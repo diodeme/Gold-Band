@@ -340,27 +340,27 @@ use crate::acp::branches::{
 use crate::acp::commands::{AcpCommandItem, parse_available_commands};
 use crate::acp::connection::{
     AcpConnectionUnavailable, AdapterConnection, AdapterConnectionKey, AdapterConnectionManager,
-    SessionEventPump, SessionRouteTryRecvError, SessionRouteWatermark,
+    SessionEventPump, SessionObservedFrame, SessionRouteTryRecvError, SessionRouteWatermark,
 };
 use crate::acp::elicitation::{
-    ELICITATION_DEFAULT_TIMEOUT, ElicitationAction,
-    bind_pending_elicitation_timeline_identity, cancel_pending_elicitation_requests,
-    elicitation_response_result, pending_elicitation_state, remove_elicitation_signal_files,
-    wait_for_elicitation_response_until_cancelled, write_pending_elicitation,
+    ELICITATION_DEFAULT_TIMEOUT, ElicitationAction, bind_pending_elicitation_timeline_identity,
+    cancel_pending_elicitation_requests, elicitation_response_result, pending_elicitation_state,
+    remove_elicitation_signal_files, wait_for_elicitation_response_until_cancelled,
+    write_pending_elicitation,
 };
 use crate::acp::events::{
     AcpAttemptPaths, AcpLatestTurnStatus, AcpLifecycleOwner, AcpLifecycleTerminalGuard,
     AcpLiveTurnActivity, AcpPromptRetryState, AcpSessionAvailability, AcpSessionMetadata,
-    AcpSessionTiming, AcpTimingState, AcpUiEvent, append_diagnostic, append_raw_frame,
-    append_structured_diagnostic, cancel_latest_processing_prompt_retry, current_timestamp,
-    is_semantically_empty_agent_content, load_session_metadata, normalize_session_update,
-    permission_request_event, read_lifecycle_header, user_prompt_event_with_quotes,
-    write_session_metadata, write_session_metadata_owned,
+    AcpSessionTiming, AcpTimingState, AcpUiEvent, RawFrameAppendOutcome, append_diagnostic,
+    append_raw_frame, append_raw_frame_observed, append_structured_diagnostic,
+    cancel_latest_processing_prompt_retry, current_timestamp, is_semantically_empty_agent_content,
+    load_session_metadata, normalize_session_update, permission_request_event,
+    read_lifecycle_header, user_prompt_event_with_quotes, write_session_metadata,
+    write_session_metadata_owned,
 };
 use crate::acp::history::{ProviderHistoryImport, ProviderHistoryReplay, ReplayUpdateDecision};
 use crate::acp::interaction::{
-    AcpPromptInteractionIdentity, AcpPromptInteractionKind,
-    annotate_prompt_interaction_identity,
+    AcpPromptInteractionIdentity, AcpPromptInteractionKind, annotate_prompt_interaction_identity,
 };
 use crate::acp::permission::{
     PermissionResponseState, acp_permission_response_result,
@@ -368,6 +368,7 @@ use crate::acp::permission::{
     permission_response_file, remove_permission_signal_files,
     wait_for_permission_response_until_cancelled, write_pending_permission,
 };
+use crate::acp::pipeline_diagnostics::{AcpPipelineDiagnostics, PipelineUpdateKind};
 use crate::acp::timeline::{
     TimelineCompactionPolicy, TimelineStore, read_indexed_prompt_anchor_events,
 };
@@ -572,15 +573,15 @@ fn is_transport_interruption(error: &anyhow::Error) -> bool {
         || error.downcast_ref::<AcpConnectionUnavailable>().is_some()
 }
 
-fn drain_frames_until_quiet<Receive, Observe>(
+fn drain_frames_until_quiet<Frame, Receive, Observe>(
     quiet_period: Duration,
     timeout: Duration,
     mut receive: Receive,
     mut observe: Observe,
 ) -> Result<usize>
 where
-    Receive: FnMut(Duration) -> std::result::Result<Value, RecvTimeoutError>,
-    Observe: FnMut(Value) -> Result<()>,
+    Receive: FnMut(Duration) -> std::result::Result<Frame, RecvTimeoutError>,
+    Observe: FnMut(Frame) -> Result<()>,
 {
     drain_frames_until_quiet_with_timeout_error(
         quiet_period,
@@ -591,7 +592,7 @@ where
     )
 }
 
-fn drain_frames_until_quiet_with_timeout_error<Receive, Observe, TimeoutError>(
+fn drain_frames_until_quiet_with_timeout_error<Frame, Receive, Observe, TimeoutError>(
     quiet_period: Duration,
     timeout: Duration,
     mut receive: Receive,
@@ -599,8 +600,8 @@ fn drain_frames_until_quiet_with_timeout_error<Receive, Observe, TimeoutError>(
     timeout_error: TimeoutError,
 ) -> Result<usize>
 where
-    Receive: FnMut(Duration) -> std::result::Result<Value, RecvTimeoutError>,
-    Observe: FnMut(Value) -> Result<()>,
+    Receive: FnMut(Duration) -> std::result::Result<Frame, RecvTimeoutError>,
+    Observe: FnMut(Frame) -> Result<()>,
     TimeoutError: Fn(Duration) -> anyhow::Error,
 {
     let started_at = Instant::now();
@@ -628,7 +629,7 @@ where
     }
 }
 
-fn drain_frames_until_route_watermark<Reached, Receive, Observe>(
+fn drain_frames_until_route_watermark<Frame, Reached, Receive, Observe>(
     timeout: Duration,
     mut reached: Reached,
     mut receive: Receive,
@@ -636,8 +637,8 @@ fn drain_frames_until_route_watermark<Reached, Receive, Observe>(
 ) -> Result<usize>
 where
     Reached: FnMut() -> bool,
-    Receive: FnMut(Duration) -> std::result::Result<Value, RecvTimeoutError>,
-    Observe: FnMut(Value) -> Result<()>,
+    Receive: FnMut(Duration) -> std::result::Result<Frame, RecvTimeoutError>,
+    Observe: FnMut(Frame) -> Result<()>,
 {
     let started_at = Instant::now();
     let mut drained_frames = 0usize;
@@ -659,15 +660,15 @@ where
     Ok(drained_frames)
 }
 
-fn drain_available_frames_bounded<Receive, Observe>(
+fn drain_available_frames_bounded<Frame, Receive, Observe>(
     frame_budget: usize,
     time_budget: Duration,
     mut receive: Receive,
     mut observe: Observe,
 ) -> Result<usize>
 where
-    Receive: FnMut() -> Result<Option<Value>>,
-    Observe: FnMut(Value) -> Result<()>,
+    Receive: FnMut() -> Result<Option<Frame>>,
+    Observe: FnMut(Frame) -> Result<()>,
 {
     let started_at = Instant::now();
     let mut drained_frames = 0usize;
@@ -1288,6 +1289,28 @@ fn append_raw_frame_best_effort(
     }
 }
 
+fn append_raw_frame_observed_best_effort(
+    path: &Utf8Path,
+    direction: &str,
+    frame: Value,
+    max_size: u64,
+    target_size: u64,
+) -> Option<RawFrameAppendOutcome> {
+    match append_raw_frame_observed(path, direction, frame, max_size, target_size) {
+        Ok(outcome) => Some(outcome),
+        Err(error) => {
+            debug!(
+                target: "gold_band::acp::diagnostic",
+                %path,
+                %direction,
+                %error,
+                "failed to append observed ACP raw frame; continuing runtime"
+            );
+            None
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AcpPromptRun {
     pub session_id: String,
@@ -1438,6 +1461,7 @@ pub struct AcpRuntimePolicy {
     pub external_session_sync_enabled: bool,
     pub supports_system_prompt: bool,
     pub turn_file_capture: crate::acp::turn_files::TurnFileCaptureConfig,
+    pub detailed_pipeline_diagnostics: bool,
 }
 
 impl Default for AcpRuntimePolicy {
@@ -1454,6 +1478,7 @@ impl Default for AcpRuntimePolicy {
             external_session_sync_enabled: false,
             supports_system_prompt: false,
             turn_file_capture: crate::acp::turn_files::TurnFileCaptureConfig::default(),
+            detailed_pipeline_diagnostics: false,
         }
     }
 }
@@ -1481,6 +1506,7 @@ impl From<&RuntimeConfig> for AcpRuntimePolicy {
             external_session_sync_enabled: false,
             supports_system_prompt: false,
             turn_file_capture: config.turn_files.into(),
+            detailed_pipeline_diagnostics: config.log_level.allows(&tracing::Level::DEBUG),
         }
     }
 }
@@ -1860,6 +1886,7 @@ struct AcpRuntime<'a> {
     provider_freshness: ProviderFreshnessBaseline,
     sync_required: bool,
     retain_session_route: bool,
+    pipeline_diagnostics: Option<AcpPipelineDiagnostics>,
 }
 
 #[derive(Default)]
@@ -3324,6 +3351,7 @@ impl<'a> AcpRuntime<'a> {
             provider_freshness: ProviderFreshnessBaseline::Unknown,
             sync_required: false,
             retain_session_route: false,
+            pipeline_diagnostics: None,
         })
     }
 
@@ -4777,6 +4805,7 @@ impl<'a> AcpRuntime<'a> {
                 &agent_capabilities,
             ),
         )?;
+        self.begin_pipeline_diagnostics(diagnostic_started_at);
         self.append_outbound_frame(&request.frame);
         let result = (|| {
             let mut cancel_started_at: Option<Instant> = None;
@@ -4804,6 +4833,7 @@ impl<'a> AcpRuntime<'a> {
                     self.drain_available_inbound()?;
                 }
                 self.maybe_emit_live_timing_update(Instant::now(), "tick")?;
+                self.maybe_emit_pipeline_diagnostics(Instant::now());
                 match request.recv_timeout_with_session_route_watermark(wait_for) {
                     Ok(response) => {
                         let value = response.frame;
@@ -4931,6 +4961,7 @@ impl<'a> AcpRuntime<'a> {
                 "providerId": provider_id,
             }),
         );
+        self.finish_pipeline_diagnostics(status, Instant::now());
         result
     }
 
@@ -5688,15 +5719,18 @@ impl<'a> AcpRuntime<'a> {
                 self.drain_available_inbound_bounded()?;
                 return Ok(());
             }
-            let value = match self.rx.as_ref().map(|receiver| receiver.try_recv()) {
-                Some(Ok(value)) => value,
+            let frame = match self
+                .rx
+                .as_ref()
+                .map(|receiver| receiver.try_recv_observed())
+            {
+                Some(Ok(frame)) => frame,
                 Some(Err(SessionRouteTryRecvError::Empty)) | None => return Ok(()),
                 Some(Err(SessionRouteTryRecvError::Disconnected)) => {
                     return Err(anyhow!(AcpTransportInterrupted));
                 }
             };
-            self.append_inbound_frame(&value);
-            self.handle_inbound(value)?;
+            self.process_observed_inbound(frame)?;
         }
     }
 
@@ -5705,17 +5739,17 @@ impl<'a> AcpRuntime<'a> {
         drain_available_frames_bounded(
             PROMPT_CANCEL_DRAIN_FRAME_BUDGET,
             PROMPT_CANCEL_DRAIN_TIME_BUDGET,
-            || match receiver.as_ref().map(|receiver| receiver.try_recv()) {
-                Some(Ok(value)) => Ok(Some(value)),
+            || match receiver
+                .as_ref()
+                .map(|receiver| receiver.try_recv_observed())
+            {
+                Some(Ok(frame)) => Ok(Some(frame)),
                 Some(Err(SessionRouteTryRecvError::Empty)) | None => Ok(None),
                 Some(Err(SessionRouteTryRecvError::Disconnected)) => {
                     Err(anyhow!(AcpTransportInterrupted))
                 }
             },
-            |value| {
-                self.append_inbound_frame(&value);
-                self.handle_inbound(value)
-            },
+            |frame| self.process_observed_inbound(frame),
         )
     }
 
@@ -5738,11 +5772,8 @@ impl<'a> AcpRuntime<'a> {
         let drained_frames = drain_frames_until_route_watermark(
             timeout,
             || receiver.has_consumed(watermark),
-            |wait_for| receiver.recv_timeout(wait_for),
-            |value| {
-                self.append_inbound_frame(&value);
-                self.handle_inbound(value)
-            },
+            |wait_for| receiver.recv_timeout_observed(wait_for),
+            |frame| self.process_observed_inbound(frame),
         )?;
         if drained_frames > 0 {
             self.append_timing_diagnostic(
@@ -5774,11 +5805,8 @@ impl<'a> AcpRuntime<'a> {
         let drained_frames = drain_frames_until_quiet_with_timeout_error(
             PROMPT_TERMINAL_QUIET_PERIOD,
             timeout,
-            |wait_for| receiver.recv_timeout(wait_for),
-            |value| {
-                self.append_inbound_frame(&value);
-                self.handle_inbound(value)
-            },
+            |wait_for| receiver.recv_timeout_observed(wait_for),
+            |frame| self.process_observed_inbound(frame),
             |timeout| anyhow!(AcpPromptRouteDrainTimeout { timeout }),
         )?;
         self.append_timing_diagnostic(
@@ -5803,11 +5831,8 @@ impl<'a> AcpRuntime<'a> {
         let drained_frames = drain_frames_until_quiet(
             SESSION_REPLAY_QUIET_PERIOD,
             SESSION_REPLAY_DRAIN_TIMEOUT,
-            |wait_for| receiver.recv_timeout(wait_for),
-            |value| {
-                self.append_inbound_frame(&value);
-                self.handle_inbound(value)
-            },
+            |wait_for| receiver.recv_timeout_observed(wait_for),
+            |frame| self.process_observed_inbound(frame),
         )?;
         self.append_timing_diagnostic(
             "acp_session_replay_drained",
@@ -5840,6 +5865,114 @@ impl<'a> AcpRuntime<'a> {
             self.raw_max_size,
             self.raw_target_size,
         );
+    }
+
+    fn begin_pipeline_diagnostics(&mut self, now: Instant) {
+        let route_generation = self
+            .rx
+            .as_ref()
+            .map(|receiver| {
+                let _ = receiver.take_queue_high_watermarks();
+                receiver.route_generation()
+            })
+            .unwrap_or_default();
+        self.pipeline_diagnostics = Some(AcpPipelineDiagnostics::new(
+            now,
+            self.runtime_policy.detailed_pipeline_diagnostics,
+            route_generation,
+        ));
+    }
+
+    fn process_observed_inbound(&mut self, frame: SessionObservedFrame) -> Result<()> {
+        let dequeued_at = Instant::now();
+        let kind = PipelineUpdateKind::from_frame(&frame.value);
+        if let Some(diagnostics) = self.pipeline_diagnostics.as_mut() {
+            diagnostics.observe_frame(
+                frame.bytes,
+                frame.sequence,
+                dequeued_at.saturating_duration_since(frame.received_at),
+                kind,
+            );
+        }
+
+        let raw_outcome = append_raw_frame_observed_best_effort(
+            &self.paths.raw,
+            "inbound",
+            frame.value.clone(),
+            self.raw_max_size,
+            self.raw_target_size,
+        );
+        if let Some(outcome) = raw_outcome {
+            if let Some(diagnostics) = self.pipeline_diagnostics.as_mut() {
+                diagnostics
+                    .observe_raw_append(outcome.elapsed, outcome.roll.map(|roll| roll.elapsed));
+            }
+            if let Some(roll) = outcome.roll {
+                self.append_pipeline_diagnostic(
+                    "info",
+                    "acp.pipeline-raw-roll",
+                    json!({
+                        "event": "acp_pipeline_raw_roll",
+                        "beforeBytes": roll.before_bytes,
+                        "afterBytes": roll.after_bytes,
+                        "elapsedMs": roll.elapsed.as_millis(),
+                    }),
+                );
+            }
+        }
+
+        let processing_started_at = Instant::now();
+        let result = self.handle_inbound(frame.value);
+        if let Some(diagnostics) = self.pipeline_diagnostics.as_mut() {
+            diagnostics.observe_processed(processing_started_at.elapsed());
+        }
+        self.maybe_emit_pipeline_diagnostics(Instant::now());
+        result
+    }
+
+    fn maybe_emit_pipeline_diagnostics(&mut self, now: Instant) {
+        let (window, anomaly) = self
+            .pipeline_diagnostics
+            .as_mut()
+            .map(|diagnostics| {
+                (
+                    diagnostics.take_detailed_window(now),
+                    diagnostics.take_queue_wait_anomaly(now),
+                )
+            })
+            .unwrap_or_default();
+        if let Some(window) = window {
+            self.append_pipeline_diagnostic("debug", "acp.pipeline-window", window);
+        }
+        if let Some(anomaly) = anomaly {
+            self.append_pipeline_diagnostic("warn", "acp.pipeline-queue-wait", anomaly);
+        }
+    }
+
+    fn finish_pipeline_diagnostics(&mut self, status: &str, now: Instant) {
+        let queue = self
+            .rx
+            .as_ref()
+            .map(|receiver| receiver.take_queue_high_watermarks())
+            .unwrap_or_default();
+        let Some(diagnostics) = self.pipeline_diagnostics.take() else {
+            return;
+        };
+        let summary = diagnostics.finish(now, status, queue);
+        self.append_pipeline_diagnostic("info", "acp.pipeline-summary", summary);
+    }
+
+    fn append_pipeline_diagnostic(&self, level: &str, code: &str, mut data: Value) {
+        if let Some(object) = data.as_object_mut() {
+            object.insert(
+                "sessionId".to_string(),
+                self.session_id
+                    .clone()
+                    .map(Value::String)
+                    .unwrap_or(Value::Null),
+            );
+        }
+        append_structured_diagnostic_best_effort(&self.paths.diagnostics, level, code, Some(data));
     }
 
     fn write_worker_ref(
@@ -6189,10 +6322,12 @@ impl<'a> AcpRuntime<'a> {
         now: Instant,
     ) -> Result<Option<(u64, u64)>> {
         let branch_id = event_branch_id(item);
-        let (outcome, durable_watermark) = if branch_id == ROOT_BRANCH_ID {
+        let upsert_started_at = Instant::now();
+        let (outcome, durable_watermark, compaction_elapsed) = if branch_id == ROOT_BRANCH_ID {
             let outcome = self.timeline_store.upsert(revision, item)?;
             let watermark = self.timeline_store.durable_watermark_for_item_id(&item.id);
-            (outcome, watermark)
+            let compaction_elapsed = self.timeline_store.take_last_compaction_elapsed();
+            (outcome, watermark, compaction_elapsed)
         } else {
             let policy = self.runtime_policy.timeline_compaction;
             let attempt_dir = self.paths.attempt_dir.clone();
@@ -6205,8 +6340,26 @@ impl<'a> AcpRuntime<'a> {
                 )?);
             let outcome = store.upsert(revision, item)?;
             let watermark = store.durable_watermark_for_item_id(&item.id);
-            (outcome, watermark)
+            let compaction_elapsed = store.take_last_compaction_elapsed();
+            (outcome, watermark, compaction_elapsed)
         };
+        let upsert_elapsed = upsert_started_at.elapsed();
+        if let Some(diagnostics) = self.pipeline_diagnostics.as_mut() {
+            diagnostics.observe_timeline_upsert(upsert_elapsed, compaction_elapsed);
+        }
+        if let Some(compaction_elapsed) = compaction_elapsed {
+            self.append_pipeline_diagnostic(
+                "info",
+                "acp.pipeline-timeline-compaction",
+                json!({
+                    "event": "acp_pipeline_timeline_compaction",
+                    "branchId": branch_id,
+                    "revision": revision,
+                    "upsertElapsedMs": upsert_elapsed.as_millis(),
+                    "compactionElapsedMs": compaction_elapsed.as_millis(),
+                }),
+            );
+        }
         if !matches!(
             outcome,
             crate::acp::timeline::TimelineUpsertOutcome::Unchanged
@@ -6324,7 +6477,12 @@ impl<'a> AcpRuntime<'a> {
         now: Instant,
     ) -> Result<()> {
         if let Some(live_update) = self.live_update {
-            live_update(item, timeline_watermark)?;
+            let emit_started_at = Instant::now();
+            let emit_result = live_update(item, timeline_watermark);
+            if let Some(diagnostics) = self.pipeline_diagnostics.as_mut() {
+                diagnostics.observe_live_emit(emit_started_at.elapsed());
+            }
+            emit_result?;
             self.last_live_update_at = Some(now);
             if let Some(timing) = item.timing.as_ref() {
                 self.last_live_timing_update_at = Some(now);
@@ -7448,8 +7606,7 @@ mod tests {
         SessionRestoreCapabilities, SessionRestoreIntent, SessionRestoreMethod, SessionRestorePlan,
         SessionRestorePlanError, SessionUpdatePhase, acp_prompt_rpc_failure,
         active_context_compaction, active_timeline_streams, active_timeline_streams_by_branch,
-        append_bounded, append_diagnostic_best_effort,
-        append_raw_frame_best_effort,
+        append_bounded, append_diagnostic_best_effort, append_raw_frame_best_effort,
         append_structured_diagnostic_best_effort, attached_sync_required, cancel_attempt_prompt,
         canonical_prompt_event_identity, catalog_observation_is_newer,
         cleanup_doctor_acp_dir_after_success, confirmed_context_usage_update,
@@ -7663,7 +7820,7 @@ mod tests {
         },
         permission::PermissionResponseState,
     };
-    use crate::config::RuntimeConfig;
+    use crate::config::{RuntimeConfig, RuntimeLogLevel};
     use crate::provider::prepare_acp_mcp_servers;
     use crate::runtime_error::{RecoveryMode, RuntimeErrorDomain, normalize_runtime_error};
 
@@ -8340,7 +8497,7 @@ mod tests {
             Duration::from_secs(5),
             || true,
             |_| panic!("an already-consumed watermark must not wait for another frame"),
-            |_| Ok(()),
+            |_: Value| Ok(()),
         )
         .unwrap();
 
@@ -8353,7 +8510,7 @@ mod tests {
             Duration::from_millis(1),
             || false,
             |_| Err(RecvTimeoutError::Timeout),
-            |_| Ok(()),
+            |_: Value| Ok(()),
         )
         .unwrap_err();
 
@@ -8366,7 +8523,7 @@ mod tests {
             Duration::from_millis(10),
             Duration::from_millis(1),
             |_| Err(RecvTimeoutError::Timeout),
-            |_| Ok(()),
+            |_: Value| Ok(()),
             |timeout| anyhow::anyhow!(AcpPromptRouteDrainTimeout { timeout }),
         )
         .unwrap_err();
@@ -8465,6 +8622,19 @@ mod tests {
             policy.prompt_terminal_route_timeout,
             Duration::from_millis(2_750)
         );
+    }
+
+    #[test]
+    fn detailed_pipeline_diagnostics_reuses_verbose_log_level() {
+        let mut config = RuntimeConfig::default();
+        config.log_level = RuntimeLogLevel::Info;
+        assert!(!AcpRuntimePolicy::from(&config).detailed_pipeline_diagnostics);
+
+        config.log_level = RuntimeLogLevel::Debug;
+        assert!(AcpRuntimePolicy::from(&config).detailed_pipeline_diagnostics);
+
+        config.log_level = RuntimeLogLevel::Trace;
+        assert!(AcpRuntimePolicy::from(&config).detailed_pipeline_diagnostics);
     }
 
     #[test]

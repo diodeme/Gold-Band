@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
 use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use agent_client_protocol_schema::v1::{CreateElicitationRequest, ElicitationScope};
 use anyhow::Result;
@@ -1238,6 +1239,30 @@ pub fn append_raw_frame(
     max_size: u64,
     target_size: u64,
 ) -> Result<()> {
+    append_raw_frame_observed(path, direction, frame, max_size, target_size).map(|_| ())
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RawLogRollStats {
+    pub(crate) before_bytes: u64,
+    pub(crate) after_bytes: u64,
+    pub(crate) elapsed: Duration,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RawFrameAppendOutcome {
+    pub(crate) elapsed: Duration,
+    pub(crate) roll: Option<RawLogRollStats>,
+}
+
+pub(crate) fn append_raw_frame_observed(
+    path: &Utf8Path,
+    direction: &str,
+    frame: Value,
+    max_size: u64,
+    target_size: u64,
+) -> Result<RawFrameAppendOutcome> {
+    let started_at = Instant::now();
     with_jsonl_file_lock(path, || {
         append_jsonl_unlocked(
             path,
@@ -1247,21 +1272,29 @@ pub fn append_raw_frame(
                 frame,
             },
         )?;
-        let _ = roll_raw_log(path, max_size, target_size);
-        Ok(())
+        let roll = roll_raw_log(path, max_size, target_size).unwrap_or(None);
+        Ok(RawFrameAppendOutcome {
+            elapsed: started_at.elapsed(),
+            roll,
+        })
     })
 }
 
 /// Roll the raw log file, preserving init handshake frames (everything before the first
 /// `session/update`) and only trimming the streaming update section.
-fn roll_raw_log(path: &Utf8Path, max_size: u64, target_size: u64) -> Result<()> {
+fn roll_raw_log(
+    path: &Utf8Path,
+    max_size: u64,
+    target_size: u64,
+) -> Result<Option<RawLogRollStats>> {
     use std::io::Write;
     let meta = match std::fs::metadata(path.as_std_path()) {
         Ok(m) => m,
-        Err(_) => return Ok(()),
+        Err(_) => return Ok(None),
     };
+    let before_bytes = meta.len();
     if meta.len() <= max_size {
-        return Ok(());
+        return Ok(None);
     }
     let content = std::fs::read(path.as_std_path())?;
 
@@ -1277,7 +1310,7 @@ fn roll_raw_log(path: &Utf8Path, max_size: u64, target_size: u64) -> Result<()> 
         pinned_bytes += line.len();
     }
     if !found_updatable {
-        return Ok(());
+        return Ok(None);
     }
 
     let updatable_start = pinned_bytes;
@@ -1285,7 +1318,7 @@ fn roll_raw_log(path: &Utf8Path, max_size: u64, target_size: u64) -> Result<()> 
     let pinned_len = pinned_bytes as u64;
     let effective_target = target_size.saturating_sub(pinned_len);
     if updatable_len <= effective_target {
-        return Ok(());
+        return Ok(None);
     }
     let excess = updatable_len.saturating_sub(effective_target);
 
@@ -1301,10 +1334,19 @@ fn roll_raw_log(path: &Utf8Path, max_size: u64, target_size: u64) -> Result<()> 
     }
     let drop_bytes = drop_bytes.min(updatable.len());
 
+    let roll_started_at = Instant::now();
     let mut file = std::fs::File::create(path.as_std_path())?;
     file.write_all(&content[..updatable_start])?;
     file.write_all(&updatable[drop_bytes..])?;
-    Ok(())
+    file.flush()?;
+    let after_bytes = std::fs::metadata(path.as_std_path())
+        .map(|metadata| metadata.len())
+        .unwrap_or_else(|_| before_bytes.saturating_sub(drop_bytes as u64));
+    Ok(Some(RawLogRollStats {
+        before_bytes,
+        after_bytes,
+        elapsed: roll_started_at.elapsed(),
+    }))
 }
 
 pub fn append_diagnostic(
@@ -6208,5 +6250,37 @@ mod tests {
         assert!(rolled.contains(pinned));
         assert!(rolled.contains(update_two));
         assert!(!rolled.contains(update_one));
+    }
+
+    #[test]
+    fn raw_append_reports_roll_only_when_file_is_rewritten() {
+        let dir = TempDir::new().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.raw.jsonl");
+
+        let first = super::append_raw_frame_observed(
+            &path,
+            "inbound",
+            json!({ "method": "initialize" }),
+            1024,
+            512,
+        )
+        .unwrap();
+        assert!(first.roll.is_none());
+
+        let second = super::append_raw_frame_observed(
+            &path,
+            "inbound",
+            json!({
+                "method": "session/update",
+                "payload": "x".repeat(2048)
+            }),
+            256,
+            128,
+        )
+        .unwrap();
+        let roll = second.roll.expect("raw log rewrite stats");
+        assert!(roll.before_bytes > roll.after_bytes);
     }
 }

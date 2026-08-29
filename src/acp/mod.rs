@@ -9,6 +9,7 @@ pub mod events;
 pub mod history;
 pub mod interaction;
 pub mod permission;
+mod pipeline_diagnostics;
 pub mod prompt_queue;
 pub mod timeline;
 pub mod turn_files;

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use camino::{Utf8Path, Utf8PathBuf};
@@ -629,6 +629,7 @@ pub struct TimelineStore {
     checkpoint_policy: TimelineCheckpointPolicy,
     dirty_patch_count: usize,
     restore_mode: TimelineRestoreMode,
+    last_compaction_elapsed: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -671,6 +672,7 @@ impl TimelineStore {
                 replayed
             },
             restore_mode,
+            last_compaction_elapsed: None,
         };
         if store.dirty_patch_count > 0 {
             store.force_checkpoint()?;
@@ -710,6 +712,7 @@ impl TimelineStore {
     }
 
     pub fn upsert(&mut self, revision: u64, item: &AcpUiEvent) -> Result<TimelineUpsertOutcome> {
+        self.last_compaction_elapsed = None;
         let mut storage_item = item.clone();
         externalize_timeline_event(&self.blob_store, &mut storage_item)?;
         let path = self.path.clone();
@@ -777,11 +780,17 @@ impl TimelineStore {
         self.patch_count = self.patch_count.saturating_add(1);
         self.patch_bytes = self.patch_bytes.saturating_add(line_length);
         self.file_signature = timeline_file_signature(&self.path);
+        let compaction_started_at = Instant::now();
         if self.compact_if_needed()? {
+            self.last_compaction_elapsed = Some(compaction_started_at.elapsed());
             Ok(TimelineUpsertOutcome::AppendedAndCompacted)
         } else {
             Ok(TimelineUpsertOutcome::Appended)
         }
+    }
+
+    pub fn take_last_compaction_elapsed(&mut self) -> Option<Duration> {
+        self.last_compaction_elapsed.take()
     }
 
     pub fn compact_if_needed(&mut self) -> Result<bool> {
@@ -2995,6 +3004,32 @@ mod tests {
             load_timeline_items(&path).unwrap()[0].content.as_deref(),
             Some("hello")
         );
+    }
+
+    #[test]
+    fn upsert_exposes_exact_compaction_observation_once() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut store = TimelineStore::open(
+            path,
+            TimelineCompactionPolicy {
+                max_size_bytes: u64::MAX,
+                patch_ratio: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            store.upsert(1, &event("message-1", 1, "hel")).unwrap(),
+            TimelineUpsertOutcome::Appended
+        );
+        assert!(store.take_last_compaction_elapsed().is_none());
+
+        assert_eq!(
+            store.upsert(2, &event("message-1", 2, "hello")).unwrap(),
+            TimelineUpsertOutcome::AppendedAndCompacted
+        );
+        assert!(store.take_last_compaction_elapsed().is_some());
+        assert!(store.take_last_compaction_elapsed().is_none());
     }
 
     #[test]

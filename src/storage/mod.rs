@@ -701,6 +701,18 @@ impl GoldBandPaths {
             .join("graph.json")
     }
 
+    pub fn dynamic_coordination_snapshot_file(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) -> Utf8PathBuf {
+        self.dynamic_dir(task_id, run_id, round_id, node_id, attempt_id)
+            .join("coordination-snapshot.json")
+    }
+
     pub fn dynamic_events_file(
         &self,
         task_id: &str,

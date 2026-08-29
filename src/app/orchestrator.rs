@@ -28,17 +28,22 @@ use crate::dsl::{
     workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{
-    AllowedWorkflowSnapshot, DYNAMIC_COMPLETION_ARTIFACT, DynamicAgentTaskSpec,
-    DynamicCompletionSchemaPolicy, DynamicCompletionStatus, DynamicGraphState, DynamicGroupState,
-    DynamicGroupStatus, DynamicNext, DynamicNodeCompletion, DynamicNodeCompletionKind,
-    DynamicNodeKind, DynamicNodeSpec, DynamicNodeSpecKind, DynamicNodeState, DynamicNodeStatus,
-    DynamicProposalState, DynamicProposalValidationError, DynamicProposalValidationStatus,
-    DynamicRunPhase, DynamicRunState, DynamicRunStatus, WorkspaceKind, WorkspaceOwnership,
-    WorkspaceState, WorkspaceStatus, dynamic_completion_effective_schema,
-    dynamic_graph_has_active_leaf, dynamic_leaf_is_active, dynamic_runtime_owns_leaf_projection,
-    refresh_dynamic_current_leaf_ids, validate_dynamic_group_state, validate_dynamic_node_state,
-    validate_dynamic_run_state, validate_workspace_state, validate_workspace_topology,
-    write_dynamic_node_state,
+    AI_DYNAMIC_REPORT_MANIFEST_ARTIFACT, AI_DYNAMIC_RESULT_ARTIFACT, AiDynamicChildWorkflowRef,
+    AiDynamicCoordinationGroup, AiDynamicCoordinationNode, AiDynamicCoordinationSnapshot,
+    AiDynamicCoordinationSnapshotKind, AiDynamicReportAttachment, AiDynamicReportGroup,
+    AiDynamicReportManifest, AiDynamicReportManifestKind, AiDynamicReportManifestRef,
+    AiDynamicReportNext, AiDynamicReportNode, AiDynamicResult, AiDynamicResultKind,
+    AiDynamicTaskRef, AiDynamicWorkspaceRef, AllowedWorkflowSnapshot, DYNAMIC_COMPLETION_ARTIFACT,
+    DynamicAgentTaskSpec, DynamicCompletionSchemaPolicy, DynamicCompletionStatus,
+    DynamicGraphState, DynamicGroupState, DynamicGroupStatus, DynamicNext, DynamicNodeCompletion,
+    DynamicNodeCompletionKind, DynamicNodeKind, DynamicNodeSpec, DynamicNodeSpecKind,
+    DynamicNodeState, DynamicNodeStatus, DynamicProposalState, DynamicProposalValidationError,
+    DynamicProposalValidationStatus, DynamicRunPhase, DynamicRunState, DynamicRunStatus,
+    WorkspaceKind, WorkspaceOwnership, WorkspaceState, WorkspaceStatus,
+    dynamic_completion_effective_schema, dynamic_graph_has_active_leaf, dynamic_leaf_is_active,
+    dynamic_runtime_owns_leaf_projection, refresh_dynamic_current_leaf_ids,
+    validate_dynamic_group_state, validate_dynamic_node_state, validate_dynamic_run_state,
+    validate_workspace_state, validate_workspace_topology, write_dynamic_node_state,
 };
 use crate::dynamic_store::{
     CURRENT_DYNAMIC_GRAPH_VERSION, load_dynamic_graph, validate_dynamic_graph,
@@ -5605,6 +5610,7 @@ fn dynamic_effective_completion_schema(
 fn dynamic_output_contract(
     ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
+    node: &DynamicNodeState,
     emission_mode: OutputEmissionMode,
 ) -> PromptOutputContract {
     let language = ctx.app.config.desktop_language;
@@ -5624,6 +5630,7 @@ fn dynamic_output_contract(
                 DesktopLanguage::ZhCn => dynamic_model_policy_summary_zh_cn(ctx),
                 DesktopLanguage::En => dynamic_model_policy_summary(ctx),
             },
+            "end_summary_is_outer_handoff": dynamic_end_summary_is_outer_handoff(graph, node),
             "json_schema": json_schema,
         }),
     )
@@ -5648,6 +5655,25 @@ fn dynamic_node_is_bootstrap_dispatch(node: &DynamicNodeState) -> bool {
         && node.chain_id == DYNAMIC_BOOTSTRAP_NODE_ID
 }
 
+fn dynamic_end_summary_is_outer_handoff(
+    graph: &DynamicGraphState,
+    node: &DynamicNodeState,
+) -> bool {
+    if node.group_id.is_none() {
+        return true;
+    }
+    if node.kind != DynamicNodeKind::Acceptance {
+        return false;
+    }
+    node.group_id.as_deref().is_some_and(|group_id| {
+        graph
+            .groups
+            .iter()
+            .find(|group| group.id == group_id)
+            .is_some_and(|group| group.parent_group_id.is_none())
+    })
+}
+
 fn dynamic_output_emission_mode(node: &DynamicNodeState) -> OutputEmissionMode {
     if dynamic_node_is_bootstrap_dispatch(node) {
         OutputEmissionMode::InlineControl
@@ -5666,7 +5692,7 @@ fn dynamic_output_contract_for_node(
     node: &DynamicNodeState,
 ) -> Option<PromptOutputContract> {
     dynamic_output_emission_mode_for_node(node)
-        .map(|emission_mode| dynamic_output_contract(ctx, graph, emission_mode))
+        .map(|emission_mode| dynamic_output_contract(ctx, graph, node, emission_mode))
 }
 
 fn dynamic_attempt_id(_node: &DynamicNodeState) -> String {
@@ -5754,6 +5780,17 @@ fn persist_dynamic_graph_for_resume_unlocked(
             .dynamic_graph_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id),
         graph,
     )?;
+    let coordination_snapshot = build_ai_dynamic_coordination_snapshot(graph)?;
+    write_json(
+        &app.paths.dynamic_coordination_snapshot_file(
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+        ),
+        &coordination_snapshot,
+    )?;
     for node in &graph.nodes {
         write_dynamic_node_state(
             &app.paths.dynamic_node_file(
@@ -5768,6 +5805,69 @@ fn persist_dynamic_graph_for_resume_unlocked(
         )?;
     }
     Ok(())
+}
+
+fn build_ai_dynamic_coordination_snapshot(
+    graph: &DynamicGraphState,
+) -> Result<AiDynamicCoordinationSnapshot> {
+    let completions = accepted_dynamic_completions(graph)?;
+    let spawned_by = dynamic_spawned_by_node_ids(graph, &completions);
+    let nodes = graph
+        .nodes
+        .iter()
+        .map(|node| {
+            Ok(AiDynamicCoordinationNode {
+                id: node.id.clone(),
+                kind: node.kind,
+                title: node.title.clone(),
+                task: node.task.clone(),
+                status: node.status,
+                outcome: node.outcome,
+                spawned_by_node_id: spawned_by.get(&node.id).cloned(),
+                depends_on: node.depends_on.clone(),
+                group_id: node.group_id.clone(),
+                chain_id: node.chain_id.clone(),
+                workspace: ai_dynamic_workspace_ref(graph, &node.workspace_id)?,
+                started_at: node.started_at.clone(),
+                finished_at: node.finished_at.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let groups = graph
+        .groups
+        .iter()
+        .map(|group| {
+            Ok(AiDynamicCoordinationGroup {
+                id: group.id.clone(),
+                status: group.status,
+                depth: group.depth,
+                parent_group_id: group.parent_group_id.clone(),
+                created_by_node_id: group.created_by_node_id.clone(),
+                root_node_ids: group.root_node_ids.clone(),
+                terminal_node_ids: group.terminal_node_ids.clone(),
+                target_workspace: ai_dynamic_workspace_ref(graph, &group.target_workspace_id)?,
+                child_workspaces: group
+                    .child_workspace_ids
+                    .iter()
+                    .map(|workspace_id| ai_dynamic_workspace_ref(graph, workspace_id))
+                    .collect::<Result<Vec<_>>>()?,
+                merge_node_id: group.merge_node_id.clone(),
+                acceptance_node_id: group.acceptance_node_id.clone(),
+                merge: ai_dynamic_task_ref(&group.merge),
+                acceptance: ai_dynamic_task_ref(&group.acceptance),
+                created_at: group.created_at.clone(),
+                updated_at: group.updated_at.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(AiDynamicCoordinationSnapshot {
+        version: VERSION.to_string(),
+        kind: AiDynamicCoordinationSnapshotKind::AiDynamicCoordinationSnapshot,
+        dynamic_run_id: graph.run.id.clone(),
+        generated_at: now_rfc3339_like(),
+        nodes,
+        groups,
+    })
 }
 
 fn persist_dynamic_graph_for_resume(
@@ -7013,6 +7113,7 @@ fn complete_dynamic_graph_success(
     ctx: &DynamicExecutionContext<'_>,
     graph: &mut DynamicGraphState,
 ) -> Result<()> {
+    publish_ai_dynamic_success_outputs(ctx, graph)?;
     let terminal_leaf_ids = graph
         .nodes
         .last()
@@ -7036,6 +7137,301 @@ fn complete_dynamic_graph_success(
     );
     emit_dynamic_run_terminal_session_update_best_effort(ctx, graph);
     event_result
+}
+
+fn accepted_dynamic_completions(
+    graph: &DynamicGraphState,
+) -> Result<HashMap<String, DynamicNodeCompletion>> {
+    graph
+        .proposals
+        .iter()
+        .filter(|proposal| proposal.validation_status == DynamicProposalValidationStatus::Accepted)
+        .map(|proposal| {
+            let completion =
+                serde_json::from_value::<DynamicNodeCompletion>(proposal.parsed.clone())
+                    .with_context(|| {
+                        format!(
+                            "accepted dynamic proposal `{}` has an invalid completion payload",
+                            proposal.id
+                        )
+                    })?;
+            Ok((proposal.source_node_id.clone(), completion))
+        })
+        .collect()
+}
+
+fn dynamic_spawned_by_node_ids(
+    graph: &DynamicGraphState,
+    completions: &HashMap<String, DynamicNodeCompletion>,
+) -> HashMap<String, String> {
+    let mut spawned_by = HashMap::new();
+    for (source_node_id, completion) in completions {
+        match &completion.next {
+            DynamicNext::End => {}
+            DynamicNext::Single { node } => {
+                spawned_by.insert(node.id.clone(), source_node_id.clone());
+            }
+            DynamicNext::Fanout { nodes, .. } => {
+                for node in nodes {
+                    spawned_by.insert(node.id.clone(), source_node_id.clone());
+                }
+            }
+        }
+    }
+    for group in &graph.groups {
+        if let Some(merge_node_id) = &group.merge_node_id {
+            spawned_by.insert(merge_node_id.clone(), group.created_by_node_id.clone());
+            if let Some(acceptance_node_id) = &group.acceptance_node_id {
+                spawned_by.insert(acceptance_node_id.clone(), merge_node_id.clone());
+            }
+        }
+    }
+    spawned_by
+}
+
+fn ai_dynamic_workspace_ref(
+    graph: &DynamicGraphState,
+    workspace_id: &str,
+) -> Result<AiDynamicWorkspaceRef> {
+    let workspace = dynamic_workspace(graph, workspace_id)?;
+    Ok(AiDynamicWorkspaceRef {
+        id: workspace.id.clone(),
+        kind: workspace.kind,
+        path: workspace.path.clone(),
+        branch: workspace.branch.clone(),
+    })
+}
+
+fn ai_dynamic_task_ref(spec: &DynamicAgentTaskSpec) -> AiDynamicTaskRef {
+    AiDynamicTaskRef {
+        title: spec.title.clone(),
+        task: spec.task.clone(),
+    }
+}
+
+fn ai_dynamic_report_next(next: &DynamicNext) -> AiDynamicReportNext {
+    match next {
+        DynamicNext::End => AiDynamicReportNext::End,
+        DynamicNext::Single { node } => AiDynamicReportNext::Single {
+            node_id: node.id.clone(),
+        },
+        DynamicNext::Fanout {
+            group_id, nodes, ..
+        } => AiDynamicReportNext::Fanout {
+            group_id: group_id.clone(),
+            root_node_ids: nodes.iter().map(|node| node.id.clone()).collect(),
+        },
+    }
+}
+
+fn authoritative_dynamic_completion<'a>(
+    graph: &'a DynamicGraphState,
+    completions: &'a HashMap<String, DynamicNodeCompletion>,
+) -> Result<(&'a DynamicNodeState, &'a DynamicNodeCompletion)> {
+    let top_level_groups = graph
+        .groups
+        .iter()
+        .filter(|group| group.parent_group_id.is_none())
+        .collect::<Vec<_>>();
+    if top_level_groups.is_empty() {
+        let candidates = graph
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.group_id.is_none()
+                    && node.status == DynamicNodeStatus::Completed
+                    && node.outcome == Some(NodeOutcome::Success)
+            })
+            .filter_map(|node| {
+                completions
+                    .get(&node.id)
+                    .filter(|completion| matches!(completion.next, DynamicNext::End))
+                    .map(|completion| (node, completion))
+            })
+            .collect::<Vec<_>>();
+        ensure!(
+            candidates.len() == 1,
+            "AI-DYNAMIC success requires exactly one authoritative top-level end completion; found {}",
+            candidates.len()
+        );
+        return Ok(candidates[0]);
+    }
+
+    ensure!(
+        top_level_groups.len() == 1,
+        "AI-DYNAMIC success requires exactly one authoritative top-level group; found {}",
+        top_level_groups.len()
+    );
+    let group = top_level_groups[0];
+    let acceptance_node_id = group.acceptance_node_id.as_deref().ok_or_else(|| {
+        anyhow!(
+            "authoritative top-level group `{}` has no acceptance node",
+            group.id
+        )
+    })?;
+    let node = graph
+        .nodes
+        .iter()
+        .find(|node| node.id == acceptance_node_id)
+        .ok_or_else(|| {
+            anyhow!("authoritative acceptance node `{acceptance_node_id}` is missing")
+        })?;
+    let completion = completions.get(acceptance_node_id).ok_or_else(|| {
+        anyhow!("authoritative acceptance node `{acceptance_node_id}` has no accepted completion")
+    })?;
+    ensure!(
+        matches!(completion.next, DynamicNext::End),
+        "authoritative acceptance node `{acceptance_node_id}` did not terminate with next=end"
+    );
+    Ok((node, completion))
+}
+
+fn build_ai_dynamic_report_manifest(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+    generated_at: &str,
+    completions: &HashMap<String, DynamicNodeCompletion>,
+) -> Result<AiDynamicReportManifest> {
+    let roots = graph
+        .nodes
+        .iter()
+        .filter(|node| node.depth == 0 && node.group_id.is_none() && node.depends_on.is_empty())
+        .collect::<Vec<_>>();
+    ensure!(
+        roots.len() == 1,
+        "AI-DYNAMIC report requires exactly one root node; found {}",
+        roots.len()
+    );
+    let spawned_by = dynamic_spawned_by_node_ids(graph, completions);
+    let nodes = graph
+        .nodes
+        .iter()
+        .map(|node| {
+            let attachments = dynamic_attachment_entries_for_node(ctx, node)
+                .into_iter()
+                .map(|attachment| {
+                    let size_bytes = std::fs::metadata(attachment.path.as_std_path())
+                        .map(|metadata| metadata.len())
+                        .unwrap_or_default();
+                    AiDynamicReportAttachment {
+                        name: attachment.name,
+                        path: attachment.path,
+                        size_bytes,
+                    }
+                })
+                .collect();
+            Ok(AiDynamicReportNode {
+                id: node.id.clone(),
+                kind: node.kind,
+                title: node.title.clone(),
+                task: node.task.clone(),
+                status: node.status,
+                outcome: node.outcome,
+                spawned_by_node_id: spawned_by.get(&node.id).cloned(),
+                depends_on: node.depends_on.clone(),
+                group_id: node.group_id.clone(),
+                chain_id: node.chain_id.clone(),
+                workspace: ai_dynamic_workspace_ref(graph, &node.workspace_id)?,
+                started_at: node.started_at.clone(),
+                finished_at: node.finished_at.clone(),
+                summary: completions
+                    .get(&node.id)
+                    .map(|completion| completion.summary.clone()),
+                next: completions
+                    .get(&node.id)
+                    .map(|completion| ai_dynamic_report_next(&completion.next)),
+                child_workflow: node.workflow_id.as_ref().map(|workflow_id| {
+                    AiDynamicChildWorkflowRef {
+                        workflow_id: workflow_id.clone(),
+                        workflow_snapshot_id: node.workflow_snapshot_id.clone(),
+                        child_run_id: node.child_run_id.clone(),
+                    }
+                }),
+                attachments,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let groups = graph
+        .groups
+        .iter()
+        .map(|group| AiDynamicReportGroup {
+            id: group.id.clone(),
+            status: group.status,
+            depth: group.depth,
+            parent_group_id: group.parent_group_id.clone(),
+            created_by_node_id: group.created_by_node_id.clone(),
+            root_node_ids: group.root_node_ids.clone(),
+            terminal_node_ids: group.terminal_node_ids.clone(),
+            target_workspace_id: group.target_workspace_id.clone(),
+            child_workspace_ids: group.child_workspace_ids.clone(),
+            merge_node_id: group.merge_node_id.clone(),
+            acceptance_node_id: group.acceptance_node_id.clone(),
+            merge: ai_dynamic_task_ref(&group.merge),
+            acceptance: ai_dynamic_task_ref(&group.acceptance),
+            created_at: group.created_at.clone(),
+            updated_at: group.updated_at.clone(),
+        })
+        .collect();
+    Ok(AiDynamicReportManifest {
+        version: VERSION.to_string(),
+        kind: AiDynamicReportManifestKind::AiDynamicReportManifest,
+        dynamic_run_id: graph.run.id.clone(),
+        root_node_id: roots[0].id.clone(),
+        outcome: RunOutcome::Success,
+        generated_at: generated_at.to_string(),
+        nodes,
+        groups,
+    })
+}
+
+fn publish_ai_dynamic_success_outputs(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+) -> Result<()> {
+    let completions = accepted_dynamic_completions(graph)?;
+    let (source, completion) = authoritative_dynamic_completion(graph, &completions)?;
+    let generated_at = now_rfc3339_like();
+    let manifest = build_ai_dynamic_report_manifest(ctx, graph, &generated_at, &completions)?;
+    let manifest_path = ctx.app.paths.artifact_file(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+        AI_DYNAMIC_REPORT_MANIFEST_ARTIFACT,
+    );
+    let attachment_count = manifest
+        .nodes
+        .iter()
+        .map(|node| node.attachments.len())
+        .sum();
+    let result = AiDynamicResult {
+        version: VERSION.to_string(),
+        kind: AiDynamicResultKind::AiDynamicResult,
+        outcome: RunOutcome::Success,
+        summary: completion.summary.clone(),
+        source_node_id: source.id.clone(),
+        source_group_id: source.group_id.clone(),
+        report_manifest: AiDynamicReportManifestRef {
+            path: manifest_path.clone(),
+            format_version: VERSION.to_string(),
+            unit_count: manifest.nodes.len() + manifest.groups.len(),
+            attachment_count,
+            generated_at,
+        },
+    };
+    write_json(&manifest_path, &manifest)?;
+    write_json(
+        &ctx.app.paths.artifact_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+            AI_DYNAMIC_RESULT_ARTIFACT,
+        ),
+        &result,
+    )
 }
 
 fn discard_revoked_dynamic_resume_before_launch(
@@ -12692,6 +13088,18 @@ fn dynamic_hidden_sections(
     );
     let runtime_context = dynamic_runtime_context(ctx, &node.id, attempt_id);
     let projection = dynamic_context_projection(ctx, graph, node);
+    let has_coordination_snapshot = match node.kind {
+        DynamicNodeKind::Worker => !dynamic_node_is_bootstrap_dispatch(node),
+        DynamicNodeKind::Acceptance => has_output_contract,
+        DynamicNodeKind::WorkflowInvocation | DynamicNodeKind::Merge => false,
+    };
+    let coordination_snapshot_path = ctx.app.paths.dynamic_coordination_snapshot_file(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+    );
     let content = render_template(
         prompt_by_language(
             ctx.app.config.desktop_language,
@@ -12720,6 +13128,8 @@ fn dynamic_hidden_sections(
             "workspace_id": node.workspace_id,
             "workspace_path": workspace_path,
             "workspace_capability": dynamic_workspace_capability_summary(ctx),
+            "has_coordination_snapshot": has_coordination_snapshot,
+            "coordination_snapshot_path": coordination_snapshot_path,
             "direct_predecessors": projection.direct_predecessors,
             "has_direct_predecessors": projection.has_direct_predecessors,
             "active_group": projection.active_group,

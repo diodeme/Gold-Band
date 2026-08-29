@@ -1,0 +1,100 @@
+name: Technical proposal
+description: Propose an architectural, lifecycle, data-integrity, migration, or maintainability change.
+title: ""
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for technical work without a primary new user-facing feature. Prefer a root design correction over a case-specific compatibility patch.
+
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the technical outcome in one concise sentence.
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Current problem
+      description: Explain the failure mode, maintenance cost, or missing capability and its concrete impact.
+    validations:
+      required: true
+
+  - type: textarea
+    id: current-design
+    attributes:
+      label: Current design and authoritative source
+      description: Identify the owning domain, canonical data, stable identity, lifecycle, write boundaries, and relevant design documents.
+    validations:
+      required: true
+
+  - type: textarea
+    id: missing-invariant
+    attributes:
+      label: Missing invariant or contract
+      description: State exactly what the current design cannot express or enforce. If the design is sound, explain which implementation contract is incomplete instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Existing solutions and alternatives
+      description: Compare existing libraries, platform capabilities, repository mechanisms, and credible design alternatives.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed design direction
+      description: Define data ownership, interfaces, write order, failure behavior, and why the proposal is proportionate to the demonstrated invariant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: migration
+    attributes:
+      label: Migration and deletion plan
+      description: List replaced fields, paths, entry points, or consumers that must be removed. Do not add a compatibility layer unless explicitly required.
+    validations:
+      required: true
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks and performance impact
+      description: Review data scale, I/O, loading, rendering, memory, caches, queues, concurrency, locks, failure recovery, and overdesign risk.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List interface-level invariants, failure-path coverage, documentation, migration, and operational evidence.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Submission checklist
+      options:
+        - label: I identified the authoritative source and owning domain.
+          required: true
+        - label: I explained why existing mechanisms are insufficient.
+          required: true
+        - label: I included removal of replaced paths instead of permanent compatibility layers.
+          required: true
+        - label: I reviewed performance and overdesign impact.
+          required: true
+        - label: I removed secrets, personal data, and unnecessary private paths.
+          required: true

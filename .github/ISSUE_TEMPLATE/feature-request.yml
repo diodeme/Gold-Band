@@ -1,0 +1,91 @@
+name: Feature request
+description: Propose new user value with clear scope and acceptance criteria.
+title: ""
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the user problem before prescribing an implementation. Do not include credentials, private data, or undisclosed security vulnerabilities.
+
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the requested outcome in one concise sentence.
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Explain who encounters the problem, in which workflow, and why the current behavior is insufficient.
+    validations:
+      required: true
+
+  - type: textarea
+    id: use-cases
+    attributes:
+      label: Primary use cases
+      description: List concrete scenarios and expected user value.
+    validations:
+      required: true
+
+  - type: textarea
+    id: goals
+    attributes:
+      label: Goals
+      description: Define the outcomes that must be delivered.
+    validations:
+      required: true
+
+  - type: textarea
+    id: non-goals
+    attributes:
+      label: Non-goals
+      description: Define adjacent work that should remain outside this issue.
+    validations:
+      required: true
+
+  - type: textarea
+    id: existing-solutions
+    attributes:
+      label: Existing solutions and industry practice
+      description: Record relevant open-source components, platform capabilities, competing patterns, and why they can or cannot satisfy the requirement.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-outcome
+    attributes:
+      label: Proposed outcome
+      description: Describe the desired behavior and boundaries without forcing an unsupported implementation detail.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List observable behavior, interface-level tests, documentation, and any necessary visual validation.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Submission checklist
+      options:
+        - label: I searched open and closed issues for duplicates.
+          required: true
+        - label: I separated goals from non-goals.
+          required: true
+        - label: I considered existing components and established industry practices.
+          required: true
+        - label: I removed secrets, personal data, and unnecessary private paths.
+          required: true

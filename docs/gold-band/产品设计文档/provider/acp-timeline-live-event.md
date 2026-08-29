@@ -40,6 +40,15 @@ Gold Band 的 ACP 会话同时服务两类读取路径：
 - 诊断写入为 best effort：失败只能进入内部 debug tracing，不得中断 Provider prompt；同时生产热路径禁止逐帧追加 diagnostics。
 - queue wait 持续增长而 Raw roll/compaction 总耗时占比很低，表示 session consumer 吞吐不足；不得继续用调大 compaction 阈值掩盖逐帧 Timeline/IPC 写放大。
 
+## Timeline 持久化提交与压缩契约
+
+- 75ms 是从当前窗口第一条 pending update 开始计算的固定 deadline。一次慢写完成后必须清空旧 deadline，由下一条 update 开启新窗口；不得保存慢写开始时间并让后续 update 立即连续落盘。
+- 同一窗口按稳定 item identity latest-wins，再按 branch 分组。每个 branch 的一批 distinct identity 只获取一次 Timeline 文件锁、打开一次 append 文件、执行一次缓冲写与 flush，并且最多 checkpoint/compact 一次。
+- 批量 upsert 返回结果和 durable watermark 必须与输入 identity 对齐；批内重复 identity 是调用契约错误，不能产生顺序不确定的双写。
+- 更新已有 item 时复用同一个 Timeline reader，通过 index locator seek 读取 canonical item；不得为同批每个 identity 重复打开文件。
+- Timeline index V9 保证 locator 指向完整 canonical item。旧 index 首次打开时先用历史 replay 归一化迁移；V9 压缩直接读取最终 locator，不再扫描全部 patch，压缩复杂度由历史 revision 数降为最终 canonical item 数。
+- ratio 压缩必须同时满足 patch 数超过 `uniqueItems × 4` 且至少达到 4,096；8 MiB 文件大小上限独立生效。这样避免小日志每 5 次更新就全量重写，同时仍保证文件增长有界。
+
 ## 前端状态规则
 
 前端合并 ACP 事件时必须以稳定 key 为准，key 至少包含 attempt/session、kind 与 stable id。合并同一 key 的 stream 快照时：
@@ -71,6 +80,14 @@ Gold Band 的 ACP 会话同时服务两类读取路径：
 - 2,000 个同一工具身份的非终态 terminal delta 突发不能产生 2,000 次 Timeline/IPC 提交；最终工具投影必须完整收敛，工具终态仍立即可见。
 - 持续 session-update backlog 下，runtime 必须在每个有界 drain 批次之间观察 prompt response 与取消，不能因数据面繁忙触发伪 terminal-route timeout。
 - response watermark 之后即使仍有 backlog，成功响应收敛也不会为了清空整个队列而无限延迟。
+- Release 压测每个场景 1,000,000 条 update、每 256 frame 一批，共 3,907 次真实提交：单 identity 与 256 identities 均保持最终 latest-wins 内容和最大 sequence 正确；本机 7,814 次提交中实测最大单批落盘 320.73ms，叠加 75ms 窗口的保守可见上界约 396ms，不得出现秒级提交或分钟级累计积压。
+- 同一份 10,000 update / 256 identities Release A/B 必须能证明修复覆盖真实写放大：V8 逐 identity 提交耗时 196.89s、单批最大 7.48s、P99 6.93s；V9 group commit 耗时 1.20s、单批最大 83.75ms、P99 76.58ms。总耗时和最大批延迟分别改善约 164 倍与 89 倍；不能只用修复后的新接口压测推断旧路径存在问题。
+
+## 性能与过度设计评审
+
+- streaming pending map、批量准备区和写缓冲只随当前 75ms 窗口内的 distinct identity/编码字节增长，不随会话历史 frame 数增长；Timeline 文件继续受 ratio 与 8 MiB 双边界约束。
+- 普通批量提交时间复杂度为 O(batch identities)，V9 压缩为 O(canonical items)，不再对全部历史 patch 做全量扫描；文件锁只覆盖同一 Timeline 的索引校验、append 或原子压缩事务。
+- 方案复用现有 JSONL、materialized index、文件锁、原子写和标准库 `BufWriter`，没有新增线程、数据库、持久队列、缓存层或依赖。现有 canonical identity/revision/generation 已足够表达不变量，因此没有复制状态模型。
 
 ## Agent 分支路由持久化契约
 

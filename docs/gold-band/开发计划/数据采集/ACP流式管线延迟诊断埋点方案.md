@@ -45,6 +45,36 @@ task-320 的新埋点在第二轮 prompt 记录到 `queueWaitMs = 846708`、`pro
 - [x] 成功 response 直接按 route watermark 收敛，不再先执行无限 available drain；RPC error 仅有界读取。
 - [x] 新增非终态工具合并/终态立即提交和 drain 公平性单元测试。
 
+## Timeline group commit 与长尾优化
+
+task-320 generation 19 的可审计基线为 2,340 帧、1,067 次 Timeline upsert：Timeline upsert 累计 214,025ms、单次最大 1,659ms、最大 queue wait 158,671ms；同期 Raw 累计 3,343ms、compaction 累计 1,444ms。根因不是磁盘吞吐不足，而是同步提交次数与单次提交工作放大：旧 75ms 判断保存慢写开始时间，慢写超过窗口后下一帧会立即再写；pending identity 又逐项加锁、打开、flush。
+
+- [x] 75ms 改为从首个 pending update 开始的固定 deadline，flush 后清空，慢写耗时不再透支下一窗口。
+- [x] `TimelineStore::upsert_batch` 对 distinct identity 执行一次锁、一次 append open、一次缓冲 flush、一次 index checkpoint 判断及最多一次 compaction。
+- [x] client 按 branch group commit，branch store 使用 `Entry` 惰性创建，消除已存在 branch 仍提前 `open()` 的开销。
+- [x] 同批已有 item 复用单个 reader；JSONL append 与 canonical rewrite 使用标准库缓冲写，消除逐 identity open 和逐字段/逐行底层写放大。
+- [x] Timeline index 升级 V9，明确 locator 指向完整 canonical item；旧 index 首次归一化迁移，之后 compaction 只读最终 locator，不 replay 全 patch。
+- [x] ratio compaction 增加 4,096 patch 最小门槛，且继续保留 8 MiB 独立上限；解决单 identity 每 5 patch、低基数日志频繁全量重写的设计缺陷。
+- [x] 新增 batch identity/watermark 回归、固定 deadline 回归、小 patch volume 不压缩回归，以及可配置至百万条的 ignored Release 压测。
+
+为验证压力测试不是只测新接口，曾临时完整还原四个生产修复文件，仅保留相同事件生成与统计逻辑，并将提交切回 V8 逐 identity `upsert`；随后恢复完全相同的修复，用同样数据切回 `upsert_batch`。10,000 update / 256 identities 的 Release A/B 结果为：
+
+| 版本 | 提交方式 | 总落盘耗时 | P99 单批 | 最大单批 |
+| --- | --- | ---: | ---: | ---: |
+| V8 基线 | 每批最多 256 次同步 `upsert` | 196.89s | 6.93s | 7.48s |
+| V9 修复 | 每批一次 `upsert_batch` | 1.20s | 76.58ms | 83.75ms |
+
+同数据下总耗时改善约 164 倍、最大批延迟改善约 89 倍。旧版仅 10,000 条就稳定产生分钟级处理时间和秒级单批阻塞，足以解释 task-318 中 queue wait 持续增长并超过 terminal route timeout；因此后续大规模结果可以作为修复有效性的证据，而不是仅证明新接口自身很快。
+
+Release 最终压测在 Windows 本机执行两组各 1,000,000 条 update，每 256 frame 模拟一次 group commit，每组 3,907 次提交；单场景规模约为 task-320 的 427 倍：
+
+| 场景 | 最终 items | compactions | 总落盘耗时 | P95 | P99 | 最大单批 | 最大压缩批次 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 同一 identity 持续修订 | 1 | 0 | 101.51s | 46.59ms | 85.37ms | 320.73ms | 0ms |
+| 256 identities 交错修订 | 256 | 244 | 134.82s | 80.22ms | 103.01ms | 237.22ms | 237.22ms |
+
+两组共 2,000,000 条输入、7,814 次真实提交全部通过 latest-wins 数量和 sequence 验证；本次实测最大落盘延迟为 320.73ms，加固定 75ms 窗口后的保守可见上界约 396ms。该数字是本机长压观测最大值，不是对所有硬件的理论硬上限；关键验收是延迟不随百万条历史增长为秒级或分钟级积压。
+
 ## 验收
 
 - production 模式在 5 秒边界不产生 window，但 prompt 终态始终产生 summary。
@@ -63,3 +93,5 @@ task-320 的新埋点在第二轮 prompt 记录到 `queueWaitMs = 846708`、`pro
 - receipt time 复用已有 frame ownership；queue high-water 复用已有 route/pump mutex，仅在 prompt 起止读取并重置。5 秒 diagnostics I/O 只在用户开启详细日志时发生。
 - 未引入 histogram/t-digest、遥测数据库、独立采样状态机或新 UI 开关；当前抽象与定位单条 ACP 管线的实际规模和风险匹配。
 - 吞吐修复新增的 pending map 上限等于当前窗口内活跃 stream/tool identity 数，替代按 Raw frame 增长的同步写入/IPC 次数；每批排序规模为活跃 identity 数，不扫描历史 Timeline。没有新增线程、持久字段、队列或依赖。
+- Timeline group commit 的普通路径为 O(batch identities)，V9 compaction 为 O(canonical items)，不再为每批 identity N 次打开文件，也不再按历史 patch 数全量 replay。写缓冲和 batch 暂存受当前窗口 distinct identity/编码量约束，持久文件受 4,096 patch ratio 门槛与 8 MiB 上限约束。
+- 未新增异步持久化线程、后台 compaction 队列、数据库或第二套 canonical state；继续复用现有 JSONL/index/atomic write。相较引入并发状态机，本方案直接消除 I/O 与算法放大，复杂度与现有数据规模、崩溃一致性风险匹配，不属于过度设计。

@@ -1519,11 +1519,15 @@ pub(crate) fn load_timeline_items_for_storage_unlocked(path: &Utf8Path) -> Resul
     let mut items = latest_by_item
         .into_values()
         .map(|(_, item)| item)
-        .filter(|item| !is_provider_user_echo_event(item))
         .collect::<Vec<_>>();
-    items.sort_by_key(|item| (item.started_seq.unwrap_or(item.seq), item.seq));
-    remove_reclassified_local_provider_history(&mut items);
+    normalize_timeline_items_for_storage(&mut items);
     Ok(items)
+}
+
+pub(crate) fn normalize_timeline_items_for_storage(items: &mut Vec<AcpUiEvent>) {
+    items.retain(|item| !is_provider_user_echo_event(item));
+    items.sort_by_key(|item| (item.started_seq.unwrap_or(item.seq), item.seq));
+    remove_reclassified_local_provider_history(items);
 }
 
 pub(crate) fn merge_timeline_item_revision(

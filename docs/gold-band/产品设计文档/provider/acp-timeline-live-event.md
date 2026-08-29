@@ -11,22 +11,25 @@ Gold Band 的 ACP 会话同时服务两类读取路径：
 
 ## 事件契约
 
-`textDelta`、`thoughtDelta`、`plan` 在 Gold Band UI 层不是原始 token delta，而是按稳定 timeline item 聚合后的累计快照：
+`textDelta`、`thoughtDelta`、`plan` 以及非终态 `toolCall/toolCallUpdate` 在 Gold Band canonical/live 层不是必须逐帧提交的原始协议 delta，而是按稳定 timeline item 或 `toolCallId` 聚合后的最新快照：
 
 - 同一段 assistant 文本使用稳定 `id`，例如 `assistant-message-{messageId}`。
 - 同一段 thought 使用稳定 `id`，例如 `assistant-thought-{messageId}`。
 - `content` 表示该稳定 item 到当前 `endedSeq` 为止的完整内容。
 - `seq` / `startedSeq` 定义 timeline item 的规范顺序，必须随事件推进单调递增；恢复解析、计时重建和测试夹具都不得依赖 HashMap 遍历顺序或相同序号下的偶然排序。
 - 原始 token delta 只保留在 `acp.raw.jsonl`，不得由前端 chat 渲染重新解释。
+- tool terminal delta 仍按 FIFO 逐帧经过 runtime 并写入 Raw 审计；Timeline 与 live event 只保留同一工具身份在当前发布窗口内的最新投影。工具成功、失败、取消等终态不得合并延迟。
 
 ## 后端实时发送规则
 
 后端可以对流式 timeline item 做节流，但节流边界必须按稳定 item 管理：
 
-- 同一个稳定 item 的连续快照可以合并到 pending live update。
-- 当下一个流式快照属于不同稳定 item 时，必须先发送旧 pending 快照，再处理新 item。
-- `toolCall`、`usageUpdate`、session terminal 等非流式事件发送前，也必须先发送 pending stream 快照。
-- 单槽 pending 只能缓存“同一个稳定 item 的最新快照”，不能覆盖不同 text/thought/plan item。
+- pending timeline/live batch 以稳定 item id 为 key；同一 key 的新快照原位替换旧值，不同 text/thought/plan/tool identity 可以同时各保留一份。
+- batch 每 75ms、session route 暂时清空或会话收尾时按 revision 顺序 flush；内存规模受当前活跃 identity 数约束，不受 Raw frame 数约束。
+- 权限、elicitation、usage、错误、工具终态和 session terminal 等关键事件发送前，必须先按 revision flush 全部 pending batch，再立即处理关键事件。
+- durable watermark 只在对应累计快照真实写入 Timeline 后附加；尚未 flush 的 live update 不得伪造持久化水位。
+- Prompt 活跃期每次最多连续 drain 256 帧或 25ms，随后必须检查 JSON-RPC response、取消和诊断控制面；确认仍有 backlog 时使用零等待进入下一批，不能睡眠，也不能无限 drain 到队列清空后才观察控制面。
+- 成功 response 已携带 session route watermark 时，runtime 必须直接消费至该 watermark，不能先执行一次无限 available drain；watermark 之后的持续流量只由后续 quiet drain 的既有边界处理。RPC error 没有 terminal 收敛要求，只做有界 best-effort drain。
 
 ## 管线性能诊断契约
 
@@ -35,6 +38,7 @@ Gold Band 的 ACP 会话同时服务两类读取路径：
 - Raw roll 和 Timeline compaction 只在真实重写发生时计数；compaction duration 只覆盖 canonical timeline 的压缩调用，upsert duration 另行记录，不能把整个 prompt elapsed 误标为压缩耗时。
 - live emit duration 在调用既有 live callback 的同步边界测量。该观测不得改变累计快照、latest-wins、durable watermark 或前端发布契约。
 - 诊断写入为 best effort：失败只能进入内部 debug tracing，不得中断 Provider prompt；同时生产热路径禁止逐帧追加 diagnostics。
+- queue wait 持续增长而 Raw roll/compaction 总耗时占比很低，表示 session consumer 吞吐不足；不得继续用调大 compaction 阈值掩盖逐帧 Timeline/IPC 写放大。
 
 ## 前端状态规则
 
@@ -64,6 +68,9 @@ Gold Band 的 ACP 会话同时服务两类读取路径：
 - 实时流式会话中，首个 Gold Band 用户消息、系统提示词入口和模型/权限配置在 session-ready 快照到达后立即可见。
 - 停止会话前后，同一消息内容一致。
 - 强刷后从磁盘恢复的会话内容与实时可见内容一致。
+- 2,000 个同一工具身份的非终态 terminal delta 突发不能产生 2,000 次 Timeline/IPC 提交；最终工具投影必须完整收敛，工具终态仍立即可见。
+- 持续 session-update backlog 下，runtime 必须在每个有界 drain 批次之间观察 prompt response 与取消，不能因数据面繁忙触发伪 terminal-route timeout。
+- response watermark 之后即使仍有 backlog，成功响应收敛也不会为了清空整个队列而无限延迟。
 
 ## Agent 分支路由持久化契约
 

@@ -399,6 +399,8 @@ const DOCTOR_DIAGNOSTIC_TARGET_SIZE: u64 = 384 * 1024;
 const DOCTOR_COMMAND_DISCOVERY_TIMEOUT: Duration = Duration::from_millis(500);
 const SESSION_TITLE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const PROMPT_CANCEL_TIMEOUT: Duration = Duration::from_secs(10);
+const PROMPT_ACTIVE_DRAIN_FRAME_BUDGET: usize = 256;
+const PROMPT_ACTIVE_DRAIN_TIME_BUDGET: Duration = Duration::from_millis(25);
 const PROMPT_CANCEL_DRAIN_FRAME_BUDGET: usize = 64;
 const PROMPT_CANCEL_DRAIN_TIME_BUDGET: Duration = Duration::from_millis(25);
 const SESSION_CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -663,9 +665,31 @@ where
 fn drain_available_frames_bounded<Frame, Receive, Observe>(
     frame_budget: usize,
     time_budget: Duration,
+    receive: Receive,
+    observe: Observe,
+) -> Result<usize>
+where
+    Receive: FnMut() -> Result<Option<Frame>>,
+    Observe: FnMut(Frame) -> Result<()>,
+{
+    Ok(
+        drain_available_frames_with_budget(frame_budget, time_budget, receive, observe)?
+            .drained_frames,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BoundedDrainOutcome {
+    drained_frames: usize,
+    budget_exhausted: bool,
+}
+
+fn drain_available_frames_with_budget<Frame, Receive, Observe>(
+    frame_budget: usize,
+    time_budget: Duration,
     mut receive: Receive,
     mut observe: Observe,
-) -> Result<usize>
+) -> Result<BoundedDrainOutcome>
 where
     Receive: FnMut() -> Result<Option<Frame>>,
     Observe: FnMut(Frame) -> Result<()>,
@@ -674,12 +698,18 @@ where
     let mut drained_frames = 0usize;
     while drained_frames < frame_budget && started_at.elapsed() < time_budget {
         let Some(value) = receive()? else {
-            break;
+            return Ok(BoundedDrainOutcome {
+                drained_frames,
+                budget_exhausted: false,
+            });
         };
         observe(value)?;
         drained_frames = drained_frames.saturating_add(1);
     }
-    Ok(drained_frames)
+    Ok(BoundedDrainOutcome {
+        drained_frames,
+        budget_exhausted: true,
+    })
 }
 
 fn prompt_cancel_terminal_timeout(
@@ -1871,11 +1901,11 @@ struct AcpRuntime<'a> {
     active_timeline_streams: HashMap<String, AcpBranchTimelineStreams>,
     timing_state: AcpTimingState,
     live_update: Option<&'a dyn Fn(&AcpUiEvent, Option<(u64, u64)>) -> Result<()>>,
-    pending_live_update: Option<PendingAcpLiveUpdate>,
+    pending_live_updates: HashMap<String, PendingAcpLiveUpdate>,
     last_live_update_at: Option<Instant>,
     last_live_timing_update_at: Option<Instant>,
     last_live_timing: Option<crate::acp::events::AcpTimingPatch>,
-    pending_timeline_patch: Option<(u64, AcpUiEvent)>,
+    pending_timeline_patches: HashMap<String, PendingAcpTimelinePatch>,
     last_timeline_patch_at: Option<Instant>,
     raw_max_size: u64,
     raw_target_size: u64,
@@ -1907,6 +1937,12 @@ struct PendingAcpLiveUpdate {
     revision: u64,
     item: AcpUiEvent,
     durable_watermark: Option<(u64, u64)>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingAcpTimelinePatch {
+    revision: u64,
+    item: AcpUiEvent,
 }
 
 impl AcpTimelineStreamSlot {
@@ -3336,11 +3372,11 @@ impl<'a> AcpRuntime<'a> {
             active_timeline_streams,
             timing_state,
             live_update,
-            pending_live_update: None,
+            pending_live_updates: HashMap::new(),
             last_live_update_at: None,
             last_live_timing_update_at: None,
             last_live_timing: None,
-            pending_timeline_patch: None,
+            pending_timeline_patches: HashMap::new(),
             last_timeline_patch_at: None,
             raw_max_size,
             raw_target_size,
@@ -4822,7 +4858,7 @@ impl<'a> AcpRuntime<'a> {
                         timeout: PROMPT_CANCEL_TIMEOUT,
                     }));
                 }
-                let wait_for = cancel_started_at
+                let mut wait_for = cancel_started_at
                     .map(|started| {
                         PROMPT_CANCEL_TIMEOUT
                             .saturating_sub(started.elapsed())
@@ -4830,7 +4866,15 @@ impl<'a> AcpRuntime<'a> {
                     })
                     .unwrap_or(STOP_CHECK_INTERVAL);
                 if cancel_started_at.is_none() {
-                    self.drain_available_inbound()?;
+                    let drained = self.drain_available_inbound_fair()?;
+                    if drained.budget_exhausted {
+                        // The response channel is control-plane state and must
+                        // be sampled between bounded data-plane drain batches.
+                        // A zero timeout keeps draining immediately when the
+                        // response has not arrived without sleeping on a known
+                        // session-update backlog.
+                        wait_for = Duration::ZERO;
+                    }
                 }
                 self.maybe_emit_live_timing_update(Instant::now(), "tick")?;
                 self.maybe_emit_pipeline_diagnostics(Instant::now());
@@ -4855,10 +4899,8 @@ impl<'a> AcpRuntime<'a> {
                             )?;
                             self.usage.record_prompt_usage(prompt_usage);
                         }
-                        if cancel_started_at.is_some() {
+                        if value.get("error").is_some() {
                             self.drain_available_inbound_bounded()?;
-                        } else {
-                            self.drain_available_inbound()?;
                         }
                         if value.get("error").is_none() {
                             let watermark = response.session_route_watermark.ok_or_else(|| {
@@ -5725,13 +5767,41 @@ impl<'a> AcpRuntime<'a> {
                 .map(|receiver| receiver.try_recv_observed())
             {
                 Some(Ok(frame)) => frame,
-                Some(Err(SessionRouteTryRecvError::Empty)) | None => return Ok(()),
+                Some(Err(SessionRouteTryRecvError::Empty)) | None => {
+                    self.flush_pending_timeline_patches(None)?;
+                    self.flush_pending_live_updates()?;
+                    return Ok(());
+                }
                 Some(Err(SessionRouteTryRecvError::Disconnected)) => {
                     return Err(anyhow!(AcpTransportInterrupted));
                 }
             };
             self.process_observed_inbound(frame)?;
         }
+    }
+
+    fn drain_available_inbound_fair(&mut self) -> Result<BoundedDrainOutcome> {
+        let receiver = self.rx.as_ref().cloned();
+        let outcome = drain_available_frames_with_budget(
+            PROMPT_ACTIVE_DRAIN_FRAME_BUDGET,
+            PROMPT_ACTIVE_DRAIN_TIME_BUDGET,
+            || match receiver
+                .as_ref()
+                .map(|receiver| receiver.try_recv_observed())
+            {
+                Some(Ok(frame)) => Ok(Some(frame)),
+                Some(Err(SessionRouteTryRecvError::Empty)) | None => Ok(None),
+                Some(Err(SessionRouteTryRecvError::Disconnected)) => {
+                    Err(anyhow!(AcpTransportInterrupted))
+                }
+            },
+            |frame| self.process_observed_inbound(frame),
+        )?;
+        if !outcome.budget_exhausted {
+            self.flush_pending_timeline_patches(None)?;
+            self.flush_pending_live_updates()?;
+        }
+        Ok(outcome)
     }
 
     fn drain_available_inbound_bounded(&mut self) -> Result<usize> {
@@ -6015,8 +6085,8 @@ impl<'a> AcpRuntime<'a> {
         stop_reason: Option<String>,
         capabilities: Value,
     ) -> Result<()> {
-        self.flush_pending_timeline_patch()?;
-        self.flush_pending_live_update()?;
+        self.flush_pending_timeline_patches(None)?;
+        self.flush_pending_live_updates()?;
         self.timeline_store.force_checkpoint()?;
         for store in self.branch_timeline_stores.values_mut() {
             store.force_checkpoint()?;
@@ -6267,52 +6337,57 @@ impl<'a> AcpRuntime<'a> {
     ) -> Result<Option<(u64, u64)>> {
         if is_streaming_timeline_update(&item) {
             let now = Instant::now();
+            let item_id = item.id.clone();
+            self.pending_timeline_patches.insert(
+                item_id.clone(),
+                PendingAcpTimelinePatch {
+                    revision: self.timeline_revision,
+                    item,
+                },
+            );
             let should_write = self
                 .last_timeline_patch_at
                 .map(|last| now.duration_since(last) >= LIVE_STREAM_UPDATE_INTERVAL)
                 .unwrap_or(true);
             if should_write {
-                if self
-                    .pending_timeline_patch
-                    .as_ref()
-                    .map(|(_, pending)| pending.id.as_str() != item.id.as_str())
-                    .unwrap_or(false)
-                {
-                    self.flush_pending_timeline_patch()?;
-                } else {
-                    self.pending_timeline_patch = None;
-                }
-                return self.persist_timeline_item_patch_now(self.timeline_revision, &item, now);
-            } else {
-                if self
-                    .pending_timeline_patch
-                    .as_ref()
-                    .map(|(_, pending)| pending.id.as_str() != item.id.as_str())
-                    .unwrap_or(false)
-                {
-                    self.flush_pending_timeline_patch()?;
-                }
-                self.pending_timeline_patch = Some((self.timeline_revision, item));
+                return self.flush_pending_timeline_patches(Some(&item_id));
             }
             return Ok(None);
         }
 
-        self.flush_pending_timeline_patch()?;
+        self.flush_pending_timeline_patches(None)?;
         self.persist_timeline_item_patch_now(self.timeline_revision, &item, Instant::now())
     }
 
-    fn flush_pending_timeline_patch(&mut self) -> Result<()> {
-        if let Some((revision, item)) = self.pending_timeline_patch.take() {
+    fn flush_pending_timeline_patches(
+        &mut self,
+        target_item_id: Option<&str>,
+    ) -> Result<Option<(u64, u64)>> {
+        if self.pending_timeline_patches.is_empty() {
+            return Ok(None);
+        }
+        let mut pending = std::mem::take(&mut self.pending_timeline_patches)
+            .into_values()
+            .collect::<Vec<_>>();
+        pending.sort_by_key(|pending| pending.revision);
+        let flushed_at = Instant::now();
+        let mut target_watermark = None;
+        for pending in pending {
+            let revision = pending.revision;
+            let item = pending.item;
             let durable_watermark =
-                self.persist_timeline_item_patch_now(revision, &item, Instant::now())?;
-            if let Some(pending_live) = self.pending_live_update.as_mut()
-                && pending_live.revision == revision
-                && pending_live.item.id == item.id
+                self.persist_timeline_item_patch_now(revision, &item, flushed_at)?;
+            if target_item_id == Some(item.id.as_str()) {
+                target_watermark = durable_watermark;
+            }
+            if let Some(pending_live) = self.pending_live_updates.get_mut(&item.id)
+                && pending_live.revision <= revision
             {
                 pending_live.durable_watermark = durable_watermark;
             }
         }
-        Ok(())
+        self.last_timeline_patch_at = Some(flushed_at);
+        Ok(target_watermark)
     }
 
     fn persist_timeline_item_patch_now(
@@ -6379,39 +6454,40 @@ impl<'a> AcpRuntime<'a> {
             return Ok(());
         }
         if is_streaming_timeline_update(&item) {
-            if let Some(pending) =
-                take_pending_live_update_for_stream_switch(&mut self.pending_live_update, &item)
-            {
-                self.emit_live_update_now(
-                    &pending.item,
-                    pending.durable_watermark,
-                    Instant::now(),
-                )?;
-            }
+            let item_id = item.id.clone();
+            self.pending_live_updates.insert(
+                item_id,
+                PendingAcpLiveUpdate {
+                    revision,
+                    item,
+                    durable_watermark,
+                },
+            );
             let now = Instant::now();
             let should_emit = self
                 .last_live_update_at
                 .map(|last| now.duration_since(last) >= LIVE_STREAM_UPDATE_INTERVAL)
                 .unwrap_or(true);
             if should_emit {
-                self.pending_live_update = None;
-                self.emit_live_update_now(&item, durable_watermark, now)?;
-            } else {
-                self.pending_live_update = Some(PendingAcpLiveUpdate {
-                    revision,
-                    item,
-                    durable_watermark,
-                });
+                self.flush_pending_live_updates()?;
             }
             return Ok(());
         }
-        self.flush_pending_live_update()?;
+        self.flush_pending_live_updates()?;
         self.emit_live_update_now(&item, durable_watermark, Instant::now())
     }
 
-    fn flush_pending_live_update(&mut self) -> Result<()> {
-        if let Some(pending) = self.pending_live_update.take() {
-            self.emit_live_update_now(&pending.item, pending.durable_watermark, Instant::now())?;
+    fn flush_pending_live_updates(&mut self) -> Result<()> {
+        if self.pending_live_updates.is_empty() {
+            return Ok(());
+        }
+        let mut pending = std::mem::take(&mut self.pending_live_updates)
+            .into_values()
+            .collect::<Vec<_>>();
+        pending.sort_by_key(|pending| pending.revision);
+        let emitted_at = Instant::now();
+        for pending in pending {
+            self.emit_live_update_now(&pending.item, pending.durable_watermark, emitted_at)?;
         }
         Ok(())
     }
@@ -6466,7 +6542,7 @@ impl<'a> AcpRuntime<'a> {
                 "reason": reason,
             })),
         };
-        self.flush_pending_live_update()?;
+        self.flush_pending_live_updates()?;
         self.emit_live_update_now(&event, None, now)
     }
 
@@ -6845,8 +6921,8 @@ impl<'a> AcpRuntime<'a> {
 
     fn shutdown(mut self) {
         debug!(adapter = %self.connection.adapter().adapter_id, "releasing ACP runtime session");
-        let _ = self.flush_pending_timeline_patch();
-        let _ = self.flush_pending_live_update();
+        let _ = self.flush_pending_timeline_patches(None);
+        let _ = self.flush_pending_live_updates();
         if self.connection_key.is_some() {
             AcpSessionRuntimeRegistry::shared().invalidate(&self.paths.attempt_dir);
         }
@@ -6861,8 +6937,8 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn release_managed_session(mut self) {
-        let _ = self.flush_pending_timeline_patch();
-        let _ = self.flush_pending_live_update();
+        let _ = self.flush_pending_timeline_patches(None);
+        let _ = self.flush_pending_live_updates();
         if self.connection_key.is_none() {
             self.shutdown();
             return;
@@ -6916,8 +6992,8 @@ impl<'a> AcpRuntime<'a> {
 
 impl Drop for AcpRuntime<'_> {
     fn drop(&mut self) {
-        let _ = self.flush_pending_timeline_patch();
-        let _ = self.flush_pending_live_update();
+        let _ = self.flush_pending_timeline_patches(None);
+        let _ = self.flush_pending_live_updates();
         if !self.retain_session_route
             && let Some(session_id) = self.session_id.as_deref()
         {
@@ -6988,6 +7064,9 @@ fn merge_tool_revision(
 
 fn is_streaming_timeline_update(event: &crate::acp::events::AcpUiEvent) -> bool {
     matches!(event.kind.as_str(), "textDelta" | "thoughtDelta" | "plan")
+        || (matches!(event.kind.as_str(), "toolCall" | "toolCallUpdate")
+            && event.tool_call_id.is_some()
+            && !is_terminal_tool_status(event.status.as_deref()))
 }
 
 fn runtime_hot_timeline_items(
@@ -7183,19 +7262,6 @@ fn is_terminal_tool_status(status: Option<&str>) -> bool {
         status.unwrap_or_default().to_ascii_lowercase().as_str(),
         "completed" | "success" | "succeeded" | "failed" | "error" | "cancelled" | "canceled"
     )
-}
-
-fn take_pending_live_update_for_stream_switch(
-    pending: &mut Option<PendingAcpLiveUpdate>,
-    item: &crate::acp::events::AcpUiEvent,
-) -> Option<PendingAcpLiveUpdate> {
-    if pending
-        .as_ref()
-        .is_some_and(|pending| pending.item.id != item.id)
-    {
-        return pending.take();
-    }
-    None
 }
 
 fn stable_message_item_id(event: &crate::acp::events::AcpUiEvent) -> String {
@@ -7600,22 +7666,23 @@ mod tests {
         AcpPromptRouteDrainTimeout, AcpPromptRouteUnavailable, AcpPromptTerminalState,
         AcpPromptTokenUsage, AcpRuntime, AcpRuntimePolicy, AcpUsageState, AttachedSessionReusePlan,
         CancelNotificationPhase, DOCTOR_DIAGNOSTIC_TARGET_SIZE, NESTED_AGENT_TRANSCRIPT_CAPABILITY,
-        PROMPT_CANCEL_DRAIN_FRAME_BUDGET, PROMPT_CANCEL_TIMEOUT, PendingAcpLiveUpdate,
-        PriorAttemptMetrics, PromptActivity, PromptBundle, PromptVisibility,
-        ProviderFreshnessBaseline, RuntimeStopProbe, SessionModelResolution,
-        SessionRestoreCapabilities, SessionRestoreIntent, SessionRestoreMethod, SessionRestorePlan,
-        SessionRestorePlanError, SessionUpdatePhase, acp_prompt_rpc_failure,
-        active_context_compaction, active_timeline_streams, active_timeline_streams_by_branch,
-        append_bounded, append_diagnostic_best_effort, append_raw_frame_best_effort,
-        append_structured_diagnostic_best_effort, attached_sync_required, cancel_attempt_prompt,
-        canonical_prompt_event_identity, catalog_observation_is_newer,
-        cleanup_doctor_acp_dir_after_success, confirmed_context_usage_update,
-        dispatch_attempt_prompt_cancel, drain_available_frames_bounded, drain_frames_until_quiet,
-        drain_frames_until_quiet_with_timeout_error, drain_frames_until_route_watermark,
-        evaluate_provider_revision, initialize_params, is_pending_retry_prompt_event,
-        is_transport_interruption, latest_visible_turn_id, map_prompt_terminal_drain_error,
-        merge_tool_revision, next_prompt_retry_attempt, parse_agent_capabilities,
-        permission_decision_timeline_event, plan_attached_session_reuse, plan_session_restore,
+        PROMPT_CANCEL_DRAIN_FRAME_BUDGET, PROMPT_CANCEL_TIMEOUT, PriorAttemptMetrics,
+        PromptActivity, PromptBundle, PromptVisibility, ProviderFreshnessBaseline,
+        RuntimeStopProbe, SessionModelResolution, SessionRestoreCapabilities, SessionRestoreIntent,
+        SessionRestoreMethod, SessionRestorePlan, SessionRestorePlanError, SessionUpdatePhase,
+        acp_prompt_rpc_failure, active_context_compaction, active_timeline_streams,
+        active_timeline_streams_by_branch, append_bounded, append_diagnostic_best_effort,
+        append_raw_frame_best_effort, append_structured_diagnostic_best_effort,
+        attached_sync_required, cancel_attempt_prompt, canonical_prompt_event_identity,
+        catalog_observation_is_newer, cleanup_doctor_acp_dir_after_success,
+        confirmed_context_usage_update, dispatch_attempt_prompt_cancel,
+        drain_available_frames_bounded, drain_available_frames_with_budget,
+        drain_frames_until_quiet, drain_frames_until_quiet_with_timeout_error,
+        drain_frames_until_route_watermark, evaluate_provider_revision, initialize_params,
+        is_pending_retry_prompt_event, is_streaming_timeline_update, is_transport_interruption,
+        latest_visible_turn_id, map_prompt_terminal_drain_error, merge_tool_revision,
+        next_prompt_retry_attempt, parse_agent_capabilities, permission_decision_timeline_event,
+        plan_attached_session_reuse, plan_session_restore,
         prepare_attempt_usage_after_reuse_decision, preserve_interrupted_session_identity,
         prompt_activity, prompt_cancel_terminal_timeout, prompt_cancellation_outcome,
         prompt_usage_transaction_id, provider_thread_is_active, register_provider_control,
@@ -7624,8 +7691,7 @@ mod tests {
         session_config_fingerprint, session_load_params, session_new_params, session_prompt_params,
         session_prompt_text, session_resume_params, settle_attempt_prompt_interactions,
         settle_prompt_event, should_suppress_session_update, stable_message_item_id,
-        take_pending_live_update_for_stream_switch, unregister_provider_control,
-        validate_session_restore_target,
+        unregister_provider_control, validate_session_restore_target,
     };
 
     #[test]
@@ -8505,6 +8571,26 @@ mod tests {
     }
 
     #[test]
+    fn prompt_terminal_watermark_drain_stops_before_later_backlog() {
+        let mut queued = (1..=10).collect::<VecDeque<_>>();
+        let consumed = Cell::new(0usize);
+
+        let drained = drain_frames_until_route_watermark(
+            Duration::from_secs(1),
+            || consumed.get() >= 3,
+            |_| queued.pop_front().ok_or(RecvTimeoutError::Disconnected),
+            |_| {
+                consumed.set(consumed.get().saturating_add(1));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(drained, 3);
+        assert_eq!(queued.len(), 7);
+    }
+
+    #[test]
     fn prompt_terminal_watermark_timeout_cannot_be_classified_as_success() {
         let error = drain_frames_until_route_watermark(
             Duration::from_millis(1),
@@ -8552,6 +8638,30 @@ mod tests {
         assert_eq!(drained, PROMPT_CANCEL_DRAIN_FRAME_BUDGET);
         assert_eq!(observed.len(), PROMPT_CANCEL_DRAIN_FRAME_BUDGET);
         assert_eq!(queued.len(), PROMPT_CANCEL_DRAIN_FRAME_BUDGET * 3);
+    }
+
+    #[test]
+    fn active_prompt_drain_reports_backlog_after_its_fairness_budget() {
+        let mut queued = (0..12)
+            .map(|index| json!({ "index": index }))
+            .collect::<VecDeque<_>>();
+        let mut observed = Vec::new();
+
+        let outcome = drain_available_frames_with_budget(
+            4,
+            Duration::from_secs(1),
+            || Ok(queued.pop_front()),
+            |value| {
+                observed.push(value);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(outcome.drained_frames, 4);
+        assert!(outcome.budget_exhausted);
+        assert_eq!(observed.len(), 4);
+        assert_eq!(queued.len(), 8);
     }
 
     #[test]
@@ -9087,6 +9197,35 @@ mod tests {
         assert_eq!(hot.len(), 2);
         assert!(hot.contains_key("tool-call-pending"));
         assert!(hot.contains_key("permission-1"));
+    }
+
+    #[test]
+    fn non_terminal_tool_updates_are_streaming_but_terminal_updates_are_immediate() {
+        let mut running = timeline_event(
+            "tool-call-1",
+            1,
+            "toolCall",
+            Some("in_progress"),
+            None,
+            Some(json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tool-1",
+                "_meta": {
+                    "terminal_output_delta": {
+                        "terminal_id": "tool-1",
+                        "data": "partial output"
+                    }
+                }
+            })),
+        );
+        running.tool_call_id = Some("tool-1".to_string());
+        let mut completed = running.clone();
+        completed.seq = 2;
+        completed.ended_seq = Some(2);
+        completed.status = Some("completed".to_string());
+
+        assert!(is_streaming_timeline_update(&running));
+        assert!(!is_streaming_timeline_update(&completed));
     }
 
     #[test]
@@ -10042,90 +10181,6 @@ mod tests {
         );
 
         assert_eq!(second.content.as_deref(), Some("thinking more"));
-    }
-
-    #[test]
-    fn stream_switch_takes_pending_live_update_before_overwrite() {
-        let mut pending = Some(PendingAcpLiveUpdate {
-            revision: 20,
-            durable_watermark: Some((1, 20)),
-            item: AcpUiEvent {
-                id: "assistant-message-1".to_string(),
-                seq: 20,
-                timestamp: "20Z".to_string(),
-                kind: "textDelta".to_string(),
-                session_id: Some("session-1".to_string()),
-                content: Some("完整文本快照".to_string()),
-                title: None,
-                tool_call_id: None,
-                status: None,
-                started_seq: Some(10),
-                ended_seq: Some(20),
-                started_at: Some("10Z".to_string()),
-                ended_at: Some("20Z".to_string()),
-                timing: None,
-                raw: None,
-            },
-        });
-        let next_stream = AcpUiEvent {
-            id: "session-plan-1".to_string(),
-            seq: 21,
-            timestamp: "21Z".to_string(),
-            kind: "plan".to_string(),
-            session_id: Some("session-1".to_string()),
-            content: Some(String::new()),
-            title: None,
-            tool_call_id: None,
-            status: None,
-            started_seq: Some(21),
-            ended_seq: Some(21),
-            started_at: Some("21Z".to_string()),
-            ended_at: Some("21Z".to_string()),
-            timing: None,
-            raw: None,
-        };
-
-        let flushed =
-            take_pending_live_update_for_stream_switch(&mut pending, &next_stream).unwrap();
-
-        assert_eq!(flushed.item.id, "assistant-message-1");
-        assert_eq!(flushed.item.content.as_deref(), Some("完整文本快照"));
-        assert_eq!(flushed.durable_watermark, Some((1, 20)));
-        assert!(pending.is_none());
-    }
-
-    #[test]
-    fn same_stream_keeps_pending_live_update_buffered() {
-        let mut pending = Some(PendingAcpLiveUpdate {
-            revision: 20,
-            durable_watermark: None,
-            item: AcpUiEvent {
-                id: "assistant-message-1".to_string(),
-                seq: 20,
-                timestamp: "20Z".to_string(),
-                kind: "textDelta".to_string(),
-                session_id: Some("session-1".to_string()),
-                content: Some("partial".to_string()),
-                title: None,
-                tool_call_id: None,
-                status: None,
-                started_seq: Some(10),
-                ended_seq: Some(20),
-                started_at: Some("10Z".to_string()),
-                ended_at: Some("20Z".to_string()),
-                timing: None,
-                raw: None,
-            },
-        });
-        let same_stream = pending.as_ref().unwrap().item.clone();
-
-        let flushed = take_pending_live_update_for_stream_switch(&mut pending, &same_stream);
-
-        assert!(flushed.is_none());
-        assert_eq!(
-            pending.and_then(|event| event.item.content),
-            Some("partial".to_string())
-        );
     }
 
     #[test]

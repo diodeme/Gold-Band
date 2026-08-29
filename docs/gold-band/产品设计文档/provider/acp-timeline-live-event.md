@@ -28,6 +28,14 @@ Gold Band 的 ACP 会话同时服务两类读取路径：
 - `toolCall`、`usageUpdate`、session terminal 等非流式事件发送前，也必须先发送 pending stream 快照。
 - 单槽 pending 只能缓存“同一个稳定 item 的最新快照”，不能覆盖不同 text/thought/plan item。
 
+## 管线性能诊断契约
+
+- session route frame 必须携带 stdout reader 首次接收时的单调时钟，跨 early buffer、ingress queue 和 event pump 不得重置；runtime dequeue 后以该时间计算 queue wait。
+- prompt 级生产摘要和 Debug/Trace 下的 5 秒窗口统一写入 attempt 的 `acp.diagnostics.jsonl`。摘要只保存固定枚举类别、固定延迟桶、计数、字节、阶段耗时及 ingress/pump 高水位，不保存 frame/prompt/tool payload。
+- Raw roll 和 Timeline compaction 只在真实重写发生时计数；compaction duration 只覆盖 canonical timeline 的压缩调用，upsert duration 另行记录，不能把整个 prompt elapsed 误标为压缩耗时。
+- live emit duration 在调用既有 live callback 的同步边界测量。该观测不得改变累计快照、latest-wins、durable watermark 或前端发布契约。
+- 诊断写入为 best effort：失败只能进入内部 debug tracing，不得中断 Provider prompt；同时生产热路径禁止逐帧追加 diagnostics。
+
 ## 前端状态规则
 
 前端合并 ACP 事件时必须以稳定 key 为准，key 至少包含 attempt/session、kind 与 stable id。合并同一 key 的 stream 快照时：

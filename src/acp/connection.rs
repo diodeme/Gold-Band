@@ -65,6 +65,34 @@ struct SessionRouteFrame {
     value: Value,
     bytes: usize,
     sequence: u64,
+    received_at: Instant,
+}
+
+#[derive(Debug)]
+pub(crate) struct SessionObservedFrame {
+    pub(crate) value: Value,
+    pub(crate) bytes: usize,
+    pub(crate) sequence: u64,
+    pub(crate) received_at: Instant,
+}
+
+impl From<SessionRouteFrame> for SessionObservedFrame {
+    fn from(frame: SessionRouteFrame) -> Self {
+        Self {
+            value: frame.value,
+            bytes: frame.bytes,
+            sequence: frame.sequence,
+            received_at: frame.received_at,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SessionQueueHighWatermarks {
+    pub(crate) ingress_frames: usize,
+    pub(crate) ingress_bytes: usize,
+    pub(crate) pump_frames: usize,
+    pub(crate) pump_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -107,7 +135,7 @@ impl EarlySessionFrames {
         true
     }
 
-    fn take(&mut self, session_id: &str, now: Instant) -> Vec<(Value, usize)> {
+    fn take(&mut self, session_id: &str, now: Instant) -> Vec<EarlySessionFrame> {
         self.purge_expired(now);
         let Some(frames) = self.by_session.remove(session_id) else {
             return Vec::new();
@@ -116,7 +144,7 @@ impl EarlySessionFrames {
         for frame in frames {
             self.total_bytes = self.total_bytes.saturating_sub(frame.bytes);
             self.total_frames = self.total_frames.saturating_sub(1);
-            drained.push((frame.value, frame.bytes));
+            drained.push(frame);
         }
         drained
     }
@@ -224,7 +252,12 @@ struct SessionRouteSender {
 }
 
 impl SessionRouteSender {
+    #[cfg(test)]
     fn send(&self, value: Value, bytes: usize) -> bool {
+        self.send_at(value, bytes, Instant::now())
+    }
+
+    fn send_at(&self, value: Value, bytes: usize, received_at: Instant) -> bool {
         let Ok(mut state) = self.inner.state.lock() else {
             return false;
         };
@@ -256,6 +289,7 @@ impl SessionRouteSender {
             value,
             bytes,
             sequence,
+            received_at,
         });
         state.high_water_bytes = state.high_water_bytes.max(state.queued_bytes);
         state.high_water_frames = state.high_water_frames.max(state.queue.len());
@@ -290,6 +324,12 @@ pub struct SessionRouteReceiver {
 
 impl SessionRouteReceiver {
     pub fn try_recv(&self) -> std::result::Result<Value, SessionRouteTryRecvError> {
+        self.try_recv_observed().map(|frame| frame.value)
+    }
+
+    pub(crate) fn try_recv_observed(
+        &self,
+    ) -> std::result::Result<SessionObservedFrame, SessionRouteTryRecvError> {
         let Ok(mut state) = self.inner.state.lock() else {
             return Err(SessionRouteTryRecvError::Disconnected);
         };
@@ -297,7 +337,7 @@ impl SessionRouteReceiver {
             state.queued_bytes = state.queued_bytes.saturating_sub(frame.bytes);
             drop(state);
             self.inner.not_full.notify_all();
-            return Ok(frame.value);
+            return Ok(frame.into());
         }
         if state.closed || !state.receiver_alive {
             Err(SessionRouteTryRecvError::Disconnected)
@@ -354,6 +394,8 @@ impl Drop for SessionRouteReceiver {
 struct SessionEventPumpState {
     queue: VecDeque<SessionRouteFrame>,
     queued_bytes: usize,
+    high_water_bytes: usize,
+    high_water_frames: usize,
     last_consumed_sequence: u64,
     closed: bool,
 }
@@ -367,6 +409,7 @@ struct SessionEventPumpInner {
 
 pub struct SessionEventPump {
     inner: Arc<SessionEventPumpInner>,
+    route_inner: Arc<SessionRouteInner>,
     shutdown: Arc<AtomicBool>,
     route_generation: u64,
 }
@@ -380,8 +423,10 @@ impl SessionEventPump {
         });
         let shutdown = Arc::new(AtomicBool::new(false));
         let route_generation = receiver.inner.generation;
+        let route_inner = Arc::clone(&receiver.inner);
         let pump = Arc::new(Self {
             inner: Arc::clone(&inner),
+            route_inner,
             shutdown: Arc::clone(&shutdown),
             route_generation,
         });
@@ -409,6 +454,8 @@ impl SessionEventPump {
                         }
                         state.queued_bytes = state.queued_bytes.saturating_add(bytes);
                         state.queue.push_back(frame);
+                        state.high_water_bytes = state.high_water_bytes.max(state.queued_bytes);
+                        state.high_water_frames = state.high_water_frames.max(state.queue.len());
                         drop(state);
                         inner.not_empty.notify_one();
                     }
@@ -426,6 +473,12 @@ impl SessionEventPump {
     }
 
     pub fn try_recv(&self) -> std::result::Result<Value, SessionRouteTryRecvError> {
+        self.try_recv_observed().map(|frame| frame.value)
+    }
+
+    pub(crate) fn try_recv_observed(
+        &self,
+    ) -> std::result::Result<SessionObservedFrame, SessionRouteTryRecvError> {
         let Ok(mut state) = self.inner.state.lock() else {
             return Err(SessionRouteTryRecvError::Disconnected);
         };
@@ -434,7 +487,7 @@ impl SessionEventPump {
             state.last_consumed_sequence = frame.sequence;
             drop(state);
             self.inner.not_full.notify_all();
-            return Ok(frame.value);
+            return Ok(frame.into());
         }
         if state.closed {
             Err(SessionRouteTryRecvError::Disconnected)
@@ -447,6 +500,13 @@ impl SessionEventPump {
         &self,
         timeout: Duration,
     ) -> std::result::Result<Value, mpsc::RecvTimeoutError> {
+        self.recv_timeout_observed(timeout).map(|frame| frame.value)
+    }
+
+    pub(crate) fn recv_timeout_observed(
+        &self,
+        timeout: Duration,
+    ) -> std::result::Result<SessionObservedFrame, mpsc::RecvTimeoutError> {
         let deadline = Instant::now() + timeout;
         let Ok(mut state) = self.inner.state.lock() else {
             return Err(mpsc::RecvTimeoutError::Disconnected);
@@ -457,7 +517,7 @@ impl SessionEventPump {
                 state.last_consumed_sequence = frame.sequence;
                 drop(state);
                 self.inner.not_full.notify_all();
-                return Ok(frame.value);
+                return Ok(frame.into());
             }
             if state.closed {
                 return Err(mpsc::RecvTimeoutError::Disconnected);
@@ -488,6 +548,37 @@ impl SessionEventPump {
 
     pub fn route_generation(&self) -> u64 {
         self.route_generation
+    }
+
+    pub(crate) fn take_queue_high_watermarks(&self) -> SessionQueueHighWatermarks {
+        let (ingress_frames, ingress_bytes) = self
+            .route_inner
+            .state
+            .lock()
+            .map(|mut state| {
+                let high_water = (state.high_water_frames, state.high_water_bytes);
+                state.high_water_frames = state.queue.len();
+                state.high_water_bytes = state.queued_bytes;
+                high_water
+            })
+            .unwrap_or_default();
+        let (pump_frames, pump_bytes) = self
+            .inner
+            .state
+            .lock()
+            .map(|mut state| {
+                let high_water = (state.high_water_frames, state.high_water_bytes);
+                state.high_water_frames = state.queue.len();
+                state.high_water_bytes = state.queued_bytes;
+                high_water
+            })
+            .unwrap_or_default();
+        SessionQueueHighWatermarks {
+            ingress_frames,
+            ingress_bytes,
+            pump_frames,
+            pump_bytes,
+        }
     }
 
     pub fn close(&self) {
@@ -1438,17 +1529,20 @@ fn read_stdout(connection: Arc<AdapterConnection>, stdout: impl Read + Send + 's
         match reader.read_until(b'\n', &mut line) {
             Ok(0) => break,
             Ok(_) if line.iter().all(u8::is_ascii_whitespace) => {}
-            Ok(frame_bytes) => match serde_json::from_slice::<Value>(&line) {
-                Ok(value) => route_inbound_frame(&connection, value, frame_bytes),
-                Err(error) => warn!(
-                    provider = %connection.provider_id,
-                    adapter = %connection.adapter.adapter_id,
-                    command = %connection.adapter.command,
-                    %error,
-                    frame_bytes,
-                    "invalid ACP stdout frame"
-                ),
-            },
+            Ok(frame_bytes) => {
+                let received_at = Instant::now();
+                match serde_json::from_slice::<Value>(&line) {
+                    Ok(value) => route_inbound_frame(&connection, value, frame_bytes, received_at),
+                    Err(error) => warn!(
+                        provider = %connection.provider_id,
+                        adapter = %connection.adapter.adapter_id,
+                        command = %connection.adapter.command,
+                        %error,
+                        frame_bytes,
+                        "invalid ACP stdout frame"
+                    ),
+                }
+            }
             Err(error) => {
                 warn!(
                     provider = %connection.provider_id,
@@ -1605,7 +1699,12 @@ fn log_adapter_exit(connection: &AdapterConnection, transport_was_already_closed
     }
 }
 
-fn route_inbound_frame(connection: &AdapterConnection, value: Value, frame_bytes: usize) {
+fn route_inbound_frame(
+    connection: &AdapterConnection,
+    value: Value,
+    frame_bytes: usize,
+    received_at: Instant,
+) {
     if value.get("method").is_none() {
         if let Some(id) = value.get("id").and_then(Value::as_u64) {
             if let Some(pending) = connection
@@ -1635,7 +1734,7 @@ fn route_inbound_frame(connection: &AdapterConnection, value: Value, frame_bytes
             session_id,
             value.clone(),
             frame_bytes,
-            Instant::now(),
+            received_at,
         ) {
             return;
         }
@@ -1677,8 +1776,8 @@ fn register_session_route_state(
     if let Some(previous) = previous {
         previous.close();
     }
-    for (value, bytes) in buffered {
-        if !tx.send(value, bytes) {
+    for frame in buffered {
+        if !tx.send_at(frame.value, frame.bytes, frame.received_at) {
             break;
         }
     }
@@ -1698,7 +1797,7 @@ fn route_or_buffer_session_frame(
     };
     if let Some(route) = routes.get(session_id).cloned() {
         drop(routes);
-        return route.send(value, frame_bytes);
+        return route.send_at(value, frame_bytes, now);
     }
     let buffered = early_session_frames
         .lock()
@@ -2652,6 +2751,47 @@ mod tests {
 
         assert_eq!(receiver.try_recv().unwrap(), frame);
         assert_eq!(receiver.try_recv(), Err(SessionRouteTryRecvError::Empty));
+    }
+
+    #[test]
+    fn session_route_preserves_stdout_receipt_time() {
+        let (sender, receiver) = session_route_pair("test-adapter", "session-observed");
+        let received_at = std::time::Instant::now() - Duration::from_millis(75);
+        assert!(sender.send_at(json!({ "kind": "observed" }), 48, received_at));
+
+        let observed = receiver.try_recv_observed().unwrap();
+        assert_eq!(observed.value, json!({ "kind": "observed" }));
+        assert_eq!(observed.bytes, 48);
+        assert_eq!(observed.received_at, received_at);
+    }
+
+    #[test]
+    fn early_session_route_preserves_stdout_receipt_time() {
+        let routes = Mutex::new(HashMap::new());
+        let early_frames = Mutex::new(EarlySessionFrames::default());
+        let received_at = std::time::Instant::now() - Duration::from_millis(50);
+        let frame = json!({
+            "method": "session/update",
+            "params": { "sessionId": "session-early-observed" }
+        });
+        assert!(route_or_buffer_session_frame(
+            &routes,
+            &early_frames,
+            "session-early-observed",
+            frame.clone(),
+            96,
+            received_at,
+        ));
+
+        let receiver = register_session_route_state(
+            "test-adapter",
+            "session-early-observed",
+            &routes,
+            &early_frames,
+        );
+        let observed = receiver.try_recv_observed().unwrap();
+        assert_eq!(observed.value, frame);
+        assert_eq!(observed.received_at, received_at);
     }
 
     #[test]

@@ -698,3 +698,12 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - Session metadata 的 catalog、诊断和 provider snapshot 写入不得从当前文件反推缺失的 turn 身份。没有明确身份的写入只能更新非生命周期字段；显式身份与当前 turn 不匹配时只能保留当前 canonical lifecycle，不能覆盖新 turn。
 - provider 的 `Accepted/Running/terminal` lifecycle 写入及外层执行失败结算，都必须用 runtime 持有的同一 `AcpLifecycleOwner` 对当前 `turnId + operationId + revision` 做精确 CAS，不能从写入时读取到的最新 snapshot 反推自己的身份。stop 接管会创建新的 control-plane ownership；停止控制方在 cancel dispatch 后用该 owner 结算 `cancelled`，不能再等待已失去 ownership 的 provider runtime 写 terminal。若该 turn 已完成、取消、revision 已推进或已被后续 turn 接管，迟到结果必须是 stale no-op，不得升级为 provider failure，也不得清理或覆盖新 turn 的 active ownership。stop command 必须使用 stop transition 返回的 owner 结果区分“本次 accepted”和重复/terminal no-op；后两者不得再次写 attempt-wide provider cancel latch、暂停运行态或启动旧 turn cleanup，避免旧 stop 误伤后续 turn。
 - 接纳后无法认领不再静默返回成功，而返回稳定的 `conversation.prompt-execution-claim-lost` 错误并发布当前权威 lifecycle；Direct composer 继续依据 canonical lifecycle 决定排队或恢复发送。
+
+# 2026-08-29：ACP 流式管线延迟诊断边界
+
+- ACP 流式卡顿不能只凭最终 timeline 的 patch 数或 compaction generation 归因。诊断必须分别观测 stdout receipt、session route/pump dequeue、runtime normalize/persist、timeline upsert/compaction、raw append/roll 与 live emit 边界；`acp.raw.jsonl` 的帧时间戳仍是协议审计事实，不承担跨队列性能归因。
+- stdout reader 在帧首次路由时记录进程内单调 `Instant`，该时间随 early-session buffer、session ingress 和 event pump 原样传递到 runtime。receipt time 只存在于当前进程的性能控制面，不写入 timeline，也不替代 `routeSeq`、timeline revision 或事件展示序号。
+- 每个 `session/prompt` 在 attempt 的 `acp.diagnostics.jsonl` 常开写入一条 `acp.pipeline-summary`，记录固定延迟桶、帧数/字节数、route/pump 高水位，以及 raw、timeline、compaction 和 live emit 的 count/total/max。真实 Raw roll、Timeline compaction 和超过 1 秒的 route queue wait 可额外写低频结构化事件；queue wait 异常同一 prompt 最多每 30 秒一条。
+- 设置页既有“记录详细日志”映射为 runtime `Debug/Trace` 时，额外每 5 秒写一条 `acp.pipeline-window`；生产默认级别不写窗口。该开关只改变诊断采样粒度，不改变 transport、timeline 或 UI 流式语义，不新增独立配置或第二状态源。
+- 诊断数据不得包含 prompt、正文、文件内容、工具输出或任意 provider payload。每帧热路径只更新固定长度计数器和 8 桶 histogram；不得逐帧落盘、保存任意 kind map 或创建随帧数增长的队列。30 分钟详细会话的目标增量为约 200～400 KiB，默认常开摘要通常为每 prompt 2～10 KiB。
+- 该埋点用于形成可证伪的阶段耗时证据，不预设 Timeline compaction 就是完整根因。只有现场 summary/window 显示某一阶段占据主要延迟后，才能进入对应数据边界的根因修复。

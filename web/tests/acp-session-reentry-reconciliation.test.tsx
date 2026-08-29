@@ -62,6 +62,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const locator = {
   projectId: 'project-watermark',
   taskId: 'task-watermark',
+  taskUuid: 'task-uuid-watermark',
   runId: 'run-watermark',
   roundId: 'round-watermark',
   nodeId: 'node-watermark',

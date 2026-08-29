@@ -17,7 +17,7 @@ Gold Band 的 ACP 会话同时服务两类读取路径：
 - 同一段 thought 使用稳定 `id`，例如 `assistant-thought-{messageId}`。
 - `content` 表示该稳定 item 到当前 `endedSeq` 为止的完整内容。
 - `seq` / `startedSeq` 定义 timeline item 的规范顺序，必须随事件推进单调递增；恢复解析、计时重建和测试夹具都不得依赖 HashMap 遍历顺序或相同序号下的偶然排序。
-- 原始 token delta 只保留在 `acp.raw.jsonl`，不得由前端 chat 渲染重新解释。
+- 原始 token delta 仍逐帧保留为 `acp.raw.jsonl` 中独立的 FIFO JSONL record，但允许多个连续 record 组成一次有界 group commit；不得由前端 chat 渲染重新解释。
 - tool terminal delta 仍按 FIFO 逐帧经过 runtime 并写入 Raw 审计；Timeline 与 live event 只保留同一工具身份在当前发布窗口内的最新投影。工具成功、失败、取消等终态不得合并延迟。
 
 ## 后端实时发送规则
@@ -28,8 +28,9 @@ Gold Band 的 ACP 会话同时服务两类读取路径：
 - batch 每 75ms、session route 暂时清空或会话收尾时按 revision 顺序 flush；内存规模受当前活跃 identity 数约束，不受 Raw frame 数约束。
 - 权限、elicitation、usage、错误、工具终态和 session terminal 等关键事件发送前，必须先按 revision flush 全部 pending batch，再立即处理关键事件。
 - durable watermark 只在对应累计快照真实写入 Timeline 后附加；尚未 flush 的 live update 不得伪造持久化水位。
-- Prompt 活跃期每次最多连续 drain 256 帧或 25ms，随后必须检查 JSON-RPC response、取消和诊断控制面；确认仍有 backlog 时使用零等待进入下一批，不能睡眠，也不能无限 drain 到队列清空后才观察控制面。
+- Prompt 活跃期每次最多预取 128 帧、约 4 MiB 或 25ms，再完成当前有界 Raw/canonical batch 并检查 JSON-RPC response、取消和诊断控制面；单个超过字节预算的协议帧保持原子。确认仍有 backlog 时使用零等待进入下一批，不能睡眠，也不能无限 drain 到队列清空后才观察控制面。
 - 成功 response 已携带 session route watermark 时，runtime 必须直接消费至该 watermark，不能先执行一次无限 available drain；watermark 之后的持续流量只由后续 quiet drain 的既有边界处理。RPC error 没有 terminal 收敛要求，只做有界 best-effort drain。
+- session route 的 `consumed` watermark 表示对应帧已经完成 runtime canonical 处理，不表示仅从 event pump 出队。批量预取不得提前推进水位；每帧处理成功后按 sequence 显式 acknowledgement，乱序 acknowledgement 必须失败关闭，terminal 收敛不得跳过已预取但尚未处理的帧。
 
 ## 管线性能诊断契约
 
@@ -48,6 +49,13 @@ Gold Band 的 ACP 会话同时服务两类读取路径：
 - 更新已有 item 时复用同一个 Timeline reader，通过 index locator seek 读取 canonical item；不得为同批每个 identity 重复打开文件。
 - Timeline index V9 保证 locator 指向完整 canonical item。旧 index 首次打开时先用历史 replay 归一化迁移；V9 压缩直接读取最终 locator，不再扫描全部 patch，压缩复杂度由历史 revision 数降为最终 canonical item 数。
 - ratio 压缩必须同时满足 patch 数超过 `uniqueItems × 4` 且至少达到 4,096；8 MiB 文件大小上限独立生效。这样避免小日志每 5 次更新就全量重写，同时仍保证文件增长有界。
+
+## Raw 持久化 group commit 契约
+
+- Raw 的 canonical 单位仍是逐帧 JSONL record，batch 只改变物理提交次数，不合并 payload、不丢帧、不改变 FIFO 顺序，也不成为第二条业务队列。
+- 活跃 prompt 的同一预取批次只执行一次 JSON 编码集合、一次 Raw 文件锁、一次 append open、一次缓冲写与 flush，并且最多执行一次 roll；单帧 API 继续复用同一批量实现，避免两套写入语义。
+- batch 内存同时受 128 帧和约 4 MiB 预取边界约束；roll 后保留目标窗口时必须保持握手帧策略、最后一帧完整和保留帧 sequence 单调。
+- Raw append 继续是 best effort 诊断边界，失败不得中断 provider runtime；但 runtime 的 route consumption 只能由 canonical frame processing 成功确认，不能由 Raw batch 成功或出队动作替代。
 
 ## 前端状态规则
 
@@ -80,6 +88,7 @@ Gold Band 的 ACP 会话同时服务两类读取路径：
 - 2,000 个同一工具身份的非终态 terminal delta 突发不能产生 2,000 次 Timeline/IPC 提交；最终工具投影必须完整收敛，工具终态仍立即可见。
 - 持续 session-update backlog 下，runtime 必须在每个有界 drain 批次之间观察 prompt response 与取消，不能因数据面繁忙触发伪 terminal-route timeout。
 - response watermark 之后即使仍有 backlog，成功响应收敛也不会为了清空整个队列而无限延迟。
+- 录制工具突发等规模的 Raw Release 压测固定为 13,245 帧、69,752,109 bytes、19 个工具 identity、2 MiB/1 MiB roll 边界。最终 128 帧 group commit 必须在本机 3 秒门槛内完成，并验证 roll 后 FIFO、握手帧与最后一帧完整；逐帧旧接口必须用同一输入建立 A/B，不能只测修复后接口。
 - Release 压测每个场景 1,000,000 条 update、每 256 frame 一批，共 3,907 次真实提交：单 identity 与 256 identities 均保持最终 latest-wins 内容和最大 sequence 正确；本机 7,814 次提交中实测最大单批落盘 320.73ms，叠加 75ms 窗口的保守可见上界约 396ms，不得出现秒级提交或分钟级累计积压。
 - 同一份 10,000 update / 256 identities Release A/B 必须能证明修复覆盖真实写放大：V8 逐 identity 提交耗时 196.89s、单批最大 7.48s、P99 6.93s；V9 group commit 耗时 1.20s、单批最大 83.75ms、P99 76.58ms。总耗时和最大批延迟分别改善约 164 倍与 89 倍；不能只用修复后的新接口压测推断旧路径存在问题。
 
@@ -88,6 +97,7 @@ Gold Band 的 ACP 会话同时服务两类读取路径：
 - streaming pending map、批量准备区和写缓冲只随当前 75ms 窗口内的 distinct identity/编码字节增长，不随会话历史 frame 数增长；Timeline 文件继续受 ratio 与 8 MiB 双边界约束。
 - 普通批量提交时间复杂度为 O(batch identities)，V9 压缩为 O(canonical items)，不再对全部历史 patch 做全量扫描；文件锁只覆盖同一 Timeline 的索引校验、append 或原子压缩事务。
 - 方案复用现有 JSONL、materialized index、文件锁、原子写和标准库 `BufWriter`，没有新增线程、数据库、持久队列、缓存层或依赖。现有 canonical identity/revision/generation 已足够表达不变量，因此没有复制状态模型。
+- Raw batch 编码暂存为 O(min(128 frames, about 4 MiB) + one atomic oversized frame)，文件操作由逐帧 O(frames) 降为 O(batches)；session sequence 仍是唯一水位，显式 acknowledgement 只修正既有水位转换，不增加持久字段或平行 identity。
 
 ## Agent 分支路由持久化契约
 

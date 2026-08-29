@@ -318,6 +318,19 @@ pub enum SessionRouteTryRecvError {
     Disconnected,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum SessionRouteAcknowledgeError {
+    #[error("ACP session route acknowledgement state is unavailable")]
+    StateUnavailable,
+    #[error(
+        "ACP session route acknowledgement is out of order: expected sequence {expected_sequence}, got {actual_sequence}"
+    )]
+    OutOfOrder {
+        expected_sequence: u64,
+        actual_sequence: u64,
+    },
+}
+
 pub struct SessionRouteReceiver {
     inner: Arc<SessionRouteInner>,
 }
@@ -473,7 +486,10 @@ impl SessionEventPump {
     }
 
     pub fn try_recv(&self) -> std::result::Result<Value, SessionRouteTryRecvError> {
-        self.try_recv_observed().map(|frame| frame.value)
+        let frame = self.try_recv_observed()?;
+        self.acknowledge_consumed(frame.sequence)
+            .map_err(|_| SessionRouteTryRecvError::Disconnected)?;
+        Ok(frame.value)
     }
 
     pub(crate) fn try_recv_observed(
@@ -484,9 +500,6 @@ impl SessionEventPump {
         };
         if let Some(frame) = state.queue.pop_front() {
             state.queued_bytes = state.queued_bytes.saturating_sub(frame.bytes);
-            state.last_consumed_sequence = frame.sequence;
-            drop(state);
-            self.inner.not_full.notify_all();
             return Ok(frame.into());
         }
         if state.closed {
@@ -500,7 +513,10 @@ impl SessionEventPump {
         &self,
         timeout: Duration,
     ) -> std::result::Result<Value, mpsc::RecvTimeoutError> {
-        self.recv_timeout_observed(timeout).map(|frame| frame.value)
+        let frame = self.recv_timeout_observed(timeout)?;
+        self.acknowledge_consumed(frame.sequence)
+            .map_err(|_| mpsc::RecvTimeoutError::Disconnected)?;
+        Ok(frame.value)
     }
 
     pub(crate) fn recv_timeout_observed(
@@ -514,9 +530,6 @@ impl SessionEventPump {
         loop {
             if let Some(frame) = state.queue.pop_front() {
                 state.queued_bytes = state.queued_bytes.saturating_sub(frame.bytes);
-                state.last_consumed_sequence = frame.sequence;
-                drop(state);
-                self.inner.not_full.notify_all();
                 return Ok(frame.into());
             }
             if state.closed {
@@ -579,6 +592,31 @@ impl SessionEventPump {
             pump_frames,
             pump_bytes,
         }
+    }
+
+    pub(crate) fn acknowledge_consumed(
+        &self,
+        sequence: u64,
+    ) -> std::result::Result<(), SessionRouteAcknowledgeError> {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .map_err(|_| SessionRouteAcknowledgeError::StateUnavailable)?;
+        if sequence <= state.last_consumed_sequence {
+            return Ok(());
+        }
+        let expected_sequence = state.last_consumed_sequence.saturating_add(1);
+        if sequence != expected_sequence {
+            return Err(SessionRouteAcknowledgeError::OutOfOrder {
+                expected_sequence,
+                actual_sequence: sequence,
+            });
+        }
+        state.last_consumed_sequence = sequence;
+        drop(state);
+        self.inner.not_full.notify_all();
+        Ok(())
     }
 
     pub fn close(&self) {
@@ -2881,6 +2919,32 @@ mod tests {
             json!("response-adjacent")
         );
         assert!(pump.has_consumed(response_watermark));
+        pump.close();
+    }
+
+    #[test]
+    fn session_event_pump_does_not_consume_prefetched_frames_before_processing() {
+        let (sender, receiver) = session_route_pair("test-adapter", "session-prefetched");
+        let pump = SessionEventPump::start(receiver);
+        assert!(sender.send(json!({ "index": 1 }), 32));
+        let first_watermark = sender.watermark().expect("first watermark");
+        assert!(sender.send(json!({ "index": 2 }), 32));
+        let second_watermark = sender.watermark().expect("second watermark");
+
+        let first = pump.recv_timeout_observed(Duration::from_secs(1)).unwrap();
+        let second = pump.recv_timeout_observed(Duration::from_secs(1)).unwrap();
+        assert_eq!(first.sequence, first_watermark.sequence());
+        assert_eq!(second.sequence, second_watermark.sequence());
+
+        assert!(!pump.has_consumed(first_watermark));
+        assert!(!pump.has_consumed(second_watermark));
+
+        pump.acknowledge_consumed(first.sequence).unwrap();
+        assert!(pump.has_consumed(first_watermark));
+        assert!(!pump.has_consumed(second_watermark));
+
+        pump.acknowledge_consumed(second.sequence).unwrap();
+        assert!(pump.has_consumed(second_watermark));
         pump.close();
     }
 

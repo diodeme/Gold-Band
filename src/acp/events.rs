@@ -14,8 +14,8 @@ use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 use crate::acp::control::AcpRuntimeControlCursor;
 use crate::provider::{ConversationPromptInput, UserPromptQuote};
 use crate::storage::{
-    append_jsonl, append_jsonl_unlocked, atomic_write_file, ensure_parent_dir, read_json,
-    with_jsonl_file_lock, write_json,
+    append_jsonl, append_jsonl_lines_flushed_unlocked, atomic_write_file, ensure_parent_dir,
+    read_json, with_jsonl_file_lock, write_json,
 };
 
 const AGENT_TRANSCRIPT_META_KEY: &str = "agentTranscript";
@@ -1242,6 +1242,18 @@ pub fn append_raw_frame(
     append_raw_frame_observed(path, direction, frame, max_size, target_size).map(|_| ())
 }
 
+/// Append an ordered group of Raw protocol frames with one file lock, open,
+/// buffered write, flush, and roll check.
+pub fn append_raw_frames(
+    path: &Utf8Path,
+    direction: &str,
+    frames: &[Value],
+    max_size: u64,
+    target_size: u64,
+) -> Result<()> {
+    append_raw_frames_observed(path, direction, frames.iter(), max_size, target_size).map(|_| ())
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RawLogRollStats {
     pub(crate) before_bytes: u64,
@@ -1262,16 +1274,49 @@ pub(crate) fn append_raw_frame_observed(
     max_size: u64,
     target_size: u64,
 ) -> Result<RawFrameAppendOutcome> {
+    append_raw_frames_observed(
+        path,
+        direction,
+        std::iter::once(&frame),
+        max_size,
+        target_size,
+    )
+}
+
+#[derive(Serialize)]
+struct BorrowedAcpRawFrame<'a> {
+    timestamp: &'a str,
+    direction: &'a str,
+    frame: &'a Value,
+}
+
+pub(crate) fn append_raw_frames_observed<'a>(
+    path: &Utf8Path,
+    direction: &str,
+    frames: impl IntoIterator<Item = &'a Value>,
+    max_size: u64,
+    target_size: u64,
+) -> Result<RawFrameAppendOutcome> {
     let started_at = Instant::now();
-    with_jsonl_file_lock(path, || {
-        append_jsonl_unlocked(
-            path,
-            &AcpRawFrame {
-                timestamp: current_timestamp(),
-                direction: direction.to_string(),
+    let timestamp = current_timestamp();
+    let encoded = frames
+        .into_iter()
+        .map(|frame| {
+            serde_json::to_vec(&BorrowedAcpRawFrame {
+                timestamp: &timestamp,
+                direction,
                 frame,
-            },
-        )?;
+            })
+        })
+        .collect::<serde_json::Result<Vec<_>>>()?;
+    if encoded.is_empty() {
+        return Ok(RawFrameAppendOutcome {
+            elapsed: started_at.elapsed(),
+            roll: None,
+        });
+    }
+    with_jsonl_file_lock(path, || {
+        append_jsonl_lines_flushed_unlocked(path, &encoded)?;
         let roll = roll_raw_log(path, max_size, target_size).unwrap_or(None);
         Ok(RawFrameAppendOutcome {
             elapsed: started_at.elapsed(),

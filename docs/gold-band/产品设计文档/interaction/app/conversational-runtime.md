@@ -709,6 +709,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - stdout reader 在帧首次路由时记录进程内单调 `Instant`，该时间随 early-session buffer、session ingress 和 event pump 原样传递到 runtime。receipt time 只存在于当前进程的性能控制面，不写入 timeline，也不替代 `routeSeq`、timeline revision 或事件展示序号。
 - 每个 `session/prompt` 在 attempt 的 `acp.diagnostics.jsonl` 常开写入一条 `acp.pipeline-summary`，记录固定延迟桶、帧数/字节数、route/pump 高水位，以及 raw、timeline、compaction 和 live emit 的 count/total/max。真实 Raw roll、Timeline compaction 和超过 1 秒的 route queue wait 可额外写低频结构化事件；queue wait 异常同一 prompt 最多每 30 秒一条。
 - 设置页既有“记录详细日志”映射为 runtime `Debug/Trace` 时，额外每 5 秒写一条 `acp.pipeline-window`；生产默认级别不写窗口。该开关只改变诊断采样粒度，不改变 transport、timeline 或 UI 流式语义，不新增独立配置或第二状态源。
-- task-320 证明 Codex terminal output burst 会把数千个 `tool_call_update` 堆入 session route；当非终态工具更新绕过累计流合并时，queue wait 可增长到 846.7 秒，而同期 Raw roll 仅 4ms、13 次 Timeline compaction 合计约 12.3 秒。根因修复固定在 runtime canonical/live 发布边界和 drain 公平性，不调整 Raw 审计、route FIFO、压缩阈值或前端打字机速度。
+- task-320 证明 Codex terminal output burst 会把数千个 `tool_call_update` 堆入 session route；当非终态工具更新绕过累计流合并时，queue wait 可增长到 846.7 秒，而同期 Raw roll 仅 4ms、13 次 Timeline compaction 合计约 12.3 秒。Timeline group commit 修复后，最后一个新版本 turn 的 13,245 帧 / 69,752,109 bytes 窗口又暴露 Raw append 累计 23.697 秒：Raw 的逐帧审计 record 继续保留，但物理提交改为 128 帧、约 4 MiB、25ms 有界 group commit；route FIFO、压缩阈值和前端打字机语义不变。
+- event pump dequeue 只是 frame delivery，不是 canonical consumption。批量预取后必须在每帧 runtime 处理成功时按 route sequence 显式 ack；terminal route watermark 只能读取该 ack 水位，不能跳过同批已出队但尚未处理的帧。
 - 诊断数据不得包含 prompt、正文、文件内容、工具输出或任意 provider payload。每帧热路径只更新固定长度计数器和 8 桶 histogram；不得逐帧落盘、保存任意 kind map 或创建随帧数增长的队列。30 分钟详细会话的目标增量为约 200～400 KiB，默认常开摘要通常为每 prompt 2～10 KiB。
 - 该埋点用于形成可证伪的阶段耗时证据，不预设 Timeline compaction 就是完整根因。只有现场 summary/window 显示某一阶段占据主要延迟后，才能进入对应数据边界的根因修复。

@@ -13,6 +13,7 @@ use crate::domain::{
 use crate::dsl::{
     JsonConditionDsl, JsonPathSegment, NodeDsl, ValidatedWorkflow, WorkerNode, parse_json_path,
 };
+use crate::dynamic::AI_DYNAMIC_RESULT_ARTIFACT;
 use crate::observability::{ProgressStage, progress};
 use crate::prompts::PromptExecutionSurface;
 use crate::provider::{
@@ -326,7 +327,7 @@ fn output_artifact_for_predecessor(
             .output
             .as_ref()
             .map(|output| output.artifact.as_str()),
-        NodeDsl::AiDynamic(_) => None,
+        NodeDsl::AiDynamic(_) => Some(AI_DYNAMIC_RESULT_ARTIFACT),
     }?;
     let path = app.paths.artifact_file(
         task_id,

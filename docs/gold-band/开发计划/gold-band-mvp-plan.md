@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-08-28：AI-DYNAMIC 外层交接与跨 group 协调投影
+
+- 根因与实现：canonical `DynamicGraphState` 已完整保存节点、group、workspace 与 accepted proposal，但既没有对外层普通后继节点发布业务结果，内部 prompt 也只有当前位置的最小投影，无法按需获知其他并行 group 的最新任务与 workspace。这属于原设计缺少受控发布/协调投影，不是单点解析 Bug。现由 Runtime 从 canonical graph 派生三类只读视图：成功时生成小型 `ai-dynamic-result.json` 和完整 `ai-dynamic-report-manifest.json`，普通 predecessor 接口只注入前者；运行期间在 graph 同锁原子持久化后生成 `dynamic/coordination-snapshot.json`。顶层 acceptance 或无 group 的最终 `next=end` completion 直接提供唯一权威业务摘要，不增加总结 Agent；manifest 自动保留所有内部 accepted summary、节点/group 时间关系、依赖、workspace、attachments 与 child workflow 引用。
+- Prompt 与阶段边界：双语 hidden context 只向非 bootstrap worker 的业务/finalize/repair turn，以及 acceptance 的 finalize/repair turn 暴露协调快照路径；bootstrap、merge、acceptance 业务 turn 不注入。摘要范围只由 Runtime 计算 `end_summary_is_outer_handoff` 并在双语 output protocol 中渲染：顶层 `next=end.summary` 是外层完整业务交接，嵌套/分支 summary 是内部报告；acceptance 角色 prompt 不再重复要求 Agent 自行判断 group 层级。快照排除 provider/session、proposal、控制 artifact、raw 与诊断，Runtime 独占写入，写失败时中止新节点启动并由 canonical graph 重建。
+- 接口验收：AI-DYNAMIC fanout 集成测试固定权威 acceptance 摘要、result 不内联长 manifest、manifest 的 root/fanout/spawn/group 关系、协调快照任务/状态/workspace，以及 bootstrap/worker/merge/acceptance 的分阶段注入规则；nested fanout 固定父 group 摘要优先于 child acceptance；无 group 回归固定最终 `next=end` summary；外层 successor 回归固定普通节点可见 result preview 和 manifest 路径。`cargo test --test ai_dynamic_node -- --nocapture` 共 27 项全部通过。`cargo test --lib --no-run` 仍被本工作区既有 6 处测试 initializer 缺少 `task_uuid` 阻断（`src/app/observability.rs` 与 `src/app/mod.rs`），与本项修改无关。
+- 过度设计与性能评审：复用现有 graph、accepted proposal、通用 artifact/predecessor、原子 JSON 写入和 hidden finalize 机制，不增加状态机、Agent、依赖、缓存、队列或兼容层。协调快照每次 graph 真实持久化执行一次 O(nodes + groups + accepted proposals) 投影与有界 JSON 写入；数量受 `maxDynamicNodes/maxGroupDepth` 硬限制，且不扫描 attachments、ACP Timeline 或 raw stream。完整 manifest 只在成功终结时线性枚举一次节点附件目录，普通后继只加载小型 result；锁内新增 snapshot I/O 是一致性所需的有界成本，无需专项 benchmark。
+
 ## 2026-08-27：顺序 Task locator 复用导致会话混显修复
 
 - 根因与实现：Task 已有每次创建都生成的稳定 `taskUuid`，`task-004` 等顺序 `taskId` 在旧实体删除后可被新实体复用，该数据设计能够正确区分两个实体；缺陷属于正确设计的身份传播与消费实现不完整。现统一以 `projectId + taskUuid + runId` 作为 canonical Run identity，`taskId` 只保留为可读路径 locator；后端 Runtime lifecycle 与 ACP live event 补齐 `taskUuid`，前端导航提交、响应校验、Run/ACP 缓存、快照合并、侧栏 key、右侧工作区和删除清理都消费同一身份接口。不同 UUID 即使复用相同 `taskId/runId` 也必须原子换代或隔离，迟到响应和旧会话事件不得覆盖新实体。

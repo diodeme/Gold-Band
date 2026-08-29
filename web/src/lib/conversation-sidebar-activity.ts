@@ -30,12 +30,20 @@ export function conversationTaskActivityFromLifecycle(
 export function conversationTaskActivityFromUpdate(
   event: AcpSessionUpdatedEventVm,
 ): ConversationTaskActivityVm | null | undefined {
+  const lifecycleActivity = event.lifecycle
+    ? conversationTaskActivityFromLifecycle(event.lifecycle)
+    : undefined;
+  // A quiescent canonical lifecycle is terminal for the task activity
+  // projection. A task-wide lightweight activity sample can be captured
+  // before the attempt control is released, so it must not resurrect the
+  // breathing indicator after the same update has settled the lifecycle.
+  if (lifecycleActivity === null) {
+    return null;
+  }
   if (event.activity !== undefined) {
     return event.activity ?? null;
   }
-  return event.lifecycle
-    ? conversationTaskActivityFromLifecycle(event.lifecycle)
-    : undefined;
+  return lifecycleActivity;
 }
 
 export function applyConversationSidebarTaskActivity(

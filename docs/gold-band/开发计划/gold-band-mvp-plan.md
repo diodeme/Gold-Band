@@ -7,6 +7,12 @@
 - 接口验收：AI-DYNAMIC fanout 集成测试固定权威 acceptance 摘要、result 不内联长 manifest、manifest 的 root/fanout/spawn/group 关系、协调快照任务/状态/workspace，以及 bootstrap/worker/merge/acceptance 的分阶段注入规则；nested fanout 固定父 group 摘要优先于 child acceptance；无 group 回归固定最终 `next=end` summary；外层 successor 回归固定普通节点可见 result preview 和 manifest 路径。`cargo test --test ai_dynamic_node -- --nocapture` 共 27 项全部通过。`cargo test --lib --no-run` 仍被本工作区既有 6 处测试 initializer 缺少 `task_uuid` 阻断（`src/app/observability.rs` 与 `src/app/mod.rs`），与本项修改无关。
 - 过度设计与性能评审：复用现有 graph、accepted proposal、通用 artifact/predecessor、原子 JSON 写入和 hidden finalize 机制，不增加状态机、Agent、依赖、缓存、队列或兼容层。协调快照每次 graph 真实持久化执行一次 O(nodes + groups + accepted proposals) 投影与有界 JSON 写入；数量受 `maxDynamicNodes/maxGroupDepth` 硬限制，且不扫描 attachments、ACP Timeline 或 raw stream。完整 manifest 只在成功终结时线性枚举一次节点附件目录，普通后继只加载小型 result；锁内新增 snapshot I/O 是一致性所需的有界成本，无需专项 benchmark。
 
+## 2026-08-28：Direct 终态侧边栏呼吸效果收敛
+
+- 根因与实现：ACP raw 的 `session/prompt` response 已返回 `stopReason=end_turn`，attempt snapshot 也已持久化为 `liveTurnActivity=idle + latestTurnStatus=completed`，说明统一生命周期设计正确；缺陷位于前端消费优先级。`AcpSessionUpdatedEvent` 同时携带 attempt 级 canonical lifecycle 与 task 级轻量 activity 时，旧投影无条件优先采用 activity，迟到的 `running` 样本可覆盖同一事件中的静止终态并让 Agent icon 持续呼吸。现保持 task activity 轻量事件链不变，只增加终态单调规则：canonical lifecycle 已静止时返回 `null`，拒绝非空轻量 activity 复活活动态；缺少 lifecycle 的高频事件和真实 active lifecycle 继续沿用既有 task activity。
+- 验收：先增加最小失败测试构造 `completed/idle` lifecycle 与迟到 `running` activity，旧实现稳定返回 running；修复后同一测试转绿。侧边栏、终态提示、ACP 事件路由与 composer 生命周期扩大回归 4 个文件共 111 项全部通过，TypeScript 检查与 Web 生产构建通过。尝试按规则使用 Computer Use 验证当前 EXE，但原生管道不可用；随后启动 `/chat` 深链路并尝试内置浏览器验证，可用浏览器列表为空。两条可视化通道均由环境阻塞，测试 Vite 进程已清理，本次不把未执行的客户端实操记为通过。
+- 性能与过度设计评审：复用现有 lifecycle、task activity 和侧边栏局部投影，不新增持久字段、aggregate、状态机、依赖、缓存、轮询或全量 sidebar 刷新；每个 ACP update 仅增加一次 O(1) 静止态判定，不改变 I/O、数据加载量、订阅范围或锁行为，并终止完成会话的无意义无限 CSS 动画，无需专项 benchmark。
+
 ## 2026-08-27：顺序 Task locator 复用导致会话混显修复
 
 - 根因与实现：Task 已有每次创建都生成的稳定 `taskUuid`，`task-004` 等顺序 `taskId` 在旧实体删除后可被新实体复用，该数据设计能够正确区分两个实体；缺陷属于正确设计的身份传播与消费实现不完整。现统一以 `projectId + taskUuid + runId` 作为 canonical Run identity，`taskId` 只保留为可读路径 locator；后端 Runtime lifecycle 与 ACP live event 补齐 `taskUuid`，前端导航提交、响应校验、Run/ACP 缓存、快照合并、侧栏 key、右侧工作区和删除清理都消费同一身份接口。不同 UUID 即使复用相同 `taskId/runId` 也必须原子换代或隔离，迟到响应和旧会话事件不得覆盖新实体。

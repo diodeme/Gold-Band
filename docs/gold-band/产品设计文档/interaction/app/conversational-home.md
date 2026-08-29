@@ -198,7 +198,7 @@
 
 ### 会话行展示
 - 标题（自动生成或手动修改）
-- Workflow/AUTO 使用状态小圆点（绿/红/黄）；Direct 使用 Agent icon。两种标识必须占用相同宽度的身份槽位，使标题文字起点严格对齐；Direct icon 使用紧凑尺寸，不得挤占标题空间。Direct 存在当前活跃 turn 时，在 Agent icon 外显示轻量主色旋转环，结束后恢复静态 icon；不使用成功/暂停/失败颜色表达单轮结果。
+- Workflow/AUTO 使用状态小圆点（绿/红/黄）；Direct 使用 Agent icon。两种标识必须占用相同宽度的身份槽位，使标题文字起点严格对齐；Direct icon 使用紧凑尺寸，不得挤占标题空间。Direct 存在当前活跃 turn 时，让既有 Agent icon 使用遵守 reduced-motion 的低强度呼吸效果，结束后立即恢复静态 icon；不增加旋转环，也不使用成功/暂停/失败颜色表达单轮结果。
 - 相对时间统一来自 task 行的 `lastActivityAt`（分/时/天/周/月/年；Workflow/AUTO 运行中不显示）。该字段由后端在会话元数据活动时间、创建时间和所有 run 的 `updatedAt` 中取真实时间最大值，不能由前端按运行模式重新选择时间源。紧凑时间区间必须连续：不足 1 分钟显示“刚刚”，1–59 分钟显示 `m`，1–23 小时显示 `h`，1–6 天显示 `d`，7–29 天显示 `w`，30–364 天显示 `mo`，365 天起显示 `y`；不得在周/月或月/年边界产生 `0mo`、`0y`。
 - hover 时在行尾显示重命名 / 置顶 / 删除操作；未 hover 时不为操作按钮预留占位，长标题只占用标题和时间可用区域
 - 删除会话前必须弹出不可撤销确认；确认文案明确说明将删除 `~/.gold-band` 下对应 task 目录，并在系统支持时优先移入回收站
@@ -215,8 +215,8 @@
 
 ## 状态规则
 - Workflow/AUTO 状态 = 最新 run 的最终状态；成功 = 绿色，失败/异常/停止 = 红色，暂停 = 黄色，运行中不显示时间
-- Direct 不用 run outcome 表达会话身份，不展示成功/暂停/失败色点。旋转环必须消费后端 task 级 canonical activity：同时覆盖首轮 runtime active、completed run 上的 same-session ACP follow-up 和 cancel requested；禁止只判断 `latestRun.status`，因为 Direct 后续追问期间底层 run 仍可能保持 completed。
-- 高频 ACP session update 必须直接携带从 task 根目录聚合所有 per-attempt prompt control registry 后投影的轻量 `activity`，包括 `starting / accepted / running / cancel-requested`；只有该 task 已无活动 prompt 时，终态事件才用显式 `null` 清除。`session/new` 尚未返回即停止的 prompt 也必须在 control 释放后发布该清除事件；run 因可恢复语义保持 `paused / process-interrupted` 不得阻止圆环收敛。该投影只读内存控制状态，不得为侧边栏圆环重建完整 lifecycle、session 或 timeline。前端优先消费显式 `activity`（包括 `null`），并仅对旧的无 `activity` 事件回退到 lifecycle 投影。
+- Direct 不用 run outcome 表达会话身份，不展示成功/暂停/失败色点。呼吸效果必须消费后端 task 级 canonical activity：同时覆盖首轮 runtime active、completed run 上的 same-session ACP follow-up 和 cancel requested；禁止只判断 `latestRun.status`，因为 Direct 后续追问期间底层 run 仍可能保持 completed。
+- 高频 ACP session update 必须直接携带从 task 根目录聚合所有 per-attempt prompt control registry 后投影的轻量 `activity`，包括 `starting / accepted / running / cancel-requested`；只有该 task 已无活动 prompt 时，终态事件才用显式 `null` 清除。`session/new` 尚未返回即停止的 prompt 也必须在 control 释放后发布该清除事件；run 因可恢复语义保持 `paused / process-interrupted` 不得阻止呼吸效果收敛。该投影只读内存控制状态，不得为侧边栏动效重建完整 session 或 timeline。前端在事件缺少 lifecycle 时消费显式 `activity`（包括 `null`）；同一事件同时包含 lifecycle 与 activity 时，canonical lifecycle 的静止态拥有终态优先级，必须压制迟到的非空轻量 activity，禁止终态会话重新出现呼吸效果。
 - App shell 必须跨当前页面与工作空间全局监听 run lifecycle 终态事件，并使用完整 `projectId + taskId + runId` locator 只更新普通工作空间区和置顶副本中命中的 `status/outcome`；后台 run 完成不得因为用户正在查看另一工作空间而遗漏。该事件不得重新请求或替换完整 `ConversationSidebarVm`，也不得加载后台 run 的 session tree、timeline 或正文；只有事件命中当前打开 run 时才局部刷新当前 `ConversationRunVm`。已投影的 terminal 状态不得被迟到的非终态更新回退。
 - App shell 同样必须建立唯一全局 ACP session update 订阅，并使用完整 `projectId + taskId` 只更新普通工作空间区和置顶副本中命中的 task `activity`；不得把该订阅绑定到当前打开 run。当前 run 的 session/detail 更新通过稳定回调消费同一事件，后台 task 不加载详情。重复的同 phase activity 必须保持侧栏及非目标对象 identity，不得让 token 级事件持续重渲染整棵侧栏。
 
@@ -244,6 +244,6 @@
 - 切换 workspace 后再返回时，必须恢复该 workspace 当前 Direct Agent 及其模型/权限；其他 workspace 的选择不得覆盖当前 workspace。切换期间 composer 的 workspace 与运行模式配置由同一个 App 层 workspace key 驱动，不保留组件内第二份 workspace 选择状态。
 - 快速对话 composer 切换 workspace 属于导航上下文切换，不结束未提交草稿生命周期；无论从 composer 工作空间选择器还是左侧工作空间“新会话”入口切换，正文、图片及其他附件都必须原样保留。只有提交成功或用户明确执行清空/放弃操作时才清理草稿。
 - Direct 会话创建后 Agent 身份不可修改；更换 Agent 等价于创建新的 Direct 会话。会话内模型与权限模式分别使用独立显式 override：未指定时不干预 Agent 当前配置，选择具体值后不再允许回到“不指定”，但可以继续切换其他具体值。
-- Direct 侧边栏 task 行使用 Agent icon 代替 run 成功/暂停/失败状态点；当前 turn 活跃时由 task 级 activity 在 icon 外显示旋转环，相对时间来自 `lastActivityAt`。工作流和 AUTO 继续使用 run 状态点。
+- Direct 侧边栏 task 行使用 Agent icon 代替 run 成功/暂停/失败状态点；当前 turn 活跃时由 task 级 activity 驱动 icon 低强度呼吸，相对时间来自 `lastActivityAt`。工作流和 AUTO 继续使用 run 状态点。
 - Direct task 行点击后直接进入最近会话，不渲染 `run-00x` 子列表；底层 run 仅作为内部执行与存储结构。
 - Direct 的置顶区、workspace 区和搜索结果使用同一 Agent identity VM，不允许前端组件自行从 metadata 重复推断。

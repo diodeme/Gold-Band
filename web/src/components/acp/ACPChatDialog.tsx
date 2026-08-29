@@ -861,6 +861,7 @@ export function ACPChatDialog(
     {
       projectId,
       taskId,
+      taskUuid,
       runId,
       roundId,
       nodeId,

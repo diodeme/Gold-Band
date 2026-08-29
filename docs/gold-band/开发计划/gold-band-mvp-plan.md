@@ -1,5 +1,11 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-08-29：会话重入后 Composer 终态收敛
+
+- 根因与实现：task-318 的 ACP raw 最终返回 `stopReason=end_turn`，持久化 snapshot 也已是 `liveTurnActivity=idle + latestTurnStatus=completed`；终态在页面卸载期间由全局 conversation event router 按真实 `taskUuid` 作用域接收。缺陷是主 `ACPChatDialog` 的 branch live snapshot 订阅漏传 `taskUuid`，重入时改读 `missing-task-uuid` 作用域，陈旧 optimistic 状态因此继续显示“回复生成中”。这属于 canonical lifecycle 与稳定 Task identity 设计正确、消费实现不完整。现仅补齐完整 locator 透传，后台写入、主会话重入、Agent branch 与右侧工作区统一使用 `projectId + taskUuid + run/attempt locator`，不依赖等待或切换会话触发收敛。
+- 失败证据与验收：最小失败测试模拟主会话卸载期间真实 UUID branch 收到 terminal lifecycle，旧实现重入后 textarea 仍为 disabled；补齐 locator 后同一测试转绿。扩大回归覆盖会话重入、conversation event router 与 composer lifecycle，共 3 个文件 100 项全部通过；TypeScript 检查和 Web 生产构建通过。已启动 `http://127.0.0.1:1420/chat`，但应用内浏览器恢复检查后可用实例列表仍为空，无法执行客户端实操；测试服务与 1420 监听已清理，不把该项记为通过。
+- 依赖、过度设计与性能评审：复用既有全局 event router、canonical lifecycle、`taskUuid` 和 React external-store 订阅，不新增状态机、持久字段、依赖、缓存、队列、轮询、延时补偿或兼容层。branch key 构造与 snapshot 读取仍为 O(1)，不增加 I/O、历史加载、扫描、订阅数量、渲染范围或锁行为；修复只让现有订阅读取正确作用域，无需专项 benchmark。
+
 ## 2026-08-29：会话侧栏分层与渐进加载
 
 - 根因与规模：现有侧栏接口把 workspace identity、全部 Task 摘要和全部 Run 历史绑成一次原子返回；本地约 4 个 workspace、388 个 Task、666 个 Run 时，冷启动侧栏需约 12–20.7 秒。瓶颈不是 React 首屏绘制，而是返回任何可见数据前跨 workspace 扫描全部 `task.json/run.json`，属于接口重量和关键路径边界的根本设计缺陷。

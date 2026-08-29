@@ -301,6 +301,26 @@ describe('ConversationSidebar run selection identity', () => {
     expect(conversationTaskActivityFromUpdate(event)).toBeUndefined();
   });
 
+  it('lets a canonical terminal lifecycle clear a stale lightweight activity projection', () => {
+    expect(conversationTaskActivityFromUpdate({
+      taskId: 'task-a',
+      runId: 'run-001',
+      roundId: 'round-001',
+      nodeId: 'direct-agent',
+      attemptId: 'attempt-001',
+      lifecycle: {
+        runtime: { status: 'completed', outcome: 'success', resumable: false, current: true, active: false, continuable: false, phase: 'terminal' },
+        control: { mode: 'non-runtime-controlled' },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'completed', stopping: false },
+        displayStatus: 'completed',
+        runtimeDisplay: { code: 'success', tone: 'success', icon: 'check', terminal: true, resumable: false, reasonCode: null, blockingError: false },
+        continueKind: null,
+        composer: { mode: 'normal', submitTarget: 'acp-prompt', processingKind: 'processing', statusKey: null, canStop: false, lockInput: false },
+      },
+      activity: { phase: 'running', stopping: false },
+    })).toBeNull();
+  });
+
   it('binds an active run to its canonical task entity', () => {
     const activeRunKey = conversationSidebarRunKey('project-a', 'task-a', 'run-003', 'task-uuid-a');
 

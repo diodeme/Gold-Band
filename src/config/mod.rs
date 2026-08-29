@@ -1334,6 +1334,8 @@ impl ProjectIdentityConfig {
 #[serde(rename_all = "camelCase")]
 pub struct TurnFilesConfig {
     pub card_preview_limit: usize,
+    #[serde(default = "default_turn_attachment_card_preview_limit")]
+    pub attachment_card_preview_limit: usize,
     pub capture_max_entries: usize,
     pub capture_max_file_bytes: usize,
     pub capture_max_total_bytes: usize,
@@ -1343,10 +1345,15 @@ pub struct TurnFilesConfig {
     pub blob_retention_policy: TurnFileBlobRetentionPolicy,
 }
 
+const fn default_turn_attachment_card_preview_limit() -> usize {
+    1
+}
+
 impl Default for TurnFilesConfig {
     fn default() -> Self {
         Self {
             card_preview_limit: 3,
+            attachment_card_preview_limit: 1,
             capture_max_entries: 256,
             capture_max_file_bytes: 2 * 1024 * 1024,
             capture_max_total_bytes: 16 * 1024 * 1024,
@@ -1362,6 +1369,7 @@ impl TurnFilesConfig {
     fn normalized(self) -> Self {
         Self {
             card_preview_limit: self.card_preview_limit.max(1),
+            attachment_card_preview_limit: self.attachment_card_preview_limit.max(1),
             capture_max_entries: self.capture_max_entries.max(1),
             capture_max_file_bytes: self.capture_max_file_bytes.max(1),
             capture_max_total_bytes: self
@@ -2358,7 +2366,22 @@ mod tests {
         );
         assert_eq!(roundtripped.acp_max_idle_session_runtimes, Some(12));
         assert_eq!(roundtripped.acp_timeline_compact_patch_ratio, Some(6));
-        assert_eq!(roundtripped.turn_files.unwrap().card_preview_limit, 5);
+        let turn_files = roundtripped.turn_files.unwrap();
+        assert_eq!(turn_files.card_preview_limit, 5);
+        assert_eq!(turn_files.attachment_card_preview_limit, 1);
+    }
+
+    #[test]
+    fn turn_files_config_defaults_the_attachment_card_preview_limit() {
+        let mut value = serde_json::to_value(TurnFilesConfig::default()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("attachmentCardPreviewLimit");
+
+        let config: TurnFilesConfig = serde_json::from_value(value).unwrap();
+
+        assert_eq!(config.attachment_card_preview_limit, 1);
     }
 
     #[test]

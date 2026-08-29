@@ -319,7 +319,7 @@ const defaultAppConfig: AppConfigVm = {
   conversationInlineContentMaxBytes: 64_000,
   conversationInlineImageMaxBytes: 4 * 1024 * 1024,
   conversationInlineImageMaxDimension: 2_560,
-  turnFiles: { cardPreviewLimit: 3 },
+  turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 1 },
   workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
   workspaceFiles: FALLBACK_WORKSPACE_FILES,
 };

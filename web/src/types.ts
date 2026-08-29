@@ -162,6 +162,7 @@ export interface AppConfigVm {
 
 export interface TurnFilesVm {
   cardPreviewLimit: number;
+  attachmentCardPreviewLimit: number;
 }
 
 export interface WorkspaceFilesVm {
@@ -1645,6 +1646,13 @@ export interface TurnFileChangeVm {
   limitationCode?: string | null;
 }
 
+export interface TurnAttachmentVm {
+  id: string;
+  relativePath: string;
+  name: string;
+  byteLength: number;
+}
+
 export interface TurnFileChangeSummaryVm {
   fileCount: number;
   addedFiles: number;
@@ -1665,6 +1673,7 @@ export interface TurnFileChangeSetVm {
   finishedAt?: string | null;
   summary: TurnFileChangeSummaryVm;
   changes: TurnFileChangeVm[];
+  attachments: TurnAttachmentVm[];
   limitationCodes: string[];
 }
 

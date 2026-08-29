@@ -555,6 +555,7 @@ function SessionContent({ vm, detail, appConfig, workspaceProjectId, onRefresh, 
           eventPageSize={appConfig.acpChatEventPageSize}
           inlineContentMaxBytes={appConfig.conversationInlineContentMaxBytes}
           turnFileCardPreviewLimit={appConfig.turnFiles.cardPreviewLimit}
+          turnAttachmentCardPreviewLimit={appConfig.turnFiles.attachmentCardPreviewLimit}
           taskId={vm.run.taskId}
           runId={vm.run.id}
           roundId={vm.round.id}

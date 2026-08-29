@@ -2413,7 +2413,9 @@ pub fn run_prompt(
                 restored,
                 Some("error".to_string()),
             )?;
-            if let Err(capture_error) = runtime.finalize_turn_file_changes(&prompt_turn) {
+            if let Err(capture_error) =
+                runtime.finalize_turn_file_changes(&prompt_turn, &workspace_dir)
+            {
                 append_structured_diagnostic_best_effort(
                     &runtime.paths.diagnostics,
                     "error",
@@ -2464,7 +2466,7 @@ pub fn run_prompt(
     )?;
     runtime
         .interrupt_active_context_compaction(stop_reason.as_deref().unwrap_or("prompt_finished"))?;
-    runtime.finalize_turn_file_changes(&prompt_turn)?;
+    runtime.finalize_turn_file_changes(&prompt_turn, &workspace_dir)?;
     runtime.control.mark_stopped();
     runtime.write_session(status, restored, stop_reason.clone(), capabilities)?;
     if let Some(session_update) = session_update {
@@ -4477,6 +4479,21 @@ impl<'a> AcpRuntime<'a> {
             started_at: user_event.timestamp.clone(),
             event: user_event,
         };
+        let turn_file_store = crate::acp::turn_files::TurnFileStore::new(
+            self.paths.attempt_dir.clone(),
+            self.runtime_policy.turn_file_capture,
+        );
+        if let Err(error) = turn_file_store.capture_attachment_baseline(&identity.id) {
+            append_structured_diagnostic_best_effort(
+                &self.paths.diagnostics,
+                "warn",
+                "turn-files.attachment-baseline-failed",
+                Some(json!({
+                    "error": error.to_string(),
+                    "turnId": identity.id,
+                })),
+            );
+        }
         self.active_turn_file_branches.clear();
         self.active_turn_file_tool_outcomes.clear();
         self.pending_retry_prompt_event = None;
@@ -5112,17 +5129,25 @@ impl<'a> AcpRuntime<'a> {
         Ok(())
     }
 
-    fn finalize_turn_file_changes(&mut self, turn: &AcpPromptTurnIdentity) -> Result<()> {
+    fn finalize_turn_file_changes(
+        &mut self,
+        turn: &AcpPromptTurnIdentity,
+        workspace_dir: &Utf8Path,
+    ) -> Result<()> {
         let store = crate::acp::turn_files::TurnFileStore::new(
             self.paths.attempt_dir.clone(),
             self.runtime_policy.turn_file_capture,
         );
         let finished_at = current_timestamp();
-        let branches = self
+        let attachment_delta = store.collect_turn_attachment_delta(&turn.id)?;
+        let mut branches = self
             .active_turn_file_branches
             .iter()
             .cloned()
             .collect::<Vec<_>>();
+        if !branches.iter().any(|branch_id| branch_id == ROOT_BRANCH_ID) {
+            branches.push(ROOT_BRANCH_ID.to_string());
+        }
         for branch_id in branches {
             let tool_outcomes = self
                 .active_turn_file_tool_outcomes
@@ -5133,13 +5158,16 @@ impl<'a> AcpRuntime<'a> {
                         .flatten()
                 })
                 .collect::<HashMap<_, _>>();
-            let Some(change_set) = store.finalize_turn_branch(
+            let Some(change_set) = store.finalize_turn_branch_with_attachments(
                 &turn.id,
                 &turn.prompt_event_id,
                 &branch_id,
                 &turn.started_at,
                 &finished_at,
                 &tool_outcomes,
+                Some(workspace_dir),
+                &attachment_delta,
+                branch_id == ROOT_BRANCH_ID,
             )?
             else {
                 continue;
@@ -5175,6 +5203,7 @@ impl<'a> AcpRuntime<'a> {
                     "turnId": change_set.turn_id,
                     "promptEventId": change_set.prompt_event_id,
                     "summary": change_set.summary,
+                    "attachmentCount": change_set.attachments.len(),
                     "limitationCodes": change_set.limitation_codes,
                     "_meta": {
                         "conversation": { "branchId": branch_id }

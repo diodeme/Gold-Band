@@ -166,7 +166,7 @@ describe('ConversationRunPage follow mode reentry', () => {
         <ConversationRunPage
           run={run}
           taskTitle="AUTO run"
-          appConfig={{ turnFiles: { cardPreviewLimit: 10 } } as AppConfigVm}
+          appConfig={{ turnFiles: { cardPreviewLimit: 10, attachmentCardPreviewLimit: 1 } } as AppConfigVm}
           agentRegistry={null}
           followMode="manual"
           onRerun={vi.fn()}
@@ -203,7 +203,7 @@ describe('ConversationRunPage follow mode reentry', () => {
         <ConversationRunPage
           run={run}
           taskTitle="AUTO run"
-          appConfig={{ turnFiles: { cardPreviewLimit: 10 } } as AppConfigVm}
+          appConfig={{ turnFiles: { cardPreviewLimit: 10, attachmentCardPreviewLimit: 1 } } as AppConfigVm}
           agentRegistry={null}
           followMode={followMode}
           onRerun={vi.fn()}
@@ -240,7 +240,7 @@ describe('ConversationRunPage follow mode reentry', () => {
         <ConversationRunPage
           run={terminalDynamicRun()}
           taskTitle="AUTO run"
-          appConfig={{ turnFiles: { cardPreviewLimit: 10 } } as AppConfigVm}
+          appConfig={{ turnFiles: { cardPreviewLimit: 10, attachmentCardPreviewLimit: 1 } } as AppConfigVm}
           agentRegistry={null}
           followMode="manual"
           onRerun={vi.fn()}

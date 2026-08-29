@@ -162,7 +162,9 @@ import {
 import { AcpProcessingSpinner } from "@/components/acp/AcpProcessingSpinner";
 import { WorkspaceFileEditor } from "@/components/workspace/files/WorkspaceFileEditor";
 import {
+  DEFAULT_TURN_ATTACHMENT_CARD_PREVIEW_LIMIT,
   DEFAULT_TURN_FILE_CARD_PREVIEW_LIMIT,
+  TurnAttachmentCardPreviewLimitContext,
   TurnFileCardPreviewLimitContext,
   TurnFileChangesCard,
 } from "@/components/acp/TurnFileChangesCard";
@@ -361,6 +363,7 @@ interface ACPChatDialogProps {
   usageCompact?: boolean;
   cacheNamespace?: string;
   turnFileCardPreviewLimit?: number;
+  turnAttachmentCardPreviewLimit?: number;
   wallpaperSurface?: boolean;
   worktreePath?: string | null;
   showBranchControl?: boolean;
@@ -829,6 +832,7 @@ export function ACPChatDialog(
     usageCompact,
     cacheNamespace,
     turnFileCardPreviewLimit = DEFAULT_TURN_FILE_CARD_PREVIEW_LIMIT,
+    turnAttachmentCardPreviewLimit = DEFAULT_TURN_ATTACHMENT_CARD_PREVIEW_LIMIT,
     wallpaperSurface = false,
     worktreePath,
     showBranchControl = false,
@@ -3887,6 +3891,7 @@ export function ACPChatDialog(
 
   return (
     <TurnFileCardPreviewLimitContext.Provider value={turnFileCardPreviewLimit}>
+    <TurnAttachmentCardPreviewLimitContext.Provider value={turnAttachmentCardPreviewLimit}>
     <AcpBranchLocatorContext.Provider value={attemptWorkspaceLocator}>
     <div
       ref={conversationRootRef}
@@ -4182,6 +4187,7 @@ export function ACPChatDialog(
       {!readOnly && !queueRestorePending ? <AgentSelectionQuoteButton rootRef={conversationRootRef} onQuote={addSelectedQuote} /> : null}
     </div>
     </AcpBranchLocatorContext.Provider>
+    </TurnAttachmentCardPreviewLimitContext.Provider>
     </TurnFileCardPreviewLimitContext.Provider>
   );
 }

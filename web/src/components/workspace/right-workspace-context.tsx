@@ -97,6 +97,13 @@ export type GitFileComparisonWorkspaceResource = RightWorkspaceResourceBase & {
   reviewLanding?: 'top' | 'first-change' | 'last-change' | null;
 };
 
+export type TurnAttachmentWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'turn-attachment';
+  locator: import('@/types').TurnFileLocatorVm;
+  changeSetId: string;
+  attachmentId: string;
+};
+
 export type SourceControlWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'source-control';
   projectId: string;
@@ -153,6 +160,7 @@ export type RightWorkspaceResource =
   | ConversationDirectoryWorkspaceResource
   | FileWorkspaceResource
   | TurnFileWorkspaceResource
+  | TurnAttachmentWorkspaceResource
   | GitFileComparisonWorkspaceResource
   | SourceControlWorkspaceResource
   | ConversationAssetWorkspaceResource

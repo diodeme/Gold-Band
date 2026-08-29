@@ -325,6 +325,10 @@ export function getFileComparison(locator: Parameters<ReturnType<typeof getRunti
   return getRuntimeApi().getFileComparison(locator, changeSetId, changeId);
 }
 
+export function resolveTurnAttachmentFile(locator: Parameters<ReturnType<typeof getRuntimeApi>['resolveTurnAttachmentFile']>[0], changeSetId: string, attachmentId: string) {
+  return getRuntimeApi().resolveTurnAttachmentFile(locator, changeSetId, attachmentId);
+}
+
 export function subscribeAcpSessionUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeAcpSessionUpdates']>>[0]) {
   return getRuntimeApi().subscribeAcpSessionUpdates?.(listener) ?? Promise.resolve(() => {});
 }

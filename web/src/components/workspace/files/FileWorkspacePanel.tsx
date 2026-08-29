@@ -102,7 +102,7 @@ function FileEmptyState() {
   );
 }
 
-function FileContent({ resource }: { resource: FileWorkspaceResource }) {
+export function FileContent({ resource }: { resource: FileWorkspaceResource }) {
   const { t } = useTranslation();
   const entry = useFileContentEntry(resource.key);
   const [locationAdjusted, setLocationAdjusted] = useState(false);

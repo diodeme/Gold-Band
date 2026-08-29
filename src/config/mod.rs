@@ -774,6 +774,7 @@ pub const MAX_SKILL_DESCRIPTION_LEN: usize = 1024;
 pub const DEFAULT_CONVERSATION_AUTO_TITLE_MAX_CHARS: usize = 18;
 pub const DEFAULT_NOTIFICATION_AUTO_DISMISS_TARGET_SECS: u64 = 20;
 pub const DEFAULT_SCHEDULED_OCCURRENCE_RETENTION_DAYS: u16 = 30;
+pub const DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS: u64 = 10_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1691,7 +1692,7 @@ impl Default for RuntimeConfig {
             acp_raw_target_size_bytes: 4 * 1024 * 1024,
             acp_session_foreground_lease_ttl_secs: 90,
             acp_session_foreground_lease_renew_interval_secs: 30,
-            acp_prompt_terminal_route_timeout_ms: 5_000,
+            acp_prompt_terminal_route_timeout_ms: DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS,
             acp_session_idle_ttl_secs: 600,
             acp_adapter_connection_idle_ttl_secs: 600,
             acp_max_idle_session_runtimes: 8,
@@ -3053,7 +3054,10 @@ mod tests {
         assert_eq!(config.acp_session_foreground_lease_ttl_secs, 60);
         assert_eq!(config.acp_session_foreground_lease_renew_interval_secs, 20);
         assert_eq!(config.acp_session_idle_ttl_secs, 600);
-        assert_eq!(config.acp_prompt_terminal_route_timeout_ms, 5_000);
+        assert_eq!(
+            config.acp_prompt_terminal_route_timeout_ms,
+            DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS
+        );
         assert_eq!(config.acp_max_idle_session_runtimes, 8);
         assert_eq!(config.acp_timeline_compact_patch_ratio, 4);
     }

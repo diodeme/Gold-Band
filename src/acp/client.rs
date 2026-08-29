@@ -376,7 +376,9 @@ use crate::acp::usage::{
     AcpAttemptTokenTotals, AcpAttemptUsageRecovery, AcpPromptTokenUsage, append_prompt_completed,
     append_prompt_started, repair_attempt_usage,
 };
-use crate::config::{AcpAdapterConfig, ManagedAgentId, RuntimeConfig};
+use crate::config::{
+    AcpAdapterConfig, DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS, ManagedAgentId, RuntimeConfig,
+};
 use crate::domain::{SessionMode, TurnControlMode, TurnControlTransitionCause, VERSION};
 use crate::provider::{
     ACP_MCP_TRANSPORT_UNSUPPORTED_CODE, AcpContentBlock, AcpResourceLinkBlock, PromptBundle,
@@ -1504,7 +1506,9 @@ impl Default for AcpRuntimePolicy {
         Self {
             foreground_lease_ttl: Duration::from_secs(90),
             foreground_lease_renew_interval: Duration::from_secs(30),
-            prompt_terminal_route_timeout: Duration::from_millis(5_000),
+            prompt_terminal_route_timeout: Duration::from_millis(
+                DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS,
+            ),
             session_idle_ttl: Duration::from_secs(600),
             adapter_connection_idle_ttl: Duration::from_secs(600),
             max_idle_session_runtimes: 8,

@@ -1,0 +1,121 @@
+name: Bug report
+description: Report reproducible behavior that differs from the intended design.
+title: ""
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Gold Band. Do not include credentials, private data, or undisclosed security vulnerabilities in a public issue.
+
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the observable problem in one concise sentence.
+      placeholder: The application does ... when ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: Actual behavior
+      description: Explain what happened, including the final state shown to the user.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected behavior
+      description: Explain the behavior required by the product design or user workflow.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide the smallest deterministic sequence that reproduces the problem.
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include the Gold Band version, operating system, execution mode, and relevant provider or Agent.
+      placeholder: Gold Band 0.x.x; Windows 11; Direct mode; Claude Code
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Add sanitized logs, screenshots, protocol frames, state snapshots, or a failing test.
+      render: shell
+
+  - type: textarea
+    id: design-intent
+    attributes:
+      label: Original design intent
+      description: Link or summarize the product design and invariant that should govern this behavior. State when it is still unknown.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: root-cause-status
+    attributes:
+      label: Root-cause status
+      description: Distinguish verified evidence from an investigation hypothesis.
+      options:
+        - Verified
+        - Hypothesis
+        - Unknown
+    validations:
+      required: true
+
+  - type: textarea
+    id: root-cause
+    attributes:
+      label: Root-cause analysis
+      description: Explain the defect formation path and whether this is a design defect, an incomplete implementation of a sound design, or a business or implementation logic error.
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact and scope
+      description: Describe affected users, data, workflows, frequency, and severity.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List observable outcomes and the regression evidence required to close this issue.
+      placeholder: |
+        - [ ] A minimal failing test reproduces the root cause.
+        - [ ] The same test passes after the fix.
+        - [ ] Relevant adjacent regressions pass.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Submission checklist
+      options:
+        - label: I searched open and closed issues for duplicates.
+          required: true
+        - label: I removed secrets, personal data, and unnecessary private paths.
+          required: true
+        - label: I marked unverified root-cause claims as hypotheses or unknown.
+          required: true

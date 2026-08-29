@@ -56,6 +56,7 @@ task-320 generation 19 的可审计基线为 2,340 帧、1,067 次 Timeline upse
 - [x] Timeline index 升级 V9，明确 locator 指向完整 canonical item；旧 index 首次归一化迁移，之后 compaction 只读最终 locator，不 replay 全 patch。
 - [x] ratio compaction 增加 4,096 patch 最小门槛，且继续保留 8 MiB 独立上限；解决单 identity 每 5 patch、低基数日志频繁全量重写的设计缺陷。
 - [x] 新增 batch identity/watermark 回归、固定 deadline 回归、小 patch volume 不压缩回归，以及可配置至百万条的 ignored Release 压测。
+- [x] Timeline 吞吐修复后将正常 prompt 的 terminal route 收敛默认余量由 5 秒调整为 10 秒；取消流程继续复用既有统一 10 秒 deadline 的剩余时间，不叠加等待，也不以延长超时替代吞吐根因修复。
 
 为验证压力测试不是只测新接口，曾临时完整还原四个生产修复文件，仅保留相同事件生成与统计逻辑，并将提交切回 V8 逐 identity `upsert`；随后恢复完全相同的修复，用同样数据切回 `upsert_batch`。10,000 update / 256 identities 的 Release A/B 结果为：
 

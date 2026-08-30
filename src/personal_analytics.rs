@@ -44,7 +44,7 @@ const EXCLUDED_FILE_NAMES: &[&str] = &[
     "gold-band.db-wal",
     "gold-band.db-shm",
 ];
-const EXCLUDED_DIRECTORY_NAMES: &[&str] = &["doctor", "logs", "diagnostics"];
+const EXCLUDED_DIRECTORY_NAMES: &[&str] = &["doctor", "logs", "diagnostics", "worktrees"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -609,31 +609,38 @@ where
         .canonicalize_utf8()
         .with_context(|| format!("canonicalize analytics source root {projects_root}"))?;
     let mut files = Vec::new();
-    for entry in WalkDir::new(projects_root)
+    for entry in WalkDir::new(&canonical_root)
         .follow_links(false)
         .sort_by_file_name()
         .into_iter()
+        .filter_entry(should_descend_analytics_entry)
     {
         let entry = match entry {
             Ok(entry) => entry,
             Err(_) => continue,
         };
-        if entry.file_type().is_file() || entry.file_type().is_symlink() {
-            files.push(
+        if (entry.file_type().is_file() || entry.file_type().is_symlink())
+            && entry
+                .file_name()
+                .to_str()
+                .is_some_and(is_personal_analytics_source_name)
+        {
+            files.push((
                 Utf8PathBuf::from_path_buf(entry.path().to_path_buf()).map_err(|path| {
                     anyhow!(
                         "analytics source path is not valid UTF-8: {}",
                         path.display()
                     )
                 })?,
-            );
+                entry.file_type().is_symlink(),
+            ));
         }
     }
     let total = files.len() as u64;
     let mut accumulator = ProjectionAccumulator::default();
     accumulator.coverage.discovered_files = total;
 
-    for (index, path) in files.iter().enumerate() {
+    for (index, (path, is_symlink)) in files.iter().enumerate() {
         if cancelled() {
             bail!("analytics.cancelled");
         }
@@ -644,7 +651,7 @@ where
             .coverage
             .discovered_bytes
             .saturating_add(path.metadata().map(|metadata| metadata.len()).unwrap_or(0));
-        let relative = match safe_relative_path(&canonical_root, path) {
+        let relative = match safe_relative_path(&canonical_root, path, *is_symlink) {
             Some(relative) => relative,
             None => {
                 accumulator.coverage.skipped_files += 1;
@@ -1523,29 +1530,13 @@ fn named_counts(values: &BTreeMap<String, u64>, limit: usize) -> Vec<AnalyticsNa
     values
 }
 
-fn safe_relative_path(root: &Utf8Path, path: &Utf8Path) -> Option<String> {
-    if path.is_symlink() {
+fn safe_relative_path(root: &Utf8Path, path: &Utf8Path, is_symlink: bool) -> Option<String> {
+    if is_symlink {
         return None;
     }
-    let canonical = path.canonicalize_utf8().ok()?;
-    if !path_starts_with(&canonical, root) {
-        return None;
-    }
-    canonical
-        .strip_prefix(root)
+    path.strip_prefix(root)
         .ok()
         .map(|relative| relative.as_str().replace('\\', "/"))
-}
-
-fn path_starts_with(path: &Utf8Path, root: &Utf8Path) -> bool {
-    if cfg!(windows) {
-        path.as_str()
-            .replace('\\', "/")
-            .to_ascii_lowercase()
-            .starts_with(&root.as_str().replace('\\', "/").to_ascii_lowercase())
-    } else {
-        path.starts_with(root)
-    }
 }
 
 fn is_excluded(relative: &str, file_name: &str) -> bool {
@@ -1567,6 +1558,22 @@ fn is_excluded(relative: &str, file_name: &str) -> bool {
                 .as_str(),
             "db" | "wal" | "shm" | "zip" | "pid" | "class" | "exe" | "dll" | "bin"
         )
+}
+
+fn is_personal_analytics_source_name(file_name: &str) -> bool {
+    CANONICAL_JSON_NAMES.contains(&file_name)
+        || CANONICAL_JSONL_NAMES.contains(&file_name)
+        || SEMANTIC_TEXT_NAMES.contains(&file_name)
+        || EXCLUDED_FILE_NAMES.contains(&file_name)
+}
+
+fn should_descend_analytics_entry(entry: &walkdir::DirEntry) -> bool {
+    if entry.depth() == 0 || !entry.file_type().is_dir() {
+        return true;
+    }
+    let name = entry.file_name().to_string_lossy();
+    !EXCLUDED_DIRECTORY_NAMES.contains(&name.as_ref())
+        && !matches!(name.as_ref(), "target" | ".git")
 }
 
 fn task_key(relative: &str) -> Option<String> {
@@ -1844,6 +1851,22 @@ mod tests {
         assert_eq!(task.project_id, None);
         assert_eq!(task.task_id, None);
         assert_eq!(task.latest_run_id, None);
+    }
+
+    #[test]
+    fn analytics_relative_paths_stay_inside_the_canonical_root_and_reject_symlinks() {
+        let root = Utf8Path::new("C:/analytics-root");
+        let source = Utf8Path::new("C:/analytics-root/project-a/tasks/task-1/task.json");
+
+        assert_eq!(
+            safe_relative_path(root, source, false).as_deref(),
+            Some("project-a/tasks/task-1/task.json")
+        );
+        assert_eq!(safe_relative_path(root, source, true), None);
+        assert_eq!(
+            safe_relative_path(root, Utf8Path::new("C:/outside/task.json"), false),
+            None
+        );
     }
 
     #[test]

@@ -1551,6 +1551,22 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
     let graph_path =
         app.paths
             .dynamic_graph_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
+    let workspace_transition_stop = !require_active_leaf
+        && load_dynamic_graph(&graph_path, &app.paths.repo_root).is_ok_and(|graph| {
+            graph.run.status == DynamicRunStatus::Running
+                && graph.run.phase == DynamicRunPhase::PreparingWorkspace
+                && graph.nodes.iter().any(|node| {
+                    node.id == dynamic_node_id
+                        && node.status == DynamicNodeStatus::Completed
+                        && expected_dynamic_attempt_id
+                            .is_none_or(|attempt_id| self::dynamic_attempt_id(node) == attempt_id)
+                })
+        });
+    if workspace_transition_stop {
+        // Stop acceptance belongs to the outer run and must not wait on a Git/workspace
+        // transition. Dynamic descendants still converge under the canonical graph lock.
+        app.run_pause(task_id, run_id, reason)?;
+    }
     let state_lock = dynamic_state_lock_for(
         &app.paths.repo_root,
         task_id,
@@ -1560,30 +1576,6 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
         outer_attempt_id,
     )?;
     let _guard = state_lock.lock();
-    if !require_active_leaf
-        && load_dynamic_graph(&graph_path, &app.paths.repo_root).is_ok_and(|graph| {
-            graph.run.status == DynamicRunStatus::Running
-                && graph.run.phase == DynamicRunPhase::PreparingWorkspace
-                && graph.nodes.iter().any(|node| {
-                    node.id == dynamic_node_id && node.status == DynamicNodeStatus::Completed
-                })
-        })
-    {
-        app.run_pause(task_id, run_id, reason)?;
-        if let Some(dynamic_attempt_id) = expected_dynamic_attempt_id {
-            stop_dynamic_resume_target(
-                &app.paths.repo_root,
-                task_id,
-                run_id,
-                round_id,
-                outer_node_id,
-                outer_attempt_id,
-                dynamic_node_id,
-                dynamic_attempt_id,
-            )?;
-        }
-        return Ok(false);
-    }
     let now = now_rfc3339_like();
     if graph_path.exists() {
         let mut graph = load_dynamic_graph(&graph_path, &app.paths.repo_root)?;
@@ -1616,58 +1608,75 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
                     dynamic_attempt_id,
                 )?;
             }
-            return Ok(false);
-        }
-        if require_active_leaf
-            && !matches!(
-                graph.nodes[target_index].status,
-                DynamicNodeStatus::Ready | DynamicNodeStatus::Running
-            )
-        {
-            return Ok(false);
-        }
-        mark_dynamic_node_paused(&mut graph.nodes[target_index], reason, None);
-        refresh_dynamic_current_leaf_ids(&mut graph);
-        let has_active_leaf = dynamic_graph_has_active_leaf(&graph);
-        if has_active_leaf {
-            graph.run.status = DynamicRunStatus::Running;
-            graph.run.phase = DynamicRunPhase::Executing;
-            graph.run.outcome = None;
-            graph.run.pause_reason = None;
-        } else if graph.run.status == DynamicRunStatus::Running {
-            graph.run.status = DynamicRunStatus::Paused;
-            graph.run.phase = DynamicRunPhase::Executing;
-            graph.run.outcome = None;
-            graph.run.pause_reason = Some(reason);
-        }
-        graph.run.updated_at = now.clone();
-        validate_dynamic_run_state(&graph.run)?;
-        for node in &graph.nodes {
-            validate_dynamic_node_state(node)?;
-        }
-        persist_dynamic_graph_for_resume_unlocked(
-            app,
-            task_id,
-            run_id,
-            round_id,
-            outer_node_id,
-            outer_attempt_id,
-            &mut graph,
-        )?;
-        if has_active_leaf {
-            if let Some(dynamic_attempt_id) = expected_dynamic_attempt_id {
-                stop_dynamic_resume_target(
-                    &app.paths.repo_root,
-                    task_id,
-                    run_id,
-                    round_id,
-                    outer_node_id,
-                    outer_attempt_id,
-                    dynamic_node_id,
-                    dynamic_attempt_id,
-                )?;
+            if !workspace_transition_stop {
+                return Ok(false);
             }
-            return Ok(true);
+            mark_dynamic_graph_paused_in_memory(&mut graph, reason);
+            validate_dynamic_run_state(&graph.run)?;
+            for node in &graph.nodes {
+                validate_dynamic_node_state(node)?;
+            }
+            persist_dynamic_graph_for_resume_unlocked(
+                app,
+                task_id,
+                run_id,
+                round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &mut graph,
+            )?;
+        } else {
+            if require_active_leaf
+                && !matches!(
+                    graph.nodes[target_index].status,
+                    DynamicNodeStatus::Ready | DynamicNodeStatus::Running
+                )
+            {
+                return Ok(false);
+            }
+            mark_dynamic_node_paused(&mut graph.nodes[target_index], reason, None);
+            refresh_dynamic_current_leaf_ids(&mut graph);
+            let has_active_leaf = dynamic_graph_has_active_leaf(&graph);
+            if has_active_leaf {
+                graph.run.status = DynamicRunStatus::Running;
+                graph.run.phase = DynamicRunPhase::Executing;
+                graph.run.outcome = None;
+                graph.run.pause_reason = None;
+            } else if graph.run.status == DynamicRunStatus::Running {
+                graph.run.status = DynamicRunStatus::Paused;
+                graph.run.phase = DynamicRunPhase::Executing;
+                graph.run.outcome = None;
+                graph.run.pause_reason = Some(reason);
+            }
+            graph.run.updated_at = now.clone();
+            validate_dynamic_run_state(&graph.run)?;
+            for node in &graph.nodes {
+                validate_dynamic_node_state(node)?;
+            }
+            persist_dynamic_graph_for_resume_unlocked(
+                app,
+                task_id,
+                run_id,
+                round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &mut graph,
+            )?;
+            if has_active_leaf {
+                if let Some(dynamic_attempt_id) = expected_dynamic_attempt_id {
+                    stop_dynamic_resume_target(
+                        &app.paths.repo_root,
+                        task_id,
+                        run_id,
+                        round_id,
+                        outer_node_id,
+                        outer_attempt_id,
+                        dynamic_node_id,
+                        dynamic_attempt_id,
+                    )?;
+                }
+                return Ok(true);
+            }
         }
     }
 
@@ -17860,19 +17869,10 @@ mod tests {
             created_at: "2026-06-16T00:00:00Z".to_string(),
             updated_at: "2026-06-16T00:00:00Z".to_string(),
         });
-        graph.proposals.push(DynamicProposalState {
-            version: VERSION.to_string(),
-            id: "proposal-bootstrap-001".to_string(),
-            dynamic_run_id: graph.run.id.clone(),
-            source_node_id: "bootstrap".to_string(),
-            artifact_path: Utf8PathBuf::from("artifact.json"),
-            raw_output_path: Utf8PathBuf::from("raw.txt"),
-            parsed: serde_json::json!({}),
-            validation_status: DynamicProposalValidationStatus::Accepted,
-            validation_errors: Vec::new(),
-            materialized_event_ids: Vec::new(),
-            created_at: "2026-06-16T00:00:00Z".to_string(),
-        });
+        graph.proposals.push(accepted_proposal(
+            "bootstrap",
+            serde_json::from_str(&test_end_completion("bootstrap completed")).unwrap(),
+        ));
 
         let advanced = advance_dynamic_groups(&ctx, &mut graph).unwrap();
 
@@ -21076,11 +21076,16 @@ mod tests {
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
         let mut completed = test_worktree_node("goodbye-worker");
+        completed.depth = 0;
         completed.status = DynamicNodeStatus::Completed;
         completed.outcome = Some(NodeOutcome::Success);
         completed.finished_at = Some("2026-06-16T00:00:00Z".to_string());
         let mut graph = test_dynamic_graph_at(repo_root, vec![completed]);
         graph.run.current_node_ids.clear();
+        graph.proposals.push(accepted_proposal(
+            "goodbye-worker",
+            serde_json::from_str(&test_end_completion("goodbye completed")).unwrap(),
+        ));
 
         complete_dynamic_graph_success(&ctx, &mut graph).unwrap();
 

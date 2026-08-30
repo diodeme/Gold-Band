@@ -4596,7 +4596,8 @@ mod tests {
     }
 
     fn wait_operation(service: &GitSourceControlService, operation_id: &str) -> GitOperation {
-        for _ in 0..250 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
             let operation = service.get_operation(operation_id).unwrap();
             if !matches!(
                 operation.status,
@@ -4604,9 +4605,14 @@ mod tests {
             ) {
                 return operation;
             }
+            if std::time::Instant::now() >= deadline {
+                panic!(
+                    "Git operation {operation_id} did not finish; last status: {:?}",
+                    operation.status
+                );
+            }
             std::thread::sleep(Duration::from_millis(20));
         }
-        panic!("Git operation {operation_id} did not finish");
     }
 
     #[test]

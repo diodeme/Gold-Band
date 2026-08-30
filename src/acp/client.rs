@@ -8708,10 +8708,9 @@ mod tests {
 
     #[test]
     fn prompt_terminal_quiet_drain_observes_frame_after_rpc_response() {
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(0);
         let sender_keepalive = sender.clone();
         let producer = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(10));
             sender
                 .send(json!({
                     "sessionUpdate": "agent_message_chunk",
@@ -9293,10 +9292,9 @@ mod tests {
 
     #[test]
     fn load_response_does_not_end_replay_before_delayed_agent_chunks_arrive() {
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(0);
         let sender_keepalive = sender.clone();
         let producer = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(15));
             sender
                 .send(json!({
                     "sessionUpdate": "agent_message_chunk",

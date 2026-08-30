@@ -1134,11 +1134,7 @@ fn direct_agent_identity(app: &App, agent_type: &str) -> Option<ConversationAgen
     })
 }
 
-pub fn touch_conversation_activity(app: &App, task_id: &str) -> anyhow::Result<()> {
-    touch_conversation_activity_at(app, task_id, &chrono::Utc::now().to_rfc3339())
-}
-
-fn touch_conversation_activity_at(
+pub fn touch_conversation_activity_at(
     app: &App,
     task_id: &str,
     activity_at: &str,

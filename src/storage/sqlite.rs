@@ -114,7 +114,8 @@ pub fn delete_task(task_dir: &Utf8Path) {
 
 const MAX_RETRIES: u32 = 3;
 const RETRY_DELAYS_MS: [u64; 3] = [200, 500, 1500];
-const SEARCH_INDEX_SCHEMA_VERSION: i32 = 5;
+const SEARCH_INDEX_SCHEMA_VERSION: i32 = 6;
+const SEARCH_INDEX_FULL_REBUILD_SCHEMA_VERSION: i32 = 5;
 const UNTRACKED_TASK_ACTIVITY_AT: &str = "1970-01-01T00:00:00Z";
 
 /// Best-effort SQLite search index for cross-session prompt/timeline retrieval.
@@ -203,7 +204,9 @@ impl SearchIndex {
             }
         }
 
-        let rebuild_task_fts = tasks_table_exists && schema_version != SEARCH_INDEX_SCHEMA_VERSION;
+        let rebuild_task_fts = tasks_table_exists
+            && schema_version != SEARCH_INDEX_SCHEMA_VERSION
+            && schema_version != SEARCH_INDEX_FULL_REBUILD_SCHEMA_VERSION;
         if rebuild_task_fts && !task_schema_migrated {
             conn.execute_batch(
                 "DROP TRIGGER IF EXISTS tasks_ai;
@@ -213,7 +216,16 @@ impl SearchIndex {
             )?;
         }
 
-        if schema_version != SEARCH_INDEX_SCHEMA_VERSION {
+        if tasks_table_exists && schema_version != SEARCH_INDEX_SCHEMA_VERSION {
+            // Schema v6 narrows the FTS maintenance trigger to searchable
+            // columns. Advancing only `updated_at` must not retokenize a
+            // potentially large requirement body.
+            conn.execute_batch("DROP TRIGGER IF EXISTS tasks_au;")?;
+        }
+
+        if schema_version != SEARCH_INDEX_SCHEMA_VERSION
+            && schema_version != SEARCH_INDEX_FULL_REBUILD_SCHEMA_VERSION
+        {
             conn.execute_batch(
                 "DROP TRIGGER IF EXISTS session_prompts_ai;
                 DROP TRIGGER IF EXISTS session_prompts_ad;
@@ -294,7 +306,8 @@ impl SearchIndex {
                 INSERT INTO tasks_fts(tasks_fts, rowid, title, description, requirement_text)
                 VALUES('delete', old.rowid, old.title, old.description, old.requirement_text);
             END;
-            CREATE TRIGGER IF NOT EXISTS tasks_au AFTER UPDATE ON tasks BEGIN
+            CREATE TRIGGER IF NOT EXISTS tasks_au
+            AFTER UPDATE OF title, description, requirement_text ON tasks BEGIN
                 INSERT INTO tasks_fts(tasks_fts, rowid, title, description, requirement_text)
                 VALUES('delete', old.rowid, old.title, old.description, old.requirement_text);
                 INSERT INTO tasks_fts(rowid, title, description, requirement_text)
@@ -674,33 +687,11 @@ impl SearchIndex {
     // ── task indexing ──────────────────────────────────────────
 
     pub fn index_task_with_retry(&self, task_dir: &Utf8Path, task_id: &str) {
-        self.index_task_with_optional_activity_retry(task_dir, task_id, None);
-    }
-
-    pub fn index_task_activity_with_retry(
-        &self,
-        task_dir: &Utf8Path,
-        task_id: &str,
-        activity_at: &str,
-    ) {
-        self.index_task_with_optional_activity_retry(task_dir, task_id, Some(activity_at));
-    }
-
-    fn index_task_with_optional_activity_retry(
-        &self,
-        task_dir: &Utf8Path,
-        task_id: &str,
-        activity_at: Option<&str>,
-    ) {
         for attempt in 0..MAX_RETRIES {
             if attempt > 0 {
                 std::thread::sleep(Duration::from_millis(RETRY_DELAYS_MS[attempt as usize]));
             }
-            let result = match activity_at {
-                Some(activity_at) => self.index_task_with_activity(task_dir, task_id, activity_at),
-                None => self.index_task(task_dir, task_id),
-            };
-            match result {
+            match self.index_task(task_dir, task_id) {
                 Ok(()) => return,
                 Err(e) => {
                     warn!(
@@ -714,17 +705,84 @@ impl SearchIndex {
         }
     }
 
+    pub fn index_task_activity_with_retry(
+        &self,
+        task_dir: &Utf8Path,
+        task_id: &str,
+        activity_at: &str,
+    ) {
+        for attempt in 0..MAX_RETRIES {
+            if attempt > 0 {
+                std::thread::sleep(Duration::from_millis(RETRY_DELAYS_MS[attempt as usize]));
+            }
+            match self.index_task_activity(task_dir, task_id, activity_at) {
+                Ok(()) => return,
+                Err(e) => {
+                    warn!(
+                        "sqlite index_task_activity failed (attempt {}/{}): {:#}",
+                        attempt + 1,
+                        MAX_RETRIES,
+                        e
+                    );
+                }
+            }
+        }
+    }
+
     fn index_task(&self, task_dir: &Utf8Path, task_id: &str) -> Result<(), rusqlite::Error> {
         self.index_task_with_optional_activity(task_dir, task_id, None)
     }
 
+    #[cfg(test)]
     fn index_task_with_activity(
         &self,
         task_dir: &Utf8Path,
         task_id: &str,
         activity_at: &str,
     ) -> Result<(), rusqlite::Error> {
-        self.index_task_with_optional_activity(task_dir, task_id, Some(activity_at))
+        self.index_task_activity(task_dir, task_id, activity_at)
+    }
+
+    fn index_task_activity(
+        &self,
+        task_dir: &Utf8Path,
+        task_id: &str,
+        activity_at: &str,
+    ) -> Result<(), rusqlite::Error> {
+        let task_path = task_dir.to_string();
+        {
+            let mut conn = self.conn.lock().expect("search index lock poisoned");
+            let tx = conn.transaction()?;
+            let existing_activity_at = tx
+                .query_row(
+                    "SELECT updated_at FROM tasks WHERE task_path = ?1",
+                    params![&task_path],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            let Some(existing_activity_at) = existing_activity_at else {
+                tx.commit()?;
+                drop(conn);
+                return self.index_task_with_optional_activity(
+                    task_dir,
+                    task_id,
+                    Some(activity_at),
+                );
+            };
+            let updated_at = latest_task_activity(
+                (!existing_activity_at.is_empty()).then_some(existing_activity_at.as_str()),
+                Some(activity_at),
+            )
+            .unwrap_or(UNTRACKED_TASK_ACTIVITY_AT);
+            if updated_at != existing_activity_at {
+                tx.execute(
+                    "UPDATE tasks SET updated_at = ?1 WHERE task_path = ?2",
+                    params![updated_at, &task_path],
+                )?;
+            }
+            tx.commit()?;
+        }
+        Ok(())
     }
 
     fn index_task_with_optional_activity(
@@ -1298,6 +1356,19 @@ mod tests {
             .unwrap();
         assert!(task_fts_sql.contains("tokenize='trigram'"));
 
+        let task_update_trigger_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'tasks_au'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            task_update_trigger_sql
+                .to_ascii_lowercase()
+                .contains("after update of title, description, requirement_text on tasks")
+        );
+
         let mut stmt = conn.prepare("PRAGMA table_info(session_prompts)").unwrap();
         let prompt_columns = stmt
             .query_map([], |row| {
@@ -1552,6 +1623,66 @@ mod tests {
         assert_eq!(activities[0].updated_at, "2026-08-29T12:00:00Z");
         assert_eq!(activities[1].task_id, "task-001");
         assert_eq!(activities[1].updated_at, "2026-08-29T10:00:00Z");
+    }
+
+    #[test]
+    fn task_activity_projection_does_not_reindex_heavy_task_fields() {
+        let dir = tempdir().unwrap();
+        let db_path = camino::Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
+        let index = SearchIndex::open(&db_path).unwrap();
+        let task_dir =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("tasks/task-001")).unwrap();
+        std::fs::create_dir_all(task_dir.join("authoring").as_std_path()).unwrap();
+        crate::storage::write_json(
+            &task_dir.join("task.json"),
+            &TaskState {
+                version: crate::domain::VERSION.to_string(),
+                id: "task-001".to_string(),
+                title: Some("Indexed title".to_string()),
+                description: Some("Indexed description".to_string()),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        std::fs::write(
+            task_dir
+                .join("authoring")
+                .join("requirement.md")
+                .as_std_path(),
+            "indexed-requirement-needle",
+        )
+        .unwrap();
+        index.index_task(&task_dir, "task-001").unwrap();
+
+        std::fs::remove_file(task_dir.join("task.json").as_std_path()).unwrap();
+        std::fs::remove_file(
+            task_dir
+                .join("authoring")
+                .join("requirement.md")
+                .as_std_path(),
+        )
+        .unwrap();
+        index
+            .index_task_with_activity(&task_dir, "task-001", "2026-08-30T12:00:00Z")
+            .unwrap();
+
+        let conn = index.conn.lock().unwrap();
+        let projected: (String, String, String, String) = conn
+            .query_row(
+                "SELECT title, description, requirement_text, updated_at FROM tasks WHERE task_path = ?1",
+                params![task_dir.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            projected,
+            (
+                "Indexed title".to_string(),
+                "Indexed description".to_string(),
+                "indexed-requirement-needle".to_string(),
+                "2026-08-30T12:00:00Z".to_string(),
+            )
+        );
     }
 
     #[test]

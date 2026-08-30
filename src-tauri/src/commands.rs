@@ -500,6 +500,7 @@ fn settle_failed_prompt_submission(
     expected_revision: u64,
 ) -> bool {
     let lifecycle_path = acp_lifecycle_path(&locator.attempt_dir(app));
+    let decided_at = gold_band::acp::events::current_timestamp();
     match gold_band::acp::events::persist_session_turn_terminal_owned(
         &lifecycle_path,
         turn_id,
@@ -507,13 +508,18 @@ fn settle_failed_prompt_submission(
         expected_revision,
         gold_band::acp::events::AcpLatestTurnStatus::Failed,
         "provider-error",
-        &gold_band::acp::events::current_timestamp(),
+        &decided_at,
     ) {
         Ok(Some(header)) => {
             let failed =
                 header.latest_turn_status == gold_band::acp::events::AcpLatestTurnStatus::Failed;
             if failed {
-                touch_task_activity_best_effort(app, &locator.task_id, "prompt-turn-failed");
+                touch_terminal_task_activity_best_effort(
+                    app,
+                    locator,
+                    Some(turn_id),
+                    "prompt-turn-failed",
+                );
             }
             failed
         }
@@ -583,6 +589,7 @@ fn admit_conversation_prompt_turn(
     let agent_label = acp_turn_agent_label(app, locator);
     let submission =
         conversation_prompt_submission(app, locator, turn_id.clone(), input, attachment_paths);
+    let admitted_at = submission.admitted_at.clone();
     let lifecycle_path = acp_lifecycle_path(&attempt_dir);
     if let Some(existing) =
         gold_band::acp::events::inspect_session_turn(&lifecycle_path, &submission)
@@ -595,6 +602,12 @@ fn admit_conversation_prompt_turn(
     let admission = gold_band::acp::events::begin_session_turn(&lifecycle_path, &submission)
         .map_err(prompt_submission_admission_error)?;
     if admission.started() {
+        touch_task_activity_at_best_effort(
+            app,
+            &locator.task_id,
+            &admitted_at,
+            "user-prompt-admitted",
+        );
         emit_direct_turn_started(app, locator);
         emit_acp_session_update(
             app_handle,
@@ -1540,14 +1553,76 @@ fn prompt_turn_lifecycle_callback(
     })
 }
 
-fn touch_task_activity_best_effort(app: &App, task_id: &str, reason: &'static str) {
-    if let Err(error) = crate::view_models_conversation::touch_conversation_activity(app, task_id) {
+fn touch_task_activity_at_best_effort(
+    app: &App,
+    task_id: &str,
+    activity_at: &str,
+    reason: &'static str,
+) {
+    if let Err(error) =
+        crate::view_models_conversation::touch_conversation_activity_at(app, task_id, activity_at)
+    {
         warn!(
             project_id = %app.paths.project_id,
             %task_id,
             %reason,
             %error,
             "failed to project durable Task conversation activity"
+        );
+    }
+}
+
+fn touch_terminal_task_activity_best_effort(
+    app: &App,
+    locator: &AttemptLocator,
+    expected_turn_id: Option<&str>,
+    reason: &'static str,
+) {
+    let result = (|| -> anyhow::Result<()> {
+        let lifecycle_path = acp_lifecycle_path(&locator.attempt_dir(app));
+        let metadata = gold_band::acp::events::read_session_metadata_value(&lifecycle_path, None)?;
+        if let Some(expected_turn_id) = expected_turn_id
+            && metadata.get("turnId").and_then(serde_json::Value::as_str) != Some(expected_turn_id)
+        {
+            tracing::debug!(
+                project_id = %app.paths.project_id,
+                task_id = %locator.task_id,
+                run_id = %locator.run_id,
+                %expected_turn_id,
+                "skipping stale terminal Task activity observation"
+            );
+            return Ok(());
+        }
+        anyhow::ensure!(
+            metadata
+                .get("liveTurnActivity")
+                .and_then(serde_json::Value::as_str)
+                == Some("idle")
+                && metadata
+                    .get("latestTurnStatus")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|status| status != "none"),
+            "canonical prompt turn has not reached terminal state"
+        );
+        let activity_at = metadata
+            .get("updatedAt")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("canonical terminal activity timestamp is missing"))?;
+        crate::view_models_conversation::touch_conversation_activity_at(
+            app,
+            &locator.task_id,
+            activity_at,
+        )
+    })();
+    if let Err(error) = result {
+        warn!(
+            project_id = %app.paths.project_id,
+            task_id = %locator.task_id,
+            run_id = %locator.run_id,
+            %reason,
+            %error,
+            "failed to project canonical terminal Task conversation activity"
         );
     }
 }
@@ -1566,7 +1641,12 @@ fn process_prompt_turn_lifecycle(
             prompt_id,
             successful,
         } => {
-            touch_task_activity_best_effort(app, &locator.task_id, "prompt-turn-finished");
+            touch_terminal_task_activity_best_effort(
+                app,
+                &locator,
+                prompt_id.as_deref(),
+                "prompt-turn-finished",
+            );
             let completion = prompt_id.map(|turn_id| DeferredTurnCompletion {
                 turn_id,
                 agent_label: acp_turn_agent_label(app, &locator),
@@ -5975,9 +6055,14 @@ async fn submit_conversation_prompt_inner(
         )
     );
     if direct_mode && (live_prompt_active || run.status == RunStatus::Running) {
-        enqueue_prompt(&attempt_dir, input, attachment_paths.unwrap_or_default())
+        let queued = enqueue_prompt(&attempt_dir, input, attachment_paths.unwrap_or_default())
             .map_err(prompt_queue_command_error)?;
-        touch_task_activity_best_effort(&app, &locator.task_id, "user-prompt-queued");
+        touch_task_activity_at_best_effort(
+            &app,
+            &locator.task_id,
+            &queued.created_at,
+            "user-prompt-queued",
+        );
         emit_acp_session_update(
             &app_handle,
             &app,
@@ -6058,7 +6143,6 @@ async fn submit_conversation_prompt_inner(
         .expect("admitted ACP turn must carry its stable turn identity");
     let lifecycle = lifecycle_for_locator(&app, &locator);
     if admission.started() {
-        touch_task_activity_best_effort(&app, &locator.task_id, "user-prompt-admitted");
         emit_acp_session_update(
             &app_handle,
             &app,
@@ -7079,6 +7163,7 @@ fn spawn_active_session_stop_cleanup(
         // request_session_stop transferred lifecycle ownership away from the
         // provider runtime. The stop controller therefore owns terminal
         // settlement after dispatch; the old provider owner can only no-op.
+        let decided_at = gold_band::acp::events::current_timestamp();
         let terminal_persisted = match gold_band::acp::events::persist_session_turn_terminal_owned(
             &lifecycle_path,
             turn_id,
@@ -7086,7 +7171,7 @@ fn spawn_active_session_stop_cleanup(
             *revision,
             gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
             "cancelled",
-            &gold_band::acp::events::current_timestamp(),
+            &decided_at,
         ) {
             Ok(Some(_)) => {
                 info!(
@@ -7131,7 +7216,12 @@ fn spawn_active_session_stop_cleanup(
             }
         };
         if terminal_persisted {
-            touch_task_activity_best_effort(&app, &locator.task_id, "user-stop-terminal");
+            touch_terminal_task_activity_best_effort(
+                &app,
+                &locator,
+                Some(turn_id),
+                "user-stop-terminal",
+            );
         }
         if let Err(error) = client::settle_attempt_prompt_interactions(&attempt_dir) {
             warn!(%error, %attempt_dir, "failed to settle ACP interactions after accepted stop dispatch");
@@ -10995,6 +11085,208 @@ mod tests {
             task_activity_at: None,
         };
         assert!(serde_json::to_value(terminal).unwrap()["activity"].is_null());
+    }
+
+    #[test]
+    fn repeated_finished_observation_reuses_the_canonical_terminal_activity_time() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-task-activity-terminal-idempotency-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap());
+        let locator = AttemptLocator::new(
+            "task-001".to_string(),
+            "run-001".to_string(),
+            "round-001".to_string(),
+            "direct-agent".to_string(),
+            "attempt-001".to_string(),
+            None,
+            None,
+        );
+        let terminal_at = "2026-08-30T10:00:00Z";
+        write_json(
+            &app.paths
+                .task_dir("task-001")
+                .join("authoring")
+                .join("conversation.json"),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "source": "conversation",
+                "runMode": "direct",
+                "workflowTemplateId": null,
+                "includeOptionalEntry": false,
+                "directConfig": null,
+                "agentIdentity": null,
+                "titleAutoGenerated": false,
+                "initialAttachmentNames": null,
+                "createdAt": "2026-08-30T09:00:00Z",
+                "lastActivityAt": terminal_at
+            }),
+        )
+        .unwrap();
+        write_json(
+            &acp_lifecycle_path(&locator.attempt_dir(&app)),
+            &serde_json::json!({
+                "availability": "established",
+                "liveTurnActivity": "idle",
+                "latestTurnStatus": "cancelled",
+                "acpRevision": 2,
+                "turnId": "turn-001",
+                "lifecycleOperationId": "stop-001",
+                "stopReason": "cancelled",
+                "restored": false,
+                "capabilities": {},
+                "createdAt": "2026-08-30T09:00:00Z",
+                "updatedAt": terminal_at
+            }),
+        )
+        .unwrap();
+
+        process_prompt_turn_lifecycle(
+            &app,
+            locator,
+            AcpPromptLifecycleEvent::Finished {
+                prompt_id: Some("turn-001".to_string()),
+                successful: false,
+            },
+            |_, _, _| {},
+        )
+        .unwrap();
+
+        let metadata: serde_json::Value = read_json(
+            &app.paths
+                .task_dir("task-001")
+                .join("authoring")
+                .join("conversation.json"),
+        )
+        .unwrap();
+        assert_eq!(metadata["lastActivityAt"], terminal_at);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task_activity_index_update_preserves_search_document_and_repairs_missing_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
+        let index = gold_band::storage::sqlite::SearchIndex::open(&db_path).unwrap();
+        let tasks_dir = Utf8PathBuf::from_path_buf(dir.path().join("tasks")).unwrap();
+        let schema = rusqlite::Connection::open(db_path.as_std_path()).unwrap();
+        let task_update_trigger_sql: String = schema
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'tasks_au'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            task_update_trigger_sql
+                .to_ascii_lowercase()
+                .contains("after update of title, description, requirement_text on tasks")
+        );
+
+        let indexed_task = tasks_dir.join("task-001");
+        std::fs::create_dir_all(indexed_task.join("authoring").as_std_path()).unwrap();
+        write_json(
+            &indexed_task.join("task.json"),
+            &TaskState {
+                version: gold_band::domain::VERSION.to_string(),
+                id: "task-001".to_string(),
+                title: Some("Indexed title".to_string()),
+                description: Some("Indexed description".to_string()),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        std::fs::write(
+            indexed_task
+                .join("authoring")
+                .join("requirement.md")
+                .as_std_path(),
+            "indexed-requirement-needle",
+        )
+        .unwrap();
+        index.index_task_with_retry(&indexed_task, "task-001");
+        std::fs::remove_file(indexed_task.join("task.json").as_std_path()).unwrap();
+        std::fs::remove_file(
+            indexed_task
+                .join("authoring")
+                .join("requirement.md")
+                .as_std_path(),
+        )
+        .unwrap();
+        index.index_task_activity_with_retry(&indexed_task, "task-001", "2026-08-30T12:00:00Z");
+        let preserved = index
+            .search_tasks_in_task_roots("indexed-requirement-needle", &[tasks_dir.to_string()], 10)
+            .unwrap();
+        assert_eq!(preserved.len(), 1);
+        assert_eq!(preserved[0].task_id, "task-001");
+
+        let missing_row_task = tasks_dir.join("task-002");
+        std::fs::create_dir_all(missing_row_task.join("authoring").as_std_path()).unwrap();
+        write_json(
+            &missing_row_task.join("task.json"),
+            &TaskState {
+                version: gold_band::domain::VERSION.to_string(),
+                id: "task-002".to_string(),
+                title: Some("Missing row repair".to_string()),
+                description: None,
+                uuid: None,
+            },
+        )
+        .unwrap();
+        index.index_task_activity_with_retry(&missing_row_task, "task-002", "2026-08-30T13:00:00Z");
+        let repaired = index
+            .search_tasks_in_task_roots("missing row repair", &[tasks_dir.to_string()], 10)
+            .unwrap();
+        assert_eq!(repaired.len(), 1);
+        assert_eq!(repaired[0].task_id, "task-002");
+    }
+
+    #[test]
+    fn task_activity_schema_v5_upgrade_only_replaces_the_task_update_trigger() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
+        drop(gold_band::storage::sqlite::SearchIndex::open(&db_path).unwrap());
+        let connection = rusqlite::Connection::open(db_path.as_std_path()).unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA user_version = 5;
+                 DROP TRIGGER tasks_au;
+                 CREATE TRIGGER tasks_au AFTER UPDATE ON tasks BEGIN
+                    INSERT INTO tasks_fts(tasks_fts, rowid, title, description, requirement_text)
+                    VALUES('delete', old.rowid, old.title, old.description, old.requirement_text);
+                    INSERT INTO tasks_fts(rowid, title, description, requirement_text)
+                    VALUES (new.rowid, new.title, new.description, new.requirement_text);
+                 END;
+                 INSERT INTO sessions (attempt_path, task_id, run_id, round_id, node_id, attempt_id)
+                 VALUES ('attempt-before-v6', 'task-001', 'run-001', 'round-001', 'node-001', 'attempt-001');",
+            )
+            .unwrap();
+        drop(connection);
+
+        drop(gold_band::storage::sqlite::SearchIndex::open(&db_path).unwrap());
+        let migrated = rusqlite::Connection::open(db_path.as_std_path()).unwrap();
+        let schema_version: i32 = migrated
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let session_count: i64 = migrated
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        let task_update_trigger_sql: String = migrated
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'tasks_au'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(schema_version, 6);
+        assert_eq!(session_count, 1);
+        assert!(
+            task_update_trigger_sql
+                .to_ascii_lowercase()
+                .contains("after update of title, description, requirement_text on tasks")
+        );
     }
 
     #[test]

@@ -1501,12 +1501,14 @@ pub fn load_timeline_items(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
     with_jsonl_file_lock(path, || load_timeline_items_unlocked(path))
 }
 
-pub fn annotate_latest_runtime_control_output(
+pub fn annotate_runtime_control_output(
     path: &Utf8Path,
+    item_id: &str,
     artifact_name: &str,
     kind: &str,
+    span: &crate::artifacts::JsonArtifactSpan,
 ) -> Result<bool> {
-    crate::acp::timeline::annotate_latest_runtime_control_output(path, artifact_name, kind)
+    crate::acp::timeline::annotate_runtime_control_output(path, item_id, artifact_name, kind, span)
 }
 
 pub(crate) fn load_timeline_items_unlocked(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
@@ -3400,7 +3402,7 @@ mod tests {
     use super::{
         AcpLatestTurnStatus, AcpLiveTurnActivity, AcpPromptSubmission, AcpSessionAvailability,
         AcpSessionMetadata, AcpTimingState, AcpTurnAdmission, AcpUiEvent,
-        agent_transcript_tool_output, annotate_latest_runtime_control_output, append_raw_frame,
+        agent_transcript_tool_output, annotate_runtime_control_output, append_raw_frame,
         append_structured_diagnostic, append_timeline_patch, begin_session_turn,
         cancel_latest_processing_prompt_retry, compact_live_conversation_event,
         context_compaction_phase, elicitation_request_event, elicitation_response_event,
@@ -5827,10 +5829,13 @@ mod tests {
         .unwrap();
 
         assert!(
-            annotate_latest_runtime_control_output(
+            annotate_runtime_control_output(
                 &path,
+                "message-2",
                 "dynamic-node-completion",
                 "dynamic-node-completion",
+                &crate::artifacts::json_artifact_display_span("你好\n```json\n{\"a\":\"b\"}\n```",)
+                    .unwrap(),
             )
             .unwrap()
         );
@@ -5889,8 +5894,17 @@ mod tests {
         .unwrap();
 
         assert!(
-            annotate_latest_runtime_control_output(&path, "accept-result", "workflow-output")
-                .unwrap()
+            annotate_runtime_control_output(
+                &path,
+                "message-1",
+                "accept-result",
+                "workflow-output",
+                &crate::artifacts::json_artifact_display_span(
+                    "修复前\n```json\n{\"a\":\"unterminated}\n```",
+                )
+                .unwrap(),
+            )
+            .unwrap()
         );
 
         let items = load_timeline_items(&path).unwrap();

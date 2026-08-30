@@ -1,8 +1,12 @@
 use std::collections::HashMap;
+use std::io::{BufRead as _, BufReader};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::{Duration, Instant};
 
 use camino::Utf8PathBuf;
-use gold_band::acp::events::{AcpUiEvent, load_timeline_items};
+use gold_band::acp::events::{
+    AcpRawFrame, AcpUiEvent, load_timeline_items, normalize_session_update,
+};
 use gold_band::acp::timeline::{TimelineCompactionPolicy, TimelineStore};
 use serde_json::json;
 use tempfile::tempdir;
@@ -10,6 +14,9 @@ use tempfile::tempdir;
 const DEFAULT_STRESS_UPDATE_COUNT: usize = 100_000;
 const STRESS_FRAME_BATCH_SIZE: usize = 256;
 const STRESS_UPDATE_COUNT_ENV: &str = "GOLD_BAND_TIMELINE_STRESS_UPDATES";
+const RAW_REPLAY_PATH_ENV: &str = "GOLD_BAND_ACP_RAW_REPLAY_PATH";
+const RAW_REPLAY_REQUEST_ID_ENV: &str = "GOLD_BAND_ACP_RAW_REPLAY_REQUEST_ID";
+const RAW_REPLAY_START_REVISION_ENV: &str = "GOLD_BAND_ACP_RAW_REPLAY_START_REVISION";
 
 fn stress_update_count() -> usize {
     std::env::var(STRESS_UPDATE_COUNT_ENV)
@@ -134,6 +141,154 @@ fn run_stress(identity_count: usize, update_count: usize) -> StressResult {
         p99_commit: percentile(&latencies, 99),
         timeline_bytes,
     }
+}
+
+fn rpc_id_matches(value: Option<&serde_json::Value>, expected: &str) -> bool {
+    value.is_some_and(|value| {
+        value
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| value.as_u64().map(|value| value.to_string()))
+            .as_deref()
+            == Some(expected)
+    })
+}
+
+fn replay_stream_item(
+    streams: &mut HashMap<String, AcpUiEvent>,
+    mut event: AcpUiEvent,
+) -> AcpUiEvent {
+    let prefix = match event.kind.as_str() {
+        "textDelta" => "assistant-message-root",
+        "thoughtDelta" => "assistant-thought-root",
+        _ => return event,
+    };
+    let source_id = event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("messageId"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| event.id.clone());
+    let item_id = format!("{prefix}-{source_id}");
+    if let Some(previous) = streams.get(&item_id) {
+        let mut content = previous.content.clone().unwrap_or_default();
+        content.push_str(event.content.as_deref().unwrap_or_default());
+        event.content = Some(content);
+        event.started_seq = previous.started_seq.or(Some(previous.seq));
+        event.started_at = previous
+            .started_at
+            .clone()
+            .or_else(|| Some(previous.timestamp.clone()));
+    } else {
+        event.started_seq = Some(event.seq);
+        event.started_at = Some(event.timestamp.clone());
+    }
+    event.id = item_id.clone();
+    event.ended_seq = Some(event.seq);
+    event.ended_at = Some(event.timestamp.clone());
+    streams.insert(item_id, event.clone());
+    event
+}
+
+fn panic_payload_text(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or("<non-string panic payload>")
+}
+
+#[test]
+#[ignore = "requires an explicit ACP raw capture path"]
+fn captured_prompt_session_updates_replay_through_timeline_storage() {
+    let raw_path = std::env::var(RAW_REPLAY_PATH_ENV)
+        .unwrap_or_else(|_| panic!("set {RAW_REPLAY_PATH_ENV} to an acp.raw.jsonl capture"));
+    let request_id = std::env::var(RAW_REPLAY_REQUEST_ID_ENV).unwrap_or_else(|_| "88".to_string());
+    let mut revision = std::env::var(RAW_REPLAY_START_REVISION_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(5_466);
+    let file = std::fs::File::open(&raw_path).unwrap();
+    let dir = tempdir().unwrap();
+    let timeline_path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+    let mut store =
+        TimelineStore::open(timeline_path.clone(), TimelineCompactionPolicy::default()).unwrap();
+    let mut prompt_seen = false;
+    let mut terminal_response_seen = false;
+    let mut capture_line = 0usize;
+    let mut replayed_updates = 0usize;
+    let mut streams = HashMap::<String, AcpUiEvent>::new();
+
+    for line in BufReader::new(file).lines() {
+        capture_line = capture_line.saturating_add(1);
+        let raw: AcpRawFrame = serde_json::from_str(&line.unwrap())
+            .unwrap_or_else(|error| panic!("invalid raw frame at line {capture_line}: {error}"));
+        let frame = raw.frame;
+        if !prompt_seen {
+            prompt_seen = frame.get("method").and_then(serde_json::Value::as_str)
+                == Some("session/prompt")
+                && rpc_id_matches(frame.get("id"), &request_id);
+            continue;
+        }
+        if rpc_id_matches(frame.get("id"), &request_id)
+            && (frame.get("result").is_some() || frame.get("error").is_some())
+        {
+            terminal_response_seen = true;
+            break;
+        }
+        if raw.direction != "inbound"
+            || frame.get("method").and_then(serde_json::Value::as_str) != Some("session/update")
+        {
+            continue;
+        }
+
+        let params = frame.get("params").cloned().unwrap_or_else(|| json!({}));
+        let session_id = params
+            .get("sessionId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let update = params.get("update").cloned().unwrap_or(params);
+        revision = revision.saturating_add(1);
+        let mut event = normalize_session_update(revision, session_id, &update);
+        event.timestamp = raw.timestamp;
+        let event = replay_stream_item(&mut streams, event);
+        let outcome = catch_unwind(AssertUnwindSafe(|| store.upsert(revision, &event)));
+        match outcome {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                panic!(
+                    "timeline replay failed at raw line {capture_line}, revision {revision}, kind {}: {error:#}",
+                    event.kind
+                );
+            }
+            Err(payload) => {
+                panic!(
+                    "timeline replay panicked at raw line {capture_line}, revision {revision}, kind {}: {}",
+                    event.kind,
+                    panic_payload_text(payload.as_ref())
+                );
+            }
+        }
+        replayed_updates = replayed_updates.saturating_add(1);
+    }
+
+    assert!(
+        prompt_seen,
+        "request {request_id} was not found in raw capture"
+    );
+    assert!(
+        replayed_updates > 0,
+        "request {request_id} had no session updates"
+    );
+    store.force_checkpoint().unwrap();
+    let items = load_timeline_items(&timeline_path).unwrap();
+    assert!(!items.is_empty());
+    eprintln!(
+        "replayed request {request_id}: updates={replayed_updates}, final_revision={revision}, items={}, terminal_response_seen={terminal_response_seen}",
+        items.len()
+    );
 }
 
 #[test]

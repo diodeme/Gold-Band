@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use tracing::{info, warn};
 
-use crate::acp::events::annotate_latest_runtime_control_output;
+use crate::acp::events::annotate_runtime_control_output;
 use crate::artifacts::parse_json_artifact;
 use crate::domain::{
     InvocationKind, NodeOutcome, RunStatus, SessionMode, TurnControlMode, VERSION,
@@ -19,8 +19,8 @@ use crate::prompts::PromptExecutionSurface;
 use crate::provider::{
     ConversationPromptInput, OutputEmissionMode, PromptArtifactRef, PromptAttachmentRef,
     PromptOutputContract, PromptPredecessorContext, PromptRuntimeContext, PromptVisibility,
-    ProviderRunResult, ProviderRunStatus, RuntimeControlIntent, StreamMode, UserPromptRenderMode,
-    WorkerInvocation,
+    ProviderRunResult, ProviderRunStatus, RuntimeControlIntent, RuntimeControlOutput, StreamMode,
+    UserPromptRenderMode, WorkerInvocation,
 };
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, WorkerRefState, validate_node_state,
@@ -1064,22 +1064,24 @@ pub(crate) fn finalize_ai_attempt(
     if let Some(info) = result.runtime_error {
         return Err(runtime_error(info));
     }
+    if let Some(control_output) = result.runtime_control_output.as_ref() {
+        annotate_runtime_control_output_best_effort(
+            app,
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            control_output,
+            "workflow-output",
+        );
+    }
 
     match result.status {
         ProviderRunStatus::Success => {
             if let Some(payload) = result.result_payload {
                 if let Some(output_artifact) = payload.output_artifact {
                     if !output_artifact.content.trim().is_empty() {
-                        annotate_runtime_control_output_best_effort(
-                            app,
-                            task_id,
-                            run_id,
-                            round_id,
-                            node_id,
-                            attempt_id,
-                            &output_artifact.name,
-                            "workflow-output",
-                        );
                         let artifact_path = app.paths.artifact_file(
                             task_id,
                             run_id,
@@ -1147,20 +1149,30 @@ fn annotate_runtime_control_output_best_effort(
     round_id: &str,
     node_id: &str,
     attempt_id: &str,
-    artifact_name: &str,
+    control_output: &RuntimeControlOutput,
     kind: &str,
 ) {
-    let path = app
+    let attempt_dir = app
         .paths
-        .acp_timeline_file(task_id, run_id, round_id, node_id, attempt_id);
-    if let Err(error) = annotate_latest_runtime_control_output(&path, artifact_name, kind) {
+        .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
+    let path =
+        crate::acp::branches::branch_timeline_path(&attempt_dir, &control_output.source.branch_id);
+    if let Err(error) = annotate_runtime_control_output(
+        &path,
+        &control_output.source.item_id,
+        &control_output.artifact_name,
+        kind,
+        &control_output.span,
+    ) {
         warn!(
             task_id,
             run_id,
             round_id,
             node_id,
             attempt_id,
-            artifact_name,
+            artifact_name = control_output.artifact_name,
+            branch_id = control_output.source.branch_id,
+            item_id = control_output.source.item_id,
             error = %error,
             "failed to annotate runtime control output display"
         );
@@ -1324,6 +1336,7 @@ mod tests {
                 "provider failed before business result",
                 serde_json::json!({}),
             )),
+            runtime_control_output: None,
         };
 
         let error = finalize_ai_attempt(
@@ -1415,6 +1428,14 @@ mod tests {
             worker_ref_seed: None,
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: Some(crate::provider::RuntimeControlOutput {
+                artifact_name: "node-result".to_string(),
+                source: crate::acp::client::AcpPromptMessageSource {
+                    branch_id: "root".to_string(),
+                    item_id: "assistant-message-1".to_string(),
+                },
+                span: crate::artifacts::json_artifact_display_span(content).unwrap(),
+            }),
         };
 
         let node = finalize_ai_attempt(

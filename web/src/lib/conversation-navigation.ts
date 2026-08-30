@@ -40,6 +40,16 @@ export function conversationPageMatchesRun(
     && sameConversationRunEntity(page, run);
 }
 
+export function canonicalizeConversationPageIdentity(
+  page: ConversationPage,
+  taskUuid: string | null | undefined,
+): ConversationPage {
+  if (page.kind !== 'conversation-run') return page;
+  const canonicalTaskUuid = taskUuid?.trim();
+  if (!canonicalTaskUuid || page.taskUuid?.trim() === canonicalTaskUuid) return page;
+  return { ...page, taskUuid: canonicalTaskUuid };
+}
+
 export function conversationPageTargetsTask(
   page: ConversationPage,
   task: Pick<ConversationRunVm, 'projectId' | 'taskId' | 'taskUuid'>,

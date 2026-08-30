@@ -171,6 +171,7 @@ import {
 import { conversationPageForSearchResult } from '@/lib/conversation-search';
 import {
   beginConversationSessionSelection,
+  canonicalizeConversationPageIdentity,
   conversationPageForSession,
   conversationPageForIntervention,
   conversationPageMatchesRun,
@@ -1330,12 +1331,11 @@ export function App() {
         )) return;
         const currentPage = conversationPageRef.current;
         if (currentPage.kind !== 'conversation-run') return;
-        const canonicalPage = {
-          ...currentPage,
-          taskUuid: run.taskUuid,
-        };
+        const canonicalPage = canonicalizeConversationPageIdentity(currentPage, run.taskUuid);
         conversationPageRef.current = canonicalPage;
-        setConversationPage(canonicalPage);
+        if (canonicalPage !== currentPage) {
+          setConversationPage(canonicalPage);
+        }
         const latestFollowState = conversationSessionFollowRef.current.runKey === targetRunKey
           ? conversationSessionFollowRef.current
           : followStateAtRequest;

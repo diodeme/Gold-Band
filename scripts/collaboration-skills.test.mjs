@@ -17,6 +17,25 @@ const issueTemplates = [
   "technical-proposal.yml",
 ];
 
+const requiredFieldIdsByTemplate = {
+  "bug-report.yml": ["actual", "expected", "reproduction", "environment"],
+  "feature-request.yml": ["problem", "desired-outcome", "use-case"],
+  "performance-issue.yml": ["problem", "workload", "environment"],
+  "technical-proposal.yml": ["problem", "proposal", "alternatives"],
+};
+
+const maintainerOwnedFieldIds = new Set([
+  "acceptance",
+  "bottleneck-status",
+  "correctness",
+  "existing-solutions",
+  "goals",
+  "non-goals",
+  "root-cause",
+  "root-cause-status",
+  "suspected-bottleneck",
+]);
+
 function parseFrontmatter(source) {
   const match = source.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/);
   assert.ok(match, "SKILL.md must start with YAML frontmatter");
@@ -47,6 +66,14 @@ for (const skillName of skillNames) {
       "utf8",
     );
     assert.match(metadata, new RegExp(`\\$${skillName}\\b`));
+
+    if (skillName === "git-issue") {
+      assert.match(
+        canonical,
+        /Ask reporters only for information they can reliably provide/i,
+      );
+      assert.match(canonical, /maintainer-owned analysis must not block/i);
+    }
   });
 }
 
@@ -70,16 +97,49 @@ test("English issue forms cover the four canonical collaboration cases", async (
   const templateRoot = path.join(repoRoot, ".github", "ISSUE_TEMPLATE");
   for (const templateName of issueTemplates) {
     const source = await readFile(path.join(templateRoot, templateName), "utf8");
+    const template = parseYaml(source);
     assert.equal(
-      validateIssueForm(parseYaml(source)),
+      validateIssueForm(template),
       true,
       `${templateName} violates the GitHub Issue Forms schema: ${JSON.stringify(validateIssueForm.errors)}`,
     );
     assert.match(source, /^name: .+/m);
     assert.match(source, /^description: .+/m);
     assert.match(source, /^body:/m);
-    assert.match(source, /Acceptance criteria/);
     assert.doesNotMatch(source, /[\u3400-\u9fff]/u);
+
+    const fields = template.body.filter((item) => item.id);
+    assert.equal(
+      fields.some((field) => field.id === "summary"),
+      false,
+      `${templateName} must use the GitHub issue title instead of duplicating it with a Summary field`,
+    );
+    assert.deepEqual(
+      fields
+        .filter((field) => field.validations?.required === true)
+        .map((field) => field.id),
+      requiredFieldIdsByTemplate[templateName],
+      `${templateName} must require only information its intended submitter can reliably provide`,
+    );
+
+    if (templateName !== "technical-proposal.yml") {
+      assert.deepEqual(
+        fields
+          .map((field) => field.id)
+          .filter((fieldId) => maintainerOwnedFieldIds.has(fieldId)),
+        [],
+        `${templateName} must not ask reporters for maintainer-owned analysis`,
+      );
+    }
+
+    const checklist = template.body.find(
+      (item) => item.type === "checkboxes" && item.id === "checklist",
+    );
+    assert.equal(checklist?.attributes?.options?.length, 2);
+    assert.equal(
+      checklist.attributes.options.every((option) => option.required === true),
+      true,
+    );
   }
 
   const configSource = await readFile(

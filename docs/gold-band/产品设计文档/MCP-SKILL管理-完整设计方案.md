@@ -45,6 +45,13 @@
 - GitHub Issue Forms 与 config 的可选 `title`、`labels`、`contact_links` 等字段只有存在有效值时才允许写入；不得使用 `title: ""`、`labels: []` 或 `contact_links: []` 表示“不设置”，因为 GitHub 会把表单配置判为无效并静默回退到空白 Issue 编辑器。
 - 协作模板契约测试必须使用 SchemaStore 的 GitHub Issue Forms 与 issue template config schema 校验解析后的 YAML 数据，不能只验证 YAML 语法、固定标题文本或文件存在性。测试直接依赖的 YAML parser 必须声明为项目 devDependency，不依赖间接依赖偶然提升到根目录。
 
+## 2026-08-30 Issue Forms 提交者边界补充
+
+- 公开 Issue Form 只收集目标提交者能够可靠提供的事实，不把维护者的设计回溯、根因分类、方案研究、性能目标、回归策略或验收定义设为普通用户的提交前置条件。GitHub Issue 标题已经承担摘要职责，四类表单均不得重复设置必填 `Summary` 字段。
+- Bug 必填实际行为、预期行为、复现步骤和环境；Feature 必填用户问题、期望结果和主要用例；Performance 必填可观察的性能问题、复现 workload 和环境，测量与 Profiler 证据可选；Technical Proposal 面向贡献者，必填当前问题、提议方向和已考虑替代方案，其余设计、迁移、风险与验收信息均按已有证据选填。
+- 设计意图、根因、瓶颈、正确性约束与验收标准由维护者在调查、Issue refinement 或 PR 阶段补充。`git-issue` 可以基于仓库证据主动调查，但不得因为报告者无法提供这些内部分析而阻止生成待审阅 Issue。
+- 契约测试除 SchemaStore 语法校验外，还固定各模板的最小必填字段、禁止普通反馈模板重新引入维护者字段，并把提交检查项收敛为查重与敏感信息清理两项。
+
 
 ---
 

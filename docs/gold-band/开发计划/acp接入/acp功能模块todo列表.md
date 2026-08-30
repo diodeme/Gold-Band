@@ -102,6 +102,7 @@
 
 - 在创建、重跑、继续、恢复和发送的会话准入边界按 `project_id` 校验 workspace 路径存在、为目录且可读；失败时在 Run / Attempt / ACP turn 写入前返回稳定错误码与路径参数。
 - [x] 2026-08-30 将上述 `metadata/read_dir` 准入检查统一下沉到既有 blocking pool；校验、新建、重跑、普通继续、ACP 继续/恢复/发送命令均 await 同一边界，接口回归固定完整 `projectId` 与 locator，错误码和写入前顺序不变。
+- [x] 2026-08-30 合入最新 main 的 Runtime control provenance 后，旧 synthetic provider fixture 显式补齐 `runtime_control_output=None`，timeline/config 模块测试显式导入其 canonical 常量；无 canonical timeline locator 的测试不得伪造 branch/item 来源，生产 output evaluation、精确 timeline 标注及配置值语义不变。
 - 执行 `initialize`。
 - 根据 worker-ref 尝试 `session/load`。
 - 不可恢复时创建 `session/new`。

@@ -1921,12 +1921,13 @@ mod tests {
     use super::{
         AcpAdapterConfig, AppearancePreference, ColorSchemePreference, ConsoleThemeName,
         ConversationDirectConfig, ConversationRunMode, ConversationRunModeEntry,
-        DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT, DesktopAvailableUpdate, DesktopLanguage,
-        DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, ManagedAgentConfig,
-        ManagedAgentId, PersonalizationPreference, ProjectAppConfig, ProjectIdentityConfig,
-        RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery,
-        TurnFilesConfig, VisualQuality, WallpaperImagePreference, WorkspaceLayoutConfig,
-        catalog_agent_default_config, project_identity_config,
+        DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS, DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+        DesktopAvailableUpdate, DesktopLanguage, DesktopUpdateBadgeState, FontSizePreference,
+        FontStackPreference, ManagedAgentConfig, ManagedAgentId, PersonalizationPreference,
+        ProjectAppConfig, ProjectIdentityConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig,
+        StateConfig, SystemPromptDelivery, TurnFilesConfig, VisualQuality,
+        WallpaperImagePreference, WorkspaceLayoutConfig, catalog_agent_default_config,
+        project_identity_config,
     };
     use crate::agent_catalog::builtin_agent_catalog;
     use std::collections::BTreeMap;

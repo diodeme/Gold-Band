@@ -3028,9 +3028,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        DEFAULT_TIMELINE_TAIL_REPLAY_LIMIT, TIMELINE_BLOB_MIN_BYTES, TIMELINE_INDEX_FORMAT_VERSION,
-        TimelineCompactionPolicy, TimelineRestoreMode, TimelineSettleOutcome, TimelineStore,
-        TimelineUpsertOutcome, read_indexed_prompt_anchor_events, read_indexed_runtime_restore,
+        DEFAULT_TIMELINE_COMPACT_MIN_PATCH_COUNT, DEFAULT_TIMELINE_TAIL_REPLAY_LIMIT,
+        TIMELINE_BLOB_MIN_BYTES, TIMELINE_INDEX_FORMAT_VERSION, TimelineCompactionPolicy,
+        TimelineRestoreMode, TimelineSettleOutcome, TimelineStore, TimelineUpsertOutcome,
+        read_indexed_prompt_anchor_events, read_indexed_runtime_restore,
         read_indexed_runtime_restore_for_branch, read_indexed_timeline_page,
         read_indexed_timeline_projection, settle_latest_processing_retry_prompt,
         settle_timeline_item_status, timeline_index_path,

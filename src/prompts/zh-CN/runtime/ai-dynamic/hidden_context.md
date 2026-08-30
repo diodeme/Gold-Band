@@ -25,7 +25,7 @@
 ## Runtime 协调快照
 - 只读快照：{{ coordination_snapshot_path }}
 - 该文件由 Runtime 从 canonical dynamic graph 生成并独占写入；不要修改它。
-- 开始或继续当前任务前读取最新快照，了解其他节点和 group 的任务、状态、依赖与 workspace，避免重复或冲突。
+- 开始或继续当前任务前读取最新快照：先按 `workstreams[]` 的目标、TODO 状态、父子关系与 steps 理解其他子任务，再结合 `groups[]` 的嵌套关系和 phase，避免重复或冲突。
 - 准备输出 `next.type="single"` 或 `next.type="fanout"` 前再次读取同一路径，以最新状态规划后继任务。
 {% endif %}
 

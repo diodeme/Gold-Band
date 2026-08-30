@@ -536,7 +536,7 @@ pub struct AiDynamicCoordinationSnapshot {
     pub kind: AiDynamicCoordinationSnapshotKind,
     pub dynamic_run_id: String,
     pub generated_at: String,
-    pub nodes: Vec<AiDynamicCoordinationNode>,
+    pub workstreams: Vec<AiDynamicCoordinationWorkstream>,
     pub groups: Vec<AiDynamicCoordinationGroup>,
 }
 
@@ -546,23 +546,49 @@ pub enum AiDynamicCoordinationSnapshotKind {
     AiDynamicCoordinationSnapshot,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiDynamicWorkstreamStatus {
+    Pending,
+    Active,
+    Waiting,
+    Paused,
+    Completed,
+    Failed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AiDynamicCoordinationNode {
+pub struct AiDynamicCoordinationWorkstream {
     pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_workstream_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_group_id: Option<String>,
+    pub title: String,
+    pub goal: String,
+    pub status: AiDynamicWorkstreamStatus,
+    pub workspace: AiDynamicWorkspaceRef,
+    pub child_group_ids: Vec<String>,
+    pub steps: Vec<AiDynamicCoordinationStep>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicCoordinationStep {
+    pub node_id: String,
     pub kind: DynamicNodeKind,
     pub title: String,
     pub task: String,
     pub status: DynamicNodeStatus,
-    pub outcome: Option<NodeOutcome>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub spawned_by_node_id: Option<String>,
+    pub outcome: Option<NodeOutcome>,
     pub depends_on: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub group_id: Option<String>,
-    pub chain_id: String,
-    pub workspace: AiDynamicWorkspaceRef,
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
 }
 
@@ -570,23 +596,28 @@ pub struct AiDynamicCoordinationNode {
 #[serde(rename_all = "camelCase")]
 pub struct AiDynamicCoordinationGroup {
     pub id: String,
-    pub status: DynamicGroupStatus,
-    pub depth: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_group_id: Option<String>,
-    pub created_by_node_id: String,
-    pub root_node_ids: Vec<String>,
-    pub terminal_node_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_by_workstream_id: Option<String>,
+    pub branch_workstream_ids: Vec<String>,
+    pub phase: DynamicGroupStatus,
     pub target_workspace: AiDynamicWorkspaceRef,
-    pub child_workspaces: Vec<AiDynamicWorkspaceRef>,
+    pub merge: AiDynamicCoordinationGroupStage,
+    pub acceptance: AiDynamicCoordinationGroupStage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicCoordinationGroupStage {
+    pub title: String,
+    pub task: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub merge_node_id: Option<String>,
+    pub node_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub acceptance_node_id: Option<String>,
-    pub merge: AiDynamicTaskRef,
-    pub acceptance: AiDynamicTaskRef,
-    pub created_at: String,
-    pub updated_at: String,
+    pub status: Option<DynamicNodeStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<NodeOutcome>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-08-30：AI-DYNAMIC 运行中协调改为 Workstream/TODO 投影
+
+- 根因与设计判断：canonical `DynamicGraphState` 的 node、group、chain、workspace 与 accepted proposal 已能完整表达事实，缺陷在于第一版 `coordination-snapshot.json` 直接镜像平铺 `nodes[] / groups[]`，内部 Agent 仍需自行把技术节点还原为子任务链，难以直接判断其他分支正在做什么、已经完成什么以及任务嵌套关系。这属于正确 canonical 设计上的消费投影不完善，不修改 graph 状态机，也不增加 `parentChainId` 或第二套持久身份。
+- 数据与实现：破坏式删除协调快照旧顶层 `nodes[]`，从现有 `(groupId, chainId)` 把普通 worker / workflow-invocation 线性归并为 `workstreams[]`；派生 ID 取链上首个业务节点，bootstrap 作为纯控制分发节点排除，bootstrap 直接 fanout 的 branches 成为顶层 workstreams。`single` 成为同一 workstream 的后续 step，业务 fanout/nested fanout 通过 group 创建者形成父子 workstream。workstream 提供目标、TODO 状态、workspace、child groups 和轻量 steps；`groups[]` 仅提供嵌套关系、可选创建者 workstream、直接 branch workstreams、phase、target workspace 与当前 merge/acceptance 阶段。acceptance 发起修复时沿 `acceptance.groupId -> group.createdByNodeId` 递归解析最近业务 owner；若顶层 group 源自 bootstrap，则 repair 保持顶层且 group owner 缺省。旧 merge/acceptance 控制历史不进入 workstream，继续只由最终 manifest 审计。
+- 契约与验收：协调快照仍由 Runtime 在 graph 同锁持久化后生成，hidden context 的注入时点与按需读取规则不变，双语读取说明同步改为 workstream-first；`ai-dynamic-result.json`、`ai-dynamic-report-manifest.json` 的位置、schema、生成时机及普通后继消费契约完全不变。最小接口测试先因旧快照仍存在顶层 `nodes[]` 稳定失败；bootstrap 业务身份测试又先稳定命中错误的 `workstreamId=bootstrap`。实现后固定 bootstrap 排除、single steps 聚合、fanout/nested fanout 父子关系、workspace/summary、merge/acceptance group 阶段，以及 acceptance repair 不使用控制节点作为 workstream ID。4 项 coordination 单测覆盖 bootstrap、single/fanout repair owner、active/waiting/paused 状态与间接环拒绝，`cargo test --test ai_dynamic_node -- --nocapture` 27 项全部通过，`cargo fmt --all -- --check` 通过。
+- 性能与过度设计评审：构建器以 node/group/workspace ID 索引、`(groupId, chainId)` 聚合和带 cycle guard 的 memoized group owner 解析完成一次 `O(nodes + groups + workspaces + accepted proposals)` 投影，输出顺序继续使用 canonical graph 顺序；规模受现有 dynamic limits 约束，不增加目录扫描、N+1 I/O、依赖、缓存、队列、锁范围或兼容层。现有 canonical identity 和 lifecycle 已足够，新增内容仅是可重建 read model，无需 benchmark 或新的 aggregate。
+
 ## 2026-08-30：Runtime artifact 来源精确关联与 Direct 扫描隔离
 
 - [x] 根因与形成路径：Runtime 原设计只在实际 output contract 结算后扫描候选，但 Timeline materialized index 优化把 JSON artifact 展示推断下沉到所有 `textDelta` upsert，造成 Direct / `NonRuntimeControlled` 流式消息也执行 artifact scanner；终局标注又从整个 Timeline 选择“最新候选”，因此 Runtime 输出后追加的普通追问 JSON 可能被误标为先前控制结果。该问题属于正确的 Runtime/Direct 领域边界被通用 Timeline 投影破坏，不是 bootstrap、PostTurn 最近三条回看规则错误。

@@ -256,6 +256,7 @@ import {
 } from '@/lib/conversation-composer-layout';
 import { getRuntimeApi, type AcpSessionUpdatedEventVm } from "@/api/client";
 import { isTauriRuntime } from "@/api/shared";
+import type { ConversationPromptSubmitVm } from "@/api/client";
 import {
   acknowledgeConversationBranchReplay,
   conversationEventMatchesAttempt,
@@ -3631,7 +3632,7 @@ export function ACPChatDialog(
         return;
       }
       const recoveryRevision = localLifecycle?.runtime.revision;
-      let result;
+      let result: ConversationPromptSubmitVm;
       if (localLifecycle?.continueKind === 'recover-completed-attempt') {
         if (recoveryRevision == null) return;
         result = await recoverConversationRuntime(

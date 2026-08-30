@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use crate::commands::{
     CommandErrorVm, CommandResult, command_error, configure_conversation_runtime_callbacks,
-    resolve_command_app, spawn_blocking_command,
+    resolve_command_app, spawn_blocking_command, validate_runtime_workspace_for_command,
 };
 use crate::conversation_attention::{
     ConversationTerminalResultAcknowledgementVm, acknowledge_terminal_result, remove_task_attention,
@@ -42,6 +42,21 @@ fn scheduled_service_error(
         }
     }
     CommandErrorVm::new(error.code.to_string(), params)
+}
+
+async fn runtime_workspace_entry_for_project(
+    state: &gold_band::config::StateConfig,
+    project_id: &str,
+) -> CommandResult<(String, String)> {
+    let (workspace_path, resolved_project_id) = workspace_entry_for_project(state, project_id)
+        .ok_or_else(|| {
+            CommandErrorVm::new(
+                "workspace.not-found",
+                serde_json::json!({ "projectId": project_id }),
+            )
+        })?;
+    validate_runtime_workspace_for_command(&resolved_project_id, &workspace_path).await?;
+    Ok((workspace_path, resolved_project_id))
 }
 fn validate_scheduled_runtime_settings_input(
     input: &crate::view_models_conversation::ScheduledRuntimeSettingsInputVm,
@@ -718,21 +733,15 @@ pub async fn get_conversation_run(
 }
 
 #[tauri::command]
-pub fn validate_conversation_create(
+pub async fn validate_conversation_create(
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::ConversationCreateInputVm,
 ) -> CommandResult<crate::view_models_conversation::ConversationValidationResultVm> {
     let context = state.context().map_err(command_error)?;
     let global_app = context.app();
     let app_state = global_app.load_state().map_err(command_error)?;
-    let Some((workspace_path, resolved_project_id)) =
-        workspace_entry_for_project(&app_state, &input.project_id)
-    else {
-        return Err(CommandErrorVm::new(
-            "workspace.not-found",
-            serde_json::json!({ "projectId": input.project_id }),
-        ));
-    };
+    let (workspace_path, resolved_project_id) =
+        runtime_workspace_entry_for_project(&app_state, &input.project_id).await?;
     let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
     let mut input = input;
     input.project_id = resolved_project_id;
@@ -780,14 +789,8 @@ async fn create_conversation_run_inner(
     let context = state.context().map_err(command_error)?;
     let global_app = context.app();
     let app_state = global_app.load_state().map_err(command_error)?;
-    let Some((workspace_path, resolved_project_id)) =
-        workspace_entry_for_project(&app_state, &input.project_id)
-    else {
-        return Err(CommandErrorVm::new(
-            "workspace.not-found",
-            serde_json::json!({ "projectId": input.project_id }),
-        ));
-    };
+    let (workspace_path, resolved_project_id) =
+        runtime_workspace_entry_for_project(&app_state, &input.project_id).await?;
     let workspace_app = state
         .app()
         .map_err(command_error)?
@@ -836,7 +839,7 @@ async fn create_conversation_run_inner(
 }
 
 #[tauri::command]
-pub fn rerun_conversation_task(
+pub async fn rerun_conversation_task(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: String,
@@ -846,14 +849,8 @@ pub fn rerun_conversation_task(
     let context = state.context().map_err(command_error)?;
     let global_app = context.app();
     let app_state = global_app.load_state().map_err(command_error)?;
-    let Some((workspace_path, resolved_project_id)) =
-        workspace_entry_for_project(&app_state, &project_id)
-    else {
-        return Err(CommandErrorVm::new(
-            "workspace.not-found",
-            serde_json::json!({ "projectId": project_id }),
-        ));
-    };
+    let (workspace_path, resolved_project_id) =
+        runtime_workspace_entry_for_project(&app_state, &project_id).await?;
     let workspace_app = state
         .app()
         .map_err(command_error)?
@@ -2243,8 +2240,9 @@ mod tests {
         MaterializeAttachmentFileInput, base64_encode, conversation_search_result_for_workspace,
         conversation_search_task_roots, decode_occurrence_cursor, encode_occurrence_cursor,
         materialize_attachment_files_to_dir, message_attachment_content_from_attempt_dir,
-        scheduled_occurrence_vms_from_occurrences, scheduled_runtime_settings_vm,
-        scheduled_service_error, validate_scheduled_runtime_settings_input,
+        runtime_workspace_entry_for_project, scheduled_occurrence_vms_from_occurrences,
+        scheduled_runtime_settings_vm, scheduled_service_error,
+        validate_scheduled_runtime_settings_input,
     };
     use camino::Utf8PathBuf;
     use gold_band::app::App;
@@ -2256,6 +2254,35 @@ mod tests {
     use uuid::Uuid;
 
     use crate::view_models_conversation::ScheduledRuntimeSettingsInputVm;
+
+    #[test]
+    fn runtime_workspace_entry_rejects_an_unavailable_workspace_before_admission() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace_path = directory
+            .path()
+            .join("removed-workspace")
+            .to_string_lossy()
+            .into_owned();
+        let mut state = StateConfig::default();
+        state
+            .conversation_workspaces
+            .push(ConversationWorkspaceEntry {
+                project_id: "project-1".to_string(),
+                workspace_path: workspace_path.clone(),
+                name: "Removed workspace".to_string(),
+                added_at: "2026-08-27T00:00:00Z".to_string(),
+            });
+
+        let error = tauri::async_runtime::block_on(runtime_workspace_entry_for_project(
+            &state,
+            "project-1",
+        ))
+        .unwrap_err();
+
+        assert_eq!(error.code, "workspace.path-not-found");
+        assert_eq!(error.params["projectId"], "project-1");
+        assert_eq!(error.params["workspacePath"], workspace_path);
+    }
 
     #[test]
     fn occurrence_cursor_round_trips_and_rejects_invalid_input() {

@@ -60,6 +60,7 @@ interface WorkspaceShellProps {
   sidebarCollapsed: boolean;
   onSelect: (page: ConversationPage) => void;
   onToggleSidebar: () => void;
+  onOpenPersonalAnalytics: () => void;
   onNewConversation: () => void;
   onSearch: () => void;
   onSelectTask: (projectId: string, taskId: string, taskUuid?: string | null) => void;
@@ -272,6 +273,7 @@ function WorkspaceShellLayout({
   sidebarCollapsed,
   onSelect,
   onToggleSidebar,
+  onOpenPersonalAnalytics,
   onNewConversation,
   onSearch,
   onSelectTask,
@@ -676,6 +678,7 @@ function WorkspaceShellLayout({
         platform={platform}
         sidebarCollapsed={sidebarCollapsed || autoCollapse.left}
         onToggleSidebar={onToggleSidebar}
+        onOpenPersonalAnalytics={onOpenPersonalAnalytics}
         rightWorkspaceOpen={rightWorkspacePresented}
         onToggleRightWorkspace={rightWorkspaceAvailable ? toggleRightWorkspace : undefined}
       />

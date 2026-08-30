@@ -42,8 +42,7 @@ pub struct PendingElicitationPayload {
     pub request: CreateElicitationRequest,
 }
 
-pub type PendingElicitationState =
-    PendingAcpPromptInteractionState<PendingElicitationPayload>;
+pub type PendingElicitationState = PendingAcpPromptInteractionState<PendingElicitationPayload>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -291,8 +290,7 @@ fn resolve_elicitation_identity(
                 indexed,
             )));
         }
-        if let Some(indexed) =
-            read_indexed_timeline_item(&path, &pending.identity.interaction_id)?
+        if let Some(indexed) = read_indexed_timeline_item(&path, &pending.identity.interaction_id)?
         {
             return Ok(Some((
                 TimelineItemIdentity {
@@ -451,7 +449,10 @@ mod tests {
         assert!(path.exists());
         let read_back: PendingElicitationState = read_json(&path).unwrap();
         assert_eq!(read_back.identity.interaction_id, "elicit-abc123");
-        assert_eq!(read_back.identity.kind, AcpPromptInteractionKind::Elicitation);
+        assert_eq!(
+            read_back.identity.kind,
+            AcpPromptInteractionKind::Elicitation
+        );
         assert_eq!(read_back.identity.turn_id, "turn-2");
         assert_eq!(read_back.identity.prompt_event_id, "prompt-turn-2");
         assert_eq!(read_back.payload.request.message, "请选择数据库");

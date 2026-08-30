@@ -1678,9 +1678,11 @@ export function ACPChatDialog(
   const composerDraftOccupied = prompt.length > 0
     || pendingAttachments.length > 0
     || quotes.length > 0;
+  const showBranchInfo = Boolean(showBranchControl && projectId);
   const showComposerInfoPanel = showComposerStatus
     || composerSessionSeconds != null
     || Boolean(worktreePath)
+    || showBranchInfo
     || hasAcpUsagePanelContent(effective?.usage);
   const composerInfoTabTarget = !showComposerInfoPanel
     ? null
@@ -4119,7 +4121,7 @@ export function ACPChatDialog(
                 ) : null}
           <div className="px-5 pt-1 pb-2">
             <div
-              className="relative mx-auto w-full max-w-[var(--conversation-content-rail-max-inline-size)] [filter:drop-shadow(var(--gb-material-shadow))_drop-shadow(var(--gb-material-edge-shadow))]"
+              className="relative mx-auto w-full max-w-[var(--conversation-content-rail-max-inline-size)] [--acp-composer-rail-shadow:var(--gb-material-shadow)] [filter:drop-shadow(var(--acp-composer-rail-shadow))] dark:[--acp-composer-rail-shadow:var(--gb-elevation-overlay)]"
               data-acp-conversation-rail="composer"
               style={ACP_SESSION_COMPOSER_BORDER_STYLE}
             >
@@ -4128,7 +4130,7 @@ export function ACPChatDialog(
                 processingLabel={showComposerStatus ? composerStatusLabel : null}
                 sessionSeconds={composerSessionSeconds}
                 worktreePath={worktreePath}
-                branchProjectId={showBranchControl ? projectId : null}
+                branchProjectId={showBranchInfo ? projectId : null}
                 managedWorktreeBranch={effective?.worktreeBranch ?? managedWorktreeBranch}
                 className={cn(
                   ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Git Issue"
+  short_description: "Draft and publish reviewed GitHub issues"
+  default_prompt: "Use $git-issue to prepare an evidence-based GitHub issue for my review before publishing."

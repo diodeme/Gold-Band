@@ -20,8 +20,7 @@ function makeSession(partial?: Partial<AcpSessionVm>): AcpSessionVm {
       oldestCursor: null,
       newestCursor: null,
     },
-    pendingPermissions: [],
-    pendingElicitations: [],
+    pendingInteractions: [],
     diagnostics: {
       rawFrameCount: 0,
       eventCount: 0,

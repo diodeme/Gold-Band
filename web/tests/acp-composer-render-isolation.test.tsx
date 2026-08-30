@@ -72,8 +72,7 @@ function completedSession(): AcpSessionVm {
       newestCursor: null,
     },
     timelineProjection: { agents: [], todoEntries: [] },
-    pendingPermissions: [],
-    pendingElicitations: [],
+    pendingInteractions: [],
     diagnostics: { rawFrameCount: 0, eventCount: 1, errorCount: 0 },
   };
 }

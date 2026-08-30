@@ -1,0 +1,4 @@
+interface:
+  display_name: "Git PR"
+  short_description: "Draft and publish reviewed GitHub pull requests"
+  default_prompt: "Use $git-pr to prepare a complete GitHub pull request for my review before publishing."

@@ -133,6 +133,7 @@ pub struct ConversationWorkspaceRecoveryReport {
 pub struct RecoveredConversationRun {
     pub project_id: String,
     pub task_id: String,
+    pub task_uuid: Option<String>,
     pub run_id: String,
     pub round_id: String,
     pub node_id: String,
@@ -517,6 +518,7 @@ impl DesktopState {
                         report.recovered_runs.push(RecoveredConversationRun {
                             project_id: candidate.project_id.clone(),
                             task_id: candidate.task_id.clone(),
+                            task_uuid: recovered.task_uuid.clone(),
                             run_id: candidate.run_id.clone(),
                             round_id: recovered.current_round.unwrap_or_default(),
                             node_id: recovered.current_node.unwrap_or_default(),

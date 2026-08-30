@@ -62,6 +62,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const locator = {
   projectId: 'project-watermark',
   taskId: 'task-watermark',
+  taskUuid: 'task-uuid-watermark',
   runId: 'run-watermark',
   roundId: 'round-watermark',
   nodeId: 'node-watermark',
@@ -124,8 +125,7 @@ function session(events: AcpUiEventVm[], status = 'running'): AcpSessionVm {
       hasNewer: false,
     },
     timelineProjection: { agents: [], todoEntries: [] },
-    pendingPermissions: [],
-    pendingElicitations: [],
+    pendingInteractions: [],
     diagnostics: { rawFrameCount: 0, eventCount: events.length, errorCount: 0 },
   };
 }
@@ -625,9 +625,13 @@ describe('ACP session re-entry reconciliation', () => {
       prompt,
       event('answer-retry-gap', 9, 'textDelta', '重试后补齐的回答', { startedSeq: 2 }),
     ]);
+    let rejectReplay!: (reason?: unknown) => void;
+    const pendingReplay = new Promise<never>((_, reject) => {
+      rejectReplay = reject;
+    });
     vi.mocked(getAcpSession)
       .mockResolvedValueOnce(stale)
-      .mockRejectedValueOnce(new Error('temporary replay read failure'))
+      .mockReturnValueOnce(pendingReplay)
       .mockResolvedValue(complete);
 
     applyConversationEventToBranchSnapshots(update(event(
@@ -643,14 +647,14 @@ describe('ACP session re-entry reconciliation', () => {
 
     const { container, root } = await renderDialog(stale);
     try {
-      await act(async () => {
-        await new Promise((resolve) => window.setTimeout(resolve, 40));
+      await vi.waitFor(() => {
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
       });
-      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
       expect([...container.querySelectorAll('[data-testid="markdown"]')]
         .every((node) => node.getAttribute('data-streaming') === 'false')).toBe(true);
 
       await act(async () => {
+        rejectReplay(new Error('temporary replay read failure'));
         await new Promise((resolve) => window.setTimeout(resolve, 140));
       });
       expect(vi.mocked(getAcpSession).mock.calls.length).toBeGreaterThanOrEqual(3);

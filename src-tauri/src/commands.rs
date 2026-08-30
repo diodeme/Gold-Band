@@ -134,9 +134,37 @@ where
     T: Send + 'static,
     F: FnOnce() -> CommandResult<T> + Send + 'static,
 {
-    tauri::async_runtime::spawn_blocking(operation)
+    tauri::async_runtime::handle()
+        .inner()
+        .spawn_blocking(operation)
         .await
-        .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
+        .map_err(|error| {
+            let kind = if error.is_panic() {
+                "panic"
+            } else if error.is_cancelled() {
+                "cancelled"
+            } else {
+                "unknown"
+            };
+            let detail = if error.is_panic() {
+                let payload = error.into_panic();
+                payload
+                    .downcast_ref::<&str>()
+                    .map(|message| (*message).to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "non-string panic payload".to_string())
+            } else {
+                error.to_string()
+            };
+            warn!(join_kind = kind, %detail, "blocking command task failed to join");
+            CommandErrorVm::new(
+                "app.task-join-failed",
+                serde_json::json!({
+                    "kind": kind,
+                    "detail": detail,
+                }),
+            )
+        })?
 }
 
 #[derive(Debug, Clone)]
@@ -10558,6 +10586,25 @@ mod tests {
         });
 
         assert_ne!(worker_thread, caller_thread);
+    }
+
+    #[test]
+    fn blocking_command_preserves_panicking_join_diagnostics() {
+        let error = tauri::async_runtime::block_on(async {
+            spawn_blocking_command::<(), _>(|| {
+                panic!("simulated blocking command panic");
+            })
+            .await
+            .unwrap_err()
+        });
+
+        assert_eq!(error.code, "app.task-join-failed");
+        assert_eq!(error.params["kind"], "panic");
+        assert!(
+            error.params["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("simulated blocking command panic"))
+        );
     }
 
     #[test]

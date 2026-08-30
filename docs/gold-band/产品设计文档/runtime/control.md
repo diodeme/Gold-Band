@@ -228,16 +228,23 @@ runtime 落盘完成后，前端可见状态必须继续通过 lifecycle/run-sta
 
 ## 11. 控制 JSON 展示标注
 
-当普通 worker 的 output contract 或 AI-DYNAMIC 的 `dynamic-node-completion` 被 runtime 作为控制输入提取后，runtime 会对当前 attempt 的 ACP timeline 写入展示标注：
+只有 `RuntimeControlled` turn 同时拥有本轮 active output contract 时，Runtime 才执行 output evaluation。`NonRuntimeControlled` / Direct 即使回复中包含合法 JSON 或历史 attempt 仍保留 output contract，也必须完全绕过候选扫描、artifact 提取与展示标注。
+
+`PostTurnProjection` 与 AI-DYNAMIC bootstrap 使用的 `InlineControl` 共享既有消息选择规则，不因本次标注修复改变业务语义：terminal message 有稳定 ID 时，在最近最多 3 条 Agent message 中倒序寻找第一个合法 JSON；全 turn 都没有稳定 ID 时只检查最后一条；曾观察到稳定消息但 terminal message 匿名时进入 `provider.acp-terminal-message-unidentified` Manual recovery。倒序窗口内允许较早的合法 JSON 覆盖较新的非法候选；只有没有合法 JSON 时，才保留离 terminal 最近的非法候选供 repair/阻塞展示；完全没有 JSON-like 候选时结果为 Missing，不写展示标注。
+
+output evaluation 必须在一次候选扫描中同时返回 artifact 结果和命中来源，来源使用当前 attempt 内 canonical `branchId + itemId`，并携带同次扫描得到的 JSON byte span。固定 workflow 与 AI-DYNAMIC 终局处理根据 `attempt directory + branchId + itemId` 定点写入标注，不得再次扫描 Timeline、按正文猜候选或回退到“最新 JSON 消息”。Timeline materialized index 只管理通用事件 locator，不保存或维护 runtime-control candidate 推断。
+
+当 output evaluation 命中合法或非法控制候选后，runtime 会对来源消息所在的 ACP timeline 写入展示标注：
 
 - 标注位置：对应 assistant `textDelta` item 的 `raw.runtimeControlOutputDisplay`。
 - 标注内容：`artifactName`、`kind`、`jsonText`、`start/end`、`jsonStart/jsonEnd`、`fenced`、`parseStatus`。
 - `parseStatus` 可以是 `valid` 或 `invalid`。runtime 控制和 artifact 解析仍只接受合法 JSON；`invalid` 只表示该 assistant 输出中存在 JSON-like 控制候选，且本轮将进入 repair 或阻塞处理。
 - 同一条 assistant 输出中同时存在合法完整 JSON 与更靠后的非法 JSON-like 嵌套片段时，展示标注必须优先选择合法完整 JSON；非法 span 只作为没有合法 JSON 时的 fallback。
+- 写入前必须验证 locator 的 item identity、span 顺序、UTF-8 字符边界以及 `jsonText` 与当前消息正文完全一致；任一事实不匹配即拒绝标注，不得转而污染其他消息。
 - `start/end` 使用前端 JavaScript 字符串可直接消费的 UTF-16 索引，用于展示层把自然语言和控制 JSON 拆分。
 - 前端展示为单行折叠控制条：收起态不展示 JSON 内容，展开后才展示完整格式化 JSON；`valid` 使用主色和控制清单图标，`invalid` 使用告警色和告警图标。
 - 该标注只服务 UI 展示，不参与 artifact 内容、schema 校验、success condition、edge control 或 repair 判断。
-- 标注失败不得阻断 runtime 主控制流；artifact 提取、落盘和校验仍以 Rust 端既有 JSON 扫描与 validation 为准。
+- 标注失败不得阻断 runtime 主控制流；artifact 提取、落盘和校验使用 output evaluation 已返回的结果，不依赖 UI 标注成功，也不重新执行候选扫描。
 
 ## 12. 2026-08-20 ACP turn stop 与运行态恢复
 

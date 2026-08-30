@@ -5,7 +5,7 @@ use crate::config::{
     ManagedAgentId, ProjectIdentityConfig, SettingsConfig, project_identity_config,
 };
 use crate::domain::VERSION;
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use atomic_write_file::AtomicWriteFile;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
@@ -1078,9 +1078,13 @@ pub fn with_jsonl_file_lock<T>(
 
 pub fn with_file_lock<T>(path: &Utf8Path, operation: impl FnOnce() -> Result<T>) -> Result<T> {
     let lock = storage_file_lock_for(path)?;
-    let _guard = lock
-        .lock()
-        .map_err(|_| anyhow!("storage file lock poisoned"))?;
+    let _guard = lock.lock().unwrap_or_else(|poisoned| {
+        tracing::warn!(
+            path = path.as_str(),
+            "recovering poisoned storage file lock after a panicking operation"
+        );
+        poisoned.into_inner()
+    });
     operation()
 }
 
@@ -1089,7 +1093,13 @@ fn storage_file_lock_for(path: &Utf8Path) -> Result<Arc<Mutex<()>>> {
     let mut locks = STORAGE_FILE_LOCKS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
-        .map_err(|_| anyhow!("storage file lock registry poisoned"))?;
+        .unwrap_or_else(|poisoned| {
+            tracing::warn!(
+                path = path.as_str(),
+                "recovering poisoned storage file lock registry"
+            );
+            poisoned.into_inner()
+        });
     Ok(locks
         .entry(key)
         .or_insert_with(|| Arc::new(Mutex::new(())))
@@ -1752,6 +1762,22 @@ mod tests {
             line_count += 1;
         }
         assert_eq!(line_count, thread_count * writes_per_thread);
+    }
+
+    #[test]
+    fn file_lock_recovers_after_a_panicking_operation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("recoverable.jsonl")).unwrap();
+
+        let panic = std::panic::catch_unwind(|| {
+            let _ = with_file_lock(&path, || -> Result<()> {
+                panic!("simulated timeline mutation panic");
+            });
+        });
+        assert!(panic.is_err());
+
+        let recovered = with_file_lock(&path, || Ok("recovered"));
+        assert_eq!(recovered.unwrap(), "recovered");
     }
 
     #[test]

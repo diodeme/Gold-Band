@@ -1104,6 +1104,39 @@ fn unregister_provider_control(attempt_dir: &Utf8Path, control: &Arc<ProviderCon
     }
 }
 
+struct ProviderControlRegistration {
+    attempt_dir: Utf8PathBuf,
+    control: Arc<ProviderControl>,
+    committed: bool,
+}
+
+impl ProviderControlRegistration {
+    fn new(attempt_dir: Utf8PathBuf) -> Self {
+        let control = register_provider_control(&attempt_dir);
+        Self {
+            attempt_dir,
+            control,
+            committed: false,
+        }
+    }
+
+    fn control(&self) -> Arc<ProviderControl> {
+        Arc::clone(&self.control)
+    }
+
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for ProviderControlRegistration {
+    fn drop(&mut self) {
+        if !self.committed {
+            unregister_provider_control(&self.attempt_dir, &self.control);
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RuntimeStopProbe {
     pub run_file: Utf8PathBuf,
@@ -1238,6 +1271,13 @@ pub struct AcpPromptOutput {
 pub struct AcpPromptMessageOutput {
     pub text: String,
     pub has_stable_id: bool,
+    pub source: Option<AcpPromptMessageSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpPromptMessageSource {
+    pub branch_id: String,
+    pub item_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1320,6 +1360,10 @@ impl AcpPromptOutputAccumulator {
                 self.output.recent_messages.push(AcpPromptMessageOutput {
                     text: stable.text.clone(),
                     has_stable_id: true,
+                    source: Some(AcpPromptMessageSource {
+                        branch_id: event_branch_id(event),
+                        item_id: stable_message_item_id(event),
+                    }),
                 });
                 self.active_anonymous_chars = 0;
             }
@@ -1331,6 +1375,10 @@ impl AcpPromptOutputAccumulator {
                     self.output.recent_messages.push(AcpPromptMessageOutput {
                         text: String::new(),
                         has_stable_id: false,
+                        source: Some(AcpPromptMessageSource {
+                            branch_id: event_branch_id(event),
+                            item_id: stable_message_item_id(event),
+                        }),
                     });
                 }
                 if let Some(message) = self.output.recent_messages.last_mut() {
@@ -3186,7 +3234,7 @@ impl<'a> AcpRuntime<'a> {
         let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir);
         ensure_parent_dir(&paths.raw)?;
         ensure_parent_dir(&paths.diagnostics)?;
-        let control = register_provider_control(&paths.attempt_dir);
+        let control_registration = ProviderControlRegistration::new(paths.attempt_dir.clone());
         let key = AdapterConnectionKey::new(provider_id, cwd.clone());
         let adapter_started_at = Instant::now();
         let resolution = AdapterConnectionManager::shared()
@@ -3198,7 +3246,6 @@ impl<'a> AcpRuntime<'a> {
                 require_local_claude_executable,
             )
             .map_err(|error| {
-                unregister_provider_control(&paths.attempt_dir, &control);
                 let _ = append_diagnostic(
                     &paths.diagnostics,
                     "error",
@@ -3233,13 +3280,13 @@ impl<'a> AcpRuntime<'a> {
                 "pid": connection.pid(),
             })),
         );
-        Self::from_connection(
+        let runtime = Self::from_connection(
             provider_id,
             cwd,
             Some(key),
             connection,
             paths,
-            control,
+            control_registration.control(),
             raw_max_size,
             raw_target_size,
             runtime_policy,
@@ -3247,7 +3294,9 @@ impl<'a> AcpRuntime<'a> {
             live_update,
             stop_probe,
             true,
-        )
+        )?;
+        control_registration.commit();
+        Ok(runtime)
     }
 
     fn start_standalone(
@@ -3265,7 +3314,7 @@ impl<'a> AcpRuntime<'a> {
         let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir);
         ensure_parent_dir(&paths.raw)?;
         ensure_parent_dir(&paths.diagnostics)?;
-        let control = register_provider_control(&paths.attempt_dir);
+        let control_registration = ProviderControlRegistration::new(paths.attempt_dir.clone());
         let connection = AdapterConnection::spawn_standalone(
             provider_id,
             config,
@@ -3274,7 +3323,6 @@ impl<'a> AcpRuntime<'a> {
             require_local_claude_executable,
         )
         .map_err(|error| {
-            unregister_provider_control(&paths.attempt_dir, &control);
             let _ = append_diagnostic(
                 &paths.diagnostics,
                 "error",
@@ -3287,13 +3335,13 @@ impl<'a> AcpRuntime<'a> {
             );
             error
         })?;
-        Self::from_connection(
+        let runtime = Self::from_connection(
             provider_id,
             cwd,
             None,
             connection,
             paths,
-            control,
+            control_registration.control(),
             raw_max_size,
             raw_target_size,
             AcpRuntimePolicy::default(),
@@ -3301,7 +3349,9 @@ impl<'a> AcpRuntime<'a> {
             live_update,
             stop_probe,
             false,
-        )
+        )?;
+        control_registration.commit();
+        Ok(runtime)
     }
 
     fn from_connection(
@@ -7834,10 +7884,12 @@ fn permission_decision_timeline_event(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::collections::{HashSet, VecDeque};
     use std::sync::mpsc::RecvTimeoutError;
     use std::time::{Duration, Instant};
 
+    use camino::Utf8PathBuf;
     use serde_json::{Value, json};
 
     use crate::domain::{SessionMode, TurnControlMode};
@@ -7849,31 +7901,32 @@ mod tests {
         AcpPromptTokenUsage, AcpRuntime, AcpRuntimePolicy, AcpUsageState, AttachedSessionReusePlan,
         CancelNotificationPhase, DOCTOR_DIAGNOSTIC_TARGET_SIZE, NESTED_AGENT_TRANSCRIPT_CAPABILITY,
         PROMPT_CANCEL_DRAIN_FRAME_BUDGET, PROMPT_CANCEL_TIMEOUT, PriorAttemptMetrics,
-        PromptActivity, PromptBundle, PromptVisibility, ProviderFreshnessBaseline,
-        RuntimeStopProbe, SessionModelResolution, SessionRestoreCapabilities, SessionRestoreIntent,
-        SessionRestoreMethod, SessionRestorePlan, SessionRestorePlanError, SessionUpdatePhase,
-        acp_prompt_rpc_failure, active_context_compaction, active_timeline_streams,
-        active_timeline_streams_by_branch, append_bounded, append_diagnostic_best_effort,
-        append_raw_frame_best_effort, append_structured_diagnostic_best_effort,
-        attached_sync_required, cancel_attempt_prompt, canonical_prompt_event_identity,
-        catalog_observation_is_newer, cleanup_doctor_acp_dir_after_success,
-        confirmed_context_usage_update, dispatch_attempt_prompt_cancel,
-        drain_available_frames_bounded, drain_available_frames_with_budget,
-        drain_frames_until_quiet, drain_frames_until_quiet_with_timeout_error,
-        drain_frames_until_route_watermark, evaluate_provider_revision, initialize_params,
-        is_pending_retry_prompt_event, is_streaming_timeline_update, is_transport_interruption,
-        latest_visible_turn_id, map_prompt_terminal_drain_error, merge_tool_revision,
-        next_prompt_retry_attempt, parse_agent_capabilities, permission_decision_timeline_event,
-        plan_attached_session_reuse, plan_session_restore,
-        prepare_attempt_usage_after_reuse_decision, preserve_interrupted_session_identity,
-        prompt_activity, prompt_cancel_terminal_timeout, prompt_cancellation_outcome,
-        prompt_usage_transaction_id, provider_thread_is_active, register_provider_control,
-        request_prompt_cancel, resolve_permission_mode, resolve_session_model,
-        retain_bounded_doctor_acp_failure_bundle, runtime_hot_timeline_items,
-        session_config_fingerprint, session_load_params, session_new_params, session_prompt_params,
-        session_prompt_text, session_resume_params, settle_attempt_prompt_interactions,
-        settle_prompt_event, should_suppress_session_update, stable_message_item_id,
-        timeline_patch_flush_due, unregister_provider_control, validate_session_restore_target,
+        PromptActivity, PromptBundle, PromptVisibility, ProviderControlRegistration,
+        ProviderFreshnessBaseline, RuntimeStopProbe, SessionModelResolution,
+        SessionRestoreCapabilities, SessionRestoreIntent, SessionRestoreMethod, SessionRestorePlan,
+        SessionRestorePlanError, SessionUpdatePhase, acp_prompt_rpc_failure,
+        active_context_compaction, active_timeline_streams, active_timeline_streams_by_branch,
+        append_bounded, append_diagnostic_best_effort, append_raw_frame_best_effort,
+        append_structured_diagnostic_best_effort, attached_sync_required, cancel_attempt_prompt,
+        canonical_prompt_event_identity, catalog_observation_is_newer,
+        cleanup_doctor_acp_dir_after_success, confirmed_context_usage_update,
+        dispatch_attempt_prompt_cancel, drain_available_frames_bounded,
+        drain_available_frames_with_budget, drain_frames_until_quiet,
+        drain_frames_until_quiet_with_timeout_error, drain_frames_until_route_watermark,
+        evaluate_provider_revision, initialize_params, is_pending_retry_prompt_event,
+        is_streaming_timeline_update, is_transport_interruption, latest_visible_turn_id,
+        map_prompt_terminal_drain_error, merge_tool_revision, next_prompt_retry_attempt,
+        parse_agent_capabilities, permission_decision_timeline_event, plan_attached_session_reuse,
+        plan_session_restore, prepare_attempt_usage_after_reuse_decision,
+        preserve_interrupted_session_identity, prompt_activity, prompt_cancel_terminal_timeout,
+        prompt_cancellation_outcome, prompt_usage_transaction_id, provider_thread_is_active,
+        register_provider_control, request_prompt_cancel, resolve_permission_mode,
+        resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
+        runtime_hot_timeline_items, session_config_fingerprint, session_load_params,
+        session_new_params, session_prompt_params, session_prompt_text, session_resume_params,
+        settle_attempt_prompt_interactions, settle_prompt_event, should_suppress_session_update,
+        stable_message_item_id, timeline_patch_flush_due, unregister_provider_control,
+        validate_session_restore_target,
     };
 
     #[test]
@@ -9046,6 +9099,24 @@ mod tests {
 
         unregister_provider_control(attempt_dir, &control);
         assert_eq!(prompt_activity(attempt_dir), None);
+    }
+
+    #[test]
+    fn provider_control_registration_rolls_back_uncommitted_runtime_construction() {
+        let attempt_dir = Utf8PathBuf::from(format!(
+            "test-provider-control-construction-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+
+        {
+            let _registration = ProviderControlRegistration::new(attempt_dir.clone());
+            assert_eq!(
+                prompt_activity(&attempt_dir),
+                Some(PromptActivity::Starting)
+            );
+        }
+
+        assert_eq!(prompt_activity(&attempt_dir), None);
     }
 
     #[test]

@@ -812,6 +812,39 @@ describe('ACP chat event handling', () => {
     expect(parts.visibleText).toBe(content);
   });
 
+  it('keeps a later unmarked Direct JSON message separate from the selected Runtime output', () => {
+    const runtimeContent = 'result\n```json\n{"accepted":true}\n```';
+    const directContent = 'example\n```json\n{"example":true}\n```';
+    const messages = [
+      runtimeControlMessageParts(event({
+        id: 'runtime-output',
+        seq: 10,
+        kind: 'textDelta',
+        content: runtimeContent,
+        raw: {
+          runtimeControlOutputDisplay: {
+            kind: 'workflow-output',
+            artifactName: 'accept-result',
+            jsonText: '{"accepted":true}',
+            start: runtimeContent.indexOf('```json'),
+            end: runtimeContent.length,
+            parseStatus: 'valid',
+          },
+        },
+      })),
+      runtimeControlMessageParts(event({
+        id: 'direct-follow-up',
+        seq: 20,
+        kind: 'textDelta',
+        content: directContent,
+      })),
+    ];
+
+    expect(messages[0].display?.jsonText).toBe('{"accepted":true}');
+    expect(messages[1].display).toBeNull();
+    expect(messages[1].visibleText).toBe(directContent);
+  });
+
   it('splits every marked runtime repair attempt independently', () => {
     const attempts = ['A', 'B', 'C'].map((label, index) => {
       const content = `${label}\n{"try":${index + 1}}`;

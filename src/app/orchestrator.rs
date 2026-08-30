@@ -13,7 +13,7 @@ use jsonschema::error::{ValidationError, ValidationErrorKind};
 use parking_lot::ReentrantMutex;
 
 use crate::acp::elicitation::cancel_pending_elicitation_requests;
-use crate::acp::events::annotate_latest_runtime_control_output;
+use crate::acp::events::annotate_runtime_control_output;
 use crate::acp::permission::cancel_pending_permission_requests;
 use crate::artifacts::parse_json_artifact;
 use crate::config::DesktopLanguage;
@@ -71,7 +71,7 @@ use crate::prompts::{
 use crate::provider::{
     ConversationPromptInput, OutputEmissionMode, PromptHiddenSection, PromptOutputContract,
     PromptRuntimeContext, PromptVisibility, ProviderRunResult, ProviderRunStatus,
-    RuntimeControlIntent, StreamMode, UserPromptRenderMode, WorkerInvocation,
+    RuntimeControlIntent, RuntimeControlOutput, StreamMode, UserPromptRenderMode, WorkerInvocation,
     conversation_prompt_text, render_prompt_bundle, supported_models_from_capabilities,
     supported_modes_from_capabilities,
 };
@@ -9460,6 +9460,15 @@ fn finalize_dynamic_worker_result(
     if let Some(info) = result.runtime_error {
         return Err(runtime_error(info));
     }
+    if let Some(control_output) = result.runtime_control_output.as_ref() {
+        annotate_dynamic_runtime_control_output_best_effort(
+            ctx,
+            &node_id,
+            attempt_id,
+            control_output,
+            "dynamic-node-completion",
+        );
+    }
     match status {
         ProviderRunStatus::Success => {
             if let Some(payload) = result.result_payload
@@ -9534,13 +9543,6 @@ fn write_dynamic_output_artifact(
     if output_artifact.content.trim().is_empty() {
         return Ok(None);
     }
-    annotate_dynamic_runtime_control_output_best_effort(
-        ctx,
-        node_id,
-        attempt_id,
-        &output_artifact.name,
-        "dynamic-node-completion",
-    );
     let artifact_path =
         dynamic_output_artifact_path(ctx, node_id, attempt_id, &output_artifact.name);
     std::fs::create_dir_all(
@@ -9565,23 +9567,27 @@ fn annotate_dynamic_runtime_control_output_best_effort(
     ctx: &DynamicExecutionContext<'_>,
     node_id: &str,
     attempt_id: &str,
-    artifact_name: &str,
+    control_output: &RuntimeControlOutput,
     kind: &str,
 ) {
-    let path = ctx
-        .app
-        .paths
-        .dynamic_node_attempt_dir(
-            ctx.task_id,
-            ctx.run_id,
-            ctx.round_id,
-            ctx.outer_node_id,
-            ctx.outer_attempt_id,
-            node_id,
-            attempt_id,
-        )
-        .join("acp.timeline.jsonl");
-    if let Err(error) = annotate_latest_runtime_control_output(&path, artifact_name, kind) {
+    let attempt_dir = ctx.app.paths.dynamic_node_attempt_dir(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+        node_id,
+        attempt_id,
+    );
+    let path =
+        crate::acp::branches::branch_timeline_path(&attempt_dir, &control_output.source.branch_id);
+    if let Err(error) = annotate_runtime_control_output(
+        &path,
+        &control_output.source.item_id,
+        &control_output.artifact_name,
+        kind,
+        &control_output.span,
+    ) {
         tracing::warn!(
             task_id = ctx.task_id,
             run_id = ctx.run_id,
@@ -9590,7 +9596,9 @@ fn annotate_dynamic_runtime_control_output_best_effort(
             outer_attempt_id = ctx.outer_attempt_id,
             node_id,
             attempt_id,
-            artifact_name,
+            artifact_name = control_output.artifact_name,
+            branch_id = control_output.source.branch_id,
+            item_id = control_output.source.item_id,
             error = %error,
             "failed to annotate dynamic runtime control output display"
         );
@@ -14852,6 +14860,7 @@ mod tests {
                 }),
                 stream_path: None,
                 runtime_error: None,
+                runtime_control_output: None,
             })
         }
 
@@ -20600,6 +20609,7 @@ mod tests {
             }),
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         };
 
         let candidate = interrupted_dynamic_output_artifact_candidate(&result);
@@ -20683,6 +20693,7 @@ mod tests {
             worker_ref_seed: None,
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         };
 
         let candidate = interrupted_dynamic_output_artifact_candidate(&result);

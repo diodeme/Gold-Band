@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   beginConversationSessionSelection,
+  canonicalizeConversationPageIdentity,
   conversationPageForSession,
   conversationPageForIntervention,
   conversationPageMatchesRun,
@@ -24,6 +25,22 @@ const oldRun = {
 } as ConversationRunVm;
 
 describe('conversation navigation presentation transaction', () => {
+  it('keeps the same page identity once the canonical task UUID is committed', () => {
+    const page: ConversationPage = {
+      kind: 'conversation-run',
+      projectId: 'project-1',
+      taskId: 'task-001',
+      taskUuid: 'task-uuid-001',
+      runId: 'run-001',
+    };
+
+    expect(canonicalizeConversationPageIdentity(page, 'task-uuid-001')).toBe(page);
+    expect(canonicalizeConversationPageIdentity(
+      { ...page, taskUuid: undefined },
+      'task-uuid-001',
+    )).toEqual(page);
+  });
+
   it('keeps project identity when local task and run ids collide across workspaces', () => {
     const page = conversationPageForIntervention({
       targetType: 'conversation',

@@ -16,7 +16,7 @@ use crate::acp::events::{
     normalize_timeline_items_for_storage,
 };
 use crate::acp::turn_files::{FileVersionRef, TurnFileCaptureConfig, TurnFileStore};
-use crate::artifacts::json_artifact_display_span;
+use crate::artifacts::JsonArtifactSpan;
 use crate::storage::{
     append_jsonl_flushed_unlocked, append_jsonl_lines_flushed_unlocked, atomic_write_file,
     ensure_parent_dir, with_jsonl_file_lock,
@@ -26,6 +26,9 @@ pub const DEFAULT_TIMELINE_COMPACT_MAX_SIZE_BYTES: u64 = 8 * 1024 * 1024;
 pub const DEFAULT_TIMELINE_COMPACT_PATCH_RATIO: usize = 4;
 pub const DEFAULT_TIMELINE_COMPACT_MIN_PATCH_COUNT: usize = 4 * 1024;
 pub const TIMELINE_BLOB_MIN_BYTES: usize = 64 * 1024;
+// V10 removes runtime-control artifact inference from the generic timeline
+// index. Artifact selection belongs to Runtime output evaluation and the
+// selected source is annotated by its canonical branch and item identity.
 // V9 guarantees that each indexed locator points at a canonical full item, so
 // compaction can read only the latest locators instead of replaying every patch.
 // V8 keeps Agent launch links as standalone semantic blocks and recognizes
@@ -43,7 +46,7 @@ pub const TIMELINE_BLOB_MIN_BYTES: usize = 64 * 1024;
 // V4 adds the retry-prompt role and its current pending identity. Treating a V2
 // index as compatible would leave stop unable to settle a processing retry in
 // the crash window between the timeline append and session metadata rewrite.
-pub const TIMELINE_INDEX_FORMAT_VERSION: u32 = 9;
+pub const TIMELINE_INDEX_FORMAT_VERSION: u32 = 10;
 pub const DEFAULT_TIMELINE_CHECKPOINT_PATCH_INTERVAL: usize = 256;
 pub const DEFAULT_TIMELINE_TAIL_REPLAY_LIMIT: usize = 256;
 // Internal result marker: tail replay exceeded its bound and the index was
@@ -135,8 +138,6 @@ struct TimelineItemLocator {
     agent_prompt: bool,
     #[serde(default)]
     agent_result: bool,
-    #[serde(default)]
-    runtime_control_candidate: bool,
     #[serde(default)]
     retry_prompt: bool,
     #[serde(default)]
@@ -312,8 +313,6 @@ struct TimelineMaterializedIndex {
     #[serde(default)]
     accepted_prompt_ids: HashSet<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    latest_runtime_control_candidate: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pending_retry_prompt_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     timing_state_snapshot: Option<AcpTimingStateSnapshot>,
@@ -343,7 +342,6 @@ impl Default for TimelineMaterializedIndex {
             latest_plan: None,
             agent_launches: HashMap::new(),
             accepted_prompt_ids: HashSet::new(),
-            latest_runtime_control_candidate: None,
             pending_retry_prompt_id: None,
             timing_state_snapshot: None,
             runtime_projection: TimelineRuntimeProjection::default(),
@@ -1198,9 +1196,6 @@ fn apply_index_event_inner(
     let previous_locator = index.item_locators.get(&item.id).cloned();
     index.covered_revision = index.covered_revision.max(revision).max(locator.ended_seq);
     apply_lightweight_projection(index, item);
-    let replaced_latest_candidate =
-        index.latest_runtime_control_candidate.as_deref() == Some(item.id.as_str());
-    let runtime_control_candidate = locator.runtime_control_candidate;
     let replaced_pending_retry = index.pending_retry_prompt_id.as_deref() == Some(item.id.as_str());
     let processing_retry = locator.retry_prompt && locator.status.as_deref() == Some("processing");
     let candidate_order = (locator.ended_seq, locator.seq, locator.revision);
@@ -1211,25 +1206,6 @@ fn apply_index_event_inner(
         previous_locator.as_ref(),
         rebuild_late_runtime_projection,
     );
-    if runtime_control_candidate {
-        let should_replace = index
-            .latest_runtime_control_candidate
-            .as_ref()
-            .and_then(|candidate_id| index.item_locators.get(candidate_id))
-            .is_none_or(|current| {
-                candidate_order >= (current.ended_seq, current.seq, current.revision)
-            });
-        if should_replace {
-            index.latest_runtime_control_candidate = Some(item.id.clone());
-        }
-    } else if replaced_latest_candidate {
-        index.latest_runtime_control_candidate = index
-            .item_locators
-            .iter()
-            .filter(|(_, locator)| locator.runtime_control_candidate)
-            .max_by_key(|(_, locator)| (locator.ended_seq, locator.seq, locator.revision))
-            .map(|(item_id, _)| item_id.clone());
-    }
     if processing_retry {
         let should_replace = index
             .pending_retry_prompt_id
@@ -1530,12 +1506,6 @@ fn timeline_item_locator(
             .and_then(|raw| raw.get("source"))
             .and_then(Value::as_str)
             == Some("agentBranchResult"),
-        runtime_control_candidate: item.kind == "textDelta"
-            && item
-                .content
-                .as_deref()
-                .and_then(json_artifact_display_span)
-                .is_some(),
         retry_prompt: item
             .raw
             .as_ref()
@@ -2571,28 +2541,45 @@ pub fn read_indexed_timeline_projection(path: &Utf8Path) -> Result<TimelineBranc
     })
 }
 
-pub fn annotate_latest_runtime_control_output(
+pub fn annotate_runtime_control_output(
     path: &Utf8Path,
+    item_id: &str,
     artifact_name: &str,
     kind: &str,
+    span: &JsonArtifactSpan,
 ) -> Result<bool> {
     with_jsonl_file_lock(path, || {
         let policy = TimelineCheckpointPolicy::default();
         let index_path = timeline_index_path(path);
         let (mut index, _) = load_or_rebuild_index_unlocked(path, &index_path, policy)?;
-        let Some(item_id) = index.latest_runtime_control_candidate.clone() else {
-            return Ok(false);
-        };
-        let Some(locator) = index.item_locators.get(&item_id).cloned() else {
+        let Some(locator) = index.item_locators.get(item_id).cloned() else {
             return Ok(false);
         };
         let mut event = read_event_at_locator(path, &locator)?;
         let Some(content) = event.content.as_deref() else {
             return Ok(false);
         };
-        let Some(span) = json_artifact_display_span(content) else {
-            return Ok(false);
-        };
+        ensure!(
+            event.id == item_id,
+            "runtime-control source locator identity mismatch"
+        );
+        ensure!(
+            span.start <= span.json_start
+                && span.json_start <= span.json_end
+                && span.json_end <= span.end
+                && span.end <= content.len(),
+            "runtime-control source span is outside the selected message"
+        );
+        ensure!(
+            [span.start, span.json_start, span.json_end, span.end]
+                .into_iter()
+                .all(|index| content.is_char_boundary(index)),
+            "runtime-control source span is not on UTF-8 character boundaries"
+        );
+        ensure!(
+            content[span.json_start..span.json_end] == span.json_text,
+            "runtime-control source content changed after output evaluation"
+        );
         let display = serde_json::json!({
             "artifactName": artifact_name,
             "kind": kind,

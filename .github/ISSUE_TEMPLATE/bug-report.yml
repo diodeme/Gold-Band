@@ -1,6 +1,5 @@
 name: Bug report
 description: Report reproducible behavior that differs from the intended design.
-title: ""
 labels:
   - bug
 body:

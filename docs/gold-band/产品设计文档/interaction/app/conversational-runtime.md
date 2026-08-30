@@ -554,6 +554,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 
 - 只有 `RuntimeControlled` turn 同时拥有本轮 active output contract 时，后端才扫描控制候选。`PostTurnProjection` 与 bootstrap `InlineControl` 均保持最近最多 3 条 Agent message 的既有倒序选择规则；Direct / `NonRuntimeControlled` 完全不扫描，即使消息正文是合法 JSON 也按普通对话处理。
 - 后端 output evaluation 在同一次扫描中返回 artifact、命中的 canonical `branchId + itemId` 和 JSON span，再按该来源精确标注对应 ACP `textDelta` item 的 `raw.runtimeControlOutputDisplay`。合法结果与没有合法结果时保留的最新非法候选都遵守同一来源契约；完全没有候选时不标注。Timeline 与前端不得重新扫描正文、寻找最新 JSON 或把后续 Direct 消息关联为先前 Runtime 输出。
+- Synthetic provider 或隔离 fixture 直接构造 artifact、但没有真实 ACP timeline message locator 时，`runtime_control_output/source` 必须为 `None`；不得为通过接口构造而伪造 branch/item identity。涉及 timeline/config 可调边界的模块内测试必须显式引用同模块 canonical 常量，不复制或依赖失效的隐式作用域。
 - 前端只消费后端已经写到具体消息上的标记，不按消息内容全局猜测 JSON。标注 span 与当前消息 identity/正文不一致时后端拒绝写入，不 fallback 到其他消息。
 - 带标记的 assistant 消息如果同时包含自然语言和控制 JSON，自然语言继续作为普通 assistant 消息气泡展示，控制 JSON 单独展示为 `GOLD BAND 工作流控制` 折叠控制条。
 - 带标记的 assistant 消息如果仅包含控制 JSON，不展示普通消息气泡，只展示折叠控制条。

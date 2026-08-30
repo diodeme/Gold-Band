@@ -178,6 +178,7 @@ fn success_result() -> ProviderRunResult {
         }),
         stream_path: None,
         runtime_error: None,
+        runtime_control_output: None,
 
     }
 }
@@ -231,6 +232,7 @@ impl ProviderAdapter for InterruptThenSuccessProvider {
             worker_ref_seed: None,
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 
@@ -280,6 +282,7 @@ impl ProviderAdapter for InterruptedThenContinueProvider {
                 }),
                 stream_path: None,
                 runtime_error: None,
+                runtime_control_output: None,
             });
         }
         assert_eq!(session_mode, SessionMode::Continue);
@@ -340,6 +343,7 @@ impl ProviderAdapter for AlwaysFailAcceptanceProvider {
             worker_ref_seed: None,
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 
@@ -449,6 +453,7 @@ impl ProviderAdapter for NewRoundScopedContextProvider {
             worker_ref_seed: None,
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 
@@ -531,6 +536,7 @@ impl ProviderAdapter for MultiAttemptContinueProvider {
             }),
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 
@@ -612,6 +618,7 @@ impl ProviderAdapter for OneRepairProvider {
             }),
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 
@@ -673,6 +680,7 @@ impl ProviderAdapter for RepairExhaustionProvider {
             }),
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 
@@ -724,6 +732,7 @@ impl ProviderAdapter for TerminalMessageAnomalyProvider {
                     "terminalMessageHasStableId": false,
                 }),
             )),
+            runtime_control_output: None,
         })
     }
 

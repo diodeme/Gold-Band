@@ -54,7 +54,6 @@ import {
   saveConversationPreference,
   saveLastConversationWorkspace,
   getGitCapability,
-  subscribeAcpSessionUpdates,
   subscribeConversationRunStateUpdates,
   subscribeConversationTerminalResultUpdates,
   subscribeScheduledTaskUpdates,
@@ -63,6 +62,8 @@ import {
 } from './api';
 import { isTauriRuntime } from './api/shared';
 import { registerHeartbeatActivityListeners } from './lib/heartbeat-activity';
+import { DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE } from './lib/acp-chat-pagination';
+import { subscribeConversationEvents } from './lib/conversation-event-router';
 import { prefetchScheduledRuntimeSettings } from '@/components/scheduled-tasks/useScheduledRuntimeSettings';
 import {
   applyConversationSidebarRunLifecycle,
@@ -341,7 +342,7 @@ const defaultAppInfo: AppInfoVm = {
 };
 const defaultAppConfig: AppConfigVm = {
   acpSessionTitleRefreshEnabled: false,
-  acpChatEventPageSize: 360,
+  acpChatEventPageSize: DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
   conversationInlineContentMaxBytes: 64_000,
   conversationInlineImageMaxBytes: 4 * 1024 * 1024,
   conversationInlineImageMaxDimension: 2_560,
@@ -457,7 +458,7 @@ export function App() {
     conversationSidebarFlights.invalidate(key);
   }, [conversationSidebarFlights]);
   const conversationRunStateRefreshRef = useRef<Parameters<typeof subscribeConversationRunStateUpdates>[0] | null>(null);
-  const conversationAcpSessionRefreshRef = useRef<Parameters<typeof subscribeAcpSessionUpdates>[0] | null>(null);
+  const conversationAcpSessionRefreshRef = useRef<Parameters<typeof subscribeConversationEvents>[0] | null>(null);
   const conversationTerminalAcknowledgementsInFlightRef = useRef(new Set<string>());
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationRunModesByWorkspace, setConversationRunModesByWorkspace] = useState<ConversationRunModesByWorkspace>({});
@@ -1207,8 +1208,7 @@ export function App() {
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation') return undefined;
     let active = true;
-    let dispose: (() => void) | undefined;
-    void subscribeAcpSessionUpdates((event) => {
+    const dispose = subscribeConversationEvents((event) => {
       if (!active) return;
       const projectId = event.projectId?.trim();
       const taskUuid = event.taskUuid?.trim();
@@ -1238,13 +1238,10 @@ export function App() {
         }
       }
       conversationAcpSessionRefreshRef.current?.(event);
-    }).then((unlisten) => {
-      if (active) dispose = unlisten;
-      else unlisten();
-    }).catch(() => {});
+    });
     return () => {
       active = false;
-      dispose?.();
+      dispose();
     };
   }, [applyConversationLifecycleSnapshotToSidebar, applyConversationTaskActivity, bootstrap, uiMode]);
 
@@ -1515,7 +1512,7 @@ export function App() {
     };
     conversationRunStateRefreshRef.current = refreshSelectedRunFromStateEvent;
 
-    const refreshSelectedRunFromAcpEvent: Parameters<typeof subscribeAcpSessionUpdates>[0] = (event) => {
+    const refreshSelectedRunFromAcpEvent: Parameters<typeof subscribeConversationEvents>[0] = (event) => {
       if (!active) return;
       if (event.projectId !== projectId || event.taskUuid !== taskUuid || event.runId !== runId) return;
       const sessionKey = conversationSessionKeyFromParts(event);

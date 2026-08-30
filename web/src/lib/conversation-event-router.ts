@@ -15,6 +15,7 @@ import { mergeConversationAttemptLifecycle } from '@/lib/acp-runtime-composer-st
 type Listener = (event: AcpSessionUpdatedEventVm) => void;
 
 const listeners = new Set<Listener>();
+const attemptListeners = new Map<string, Set<Listener>>();
 const branchSnapshots = new Map<string, ConversationBranchLiveSnapshot>();
 const branchReplayBuffers = new Map<string, ConversationBranchReplayBuffer>();
 const branchListeners = new Map<string, Set<() => void>>();
@@ -82,13 +83,51 @@ async function ensureStarted() {
         () => summarizeAcpStreamingEvent(event),
       );
       applyConversationEventToBranchSnapshots(event);
-      for (const listener of listeners) listener(event);
+      notifyConversationEventListeners(
+        attemptListeners.get(attemptKey(event)) ?? [],
+        event,
+        'attempt',
+      );
+      notifyConversationEventListeners(listeners, event, 'global');
     });
     started = true;
   })().finally(() => {
     starting = null;
   });
   return starting;
+}
+
+function notifyConversationEventListeners(
+  targetListeners: Iterable<Listener>,
+  event: AcpSessionUpdatedEventVm,
+  scope: 'attempt' | 'global',
+) {
+  for (const listener of targetListeners) {
+    try {
+      listener(event);
+    } catch (error) {
+      recordConversationEventListenerError(scope, event, error);
+    }
+  }
+}
+
+function recordConversationEventListenerError(
+  scope: 'attempt' | 'global',
+  event: AcpSessionUpdatedEventVm,
+  error: unknown,
+) {
+  try {
+    console.error('[Gold Band] Conversation event listener failed', {
+      scope,
+      attemptKey: attemptKey(event),
+      branchId: conversationEventBranchId(event),
+      eventKind: event.event?.kind ?? null,
+      eventId: event.event?.id ?? null,
+      error,
+    });
+  } catch {
+    // Diagnostics must not interfere with the remaining event listeners.
+  }
 }
 
 export async function ensureConversationEventRouterStarted() {
@@ -113,7 +152,7 @@ const EMPTY_BRANCH_SNAPSHOT: ConversationBranchLiveSnapshot = {
   lifecycle: null,
 };
 
-function attemptKey(locator: {
+export interface ConversationAttemptLocator {
   projectId?: string | null;
   taskId: string;
   taskUuid?: string | null;
@@ -123,11 +162,28 @@ function attemptKey(locator: {
   attemptId: string;
   outerNodeId?: string | null;
   outerAttemptId?: string | null;
-}) {
-  return [locator.projectId ?? 'default', locator.taskUuid ?? 'missing-task-uuid', locator.runId, locator.roundId, locator.nodeId, locator.attemptId, locator.outerNodeId ?? '', locator.outerAttemptId ?? ''].join(':');
 }
 
-type ConversationAttemptLocator = Parameters<typeof attemptKey>[0];
+function attemptKey(locator: ConversationAttemptLocator) {
+  const taskUuid = locator.taskUuid?.trim();
+  const taskIdentity = taskUuid
+    ? ['taskUuid', taskUuid]
+    : ['taskId', locator.taskId];
+  return JSON.stringify([
+    locator.projectId ?? null,
+    taskIdentity,
+    locator.runId,
+    locator.roundId,
+    locator.nodeId,
+    locator.attemptId,
+    locator.outerNodeId ?? null,
+    locator.outerAttemptId ?? null,
+  ]);
+}
+
+export function conversationAttemptStoreKey(locator: ConversationAttemptLocator) {
+  return attemptKey(locator);
+}
 
 export function conversationBranchStoreKey(locator: Parameters<typeof attemptKey>[0], branchId: string) {
   return `${attemptKey(locator)}:${branchId}`;
@@ -575,32 +631,30 @@ export function subscribeConversationEvents(listener: Listener) {
   return () => { listeners.delete(listener); };
 }
 
+export function subscribeConversationAttemptEvents(
+  locator: ConversationAttemptLocator,
+  listener: Listener,
+) {
+  const key = attemptKey(locator);
+  const keyedListeners = attemptListeners.get(key) ?? new Set<Listener>();
+  keyedListeners.add(listener);
+  attemptListeners.set(key, keyedListeners);
+  void ensureStarted();
+  return () => {
+    keyedListeners.delete(listener);
+    if (keyedListeners.size === 0) attemptListeners.delete(key);
+  };
+}
+
 export function conversationEventBranchId(event: AcpSessionUpdatedEventVm) {
   return event.branchId ?? 'root';
 }
 
 export function conversationEventMatchesAttempt(
   event: AcpSessionUpdatedEventVm,
-  locator: {
-    projectId?: string | null;
-    taskId: string;
-    taskUuid?: string | null;
-    runId: string;
-    roundId: string;
-    nodeId: string;
-    attemptId: string;
-    outerNodeId?: string | null;
-    outerAttemptId?: string | null;
-  },
+  locator: ConversationAttemptLocator,
 ) {
-  return (event.projectId ?? null) === (locator.projectId ?? null)
-    && (event.taskUuid ?? null) === (locator.taskUuid ?? null)
-    && event.runId === locator.runId
-    && event.roundId === locator.roundId
-    && event.nodeId === locator.nodeId
-    && event.attemptId === locator.attemptId
-    && (event.outerNodeId ?? null) === (locator.outerNodeId ?? null)
-    && (event.outerAttemptId ?? null) === (locator.outerAttemptId ?? null);
+  return attemptKey(event) === attemptKey(locator);
 }
 
 export function readConversationBranchLiveSnapshot(

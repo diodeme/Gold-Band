@@ -416,10 +416,12 @@ describe('conversation sidebar navigation wiring', () => {
 
   it('keeps one shell-level ACP listener and clears only the matching task activity', () => {
     const source = fs.readFileSync(path.resolve(process.cwd(), 'web/src/App.tsx'), 'utf8');
-    const subscriptions = source.match(/void subscribeAcpSessionUpdates\(\(event\) =>/g) ?? [];
-    const globalSubscription = source.match(/void subscribeAcpSessionUpdates\(\(event\) => \{[\s\S]*?\}\)\.then/)?.[0] ?? '';
+    const nativeSubscriptions = source.match(/subscribeAcpSessionUpdates\(/g) ?? [];
+    const subscriptions = source.match(/subscribeConversationEvents\(\(event\) =>/g) ?? [];
+    const globalSubscription = source.match(/subscribeConversationEvents\(\(event\) => \{[\s\S]*?conversationAcpSessionRefreshRef\.current\?\.\(event\);[\s\S]*?\}\);/)?.[0] ?? '';
     const selectedRunHandler = source.match(/const refreshSelectedRunFromAcpEvent[\s\S]*?conversationAcpSessionRefreshRef\.current = refreshSelectedRunFromAcpEvent/)?.[0] ?? '';
 
+    expect(nativeSubscriptions).toHaveLength(0);
     expect(subscriptions).toHaveLength(1);
     expect(globalSubscription).toContain('conversationTaskActivityFromUpdate(event)');
     expect(globalSubscription).toContain('applyConversationTaskActivity(');
@@ -428,5 +430,12 @@ describe('conversation sidebar navigation wiring', () => {
     expect(globalSubscription).not.toContain('getConversationSidebar(');
     expect(selectedRunHandler).not.toContain('applyConversationTaskActivity(');
     expect(selectedRunHandler).not.toContain('applyConversationLifecycleSnapshotToSidebar(');
+
+    const dialogSource = fs.readFileSync(
+      path.resolve(process.cwd(), 'web/src/components/acp/ACPChatDialog.tsx'),
+      'utf8',
+    );
+    expect(dialogSource).toContain('subscribeConversationAttemptEvents(branchLocator');
+    expect(dialogSource).not.toContain('subscribeConversationEvents((event) =>');
   });
 });

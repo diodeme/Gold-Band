@@ -93,13 +93,13 @@ Gold Band 需要吸收的是 Jockey 的 ACP 事件归一化和 Chat/Session UI �
 - UI 组件只依赖 Gold Band 会话详情 ViewModel，不直接绑定 ACP crate / adapter 原始结构。
 - Raw ACP frame 只在诊断入口展示，不作为普通用户主视图。
 - 为定位“live event 已到达但打字机未激活”的间歇性问题，增加默认关闭的 ACP streaming 结构化诊断轨迹：覆盖 router、attempt/branch locator、animation readiness/replay 水位、streaming target、Markdown render 与 terminal settle。轨迹不保存消息正文，最多保留 2,000 条并可从 DevTools 导出 JSON；单元测试固化容量上限、快照隔离和 locator 差异报告。
-- ACP Markdown 播放复用单个 Streamdown 文档的 renderer token，并由每条消息唯一的文档水位严格顺序释放；列表 marker、各列表项、后续标题和段落不得各自启动动画。播放器按 Streamdown block DOM 身份缓存 token 索引，累计快照更新只重建变化 block，稳定 block 不重复扫描或校准。播放积压只调整 token 释放速度，不改变 canonical 发布频率或 Markdown 解析边界；工具、用户、终态或会话切换必须立即 settle。
+- ACP Markdown 播放复用单个 Streamdown 文档的 renderer token，并由每条消息唯一的文档水位严格顺序释放；列表 marker、各列表项、后续标题和段落不得各自启动动画。只有当前流式 assistant 消息创建 playback controller 及其 `MutationObserver`；静态历史直接展示最终正文且不创建这两类资源。static→streaming 时把既有正文作为 settled baseline，只播放后续追加；streaming→static、工具、用户、终态或会话切换必须先完整 settle 再释放。播放器按 Streamdown block DOM 身份缓存 token 索引，累计快照更新只重建变化 block，稳定 block 不重复扫描或校准；播放积压只调整 token 释放速度，不改变 canonical 发布频率或 Markdown 解析边界。
 - ACP streaming 调试开关同时采样浏览器 Long Animation Frame、播放 tick、会话 ResizeObserver 和自动贴底；高频 Resize/贴底只按 500ms 汇总，Long Animation Frame 只保留 blocking/render/style-layout 时长与最多三个 script attribution，不保存正文或脚本 URL。
 - ACP streaming 诊断额外覆盖播放层 init/reconcile/约 500ms sample/超过 50ms long-frame/settle；只记录 canonical 长度、token 总数与水位、积压、帧数、释放数、最长帧、reconcile 耗时和原因，禁止记录正文或每字符事件，确保诊断不会成为新的热路径。
-- 普通 ACP session 查询必须返回指定 `branchId` 的语义块窗口，而不是完整会话文件。根分支读取 `acp.timeline.jsonl`，Agent 分支读取 `agents/<AgentExecutionId>/timeline.jsonl`；初始默认返回最近约 30 个语义块，前端保留有限多页缓冲。分页游标统一为 `beforeCursor / afterCursor`，折叠工具数、Activity 审计数和子 Agent 历史都不参与父 branch 的 `hasOlder`。首个 root session-ready 快照仍必须把 snapshot metadata 与首个 `goldBandPrompt` 一起暴露；Agent 分支以 synthetic Agent Prompt 作为只读会话起点。
+- 普通 ACP session 查询必须返回指定 `branchId` 的语义块窗口，而不是完整会话文件。根分支读取 `acp.timeline.jsonl`，Agent 分支读取 `agents/<AgentExecutionId>/timeline.jsonl`；初始默认返回最近 96 个语义块，前端固定保留三页滑动窗口。分页游标统一为 `beforeCursor / afterCursor`，折叠工具数、Activity 审计数和子 Agent 历史都不参与父 branch 的 `hasOlder`。首个 root session-ready 快照仍必须把 snapshot metadata 与首个 `goldBandPrompt` 一起暴露；Agent 分支以 synthetic Agent Prompt 作为只读会话起点。
 - `available_commands_update`、`usage_update`、session/mode/config update 等状态帧不渲染为聊天消息；它们只更新 session 状态或留在 Raw frames 中排障。
-- ACP runtime 文件位于 `~/.gold-band/projects/{project-id}/tasks/...`，不写入项目工作树；ACP 会话身份只以当前 user runtime attempt 的 `worker-ref.json` 为事实源：`continue_ref.acpSessionId` 决定 resume/load 的目标 session 与 UI header 的 provider session id；`acp.session.json` 不再作为 session id 来源，但会保存 status、capabilities、adapter 配置快照、stop reason，以及通过可选 `session/list` 轮询 best-effort 拉取得到的 `title` 缓存。该能力受项目级 `configs/app-config.json` 控制，默认关闭。title 仅用于后续 UI/检索储备；本期不作为会话头部展示的依赖字段，拉取不到时保持为空。
-- `configs/app-config.json` 是版本内共享的项目级 app config 入口，不是用户本机偏好设置：适合开发期可选能力和共享 UI/runtime 参数的统一管理。CLI 与桌面端都读取同一份文件；未声明字段继续走代码默认值，不要求每个配置都显式写入。当前文件示例：`{ "acpSessionTitleRefreshEnabled": false, "acpChatEventPageSize": 360 }`。
+- ACP runtime 文件位于 `~/.gold-band/projects/{project-id}/tasks/...`，不写入项目工作树；ACP 会话身份只以当前 user runtime attempt 的 `worker-ref.json` 为事实源：`continue_ref.acpSessionId` 决定 resume/load 的目标 session 与 UI header 的 provider session id；`acp.session.json` 不再作为 session id 来源，但会保存 status、capabilities、adapter 配置快照、stop reason，以及通过可选 `session/list` 轮询 best-effort 拉取得到的 `title` 缓存。该能力受项目级 `configs/app-config.toml` 控制，默认关闭。title 仅用于后续 UI/检索储备；本期不作为会话头部展示的依赖字段，拉取不到时保持为空。
+- `configs/app-config.toml` 是版本内共享的项目级 app config 入口，不是用户本机偏好设置：适合开发期可选能力和共享 UI/runtime 参数的统一管理。CLI 与桌面端都读取同一份文件；未声明字段继续走代码默认值，不要求每个配置都显式写入。当前配置使用 TOML 字段，例如 `acpSessionTitleRefreshEnabled = false`、`acpChatEventPageSize = 96`；会话窗口固定保留三页，默认上限为 288。
 - session-wide metadata、`pendingInteractions`、usage 和 diagnostics 由后端流式扫描全量事件得出，不允许为了 UI 轮询保留或传输全量事件数组。
 - `Agent` execution 是后端规范分支模型：事件进入 timeline 前已按内部 branch metadata 路由，前端只将父 branch 的 launch item 投影为 `AgentLinkRow`，不得重新按 seq 生命周期窗口框选子事件。
 - 未识别事件应进入诊断区或系统提示，不应破坏会话流。
@@ -132,7 +132,7 @@ Gold Band 需要吸收的是 Jockey 的 ACP 事件归一化和 Chat/Session UI �
 
 基础 AI chat 交互优先使用 prompt-kit 生成到项目内的源码组件，避免自研消息容器、输入框和工具调用基础控件：
 
-- 普通 `overflow-y-auto` message list：承载 ACP 历史浏览和向上分页；对 prepend 历史使用 scrollHeight 差值补偿 scrollTop，避免虚拟列表重新测量高度时闪回；对流式消息内容增高使用内容尺寸监听来维持底部贴合，避免只在事件数量变化时滚动。
+- 普通 `overflow-y-auto` message list：承载 ACP 历史浏览和双向 cursor 分页；prepend/append 前捕获当前可见语义项的稳定 DOM key 与 top，合并和反向裁剪后按同一项的新旧 top 差值补偿 `scrollTop`。继续使用原生滚动，不引入动态高度虚拟列表；流式消息、图片和折叠块的内容增高由共享内容尺寸监听维持底部贴合，不能只在事件数量变化时滚动。
 - `ChatContainerRoot / ChatContainerContent / ChatContainerScrollAnchor`：仅用于不需要历史分页的普通聊天容器场景。
 - `Message / MessageContent`：承载用户与 agent 气泡。
 - `PromptInput / PromptInputTextarea / PromptInputActions / PromptInputAction`：承载 composer、快捷键、loading 和 action 区域。受控输入的 autosize ref 必须稳定，每次 value 更新只在 layout effect 中测量一次，不能在 `onChange`、ref 重挂载和 layout effect 三条路径重复读写高度。
@@ -143,6 +143,7 @@ Gold Band 需要吸收的是 Jockey 的 ACP 事件归一化和 Chat/Session UI �
 ACP 专属组件只做协议事件映射和业务状态组合：
 
 - `ACPChatDialog`：组合共享会话视口、intervention 与根会话 composer，并负责 branch 查询和实时事件合并。branch locator 使用稳定对象引用下发；composer 草稿逐键更新不得使历史 Markdown/Activity/Tool 消费者失去 memo 命中。
+- `conversation event router`：建立 Web 端唯一原生 ACP session update 订阅。Canonical attempt key 的 Task 分量使用 `taskScope = taskUuid ?? taskId`：存在 `taskUuid` 时以 UUID 为 canonical，只有缺失 UUID 的 legacy 事件才回退 `taskId`；完整 key 仍包含 project/task/run/round/node/attempt 与 outer locator，不能只按 attempt ID 投递。Router 按该 key 为会话详情提供 keyed listener；投递前先更新有界 branch replay/lifecycle snapshot，并向 App 发布侧栏状态、新 session 锚点、terminal/interaction 与当前 run 自动跟随所需的轻量全局投影。`ACPChatDialog` 不建立第二份全局订阅，后台会话普通事件不得遍历当前页面 listener，切回会话仍从 replay 追平。
 - `ConversationViewport` / `ACPMessageList`：根会话与 Agent 分支共用的原生滚动消息视口，按语义块展示正式文字、活动摘要、TODO 和 Agent 链接。
 - `ACPSessionHeader`：展示 session/provider/adapter/cwd/连接状态；Agent 只读容器按只读边界隐藏不适用入口。
 - `ACPEventRenderer`：根据 Gold Band 规范事件类型选择渲染组件，不读取 provider 私有 metadata。
@@ -279,7 +280,7 @@ Raw 视图用于排障：
 
 Raw 视图不承担主交互，不把 ACP 原始 JSON 暴露为普通用户默认体验。切换 Raw 视图或展开单个 frame 时必须保留用户当前阅读位置；用户主动检索、筛选或翻页时只替换当前页结果；Raw 详情内容必须主动换行，禁止横向撑出会话抽屉。
 
-新增用户 prompt、轮询获得新 ACP event 或 agent 回复追加内容且用户仍在底部时，会话列表必须贴底；同一条流式 agent 消息内容变高但事件数量不变时，也必须通过内容尺寸变化监听继续贴底；抽屉关闭不会停止后端 ACP prompt，重新打开同一节点会话时只要持久化 session status 仍是 pending/running/cancelling 等 active 状态，`ACPChatDialog` 必须立即恢复约 1.5 秒一次的 session 轮询并继续合并渲染新增事件；用户上滑加载历史期间必须冻结自动贴底并忽略虚拟列表加载后的临时 at-bottom 误报；历史加载应在用户不在底部且距离顶部约 240px 内预触发，并在顶部显示“— 上滑查看历史信息 —”提示，不要求用户贴到绝对顶部；加载成功后只保持当前阅读锚点，prepend 前后用 scrollHeight 差值补偿 scrollTop，避免滚动条长度变化导致阅读位置按比例回退；不自动下拉补较新页，避免快速上下滚动时两个方向的分页互相抢占滚动位置；处理中提示结束时只移除 composer/乐观气泡状态，不允许 session 刷新导致消息区先跳顶部再回底部。
+新增用户 prompt、Router 推送新 ACP event 或 agent 回复追加内容且用户仍在真实会话底部时，会话列表必须贴底；同一条流式 agent 消息内容变高但事件数量不变时，也必须通过共享内容尺寸监听继续贴底。页面卸载不会停止后端 ACP prompt；重新进入 active session 时先从有界 replay/lifecycle snapshot 衔接，再以 `getAcpSession` 权威快照校准，不恢复轮询或第二份原生订阅。历史页默认每次 96 个窗口项、客户端保留三页共 288；用户接近上下边界时按单一分页方向加载，加载前捕获当前可见语义项 DOM 锚点，合并后从相反方向裁剪并在 layout 阶段按锚点 top 差值恢复阅读位置。全程使用原生滚动，不使用虚拟列表、预估行高或 `scrollHeight` 总量补偿；处理中提示结束时只移除 composer/乐观气泡状态，不允许 session 刷新导致消息区先跳顶部再回底部。
 
 ### 6.9 处理中反馈与计时
 

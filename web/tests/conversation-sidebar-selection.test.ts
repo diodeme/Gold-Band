@@ -224,6 +224,13 @@ describe('ConversationSidebar run selection identity', () => {
     expect(sidebar.pinnedTasks[0].runs[0].status).toBe('running');
     expect(sidebar.tasksByWorkspace['project-a'][0].latestRun?.status).toBe('running');
     expect(sidebar.tasksByWorkspace['project-a'][0].runs[0].resumable).toBe(false);
+    expect(applyConversationSidebarRunLifecycle(
+      sidebar,
+      'project-a',
+      'task-a',
+      'run-001',
+      lifecycle,
+    )).toBe(sidebar);
   });
 
   it('projects a background terminal run across workspaces without replacing unrelated sidebar data', () => {

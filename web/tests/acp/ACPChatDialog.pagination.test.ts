@@ -10,6 +10,10 @@ import {
   resolveAcpHasOlderEvents,
 } from '../../src/components/acp/ACPChatDialog';
 import { normalizeAcpEventForAttempt } from '../../src/lib/acp-event-normalization';
+import {
+  DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
+  DEFAULT_ACP_CHAT_LOADED_EVENT_BUFFER_LIMIT,
+} from '../../src/lib/acp-chat-pagination';
 import type { AcpSessionVm, AcpUiEventVm } from '../../src/types';
 
 function event(
@@ -124,14 +128,17 @@ describe('ACPChatDialog pagination buffer', () => {
   });
 
   it('keeps three configured pages in the sliding event buffer', () => {
-    expect(loadedEventBufferLimit(360)).toBe(1080);
+    expect(DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE).toBe(96);
+    expect(DEFAULT_ACP_CHAT_LOADED_EVENT_BUFFER_LIMIT).toBe(288);
+    expect(loadedEventBufferLimit(DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE)).toBe(288);
+    expect(loadedEventBufferLimit(240)).toBe(720);
     expect(loadedEventBufferLimit(30)).toBe(90);
     expect(loadedEventBufferLimit(10)).toBe(30);
     expect(loadedEventBufferLimit(2000)).toBe(2000);
   });
 
   it('keeps the current page when the next page is merged', () => {
-    const current = Array.from({ length: 360 }, (_, index) =>
+    const current = Array.from({ length: 96 }, (_, index) =>
       event({
         id: `current-${index + 1}`,
         seq: index + 1,
@@ -140,31 +147,31 @@ describe('ACPChatDialog pagination buffer', () => {
         content: `current ${index + 1}`,
       }),
     );
-    const newer = Array.from({ length: 360 }, (_, index) =>
+    const newer = Array.from({ length: 96 }, (_, index) =>
       event({
-        id: `newer-${index + 361}`,
-        seq: index + 361,
-        timestamp: `${index + 361}Z`,
+        id: `newer-${index + 97}`,
+        seq: index + 97,
+        timestamp: `${index + 97}Z`,
         kind: 'textDelta',
-        content: `newer ${index + 361}`,
+        content: `newer ${index + 97}`,
       }),
     );
 
     const merged = limitAcpEvents(
       mergeAcpEvents(current, newer),
       'start',
-      loadedEventBufferLimit(360),
+      loadedEventBufferLimit(DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE),
     );
 
-    expect(merged).toHaveLength(720);
+    expect(merged).toHaveLength(192);
     expect(merged[0]!.id).toBe('current-1');
-    expect(merged[359]!.id).toBe('current-360');
-    expect(merged[360]!.id).toBe('newer-361');
-    expect(merged[719]!.id).toBe('newer-720');
+    expect(merged[95]!.id).toBe('current-96');
+    expect(merged[96]!.id).toBe('newer-97');
+    expect(merged[191]!.id).toBe('newer-192');
   });
 
   it('slides a full three-page window without breaking the page boundary', () => {
-    const current = Array.from({ length: 1080 }, (_, index) =>
+    const current = Array.from({ length: 288 }, (_, index) =>
       event({
         id: `event-${index + 1}`,
         seq: index + 1,
@@ -173,27 +180,27 @@ describe('ACPChatDialog pagination buffer', () => {
         content: `event ${index + 1}`,
       }),
     );
-    const newer = Array.from({ length: 360 }, (_, index) =>
+    const newer = Array.from({ length: 96 }, (_, index) =>
       event({
-        id: `event-${index + 1081}`,
-        seq: index + 1081,
-        timestamp: `${index + 1081}Z`,
+        id: `event-${index + 289}`,
+        seq: index + 289,
+        timestamp: `${index + 289}Z`,
         kind: 'textDelta',
-        content: `event ${index + 1081}`,
+        content: `event ${index + 289}`,
       }),
     );
 
     const merged = limitAcpEvents(
       mergeAcpEvents(current, newer),
       'start',
-      loadedEventBufferLimit(360),
+      loadedEventBufferLimit(DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE),
     );
 
-    expect(merged).toHaveLength(1080);
-    expect(merged[0]!.seq).toBe(361);
-    expect(merged[719]!.seq).toBe(1080);
-    expect(merged[720]!.seq).toBe(1081);
-    expect(merged[1079]!.seq).toBe(1440);
+    expect(merged).toHaveLength(288);
+    expect(merged[0]!.seq).toBe(97);
+    expect(merged[191]!.seq).toBe(288);
+    expect(merged[192]!.seq).toBe(289);
+    expect(merged[287]!.seq).toBe(384);
   });
 
   it('does not turn live activity audit overflow into conversation history', () => {

@@ -474,6 +474,14 @@ describe('conversation event router', () => {
     )).toBe(true);
     expect(conversationEventMatchesAttempt({ ...locator, projectId: null }, locator)).toBe(false);
     expect(conversationEventMatchesAttempt({ ...locator, attemptId: 'attempt-2' }, locator)).toBe(false);
+    expect(conversationEventMatchesAttempt(
+      { ...locator, taskId: 'legacy-task-a', taskUuid: null },
+      { ...locator, taskId: 'legacy-task-b', taskUuid: null },
+    )).toBe(false);
+    expect(conversationEventMatchesAttempt(
+      { ...locator, taskId: 'renamed-task-a' },
+      { ...locator, taskId: 'renamed-task-b' },
+    )).toBe(true);
   });
 
   it('isolates replay, permission attention, and subscriptions across reused task locators', () => {

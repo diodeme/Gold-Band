@@ -373,32 +373,50 @@ export const Markdown = memo(function Markdown({ children, className, streaming 
   const { t } = useTranslation();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const playbackRef = useRef<StreamingMarkdownPlayback | null>(null);
+  const previousStreamingRef = useRef(streaming);
   const blockParserRef = useRef<ReturnType<typeof createIncrementalMarkdownBlockParser> | null>(null);
   if (!blockParserRef.current) {
     blockParserRef.current = createIncrementalMarkdownBlockParser();
   }
 
   useLayoutEffect(() => {
+    const wasStreaming = previousStreamingRef.current;
+    previousStreamingRef.current = streaming;
+    const currentPlayback = playbackRef.current;
+
+    if (!streaming) {
+      if (!currentPlayback) return;
+      currentPlayback.setCanonical(children);
+      currentPlayback.setStreaming(false);
+      currentPlayback.dispose();
+      if (playbackRef.current === currentPlayback) playbackRef.current = null;
+      return;
+    }
+
+    if (currentPlayback) {
+      currentPlayback.setCanonical(children);
+      currentPlayback.setStreaming(true);
+      return;
+    }
+
     const root = rootRef.current;
     if (!root) return;
     const playback = createStreamingMarkdownPlayback(root, {
       canonical: children,
-      streaming,
+      // History that was already rendered statically is the settled baseline.
+      // A newly mounted streaming message still plays from its first token.
+      streaming: wasStreaming,
     });
     playbackRef.current = playback;
-    return () => {
-      playback.dispose();
-      if (playbackRef.current === playback) playbackRef.current = null;
-    };
+    if (!wasStreaming) playback.setStreaming(true);
+  }, [children, streaming]);
+
+  useLayoutEffect(() => () => {
+    const playback = playbackRef.current;
+    if (!playback) return;
+    playback.dispose();
+    if (playbackRef.current === playback) playbackRef.current = null;
   }, []);
-
-  useLayoutEffect(() => {
-    playbackRef.current?.setCanonical(children);
-  }, [children]);
-
-  useLayoutEffect(() => {
-    playbackRef.current?.setStreaming(streaming);
-  }, [streaming]);
 
   return (
     <div

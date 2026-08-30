@@ -43,13 +43,22 @@ vi.mock('@/components/prompt-kit/markdown', () => ({
 }));
 
 import { getAcpSession } from '@/api';
-import { ACPChatDialog, optimisticUserEvent } from '@/components/acp/ACPChatDialog';
+import {
+  ACPChatDialog,
+  loadedEventBufferLimit,
+  optimisticUserEvent,
+  resetAcpResourceCache,
+} from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import {
   applyConversationEventToBranchSnapshots,
   CONVERSATION_EVENT_REPLAY_LIMITS,
+  readConversationBranchReplaySnapshot,
   resetConversationEventRouterSnapshots,
 } from '@/lib/conversation-event-router';
+import {
+  DEFAULT_ACP_CHAT_LOADED_EVENT_BUFFER_LIMIT,
+} from '@/lib/acp-chat-pagination';
 import type { AcpSessionUpdatedEventVm } from '@/api/client';
 import type {
   AcpSessionVm,
@@ -146,6 +155,7 @@ async function renderDialog(
   onInitialSessionQueryStateChange?: (state: 'loading' | 'success' | 'error') => void,
   optimisticEvents?: AcpUiEventVm[],
   dialogLocator: TestLocator = locator,
+  eventPageSize?: number,
 ) {
   const container = document.createElement('div');
   document.body.append(container);
@@ -158,6 +168,7 @@ async function renderDialog(
           {...dialogLocator}
           branchId={branchId}
           optimisticEvents={optimisticEvents}
+          eventPageSize={eventPageSize}
           onInitialSessionQueryStateChange={onInitialSessionQueryStateChange}
           showSystemPromptAction={false}
           showRawFramesAction={false}
@@ -244,6 +255,7 @@ async function unmount(root: Root) {
 }
 
 beforeEach(() => {
+  resetAcpResourceCache();
   resetConversationEventRouterSnapshots();
   vi.mocked(getAcpSession).mockReset();
   vi.stubGlobal('ResizeObserver', class {
@@ -261,6 +273,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetAcpResourceCache();
   vi.unstubAllGlobals();
   document.body.replaceChildren();
 });
@@ -756,6 +769,272 @@ describe('ACP session re-entry reconciliation', () => {
         await new Promise((resolve) => window.setTimeout(resolve, 150));
       });
       expect(live?.getAttribute('data-streaming')).toBe('false');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('keeps older pagination reachable after live updates trim a full event window', async () => {
+    const oldestPrompt = event('prompt-live-window', 1, 'userTextDelta', '窗口中最早的消息', {
+      raw: { source: 'goldBandPrompt', promptId: 'prompt-live-window' },
+    });
+    const initial = session([oldestPrompt]);
+    vi.mocked(getAcpSession).mockResolvedValue(initial);
+
+    const { container, root } = await renderDialog(initial);
+    try {
+      await act(async () => {
+        for (let index = 0; index < DEFAULT_ACP_CHAT_LOADED_EVENT_BUFFER_LIMIT; index += 1) {
+          runtime.listener?.(update(event(
+            `live-window-${index + 1}`,
+            index + 2,
+            'textDelta',
+            `实时窗口消息 ${index + 1}`,
+          )));
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+      });
+
+      expect(container.textContent).not.toContain('窗口中最早的消息');
+      const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+        .find((element) => (
+          element.classList.contains('h-full')
+          && element.classList.contains('overflow-y-auto')
+        ));
+      expect(scroller).toBeDefined();
+      Object.defineProperties(scroller!, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: 2_400 },
+        scrollTop: { configurable: true, value: 0, writable: true },
+      });
+
+      await act(async () => {
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 20));
+      });
+
+      expect(vi.mocked(getAcpSession).mock.calls.some(
+        (call) => typeof call[6]?.beforeSeq === 'number',
+      )).toBe(true);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('keeps a live update reachable when a stale newer-page response arrives late', async () => {
+    const pageSize = 30;
+    const loadedWindowSize = loadedEventBufferLimit(pageSize);
+    const totalEventCount = loadedWindowSize;
+    const currentWindowStart = pageSize + 1;
+    const currentEvents = Array.from({ length: pageSize }, (_, index) => {
+      const seq = currentWindowStart + index;
+      return event(`current-window-${seq}`, seq, 'textDelta', `当前窗口消息 ${seq}`);
+    });
+    const initial = session(currentEvents);
+    Object.assign(initial.eventPage, {
+      coveredRevision: totalEventCount,
+      newestRevision: currentEvents.at(-1)?.seq,
+      total: totalEventCount,
+      hasOlder: true,
+      hasNewer: true,
+    });
+
+    const newerWindowStart = currentWindowStart + pageSize;
+    const newerEvents = Array.from({ length: pageSize }, (_, index) => {
+      const seq = newerWindowStart + index;
+      return event(`newer-window-${seq}`, seq, 'textDelta', `下一窗口消息 ${seq}`);
+    });
+    const staleNewerPage = session(newerEvents);
+    Object.assign(staleNewerPage.eventPage, {
+      coveredRevision: totalEventCount,
+      newestRevision: totalEventCount,
+      total: totalEventCount,
+      hasOlder: true,
+      hasNewer: false,
+    });
+
+    let resolveNewerPage!: (value: AcpSessionVm) => void;
+    const pendingNewerPage = new Promise<AcpSessionVm>((resolve) => {
+      resolveNewerPage = resolve;
+    });
+    vi.mocked(getAcpSession).mockImplementation(async (...args) => {
+      if (typeof args[6]?.afterSeq === 'number') return pendingNewerPage;
+      return initial;
+    });
+
+    const { container, root } = await renderDialog(
+      initial,
+      'root',
+      undefined,
+      undefined,
+      locator,
+      pageSize,
+    );
+    try {
+      const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+        .find((element) => (
+          element.classList.contains('h-full')
+          && element.classList.contains('overflow-y-auto')
+        ));
+      expect(scroller).toBeDefined();
+      Object.defineProperties(scroller!, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: 2_400 },
+        scrollTop: { configurable: true, value: 1_800, writable: true },
+      });
+
+      await act(async () => {
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 30));
+      });
+      expect(vi.mocked(getAcpSession).mock.calls.some(
+        (call) => typeof call[6]?.afterSeq === 'number',
+      )).toBe(true);
+
+      const anchorText = `当前窗口消息 ${currentWindowStart}`;
+      const findAnchor = () => [...container.querySelectorAll<HTMLElement>('[data-acp-item-key]')]
+        .find((element) => element.textContent?.includes(anchorText));
+      expect(findAnchor()).toBeDefined();
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
+      scroller!.scrollTop = 500;
+
+      await act(async () => {
+        runtime.listener?.(update(event(
+          'live-during-newer-page-request',
+          totalEventCount + 1,
+          'textDelta',
+          '迟到分页期间到达的实时消息',
+        )));
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+      });
+      expect(readConversationBranchReplaySnapshot(locator, 'root').events)
+        .toEqual([expect.objectContaining({ id: 'live-during-newer-page-request' })]);
+      expect(container.textContent).not.toContain('迟到分页期间到达的实时消息');
+
+      await act(async () => {
+        resolveNewerPage(staleNewerPage);
+        await new Promise((resolve) => window.setTimeout(resolve, 30));
+      });
+
+      expect({
+        anchorPresent: Boolean(findAnchor()),
+        returnToLatestVisible: Boolean(
+          container.querySelector('[data-acp-return-to-latest="true"]'),
+        ),
+        stalePageApplied: container.textContent?.includes(`下一窗口消息 ${newerWindowStart}`),
+        liveEventInjected: container.textContent?.includes('迟到分页期间到达的实时消息'),
+        scrollTop: scroller!.scrollTop,
+      }).toEqual({
+        anchorPresent: true,
+        returnToLatestVisible: true,
+        stalePageApplied: true,
+        liveEventInjected: false,
+        scrollTop: 500,
+      });
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('keeps the historical window anchored and newer pagination reachable when live events arrive', async () => {
+    const pageSize = 30;
+    const loadedWindowSize = loadedEventBufferLimit(pageSize);
+    const totalEventCount = loadedWindowSize * 2;
+    const currentWindowStart = loadedWindowSize + 1;
+    const currentEvents = Array.from({ length: loadedWindowSize }, (_, index) => {
+      const seq = currentWindowStart + index;
+      return event(`current-window-${seq}`, seq, 'textDelta', `当前窗口消息 ${seq}`);
+    });
+    const initial = session(currentEvents);
+    Object.assign(initial.eventPage, {
+      coveredRevision: totalEventCount,
+      newestRevision: totalEventCount,
+      total: totalEventCount,
+      hasOlder: true,
+    });
+
+    const olderWindowStart = currentWindowStart - pageSize;
+    const olderEvents = Array.from({ length: pageSize }, (_, index) => {
+      const seq = olderWindowStart + index;
+      return event(`older-window-${seq}`, seq, 'textDelta', `旧窗口锚点消息 ${seq}`);
+    });
+    const older = session(olderEvents);
+    Object.assign(older.eventPage, {
+      coveredRevision: totalEventCount,
+      newestRevision: totalEventCount,
+      total: totalEventCount,
+      hasOlder: true,
+      hasNewer: true,
+    });
+
+    vi.mocked(getAcpSession).mockImplementation(async (...args) => (
+      typeof args[6]?.beforeSeq === 'number' ? older : initial
+    ));
+
+    const { container, root } = await renderDialog(
+      initial,
+      'root',
+      undefined,
+      undefined,
+      locator,
+      pageSize,
+    );
+    try {
+      const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+        .find((element) => (
+          element.classList.contains('h-full')
+          && element.classList.contains('overflow-y-auto')
+        ));
+      expect(scroller).toBeDefined();
+      Object.defineProperties(scroller!, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: 2_400 },
+        scrollTop: { configurable: true, value: 0, writable: true },
+      });
+
+      await act(async () => {
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 30));
+      });
+
+      const anchorText = `旧窗口锚点消息 ${olderWindowStart}`;
+      const findAnchor = () => [...container.querySelectorAll<HTMLElement>('[data-acp-item-key]')]
+        .find((element) => element.textContent?.includes(anchorText));
+      expect(findAnchor()).toBeDefined();
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
+      scroller!.scrollTop = 500;
+
+      await act(async () => {
+        runtime.listener?.(update(event(
+          'live-beyond-historical-window',
+          totalEventCount + 1,
+          'textDelta',
+          '历史阅读期间到达的实时消息',
+        )));
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+      });
+
+      expect({
+        anchorPresent: Boolean(findAnchor()),
+        returnToLatestVisible: Boolean(
+          container.querySelector('[data-acp-return-to-latest="true"]'),
+        ),
+        scrollTop: scroller!.scrollTop,
+      }).toEqual({
+        anchorPresent: true,
+        returnToLatestVisible: true,
+        scrollTop: 500,
+      });
+
+      scroller!.scrollTop = scroller!.scrollHeight - scroller!.clientHeight;
+      await act(async () => {
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 30));
+      });
+
+      expect(vi.mocked(getAcpSession).mock.calls.some(
+        (call) => typeof call[6]?.afterSeq === 'number',
+      )).toBe(true);
     } finally {
       await unmount(root);
     }

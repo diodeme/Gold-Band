@@ -33,7 +33,7 @@ Before approval, do not run `gh issue create`, `gh issue edit`, `gh issue commen
 7. Classify the issue and select the closest repository template:
    - Bug report for observable incorrect behavior.
    - Feature request for new user-facing value.
-   - Performance issue for measured latency, resource, throughput, or scale problems.
+   - Performance issue for observable latency, resource, throughput, or scale problems.
    - Technical proposal for architecture, data integrity, lifecycle, migration, or maintainability work without a primary user-facing feature.
 8. Fetch current labels and use only labels that already exist. Do not create labels, milestones, projects, or assignees unless the user explicitly requests them and reviews the final metadata.
 
@@ -43,11 +43,12 @@ Use English for the published title, template headings, and prose by default. Tr
 
 Follow the selected template instead of duplicating a private format in this skill. Apply these evidence rules:
 
-- State observed behavior, expected behavior, reproduction steps, environment, and impact for bugs.
-- Trace original design intent when diagnosing a bug. Mark root cause as `Verified`, `Hypothesis`, or `Unknown`; never present an inference as fact.
-- Record the problem, user value, goals, non-goals, existing solutions, and acceptance criteria for features.
-- Record data size, baseline, target, measurement method, and correctness constraints for performance issues.
-- Explain the missing invariant, authoritative source, alternatives, migration, and deletion of replaced paths for technical proposals.
+- Ask reporters only for information they can reliably provide. Maintainer-owned analysis must not block preparing an issue.
+- For bugs, require actual behavior, expected behavior, reproduction steps, and environment; treat evidence, impact, design intent, root cause, and acceptance criteria as optional investigation results.
+- For features, require the user problem, desired outcome, and a concrete use case; do not require the reporter to define scope, research implementations, or write acceptance criteria.
+- For performance reports, require the observed problem, workload, and environment; measurements and profiler evidence are helpful but optional.
+- For technical proposals, require the current problem, proposed direction, and alternatives considered. Add design context, migration, risks, performance impact, or acceptance considerations only when evidence already supports them.
+- When independently diagnosing a bug, mark root cause as `Verified`, `Hypothesis`, or `Unknown`; never present an inference as fact.
 - Include only claims supported by repository evidence or clearly attribute them to the reporter.
 - Remove secrets, credentials, personal data, private URLs, and unnecessary absolute local paths.
 - Use `Closes #N` only when the proposed outcome fully resolves the linked issue; otherwise use `Refs #N`.

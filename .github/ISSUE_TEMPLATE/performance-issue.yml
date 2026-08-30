@@ -1,104 +1,47 @@
 name: Performance issue
-description: Report a measured latency, throughput, memory, rendering, or scale problem.
+description: Report slow, resource-heavy, or unresponsive behavior.
 body:
   - type: markdown
     attributes:
       value: |
-        Performance work requires a reproducible workload, a measured baseline, and a correctness-preserving target. Do not include credentials or private data.
+        Describe the performance problem you observed. Measurements are helpful but optional; maintainers will verify the bottleneck and define a safe target. Do not include credentials or private data.
 
-  - type: input
-    id: summary
+  - type: textarea
+    id: problem
     attributes:
-      label: Summary
-      description: Describe the user-visible performance problem in one concise sentence.
+      label: Observed performance problem
+      description: What feels slow, uses too many resources, or becomes unresponsive?
     validations:
       required: true
 
   - type: textarea
-    id: scenario
+    id: workload
     attributes:
-      label: Scenario and data scale
-      description: Define the workflow, dataset size, event count, message count, file size, concurrency, and growth limit needed to reproduce the problem.
+      label: Steps and workload
+      description: Explain how to reproduce it and, when known, the approximate message count, file size, dataset size, or concurrency.
     validations:
       required: true
 
   - type: textarea
-    id: baseline
+    id: environment
     attributes:
-      label: Measured baseline
-      description: Record current measurements, hardware, build mode, sample count, and measurement variance.
+      label: Environment
+      description: Include the Gold Band version, operating system, hardware details when relevant, and any relevant provider or Agent.
     validations:
       required: true
 
   - type: textarea
-    id: target
+    id: measurements
     attributes:
-      label: Acceptance target
-      description: Define the measurable latency, memory, throughput, loading, or rendering target.
-    validations:
-      required: true
-
-  - type: textarea
-    id: measurement
-    attributes:
-      label: Measurement method
-      description: Describe the production build, profiler, benchmark, performance timeline, or other repeatable method.
-    validations:
-      required: true
-
-  - type: textarea
-    id: evidence
-    attributes:
-      label: Evidence
-      description: Add sanitized profiler output, flamegraphs, heap evidence, benchmark results, or performance timelines.
-      render: shell
-
-  - type: dropdown
-    id: bottleneck-status
-    attributes:
-      label: Bottleneck status
-      options:
-        - Verified
-        - Hypothesis
-        - Unknown
-    validations:
-      required: true
-
-  - type: textarea
-    id: suspected-bottleneck
-    attributes:
-      label: Bottleneck analysis
-      description: Explain evidence for data volume, refresh scope, state boundaries, I/O, parsing, allocation, locking, queueing, or rendering as the root bottleneck.
-
-  - type: textarea
-    id: correctness
-    attributes:
-      label: Correctness and integrity constraints
-      description: List behavior, ordering, identity, lifecycle, and data-integrity invariants that optimization must preserve.
-    validations:
-      required: true
-
-  - type: textarea
-    id: acceptance
-    attributes:
-      label: Acceptance criteria
-      description: List the target measurements and regression coverage required to close the issue.
-      placeholder: |
-        - [ ] The target workload meets ...
-        - [ ] Correctness regressions pass.
-    validations:
-      required: true
+      label: Measurements or evidence
+      description: Optionally add timings, memory usage, profiler output, recordings, screenshots, or comparisons with previous behavior.
 
   - type: checkboxes
     id: checklist
     attributes:
       label: Submission checklist
       options:
-        - label: I measured a baseline with a repeatable workload.
-          required: true
-        - label: I defined a measurable acceptance target.
-          required: true
-        - label: I distinguished verified bottlenecks from hypotheses.
+        - label: I searched open and closed issues for duplicates.
           required: true
         - label: I removed secrets, personal data, and unnecessary private paths.
           required: true

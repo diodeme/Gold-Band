@@ -72,7 +72,7 @@ collect evidence -> prepare preview -> awaiting approval -> approved revision ->
 3. 使用特征词搜索 open/closed issues；疑似重复时先让用户决定停止、补充既有 Issue 或创建不同 Issue。
 4. 动态读取 labels，只能选择现存 label；assignee、milestone、project 等 metadata 必须显式请求并进入预览。
 5. 默认把中文需求整理为英文发布内容，保留代码、日志、命令、identifier 和 quoted error 原文；用户明确要求中文时才使用中文。
-6. Bug 根因必须标记 `Verified / Hypothesis / Unknown`，并回溯设计意图和缺陷形成路径；不能把推测写成事实。
+6. Agent 能基于仓库证据完成 Bug 调查时，根因必须标记 `Verified / Hypothesis / Unknown`，并回溯设计意图和缺陷形成路径；这些维护者分析不是报告者的必填信息，未知时不得阻塞 Issue 预览，也不能把推测写成事实。
 7. 发布前清理 credential、个人数据、私有 URL 和无必要的本机绝对路径。
 8. 获批后创建或更新 Issue，再通过 `gh issue view` 回读 number、title、body、labels、state 和 URL。
 
@@ -80,12 +80,12 @@ collect evidence -> prepare preview -> awaiting approval -> approved revision ->
 
 四类模板边界：
 
-- Bug：实际/预期、最小复现、环境、证据、设计意图、根因状态、影响和回归验收。
-- Feature：用户问题、使用场景、目标/非目标、现有组件和行业方案评估、期望结果和验收。
-- Performance：数据规模、基线、目标、测量方法、瓶颈状态、正确性约束和性能验收。
-- Technical Proposal：权威事实源、不变量缺口、现有方案、设计方向、迁移删除、性能/过度设计影响和接口验收。
+- Bug：必填实际行为、预期行为、复现步骤和环境；日志、截图、影响与其他证据可选。
+- Feature：必填用户问题、期望结果和一个主要用例；示例、截图、相关工具与已尝试替代流程可选。
+- Performance：必填可观察的性能问题、复现步骤/workload 和环境；计时、内存、Profiler、录屏或对比证据可选，不要求报告者先证明瓶颈或定义优化目标。
+- Technical Proposal：面向贡献者，必填当前问题、提议方向和已考虑替代方案；设计上下文、迁移删除、风险/性能影响和验收考虑均为可选深化信息。
 
-模板统一使用英文。`config.yml` 保留 blank issue，用于文档、咨询或无法归入四类的事项。安全漏洞、credential 或隐私数据不得作为公开 Issue 发布。
+所有 Issue 直接使用 GitHub 标题，不重复要求 `Summary`。提交 checklist 只保留查重和敏感信息清理。模板统一使用英文。`config.yml` 保留 blank issue，用于文档、咨询或无法归入四类的事项。安全漏洞、credential 或隐私数据不得作为公开 Issue 发布。
 
 ## PR 工作流
 
@@ -121,7 +121,7 @@ PR template 统一包含以下可裁剪章节：
 - 使用 `skill-creator/scripts/quick_validate.py` 分别验证两个 SKILL。
 - 契约测试确认 frontmatter 只有 `name` 和 `description`，OpenAI metadata 引用正确的 `$skill-name`。
 - 契约测试确认两个 SKILL 都包含“后续消息明确批准”和“preview revision 变化后重新批准”的门禁。
-- 契约测试使用 SchemaStore 的 GitHub Issue Forms 与 issue template config schema 校验解析后的 YAML，确认四类 Issue Forms 为英文、含 Acceptance criteria，PR template 含验证、文档和方案自评审章节。
+- 契约测试使用 SchemaStore 的 GitHub Issue Forms 与 issue template config schema 校验解析后的 YAML，确认四类 Issue Forms 为英文、只要求对应提交者能够可靠提供的最小字段，普通反馈模板不包含维护者分析字段，PR template 含验证、文档和方案自评审章节。
 - `npm run test:collaboration-skills` 纳入 `.github/workflows/pr-checks.yml`。
 - workspace 管理者设置 `.agents/skills` 后，应单独确认其为指向 `../.claude/skills` 的真实相对符号链接，并验证两个发现入口读取内容一致；该环境操作不阻塞 canonical SKILL 内容提交。
 
@@ -129,7 +129,7 @@ PR template 统一包含以下可裁剪章节：
 
 ### 过度设计
 
-方案不新增运行服务、缓存、队列、数据库、GitHub SDK 或自研模板渲染器。四类 Issue Form 对应不同证据模型，不能由一个巨型模板稳定表达；其余事项继续使用 blank issue。SKILL 只保存流程，不复制内容 schema。
+方案不新增运行服务、缓存、队列、数据库、GitHub SDK 或自研模板渲染器。四类 Issue Form 对应不同提交者和事实类型，但公开入口只保留最小可靠信息；维护者分析继续由调查与 PR 流程承接，不复制到表单形成前置负担。其余事项继续使用 blank issue。SKILL 只保存流程，不复制内容 schema。
 
 ### 性能影响
 
@@ -142,5 +142,6 @@ PR template 统一包含以下可裁剪章节：
 - [x] 新增四类英文 Issue Forms 与英文 PR template。
 - [x] 新增协作 SKILL 与模板的 canonical 内容契约测试并接入 PR checks。
 - [x] 修复空 `title` / `labels` / `contact_links` 导致 GitHub 静默回退空白编辑器的问题，并将官方语法 schema 校验固化为回归测试。
+- [x] 按报告者/维护者职责边界精简四类 Issue Forms，并以契约测试固定最小必填字段与两项安全 checklist。
 - [ ] workspace 管理者单独创建并验证 `.agents/skills -> ../.claude/skills` 真实符号链接。
 - [x] 完成 SKILL validator、canonical 内容契约测试和最终差异验收。

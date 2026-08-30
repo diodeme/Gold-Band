@@ -26,6 +26,7 @@ Task 最近对话活动只在三类 durable 边界推进：Task 创建成功、�
 ### 会话运行准入与工作空间访问
 
 - 创建、重跑、继续、恢复或发送会话输入时，后端先按 `project_id` 解析持久化的 workspace，再检查路径存在、类型为目录且目录可读；校验通过后才允许创建 Run / Attempt 或准入 ACP prompt turn。
+- workspace 的 `metadata/read_dir` 检查属于可能被网络盘、断开磁盘或权限服务阻塞的文件 I/O，所有运行准入命令必须是 async Tauri command，并在既有 blocking pool 中完成检查后再继续；不得占用 IPC async/UI 调度线程，也不得改变准入顺序。
 - 校验失败返回 `workspace.path-not-found`、`workspace.path-not-directory` 或 `workspace.path-inaccessible`，参数固定包含 `projectId` 与 `workspacePath`；前端负责按当前语言生成可执行提示，并保留既有历史和 composer 输入。
 - 工作空间不可用不改变 Agent doctor 结果。历史读取、侧栏展示、停止、删除等非运行准入操作继续使用持久化 workspace 事实，不因当前目录不可访问而被统一拦截。
 - 校验仅位于会话运行准入层；ACP adapter 启动层不重复校验、不解释 Windows 进程错误码，也不增加进程边界兜底。

@@ -11963,8 +11963,7 @@ fn build_dynamic_worker_invocation(
     let control_emission_mode = output_contract
         .as_ref()
         .map(|contract| contract.emission_mode);
-    let has_output_contract =
-        control_emission_mode == Some(OutputEmissionMode::InlineControl);
+    let has_output_contract = control_emission_mode == Some(OutputEmissionMode::InlineControl);
     let extra_system_sections = dynamic_system_sections(ctx, control_emission_mode)?;
     let extra_hidden_sections = dynamic_hidden_sections(
         ctx,
@@ -17976,7 +17975,11 @@ mod tests {
         assert!(prompt.system_prompt.contains("AI-DYNAMIC 稳定规则"));
         assert!(prompt.system_prompt.contains("用户主动打断当前工作"));
         assert!(prompt.system_prompt.contains("dynamic-node-completion"));
-        assert!(!prompt.system_prompt.contains("本次业务 turn 使用后置控制流程"));
+        assert!(
+            !prompt
+                .system_prompt
+                .contains("本次业务 turn 使用后置控制流程")
+        );
         assert!(!prompt.system_prompt.contains("内部 attempt 目录"));
         assert!(!prompt.system_prompt.contains("remaining dynamic nodes"));
         assert!(!prompt.system_prompt.contains("当前链路可复用会话节点"));
@@ -18118,7 +18121,11 @@ mod tests {
                 .system_prompt
                 .contains("不要在当前 turn 拆分任务、选择 Agent、规划或执行后继节点")
         );
-        assert!(!prompt.system_prompt.contains("本次 invocation 是执行型节点"));
+        assert!(
+            !prompt
+                .system_prompt
+                .contains("本次 invocation 是执行型节点")
+        );
         assert!(prompt.system_prompt.contains("隐藏 finalize turn"));
     }
 
@@ -18579,10 +18586,9 @@ mod tests {
         assert!(!inline.contains("本次业务 turn 使用后置控制流程"));
         assert!(!inline.contains("本次 invocation 是执行型节点"));
 
-        let deferred =
-            dynamic_system_sections(&ctx, Some(OutputEmissionMode::PostTurnProjection))
-                .unwrap()
-                .join("\n");
+        let deferred = dynamic_system_sections(&ctx, Some(OutputEmissionMode::PostTurnProjection))
+            .unwrap()
+            .join("\n");
         assert!(deferred.contains("本次业务 turn 使用后置控制流程"));
         assert!(deferred.contains("立即停止执行并自然结束本 turn"));
         assert!(deferred.contains("只有收到 runtime 的 hidden finalize 提示后"));
@@ -18599,14 +18605,14 @@ mod tests {
         english_config.desktop_language = DesktopLanguage::En;
         let english_app = App::with_config(repo_root, english_config);
         let english_ctx = test_context(&english_app, &dynamic);
-        let english_deferred = dynamic_system_sections(
-            &english_ctx,
-            Some(OutputEmissionMode::PostTurnProjection),
-        )
-        .unwrap()
-        .join("\n");
+        let english_deferred =
+            dynamic_system_sections(&english_ctx, Some(OutputEmissionMode::PostTurnProjection))
+                .unwrap()
+                .join("\n");
         assert!(english_deferred.contains("This business turn uses deferred control"));
-        assert!(english_deferred.contains("stop execution immediately and end this turn naturally"));
+        assert!(
+            english_deferred.contains("stop execution immediately and end this turn naturally")
+        );
         assert!(english_deferred.contains("Only after receiving runtime's hidden finalize prompt"));
         assert!(!english_deferred.contains("dynamic-node-completion"));
         assert!(!english_deferred.contains("next.type"));

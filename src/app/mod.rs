@@ -6043,6 +6043,7 @@ mod tests {
             scheduled_occurrence_id: None,
             project_id: "project-1".to_string(),
             task_id: "task-1".to_string(),
+            task_uuid: None,
             run_id: "run-1".to_string(),
             round_id: "round-1".to_string(),
             node_id: "node-1".to_string(),
@@ -6542,6 +6543,7 @@ mod tests {
             scheduled_occurrence_id: None,
             project_id: "project-001".to_string(),
             task_id: "task-001".to_string(),
+            task_uuid: None,
             run_id: "run-001".to_string(),
             round_id: "round-001".to_string(),
             node_id: "node-001".to_string(),
@@ -6956,6 +6958,7 @@ mod tests {
 
         app.emit_acp_session_update(AcpLiveEventContext {
             task_id: "task-001".to_string(),
+            task_uuid: None,
             run_id: "run-001".to_string(),
             round_id: "round-001".to_string(),
             node_id: "验收".to_string(),
@@ -6986,6 +6989,7 @@ mod tests {
 
         let context = AcpLiveEventContext {
             task_id: "task-001".to_string(),
+            task_uuid: None,
             run_id: "run-001".to_string(),
             round_id: "round-001".to_string(),
             node_id: "dev".to_string(),
@@ -7021,6 +7025,7 @@ mod tests {
             }));
         let context = AcpLiveEventContext {
             task_id: "task-001".to_string(),
+            task_uuid: None,
             run_id: "run-001".to_string(),
             round_id: "round-001".to_string(),
             node_id: "direct-agent".to_string(),

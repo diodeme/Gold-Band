@@ -5547,9 +5547,8 @@ pub async fn resolve_turn_attachment_file(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<crate::workspace_files::ResolvedWorkspaceFileLinkVm> {
-    gold_band::acp::branches::validate_conversation_branch_id(&branch_id).map_err(|_| {
-        CommandErrorVm::new(ATTACHMENT_ACCESS_DENIED, serde_json::json!({}))
-    })?;
+    gold_band::acp::branches::validate_conversation_branch_id(&branch_id)
+        .map_err(|_| CommandErrorVm::new(ATTACHMENT_ACCESS_DENIED, serde_json::json!({})))?;
     let app = resolve_command_app(state.inner(), Some(&project_id))?.clone_for_background();
     let locator = AttemptLocator::new(
         task_id,

@@ -8,6 +8,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const DYNAMIC_COMPLETION_ARTIFACT: &str = "dynamic-node-completion";
+pub const AI_DYNAMIC_RESULT_ARTIFACT: &str = "ai-dynamic-result";
+pub const AI_DYNAMIC_REPORT_MANIFEST_ARTIFACT: &str = "ai-dynamic-report-manifest";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -158,14 +160,20 @@ pub struct DynamicNodeState {
     /// It changes on every explicit continue and is cleared when the leaf pauses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_execution_id: Option<String>,
-    /// Canonical lifecycle phase for this leaf attempt. Parallel leaves update
-    /// only their own phase; the outer Run execution remains a graph aggregate.
+    /// Canonical Runtime phase projected on this leaf attempt. Parallel leaves
+    /// update only their own phase; graph-owned workspace transitions temporarily
+    /// take over only their causal leaves. The outer Run execution remains a
+    /// graph aggregate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_execution_phase: Option<RuntimeExecutionPhase>,
+    /// Monotonic watermark for every Runtime lifecycle projection visible on
+    /// this leaf, including leaf-local execution and graph-owned transitions.
+    /// ACP turn state has its own revision domain and is not folded into this
+    /// counter.
     #[serde(default)]
-    pub runtime_execution_revision: u64,
+    pub runtime_lifecycle_revision: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime_execution_updated_at: Option<String>,
+    pub runtime_lifecycle_updated_at: Option<String>,
     pub group_id: Option<String>,
     pub chain_id: String,
     pub depth: u32,
@@ -217,6 +225,11 @@ pub fn write_dynamic_node_state(path: &camino::Utf8Path, state: &DynamicNodeStat
 }
 
 impl DynamicNodeState {
+    pub fn advance_runtime_lifecycle_revision(&mut self, updated_at: impl Into<String>) {
+        self.runtime_lifecycle_revision = self.runtime_lifecycle_revision.saturating_add(1);
+        self.runtime_lifecycle_updated_at = Some(updated_at.into());
+    }
+
     pub fn begin_runtime_execution(
         &mut self,
         execution_id: impl Into<String>,
@@ -224,8 +237,7 @@ impl DynamicNodeState {
     ) {
         self.runtime_execution_id = Some(execution_id.into());
         self.runtime_execution_phase = Some(RuntimeExecutionPhase::StartingNode);
-        self.runtime_execution_revision = self.runtime_execution_revision.saturating_add(1);
-        self.runtime_execution_updated_at = Some(updated_at.into());
+        self.advance_runtime_lifecycle_revision(updated_at);
     }
 
     pub fn transition_runtime_execution(
@@ -255,23 +267,20 @@ impl DynamicNodeState {
             "dynamic leaf runtime execution cannot transition from {current_phase:?} to {phase:?}"
         );
         self.runtime_execution_phase = Some(phase);
-        self.runtime_execution_revision = self.runtime_execution_revision.saturating_add(1);
-        self.runtime_execution_updated_at = Some(updated_at.into());
+        self.advance_runtime_lifecycle_revision(updated_at);
         Ok(true)
     }
 
     pub fn pause_runtime_execution(&mut self, updated_at: impl Into<String>) {
         self.runtime_execution_id = None;
         self.runtime_execution_phase = Some(RuntimeExecutionPhase::Paused);
-        self.runtime_execution_revision = self.runtime_execution_revision.saturating_add(1);
-        self.runtime_execution_updated_at = Some(updated_at.into());
+        self.advance_runtime_lifecycle_revision(updated_at);
     }
 
     pub fn complete_runtime_execution(&mut self, updated_at: impl Into<String>) {
         self.runtime_execution_id = None;
         self.runtime_execution_phase = Some(RuntimeExecutionPhase::Terminal);
-        self.runtime_execution_revision = self.runtime_execution_revision.saturating_add(1);
-        self.runtime_execution_updated_at = Some(updated_at.into());
+        self.advance_runtime_lifecycle_revision(updated_at);
     }
 }
 
@@ -369,6 +378,215 @@ pub struct DynamicGraphState {
     pub groups: Vec<DynamicGroupState>,
     pub workspaces: Vec<WorkspaceState>,
     pub proposals: Vec<DynamicProposalState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicResult {
+    pub version: String,
+    pub kind: AiDynamicResultKind,
+    pub outcome: RunOutcome,
+    pub summary: String,
+    pub source_node_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_group_id: Option<String>,
+    pub report_manifest: AiDynamicReportManifestRef,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiDynamicResultKind {
+    AiDynamicResult,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicReportManifestRef {
+    pub path: Utf8PathBuf,
+    pub format_version: String,
+    pub unit_count: usize,
+    pub attachment_count: usize,
+    pub generated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicReportManifest {
+    pub version: String,
+    pub kind: AiDynamicReportManifestKind,
+    pub dynamic_run_id: String,
+    pub root_node_id: String,
+    pub outcome: RunOutcome,
+    pub generated_at: String,
+    pub nodes: Vec<AiDynamicReportNode>,
+    pub groups: Vec<AiDynamicReportGroup>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiDynamicReportManifestKind {
+    AiDynamicReportManifest,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicReportNode {
+    pub id: String,
+    pub kind: DynamicNodeKind,
+    pub title: String,
+    pub task: String,
+    pub status: DynamicNodeStatus,
+    pub outcome: Option<NodeOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spawned_by_node_id: Option<String>,
+    pub depends_on: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+    pub chain_id: String,
+    pub workspace: AiDynamicWorkspaceRef,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next: Option<AiDynamicReportNext>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_workflow: Option<AiDynamicChildWorkflowRef>,
+    pub attachments: Vec<AiDynamicReportAttachment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum AiDynamicReportNext {
+    End,
+    Single {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+    },
+    Fanout {
+        #[serde(rename = "groupId")]
+        group_id: String,
+        #[serde(rename = "rootNodeIds")]
+        root_node_ids: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicWorkspaceRef {
+    pub id: String,
+    pub kind: WorkspaceKind,
+    pub path: Utf8PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicChildWorkflowRef {
+    pub workflow_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow_snapshot_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicReportAttachment {
+    pub name: String,
+    pub path: Utf8PathBuf,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicReportGroup {
+    pub id: String,
+    pub status: DynamicGroupStatus,
+    pub depth: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_group_id: Option<String>,
+    pub created_by_node_id: String,
+    pub root_node_ids: Vec<String>,
+    pub terminal_node_ids: Vec<String>,
+    pub target_workspace_id: String,
+    pub child_workspace_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merge_node_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acceptance_node_id: Option<String>,
+    pub merge: AiDynamicTaskRef,
+    pub acceptance: AiDynamicTaskRef,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicTaskRef {
+    pub title: String,
+    pub task: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicCoordinationSnapshot {
+    pub version: String,
+    pub kind: AiDynamicCoordinationSnapshotKind,
+    pub dynamic_run_id: String,
+    pub generated_at: String,
+    pub nodes: Vec<AiDynamicCoordinationNode>,
+    pub groups: Vec<AiDynamicCoordinationGroup>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiDynamicCoordinationSnapshotKind {
+    AiDynamicCoordinationSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicCoordinationNode {
+    pub id: String,
+    pub kind: DynamicNodeKind,
+    pub title: String,
+    pub task: String,
+    pub status: DynamicNodeStatus,
+    pub outcome: Option<NodeOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spawned_by_node_id: Option<String>,
+    pub depends_on: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+    pub chain_id: String,
+    pub workspace: AiDynamicWorkspaceRef,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicCoordinationGroup {
+    pub id: String,
+    pub status: DynamicGroupStatus,
+    pub depth: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_group_id: Option<String>,
+    pub created_by_node_id: String,
+    pub root_node_ids: Vec<String>,
+    pub terminal_node_ids: Vec<String>,
+    pub target_workspace: AiDynamicWorkspaceRef,
+    pub child_workspaces: Vec<AiDynamicWorkspaceRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merge_node_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acceptance_node_id: Option<String>,
+    pub merge: AiDynamicTaskRef,
+    pub acceptance: AiDynamicTaskRef,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -765,6 +983,30 @@ pub fn dynamic_leaf_is_active(status: DynamicNodeStatus) -> bool {
     )
 }
 
+/// The outer AI-DYNAMIC Runtime may temporarily own the phase projected on a
+/// leaf attempt while the leaf keeps its own lifecycle ordering watermark.
+/// Keep this ownership predicate in the core model so transition producers and
+/// desktop lifecycle consumers cannot drift apart.
+pub fn dynamic_runtime_owns_leaf_projection(
+    graph: &DynamicGraphState,
+    node: &DynamicNodeState,
+) -> bool {
+    if graph.run.status != DynamicRunStatus::Running {
+        return false;
+    }
+    if graph.run.phase == DynamicRunPhase::PreparingWorkspace
+        && node.runtime_execution_phase == Some(RuntimeExecutionPhase::PreparingWorkspace)
+    {
+        return true;
+    }
+    graph.run.current_node_ids.is_empty()
+        && graph.nodes.last().is_some_and(|last| {
+            last.id == node.id
+                && node.status == DynamicNodeStatus::Completed
+                && node.outcome.is_some()
+        })
+}
+
 pub fn refresh_dynamic_current_leaf_ids(graph: &mut DynamicGraphState) {
     graph.run.current_node_ids = graph
         .nodes
@@ -868,6 +1110,17 @@ pub fn validate_dynamic_node_state(state: &DynamicNodeState) -> Result<()> {
             Some(RuntimeExecutionPhase::Paused | RuntimeExecutionPhase::Terminal)
         ) || state.runtime_execution_id.is_none(),
         "inactive dynamic leaf execution phase cannot retain an execution id"
+    );
+    ensure!(
+        (state.runtime_lifecycle_revision == 0) == state.runtime_lifecycle_updated_at.is_none(),
+        "dynamic leaf Runtime lifecycle revision and updatedAt must be initialized together"
+    );
+    ensure!(
+        state
+            .runtime_lifecycle_updated_at
+            .as_deref()
+            .is_none_or(|updated_at| !updated_at.trim().is_empty()),
+        "dynamic leaf Runtime lifecycle updatedAt cannot be empty"
     );
     Ok(())
 }
@@ -1057,6 +1310,35 @@ mod tests {
             durable.get("title").and_then(serde_json::Value::as_str),
             Some("Updated by stale lifecycle state")
         );
+    }
+
+    #[test]
+    fn dynamic_leaf_runtime_lifecycle_watermark_advances_for_local_and_graph_owned_changes() {
+        let mut node =
+            dynamic_node_with_storage_version(crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION);
+
+        node.begin_runtime_execution("execution-1", "2026-08-24T00:00:01Z");
+        assert_eq!(node.runtime_lifecycle_revision, 1);
+        node.transition_runtime_execution(
+            "execution-1",
+            RuntimeExecutionPhase::RunningNode,
+            "2026-08-24T00:00:02Z",
+        )
+        .unwrap();
+        assert_eq!(node.runtime_lifecycle_revision, 2);
+        node.advance_runtime_lifecycle_revision("2026-08-24T00:00:03Z");
+        assert_eq!(node.runtime_lifecycle_revision, 3);
+        assert_eq!(
+            node.runtime_lifecycle_updated_at.as_deref(),
+            Some("2026-08-24T00:00:03Z")
+        );
+        validate_dynamic_node_state(&node).unwrap();
+
+        let durable = serde_json::to_value(&node).unwrap();
+        assert_eq!(durable["runtimeLifecycleRevision"], 3);
+        assert_eq!(durable["runtimeLifecycleUpdatedAt"], "2026-08-24T00:00:03Z");
+        assert!(durable.get("runtimeExecutionRevision").is_none());
+        assert!(durable.get("runtimeExecutionUpdatedAt").is_none());
     }
 
     #[test]

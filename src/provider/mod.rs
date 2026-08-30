@@ -1,5 +1,5 @@
 use crate::acp::{client, events::AcpUiEvent};
-use crate::artifacts::{artifact_uses_json_output, json_artifact_text};
+use crate::artifacts::{JsonArtifactSpan, artifact_uses_json_output, json_artifact_display_span};
 use crate::config::{
     AcpAdapterConfig, ManagedAgentConfig, ManagedAgentId, catalog_agent_default_config,
 };
@@ -567,6 +567,8 @@ pub struct ProviderRunResult {
     pub stream_path: Option<Utf8PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_error: Option<RuntimeErrorInfo>,
+    #[serde(skip)]
+    pub runtime_control_output: Option<RuntimeControlOutput>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -594,6 +596,19 @@ pub struct ProviderResultPayload {
 pub struct OutputArtifactPayload {
     pub name: String,
     pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeControlOutput {
+    pub artifact_name: String,
+    pub source: client::AcpPromptMessageSource,
+    pub span: JsonArtifactSpan,
+}
+
+#[derive(Debug, Default)]
+struct OutputArtifactEvaluation {
+    payload: Option<ProviderResultPayload>,
+    runtime_control_output: Option<RuntimeControlOutput>,
 }
 
 #[derive(Debug, Clone)]
@@ -1514,10 +1529,7 @@ impl AcpProvider {
             &prompt,
             req.invocation_kind,
             req.profile.as_deref(),
-            req.output_contract
-                .as_ref()
-                .filter(|contract| contract.emission_mode == OutputEmissionMode::InlineControl)
-                .map(|contract| contract.artifact.as_str()),
+            active_output_contract_for_turn(&req).map(|contract| contract.artifact.as_str()),
             req.cold_artifacts.len(),
             req.cold_attachments.len(),
             req.log_prompts,
@@ -1565,25 +1577,14 @@ impl AcpProvider {
             }),
         )?;
         let mut terminal = classify_acp_prompt_run(&run);
-        let artifact_result = if req.turn_control_mode == TurnControlMode::RuntimeControlled
-            && matches!(
-                terminal.status,
-                ProviderRunStatus::Success | ProviderRunStatus::Interrupted
-            ) {
-            req.output_contract
-                .as_ref()
-                .filter(|contract| contract.emission_mode == OutputEmissionMode::InlineControl)
-                .map(|contract| output_artifact_payload_from_run(contract, &run.output))
-                .unwrap_or(Ok(None))
-        } else {
-            Ok(None)
-        };
-        let result_payload = match artifact_result {
-            Ok(payload) => payload,
+        let artifact_result =
+            evaluate_runtime_control_output_for_run(&req, terminal.status, &run.output);
+        let (result_payload, runtime_control_output) = match artifact_result {
+            Ok(evaluation) => (evaluation.payload, evaluation.runtime_control_output),
             Err(error) => {
                 terminal.status = ProviderRunStatus::Failure;
                 terminal.runtime_error = Some(error);
-                None
+                (None, None)
             }
         };
         Ok(ProviderRunResult {
@@ -1593,6 +1594,7 @@ impl AcpProvider {
             worker_ref_seed: None,
             stream_path: None,
             runtime_error: terminal.runtime_error,
+            runtime_control_output,
         })
     }
 
@@ -1604,7 +1606,7 @@ impl AcpProvider {
         prompt_accepted: Option<AcpPromptAccepted<'_>>,
         runtime_phase_update: Option<ProviderRuntimePhaseUpdate<'_>>,
     ) -> Result<ProviderRunResult> {
-        let mut contract = req
+        let contract = req
             .output_contract
             .clone()
             .expect("post-turn projection requires output contract");
@@ -1653,7 +1655,6 @@ impl AcpProvider {
                 .as_deref()
                 .is_some_and(|prompt| !prompt.trim().is_empty());
         let mut finalize_req = req;
-        contract.emission_mode = OutputEmissionMode::InlineControl;
         finalize_req.output_contract = Some(contract.clone());
         finalize_req.session_mode = SessionMode::Continue;
         finalize_req.continue_ref = Some(continue_ref);
@@ -1688,6 +1689,21 @@ impl AcpProvider {
     }
 }
 
+fn active_output_contract_for_turn(req: &WorkerInvocation) -> Option<&PromptOutputContract> {
+    // PostTurn keeps its stable emission identity through finalize/repair so
+    // the hidden user prompt owns the contract without promoting it into the
+    // system prompt. The render mode activates control-result extraction.
+    req.output_contract
+        .as_ref()
+        .filter(|contract| match contract.emission_mode {
+            OutputEmissionMode::InlineControl => true,
+            OutputEmissionMode::PostTurnProjection => matches!(
+                req.user_prompt_render_mode,
+                UserPromptRenderMode::RuntimeFinalize | UserPromptRenderMode::RuntimeRepair
+            ),
+        })
+}
+
 fn acp_turn_was_cancelled_before_execution(
     header: &crate::acp::events::AcpLifecycleHeader,
     turn_id: &str,
@@ -1706,6 +1722,7 @@ fn interrupted_acp_provider_run_result() -> ProviderRunResult {
         worker_ref_seed: None,
         stream_path: None,
         runtime_error: None,
+        runtime_control_output: None,
     }
 }
 
@@ -1908,12 +1925,12 @@ fn classify_acp_prompt_run(run: &client::AcpPromptRun) -> ProviderTerminalOutcom
     }
 }
 
-fn output_artifact_payload_from_run(
+fn evaluate_output_artifact_from_run(
     contract: &PromptOutputContract,
     output: &client::AcpPromptOutput,
-) -> std::result::Result<Option<ProviderResultPayload>, RuntimeErrorInfo> {
+) -> std::result::Result<OutputArtifactEvaluation, RuntimeErrorInfo> {
     let Some(terminal_message) = output.recent_messages.last() else {
-        return Ok(None);
+        return Ok(OutputArtifactEvaluation::default());
     };
     if !terminal_message.has_stable_id && output.observed_stable_message {
         return Err(crate::runtime_error::manual_runtime_error_info(
@@ -1928,27 +1945,86 @@ fn output_artifact_payload_from_run(
     }
 
     let uses_json_output = contract.kind == "json" || artifact_uses_json_output(&contract.artifact);
-    let content = if uses_json_output {
-        if terminal_message.has_stable_id {
-            output
-                .recent_messages
-                .iter()
-                .rev()
-                .take(3)
-                .find_map(|message| json_artifact_text(&message.text))
-        } else {
-            json_artifact_text(&terminal_message.text)
-        }
-    } else {
-        non_empty_artifact_text(&terminal_message.text)
-    };
+    if !uses_json_output {
+        return Ok(OutputArtifactEvaluation {
+            payload: non_empty_artifact_text(&terminal_message.text).map(|content| {
+                ProviderResultPayload {
+                    output_artifact: Some(OutputArtifactPayload {
+                        name: contract.artifact.clone(),
+                        content,
+                    }),
+                }
+            }),
+            runtime_control_output: None,
+        });
+    }
 
-    Ok(content.map(|content| ProviderResultPayload {
-        output_artifact: Some(OutputArtifactPayload {
-            name: contract.artifact.clone(),
-            content,
-        }),
-    }))
+    let candidates = if terminal_message.has_stable_id {
+        output
+            .recent_messages
+            .iter()
+            .rev()
+            .take(3)
+            .collect::<Vec<_>>()
+    } else {
+        vec![terminal_message]
+    };
+    let mut invalid = None;
+    for message in candidates {
+        let Some(span) = json_artifact_display_span(&message.text) else {
+            continue;
+        };
+        let runtime_control_output = message.source.clone().map(|source| RuntimeControlOutput {
+            artifact_name: contract.artifact.clone(),
+            source,
+            span: span.clone(),
+        });
+        if span.parse_status == "valid" {
+            return Ok(OutputArtifactEvaluation {
+                payload: Some(ProviderResultPayload {
+                    output_artifact: Some(OutputArtifactPayload {
+                        name: contract.artifact.clone(),
+                        content: span.json_text,
+                    }),
+                }),
+                runtime_control_output,
+            });
+        }
+        if invalid.is_none() {
+            invalid = runtime_control_output;
+        }
+    }
+
+    Ok(OutputArtifactEvaluation {
+        payload: None,
+        runtime_control_output: invalid,
+    })
+}
+
+fn evaluate_runtime_control_output_for_run(
+    req: &WorkerInvocation,
+    status: ProviderRunStatus,
+    output: &client::AcpPromptOutput,
+) -> std::result::Result<OutputArtifactEvaluation, RuntimeErrorInfo> {
+    if req.turn_control_mode != TurnControlMode::RuntimeControlled
+        || !matches!(
+            status,
+            ProviderRunStatus::Success | ProviderRunStatus::Interrupted
+        )
+    {
+        return Ok(OutputArtifactEvaluation::default());
+    }
+    active_output_contract_for_turn(req)
+        .map(|contract| evaluate_output_artifact_from_run(contract, output))
+        .unwrap_or(Ok(OutputArtifactEvaluation::default()))
+}
+
+#[cfg(test)]
+fn output_artifact_payload_from_run(
+    contract: &PromptOutputContract,
+    output: &client::AcpPromptOutput,
+) -> std::result::Result<Option<ProviderResultPayload>, RuntimeErrorInfo> {
+    evaluate_output_artifact_from_run(contract, output).map(|evaluation| evaluation.payload)
 }
 
 fn non_empty_artifact_text(value: &str) -> Option<String> {
@@ -3194,7 +3270,6 @@ mod tests {
         );
 
         let contract = req.output_contract.as_mut().unwrap();
-        contract.emission_mode = OutputEmissionMode::InlineControl;
         contract.finalize_context = Some("remaining nodes: 3".to_string());
         let finalize_prompt =
             render_artifact_finalize_prompt(req.runtime_context.language, contract).unwrap();
@@ -3206,16 +3281,28 @@ mod tests {
         let prompt = render_prompt_bundle(&req).unwrap();
         assert_eq!(prompt.visibility, PromptVisibility::Hidden);
         assert_eq!(prompt.hidden_reason.as_deref(), Some("artifactFinalize"));
+        assert_eq!(prompt.system_prompt, business_prompt.system_prompt);
+        assert!(!prompt.system_prompt.contains("required status field"));
+        assert!(!prompt.system_prompt.contains("dynamic-node-completion"));
         assert!(prompt.user_prompt.contains("dynamic-node-completion"));
         assert!(prompt.user_prompt.contains("required status field"));
         assert!(prompt.user_prompt.contains("remaining nodes: 3"));
         assert!(prompt.user_prompt.contains("不要继续执行任务"));
+        assert!(active_output_contract_for_turn(&req).is_some());
 
         req.user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
+        let repair_prompt = render_prompt_bundle(&req).unwrap();
         assert_eq!(
-            render_prompt_bundle(&req).unwrap().hidden_reason.as_deref(),
+            repair_prompt.hidden_reason.as_deref(),
             Some("invalidOutputRepair")
         );
+        assert_eq!(repair_prompt.system_prompt, business_prompt.system_prompt);
+        assert!(
+            !repair_prompt
+                .system_prompt
+                .contains("required status field")
+        );
+        assert!(active_output_contract_for_turn(&req).is_some());
     }
 
     #[test]
@@ -3460,6 +3547,7 @@ mod tests {
         run.output.recent_messages = vec![client::AcpPromptMessageOutput {
             text: run.output.visible_text.clone(),
             has_stable_id: false,
+            source: None,
         }];
 
         let outcome = classify_acp_prompt_run(&run);
@@ -3652,6 +3740,7 @@ mod tests {
             recent_messages: vec![client::AcpPromptMessageOutput {
                 text: json.to_string(),
                 has_stable_id: true,
+                source: None,
             }],
             observed_stable_message: true,
         };
@@ -3685,6 +3774,7 @@ mod tests {
             recent_messages: vec![client::AcpPromptMessageOutput {
                 text: json.to_string(),
                 has_stable_id: false,
+                source: None,
             }],
             ..Default::default()
         };
@@ -3705,10 +3795,12 @@ mod tests {
                 client::AcpPromptMessageOutput {
                     text: r#"{"status":"success"}"#.to_string(),
                     has_stable_id: false,
+                    source: None,
                 },
                 client::AcpPromptMessageOutput {
                     text: "unexpected status 502 Bad Gateway".to_string(),
                     has_stable_id: false,
+                    source: None,
                 },
             ],
             observed_stable_message: true,
@@ -3734,10 +3826,12 @@ mod tests {
                 client::AcpPromptMessageOutput {
                     text: r#"{"status":"success"}"#.to_string(),
                     has_stable_id: true,
+                    source: None,
                 },
                 client::AcpPromptMessageOutput {
                     text: "final explanation without JSON".to_string(),
                     has_stable_id: true,
+                    source: None,
                 },
             ],
             observed_stable_message: true,
@@ -3754,6 +3848,147 @@ mod tests {
     }
 
     #[test]
+    fn runtime_output_evaluation_keeps_the_source_selected_within_the_three_message_window() {
+        for emission_mode in [
+            OutputEmissionMode::PostTurnProjection,
+            OutputEmissionMode::InlineControl,
+        ] {
+            let contract = test_output_contract(emission_mode);
+            let output = client::AcpPromptOutput {
+                recent_messages: vec![
+                    client::AcpPromptMessageOutput {
+                        text: r#"{"status":"success"}"#.to_string(),
+                        has_stable_id: true,
+                        source: Some(client::AcpPromptMessageSource {
+                            branch_id: "root".to_string(),
+                            item_id: "selected-output".to_string(),
+                        }),
+                    },
+                    client::AcpPromptMessageOutput {
+                        text: "final explanation without JSON".to_string(),
+                        has_stable_id: true,
+                        source: Some(client::AcpPromptMessageSource {
+                            branch_id: "root".to_string(),
+                            item_id: "terminal-message".to_string(),
+                        }),
+                    },
+                ],
+                observed_stable_message: true,
+                ..Default::default()
+            };
+
+            let evaluation = evaluate_output_artifact_from_run(&contract, &output).unwrap();
+
+            assert_eq!(
+                evaluation.payload.unwrap().output_artifact.unwrap().content,
+                r#"{"status":"success"}"#
+            );
+            assert_eq!(
+                evaluation.runtime_control_output.unwrap().source.item_id,
+                "selected-output"
+            );
+        }
+    }
+
+    #[test]
+    fn valid_runtime_output_and_display_source_win_over_a_newer_invalid_candidate() {
+        let contract = test_output_contract(OutputEmissionMode::InlineControl);
+        let output = client::AcpPromptOutput {
+            recent_messages: vec![
+                client::AcpPromptMessageOutput {
+                    text: r#"{"status":"success"}"#.to_string(),
+                    has_stable_id: true,
+                    source: Some(client::AcpPromptMessageSource {
+                        branch_id: "root".to_string(),
+                        item_id: "valid-output".to_string(),
+                    }),
+                },
+                client::AcpPromptMessageOutput {
+                    text: r#"```json
+{"status":"unterminated}
+```"#
+                        .to_string(),
+                    has_stable_id: true,
+                    source: Some(client::AcpPromptMessageSource {
+                        branch_id: "root".to_string(),
+                        item_id: "newer-invalid-output".to_string(),
+                    }),
+                },
+            ],
+            observed_stable_message: true,
+            ..Default::default()
+        };
+
+        let evaluation = evaluate_output_artifact_from_run(&contract, &output).unwrap();
+
+        assert!(evaluation.payload.is_some());
+        assert_eq!(
+            evaluation.runtime_control_output.unwrap().source.item_id,
+            "valid-output"
+        );
+    }
+
+    #[test]
+    fn invalid_runtime_output_returns_the_newest_candidate_source_without_an_artifact() {
+        let contract = test_output_contract(OutputEmissionMode::PostTurnProjection);
+        let output = client::AcpPromptOutput {
+            recent_messages: vec![
+                client::AcpPromptMessageOutput {
+                    text: r#"{"status":"older}"#.to_string(),
+                    has_stable_id: true,
+                    source: Some(client::AcpPromptMessageSource {
+                        branch_id: "root".to_string(),
+                        item_id: "older-invalid-output".to_string(),
+                    }),
+                },
+                client::AcpPromptMessageOutput {
+                    text: r#"{"status":"newer}"#.to_string(),
+                    has_stable_id: true,
+                    source: Some(client::AcpPromptMessageSource {
+                        branch_id: "root".to_string(),
+                        item_id: "newer-invalid-output".to_string(),
+                    }),
+                },
+            ],
+            observed_stable_message: true,
+            ..Default::default()
+        };
+
+        let evaluation = evaluate_output_artifact_from_run(&contract, &output).unwrap();
+
+        assert!(evaluation.payload.is_none());
+        let control_output = evaluation.runtime_control_output.unwrap();
+        assert_eq!(control_output.source.item_id, "newer-invalid-output");
+        assert_eq!(control_output.span.parse_status, "invalid");
+    }
+
+    #[test]
+    fn direct_turn_does_not_enter_runtime_output_evaluation() {
+        let mut req = test_worker_invocation(Utf8PathBuf::from("/run/attempt-001"));
+        req.turn_control_mode = TurnControlMode::NonRuntimeControlled;
+        req.output_contract = Some(test_output_contract(OutputEmissionMode::InlineControl));
+        let output = client::AcpPromptOutput {
+            recent_messages: vec![client::AcpPromptMessageOutput {
+                text: r#"{"example":true}"#.to_string(),
+                has_stable_id: false,
+                source: Some(client::AcpPromptMessageSource {
+                    branch_id: "root".to_string(),
+                    item_id: "direct-message".to_string(),
+                }),
+            }],
+            observed_stable_message: true,
+            ..Default::default()
+        };
+
+        let evaluation =
+            evaluate_runtime_control_output_for_run(&req, ProviderRunStatus::Success, &output)
+                .expect("Direct turns bypass Runtime output evaluation");
+
+        assert!(evaluation.payload.is_none());
+        assert!(evaluation.runtime_control_output.is_none());
+    }
+
+    #[test]
     fn stable_terminal_message_scans_at_most_three_messages() {
         let contract = test_output_contract(OutputEmissionMode::InlineControl);
         let output = client::AcpPromptOutput {
@@ -3762,18 +3997,22 @@ mod tests {
                 client::AcpPromptMessageOutput {
                     text: r#"{"status":"success"}"#.to_string(),
                     has_stable_id: true,
+                    source: None,
                 },
                 client::AcpPromptMessageOutput {
                     text: "one".to_string(),
                     has_stable_id: true,
+                    source: None,
                 },
                 client::AcpPromptMessageOutput {
                     text: "two".to_string(),
                     has_stable_id: true,
+                    source: None,
                 },
                 client::AcpPromptMessageOutput {
                     text: "three".to_string(),
                     has_stable_id: true,
+                    source: None,
                 },
             ],
             observed_stable_message: true,
@@ -3802,6 +4041,7 @@ mod tests {
             recent_messages: vec![client::AcpPromptMessageOutput {
                 text: text.to_string(),
                 has_stable_id: false,
+                source: None,
             }],
             ..Default::default()
         };

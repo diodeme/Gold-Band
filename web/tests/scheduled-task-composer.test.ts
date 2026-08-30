@@ -20,6 +20,10 @@ describe('scheduled task composer entry', () => {
     expect(source).toContain('scheduledMode');
     expect(source).toContain('Settings2');
     expect(source).toContain("t('scheduled.composer.create')");
+    expect(source.match(/t\('scheduled\.composer\.switchTo'\)/g)).toHaveLength(2);
+    expect(source.match(/<span className="text-xs leading-5 text-muted-foreground">\{t\('scheduled\.composer\.switchTo'\)\}<\/span>/g)).toHaveLength(2);
+    expect(source).toMatch(/switchTo'[\s\S]*?<Send[\s\S]*?t\('acp\.send'\)/u);
+    expect(source).toMatch(/switchTo'[\s\S]*?<AlarmClock[\s\S]*?t\('scheduled\.composer\.create'\)/u);
     expect(source).toContain('scheduledMode ? createScheduledTask() : handleSubmit()');
     expect(source.match(/w-6 rounded-none px-0 shadow-none/g)).toHaveLength(2);
     expect(source).not.toContain('border-primary-foreground/20');

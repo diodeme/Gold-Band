@@ -233,6 +233,14 @@ export function getSourceControlSnapshot(projectId: string, workspacePath?: stri
   return getRuntimeApi().getSourceControlSnapshot(projectId, workspacePath);
 }
 
+export function getGitBranchPickerSnapshot(projectId: string, workspacePath?: string | null) {
+  return getRuntimeApi().getGitBranchPickerSnapshot(projectId, workspacePath);
+}
+
+export function changeGitBranch(projectId: string, workspacePath: string | null | undefined, input: Parameters<ReturnType<typeof getRuntimeApi>['changeGitBranch']>[2]) {
+  return getRuntimeApi().changeGitBranch(projectId, workspacePath, input);
+}
+
 export function getGitHistory(projectId: string, workspacePath: string | null | undefined, query: Parameters<ReturnType<typeof getRuntimeApi>['getGitHistory']>[2]) {
   return getRuntimeApi().getGitHistory(projectId, workspacePath, query);
 }
@@ -343,6 +351,10 @@ export function getTurnFileChangeSet(locator: Parameters<ReturnType<typeof getRu
 
 export function getFileComparison(locator: Parameters<ReturnType<typeof getRuntimeApi>['getFileComparison']>[0], changeSetId: string, changeId: string) {
   return getRuntimeApi().getFileComparison(locator, changeSetId, changeId);
+}
+
+export function resolveTurnAttachmentFile(locator: Parameters<ReturnType<typeof getRuntimeApi>['resolveTurnAttachmentFile']>[0], changeSetId: string, attachmentId: string) {
+  return getRuntimeApi().resolveTurnAttachmentFile(locator, changeSetId, attachmentId);
 }
 
 export function subscribeAcpSessionUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeAcpSessionUpdates']>>[0]) {
@@ -529,13 +541,29 @@ export function saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | n
 export function recordActivity() {
   return getRuntimeApi().recordActivity();
 }
+
+export function reportFrontendError(input: import('./api/client').FrontendErrorReportInput) {
+  return getRuntimeApi().reportFrontendError(input);
+}
 // ── Conversation UI ──
 export function saveDesktopUiMode(mode: 'conversation' | 'workbench') {
   return getRuntimeApi().saveDesktopUiMode(mode);
 }
 
-export function getConversationSidebar() {
-  return getRuntimeApi().getConversationSidebar();
+export function getConversationSidebarBootstrap() {
+  return getRuntimeApi().getConversationSidebarBootstrap();
+}
+
+export function getConversationTaskPage(projectId: string, cursor?: string | null, limit?: number) {
+  return getRuntimeApi().getConversationTaskPage(projectId, cursor, limit);
+}
+
+export function getConversationPinnedTaskPage(cursor?: string | null, limit?: number) {
+  return getRuntimeApi().getConversationPinnedTaskPage(cursor, limit);
+}
+
+export function getConversationRunSummaryPage(projectId: string, taskId: string, cursor?: string | null, limit?: number) {
+  return getRuntimeApi().getConversationRunSummaryPage(projectId, taskId, cursor, limit);
 }
 
 export function acknowledgeConversationTerminalResult(projectId: string, taskId: string, eventId: string) {

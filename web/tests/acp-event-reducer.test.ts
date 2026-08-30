@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   acpSessionEventsSignature,
   mergeAcpEventWindows,
+  mergeAcpEventWindowsForSession,
   projectLatestAcpUsageUpdate,
 } from "@/lib/acp-event-reducer";
 import type { AcpSessionVm, AcpUiEventVm } from "@/types";
@@ -39,6 +40,23 @@ function session(events: AcpUiEventVm[]): Pick<AcpSessionVm, "events" | "eventPa
 }
 
 describe("ACP event reducer", () => {
+  it("replaces old messages and permissions when the ACP session identity changes", () => {
+    const oldEvents = [
+      event({ id: "old-message", kind: "agentMessage", content: "你好？", sessionId: "old-session" }),
+      event({ id: "old-permission", kind: "permissionRequest", status: "pending", sessionId: "old-session" }),
+    ];
+    const newEvents = [
+      event({ id: "new-message", kind: "agentMessage", content: "new task", sessionId: "new-session" }),
+    ];
+
+    expect(mergeAcpEventWindowsForSession(
+      "old-session",
+      "new-session",
+      oldEvents,
+      newEvents,
+    )).toEqual(newEvents);
+  });
+
   it("projects the latest hidden usage update into the current session", () => {
     const current = {
       usage: { used: 128_399, size: 258_400, inputTokens: 42 },

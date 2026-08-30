@@ -3,7 +3,6 @@
 @import "streamdown/styles.css";
 @import "./themes/generated/builtin-themes.css";
 @source "../../node_modules/streamdown/dist/*.js";
-@source "../../node_modules/@streamdown/code/dist/*.js";
 
 [data-streamdown="code-block"] {
   margin-block: 0.5rem;
@@ -301,6 +300,14 @@
     0 0 16px color-mix(in srgb, var(--gold-window-edge-shadow) 45%, transparent);
   --gold-conversation-scrollbar-thumb: color-mix(in srgb, var(--foreground) 11%, transparent);
   --gold-conversation-scrollbar-thumb-hover: color-mix(in srgb, var(--foreground) 22%, transparent);
+  --workspace-editor-divider: color-mix(in srgb, var(--border) 55%, transparent);
+  --workspace-editor-active-line: color-mix(in srgb, var(--muted) 35%, transparent);
+  --workspace-editor-deleted-line: color-mix(in srgb, var(--destructive) 10%, transparent);
+  --workspace-editor-inserted-line: color-mix(in srgb, var(--gold-success) 10%, transparent);
+  --workspace-editor-deleted-text: color-mix(in srgb, var(--destructive) 12%, transparent);
+  --workspace-editor-inserted-text: color-mix(in srgb, var(--gold-success) 12%, transparent);
+  --workspace-editor-collapsed-border: color-mix(in srgb, var(--border) 70%, transparent);
+  --workspace-editor-collapsed-background: color-mix(in srgb, var(--muted) 45%, transparent);
   --gb-material-model: solid;
   --gb-material-opacity: 1;
   --gb-material-border-highlight: transparent;

@@ -1,7 +1,9 @@
+use std::backtrace::Backtrace;
 use std::fs::{self, File};
 use std::io::Write as _;
+use std::panic;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Once, OnceLock};
 
 use camino::Utf8Path;
 use file_rotate::compression::Compression;
@@ -9,6 +11,7 @@ use file_rotate::suffix::AppendCount;
 use file_rotate::{ContentLimit, FileRotate};
 use serde::Serialize;
 use tracing::warn;
+use tracing_appender::non_blocking::{ErrorCounter, NonBlocking, NonBlockingBuilder, WorkerGuard};
 use tracing_subscriber::filter::FilterFn;
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -24,9 +27,11 @@ use crate::storage::{GoldBandPaths, append_jsonl, ensure_parent_dir, write_json}
 const PROGRESS_TARGET: &str = "gold_band.progress";
 const RUNTIME_LOG_MAX_BYTES: usize = 8 * 1024 * 1024;
 const RUNTIME_LOG_ROTATED_FILES: usize = 4;
+const RUNTIME_LOG_BUFFERED_LINES_LIMIT: usize = 1_024;
 static TRACE_ID: OnceLock<String> = OnceLock::new();
 static TRACING_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static RUNTIME_LOG_LEVEL: AtomicU8 = AtomicU8::new(RuntimeLogLevel::Info.as_u8());
+static PANIC_LOGGING_HOOK: Once = Once::new();
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -173,18 +178,55 @@ impl tracing_subscriber::fmt::time::FormatTime for LocalTimer {
     }
 }
 
-pub fn init_tracing(paths: &GoldBandPaths, config: &RuntimeConfig, enable_stderr_progress: bool) {
+#[derive(Debug)]
+pub struct RuntimeLogGuard {
+    _worker_guard: WorkerGuard,
+    dropped_lines: ErrorCounter,
+}
+
+impl RuntimeLogGuard {
+    fn new(worker_guard: WorkerGuard, dropped_lines: ErrorCounter) -> Self {
+        Self {
+            _worker_guard: worker_guard,
+            dropped_lines,
+        }
+    }
+
+    pub fn dropped_lines(&self) -> usize {
+        self.dropped_lines.dropped_lines()
+    }
+}
+
+impl Drop for RuntimeLogGuard {
+    fn drop(&mut self) {
+        let dropped_lines = self.dropped_lines();
+        if dropped_lines > 0 {
+            warn!(
+                target: "gold_band::observability",
+                dropped_lines,
+                "runtime log queue dropped diagnostic lines"
+            );
+            eprintln!("gold-band: runtime log queue dropped {dropped_lines} lines");
+        }
+    }
+}
+
+pub fn init_tracing(
+    paths: &GoldBandPaths,
+    config: &RuntimeConfig,
+    enable_stderr_progress: bool,
+) -> Option<RuntimeLogGuard> {
     let _ = TRACE_ID.get_or_init(trace_id_seed);
     cleanup_old_logs(paths, config.log_retention_days);
     set_runtime_log_level(config.log_level);
     if TRACING_INITIALIZED.swap(true, Ordering::SeqCst) {
-        return;
+        return None;
     }
 
     let logs_dir = paths.logs_dir();
     if let Err(err) = fs::create_dir_all(logs_dir.as_std_path()) {
         eprintln!("gold-band: failed to create logs dir {logs_dir}: {err}");
-        return;
+        return None;
     }
 
     let log_path = paths.runtime_log_file();
@@ -192,13 +234,19 @@ pub fn init_tracing(paths: &GoldBandPaths, config: &RuntimeConfig, enable_stderr
 
     let progress_filter = EnvFilter::new(format!("{PROGRESS_TARGET}=info"));
 
-    let file_layer = fmt::layer()
-        .with_ansi(false)
-        .with_writer(Mutex::new(runtime_log_writer(
+    let (runtime_log_writer, runtime_log_guard) = runtime_log_channel(
+        runtime_log_writer(
             log_path.as_std_path(),
             RUNTIME_LOG_MAX_BYTES,
             RUNTIME_LOG_ROTATED_FILES,
-        )))
+        ),
+        RUNTIME_LOG_BUFFERED_LINES_LIMIT,
+    );
+    let dropped_lines = runtime_log_writer.error_counter();
+
+    let file_layer = fmt::layer()
+        .with_ansi(false)
+        .with_writer(runtime_log_writer)
         .with_target(true)
         .with_timer(LocalTimer)
         .with_filter(FilterFn::new(runtime_log_filter));
@@ -216,6 +264,66 @@ pub fn init_tracing(paths: &GoldBandPaths, config: &RuntimeConfig, enable_stderr
     } else {
         registry.init();
     }
+    install_panic_logging_hook();
+
+    Some(RuntimeLogGuard::new(runtime_log_guard, dropped_lines))
+}
+
+fn install_panic_logging_hook() {
+    PANIC_LOGGING_HOOK.call_once(|| {
+        let previous_hook = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            let payload = info
+                .payload()
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| {
+                    info.payload()
+                        .downcast_ref::<&str>()
+                        .map(|message| (*message).to_string())
+                })
+                .unwrap_or_else(|| "<non-string panic payload>".to_string());
+            let location = info
+                .location()
+                .map(|location| {
+                    format!(
+                        "{}:{}:{}",
+                        location.file(),
+                        location.line(),
+                        location.column()
+                    )
+                })
+                .unwrap_or_else(|| "<unknown>".to_string());
+            let thread = std::thread::current()
+                .name()
+                .unwrap_or("<unnamed>")
+                .to_string();
+            let backtrace = Backtrace::force_capture().to_string();
+            let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                tracing::error!(
+                    target: "gold_band::panic",
+                    event = "runtime_panic",
+                    panic_thread = %thread,
+                    panic_payload = %payload,
+                    panic_location = %location,
+                    panic_backtrace = %backtrace,
+                    "Rust panic captured by runtime hook"
+                );
+            }));
+            let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| previous_hook(info)));
+        }));
+    });
+}
+
+fn runtime_log_channel<T: std::io::Write + Send + 'static>(
+    writer: T,
+    buffered_lines_limit: usize,
+) -> (NonBlocking, WorkerGuard) {
+    NonBlockingBuilder::default()
+        .buffered_lines_limit(buffered_lines_limit)
+        .lossy(true)
+        .thread_name("gold-band-runtime-log")
+        .finish(writer)
 }
 
 fn runtime_log_writer(
@@ -436,19 +544,72 @@ pub fn touch_log_file_best_effort(paths: &GoldBandPaths) {
 #[cfg(test)]
 mod tests {
     use std::io::Write;
+    use std::sync::mpsc;
+    use std::time::Duration;
 
-    use super::runtime_log_writer;
+    use super::{runtime_log_channel, runtime_log_writer};
+
+    struct GatedWriter {
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+        block_next_write: bool,
+    }
+
+    impl Write for GatedWriter {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            if self.block_next_write {
+                self.block_next_write = false;
+                let _ = self.entered.send(());
+                let _ = self.release.recv();
+            }
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
 
     #[test]
-    fn runtime_log_rotates_by_size_and_keeps_configured_backups() {
+    fn runtime_log_queue_drops_at_capacity_without_backpressure() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (mut writer, guard) = runtime_log_channel(
+            GatedWriter {
+                entered: entered_tx,
+                release: release_rx,
+                block_next_write: true,
+            },
+            1,
+        );
+        let dropped_lines = writer.error_counter();
+
+        writer.write_all(b"first\n").expect("enqueue first line");
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker starts first write");
+        writer.write_all(b"second\n").expect("fill queue");
+        writer
+            .write_all(b"third\n")
+            .expect("drop without surfacing writer failure");
+
+        assert_eq!(dropped_lines.dropped_lines(), 1);
+        release_tx.send(()).expect("release worker");
+        drop(writer);
+        drop(guard);
+    }
+
+    #[test]
+    fn async_runtime_log_flushes_and_keeps_configured_rotated_backups() {
         let temp = tempfile::tempdir().expect("create temp dir");
         let log_path = temp.path().join("runtime.log");
-        let mut writer = runtime_log_writer(&log_path, 8, 4);
+        let (mut writer, guard) = runtime_log_channel(runtime_log_writer(&log_path, 8, 4), 16);
 
         writer
             .write_all(b"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH")
-            .expect("write log data");
-        writer.flush().expect("flush log data");
+            .expect("enqueue log data");
+        drop(writer);
+        drop(guard);
 
         assert!(log_path.exists());
         assert!(std::fs::metadata(&log_path).unwrap().len() <= 8);

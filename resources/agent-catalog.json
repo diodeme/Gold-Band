@@ -3,7 +3,7 @@
   "source": {
     "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
     "registryVersion": "1.0.0",
-    "fetchedAt": "2026-08-24T03:23:15.622Z"
+    "fetchedAt": "2026-08-25T10:26:46.733Z"
   },
   "agents": [
     {
@@ -99,7 +99,7 @@
     {
       "id": "codebuddy-code",
       "label": "CodeBuddy",
-      "version": "2.137.1",
+      "version": "2.138.0",
       "description": "Tencent Cloud's official intelligent coding tool",
       "repository": null,
       "website": "https://www.codebuddy.cn/cli/",
@@ -108,7 +108,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@tencent-ai/codebuddy-code@2.137.1",
+        "@tencent-ai/codebuddy-code@2.138.0",
         "--acp"
       ],
       "env": {},
@@ -164,7 +164,7 @@
     {
       "id": "opencode",
       "label": "OpenCode",
-      "version": "1.18.21",
+      "version": "1.18.23",
       "description": "The open source coding agent",
       "repository": "https://github.com/anomalyco/opencode",
       "website": "https://opencode.ai",

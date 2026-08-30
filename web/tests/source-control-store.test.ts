@@ -27,6 +27,26 @@ describe('source control session store', () => {
     expect(api.getHistory).not.toHaveBeenCalled();
   });
 
+  it('stops at the unsupported Git version capability without repository data requests', async () => {
+    const api = fakeApi();
+    api.getCapability.mockResolvedValueOnce(capability('version-unsupported', '2.35.9'));
+    const store = new SourceControlStore(api);
+
+    await store.ensureLoaded('project-1', 'D:/repo');
+
+    expect(store.session('project-1', 'D:/repo')).toMatchObject({
+      status: 'unavailable',
+      capability: {
+        status: 'version-unsupported',
+        installedVersion: '2.35.9',
+        minimumVersion: '2.36.0',
+      },
+      error: null,
+    });
+    expect(api.getSnapshot).not.toHaveBeenCalled();
+    expect(api.getHistory).not.toHaveBeenCalled();
+  });
+
   it('initializes a non-repository and loads its unborn Git workspace without a second error state', async () => {
     const api = fakeApi();
     api.getCapability
@@ -370,9 +390,20 @@ describe('source control session store', () => {
       store.ensureLoaded('project-1', 'D:/repo/worktree-b'),
     ]);
     store.setActiveTab('project-1', 'd:/REPO/worktree-a', 'github');
+    store.setRepositoryTab('project-1', 'd:/REPO/worktree-a', 'worktrees');
+    store.setSubject('project-1', 'd:/REPO/worktree-a', 'Worktree A draft');
+    store.setActiveTab('project-1', 'D:/repo/worktree-b', 'history');
 
-    expect(store.session('project-1', 'D:/repo/worktree-a').activeTab).toBe('github');
-    expect(store.session('project-1', 'D:/repo/worktree-b').activeTab).toBe('changes');
+    expect(store.session('project-1', 'D:/repo/worktree-a')).toMatchObject({
+      activeTab: 'github',
+      repositoryTab: 'worktrees',
+      subject: 'Worktree A draft',
+    });
+    expect(store.session('project-1', 'D:/repo/worktree-b')).toMatchObject({
+      activeTab: 'history',
+      repositoryTab: 'branches',
+      subject: '',
+    });
     expect(api.getSnapshot).toHaveBeenCalledTimes(2);
   });
 
@@ -580,9 +611,11 @@ function fakeApi() {
   };
 }
 
-function capability(status: GitCapabilityVm['status']): GitCapabilityVm {
+function capability(status: GitCapabilityVm['status'], installedVersion = '2.53.0'): GitCapabilityVm {
   return {
     status,
+    installedVersion: status === 'not-installed' || status === 'version-unavailable' ? null : installedVersion,
+    minimumVersion: '2.36.0',
     repoRoot: status === 'not-installed' || status === 'repository-required' ? null : 'D:/repo',
     commonDir: status === 'not-installed' || status === 'repository-required' ? null : 'D:/repo/.git',
     head: status === 'ready' ? 'a'.repeat(40) : null,

@@ -5,7 +5,15 @@ vi.mock('../src/api/client', () => ({
 }));
 
 import { getRuntimeApi } from '../src/api/client';
-import { deleteProfile, materializeConversationAttachments, pauseRun, removeRecentWorkspace, stopActiveSession } from '../src/api';
+import {
+  changeGitBranch,
+  deleteProfile,
+  getGitBranchPickerSnapshot,
+  materializeConversationAttachments,
+  pauseRun,
+  removeRecentWorkspace,
+  stopActiveSession,
+} from '../src/api';
 
 describe('api facade', () => {
   beforeEach(() => {
@@ -69,5 +77,22 @@ describe('api facade', () => {
     await pauseRun('task-1', 'run-1', 'project-1');
 
     expect(pauseImpl).toHaveBeenCalledWith('task-1', 'run-1', 'project-1');
+  });
+
+  it('routes branch picker reads and mutations through the selected runtime API', async () => {
+    const snapshot = { revision: 'revision-1', currentBranch: 'main' };
+    const getSnapshotImpl = vi.fn().mockResolvedValue(snapshot);
+    const changeBranchImpl = vi.fn().mockResolvedValue({ ...snapshot, currentBranch: 'feature/test' });
+    vi.mocked(getRuntimeApi).mockReturnValue({
+      getGitBranchPickerSnapshot: getSnapshotImpl,
+      changeGitBranch: changeBranchImpl,
+    } as never);
+
+    await getGitBranchPickerSnapshot('project-1', 'D:/repo');
+    const input = { kind: 'switch' as const, name: 'feature/test', expectedRevision: 'revision-1' };
+    await changeGitBranch('project-1', 'D:/repo', input);
+
+    expect(getSnapshotImpl).toHaveBeenCalledWith('project-1', 'D:/repo');
+    expect(changeBranchImpl).toHaveBeenCalledWith('project-1', 'D:/repo', input);
   });
 });

@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationPinnedTaskPageVm, ConversationRunModeVm, ConversationRunSummaryPageVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarBootstrapVm, ConversationTaskPageVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -52,6 +52,12 @@ export const desktopApi: RuntimeApi = {
   },
   getSourceControlSnapshot(projectId, workspacePath) {
     return invokeCommand('get_source_control_snapshot', { projectId, workspacePath });
+  },
+  getGitBranchPickerSnapshot(projectId, workspacePath) {
+    return invokeCommand('get_git_branch_picker_snapshot', { projectId, workspacePath });
+  },
+  changeGitBranch(projectId, workspacePath, input) {
+    return invokeCommand('change_git_branch', { projectId, workspacePath, input });
   },
   getGitHistory(projectId, workspacePath, query) {
     return invokeCommand('get_git_history', { projectId, workspacePath, query });
@@ -373,6 +379,9 @@ export const desktopApi: RuntimeApi = {
   getFileComparison(locator, changeSetId, changeId) {
     return invokeCommand<import('../types').FileComparisonVm>('get_file_comparison', { ...locator, changeSetId, changeId });
   },
+  resolveTurnAttachmentFile(locator, changeSetId, attachmentId) {
+    return invokeCommand<import('../types').ResolvedWorkspaceFileLinkVm>('resolve_turn_attachment_file', { ...locator, changeSetId, attachmentId });
+  },
   renewAcpSessionLease(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
     return invokeCommand<number>('renew_acp_session_lease', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
@@ -473,6 +482,9 @@ export const desktopApi: RuntimeApi = {
   recordActivity() {
     return invokeCommand('record_activity');
   },
+  reportFrontendError(input) {
+    return invokeCommand('report_frontend_error', { input });
+  },
   getUpdateStatus() {
     return invokeCommand('get_update_status');
   },
@@ -495,8 +507,17 @@ export const desktopApi: RuntimeApi = {
   saveDesktopUiMode(mode) {
     return invokeCommand('save_desktop_ui_mode', { mode });
   },
-  getConversationSidebar() {
-    return invokeCommand<ConversationSidebarVm>('get_conversation_sidebar');
+  getConversationSidebarBootstrap() {
+    return invokeCommand<ConversationSidebarBootstrapVm>('get_conversation_sidebar_bootstrap');
+  },
+  getConversationTaskPage(projectId, cursor, limit) {
+    return invokeCommand<ConversationTaskPageVm>('get_conversation_task_page', { projectId, cursor, limit });
+  },
+  getConversationPinnedTaskPage(cursor, limit) {
+    return invokeCommand<ConversationPinnedTaskPageVm>('get_conversation_pinned_task_page', { cursor, limit });
+  },
+  getConversationRunSummaryPage(projectId, taskId, cursor, limit) {
+    return invokeCommand<ConversationRunSummaryPageVm>('get_conversation_run_summary_page', { projectId, taskId, cursor, limit });
   },
   acknowledgeConversationTerminalResult(projectId, taskId, eventId) {
     return invokeCommand('acknowledge_conversation_terminal_result', {
@@ -582,16 +603,16 @@ export const desktopApi: RuntimeApi = {
     return invokeCommand<ConversationTaskRowVm>('update_task_metadata', { projectId, taskId, title, description });
   },
   deleteConversationTask(projectId, taskId) {
-    return invokeCommand<ConversationSidebarVm>('delete_conversation_task', { projectId, taskId });
+    return invokeCommand<ConversationSidebarBootstrapVm>('delete_conversation_task', { projectId, taskId });
   },
   pinConversation(projectId, taskId) {
-    return invokeCommand<ConversationSidebarVm>('pin_conversation', { projectId, taskId });
+    return invokeCommand<ConversationSidebarBootstrapVm>('pin_conversation', { projectId, taskId });
   },
   unpinConversation(projectId, taskId) {
-    return invokeCommand<ConversationSidebarVm>('unpin_conversation', { projectId, taskId });
+    return invokeCommand<ConversationSidebarBootstrapVm>('unpin_conversation', { projectId, taskId });
   },
   reorderPinnedConversations(pins) {
-    return invokeCommand<ConversationSidebarVm>('reorder_pinned_conversations', { ordered: pins.map((p) => ({ project_id: p.projectId, task_id: p.taskId, order: 0 })) });
+    return invokeCommand<ConversationSidebarBootstrapVm>('reorder_pinned_conversations', { ordered: pins.map((p) => ({ project_id: p.projectId, task_id: p.taskId, order: 0 })) });
   },
   searchConversationTasks(query, limit) {
     return invokeCommand<ConversationSearchResultVm[]>('search_conversation_tasks', { query, limit });
@@ -611,13 +632,13 @@ export const desktopApi: RuntimeApi = {
     if (!path) {
       throw new Error('workspace.cancelled');
     }
-    return invokeCommand<ConversationSidebarVm>('add_conversation_workspace', { path });
+    return invokeCommand<ConversationSidebarBootstrapVm>('add_conversation_workspace', { path });
   },
   removeConversationWorkspace(projectId) {
-    return invokeCommand<ConversationSidebarVm>('remove_conversation_workspace', { projectId });
+    return invokeCommand<ConversationSidebarBootstrapVm>('remove_conversation_workspace', { projectId });
   },
   syncConversationWorkspace(workspacePath) {
-    return invokeCommand<ConversationSidebarVm>('sync_conversation_workspace', { workspacePath });
+    return invokeCommand<ConversationSidebarBootstrapVm>('sync_conversation_workspace', { workspacePath });
   },
   saveConversationPreference(key, value) {
     return invokeCommand('save_conversation_preference', { key, value });

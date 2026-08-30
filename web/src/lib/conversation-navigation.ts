@@ -9,6 +9,11 @@ import type {
   InterventionNavigateEventVm,
 } from '@/types';
 import { findConversationTask } from '@/lib/conversation-task-state';
+import {
+  conversationRunLocatorResolvesTo,
+  sameConversationRunEntity,
+  sameConversationTaskEntity,
+} from '@/lib/conversation-run-identity';
 
 type ConversationSessionLocator = Pick<
   ConversationSessionTargetVm,
@@ -32,9 +37,45 @@ export function conversationPageMatchesRun(
 ): page is Extract<ConversationPage, { kind: 'conversation-run' }> {
   return page.kind === 'conversation-run'
     && run != null
-    && page.projectId === run.projectId
-    && page.taskId === run.taskId
-    && page.runId === run.runId;
+    && sameConversationRunEntity(page, run);
+}
+
+export function canonicalizeConversationPageIdentity(
+  page: ConversationPage,
+  taskUuid: string | null | undefined,
+): ConversationPage {
+  if (page.kind !== 'conversation-run') return page;
+  const canonicalTaskUuid = taskUuid?.trim();
+  if (!canonicalTaskUuid || page.taskUuid?.trim() === canonicalTaskUuid) return page;
+  return { ...page, taskUuid: canonicalTaskUuid };
+}
+
+export function conversationPageTargetsTask(
+  page: ConversationPage,
+  task: Pick<ConversationRunVm, 'projectId' | 'taskId' | 'taskUuid'>,
+): page is Extract<ConversationPage, { kind: 'conversation-run' }> {
+  if (page.kind !== 'conversation-run'
+    || page.projectId !== task.projectId
+    || page.taskId !== task.taskId) {
+    return false;
+  }
+  const pageTaskUuid = page.taskUuid?.trim();
+  const targetTaskUuid = task.taskUuid?.trim();
+  return !pageTaskUuid
+    || !targetTaskUuid
+    || sameConversationTaskEntity(page, task);
+}
+
+export function conversationSourceControlWorkspacePath(
+  page: ConversationPage,
+  run: ConversationRunVm | null | undefined,
+): string | null {
+  if (!run || !conversationPageMatchesRun(page, run)) return null;
+  const selectedLeaf = findConversationLeafByKey(run.sessionTree, run.sessionTree.selectedSessionKey)
+    ?? findConversationLeafForPage(run.sessionTree, page);
+  if (selectedLeaf) return selectedLeaf.worktreePath ?? null;
+  if (run.selectedSession) return run.selectedSession.worktreePath ?? null;
+  return run.worktree?.path ?? null;
 }
 
 export function conversationPageForRun(run: ConversationRunVm): Extract<ConversationPage, { kind: 'conversation-run' }> {
@@ -42,6 +83,7 @@ export function conversationPageForRun(run: ConversationRunVm): Extract<Conversa
     kind: 'conversation-run',
     projectId: run.projectId,
     taskId: run.taskId,
+    taskUuid: run.taskUuid,
     runId: run.runId,
   };
 }
@@ -80,13 +122,14 @@ export function beginConversationSessionSelection(
 }
 
 export function conversationPageForSession(
-  run: Pick<ConversationRunVm, 'projectId' | 'taskId' | 'runId'>,
+  run: Pick<ConversationRunVm, 'projectId' | 'taskId' | 'taskUuid' | 'runId'>,
   locator: ConversationSessionLocator,
 ): Extract<ConversationPage, { kind: 'conversation-run' }> {
   return {
     kind: 'conversation-run',
     projectId: run.projectId,
     taskId: run.taskId,
+    taskUuid: run.taskUuid,
     runId: run.runId,
     roundId: locator.roundId,
     nodeId: locator.nodeId,
@@ -130,19 +173,31 @@ export function shouldCommitConversationNavigation(
   requested: ConversationPage,
   run: ConversationRunVm,
 ) {
-  return requestId === currentRequestId && conversationPageMatchesRun(requested, run);
+  return requestId === currentRequestId
+    && requested.kind === 'conversation-run'
+    && conversationRunLocatorResolvesTo(requested, run);
+}
+
+export function shouldSurfaceConversationNavigationError(
+  requestId: number,
+  currentRequestId: number,
+  requested: ConversationPage,
+  currentPage: ConversationPage,
+) {
+  return requestId === currentRequestId
+    && requested.kind === 'conversation-run'
+    && currentPage.kind === 'conversation-run'
+    && conversationRunLocatorResolvesTo(requested, currentPage);
 }
 
 export function conversationTerminalResultAcknowledgementTarget(
   sidebar: ConversationSidebarVm,
   page: ConversationPage,
-  loadedRun: Pick<ConversationRunVm, 'projectId' | 'taskId' | 'runId'> | null | undefined,
+  loadedRun: Pick<ConversationRunVm, 'projectId' | 'taskId' | 'taskUuid' | 'runId'> | null | undefined,
 ) {
   if (page.kind !== 'conversation-run'
     || !loadedRun
-    || page.projectId !== loadedRun.projectId
-    || page.taskId !== loadedRun.taskId
-    || page.runId !== loadedRun.runId) {
+    || !sameConversationRunEntity(page, loadedRun)) {
     return null;
   }
   const unread = findConversationTask(sidebar, page.projectId, page.taskId)?.unreadTerminalResult;

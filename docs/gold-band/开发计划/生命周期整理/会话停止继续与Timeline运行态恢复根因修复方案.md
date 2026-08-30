@@ -7,6 +7,19 @@
 
 不建议引入数据库、工作流框架或新的全局状态机。复用现有的 timeline index、revision、operation ID、owner CAS 和原子 JSON 写入。
 
+## 2026-08-24 AI-DYNAMIC merge turn identity 补充
+
+本轮确认 AI-DYNAMIC fanout 的 merge 在 workspace checkpoint 后、ACP session admission 前会因缺失 logical turn ID 进入 `runtime-abnormal`。产品设计一直把 merge 定义为不接入 `dynamic-node-completion` output contract 的执行型 ACP 节点；缺陷来自实现把 merge 放在独立 `execute_dynamic_agent_stage` 链路后，没有同步普通 worker 已有的 logical prompt identity 分配，而共享 ACP provider 在 canonical lifecycle 收口后已要求所有业务 turn 必须携带 ID。
+
+修复不为 merge 增加专用 fallback：
+
+- AI-DYNAMIC invocation builder 将 logical turn ID 收紧为必填参数，统一覆盖 worker、merge、acceptance 与动态会话 prompt；builder 只负责消费已分配身份，不能接收缺失值。
+- orchestration 在调用 builder 前使用现有 `logical_prompt_id` 生成或继承身份；自动重试继续复用同一 ID，新业务 turn 使用新 ID。
+- 测试 provider 删除缺失 ID 时补造 `test-prompt` 的宽松行为，按生产 ACP 契约返回 `acp.prompt-turn-id-required`。
+- fanout 接口回归必须完整经过 merge 与 acceptance，并断言所有业务 invocation 的 ID 非空、互不复用，merge / acceptance 均获得 `runtime-turn-*`。
+
+本次只增加每个 turn 一次 O(1) 非空校验和既有 UUID 生成，不增加持久字段、磁盘 I/O、Timeline 扫描、缓存、锁范围或并发机制。
+
 ## 2026-08-21 一致性审计补充
 
 本轮审计确认原有 canonical lifecycle、revision、owner/CAS 和 metadata lock 设计方向正确，缺口来自共享 `acp.snapshot.json` 的事务边界与消费端投影没有完全收口。实现按原设计补齐，不引入新状态机、数据库或 Timeline index 分片：

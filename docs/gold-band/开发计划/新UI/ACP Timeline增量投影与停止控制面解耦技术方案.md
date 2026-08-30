@@ -177,8 +177,7 @@ outerNodeId? / outerAttemptId? / nodeId / attemptId / branchId
       "semanticBlocks": [],
       "latestPage": {},
       "latestTodo": null,
-      "pendingPermissions": {},
-      "pendingElicitations": {},
+      "pendingInteractions": {},
       "availableCommands": [],
       "usage": null,
       "timing": null

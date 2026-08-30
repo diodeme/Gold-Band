@@ -5,7 +5,7 @@
 - 状态：已完成（本地 Git 读取/写入、可取消远端与 stash 操作、GitHub capability/login、PR/Issue 查询、PR diff、Commit 主从审阅、提交归属、跨文件 Diff 导航、会话缓存、Git 状态监控与 operation event subscription 均已完成）
 - 日期：2026-08-12
 - 范围：Gold Band 桌面端右侧源码管理、常见 Git 操作、Commit Patch 审阅、GitHub PR/Issue 集成
-- Git 执行基线：系统 Git CLI + Rust typed service
+- Git 执行基线：系统 Git CLI `2.36.0+` + Rust typed service；版本门槛覆盖所有 Git 功能，但不阻断应用其他功能
 - GitHub 执行基线：系统 `gh` CLI，不捆绑、不自动安装、不由 Gold Band 保存 token
 - UI 基线：现有 Right Workspace、文件工作区、CodeMirror/Atomic、shadcn/ui、Tailwind CSS
 - 关联基线：`AI-DYNAMIC工作空间树与Git基础设施V2技术方案.md` 中已实现的 Git capability、checkpoint、worktree 与 runtime workspace 语义
@@ -129,12 +129,16 @@ Git Graph 和关系分析不再作为首版能力。真实仓库的多 ref DAG �
 源码管理首次加载复用已有 `GitRepositoryService.probe()`、`get_git_capability` 与 `initialize_git_repository`，建立 capability gate，而不是直接把完整 snapshot 的任意失败投影成一个 error：
 
 - `not-installed`：不请求 snapshot/history，显示 Git 安装引导和重新检测。
+- `version-unsupported`：Git 可执行文件存在但版本低于 `2.36.0`；返回 `installedVersion + minimumVersion`，不请求 repository snapshot/history，并在源码管理、分支选择器和 Git 前置对话框展示下载与重新检测。
+- `version-unavailable`：Git 可执行文件存在但 `git --version` 失败、非 UTF-8 或格式无法识别；与未安装、低版本分开处理，不猜测可用能力。
 - `repository-required`：显示非 Git 仓库状态，typed command 执行 `git init`；不 stage、不 commit。
 - `head-required`：允许读取源码管理 snapshot；history 对 unborn HEAD 返回稳定空页，用户从“更改”完成首次提交。
 - `worktree-required / repository-unavailable`：按稳定 capability 状态展示针对性恢复建议。
 - `ready`：snapshot/history 并行加载，真实命令失败才进入结构化错误态。
 
 capability 仅在首次进入、不可用状态的显式重试或初始化终态读取；已 ready 的后台 watcher refresh 不重复 probe。Tauri capability/init command 进入 blocking pool，避免 Git 进程等待占用 IPC event loop。
+
+最低版本采用单一产品级 Git capability，不建立按命令分支的版本矩阵，也不实现 `worktree list --porcelain` 旧行协议或路径输出 fallback。版本解析复用 Rust `semver` 比较核心版本，同时接受 Git for Windows、Apple Git 等发行后缀；`2.36.0-rc*` 仍低于稳定版。通过门槛后继续使用 Git 原生 `--path-format=absolute` 与 `worktree list --porcelain -z`，避免跨平台自行模拟 Git 的路径/worktree 协议。Git source-control typed service 在解析 workspace scope 前统一执行版本 gate，结构化错误为 `git.version-unsupported / git.version-unavailable`；runtime preflight 对应 `run.git-version-unsupported / run.git-version-unavailable`。版本信息不持久化、不新增全局缓存。
 
 ```text
 Right Workspace / Source Control

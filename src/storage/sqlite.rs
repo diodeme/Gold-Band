@@ -2,7 +2,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use camino::Utf8Path;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::Deserialize;
 use tracing::warn;
 
 use crate::acp::events::{AcpSessionMetadata, load_timeline_items};
@@ -26,6 +27,12 @@ pub fn init_search_index(
         let projects_dir = projects_dir.to_path_buf();
         std::thread::spawn(move || {
             index_clone.backfill_from_disk(&projects_dir);
+        });
+    } else if index.needs_task_activity_backfill() {
+        let index_clone = index.clone();
+        let projects_dir = projects_dir.to_path_buf();
+        std::thread::spawn(move || {
+            index_clone.backfill_task_activities_from_disk(&projects_dir);
         });
     }
 
@@ -70,6 +77,30 @@ pub fn index_task_with_retry(task_dir: &Utf8Path, task_id: &str) {
     index.index_task_with_retry(task_dir, task_id);
 }
 
+/// Project the latest durable Task conversation activity into SQLite.
+/// The canonical files must already have been written before this is called.
+pub fn index_task_activity_with_retry(task_dir: &Utf8Path, task_id: &str, activity_at: &str) {
+    let Some(index) = search_index() else {
+        return;
+    };
+    index.index_task_activity_with_retry(task_dir, task_id, activity_at);
+}
+
+/// Read the lightweight activity projection for one canonical task root.
+/// Missing or unavailable index rows are handled by the caller's canonical-ID fallback.
+pub fn task_activities_in_task_root(task_root: &Utf8Path) -> Vec<TaskActivityIndexEntry> {
+    let Some(index) = search_index() else {
+        return Vec::new();
+    };
+    match index.task_activities_in_task_root(task_root) {
+        Ok(entries) => entries,
+        Err(error) => {
+            warn!(%error, %task_root, "sqlite task activity query failed");
+            Vec::new()
+        }
+    }
+}
+
 pub fn delete_task(task_dir: &Utf8Path) {
     let Some(index) = search_index() else {
         return;
@@ -83,7 +114,9 @@ pub fn delete_task(task_dir: &Utf8Path) {
 
 const MAX_RETRIES: u32 = 3;
 const RETRY_DELAYS_MS: [u64; 3] = [200, 500, 1500];
-const SEARCH_INDEX_SCHEMA_VERSION: i32 = 5;
+const SEARCH_INDEX_SCHEMA_VERSION: i32 = 6;
+const SEARCH_INDEX_FULL_REBUILD_SCHEMA_VERSION: i32 = 5;
+const UNTRACKED_TASK_ACTIVITY_AT: &str = "1970-01-01T00:00:00Z";
 
 /// Best-effort SQLite search index for cross-session prompt/timeline retrieval.
 ///
@@ -171,7 +204,9 @@ impl SearchIndex {
             }
         }
 
-        let rebuild_task_fts = tasks_table_exists && schema_version != SEARCH_INDEX_SCHEMA_VERSION;
+        let rebuild_task_fts = tasks_table_exists
+            && schema_version != SEARCH_INDEX_SCHEMA_VERSION
+            && schema_version != SEARCH_INDEX_FULL_REBUILD_SCHEMA_VERSION;
         if rebuild_task_fts && !task_schema_migrated {
             conn.execute_batch(
                 "DROP TRIGGER IF EXISTS tasks_ai;
@@ -181,7 +216,16 @@ impl SearchIndex {
             )?;
         }
 
-        if schema_version != SEARCH_INDEX_SCHEMA_VERSION {
+        if tasks_table_exists && schema_version != SEARCH_INDEX_SCHEMA_VERSION {
+            // Schema v6 narrows the FTS maintenance trigger to searchable
+            // columns. Advancing only `updated_at` must not retokenize a
+            // potentially large requirement body.
+            conn.execute_batch("DROP TRIGGER IF EXISTS tasks_au;")?;
+        }
+
+        if schema_version != SEARCH_INDEX_SCHEMA_VERSION
+            && schema_version != SEARCH_INDEX_FULL_REBUILD_SCHEMA_VERSION
+        {
             conn.execute_batch(
                 "DROP TRIGGER IF EXISTS session_prompts_ai;
                 DROP TRIGGER IF EXISTS session_prompts_ad;
@@ -262,7 +306,8 @@ impl SearchIndex {
                 INSERT INTO tasks_fts(tasks_fts, rowid, title, description, requirement_text)
                 VALUES('delete', old.rowid, old.title, old.description, old.requirement_text);
             END;
-            CREATE TRIGGER IF NOT EXISTS tasks_au AFTER UPDATE ON tasks BEGIN
+            CREATE TRIGGER IF NOT EXISTS tasks_au
+            AFTER UPDATE OF title, description, requirement_text ON tasks BEGIN
                 INSERT INTO tasks_fts(tasks_fts, rowid, title, description, requirement_text)
                 VALUES('delete', old.rowid, old.title, old.description, old.requirement_text);
                 INSERT INTO tasks_fts(rowid, title, description, requirement_text)
@@ -289,6 +334,16 @@ impl SearchIndex {
         count == 0
     }
 
+    fn needs_task_activity_backfill(&self) -> bool {
+        let conn = self.conn.lock().expect("search index lock poisoned");
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tasks WHERE updated_at = '')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(true)
+    }
+
     /// Walk all project directories under `projects_dir`, reading
     /// `task.json` / `requirement.md` for tasks and `acp.snapshot.json` /
     /// `acp.timeline.jsonl` for attempts, upserting into the DB.
@@ -299,6 +354,44 @@ impl SearchIndex {
         if let Err(error) = self.backfill_from_disk_strict(projects_dir) {
             warn!(error = %error, "sqlite search index backfill did not complete");
         }
+    }
+
+    fn backfill_task_activities_from_disk(&self, projects_dir: &Utf8Path) {
+        if let Err(error) = self.backfill_task_activities_from_disk_strict(projects_dir) {
+            warn!(error = %error, "sqlite Task activity backfill did not complete");
+        }
+    }
+
+    fn backfill_task_activities_from_disk_strict(
+        &self,
+        projects_dir: &Utf8Path,
+    ) -> anyhow::Result<()> {
+        if !projects_dir.is_dir() {
+            return Ok(());
+        }
+        for project_entry in std::fs::read_dir(projects_dir.as_std_path())? {
+            let project_entry = project_entry?;
+            let Some(tasks_dir) = to_utf8(project_entry.path().join("tasks")) else {
+                continue;
+            };
+            if !tasks_dir.is_dir() {
+                continue;
+            }
+            for task_entry in std::fs::read_dir(tasks_dir.as_std_path())? {
+                let task_entry = task_entry?;
+                let Some(task_dir) = to_utf8(task_entry.path()) else {
+                    continue;
+                };
+                if !task_dir.is_dir() || !task_dir.join("task.json").exists() {
+                    continue;
+                }
+                let Some(task_id) = file_name(&task_dir) else {
+                    continue;
+                };
+                self.index_task(&task_dir, task_id)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn rebuild_from_disk(&self, projects_dir: &Utf8Path) -> anyhow::Result<()> {
@@ -612,9 +705,95 @@ impl SearchIndex {
         }
     }
 
+    pub fn index_task_activity_with_retry(
+        &self,
+        task_dir: &Utf8Path,
+        task_id: &str,
+        activity_at: &str,
+    ) {
+        for attempt in 0..MAX_RETRIES {
+            if attempt > 0 {
+                std::thread::sleep(Duration::from_millis(RETRY_DELAYS_MS[attempt as usize]));
+            }
+            match self.index_task_activity(task_dir, task_id, activity_at) {
+                Ok(()) => return,
+                Err(e) => {
+                    warn!(
+                        "sqlite index_task_activity failed (attempt {}/{}): {:#}",
+                        attempt + 1,
+                        MAX_RETRIES,
+                        e
+                    );
+                }
+            }
+        }
+    }
+
     fn index_task(&self, task_dir: &Utf8Path, task_id: &str) -> Result<(), rusqlite::Error> {
+        self.index_task_with_optional_activity(task_dir, task_id, None)
+    }
+
+    #[cfg(test)]
+    fn index_task_with_activity(
+        &self,
+        task_dir: &Utf8Path,
+        task_id: &str,
+        activity_at: &str,
+    ) -> Result<(), rusqlite::Error> {
+        self.index_task_activity(task_dir, task_id, activity_at)
+    }
+
+    fn index_task_activity(
+        &self,
+        task_dir: &Utf8Path,
+        task_id: &str,
+        activity_at: &str,
+    ) -> Result<(), rusqlite::Error> {
+        let task_path = task_dir.to_string();
+        {
+            let mut conn = self.conn.lock().expect("search index lock poisoned");
+            let tx = conn.transaction()?;
+            let existing_activity_at = tx
+                .query_row(
+                    "SELECT updated_at FROM tasks WHERE task_path = ?1",
+                    params![&task_path],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            let Some(existing_activity_at) = existing_activity_at else {
+                tx.commit()?;
+                drop(conn);
+                return self.index_task_with_optional_activity(
+                    task_dir,
+                    task_id,
+                    Some(activity_at),
+                );
+            };
+            let updated_at = latest_task_activity(
+                (!existing_activity_at.is_empty()).then_some(existing_activity_at.as_str()),
+                Some(activity_at),
+            )
+            .unwrap_or(UNTRACKED_TASK_ACTIVITY_AT);
+            if updated_at != existing_activity_at {
+                tx.execute(
+                    "UPDATE tasks SET updated_at = ?1 WHERE task_path = ?2",
+                    params![updated_at, &task_path],
+                )?;
+            }
+            tx.commit()?;
+        }
+        Ok(())
+    }
+
+    fn index_task_with_optional_activity(
+        &self,
+        task_dir: &Utf8Path,
+        task_id: &str,
+        activity_at: Option<&str>,
+    ) -> Result<(), rusqlite::Error> {
         let task_path = task_dir.to_string();
         let task: Option<TaskState> = read_json(&task_dir.join("task.json")).ok();
+        let activity_metadata = read_task_activity_metadata(task_dir);
         let requirement_text = std::fs::read_to_string(
             task_dir
                 .join("authoring")
@@ -623,19 +802,45 @@ impl SearchIndex {
         )
         .unwrap_or_default();
 
-        let (title, description, created_at, updated_at) = task
+        let (title, description) = task
             .as_ref()
             .map(|t| {
                 (
                     t.title.as_deref().unwrap_or(""),
                     t.description.as_deref().unwrap_or(""),
-                    "", // TaskState has no created_at; snapshot-based timestamps don't apply here
-                    "", // We could derive from file mtime, but keep it simple
                 )
             })
-            .unwrap_or(("", "", "", ""));
+            .unwrap_or(("", ""));
 
         let conn = self.conn.lock().expect("search index lock poisoned");
+        let existing = conn
+            .query_row(
+                "SELECT created_at, updated_at FROM tasks WHERE task_path = ?1",
+                params![&task_path],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        let metadata_created_at = activity_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.created_at.as_deref());
+        let metadata_activity_at = activity_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.last_activity_at.as_deref())
+            .or(metadata_created_at);
+        let incoming_activity_at = activity_at.or(metadata_activity_at);
+        let created_at = existing
+            .as_ref()
+            .map(|(created_at, _)| created_at.as_str())
+            .filter(|value| !value.is_empty() && *value != UNTRACKED_TASK_ACTIVITY_AT)
+            .or(metadata_created_at)
+            .or(incoming_activity_at)
+            .unwrap_or(UNTRACKED_TASK_ACTIVITY_AT);
+        let existing_activity_at = existing
+            .as_ref()
+            .map(|(_, updated_at)| updated_at.as_str())
+            .filter(|value| !value.is_empty());
+        let updated_at = latest_task_activity(existing_activity_at, incoming_activity_at)
+            .unwrap_or(UNTRACKED_TASK_ACTIVITY_AT);
         conn.execute(
             "INSERT INTO tasks (task_id, task_path, title, description, requirement_text, created_at, updated_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7)
@@ -648,6 +853,38 @@ impl SearchIndex {
             params![task_id, task_path, title, description, requirement_text, created_at, updated_at],
         )?;
         Ok(())
+    }
+
+    pub fn task_activities_in_task_root(
+        &self,
+        task_root: &Utf8Path,
+    ) -> Result<Vec<TaskActivityIndexEntry>, rusqlite::Error> {
+        let task_path_prefix = format!(
+            "{}{}",
+            task_root.as_str().trim_end_matches(['/', '\\']),
+            std::path::MAIN_SEPARATOR
+        );
+        let conn = self.conn.lock().expect("search index lock poisoned");
+        let scope = if cfg!(windows) {
+            "substr(task_path, 1, length(?1)) = ?1 COLLATE NOCASE"
+        } else {
+            "substr(task_path, 1, length(?1)) = ?1"
+        };
+        let sql = format!(
+            "SELECT task_id, task_path, updated_at
+             FROM tasks
+             WHERE {scope}
+             ORDER BY updated_at DESC, task_id DESC"
+        );
+        let mut statement = conn.prepare(&sql)?;
+        let rows = statement.query_map(params![task_path_prefix], |row| {
+            Ok(TaskActivityIndexEntry {
+                task_id: row.get(0)?,
+                task_path: row.get(1)?,
+                updated_at: row.get(2)?,
+            })
+        })?;
+        rows.collect()
     }
 
     // ── task search ────────────────────────────────────────────
@@ -869,6 +1106,51 @@ fn read_snapshot(attempt_dir: &Utf8Path) -> Option<AcpSessionMetadata> {
     None
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskActivityMetadata {
+    created_at: Option<String>,
+    last_activity_at: Option<String>,
+}
+
+fn read_task_activity_metadata(task_dir: &Utf8Path) -> Option<TaskActivityMetadata> {
+    read_json(&task_dir.join("authoring").join("conversation.json")).ok()
+}
+
+fn task_activity_order_key(value: &str) -> Option<i64> {
+    let trimmed = value.trim();
+    let epoch = trimmed.strip_suffix('Z').unwrap_or(trimmed);
+    if !epoch.contains(['-', ':', 'T']) {
+        return epoch.parse::<i64>().ok().map(|seconds| {
+            if seconds.abs() >= 10_000_000_000 {
+                seconds
+            } else {
+                seconds.saturating_mul(1_000)
+            }
+        });
+    }
+    chrono::DateTime::parse_from_rfc3339(trimmed)
+        .ok()
+        .map(|timestamp| timestamp.timestamp_millis())
+}
+
+fn latest_task_activity<'a>(left: Option<&'a str>, right: Option<&'a str>) -> Option<&'a str> {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            let ordering = match (
+                task_activity_order_key(left),
+                task_activity_order_key(right),
+            ) {
+                (Some(left), Some(right)) => left.cmp(&right),
+                _ => left.cmp(right),
+            };
+            Some(if ordering.is_lt() { right } else { left })
+        }
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
 fn to_utf8(path: std::path::PathBuf) -> Option<camino::Utf8PathBuf> {
     camino::Utf8PathBuf::from_path_buf(path).ok()
 }
@@ -1007,6 +1289,13 @@ pub struct SessionSearchResult {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskActivityIndexEntry {
+    pub task_id: String,
+    pub task_path: String,
+    pub updated_at: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1066,6 +1355,19 @@ mod tests {
             )
             .unwrap();
         assert!(task_fts_sql.contains("tokenize='trigram'"));
+
+        let task_update_trigger_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'tasks_au'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            task_update_trigger_sql
+                .to_ascii_lowercase()
+                .contains("after update of title, description, requirement_text on tasks")
+        );
 
         let mut stmt = conn.prepare("PRAGMA table_info(session_prompts)").unwrap();
         let prompt_columns = stmt
@@ -1241,6 +1543,146 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].task_path, included_task.as_str());
+    }
+
+    #[test]
+    fn task_activity_projection_is_monotonic_and_workspace_scoped() {
+        let dir = tempdir().unwrap();
+        let db_path = camino::Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
+        let index = SearchIndex::open(&db_path).unwrap();
+        let projects_dir = camino::Utf8PathBuf::from_path_buf(dir.path().join("projects")).unwrap();
+        let workspace_a_tasks = projects_dir.join("a").join("tasks");
+        let workspace_b_tasks = projects_dir.join("b").join("tasks");
+
+        for (tasks_dir, task_id) in [
+            (&workspace_a_tasks, "task-001"),
+            (&workspace_a_tasks, "task-002"),
+            (&workspace_b_tasks, "task-001"),
+        ] {
+            let task_dir = tasks_dir.join(task_id);
+            std::fs::create_dir_all(task_dir.join("authoring").as_std_path()).unwrap();
+            crate::storage::write_json(
+                &task_dir.join("task.json"),
+                &TaskState {
+                    version: crate::domain::VERSION.to_string(),
+                    id: task_id.to_string(),
+                    title: Some(task_id.to_string()),
+                    description: None,
+                    uuid: None,
+                },
+            )
+            .unwrap();
+        }
+
+        crate::storage::write_json(
+            &workspace_a_tasks
+                .join("task-001")
+                .join("authoring")
+                .join("conversation.json"),
+            &serde_json::json!({
+                "createdAt": "2026-08-29T09:00:00Z",
+                "lastActivityAt": "2026-08-29T10:00:00Z"
+            }),
+        )
+        .unwrap();
+        index
+            .index_task(&workspace_a_tasks.join("task-001"), "task-001")
+            .unwrap();
+        index
+            .index_task_with_activity(
+                &workspace_a_tasks.join("task-002"),
+                "task-002",
+                "2026-08-29T12:00:00Z",
+            )
+            .unwrap();
+        index
+            .index_task_with_activity(
+                &workspace_b_tasks.join("task-001"),
+                "task-001",
+                "2026-08-29T13:00:00Z",
+            )
+            .unwrap();
+
+        // A delayed event and an ordinary metadata reindex must not move time backwards.
+        index
+            .index_task_with_activity(
+                &workspace_a_tasks.join("task-002"),
+                "task-002",
+                "2026-08-29T11:00:00Z",
+            )
+            .unwrap();
+        index
+            .index_task(&workspace_a_tasks.join("task-002"), "task-002")
+            .unwrap();
+
+        let activities = index
+            .task_activities_in_task_root(&workspace_a_tasks)
+            .unwrap();
+        assert_eq!(activities.len(), 2);
+        assert_eq!(activities[0].task_id, "task-002");
+        assert_eq!(activities[0].updated_at, "2026-08-29T12:00:00Z");
+        assert_eq!(activities[1].task_id, "task-001");
+        assert_eq!(activities[1].updated_at, "2026-08-29T10:00:00Z");
+    }
+
+    #[test]
+    fn task_activity_projection_does_not_reindex_heavy_task_fields() {
+        let dir = tempdir().unwrap();
+        let db_path = camino::Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
+        let index = SearchIndex::open(&db_path).unwrap();
+        let task_dir =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("tasks/task-001")).unwrap();
+        std::fs::create_dir_all(task_dir.join("authoring").as_std_path()).unwrap();
+        crate::storage::write_json(
+            &task_dir.join("task.json"),
+            &TaskState {
+                version: crate::domain::VERSION.to_string(),
+                id: "task-001".to_string(),
+                title: Some("Indexed title".to_string()),
+                description: Some("Indexed description".to_string()),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        std::fs::write(
+            task_dir
+                .join("authoring")
+                .join("requirement.md")
+                .as_std_path(),
+            "indexed-requirement-needle",
+        )
+        .unwrap();
+        index.index_task(&task_dir, "task-001").unwrap();
+
+        std::fs::remove_file(task_dir.join("task.json").as_std_path()).unwrap();
+        std::fs::remove_file(
+            task_dir
+                .join("authoring")
+                .join("requirement.md")
+                .as_std_path(),
+        )
+        .unwrap();
+        index
+            .index_task_with_activity(&task_dir, "task-001", "2026-08-30T12:00:00Z")
+            .unwrap();
+
+        let conn = index.conn.lock().unwrap();
+        let projected: (String, String, String, String) = conn
+            .query_row(
+                "SELECT title, description, requirement_text, updated_at FROM tasks WHERE task_path = ?1",
+                params![task_dir.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            projected,
+            (
+                "Indexed title".to_string(),
+                "Indexed description".to_string(),
+                "indexed-requirement-needle".to_string(),
+                "2026-08-30T12:00:00Z".to_string(),
+            )
+        );
     }
 
     #[test]

@@ -46,6 +46,7 @@ export function resolveConversationEventSelectedSessionKey(args: {
   incomingSessionKey: string;
   followMode: ConversationSessionFollowMode;
   currentSelectedActive?: boolean;
+  currentSelectedTerminal?: boolean;
   incomingActive?: boolean;
   currentSelectedRuntimeControlled?: boolean;
   incomingRuntimeControlled?: boolean;
@@ -55,6 +56,7 @@ export function resolveConversationEventSelectedSessionKey(args: {
     incomingSessionKey,
     followMode,
     currentSelectedActive = false,
+    currentSelectedTerminal = false,
     incomingActive = true,
     currentSelectedRuntimeControlled = false,
     incomingRuntimeControlled = false,
@@ -65,7 +67,10 @@ export function resolveConversationEventSelectedSessionKey(args: {
   if (!currentSelectedKey) return incomingSessionKey;
   if (followMode !== 'auto') return currentSelectedKey;
   if (!incomingActive) return currentSelectedKey;
-  if (!currentSelectedRuntimeControlled || !incomingRuntimeControlled) return currentSelectedKey;
+  if (!incomingRuntimeControlled) return currentSelectedKey;
+  const followsDynamicSuccessor = currentSelectedTerminal
+    && areDynamicConversationSiblingSessionKeys(currentSelectedKey, incomingSessionKey);
+  if (!currentSelectedRuntimeControlled && !followsDynamicSuccessor) return currentSelectedKey;
   return currentSelectedActive ? currentSelectedKey : incomingSessionKey;
 }
 
@@ -73,6 +78,7 @@ export function resolveConversationRefreshSelectedSessionKey(args: {
   followMode: ConversationSessionFollowMode;
   pendingEventSessionKey?: string | null;
   currentSelectedKey?: string | null;
+  currentSelectedTerminal?: boolean;
   currentSelectedRuntimeControlled?: boolean;
   pendingEventRuntimeControlled?: boolean;
 }) {
@@ -80,6 +86,7 @@ export function resolveConversationRefreshSelectedSessionKey(args: {
     followMode,
     pendingEventSessionKey,
     currentSelectedKey,
+    currentSelectedTerminal = false,
     currentSelectedRuntimeControlled = false,
     pendingEventRuntimeControlled = false,
   } = args;
@@ -93,8 +100,15 @@ export function resolveConversationRefreshSelectedSessionKey(args: {
   if (
     followMode === 'auto'
     && pendingEventSessionKey
-    && currentSelectedRuntimeControlled
     && pendingEventRuntimeControlled
+    && (
+      currentSelectedRuntimeControlled
+      || Boolean(
+        currentSelectedKey
+        && currentSelectedTerminal
+        && areDynamicConversationSiblingSessionKeys(currentSelectedKey, pendingEventSessionKey)
+      )
+    )
   ) return pendingEventSessionKey;
   return currentSelectedKey ?? pendingEventSessionKey ?? null;
 }
@@ -109,6 +123,17 @@ export function isNestedConversationSessionKey(currentSelectedKey: string, incom
   return currentSelectedKey.startsWith(`${incomingSessionKey}/`);
 }
 
+export function areDynamicConversationSiblingSessionKeys(firstKey: string, secondKey: string) {
+  const firstScope = dynamicConversationOuterAttemptScope(firstKey);
+  return firstScope !== null && firstScope === dynamicConversationOuterAttemptScope(secondKey);
+}
+
+function dynamicConversationOuterAttemptScope(sessionKey: string) {
+  const parts = sessionKey.split('/');
+  if (parts.length !== 5 || parts.some((part) => part.length === 0)) return null;
+  return parts.slice(0, 3).join('/');
+}
+
 export function shouldEnableConversationAutoFollow(
   isActiveSession: boolean,
   atBottom: boolean,
@@ -121,6 +146,16 @@ export function isTerminalConversationSessionStatus(status?: string | null) {
   return ['completed', 'complete', 'failed', 'failure', 'error', 'killed', 'cancelled', 'canceled'].includes(
     status?.trim().toLowerCase().replace(/_/g, '-') ?? '',
   );
+}
+
+export function conversationAcpRunRefreshStatus(args: {
+  dynamicSession: boolean;
+  lifecycle?: Pick<ConversationAttemptLifecycleVm, 'displayStatus' | 'runtime'> | null;
+  sessionStatus?: string | null;
+}) {
+  return args.dynamicSession
+    ? args.lifecycle?.runtime.status ?? args.sessionStatus
+    : args.lifecycle?.displayStatus ?? args.sessionStatus;
 }
 
 export function needsInteractiveConversationRunRefresh(status?: string | null, pendingPermissionCount = 0) {

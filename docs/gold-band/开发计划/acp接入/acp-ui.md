@@ -100,7 +100,7 @@ Gold Band 需要吸收的是 Jockey 的 ACP 事件归一化和 Chat/Session UI �
 - `available_commands_update`、`usage_update`、session/mode/config update 等状态帧不渲染为聊天消息；它们只更新 session 状态或留在 Raw frames 中排障。
 - ACP runtime 文件位于 `~/.gold-band/projects/{project-id}/tasks/...`，不写入项目工作树；ACP 会话身份只以当前 user runtime attempt 的 `worker-ref.json` 为事实源：`continue_ref.acpSessionId` 决定 resume/load 的目标 session 与 UI header 的 provider session id；`acp.session.json` 不再作为 session id 来源，但会保存 status、capabilities、adapter 配置快照、stop reason，以及通过可选 `session/list` 轮询 best-effort 拉取得到的 `title` 缓存。该能力受项目级 `configs/app-config.json` 控制，默认关闭。title 仅用于后续 UI/检索储备；本期不作为会话头部展示的依赖字段，拉取不到时保持为空。
 - `configs/app-config.json` 是版本内共享的项目级 app config 入口，不是用户本机偏好设置：适合开发期可选能力和共享 UI/runtime 参数的统一管理。CLI 与桌面端都读取同一份文件；未声明字段继续走代码默认值，不要求每个配置都显式写入。当前文件示例：`{ "acpSessionTitleRefreshEnabled": false, "acpChatEventPageSize": 360 }`。
-- session-wide metadata、pending permission、usage 和 diagnostics 由后端流式扫描全量事件得出，不允许为了 UI 轮询保留或传输全量事件数组。
+- session-wide metadata、`pendingInteractions`、usage 和 diagnostics 由后端流式扫描全量事件得出，不允许为了 UI 轮询保留或传输全量事件数组。
 - `Agent` execution 是后端规范分支模型：事件进入 timeline 前已按内部 branch metadata 路由，前端只将父 branch 的 launch item 投影为 `AgentLinkRow`，不得重新按 seq 生命周期窗口框选子事件。
 - 未识别事件应进入诊断区或系统提示，不应破坏会话流。
 - runtime control 在 provider session 建立前完成 timeline 扫描时，只能写入 `availability=unavailable` 的控制占位，不能把文件存在投影为 established session。初始 `get_acp_session` 对“无 session id、无可展示 timeline event、无 Agent branch execution”的该类占位返回 `null`；前端同时以 `isAcpSessionReadyForInitialDisplay` 守住 hydrate 成功门槛。返回 `null` 或未物化快照时不立即显示 "ACP 会话失败"，而是以 120ms / 300ms / 700ms / 1200ms 递增间隔短暂重试，避免与后端 `session/new` 及首次 timeline 写入形成竞争；所有重试耗尽仍未获得可展示快照时才降级为失败态。
@@ -180,7 +180,7 @@ ACP 专属组件只做协议事件映射和业务状态组合：
 - 当 node 处于 `waiting_for_user_input`、permission pending、adapter disconnected 等状态时，composer 应显示明确状态。
 - 当 ACP session 处于 pending/running/cancelling 等 active 状态时，composer 展示 Stop action，普通 Send 禁用；Stop 请求只取消当前 ACP adapter prompt。AI-DYNAMIC 内部 leaf 的运行事实以 dynamic leaf workflow 状态为准，ACP `cancelled` 只代表聊天会话传输事实，不得让前端或命令层把 live running sibling 推成 paused。
 - 若 Stop 发生在本地 optimistic prompt 已创建、但后端真实 `userTextDelta` 尚未写入之前，前端必须立即移除该 optimistic prompt 并释放其发送锁；未被后端接受的取消 prompt 不得永久停留在“发送中”。停止命令成功后必须先读取并合并最终 session，再只清理 `optimistic=true && status=sending` 的消息；已由 durable `goldBandPrompt` 接受的用户消息继续保留，避免停止后当前 UI 消失、应用重启又从磁盘恢复。`runtime-continue-started` 与普通发送不同：该返回值即表示后端已接受继续命令，即使 `session` 为 `null`，后端响应也必须携带 `runtime-active / provider-running` lifecycle，前端要把本次 optimistic prompt 从 `sending` 转为 accepted/completed 并清理 `awaitingResponse`，不能继续等待 ACP echo 才解除发送锁。后台线程真正写入 run/node running 文件前，旧的 paused/interrupted-input lifecycle snapshot 不得把 composer 短暂降级为可输入；只有父级 lifecycle 追到 active、stopping 或 runtime-error 后，前端才释放本地 continue-started lifecycle override。
-- Plan intervention permission 是 active-session 发送锁的唯一例外：composer 仍可输入反馈，但只在权限决策完成且当前 turn 结束后继续发送 queued prompt。
+- 任一 prompt-scoped user interaction（当前为 permission / elicitation）pending 时，Direct composer 仍可输入反馈并投递到既有 durable prompt queue；交互完成且当前 turn 结束后再继续发送。其他 runtime intervention 不复用此例外。
 - 用户输入不走 terminal stdin，不依赖 legacy CLI 会话。
 
 ### 6.2 文本流
@@ -236,7 +236,7 @@ Tool call update 应按 attempt-scoped `toolCallId` 更新同一条审计项，�
 - 阻塞式 dialog：用于必须先决策才能继续的请求。
 - inline approval bar：用于嵌入会话流并保留上下文的请求，视觉上参考 prompt-kit `system-message` 的轻量提示，而不是大块表单卡片。
 
-权限请求必须保留用户选择、时间和相关 tool call id，便于后续排障。用户点击允许或拒绝后，UI 立即乐观关闭 pending 卡片；若响应失败，再恢复卡片并提示重试。pending / selected 的确认协议键必须使用 ACP JSON-RPC `session/request_permission` 原始 request id；timeline item id 可以是 `permission-<id>` 展示键，但前端提交、后端 `AcpPermissionRequestVm.requestId`、`acp.permission-request.<id>.json` 和 `acp.permission-response.<id>.json` 必须统一回到原始 id。新旧 UI 同时打开同一 ACP session 时，只能消费同一个 canonical requestId，不允许各自用本地展示 id 写响应文件。pending / waiting 状态使用低强调 primary 语义色，不使用 warning 橙色；审批卡片固定为信息行 + 按钮行两层，宽度不强制撑满会话列，按钮较多时使用居中的两列按钮组，不得挤压标题和 pending 状态；allow 选项使用浅色 accent surface，reject 使用中性描边，禁止把所有 allow 同时做成深色实心主按钮。按钮使用紧凑胶囊形态，长选项文本单行截断，并以整个按钮作为 shadcn Tooltip trigger，在 hover / keyboard focus 时展示可换行全文，同时提供完整 `aria-label`。所有 `session/request_permission` 都只通过权限卡片响应，不按 option id、名称或 kind 猜测产品语义，也不允许 composer 发送隐式代替用户选择。Direct 会话的 Agent turn 尚未完成时，composer 新消息继续进入现有 prompt queue，和 pending 权限卡片独立存在。
+权限请求必须保留用户选择、时间和相关 tool call id，便于后续排障。用户点击允许或拒绝后，UI 立即乐观关闭 pending 卡片；若响应失败，再恢复卡片并提示重试。ACP JSON-RPC 原始 request id 作为通用 `interactionId`，与 `acp.permission-request.<id>.json`、响应文件及提交接口保持一致；`turnId / promptEventId` 负责区分 owner occurrence。permission / elicitation 共同进入 `AcpSessionVm.pendingInteractions`，但权限选项、表单 schema、响应转换与卡片分别实现。pending / waiting 状态使用低强调 primary 语义色；所有 `session/request_permission` 只通过权限卡片响应，不允许 composer 隐式代替用户选择。Direct 会话的 Agent turn 尚未完成时，composer 新消息继续进入现有 prompt queue，并与 pending 交互卡独立存在。
 
 2026-07-28 权限卡片视觉与长文本验收已固化：复用现有 shadcn `Button` / `Tooltip` copy-in 组件，卡片收敛为低边界、低阴影的轻量审批条；前端静态渲染单测覆盖浅色 allow / 中性 reject 层级、截断标签、Tooltip trigger 与完整无障碍名称。UI 验收需在本地会话页同时检查浅色和深色主题，以及长命令选项的鼠标悬浮与键盘聚焦全文展示。
 
@@ -339,6 +339,8 @@ docs/gold-band/开发计划/acp接入/acp功能模块todo列表.md
 
 - Rust：覆盖五类 Agent 的读写目录策略；Codex 同时读取 `.codex / .agents`，Claude 不读取 `.agents`；命令 payload 解析、ACP 优先去重、命名空间与 Unicode Skill 名、Skill 增删重扫和旧持久化目录迁移有单测；通知先于 route 注册时仍能按序送达。
 - Frontend：`/`、`/ckm:design` 可匹配，空格、英文逗号、中文逗号会关闭；过滤、插入文本、完整命令标签解析和键盘选中项滚动计算有纯函数单测。标签解析先消费最长合法命令 token，再判断后续分隔符，必须覆盖 `ckm:design-system`、`review.fix` 等包含 `- / . / :` 的命令，禁止回溯成较短标签。标签必须只识别当前 Agent 目录中的完整命令，保留原始大小写和分隔符，并与 textarea 首行使用一致的 `rem` 排版节奏和顶部基线；标签使用主题语义色适配明暗主题，摘要统一使用 shadcn Tooltip，不使用浏览器原生 `title`。删除分隔符或破坏命令后取消标签，再次补充分隔符后恢复。命令行的鼠标与键盘选中态必须统一使用 cmdk `data-selected`，以背景、内描边和左侧强调条保证可辨识；浅色主题采用低透明度 `primary` 蓝色，深色主题采用 `foreground` 叠层。共享菜单还需验证紧凑字号与 hint 标签层级、点击外部关闭、删除后重开，以及切换 Agent 时不展示旧目录快照。
+- 2026-08-25：快速对话的内联覆盖层与会话详情 Popover 统一改用不透明 `popover` 语义表面，移除容器级透明度和 backdrop blur，避免下方输入区、工具栏和正文穿透影响阅读；保留选中行的低透明度状态表达。快速对话同时在菜单打开期间提升输入菜单区域的局部层叠层级，完整覆盖同一 composer 中后绘制的处理模式与 Agent 控件，关闭后撤销。两种入口的 DOM 测试固定 `bg-popover` 且禁止恢复 `bg-popover/*` 与 `backdrop-blur`，内联入口额外固定开合层叠契约。
+- 2026-08-26：permission / elicitation 已收敛为通用 ACP prompt interaction。Rust 统一 durable envelope、kind、owner turn identity、Timeline annotation 与绑定函数；Session VM 以 `pendingInteractions` 判别联合替换两套 pending 数组；前端统一 live reducer、terminal settlement、陈旧快照保护及 `interaction-blocked` composer 模式。协议 payload、响应 API 与现有卡片保持独立。测试代码覆盖两类交互的 owner-turn 竞态和 Direct queue 路由；按用户要求本轮不执行自动化、构建或桌面验证。
 - Session Header：静态渲染测试必须固化 Agent 名称与 session id 的 `items-baseline` 组合、一致 `leading-5`、Direct 标题组间距和名称/ID 组内距，并禁止恢复 session id 的垂直 padding 对齐方式；纯函数测试覆盖长 ID 的“前 8 位…后 4 位”投影和短 ID 原样展示，浏览器验收完整值 Tooltip 与复制行为。
 - Session ID 复制反馈状态测试必须覆盖 `idle -> copied -> closing -> idle`；`feedback-elapsed` 只关闭 Tooltip、不清除反馈内容，`closing` 阶段拒绝悬浮重开，防止关闭动画闪现完整 ID。
 - 快速对话验收：命令列表以带圆角、不参与布局的覆盖层紧贴首行输入下方，打开时 composer 高度不变，左右边缘与主输入框对齐；关闭当前 `/query` 后切页返回保持关闭，输入变化后可重新触发，切换 Agent 后新 Agent 菜单重新打开。会话详情仍在 composer 上方显示浮层，浮层宽度使用 composer anchor 实际宽度并与其左右严格对齐。两处 composer 的命令标签显示一致，发送与持久化仍使用包含 `/${name}` 和分隔符的原始文本。标签宽度由共享 `ResizeObserver` hook 测量并只作用于 textarea 首行 `text-indent`，textarea 保持全宽，第二行及后续换行必须从输入区左边缘开始。

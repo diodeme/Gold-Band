@@ -117,7 +117,7 @@ pub async fn run() -> Result<()> {
     let enable_stderr_progress = !matches!(cli.command, Commands::Console { .. });
     let config = resolve_runtime_config(&cli, &settings, &state);
     let app = App::with_config(repo_root, config);
-    init_tracing(&app.paths, &app.config, enable_stderr_progress);
+    let _runtime_log_guard = init_tracing(&app.paths, &app.config, enable_stderr_progress);
     touch_log_file_best_effort(&app.paths);
 
     match cli.command {

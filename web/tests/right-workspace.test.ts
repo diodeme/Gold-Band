@@ -15,8 +15,10 @@ import {
   fileBrowserWorkspaceResourceKey,
   gitFileComparisonWorkspaceResourceKey,
   hiddenPromptSectionWorkspaceResourceKey,
+  projectSourceControlWorkspaceState,
   rightWorkspaceReducer,
   scheduledTaskConfigWorkspaceResourceKey,
+  sourceControlWorkspaceResourceKey,
   draftAttachmentWorkspaceResourceKey,
   type AgentTranscriptLocator,
   type FileWorkspaceResource,
@@ -26,6 +28,7 @@ import {
 const locator = (branchId: string): AgentTranscriptLocator => ({
   projectId: 'project-1',
   taskId: 'task-1',
+  taskUuid: 'task-uuid-1',
   runId: 'run-1',
   roundId: 'round-1',
   nodeId: 'node-1',
@@ -44,13 +47,38 @@ const agent = (branchId: string): RightWorkspaceResource => ({
 });
 
 describe('right workspace resource model', () => {
+  it('keeps one source-control tab and only projects a different workspace identity', () => {
+    const resource: RightWorkspaceResource = {
+      kind: 'source-control',
+      key: sourceControlWorkspaceResourceKey('project-1'),
+      scopeKey: 'conversation:project-1:task-1:run-1',
+      projectId: 'project-1',
+      workspacePath: null,
+      title: 'Source control',
+      attention: false,
+    };
+    const main = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open', resource });
+
+    expect(sourceControlWorkspaceResourceKey('project-1')).toBe('source-control:project-1');
+    expect(projectSourceControlWorkspaceState(main, null)).toBe(main);
+
+    const worktree = projectSourceControlWorkspaceState(main, 'D:/repo/worktrees/worker-a');
+    expect(worktree.tabs).toHaveLength(1);
+    expect(worktree.activeTabKey).toBe(resource.key);
+    expect(worktree.tabs[0]).toMatchObject({
+      key: resource.key,
+      workspacePath: 'D:/repo/worktrees/worker-a',
+    });
+    expect(projectSourceControlWorkspaceState(worktree, 'd:\\REPO\\worktrees\\worker-a\\')).toBe(worktree);
+  });
+
   it('uses stable locator-only keys for conversation and ACP resources', () => {
-    const runLocator = { projectId: 'project-1', taskId: 'task-1', runId: 'run-1' };
+    const runLocator = { projectId: 'project-1', taskId: 'task-1', taskUuid: 'task-uuid-1', runId: 'run-1' };
     expect(conversationRunWorkspaceResourceKey('workflow-view', runLocator)).toBe(
-      'workflow-view:project-1:task-1:run-1',
+      'workflow-view:project-1:task-uuid-1:run-1',
     );
     expect(acpAttemptWorkspaceResourceKey('raw-frames', locator('agent-a'))).toBe(
-      'raw-frames:project-1:task-1:run-1:round-1:node-1:attempt-1:::agent-a',
+      'raw-frames:project-1:task-uuid-1:run-1:round-1:node-1:attempt-1:::agent-a',
     );
     expect(hiddenPromptSectionWorkspaceResourceKey({
       ...locator('agent-a'),
@@ -58,7 +86,7 @@ describe('right workspace resource model', () => {
       eventSeq: 42,
       partIndex: 2,
     })).toBe(
-      'hidden-prompt-section:project-1:task-1:run-1:round-1:node-1:attempt-1:::agent-a:prompt-1:42:2',
+      'hidden-prompt-section:project-1:task-uuid-1:run-1:round-1:node-1:attempt-1:::agent-a:prompt-1:42:2',
     );
     expect(hiddenPromptSectionWorkspaceResourceKey({
       ...locator('agent-b'),
@@ -81,7 +109,7 @@ describe('right workspace resource model', () => {
       partIndex: 2,
     })).toEqual({
       kind: 'hidden-prompt-section',
-      key: 'hidden-prompt-section:project-1:task-1:run-1:round-1:node-1:attempt-1:::agent-a:prompt-1:42:2',
+      key: 'hidden-prompt-section:project-1:task-uuid-1:run-1:round-1:node-1:attempt-1:::agent-a:prompt-1:42:2',
       scopeKey: 'conversation:project-1:task-1:run-1',
       title: 'Hidden runtime context',
       description: null,
@@ -295,8 +323,8 @@ describe('right workspace resource model', () => {
 
   it('isolates resource and open state by conversation scope', () => {
     const store = new ConversationWorkspaceStore();
-    const first = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', runId: 'run-1' });
-    const second = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-2', runId: 'run-1' });
+    const first = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', taskUuid: 'task-uuid-1', runId: 'run-1' });
+    const second = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-2', taskUuid: 'task-uuid-2', runId: 'run-1' });
     store.save(first, createInitialRightWorkspaceState());
     store.save(second, {
       ...createInitialRightWorkspaceState(),
@@ -318,7 +346,12 @@ describe('right workspace resource model', () => {
   it('evicts the least recently used conversation workspace after 24 stateful scopes', () => {
     const store = new ConversationWorkspaceStore();
     const scopes = Array.from({ length: CONVERSATION_WORKSPACE_LRU_LIMIT + 1 }, (_, index) => (
-      createConversationWorkspaceScope({ projectId: 'project-1', taskId: `task-${index}`, runId: 'run-1' })
+      createConversationWorkspaceScope({
+        projectId: 'project-1',
+        taskId: `task-${index}`,
+        taskUuid: `task-uuid-${index}`,
+        runId: 'run-1',
+      })
     ));
     for (const scope of scopes.slice(0, CONVERSATION_WORKSPACE_LRU_LIMIT)) {
       store.save(scope, createInitialRightWorkspaceState());
@@ -378,9 +411,9 @@ describe('right workspace resource model', () => {
   it('keeps draft promotion isolated to the same project and idempotent after success', () => {
     const store = new ConversationWorkspaceStore();
     const draft = createDraftConversationWorkspaceScope('project-1');
-    const conversation = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', runId: 'run-1' });
-    const siblingConversation = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-2', runId: 'run-1' });
-    const otherProjectConversation = createConversationWorkspaceScope({ projectId: 'project-2', taskId: 'task-1', runId: 'run-1' });
+    const conversation = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', taskUuid: 'task-uuid-1', runId: 'run-1' });
+    const siblingConversation = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-2', taskUuid: 'task-uuid-2', runId: 'run-1' });
+    const otherProjectConversation = createConversationWorkspaceScope({ projectId: 'project-2', taskId: 'task-1', taskUuid: 'task-uuid-1', runId: 'run-1' });
     store.save(draft, {
       tabs: [{ ...agent('draft-agent'), scopeKey: draft.key }],
       activeTabKey: agent('draft-agent').key,

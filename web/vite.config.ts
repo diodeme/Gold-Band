@@ -2,11 +2,13 @@ import { fileURLToPath, URL } from 'node:url';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { identitySensitiveDependencies } from './config/identity-sensitive-dependencies';
 
 export default defineConfig({
   root: 'web',
   plugins: [react(), tailwindcss()],
   resolve: {
+    dedupe: [...identitySensitiveDependencies],
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
@@ -19,5 +21,6 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    target: 'safari15.4',
   },
 });

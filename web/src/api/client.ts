@@ -6,6 +6,7 @@ import type {
   AcpUiEventVm,
   ActiveSessionStopVm,
   AgentRegistryVm,
+  AgentInsightOperationVm,
   AppBootstrapVm,
   AppExitRequestVm,
   AutoTemplate,
@@ -32,6 +33,9 @@ import type {
   CreateTaskInput,
   DesktopLanguage,
   PersonalizationPreference,
+  PersonalAnalyticsSnapshotVm,
+  PersonalAnalyticsReportVm,
+  PersonalAnalyticsOperationVm,
   AppearancePreference,
   LocalClaudeStatusVm,
   LogPageVm,
@@ -278,6 +282,13 @@ export interface RuntimeApi {
   resolveAppExit(input: ResolveAppExitInput): Promise<void>;
   getSystemFonts(): Promise<string[]>;
   getAgentRegistry(): Promise<AgentRegistryVm>;
+  getPersonalAnalytics(): Promise<PersonalAnalyticsSnapshotVm>;
+  syncPersonalAnalytics(): Promise<PersonalAnalyticsSnapshotVm>;
+  queryPersonalAnalyticsReport(range: { start?: string | null; end?: string | null }, agentType?: string): Promise<PersonalAnalyticsReportVm>;
+  startPersonalAnalyticsInsights(agentType: string, range: { start?: string | null; end?: string | null }): Promise<AgentInsightOperationVm>;
+  cancelPersonalAnalyticsInsights(operationId: string): Promise<AgentInsightOperationVm>;
+  cancelPersonalAnalytics(operationId: string): Promise<PersonalAnalyticsSnapshotVm>;
+  subscribePersonalAnalyticsUpdates?(listener: (snapshot: PersonalAnalyticsSnapshotVm) => void): Promise<() => void>;
   getAgentCommandCatalog(agentType: string, workspacePath: string): Promise<import('../types').AcpCommandCatalogVm | null>;
   createAgent(agentType: string, input: ManagedAgentInput): Promise<AgentRegistryVm>;
   updateAgent(agentType: string, input: ManagedAgentInput): Promise<AgentRegistryVm>;

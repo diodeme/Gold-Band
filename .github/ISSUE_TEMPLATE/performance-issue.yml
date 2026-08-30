@@ -1,7 +1,5 @@
 name: Performance issue
 description: Report a measured latency, throughput, memory, rendering, or scale problem.
-title: ""
-labels: []
 body:
   - type: markdown
     attributes:

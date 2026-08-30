@@ -121,7 +121,7 @@ PR template 统一包含以下可裁剪章节：
 - 使用 `skill-creator/scripts/quick_validate.py` 分别验证两个 SKILL。
 - 契约测试确认 frontmatter 只有 `name` 和 `description`，OpenAI metadata 引用正确的 `$skill-name`。
 - 契约测试确认两个 SKILL 都包含“后续消息明确批准”和“preview revision 变化后重新批准”的门禁。
-- 契约测试确认四类 Issue Forms 为英文、含 Acceptance criteria，PR template 含验证、文档和方案自评审章节。
+- 契约测试使用 SchemaStore 的 GitHub Issue Forms 与 issue template config schema 校验解析后的 YAML，确认四类 Issue Forms 为英文、含 Acceptance criteria，PR template 含验证、文档和方案自评审章节。
 - `npm run test:collaboration-skills` 纳入 `.github/workflows/pr-checks.yml`。
 - workspace 管理者设置 `.agents/skills` 后，应单独确认其为指向 `../.claude/skills` 的真实相对符号链接，并验证两个发现入口读取内容一致；该环境操作不阻塞 canonical SKILL 内容提交。
 
@@ -141,5 +141,6 @@ PR template 统一包含以下可裁剪章节：
 - [x] 实现绑定 preview revision 的强制用户审阅门禁。
 - [x] 新增四类英文 Issue Forms 与英文 PR template。
 - [x] 新增协作 SKILL 与模板的 canonical 内容契约测试并接入 PR checks。
+- [x] 修复空 `title` / `labels` / `contact_links` 导致 GitHub 静默回退空白编辑器的问题，并将官方语法 schema 校验固化为回归测试。
 - [ ] workspace 管理者单独创建并验证 `.agents/skills -> ../.claude/skills` 真实符号链接。
 - [x] 完成 SKILL validator、canonical 内容契约测试和最终差异验收。

@@ -2082,7 +2082,11 @@ pub fn read_indexed_timeline_page(
         let candidates = index
             .semantic_blocks
             .iter()
-            .filter(|block| block.newest_seq < cursor)
+            // Backward pagination follows the stable visual order established
+            // by rebuild_semantic_blocks. A cumulative item can start before
+            // the cursor and finish much later; its end revision must not move
+            // it out of the older page.
+            .filter(|block| block.oldest_seq < cursor)
             .collect::<Vec<_>>();
         let candidate_count = candidates.len();
         candidates

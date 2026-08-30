@@ -1,79 +1,42 @@
 name: Feature request
-description: Propose new user value with clear scope and acceptance criteria.
+description: Suggest an improvement or a new user-facing capability.
 labels:
   - enhancement
 body:
   - type: markdown
     attributes:
       value: |
-        Describe the user problem before prescribing an implementation. Do not include credentials, private data, or undisclosed security vulnerabilities.
-
-  - type: input
-    id: summary
-    attributes:
-      label: Summary
-      description: Describe the requested outcome in one concise sentence.
-    validations:
-      required: true
+        Tell us about the user problem and desired outcome. Maintainers will evaluate scope, implementation options, and acceptance criteria. Do not include credentials, private data, or undisclosed security vulnerabilities.
 
   - type: textarea
     id: problem
     attributes:
       label: User problem
-      description: Explain who encounters the problem, in which workflow, and why the current behavior is insufficient.
+      description: Who encounters the problem, in which workflow, and why is the current behavior insufficient?
     validations:
       required: true
 
   - type: textarea
-    id: use-cases
+    id: desired-outcome
     attributes:
-      label: Primary use cases
-      description: List concrete scenarios and expected user value.
+      label: Desired outcome
+      description: What should become easier or possible for the user?
     validations:
       required: true
 
   - type: textarea
-    id: goals
+    id: use-case
     attributes:
-      label: Goals
-      description: Define the outcomes that must be delivered.
+      label: Primary use case
+      description: Give one concrete example of when and how this capability would be used.
     validations:
       required: true
 
   - type: textarea
-    id: non-goals
+    id: additional-context
     attributes:
-      label: Non-goals
-      description: Define adjacent work that should remain outside this issue.
-    validations:
-      required: true
-
-  - type: textarea
-    id: existing-solutions
-    attributes:
-      label: Existing solutions and industry practice
-      description: Record relevant open-source components, platform capabilities, competing patterns, and why they can or cannot satisfy the requirement.
-    validations:
-      required: true
-
-  - type: textarea
-    id: proposed-outcome
-    attributes:
-      label: Proposed outcome
-      description: Describe the desired behavior and boundaries without forcing an unsupported implementation detail.
-    validations:
-      required: true
-
-  - type: textarea
-    id: acceptance
-    attributes:
-      label: Acceptance criteria
-      description: List observable behavior, interface-level tests, documentation, and any necessary visual validation.
-      placeholder: |
-        - [ ] ...
-        - [ ] ...
-    validations:
-      required: true
+      label: Additional context
+      description: Optionally add examples, screenshots, related tools, or alternative workflows you have tried.
 
   - type: checkboxes
     id: checklist
@@ -81,10 +44,6 @@ body:
       label: Submission checklist
       options:
         - label: I searched open and closed issues for duplicates.
-          required: true
-        - label: I separated goals from non-goals.
-          required: true
-        - label: I considered existing components and established industry practices.
           required: true
         - label: I removed secrets, personal data, and unnecessary private paths.
           required: true

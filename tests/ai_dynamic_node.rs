@@ -1046,6 +1046,48 @@ fn dynamic_graph(app: &App, task_id: &str) -> DynamicGraphState {
     .unwrap()
 }
 
+fn coordination_snapshot(app: &App, task_id: &str) -> serde_json::Value {
+    gold_band::storage::read_json(
+        &app.paths
+            .dynamic_dir(task_id, "run-001", "round-001", "router", "attempt-001")
+            .join("coordination-snapshot.json"),
+    )
+    .unwrap()
+}
+
+fn coordination_workstream<'a>(
+    snapshot: &'a serde_json::Value,
+    workstream_id: &str,
+) -> &'a serde_json::Value {
+    snapshot["workstreams"]
+        .as_array()
+        .expect("coordination snapshot must expose workstream-first TODOs")
+        .iter()
+        .find(|workstream| workstream["id"] == workstream_id)
+        .unwrap_or_else(|| panic!("missing coordination workstream `{workstream_id}`"))
+}
+
+fn coordination_group<'a>(
+    snapshot: &'a serde_json::Value,
+    group_id: &str,
+) -> &'a serde_json::Value {
+    snapshot["groups"]
+        .as_array()
+        .expect("coordination snapshot must expose groups")
+        .iter()
+        .find(|group| group["id"] == group_id)
+        .unwrap_or_else(|| panic!("missing coordination group `{group_id}`"))
+}
+
+fn json_string_array(value: &serde_json::Value) -> Vec<&str> {
+    value
+        .as_array()
+        .expect("expected a JSON string array")
+        .iter()
+        .map(|item| item.as_str().expect("expected a JSON string"))
+        .collect()
+}
+
 fn wait_for_invocation(
     provider: &DynamicProvider,
     node_id: &str,
@@ -1207,20 +1249,52 @@ fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
         .paths
         .dynamic_dir(task_id, "run-001", "round-001", "router", "attempt-001")
         .join("coordination-snapshot.json");
-    let coordination: serde_json::Value =
-        gold_band::storage::read_json(&coordination_path).unwrap();
+    let coordination = coordination_snapshot(&app, task_id);
     assert_eq!(coordination["kind"], "ai-dynamic-coordination-snapshot");
     assert!(
-        coordination["nodes"]
-            .as_array()
-            .unwrap()
+        coordination.get("nodes").is_none(),
+        "the runtime TODO projection must not duplicate the complete node history"
+    );
+    let workstreams = coordination["workstreams"]
+        .as_array()
+        .expect("coordination snapshot must expose workstream-first TODOs");
+    assert_eq!(workstreams.len(), 2);
+    assert!(
+        workstreams
             .iter()
-            .any(|node| {
-                node["id"] == "branch-a"
-                    && node["task"] == "Finish branch A"
-                    && node["status"] == "completed"
-                    && node["workspace"]["path"].as_str().is_some()
-            })
+            .all(|workstream| workstream["id"] != "bootstrap"),
+        "bootstrap is a control dispatcher, not a business workstream"
+    );
+    let branch_a_workstream = coordination_workstream(&coordination, "branch-a");
+    assert!(branch_a_workstream.get("parentWorkstreamId").is_none());
+    assert_eq!(branch_a_workstream["ownerGroupId"], "group-core");
+    assert_eq!(branch_a_workstream["title"], "Branch A");
+    assert_eq!(branch_a_workstream["goal"], "Finish branch A");
+    assert_eq!(branch_a_workstream["status"], "completed");
+    assert!(branch_a_workstream["workspace"]["path"].as_str().is_some());
+    let branch_a_steps = branch_a_workstream["steps"].as_array().unwrap();
+    assert_eq!(branch_a_steps.len(), 1);
+    assert_eq!(branch_a_steps[0]["nodeId"], "branch-a");
+    assert_eq!(branch_a_steps[0]["task"], "Finish branch A");
+    assert_eq!(branch_a_steps[0]["status"], "completed");
+    assert_eq!(branch_a_steps[0]["summary"], "branch done");
+
+    let group = coordination_group(&coordination, "group-core");
+    assert!(group.get("createdByWorkstreamId").is_none());
+    assert_eq!(
+        json_string_array(&group["branchWorkstreamIds"]),
+        vec!["branch-a", "branch-b"]
+    );
+    assert_eq!(group["phase"], "closed");
+    assert_eq!(group["merge"]["nodeId"], "group-core-merge");
+    assert_eq!(group["merge"]["status"], "completed");
+    assert_eq!(group["acceptance"]["nodeId"], "group-core-accept");
+    assert_eq!(group["acceptance"]["status"], "completed");
+    assert!(
+        workstreams.iter().all(|workstream| {
+            workstream["id"] != "group-core-merge" && workstream["id"] != "group-core-accept"
+        }),
+        "merge and acceptance are group phases, not business workstreams"
     );
 
     let invocations = provider.invocations.lock().unwrap();
@@ -1866,6 +1940,38 @@ fn ai_dynamic_nested_fanout_waits_for_child_group_before_parent_merge() {
         .position(|node_id| *node_id == "group-core-merge")
         .unwrap();
     assert!(child_accept_position < parent_merge_position);
+
+    let coordination = coordination_snapshot(&app, task_id);
+    let workstreams = coordination["workstreams"].as_array().unwrap();
+    assert_eq!(workstreams.len(), 4);
+    let branch_a = coordination_workstream(&coordination, "branch-a");
+    assert!(branch_a.get("parentWorkstreamId").is_none());
+    assert_eq!(branch_a["ownerGroupId"], "group-core");
+    for child_id in ["branch-a-1", "branch-a-2"] {
+        let child_workstream = coordination_workstream(&coordination, child_id);
+        assert_eq!(child_workstream["parentWorkstreamId"], "branch-a");
+        assert_eq!(child_workstream["ownerGroupId"], "group-branch-a");
+        assert_eq!(child_workstream["status"], "completed");
+    }
+    let child_group = coordination_group(&coordination, "group-branch-a");
+    assert_eq!(child_group["parentGroupId"], "group-core");
+    assert_eq!(child_group["createdByWorkstreamId"], "branch-a");
+    assert_eq!(
+        json_string_array(&child_group["branchWorkstreamIds"]),
+        vec!["branch-a-1", "branch-a-2"]
+    );
+    assert_eq!(child_group["phase"], "closed");
+    assert!(workstreams.iter().all(|workstream| {
+        !matches!(
+            workstream["id"].as_str(),
+            Some(
+                "group-branch-a-merge"
+                    | "group-branch-a-accept"
+                    | "group-core-merge"
+                    | "group-core-accept"
+            )
+        )
+    }));
 }
 
 #[test]
@@ -2343,6 +2449,36 @@ fn ai_dynamic_lists_resumable_session_nodes_and_uses_continue_session() {
         .unwrap();
     assert_eq!(branch_c.session_mode, SessionMode::Continue);
     assert!(branch_c.continue_ref.is_some());
+
+    let coordination = coordination_snapshot(&app, task_id);
+    let workstreams = coordination["workstreams"].as_array().unwrap();
+    assert_eq!(workstreams.len(), 2);
+    assert!(
+        workstreams
+            .iter()
+            .all(|workstream| workstream["id"] != "branch-c"),
+        "a single successor must remain a step in its source workstream"
+    );
+    let branch_b_workstream = coordination_workstream(&coordination, "branch-b");
+    assert!(branch_b_workstream.get("parentWorkstreamId").is_none());
+    assert_eq!(branch_b_workstream["ownerGroupId"], "group-core");
+    assert_eq!(branch_b_workstream["status"], "completed");
+    assert!(branch_b_workstream["workspace"]["path"].as_str().is_some());
+    let steps = branch_b_workstream["steps"].as_array().unwrap();
+    assert_eq!(
+        steps
+            .iter()
+            .map(|step| step["nodeId"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["branch-b", "branch-c"]
+    );
+    assert_eq!(steps[0]["status"], "completed");
+    assert_eq!(
+        steps[0]["summary"],
+        "continue branch B conversation into final wrap-up node"
+    );
+    assert_eq!(steps[1]["status"], "completed");
+    assert_eq!(steps[1]["summary"], "branch C done");
 }
 
 #[test]

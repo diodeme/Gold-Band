@@ -25,7 +25,7 @@
 ## Runtime coordination snapshot
 - Read-only snapshot: {{ coordination_snapshot_path }}
 - Runtime derives this file from the canonical dynamic graph and is its only writer. Do not modify it.
-- Read the latest snapshot before starting or continuing this task so you understand other nodes' and groups' tasks, status, dependencies, and workspaces and avoid duplicate or conflicting work.
+- Read the latest snapshot before starting or continuing this task: use each `workstreams[]` goal, TODO status, parent relationship, and steps to understand other subtasks, then use `groups[]` nesting and phase to avoid duplicate or conflicting work.
 - Read the same path again before outputting `next.type="single"` or `next.type="fanout"`, and plan successors from the latest state.
 {% endif %}
 

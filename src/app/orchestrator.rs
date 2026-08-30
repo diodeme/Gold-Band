@@ -29,19 +29,20 @@ use crate::dsl::{
 };
 use crate::dynamic::{
     AI_DYNAMIC_REPORT_MANIFEST_ARTIFACT, AI_DYNAMIC_RESULT_ARTIFACT, AiDynamicChildWorkflowRef,
-    AiDynamicCoordinationGroup, AiDynamicCoordinationNode, AiDynamicCoordinationSnapshot,
-    AiDynamicCoordinationSnapshotKind, AiDynamicReportAttachment, AiDynamicReportGroup,
-    AiDynamicReportManifest, AiDynamicReportManifestKind, AiDynamicReportManifestRef,
-    AiDynamicReportNext, AiDynamicReportNode, AiDynamicResult, AiDynamicResultKind,
-    AiDynamicTaskRef, AiDynamicWorkspaceRef, AllowedWorkflowSnapshot, DYNAMIC_COMPLETION_ARTIFACT,
-    DynamicAgentTaskSpec, DynamicCompletionSchemaPolicy, DynamicCompletionStatus,
-    DynamicGraphState, DynamicGroupState, DynamicGroupStatus, DynamicNext, DynamicNodeCompletion,
-    DynamicNodeCompletionKind, DynamicNodeKind, DynamicNodeSpec, DynamicNodeSpecKind,
-    DynamicNodeState, DynamicNodeStatus, DynamicProposalState, DynamicProposalValidationError,
-    DynamicProposalValidationStatus, DynamicRunPhase, DynamicRunState, DynamicRunStatus,
-    WorkspaceKind, WorkspaceOwnership, WorkspaceState, WorkspaceStatus,
-    dynamic_completion_effective_schema, dynamic_graph_has_active_leaf, dynamic_leaf_is_active,
-    dynamic_runtime_owns_leaf_projection, refresh_dynamic_current_leaf_ids,
+    AiDynamicCoordinationGroup, AiDynamicCoordinationGroupStage, AiDynamicCoordinationSnapshot,
+    AiDynamicCoordinationSnapshotKind, AiDynamicCoordinationStep, AiDynamicCoordinationWorkstream,
+    AiDynamicReportAttachment, AiDynamicReportGroup, AiDynamicReportManifest,
+    AiDynamicReportManifestKind, AiDynamicReportManifestRef, AiDynamicReportNext,
+    AiDynamicReportNode, AiDynamicResult, AiDynamicResultKind, AiDynamicTaskRef,
+    AiDynamicWorkspaceRef, AiDynamicWorkstreamStatus, AllowedWorkflowSnapshot,
+    DYNAMIC_COMPLETION_ARTIFACT, DynamicAgentTaskSpec, DynamicCompletionSchemaPolicy,
+    DynamicCompletionStatus, DynamicGraphState, DynamicGroupState, DynamicGroupStatus, DynamicNext,
+    DynamicNodeCompletion, DynamicNodeCompletionKind, DynamicNodeKind, DynamicNodeSpec,
+    DynamicNodeSpecKind, DynamicNodeState, DynamicNodeStatus, DynamicProposalState,
+    DynamicProposalValidationError, DynamicProposalValidationStatus, DynamicRunPhase,
+    DynamicRunState, DynamicRunStatus, WorkspaceKind, WorkspaceOwnership, WorkspaceState,
+    WorkspaceStatus, dynamic_completion_effective_schema, dynamic_graph_has_active_leaf,
+    dynamic_leaf_is_active, dynamic_runtime_owns_leaf_projection, refresh_dynamic_current_leaf_ids,
     validate_dynamic_group_state, validate_dynamic_node_state, validate_dynamic_run_state,
     validate_workspace_state, validate_workspace_topology, write_dynamic_node_state,
 };
@@ -5816,65 +5817,462 @@ fn persist_dynamic_graph_for_resume_unlocked(
     Ok(())
 }
 
+struct AiDynamicCoordinationWorkstreamBuilder {
+    id: String,
+    owner_group_id: Option<String>,
+    title: String,
+    goal: String,
+    workspace_id: String,
+    steps: Vec<AiDynamicCoordinationStep>,
+}
+
+fn dynamic_node_is_coordination_step(node: &DynamicNodeState) -> bool {
+    !dynamic_node_is_bootstrap_dispatch(node)
+        && matches!(
+            node.kind,
+            DynamicNodeKind::Worker | DynamicNodeKind::WorkflowInvocation
+        )
+}
+
+fn ai_dynamic_coordination_workspace_ref(
+    workspace_refs: &HashMap<String, AiDynamicWorkspaceRef>,
+    workspace_id: &str,
+) -> Result<AiDynamicWorkspaceRef> {
+    workspace_refs.get(workspace_id).cloned().ok_or_else(|| {
+        anyhow!("dynamic.coordination.workspace-missing: workspace `{workspace_id}`")
+    })
+}
+
+fn ensure_ai_dynamic_coordination_parent_topology<'a>(
+    relation: &str,
+    parents: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
+) -> Result<()> {
+    let mut parent_by_id = HashMap::<&str, Option<&str>>::new();
+    for (id, parent_id) in parents {
+        ensure!(
+            parent_by_id.insert(id, parent_id).is_none(),
+            "dynamic.coordination.{relation}-duplicate: `{id}`"
+        );
+    }
+
+    let mut resolved = HashSet::<&str>::new();
+    for id in parent_by_id.keys().copied() {
+        let mut path = HashSet::<&str>::new();
+        let mut current_id = Some(id);
+        while let Some(candidate_id) = current_id {
+            if resolved.contains(candidate_id) {
+                break;
+            }
+            ensure!(
+                path.insert(candidate_id),
+                "dynamic.coordination.{relation}-cycle: `{candidate_id}`"
+            );
+            current_id = *parent_by_id.get(candidate_id).ok_or_else(|| {
+                anyhow!("dynamic.coordination.{relation}-parent-missing: `{candidate_id}`")
+            })?;
+        }
+        resolved.extend(path);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_coordination_group_owner_workstream_id(
+    group_id: &str,
+    graph: &DynamicGraphState,
+    node_indices: &HashMap<String, usize>,
+    group_indices: &HashMap<String, usize>,
+    workstream_ids_by_node_id: &HashMap<String, String>,
+    memo: &mut HashMap<String, Option<String>>,
+    visiting: &mut HashSet<String>,
+) -> Result<Option<String>> {
+    if let Some(workstream_id) = memo.get(group_id) {
+        return Ok(workstream_id.clone());
+    }
+    ensure!(
+        visiting.insert(group_id.to_string()),
+        "dynamic.coordination.group-owner-cycle: group `{group_id}`"
+    );
+    let resolved = (|| {
+        let group_index = group_indices
+            .get(group_id)
+            .copied()
+            .ok_or_else(|| anyhow!("dynamic.coordination.group-missing: group `{group_id}`"))?;
+        let group = &graph.groups[group_index];
+        let creator_index = node_indices
+            .get(&group.created_by_node_id)
+            .copied()
+            .ok_or_else(|| {
+                anyhow!(
+                    "dynamic.coordination.group-creator-missing: group `{}` creator `{}`",
+                    group.id,
+                    group.created_by_node_id
+                )
+            })?;
+        let creator = &graph.nodes[creator_index];
+        ensure!(
+            creator.group_id == group.parent_group_id,
+            "dynamic.coordination.group-creator-scope-mismatch: group `{}` creator `{}`",
+            group.id,
+            creator.id
+        );
+        match creator.kind {
+            DynamicNodeKind::Worker | DynamicNodeKind::WorkflowInvocation => {
+                if dynamic_node_is_bootstrap_dispatch(creator) {
+                    Ok(None)
+                } else {
+                    workstream_ids_by_node_id
+                        .get(&creator.id)
+                        .cloned()
+                        .map(Some)
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "dynamic.coordination.creator-workstream-missing: node `{}`",
+                                creator.id
+                            )
+                        })
+                }
+            }
+            DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => {
+                let owner_group_id = creator.group_id.as_deref().ok_or_else(|| {
+                    anyhow!(
+                        "dynamic.coordination.control-group-missing: node `{}`",
+                        creator.id
+                    )
+                })?;
+                resolve_coordination_group_owner_workstream_id(
+                    owner_group_id,
+                    graph,
+                    node_indices,
+                    group_indices,
+                    workstream_ids_by_node_id,
+                    memo,
+                    visiting,
+                )
+            }
+        }
+    })();
+    visiting.remove(group_id);
+    let workstream_id = resolved?;
+    memo.insert(group_id.to_string(), workstream_id.clone());
+    Ok(workstream_id)
+}
+
+fn ai_dynamic_coordination_workstream_status(
+    steps: &[AiDynamicCoordinationStep],
+    child_groups: &[&DynamicGroupState],
+) -> AiDynamicWorkstreamStatus {
+    if steps.iter().any(|step| {
+        step.status == DynamicNodeStatus::Completed && step.outcome != Some(NodeOutcome::Success)
+    }) || child_groups
+        .iter()
+        .any(|group| group.status == DynamicGroupStatus::Failed)
+    {
+        return AiDynamicWorkstreamStatus::Failed;
+    }
+    if steps
+        .iter()
+        .any(|step| step.status == DynamicNodeStatus::Paused)
+    {
+        return AiDynamicWorkstreamStatus::Paused;
+    }
+    if steps.iter().any(|step| {
+        matches!(
+            step.status,
+            DynamicNodeStatus::Ready | DynamicNodeStatus::Running
+        )
+    }) {
+        return AiDynamicWorkstreamStatus::Active;
+    }
+    if steps
+        .iter()
+        .any(|step| step.status == DynamicNodeStatus::Pending)
+    {
+        return AiDynamicWorkstreamStatus::Pending;
+    }
+    if child_groups
+        .iter()
+        .any(|group| group.status != DynamicGroupStatus::Closed)
+    {
+        return AiDynamicWorkstreamStatus::Waiting;
+    }
+    AiDynamicWorkstreamStatus::Completed
+}
+
+fn ai_dynamic_coordination_group_stage(
+    graph: &DynamicGraphState,
+    node_indices: &HashMap<String, usize>,
+    group_id: &str,
+    expected_kind: DynamicNodeKind,
+    spec: &DynamicAgentTaskSpec,
+    node_id: Option<&str>,
+) -> Result<AiDynamicCoordinationGroupStage> {
+    let node = node_id
+        .map(|node_id| {
+            node_indices
+                .get(node_id)
+                .copied()
+                .map(|index| &graph.nodes[index])
+                .ok_or_else(|| {
+                    anyhow!("dynamic.coordination.group-stage-missing: node `{node_id}`")
+                })
+        })
+        .transpose()?;
+    if let Some(node) = node {
+        ensure!(
+            node.group_id.as_deref() == Some(group_id) && node.kind == expected_kind,
+            "dynamic.coordination.group-stage-mismatch: group `{group_id}` node `{}`",
+            node.id
+        );
+    }
+    Ok(AiDynamicCoordinationGroupStage {
+        title: spec.title.clone(),
+        task: spec.task.clone(),
+        node_id: node.map(|node| node.id.clone()),
+        status: node.map(|node| node.status),
+        outcome: node.and_then(|node| node.outcome),
+    })
+}
+
 fn build_ai_dynamic_coordination_snapshot(
     graph: &DynamicGraphState,
 ) -> Result<AiDynamicCoordinationSnapshot> {
     let completions = accepted_dynamic_completions(graph)?;
-    let spawned_by = dynamic_spawned_by_node_ids(graph, &completions);
-    let nodes = graph
+    let node_indices = graph
         .nodes
         .iter()
-        .map(|node| {
-            Ok(AiDynamicCoordinationNode {
-                id: node.id.clone(),
-                kind: node.kind,
-                title: node.title.clone(),
-                task: node.task.clone(),
-                status: node.status,
-                outcome: node.outcome,
-                spawned_by_node_id: spawned_by.get(&node.id).cloned(),
-                depends_on: node.depends_on.clone(),
-                group_id: node.group_id.clone(),
-                chain_id: node.chain_id.clone(),
-                workspace: ai_dynamic_workspace_ref(graph, &node.workspace_id)?,
-                started_at: node.started_at.clone(),
-                finished_at: node.finished_at.clone(),
-            })
+        .enumerate()
+        .map(|(index, node)| (node.id.clone(), index))
+        .collect::<HashMap<_, _>>();
+    let group_indices = graph
+        .groups
+        .iter()
+        .enumerate()
+        .map(|(index, group)| (group.id.clone(), index))
+        .collect::<HashMap<_, _>>();
+    let workspace_refs = graph
+        .workspaces
+        .iter()
+        .map(|workspace| {
+            (
+                workspace.id.clone(),
+                AiDynamicWorkspaceRef {
+                    id: workspace.id.clone(),
+                    kind: workspace.kind,
+                    path: workspace.path.clone(),
+                    branch: workspace.branch.clone(),
+                },
+            )
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<HashMap<_, _>>();
+    ensure!(
+        node_indices.len() == graph.nodes.len(),
+        "dynamic.coordination.duplicate-node-id"
+    );
+    ensure!(
+        group_indices.len() == graph.groups.len(),
+        "dynamic.coordination.duplicate-group-id"
+    );
+    ensure!(
+        workspace_refs.len() == graph.workspaces.len(),
+        "dynamic.coordination.duplicate-workspace-id"
+    );
+
+    let mut workstream_builders = Vec::<AiDynamicCoordinationWorkstreamBuilder>::new();
+    let mut workstream_indices_by_chain = HashMap::<(Option<String>, String), usize>::new();
+    let mut workstream_ids_by_node_id = HashMap::<String, String>::new();
+    for node in &graph.nodes {
+        if !dynamic_node_is_coordination_step(node) {
+            continue;
+        }
+        let chain_key = (node.group_id.clone(), node.chain_id.clone());
+        let workstream_index = if let Some(index) = workstream_indices_by_chain.get(&chain_key) {
+            *index
+        } else {
+            let index = workstream_builders.len();
+            workstream_builders.push(AiDynamicCoordinationWorkstreamBuilder {
+                id: node.id.clone(),
+                owner_group_id: node.group_id.clone(),
+                title: node.title.clone(),
+                goal: node.task.clone(),
+                workspace_id: node.workspace_id.clone(),
+                steps: Vec::new(),
+            });
+            workstream_indices_by_chain.insert(chain_key, index);
+            index
+        };
+        let workstream = &mut workstream_builders[workstream_index];
+        ensure!(
+            workstream.workspace_id == node.workspace_id,
+            "dynamic.coordination.workstream-workspace-mismatch: workstream `{}`",
+            workstream.id
+        );
+        let workstream_id = workstream.id.clone();
+        workstream.steps.push(AiDynamicCoordinationStep {
+            node_id: node.id.clone(),
+            kind: node.kind,
+            title: node.title.clone(),
+            task: node.task.clone(),
+            status: node.status,
+            outcome: node.outcome,
+            depends_on: node.depends_on.clone(),
+            summary: completions
+                .get(&node.id)
+                .map(|completion| completion.summary.clone()),
+            started_at: node.started_at.clone(),
+            finished_at: node.finished_at.clone(),
+        });
+        workstream_ids_by_node_id.insert(node.id.clone(), workstream_id);
+    }
+
+    let mut group_owner_workstream_ids = HashMap::<String, Option<String>>::new();
+    let mut visiting_groups = HashSet::<String>::new();
+    for group in &graph.groups {
+        resolve_coordination_group_owner_workstream_id(
+            &group.id,
+            graph,
+            &node_indices,
+            &group_indices,
+            &workstream_ids_by_node_id,
+            &mut group_owner_workstream_ids,
+            &mut visiting_groups,
+        )?;
+    }
+
+    let mut child_group_ids_by_workstream = HashMap::<String, Vec<String>>::new();
+    for group in &graph.groups {
+        let owner_workstream_id = group_owner_workstream_ids.get(&group.id).ok_or_else(|| {
+            anyhow!(
+                "dynamic.coordination.group-owner-missing: group `{}`",
+                group.id
+            )
+        })?;
+        if let Some(owner_workstream_id) = owner_workstream_id {
+            child_group_ids_by_workstream
+                .entry(owner_workstream_id.clone())
+                .or_default()
+                .push(group.id.clone());
+        }
+    }
+
+    let mut branch_workstream_ids_by_group = HashMap::<String, Vec<String>>::new();
+    for workstream in &workstream_builders {
+        if let Some(group_id) = workstream.owner_group_id.as_ref() {
+            branch_workstream_ids_by_group
+                .entry(group_id.clone())
+                .or_default()
+                .push(workstream.id.clone());
+        }
+    }
+
+    let mut workstreams = Vec::with_capacity(workstream_builders.len());
+    for workstream in workstream_builders {
+        let parent_workstream_id = match workstream.owner_group_id.as_ref() {
+            Some(group_id) => group_owner_workstream_ids
+                .get(group_id)
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow!("dynamic.coordination.parent-workstream-missing: group `{group_id}`")
+                })?,
+            None => None,
+        };
+        let child_group_ids = child_group_ids_by_workstream
+            .remove(&workstream.id)
+            .unwrap_or_default();
+        let child_groups = child_group_ids
+            .iter()
+            .map(|group_id| {
+                group_indices
+                    .get(group_id)
+                    .copied()
+                    .map(|index| &graph.groups[index])
+                    .ok_or_else(|| {
+                        anyhow!("dynamic.coordination.child-group-missing: group `{group_id}`")
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let status = ai_dynamic_coordination_workstream_status(&workstream.steps, &child_groups);
+        workstreams.push(AiDynamicCoordinationWorkstream {
+            id: workstream.id,
+            parent_workstream_id,
+            owner_group_id: workstream.owner_group_id,
+            title: workstream.title,
+            goal: workstream.goal,
+            status,
+            workspace: ai_dynamic_coordination_workspace_ref(
+                &workspace_refs,
+                &workstream.workspace_id,
+            )?,
+            child_group_ids,
+            steps: workstream.steps,
+        });
+    }
+
+    ensure_ai_dynamic_coordination_parent_topology(
+        "workstream",
+        workstreams.iter().map(|workstream| {
+            (
+                workstream.id.as_str(),
+                workstream.parent_workstream_id.as_deref(),
+            )
+        }),
+    )?;
+
     let groups = graph
         .groups
         .iter()
         .map(|group| {
             Ok(AiDynamicCoordinationGroup {
                 id: group.id.clone(),
-                status: group.status,
-                depth: group.depth,
                 parent_group_id: group.parent_group_id.clone(),
-                created_by_node_id: group.created_by_node_id.clone(),
-                root_node_ids: group.root_node_ids.clone(),
-                terminal_node_ids: group.terminal_node_ids.clone(),
-                target_workspace: ai_dynamic_workspace_ref(graph, &group.target_workspace_id)?,
-                child_workspaces: group
-                    .child_workspace_ids
-                    .iter()
-                    .map(|workspace_id| ai_dynamic_workspace_ref(graph, workspace_id))
-                    .collect::<Result<Vec<_>>>()?,
-                merge_node_id: group.merge_node_id.clone(),
-                acceptance_node_id: group.acceptance_node_id.clone(),
-                merge: ai_dynamic_task_ref(&group.merge),
-                acceptance: ai_dynamic_task_ref(&group.acceptance),
-                created_at: group.created_at.clone(),
-                updated_at: group.updated_at.clone(),
+                created_by_workstream_id: group_owner_workstream_ids
+                    .get(&group.id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "dynamic.coordination.group-owner-missing: group `{}`",
+                            group.id
+                        )
+                    })?,
+                branch_workstream_ids: branch_workstream_ids_by_group
+                    .remove(&group.id)
+                    .unwrap_or_default(),
+                phase: group.status,
+                target_workspace: ai_dynamic_coordination_workspace_ref(
+                    &workspace_refs,
+                    &group.target_workspace_id,
+                )?,
+                merge: ai_dynamic_coordination_group_stage(
+                    graph,
+                    &node_indices,
+                    &group.id,
+                    DynamicNodeKind::Merge,
+                    &group.merge,
+                    group.merge_node_id.as_deref(),
+                )?,
+                acceptance: ai_dynamic_coordination_group_stage(
+                    graph,
+                    &node_indices,
+                    &group.id,
+                    DynamicNodeKind::Acceptance,
+                    &group.acceptance,
+                    group.acceptance_node_id.as_deref(),
+                )?,
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    ensure_ai_dynamic_coordination_parent_topology(
+        "group",
+        groups
+            .iter()
+            .map(|group| (group.id.as_str(), group.parent_group_id.as_deref())),
+    )?;
     Ok(AiDynamicCoordinationSnapshot {
         version: VERSION.to_string(),
         kind: AiDynamicCoordinationSnapshotKind::AiDynamicCoordinationSnapshot,
         dynamic_run_id: graph.run.id.clone(),
         generated_at: now_rfc3339_like(),
-        nodes,
+        workstreams,
         groups,
     })
 }
@@ -18751,6 +19149,245 @@ mod tests {
         assert_eq!(graph.groups[0].acceptance_node_id, None);
         assert!(graph.nodes.iter().any(|node| node.id == "repair"));
         assert_eq!(visible, vec!["repair".to_string()]);
+    }
+
+    #[test]
+    fn coordination_snapshot_excludes_bootstrap_from_business_workstream() {
+        let mut bootstrap = test_worktree_node(DYNAMIC_BOOTSTRAP_NODE_ID);
+        bootstrap.depth = 0;
+        bootstrap.title = "AI-DYNAMIC bootstrap".to_string();
+        bootstrap.task =
+            "Design the first internal dynamic step for this AI-DYNAMIC node.".to_string();
+        bootstrap.status = DynamicNodeStatus::Completed;
+        bootstrap.outcome = Some(NodeOutcome::Success);
+
+        let mut business = test_worktree_node("implement-feature");
+        business.chain_id = DYNAMIC_BOOTSTRAP_NODE_ID.to_string();
+        business.title = "Implement feature".to_string();
+        business.task = "Implement the requested business feature.".to_string();
+        business.status = DynamicNodeStatus::Ready;
+
+        let graph = test_dynamic_graph(vec![bootstrap, business]);
+        let snapshot = build_ai_dynamic_coordination_snapshot(&graph).unwrap();
+
+        assert_eq!(snapshot.workstreams.len(), 1);
+        let workstream = &snapshot.workstreams[0];
+        assert_eq!(workstream.id, "implement-feature");
+        assert_eq!(workstream.title, "Implement feature");
+        assert_eq!(workstream.goal, "Implement the requested business feature.");
+        assert_eq!(workstream.status, AiDynamicWorkstreamStatus::Active);
+        assert_eq!(workstream.steps.len(), 1);
+        assert_eq!(workstream.steps[0].node_id, "implement-feature");
+    }
+
+    #[test]
+    fn coordination_parent_topology_rejects_indirect_cycle() {
+        let error = ensure_ai_dynamic_coordination_parent_topology(
+            "workstream",
+            [
+                ("workstream-a", Some("workstream-b")),
+                ("workstream-b", Some("workstream-a")),
+            ],
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("dynamic.coordination.workstream-cycle")
+        );
+    }
+
+    #[test]
+    fn coordination_snapshot_projects_acceptance_repair_as_group_owned_workstream() {
+        let mut root = test_worktree_node("root");
+        root.depth = 0;
+        root.status = DynamicNodeStatus::Completed;
+        root.outcome = Some(NodeOutcome::Success);
+
+        let mut branch = test_worktree_node("branch");
+        branch.group_id = Some("group-core".to_string());
+        branch.chain_id = "branch".to_string();
+        branch.status = DynamicNodeStatus::Completed;
+        branch.outcome = Some(NodeOutcome::Success);
+
+        let mut merge = test_worktree_node("group-core-merge");
+        merge.kind = DynamicNodeKind::Merge;
+        merge.group_id = Some("group-core".to_string());
+        merge.chain_id = "group-core-merge".to_string();
+        merge.status = DynamicNodeStatus::Completed;
+        merge.outcome = Some(NodeOutcome::Success);
+
+        let mut acceptance = test_worktree_node("group-core-accept");
+        acceptance.kind = DynamicNodeKind::Acceptance;
+        acceptance.group_id = Some("group-core".to_string());
+        acceptance.chain_id = "group-core-accept".to_string();
+        acceptance.status = DynamicNodeStatus::Completed;
+        acceptance.outcome = Some(NodeOutcome::Success);
+
+        let mut repair = test_worktree_node("repair");
+        repair.group_id = Some("group-core".to_string());
+        repair.chain_id = "group-core-accept".to_string();
+        repair.status = DynamicNodeStatus::Ready;
+
+        let mut graph = test_dynamic_graph(vec![root, branch, merge, acceptance, repair]);
+        graph.groups.push(DynamicGroupState {
+            version: VERSION.to_string(),
+            id: "group-core".to_string(),
+            dynamic_run_id: graph.run.id.clone(),
+            status: DynamicGroupStatus::Open,
+            depth: 1,
+            parent_group_id: None,
+            root_node_ids: vec!["branch".to_string()],
+            terminal_node_ids: vec!["branch".to_string()],
+            target_workspace_id: "workspace-main".to_string(),
+            child_workspace_ids: Vec::new(),
+            merge_node_id: None,
+            acceptance_node_id: None,
+            created_by_node_id: "root".to_string(),
+            merge: test_agent_task("merge"),
+            acceptance: test_agent_task("accept"),
+            created_at: "2026-06-16T00:00:00Z".to_string(),
+            updated_at: "2026-06-16T00:00:00Z".to_string(),
+        });
+
+        let snapshot = build_ai_dynamic_coordination_snapshot(&graph).unwrap();
+
+        assert_eq!(snapshot.workstreams.len(), 3);
+        let root = snapshot
+            .workstreams
+            .iter()
+            .find(|workstream| workstream.id == "root")
+            .unwrap();
+        assert_eq!(root.status, AiDynamicWorkstreamStatus::Waiting);
+        assert_eq!(root.child_group_ids, vec!["group-core"]);
+        let repair = snapshot
+            .workstreams
+            .iter()
+            .find(|workstream| workstream.id == "repair")
+            .unwrap();
+        assert_eq!(repair.parent_workstream_id.as_deref(), Some("root"));
+        assert_eq!(repair.owner_group_id.as_deref(), Some("group-core"));
+        assert_eq!(repair.status, AiDynamicWorkstreamStatus::Active);
+        assert_eq!(repair.steps.len(), 1);
+        assert_eq!(repair.steps[0].node_id, "repair");
+        assert!(snapshot.workstreams.iter().all(|workstream| {
+            workstream.id != "group-core-merge" && workstream.id != "group-core-accept"
+        }));
+        assert_eq!(
+            snapshot.groups[0].created_by_workstream_id.as_deref(),
+            Some("root")
+        );
+        assert_eq!(
+            snapshot.groups[0].branch_workstream_ids,
+            vec!["branch", "repair"]
+        );
+        assert_eq!(snapshot.groups[0].merge.node_id, None);
+        assert_eq!(snapshot.groups[0].acceptance.node_id, None);
+
+        graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == "repair")
+            .unwrap()
+            .status = DynamicNodeStatus::Paused;
+        let paused_snapshot = build_ai_dynamic_coordination_snapshot(&graph).unwrap();
+        assert_eq!(
+            paused_snapshot
+                .workstreams
+                .iter()
+                .find(|workstream| workstream.id == "repair")
+                .unwrap()
+                .status,
+            AiDynamicWorkstreamStatus::Paused
+        );
+    }
+
+    #[test]
+    fn coordination_snapshot_resolves_acceptance_fanout_to_business_owner() {
+        let mut root = test_worktree_node("root");
+        root.depth = 0;
+        root.status = DynamicNodeStatus::Completed;
+        root.outcome = Some(NodeOutcome::Success);
+
+        let mut branch = test_worktree_node("branch");
+        branch.group_id = Some("group-core".to_string());
+        branch.chain_id = "branch".to_string();
+        branch.status = DynamicNodeStatus::Completed;
+        branch.outcome = Some(NodeOutcome::Success);
+
+        let mut acceptance = test_worktree_node("group-core-accept");
+        acceptance.kind = DynamicNodeKind::Acceptance;
+        acceptance.group_id = Some("group-core".to_string());
+        acceptance.chain_id = "group-core-accept".to_string();
+        acceptance.status = DynamicNodeStatus::Completed;
+        acceptance.outcome = Some(NodeOutcome::Success);
+
+        let mut repair = test_worktree_node("repair-branch");
+        repair.group_id = Some("group-repair".to_string());
+        repair.chain_id = "repair-branch".to_string();
+        repair.status = DynamicNodeStatus::Ready;
+
+        let mut graph = test_dynamic_graph(vec![root, branch, acceptance, repair]);
+        graph.groups.push(DynamicGroupState {
+            version: VERSION.to_string(),
+            id: "group-core".to_string(),
+            dynamic_run_id: graph.run.id.clone(),
+            status: DynamicGroupStatus::Open,
+            depth: 1,
+            parent_group_id: None,
+            root_node_ids: vec!["branch".to_string()],
+            terminal_node_ids: vec!["branch".to_string()],
+            target_workspace_id: "workspace-main".to_string(),
+            child_workspace_ids: Vec::new(),
+            merge_node_id: None,
+            acceptance_node_id: Some("group-core-accept".to_string()),
+            created_by_node_id: "root".to_string(),
+            merge: test_agent_task("merge core"),
+            acceptance: test_agent_task("accept core"),
+            created_at: "2026-06-16T00:00:00Z".to_string(),
+            updated_at: "2026-06-16T00:00:00Z".to_string(),
+        });
+        graph.groups.push(DynamicGroupState {
+            version: VERSION.to_string(),
+            id: "group-repair".to_string(),
+            dynamic_run_id: graph.run.id.clone(),
+            status: DynamicGroupStatus::Open,
+            depth: 2,
+            parent_group_id: Some("group-core".to_string()),
+            root_node_ids: vec!["repair-branch".to_string()],
+            terminal_node_ids: Vec::new(),
+            target_workspace_id: "workspace-main".to_string(),
+            child_workspace_ids: Vec::new(),
+            merge_node_id: None,
+            acceptance_node_id: None,
+            created_by_node_id: "group-core-accept".to_string(),
+            merge: test_agent_task("merge repair"),
+            acceptance: test_agent_task("accept repair"),
+            created_at: "2026-06-16T00:01:00Z".to_string(),
+            updated_at: "2026-06-16T00:01:00Z".to_string(),
+        });
+
+        let snapshot = build_ai_dynamic_coordination_snapshot(&graph).unwrap();
+
+        let repair = snapshot
+            .workstreams
+            .iter()
+            .find(|workstream| workstream.id == "repair-branch")
+            .unwrap();
+        assert_eq!(repair.parent_workstream_id.as_deref(), Some("root"));
+        assert_eq!(repair.owner_group_id.as_deref(), Some("group-repair"));
+        let repair_group = snapshot
+            .groups
+            .iter()
+            .find(|group| group.id == "group-repair")
+            .unwrap();
+        assert_eq!(repair_group.parent_group_id.as_deref(), Some("group-core"));
+        assert_eq!(
+            repair_group.created_by_workstream_id.as_deref(),
+            Some("root")
+        );
+        assert_eq!(repair_group.branch_workstream_ids, vec!["repair-branch"]);
     }
 
     #[test]

@@ -97,13 +97,7 @@ pub fn cancel_pending_permission_requests(
             decided_at.clone(),
         )? == TimelineSettleOutcome::Applied
         {
-            write_permission_response(
-                attempt_dir,
-                request_id,
-                None,
-                true,
-                decided_at.clone(),
-            )?;
+            write_permission_response(attempt_dir, request_id, None, true, decided_at.clone())?;
             remove_file_if_exists(&pending_permission_file(attempt_dir, request_id))?;
         }
     }

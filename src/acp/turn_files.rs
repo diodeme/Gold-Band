@@ -711,8 +711,8 @@ impl TurnFileStore {
         {
             return Err(anyhow!(ATTACHMENT_ACCESS_DENIED));
         }
-        let canonical_root = std::fs::canonicalize(root.as_std_path())
-            .map_err(|_| anyhow!(ATTACHMENT_NOT_FOUND))?;
+        let canonical_root =
+            std::fs::canonicalize(root.as_std_path()).map_err(|_| anyhow!(ATTACHMENT_NOT_FOUND))?;
         let canonical_path = std::fs::canonicalize(candidate.as_std_path())
             .map_err(|_| anyhow!(ATTACHMENT_NOT_FOUND))?;
         if !canonical_path.is_file() || !canonical_path.starts_with(&canonical_root) {

@@ -101,6 +101,7 @@ pub struct AppConfigVm {
 #[serde(rename_all = "camelCase")]
 pub struct TurnFilesVm {
     pub card_preview_limit: usize,
+    pub attachment_card_preview_limit: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -757,6 +758,8 @@ pub struct AcpSessionVm {
     pub adapter_icon_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_branch: Option<String>,
     pub cwd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_cwd: Option<String>,
@@ -772,8 +775,7 @@ pub struct AcpSessionVm {
     pub events: Vec<AcpUiEventVm>,
     pub event_page: AcpEventPageVm,
     pub timeline_projection: AcpTimelineProjectionVm,
-    pub pending_permissions: Vec<AcpPermissionRequestVm>,
-    pub pending_elicitations: Vec<AcpElicitationRequestVm>,
+    pub pending_interactions: Vec<AcpPromptInteractionVm>,
     pub available_commands: Option<Vec<serde_json::Value>>,
     pub usage: Option<AcpUsageVm>,
     pub diagnostics: AcpDiagnosticsVm,
@@ -957,13 +959,30 @@ pub struct AcpSessionTimingVm {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AcpPermissionRequestVm {
-    pub request_id: String,
-    pub title: String,
-    pub tool_call_id: Option<String>,
-    pub options: Vec<AcpPermissionOptionVm>,
-    pub raw: serde_json::Value,
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum AcpPromptInteractionVm {
+    Permission {
+        interaction_id: String,
+        turn_id: Option<String>,
+        prompt_event_id: Option<String>,
+        title: String,
+        tool_call_id: Option<String>,
+        options: Vec<AcpPermissionOptionVm>,
+        raw: serde_json::Value,
+    },
+    Elicitation {
+        interaction_id: String,
+        turn_id: Option<String>,
+        prompt_event_id: Option<String>,
+        message: String,
+        tool_call_id: Option<String>,
+        requested_schema: serde_json::Value,
+        raw: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -972,16 +991,6 @@ pub struct AcpPermissionOptionVm {
     pub option_id: String,
     pub name: String,
     pub kind: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AcpElicitationRequestVm {
-    pub elicitation_id: String,
-    pub message: String,
-    pub tool_call_id: Option<String>,
-    pub requested_schema: serde_json::Value,
-    pub raw: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1243,6 +1252,7 @@ fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
         conversation_inline_image_max_dimension: config.conversation_inline_image_max_dimension,
         turn_files: TurnFilesVm {
             card_preview_limit: config.turn_files.card_preview_limit,
+            attachment_card_preview_limit: config.turn_files.attachment_card_preview_limit,
         },
         workspace_layout: WorkspaceLayoutVm {
             shell_min_width: config.workspace_layout.shell_min_width,
@@ -3661,7 +3671,6 @@ pub fn dynamic_acp_session_vm(
     };
     let branch_record = conversation_branch_record(&agent_index, &branch_id);
     let status = conversation_branch_status(&root_status, &branch_id, branch_record);
-    let stopping = is_acp_session_stopping_status(&status);
     let active_status = is_acp_session_active_status(&status);
     let branch_timeline_path =
         gold_band::acp::branches::branch_timeline_path(&attempt_dir, &branch_id);
@@ -3685,21 +3694,13 @@ pub fn dynamic_acp_session_vm(
     );
     let parent_branch_id =
         branch_record.and_then(|record| record.parent_agent_execution_id.clone());
-    let pending_permissions = if stopping || !active_status {
-        Vec::new()
-    } else {
-        event_scan
-            .latest_permission_events
-            .into_values()
-            .filter(|event| event.status.as_deref() == Some("pending"))
-            .map(|event| permission_vm_from_event(&event))
-            .collect::<Vec<_>>()
-    };
-    let pending_elicitations = if stopping || !active_status {
-        Vec::new()
-    } else {
-        event_scan.pending_elicitations.clone()
-    };
+    let pending_interactions = event_scan
+        .latest_permission_events
+        .into_values()
+        .filter(|event| event.status.as_deref() == Some("pending"))
+        .map(|event| permission_vm_from_event(&event))
+        .chain(event_scan.pending_elicitations.clone())
+        .collect::<Vec<_>>();
     let provider = worker_ref
         .as_ref()
         .map(|state| state.provider.clone())
@@ -3752,8 +3753,8 @@ pub fn dynamic_acp_session_vm(
         outer_node_id,
         outer_attempt_id,
     );
-    let worktree_path =
-        session_worktree_path(run_worktree.as_ref(), dynamic_graph.as_ref(), Some(node_id));
+    let session_worktree =
+        session_worktree_projection(run_worktree.as_ref(), dynamic_graph.as_ref(), Some(node_id));
     let result = AcpSessionVm {
         branch_id: branch_id.clone(),
         parent_branch_id,
@@ -3786,7 +3787,10 @@ pub fn dynamic_acp_session_vm(
             .map(str::to_string),
         adapter_display_name,
         adapter_icon_key,
-        worktree_path,
+        worktree_path: session_worktree
+            .as_ref()
+            .map(|workspace| workspace.path.clone()),
+        worktree_branch: session_worktree.and_then(|workspace| workspace.branch),
         cwd,
         provider_cwd,
         status,
@@ -3821,8 +3825,7 @@ pub fn dynamic_acp_session_vm(
         events: event_scan.events,
         event_page: event_scan.event_page,
         timeline_projection: event_scan.timeline_projection,
-        pending_permissions,
-        pending_elicitations,
+        pending_interactions,
         available_commands: event_scan.available_commands,
         usage: if branch_id != gold_band::acp::branches::ROOT_BRANCH_ID {
             None
@@ -4045,7 +4048,6 @@ pub fn acp_session_vm(
     );
     let branch_record = conversation_branch_record(&agent_index, &branch_id);
     let status = conversation_branch_status(&root_status, &branch_id, branch_record);
-    let stopping = is_acp_session_stopping_status(&status);
     let active_status = is_acp_session_active_status(&status);
     let branch_timeline_path =
         gold_band::acp::branches::branch_timeline_path(&attempt_dir, &branch_id);
@@ -4105,21 +4107,13 @@ pub fn acp_session_vm(
     );
     let parent_branch_id =
         branch_record.and_then(|record| record.parent_agent_execution_id.clone());
-    let pending_permissions = if stopping || !active_status {
-        Vec::new()
-    } else {
-        event_scan
-            .latest_permission_events
-            .into_values()
-            .filter(|event| event.status.as_deref() == Some("pending"))
-            .map(|event| permission_vm_from_event(&event))
-            .collect::<Vec<_>>()
-    };
-    let pending_elicitations = if stopping || !active_status {
-        Vec::new()
-    } else {
-        event_scan.pending_elicitations.clone()
-    };
+    let pending_interactions = event_scan
+        .latest_permission_events
+        .into_values()
+        .filter(|event| event.status.as_deref() == Some("pending"))
+        .map(|event| permission_vm_from_event(&event))
+        .chain(event_scan.pending_elicitations.clone())
+        .collect::<Vec<_>>();
 
     let provider = worker_ref
         .as_ref()
@@ -4166,7 +4160,7 @@ pub fn acp_session_vm(
         .map(str::to_string)
         .or_else(|| snapshot_path.parent().map(|path| path.to_string()));
     let run_worktree = run_worktree_state_optional(app, task_id, run_id)?;
-    let worktree_path = session_worktree_path(run_worktree.as_ref(), None, None);
+    let session_worktree = session_worktree_projection(run_worktree.as_ref(), None, None);
 
     let result = AcpSessionVm {
         branch_id: branch_id.clone(),
@@ -4191,7 +4185,10 @@ pub fn acp_session_vm(
             .map(str::to_string),
         adapter_display_name,
         adapter_icon_key,
-        worktree_path,
+        worktree_path: session_worktree
+            .as_ref()
+            .map(|workspace| workspace.path.clone()),
+        worktree_branch: session_worktree.and_then(|workspace| workspace.branch),
         cwd,
         provider_cwd,
         status,
@@ -4257,8 +4254,7 @@ pub fn acp_session_vm(
         events: event_scan.events,
         event_page: event_scan.event_page,
         timeline_projection: event_scan.timeline_projection,
-        pending_permissions,
-        pending_elicitations,
+        pending_interactions,
     };
     trace_acp_session_query(
         &mut query_trace,
@@ -4338,7 +4334,7 @@ struct AcpEventScan {
     session_elapsed_seconds: Option<u64>,
     session_timing: Option<AcpSessionTimingVm>,
     latest_permission_events: HashMap<String, AcpUiEventVm>,
-    pending_elicitations: Vec<AcpElicitationRequestVm>,
+    pending_elicitations: Vec<AcpPromptInteractionVm>,
     available_commands: Option<Vec<serde_json::Value>>,
     usage: Option<AcpUsageVm>,
 }
@@ -4553,19 +4549,15 @@ fn indexed_timeline_page_to_scan(
     order_provider_history_by_prompt_anchors_vm(&mut events);
     hydrate_timeline_events(timeline_path, &mut events)?;
 
-    let pending_elicitations = if session_active {
-        indexed
-            .pending_elicitations
-            .into_iter()
-            .map(|event| {
-                serde_json::from_value::<AcpUiEventVm>(serde_json::to_value(event)?)
-                    .map(|event| elicitation_vm_from_event(&event))
-                    .map_err(Into::into)
-            })
-            .collect::<Result<Vec<_>>>()?
-    } else {
-        Vec::new()
-    };
+    let pending_elicitations = indexed
+        .pending_elicitations
+        .into_iter()
+        .map(|event| {
+            serde_json::from_value::<AcpUiEventVm>(serde_json::to_value(event)?)
+                .map(|event| elicitation_vm_from_event(&event))
+                .map_err(Into::into)
+        })
+        .collect::<Result<Vec<_>>>()?;
     let projection_events = indexed
         .latest_plan
         .into_iter()
@@ -5179,7 +5171,7 @@ fn paginate_timeline(
     let semantic_blocks = conversation_semantic_blocks(all_events);
     let total = semantic_blocks.len();
     let session_timing = latest_session_timing_from_events(all_events);
-    let pending_elicitations = pending_elicitation_vms(all_events, session_active);
+    let pending_elicitations = pending_elicitation_vms(all_events);
     let timeline_projection =
         build_acp_timeline_projection(all_events, latest_permission_events, session_active);
     let (selected_blocks, after_cursor_has_newer) = if let Some(cursor) = after_seq {
@@ -6812,40 +6804,54 @@ fn run_worktree_state_optional(
     Ok(read_json::<RunState>(&path)?.worktree)
 }
 
-pub(crate) fn session_worktree_path(
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionWorktreeProjection {
+    pub path: String,
+    pub branch: Option<String>,
+}
+
+pub(crate) fn session_worktree_projection(
     run_worktree: Option<&gold_band::runtime::RunWorktreeState>,
     dynamic_graph: Option<&DynamicGraphState>,
     dynamic_node_id: Option<&str>,
-) -> Option<String> {
+) -> Option<SessionWorktreeProjection> {
     let (graph, dynamic_node_id) = match (dynamic_graph, dynamic_node_id) {
-        (None, None) => return run_worktree.map(|worktree| worktree.path.to_string()),
+        (None, None) => {
+            return run_worktree.map(|worktree| SessionWorktreeProjection {
+                path: worktree.path.to_string(),
+                branch: Some(worktree.branch.clone()),
+            });
+        }
         (Some(graph), Some(dynamic_node_id)) => (graph, dynamic_node_id),
         _ => return None,
     };
     let node = graph.nodes.iter().find(|node| node.id == dynamic_node_id)?;
-    workspace_worktree_path_by_id(run_worktree, &graph.workspaces, &node.workspace_id)
+    workspace_worktree_projection_by_id(run_worktree, &graph.workspaces, &node.workspace_id)
 }
 
-fn workspace_worktree_path_by_id(
+fn workspace_worktree_projection_by_id(
     run_worktree: Option<&gold_band::runtime::RunWorktreeState>,
     workspaces: &[gold_band::dynamic::WorkspaceState],
     workspace_id: &str,
-) -> Option<String> {
+) -> Option<SessionWorktreeProjection> {
     let workspace = workspaces
         .iter()
         .find(|workspace| workspace.id == workspace_id)?;
-    workspace_worktree_path(run_worktree, workspace)
+    workspace_worktree_projection(run_worktree, workspace)
 }
 
-fn workspace_worktree_path(
+fn workspace_worktree_projection(
     run_worktree: Option<&gold_band::runtime::RunWorktreeState>,
     workspace: &gold_band::dynamic::WorkspaceState,
-) -> Option<String> {
+) -> Option<SessionWorktreeProjection> {
     match workspace.kind {
         WorkspaceKind::Worktree
             if workspace.status != gold_band::dynamic::WorkspaceStatus::Released =>
         {
-            Some(workspace.path.to_string())
+            Some(SessionWorktreeProjection {
+                path: workspace.path.to_string(),
+                branch: workspace.branch.clone(),
+            })
         }
         WorkspaceKind::Worktree => None,
         WorkspaceKind::Main => run_worktree
@@ -6853,7 +6859,10 @@ fn workspace_worktree_path(
                 gold_band::storage::normalize_workspace_path(&worktree.path)
                     == gold_band::storage::normalize_workspace_path(&workspace.path)
             })
-            .map(|worktree| worktree.path.to_string()),
+            .map(|worktree| SessionWorktreeProjection {
+                path: worktree.path.to_string(),
+                branch: Some(worktree.branch.clone()),
+            }),
     }
 }
 
@@ -7064,7 +7073,7 @@ fn insert_latest_permission_event(
     }
 }
 
-fn permission_vm_from_event(event: &AcpUiEventVm) -> AcpPermissionRequestVm {
+fn permission_vm_from_event(event: &AcpUiEventVm) -> AcpPromptInteractionVm {
     let request_id = permission_request_id_from_event(event);
     let mut raw = event
         .raw
@@ -7100,8 +7109,18 @@ fn permission_vm_from_event(event: &AcpUiEventVm) -> AcpPermissionRequestVm {
                 .to_string(),
         })
         .collect::<Vec<_>>();
-    AcpPermissionRequestVm {
-        request_id,
+    AcpPromptInteractionVm::Permission {
+        interaction_id: request_id,
+        turn_id: raw
+            .pointer("/_meta/goldBandConversation/turnId")
+            .or_else(|| raw.get("turnId"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        prompt_event_id: raw
+            .pointer("/_meta/goldBandConversation/promptEventId")
+            .or_else(|| raw.get("promptEventId"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
         title: event
             .title
             .clone()
@@ -7115,11 +7134,7 @@ fn permission_vm_from_event(event: &AcpUiEventVm) -> AcpPermissionRequestVm {
 #[cfg(test)]
 fn pending_elicitation_vms(
     events: &[AcpUiEventVm],
-    session_active: bool,
-) -> Vec<AcpElicitationRequestVm> {
-    if !session_active {
-        return Vec::new();
-    }
+) -> Vec<AcpPromptInteractionVm> {
     let resolved_ids = events
         .iter()
         .filter(|event| event.kind == "elicitationResponse")
@@ -7142,7 +7157,7 @@ fn pending_elicitation_vms(
     vec![elicitation_vm_from_event(request)]
 }
 
-fn elicitation_vm_from_event(event: &AcpUiEventVm) -> AcpElicitationRequestVm {
+fn elicitation_vm_from_event(event: &AcpUiEventVm) -> AcpPromptInteractionVm {
     let raw = event
         .raw
         .clone()
@@ -7155,8 +7170,18 @@ fn elicitation_vm_from_event(event: &AcpUiEventVm) -> AcpElicitationRequestVm {
             (raw.get("type").and_then(Value::as_str) == Some("object")).then(|| raw.clone())
         })
         .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} }));
-    AcpElicitationRequestVm {
-        elicitation_id: event.id.clone(),
+    AcpPromptInteractionVm::Elicitation {
+        interaction_id: event.id.clone(),
+        turn_id: raw
+            .pointer("/_meta/goldBandConversation/turnId")
+            .or_else(|| raw.get("turnId"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        prompt_event_id: raw
+            .pointer("/_meta/goldBandConversation/promptEventId")
+            .or_else(|| raw.get("promptEventId"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
         message: raw
             .get("message")
             .and_then(Value::as_str)
@@ -9377,6 +9402,10 @@ mod tests {
             110,
             Some(json!({
                 "requestId": "0",
+                "_meta": { "goldBandConversation": {
+                    "turnId": "turn-2",
+                    "promptEventId": "prompt-2"
+                }},
                 "options": [
                     { "optionId": "allow", "name": "Allow", "kind": "allow_once" }
                 ]
@@ -9385,9 +9414,21 @@ mod tests {
 
         let vm = permission_vm_from_event(&event);
 
-        assert_eq!(vm.request_id, "0");
+        let AcpPromptInteractionVm::Permission {
+            interaction_id,
+            turn_id,
+            prompt_event_id,
+            raw,
+            ..
+        } = vm
+        else {
+            panic!("expected permission interaction");
+        };
+        assert_eq!(interaction_id, "0");
+        assert_eq!(turn_id.as_deref(), Some("turn-2"));
+        assert_eq!(prompt_event_id.as_deref(), Some("prompt-2"));
         assert_eq!(
-            vm.raw.get("requestId").and_then(|value| value.as_str()),
+            raw.get("requestId").and_then(|value| value.as_str()),
             Some("0")
         );
     }
@@ -9407,7 +9448,12 @@ mod tests {
         );
 
         assert_eq!(permission_request_id_from_event(&event), "0");
-        assert_eq!(permission_vm_from_event(&event).request_id, "0");
+        let AcpPromptInteractionVm::Permission { interaction_id, .. } =
+            permission_vm_from_event(&event)
+        else {
+            panic!("expected permission interaction");
+        };
+        assert_eq!(interaction_id, "0");
     }
 
     #[test]
@@ -10106,27 +10152,31 @@ mod tests {
         };
 
         assert_eq!(
-            workspace_worktree_path(
+            workspace_worktree_projection(
                 Some(&run_worktree),
                 &workspace(
                     "workspace-child",
                     WorkspaceKind::Worktree,
                     child_path.clone()
                 ),
-            )
-            .as_deref(),
-            Some(child_path.as_str()),
+            ),
+            Some(SessionWorktreeProjection {
+                path: child_path.to_string(),
+                branch: Some("gb-dynamic-child".to_string()),
+            }),
         );
         assert_eq!(
-            workspace_worktree_path(
+            workspace_worktree_projection(
                 Some(&run_worktree),
                 &workspace("workspace-main", WorkspaceKind::Main, outer_path.clone()),
-            )
-            .as_deref(),
-            Some(outer_path.as_str()),
+            ),
+            Some(SessionWorktreeProjection {
+                path: outer_path.to_string(),
+                branch: Some("gb-conversation-outer".to_string()),
+            }),
         );
         assert_eq!(
-            workspace_worktree_path(
+            workspace_worktree_projection(
                 Some(&run_worktree),
                 &workspace(
                     "workspace-main",
@@ -10137,7 +10187,7 @@ mod tests {
             None,
         );
         assert_eq!(
-            workspace_worktree_path(
+            workspace_worktree_projection(
                 None,
                 &workspace(
                     "workspace-main",
@@ -10148,7 +10198,7 @@ mod tests {
             None,
         );
         assert_eq!(
-            workspace_worktree_path_by_id(
+            workspace_worktree_projection_by_id(
                 Some(&run_worktree),
                 &[
                     workspace("workspace-main", WorkspaceKind::Main, outer_path.clone()),
@@ -10159,9 +10209,11 @@ mod tests {
                     ),
                 ],
                 "workspace-child",
-            )
-            .as_deref(),
-            Some(child_path.as_str()),
+            ),
+            Some(SessionWorktreeProjection {
+                path: child_path.to_string(),
+                branch: Some("gb-dynamic-child".to_string()),
+            }),
         );
         let mut released_child = workspace(
             "workspace-child",
@@ -10170,11 +10222,11 @@ mod tests {
         );
         released_child.status = gold_band::dynamic::WorkspaceStatus::Released;
         assert_eq!(
-            workspace_worktree_path(Some(&run_worktree), &released_child),
+            workspace_worktree_projection(Some(&run_worktree), &released_child),
             None,
         );
         assert_eq!(
-            session_worktree_path(Some(&run_worktree), None, Some("missing-dynamic-node")),
+            session_worktree_projection(Some(&run_worktree), None, Some("missing-dynamic-node")),
             None,
         );
     }
@@ -10242,6 +10294,143 @@ mod tests {
         .unwrap();
 
         assert!(session.is_none(), "unexpected ACP session VM: {session:#?}");
+    }
+
+    #[test]
+    fn acp_session_vm_preserves_newer_prompt_interactions_when_session_status_is_terminal() {
+        let dir = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap());
+        let node_path = app.paths.node_file(
+            "task-permission",
+            "run-001",
+            "round-001",
+            "direct-agent",
+            "attempt-001",
+        );
+        write_json(
+            &node_path,
+            &NodeState {
+                version: gold_band::domain::VERSION.to_string(),
+                acp_storage_schema_version: gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                node_id: "direct-agent".to_string(),
+                node_type: NodeType::Worker,
+                run_id: "run-001".to_string(),
+                round_id: "round-001".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                status: RunStatus::Completed,
+                outcome: Some(gold_band::domain::NodeOutcome::Success),
+                started_at: "1787036945Z".to_string(),
+                finished_at: Some("1787036947Z".to_string()),
+                manual_check_pending: false,
+                runtime_execution_id: None,
+                resolved_config: gold_band::domain::ResolvedConfig::new(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        write_json(
+            &app.paths.acp_snapshot_file(
+                "task-permission",
+                "run-001",
+                "round-001",
+                "direct-agent",
+                "attempt-001",
+            ),
+            &json!({
+                "sessionId": "session-1",
+                "status": "completed",
+                "latestTurnStatus": "completed",
+                "restored": false,
+                "createdAt": "1787036946Z"
+            }),
+        )
+        .unwrap();
+        let attempt_dir = node_path.parent().unwrap().to_path_buf();
+        let mut permission = gold_band::acp::events::permission_request_event(
+            3,
+            "request-turn-2".to_string(),
+            json!({
+                "sessionId": "session-1",
+                "_meta": { "goldBandConversation": {
+                    "branchId": "root",
+                    "turnId": "turn-2",
+                    "promptEventId": "prompt-turn-2"
+                }},
+                "options": [{ "optionId": "allow", "name": "Allow", "kind": "allow_once" }]
+            }),
+        );
+        permission.id = "permission-request-turn-2".to_string();
+        let elicitation_request = serde_json::from_value(json!({
+            "mode": "form",
+            "sessionId": "session-1",
+            "message": "Choose",
+            "requestedSchema": { "type": "object", "properties": {} }
+        }))
+        .unwrap();
+        let mut elicitation = gold_band::acp::events::elicitation_request_event(
+            4,
+            "elicit-turn-2".to_string(),
+            &elicitation_request,
+        );
+        gold_band::acp::branches::annotate_event_branch(&mut elicitation);
+        gold_band::acp::interaction::annotate_prompt_interaction_identity(
+            &mut elicitation,
+            &gold_band::acp::interaction::AcpPromptInteractionIdentity::new(
+                "elicit-turn-2",
+                gold_band::acp::interaction::AcpPromptInteractionKind::Elicitation,
+                "turn-2",
+                "prompt-turn-2",
+            ),
+        );
+        gold_band::acp::events::write_timeline_items(
+            &gold_band::acp::branches::branch_timeline_path(&attempt_dir, "root"),
+            &[permission, elicitation],
+        )
+        .unwrap();
+
+        let session = acp_session_vm(
+            &app,
+            "task-permission",
+            "run-001",
+            "round-001",
+            "direct-agent",
+            "attempt-001",
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(session.pending_interactions.len(), 2);
+        let AcpPromptInteractionVm::Permission {
+            interaction_id,
+            turn_id,
+            prompt_event_id,
+            ..
+        } = &session.pending_interactions[0]
+        else {
+            panic!("expected permission interaction");
+        };
+        assert_eq!(interaction_id, "request-turn-2");
+        assert_eq!(turn_id.as_deref(), Some("turn-2"));
+        assert_eq!(prompt_event_id.as_deref(), Some("prompt-turn-2"));
+        let elicitation = session
+            .pending_interactions
+            .iter()
+            .find(|interaction| matches!(interaction, AcpPromptInteractionVm::Elicitation { .. }))
+            .expect("expected elicitation interaction");
+        let AcpPromptInteractionVm::Elicitation {
+            interaction_id,
+            turn_id,
+            prompt_event_id,
+            ..
+        } = elicitation
+        else {
+            unreachable!();
+        };
+        assert_eq!(interaction_id, "elicit-turn-2");
+        assert_eq!(turn_id.as_deref(), Some("turn-2"));
+        assert_eq!(prompt_event_id.as_deref(), Some("prompt-turn-2"));
     }
 
     #[test]
@@ -10645,12 +10834,17 @@ mod tests {
         assert_eq!(scan.events.len(), 1);
         assert_eq!(scan.events[0].kind, "elicitationRequest");
         assert_eq!(scan.pending_elicitations.len(), 1);
+        let AcpPromptInteractionVm::Elicitation {
+            interaction_id,
+            requested_schema,
+            ..
+        } = &scan.pending_elicitations[0]
+        else {
+            panic!("expected elicitation interaction");
+        };
+        assert_eq!(interaction_id, "elicit-pending");
         assert_eq!(
-            scan.pending_elicitations[0].elicitation_id,
-            "elicit-pending"
-        );
-        assert_eq!(
-            scan.pending_elicitations[0].requested_schema["properties"]["database"]["type"],
+            requested_schema["properties"]["database"]["type"],
             "string"
         );
     }
@@ -10682,21 +10876,23 @@ mod tests {
                 .all(|event| event.kind != "elicitationRequest")
         );
         assert_eq!(scan.pending_elicitations.len(), 1);
-        assert_eq!(
-            scan.pending_elicitations[0].elicitation_id,
-            "elicit-authoritative"
-        );
+        let AcpPromptInteractionVm::Elicitation { interaction_id, .. } =
+            &scan.pending_elicitations[0]
+        else {
+            panic!("expected elicitation interaction");
+        };
+        assert_eq!(interaction_id, "elicit-authoritative");
     }
 
     #[test]
-    fn elicitation_response_and_terminal_session_clear_authoritative_pending_state() {
+    fn elicitation_response_settles_pending_but_terminal_status_alone_does_not() {
         let request = elicitation_request_event_at("elicit-resolved", 1_000);
         let response = elicitation_response_event_at("elicit-resolved", 2_000);
-        let resolved = pending_elicitation_vms(&[request.clone(), response], true);
-        let terminal = pending_elicitation_vms(&[request], false);
+        let resolved = pending_elicitation_vms(&[request.clone(), response]);
+        let terminal = pending_elicitation_vms(&[request]);
 
         assert!(resolved.is_empty());
-        assert!(terminal.is_empty());
+        assert_eq!(terminal.len(), 1);
     }
 
     #[test]
@@ -10705,7 +10901,7 @@ mod tests {
         let newer = elicitation_request_event_at("elicit-new", 2_000);
         let response = elicitation_response_event_at("elicit-new", 3_000);
 
-        assert!(pending_elicitation_vms(&[older, newer, response], true).is_empty());
+        assert!(pending_elicitation_vms(&[older, newer, response]).is_empty());
     }
 
     #[test]

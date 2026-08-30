@@ -30,6 +30,7 @@ describe('browserApi', () => {
   });
 
   it('serves the authoritative hidden-prompt fixture for right-workspace deep-link verification', async () => {
+    const run = await browserApi.getConversationRun('default', 'mock-task', 'run-052');
     const session = await browserApi.getAcpSession(
       'default',
       'mock-task',
@@ -39,6 +40,7 @@ describe('browserApi', () => {
       'attempt-001',
     );
 
+    expect(run.taskUuid).toBe('browser-mock-task-uuid');
     expect(session?.events[0]?.content).toContain('Gold Band stable system prompt');
     expect(session?.events[0]?.content).toContain('Gold Band runtime context');
     expect(session?.systemPromptAppend).toContain('**system prompt**');
@@ -57,6 +59,17 @@ describe('browserApi', () => {
     expect(second.commits).toHaveLength(3);
     expect(second.nextCursor).toBeNull();
     expect(new Set([...first.commits, ...second.commits].map((commit) => commit.oid)).size).toBe(303);
+  });
+
+  it('exposes a branch picker snapshot and applies a preview branch switch', async () => {
+    const snapshot = await browserApi.getGitBranchPickerSnapshot('project-1', 'D:/repo');
+    expect(snapshot.currentBranch).toBe('feature/source-control');
+
+    await expect(browserApi.changeGitBranch('project-1', 'D:/repo', {
+      kind: 'switch',
+      name: 'main',
+      expectedRevision: snapshot.revision,
+    })).resolves.toMatchObject({ currentBranch: 'main' });
   });
 
   it('keeps the current preview workspace in the recent list', async () => {

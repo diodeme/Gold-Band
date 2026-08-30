@@ -5,13 +5,13 @@ use crate::config::{
     ManagedAgentId, ProjectIdentityConfig, SettingsConfig, project_identity_config,
 };
 use crate::domain::VERSION;
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use atomic_write_file::AtomicWriteFile;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread;
@@ -32,6 +32,8 @@ const DEFAULT_STORAGE_PATH_CONFIG: StoragePathConfig = StoragePathConfig {
 
 static STORAGE_PATH_CONFIG: OnceLock<RwLock<StoragePathConfig>> = OnceLock::new();
 static STORAGE_FILE_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+
+const JSONL_BATCH_WRITE_BUFFER_BYTES: usize = 64 * 1024;
 
 pub fn configure_storage_paths(config: StoragePathConfig) {
     *storage_path_config_lock()
@@ -701,6 +703,18 @@ impl GoldBandPaths {
             .join("graph.json")
     }
 
+    pub fn dynamic_coordination_snapshot_file(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) -> Utf8PathBuf {
+        self.dynamic_dir(task_id, run_id, round_id, node_id, attempt_id)
+            .join("coordination-snapshot.json")
+    }
+
     pub fn dynamic_events_file(
         &self,
         task_id: &str,
@@ -1064,9 +1078,13 @@ pub fn with_jsonl_file_lock<T>(
 
 pub fn with_file_lock<T>(path: &Utf8Path, operation: impl FnOnce() -> Result<T>) -> Result<T> {
     let lock = storage_file_lock_for(path)?;
-    let _guard = lock
-        .lock()
-        .map_err(|_| anyhow!("storage file lock poisoned"))?;
+    let _guard = lock.lock().unwrap_or_else(|poisoned| {
+        tracing::warn!(
+            path = path.as_str(),
+            "recovering poisoned storage file lock after a panicking operation"
+        );
+        poisoned.into_inner()
+    });
     operation()
 }
 
@@ -1075,7 +1093,13 @@ fn storage_file_lock_for(path: &Utf8Path) -> Result<Arc<Mutex<()>>> {
     let mut locks = STORAGE_FILE_LOCKS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
-        .map_err(|_| anyhow!("storage file lock registry poisoned"))?;
+        .unwrap_or_else(|poisoned| {
+            tracing::warn!(
+                path = path.as_str(),
+                "recovering poisoned storage file lock registry"
+            );
+            poisoned.into_inner()
+        });
     Ok(locks
         .entry(key)
         .or_insert_with(|| Arc::new(Mutex::new(())))
@@ -1136,15 +1160,31 @@ pub fn append_jsonl_unlocked<T: Serialize>(path: &Utf8Path, value: &T) -> Result
 /// need process-crash recovery without forcing a physical disk sync per frame.
 pub fn append_jsonl_flushed_unlocked<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
     let line = serde_json::to_vec(value)?;
+    append_jsonl_lines_flushed_unlocked(path, std::slice::from_ref(&line))
+}
+
+/// Append multiple pre-encoded JSONL records with one file open and one flush.
+/// Callers must already hold this path's JSONL lock.
+pub fn append_jsonl_lines_flushed_unlocked(path: &Utf8Path, lines: &[Vec<u8>]) -> Result<()> {
+    if lines.is_empty() {
+        return Ok(());
+    }
     ensure_parent_dir(path)?;
     repair_jsonl_tail_unlocked(path)?;
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(path.as_std_path())?;
-    file.write_all(&line)?;
-    file.write_all(b"\n")?;
-    file.flush()?;
+    let encoded_bytes = lines
+        .iter()
+        .fold(0usize, |total, line| total.saturating_add(line.len() + 1));
+    let buffer_bytes = encoded_bytes.min(JSONL_BATCH_WRITE_BUFFER_BYTES).max(1);
+    let mut writer = BufWriter::with_capacity(buffer_bytes, file);
+    for line in lines {
+        writer.write_all(line)?;
+        writer.write_all(b"\n")?;
+    }
+    writer.flush()?;
     Ok(())
 }
 
@@ -1722,6 +1762,22 @@ mod tests {
             line_count += 1;
         }
         assert_eq!(line_count, thread_count * writes_per_thread);
+    }
+
+    #[test]
+    fn file_lock_recovers_after_a_panicking_operation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("recoverable.jsonl")).unwrap();
+
+        let panic = std::panic::catch_unwind(|| {
+            let _ = with_file_lock(&path, || -> Result<()> {
+                panic!("simulated timeline mutation panic");
+            });
+        });
+        assert!(panic.is_err());
+
+        let recovered = with_file_lock(&path, || Ok("recovered"));
+        assert_eq!(recovered.unwrap(), "recovered");
     }
 
     #[test]

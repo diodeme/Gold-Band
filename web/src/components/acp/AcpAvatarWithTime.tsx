@@ -1,6 +1,7 @@
 import { cn } from '@/lib/utils';
 import { AvatarDisplay } from '@/components/avatar/AvatarDisplay';
 import { useAvatarPreferences } from '@/components/avatar/AvatarPreferencesContext';
+import { parseTimestamp } from '@/lib/datetime';
 
 interface AcpAvatarWithTimeProps {
   tone: 'assistant' | 'user';
@@ -15,12 +16,7 @@ interface AcpAvatarProps {
 }
 
 function parseAcpTimestampMs(value: string): number | null {
-  // ACP timestamps are Unix epoch seconds with optional "Z" suffix, e.g. "1778771541Z"
-  const numeric = value.match(/^(\d+(?:\.\d+)?)Z?$/);
-  if (numeric) return Number(numeric[1]) * 1000;
-  // Fallback: ISO 8601 or other Date-parseable format
-  const parsed = Date.parse(value);
-  return Number.isNaN(parsed) ? null : parsed;
+  return parseTimestamp(value)?.getTime() ?? null;
 }
 
 function formatMessageTime(raw?: string | null): string {
@@ -50,13 +46,13 @@ export function AcpAvatar({ tone, className, fallbackClassName }: AcpAvatarProps
         'mt-0.5 size-9',
         tone === 'assistant'
           ? 'bg-card text-muted-foreground'
-          : 'border-[color-mix(in_srgb,var(--primary)_24%,var(--border))] bg-[color-mix(in_srgb,var(--primary)_12%,var(--card))] text-[color-mix(in_srgb,var(--primary)_72%,white)]',
+          : 'border-border bg-card text-primary border-[color-mix(in_srgb,var(--primary)_24%,var(--border))] bg-[color-mix(in_srgb,var(--primary)_12%,var(--card))] text-[color-mix(in_srgb,var(--primary)_72%,white)]',
         className,
       )}
       fallbackClassName={cn(
         tone === 'assistant'
           ? 'bg-card text-muted-foreground'
-          : 'bg-[color-mix(in_srgb,var(--primary)_12%,var(--card))] text-[color-mix(in_srgb,var(--primary)_72%,white)]',
+          : 'bg-card text-primary bg-[color-mix(in_srgb,var(--primary)_12%,var(--card))] text-[color-mix(in_srgb,var(--primary)_72%,white)]',
         fallbackClassName,
       )}
     />

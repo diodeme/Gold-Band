@@ -5,17 +5,24 @@ export function isOverflowing(element: HTMLElement | null) {
 }
 
 /** Measure only when the user asks for the complete value via hover or focus. */
-export function useOverflowTooltip<TElement extends HTMLElement = HTMLSpanElement>() {
+export function useOverflowTooltip<TElement extends HTMLElement = HTMLSpanElement>({
+  always = false,
+}: { always?: boolean } = {}) {
   const valueRef = useRef<TElement>(null);
   const [tooltipOpen, setTooltipOpen] = useState(false);
 
+  const shouldShowTooltip = useCallback(
+    () => always || isOverflowing(valueRef.current),
+    [always],
+  );
+
   const showTooltipIfOverflowing = useCallback(() => {
-    setTooltipOpen(isOverflowing(valueRef.current));
-  }, []);
+    setTooltipOpen(shouldShowTooltip());
+  }, [shouldShowTooltip]);
   const hideTooltip = useCallback(() => setTooltipOpen(false), []);
   const handleTooltipOpenChange = useCallback((open: boolean) => {
-    setTooltipOpen(open && isOverflowing(valueRef.current));
-  }, []);
+    setTooltipOpen(open && shouldShowTooltip());
+  }, [shouldShowTooltip]);
 
   return {
     valueRef,

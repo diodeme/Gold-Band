@@ -11,6 +11,7 @@ import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
+import { conversationRunIdentityKey, conversationTaskIdentityKey } from '@/lib/conversation-run-identity';
 import { formatCompactRelativeTime } from '@/lib/datetime';
 
 export const conversationSidebarActivityIconClass = 'motion-safe:animate-pulse';
@@ -58,16 +59,20 @@ interface ConversationSidebarProps {
   onSelect: (page: ConversationPage) => void;
   onNewConversation: () => void;
   onSearch: () => void;
-  onSelectTask: (projectId: string, taskId: string) => void;
-  onSelectRun: (projectId: string, taskId: string, runId: string) => void;
+  onSelectTask: (projectId: string, taskId: string, taskUuid?: string | null) => void;
+  onSelectRun: (projectId: string, taskId: string, taskUuid: string | null | undefined, runId: string) => void;
   onPinTask: (projectId: string, taskId: string) => void;
   onUnpinTask: (projectId: string, taskId: string) => void;
   onRenameTask: (projectId: string, taskId: string, title: string) => void;
-  onDeleteTask: (projectId: string, taskId: string) => void;
+  onDeleteTask: (projectId: string, taskId: string, taskUuid?: string | null) => void;
   onPauseRun?: (projectId: string, taskId: string, runId: string) => void | Promise<void>;
   onNewConversationInWorkspace?: (projectId: string) => void;
   onAddWorkspace?: () => void;
   onRemoveWorkspace?: (projectId: string) => Promise<void>;
+  onRetryBootstrap: () => void;
+  onRequestWorkspaceTasks: (projectId: string, cursor?: string | null) => void;
+  onRequestPinnedTasks: (cursor?: string | null) => void;
+  onRequestTaskRuns: (task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>, cursor?: string | null) => void;
 }
 
 export const ConversationSidebar = memo(function ConversationSidebar({
@@ -88,6 +93,10 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   onNewConversationInWorkspace,
   onAddWorkspace,
   onRemoveWorkspace,
+  onRetryBootstrap,
+  onRequestWorkspaceTasks,
+  onRequestPinnedTasks,
+  onRequestTaskRuns,
 }: ConversationSidebarProps) {
   const { t } = useTranslation();
   const [expandedWorkspaces, setExpandedWorkspaces] = useState<Record<string, boolean>>({});
@@ -106,7 +115,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     return acc;
   }, {}), [vm.pinnedTasks]);
   const pinnedTaskKeys = useMemo(
-    () => new Set(vm.pinnedTasks.map((task) => conversationSidebarTaskKey(task.projectId, task.taskId))),
+    () => new Set(vm.pinnedTasks.map((task) => conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid))),
     [vm.pinnedTasks],
   );
   const workspacesByProjectId = useMemo(
@@ -160,10 +169,10 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   };
 
   const activeTaskKey = active.kind === 'conversation-run'
-    ? conversationSidebarTaskKey(active.projectId, active.taskId)
+    ? conversationSidebarTaskKey(active.projectId, active.taskId, active.taskUuid)
     : null;
   const activeRunKey = active.kind === 'conversation-run'
-    ? conversationSidebarRunKey(active.projectId, active.taskId, active.runId)
+    ? conversationSidebarRunKey(active.projectId, active.taskId, active.runId, active.taskUuid)
     : null;
 
   useEffect(() => {
@@ -174,10 +183,22 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     setExpandedTaskKeys((prev) => prev.workspace === activeTaskKey
       ? prev
       : updateConversationSidebarExpandedTaskKeys(prev, 'workspace', activeTaskKey, 'expand'));
-  }, [activeTaskKey]);
+    const task = Object.values(vm.tasksByWorkspace).flat()
+      .find((candidate) => conversationSidebarTaskKey(candidate.projectId, candidate.taskId, candidate.taskUuid) === activeTaskKey);
+    if (task && (task.runHistoryStatus === 'not-loaded' || task.runHistoryStatus === 'error')) {
+      onRequestTaskRuns(task);
+    }
+  }, [activeTaskKey, onRequestTaskRuns, vm.tasksByWorkspace]);
 
   const toggleWorkspace = (projectId: string) => {
-    setExpandedWorkspaces((prev) => ({ ...prev, [projectId]: !prev[projectId] }));
+    setExpandedWorkspaces((prev) => {
+      const expanding = !prev[projectId];
+      if (expanding) {
+        const status = vm.workspaceTaskPages[projectId]?.status ?? 'not-loaded';
+        if (status === 'not-loaded' || status === 'error') onRequestWorkspaceTasks(projectId);
+      }
+      return { ...prev, [projectId]: expanding };
+    });
   };
 
   const markRunListInteraction = (scope: ConversationSidebarRunListScope) => {
@@ -185,18 +206,24 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     setActiveRunListScope(scope);
   };
 
-  const toggleTaskRuns = (scope: ConversationSidebarRunListScope, projectId: string, taskId: string) => {
-    const taskKey = conversationSidebarTaskKey(projectId, taskId);
+  const toggleTaskRuns = (scope: ConversationSidebarRunListScope, task: ConversationTaskRowVm) => {
+    const taskKey = conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid);
     markRunListInteraction(scope);
+    if (task.runHistoryStatus === 'not-loaded' || task.runHistoryStatus === 'error') {
+      onRequestTaskRuns(task);
+    }
     setExpandedTaskKeys((prev) => updateConversationSidebarExpandedTaskKeys(prev, scope, taskKey, 'toggle'));
   };
 
-  const expandTaskRuns = (scope: ConversationSidebarRunListScope, projectId: string, taskId: string) => {
+  const expandTaskRuns = (scope: ConversationSidebarRunListScope, task: ConversationTaskRowVm) => {
     markRunListInteraction(scope);
+    if (task.runHistoryStatus === 'not-loaded' || task.runHistoryStatus === 'error') {
+      onRequestTaskRuns(task);
+    }
     setExpandedTaskKeys((prev) => updateConversationSidebarExpandedTaskKeys(
       prev,
       scope,
-      conversationSidebarTaskKey(projectId, taskId),
+      conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid),
       'expand',
     ));
   };
@@ -275,7 +302,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
           data-conversation-sidebar-region="scrollable-conversations"
           className="min-h-0 flex-1"
         >
-        {vm.pinnedTasks.length > 0 ? (
+        {vm.pinRefs.length > 0 || vm.pinnedTasks.length > 0 ? (
           <div className="my-1.5 border-y border-border/55 py-2">
             <button
               type="button"
@@ -293,34 +320,43 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                   const isWsCollapsed = collapsedPinnedWorkspaces[projectId] ?? false;
                   return (
                     <div key={`pinned-ws-${projectId}`}>
-                      <button
-                        type="button"
-                        className="flex w-full items-center gap-1.5 px-1 py-1 text-left text-sm font-semibold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground"
-                        onClick={() => togglePinnedWorkspace(projectId)}
-                      >
-                        <ChevronDown className={cn('size-3 shrink-0 transition-transform', isWsCollapsed && '-rotate-90')} />
-                        <span className="truncate">{ws?.name ?? projectId}</span>
-                      </button>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            data-conversation-pinned-workspace-id={projectId}
+                            className="flex w-full items-center gap-1.5 px-1 py-1 text-left text-sm font-semibold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground"
+                            onClick={() => togglePinnedWorkspace(projectId)}
+                          >
+                            <ChevronDown className={cn('size-3 shrink-0 transition-transform', isWsCollapsed && '-rotate-90')} />
+                            <span className="truncate">{ws?.name ?? projectId}</span>
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="right" className="max-w-[min(36rem,calc(100vw-2rem))] break-all">
+                          {ws?.workspacePath ?? projectId}
+                        </TooltipContent>
+                      </Tooltip>
                       {!isWsCollapsed ? (
                         <div className="space-y-0.5">
                           {tasks.map((task) => (
                             <TaskRow
-                              key={`pinned-${task.projectId}-${task.taskId}`}
+                              key={`pinned-${conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}`}
                               task={task}
                               pinned
-                              isActive={isConversationSidebarRunListScopeActive('pinned', activeRunListScope) && active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
+                              isActive={isConversationSidebarRunListScopeActive('pinned', activeRunListScope) && activeTaskKey === conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}
                               activeRunKey={isConversationSidebarRunListScopeActive('pinned', activeRunListScope) ? activeRunKey : null}
-                              expanded={expandedTaskKeys.pinned === conversationSidebarTaskKey(task.projectId, task.taskId)}
-                              onSelect={() => onSelectTask(task.projectId, task.taskId)}
+                              expanded={expandedTaskKeys.pinned === conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}
+                              onSelect={() => onSelectTask(task.projectId, task.taskId, task.taskUuid)}
                               onSelectRun={(runId) => {
                                 markRunListInteraction('pinned');
-                                onSelectRun(task.projectId, task.taskId, runId);
+                                onSelectRun(task.projectId, task.taskId, task.taskUuid, runId);
                               }}
-                              onToggleRuns={() => toggleTaskRuns('pinned', task.projectId, task.taskId)}
-                              onExpandRuns={() => expandTaskRuns('pinned', task.projectId, task.taskId)}
+                              onToggleRuns={() => toggleTaskRuns('pinned', task)}
+                              onExpandRuns={() => expandTaskRuns('pinned', task)}
+                              onLoadMoreRuns={() => onRequestTaskRuns(task, task.runsNextCursor)}
                               onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
                               onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
-                              onDelete={() => onDeleteTask(task.projectId, task.taskId)}
+                              onDelete={() => onDeleteTask(task.projectId, task.taskId, task.taskUuid)}
                               onPauseRun={(runId) => onPauseRun?.(task.projectId, task.taskId, runId)}
                               t={t}
                             />
@@ -330,6 +366,22 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                     </div>
                   );
                 })}
+                {vm.pinnedTaskPage.status === 'loading' ? (
+                  <div className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
+                    <Loader2 className="size-3 animate-spin" />
+                    {t('conversation.sidebar.loadingPinned')}
+                  </div>
+                ) : null}
+                {vm.pinnedTaskPage.status === 'error' ? (
+                  <Button variant="ghost" size="sm" className="h-7 w-full justify-start text-xs text-muted-foreground" onClick={() => onRequestPinnedTasks()}>
+                    {t('conversation.sidebar.retryPinned')}
+                  </Button>
+                ) : null}
+                {vm.pinnedTaskPage.status === 'ready' && vm.pinnedTaskPage.nextCursor ? (
+                  <Button variant="ghost" size="sm" className="h-7 w-full justify-start text-xs text-muted-foreground" onClick={() => onRequestPinnedTasks(vm.pinnedTaskPage.nextCursor)}>
+                    {t('conversation.sidebar.loadMorePinned')}
+                  </Button>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -339,6 +391,17 @@ export const ConversationSidebar = memo(function ConversationSidebar({
 
         {/* Workspace sections — scrollable with sticky headers */}
           <div className="pt-2">
+            {vm.loadStatus === 'not-loaded' || vm.loadStatus === 'loading' ? (
+              <div className="flex items-center gap-2 px-3 py-3 text-xs text-muted-foreground">
+                <Loader2 className="size-3.5 animate-spin" />
+                {t('conversation.sidebar.loadingWorkspaces')}
+              </div>
+            ) : null}
+            {vm.loadStatus === 'error' ? (
+              <Button variant="ghost" size="sm" className="h-8 w-full justify-start text-xs text-muted-foreground" onClick={onRetryBootstrap}>
+                {t('conversation.sidebar.retryWorkspaces')}
+              </Button>
+            ) : null}
             {vm.workspaces.map((ws) => (
               <div
                 key={ws.projectId}
@@ -346,16 +409,23 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                 className="mb-2"
               >
                 <div className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-1">
-                  <button
-                    type="button"
-                    data-conversation-workspace-id={ws.projectId}
-                    aria-expanded={Boolean(expandedWorkspaces[ws.projectId])}
-                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm font-semibold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground group-hover:pr-11"
-                    onClick={() => toggleWorkspace(ws.projectId)}
-                  >
-                    <ChevronDown className={cn('size-3 shrink-0 transition-transform', !expandedWorkspaces[ws.projectId] && '-rotate-90')} />
-                    <span className="truncate">{ws.name}</span>
-                  </button>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        data-conversation-workspace-id={ws.projectId}
+                        aria-expanded={Boolean(expandedWorkspaces[ws.projectId])}
+                        className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm font-semibold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground group-hover:pr-11"
+                        onClick={() => toggleWorkspace(ws.projectId)}
+                      >
+                        <ChevronDown className={cn('size-3 shrink-0 transition-transform', !expandedWorkspaces[ws.projectId] && '-rotate-90')} />
+                        <span className="truncate">{ws.name}</span>
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-[min(36rem,calc(100vw-2rem))] break-all">
+                      {ws.workspacePath}
+                    </TooltipContent>
+                  </Tooltip>
                   <span className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
                     {onNewConversationInWorkspace ? (
                       <Button variant="ghost" size="icon" className="size-5 active:scale-90 transition-transform" onClick={(e) => { e.stopPropagation(); onNewConversationInWorkspace(ws.projectId); }}>
@@ -383,29 +453,46 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                   <div className="space-y-0.5">
                     {(vm.tasksByWorkspace[ws.projectId] ?? []).map((task) => (
                       <TaskRow
-                        key={`${task.projectId}-${task.taskId}`}
+                        key={conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}
                         task={task}
-                        pinned={pinnedTaskKeys.has(conversationSidebarTaskKey(task.projectId, task.taskId))}
-                        isActive={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) && active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
+                        pinned={pinnedTaskKeys.has(conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid))}
+                        isActive={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) && activeTaskKey === conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}
                         activeRunKey={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) ? activeRunKey : null}
-                        expanded={expandedTaskKeys.workspace === conversationSidebarTaskKey(task.projectId, task.taskId)}
-                        onSelect={() => onSelectTask(task.projectId, task.taskId)}
+                        expanded={expandedTaskKeys.workspace === conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}
+                        onSelect={() => onSelectTask(task.projectId, task.taskId, task.taskUuid)}
                         onSelectRun={(runId) => {
                           markRunListInteraction('workspace');
-                          onSelectRun(task.projectId, task.taskId, runId);
+                          onSelectRun(task.projectId, task.taskId, task.taskUuid, runId);
                         }}
-                        onToggleRuns={() => toggleTaskRuns('workspace', task.projectId, task.taskId)}
-                        onExpandRuns={() => expandTaskRuns('workspace', task.projectId, task.taskId)}
+                        onToggleRuns={() => toggleTaskRuns('workspace', task)}
+                        onExpandRuns={() => expandTaskRuns('workspace', task)}
+                        onLoadMoreRuns={() => onRequestTaskRuns(task, task.runsNextCursor)}
                         onPin={() => onPinTask(task.projectId, task.taskId)}
                         onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
                         onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
-                        onDelete={() => onDeleteTask(task.projectId, task.taskId)}
+                        onDelete={() => onDeleteTask(task.projectId, task.taskId, task.taskUuid)}
                         onPauseRun={(runId) => onPauseRun?.(task.projectId, task.taskId, runId)}
                         t={t}
                       />
                     ))}
-                    {(!vm.tasksByWorkspace[ws.projectId] || vm.tasksByWorkspace[ws.projectId].length === 0) ? (
+                    {vm.workspaceTaskPages[ws.projectId]?.status === 'loading' ? (
+                      <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
+                        <Loader2 className="size-3 animate-spin" />
+                        {t('conversation.sidebar.loadingConversations')}
+                      </div>
+                    ) : null}
+                    {vm.workspaceTaskPages[ws.projectId]?.status === 'error' ? (
+                      <Button variant="ghost" size="sm" className="h-7 w-full justify-start px-3 text-xs text-muted-foreground" onClick={() => onRequestWorkspaceTasks(ws.projectId)}>
+                        {t('conversation.sidebar.retryConversations')}
+                      </Button>
+                    ) : null}
+                    {vm.workspaceTaskPages[ws.projectId]?.status === 'ready-empty' ? (
                       <div className="px-3 py-2 text-xs text-muted-foreground">{t('conversation.noConversations')}</div>
+                    ) : null}
+                    {vm.workspaceTaskPages[ws.projectId]?.status === 'ready' && vm.workspaceTaskPages[ws.projectId]?.nextCursor ? (
+                      <Button variant="ghost" size="sm" className="h-7 w-full justify-start px-3 text-xs text-muted-foreground" onClick={() => onRequestWorkspaceTasks(ws.projectId, vm.workspaceTaskPages[ws.projectId]?.nextCursor)}>
+                        {t('conversation.sidebar.loadMoreConversations')}
+                      </Button>
                     ) : null}
                   </div>
                 ) : null}
@@ -424,7 +511,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
               </button>
             ) : null}
 
-            {vm.workspaces.length === 0 ? (
+            {vm.loadStatus === 'ready-empty' ? (
               <div className="px-3 py-4 text-center text-xs text-muted-foreground">
                 {t('conversation.sidebar.noWorkspaces')}
               </div>
@@ -515,9 +602,9 @@ export function canOpenConversationSidebarRunMenu(scope: 'task' | 'run') {
 }
 
 export function shouldShowConversationSidebarRunList(
-  task: Pick<ConversationTaskRowVm, 'runMode' | 'runs'>,
+  task: Pick<ConversationTaskRowVm, 'runMode' | 'runs' | 'latestRun'>,
 ) {
-  return task.runMode !== 'direct' && task.runs.length >= 1;
+  return task.runMode !== 'direct' && Boolean(task.latestRun || task.runs.length >= 1);
 }
 
 export function conversationSidebarIdentityKind(task: Pick<ConversationTaskRowVm, 'runMode' | 'agentIdentity'>) {
@@ -600,6 +687,7 @@ function TaskRow({
   onSelectRun,
   onToggleRuns,
   onExpandRuns,
+  onLoadMoreRuns,
   onPin,
   onUnpin,
   onRename,
@@ -616,6 +704,7 @@ function TaskRow({
   onSelectRun?: (runId: string) => void;
   onToggleRuns: () => void;
   onExpandRuns: () => void;
+  onLoadMoreRuns: () => void;
   onPin?: () => void;
   onUnpin?: () => void;
   onRename?: (title: string) => void;
@@ -800,7 +889,7 @@ function TaskRow({
                 <div
                   className={cn(
                     'flex items-center gap-2 rounded-md px-2 py-1 cursor-pointer text-xs leading-4',
-                    isConversationSidebarRunActive(activeRunKey, task.projectId, task.taskId, run.runId)
+                    isConversationSidebarRunActive(activeRunKey, task.projectId, task.taskId, run.runId, task.taskUuid)
                       ? 'bg-sidebar-accent text-sidebar-accent-foreground'
                       : 'hover:bg-sidebar-accent',
                   )}
@@ -823,6 +912,22 @@ function TaskRow({
               </RunStopMenu>
             );
           })}
+          {task.runHistoryStatus === 'loading' ? (
+            <div className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
+              <Loader2 className="size-3 animate-spin" />
+              {t('conversation.sidebar.loadingRuns')}
+            </div>
+          ) : null}
+          {task.runHistoryStatus === 'error' ? (
+            <Button variant="ghost" size="sm" className="h-7 w-full justify-start text-xs text-muted-foreground" onClick={onExpandRuns}>
+              {t('conversation.sidebar.retryRuns')}
+            </Button>
+          ) : null}
+          {task.runHistoryStatus === 'ready' && task.runsNextCursor ? (
+            <Button variant="ghost" size="sm" className="h-7 w-full justify-start text-xs text-muted-foreground" onClick={onLoadMoreRuns}>
+              {t('conversation.sidebar.loadMoreRuns')}
+            </Button>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -911,12 +1016,19 @@ export function reconcileConversationSidebarExpandedWorkspaces(
   return changed ? next : current;
 }
 
-export function conversationSidebarTaskKey(projectId: string, taskId: string) {
-  return `${projectId}\u0000${taskId}`;
+export function conversationSidebarTaskKey(projectId: string, taskId: string, taskUuid?: string | null) {
+  return conversationTaskIdentityKey({ projectId, taskId, taskUuid })
+    ?? JSON.stringify(['invalid-task-identity', projectId, taskId]);
 }
 
-export function conversationSidebarRunKey(projectId: string, taskId: string, runId: string) {
-  return `${conversationSidebarTaskKey(projectId, taskId)}\u0000${runId}`;
+export function conversationSidebarRunKey(
+  projectId: string,
+  taskId: string,
+  runId: string,
+  taskUuid?: string | null,
+) {
+  return conversationRunIdentityKey({ projectId, taskId, taskUuid, runId })
+    ?? JSON.stringify(['invalid-run-identity', projectId, taskId, runId]);
 }
 
 export function isConversationSidebarRunActive(
@@ -924,6 +1036,7 @@ export function isConversationSidebarRunActive(
   projectId: string,
   taskId: string,
   runId: string,
+  taskUuid?: string | null,
 ) {
-  return activeRunKey === conversationSidebarRunKey(projectId, taskId, runId);
+  return activeRunKey === conversationSidebarRunKey(projectId, taskId, runId, taskUuid);
 }

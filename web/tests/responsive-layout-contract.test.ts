@@ -68,7 +68,8 @@ describe('responsive desktop layout contracts', () => {
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('items-center');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('justify-start');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('gap-0');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('pl-8');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('px-8');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('@container/conversation-context');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).not.toContain('justify-center');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('[--conversation-workspace-info-surface:var(--gold-surface-high)]');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).not.toContain('var(--gb-conversation-background)');
@@ -91,6 +92,9 @@ describe('responsive desktop layout contracts', () => {
     expect(composerSource).toContain('data-conversation-workspace-info-curve="right"');
     expect(composerSource).toContain('data-conversation-workspace-info-body="true"');
     expect(composerSource).toContain('data-conversation-workspace-info-controls="true"');
+    expect(composerSource).toContain('@xs/conversation-context:inline');
+    expect(composerSource).toContain('@md/conversation-context:inline');
+    expect(composerSource).toContain('responsiveContext');
     expect(composerSource).toContain('relative z-10 flex min-w-0 items-center gap-0');
     expect(composerSource).toContain('absolute inset-y-0 left-12 right-12');
     expect(composerSource).toContain('absolute left-0 bottom-0 h-7 w-12');

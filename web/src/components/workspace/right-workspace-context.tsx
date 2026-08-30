@@ -2,10 +2,15 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useReducer,
 import { BoundedLruCache } from '@/lib/bounded-lru-cache';
 import type { AttachmentItem } from '@/lib/attachment-service';
 import { RIGHT_WORKSPACE_DEFAULT_WIDTH } from './workspace-layout';
+import {
+  normalizeSourceControlWorkspacePath,
+  sameSourceControlWorkspacePath,
+} from './source-control/source-control-identity';
 
 export interface AgentTranscriptLocator {
   projectId: string;
   taskId: string;
+  taskUuid?: string | null;
   runId: string;
   roundId: string;
   nodeId: string;
@@ -18,6 +23,7 @@ export interface AgentTranscriptLocator {
 export interface ConversationRunLocator {
   projectId: string;
   taskId: string;
+  taskUuid?: string | null;
   runId: string;
 }
 
@@ -91,6 +97,13 @@ export type GitFileComparisonWorkspaceResource = RightWorkspaceResourceBase & {
   reviewLanding?: 'top' | 'first-change' | 'last-change' | null;
 };
 
+export type TurnAttachmentWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'turn-attachment';
+  locator: import('@/types').TurnFileLocatorVm;
+  changeSetId: string;
+  attachmentId: string;
+};
+
 export type SourceControlWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'source-control';
   projectId: string;
@@ -147,6 +160,7 @@ export type RightWorkspaceResource =
   | ConversationDirectoryWorkspaceResource
   | FileWorkspaceResource
   | TurnFileWorkspaceResource
+  | TurnAttachmentWorkspaceResource
   | GitFileComparisonWorkspaceResource
   | SourceControlWorkspaceResource
   | ConversationAssetWorkspaceResource
@@ -229,7 +243,7 @@ export function createConversationWorkspaceScope(input: {
 }): ConversationWorkspaceScope {
   return {
     kind: 'conversation',
-    key: `conversation:${input.projectId}:${input.taskId}:${input.runId}`,
+    key: `conversation:${input.projectId}:${input.taskUuid ?? 'missing-task-uuid'}:${input.runId}`,
     ...input,
   };
 }
@@ -468,11 +482,13 @@ export function RightWorkspaceProvider({
   initialWidth,
   scope = DEFAULT_SCOPE,
   store,
+  sourceControlWorkspacePath = null,
   children,
 }: {
   initialWidth?: number;
   scope?: ConversationWorkspaceScope | null;
   store?: ConversationWorkspaceStore;
+  sourceControlWorkspacePath?: string | null;
   children: ReactNode;
 }) {
   const internalStoreRef = useRef<ConversationWorkspaceStore | null>(null);
@@ -480,15 +496,24 @@ export function RightWorkspaceProvider({
   const effectiveStore = store ?? internalStoreRef.current;
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
+  const sourceControlWorkspacePathRef = useRef(sourceControlWorkspacePath);
+  sourceControlWorkspacePathRef.current = sourceControlWorkspacePath;
+  const sourceControlWorkspaceIdentity = normalizeSourceControlWorkspacePath(sourceControlWorkspacePath);
   const [conversationDirectoryEntry, setConversationDirectoryEntryState] = useState<ConversationDirectoryWorkspaceEntry | null>(null);
   const [revision, render] = useReducer((currentRevision) => currentRevision + 1, 0);
   const rendererRegistryRef = useRef(new Map<RightWorkspaceResourceKind, RightWorkspaceResourceRenderer>());
   const closeResolverRegistryRef = useRef(new Map<RightWorkspaceResourceKind, RightWorkspaceResourceCloseResolver>());
   const previousScopeRef = useRef<ConversationWorkspaceScope | null>(scope);
   const [rendererRevision, renderRenderer] = useReducer((currentRevision) => currentRevision + 1, 0);
+  const peekProjectedState = useCallback((targetScope: ConversationWorkspaceScope) => (
+    projectSourceControlWorkspaceState(
+      effectiveStore.peek(targetScope),
+      sourceControlWorkspacePathRef.current,
+    )
+  ), [effectiveStore]);
   const sessionState = useMemo(
-    () => scope ? effectiveStore.peek(scope) : createInitialRightWorkspaceState(),
-    [effectiveStore, revision, scope],
+    () => scope ? peekProjectedState(scope) : createInitialRightWorkspaceState(),
+    [peekProjectedState, revision, scope, sourceControlWorkspaceIdentity],
   );
   const shellState = useMemo(
     () => effectiveStore.peekShellState(scope, initialWidth),
@@ -516,7 +541,7 @@ export function RightWorkspaceProvider({
   const commit = useCallback((action: RightWorkspaceAction) => {
     const currentScope = scopeRef.current;
     if (!currentScope) return null;
-    const current = effectiveStore.peek(currentScope);
+    const current = peekProjectedState(currentScope);
     if (
       (action.type === 'open' || action.type === 'synchronize')
       && action.resource.scopeKey !== currentScope.key
@@ -525,11 +550,11 @@ export function RightWorkspaceProvider({
     if (next === current) return null;
     effectiveStore.save(currentScope, next);
     return next;
-  }, [effectiveStore]);
+  }, [effectiveStore, peekProjectedState]);
   const openResource = useCallback(async (resource: RightWorkspaceResource) => {
     const currentScope = scopeRef.current;
     if (!currentScope) return;
-    const current = effectiveStore.peek(currentScope);
+    const current = peekProjectedState(currentScope);
     if (current.activeTabKey && current.activeTabKey !== resource.key) {
       const active = current.tabs.find((tab) => tab.key === current.activeTabKey);
       if (active && await closeResolverRegistryRef.current.get(active.kind)?.(active, 'deactivate') === false) return;
@@ -537,12 +562,12 @@ export function RightWorkspaceProvider({
     if (!commit({ type: 'open', resource })) return;
     effectiveStore.openWorkspace(currentScope, { explicit: true });
     render();
-  }, [commit, effectiveStore]);
+  }, [commit, effectiveStore, peekProjectedState]);
   const getResource = useCallback((key: string) => {
     const currentScope = scopeRef.current;
     if (!currentScope) return null;
-    return effectiveStore.peek(currentScope).tabs.find((tab) => tab.key === key) ?? null;
-  }, [effectiveStore]);
+    return peekProjectedState(currentScope).tabs.find((tab) => tab.key === key) ?? null;
+  }, [peekProjectedState]);
   const openWorkspace = useCallback(() => {
     const currentScope = scopeRef.current;
     if (!currentScope) return;
@@ -551,7 +576,7 @@ export function RightWorkspaceProvider({
   }, [effectiveStore]);
   const activateTab = useCallback(async (key: string) => {
     if (!scope) return;
-    const current = effectiveStore.peek(scope);
+    const current = peekProjectedState(scope);
     if (current.activeTabKey && current.activeTabKey !== key) {
       const active = current.tabs.find((tab) => tab.key === current.activeTabKey);
       if (active && await closeResolverRegistryRef.current.get(active.kind)?.(active, 'deactivate') === false) return;
@@ -559,24 +584,24 @@ export function RightWorkspaceProvider({
     if (!commit({ type: 'activate', key })) return;
     effectiveStore.openWorkspace(scope, { explicit: false });
     render();
-  }, [commit, effectiveStore, scope]);
+  }, [commit, effectiveStore, peekProjectedState, scope]);
   const closeTab = useCallback(async (key: string) => {
     if (!scope) return;
-    const resource = effectiveStore.peek(scope).tabs.find((tab) => tab.key === key);
+    const resource = peekProjectedState(scope).tabs.find((tab) => tab.key === key);
     if (resource && await closeResolverRegistryRef.current.get(resource.kind)?.(resource, 'close') === false) return;
     const next = commit({ type: 'close', key });
     if (!next) return;
     if (next.tabs.length === 0) effectiveStore.closeWorkspace(scope);
     render();
-  }, [commit, effectiveStore, scope]);
+  }, [commit, effectiveStore, peekProjectedState, scope]);
   const closeWorkspace = useCallback(async () => {
     if (!scope) return;
-    const current = effectiveStore.peek(scope);
+    const current = peekProjectedState(scope);
     const active = current.tabs.find((tab) => tab.key === current.activeTabKey);
     if (active && await closeResolverRegistryRef.current.get(active.kind)?.(active, 'workspace-close') === false) return;
     effectiveStore.closeWorkspace(scope);
     render();
-  }, [effectiveStore, scope]);
+  }, [effectiveStore, peekProjectedState, scope]);
   const setWidth = useCallback((nextWidth: number) => {
     if (effectiveStore.setWidth(nextWidth)) render();
   }, [effectiveStore]);
@@ -659,7 +684,7 @@ export function useOptionalRightWorkspaceCommands() {
 export function agentTranscriptResourceKey(locator: AgentTranscriptLocator) {
   return [
     locator.projectId,
-    locator.taskId,
+    locator.taskUuid ?? 'missing-task-uuid',
     locator.runId,
     locator.roundId,
     locator.nodeId,
@@ -671,16 +696,30 @@ export function agentTranscriptResourceKey(locator: AgentTranscriptLocator) {
 }
 
 export function conversationRunWorkspaceResourceKey(kind: 'workflow-view' | 'workflow-edit', locator: ConversationRunLocator) {
-  return `${kind}:${locator.projectId}:${locator.taskId}:${locator.runId}`;
+  return `${kind}:${locator.projectId}:${locator.taskUuid ?? 'missing-task-uuid'}:${locator.runId}`;
 }
 
 export function fileBrowserWorkspaceResourceKey(projectId: string) {
   return `file-browser:${projectId}`;
 }
 
-export function sourceControlWorkspaceResourceKey(projectId: string, workspacePath?: string | null) {
-  const normalizedPath = workspacePath?.replaceAll('\\', '/');
-  return `source-control:${projectId}:${normalizedPath ?? 'main'}`;
+export function sourceControlWorkspaceResourceKey(projectId: string) {
+  return `source-control:${projectId}`;
+}
+
+export function projectSourceControlWorkspaceState(
+  state: RightWorkspaceSessionState,
+  workspacePath: string | null | undefined,
+): RightWorkspaceSessionState {
+  let changed = false;
+  const tabs = state.tabs.map((tab) => {
+    if (tab.kind !== 'source-control' || sameSourceControlWorkspacePath(tab.workspacePath, workspacePath)) {
+      return tab;
+    }
+    changed = true;
+    return { ...tab, workspacePath: workspacePath ?? null };
+  });
+  return changed ? { ...state, tabs } : state;
 }
 
 export function scheduledTaskConfigWorkspaceResourceKey(scopeKey: string) {
@@ -703,11 +742,11 @@ export function gitDiffReviewWorkspaceResourceKey(projectId: string, reviewSessi
 }
 
 export function conversationDirectoryWorkspaceResourceKey(locator: ConversationDirectoryWorkspaceResource['locator']) {
-  return ['conversation-directory', locator.projectId, locator.taskId, locator.runId].join(':');
+  return ['conversation-directory', locator.projectId, locator.taskUuid ?? 'missing-task-uuid', locator.runId].join(':');
 }
 
 export function conversationDirectoryWorkspaceDataKey(locator: ConversationDirectoryWorkspaceResource['locator']) {
-  return [locator.projectId, locator.taskId, locator.runId, locator.roundId, locator.outerNodeId ?? '', locator.outerAttemptId ?? '', locator.nodeId, locator.attemptId].join(':');
+  return [locator.projectId, locator.taskUuid ?? 'missing-task-uuid', locator.runId, locator.roundId, locator.outerNodeId ?? '', locator.outerAttemptId ?? '', locator.nodeId, locator.attemptId].join(':');
 }
 
 export function fileWorkspaceResourceKey(projectId: string, canonicalPath: string) {
@@ -720,7 +759,7 @@ export function acpAttemptWorkspaceResourceKey(kind: 'system-prompt' | 'raw-fram
   return [
     kind,
     locator.projectId,
-    locator.taskId,
+    locator.taskUuid ?? 'missing-task-uuid',
     locator.runId,
     locator.roundId,
     locator.nodeId,
@@ -741,7 +780,7 @@ export function conversationAssetWorkspaceResourceKey(
     'conversation-asset',
     assetKind,
     locator.projectId,
-    locator.taskId,
+    locator.taskUuid ?? 'missing-task-uuid',
     locator.runId,
     locator.roundId,
     locator.nodeId,
@@ -757,7 +796,7 @@ export function hiddenPromptSectionWorkspaceResourceKey(locator: HiddenPromptSec
   return [
     'hidden-prompt-section',
     locator.projectId,
-    locator.taskId,
+    locator.taskUuid ?? 'missing-task-uuid',
     locator.runId,
     locator.roundId,
     locator.nodeId,

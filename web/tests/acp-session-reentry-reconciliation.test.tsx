@@ -62,10 +62,16 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const locator = {
   projectId: 'project-watermark',
   taskId: 'task-watermark',
+  taskUuid: 'task-uuid-watermark',
   runId: 'run-watermark',
   roundId: 'round-watermark',
   nodeId: 'node-watermark',
   attemptId: 'attempt-watermark',
+};
+
+type TestLocator = typeof locator & {
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
 };
 
 function event(
@@ -119,8 +125,7 @@ function session(events: AcpUiEventVm[], status = 'running'): AcpSessionVm {
       hasNewer: false,
     },
     timelineProjection: { agents: [], todoEntries: [] },
-    pendingPermissions: [],
-    pendingElicitations: [],
+    pendingInteractions: [],
     diagnostics: { rawFrameCount: 0, eventCount: events.length, errorCount: 0 },
   };
 }
@@ -140,6 +145,7 @@ async function renderDialog(
   branchId = 'root',
   onInitialSessionQueryStateChange?: (state: 'loading' | 'success' | 'error') => void,
   optimisticEvents?: AcpUiEventVm[],
+  dialogLocator: TestLocator = locator,
 ) {
   const container = document.createElement('div');
   document.body.append(container);
@@ -149,7 +155,7 @@ async function renderDialog(
       <TooltipProvider>
         <ACPChatDialog
           session={acpSession}
-          {...locator}
+          {...dialogLocator}
           branchId={branchId}
           optimisticEvents={optimisticEvents}
           onInitialSessionQueryStateChange={onInitialSessionQueryStateChange}
@@ -206,6 +212,33 @@ function terminalLifecycle(turnId: string): ConversationAttemptLifecycleVm {
   };
 }
 
+function dynamicTerminalLifecycle(revision = 8): ConversationAttemptLifecycleVm {
+  return {
+    ...terminalLifecycle('turn-dynamic-completed'),
+    runtime: {
+      status: 'completed',
+      outcome: 'success',
+      pauseReason: null,
+      resumable: false,
+      current: false,
+      active: false,
+      continuable: false,
+      phase: 'terminal',
+      revision,
+    },
+    displayStatus: 'completed',
+    runtimeDisplay: {
+      code: 'completed',
+      tone: 'success',
+      icon: 'check',
+      terminal: true,
+      resumable: false,
+      reasonCode: null,
+      blockingError: false,
+    },
+  };
+}
+
 async function unmount(root: Root) {
   await act(async () => root.unmount());
 }
@@ -233,6 +266,168 @@ afterEach(() => {
 });
 
 describe('ACP session re-entry reconciliation', () => {
+  it('refreshes dynamic terminal control output once and coalesces duplicate lifecycle-only notifications', async () => {
+    const dynamicLocator: TestLocator = {
+      ...locator,
+      outerNodeId: 'ai-dynamic',
+      outerAttemptId: 'attempt-001',
+    };
+    const json = '{"version":"0.1","kind":"dynamic-node-completion","status":"success"}';
+    const stale = session([event('dynamic-result', 2, 'textDelta', json)], 'completed');
+    const annotated = session([
+      event('dynamic-result', 2, 'textDelta', json, {
+        raw: {
+          runtimeControlOutputDisplay: {
+            kind: 'dynamic-node-completion',
+            artifactName: 'dynamic-node-completion',
+            jsonText: json,
+            start: 0,
+            end: json.length,
+            parseStatus: 'valid',
+          },
+        },
+      }),
+    ], 'completed');
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(stale)
+      .mockResolvedValueOnce(annotated);
+
+    const { container, root } = await renderDialog(
+      stale,
+      'root',
+      undefined,
+      undefined,
+      dynamicLocator,
+    );
+    try {
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
+      expect(container.querySelector('[data-theme-role="runtime-control"]')).toBeNull();
+
+      await act(async () => {
+        const update = {
+          ...dynamicLocator,
+          lifecycle: dynamicTerminalLifecycle(),
+        };
+        runtime.listener?.(update);
+        runtime.listener?.(update);
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+      expect(container.querySelector('[data-theme-role="runtime-control"]')).not.toBeNull();
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('does not add a terminal content query for direct or normal workflow attempts', async () => {
+    const completed = session([event('direct-result', 2, 'textDelta', 'done')], 'completed');
+    vi.mocked(getAcpSession).mockResolvedValue(completed);
+
+    const { root } = await renderDialog(completed);
+    try {
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        runtime.listener?.({
+          ...locator,
+          lifecycle: dynamicTerminalLifecycle(),
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('ignores a dynamic terminal refresh response after the selected leaf changes', async () => {
+    const firstLocator: TestLocator = {
+      ...locator,
+      nodeId: 'goodbye-worker',
+      outerNodeId: 'ai-dynamic',
+      outerAttemptId: 'attempt-001',
+    };
+    const secondLocator: TestLocator = {
+      ...firstLocator,
+      nodeId: 'hello-worker',
+    };
+    const json = '{"kind":"dynamic-node-completion","status":"success"}';
+    const stale = {
+      ...session([event('old-result', 2, 'textDelta', json)], 'completed'),
+      nodeId: firstLocator.nodeId,
+    };
+    const annotated = {
+      ...stale,
+      events: [event('old-result', 2, 'textDelta', json, {
+        raw: {
+          runtimeControlOutputDisplay: {
+            kind: 'dynamic-node-completion',
+            artifactName: 'dynamic-node-completion',
+            jsonText: json,
+            start: 0,
+            end: json.length,
+            parseStatus: 'valid',
+          },
+        },
+      })],
+    };
+    const next = {
+      ...session([event('new-result', 2, 'textDelta', 'hello worker selected')]),
+      nodeId: secondLocator.nodeId,
+    };
+    let resolveOldRefresh: ((value: AcpSessionVm) => void) | null = null;
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(stale)
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveOldRefresh = resolve;
+      }))
+      .mockResolvedValue(next);
+
+    const { container, root } = await renderDialog(
+      stale,
+      'root',
+      undefined,
+      undefined,
+      firstLocator,
+    );
+    try {
+      await act(async () => {
+        runtime.listener?.({
+          ...firstLocator,
+          lifecycle: dynamicTerminalLifecycle(),
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        root.render(
+          <TooltipProvider>
+            <ACPChatDialog
+              session={next}
+              {...secondLocator}
+              branchId="root"
+              showSystemPromptAction={false}
+              showRawFramesAction={false}
+              usageCompact
+            />
+          </TooltipProvider>,
+        );
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      await act(async () => {
+        resolveOldRefresh?.(annotated);
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      expect(container.textContent).toContain('hello worker selected');
+      expect(container.querySelector('[data-theme-role="runtime-control"]')).toBeNull();
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('settles stale optimistic response state from a terminal lifecycle received while unmounted', async () => {
     const turnId = 'turn-background-completed';
     const stale = session([
@@ -430,9 +625,13 @@ describe('ACP session re-entry reconciliation', () => {
       prompt,
       event('answer-retry-gap', 9, 'textDelta', '重试后补齐的回答', { startedSeq: 2 }),
     ]);
+    let rejectReplay!: (reason?: unknown) => void;
+    const pendingReplay = new Promise<never>((_, reject) => {
+      rejectReplay = reject;
+    });
     vi.mocked(getAcpSession)
       .mockResolvedValueOnce(stale)
-      .mockRejectedValueOnce(new Error('temporary replay read failure'))
+      .mockReturnValueOnce(pendingReplay)
       .mockResolvedValue(complete);
 
     applyConversationEventToBranchSnapshots(update(event(
@@ -448,14 +647,14 @@ describe('ACP session re-entry reconciliation', () => {
 
     const { container, root } = await renderDialog(stale);
     try {
-      await act(async () => {
-        await new Promise((resolve) => window.setTimeout(resolve, 40));
+      await vi.waitFor(() => {
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
       });
-      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
       expect([...container.querySelectorAll('[data-testid="markdown"]')]
         .every((node) => node.getAttribute('data-streaming') === 'false')).toBe(true);
 
       await act(async () => {
+        rejectReplay(new Error('temporary replay read failure'));
         await new Promise((resolve) => window.setTimeout(resolve, 140));
       });
       expect(vi.mocked(getAcpSession).mock.calls.length).toBeGreaterThanOrEqual(3);

@@ -30,6 +30,28 @@
 - 前端选择控件统一遵守 `docs/gold-band/rules/ui-interaction.md` 的共享组件约束；全局 AST 契约测试同时阻止产品源码新增原生 `<select>` 或浏览器 `title` Tooltip，避免同类实现回退。
 - 上下文管理按领域延迟加载：首次进入“角色管理”只读取 Profile，不读取 Agent registry、SKILL 或会话任务树；只有进入“SKILL 管理”或打开 SKILL 创建抽屉时才并行读取 Agent registry 与 workspace 元数据。workspace 选择器必须调用轻量 `get_conversation_workspaces`，禁止为了取得项目名称复用包含 task/run 历史的 `get_conversation_sidebar`。
 
+## 2026-08-29 项目协作 SKILL 补充
+
+- 项目级 GitHub 协作 SKILL 以 `<workspace>/.claude/skills` 为唯一内容真源；`<workspace>/.agents/skills` 只允许作为指向 `../.claude/skills` 的相对目录符号链接，为读取 `.agents` 约定的 Agent 提供兼容发现。链接投影不得复制正文、形成第二份可编辑实例或被管理页重复展示。
+- 目录链接会投影 `.claude/skills` 下的全部项目 SKILL，而不是只投影 GitHub 协作 SKILL。新增 `git-issue` 与 `git-pr` 必须通过两个发现入口读取到同一 `SKILL.md` 内容；规范路径比较需要解析相对段和符号链接后再判断身份。
+- `git-issue` 与 `git-pr` 只负责编排仓库取证、模板选择、用户审阅、GitHub 写入和回读验证。Issue/PR 正文结构的权威来源分别为 `.github/ISSUE_TEMPLATE/*` 与 `.github/PULL_REQUEST_TEMPLATE.md`，SKILL 不复制模板字段。
+- GitHub 发布采用强制审阅门禁：Agent 必须先展示仓库、完整标题、完整正文及全部元数据，并等待用户在后续消息中明确批准；初始“提交”请求不能批准尚未展示的内容。批准绑定到已展示 revision，正文、元数据、diff 或提交集合变化后必须重新审阅。
+- GitHub 模板和默认发布内容统一使用英文；Agent 可使用中文与用户沟通，并把中文需求整理为自然英文。用户明确要求中文发布时才改变单次产出的语言，不维护两套模板真源。
+- `git-pr` 复用 `git-commit` 的本地 staging/commit 边界；批准前禁止 push 和 PR 写操作，批准后才允许发布经审阅的提交集合。两个协作 SKILL 都使用官方 `gh` CLI 和仓库实时规则，不硬编码 owner、repository、default branch、label 或 required check。
+- 接口级契约测试固定 canonical SKILL 的 frontmatter、审阅门禁、四类英文 Issue Forms 和 PR 模板关键章节；PR checks 必须运行该契约测试。`.agents/skills` 的环境级链接由 workspace 管理者单独设置和验证，不属于协作 SKILL 内容提交的 CI 前置条件。
+
+## 2026-08-30 Issue Forms schema 校验补充
+
+- GitHub Issue Forms 与 config 的可选 `title`、`labels`、`contact_links` 等字段只有存在有效值时才允许写入；不得使用 `title: ""`、`labels: []` 或 `contact_links: []` 表示“不设置”，因为 GitHub 会把表单配置判为无效并静默回退到空白 Issue 编辑器。
+- 协作模板契约测试必须使用 SchemaStore 的 GitHub Issue Forms 与 issue template config schema 校验解析后的 YAML 数据，不能只验证 YAML 语法、固定标题文本或文件存在性。测试直接依赖的 YAML parser 必须声明为项目 devDependency，不依赖间接依赖偶然提升到根目录。
+
+## 2026-08-30 Issue Forms 提交者边界补充
+
+- 公开 Issue Form 只收集目标提交者能够可靠提供的事实，不把维护者的设计回溯、根因分类、方案研究、性能目标、回归策略或验收定义设为普通用户的提交前置条件。GitHub Issue 标题已经承担摘要职责，四类表单均不得重复设置必填 `Summary` 字段。
+- Bug 必填实际行为、预期行为、复现步骤和环境；Feature 必填用户问题、期望结果和主要用例；Performance 必填可观察的性能问题、复现 workload 和环境，测量与 Profiler 证据可选；Technical Proposal 面向贡献者，必填当前问题、提议方向和已考虑替代方案，其余设计、迁移、风险与验收信息均按已有证据选填。
+- 设计意图、根因、瓶颈、正确性约束与验收标准由维护者在调查、Issue refinement 或 PR 阶段补充。`git-issue` 可以基于仓库证据主动调查，但不得因为报告者无法提供这些内部分析而阻止生成待审阅 Issue。
+- 契约测试除 SchemaStore 语法校验外，还固定各模板的最小必填字段、禁止普通反馈模板重新引入维护者字段，并把提交检查项收敛为查重与敏感信息清理两项。
+
 
 ---
 

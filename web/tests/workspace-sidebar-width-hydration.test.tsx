@@ -143,7 +143,7 @@ describe('WorkspaceShell sidebar width hydration', () => {
       appConfig: {
         acpSessionTitleRefreshEnabled: false,
         acpChatEventPageSize: 360,
-        turnFiles: { cardPreviewLimit: 3 },
+        turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 1 },
         workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
       },
       active: { kind: 'conversation-home' } as const,
@@ -210,7 +210,7 @@ describe('WorkspaceShell sidebar width hydration', () => {
       appConfig: {
         acpSessionTitleRefreshEnabled: false,
         acpChatEventPageSize: 360,
-        turnFiles: { cardPreviewLimit: 3 },
+        turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 1 },
         workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
       },
       vm: {
@@ -311,7 +311,7 @@ describe('WorkspaceShell sidebar width hydration', () => {
       appConfig: {
         acpSessionTitleRefreshEnabled: false,
         acpChatEventPageSize: 360,
-        turnFiles: { cardPreviewLimit: 3 },
+        turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 1 },
         workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
       },
       vm: {
@@ -399,7 +399,7 @@ describe('WorkspaceShell sidebar width hydration', () => {
             appConfig={{
               acpSessionTitleRefreshEnabled: false,
               acpChatEventPageSize: 360,
-              turnFiles: { cardPreviewLimit: 3 },
+              turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 1 },
               workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
             }}
             vm={{

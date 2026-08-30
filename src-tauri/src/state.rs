@@ -10,7 +10,8 @@ use std::{
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use gold_band::acp::commands::{
-    AcpCommandCatalog, AcpCommandItem, catalog_key, merge_native_skill_commands, project_id,
+    AcpCommandCatalog, AcpCommandItem, catalog_key, merge_command_sources,
+    merge_native_skill_commands, project_id, scan_native_skill_commands,
 };
 use gold_band::acp::events::current_timestamp;
 use gold_band::app::ActiveMetricTurn;
@@ -132,6 +133,7 @@ pub struct ConversationWorkspaceRecoveryReport {
 pub struct RecoveredConversationRun {
     pub project_id: String,
     pub task_id: String,
+    pub task_uuid: Option<String>,
     pub run_id: String,
     pub round_id: String,
     pub node_id: String,
@@ -516,6 +518,7 @@ impl DesktopState {
                         report.recovered_runs.push(RecoveredConversationRun {
                             project_id: candidate.project_id.clone(),
                             task_id: candidate.task_id.clone(),
+                            task_uuid: recovered.task_uuid.clone(),
                             run_id: candidate.run_id.clone(),
                             round_id: recovered.current_round.unwrap_or_default(),
                             node_id: recovered.current_node.unwrap_or_default(),
@@ -1065,37 +1068,47 @@ impl DesktopState {
             .agents
             .get(agent_id)
             .map(ManagedAgentConfig::skill_directory_policy);
-        let (catalog, catalogs_to_persist) = {
-            let mut catalogs = self
-                .agent_command_catalogs
-                .lock()
-                .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
-            let Some(mut catalog) = catalogs.get(&key).cloned() else {
-                return Ok(None);
-            };
-            let mut changed = false;
-            if let Some(policy) = policy {
-                // 旧目录文件没有 acp_commands，只能暂用旧 commands 迁移；下一次 Doctor
-                // 会写入 Some(...)，之后所有扫描都从原始 ACP 列表开始，Skill 删除不会残留。
-                let raw_commands = catalog
+        // The persisted catalog is an ACP-command cache, not the authority for
+        // filesystem-visible Skills. A provider can run in a fresh worktree
+        // that has never been probed, so a cache miss must still project the
+        // Skills visible from that physical workspace. Clone under the lock
+        // and perform the directory scan after releasing it.
+        let cached = self
+            .agent_command_catalogs
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
+            .get(&key)
+            .cloned();
+        let raw_commands = cached
+            .as_ref()
+            .map(|catalog| {
+                // Old persisted catalogs without acp_commands can only use the
+                // merged command list until the next Doctor refresh.
+                catalog
                     .acp_commands
                     .as_ref()
                     .unwrap_or(&catalog.commands)
-                    .clone();
-                let commands = merge_native_skill_commands(&policy, workspace, raw_commands);
-                if commands != catalog.commands {
-                    catalog.commands = commands;
-                    catalog.updated_at = current_timestamp();
-                    catalogs.insert(key, catalog.clone());
-                    changed = true;
-                }
-            }
-            let snapshot = changed.then(|| catalogs.clone());
-            (catalog, snapshot)
-        };
-        if let Some(catalogs) = catalogs_to_persist {
-            self.persist_agent_command_catalogs(&catalogs)?;
+                    .clone()
+            })
+            .unwrap_or_default();
+        if policy.is_none() && cached.is_none() {
+            return Ok(None);
         }
+        let skill_commands = policy
+            .as_ref()
+            .map(|policy| scan_native_skill_commands(policy, workspace))
+            .unwrap_or_default();
+        let commands = merge_command_sources(raw_commands.clone(), skill_commands.clone());
+        let catalog = AcpCommandCatalog {
+            agent_type: agent_id.as_str().to_string(),
+            project_id,
+            acp_commands: Some(raw_commands),
+            skill_commands: Some(skill_commands),
+            commands,
+            updated_at: cached
+                .map(|catalog| catalog.updated_at)
+                .unwrap_or_else(current_timestamp),
+        };
         Ok(Some(catalog))
     }
 
@@ -1124,6 +1137,7 @@ impl DesktopState {
             agent_type: agent_id.as_str().to_string(),
             project_id: project_id.clone(),
             acp_commands: Some(acp_commands),
+            skill_commands: None,
             commands,
             updated_at: current_timestamp(),
         };
@@ -1487,6 +1501,92 @@ mod tests {
 
         assert_eq!(state.pending_update_path().unwrap(), Some(path.clone()));
         assert_eq!(state.take_pending_update(), Some(path));
+    }
+
+    #[test]
+    fn command_catalog_cache_miss_scans_skills_visible_in_a_worktree() {
+        let (root, state) = desktop_state();
+        let workspace = Utf8PathBuf::from_path_buf(root.path().join("fresh-worktree")).unwrap();
+        let skill_dir = workspace.join(".claude/skills/worktree-skill");
+        std::fs::create_dir_all(skill_dir.as_std_path()).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md").as_std_path(),
+            "---\nname: worktree-skill\ndescription: Visible from the worktree\n---\n",
+        )
+        .unwrap();
+        let agent_id = ManagedAgentId::from_str("claude-acp").unwrap();
+        let key = catalog_key(agent_id.as_str(), &project_id(&workspace));
+        assert!(
+            !state
+                .agent_command_catalogs
+                .lock()
+                .unwrap()
+                .contains_key(&key)
+        );
+
+        let catalog = state
+            .agent_command_catalog(&agent_id, &workspace)
+            .unwrap()
+            .unwrap();
+
+        assert!(catalog.commands.iter().any(|command| {
+            command.name == "worktree-skill" && command.description == "Visible from the worktree"
+        }));
+        assert!(catalog.acp_commands.as_ref().unwrap().is_empty());
+        assert!(
+            !state
+                .agent_command_catalogs
+                .lock()
+                .unwrap()
+                .contains_key(&key)
+        );
+    }
+
+    #[test]
+    fn command_catalog_keeps_acp_commands_ahead_of_same_named_worktree_skills() {
+        let (root, state) = desktop_state();
+        let workspace = Utf8PathBuf::from_path_buf(root.path().join("active-worktree")).unwrap();
+        let skill_dir = workspace.join(".claude/skills/review");
+        std::fs::create_dir_all(skill_dir.as_std_path()).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md").as_std_path(),
+            "---\nname: review\ndescription: Skill metadata\n---\n",
+        )
+        .unwrap();
+        let agent_id = ManagedAgentId::from_str("claude-acp").unwrap();
+        state
+            .record_agent_commands(
+                &agent_id,
+                &workspace,
+                vec![AcpCommandItem {
+                    name: "review".to_string(),
+                    description: "ACP metadata".to_string(),
+                    input_hint: Some("target".to_string()),
+                }],
+            )
+            .unwrap();
+
+        let catalog = state
+            .agent_command_catalog(&agent_id, &workspace)
+            .unwrap()
+            .unwrap();
+
+        let review_commands = catalog
+            .commands
+            .iter()
+            .filter(|command| command.name == "review")
+            .collect::<Vec<_>>();
+        assert_eq!(review_commands.len(), 1);
+        assert_eq!(review_commands[0].description, "ACP metadata");
+        assert_eq!(review_commands[0].input_hint.as_deref(), Some("target"));
+        let skill_review = catalog
+            .skill_commands
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|command| command.name == "review")
+            .unwrap();
+        assert_eq!(skill_review.description, "Skill metadata");
     }
 
     fn write_completed_attempt_with_running_run(app: &App, candidate_token: Option<String>) {

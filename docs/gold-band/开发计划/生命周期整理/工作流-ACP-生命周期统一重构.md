@@ -68,7 +68,7 @@
 - `runtime.revision`: execution 的单调版本，用于拒绝 stale progress/响应
 - `control.mode`: `runtime-controlled | non-runtime-controlled`
 - `acp.sessionAvailability / liveTurnActivity / latestTurnStatus / stopping`: session、当前 turn 与历史结果分离
-- `composer.mode`: `normal | runtime-active | stopping | invalid-workflow | runtime-error | permission-blocked | submitting`
+- `composer.mode`: `normal | runtime-active | stopping | invalid-workflow | runtime-error | interaction-blocked | submitting`
 - `composer.submitTarget`: `acp-prompt | queue-prompt | permission-response | none`
 - `composer.processingKind`: 现有 processing kind 加 `launching-next-node`
 - `composer.statusKey` 或 `statusCode`: 例如 `conversation.runtime.launchingNextNode`

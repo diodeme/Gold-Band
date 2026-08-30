@@ -1,16 +1,19 @@
-import { memo, type CSSProperties } from 'react';
+import { memo, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { AcpUsageVm } from '@/types';
 import { cn } from '@/lib/utils';
 import { formatTokenCount } from '@/lib/format-token';
 import { AcpProcessingSpinner } from '@/components/acp/AcpProcessingSpinner';
-import { GitFork } from 'lucide-react';
+import { Ellipsis, GitFork } from 'lucide-react';
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
+import { Button } from '@/components/ui/button';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ACP_SESSION_COMPOSER_BORDER_WIDTH_PX } from '@/lib/conversation-composer-layout';
+import { GitBranchSelector } from '@/components/git/GitBranchSelector';
 
 export { formatTokenCount } from '@/lib/format-token';
 
@@ -19,6 +22,8 @@ export interface AcpUsagePanelProps {
   processingLabel?: string | null;
   sessionSeconds?: number | null;
   worktreePath?: string | null;
+  branchProjectId?: string | null;
+  managedWorktreeBranch?: string | null;
   className?: string;
 }
 
@@ -34,6 +39,14 @@ export const CONTEXT_USAGE_THRESHOLDS = {
 } as const;
 
 export type ContextUsageTone = 'unknown' | 'healthy' | 'elevated' | 'warning' | 'critical';
+
+export type AcpUsagePanelLayout = 'full' | 'branch-overflow' | 'workspace-overflow' | 'context-overflow';
+
+export const ACP_USAGE_PANEL_LAYOUT_BREAKPOINTS = {
+  full: 560,
+  workspace: 440,
+  context: 340,
+} as const;
 
 const ACP_SESSION_INFO_CONNECTOR_RADIUS_PX = 10;
 const ACP_SESSION_INFO_CONNECTOR_EXTENT_PX = ACP_SESSION_INFO_CONNECTOR_RADIUS_PX
@@ -60,14 +73,30 @@ const CONTEXT_USAGE_TONE_COLORS: Record<ContextUsageTone, string> = {
   critical: 'var(--gold-danger)',
 };
 
+function preserveOverflowTriggerFocus(event: Event) {
+  event.preventDefault();
+}
+
+export function acpUsagePanelLayoutForWidth(width: number): AcpUsagePanelLayout {
+  if (width >= ACP_USAGE_PANEL_LAYOUT_BREAKPOINTS.full) return 'full';
+  if (width >= ACP_USAGE_PANEL_LAYOUT_BREAKPOINTS.workspace) return 'branch-overflow';
+  if (width >= ACP_USAGE_PANEL_LAYOUT_BREAKPOINTS.context) return 'workspace-overflow';
+  return 'context-overflow';
+}
+
 export const AcpUsagePanel = memo(function AcpUsagePanel({
   usage,
   processingLabel,
   sessionSeconds,
   worktreePath,
+  branchProjectId,
+  managedWorktreeBranch,
   className,
 }: AcpUsagePanelProps) {
   const { t } = useTranslation();
+  const panelRef = useRef<HTMLDivElement>(null);
+  const resizeFrameRef = useRef<number | null>(null);
+  const [layout, setLayout] = useState<AcpUsagePanelLayout>('full');
 
   const used = usage?.used != null && usage.used > 0 ? usage.used : null;
   const size = usage?.size != null && usage.size > 0 ? usage.size : null;
@@ -79,98 +108,191 @@ export const AcpUsagePanel = memo(function AcpUsagePanel({
   const showProcessing = Boolean(processingLabel);
   const showTiming = sessionSeconds != null;
   const showWorktree = Boolean(worktreePath?.trim());
+  const showBranch = Boolean(branchProjectId);
   const showContext = hasAcpUsagePanelContent(usage);
+  const hasVisibleContent = showProcessing || showTiming || showWorktree || showBranch || showContext;
 
-  if (!showProcessing && !showTiming && !showWorktree && !showContext) return null;
+  useLayoutEffect(() => {
+    if (!hasVisibleContent) return;
+    const panel = panelRef.current;
+    const container = panel?.parentElement;
+    if (!container) return;
+
+    const publishLayout = () => {
+      const width = Math.round(container.getBoundingClientRect().width || container.clientWidth);
+      if (width <= 0) return;
+      const nextLayout = acpUsagePanelLayoutForWidth(width);
+      setLayout((current) => current === nextLayout ? current : nextLayout);
+    };
+    const scheduleLayout = () => {
+      if (resizeFrameRef.current !== null) return;
+      resizeFrameRef.current = window.requestAnimationFrame(() => {
+        resizeFrameRef.current = null;
+        publishLayout();
+      });
+    };
+
+    publishLayout();
+    const observer = new ResizeObserver(scheduleLayout);
+    observer.observe(container);
+    return () => {
+      observer.disconnect();
+      if (resizeFrameRef.current !== null) window.cancelAnimationFrame(resizeFrameRef.current);
+      resizeFrameRef.current = null;
+    };
+  }, [hasVisibleContent]);
+
+  if (!hasVisibleContent) return null;
 
   const gaugeStyle: ContextGaugeStyle = {
     '--context-usage-percent': `${percentage ?? 0}%`,
     '--context-usage-color': CONTEXT_USAGE_TONE_COLORS[usageTone],
   };
+  const branchInOverflow = showBranch && layout !== 'full';
+  const worktreeInOverflow = showWorktree
+    && (layout === 'workspace-overflow' || layout === 'context-overflow');
+  const contextInOverflow = showContext && layout === 'context-overflow';
+  const hasOverflow = branchInOverflow || worktreeInOverflow || contextInOverflow;
+  const worktreeInline = showWorktree && !worktreeInOverflow;
+  const branchInline = showBranch && !branchInOverflow;
+
+  const contextItem = showContext ? (
+    <span className="flex shrink-0 items-center gap-1.5" data-acp-session-info-item="context">
+      <span className="text-muted-foreground/80">{t('acp.usagePanel.contextWindow')}</span>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            aria-label={`${t('acp.usagePanel.contextWindow')} ${t('acp.usagePanel.occupied')} ${usageLabel} ${percentageLabel}`}
+            data-context-usage-gauge="true"
+            data-context-usage-tone={usageTone}
+          >
+            <span
+              aria-hidden="true"
+              className="grid size-6 place-items-center rounded-full bg-[conic-gradient(var(--context-usage-color)_var(--context-usage-percent),var(--border)_0)] p-0.5"
+              style={gaugeStyle}
+            >
+              <span className="flex size-full items-center justify-center rounded-full bg-background text-[9px] font-medium leading-none tracking-[-0.02em] tabular-nums text-foreground">
+                {percentage ?? '--'}
+              </span>
+            </span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top" sideOffset={6} className="min-w-44 p-3">
+          <div className="space-y-2">
+            <div className="flex items-baseline justify-between gap-4 border-b border-border/60 pb-2">
+              <span className="text-muted-foreground">{t('acp.usagePanel.occupied')}</span>
+              <span className="font-medium tabular-nums text-popover-foreground">{usageLabel}</span>
+            </div>
+            {tokenRows.length > 0 ? (
+              <dl className="space-y-1.5">
+                {tokenRows.map(([labelKey, value]) => (
+                  <div key={labelKey} className="flex items-center justify-between gap-6">
+                    <dt className="text-muted-foreground">{t(labelKey)}</dt>
+                    <dd className="font-medium tabular-nums">{formatTokenCount(value)}</dd>
+                  </div>
+                ))}
+              </dl>
+            ) : null}
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    </span>
+  ) : null;
+
+  const worktreeItem = showWorktree ? (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          className="flex min-w-0 shrink items-center gap-1 rounded-sm text-foreground/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          tabIndex={0}
+          data-acp-session-info-item="worktree"
+          data-acp-worktree="true"
+        >
+          <GitFork className="size-3.5 shrink-0" />
+          <span className="truncate">{t('conversation.runtime.worktree')}</span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={6} className="max-w-[min(36rem,calc(100vw-2rem))] break-all">
+        {worktreePath}
+      </TooltipContent>
+    </Tooltip>
+  ) : null;
+
+  const branchItem = showBranch ? (
+    <span
+      className={cn(
+        'min-w-0',
+        branchInOverflow && 'w-full [&_[data-git-branch-selector]]:w-full [&_[data-git-branch-selector]]:max-w-none [&_[data-git-branch-selector]]:justify-start',
+      )}
+      data-acp-session-info-item="branch"
+    >
+      <GitBranchSelector
+        projectId={branchProjectId ?? ''}
+        readOnlyBranch={showWorktree ? managedWorktreeBranch ?? '' : undefined}
+        variant="session"
+      />
+    </span>
+  ) : null;
 
   return (
     <div
+      ref={panelRef}
       className={cn(
         'flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-xs leading-4 text-muted-foreground/75',
         className,
       )}
       data-acp-session-info="true"
+      data-acp-session-info-layout={layout}
     >
       {showProcessing ? (
-        <span className="flex min-w-0 items-center gap-1.5 font-medium text-foreground">
+        <span className="flex min-w-0 items-center gap-1.5 font-medium text-foreground" data-acp-session-info-item="processing">
           <AcpProcessingSpinner className="size-3.5 shrink-0" />
           <span className="truncate">{processingLabel}</span>
         </span>
       ) : null}
 
       {showTiming ? (
-        <span className="flex shrink-0 items-center gap-1.5">
+        <span className="flex shrink-0 items-center gap-1.5" data-acp-session-info-item="timing">
           <span className="text-muted-foreground/80">{t('acp.timingSession')}</span>
           <span className="tabular-nums text-foreground/80">{formatElapsed(sessionSeconds)}</span>
         </span>
       ) : null}
 
-      {showContext ? (
-        <span className="flex shrink-0 items-center gap-1.5">
-          <span className="text-muted-foreground/80">{t('acp.usagePanel.contextWindow')}</span>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-                aria-label={`${t('acp.usagePanel.contextWindow')} ${t('acp.usagePanel.occupied')} ${usageLabel} ${percentageLabel}`}
-                data-context-usage-gauge="true"
-                data-context-usage-tone={usageTone}
-              >
-                <span
-                  aria-hidden="true"
-                  className="grid size-6 place-items-center rounded-full bg-[conic-gradient(var(--context-usage-color)_var(--context-usage-percent),var(--border)_0)] p-0.5"
-                  style={gaugeStyle}
-                >
-                  <span className="flex size-full items-center justify-center rounded-full bg-background text-[9px] font-medium leading-none tracking-[-0.02em] tabular-nums text-foreground">
-                    {percentage ?? '--'}
-                  </span>
-                </span>
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="top" sideOffset={6} className="min-w-44 p-3">
-              <div className="space-y-2">
-                <div className="flex items-baseline justify-between gap-4 border-b border-border/60 pb-2">
-                  <span className="text-muted-foreground">{t('acp.usagePanel.occupied')}</span>
-                  <span className="font-medium tabular-nums text-popover-foreground">{usageLabel}</span>
-                </div>
-                {tokenRows.length > 0 ? (
-                  <dl className="space-y-1.5">
-                    {tokenRows.map(([labelKey, value]) => (
-                      <div key={labelKey} className="flex items-center justify-between gap-6">
-                        <dt className="text-muted-foreground">{t(labelKey)}</dt>
-                        <dd className="font-medium tabular-nums">{formatTokenCount(value)}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                ) : null}
-              </div>
-            </TooltipContent>
-          </Tooltip>
-        </span>
-      ) : null}
+      {!contextInOverflow ? contextItem : null}
+      {worktreeInline ? <span className="ml-auto min-w-0">{worktreeItem}</span> : null}
+      {branchInline ? <span className={cn('min-w-0', !worktreeInline && 'ml-auto')}>{branchItem}</span> : null}
 
-      {showWorktree ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span
-              className="ml-auto flex min-w-0 shrink items-center gap-1 rounded-sm text-foreground/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              tabIndex={0}
-              data-acp-worktree="true"
+      {hasOverflow ? (
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              className={cn('text-foreground/80', !worktreeInline && !branchInline && 'ml-auto')}
+              aria-label={t('acp.usagePanel.more')}
+              data-acp-session-info-more="true"
             >
-              <GitFork className="size-3.5 shrink-0" />
-              <span className="truncate">{t('conversation.runtime.worktree')}</span>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent side="top" sideOffset={6} className="max-w-[min(36rem,calc(100vw-2rem))] break-all">
-            {worktreePath}
-          </TooltipContent>
-        </Tooltip>
+              <Ellipsis className="size-3.5" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent
+            side="top"
+            align="start"
+            sideOffset={6}
+            onOpenAutoFocus={preserveOverflowTriggerFocus}
+            className="w-auto min-w-44 max-w-[min(22rem,calc(100vw-2rem))] p-1.5"
+            data-acp-session-info-overflow="true"
+          >
+            <div className="flex min-w-0 flex-col gap-1">
+              {contextInOverflow ? <div className="flex min-h-8 items-center px-2">{contextItem}</div> : null}
+              {worktreeInOverflow ? <div className="flex min-h-8 items-center px-2">{worktreeItem}</div> : null}
+              {branchInOverflow ? <div className="flex min-h-8 items-center px-0.5">{branchItem}</div> : null}
+            </div>
+          </PopoverContent>
+        </Popover>
       ) : null}
 
       <svg
@@ -238,6 +360,8 @@ function areUsagePanelPropsEqual(previous: AcpUsagePanelProps, next: AcpUsagePan
     && previous.processingLabel === next.processingLabel
     && previous.sessionSeconds === next.sessionSeconds
     && previous.worktreePath === next.worktreePath
+    && previous.branchProjectId === next.branchProjectId
+    && previous.managedWorktreeBranch === next.managedWorktreeBranch
     && usageFieldsEqual(previous.usage, next.usage);
 }
 

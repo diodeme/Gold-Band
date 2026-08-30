@@ -8,6 +8,7 @@ import type {
   GraphVm,
 } from '@/types';
 import { mergeConversationAttemptLifecycle } from './acp-runtime-composer-state';
+import { sameConversationRunEntity } from './conversation-run-identity';
 
 export type ConversationRunSnapshotSource =
   | 'create'
@@ -39,7 +40,9 @@ export interface ConversationRunSnapshotMergeOptions {
 export function applyConversationSelectedSessionSnapshot(
   current: ConversationRunVm | null,
   snapshot: {
+    projectId?: string | null;
     taskId: string;
+    taskUuid?: string | null;
     runId: string;
     roundId: string;
     nodeId: string;
@@ -51,7 +54,12 @@ export function applyConversationSelectedSessionSnapshot(
   },
 ): ConversationRunVm | null {
   if (!current || (!snapshot.session && !snapshot.lifecycle)) return current;
-  if (current.taskId !== snapshot.taskId || current.runId !== snapshot.runId) return current;
+  if (!snapshot.projectId || !sameConversationRunEntity(current, {
+    projectId: snapshot.projectId,
+    taskId: snapshot.taskId,
+    taskUuid: snapshot.taskUuid,
+    runId: snapshot.runId,
+  })) return current;
   const snapshotKey = conversationSessionKeyFromParts(snapshot);
   if (current.sessionTree.selectedSessionKey !== snapshotKey) return current;
   const leaf = findConversationLeafByKey(current.sessionTree, snapshotKey);
@@ -81,7 +89,9 @@ export function applyConversationSelectedSessionSnapshot(
 export function applyConversationBackgroundSessionRuntimeSnapshot(
   current: ConversationRunVm | null,
   snapshot: {
+    projectId?: string | null;
     taskId: string;
+    taskUuid?: string | null;
     runId: string;
     roundId: string;
     nodeId: string;
@@ -93,7 +103,12 @@ export function applyConversationBackgroundSessionRuntimeSnapshot(
   },
 ): ConversationRunVm | null {
   if (!current || (!snapshot.session && !snapshot.lifecycle)) return current;
-  if (current.taskId !== snapshot.taskId || current.runId !== snapshot.runId) return current;
+  if (!snapshot.projectId || !sameConversationRunEntity(current, {
+    projectId: snapshot.projectId,
+    taskId: snapshot.taskId,
+    taskUuid: snapshot.taskUuid,
+    runId: snapshot.runId,
+  })) return current;
   const snapshotKey = conversationSessionKeyFromParts(snapshot);
   if (current.sessionTree.selectedSessionKey === snapshotKey) return current;
   const currentLeaf = findConversationLeafByKey(current.sessionTree, snapshotKey);
@@ -121,7 +136,7 @@ export function mergeConversationRunSnapshot(
   source: ConversationRunSnapshotSource,
   options: ConversationRunSnapshotMergeOptions = {},
 ): ConversationRunVm {
-  if (!current || current.runId !== incoming.runId || current.taskId !== incoming.taskId) {
+  if (!current || !sameConversationRunEntity(current, incoming)) {
     return incoming;
   }
 

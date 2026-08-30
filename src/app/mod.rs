@@ -75,11 +75,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 use self::ids::{generate_uuid, next_workflow_id, now_rfc3339_like, reserve_next_task_dir};
 pub use self::orchestrator::ManualCheckSubmissionLease;
 use self::orchestrator::{
-    dynamic_state_lock_for,
+    dynamic_resume_target_is_active, dynamic_state_lock_for,
     launch_prepared_run_background as orchestrator_launch_prepared_run_background,
     pause_dynamic_leaf_runtime_state, pause_dynamic_leaf_runtime_state_if_active_execution,
     prepare_dynamic_acp_prompt, prepare_run as orchestrator_prepare_run,
     prepare_run_in_worktree as orchestrator_prepare_run_in_worktree,
+    prepare_run_in_worktree_at as orchestrator_prepare_run_in_worktree_at,
     prepare_run_with_authoring as orchestrator_prepare_run_with_authoring,
     reserve_manual_check_submission as orchestrator_reserve_manual_check_submission,
     run_continue as orchestrator_run_continue,
@@ -1041,6 +1042,7 @@ pub enum RuntimeLifecycleEvent {
         scheduled_occurrence_id: Option<String>,
         project_id: String,
         task_id: String,
+        task_uuid: Option<String>,
         run_id: String,
         round_id: String,
         node_id: String,
@@ -1069,6 +1071,7 @@ pub enum RuntimeLifecycleEvent {
         scheduled_occurrence_id: Option<String>,
         project_id: String,
         task_id: String,
+        task_uuid: Option<String>,
         run_id: String,
         round_id: String,
         node_id: String,
@@ -1205,6 +1208,7 @@ fn default_task_search_indexer() -> Arc<dyn Fn(&Utf8Path, &str) + Send + Sync> {
 #[derive(Debug, Clone)]
 pub struct AcpLiveEventContext {
     pub task_id: String,
+    pub task_uuid: Option<String>,
     pub run_id: String,
     pub round_id: String,
     pub node_id: String,
@@ -3547,7 +3551,17 @@ impl App {
         let summary = self.task_summary(&task_id)?;
         owned_task_dir.disarm();
         (self.task_search_indexer)(&self.paths.task_dir(&task_id), &task_id);
+        let created_at = crate::acp::events::current_timestamp();
+        sqlite::index_task_activity_with_retry(
+            &self.paths.task_dir(&task_id),
+            &task_id,
+            &created_at,
+        );
         Ok(summary)
+    }
+
+    pub fn record_task_activity_index(&self, task_id: &str, activity_at: &str) {
+        sqlite::index_task_activity_with_retry(&self.paths.task_dir(task_id), task_id, activity_at);
     }
 
     pub fn update_task_metadata(
@@ -4509,6 +4523,7 @@ impl App {
         outer_node_id: &str,
         outer_attempt_id: &str,
         node_id: &str,
+        attempt_id: &str,
         reason: PauseReason,
     ) -> Result<()> {
         pause_dynamic_leaf_runtime_state(
@@ -4519,7 +4534,31 @@ impl App {
             outer_node_id,
             outer_attempt_id,
             node_id,
+            attempt_id,
             reason,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn dynamic_resume_target_is_active(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        outer_node_id: &str,
+        outer_attempt_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) -> Result<bool> {
+        dynamic_resume_target_is_active(
+            &self.paths.repo_root,
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+            node_id,
+            attempt_id,
         )
     }
 
@@ -5039,6 +5078,15 @@ impl App {
         orchestrator_prepare_run_in_worktree(self, task_id, workflow_override)
     }
 
+    pub fn prepare_run_in_worktree_at(
+        &self,
+        task_id: &str,
+        workflow_override: Option<&Utf8Path>,
+        fork_commit: String,
+    ) -> Result<PreparedRun> {
+        orchestrator_prepare_run_in_worktree_at(self, task_id, workflow_override, fork_commit)
+    }
+
     pub fn prepare_run_with_authoring(
         &self,
         task_id: &str,
@@ -5370,7 +5418,7 @@ mod tests {
         AutoTemplateStore, CreateTaskInput, OwnedTaskDirectory, RuntimeLifecycleEvent,
         WorkflowTemplate, WorkflowTemplateStore, next_auto_template_id,
     };
-    use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
+    use crate::acp::elicitation::{pending_elicitation_file, pending_elicitation_state};
     use crate::config::{
         AppearancePreference, ColorSchemePreference, ConsoleThemeName, DesktopLanguage,
         DesktopUpdateBadgeState, FontSizePreference, FontStackPreference,
@@ -7024,8 +7072,8 @@ mod tests {
             runtime_error: None,
             runtime_execution_id: None,
             runtime_execution_phase: None,
-            runtime_execution_revision: 0,
-            runtime_execution_updated_at: None,
+            runtime_lifecycle_revision: 0,
+            runtime_lifecycle_updated_at: None,
             group_id: None,
             chain_id: id.to_string(),
             depth: 1,
@@ -7347,6 +7395,7 @@ mod tests {
             "ai-dynamic",
             "attempt-001",
             "good-morning",
+            "attempt-001",
             PauseReason::ProcessInterrupted,
         )
         .unwrap();
@@ -7401,6 +7450,7 @@ mod tests {
             "ai-dynamic",
             "attempt-001",
             "good-night",
+            "attempt-001",
             PauseReason::ProcessInterrupted,
         )
         .unwrap();
@@ -7459,6 +7509,7 @@ mod tests {
             "ai-dynamic",
             "attempt-001",
             "good-night",
+            "attempt-001",
             PauseReason::ProcessInterrupted,
         )
         .unwrap();
@@ -7634,19 +7685,20 @@ mod tests {
         .unwrap();
         write_json(
             &pending_elicitation_file(&attempt_dir, "elicit-001"),
-            &PendingElicitationState {
-                elicitation_id: "elicit-001".to_string(),
-                jsonrpc_id: serde_json::json!(1),
-                request: serde_json::from_value(serde_json::json!({
+            &pending_elicitation_state(
+                "elicit-001",
+                "turn-1",
+                "prompt-turn-1",
+                serde_json::json!(1),
+                serde_json::from_value(serde_json::json!({
                     "mode": "form",
                     "sessionId": "session-test",
                     "message": "继续吗",
                     "requestedSchema": { "type": "object", "properties": {} }
                 }))
                 .unwrap(),
-                created_at: "1Z".to_string(),
-                timeline_identity: None,
-            },
+                "1Z".to_string(),
+            ),
         )
         .unwrap();
 

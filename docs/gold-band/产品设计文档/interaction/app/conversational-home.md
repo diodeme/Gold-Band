@@ -59,6 +59,9 @@
    - 工作空间和工作位置菜单关闭后的焦点归还都按输入方式处理：鼠标或触控选择、再次点击触发器或点击外部关闭后，不把焦点重新放回触发器，也不保留误导性的选中描边；键盘选择或关闭后仍由 Radix 将焦点归还触发器并显示 `focus-visible`，保证后续键盘导航连续。禁止通过删除共享 focus ring 或强制 blur 所有输入方式掩盖该差异。
    - 普通快速对话当前选择的工作空间属于应用运行期的 draft 上下文：用户切换后，无论进入设置还是查看其他工作空间的会话详情，再点击全局“快速对话”都必须恢复该 draft。只有 draft 尚不存在时，才先使用当前会话所属工作空间，非会话页再回退最近会话工作空间。只有在某个工作空间下显式点击“新会话”，才将 draft 切换为该工作空间。draft 选择不得写入或重排 `lastConversationWorkspace`，左侧工作空间置顶仍只由最近实际创建、重跑或进入的会话驱动。
    - 同一区域提供工作位置选择器，仅包含“主工作区”和“新工作树 / New worktree”。“新工作树”使用 Git fork 图标，悬浮或键盘聚焦提示“创建副本，以便并行工作 / Create a copy for parallel work”。工作位置触发器与工作空间触发器统一使用 28px 高度、相同圆角、水平内边距、图标和箭头规格，宽度仅随各自内容自然收缩；不得让 shadcn `SelectTrigger` 的默认 size variant 把工作空间控件撑高。工作位置偏好按 `projectId` 记忆，切换工作空间后恢复该工作空间最后一次选择，不使用跨工作空间的单一全局值。
+   - 快速对话顶部上下文栏必须按自身容器宽度渐进收缩，不依赖窗口 viewport：宽档展示工作空间、工作位置和分支的图标与当前值；中档只保留工作空间当前值，工作位置与分支收为 28px 图标触发器；窄档三个控件都收为 28px 图标触发器。三个选择器保持各自一步直达，不合并进“更多”，也不得因档位变化重复挂载控件、清空焦点/菜单状态或重复读取分支 snapshot。图标态通过项目 Tooltip 在悬浮或键盘聚焦时展示“领域：当前值”，同时提供包含当前值的 `aria-label`；打开对应 Select、DropdownMenu 或 Popover 时必须在同一次 open 状态提交中关闭 Tooltip，不能在 Popover 的 click 打开之前先于 pointerdown 单独关闭而制造按压态回闪；菜单出现后触发器持续使用 Popover 自身受控 open 投影的强调态，不能依赖 TooltipTrigger 与 PopoverTrigger 竞争写入的共享 `data-state`。分支 Popover 关闭后的焦点归还必须区分输入方式：鼠标或触控选择分支、再次点击触发器或点击外部关闭时，不把焦点还给紧凑图标，并收起其 Tooltip；键盘选择或关闭后继续由 Radix 归还触发器焦点，保留键盘导航连续性。容器重新变宽后按同一 CSS 投影恢复标签。
+   - 普通快速对话的信息栏最右侧提供当前工作目录的分支选择器，复用 shadcn `Popover + Command` 与源码管理 Git 能力，读取轻量 branch snapshot，不加载 status numstat、历史或 Diff。选择已有本地分支以及“创建并检出新分支”都是真实 Git checkout；主工作区与用户选中的普通工作树遵循相同规则，Git 拒绝即返回结构化错误，不伪造选择态。Popover 默认与分支触发按钮左边缘对齐；搜索框固定在顶部，分支列表独立滚动，“创建并检出新分支”作为左对齐 action 固定在底部，不进入滚动列表。列表支持搜索；分支名在触发器中单行截断，只有真实溢出时才在鼠标悬浮或键盘聚焦后通过项目 Tooltip 查看全称。切换期间禁用发送，成功后只使用后端返回的当前分支更新本次 draft 的分支选择；snapshot 中的 `HEAD` 与 revision 只服务选择器展示、缓存校准和后续 Git mutation CAS，不进入会话创建意图。已读取 snapshot 按 `projectId + workspacePath` 进入 App 会话期最多 24 项的有界 Store；切换 workspace、进入会话再返回时先同步恢复已有 snapshot，不显示 loading spinner，同时后台读取轻量 snapshot 校准。缓存不持久化、不替代后端 revision，LRU 淘汰后按首次加载处理。
+   - 分支 snapshot 加载 effect 只允许由 `projectId + workspacePath + readOnlyBranch` 等语义作用域变化触发；父级通知 callback 的引用变化不得重新读取 snapshot 或产生 Git IPC。通知始终调用最新 callback，同一 `projectId + branch` 写回 draft 必须幂等。
    - 非 Git 工作空间仍展示“新工作树”；用户选择时先复用 AI-DYNAMIC 的 Git capability preflight，并通过既有 `GitRequirementDialog` 展示结构化错误与恢复动作。校验失败不得保存 worktree 偏好、创建 task/run 或静默回退主工作区。
    - 定时任务创建模式在与普通快速对话一致的顶部信息栏展示工作空间选择器；定时任务固定使用主工作区，不展示或继承快速对话的工作位置选择，也不向定时任务定义提交 `workLocation`。
    - composer 底栏必须按自身可用宽度而不是整窗 viewport 响应。普通快速对话底栏只承载附件、配置与发送，并与会话详情 command bar 共用紧凑尺寸基线：附件入口为 28px，模型、权限和发送为 32px；正文与底栏之间只使用留白，不绘制额外顶部分割线。WORKFLOW / AUTO 没有内联模型与权限控件时，附件与发送 split-button 在紧凑的 `xs` composer 容器档位即直接同排。Direct 保留配置型布局：最窄容器下附件独立占据操作起点，模型、权限按可用宽度换行；中等宽度中模型与权限等宽并列、发送位于下一行末列；达到桌面宽度后再恢复完整单行。模型与权限等配置选择器必须允许布局层覆盖为 `w-full / max-w-none`，禁止组件内部最小宽度决定偶然换行结果。
@@ -89,9 +92,10 @@
 ### 工作树创建与运行目录
 
 - `RunState.worktree { path, branch, fork_commit }` 是会话运行工作位置的 canonical fact；缺少该字段表示主工作区。会话 metadata 中的 `work_location` 只保存创建与重跑意图，详情页和执行路径不得从偏好反推当前 run 的事实。
-- 选择 worktree 后，run 先进入既有 `PreparingWorkspace` 阶段，在 Gold Band 用户数据目录的受管 `worktrees/` 下创建独立目录，并以源仓库当前 `HEAD` 创建专用分支。路径和分支使用 run identity 的确定性短哈希生成，不把 worktree 写入源仓库，也不使用名称反查身份。
+- 选择 worktree 后，用户选中的分支先在发起 composer 所绑定的真实工作目录完成 checkout；选择阶段只保留分支名这一用户意图，不提前保存 `HEAD`、revision 或 `forkCommit`。点击发送后，创建命令必须在同一 repository/workspace Git 写锁内校验当前检出的仍是用户所选分支，并读取该时刻的最新 `HEAD`，随后立即把它固化为本次 Run 的 `forkCommit`。因此发送前在同一分支发生任意次数 commit 都合法；若工作目录已切换到其他分支则以结构化 `git.ref-changed` 失败，不能从隐藏的新分支派发。run 随后进入既有 `PreparingWorkspace` 阶段，在当前产品通道用户数据目录的受管 `worktrees/` 下从固定 `forkCommit` 创建 Run 专属分支和独立目录；锁释放后的新 commit 不得改变已创建 Run 的 fork 点。路径和分支使用 `projectId + taskUuid + runUuid` canonical identity 的稳定 BLAKE3 短哈希生成；不得使用会在数据目录重建、产品通道切换或历史迁移后重复的 `task-006/run-001` 顺序编号。不同产品通道可以操作同一 Git repository，但独立创建的 run 必须获得不同分支；同一 run 重试必须稳定复用原 identity。不把 worktree 写入源仓库，也不使用名称反查身份。
+- `PreparingWorkspace` 是 Runtime 的 canonical 工作区阶段，可同时覆盖初始环境准备和 AI-DYNAMIC leaf 成功后的 checkpoint、fork、release 等后置转换。Composer 根据已有 graph/leaf lifecycle 事实区分展示语义：初始阶段继续显示“正在准备开发环境…”，只有 graph 正在执行 workspace transition 且拥有的 leaf 已 `completed/success` 时显示“正在处理工作区…”。该区别只属于 ViewModel 展示投影，不新增持久状态，也不改变 Direct 和普通 Workflow 的阶段映射。
 - Agent 的 `workspace_dir` 使用该 run worktree；adapter 的 `adapter_workspace_dir` 继续指向原项目工作空间，以保持配置和能力发现边界。AI-DYNAMIC 的 main workspace 使用外层 run 的实际工作目录，因此可以在会话 worktree 内继续按现有 fanout 机制创建子 worktree。
-- 创建工作树沿用 AI-DYNAMIC 已有的 Git helper、结构化错误、创建清理和停止 UI。Git 命令本身不强制中断；若用户在创建期间停止，外层 run 先持久化 Paused，创建完成后重新读取 durable run，禁止启动 Agent，并保留已创建工作树供检查。重跑 worktree 会话时从当时新的 `HEAD` 创建新的 run worktree，不复用旧 run 目录。
+- 创建工作树沿用 AI-DYNAMIC 已有的 Git helper、结构化错误、创建清理和停止 UI。创建边界失败必须返回 `workspace.worktree-create-failed` 等稳定 `RuntimeErrorInfo`，后台启动统一持久化与当前 pause timestamp 对齐的 `run_paused.controlFailure.runtimeError`；会话页按错误码显示本地化恢复文案，原始 Git diagnostic 只用于日志与诊断，不得只落入旁路文本文件或通用系统通知。Git 命令本身不强制中断；若用户在创建期间停止，外层 run 先持久化 Paused，创建完成后重新读取 durable run，禁止启动 Agent，并保留已创建工作树供检查。重跑 worktree 会话时从当时新的 `HEAD` 创建新的 run worktree，不复用旧 run 目录。
 
 ### 附件上传
 
@@ -160,6 +164,7 @@
 3. 功能入口：Agent 管理、上下文管理、运行模式管理、定时任务
 4. 置顶区：用户置顶的会话，支持折叠/展开；与工作空间列表共用会话滚动区，整体使用对称上下分隔线包裹。展开后“置顶”标题 sticky 吸附在滚动区顶部，吸附范围受置顶容器约束，首个 workspace 标题到达时自然接替
 5. 工作空间区：多 workspace 并列，每个下含 task 列表；与置顶区连续滚动，标题 sticky 吸附；hover 显示 +（新建对话）和删除按钮
+   - 普通工作空间分组标题与置顶区中的工作空间标题都必须在鼠标悬浮或键盘聚焦时通过项目 Tooltip 展示 canonical absolute path；名称继续作为视觉标题，禁止使用原生 `title`，也不得用展示名反查路径。
 
 顶部快捷入口与功能入口组成固定导航区，设置入口固定在侧栏底部；两者不随会话列表滚动。固定导航区采用紧凑但可呼吸的间距，优先把垂直空间留给置顶和工作空间会话列表，同时避免入口按钮被压得过紧。
 - 快捷入口、功能入口、“置顶”、“添加工作空间”和设置入口使用 UI 基准字号；快捷与功能入口使用统一的紧凑按钮高度。workspace 标题使用同档字号与半粗体建立分组层级，会话项通过字重和元信息颜色继续表达层级
@@ -170,6 +175,15 @@
 - 功能入口统一使用现有 Lucide 线性图标并保持同一尺寸与描边重量；上下文管理使用 `Library` 表达角色、MCP、SKILL 等可复用资源库，运行模式管理使用 `Route` 表达工作流 / AUTO 的执行路径选择。禁止为这两个入口恢复多立方体或密集节点连线图标，避免与同组单主体图标形成视觉重量落差
 - 定时任务会话的 `AlarmClock` 标识属于静态来源标识，侧边栏与会话标题统一使用 `foreground` 随主题反色；会话标题中的说明提示复用 shadcn Tooltip，视觉提示不得使用浏览器原生 `title`。
 - 侧边栏宽度拖拽的交互热区与视觉分隔必须解耦：热区可以保留便于命中的透明宽度，但侧边栏与主内容区之间只显示主内容圆角边界自身的 1px 主题 `sidebar-border` 中性分隔线；hover / 拖动时不得把整段热区染成 primary 色带。
+
+### 渐进加载契约
+
+- 会话侧栏启动分为四层接口：`get_conversation_sidebar_bootstrap` 只返回工作空间 identity、置顶 locator、最近工作空间和偏好；当前或用户展开的工作空间再通过 `get_conversation_task_page` 读取首批 Task 摘要；置顶区通过独立 `get_conversation_pinned_task_page` 读取有界摘要；只有 Workflow/AUTO Task 被展开时，才通过 `get_conversation_run_summary_page` 读取 Run 历史。基础身份、首批可见数据和逐项历史不得重新合并成一个原子接口。
+- Task 页默认 24 项，使用 `updatedAt + taskId` 稳定 cursor；Run 页默认 20 项，继续使用递减 `runId` cursor。前端已合并 Task 最多保留 120 项、单 Task 已合并 Run 最多保留 100 项。继续加载只能追加去重后的下一页，不得形成无界 DOM、缓存或历史数组。
+- 每个层级必须独立表达 `not-loaded / loading / ready / ready-empty / error`。尚未请求不得显示“暂无会话/暂无运行”，已有可用数据的后台刷新不得清空内容；错误只影响对应 workspace、置顶区或 Run 历史，并在原位置提供重试。
+- 同一资源同时只允许一个请求；所有异步提交都按资源 generation 校验。删除 Task、移除 workspace、置顶关系变化或 bootstrap 重置必须在发起 mutation 时作废相关 generation，迟到页不得把已删除实体或旧 pin 投影写回。Task 合并按 `projectId + taskUuid` 去重，只有历史缺少 UUID 时才退回 `taskId`；Run 合并在 Task identity 内按 `runId` 去重。
+- 单条损坏 Task/Run 通过结构化 `errors` 隔离，不能阻断同页其他条目。反馈会话选择器等非侧栏消费者也只能组合轻量 bootstrap 与每个 workspace 的有界首批 Task 摘要，不得借用全量历史接口。
+- Task 页从 SQLite `tasks.updated_at` 读取轻量活动投影，按活动时间递减、再按递减 `taskId` 稳定分页；canonical Task 目录身份仍由文件系统枚举，索引缺行或不可用不得隐藏 Task，缺少活动投影的历史 Task 暂按递减 `taskId` 排在已有活动时间之后。Task 摘要只读取当前页 `task.json` 和各项最新序号 Run，不扫描页外 `run.json`。Run 分页继续只按递减 `runId`，不建立 Run 活动索引。
 
 ### 工作空间管理
 - 侧边栏底部提供"添加工作空间"入口，通过系统目录选择器添加
@@ -193,8 +207,8 @@
 
 ### 会话行展示
 - 标题（自动生成或手动修改）
-- Workflow/AUTO 使用状态小圆点（绿/红/黄）；Direct 使用 Agent icon。两种标识必须占用相同宽度的身份槽位，使标题文字起点严格对齐；Direct icon 使用紧凑尺寸，不得挤占标题空间。Direct 存在当前活跃 turn 时，在 Agent icon 外显示轻量主色旋转环，结束后恢复静态 icon；不使用成功/暂停/失败颜色表达单轮结果。
-- 相对时间统一来自 task 行的 `lastActivityAt`（分/时/天/周/月/年；Workflow/AUTO 运行中不显示）。该字段由后端在会话元数据活动时间、创建时间和所有 run 的 `updatedAt` 中取真实时间最大值，不能由前端按运行模式重新选择时间源。紧凑时间区间必须连续：不足 1 分钟显示“刚刚”，1–59 分钟显示 `m`，1–23 小时显示 `h`，1–6 天显示 `d`，7–29 天显示 `w`，30–364 天显示 `mo`，365 天起显示 `y`；不得在周/月或月/年边界产生 `0mo`、`0y`。
+- Workflow/AUTO 使用状态小圆点（绿/红/黄）；Direct 使用 Agent icon。两种标识必须占用相同宽度的身份槽位，使标题文字起点严格对齐；Direct icon 使用紧凑尺寸，不得挤占标题空间。Direct 存在当前活跃 turn 时，让既有 Agent icon 使用遵守 reduced-motion 的低强度呼吸效果，结束后立即恢复静态 icon；不增加旋转环，也不使用成功/暂停/失败颜色表达单轮结果。
+- 相对时间统一来自 task 行的 `lastActivityAt`（分/时/天/周/月/年；Workflow/AUTO 运行中不显示）。该字段只取 Task 创建时间或会话元数据 `lastActivityAt`，不再聚合 Run `updatedAt`。紧凑时间区间必须连续：不足 1 分钟显示“刚刚”，1–59 分钟显示 `m`，1–23 小时显示 `h`，1–6 天显示 `d`，7–29 天显示 `w`，30–364 天显示 `mo`，365 天起显示 `y`；不得在周/月或月/年边界产生 `0mo`、`0y`。
 - hover 时在行尾显示重命名 / 置顶 / 删除操作；未 hover 时不为操作按钮预留占位，长标题只占用标题和时间可用区域
 - 删除会话前必须弹出不可撤销确认；确认文案明确说明将删除 `~/.gold-band` 下对应 task 目录，并在系统支持时优先移入回收站
 - 如果会话仍有运行中的 run，后端拒绝删除并提示用户先停止
@@ -203,15 +217,17 @@
 - run 选中态必须使用 `projectId + taskId + runId` 组合身份判断，不能只比较 `runId`；不同会话中同名 run 只允许当前会话对应项显示选中态
 
 ### 排序规则
-- 最近排序：同一 workspace 内所有 Direct、Workflow、AUTO task 统一按 `lastActivityAt` 倒序。run 列表也按 `updatedAt` 倒序，task 的 `latestRun` 指向最近有活动的 run，保证排序、状态点和界面相对时间使用同一份活动事实。
-- 时间比较必须先把内部 Unix 秒时间戳（如 `1780000000Z`）、RFC 3339 和历史本地日期时间归一化为时间值；禁止直接按原始字符串排序，否则混合格式会产生错误顺序。
+- 最近对话活动排序：同一 workspace 内所有 Direct、Workflow、AUTO Task 按 `updatedAt DESC, taskId DESC` 分页。Task 创建成功时初始化活动时间；用户 Prompt 成功写入持久队列或 durable turn admission 后更新一次；Agent Turn 正常结束、失败、异常中断或用户停止并成功写入 terminal canonical 状态后再更新一次。重复提交、校验/持久化失败、仅查看、标题更新、Run 启动/恢复、流式 delta、工具进度、诊断、迁移和启动恢复不得推进活动时间。
+- `authoring/conversation.json.lastActivityAt` 是 Task 最近对话活动的 canonical 字段，SQLite `tasks.updated_at` 是其可重建排序投影。写入顺序固定为先成功写 canonical，再以单调时间更新 SQLite；迟到事件不得把两者任一时间回退。索引失败只造成排序暂时陈旧，不改变 Prompt/终态操作的成功事实。
+- durable accepted 或 terminal 写入后的轻量 ACP session update 可携带 `taskActivityAt`；前端仅在该时间严格前进时更新 Task 相对时间并把工作空间内该 Task 移到首位，置顶区仍保持手动顺序。普通 timeline/stream event 不读取 Task 元数据且不携带该字段，同值 session update 不重排、不扩大渲染范围。
+- Run 历史继续按稳定递减 `runId` 分页，`latestRun` 指向最新序号 Run；Run `updatedAt` 不参与 Task 排序。时间展示、SQLite 投影合并和 cursor 生成必须先把内部 Unix 秒时间戳（如 `1780000000Z`）、RFC 3339 和历史本地日期时间归一化为时间值，禁止直接比较原始字符串。
 - 置顶排序：手动拖拽可调
 - 置顶会话在原工作空间下重复展示
 
 ## 状态规则
 - Workflow/AUTO 状态 = 最新 run 的最终状态；成功 = 绿色，失败/异常/停止 = 红色，暂停 = 黄色，运行中不显示时间
-- Direct 不用 run outcome 表达会话身份，不展示成功/暂停/失败色点。旋转环必须消费后端 task 级 canonical activity：同时覆盖首轮 runtime active、completed run 上的 same-session ACP follow-up 和 cancel requested；禁止只判断 `latestRun.status`，因为 Direct 后续追问期间底层 run 仍可能保持 completed。
-- 高频 ACP session update 必须直接携带从 task 根目录聚合所有 per-attempt prompt control registry 后投影的轻量 `activity`，包括 `starting / accepted / running / cancel-requested`；只有该 task 已无活动 prompt 时，终态事件才用显式 `null` 清除。`session/new` 尚未返回即停止的 prompt 也必须在 control 释放后发布该清除事件；run 因可恢复语义保持 `paused / process-interrupted` 不得阻止圆环收敛。该投影只读内存控制状态，不得为侧边栏圆环重建完整 lifecycle、session 或 timeline。前端优先消费显式 `activity`（包括 `null`），并仅对旧的无 `activity` 事件回退到 lifecycle 投影。
+- Direct 不用 run outcome 表达会话身份，不展示成功/暂停/失败色点。呼吸效果必须消费后端 task 级 canonical activity：同时覆盖首轮 runtime active、completed run 上的 same-session ACP follow-up 和 cancel requested；禁止只判断 `latestRun.status`，因为 Direct 后续追问期间底层 run 仍可能保持 completed。
+- 高频 ACP session update 必须直接携带从 task 根目录聚合所有 per-attempt prompt control registry 后投影的轻量 `activity`，包括 `starting / accepted / running / cancel-requested`；只有该 task 已无活动 prompt 时，终态事件才用显式 `null` 清除。`session/new` 尚未返回即停止的 prompt 也必须在 control 释放后发布该清除事件；run 因可恢复语义保持 `paused / process-interrupted` 不得阻止呼吸效果收敛。该投影只读内存控制状态，不得为侧边栏动效重建完整 session 或 timeline。前端在事件缺少 lifecycle 时消费显式 `activity`（包括 `null`）；同一事件同时包含 lifecycle 与 activity 时，canonical lifecycle 的静止态拥有终态优先级，必须压制迟到的非空轻量 activity，禁止终态会话重新出现呼吸效果。
 - App shell 必须跨当前页面与工作空间全局监听 run lifecycle 终态事件，并使用完整 `projectId + taskId + runId` locator 只更新普通工作空间区和置顶副本中命中的 `status/outcome`；后台 run 完成不得因为用户正在查看另一工作空间而遗漏。该事件不得重新请求或替换完整 `ConversationSidebarVm`，也不得加载后台 run 的 session tree、timeline 或正文；只有事件命中当前打开 run 时才局部刷新当前 `ConversationRunVm`。已投影的 terminal 状态不得被迟到的非终态更新回退。
 - App shell 同样必须建立唯一全局 ACP session update 订阅，并使用完整 `projectId + taskId` 只更新普通工作空间区和置顶副本中命中的 task `activity`；不得把该订阅绑定到当前打开 run。当前 run 的 session/detail 更新通过稳定回调消费同一事件，后台 task 不加载详情。重复的同 phase activity 必须保持侧栏及非目标对象 identity，不得让 token 级事件持续重渲染整棵侧栏。
 
@@ -220,7 +236,7 @@
 - 会话主页与消息流分别消费 Theme Contract v2 的 `panel`、`composer`、`message-user`、`message-assistant`、`message-disclosure`、`runtime-control`、`activity`、`tool-card` 和 `permission-card` role；Markdown 标题密度与 ACP 卡片结构仍由产品交互规则约束，主题不能改变 DOM、信息层级或业务状态。
 - 用户消息中的系统提示/运行上下文折叠块统一使用 `message-disclosure`，AI 输出判定与控制产物统一使用 `runtime-control`。两者的背景、前景、完整边框、圆角、材质和 elevation 由主题 recipe 声明；展开状态、内容分隔、joined artifact 操作、focus ring 与 invalid/destructive 变体仍由共享组件负责，组件不得读取 `themeId` 或写死正常态主题色。
 - 思考、工具审计批次和上下文压缩等非正文结构行消费 `activity`；两个内置主题的折叠 Activity 摘要统一呈现为无背景、无边框、无圆角的一行文本，静态态使用 `muted-foreground` 弱化文字，hover、键盘 focus 或展开态只切换为普通 `foreground`，不得使用主题强调色或重新增加整行背景。权限申请与 Elicitation 等等待用户介入的表面消费 `permission-card`，外层统一使用透明底、hairline 边界和零 elevation，状态强调限制在选项、按钮、错误或选中局部，不允许铺满整张决策卡；权限卡中的 Allow 系列选项静态文字使用 `accent-foreground`，hover/focus 复用 Elicitation 选项的 `accent/60` 背景与强调边界，Reject 保持中性；每轮文件变更摘要复用 shadcn `Card` 的 `card` role。会话树弹层与选择器分别复用 `popover`、`input`，不得在业务组件重新声明完整背景、perimeter、圆角或 elevation。
-- AI 正文后的复制操作属于消息级次要动作，使用 prompt-kit `MessageActions` 与 shadcn `Button` 的紧凑图标尺寸；不得以空白操作行拉大正文与下一条 Activity 之间的垂直间距，同时保留 Tooltip、键盘焦点和复制完成反馈。
+- AI 正文后的复制操作属于消息级次要动作，使用 prompt-kit `MessageActions` 与 shadcn `Button` 的紧凑图标尺寸；不得以空白操作行拉大正文与下一条 Activity 之间的垂直间距，同时保留 Tooltip、键盘焦点和复制完成反馈。复制按钮右侧显示该消息的详细时间，并跟随同一 `hover / focus-within` 状态出现：基础格式为 `HH:MM  相对时间`，超过一周追加 `MM/DD`，不同年份追加 `MM/DD/YYYY`。时间来自消息已有 timestamp 和共享时间解析函数，不新增后端字段、消息级定时器或缓存；头像下方时间继续保持既有 `HH:MM`。
 - 会话内容区标记稳定 `conversation` wallpaper surface。运行时只预加载当前可见槽，资源失败或 performance 档关闭壁纸时回退语义背景色；overlay 位于内容下方，不在每条消息重复创建合成层。
 - `ThemeAssetsContext` 只提供低频图标 descriptor，不保存二进制资源，也不承载流式消息状态；主题或明暗切换不得导致已完成 Markdown 重新解析。
 
@@ -239,6 +255,6 @@
 - 切换 workspace 后再返回时，必须恢复该 workspace 当前 Direct Agent 及其模型/权限；其他 workspace 的选择不得覆盖当前 workspace。切换期间 composer 的 workspace 与运行模式配置由同一个 App 层 workspace key 驱动，不保留组件内第二份 workspace 选择状态。
 - 快速对话 composer 切换 workspace 属于导航上下文切换，不结束未提交草稿生命周期；无论从 composer 工作空间选择器还是左侧工作空间“新会话”入口切换，正文、图片及其他附件都必须原样保留。只有提交成功或用户明确执行清空/放弃操作时才清理草稿。
 - Direct 会话创建后 Agent 身份不可修改；更换 Agent 等价于创建新的 Direct 会话。会话内模型与权限模式分别使用独立显式 override：未指定时不干预 Agent 当前配置，选择具体值后不再允许回到“不指定”，但可以继续切换其他具体值。
-- Direct 侧边栏 task 行使用 Agent icon 代替 run 成功/暂停/失败状态点；当前 turn 活跃时由 task 级 activity 在 icon 外显示旋转环，相对时间来自 `lastActivityAt`。工作流和 AUTO 继续使用 run 状态点。
+- Direct 侧边栏 task 行使用 Agent icon 代替 run 成功/暂停/失败状态点；当前 turn 活跃时由 task 级 activity 驱动 icon 低强度呼吸，相对时间来自 `lastActivityAt`。工作流和 AUTO 继续使用 run 状态点。
 - Direct task 行点击后直接进入最近会话，不渲染 `run-00x` 子列表；底层 run 仅作为内部执行与存储结构。
 - Direct 的置顶区、workspace 区和搜索结果使用同一 Agent identity VM，不允许前端组件自行从 metadata 重复推断。

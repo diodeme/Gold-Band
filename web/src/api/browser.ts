@@ -220,6 +220,19 @@ let browserGitStagePreviewApplied = false;
 const browserGitHubOperations = new Map<string, GitHubOperationVm>();
 const browserGitHubOperationListeners = new Set<(operation: GitHubOperationVm) => void>();
 
+function browserGitVersionCapabilityPreview() {
+  const status = typeof window === 'undefined'
+    ? null
+    : new URLSearchParams(window.location.search).get('gitCapability');
+  if (status === 'version-unsupported') {
+    return { status, installedVersion: '2.35.9.windows.1', minimumVersion: '2.36.0' } as const;
+  }
+  if (status === 'version-unavailable') {
+    return { status, installedVersion: null, minimumVersion: '2.36.0' } as const;
+  }
+  return null;
+}
+
 const browserGitCommits: GitCommitVm[] = [
   {
     oid: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241',
@@ -297,7 +310,10 @@ function browserAgentIdentity(agentType: string) {
 
 function browserCompletedConversationRun(): ConversationRunVm {
   const run = structuredClone(mockErrorBlockedConversationRun);
+  const worktreePath = '/preview/gold-band/worktrees/browser-completed-run';
+  const worktreeBranch = 'gold-band/conversation/browser-completed-run';
   run.runId = 'run-052';
+  run.taskUuid = 'browser-mock-task-uuid';
   run.runMode = 'direct';
   run.directConfig = { agentType: 'claude-acp' };
   run.agentIdentity = browserAgentIdentity('claude-acp');
@@ -305,14 +321,26 @@ function browserCompletedConversationRun(): ConversationRunVm {
   run.runOutcome = 'success';
   run.pauseReason = null;
   run.runtimeErrorMessage = null;
+  run.worktree = {
+    path: worktreePath,
+    branch: worktreeBranch,
+    forkCommit: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241',
+  };
+  const selectedLeaf = run.sessionTree.rounds[0]?.nodes[0]?.attempts[0];
+  if (selectedLeaf) {
+    selectedLeaf.worktreePath = worktreePath;
+    selectedLeaf.worktreeBranch = worktreeBranch;
+  }
   run.selectedSession = {
     ...mockErrorBlockedConversationSession,
     sessionId: 'browser-session-052',
     roundId: 'round-001',
     nodeId: 'dev',
     attemptId: 'attempt-001',
-    providerCwd: 'D:/Projects/code/ai/Gold-Band',
-    cwd: 'D:/Projects/code/ai/Gold-Band',
+    worktreePath,
+    worktreeBranch,
+    providerCwd: worktreePath,
+    cwd: worktreePath,
     status: 'completed',
     stopReason: 'end_turn',
     systemPromptAppend: [
@@ -321,7 +349,7 @@ function browserCompletedConversationRun(): ConversationRunVm {
       'This **system prompt** verifies the rendered/source workspace modes.',
       '',
       '- Attempt: `attempt-001`',
-      '- Workspace: `D:/Projects/code/ai/Gold-Band`',
+      `- Workspace: \`${worktreePath}\``,
     ].join('\n'),
     usage: {
       used: 25_400,
@@ -404,6 +432,7 @@ function browserCompletedConversationRun(): ConversationRunVm {
         raw: {
           changeSetId: browserTurnFileChangeSet.id,
           summary: browserTurnFileChangeSet.summary,
+          attachmentCount: browserTurnFileChangeSet.attachments.length,
         },
       },
       {
@@ -642,6 +671,20 @@ const browserTurnFileChangeSet = {
       deletedLines: 1,
     },
   ],
+  attachments: [
+    {
+      id: 'browser-turn-attachment-report',
+      relativePath: 'report.md',
+      name: 'report.md',
+      byteLength: 62,
+    },
+    {
+      id: 'browser-turn-attachment-summary',
+      relativePath: 'summary.txt',
+      name: 'summary.txt',
+      byteLength: 28,
+    },
+  ],
   limitationCodes: [],
 };
 
@@ -651,6 +694,8 @@ const browserWorkspaceFiles = new Map<string, string>([
   ['/default/src/main.rs', 'fn main() {\n    println!("Gold Band");\n}\n'],
   ['/default/src/config.json', '{\n  "workspace": "default"\n}\n'],
   ['/default/assets/logo.svg', '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="120"><rect width="240" height="120" rx="24" fill="#b9922e"/><text x="120" y="70" text-anchor="middle" fill="#18140a" font-size="24">Gold Band</text></svg>'],
+  ['/browser-attempt/attachments/report.md', '# Turn report\n\nThis attachment is editable in the workspace.\n'],
+  ['/browser-attempt/attachments/summary.txt', 'Browser attachment summary.\n'],
 ]);
 const browserFileRevisions = new Map<string, number>();
 const browserWorkspaceFileListeners = new Set<(event: WorkspaceFileChangedEventVm) => void>();
@@ -747,10 +792,14 @@ export const browserApi: RuntimeApi = {
     return () => browserScheduledOccurrenceListeners.delete(listener);
   },
   getGitCapability() {
-    return Promise.resolve({ status: 'repository-required', repoRoot: null, commonDir: null, head: null });
+    const versionCapability = browserGitVersionCapabilityPreview();
+    if (versionCapability) {
+      return Promise.resolve({ ...versionCapability, repoRoot: null, commonDir: null, head: null });
+    }
+    return Promise.resolve({ status: 'repository-required', installedVersion: '2.53.0', minimumVersion: '2.36.0', repoRoot: null, commonDir: null, head: null });
   },
   initializeGitRepository() {
-    return Promise.resolve({ status: 'head-required', repoRoot: null, commonDir: null, head: null });
+    return Promise.resolve({ status: 'head-required', installedVersion: '2.53.0', minimumVersion: '2.36.0', repoRoot: null, commonDir: null, head: null });
   },
   getSourceControlSnapshot(projectId, workspacePath) {
     const resolvedWorkspacePath = workspacePath ?? '/preview/gold-band';
@@ -791,6 +840,49 @@ export const browserApi: RuntimeApi = {
       worktrees: [{ path: resolvedWorkspacePath, headOid: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241', branch: 'refs/heads/feature/source-control', main: workspacePath == null, detached: false, locked: false, lockReason: null, prunable: false, ownership: 'user', runtimeStatus: null }],
       stashes: [],
     });
+  },
+  getGitBranchPickerSnapshot(_projectId, workspacePath) {
+    const versionCapability = browserGitVersionCapabilityPreview();
+    if (versionCapability) {
+      return Promise.reject({
+        code: `git.${versionCapability.status}`,
+        params: {
+          installedVersion: versionCapability.installedVersion,
+          minimumVersion: versionCapability.minimumVersion,
+        },
+      });
+    }
+    const resolvedWorkspacePath = workspacePath ?? '/preview/gold-band';
+    return Promise.resolve({
+      workspacePath: resolvedWorkspacePath,
+      currentBranch: 'feature/source-control',
+      headOid: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241',
+      revision: 'browser-preview-revision',
+      dirtyFileCount: 3,
+      operationInProgress: null,
+      lock: { locked: false, owner: null, operation: null },
+      branches: [
+        { name: 'feature/source-control', targetOid: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241', checkedOutWorktreePaths: [resolvedWorkspacePath] },
+        { name: 'main', targetOid: '8dc4ac2a3fc32f88e2348c0ea6682907c38acc89', checkedOutWorktreePaths: [] },
+        { name: 'gold-band/conversation/5aa4c2b45fc6', targetOid: '1dc4ac2a3fc32f88e2348c0ea6682907c38acc11', checkedOutWorktreePaths: ['/preview/gold-band/worktrees/5aa4c2b45fc6'] },
+      ],
+    });
+  },
+  async changeGitBranch(projectId, workspacePath, input) {
+    const snapshot = await browserApi.getGitBranchPickerSnapshot(projectId, workspacePath);
+    const name = input.name;
+    const targetOid = input.kind === 'create-and-switch'
+      ? snapshot.headOid ?? 'browser-preview-head'
+      : snapshot.branches.find((branch) => branch.name === name)?.targetOid ?? 'browser-preview-head';
+    return {
+      ...snapshot,
+      currentBranch: name,
+      headOid: targetOid,
+      revision: `${snapshot.revision}:${name}`,
+      branches: snapshot.branches.some((branch) => branch.name === name)
+        ? snapshot.branches
+        : [...snapshot.branches, { name, targetOid, checkedOutWorktreePaths: [snapshot.workspacePath] }],
+    };
   },
   getGitHistory(_projectId, _workspacePath, query) {
     const cursorMatch = query.cursor?.match(/^browser-history:(\d+)$/);
@@ -1422,6 +1514,7 @@ export const browserApi: RuntimeApi = {
       finishedAt: '',
       summary: { fileCount: 0, addedFiles: 0, modifiedFiles: 0, deletedFiles: 0, addedLines: 0, deletedLines: 0 },
       changes: [],
+      attachments: [],
       limitationCodes: [],
     });
   },
@@ -1465,6 +1558,23 @@ export const browserApi: RuntimeApi = {
       before: null,
       after: null,
       limitationCode: null,
+    });
+  },
+  resolveTurnAttachmentFile(locator, changeSetId, attachmentId) {
+    const attachment = changeSetId === browserTurnFileChangeSet.id
+      ? browserTurnFileChangeSet.attachments.find((candidate) => candidate.id === attachmentId)
+      : null;
+    if (!attachment) return Promise.reject({ code: 'turn-files.attachment-not-found', params: {} });
+    const canonicalPath = `/browser-attempt/attachments/${attachment.relativePath}`;
+    return Promise.resolve({
+      locator: {
+        projectId: locator.projectId,
+        canonicalPath,
+        relativePath: null,
+        scope: 'external' as const,
+      },
+      target: null,
+      externalAccessGrant: issueBrowserExternalFileGrant(canonicalPath),
     });
   },
   subscribeAcpSessionUpdates() {
@@ -1769,6 +1879,9 @@ export const browserApi: RuntimeApi = {
   recordActivity() {
     return Promise.resolve();
   },
+  reportFrontendError(_input) {
+    return Promise.resolve();
+  },
   saveMetricsSettings(_enabled: boolean, _metricsBaseUrl: string | null, _apiKey: string | null) {
     return this.getMetricsSettings();
   },
@@ -1803,7 +1916,17 @@ export const browserApi: RuntimeApi = {
   saveDesktopUiMode(_mode) {
     return Promise.resolve();
   },
-  getConversationSidebar() {
+  getConversationSidebarBootstrap() {
+    return Promise.resolve({
+      workspaces: [{ projectId: 'default', workspacePath: '/default', name: 'Default Workspace' }],
+      pinRefs: [...browserConversationTasks.values()]
+        .filter((task) => task.pinned)
+        .map((task) => ({ projectId: task.projectId, taskId: task.taskId })),
+      lastActiveWorkspaceId: 'default',
+      preferences: {},
+    });
+  },
+  getConversationTaskPage(projectId, cursor, limit = 24) {
     const previewTask: ConversationTaskRowVm = {
       projectId: 'default',
       taskId: 'mock-task',
@@ -1812,15 +1935,44 @@ export const browserApi: RuntimeApi = {
       runMode: 'workflow',
       lastActivityAt: '2026-05-02T16:08:00Z',
       runs: [],
+      runHistoryStatus: 'ready-empty',
+      runsNextCursor: null,
       pinned: false,
       pinnedOrder: null,
     };
-    const sidebar: ConversationSidebarVm = {
-      workspaces: [{ projectId: 'default', workspacePath: '/default', name: 'Default Workspace' }],
-      pinnedTasks: [],
-      tasksByWorkspace: { default: [previewTask, ...browserConversationTasks.values()] },
-    };
-    return Promise.resolve(sidebar);
+    const tasks = [previewTask, ...browserConversationTasks.values()]
+      .filter((task) => task.projectId === projectId);
+    const start = cursor ? Math.max(0, tasks.findIndex((task) => task.taskId === cursor) + 1) : 0;
+    const page = tasks.slice(start, start + limit);
+    return Promise.resolve({
+      projectId,
+      tasks: page,
+      nextCursor: start + limit < tasks.length ? page.at(-1)?.taskId ?? null : null,
+      errors: [],
+    });
+  },
+  getConversationPinnedTaskPage(cursor, limit = 24) {
+    const tasks = [...browserConversationTasks.values()].filter((task) => task.pinned);
+    const start = cursor ? Math.max(0, tasks.findIndex((task) => task.taskId === cursor) + 1) : 0;
+    const page = tasks.slice(start, start + limit);
+    return Promise.resolve({
+      tasks: page,
+      nextCursor: start + limit < tasks.length ? page.at(-1)?.taskId ?? null : null,
+      errors: [],
+    });
+  },
+  getConversationRunSummaryPage(projectId, taskId, cursor, limit = 20) {
+    const task = browserConversationTasks.get(taskId);
+    const start = cursor ? Math.max(0, (task?.runs ?? []).findIndex((run) => run.runId === cursor) + 1) : 0;
+    const runs = (task?.runs ?? []).slice(start, start + limit);
+    return Promise.resolve({
+      projectId,
+      taskId,
+      taskUuid: task?.taskUuid ?? null,
+      runs,
+      nextCursor: start + limit < (task?.runs.length ?? 0) ? runs.at(-1)?.runId ?? null : null,
+      errors: [],
+    });
   },
   acknowledgeConversationTerminalResult(projectId, taskId, eventId) {
     const task = browserConversationTasks.get(taskId);
@@ -2072,6 +2224,8 @@ export const browserApi: RuntimeApi = {
         resumable: false,
       },
       runs: [],
+      runHistoryStatus: 'not-loaded',
+      runsNextCursor: null,
       pinned: false,
       pinnedOrder: null,
     };
@@ -2096,6 +2250,8 @@ export const browserApi: RuntimeApi = {
       autoTitle: false,
       runMode: 'workflow' as const,
       runs: [],
+      runHistoryStatus: 'ready-empty' as const,
+      runsNextCursor: null,
       pinned: false,
       pinnedOrder: null,
     };
@@ -2104,16 +2260,21 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve(task);
   },
   deleteConversationTask(_projectId, _taskId) {
-    return this.getConversationSidebar();
+    browserConversationTasks.delete(_taskId);
+    return this.getConversationSidebarBootstrap();
   },
   pinConversation(_projectId, _taskId) {
-    return this.getConversationSidebar();
+    const task = browserConversationTasks.get(_taskId);
+    if (task) task.pinned = true;
+    return this.getConversationSidebarBootstrap();
   },
   unpinConversation(_projectId, _taskId) {
-    return this.getConversationSidebar();
+    const task = browserConversationTasks.get(_taskId);
+    if (task) task.pinned = false;
+    return this.getConversationSidebarBootstrap();
   },
   reorderPinnedConversations(_pins) {
-    return this.getConversationSidebar();
+    return this.getConversationSidebarBootstrap();
   },
   searchConversationTasks(_query, _limit) {
     return Promise.resolve([]);
@@ -2131,13 +2292,13 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve(ws);
   },
   addConversationWorkspace() {
-    return this.getConversationSidebar();
+    return this.getConversationSidebarBootstrap();
   },
   removeConversationWorkspace(_projectId) {
-    return this.getConversationSidebar();
+    return this.getConversationSidebarBootstrap();
   },
   syncConversationWorkspace(_workspacePath) {
-    return this.getConversationSidebar();
+    return this.getConversationSidebarBootstrap();
   },
   saveConversationPreference(_key, _value) {
     return Promise.resolve();

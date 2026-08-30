@@ -32,16 +32,27 @@ const callbacks = {
   onUnpinTask: () => {},
   onRenameTask: () => {},
   onDeleteTask: () => {},
+  onRetryBootstrap: () => {},
+  onRequestWorkspaceTasks: () => {},
+  onRequestPinnedTasks: () => {},
+  onRequestTaskRuns: () => {},
 };
 
 function sidebarVm(): ConversationSidebarVm {
   return {
+    loadStatus: 'ready',
     workspaces: [
       { projectId: 'workspace-a', workspacePath: 'D:\\workspace-a', name: 'Workspace A' },
       { projectId: 'workspace-b', workspacePath: 'D:\\workspace-b', name: 'Workspace B' },
     ],
+    pinRefs: [],
     pinnedTasks: [],
+    pinnedTaskPage: { status: 'ready-empty', nextCursor: null },
     tasksByWorkspace: { 'workspace-a': [], 'workspace-b': [] },
+    workspaceTaskPages: {
+      'workspace-a': { status: 'ready-empty', nextCursor: null },
+      'workspace-b': { status: 'ready-empty', nextCursor: null },
+    },
     lastActiveWorkspaceId: 'workspace-a',
   };
 }
@@ -55,6 +66,55 @@ afterEach(() => {
 });
 
 describe('ConversationSidebar workspace expansion intent', () => {
+  it('does not project a not-yet-loaded workspace as an empty conversation list', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const vm = sidebarVm();
+    vm.workspaceTaskPages['workspace-a'] = { status: 'loading', nextCursor: null };
+
+    try {
+      await act(async () => {
+        root.render(
+          <ConversationSidebar
+            {...callbacks}
+            vm={vm}
+            active={{ kind: 'conversation-home' }}
+            defaultExpandedWorkspaceId="workspace-a"
+          />,
+        );
+      });
+
+      expect(container.textContent).toContain('conversation.sidebar.loadingConversations');
+      expect(container.textContent).not.toContain('conversation.noConversations');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('exposes the absolute workspace path from the heading by hover or keyboard focus', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          <ConversationSidebar
+            {...callbacks}
+            vm={sidebarVm()}
+            active={{ kind: 'conversation-home' }}
+            defaultExpandedWorkspaceId="workspace-a"
+          />,
+        );
+      });
+      await act(async () => workspaceButton(container, 'workspace-a').focus());
+      expect(document.body.querySelector('[data-slot="tooltip-content"]')?.textContent).toBe('D:\\workspace-a');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('keeps workspace groups on the compact sidebar spacing token', async () => {
     const container = document.createElement('div');
     document.body.append(container);

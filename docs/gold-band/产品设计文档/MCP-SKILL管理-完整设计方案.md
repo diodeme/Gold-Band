@@ -40,6 +40,11 @@
 - `git-pr` 复用 `git-commit` 的本地 staging/commit 边界；批准前禁止 push 和 PR 写操作，批准后才允许发布经审阅的提交集合。两个协作 SKILL 都使用官方 `gh` CLI 和仓库实时规则，不硬编码 owner、repository、default branch、label 或 required check。
 - 接口级契约测试固定 canonical SKILL 的 frontmatter、审阅门禁、四类英文 Issue Forms 和 PR 模板关键章节；PR checks 必须运行该契约测试。`.agents/skills` 的环境级链接由 workspace 管理者单独设置和验证，不属于协作 SKILL 内容提交的 CI 前置条件。
 
+## 2026-08-30 Issue Forms schema 校验补充
+
+- GitHub Issue Forms 与 config 的可选 `title`、`labels`、`contact_links` 等字段只有存在有效值时才允许写入；不得使用 `title: ""`、`labels: []` 或 `contact_links: []` 表示“不设置”，因为 GitHub 会把表单配置判为无效并静默回退到空白 Issue 编辑器。
+- 协作模板契约测试必须使用 SchemaStore 的 GitHub Issue Forms 与 issue template config schema 校验解析后的 YAML 数据，不能只验证 YAML 语法、固定标题文本或文件存在性。测试直接依赖的 YAML parser 必须声明为项目 devDependency，不依赖间接依赖偶然提升到根目录。
+
 
 ---
 

@@ -687,6 +687,12 @@ const resources = {
         workspace: {
           "path-invalid-utf8": "选择的工作空间路径不是有效 UTF-8。",
           "path-resolve-failed": "无法解析选择的工作空间路径。",
+          "path-not-found":
+            "工作空间不存在或已被移动：{{workspacePath}}。请确认目录位置后重试。",
+          "path-not-directory":
+            "工作空间路径不是文件夹：{{workspacePath}}。请重新选择工作空间。",
+          "path-inaccessible":
+            "无法访问工作空间：{{workspacePath}}。请检查磁盘连接、网络位置或目录权限后重试。",
           "not-found": "找不到对应的工作空间。",
           "recent-minimum-required": "至少保留一个最近工作空间。",
           "recent-current-locked": "当前工作空间正在使用，不能从最近列表移除。",
@@ -3080,6 +3086,12 @@ const resources = {
         workspace: {
           "path-invalid-utf8": "Selected workspace path is not valid UTF-8.",
           "path-resolve-failed": "Failed to resolve selected workspace path.",
+          "path-not-found":
+            "The workspace does not exist or was moved: {{workspacePath}}. Check the folder location and try again.",
+          "path-not-directory":
+            "The workspace path is not a folder: {{workspacePath}}. Select the workspace again.",
+          "path-inaccessible":
+            "The workspace cannot be accessed: {{workspacePath}}. Check the drive, network location, or folder permissions and try again.",
           "not-found": "The workspace could not be found.",
           "recent-minimum-required": "Keep at least one recent workspace.",
           "recent-current-locked": "The current workspace is in use and cannot be removed from recent workspaces.",

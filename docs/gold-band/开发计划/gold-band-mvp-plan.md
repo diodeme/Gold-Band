@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-08-30：Task 活动时间轻量投影与终态幂等
+
+- 根因与形成路径：Task 最近活动采用 `conversation.json.lastActivityAt` 作为 canonical、SQLite `tasks.updated_at` 作为可重建排序投影的设计正确，但 activity 更新错误复用了完整 Task 搜索索引入口，每次 Turn 边界都会读取 `task.json`、`conversation.json` 和整份 `requirement.md` 后执行全字段 UPSERT；`tasks_au` 又监听任意 UPDATE，使单列时间变化也重新分词搜索正文。停止控制器与迟到 Finished 还分别以各自 `Utc::now()` 推进同一 terminal，造成一次停止可能产生第二次活动写入。问题属于正确设计下接口职责、canonical 事件时间和 FTS 触发范围实现不完整。
+- 实现：SQLite activity 建立专用短事务，只读取现有 `updated_at`，使用既有时间比较规则严格单调推进；已有行不读取或改写标题、描述、需求正文，缺行时才在锁外回退完整 Task 索引自愈。schema 升至 v6，v5 升级只替换 `tasks_au` 为 `UPDATE OF title, description, requirement_text`，activity 单列更新不触发 FTS 重建。queue 使用 durable item `createdAt`，admission 在 `begin_session_turn` 成功后使用 submission `admittedAt`；完成、失败和停止统一从对应 canonical lifecycle snapshot 校验 `turnId + terminal` 并读取 `updatedAt`。停止控制器与迟到 Finished 即使重复观察同一 terminal，也只提交同一个时间并由 canonical/SQLite 单调规则收敛为 no-op。
+- 失败证据与验收：新增最小测试分别固定“activity 更新不得清空已索引搜索正文”和“重复 Finished 不得把 terminal 时间改为观察时刻”。修复前测试执行被仓库既有 `timeline.rs/config/mod.rs` 测试缺少三个常量导入阻塞；旧源码仍提供可审计证据：activity 直接进入全量文件读取/UPSERT，Finished 无条件调用 `Utc::now()`。修复后桌面公开接口测试固定搜索正文保留、缺行自愈和受限 FTS trigger；包含 v5→v6 仅替换 trigger 且保留 Session 行在内的 activity 相关回归 18 项通过，`cargo check -p gold-band-desktop` 通过。根 crate 单元测试仍受同一无关编译错误阻塞，未将其记为通过。
+- 依赖、性能与过度设计评审：复用现有 Task 表、FTS5、canonical queue/admission/terminal 时间、SQLite mutex/WAL 与三次 best-effort retry，不新增依赖、持久字段、缓存、队列、后台线程、状态机或第二事实源。正常 activity 从三次文件读取、全文解析、全字段 UPSERT 与 FTS 重分词，收窄为一次主键查询和至多一次单列 UPDATE；时间不前进时只有查询，stream/tool/token 热路径仍为零写入。事务锁只覆盖两条小 SQL，缺行自愈才执行既有完整索引，复杂度与实际一致性风险匹配，无需为低频 Turn 边界增加专项 benchmark。
+
 ## 2026-08-29：会话重入后 Composer 终态收敛
 
 - 根因与实现：task-318 的 ACP raw 最终返回 `stopReason=end_turn`，持久化 snapshot 也已是 `liveTurnActivity=idle + latestTurnStatus=completed`；终态在页面卸载期间由全局 conversation event router 按真实 `taskUuid` 作用域接收。缺陷是主 `ACPChatDialog` 的 branch live snapshot 订阅漏传 `taskUuid`，重入时改读 `missing-task-uuid` 作用域，陈旧 optimistic 状态因此继续显示“回复生成中”。这属于 canonical lifecycle 与稳定 Task identity 设计正确、消费实现不完整。现仅补齐完整 locator 透传，后台写入、主会话重入、Agent branch 与右侧工作区统一使用 `projectId + taskUuid + run/attempt locator`，不依赖等待或切换会话触发收敛。

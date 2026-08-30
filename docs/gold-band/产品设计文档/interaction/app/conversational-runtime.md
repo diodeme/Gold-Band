@@ -716,3 +716,9 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - event pump dequeue 只是 frame delivery，不是 canonical consumption。批量预取后必须在每帧 runtime 处理成功时按 route sequence 显式 ack；terminal route watermark 只能读取该 ack 水位，不能跳过同批已出队但尚未处理的帧。
 - 诊断数据不得包含 prompt、正文、文件内容、工具输出或任意 provider payload。每帧热路径只更新固定长度计数器和 8 桶 histogram；不得逐帧落盘、保存任意 kind map 或创建随帧数增长的队列。30 分钟详细会话的目标增量为约 200～400 KiB，默认常开摘要通常为每 prompt 2～10 KiB。
 - 该埋点用于形成可证伪的阶段耗时证据，不预设 Timeline compaction 就是完整根因。只有现场 summary/window 显示某一阶段占据主要延迟后，才能进入对应数据边界的根因修复。
+
+# 2026-08-30：ACP 历史反向分页位置语义
+
+- ACP timeline 的可见历史继续以有限语义块窗口为单位分页。`startedSeq/oldestSeq` 表示逻辑项在会话中的稳定阅读位置；`endedSeq/newestSeq/lastRevision` 表示累计内容或生命周期最后更新水位。累计用户消息、Assistant 消息、Thought 或 Tool 可以较早开始并在较晚 revision 结算，这不会改变其阅读位置。
+- `beforeSeq` 反向分页必须按语义块的 `oldestSeq` 与当前窗口最早项比较，不得用 `newestSeq` 排除跨越游标的累计项；增量刷新继续使用 revision/end 水位。分页结果按既有稳定 item identity 合并，prepend 后继续使用真实 DOM item 锚点恢复阅读位置。
+- 该契约复用现有 timeline materialized index、原生滚动和有界前端窗口，不新增缓存、全量正文扫描、虚拟列表或第二套 timeline 状态。接口回归必须覆盖较早逻辑项在游标之后才终结的重叠区间，并确认最早消息可达、`hasOlder/hasNewer` 与语义块顺序一致。

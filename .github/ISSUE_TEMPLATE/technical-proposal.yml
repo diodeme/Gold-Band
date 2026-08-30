@@ -1,7 +1,5 @@
 name: Technical proposal
 description: Propose an architectural, lifecycle, data-integrity, migration, or maintainability change.
-title: ""
-labels: []
 body:
   - type: markdown
     attributes:

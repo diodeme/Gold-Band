@@ -1,6 +1,5 @@
 name: Feature request
 description: Propose new user value with clear scope and acceptance criteria.
-title: ""
 labels:
   - enhancement
 body:

@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import Ajv from "ajv";
+import { parse as parseYaml } from "yaml";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const claudeSkills = path.join(repoRoot, ".claude", "skills");
@@ -49,9 +51,30 @@ for (const skillName of skillNames) {
 }
 
 test("English issue forms cover the four canonical collaboration cases", async () => {
+  const [schemaResponse, configSchemaResponse] = await Promise.all([
+    fetch("https://json.schemastore.org/github-issue-forms.json"),
+    fetch("https://json.schemastore.org/github-issue-config.json"),
+  ]);
+  assert.equal(schemaResponse.ok, true, "Issue Forms schema must be available");
+  assert.equal(
+    configSchemaResponse.ok,
+    true,
+    "Issue template config schema must be available",
+  );
+  const validateIssueForm = new Ajv({ allErrors: true, strict: false }).compile(
+    await schemaResponse.json(),
+  );
+  const validateIssueConfig = new Ajv({ allErrors: true, strict: false }).compile(
+    await configSchemaResponse.json(),
+  );
   const templateRoot = path.join(repoRoot, ".github", "ISSUE_TEMPLATE");
   for (const templateName of issueTemplates) {
     const source = await readFile(path.join(templateRoot, templateName), "utf8");
+    assert.equal(
+      validateIssueForm(parseYaml(source)),
+      true,
+      `${templateName} violates the GitHub Issue Forms schema: ${JSON.stringify(validateIssueForm.errors)}`,
+    );
     assert.match(source, /^name: .+/m);
     assert.match(source, /^description: .+/m);
     assert.match(source, /^body:/m);
@@ -59,8 +82,16 @@ test("English issue forms cover the four canonical collaboration cases", async (
     assert.doesNotMatch(source, /[\u3400-\u9fff]/u);
   }
 
-  const config = await readFile(path.join(templateRoot, "config.yml"), "utf8");
-  assert.match(config, /^blank_issues_enabled: true$/m);
+  const configSource = await readFile(
+    path.join(templateRoot, "config.yml"),
+    "utf8",
+  );
+  assert.equal(
+    validateIssueConfig(parseYaml(configSource)),
+    true,
+    `config.yml violates the GitHub issue template config schema: ${JSON.stringify(validateIssueConfig.errors)}`,
+  );
+  assert.match(configSource, /^blank_issues_enabled: true$/m);
 });
 
 test("the PR template records verification, documentation, and design reviews", async () => {

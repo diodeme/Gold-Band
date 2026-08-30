@@ -643,9 +643,9 @@ function WorkspaceShellLayout({
     await fileContentStore.releaseProject(projectId);
     fileExplorerStore.clear(projectId);
   }, [onRemoveWorkspace]);
-  const deleteTask = useCallback((projectId: string, taskId: string) => {
+  const deleteTask = useCallback((projectId: string, taskId: string, taskUuid?: string | null) => {
     void fileContentStore.flushAll(projectId).then((saved) => {
-      if (saved) onDeleteTask(projectId, taskId);
+      if (saved) onDeleteTask(projectId, taskId, taskUuid);
     });
   }, [onDeleteTask]);
   const toggleRightWorkspace = useCallback(() => {

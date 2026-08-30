@@ -428,6 +428,75 @@ fn sqlite_index_syncs_reopens_incrementally_and_queries_date_ranges() {
 }
 
 #[test]
+fn sqlite_index_does_not_admit_managed_worktree_checkout_files() {
+    let root = tempdir().unwrap();
+    let canonical_task = root.path().join("project-a/tasks/task-real");
+    write(
+        &canonical_task.join("task.json"),
+        r#"{"version":"1.0","title":"Canonical task"}"#,
+    );
+    write(
+        &canonical_task.join("conversation.json"),
+        r#"{"version":"1.0","runMode":"workflow"}"#,
+    );
+    write(
+        &canonical_task.join("runs/run-1/run.json"),
+        r#"{"version":"1.0","status":"completed","outcome":"success","updated_at":"2026-08-30T00:00:00Z"}"#,
+    );
+    write(
+        &canonical_task.join("attachments/notes.txt"),
+        "not an analytics source",
+    );
+
+    let checkout_task = root
+        .path()
+        .join("project-a/worktrees/run-worktree/tasks/task-shadow");
+    write(
+        &checkout_task.join("task.json"),
+        r#"{"version":"1.0","title":"Checkout shadow"}"#,
+    );
+    write(
+        &checkout_task.join("conversation.json"),
+        r#"{"version":"1.0","runMode":"workflow"}"#,
+    );
+    write(
+        &checkout_task.join("runs/run-shadow/run.json"),
+        r#"{"version":"1.0","status":"completed","outcome":"failure","updated_at":"2026-08-30T00:00:00Z"}"#,
+    );
+
+    let projects = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+    let db = Utf8PathBuf::from_path_buf(root.path().join("gold-band.db")).unwrap();
+    let mut index = PersonalAnalyticsIndex::open(&db).unwrap();
+    let stats = index.sync(&projects, |_, _| {}, || false).unwrap();
+    let report = index
+        .report(
+            &PersonalAnalyticsDateRange::default(),
+            "worktree-scope".into(),
+        )
+        .unwrap();
+
+    assert_eq!(stats.reparsed_files, 3);
+    assert_eq!(report.overview.task_count, 1);
+    assert_eq!(report.overview.run_count, 1);
+    let indexed_worktree_sources: i64 = Connection::open(db.as_std_path())
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM analytics_sources WHERE sourcePath LIKE '%/worktrees/%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(indexed_worktree_sources, 0);
+    let indexed_sources: i64 = Connection::open(db.as_std_path())
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM analytics_sources", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(indexed_sources, 3);
+}
+
+#[test]
 fn bounded_task_activity_uses_only_facts_inside_the_requested_range() {
     let root = tempdir().unwrap();
     let task = root.path().join("project-a/tasks/task-1");
@@ -1270,16 +1339,18 @@ fn sqlite_sync_cancel_leaves_no_partial_index() {
 #[test]
 #[ignore = "requires an explicit local MALING_PROJECTS_ROOT and a temporary SQLite database"]
 fn real_history_sqlite_index_and_range_query_baseline() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_test_writer()
+        .try_init();
     let root = std::env::var("MALING_PROJECTS_ROOT")
         .expect("MALING_PROJECTS_ROOT must identify the local projects directory");
     let database = tempdir().unwrap();
     let db = Utf8PathBuf::from_path_buf(database.path().join("gold-band.db")).unwrap();
     let mut index = PersonalAnalyticsIndex::open(&db).unwrap();
-    let full_started = Instant::now();
     let full = index
         .sync(Utf8Path::new(&root), |_, _| {}, || false)
         .unwrap();
-    let increment_started = Instant::now();
     let increment = index
         .sync(Utf8Path::new(&root), |_, _| {}, || false)
         .unwrap();
@@ -1293,6 +1364,7 @@ fn real_history_sqlite_index_and_range_query_baseline() {
             "performance-range".into(),
         )
         .unwrap();
+    let range_ms = range_started.elapsed().as_millis();
     let all_report = index
         .report(
             &PersonalAnalyticsDateRange::default(),
@@ -1301,11 +1373,11 @@ fn real_history_sqlite_index_and_range_query_baseline() {
         .unwrap();
     println!(
         "sqlite_full_ms={} sqlite_full_index_revision={} sqlite_increment_ms={} sqlite_increment_reparsed={} sqlite_range_ms={} sqlite_range_runs={} attempts={} direct_started={} direct_completed={} direct_unknown={}",
-        full_started.elapsed().as_millis(),
+        full.duration_ms,
         full.index_revision,
-        increment_started.elapsed().as_millis(),
+        increment.duration_ms,
         increment.reparsed_files,
-        range_started.elapsed().as_millis(),
+        range_ms,
         report.overview.run_count,
         all_report.overview.attempt_count,
         all_report

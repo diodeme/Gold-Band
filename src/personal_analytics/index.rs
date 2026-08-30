@@ -11,6 +11,7 @@ use chrono::{Local, NaiveDate, TimeZone, Utc};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tracing::info;
 use walkdir::WalkDir;
 
 use crate::acp::events::{AcpTimelineItem, AcpTimelinePatch};
@@ -21,9 +22,10 @@ use super::{
     PERSONAL_ANALYTICS_SEMANTIC_MAX_ITEMS, PersonalAnalyticsNarrative, PersonalAnalyticsReport,
     PersonalAnalyticsSemanticItem, ProjectionAccumulator, RunFact, TaskFact, TokenCounters,
     attempt_key, canonicalize_personal_analytics_report, child_run_key, finalize_projection,
-    is_current_attempt_usage, is_excluded, node_group_key, node_id, node_provider,
-    normalized_tool_name, parse_prompt_usage, read_bounded_utf8_prefix, run_key,
-    safe_relative_path, string_at, task_key, timestamp_epoch, u64_at_optional,
+    is_current_attempt_usage, is_excluded, is_personal_analytics_source_name, node_group_key,
+    node_id, node_provider, normalized_tool_name, parse_prompt_usage, read_bounded_utf8_prefix,
+    run_key, safe_relative_path, should_descend_analytics_entry, string_at, task_key,
+    timestamp_epoch, u64_at_optional,
 };
 
 const ANALYTICS_INDEX_SCHEMA_VERSION: i64 = 7;
@@ -370,12 +372,15 @@ impl PersonalAnalyticsIndex {
     {
         let started = std::time::Instant::now();
         let canonical_root = projects_root.canonicalize_utf8()?;
+        let discovery_started = std::time::Instant::now();
         let files = discover_sources(&canonical_root)?;
         let existing = self.existing_sources()?;
+        let discovery_ms = discovery_started.elapsed().as_millis() as u64;
         let total = files.len() as u64;
         let mut pending = Vec::new();
         let mut reparsed_files = 0u64;
         let progress = Mutex::new(progress);
+        let comparison_started = std::time::Instant::now();
         for (index, source) in files.iter().enumerate() {
             if cancelled() {
                 bail!("analytics.cancelled");
@@ -397,7 +402,10 @@ impl PersonalAnalyticsIndex {
             reparsed_files += u64::from(source.eligible);
             pending.push(source);
         }
+        let comparison_ms = comparison_started.elapsed().as_millis() as u64;
+        let parse_started = std::time::Instant::now();
         let replacements = Self::parse_sources_parallel(pending, total, &progress, &cancelled)?;
+        let parse_ms = parse_started.elapsed().as_millis() as u64;
         let current_paths = files
             .iter()
             .map(|file| file.relative.as_str())
@@ -414,6 +422,7 @@ impl PersonalAnalyticsIndex {
         if cancelled() {
             bail!("analytics.cancelled");
         }
+        let write_started = std::time::Instant::now();
         let tx = self.conn.transaction()?;
         mark_sync(&tx, "syncing", None)?;
         let mut run_type_tasks = BTreeSet::new();
@@ -425,8 +434,9 @@ impl PersonalAnalyticsIndex {
             )?;
         }
         for (source, facts) in &replacements {
-            upsert_source(&tx, source, facts)?;
+            run_type_tasks.extend(upsert_source(&tx, source, facts)?);
         }
+        cleanup_orphaned_analytics_facts(&tx)?;
         for task_locator in run_type_tasks {
             refresh_run_types(&tx, &task_locator)?;
         }
@@ -441,12 +451,27 @@ impl PersonalAnalyticsIndex {
         )?;
         mark_sync(&tx, "idle", None)?;
         tx.commit()?;
+        let write_ms = write_started.elapsed().as_millis() as u64;
+        let duration_ms = started.elapsed().as_millis() as u64;
+        info!(
+            target: "gold_band::perf",
+            operation = "personal_analytics_sync",
+            discovered_sources = total,
+            replacement_sources = replacements.len(),
+            deleted_sources = deleted_files.len(),
+            discovery_ms,
+            comparison_ms,
+            parse_ms,
+            write_ms,
+            duration_ms,
+            "personal analytics index sync completed"
+        );
         Ok(AnalyticsIndexStats {
             index_revision,
             changed_files: reparsed_files + deleted_files.len() as u64,
             reparsed_files,
             deleted_files: deleted_files.len() as u64,
-            duration_ms: started.elapsed().as_millis() as u64,
+            duration_ms,
         })
     }
 
@@ -732,9 +757,10 @@ fn upsert_source(
     tx: &Transaction<'_>,
     source: &SourceFile,
     facts: &SourceFacts,
-) -> rusqlite::Result<()> {
+) -> rusqlite::Result<BTreeSet<String>> {
     let mut task_locators = BTreeSet::new();
-    tx.execute(
+    execute_cached(
+        tx,
         "INSERT OR REPLACE INTO analytics_sources
          (sourcePath, sourceType, fingerprint, parseStatus, errorCode, sizeBytes, activityEpoch)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -762,7 +788,8 @@ fn upsert_source(
             .next()
             .unwrap_or("Task")
             .to_string();
-        tx.execute(
+        execute_cached(
+            tx,
             "INSERT INTO analytics_tasks
              (taskLocator, projectLocator, projectName, title, mode, taskSourcePath,
               conversationSourcePath, lastActivityEpoch)
@@ -787,7 +814,8 @@ fn upsert_source(
         task_locators.insert(update.task_locator.clone());
     }
     for run in &facts.runs {
-        tx.execute(
+        execute_cached(
+            tx,
             "INSERT OR REPLACE INTO analytics_runs VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 run.run_locator,
@@ -813,11 +841,9 @@ fn upsert_source(
         upsert_attempt(tx, source, attempt, role)?;
         task_locators.insert(attempt.task_locator.clone());
     }
-    for task_locator in task_locators {
-        refresh_run_types(tx, &task_locator)?;
-    }
     for counter in &facts.counters {
-        tx.execute(
+        execute_cached(
+            tx,
             "INSERT OR REPLACE INTO analytics_counters VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
                 source.relative,
@@ -831,7 +857,8 @@ fn upsert_source(
         )?;
     }
     if let Some(semantic) = &facts.semantic {
-        tx.execute(
+        execute_cached(
+            tx,
             "INSERT OR REPLACE INTO analytics_semantic_samples VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![
                 source.relative,
@@ -842,7 +869,7 @@ fn upsert_source(
             ],
         )?;
     }
-    Ok(())
+    Ok(task_locators)
 }
 
 fn upsert_attempt(
@@ -852,7 +879,8 @@ fn upsert_attempt(
     role: AttemptSourceRole,
 ) -> rusqlite::Result<()> {
     match role {
-        AttemptSourceRole::Node => tx.execute(
+        AttemptSourceRole::Node => execute_cached(
+            tx,
             "INSERT INTO analytics_attempts
              (attemptLocator, runLocator, taskLocator, nodeSourcePath, snapshotSourcePath,
               usageSourcePath, nodeId, agent, outcome, childRunLocator,
@@ -880,7 +908,8 @@ fn upsert_attempt(
                 attempt.activity_epoch
             ],
         ),
-        AttemptSourceRole::Snapshot => tx.execute(
+        AttemptSourceRole::Snapshot => execute_cached(
+            tx,
             "INSERT INTO analytics_attempts
              (attemptLocator, runLocator, taskLocator, nodeSourcePath, snapshotSourcePath,
               usageSourcePath, nodeId, agent, outcome, childRunLocator,
@@ -904,7 +933,8 @@ fn upsert_attempt(
                 attempt.activity_epoch
             ],
         ),
-        AttemptSourceRole::Usage => tx.execute(
+        AttemptSourceRole::Usage => execute_cached(
+            tx,
             "INSERT INTO analytics_attempts
              (attemptLocator, runLocator, taskLocator, nodeSourcePath, snapshotSourcePath,
               usageSourcePath, nodeId, agent, outcome, childRunLocator,
@@ -945,11 +975,13 @@ fn delete_source_facts(
     source_path: &str,
 ) -> rusqlite::Result<BTreeSet<String>> {
     let mut run_type_tasks = BTreeSet::new();
-    tx.execute(
-        "DELETE FROM analytics_runs WHERE sourcePath = ?1",
-        [source_path],
-    )?;
-    if source_path.ends_with("/node.json") {
+    if source_path.ends_with("/run.json") {
+        execute_cached(
+            tx,
+            "DELETE FROM analytics_runs WHERE sourcePath = ?1",
+            [source_path],
+        )?;
+    } else if source_path.ends_with("/node.json") {
         let mut statement = tx.prepare(
             "SELECT DISTINCT taskLocator FROM analytics_attempts
              WHERE nodeSourcePath = ?1 AND childRunLocator IS NOT NULL",
@@ -959,7 +991,8 @@ fn delete_source_facts(
                 .query_map([source_path], |row| row.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?,
         );
-        tx.execute(
+        execute_cached(
+            tx,
             "UPDATE analytics_attempts
              SET nodeSourcePath = NULL, nodeId = 'unknown', agent = NULL,
                  outcome = NULL, childRunLocator = NULL
@@ -967,14 +1000,16 @@ fn delete_source_facts(
             [source_path],
         )?;
     } else if source_path.ends_with("/acp.snapshot.json") {
-        tx.execute(
+        execute_cached(
+            tx,
             "UPDATE analytics_attempts
              SET snapshotSourcePath = NULL, sessionElapsedSeconds = NULL, zeroFilled = 1
              WHERE snapshotSourcePath = ?1",
             [source_path],
         )?;
     } else if source_path.ends_with("/acp.prompt-usage.jsonl") {
-        tx.execute(
+        execute_cached(
+            tx,
             "UPDATE analytics_attempts
              SET usageSourcePath = NULL, inputTokens = 0, outputTokens = 0,
                  cacheReadTokens = 0, cacheWriteTokens = 0, totalTokens = 0,
@@ -983,27 +1018,45 @@ fn delete_source_facts(
             [source_path],
         )?;
     }
-    tx.execute(
-        "DELETE FROM analytics_counters WHERE sourcePath = ?1",
-        [source_path],
-    )?;
-    tx.execute(
-        "DELETE FROM analytics_semantic_samples WHERE sourcePath = ?1",
-        [source_path],
-    )?;
+    if source_path.ends_with("/acp.prompt-usage.jsonl")
+        || source_path.ends_with("/acp.timeline.jsonl")
+        || source_path.ends_with("/observability.snapshot.json")
+    {
+        execute_cached(
+            tx,
+            "DELETE FROM analytics_counters WHERE sourcePath = ?1",
+            [source_path],
+        )?;
+    }
+    if source_path.ends_with("/requirement.md") {
+        execute_cached(
+            tx,
+            "DELETE FROM analytics_semantic_samples WHERE sourcePath = ?1",
+            [source_path],
+        )?;
+    }
+    if source_path.ends_with("/task.json") {
+        execute_cached(
+            tx,
+            "UPDATE analytics_tasks SET title = taskLocator, taskSourcePath = NULL WHERE taskSourcePath = ?1",
+            [source_path],
+        )?;
+    } else if source_path.ends_with("/conversation.json") {
+        execute_cached(
+            tx,
+            "UPDATE analytics_tasks SET mode = 'unknown', conversationSourcePath = NULL,
+                    lastActivityEpoch = NULL WHERE conversationSourcePath = ?1",
+            [source_path],
+        )?;
+    }
+    Ok(run_type_tasks)
+}
+
+fn cleanup_orphaned_analytics_facts(tx: &Transaction<'_>) -> rusqlite::Result<()> {
     tx.execute(
         "DELETE FROM analytics_attempts
          WHERE nodeSourcePath IS NULL AND snapshotSourcePath IS NULL AND usageSourcePath IS NULL",
         [],
-    )?;
-    tx.execute(
-        "UPDATE analytics_tasks SET title = taskLocator, taskSourcePath = NULL WHERE taskSourcePath = ?1",
-        [source_path],
-    )?;
-    tx.execute(
-        "UPDATE analytics_tasks SET mode = 'unknown', conversationSourcePath = NULL,
-                lastActivityEpoch = NULL WHERE conversationSourcePath = ?1",
-        [source_path],
     )?;
     tx.execute(
         "DELETE FROM analytics_tasks
@@ -1012,11 +1065,19 @@ fn delete_source_facts(
            AND NOT EXISTS (SELECT 1 FROM analytics_attempts WHERE taskLocator = analytics_tasks.taskLocator)",
         [],
     )?;
-    Ok(run_type_tasks)
+    Ok(())
+}
+
+fn execute_cached<P>(tx: &Transaction<'_>, sql: &str, params: P) -> rusqlite::Result<usize>
+where
+    P: rusqlite::Params,
+{
+    tx.prepare_cached(sql)?.execute(params)
 }
 
 fn refresh_run_types(tx: &Transaction<'_>, task_locator: &str) -> rusqlite::Result<()> {
-    tx.execute(
+    execute_cached(
+        tx,
         "UPDATE analytics_runs SET unitType = CASE
            WHEN (SELECT mode FROM analytics_tasks WHERE taskLocator = ?1) = 'direct' THEN 'direct-session'
            WHEN (SELECT mode FROM analytics_tasks WHERE taskLocator = ?1) = 'auto'
@@ -1034,17 +1095,27 @@ fn refresh_run_types(tx: &Transaction<'_>, task_locator: &str) -> rusqlite::Resu
 
 fn discover_sources(root: &Utf8Path) -> Result<Vec<SourceFile>> {
     let mut files = Vec::new();
-    for entry in WalkDir::new(root).follow_links(false).sort_by_file_name() {
+    for entry in WalkDir::new(root)
+        .follow_links(false)
+        .sort_by_file_name()
+        .into_iter()
+        .filter_entry(should_descend_analytics_entry)
+    {
         let entry = entry?;
         if !entry.file_type().is_file() {
             continue;
         }
-        let path = Utf8PathBuf::from_path_buf(entry.path().to_path_buf())
-            .map_err(|path| anyhow::anyhow!("invalid UTF-8 analytics path: {}", path.display()))?;
-        let Some(relative) = safe_relative_path(root, &path) else {
+        let Some(file_name) = entry.file_name().to_str() else {
             continue;
         };
-        let file_name = path.file_name().unwrap_or_default();
+        if !is_personal_analytics_source_name(file_name) {
+            continue;
+        }
+        let path = Utf8PathBuf::from_path_buf(entry.path().to_path_buf())
+            .map_err(|path| anyhow::anyhow!("invalid UTF-8 analytics path: {}", path.display()))?;
+        let Some(relative) = safe_relative_path(root, &path, entry.file_type().is_symlink()) else {
+            continue;
+        };
         if is_excluded(&relative, file_name) {
             continue;
         }

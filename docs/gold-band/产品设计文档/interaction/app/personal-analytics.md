@@ -50,7 +50,7 @@
 5. AUTO：`dynamic-run.json`、`graph.json`。
 6. 可观测事实：`observability.snapshot.json`、`events.jsonl`。
 
-默认排除 `acp.raw.jsonl`、`doctor/`、诊断日志、数据库/WAL、ZIP、PID、class 和二进制文件。客户端扫描器在 canonical root 内拒绝 symlink/reparse point 和越界路径；客户端不会按 Agent 返回的 locator 回读原文件，prompt 也要求 Agent 只处理已内联进语义批次的文本。这两项客户端约束不会在技术上隔离通用 ACP/provider 已有的文件能力。
+默认排除 `acp.raw.jsonl`、`doctor/`、诊断日志、数据库/WAL、ZIP、PID、class、二进制文件和受管 `runtime/worktrees/` checkout。扫描器使用 `WalkDir(follow_links=false)` 在 canonical root 内剪枝排除目录，只允许既有 canonical 文件名清单在 metadata/fingerprint 前进入候选集；普通源码、附件和 checkout 内同名 JSON 不进入 `analytics_sources`。路径按同一次 canonical root 遍历结果生成相对 locator，并显式拒绝 symlink/reparse point 和越界路径。客户端不会按 Agent 返回的 locator 回读原文件，prompt 也要求 Agent 只处理已内联进语义批次的文本。这两项客户端约束不会在技术上隔离通用 ACP/provider 已有的文件能力。
 
 统计只接受当前 canonical 模型：旧 `turn.json`、task 根目录 usage、无 `kind` 的 usage 记录和 baseline totals 均不进入确定性指标；其中 task 根目录 usage 直接归为非 eligible source，不计入已解析来源覆盖率。`promptCompleted` 本身足以证明对应 turn 已开始；只有 `promptStarted` 而没有 completion 的 turn 进入 unknown。不得从 `availableCommands` 推断 Skill 调用，也不得用包含完整命令或路径的 fallback title 作为工具名称。
 
@@ -115,7 +115,7 @@ Agent 最终只能输出 `PersonalAnalyticsNarrative`，包含 `schemaVersion + 
 
 ## 7. 性能与数据完整性
 
-- 首次索引在 Rust blocking pool 中流式解析全部 eligible canonical 文件；后续按 `path + size + mtime + type` fingerprint 增量解析新增、变化和损坏文件，并删除消失源的派生事实。
+- 首次索引在 Rust blocking pool 中流式解析全部 eligible canonical 文件；后续按 `path + size + mtime + type` fingerprint 增量解析新增、变化和损坏文件，并删除消失源的派生事实。同步只枚举 canonical 候选，批次事务内按 source type 清理旧事实，末尾一次清理 orphan attempt/task，并按唯一 task locator 一次刷新 run type；重复 SQL 使用 rusqlite 有界 statement cache。
 - 日期切换只执行 SQLite 聚合查询，不重新解析历史文件，也不向 React 传递全历史明细。
 - 不把完整 timeline、附件或 prompt 集合加载进内存，不在 React 计算全历史聚合。
 - 最近任务和排行榜最多各 10 条，节点、工具、Agent、Skill 聚合最多各 12 条；页面 DTO 保持有界。
@@ -127,6 +127,12 @@ Agent 最终只能输出 `PersonalAnalyticsNarrative`，包含 `schemaVersion + 
 SQLite 是唯一派生索引存储，始终可删除重建；无源文件变化时不推进 `indexRevision`，避免可用洞察被无效失效。
 
 2026-08-19 release 同轮复测：SQLite 首次全量索引约 `19.330s`，既有投影路径约 `17.600s`；增量同步约 `9.758s`，只重解析测试期间变化的 `1` 个文件；日期范围聚合查询约 `64ms`。范围查询和增量收益达标，但首次索引比历史 `6.032s` 门槛和当前可比投影路径分别慢约 `13.298s`、`1.730s`；该差距保持未关闭，后续必须继续定位解析、SQLite 写入与磁盘冷/热缓存成本。
+
+2026-08-30 release 真实根 `C:\Users\unlik\.gold-band\projects` 复测：全树约 188,985 文件/15.33 GB，其中受管 worktree 单独约 149,945 文件/7.96 GB，最终 canonical 候选 9,639 个、约 298 MB，timeline 约 274 MB。剪枝 worktree、候选名前置过滤、取消逐文件 canonicalize、批次化 orphan/run-type 维护并复用 statement cache 后，首次同步 `5.786s`、第二轮 `1.677s`（期间 1 个活跃文件变化）、日期范围查询 `121ms`。阶段 timing 为发现 `2.343s`、并行解析 `0.830s`、SQLite 写入 `2.611s`；230 runs、2033 attempts 与 Direct 1336/1103/233 的身份及总量保持一致。
+
+同一合并 revision 的最终验收覆盖 Rust lib 默认并行、全部 integration target、desktop 全量、Web 全量与生产构建；扫描实现未因后续测试收口发生变化，因此上述 release 真实数据基线继续作为本 revision 的性能证据。
+
+Agent 报告解析只消费本轮 `AcpPromptOutput` 的有界消息文本和稳定/匿名边界；`AcpPromptMessageOutput.source` 属于 Runtime control 的 canonical timeline 标注 locator，不作为个人分析报告选择条件。没有真实 branch/item locator 的隔离 fixture 必须使用 `None`，不得伪造来源身份。
 
 ## 8. 验收边界
 
@@ -149,7 +155,7 @@ SQLite 是唯一派生索引存储，始终可删除重建；无源文件变化�
 
 `.maling/projects` canonical 文件仍是唯一权威事实源；SQLite 是可重建的分析投影索引。索引扩展现有 `gold-band.sqlite`，不创建第二个数据库，不把 SQLite 写回业务文件。
 
-首次生成时执行全量只读扫描、解析并写入索引；后续生成执行增量同步。同步时枚举 canonical 文件并比较 `path + fingerprint`，只重新读取新增或变化文件，删除已消失文件的派生事实，并以单调 `index_revision` 标识索引版本。不使用目录 mtime 作为唯一变化依据；索引损坏或版本不匹配时允许整体重建。
+首次生成时执行全量只读扫描、解析并写入索引；后续生成执行增量同步。同步时先剪枝受管 worktree/诊断/构建目录，只枚举 canonical 文件名候选并比较 `path + fingerprint`，只重新读取新增或变化文件，删除已消失文件的派生事实，并以单调 `index_revision` 标识索引版本。不使用目录 mtime 作为唯一变化依据；旧索引中的非候选或 worktree source 会在下一轮作为消失源清理，索引损坏或版本不匹配时允许整体重建。
 
 物理模型压缩为 8 张表，逻辑领域通过视图保留：
 
@@ -200,13 +206,13 @@ Agent 洞察基于当前日期范围和当前 `index_revision` 的投影生成�
 - 根因评估：当前痛点来自数据生命周期设计不足。日期筛选要求同一历史数据可反复按不同范围查询，用户增量使用要求避免每次全量重读；AI 与确定性报告耦合又让统计展示依赖 Agent 成功。SQLite 派生索引和洞察独立生命周期是根本修复。
 - 现成能力评估：复用现有 SQLite/rusqlite、WAL、事务、迁移机制、原生日期输入、shadcn/ui 和 IntersectionObserver。行业上以文件为事实源、数据库为可重建投影属于成熟实践；无需引入第三方分析数据库。
 - 过度设计评估：新增分析索引是必要的，但物理表压缩为 8 张并用视图保留逻辑领域，不创建第二个数据库、不保存无限报告历史、不建设通用缓存平台。语义样本、洞察结果和排行仍必须有界。当前设计没有引入假设性的队列、并发框架或服务端同步。
-- 性能评估：首次全量解析仍为 O(eligible canonical bytes)；当前 release 约 `19.330s`，略慢于同轮既有投影路径 `17.600s`，且未达到历史 `6.032s` 门槛。增量同步只读取新增或变化文件，实测约 `9.758s`；日期切换只执行索引化 SQLite 聚合，实测约 `64ms`；页面导航不触发全报告重渲染。
+- 性能评估：首次全量解析仍为 O(canonical candidates + eligible bytes)，但不再随受管 worktree 或普通附件/源码总量增长；2026-08-30 release 真实根首次 `5.786s`，优于历史 `6.032s` 门槛，带 1 个活跃变化文件的第二轮 `1.677s`，日期范围查询 `121ms`。结构化 timing 分离发现、比较、解析和 SQLite 写入；页面导航不触发物理历史扫描或全报告重渲染。
 - 数据完整性评估：文件是权威源，SQLite 可重建；写入采用事务和幂等 upsert，删除源文件时同步删除派生事实。项目、usage、事件计数和洞察明细视图没有独立事实版本，必须从 8 张物理表重建。洞察缓存仅对 completed payload 按 range/schema/indexRevision/agentType 建唯一索引；processing/failed/cancelled 只存在于 `AgentInsightOperation` durable lifecycle，不在 SQLite 建立平行事实。报告必须携带 `index_revision`，防止旧洞察或旧报告与新索引混合。
 - 主要风险与缓解：fingerprint 计算增加元数据读取，但远低于重复解析 JSONL；日期归属存在跨天任务边界，必须显式使用最后活动时间口径；索引迁移失败需保留旧报告并支持重建；洞察缓存必须绑定 range、schema 和 index revision。
 
 ### 9.5 优化验收门槛
 
-- 首次全量索引性能未达到 2026-08-17 `6.032s` 门槛：当前约 `19.330s`，也比同轮既有投影路径 `17.600s` 慢约 `1.730s`；该差距保持未关闭状态，禁止标记为达标。增量同步只读取变化文件，并用测试固定。
+- 首次全量索引必须不劣于 2026-08-17 `6.032s` 门槛；2026-08-30 在 9,639 个 canonical 候选、约 298 MB 真实数据上达到 `5.786s`，该项关闭。增量同步只读取变化文件，并用接口测试固定；同轮带 1 个活跃变化文件为 `1.677s`。
 - 任意两个日期范围的 run、task、Token、累计执行耗时和覆盖率统计均可从索引复算并与接口结果一致。
 - `analytics_projects`、`analytics_usage`、`analytics_event_counts` 和 `analytics_insights` 视图与物理表聚合结果一致，视图不持有第二份事实。
 - 修改、新增、删除、损坏和未知版本文件均不会造成半写入索引或全量失败。

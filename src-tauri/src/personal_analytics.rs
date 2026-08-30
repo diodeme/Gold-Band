@@ -1566,6 +1566,7 @@ mod tests {
         client::AcpPromptMessageOutput {
             text: text.to_string(),
             has_stable_id,
+            source: None,
         }
     }
 

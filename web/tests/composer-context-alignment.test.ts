@@ -63,7 +63,7 @@ describe('composer context horizontal alignment', () => {
 
   it('keeps both composer surfaces and image previews on the full-contrast theme boundary', () => {
     expect(composerLayoutSource).toContain('rounded-2xl border-border bg-card/60');
-    expect(composerLayoutSource).toContain("stackSurfaceClassName: 'border border-border [border-width:var(--acp-session-composer-border-width)]'");
+    expect(composerLayoutSource).toContain("stackSurfaceClassName: 'border border-border shadow-none [border-width:var(--acp-session-composer-border-width)]'");
     expect(composerContextSource).toContain('rounded-md border border-border object-cover');
   });
 

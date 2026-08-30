@@ -49,6 +49,7 @@ import {
   resetAcpResourceCache,
   storeAcpLoadedEvents,
 } from '@/components/acp/ACPChatDialog';
+import { GitBranchPickerSnapshotProvider } from '@/components/git/GitBranchPickerSnapshotContext';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import type { AcpSessionVm, ConversationAttemptLifecycleVm } from '@/types';
 
@@ -219,6 +220,53 @@ describe('ACP composer render isolation', () => {
       expect(container.querySelector('[data-marker]')?.getAttribute('data-marker'))
         .toBe('parent-update');
       expect(mergeAcpEventWindowsCounter).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('joins a branch-only session info tab to the composer surface', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <GitBranchPickerSnapshotProvider>
+            <TooltipProvider>
+              <ACPChatDialog
+                session={completedSession()}
+                projectId="project-render"
+                taskId="task-render"
+                runId="run-render"
+                roundId="round-render"
+                nodeId="node-render"
+                attemptId="attempt-render"
+                showBranchControl
+                showSystemPromptAction={false}
+                showRawFramesAction={false}
+                usageCompact
+              />
+            </TooltipProvider>
+          </GitBranchPickerSnapshotProvider>,
+        );
+      });
+
+      expect(container.querySelector('[data-acp-session-info-item="branch"]')).not.toBeNull();
+      const composerRail = container.querySelector('[data-acp-conversation-rail="composer"]');
+      expect(composerRail?.classList.contains(
+        '[--acp-composer-rail-shadow:var(--gb-material-shadow)]',
+      )).toBe(true);
+      expect(composerRail?.classList.contains(
+        'dark:[--acp-composer-rail-shadow:var(--gb-elevation-overlay)]',
+      )).toBe(true);
+      expect(composerRail?.classList.contains(
+        '[filter:drop-shadow(var(--acp-composer-rail-shadow))]',
+      )).toBe(true);
+      expect(composerRail?.className.match(/drop-shadow\(/gu) ?? []).toHaveLength(1);
+      expect(composerRail?.className).not.toContain('--gb-material-edge-shadow');
+      const promptInput = container.querySelector('[data-slot="prompt-input"]');
+      expect(promptInput?.classList.contains('rounded-tl-none')).toBe(true);
     } finally {
       await act(async () => root.unmount());
     }

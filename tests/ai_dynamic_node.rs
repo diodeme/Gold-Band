@@ -255,6 +255,7 @@ impl DynamicProvider {
                     "provider is temporarily unavailable",
                     json!({}),
                 )),
+                runtime_control_output: None,
             });
         }
         let (status, output_artifact) = match (
@@ -307,6 +308,7 @@ impl DynamicProvider {
             }),
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 

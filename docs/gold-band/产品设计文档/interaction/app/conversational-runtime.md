@@ -23,6 +23,14 @@ Task 最近对话活动只在三类 durable 边界推进：Task 创建成功、�
 
 ## 运行时数据与内存边界
 
+### 会话运行准入与工作空间访问
+
+- 创建、重跑、继续、恢复或发送会话输入时，后端先按 `project_id` 解析持久化的 workspace，再检查路径存在、类型为目录且目录可读；校验通过后才允许创建 Run / Attempt 或准入 ACP prompt turn。
+- workspace 的 `metadata/read_dir` 检查属于可能被网络盘、断开磁盘或权限服务阻塞的文件 I/O，所有运行准入命令必须是 async Tauri command，并在既有 blocking pool 中完成检查后再继续；不得占用 IPC async/UI 调度线程，也不得改变准入顺序。
+- 校验失败返回 `workspace.path-not-found`、`workspace.path-not-directory` 或 `workspace.path-inaccessible`，参数固定包含 `projectId` 与 `workspacePath`；前端负责按当前语言生成可执行提示，并保留既有历史和 composer 输入。
+- 工作空间不可用不改变 Agent doctor 结果。历史读取、侧栏展示、停止、删除等非运行准入操作继续使用持久化 workspace 事实，不因当前目录不可访问而被统一拦截。
+- 校验仅位于会话运行准入层；ACP adapter 启动层不重复校验、不解释 Windows 进程错误码，也不增加进程边界兜底。
+
 - `acp.timeline.jsonl` 是会话展示事件的规范索引，采用“canonical base + append patch journal”模型；活动 runtime 内存只保存当前 text/thought/plan 累计流、未终态 tool call、未决 permission/elicitation、session metadata、usage 与 timing aggregate。完成并已持久化的历史事件必须立即从热状态释放，不能按完整会话历史常驻 `HashMap`。
 - 每个 root/Agent branch 的 timeline 同目录维护可删除重建的 `*.index.json` 物化投影。V8 index 保存 generation、checkpoint offset/revision、最新 item locator、语义块 locator 与每块 `lastRevision`、Todo、pending interaction、当前 processing retry identity、commands、usage/timing、Agent transcript 摘要及有界 runtime hot projection；timeline 仍是唯一正文事实。Agent launch 必须按 `_meta.goldBandConversation.launchedAgentExecutionId` canonical identity 形成独立语义块，不能并入普通 activity summary，否则分页总数与 Agent link 展示会丢失。append 在 timeline 文件锁内 flush 后增量更新内存 projection，每累计最多 256 个 patch 或 session terminal/正常关闭时原子 checkpoint。进程在 timeline 已提交、index 尚未替换之间退出时，只回放 checkpoint 后最多 256 条尾记录；index 缺失、版本不符、前缀校验失败或 compaction 改变 offset 时，在 blocking worker pool 重建一次并推进 generation。旧 format 必须重建，不能用 serde 默认值静默补齐停止、revision delta、runtime restore 或 Agent link 所需字段。健康 JSONL append 只检查文件末字节，只有检测到中断尾行才扫描恢复，禁止每次 append 重读完整文件。
 - 会话详情、重进与分页统一通过 TimelineStore index 定位当前语义页，正常产品路径不得再调用 legacy 全量 timeline parser。首次打开旧会话允许一次 O(N) 迁移；之后只返回当前页、pending/轻量 projection 与 generation/revision 水位。完整 parser、旧 semantic pagination 和 Agent rebuild 只保留在测试构建中作为等价 oracle；usage repair、diagnostics、raw fallback 与 stale lifecycle 修复不得混入普通 session query。
@@ -546,6 +554,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 
 - 只有 `RuntimeControlled` turn 同时拥有本轮 active output contract 时，后端才扫描控制候选。`PostTurnProjection` 与 bootstrap `InlineControl` 均保持最近最多 3 条 Agent message 的既有倒序选择规则；Direct / `NonRuntimeControlled` 完全不扫描，即使消息正文是合法 JSON 也按普通对话处理。
 - 后端 output evaluation 在同一次扫描中返回 artifact、命中的 canonical `branchId + itemId` 和 JSON span，再按该来源精确标注对应 ACP `textDelta` item 的 `raw.runtimeControlOutputDisplay`。合法结果与没有合法结果时保留的最新非法候选都遵守同一来源契约；完全没有候选时不标注。Timeline 与前端不得重新扫描正文、寻找最新 JSON 或把后续 Direct 消息关联为先前 Runtime 输出。
+- Synthetic provider 或隔离 fixture 直接构造 artifact、但没有真实 ACP timeline message locator 时，`runtime_control_output/source` 必须为 `None`；不得为通过接口构造而伪造 branch/item identity。涉及 timeline/config 可调边界的模块内测试必须显式引用同模块 canonical 常量，不复制或依赖失效的隐式作用域。
 - 前端只消费后端已经写到具体消息上的标记，不按消息内容全局猜测 JSON。标注 span 与当前消息 identity/正文不一致时后端拒绝写入，不 fallback 到其他消息。
 - 带标记的 assistant 消息如果同时包含自然语言和控制 JSON，自然语言继续作为普通 assistant 消息气泡展示，控制 JSON 单独展示为 `GOLD BAND 工作流控制` 折叠控制条。
 - 带标记的 assistant 消息如果仅包含控制 JSON，不展示普通消息气泡，只展示折叠控制条。

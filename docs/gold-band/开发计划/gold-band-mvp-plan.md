@@ -57,9 +57,9 @@
 
 ## 2026-08-29：删除会话成功后误报 Run not found
 
-- 根因与实现：删除 command 在后端先将 Task 目录移入回收站，再完成清理并返回新侧栏；前端此前直到 command 成功后才增加 navigation request generation，导致这段窗口内当前 Run 的旧 `getConversationRun` 仍有权展示失败。该问题属于 canonical identity 设计正确、删除生命周期 fencing 实现不完整。现复用既有 request generation，在删除 IPC 发起前按 `projectId + taskUuid` 作废目标实体请求；详情错误展示也统一校验 request generation 与完整 Run identity。删除成功后再清理侧栏、Run/ACP/右侧工作区缓存并同步首页路由；删除失败且页面仍指向目标实体时重新触发权威详情读取。未按 `run not found` 文本特判，也不会误伤复用同 `taskId` 的新 UUID。
-- 失败证据与验收：最小测试固定删除调用与请求作废的执行顺序；修复前删除调用位于片段偏移 69、请求作废直到偏移 648 才发生，20 项中仅该断言失败。修复后同一用例转绿，并增加当前 UUID、复用 UUID、无 UUID deep link 以及旧失败不得显示为全局错误的接口断言；定向导航测试 22 项全部通过，扩大回归 6 个测试文件共 87 项全部通过，TypeScript、Web 生产构建与隔离 WB/MALING 桌面构建通过。
-- 依赖、过度设计与性能评审：复用 React 事件链、现有 navigation request generation、canonical `taskUuid` 与 Tauri command Promise，不新增依赖、状态机、持久字段、缓存、队列、轮询或后端兼容层。每次删除只增加常数次 O(1) 身份比较和 generation 自增；正常详情加载、事件订阅、LRU 上限、I/O、请求数量与渲染范围不变，无需专项 benchmark。
+- 根因与实现：删除 command 在后端先将 Task 目录移入回收站，再完成清理并返回新侧栏；第一处缺陷是前端此前直到 command 成功后才增加 navigation request generation，导致窗口内旧 `getConversationRun` 仍有权展示失败。补齐 fencing 后仍有偶现，是因为 Run 导航成功时无条件创建并提交等价 `conversationPage` 对象，而该 state 本身是加载 effect 依赖，形成“读取成功 → 等价 state 写入 → 再读取”的闭环；删除前的排队更新可以在 generation 作废后启动一条新请求。工作区壳还丢失了侧栏传入的 `taskUuid`。该问题属于 canonical identity 设计正确，但 React identity 收敛和跨层透传实现不完整。现保留既有 generation fencing，并新增无状态的 canonical page helper：仅首次缺少或变化时补齐 UUID，相同 UUID 直接返回原对象；工作区壳同步透传 UUID。未增加删除状态机，也未按 `run not found` 文本特判。
+- 失败证据与验收：生产日志中同一 `task-048/run-001` 在 `17:59:29.541` 至 `17:59:31.245` 之间约每 80–120ms 重复成功读取，单次 10–14ms；删除期间 `17:59:31.603` 出现唯一 `status=error`，随后 `17:59:31.932` 侧栏成功返回，和偶现窗口一致。原有最小测试固定删除调用先于请求作废时会失败；本轮 canonical page identity 测试修复前 23 项中仅该断言因 helper 缺失失败，工作区壳 UUID 透传测试独立失败。实现后两组定向测试共 25 项全部通过；扩大回归、构建与桌面实操结果待本轮最终验收补充。
+- 依赖、过度设计与性能评审：复用 React 对象 identity、现有 navigation request generation、canonical `taskUuid` 与 Tauri command Promise，不新增依赖、状态机、持久字段、缓存、队列、轮询或后端兼容层。canonicalization 和删除透传均为 O(1)；修复前等价 state 闭环会在页面停留期间无界触发每秒约 8–12 次 Run 磁盘读取，修复后只保留首次 canonical identity 补齐及既有事件驱动刷新，降低 I/O 与根组件重渲染，无需额外缓存或专项 benchmark。
 
 ## 2026-08-28：AI-DYNAMIC 外层交接与跨 group 协调投影
 

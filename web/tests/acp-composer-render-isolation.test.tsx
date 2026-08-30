@@ -4,8 +4,9 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { getAgentCommandCatalog, streamdownRender } = vi.hoisted(() => ({
+const { getAgentCommandCatalog, mergeAcpEventWindowsCounter, streamdownRender } = vi.hoisted(() => ({
   getAgentCommandCatalog: vi.fn(),
+  mergeAcpEventWindowsCounter: vi.fn(),
   streamdownRender: vi.fn(),
 }));
 
@@ -27,7 +28,27 @@ vi.mock('@/api', async () => {
   };
 });
 
-import { ACPChatDialog } from '@/components/acp/ACPChatDialog';
+vi.mock('@/lib/acp-event-reducer', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/acp-event-reducer')>(
+    '@/lib/acp-event-reducer',
+  );
+  return {
+    ...actual,
+    mergeAcpEventWindows: (
+      ...args: Parameters<typeof actual.mergeAcpEventWindows>
+    ) => {
+      mergeAcpEventWindowsCounter();
+      return actual.mergeAcpEventWindows(...args);
+    },
+  };
+});
+
+import {
+  ACPChatDialog,
+  createAcpEventWindowCacheKey,
+  resetAcpResourceCache,
+  storeAcpLoadedEvents,
+} from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import type { AcpSessionVm, ConversationAttemptLifecycleVm } from '@/types';
 
@@ -119,6 +140,7 @@ function nonRuntimeControlledLifecycle(): ConversationAttemptLifecycleVm {
 }
 
 beforeEach(() => {
+  resetAcpResourceCache();
   getAgentCommandCatalog.mockResolvedValue({
     agentType: 'test',
     projectId: 'worktree-project',
@@ -145,6 +167,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetAcpResourceCache();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   streamdownRender.mockClear();
@@ -153,6 +176,54 @@ afterEach(() => {
 });
 
 describe('ACP composer render isolation', () => {
+  it('does not restore and merge the historical window on an unrelated parent render', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const session = completedSession();
+    const eventWindowKey = createAcpEventWindowCacheKey({
+      projectId: 'project-render',
+      taskId: 'task-render',
+      runId: 'run-render',
+      roundId: 'round-render',
+      nodeId: 'node-render',
+      attemptId: 'attempt-render',
+    });
+    storeAcpLoadedEvents(eventWindowKey, session.events, 288);
+    const view = (marker: string) => (
+      <div data-marker={marker}>
+        <TooltipProvider>
+          <ACPChatDialog
+            session={session}
+            projectId="project-render"
+            taskId="task-render"
+            runId="run-render"
+            roundId="round-render"
+            nodeId="node-render"
+            attemptId="attempt-render"
+            showSystemPromptAction={false}
+            showRawFramesAction={false}
+            usageCompact
+          />
+        </TooltipProvider>
+      </div>
+    );
+
+    try {
+      await act(async () => root.render(view('initial')));
+      expect(mergeAcpEventWindowsCounter).toHaveBeenCalled();
+      mergeAcpEventWindowsCounter.mockClear();
+
+      await act(async () => root.render(view('parent-update')));
+
+      expect(container.querySelector('[data-marker]')?.getAttribute('data-marker'))
+        .toBe('parent-update');
+      expect(mergeAcpEventWindowsCounter).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('keeps the conversation shell mounted when an established session payload is temporarily absent', async () => {
     const container = document.createElement('div');
     document.body.append(container);

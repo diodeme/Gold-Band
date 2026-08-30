@@ -207,13 +207,25 @@ export function applyConversationSidebarRunLifecycle(
     if (!runsChanged && latestRun === task.latestRun) return task;
     return { ...task, runs, latestRun };
   };
+  const pinnedTasks = sidebar.pinnedTasks.map(updateTask);
+  const currentWorkspaceTasks = sidebar.tasksByWorkspace[projectId] ?? [];
+  const workspaceTasks = currentWorkspaceTasks.map(updateTask);
+  const pinnedTasksChanged = pinnedTasks.some(
+    (task, index) => task !== sidebar.pinnedTasks[index],
+  );
+  const workspaceTasksChanged = workspaceTasks.some(
+    (task, index) => task !== currentWorkspaceTasks[index],
+  );
+  if (!pinnedTasksChanged && !workspaceTasksChanged) return sidebar;
   return {
     ...sidebar,
-    pinnedTasks: sidebar.pinnedTasks.map(updateTask),
-    tasksByWorkspace: {
-      ...sidebar.tasksByWorkspace,
-      [projectId]: (sidebar.tasksByWorkspace[projectId] ?? []).map(updateTask),
-    },
+    pinnedTasks: pinnedTasksChanged ? pinnedTasks : sidebar.pinnedTasks,
+    tasksByWorkspace: workspaceTasksChanged
+      ? {
+          ...sidebar.tasksByWorkspace,
+          [projectId]: workspaceTasks,
+        }
+      : sidebar.tasksByWorkspace,
   };
 }
 

@@ -113,6 +113,11 @@ import {
   mergeAcpLiveToolEvent,
 } from "@/lib/acp-live-flush";
 import {
+  ACP_CHAT_LOADED_EVENT_BUFFER_PAGE_COUNT,
+  ACP_CHAT_LOADED_EVENT_BUFFER_MAX_MULTIPAGE_ITEMS,
+  DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
+} from "@/lib/acp-chat-pagination";
+import {
   createAcpSessionConfigViewModel,
   findAcpConfigOption,
   type AcpProviderConfigCatalog,
@@ -258,7 +263,7 @@ import {
   readConversationBranchReplaySnapshot,
   reconcileConversationBranchSession,
   resolveConversationBranchDisplayStatus,
-  subscribeConversationEvents,
+  subscribeConversationAttemptEvents,
   useConversationBranchLiveSnapshot,
 } from "@/lib/conversation-event-router";
 import {
@@ -474,10 +479,6 @@ type AcpTimelineProjection = {
 
 type AcpTimelineItem = AcpTimelineEvent | AcpAgentLink | AcpActivityBatch;
 
-const DEFAULT_EVENT_PAGE_SIZE = 360;
-const LOADED_EVENT_BUFFER_PAGE_COUNT = 3;
-const MAX_LOADED_EVENT_BUFFER_LIMIT =
-  DEFAULT_EVENT_PAGE_SIZE * LOADED_EVENT_BUFFER_PAGE_COUNT;
 const MIN_LOADED_EVENT_BUFFER_LIMIT = 30;
 const HISTORY_LOAD_THRESHOLD_PX = 240;
 const NEWER_PAGE_LOAD_THRESHOLD_PX = 240;
@@ -746,7 +747,7 @@ export function createAcpEventWindowCacheKey(input: {
 function normalizeEventPageSize(value?: number) {
   return Number.isFinite(value) && value && value > 0
     ? Math.floor(value)
-    : DEFAULT_EVENT_PAGE_SIZE;
+    : DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE;
 }
 
 export function loadedEventBufferLimit(eventPageSize: number) {
@@ -754,8 +755,8 @@ export function loadedEventBufferLimit(eventPageSize: number) {
     MIN_LOADED_EVENT_BUFFER_LIMIT,
     eventPageSize,
     Math.min(
-      MAX_LOADED_EVENT_BUFFER_LIMIT,
-      eventPageSize * LOADED_EVENT_BUFFER_PAGE_COUNT,
+      ACP_CHAT_LOADED_EVENT_BUFFER_MAX_MULTIPAGE_ITEMS,
+      eventPageSize * ACP_CHAT_LOADED_EVENT_BUFFER_PAGE_COUNT,
     ),
   );
 }
@@ -766,6 +767,26 @@ export function resolveAcpHasOlderEvents(
   visibleEventCount: number,
 ) {
   return sessionHasOlder || visibleEventCount < mergedEventCount;
+}
+
+function conversationReplayHasUncoveredNewerEvents(
+  replay: ReturnType<typeof readConversationBranchReplaySnapshot>,
+  eventPage: AcpSessionVm["eventPage"],
+) {
+  const pageGeneration = eventPage.generation ?? 0;
+  if (
+    replay.timelineGeneration > 0
+    && pageGeneration > 0
+    && replay.timelineGeneration !== pageGeneration
+  ) {
+    return replay.timelineGeneration > pageGeneration;
+  }
+  const coveredRevision = eventPage.coveredRevision
+    ?? eventPage.newestRevision;
+  if (replay.headRevision > 0 && coveredRevision != null) {
+    return replay.headRevision > coveredRevision;
+  }
+  return replay.headSeq > (eventPage.newestSeq ?? 0);
 }
 
 export type AcpSessionPaginationUpdateMode = "replace" | "append-newer";
@@ -906,11 +927,6 @@ export function ACPChatDialog(
   const componentInstanceId = componentInstanceIdRef.current;
   const restoredOptimisticEvents =
     controlledOptimisticEvents ?? readStoredOptimisticEvents(sessionKey);
-  const restoredLoadedEvents = restoreAcpLoadedEvents(
-    eventWindowKey,
-    restoredSession?.events ?? [],
-    effectiveLoadedEventBufferLimit,
-  );
   const restoredBranchViewState = restoreAcpBranchViewState(eventWindowKey);
   const restoredPromptEvent = latestSendingOptimisticEvent(
     restoredOptimisticEvents,
@@ -921,9 +937,13 @@ export function ACPChatDialog(
     restoredSession,
   );
   const [loadedEvents, setLoadedEvents] = useState<AcpUiEventVm[]>(
-    () => restoredLoadedEvents,
+    () => restoreAcpLoadedEvents(
+      eventWindowKey,
+      restoredSession?.events ?? [],
+      effectiveLoadedEventBufferLimit,
+    ),
   );
-  const loadedEventsRef = useRef<AcpUiEventVm[]>(restoredLoadedEvents);
+  const loadedEventsRef = useRef<AcpUiEventVm[]>(loadedEvents);
   const [optimisticEvents, setOptimisticEvents] = useState<AcpUiEventVm[]>(
     () => restoredOptimisticEvents,
   );
@@ -986,6 +1006,17 @@ export function ACPChatDialog(
   const hasNewerEventsRef = useRef(hasNewerEvents);
   hasOlderEventsRef.current = hasOlderEvents;
   hasNewerEventsRef.current = hasNewerEvents;
+  const commitHasNewerEvents = useCallback((next: boolean) => {
+    hasNewerEventsRef.current = next;
+    setHasNewerEvents(next);
+  }, []);
+  const replayHasUncoveredNewerEvents = useCallback(
+    (eventPage: AcpSessionVm["eventPage"]) => conversationReplayHasUncoveredNewerEvents(
+      readConversationBranchReplaySnapshot(attemptWorkspaceLocator, branchId),
+      eventPage,
+    ),
+    [attemptWorkspaceLocator, branchId],
+  );
   const [dismissedPermissionIds, setDismissedPermissionIds] = useState<
     Set<string>
   >(() => new Set());
@@ -2073,18 +2104,34 @@ export function ACPChatDialog(
     }
     const normalizedUpdates = liveTimelineUpdatesFromEvents(normalizedEvents);
     if (normalizedUpdates.length === 0) return;
+    if (
+      hasNewerEventsRef.current
+      || paginationDirectionRef.current !== null
+      || !viewportAtBottomRef.current
+    ) {
+      // The visible list is a historical window. The router has already
+      // retained this live event for replay, so keep the user's window and
+      // anchor intact and expose the existing newer-pagination path.
+      commitHasNewerEvents(true);
+      return;
+    }
     setLoadedEvents((events) => {
-      setHasNewerEvents(false);
+      commitHasNewerEvents(false);
       const merged = mergeAcpEvents(events, normalizedUpdates);
       const limited = limitAcpEvents(
         merged,
         "start",
         effectiveLoadedEventBufferLimit,
       );
+      setHasOlderEvents((current) => resolveAcpHasOlderEvents(
+        current,
+        merged.length,
+        limited.length,
+      ));
       loadedEventsRef.current = limited;
       return limited;
     });
-  }, [effectiveLoadedEventBufferLimit, normalizeEventUpdate]);
+  }, [commitHasNewerEvents, effectiveLoadedEventBufferLimit, normalizeEventUpdate]);
 
   const applyEventUpdate = useCallback((event: AcpUiEventVm | null | undefined) => {
     if (!event) return;
@@ -2383,7 +2430,7 @@ export function ACPChatDialog(
     let snapshotCoveredRevision = latestSessionRef.current?.eventPage.coveredRevision ?? 0;
     let dynamicTerminalContentRefreshRequested = false;
     void (async () => {
-      stopListening = subscribeConversationEvents((event) => {
+      stopListening = subscribeConversationAttemptEvents(branchLocator, (event) => {
         const locatorMatches = conversationEventMatchesAttempt(event, branchLocator);
         recordAcpStreamingDiagnostic("locator-match", () => ({
           componentInstanceId,
@@ -2975,8 +3022,10 @@ export function ACPChatDialog(
       latestSessionRef.current = reconciled;
       setCurrentSession(reconciled);
       setHasOlderEvents(updated.eventPage.hasOlder);
-      setHasNewerEvents(
-        updated.eventPage.hasNewer || limited.length < merged.length,
+      commitHasNewerEvents(
+        updated.eventPage.hasNewer
+          || limited.length < merged.length
+          || replayHasUncoveredNewerEvents(updated.eventPage),
       );
       loadedEventsRef.current = limited;
       setLoadedEvents(limited);
@@ -3032,7 +3081,10 @@ export function ACPChatDialog(
       const reconciled = reconcileAcpSessionForDisplay(latestSessionRef.current, updated);
       latestSessionRef.current = reconciled;
       setCurrentSession(reconciled);
-      setHasNewerEvents(updated.eventPage.hasNewer);
+      commitHasNewerEvents(
+        updated.eventPage.hasNewer
+          || replayHasUncoveredNewerEvents(updated.eventPage),
+      );
       setLoadedEvents((events) => {
         const merged = mergeAcpEvents(events, updated.events);
         const limited = limitAcpEvents(
@@ -3084,7 +3136,10 @@ export function ACPChatDialog(
       loadedEventsRef.current = latestEvents;
       setLoadedEvents(latestEvents);
       setHasOlderEvents(updated.eventPage.hasOlder);
-      setHasNewerEvents(updated.eventPage.hasNewer);
+      commitHasNewerEvents(
+        updated.eventPage.hasNewer
+          || replayHasUncoveredNewerEvents(updated.eventPage),
+      );
       viewportAtBottomRef.current = true;
       requestAnimationFrame(() => {
         chatContainerContextRef.current?.scrollToBottom({ animation: "instant" });

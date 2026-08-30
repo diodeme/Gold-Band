@@ -1687,7 +1687,7 @@ impl Default for RuntimeConfig {
             desktop_metrics_base_url: None,
             desktop_metrics_api_key: None,
             acp_session_title_refresh_enabled: false,
-            acp_chat_event_page_size: 360,
+            acp_chat_event_page_size: 96,
             acp_raw_max_size_bytes: 5 * 1024 * 1024,
             acp_raw_target_size_bytes: 4 * 1024 * 1024,
             acp_session_foreground_lease_ttl_secs: 90,
@@ -2027,6 +2027,7 @@ mod tests {
         assert_eq!(config.appearance, AppearancePreference::default());
         assert!(matches!(config.desktop_language, DesktopLanguage::ZhCn));
         assert_eq!(config.personalization, PersonalizationPreference::default());
+        assert_eq!(config.acp_chat_event_page_size, 96);
     }
 
     #[test]

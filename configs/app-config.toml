@@ -1,5 +1,5 @@
 acpSessionTitleRefreshEnabled = false
-acpChatEventPageSize = 200
+acpChatEventPageSize = 96
 acpRawMaxSizeBytes = 2097152
 acpRawTargetSizeBytes = 1048576
 acpSessionForegroundLeaseTtlSecs = 90

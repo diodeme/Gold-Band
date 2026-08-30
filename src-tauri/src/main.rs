@@ -14,6 +14,7 @@ mod i18n;
 mod image_actions;
 mod metrics;
 mod notifications;
+mod personal_analytics;
 mod scheduled_runtime;
 mod scheduled_service;
 mod state;
@@ -51,16 +52,15 @@ use commands::{
     preflight_github_pull_request, read_conversation_directory_file, read_skill, record_activity,
     recover_conversation_runtime, remove_recent_workspace, renew_acp_session_lease,
     reorder_conversation_queued_prompts, replace_auto_templates, report_frontend_error,
-    report_webview_environment, respond_acp_permission, respond_elicitation,
-    resolve_turn_attachment_file, restore_conversation_queued_prompt,
-    restore_theme_desktop_wallpaper, retry_run,
-    save_auto_template, save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
-    save_desktop_wallpaper_opacity, save_metrics_settings, save_task_workflow,
-    save_updater_settings, save_workflow_template, search_acp_prompts, search_acp_sessions,
-    search_tasks, select_recent_desktop_avatar, select_recent_desktop_wallpaper,
-    select_recent_workspace, set_acp_session_config_option, set_acp_session_model,
-    set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref,
-    start_git_operation, start_git_state_monitor, start_github_login,
+    report_webview_environment, resolve_turn_attachment_file, respond_acp_permission,
+    respond_elicitation, restore_conversation_queued_prompt, restore_theme_desktop_wallpaper,
+    retry_run, save_auto_template, save_desktop_avatar, save_desktop_avatar_shape,
+    save_desktop_preferences, save_desktop_wallpaper_opacity, save_metrics_settings,
+    save_task_workflow, save_updater_settings, save_workflow_template, search_acp_prompts,
+    search_acp_sessions, search_tasks, select_recent_desktop_avatar,
+    select_recent_desktop_wallpaper, select_recent_workspace, set_acp_session_config_option,
+    set_acp_session_model, set_acp_session_permission_mode, show_artifact, show_attachment,
+    show_worker_ref, start_git_operation, start_git_state_monitor, start_github_login,
     start_github_pull_request_create, start_run, stop_active_session, stop_git_state_monitor,
     submit_conversation_prompt, submit_manual_check, toggle_mcp_server, update_agent,
     update_auto_template, update_mcp_server, update_notification_attention, update_profile,
@@ -162,6 +162,8 @@ fn run() -> anyhow::Result<()> {
         .manage(desktop_lifecycle::DesktopLifecycleCoordinator::default())
         .manage(notifications::PendingInterventionNavigations::default())
         .manage(git_state_monitor::GitStateMonitorRuntime::default())
+        .manage(personal_analytics::PersonalAnalyticsRuntime::default())
+        .manage(personal_analytics::PersonalAnalyticsInsightRuntime::default())
         .manage(WorkspaceFileRuntime::default())
         .manage(WorkspaceFileWatchRuntime::default())
         .manage(wallpaper_runtime);
@@ -347,6 +349,12 @@ fn run() -> anyhow::Result<()> {
             get_system_fonts,
             check_local_claude,
             get_agent_registry,
+            personal_analytics::get_personal_analytics,
+            personal_analytics::sync_personal_analytics,
+            personal_analytics::query_personal_analytics_report,
+            personal_analytics::start_personal_analytics_insights,
+            personal_analytics::cancel_personal_analytics_insights,
+            personal_analytics::cancel_personal_analytics,
             get_agent_binding_usage,
             get_agent_command_catalog,
             create_agent,

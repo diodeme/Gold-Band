@@ -121,7 +121,7 @@ fn schema_v4_removes_adapter_config_without_losing_tasks() {
     let schema_version: i32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(schema_version, 5);
+    assert_eq!(schema_version, 6);
     let task_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))
         .unwrap();

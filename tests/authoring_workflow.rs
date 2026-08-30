@@ -67,6 +67,7 @@ impl ProviderAdapter for SuccessProvider {
             }),
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 
@@ -138,6 +139,7 @@ impl ProviderAdapter for InterruptThenSuccessProvider {
             }),
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 

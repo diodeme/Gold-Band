@@ -477,7 +477,7 @@ export const mockBootstrap: AppBootstrapVm = {
   appConfig: {
     acpSessionTitleRefreshEnabled: false,
     acpChatEventPageSize: DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
-    conversationInlineContentMaxBytes: 64_000,
+    conversationInlineContentMaxBytes: 20_000,
     conversationInlineImageMaxBytes: 4 * 1024 * 1024,
     conversationInlineImageMaxDimension: 2_560,
     turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 1 },

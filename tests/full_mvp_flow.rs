@@ -91,6 +91,7 @@ impl ProviderAdapter for SequencedProvider {
             }),
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 

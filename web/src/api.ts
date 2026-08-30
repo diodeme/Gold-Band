@@ -28,6 +28,34 @@ export function getAgentRegistry() {
   return getRuntimeApi().getAgentRegistry();
 }
 
+export function getPersonalAnalytics() {
+  return getRuntimeApi().getPersonalAnalytics();
+}
+
+export function syncPersonalAnalytics() {
+  return getRuntimeApi().syncPersonalAnalytics();
+}
+
+export function queryPersonalAnalyticsReport(range: { start?: string | null; end?: string | null }, agentType?: string) {
+  return getRuntimeApi().queryPersonalAnalyticsReport(range, agentType);
+}
+
+export function startPersonalAnalyticsInsights(agentType: string, range: { start?: string | null; end?: string | null }) {
+  return getRuntimeApi().startPersonalAnalyticsInsights(agentType, range);
+}
+
+export function cancelPersonalAnalyticsInsights(operationId: string) {
+  return getRuntimeApi().cancelPersonalAnalyticsInsights(operationId);
+}
+
+export function cancelPersonalAnalytics(operationId: string) {
+  return getRuntimeApi().cancelPersonalAnalytics(operationId);
+}
+
+export function subscribePersonalAnalyticsUpdates(listener: Parameters<NonNullable<ReturnType<typeof getRuntimeApi>['subscribePersonalAnalyticsUpdates']>>[0]) {
+  return getRuntimeApi().subscribePersonalAnalyticsUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
 export function getAgentCommandCatalog(agentType: string, workspacePath: string) {
   return getRuntimeApi().getAgentCommandCatalog(agentType, workspacePath);
 }

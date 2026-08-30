@@ -124,6 +124,7 @@ import {
 import { RunModeManagementPage } from './pages/RunModeManagementPage';
 import { ScheduledTaskManagementPage } from './pages/ScheduledTaskManagementPage';
 import { ScheduledTaskDetailPage } from './pages/ScheduledTaskDetailPage';
+import { PersonalAnalyticsPage } from './pages/PersonalAnalyticsPage';
 import { RoundDetailPage } from './pages/RoundDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { createInitialCreateTaskDraft, TaskListPage, type CreateTaskDraftState } from './pages/TaskListPage';
@@ -343,7 +344,7 @@ const defaultAppInfo: AppInfoVm = {
 const defaultAppConfig: AppConfigVm = {
   acpSessionTitleRefreshEnabled: false,
   acpChatEventPageSize: DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
-  conversationInlineContentMaxBytes: 64_000,
+  conversationInlineContentMaxBytes: 20_000,
   conversationInlineImageMaxBytes: 4 * 1024 * 1024,
   conversationInlineImageMaxDimension: 2_560,
   turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 1 },
@@ -1871,7 +1872,9 @@ export function App() {
       }
     }
 
-    const leaf = findSessionLeaf(run.sessionTree, event.roundId, event.nodeId, event.attemptId);
+    const resolvedRun = run;
+
+    const leaf = findSessionLeaf(resolvedRun.sessionTree, event.roundId, event.nodeId, event.attemptId);
     if (!leaf) return;
     const key = conversationSessionKeyFromParts({
       roundId: leaf.roundId,
@@ -1881,10 +1884,9 @@ export function App() {
       outerAttemptId: leaf.outerAttemptId,
     });
     conversationSelectedSessionKeyRef.current = key;
-    updateConversationSessionFollow('manual', key, run);
-    const selectedRun = run;
+    updateConversationSessionFollow('manual', key, resolvedRun);
     setConversationRun((current) => {
-      const base = current && conversationPageMatchesRun(runPage, current) ? current : selectedRun;
+      const base = current && conversationPageMatchesRun(runPage, current) ? current : resolvedRun;
       const next = beginConversationSessionSelection(base, key);
       conversationRunRef.current = next;
       return next;
@@ -2427,6 +2429,14 @@ export function App() {
       }}
       onSelectConversation={onSelectConversation}
       onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+      onOpenPersonalAnalytics={() => {
+        const page: ConversationPage = { kind: 'personal-analytics' };
+        setWorkspacePickerOpen(false);
+        setUiMode('conversation');
+        setPrimaryModule('task-orchestration');
+        setConversationPage(page);
+        pushRoute('task-orchestration', taskListPage, page);
+      }}
       onChooseWorkspace={() => setWorkspacePickerOpen(true)}
       onConversationNew={() => {
         const targetPid = resolveConversationHomeWorkspaceId(
@@ -2640,6 +2650,22 @@ export function App() {
 
   function renderConversationContent() {
     const conversationPage = presentedConversationPage;
+    if (conversationPage.kind === 'personal-analytics') {
+      return (
+        <PersonalAnalyticsPage
+          agentRegistry={agentRegistry}
+          onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
+          onOpenTask={(task) => {
+            onSelectConversation({
+              kind: 'conversation-run',
+              projectId: task.projectId,
+              taskId: task.taskId,
+              runId: task.latestRunId,
+            });
+          }}
+        />
+      );
+    }
     if (conversationPage.kind === 'agents') {
       return <AgentManagementPage vm={agentRegistry} loading={loading !== null} onRefresh={() => void refresh('manual')} onRegistryChange={setAgentRegistry} />;
     }

@@ -51,10 +51,6 @@ function waitForScrollFrames() {
   return new Promise<void>((resolve) => window.setTimeout(resolve, 24));
 }
 
-function waitForFollowRecovery() {
-  return new Promise<void>((resolve) => window.setTimeout(resolve, 80));
-}
-
 function emitObservedHeight(height: number) {
   for (const observer of ControlledResizeObserver.instances) {
     if (observer.element) observer.emitHeight(height);
@@ -220,7 +216,9 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
       await act(async () => {
         scrollTop = 96;
         viewport?.dispatchEvent(new Event('scroll'));
-        await waitForFollowRecovery();
+        await vi.waitFor(() => {
+          expect(scrollTop).toBe(139);
+        }, { timeout: 5_000, interval: 10 });
       });
       expect(scrollTop).toBe(139);
       expect(contextRef.current?.state.isAtBottom).toBe(true);

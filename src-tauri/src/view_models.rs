@@ -7132,9 +7132,7 @@ fn permission_vm_from_event(event: &AcpUiEventVm) -> AcpPromptInteractionVm {
 }
 
 #[cfg(test)]
-fn pending_elicitation_vms(
-    events: &[AcpUiEventVm],
-) -> Vec<AcpPromptInteractionVm> {
+fn pending_elicitation_vms(events: &[AcpUiEventVm]) -> Vec<AcpPromptInteractionVm> {
     let resolved_ids = events
         .iter()
         .filter(|event| event.kind == "elicitationResponse")
@@ -7865,7 +7863,7 @@ mod tests {
         let vm = app_config_vm(&RuntimeConfig::default());
         let value = serde_json::to_value(vm).unwrap();
 
-        assert_eq!(value["conversationInlineContentMaxBytes"], 64_000);
+        assert_eq!(value["conversationInlineContentMaxBytes"], 20_000);
         assert_eq!(value["conversationInlineImageMaxBytes"], 4 * 1024 * 1024);
         assert_eq!(value["conversationInlineImageMaxDimension"], 2_560);
         assert_eq!(value["workspaceLayout"]["shellMinWidth"], 480);
@@ -10843,10 +10841,7 @@ mod tests {
             panic!("expected elicitation interaction");
         };
         assert_eq!(interaction_id, "elicit-pending");
-        assert_eq!(
-            requested_schema["properties"]["database"]["type"],
-            "string"
-        );
+        assert_eq!(requested_schema["properties"]["database"]["type"], "string");
     }
 
     #[test]

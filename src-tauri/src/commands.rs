@@ -1202,12 +1202,13 @@ pub(crate) fn resolve_command_app(
     }
 }
 
-fn resolve_runtime_command_app(
+async fn resolve_runtime_command_app(
     state: &DesktopState,
     project_id: Option<&str>,
 ) -> Result<App, CommandErrorVm> {
     let app = resolve_command_app(state, project_id)?;
-    validate_runtime_workspace_for_command(&app.paths.project_id, app.paths.repo_root.as_str())?;
+    validate_runtime_workspace_for_command(&app.paths.project_id, app.paths.repo_root.as_str())
+        .await?;
     Ok(app)
 }
 
@@ -1504,12 +1505,12 @@ fn resolve_command_app_with_emitters(
     ))
 }
 
-fn resolve_runtime_command_app_with_emitters(
+async fn resolve_runtime_command_app_with_emitters(
     app_handle: &AppHandle,
     state: &DesktopState,
     project_id: Option<&str>,
 ) -> Result<ConfiguredConversationApp, CommandErrorVm> {
-    let app = resolve_runtime_command_app(state, project_id)?;
+    let app = resolve_runtime_command_app(state, project_id).await?;
     let pid = project_id.map(str::to_string);
     Ok(configure_conversation_runtime_callbacks(
         app,
@@ -2012,12 +2013,25 @@ impl CommandErrorVm {
     }
 }
 
-pub(crate) fn validate_runtime_workspace_for_command(
+async fn run_runtime_workspace_validation<T, F>(operation: F) -> CommandResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> CommandResult<T> + Send + 'static,
+{
+    spawn_blocking_command(operation).await
+}
+
+pub(crate) async fn validate_runtime_workspace_for_command(
     project_id: &str,
     workspace_path: &str,
 ) -> CommandResult<()> {
-    validate_runtime_workspace_access(project_id, workspace_path)
-        .map_err(CommandErrorVm::from_runtime_workspace_access)
+    let project_id = project_id.to_string();
+    let workspace_path = workspace_path.to_string();
+    run_runtime_workspace_validation(move || {
+        validate_runtime_workspace_access(&project_id, &workspace_path)
+            .map_err(CommandErrorVm::from_runtime_workspace_access)
+    })
+    .await
 }
 
 pub(crate) async fn prepare_app_exit_inner(
@@ -3731,7 +3745,7 @@ pub async fn get_github_issue(
 }
 
 #[tauri::command]
-pub fn continue_run(
+pub async fn continue_run(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: Option<String>,
@@ -3743,7 +3757,8 @@ pub fn continue_run(
         &app_handle,
         state.inner(),
         project_id.as_deref(),
-    )?;
+    )
+    .await?;
     app.record_metrics_resume_cause(
         &task_id,
         &run_id,
@@ -3849,7 +3864,8 @@ async fn continue_conversation_runtime_inner(
         &app_handle,
         state.inner(),
         project_id.as_deref(),
-    )?;
+    )
+    .await?;
     let locator = AttemptLocator::new(
         task_id,
         run_id,
@@ -3951,7 +3967,8 @@ pub async fn recover_conversation_runtime(
         &app_handle,
         state.inner(),
         project_id.as_deref(),
-    )?;
+    )
+    .await?;
     let locator = AttemptLocator::new(task_id, run_id, round_id, node_id, attempt_id, None, None);
     let app = app.clone_for_background();
     spawn_blocking_command(move || {
@@ -5597,9 +5614,8 @@ pub async fn resolve_turn_attachment_file(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<crate::workspace_files::ResolvedWorkspaceFileLinkVm> {
-    gold_band::acp::branches::validate_conversation_branch_id(&branch_id).map_err(|_| {
-        CommandErrorVm::new(ATTACHMENT_ACCESS_DENIED, serde_json::json!({}))
-    })?;
+    gold_band::acp::branches::validate_conversation_branch_id(&branch_id)
+        .map_err(|_| CommandErrorVm::new(ATTACHMENT_ACCESS_DENIED, serde_json::json!({})))?;
     let app = resolve_command_app(state.inner(), Some(&project_id))?.clone_for_background();
     let locator = AttemptLocator::new(
         task_id,
@@ -6088,7 +6104,8 @@ async fn submit_conversation_prompt_inner(
         &app_handle,
         state.inner(),
         project_id.as_deref(),
-    )?;
+    )
+    .await?;
     let locator = AttemptLocator::new(
         task_id,
         run_id,
@@ -10659,6 +10676,19 @@ mod tests {
                 .as_str()
                 .is_some_and(|detail| detail.contains("simulated blocking command panic"))
         );
+    }
+
+    #[test]
+    fn runtime_workspace_validation_runs_outside_the_caller_thread() {
+        let caller_thread = std::thread::current().id();
+
+        let worker_thread = tauri::async_runtime::block_on(async {
+            run_runtime_workspace_validation(|| Ok(std::thread::current().id()))
+                .await
+                .unwrap()
+        });
+
+        assert_ne!(worker_thread, caller_thread);
     }
 
     #[test]

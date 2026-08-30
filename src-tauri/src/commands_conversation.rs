@@ -44,7 +44,7 @@ fn scheduled_service_error(
     CommandErrorVm::new(error.code.to_string(), params)
 }
 
-fn runtime_workspace_entry_for_project(
+async fn runtime_workspace_entry_for_project(
     state: &gold_band::config::StateConfig,
     project_id: &str,
 ) -> CommandResult<(String, String)> {
@@ -55,7 +55,7 @@ fn runtime_workspace_entry_for_project(
                 serde_json::json!({ "projectId": project_id }),
             )
         })?;
-    validate_runtime_workspace_for_command(&resolved_project_id, &workspace_path)?;
+    validate_runtime_workspace_for_command(&resolved_project_id, &workspace_path).await?;
     Ok((workspace_path, resolved_project_id))
 }
 fn validate_scheduled_runtime_settings_input(
@@ -733,7 +733,7 @@ pub async fn get_conversation_run(
 }
 
 #[tauri::command]
-pub fn validate_conversation_create(
+pub async fn validate_conversation_create(
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::ConversationCreateInputVm,
 ) -> CommandResult<crate::view_models_conversation::ConversationValidationResultVm> {
@@ -741,7 +741,7 @@ pub fn validate_conversation_create(
     let global_app = context.app();
     let app_state = global_app.load_state().map_err(command_error)?;
     let (workspace_path, resolved_project_id) =
-        runtime_workspace_entry_for_project(&app_state, &input.project_id)?;
+        runtime_workspace_entry_for_project(&app_state, &input.project_id).await?;
     let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
     let mut input = input;
     input.project_id = resolved_project_id;
@@ -790,7 +790,7 @@ async fn create_conversation_run_inner(
     let global_app = context.app();
     let app_state = global_app.load_state().map_err(command_error)?;
     let (workspace_path, resolved_project_id) =
-        runtime_workspace_entry_for_project(&app_state, &input.project_id)?;
+        runtime_workspace_entry_for_project(&app_state, &input.project_id).await?;
     let workspace_app = state
         .app()
         .map_err(command_error)?
@@ -839,7 +839,7 @@ async fn create_conversation_run_inner(
 }
 
 #[tauri::command]
-pub fn rerun_conversation_task(
+pub async fn rerun_conversation_task(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: String,
@@ -850,7 +850,7 @@ pub fn rerun_conversation_task(
     let global_app = context.app();
     let app_state = global_app.load_state().map_err(command_error)?;
     let (workspace_path, resolved_project_id) =
-        runtime_workspace_entry_for_project(&app_state, &project_id)?;
+        runtime_workspace_entry_for_project(&app_state, &project_id).await?;
     let workspace_app = state
         .app()
         .map_err(command_error)?
@@ -2273,7 +2273,11 @@ mod tests {
                 added_at: "2026-08-27T00:00:00Z".to_string(),
             });
 
-        let error = runtime_workspace_entry_for_project(&state, "project-1").unwrap_err();
+        let error = tauri::async_runtime::block_on(runtime_workspace_entry_for_project(
+            &state,
+            "project-1",
+        ))
+        .unwrap_err();
 
         assert_eq!(error.code, "workspace.path-not-found");
         assert_eq!(error.params["projectId"], "project-1");

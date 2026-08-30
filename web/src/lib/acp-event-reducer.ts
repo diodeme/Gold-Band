@@ -154,6 +154,19 @@ export function mergeAcpEventWindows(
   );
 }
 
+export function mergeAcpEventWindowsForSession(
+  previousSessionId: string | null | undefined,
+  nextSessionId: string | null | undefined,
+  previous: AcpUiEventVm[],
+  next: AcpUiEventVm[],
+  alignDisplaySeq?: (event: AcpUiEventVm, previous: AcpUiEventVm[]) => number,
+) {
+  if (previousSessionId && nextSessionId && previousSessionId !== nextSessionId) {
+    return next;
+  }
+  return mergeAcpEventWindows(previous, next, alignDisplaySeq);
+}
+
 type ProviderHistoryPlacement = {
   afterPromptId: string | null;
   beforePromptId: string | null;

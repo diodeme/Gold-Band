@@ -9,6 +9,7 @@ export function AgentConversationPanel({ resource }: { resource: AgentTranscript
         session={null}
         projectId={locator.projectId}
         taskId={locator.taskId}
+        taskUuid={locator.taskUuid}
         runId={locator.runId}
         roundId={locator.roundId}
         nodeId={locator.nodeId}
@@ -21,7 +22,7 @@ export function AgentConversationPanel({ resource }: { resource: AgentTranscript
         showRawFramesAction
         allowEventOnlySessionShell={false}
         usageCompact
-        cacheNamespace="right-workspace-agent"
+        cacheNamespace={`right-workspace-agent:${locator.taskUuid ?? 'missing-task-uuid'}`}
       />
     </div>
   );

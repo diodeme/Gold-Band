@@ -774,6 +774,7 @@ pub const MAX_SKILL_DESCRIPTION_LEN: usize = 1024;
 pub const DEFAULT_CONVERSATION_AUTO_TITLE_MAX_CHARS: usize = 18;
 pub const DEFAULT_NOTIFICATION_AUTO_DISMISS_TARGET_SECS: u64 = 20;
 pub const DEFAULT_SCHEDULED_OCCURRENCE_RETENTION_DAYS: u16 = 30;
+pub const DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS: u64 = 10_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1334,6 +1335,8 @@ impl ProjectIdentityConfig {
 #[serde(rename_all = "camelCase")]
 pub struct TurnFilesConfig {
     pub card_preview_limit: usize,
+    #[serde(default = "default_turn_attachment_card_preview_limit")]
+    pub attachment_card_preview_limit: usize,
     pub capture_max_entries: usize,
     pub capture_max_file_bytes: usize,
     pub capture_max_total_bytes: usize,
@@ -1343,10 +1346,15 @@ pub struct TurnFilesConfig {
     pub blob_retention_policy: TurnFileBlobRetentionPolicy,
 }
 
+const fn default_turn_attachment_card_preview_limit() -> usize {
+    1
+}
+
 impl Default for TurnFilesConfig {
     fn default() -> Self {
         Self {
             card_preview_limit: 3,
+            attachment_card_preview_limit: 1,
             capture_max_entries: 256,
             capture_max_file_bytes: 2 * 1024 * 1024,
             capture_max_total_bytes: 16 * 1024 * 1024,
@@ -1362,6 +1370,7 @@ impl TurnFilesConfig {
     fn normalized(self) -> Self {
         Self {
             card_preview_limit: self.card_preview_limit.max(1),
+            attachment_card_preview_limit: self.attachment_card_preview_limit.max(1),
             capture_max_entries: self.capture_max_entries.max(1),
             capture_max_file_bytes: self.capture_max_file_bytes.max(1),
             capture_max_total_bytes: self
@@ -1683,7 +1692,7 @@ impl Default for RuntimeConfig {
             acp_raw_target_size_bytes: 4 * 1024 * 1024,
             acp_session_foreground_lease_ttl_secs: 90,
             acp_session_foreground_lease_renew_interval_secs: 30,
-            acp_prompt_terminal_route_timeout_ms: 5_000,
+            acp_prompt_terminal_route_timeout_ms: DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS,
             acp_session_idle_ttl_secs: 600,
             acp_adapter_connection_idle_ttl_secs: 600,
             acp_max_idle_session_runtimes: 8,
@@ -2358,7 +2367,22 @@ mod tests {
         );
         assert_eq!(roundtripped.acp_max_idle_session_runtimes, Some(12));
         assert_eq!(roundtripped.acp_timeline_compact_patch_ratio, Some(6));
-        assert_eq!(roundtripped.turn_files.unwrap().card_preview_limit, 5);
+        let turn_files = roundtripped.turn_files.unwrap();
+        assert_eq!(turn_files.card_preview_limit, 5);
+        assert_eq!(turn_files.attachment_card_preview_limit, 1);
+    }
+
+    #[test]
+    fn turn_files_config_defaults_the_attachment_card_preview_limit() {
+        let mut value = serde_json::to_value(TurnFilesConfig::default()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("attachmentCardPreviewLimit");
+
+        let config: TurnFilesConfig = serde_json::from_value(value).unwrap();
+
+        assert_eq!(config.attachment_card_preview_limit, 1);
     }
 
     #[test]
@@ -3030,7 +3054,10 @@ mod tests {
         assert_eq!(config.acp_session_foreground_lease_ttl_secs, 60);
         assert_eq!(config.acp_session_foreground_lease_renew_interval_secs, 20);
         assert_eq!(config.acp_session_idle_ttl_secs, 600);
-        assert_eq!(config.acp_prompt_terminal_route_timeout_ms, 5_000);
+        assert_eq!(
+            config.acp_prompt_terminal_route_timeout_ms,
+            DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS
+        );
         assert_eq!(config.acp_max_idle_session_runtimes, 8);
         assert_eq!(config.acp_timeline_compact_patch_ratio, 4);
     }

@@ -162,7 +162,9 @@ import {
 import { AcpProcessingSpinner } from "@/components/acp/AcpProcessingSpinner";
 import { WorkspaceFileEditor } from "@/components/workspace/files/WorkspaceFileEditor";
 import {
+  DEFAULT_TURN_ATTACHMENT_CARD_PREVIEW_LIMIT,
   DEFAULT_TURN_FILE_CARD_PREVIEW_LIMIT,
+  TurnAttachmentCardPreviewLimitContext,
   TurnFileCardPreviewLimitContext,
   TurnFileChangesCard,
 } from "@/components/acp/TurnFileChangesCard";
@@ -182,6 +184,7 @@ import {
   acpSessionEventsSignature,
   mergeAcpEventSnapshots,
   mergeAcpEventWindows,
+  mergeAcpEventWindowsForSession,
   mergeRawObject,
   permissionRequestIdFromEvent,
   projectLatestAcpUsageUpdate,
@@ -330,6 +333,7 @@ interface ACPChatDialogProps {
   sessionReferenceId?: string | null;
   projectId: string;
   taskId: string;
+  taskUuid?: string | null;
   runId: string;
   roundId: string;
   nodeId: string;
@@ -359,6 +363,7 @@ interface ACPChatDialogProps {
   usageCompact?: boolean;
   cacheNamespace?: string;
   turnFileCardPreviewLimit?: number;
+  turnAttachmentCardPreviewLimit?: number;
   wallpaperSurface?: boolean;
   worktreePath?: string | null;
   showBranchControl?: boolean;
@@ -797,6 +802,7 @@ export function ACPChatDialog(
     sessionReferenceId,
     projectId,
     taskId,
+    taskUuid,
     runId,
     roundId,
     nodeId,
@@ -826,6 +832,7 @@ export function ACPChatDialog(
     usageCompact,
     cacheNamespace,
     turnFileCardPreviewLimit = DEFAULT_TURN_FILE_CARD_PREVIEW_LIMIT,
+    turnAttachmentCardPreviewLimit = DEFAULT_TURN_ATTACHMENT_CARD_PREVIEW_LIMIT,
     wallpaperSurface = false,
     worktreePath,
     showBranchControl = false,
@@ -839,6 +846,7 @@ export function ACPChatDialog(
   const attemptWorkspaceLocator = useMemo<AcpAttemptWorkspaceLocator>(() => ({
     projectId,
     taskId,
+    taskUuid,
     runId,
     roundId,
     nodeId,
@@ -846,13 +854,14 @@ export function ACPChatDialog(
     outerNodeId,
     outerAttemptId,
     branchId,
-  }), [attemptId, branchId, nodeId, outerAttemptId, outerNodeId, projectId, roundId, runId, taskId]);
+  }), [attemptId, branchId, nodeId, outerAttemptId, outerNodeId, projectId, roundId, runId, taskId, taskUuid]);
   const systemPromptWorkspaceKey = acpAttemptWorkspaceResourceKey('system-prompt', attemptWorkspaceLocator);
   const rawFramesWorkspaceKey = acpAttemptWorkspaceResourceKey('raw-frames', attemptWorkspaceLocator);
   const branchLiveSnapshot = useConversationBranchLiveSnapshot(
     {
       projectId,
       taskId,
+      taskUuid,
       runId,
       roundId,
       nodeId,
@@ -1405,29 +1414,47 @@ export function ACPChatDialog(
     hasNewerEvents,
     "permission",
   );
-  const hidePendingInteractions = shouldHidePendingAcpInteractions(
+  const pendingPermissionCandidate =
+    effective?.pendingInteractions?.find(
+      (request): request is AcpPermissionRequestVm =>
+        request.kind === "permission"
+        && !dismissedPermissionIds.has(request.interactionId),
+    ) ?? (canInferPendingPermission
+      ? pendingPermissionFromEvents(effectiveEvents, dismissedPermissionIds)
+      : null);
+  const hidePendingPermission = shouldHidePendingAcpInteractions(
     localLifecycle,
     activeTurnPromptId,
     cancelling,
     stopCommandPending,
+    pendingPermissionCandidate?.turnId,
   );
   const pendingPermission =
-    hidePendingInteractions
+    hidePendingPermission
       ? null
-      : effective?.pendingPermissions?.find(
-          (request) => !dismissedPermissionIds.has(request.requestId),
-        ) ?? (canInferPendingPermission
-          ? pendingPermissionFromEvents(effectiveEvents, dismissedPermissionIds)
-          : null);
-  const waitingForPermission = Boolean(pendingPermission);
-  const pendingElicitationRequest = hidePendingInteractions
+      : pendingPermissionCandidate;
+  const hidePendingElicitation = shouldHidePendingAcpInteractions(
+    localLifecycle,
+    activeTurnPromptId,
+    cancelling,
+    stopCommandPending,
+    effective?.pendingInteractions.find(
+      (request) => request.kind === "elicitation",
+    )?.turnId,
+  );
+  const pendingElicitationRequest = hidePendingElicitation
     ? null
-    : effective?.pendingElicitations.find(
-        (request) => !answeredElicitations.has(request.elicitationId),
+    : effective?.pendingInteractions.find(
+        (request): request is AcpElicitationRequestVm =>
+          request.kind === "elicitation"
+          && !answeredElicitations.has(request.interactionId),
       );
   const pendingElicitation = pendingElicitationRequest
     ? pendingElicitationFromRequest(pendingElicitationRequest)
     : null;
+  const waitingForUserInteraction = Boolean(
+    pendingPermission || pendingElicitation,
+  );
   const projectedSessionStatus = activityProjectionStatus(
     projectionLifecycle,
     effective?.status,
@@ -1576,7 +1603,7 @@ export function ACPChatDialog(
     acpStatus: effective?.status,
     prompt,
     hasAttachments: pendingAttachments.length > 0,
-    waitingForPermission,
+    waitingForUserInteraction,
     sending,
     awaitingResponse: activeAwaitingResponse,
     waitingForOptimisticPrompt,
@@ -1754,6 +1781,7 @@ export function ACPChatDialog(
       reconcileConversationBranchSession({
         projectId,
         taskId,
+        taskUuid,
         runId,
         roundId,
         nodeId,
@@ -1769,7 +1797,13 @@ export function ACPChatDialog(
     if (!normalized) return;
     setLoadedEvents((events) => {
       setHasNewerEvents(normalized.eventPage.hasNewer);
-      const merged = mergeAcpEvents(events, normalized.events);
+      const merged = mergeAcpEventWindowsForSession(
+        previous?.sessionId,
+        normalized.sessionId,
+        events,
+        normalized.events,
+        alignAcpDisplaySeq,
+      );
       const limited = limitAcpEvents(
         merged,
         "start",
@@ -1783,7 +1817,7 @@ export function ACPChatDialog(
       loadedEventsRef.current = limited;
       return limited;
     });
-  }, [attemptId, componentInstanceId, effectiveLoadedEventBufferLimit, eventWindowKey, nodeId, normalizeSessionUpdate, outerAttemptId, outerNodeId, projectId, roundId, runId, sessionIdentity, taskId]);
+  }, [attemptId, componentInstanceId, effectiveLoadedEventBufferLimit, eventWindowKey, nodeId, normalizeSessionUpdate, outerAttemptId, outerNodeId, projectId, roundId, runId, sessionIdentity, taskId, taskUuid]);
 
   const refreshSessionAfterConfigUnavailable = useCallback(async (error: unknown) => {
     if (!isAcpSessionConfigValueUnavailableError(error)) return;
@@ -2005,10 +2039,12 @@ export function ACPChatDialog(
     const latestTiming = latestLiveSessionTimingFromEvents(normalizedEvents);
     const branchResult = latestAgentBranchResult(normalizedEvents);
     const hasUsageUpdate = normalizedEvents.some((event) => event.kind === "usageUpdate");
-    const hasElicitationLifecycleUpdate = normalizedEvents.some(
-      (event) => event.kind === "elicitationRequest" || event.kind === "elicitationResponse",
+    const hasPromptInteractionLifecycleUpdate = normalizedEvents.some(
+      (event) => event.kind === "permissionRequest"
+        || event.kind === "elicitationRequest"
+        || event.kind === "elicitationResponse",
     );
-    if (latestTiming || branchResult || hasUsageUpdate || hasElicitationLifecycleUpdate) {
+    if (latestTiming || branchResult || hasUsageUpdate || hasPromptInteractionLifecycleUpdate) {
       setCurrentSession((current) => {
         const latest = latestSessionRef.current;
         const base =
@@ -2024,8 +2060,8 @@ export function ACPChatDialog(
         if (hasUsageUpdate) {
           updated = projectLatestAcpUsageUpdate(updated, normalizedEvents);
         }
-        if (hasElicitationLifecycleUpdate) {
-          updated = applyPendingElicitationEventsToSession(updated, normalizedEvents);
+        if (hasPromptInteractionLifecycleUpdate) {
+          updated = applyPendingInteractionEventsToSession(updated, normalizedEvents);
         }
         const reconciled = settlePendingAcpInteractionsForLifecycle(
           reconcileAcpSessionForDisplay(latest, updated),
@@ -2332,6 +2368,7 @@ export function ACPChatDialog(
     const branchLocator = {
       projectId,
       taskId,
+      taskUuid,
       runId,
       roundId,
       nodeId,
@@ -3580,7 +3617,7 @@ export function ACPChatDialog(
   ) => {
     setPermissionError(null);
     setDismissedPermissionIds((current) =>
-      new Set(current).add(request.requestId),
+      new Set(current).add(request.interactionId),
     );
     try {
       const updated = await respondAcpPermission(
@@ -3590,7 +3627,7 @@ export function ACPChatDialog(
         roundId,
         nodeId,
         attemptId,
-        request.requestId,
+        request.interactionId,
         optionId,
         effective,
         outerNodeId,
@@ -3624,7 +3661,7 @@ export function ACPChatDialog(
     } catch (error) {
       setDismissedPermissionIds((current) => {
         const next = new Set(current);
-        next.delete(request.requestId);
+        next.delete(request.interactionId);
         return next;
       });
       setPermissionError(displayAppError(t, error));
@@ -3855,6 +3892,7 @@ export function ACPChatDialog(
 
   return (
     <TurnFileCardPreviewLimitContext.Provider value={turnFileCardPreviewLimit}>
+    <TurnAttachmentCardPreviewLimitContext.Provider value={turnAttachmentCardPreviewLimit}>
     <AcpBranchLocatorContext.Provider value={attemptWorkspaceLocator}>
     <div
       ref={conversationRootRef}
@@ -3987,18 +4025,18 @@ export function ACPChatDialog(
                 ) : null}
                 {pendingElicitation ? (
                   <ElicitationCard
-                    key={pendingElicitation.elicitationId}
-                    elicitationId={pendingElicitation.elicitationId}
+                    key={pendingElicitation.interactionId}
+                    elicitationId={pendingElicitation.interactionId}
                     message={pendingElicitation.message}
                     schema={pendingElicitation.requestedSchema}
                     onRespond={(content) =>
                       answerElicitation(
-                        pendingElicitation.elicitationId,
+                        pendingElicitation.interactionId,
                         content,
                       )
                     }
                     onDecline={() =>
-                      declineElicitation(pendingElicitation.elicitationId)
+                      declineElicitation(pendingElicitation.interactionId)
                     }
                   />
                 ) : null}
@@ -4150,6 +4188,7 @@ export function ACPChatDialog(
       {!readOnly && !queueRestorePending ? <AgentSelectionQuoteButton rootRef={conversationRootRef} onQuote={addSelectedQuote} /> : null}
     </div>
     </AcpBranchLocatorContext.Provider>
+    </TurnAttachmentCardPreviewLimitContext.Provider>
     </TurnFileCardPreviewLimitContext.Provider>
   );
 }
@@ -7082,8 +7121,13 @@ export function permissionRequestFromEvent(
     ...(rawObject(event.raw) ?? {}),
     requestId,
   };
+  const conversation = rawObject(rawObject(raw._meta)?.goldBandConversation);
   return {
-    requestId,
+    kind: "permission",
+    interactionId: requestId,
+    turnId: stringValue(conversation?.turnId) ?? stringValue(raw.turnId) ?? null,
+    promptEventId:
+      stringValue(conversation?.promptEventId) ?? stringValue(raw.promptEventId) ?? null,
     title: event.title ?? "Permission required",
     toolCallId: event.toolCallId,
     options:
@@ -7100,7 +7144,7 @@ export function permissionRequestFromEvent(
 }
 
 interface PendingElicitationVm {
-  elicitationId: string;
+  interactionId: string;
   message: string;
   requestedSchema: ElicitationSchema;
 }
@@ -7110,7 +7154,7 @@ function pendingElicitationFromRequest(
 ): PendingElicitationVm {
   const requestedSchema = rawObject(request.requestedSchema);
   return {
-    elicitationId: request.elicitationId,
+    interactionId: request.interactionId,
     message: request.message,
     requestedSchema:
       requestedSchema?.type === "object"
@@ -7129,7 +7173,16 @@ function elicitationRequestFromEvent(
     properties: {},
   });
   return {
-    elicitationId: event.id,
+    kind: "elicitation",
+    interactionId: event.id,
+    turnId:
+      stringValue(rawObject(rawObject(raw._meta)?.goldBandConversation)?.turnId)
+      ?? stringValue(raw.turnId)
+      ?? null,
+    promptEventId:
+      stringValue(rawObject(rawObject(raw._meta)?.goldBandConversation)?.promptEventId)
+      ?? stringValue(raw.promptEventId)
+      ?? null,
     message: stringValue(raw.message) ?? event.content ?? "",
     toolCallId: event.toolCallId ?? stringValue(raw.toolCallId) ?? null,
     requestedSchema,
@@ -7137,12 +7190,12 @@ function elicitationRequestFromEvent(
   };
 }
 
-function reducePendingElicitations(
-  current: AcpElicitationRequestVm[],
+function reducePendingInteractions(
+  current: AcpSessionVm["pendingInteractions"],
   events: AcpUiEventVm[],
 ) {
   const pending = new Map(
-    current.map((request) => [request.elicitationId, request]),
+    current.map((interaction) => [interaction.interactionId, interaction]),
   );
   const ordered = [...events].sort(
     (left, right) => originalSeqFromAcpEvent(left) - originalSeqFromAcpEvent(right),
@@ -7155,34 +7208,48 @@ function reducePendingElicitations(
       pending.delete(elicitationId);
       continue;
     }
-    if (event.kind !== "elicitationRequest") continue;
-    if (event.status?.toLowerCase() === "pending") {
-      pending.clear();
-      pending.set(event.id, elicitationRequestFromEvent(event));
-    } else {
-      pending.delete(event.id);
+    if (event.kind === "permissionRequest") {
+      const request = permissionRequestFromEvent(event);
+      if (!request) continue;
+      if (event.status?.toLowerCase() === "pending") {
+        for (const interaction of pending.values()) {
+          if (interaction.kind === "permission") {
+            pending.delete(interaction.interactionId);
+          }
+        }
+        pending.set(request.interactionId, request);
+      } else {
+        pending.delete(request.interactionId);
+      }
+      continue;
     }
+    if (event.kind !== "elicitationRequest") continue;
+    if (event.status?.toLowerCase() !== "pending") {
+      pending.delete(event.id);
+      continue;
+    }
+    for (const interaction of pending.values()) {
+      if (interaction.kind === "elicitation") {
+        pending.delete(interaction.interactionId);
+      }
+    }
+    pending.set(event.id, elicitationRequestFromEvent(event));
   }
   return [...pending.values()];
 }
 
-export function applyPendingElicitationEventsToSession(
+export function applyPendingInteractionEventsToSession(
   session: AcpSessionVm | null | undefined,
   events: AcpUiEventVm[],
 ): AcpSessionVm | null {
   if (!session) return session ?? null;
-  if (isSessionTerminalStatus(session.status)) {
-    return session.pendingElicitations.length > 0
-      ? { ...session, pendingElicitations: [] }
-      : session;
-  }
-  const pendingElicitations = reducePendingElicitations(
-    session.pendingElicitations,
+  const pendingInteractions = reducePendingInteractions(
+    session.pendingInteractions,
     events,
   );
   return {
     ...session,
-    pendingElicitations,
+    pendingInteractions,
   };
 }
 
@@ -7242,7 +7309,7 @@ export function pendingElicitationFromEvents(
           ? (schemaSource as unknown as ElicitationSchema)
           : { type: "object", properties: {} };
       return {
-        elicitationId: event.id,
+        interactionId: event.id,
         message: stringValue(raw.message) ?? event.content ?? "",
         requestedSchema: schema,
       };
@@ -7928,15 +7995,14 @@ function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpS
         ? formatTimelineCursor(auditBounds.newestSeq)
         : null,
     },
-    pendingPermissions: [],
-    pendingElicitations: [],
+    pendingInteractions: [],
     diagnostics: {
       rawFrameCount: 0,
       eventCount: events.length,
       errorCount: 0,
     },
   };
-  return applyPendingElicitationEventsToSession(session, events) ?? session;
+  return applyPendingInteractionEventsToSession(session, events) ?? session;
 }
 
 function createVisibleAcpSession(
@@ -8008,7 +8074,7 @@ function applyAgentBranchResultToSession(
   return {
     ...session,
     status: "completed",
-    pendingElicitations: [],
+    pendingInteractions: [],
     sessionUpdatedAt: result.endedAt ?? result.timestamp ?? session.sessionUpdatedAt,
     timing: session.timing
       ? {
@@ -8241,16 +8307,17 @@ export function settlePendingAcpInteractionsForLifecycle(
   lifecycle: ConversationAttemptLifecycleVm | null | undefined,
 ): AcpSessionVm | null {
   if (!session || !isTerminalAcpLifecycle(lifecycle)) return session ?? null;
-  if (
-    session.pendingPermissions.length === 0
-    && session.pendingElicitations.length === 0
-  ) {
+  const terminalTurnId = lifecycle?.acp.turnId ?? null;
+  const pendingInteractions = session.pendingInteractions.filter((interaction) => {
+    if (!terminalTurnId || !interaction.turnId) return false;
+    return interaction.turnId !== terminalTurnId;
+  });
+  if (pendingInteractions.length === session.pendingInteractions.length) {
     return session;
   }
   return {
     ...session,
-    pendingPermissions: [],
-    pendingElicitations: [],
+    pendingInteractions,
   };
 }
 
@@ -8269,23 +8336,17 @@ function preserveAcpSessionMetadataForDisplay(
     previous.events.some(isGoldBandUserPrompt) &&
     !next.events.some(isGoldBandUserPrompt);
   const pendingProjectionAdvanced = hasAdvancedAcpSessionProjection(previous, next);
-  const preserveSettledPermissions =
-    previous.pendingPermissions.length === 0
-    && next.pendingPermissions.length > 0
-    && !pendingProjectionAdvanced;
-  const preservePendingElicitations = shouldPreservePendingElicitations(previous, next);
-  const preserveSettledElicitations =
-    previous.pendingElicitations.length === 0
-    && next.pendingElicitations.length > 0
-    && !pendingProjectionAdvanced;
+  const preservePendingInteractions = shouldPreservePendingInteractions(
+    previous,
+    next,
+    pendingProjectionAdvanced,
+  );
 
   if (
     !preserveSystemPrompt &&
     !preserveConfig &&
     !preserveGoldBandPrompts &&
-    !preserveSettledPermissions &&
-    !preservePendingElicitations &&
-    !preserveSettledElicitations
+    !preservePendingInteractions
   ) {
     return next;
   }
@@ -8309,12 +8370,9 @@ function preserveAcpSessionMetadataForDisplay(
     config: preserveConfig
       ? mergeAcpSessionConfigForDisplay(previous.config, next.config)
       : next.config,
-    pendingPermissions: preserveSettledPermissions
-      ? previous.pendingPermissions
-      : next.pendingPermissions,
-    pendingElicitations: preservePendingElicitations || preserveSettledElicitations
-      ? previous.pendingElicitations
-      : next.pendingElicitations,
+    pendingInteractions: preservePendingInteractions
+      ? previous.pendingInteractions
+      : next.pendingInteractions,
     events,
     eventPage: next.eventPage,
   };
@@ -8344,20 +8402,26 @@ function hasAdvancedAcpSessionProjection(
   return false;
 }
 
-function shouldPreservePendingElicitations(
+function shouldPreservePendingInteractions(
   previous: AcpSessionVm,
   next: AcpSessionVm,
+  projectionAdvanced: boolean,
 ) {
+  if (projectionAdvanced) return false;
   if (
-    previous.pendingElicitations.length === 0 ||
-    next.pendingElicitations.length > 0 ||
-    !isSessionActiveStatus(next.status)
+    previous.pendingInteractions.length === 0
+    && next.pendingInteractions.length > 0
   ) {
-    return false;
+    return true;
   }
-  const pendingIds = new Set(
-    previous.pendingElicitations.map((request) => request.elicitationId),
-  );
+  if (
+    previous.pendingInteractions.length === 0
+    || next.pendingInteractions.length > 0
+    || !isSessionActiveStatus(next.status)
+  ) return false;
+  const pendingIds = new Set(previous.pendingInteractions.map(
+    (interaction) => interaction.interactionId,
+  ));
   return !next.events.some((event) => {
     if (event.kind === "elicitationResponse") {
       const elicitationId =
@@ -8365,9 +8429,14 @@ function shouldPreservePendingElicitations(
         event.id.replace(/-response$/, "");
       return pendingIds.has(elicitationId);
     }
-    return event.kind === "elicitationRequest" &&
-      pendingIds.has(event.id) &&
-      event.status?.toLowerCase() !== "pending";
+    if (
+      event.kind === "elicitationRequest"
+      && pendingIds.has(event.id)
+      && event.status?.toLowerCase() !== "pending"
+    ) return true;
+    if (event.kind !== "permissionRequest") return false;
+    return pendingIds.has(permissionRequestIdFromEvent(event))
+      && event.status?.toLowerCase() !== "pending";
   });
 }
 

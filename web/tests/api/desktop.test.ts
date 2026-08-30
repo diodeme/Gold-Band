@@ -224,6 +224,32 @@ describe('desktopApi', () => {
     expect(invokeCommand).toHaveBeenCalledWith('get_conversation_workspaces');
   });
 
+  it('loads the conversation sidebar through bounded progressive commands', async () => {
+    await desktopApi.getConversationSidebarBootstrap();
+    expect(invokeCommand).toHaveBeenCalledWith('get_conversation_sidebar_bootstrap');
+
+    await desktopApi.getConversationTaskPage('project-1', 'task-24', 24);
+    expect(invokeCommand).toHaveBeenCalledWith('get_conversation_task_page', {
+      projectId: 'project-1',
+      cursor: 'task-24',
+      limit: 24,
+    });
+
+    await desktopApi.getConversationPinnedTaskPage('pin-24', 24);
+    expect(invokeCommand).toHaveBeenCalledWith('get_conversation_pinned_task_page', {
+      cursor: 'pin-24',
+      limit: 24,
+    });
+
+    await desktopApi.getConversationRunSummaryPage('project-1', 'task-1', 'run-20', 20);
+    expect(invokeCommand).toHaveBeenCalledWith('get_conversation_run_summary_page', {
+      projectId: 'project-1',
+      taskId: 'task-1',
+      cursor: 'run-20',
+      limit: 20,
+    });
+  });
+
   it('exposes branch picker reads and mutations through the desktop runtime contract', async () => {
     await desktopApi.getGitBranchPickerSnapshot('project-1', 'D:/repo');
     expect(invokeCommand).toHaveBeenCalledWith('get_git_branch_picker_snapshot', {

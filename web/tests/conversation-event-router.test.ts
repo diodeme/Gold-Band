@@ -17,6 +17,7 @@ import type { AcpAgentExecutionVm, AcpSessionVm, AcpUiEventVm } from '@/types';
 const locator = {
   projectId: 'project-1',
   taskId: 'task-1',
+  taskUuid: 'task-uuid-1',
   runId: 'run-1',
   roundId: 'round-1',
   nodeId: 'node-1',
@@ -69,8 +70,7 @@ function sessionUpdate(status: string, agents: AcpAgentExecutionVm[]): AcpSessio
       hasNewer: false,
     },
     timelineProjection: { agents, todoEntries: [] },
-    pendingPermissions: [],
-    pendingElicitations: [],
+    pendingInteractions: [],
     diagnostics: { rawFrameCount: 0, eventCount: 0, errorCount: 0 },
   };
   return { ...locator, session };
@@ -474,5 +474,26 @@ describe('conversation event router', () => {
     )).toBe(true);
     expect(conversationEventMatchesAttempt({ ...locator, projectId: null }, locator)).toBe(false);
     expect(conversationEventMatchesAttempt({ ...locator, attemptId: 'attempt-2' }, locator)).toBe(false);
+  });
+
+  it('isolates replay, permission attention, and subscriptions across reused task locators', () => {
+    const oldLocator = { ...locator, taskUuid: 'old-task-uuid' };
+    const newLocator = { ...locator, taskUuid: 'new-task-uuid' };
+    applyConversationEventToBranchSnapshots({
+      ...oldLocator,
+      branchId: 'root',
+      event: { ...uiEvent('permissionRequest', 'pending'), id: 'old-permission' },
+    });
+
+    expect(readConversationBranchLiveSnapshot(oldLocator, 'root')).toMatchObject({
+      status: 'waiting_permission',
+      attention: true,
+    });
+    expect(readConversationBranchLiveSnapshot(newLocator, 'root')).toMatchObject({
+      status: null,
+      attention: false,
+    });
+    expect(readConversationBranchReplaySnapshot(newLocator, 'root').events).toEqual([]);
+    expect(conversationEventMatchesAttempt({ ...oldLocator }, newLocator)).toBe(false);
   });
 });

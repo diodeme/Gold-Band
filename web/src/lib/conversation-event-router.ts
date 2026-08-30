@@ -116,6 +116,7 @@ const EMPTY_BRANCH_SNAPSHOT: ConversationBranchLiveSnapshot = {
 function attemptKey(locator: {
   projectId?: string | null;
   taskId: string;
+  taskUuid?: string | null;
   runId: string;
   roundId: string;
   nodeId: string;
@@ -123,7 +124,7 @@ function attemptKey(locator: {
   outerNodeId?: string | null;
   outerAttemptId?: string | null;
 }) {
-  return [locator.projectId ?? 'default', locator.taskId, locator.runId, locator.roundId, locator.nodeId, locator.attemptId, locator.outerNodeId ?? '', locator.outerAttemptId ?? ''].join(':');
+  return [locator.projectId ?? 'default', locator.taskUuid ?? 'missing-task-uuid', locator.runId, locator.roundId, locator.nodeId, locator.attemptId, locator.outerNodeId ?? '', locator.outerAttemptId ?? ''].join(':');
 }
 
 type ConversationAttemptLocator = Parameters<typeof attemptKey>[0];
@@ -583,6 +584,7 @@ export function conversationEventMatchesAttempt(
   locator: {
     projectId?: string | null;
     taskId: string;
+    taskUuid?: string | null;
     runId: string;
     roundId: string;
     nodeId: string;
@@ -592,7 +594,7 @@ export function conversationEventMatchesAttempt(
   },
 ) {
   return (event.projectId ?? null) === (locator.projectId ?? null)
-    && event.taskId === locator.taskId
+    && (event.taskUuid ?? null) === (locator.taskUuid ?? null)
     && event.runId === locator.runId
     && event.roundId === locator.roundId
     && event.nodeId === locator.nodeId

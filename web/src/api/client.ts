@@ -16,8 +16,12 @@ import type {
   ConversationCreateInput,
   ConversationRunModeVm,
   ConversationRunVm,
+  ConversationRunSummaryPageVm,
   ConversationSearchResultVm,
+  ConversationSidebarBootstrapVm,
   ConversationSidebarVm,
+  ConversationPinnedTaskPageVm,
+  ConversationTaskPageVm,
   ConversationTaskRowVm,
   ConversationValidationResultVm,
   ConversationWorkspaceVm,
@@ -127,6 +131,7 @@ export interface AcpSessionUpdatedEventVm {
   timelineRevision?: number | null;
   projectId?: string | null;
   taskId: string;
+  taskUuid?: string | null;
   runId: string;
   roundId: string;
   nodeId: string;
@@ -137,12 +142,14 @@ export interface AcpSessionUpdatedEventVm {
   event?: AcpUiEventVm | null;
   lifecycle?: ConversationAttemptLifecycleVm | null;
   activity?: ConversationTaskActivityVm | null;
+  taskActivityAt?: string | null;
 }
 
 export interface ConversationRunStateUpdatedEventVm {
   eventKind: 'node-started' | 'run-paused' | 'run-completed' | 'run-recovered';
   projectId: string;
   taskId: string;
+  taskUuid?: string | null;
   runId: string;
   roundId: string;
   nodeId: string;
@@ -316,6 +323,7 @@ export interface RuntimeApi {
   getAcpToolDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: import('../types').AcpToolDetailQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<import('../types').AcpToolDetailVm>;
   getTurnFileChangeSet(locator: TurnFileLocatorVm, changeSetId: string): Promise<TurnFileChangeSetVm>;
   getFileComparison(locator: TurnFileLocatorVm, changeSetId: string, changeId: string): Promise<FileComparisonVm>;
+  resolveTurnAttachmentFile(locator: TurnFileLocatorVm, changeSetId: string, attachmentId: string): Promise<ResolvedWorkspaceFileLinkVm>;
   renewAcpSessionLease?(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<number>;
   subscribeAcpSessionUpdates?(listener: (event: AcpSessionUpdatedEventVm) => void): Promise<() => void>;
   subscribeConversationRunStateUpdates?(listener: (event: ConversationRunStateUpdatedEventVm) => void): Promise<() => void>;
@@ -369,7 +377,10 @@ export interface RuntimeApi {
   downloadAndInstallUpdate(): Promise<void>;
   // ── Conversation UI ──
   saveDesktopUiMode(mode: 'conversation' | 'workbench'): Promise<void>;
-  getConversationSidebar(): Promise<ConversationSidebarVm>;
+  getConversationSidebarBootstrap(): Promise<ConversationSidebarBootstrapVm>;
+  getConversationTaskPage(projectId: string, cursor?: string | null, limit?: number): Promise<ConversationTaskPageVm>;
+  getConversationPinnedTaskPage(cursor?: string | null, limit?: number): Promise<ConversationPinnedTaskPageVm>;
+  getConversationRunSummaryPage(projectId: string, taskId: string, cursor?: string | null, limit?: number): Promise<ConversationRunSummaryPageVm>;
   acknowledgeConversationTerminalResult(projectId: string, taskId: string, eventId: string): Promise<import('../types').ConversationTerminalResultAcknowledgementVm>;
   listScheduledTasks(projectId?: string | null): Promise<import('../types').ScheduledTaskVm[]>;
   setScheduledTaskEnabled(projectId: string | null | undefined, scheduledTaskId: string, enabled: boolean): Promise<import('../types').ScheduledTaskVm>;
@@ -386,17 +397,17 @@ export interface RuntimeApi {
   createConversationRun(input: ConversationCreateInput): Promise<ConversationCreateResultVm>;
   rerunConversationTask(projectId: string, taskId: string): Promise<ConversationRunVm>;
   updateTaskMetadata(projectId: string, taskId: string, title: string, description?: string | null): Promise<ConversationTaskRowVm>;
-  deleteConversationTask(projectId: string, taskId: string): Promise<ConversationSidebarVm>;
-  pinConversation(projectId: string, taskId: string): Promise<ConversationSidebarVm>;
-  unpinConversation(projectId: string, taskId: string): Promise<ConversationSidebarVm>;
-  reorderPinnedConversations(pins: PinRef[]): Promise<ConversationSidebarVm>;
+  deleteConversationTask(projectId: string, taskId: string): Promise<ConversationSidebarBootstrapVm>;
+  pinConversation(projectId: string, taskId: string): Promise<ConversationSidebarBootstrapVm>;
+  unpinConversation(projectId: string, taskId: string): Promise<ConversationSidebarBootstrapVm>;
+  reorderPinnedConversations(pins: PinRef[]): Promise<ConversationSidebarBootstrapVm>;
   searchConversationTasks(query: string, limit?: number): Promise<ConversationSearchResultVm[]>;
   getConversationRunMode(projectId: string): Promise<ConversationRunModeVm | null>;
   saveConversationRunMode(projectId: string, settings: ConversationRunModeVm): Promise<void>;
   chooseConversationWorkspace(): Promise<ConversationWorkspaceVm>;
-  addConversationWorkspace(): Promise<ConversationSidebarVm>;
-  removeConversationWorkspace(projectId: string): Promise<ConversationSidebarVm>;
-  syncConversationWorkspace(workspacePath: string): Promise<ConversationSidebarVm>;
+  addConversationWorkspace(): Promise<ConversationSidebarBootstrapVm>;
+  removeConversationWorkspace(projectId: string): Promise<ConversationSidebarBootstrapVm>;
+  syncConversationWorkspace(workspacePath: string): Promise<ConversationSidebarBootstrapVm>;
   saveConversationPreference(key: string, value: unknown): Promise<void>;
   saveLastConversationWorkspace(projectId: string): Promise<void>;
   listWorkspaceDirectory(projectId: string, relativePath: string): Promise<WorkspaceDirectoryEntryVm[]>;

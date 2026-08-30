@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { GroupImperativeHandle, Layout, LayoutChangedMeta, PanelImperativeHandle } from 'react-resizable-panels';
-import type { AppConfigVm, ConversationPage, ConversationSidebarVm, DesktopPlatform, DesktopWindowFrameStyle } from '../../types';
+import type { AppConfigVm, ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, DesktopPlatform, DesktopWindowFrameStyle } from '../../types';
 import { ConversationSidebar, type ConversationSidebarWorkspaceRevealRequest } from '../conversation/ConversationSidebar';
 import { saveConversationPreference } from '../../api';
 import { AppTitleBar } from '../AppTitleBar';
@@ -62,16 +62,20 @@ interface WorkspaceShellProps {
   onToggleSidebar: () => void;
   onNewConversation: () => void;
   onSearch: () => void;
-  onSelectTask: (projectId: string, taskId: string) => void;
-  onSelectRun: (projectId: string, taskId: string, runId: string) => void;
+  onSelectTask: (projectId: string, taskId: string, taskUuid?: string | null) => void;
+  onSelectRun: (projectId: string, taskId: string, taskUuid: string | null | undefined, runId: string) => void;
   onPauseRun?: (projectId: string, taskId: string, runId: string) => void | Promise<void>;
   onPinTask: (projectId: string, taskId: string) => void;
   onUnpinTask: (projectId: string, taskId: string) => void;
   onRenameTask: (projectId: string, taskId: string, title: string) => void;
-  onDeleteTask: (projectId: string, taskId: string) => void;
+  onDeleteTask: (projectId: string, taskId: string, taskUuid?: string | null) => void;
   onNewConversationInWorkspace?: (projectId: string) => void;
   onAddWorkspace?: () => void;
   onRemoveWorkspace?: (projectId: string) => Promise<void>;
+  onRetryBootstrap: () => void;
+  onRequestWorkspaceTasks: (projectId: string, cursor?: string | null) => void;
+  onRequestPinnedTasks: (cursor?: string | null) => void;
+  onRequestTaskRuns: (task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>, cursor?: string | null) => void;
   activeWorkspaceId?: string | null;
   defaultExpandedWorkspaceId?: string | null;
   workspaceRevealRequest?: ConversationSidebarWorkspaceRevealRequest | null;
@@ -132,6 +136,7 @@ function workspacePanelGroupWidth(element: HTMLDivElement | null) {
 
 const LazyFileWorkspacePanel = lazy(() => import('./files/FileWorkspacePanel').then((module) => ({ default: module.FileWorkspacePanel })));
 const LazyTurnFileWorkspacePanel = lazy(() => import('./files/TurnFileWorkspacePanel').then((module) => ({ default: module.TurnFileWorkspacePanel })));
+const LazyTurnAttachmentWorkspacePanel = lazy(() => import('./files/TurnAttachmentWorkspacePanel').then((module) => ({ default: module.TurnAttachmentWorkspacePanel })));
 const LazyConversationAssetWorkspacePanel = lazy(() => import('./files/ConversationAssetWorkspacePanel').then((module) => ({ default: module.ConversationAssetWorkspacePanel })));
 const LazyDraftAttachmentWorkspacePanel = lazy(() => import('./files/DraftAttachmentWorkspacePanel').then((module) => ({ default: module.DraftAttachmentWorkspacePanel })));
 const LazyConversationDirectoryWorkspacePanel = lazy(() => import('./ConversationDirectoryWorkspacePanel').then((module) => ({ default: module.ConversationDirectoryWorkspacePanel })));
@@ -180,6 +185,11 @@ function FileWorkspaceIntegration({
       ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyConversationAssetWorkspacePanel resource={resource} /></Suspense>
       : null
   )), [workspace.registerResourceRenderer]);
+  useEffect(() => workspace.registerResourceRenderer('turn-attachment', (resource: RightWorkspaceResource) => (
+    resource.kind === 'turn-attachment'
+      ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyTurnAttachmentWorkspacePanel resource={resource} /></Suspense>
+      : null
+  )), [workspace.registerResourceRenderer]);
   useEffect(() => workspace.registerResourceRenderer('draft-attachment', (resource: RightWorkspaceResource) => (
     resource.kind === 'draft-attachment'
       ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyDraftAttachmentWorkspacePanel resource={resource} /></Suspense>
@@ -192,6 +202,11 @@ function FileWorkspaceIntegration({
   )), [workspace.registerResourceRenderer]);
   useEffect(() => workspace.registerResourceCloseResolver('file', (resource, reason) => (
     resource.kind === 'file'
+      ? (reason === 'close' ? fileContentStore.close(resource.key) : fileContentStore.flush(resource.key))
+      : true
+  )), [workspace.registerResourceCloseResolver]);
+  useEffect(() => workspace.registerResourceCloseResolver('turn-attachment', (resource, reason) => (
+    resource.kind === 'turn-attachment'
       ? (reason === 'close' ? fileContentStore.close(resource.key) : fileContentStore.flush(resource.key))
       : true
   )), [workspace.registerResourceCloseResolver]);
@@ -269,6 +284,10 @@ function WorkspaceShellLayout({
   onNewConversationInWorkspace,
   onAddWorkspace,
   onRemoveWorkspace,
+  onRetryBootstrap,
+  onRequestWorkspaceTasks,
+  onRequestPinnedTasks,
+  onRequestTaskRuns,
   activeWorkspaceId: _activeWorkspaceId,
   defaultExpandedWorkspaceId,
   workspaceRevealRequest,
@@ -698,6 +717,10 @@ function WorkspaceShellLayout({
               onNewConversationInWorkspace={onNewConversationInWorkspace}
               onAddWorkspace={onAddWorkspace}
               onRemoveWorkspace={onRemoveWorkspace ? removeWorkspace : undefined}
+              onRetryBootstrap={onRetryBootstrap}
+              onRequestWorkspaceTasks={onRequestWorkspaceTasks}
+              onRequestPinnedTasks={onRequestPinnedTasks}
+              onRequestTaskRuns={onRequestTaskRuns}
             />
           ) : null}
         </ResizablePanel>

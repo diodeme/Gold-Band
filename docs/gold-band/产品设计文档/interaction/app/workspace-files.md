@@ -15,9 +15,9 @@
 - 目录筛选属于工作区工具栏控件，不属于 CodeMirror。它复用 shadcn/ui `Input` 的 `toolbar` 外观：静止时使用低对比度表面与边界，键盘聚焦时保留 1px 语义色焦点环和边界变化；表单输入继续使用标准的高可见焦点态，不能为了视觉弱化而全局移除无障碍焦点提示。
 - 文件和目录共用紧凑右键菜单，提供绝对路径和 `/` 分隔的工作空间相对路径复制；紧凑目录行的选择、右键和“在文件管理器中打开”统一作用于合并链最后一级真实目录，需要操作中间目录时切换到树形目录。菜单按 LTR 优先从点击点向右展开，空间不足时允许组件进行碰撞调整。复制路径不得激活文件、切换详情或改变树布局；成功不提示，失败使用不占据文档流的浮层提示。Windows 绝对路径对客与剪贴板统一移除 `\\?\` extended-length 前缀，UNC 路径恢复为标准 `\\server\share` 格式。
 - 会话详情的右侧工作区入口页及其“新建 Tab”菜单提供独立的“运行目录”资源，并展示当前 attempt 的运行产物；会话标题栏不重复放置入口。“工作空间”资源始终只表示项目工作空间。右侧工作区按“Tab 生命周期、上下文绑定域、同 locator 数据失效”分层：Tab 集合继续归属于 run；工作空间绑定 project，不随 session 切换；运行目录使用 `conversation-directory:<projectId>:<taskId>:<runId>` 作为 run 内唯一 Tab 身份，并绑定当前 selected attempt。切换 session/attempt 时，已打开运行目录必须在原 Tab 内原位替换完整 attempt locator，不新增、不激活、不关闭 Tab；未打开时只更新入口。系统提示、附件、Diff 等显式打开的历史资源继续固定其原 locator，不因 selected attempt 变化而重绑。两类资源均复用同一 `FileWorkspaceSplitLayout`，因此共享左侧文件详情、右侧目录树、窄宽度“文件 / 目录”切换和宽度响应逻辑；运行目录默认只读，避免直接修改 Agent 运行产物。两类目录树均以当前文件的 canonical path 驱动同一主题化选中态（完整 `accent` 背景、细侧标与 `accent-foreground` 图标色）；目录只展开或收起，不改变当前文件选中。react-arborist 的瞬时焦点只使用主题 ring，不得再绘制第二块 `accent` 背景；hover 使用较弱的 `accent` 层级，因此当前文件、键盘焦点和鼠标反馈在 Gold Band、科技中性的明暗方案中都保持可区分。运行目录的虚拟树通过容器 `ResizeObserver` 测量可用高度，和项目目录一样填满详情区域并在内部滚动，不使用固定像素高度。高度测量必须归属于实际挂载的目录树组件；单双栏切换替换目录树 DOM 时，该组件随布局分支重新挂载并重新绑定观察器，禁止由跨分支存活的父组件持有旧 DOM 的测量生命周期。attempt locator 变化属于真实数据身份切换，必须清理旧文件选择、预览和目录树后读取新根目录，并通过 generation 或取消标记阻止旧 attempt 的迟到响应覆盖新目录。目录、文件以及工作空间筛选结果文件共用同一右键菜单组件，按“复制绝对路径、复制相对路径、在文件管理器中打开”的顺序提供操作；运行目录动作只接收 task/run/round/node/attempt 与相对路径，由 Rust 重新计算 attempt 根目录并拒绝越界；工作空间动作只接收 `projectId + relativePath`，由 Rust 重新解析注册的工作空间根目录。前端不传递任意本机绝对路径。
-- 运行目录和会话附件中的 `.md` 必须复用统一的只读 Markdown 文档适配器：默认实时预览，可切换源码并复制源码，始终保持 `editable=false`。入口不得仅按普通文本直接调用底层编辑器并省略 Markdown mode；文档超过统一配置阈值时自动固定为源码模式。
+- 运行目录和用户消息附件中的 `.md` 必须复用统一的只读 Markdown 文档适配器：默认实时预览，可切换源码并复制源码，始终保持 `editable=false`。节点在当前 turn 新增并从附件卡打开的 `attachments/` 文件属于交付物编辑资源，复用普通 `FileContent`：Markdown 默认实时预览、可切换源码且 `editable=true`，保存使用外部文件精确 grant、revision/CAS 与原子写入。两类入口不得仅按普通文本省略 Markdown mode；文档超过统一配置阈值时自动固定为源码模式。
 - 运行目录的 attempt locator 与入口文案属于低频工作区投影，只在这些语义字段实际变化时更新；语义未变时不得重复同步已打开 Tab 或重新读取目录。Agent text、thought、tool 等流式事件不得仅因 session leaf 对象引用变化而刷新工作区 Context。react-arborist 的节点 renderer 必须是模块级稳定组件，不能在 render 中创建新的组件类型；同一节点 identity 未变化时，无关流式更新和父级重渲染不得卸载目录行或关闭已经打开的 Radix 右键菜单。真实删除或重命名目标节点时，菜单随节点生命周期关闭。
-- 单栏状态的“文件 / 目录”视图由当前选中文件的稳定 identity 驱动；无论此前是否已有文件，目录树选择新文件后都必须自动切回“文件”。用户附件的只读 CodeMirror 启用原生折行并约束内部最小宽度，长行只能在内容区内换行，不得撑宽右侧工作区。
+- 单栏状态的“文件 / 目录”视图由当前选中文件的稳定 identity 驱动；无论此前是否已有文件，目录树选择新文件后都必须自动切回“文件”。用户消息附件的只读 CodeMirror 与节点附件卡打开的可编辑 CodeMirror 都启用原生折行并约束内部最小宽度，长行只能在内容区内换行，不得撑宽右侧工作区。
 - 项目工作空间始终只有一个稳定的 `file-browser:<projectId>` 文件 Tab；树点击、搜索结果和会话文件链接均在该 Tab 内更新当前选中文件。`projectId + canonicalPath` 仅作为 `FileContentStore` 的文档身份；再次点击同一文件的不同链接位置只更新 `target/targetRevision`，不创建任何文件级 Tab。
 - 关闭最后一个资源 Tab 时右侧工作区同步收起。接口级验收必须按稳定 file-browser key 查询资源，并从 `selectedFile` 读取当前文件与定位 revision；连续打开任意数量的项目文件后 Tab 数仍为 1，测试和消费者不得继续依赖旧的 file key 或“每文件一 Tab”结构。
 - 会话中的本地文件链接使用“文件图标 + 语义链接文字”的轻量文本按钮形态，不使用背景、边框或阴影；图标与文字统一消费主题包的 `link` 语义色，不得复用“运行中”状态色，保留主题 `font-medium` 层级，默认不显示下划线，hover 时显示下划线，键盘 focus 使用同一 `link` 语义色保留清晰 focus ring，不可用时统一切换为 `muted-foreground`。链接目标带 `:line[:column]` 或 `#Lline[-LendLine]` 时，可见名称必须连续显示为紧凑的 `文件名:位置`，位置与文件名完全继承同一字号、字体、字重和颜色；不得用间隙、独立颜色、独立 badge、小号等宽文本或第二层底色把位置拆成附属标签。Markdown label 已含等价位置时不得重复追加。路径解析得到的 `target/targetRevision` 属于绑定 `projectId + canonicalPath` 的一次定位意图：相同链接每次点击都产生新 revision。Adapter 以 `documentKey + contentRevision + 当前 EditorView ref` 判断文档实例，不得用全文字符串相等判断，因为 CodeMirror 会规范化 CRLF。`onCreateEditor` 只初始化 View 插件；外部定位必须等受控 `value` 同步后的 React effect，再在同一个 CodeMirror transaction 中提交 selection 与官方 `EditorView.scrollIntoView(range, { y: 'center' })` effect。滚动测量、虚拟高度换算与视口更新完全交给 CodeMirror，不得用 rAF/ResizeObserver 轮询、`coordsAtPos`、估算块高度或直接写 `scrollTop` 实现第二套滚动器。transaction 成功 dispatch 后按文档身份消费 revision，文件切换不能沿用其他文件的已消费 revision。
@@ -28,7 +28,7 @@
 | 类别 | 内置能力 |
 |---|---|
 | 文本、日志 | CodeMirror 查看、查找、行号、换行和编辑 |
-| Markdown | 项目文件默认实时预览编辑；系统提示、用户附件、运行产物与完全新增的文件版本均复用同一 AtomEditor 查看器并固定只读。查看器可切换源码模式并一键复制当前源码；两种模式共享源码与视口状态，项目文件额外共享撤销历史和自动保存队列 |
+| Markdown | 项目文件与节点附件卡打开的本轮新增附件默认实时预览编辑，可切换源码并保存；系统提示、用户消息附件、运行目录文件与完全新增的历史文件版本固定只读。两类资源复用同一 AtomEditor/WorkspaceFileEditor 契约并共享模式与视口语义；可编辑资源额外共享撤销历史、revision 与自动保存队列 |
 | 常见代码与配置 | CodeMirror 按需语言高亮；无语言包时回退纯文本 |
 | PNG、JPEG、WebP、GIF、BMP、ICO | 安全图片预览、缩放、适应窗口、原始大小和拖拽平移；GIF 支持播放/暂停，并在 reduced motion 下默认显示静态首帧 |
 | SVG | Rust 安全栅格化预览，可切换源码编辑 |
@@ -69,6 +69,7 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 - 前端只提交 `projectId + canonicalPath`；Rust 权威解析项目根、规范化路径并判断工作空间内外。
 - 工作空间外文件使用绑定单个 canonical path、项目、读写权限和 TTL 的 access grant。token 不进入 Tab、持久化、日志或 URL，关闭 Tab 时主动释放。
 - 工作空间外 watcher 在每批事件发出前重新校验并读取轮换后的 grant；授权过期或释放后立即停止向前端发送该文件事件。
+- `turn-attachment` 不接受前端绝对路径。后端必须先以完整 attempt locator、branch、changeSetId 和 attachmentId 查询 finalized manifest，验证 branch ownership，再在 attempt `attachments/` 根内解析 manifest 相对路径；canonicalize 后越界、缺失、非普通文件或 symlink escape 一律拒绝。验证通过后才可复用工作空间外精确读写 grant 与 watcher。
 - 图片不使用 `file://`。Rust 完成文件签名、字节数、像素数和 revision 校验后签发 `WorkspaceFilePreviewGrantVm { token, expiresAtMs }`；SVG 禁止原始 DOM 注入和外部资源加载。
 - Markdown 图片不使用组件默认的原始 `<img src>`：工作空间内图片以及工作空间外 Markdown 同目录/子目录相对图片自动签发 preview grant；文档目录外引用按当前文档统一确认一次，且只授权文档实际引用的精确文件。grant 到期前按当前引用批量原子轮换，新 token 生效后再释放旧 token；页面重新可见、图片加载失败或开发后端重启导致内存 grant 丢失时幂等补发。UNC 和危险 scheme 不加载，网络图片只保留超链接。
 - 所有文件错误继续使用 `CommandErrorVm { code, params }`；Rust 不产生对客文案，前端同步维护中英文恢复提示。
@@ -82,7 +83,7 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 - `FileExplorerStore` 同时管理项目级目录展示模式，并区分用户滚动位置与一次性选中 reveal：侧栏收起/展开或展示模式切换重挂载时恢复原滚动位置，同一选中路径不会再次自动居中；程序化恢复滚动不反写用户滚动快照。虚拟树高度必须使用扣除容器 padding 后的 content box。树形目录按层级计算稳定最小行宽；紧凑目录同时保留层级最小宽度与合并名称的完整固有宽度。两种模式都只在真实内容宽度超过侧栏时出现横向滚动，未溢出时不得保留空滚动范围，并保留稳定 scrollbar gutter、关闭 scroll anchoring、限制 overscroll 传播，避免底部存在被裁切的伪滚动区及随后的回弹震颤。
 - 连续缩放的可变像素值属于瞬时布局数据，不进入 `RightWorkspaceContext`、`FileExplorerStore` 的可观察快照或组件 state。标签溢出检测只观察标签条容器并按动画帧合并测量，不逐个观察所有标签子节点；只有溢出布尔值变化时才发布 React 更新。
 - `FileContentStore` 管理内容快照、CodeMirror 历史、preview/access grant、自动保存串行队列、冲突与有限 LRU。
-- 可编辑项目文件的 Markdown 模式、内嵌图片解析状态、文档级精确授权和派生 preview grant 与文件 Tab 同生命周期，由 `FileContentStore` 统一管理。运行目录、会话附件等只读 Markdown 的 mode 归属于以完整 `documentKey` 标识的只读文档组件会话；切换文档身份时重置为默认模式，不进入全局 Context 或复制文件内容状态。
+- 可编辑项目文件和 `turn-attachment` 的 Markdown 模式、内嵌图片解析状态、文档级精确授权、派生 preview grant、revision 与保存队列均与文件 Tab 同生命周期，由 `FileContentStore` 统一管理。运行目录、用户消息附件等只读 Markdown 的 mode 归属于以完整 `documentKey` 标识的只读文档组件会话；切换文档身份时重置为默认模式，不进入全局 Context 或复制文件内容状态。
 - `WorkspaceFileService` 管理路径授权、目录/搜索、类型识别、读取、revision、原子写入、图片安全输出和 watcher。
 - 文件面板、CodeMirror、语言支持与虚拟化文件树使用独立动态 chunk；未打开文件功能时不进入会话首屏。
 - `configs/app-config.toml` 是工作区布局阈值的权威来源。桌面 `get_app_bootstrap.appConfig.workspaceLayout` 必须完整投影 `shellMinWidth/shellMinHeight`、`rightWorkspace` 及各页面 profile；`rightWorkspace.file` 与右栏宽度属于同一生命周期契约，不能只存在于前端类型或 browser mock。桌面 bootstrap 完成后前端直接消费真实契约，不增加缺字段 fallback。
@@ -92,6 +93,7 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 - 2026-08-16 起文件工作区接入 Theme Contract v2：外层使用稳定 `workspace` wallpaper surface，编辑器使用 `editor` role。主题只改变背景投影、字体变量、边界、形状和材质，不销毁 CodeMirror `EditorView`，也不改变文件加载、保存或 revision 状态。
 - 壁纸仅在工作区 surface 可见时预加载；缺失、损坏或由 performance 档关闭时回退语义底色。编辑器正文继续使用独立 editor 字体栈和字号，locale 切换不重载文件内容。
 - 2026-08-17 补齐运行目录 Markdown 能力：运行目录与会话附件接入统一只读 Markdown 适配器，固定只读、默认实时预览、支持源码切换，并统一遵守高亮与实时预览长度阈值；DOM 回归测试固定运行目录 `.md` 的读取 locator、只读属性和模式切换契约。
+- 2026-08-28 新增 `turn-attachment` 交付物资源：同一 turn change set 中的附件/普通变化集合天然互斥，附件点击立即打开独立 Tab，再通过 manifest 身份签发精确外部读写 grant。面板直接复用可编辑 `FileContent`，因此 Markdown 渲染/源码切换、自动保存、CAS 冲突和关闭冲刷不复制第二套实现。
 
 2026-08-09 文件 reveal 已迁移到官方 `tauri-plugin-opener` Rust API。项目工作空间和会话运行目录仍分别使用原有受控 locator 解析路径，只有验证后的 canonical path 会交给 opener；删除 Explorer `/select` 参数拼接和 `xdg-open` 平台分支，使 Finder reveal 成为同一接口的 macOS 实现。
 

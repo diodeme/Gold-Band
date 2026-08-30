@@ -1042,6 +1042,7 @@ pub enum RuntimeLifecycleEvent {
         scheduled_occurrence_id: Option<String>,
         project_id: String,
         task_id: String,
+        task_uuid: Option<String>,
         run_id: String,
         round_id: String,
         node_id: String,
@@ -1070,6 +1071,7 @@ pub enum RuntimeLifecycleEvent {
         scheduled_occurrence_id: Option<String>,
         project_id: String,
         task_id: String,
+        task_uuid: Option<String>,
         run_id: String,
         round_id: String,
         node_id: String,
@@ -1206,6 +1208,7 @@ fn default_task_search_indexer() -> Arc<dyn Fn(&Utf8Path, &str) + Send + Sync> {
 #[derive(Debug, Clone)]
 pub struct AcpLiveEventContext {
     pub task_id: String,
+    pub task_uuid: Option<String>,
     pub run_id: String,
     pub round_id: String,
     pub node_id: String,
@@ -3548,7 +3551,17 @@ impl App {
         let summary = self.task_summary(&task_id)?;
         owned_task_dir.disarm();
         (self.task_search_indexer)(&self.paths.task_dir(&task_id), &task_id);
+        let created_at = crate::acp::events::current_timestamp();
+        sqlite::index_task_activity_with_retry(
+            &self.paths.task_dir(&task_id),
+            &task_id,
+            &created_at,
+        );
         Ok(summary)
+    }
+
+    pub fn record_task_activity_index(&self, task_id: &str, activity_at: &str) {
+        sqlite::index_task_activity_with_retry(&self.paths.task_dir(task_id), task_id, activity_at);
     }
 
     pub fn update_task_metadata(
@@ -5405,7 +5418,7 @@ mod tests {
         AutoTemplateStore, CreateTaskInput, OwnedTaskDirectory, RuntimeLifecycleEvent,
         WorkflowTemplate, WorkflowTemplateStore, next_auto_template_id,
     };
-    use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
+    use crate::acp::elicitation::{pending_elicitation_file, pending_elicitation_state};
     use crate::config::{
         AppearancePreference, ColorSchemePreference, ConsoleThemeName, DesktopLanguage,
         DesktopUpdateBadgeState, FontSizePreference, FontStackPreference,
@@ -7672,19 +7685,20 @@ mod tests {
         .unwrap();
         write_json(
             &pending_elicitation_file(&attempt_dir, "elicit-001"),
-            &PendingElicitationState {
-                elicitation_id: "elicit-001".to_string(),
-                jsonrpc_id: serde_json::json!(1),
-                request: serde_json::from_value(serde_json::json!({
+            &pending_elicitation_state(
+                "elicit-001",
+                "turn-1",
+                "prompt-turn-1",
+                serde_json::json!(1),
+                serde_json::from_value(serde_json::json!({
                     "mode": "form",
                     "sessionId": "session-test",
                     "message": "继续吗",
                     "requestedSchema": { "type": "object", "properties": {} }
                 }))
                 .unwrap(),
-                created_at: "1Z".to_string(),
-                timeline_identity: None,
-            },
+                "1Z".to_string(),
+            ),
         )
         .unwrap();
 

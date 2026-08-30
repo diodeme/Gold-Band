@@ -21,6 +21,14 @@
 - Workspace capability:
 {{ workspace_capability }}
 
+{% if has_coordination_snapshot %}
+## Runtime coordination snapshot
+- Read-only snapshot: {{ coordination_snapshot_path }}
+- Runtime derives this file from the canonical dynamic graph and is its only writer. Do not modify it.
+- Read the latest snapshot before starting or continuing this task so you understand other nodes' and groups' tasks, status, dependencies, and workspaces and avoid duplicate or conflicting work.
+- Read the same path again before outputting `next.type="single"` or `next.type="fanout"`, and plan successors from the latest state.
+{% endif %}
+
 {% if has_direct_predecessors %}
 ## Direct predecessors
 {{ direct_predecessors }}

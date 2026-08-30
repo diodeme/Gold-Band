@@ -80,6 +80,7 @@ Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工
 - [Agent 管理页](agent-management.md)
 - [上下文管理与角色批量导入](context-management.md)
 - [设置页](settings.md)
+- [WebView 兼容能力与分级降级](webview-compatibility.md)
 
 ---
 

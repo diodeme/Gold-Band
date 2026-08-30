@@ -77,6 +77,7 @@ markdownEmbeddedImageMaxConcurrent = 4
 
 [turnFiles]
 cardPreviewLimit = 3
+attachmentCardPreviewLimit = 1
 captureMaxEntries = 256
 captureMaxFileBytes = 2097152
 captureMaxTotalBytes = 16777216

@@ -28,8 +28,7 @@ function session(): AcpSessionVm {
       hasOlder: false,
       hasNewer: false,
     },
-    pendingPermissions: [],
-    pendingElicitations: [],
+    pendingInteractions: [],
   } as AcpSessionVm;
 }
 

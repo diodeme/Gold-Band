@@ -2,7 +2,6 @@ import type React from 'react';
 import { createContext, isValidElement, memo, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Download, FileCode2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { code } from '@streamdown/code';
 import {
   Block,
   CodeBlock,
@@ -22,6 +21,7 @@ import {
   createStreamingMarkdownPlayback,
   type StreamingMarkdownPlayback,
 } from '@/lib/streaming-markdown-playback';
+import { wasmCode } from '@/lib/streamdown-wasm-code';
 
 export type MarkdownProps = {
   children: string;
@@ -47,7 +47,8 @@ export function useMarkdownResourceLinkHandler() {
 export { isLocalFileHref };
 
 export function proxyLocalFileLinks(markdown: string) {
-  return markdown.replace(/(?<!!)\[([^\]\n]+)\]\(([^)\n]+)\)/gu, (match, label: string, destination: string) => {
+  return markdown.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/gu, (match, label: string, destination: string, offset: number) => {
+    if (markdown[offset - 1] === '!') return match;
     const trimmed = destination.trim();
     const href = trimmed.startsWith('<') && trimmed.endsWith('>') ? trimmed.slice(1, -1) : trimmed;
     return isLocalFileHref(href)
@@ -81,7 +82,7 @@ const markdownUrlTransform: NonNullable<StreamdownProps['urlTransform']> = (url,
   isLocalFileHref(url) ? url : defaultUrlTransform(url, key, node)
 );
 const markdownLinkSafety: NonNullable<StreamdownProps['linkSafety']> = { enabled: false };
-const markdownPlugins: NonNullable<StreamdownProps['plugins']> = { code };
+const markdownPlugins: NonNullable<StreamdownProps['plugins']> = { code: wasmCode };
 const markdownControls: NonNullable<StreamdownProps['controls']> = {
   code: { copy: false, download: false },
   table: false,

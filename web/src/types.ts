@@ -162,6 +162,7 @@ export interface AppConfigVm {
 
 export interface TurnFilesVm {
   cardPreviewLimit: number;
+  attachmentCardPreviewLimit: number;
 }
 
 export interface WorkspaceFilesVm {
@@ -1490,8 +1491,7 @@ export interface AcpSessionVm {
   events: AcpUiEventVm[];
   eventPage: AcpEventPageVm;
   timelineProjection: AcpTimelineProjectionVm | null;
-  pendingPermissions: AcpPermissionRequestVm[];
-  pendingElicitations: AcpElicitationRequestVm[];
+  pendingInteractions: AcpPromptInteractionVm[];
   availableCommands?: unknown[] | null;
   usage?: AcpUsageVm | null;
   diagnostics: AcpDiagnosticsVm;
@@ -1589,8 +1589,14 @@ export interface AcpSessionTimingVm {
   paused: boolean;
 }
 
-export interface AcpPermissionRequestVm {
-  requestId: string;
+export interface AcpPromptInteractionIdentityVm {
+  interactionId: string;
+  turnId?: string | null;
+  promptEventId?: string | null;
+}
+
+export interface AcpPermissionRequestVm extends AcpPromptInteractionIdentityVm {
+  kind: 'permission';
   title: string;
   toolCallId?: string | null;
   options: AcpPermissionOptionVm[];
@@ -1640,6 +1646,13 @@ export interface TurnFileChangeVm {
   limitationCode?: string | null;
 }
 
+export interface TurnAttachmentVm {
+  id: string;
+  relativePath: string;
+  name: string;
+  byteLength: number;
+}
+
 export interface TurnFileChangeSummaryVm {
   fileCount: number;
   addedFiles: number;
@@ -1660,6 +1673,7 @@ export interface TurnFileChangeSetVm {
   finishedAt?: string | null;
   summary: TurnFileChangeSummaryVm;
   changes: TurnFileChangeVm[];
+  attachments: TurnAttachmentVm[];
   limitationCodes: string[];
 }
 
@@ -1678,13 +1692,17 @@ export interface FileComparisonVm {
   limitationCode?: string | null;
 }
 
-export interface AcpElicitationRequestVm {
-  elicitationId: string;
+export interface AcpElicitationRequestVm extends AcpPromptInteractionIdentityVm {
+  kind: 'elicitation';
   message: string;
   toolCallId?: string | null;
   requestedSchema: Record<string, unknown>;
   raw: unknown;
 }
+
+export type AcpPromptInteractionVm =
+  | AcpPermissionRequestVm
+  | AcpElicitationRequestVm;
 
 // Navigation payload emitted after clicking "View details" in a system toast.
 // It carries the complete attempt locator and a deduplication key.
@@ -1916,6 +1934,7 @@ export type ConversationPage =
       kind: 'conversation-run';
       projectId: string;
       taskId: string;
+      taskUuid?: string | null;
       runId: string;
       roundId?: string;
       nodeId?: string;
@@ -2060,9 +2079,29 @@ export interface ConversationWorkspaceVm {
   name: string;
 }
 
+export type ConversationLoadStatus = 'not-loaded' | 'loading' | 'ready' | 'ready-empty' | 'error';
+
+export interface ConversationPageLoadVm {
+  status: ConversationLoadStatus;
+  nextCursor?: string | null;
+}
+
+export interface ConversationListItemErrorVm {
+  code: string;
+  params: Record<string, unknown>;
+}
+
+export interface ConversationSidebarBootstrapVm {
+  workspaces: ConversationWorkspaceVm[];
+  pinRefs: PinRef[];
+  lastActiveWorkspaceId?: string | null;
+  preferences: Record<string, unknown>;
+}
+
 export interface ConversationTaskRowVm {
   projectId: string;
   taskId: string;
+  taskUuid?: string | null;
   title: string;
   autoTitle: boolean;
   runMode: 'direct' | 'auto' | 'workflow';
@@ -2073,6 +2112,8 @@ export interface ConversationTaskRowVm {
   unreadTerminalResult?: ConversationTerminalResultVm | null;
   latestRun?: ConversationRunSummaryVm | null;
   runs: ConversationRunSummaryVm[];
+  runHistoryStatus: ConversationLoadStatus;
+  runsNextCursor?: string | null;
   pinned: boolean;
   pinnedOrder?: number | null;
   scheduledTaskId?: string | null;
@@ -2151,11 +2192,37 @@ export interface ConversationRunSummaryVm {
 }
 
 export interface ConversationSidebarVm {
+  loadStatus: ConversationLoadStatus;
   workspaces: ConversationWorkspaceVm[];
+  pinRefs: PinRef[];
   pinnedTasks: ConversationTaskRowVm[];
+  pinnedTaskPage: ConversationPageLoadVm;
   tasksByWorkspace: Record<string, ConversationTaskRowVm[]>;
+  workspaceTaskPages: Record<string, ConversationPageLoadVm>;
   lastActiveWorkspaceId?: string | null;
   preferences?: Record<string, unknown> | null;
+}
+
+export interface ConversationTaskPageVm {
+  projectId: string;
+  tasks: ConversationTaskRowVm[];
+  nextCursor?: string | null;
+  errors: ConversationListItemErrorVm[];
+}
+
+export interface ConversationPinnedTaskPageVm {
+  tasks: ConversationTaskRowVm[];
+  nextCursor?: string | null;
+  errors: ConversationListItemErrorVm[];
+}
+
+export interface ConversationRunSummaryPageVm {
+  projectId: string;
+  taskId: string;
+  taskUuid?: string | null;
+  runs: ConversationRunSummaryVm[];
+  nextCursor?: string | null;
+  errors: ConversationListItemErrorVm[];
 }
 
 export interface PinRef {
@@ -2192,7 +2259,7 @@ export interface ConversationAcpFacetVm {
 }
 
 export interface ConversationComposerVm {
-  mode: 'normal' | 'runtime-active' | 'stopping' | 'invalid-workflow' | 'runtime-error' | 'permission-blocked' | 'submitting' | string;
+  mode: 'normal' | 'runtime-active' | 'stopping' | 'invalid-workflow' | 'runtime-error' | 'interaction-blocked' | 'submitting' | string;
   submitTarget: 'acp-prompt' | 'queue-prompt' | 'permission-response' | 'none' | string;
   processingKind: 'sending' | 'launching' | 'processing' | 'thinking' | 'tool' | 'compacting' | 'responding' | 'stopping' | 'launching-next-node' | string;
   statusKey?: string | null;

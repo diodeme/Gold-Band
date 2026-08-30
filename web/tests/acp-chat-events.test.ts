@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  applyPendingElicitationEventsToSession,
+  applyPendingInteractionEventsToSession,
   buildAcpTimeline,
   applyAgentBranchResultToSession,
   calculateSessionElapsedSeconds,
@@ -74,8 +74,7 @@ function session(partial: Partial<AcpSessionVm>): AcpSessionVm {
       hasOlder: false,
       hasNewer: false,
     },
-    pendingPermissions: partial.pendingPermissions ?? [],
-    pendingElicitations: partial.pendingElicitations ?? [],
+    pendingInteractions: partial.pendingInteractions ?? [],
     diagnostics: partial.diagnostics ?? {
       rawFrameCount: 0,
       eventCount: 0,
@@ -85,6 +84,39 @@ function session(partial: Partial<AcpSessionVm>): AcpSessionVm {
 }
 
 describe('ACP chat event handling', () => {
+  it('projects and settles permission through the shared pending interaction reducer', () => {
+    const current = session({ status: 'running' });
+    const request = event({
+      id: 'permission-rpc-live',
+      seq: 10,
+      kind: 'permissionRequest',
+      status: 'pending',
+      title: 'Allow write',
+      raw: {
+        requestId: 'rpc-live',
+        _meta: { goldBandConversation: {
+          turnId: 'turn-2',
+          promptEventId: 'prompt-turn-2',
+        } },
+        options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+      },
+    });
+    const pending = applyPendingInteractionEventsToSession(current, [request]);
+    const settled = applyPendingInteractionEventsToSession(pending, [{
+      ...request,
+      seq: 11,
+      status: 'selected',
+    }]);
+
+    expect(pending?.pendingInteractions).toMatchObject([{
+      kind: 'permission',
+      interactionId: 'rpc-live',
+      turnId: 'turn-2',
+      promptEventId: 'prompt-turn-2',
+    }]);
+    expect(settled?.pendingInteractions).toEqual([]);
+  });
+
   it('stops the read-only Agent session when its canonical result arrives', () => {
     const current = session({
       status: 'running',
@@ -173,7 +205,7 @@ describe('ACP chat event handling', () => {
       new Set(),
     );
 
-    expect(permission?.requestId).toBe('0');
+    expect(permission?.interactionId).toBe('0');
     expect(permission?.raw).toMatchObject({ requestId: '0' });
   });
 
@@ -191,7 +223,7 @@ describe('ACP chat event handling', () => {
       }),
     ];
 
-    expect(pendingPermissionFromEvents(events, new Set())?.requestId).toBe('0');
+    expect(pendingPermissionFromEvents(events, new Set())?.interactionId).toBe('0');
     expect(pendingPermissionFromEvents(events, new Set(['0']))).toBeNull();
   });
 
@@ -280,7 +312,7 @@ describe('ACP chat event handling', () => {
       }),
     ];
 
-    expect(pendingElicitationFromEvents(events, new Map())?.elicitationId).toBe('elicit-2');
+    expect(pendingElicitationFromEvents(events, new Map())?.interactionId).toBe('elicit-2');
   });
 
   it('projects a live elicitation into authoritative session state without relying on timing', () => {
@@ -296,7 +328,7 @@ describe('ACP chat event handling', () => {
       type: 'object',
       properties: { database: { type: 'string' } },
     };
-    const updated = applyPendingElicitationEventsToSession(current, [event({
+    const updated = applyPendingInteractionEventsToSession(current, [event({
       id: 'elicit-live',
       seq: 20,
       kind: 'elicitationRequest',
@@ -310,8 +342,11 @@ describe('ACP chat event handling', () => {
     })]);
 
     expect(updated?.timing?.paused).toBe(false);
-    expect(updated?.pendingElicitations).toEqual([{
-      elicitationId: 'elicit-live',
+    expect(updated?.pendingInteractions).toEqual([{
+      kind: 'elicitation',
+      interactionId: 'elicit-live',
+      turnId: null,
+      promptEventId: null,
       message,
       toolCallId: 'ask-tool-1',
       requestedSchema,
@@ -323,46 +358,48 @@ describe('ACP chat event handling', () => {
     }]);
   });
 
-  it('clears authoritative elicitation state on response or terminal session', () => {
+  it('settles elicitation on response without treating terminal session status as ownership', () => {
     const pending = session({
       status: 'running',
-      pendingElicitations: [{
-        elicitationId: 'elicit-live',
+      pendingInteractions: [{
+        kind: 'elicitation',
+        interactionId: 'elicit-live',
         message: 'Choose',
         requestedSchema: { type: 'object' },
         raw: {},
       }],
     });
-    const resolved = applyPendingElicitationEventsToSession(pending, [event({
+    const resolved = applyPendingInteractionEventsToSession(pending, [event({
       id: 'elicit-live-response',
       seq: 21,
       kind: 'elicitationResponse',
       status: 'completed',
       raw: { elicitationId: 'elicit-live', action: 'accept' },
     })]);
-    const terminal = applyPendingElicitationEventsToSession(
+    const terminal = applyPendingInteractionEventsToSession(
       { ...pending, status: 'cancelled' },
       [],
     );
 
-    expect(resolved?.pendingElicitations).toEqual([]);
-    expect(terminal?.pendingElicitations).toEqual([]);
+    expect(resolved?.pendingInteractions).toEqual([]);
+    expect(terminal?.pendingInteractions).toHaveLength(1);
   });
 
   it('preserves a live pending elicitation across a stale active session snapshot', () => {
     const pendingRequest = {
-      elicitationId: 'elicit-live',
+      kind: 'elicitation' as const,
+      interactionId: 'elicit-live',
       message: 'Choose',
       requestedSchema: { type: 'object' },
       raw: {},
     };
-    const live = session({ pendingElicitations: [pendingRequest] });
+    const live = session({ pendingInteractions: [pendingRequest] });
     const staleSnapshot = session({
-      pendingElicitations: [],
+      pendingInteractions: [],
       events: [],
     });
     const resolvedSnapshot = session({
-      pendingElicitations: [],
+      pendingInteractions: [],
       events: [event({
         id: 'elicit-live-response',
         seq: 22,
@@ -373,10 +410,10 @@ describe('ACP chat event handling', () => {
     });
 
     expect(
-      reconcileAcpSessionForDisplay(live, staleSnapshot)?.pendingElicitations,
+      reconcileAcpSessionForDisplay(live, staleSnapshot)?.pendingInteractions,
     ).toEqual([pendingRequest]);
     expect(
-      reconcileAcpSessionForDisplay(live, resolvedSnapshot)?.pendingElicitations,
+      reconcileAcpSessionForDisplay(live, resolvedSnapshot)?.pendingInteractions,
     ).toEqual([]);
   });
 
@@ -489,7 +526,7 @@ describe('ACP chat event handling', () => {
     ];
 
     expect(pendingElicitationFromEvents(events, new Map())).toEqual({
-      elicitationId: 'elicit-full-request',
+      interactionId: 'elicit-full-request',
       message,
       requestedSchema,
     });
@@ -773,6 +810,39 @@ describe('ACP chat event handling', () => {
 
     expect(parts.display).toBeNull();
     expect(parts.visibleText).toBe(content);
+  });
+
+  it('keeps a later unmarked Direct JSON message separate from the selected Runtime output', () => {
+    const runtimeContent = 'result\n```json\n{"accepted":true}\n```';
+    const directContent = 'example\n```json\n{"example":true}\n```';
+    const messages = [
+      runtimeControlMessageParts(event({
+        id: 'runtime-output',
+        seq: 10,
+        kind: 'textDelta',
+        content: runtimeContent,
+        raw: {
+          runtimeControlOutputDisplay: {
+            kind: 'workflow-output',
+            artifactName: 'accept-result',
+            jsonText: '{"accepted":true}',
+            start: runtimeContent.indexOf('```json'),
+            end: runtimeContent.length,
+            parseStatus: 'valid',
+          },
+        },
+      })),
+      runtimeControlMessageParts(event({
+        id: 'direct-follow-up',
+        seq: 20,
+        kind: 'textDelta',
+        content: directContent,
+      })),
+    ];
+
+    expect(messages[0].display?.jsonText).toBe('{"accepted":true}');
+    expect(messages[1].display).toBeNull();
+    expect(messages[1].visibleText).toBe(directContent);
   });
 
   it('splits every marked runtime repair attempt independently', () => {

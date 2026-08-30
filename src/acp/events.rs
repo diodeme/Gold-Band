@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
 use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use agent_client_protocol_schema::v1::{CreateElicitationRequest, ElicitationScope};
 use anyhow::Result;
@@ -13,8 +14,8 @@ use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 use crate::acp::control::AcpRuntimeControlCursor;
 use crate::provider::{ConversationPromptInput, UserPromptQuote};
 use crate::storage::{
-    append_jsonl, append_jsonl_unlocked, atomic_write_file, ensure_parent_dir, read_json,
-    with_jsonl_file_lock, write_json,
+    append_jsonl, append_jsonl_lines_flushed_unlocked, atomic_write_file, ensure_parent_dir,
+    read_json, with_jsonl_file_lock, write_json,
 };
 
 const AGENT_TRANSCRIPT_META_KEY: &str = "agentTranscript";
@@ -1238,30 +1239,107 @@ pub fn append_raw_frame(
     max_size: u64,
     target_size: u64,
 ) -> Result<()> {
-    with_jsonl_file_lock(path, || {
-        append_jsonl_unlocked(
-            path,
-            &AcpRawFrame {
-                timestamp: current_timestamp(),
-                direction: direction.to_string(),
+    append_raw_frame_observed(path, direction, frame, max_size, target_size).map(|_| ())
+}
+
+/// Append an ordered group of Raw protocol frames with one file lock, open,
+/// buffered write, flush, and roll check.
+pub fn append_raw_frames(
+    path: &Utf8Path,
+    direction: &str,
+    frames: &[Value],
+    max_size: u64,
+    target_size: u64,
+) -> Result<()> {
+    append_raw_frames_observed(path, direction, frames.iter(), max_size, target_size).map(|_| ())
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RawLogRollStats {
+    pub(crate) before_bytes: u64,
+    pub(crate) after_bytes: u64,
+    pub(crate) elapsed: Duration,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RawFrameAppendOutcome {
+    pub(crate) elapsed: Duration,
+    pub(crate) roll: Option<RawLogRollStats>,
+}
+
+pub(crate) fn append_raw_frame_observed(
+    path: &Utf8Path,
+    direction: &str,
+    frame: Value,
+    max_size: u64,
+    target_size: u64,
+) -> Result<RawFrameAppendOutcome> {
+    append_raw_frames_observed(
+        path,
+        direction,
+        std::iter::once(&frame),
+        max_size,
+        target_size,
+    )
+}
+
+#[derive(Serialize)]
+struct BorrowedAcpRawFrame<'a> {
+    timestamp: &'a str,
+    direction: &'a str,
+    frame: &'a Value,
+}
+
+pub(crate) fn append_raw_frames_observed<'a>(
+    path: &Utf8Path,
+    direction: &str,
+    frames: impl IntoIterator<Item = &'a Value>,
+    max_size: u64,
+    target_size: u64,
+) -> Result<RawFrameAppendOutcome> {
+    let started_at = Instant::now();
+    let timestamp = current_timestamp();
+    let encoded = frames
+        .into_iter()
+        .map(|frame| {
+            serde_json::to_vec(&BorrowedAcpRawFrame {
+                timestamp: &timestamp,
+                direction,
                 frame,
-            },
-        )?;
-        let _ = roll_raw_log(path, max_size, target_size);
-        Ok(())
+            })
+        })
+        .collect::<serde_json::Result<Vec<_>>>()?;
+    if encoded.is_empty() {
+        return Ok(RawFrameAppendOutcome {
+            elapsed: started_at.elapsed(),
+            roll: None,
+        });
+    }
+    with_jsonl_file_lock(path, || {
+        append_jsonl_lines_flushed_unlocked(path, &encoded)?;
+        let roll = roll_raw_log(path, max_size, target_size).unwrap_or(None);
+        Ok(RawFrameAppendOutcome {
+            elapsed: started_at.elapsed(),
+            roll,
+        })
     })
 }
 
 /// Roll the raw log file, preserving init handshake frames (everything before the first
 /// `session/update`) and only trimming the streaming update section.
-fn roll_raw_log(path: &Utf8Path, max_size: u64, target_size: u64) -> Result<()> {
+fn roll_raw_log(
+    path: &Utf8Path,
+    max_size: u64,
+    target_size: u64,
+) -> Result<Option<RawLogRollStats>> {
     use std::io::Write;
     let meta = match std::fs::metadata(path.as_std_path()) {
         Ok(m) => m,
-        Err(_) => return Ok(()),
+        Err(_) => return Ok(None),
     };
+    let before_bytes = meta.len();
     if meta.len() <= max_size {
-        return Ok(());
+        return Ok(None);
     }
     let content = std::fs::read(path.as_std_path())?;
 
@@ -1277,7 +1355,7 @@ fn roll_raw_log(path: &Utf8Path, max_size: u64, target_size: u64) -> Result<()> 
         pinned_bytes += line.len();
     }
     if !found_updatable {
-        return Ok(());
+        return Ok(None);
     }
 
     let updatable_start = pinned_bytes;
@@ -1285,7 +1363,7 @@ fn roll_raw_log(path: &Utf8Path, max_size: u64, target_size: u64) -> Result<()> 
     let pinned_len = pinned_bytes as u64;
     let effective_target = target_size.saturating_sub(pinned_len);
     if updatable_len <= effective_target {
-        return Ok(());
+        return Ok(None);
     }
     let excess = updatable_len.saturating_sub(effective_target);
 
@@ -1301,10 +1379,19 @@ fn roll_raw_log(path: &Utf8Path, max_size: u64, target_size: u64) -> Result<()> 
     }
     let drop_bytes = drop_bytes.min(updatable.len());
 
+    let roll_started_at = Instant::now();
     let mut file = std::fs::File::create(path.as_std_path())?;
     file.write_all(&content[..updatable_start])?;
     file.write_all(&updatable[drop_bytes..])?;
-    Ok(())
+    file.flush()?;
+    let after_bytes = std::fs::metadata(path.as_std_path())
+        .map(|metadata| metadata.len())
+        .unwrap_or_else(|_| before_bytes.saturating_sub(drop_bytes as u64));
+    Ok(Some(RawLogRollStats {
+        before_bytes,
+        after_bytes,
+        elapsed: roll_started_at.elapsed(),
+    }))
 }
 
 pub fn append_diagnostic(
@@ -1414,12 +1501,14 @@ pub fn load_timeline_items(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
     with_jsonl_file_lock(path, || load_timeline_items_unlocked(path))
 }
 
-pub fn annotate_latest_runtime_control_output(
+pub fn annotate_runtime_control_output(
     path: &Utf8Path,
+    item_id: &str,
     artifact_name: &str,
     kind: &str,
+    span: &crate::artifacts::JsonArtifactSpan,
 ) -> Result<bool> {
-    crate::acp::timeline::annotate_latest_runtime_control_output(path, artifact_name, kind)
+    crate::acp::timeline::annotate_runtime_control_output(path, item_id, artifact_name, kind, span)
 }
 
 pub(crate) fn load_timeline_items_unlocked(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
@@ -1477,11 +1566,15 @@ pub(crate) fn load_timeline_items_for_storage_unlocked(path: &Utf8Path) -> Resul
     let mut items = latest_by_item
         .into_values()
         .map(|(_, item)| item)
-        .filter(|item| !is_provider_user_echo_event(item))
         .collect::<Vec<_>>();
-    items.sort_by_key(|item| (item.started_seq.unwrap_or(item.seq), item.seq));
-    remove_reclassified_local_provider_history(&mut items);
+    normalize_timeline_items_for_storage(&mut items);
     Ok(items)
+}
+
+pub(crate) fn normalize_timeline_items_for_storage(items: &mut Vec<AcpUiEvent>) {
+    items.retain(|item| !is_provider_user_echo_event(item));
+    items.sort_by_key(|item| (item.started_seq.unwrap_or(item.seq), item.seq));
+    remove_reclassified_local_provider_history(items);
 }
 
 pub(crate) fn merge_timeline_item_revision(
@@ -3309,7 +3402,7 @@ mod tests {
     use super::{
         AcpLatestTurnStatus, AcpLiveTurnActivity, AcpPromptSubmission, AcpSessionAvailability,
         AcpSessionMetadata, AcpTimingState, AcpTurnAdmission, AcpUiEvent,
-        agent_transcript_tool_output, annotate_latest_runtime_control_output, append_raw_frame,
+        agent_transcript_tool_output, annotate_runtime_control_output, append_raw_frame,
         append_structured_diagnostic, append_timeline_patch, begin_session_turn,
         cancel_latest_processing_prompt_retry, compact_live_conversation_event,
         context_compaction_phase, elicitation_request_event, elicitation_response_event,
@@ -5736,10 +5829,13 @@ mod tests {
         .unwrap();
 
         assert!(
-            annotate_latest_runtime_control_output(
+            annotate_runtime_control_output(
                 &path,
+                "message-2",
                 "dynamic-node-completion",
                 "dynamic-node-completion",
+                &crate::artifacts::json_artifact_display_span("你好\n```json\n{\"a\":\"b\"}\n```",)
+                    .unwrap(),
             )
             .unwrap()
         );
@@ -5798,8 +5894,17 @@ mod tests {
         .unwrap();
 
         assert!(
-            annotate_latest_runtime_control_output(&path, "accept-result", "workflow-output")
-                .unwrap()
+            annotate_runtime_control_output(
+                &path,
+                "message-1",
+                "accept-result",
+                "workflow-output",
+                &crate::artifacts::json_artifact_display_span(
+                    "修复前\n```json\n{\"a\":\"unterminated}\n```",
+                )
+                .unwrap(),
+            )
+            .unwrap()
         );
 
         let items = load_timeline_items(&path).unwrap();
@@ -6208,5 +6313,37 @@ mod tests {
         assert!(rolled.contains(pinned));
         assert!(rolled.contains(update_two));
         assert!(!rolled.contains(update_one));
+    }
+
+    #[test]
+    fn raw_append_reports_roll_only_when_file_is_rewritten() {
+        let dir = TempDir::new().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.raw.jsonl");
+
+        let first = super::append_raw_frame_observed(
+            &path,
+            "inbound",
+            json!({ "method": "initialize" }),
+            1024,
+            512,
+        )
+        .unwrap();
+        assert!(first.roll.is_none());
+
+        let second = super::append_raw_frame_observed(
+            &path,
+            "inbound",
+            json!({
+                "method": "session/update",
+                "payload": "x".repeat(2048)
+            }),
+            256,
+            128,
+        )
+        .unwrap();
+        let roll = second.roll.expect("raw log rewrite stats");
+        assert!(roll.before_bytes > roll.after_bytes);
     }
 }

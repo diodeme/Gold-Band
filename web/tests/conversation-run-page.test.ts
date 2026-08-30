@@ -54,8 +54,7 @@ function session(partial: Partial<AcpSessionVm> = {}): AcpSessionVm {
       hasOlder: false,
       hasNewer: false,
     },
-    pendingPermissions: [],
-    pendingElicitations: [],
+    pendingInteractions: [],
     diagnostics: {
       rawFrameCount: 0,
       eventCount: 0,

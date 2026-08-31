@@ -330,7 +330,7 @@ fn sqlite_index_syncs_reopens_incrementally_and_queries_date_ranges() {
     drop(index);
     let mut index = PersonalAnalyticsIndex::open(&db).unwrap();
     let reopened_state = index.state().unwrap();
-    assert_eq!(reopened_state.schema_version, 7);
+    assert_eq!(reopened_state.schema_version, 9);
     assert_eq!(reopened_state.index_revision, first.index_revision);
     let reopened = index
         .report(&PersonalAnalyticsDateRange::default(), "reopened".into())
@@ -1132,7 +1132,7 @@ fn auto_dynamic_leaf_sources_share_one_canonical_attempt_identity() {
 
     let mut migrated = PersonalAnalyticsIndex::open(&db).unwrap();
     let migrated_state = migrated.state().unwrap();
-    assert_eq!(migrated_state.schema_version, 7);
+    assert_eq!(migrated_state.schema_version, 9);
     assert_eq!(migrated_state.index_revision, 0);
     let migrated_stats = migrated.sync(&projects, |_, _| {}, || false).unwrap();
     assert!(migrated_stats.reparsed_files > 0);
@@ -1589,18 +1589,76 @@ fn insight_cache_lookup_never_creates_a_parallel_lifecycle_row() {
         .query_row(
             "SELECT COUNT(*) FROM analytics_insight_cache
              WHERE rangeStart IS ?1 AND rangeEnd IS ?2 AND schemaVersion = ?3
-               AND indexRevision = ?4 AND agentType = ?5",
+               AND indexRevision = ?4 AND agentType = ?5 AND modelId IS ?6
+               AND thoughtLevelOptionId IS ?7 AND thoughtLevelValue IS ?8",
             rusqlite::params![
                 identity.range_start,
                 identity.range_end,
                 identity.schema_version,
                 identity.index_revision,
-                identity.agent_type
+                identity.agent_type,
+                identity.model_id,
+                identity.thought_level_option_id,
+                identity.thought_level_value,
             ],
             |row| row.get(0),
         )
         .unwrap();
     assert_eq!(run_count, 1);
+}
+
+#[test]
+fn insight_cache_identity_distinguishes_selected_models() {
+    let root = tempdir().unwrap();
+    let db = Utf8PathBuf::from_path_buf(root.path().join("gold-band.db")).unwrap();
+    let mut index = PersonalAnalyticsIndex::open(&db).unwrap();
+    let mut model_a = insight_identity(1);
+    model_a.model_id = Some("model-a".to_string());
+    index
+        .store_completed_insight(&model_a, &cached_narrative(), "2026-08-20T00:00:01Z")
+        .unwrap();
+
+    let mut same_model = model_a.clone();
+    same_model.operation_id = "operation-same-model".into();
+    assert!(index.completed_insight(&same_model).unwrap().is_some());
+
+    let mut model_b = model_a.clone();
+    model_b.operation_id = "operation-model-b".into();
+    model_b.model_id = Some("model-b".to_string());
+    assert!(index.completed_insight(&model_b).unwrap().is_none());
+
+    let mut agent_default = model_a;
+    agent_default.operation_id = "operation-agent-default".into();
+    agent_default.model_id = None;
+    assert!(index.completed_insight(&agent_default).unwrap().is_none());
+}
+
+#[test]
+fn insight_cache_identity_distinguishes_selected_thought_levels() {
+    let root = tempdir().unwrap();
+    let db = Utf8PathBuf::from_path_buf(root.path().join("gold-band.db")).unwrap();
+    let mut index = PersonalAnalyticsIndex::open(&db).unwrap();
+    let mut high = insight_identity(1);
+    high.thought_level_option_id = Some("reasoning_effort".to_string());
+    high.thought_level_value = Some("high".to_string());
+    index
+        .store_completed_insight(&high, &cached_narrative(), "2026-08-20T00:00:01Z")
+        .unwrap();
+
+    let mut same_level = high.clone();
+    same_level.operation_id = "operation-same-level".into();
+    assert!(index.completed_insight(&same_level).unwrap().is_some());
+
+    let mut low = high.clone();
+    low.operation_id = "operation-low".into();
+    low.thought_level_value = Some("low".to_string());
+    assert!(index.completed_insight(&low).unwrap().is_none());
+
+    let mut unspecified = high;
+    unspecified.operation_id = "operation-unspecified-level".into();
+    unspecified.thought_level_option_id = None;
+    unspecified.thought_level_value = None;
+    assert!(index.completed_insight(&unspecified).unwrap().is_none());
 }
 
 fn cached_narrative() -> PersonalAnalyticsNarrative {
@@ -1625,5 +1683,8 @@ fn insight_identity(index_revision: u64) -> gold_band::personal_analytics::index
         schema_version: PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION.to_string(),
         index_revision,
         agent_type: "agent-a".to_string(),
+        model_id: None,
+        thought_level_option_id: None,
+        thought_level_value: None,
     }
 }

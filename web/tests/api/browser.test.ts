@@ -85,8 +85,17 @@ describe('browserApi', () => {
     const range = { start: '2026-08-01', end: '2026-08-18' };
 
     await expect(browserApi.queryPersonalAnalyticsReport(range)).resolves.toMatchObject({ range });
-    await expect(browserApi.startPersonalAnalyticsInsights('agent-a', range)).resolves.toMatchObject({
+    await expect(browserApi.startPersonalAnalyticsInsights(
+      'agent-a',
+      range,
+      'model-a',
+      'reasoning_effort',
+      'high',
+    )).resolves.toMatchObject({
       agentType: 'agent-a',
+      modelId: 'model-a',
+      thoughtLevelOptionId: 'reasoning_effort',
+      thoughtLevelValue: 'high',
       range,
       generation: 1,
       schemaVersion: '2.2.0',

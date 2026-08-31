@@ -222,11 +222,11 @@ export const desktopApi: RuntimeApi = {
   syncPersonalAnalytics() {
     return invokeCommand('sync_personal_analytics');
   },
-  queryPersonalAnalyticsReport(range: { start?: string | null; end?: string | null }, agentType?: string) {
-    return invokeCommand('query_personal_analytics_report', { input: { range: normalizeRange(range), agentType } });
+  queryPersonalAnalyticsReport(range: { start?: string | null; end?: string | null }, agentType?: string, modelId?: string | null, thoughtLevelOptionId?: string | null, thoughtLevelValue?: string | null) {
+    return invokeCommand('query_personal_analytics_report', { input: { range: normalizeRange(range), agentType, modelId, thoughtLevelOptionId, thoughtLevelValue } });
   },
-  startPersonalAnalyticsInsights(agentType: string, range: { start?: string | null; end?: string | null }) {
-    return invokeCommand('start_personal_analytics_insights', { input: { agentType, range: normalizeRange(range) } });
+  startPersonalAnalyticsInsights(agentType: string, range: { start?: string | null; end?: string | null }, modelId?: string | null, thoughtLevelOptionId?: string | null, thoughtLevelValue?: string | null) {
+    return invokeCommand('start_personal_analytics_insights', { input: { agentType, modelId, thoughtLevelOptionId, thoughtLevelValue, range: normalizeRange(range) } });
   },
   cancelPersonalAnalyticsInsights(operationId: string) {
     return invokeCommand('cancel_personal_analytics_insights', { input: { operationId } });

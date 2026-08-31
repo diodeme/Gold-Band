@@ -296,8 +296,8 @@ export interface RuntimeApi {
   getAgentRegistry(): Promise<AgentRegistryVm>;
   getPersonalAnalytics(): Promise<PersonalAnalyticsSnapshotVm>;
   syncPersonalAnalytics(): Promise<PersonalAnalyticsSnapshotVm>;
-  queryPersonalAnalyticsReport(range: { start?: string | null; end?: string | null }, agentType?: string): Promise<PersonalAnalyticsReportVm>;
-  startPersonalAnalyticsInsights(agentType: string, range: { start?: string | null; end?: string | null }): Promise<AgentInsightOperationVm>;
+  queryPersonalAnalyticsReport(range: { start?: string | null; end?: string | null }, agentType?: string, modelId?: string | null, thoughtLevelOptionId?: string | null, thoughtLevelValue?: string | null): Promise<PersonalAnalyticsReportVm>;
+  startPersonalAnalyticsInsights(agentType: string, range: { start?: string | null; end?: string | null }, modelId?: string | null, thoughtLevelOptionId?: string | null, thoughtLevelValue?: string | null): Promise<AgentInsightOperationVm>;
   cancelPersonalAnalyticsInsights(operationId: string): Promise<AgentInsightOperationVm>;
   cancelPersonalAnalytics(operationId: string): Promise<PersonalAnalyticsSnapshotVm>;
   subscribePersonalAnalyticsUpdates?(listener: (snapshot: PersonalAnalyticsSnapshotVm) => void): Promise<() => void>;

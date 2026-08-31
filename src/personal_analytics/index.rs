@@ -28,7 +28,7 @@ use super::{
     timestamp_epoch, u64_at_optional,
 };
 
-const ANALYTICS_INDEX_SCHEMA_VERSION: i64 = 7;
+const ANALYTICS_INDEX_SCHEMA_VERSION: i64 = 9;
 const ANALYTICS_INSIGHT_CACHE_RETAINED: i64 = 64;
 #[cfg(test)]
 const ANALYTICS_PHYSICAL_TABLES: [&str; 8] = [
@@ -158,6 +158,9 @@ pub struct InsightIdentity {
     pub schema_version: String,
     pub index_revision: u64,
     pub agent_type: String,
+    pub model_id: Option<String>,
+    pub thought_level_option_id: Option<String>,
+    pub thought_level_value: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -308,13 +311,17 @@ impl PersonalAnalyticsIndex {
                 schemaVersion TEXT NOT NULL,
                 indexRevision INTEGER NOT NULL,
                 agentType TEXT NOT NULL,
+                modelId TEXT,
+                thoughtLevelOptionId TEXT,
+                thoughtLevelValue TEXT,
                 insightsJson TEXT NOT NULL,
                 completedAt TEXT NOT NULL
             );
             CREATE UNIQUE INDEX IF NOT EXISTS analytics_insight_cache_identity_idx
                 ON analytics_insight_cache(
                     COALESCE(rangeStart, ''), COALESCE(rangeEnd, ''),
-                    schemaVersion, indexRevision, agentType
+                    schemaVersion, indexRevision, agentType, COALESCE(modelId, ''),
+                    COALESCE(thoughtLevelOptionId, ''), COALESCE(thoughtLevelValue, '')
                 );
             CREATE VIEW IF NOT EXISTS analytics_projects AS
                 SELECT projectLocator, projectName, COUNT(DISTINCT taskLocator) AS taskCount,
@@ -635,14 +642,18 @@ impl PersonalAnalyticsIndex {
             .query_row(
                 "SELECT insightsJson FROM analytics_insight_cache
                  WHERE rangeStart IS ?1 AND rangeEnd IS ?2 AND schemaVersion = ?3
-                   AND indexRevision = ?4 AND agentType = ?5
+                   AND indexRevision = ?4 AND agentType = ?5 AND modelId IS ?6
+                   AND thoughtLevelOptionId IS ?7 AND thoughtLevelValue IS ?8
                  ORDER BY completedAt DESC LIMIT 1",
                 rusqlite::params![
                     identity.range_start,
                     identity.range_end,
                     identity.schema_version,
                     identity.index_revision,
-                    identity.agent_type
+                    identity.agent_type,
+                    identity.model_id,
+                    identity.thought_level_option_id,
+                    identity.thought_level_value,
                 ],
                 |row| row.get::<_, String>(0),
             )
@@ -669,8 +680,8 @@ impl PersonalAnalyticsIndex {
         transaction.execute(
             "INSERT OR REPLACE INTO analytics_insight_cache
              (sourceOperationId, rangeStart, rangeEnd, schemaVersion, indexRevision, agentType,
-              insightsJson, completedAt)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+               modelId, thoughtLevelOptionId, thoughtLevelValue, insightsJson, completedAt)
+              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             rusqlite::params![
                 identity.operation_id,
                 identity.range_start,
@@ -678,6 +689,9 @@ impl PersonalAnalyticsIndex {
                 identity.schema_version,
                 identity.index_revision,
                 identity.agent_type,
+                identity.model_id,
+                identity.thought_level_option_id,
+                identity.thought_level_value,
                 payload,
                 now
             ],
@@ -2220,6 +2234,9 @@ mod tests {
             schema_version: PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION.into(),
             index_revision: 1,
             agent_type: "agent-a".into(),
+            model_id: None,
+            thought_level_option_id: None,
+            thought_level_value: None,
         };
         let narrative = PersonalAnalyticsNarrative {
             schema_version: PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION.into(),

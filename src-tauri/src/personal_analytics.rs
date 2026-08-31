@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use camino::{Utf8Path, Utf8PathBuf};
+use gold_band::acp::branches::initialize_standalone_agent_timeline_storage;
 use gold_band::acp::client::{self, AcpRuntimePolicy};
 use gold_band::acp::events::{
     AcpLifecycleOwner, AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
@@ -28,7 +29,8 @@ use gold_band::prompts::{
 };
 use gold_band::provider::{
     AttachmentProjectionPolicy, ConversationPromptInput, PromptBundle, PromptVisibility,
-    RuntimeControlIntent, resolve_attachments,
+    RuntimeControlIntent, resolve_attachments, select_config_options_from_capabilities,
+    supported_models_from_capabilities,
 };
 use gold_band::storage::{read_json, write_json};
 use serde::{Deserialize, Serialize};
@@ -53,12 +55,18 @@ pub struct CancelPersonalAnalyticsInput {
 pub struct QueryPersonalAnalyticsReportInput {
     pub range: PersonalAnalyticsDateRange,
     pub agent_type: Option<String>,
+    pub model_id: Option<String>,
+    pub thought_level_option_id: Option<String>,
+    pub thought_level_value: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StartPersonalAnalyticsInsightsInput {
     pub agent_type: String,
+    pub model_id: Option<String>,
+    pub thought_level_option_id: Option<String>,
+    pub thought_level_value: Option<String>,
     pub range: PersonalAnalyticsDateRange,
 }
 
@@ -562,6 +570,16 @@ pub fn query_personal_analytics_report(
         })?;
     let report_index_revision = report.index_revision;
     if let Some(agent_type) = input.agent_type.as_deref() {
+        let model_id = input
+            .model_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let (thought_level_option_id, thought_level_value) = normalize_thought_level_selection(
+            input.thought_level_option_id.as_deref(),
+            input.thought_level_value.as_deref(),
+        )?;
         let identity = gold_band::personal_analytics::index::InsightIdentity {
             operation_id: String::new(),
             range_start: input.range.start.clone(),
@@ -569,6 +587,9 @@ pub fn query_personal_analytics_report(
             schema_version: PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION.to_string(),
             index_revision: report.index_revision,
             agent_type: agent_type.to_string(),
+            model_id,
+            thought_level_option_id,
+            thought_level_value,
         };
         if let Some(narrative) = index.completed_insight(&identity).map_err(|error| {
             analytics_error(
@@ -614,15 +635,35 @@ pub async fn start_personal_analytics_insights(
             json!({ "reason": error.to_string() }),
         )
     })?;
-    if !diagnostics
+    let Some(diagnostic) = diagnostics
         .get(&agent_id)
-        .is_some_and(|diagnostic| diagnostic.available)
-    {
+        .filter(|diagnostic| diagnostic.available)
+    else {
         return Err(analytics_error(
             "analytics.agent-unavailable",
             json!({ "agentType": input.agent_type }),
         ));
+    };
+    let model_id = input
+        .model_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if let Some(model_id) = model_id.as_deref() {
+        let models = supported_models_from_capabilities(diagnostic.capabilities.as_ref());
+        if !models.iter().any(|model| model.id == model_id) {
+            return Err(analytics_error(
+                "analytics.model-unavailable",
+                json!({ "agentType": input.agent_type, "modelId": model_id }),
+            ));
+        }
     }
+    let (thought_level_option_id, thought_level_value) = validate_thought_level_selection(
+        diagnostic.capabilities.as_ref(),
+        input.thought_level_option_id.as_deref(),
+        input.thought_level_value.as_deref(),
+    )?;
     let (_, agent_config) = app.managed_agent(&input.agent_type).map_err(|_| {
         analytics_error(
             "analytics.agent-unavailable",
@@ -659,6 +700,9 @@ pub async fn start_personal_analytics_insights(
         operation_id: operation_id.clone(),
         generation: 0,
         agent_type: input.agent_type.clone(),
+        model_id,
+        thought_level_option_id,
+        thought_level_value,
         range: input.range,
         schema_version: PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION.to_string(),
         index_revision: report.index_revision,
@@ -950,6 +994,9 @@ fn run_insight_operation_inner(
         schema_version: operation.schema_version.clone(),
         index_revision: operation.index_revision,
         agent_type: operation.agent_type.clone(),
+        model_id: operation.model_id.clone(),
+        thought_level_option_id: operation.thought_level_option_id.clone(),
+        thought_level_value: operation.thought_level_value.clone(),
     };
     let cached_narrative = index.completed_insight(&identity).map_err(|error| {
         analytics_error(
@@ -985,6 +1032,9 @@ fn run_insight_operation_inner(
                 app,
                 agent_config,
                 &operation.agent_type,
+                operation.model_id.as_deref(),
+                operation.thought_level_option_id.as_deref(),
+                operation.thought_level_value.as_deref(),
                 operation_id,
                 operation_dir,
                 &projection_path,
@@ -1027,6 +1077,9 @@ fn run_insight_operation_inner(
                         app,
                         agent_config,
                         &operation.agent_type,
+                        operation.model_id.as_deref(),
+                        operation.thought_level_option_id.as_deref(),
+                        operation.thought_level_value.as_deref(),
                         operation_id,
                         operation_dir,
                         &projection_path,
@@ -1139,6 +1192,9 @@ fn invoke_agent(
     app: &gold_band::app::App,
     agent_config: &gold_band::config::ManagedAgentConfig,
     agent_type: &str,
+    model_id: Option<&str>,
+    thought_level_option_id: Option<&str>,
+    thought_level_value: Option<&str>,
     operation_id: &str,
     operation_dir: &Utf8Path,
     projection_path: &Utf8Path,
@@ -1261,8 +1317,8 @@ fn invoke_agent(
         &prompt,
         SessionMode::New,
         None,
-        None,
-        BTreeMap::new(),
+        model_id.map(str::to_string),
+        insight_config_options(thought_level_option_id, thought_level_value),
         None,
         app.config.use_local_claude,
         app.config.require_local_claude_executable,
@@ -1303,6 +1359,12 @@ fn claim_agent_prompt_lifecycle(
     display_text: &str,
     attachment_paths: &[String],
 ) -> CommandResult<AcpLifecycleOwner> {
+    initialize_standalone_agent_timeline_storage(attempt_dir).map_err(|error| {
+        analytics_error(
+            "analytics.execution-failed",
+            json!({ "reason": error.to_string() }),
+        )
+    })?;
     let submission = AcpPromptSubmission {
         turn_id: turn_id.to_string(),
         operation_id: format!("prompt:{}", Uuid::new_v4().simple()),
@@ -1474,6 +1536,9 @@ fn load_insight_operation(
         schema_version: recovered.schema_version.clone(),
         index_revision: recovered.index_revision,
         agent_type: recovered.agent_type.clone(),
+        model_id: recovered.model_id.clone(),
+        thought_level_option_id: recovered.thought_level_option_id.clone(),
+        thought_level_value: recovered.thought_level_value.clone(),
     };
     let cache_committed = PersonalAnalyticsIndex::open(database_path)
         .and_then(|index| index.completed_insight(&identity))
@@ -1558,6 +1623,70 @@ fn prompt_error(error: impl std::fmt::Display) -> PersonalAnalyticsError {
     )
 }
 
+fn normalize_thought_level_selection(
+    option_id: Option<&str>,
+    value: Option<&str>,
+) -> CommandResult<(Option<String>, Option<String>)> {
+    let option_id = option_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let value = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if option_id.is_some() != value.is_some() {
+        return Err(analytics_error(
+            "analytics.thought-level-unavailable",
+            json!({ "configId": option_id, "value": value }),
+        ));
+    }
+    Ok((option_id, value))
+}
+
+fn validate_thought_level_selection(
+    capabilities: Option<&Value>,
+    option_id: Option<&str>,
+    value: Option<&str>,
+) -> CommandResult<(Option<String>, Option<String>)> {
+    let (option_id, value) = normalize_thought_level_selection(option_id, value)?;
+    let (Some(option_id), Some(value)) = (option_id, value) else {
+        return Ok((None, None));
+    };
+    let thought_level = select_config_options_from_capabilities(capabilities)
+        .into_iter()
+        .find(|option| option.category.as_deref() == Some("thought_level"));
+    let valid = thought_level.as_ref().is_some_and(|option| {
+        option.id == option_id && option.options.iter().any(|item| item.value == value)
+    });
+    if !valid {
+        return Err(analytics_error(
+            "analytics.thought-level-unavailable",
+            json!({
+                "configId": option_id,
+                "value": value,
+                "availableValues": thought_level
+                    .as_ref()
+                    .map(|option| option.options.iter().map(|item| item.value.as_str()).collect::<Vec<_>>())
+                    .unwrap_or_default(),
+            }),
+        ));
+    }
+    Ok((Some(option_id), Some(value)))
+}
+
+fn insight_config_options(
+    thought_level_option_id: Option<&str>,
+    thought_level_value: Option<&str>,
+) -> BTreeMap<String, String> {
+    match (thought_level_option_id, thought_level_value) {
+        (Some(option_id), Some(value)) => {
+            BTreeMap::from([(option_id.to_string(), value.to_string())])
+        }
+        _ => BTreeMap::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1626,6 +1755,57 @@ mod tests {
     }
 
     #[test]
+    fn thought_level_selection_uses_capability_category_instead_of_a_hardcoded_id() {
+        let capabilities = json!({
+            "configOptions": [{
+                "id": "thinking_budget",
+                "category": "thought_level",
+                "type": "select",
+                "options": [
+                    { "value": "standard", "name": "Standard" },
+                    { "value": "deep", "name": "Deep" }
+                ]
+            }]
+        });
+
+        assert_eq!(
+            validate_thought_level_selection(
+                Some(&capabilities),
+                Some("thinking_budget"),
+                Some("deep"),
+            )
+            .unwrap(),
+            (
+                Some("thinking_budget".to_string()),
+                Some("deep".to_string())
+            )
+        );
+        let stale_value = validate_thought_level_selection(
+            Some(&capabilities),
+            Some("thinking_budget"),
+            Some("removed"),
+        )
+        .unwrap_err();
+        assert_eq!(stale_value.code, "analytics.thought-level-unavailable");
+        let stale_id = validate_thought_level_selection(
+            Some(&capabilities),
+            Some("reasoning_effort"),
+            Some("deep"),
+        )
+        .unwrap_err();
+        assert_eq!(stale_id.code, "analytics.thought-level-unavailable");
+    }
+
+    #[test]
+    fn thought_level_override_reaches_the_provider_specific_config_map() {
+        assert_eq!(
+            insight_config_options(Some("thinking_budget"), Some("deep")),
+            BTreeMap::from([("thinking_budget".to_string(), "deep".to_string())])
+        );
+        assert!(insight_config_options(None, None).is_empty());
+    }
+
+    #[test]
     fn insight_agent_attempt_claims_a_durable_acp_lifecycle_owner() {
         let temp = tempfile::tempdir().unwrap();
         let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().join("analysis-attempt")).unwrap();
@@ -1641,6 +1821,7 @@ mod tests {
         )
         .unwrap();
         let snapshot = read_json::<Value>(&attempt_dir.join("acp.snapshot.json")).unwrap();
+        let storage = read_json::<Value>(&attempt_dir.join("acp.storage.json")).unwrap();
 
         assert_eq!(owner.turn_id, "turn-1");
         assert!(owner.operation_id.starts_with("prompt:"));
@@ -1652,6 +1833,11 @@ mod tests {
             snapshot["promptSubmission"]["attachmentPaths"][0],
             "projection.json"
         );
+        assert_eq!(
+            storage["acpStorageSchemaVersion"],
+            json!(gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION)
+        );
+        assert!(!gold_band::acp::branches::prepare_agent_timeline_storage(&attempt_dir).unwrap());
 
         gold_band::acp::events::persist_session_turn_terminal_owned(
             &attempt_dir.join("acp.snapshot.json"),
@@ -1693,6 +1879,9 @@ mod tests {
             operation_id: format!("operation-{revision}"),
             generation: 1,
             agent_type: "agent-a".to_string(),
+            model_id: Some("model-a".to_string()),
+            thought_level_option_id: Some("reasoning_effort".to_string()),
+            thought_level_value: Some("high".to_string()),
             range: PersonalAnalyticsDateRange::default(),
             schema_version: PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION.to_string(),
             index_revision: 1,
@@ -1891,6 +2080,9 @@ mod tests {
             schema_version: accepted.schema_version,
             index_revision: accepted.index_revision,
             agent_type: accepted.agent_type,
+            model_id: accepted.model_id,
+            thought_level_option_id: accepted.thought_level_option_id,
+            thought_level_value: accepted.thought_level_value,
         };
         let narrative = PersonalAnalyticsNarrative {
             schema_version: PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION.to_string(),
@@ -2027,6 +2219,9 @@ mod tests {
             schema_version: operation.schema_version.clone(),
             index_revision: operation.index_revision,
             agent_type: operation.agent_type.clone(),
+            model_id: operation.model_id.clone(),
+            thought_level_option_id: operation.thought_level_option_id.clone(),
+            thought_level_value: operation.thought_level_value.clone(),
         };
         let mut index = PersonalAnalyticsIndex::open(&database_path).unwrap();
         index

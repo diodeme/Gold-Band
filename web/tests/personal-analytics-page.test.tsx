@@ -18,6 +18,7 @@ vi.mock('@/api', () => api);
 
 import '../src/i18n';
 import { PersonalAnalyticsPage } from '../src/pages/PersonalAnalyticsPage';
+import { rememberPersonalAnalyticsSelection } from '../src/lib/personal-analytics-preferences';
 import type { AgentInsightOperationStatus, AgentInsightOperationVm, AgentRegistryVm, PersonalAnalyticsOperationStatus, PersonalAnalyticsReportVm, PersonalAnalyticsSnapshotVm } from '../src/types';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -29,6 +30,7 @@ const intersectionObservers: Array<{
 }> = [];
 
 beforeEach(() => {
+  window.localStorage.clear();
   intersectionObservers.length = 0;
   vi.stubGlobal('ResizeObserver', class {
     observe() {}
@@ -66,6 +68,98 @@ afterEach(async () => {
 });
 
 describe('PersonalAnalyticsPage', () => {
+  it('restores and applies a remembered Agent, model, and thought level when the page is reopened', async () => {
+    rememberPersonalAnalyticsSelection({
+      agentType: 'agent-a',
+      modelId: 'model-b',
+      thoughtLevelOptionId: 'reasoning_effort',
+      thoughtLevelValue: 'high',
+    });
+    api.getPersonalAnalytics.mockResolvedValueOnce({ ...snapshot('completed', 6), latestReport: report() });
+
+    const container = await renderPage(registry(true));
+
+    expect(container.querySelector('[data-personal-analytics-model="true"]')?.textContent).toContain('Model B');
+    expect(container.querySelector('[data-personal-analytics-model="true"]')?.textContent).toContain('High');
+    expect(api.queryPersonalAnalyticsReport).toHaveBeenLastCalledWith(
+      { start: null, end: null },
+      'agent-a',
+      'model-b',
+      'reasoning_effort',
+      'high',
+    );
+
+    await act(async () => {
+      (container.querySelector('[data-personal-analytics-insight="true"]') as HTMLButtonElement).click();
+      await Promise.resolve();
+    });
+    expect(api.startPersonalAnalyticsInsights).toHaveBeenCalledWith(
+      'agent-a',
+      { start: null, end: null },
+      'model-b',
+      'reasoning_effort',
+      'high',
+    );
+  });
+
+  it('keeps the header controls adaptive when Agent and model selectors are both present', async () => {
+    api.getPersonalAnalytics.mockResolvedValueOnce({ ...snapshot('completed', 6), latestReport: report() });
+    const container = await renderPage(registry(true));
+
+    const actions = container.querySelector('[data-personal-analytics-header-actions="true"]');
+    const controls = container.querySelector('[data-personal-analytics-controls="true"]');
+    expect(actions?.className).toContain('min-w-0');
+    expect(actions?.className).not.toContain('md:max-w-[36rem]');
+    expect(controls?.className).toContain('flex-wrap');
+    expect(controls?.className).not.toContain('sm:flex-row');
+  });
+
+  it('reuses the composer model selector and gives deterministic sync refresh semantics', async () => {
+    api.getPersonalAnalytics.mockResolvedValueOnce({ ...snapshot('completed', 6), latestReport: report() });
+    const modelOnlyRegistry = registry(true);
+    modelOnlyRegistry.agents[0].configOptions = null;
+    const container = await renderPage(modelOnlyRegistry);
+
+    expect(container.querySelector('label[for="personal-analytics-agent"]')).toBeNull();
+    expect(container.querySelector('[data-personal-analytics-model="true"]')?.textContent).toContain('模型');
+    expect(container.querySelector('[data-personal-analytics-model="true"]')?.textContent).toContain('不指定');
+
+    const modelTrigger = container.querySelector<HTMLButtonElement>('[data-personal-analytics-model="true"] [data-slot="dropdown-menu-trigger"]')!;
+    await act(async () => {
+      modelTrigger.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+    });
+    const modelB = Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitemradio"]'))
+      .find((item) => item.textContent?.includes('Model B'))!;
+    await act(async () => {
+      modelB.click();
+      await Promise.resolve();
+    });
+    expect(api.queryPersonalAnalyticsReport).toHaveBeenLastCalledWith(
+      { start: null, end: null },
+      'agent-a',
+      'model-b',
+      undefined,
+      undefined,
+    );
+
+    await act(async () => {
+      (container.querySelector('[data-personal-analytics-insight="true"]') as HTMLButtonElement).click();
+      await Promise.resolve();
+    });
+    expect(api.startPersonalAnalyticsInsights).toHaveBeenCalledWith(
+      'agent-a',
+      { start: null, end: null },
+      'model-b',
+      undefined,
+      undefined,
+    );
+
+    const refreshButton = buttonByText(container, '刷新');
+    const insightButton = container.querySelector('[data-personal-analytics-insight="true"]') as HTMLButtonElement;
+    expect(refreshButton?.querySelector('svg')?.classList.contains('lucide-refresh-cw')).toBe(true);
+    expect(insightButton.querySelector('svg')?.classList.contains('lucide-sparkles')).toBe(true);
+  });
+
   it('keeps deterministic sync available and exposes Agent management when no Agent is available', async () => {
     api.getPersonalAnalytics.mockResolvedValueOnce(snapshot('completed', 6));
     const container = await renderPage(registry(false));
@@ -174,7 +268,7 @@ describe('PersonalAnalyticsPage', () => {
     await act(async () => {
       await Promise.resolve();
     });
-    expect(container.textContent).toContain('正在同步');
+    expect(container.textContent).toContain('正在刷新');
     expect(startButton(container).disabled).toBe(true);
 
     expect(api.syncPersonalAnalytics).toHaveBeenCalledTimes(1);
@@ -237,6 +331,9 @@ describe('PersonalAnalyticsPage', () => {
     expect(api.queryPersonalAnalyticsReport).toHaveBeenLastCalledWith(
       { start: '2026-08-01', end: '2026-08-18' },
       'agent-a',
+      undefined,
+      undefined,
+      undefined,
     );
     expect(api.startPersonalAnalyticsInsights).not.toHaveBeenCalled();
     expect(container.querySelectorAll('[data-personal-analytics-nav="true"] button')).toHaveLength(8);
@@ -266,6 +363,9 @@ describe('PersonalAnalyticsPage', () => {
     expect(api.queryPersonalAnalyticsReport).toHaveBeenLastCalledWith(
       { start: '2026-08-01', end: '2026-08-18' },
       'agent-a',
+      undefined,
+      undefined,
+      undefined,
     );
     expect(api.startPersonalAnalyticsInsights).not.toHaveBeenCalled();
   });
@@ -387,7 +487,13 @@ describe('PersonalAnalyticsPage', () => {
     await act(async () => {});
 
     expect(api.queryPersonalAnalyticsReport.mock.calls.length).toBeGreaterThan(initialQueries);
-    expect(api.queryPersonalAnalyticsReport).toHaveBeenLastCalledWith({ start: null, end: null }, 'agent-a');
+    expect(api.queryPersonalAnalyticsReport).toHaveBeenLastCalledWith(
+      { start: null, end: null },
+      'agent-a',
+      undefined,
+      undefined,
+      undefined,
+    );
     expect(container.textContent).toContain('优先收敛重入根因');
   });
 
@@ -430,6 +536,9 @@ describe('PersonalAnalyticsPage', () => {
     expect(api.queryPersonalAnalyticsReport).toHaveBeenLastCalledWith(
       { start: localToday, end: localToday },
       'agent-a',
+      undefined,
+      undefined,
+      undefined,
     );
 
     await act(async () => {
@@ -558,6 +667,20 @@ function registry(available: boolean, displayName = 'Agent A'): AgentRegistryVm 
       externalSessionSyncSupported: false,
       externalSessionSyncEnabled: false,
       diagnostic: { status: available ? 'healthy' : 'unavailable', available, checkedAt: '2026-08-18T00:00:00Z' },
+      supportedModels: available ? [
+        { id: 'model-a', name: 'Model A', description: 'Fast model' },
+        { id: 'model-b', name: 'Model B', description: 'Deep model' },
+      ] : null,
+      configOptions: available ? [{
+        id: 'reasoning_effort',
+        category: 'thought_level',
+        name: 'Reasoning effort',
+        currentValue: 'low',
+        options: [
+          { value: 'low', name: 'Low' },
+          { value: 'high', name: 'High' },
+        ],
+      }] : null,
     }],
     catalog: [],
   };
@@ -595,6 +718,9 @@ function insightOperation(
     operationId: 'insight-operation-1',
     generation,
     agentType: 'agent-a',
+    modelId: null,
+    thoughtLevelOptionId: null,
+    thoughtLevelValue: null,
     range: { start: null, end: null },
     schemaVersion: '2.2.0',
     indexRevision: 1,

@@ -206,6 +206,7 @@ import {
   isTerminalLifecycleForTurn,
   shouldHidePendingAcpInteractions,
   mergeConversationAttemptLifecycle,
+  mergeConversationAttemptLiveControlFacets,
   shouldSettleAcpComposerTransientState,
   shouldSettleRuntimeContinueSubmission,
   isRuntimeActiveStatus,
@@ -1573,6 +1574,20 @@ export function ACPChatDialog(
     });
   }, [updateOptimisticEvents]);
 
+  const settlePendingInteractionsForLifecycle = useCallback((
+    lifecycle: Pick<ConversationAttemptLifecycleVm, 'acp'>,
+  ) => {
+    if (!isTerminalAcpLifecycle(lifecycle)) return;
+    setCurrentSession((currentSession) => {
+      const base = currentSession ?? latestSessionRef.current;
+      const settled = settlePendingAcpInteractionsForLifecycle(base, lifecycle);
+      if (settled === base) return currentSession;
+      latestSessionRef.current = settled;
+      if (settled) storeAcpSession(eventWindowKey, settled);
+      return settled;
+    });
+  }, [eventWindowKey]);
+
   const applyLifecycleProjection = useCallback((
     incoming: ConversationAttemptLifecycleVm,
     source: "context" | "local" = "local",
@@ -1582,16 +1597,25 @@ export function ACPChatDialog(
     const merged = mergeConversationAttemptLifecycle(current, incoming);
     lifecycleProjectionRef.current = merged;
     setLocalRuntimeLifecycle(source === "context" && merged === incoming ? null : merged);
-    if (!isTerminalAcpLifecycle(merged)) return;
-    setCurrentSession((currentSession) => {
-      const base = currentSession ?? latestSessionRef.current;
-      const settled = settlePendingAcpInteractionsForLifecycle(base, merged);
-      if (settled === base) return currentSession;
-      latestSessionRef.current = settled;
-      if (settled) storeAcpSession(eventWindowKey, settled);
-      return settled;
-    });
-  }, [eventWindowKey]);
+    settlePendingInteractionsForLifecycle(merged);
+  }, [settlePendingInteractionsForLifecycle]);
+
+  const applyCachedLiveControlFacets = useCallback((
+    acp: ConversationAttemptLifecycleVm['acp'],
+    promptQueue: ConversationAttemptLifecycleVm['promptQueue'],
+  ) => {
+    const current = lifecycleProjectionRef.current;
+    if (!current) {
+      settlePendingInteractionsForLifecycle({ acp });
+      return;
+    }
+    const merged = mergeConversationAttemptLiveControlFacets(current, { acp, promptQueue });
+    if (merged !== current) {
+      lifecycleProjectionRef.current = merged;
+      setLocalRuntimeLifecycle(merged);
+    }
+    settlePendingInteractionsForLifecycle(merged);
+  }, [settlePendingInteractionsForLifecycle]);
 
   useEffect(() => {
     logAcpSessionReadyLifecycle("component-mount", componentInstanceId, sessionIdentity);
@@ -1820,9 +1844,9 @@ export function ACPChatDialog(
   }, [commitHasNewerEvents, commitLoadedEventWindow, effectiveLoadedEventBufferLimit, eventWindowKey, sessionKey]);
 
   useEffect(() => {
-    if (branchId !== 'root' || !branchLiveSnapshot.lifecycle) return;
-    applyLifecycleProjection(branchLiveSnapshot.lifecycle);
-  }, [applyLifecycleProjection, branchId, branchLiveSnapshot.lifecycle]);
+    if (branchId !== 'root' || !branchLiveSnapshot.acp) return;
+    applyCachedLiveControlFacets(branchLiveSnapshot.acp, branchLiveSnapshot.promptQueue);
+  }, [applyCachedLiveControlFacets, branchId, branchLiveSnapshot.acp, branchLiveSnapshot.promptQueue]);
 
   useEffect(() => {
     if (loadedEventWindow.eventWindowKey !== eventWindowKey) return;
@@ -10684,7 +10708,7 @@ function reconcileCanonicalAcpSessionForDisplay(
  */
 export function settlePendingAcpInteractionsForLifecycle(
   session: AcpSessionVm | null | undefined,
-  lifecycle: ConversationAttemptLifecycleVm | null | undefined,
+  lifecycle: Pick<ConversationAttemptLifecycleVm, 'acp'> | null | undefined,
 ): AcpSessionVm | null {
   if (!session || !isTerminalAcpLifecycle(lifecycle)) return session ?? null;
   const terminalTurnId = lifecycle?.acp.turnId ?? null;

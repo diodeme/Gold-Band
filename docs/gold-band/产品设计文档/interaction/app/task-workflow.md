@@ -8,7 +8,7 @@
 ## 2. 页面入口
 进入方式：
 - 从任务列表双击某个任务或点击“进入任务”
-- 从 round 详情面包屑返回“工作流列表”
+- 从会话运行页返回任务工作流
 
 页面面包屑：
 
@@ -198,7 +198,7 @@ Run 分组行规则：
 
 Run 分组行操作：
 - 点击整行或左侧箭头展开 / 收起
-- running / paused Run 的操作列展示“停止”；存在当前 round 时同时展示“查看”，查看进入当前 round 详情。手动停止需要递归终止该 run 当前执行树下的所有活跃资源：当前 provider / ACP 会话、AI-DYNAMIC 内部并行节点、以及 workflow-invocation 拉起的 child run；随后将 run / round / 当前 node 与已发现的 dynamic 子状态一并收敛为 killed。
+- running / paused Run 的操作列展示“停止”；存在当前 round 时同时展示“查看”，查看进入会话运行页并定位当前 Round。手动停止需要递归终止该 run 当前执行树下的所有活跃资源：当前 provider / ACP 会话、AI-DYNAMIC 内部并行节点、以及 workflow-invocation 拉起的 child run；随后将 run / round / 当前 node 与已发现的 dynamic 子状态一并收敛为 killed。
 - `workflow-invocation` 在 AI-DYNAMIC 内部按复合节点处理：child workflow run 若暂停，外层 dynamic node 也暂停；继续该外层 run 时，runtime 直接委托对应 `childRunId` 从自身断点恢复，外层只观察复合节点状态，不直接暴露内部 ACP 细节。
 - 关闭桌面应用与手动“停止 run”语义不同：关闭应用时，当前所有 running run 会递归请求取消活跃 provider/ACP，并把 run、AI-DYNAMIC dynamic run、内部 paused node、以及 child workflow run 统一写成 `ProcessInterrupted` 可恢复暂停；再次打开应用后，用户可继续这些 run。
 - completed 等终态 Run 没有直接操作时，操作列保持空白
@@ -215,14 +215,14 @@ Round 明细行展示：
 Round 行规则：
 - 使用与 run 摘要行一致的紧凑固定行高节奏和列宽
 - 展开区域通过缩进、左侧时间线和独立浅表面表达 Round 从属于当前 Run
-- 当前节点只在行内展示单行截断摘要；需要完整上下文时进入 round 详情页
+- 当前节点只在行内展示单行截断摘要；需要完整上下文时进入会话运行页
 
-Round 行使用明确“查看 / Open”按钮进入 round 详情页；按钮必须稳定可见，不使用弱化箭头作为唯一入口。
+Round 行使用明确“查看 / Open”按钮进入 canonical `conversation-run` 并携带 Round locator；按钮必须稳定可见，不使用弱化箭头作为唯一入口。旧 workbench `round-detail` 路由与页面不再保留。
 
 页面层级变为：
 
 ```text
-任务列表 > 任务01 > 工作流列表 > run01 > round01
+会话 > task01 > run01 > round01
 ```
 
 ---

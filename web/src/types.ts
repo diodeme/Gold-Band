@@ -2097,8 +2097,7 @@ export type PrimaryModule = 'task-orchestration' | 'agent-management' | 'knowled
 
 export type TaskPage =
   | { kind: 'task-list' }
-  | { kind: 'workflow'; taskId: string }
-  | { kind: 'round-detail'; taskId: string; runId: string; roundId: string };
+  | { kind: 'workflow'; taskId: string };
 
 type RoundSelectionContext = { contextNodeId?: string };
 

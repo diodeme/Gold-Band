@@ -8,6 +8,7 @@ import {
   isTerminalLifecycleForTurn,
   shouldHidePendingAcpInteractions,
   mergeConversationAttemptLifecycle,
+  mergeConversationAttemptLiveControlFacets,
   shouldSettleAcpComposerTransientState,
   shouldKeepLocalRuntimeLifecycleOverride,
   shouldSettleRuntimeContinueSubmission,
@@ -1071,6 +1072,47 @@ describe('deriveAcpRuntimeComposerState', () => {
 });
 
 describe('mergeConversationAttemptLifecycle', () => {
+  it('preserves canonical non-blocking runtime-abnormal semantics when replaying a newer ACP facet', () => {
+    const canonical = lifecycle({
+      runtime: {
+        revision: 4,
+        status: 'paused',
+        pauseReason: 'runtime-abnormal',
+        resumable: true,
+        current: true,
+        active: false,
+        continuable: true,
+        phase: 'idle',
+      },
+      acp: {
+        revision: 10,
+        turnId: 'turn-1',
+        liveTurnActivity: 'idle',
+        latestTurnStatus: 'failed',
+        stopping: false,
+      },
+      displayStatus: 'runtime-abnormal',
+      runtimeDisplay: runtimeAbnormalDisplay,
+      composer: {
+        mode: 'normal',
+        submitTarget: 'acp-prompt',
+        lockInput: false,
+      },
+    });
+    const cachedAcp = {
+      ...canonical.acp,
+      revision: 11,
+    };
+
+    const merged = mergeConversationAttemptLiveControlFacets(canonical, { acp: cachedAcp });
+
+    expect(merged.acp).toBe(cachedAcp);
+    expect(merged.runtimeDisplay).toBe(runtimeAbnormalDisplay);
+    expect(merged.runtimeDisplay.blockingError).toBe(false);
+    expect(merged.composer.mode).toBe('normal');
+    expect(merged.composer.lockInput).toBe(false);
+  });
+
   it('rejects a late stopping facet after the same turn already became terminal', () => {
     const terminal = lifecycle({
       acp: {

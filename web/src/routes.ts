@@ -65,9 +65,6 @@ export function routeFromPath(pathname: string): AppRoute {
   if (segments[0] !== 'tasks') return { ...workbenchBase, module: 'task-orchestration', taskPage: taskListPage };
   if (!segments[1]) return { ...workbenchBase, module: 'task-orchestration', taskPage: taskListPage };
   if (segments[2] === 'workflow') return { ...workbenchBase, module: 'task-orchestration', taskPage: { kind: 'workflow', taskId: segments[1] } };
-  if (segments[2] === 'runs' && segments[3] && segments[4] === 'rounds' && segments[5]) {
-    return { ...workbenchBase, module: 'task-orchestration', taskPage: { kind: 'round-detail', taskId: segments[1], runId: segments[3], roundId: segments[5] } };
-  }
   return { ...workbenchBase, module: 'task-orchestration', taskPage: taskListPage };
 }
 
@@ -105,9 +102,6 @@ export function pathFromRoute(module: PrimaryModule, taskPage: TaskPage, convers
   if (module === 'agent-management') return '/agents';
   if (module === 'knowledge-base') return '/contexts';
   if (taskPage.kind === 'workflow') return `/tasks/${encodeURIComponent(taskPage.taskId)}/workflow`;
-  if (taskPage.kind === 'round-detail') {
-    return `/tasks/${encodeURIComponent(taskPage.taskId)}/runs/${encodeURIComponent(taskPage.runId)}/rounds/${encodeURIComponent(taskPage.roundId)}`;
-  }
   return '/tasks';
 }
 

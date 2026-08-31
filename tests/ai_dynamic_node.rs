@@ -24,6 +24,7 @@ use tempfile::tempdir;
 #[derive(Clone)]
 enum DynamicScenario {
     DirectEnd,
+    NewRoundFeedback,
     Fanout,
     WorktreeFanout,
     NestedFanout,
@@ -62,6 +63,10 @@ impl DynamicProvider {
 
     fn direct_end() -> Self {
         Self::new(DynamicScenario::DirectEnd)
+    }
+
+    fn new_round_feedback() -> Self {
+        Self::new(DynamicScenario::NewRoundFeedback)
     }
 
     fn worktree_fanout() -> Self {
@@ -320,6 +325,24 @@ impl DynamicProvider {
         let profile = req.profile.as_deref().unwrap_or("profile");
         match (&self.scenario, req.runtime_context.node_id.as_str()) {
             (DynamicScenario::DirectEnd, "bootstrap") => Some(end_completion("outer handoff")),
+            (DynamicScenario::NewRoundFeedback, "bootstrap") => {
+                Some(if req.runtime_context.round_id == "round-001" {
+                    end_completion("round handoff")
+                } else {
+                    new_round_revision_completion()
+                })
+            }
+            (DynamicScenario::NewRoundFeedback, "revision") => {
+                Some(end_completion("revision completed"))
+            }
+            (DynamicScenario::NewRoundFeedback, "accept") => Some(
+                if req.runtime_context.round_id == "round-001" {
+                    r#"{"result":false,"reason":"ROUND_ONE_REVISION_REQUIRED"}"#
+                } else {
+                    r#"{"result":true,"reason":"accepted"}"#
+                }
+                .to_string(),
+            ),
             (DynamicScenario::Fanout, "bootstrap") => Some(fanout_completion(profile)),
             (DynamicScenario::Fanout, "branch-a" | "branch-b") => {
                 Some(end_completion("branch done"))
@@ -573,6 +596,27 @@ fn end_completion(summary: &str) -> String {
             "next": {{ "type": "end" }}
         }}"#
     )
+}
+
+fn new_round_revision_completion() -> String {
+    r#"{
+            "version": "0.1",
+            "kind": "dynamic-node-completion",
+            "status": "success",
+            "summary": "delegate the requested revision",
+            "next": {
+                "type": "single",
+                "node": {
+                    "id": "revision",
+                    "kind": "worker",
+                    "title": "Apply revision",
+                    "task": "Apply the previous Round acceptance feedback",
+                    "profile": "pf-builtin-dev",
+                    "dependsOn": ["bootstrap"]
+                }
+            }
+        }"#
+    .to_string()
 }
 
 fn invalid_workflow_invocation_completion(_profile: &str) -> String {
@@ -990,6 +1034,63 @@ fn write_dynamic_workflow_with_successor(app: &App, task_id: &str) {
             "edges": [
                 { "from": "router", "to": "after", "on": "success" },
                 { "from": "after", "to": "$end", "on": "success" }
+            ]
+        }"#,
+    )
+    .unwrap();
+}
+
+fn write_dynamic_workflow_with_new_round_feedback(app: &App, task_id: &str) {
+    std::fs::write(
+        app.paths.workflow_file(task_id).as_std_path(),
+        r#"{
+            "version": "0.1",
+            "id": "dynamic-flow-with-new-round-feedback",
+            "entry": "router",
+            "control": { "max_attempts": 1, "max_rounds": 1 },
+            "nodes": [
+                {
+                    "id": "router",
+                    "type": "ai-dynamic",
+                    "agentStrategy": {
+                        "mode": "fixed",
+                        "provider": "claude-acp",
+                        "model": "test-model"
+                    },
+                    "control": {
+                        "maxDynamicNodes": 10,
+                        "maxFanout": 2,
+                        "maxDepth": 4,
+                        "maxParallel": 2,
+                        "maxGroupDepth": 2,
+                        "maxWorkflowInvocations": 2,
+                        "allowNestedDynamic": false
+                    },
+                    "allowedWorkflows": []
+                },
+                {
+                    "id": "accept",
+                    "type": "worker",
+                    "provider": "claude-acp",
+                    "profile": "pf-builtin-accept",
+                    "goal": "Accept the AI-DYNAMIC result",
+                    "output": {
+                        "kind": "json",
+                        "artifact": "accept-result",
+                        "schema": { "result": "boolean", "reason": "String" }
+                    },
+                    "success_condition": { "expression": "$.result == true" }
+                }
+            ],
+            "edges": [
+                { "from": "router", "to": "accept", "on": "success" },
+                {
+                    "from": "accept",
+                    "to": "$new-round",
+                    "on": "failure",
+                    "new_round_entry": "router"
+                },
+                { "from": "accept", "to": "$end", "on": "success" }
             ]
         }"#,
     )
@@ -1449,6 +1550,106 @@ fn ai_dynamic_without_groups_publishes_final_end_summary() {
     assert_eq!(result["summary"], "outer handoff");
     assert_eq!(result["sourceNodeId"], "bootstrap");
     assert!(result.get("sourceGroupId").is_none());
+}
+
+#[test]
+fn ai_dynamic_new_round_bootstrap_receives_acceptance_trigger_context() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-new-round-feedback";
+    let provider = DynamicProvider::new_round_feedback();
+    let app = with_available_claude_diagnostics(App::with_provider(
+        repo_root,
+        Box::new(provider.clone()),
+    ));
+    write_task_file(&app, task_id);
+    write_dynamic_workflow_with_new_round_feedback(&app, task_id);
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+    assert_eq!(run.new_rounds_opened, 1);
+
+    let invocations = provider.invocations.lock().unwrap();
+    let round_two_bootstrap = invocations
+        .iter()
+        .find(|invocation| {
+            invocation.runtime_context.round_id == "round-002"
+                && invocation.runtime_context.node_id == "bootstrap"
+                && is_business_invocation(invocation)
+        })
+        .expect("the second round should execute the AI-DYNAMIC bootstrap");
+    let trigger = round_two_bootstrap
+        .new_round_trigger
+        .as_ref()
+        .expect("the second-round bootstrap must receive the first-round acceptance trigger");
+    assert_eq!(trigger.round_id, "round-001");
+    assert_eq!(trigger.node_id, "accept");
+    assert_eq!(trigger.attempt_id, "attempt-001");
+    assert_eq!(trigger.outcome.as_deref(), Some("failure"));
+    assert_eq!(trigger.branch_direction.as_deref(), Some("$new-round"));
+
+    let artifact = trigger
+        .output_artifact
+        .as_ref()
+        .expect("the acceptance trigger must expose its output artifact");
+    let expected_artifact_path = app.paths.artifact_file(
+        task_id,
+        "run-001",
+        "round-001",
+        "accept",
+        "attempt-001",
+        "accept-result",
+    );
+    assert_eq!(artifact.name, "accept-result");
+    assert_eq!(artifact.path, expected_artifact_path);
+    assert!(
+        artifact
+            .preview
+            .as_deref()
+            .is_some_and(|preview| preview.contains("ROUND_ONE_REVISION_REQUIRED")),
+        "the trigger must include the prior acceptance artifact preview"
+    );
+    let round_two_revision = invocations
+        .iter()
+        .find(|invocation| {
+            invocation.runtime_context.round_id == "round-002"
+                && invocation.runtime_context.node_id == "revision"
+                && is_business_invocation(invocation)
+        })
+        .expect("the second-round bootstrap should dispatch an internal revision worker");
+    assert!(round_two_revision.new_round_trigger.is_none());
+    let revision_prompt = render_prompt_bundle(round_two_revision).unwrap();
+    assert!(!revision_prompt.user_prompt.contains("$new-round"));
+    assert!(
+        !revision_prompt
+            .user_prompt
+            .contains("ROUND_ONE_REVISION_REQUIRED")
+    );
+    assert!(
+        invocations
+            .iter()
+            .filter(|invocation| {
+                invocation.runtime_context.round_id == "round-002"
+                    && invocation.runtime_context.node_id != "bootstrap"
+            })
+            .all(|invocation| invocation.new_round_trigger.is_none()),
+        "the outer trigger must not be broadcast beyond the AI-DYNAMIC bootstrap"
+    );
+
+    let rendered = render_prompt_bundle(round_two_bootstrap).unwrap();
+    assert!(rendered.user_prompt.contains("$new-round"));
+    assert!(
+        rendered
+            .user_prompt
+            .contains("round-001/accept/attempt-001")
+    );
+    assert!(
+        rendered
+            .user_prompt
+            .contains(expected_artifact_path.as_str())
+    );
+    assert!(rendered.user_prompt.contains("ROUND_ONE_REVISION_REQUIRED"));
 }
 
 #[test]

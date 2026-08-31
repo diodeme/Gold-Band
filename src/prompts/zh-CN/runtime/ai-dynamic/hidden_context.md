@@ -21,6 +21,13 @@
 - Workspace 能力：
 {{ workspace_capability }}
 
+{% if has_new_round_trigger %}
+## `$new-round` 触发反馈
+{{ new_round_trigger }}
+- 这是上一轮触发当前新 Round 的失败节点输出。先理解其中的失败原因和未完成项，再规划本轮内部任务，不要只按原始需求原样重跑。
+- artifact 预览可能被截断；需要完整信息时读取上面明确列出的 artifact 或附件。
+{% endif %}
+
 {% if has_coordination_snapshot %}
 ## Runtime 协调快照
 - 只读快照：{{ coordination_snapshot_path }}

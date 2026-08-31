@@ -21,6 +21,13 @@
 - Workspace capability:
 {{ workspace_capability }}
 
+{% if has_new_round_trigger %}
+## `$new-round` trigger feedback
+{{ new_round_trigger }}
+- This is the failed node output that opened the current new Round. Understand its failure reason and unfinished work before planning the internal tasks for this Round; do not simply repeat the original requirement unchanged.
+- The artifact preview may be truncated. Read the explicitly listed artifact or attachments when complete details are needed.
+{% endif %}
+
 {% if has_coordination_snapshot %}
 ## Runtime coordination snapshot
 - Read-only snapshot: {{ coordination_snapshot_path }}

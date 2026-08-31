@@ -71,9 +71,10 @@ use crate::prompts::{
 };
 use crate::provider::{
     ConversationPromptInput, OutputEmissionMode, PromptHiddenSection, PromptOutputContract,
-    PromptRuntimeContext, PromptVisibility, ProviderRunResult, ProviderRunStatus,
-    RuntimeControlIntent, RuntimeControlOutput, StreamMode, UserPromptRenderMode, WorkerInvocation,
-    conversation_prompt_text, render_prompt_bundle, supported_models_from_capabilities,
+    PromptPredecessorContext, PromptRuntimeContext, PromptVisibility, ProviderRunResult,
+    ProviderRunStatus, RuntimeControlIntent, RuntimeControlOutput, StreamMode,
+    UserPromptRenderMode, WorkerInvocation, conversation_prompt_text,
+    render_new_round_trigger_reason_line, render_prompt_bundle, supported_models_from_capabilities,
     supported_modes_from_capabilities,
 };
 use crate::runtime::{
@@ -92,7 +93,7 @@ use super::ids::{
     generate_uuid, next_attempt_id, next_dynamic_resume_request_id, next_runtime_execution_id,
     now_rfc3339_like, reserve_next_run_dir,
 };
-use super::node_executor::{execute_ai_node, re_evaluate_attempt};
+use super::node_executor::{build_new_round_trigger_context, execute_ai_node, re_evaluate_attempt};
 use super::profile_resolver::{resolve_profile_for_node, resolve_workflow_profiles};
 use super::state_access::{
     current_attempt_state, load_run_workflow, persist_runtime_state,
@@ -4719,6 +4720,9 @@ struct DynamicExecutionContext<'a> {
     /// Runtime generation that owns scheduler-side graph transitions. A stop
     /// clears it, and an explicit continue always allocates a different one.
     outer_runtime_execution_id: Option<String>,
+    /// Derived feedback from the outer workflow edge that opened this Round.
+    /// It is transient and is projected only to the internal bootstrap turn.
+    outer_new_round_trigger: Option<PromptPredecessorContext>,
     dynamic: &'a AiDynamicNode,
     // UUIDs from the outer run/round/node — used for metrics reporting
     task_uuid: Option<&'a str>,
@@ -6752,6 +6756,7 @@ fn execute_ai_dynamic_node(
     round: &RoundState,
     attempt_id: &str,
     dynamic: &AiDynamicNode,
+    outer_new_round_trigger: Option<PromptPredecessorContext>,
     mut outer_node: NodeState,
     parent_continue_input: Option<ConversationPromptInput>,
     parent_continue_prompt_id: Option<String>,
@@ -6765,6 +6770,7 @@ fn execute_ai_dynamic_node(
         outer_node_id: &outer_node.node_id,
         outer_attempt_id: attempt_id,
         outer_runtime_execution_id: outer_node.runtime_execution_id.clone(),
+        outer_new_round_trigger,
         dynamic,
         task_uuid: run.task_uuid.as_deref(),
         run_uuid: run.uuid.as_deref(),
@@ -7958,6 +7964,11 @@ fn launch_ready_dynamic_nodes(
         let round_uuid = ctx.round_uuid.map(|s| s.to_string());
         let outer_node_uuid = ctx.outer_node_uuid.map(|s| s.to_string());
         let outer_runtime_execution_id = ctx.outer_runtime_execution_id.clone();
+        let outer_new_round_trigger = if dynamic_node_is_bootstrap_dispatch(&node_clone) {
+            ctx.outer_new_round_trigger.clone()
+        } else {
+            None
+        };
         let parent_continue_input = ctx.parent_continue_input.clone();
         let parent_continue_prompt_id = ctx.parent_continue_prompt_id.clone();
         let spawned_node_id = node_id_for_job.clone();
@@ -7974,6 +7985,7 @@ fn launch_ready_dynamic_nodes(
                     &outer_node_id,
                     &outer_attempt_id,
                     outer_runtime_execution_id,
+                    outer_new_round_trigger,
                     &dynamic,
                     node_clone,
                     task_uuid.as_deref(),
@@ -8527,6 +8539,7 @@ fn execute_dynamic_node_job(
     outer_node_id: &str,
     outer_attempt_id: &str,
     outer_runtime_execution_id: Option<String>,
+    outer_new_round_trigger: Option<PromptPredecessorContext>,
     dynamic: &AiDynamicNode,
     node: DynamicNodeState,
     task_uuid: Option<&str>,
@@ -8606,6 +8619,7 @@ fn execute_dynamic_node_job(
         outer_node_id,
         outer_attempt_id,
         outer_runtime_execution_id,
+        outer_new_round_trigger,
         dynamic,
         task_uuid,
         run_uuid,
@@ -12219,6 +12233,7 @@ pub(crate) fn prepare_dynamic_acp_prompt(
         outer_node_id,
         outer_attempt_id,
         outer_runtime_execution_id: None,
+        outer_new_round_trigger: None,
         dynamic,
         task_uuid: None,
         run_uuid: None,
@@ -12538,7 +12553,8 @@ fn build_dynamic_worker_invocation(
         output_contract,
         runtime_context,
         predecessors,
-        new_round_trigger: None,
+        new_round_trigger: dynamic_new_round_trigger_for_invocation(ctx, node, session_mode)
+            .cloned(),
         extra_system_sections,
         extra_hidden_sections,
         task_instruction: Some(task_instruction.clone()),
@@ -13482,6 +13498,18 @@ fn dynamic_system_sections(
     )?])
 }
 
+fn dynamic_new_round_trigger_for_invocation<'a>(
+    ctx: &'a DynamicExecutionContext<'_>,
+    node: &DynamicNodeState,
+    session_mode: SessionMode,
+) -> Option<&'a PromptPredecessorContext> {
+    if session_mode == SessionMode::New && dynamic_node_is_bootstrap_dispatch(node) {
+        ctx.outer_new_round_trigger.as_ref()
+    } else {
+        None
+    }
+}
+
 fn dynamic_hidden_sections(
     ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
@@ -13502,6 +13530,7 @@ fn dynamic_hidden_sections(
     );
     let runtime_context = dynamic_runtime_context(ctx, &node.id, attempt_id);
     let projection = dynamic_context_projection(ctx, graph, node);
+    let new_round_trigger = dynamic_new_round_trigger_for_invocation(ctx, node, session_mode);
     let has_coordination_snapshot = match node.kind {
         DynamicNodeKind::Worker => !dynamic_node_is_bootstrap_dispatch(node),
         DynamicNodeKind::Acceptance => has_output_contract,
@@ -13514,76 +13543,92 @@ fn dynamic_hidden_sections(
         ctx.outer_node_id,
         ctx.outer_attempt_id,
     );
-    let content = render_template(
-        prompt_by_language(
-            ctx.app.config.desktop_language,
-            AI_DYNAMIC_HIDDEN_CONTEXT_ZH_CN,
-            AI_DYNAMIC_HIDDEN_CONTEXT_EN,
+    let template = prompt_by_language(
+        ctx.app.config.desktop_language,
+        AI_DYNAMIC_HIDDEN_CONTEXT_ZH_CN,
+        AI_DYNAMIC_HIDDEN_CONTEXT_EN,
+    );
+    let mut template_context = serde_json::json!({
+        "outer_node_id": ctx.outer_node_id,
+        "outer_attempt_id": ctx.outer_attempt_id,
+        "dynamic_run_id": graph.run.id,
+        "node_id": node.id,
+        "title": node.title,
+        "kind": format!("{:?}", node.kind),
+        "group_id": node.group_id.as_deref().unwrap_or("none"),
+        "chain_id": node.chain_id,
+        "depth": node.depth,
+        "session_mode": match session_mode {
+            SessionMode::New => "new",
+            SessionMode::Continue => "continue",
+        },
+        "continue_from_node_id": node.continue_from_node_id.as_deref().unwrap_or("none"),
+        "dynamic_root": dynamic_root,
+        "node_dir": runtime_context.node_dir,
+        "attempt_dir": runtime_context.attempt_dir,
+        "attachments_dir": runtime_context.attachments_dir,
+        "workspace_id": node.workspace_id,
+        "workspace_path": workspace_path,
+        "workspace_capability": dynamic_workspace_capability_summary(ctx),
+        "has_coordination_snapshot": has_coordination_snapshot,
+        "coordination_snapshot_path": coordination_snapshot_path,
+        "direct_predecessors": projection.direct_predecessors,
+        "has_direct_predecessors": projection.has_direct_predecessors,
+        "active_group": projection.active_group,
+        "has_active_group": projection.has_active_group,
+        "inherited_groups": projection.inherited_groups,
+        "has_inherited_groups": projection.has_inherited_groups,
+        "siblings": projection.siblings,
+        "has_siblings": projection.has_siblings,
+        "available_attachments": projection.available_attachments,
+        "has_available_attachments": projection.has_available_attachments,
+        "has_output_contract": has_output_contract,
+        "allowed_workflow_snapshots": allowed_workflow_snapshot_summary(&graph.run.allowed_workflow_snapshots),
+        "agent_strategy_mode": dynamic_agent_strategy_mode(ctx.dynamic),
+        "bootstrap_provider": ctx.dynamic.bootstrap_provider().unwrap_or("none"),
+        "agent_routing_prompt": dynamic_agent_routing_prompt(ctx.dynamic).unwrap_or("none"),
+        "acceptance_model_policy": match ctx.app.config.desktop_language {
+            DesktopLanguage::ZhCn => match dynamic_acceptance_model(ctx.dynamic) {
+                Some(model) => format!(
+                    "`merge` / `acceptance` 固定使用验收模型 `{model}`；这两个 spec 不要输出 `model`。"
+                ),
+                None => "未单独配置验收模型；`merge` / `acceptance` 与普通动态节点沿用同一套模型规则。".to_string(),
+            },
+            DesktopLanguage::En => match dynamic_acceptance_model(ctx.dynamic) {
+                Some(model) => format!(
+                    "`merge` / `acceptance` use the configured acceptance model `{model}`; those specs must not output `model`."
+                ),
+                None => "No dedicated acceptance model is configured; `merge` / `acceptance` follow the same model rules as other dynamic nodes.".to_string(),
+            },
+        },
+        "available_providers": available_provider_summary(ctx),
+        "available_profiles": available_profile_summary(ctx),
+        "remaining_budget": dynamic_remaining_budget_summary(graph, node),
+        "resumable_sessions": dynamic_resumable_session_summary(ctx, graph, node),
+        "depends_on": if node.depends_on.is_empty() {
+            "none".to_string()
+        } else {
+            node.depends_on.join(", ")
+        },
+    });
+    let template_fields = template_context
+        .as_object_mut()
+        .expect("AI-DYNAMIC hidden context must be an object");
+    template_fields.insert(
+        "has_new_round_trigger".to_string(),
+        serde_json::Value::Bool(new_round_trigger.is_some()),
+    );
+    template_fields.insert(
+        "new_round_trigger".to_string(),
+        serde_json::Value::String(
+            new_round_trigger
+                .map(|trigger| {
+                    render_new_round_trigger_reason_line(trigger, ctx.app.config.desktop_language)
+                })
+                .unwrap_or_default(),
         ),
-        serde_json::json!({
-            "outer_node_id": ctx.outer_node_id,
-            "outer_attempt_id": ctx.outer_attempt_id,
-            "dynamic_run_id": graph.run.id,
-            "node_id": node.id,
-            "title": node.title,
-            "kind": format!("{:?}", node.kind),
-            "group_id": node.group_id.as_deref().unwrap_or("none"),
-            "chain_id": node.chain_id,
-            "depth": node.depth,
-            "session_mode": match session_mode {
-                SessionMode::New => "new",
-                SessionMode::Continue => "continue",
-            },
-            "continue_from_node_id": node.continue_from_node_id.as_deref().unwrap_or("none"),
-            "dynamic_root": dynamic_root,
-            "node_dir": runtime_context.node_dir,
-            "attempt_dir": runtime_context.attempt_dir,
-            "attachments_dir": runtime_context.attachments_dir,
-            "workspace_id": node.workspace_id,
-            "workspace_path": workspace_path,
-            "workspace_capability": dynamic_workspace_capability_summary(ctx),
-            "has_coordination_snapshot": has_coordination_snapshot,
-            "coordination_snapshot_path": coordination_snapshot_path,
-            "direct_predecessors": projection.direct_predecessors,
-            "has_direct_predecessors": projection.has_direct_predecessors,
-            "active_group": projection.active_group,
-            "has_active_group": projection.has_active_group,
-            "inherited_groups": projection.inherited_groups,
-            "has_inherited_groups": projection.has_inherited_groups,
-            "siblings": projection.siblings,
-            "has_siblings": projection.has_siblings,
-            "available_attachments": projection.available_attachments,
-            "has_available_attachments": projection.has_available_attachments,
-            "has_output_contract": has_output_contract,
-            "allowed_workflow_snapshots": allowed_workflow_snapshot_summary(&graph.run.allowed_workflow_snapshots),
-            "agent_strategy_mode": dynamic_agent_strategy_mode(ctx.dynamic),
-            "bootstrap_provider": ctx.dynamic.bootstrap_provider().unwrap_or("none"),
-            "agent_routing_prompt": dynamic_agent_routing_prompt(ctx.dynamic).unwrap_or("none"),
-            "acceptance_model_policy": match ctx.app.config.desktop_language {
-                DesktopLanguage::ZhCn => match dynamic_acceptance_model(ctx.dynamic) {
-                    Some(model) => format!(
-                        "`merge` / `acceptance` 固定使用验收模型 `{model}`；这两个 spec 不要输出 `model`。"
-                    ),
-                    None => "未单独配置验收模型；`merge` / `acceptance` 与普通动态节点沿用同一套模型规则。".to_string(),
-                },
-                DesktopLanguage::En => match dynamic_acceptance_model(ctx.dynamic) {
-                    Some(model) => format!(
-                        "`merge` / `acceptance` use the configured acceptance model `{model}`; those specs must not output `model`."
-                    ),
-                    None => "No dedicated acceptance model is configured; `merge` / `acceptance` follow the same model rules as other dynamic nodes.".to_string(),
-                },
-            },
-            "available_providers": available_provider_summary(ctx),
-            "available_profiles": available_profile_summary(ctx),
-            "remaining_budget": dynamic_remaining_budget_summary(graph, node),
-            "resumable_sessions": dynamic_resumable_session_summary(ctx, graph, node),
-            "depends_on": if node.depends_on.is_empty() {
-                "none".to_string()
-            } else {
-                node.depends_on.join(", ")
-            },
-        }),
-    )?;
+    );
+    let content = render_template(template, template_context)?;
     Ok(vec![PromptHiddenSection {
         title: "Gold Band AI-DYNAMIC runtime context".to_string(),
         content,
@@ -14527,6 +14572,19 @@ fn drive_from_node_with_initial_session(
         let current_node_dsl = workflow
             .get_node(&current_node_id)
             .expect("validated node exists");
+        let outer_new_round_trigger = if matches!(current_node_dsl, NodeDsl::AiDynamic(_)) {
+            build_new_round_trigger_context(
+                app,
+                task_id,
+                &run.id,
+                round,
+                &current_node_id,
+                &current_attempt_id,
+                workflow,
+            )
+        } else {
+            None
+        };
         if matches!(current_node_dsl, NodeDsl::Worker(_)) {
             setup_node_environment(app, task_id, &run.id, &round.id, &node, &ctx)?;
         }
@@ -14581,6 +14639,7 @@ fn drive_from_node_with_initial_session(
                     round,
                     &current_attempt_id,
                     dynamic,
+                    outer_new_round_trigger.clone(),
                     node.clone(),
                     parent_continue_input.clone(),
                     parent_continue_prompt_id.clone(),
@@ -16741,6 +16800,7 @@ mod tests {
             outer_node_id: "ai-dynamic",
             outer_attempt_id: "attempt-001",
             outer_runtime_execution_id: None,
+            outer_new_round_trigger: None,
             dynamic,
             task_uuid: None,
             run_uuid: None,

@@ -795,6 +795,24 @@ fn render_prompt_bundle_shows_new_round_trigger_reason() {
             .user_prompt
             .contains("- round-001/accept/attempt-001: attachments/accept-report.md")
     );
+
+    req.runtime_context.language = gold_band::config::DesktopLanguage::En;
+    let english_prompt = render_prompt_bundle(&req).unwrap();
+    assert!(
+        english_prompt
+            .user_prompt
+            .contains("$new-round was triggered by this node")
+    );
+    assert!(
+        english_prompt
+            .user_prompt
+            .contains("output artifact=accept-result")
+    );
+    assert!(
+        english_prompt
+            .user_prompt
+            .contains("output preview={\"result\":false")
+    );
 }
 
 #[test]

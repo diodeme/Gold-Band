@@ -7,6 +7,13 @@
 - 失败证据与验收：最小 DOM 测试构造 pinned Task 已加载、workspace Task 页 `not-loaded` 且数组为空的 Direct 会话；修复前稳定失败于期望 canonical `onSelect` 一次、实际 0 次，其余同文件 5 项通过。修复后同一用例转绿，并补充 workspace Task 点击进入 `latestRun`、历史 Run 点击进入精确 `runId`；侧栏、导航、渐进加载和宿主组件定向回归 8 文件 71 项通过，TypeScript、主题构建和 Vite 生产构建通过。全量 Web 回归运行期间无关 ACP 分页文件仍在并发更新，首轮输出读取了随后已变化的旧容量断言，因而不作为稳定结论；对当时 6 个失败文件隔离重跑后 4 文件通过，剩余 2 个既有 ACP 历史交接文件 16 项失败，集中在“返回最新”按钮与 canonical handoff，与侧栏导航调用链无重叠，未在本次修复中旁路修改。本地 `/chat` 已启动且无控制台错误，但浏览器降级数据只有一个无 `latestRun` 的示例 Task，Pin mutation 在非桌面环境不可用，无法可靠构造现场状态；服务和测试 Chrome 已清理，真实 EXE 数据场景保留为客户端重载新构建后的实操复核项，不把页面启动冒充为目标点击通过。
 - 性能与过度设计评审：删除点击时的 workspace Task 数组 O(n) 扫描和两层回调转发，改为基于当前有界摘要的 O(1) locator 构造；不新增状态、Context、依赖、缓存、队列、数据请求、持久字段或兼容层，也不扩大 React 订阅和渲染范围。复用现有 `ConversationPage`、interaction scope 与 cache-aware 导航入口，复杂度低于旧实现，无需专项 benchmark。
 
+## 2026-08-31：AI-DYNAMIC 新 Round 入口承接上一轮触发节点反馈
+
+- 根因与设计判断：通用 Round trace、`new_round_entry` 与普通 worker 的 `new_round_trigger` 投影已经正确表达“由哪个上一轮节点、因何失败、携带什么 artifact 打开本轮”；缺口是 AI-DYNAMIC 使用专用 hidden context 替代普通 predecessor hidden context，独立 invocation 链又把 `new_round_trigger` 固定为 `None`，导致 AI-DYNAMIC 作为新 Round 入口时内部 bootstrap 看不到上一轮外层触发节点反馈。这属于正确设计在 AI-DYNAMIC 消费边界上的实现不完整，不修改 Round/DynamicGraph 状态机，也不新增 canonical identity 或持久字段。
+- 实现与契约：在外层 workflow dispatch 进入 retry loop 前复用既有 trigger builder，按当前 Round 入口 attempt 从 canonical trace 派生一次 `PromptPredecessorContext`，并作为瞬态值穿过 AI-DYNAMIC 调度线程。只有内部 bootstrap 的初始 `InlineControl` invocation 同时获得结构化 `new_round_trigger` 和专用 hidden context 文本；首轮 bootstrap、后续 internal worker/workflow invocation/merge/acceptance、手工 follow-up 与非入口 AI-DYNAMIC 均不注入。双语 hidden template 明确先理解失败原因和未完成项，预览不足时读取列出的 artifact/附件；trigger 不进入 dynamic graph 或 coordination snapshot。
+- 失败证据与接口验收：最小两轮测试构造 `ai-dynamic -> accept(failure) -> $new-round(ai-dynamic)`，旧实现稳定失败于第二轮 bootstrap 的 trigger 为 `None`；修复后同一测试固定 `round/node/attempt` locator、failure outcome、artifact 绝对路径、预览标记同时进入结构化 invocation 和最终 prompt，并固定该反馈不会广播到第二轮其他节点。AI-DYNAMIC integration 回归 28/28、prompt bundle 中英文及分层回归 30/30 全部通过。
+- 性能与过度设计评审：每次新的外层 Round 入口只执行一次既有的有界 trace/artifact 投影，preview 上限沿用 2 KiB；内部动态节点数量和 fanout 不增加扫描或 I/O。不新增依赖、缓存、队列、锁、aggregate、持久状态或兼容层，复用现有 `PromptPredecessorContext` 与双语 prompt renderer，复杂度与缺失的消费投影相匹配，无需专项 benchmark。
+
 ## 2026-08-31：ACP Event Router 原生订阅启动恢复
 
 - 根因与形成路径：conversation event Router 统一持有一份原生 ACP session update stream 的设计正确，但启动 Promise 只在成功时设置 `started`，三个 subscriber 入口又以未处理的 `void` Promise 启动。Tauri `listen()` 首次拒绝后虽然 `starting` 会复位，仍存活的页面没有任何生命周期事件再次驱动启动，因而同时产生 unhandled rejection 与 live event 长期中断。这属于正确单例订阅设计的失败恢复实现不完整，不下放给页面各自重试，也不新增第二事件源。

@@ -2521,7 +2521,7 @@ fn runtime_predecessor_context(
     new_round_trigger: Option<&PromptPredecessorContext>,
     ctx: &PromptRuntimeContext,
 ) -> RuntimePredecessorTemplateContext {
-    let reason_lines = predecessor_reason_lines(predecessors, new_round_trigger);
+    let reason_lines = predecessor_reason_lines(predecessors, new_round_trigger, ctx.language);
     let attachment_lines = predecessor_attachment_lines(predecessors);
     RuntimePredecessorTemplateContext {
         is_empty: predecessors.is_empty(),
@@ -2566,6 +2566,7 @@ fn predecessor_chain_text(
 fn predecessor_reason_lines(
     predecessors: &[PromptPredecessorContext],
     new_round_trigger: Option<&PromptPredecessorContext>,
+    language: crate::config::DesktopLanguage,
 ) -> String {
     let mut lines = predecessors
         .iter()
@@ -2608,39 +2609,71 @@ fn predecessor_reason_lines(
         if !lines.is_empty() {
             lines.push('\n');
         }
-        lines.push_str(&new_round_trigger_reason_line(trigger));
+        lines.push_str(&render_new_round_trigger_reason_line(trigger, language));
     }
     lines
 }
 
-fn new_round_trigger_reason_line(trigger: &PromptPredecessorContext) -> String {
-    let mut parts = vec![format!(
-        "$new-round 由该节点触发；节点类型={}；结果={}",
-        trigger.node_type,
-        trigger.outcome.as_deref().unwrap_or("unknown")
-    )];
-    if let Some(reason) = trigger.branch_reason.as_deref() {
-        parts.push(reason.to_string());
-    }
-    if let Some(artifact) = &trigger.output_artifact {
-        parts.push(format!(
-            "输出 artifact={}: {}",
-            artifact.name, artifact.path
-        ));
-        if let Some(preview) = artifact.preview.as_deref() {
-            parts.push(format!("输出预览={}", preview.trim()));
-        }
-    }
-    if !trigger.attachments.is_empty() {
-        let files = trigger
+pub(crate) fn render_new_round_trigger_reason_line(
+    trigger: &PromptPredecessorContext,
+    language: crate::config::DesktopLanguage,
+) -> String {
+    let files = (!trigger.attachments.is_empty()).then(|| {
+        trigger
             .attachments
             .iter()
             .map(|attachment| format!("attachments/{}", attachment.name))
             .collect::<Vec<_>>()
-            .join(", ");
-        parts.push(format!("附件={}", files));
+            .join(", ")
+    });
+    match language {
+        crate::config::DesktopLanguage::ZhCn => {
+            let mut parts = vec![format!(
+                "$new-round 由该节点触发；节点类型={}；结果={}",
+                trigger.node_type,
+                trigger.outcome.as_deref().unwrap_or("unknown")
+            )];
+            if let Some(reason) = trigger.branch_reason.as_deref() {
+                parts.push(reason.to_string());
+            }
+            if let Some(artifact) = &trigger.output_artifact {
+                parts.push(format!(
+                    "输出 artifact={}: {}",
+                    artifact.name, artifact.path
+                ));
+                if let Some(preview) = artifact.preview.as_deref() {
+                    parts.push(format!("输出预览={}", preview.trim()));
+                }
+            }
+            if let Some(files) = files {
+                parts.push(format!("附件={}", files));
+            }
+            format!("- {}：{}。", predecessor_ref(trigger), parts.join("；"))
+        }
+        crate::config::DesktopLanguage::En => {
+            let mut parts = vec![format!(
+                "$new-round was triggered by this node; node type={}; outcome={}",
+                trigger.node_type,
+                trigger.outcome.as_deref().unwrap_or("unknown")
+            )];
+            if let Some(reason) = trigger.branch_reason.as_deref() {
+                parts.push(reason.to_string());
+            }
+            if let Some(artifact) = &trigger.output_artifact {
+                parts.push(format!(
+                    "output artifact={}: {}",
+                    artifact.name, artifact.path
+                ));
+                if let Some(preview) = artifact.preview.as_deref() {
+                    parts.push(format!("output preview={}", preview.trim()));
+                }
+            }
+            if let Some(files) = files {
+                parts.push(format!("attachments={}", files));
+            }
+            format!("- {}: {}.", predecessor_ref(trigger), parts.join("; "))
+        }
     }
-    format!("- {}：{}。", predecessor_ref(trigger), parts.join("；"))
 }
 
 fn predecessor_attachment_lines(predecessors: &[PromptPredecessorContext]) -> String {

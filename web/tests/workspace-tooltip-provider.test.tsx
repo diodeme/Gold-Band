@@ -139,8 +139,6 @@ describe('WorkspaceShell tooltip boundary', () => {
             onToggleSidebar={() => {}}
             onNewConversation={() => {}}
             onSearch={() => {}}
-            onSelectTask={() => {}}
-            onSelectRun={() => {}}
             onPinTask={() => {}}
             onUnpinTask={() => {}}
             onRenameTask={() => {}}
@@ -184,8 +182,6 @@ describe('WorkspaceShell tooltip boundary', () => {
             onToggleSidebar={() => {}}
             onNewConversation={() => {}}
             onSearch={() => {}}
-            onSelectTask={() => {}}
-            onSelectRun={() => {}}
             onPinTask={() => {}}
             onUnpinTask={() => {}}
             onRenameTask={() => {}}

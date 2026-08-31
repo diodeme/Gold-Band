@@ -358,20 +358,21 @@ describe('conversation sidebar navigation wiring', () => {
     expect(requestInvalidation).toBeLessThan(deleteRequest);
   });
 
-  it('routes run exits plus task and run selections through the cache-aware conversation navigation entry', () => {
+  it('routes run exits plus sidebar task and run selections through the cache-aware conversation navigation entry', () => {
     const source = fs.readFileSync(path.resolve(process.cwd(), 'web/src/App.tsx'), 'utf8');
+    const sidebarSource = fs.readFileSync(path.resolve(process.cwd(), 'web/src/components/conversation/ConversationSidebar.tsx'), 'utf8');
     const quickChatSelection = source.match(/onConversationNew=\{[\s\S]*?onConversationSearch=/)?.[0] ?? '';
     const workspaceQuickChatSelection = source.match(/onConversationNewInWorkspace=\{[\s\S]*?onConversationAddWorkspace=/)?.[0] ?? '';
-    const taskSelection = source.match(/onConversationSelectTask=\{[\s\S]*?onConversationSelectRun=/)?.[0] ?? '';
-    const runSelection = source.match(/onConversationSelectRun=\{[\s\S]*?onConversationPauseRun=/)?.[0] ?? '';
+    const sidebarRunSelection = sidebarSource.match(/const selectTaskRun[\s\S]*?const selectTask =/)?.[0] ?? '';
     const searchSelection = source.match(/<ConversationSearchDialog[\s\S]*?\/>/)?.[0] ?? '';
     const interventionNavigation = source.match(/const handleInterventionNavigate[\s\S]*?useInterventionNotifications/)?.[0] ?? '';
 
     expect(quickChatSelection).toContain("onSelectConversation({ kind: 'conversation-home' })");
     expect(quickChatSelection).toContain('resolveConversationHomeWorkspaceId(');
     expect(workspaceQuickChatSelection).toContain("onSelectConversation({ kind: 'conversation-home' })");
-    expect(taskSelection).toContain('onSelectConversation({');
-    expect(runSelection).toContain('onSelectConversation({');
+    expect(sidebarRunSelection).toContain('onSelect({');
+    expect(sidebarRunSelection).toContain("kind: 'conversation-run'");
+    expect(sidebarRunSelection).toContain('taskUuid: task.taskUuid');
     expect(searchSelection).toContain('onSelectConversation(page)');
     expect(interventionNavigation).toContain('onSelectConversation(page)');
     expect(interventionNavigation).toContain('onSelectConversation(runPage)');
@@ -379,8 +380,8 @@ describe('conversation sidebar navigation wiring', () => {
     expect(workspaceQuickChatSelection).not.toContain('setConversationPage(');
     expect(searchSelection).not.toContain('setConversationPage(');
     expect(interventionNavigation).not.toContain('setConversationPage(');
-    expect(taskSelection).not.toContain('setConversationPage({ kind: \'conversation-run\'');
-    expect(runSelection).not.toContain('setConversationPage({ kind: \'conversation-run\'');
+    expect(source).not.toContain('onConversationSelectTask=');
+    expect(source).not.toContain('onConversationSelectRun=');
   });
 
   it('commits session selection to React state, the latest-page ref, and history in one event', () => {

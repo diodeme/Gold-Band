@@ -63,8 +63,6 @@ interface WorkspaceShellProps {
   onOpenPersonalAnalytics: () => void;
   onNewConversation: () => void;
   onSearch: () => void;
-  onSelectTask: (projectId: string, taskId: string, taskUuid?: string | null) => void;
-  onSelectRun: (projectId: string, taskId: string, taskUuid: string | null | undefined, runId: string) => void;
   onPauseRun?: (projectId: string, taskId: string, runId: string) => void | Promise<void>;
   onPinTask: (projectId: string, taskId: string) => void;
   onUnpinTask: (projectId: string, taskId: string) => void;
@@ -276,8 +274,6 @@ function WorkspaceShellLayout({
   onOpenPersonalAnalytics,
   onNewConversation,
   onSearch,
-  onSelectTask,
-  onSelectRun,
   onPauseRun,
   onPinTask,
   onUnpinTask,
@@ -710,8 +706,6 @@ function WorkspaceShellLayout({
               onSelect={onSelect}
               onNewConversation={onNewConversation}
               onSearch={onSearch}
-              onSelectTask={onSelectTask}
-              onSelectRun={onSelectRun}
               onPauseRun={onPauseRun}
               onPinTask={onPinTask}
               onUnpinTask={onUnpinTask}

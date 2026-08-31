@@ -71,8 +71,6 @@ describe('ConversationSidebar Direct terminal result dot', () => {
             onSelect={() => {}}
             onNewConversation={() => {}}
             onSearch={() => {}}
-            onSelectTask={() => {}}
-            onSelectRun={() => {}}
             onPinTask={() => {}}
             onUnpinTask={() => {}}
             onRenameTask={() => {}}

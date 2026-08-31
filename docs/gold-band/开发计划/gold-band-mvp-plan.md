@@ -166,12 +166,12 @@
 - 验收：核心库和桌面端 `cargo check` 通过；定向单测固定 manifest 首次写入、相同内容不改 mtime、版本/路径内容变化重写、恢复候选只读校验、原子写 open 错误向上传播、`App` 构造不创建 `project.json`，以及桌面 manifest I/O 错误在显式写边界返回、在普通读取边界继续、完整性错误始终不被吞。按要求不执行全量回归和 UI/网页验证。
 - 性能与过度设计评审：高频 `App` 构造由每次一次原子写降为零 manifest I/O；低频注册边界为一次 O(1) 小 JSON 读取/比较，只有内容变化才产生一次原子写。除版本化的一次性 identity 迁移外，不增加常驻 workspace 扫描、缓存、锁表、重试线程或临时文件清理器。现有 manifest identity 与 canonical lifecycle 已足够表达不变量，不新增第二套状态模型或依赖。
 
-## 2026-08-18：内置验证与审查角色非阻塞边界补齐
+## 2026-08-18：内置验证、审查与验收角色非阻塞边界补齐
 
-- 根因：测试与审查角色已有前序产物读取和 git 工作区回退规则，但没有完整区分“验证结论失败”和“工作流节点阻塞”；环境限制、人工验收或开发节点缺少报告可能被错误解释为 BLOCKED。这是既有角色职责契约不完整，不是 Runtime 生命周期或数据模型缺陷。
-- 实现：中英文测试 profile 明确环境问题或人工验收只需如实记录未执行项与证据缺口，不构成阻塞条件；中英文审查 profile 明确前序开发节点没有产出 `dev-report.md` 时继续以当前 git 工作区对应改动为准。继续复用现有 profile system prompt、工作区 diff 和报告格式，不新增 fallback 层或运行时特判。
-- 验收：通过 `App::profiles()` 接口同时读取中英文内置测试、审查角色，固定非阻塞语义及工作区回退契约；提示词通过现有 Rust 编译期 `include_str!` 管理，中英文目录结构保持一致。
-- 性能与过度设计评审：仅增加四处静态提示词文本和一项接口回归，不新增状态、持久字段、依赖、扫描、缓存、队列、锁或 I/O；每次调用只增加常量级 prompt 字符串长度，现有 canonical profile ID 和加载路径均不变，无需 benchmark。
+- 根因：测试、审查与验收角色已有前序产物读取、证据裁决和 git 工作区回退规则，但没有完整区分“验证/验收结论失败”和“工作流节点阻塞”；环境限制、人工验收或开发节点缺少报告可能被错误解释为 BLOCKED。这是既有角色职责契约不完整，不是 Runtime 生命周期或数据模型缺陷。
+- 实现：中英文测试与验收 profile 明确环境问题或人工验收只需如实记录未执行项与证据缺口，不构成阻塞条件，也不得仅据此声明 BLOCKED；验收仍可按证据给出 PARTIAL / MISSING 或 FAIL / INCOMPLETE。中英文审查 profile 明确前序开发节点没有产出 `dev-report.md` 时继续以当前 git 工作区对应改动为准。继续复用现有 profile system prompt、工作区 diff 和报告格式，不新增 fallback 层或运行时特判。
+- 验收：通过 `App::profiles()` 接口同时读取中英文内置测试、审查与验收角色，固定非阻塞语义及工作区回退契约；提示词通过现有 Rust 编译期 `include_str!` 管理，中英文目录结构保持一致。
+- 性能与过度设计评审：仅增加静态提示词文本并扩展既有接口回归，不新增状态、持久字段、依赖、扫描、缓存、队列、锁或 I/O；每次调用只增加常量级 prompt 字符串长度，现有 canonical profile ID 和加载路径均不变，无需 benchmark。
 
 ## 2026-08-18：ACP 结构化终态优先收敛
 
@@ -1721,6 +1721,14 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] Windows 模拟 UI 验收：内置浏览器验证 unsupported 结构化启动页；compatible 在浅色/深色和 1280/620/420 宽度下无横向溢出，命名容器离散档位可收缩和恢复；full 继续使用原生 container query，容器没有 compatible tier 属性，控制台无新增 warning/error。测试页面、视口覆盖和开发服务已清理。
 - [ ] 真机边界：Intel Monterey/WebKit 613 仍必须使用 DevTools DMG 冒烟，Windows 能力 fixture 和 Chromium 页面结果不得替代 WKWebView 真机结论。
 - 性能与过度设计评审：启动探测 O(1)，诊断异步 best-effort；WASM 惰性单例且缓存有界；compatible 只观察当前挂载的少量登记容器，full 不新增 observer/state。生产 assets 为 261 个文件/10.20 MiB 未压缩，约 6.33 MiB 语言/主题资源和 622 KiB WASM 引擎资源均不进入首屏；原实现也基于 Shiki，安装包真实增量留给 CI artifact 前后对比。未引入第二套 App、版本矩阵、持久状态、轮询、事件总线、无界缓存、同步 I/O 或自研解析器；新增边界与实际兼容风险匹配。
+
+## 2026-08-31：WebView CSS 自定义属性语义探测
+
+- [x] 根因与方向：首次 Intel Mac 真机快照同时支持 `:has()`、OKLCH、ResizeObserver、structuredClone 和 WebAssembly，却因 `CSS.supports(custom-property, value)` 假阴性报告 `cssCustomProperties=false`，随后被启动门禁错误归为 unsupported。能力分级和门禁设计正确，缺陷属于探测实现不完整；冻结 user agent 只用于诊断，不改为版本硬编码或用户设备特判。
+- [x] 实现：CSS 自定义属性改为真实语义探测，在启动预检阶段挂载隐藏临时容器，让目标子节点继承变量颜色并与直接颜色控制节点比较计算样式，`finally` 保证清理。其他 CSS 能力继续复用 `CSS.supports()`，能力快照和策略接口不变。
+- [x] 自动化与浏览器验收：最小 Vitest 先稳定复现“`CSS.supports()` 假阴性但语义探测为真”仍被误判，修复后同一用例转绿；WebView 相关 5 个文件/16 项通过，TypeScript 与生产构建通过。内置浏览器确认页面进入 `/chat`、tier 为 full、React 根节点已挂载、探测临时节点残留为 0，控制台无 warning/error；页面和预览服务已清理。
+- [ ] 真机验收：修正版 Intel DevTools DMG 仍需在同一用户设备确认 `cssCustomProperties=true`、tier 为 compatible 且业务 App 正常加载。
+- 性能与过度设计评审：每次页面启动只增加一个宿主、两个子节点和两次计算样式读取，固定 O(1) 且立即清理；不增加依赖、版本矩阵、状态机、持久字段、缓存、轮询、observer、React state、I/O 或并发机制。复用现有能力环境与纯策略接口，改动范围与真机假阴性根因匹配。
 
 ## 2026-08-31：ACP 历史窗口到 live head 原子交接
 

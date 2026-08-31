@@ -11,6 +11,7 @@ import { resolveWebviewFeaturePolicy } from '@/lib/webview-feature-policy';
 function probeEnvironment(options: {
   lookbehind?: boolean;
   supportedCss?: readonly string[];
+  cssCustomProperties?: boolean;
 } = {}): WebviewCapabilityProbeEnvironment {
   const supportedCss = new Set(options.supportedCss ?? []);
   return {
@@ -21,6 +22,8 @@ function probeEnvironment(options: {
     cssSupports(property, value) {
       return supportedCss.has(value === undefined ? property : `${property}:${value}`);
     },
+    cssCustomProperties: options.cssCustomProperties
+      ?? supportedCss.has('--gold-band-capability-probe:1'),
     resizeObserver: true,
     structuredClone: true,
     webAssembly: true,
@@ -51,6 +54,21 @@ describe('WebView capabilities', () => {
       codeHighlighting: 'wasm',
       visualMaterial: 'solid',
     });
+  });
+
+  it('uses the semantic custom-property probe when CSS.supports reports a false negative', () => {
+    const capabilities = detectWebviewCapabilities(probeEnvironment({
+      cssCustomProperties: true,
+      supportedCss: [
+        'selector(:has(*))',
+        'color:oklch(50% 0.1 90)',
+        'display:grid',
+        '-webkit-backdrop-filter:blur(1px)',
+      ],
+    }));
+
+    expect(capabilities.cssCustomProperties).toBe(true);
+    expect(resolveWebviewFeaturePolicy(capabilities).tier).toBe('compatible');
   });
 
   it('classifies the complete profile as full and freezes the policy', () => {

@@ -40,6 +40,14 @@
 4. 现代 CSS 和容器响应式的集中降级路径。
 5. 可审计的 WebView 诊断日志。
 
+### 2.3 首次真机结果与探测纠偏（2026-08-31）
+
+Intel Mac DevTools DMG 已成功进入预检页，但现场能力快照同时报告 `:has()`、OKLCH、ResizeObserver、structuredClone 和 WebAssembly 可用，仅 `cssCustomProperties=false`。决策链确认是 `CSS.supports('--gold-band-capability-probe', '1')` 在该 WKWebView 上假阴性，继而把本应进入 compatible 档的环境错误判为 unsupported；冻结的 `AppleWebKit/605.1.15` user agent 不能作为真实系统 WebKit 版本依据。
+
+能力分级和启动门禁的设计保持不变，缺陷属于正确设计下探测实现不完整。CSS 自定义属性改为语义探测：启动时挂载一个隐藏临时容器，让子节点通过继承变量解析颜色，再与直接设置同值的控制节点比较计算样式，最后在 `finally` 中移除。其他适合 `CSS.supports()` 的现代 CSS 能力继续走原探测，不增加平台、版本或用户机器特判。
+
+最小测试先复现语义探测为真但 `CSS.supports()` 假阴性时仍被归为 unsupported，修复后同一测试转绿。相关 WebView 5 个测试文件/16 项、TypeScript 和生产构建通过；内置浏览器确认业务 App 进入 `/chat`、tier 为 full、临时探测节点无残留且控制台无 warning/error。修正版 Intel DevTools DMG 的同机验证仍待用户完成。
+
 ## 3. 开源组件与行业实践评估
 
 ### 3.1 继续复用的现有能力
@@ -373,6 +381,7 @@ Windows 可以完成能力注入、接口回归、生产 bundle 审计和 UI 模
 ### 11.1 启动
 
 - JS/CSS 能力探测为固定数量的同步调用，时间和内存复杂度均为 O(1)。
+- CSS 自定义属性探测固定创建一个宿主与两个子节点、读取两次计算样式并立即移除；只发生一次常量级 style calculation，不保留 DOM、observer、缓存或 React state。
 - macOS/WebKit 版本诊断异步进行，不放入 React App 加载的前置阻塞链。
 - 预检边界可以延后业务 chunk 请求，但仅增加一次当地资源动态导入；验收时应记录预检和 App 首屏时序。
 
@@ -432,3 +441,4 @@ Windows 可以完成能力注入、接口回归、生产 bundle 审计和 UI 模
 - TypeScript、相关 Web 回归、Rust 接口测试、生产构建和 UI 验证通过。
 - 产品设计文档、App overview 和 MVP 开发计划已同步。
 - Intel macOS Monterey/WebKit 613 真机冒烟结果已记录；若尚未获得真机结果，必须明确标记“自动化完成、真机待验收”，不得宣称已完全验证。
+- 首次真机暴露的 CSS 自定义属性假阴性已由最小失败测试固定，修正版需在同一设备确认不再被错误拦截。

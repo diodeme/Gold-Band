@@ -4,7 +4,7 @@
 
 - 产品状态：已实现 SQLite 派生索引、自动增量同步、日期范围确定性报告、章节导航和独立 Agent 洞察生命周期。
 - 用户入口：“帮助”菜单中与“用户反馈”同级的“个人数据分析”。
-- 用户流程：从帮助菜单直接进入独立原生统计页面；页面自动同步 SQLite 索引并展示确定性报告，用户可切换日期范围，或显式选择可用 Agent 生成当前范围的分章节洞察。
+- 用户流程：从帮助菜单直接进入独立原生统计页面；页面自动同步 SQLite 索引并展示确定性报告，用户可切换日期范围，或显式选择可用 Agent、模型与思考强度生成当前范围的分章节洞察。
 - 范围：只实现个人数据分析专用内置能力，不建设通用 `SkillSource::BuiltIn` 平台。
 - 报告：只接受版本化 JSON DTO，由 React 原生页面渲染；不执行 Agent 生成的 HTML。
 
@@ -30,7 +30,7 @@
 | --- | --- | --- | --- |
 | `AnalyticsIndex` | analytics | 8 张物理表、4 个逻辑视图、fingerprint、indexRevision | 可删除重建的派生投影，无源文件变化时不推进版本 |
 | `AnalyticsOperation` | application | 确定性同步 operationId、status、revision、progress、indexRevision、reportId | queued → scanning → completed/failed/cancelled |
-| `AgentInsightOperation` | inference | 洞察 operationId、generation、revision、range、schemaVersion、indexRevision、agentType、status | queued → analyzing → validating-report → completed/failed/cancelled；repair 可回到 analyzing |
+| `AgentInsightOperation` | inference | 洞察 operationId、generation、revision、range、schemaVersion、indexRevision、agentType、modelId、thoughtLevelOptionId、thoughtLevelValue、status | queued → analyzing → validating-report → completed/failed/cancelled；repair 可回到 analyzing |
 | `AnalyticsProjection` | analytics | 日期范围聚合、coverage、metric definitions、evidence locators | 由 indexRevision 标识的只读派生物 |
 | `ContentManifest` | analytics input authorization | 本次语义样本的 evidence locator 与明确排除源 | locator 只约束客户端附件与证据引用，不代表客户端代 Agent 回读原文件，也不隔离 provider 已有文件能力 |
 | `SemanticBatchManifest` | analytics authorization | 批次、预算、样本 coverage、允许内容 locator | 有界批次，完成后不改变确定性统计 |
@@ -92,11 +92,13 @@ Agent 最终只能输出 `PersonalAnalyticsNarrative`，包含 `schemaVersion + 
 1. 点击“个人数据分析”直接导航到 `/chat/personal-analytics`；UI mode、主模块、页面状态和路由在同一导航事务中更新，不经过 Dialog。
 2. 页面标题操作区提供全部、今天、近 7 天、近 30 天和自定义范围；自定义范围使用两个原生日期输入。
 3. 桌面宽度使用左侧章节导航和右侧报告内容；窄宽度切换为横向吸顶导航，当前章节由 `IntersectionObserver` 标记。
-4. 标题操作区使用 shadcn `Select` 列出可用 Agent，并只服务“生成 Agent 洞察”；确定性同步不依赖 Agent。
-5. 同步期间保留当前可用报告并展示进度；洞察运行中锁定 Agent 选择并禁止重复启动，失败或取消不影响统计。
-6. 报告契约为 `2.2.0`，任务摘要携带 `projectId + taskId + latestRunId` 稳定导航身份；最近任务、耗时 TOP10 和 Token TOP10 的任务行均可点击，并通过既有会话路由直接进入对应会话。缺失导航身份的 `2.1.0` 缓存报告仍可展示，但任务行降级为不可点击，下一次成功查询或同步后恢复。
-7. 桌面宽度收窄章节目录并扩大报告内容可用空间；Token TOP10 同时展示累计执行耗时与 Token。
-8. 页面使用现有 shadcn/ui 和 Tailwind 组件，参考增强版 HTML 的信息架构，不复制其营销式视觉或执行其中代码。
+4. 标题操作区使用 shadcn `Select` 列出可用 Agent，并直接复用 composer 的 `AcpModelThoughtSelects` 组合选择栏；模型与 `category=thought_level` 的思考强度均来源于所选 Agent 最近一次 doctor capability，配置 ID 不得硬编码为某个 Provider 字段。未指定表示使用 Agent 默认模型/思考强度。三者只服务“生成 Agent 洞察”，确定性刷新不依赖它们。选择偏好使用 schema 2 的版本化本地结构，按 Agent 成组保存模型与 `thoughtLevelOptionId + thoughtLevelValue`；恢复时只接受当前 doctor capability 仍存在的身份和值，失效项分别回退 Agent 默认值。
+5. 日期范围、Agent、模型/思考强度和动作按钮使用容器驱动的可换行布局；选择器在窄宽度占满一行，宽度足够时共享剩余空间，按钮允许换行，不设置依赖当前文案长度的固定操作区上限。
+6. 增量索引入口统一命名为“刷新”并使用刷新图标，与“生成 Agent 洞察”的 Sparkles 图标区分。刷新期间保留当前可用报告并展示进度；洞察运行中锁定 Agent、模型与思考强度选择并禁止重复启动，失败或取消不影响统计。
+7. “帮助” Tooltip 由菜单与导航状态共同控制；菜单打开时关闭 Tooltip，选择“个人数据分析”或“用户反馈”后保持抑制，直到指针离开或焦点真正脱离触发器，避免页面切换后旧提示残留。
+8. 报告契约为 `2.2.0`，任务摘要携带 `projectId + taskId + latestRunId` 稳定导航身份；最近任务、耗时 TOP10 和 Token TOP10 的任务行均可点击，并通过既有会话路由直接进入对应会话。缺失导航身份的 `2.1.0` 缓存报告仍可展示，但任务行降级为不可点击，下一次成功查询或同步后恢复。
+9. 桌面宽度收窄章节目录并扩大报告内容可用空间；Token TOP10 同时展示累计执行耗时与 Token。
+10. 页面使用现有 shadcn/ui 和 Tailwind 组件，参考增强版 HTML 的信息架构，不复制其营销式视觉或执行其中代码。
 
 报告使用纵向原生分区，主要段落固定为：
 
@@ -179,7 +181,7 @@ Agent 报告解析只消费本轮 `AcpPromptOutput` 的有界消息文本和稳�
 
 这种压缩不改变事实边界：项目是任务上的展示投影，Token 的统计粒度仍是 attempt，工具和事件计数有显式 `kind` 白名单，洞察结果必须在完整校验通过后作为一个 JSON payload 原子写入。不得为了继续减表把 `tasks/runs/attempts` 合并成宽表，否则会引入重复行和统计放大；也不得使用无约束 EAV。
 
-索引 schema `7` 延续 schema `6` 的 canonical attempt 合并口径，并把洞察表收窄为纯 completed cache：`node.json`、`acp.snapshot.json` 和 attempt 下的 `acp.prompt-usage.jsonl` 作为同一 canonical attempt locator 的三类来源贡献合并；普通 Workflow 节点使用物理 attempt 目录；AUTO dynamic leaf 使用 `dynamic/nodes/<leaf-id>` 权威身份目录，下面固定的 ACP attempt 子目录只承载会话产物，不生成第二个统计 attempt。Dynamic Node 从 `DynamicNodeState.id/provider/outcome` 读取身份，并行 sibling leaf 使用各自 leaf locator 分组，不视为同一节点重试。Node 提供节点身份、Agent、outcome，以及 workflow invocation 的完整 child run locator；Snapshot 提供累计执行耗时；Usage 的 `promptCompleted` 提供 Token 与去重后的 prompt 数。Node outcome 必须持久化并恢复为 `NodeFact`，作为“重试后恢复”的事实；不得在 SQLite 投影中补成 unknown。Usage-only 记录只参与 Token / prompt 聚合，不生成 `NodeFact`，不计入执行 attempt 或重试。Prompt 使用 `promptStarted` 与 `promptCompleted` 的 `turn_id` 并集去重，按最终状态和自身 timestamp 写入模式中立的 `prompt-status` counter；范围查询仅在 canonical 任务模式为 Direct 时把它投影为 Direct 回复，completion 缺少 start 时仍计为已开始且完成，只有 start 时计为 unknown。旧 `turn.json`、task 根目录 usage、无 `kind` usage 和 baseline totals 不解析为事实。Run 按任务模式和 child run locator 归一为 `workflow-run`、`auto-outer-run`、`auto-child-run` 或 `direct-session`；`auto-child-run` 不进入 AUTO outer run 可靠性、终局汇总和最近任务状态。counter 日期仍归属自身：timeline 按稳定 `itemId` 物化最高 `revision`，每个逻辑事件只贡献一次计数并使用最终事件自身时间。索引状态中的 `schemaVersion` 必须由同一运行时常量写入；只有真实版本不匹配时才重建可删除索引。
+索引 schema `9` 延续 schema `8` 的 canonical attempt 合并口径和纯 completed 洞察 cache，并为 `analytics_insight_cache` 增加可空 `thoughtLevelOptionId + thoughtLevelValue`；schema `8` 已增加可空 `modelId`。`node.json`、`acp.snapshot.json` 和 attempt 下的 `acp.prompt-usage.jsonl` 作为同一 canonical attempt locator 的三类来源贡献合并；普通 Workflow 节点使用物理 attempt 目录；AUTO dynamic leaf 使用 `dynamic/nodes/<leaf-id>` 权威身份目录，下面固定的 ACP attempt 子目录只承载会话产物，不生成第二个统计 attempt。Dynamic Node 从 `DynamicNodeState.id/provider/outcome` 读取身份，并行 sibling leaf 使用各自 leaf locator 分组，不视为同一节点重试。Node 提供节点身份、Agent、outcome，以及 workflow invocation 的完整 child run locator；Snapshot 提供累计执行耗时；Usage 的 `promptCompleted` 提供 Token 与去重后的 prompt 数。Node outcome 必须持久化并恢复为 `NodeFact`，作为“重试后恢复”的事实；不得在 SQLite 投影中补成 unknown。Usage-only 记录只参与 Token / prompt 聚合，不生成 `NodeFact`，不计入执行 attempt 或重试。Prompt 使用 `promptStarted` 与 `promptCompleted` 的 `turn_id` 并集去重，按最终状态和自身 timestamp 写入模式中立的 `prompt-status` counter；范围查询仅在 canonical 任务模式为 Direct 时把它投影为 Direct 回复，completion 缺少 start 时仍计为已开始且完成，只有 start 时计为 unknown。旧 `turn.json`、task 根目录 usage、无 `kind` usage 和 baseline totals 不解析为事实。Run 按任务模式和 child run locator 归一为 `workflow-run`、`auto-outer-run`、`auto-child-run` 或 `direct-session`；`auto-child-run` 不进入 AUTO outer run 可靠性、终局汇总和最近任务状态。counter 日期仍归属自身：timeline 按稳定 `itemId` 物化最高 `revision`，每个逻辑事件只贡献一次计数并使用最终事件自身时间。索引状态中的 `schemaVersion` 必须由同一运行时常量写入；只有真实版本不匹配时才重建可删除索引。
 
 日期筛选使用本地时区自然日，起止日均包含在内。Run 按最后活动时间或终局时间归属；Direct 回复按回复活动时间归属；Token 和累计执行耗时跟随所属 attempt/run 归属；counter 按事件或 snapshot 自身活动时间归属。跨日期长任务的不同 run 和 timeline 事件分别进入对应日期范围；单个 attempt 不按秒拆分，整体跟随最后活动时间，这是明确口径而非估算。报告历史起止时间对范围内全部 run 显式执行 `min(activityEpoch)` / `max(activityEpoch)`，不得依赖读取顺序或布尔过滤。范围任务集合及 `lastActivityAt` 统一从范围内 conversation、run、attempt 和 counter 活动事实聚合；全局 `analytics_tasks.lastActivityEpoch` 只有落入当前范围时才能参与。排行摘要在当期无 run 时可使用该任务最新 canonical run 作为状态和跳转投影，但该范围外 run 不得贡献 `lastActivityAt`，也不得进入当期 run 数、历史起止、可靠性或最近任务排序。
 
@@ -189,17 +191,17 @@ Agent 报告解析只消费本轮 `AcpPromptOutput` 的有界消息文本和稳�
 
 “使用概览”只展示项目、任务、会话、Token、平均耗时和历史范围等跨领域摘要；Direct、Workflow、AUTO 三项终局可靠性只在独立“终局可靠性”章节展示一次，不在概览重复渲染。
 
-分析同步继续使用 `PersonalAnalyticsOperation`；Agent 洞察使用专用 `AgentInsightOperation` durable JSON 作为唯一 lifecycle 权威，冻结 `operationId + generation + range + schemaVersion + indexRevision + agentType`。`generation` 在不同洞察 operation 间单调递增，`revision` 只排序同一 operation 内的转换；前端的首次 snapshot、live event、start/cancel response 必须进入同一 merge，先比较 generation，再比较 revision，终态不得回退。普通转换在同一互斥区内先原子写盘，再提交内存和发布事件；取消持久化为 `Cancelling` 后只能进入 `Cancelled`。完成提交在同一互斥区内先写 completed cache，再推进内存与 durable JSON，cache 是崩溃窗口的 durable commit marker：若 JSON 替换失败或进程退出，启动恢复按冻结身份命中 cache 后收敛 `Completed`，否则收敛 `Failed/analytics.execution-interrupted`。取消与最终 cache commit 由同一互斥区串行化，已接受取消不得留下当前 operation 的 completed cache。
+分析刷新继续使用 `PersonalAnalyticsOperation`；Agent 洞察使用专用 `AgentInsightOperation` durable JSON 作为唯一 lifecycle 权威，冻结 `operationId + generation + range + schemaVersion + indexRevision + agentType + modelId + thoughtLevelOptionId + thoughtLevelValue`。`modelId=null` 表示使用 Agent 默认模型；思考强度两个字段必须同时为空或同时有值。显式模型、思考强度 ID 与值必须属于所选 Agent 最新 capability，否则返回结构化 `analytics.model-unavailable` / `analytics.thought-level-unavailable`，不得静默降级。同一模型与思考强度用于 analysis 和 repair，并分别传入通用 ACP runtime 的 model override 与 `config_options`。`generation` 在不同洞察 operation 间单调递增，`revision` 只排序同一 operation 内的转换；前端的首次 snapshot、live event、start/cancel response 必须进入同一 merge，先比较 generation，再比较 revision，终态不得回退。普通转换在同一互斥区内先原子写盘，再提交内存和发布事件；取消持久化为 `Cancelling` 后只能进入 `Cancelled`。完成提交在同一互斥区内先写 completed cache，再推进内存与 durable JSON，cache 是崩溃窗口的 durable commit marker：若 JSON 替换失败或进程退出，启动恢复按冻结身份命中 cache 后收敛 `Completed`，否则收敛 `Failed/analytics.execution-interrupted`。取消与最终 cache commit 由同一互斥区串行化，已接受取消不得留下当前 operation 的 completed cache。
 
-analysis 与 repair attempt 作为 `AgentInsightOperation` 下属的 provider turn，统一复用 ACP durable admission：调用 provider 前先在各自 attempt 的 `acp.snapshot.json` 写入并 claim `turnId + operationId + revision`，再把该 CAS owner 交给通用 ACP runtime。该 ACP lifecycle 只约束单次 provider turn 的取消与迟到写入，不是洞察业务状态的第二权威；页面、恢复和 completed cache 仍只以 `AgentInsightOperation` 为准。
+analysis 与 repair attempt 作为 `AgentInsightOperation` 下属的 provider turn，统一复用 ACP durable admission：调用 provider 前先在各自 attempt 写入当前版本的 ACP 自有 `acp.storage.json`，再在 `acp.snapshot.json` 写入并 claim `turnId + operationId + revision`，最后把该 CAS owner 交给通用 ACP runtime。两类 prompt 均使用 `PromptVisibility::Hidden` 和 `hiddenReason=personalAnalytics`，attempt 只保存在当前 analytics operation 目录，不进入会话列表或消息流；用户只看到 operation 状态与最终校验通过的结构化洞察。`acp.storage.json` 只为没有 workflow/dynamic `node.json` 的 standalone attempt 显式声明 timeline storage schema，不创建可见 UI 入口，也不伪造工作流节点；通用迁移入口仅在该文件真实存在时接受 standalone attempt，缺失 node/storage state 的损坏工作流仍返回 `acp.attempt-state-missing`。该 ACP lifecycle 只约束单次 provider turn 的取消与迟到写入，不是洞察业务状态的第二权威；页面、恢复和 completed cache 仍只以 `AgentInsightOperation` 为准。
 
 ### 9.3 确定性报告与 Agent 洞察解耦
 
-“开始分析”只执行索引同步和确定性报告生成，不调用 Agent。Agent 选择继续保留在页面顶部，但只服务于独立的“生成 Agent 洞察”按钮。
+“刷新”只执行索引增量同步和确定性报告生成，不调用 Agent。Agent、模型与思考强度选择保留在页面顶部，但只服务于独立的“生成 Agent 洞察”按钮。
 
 Agent 洞察基于当前日期范围和当前 `index_revision` 的投影生成，仍只输出质量、效率、Token、上下文与技能四类结构化洞察。洞察插入对应章节的“Agent 洞察”子区块，不集中放在报告末尾。Schema 或版本不合法时仍最多执行一次结构 repair。
 
-日期范围或 `index_revision` 变化后旧洞察不可复用；相同范围和索引版本下已完成的洞察可复用，避免重复调用 AI。SQLite 只保存 completed payload，不保存 processing/failed/cancelled lifecycle；缓存查询无写副作用，完成写入按 range/schema/indexRevision/agentType 唯一替换且最多保留 64 条。无论 Agent 调用还是缓存命中，当前 `AgentInsightOperation` 都按 `Queued -> Analyzing -> ValidatingReport -> Completed` 收敛；repair 时允许 `ValidatingReport -> Analyzing -> ValidatingReport`。洞察失败、取消或校验失败不写 cache，也不影响确定性统计报告。
+日期范围、`index_revision`、Agent、模型或思考强度变化后旧洞察不可复用；相同范围、索引版本和完整执行选择下已完成的洞察可复用，避免重复调用 AI。SQLite 只保存 completed payload，不保存 processing/failed/cancelled lifecycle；缓存查询无写副作用，完成写入按 range/schema/indexRevision/agentType/modelId/thoughtLevelOptionId/thoughtLevelValue 唯一替换且最多保留 64 条。无论 Agent 调用还是缓存命中，当前 `AgentInsightOperation` 都按 `Queued -> Analyzing -> ValidatingReport -> Completed` 收敛；repair 时允许 `ValidatingReport -> Analyzing -> ValidatingReport`。洞察失败、取消或校验失败不写 cache，也不影响确定性统计报告。
 
 ### 9.4 设计评估
 
@@ -207,7 +209,7 @@ Agent 洞察基于当前日期范围和当前 `index_revision` 的投影生成�
 - 现成能力评估：复用现有 SQLite/rusqlite、WAL、事务、迁移机制、原生日期输入、shadcn/ui 和 IntersectionObserver。行业上以文件为事实源、数据库为可重建投影属于成熟实践；无需引入第三方分析数据库。
 - 过度设计评估：新增分析索引是必要的，但物理表压缩为 8 张并用视图保留逻辑领域，不创建第二个数据库、不保存无限报告历史、不建设通用缓存平台。语义样本、洞察结果和排行仍必须有界。当前设计没有引入假设性的队列、并发框架或服务端同步。
 - 性能评估：首次全量解析仍为 O(canonical candidates + eligible bytes)，但不再随受管 worktree 或普通附件/源码总量增长；2026-08-30 release 真实根首次 `5.786s`，优于历史 `6.032s` 门槛，带 1 个活跃变化文件的第二轮 `1.677s`，日期范围查询 `121ms`。结构化 timing 分离发现、比较、解析和 SQLite 写入；页面导航不触发物理历史扫描或全报告重渲染。
-- 数据完整性评估：文件是权威源，SQLite 可重建；写入采用事务和幂等 upsert，删除源文件时同步删除派生事实。项目、usage、事件计数和洞察明细视图没有独立事实版本，必须从 8 张物理表重建。洞察缓存仅对 completed payload 按 range/schema/indexRevision/agentType 建唯一索引；processing/failed/cancelled 只存在于 `AgentInsightOperation` durable lifecycle，不在 SQLite 建立平行事实。报告必须携带 `index_revision`，防止旧洞察或旧报告与新索引混合。
+- 数据完整性评估：文件是权威源，SQLite 可重建；写入采用事务和幂等 upsert，删除源文件时同步删除派生事实。项目、usage、事件计数和洞察明细视图没有独立事实版本，必须从 8 张物理表重建。洞察缓存仅对 completed payload 按 range/schema/indexRevision/agentType/modelId/thoughtLevelOptionId/thoughtLevelValue 建唯一索引；processing/failed/cancelled 只存在于 `AgentInsightOperation` durable lifecycle，不在 SQLite 建立平行事实。报告必须携带 `index_revision`，防止旧洞察或旧报告与新索引混合。
 - 主要风险与缓解：fingerprint 计算增加元数据读取，但远低于重复解析 JSONL；日期归属存在跨天任务边界，必须显式使用最后活动时间口径；索引迁移失败需保留旧报告并支持重建；洞察缓存必须绑定 range、schema 和 index revision。
 
 ### 9.5 优化验收门槛

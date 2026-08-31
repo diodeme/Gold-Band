@@ -527,6 +527,9 @@ export interface AgentInsightOperationVm {
   operationId: string;
   generation: number;
   agentType: string;
+  modelId: string | null;
+  thoughtLevelOptionId: string | null;
+  thoughtLevelValue: string | null;
   range: { start: string | null; end: string | null };
   schemaVersion: string;
   indexRevision: number;

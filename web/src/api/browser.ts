@@ -163,6 +163,9 @@ const browserInsightOperation: AgentInsightOperationVm = {
   operationId: 'browser-insight-preview',
   generation: 1,
   agentType: 'codex-acp',
+  modelId: null,
+  thoughtLevelOptionId: null,
+  thoughtLevelValue: null,
   range: { start: null, end: null },
   schemaVersion: '2.2.0',
   indexRevision: 6,
@@ -1205,16 +1208,19 @@ export const browserApi: RuntimeApi = {
   syncPersonalAnalytics() {
     return Promise.resolve(browserPersonalAnalytics);
   },
-  queryPersonalAnalyticsReport(range: { start?: string | null; end?: string | null }) {
+  queryPersonalAnalyticsReport(range: { start?: string | null; end?: string | null }, _agentType?: string, _modelId?: string | null, _thoughtLevelOptionId?: string | null, _thoughtLevelValue?: string | null) {
     return Promise.resolve({
       ...browserPersonalAnalytics.latestReport!,
       range: { start: range.start ?? null, end: range.end ?? null },
     });
   },
-  startPersonalAnalyticsInsights(agentType: string, range: { start?: string | null; end?: string | null }) {
+  startPersonalAnalyticsInsights(agentType: string, range: { start?: string | null; end?: string | null }, modelId?: string | null, thoughtLevelOptionId?: string | null, thoughtLevelValue?: string | null) {
     return Promise.resolve({
       ...browserInsightOperation,
       agentType,
+      modelId: modelId ?? null,
+      thoughtLevelOptionId: thoughtLevelOptionId ?? null,
+      thoughtLevelValue: thoughtLevelValue ?? null,
       range: { start: range.start ?? null, end: range.end ?? null },
     });
   },

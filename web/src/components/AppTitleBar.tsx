@@ -43,6 +43,8 @@ export function AppTitleBar({
   const [isMaximized, setIsMaximized] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [helpMenuOpen, setHelpMenuOpen] = useState(false);
+  const [helpTooltipOpen, setHelpTooltipOpen] = useState(false);
+  const [helpTooltipSuppressed, setHelpTooltipSuppressed] = useState(false);
   const tauriRuntime = isTauriRuntime();
   const policy = resolveWindowControlsPolicy(platform);
 
@@ -148,14 +150,27 @@ export function AppTitleBar({
           data-titlebar-trailing-actions="true"
         >
           {feedbackEnabled || onOpenPersonalAnalytics ? (
-            <DropdownMenu open={helpMenuOpen} onOpenChange={setHelpMenuOpen}>
-              <Tooltip>
+            <DropdownMenu open={helpMenuOpen} onOpenChange={(open) => {
+              setHelpMenuOpen(open);
+              if (open) setHelpTooltipOpen(false);
+            }}>
+              <Tooltip
+                open={helpTooltipOpen && !helpMenuOpen && !helpTooltipSuppressed}
+                onOpenChange={(open) => {
+                  if (open && (helpMenuOpen || helpTooltipSuppressed)) return;
+                  setHelpTooltipOpen(open);
+                }}
+              >
                 <TooltipTrigger asChild>
                   <DropdownMenuTrigger asChild>
                     <button
                       type="button"
                       className={APP_TITLE_BAR_LAYOUT.helpActionClassName}
                       aria-label={t('common.help')}
+                      onPointerLeave={() => setHelpTooltipSuppressed(false)}
+                      onBlur={() => {
+                        if (!helpMenuOpen) setHelpTooltipSuppressed(false);
+                      }}
                     >
                       {t('common.help')}
                     </button>
@@ -167,6 +182,8 @@ export function AppTitleBar({
                 {onOpenPersonalAnalytics ? (
                   <DropdownMenuItem
                     onSelect={() => {
+                      setHelpTooltipOpen(false);
+                      setHelpTooltipSuppressed(true);
                       setHelpMenuOpen(false);
                       requestAnimationFrame(onOpenPersonalAnalytics);
                     }}
@@ -179,6 +196,8 @@ export function AppTitleBar({
                 {feedbackEnabled ? (
                 <DropdownMenuItem
                   onSelect={() => {
+                    setHelpTooltipOpen(false);
+                    setHelpTooltipSuppressed(true);
                     setHelpMenuOpen(false);
                     requestAnimationFrame(() => setFeedbackOpen(true));
                   }}

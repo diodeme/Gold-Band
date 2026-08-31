@@ -166,6 +166,11 @@ pub struct AgentInsightOperation {
     pub operation_id: String,
     pub generation: u64,
     pub agent_type: String,
+    pub model_id: Option<String>,
+    #[serde(default)]
+    pub thought_level_option_id: Option<String>,
+    #[serde(default)]
+    pub thought_level_value: Option<String>,
     pub range: index::PersonalAnalyticsDateRange,
     pub schema_version: String,
     pub index_revision: u64,

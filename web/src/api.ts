@@ -36,12 +36,12 @@ export function syncPersonalAnalytics() {
   return getRuntimeApi().syncPersonalAnalytics();
 }
 
-export function queryPersonalAnalyticsReport(range: { start?: string | null; end?: string | null }, agentType?: string) {
-  return getRuntimeApi().queryPersonalAnalyticsReport(range, agentType);
+export function queryPersonalAnalyticsReport(range: { start?: string | null; end?: string | null }, agentType?: string, modelId?: string | null, thoughtLevelOptionId?: string | null, thoughtLevelValue?: string | null) {
+  return getRuntimeApi().queryPersonalAnalyticsReport(range, agentType, modelId, thoughtLevelOptionId, thoughtLevelValue);
 }
 
-export function startPersonalAnalyticsInsights(agentType: string, range: { start?: string | null; end?: string | null }) {
-  return getRuntimeApi().startPersonalAnalyticsInsights(agentType, range);
+export function startPersonalAnalyticsInsights(agentType: string, range: { start?: string | null; end?: string | null }, modelId?: string | null, thoughtLevelOptionId?: string | null, thoughtLevelValue?: string | null) {
+  return getRuntimeApi().startPersonalAnalyticsInsights(agentType, range, modelId, thoughtLevelOptionId, thoughtLevelValue);
 }
 
 export function cancelPersonalAnalyticsInsights(operationId: string) {

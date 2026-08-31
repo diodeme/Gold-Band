@@ -190,6 +190,188 @@ describe('ConversationRunPage follow mode reentry', () => {
     await act(async () => root.unmount());
   });
 
+  it('does not forward a superseded Direct runtime error after a follow-up turn starts', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const selectedKey = 'round-001/direct-agent/attempt-001';
+    const lifecycle = {
+      runtime: {
+        status: 'paused',
+        outcome: null,
+        pauseReason: 'runtime-abnormal',
+        resumable: true,
+        current: true,
+        active: false,
+        continuable: false,
+        phase: 'idle',
+        revision: 4,
+      },
+      control: { mode: 'non-runtime-controlled' },
+      acp: {
+        revision: 5,
+        turnId: 'follow-up-turn',
+        sessionAvailability: 'established',
+        liveTurnActivity: 'running',
+        latestTurnStatus: 'none',
+        stopping: false,
+      },
+      displayStatus: 'paused',
+      runtimeDisplay: {
+        code: 'runtime-abnormal',
+        tone: 'danger',
+        terminal: false,
+        resumable: true,
+        reasonCode: 'runtime-abnormal',
+        blockingError: false,
+      },
+      composer: {
+        mode: 'normal',
+        submitTarget: 'acp-prompt',
+        processingKind: 'processing',
+        canStop: true,
+        lockInput: false,
+      },
+    };
+    const leaf = {
+      roundId: 'round-001',
+      nodeId: 'direct-agent',
+      attemptId: 'attempt-001',
+      pathLabel: selectedKey,
+      status: 'paused',
+      current: true,
+      manualCheckPending: false,
+      sessionEstablished: true,
+      artifactCount: 0,
+      attachmentCount: 0,
+      runtimeDisplay: lifecycle.runtimeDisplay,
+      lifecycle,
+    };
+    const run = {
+      projectId: 'project-1',
+      taskId: 'task-333',
+      runId: 'run-001',
+      runStatus: 'paused',
+      runMode: 'direct',
+      pauseReason: 'runtime-abnormal',
+      runtimeErrorMessage: 'old provider failure',
+      activeSessions: [],
+      inputAttachments: [],
+      selectedSession: {
+        sessionId: 'session-direct',
+        provider: 'codex-acp',
+        status: 'running',
+        restored: true,
+        roundId: 'round-001',
+        nodeId: 'direct-agent',
+        attemptId: 'attempt-001',
+        events: [],
+        eventPage: {
+          loadedCount: 0,
+          total: 0,
+          hasOlder: false,
+          hasNewer: false,
+        },
+        pendingInteractions: [],
+        diagnostics: {
+          rawFrameCount: 10,
+          eventCount: 4,
+          errorCount: 1,
+          lastError: 'old provider failure',
+          lastErrorTimestamp: '10Z',
+        },
+      },
+      sessionTree: {
+        selectedSessionKey: selectedKey,
+        rounds: [{
+          roundId: 'round-001',
+          index: 1,
+          label: 'Round 1',
+          status: 'paused',
+          nodes: [{
+            nodeId: 'direct-agent',
+            label: 'Direct Agent',
+            nodeType: 'worker',
+            status: 'paused',
+            attempts: [leaf],
+            outerNodes: [],
+          }],
+        }],
+      },
+      workflowStatus: 'valid',
+      workflowValid: true,
+      workflowGraph: { nodes: [], edges: [] },
+      resumable: true,
+    } as unknown as ConversationRunVm;
+
+    await act(async () => {
+      root.render(
+        <ConversationRunPage
+          run={run}
+          taskTitle="Direct run"
+          appConfig={{ turnFiles: { cardPreviewLimit: 10, attachmentCardPreviewLimit: 1 } } as AppConfigVm}
+          agentRegistry={null}
+          followMode="auto"
+          onRerun={vi.fn()}
+          onEditWorkflow={vi.fn()}
+          onSelectSession={vi.fn()}
+          onAutoFollowChange={vi.fn()}
+          initialSessionTreeExpansion={{}}
+          onSessionTreeExpansionChange={vi.fn()}
+        />,
+      );
+    });
+
+    expect(chatMocks.render).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtimeComposerContext: expect.objectContaining({
+          lifecycle,
+          runtimeError: null,
+        }),
+      }),
+      undefined,
+    );
+
+    const runWithoutDiagnostic = {
+      ...run,
+      selectedSession: {
+        ...run.selectedSession,
+        diagnostics: {
+          ...run.selectedSession?.diagnostics,
+          lastError: null,
+          lastErrorTimestamp: null,
+        },
+      },
+    } as ConversationRunVm;
+    await act(async () => {
+      root.render(
+        <ConversationRunPage
+          run={runWithoutDiagnostic}
+          taskTitle="Direct run"
+          appConfig={{ turnFiles: { cardPreviewLimit: 10, attachmentCardPreviewLimit: 1 } } as AppConfigVm}
+          agentRegistry={null}
+          followMode="auto"
+          onRerun={vi.fn()}
+          onEditWorkflow={vi.fn()}
+          onSelectSession={vi.fn()}
+          onAutoFollowChange={vi.fn()}
+          initialSessionTreeExpansion={{}}
+          onSessionTreeExpansionChange={vi.fn()}
+        />,
+      );
+    });
+    expect(chatMocks.render).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        runtimeComposerContext: expect.objectContaining({
+          runtimeError: 'old provider failure',
+        }),
+      }),
+      undefined,
+    );
+
+    await act(async () => root.unmount());
+  });
+
   it('restores dynamic session auto-follow after a scroll-only pause returns to bottom', async () => {
     const container = document.createElement('div');
     document.body.append(container);

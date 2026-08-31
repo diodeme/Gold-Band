@@ -447,9 +447,17 @@ export function ConversationRunPage({
   );
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
   const runtimeControlErrorBase = localizedRuntimeErrorMessage ?? run.runtimeErrorMessage;
+  const selectedSessionOwnsNonBlockingDirectError = Boolean(
+    isDirect
+    && selectedLeaf?.lifecycle?.control.mode === 'non-runtime-controlled'
+    && selectedLeaf.lifecycle.runtime.pauseReason === 'runtime-abnormal'
+    && !selectedLeaf.lifecycle.runtimeDisplay.blockingError
+    && selectedLeaf.lifecycle.composer.submitTarget === 'acp-prompt'
+    && selectedSession?.diagnostics.lastError,
+  );
   const selectedSessionRuntimeControlError = runtimeControlErrorBase && !(
     selectedLeaf?.lifecycle?.composer.mode === 'runtime-error' || selectedSessionDisplay?.code === 'error-blocked'
-  )
+  ) && !selectedSessionOwnsNonBlockingDirectError
     ? runtimeControlErrorBase
     : null;
   const selectedSessionErrorDetails = run.runtimeErrorMessage ?? selectedSession?.diagnostics.lastError ?? null;

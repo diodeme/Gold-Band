@@ -3,6 +3,7 @@ import {
   acpSessionEventsSignature,
   mergeAcpEventWindows,
   mergeAcpEventWindowsForSession,
+  mergeAcpToolDetailEnrichment,
   projectLatestAcpUsageUpdate,
 } from "@/lib/acp-event-reducer";
 import type { AcpSessionVm, AcpUiEventVm } from "@/types";
@@ -269,6 +270,20 @@ describe("ACP event reducer", () => {
     expect(acpSessionEventsSignature(before)).not.toBe(acpSessionEventsSignature(after));
   });
 
+  it("changes the session event signature when only the timeline generation advances", () => {
+    const sharedEvents = [
+      event({ id: "assistant-message-1", kind: "textDelta", seq: 10, content: "相同内容" }),
+    ];
+    const before = session(sharedEvents);
+    before.eventPage.generation = 1;
+    before.eventPage.coveredRevision = 10;
+    const after = session(sharedEvents);
+    after.eventPage.generation = 2;
+    after.eventPage.coveredRevision = 1;
+
+    expect(acpSessionEventsSignature(before)).not.toBe(acpSessionEventsSignature(after));
+  });
+
   it("reorders placement-only provider history patches before the matching local prompt", () => {
     const prompt = (id: string, promptId: string, seq: number, content: string) =>
       event({
@@ -339,5 +354,55 @@ describe("ACP event reducer", () => {
       "tool-call-ask",
     ]);
     expect(merged[2]!.seq).toBe(101);
+  });
+
+  it("enriches tool detail without overwriting same-position canonical fields", () => {
+    const canonical = event({
+      id: "tool-stable",
+      kind: "toolCall",
+      seq: 20,
+      status: "completed",
+      content: null,
+      raw: {
+        output: "fresh-output",
+        toolCall: {
+          output: null,
+          input: { path: "fresh.txt" },
+        },
+        content: ["fresh-content"],
+      },
+    });
+    const detail = event({
+      id: "tool-stable",
+      kind: "toolCall",
+      seq: 20,
+      status: "running",
+      content: "stale content",
+      raw: {
+        output: "stale-output",
+        detailOnly: "hydrated",
+        toolCall: {
+          output: "stale-nested-output",
+          input: { path: "stale.txt", line: 8 },
+          locations: ["fresh.txt:8"],
+        },
+        content: ["stale-content"],
+      },
+    });
+
+    const merged = mergeAcpToolDetailEnrichment(canonical, detail);
+
+    expect(merged.status).toBe("completed");
+    expect(merged.content).toBeNull();
+    expect(merged.raw).toEqual({
+      output: "fresh-output",
+      detailOnly: "hydrated",
+      toolCall: {
+        output: null,
+        input: { path: "fresh.txt", line: 8 },
+        locations: ["fresh.txt:8"],
+      },
+      content: ["fresh-content"],
+    });
   });
 });

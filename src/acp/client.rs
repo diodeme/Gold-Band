@@ -381,8 +381,9 @@ use crate::config::{
 };
 use crate::domain::{SessionMode, TurnControlMode, TurnControlTransitionCause, VERSION};
 use crate::provider::{
-    ACP_MCP_TRANSPORT_UNSUPPORTED_CODE, AcpContentBlock, AcpResourceLinkBlock, PromptBundle,
-    PromptVisibility, SkippedAcpMcpServer, gold_band_hidden_block, prepare_acp_mcp_servers,
+    ACP_MCP_TRANSPORT_UNSUPPORTED_CODE, AcpContentBlock, AcpLiveTimelinePosition,
+    AcpResourceLinkBlock, PromptBundle, PromptVisibility, SkippedAcpMcpServer,
+    gold_band_hidden_block, prepare_acp_mcp_servers,
 };
 use crate::runtime::{WorkerRefState, validate_worker_ref_state};
 use crate::runtime_error::{
@@ -2034,7 +2035,7 @@ struct AcpRuntime<'a> {
     attempt_usage_ready: bool,
     active_timeline_streams: HashMap<String, AcpBranchTimelineStreams>,
     timing_state: AcpTimingState,
-    live_update: Option<&'a dyn Fn(&AcpUiEvent, Option<(u64, u64)>) -> Result<()>>,
+    live_update: Option<&'a dyn Fn(&AcpUiEvent, AcpLiveTimelinePosition) -> Result<()>>,
     pending_live_updates: HashMap<String, PendingAcpLiveUpdate>,
     last_live_update_at: Option<Instant>,
     last_live_timing_update_at: Option<Instant>,
@@ -2077,6 +2078,36 @@ struct PendingAcpLiveUpdate {
 struct PendingAcpTimelinePatch {
     revision: u64,
     item: AcpUiEvent,
+}
+
+fn timeline_position_for_live_event(
+    current_generation: u64,
+    durable_watermark: Option<(u64, u64)>,
+) -> AcpLiveTimelinePosition {
+    durable_watermark
+        .map(|(generation, revision)| AcpLiveTimelinePosition::durable(generation, revision))
+        .unwrap_or_else(|| AcpLiveTimelinePosition::transient(current_generation))
+}
+
+fn timeline_generation_for_live_event(
+    root_store: &TimelineStore,
+    branch_stores: &mut HashMap<String, TimelineStore>,
+    attempt_dir: &Utf8Path,
+    policy: TimelineCompactionPolicy,
+    event: &AcpUiEvent,
+) -> Result<u64> {
+    let branch_id = event_branch_id(event);
+    if branch_id == ROOT_BRANCH_ID {
+        return Ok(root_store.generation());
+    }
+    let store = match branch_stores.entry(branch_id.clone()) {
+        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+        std::collections::hash_map::Entry::Vacant(entry) => entry.insert(TimelineStore::open(
+            branch_timeline_path(attempt_dir, &branch_id),
+            policy,
+        )?),
+    };
+    Ok(store.generation())
 }
 
 impl AcpTimelineStreamSlot {
@@ -2370,7 +2401,7 @@ pub fn run_prompt(
     acp_raw_target_size_bytes: u64,
     runtime_policy: AcpRuntimePolicy,
     lifecycle_owner: AcpLifecycleOwner,
-    live_update: Option<&dyn Fn(&AcpUiEvent, Option<(u64, u64)>) -> Result<()>>,
+    live_update: Option<&dyn Fn(&AcpUiEvent, AcpLiveTimelinePosition) -> Result<()>>,
     mcp_servers: &[Value],
     session_update: Option<&dyn Fn() -> Result<()>>,
     prompt_accepted: Option<&dyn Fn(&str) -> Result<()>>,
@@ -3228,7 +3259,7 @@ impl<'a> AcpRuntime<'a> {
         raw_target_size: u64,
         runtime_policy: AcpRuntimePolicy,
         lifecycle_owner: Option<AcpLifecycleOwner>,
-        live_update: Option<&'a dyn Fn(&AcpUiEvent, Option<(u64, u64)>) -> Result<()>>,
+        live_update: Option<&'a dyn Fn(&AcpUiEvent, AcpLiveTimelinePosition) -> Result<()>>,
         stop_probe: Option<RuntimeStopProbe>,
     ) -> Result<Self> {
         let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir);
@@ -3308,7 +3339,7 @@ impl<'a> AcpRuntime<'a> {
         require_local_claude_executable: bool,
         raw_max_size: u64,
         raw_target_size: u64,
-        live_update: Option<&'a dyn Fn(&AcpUiEvent, Option<(u64, u64)>) -> Result<()>>,
+        live_update: Option<&'a dyn Fn(&AcpUiEvent, AcpLiveTimelinePosition) -> Result<()>>,
         stop_probe: Option<RuntimeStopProbe>,
     ) -> Result<Self> {
         let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir);
@@ -3365,7 +3396,7 @@ impl<'a> AcpRuntime<'a> {
         raw_target_size: u64,
         runtime_policy: AcpRuntimePolicy,
         lifecycle_owner: Option<AcpLifecycleOwner>,
-        live_update: Option<&'a dyn Fn(&AcpUiEvent, Option<(u64, u64)>) -> Result<()>>,
+        live_update: Option<&'a dyn Fn(&AcpUiEvent, AcpLiveTimelinePosition) -> Result<()>>,
         stop_probe: Option<RuntimeStopProbe>,
         attempt_storage: bool,
     ) -> Result<Self> {
@@ -6784,18 +6815,31 @@ impl<'a> AcpRuntime<'a> {
         timeline_watermark: Option<(u64, u64)>,
         now: Instant,
     ) -> Result<()> {
-        if let Some(live_update) = self.live_update {
-            let emit_started_at = Instant::now();
-            let emit_result = live_update(item, timeline_watermark);
-            if let Some(diagnostics) = self.pipeline_diagnostics.as_mut() {
-                diagnostics.observe_live_emit(emit_started_at.elapsed());
-            }
-            emit_result?;
-            self.last_live_update_at = Some(now);
-            if let Some(timing) = item.timing.as_ref() {
-                self.last_live_timing_update_at = Some(now);
-                self.last_live_timing = Some(timing.clone());
-            }
+        let Some(live_update) = self.live_update else {
+            return Ok(());
+        };
+        let current_generation = match timeline_watermark {
+            Some((generation, _)) => generation,
+            None => timeline_generation_for_live_event(
+                &self.timeline_store,
+                &mut self.branch_timeline_stores,
+                &self.paths.attempt_dir,
+                self.runtime_policy.timeline_compaction,
+                item,
+            )?,
+        };
+        let timeline_position =
+            timeline_position_for_live_event(current_generation, timeline_watermark);
+        let emit_started_at = Instant::now();
+        let emit_result = live_update(item, timeline_position);
+        if let Some(diagnostics) = self.pipeline_diagnostics.as_mut() {
+            diagnostics.observe_live_emit(emit_started_at.elapsed());
+        }
+        emit_result?;
+        self.last_live_update_at = Some(now);
+        if let Some(timing) = item.timing.as_ref() {
+            self.last_live_timing_update_at = Some(now);
+            self.last_live_timing = Some(timing.clone());
         }
         Ok(())
     }
@@ -7925,7 +7969,8 @@ mod tests {
         runtime_hot_timeline_items, session_config_fingerprint, session_load_params,
         session_new_params, session_prompt_params, session_prompt_text, session_resume_params,
         settle_attempt_prompt_interactions, settle_prompt_event, should_suppress_session_update,
-        stable_message_item_id, timeline_patch_flush_due, unregister_provider_control,
+        stable_message_item_id, timeline_generation_for_live_event, timeline_patch_flush_due,
+        timeline_position_for_live_event, unregister_provider_control,
         validate_session_restore_target,
     };
 
@@ -9427,6 +9472,87 @@ mod tests {
             timing: None,
             raw,
         }
+    }
+
+    #[test]
+    fn transient_live_update_carries_timeline_generation_without_revision() {
+        let position = timeline_position_for_live_event(7, None);
+
+        assert_eq!(position.generation, 7);
+        assert_eq!(position.revision, None);
+    }
+
+    #[test]
+    fn durable_live_update_preserves_the_committed_generation_revision_pair() {
+        let position = timeline_position_for_live_event(7, Some((41, 99)));
+
+        assert_eq!(position.generation, 41);
+        assert_eq!(position.revision, Some(99));
+    }
+
+    #[test]
+    fn transient_branch_live_update_uses_its_own_timeline_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let root_path = attempt_dir.join("acp.timeline.jsonl");
+        let branch_id = "agent-branch-1";
+        let branch_path = crate::acp::branches::branch_timeline_path(&attempt_dir, branch_id);
+        let stable_policy = crate::acp::timeline::TimelineCompactionPolicy {
+            max_size_bytes: u64::MAX,
+            patch_ratio: usize::MAX,
+        };
+        let compacting_policy = crate::acp::timeline::TimelineCompactionPolicy {
+            max_size_bytes: 0,
+            patch_ratio: usize::MAX,
+        };
+        let root_store =
+            crate::acp::timeline::TimelineStore::open(root_path, stable_policy).unwrap();
+        let mut branch_store =
+            crate::acp::timeline::TimelineStore::open(branch_path, compacting_policy).unwrap();
+        let mut branch_event = timeline_event(
+            "branch-message",
+            1,
+            "textDelta",
+            Some("active"),
+            Some("hello"),
+            Some(json!({
+                "_meta": {
+                    "goldBandConversation": {
+                        "branchId": branch_id,
+                    },
+                },
+            })),
+        );
+        branch_store.upsert(1, &branch_event).unwrap();
+        let branch_generation = branch_store.generation();
+        assert!(branch_generation > root_store.generation());
+        drop(branch_store);
+
+        let mut branch_stores = std::collections::HashMap::new();
+        let generation = timeline_generation_for_live_event(
+            &root_store,
+            &mut branch_stores,
+            &attempt_dir,
+            stable_policy,
+            &branch_event,
+        )
+        .unwrap();
+
+        assert_eq!(generation, branch_generation);
+        assert!(branch_stores.contains_key(branch_id));
+
+        branch_event.raw = None;
+        assert_eq!(
+            timeline_generation_for_live_event(
+                &root_store,
+                &mut branch_stores,
+                &attempt_dir,
+                stable_policy,
+                &branch_event,
+            )
+            .unwrap(),
+            root_store.generation(),
+        );
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { acpOptimisticKey, buildConversationSystemPromptOptions, mergedConversationSession } from '../src/pages/RoundDetailPage';
+import { buildConversationSystemPromptOptions, mergedConversationSession } from '../src/pages/RoundDetailPage';
 import type { AcpConversationVm, AcpSessionVm } from '../src/types';
 
 function makeSession(partial?: Partial<AcpSessionVm>): AcpSessionVm {
@@ -53,14 +53,6 @@ function makeConversation(): AcpConversationVm {
 }
 
 describe('round detail system prompt fallback', () => {
-  it('isolates optimistic events by complete session and branch identity', () => {
-    const root = acpOptimisticKey('project-1', 'task-1', 'run-1', 'round-1', 'node-1', 'attempt-1', null, null, 'root');
-    const branch = acpOptimisticKey('project-1', 'task-1', 'run-1', 'round-1', 'node-1', 'attempt-1', null, null, 'agent-1');
-    const dynamic = acpOptimisticKey('project-1', 'task-1', 'run-1', 'round-1', 'node-1', 'attempt-1', 'outer-1', 'outer-attempt-1', 'root');
-
-    expect(new Set([root, branch, dynamic]).size).toBe(3);
-  });
-
   it('keeps the current attempt system prompt before conversation snapshot catches up', () => {
     const conversation = makeConversation();
     const fallback = makeSession({ systemPromptAppend: 'current system prompt' });

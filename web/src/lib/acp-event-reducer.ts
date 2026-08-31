@@ -63,6 +63,42 @@ export function mergeRawObject(previous: unknown, next: unknown) {
   return merged;
 }
 
+/**
+ * Enrich a canonical tool snapshot with fields that only exist in an on-demand
+ * detail response. The canonical snapshot always wins for fields it owns,
+ * including explicit nulls, so a late detail read cannot roll live output or
+ * lifecycle state backward at the same timeline position.
+ */
+export function mergeAcpToolDetailEnrichment(
+  canonical: AcpUiEventVm,
+  detail: AcpUiEventVm,
+): AcpUiEventVm {
+  if (!Object.prototype.hasOwnProperty.call(canonical, "raw")) {
+    return Object.prototype.hasOwnProperty.call(detail, "raw")
+      ? { ...canonical, raw: detail.raw }
+      : canonical;
+  }
+  return {
+    ...canonical,
+    raw: mergeToolDetailRawValue(detail.raw, canonical.raw),
+  };
+}
+
+function mergeToolDetailRawValue(detail: unknown, canonical: unknown): unknown {
+  const detailObject = rawObject(detail);
+  const canonicalObject = rawObject(canonical);
+  if (!detailObject || !canonicalObject) return canonical;
+  const merged: RawObject = { ...detailObject };
+  for (const key of Object.keys(canonicalObject)) {
+    const canonicalValue = canonicalObject[key];
+    const detailValue = detailObject[key];
+    merged[key] = rawObject(canonicalValue) && rawObject(detailValue)
+      ? mergeToolDetailRawValue(detailValue, canonicalValue)
+      : canonicalValue;
+  }
+  return merged;
+}
+
 export function mergeAcpEventSnapshots(
   existing: AcpUiEventVm,
   incoming: AcpUiEventVm,
@@ -320,8 +356,17 @@ export function acpSessionEventsSignature(
   if (!session) return "null";
   return JSON.stringify({
     length: session.events.length,
+    generation: session.eventPage.generation ?? null,
+    coveredRevision: session.eventPage.coveredRevision ?? null,
+    newestRevision: session.eventPage.newestRevision ?? null,
+    loadedCount: session.eventPage.loadedCount,
+    total: session.eventPage.total,
+    oldestSeq: session.eventPage.oldestSeq ?? null,
+    newestSeq: session.eventPage.newestSeq ?? null,
     hasOlder: session.eventPage.hasOlder,
     hasNewer: session.eventPage.hasNewer,
+    oldestCursor: session.eventPage.oldestCursor ?? null,
+    newestCursor: session.eventPage.newestCursor ?? null,
     events: session.events.map((event) => ({
       key: acpEventKey(event),
       status: event.status ?? null,

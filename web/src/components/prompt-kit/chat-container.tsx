@@ -31,6 +31,8 @@ export type ChatContainerContentExpansionController = {
   endContentExpansion: (
     token: ChatContainerContentExpansionToken | null,
   ) => boolean
+  scrollRef: StickToBottomContext["scrollRef"]
+  compensateContentAnchor: (delta: number) => boolean
 }
 
 export type ChatContainerContext = StickToBottomContext &
@@ -177,6 +179,8 @@ function ChatContainerLifecycle({
   const nextContentExpansionTokenRef = useRef(0)
   const contentExpansionTokensRef = useRef<Set<number> | null>(null)
   const contentExpansionRestoreFrameRef = useRef<number | null>(null)
+  const contentAnchorCompensationFrameRef = useRef<number | null>(null)
+  const contentAnchorCompensationActiveRef = useRef(false)
   const initialViewportAlignedRef = useRef(false)
   const lastLayoutDiagnosticAtRef = useRef(0)
   const layoutDiagnosticRef = useRef({
@@ -259,9 +263,29 @@ function ChatContainerLifecycle({
     return true
   }, [libraryScrollToBottom, updateFollowIntent])
 
+  const compensateContentAnchor = useCallback((delta: number) => {
+    const viewport = scrollRef.current
+    if (!viewport || !Number.isFinite(delta) || delta === 0) return false
+    contentAnchorCompensationActiveRef.current = true
+    viewport.scrollTop += delta
+    if (contentAnchorCompensationFrameRef.current !== null) {
+      cancelAnimationFrame(contentAnchorCompensationFrameRef.current)
+    }
+    contentAnchorCompensationFrameRef.current = requestAnimationFrame(() => {
+      contentAnchorCompensationFrameRef.current = null
+      contentAnchorCompensationActiveRef.current = false
+    })
+    return true
+  }, [scrollRef])
+
   const contentExpansionController = useMemo<ChatContainerContentExpansionController>(
-    () => ({ beginContentExpansion, endContentExpansion }),
-    [beginContentExpansion, endContentExpansion],
+    () => ({
+      beginContentExpansion,
+      endContentExpansion,
+      scrollRef,
+      compensateContentAnchor,
+    }),
+    [beginContentExpansion, compensateContentAnchor, endContentExpansion, scrollRef],
   )
 
   const exposedContext = useMemo<ChatContainerContext>(() => ({
@@ -271,6 +295,7 @@ function ChatContainerLifecycle({
     stopScroll,
     beginContentExpansion,
     endContentExpansion,
+    compensateContentAnchor,
     isAtBottom: isFollowing,
     escapedFromLock: !isFollowing,
     state: stickContext.state,
@@ -282,6 +307,7 @@ function ChatContainerLifecycle({
     },
   }), [
     beginContentExpansion,
+    compensateContentAnchor,
     endContentExpansion,
     isFollowing,
     scrollToBottom,
@@ -362,6 +388,7 @@ function ChatContainerLifecycle({
       const previousScrollTop = lastScrollTopRef.current
       const currentScrollTop = viewport.scrollTop
       lastScrollTopRef.current = currentScrollTop
+      if (contentAnchorCompensationActiveRef.current) return
       if (
         contentExpansionTokensRef.current &&
         pointerScrollingRef.current &&
@@ -446,6 +473,12 @@ function ChatContainerLifecycle({
     stopScroll,
     updateFollowIntent,
   ])
+
+  useEffect(() => () => {
+    if (contentAnchorCompensationFrameRef.current !== null) {
+      cancelAnimationFrame(contentAnchorCompensationFrameRef.current)
+    }
+  }, [])
 
   useEffect(() => {
     const content = contentRef.current

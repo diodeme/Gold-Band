@@ -129,10 +129,8 @@ import { browserApi } from './browser';
 import { desktopApi } from './desktop';
 import { isTauriRuntime } from './shared';
 
-export interface AcpSessionUpdatedEventVm {
+interface AcpSessionUpdatedEventBaseVm {
   branchId?: string | null;
-  timelineGeneration?: number | null;
-  timelineRevision?: number | null;
   projectId?: string | null;
   taskId: string;
   taskUuid?: string | null;
@@ -142,12 +140,26 @@ export interface AcpSessionUpdatedEventVm {
   attemptId: string;
   outerNodeId?: string | null;
   outerAttemptId?: string | null;
-  session?: AcpSessionVm | null;
-  event?: AcpUiEventVm | null;
   lifecycle?: ConversationAttemptLifecycleVm | null;
   activity?: ConversationTaskActivityVm | null;
   taskActivityAt?: string | null;
+  timelineRecoveryRequired?: boolean;
 }
+
+export type AcpSessionUpdatedEventVm = AcpSessionUpdatedEventBaseVm & (
+  | {
+      event: AcpUiEventVm;
+      session?: null;
+      timelineGeneration: number;
+      timelineRevision?: number | null;
+    }
+  | {
+      event?: null;
+      session?: AcpSessionVm | null;
+      timelineGeneration?: number | null;
+      timelineRevision?: number | null;
+    }
+);
 
 export interface ConversationRunStateUpdatedEventVm {
   eventKind: 'node-started' | 'run-paused' | 'run-completed' | 'run-recovered';

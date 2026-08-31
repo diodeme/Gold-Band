@@ -10,11 +10,11 @@ import {
   markAcpSessionContentHydrated,
   resetAcpResourceCache,
   restoreAcpBranchViewState,
-  restoreAcpLoadedEvents,
+  restoreAcpLoadedEventWindow,
   restoreAcpSession,
   shouldInitiallyFollowAcpBranch,
   storeAcpBranchViewState,
-  storeAcpLoadedEvents,
+  storeAcpLoadedEventWindow,
   storeAcpSession,
 } from '@/components/acp/ACPChatDialog';
 import type { AcpSessionVm, AcpUiEventVm } from '@/types';
@@ -53,6 +53,7 @@ const session = (branchId: string): AcpSessionVm => ({
   restored: true,
   events: [],
   eventPage: {
+    generation: 1,
     loadedCount: 0,
     total: 0,
     hasOlder: false,
@@ -117,7 +118,11 @@ describe('ACP branch view state cache', () => {
 
   it('evicts session, events, and view state atomically by resource key', () => {
     storeAcpSession('combined-oldest', session('agent-oldest'));
-    storeAcpLoadedEvents('combined-oldest', [event('event-oldest')], 100);
+    storeAcpLoadedEventWindow('combined-oldest', {
+      sessionId: 'session-1',
+      timelineGeneration: 1,
+      events: [event('event-oldest')],
+    }, 100);
     storeAcpBranchViewState('combined-oldest', state(100));
     for (let index = 0; index < 12; index += 1) {
       storeAcpSession(`combined-${index}`, session(`agent-${index}`));
@@ -125,7 +130,66 @@ describe('ACP branch view state cache', () => {
 
     expect(restoreAcpSession('combined-oldest')).toBeNull();
     expect(restoreAcpBranchViewState('combined-oldest')).toBeNull();
-    expect(restoreAcpLoadedEvents('combined-oldest', [], 100)).toEqual([]);
+    expect(restoreAcpLoadedEventWindow('combined-oldest', null, 100).events).toEqual([]);
+  });
+
+  it('restores a historical visible window without merging a cached live-head session', () => {
+    const key = 'historical-window-with-live-head';
+    const historicalEvent = event('historical-visible-event');
+    const liveHeadEvent = { ...event('live-head-event'), seq: 20 };
+    storeAcpLoadedEventWindow(key, {
+      sessionId: 'session-1',
+      timelineGeneration: 1,
+      events: [historicalEvent],
+    }, 100);
+    const liveHeadSession = {
+      ...session('root'),
+      events: [liveHeadEvent],
+      eventPage: {
+        generation: 2,
+        loadedCount: 1,
+        total: 20,
+        hasOlder: true,
+        hasNewer: false,
+      },
+    };
+    storeAcpSession(key, liveHeadSession);
+    storeAcpBranchViewState(key, {
+      ...state(500),
+      hasNewer: true,
+    });
+
+    expect(restoreAcpLoadedEventWindow(key, liveHeadSession, 100, true)).toEqual({
+      sessionId: 'session-1',
+      timelineGeneration: 1,
+      events: [historicalEvent],
+    });
+    expect(restoreAcpBranchViewState(key)?.hasNewer).toBe(true);
+  });
+
+  it('does not preserve a historical window owned by a different ACP session', () => {
+    const key = 'historical-window-replaced-session';
+    const historicalEvent = event('historical-session-one');
+    storeAcpLoadedEventWindow(key, {
+      sessionId: 'session-1',
+      timelineGeneration: 1,
+      events: [historicalEvent],
+    }, 100);
+    const replacementEvent = {
+      ...event('replacement-session-two'),
+      sessionId: 'session-2',
+    };
+    const replacementSession = {
+      ...session('root'),
+      sessionId: 'session-2',
+      events: [replacementEvent],
+    };
+
+    expect(restoreAcpLoadedEventWindow(key, replacementSession, 100, true)).toEqual({
+      sessionId: 'session-2',
+      timelineGeneration: 1,
+      events: [replacementEvent],
+    });
   });
 
   it('captures and compensates a real DOM item anchor for either root or Agent branches', () => {

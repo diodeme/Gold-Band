@@ -61,6 +61,7 @@ import {
   ChainOfThoughtTrigger,
 } from "@/components/prompt-kit/chain-of-thought";
 import {
+  alignChatContainerViewportToBottomBeforePaint,
   type ChatContainerContentExpansionToken,
   type ChatContainerContext,
   useOptionalChatContainerContentExpansion,
@@ -116,6 +117,7 @@ import {
   ACP_CHAT_LOADED_EVENT_BUFFER_PAGE_COUNT,
   ACP_CHAT_LOADED_EVENT_BUFFER_MAX_MULTIPAGE_ITEMS,
   DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
+  DEFAULT_ACP_CHAT_LOADED_EVENT_BUFFER_LIMIT,
 } from "@/lib/acp-chat-pagination";
 import {
   createAcpSessionConfigViewModel,
@@ -188,6 +190,7 @@ import {
   acpEventKey,
   acpSessionEventsSignature,
   mergeAcpEventSnapshots,
+  mergeAcpToolDetailEnrichment,
   mergeAcpEventWindows,
   mergeAcpEventWindowsForSession,
   mergeRawObject,
@@ -261,6 +264,7 @@ import {
   acknowledgeConversationBranchReplay,
   conversationEventMatchesAttempt,
   ensureConversationEventRouterStarted,
+  isValidConversationTimelineGeneration,
   readConversationBranchReplaySnapshot,
   reconcileConversationBranchSession,
   resolveConversationBranchDisplayStatus,
@@ -358,7 +362,6 @@ interface ACPChatDialogProps {
   eventPageSize?: number;
   inlineContentMaxBytes?: number;
   liveUpdatesPaused?: boolean;
-  optimisticEvents?: AcpUiEventVm[];
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
   onManualCheckSubmitted?: () => void;
   onSessionStopped?: () => void;
@@ -443,6 +446,14 @@ type AcpAgentLink = {
 
 const AcpBranchLocatorContext = createContext<AgentTranscriptLocator | null>(null);
 
+type AcpTimelineWindowOwner = {
+  eventWindowKey: string;
+  sessionId: string | null;
+  timelineGeneration: number;
+};
+
+const AcpTimelineWindowOwnerContext = createContext<AcpTimelineWindowOwner | null>(null);
+
 type AcpActivityBatch = {
   kind: "activityBatch";
   id: string;
@@ -465,6 +476,7 @@ type AcpActivityBatch = {
   detailAvailable: boolean;
   hasMoreEarlier: boolean;
   earlierCursor?: string | null;
+  sessionId: string | null;
 };
 
 type AcpTodoEntry = {
@@ -481,17 +493,95 @@ type AcpTimelineProjection = {
 type AcpTimelineItem = AcpTimelineEvent | AcpAgentLink | AcpActivityBatch;
 
 const MIN_LOADED_EVENT_BUFFER_LIMIT = 30;
+export const ACP_ACTIVITY_DETAIL_PAGE_SIZE = 40;
+export const ACP_ACTIVITY_DETAIL_WINDOW_PAGE_COUNT = 3;
+export const ACP_ACTIVITY_DETAIL_WINDOW_LIMIT =
+  ACP_ACTIVITY_DETAIL_PAGE_SIZE * ACP_ACTIVITY_DETAIL_WINDOW_PAGE_COUNT;
 const HISTORY_LOAD_THRESHOLD_PX = 240;
 const NEWER_PAGE_LOAD_THRESHOLD_PX = 240;
 const LIVE_EVENT_FLUSH_MS = 125;
 const LIVE_EVENT_INTERACTION_QUIET_MS = 180;
 const LIVE_EVENT_MAX_DEFER_MS = 250;
+export const ACP_LIVE_EVENT_BUFFER_MAX_IDENTITIES =
+  DEFAULT_ACP_CHAT_LOADED_EVENT_BUFFER_LIMIT;
+export const ACP_REPLAY_CATCH_UP_MAX_PAGES = 4;
+export const ACP_REPLAY_CATCH_UP_MAX_MS = 2_000;
 const ACP_SESSION_LEASE_RETRY_MS = 30_000;
+
+async function awaitAcpReplayCatchUpRequest<T>(
+  request: Promise<T>,
+  deadlineAt: number,
+): Promise<T | null> {
+  const remainingMs = Math.max(0, deadlineAt - performance.now());
+  if (remainingMs === 0) return null;
+  return new Promise<T | null>((resolve) => {
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(null);
+    }, remainingMs);
+    request.then((value) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve(value);
+    }).catch(() => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve(null);
+    });
+  });
+}
+
+type AcpPaginationRequestToken = {
+  componentInstanceId: string;
+  eventWindowKey: string;
+  requestSeq: number;
+  windowSessionId: string | null;
+  windowTimelineGeneration: number;
+};
+
+export interface AcpLoadedEventWindow {
+  sessionId: string | null;
+  timelineGeneration: number;
+  events: AcpUiEventVm[];
+}
+
+interface AcpOwnedLoadedEventWindow extends AcpLoadedEventWindow {
+  eventWindowKey: string;
+}
+
+type AcpLoadedEventWindowRelation =
+  | "same"
+  | "incoming-newer"
+  | "incoming-older"
+  | "different-session";
+
+type AcpGenerationScopedLiveEvent = {
+  event: AcpUiEventVm;
+  timelineGeneration: number;
+};
 
 type LiveStreamingMarkdownTarget = {
   key: string;
   position: number;
 };
+
+type AcpCanonicalHeadHandoffIntent = "ordinary" | "recovery";
+type AcpCanonicalHeadHandoff = (
+  intent: AcpCanonicalHeadHandoffIntent,
+) => Promise<boolean>;
+
+function mergeCanonicalHeadHandoffIntent(
+  current: AcpCanonicalHeadHandoffIntent | null,
+  incoming: AcpCanonicalHeadHandoffIntent,
+) {
+  return current === "recovery" || incoming === "recovery"
+    ? "recovery"
+    : "ordinary";
+}
 const CONTEXT_COMPACTION_DELAYED_AFTER_SECONDS = 120;
 
 export const ACP_SESSION_SCROLL_AREA_CLASS_NAME = goldThemedScrollbarClassName(
@@ -544,7 +634,12 @@ const hiddenEventKinds = new Set([
   "runtimeError",
 ]);
 
-const optimisticEventStore = new Map<string, AcpUiEventVm[]>();
+export const ACP_OPTIMISTIC_SESSION_CACHE_LIMIT = 12;
+export const ACP_OPTIMISTIC_EVENTS_PER_SESSION_LIMIT =
+  DEFAULT_ACP_CHAT_LOADED_EVENT_BUFFER_LIMIT;
+const optimisticEventStore = new BoundedLruCache<string, AcpUiEventVm[]>(
+  ACP_OPTIMISTIC_SESSION_CACHE_LIMIT,
+);
 const optimisticEventListeners = new Map<
   string,
   Set<(events: AcpUiEventVm[]) => void>
@@ -559,12 +654,26 @@ function updateStoredOptimisticEvents(
   updater: (current: AcpUiEventVm[]) => AcpUiEventVm[],
 ) {
   const next = updater(readStoredOptimisticEvents(sessionKey));
-  if (next.length === 0) optimisticEventStore.delete(sessionKey);
-  else optimisticEventStore.set(sessionKey, next);
+  return replaceStoredOptimisticEvents(sessionKey, next);
+}
+
+function replaceStoredOptimisticEvents(
+  sessionKey: string,
+  next: AcpUiEventVm[],
+) {
+  const boundedNext = boundAcpOptimisticEvents(next);
+  if (boundedNext.length === 0) optimisticEventStore.delete(sessionKey);
+  else optimisticEventStore.set(sessionKey, boundedNext);
   optimisticEventListeners
     .get(sessionKey)
-    ?.forEach((listener) => listener(next));
-  return next;
+    ?.forEach((listener) => listener(boundedNext));
+  return boundedNext;
+}
+
+export function boundAcpOptimisticEvents(events: AcpUiEventVm[]) {
+  return events.length > ACP_OPTIMISTIC_EVENTS_PER_SESSION_LIMIT
+    ? events.slice(-ACP_OPTIMISTIC_EVENTS_PER_SESSION_LIMIT)
+    : events;
 }
 
 export function updateAcpOptimisticEvents(
@@ -611,7 +720,7 @@ export interface AcpBranchViewState {
 
 interface AcpCachedResource {
   session?: AcpSessionVm;
-  events?: AcpUiEventVm[];
+  eventWindow?: AcpLoadedEventWindow;
   viewState?: AcpBranchViewState;
   contentHydrated?: boolean;
 }
@@ -653,42 +762,141 @@ export function shouldInitiallyFollowAcpBranch(
   return state?.atBottom ?? true;
 }
 
-export function restoreAcpLoadedEvents(
-  sessionKey: string,
-  events: AcpUiEventVm[],
-  eventPageSize: number,
+function isStoredAcpHistoricalWindow(
+  state?: Pick<AcpBranchViewState, 'atBottom' | 'hasNewer'> | null,
 ) {
-  const stored = acpResourceStore.get(sessionKey)?.events ?? [];
-  return limitAcpEvents(
-    stored.length > 0 ? mergeAcpEvents(stored, events) : events,
-    "start",
-    eventPageSize,
-  );
+  return Boolean(state && (!state.atBottom || state.hasNewer));
 }
 
-export function storeAcpLoadedEvents(
+function acpSessionTimelineGeneration(session?: AcpSessionVm | null) {
+  return session?.eventPage.generation ?? 0;
+}
+
+export function createAcpLoadedEventWindow(
+  session: AcpSessionVm | null | undefined,
+  events: AcpUiEventVm[] = session?.events ?? [],
+): AcpLoadedEventWindow {
+  return {
+    sessionId: session?.sessionId ?? null,
+    timelineGeneration: acpSessionTimelineGeneration(session),
+    events,
+  };
+}
+
+function compareAcpLoadedEventWindowToSession(
+  window: Pick<AcpLoadedEventWindow, "sessionId" | "timelineGeneration">,
+  session: AcpSessionVm,
+): AcpLoadedEventWindowRelation {
+  const incomingSessionId = session.sessionId ?? null;
+  if (
+    window.sessionId
+    && incomingSessionId
+    && window.sessionId !== incomingSessionId
+  ) {
+    return "different-session";
+  }
+  const incomingGeneration = acpSessionTimelineGeneration(session);
+  if (incomingGeneration > window.timelineGeneration) return "incoming-newer";
+  if (incomingGeneration < window.timelineGeneration) return "incoming-older";
+  return "same";
+}
+
+function compareAcpLoadedEventWindowToLiveEvent(
+  window: Pick<AcpLoadedEventWindow, "sessionId" | "timelineGeneration">,
+  event: AcpUiEventVm,
+  timelineGeneration: number,
+): AcpLoadedEventWindowRelation {
+  if (
+    window.sessionId
+    && event.sessionId
+    && window.sessionId !== event.sessionId
+  ) {
+    return "different-session";
+  }
+  if (timelineGeneration > window.timelineGeneration) return "incoming-newer";
+  if (timelineGeneration < window.timelineGeneration) return "incoming-older";
+  return "same";
+}
+
+function acpSessionHasTimelineBeyondLoadedWindow(
+  window: AcpLoadedEventWindow,
+  session: AcpSessionVm,
+) {
+  const relation = compareAcpLoadedEventWindowToSession(window, session);
+  if (relation === "different-session" || relation === "incoming-newer") return true;
+  if (relation === "incoming-older") return false;
+  if (session.eventPage.hasNewer) return true;
+  const loadedNewestPosition = window.events.reduce<number | null>((latest, event) => (
+    Math.max(latest ?? 0, timelineEventPosition(event))
+  ), null);
+  const incomingNewestPosition = session.eventPage.newestSeq
+    ?? session.events.reduce<number | null>((latest, event) => (
+      Math.max(latest ?? 0, timelineEventPosition(event))
+    ), null);
+  return incomingNewestPosition !== null
+    && (loadedNewestPosition === null || incomingNewestPosition > loadedNewestPosition);
+}
+
+function paginationTokenOwnsLoadedEventWindow(
+  token: AcpPaginationRequestToken,
+  window: Pick<AcpLoadedEventWindow, "sessionId" | "timelineGeneration">,
+) {
+  return token.windowTimelineGeneration === window.timelineGeneration
+    && token.windowSessionId === window.sessionId;
+}
+
+export function restoreAcpLoadedEventWindow(
   sessionKey: string,
-  events: AcpUiEventVm[],
+  session: AcpSessionVm | null | undefined,
+  eventPageSize: number,
+  preserveStoredWindow = false,
+): AcpLoadedEventWindow {
+  const stored = acpResourceStore.get(sessionKey)?.eventWindow;
+  const storedOwnsSession = !session
+    || stored?.sessionId === (session.sessionId ?? null);
+  if (stored && storedOwnsSession && (preserveStoredWindow || !session)) {
+    return {
+      ...stored,
+      events: limitAcpEvents(stored.events, "start", eventPageSize),
+    };
+  }
+  if (!session) return createAcpLoadedEventWindow(null);
+  const incoming = createAcpLoadedEventWindow(session);
+  if (!stored || compareAcpLoadedEventWindowToSession(stored, session) !== "same") {
+    return {
+      ...incoming,
+      events: limitAcpEvents(incoming.events, "start", eventPageSize),
+    };
+  }
+  const merged = mergeAcpEventWindowsForSession(
+    stored.sessionId,
+    incoming.sessionId,
+    stored.events,
+    incoming.events,
+    alignAcpDisplaySeq,
+  );
+  return {
+    ...incoming,
+    events: limitAcpEvents(merged, "start", eventPageSize),
+  };
+}
+
+export function storeAcpLoadedEventWindow(
+  sessionKey: string,
+  eventWindow: AcpLoadedEventWindow,
   eventPageSize: number,
 ) {
-  if (events.length === 0) {
-    const current = acpResourceStore.peek(sessionKey);
-    if (!current) return;
-    const { events: _events, ...rest } = current;
-    if (Object.keys(rest).length === 0) {
-      acpResourceStore.delete(sessionKey);
-    } else {
-      acpResourceStore.set(sessionKey, rest);
-    }
-  } else {
-    storeAcpResourcePart(sessionKey, {
-      events: limitAcpEvents(events, "start", eventPageSize),
-    });
-  }
+  storeAcpResourcePart(sessionKey, {
+    eventWindow: {
+      ...eventWindow,
+      events: limitAcpEvents(eventWindow.events, "start", eventPageSize),
+    },
+  });
 }
 
 export function resetAcpResourceCache() {
   acpResourceStore.clear();
+  optimisticEventStore.clear();
 }
 
 export function createAcpSessionCacheKey(
@@ -774,6 +982,7 @@ function conversationReplayHasUncoveredNewerEvents(
   replay: ReturnType<typeof readConversationBranchReplaySnapshot>,
   eventPage: AcpSessionVm["eventPage"],
 ) {
+  if (replay.events.length === 0 && !replay.requiresCatchUp) return false;
   const pageGeneration = eventPage.generation ?? 0;
   if (
     replay.timelineGeneration > 0
@@ -788,6 +997,122 @@ function conversationReplayHasUncoveredNewerEvents(
     return replay.headRevision > coveredRevision;
   }
   return replay.headSeq > (eventPage.newestSeq ?? 0);
+}
+
+interface AcpTimelineWatermark {
+  generation: number;
+  coveredRevision: number;
+  coveredSeq: number | null;
+}
+
+function reconcileAcpTimelineWatermark(
+  current: AcpTimelineWatermark,
+  incoming: AcpSessionVm["eventPage"],
+): AcpTimelineWatermark {
+  const incomingGeneration = incoming.generation ?? current.generation;
+  const incomingCoveredRevision = incoming.coveredRevision
+    ?? incoming.newestRevision
+    ?? 0;
+  const incomingCoveredSeq = incoming.newestSeq ?? null;
+  if (incomingGeneration > current.generation) {
+    return {
+      generation: incomingGeneration,
+      coveredRevision: incomingCoveredRevision,
+      coveredSeq: incomingCoveredSeq,
+    };
+  }
+  if (incomingGeneration < current.generation) return current;
+  return {
+    generation: current.generation,
+    coveredRevision: Math.max(
+      current.coveredRevision,
+      incomingCoveredRevision,
+    ),
+    coveredSeq: current.coveredSeq === null
+      ? incomingCoveredSeq
+      : incomingCoveredSeq === null
+        ? current.coveredSeq
+        : Math.max(current.coveredSeq, incomingCoveredSeq),
+  };
+}
+
+function createAcpTimelineWatermark(
+  eventPage?: AcpSessionVm["eventPage"] | null,
+): AcpTimelineWatermark {
+  return eventPage
+    ? reconcileAcpTimelineWatermark(
+        { generation: 0, coveredRevision: 0, coveredSeq: null },
+        eventPage,
+      )
+    : { generation: 0, coveredRevision: 0, coveredSeq: null };
+}
+
+function acpTimelineWatermarkCoversSequenceLoss(
+  watermark: AcpTimelineWatermark,
+  lossGeneration: number,
+  lossSeq: number,
+) {
+  if (lossSeq <= 0) return true;
+  if (lossGeneration > 0 && watermark.generation > lossGeneration) return true;
+  if (watermark.generation < lossGeneration) return false;
+  if (lossGeneration > 0 && watermark.generation !== lossGeneration) return false;
+  return (watermark.coveredSeq ?? 0) >= lossSeq;
+}
+
+function hasAdvancedCanonicalAcpSessionRevision(
+  previous: AcpSessionVm,
+  next: AcpSessionVm,
+) {
+  const previousGeneration = previous.eventPage.generation ?? 0;
+  const nextGeneration = next.eventPage.generation ?? 0;
+  if (previousGeneration !== nextGeneration) return false;
+  const previousRevision = previous.eventPage.coveredRevision
+    ?? previous.eventPage.newestRevision
+    ?? 0;
+  const nextRevision = next.eventPage.coveredRevision
+    ?? next.eventPage.newestRevision
+    ?? 0;
+  return nextRevision > previousRevision;
+}
+
+function shouldPreferObservedAcpSessionOverCanonicalResponse(
+  canonical: AcpSessionVm,
+  observed: AcpSessionVm,
+) {
+  if (!isSameAcpSessionForMetadata(canonical, observed)) return false;
+  const canonicalGeneration = canonical.eventPage.generation ?? 0;
+  const observedGeneration = observed.eventPage.generation ?? 0;
+  if (canonicalGeneration !== observedGeneration) {
+    return observedGeneration > canonicalGeneration;
+  }
+  if (hasAdvancedCanonicalAcpSessionRevision(canonical, observed)) return true;
+  if (hasAdvancedCanonicalAcpSessionRevision(observed, canonical)) return false;
+  if (hasAdvancedAcpSessionProjection(canonical, observed)) return true;
+  if (hasAdvancedAcpSessionProjection(observed, canonical)) return false;
+  const canonicalUpdatedAt = parseAcpTimestamp(canonical.sessionUpdatedAt);
+  const observedUpdatedAt = parseAcpTimestamp(observed.sessionUpdatedAt);
+  if (observedUpdatedAt === null) return false;
+  return canonicalUpdatedAt === null || observedUpdatedAt > canonicalUpdatedAt;
+}
+
+function hasOlderAcpTimelineProjection(
+  previous: AcpSessionVm | null | undefined,
+  next: AcpSessionVm | null | undefined,
+) {
+  if (!previous || !next || !isSameAcpSessionForMetadata(previous, next)) return false;
+  const previousGeneration = previous.eventPage.generation;
+  const nextGeneration = next.eventPage.generation;
+  if (previousGeneration != null && nextGeneration != null) {
+    if (nextGeneration < previousGeneration) return true;
+    if (nextGeneration > previousGeneration) return false;
+  }
+  const previousRevision = previous.eventPage.coveredRevision
+    ?? previous.eventPage.newestRevision;
+  const nextRevision = next.eventPage.coveredRevision
+    ?? next.eventPage.newestRevision;
+  return previousRevision != null
+    && nextRevision != null
+    && nextRevision < previousRevision;
 }
 
 export type AcpSessionPaginationUpdateMode = "replace" | "append-newer";
@@ -843,7 +1168,6 @@ export function ACPChatDialog(
     eventPageSize,
     inlineContentMaxBytes,
     liveUpdatesPaused: externalLiveUpdatesPaused = false,
-    optimisticEvents: controlledOptimisticEvents,
     onOptimisticEventsChange,
     onManualCheckSubmitted,
     onSessionStopped,
@@ -926,8 +1250,7 @@ export function ACPChatDialog(
   const restoredSession = session ?? restoreAcpSession(eventWindowKey);
   const componentInstanceIdRef = useRef(createAcpChatDialogInstanceId());
   const componentInstanceId = componentInstanceIdRef.current;
-  const restoredOptimisticEvents =
-    controlledOptimisticEvents ?? readStoredOptimisticEvents(sessionKey);
+  const restoredOptimisticEvents = readStoredOptimisticEvents(sessionKey);
   const restoredBranchViewState = restoreAcpBranchViewState(eventWindowKey);
   const restoredPromptEvent = latestSendingOptimisticEvent(
     restoredOptimisticEvents,
@@ -937,17 +1260,28 @@ export function ACPChatDialog(
   const [currentSession, setCurrentSession] = useState<AcpSessionVm | null>(
     restoredSession,
   );
-  const [loadedEvents, setLoadedEvents] = useState<AcpUiEventVm[]>(
-    () => restoreAcpLoadedEvents(
+  const [loadedEventWindow, setLoadedEventWindow] = useState<AcpOwnedLoadedEventWindow>(
+    () => ({
       eventWindowKey,
-      restoredSession?.events ?? [],
-      effectiveLoadedEventBufferLimit,
-    ),
+      ...restoreAcpLoadedEventWindow(
+        eventWindowKey,
+        restoredSession,
+        effectiveLoadedEventBufferLimit,
+        isStoredAcpHistoricalWindow(restoredBranchViewState),
+      ),
+    }),
   );
-  const loadedEventsRef = useRef<AcpUiEventVm[]>(loadedEvents);
+  const loadedEvents = loadedEventWindow.eventWindowKey === eventWindowKey
+    ? loadedEventWindow.events
+    : [];
+  const loadedEventWindowRef = useRef<AcpOwnedLoadedEventWindow>(loadedEventWindow);
   const [optimisticEvents, setOptimisticEvents] = useState<AcpUiEventVm[]>(
     () => restoredOptimisticEvents,
   );
+  const optimisticEventsRef = useRef<AcpUiEventVm[]>(optimisticEvents);
+  optimisticEventsRef.current = optimisticEvents;
+  const onOptimisticEventsChangeRef = useRef(onOptimisticEventsChange);
+  onOptimisticEventsChangeRef.current = onOptimisticEventsChange;
   const prompt = composerDraft.draft.content;
   const setPrompt = composerDraft.setContent;
   const quotes = composerDraft.draft.quotes;
@@ -970,6 +1304,10 @@ export function ACPChatDialog(
   const [activeTurnStartedAt, setActiveTurnStartedAt] = useState<string | null>(
     null,
   );
+  const activeTurnPromptRef = useRef(activeTurnPrompt);
+  const activeTurnPromptIdRef = useRef(activeTurnPromptId);
+  activeTurnPromptRef.current = activeTurnPrompt;
+  activeTurnPromptIdRef.current = activeTurnPromptId;
   const [streamingMarkdownItemKey, setStreamingMarkdownItemKey] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [cancelError, setCancelError] = useState<string | null>(null);
@@ -998,10 +1336,14 @@ export function ACPChatDialog(
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [loadingLatest, setLoadingLatest] = useState(false);
   const [hasOlderEvents, setHasOlderEvents] = useState(
-    () => restoredSession?.eventPage.hasOlder ?? false,
+    () => restoredBranchViewState?.hasOlder
+      ?? restoredSession?.eventPage.hasOlder
+      ?? false,
   );
   const [hasNewerEvents, setHasNewerEvents] = useState(
-    () => restoredSession?.eventPage.hasNewer ?? false,
+    () => restoredBranchViewState?.hasNewer
+      ?? restoredSession?.eventPage.hasNewer
+      ?? false,
   );
   const hasOlderEventsRef = useRef(hasOlderEvents);
   const hasNewerEventsRef = useRef(hasNewerEvents);
@@ -1059,11 +1401,23 @@ export function ACPChatDialog(
   const [queueRestorePending, setQueueRestorePending] = useState(false);
   const latestSessionRef = useRef<AcpSessionVm | null>(restoredSession);
   const sessionRefreshSeqRef = useRef(0);
+  const sessionIdentityRef = useRef(sessionIdentity);
+  sessionIdentityRef.current = sessionIdentity;
+  const paginationRequestSeqRef = useRef(0);
+  const paginationRequestOwnerRef = useRef<AcpPaginationRequestToken | null>(null);
+  const paginationCursorGenerationStaleRef = useRef(false);
   const configGenerationRef = useRef(0);
   const configMutationGenerationRef = useRef(0);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const paginationAnchorRef = useRef<{ key: string; top: number } | null>(null);
-  const pendingLiveEventsRef = useRef(new AcpLatestWinsEventBuffer<AcpUiEventVm>());
+  const pendingLiveEventsRef = useRef(
+    new AcpLatestWinsEventBuffer<AcpGenerationScopedLiveEvent>(
+      Math.min(
+        effectiveLoadedEventBufferLimit,
+        ACP_LIVE_EVENT_BUFFER_MAX_IDENTITIES,
+      ),
+    ),
+  );
   const liveEventFlushTimerRef = useRef<number | null>(null);
   const liveUpdatesDeferredUntilRef = useRef(0);
   const pendingLiveEventsSinceRef = useRef<number | null>(null);
@@ -1071,18 +1425,153 @@ export function ACPChatDialog(
   const liveBeforeReadyLogCountRef = useRef(0);
   const liveAnimationReadyRef = useRef(false);
   const liveStreamingTargetRef = useRef<LiveStreamingMarkdownTarget | null>(null);
+  const pendingLatestLayoutCommitRef = useRef<string | null>(null);
+  const canonicalHeadHandoffRef = useRef<AcpCanonicalHeadHandoff | null>(null);
+  const canonicalHeadRecoveryPendingRef = useRef(false);
+  const canonicalHeadHandoffInFlightRef = useRef(false);
+  const canonicalHeadHandoffTrailingIntentRef = useRef<
+    AcpCanonicalHeadHandoffIntent | null
+  >(null);
+  const canonicalHeadHandoffEpochRef = useRef(0);
+  const canonicalHeadRecoveryAutoHandoffRef = useRef(false);
   const sessionPropSyncIdentityRef = useRef(eventWindowKey);
   const sessionResetIdentityRef = useRef(eventWindowKey);
   const liveUpdatesPaused = Boolean(externalLiveUpdatesPaused || systemPromptOpen);
   liveUpdatesPausedRef.current = liveUpdatesPaused;
 
-  const updateOptimisticEvents = (
+  const markCanonicalHeadRecovery = useCallback((autoHandoff: boolean) => {
+    canonicalHeadRecoveryPendingRef.current = true;
+    canonicalHeadRecoveryAutoHandoffRef.current =
+      canonicalHeadRecoveryAutoHandoffRef.current || autoHandoff;
+    commitHasNewerEvents(true);
+  }, [commitHasNewerEvents]);
+
+  const commitLoadedEventWindow = useCallback((
+    ownerKey: string,
+    next: AcpLoadedEventWindow,
+  ) => {
+    if (sessionIdentityRef.current !== ownerKey) return false;
+    const previous = loadedEventWindowRef.current;
+    const scopeChanged = previous.eventWindowKey !== ownerKey;
+    const timelineOwnerChanged = scopeChanged
+      || previous.timelineGeneration !== next.timelineGeneration
+      || previous.sessionId !== next.sessionId;
+    if (timelineOwnerChanged) {
+      if (liveEventFlushTimerRef.current !== null) {
+        window.clearTimeout(liveEventFlushTimerRef.current);
+        liveEventFlushTimerRef.current = null;
+      }
+      pendingLiveEventsRef.current.clear();
+      pendingLiveEventsSinceRef.current = null;
+      paginationCursorGenerationStaleRef.current = false;
+    }
+    if (scopeChanged) {
+      canonicalHeadHandoffEpochRef.current += 1;
+      canonicalHeadRecoveryPendingRef.current = false;
+      canonicalHeadHandoffInFlightRef.current = false;
+      canonicalHeadHandoffTrailingIntentRef.current = null;
+      canonicalHeadRecoveryAutoHandoffRef.current = false;
+    }
+    const ownedNext = { ...next, eventWindowKey: ownerKey };
+    loadedEventWindowRef.current = ownedNext;
+    storeAcpLoadedEventWindow(
+      ownerKey,
+      next,
+      effectiveLoadedEventBufferLimit,
+    );
+    setLoadedEventWindow(ownedNext);
+    return true;
+  }, [effectiveLoadedEventBufferLimit]);
+
+  const updateOptimisticEvents = useCallback((
     updater: (current: AcpUiEventVm[]) => AcpUiEventVm[],
   ) => {
-    const next = updateStoredOptimisticEvents(sessionKey, updater);
-    setOptimisticEvents(next);
-    onOptimisticEventsChange?.(next);
-  };
+    const next = updater(optimisticEventsRef.current);
+    const boundedNext = replaceStoredOptimisticEvents(sessionKey, next);
+    optimisticEventsRef.current = boundedNext;
+    setOptimisticEvents(boundedNext);
+    onOptimisticEventsChangeRef.current?.(boundedNext);
+  }, [sessionKey]);
+
+  const isHistoricalTimelineWindow = useCallback(() => (
+    hasNewerEventsRef.current
+    || paginationDirectionRef.current !== null
+    || !viewportAtBottomRef.current
+  ), []);
+
+  const ownsPaginationRequest = useCallback((token: AcpPaginationRequestToken) => {
+    const owner = paginationRequestOwnerRef.current;
+    return Boolean(
+      owner
+      && owner.componentInstanceId === token.componentInstanceId
+      && owner.eventWindowKey === token.eventWindowKey
+      && owner.requestSeq === token.requestSeq
+      && sessionIdentityRef.current === token.eventWindowKey
+    );
+  }, []);
+
+  const ownsPaginationWindowRequest = useCallback((token: AcpPaginationRequestToken) => (
+    ownsPaginationRequest(token)
+    && paginationTokenOwnsLoadedEventWindow(
+      token,
+      loadedEventWindowRef.current,
+    )
+  ), [ownsPaginationRequest]);
+
+  const beginPaginationRequest = useCallback((direction: "older" | "newer") => {
+    const eventWindow = loadedEventWindowRef.current;
+    const token: AcpPaginationRequestToken = {
+      componentInstanceId,
+      eventWindowKey,
+      requestSeq: paginationRequestSeqRef.current + 1,
+      windowSessionId: eventWindow.sessionId,
+      windowTimelineGeneration: eventWindow.timelineGeneration,
+    };
+    paginationRequestSeqRef.current = token.requestSeq;
+    paginationRequestOwnerRef.current = token;
+    paginationDirectionRef.current = direction;
+    return token;
+  }, [componentInstanceId, eventWindowKey]);
+
+  const finishPaginationRequest = useCallback((token: AcpPaginationRequestToken) => {
+    if (!ownsPaginationRequest(token)) return false;
+    paginationRequestOwnerRef.current = null;
+    paginationDirectionRef.current = null;
+    return true;
+  }, [ownsPaginationRequest]);
+
+  const settleOptimisticPromptAdmissions = useCallback((events: AcpUiEventVm[]) => {
+    const admittedPrompts = events.filter(isGoldBandUserPrompt);
+    if (admittedPrompts.length === 0) return;
+    const acceptedActivePrompt = findMatchingGoldBandUserPrompt(
+      admittedPrompts,
+      activeTurnPromptRef.current,
+      activeTurnPromptIdRef.current,
+    );
+    if (acceptedActivePrompt) {
+      setActiveTurnStartedAt((current) => current ?? acceptedActivePrompt.timestamp);
+      setSending(false);
+    }
+    updateOptimisticEvents((current) => {
+      let changed = false;
+      const next = current.map((event) => {
+        if (!hasMatchingUserPrompt(admittedPrompts, event)) return event;
+        const eventRaw = rawObject(event.raw);
+        if (event.status !== "sending" && eventRaw?.optimistic !== true) {
+          return event;
+        }
+        const settledRaw = { ...(eventRaw ?? {}) };
+        delete settledRaw.optimistic;
+        changed = true;
+        return {
+          ...event,
+          status: null,
+          raw: settledRaw,
+        };
+      });
+      return changed ? next : current;
+    });
+  }, [updateOptimisticEvents]);
 
   const applyLifecycleProjection = useCallback((
     incoming: ConversationAttemptLifecycleVm,
@@ -1119,13 +1608,11 @@ export function ACPChatDialog(
     onInitialSessionQueryStateChange?.(initialSessionQueryState);
   }, [initialSessionQueryState, onInitialSessionQueryStateChange]);
 
-  useEffect(() => {
-    if (controlledOptimisticEvents)
-      setOptimisticEvents(controlledOptimisticEvents);
-  }, [controlledOptimisticEvents]);
-
   useEffect(
-    () => subscribeStoredOptimisticEvents(sessionKey, setOptimisticEvents),
+    () => subscribeStoredOptimisticEvents(sessionKey, (events) => {
+      optimisticEventsRef.current = events;
+      setOptimisticEvents(events);
+    }),
     [sessionKey],
   );
 
@@ -1146,9 +1633,24 @@ export function ACPChatDialog(
     applyLifecycleProjection(incoming, "context");
   }, [applyLifecycleProjection, runtimeComposerContext?.lifecycle]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const identityChanged = sessionPropSyncIdentityRef.current !== eventWindowKey;
     sessionPropSyncIdentityRef.current = eventWindowKey;
+    const previousCanonicalSession = identityChanged
+      ? null
+      : latestSessionRef.current;
+    if (
+      !identityChanged
+      && hasOlderAcpTimelineProjection(previousCanonicalSession, session)
+    ) {
+      return;
+    }
+    const preserveVisibleTimeline = !identityChanged
+      && isHistoricalTimelineWindow()
+      && (!session || compareAcpLoadedEventWindowToSession(
+        loadedEventWindowRef.current,
+        session,
+      ) !== "different-session");
     setCurrentSession((previous) => {
       if (!identityChanged && !session && previous) {
         latestSessionRef.current = previous;
@@ -1167,57 +1669,85 @@ export function ACPChatDialog(
       return next;
     });
     if (!session && identityChanged) {
-      const restored = restoreAcpLoadedEvents(
+      const restored = restoreAcpLoadedEventWindow(
         eventWindowKey,
-        [],
+        null,
         effectiveLoadedEventBufferLimit,
       );
       const cachedSession = restoreAcpSession(eventWindowKey);
-      loadedEventsRef.current = restored;
-      setLoadedEvents(restored);
-      setHasOlderEvents(cachedSession?.eventPage.hasOlder ?? false);
-      setHasNewerEvents(cachedSession?.eventPage.hasNewer ?? false);
+      const cachedViewState = restoreAcpBranchViewState(eventWindowKey);
+      commitLoadedEventWindow(eventWindowKey, restored);
+      setHasOlderEvents(
+        cachedViewState?.hasOlder ?? cachedSession?.eventPage.hasOlder ?? false,
+      );
+      commitHasNewerEvents(
+        cachedViewState?.hasNewer ?? cachedSession?.eventPage.hasNewer ?? false,
+      );
       return;
     }
     if (!session) return;
-    setLoadedEvents((events) => {
-      const currentEvents =
-        events.length === 0
-          ? restoreAcpLoadedEvents(
-              eventWindowKey,
-              session.events,
-              effectiveLoadedEventBufferLimit,
-            )
-          : events;
-      const merged = mergeAcpEvents(currentEvents, session.events);
-      const limited = limitAcpEvents(
-        merged,
-        "start",
-        effectiveLoadedEventBufferLimit,
+    settleOptimisticPromptAdmissions(session.events);
+    if (preserveVisibleTimeline) {
+      commitHasNewerEvents(
+        hasNewerEventsRef.current
+        || acpSessionHasTimelineBeyondLoadedWindow(
+          loadedEventWindowRef.current,
+          session,
+        ),
       );
-      setHasOlderEvents(resolveAcpHasOlderEvents(
-        session.eventPage.hasOlder,
-        merged.length,
-        limited.length,
-      ));
-      setHasNewerEvents(session.eventPage.hasNewer);
-      loadedEventsRef.current = limited;
-      return limited;
+      return;
+    }
+    const currentWindow = identityChanged
+      ? restoreAcpLoadedEventWindow(
+          eventWindowKey,
+          session,
+          effectiveLoadedEventBufferLimit,
+          isStoredAcpHistoricalWindow(restoreAcpBranchViewState(eventWindowKey)),
+        )
+      : loadedEventWindowRef.current;
+    const sameWindowOwner = compareAcpLoadedEventWindowToSession(
+      currentWindow,
+      session,
+    ) === "same";
+    const merged = sameWindowOwner
+      ? mergeAcpEventWindowsForSession(
+          currentWindow.sessionId,
+          session.sessionId,
+          currentWindow.events,
+          session.events,
+          alignAcpDisplaySeq,
+        )
+      : session.events;
+    const limited = limitAcpEvents(
+      merged,
+      "start",
+      effectiveLoadedEventBufferLimit,
+    );
+    setHasOlderEvents(resolveAcpHasOlderEvents(
+      session.eventPage.hasOlder,
+      merged.length,
+      limited.length,
+    ));
+    commitHasNewerEvents(session.eventPage.hasNewer);
+    commitLoadedEventWindow(eventWindowKey, {
+      sessionId: session.sessionId ?? null,
+      timelineGeneration: acpSessionTimelineGeneration(session),
+      events: limited,
     });
-  }, [effectiveLoadedEventBufferLimit, eventWindowKey, session]);
+  }, [commitHasNewerEvents, commitLoadedEventWindow, effectiveLoadedEventBufferLimit, eventWindowKey, isHistoricalTimelineWindow, session, settleOptimisticPromptAdmissions]);
 
   useEffect(() => {
     const identityChanged = sessionResetIdentityRef.current !== eventWindowKey;
     sessionResetIdentityRef.current = eventWindowKey;
     const cachedSession = session ?? restoreAcpSession(eventWindowKey);
-    const storedOptimisticEvents =
-      controlledOptimisticEvents ?? readStoredOptimisticEvents(sessionKey);
-    const storedLoadedEvents = restoreAcpLoadedEvents(
-      eventWindowKey,
-      cachedSession?.events ?? [],
-      effectiveLoadedEventBufferLimit,
-    );
+    const storedOptimisticEvents = readStoredOptimisticEvents(sessionKey);
     const storedBranchViewState = restoreAcpBranchViewState(eventWindowKey);
+    const storedLoadedEventWindow = restoreAcpLoadedEventWindow(
+      eventWindowKey,
+      cachedSession,
+      effectiveLoadedEventBufferLimit,
+      isStoredAcpHistoricalWindow(storedBranchViewState),
+    );
     const storedPromptEvent = latestSendingOptimisticEvent(
       storedOptimisticEvents,
     );
@@ -1243,8 +1773,8 @@ export function ACPChatDialog(
         : "loading",
     );
     setSessionLoadError(null);
-    loadedEventsRef.current = storedLoadedEvents;
-    setLoadedEvents(storedLoadedEvents);
+    commitLoadedEventWindow(eventWindowKey, storedLoadedEventWindow);
+    optimisticEventsRef.current = storedOptimisticEvents;
     setOptimisticEvents(storedOptimisticEvents);
     setDismissedPermissionIds(new Set());
     setPermissionError(null);
@@ -1261,8 +1791,15 @@ export function ACPChatDialog(
     setRawPage(null);
     setRawQuery({ page: 0, pageSize: 100, order: "desc" });
     setLoadingOlder(false);
-    setHasOlderEvents(cachedSession?.eventPage.hasOlder ?? false);
-    setHasNewerEvents(cachedSession?.eventPage.hasNewer ?? false);
+    setLoadingLatest(false);
+    setHasOlderEvents(
+      storedBranchViewState?.hasOlder ?? cachedSession?.eventPage.hasOlder ?? false,
+    );
+    commitHasNewerEvents(
+      storedBranchViewState?.hasNewer ?? cachedSession?.eventPage.hasNewer ?? false,
+    );
+    paginationRequestSeqRef.current += 1;
+    paginationRequestOwnerRef.current = null;
     paginationDirectionRef.current = null;
     preservingScrollRef.current = false;
     paginationAnchorRef.current = null;
@@ -1277,9 +1814,10 @@ export function ACPChatDialog(
     liveBeforeReadyLogCountRef.current = 0;
     liveAnimationReadyRef.current = false;
     liveStreamingTargetRef.current = null;
+    pendingLatestLayoutCommitRef.current = null;
     setStreamingMarkdownItemKey(null);
     setCanvasMode("chat");
-  }, [effectiveLoadedEventBufferLimit, eventWindowKey, sessionKey]);
+  }, [commitHasNewerEvents, commitLoadedEventWindow, effectiveLoadedEventBufferLimit, eventWindowKey, sessionKey]);
 
   useEffect(() => {
     if (branchId !== 'root' || !branchLiveSnapshot.lifecycle) return;
@@ -1287,13 +1825,37 @@ export function ACPChatDialog(
   }, [applyLifecycleProjection, branchId, branchLiveSnapshot.lifecycle]);
 
   useEffect(() => {
-    loadedEventsRef.current = loadedEvents;
-    storeAcpLoadedEvents(
+    if (loadedEventWindow.eventWindowKey !== eventWindowKey) return;
+    storeAcpLoadedEventWindow(
       eventWindowKey,
-      loadedEvents,
+      {
+        sessionId: loadedEventWindow.sessionId,
+        timelineGeneration: loadedEventWindow.timelineGeneration,
+        events: loadedEventWindow.events,
+      },
       effectiveLoadedEventBufferLimit,
     );
-  }, [effectiveLoadedEventBufferLimit, eventWindowKey, loadedEvents]);
+  }, [effectiveLoadedEventBufferLimit, eventWindowKey, loadedEventWindow]);
+
+  useEffect(() => () => {
+    paginationRequestSeqRef.current += 1;
+    paginationRequestOwnerRef.current = null;
+    pendingLatestLayoutCommitRef.current = null;
+  }, []);
+
+  useLayoutEffect(() => {
+    if (pendingLatestLayoutCommitRef.current === null) return;
+    if (pendingLatestLayoutCommitRef.current !== sessionIdentity) {
+      pendingLatestLayoutCommitRef.current = null;
+      return;
+    }
+    const context = chatContainerContextRef.current;
+    const scroller = context?.scrollRef.current;
+    if (!context || !scroller) return;
+    pendingLatestLayoutCommitRef.current = null;
+    alignChatContainerViewportToBottomBeforePaint(scroller);
+    void context.scrollToBottom({ animation: "instant" });
+  });
 
   useLayoutEffect(() => () => {
     const scroller = chatContainerContextRef.current?.scrollRef.current;
@@ -1387,6 +1949,7 @@ export function ACPChatDialog(
             baseSession,
             loadedEvents,
             effectiveLoadedEventBufferLimit,
+            isHistoricalTimelineWindow() ? "historical" : "live-head",
           )
         : (liveSessionShell ?? establishedSessionShell ?? attemptSessionShell),
     [
@@ -1395,6 +1958,8 @@ export function ACPChatDialog(
       attemptSessionShell,
       liveSessionShell,
       establishedSessionShell,
+      hasNewerEvents,
+      isHistoricalTimelineWindow,
       loadedEvents,
     ],
   );
@@ -1503,6 +2068,23 @@ export function ACPChatDialog(
   );
   const todoEntries = timelineProjection.todoEntries;
   const timeline = useStableAcpTimeline(timelineProjection.timeline);
+  const effectiveTimelineGeneration = acpSessionTimelineGeneration(effective);
+  const timelineWindowOwner = useMemo<AcpTimelineWindowOwner>(() => ({
+    eventWindowKey,
+    sessionId: loadedEventWindow.eventWindowKey === eventWindowKey
+      ? loadedEventWindow.sessionId
+      : (effective?.sessionId ?? null),
+    timelineGeneration: loadedEventWindow.eventWindowKey === eventWindowKey
+      ? loadedEventWindow.timelineGeneration
+      : effectiveTimelineGeneration,
+  }), [
+    effective?.sessionId,
+    effectiveTimelineGeneration,
+    eventWindowKey,
+    loadedEventWindow.eventWindowKey,
+    loadedEventWindow.sessionId,
+    loadedEventWindow.timelineGeneration,
+  ]);
   const timelineSurfaceState = resolveAcpTimelineSurfaceState({
     hasTimelineItems: timeline.length > 0,
     initialSessionLoading: initialSessionQueryState === "loading",
@@ -1753,7 +2335,7 @@ export function ACPChatDialog(
     const target = nextLiveStreamingMarkdownTarget(
       previousTarget,
       event,
-      latestUserPromptPosition(loadedEventsRef.current),
+      latestUserPromptPosition(loadedEventWindowRef.current.events),
     );
     recordAcpStreamingDiagnostic("target-decision", () => ({
       componentInstanceId,
@@ -1767,7 +2349,9 @@ export function ACPChatDialog(
       eventEndedSeq: event.endedSeq ?? null,
       previousTarget: previousTarget?.key ?? null,
       nextTarget: target?.key ?? null,
-      latestUserPromptPosition: latestUserPromptPosition(loadedEventsRef.current),
+      latestUserPromptPosition: latestUserPromptPosition(
+        loadedEventWindowRef.current.events,
+      ),
     }));
     if (target === liveStreamingTargetRef.current) return;
     if (!target) {
@@ -1787,8 +2371,19 @@ export function ACPChatDialog(
     source = "session-update",
     paginationMode: AcpSessionPaginationUpdateMode = "replace",
   ) => {
+    if (sessionIdentityRef.current !== eventWindowKey) return;
     const incoming = normalizeSessionUpdate(updated);
+    const preserveVisibleTimeline = (
+      liveUpdatesPausedRef.current
+      || canonicalHeadRecoveryPendingRef.current
+      || isHistoricalTimelineWindow()
+    )
+      && (!incoming || compareAcpLoadedEventWindowToSession(
+        loadedEventWindowRef.current,
+        incoming,
+      ) !== "different-session");
     const previous = latestSessionRef.current;
+    if (hasOlderAcpTimelineProjection(previous, incoming)) return;
     const reconciled = reconcileAcpSessionForDisplay(previous, incoming);
     const paginated = reconciled
       ? {
@@ -1829,29 +2424,58 @@ export function ACPChatDialog(
       sessionsEquivalent(current, normalized) ? current : normalized,
     );
     if (!normalized) return;
-    setLoadedEvents((events) => {
-      setHasNewerEvents(normalized.eventPage.hasNewer);
-      const merged = mergeAcpEventWindowsForSession(
-        previous?.sessionId,
-        normalized.sessionId,
-        events,
-        normalized.events,
-        alignAcpDisplaySeq,
+    settleOptimisticPromptAdmissions(normalized.events);
+    if (preserveVisibleTimeline) {
+      const timelineBeyondVisibleWindow = acpSessionHasTimelineBeyondLoadedWindow(
+        loadedEventWindowRef.current,
+        normalized,
       );
-      const limited = limitAcpEvents(
-        merged,
-        "start",
-        effectiveLoadedEventBufferLimit,
+      commitHasNewerEvents(
+        hasNewerEventsRef.current
+        || timelineBeyondVisibleWindow,
       );
-      setHasOlderEvents(resolveAcpHasOlderEvents(
-        normalized.eventPage.hasOlder,
-        merged.length,
-        limited.length,
-      ));
-      loadedEventsRef.current = limited;
-      return limited;
+      if (
+        liveUpdatesPausedRef.current
+        && (
+          timelineBeyondVisibleWindow
+          || acpSessionEventsSignature(previous) !== acpSessionEventsSignature(normalized)
+        )
+      ) {
+        markCanonicalHeadRecovery(true);
+      }
+      return;
+    }
+    commitHasNewerEvents(normalized.eventPage.hasNewer);
+    const currentWindow = loadedEventWindowRef.current;
+    const sameWindowOwner = compareAcpLoadedEventWindowToSession(
+      currentWindow,
+      normalized,
+    ) === "same";
+    const merged = sameWindowOwner
+      ? mergeAcpEventWindowsForSession(
+          currentWindow.sessionId,
+          normalized.sessionId,
+          currentWindow.events,
+          normalized.events,
+          alignAcpDisplaySeq,
+        )
+      : normalized.events;
+    const limited = limitAcpEvents(
+      merged,
+      "start",
+      effectiveLoadedEventBufferLimit,
+    );
+    setHasOlderEvents(resolveAcpHasOlderEvents(
+      normalized.eventPage.hasOlder,
+      merged.length,
+      limited.length,
+    ));
+    commitLoadedEventWindow(eventWindowKey, {
+      sessionId: normalized.sessionId ?? null,
+      timelineGeneration: acpSessionTimelineGeneration(normalized),
+      events: limited,
     });
-  }, [attemptId, componentInstanceId, effectiveLoadedEventBufferLimit, eventWindowKey, nodeId, normalizeSessionUpdate, outerAttemptId, outerNodeId, projectId, roundId, runId, sessionIdentity, taskId, taskUuid]);
+  }, [attemptId, commitHasNewerEvents, commitLoadedEventWindow, componentInstanceId, effectiveLoadedEventBufferLimit, eventWindowKey, isHistoricalTimelineWindow, markCanonicalHeadRecovery, nodeId, normalizeSessionUpdate, outerAttemptId, outerNodeId, projectId, roundId, runId, sessionIdentity, settleOptimisticPromptAdmissions, taskId, taskUuid]);
 
   const refreshSessionAfterConfigUnavailable = useCallback(async (error: unknown) => {
     if (!isAcpSessionConfigValueUnavailableError(error)) return;
@@ -2065,11 +2689,26 @@ export function ACPChatDialog(
       });
   }, [applySessionUpdate, attemptId, nodeId, outerAttemptId, outerNodeId, patchSessionConfig, projectId, rollbackSessionConfig, roundId, runId, taskId, t]);
 
-  const applyEventUpdates = useCallback((updates: AcpUiEventVm[]) => {
+  const applyEventUpdates = useCallback((
+    updates: AcpUiEventVm[],
+    timelineGeneration: number,
+    projectTimeline = true,
+  ) => {
+    const currentWindow = loadedEventWindowRef.current;
+    if (updates.some((event) => (
+      compareAcpLoadedEventWindowToLiveEvent(
+        currentWindow,
+        event,
+        timelineGeneration,
+      ) !== "same"
+    ))) {
+      return;
+    }
     const normalizedEvents = updates
       .map((event) => normalizeEventUpdate(event))
       .filter((event): event is AcpUiEventVm => Boolean(event));
     if (normalizedEvents.length === 0) return;
+    settleOptimisticPromptAdmissions(normalizedEvents);
     const latestTiming = latestLiveSessionTimingFromEvents(normalizedEvents);
     const branchResult = latestAgentBranchResult(normalizedEvents);
     const hasUsageUpdate = normalizedEvents.some((event) => event.kind === "usageUpdate");
@@ -2085,28 +2724,25 @@ export function ACPChatDialog(
           latest && (!current || shouldPreferAcpSessionMetadata(latest, current))
             ? latest
             : (current ?? latest);
-        let updated = latestTiming
-          ? stabilizeAcpSessionTimingPatchForDisplay(base, latestTiming)
-          : (base ?? null);
-        if (branchResult) {
-          updated = applyAgentBranchResultToSession(updated, branchResult);
-        }
-        if (hasUsageUpdate) {
-          updated = projectLatestAcpUsageUpdate(updated, normalizedEvents);
-        }
-        if (hasPromptInteractionLifecycleUpdate) {
-          updated = applyPendingInteractionEventsToSession(updated, normalizedEvents);
-        }
-        const reconciled = settlePendingAcpInteractionsForLifecycle(
-          reconcileAcpSessionForDisplay(latest, updated),
-          lifecycleProjectionRef.current,
+        const reconciled = reconcileAcpSessionForDisplay(
+          latest,
+          projectAcpSessionControlEvents(
+            base,
+            normalizedEvents,
+            lifecycleProjectionRef.current,
+          ),
         );
         latestSessionRef.current = reconciled;
+        if (reconciled) storeAcpSession(eventWindowKey, reconciled);
         return reconciled;
       });
     }
     const normalizedUpdates = liveTimelineUpdatesFromEvents(normalizedEvents);
     if (normalizedUpdates.length === 0) return;
+    if (!projectTimeline) {
+      commitHasNewerEvents(true);
+      return;
+    }
     if (
       hasNewerEventsRef.current
       || paginationDirectionRef.current !== null
@@ -2118,27 +2754,31 @@ export function ACPChatDialog(
       commitHasNewerEvents(true);
       return;
     }
-    setLoadedEvents((events) => {
-      commitHasNewerEvents(false);
-      const merged = mergeAcpEvents(events, normalizedUpdates);
-      const limited = limitAcpEvents(
-        merged,
-        "start",
-        effectiveLoadedEventBufferLimit,
-      );
-      setHasOlderEvents((current) => resolveAcpHasOlderEvents(
-        current,
-        merged.length,
-        limited.length,
-      ));
-      loadedEventsRef.current = limited;
-      return limited;
+    commitHasNewerEvents(false);
+    const activeWindow = loadedEventWindowRef.current;
+    const merged = mergeAcpEvents(activeWindow.events, normalizedUpdates);
+    const limited = limitAcpEvents(
+      merged,
+      "start",
+      effectiveLoadedEventBufferLimit,
+    );
+    setHasOlderEvents((current) => resolveAcpHasOlderEvents(
+      current,
+      merged.length,
+      limited.length,
+    ));
+    commitLoadedEventWindow(eventWindowKey, {
+      ...activeWindow,
+      events: limited,
     });
-  }, [commitHasNewerEvents, effectiveLoadedEventBufferLimit, normalizeEventUpdate]);
+  }, [commitHasNewerEvents, commitLoadedEventWindow, effectiveLoadedEventBufferLimit, eventWindowKey, normalizeEventUpdate, settleOptimisticPromptAdmissions]);
 
-  const applyEventUpdate = useCallback((event: AcpUiEventVm | null | undefined) => {
+  const applyEventUpdate = useCallback((
+    event: AcpUiEventVm | null | undefined,
+    timelineGeneration: number,
+  ) => {
     if (!event) return;
-    applyEventUpdates([event]);
+    applyEventUpdates([event], timelineGeneration);
   }, [applyEventUpdates]);
 
   const flushPendingLiveEvents = useCallback(() => {
@@ -2146,14 +2786,29 @@ export function ACPChatDialog(
       window.clearTimeout(liveEventFlushTimerRef.current);
       liveEventFlushTimerRef.current = null;
     }
-    const updates = pendingLiveEventsRef.current.drain();
+    const scopedUpdates = pendingLiveEventsRef.current.drain();
     pendingLiveEventsSinceRef.current = null;
-    if (updates.length === 0) return;
+    if (scopedUpdates.length === 0) return;
+    const currentWindow = loadedEventWindowRef.current;
+    const applicableUpdates = scopedUpdates.filter((update) => (
+      compareAcpLoadedEventWindowToLiveEvent(
+        currentWindow,
+        update.event,
+        update.timelineGeneration,
+      ) === "same"
+    ));
+    if (applicableUpdates.length === 0) return;
+    const updates = applicableUpdates.map((update) => update.event);
+    const timelineGeneration = applicableUpdates[0].timelineGeneration;
     const { timingUpdates, timelineUpdates } = partitionAcpLiveTimingUpdates(updates);
-    if (timingUpdates.length > 0) applyEventUpdates(timingUpdates);
+    if (timingUpdates.length > 0) {
+      applyEventUpdates(timingUpdates, timelineGeneration);
+    }
     // The timer and latest-wins map are the single flight. Publishing synchronously
     // here prevents React from retaining obsolete cumulative snapshots in transitions.
-    if (timelineUpdates.length > 0) applyEventUpdates(timelineUpdates);
+    if (timelineUpdates.length > 0) {
+      applyEventUpdates(timelineUpdates, timelineGeneration);
+    }
   }, [applyEventUpdates]);
 
   const liveFlushDeferRemainingMs = useCallback(() => (
@@ -2227,6 +2882,9 @@ export function ACPChatDialog(
 
   const handleAtBottomChange = useCallback((viewportAtBottom: boolean) => {
     viewportAtBottomRef.current = viewportAtBottom;
+    if (!viewportAtBottom && liveStreamingTargetRef.current) {
+      settleLiveStreamingMarkdown();
+    }
     const scroller = chatContainerContextRef.current?.scrollRef.current;
     if (scroller) {
       storeAcpBranchViewState(
@@ -2242,13 +2900,137 @@ export function ACPChatDialog(
     onAtBottomChange?.(
       isAcpConversationAtBottom(viewportAtBottom, hasNewerEvents),
     );
-  }, [eventWindowKey, hasNewerEvents, onAtBottomChange]);
+  }, [eventWindowKey, hasNewerEvents, onAtBottomChange, settleLiveStreamingMarkdown]);
+
+  const requestCanonicalHeadHandoff = useCallback((
+    requestedIntent: AcpCanonicalHeadHandoffIntent,
+    autoHandoff: boolean,
+  ) => {
+    if (requestedIntent === "recovery") {
+      canonicalHeadRecoveryPendingRef.current = true;
+      canonicalHeadRecoveryAutoHandoffRef.current =
+        canonicalHeadRecoveryAutoHandoffRef.current || autoHandoff;
+      commitHasNewerEvents(true);
+    }
+
+    // A loss discovered while any canonical read is in flight must survive
+    // that read. Recovery wins over an ordinary trailing handoff because only
+    // a successful recovery is allowed to clear the loss gate.
+    if (canonicalHeadHandoffInFlightRef.current) {
+      canonicalHeadHandoffTrailingIntentRef.current =
+        mergeCanonicalHeadHandoffIntent(
+          canonicalHeadHandoffTrailingIntentRef.current,
+          requestedIntent,
+        );
+      return;
+    }
+
+    const canStart = requestedIntent === "ordinary"
+      || canonicalHeadRecoveryAutoHandoffRef.current
+      || canonicalHeadHandoffTrailingIntentRef.current !== null;
+    if (!canStart) return;
+
+    const intent = mergeCanonicalHeadHandoffIntent(
+      canonicalHeadHandoffTrailingIntentRef.current,
+      requestedIntent,
+    );
+    if (liveUpdatesPausedRef.current) {
+      canonicalHeadHandoffTrailingIntentRef.current = intent;
+      return;
+    }
+
+    const startHandoff = (nextIntent: AcpCanonicalHeadHandoffIntent) => {
+      const handoff = canonicalHeadHandoffRef.current;
+      if (!handoff) {
+        canonicalHeadHandoffTrailingIntentRef.current =
+          mergeCanonicalHeadHandoffIntent(
+            canonicalHeadHandoffTrailingIntentRef.current,
+            nextIntent,
+          );
+        return;
+      }
+      const ownerKey = sessionIdentityRef.current;
+      const ownerEpoch = canonicalHeadHandoffEpochRef.current;
+      canonicalHeadHandoffTrailingIntentRef.current = null;
+      canonicalHeadHandoffInFlightRef.current = true;
+      liveAnimationReadyRef.current = false;
+      settleLiveStreamingMarkdown();
+
+      const completeHandoff = (succeeded: boolean) => {
+        if (
+          sessionIdentityRef.current !== ownerKey
+          || canonicalHeadHandoffEpochRef.current !== ownerEpoch
+        ) return;
+        canonicalHeadHandoffInFlightRef.current = false;
+
+        const trailingIntent = canonicalHeadHandoffTrailingIntentRef.current;
+        if (trailingIntent) {
+          if (liveUpdatesPausedRef.current) return;
+          startHandoff(trailingIntent);
+          return;
+        }
+
+        if (!succeeded || nextIntent !== "recovery") return;
+        canonicalHeadRecoveryPendingRef.current = false;
+        canonicalHeadRecoveryAutoHandoffRef.current = false;
+      };
+
+      void handoff(nextIntent).then(
+        completeHandoff,
+        () => completeHandoff(false),
+      );
+    };
+
+    startHandoff(intent);
+  }, [commitHasNewerEvents, settleLiveStreamingMarkdown]);
+
+  const requestCanonicalHeadRecovery = useCallback((autoHandoff: boolean) => {
+    requestCanonicalHeadHandoff("recovery", autoHandoff);
+  }, [requestCanonicalHeadHandoff]);
 
   const enqueueLiveEventUpdate = useCallback(
-    (event: AcpUiEventVm) => {
+    (event: AcpUiEventVm, timelineGeneration: number) => {
+      const relation = compareAcpLoadedEventWindowToLiveEvent(
+        loadedEventWindowRef.current,
+        event,
+        timelineGeneration,
+      );
+      if (relation === "different-session") return false;
+      const normalizedAdmission = normalizeEventUpdate(event);
+      if (normalizedAdmission) {
+        settleOptimisticPromptAdmissions([normalizedAdmission]);
+      }
+      if (relation === "incoming-older") return false;
+      if (relation !== "same") {
+        const preserveVisibleTimeline = isHistoricalTimelineWindow();
+        if (liveEventFlushTimerRef.current !== null) {
+          window.clearTimeout(liveEventFlushTimerRef.current);
+          liveEventFlushTimerRef.current = null;
+        }
+        pendingLiveEventsRef.current.clear();
+        pendingLiveEventsSinceRef.current = null;
+        requestCanonicalHeadRecovery(!preserveVisibleTimeline);
+        return false;
+      }
+      const preserveVisibleTimeline = isHistoricalTimelineWindow();
+      if (
+        canonicalHeadRecoveryPendingRef.current
+        || liveUpdatesPausedRef.current
+        || preserveVisibleTimeline
+      ) {
+        applyEventUpdates([event], timelineGeneration, false);
+        if (
+          liveUpdatesPausedRef.current
+          && !preserveVisibleTimeline
+          && liveTimelineUpdatesFromEvents([event]).length > 0
+        ) {
+          requestCanonicalHeadRecovery(true);
+        }
+        return false;
+      }
       if (event.kind === "timingUpdate") {
-        applyEventUpdate(event);
-        return;
+        applyEventUpdate(event, timelineGeneration);
+        return true;
       }
       const decision = decideAcpLiveEventFlush({
         coalescable: isCoalescableAcpLiveEvent(event),
@@ -2261,32 +3043,51 @@ export function ACPChatDialog(
 
       if (decision.applyImmediately) {
         const bufferedToolKey = liveToolEventBufferKey(event);
-        const pendingToolEvent = bufferedToolKey
+        const pendingToolUpdate = bufferedToolKey
           ? pendingLiveEventsRef.current.get(bufferedToolKey)
           : null;
-        const eventToApply = pendingToolEvent
-          ? mergeAcpLiveToolEvent(pendingToolEvent, event, mergeRaw)
+        const eventToApply = pendingToolUpdate
+          && pendingToolUpdate.timelineGeneration === timelineGeneration
+          ? mergeAcpLiveToolEvent(pendingToolUpdate.event, event, mergeRaw)
           : event;
         if (bufferedToolKey) pendingLiveEventsRef.current.delete(bufferedToolKey);
         if (decision.flushPendingBeforeApply) flushPendingLiveEvents();
-        applyEventUpdate(eventToApply);
-        return;
+        applyEventUpdate(eventToApply, timelineGeneration);
+        return true;
       }
 
-      if (!decision.buffer) return;
+      if (!decision.buffer) return false;
       if (pendingLiveEventsRef.current.size === 0) {
         pendingLiveEventsSinceRef.current = performance.now();
       }
       const bufferKey = liveEventBufferKey(event);
-      pendingLiveEventsRef.current.replace(
+      const pendingUpdate = pendingLiveEventsRef.current.get(bufferKey);
+      const evictedKey = pendingLiveEventsRef.current.replace(
         bufferKey,
-        mergeBufferedLiveEvent(pendingLiveEventsRef.current.get(bufferKey), event),
+        {
+          event: pendingUpdate
+            && pendingUpdate.timelineGeneration === timelineGeneration
+            ? mergeBufferedLiveEvent(pendingUpdate.event, event)
+            : event,
+          timelineGeneration,
+        },
       );
+      if (evictedKey !== null) {
+        if (liveEventFlushTimerRef.current !== null) {
+          window.clearTimeout(liveEventFlushTimerRef.current);
+          liveEventFlushTimerRef.current = null;
+        }
+        pendingLiveEventsRef.current.clear();
+        pendingLiveEventsSinceRef.current = null;
+        requestCanonicalHeadRecovery(true);
+        return false;
+      }
       if (decision.scheduleDelayMs !== null) {
         schedulePendingLiveFlush(decision.scheduleDelayMs);
       }
+      return true;
     },
-    [applyEventUpdate, flushPendingLiveEvents, liveFlushDeferRemainingMs, liveFlushMaxDeferRemainingMs, schedulePendingLiveFlush],
+    [applyEventUpdate, applyEventUpdates, flushPendingLiveEvents, isHistoricalTimelineWindow, liveFlushDeferRemainingMs, liveFlushMaxDeferRemainingMs, normalizeEventUpdate, requestCanonicalHeadRecovery, schedulePendingLiveFlush, settleOptimisticPromptAdmissions],
   );
 
   useEffect(() => {
@@ -2295,10 +3096,26 @@ export function ACPChatDialog(
         window.clearTimeout(liveEventFlushTimerRef.current);
         liveEventFlushTimerRef.current = null;
       }
+      if (pendingLiveEventsRef.current.size > 0) {
+        pendingLiveEventsRef.current.clear();
+        pendingLiveEventsSinceRef.current = null;
+        requestCanonicalHeadRecovery(true);
+      }
+      return;
+    }
+    if (canonicalHeadRecoveryPendingRef.current) {
+      requestCanonicalHeadRecovery(
+        canonicalHeadRecoveryAutoHandoffRef.current,
+      );
+      return;
+    }
+    const trailingIntent = canonicalHeadHandoffTrailingIntentRef.current;
+    if (trailingIntent) {
+      requestCanonicalHeadHandoff(trailingIntent, true);
       return;
     }
     flushOrSchedulePendingLiveEvents();
-  }, [flushOrSchedulePendingLiveEvents, liveUpdatesPaused]);
+  }, [flushOrSchedulePendingLiveEvents, liveUpdatesPaused, requestCanonicalHeadHandoff, requestCanonicalHeadRecovery]);
 
   useLayoutEffect(() => {
     const scroller = chatContainerContextRef.current?.scrollRef.current;
@@ -2429,9 +3246,75 @@ export function ACPChatDialog(
     let retryAttempt = 0;
     let lastLoadError: unknown = null;
     let initialFetchSucceeded = false;
-    let snapshotGeneration = latestSessionRef.current?.eventPage.generation ?? 0;
-    let snapshotCoveredRevision = latestSessionRef.current?.eventPage.coveredRevision ?? 0;
+    // Visible/cache state may contain transient Router replay. ACK coverage is
+    // rebuilt only from canonical responses observed by this effect.
+    let snapshotWatermark = createAcpTimelineWatermark();
     let dynamicTerminalContentRefreshRequested = false;
+    let branchRefreshInFlight = false;
+    let branchRefreshTrailing = false;
+    let branchRefreshRequestSeq = 0;
+
+    const requestSelectedBranchRefresh = () => {
+      if (
+        !active
+        || sessionRefreshSeqRef.current !== refreshSeq
+        || sessionIdentityRef.current !== eventWindowKey
+      ) {
+        return;
+      }
+      if (branchRefreshInFlight) {
+        branchRefreshTrailing = true;
+        return;
+      }
+      branchRefreshInFlight = true;
+      branchRefreshTrailing = false;
+      branchRefreshRequestSeq += 1;
+      const requestSeq = branchRefreshRequestSeq;
+      const ownerKey = eventWindowKey;
+      void getAcpSession(
+        projectId,
+        taskId,
+        runId,
+        roundId,
+        nodeId,
+        attemptId,
+        { branchId, pageSize: effectiveEventPageSize, eventLimit: effectiveEventPageSize },
+        latestSessionRef.current,
+        outerNodeId,
+        outerAttemptId,
+      ).then((updated) => {
+        if (
+          !updated
+          || !active
+          || sessionRefreshSeqRef.current !== refreshSeq
+          || sessionIdentityRef.current !== ownerKey
+          || branchRefreshRequestSeq !== requestSeq
+          || branchRefreshTrailing
+        ) {
+          return;
+        }
+        applySessionUpdate(updated, 'subscription-branch-refresh');
+        snapshotWatermark = reconcileAcpTimelineWatermark(
+          snapshotWatermark,
+          updated.eventPage,
+        );
+      }).catch(() => {}).finally(() => {
+        branchRefreshInFlight = false;
+        if (
+          !active
+          || sessionRefreshSeqRef.current !== refreshSeq
+          || sessionIdentityRef.current !== ownerKey
+        ) {
+          branchRefreshTrailing = false;
+          return;
+        }
+        if (branchRefreshTrailing) {
+          branchRefreshTrailing = false;
+          requestSelectedBranchRefresh();
+        }
+      });
+    };
+
     void (async () => {
       stopListening = subscribeConversationAttemptEvents(branchLocator, (event) => {
         const locatorMatches = conversationEventMatchesAttempt(event, branchLocator);
@@ -2446,6 +3329,9 @@ export function ACPChatDialog(
         if (!active || !locatorMatches) return;
         if (event.lifecycle) {
           applyLifecycleProjection(event.lifecycle);
+        }
+        if (event.timelineRecoveryRequired) {
+          requestCanonicalHeadRecovery(!isHistoricalTimelineWindow());
         }
         if (event.event) {
           if ((event.branchId ?? 'root') !== branchId) {
@@ -2477,8 +3363,17 @@ export function ACPChatDialog(
               current: summarizeAcpSessionReady(latest),
             });
           }
-          observeLiveStreamingEvent(event.event);
-          enqueueLiveEventUpdate(event.event);
+          if (!isValidConversationTimelineGeneration(event.timelineGeneration)) {
+            requestCanonicalHeadRecovery(!isHistoricalTimelineWindow());
+            return;
+          }
+          const acceptedForVisibleGeneration = enqueueLiveEventUpdate(
+            event.event,
+            event.timelineGeneration,
+          );
+          if (acceptedForVisibleGeneration && !isHistoricalTimelineWindow()) {
+            observeLiveStreamingEvent(event.event);
+          }
         } else {
           flushOrSchedulePendingLiveEvents(true);
           if (
@@ -2506,35 +3401,19 @@ export function ACPChatDialog(
                 return;
               }
               applySessionUpdate(updated, 'subscription-dynamic-terminal-refresh');
-              snapshotGeneration = Math.max(
-                snapshotGeneration,
-                updated.eventPage.generation ?? 0,
-              );
-              snapshotCoveredRevision = Math.max(
-                snapshotCoveredRevision,
-                updated.eventPage.coveredRevision ?? 0,
+              snapshotWatermark = reconcileAcpTimelineWatermark(
+                snapshotWatermark,
+                updated.eventPage,
               );
             }).catch(() => {});
             return;
           }
           if (!event.session) return;
           if (branchId !== 'root') {
-            void getAcpSession(
-              projectId,
-              taskId,
-              runId,
-              roundId,
-              nodeId,
-              attemptId,
-              { branchId, pageSize: effectiveEventPageSize, eventLimit: effectiveEventPageSize },
-              latestSessionRef.current,
-              outerNodeId,
-              outerAttemptId,
-            ).then((updated) => {
-              // A lifecycle-only update has no session payload. It must not erase
-              // the mounted branch while the authoritative session refresh catches up.
-              if (updated) applySessionUpdate(updated, 'subscription-branch-refresh');
-            }).catch(() => {});
+            // Agent branch envelopes carry root/session metadata rather than the
+            // selected branch body. Coalesce bursts into one in-flight read plus
+            // one latest trailing read, and fence both responses to this owner.
+            requestSelectedBranchRefresh();
             return;
           }
           // Guard against subscription refresh overwriting a pending user config change
@@ -2564,7 +3443,7 @@ export function ACPChatDialog(
           const incomingGeneration = event.timelineGeneration
             ?? incoming.eventPage.generation;
           const currentGeneration = Math.max(
-            snapshotGeneration,
+            snapshotWatermark.generation,
             current?.eventPage.generation ?? 0,
           );
           const sessionIdentityConflicts = Boolean(
@@ -2580,18 +3459,9 @@ export function ACPChatDialog(
             return;
           }
           applySessionUpdate(incoming, "subscription-session");
-          const incomingCoveredRevision = event.timelineRevision
-            ?? incoming.eventPage.coveredRevision
-            ?? 0;
-          if (incomingGeneration != null && incomingGeneration > snapshotGeneration) {
-            snapshotGeneration = incomingGeneration;
-            snapshotCoveredRevision = incomingCoveredRevision;
-          } else {
-            snapshotCoveredRevision = Math.max(
-              snapshotCoveredRevision,
-              incomingCoveredRevision,
-            );
-          }
+          // Subscription session snapshots may advance the visible canonical
+          // projection, but only full-head/delta query responses prove replay
+          // coverage. Keep their sequence/revision out of the ACK watermark.
           if (isAcpSessionReadyForInitialDisplay(incoming)) {
             initialFetchSucceeded = true;
             lastLoadError = null;
@@ -2651,17 +3521,19 @@ export function ACPChatDialog(
             const updatedGeneration = updated.eventPage.generation;
             if (
               (initialFetchSucceeded && !isAcpSessionReadyForInitialDisplay(updated))
-              || (updatedGeneration != null && updatedGeneration < snapshotGeneration)
+              || (
+                updatedGeneration != null
+                && updatedGeneration < snapshotWatermark.generation
+              )
             ) {
               break;
             }
             lastLoadError = null;
             setSessionLoadError(null);
             applySessionUpdate(updated, "initial-fetch");
-            snapshotGeneration = updatedGeneration ?? snapshotGeneration;
-            snapshotCoveredRevision = Math.max(
-              snapshotCoveredRevision,
-              updated.eventPage.coveredRevision ?? 0,
+            snapshotWatermark = reconcileAcpTimelineWatermark(
+              snapshotWatermark,
+              updated.eventPage,
             );
             if (isAcpSessionReadyForInitialDisplay(updated)) {
               markAcpSessionContentHydrated(eventWindowKey);
@@ -2700,26 +3572,34 @@ export function ACPChatDialog(
           setInitialSessionQueryState("error");
           return;
         }
-        let replay = readConversationBranchReplaySnapshot(branchLocator, branchId);
-        let requiredLossWatermarkGeneration = replay.lossWatermarkGeneration;
-        let requiredLossWatermarkRevision = replay.lossWatermarkRevision;
-        let replayRetryAttempt = 0;
-        let replayAcknowledged = requiredLossWatermarkRevision === 0;
-        if (replay.events.length > 0) applyEventUpdates(replay.events);
+        const replayCut = readConversationBranchReplaySnapshot(branchLocator, branchId);
+        const requiredLossWatermarkGeneration = replayCut.lossWatermarkGeneration;
+        const requiredLossWatermarkRevision = replayCut.lossWatermarkRevision;
+        const requiredLossWatermarkSeq = replayCut.lossWatermarkSeq;
+        if (isHistoricalTimelineWindow()) {
+          if (replayCut.events.length > 0 || replayCut.requiresCatchUp) {
+            commitHasNewerEvents(true);
+          }
+          liveAnimationReadyRef.current = false;
+          return;
+        }
+        const requiredTimelineGeneration = replayCut.timelineGeneration
+          || requiredLossWatermarkGeneration;
+        const recoveryDeadlineAt = performance.now() + ACP_REPLAY_CATCH_UP_MAX_MS;
+        let replayAcknowledged = false;
+        let catchUpCandidateSession = latestSessionRef.current;
+        const currentSessionId = () => catchUpCandidateSession?.sessionId
+          ?? latestSessionRef.current?.sessionId
+          ?? null;
 
-        while (
-          active
-          && sessionRefreshSeqRef.current === refreshSeq
-          && !replayAcknowledged
+        if (
+          replayCut.sessionId !== null
+          && replayCut.sessionId !== currentSessionId()
         ) {
-          replay = readConversationBranchReplaySnapshot(branchLocator, branchId);
-          if (replay.events.length > 0) applyEventUpdates(replay.events);
-          requiredLossWatermarkGeneration = replay.lossWatermarkGeneration;
-          requiredLossWatermarkRevision = replay.lossWatermarkRevision;
-          let retryNeeded = false;
-
-          if (snapshotGeneration < requiredLossWatermarkGeneration) {
-            const refreshed = await getAcpSession(
+          commitHasNewerEvents(true);
+        } else {
+          const refreshCanonicalSnapshot = async (source: string) => {
+            const refreshResponse = await awaitAcpReplayCatchUpRequest(getAcpSession(
               projectId,
               taskId,
               runId,
@@ -2731,102 +3611,282 @@ export function ACPChatDialog(
                 pageSize: effectiveEventPageSize,
                 eventLimit: effectiveEventPageSize,
               },
-              latestSessionRef.current,
+              catchUpCandidateSession ?? latestSessionRef.current,
               outerNodeId,
               outerAttemptId,
-            ).catch(() => null);
-            if (!refreshed || !active || sessionRefreshSeqRef.current !== refreshSeq) {
-              retryNeeded = true;
-            } else {
-              applySessionUpdate(refreshed, "replay-generation-refresh");
-              snapshotGeneration = refreshed.eventPage.generation ?? snapshotGeneration;
-              snapshotCoveredRevision = refreshed.eventPage.coveredRevision ?? 0;
-            }
-          }
-
-          while (
-            !retryNeeded
-            && active
-            && sessionRefreshSeqRef.current === refreshSeq
-            && snapshotGeneration === requiredLossWatermarkGeneration
-            && snapshotCoveredRevision < requiredLossWatermarkRevision
-          ) {
-            const delta = await getAcpSession(
-              projectId,
-              taskId,
-              runId,
-              roundId,
-              nodeId,
-              attemptId,
-              {
-                branchId,
-                afterRevision: snapshotCoveredRevision,
-                pageSize: effectiveEventPageSize,
-                eventLimit: effectiveEventPageSize,
-              },
+            ), recoveryDeadlineAt);
+            if (
+              !refreshResponse
+              || !active
+              || sessionRefreshSeqRef.current !== refreshSeq
+              || sessionIdentityRef.current !== eventWindowKey
+            ) return false;
+            const refreshed = reconcileCanonicalAcpSessionForDisplay(
               latestSessionRef.current,
-              outerNodeId,
-              outerAttemptId,
-            ).catch(() => null);
-            if (!delta || !active || sessionRefreshSeqRef.current !== refreshSeq) {
-              retryNeeded = true;
-              break;
-            }
-            const deltaGeneration = delta.eventPage.generation ?? snapshotGeneration;
-            if (deltaGeneration !== snapshotGeneration) {
-              retryNeeded = true;
-              break;
-            }
-            applySessionUpdate(delta, "replay-gap-catch-up", "append-newer");
-            const nextRevision = delta.eventPage.newestRevision ?? snapshotCoveredRevision;
-            if (nextRevision <= snapshotCoveredRevision) {
-              retryNeeded = true;
-              break;
-            }
-            snapshotCoveredRevision = nextRevision;
+              refreshResponse,
+            );
+            applySessionUpdate(refreshed, source);
+            catchUpCandidateSession = refreshed;
+            snapshotWatermark = reconcileAcpTimelineWatermark(
+              snapshotWatermark,
+              refreshResponse.eventPage,
+            );
+            return true;
+          };
+
+          if (snapshotWatermark.generation < requiredTimelineGeneration) {
+            await refreshCanonicalSnapshot("replay-generation-refresh");
           }
 
-          replay = readConversationBranchReplaySnapshot(branchLocator, branchId);
-          if (replay.events.length > 0) applyEventUpdates(replay.events);
-          replayAcknowledged = acknowledgeConversationBranchReplay(
-            branchLocator,
-            branchId,
-            snapshotGeneration,
-            snapshotCoveredRevision,
-            replay.generation,
+          const newerGenerationCoversLoss = Boolean(
+            requiredLossWatermarkGeneration > 0
+            && snapshotWatermark.generation > requiredLossWatermarkGeneration,
           );
-          if (replayAcknowledged) break;
-          const delay = missingAcpSessionRetryDelay(replayRetryAttempt);
-          if (delay === null) break;
-          replayRetryAttempt += 1;
-          await new Promise((resolve) => setTimeout(resolve, delay));
+          const requiresRevisionCatchUp = replayCut.requiresCatchUp
+            && !newerGenerationCoversLoss
+            && (
+              requiredLossWatermarkGeneration === snapshotWatermark.generation
+              || (
+                requiredLossWatermarkGeneration === 0
+                && snapshotWatermark.generation === 0
+              )
+            )
+            && snapshotWatermark.coveredRevision < requiredLossWatermarkRevision;
+          let catchUpRequestCount = 0;
+          let catchUpRetryAttempt = 0;
+          while (
+            active
+            && sessionRefreshSeqRef.current === refreshSeq
+            && sessionIdentityRef.current === eventWindowKey
+            && requiresRevisionCatchUp
+            && snapshotWatermark.coveredRevision < requiredLossWatermarkRevision
+            && catchUpRequestCount < ACP_REPLAY_CATCH_UP_MAX_PAGES
+            && performance.now() < recoveryDeadlineAt
+          ) {
+            catchUpRequestCount += 1;
+            const delta = await awaitAcpReplayCatchUpRequest(getAcpSession(
+              projectId,
+              taskId,
+              runId,
+              roundId,
+              nodeId,
+              attemptId,
+              {
+                branchId,
+                afterRevision: snapshotWatermark.coveredRevision,
+                pageSize: effectiveEventPageSize,
+                eventLimit: effectiveEventPageSize,
+              },
+              catchUpCandidateSession,
+              outerNodeId,
+              outerAttemptId,
+            ), recoveryDeadlineAt);
+            if (!delta) {
+              const delay = missingAcpSessionRetryDelay(catchUpRetryAttempt);
+              if (delay === null || performance.now() + delay >= recoveryDeadlineAt) {
+                break;
+              }
+              catchUpRetryAttempt += 1;
+              await new Promise((resolve) => window.setTimeout(resolve, delay));
+              continue;
+            }
+            catchUpRetryAttempt = 0;
+            const deltaGeneration = delta.eventPage.generation
+              ?? snapshotWatermark.generation;
+            if (deltaGeneration !== snapshotWatermark.generation) break;
+            const nextRevision = delta.eventPage.newestRevision
+              ?? delta.eventPage.coveredRevision
+              ?? snapshotWatermark.coveredRevision;
+            if (nextRevision <= snapshotWatermark.coveredRevision) break;
+            const reconciledDelta = reconcileAcpSessionForDisplay(
+              catchUpCandidateSession,
+              delta,
+            ) ?? delta;
+            const mergedDeltaEvents = limitAcpEvents(
+              mergeAcpEvents(
+                catchUpCandidateSession?.events ?? [],
+                delta.events,
+              ),
+              "start",
+              effectiveLoadedEventBufferLimit,
+            );
+            catchUpCandidateSession = {
+              ...reconciledDelta,
+              events: mergedDeltaEvents,
+              eventPage: reconcileAcpEventPageForUpdate(
+                catchUpCandidateSession?.eventPage,
+                delta.eventPage,
+                "append-newer",
+              ),
+            };
+            snapshotWatermark = reconcileAcpTimelineWatermark(
+              snapshotWatermark,
+              {
+                ...delta.eventPage,
+                generation: snapshotWatermark.generation,
+                coveredRevision: nextRevision,
+              },
+            );
+          }
+
+          let sequenceRetryAttempt = 0;
+          while (
+            active
+            && sessionRefreshSeqRef.current === refreshSeq
+            && sessionIdentityRef.current === eventWindowKey
+            && !acpTimelineWatermarkCoversSequenceLoss(
+              snapshotWatermark,
+              requiredLossWatermarkGeneration,
+              requiredLossWatermarkSeq,
+            )
+            && catchUpRequestCount < ACP_REPLAY_CATCH_UP_MAX_PAGES
+            && performance.now() < recoveryDeadlineAt
+          ) {
+            const delay = missingAcpSessionRetryDelay(sequenceRetryAttempt);
+            if (delay === null || performance.now() + delay >= recoveryDeadlineAt) {
+              break;
+            }
+            sequenceRetryAttempt += 1;
+            await new Promise((resolve) => window.setTimeout(resolve, delay));
+            catchUpRequestCount += 1;
+            await refreshCanonicalSnapshot("replay-sequence-catch-up");
+          }
+
+          const caughtUpFixedCut = snapshotWatermark.generation >= requiredTimelineGeneration
+            && (
+              !requiresRevisionCatchUp
+              || snapshotWatermark.coveredRevision >= requiredLossWatermarkRevision
+            )
+            && acpTimelineWatermarkCoversSequenceLoss(
+              snapshotWatermark,
+              requiredLossWatermarkGeneration,
+              requiredLossWatermarkSeq,
+            );
+          if (caughtUpFixedCut) {
+            const cutAcknowledged = acknowledgeConversationBranchReplay(
+              branchLocator,
+              branchId,
+              currentSessionId(),
+              snapshotWatermark.generation,
+              snapshotWatermark.coveredRevision,
+              snapshotWatermark.coveredSeq,
+              replayCut.generation,
+            );
+            const finalReplayCut = readConversationBranchReplaySnapshot(
+              branchLocator,
+              branchId,
+            );
+            const finalCutHasReplay = finalReplayCut.events.length > 0
+              || finalReplayCut.requiresCatchUp;
+            const finalCutSafe = cutAcknowledged
+              && (
+                !finalCutHasReplay
+                || finalReplayCut.sessionId === currentSessionId()
+              )
+              && (
+                !finalCutHasReplay
+                || finalReplayCut.timelineGeneration === snapshotWatermark.generation
+                || (
+                  finalReplayCut.timelineGeneration === 0
+                  && snapshotWatermark.generation === 0
+                )
+              )
+              && finalReplayCut.lossWatermarkRouterGeneration
+                <= replayCut.generation;
+            if (finalCutSafe) {
+              replayAcknowledged = acknowledgeConversationBranchReplay(
+                branchLocator,
+                branchId,
+                currentSessionId(),
+                snapshotWatermark.generation,
+                snapshotWatermark.coveredRevision,
+                snapshotWatermark.coveredSeq,
+                finalReplayCut.generation,
+              );
+              if (replayAcknowledged) {
+                if (catchUpCandidateSession) {
+                  applySessionUpdate(
+                    catchUpCandidateSession,
+                    "replay-gap-catch-up",
+                  );
+                }
+                const replayBelongsToSnapshot =
+                  replayCut.timelineGeneration === snapshotWatermark.generation
+                  || (
+                    replayCut.timelineGeneration === 0
+                    && snapshotWatermark.generation === 0
+                  );
+                const replayEvents = replayBelongsToSnapshot
+                  ? mergeAcpEvents(replayCut.events, finalReplayCut.events)
+                  : finalReplayCut.events;
+                if (replayEvents.length > 0) {
+                  applyEventUpdates(replayEvents, snapshotWatermark.generation);
+                }
+              }
+            }
+          }
         }
 
+        const remainingReplay = readConversationBranchReplaySnapshot(
+          branchLocator,
+          branchId,
+        );
+        const remainingHasState = remainingReplay.events.length > 0
+          || remainingReplay.requiresCatchUp;
+        const remainingTimelineMatches = !remainingHasState
+          || remainingReplay.timelineGeneration === snapshotWatermark.generation
+          || (
+            remainingReplay.timelineGeneration === 0
+            && snapshotWatermark.generation === 0
+          );
+        const remainingSessionMatches = !remainingHasState
+          || remainingReplay.sessionId === currentSessionId();
+        let hasRemainingReplay = remainingReplay.requiresCatchUp
+          || !remainingTimelineMatches
+          || !remainingSessionMatches;
+        if (
+          !hasRemainingReplay
+          && remainingReplay.events.length > 0
+        ) {
+          // These events have already passed through the keyed live listener
+          // into the page's latest-wins buffer. Prefix-ACK them without another
+          // DOM projection; a concurrent newer prefix remains retained.
+          hasRemainingReplay = !acknowledgeConversationBranchReplay(
+            branchLocator,
+            branchId,
+            currentSessionId(),
+            snapshotWatermark.generation,
+            snapshotWatermark.coveredRevision,
+            snapshotWatermark.coveredSeq,
+            remainingReplay.generation,
+          );
+        }
+        commitHasNewerEvents(hasRemainingReplay || !replayAcknowledged);
         if (!replayAcknowledged) {
           recordAcpStreamingDiagnostic("animation-readiness", () => ({
             componentInstanceId,
             sessionIdentity,
             ready: false,
             reason: "replay-catch-up-pending",
-            snapshotCoveredRevision,
-            snapshotGeneration,
+            snapshotCoveredRevision: snapshotWatermark.coveredRevision,
+            snapshotGeneration: snapshotWatermark.generation,
             requiredLossWatermarkGeneration,
             requiredLossWatermarkRevision,
-            replayGeneration: replay.generation,
+            replayGeneration: replayCut.generation,
           }));
           return;
         }
-        liveAnimationReadyRef.current = true;
+        liveAnimationReadyRef.current = !hasRemainingReplay;
         recordAcpStreamingDiagnostic("animation-readiness", () => ({
           componentInstanceId,
           sessionIdentity,
           ready: true,
           reason: "fixed-loss-watermark-covered",
-          snapshotCoveredRevision,
-          snapshotGeneration,
+          snapshotCoveredRevision: snapshotWatermark.coveredRevision,
+          snapshotGeneration: snapshotWatermark.generation,
           requiredLossWatermarkGeneration,
           requiredLossWatermarkRevision,
-          replayGeneration: replay.generation,
+          replayGeneration: replayCut.generation,
         }));
       }
     })();
@@ -2859,6 +3919,7 @@ export function ACPChatDialog(
     effectiveEventPageSize,
     flushPendingLiveEvents,
     flushOrSchedulePendingLiveEvents,
+    isHistoricalTimelineWindow,
     nodeId,
     observeLiveStreamingEvent,
     outerAttemptId,
@@ -2890,7 +3951,10 @@ export function ACPChatDialog(
     setActiveTurnStartedAt(null);
     awaitTerminalStopRef.current = false;
     updateOptimisticEvents((current) => current.filter(
-      (event) => promptIdFromEvent(event) !== terminalTurnId,
+      (event) => (
+        promptIdFromEvent(event) !== terminalTurnId
+        || !isPendingOptimisticPrompt(event)
+      ),
     ));
     const shouldNotifyStopped = cancelRequestedRef.current;
     cancelRequestedRef.current = false;
@@ -2971,11 +4035,449 @@ export function ACPChatDialog(
 
   const preserveScrollPosition = useCallback(() => {}, []);
 
-  const loadOlderEvents = async () => {
-    const previousEvents = loadedEventsRef.current;
+  const rejoinLatestHead = useCallback(async (
+    headSession: AcpSessionVm,
+    seedEvents: AcpUiEventVm[] = headSession.events,
+    requestToken: AcpPaginationRequestToken,
+    intent: AcpCanonicalHeadHandoffIntent,
+    discardReplayThroughCut: ReturnType<
+      typeof readConversationBranchReplaySnapshot
+    > | null = null,
+  ) => {
+    if (!ownsPaginationWindowRequest(requestToken)) return false;
+    liveAnimationReadyRef.current = false;
+    settleLiveStreamingMarkdown();
+
+    const observedDisplaySession = latestSessionRef.current;
+    const preferObservedCanonicalSession = Boolean(
+      observedDisplaySession
+      && shouldPreferObservedAcpSessionOverCanonicalResponse(
+        headSession,
+        observedDisplaySession,
+      ),
+    );
+    let candidateSession = reconcileCanonicalAcpSessionForDisplay(
+      observedDisplaySession,
+      headSession,
+    );
+    const candidateSourceEvents = preferObservedCanonicalSession
+      ? observedDisplaySession!.events
+      : seedEvents;
+    let candidateEvents = limitAcpEvents(
+      candidateSourceEvents,
+      "start",
+      effectiveLoadedEventBufferLimit,
+    );
+    let candidateWindowTrimmed = candidateEvents.length < candidateSourceEvents.length;
+    let candidatePage = preferObservedCanonicalSession
+      ? observedDisplaySession!.eventPage
+      : headSession.eventPage;
+    let canonicalWatermark = createAcpTimelineWatermark(headSession.eventPage);
+    let candidateGeneration = canonicalWatermark.generation;
+    let caughtThroughRevision = canonicalWatermark.coveredRevision;
+    let canonicalSessionId = headSession.sessionId ?? null;
+    let generationRefreshAttempted = false;
+    const canonicalOwnerWasOvertaken = () => {
+      const observed = latestSessionRef.current;
+      if (!observed) return false;
+      const observedSessionId = observed.sessionId?.trim() || null;
+      if (
+        canonicalSessionId !== null
+        && observedSessionId !== null
+        && observedSessionId !== canonicalSessionId
+      ) {
+        return true;
+      }
+      return (observed.eventPage.generation ?? 0) > canonicalWatermark.generation;
+    };
+
+    if (canonicalOwnerWasOvertaken()) {
+      requestCanonicalHeadHandoff(intent, true);
+      return false;
+    }
+
+    const adoptCandidateSession = (
+      preferredSession: AcpSessionVm,
+      sourceEvents: AcpUiEventVm[] = preferredSession.events,
+      resetTrimmedWindow = false,
+    ) => {
+      candidateSession = preferredSession;
+      candidateEvents = limitAcpEvents(
+        sourceEvents,
+        "start",
+        effectiveLoadedEventBufferLimit,
+      );
+      const sourceWindowTrimmed = candidateEvents.length < sourceEvents.length;
+      candidateWindowTrimmed = resetTrimmedWindow
+        ? sourceWindowTrimmed
+        : candidateWindowTrimmed || sourceWindowTrimmed;
+    };
+
+    const refreshCanonicalHead = async (deadlineAt: number) => {
+      const response = await awaitAcpReplayCatchUpRequest(getAcpSession(
+          projectId,
+          taskId,
+          runId,
+          roundId,
+          nodeId,
+          attemptId,
+          {
+            branchId,
+            pageSize: effectiveEventPageSize,
+            eventLimit: effectiveEventPageSize,
+          },
+          latestSessionRef.current,
+          outerNodeId,
+          outerAttemptId,
+        ), deadlineAt);
+      if (!ownsPaginationWindowRequest(requestToken)) return false;
+      const refreshed = normalizeSessionUpdate(response);
+      if (!refreshed) return false;
+      const refreshedGeneration = refreshed.eventPage.generation
+        ?? canonicalWatermark.generation;
+      if (refreshedGeneration < canonicalWatermark.generation) return false;
+      if (
+        canonicalSessionId !== null
+        && refreshed.sessionId != null
+        && refreshed.sessionId !== canonicalSessionId
+      ) return false;
+      const previousGeneration = canonicalWatermark.generation;
+      canonicalWatermark = reconcileAcpTimelineWatermark(
+        canonicalWatermark,
+        refreshed.eventPage,
+      );
+      candidateGeneration = canonicalWatermark.generation;
+      caughtThroughRevision = canonicalWatermark.coveredRevision;
+      canonicalSessionId = refreshed.sessionId ?? canonicalSessionId;
+      const latestObservedSession = latestSessionRef.current;
+      const preferLatestCanonicalSession = Boolean(
+        latestObservedSession
+        && shouldPreferObservedAcpSessionOverCanonicalResponse(
+          refreshed,
+          latestObservedSession,
+        ),
+      );
+      const preferredSession = reconcileCanonicalAcpSessionForDisplay(
+        latestObservedSession,
+        refreshed,
+      );
+      candidatePage = preferLatestCanonicalSession
+        ? latestObservedSession!.eventPage
+        : refreshed.eventPage;
+      adoptCandidateSession(
+        preferredSession,
+        preferLatestCanonicalSession
+          ? latestObservedSession!.events
+          : refreshed.events,
+        canonicalWatermark.generation !== previousGeneration,
+      );
+      return true;
+    };
+
+    if (!ownsPaginationWindowRequest(requestToken)) return false;
+    // C0 is immutable: recovery covers only the loss observed at this cut and
+    // never chases a Router head that keeps advancing during awaited I/O.
+    const replayCut = discardReplayThroughCut
+      ?? readConversationBranchReplaySnapshot(
+        attemptWorkspaceLocator,
+        branchId,
+      );
+    const recoveryDeadlineAt = performance.now() + ACP_REPLAY_CATCH_UP_MAX_MS;
+    const replayCutTimelineGeneration = replayCut.timelineGeneration
+      || replayCut.lossWatermarkGeneration;
+    const candidateSessionId = () => canonicalSessionId;
     if (
+      replayCut.sessionId !== null
+      && replayCut.sessionId !== candidateSessionId()
+    ) {
+      return false;
+    }
+    if (
+      replayCutTimelineGeneration > 0
+      && replayCutTimelineGeneration > candidateGeneration
+    ) {
+      if (generationRefreshAttempted) return false;
+      generationRefreshAttempted = true;
+      if (!await refreshCanonicalHead(recoveryDeadlineAt)) return false;
+      if (candidateGeneration < replayCutTimelineGeneration) return false;
+    }
+
+    const newerGenerationCoversLoss = Boolean(
+      replayCut.lossWatermarkGeneration > 0
+      && candidateGeneration > replayCut.lossWatermarkGeneration,
+    );
+    const fixedLossWatermarkRevision = replayCut.lossWatermarkRevision;
+    const requiresRevisionCatchUp = replayCut.requiresCatchUp
+      && !newerGenerationCoversLoss
+      && (
+        replayCut.lossWatermarkGeneration === candidateGeneration
+        || (
+          replayCut.lossWatermarkGeneration === 0
+          && candidateGeneration === 0
+        )
+      )
+      && caughtThroughRevision < fixedLossWatermarkRevision;
+    let catchUpPageCount = 0;
+    while (
+      requiresRevisionCatchUp
+      && caughtThroughRevision < fixedLossWatermarkRevision
+      && catchUpPageCount < ACP_REPLAY_CATCH_UP_MAX_PAGES
+      && performance.now() < recoveryDeadlineAt
+    ) {
+      catchUpPageCount += 1;
+      const deltaResponse = await awaitAcpReplayCatchUpRequest(getAcpSession(
+        projectId,
+        taskId,
+        runId,
+        roundId,
+        nodeId,
+        attemptId,
+        {
+          branchId,
+          afterRevision: caughtThroughRevision,
+          pageSize: effectiveEventPageSize,
+          eventLimit: effectiveEventPageSize,
+        },
+        candidateSession,
+        outerNodeId,
+        outerAttemptId,
+      ), recoveryDeadlineAt);
+      if (!ownsPaginationWindowRequest(requestToken)) return false;
+      const delta = normalizeSessionUpdate(deltaResponse);
+      if (!delta) return false;
+      const deltaGeneration = delta.eventPage.generation ?? candidateGeneration;
+      if (deltaGeneration !== candidateGeneration) return false;
+      const nextRevision = delta.eventPage.newestRevision
+        ?? delta.eventPage.coveredRevision
+        ?? caughtThroughRevision;
+      if (nextRevision <= caughtThroughRevision) return false;
+      candidateSession = reconcileAcpSessionForDisplay(
+        candidateSession,
+        delta,
+      ) ?? candidateSession;
+      candidateSession = projectAcpSessionControlEvents(
+        candidateSession,
+        delta.events,
+        lifecycleProjectionRef.current,
+      ) ?? candidateSession;
+      const mergedDeltaEvents = mergeAcpEvents(candidateEvents, delta.events);
+      candidateEvents = limitAcpEvents(
+        mergedDeltaEvents,
+        "start",
+        effectiveLoadedEventBufferLimit,
+      );
+      candidateWindowTrimmed = candidateWindowTrimmed
+        || candidateEvents.length < mergedDeltaEvents.length;
+      candidatePage = reconcileAcpEventPageForUpdate(
+        candidatePage,
+        delta.eventPage,
+        "append-newer",
+      );
+      canonicalWatermark = reconcileAcpTimelineWatermark(
+        canonicalWatermark,
+        {
+          ...delta.eventPage,
+          generation: candidateGeneration,
+          coveredRevision: nextRevision,
+        },
+      );
+      candidateGeneration = canonicalWatermark.generation;
+      caughtThroughRevision = canonicalWatermark.coveredRevision;
+    }
+    if (
+      requiresRevisionCatchUp
+      && caughtThroughRevision < fixedLossWatermarkRevision
+    ) {
+      return false;
+    }
+
+    let sequenceRetryAttempt = 0;
+    while (
+      !acpTimelineWatermarkCoversSequenceLoss(
+        canonicalWatermark,
+        replayCut.lossWatermarkGeneration,
+        replayCut.lossWatermarkSeq,
+      )
+      && catchUpPageCount < ACP_REPLAY_CATCH_UP_MAX_PAGES
+      && performance.now() < recoveryDeadlineAt
+    ) {
+      const delay = missingAcpSessionRetryDelay(sequenceRetryAttempt);
+      if (delay === null || performance.now() + delay >= recoveryDeadlineAt) {
+        break;
+      }
+      sequenceRetryAttempt += 1;
+      await new Promise((resolve) => window.setTimeout(resolve, delay));
+      catchUpPageCount += 1;
+      await refreshCanonicalHead(recoveryDeadlineAt);
+      if (!ownsPaginationWindowRequest(requestToken)) return false;
+    }
+    if (!acpTimelineWatermarkCoversSequenceLoss(
+      canonicalWatermark,
+      replayCut.lossWatermarkGeneration,
+      replayCut.lossWatermarkSeq,
+    )) {
+      return false;
+    }
+
+    // The visible historical window deliberately stays on its old generation,
+    // so the pagination token alone cannot detect a newer subscription owner.
+    // Queue one fresh coordinator read instead of committing or ACKing the
+    // stale canonical response.
+    if (canonicalOwnerWasOvertaken()) {
+      requestCanonicalHeadHandoff(intent, true);
+      return false;
+    }
+
+    const cutAcknowledged = acknowledgeConversationBranchReplay(
+      attemptWorkspaceLocator,
+      branchId,
+      candidateSessionId(),
+      canonicalWatermark.generation,
+      canonicalWatermark.coveredRevision,
+      canonicalWatermark.coveredSeq,
+      replayCut.generation,
+    );
+    if (!cutAcknowledged || !ownsPaginationWindowRequest(requestToken)) return false;
+
+    // C1 is read once after the prefix ACK. New retained values are safe to
+    // merge; a new loss or generation/session transition stays in Router for
+    // the next explicit recovery instead of starting another unbounded chase.
+    const finalReplayCut = readConversationBranchReplaySnapshot(
+      attemptWorkspaceLocator,
+      branchId,
+    );
+    const finalCutHasReplay = finalReplayCut.events.length > 0
+      || finalReplayCut.requiresCatchUp;
+    const finalCutSessionMatches = !finalCutHasReplay
+      || finalReplayCut.sessionId === candidateSessionId();
+    const finalCutGenerationMatches = !finalCutHasReplay
+      || finalReplayCut.timelineGeneration === candidateGeneration
+      || (
+        finalReplayCut.timelineGeneration === 0
+        && candidateGeneration === 0
+      );
+    const finalCutHasNewLoss = finalReplayCut.lossWatermarkRouterGeneration
+      > replayCut.generation;
+    if (
+      !finalCutSessionMatches
+      || !finalCutGenerationMatches
+      || finalCutHasNewLoss
+    ) {
+      return false;
+    }
+    const finalCutAcknowledged = acknowledgeConversationBranchReplay(
+      attemptWorkspaceLocator,
+      branchId,
+      candidateSessionId(),
+      canonicalWatermark.generation,
+      canonicalWatermark.coveredRevision,
+      canonicalWatermark.coveredSeq,
+      finalReplayCut.generation,
+    );
+    if (!finalCutAcknowledged || !ownsPaginationWindowRequest(requestToken)) {
+      return false;
+    }
+
+    const replayBelongsToCandidate = replayCut.timelineGeneration === candidateGeneration
+      || (replayCut.timelineGeneration === 0 && candidateGeneration === 0);
+    const replayEvents = replayBelongsToCandidate
+      ? discardReplayThroughCut
+        ? finalReplayCut.events
+        : mergeAcpEvents(replayCut.events, finalReplayCut.events)
+      : finalReplayCut.events;
+    const replayTimelineEvents = liveTimelineUpdatesFromEvents(replayEvents);
+    const mergedEvents = mergeAcpEvents(candidateEvents, replayTimelineEvents);
+    const latestEvents = limitAcpEvents(
+      mergedEvents,
+      "start",
+      effectiveLoadedEventBufferLimit,
+    );
+    candidateWindowTrimmed = candidateWindowTrimmed
+      || latestEvents.length < mergedEvents.length;
+    const { oldestSeq, newestSeq } = acpPaginationSeqBounds(
+      latestEvents,
+      eventIdPrefix,
+    );
+    const hasOlder = resolveAcpHasOlderEvents(
+      candidatePage.hasOlder || candidateWindowTrimmed,
+      mergedEvents.length,
+      latestEvents.length,
+    );
+    const remainingReplay = readConversationBranchReplaySnapshot(
+      attemptWorkspaceLocator,
+      branchId,
+    );
+    const hasRemainingReplay = remainingReplay.events.length > 0
+      || remainingReplay.requiresCatchUp;
+    const committedPage: AcpSessionVm["eventPage"] = {
+      ...candidatePage,
+      generation: candidateGeneration || candidatePage.generation,
+      loadedCount: latestEvents.length,
+      total: Math.max(candidatePage.total, latestEvents.length),
+      oldestSeq,
+      newestSeq,
+      hasOlder,
+      hasNewer: hasRemainingReplay,
+      oldestCursor: oldestSeq == null ? null : formatTimelineCursor(oldestSeq),
+      newestCursor: newestSeq == null ? null : formatTimelineCursor(newestSeq),
+    };
+    const projectedCandidate = projectAcpSessionControlEvents(
+      candidateSession,
+      replayEvents,
+      lifecycleProjectionRef.current,
+    );
+    const committedSession = settlePendingAcpInteractionsForLifecycle(
+      reconcileAcpSessionForDisplay(
+        latestSessionRef.current,
+        {
+          ...(projectedCandidate ?? candidateSession),
+          events: latestEvents,
+          eventPage: committedPage,
+        },
+      ),
+      lifecycleProjectionRef.current,
+    );
+    if (!committedSession || !ownsPaginationWindowRequest(requestToken)) {
+      return false;
+    }
+
+    settleOptimisticPromptAdmissions(latestEvents);
+    latestSessionRef.current = committedSession;
+    viewportAtBottomRef.current = true;
+    paginationAnchorRef.current = null;
+    pendingLatestLayoutCommitRef.current = sessionIdentity;
+    liveAnimationReadyRef.current = !hasRemainingReplay;
+    reconcileConversationBranchSession({
+      projectId,
+      taskId,
+      taskUuid,
+      runId,
+      roundId,
+      nodeId,
+      attemptId,
+      outerNodeId,
+      outerAttemptId,
+    }, committedSession);
+    storeAcpSession(eventWindowKey, committedSession);
+    setCurrentSession(committedSession);
+    commitLoadedEventWindow(eventWindowKey, {
+      sessionId: committedSession.sessionId ?? null,
+      timelineGeneration: candidateGeneration,
+      events: latestEvents,
+    });
+    setHasOlderEvents(hasOlder);
+    commitHasNewerEvents(hasRemainingReplay);
+    paginationCursorGenerationStaleRef.current = false;
+    return true;
+  }, [attemptId, attemptWorkspaceLocator, branchId, commitHasNewerEvents, commitLoadedEventWindow, effectiveEventPageSize, effectiveLoadedEventBufferLimit, eventIdPrefix, eventWindowKey, nodeId, normalizeSessionUpdate, outerAttemptId, outerNodeId, ownsPaginationWindowRequest, projectId, requestCanonicalHeadHandoff, roundId, runId, sessionIdentity, settleLiveStreamingMarkdown, settleOptimisticPromptAdmissions, taskId, taskUuid]);
+
+  const loadOlderEvents = async () => {
+    const previousWindow = loadedEventWindowRef.current;
+    const previousEvents = previousWindow.events;
+    if (
+      paginationCursorGenerationStaleRef.current ||
       paginationDirectionRef.current !== null ||
-      !hasOlderEvents ||
+      !hasOlderEventsRef.current ||
       previousEvents.length === 0
     )
       return;
@@ -2986,12 +4488,11 @@ export function ACPChatDialog(
     paginationAnchorRef.current = scroller
       ? captureVisibleAcpAnchor(scroller)
       : null;
-    paginationDirectionRef.current = "older";
+    const requestToken = beginPaginationRequest("older");
     chatContainerContextRef.current?.stopScroll();
     setLoadingOlder(true);
     try {
-      const updated = normalizeSessionUpdate(
-        await getAcpSession(
+      const response = await getAcpSession(
           projectId,
           taskId,
           runId,
@@ -3008,41 +4509,58 @@ export function ACPChatDialog(
           baseSession,
           outerNodeId,
           outerAttemptId,
-        ),
-      );
+        ).catch(() => null);
+      if (!ownsPaginationRequest(requestToken)) return;
+      const updated = normalizeSessionUpdate(response);
       if (!updated) {
         paginationAnchorRef.current = null;
         return;
       }
+      const activeWindow = loadedEventWindowRef.current;
+      if (!paginationTokenOwnsLoadedEventWindow(requestToken, activeWindow)) {
+        paginationAnchorRef.current = null;
+        return;
+      }
+      const windowRelation = compareAcpLoadedEventWindowToSession(
+        activeWindow,
+        updated,
+      );
+      if (windowRelation !== "same") {
+        paginationAnchorRef.current = null;
+        paginationCursorGenerationStaleRef.current = true;
+        setHasOlderEvents(false);
+        commitHasNewerEvents(true);
+        return;
+      }
       chatContainerContextRef.current?.stopScroll();
-      const merged = mergeAcpEvents(updated.events, previousEvents);
+      const merged = mergeAcpEvents(updated.events, activeWindow.events);
       const limited = limitAcpEvents(
         merged,
         "end",
         effectiveLoadedEventBufferLimit,
       );
-      const reconciled = reconcileAcpSessionForDisplay(latestSessionRef.current, updated);
-      latestSessionRef.current = reconciled;
-      setCurrentSession(reconciled);
       setHasOlderEvents(updated.eventPage.hasOlder);
       commitHasNewerEvents(
         updated.eventPage.hasNewer
           || limited.length < merged.length
           || replayHasUncoveredNewerEvents(updated.eventPage),
       );
-      loadedEventsRef.current = limited;
-      setLoadedEvents(limited);
+      commitLoadedEventWindow(eventWindowKey, {
+        ...activeWindow,
+        events: limited,
+      });
     } finally {
-      paginationDirectionRef.current = null;
-      setLoadingOlder(false);
+      if (finishPaginationRequest(requestToken)) setLoadingOlder(false);
     }
   };
 
   const loadNewerEvents = async () => {
-    const previousEvents = loadedEventsRef.current;
+    const previousWindow = loadedEventWindowRef.current;
+    const previousEvents = previousWindow.events;
     if (
+      paginationCursorGenerationStaleRef.current ||
       paginationDirectionRef.current !== null ||
-      !hasNewerEvents ||
+      !hasNewerEventsRef.current ||
       previousEvents.length === 0
     )
       return;
@@ -3053,11 +4571,19 @@ export function ACPChatDialog(
     paginationAnchorRef.current = scroller
       ? captureVisibleAcpAnchor(scroller)
       : null;
-    paginationDirectionRef.current = "newer";
+    const requestToken = beginPaginationRequest("newer");
+    const handOffReachedHead = () => {
+      paginationAnchorRef.current = null;
+      if (!finishPaginationRequest(requestToken)) return false;
+      requestCanonicalHeadHandoff(
+        canonicalHeadRecoveryPendingRef.current ? "recovery" : "ordinary",
+        true,
+      );
+      return true;
+    };
     chatContainerContextRef.current?.stopScroll();
     try {
-      const updated = normalizeSessionUpdate(
-        await getAcpSession(
+      const response = await getAcpSession(
           projectId,
           taskId,
           runId,
@@ -3074,47 +4600,91 @@ export function ACPChatDialog(
           baseSession,
           outerNodeId,
           outerAttemptId,
-        ),
-      );
+        ).catch(() => null);
+      if (!ownsPaginationRequest(requestToken)) return;
+      const updated = normalizeSessionUpdate(response);
       if (!updated) {
         paginationAnchorRef.current = null;
         return;
       }
+      const activeWindow = loadedEventWindowRef.current;
+      if (!paginationTokenOwnsLoadedEventWindow(requestToken, activeWindow)) {
+        paginationAnchorRef.current = null;
+        return;
+      }
       chatContainerContextRef.current?.stopScroll();
-      const reconciled = reconcileAcpSessionForDisplay(latestSessionRef.current, updated);
-      latestSessionRef.current = reconciled;
-      setCurrentSession(reconciled);
+      const activeScroller = chatContainerContextRef.current?.scrollRef.current;
+      const remainsAtNewerEdge = activeScroller
+        ? activeScroller.scrollHeight - activeScroller.scrollTop - activeScroller.clientHeight
+          < NEWER_PAGE_LOAD_THRESHOLD_PX
+        : viewportAtBottomRef.current;
+      const windowRelation = compareAcpLoadedEventWindowToSession(
+        activeWindow,
+        updated,
+      );
+      if (windowRelation !== "same") {
+        paginationCursorGenerationStaleRef.current = true;
+        if (
+          (windowRelation === "incoming-newer"
+            || windowRelation === "different-session")
+          && !updated.eventPage.hasNewer
+          && remainsAtNewerEdge
+        ) {
+          if (!handOffReachedHead()) commitHasNewerEvents(true);
+          return;
+        }
+        paginationAnchorRef.current = null;
+        commitHasNewerEvents(true);
+        return;
+      }
+      if (
+        !updated.eventPage.hasNewer
+        && remainsAtNewerEdge
+      ) {
+        if (!handOffReachedHead()) commitHasNewerEvents(true);
+        return;
+      }
       commitHasNewerEvents(
         updated.eventPage.hasNewer
           || replayHasUncoveredNewerEvents(updated.eventPage),
       );
-      setLoadedEvents((events) => {
-        const merged = mergeAcpEvents(events, updated.events);
-        const limited = limitAcpEvents(
-          merged,
-          "start",
-          effectiveLoadedEventBufferLimit,
-        );
-        setHasOlderEvents(resolveAcpHasOlderEvents(
-          updated.eventPage.hasOlder,
-          merged.length,
-          limited.length,
-        ));
-        loadedEventsRef.current = limited;
-        return limited;
+      const merged = mergeAcpEvents(activeWindow.events, updated.events);
+      const limited = limitAcpEvents(
+        merged,
+        "start",
+        effectiveLoadedEventBufferLimit,
+      );
+      setHasOlderEvents(resolveAcpHasOlderEvents(
+        updated.eventPage.hasOlder,
+        merged.length,
+        limited.length,
+      ));
+      commitLoadedEventWindow(eventWindowKey, {
+        ...activeWindow,
+        events: limited,
       });
     } finally {
-      paginationDirectionRef.current = null;
+      finishPaginationRequest(requestToken);
     }
   };
 
-  const returnToLatestEvents = async () => {
-    if (paginationDirectionRef.current !== null) return;
-    paginationDirectionRef.current = "newer";
+  const returnToLatestEvents = async (
+    intent: AcpCanonicalHeadHandoffIntent,
+  ) => {
+    if (paginationDirectionRef.current !== null) return false;
+    const discardReplayThroughCut = intent === "recovery"
+      ? readConversationBranchReplaySnapshot(
+          attemptWorkspaceLocator,
+          branchId,
+        )
+      : null;
+    const requestToken = beginPaginationRequest("newer");
+    liveAnimationReadyRef.current = false;
+    settleLiveStreamingMarkdown();
+    chatContainerContextRef.current?.stopScroll();
     setLoadingLatest(true);
     try {
-      const updated = normalizeSessionUpdate(
-        await getAcpSession(
+      const response = await getAcpSession(
           projectId,
           taskId,
           runId,
@@ -3125,32 +4695,34 @@ export function ACPChatDialog(
           baseSession,
           outerNodeId,
           outerAttemptId,
-        ),
-      );
-      if (!updated) return;
-      const reconciled = reconcileAcpSessionForDisplay(latestSessionRef.current, updated);
-      latestSessionRef.current = reconciled;
-      setCurrentSession(reconciled);
-      const latestEvents = limitAcpEvents(
+        ).catch(() => null);
+      if (!ownsPaginationRequest(requestToken)) return false;
+      const updated = normalizeSessionUpdate(response);
+      if (!updated) return false;
+      const rejoined = await rejoinLatestHead(
+        updated,
         updated.events,
-        "start",
-        effectiveLoadedEventBufferLimit,
+        requestToken,
+        intent,
+        discardReplayThroughCut,
       );
-      loadedEventsRef.current = latestEvents;
-      setLoadedEvents(latestEvents);
-      setHasOlderEvents(updated.eventPage.hasOlder);
-      commitHasNewerEvents(
-        updated.eventPage.hasNewer
-          || replayHasUncoveredNewerEvents(updated.eventPage),
-      );
-      viewportAtBottomRef.current = true;
-      requestAnimationFrame(() => {
-        chatContainerContextRef.current?.scrollToBottom({ animation: "instant" });
-      });
+      if (!ownsPaginationRequest(requestToken)) return false;
+      if (!rejoined) {
+        commitHasNewerEvents(true);
+        return false;
+      }
+      return true;
     } finally {
-      paginationDirectionRef.current = null;
-      setLoadingLatest(false);
+      if (finishPaginationRequest(requestToken)) setLoadingLatest(false);
     }
+  };
+  canonicalHeadHandoffRef.current = returnToLatestEvents;
+
+  const handleReturnToLatestEvents = () => {
+    requestCanonicalHeadHandoff(
+      canonicalHeadRecoveryPendingRef.current ? "recovery" : "ordinary",
+      true,
+    );
   };
 
   const releaseSubmittedAttachments = (attachments: AttachmentItem[]) => {
@@ -3237,7 +4809,7 @@ export function ACPChatDialog(
       draftContent,
       undefined,
       submittedQuotes,
-      latestCanonicalTimelinePosition(loadedEventsRef.current),
+      latestCanonicalTimelinePosition(loadedEventWindowRef.current.events),
       optimisticAttachments,
     );
     const promptId = promptIdFromEvent(optimisticEvent);
@@ -3263,6 +4835,20 @@ export function ACPChatDialog(
     setActiveTurnStartedAt(null);
     setAwaitingResponse(true);
     updateOptimisticEvents((current) => [...current, optimisticEvent]);
+    const acceptedPromptAdmission = () => findMatchingGoldBandUserPrompt(
+      mergeAcpEvents(
+        mergeAcpEvents(
+          latestSessionRef.current?.events ?? [],
+          loadedEventWindowRef.current.events,
+        ),
+        optimisticEventsRef.current.filter(
+          (event) => !isPendingOptimisticPrompt(event) && event.status !== "failed",
+        ),
+      ),
+      draftContent,
+      promptId,
+      optimisticEvent.timestamp,
+    );
     let submissionAccepted = false;
     try {
       const result = target === "runtime-continue"
@@ -3299,12 +4885,19 @@ export function ACPChatDialog(
         applyLifecycleProjection(result.lifecycle);
         emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
       }
+      const authoritativeAdmission = acceptedPromptAdmission();
       if (target === "runtime-continue" && result.kind === "runtime-continue-started") {
         submissionAccepted = true;
         setActiveTurnStartedAt(optimisticEvent.timestamp);
       } else if (!updated && isAcceptedAcpPromptSubmitKind(result.kind)) {
         submissionAccepted = true;
         setActiveTurnStartedAt(optimisticEvent.timestamp);
+      } else if (authoritativeAdmission) {
+        submissionAccepted = true;
+        setActiveTurnStartedAt(authoritativeAdmission.timestamp);
+        if (updated && isSessionTerminalStatus(updated.status)) {
+          setAwaitingResponse(false);
+        }
       } else if (result.kind === "rejected") {
         setSendError(t("errors.app.unexpected", { message: "" }));
         setAwaitingResponse(false);
@@ -3318,36 +4911,6 @@ export function ACPChatDialog(
               : event,
           ),
         );
-      } else if (updated) {
-        const acceptedEvents = mergeAcpEvents(loadedEventsRef.current, updated.events);
-        const acceptedPrompt = findMatchingGoldBandUserPrompt(
-          acceptedEvents,
-          draftContent,
-          promptId,
-          optimisticEvent.timestamp,
-        );
-        if (acceptedPrompt) {
-          submissionAccepted = true;
-          setActiveTurnStartedAt(acceptedPrompt.timestamp);
-          if (isSessionTerminalStatus(updated.status)) setAwaitingResponse(false);
-          updateOptimisticEvents((current) =>
-            current.filter(
-              (event) => !hasMatchingUserPrompt(acceptedEvents, event),
-            ),
-          );
-        } else {
-          setAwaitingResponse(false);
-          setActiveTurnPrompt(null);
-          setActiveTurnPromptId(null);
-          setActiveTurnStartedAt(null);
-          updateOptimisticEvents((current) =>
-            current.map((event) =>
-              event.id === optimisticEvent.id
-                ? { ...event, status: "failed" }
-                : event,
-            ),
-          );
-        }
       } else {
         setAwaitingResponse(false);
         setActiveTurnPrompt(null);
@@ -3373,7 +4936,19 @@ export function ACPChatDialog(
         );
         return true;
       }
+      const admittedBeforeRecovery = acceptedPromptAdmission();
+      if (admittedBeforeRecovery) {
+        submissionAccepted = true;
+        setActiveTurnStartedAt(admittedBeforeRecovery.timestamp);
+        return true;
+      }
       await refreshSessionAfterConfigUnavailable(error);
+      const admittedAfterRecovery = acceptedPromptAdmission();
+      if (admittedAfterRecovery) {
+        submissionAccepted = true;
+        setActiveTurnStartedAt(admittedAfterRecovery.timestamp);
+        return true;
+      }
       const message = displayAppError(t, error);
       if (target === "runtime-continue") {
         setRuntimeContinueError(message);
@@ -3673,6 +5248,7 @@ export function ACPChatDialog(
     request: AcpPermissionRequestVm,
     optionId: string,
   ) => {
+    const operationOwner = eventWindowKey;
     setPermissionError(null);
     setDismissedPermissionIds((current) =>
       new Set(current).add(request.interactionId),
@@ -3691,6 +5267,7 @@ export function ACPChatDialog(
         outerNodeId,
         outerAttemptId,
       );
+      if (sessionIdentityRef.current !== operationOwner) return;
       if (branchId === 'root' || updated?.branchId === branchId) {
         applySessionUpdate(updated);
       } else {
@@ -3711,12 +5288,15 @@ export function ACPChatDialog(
             outerNodeId,
             outerAttemptId,
           );
+          if (sessionIdentityRef.current !== operationOwner) return;
           applySessionUpdate(refreshedBranch);
         } catch (error) {
+          if (sessionIdentityRef.current !== operationOwner) return;
           setPermissionError(displayAppError(t, error));
         }
       }
     } catch (error) {
+      if (sessionIdentityRef.current !== operationOwner) return;
       setDismissedPermissionIds((current) => {
         const next = new Set(current);
         next.delete(request.interactionId);
@@ -3730,6 +5310,7 @@ export function ACPChatDialog(
     elicitationId: string,
     content?: Record<string, unknown>,
   ) => {
+    const operationOwner = eventWindowKey;
     setSendError(null);
     setAnsweredElicitations((current) => {
       const next = new Map(current);
@@ -3751,6 +5332,7 @@ export function ACPChatDialog(
         outerAttemptId,
       );
     } catch (error) {
+      if (sessionIdentityRef.current !== operationOwner) return;
       setAnsweredElicitations((current) => {
         const next = new Map(current);
         next.delete(elicitationId);
@@ -3761,6 +5343,7 @@ export function ACPChatDialog(
   };
 
   const declineElicitation = async (elicitationId: string) => {
+    const operationOwner = eventWindowKey;
     setSendError(null);
     setAnsweredElicitations((current) => {
       const next = new Map(current);
@@ -3782,6 +5365,7 @@ export function ACPChatDialog(
         outerAttemptId,
       );
     } catch (error) {
+      if (sessionIdentityRef.current !== operationOwner) return;
       setAnsweredElicitations((current) => {
         const next = new Map(current);
         next.delete(elicitationId);
@@ -4027,24 +5611,32 @@ export function ACPChatDialog(
                   <AcpPendingTimelineState label={composerStatusLabel} />
                 </div>
               ) : (
-                <div
-                  className="mx-auto w-full max-w-[var(--conversation-content-rail-max-inline-size)] space-y-1 px-5 py-5"
-                  data-acp-conversation-rail="timeline"
+                <AcpTimelineWindowOwnerContext.Provider
+                  key={timelineWindowRenderScopeKey(
+                    timelineWindowOwner.eventWindowKey,
+                    timelineWindowOwner.sessionId,
+                  )}
+                  value={timelineWindowOwner}
                 >
-                  {timeline.map((item) => (
-                    <div
-                      key={timelineRenderKey(eventWindowKey, item)}
-                      data-acp-item-key={timelineEventKey(item)}
-                    >
-                      <ACPTimelineItemRenderer
-                        event={item}
-                        streamingMarkdownItemKey={streamingMarkdownItemKey}
-                        messageAttachmentLocator={messageAttachmentLocator}
-                        onMessageAttachmentClick={handleOpenMessageAttachment}
-                      />
-                    </div>
-                  ))}
-                </div>
+                  <div
+                    className="mx-auto w-full max-w-[var(--conversation-content-rail-max-inline-size)] space-y-1 px-5 py-5"
+                    data-acp-conversation-rail="timeline"
+                  >
+                    {timeline.map((item) => (
+                      <div
+                        key={timelineEventKey(item)}
+                        data-acp-item-key={timelineEventKey(item)}
+                      >
+                        <ACPTimelineItemRenderer
+                          event={item}
+                          streamingMarkdownItemKey={streamingMarkdownItemKey}
+                          messageAttachmentLocator={messageAttachmentLocator}
+                          onMessageAttachmentClick={handleOpenMessageAttachment}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </AcpTimelineWindowOwnerContext.Provider>
               )}
               <InterventionLayer>
                 {sendError ? (
@@ -4113,7 +5705,7 @@ export function ACPChatDialog(
                     variant="secondary"
                     className="absolute right-4 top-0 z-30 -translate-y-[calc(100%+1rem)] gap-1.5 rounded-full border border-border/60 bg-background/95 shadow-sm backdrop-blur"
                     disabled={loadingLatest}
-                    onClick={() => void returnToLatestEvents()}
+                    onClick={handleReturnToLatestEvents}
                     data-acp-return-to-latest="true"
                   >
                     <ChevronDown className="size-3.5" />
@@ -5173,34 +6765,70 @@ export function ACPMessageList({
   sessionStatus,
   sending,
   branchLocator,
+  timelineGeneration = 0,
   streamingMarkdownItemKey = null,
 }: {
   timeline: AcpTimelineItem[];
   sessionStatus: string;
   sending: boolean;
   branchLocator?: AgentTranscriptLocator;
+  timelineGeneration?: number;
   streamingMarkdownItemKey?: string | null;
   onLayoutChange?: () => void;
 }) {
   const active = isSessionActiveStatus(sessionStatus) || sending;
+  const sessionId = timelineSessionId(timeline);
+  const standaloneWindowKey = branchLocator
+    ? createAcpSessionCacheKey(
+        "message-list",
+        branchLocator.taskId,
+        branchLocator.runId,
+        branchLocator.roundId,
+        branchLocator.nodeId,
+        branchLocator.attemptId,
+        branchLocator.projectId,
+        branchLocator.outerNodeId,
+        branchLocator.outerAttemptId,
+        branchLocator.branchId,
+      )
+    : "message-list:standalone";
+  const timelineWindowOwner = useMemo<AcpTimelineWindowOwner>(() => ({
+    eventWindowKey: standaloneWindowKey,
+    sessionId,
+    timelineGeneration,
+  }), [sessionId, standaloneWindowKey, timelineGeneration]);
   if (timeline.length === 0) return active ? null : <EmptyAcpState />;
 
   const content = (
-    <div className="min-w-0 space-y-1">
-      {timeline.map((item) => (
-        <ACPTimelineItemRenderer
-          key={timelineEventKey(item)}
-          event={item}
-          streamingMarkdownItemKey={streamingMarkdownItemKey}
-        />
-      ))}
-    </div>
+    <AcpTimelineWindowOwnerContext.Provider
+      key={timelineWindowRenderScopeKey(standaloneWindowKey, sessionId)}
+      value={timelineWindowOwner}
+    >
+      <div className="min-w-0 space-y-1">
+        {timeline.map((item) => (
+          <ACPTimelineItemRenderer
+            key={timelineEventKey(item)}
+            event={item}
+            streamingMarkdownItemKey={streamingMarkdownItemKey}
+          />
+        ))}
+      </div>
+    </AcpTimelineWindowOwnerContext.Provider>
   );
   return branchLocator ? (
     <AcpBranchLocatorContext.Provider value={branchLocator}>
       {content}
     </AcpBranchLocatorContext.Provider>
   ) : content;
+}
+
+function timelineSessionId(timeline: AcpTimelineItem[]) {
+  for (const item of timeline) {
+    if (isActivityBatch(item) && item.sessionId) return item.sessionId;
+    if (isAgentLink(item) && item.toolEvent.sessionId) return item.toolEvent.sessionId;
+    if (!isActivityBatch(item) && !isAgentLink(item) && item.sessionId) return item.sessionId;
+  }
+  return null;
 }
 
 function EmptyAcpState() {
@@ -5517,6 +7145,55 @@ const AgentBranchSessionSummary = memo(function AgentBranchSessionSummary({
   );
 });
 
+type AcpActivityDetailWindow = {
+  ownerKey: string;
+  activityEndSeq: number;
+  totalEventCount: number;
+  events: AcpTimelineEvent[];
+  detailLoaded: boolean;
+  hasMoreEarlier: boolean;
+  earlierCursor: string | null;
+  hasNewer: boolean;
+  error: {
+    scopeKey: string;
+    message: string;
+    cursor: string | null;
+    replaceWithLatest: boolean;
+  } | null;
+};
+
+type AcpDetailRequestToken = {
+  requestSeq: number;
+  ownerKey: string;
+  scopeKey: string;
+  observedRevision: number;
+};
+
+type AcpActivityDetailRequestToken = AcpDetailRequestToken & {
+  anchor: { key: string; top: number } | null;
+  sessionId: string;
+};
+
+type AcpToolDetailRequestToken = AcpDetailRequestToken & {
+  eventId: string;
+  toolCallId: string | null;
+  sessionId: string;
+  sourceSignature: string;
+  sourceStatus: string | null;
+  sourceContent: string | null;
+  sourceTitle: string | null;
+};
+
+type AcpToolDetailState = {
+  ownerKey: string;
+  observedRevision: number;
+  sourceSignature: string;
+  sourceStatus: string | null;
+  sourceContent: string | null;
+  sourceTitle: string | null;
+  event: AcpTimelineEvent;
+};
+
 const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
   event,
   nested = false,
@@ -5526,56 +7203,133 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
 }) {
   const { t } = useTranslation();
   const branchLocator = useContext(AcpBranchLocatorContext);
+  const timelineWindowOwner = useContext(AcpTimelineWindowOwnerContext);
   const contentExpansion = useOptionalChatContainerContentExpansion();
-  const [open, setOpen] = useState(false);
-  const [auditEvents, setAuditEvents] = useState(() => event.events.filter(isVisibleActivityAuditEvent));
-  const initialDetailComplete = hasCompleteLocalActivityDetail(event);
-  const loadedDetailCursorsRef = useRef(new Set<string>(
-    initialDetailComplete ? [activityDetailRequestKey(event, null)] : [],
-  ));
-  const [detailLoaded, setDetailLoaded] = useState(
-    initialDetailComplete,
+  const sessionId = timelineWindowOwner?.sessionId ?? event.sessionId ?? null;
+  const ownerKey = acpDetailOwnerKey(
+    branchLocator,
+    timelineWindowOwner,
+    sessionId,
+    `activity:${event.activityStartSeq}`,
   );
-  const [hasMoreEarlier, setHasMoreEarlier] = useState(event.hasMoreEarlier);
-  const [earlierCursor, setEarlierCursor] = useState(event.earlierCursor ?? null);
-  const [loadingEarlier, setLoadingEarlier] = useState(false);
-  const [detailError, setDetailError] = useState<string | null>(null);
-  const detailRequestInFlightRef = useRef(false);
+  const requestScopeKey = acpDetailRequestScopeKey(
+    ownerKey,
+    timelineWindowOwner?.timelineGeneration ?? 0,
+    event.activityEndSeq,
+  );
+  const [open, setOpen] = useState(false);
+  const [detailWindow, setDetailWindow] = useState<AcpActivityDetailWindow>(() => (
+    createAcpActivityDetailWindow(event, ownerKey)
+  ));
+  const activeDetailWindow = detailWindow.ownerKey === ownerKey
+    && detailWindow.activityEndSeq === event.activityEndSeq
+    && detailWindow.totalEventCount === event.totalEventCount
+      ? detailWindow
+      : syncAcpActivityDetailWindow(detailWindow, event, ownerKey);
+  const [loadingRequestScope, setLoadingRequestScope] = useState<string | null>(null);
+  const activeDetailRequestRef = useRef<AcpActivityDetailRequestToken | null>(null);
+  const trailingDetailRequestRef = useRef<{
+    cursor: string | null;
+    replaceWithLatest: boolean;
+  } | null>(null);
+  const latestLoadDetailRef = useRef<(
+    cursor: string | null,
+    replaceWithLatest?: boolean,
+  ) => Promise<void>>(async () => {});
+  const detailRequestSeqRef = useRef(0);
+  const mountedRef = useRef(true);
+  const openRef = useRef(open);
+  const currentRequestScopeRef = useRef(requestScopeKey);
+  const currentEventRef = useRef(event);
+  openRef.current = open;
+  currentRequestScopeRef.current = requestScopeKey;
+  currentEventRef.current = event;
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const detailListRef = useRef<HTMLDivElement>(null);
+  const pendingDetailAnchorRef = useRef<{ key: string; top: number } | null>(null);
   const disclosureTokenRef = useRef<ChatContainerContentExpansionToken | null>(null);
   const contentExpansionRef = useRef(contentExpansion);
   contentExpansionRef.current = contentExpansion;
+  const detailRequestInFlight = loadingRequestScope !== null;
+  const loadingEarlier = loadingRequestScope === requestScopeKey;
+  const activeDetailError = activeDetailWindow.error?.scopeKey === requestScopeKey
+    ? activeDetailWindow.error
+    : null;
   const summary = activityBatchSummary(event, t);
-  useEffect(() => () => {
-    const token = disclosureTokenRef.current;
-    disclosureTokenRef.current = null;
-    if (token !== null) contentExpansionRef.current?.endContentExpansion(token);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      activeDetailRequestRef.current = null;
+      trailingDetailRequestRef.current = null;
+      const token = disclosureTokenRef.current;
+      disclosureTokenRef.current = null;
+      if (token !== null) contentExpansionRef.current?.endContentExpansion(token);
+    };
   }, []);
   useEffect(() => {
-    setAuditEvents((current) => mergeAcpEvents(current, event.events.filter(isVisibleActivityAuditEvent)) as AcpTimelineEvent[]);
-    setHasMoreEarlier((current) => current || event.hasMoreEarlier);
-    setEarlierCursor((current) => current ?? event.earlierCursor ?? null);
-  }, [event.earlierCursor, event.events, event.hasMoreEarlier]);
-  useEffect(() => {
-    const latestDetailLoaded = loadedDetailCursorsRef.current.has(
-      activityDetailRequestKey(event, null),
+    setDetailWindow((current) => syncAcpActivityDetailWindow(current, event, ownerKey));
+  }, [
+    event.detailAvailable,
+    event.earlierCursor,
+    event.events,
+    event.hasMoreEarlier,
+    event.totalEventCount,
+    ownerKey,
+  ]);
+  useLayoutEffect(() => {
+    const anchor = pendingDetailAnchorRef.current;
+    if (!anchor) return;
+    pendingDetailAnchorRef.current = null;
+    const item = findAcpActivityDetailItem(detailListRef.current, anchor.key);
+    if (!item) return;
+    contentExpansion?.compensateContentAnchor(
+      item.getBoundingClientRect().top - anchor.top,
     );
-    setDetailLoaded(
-      !event.detailAvailable
-      || auditEvents.length >= event.totalEventCount
-      || latestDetailLoaded,
+  }, [activeDetailWindow.events, contentExpansion]);
+  const ownsDetailRequest = (token: AcpDetailRequestToken) => {
+    const active = activeDetailRequestRef.current;
+    return Boolean(
+      mountedRef.current
+      && active
+      && active.requestSeq === token.requestSeq
+      && active.scopeKey === token.scopeKey
+      && currentRequestScopeRef.current === token.scopeKey,
     );
-  }, [auditEvents.length, event.activityEndSeq, event.activityStartSeq, event.detailAvailable, event.totalEventCount]);
-  const loadDetail = async (cursor: string | null) => {
-    const requestKey = activityDetailRequestKey(event, cursor);
-    if (
-      !branchLocator
-      || detailRequestInFlightRef.current
-      || loadedDetailCursorsRef.current.has(requestKey)
-    ) return;
-    detailRequestInFlightRef.current = true;
-    setLoadingEarlier(true);
-    setDetailError(null);
+  };
+  const loadDetail = async (cursor: string | null, replaceWithLatest = false) => {
+    if (!branchLocator || !sessionId?.trim()) return;
+    const activeRequest = activeDetailRequestRef.current;
+    if (activeRequest) {
+      if (activeRequest.scopeKey !== requestScopeKey) {
+        trailingDetailRequestRef.current = { cursor, replaceWithLatest };
+      }
+      return;
+    }
+    if (cursor === null && activeDetailWindow.detailLoaded && !replaceWithLatest) return;
+    const requestEvent = event;
+    const token: AcpActivityDetailRequestToken = {
+      requestSeq: detailRequestSeqRef.current + 1,
+      ownerKey,
+      scopeKey: requestScopeKey,
+      observedRevision: requestEvent.activityEndSeq,
+      sessionId,
+      anchor: cursor === null || replaceWithLatest
+        ? null
+        : captureVisibleAcpActivityDetailAnchor(
+            contentExpansion?.scrollRef.current ?? null,
+            detailListRef.current,
+          ),
+    };
+    detailRequestSeqRef.current = token.requestSeq;
+    activeDetailRequestRef.current = token;
+    setLoadingRequestScope(token.scopeKey);
+    setDetailWindow((current) => {
+      const active = current.ownerKey === ownerKey
+        ? current
+        : createAcpActivityDetailWindow(requestEvent, ownerKey);
+      return active.error === null ? active : { ...active, error: null };
+    });
     try {
       const detail = await getAcpActivityDetail(
         branchLocator.projectId,
@@ -5586,27 +7340,84 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
         branchLocator.attemptId,
         {
           branchId: branchLocator.branchId,
-          activityStartSeq: event.activityStartSeq,
-          activityEndSeq: event.activityEndSeq,
+          sessionId: token.sessionId,
+          activityStartSeq: requestEvent.activityStartSeq,
+          activityEndSeq: requestEvent.activityEndSeq,
           earlierCursor: cursor,
-          limit: 40,
+          limit: ACP_ACTIVITY_DETAIL_PAGE_SIZE,
         },
         branchLocator.outerNodeId,
         branchLocator.outerAttemptId,
       );
-      setAuditEvents((current) => mergeAcpEvents(detail.items, current) as AcpTimelineEvent[]);
-      setDetailLoaded(true);
-      setHasMoreEarlier(detail.hasMoreEarlier);
-      setEarlierCursor(detail.earlierCursor ?? null);
-      loadedDetailCursorsRef.current.add(requestKey);
+      if (!ownsDetailRequest(token)) return;
+      if (!acpActivityDetailBelongsToRequest(
+        detail.items,
+        token.sessionId,
+        requestEvent,
+      )) return;
+      if (token.anchor) pendingDetailAnchorRef.current = token.anchor;
+      const currentEvent = currentEventRef.current;
+      setDetailWindow((current) => mergeAcpActivityDetailPage({
+        current,
+        event: currentEvent,
+        ownerKey,
+        items: detail.items.filter(isVisibleActivityAuditEvent) as AcpTimelineEvent[],
+        hasMoreEarlier: detail.hasMoreEarlier,
+        earlierCursor: detail.earlierCursor ?? null,
+        loadingEarlierPage: cursor !== null && !replaceWithLatest,
+      }));
     } catch (error) {
-      setDetailError(displayAppError(t, error));
+      if (!ownsDetailRequest(token)) return;
+      setDetailWindow((current) => {
+        const active = current.ownerKey === ownerKey
+          ? current
+          : createAcpActivityDetailWindow(currentEventRef.current, ownerKey);
+        return {
+          ...active,
+          error: {
+            scopeKey: token.scopeKey,
+            message: displayAppError(t, error),
+            cursor,
+            replaceWithLatest,
+          },
+        };
+      });
     } finally {
-      detailRequestInFlightRef.current = false;
-      setLoadingEarlier(false);
+      const active = activeDetailRequestRef.current;
+      if (active === token) {
+        activeDetailRequestRef.current = null;
+        if (mountedRef.current) setLoadingRequestScope(null);
+        const trailing = trailingDetailRequestRef.current;
+        trailingDetailRequestRef.current = null;
+        if (mountedRef.current && openRef.current && trailing) {
+          void latestLoadDetailRef.current(
+            trailing.cursor,
+            trailing.replaceWithLatest,
+          );
+        }
+      }
     }
   };
+  latestLoadDetailRef.current = loadDetail;
+  useEffect(() => {
+    if (
+      !open
+      || activeDetailWindow.detailLoaded
+      || !event.detailAvailable
+      || activeDetailError
+      || activeDetailRequestRef.current?.scopeKey === requestScopeKey
+    ) return;
+    void loadDetail(null);
+  }, [
+    activeDetailWindow.detailLoaded,
+    activeDetailError,
+    event.detailAvailable,
+    open,
+    requestScopeKey,
+  ]);
   const handleOpenChange = (next: boolean) => {
+    openRef.current = next;
+    if (!next) trailingDetailRequestRef.current = null;
     let restoringBottom = false;
     if (next) {
       disclosureTokenRef.current = contentExpansion?.beginContentExpansion() ?? null;
@@ -5616,7 +7427,9 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
       restoringBottom = contentExpansion?.endContentExpansion(token) ?? false;
     }
     setOpen(next);
-    if (next && !detailLoaded && event.detailAvailable) void loadDetail(null);
+    if (next && !activeDetailWindow.detailLoaded && event.detailAvailable) {
+      void loadDetail(null);
+    }
     if (!next && !restoringBottom) {
       requestAnimationFrame(() => {
         triggerRef.current?.scrollIntoView?.({ block: "nearest" });
@@ -5660,46 +7473,72 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
         {open ? (
           <CollapsibleContent className="min-w-0 max-w-full overflow-hidden">
             <div className="ml-2 min-w-0 max-w-full space-y-1 border-l border-border/55 py-1 pl-3">
-              {hasMoreEarlier ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 px-2 text-xs text-muted-foreground"
-                  disabled={loadingEarlier}
-                  onClick={() => void loadDetail(earlierCursor)}
-                >
-                  {loadingEarlier ? <Loader2 className="mr-1 size-3 animate-spin" /> : null}
-                  {t("acp.activityShowEarlier", { count: Math.max(0, event.totalEventCount - auditEvents.length) })}
-                </Button>
-              ) : null}
-              {loadingEarlier && auditEvents.length === 0 ? (
+              <div className="flex min-w-0 flex-wrap items-center gap-1">
+                {activeDetailWindow.hasMoreEarlier && activeDetailWindow.earlierCursor ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs text-muted-foreground"
+                    disabled={detailRequestInFlight}
+                    onClick={() => void loadDetail(activeDetailWindow.earlierCursor)}
+                  >
+                    {loadingEarlier ? <Loader2 className="mr-1 size-3 animate-spin" /> : null}
+                    {t("acp.activityShowEarlier", {
+                      count: Math.max(0, event.totalEventCount - activeDetailWindow.events.length),
+                    })}
+                  </Button>
+                ) : null}
+                {activeDetailWindow.hasNewer ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs text-muted-foreground"
+                    disabled={detailRequestInFlight}
+                    onClick={() => void loadDetail(null, true)}
+                    data-acp-activity-return-to-latest="true"
+                  >
+                    {loadingEarlier ? <Loader2 className="mr-1 size-3 animate-spin" /> : null}
+                    {t("acp.activityReturnToLatest")}
+                  </Button>
+                ) : null}
+              </div>
+              {loadingEarlier && activeDetailWindow.events.length === 0 ? (
                 <div className="flex h-8 items-center gap-2 px-2 text-xs text-muted-foreground">
                   <Loader2 className="size-3 animate-spin" />
                   {t("common.loading")}
                 </div>
               ) : null}
-              {detailError ? (
+              {activeDetailError ? (
                 <div className="flex min-w-0 items-center justify-between gap-2 px-2 py-1 text-xs text-destructive">
-                  <span className="min-w-0 truncate">{detailError}</span>
+                  <span className="min-w-0 truncate">{activeDetailError.message}</span>
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
                     className="h-7 shrink-0 px-2 text-xs"
-                    onClick={() => void loadDetail(detailLoaded ? earlierCursor : null)}
+                    disabled={detailRequestInFlight}
+                    onClick={() => void loadDetail(
+                      activeDetailError.cursor,
+                      activeDetailError.replaceWithLatest,
+                    )}
                     data-acp-activity-detail-retry="true"
                   >
                     {t("common.retry")}
                   </Button>
                 </div>
               ) : null}
-              {auditEvents.map((activity) => (
-                <ActivityAuditEvent
-                  key={timelineEventKey(activity)}
-                  event={activity}
-                />
-              ))}
+              <div ref={detailListRef} className="min-w-0 space-y-1">
+                {activeDetailWindow.events.map((activity) => (
+                  <div
+                    key={timelineEventKey(activity)}
+                    data-acp-activity-detail-item-key={timelineEventKey(activity)}
+                  >
+                    <ActivityAuditEvent event={activity} />
+                  </div>
+                ))}
+              </div>
               <div className="flex justify-end px-1 pt-1">
                 <Button
                   type="button"
@@ -5731,7 +7570,7 @@ const ActivityAuditEvent = memo(function ActivityAuditEvent({
   return <ToolBlock event={event} nested compact />;
 });
 
-function isVisibleActivityAuditEvent(event: AcpTimelineEvent) {
+function isVisibleActivityAuditEvent(event: Pick<AcpUiEventVm, "kind">) {
   return event.kind !== "permissionRequest" && event.kind !== "activitySummary";
 }
 
@@ -5741,8 +7580,208 @@ function hasCompleteLocalActivityDetail(event: AcpActivityBatch) {
   return localEventCount >= event.totalEventCount;
 }
 
-function activityDetailRequestKey(event: AcpActivityBatch, cursor: string | null) {
-  return `${event.activityStartSeq}:${event.activityEndSeq}:${cursor ?? 'latest'}`;
+function acpDetailOwnerKey(
+  branchLocator: AgentTranscriptLocator | null,
+  timelineWindowOwner: AcpTimelineWindowOwner | null,
+  sessionId: string | null | undefined,
+  itemKey: string,
+) {
+  const eventWindowKey = timelineWindowOwner?.eventWindowKey
+    ?? (branchLocator
+      ? [
+          branchLocator.projectId,
+          branchLocator.taskId,
+          branchLocator.runId,
+          branchLocator.roundId,
+          branchLocator.outerNodeId ?? "root",
+          branchLocator.outerAttemptId ?? "root",
+          branchLocator.nodeId,
+          branchLocator.attemptId,
+          branchLocator.branchId,
+        ].join(":" )
+      : "unscoped");
+  return `${timelineWindowRenderScopeKey(eventWindowKey, sessionId)}:${itemKey}`;
+}
+
+function acpDetailRequestScopeKey(
+  ownerKey: string,
+  timelineGeneration: number,
+  observedRevision: number,
+) {
+  return `${ownerKey}:generation:${timelineGeneration}:revision:${observedRevision}`;
+}
+
+function createAcpActivityDetailWindow(
+  event: AcpActivityBatch,
+  ownerKey: string,
+): AcpActivityDetailWindow {
+  const events = limitAcpEvents(
+    event.events.filter(isVisibleActivityAuditEvent),
+    "start",
+    ACP_ACTIVITY_DETAIL_WINDOW_LIMIT,
+  ) as AcpTimelineEvent[];
+  return {
+    ownerKey,
+    activityEndSeq: event.activityEndSeq,
+    totalEventCount: event.totalEventCount,
+    events,
+    detailLoaded: hasCompleteLocalActivityDetail(event),
+    hasMoreEarlier: event.hasMoreEarlier,
+    earlierCursor: event.earlierCursor ?? null,
+    hasNewer: false,
+    error: null,
+  };
+}
+
+function syncAcpActivityDetailWindow(
+  current: AcpActivityDetailWindow,
+  event: AcpActivityBatch,
+  ownerKey: string,
+): AcpActivityDetailWindow {
+  if (current.ownerKey !== ownerKey) {
+    return createAcpActivityDetailWindow(event, ownerKey);
+  }
+  // A historical detail window is an intentional reading projection. Live
+  // tail changes are acknowledged by the parent timeline but are not inserted
+  // into this DOM until the user explicitly returns to the latest page.
+  if (current.hasNewer) {
+    return {
+      ...current,
+      activityEndSeq: event.activityEndSeq,
+      totalEventCount: event.totalEventCount,
+    };
+  }
+
+  const canonicalRangeChanged = current.activityEndSeq !== event.activityEndSeq
+    || current.totalEventCount !== event.totalEventCount;
+  const merged = mergeAcpEvents(
+    current.events,
+    event.events.filter(isVisibleActivityAuditEvent),
+  ) as AcpTimelineEvent[];
+  const events = limitAcpEvents(
+    merged,
+    "start",
+    ACP_ACTIVITY_DETAIL_WINDOW_LIMIT,
+  ) as AcpTimelineEvent[];
+  const detailLoaded = hasCompleteLocalActivityDetail(event)
+    || (current.detailLoaded && !canonicalRangeChanged);
+  return {
+    ...current,
+    activityEndSeq: event.activityEndSeq,
+    totalEventCount: event.totalEventCount,
+    events,
+    detailLoaded,
+    hasMoreEarlier: detailLoaded && !canonicalRangeChanged
+      ? current.hasMoreEarlier
+      : event.hasMoreEarlier,
+    earlierCursor: detailLoaded && !canonicalRangeChanged
+      ? current.earlierCursor
+      : (event.earlierCursor ?? null),
+  };
+}
+
+function mergeAcpActivityDetailPage({
+  current,
+  event,
+  ownerKey,
+  items,
+  hasMoreEarlier,
+  earlierCursor,
+  loadingEarlierPage,
+}: {
+  current: AcpActivityDetailWindow;
+  event: AcpActivityBatch;
+  ownerKey: string;
+  items: AcpTimelineEvent[];
+  hasMoreEarlier: boolean;
+  earlierCursor: string | null;
+  loadingEarlierPage: boolean;
+}): AcpActivityDetailWindow {
+  const active = current.ownerKey === ownerKey
+    ? current
+    : createAcpActivityDetailWindow(event, ownerKey);
+  if (!loadingEarlierPage) {
+    const latest = mergeAcpEvents(
+      items,
+      event.events.filter(isVisibleActivityAuditEvent),
+    ) as AcpTimelineEvent[];
+    return {
+      ownerKey,
+      activityEndSeq: event.activityEndSeq,
+      totalEventCount: event.totalEventCount,
+      events: limitAcpEvents(
+        latest,
+        "start",
+        ACP_ACTIVITY_DETAIL_WINDOW_LIMIT,
+      ) as AcpTimelineEvent[],
+      detailLoaded: true,
+      hasMoreEarlier,
+      earlierCursor,
+      hasNewer: false,
+      error: null,
+    };
+  }
+
+  const merged = mergeAcpEvents(items, active.events) as AcpTimelineEvent[];
+  const overflowed = merged.length > ACP_ACTIVITY_DETAIL_WINDOW_LIMIT;
+  return {
+    ...active,
+    activityEndSeq: event.activityEndSeq,
+    totalEventCount: event.totalEventCount,
+    events: limitAcpEvents(
+      merged,
+      "end",
+      ACP_ACTIVITY_DETAIL_WINDOW_LIMIT,
+    ) as AcpTimelineEvent[],
+    detailLoaded: true,
+    hasMoreEarlier,
+    earlierCursor,
+    hasNewer: active.hasNewer || overflowed,
+    error: null,
+  };
+}
+
+function acpActivityDetailBelongsToRequest(
+  items: AcpUiEventVm[],
+  sessionId: string,
+  event: AcpActivityBatch,
+) {
+  return items.every((item) => {
+    if (item.sessionId !== sessionId) return false;
+    const start = item.startedSeq ?? item.seq;
+    const end = item.endedSeq ?? item.seq;
+    return start >= event.activityStartSeq && end <= event.activityEndSeq;
+  });
+}
+
+function captureVisibleAcpActivityDetailAnchor(
+  viewport: HTMLElement | null,
+  detailList: HTMLElement | null,
+) {
+  if (!viewport || !detailList) return null;
+  const viewportBounds = viewport.getBoundingClientRect();
+  for (const item of detailList.querySelectorAll<HTMLElement>(
+    "[data-acp-activity-detail-item-key]",
+  )) {
+    const bounds = item.getBoundingClientRect();
+    if (bounds.bottom < viewportBounds.top || bounds.top > viewportBounds.bottom) continue;
+    const key = item.dataset.acpActivityDetailItemKey;
+    if (key) return { key, top: bounds.top };
+  }
+  return null;
+}
+
+function findAcpActivityDetailItem(
+  detailList: HTMLElement | null,
+  key: string,
+) {
+  if (!detailList) return null;
+  for (const item of detailList.querySelectorAll<HTMLElement>(
+    "[data-acp-activity-detail-item-key]",
+  )) {
+    if (item.dataset.acpActivityDetailItemKey === key) return item;
+  }
+  return null;
 }
 
 function activityBatchSummary(
@@ -6409,12 +8448,69 @@ const ToolBlock = memo(function ToolBlock({
 }) {
   const { t } = useTranslation();
   const branchLocator = useContext(AcpBranchLocatorContext);
+  const timelineWindowOwner = useContext(AcpTimelineWindowOwnerContext);
+  const sessionId = timelineWindowOwner?.sessionId ?? event.sessionId ?? null;
+  const logicalToolKey = event.toolCallId
+    ? `tool:${event.toolCallId}`
+    : `event:${event.id}`;
+  const ownerKey = acpDetailOwnerKey(
+    branchLocator,
+    timelineWindowOwner,
+    sessionId,
+    logicalToolKey,
+  );
+  const observedRevision = timelineEventPosition(event);
+  const requestScopeKey = acpDetailRequestScopeKey(
+    ownerKey,
+    timelineWindowOwner?.timelineGeneration ?? 0,
+    observedRevision,
+  );
   const [open, setOpen] = useState(false);
-  const [detailEvent, setDetailEvent] = useState<AcpTimelineEvent | null>(null);
-  const [detailError, setDetailError] = useState<string | null>(null);
-  const detailRequestInFlightRef = useRef(false);
+  const [detailState, setDetailState] = useState<AcpToolDetailState | null>(null);
+  const [detailError, setDetailError] = useState<{
+    scopeKey: string;
+    sourceSignature: string;
+    message: string;
+  } | null>(null);
+  const sourceSignature = useMemo(
+    () => open ? toolDetailSourceSignature(event) : null,
+    [event.raw, open],
+  );
+  const activeDetailRequestRef = useRef<AcpToolDetailRequestToken | null>(null);
+  const trailingToolDetailRequestRef = useRef(false);
+  const latestLoadToolDetailRef = useRef<() => void>(() => {});
+  const detailRequestSeqRef = useRef(0);
+  const mountedRef = useRef(true);
+  const openRef = useRef(open);
+  const currentRequestScopeRef = useRef(requestScopeKey);
+  const currentOwnerKeyRef = useRef(ownerKey);
+  const currentEffectiveSessionIdRef = useRef(sessionId);
+  const currentSourceSignatureRef = useRef<string | null>(sourceSignature);
+  const currentEventRef = useRef(event);
+  openRef.current = open;
+  currentRequestScopeRef.current = requestScopeKey;
+  currentOwnerKeyRef.current = ownerKey;
+  currentEffectiveSessionIdRef.current = sessionId;
+  if (sourceSignature !== null) {
+    currentSourceSignatureRef.current = sourceSignature;
+  }
+  currentEventRef.current = event;
+  const activeDetailState = detailState
+    && sourceSignature !== null
+    && detailState.ownerKey === ownerKey
+    && toolDetailSourceSnapshotMatches(detailState, event, sourceSignature)
+      ? detailState
+      : null;
+  const detailEvent = activeDetailState
+    ? mergeAcpToolDetailEnrichment(event, activeDetailState.event) as AcpTimelineEvent
+    : event;
+  const activeDetailError = detailError?.scopeKey === requestScopeKey
+    && sourceSignature !== null
+    && detailError.sourceSignature === sourceSignature
+    ? detailError.message
+    : null;
   const summaryDetails = toolDetails(event, false);
-  const details = open ? toolDetails(detailEvent ?? event, true) : summaryDetails;
+  const details = open ? toolDetails(detailEvent, true) : summaryDetails;
   const ToolIcon = toolIcon(details.name);
   const orderedInput: ToolParam[] = details.queryBlocks.map((block) => ({
     label: t(block.labelKey),
@@ -6433,14 +8529,61 @@ const ToolBlock = memo(function ToolBlock({
         ? (event.content ?? undefined)
         : undefined,
   };
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      activeDetailRequestRef.current = null;
+      trailingToolDetailRequestRef.current = false;
+    };
+  }, []);
+  const ownsToolDetailRequest = (token: AcpToolDetailRequestToken) => {
+    const active = activeDetailRequestRef.current;
+    return Boolean(
+      mountedRef.current
+      && active === token
+      && currentOwnerKeyRef.current === token.ownerKey
+      && currentRequestScopeRef.current === token.scopeKey,
+    );
+  };
   const loadToolDetail = () => {
     if (
       !branchLocator
-      || detailEvent
-      || detailRequestInFlightRef.current
+      || !sessionId?.trim()
+      || sourceSignature === null
+      || activeDetailState
       || !toolDetailAvailable(event)
     ) return;
-    detailRequestInFlightRef.current = true;
+    const activeRequest = activeDetailRequestRef.current;
+    if (activeRequest) {
+      if (
+        activeRequest.scopeKey !== requestScopeKey
+        || !toolDetailRequestStillMatchesEvent(
+          activeRequest,
+          event,
+          sessionId,
+          sourceSignature,
+        )
+      ) {
+        trailingToolDetailRequestRef.current = true;
+      }
+      return;
+    }
+    const token: AcpToolDetailRequestToken = {
+      requestSeq: detailRequestSeqRef.current + 1,
+      ownerKey,
+      scopeKey: requestScopeKey,
+      observedRevision,
+      eventId: event.id,
+      toolCallId: event.toolCallId ?? null,
+      sessionId,
+      sourceSignature,
+      sourceStatus: event.status ?? null,
+      sourceContent: event.content ?? null,
+      sourceTitle: event.title ?? null,
+    };
+    detailRequestSeqRef.current = token.requestSeq;
+    activeDetailRequestRef.current = token;
     setDetailError(null);
     void getAcpToolDetail(
       branchLocator.projectId,
@@ -6451,19 +8594,75 @@ const ToolBlock = memo(function ToolBlock({
       branchLocator.attemptId,
       {
         branchId: branchLocator.branchId,
+        sessionId: token.sessionId,
         eventId: event.id,
         toolCallId: event.toolCallId,
       },
       branchLocator.outerNodeId,
       branchLocator.outerAttemptId,
     ).then((detail) => {
-      if (detail.event) setDetailEvent(detail.event as AcpTimelineEvent);
+      if (!ownsToolDetailRequest(token) || !detail.event) return;
+      const currentEvent = currentEventRef.current;
+      const currentSourceSignature = currentSourceSignatureRef.current;
+      const detailEvent = detail.event as AcpTimelineEvent;
+      if (
+        currentSourceSignature === null
+        || !toolDetailResponseBelongsToRequest(detailEvent, token)
+        || !toolDetailRequestStillMatchesEvent(
+          token,
+          currentEvent,
+          currentEffectiveSessionIdRef.current,
+          currentSourceSignature,
+        )
+        || timelineEventPosition(detailEvent) < timelineEventPosition(currentEvent)
+      ) return;
+      const merged = mergeAcpToolDetailEnrichment(
+        currentEvent,
+        detailEvent,
+      ) as AcpTimelineEvent;
+      setDetailState({
+        ownerKey,
+        observedRevision: timelineEventPosition(currentEvent),
+        sourceSignature: currentSourceSignature,
+        sourceStatus: currentEvent.status ?? null,
+        sourceContent: currentEvent.content ?? null,
+        sourceTitle: currentEvent.title ?? null,
+        event: merged,
+      });
     }).catch((error) => {
-      setDetailError(displayAppError(t, error));
+      if (!ownsToolDetailRequest(token)) return;
+      setDetailError({
+        scopeKey: token.scopeKey,
+        sourceSignature: token.sourceSignature,
+        message: displayAppError(t, error),
+      });
     }).finally(() => {
-      detailRequestInFlightRef.current = false;
+      if (activeDetailRequestRef.current === token) {
+        activeDetailRequestRef.current = null;
+        const loadTrailing = trailingToolDetailRequestRef.current;
+        trailingToolDetailRequestRef.current = false;
+        if (mountedRef.current && openRef.current && loadTrailing) {
+          latestLoadToolDetailRef.current();
+        }
+      }
     });
   };
+  latestLoadToolDetailRef.current = loadToolDetail;
+  useEffect(() => {
+    if (
+      !open
+      || activeDetailState
+      || activeDetailError
+      || !toolDetailAvailable(event)
+    ) return;
+    loadToolDetail();
+  }, [
+    activeDetailError,
+    activeDetailState,
+    event,
+    open,
+    requestScopeKey,
+  ]);
   return (
     <AssistantTimelineRow timestamp={event.timestamp} nested={nested}>
       <div className="min-w-0 max-w-full">
@@ -6473,16 +8672,17 @@ const ToolBlock = memo(function ToolBlock({
           icon={<ToolIcon className="size-4" />}
           open={open}
           onOpenChange={(next) => {
+            openRef.current = next;
+            if (!next) trailingToolDetailRequestRef.current = false;
             setOpen(next);
-            if (next) loadToolDetail();
           }}
           animated={false}
           variant={compact ? "audit" : "card"}
           className={compact ? "acp-activity-audit-tool" : undefined}
         />
-        {detailError ? (
+        {activeDetailError ? (
           <div className="mt-1 flex min-w-0 items-center justify-between gap-2 px-2 text-xs text-destructive">
-            <span className="min-w-0 truncate">{detailError}</span>
+            <span className="min-w-0 truncate">{activeDetailError}</span>
             <Button
               type="button"
               variant="ghost"
@@ -6502,6 +8702,69 @@ const ToolBlock = memo(function ToolBlock({
 
 function toolDetailAvailable(event: AcpTimelineEvent) {
   return goldBandConversationMeta(event)?.toolDetailAvailable === true;
+}
+
+function toolDetailSourceSignature(event: AcpTimelineEvent) {
+  const raw = rawObject(event.raw);
+  const toolCall = rawObject(raw?.toolCall) ?? rawObject(raw?.content) ?? raw;
+  return JSON.stringify(canonicalizeToolDetailSourceValue({
+    toolName: canonicalToolName(event) ?? null,
+    detailAvailable: toolDetailAvailable(event),
+    rawInput: toolCall?.rawInput ?? raw?.rawInput ?? null,
+    input: toolCall?.input ?? raw?.input ?? null,
+    locations: toolCall?.locations ?? raw?.locations ?? null,
+  }));
+}
+
+function canonicalizeToolDetailSourceValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalizeToolDetailSourceValue);
+  }
+  const object = rawObject(value);
+  if (!object) return value ?? null;
+  return Object.keys(object)
+    .sort()
+    .reduce<Record<string, unknown>>((canonical, key) => {
+      canonical[key] = canonicalizeToolDetailSourceValue(object[key]);
+      return canonical;
+    }, {});
+}
+
+function toolDetailSourceSnapshotMatches(
+  state: AcpToolDetailState,
+  event: AcpTimelineEvent,
+  sourceSignature: string,
+) {
+  return state.observedRevision === timelineEventPosition(event)
+    && state.sourceSignature === sourceSignature
+    && state.sourceStatus === (event.status ?? null)
+    && state.sourceContent === (event.content ?? null)
+    && state.sourceTitle === (event.title ?? null);
+}
+
+function toolDetailRequestStillMatchesEvent(
+  token: AcpToolDetailRequestToken,
+  event: AcpTimelineEvent,
+  effectiveSessionId: string | null,
+  sourceSignature: string,
+) {
+  return token.observedRevision === timelineEventPosition(event)
+    && token.eventId === event.id
+    && token.toolCallId === (event.toolCallId ?? null)
+    && token.sessionId === effectiveSessionId
+    && token.sourceSignature === sourceSignature
+    && token.sourceStatus === (event.status ?? null)
+    && token.sourceContent === (event.content ?? null)
+    && token.sourceTitle === (event.title ?? null);
+}
+
+function toolDetailResponseBelongsToRequest(
+  detail: AcpTimelineEvent,
+  token: AcpToolDetailRequestToken,
+) {
+  if (detail.sessionId !== token.sessionId) return false;
+  if (token.toolCallId) return detail.toolCallId === token.toolCallId;
+  return detail.id === token.eventId;
 }
 
 function toolLabels(t: ReturnType<typeof useTranslation>["t"]): ToolLabels {
@@ -7497,7 +9760,8 @@ function stabilizeTimelineItem(
       next.writtenFileCount === previous.writtenFileCount &&
       next.detailAvailable === previous.detailAvailable &&
       next.hasMoreEarlier === previous.hasMoreEarlier &&
-      next.earlierCursor === previous.earlierCursor
+      next.earlierCursor === previous.earlierCursor &&
+      next.sessionId === previous.sessionId
     ) {
       return previous;
     }
@@ -7561,6 +9825,13 @@ function sameTimelineEvent(left: AcpTimelineEvent, right: AcpTimelineEvent) {
 
 function timelineEventPosition(event: Pick<AcpUiEventVm, "seq" | "endedSeq">) {
   return event.endedSeq ?? event.seq;
+}
+
+export function timelineWindowRenderScopeKey(
+  eventWindowKey: string,
+  sessionId: string | null | undefined,
+) {
+  return `${eventWindowKey}:session:${sessionId ?? "pending"}`;
 }
 
 function timelineRenderKey(eventWindowKey: string, event: AcpTimelineItem) {
@@ -7819,7 +10090,7 @@ function batchAcpActivities(
       ?? first.startedSeq
       ?? first.seq;
     const auditEvents = activityEvents.filter((event) => event.kind !== "activitySummary");
-    const retainedEvents = auditEvents.slice(-40);
+    const retainedEvents = auditEvents.slice(-ACP_ACTIVITY_DETAIL_PAGE_SIZE);
     const toolIds = new Set(
       auditEvents
         .filter((event) => event.kind === "toolCall" || event.kind === "toolCallUpdate")
@@ -7851,6 +10122,7 @@ function batchAcpActivities(
       detailAvailable: activityMeta?.detailAvailable === true || auditEvents.length > 0,
       hasMoreEarlier: activityMeta?.hasMoreEarlier === true || auditEvents.length > retainedEvents.length,
       earlierCursor: stringValue(activityMeta?.earlierCursor),
+      sessionId: last.sessionId ?? first.sessionId ?? null,
     });
     activityEvents = [];
   };
@@ -8065,11 +10337,14 @@ function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpS
 
 function createVisibleAcpSession(
   session: AcpSessionVm,
-  liveEvents: AcpUiEventVm[],
+  loadedEvents: AcpUiEventVm[],
   eventPageSize: number,
+  projectionMode: "live-head" | "historical",
 ): AcpSessionVm {
-  const mergedEvents = mergeAcpEvents(session.events, liveEvents);
-  const limitedEvents = limitAcpEvents(mergedEvents, "start", eventPageSize);
+  const visibleEvents = projectionMode === "historical"
+    ? loadedEvents
+    : mergeAcpEvents(session.events, loadedEvents);
+  const limitedEvents = limitAcpEvents(visibleEvents, "start", eventPageSize);
   return {
     ...session,
     events: limitedEvents,
@@ -8218,6 +10493,31 @@ function liveTimelineUpdatesFromEvents(events: AcpUiEventVm[]) {
   );
 }
 
+export function projectAcpSessionControlEvents(
+  session: AcpSessionVm | null | undefined,
+  events: AcpUiEventVm[],
+  lifecycle?: ConversationAttemptLifecycleVm | null,
+): AcpSessionVm | null {
+  if (!session) return session ?? null;
+  const latestTiming = latestLiveSessionTimingFromEvents(events);
+  const branchResult = latestAgentBranchResult(events);
+  const hasUsageUpdate = events.some((event) => event.kind === "usageUpdate");
+  const hasPromptInteractionLifecycleUpdate = events.some(
+    (event) => event.kind === "permissionRequest"
+      || event.kind === "elicitationRequest"
+      || event.kind === "elicitationResponse",
+  );
+  let projected = latestTiming
+    ? stabilizeAcpSessionTimingPatchForDisplay(session, latestTiming)
+    : session;
+  if (branchResult) projected = applyAgentBranchResultToSession(projected, branchResult);
+  if (hasUsageUpdate) projected = projectLatestAcpUsageUpdate(projected, events);
+  if (hasPromptInteractionLifecycleUpdate) {
+    projected = applyPendingInteractionEventsToSession(projected, events);
+  }
+  return settlePendingAcpInteractionsForLifecycle(projected, lifecycle);
+}
+
 function calculateSessionElapsedSeconds(events: AcpUiEventVm[], status: string) {
   let elapsedSeconds = 0;
   let turnStartedAt: number | null = null;
@@ -8354,6 +10654,28 @@ function reconcileAcpSessionForDisplay(
   return preserveAcpSessionMetadataForDisplay(previous, timingStable);
 }
 
+function reconcileCanonicalAcpSessionForDisplay(
+  previous: AcpSessionVm | null | undefined,
+  canonical: AcpSessionVm,
+) {
+  if (
+    !previous
+    || !isSameAcpSessionForMetadata(previous, canonical)
+    || !shouldPreferObservedAcpSessionOverCanonicalResponse(canonical, previous)
+  ) {
+    return reconcileAcpSessionForDisplay(previous, canonical) ?? canonical;
+  }
+  const latestDisplay = reconcileAcpSessionForDisplay(canonical, previous)
+    ?? previous;
+  return {
+    ...latestDisplay,
+    events: mergeAcpEvents(canonical.events, previous.events),
+    // Display events may include transient Router replay. Keep the page from
+    // the canonical response so it can never become ACK coverage evidence.
+    eventPage: canonical.eventPage,
+  };
+}
+
 /**
  * A terminal ACP lifecycle settles the transient interaction projection for
  * that turn even when the session body carrying the corresponding Timeline
@@ -8390,7 +10712,11 @@ function preserveAcpSessionMetadataForDisplay(
   const preserveSystemPrompt =
     !next.systemPromptAppend?.trim() && Boolean(previous.systemPromptAppend?.trim());
   const preserveConfig = shouldPreferAcpSessionConfig(previous.config, next.config);
+  const timelineGenerationChanged = previous.eventPage.generation != null
+    && next.eventPage.generation != null
+    && previous.eventPage.generation !== next.eventPage.generation;
   const preserveGoldBandPrompts =
+    !timelineGenerationChanged &&
     previous.events.some(isGoldBandUserPrompt) &&
     !next.events.some(isGoldBandUserPrompt);
   const pendingProjectionAdvanced = hasAdvancedAcpSessionProjection(previous, next);
@@ -8911,12 +11237,14 @@ function isOptimisticEvent(event: AcpUiEventVm) {
   return rawObject(event.raw)?.optimistic === true;
 }
 
+function isPendingOptimisticPrompt(event: AcpUiEventVm) {
+  return isOptimisticEvent(event)
+    && (event.status === "sending" || event.status === "processing");
+}
+
 function clearPendingOptimisticPromptsAfterStop(events: AcpUiEventVm[]) {
   return events.filter(
-    (event) => !(
-      isOptimisticEvent(event)
-      && (event.status === "sending" || event.status === "processing")
-    ),
+    (event) => !isPendingOptimisticPrompt(event),
   );
 }
 

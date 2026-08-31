@@ -33,7 +33,12 @@ vi.mock('@/api/shared', async () => {
 
 vi.mock('@/api', async () => {
   const actual = await vi.importActual<typeof import('@/api')>('@/api');
-  return { ...actual, getAcpSession: vi.fn() };
+  return {
+    ...actual,
+    getAcpActivityDetail: vi.fn(),
+    getAcpSession: vi.fn(),
+    submitConversationPrompt: vi.fn(),
+  };
 });
 
 vi.mock('@/components/prompt-kit/markdown', () => ({
@@ -42,12 +47,16 @@ vi.mock('@/components/prompt-kit/markdown', () => ({
   ),
 }));
 
-import { getAcpSession } from '@/api';
+import { getAcpActivityDetail, getAcpSession, submitConversationPrompt } from '@/api';
 import {
   ACPChatDialog,
+  createAcpEventWindowCacheKey,
+  createAcpSessionCacheKey,
   loadedEventBufferLimit,
   optimisticUserEvent,
   resetAcpResourceCache,
+  restoreAcpSession,
+  updateAcpOptimisticEvents,
 } from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import {
@@ -56,9 +65,6 @@ import {
   readConversationBranchReplaySnapshot,
   resetConversationEventRouterSnapshots,
 } from '@/lib/conversation-event-router';
-import {
-  DEFAULT_ACP_CHAT_LOADED_EVENT_BUFFER_LIMIT,
-} from '@/lib/acp-chat-pagination';
 import type { AcpSessionUpdatedEventVm } from '@/api/client';
 import type {
   AcpSessionVm,
@@ -156,7 +162,70 @@ async function renderDialog(
   optimisticEvents?: AcpUiEventVm[],
   dialogLocator: TestLocator = locator,
   eventPageSize?: number,
+  lifecycle?: ConversationAttemptLifecycleVm,
 ) {
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  if (optimisticEvents) {
+    const optimisticKey = createAcpSessionCacheKey(
+      undefined,
+      dialogLocator.taskId,
+      dialogLocator.runId,
+      dialogLocator.roundId,
+      dialogLocator.nodeId,
+      dialogLocator.attemptId,
+      dialogLocator.projectId,
+      dialogLocator.outerNodeId,
+      dialogLocator.outerAttemptId,
+      branchId,
+    );
+    updateAcpOptimisticEvents(optimisticKey, () => optimisticEvents);
+  }
+  await act(async () => {
+    root.render(
+      <TooltipProvider>
+        <ACPChatDialog
+          session={acpSession}
+          {...dialogLocator}
+          branchId={branchId}
+          eventPageSize={eventPageSize}
+          runtimeComposerContext={lifecycle ? {
+            isOrchestrated: true,
+            runtimeStatus: lifecycle.runtime.status,
+            workflowValid: true,
+            lifecycle,
+          } : undefined}
+          onInitialSessionQueryStateChange={onInitialSessionQueryStateChange}
+          showSystemPromptAction={false}
+          showRawFramesAction={false}
+          usageCompact
+        />
+      </TooltipProvider>,
+    );
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+  });
+  return { container, root };
+}
+
+async function renderStoredOptimisticDialog(
+  acpSession: AcpSessionVm,
+  initialOptimisticEvents: AcpUiEventVm[],
+  eventPageSize?: number,
+) {
+  const optimisticKey = createAcpSessionCacheKey(
+    undefined,
+    locator.taskId,
+    locator.runId,
+    locator.roundId,
+    locator.nodeId,
+    locator.attemptId,
+    locator.projectId,
+    undefined,
+    undefined,
+    'root',
+  );
+  updateAcpOptimisticEvents(optimisticKey, () => initialOptimisticEvents);
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -165,11 +234,9 @@ async function renderDialog(
       <TooltipProvider>
         <ACPChatDialog
           session={acpSession}
-          {...dialogLocator}
-          branchId={branchId}
-          optimisticEvents={optimisticEvents}
+          {...locator}
+          branchId="root"
           eventPageSize={eventPageSize}
-          onInitialSessionQueryStateChange={onInitialSessionQueryStateChange}
           showSystemPromptAction={false}
           showRawFramesAction={false}
           usageCompact
@@ -254,10 +321,23 @@ async function unmount(root: Root) {
   await act(async () => root.unmount());
 }
 
+async function setTextareaValue(textarea: HTMLTextAreaElement, value: string) {
+  const valueSetter = Object.getOwnPropertyDescriptor(
+    HTMLTextAreaElement.prototype,
+    'value',
+  )?.set;
+  await act(async () => {
+    valueSetter?.call(textarea, value);
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
 beforeEach(() => {
   resetAcpResourceCache();
   resetConversationEventRouterSnapshots();
+  vi.mocked(getAcpActivityDetail).mockReset();
   vi.mocked(getAcpSession).mockReset();
+  vi.mocked(submitConversationPrompt).mockReset();
   vi.stubGlobal('ResizeObserver', class {
     observe() {}
     unobserve() {}
@@ -629,6 +709,280 @@ describe('ACP session re-entry reconciliation', () => {
     }
   });
 
+  it('automatically rereads the canonical head until a sequence-only replay loss is covered', async () => {
+    const stale = session([
+      event('sequence-loss-answer', 2, 'textDelta', 'sequence loss 前的旧内容'),
+    ]);
+    const covered = session([
+      event('sequence-loss-answer', 9, 'textDelta', 'sequence loss 已由 canonical head 覆盖', {
+        startedSeq: 2,
+        endedSeq: 9,
+      }),
+    ]);
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(stale)
+      .mockResolvedValue(covered);
+
+    applyConversationEventToBranchSnapshots({
+      ...update(event(
+        'sequence-loss-answer',
+        9,
+        'textDelta',
+        '尚未落盘的 sequence-only live',
+        {
+          startedSeq: 2,
+          endedSeq: 9,
+          raw: { oversized: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes) },
+        },
+      )),
+      timelineRevision: null,
+    });
+    expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+      lossWatermarkRevision: 0,
+      lossWatermarkSeq: 9,
+      requiresCatchUp: true,
+    });
+
+    const { container, root } = await renderDialog(stale);
+    try {
+      await vi.waitFor(() => {
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+      });
+
+      expect(vi.mocked(getAcpSession).mock.calls.map((call) => call[6]?.afterRevision))
+        .toEqual([undefined, undefined]);
+      expect(container.textContent).toContain('sequence loss 已由 canonical head 覆盖');
+      expect(container.textContent).not.toContain('sequence loss 前的旧内容');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+        lossWatermarkSeq: 0,
+        requiresCatchUp: false,
+      });
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('does not acknowledge sequence loss from a subscription-only session watermark during initial re-entry', async () => {
+    const stale = session([
+      event('subscription-watermark-answer', 2, 'textDelta', 'canonical head 仍未覆盖 sequence loss'),
+    ]);
+    const subscriptionOnly = session([
+      event('subscription-watermark-answer', 20, 'textDelta', 'subscription 可展示最新内容', {
+        startedSeq: 2,
+        endedSeq: 20,
+      }),
+    ]);
+    Object.assign(subscriptionOnly.eventPage, {
+      coveredRevision: 2,
+      newestRevision: 2,
+      newestSeq: 20,
+    });
+    const covered = session([
+      event('subscription-watermark-answer', 9, 'textDelta', 'canonical full-head 已覆盖 sequence loss', {
+        startedSeq: 2,
+        endedSeq: 9,
+      }),
+    ]);
+    let resolveInitialRead!: (value: AcpSessionVm) => void;
+    const initialRead = new Promise<AcpSessionVm>((resolve) => {
+      resolveInitialRead = resolve;
+    });
+    let resolveCanonicalRead!: (value: AcpSessionVm) => void;
+    const canonicalRead = new Promise<AcpSessionVm>((resolve) => {
+      resolveCanonicalRead = resolve;
+    });
+    vi.mocked(getAcpSession)
+      .mockReturnValueOnce(initialRead)
+      .mockReturnValueOnce(canonicalRead)
+      .mockResolvedValue(covered);
+
+    applyConversationEventToBranchSnapshots({
+      ...update(event(
+        'subscription-watermark-answer',
+        9,
+        'textDelta',
+        '尚未落盘的 sequence-only live',
+        {
+          startedSeq: 2,
+          endedSeq: 9,
+          raw: { oversized: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes) },
+        },
+      )),
+      timelineRevision: null,
+    });
+
+    const { container, root } = await renderDialog(stale);
+    try {
+      await vi.waitFor(() => {
+        expect(runtime.listener).not.toBeNull();
+      });
+      await act(async () => {
+        runtime.listener?.({
+          ...locator,
+          branchId: 'root',
+          timelineGeneration: 1,
+          timelineRevision: 2,
+          session: subscriptionOnly,
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(container.textContent).toContain('canonical head 仍未覆盖 sequence loss');
+      expect(container.textContent).not.toContain('subscription 可展示最新内容');
+
+      await act(async () => {
+        resolveInitialRead(stale);
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      await vi.waitFor(() => {
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+      });
+      expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+        lossWatermarkSeq: 9,
+        requiresCatchUp: true,
+      });
+      expect(container.textContent).toContain('canonical head 仍未覆盖 sequence loss');
+      expect(container.textContent).not.toContain('subscription 可展示最新内容');
+
+      await act(async () => {
+        resolveCanonicalRead(covered);
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      await vi.waitFor(() => {
+        expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+          lossWatermarkSeq: 0,
+          requiresCatchUp: false,
+        });
+      });
+      expect(container.textContent).toContain('canonical full-head 已覆盖 sequence loss');
+      expect(container.textContent).not.toContain('subscription 可展示最新内容');
+      expect(vi.mocked(getAcpSession).mock.calls.map((call) => call[6]?.afterRevision))
+        .toEqual([undefined, undefined]);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('does not acknowledge sequence loss from a replay-projected visible sequence', async () => {
+    const historical = session([
+      event('visible-sequence-history', 1, 'textDelta', '仍在阅读的历史窗口'),
+    ]);
+    Object.assign(historical.eventPage, {
+      coveredRevision: 1,
+      newestRevision: 1,
+      total: 2,
+      hasNewer: true,
+    });
+    const canonicalBeforeReplay = session([
+      event('visible-sequence-canonical', 1, 'textDelta', 'replay 投影前的 canonical head'),
+    ]);
+    const canonicalStillBehindLoss = session([
+      event('visible-sequence-canonical', 10, 'textDelta', '第一次 recovery 的 canonical 仍落后'),
+    ]);
+    const canonicalCoveredLoss = session([
+      event('visible-sequence-loss', 15, 'textDelta', '真正覆盖 sequence loss 的 canonical head'),
+    ]);
+    let resolveCanonicalCoveredLoss!: (value: AcpSessionVm) => void;
+    const pendingCanonicalCoveredLoss = new Promise<AcpSessionVm>((resolve) => {
+      resolveCanonicalCoveredLoss = resolve;
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(historical)
+      .mockResolvedValueOnce(canonicalBeforeReplay)
+      .mockResolvedValueOnce(canonicalStillBehindLoss)
+      .mockReturnValue(pendingCanonicalCoveredLoss);
+
+    applyConversationEventToBranchSnapshots({
+      ...update(event(
+        'visible-sequence-replay',
+        20,
+        'textDelta',
+        '只来自 replay 的可见高 sequence',
+      )),
+      timelineRevision: null,
+    });
+
+    const { container, root } = await renderDialog(historical);
+    try {
+      const returnToLatest = container.querySelector<HTMLButtonElement>(
+        '[data-acp-return-to-latest="true"]',
+      );
+      expect(returnToLatest).not.toBeNull();
+      await act(async () => {
+        returnToLatest!.click();
+        await vi.waitFor(() => {
+          expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+        });
+      });
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain('只来自 replay 的可见高 sequence');
+      });
+      const cacheKey = createAcpEventWindowCacheKey({
+        ...locator,
+        branchId: 'root',
+      });
+      expect(restoreAcpSession(cacheKey)?.eventPage.newestSeq).toBe(20);
+
+      applyConversationEventToBranchSnapshots({
+        ...update(event(
+          'visible-sequence-loss',
+          15,
+          'textDelta',
+          '尚未被 canonical 覆盖的 sequence loss',
+          { raw: { oversized: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes) } },
+        )),
+        timelineRevision: null,
+      });
+      expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+        lossWatermarkRevision: 0,
+        lossWatermarkSeq: 15,
+        requiresCatchUp: true,
+      });
+
+      await act(async () => {
+        runtime.listener?.({
+          ...locator,
+          branchId: 'root',
+          event: event(
+            'visible-sequence-malformed',
+            21,
+            'textDelta',
+            '触发 canonical recovery 的非法 live',
+          ),
+          timelineRevision: null,
+        });
+      });
+      await vi.waitFor(() => {
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(3);
+      });
+      expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+        lossWatermarkSeq: 15,
+        requiresCatchUp: true,
+      });
+      await vi.waitFor(() => {
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(4);
+      });
+      await act(async () => {
+        resolveCanonicalCoveredLoss(canonicalCoveredLoss);
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      expect(vi.mocked(getAcpSession).mock.calls.map((call) => call[6]?.afterRevision))
+        .toEqual([undefined, undefined, undefined, undefined]);
+      expect(container.textContent).toContain('真正覆盖 sequence loss 的 canonical head');
+      expect(container.textContent).not.toContain('只来自 replay 的可见高 sequence');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+        lossWatermarkSeq: 0,
+        requiresCatchUp: false,
+      });
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('keeps the animation gate closed and retries a failed replay delta', async () => {
     const prompt = event('prompt-retry-gap', 1, 'userTextDelta', '检查项目', {
       raw: { source: 'goldBandPrompt', promptId: 'prompt-retry-gap' },
@@ -707,6 +1061,189 @@ describe('ACP session re-entry reconciliation', () => {
     }
   });
 
+  it('refreshes a stale snapshot before projecting retained replay from a newer generation', async () => {
+    const prompt = event('prompt-generation-refresh', 1, 'userTextDelta', '检查新代际');
+    const stale = session([
+      prompt,
+      event('answer-generation-stale', 2, 'textDelta', '旧代际回答'),
+    ]);
+    const refreshed = session([
+      prompt,
+      event('answer-generation-current', 8, 'textDelta', '新代际完整回答', {
+        startedSeq: 2,
+      }),
+    ]);
+    refreshed.eventPage.generation = 2;
+    refreshed.eventPage.coveredRevision = 8;
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(stale)
+      .mockResolvedValue(refreshed);
+    applyConversationEventToBranchSnapshots({
+      ...update(event(
+        'answer-generation-current',
+        8,
+        'textDelta',
+        '新代际完整回答',
+        { startedSeq: 2 },
+      )),
+      timelineGeneration: 2,
+      timelineRevision: 8,
+    });
+
+    const { container, root } = await renderDialog(stale);
+    try {
+      await vi.waitFor(() => {
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+      });
+      expect(container.textContent).toContain('新代际完整回答');
+      expect(container.textContent).not.toContain('旧代际回答');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('does not project retained replay from an older generation over a newer snapshot', async () => {
+    const compacted = session([
+      event('prompt-generation-current', 1, 'userTextDelta', '检查当前代际'),
+      event('answer-generation-current', 8, 'textDelta', '当前代际回答'),
+    ]);
+    compacted.eventPage.generation = 2;
+    compacted.eventPage.coveredRevision = 8;
+    vi.mocked(getAcpSession).mockResolvedValue(compacted);
+    applyConversationEventToBranchSnapshots(update(event(
+      'answer-generation-stale',
+      7,
+      'textDelta',
+      '不应出现的旧代际回答',
+    )));
+
+    const { container, root } = await renderDialog(compacted);
+    try {
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(container.textContent).toContain('当前代际回答');
+      expect(container.textContent).not.toContain('不应出现的旧代际回答');
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('resets the covered revision when the initial snapshot advances generation', async () => {
+    const previousGeneration = session([
+      event('answer-before-generation-reset', 100, 'textDelta', '旧代际高水位'),
+    ]);
+    previousGeneration.eventPage.coveredRevision = 100;
+    previousGeneration.eventPage.newestRevision = 100;
+    const compacted = session([
+      event('answer-after-generation-reset', 5, 'textDelta', '新代际尚未追平'),
+    ]);
+    compacted.eventPage.generation = 2;
+    compacted.eventPage.coveredRevision = 5;
+    compacted.eventPage.newestRevision = 5;
+    const caughtUp = session([
+      event('answer-after-generation-reset', 9, 'textDelta', '新代际尚未追平，随后已经完成追平', {
+        startedSeq: 5,
+      }),
+    ]);
+    caughtUp.eventPage.generation = 2;
+    caughtUp.eventPage.coveredRevision = 9;
+    caughtUp.eventPage.newestRevision = 9;
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(compacted)
+      .mockResolvedValue(caughtUp);
+    applyConversationEventToBranchSnapshots({
+      ...update(event(
+        'answer-after-generation-reset',
+        9,
+        'textDelta',
+        '新代际尚未追平，随后已经完成追平',
+        {
+          startedSeq: 5,
+          raw: { oversized: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes) },
+        },
+      )),
+      timelineGeneration: 2,
+      timelineRevision: 9,
+    });
+
+    const { container, root } = await renderDialog(previousGeneration);
+    try {
+      await vi.waitFor(() => {
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+        expect(container.textContent).toContain('随后已经完成追平');
+      });
+      expect(vi.mocked(getAcpSession).mock.calls[1]?.[6]).toMatchObject({
+        afterRevision: 5,
+      });
+      expect(container.textContent).not.toContain('旧代际高水位');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('keeps a newer subscription generation when an awaited replay refresh returns late', async () => {
+    const stale = session([
+      event('answer-generation-race-stale', 2, 'textDelta', '一代旧回答'),
+    ]);
+    const refreshGeneration = session([
+      event('answer-generation-race-refresh', 8, 'textDelta', '二代迟到刷新'),
+    ]);
+    refreshGeneration.eventPage.generation = 2;
+    refreshGeneration.eventPage.coveredRevision = 8;
+    const subscriptionGeneration = session([
+      event('answer-generation-race-current', 12, 'textDelta', '三代当前回答'),
+    ]);
+    subscriptionGeneration.eventPage.generation = 3;
+    subscriptionGeneration.eventPage.coveredRevision = 12;
+    let resolveRefresh!: (value: AcpSessionVm) => void;
+    const pendingRefresh = new Promise<AcpSessionVm>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(stale)
+      .mockReturnValueOnce(pendingRefresh);
+    applyConversationEventToBranchSnapshots({
+      ...update(event(
+        'answer-generation-race-replay',
+        8,
+        'textDelta',
+        '二代 replay 不应混入',
+      )),
+      timelineGeneration: 2,
+      timelineRevision: 8,
+    });
+
+    const { container, root } = await renderDialog(stale);
+    try {
+      await vi.waitFor(() => {
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+      });
+      await act(async () => {
+        runtime.listener?.({
+          ...locator,
+          branchId: 'root',
+          timelineGeneration: 3,
+          timelineRevision: 12,
+          session: subscriptionGeneration,
+        });
+        resolveRefresh(refreshGeneration);
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain('三代当前回答');
+      });
+      expect(container.textContent).not.toContain('一代旧回答');
+      expect(container.textContent).not.toContain('二代迟到刷新');
+      expect(container.textContent).not.toContain('二代 replay 不应混入');
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('does not query Agent branch content for a lifecycle-only notification', async () => {
     const branch = { ...session([]), branchId: 'agent-a' };
     vi.mocked(getAcpSession).mockResolvedValue(branch);
@@ -719,6 +1256,142 @@ describe('ACP session re-entry reconciliation', () => {
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
       expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('ignores a late Agent-branch refresh after the selected eventWindowKey changes', async () => {
+    const firstLocator = {
+      ...locator,
+      nodeId: 'agent-owner-a',
+      attemptId: 'agent-attempt-a',
+    };
+    const secondLocator = {
+      ...locator,
+      nodeId: 'agent-owner-b',
+      attemptId: 'agent-attempt-b',
+    };
+    const first = {
+      ...session([event('agent-a-initial', 1, 'textDelta', 'Agent A initial')]),
+      branchId: 'agent-a',
+      nodeId: firstLocator.nodeId,
+      attemptId: firstLocator.attemptId,
+    };
+    const lateFirst = {
+      ...session([event('agent-a-late', 2, 'textDelta', 'Agent A late refresh')]),
+      branchId: 'agent-a',
+      nodeId: firstLocator.nodeId,
+      attemptId: firstLocator.attemptId,
+    };
+    const second = {
+      ...session([event('agent-b-current', 1, 'textDelta', 'Agent B current')]),
+      branchId: 'agent-b',
+      nodeId: secondLocator.nodeId,
+      attemptId: secondLocator.attemptId,
+    };
+    let resolveLateFirst!: (value: AcpSessionVm) => void;
+    let firstLocatorRequestCount = 0;
+    vi.mocked(getAcpSession).mockImplementation(async (...args) => {
+      if (args[4] === secondLocator.nodeId) return second;
+      firstLocatorRequestCount += 1;
+      if (firstLocatorRequestCount === 1) return first;
+      return new Promise<AcpSessionVm>((resolve) => {
+        resolveLateFirst = resolve;
+      });
+    });
+
+    const { container, root } = await renderDialog(
+      first,
+      'agent-a',
+      undefined,
+      undefined,
+      firstLocator,
+    );
+    try {
+      await act(async () => {
+        runtime.listener?.({
+          ...firstLocator,
+          branchId: 'agent-a',
+          session: first,
+        });
+        await vi.waitFor(() => expect(firstLocatorRequestCount).toBe(2));
+      });
+
+      await act(async () => {
+        root.render(
+          <TooltipProvider>
+            <ACPChatDialog
+              session={second}
+              {...secondLocator}
+              branchId="agent-b"
+              showSystemPromptAction={false}
+              showRawFramesAction={false}
+              usageCompact
+            />
+          </TooltipProvider>,
+        );
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(container.textContent).toContain('Agent B current');
+
+      await act(async () => {
+        resolveLateFirst(lateFirst);
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+
+      expect(container.textContent).toContain('Agent B current');
+      expect(container.textContent).not.toContain('Agent A late refresh');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('coalesces an Agent-branch session-envelope burst into one trailing refresh', async () => {
+    const branch = {
+      ...session([event('agent-burst-initial', 1, 'textDelta', 'Agent burst initial')]),
+      branchId: 'agent-burst',
+    };
+    const intermediate = {
+      ...session([event('agent-burst-intermediate', 2, 'textDelta', 'Agent burst intermediate')]),
+      branchId: 'agent-burst',
+    };
+    const latest = {
+      ...session([event('agent-burst-latest', 3, 'textDelta', 'Agent burst latest')]),
+      branchId: 'agent-burst',
+    };
+    let resolveIntermediate!: (value: AcpSessionVm) => void;
+    const pendingIntermediate = new Promise<AcpSessionVm>((resolve) => {
+      resolveIntermediate = resolve;
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(branch)
+      .mockReturnValueOnce(pendingIntermediate)
+      .mockResolvedValue(latest);
+
+    const { container, root } = await renderDialog(branch, 'agent-burst');
+    try {
+      await act(async () => {
+        const envelope = {
+          ...locator,
+          branchId: 'agent-burst',
+          session: branch,
+        };
+        runtime.listener?.(envelope);
+        runtime.listener?.(envelope);
+        runtime.listener?.(envelope);
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        resolveIntermediate(intermediate);
+        await vi.waitFor(() => expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(3));
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+
+      expect(container.textContent).toContain('Agent burst latest');
+      expect(container.textContent).not.toContain('Agent burst intermediate');
     } finally {
       await unmount(root);
     }
@@ -775,16 +1448,25 @@ describe('ACP session re-entry reconciliation', () => {
   });
 
   it('keeps older pagination reachable after live updates trim a full event window', async () => {
+    const pageSize = 30;
+    const loadedWindowSize = loadedEventBufferLimit(pageSize);
     const oldestPrompt = event('prompt-live-window', 1, 'userTextDelta', '窗口中最早的消息', {
       raw: { source: 'goldBandPrompt', promptId: 'prompt-live-window' },
     });
     const initial = session([oldestPrompt]);
     vi.mocked(getAcpSession).mockResolvedValue(initial);
 
-    const { container, root } = await renderDialog(initial);
+    const { container, root } = await renderDialog(
+      initial,
+      'root',
+      undefined,
+      undefined,
+      locator,
+      pageSize,
+    );
     try {
       await act(async () => {
-        for (let index = 0; index < DEFAULT_ACP_CHAT_LOADED_EVENT_BUFFER_LIMIT; index += 1) {
+        for (let index = 0; index < loadedWindowSize; index += 1) {
           runtime.listener?.(update(event(
             `live-window-${index + 1}`,
             index + 2,
@@ -936,6 +1618,81 @@ describe('ACP session re-entry reconciliation', () => {
     }
   });
 
+  it('atomically rejoins when newer pagination reaches the server head while the viewport stays at bottom', async () => {
+    const pageSize = 30;
+    const current = session([
+      event('auto-rejoin-history', 1, 'textDelta', '自动交接前的旧窗口'),
+    ]);
+    Object.assign(current.eventPage, {
+      coveredRevision: 2,
+      newestRevision: 1,
+      total: 2,
+      hasOlder: true,
+      hasNewer: true,
+    });
+    const serverHead = session([
+      event('auto-rejoin-stale-head', 2, 'textDelta', '服务端页中的滞后内容'),
+    ]);
+    Object.assign(serverHead.eventPage, {
+      coveredRevision: 2,
+      newestRevision: 2,
+      total: 2,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    let resolveNewer!: (value: AcpSessionVm) => void;
+    const pendingNewer = new Promise<AcpSessionVm>((resolve) => {
+      resolveNewer = resolve;
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(current)
+      .mockReturnValueOnce(pendingNewer)
+      .mockResolvedValue(serverHead);
+
+    const { container, root } = await renderDialog(
+      current,
+      'root',
+      undefined,
+      undefined,
+      locator,
+      pageSize,
+    );
+    try {
+      const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+        .find((element) => element.classList.contains('h-full')
+          && element.classList.contains('overflow-y-auto'));
+      expect(scroller).toBeDefined();
+      Object.defineProperties(scroller!, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: 2_400 },
+        scrollTop: { configurable: true, value: 1_800, writable: true },
+      });
+
+      await act(async () => {
+        scroller!.dispatchEvent(new Event('scroll'));
+        await vi.waitFor(() => expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2));
+      });
+      await act(async () => {
+        runtime.listener?.(update(event(
+          'auto-rejoin-live-head',
+          3,
+          'textDelta',
+          '分页请求期间到达的最终内容',
+        )));
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+        resolveNewer(serverHead);
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+      });
+
+      expect(container.textContent).toContain('分页请求期间到达的最终内容');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      expect(readConversationBranchReplaySnapshot(locator, 'root').events).toEqual([]);
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(3);
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('keeps the historical window anchored and newer pagination reachable when live events arrive', async () => {
     const pageSize = 30;
     const loadedWindowSize = loadedEventBufferLimit(pageSize);
@@ -1035,6 +1792,2407 @@ describe('ACP session re-entry reconciliation', () => {
       expect(vi.mocked(getAcpSession).mock.calls.some(
         (call) => typeof call[6]?.afterSeq === 'number',
       )).toBe(true);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('settles optimistic prompt admission before a newer-generation event is gated from history', async () => {
+    const turnId = 'prompt-accepted-while-reading-history';
+    const historical = session([
+      event('historical-message', 1, 'textDelta', '正在阅读的历史消息'),
+    ]);
+    Object.assign(historical.eventPage, {
+      coveredRevision: 1,
+      newestRevision: 1,
+      total: 2,
+      hasNewer: true,
+    });
+    const optimistic = optimisticUserEvent('刚刚发送的新问题', turnId, [], 1);
+    const optimisticSessionKey = createAcpSessionCacheKey(
+      undefined,
+      locator.taskId,
+      locator.runId,
+      locator.roundId,
+      locator.nodeId,
+      locator.attemptId,
+      locator.projectId,
+      undefined,
+      undefined,
+      'root',
+    );
+    updateAcpOptimisticEvents(optimisticSessionKey, () => [optimistic]);
+    vi.mocked(getAcpSession).mockResolvedValue(historical);
+
+    const { container, root } = await renderDialog(
+      historical,
+      'root',
+      undefined,
+      [optimistic],
+    );
+    try {
+      const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+        .find((element) => (
+          element.classList.contains('h-full')
+          && element.classList.contains('overflow-y-auto')
+        ));
+      expect(scroller).toBeDefined();
+      Object.defineProperties(scroller!, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: 2_400 },
+        scrollTop: { configurable: true, value: 500, writable: true },
+      });
+      const visibleItemCount = container.querySelectorAll('[data-acp-item-key]').length;
+      expect(container.textContent).toContain('发送中');
+      expect(container.textContent).toContain('刚刚发送的新问题');
+
+      await act(async () => {
+        runtime.listener?.({
+          ...update(event(
+            'canonical-current-prompt',
+            2,
+            'userTextDelta',
+            '刚刚发送的新问题',
+            { raw: { source: 'goldBandPrompt', promptId: turnId } },
+          )),
+          timelineGeneration: 2,
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+      });
+
+      expect(readConversationBranchReplaySnapshot(locator, 'root').events)
+        .toEqual([expect.objectContaining({ id: 'canonical-current-prompt' })]);
+      expect(container.querySelectorAll('[data-acp-item-key]')).toHaveLength(visibleItemCount);
+      expect(container.textContent).toContain('刚刚发送的新问题');
+      expect(container.textContent).not.toContain('发送中');
+      expect(scroller!.scrollTop).toBe(500);
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
+    } finally {
+      updateAcpOptimisticEvents(optimisticSessionKey, () => []);
+      await unmount(root);
+    }
+  });
+
+  it('does not reopen return-to-latest for an equal-watermark metadata refresh away from bottom', async () => {
+    const canonicalHead = session([
+      event('canonical-head-message', 10, 'textDelta', '已经位于 canonical head'),
+    ]);
+    Object.assign(canonicalHead.eventPage, {
+      generation: 1,
+      coveredRevision: 10,
+      newestRevision: 10,
+      oldestSeq: 10,
+      newestSeq: 10,
+      total: 1,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    const metadataRefresh = {
+      ...canonicalHead,
+      diagnostics: {
+        ...canonicalHead.diagnostics,
+        rawFrameCount: canonicalHead.diagnostics.rawFrameCount + 1,
+      },
+    };
+    vi.mocked(getAcpSession).mockResolvedValue(canonicalHead);
+    const onAtBottomChange = vi.fn();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <TooltipProvider>
+          <ACPChatDialog
+            session={canonicalHead}
+            {...locator}
+            branchId="root"
+            onAtBottomChange={onAtBottomChange}
+            showSystemPromptAction={false}
+            showRawFramesAction={false}
+            usageCompact
+          />
+        </TooltipProvider>,
+      );
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    try {
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+        .find((element) => element.classList.contains('h-full')
+          && element.classList.contains('overflow-y-auto'));
+      expect(scroller).toBeDefined();
+      Object.defineProperties(scroller!, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: 2_400 },
+        scrollTop: { configurable: true, value: 500, writable: true },
+      });
+
+      await act(async () => {
+        scroller!.dispatchEvent(new WheelEvent('wheel', {
+          bubbles: true,
+          deltaY: -100,
+        }));
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+      expect(onAtBottomChange).toHaveBeenLastCalledWith(false);
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+
+      await act(async () => {
+        runtime.listener?.({
+          ...locator,
+          branchId: 'root',
+          timelineGeneration: 1,
+          timelineRevision: 10,
+          session: metadataRefresh,
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+
+      expect(container.textContent).toContain('已经位于 canonical head');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('keeps a stored accepted prompt static through terminal lifecycle until the canonical head replaces it', async () => {
+    const turnId = 'controlled-prompt-accepted-in-history';
+    const historical = session([
+      event('controlled-history', 1, 'textDelta', '受控状态正在阅读的历史消息'),
+    ]);
+    Object.assign(historical.eventPage, {
+      coveredRevision: 1,
+      newestRevision: 1,
+      total: 2,
+      hasNewer: true,
+    });
+    const optimistic = optimisticUserEvent('受控状态的新问题', turnId, [], 1);
+    const canonicalPrompt = event(
+      'controlled-canonical-prompt',
+      2,
+      'userTextDelta',
+      '受控状态的新问题',
+      { raw: { source: 'goldBandPrompt', promptId: turnId } },
+    );
+    const latest = session([canonicalPrompt]);
+    Object.assign(latest.eventPage, {
+      coveredRevision: 2,
+      newestRevision: 2,
+      total: 2,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(historical)
+      .mockResolvedValueOnce(latest);
+
+    const { container, root } = await renderStoredOptimisticDialog(
+      historical,
+      [optimistic],
+      30,
+    );
+    try {
+      const optimisticItem = [...container.querySelectorAll<HTMLElement>('[data-acp-item-key]')]
+        .find((item) => item.textContent?.includes('受控状态的新问题'));
+      expect(optimisticItem).toBeDefined();
+      const optimisticKey = optimisticItem?.dataset.acpItemKey;
+      expect(optimisticKey).toBeTruthy();
+      expect(container.textContent).toContain('发送中');
+
+      await act(async () => {
+        runtime.listener?.(update(canonicalPrompt));
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+      });
+
+      expect(container.querySelector(`[data-acp-item-key="${optimisticKey}"]`))
+        .toBe(optimisticItem);
+      expect(container.textContent).toContain('受控状态的新问题');
+      expect(container.textContent).not.toContain('发送中');
+      expect(container.textContent).not.toContain('controlled-canonical-prompt');
+
+      await act(async () => {
+        runtime.listener?.({
+          ...locator,
+          branchId: 'root',
+          timelineGeneration: 1,
+          timelineRevision: 2,
+          lifecycle: terminalLifecycle(turnId),
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      expect(container.querySelector(`[data-acp-item-key="${optimisticKey}"]`))
+        .toBe(optimisticItem);
+      expect(container.textContent).toContain('受控状态的新问题');
+
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>(
+          '[data-acp-return-to-latest="true"]',
+        )?.click();
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+      });
+
+      const promptItems = [...container.querySelectorAll<HTMLElement>('[data-acp-item-key]')]
+        .filter((item) => item.textContent?.includes('受控状态的新问题'));
+      expect(promptItems).toHaveLength(1);
+      expect(promptItems[0]?.dataset.acpItemKey).toBe(
+        'userTextDelta-controlled-canonical-prompt',
+      );
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('keeps a submitted prompt static when its canonical submit response arrives over a historical window', async () => {
+    const historical = session([
+      event('submit-history', 1, 'textDelta', '提交响应到达前的历史窗口'),
+    ], 'completed');
+    Object.assign(historical.eventPage, {
+      coveredRevision: 1,
+      newestRevision: 1,
+      total: 2,
+      hasNewer: true,
+    });
+    vi.mocked(getAcpSession).mockResolvedValue(historical);
+    vi.mocked(submitConversationPrompt).mockImplementation(async (...args) => {
+      const promptId = String(args[7]);
+      const canonical = event('submit-canonical-prompt', 2, 'userTextDelta', '历史窗口内发送的问题', {
+        raw: { source: 'goldBandPrompt', promptId },
+      });
+      const updated = session([canonical]);
+      Object.assign(updated.eventPage, {
+        coveredRevision: 2,
+        newestRevision: 2,
+        total: 2,
+        hasOlder: true,
+        hasNewer: false,
+      });
+      return {
+        kind: 'acp-session',
+        session: updated,
+        run: null,
+        lifecycle: null,
+      };
+    });
+
+    const { container, root } = await renderDialog(
+      historical,
+      'root',
+      undefined,
+      undefined,
+      locator,
+      30,
+      terminalLifecycle('previous-submit-turn'),
+    );
+    try {
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea');
+      expect(textarea).not.toBeNull();
+      await setTextareaValue(textarea!, '历史窗口内发送的问题');
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[data-acp-send="true"]')?.click();
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+
+      const promptItems = [...container.querySelectorAll<HTMLElement>('[data-acp-item-key]')]
+        .filter((item) => item.textContent?.includes('历史窗口内发送的问题'));
+      expect(promptItems).toHaveLength(1);
+      expect(promptItems[0]?.dataset.acpItemKey).not.toBe(
+        'userTextDelta-submit-canonical-prompt',
+      );
+      expect(container.textContent).not.toContain('发送中');
+      expect(container.textContent).toContain('提交响应到达前的历史窗口');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('does not regress an admitted prompt to failed when its submit transport rejects late', async () => {
+    const historical = session([
+      event('late-reject-history', 1, 'textDelta', '迟到失败前的历史窗口'),
+    ], 'completed');
+    Object.assign(historical.eventPage, {
+      coveredRevision: 1,
+      newestRevision: 1,
+      total: 2,
+      hasNewer: true,
+    });
+    let rejectSubmit!: (reason: Error) => void;
+    vi.mocked(getAcpSession).mockResolvedValue(historical);
+    vi.mocked(submitConversationPrompt).mockReturnValue(new Promise((_, reject) => {
+      rejectSubmit = reject;
+    }));
+
+    const { container, root } = await renderDialog(
+      historical,
+      'root',
+      undefined,
+      undefined,
+      locator,
+      30,
+      terminalLifecycle('previous-late-reject-turn'),
+    );
+    try {
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea');
+      await setTextareaValue(textarea!, '已经被 canonical 接收的问题');
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[data-acp-send="true"]')?.click();
+        await vi.waitFor(() => expect(vi.mocked(submitConversationPrompt)).toHaveBeenCalledTimes(1));
+      });
+      const promptId = String(vi.mocked(submitConversationPrompt).mock.calls[0]?.[7]);
+
+      await act(async () => {
+        runtime.listener?.(update(event(
+          'late-reject-canonical-prompt',
+          2,
+          'userTextDelta',
+          '已经被 canonical 接收的问题',
+          { raw: { source: 'goldBandPrompt', promptId } },
+        )));
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+      });
+      expect(container.textContent).not.toContain('发送中');
+
+      await act(async () => {
+        rejectSubmit(new Error('late transport rejection'));
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+
+      expect(container.textContent).toContain('已经被 canonical 接收的问题');
+      expect(container.textContent).not.toContain('late transport rejection');
+      expect(textarea?.value).toBe('');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('keeps the visible historical window when the same-session prop refresh carries the live head', async () => {
+    const historical = session([
+      event('prop-history', 1, 'textDelta', 'prop 刷新前的历史锚点'),
+    ]);
+    Object.assign(historical.eventPage, {
+      coveredRevision: 1,
+      newestRevision: 1,
+      total: 3,
+      hasOlder: true,
+      hasNewer: true,
+    });
+    const head = session([
+      event('prop-head-prompt', 2, 'userTextDelta', '不应注入的当前问题', {
+        raw: { source: 'goldBandPrompt', promptId: 'prop-head-prompt' },
+      }),
+      event('prop-head-answer', 3, 'textDelta', '不应注入的当前回复'),
+    ]);
+    Object.assign(head.eventPage, {
+      generation: 2,
+      coveredRevision: 3,
+      newestRevision: 3,
+      total: 3,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    vi.mocked(getAcpSession).mockResolvedValue(historical);
+
+    const { container, root } = await renderDialog(historical, 'root', undefined, undefined, locator, 30);
+    try {
+      const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+        .find((element) => element.classList.contains('h-full')
+          && element.classList.contains('overflow-y-auto'));
+      expect(scroller).toBeDefined();
+      Object.defineProperties(scroller!, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: 2_400 },
+        scrollTop: { configurable: true, value: 500, writable: true },
+      });
+      const historicalItem = [...container.querySelectorAll<HTMLElement>('[data-acp-item-key]')]
+        .find((item) => item.textContent?.includes('prop 刷新前的历史锚点'));
+      expect(historicalItem).toBeDefined();
+
+      await act(async () => {
+        root.render(
+          <TooltipProvider>
+            <ACPChatDialog
+              session={head}
+              {...locator}
+              branchId="root"
+              eventPageSize={30}
+              showSystemPromptAction={false}
+              showRawFramesAction={false}
+              usageCompact
+            />
+          </TooltipProvider>,
+        );
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      expect(container.textContent).toContain('prop 刷新前的历史锚点');
+      expect(container.textContent).not.toContain('不应注入的当前问题');
+      expect(container.textContent).not.toContain('不应注入的当前回复');
+      expect([...container.querySelectorAll<HTMLElement>('[data-acp-item-key]')]
+        .find((item) => item.textContent?.includes('prop 刷新前的历史锚点')))
+        .toBe(historicalItem);
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
+      expect(scroller!.scrollTop).toBe(500);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('replaces the live-head DOM when a same-session prop advances generation', async () => {
+    const previous = session([
+      event('prop-generation-old', 1, 'textDelta', 'prop 一代旧内容'),
+    ]);
+    const current = session([
+      event('prop-generation-current', 1, 'textDelta', 'prop 二代当前内容'),
+    ]);
+    current.eventPage.generation = 2;
+    current.eventPage.coveredRevision = 1;
+    vi.mocked(getAcpSession).mockResolvedValue(previous);
+
+    const { container, root } = await renderDialog(previous);
+    try {
+      expect(container.textContent).toContain('prop 一代旧内容');
+      await act(async () => {
+        root.render(
+          <TooltipProvider>
+            <ACPChatDialog
+              session={current}
+              {...locator}
+              branchId="root"
+              showSystemPromptAction={false}
+              showRawFramesAction={false}
+              usageCompact
+            />
+          </TooltipProvider>,
+        );
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      expect(container.textContent).toContain('prop 二代当前内容');
+      expect(container.textContent).not.toContain('prop 一代旧内容');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('preserves event-only usage metadata across the latest-head replay handoff', async () => {
+    const historical = session([
+      event('usage-history', 1, 'textDelta', 'usage 交接前的历史窗口'),
+    ]);
+    Object.assign(historical.eventPage, {
+      coveredRevision: 1,
+      newestRevision: 1,
+      total: 2,
+      hasNewer: true,
+    });
+    const staleLatest = session([
+      event('usage-head', 2, 'textDelta', 'usage 交接后的最新正文'),
+    ]);
+    Object.assign(staleLatest.eventPage, {
+      coveredRevision: 2,
+      newestRevision: 2,
+      total: 2,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    let resolveLatest!: (value: AcpSessionVm) => void;
+    const pendingLatest = new Promise<AcpSessionVm>((resolve) => {
+      resolveLatest = resolve;
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(historical)
+      .mockReturnValueOnce(pendingLatest);
+
+    const { container, root } = await renderDialog(historical, 'root', undefined, undefined, locator, 30);
+    try {
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>(
+          '[data-acp-return-to-latest="true"]',
+        )?.click();
+        await vi.waitFor(() => expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2));
+      });
+
+      await act(async () => {
+        runtime.listener?.(update(event('usage-live', 3, 'usageUpdate', null, {
+          raw: { sessionUpdate: 'usage_update', used: 7_920, size: 258_400 },
+        })));
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+      });
+      const usageLabel = container.querySelector<HTMLElement>(
+        '[data-context-usage-gauge="true"]',
+      )?.getAttribute('aria-label');
+      expect(usageLabel).toContain('7.9K');
+
+      await act(async () => {
+        resolveLatest(staleLatest);
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+      });
+
+      expect(container.textContent).toContain('usage 交接后的最新正文');
+      expect(container.querySelector<HTMLElement>(
+        '[data-context-usage-gauge="true"]',
+      )?.getAttribute('aria-label')).toBe(usageLabel);
+      expect(readConversationBranchReplaySnapshot(locator, 'root').events).toEqual([]);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('rejects a late latest-head request after the selected session identity changes', async () => {
+    const historical = session([
+      event('identity-old-history', 1, 'textDelta', '旧会话历史窗口'),
+    ]);
+    Object.assign(historical.eventPage, {
+      coveredRevision: 1,
+      newestRevision: 1,
+      total: 2,
+      hasNewer: true,
+    });
+    const staleOldHead = session([
+      event('identity-old-head', 2, 'textDelta', '迟到的旧会话最新内容'),
+    ]);
+    Object.assign(staleOldHead.eventPage, {
+      coveredRevision: 2,
+      newestRevision: 2,
+      total: 2,
+      hasNewer: false,
+    });
+    const nextLocator = { ...locator, nodeId: 'identity-next-node', attemptId: 'identity-next-attempt' };
+    const nextSession = {
+      ...session([event('identity-next-content', 1, 'textDelta', '新会话保持可见')]),
+      nodeId: nextLocator.nodeId,
+      attemptId: nextLocator.attemptId,
+    };
+    let resolveOldLatest!: (value: AcpSessionVm) => void;
+    let oldRequestCount = 0;
+    vi.mocked(getAcpSession).mockImplementation(async (...args) => {
+      if (args[4] === nextLocator.nodeId) return nextSession;
+      oldRequestCount += 1;
+      if (oldRequestCount === 1) return historical;
+      return new Promise<AcpSessionVm>((resolve) => {
+        resolveOldLatest = resolve;
+      });
+    });
+
+    const { container, root } = await renderDialog(historical, 'root', undefined, undefined, locator, 30);
+    try {
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>(
+          '[data-acp-return-to-latest="true"]',
+        )?.click();
+        await vi.waitFor(() => expect(oldRequestCount).toBe(2));
+      });
+
+      await act(async () => {
+        root.render(
+          <TooltipProvider>
+            <ACPChatDialog
+              session={nextSession}
+              {...nextLocator}
+              branchId="root"
+              eventPageSize={30}
+              showSystemPromptAction={false}
+              showRawFramesAction={false}
+              usageCompact
+            />
+          </TooltipProvider>,
+        );
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(container.textContent).toContain('新会话保持可见');
+
+      await act(async () => {
+        resolveOldLatest(staleOldHead);
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+      });
+
+      expect(container.textContent).toContain('新会话保持可见');
+      expect(container.textContent).not.toContain('迟到的旧会话最新内容');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('atomically rejoins the live head with replay received during the latest-page request', async () => {
+    const historical = session([
+      event('historical-answer', 1, 'textDelta', '当前阅读的旧回复'),
+    ]);
+    Object.assign(historical.eventPage, {
+      coveredRevision: 1,
+      newestRevision: 1,
+      total: 3,
+      hasOlder: true,
+      hasNewer: true,
+    });
+    const prompt = event('current-prompt', 2, 'userTextDelta', '当前问题', {
+      raw: { source: 'goldBandPrompt', promptId: 'current-prompt' },
+    });
+    const staleLatest = session([
+      prompt,
+      event('current-answer', 3, 'textDelta', '后端页中的旧累计回复', {
+        startedSeq: 3,
+        endedSeq: 3,
+      }),
+      event('current-tool', 3, 'toolCall', null, {
+        title: 'Reading files',
+        toolCallId: 'current-tool',
+        status: 'running',
+      }),
+    ]);
+    Object.assign(staleLatest.eventPage, {
+      coveredRevision: 3,
+      newestRevision: 3,
+      total: 3,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    let resolveLatest!: (value: AcpSessionVm) => void;
+    const pendingLatest = new Promise<AcpSessionVm>((resolve) => {
+      resolveLatest = resolve;
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(historical)
+      .mockReturnValueOnce(pendingLatest);
+
+    const { container, root } = await renderDialog(historical);
+    try {
+      const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+        .find((element) => (
+          element.classList.contains('h-full')
+          && element.classList.contains('overflow-y-auto')
+        ));
+      expect(scroller).toBeDefined();
+      Object.defineProperties(scroller!, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: 2_400 },
+        scrollTop: { configurable: true, value: 500, writable: true },
+      });
+      vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1));
+      vi.stubGlobal('cancelAnimationFrame', vi.fn());
+      const returnButton = container.querySelector<HTMLButtonElement>(
+        '[data-acp-return-to-latest="true"]',
+      );
+      expect(returnButton).not.toBeNull();
+
+      await act(async () => {
+        returnButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await vi.waitFor(() => {
+          expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+        });
+      });
+
+      await act(async () => {
+        runtime.listener?.(update(event(
+          'current-answer',
+          5,
+          'textDelta',
+          'replay 中的最终累计回复',
+          { startedSeq: 3, endedSeq: 5 },
+        )));
+        runtime.listener?.(update(event(
+          'current-tool',
+          5,
+          'toolCall',
+          null,
+          {
+            title: 'Editing files',
+            toolCallId: 'current-tool',
+            status: 'completed',
+            startedSeq: 3,
+            endedSeq: 5,
+          },
+        )));
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+      });
+      expect(readConversationBranchReplaySnapshot(locator, 'root').headRevision).toBe(5);
+
+      await act(async () => {
+        resolveLatest(staleLatest);
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+      });
+
+      expect(container.textContent).toContain('replay 中的最终累计回复');
+      expect(container.textContent).not.toContain('后端页中的旧累计回复');
+      expect(container.textContent).toContain('Editing · files');
+      expect(container.textContent).not.toContain('Reading · files');
+      expect(container.querySelectorAll('[data-acp-item-key="textDelta-current-answer"]'))
+        .toHaveLength(1);
+      const activityTrigger = [...container.querySelectorAll<HTMLButtonElement>('button')]
+        .find((button) => button.textContent?.includes('Editing · files'));
+      expect(activityTrigger?.getAttribute('aria-expanded')).toBe('false');
+      expect(getAcpActivityDetail).not.toHaveBeenCalled();
+      expect([...container.querySelectorAll('[data-testid="markdown"]')]
+        .every((node) => node.getAttribute('data-streaming') === 'false')).toBe(true);
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      expect(scroller!.scrollTop).toBe(1_800);
+      expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+        events: [],
+        requiresCatchUp: false,
+      });
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('prefers a newer canonical session snapshot received during the latest-page request', async () => {
+    const historical = session([
+      event('snapshot-history', 1, 'textDelta', '快照竞态中的旧窗口'),
+    ]);
+    Object.assign(historical.eventPage, {
+      coveredRevision: 1,
+      newestRevision: 1,
+      total: 2,
+      hasNewer: true,
+    });
+    const prompt = event('snapshot-prompt', 2, 'userTextDelta', '检查 session 快照', {
+      raw: { source: 'goldBandPrompt', promptId: 'snapshot-prompt' },
+    });
+    const staleLatest = session([
+      prompt,
+      event('snapshot-answer', 3, 'textDelta', '查询返回的滞后 session 内容', {
+        startedSeq: 3,
+        endedSeq: 3,
+      }),
+    ]);
+    Object.assign(staleLatest.eventPage, {
+      coveredRevision: 3,
+      newestRevision: 3,
+      total: 2,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    const liveSnapshot = session([
+      prompt,
+      event('snapshot-answer', 5, 'textDelta', '订阅收到的较新 canonical session', {
+        startedSeq: 3,
+        endedSeq: 5,
+      }),
+    ]);
+    Object.assign(liveSnapshot.eventPage, {
+      coveredRevision: 5,
+      newestRevision: 5,
+      total: 2,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    let resolveLatest!: (value: AcpSessionVm) => void;
+    const pendingLatest = new Promise<AcpSessionVm>((resolve) => {
+      resolveLatest = resolve;
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(historical)
+      .mockReturnValueOnce(pendingLatest);
+
+    const { container, root } = await renderDialog(historical);
+    try {
+      const returnButton = container.querySelector<HTMLButtonElement>(
+        '[data-acp-return-to-latest="true"]',
+      );
+      expect(returnButton).not.toBeNull();
+      await act(async () => {
+        returnButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await vi.waitFor(() => {
+          expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+        });
+      });
+
+      await act(async () => {
+        runtime.listener?.({
+          ...locator,
+          branchId: 'root',
+          timelineGeneration: 1,
+          timelineRevision: 5,
+          session: liveSnapshot,
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(container.textContent).not.toContain('订阅收到的较新 canonical session');
+
+      await act(async () => {
+        resolveLatest(staleLatest);
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+      });
+
+      expect(container.textContent).toContain('订阅收到的较新 canonical session');
+      expect(container.textContent).not.toContain('查询返回的滞后 session 内容');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('preserves newer same-revision session metadata received during the latest-page request', async () => {
+    const historical = session([
+      event('metadata-race-history', 1, 'textDelta', 'metadata 竞态中的旧窗口'),
+    ]);
+    Object.assign(historical, {
+      sessionUpdatedAt: '2026-08-31T00:00:00Z',
+      usage: { used: 1, size: 100 },
+    });
+    Object.assign(historical.eventPage, {
+      coveredRevision: 1,
+      newestRevision: 1,
+      total: 2,
+      hasNewer: true,
+    });
+    const staleLatest = session([
+      event('metadata-race-answer', 3, 'textDelta', '同 revision 的查询内容'),
+    ]);
+    Object.assign(staleLatest, {
+      sessionUpdatedAt: '2026-08-31T00:00:01Z',
+      usage: { used: 3, size: 100 },
+    });
+    Object.assign(staleLatest.eventPage, {
+      coveredRevision: 3,
+      newestRevision: 3,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    const newerMetadata = session([
+      event('metadata-race-answer', 3, 'textDelta', '同 revision 的查询内容'),
+    ], 'completed');
+    Object.assign(newerMetadata, {
+      sessionUpdatedAt: '2026-08-31T00:00:02Z',
+      usage: { used: 9, size: 100 },
+    });
+    Object.assign(newerMetadata.eventPage, {
+      coveredRevision: 3,
+      newestRevision: 3,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    let resolveLatest!: (value: AcpSessionVm) => void;
+    const pendingLatest = new Promise<AcpSessionVm>((resolve) => {
+      resolveLatest = resolve;
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(historical)
+      .mockReturnValueOnce(pendingLatest);
+    const cacheKey = createAcpEventWindowCacheKey({
+      ...locator,
+      branchId: 'root',
+    });
+
+    const { container, root } = await renderDialog(historical);
+    try {
+      const returnButton = container.querySelector<HTMLButtonElement>(
+        '[data-acp-return-to-latest="true"]',
+      );
+      expect(returnButton).not.toBeNull();
+      await act(async () => {
+        returnButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await vi.waitFor(() => {
+          expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+        });
+      });
+
+      await act(async () => {
+        runtime.listener?.({
+          ...locator,
+          branchId: 'root',
+          timelineGeneration: 1,
+          timelineRevision: 3,
+          session: newerMetadata,
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(restoreAcpSession(cacheKey)).toMatchObject({
+        status: 'completed',
+        sessionUpdatedAt: '2026-08-31T00:00:02Z',
+        usage: { used: 9, size: 100 },
+      });
+
+      await act(async () => {
+        resolveLatest(staleLatest);
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      expect(restoreAcpSession(cacheKey)).toMatchObject({
+        status: 'completed',
+        sessionUpdatedAt: '2026-08-31T00:00:02Z',
+        usage: { used: 9, size: 100 },
+      });
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('queues one fresh canonical handoff when a newer subscription generation overtakes the latest-page request', async () => {
+    const historical = session([
+      event('generation-race-history', 1, 'textDelta', 'generation 竞态中的旧窗口'),
+    ]);
+    Object.assign(historical.eventPage, {
+      generation: 1,
+      coveredRevision: 1,
+      newestRevision: 1,
+      total: 2,
+      hasNewer: true,
+    });
+    const staleGenerationOne = session([
+      event('generation-race-stale', 3, 'textDelta', '迟到的 generation 1 head'),
+    ]);
+    Object.assign(staleGenerationOne.eventPage, {
+      generation: 1,
+      coveredRevision: 3,
+      newestRevision: 3,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    const subscriptionGenerationTwo = session([
+      event('generation-race-subscription', 1, 'textDelta', 'subscription 已进入 generation 2'),
+    ]);
+    Object.assign(subscriptionGenerationTwo.eventPage, {
+      generation: 2,
+      coveredRevision: 1,
+      newestRevision: 1,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    const canonicalGenerationTwo = session([
+      event('generation-race-canonical', 2, 'textDelta', 'fresh-read 的 generation 2 canonical head'),
+    ]);
+    Object.assign(canonicalGenerationTwo.eventPage, {
+      generation: 2,
+      coveredRevision: 2,
+      newestRevision: 2,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    let resolveStaleGenerationOne!: (value: AcpSessionVm) => void;
+    const pendingStaleGenerationOne = new Promise<AcpSessionVm>((resolve) => {
+      resolveStaleGenerationOne = resolve;
+    });
+    let resolveCanonicalGenerationTwo!: (value: AcpSessionVm) => void;
+    const pendingCanonicalGenerationTwo = new Promise<AcpSessionVm>((resolve) => {
+      resolveCanonicalGenerationTwo = resolve;
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(historical)
+      .mockReturnValueOnce(pendingStaleGenerationOne)
+      .mockReturnValueOnce(pendingCanonicalGenerationTwo);
+
+    const { container, root } = await renderDialog(historical);
+    try {
+      const returnButton = container.querySelector<HTMLButtonElement>(
+        '[data-acp-return-to-latest="true"]',
+      );
+      expect(returnButton).not.toBeNull();
+      await act(async () => {
+        returnButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await vi.waitFor(() => {
+          expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+        });
+      });
+
+      await act(async () => {
+        runtime.listener?.({
+          ...locator,
+          branchId: 'root',
+          timelineGeneration: 2,
+          timelineRevision: 1,
+          session: subscriptionGenerationTwo,
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(container.textContent).toContain('generation 竞态中的旧窗口');
+      expect(container.textContent).not.toContain('subscription 已进入 generation 2');
+
+      await act(async () => {
+        resolveStaleGenerationOne(staleGenerationOne);
+        await vi.waitFor(() => {
+          expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(3);
+        });
+      });
+      expect(container.textContent).toContain('generation 竞态中的旧窗口');
+      expect(container.textContent).not.toContain('迟到的 generation 1 head');
+
+      await act(async () => {
+        resolveCanonicalGenerationTwo(canonicalGenerationTwo);
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      expect(container.textContent).toContain('fresh-read 的 generation 2 canonical head');
+      expect(container.textContent).not.toContain('迟到的 generation 1 head');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      expect(vi.mocked(getAcpSession).mock.calls.map((call) => call[6]?.afterRevision))
+        .toEqual([undefined, undefined, undefined]);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('catches up a replay loss before committing the latest head', async () => {
+    const historical = session([
+      event('loss-history', 1, 'textDelta', '仍在阅读的旧窗口'),
+    ]);
+    Object.assign(historical.eventPage, {
+      coveredRevision: 1,
+      newestRevision: 1,
+      total: 2,
+      hasNewer: true,
+    });
+    const prompt = event('loss-prompt', 2, 'userTextDelta', '追平丢失水位', {
+      raw: { source: 'goldBandPrompt', promptId: 'loss-prompt' },
+    });
+    const staleLatest = session([
+      prompt,
+      event('loss-answer', 3, 'textDelta', '追平前的旧内容', {
+        startedSeq: 3,
+        endedSeq: 3,
+      }),
+    ]);
+    Object.assign(staleLatest.eventPage, {
+      coveredRevision: 3,
+      newestRevision: 3,
+      total: 2,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    const caughtUp = session([
+      event('loss-answer', 9, 'textDelta', '按 revision 追平后的完整内容', {
+        startedSeq: 3,
+        endedSeq: 9,
+      }),
+    ]);
+    Object.assign(caughtUp.eventPage, {
+      coveredRevision: 100,
+      newestRevision: 9,
+      total: 100,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    let resolveLatest!: (value: AcpSessionVm) => void;
+    const pendingLatest = new Promise<AcpSessionVm>((resolve) => {
+      resolveLatest = resolve;
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(historical)
+      .mockReturnValueOnce(pendingLatest)
+      .mockResolvedValueOnce(caughtUp);
+
+    const { container, root } = await renderDialog(historical);
+    try {
+      const returnButton = container.querySelector<HTMLButtonElement>(
+        '[data-acp-return-to-latest="true"]',
+      );
+      expect(returnButton).not.toBeNull();
+      await act(async () => {
+        returnButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await vi.waitFor(() => {
+          expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+        });
+      });
+
+      await act(async () => {
+        runtime.listener?.(update(event(
+          'loss-answer',
+          9,
+          'textDelta',
+          '按 revision 追平后的完整内容',
+          {
+            startedSeq: 3,
+            endedSeq: 9,
+            raw: { oversized: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes) },
+          },
+        )));
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+      });
+      expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+        events: [],
+        requiresCatchUp: true,
+        lossWatermarkRevision: 9,
+      });
+
+      await act(async () => {
+        resolveLatest(staleLatest);
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+      });
+
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(3);
+      expect(vi.mocked(getAcpSession).mock.calls[2]?.[6]).toMatchObject({
+        branchId: 'root',
+        afterRevision: 3,
+      });
+      expect(container.textContent).toContain('按 revision 追平后的完整内容');
+      expect(container.textContent).not.toContain('追平前的旧内容');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+        events: [],
+        requiresCatchUp: false,
+      });
+      const cacheKey = createAcpEventWindowCacheKey({
+        ...locator,
+        branchId: 'root',
+      });
+      expect(restoreAcpSession(cacheKey)?.eventPage).toMatchObject({
+        coveredRevision: 100,
+        newestRevision: 9,
+        total: 100,
+      });
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('does not restore a cached event window from an older timeline generation', async () => {
+    const previous = session([
+      event('cached-generation-old', 1, 'textDelta', '缓存中的一代旧内容'),
+    ]);
+    const current = session([
+      event('cached-generation-current', 1, 'textDelta', '重挂载后的二代当前内容'),
+    ]);
+    current.eventPage.generation = 2;
+    current.eventPage.coveredRevision = 1;
+    current.eventPage.newestRevision = 1;
+    vi.mocked(getAcpSession).mockResolvedValue(previous);
+
+    const first = await renderDialog(previous);
+    await unmount(first.root);
+
+    vi.mocked(getAcpSession).mockResolvedValue(current);
+    const second = await renderDialog(current);
+    try {
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 30));
+      });
+      expect(second.container.textContent).toContain('重挂载后的二代当前内容');
+      expect(second.container.textContent).not.toContain('缓存中的一代旧内容');
+    } finally {
+      await unmount(second.root);
+    }
+  });
+
+  it('keeps the historical window isolated when older pagination crosses compaction', async () => {
+    const previous = session([
+      event('older-generation-anchor', 20, 'textDelta', '一代历史阅读锚点'),
+    ]);
+    Object.assign(previous.eventPage, {
+      generation: 1,
+      coveredRevision: 20,
+      newestRevision: 20,
+      total: 40,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    const compacted = session([
+      event('older-generation-crossed', 10, 'textDelta', '不应混入的二代 older 页'),
+    ]);
+    Object.assign(compacted.eventPage, {
+      generation: 2,
+      coveredRevision: 10,
+      newestRevision: 10,
+      total: 20,
+      hasOlder: true,
+      hasNewer: true,
+    });
+    vi.mocked(getAcpSession).mockImplementation(async (...args) => (
+      typeof args[6]?.beforeSeq === 'number' ? compacted : previous
+    ));
+
+    const { container, root } = await renderDialog(previous, 'root', undefined, undefined, locator, 30);
+    try {
+      const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+        .find((element) => element.classList.contains('h-full')
+          && element.classList.contains('overflow-y-auto'));
+      expect(scroller).toBeDefined();
+      Object.defineProperties(scroller!, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: 2_400 },
+        scrollTop: { configurable: true, value: 0, writable: true },
+      });
+
+      await act(async () => {
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+
+      expect(container.textContent).toContain('一代历史阅读锚点');
+      expect(container.textContent).not.toContain('不应混入的二代 older 页');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('atomically replaces the old generation when newer pagination reaches a compacted head', async () => {
+    const previous = session([
+      event('newer-generation-old', 1, 'textDelta', '一代 newer 交接旧内容'),
+    ]);
+    Object.assign(previous.eventPage, {
+      generation: 1,
+      coveredRevision: 1,
+      newestRevision: 1,
+      total: 2,
+      hasOlder: false,
+      hasNewer: true,
+    });
+    const compactedHead = session([
+      event('newer-generation-current', 2, 'textDelta', '二代 newer 当前 head'),
+    ]);
+    Object.assign(compactedHead.eventPage, {
+      generation: 2,
+      coveredRevision: 2,
+      newestRevision: 2,
+      total: 2,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(previous)
+      .mockResolvedValue(compactedHead);
+
+    const { container, root } = await renderDialog(previous, 'root', undefined, undefined, locator, 30);
+    try {
+      const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+        .find((element) => element.classList.contains('h-full')
+          && element.classList.contains('overflow-y-auto'));
+      expect(scroller).toBeDefined();
+      Object.defineProperties(scroller!, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: 2_400 },
+        scrollTop: { configurable: true, value: 1_800, writable: true },
+      });
+
+      await act(async () => {
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+      });
+
+      expect(container.textContent).toContain('二代 newer 当前 head');
+      expect(container.textContent).not.toContain('一代 newer 交接旧内容');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('refreshes the canonical head instead of mixing a newer-generation live event into the current window', async () => {
+    const previous = session([
+      event('live-generation-old', 1, 'textDelta', '一代 live 旧内容'),
+    ]);
+    const compactedHead = session([
+      event('live-generation-current', 2, 'textDelta', '二代 live canonical 内容'),
+    ]);
+    Object.assign(compactedHead.eventPage, {
+      generation: 2,
+      coveredRevision: 2,
+      newestRevision: 2,
+      total: 1,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    let resolveCompactedHead!: (value: AcpSessionVm) => void;
+    const pendingCompactedHead = new Promise<AcpSessionVm>((resolve) => {
+      resolveCompactedHead = resolve;
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(previous)
+      .mockReturnValueOnce(pendingCompactedHead);
+
+    const { container, root } = await renderDialog(previous);
+    try {
+      await act(async () => {
+        runtime.listener?.({
+          ...update(event(
+            'live-generation-current',
+            2,
+            'textDelta',
+            '二代 live canonical 内容',
+          )),
+          timelineGeneration: 2,
+          timelineRevision: 2,
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+
+      await vi.waitFor(() => {
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+      });
+      expect(container.textContent).toContain('一代 live 旧内容');
+      expect(container.textContent).not.toContain('二代 live canonical 内容');
+
+      await act(async () => {
+        resolveCompactedHead(compactedHead);
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+      });
+
+      expect(container.textContent).toContain('二代 live canonical 内容');
+      expect(container.textContent).not.toContain('一代 live 旧内容');
+      expect(readConversationBranchReplaySnapshot(locator, 'root').events).toEqual([]);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('keeps one trailing canonical recovery when another malformed event arrives in flight', async () => {
+    const previous = session([
+      event('malformed-recovery-old', 1, 'textDelta', 'malformed recovery 前的旧内容'),
+    ]);
+    const firstCanonical = session([
+      event('malformed-recovery-answer', 2, 'textDelta', '第一次 recovery 读到的中间内容'),
+    ]);
+    Object.assign(firstCanonical.eventPage, {
+      generation: 2,
+      coveredRevision: 2,
+      newestRevision: 2,
+    });
+    const finalCanonical = session([
+      event('malformed-recovery-answer', 3, 'textDelta', '第二次 recovery 读到的最终内容', {
+        startedSeq: 2,
+      }),
+    ]);
+    Object.assign(finalCanonical.eventPage, {
+      generation: 2,
+      coveredRevision: 3,
+      newestRevision: 3,
+    });
+    let resolveFirstRecovery!: (value: AcpSessionVm) => void;
+    const firstRecovery = new Promise<AcpSessionVm>((resolve) => {
+      resolveFirstRecovery = resolve;
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(previous)
+      .mockReturnValueOnce(firstRecovery)
+      .mockResolvedValue(finalCanonical);
+
+    const { container, root } = await renderDialog(previous);
+    try {
+      await act(async () => {
+        runtime.listener?.({
+          ...locator,
+          branchId: 'root',
+          event: event(
+            'malformed-recovery-answer',
+            2,
+            'textDelta',
+            '缺失 generation 的第一次 live',
+          ),
+          timelineRevision: 2,
+        });
+        await vi.waitFor(() => {
+          expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+        });
+      });
+
+      await act(async () => {
+        runtime.listener?.({
+          ...locator,
+          branchId: 'root',
+          event: event(
+            'malformed-recovery-answer',
+            3,
+            'textDelta',
+            '缺失 generation 的第二次 live',
+            { startedSeq: 2 },
+          ),
+          timelineRevision: 3,
+        });
+        resolveFirstRecovery(firstCanonical);
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+      });
+
+      await vi.waitFor(() => {
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(3);
+      });
+      expect(container.textContent).toContain('第二次 recovery 读到的最终内容');
+      expect(container.textContent).not.toContain('第一次 recovery 读到的中间内容');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('resumes live projection after an explicit latest handoff consumes a historical recovery gate', async () => {
+    const historical = session([
+      event('historical-recovery-window', 1, 'textDelta', 'recovery gate 前的历史窗口'),
+    ]);
+    Object.assign(historical.eventPage, {
+      coveredRevision: 1,
+      newestRevision: 1,
+      hasOlder: true,
+      hasNewer: true,
+    });
+    const canonicalHead = session([
+      event('historical-recovery-canonical', 2, 'textDelta', '显式交接后的 canonical head'),
+    ]);
+    Object.assign(canonicalHead.eventPage, {
+      coveredRevision: 2,
+      newestRevision: 2,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(historical)
+      .mockResolvedValue(canonicalHead);
+
+    const { container, root } = await renderDialog(historical);
+    try {
+      await act(async () => {
+        runtime.listener?.({
+          ...locator,
+          branchId: 'root',
+          event: event(
+            'historical-recovery-malformed',
+            2,
+            'textDelta',
+            '缺失 generation 的历史 live',
+          ),
+          timelineRevision: 2,
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
+
+      const returnToLatest = container.querySelector<HTMLButtonElement>(
+        '[data-acp-return-to-latest="true"]',
+      );
+      expect(returnToLatest).not.toBeNull();
+      await act(async () => {
+        returnToLatest!.click();
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+      });
+      expect(container.textContent).toContain('显式交接后的 canonical head');
+
+      await act(async () => {
+        runtime.listener?.(update(event(
+          'historical-recovery-live-after-handoff',
+          3,
+          'textDelta',
+          '交接后继续投影的合法 live',
+        )));
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+      });
+
+      expect(container.textContent).toContain('交接后继续投影的合法 live');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('queues one recovery handoff when malformed generation arrives during an ordinary latest handoff', async () => {
+    const historical = session([
+      event('ordinary-handoff-history', 1, 'textDelta', '普通返回最新前的历史窗口'),
+    ]);
+    Object.assign(historical.eventPage, {
+      coveredRevision: 1,
+      newestRevision: 1,
+      hasOlder: true,
+      hasNewer: true,
+    });
+    const ordinaryHead = session([
+      event('ordinary-handoff-head', 2, 'textDelta', '第一次普通交接读到的 head'),
+    ]);
+    Object.assign(ordinaryHead.eventPage, {
+      coveredRevision: 2,
+      newestRevision: 2,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    const recoveredHead = session([
+      event('ordinary-handoff-recovered', 3, 'textDelta', '非法 generation 后重新校准的 head'),
+    ]);
+    Object.assign(recoveredHead.eventPage, {
+      coveredRevision: 3,
+      newestRevision: 3,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    let resolveOrdinaryHead!: (value: AcpSessionVm) => void;
+    const pendingOrdinaryHead = new Promise<AcpSessionVm>((resolve) => {
+      resolveOrdinaryHead = resolve;
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(historical)
+      .mockReturnValueOnce(pendingOrdinaryHead)
+      .mockResolvedValue(recoveredHead);
+
+    const { container, root } = await renderDialog(historical);
+    try {
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>(
+          '[data-acp-return-to-latest="true"]',
+        )?.click();
+        await vi.waitFor(() => {
+          expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+        });
+      });
+
+      await act(async () => {
+        runtime.listener?.({
+          ...locator,
+          branchId: 'root',
+          event: event(
+            'ordinary-handoff-malformed',
+            3,
+            'textDelta',
+            '普通交接期间缺失 generation 的 live',
+          ),
+          timelineRevision: 3,
+        });
+        resolveOrdinaryHead(ordinaryHead);
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+      });
+
+      await vi.waitFor(() => {
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(3);
+      });
+      expect(container.textContent).toContain('非法 generation 后重新校准的 head');
+
+      await act(async () => {
+        runtime.listener?.(update(event(
+          'ordinary-handoff-live-after-recovery',
+          4,
+          'textDelta',
+          '普通交接恢复后继续投影的 live',
+        )));
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+      });
+
+      expect(container.textContent).toContain('普通交接恢复后继续投影的 live');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('drops a delayed live event from an older generation without refreshing the current head', async () => {
+    const current = session([
+      event('delayed-live-current', 2, 'textDelta', '二代当前 live head'),
+    ]);
+    current.eventPage.generation = 2;
+    current.eventPage.coveredRevision = 2;
+    current.eventPage.newestRevision = 2;
+    vi.mocked(getAcpSession).mockResolvedValue(current);
+
+    const { container, root } = await renderDialog(current);
+    try {
+      await act(async () => {
+        runtime.listener?.({
+          ...update(event(
+            'delayed-live-generation-one',
+            3,
+            'textDelta',
+            '不应回写的一代迟到 live',
+          )),
+          timelineGeneration: 1,
+          timelineRevision: 3,
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+      });
+
+      expect(container.textContent).toContain('二代当前 live head');
+      expect(container.textContent).not.toContain('不应回写的一代迟到 live');
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('bounds generation-refresh handshakes when replay advances again during the awaited refresh', async () => {
+    const stale = session([
+      event('bounded-generation-old', 1, 'textDelta', '有界刷新前的一代内容'),
+    ]);
+    const generationTwo = session([
+      event('bounded-generation-two', 2, 'textDelta', '有界刷新拿到的二代内容'),
+    ]);
+    generationTwo.eventPage.generation = 2;
+    generationTwo.eventPage.coveredRevision = 2;
+    const generationThree = event(
+      'bounded-generation-three',
+      3,
+      'textDelta',
+      '等待期间到达的三代 replay',
+    );
+    let resolveGenerationTwo!: (value: AcpSessionVm) => void;
+    const pendingGenerationTwo = new Promise<AcpSessionVm>((resolve) => {
+      resolveGenerationTwo = resolve;
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(stale)
+      .mockReturnValueOnce(pendingGenerationTwo)
+      .mockResolvedValue(generationTwo);
+    applyConversationEventToBranchSnapshots({
+      ...update(event('bounded-generation-two-replay', 2, 'textDelta', '二代 replay')),
+      timelineGeneration: 2,
+      timelineRevision: 2,
+    });
+
+    const { container, root } = await renderDialog(stale);
+    try {
+      await vi.waitFor(() => {
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+      });
+      applyConversationEventToBranchSnapshots({
+        ...update(generationThree),
+        timelineGeneration: 3,
+        timelineRevision: 3,
+      });
+      await act(async () => {
+        resolveGenerationTwo(generationTwo);
+        await new Promise((resolve) => window.setTimeout(resolve, 80));
+      });
+
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+      expect(container.textContent).not.toContain('等待期间到达的三代 replay');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('hands off once instead of projecting an overflowed paused live buffer', async () => {
+    const pageSize = 22;
+    const pendingCapacity = loadedEventBufferLimit(pageSize);
+    const initial = session([
+      event('paused-overflow-initial', 1, 'textDelta', '暂停前的 canonical 内容'),
+    ]);
+    const canonicalHead = session([
+      event(
+        'paused-overflow-canonical',
+        pendingCapacity + 2,
+        'textDelta',
+        '恢复后的 canonical head',
+      ),
+    ]);
+    Object.assign(canonicalHead.eventPage, {
+      coveredRevision: pendingCapacity + 2,
+      newestRevision: pendingCapacity + 2,
+      total: pendingCapacity + 2,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    let canonicalReadCount = 0;
+    vi.mocked(getAcpSession).mockImplementation(async (...args) => {
+      const options = args[6];
+      if (options?.afterRevision != null) return canonicalHead;
+      canonicalReadCount += 1;
+      return canonicalReadCount === 1 ? initial : canonicalHead;
+    });
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const renderPausedState = async (paused: boolean) => {
+      await act(async () => {
+        root.render(
+          <TooltipProvider>
+            <ACPChatDialog
+              session={initial}
+              {...locator}
+              branchId="root"
+              eventPageSize={pageSize}
+              liveUpdatesPaused={paused}
+              showSystemPromptAction={false}
+              showRawFramesAction={false}
+              usageCompact
+            />
+          </TooltipProvider>,
+        );
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+    };
+
+    try {
+      expect(pendingCapacity).toBeGreaterThan(64);
+      await renderPausedState(true);
+      await vi.waitFor(() => expect(canonicalReadCount).toBe(1));
+
+      await act(async () => {
+        for (let index = 0; index <= pendingCapacity; index += 1) {
+          runtime.listener?.(update(event(
+            `paused-overflow-${index}`,
+            index + 2,
+            'textDelta',
+            `不应逐项投影的 paused live ${index}`,
+          )));
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 30));
+      });
+
+      expect(container.textContent).toContain('暂停前的 canonical 内容');
+      expect(container.textContent).not.toContain('不应逐项投影的 paused live');
+
+      await renderPausedState(false);
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+      });
+
+      expect({
+        canonicalReadCount,
+        canonicalVisible: container.textContent?.includes('恢复后的 canonical head'),
+        bufferedProjectionVisible: container.textContent?.includes('不应逐项投影的 paused live'),
+      }).toEqual({
+        canonicalReadCount: 2,
+        canonicalVisible: true,
+        bufferedProjectionVisible: false,
+      });
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('discards a scheduled coalesced live frame when pause begins before the 125ms drain', async () => {
+    const initialEvent = event(
+      'pause-transition-initial',
+      1,
+      'textDelta',
+      '暂停过渡前的 canonical 内容',
+    );
+    const initial = session([initialEvent]);
+    const canonicalHead = session([
+      initialEvent,
+      event(
+        'pause-transition-answer',
+        3,
+        'textDelta',
+        '解除暂停后的最终 canonical head',
+        { startedSeq: 2 },
+      ),
+    ]);
+    Object.assign(canonicalHead.eventPage, {
+      coveredRevision: 3,
+      newestRevision: 3,
+      total: 2,
+      hasOlder: false,
+      hasNewer: false,
+    });
+    let canonicalReadCount = 0;
+    vi.mocked(getAcpSession).mockImplementation(async (...args) => {
+      if (args[6]?.afterRevision != null) return canonicalHead;
+      canonicalReadCount += 1;
+      return canonicalReadCount === 1 ? initial : canonicalHead;
+    });
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const renderPausedState = async (paused: boolean) => {
+      await act(async () => {
+        root.render(
+          <TooltipProvider>
+            <ACPChatDialog
+              session={initial}
+              {...locator}
+              branchId="root"
+              liveUpdatesPaused={paused}
+              showSystemPromptAction={false}
+              showRawFramesAction={false}
+              usageCompact
+            />
+          </TooltipProvider>,
+        );
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+    };
+
+    try {
+      await renderPausedState(false);
+      await vi.waitFor(() => expect(canonicalReadCount).toBe(1));
+
+      await act(async () => {
+        runtime.listener?.(update(event(
+          'pause-transition-answer',
+          2,
+          'textDelta',
+          '不应 drain 到 DOM 的 coalesced live',
+        )));
+        await Promise.resolve();
+      });
+      expect(container.textContent).not.toContain('不应 drain 到 DOM 的 coalesced live');
+
+      await renderPausedState(true);
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+      });
+      expect({
+        canonicalReadCount,
+        bufferedProjectionVisible: container.textContent?.includes(
+          '不应 drain 到 DOM 的 coalesced live',
+        ),
+      }).toEqual({
+        canonicalReadCount: 1,
+        bufferedProjectionVisible: false,
+      });
+
+      await renderPausedState(false);
+      await vi.waitFor(() => expect(canonicalReadCount).toBe(2));
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+      });
+
+      expect({
+        canonicalReadCount,
+        canonicalVisible: container.textContent?.includes(
+          '解除暂停后的最终 canonical head',
+        ),
+        bufferedProjectionVisible: container.textContent?.includes(
+          '不应 drain 到 DOM 的 coalesced live',
+        ),
+      }).toEqual({
+        canonicalReadCount: 2,
+        canonicalVisible: true,
+        bufferedProjectionVisible: false,
+      });
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('keeps a paused full-session body out of the timeline while applying lifecycle control', async () => {
+    const turnId = 'pause-session-envelope-turn';
+    const initialLifecycle: ConversationAttemptLifecycleVm = {
+      ...terminalLifecycle(turnId),
+      runtime: {
+        status: 'running',
+        outcome: null,
+        pauseReason: null,
+        resumable: false,
+        current: true,
+        active: true,
+        continuable: false,
+        phase: 'provider-running',
+        revision: 6,
+      },
+      acp: {
+        revision: 10,
+        turnId,
+        sessionAvailability: 'established',
+        liveTurnActivity: 'running',
+        latestTurnStatus: 'none',
+        stopping: false,
+      },
+      displayStatus: 'running',
+      runtimeDisplay: {
+        code: 'running',
+        tone: 'running',
+        icon: 'dot',
+        terminal: false,
+        resumable: false,
+        reasonCode: null,
+        blockingError: false,
+      },
+      composer: {
+        mode: 'runtime-active',
+        submitTarget: 'none',
+        processingKind: 'processing',
+        statusKey: 'conversation.runtime.runtimeActive',
+        canStop: true,
+        lockInput: true,
+      },
+    };
+    const completedLifecycle = terminalLifecycle(turnId);
+    const initialEvent = event(
+      'pause-session-envelope-initial',
+      1,
+      'textDelta',
+      '暂停 session envelope 前的可见内容',
+    );
+    const initial = session([initialEvent]);
+    const pausedEnvelope = session([
+      initialEvent,
+      event(
+        'pause-session-envelope-answer',
+        2,
+        'textDelta',
+        '暂停期间不应投影的 full session body',
+      ),
+    ]);
+    const canonicalHead = session([
+      initialEvent,
+      event(
+        'pause-session-envelope-answer',
+        3,
+        'textDelta',
+        '解除暂停后读取的 session canonical head',
+        { startedSeq: 2 },
+      ),
+    ], 'paused');
+    Object.assign(pausedEnvelope.eventPage, {
+      coveredRevision: 2,
+      newestRevision: 2,
+      total: 2,
+    });
+    Object.assign(canonicalHead.eventPage, {
+      coveredRevision: 3,
+      newestRevision: 3,
+      total: 2,
+      hasOlder: false,
+      hasNewer: false,
+    });
+    let canonicalReadCount = 0;
+    vi.mocked(getAcpSession).mockImplementation(async (...args) => {
+      if (args[6]?.afterRevision != null) return canonicalHead;
+      canonicalReadCount += 1;
+      return canonicalReadCount === 1 ? initial : canonicalHead;
+    });
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const renderPausedState = async (paused: boolean) => {
+      await act(async () => {
+        root.render(
+          <TooltipProvider>
+            <ACPChatDialog
+              session={initial}
+              {...locator}
+              branchId="root"
+              liveUpdatesPaused={paused}
+              runtimeComposerContext={{
+                isOrchestrated: true,
+                runtimeStatus: initialLifecycle.runtime.status,
+                workflowValid: true,
+                lifecycle: initialLifecycle,
+              }}
+              showSystemPromptAction={false}
+              showRawFramesAction={false}
+              usageCompact
+            />
+          </TooltipProvider>,
+        );
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+    };
+
+    try {
+      await renderPausedState(true);
+      await vi.waitFor(() => expect(canonicalReadCount).toBe(1));
+      expect(container.querySelector<HTMLTextAreaElement>('textarea')?.disabled).toBe(true);
+
+      await act(async () => {
+        runtime.listener?.({
+          ...locator,
+          branchId: 'root',
+          timelineGeneration: 1,
+          timelineRevision: 2,
+          session: pausedEnvelope,
+          lifecycle: completedLifecycle,
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      expect({
+        lifecycleControlApplied: container.querySelector<HTMLTextAreaElement>('textarea')?.disabled,
+        initialTimelineVisible: container.textContent?.includes(
+          '暂停 session envelope 前的可见内容',
+        ),
+        pausedBodyVisible: container.textContent?.includes(
+          '暂停期间不应投影的 full session body',
+        ),
+      }).toEqual({
+        lifecycleControlApplied: false,
+        initialTimelineVisible: true,
+        pausedBodyVisible: false,
+      });
+
+      await renderPausedState(false);
+      await vi.waitFor(() => expect(canonicalReadCount).toBe(2));
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+      });
+
+      expect({
+        canonicalReadCount,
+        canonicalVisible: container.textContent?.includes(
+          '解除暂停后读取的 session canonical head',
+        ),
+        pausedBodyVisible: container.textContent?.includes(
+          '暂停期间不应投影的 full session body',
+        ),
+      }).toEqual({
+        canonicalReadCount: 2,
+        canonicalVisible: true,
+        pausedBodyVisible: false,
+      });
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('invalidates an older cursor after pagination crosses generation but keeps explicit latest recovery', async () => {
+    const initial = session([
+      event('older-cursor-generation-one', 20, 'textDelta', '一代历史窗口'),
+    ]);
+    Object.assign(initial.eventPage, {
+      generation: 1,
+      coveredRevision: 20,
+      newestRevision: 20,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    const crossedGeneration = session([
+      event('older-cursor-generation-two', 10, 'textDelta', '二代旧页不应混入'),
+    ]);
+    Object.assign(crossedGeneration.eventPage, {
+      generation: 2,
+      coveredRevision: 10,
+      newestRevision: 10,
+      hasOlder: true,
+      hasNewer: true,
+    });
+    const canonicalHead = session([
+      event('older-cursor-canonical-head', 30, 'textDelta', '二代 canonical head'),
+    ]);
+    Object.assign(canonicalHead.eventPage, {
+      generation: 2,
+      coveredRevision: 30,
+      newestRevision: 30,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    let plainReadCount = 0;
+    let olderReadCount = 0;
+    vi.mocked(getAcpSession).mockImplementation(async (...args) => {
+      const options = args[6];
+      if (options?.beforeSeq != null) {
+        olderReadCount += 1;
+        return crossedGeneration;
+      }
+      plainReadCount += 1;
+      return plainReadCount === 1 ? initial : canonicalHead;
+    });
+
+    const { container, root } = await renderDialog(initial, 'root', undefined, undefined, locator, 30);
+    try {
+      const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+        .find((element) => element.classList.contains('h-full')
+          && element.classList.contains('overflow-y-auto'));
+      expect(scroller).toBeDefined();
+      Object.defineProperties(scroller!, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: 2_400 },
+        scrollTop: { configurable: true, value: 0, writable: true },
+      });
+
+      await act(async () => {
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 30));
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 30));
+      });
+
+      const returnToLatest = container.querySelector<HTMLButtonElement>(
+        '[data-acp-return-to-latest="true"]',
+      );
+      expect(returnToLatest).not.toBeNull();
+      await act(async () => {
+        returnToLatest!.click();
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+      });
+
+      expect({
+        olderReadCount,
+        plainReadCount,
+        canonicalVisible: container.textContent?.includes('二代 canonical head'),
+        crossedPageVisible: container.textContent?.includes('二代旧页不应混入'),
+      }).toEqual({
+        olderReadCount: 1,
+        plainReadCount: 2,
+        canonicalVisible: true,
+        crossedPageVisible: false,
+      });
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('invalidates a newer cursor after pagination crosses generation but keeps explicit latest recovery', async () => {
+    const initial = session([
+      event('newer-cursor-generation-one', 20, 'textDelta', '一代较旧窗口'),
+    ]);
+    Object.assign(initial.eventPage, {
+      generation: 1,
+      coveredRevision: 40,
+      newestRevision: 20,
+      hasOlder: true,
+      hasNewer: true,
+    });
+    const crossedGeneration = session([
+      event('newer-cursor-generation-two', 30, 'textDelta', '二代中间页不应混入'),
+    ]);
+    Object.assign(crossedGeneration.eventPage, {
+      generation: 2,
+      coveredRevision: 50,
+      newestRevision: 30,
+      hasOlder: true,
+      hasNewer: true,
+    });
+    const canonicalHead = session([
+      event('newer-cursor-canonical-head', 50, 'textDelta', '二代最新 canonical head'),
+    ]);
+    Object.assign(canonicalHead.eventPage, {
+      generation: 2,
+      coveredRevision: 50,
+      newestRevision: 50,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    let plainReadCount = 0;
+    let newerReadCount = 0;
+    vi.mocked(getAcpSession).mockImplementation(async (...args) => {
+      const options = args[6];
+      if (options?.afterSeq != null) {
+        newerReadCount += 1;
+        return crossedGeneration;
+      }
+      plainReadCount += 1;
+      return plainReadCount === 1 ? initial : canonicalHead;
+    });
+
+    const { container, root } = await renderDialog(initial, 'root', undefined, undefined, locator, 30);
+    try {
+      const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+        .find((element) => element.classList.contains('h-full')
+          && element.classList.contains('overflow-y-auto'));
+      expect(scroller).toBeDefined();
+      Object.defineProperties(scroller!, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: 2_400 },
+        scrollTop: { configurable: true, value: 1_800, writable: true },
+      });
+
+      await act(async () => {
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 30));
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 30));
+      });
+
+      const returnToLatest = container.querySelector<HTMLButtonElement>(
+        '[data-acp-return-to-latest="true"]',
+      );
+      expect(returnToLatest).not.toBeNull();
+      await act(async () => {
+        returnToLatest!.click();
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+      });
+
+      expect({
+        newerReadCount,
+        plainReadCount,
+        canonicalVisible: container.textContent?.includes('二代最新 canonical head'),
+        crossedPageVisible: container.textContent?.includes('二代中间页不应混入'),
+      }).toEqual({
+        newerReadCount: 1,
+        plainReadCount: 2,
+        canonicalVisible: true,
+        crossedPageVisible: false,
+      });
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('stops replay-loss catch-up after four fixed-cut pages and keeps recovery pending', async () => {
+    const initial = session([
+      event('bounded-catch-up-initial', 1, 'textDelta', '缺口前的 snapshot'),
+    ]);
+    initial.eventPage.coveredRevision = 1;
+    initial.eventPage.newestRevision = 1;
+    const requestedAfterRevisions: number[] = [];
+    vi.mocked(getAcpSession).mockImplementation(async (...args) => {
+      const afterRevision = args[6]?.afterRevision;
+      if (afterRevision == null) return initial;
+      requestedAfterRevisions.push(afterRevision);
+      const nextRevision = afterRevision + 1;
+      const delta = session([
+        event(
+          `bounded-catch-up-${nextRevision}`,
+          nextRevision,
+          'textDelta',
+          `追平到 revision ${nextRevision}`,
+        ),
+      ]);
+      delta.eventPage.coveredRevision = nextRevision;
+      delta.eventPage.newestRevision = nextRevision;
+      return delta;
+    });
+    applyConversationEventToBranchSnapshots(update(event(
+      'bounded-catch-up-loss',
+      10,
+      'textDelta',
+      '无法保留的大事件',
+      { raw: { oversized: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes) } },
+    )));
+
+    const { root } = await renderDialog(initial);
+    try {
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 120));
+      });
+
+      const replay = readConversationBranchReplaySnapshot(locator, 'root');
+      expect({
+        requestedAfterRevisions,
+        requiresCatchUp: replay.requiresCatchUp,
+        lossWatermarkRevision: replay.lossWatermarkRevision,
+      }).toEqual({
+        requestedAfterRevisions: [1, 2, 3, 4],
+        requiresCatchUp: true,
+        lossWatermarkRevision: 10,
+      });
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('catches up only the fixed C0 replay cut when C1 advances during I/O', async () => {
+    const initial = session([
+      event('fixed-cut-initial', 1, 'textDelta', '固定切片前的 snapshot'),
+    ]);
+    initial.eventPage.coveredRevision = 1;
+    initial.eventPage.newestRevision = 1;
+    const requestedAfterRevisions: number[] = [];
+    let advancedC1 = false;
+    vi.mocked(getAcpSession).mockImplementation(async (...args) => {
+      const afterRevision = args[6]?.afterRevision;
+      if (afterRevision == null) return initial;
+      requestedAfterRevisions.push(afterRevision);
+      if (!advancedC1) {
+        advancedC1 = true;
+        applyConversationEventToBranchSnapshots(update(event(
+          'fixed-cut-c1-loss',
+          10,
+          'textDelta',
+          '追平期间抵达的新缺口',
+          { raw: { oversized: 'y'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes) } },
+        )));
+      }
+      const nextRevision = afterRevision + 1;
+      const delta = session([
+        event(
+          `fixed-cut-delta-${nextRevision}`,
+          nextRevision,
+          'textDelta',
+          `C0 追平到 revision ${nextRevision}`,
+        ),
+      ]);
+      delta.eventPage.coveredRevision = nextRevision;
+      delta.eventPage.newestRevision = nextRevision;
+      return delta;
+    });
+    applyConversationEventToBranchSnapshots(update(event(
+      'fixed-cut-c0-loss',
+      3,
+      'textDelta',
+      'C0 缺口',
+      { raw: { oversized: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes) } },
+    )));
+
+    const { root } = await renderDialog(initial);
+    try {
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 120));
+      });
+
+      const replay = readConversationBranchReplaySnapshot(locator, 'root');
+      expect({
+        requestedAfterRevisions,
+        requiresCatchUp: replay.requiresCatchUp,
+        lossWatermarkRevision: replay.lossWatermarkRevision,
+      }).toEqual({
+        requestedAfterRevisions: [1, 2],
+        requiresCatchUp: true,
+        lossWatermarkRevision: 10,
+      });
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('settles a historical recovery gate when newer pagination naturally reaches the head', async () => {
+    const historical = session([
+      event('newer-edge-recovery-history', 1, 'textDelta', '自然分页前的历史窗口'),
+    ]);
+    Object.assign(historical.eventPage, {
+      generation: 1,
+      coveredRevision: 1,
+      newestRevision: 1,
+      total: 2,
+      hasOlder: false,
+      hasNewer: true,
+    });
+    const canonicalHead = session([
+      event('newer-edge-recovery-head', 2, 'textDelta', '自然分页抵达的 canonical head'),
+    ]);
+    Object.assign(canonicalHead.eventPage, {
+      generation: 1,
+      coveredRevision: 2,
+      newestRevision: 2,
+      total: 2,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(historical)
+      .mockResolvedValue(canonicalHead);
+
+    const { container, root } = await renderDialog(
+      historical,
+      'root',
+      undefined,
+      undefined,
+      locator,
+      30,
+    );
+    try {
+      await act(async () => {
+        runtime.listener?.({
+          ...locator,
+          branchId: 'root',
+          event: event(
+            'newer-edge-recovery-malformed',
+            2,
+            'textDelta',
+            '缺失 generation 的历史 live',
+          ),
+          timelineRevision: 2,
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
+
+      const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+        .find((element) => element.classList.contains('h-full')
+          && element.classList.contains('overflow-y-auto'));
+      expect(scroller).toBeDefined();
+      Object.defineProperties(scroller!, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: 2_400 },
+        scrollTop: { configurable: true, value: 1_800, writable: true },
+      });
+
+      await act(async () => {
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+      });
+
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(3);
+      expect(vi.mocked(getAcpSession).mock.calls[1]?.[6]).toMatchObject({
+        afterSeq: 1,
+      });
+      expect(vi.mocked(getAcpSession).mock.calls[2]?.[6]).not.toHaveProperty('afterSeq');
+      expect(vi.mocked(getAcpSession).mock.calls[2]?.[6]).not.toHaveProperty('beforeSeq');
+      expect(container.textContent).toContain('自然分页抵达的 canonical head');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+
+      await act(async () => {
+        runtime.listener?.(update(event(
+          'newer-edge-recovery-live-after-head',
+          3,
+          'textDelta',
+          '自然分页后继续投影的合法 live',
+        )));
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+      });
+
+      expect(container.textContent).toContain('自然分页后继续投影的合法 live');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(3);
     } finally {
       await unmount(root);
     }

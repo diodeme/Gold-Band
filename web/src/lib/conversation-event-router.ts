@@ -31,31 +31,37 @@ let starting: Promise<void> | null = null;
 
 interface RetainedConversationEvent {
   event: AcpUiEventVm;
-  timelineGeneration: number | null;
+  timelineGeneration: number;
   timelineRevision: number | null;
   generation: number;
   estimatedBytes: number;
 }
 
 interface ConversationBranchReplayBuffer {
+  sessionId: string | null;
   generation: number;
   headSeq: number;
   timelineGeneration: number;
   headRevision: number;
   lossWatermarkGeneration: number;
   lossWatermarkRevision: number;
+  lossWatermarkSeq: number;
+  lossWatermarkRouterGeneration: number;
   retainedBytes: number;
   events: Map<string, RetainedConversationEvent>;
   order: string[];
 }
 
 export interface ConversationBranchReplaySnapshot {
+  sessionId: string | null;
   generation: number;
   headSeq: number;
   timelineGeneration: number;
   headRevision: number;
   lossWatermarkGeneration: number;
   lossWatermarkRevision: number;
+  lossWatermarkSeq: number;
+  lossWatermarkRouterGeneration: number;
   requiresCatchUp: boolean;
   retainedBytes: number;
   events: AcpUiEventVm[];
@@ -83,18 +89,37 @@ async function ensureStarted() {
         () => summarizeAcpStreamingEvent(event),
       );
       applyConversationEventToBranchSnapshots(event);
+      const projectedEvent = conversationEventForListenerProjection(event);
       notifyConversationEventListeners(
         attemptListeners.get(attemptKey(event)) ?? [],
-        event,
+        projectedEvent,
         'attempt',
       );
-      notifyConversationEventListeners(listeners, event, 'global');
+      notifyConversationEventListeners(listeners, projectedEvent, 'global');
     });
     started = true;
   })().finally(() => {
     starting = null;
   });
   return starting;
+}
+
+function conversationEventForListenerProjection(
+  event: AcpSessionUpdatedEventVm,
+): AcpSessionUpdatedEventVm {
+  if (!event.event || isValidConversationTimelineGeneration(event.timelineGeneration)) {
+    return event;
+  }
+  const {
+    event: _invalidEvent,
+    timelineGeneration: _invalidGeneration,
+    timelineRevision: _invalidRevision,
+    ...controlEnvelope
+  } = event;
+  return {
+    ...controlEnvelope,
+    timelineRecoveryRequired: true,
+  } as AcpSessionUpdatedEventVm;
 }
 
 function notifyConversationEventListeners(
@@ -189,46 +214,160 @@ export function conversationBranchStoreKey(locator: Parameters<typeof attemptKey
   return `${attemptKey(locator)}:${branchId}`;
 }
 
-export function applyConversationEventToBranchSnapshots(event: AcpSessionUpdatedEventVm) {
-  if (event.lifecycle) reconcileConversationBranchLifecycle(event, event.lifecycle);
-  if (event.event) {
-    const key = conversationBranchStoreKey(event, conversationEventBranchId(event));
-    const accepted = retainConversationEvent(
-      key,
-      event.event,
-      event.timelineGeneration ?? null,
-      event.timelineRevision ?? null,
-    );
-    if (!accepted) return;
-    const current = branchSnapshots.get(key) ?? EMPTY_BRANCH_SNAPSHOT;
-    if (isSyntheticAgentPrompt(event.event)) {
-      updateBranchSnapshot(key, current.status, current.attention, true);
-      return;
+function normalizeConversationSessionId(sessionId: string | null | undefined) {
+  if (typeof sessionId !== 'string') return null;
+  const normalized = sessionId.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function createConversationBranchReplayBuffer(
+  sessionId: string | null,
+): ConversationBranchReplayBuffer {
+  return {
+    sessionId,
+    generation: 0,
+    headSeq: 0,
+    timelineGeneration: 0,
+    headRevision: 0,
+    lossWatermarkGeneration: 0,
+    lossWatermarkRevision: 0,
+    lossWatermarkSeq: 0,
+    lossWatermarkRouterGeneration: 0,
+    retainedBytes: 0,
+    events: new Map<string, RetainedConversationEvent>(),
+    order: [],
+  };
+}
+
+function resetConversationBranchReplayOwner(
+  key: string,
+  buffer: ConversationBranchReplayBuffer,
+  sessionId: string,
+) {
+  clearRetainedEvents(buffer);
+  buffer.sessionId = sessionId;
+  buffer.generation = 0;
+  buffer.headSeq = 0;
+  buffer.timelineGeneration = 0;
+  buffer.headRevision = 0;
+  buffer.lossWatermarkGeneration = 0;
+  buffer.lossWatermarkRevision = 0;
+  buffer.lossWatermarkSeq = 0;
+  buffer.lossWatermarkRouterGeneration = 0;
+  branchSnapshots.set(key, EMPTY_BRANCH_SNAPSHOT);
+}
+
+function reconcileConversationReplaySessionOwner(
+  locator: ConversationAttemptLocator,
+  sessionId: string | null | undefined,
+  requiredBranchIds: Iterable<string>,
+  reconcileAttempt = false,
+) {
+  const normalizedSessionId = normalizeConversationSessionId(sessionId);
+  const prefix = `${attemptKey(locator)}:`;
+  const requiredKeys = [...requiredBranchIds].map((branchId) => `${prefix}${branchId}`);
+  const resetKeys = new Set<string>();
+  const requiredOwnerMismatch = normalizedSessionId != null
+    && requiredKeys.some((key) => (
+      branchReplayBuffers.get(key)?.sessionId !== normalizedSessionId
+    ));
+  if (normalizedSessionId && (reconcileAttempt || requiredOwnerMismatch)) {
+    for (const [key, buffer] of branchReplayBuffers) {
+      if (!key.startsWith(prefix)) continue;
+      if (buffer.sessionId && buffer.sessionId !== normalizedSessionId) {
+        resetConversationBranchReplayOwner(key, buffer, normalizedSessionId);
+        resetKeys.add(key);
+      } else if (!buffer.sessionId) {
+        buffer.sessionId = normalizedSessionId;
+      }
     }
-    if (isAgentBranchResult(event.event)) {
-      updateBranchSnapshot(key, 'completed', false, true);
-      return;
-    }
-    const request = event.event.kind === 'permissionRequest' || event.event.kind === 'elicitationRequest';
-    const response = event.event.kind === 'elicitationResponse';
-    const interaction = request || response;
-    const pending = request && (event.event.status ?? 'pending') === 'pending';
-    const terminal = isTerminalBranchStatus(current.status);
-    const status = terminal
-      ? current.status
-      : pending
-        ? 'waiting_permission'
-        : 'running';
-    updateBranchSnapshot(
-      key,
-      status,
-      terminal ? current.attention : interaction ? pending : current.attention,
-      true,
-    );
-    return;
   }
-  if (event.session) {
-    reconcileConversationBranchSession(event, event.session);
+  for (const key of requiredKeys) {
+    const buffer = branchReplayBuffers.get(key);
+    if (!buffer) {
+      branchReplayBuffers.set(
+        key,
+        createConversationBranchReplayBuffer(normalizedSessionId),
+      );
+      continue;
+    }
+    if (
+      normalizedSessionId
+      && buffer.sessionId
+      && buffer.sessionId !== normalizedSessionId
+    ) {
+      resetConversationBranchReplayOwner(key, buffer, normalizedSessionId);
+      resetKeys.add(key);
+    } else if (normalizedSessionId && !buffer.sessionId) {
+      buffer.sessionId = normalizedSessionId;
+    }
+  }
+  return resetKeys;
+}
+
+function notifyConversationSessionOwnerResets(resetKeys: Iterable<string>) {
+  for (const key of resetKeys) notifyBranch(key);
+}
+
+export function applyConversationEventToBranchSnapshots(event: AcpSessionUpdatedEventVm) {
+  const timelineGeneration = isValidConversationTimelineGeneration(event.timelineGeneration)
+    ? event.timelineGeneration
+    : null;
+  const timelineEvent = event.event
+    && timelineGeneration !== null
+    ? event.event
+    : null;
+  const eventBranchId = timelineEvent ? conversationEventBranchId(event) : null;
+  const resetKeys = timelineEvent
+    ? reconcileConversationReplaySessionOwner(
+        event,
+        timelineEvent.sessionId,
+        eventBranchId ? [eventBranchId] : [],
+      )
+    : new Set<string>();
+  try {
+    if (event.lifecycle) reconcileConversationBranchLifecycle(event, event.lifecycle);
+    if (timelineEvent && timelineGeneration !== null) {
+      const key = conversationBranchStoreKey(event, eventBranchId ?? 'root');
+      const accepted = retainConversationEvent(
+        key,
+        timelineEvent,
+        timelineGeneration,
+        event.timelineRevision ?? null,
+      );
+      if (!accepted) return;
+      const current = branchSnapshots.get(key) ?? EMPTY_BRANCH_SNAPSHOT;
+      if (isSyntheticAgentPrompt(timelineEvent)) {
+        updateBranchSnapshot(key, current.status, current.attention, true);
+        return;
+      }
+      if (isAgentBranchResult(timelineEvent)) {
+        updateBranchSnapshot(key, 'completed', false, true);
+        return;
+      }
+      const request = timelineEvent.kind === 'permissionRequest' || timelineEvent.kind === 'elicitationRequest';
+      const response = timelineEvent.kind === 'elicitationResponse';
+      const interaction = request || response;
+      const pending = request && (timelineEvent.status ?? 'pending') === 'pending';
+      const terminal = isTerminalBranchStatus(current.status);
+      const status = terminal
+        ? current.status
+        : pending
+          ? 'waiting_permission'
+          : 'running';
+      updateBranchSnapshot(
+        key,
+        status,
+        terminal ? current.attention : interaction ? pending : current.attention,
+        true,
+      );
+      return;
+    }
+    if (event.session) {
+      reconcileConversationBranchSession(event, event.session);
+    }
+  } finally {
+    notifyConversationSessionOwnerResets(resetKeys);
   }
 }
 
@@ -240,45 +379,56 @@ export function reconcileConversationBranchSession(
   const branchId = session.branchId || 'root';
   const branchKey = `${prefix}${branchId}`;
   const branchExecution = session.branchExecution;
-  if (branchId === 'root') {
-    updateBranchSnapshot(
-      branchKey,
-      session.status,
-      (branchSnapshots.get(branchKey) ?? EMPTY_BRANCH_SNAPSHOT).attention,
-    );
-  } else {
-    const projectedStatus = branchExecution?.executionStatus ?? session.status;
-    const authoritativeStatus = isTerminalSessionStatus(session.status)
-      && !isTerminalBranchStatus(projectedStatus)
-      ? session.status
-      : projectedStatus;
-    updateAgentBranchSnapshot(
-      branchKey,
-      authoritativeStatus,
-      branchExecution?.hasAttention ?? false,
-    );
-  }
+  const projectedAgents = session.timelineProjection?.agents ?? [];
+  const resetKeys = reconcileConversationReplaySessionOwner(
+    locator,
+    session.sessionId,
+    [branchId, ...projectedAgents.map((agent) => agent.agentExecutionId)],
+    true,
+  );
+  try {
+    if (branchId === 'root') {
+      updateBranchSnapshot(
+        branchKey,
+        session.status,
+        (branchSnapshots.get(branchKey) ?? EMPTY_BRANCH_SNAPSHOT).attention,
+      );
+    } else {
+      const projectedStatus = branchExecution?.executionStatus ?? session.status;
+      const authoritativeStatus = isTerminalSessionStatus(session.status)
+        && !isTerminalBranchStatus(projectedStatus)
+        ? session.status
+        : projectedStatus;
+      updateAgentBranchSnapshot(
+        branchKey,
+        authoritativeStatus,
+        branchExecution?.hasAttention ?? false,
+      );
+    }
 
-  const projectedBranchKeys = new Set<string>();
-  const branchTerminal = isTerminalSessionStatus(session.status);
-  for (const agent of session.timelineProjection?.agents ?? []) {
-    const key = `${prefix}${agent.agentExecutionId}`;
-    projectedBranchKeys.add(key);
-    updateAgentBranchSnapshot(
-      key,
-      branchTerminal && !isTerminalBranchStatus(agent.executionStatus)
-        ? 'interrupted'
-        : agent.executionStatus,
-      branchTerminal ? false : agent.hasAttention,
-    );
-  }
+    const projectedBranchKeys = new Set<string>();
+    const branchTerminal = isTerminalSessionStatus(session.status);
+    for (const agent of projectedAgents) {
+      const key = `${prefix}${agent.agentExecutionId}`;
+      projectedBranchKeys.add(key);
+      updateAgentBranchSnapshot(
+        key,
+        branchTerminal && !isTerminalBranchStatus(agent.executionStatus)
+          ? 'interrupted'
+          : agent.executionStatus,
+        branchTerminal ? false : agent.hasAttention,
+      );
+    }
 
-  if (branchId !== 'root' || !isTerminalSessionStatus(session.status)) return;
-  const rootKey = `${prefix}root`;
-  for (const [key, current] of branchSnapshots) {
-    if (!key.startsWith(prefix) || key === rootKey || projectedBranchKeys.has(key)) continue;
-    if (isTerminalBranchStatus(current.status)) continue;
-    updateBranchSnapshot(key, 'interrupted', false);
+    if (branchId !== 'root' || !isTerminalSessionStatus(session.status)) return;
+    const rootKey = `${prefix}root`;
+    for (const [key, current] of branchSnapshots) {
+      if (!key.startsWith(prefix) || key === rootKey || projectedBranchKeys.has(key)) continue;
+      if (isTerminalBranchStatus(current.status)) continue;
+      updateBranchSnapshot(key, 'interrupted', false);
+    }
+  } finally {
+    notifyConversationSessionOwnerResets(resetKeys);
   }
 }
 
@@ -420,40 +570,38 @@ function storeBranchSnapshot(key: string, snapshot: ConversationBranchLiveSnapsh
 function retainConversationEvent(
   key: string,
   event: AcpUiEventVm,
-  timelineGeneration: number | null,
+  timelineGeneration: number,
   timelineRevision: number | null,
 ) {
-  const buffer = branchReplayBuffers.get(key) ?? {
-    generation: 0,
-    headSeq: 0,
-    timelineGeneration: 0,
-    headRevision: 0,
-    lossWatermarkGeneration: 0,
-    lossWatermarkRevision: 0,
-    retainedBytes: 0,
-    events: new Map<string, RetainedConversationEvent>(),
-    order: [],
-  };
+  const eventSessionId = normalizeConversationSessionId(event.sessionId);
+  const buffer = branchReplayBuffers.get(key)
+    ?? createConversationBranchReplayBuffer(eventSessionId);
+  if (eventSessionId && buffer.sessionId && eventSessionId !== buffer.sessionId) {
+    resetConversationBranchReplayOwner(key, buffer, eventSessionId);
+  } else if (eventSessionId && !buffer.sessionId) {
+    buffer.sessionId = eventSessionId;
+  }
   if (
-    timelineGeneration != null
-    && buffer.timelineGeneration !== 0
+    buffer.timelineGeneration !== 0
     && timelineGeneration < buffer.timelineGeneration
   ) {
     return false;
   }
   buffer.generation += 1;
-  buffer.headSeq = Math.max(buffer.headSeq, conversationEventPosition(event));
   if (
-    timelineGeneration != null
-    && buffer.timelineGeneration !== 0
+    buffer.timelineGeneration !== 0
     && timelineGeneration > buffer.timelineGeneration
   ) {
     clearRetainedEvents(buffer);
+    buffer.headSeq = 0;
     buffer.headRevision = 0;
     buffer.lossWatermarkGeneration = 0;
     buffer.lossWatermarkRevision = 0;
+    buffer.lossWatermarkSeq = 0;
+    buffer.lossWatermarkRouterGeneration = 0;
   }
-  if (timelineGeneration != null) buffer.timelineGeneration = timelineGeneration;
+  buffer.timelineGeneration = timelineGeneration;
+  buffer.headSeq = Math.max(buffer.headSeq, conversationEventPosition(event));
   buffer.headRevision = Math.max(buffer.headRevision, timelineRevision ?? 0);
 
   const replayKey = conversationReplayEventKey(event);
@@ -462,7 +610,13 @@ function retainConversationEvent(
 
   const estimatedBytes = estimateConversationEventBytes(event);
   if (estimatedBytes > MAX_REPLAY_EVENT_BYTES) {
-    recordReplayLoss(buffer, timelineGeneration, timelineRevision);
+    recordReplayLoss(
+      buffer,
+      timelineGeneration,
+      timelineRevision,
+      conversationEventPosition(event),
+      buffer.generation,
+    );
     branchReplayBuffers.set(key, buffer);
     return true;
   }
@@ -497,7 +651,13 @@ function trimBranchReplayBuffer(buffer: ConversationBranchReplayBuffer) {
       continue;
     }
     removeRetainedEvent(buffer, oldestKey, oldest);
-    recordReplayLoss(buffer, oldest.timelineGeneration, oldest.timelineRevision);
+    recordReplayLoss(
+      buffer,
+      oldest.timelineGeneration,
+      oldest.timelineRevision,
+      conversationEventPosition(oldest.event),
+      buffer.generation,
+    );
   }
 }
 
@@ -526,16 +686,36 @@ function removeRetainedEvent(
 
 function recordReplayLoss(
   buffer: ConversationBranchReplayBuffer,
-  timelineGeneration: number | null,
+  timelineGeneration: number,
   timelineRevision: number | null,
+  timelineSeq: number,
+  routerGeneration: number,
 ) {
-  if (timelineGeneration != null && timelineGeneration !== buffer.lossWatermarkGeneration) {
+  if (timelineGeneration !== buffer.lossWatermarkGeneration) {
     buffer.lossWatermarkGeneration = timelineGeneration;
     buffer.lossWatermarkRevision = 0;
+    buffer.lossWatermarkSeq = 0;
+    buffer.lossWatermarkRouterGeneration = 0;
   }
-  buffer.lossWatermarkRevision = Math.max(
-    buffer.lossWatermarkRevision,
-    timelineRevision ?? 0,
+  if (timelineRevision != null && timelineRevision > 0) {
+    buffer.lossWatermarkRevision = Math.max(
+      buffer.lossWatermarkRevision,
+      timelineRevision,
+    );
+  }
+  if (timelineSeq > 0) {
+    buffer.lossWatermarkSeq = Math.max(
+      buffer.lossWatermarkSeq,
+      timelineSeq,
+    );
+  }
+  if (
+    buffer.lossWatermarkRevision === 0
+    && buffer.lossWatermarkSeq === 0
+  ) return;
+  buffer.lossWatermarkRouterGeneration = Math.max(
+    buffer.lossWatermarkRouterGeneration,
+    routerGeneration,
   );
 }
 
@@ -543,12 +723,15 @@ function clearRetainedEvents(
   buffer: ConversationBranchReplayBuffer,
   recordLoss = false,
 ) {
-  if (recordLoss) {
+  if (recordLoss && buffer.events.size > 0) {
+    buffer.generation += 1;
     for (const retained of buffer.events.values()) {
       recordReplayLoss(
         buffer,
         retained.timelineGeneration,
         retained.timelineRevision,
+        conversationEventPosition(retained.event),
+        buffer.generation,
       );
     }
   }
@@ -650,6 +833,10 @@ export function conversationEventBranchId(event: AcpSessionUpdatedEventVm) {
   return event.branchId ?? 'root';
 }
 
+export function isValidConversationTimelineGeneration(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) > 0;
+}
+
 export function conversationEventMatchesAttempt(
   event: AcpSessionUpdatedEventVm,
   locator: ConversationAttemptLocator,
@@ -671,25 +858,33 @@ export function readConversationBranchReplaySnapshot(
   const buffer = branchReplayBuffers.get(conversationBranchStoreKey(locator, branchId));
   if (!buffer) {
     return {
+      sessionId: null,
       generation: 0,
       headSeq: 0,
       timelineGeneration: 0,
       headRevision: 0,
       lossWatermarkGeneration: 0,
       lossWatermarkRevision: 0,
+      lossWatermarkSeq: 0,
+      lossWatermarkRouterGeneration: 0,
       requiresCatchUp: false,
       retainedBytes: 0,
       events: [],
     };
   }
   return {
+    sessionId: buffer.sessionId,
     generation: buffer.generation,
     headSeq: buffer.headSeq,
     timelineGeneration: buffer.timelineGeneration,
     headRevision: buffer.headRevision,
     lossWatermarkGeneration: buffer.lossWatermarkGeneration,
     lossWatermarkRevision: buffer.lossWatermarkRevision,
-    requiresCatchUp: buffer.lossWatermarkRevision > 0,
+    lossWatermarkSeq: buffer.lossWatermarkSeq,
+    lossWatermarkRouterGeneration: buffer.lossWatermarkRouterGeneration,
+    requiresCatchUp:
+      buffer.lossWatermarkRevision > 0
+      || buffer.lossWatermarkSeq > 0,
     retainedBytes: buffer.retainedBytes,
     events: [...buffer.events.values()]
       .sort((left, right) => (
@@ -703,25 +898,82 @@ export function readConversationBranchReplaySnapshot(
 export function acknowledgeConversationBranchReplay(
   locator: Parameters<typeof attemptKey>[0],
   branchId: string,
+  sessionId: string | null,
   timelineGeneration: number,
   coveredRevision: number,
+  coveredSeq: number | null | undefined,
   observedGeneration: number,
 ) {
   const buffer = branchReplayBuffers.get(conversationBranchStoreKey(locator, branchId));
   if (!buffer) return true;
+  if (buffer.sessionId !== normalizeConversationSessionId(sessionId)) return false;
+  if (observedGeneration < 0 || observedGeneration > buffer.generation) return false;
+
+  let prefixTimelineGeneration = 0;
+  for (const retained of buffer.events.values()) {
+    if (retained.generation > observedGeneration) continue;
+    prefixTimelineGeneration = Math.max(
+      prefixTimelineGeneration,
+      retained.timelineGeneration,
+    );
+  }
+  const hasReplayLoss = buffer.lossWatermarkRevision > 0
+    || buffer.lossWatermarkSeq > 0;
+  const lossBelongsToPrefix = hasReplayLoss
+    && buffer.lossWatermarkRouterGeneration <= observedGeneration;
+  if (lossBelongsToPrefix) {
+    prefixTimelineGeneration = Math.max(
+      prefixTimelineGeneration,
+      buffer.lossWatermarkGeneration,
+    );
+  }
+  const replayGenerationAhead = prefixTimelineGeneration > 0
+    && timelineGeneration < prefixTimelineGeneration;
+  const lossRevisionUncovered = lossBelongsToPrefix
+    && buffer.lossWatermarkRevision > 0
+    && (
+      timelineGeneration < buffer.lossWatermarkGeneration
+      || (
+        (
+          buffer.lossWatermarkGeneration === 0
+          || timelineGeneration === buffer.lossWatermarkGeneration
+        )
+        && coveredRevision < buffer.lossWatermarkRevision
+      )
+    );
+  const canonicalCoveredSeq = Number.isSafeInteger(coveredSeq)
+    && Number(coveredSeq) > 0
+    ? Number(coveredSeq)
+    : 0;
+  const lossSeqUncovered = lossBelongsToPrefix
+    && buffer.lossWatermarkSeq > 0
+    && (
+      timelineGeneration < buffer.lossWatermarkGeneration
+      || (
+        (
+          buffer.lossWatermarkGeneration === 0
+          || timelineGeneration === buffer.lossWatermarkGeneration
+        )
+        && canonicalCoveredSeq < buffer.lossWatermarkSeq
+      )
+    );
   if (
-    buffer.generation !== observedGeneration
-    || (
-      buffer.lossWatermarkRevision > 0
-      && timelineGeneration < buffer.lossWatermarkGeneration
-    )
-    || coveredRevision < buffer.lossWatermarkRevision
+    replayGenerationAhead
+    || lossRevisionUncovered
+    || lossSeqUncovered
   ) {
     return false;
   }
-  clearRetainedEvents(buffer);
-  buffer.lossWatermarkRevision = 0;
-  buffer.lossWatermarkGeneration = 0;
+  for (const [key, retained] of [...buffer.events]) {
+    if (retained.generation > observedGeneration) continue;
+    removeRetainedEvent(buffer, key, retained);
+  }
+  if (lossBelongsToPrefix) {
+    buffer.lossWatermarkRevision = 0;
+    buffer.lossWatermarkSeq = 0;
+    buffer.lossWatermarkGeneration = 0;
+    buffer.lossWatermarkRouterGeneration = 0;
+  }
   return true;
 }
 

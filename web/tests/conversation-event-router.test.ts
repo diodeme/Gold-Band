@@ -49,16 +49,21 @@ function live(
     ...locator,
     branchId,
     event,
-    timelineGeneration: timelineRevision == null ? null : timelineGeneration,
+    timelineGeneration,
     timelineRevision,
   };
 }
 
-function sessionUpdate(status: string, agents: AcpAgentExecutionVm[]): AcpSessionUpdatedEventVm {
+function sessionUpdate(
+  status: string,
+  agents: AcpAgentExecutionVm[],
+  sessionId = 'session-1',
+): AcpSessionUpdatedEventVm {
   const session: AcpSessionVm = {
     branchId: 'root',
     parentBranchId: null,
     readOnly: false,
+    sessionId,
     provider: 'test',
     status,
     restored: false,
@@ -192,6 +197,23 @@ describe('conversation event router', () => {
     expect(replay.headSeq).toBe(CONVERSATION_EVENT_REPLAY_LIMITS.eventsPerBranch + 1);
   });
 
+  it('records a sequence loss fence when bounded replay evicts transient events', () => {
+    for (let index = 0; index <= CONVERSATION_EVENT_REPLAY_LIMITS.eventsPerBranch; index += 1) {
+      applyConversationEventToBranchSnapshots(live('root', {
+        ...uiEvent('toolCall'),
+        id: `transient-tool-${index}`,
+        seq: index + 1,
+        endedSeq: index + 1,
+      }, null));
+    }
+
+    expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+      events: expect.any(Array),
+      lossWatermarkSeq: 1,
+      requiresCatchUp: true,
+    });
+  });
+
   it('keeps only a watermark when one event exceeds the byte budget', () => {
     applyConversationEventToBranchSnapshots(live('root', {
       ...uiEvent('textDelta'),
@@ -205,6 +227,26 @@ describe('conversation event router', () => {
     expect(replay).toMatchObject({
       headSeq: 9,
       lossWatermarkRevision: 9,
+      lossWatermarkSeq: 9,
+      requiresCatchUp: true,
+      retainedBytes: 0,
+    });
+  });
+
+  it('keeps a sequence watermark when an oversized transient event cannot be retained', () => {
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('textDelta'),
+      id: 'oversized-transient-answer',
+      seq: 9,
+      endedSeq: 9,
+      content: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes),
+    }, null));
+
+    expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+      events: [],
+      headSeq: 9,
+      lossWatermarkRevision: 0,
+      lossWatermarkSeq: 9,
       requiresCatchUp: true,
       retainedBytes: 0,
     });
@@ -240,10 +282,156 @@ describe('conversation event router', () => {
     }));
     const replay = readConversationBranchReplaySnapshot(locator, 'root');
 
-    expect(acknowledgeConversationBranchReplay(locator, 'root', 1, 3, replay.generation)).toBe(false);
-    expect(acknowledgeConversationBranchReplay(locator, 'root', 1, 4, replay.generation + 1)).toBe(false);
-    expect(acknowledgeConversationBranchReplay(locator, 'root', 1, 4, replay.generation)).toBe(true);
+    expect(acknowledgeConversationBranchReplay(locator, 'root', 'session-1', 1, 3, 3, replay.generation)).toBe(false);
+    expect(acknowledgeConversationBranchReplay(locator, 'root', 'session-1', 1, 4, 4, replay.generation + 1)).toBe(false);
+    expect(acknowledgeConversationBranchReplay(locator, 'root', 'session-1', 1, 4, 4, replay.generation)).toBe(true);
     expect(readConversationBranchReplaySnapshot(locator, 'root').events).toHaveLength(0);
+  });
+
+  it('acknowledges transient loss only after canonical sequence coverage reaches the fixed watermark', () => {
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('textDelta'),
+      id: 'oversized-transient-answer',
+      seq: 4,
+      endedSeq: 4,
+      content: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes),
+    }, null));
+    const replay = readConversationBranchReplaySnapshot(locator, 'root');
+
+    expect(acknowledgeConversationBranchReplay(
+      locator,
+      'root',
+      'session-1',
+      1,
+      0,
+      undefined,
+      replay.generation,
+    )).toBe(false);
+    expect(acknowledgeConversationBranchReplay(
+      locator,
+      'root',
+      'session-1',
+      1,
+      0,
+      3,
+      replay.generation,
+    )).toBe(false);
+    expect(acknowledgeConversationBranchReplay(
+      locator,
+      'root',
+      'session-1',
+      1,
+      0,
+      4,
+      replay.generation + 1,
+    )).toBe(false);
+    expect(acknowledgeConversationBranchReplay(
+      locator,
+      'root',
+      'session-1',
+      1,
+      0,
+      4,
+      replay.generation,
+    )).toBe(true);
+    expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+      lossWatermarkSeq: 0,
+      requiresCatchUp: false,
+    });
+  });
+
+  it('requires the acknowledged session to own the replay cut', () => {
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('textDelta'),
+      id: 'owned-answer',
+    }));
+    const replay = readConversationBranchReplaySnapshot(locator, 'root');
+
+    expect(acknowledgeConversationBranchReplay(
+      locator,
+      'root',
+      'session-2',
+      1,
+      1,
+      1,
+      replay.generation,
+    )).toBe(false);
+    expect(readConversationBranchReplaySnapshot(locator, 'root').events)
+      .toHaveLength(1);
+    expect(acknowledgeConversationBranchReplay(
+      locator,
+      'root',
+      'session-1',
+      1,
+      1,
+      1,
+      replay.generation,
+    )).toBe(true);
+  });
+
+  it('prefix-acknowledges a fixed replay cut without deleting later events', () => {
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('textDelta'),
+      id: 'cut-answer',
+      seq: 1,
+      endedSeq: 1,
+    }));
+    const fixedCut = readConversationBranchReplaySnapshot(locator, 'root');
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('toolCall'),
+      id: 'after-cut-tool',
+      seq: 2,
+      endedSeq: 2,
+    }, 2));
+
+    expect(acknowledgeConversationBranchReplay(
+      locator,
+      'root',
+      'session-1',
+      1,
+      1,
+      1,
+      fixedCut.generation,
+    )).toBe(true);
+    expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+      generation: fixedCut.generation + 1,
+      sessionId: 'session-1',
+      events: [expect.objectContaining({ id: 'after-cut-tool' })],
+    });
+  });
+
+  it('preserves a loss watermark recorded after the acknowledged replay cut', () => {
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('textDelta'),
+      id: 'cut-answer',
+      seq: 1,
+      endedSeq: 1,
+    }));
+    const fixedCut = readConversationBranchReplaySnapshot(locator, 'root');
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('textDelta'),
+      id: 'oversized-after-cut',
+      seq: 2,
+      endedSeq: 2,
+      content: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes),
+    }, 2));
+
+    expect(acknowledgeConversationBranchReplay(
+      locator,
+      'root',
+      'session-1',
+      1,
+      1,
+      1,
+      fixedCut.generation,
+    )).toBe(true);
+    expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+      events: [],
+      lossWatermarkRevision: 2,
+      lossWatermarkSeq: 2,
+      lossWatermarkRouterGeneration: fixedCut.generation + 1,
+      requiresCatchUp: true,
+    });
   });
 
   it('allows a newer compacted generation to cover an older loss watermark', () => {
@@ -255,11 +443,52 @@ describe('conversation event router', () => {
     }));
     const replay = readConversationBranchReplaySnapshot(locator, 'root');
 
-    expect(acknowledgeConversationBranchReplay(locator, 'root', 2, 4, replay.generation)).toBe(true);
+    expect(acknowledgeConversationBranchReplay(locator, 'root', 'session-1', 2, 0, null, replay.generation)).toBe(true);
     expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
       requiresCatchUp: false,
       lossWatermarkRevision: 0,
+      lossWatermarkSeq: 0,
     });
+  });
+
+  it('allows a newer canonical generation to cover an older transient sequence loss', () => {
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('textDelta'),
+      id: 'oversized-transient-answer',
+      seq: 4,
+      endedSeq: 4,
+      content: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes),
+    }, null));
+    const replay = readConversationBranchReplaySnapshot(locator, 'root');
+
+    expect(acknowledgeConversationBranchReplay(
+      locator,
+      'root',
+      'session-1',
+      2,
+      0,
+      null,
+      replay.generation,
+    )).toBe(true);
+    expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+      lossWatermarkSeq: 0,
+      requiresCatchUp: false,
+    });
+  });
+
+  it('does not let an older canonical generation acknowledge newer retained replay', () => {
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('textDelta'),
+      id: 'new-generation-answer',
+      endedSeq: 8,
+      content: 'new',
+    }, 8, 2));
+    const replay = readConversationBranchReplaySnapshot(locator, 'root');
+
+    expect(acknowledgeConversationBranchReplay(locator, 'root', 'session-1', 1, 8, 8, replay.generation)).toBe(false);
+    expect(readConversationBranchReplaySnapshot(locator, 'root').events)
+      .toHaveLength(1);
+    expect(acknowledgeConversationBranchReplay(locator, 'root', 'session-1', 3, 0, null, replay.generation)).toBe(true);
   });
 
   it('ignores a delayed event from an older timeline generation', () => {
@@ -281,7 +510,84 @@ describe('conversation event router', () => {
     expect(replay.events.map((event) => event.id)).toEqual(['new-generation-answer']);
   });
 
-  it('does not make transient timing updates part of durable catch-up', () => {
+  it('advances generation for a transient live event without a durable revision', () => {
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('textDelta'),
+      id: 'generation-one-answer',
+      endedSeq: 8,
+      content: 'old',
+    }, 8, 1));
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('textDelta'),
+      id: 'generation-two-transient-answer',
+      endedSeq: 9,
+      content: 'new but not durable yet',
+    }, null, 2));
+
+    const replay = readConversationBranchReplaySnapshot(locator, 'root');
+    expect(replay.timelineGeneration).toBe(2);
+    expect(replay.headRevision).toBe(0);
+    expect(replay.events.map((event) => event.id)).toEqual([
+      'generation-two-transient-answer',
+    ]);
+  });
+
+  it('clears a prior sequence loss fence when the live timeline generation advances', () => {
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('textDelta'),
+      id: 'oversized-generation-one-answer',
+      seq: 9,
+      endedSeq: 9,
+      content: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes),
+    }, null, 1));
+    expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+      timelineGeneration: 1,
+      lossWatermarkSeq: 9,
+      requiresCatchUp: true,
+    });
+
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('textDelta'),
+      id: 'generation-two-answer',
+      seq: 1,
+      endedSeq: 1,
+      content: 'compacted',
+    }, null, 2));
+
+    expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+      timelineGeneration: 2,
+      headSeq: 1,
+      lossWatermarkSeq: 0,
+      requiresCatchUp: false,
+      events: [expect.objectContaining({ id: 'generation-two-answer' })],
+    });
+  });
+
+  it('rejects an event-bearing envelope without a valid timeline generation', () => {
+    const malformed = {
+      ...locator,
+      branchId: 'root',
+      event: {
+        ...uiEvent('permissionRequest', 'pending'),
+        id: 'generationless-permission',
+      },
+      timelineRevision: 1,
+    } as unknown as AcpSessionUpdatedEventVm;
+
+    applyConversationEventToBranchSnapshots(malformed);
+
+    expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+      timelineGeneration: 0,
+      headRevision: 0,
+      events: [],
+    });
+    expect(readConversationBranchLiveSnapshot(locator, 'root')).toMatchObject({
+      status: null,
+      attention: false,
+    });
+  });
+
+  it('uses sequence coverage to recover an oversized transient timing update', () => {
     applyConversationEventToBranchSnapshots(live('root', {
       ...uiEvent('timingUpdate'),
       id: 'large-timing',
@@ -291,7 +597,8 @@ describe('conversation event router', () => {
     expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
       headRevision: 0,
       lossWatermarkRevision: 0,
-      requiresCatchUp: false,
+      lossWatermarkSeq: 1,
+      requiresCatchUp: true,
     });
   });
 
@@ -318,7 +625,7 @@ describe('conversation event router', () => {
   });
 
   it('treats an already-evicted replay buffer as acknowledged', () => {
-    expect(acknowledgeConversationBranchReplay(locator, 'root', 0, 0, 0)).toBe(true);
+    expect(acknowledgeConversationBranchReplay(locator, 'root', 'session-1', 0, 0, null, 0)).toBe(true);
   });
 
   it('strictly caps retained branch snapshots and replay buffers', () => {
@@ -378,6 +685,81 @@ describe('conversation event router', () => {
     expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toMatchObject({ status: 'waiting_permission', attention: true });
     applyConversationEventToBranchSnapshots(live('agent-a', uiEvent('permissionRequest', 'selected')));
     expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toMatchObject({ status: 'running', attention: false });
+  });
+
+  it('does not replay an old session after the same locator is reconciled to a new session', () => {
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('permissionRequest', 'pending'),
+      id: 'old-session-permission',
+    }));
+
+    reconcileConversationBranchSession(
+      locator,
+      sessionUpdate('running', [], 'session-2').session!,
+    );
+
+    expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+      sessionId: 'session-2',
+      headSeq: 0,
+      timelineGeneration: 0,
+      headRevision: 0,
+      lossWatermarkRevision: 0,
+      events: [],
+    });
+    expect(readConversationBranchLiveSnapshot(locator, 'root')).toMatchObject({
+      status: 'running',
+      attention: false,
+    });
+  });
+
+  it('clears a transient sequence loss fence when the session owner changes', () => {
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('textDelta'),
+      id: 'oversized-old-session-answer',
+      seq: 9,
+      endedSeq: 9,
+      content: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes),
+    }, null));
+    expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+      sessionId: 'session-1',
+      lossWatermarkSeq: 9,
+      requiresCatchUp: true,
+    });
+
+    reconcileConversationBranchSession(
+      locator,
+      sessionUpdate('running', [], 'session-2').session!,
+    );
+
+    expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+      sessionId: 'session-2',
+      headSeq: 0,
+      lossWatermarkRevision: 0,
+      lossWatermarkSeq: 0,
+      requiresCatchUp: false,
+      events: [],
+    });
+  });
+
+  it('replaces old-session replay when a new-session live event arrives', () => {
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('permissionRequest', 'pending'),
+      id: 'old-session-permission',
+    }));
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('textDelta'),
+      id: 'new-session-answer',
+      sessionId: 'session-2',
+    }));
+
+    expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+      sessionId: 'session-2',
+      events: [expect.objectContaining({ id: 'new-session-answer' })],
+    });
+    expect(readConversationBranchLiveSnapshot(locator, 'root')).toMatchObject({
+      status: 'running',
+      attention: false,
+    });
   });
 
   it('preserves completed branches and interrupts only still-active branches on root stop', () => {
@@ -491,6 +873,8 @@ describe('conversation event router', () => {
       ...oldLocator,
       branchId: 'root',
       event: { ...uiEvent('permissionRequest', 'pending'), id: 'old-permission' },
+      timelineGeneration: 1,
+      timelineRevision: 1,
     });
 
     expect(readConversationBranchLiveSnapshot(oldLocator, 'root')).toMatchObject({

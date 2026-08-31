@@ -56,9 +56,9 @@ use gold_band::config::{
 };
 use gold_band::observability::set_runtime_log_level;
 use gold_band::provider::{
-    ConversationPromptInput, MAX_USER_PROMPT_QUOTE_CHARS, MAX_USER_PROMPT_QUOTE_ID_BYTES,
-    MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES, MAX_USER_PROMPT_QUOTES, UserPromptQuote,
-    conversation_prompt_text, select_config_options_from_capabilities,
+    AcpLiveTimelinePosition, ConversationPromptInput, MAX_USER_PROMPT_QUOTE_CHARS,
+    MAX_USER_PROMPT_QUOTE_ID_BYTES, MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES, MAX_USER_PROMPT_QUOTES,
+    UserPromptQuote, conversation_prompt_text, select_config_options_from_capabilities,
     supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use serde::{Deserialize, Serialize};
@@ -1478,7 +1478,7 @@ pub(crate) fn acp_live_update_emitter_for_app(
     dyn Fn(
             gold_band::app::AcpLiveEventContext,
             AcpUiEvent,
-            Option<(u64, u64)>,
+            AcpLiveTimelinePosition,
         ) -> anyhow::Result<()>
         + Send
         + Sync,
@@ -4662,12 +4662,12 @@ pub(crate) fn acp_live_update_emitter(
     dyn Fn(
             gold_band::app::AcpLiveEventContext,
             AcpUiEvent,
-            Option<(u64, u64)>,
+            AcpLiveTimelinePosition,
         ) -> anyhow::Result<()>
         + Send
         + Sync,
 > {
-    Arc::new(move |context, mut event, timeline_watermark| {
+    Arc::new(move |context, mut event, timeline_position| {
         let refresh_agent_attention = matches!(
             event.kind.as_str(),
             "permissionRequest" | "elicitationRequest"
@@ -4715,7 +4715,7 @@ pub(crate) fn acp_live_update_emitter(
             context.outer_node_id.clone(),
             context.outer_attempt_id.clone(),
             event,
-            timeline_watermark,
+            timeline_position,
         );
         if refresh_agent_attention && let Some(app) = notification_app.as_ref() {
             let session = if let (Some(outer_node_id), Some(outer_attempt_id)) = (
@@ -5267,7 +5267,7 @@ fn emit_acp_event_update(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
     event: AcpUiEvent,
-    timeline_watermark: Option<(u64, u64)>,
+    timeline_position: AcpLiveTimelinePosition,
 ) {
     let activity = activity_app.and_then(|app| conversation_task_prompt_activity_vm(app, task_id));
     emit_acp_update(
@@ -5284,7 +5284,7 @@ fn emit_acp_event_update(
         outer_attempt_id,
         None,
         Some(event),
-        timeline_watermark,
+        Some(timeline_position),
         activity,
     );
 }
@@ -5295,6 +5295,14 @@ fn conversation_task_prompt_activity_vm(
 ) -> Option<ConversationTaskActivityVm> {
     client::prompt_activity_under(&app.paths.task_dir(task_id))
         .map(conversation_task_activity_from_prompt)
+}
+
+fn acp_timeline_position_fields(
+    timeline_position: Option<AcpLiveTimelinePosition>,
+) -> (Option<u64>, Option<u64>) {
+    timeline_position
+        .map(|position| (Some(position.generation), position.revision))
+        .unwrap_or((None, None))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5312,15 +5320,13 @@ fn emit_acp_update(
     outer_attempt_id: Option<String>,
     session: Option<AcpSessionVm>,
     event: Option<AcpUiEvent>,
-    timeline_watermark: Option<(u64, u64)>,
+    timeline_position: Option<AcpLiveTimelinePosition>,
     activity: Option<ConversationTaskActivityVm>,
 ) {
     let branch_id = event
         .as_ref()
         .map(gold_band::acp::branches::event_branch_id);
-    let (timeline_generation, timeline_revision) = timeline_watermark
-        .map(|(generation, revision)| (Some(generation), Some(revision)))
-        .unwrap_or((None, None));
+    let (timeline_generation, timeline_revision) = acp_timeline_position_fields(timeline_position);
     let lifecycle = app.and_then(|app| {
         conversation_attempt_lifecycle_vm(
             app,
@@ -6639,7 +6645,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                     .with_external_session_sync_enabled(agent_config.external_session_sync_enabled)
                     .with_system_prompt_support(agent_config.supports_system_prompt()),
                 claimed_owner.clone(),
-                Some(&|event, timeline_revision| {
+                Some(&|event, timeline_position| {
                     live_update(
                         acp_live_event_context(
                             &task_id_for_live,
@@ -6652,7 +6658,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                             outer_attempt_id_for_live.clone(),
                         ),
                         event.clone(),
-                        timeline_revision,
+                        timeline_position,
                     )
                 }),
                 &app.acp_mcp_servers().unwrap_or_else(|error| {
@@ -6811,7 +6817,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 .with_external_session_sync_enabled(agent_config.external_session_sync_enabled)
                 .with_system_prompt_support(agent_config.supports_system_prompt()),
             claimed_owner.clone(),
-            Some(&|event, timeline_revision| {
+            Some(&|event, timeline_position| {
                 live_update(
                     acp_live_event_context(
                         &task_id_for_live,
@@ -6824,7 +6830,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                         None,
                     ),
                     event.clone(),
-                    timeline_revision,
+                    timeline_position,
                 )
             }),
             &app.acp_mcp_servers().unwrap_or_else(|error| {
@@ -11162,6 +11168,51 @@ mod tests {
                 "personalization.wallpaper-opacity-invalid"
             );
         }
+    }
+
+    #[test]
+    fn live_event_envelope_serializes_generation_without_revision() {
+        let (timeline_generation, timeline_revision) =
+            acp_timeline_position_fields(Some(AcpLiveTimelinePosition::transient(7)));
+        let envelope = AcpSessionUpdatedEventVm {
+            branch_id: Some("root".to_string()),
+            timeline_generation,
+            timeline_revision,
+            project_id: Some("project-a".to_string()),
+            task_id: "task-a".to_string(),
+            task_uuid: Some("task-uuid-a".to_string()),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "direct-agent".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            outer_node_id: None,
+            outer_attempt_id: None,
+            session: None,
+            event: Some(AcpUiEvent {
+                id: "acp-timing-1".to_string(),
+                seq: 1,
+                timestamp: "2026-08-31T00:00:00Z".to_string(),
+                kind: "timingUpdate".to_string(),
+                session_id: Some("session-1".to_string()),
+                content: None,
+                title: None,
+                tool_call_id: None,
+                status: Some("active".to_string()),
+                started_seq: None,
+                ended_seq: None,
+                started_at: None,
+                ended_at: None,
+                timing: None,
+                raw: None,
+            }),
+            lifecycle: None,
+            activity: None,
+            task_activity_at: None,
+        };
+
+        let value = serde_json::to_value(envelope).unwrap();
+        assert_eq!(value["timelineGeneration"], 7);
+        assert!(value["timelineRevision"].is_null());
     }
 
     #[test]

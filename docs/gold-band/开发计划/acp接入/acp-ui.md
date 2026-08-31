@@ -24,6 +24,7 @@
 - 会话运行区的产物/附件入口已改为与任务列表一致的 `Collapsible` 折叠面板：默认收起展示非零产物/附件计数，展开后点击文件项继续复用现有详情弹窗；当任务列表存在时，产物/附件面板固定在任务列表上方。
 - 2026-08-19 附件物化快照大小收敛：删除 `MaterializeAttachmentFileInput.size` 这一选择时瞬时元数据，后端以 Base64 解码后的实际字节作为唯一权威大小，并据此执行空文件、单文件、总量校验及返回 `AttachmentFileVm.size`。活动日志等源文件在选择后继续变化时保存实际读取快照，不再因选择时大小与读取后大小不同而报“附件保存失败”；接口回归固定 canonical size 与重复文件名物化语义。
 - 2026-08-31 已发送图片右键操作链路补齐：根因是既有图片操作接口只接受 composer 草稿 `AttachmentItem`，消息缩略图虽已按 canonical locator 加载预览、会话图片看板也已加载正文，却都无法向共享菜单提供操作源。现将操作输入收敛为轻量只读图片资源，并复用 shadcn/Radix ContextMenu、现有 Tauri 复制/另存为命令和统一局部异步反馈；composer 图片、已发送缩略图与右侧大图共用同一菜单/状态实现。消息相对路径不冒充本地路径，已加载 data URL 直接作为操作源，不新增附件请求、缓存、持久字段、timeline 状态或全局订阅。最小 DOM 回归固定已发送缩略图两项菜单及复制/保存调用，资源面板回归固定已加载会话图片向看板传递操作源，既有 composer/看板测试继续覆盖相邻路径。
+- 2026-08-31 ACP“回到最新”滚动语义收敛：保留 `hasNewerEvents` 对历史 newer edge 与 canonical recovery gate 的统一事实表达，但按钮显隐只消费 `ConversationViewport` 已有的脱底状态，不再绑定 timeline surface 或会话生命周期；点击后有 newer edge/gate 时执行 canonical head handoff，否则使用现有 `scrollToBottom` 本地回底且不新增 session 请求。最小 DOM 回归固定 pending 默认在底部时按钮隐藏、viewport 脱底后按钮持续可见、metadata refresh 不误关按钮，以及本地回底后按钮隐藏且不发 IPC。
 - 节点详情抽屉中的 artifact / attachment 内容以二级详情层打开，返回或关闭产物详情时恢复原节点详情抽屉。
 - 节点详情抽屉顶部只保留紧凑“查看详情 / 查看会话”切换，不重复展示长节点说明。
 - legacy `progress.events` / `raw.stream` 不再作为节点会话主视图，仅保留系统日志/诊断入口。

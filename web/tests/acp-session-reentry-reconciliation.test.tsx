@@ -163,6 +163,7 @@ async function renderDialog(
   dialogLocator: TestLocator = locator,
   eventPageSize?: number,
   lifecycle?: ConversationAttemptLifecycleVm,
+  allowEventOnlySessionShell = true,
 ) {
   const container = document.createElement('div');
   document.body.append(container);
@@ -196,6 +197,7 @@ async function renderDialog(
             workflowValid: true,
             lifecycle,
           } : undefined}
+          allowEventOnlySessionShell={allowEventOnlySessionShell}
           onInitialSessionQueryStateChange={onInitialSessionQueryStateChange}
           showSystemPromptAction={false}
           showRawFramesAction={false}
@@ -246,6 +248,32 @@ async function renderStoredOptimisticDialog(
     await new Promise((resolve) => window.setTimeout(resolve, 0));
   });
   return { container, root };
+}
+
+async function detachConversationViewport(container: HTMLElement) {
+  const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+    .find((element) => element.classList.contains('h-full')
+      && element.classList.contains('overflow-y-auto'));
+  expect(scroller).toBeDefined();
+  if (scroller!.scrollHeight <= scroller!.clientHeight) {
+    Object.defineProperties(scroller!, {
+      clientHeight: { configurable: true, value: 100 },
+      scrollHeight: { configurable: true, value: 1_000 },
+      scrollTop: { configurable: true, value: 500, writable: true },
+    });
+  } else if (
+    scroller!.scrollHeight - scroller!.scrollTop - scroller!.clientHeight <= 2
+  ) {
+    scroller!.scrollTop = Math.max(
+      0,
+      scroller!.scrollHeight - scroller!.clientHeight - 100,
+    );
+  }
+  await act(async () => {
+    scroller!.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -1 }));
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+  });
+  return scroller!;
 }
 
 function terminalLifecycle(turnId: string): ConversationAttemptLifecycleVm {
@@ -709,6 +737,72 @@ describe('ACP session re-entry reconciliation', () => {
     }
   });
 
+  it('keeps return-to-latest hidden while a new session has only a pending timeline', async () => {
+    const placeholder = session([], 'pending');
+    placeholder.sessionId = null;
+    placeholder.eventPage.generation = 0;
+    placeholder.eventPage.hasNewer = true;
+    const lifecycle: ConversationAttemptLifecycleVm = {
+      ...terminalLifecycle('turn-initializing'),
+      runtime: {
+        status: 'running',
+        outcome: null,
+        pauseReason: null,
+        resumable: false,
+        current: true,
+        active: true,
+        continuable: false,
+        phase: 'provider-running',
+        revision: 1,
+      },
+      acp: {
+        revision: 1,
+        turnId: 'turn-initializing',
+        sessionAvailability: 'unavailable',
+        liveTurnActivity: 'running',
+        latestTurnStatus: 'none',
+        stopping: false,
+      },
+      displayStatus: 'running',
+      runtimeDisplay: {
+        code: 'running',
+        tone: 'running',
+        icon: 'dot',
+        terminal: false,
+        resumable: false,
+        reasonCode: null,
+        blockingError: false,
+      },
+      composer: {
+        mode: 'runtime-active',
+        submitTarget: 'none',
+        processingKind: 'processing',
+        statusKey: 'conversation.runtime.runtimeActive',
+        canStop: true,
+        lockInput: true,
+      },
+    };
+    vi.mocked(getAcpSession).mockImplementation(() => new Promise(() => {}));
+
+    const { container, root } = await renderDialog(
+      placeholder,
+      'root',
+      undefined,
+      undefined,
+      locator,
+      undefined,
+      lifecycle,
+      false,
+    );
+    try {
+      expect(container.querySelector('[data-brand-loading-state="true"]')).not.toBeNull();
+      expect(container.querySelector('[data-acp-item-key]')).toBeNull();
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('keeps retrying when the first response is an unmaterialized control placeholder', async () => {
     const placeholder = {
       ...session([], 'pending'),
@@ -1010,6 +1104,7 @@ describe('ACP session re-entry reconciliation', () => {
 
     const { container, root } = await renderDialog(historical);
     try {
+      await detachConversationViewport(container);
       const returnToLatest = container.querySelector<HTMLButtonElement>(
         '[data-acp-return-to-latest="true"]',
       );
@@ -1946,6 +2041,7 @@ describe('ACP session re-entry reconciliation', () => {
         scrollHeight: { configurable: true, value: 2_400 },
         scrollTop: { configurable: true, value: 500, writable: true },
       });
+      await detachConversationViewport(container);
       const visibleItemCount = container.querySelectorAll('[data-acp-item-key]').length;
       expect(container.textContent).toContain('发送中');
       expect(container.textContent).toContain('刚刚发送的新问题');
@@ -1977,7 +2073,7 @@ describe('ACP session re-entry reconciliation', () => {
     }
   });
 
-  it('does not reopen return-to-latest for an equal-watermark metadata refresh away from bottom', async () => {
+  it('keeps return-to-latest available while the viewport remains away from bottom', async () => {
     const canonicalHead = session([
       event('canonical-head-message', 10, 'textDelta', '已经位于 canonical head'),
     ]);
@@ -2041,7 +2137,7 @@ describe('ACP session re-entry reconciliation', () => {
         await new Promise((resolve) => window.setTimeout(resolve, 50));
       });
       expect(onAtBottomChange).toHaveBeenLastCalledWith(false);
-      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
 
       await act(async () => {
         runtime.listener?.({
@@ -2055,7 +2151,19 @@ describe('ACP session re-entry reconciliation', () => {
       });
 
       expect(container.textContent).toContain('已经位于 canonical head');
+      const returnToLatest = container.querySelector<HTMLButtonElement>(
+        '[data-acp-return-to-latest="true"]',
+      );
+      expect(returnToLatest).not.toBeNull();
+
+      await act(async () => {
+        returnToLatest!.click();
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+
+      expect(onAtBottomChange).toHaveBeenLastCalledWith(true);
       expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
     } finally {
       await unmount(root);
     }
@@ -2098,6 +2206,7 @@ describe('ACP session re-entry reconciliation', () => {
       30,
     );
     try {
+      await detachConversationViewport(container);
       const optimisticItem = [...container.querySelectorAll<HTMLElement>('[data-acp-item-key]')]
         .find((item) => item.textContent?.includes('受控状态的新问题'));
       expect(optimisticItem).toBeDefined();
@@ -2208,7 +2317,7 @@ describe('ACP session re-entry reconciliation', () => {
       );
       expect(container.textContent).not.toContain('发送中');
       expect(container.textContent).toContain('提交响应到达前的历史窗口');
-      expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
     } finally {
       await unmount(root);
     }
@@ -2311,6 +2420,7 @@ describe('ACP session re-entry reconciliation', () => {
         scrollHeight: { configurable: true, value: 2_400 },
         scrollTop: { configurable: true, value: 500, writable: true },
       });
+      await detachConversationViewport(container);
       const historicalItem = [...container.querySelectorAll<HTMLElement>('[data-acp-item-key]')]
         .find((item) => item.textContent?.includes('prop 刷新前的历史锚点'));
       expect(historicalItem).toBeDefined();
@@ -2412,6 +2522,7 @@ describe('ACP session re-entry reconciliation', () => {
 
     const { container, root } = await renderDialog(historical, 'root', undefined, undefined, locator, 30);
     try {
+      await detachConversationViewport(container);
       await act(async () => {
         container.querySelector<HTMLButtonElement>(
           '[data-acp-return-to-latest="true"]',
@@ -2483,6 +2594,7 @@ describe('ACP session re-entry reconciliation', () => {
 
     const { container, root } = await renderDialog(historical, 'root', undefined, undefined, locator, 30);
     try {
+      await detachConversationViewport(container);
       await act(async () => {
         container.querySelector<HTMLButtonElement>(
           '[data-acp-return-to-latest="true"]',
@@ -2574,6 +2686,7 @@ describe('ACP session re-entry reconciliation', () => {
         scrollHeight: { configurable: true, value: 2_400 },
         scrollTop: { configurable: true, value: 500, writable: true },
       });
+      await detachConversationViewport(container);
       vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1));
       vi.stubGlobal('cancelAnimationFrame', vi.fn());
       const returnButton = container.querySelector<HTMLButtonElement>(
@@ -2692,6 +2805,7 @@ describe('ACP session re-entry reconciliation', () => {
 
     const { container, root } = await renderDialog(historical);
     try {
+      await detachConversationViewport(container);
       const returnButton = container.querySelector<HTMLButtonElement>(
         '[data-acp-return-to-latest="true"]',
       );
@@ -2782,6 +2896,7 @@ describe('ACP session re-entry reconciliation', () => {
 
     const { container, root } = await renderDialog(historical);
     try {
+      await detachConversationViewport(container);
       const returnButton = container.querySelector<HTMLButtonElement>(
         '[data-acp-return-to-latest="true"]',
       );
@@ -2881,6 +2996,7 @@ describe('ACP session re-entry reconciliation', () => {
 
     const { container, root } = await renderDialog(historical);
     try {
+      await detachConversationViewport(container);
       const returnButton = container.querySelector<HTMLButtonElement>(
         '[data-acp-return-to-latest="true"]',
       );
@@ -2980,6 +3096,7 @@ describe('ACP session re-entry reconciliation', () => {
 
     const { container, root } = await renderDialog(historical);
     try {
+      await detachConversationViewport(container);
       const returnButton = container.querySelector<HTMLButtonElement>(
         '[data-acp-return-to-latest="true"]',
       );
@@ -3334,6 +3451,7 @@ describe('ACP session re-entry reconciliation', () => {
 
     const { container, root } = await renderDialog(historical);
     try {
+      await detachConversationViewport(container);
       await act(async () => {
         runtime.listener?.({
           ...locator,
@@ -3416,6 +3534,7 @@ describe('ACP session re-entry reconciliation', () => {
 
     const { container, root } = await renderDialog(historical);
     try {
+      await detachConversationViewport(container);
       await act(async () => {
         container.querySelector<HTMLButtonElement>(
           '[data-acp-return-to-latest="true"]',
@@ -4258,6 +4377,7 @@ describe('ACP session re-entry reconciliation', () => {
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
       expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
+      await detachConversationViewport(container);
       expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
 
       const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]

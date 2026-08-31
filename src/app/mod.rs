@@ -45,8 +45,8 @@ use crate::dynamic_store::load_dynamic_graph;
 use crate::mcp::McpManager;
 use crate::process::recover_persisted_process_group;
 use crate::provider::{
-    ConversationPromptInput, DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter,
-    ProviderCapabilities, ProviderInfo, UserPromptRenderMode, provider_from_agent,
+    AcpLiveTimelinePosition, ConversationPromptInput, DoctorResult, PromptBundle, PromptVisibility,
+    ProviderAdapter, ProviderCapabilities, ProviderInfo, UserPromptRenderMode, provider_from_agent,
     render_prompt_bundle, supported_modes_from_capabilities,
 };
 use crate::runtime::{
@@ -1167,7 +1167,7 @@ pub struct App {
             dyn Fn(
                     AcpLiveEventContext,
                     crate::acp::events::AcpUiEvent,
-                    Option<(u64, u64)>,
+                    AcpLiveTimelinePosition,
                 ) -> Result<()>
                 + Send
                 + Sync,
@@ -1588,7 +1588,7 @@ impl App {
             dyn Fn(
                     AcpLiveEventContext,
                     crate::acp::events::AcpUiEvent,
-                    Option<(u64, u64)>,
+                    AcpLiveTimelinePosition,
                 ) -> Result<()>
                 + Send
                 + Sync,
@@ -1685,13 +1685,13 @@ impl App {
     pub fn acp_live_update_for<'a>(
         &'a self,
         context: AcpLiveEventContext,
-    ) -> Option<impl Fn(&crate::acp::events::AcpUiEvent, Option<(u64, u64)>) -> Result<()> + 'a>
+    ) -> Option<impl Fn(&crate::acp::events::AcpUiEvent, AcpLiveTimelinePosition) -> Result<()> + 'a>
     {
         let live_update = self.acp_live_update.as_ref()?.clone();
         Some(
             move |event: &crate::acp::events::AcpUiEvent,
-                  timeline_watermark: Option<(u64, u64)>| {
-                live_update(context.clone(), event.clone(), timeline_watermark)
+                  timeline_position: AcpLiveTimelinePosition| {
+                live_update(context.clone(), event.clone(), timeline_position)
             },
         )
     }

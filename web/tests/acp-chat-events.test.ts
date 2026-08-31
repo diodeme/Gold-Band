@@ -16,6 +16,7 @@ import {
   partitionAcpLiveTimingUpdates,
   pendingElicitationFromEvents,
   pendingPermissionFromEvents,
+  projectAcpSessionControlEvents,
   promptRetryFooterKind,
   reconcileAcpSessionForDisplay,
   runtimeControlMessageParts,
@@ -25,6 +26,9 @@ import {
   stabilizeAcpSessionTimingPatchForDisplay,
   useSessionTimingSeconds,
   acpSessionLoadErrorReason,
+  ACP_LIVE_EVENT_BUFFER_MAX_IDENTITIES,
+  ACP_OPTIMISTIC_EVENTS_PER_SESSION_LIMIT,
+  updateAcpOptimisticEvents,
   visibleAcpBannerError,
 } from '../src/components/acp/ACPChatDialog';
 import type { AcpSessionVm, AcpUiEventVm } from '../src/types';
@@ -84,6 +88,33 @@ function session(partial: Partial<AcpSessionVm>): AcpSessionVm {
 }
 
 describe('ACP chat event handling', () => {
+  it('keeps transient live and optimistic projections at the default 576-item boundary', () => {
+    expect({
+      live: ACP_LIVE_EVENT_BUFFER_MAX_IDENTITIES,
+      optimistic: ACP_OPTIMISTIC_EVENTS_PER_SESSION_LIMIT,
+    }).toEqual({ live: 576, optimistic: 576 });
+  });
+
+  it('bounds the per-session optimistic projection instead of retaining an unbounded event queue', () => {
+    const sessionKey = 'optimistic-bound-test';
+    const oversized = Array.from(
+      { length: ACP_OPTIMISTIC_EVENTS_PER_SESSION_LIMIT + 7 },
+      (_, index) => event({
+        id: `optimistic-${index}`,
+        seq: index + 1,
+        kind: 'userTextDelta',
+        status: 'sending',
+        raw: { optimistic: true },
+      }),
+    );
+
+    const retained = updateAcpOptimisticEvents(sessionKey, () => oversized);
+
+    expect(retained).toHaveLength(ACP_OPTIMISTIC_EVENTS_PER_SESSION_LIMIT);
+    expect(retained[0]?.id).toBe('optimistic-7');
+    updateAcpOptimisticEvents(sessionKey, () => []);
+  });
+
   it('projects and settles permission through the shared pending interaction reducer', () => {
     const current = session({ status: 'running' });
     const request = event({
@@ -115,6 +146,38 @@ describe('ACP chat event handling', () => {
       promptEventId: 'prompt-turn-2',
     }]);
     expect(settled?.pendingInteractions).toEqual([]);
+  });
+
+  it('projects replay-only usage and permission controls through one session reducer', () => {
+    const current = session({
+      status: 'running',
+      usage: { used: 1_000, size: 100_000 },
+    });
+    const projected = projectAcpSessionControlEvents(current, [
+      event({
+        id: 'usage-replay',
+        seq: 20,
+        kind: 'usageUpdate',
+        raw: { sessionUpdate: 'usage_update', used: 7_920, size: 258_400 },
+      }),
+      event({
+        id: 'permission-rpc-replay',
+        seq: 21,
+        kind: 'permissionRequest',
+        status: 'pending',
+        title: 'Allow replay command',
+        raw: {
+          requestId: 'rpc-replay',
+          options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+        },
+      }),
+    ]);
+
+    expect(projected?.usage).toMatchObject({ used: 7_920, size: 258_400 });
+    expect(projected?.pendingInteractions).toMatchObject([{
+      kind: 'permission',
+      interactionId: 'rpc-replay',
+    }]);
   });
 
   it('stops the read-only Agent session when its canonical result arrives', () => {
@@ -1093,6 +1156,7 @@ describe('ACP chat event handling', () => {
       }),
       [assistant],
       100,
+      'live-head',
     );
 
     expect(visible.events.map((item) => item.id)).toEqual([
@@ -1107,6 +1171,44 @@ describe('ACP chat event handling', () => {
       hasOlder: false,
       hasNewer: false,
     });
+  });
+
+  it('keeps a historical loaded window authoritative over a newer session snapshot', () => {
+    const historical = event({
+      id: 'historical-message',
+      seq: 1,
+      kind: 'textDelta',
+      content: 'Earlier content',
+      status: 'completed',
+    });
+    const liveHead = event({
+      id: 'live-head-message',
+      seq: 12,
+      kind: 'textDelta',
+      content: 'Newest content',
+    });
+
+    const visible = createVisibleAcpSession(
+      session({ events: [liveHead] }),
+      [historical],
+      100,
+      'historical',
+    );
+
+    expect(visible.events.map((item) => item.id)).toEqual(['historical-message']);
+  });
+
+  it('does not fall back to the live head while a historical window is empty', () => {
+    const visible = createVisibleAcpSession(
+      session({
+        events: [event({ id: 'live-head-message', seq: 12 })],
+      }),
+      [],
+      100,
+      'historical',
+    );
+
+    expect(visible.events).toEqual([]);
   });
 
   it('uses backend timing as the session elapsed source of truth', () => {

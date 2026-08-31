@@ -128,9 +128,9 @@ describe('ACPChatDialog pagination buffer', () => {
   });
 
   it('keeps three configured pages in the sliding event buffer', () => {
-    expect(DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE).toBe(96);
-    expect(DEFAULT_ACP_CHAT_LOADED_EVENT_BUFFER_LIMIT).toBe(288);
-    expect(loadedEventBufferLimit(DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE)).toBe(288);
+    expect(DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE).toBe(192);
+    expect(DEFAULT_ACP_CHAT_LOADED_EVENT_BUFFER_LIMIT).toBe(576);
+    expect(loadedEventBufferLimit(DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE)).toBe(576);
     expect(loadedEventBufferLimit(240)).toBe(720);
     expect(loadedEventBufferLimit(30)).toBe(90);
     expect(loadedEventBufferLimit(10)).toBe(30);
@@ -138,7 +138,8 @@ describe('ACPChatDialog pagination buffer', () => {
   });
 
   it('keeps the current page when the next page is merged', () => {
-    const current = Array.from({ length: 96 }, (_, index) =>
+    const pageSize = DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE;
+    const current = Array.from({ length: pageSize }, (_, index) =>
       event({
         id: `current-${index + 1}`,
         seq: index + 1,
@@ -147,15 +148,16 @@ describe('ACPChatDialog pagination buffer', () => {
         content: `current ${index + 1}`,
       }),
     );
-    const newer = Array.from({ length: 96 }, (_, index) =>
-      event({
-        id: `newer-${index + 97}`,
-        seq: index + 97,
-        timestamp: `${index + 97}Z`,
+    const newer = Array.from({ length: pageSize }, (_, index) => {
+      const seq = index + pageSize + 1;
+      return event({
+        id: `newer-${seq}`,
+        seq,
+        timestamp: `${seq}Z`,
         kind: 'textDelta',
-        content: `newer ${index + 97}`,
-      }),
-    );
+        content: `newer ${seq}`,
+      });
+    });
 
     const merged = limitAcpEvents(
       mergeAcpEvents(current, newer),
@@ -163,15 +165,17 @@ describe('ACPChatDialog pagination buffer', () => {
       loadedEventBufferLimit(DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE),
     );
 
-    expect(merged).toHaveLength(192);
+    expect(merged).toHaveLength(pageSize * 2);
     expect(merged[0]!.id).toBe('current-1');
-    expect(merged[95]!.id).toBe('current-96');
-    expect(merged[96]!.id).toBe('newer-97');
-    expect(merged[191]!.id).toBe('newer-192');
+    expect(merged[pageSize - 1]!.id).toBe(`current-${pageSize}`);
+    expect(merged[pageSize]!.id).toBe(`newer-${pageSize + 1}`);
+    expect(merged[pageSize * 2 - 1]!.id).toBe(`newer-${pageSize * 2}`);
   });
 
   it('slides a full three-page window without breaking the page boundary', () => {
-    const current = Array.from({ length: 288 }, (_, index) =>
+    const pageSize = DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE;
+    const windowSize = DEFAULT_ACP_CHAT_LOADED_EVENT_BUFFER_LIMIT;
+    const current = Array.from({ length: windowSize }, (_, index) =>
       event({
         id: `event-${index + 1}`,
         seq: index + 1,
@@ -180,15 +184,16 @@ describe('ACPChatDialog pagination buffer', () => {
         content: `event ${index + 1}`,
       }),
     );
-    const newer = Array.from({ length: 96 }, (_, index) =>
-      event({
-        id: `event-${index + 289}`,
-        seq: index + 289,
-        timestamp: `${index + 289}Z`,
+    const newer = Array.from({ length: pageSize }, (_, index) => {
+      const seq = index + windowSize + 1;
+      return event({
+        id: `event-${seq}`,
+        seq,
+        timestamp: `${seq}Z`,
         kind: 'textDelta',
-        content: `event ${index + 289}`,
-      }),
-    );
+        content: `event ${seq}`,
+      });
+    });
 
     const merged = limitAcpEvents(
       mergeAcpEvents(current, newer),
@@ -196,11 +201,11 @@ describe('ACPChatDialog pagination buffer', () => {
       loadedEventBufferLimit(DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE),
     );
 
-    expect(merged).toHaveLength(288);
-    expect(merged[0]!.seq).toBe(97);
-    expect(merged[191]!.seq).toBe(288);
-    expect(merged[192]!.seq).toBe(289);
-    expect(merged[287]!.seq).toBe(384);
+    expect(merged).toHaveLength(windowSize);
+    expect(merged[0]!.seq).toBe(pageSize + 1);
+    expect(merged[windowSize - pageSize - 1]!.seq).toBe(windowSize);
+    expect(merged[windowSize - pageSize]!.seq).toBe(windowSize + 1);
+    expect(merged[windowSize - 1]!.seq).toBe(windowSize + pageSize);
   });
 
   it('does not turn live activity audit overflow into conversation history', () => {

@@ -2312,6 +2312,7 @@ export interface ConversationTaskRowVm {
 
 export interface AcpActivityDetailQueryInput {
   branchId: string;
+  sessionId: string;
   activityStartSeq: number;
   activityEndSeq: number;
   earlierCursor?: string | null;
@@ -2326,6 +2327,7 @@ export interface AcpActivityDetailVm {
 
 export interface AcpToolDetailQueryInput {
   branchId: string;
+  sessionId: string;
   eventId: string;
   toolCallId?: string | null;
 }

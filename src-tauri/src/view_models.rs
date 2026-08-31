@@ -1095,6 +1095,7 @@ pub struct AcpRawFramePageVm {
 #[serde(rename_all = "camelCase")]
 pub struct AcpActivityDetailQueryInput {
     pub branch_id: String,
+    pub session_id: String,
     pub activity_start_seq: u64,
     pub activity_end_seq: u64,
     pub earlier_cursor: Option<String>,
@@ -1113,6 +1114,7 @@ pub struct AcpActivityDetailVm {
 #[serde(rename_all = "camelCase")]
 pub struct AcpToolDetailQueryInput {
     pub branch_id: String,
+    pub session_id: String,
     pub event_id: String,
     pub tool_call_id: Option<String>,
 }
@@ -4458,6 +4460,8 @@ struct AcpTimelineEventHeaderVm {
     seq: u64,
     kind: String,
     #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
     started_seq: Option<u64>,
     #[serde(default)]
     raw: Option<AcpTimelineEventRawHeaderVm>,
@@ -5476,6 +5480,7 @@ pub fn acp_activity_detail_vm_for_attempt(
         .clamp(1, 200);
     let candidates = scan_activity_detail_candidates(
         &timeline_path,
+        &query.session_id,
         query.activity_start_seq,
         query.activity_end_seq,
         before_seq,
@@ -5487,7 +5492,8 @@ pub fn acp_activity_detail_vm_for_attempt(
         .skip(usize::from(has_more_earlier))
         .map(|(item_id, _)| item_id.clone())
         .collect::<HashSet<_>>();
-    let audit = load_selected_activity_detail_events(&timeline_path, &selected_ids)?;
+    let audit =
+        load_selected_activity_detail_events(&timeline_path, &query.session_id, &selected_ids)?;
     let mut audit = audit;
     hydrate_timeline_events(&timeline_path, &mut audit)?;
     let items = audit
@@ -5506,6 +5512,7 @@ pub fn acp_activity_detail_vm_for_attempt(
 
 fn scan_activity_detail_candidates(
     timeline_path: &camino::Utf8Path,
+    session_id: &str,
     activity_start_seq: u64,
     activity_end_seq: u64,
     before_seq: Option<u64>,
@@ -5523,7 +5530,8 @@ fn scan_activity_detail_candidates(
             continue;
         }
         let started_seq = header.item.started_seq.unwrap_or(header.item.seq);
-        if started_seq < activity_start_seq
+        if header.item.session_id.as_deref() != Some(session_id)
+            || started_seq < activity_start_seq
             || started_seq > activity_end_seq
             || before_seq.is_some_and(|cursor| started_seq >= cursor)
             || header
@@ -5582,6 +5590,7 @@ fn scan_activity_detail_candidates(
 
 fn load_selected_activity_detail_events(
     timeline_path: &camino::Utf8Path,
+    session_id: &str,
     selected_ids: &HashSet<String>,
 ) -> Result<Vec<AcpUiEventVm>> {
     if selected_ids.is_empty() {
@@ -5594,6 +5603,9 @@ fn load_selected_activity_detail_events(
         let Ok(header) = serde_json::from_str::<AcpTimelineEntryHeaderVm>(&line) else {
             continue;
         };
+        if header.item.session_id.as_deref() != Some(session_id) {
+            continue;
+        }
         let item_id = header.item_id.unwrap_or(header.item.id);
         if !selected_ids.contains(&item_id) {
             continue;
@@ -5664,11 +5676,13 @@ pub fn acp_tool_detail_vm_for_attempt(
         .filter(|value| !value.is_empty())
         .map(|value| serde_json::to_string(value).unwrap_or_else(|_| format!("\"{value}\"")))
         .collect::<Vec<_>>();
+    let session_needle = serde_json::to_string(&query.session_id)
+        .unwrap_or_else(|_| format!("\"{}\"", query.session_id));
     let file = fs::File::open(timeline_path.as_std_path())?;
     let mut detail: Option<AcpUiEventVm> = None;
     for line in BufReader::new(file).lines() {
         let line = line?;
-        if !needles.iter().any(|needle| line.contains(needle)) {
+        if !line.contains(&session_needle) || !needles.iter().any(|needle| line.contains(needle)) {
             continue;
         }
         let candidate = if let Ok(patch) = serde_json::from_str::<AcpTimelinePatchVm>(&line) {
@@ -5683,7 +5697,10 @@ pub fn acp_tool_detail_vm_for_attempt(
             || query.tool_call_id.as_deref().is_some_and(|tool_call_id| {
                 candidate.tool_call_id.as_deref() == Some(tool_call_id)
             });
-        if !identity_matches || !matches!(candidate.kind.as_str(), "toolCall" | "toolCallUpdate") {
+        if candidate.session_id.as_deref() != Some(query.session_id.as_str())
+            || !identity_matches
+            || !matches!(candidate.kind.as_str(), "toolCall" | "toolCallUpdate")
+        {
             continue;
         }
         detail = Some(
@@ -9653,6 +9670,64 @@ mod tests {
     }
 
     #[test]
+    fn detail_queries_are_scoped_by_canonical_session() {
+        let dir =
+            std::env::temp_dir().join(format!("gb-detail-session-scope-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let mut first = acp_event_at(
+            "shared-tool",
+            "toolCall",
+            Some("completed"),
+            1_000,
+            Some(json!({ "output": "session-a-output" })),
+        );
+        first.session_id = Some("session-a".to_string());
+        first.seq = 1;
+        first.started_seq = Some(1);
+        first.ended_seq = Some(1);
+        first.tool_call_id = Some("shared-call".to_string());
+        let mut second = first.clone();
+        second.session_id = Some("session-b".to_string());
+        second.seq = 2;
+        second.started_seq = Some(2);
+        second.ended_seq = Some(2);
+        second.raw = Some(json!({ "output": "session-b-output" }));
+        write_timeline_file(&attempt, "acp.timeline.jsonl", &[first, second]);
+
+        let tool = acp_tool_detail_vm_for_attempt(
+            &attempt,
+            AcpToolDetailQueryInput {
+                branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.to_string(),
+                session_id: "session-a".to_string(),
+                event_id: "shared-tool".to_string(),
+                tool_call_id: Some("shared-call".to_string()),
+            },
+        )
+        .unwrap()
+        .event
+        .expect("session-scoped tool detail");
+        assert_eq!(tool.session_id.as_deref(), Some("session-a"));
+        assert_eq!(tool.raw.unwrap()["output"], "session-a-output");
+
+        let activity = acp_activity_detail_vm_for_attempt(
+            &attempt,
+            AcpActivityDetailQueryInput {
+                branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.to_string(),
+                session_id: "session-a".to_string(),
+                activity_start_seq: 1,
+                activity_end_seq: 2,
+                earlier_cursor: None,
+                limit: Some(40),
+            },
+        )
+        .unwrap();
+        assert_eq!(activity.items.len(), 1);
+        assert_eq!(activity.items[0].session_id.as_deref(), Some("session-a"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn tool_detail_keeps_intermediate_diff_when_terminal_revision_has_only_status() {
         let dir = std::env::temp_dir().join(format!(
             "gb-tool-detail-diff-revision-{}",
@@ -9663,6 +9738,7 @@ mod tests {
         let mut intermediate = event_sequence(1, 1_000).remove(0);
         intermediate.id = "tool-call-call-1".to_string();
         intermediate.kind = "toolCall".to_string();
+        intermediate.session_id = Some("session-tool-detail".to_string());
         intermediate.tool_call_id = Some("call-1".to_string());
         intermediate.status = None;
         intermediate.raw = Some(json!({
@@ -9692,6 +9768,7 @@ mod tests {
             &attempt,
             AcpToolDetailQueryInput {
                 branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.to_string(),
+                session_id: "session-tool-detail".to_string(),
                 event_id: "tool-call-call-1".to_string(),
                 tool_call_id: Some("call-1".to_string()),
             },
@@ -11015,6 +11092,7 @@ mod tests {
                     Some(json!({ "rawInput": { "path": format!("file-{seq}.rs") } })),
                 );
                 event.seq = seq;
+                event.session_id = Some("session-activity-detail".to_string());
                 event.started_seq = Some(seq);
                 event.ended_seq = Some(seq);
                 if event.kind == "toolCall" {
@@ -11026,11 +11104,13 @@ mod tests {
             .collect::<Vec<_>>();
         let mut resolved_permission = permission_event_at("resolved", "selected", 1_050);
         resolved_permission.seq = 50;
+        resolved_permission.session_id = Some("session-activity-detail".to_string());
         resolved_permission.started_seq = Some(50);
         resolved_permission.ended_seq = Some(50);
         events.push(resolved_permission);
         let mut answer = text_event_at(2_000);
         answer.id = "answer".to_string();
+        answer.session_id = Some("session-activity-detail".to_string());
         answer.seq = 101;
         answer.started_seq = Some(101);
         answer.ended_seq = Some(101);
@@ -11060,6 +11140,7 @@ mod tests {
             &attempt,
             AcpActivityDetailQueryInput {
                 branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.to_string(),
+                session_id: "session-activity-detail".to_string(),
                 activity_start_seq: 1,
                 activity_end_seq: 100,
                 earlier_cursor: None,
@@ -11091,6 +11172,7 @@ mod tests {
             &attempt,
             AcpToolDetailQueryInput {
                 branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.to_string(),
+                session_id: "session-activity-detail".to_string(),
                 event_id: "tool-99".to_string(),
                 tool_call_id: Some("call-99".to_string()),
             },
@@ -11107,6 +11189,7 @@ mod tests {
             &attempt,
             AcpActivityDetailQueryInput {
                 branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.to_string(),
+                session_id: "session-activity-detail".to_string(),
                 activity_start_seq: 1,
                 activity_end_seq: 100,
                 earlier_cursor: detail.earlier_cursor.clone(),
@@ -11180,6 +11263,7 @@ mod tests {
             1_000,
             Some(json!({ "output": large_output })),
         );
+        event.session_id = Some("session-blob-detail".to_string());
         event.tool_call_id = Some("call-large".to_string());
         let stored_event: gold_band::acp::events::AcpUiEvent =
             serde_json::from_value(serde_json::to_value(event).unwrap()).unwrap();
@@ -11191,6 +11275,7 @@ mod tests {
             &attempt,
             AcpToolDetailQueryInput {
                 branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.to_string(),
+                session_id: "session-blob-detail".to_string(),
                 event_id: "tool-large".to_string(),
                 tool_call_id: Some("call-large".to_string()),
             },

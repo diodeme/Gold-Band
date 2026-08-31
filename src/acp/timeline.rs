@@ -642,6 +642,10 @@ struct TimelineFileSignature {
 }
 
 impl TimelineStore {
+    pub fn generation(&self) -> u64 {
+        self.index.generation
+    }
+
     pub fn durable_watermark_for_item_id(&self, item_id: &str) -> Option<(u64, u64)> {
         self.index
             .item_locators

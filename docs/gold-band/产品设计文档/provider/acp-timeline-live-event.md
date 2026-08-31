@@ -71,10 +71,14 @@ Gold Band 的 ACP 会话同时服务两类读取路径：
 ## Snapshot / live revision 交接
 
 - timeline patch revision 是持久正文的 commit 水位，event `seq/endedSeq` 只是展示顺序，二者不得互相代替。
-- durable live envelope 携带对应 branch 已持久化事件的 `timelineGeneration + timelineRevision`；尚未 flush 的累计流和不落盘的 `timingUpdate` 使用空水位，不能制造可查询的持久化承诺。generation 变化时旧 revision 不得与新 generation 直接比较。
+- 每个 timeline live envelope 都必须携带所属 root/Agent branch 当前非空 `timelineGeneration`；`timelineRevision` 仅在该累计快照已由同一次 TimelineStore mutation 持久化时非空。尚未 flush 的累计流和不落盘的 `timingUpdate` 因而使用“generation 非空、revision 为空”，既保持 compaction 归属，又不制造可查询的持久化承诺。durable event 携带同一次写入得到的精确 generation/revision 原子对；generation 变化时旧 revision 不得与新 generation 直接比较。
+- event-bearing envelope 的 generation 缺失、非正数或不是安全整数时，Router 必须在 keyed/global listener 分发前移除 event 与其 revision 水位，只保留同 envelope 的 session/lifecycle/activity 控制面，并附带 `timelineRecoveryRequired`。页面不得投影非法正文；ordinary 返回最新、页面容量 handoff 与此类 recovery 必须共用同一个 canonical-head coordinator，每个 owner 最多一个 in-flight 加一个可覆盖的 latest trailing intent，且 recovery 优先。历史窗口保留当前 DOM 和显式恢复入口；失败、新 owner 或请求期间新增 loss 不能被旧成功/finally 清除。
 - durable watermark 直接来自同一次 TimelineStore append/index mutation 的 locator；live 发布不得重新 externalize、序列化或哈希大 raw payload 来猜测持久化状态。延迟到达的旧 generation live event 必须丢弃，不能让前端水位回退。
 - session page 返回 index `generation / coveredRevision` 和当前页 `newestRevision`。`afterRevision` 依据语义块 `lastRevision` 查询；同 revision 块同页返回。
-- 有界 replay 只在 durable event 真正被淘汰时记录 `lossWatermarkRevision`。重进捕获一次固定 loss watermark，先合并 retained live，再用 revision delta 覆盖缺口；新到 live 不延长该目标。
+- 有界 replay 以明确 `sessionId + branch` 为 owner；同 attempt locator 出现新的非空 sessionId 时，必须原子清空旧 retained、loss/head 水位和旧 permission attention。ACK 同时校验 session owner、timeline generation 与 covered revision，并按 Router cut 做 prefix ACK：只删除 `retained.routerGeneration <= observedGeneration`；cut 之后到达的事件和 loss 保留。loss 额外记录其 Router generation，使旧 cut 的确认不能误清 await 期间产生的新缺口。
+- 有界 replay 只在 durable event 真正被淘汰时记录 `lossWatermarkRevision`。重进捕获一次固定 C0，不追逐不断前移的 head；同 generation 最多读取 4 个 revision delta page、总计最多 2 秒，更高 generation 至多刷新一次 canonical head。追平 C0 后只同步读取一次 C1；同 session/generation 且没有新 loss 时合并 cumulative snapshot 并 prefix ACK，否则保留恢复入口。新到 live 不延长 C0 目标。
+- 有界 replay 淘汰 `timelineRevision=null` 的 transient event 时必须另外记录该 event 的最大 `endedSeq/seq` 为 `lossWatermarkSeq`，并立即令 `requiresCatchUp=true`。sequence loss fence 只证明前端丢过一个尚无 durable revision 的累计快照，不能伪造成 revision delta cursor，也不能由只确认 revision 的 ACK 清除；统一 canonical-head coordinator 只有在匹配 session/generation 的权威 head 已以 `newestSeq` 覆盖该 fence 后才可消费它。
+- canonical ACK 的 generation、covered revision 与 covered sequence 只能由当前交接实际收到的 full-head/delta 响应推进。页面为展示而合并的 Router replay、缓存 session 和由可见事件重算的 `newestSeq` 不构成持久覆盖证据；sequence fence 未覆盖时，在同一 4 次/2 秒总预算内有界重读 full head，失败后保留 recovery gate。
 - 新 generation 的 current-page snapshot 可以覆盖旧 generation 的 loss watermark；确认要求 snapshot generation 不早于缺口 generation，且 `coveredRevision` 已覆盖缺口 revision。generation 前进后旧缺口必须清除，避免每次重进重复刷新。
 - 停止 accepted 与 terminal 只发布 lifecycle/control patch，不附带正文 session，也不触发终态补拉；尾部正文通过同一 live/revision delta 数据面自然收敛。
 - 停止控制面不保留返回完整 `AcpSessionVm` 的旧取消 IPC；所有停止调用都必须经过轻量 accepted/lifecycle 入口。
@@ -110,6 +114,11 @@ Gold Band 的 ACP 会话同时服务两类读取路径：
 
 - 后端 timeline item 已经是累计快照；前端只能为每个稳定 text/thought/plan item 或 `toolCallId` 保留一个最新待发布值，新的累计快照原位替换旧值。待发布集合大小必须受活跃 stream/tool identity 数约束，不能受 raw frame 数约束。
 - UI publish 采用单飞 timer：任意时刻最多一个 scheduled/in-flight publish。timer drain 后直接进入一次 React state merge，不为每次 flush 创建可延后的 transition 队列；非流式 lifecycle 先同步 drain pending，再按协议顺序应用自身。
+- 页面只在当前窗口位于 live head 且未暂停时使用 latest-wins publish buffer；容量不超过当前原生 DOM 窗口，有效上限按配置的 `acpChatEventPageSize × 3` 计算，默认 `192 × 3 = 576` 个 logical timeline item。用户阅读历史、系统弹窗暂停 live 或已有 canonical recovery 时，timeline 正文不进入页面 buffer，只即时收敛 control state 与 optimistic admission，并由 Router/canonical timeline 保留最终事实；恢复时通过统一 canonical-head coordinator 执行一次 handoff，禁止把中间累计 identity 逐项补渲染。
+- 页面 buffer 达到容量时必须清空本批并转 canonical recovery，不能静默淘汰一个 identity 后继续提交不完整集合。older/newer cursor 一旦观察到不同 timeline generation 即失效并熔断后续自动触边读取；只有显式“返回最新”可以重新建立 canonical cursor。
+- 非 root branch 的 session envelope 只触发所选 branch 的权威读取；同一 owner 最多一个 in-flight 和一个 latest trailing refresh。每个结果必须校验 effect refresh sequence 与 `eventWindowKey`，同 generation revision 只允许前进，避免 burst 形成并发全页请求或迟到响应跨会话回写。
+- Activity 展开详情沿用独立 40 项 cursor，但前端只保留 3 页、最多 120 个审计 item；向前加载时从 newer 端裁剪并保存真实 DOM item 锚点，裁剪后提供“回到最新活动”重新读取 latest page。Activity/Tool 详情请求绑定 `eventWindowKey + sessionId + timelineGeneration + logical item + observed position + requestSeq`；没有非空 canonical session owner 时不得查询，Tauri query 和 Timeline 候选扫描必须按同一 session 精确过滤。Tool 还必须绑定 `raw/status/content/title` 的语义 source fingerprint，而不是 `raw` 对象引用。等价 canonical refresh 不失效既有详情或增加扫描，真实同 position source 变化只覆盖一个 latest trailing；detail 仅补 canonical raw 缺失字段，canonical 同位置 output/status/content/title 与显式 null 优先。generation 只作异步 fence，不进入整棵 timeline row key。迟到响应、旧 session、低位置 Tool 详情、旧 error 和旧 finally 均不得覆盖或解锁新 owner。
+- Session-keyed optimistic prompt store 是组件唯一的 optimistic UI snapshot；组件只订阅和写回该 store，不保留第二份可分叉数组/ref。每 session 容量跟随有效 live logical item window，默认 576 项，并只缓存最近 12 个 session；它是可丢弃 UI 投影，不是 canonical admission 队列。Activity 窗口、optimistic store、Router replay 与页面 live buffer 均有独立容量，任何一层都不得因用户持续翻页或后台会话运行而随历史无界增长。
 - 现场回归以 task-159 的 6021 帧分布为基线：5209 thought chunk、534 message chunk、145 tool update、58 usage update、35 tool call 及其余 protocol/lifecycle 帧。回放必须得到正确最终累计文本、待发布集合有界、scheduled/in-flight publish 上限为 1。
 
 ## 上下文压缩生命周期事件

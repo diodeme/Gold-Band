@@ -1089,7 +1089,29 @@ impl Default for PromptVisibility {
     }
 }
 
-pub type AcpLiveUpdate<'a> = &'a dyn Fn(&AcpUiEvent, Option<(u64, u64)>) -> Result<()>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcpLiveTimelinePosition {
+    pub generation: u64,
+    pub revision: Option<u64>,
+}
+
+impl AcpLiveTimelinePosition {
+    pub const fn transient(generation: u64) -> Self {
+        Self {
+            generation,
+            revision: None,
+        }
+    }
+
+    pub const fn durable(generation: u64, revision: u64) -> Self {
+        Self {
+            generation,
+            revision: Some(revision),
+        }
+    }
+}
+
+pub type AcpLiveUpdate<'a> = &'a dyn Fn(&AcpUiEvent, AcpLiveTimelinePosition) -> Result<()>;
 pub type AcpSessionUpdate<'a> = &'a dyn Fn() -> Result<()>;
 pub type AcpPromptAccepted<'a> = &'a dyn Fn(&str) -> Result<()>;
 

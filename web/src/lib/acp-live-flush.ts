@@ -224,6 +224,12 @@ export function decideAcpLiveEventFlush(
 export class AcpLatestWinsEventBuffer<T> {
   private readonly pending = new Map<string, T>();
 
+  constructor(private readonly maxEntries: number) {
+    if (!Number.isInteger(maxEntries) || maxEntries <= 0) {
+      throw new Error('AcpLatestWinsEventBuffer maxEntries must be a positive integer');
+    }
+  }
+
   get size() {
     return this.pending.size;
   }
@@ -233,7 +239,16 @@ export class AcpLatestWinsEventBuffer<T> {
   }
 
   replace(key: string, value: T) {
+    let evictedKey: string | null = null;
+    if (!this.pending.has(key) && this.pending.size >= this.maxEntries) {
+      const oldestKey = this.pending.keys().next().value as string | undefined;
+      if (oldestKey !== undefined) {
+        this.pending.delete(oldestKey);
+        evictedKey = oldestKey;
+      }
+    }
     this.pending.set(key, value);
+    return evictedKey;
   }
 
   delete(key: string) {

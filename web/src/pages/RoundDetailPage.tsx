@@ -52,7 +52,6 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
   const [assetContent, setAssetContent] = useState<ContentVm | null>(null);
   const [assetLoading, setAssetLoading] = useState(false);
   const [logDrawerOpen, setLogDrawerOpen] = useState(false);
-  const [optimisticAcpEventsByKey, setOptimisticAcpEventsByKey] = useState<Record<string, AcpUiEventVm[]>>({});
   const selectedNodeId = selectedNodeIdFromSelection(selection);
 
   useEffect(() => {
@@ -216,13 +215,6 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
         onRefresh={onRefresh}
         appConfig={appConfig}
         workspaceProjectId={workspaceProjectId}
-        optimisticAcpEventsByKey={optimisticAcpEventsByKey}
-        onOptimisticAcpEventsChange={(key, events) => setOptimisticAcpEventsByKey((current) => {
-          const next = { ...current };
-          if (events.length === 0) delete next[key];
-          else next[key] = events;
-          return next;
-        })}
         onOpenAsset={openAsset}
       />
       <AssetDetailSheet
@@ -266,7 +258,7 @@ function isRoundContinuable(vm: RoundDetailVm) {
   );
 }
 
-function NodeDetailSheet({ vm, nodeDetail, open, activeTab, appConfig, workspaceProjectId, optimisticAcpEventsByKey, onOpenChange, onTabChange, onRefresh, onOptimisticAcpEventsChange, onOpenAsset }: { vm: RoundDetailVm; nodeDetail?: NodeDetailVm | null; open: boolean; activeTab: NodeDrawerTab; appConfig: AppConfigVm; workspaceProjectId?: string; optimisticAcpEventsByKey: Record<string, AcpUiEventVm[]>; onOpenChange: (open: boolean) => void; onTabChange: (tab: NodeDrawerTab) => void; onRefresh: () => void; onOptimisticAcpEventsChange: (key: string, events: AcpUiEventVm[]) => void; onOpenAsset: (asset: AssetItemVm) => void }) {
+function NodeDetailSheet({ vm, nodeDetail, open, activeTab, appConfig, workspaceProjectId, onOpenChange, onTabChange, onRefresh, onOpenAsset }: { vm: RoundDetailVm; nodeDetail?: NodeDetailVm | null; open: boolean; activeTab: NodeDrawerTab; appConfig: AppConfigVm; workspaceProjectId?: string; onOpenChange: (open: boolean) => void; onTabChange: (tab: NodeDrawerTab) => void; onRefresh: () => void; onOpenAsset: (asset: AssetItemVm) => void }) {
   const { t } = useTranslation();
   return (
     <Sheet modal={false} open={open} onOpenChange={onOpenChange}>
@@ -300,7 +292,7 @@ function NodeDetailSheet({ vm, nodeDetail, open, activeTab, appConfig, workspace
             </ScrollArea>
           </TabsContent>
           <TabsContent value="session" className="min-h-0 flex-1 overflow-hidden">
-            {nodeDetail ? <SessionContent vm={vm} detail={nodeDetail} appConfig={appConfig} workspaceProjectId={workspaceProjectId} onRefresh={onRefresh} optimisticAcpEventsByKey={optimisticAcpEventsByKey} onOptimisticAcpEventsChange={onOptimisticAcpEventsChange} /> : <EmptyState>{t('roundDetail.noSession')}</EmptyState>}
+            {nodeDetail ? <SessionContent vm={vm} detail={nodeDetail} appConfig={appConfig} workspaceProjectId={workspaceProjectId} onRefresh={onRefresh} /> : <EmptyState>{t('roundDetail.noSession')}</EmptyState>}
           </TabsContent>
         </Tabs>
       </SheetContent>
@@ -485,21 +477,7 @@ function AssetDetailSheet({ asset, content, loading, onBack }: { asset: AssetIte
   );
 }
 
-export function acpOptimisticKey(
-  projectId: string,
-  taskId: string,
-  runId: string,
-  roundId: string,
-  nodeId: string,
-  attemptId: string,
-  outerNodeId?: string | null,
-  outerAttemptId?: string | null,
-  branchId?: string | null,
-) {
-  return `${projectId}:${taskId}:${runId}:${roundId}:${outerNodeId ?? ''}:${outerAttemptId ?? ''}:${nodeId}:${attemptId}:${branchId ?? 'root'}`;
-}
-
-function SessionContent({ vm, detail, appConfig, workspaceProjectId, onRefresh, optimisticAcpEventsByKey, onOptimisticAcpEventsChange }: { vm: RoundDetailVm; detail: NodeDetailVm; appConfig: AppConfigVm; workspaceProjectId?: string; onRefresh: () => void; optimisticAcpEventsByKey: Record<string, AcpUiEventVm[]>; onOptimisticAcpEventsChange: (key: string, events: AcpUiEventVm[]) => void }) {
+function SessionContent({ vm, detail, appConfig, workspaceProjectId, onRefresh }: { vm: RoundDetailVm; detail: NodeDetailVm; appConfig: AppConfigVm; workspaceProjectId?: string; onRefresh: () => void }) {
   const { t } = useTranslation();
   const conversations = detail.acpConversations?.length ? detail.acpConversations : [];
   const initialKey = detail.selectedConversationKey ?? conversations[0]?.key ?? 'current';
@@ -521,17 +499,6 @@ function SessionContent({ vm, detail, appConfig, workspaceProjectId, onRefresh, 
   const attemptId = activeAttempt?.attemptId ?? detail.attemptId;
   const runtimeStatus = activeAttempt?.status ?? detail.status;
   const branchId = session?.branchId ?? 'root';
-  const optimisticKey = acpOptimisticKey(
-    workspaceProjectId ?? 'default',
-    vm.run.taskId,
-    vm.run.id,
-    vm.round.id,
-    detail.nodeId,
-    attemptId,
-    detail.outerNodeId,
-    detail.outerAttemptId,
-    branchId,
-  );
   return (
     <div className="flex h-full min-h-0 flex-col">
       {conversations.length > 1 ? (
@@ -570,8 +537,6 @@ function SessionContent({ vm, detail, appConfig, workspaceProjectId, onRefresh, 
             workflowValid: true,
           }}
           manualCheckPending={detail.manualCheckPending && attemptId === detail.attemptId}
-          optimisticEvents={optimisticAcpEventsByKey[optimisticKey]}
-          onOptimisticEventsChange={(events) => onOptimisticAcpEventsChange(optimisticKey, events)}
           onManualCheckSubmitted={onRefresh}
           onSessionStopped={onRefresh}
           />

@@ -747,11 +747,11 @@ task-284 现场日志确认 checkpoint-backed 当前页查询约 388ms，但页�
 本轮完成以下收口：
 
 - index 升级到 V4，语义块维护 `lastRevision`；查询增加 `afterRevision`，页面返回 `generation / coveredRevision / newestRevision`，同 revision 作为原子分页组。
-- live envelope 增加可空 `timelineGeneration + timelineRevision`。只有与 TimelineStore 中语义指纹一致、已经 durable 的事件获得水位；transient timing 和尚未 flush 的累计流不承诺持久水位。terminal/normal flush 顺序调整为 timeline patch 先于 live flush；compaction 后旧 generation 的 revision 不与新 generation 混合比较。
+- live envelope 增加非空 `timelineGeneration` 与独立可空的 `timelineRevision`。所有 durable/transient 事件都携带所属 root/Agent branch 当前 TimelineStore generation；只有与 TimelineStore 中语义指纹一致、已经 durable 的事件获得 revision，transient timing 和尚未 flush 的累计流使用空 revision，不承诺持久化水位。terminal/normal flush 顺序调整为 timeline patch 先于 live flush；compaction 后旧 generation 的 revision 不与新 generation 混合比较。
 - replay buffer 用 `lossWatermarkRevision` 取代移动的 `headSeq + requiresCatchUp`。只有 durable payload 淘汰才推进水位；重进捕获固定目标，用 revision delta 有界追平，删除指数退避轮询。
 - prompt finalizer 不再构建/发布完整 `AcpSessionVm`，停止完成后前端不再补拉正文；`get_conversation_run` 始终只返回 tree/lifecycle shell，ACPChatDialog 成为正文唯一查询边界。
 
-接口回归覆盖 revision delta、10,000 revision checkpoint、transient event 不推进缺口、durable 淘汰固定水位、单次 revision catch-up 与 lifecycle-only terminal。复杂度保持 `O(P + Δ)`；未新增依赖、数据库、全局缓存或第二状态机。
+接口回归覆盖 revision delta、10,000 revision checkpoint、transient event 携带 generation 但因 revision 为空而不推进缺口、durable 淘汰固定水位、单次 revision catch-up 与 lifecycle-only terminal。复杂度保持 `O(P + Δ)`；未新增依赖、数据库、全局缓存或第二状态机。
 
 task-284 原 timeline 副本的 V4 Release 复测：一次性 V3→V4 migration 2,979ms；随后 checkpoint-backed 当前页 297ms，30 个语义块、tail 0、index 839,075B，低于 1 秒目标。原会话文件未被修改。
 
@@ -796,3 +796,14 @@ task-284 原 timeline 副本的 V4 Release 复测：一次性 V3→V4 migration 
 - `repair_attempt_usage` 只读取 usage journal 和 prompt locator，不再通过 `load_timeline_items` 无条件 hydrate Blob。性能验收记录 `restoreMs`、restore mode、tail records、locator reads、full timeline item load 和 hydrated Blob bytes；正常 attached/resume 路径 Blob bytes 必须为 0。
 
 接口级回归新增 cancellation intent 与 provider completion 竞态、tail 超限 full-rebuild 诊断、active stream tool/revision parity；既有 10,000 revision、Blob reference、prompt anchor 延迟读取和 branch identity 测试继续作为回归门槛。自评审：未新增数据库、消息队列、全局状态机或无界缓存，复用现有 revision/CAS、Timeline index 和原子 JSON 写入，正常恢复复杂度与历史正文大小解耦。
+
+### 14.9 Session/generation owner 与固定 replay cut 收口（2026-08-31）
+
+- live envelope 将 generation 与 revision 解耦：所有 durable/transient 事件都携带所属 root/Agent branch 当前 TimelineStore generation，只有已持久化事件携带 revision；durable 路径保留同一次写入返回的精确原子对。Web 类型使用 event-bearing/control 判别联合，运行时若收到有 event 但缺少正数 generation 的协议错误，Router 拒绝进入 replay，live head 触发 canonical 恢复，历史窗口继续隔离。Router 淘汰无 revision transient 时仍以最大 `endedSeq/seq` 写入 `lossWatermarkSeq` 并建立 sequence loss fence；它不能伪装成 revision delta 或由普通 ACK 清除，只能由匹配 session/generation 且 `newestSeq` 已覆盖的 canonical head 消费。
+- 前端可见窗口统一由 `{eventWindowKey, sessionId, timelineGeneration, events}` 拥有。session 或 generation 变化时旧 page buffer、timer、cursor 和 recovery token 同步失效；历史/暂停状态完全不接收 timeline page buffer，只投影 control 与 optimistic admission。live-head latest-wins buffer 与原生 DOM 窗口共用配置容量，按 `acpChatEventPageSize × 3` 计算，当前默认 `192 × 3 = 576` 项而非协议固定上限；容量异常时清空本批并进入统一 canonical-head coordinator。Session-keyed optimistic store 是组件唯一 optimistic snapshot，组件不再镜像可分叉的数组/ref；每 session 容量跟随同一有效窗口，默认 576 项，并只保留最近 12 个 session。
+- Router replay 增加 session owner 与 loss 对应的 Router generation。同 locator 换 session会原子清旧 retained/loss/head/permission；ACK 改为 prefix ACK，只删除 cut 前缀。普通“返回最新”、newer edge/容量 handoff 与非法 generation、revision/sequence loss、暂停恢复统一进入一个 canonical-head coordinator；每个 owner 最多一个 in-flight 和一个可覆盖的 latest trailing intent，recovery 优先，只有匹配当前 intent 的成功交接能清其已覆盖 gate。newer pagination 自然抵达 head 时先释放旧 pagination token，再由 coordinator fresh-read head，避免分页飞行期间的新 recovery 被旧 response 旁路结清。重进和返回最新固定捕获 C0，同代 revision 缺口与 sequence-only full-head 重读共用最多 4 次/2 秒预算、跨代 canonical refresh 最多一次；ACK watermark 只由真实 canonical response eventPage 推进，可见 replay/cache 的高 `newestSeq` 不得作为 coverage。C0 后只读一次 C1，新 loss/新 owner/新代际保留恢复入口，不追逐移动 head。
+- Subscription full-session 只参与单调 display/control 合并，不参与 ACK watermark。handoff 飞行期间若 subscription 已换 session 或进入更高 generation，迟到响应不提交并合并为 coordinator 唯一 trailing fresh-read；同 generation、同 revision 的 status/usage 竞态使用稳定 `sessionUpdatedAt` 保留较新展示字段，仍不能把该时间戳解释为 revision/sequence coverage。
+- Agent branch envelope refresh 改为一个 in-flight 加一个 latest trailing；结果同时校验 refresh sequence 和 eventWindowKey，较旧 generation/revision 不提交。older/newer 遇到跨代响应后熔断旧 cursor，显式“返回最新”仍可重建 head。
+- Activity/Tool lazy detail 每个展开项限制为一个 in-flight 加一个可覆盖的 latest-trailing intent，不能让连续 revision 形成并发 IPC/JSONL 扫描。Tool detail owner 在 window/session/generation/logical item/observed position/request sequence 外增加 `raw/status/content/title` 的语义 source fingerprint，不使用 raw 对象引用；等价 canonical refresh 复用已加载/in-flight 详情，真实同 position source 变化只覆盖一个 trailing，error/retry 受同一 owner fence。详情查询要求非空 canonical session owner，Web query、Rust 候选扫描与 response commit 都精确匹配 sessionId；同 position Tool detail 使用 canonical-wins 深合并，只补 raw 缺失字段，显式 null 和新 output 不被旧详情复活或覆盖。进入暂停时清除暂停前尚未 drain 的页面 live buffer，并通过统一 coordinator 用一次 canonical recovery 取代恢复后的逐项补帧。
+
+回归固定 session owner 隔离、prefix ACK 保留 cut 后事件与新 loss、transient generation/sequence loss、canonical/visible sequence 水位分域、ordinary/recovery coordinator 优先级、newer edge 自然交接、Agent burst single-flight、Activity/Tool detail session scope、canonical enrichment 与 semantic trailing、跨代 cursor 熔断、4 次/2 秒 catch-up、paused overflow canonical handoff、optimistic 单一有界 snapshot，以及历史 DOM/折叠/贴底既有行为。默认 DOM/live/optimistic 容量为 `192 × 3 = 576`，有效值跟随配置；Router 硬边界仍为 64 replay events/branch、512 KiB/branch 和 4 MiB 全局。没有新增持久队列、第二事实源、虚拟列表、轮询或并发 worker。

@@ -60,6 +60,106 @@ afterEach(() => {
 });
 
 describe('conversation event router subscriptions', () => {
+  it('removes an invalid-generation event before keyed and global delivery while preserving controls', async () => {
+    vi.resetModules();
+    nativeState.listener = null;
+    nativeSubscription.mockImplementation(async (listener: (event: unknown) => void) => {
+      nativeState.listener = listener;
+      return vi.fn();
+    });
+    const router = await import('@/lib/conversation-event-router');
+    const session: NonNullable<AcpSessionUpdatedEventVm['session']> = {
+      branchId: 'root',
+      parentBranchId: null,
+      readOnly: false,
+      sessionId: 'session-router',
+      provider: 'test',
+      status: 'running',
+      restored: false,
+      events: [],
+      eventPage: {
+        generation: 1,
+        coveredRevision: 1,
+        loadedCount: 0,
+        total: 0,
+        hasOlder: false,
+        hasNewer: false,
+      },
+      timelineProjection: { agents: [], todoEntries: [] },
+      pendingInteractions: [],
+      diagnostics: { rawFrameCount: 0, eventCount: 0, errorCount: 0 },
+    };
+    const lifecycle: NonNullable<AcpSessionUpdatedEventVm['lifecycle']> = {
+      runtime: {
+        status: 'paused',
+        outcome: null,
+        pauseReason: null,
+        resumable: true,
+        current: true,
+        active: false,
+        continuable: true,
+        phase: 'idle',
+        revision: 1,
+      },
+      control: { mode: 'non-runtime-controlled' },
+      acp: {
+        revision: 1,
+        sessionAvailability: 'established',
+        liveTurnActivity: 'running',
+        latestTurnStatus: 'none',
+        stopping: false,
+      },
+      displayStatus: 'running',
+      runtimeDisplay: {
+        code: 'paused',
+        tone: 'warning',
+        icon: 'pause',
+        terminal: false,
+        resumable: true,
+        blockingError: false,
+      },
+      composer: {
+        mode: 'normal',
+        submitTarget: 'acp-prompt',
+        processingKind: 'responding',
+        canStop: true,
+        lockInput: false,
+      },
+    };
+    const malformed = {
+      ...baseLocator,
+      branchId: 'root',
+      event: uiEvent('generationless-event'),
+      timelineRevision: 1,
+      session,
+      lifecycle,
+    } as unknown as AcpSessionUpdatedEventVm;
+    const attemptListener = vi.fn();
+    const globalListener = vi.fn();
+    const disposers = [
+      router.subscribeConversationAttemptEvents(baseLocator, attemptListener),
+      router.subscribeConversationEvents(globalListener),
+    ];
+
+    try {
+      await router.ensureConversationEventRouterStarted();
+      publish(malformed);
+
+      expect(attemptListener).toHaveBeenCalledOnce();
+      expect(globalListener).toHaveBeenCalledOnce();
+      for (const listener of [attemptListener, globalListener]) {
+        const delivered = listener.mock.calls[0]?.[0] as AcpSessionUpdatedEventVm;
+        expect(delivered.event ?? null).toBeNull();
+        expect(delivered.timelineRecoveryRequired).toBe(true);
+        expect(delivered.session).toBe(session);
+        expect(delivered.lifecycle).toBe(lifecycle);
+      }
+    } finally {
+      disposers.forEach((dispose) => dispose());
+      router.resetConversationEventRouterSnapshots();
+    }
+  });
+
   it('owns one native stream, writes replay first, and visits only the matching attempt listeners', async () => {
     nativeSubscription.mockImplementation(async (listener: (event: unknown) => void) => {
       nativeState.listener = listener;

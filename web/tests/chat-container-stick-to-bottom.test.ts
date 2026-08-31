@@ -394,6 +394,59 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
     }
   });
 
+  it('compensates a prepended detail anchor without retriggering pagination in the same frame', async () => {
+    vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (
+      window.setTimeout(() => callback(performance.now()), 0)
+    ));
+    vi.stubGlobal('cancelAnimationFrame', (frameId: number) => window.clearTimeout(frameId));
+
+    const onViewportScroll = vi.fn();
+    const contextRef = React.createRef<ChatContainerContext>();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          React.createElement(
+            ChatContainerRoot,
+            { contextRef, onViewportScroll },
+            React.createElement(ChatContainerContent, null, 'bounded activity detail'),
+          ),
+        );
+      });
+      const viewport = contextRef.current?.scrollRef.current as HTMLDivElement;
+      let scrollTop = 120;
+      Object.defineProperties(viewport, {
+        clientHeight: { configurable: true, get: () => 100 },
+        scrollHeight: { configurable: true, get: () => 500 },
+        scrollTop: {
+          configurable: true,
+          get: () => scrollTop,
+          set: (value: number) => { scrollTop = Number(value); },
+        },
+      });
+      onViewportScroll.mockClear();
+
+      await act(async () => {
+        expect(contextRef.current?.compensateContentAnchor(80)).toBe(true);
+        viewport.dispatchEvent(new Event('scroll'));
+      });
+      expect(scrollTop).toBe(200);
+      expect(onViewportScroll).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await waitForScrollFrames();
+        viewport.dispatchEvent(new Event('scroll'));
+      });
+      expect(onViewportScroll).toHaveBeenCalledOnce();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('lets bottom content expand downward and restores following after it collapses', async () => {
     vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (

@@ -179,6 +179,7 @@
 ### 渐进加载契约
 
 - 会话侧栏启动分为四层接口：`get_conversation_sidebar_bootstrap` 只返回工作空间 identity、置顶 locator、最近工作空间和偏好；当前或用户展开的工作空间再通过 `get_conversation_task_page` 读取首批 Task 摘要；置顶区通过独立 `get_conversation_pinned_task_page` 读取有界摘要；只有 Workflow/AUTO Task 被展开时，才通过 `get_conversation_run_summary_page` 读取 Run 历史。基础身份、首批可见数据和逐项历史不得重新合并成一个原子接口。
+- 置顶 Task 摘要必须独立完成会话导航：点击 Task 使用当前摘要携带的 `projectId + taskUuid/taskId + latestRun.runId`，点击 Run 使用对应 `runId`，统一提交完整 `ConversationPage` locator；不得先从 workspace Task 页反查，也不得要求对应 workspace 已展开或加载。置顶区与 workspace 区的交互 scope 继续独立，导航 locator 只改变 canonical 页面，不合并两处列表的展开或高亮状态。
 - Task 页默认 24 项，使用 `updatedAt + taskId` 稳定 cursor；Run 页默认 20 项，继续使用递减 `runId` cursor。前端已合并 Task 最多保留 120 项、单 Task 已合并 Run 最多保留 100 项。继续加载只能追加去重后的下一页，不得形成无界 DOM、缓存或历史数组。
 - 每个层级必须独立表达 `not-loaded / loading / ready / ready-empty / error`。尚未请求不得显示“暂无会话/暂无运行”，已有可用数据的后台刷新不得清空内容；错误只影响对应 workspace、置顶区或 Run 历史，并在原位置提供重试。
 - 同一资源同时只允许一个请求；所有异步提交都按资源 generation 校验。删除 Task、移除 workspace、置顶关系变化或 bootstrap 重置必须在发起 mutation 时作废相关 generation，迟到页不得把已删除实体或旧 pin 投影写回。Task 合并按 `projectId + taskUuid` 去重，只有历史缺少 UUID 时才退回 `taskId`；Run 合并在 Task identity 内按 `runId` 去重。

@@ -2438,17 +2438,6 @@ export function App() {
       onConversationRequestTaskRuns={(task, cursor) => {
         void loadConversationRunHistory(task, cursor).catch(() => {});
       }}
-      onConversationSelectTask={(projectId, taskId, taskUuid) => {
-        const tasks = conversationSidebar.tasksByWorkspace[projectId] ?? [];
-        const task = tasks.find((t) => t.taskId === taskId);
-        const runId = task?.latestRun?.runId;
-        if (runId) {
-          onSelectConversation({ kind: 'conversation-run', projectId, taskId, taskUuid, runId });
-        }
-      }}
-      onConversationSelectRun={(projectId, taskId, taskUuid, runId) => {
-        onSelectConversation({ kind: 'conversation-run', projectId, taskId, taskUuid, runId });
-      }}
       onConversationPauseRun={onConversationPauseRun}
       onConversationRenameTask={(projectId, taskId, title) => {
         setError(null);

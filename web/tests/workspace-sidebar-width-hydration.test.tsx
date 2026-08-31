@@ -153,8 +153,6 @@ describe('WorkspaceShell sidebar width hydration', () => {
       onToggleSidebar: () => {},
       onNewConversation: () => {},
       onSearch: () => {},
-      onSelectTask: () => {},
-      onSelectRun: () => {},
       onPinTask: () => {},
       onUnpinTask: () => {},
       onRenameTask: () => {},
@@ -225,8 +223,6 @@ describe('WorkspaceShell sidebar width hydration', () => {
       onToggleSidebar: () => {},
       onNewConversation: () => {},
       onSearch: () => {},
-      onSelectTask: () => {},
-      onSelectRun: () => {},
       onPinTask: () => {},
       onUnpinTask: () => {},
       onRenameTask: () => {},
@@ -326,8 +322,6 @@ describe('WorkspaceShell sidebar width hydration', () => {
       onToggleSidebar: () => {},
       onNewConversation: () => {},
       onSearch: () => {},
-      onSelectTask: () => {},
-      onSelectRun: () => {},
       onPinTask: () => {},
       onUnpinTask: () => {},
       onRenameTask: () => {},
@@ -415,8 +409,6 @@ describe('WorkspaceShell sidebar width hydration', () => {
             onToggleSidebar={() => {}}
             onNewConversation={() => {}}
             onSearch={() => {}}
-            onSelectTask={() => {}}
-            onSelectRun={() => {}}
             onPinTask={() => {}}
             onUnpinTask={() => {}}
             onRenameTask={() => {}}

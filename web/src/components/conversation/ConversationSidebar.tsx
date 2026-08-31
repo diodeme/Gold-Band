@@ -59,8 +59,6 @@ interface ConversationSidebarProps {
   onSelect: (page: ConversationPage) => void;
   onNewConversation: () => void;
   onSearch: () => void;
-  onSelectTask: (projectId: string, taskId: string, taskUuid?: string | null) => void;
-  onSelectRun: (projectId: string, taskId: string, taskUuid: string | null | undefined, runId: string) => void;
   onPinTask: (projectId: string, taskId: string) => void;
   onUnpinTask: (projectId: string, taskId: string) => void;
   onRenameTask: (projectId: string, taskId: string, title: string) => void;
@@ -83,8 +81,6 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   onSelect,
   onNewConversation,
   onSearch,
-  onSelectTask,
-  onSelectRun,
   onPinTask,
   onUnpinTask,
   onRenameTask,
@@ -204,6 +200,26 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   const markRunListInteraction = (scope: ConversationSidebarRunListScope) => {
     runListInteractionScopeRef.current = scope;
     setActiveRunListScope(scope);
+  };
+
+  const selectTaskRun = (
+    scope: ConversationSidebarRunListScope,
+    task: ConversationTaskRowVm,
+    runId: string,
+  ) => {
+    markRunListInteraction(scope);
+    onSelect({
+      kind: 'conversation-run',
+      projectId: task.projectId,
+      taskId: task.taskId,
+      taskUuid: task.taskUuid,
+      runId,
+    });
+  };
+
+  const selectTask = (scope: ConversationSidebarRunListScope, task: ConversationTaskRowVm) => {
+    if (!task.latestRun) return;
+    selectTaskRun(scope, task, task.latestRun.runId);
   };
 
   const toggleTaskRuns = (scope: ConversationSidebarRunListScope, task: ConversationTaskRowVm) => {
@@ -346,10 +362,9 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                               isActive={isConversationSidebarRunListScopeActive('pinned', activeRunListScope) && activeTaskKey === conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}
                               activeRunKey={isConversationSidebarRunListScopeActive('pinned', activeRunListScope) ? activeRunKey : null}
                               expanded={expandedTaskKeys.pinned === conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}
-                              onSelect={() => onSelectTask(task.projectId, task.taskId, task.taskUuid)}
+                              onSelect={() => selectTask('pinned', task)}
                               onSelectRun={(runId) => {
-                                markRunListInteraction('pinned');
-                                onSelectRun(task.projectId, task.taskId, task.taskUuid, runId);
+                                selectTaskRun('pinned', task, runId);
                               }}
                               onToggleRuns={() => toggleTaskRuns('pinned', task)}
                               onExpandRuns={() => expandTaskRuns('pinned', task)}
@@ -459,10 +474,9 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                         isActive={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) && activeTaskKey === conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}
                         activeRunKey={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) ? activeRunKey : null}
                         expanded={expandedTaskKeys.workspace === conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}
-                        onSelect={() => onSelectTask(task.projectId, task.taskId, task.taskUuid)}
+                        onSelect={() => selectTask('workspace', task)}
                         onSelectRun={(runId) => {
-                          markRunListInteraction('workspace');
-                          onSelectRun(task.projectId, task.taskId, task.taskUuid, runId);
+                          selectTaskRun('workspace', task, runId);
                         }}
                         onToggleRuns={() => toggleTaskRuns('workspace', task)}
                         onExpandRuns={() => expandTaskRuns('workspace', task)}

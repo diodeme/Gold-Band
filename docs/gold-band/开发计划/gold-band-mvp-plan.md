@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-08-31：置顶会话独立导航修复
+
+- 根因与形成路径：置顶区独立读取有界 Task 摘要、workspace 区按需读取 Task 页的渐进加载设计正确，但侧边栏 Task 点击仍把 `projectId/taskId/taskUuid` 逐层传回 App，并只从 `tasksByWorkspace[projectId]` 反查 `latestRun`。置顶摘要先于 workspace Task 页就绪时反查为空，导致点击无导航；先点击 workspace 后任务进入该投影，同一置顶入口才偶然可用。问题属于正确设计下导航消费边界实现不完整，不修改会话 identity、分页或加载接口。
+- 实现：删除 `ConversationSidebar -> WorkspaceShell -> Shell -> App` 的 `onSelectTask/onSelectRun` 重复接口和 workspace 数组反查。Task 与 Run 行直接用当前摘要中的 `projectId + taskUuid/taskId + runId` 构造完整 `ConversationPage`，统一提交给既有 cache-aware `onSelectConversation`；Task 继续进入 `latestRun`，显式 Run 继续进入被点击的 `runId`，已有 Task 的再次点击仍只切换 Run 列表。导航前复用现有 interaction scope，使置顶区与 workspace 区的展开和高亮继续隔离。
+- 失败证据与验收：最小 DOM 测试构造 pinned Task 已加载、workspace Task 页 `not-loaded` 且数组为空的 Direct 会话；修复前稳定失败于期望 canonical `onSelect` 一次、实际 0 次，其余同文件 5 项通过。修复后同一用例转绿，并补充 workspace Task 点击进入 `latestRun`、历史 Run 点击进入精确 `runId`；侧栏、导航、渐进加载和宿主组件定向回归 8 文件 71 项通过，TypeScript、主题构建和 Vite 生产构建通过。全量 Web 回归运行期间无关 ACP 分页文件仍在并发更新，首轮输出读取了随后已变化的旧容量断言，因而不作为稳定结论；对当时 6 个失败文件隔离重跑后 4 文件通过，剩余 2 个既有 ACP 历史交接文件 16 项失败，集中在“返回最新”按钮与 canonical handoff，与侧栏导航调用链无重叠，未在本次修复中旁路修改。本地 `/chat` 已启动且无控制台错误，但浏览器降级数据只有一个无 `latestRun` 的示例 Task，Pin mutation 在非桌面环境不可用，无法可靠构造现场状态；服务和测试 Chrome 已清理，真实 EXE 数据场景保留为客户端重载新构建后的实操复核项，不把页面启动冒充为目标点击通过。
+- 性能与过度设计评审：删除点击时的 workspace Task 数组 O(n) 扫描和两层回调转发，改为基于当前有界摘要的 O(1) locator 构造；不新增状态、Context、依赖、缓存、队列、数据请求、持久字段或兼容层，也不扩大 React 订阅和渲染范围。复用现有 `ConversationPage`、interaction scope 与 cache-aware 导航入口，复杂度低于旧实现，无需专项 benchmark。
+
 ## 2026-08-31：ACP Event Router 原生订阅启动恢复
 
 - 根因与形成路径：conversation event Router 统一持有一份原生 ACP session update stream 的设计正确，但启动 Promise 只在成功时设置 `started`，三个 subscriber 入口又以未处理的 `void` Promise 启动。Tauri `listen()` 首次拒绝后虽然 `starting` 会复位，仍存活的页面没有任何生命周期事件再次驱动启动，因而同时产生 unhandled rejection 与 live event 长期中断。这属于正确单例订阅设计的失败恢复实现不完整，不下放给页面各自重试，也不新增第二事件源。

@@ -14,7 +14,7 @@ Gold Band 继续使用 Tauri 2 提供的系统 WebView。macOS 使用操作系�
 
 ## 3. 数据与事实源
 
-页面启动时同步探测一次 `WebviewCapabilities`，得到不可变的当前 WebView 运行事实。纯函数据此派生 `WebviewFeaturePolicy`：
+页面启动时同步探测一次 `WebviewCapabilities`，得到不可变的当前 WebView 运行事实。纯函数据此派生 `WebviewFeaturePolicy`。能力探测必须验证功能的实际语义，不能只依赖可能存在实现差异的版本字符串或 API 声明：CSS 自定义属性通过临时隐藏节点的变量继承和计算样式验证，其他现代 CSS 能力继续使用 `CSS.supports()`：
 
 | 策略字段 | 取值 | 含义 |
 | --- | --- | --- |
@@ -64,10 +64,10 @@ Markdown 继续使用 prompt-kit/Streamdown。项目本地文件链接不使用 
 
 ## 9. 性能与过度设计评审
 
-启动探测是固定数量 O(1) API 调用；诊断异步 best-effort。WASM 高亮按需加载、单例复用且缓存有界。兼容档只观察当前挂载的少量登记容器；full 档没有新增 observer、state 或渲染。无全量扫描、轮询、N+1 I/O、无界缓存、主线程文件写入或长锁。
+启动探测是固定数量 O(1) API 调用；CSS 自定义属性语义探测只挂载一个包含两个子节点的隐藏临时容器，读取两次计算样式后同步移除，不保留 DOM、监听器或状态。诊断异步 best-effort。WASM 高亮按需加载、单例复用且缓存有界。兼容档只观察当前挂载的少量登记容器；full 档没有新增 observer、state 或渲染。无全量扫描、轮询、N+1 I/O、无界缓存、主线程文件写入或长锁。
 
 新增抽象限于能力对象、纯策略、预检入口、兼容 CSS、measured container adapter 和 Shiki 官方 WASM 适配器。没有第二套 React App、平台版本矩阵、持久化能力状态、事件总线或自研 Markdown/语法引擎，复杂度与实际兼容边界相匹配。
 
 ## 10. 验收边界
 
-Windows 自动化负责三档能力 fixture、接口测试、类型检查、生产构建和 bundle 审计；它不能替代 WKWebView 613 真机结论。Intel macOS Monterey/WebKit 613 必须使用 DevTools DMG 验证启动、runtime.log 诊断、主业务路径、Markdown/WASM 高亮、弹层和窗口缩放。真机完成前统一标记为“自动化完成、Monterey 真机待验收”。
+Windows 自动化负责三档能力 fixture、接口测试、类型检查、生产构建和 bundle 审计；它不能替代 WKWebView 613 真机结论。Intel macOS Monterey/WebKit 613 必须使用 DevTools DMG 验证启动、runtime.log 诊断、主业务路径、Markdown/WASM 高亮、弹层和窗口缩放。2026-08-31 的首次用户真机结果发现 `CSS.supports(custom-property, value)` 会假阴性并被错误拦截，现已改用语义探测；修正版 DMG 尚需在同一设备确认转为 `compatible`。真机修正版完成前不得宣称已完全验证。

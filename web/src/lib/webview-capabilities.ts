@@ -15,6 +15,7 @@ export interface WebviewCapabilities {
 export interface WebviewCapabilityProbeEnvironment {
   readonly createRegExp: (source: string, flags?: string) => RegExp;
   readonly cssSupports: ((property: string, value?: string) => boolean) | null;
+  readonly cssCustomProperties: boolean;
   readonly resizeObserver: boolean;
   readonly structuredClone: boolean;
   readonly webAssembly: boolean;
@@ -47,12 +48,50 @@ function supportsCssCondition(
     : false;
 }
 
+const CSS_CUSTOM_PROPERTY_PROBE_NAME = '--gold-band-capability-probe';
+const CSS_CUSTOM_PROPERTY_PROBE_VALUE = 'rgb(1, 2, 3)';
+const CSS_CUSTOM_PROPERTY_PROBE_FALLBACK = 'rgb(4, 5, 6)';
+
+function semanticallySupportsCssCustomProperties() {
+  if (
+    typeof document === 'undefined'
+    || typeof document.createElement !== 'function'
+    || typeof getComputedStyle !== 'function'
+  ) {
+    return false;
+  }
+
+  const mount = document.body ?? document.documentElement;
+  if (!mount) return false;
+
+  const host = document.createElement('div');
+  const target = document.createElement('span');
+  const expected = document.createElement('span');
+  host.setAttribute('aria-hidden', 'true');
+  host.style.cssText = 'position:absolute;width:0;height:0;overflow:hidden;visibility:hidden;pointer-events:none;';
+  host.style.setProperty(CSS_CUSTOM_PROPERTY_PROBE_NAME, CSS_CUSTOM_PROPERTY_PROBE_VALUE);
+  target.style.color = `var(${CSS_CUSTOM_PROPERTY_PROBE_NAME}, ${CSS_CUSTOM_PROPERTY_PROBE_FALLBACK})`;
+  expected.style.color = CSS_CUSTOM_PROPERTY_PROBE_VALUE;
+  host.appendChild(target);
+  host.appendChild(expected);
+
+  try {
+    mount.appendChild(host);
+    const actualColor = getComputedStyle(target).color;
+    const expectedColor = getComputedStyle(expected).color;
+    return actualColor.length > 0 && actualColor === expectedColor;
+  } finally {
+    host.parentNode?.removeChild(host);
+  }
+}
+
 export function browserWebviewCapabilityEnvironment(): WebviewCapabilityProbeEnvironment {
   return {
     createRegExp: (source, flags) => new RegExp(source, flags),
     cssSupports: typeof CSS !== 'undefined' && typeof CSS.supports === 'function'
       ? CSS.supports.bind(CSS)
       : null,
+    cssCustomProperties: safelyProbe(semanticallySupportsCssCustomProperties),
     resizeObserver: typeof ResizeObserver === 'function',
     structuredClone: typeof structuredClone === 'function',
     webAssembly: typeof WebAssembly === 'object' && typeof WebAssembly.instantiate === 'function',
@@ -71,7 +110,7 @@ export function detectWebviewCapabilities(
       || supportsCss(environment, '-webkit-backdrop-filter', 'blur(1px)'),
     cssOklch: supportsCss(environment, 'color', 'oklch(50% 0.1 90)'),
     cssGrid: supportsCss(environment, 'display', 'grid'),
-    cssCustomProperties: supportsCss(environment, '--gold-band-capability-probe', '1'),
+    cssCustomProperties: environment.cssCustomProperties,
     resizeObserver: environment.resizeObserver,
     structuredClone: environment.structuredClone,
     webAssembly: environment.webAssembly,

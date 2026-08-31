@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-08-31：ACP Event Router 原生订阅启动恢复
+
+- 根因与形成路径：conversation event Router 统一持有一份原生 ACP session update stream 的设计正确，但启动 Promise 只在成功时设置 `started`，三个 subscriber 入口又以未处理的 `void` Promise 启动。Tauri `listen()` 首次拒绝后虽然 `starting` 会复位，仍存活的页面没有任何生命周期事件再次驱动启动，因而同时产生 unhandled rejection 与 live event 长期中断。这属于正确单例订阅设计的失败恢复实现不完整，不下放给页面各自重试，也不新增第二事件源。
+- 实现：Router 统一管理启动 single-flight、指数退避 attempt 和唯一 retry timer；失败只记录不含业务正文的内部诊断，只要 keyed/global/branch subscriber 任一仍存在便按 `250ms` 起步、最高 `5s` 重试。成功后原子设置 started 并清空 retry 状态，全部 subscriber 离开时取消待执行 timer并重置退避；之后新 subscriber 立即重新启动。成功注册的原生 stream 仍按应用生命周期保留，避免空闲页面切换反复卸载重挂并丢失后台 replay。
+- 失败证据与接口验收：最小 Router 测试令第一次原生订阅 reject、第二次成功；修复前稳定失败于“期望调用 2 次、实际 1 次”，同轮 Vitest 捕获 `native listen unavailable` unhandled rejection。修复后同一用例固定既有 attempt listener 收到恢复后的事件、成功后没有多余 timer/订阅；独立资源回归固定最后一个 subscriber 离开时 timer 归零，后续新 subscriber 仍可立即启动。Router、session 重入和只读 Agent 面板 4 个测试文件共 104 项通过；TypeScript 检查、主题构建和 Vite 生产构建通过，仅保留项目既有 dynamic import 与大 chunk warning，`git diff --check` 通过。
+- 性能与过度设计评审：复用现有 Router、subscriber registry、原生订阅接口和浏览器 timer，不新增依赖、持久字段、业务状态机、缓存、队列或页面级轮询。正常成功路径仍只执行一次 `listen()`；失败路径任意时刻最多一个启动 Promise 和一个 timer，退避上限固定为 5 秒，全部 subscriber 离开后零后台重试。每次订阅/释放只检查三个有界 registry 的 `size`，为 O(1)，不改变 timeline I/O、事件分发、React 渲染范围或 replay 容量，无需性能 benchmark。
+
 ## 2026-08-30：AI-DYNAMIC 运行中协调改为 Workstream/TODO 投影
 
 - 根因与设计判断：canonical `DynamicGraphState` 的 node、group、chain、workspace 与 accepted proposal 已能完整表达事实，缺陷在于第一版 `coordination-snapshot.json` 直接镜像平铺 `nodes[] / groups[]`，内部 Agent 仍需自行把技术节点还原为子任务链，难以直接判断其他分支正在做什么、已经完成什么以及任务嵌套关系。这属于正确 canonical 设计上的消费投影不完善，不修改 graph 状态机，也不增加 `parentChainId` 或第二套持久身份。

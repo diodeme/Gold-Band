@@ -39,7 +39,7 @@ export function DraftAttachmentWorkspacePanel({ resource }: { resource: DraftAtt
         <span className="text-muted-foreground">{attachment.mime}</span>
       </header>
       {imageSrc ? (
-        <WorkspaceImageCanvas src={imageSrc} alt={attachment.name} attachment={attachment} />
+        <WorkspaceImageCanvas src={imageSrc} alt={attachment.name} imageActionAsset={attachment} />
       ) : textState.kind === 'loading' || textState.kind === 'idle' ? (
         <div className="flex min-h-0 flex-1 items-center justify-center gap-2 px-6 text-sm text-muted-foreground">
           <LoaderCircle className="size-4 animate-spin" />

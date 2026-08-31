@@ -1,33 +1,38 @@
 import { copyImageToClipboard, saveImageAs } from '@/api';
 import type { ImageActionInput, ImageActionSourceInput } from '@/api/client';
-import type { AttachmentItem } from './attachment-service';
 
 const MAX_IMAGE_ACTION_BYTES = 25 * 1024 * 1024;
 export const IMAGE_ACTION_FEEDBACK_DURATION_MS = 1_800;
 
-export async function copyAttachmentImage(attachment: AttachmentItem): Promise<void> {
-  await copyImageToClipboard(await attachmentImageActionInput(attachment));
+export interface ImageActionAsset {
+  name: string;
+  mime: string;
+  path?: string;
+  file?: Blob;
+  previewUrl?: string;
 }
 
-export async function saveAttachmentImageAs(attachment: AttachmentItem): Promise<boolean> {
-  return saveImageAs(await attachmentImageActionInput(attachment));
+export async function copyImageAsset(asset: ImageActionAsset): Promise<void> {
+  await copyImageToClipboard(await imageActionInput(asset));
 }
 
-export async function attachmentImageActionInput(
-  attachment: AttachmentItem,
-): Promise<ImageActionInput> {
+export async function saveImageAssetAs(asset: ImageActionAsset): Promise<boolean> {
+  return saveImageAs(await imageActionInput(asset));
+}
+
+export async function imageActionInput(asset: ImageActionAsset): Promise<ImageActionInput> {
   return {
-    source: await attachmentImageSource(attachment),
-    fileName: attachment.name,
-    mime: attachment.mime,
+    source: await imageActionSource(asset),
+    fileName: asset.name,
+    mime: asset.mime,
   };
 }
 
-async function attachmentImageSource(attachment: AttachmentItem): Promise<ImageActionSourceInput> {
-  if (attachment.path) return { kind: 'path', path: attachment.path };
-  if (attachment.file) return blobImageSource(attachment.file);
-  if (attachment.previewUrl) {
-    const response = await fetch(attachment.previewUrl, { cache: 'no-store' });
+async function imageActionSource(asset: ImageActionAsset): Promise<ImageActionSourceInput> {
+  if (asset.path) return { kind: 'path', path: asset.path };
+  if (asset.file) return blobImageSource(asset.file);
+  if (asset.previewUrl) {
+    const response = await fetch(asset.previewUrl, { cache: 'no-store' });
     if (!response.ok) throw structuredImageActionError('image-action.source-unreadable');
     return blobImageSource(await response.blob());
   }

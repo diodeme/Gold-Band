@@ -68,6 +68,7 @@ import {
 } from "@/components/prompt-kit/chat-container";
 import { ConversationViewport } from "@/components/conversation/ConversationViewport";
 import { InterventionLayer } from "@/components/conversation/InterventionLayer";
+import { ImageActionsContextMenu } from "@/components/shared/ImageActionsContextMenu";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import {
   Message,
@@ -104,6 +105,7 @@ import {
 } from "@/lib/system-prompt-view-pref";
 import { goldThemedScrollbarClassName } from "@/lib/themed-scrollbar";
 import { BoundedLruCache } from "@/lib/bounded-lru-cache";
+import { useImageActions } from "@/hooks/useImageActions";
 import {
   AcpLatestWinsEventBuffer,
   decideAcpLiveEventFlush,
@@ -8279,7 +8281,7 @@ function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-const MessageAttachmentPreviewButton = memo(function MessageAttachmentPreviewButton({
+export const MessageAttachmentPreviewButton = memo(function MessageAttachmentPreviewButton({
   attachment,
   locator,
   onClick,
@@ -8325,32 +8327,67 @@ const MessageAttachmentPreviewButton = memo(function MessageAttachmentPreviewBut
     };
   }, [attachment.name, attachment.path, isImage, locator]);
 
+  const imageActions = useImageActions(isImage && previewSrc ? {
+    name: attachment.name,
+    mime: attachment.type,
+    previewUrl: previewSrc,
+  } : null);
+
   if (isImage) {
+    const previewButton = (
+      <button
+        type="button"
+        className={cn(
+          "relative size-[72px] overflow-hidden rounded-lg border border-border/60 bg-card/80 text-muted-foreground shadow-sm transition-colors hover:border-primary/45 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          imageActions.state === 'failed' && "ring-1 ring-destructive/70",
+        )}
+        aria-label={attachment.name}
+        aria-busy={imageActions.pending || undefined}
+        onClick={() => onClick?.(attachment)}
+      >
+        {previewSrc ? (
+          <img
+            src={previewSrc}
+            alt={attachment.name}
+            loading="lazy"
+            draggable={false}
+            className="size-full object-cover"
+          />
+        ) : (
+          <span className="flex size-full items-center justify-center bg-muted/40">
+            <ImageIcon className="size-5 text-blue-400" />
+          </span>
+        )}
+        {imageActions.pending ? (
+          <span className="absolute inset-0 flex items-center justify-center bg-background/65">
+            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+          </span>
+        ) : imageActions.state === 'copied' || imageActions.state === 'saved' ? (
+          <span className="absolute right-1 top-1 flex size-5 items-center justify-center rounded-full bg-background/85 text-emerald-600 shadow-sm">
+            <Check className="size-3" aria-hidden="true" />
+          </span>
+        ) : imageActions.state === 'failed' ? (
+          <span className="absolute right-1 top-1 flex size-5 items-center justify-center rounded-full bg-background/85 text-destructive shadow-sm">
+            <CircleAlert className="size-3" aria-hidden="true" />
+          </span>
+        ) : null}
+      </button>
+    );
     return (
       <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            className="relative size-[72px] overflow-hidden rounded-lg border border-border/60 bg-card/80 text-muted-foreground shadow-sm transition-colors hover:border-primary/45 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label={attachment.name}
-            onClick={() => onClick?.(attachment)}
-          >
-            {previewSrc ? (
-              <img
-                src={previewSrc}
-                alt={attachment.name}
-                loading="lazy"
-                draggable={false}
-                className="size-full object-cover"
-              />
-            ) : (
-              <span className="flex size-full items-center justify-center bg-muted/40">
-                <ImageIcon className="size-5 text-blue-400" />
-              </span>
-            )}
-          </button>
-        </TooltipTrigger>
-        <TooltipContent className="max-w-[360px] break-all">{attachmentLabel}</TooltipContent>
+        {previewSrc ? (
+          <ImageActionsContextMenu actions={imageActions}>
+            <TooltipTrigger asChild>{previewButton}</TooltipTrigger>
+          </ImageActionsContextMenu>
+        ) : (
+          <TooltipTrigger asChild>{previewButton}</TooltipTrigger>
+        )}
+        <TooltipContent className="max-w-[360px] break-all">
+          {imageActions.message ?? attachmentLabel}
+        </TooltipContent>
+        {imageActions.message ? (
+          <span className="sr-only" aria-live="polite">{imageActions.message}</span>
+        ) : null}
       </Tooltip>
     );
   }

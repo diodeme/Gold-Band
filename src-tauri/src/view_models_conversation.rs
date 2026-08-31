@@ -2603,6 +2603,7 @@ fn derive_conversation_attempt_lifecycle_with_facets(
     runtime_resumable: bool,
     manual_check_pending: bool,
     is_orchestrated: bool,
+    runtime_revision: Option<u64>,
     runtime_execution: Option<&RuntimeExecutionState>,
     execution_current: bool,
     control_mode: TurnControlMode,
@@ -2745,9 +2746,10 @@ fn derive_conversation_attempt_lifecycle_with_facets(
             // execution. Non-current workflow leaves must still advance this
             // watermark so a fresh inactive projection can replace an older
             // locally cached active facet. `active` and `phase` remain gated
-            // by the exact execution locator above. Direct passes no Runtime
-            // execution, while AI-DYNAMIC supplies its leaf-owned execution.
-            revision: runtime_execution.map(|execution| execution.revision),
+            // by the exact execution locator above. Direct carries the run
+            // revision only as an ordering watermark and still passes no
+            // Runtime execution; AI-DYNAMIC supplies its leaf-owned execution.
+            revision: runtime_revision,
         },
         control: ConversationControlFacetVm {
             mode: match effective_control_mode {
@@ -2815,6 +2817,7 @@ fn derive_conversation_attempt_lifecycle(
         runtime_resumable,
         manual_check_pending,
         is_orchestrated,
+        is_orchestrated.then_some(execution.revision),
         is_orchestrated.then_some(&execution),
         is_orchestrated,
         if is_orchestrated {
@@ -2937,6 +2940,7 @@ pub fn conversation_attempt_lifecycle_vm(
             leaf_resumable,
             false,
             is_orchestrated,
+            leaf_execution.as_ref().map(|execution| execution.revision),
             leaf_execution.as_ref(),
             leaf_execution.is_some(),
             attempt_control_mode(&attempt_dir, is_orchestrated),
@@ -2982,6 +2986,7 @@ pub fn conversation_attempt_lifecycle_vm(
         runtime_resumable,
         node.manual_check_pending,
         is_orchestrated,
+        Some(run.execution.revision),
         is_orchestrated.then_some(&run.execution),
         current
             && runtime_execution_applies_to_attempt(
@@ -3692,6 +3697,7 @@ pub fn conversation_run_vm(
                                         dyn_leaf_resumable,
                                         false,
                                         is_orchestrated,
+                                        leaf_execution.as_ref().map(|execution| execution.revision),
                                         leaf_execution.as_ref(),
                                         leaf_execution.is_some(),
                                         attempt_control_mode(&dyn_attempt_dir, is_orchestrated),
@@ -3852,6 +3858,7 @@ pub fn conversation_run_vm(
                         runtime_resumable,
                         manual_check_pending,
                         is_orchestrated,
+                        Some(run.execution.revision),
                         is_orchestrated.then_some(&run.execution),
                         current
                             && runtime_execution_applies_to_attempt(
@@ -5399,6 +5406,7 @@ mod tests {
             false,
             false,
             true,
+            Some(execution.revision),
             Some(&execution),
             true,
             TurnControlMode::RuntimeControlled,
@@ -5431,6 +5439,7 @@ mod tests {
             false,
             false,
             true,
+            Some(execution.revision),
             Some(&execution),
             true,
             TurnControlMode::RuntimeControlled,
@@ -5465,6 +5474,7 @@ mod tests {
             false,
             false,
             true,
+            Some(execution.revision),
             Some(&execution),
             false,
             TurnControlMode::NonRuntimeControlled,
@@ -5499,6 +5509,7 @@ mod tests {
             false,
             true,
             true,
+            Some(execution.revision),
             Some(&execution),
             true,
             TurnControlMode::NonRuntimeControlled,
@@ -5552,6 +5563,7 @@ mod tests {
             false,
             false,
             false,
+            Some(7),
             None,
             false,
             TurnControlMode::NonRuntimeControlled,
@@ -5559,7 +5571,7 @@ mod tests {
         );
 
         assert_eq!(lifecycle.runtime.phase, "idle");
-        assert_eq!(lifecycle.runtime.revision, None);
+        assert_eq!(lifecycle.runtime.revision, Some(7));
         assert!(!lifecycle.runtime.active);
     }
 

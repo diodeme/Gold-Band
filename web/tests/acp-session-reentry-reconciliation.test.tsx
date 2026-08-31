@@ -555,6 +555,110 @@ describe('ACP session re-entry reconciliation', () => {
     }
   });
 
+  it('does not let a cached transitional runtime error replace the converged canonical composer', async () => {
+    const turnId = 'turn-auth-unavailable';
+    const transitional: ConversationAttemptLifecycleVm = {
+      ...terminalLifecycle(turnId),
+      runtime: {
+        status: 'running',
+        outcome: null,
+        pauseReason: null,
+        resumable: false,
+        current: true,
+        active: false,
+        continuable: false,
+        phase: 'idle',
+        revision: 3,
+      },
+      acp: {
+        revision: 11,
+        turnId,
+        sessionAvailability: 'restorable',
+        liveTurnActivity: 'idle',
+        latestTurnStatus: 'failed',
+        stopping: false,
+      },
+      displayStatus: 'failed',
+      runtimeDisplay: {
+        code: 'failure',
+        tone: 'danger',
+        icon: 'error',
+        terminal: true,
+        resumable: false,
+        reasonCode: null,
+        blockingError: true,
+      },
+      continueKind: null,
+      composer: {
+        mode: 'runtime-error',
+        submitTarget: 'none',
+        processingKind: 'processing',
+        canStop: false,
+        lockInput: true,
+      },
+    };
+    const canonical: ConversationAttemptLifecycleVm = {
+      ...transitional,
+      runtime: {
+        status: 'paused',
+        outcome: null,
+        pauseReason: 'runtime-abnormal',
+        resumable: true,
+        current: true,
+        active: false,
+        continuable: false,
+        phase: 'idle',
+        revision: 4,
+      },
+      displayStatus: 'paused',
+      runtimeDisplay: {
+        code: 'runtime-abnormal',
+        tone: 'danger',
+        icon: 'error',
+        terminal: false,
+        resumable: true,
+        reasonCode: 'runtime-abnormal',
+        blockingError: false,
+      },
+      composer: {
+        mode: 'normal',
+        submitTarget: 'acp-prompt',
+        processingKind: 'processing',
+        canStop: false,
+        lockInput: false,
+      },
+    };
+    const failedSession = session([
+      event('auth-failure', 2, 'error', 'Reconnecting... 5/5'),
+    ], 'failed');
+    vi.mocked(getAcpSession).mockResolvedValue(failedSession);
+    applyConversationEventToBranchSnapshots({
+      ...locator,
+      lifecycle: transitional,
+    });
+
+    const { container, root } = await renderDialog(
+      failedSession,
+      'root',
+      undefined,
+      undefined,
+      locator,
+      undefined,
+      canonical,
+    );
+    try {
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea');
+      expect(textarea).not.toBeNull();
+      expect(textarea?.disabled).toBe(false);
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('closes the initial query gate on a ready live session and ignores a late placeholder', async () => {
     const placeholder = {
       ...session([], 'pending'),

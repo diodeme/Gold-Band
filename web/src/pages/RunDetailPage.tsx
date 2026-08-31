@@ -1,4 +1,4 @@
-import type { RunDetailVm, TaskPage } from '../types';
+import type { RunDetailVm } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
 import { AppCard } from '@/components/AppCard';
 import { CodeBlock, EmptyState, Page, PageHeader } from '@/components/PageScaffold';
@@ -13,13 +13,13 @@ interface RunDetailPageProps {
   labels: { continueRun: string; retryRun: string; stopRun: string; openRound: string };
   busy: boolean;
   taskId: string;
-  onNavigate: (page: TaskPage) => void;
+  onOpenRound: (taskId: string, runId: string, roundId: string) => void;
   onContinueRun: (taskId: string, runId: string) => void;
   onRetryRun: (taskId: string, runId: string) => void;
   onStopRun: (taskId: string, runId: string) => void;
 }
 
-export function RunDetailPage({ vm, labels, busy, taskId, onNavigate, onContinueRun, onRetryRun, onStopRun }: RunDetailPageProps) {
+export function RunDetailPage({ vm, labels, busy, taskId, onOpenRound, onContinueRun, onRetryRun, onStopRun }: RunDetailPageProps) {
   const measuredRunDetailRef = useWebviewMeasuredContainer<HTMLElement>('run-detail');
   if (!vm) return <Page><EmptyState>Loading…</EmptyState></Page>;
   const canStopRun = isRunStoppable(vm.run.status);
@@ -45,7 +45,7 @@ export function RunDetailPage({ vm, labels, busy, taskId, onNavigate, onContinue
             <ScrollArea className="h-[520px]">
               <div className="space-y-2 p-3">
                 {vm.rounds.map((round) => (
-                  <Button className="h-auto w-full justify-between p-4" variant="outline" key={round.id} onClick={() => onNavigate({ kind: 'round-detail', taskId, runId: vm.run.id, roundId: round.id })}>
+                  <Button className="h-auto w-full justify-between p-4" variant="outline" key={round.id} onClick={() => onOpenRound(taskId, vm.run.id, round.id)}>
                     <span className="min-w-0 text-left"><strong className="block truncate">{round.id}</strong><small className="text-muted-foreground">{labels.openRound}</small></span>
                     <span className="flex gap-2"><StatusBadge value={round.status} /><StatusBadge value={round.outcome} /></span>
                   </Button>

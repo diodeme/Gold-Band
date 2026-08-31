@@ -296,7 +296,7 @@ export function isTerminalLifecycleForTurn(
 
 /** Lifecycle-only terminal patches settle transient composer state. */
 export function isTerminalAcpLifecycle(
-  lifecycle: ConversationAttemptLifecycleVm | null | undefined,
+  lifecycle: Pick<ConversationAttemptLifecycleVm, 'acp'> | null | undefined,
 ) {
   return Boolean(lifecycle && isTerminalAcpFacet(lifecycle.acp));
 }
@@ -388,20 +388,7 @@ export function mergeConversationAttemptLifecycle(
   local: ConversationAttemptLifecycleVm | null | undefined,
   incoming: ConversationAttemptLifecycleVm,
 ): ConversationAttemptLifecycleVm {
-  const localAcpRevision = local?.acp.revision ?? 0;
-  const incomingAcpRevision = incoming.acp.revision ?? 0;
-  let acp = incoming.acp;
-  if (local && localAcpRevision > incomingAcpRevision) {
-    acp = local.acp;
-  } else if (
-    local &&
-    localAcpRevision === incomingAcpRevision &&
-    local.acp.turnId === incoming.acp.turnId &&
-    isTerminalAcpFacet(local.acp) &&
-    !isTerminalAcpFacet(incoming.acp)
-  ) {
-    acp = local.acp;
-  }
+  const acp = mergeConversationAcpFacet(local?.acp, incoming.acp);
 
   const localRuntimeRevision = local?.runtime.revision ?? 0;
   const incomingRuntimeRevision = incoming.runtime.revision ?? 0;
@@ -410,9 +397,7 @@ export function mergeConversationAttemptLifecycle(
     : incoming.runtime;
   const localQueue = local?.promptQueue;
   const incomingQueue = incoming.promptQueue;
-  const promptQueue = localQueue && (!incomingQueue || localQueue.revision > incomingQueue.revision)
-    ? localQueue
-    : incomingQueue;
+  const promptQueue = mergeConversationPromptQueue(localQueue, incomingQueue);
   if (acp !== incoming.acp || runtime !== incoming.runtime || promptQueue !== incomingQueue) {
     const runtimeSource = local && runtime === local.runtime ? local : incoming;
     return deriveMergedLifecycleProjection({
@@ -428,6 +413,58 @@ export function mergeConversationAttemptLifecycle(
   return incoming;
 }
 
+export function mergeConversationAcpFacet(
+  local: ConversationAttemptLifecycleVm['acp'] | null | undefined,
+  incoming: ConversationAttemptLifecycleVm['acp'],
+): ConversationAttemptLifecycleVm['acp'] {
+  if (!local) return incoming;
+  const localRevision = local.revision ?? 0;
+  const incomingRevision = incoming.revision ?? 0;
+  if (localRevision > incomingRevision) return local;
+  if (
+    localRevision === incomingRevision
+    && local.turnId === incoming.turnId
+    && isTerminalAcpFacet(local)
+    && !isTerminalAcpFacet(incoming)
+  ) {
+    return local;
+  }
+  return incoming;
+}
+
+export function mergeConversationPromptQueue(
+  local: ConversationAttemptLifecycleVm['promptQueue'],
+  incoming: ConversationAttemptLifecycleVm['promptQueue'],
+) {
+  if (!incoming) return local;
+  if (local && local.revision > incoming.revision) return local;
+  return incoming;
+}
+
+/**
+ * Replays only independently revisioned live control facts over a canonical
+ * lifecycle. A router cache must never replay its derived Runtime display or
+ * composer projection across mounts.
+ */
+export function mergeConversationAttemptLiveControlFacets(
+  canonical: ConversationAttemptLifecycleVm,
+  live: {
+    acp?: ConversationAttemptLifecycleVm['acp'] | null;
+    promptQueue?: ConversationAttemptLifecycleVm['promptQueue'];
+  },
+) {
+  const acp = live.acp
+    ? mergeConversationAcpFacet(canonical.acp, live.acp)
+    : canonical.acp;
+  const promptQueue = mergeConversationPromptQueue(canonical.promptQueue, live.promptQueue);
+  if (acp === canonical.acp && promptQueue === canonical.promptQueue) return canonical;
+  return deriveMergedLifecycleProjection({
+    ...canonical,
+    acp,
+    promptQueue,
+  }, canonical);
+}
+
 function deriveMergedLifecycleProjection(
   lifecycle: ConversationAttemptLifecycleVm,
   runtimeSource: ConversationAttemptLifecycleVm,
@@ -440,11 +477,27 @@ function deriveMergedLifecycleProjection(
     : acpActive && !runtimeActive
       ? lifecycle.acp.liveTurnActivity === 'starting' ? 'starting' : 'running'
       : lifecycle.runtime.status || runtimeSource.displayStatus;
-  const runtimeDisplay = deriveRuntimeDisplayFromMergedFacets(
-    lifecycle,
-    displayStatus,
-    runtimeSource.runtimeDisplay,
-  );
+  const runtimeDisplay = acpStopping
+    ? {
+        ...runtimeSource.runtimeDisplay,
+        code: 'paused',
+        tone: 'warning',
+        icon: 'pause',
+        terminal: false,
+        resumable: false,
+        blockingError: false,
+      }
+    : acpActive && !runtimeActive
+      ? {
+          ...runtimeSource.runtimeDisplay,
+          code: 'running',
+          tone: 'running',
+          icon: 'dot',
+          terminal: false,
+          resumable: false,
+          blockingError: false,
+        }
+      : runtimeSource.runtimeDisplay;
   const preserveSuperseded = runtimeSource.composer.mode === 'session-superseded';
   const processingCompletedLeafWorkspace = runtimeSource.composer.processingKind === 'processing-workspace'
     && lifecycle.runtime.phase === 'preparing-workspace';
@@ -496,52 +549,6 @@ function deriveMergedLifecycleProjection(
     continueKind: runtimeSource.continueKind,
     composer,
   };
-}
-
-function deriveRuntimeDisplayFromMergedFacets(
-  lifecycle: ConversationAttemptLifecycleVm,
-  displayStatus: string,
-  fallback: ConversationAttemptLifecycleVm['runtimeDisplay'],
-): ConversationAttemptLifecycleVm['runtimeDisplay'] {
-  const status = displayStatus.trim().toLowerCase().replace(/_/g, '-');
-  const outcome = lifecycle.runtime.outcome?.trim().toLowerCase().replace(/_/g, '-') ?? '';
-  const reasonCode = lifecycle.runtime.pauseReason?.trim().toLowerCase().replace(/_/g, '-') ?? null;
-  if (outcome === 'success') {
-    return { code: 'success', tone: 'success', icon: 'check', terminal: true, resumable: false, reasonCode, blockingError: false };
-  }
-  if (['failure', 'failed', 'invalid'].includes(outcome)) {
-    return { code: 'failure', tone: 'danger', icon: 'error', terminal: true, resumable: false, reasonCode, blockingError: false };
-  }
-  if (['killed', 'cancelled', 'canceled'].includes(outcome)) {
-    return { code: 'killed', tone: 'danger', icon: 'error', terminal: true, resumable: false, reasonCode, blockingError: true };
-  }
-  if (['running', 'in-progress', 'active', 'starting', 'sending'].includes(status)) {
-    return { code: 'running', tone: 'running', icon: 'dot', terminal: false, resumable: false, reasonCode, blockingError: false };
-  }
-  if (['cancelling', 'cancel-requested', 'paused'].includes(status)) {
-    const code = reasonCode === 'error-blocked' || reasonCode === 'runtime-abnormal'
-      ? reasonCode
-      : 'paused';
-    return {
-      code,
-      tone: code === 'paused' ? 'warning' : 'danger',
-      icon: code === 'paused' ? 'pause' : 'error',
-      terminal: false,
-      resumable: code === 'paused' && lifecycle.runtime.resumable,
-      reasonCode,
-      blockingError: code !== 'paused',
-    };
-  }
-  if (['completed', 'complete'].includes(status)) {
-    return { code: 'completed', tone: 'neutral', icon: 'dot', terminal: true, resumable: false, reasonCode, blockingError: false };
-  }
-  if (['failed', 'failure', 'error'].includes(status)) {
-    return { code: 'failure', tone: 'danger', icon: 'error', terminal: true, resumable: false, reasonCode, blockingError: true };
-  }
-  if (['cancelled', 'canceled', 'killed'].includes(status)) {
-    return { code: 'killed', tone: 'danger', icon: 'error', terminal: true, resumable: false, reasonCode, blockingError: true };
-  }
-  return fallback;
 }
 
 function isTerminalAcpFacet(acp: ConversationAttemptLifecycleVm['acp']) {

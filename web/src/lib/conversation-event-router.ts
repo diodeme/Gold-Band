@@ -10,7 +10,10 @@ import {
   recordAcpStreamingDiagnostic,
   summarizeAcpStreamingEvent,
 } from '@/lib/acp-streaming-diagnostics';
-import { mergeConversationAttemptLifecycle } from '@/lib/acp-runtime-composer-state';
+import {
+  mergeConversationAcpFacet,
+  mergeConversationPromptQueue,
+} from '@/lib/acp-runtime-composer-state';
 
 type Listener = (event: AcpSessionUpdatedEventVm) => void;
 
@@ -231,19 +234,21 @@ export async function ensureConversationEventRouterStarted() {
 export interface ConversationBranchLiveSnapshot {
   revision: number;
   contentRevision: number;
-  lifecycleRevision: number;
+  acpRevision: number;
   status: string | null;
   attention: boolean;
-  lifecycle: ConversationAttemptLifecycleVm | null;
+  acp: ConversationAttemptLifecycleVm['acp'] | null;
+  promptQueue: ConversationAttemptLifecycleVm['promptQueue'];
 }
 
 const EMPTY_BRANCH_SNAPSHOT: ConversationBranchLiveSnapshot = {
   revision: 0,
   contentRevision: 0,
-  lifecycleRevision: 0,
+  acpRevision: 0,
   status: null,
   attention: false,
-  lifecycle: null,
+  acp: null,
+  promptQueue: null,
 };
 
 export interface ConversationAttemptLocator {
@@ -508,17 +513,15 @@ function reconcileConversationBranchLifecycle(
   const prefix = `${attemptKey(event)}:`;
   const rootKey = `${prefix}root`;
   const rootCurrent = branchSnapshots.get(rootKey) ?? EMPTY_BRANCH_SNAPSHOT;
-  const mergedLifecycle = mergeConversationAttemptLifecycle(
-    rootCurrent.lifecycle,
-    lifecycle,
-  );
-  const status = branchStatusFromLifecycle(mergedLifecycle) ?? rootCurrent.status;
+  const acp = mergeConversationAcpFacet(rootCurrent.acp, lifecycle.acp);
+  const promptQueue = mergeConversationPromptQueue(rootCurrent.promptQueue, lifecycle.promptQueue);
+  const status = branchStatusFromAcp(acp) ?? rootCurrent.status;
   updateBranchSnapshot(
     rootKey,
     status,
     rootCurrent.attention,
     false,
-    mergedLifecycle,
+    { acp, promptQueue },
   );
   if (!status || !isTerminalSessionStatus(status)) return;
   for (const [key, current] of branchSnapshots) {
@@ -527,17 +530,17 @@ function reconcileConversationBranchLifecycle(
   }
 }
 
-function branchStatusFromLifecycle(
-  lifecycle: AcpSessionUpdatedEventVm['lifecycle'],
+function branchStatusFromAcp(
+  acp: ConversationAttemptLifecycleVm['acp'] | null | undefined,
 ) {
-  if (!lifecycle) return null;
-  switch (lifecycle.acp.liveTurnActivity) {
+  if (!acp) return null;
+  switch (acp.liveTurnActivity) {
     case 'starting': return 'pending';
     case 'accepted':
     case 'running': return 'running';
     case 'cancel-requested': return 'cancelling';
     case 'idle':
-      switch (lifecycle.acp.latestTurnStatus) {
+      switch (acp.latestTurnStatus) {
         case 'completed': return 'completed';
         case 'cancelled': return 'cancelled';
         case 'failed': return 'failed';
@@ -570,18 +573,21 @@ function updateBranchSnapshot(
   status: string | null,
   attention: boolean,
   contentChanged = false,
-  lifecycle?: ConversationAttemptLifecycleVm,
+  control?: {
+    acp: ConversationAttemptLifecycleVm['acp'];
+    promptQueue: ConversationAttemptLifecycleVm['promptQueue'];
+  },
 ) {
   const current = branchSnapshots.get(key) ?? EMPTY_BRANCH_SNAPSHOT;
-  const nextLifecycle = lifecycle
-    ? mergeConversationAttemptLifecycle(current.lifecycle, lifecycle)
-    : current.lifecycle;
-  const nextLifecycleRevision = nextLifecycle?.acp.revision ?? current.lifecycleRevision;
+  const nextAcp = control?.acp ?? current.acp;
+  const nextPromptQueue = control?.promptQueue ?? current.promptQueue;
+  const nextAcpRevision = nextAcp?.revision ?? current.acpRevision;
   if (
     current.status === status
     && current.attention === attention
-    && current.lifecycleRevision === nextLifecycleRevision
-    && current.lifecycle === nextLifecycle
+    && current.acpRevision === nextAcpRevision
+    && current.acp === nextAcp
+    && current.promptQueue === nextPromptQueue
   ) {
     if (contentChanged) {
       storeBranchSnapshot(key, {
@@ -594,10 +600,11 @@ function updateBranchSnapshot(
   storeBranchSnapshot(key, {
     revision: current.revision + 1,
     contentRevision: current.contentRevision + Number(contentChanged),
-    lifecycleRevision: nextLifecycleRevision,
+    acpRevision: nextAcpRevision,
     status,
     attention,
-    lifecycle: nextLifecycle,
+    acp: nextAcp,
+    promptQueue: nextPromptQueue,
   });
   notifyBranch(key);
 }

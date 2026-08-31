@@ -787,11 +787,12 @@ describe('conversation event router', () => {
 
     expect(readConversationBranchLiveSnapshot(locator, 'root')).toMatchObject({
       status: 'cancelled',
-      lifecycleRevision: 4,
-      lifecycle: expect.objectContaining({
-        acp: expect.objectContaining({ latestTurnStatus: 'cancelled' }),
-      }),
+      acpRevision: 4,
+      acp: expect.objectContaining({ latestTurnStatus: 'cancelled' }),
     });
+    expect(readConversationBranchLiveSnapshot(locator, 'root')).not.toHaveProperty('lifecycle');
+    expect(readConversationBranchLiveSnapshot(locator, 'root')).not.toHaveProperty('composer');
+    expect(readConversationBranchLiveSnapshot(locator, 'root')).not.toHaveProperty('runtimeDisplay');
     expect(readConversationBranchLiveSnapshot(locator, 'agent-completed').status).toBe('completed');
     expect(readConversationBranchLiveSnapshot(locator, 'agent-running')).toMatchObject({
       status: 'interrupted',
@@ -815,10 +816,8 @@ describe('conversation event router', () => {
 
     expect(readConversationBranchLiveSnapshot(locator, 'root')).toMatchObject({
       status: 'cancelled',
-      lifecycleRevision: 5,
-      lifecycle: expect.objectContaining({
-        acp: expect.objectContaining({ latestTurnStatus: 'cancelled' }),
-      }),
+      acpRevision: 5,
+      acp: expect.objectContaining({ latestTurnStatus: 'cancelled' }),
     });
     expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toMatchObject({
       status: 'interrupted',

@@ -2,7 +2,8 @@
 
 ## 0. 当前实现状态
 
-- `RoundDetailPage` 的节点 session tab 已切换为 `ACPChatDialog`。
+- 2026-08-31 删除已废弃的 `RoundDetailPage` 及 workbench `round-detail` 路由/状态消费路径；工作流 Round 行与系统干预通知统一进入 canonical `conversation-run`。旧 workbench Round deep link 不再恢复已删除页面，前端不保留兼容分支。
+- 2026-08-31 修复 ACP terminal error 后重进会话关闭输入框：根因是全局 branch snapshot 把一次过渡态完整 lifecycle（含 `runtimeDisplay/composer` 派生结果）按 ACP revision 长期缓存，并在 canonical lifecycle 之后回放。缓存现只保留独立 revision 的 ACP/queue 事实与 branch/timeline 投影；后端 Runtime display 保持 composer 阻塞语义权威，`runtime-abnormal` 仍可输入。Direct Runtime facet 补 run execution revision 水位但不消费 Workflow phase。最小重进 DOM 测试、facet 合并测试与 router 结构测试固定该契约，不新增请求、订阅、缓存或兼容层。
 - 前端新增 ACP session / event / permission / diagnostics 类型，数据来自 Tauri `AcpSessionVm`。
 - `ACPChatDialog` 展示压缩 session header、消息流、thought、tool call、plan、permission、raw frames 和 composer。
 - 会话 UI 已采用 prompt-kit copy-in 组件承载基础交互：`ChatContainer` 负责消息滚动，`Message` 负责用户/agent 气泡，`PromptInput` 负责 composer，`Tool` 负责工具调用卡片，`ChainOfThought` 负责 thought 折叠展示；ACP 专属逻辑只负责事件映射、权限和诊断。

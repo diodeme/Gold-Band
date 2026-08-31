@@ -24,7 +24,6 @@ import {
   markSettingsAdvancedUpdateSeen,
   markSettingsUpdateSeen,
   getAppBootstrap,
-  getRoundDetail,
   getTaskList,
   getWorkflow,
   clearDesktopAvatar,
@@ -125,7 +124,6 @@ import { RunModeManagementPage } from './pages/RunModeManagementPage';
 import { ScheduledTaskManagementPage } from './pages/ScheduledTaskManagementPage';
 import { ScheduledTaskDetailPage } from './pages/ScheduledTaskDetailPage';
 import { PersonalAnalyticsPage } from './pages/PersonalAnalyticsPage';
-import { RoundDetailPage } from './pages/RoundDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { createInitialCreateTaskDraft, TaskListPage, type CreateTaskDraftState } from './pages/TaskListPage';
 import { resetConversationComposerDraft } from '@/lib/conversation-composer-draft';
@@ -249,8 +247,6 @@ import type {
   PreferencesVm,
   UpdateBadgeStateVm,
   PrimaryModule,
-  RoundDetailVm,
-  RoundSelection,
   TaskListVm,
   TaskPage,
   UpdateStatusVm,
@@ -786,6 +782,9 @@ export function App() {
     ? presentedConversationPage.projectId
     : effectiveWorkspaceId;
   const defaultProjectId = draftWorkspace?.projectId ?? 'default';
+  const workbenchProjectId = conversationSidebar.workspaces.find(
+    (workspace) => workspace.workspacePath === bootstrap?.repoRoot,
+  )?.projectId ?? defaultProjectId;
   const defaultWorkspaceName = draftWorkspace?.name ?? 'Default Workspace';
   const conversationWorkLocationPreference = parseConversationWorkLocationPreference(
     conversationSidebar.preferences?.[CONVERSATION_WORK_LOCATION_PREFERENCE_KEY],
@@ -795,14 +794,12 @@ export function App() {
     defaultProjectId,
   );
   const conversationRunMode = conversationRunModeForWorkspace(conversationRunModesByWorkspace, defaultProjectId);
-  const [roundSelection, setRoundSelection] = useState<RoundSelection>({ kind: 'round' });
   const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
   const [profiles, setProfiles] = useState<ProfileVm[]>([]);
   const [taskList, setTaskList] = useState<TaskListVm | null>(null);
   const [createTaskDraft, setCreateTaskDraft] = useState<CreateTaskDraftState>(() => createInitialCreateTaskDraft());
   const composerDraftRef = useRef<ConversationComposerDraftBoundaryHandle | null>(null);
   const [workflow, setWorkflow] = useState<WorkflowVm | null>(null);
-  const [roundDetail, setRoundDetail] = useState<RoundDetailVm | null>(null);
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [loading, setLoading] = useState<VisibleRefreshMode | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1103,7 +1100,6 @@ export function App() {
       setPrimaryModule(nextRoute.module);
       setTaskPage(nextRoute.taskPage);
       setConversationPage(nextRoute.conversationPage);
-      setRoundSelection({ kind: 'round' });
       setWorkspacePickerOpen(false);
     };
     window.addEventListener('popstate', onPopState);
@@ -1697,12 +1693,10 @@ export function App() {
 
   const resetWorkspaceViews = () => {
     setTaskPage({ kind: 'task-list' });
-    setRoundSelection({ kind: 'round' });
     setAgentRegistry(null);
     setTaskList(null);
     setCreateTaskDraft(createInitialCreateTaskDraft());
     setWorkflow(null);
-    setRoundDetail(null);
     setPrimaryModule('task-orchestration');
     setWorkspacePickerOpen(false);
   };
@@ -1713,9 +1707,7 @@ export function App() {
       ? true
       : taskPage.kind === 'task-list'
       ? taskList !== null
-      : taskPage.kind === 'workflow'
-        ? workflow !== null
-        : roundDetail !== null;
+      : workflow !== null;
 
   const refresh = useCallback(async (mode: RefreshMode = 'manual') => {
     if (!bootstrap) return;
@@ -1733,10 +1725,8 @@ export function App() {
         return;
       } else if (taskPage.kind === 'task-list') {
         setTaskList(await getTaskList());
-      } else if (taskPage.kind === 'workflow') {
+      } else {
         setWorkflow(await getWorkflow(taskPage.taskId));
-      } else if (taskPage.kind === 'round-detail') {
-        setRoundDetail(await getRoundDetail(taskPage.taskId, taskPage.runId, taskPage.roundId, roundSelection));
       }
     } catch (err) {
       setError(displayAppError(t, err));
@@ -1747,7 +1737,7 @@ export function App() {
         setLoading(null);
       }
     }
-  }, [bootstrap, primaryModule, roundSelection, t, taskPage]);
+  }, [bootstrap, primaryModule, t, taskPage]);
 
   useEffect(() => {
     if (uiMode !== 'workbench') return;
@@ -1786,7 +1776,6 @@ export function App() {
     setPrimaryModule('task-orchestration');
     setWorkspacePickerOpen(false);
     setTaskPage(page);
-    setRoundSelection({ kind: 'round' });
     pushRoute('task-orchestration', page);
   };
 
@@ -1843,17 +1832,7 @@ export function App() {
       onSelectConversation(page);
       return;
     }
-    if (uiMode !== 'conversation') {
-      // 工作台模式：定位到 round-detail 并选中节点。
-      setPrimaryModule('task-orchestration');
-      const page: TaskPage = { kind: 'round-detail', taskId: event.taskId, runId: event.runId, roundId: event.roundId };
-      setTaskPage(page);
-      setRoundSelection({ kind: 'node', nodeId: event.nodeId, attemptId: event.attemptId });
-      pushRoute('task-orchestration', page);
-      return;
-    }
-
-    // 会话模式：定位到 run，并在 sessionTree 内匹配叶子后切换 session。
+    // 统一进入 canonical conversation run，并在 sessionTree 内匹配叶子后切换 session。
     const runPage = conversationPageForIntervention(event);
     const targetProjectId = event.projectId;
     onSelectConversation(runPage);
@@ -2267,6 +2246,7 @@ export function App() {
 
   function onSelectConversation(page: ConversationPage) {
     setWorkspacePickerOpen(false);
+    setUiMode('conversation');
     if (conversationRunRef.current) {
       const currentRun = conversationRunRef.current;
       const currentRunKey = conversationRunCacheKey(currentRun);
@@ -3041,15 +3021,20 @@ export function App() {
         />
       );
     }
-    if (taskPage.kind === 'workflow') {
-      return (
+    return (
         <>
         <WorkflowPage
           vm={workflow}
           busy={busy}
           refreshing={loading === 'manual'}
           breadcrumbs={pageBreadcrumbs}
-          onNavigate={navigate}
+          onOpenRound={(taskId, runId, roundId) => onSelectConversation({
+            kind: 'conversation-run',
+            projectId: workbenchProjectId,
+            taskId,
+            runId,
+            roundId,
+          })}
           onRefresh={() => void refresh('manual')}
           onStartRun={(taskId) => runAction(() => startRun(taskId))}
           onContinueRun={(taskId, runId) => void runAction(() => continueRun(undefined, taskId, runId))}
@@ -3076,7 +3061,5 @@ export function App() {
         ) : null}
         </>
       );
-    }
-    return <RoundDetailPage vm={roundDetail} breadcrumbs={pageBreadcrumbs} selection={roundSelection} refreshing={loading === 'manual'} busy={busy} appConfig={appConfig} workspaceProjectId={bootstrap?.repoRoot ? bootstrap.repoRoot.toLowerCase().replace(/[^a-z0-9\-_]/g, '-') : undefined} onRefresh={() => void refresh('manual')} onSelect={setRoundSelection} />;
   }
 }

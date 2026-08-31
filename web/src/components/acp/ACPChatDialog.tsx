@@ -1389,7 +1389,10 @@ export function ACPChatDialog(
   const paginationDirectionRef = useRef<"older" | "newer" | null>(null);
   const preservingScrollRef = useRef(false);
   const chatContainerContextRef = useRef<ChatContainerContext | null>(null);
-  const viewportAtBottomRef = useRef(restoredBranchViewState?.atBottom ?? true);
+  const [viewportAtBottom, setViewportAtBottom] = useState(
+    restoredBranchViewState?.atBottom ?? true,
+  );
+  const viewportAtBottomRef = useRef(viewportAtBottom);
   const pendingBranchViewRestoreRef = useRef<AcpBranchViewState | null>(restoredBranchViewState);
   const cancelRequestedRef = useRef(false);
   const awaitTerminalStopRef = useRef(false);
@@ -1831,7 +1834,9 @@ export function ACPChatDialog(
     paginationAnchorRef.current = null;
     liveUpdatesDeferredUntilRef.current = 0;
     pendingLiveEventsSinceRef.current = null;
-    viewportAtBottomRef.current = storedBranchViewState?.atBottom ?? true;
+    const restoredViewportAtBottom = storedBranchViewState?.atBottom ?? true;
+    viewportAtBottomRef.current = restoredViewportAtBottom;
+    setViewportAtBottom(restoredViewportAtBottom);
     pendingBranchViewRestoreRef.current = storedBranchViewState;
     cancelRequestedRef.current = false;
     awaitTerminalStopRef.current = false;
@@ -2117,6 +2122,7 @@ export function ACPChatDialog(
     runtimeActive: initializationLifecycleActive,
     sending,
   });
+  const showReturnToLatest = !viewportAtBottom;
   const sessionSnapshotSettled = shouldSettleAcpComposerTransientState(
     localLifecycle,
     effective?.status,
@@ -2908,6 +2914,9 @@ export function ACPChatDialog(
 
   const handleAtBottomChange = useCallback((viewportAtBottom: boolean) => {
     viewportAtBottomRef.current = viewportAtBottom;
+    setViewportAtBottom((current) => (
+      current === viewportAtBottom ? current : viewportAtBottom
+    ));
     if (!viewportAtBottom && liveStreamingTargetRef.current) {
       settleLiveStreamingMarkdown();
     }
@@ -4470,6 +4479,7 @@ export function ACPChatDialog(
     settleOptimisticPromptAdmissions(latestEvents);
     latestSessionRef.current = committedSession;
     viewportAtBottomRef.current = true;
+    setViewportAtBottom(true);
     paginationAnchorRef.current = null;
     pendingLatestLayoutCommitRef.current = sessionIdentity;
     liveAnimationReadyRef.current = !hasRemainingReplay;
@@ -4745,6 +4755,12 @@ export function ACPChatDialog(
   canonicalHeadHandoffRef.current = returnToLatestEvents;
 
   const handleReturnToLatestEvents = () => {
+    if (!hasNewerEventsRef.current) {
+      void chatContainerContextRef.current?.scrollToBottom({
+        animation: "instant",
+      });
+      return;
+    }
     requestCanonicalHeadHandoff(
       canonicalHeadRecoveryPendingRef.current ? "recovery" : "ordinary",
       true,
@@ -5724,7 +5740,7 @@ export function ACPChatDialog(
                 )}
                 data-acp-conversation-footer="sticky"
               >
-                {hasNewerEvents ? (
+                {showReturnToLatest ? (
                   <Button
                     type="button"
                     size="sm"

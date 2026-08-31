@@ -234,6 +234,58 @@ describe('ACP chat event handling', () => {
     ).toBe('Round 数已达上限：max rounds exceeded for $new-round: 2 > 1');
   });
 
+  it('shows the current ACP diagnostic before a follow-up response arrives', () => {
+    const acpSession = session({
+      diagnostics: {
+        rawFrameCount: 8,
+        eventCount: 3,
+        errorCount: 1,
+        lastError: 'first turn failed',
+        lastErrorTimestamp: '10Z',
+      },
+    });
+
+    expect(visibleAcpBannerError(null, acpSession, [])).toBe('first turn failed');
+  });
+
+  it('hides an ACP diagnostic after a newer normal follow-up response', () => {
+    const acpSession = session({
+      diagnostics: {
+        rawFrameCount: 12,
+        eventCount: 5,
+        errorCount: 1,
+        lastError: 'first turn failed',
+        lastErrorTimestamp: '10Z',
+      },
+    });
+
+    expect(visibleAcpBannerError(null, acpSession, [event({
+      seq: 5,
+      timestamp: '11Z',
+      kind: 'thoughtDelta',
+      status: 'running',
+    })])).toBeNull();
+  });
+
+  it('shows the latest ACP diagnostic when the follow-up turn also fails', () => {
+    const acpSession = session({
+      diagnostics: {
+        rawFrameCount: 16,
+        eventCount: 7,
+        errorCount: 2,
+        lastError: 'follow-up turn failed',
+        lastErrorTimestamp: '20Z',
+      },
+    });
+
+    expect(visibleAcpBannerError(null, acpSession, [event({
+      seq: 6,
+      timestamp: '19Z',
+      kind: 'textDelta',
+      status: 'completed',
+    })])).toBe('follow-up turn failed');
+  });
+
   it('keeps the structured provider detail instead of replacing it with a generic adapter hint', () => {
     const providerError = 'ACP `initialize` failed: Already initialized (Internal error)';
     const acpSession = session({

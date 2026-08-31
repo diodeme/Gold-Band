@@ -1,7 +1,15 @@
 import { ACPChatDialog } from '@/components/acp/ACPChatDialog';
 import type { AgentTranscriptResource } from './right-workspace-context';
 
-export function AgentConversationPanel({ resource }: { resource: AgentTranscriptResource }) {
+export function AgentConversationPanel({
+  resource,
+  eventPageSize,
+  eventWindowPageCount,
+}: {
+  resource: AgentTranscriptResource;
+  eventPageSize?: number;
+  eventWindowPageCount?: number;
+}) {
   const locator = resource.locator;
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background" data-agent-conversation-panel={locator.branchId} data-read-only="true">
@@ -17,6 +25,8 @@ export function AgentConversationPanel({ resource }: { resource: AgentTranscript
         outerNodeId={locator.outerNodeId}
         outerAttemptId={locator.outerAttemptId}
         branchId={locator.branchId}
+        eventPageSize={eventPageSize}
+        eventWindowPageCount={eventWindowPageCount}
         readOnly
         showSystemPromptAction
         showRawFramesAction

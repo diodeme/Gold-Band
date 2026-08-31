@@ -116,11 +116,15 @@ import {
   mergeAcpLiveToolEvent,
 } from "@/lib/acp-live-flush";
 import {
-  ACP_CHAT_LOADED_EVENT_BUFFER_PAGE_COUNT,
   ACP_CHAT_LOADED_EVENT_BUFFER_MAX_MULTIPAGE_ITEMS,
   DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
+  DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT,
   DEFAULT_ACP_CHAT_LOADED_EVENT_BUFFER_LIMIT,
 } from "@/lib/acp-chat-pagination";
+import {
+  DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT,
+  normalizeAcpResourceCacheSessionCount,
+} from "@/lib/acp-chat-resource-cache";
 import {
   createAcpSessionConfigViewModel,
   findAcpConfigOption,
@@ -363,6 +367,7 @@ interface ACPChatDialogProps {
   directSessionHeader?: AcpDirectSessionHeaderProps;
   eventIdPrefix?: string;
   eventPageSize?: number;
+  eventWindowPageCount?: number;
   inlineContentMaxBytes?: number;
   liveUpdatesPaused?: boolean;
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
@@ -505,8 +510,6 @@ const NEWER_PAGE_LOAD_THRESHOLD_PX = 240;
 const LIVE_EVENT_FLUSH_MS = 125;
 const LIVE_EVENT_INTERACTION_QUIET_MS = 180;
 const LIVE_EVENT_MAX_DEFER_MS = 250;
-export const ACP_LIVE_EVENT_BUFFER_MAX_IDENTITIES =
-  DEFAULT_ACP_CHAT_LOADED_EVENT_BUFFER_LIMIT;
 export const ACP_REPLAY_CATCH_UP_MAX_PAGES = 4;
 export const ACP_REPLAY_CATCH_UP_MAX_MS = 2_000;
 const ACP_SESSION_LEASE_RETRY_MS = 30_000;
@@ -638,7 +641,7 @@ const hiddenEventKinds = new Set([
 ]);
 
 export const ACP_OPTIMISTIC_SESSION_CACHE_LIMIT = 12;
-export const ACP_OPTIMISTIC_EVENTS_PER_SESSION_LIMIT =
+export const DEFAULT_ACP_OPTIMISTIC_EVENTS_PER_SESSION_LIMIT =
   DEFAULT_ACP_CHAT_LOADED_EVENT_BUFFER_LIMIT;
 const optimisticEventStore = new BoundedLruCache<string, AcpUiEventVm[]>(
   ACP_OPTIMISTIC_SESSION_CACHE_LIMIT,
@@ -648,23 +651,31 @@ const optimisticEventListeners = new Map<
   Set<(events: AcpUiEventVm[]) => void>
 >();
 
-function readStoredOptimisticEvents(sessionKey: string) {
-  return optimisticEventStore.get(sessionKey) ?? [];
+function readStoredOptimisticEvents(
+  sessionKey: string,
+  maxEvents = DEFAULT_ACP_OPTIMISTIC_EVENTS_PER_SESSION_LIMIT,
+) {
+  const stored = optimisticEventStore.get(sessionKey) ?? [];
+  const bounded = boundAcpOptimisticEvents(stored, maxEvents);
+  if (bounded !== stored) optimisticEventStore.set(sessionKey, bounded);
+  return bounded;
 }
 
 function updateStoredOptimisticEvents(
   sessionKey: string,
   updater: (current: AcpUiEventVm[]) => AcpUiEventVm[],
+  maxEvents = DEFAULT_ACP_OPTIMISTIC_EVENTS_PER_SESSION_LIMIT,
 ) {
-  const next = updater(readStoredOptimisticEvents(sessionKey));
-  return replaceStoredOptimisticEvents(sessionKey, next);
+  const next = updater(readStoredOptimisticEvents(sessionKey, maxEvents));
+  return replaceStoredOptimisticEvents(sessionKey, next, maxEvents);
 }
 
 function replaceStoredOptimisticEvents(
   sessionKey: string,
   next: AcpUiEventVm[],
+  maxEvents = DEFAULT_ACP_OPTIMISTIC_EVENTS_PER_SESSION_LIMIT,
 ) {
-  const boundedNext = boundAcpOptimisticEvents(next);
+  const boundedNext = boundAcpOptimisticEvents(next, maxEvents);
   if (boundedNext.length === 0) optimisticEventStore.delete(sessionKey);
   else optimisticEventStore.set(sessionKey, boundedNext);
   optimisticEventListeners
@@ -673,17 +684,22 @@ function replaceStoredOptimisticEvents(
   return boundedNext;
 }
 
-export function boundAcpOptimisticEvents(events: AcpUiEventVm[]) {
-  return events.length > ACP_OPTIMISTIC_EVENTS_PER_SESSION_LIMIT
-    ? events.slice(-ACP_OPTIMISTIC_EVENTS_PER_SESSION_LIMIT)
+export function boundAcpOptimisticEvents(
+  events: AcpUiEventVm[],
+  maxEvents = DEFAULT_ACP_OPTIMISTIC_EVENTS_PER_SESSION_LIMIT,
+) {
+  const normalizedMaxEvents = Math.max(1, Math.floor(maxEvents));
+  return events.length > normalizedMaxEvents
+    ? events.slice(-normalizedMaxEvents)
     : events;
 }
 
 export function updateAcpOptimisticEvents(
   sessionKey: string,
   updater: (current: AcpUiEventVm[]) => AcpUiEventVm[],
+  maxEvents = DEFAULT_ACP_OPTIMISTIC_EVENTS_PER_SESSION_LIMIT,
 ) {
-  return updateStoredOptimisticEvents(sessionKey, updater);
+  return updateStoredOptimisticEvents(sessionKey, updater, maxEvents);
 }
 
 function subscribeStoredOptimisticEvents(
@@ -710,8 +726,6 @@ function latestSendingOptimisticEvent(events: AcpUiEventVm[]) {
   return null;
 }
 
-export const ACP_RESOURCE_CACHE_LIMIT = 12;
-
 export interface AcpBranchViewState {
   anchorKey: string | null;
   anchorOffset: number;
@@ -728,7 +742,19 @@ interface AcpCachedResource {
   contentHydrated?: boolean;
 }
 
-const acpResourceStore = new BoundedLruCache<string, AcpCachedResource>(ACP_RESOURCE_CACHE_LIMIT);
+let acpResourceCacheSessionCount = DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT;
+let acpResourceStore = new BoundedLruCache<string, AcpCachedResource>(
+  DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT,
+);
+
+export function configureAcpResourceCacheSessionCount(value?: number) {
+  const sessionCount = normalizeAcpResourceCacheSessionCount(value);
+  if (sessionCount !== acpResourceCacheSessionCount) {
+    acpResourceCacheSessionCount = sessionCount;
+    acpResourceStore = new BoundedLruCache<string, AcpCachedResource>(sessionCount);
+  }
+  return sessionCount;
+}
 
 function storeAcpResourcePart(sessionKey: string, patch: Partial<AcpCachedResource>) {
   const current = acpResourceStore.peek(sessionKey) ?? {};
@@ -962,13 +988,24 @@ function normalizeEventPageSize(value?: number) {
     : DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE;
 }
 
-export function loadedEventBufferLimit(eventPageSize: number) {
+function normalizeEventWindowPageCount(value?: number) {
+  return Number.isFinite(value) && value && value > 0
+    ? Math.floor(value)
+    : DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT;
+}
+
+export function loadedEventBufferLimit(
+  eventPageSize: number,
+  eventWindowPageCount = DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT,
+) {
+  const normalizedPageSize = normalizeEventPageSize(eventPageSize);
+  const normalizedWindowPageCount = normalizeEventWindowPageCount(eventWindowPageCount);
   return Math.max(
     MIN_LOADED_EVENT_BUFFER_LIMIT,
-    eventPageSize,
+    normalizedPageSize,
     Math.min(
       ACP_CHAT_LOADED_EVENT_BUFFER_MAX_MULTIPAGE_ITEMS,
-      eventPageSize * ACP_CHAT_LOADED_EVENT_BUFFER_PAGE_COUNT,
+      normalizedPageSize * normalizedWindowPageCount,
     ),
   );
 }
@@ -1169,6 +1206,7 @@ export function ACPChatDialog(
     directSessionHeader,
     eventIdPrefix,
     eventPageSize,
+    eventWindowPageCount,
     inlineContentMaxBytes,
     liveUpdatesPaused: externalLiveUpdatesPaused = false,
     onOptimisticEventsChange,
@@ -1191,6 +1229,9 @@ export function ACPChatDialog(
   const { t } = useTranslation();
   const rightWorkspace = useOptionalRightWorkspaceCommands();
   const effectiveEventPageSize = normalizeEventPageSize(eventPageSize);
+  const effectiveEventWindowPageCount = normalizeEventWindowPageCount(
+    eventWindowPageCount,
+  );
   const branchId = requestedBranchId ?? session?.branchId ?? 'root';
   const attemptWorkspaceLocator = useMemo<AcpAttemptWorkspaceLocator>(() => ({
     projectId,
@@ -1222,6 +1263,7 @@ export function ACPChatDialog(
   );
   const effectiveLoadedEventBufferLimit = loadedEventBufferLimit(
     effectiveEventPageSize,
+    effectiveEventWindowPageCount,
   );
   const sessionKey = createAcpSessionCacheKey(
     cacheNamespace,
@@ -1253,7 +1295,10 @@ export function ACPChatDialog(
   const restoredSession = session ?? restoreAcpSession(eventWindowKey);
   const componentInstanceIdRef = useRef(createAcpChatDialogInstanceId());
   const componentInstanceId = componentInstanceIdRef.current;
-  const restoredOptimisticEvents = readStoredOptimisticEvents(sessionKey);
+  const restoredOptimisticEvents = readStoredOptimisticEvents(
+    sessionKey,
+    effectiveLoadedEventBufferLimit,
+  );
   const restoredBranchViewState = restoreAcpBranchViewState(eventWindowKey);
   const restoredPromptEvent = latestSendingOptimisticEvent(
     restoredOptimisticEvents,
@@ -1418,10 +1463,7 @@ export function ACPChatDialog(
   const paginationAnchorRef = useRef<{ key: string; top: number } | null>(null);
   const pendingLiveEventsRef = useRef(
     new AcpLatestWinsEventBuffer<AcpGenerationScopedLiveEvent>(
-      Math.min(
-        effectiveLoadedEventBufferLimit,
-        ACP_LIVE_EVENT_BUFFER_MAX_IDENTITIES,
-      ),
+      effectiveLoadedEventBufferLimit,
     ),
   );
   const liveEventFlushTimerRef = useRef<number | null>(null);
@@ -1493,11 +1535,15 @@ export function ACPChatDialog(
     updater: (current: AcpUiEventVm[]) => AcpUiEventVm[],
   ) => {
     const next = updater(optimisticEventsRef.current);
-    const boundedNext = replaceStoredOptimisticEvents(sessionKey, next);
+    const boundedNext = replaceStoredOptimisticEvents(
+      sessionKey,
+      next,
+      effectiveLoadedEventBufferLimit,
+    );
     optimisticEventsRef.current = boundedNext;
     setOptimisticEvents(boundedNext);
     onOptimisticEventsChangeRef.current?.(boundedNext);
-  }, [sessionKey]);
+  }, [effectiveLoadedEventBufferLimit, sessionKey]);
 
   const isHistoricalTimelineWindow = useCallback(() => (
     hasNewerEventsRef.current
@@ -1769,7 +1815,10 @@ export function ACPChatDialog(
     const identityChanged = sessionResetIdentityRef.current !== eventWindowKey;
     sessionResetIdentityRef.current = eventWindowKey;
     const cachedSession = session ?? restoreAcpSession(eventWindowKey);
-    const storedOptimisticEvents = readStoredOptimisticEvents(sessionKey);
+    const storedOptimisticEvents = readStoredOptimisticEvents(
+      sessionKey,
+      effectiveLoadedEventBufferLimit,
+    );
     const storedBranchViewState = restoreAcpBranchViewState(eventWindowKey);
     const storedLoadedEventWindow = restoreAcpLoadedEventWindow(
       eventWindowKey,

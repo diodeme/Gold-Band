@@ -61,7 +61,14 @@ import {
 } from './api';
 import { isTauriRuntime } from './api/shared';
 import { registerHeartbeatActivityListeners } from './lib/heartbeat-activity';
-import { DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE } from './lib/acp-chat-pagination';
+import {
+  DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
+  DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT,
+} from './lib/acp-chat-pagination';
+import {
+  DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT,
+} from './lib/acp-chat-resource-cache';
+import { configureAcpResourceCacheSessionCount } from '@/components/acp/ACPChatDialog';
 import { subscribeConversationEvents } from './lib/conversation-event-router';
 import { prefetchScheduledRuntimeSettings } from '@/components/scheduled-tasks/useScheduledRuntimeSettings';
 import {
@@ -340,6 +347,8 @@ const defaultAppInfo: AppInfoVm = {
 const defaultAppConfig: AppConfigVm = {
   acpSessionTitleRefreshEnabled: false,
   acpChatEventPageSize: DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
+  acpChatEventWindowPageCount: DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT,
+  acpChatResourceCacheSessionCount: DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT,
   conversationInlineContentMaxBytes: 20_000,
   conversationInlineImageMaxBytes: 4 * 1024 * 1024,
   conversationInlineImageMaxDimension: 2_560,
@@ -1109,6 +1118,9 @@ export function App() {
   useEffect(() => {
     getAppBootstrap()
       .then((bootstrap) => {
+        configureAcpResourceCacheSessionCount(
+          bootstrap.appConfig.acpChatResourceCacheSessionCount,
+        );
         setBootstrap(bootstrap);
         // 静默预取定时任务运行时设置，让首次进入「设置 → 定时任务」也免加载闪烁。
         void prefetchScheduledRuntimeSettings();
@@ -1986,6 +1998,9 @@ export function App() {
   };
 
   const applyWorkspace = (nextBootstrap: AppBootstrapVm) => {
+    configureAcpResourceCacheSessionCount(
+      nextBootstrap.appConfig.acpChatResourceCacheSessionCount,
+    );
     setBootstrap(nextBootstrap);
     resetWorkspaceViews();
     replaceRoute('task-orchestration', { kind: 'task-list' });
@@ -2023,6 +2038,9 @@ export function App() {
     setError(null);
     try {
       const nextBootstrap = await removeRecentWorkspace(workspace);
+      configureAcpResourceCacheSessionCount(
+        nextBootstrap.appConfig.acpChatResourceCacheSessionCount,
+      );
       setBootstrap(nextBootstrap);
     } catch (err) {
       setError(displayAppError(t, err));

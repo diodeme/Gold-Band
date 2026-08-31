@@ -12,6 +12,7 @@ import {
 import { normalizeAcpEventForAttempt } from '../../src/lib/acp-event-normalization';
 import {
   DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
+  DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT,
   DEFAULT_ACP_CHAT_LOADED_EVENT_BUFFER_LIMIT,
 } from '../../src/lib/acp-chat-pagination';
 import type { AcpSessionVm, AcpUiEventVm } from '../../src/types';
@@ -128,13 +129,17 @@ describe('ACPChatDialog pagination buffer', () => {
   });
 
   it('keeps three configured pages in the sliding event buffer', () => {
-    expect(DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE).toBe(192);
-    expect(DEFAULT_ACP_CHAT_LOADED_EVENT_BUFFER_LIMIT).toBe(576);
-    expect(loadedEventBufferLimit(DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE)).toBe(576);
-    expect(loadedEventBufferLimit(240)).toBe(720);
-    expect(loadedEventBufferLimit(30)).toBe(90);
-    expect(loadedEventBufferLimit(10)).toBe(30);
-    expect(loadedEventBufferLimit(2000)).toBe(2000);
+    expect(DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE).toBe(96);
+    expect(DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT).toBe(3);
+    expect(DEFAULT_ACP_CHAT_LOADED_EVENT_BUFFER_LIMIT).toBe(288);
+    expect(loadedEventBufferLimit(
+      DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
+      DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT,
+    )).toBe(288);
+    expect(loadedEventBufferLimit(240, 2)).toBe(480);
+    expect(loadedEventBufferLimit(30, 3)).toBe(90);
+    expect(loadedEventBufferLimit(10, 3)).toBe(30);
+    expect(loadedEventBufferLimit(2000, 3)).toBe(2000);
   });
 
   it('keeps the current page when the next page is merged', () => {

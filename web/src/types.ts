@@ -152,6 +152,8 @@ export interface AppBootstrapVm {
 export interface AppConfigVm {
   acpSessionTitleRefreshEnabled: boolean;
   acpChatEventPageSize: number;
+  acpChatEventWindowPageCount: number;
+  acpChatResourceCacheSessionCount: number;
   conversationInlineContentMaxBytes: number;
   conversationInlineImageMaxBytes: number;
   conversationInlineImageMaxDimension: number;

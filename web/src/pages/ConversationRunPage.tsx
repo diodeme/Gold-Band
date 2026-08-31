@@ -594,6 +594,7 @@ export function ConversationRunPage({
             outerNodeId={selectedLeaf.outerNodeId}
             outerAttemptId={selectedLeaf.outerAttemptId}
             eventPageSize={appConfig.acpChatEventPageSize}
+            eventWindowPageCount={appConfig.acpChatEventWindowPageCount}
             inlineContentMaxBytes={appConfig.conversationInlineContentMaxBytes}
             turnFileCardPreviewLimit={appConfig.turnFiles.cardPreviewLimit}
             turnAttachmentCardPreviewLimit={appConfig.turnFiles.attachmentCardPreviewLimit}

@@ -45,7 +45,8 @@ Claude ACP 默认通过 `npx -y @agentclientprotocol/claude-agent-acp@latest` �
 
 当前已落地的配置示例：
 - `acpSessionTitleRefreshEnabled`：控制 ACP 会话运行期间是否定时调用 `session/list` best-effort 刷新并持久化 session title 缓存；默认关闭。
-- `acpChatEventPageSize`：控制前端 ACP 会话历史分页的单次加载条数；默认 192。前端保留固定三页滑动窗口，默认最多常驻 576 个窗口项，并通过原生滚动与 DOM 锚点保持跨页连续性。
+- `acpChatEventPageSize`：控制前端 ACP 会话历史分页的单次加载条数，默认 96；`acpChatEventWindowPageCount` 控制内存与原生 DOM 中保留的页面数，默认 3。窗口上限只由两者相乘派生，默认最多常驻 288 个窗口项，并通过原生滚动与 DOM 锚点保持跨页连续性。
+- `acpChatResourceCacheSessionCount`：控制前端完整 ACP resource LRU 的会话数，默认 8。每个 resource key 原子持有 Session VM、有限事件窗口、正文 hydrate 标记与滚动/分页视图状态；淘汰只释放可重建 UI 投影，不改变后端 canonical timeline 或会话生命周期。
 - `requireLocalClaudeExecutable`：本地 Claude 诊断开关；默认关闭。开启后，当用户启用“使用本地 Claude”但 Gold Band 无法解析出 native Claude executable 时，adapter 启动直接失败，不再落到 `claude-agent-acp` / Claude Agent SDK 的内部 fallback，便于验证本地发现逻辑；临时排障也可用环境变量 `GOLD_BAND_REQUIRE_LOCAL_CLAUDE=1` 覆盖开启。
 
 ### Legacy 历史数据

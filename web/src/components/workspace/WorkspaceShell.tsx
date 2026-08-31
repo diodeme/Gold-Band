@@ -766,7 +766,13 @@ function WorkspaceShellLayout({
             !showRightDock && 'pointer-events-none overflow-hidden',
           )}
         >
-          {showRightDock ? <RightWorkspaceDock sourceControlWorkspacePath={sourceControlWorkspacePath} /> : null}
+          {showRightDock ? (
+            <RightWorkspaceDock
+              sourceControlWorkspacePath={sourceControlWorkspacePath}
+              acpChatEventPageSize={appConfig.acpChatEventPageSize}
+              acpChatEventWindowPageCount={appConfig.acpChatEventWindowPageCount}
+            />
+          ) : null}
         </ResizablePanel>
       </ResizablePanelGroup>
       <Sheet
@@ -789,7 +795,11 @@ function WorkspaceShellLayout({
           <SheetTitle className="sr-only">{t('workspace.rightWorkspace')}</SheetTitle>
           {rightWorkspaceCompact ? (
             <div className="flex min-h-0 flex-1 flex-col" data-right-workspace-presentation="sheet">
-              <RightWorkspaceDock sourceControlWorkspacePath={sourceControlWorkspacePath} />
+              <RightWorkspaceDock
+                sourceControlWorkspacePath={sourceControlWorkspacePath}
+                acpChatEventPageSize={appConfig.acpChatEventPageSize}
+                acpChatEventWindowPageCount={appConfig.acpChatEventWindowPageCount}
+              />
             </div>
           ) : null}
         </SheetContent>

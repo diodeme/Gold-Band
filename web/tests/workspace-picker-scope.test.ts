@@ -57,6 +57,8 @@ const bootstrap = (needsWorkspace: boolean): AppBootstrapVm => ({
   appConfig: {
     acpSessionTitleRefreshEnabled: false,
     acpChatEventPageSize: 360,
+    acpChatEventWindowPageCount: 3,
+    acpChatResourceCacheSessionCount: 8,
     turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 1 },
     workspaceLayout: {
       shellMinWidth: 480,

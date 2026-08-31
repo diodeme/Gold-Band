@@ -6,6 +6,7 @@ import {
   applyAcpScrollAnchorCompensation,
   captureAcpBranchScrollState,
   captureAcpBranchViewState,
+  configureAcpResourceCacheSessionCount,
   hasHydratedAcpSessionContent,
   markAcpSessionContentHydrated,
   resetAcpResourceCache,
@@ -17,6 +18,7 @@ import {
   storeAcpLoadedEventWindow,
   storeAcpSession,
 } from '@/components/acp/ACPChatDialog';
+import { DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT } from '@/lib/acp-chat-resource-cache';
 import type { AcpSessionVm, AcpUiEventVm } from '@/types';
 
 const state = (scrollTop: number) => ({
@@ -73,7 +75,10 @@ const event = (id: string): AcpUiEventVm => ({
   content: id,
 });
 
-beforeEach(() => resetAcpResourceCache());
+beforeEach(() => {
+  configureAcpResourceCacheSessionCount(DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT);
+  resetAcpResourceCache();
+});
 
 describe('ACP branch view state cache', () => {
   it('starts a remounted viewport from the cached follow intent', () => {
@@ -90,19 +95,33 @@ describe('ACP branch view state cache', () => {
   });
 
   it('evicts the least recently used branch state from the finite cache', () => {
-    for (let index = 0; index < 13; index += 1) {
+    for (let index = 0; index <= DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT; index += 1) {
       storeAcpBranchViewState(`lru-branch-${index}`, state(index));
     }
     expect(restoreAcpBranchViewState('lru-branch-0')).toBeNull();
-    expect(restoreAcpBranchViewState('lru-branch-12')).toEqual(state(12));
+    expect(restoreAcpBranchViewState(`lru-branch-${DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT}`))
+      .toEqual(state(DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT));
   });
 
   it('restores a finite Agent session VM cache independently from mounted Tab DOM', () => {
-    for (let index = 0; index < 13; index += 1) {
+    for (let index = 0; index <= DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT; index += 1) {
       storeAcpSession(`session-lru-${index}`, session(`agent-${index}`));
     }
     expect(restoreAcpSession('session-lru-0')).toBeNull();
-    expect(restoreAcpSession('session-lru-12')?.branchId).toBe('agent-12');
+    expect(restoreAcpSession(`session-lru-${DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT}`)?.branchId)
+      .toBe(`agent-${DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT}`);
+  });
+
+  it('applies the configured ACP resource session count instead of a hardcoded limit', () => {
+    expect(configureAcpResourceCacheSessionCount(3)).toBe(3);
+    for (let index = 0; index < 5; index += 1) {
+      storeAcpSession(`configured-lru-${index}`, session(`agent-${index}`));
+    }
+
+    expect(restoreAcpSession('configured-lru-0')).toBeNull();
+    expect(restoreAcpSession('configured-lru-1')).toBeNull();
+    expect(restoreAcpSession('configured-lru-2')?.branchId).toBe('agent-2');
+    expect(restoreAcpSession('configured-lru-4')?.branchId).toBe('agent-4');
   });
 
   it('distinguishes a hydrated content response from a cached session projection', () => {
@@ -124,7 +143,7 @@ describe('ACP branch view state cache', () => {
       events: [event('event-oldest')],
     }, 100);
     storeAcpBranchViewState('combined-oldest', state(100));
-    for (let index = 0; index < 12; index += 1) {
+    for (let index = 0; index < DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT; index += 1) {
       storeAcpSession(`combined-${index}`, session(`agent-${index}`));
     }
 

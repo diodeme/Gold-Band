@@ -620,7 +620,7 @@ ACP live event(branchId)
 - 更新 Agent B 时，Agent A 和根历史项保持对象引用。
 - 非激活 Tab 不挂载 ConversationViewport DOM。
 - 非激活 Agent streaming 不持续驱动完整 Tab React render。
-- 切换 Tab 能从最多 12 个 branch key 的有限 LRU 同步恢复完整 Session VM、滚动位置、分页窗口和贴底状态；后台刷新期间不得重新展示加载壳。
+- 切换 Tab 能从 `acpChatResourceCacheSessionCount` 控制的有限 LRU（默认最多 8 个 branch key）同步恢复完整 Session VM、滚动位置、分页窗口、正文 hydrate 标记和贴底状态；后台刷新期间不得重新展示加载壳。
 - canonical 非根分支一旦带有 `branchExecution` 即结束首次加载；不能因缺少根会话 metadata 或状态为 `interrupted` 进入 `missingAcpSessionRetryDelay` 退避链。
 - ACP session 查询支持可选 `traceId`，前端 effect/request 与 Rust command/view-model 各阶段使用同一 ID 记录耗时。调试开关为 `goldBand.debug.acpTiming=1`；关闭时不传 trace、不输出逐请求日志。
 - 工具大输出在活动和工具折叠时不解析。

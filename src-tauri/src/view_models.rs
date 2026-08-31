@@ -89,6 +89,8 @@ pub struct AppBootstrapVm {
 pub struct AppConfigVm {
     pub acp_session_title_refresh_enabled: bool,
     pub acp_chat_event_page_size: usize,
+    pub acp_chat_event_window_page_count: usize,
+    pub acp_chat_resource_cache_session_count: usize,
     pub conversation_inline_content_max_bytes: u64,
     pub conversation_inline_image_max_bytes: u64,
     pub conversation_inline_image_max_dimension: u32,
@@ -1249,6 +1251,8 @@ fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
     AppConfigVm {
         acp_session_title_refresh_enabled: config.acp_session_title_refresh_enabled,
         acp_chat_event_page_size: config.acp_chat_event_page_size,
+        acp_chat_event_window_page_count: config.acp_chat_event_window_page_count,
+        acp_chat_resource_cache_session_count: config.acp_chat_resource_cache_session_count,
         conversation_inline_content_max_bytes: config.conversation_inline_content_max_bytes,
         conversation_inline_image_max_bytes: config.conversation_inline_image_max_bytes,
         conversation_inline_image_max_dimension: config.conversation_inline_image_max_dimension,
@@ -7880,6 +7884,9 @@ mod tests {
         let vm = app_config_vm(&RuntimeConfig::default());
         let value = serde_json::to_value(vm).unwrap();
 
+        assert_eq!(value["acpChatEventPageSize"], 96);
+        assert_eq!(value["acpChatEventWindowPageCount"], 3);
+        assert_eq!(value["acpChatResourceCacheSessionCount"], 8);
         assert_eq!(value["conversationInlineContentMaxBytes"], 20_000);
         assert_eq!(value["conversationInlineImageMaxBytes"], 4 * 1024 * 1024);
         assert_eq!(value["conversationInlineImageMaxDimension"], 2_560);

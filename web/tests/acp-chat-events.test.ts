@@ -12,6 +12,7 @@ import {
   latestLiveSessionTimingFromEvents,
   latestSessionTimingFromEvents,
   liveTimelineUpdatesFromEvents,
+  loadedEventBufferLimit,
   mergeAcpEvents,
   partitionAcpLiveTimingUpdates,
   pendingElicitationFromEvents,
@@ -26,8 +27,6 @@ import {
   stabilizeAcpSessionTimingPatchForDisplay,
   useSessionTimingSeconds,
   acpSessionLoadErrorReason,
-  ACP_LIVE_EVENT_BUFFER_MAX_IDENTITIES,
-  ACP_OPTIMISTIC_EVENTS_PER_SESSION_LIMIT,
   updateAcpOptimisticEvents,
   visibleAcpBannerError,
 } from '../src/components/acp/ACPChatDialog';
@@ -88,17 +87,11 @@ function session(partial: Partial<AcpSessionVm>): AcpSessionVm {
 }
 
 describe('ACP chat event handling', () => {
-  it('keeps transient live and optimistic projections at the default 576-item boundary', () => {
-    expect({
-      live: ACP_LIVE_EVENT_BUFFER_MAX_IDENTITIES,
-      optimistic: ACP_OPTIMISTIC_EVENTS_PER_SESSION_LIMIT,
-    }).toEqual({ live: 576, optimistic: 576 });
-  });
-
-  it('bounds the per-session optimistic projection instead of retaining an unbounded event queue', () => {
+  it('bounds the per-session optimistic projection by the configured event window', () => {
     const sessionKey = 'optimistic-bound-test';
+    const configuredWindowLimit = loadedEventBufferLimit(48, 2);
     const oversized = Array.from(
-      { length: ACP_OPTIMISTIC_EVENTS_PER_SESSION_LIMIT + 7 },
+      { length: configuredWindowLimit + 7 },
       (_, index) => event({
         id: `optimistic-${index}`,
         seq: index + 1,
@@ -108,11 +101,16 @@ describe('ACP chat event handling', () => {
       }),
     );
 
-    const retained = updateAcpOptimisticEvents(sessionKey, () => oversized);
+    const retained = updateAcpOptimisticEvents(
+      sessionKey,
+      () => oversized,
+      configuredWindowLimit,
+    );
 
-    expect(retained).toHaveLength(ACP_OPTIMISTIC_EVENTS_PER_SESSION_LIMIT);
+    expect(configuredWindowLimit).toBe(96);
+    expect(retained).toHaveLength(configuredWindowLimit);
     expect(retained[0]?.id).toBe('optimistic-7');
-    updateAcpOptimisticEvents(sessionKey, () => []);
+    updateAcpOptimisticEvents(sessionKey, () => [], configuredWindowLimit);
   });
 
   it('projects and settles permission through the shared pending interaction reducer', () => {

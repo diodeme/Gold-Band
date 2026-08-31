@@ -25,9 +25,13 @@ const MAX_REPLAY_EVENTS_PER_BRANCH = 64;
 const MAX_REPLAY_BYTES_PER_BRANCH = 512 * 1024;
 const MAX_REPLAY_EVENT_BYTES = 256 * 1024;
 const MAX_REPLAY_BYTES_GLOBAL = 4 * 1024 * 1024;
+const ROUTER_RETRY_BASE_MS = 250;
+const ROUTER_RETRY_MAX_MS = 5_000;
 let retainedReplayBytes = 0;
 let started = false;
 let starting: Promise<void> | null = null;
+let retryTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+let retryAttempt = 0;
 
 interface RetainedConversationEvent {
   event: AcpUiEventVm;
@@ -75,33 +79,98 @@ export const CONVERSATION_EVENT_REPLAY_LIMITS = {
   globalBytes: MAX_REPLAY_BYTES_GLOBAL,
 } as const;
 
-async function ensureStarted() {
-  if (started || starting) return starting;
-  starting = (async () => {
-    const subscribe = getRuntimeApi().subscribeAcpSessionUpdates;
-    if (!subscribe) {
-      started = true;
-      return;
-    }
-    await subscribe((event) => {
-      recordAcpStreamingDiagnostic(
-        'router-received',
-        () => summarizeAcpStreamingEvent(event),
-      );
-      applyConversationEventToBranchSnapshots(event);
-      const projectedEvent = conversationEventForListenerProjection(event);
-      notifyConversationEventListeners(
-        attemptListeners.get(attemptKey(event)) ?? [],
-        projectedEvent,
-        'attempt',
-      );
-      notifyConversationEventListeners(listeners, projectedEvent, 'global');
+function hasConversationEventRouterSubscribers() {
+  return listeners.size > 0
+    || attemptListeners.size > 0
+    || branchListeners.size > 0;
+}
+
+function clearConversationEventRouterRetry(resetAttempt = false) {
+  if (retryTimer !== null) {
+    globalThis.clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+  if (resetAttempt) retryAttempt = 0;
+}
+
+function stopConversationEventRouterRetryWhenIdle() {
+  if (hasConversationEventRouterSubscribers()) return;
+  clearConversationEventRouterRetry(true);
+}
+
+function recordConversationEventRouterSubscriptionError(
+  error: unknown,
+  retryDelayMs: number,
+) {
+  try {
+    console.error('[Gold Band] Conversation event router subscription failed', {
+      error,
+      retryAttempt,
+      retryDelayMs,
     });
-    started = true;
-  })().finally(() => {
-    starting = null;
+  } catch {
+    // Diagnostics must not interfere with subscription recovery.
+  }
+}
+
+function scheduleConversationEventRouterRetry(error: unknown) {
+  if (
+    started
+    || retryTimer !== null
+    || !hasConversationEventRouterSubscribers()
+  ) return;
+  const retryDelayMs = Math.min(
+    ROUTER_RETRY_BASE_MS * (2 ** Math.min(retryAttempt, 5)),
+    ROUTER_RETRY_MAX_MS,
+  );
+  retryAttempt += 1;
+  recordConversationEventRouterSubscriptionError(error, retryDelayMs);
+  retryTimer = globalThis.setTimeout(() => {
+    retryTimer = null;
+    requestConversationEventRouterStart();
+  }, retryDelayMs);
+}
+
+function startConversationEventRouterNativeSubscription() {
+  const subscribe = getRuntimeApi().subscribeAcpSessionUpdates;
+  if (!subscribe) return Promise.resolve();
+  return subscribe((event) => {
+    recordAcpStreamingDiagnostic(
+      'router-received',
+      () => summarizeAcpStreamingEvent(event),
+    );
+    applyConversationEventToBranchSnapshots(event);
+    const projectedEvent = conversationEventForListenerProjection(event);
+    notifyConversationEventListeners(
+      attemptListeners.get(attemptKey(event)) ?? [],
+      projectedEvent,
+      'attempt',
+    );
+    notifyConversationEventListeners(listeners, projectedEvent, 'global');
+  }).then(() => undefined);
+}
+
+function requestConversationEventRouterStart(startImmediately = false) {
+  if (started) return Promise.resolve();
+  if (starting) return starting;
+  if (retryTimer !== null) {
+    if (!startImmediately) return null;
+    clearConversationEventRouterRetry();
+  }
+  const attempt = startConversationEventRouterNativeSubscription();
+  starting = attempt;
+  void attempt.then(
+    () => {
+      started = true;
+      clearConversationEventRouterRetry(true);
+    },
+    (error) => {
+      scheduleConversationEventRouterRetry(error);
+    },
+  ).finally(() => {
+    if (starting === attempt) starting = null;
   });
-  return starting;
+  return attempt;
 }
 
 function conversationEventForListenerProjection(
@@ -156,7 +225,7 @@ function recordConversationEventListenerError(
 }
 
 export async function ensureConversationEventRouterStarted() {
-  await ensureStarted();
+  await requestConversationEventRouterStart(true);
 }
 
 export interface ConversationBranchLiveSnapshot {
@@ -791,10 +860,11 @@ export function useConversationBranchLiveSnapshot(locator: Parameters<typeof att
     const set = branchListeners.get(key) ?? new Set<() => void>();
     set.add(listener);
     branchListeners.set(key, set);
-    void ensureStarted();
+    void requestConversationEventRouterStart();
     return () => {
       set.delete(listener);
       if (set.size === 0) branchListeners.delete(key);
+      stopConversationEventRouterRetryWhenIdle();
     };
   }, [key]);
   const getSnapshot = useCallback(
@@ -810,8 +880,11 @@ export function useConversationBranchLiveSnapshot(locator: Parameters<typeof att
 
 export function subscribeConversationEvents(listener: Listener) {
   listeners.add(listener);
-  void ensureStarted();
-  return () => { listeners.delete(listener); };
+  void requestConversationEventRouterStart();
+  return () => {
+    listeners.delete(listener);
+    stopConversationEventRouterRetryWhenIdle();
+  };
 }
 
 export function subscribeConversationAttemptEvents(
@@ -822,10 +895,11 @@ export function subscribeConversationAttemptEvents(
   const keyedListeners = attemptListeners.get(key) ?? new Set<Listener>();
   keyedListeners.add(listener);
   attemptListeners.set(key, keyedListeners);
-  void ensureStarted();
+  void requestConversationEventRouterStart();
   return () => {
     keyedListeners.delete(listener);
     if (keyedListeners.size === 0) attemptListeners.delete(key);
+    stopConversationEventRouterRetryWhenIdle();
   };
 }
 

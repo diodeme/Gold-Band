@@ -60,6 +60,93 @@ afterEach(() => {
 });
 
 describe('conversation event router subscriptions', () => {
+  it('retries a failed native subscription for existing listeners without duplicating the stream', async () => {
+    vi.useFakeTimers();
+    vi.resetModules();
+    nativeState.listener = null;
+    const subscribeError = new Error('native listen unavailable');
+    const nativeUnlisten = vi.fn();
+    nativeSubscription
+      .mockRejectedValueOnce(subscribeError)
+      .mockImplementationOnce(async (listener: (event: unknown) => void) => {
+        nativeState.listener = listener;
+        return nativeUnlisten;
+      });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const router = await import('@/lib/conversation-event-router');
+    const listener = vi.fn();
+    const dispose = router.subscribeConversationAttemptEvents(baseLocator, listener);
+
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(nativeSubscription).toHaveBeenCalledTimes(1);
+
+      await vi.runOnlyPendingTimersAsync();
+      expect(nativeSubscription).toHaveBeenCalledTimes(2);
+
+      publish({
+        ...baseLocator,
+        branchId: 'root',
+        event: uiEvent('recovered-listener-event'),
+        timelineGeneration: 1,
+        timelineRevision: 1,
+      });
+      expect(listener).toHaveBeenCalledOnce();
+      expect(consoleError).toHaveBeenCalledWith(
+        '[Gold Band] Conversation event router subscription failed',
+        expect.objectContaining({ error: subscribeError }),
+      );
+
+      await vi.runOnlyPendingTimersAsync();
+      expect(nativeSubscription).toHaveBeenCalledTimes(2);
+      expect(nativeUnlisten).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+      router.resetConversationEventRouterSnapshots();
+      consoleError.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels a pending subscription retry when the last listener leaves', async () => {
+    vi.useFakeTimers();
+    vi.resetModules();
+    nativeState.listener = null;
+    const nativeUnlisten = vi.fn();
+    nativeSubscription
+      .mockRejectedValueOnce(new Error('native listen unavailable'))
+      .mockImplementationOnce(async (listener: (event: unknown) => void) => {
+        nativeState.listener = listener;
+        return nativeUnlisten;
+      });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const router = await import('@/lib/conversation-event-router');
+    const firstDispose = router.subscribeConversationEvents(vi.fn());
+    let secondDispose: (() => void) | null = null;
+
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(nativeSubscription).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(1);
+
+      firstDispose();
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.runOnlyPendingTimersAsync();
+      expect(nativeSubscription).toHaveBeenCalledTimes(1);
+
+      secondDispose = router.subscribeConversationEvents(vi.fn());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(nativeSubscription).toHaveBeenCalledTimes(2);
+      expect(nativeState.listener).not.toBeNull();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      secondDispose?.();
+      router.resetConversationEventRouterSnapshots();
+      consoleError.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('removes an invalid-generation event before keyed and global delivery while preserving controls', async () => {
     vi.resetModules();
     nativeState.listener = null;

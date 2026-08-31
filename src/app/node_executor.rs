@@ -468,7 +468,7 @@ fn build_predecessor_contexts(
         .collect()
 }
 
-fn build_new_round_trigger_context(
+pub(super) fn build_new_round_trigger_context(
     app: &App,
     task_id: &str,
     run_id: &str,

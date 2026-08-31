@@ -149,7 +149,7 @@ Gold Band 可能会在 user prompt 中提供 `<hidden data-gold-band-hidden="tru
 - 若节点没有声明 `output`，system prompt 必须明确说明无需产出 canonical artifact，也无需查找或推断 artifact/output 约束。
 - `extra_system_sections` 本期继续原样保留在 system prompt，不拆分、不迁移。
 - `skill_catalog` 不再注入 runtime prompt。
-- 前序链、前序分支原因、前序附件索引和 attempt 级目录属于每次 invocation 的运行事实，进入 user prompt hidden context。跨 `$new-round` 时，只有当前 round 的入口节点会额外看到入口之前的稳定前缀节点最新产物；本轮后续节点只看到当前 round 已执行节点，不继续传播上一轮上下文。触发 `$new-round` 的上一 round 节点不进入 predecessor chain，但其 output artifact、预览和 attachments 会作为 `new_round_trigger` 写入入口节点的“Latest predecessor transition reasons / 最新前序流转原因”，用于解释为什么进入当前 round。
+- 前序链、前序分支原因、前序附件索引和 attempt 级目录属于每次 invocation 的运行事实，进入 user prompt hidden context。跨 `$new-round` 时，只有当前 round 的入口节点会额外看到入口之前的稳定前缀节点最新产物；本轮后续节点只看到当前 round 已执行节点，不继续传播上一轮上下文。触发 `$new-round` 的上一 round 节点不进入 predecessor chain，但其 output artifact、预览和 attachments 会作为 `new_round_trigger` 写入入口节点的“Latest predecessor transition reasons / 最新前序流转原因”，用于解释为什么进入当前 round。若入口是 `ai-dynamic`，其专用 hidden context 会替代普通 predecessor hidden context，因此 runtime 必须把同一结构化 trigger 等价渲染到内部 bootstrap 的初始调用；后续动态节点不重复接收。
 - attempt 根目录是 runtime / ACP 状态区；角色、任务或用户要求输出报告、脚本、过程记录等自由文件且未给绝对路径时，默认落入 hidden context 中的 attachments 目录。
 
 ---
@@ -276,7 +276,7 @@ workflow resume 请求：
 - `predecessors[].output_artifact`
 - `predecessors[].branch_reason`
 - `predecessors[].attachments`
-- `new_round_trigger`：可选，仅 `$new-round` 打开的 round 的入口节点使用；结构与 `predecessors[]` 相同，但只渲染到前序流转原因，不渲染到前序链或前序附件列表。
+- `new_round_trigger`：可选，仅 `$new-round` 打开的 round 的入口节点使用；结构与 `predecessors[]` 相同，但只渲染到前序流转原因，不渲染到前序链或前序附件列表。入口为 `ai-dynamic` 时，该字段归属外层入口 attempt，并只投影给内部 bootstrap，不成为 dynamic graph 的内部 predecessor。
 
 跨 round predecessor 选择规则：
 

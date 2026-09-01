@@ -220,6 +220,7 @@ import {
   isSessionCompletedStatus,
   isSessionTerminalStatus,
   shouldKeepLocalRuntimeLifecycleOverride,
+  shouldTreatAcpRuntimeErrorAsFallback,
 } from "@/lib/acp-runtime-composer-state";
 import {
   hasAcpSessionMetadata,
@@ -321,6 +322,7 @@ export type AcpRuntimeComposerContext = {
   workflowError?: string | null;
   pauseMessage?: string | null;
   runtimeError?: string | null;
+  runtimeErrorFallback?: string | null;
   onRepair?: () => void;
   supersededSessionNavigation?: {
     href: string;
@@ -507,6 +509,7 @@ export const ACP_ACTIVITY_DETAIL_WINDOW_LIMIT =
   ACP_ACTIVITY_DETAIL_PAGE_SIZE * ACP_ACTIVITY_DETAIL_WINDOW_PAGE_COUNT;
 const HISTORY_LOAD_THRESHOLD_PX = 240;
 const NEWER_PAGE_LOAD_THRESHOLD_PX = 240;
+const RETURN_TO_LATEST_SHOW_DISTANCE_PX = 120;
 const LIVE_EVENT_FLUSH_MS = 125;
 const LIVE_EVENT_INTERACTION_QUIET_MS = 180;
 const LIVE_EVENT_MAX_DEFER_MS = 250;
@@ -1434,10 +1437,14 @@ export function ACPChatDialog(
   const paginationDirectionRef = useRef<"older" | "newer" | null>(null);
   const preservingScrollRef = useRef(false);
   const chatContainerContextRef = useRef<ChatContainerContext | null>(null);
-  const [viewportAtBottom, setViewportAtBottom] = useState(
-    restoredBranchViewState?.atBottom ?? true,
-  );
-  const viewportAtBottomRef = useRef(viewportAtBottom);
+  const viewportAtBottomRef = useRef(restoredBranchViewState?.atBottom ?? true);
+  const [showReturnToLatest, setShowReturnToLatest] = useState(false);
+  const showReturnToLatestRef = useRef(false);
+  const commitShowReturnToLatest = useCallback((next: boolean) => {
+    if (showReturnToLatestRef.current === next) return;
+    showReturnToLatestRef.current = next;
+    setShowReturnToLatest(next);
+  }, []);
   const pendingBranchViewRestoreRef = useRef<AcpBranchViewState | null>(restoredBranchViewState);
   const cancelRequestedRef = useRef(false);
   const awaitTerminalStopRef = useRef(false);
@@ -1885,7 +1892,7 @@ export function ACPChatDialog(
     pendingLiveEventsSinceRef.current = null;
     const restoredViewportAtBottom = storedBranchViewState?.atBottom ?? true;
     viewportAtBottomRef.current = restoredViewportAtBottom;
-    setViewportAtBottom(restoredViewportAtBottom);
+    commitShowReturnToLatest(false);
     pendingBranchViewRestoreRef.current = storedBranchViewState;
     cancelRequestedRef.current = false;
     awaitTerminalStopRef.current = false;
@@ -1897,7 +1904,7 @@ export function ACPChatDialog(
     pendingLatestLayoutCommitRef.current = null;
     setStreamingMarkdownItemKey(null);
     setCanvasMode("chat");
-  }, [commitHasNewerEvents, commitLoadedEventWindow, effectiveLoadedEventBufferLimit, eventWindowKey, sessionKey]);
+  }, [commitHasNewerEvents, commitLoadedEventWindow, commitShowReturnToLatest, effectiveLoadedEventBufferLimit, eventWindowKey, sessionKey]);
 
   useEffect(() => {
     if (branchId !== 'root' || !branchLiveSnapshot.acp) return;
@@ -2171,7 +2178,6 @@ export function ACPChatDialog(
     runtimeActive: initializationLifecycleActive,
     sending,
   });
-  const showReturnToLatest = !viewportAtBottom;
   const sessionSnapshotSettled = shouldSettleAcpComposerTransientState(
     localLifecycle,
     effective?.status,
@@ -2963,13 +2969,17 @@ export function ACPChatDialog(
 
   const handleAtBottomChange = useCallback((viewportAtBottom: boolean) => {
     viewportAtBottomRef.current = viewportAtBottom;
-    setViewportAtBottom((current) => (
-      current === viewportAtBottom ? current : viewportAtBottom
-    ));
     if (!viewportAtBottom && liveStreamingTargetRef.current) {
       settleLiveStreamingMarkdown();
     }
     const scroller = chatContainerContextRef.current?.scrollRef.current;
+    const distanceFromBottom = scroller
+      ? scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
+      : 0;
+    commitShowReturnToLatest(
+      !viewportAtBottom
+      && distanceFromBottom >= RETURN_TO_LATEST_SHOW_DISTANCE_PX,
+    );
     if (scroller) {
       storeAcpBranchViewState(
         eventWindowKey,
@@ -2984,7 +2994,7 @@ export function ACPChatDialog(
     onAtBottomChange?.(
       isAcpConversationAtBottom(viewportAtBottom, hasNewerEvents),
     );
-  }, [eventWindowKey, hasNewerEvents, onAtBottomChange, settleLiveStreamingMarkdown]);
+  }, [commitShowReturnToLatest, eventWindowKey, hasNewerEvents, onAtBottomChange, settleLiveStreamingMarkdown]);
 
   const requestCanonicalHeadHandoff = useCallback((
     requestedIntent: AcpCanonicalHeadHandoffIntent,
@@ -3238,7 +3248,13 @@ export function ACPChatDialog(
       scroller.scrollTop = pending.scrollTop;
     }
     chatContainerContextRef.current?.stopScroll();
-  }, [eventWindowKey, timeline]);
+    const distanceFromBottom = scroller.scrollHeight
+      - scroller.scrollTop
+      - scroller.clientHeight;
+    commitShowReturnToLatest(
+      distanceFromBottom >= RETURN_TO_LATEST_SHOW_DISTANCE_PX,
+    );
+  }, [commitShowReturnToLatest, eventWindowKey, timeline]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -4528,7 +4544,7 @@ export function ACPChatDialog(
     settleOptimisticPromptAdmissions(latestEvents);
     latestSessionRef.current = committedSession;
     viewportAtBottomRef.current = true;
-    setViewportAtBottom(true);
+    commitShowReturnToLatest(false);
     paginationAnchorRef.current = null;
     pendingLatestLayoutCommitRef.current = sessionIdentity;
     liveAnimationReadyRef.current = !hasRemainingReplay;
@@ -4554,7 +4570,7 @@ export function ACPChatDialog(
     commitHasNewerEvents(hasRemainingReplay);
     paginationCursorGenerationStaleRef.current = false;
     return true;
-  }, [attemptId, attemptWorkspaceLocator, branchId, commitHasNewerEvents, commitLoadedEventWindow, effectiveEventPageSize, effectiveLoadedEventBufferLimit, eventIdPrefix, eventWindowKey, nodeId, normalizeSessionUpdate, outerAttemptId, outerNodeId, ownsPaginationWindowRequest, projectId, requestCanonicalHeadHandoff, roundId, runId, sessionIdentity, settleLiveStreamingMarkdown, settleOptimisticPromptAdmissions, taskId, taskUuid]);
+  }, [attemptId, attemptWorkspaceLocator, branchId, commitHasNewerEvents, commitLoadedEventWindow, commitShowReturnToLatest, effectiveEventPageSize, effectiveLoadedEventBufferLimit, eventIdPrefix, eventWindowKey, nodeId, normalizeSessionUpdate, outerAttemptId, outerNodeId, ownsPaginationWindowRequest, projectId, requestCanonicalHeadHandoff, roundId, runId, sessionIdentity, settleLiveStreamingMarkdown, settleOptimisticPromptAdmissions, taskId, taskUuid]);
 
   const loadOlderEvents = async () => {
     const previousWindow = loadedEventWindowRef.current;
@@ -5540,6 +5556,10 @@ export function ACPChatDialog(
     if (scrollTop < HISTORY_LOAD_THRESHOLD_PX) void loadOlderEvents();
     const distanceFromBottom =
       scroller.scrollHeight - scrollTop - scroller.clientHeight;
+    commitShowReturnToLatest(
+      !viewportAtBottomRef.current
+      && distanceFromBottom >= RETURN_TO_LATEST_SHOW_DISTANCE_PX,
+    );
     if (distanceFromBottom < NEWER_PAGE_LOAD_THRESHOLD_PX && hasNewerEvents) {
       void loadNewerEvents();
     }
@@ -5577,7 +5597,7 @@ export function ACPChatDialog(
       <AcpErrorState
         reason={
           acpSessionLoadErrorReason(
-            runtimeComposerContext?.runtimeError,
+            runtimeComposerContext?.runtimeError ?? runtimeComposerContext?.runtimeErrorFallback,
             sessionLoadError,
             baseSession,
             t("acp.missingSessionReason"),
@@ -5605,7 +5625,10 @@ export function ACPChatDialog(
     return (
       <AcpErrorState
         reason={
-          runtimeComposerContext?.runtimeError ?? sessionLoadError ?? t("acp.missingSessionReason")
+          runtimeComposerContext?.runtimeError
+          ?? runtimeComposerContext?.runtimeErrorFallback
+          ?? sessionLoadError
+          ?? t("acp.missingSessionReason")
         }
         transparent={wallpaperSurface}
       />
@@ -5615,12 +5638,24 @@ export function ACPChatDialog(
   // A failed provider attempt can be followed by an automatic retry. Until
   // the runtime reaches its final terminal state, the retry progress is the
   // user-facing state; showing a terminal banner here is contradictory.
+  const localLifecycleUsesRuntimeErrorFallback = shouldTreatAcpRuntimeErrorAsFallback(
+    !(runtimeComposerContext?.isOrchestrated ?? true),
+    localLifecycle,
+  );
+  const bannerRuntimeError = localLifecycleUsesRuntimeErrorFallback
+    ? null
+    : runtimeComposerContext?.runtimeError;
+  const bannerRuntimeErrorFallback = localLifecycleUsesRuntimeErrorFallback
+    ? runtimeComposerContext?.runtimeError ?? runtimeComposerContext?.runtimeErrorFallback
+    : runtimeComposerContext?.runtimeErrorFallback;
   const visibleError = runtimeActive
     ? null
     : visibleAcpBannerError(
-      runtimeComposerContext?.runtimeError,
+      bannerRuntimeError,
       effective,
       effectiveEvents,
+      bannerRuntimeErrorFallback,
+      localLifecycle?.acp.latestTurnStatus,
     );
 
   return (
@@ -9770,8 +9805,13 @@ export function visibleAcpBannerError(
   runtimeError: string | null | undefined,
   session: AcpSessionVm,
   events: AcpUiEventVm[],
+  runtimeErrorFallback?: string | null,
+  latestTurnStatus?: ConversationAttemptLifecycleVm['acp']['latestTurnStatus'],
 ) {
-  return runtimeError ?? visibleSessionError(session, events);
+  if (runtimeError) return runtimeError;
+  if (latestTurnStatus === 'completed') return null;
+  if (session.diagnostics.lastError) return visibleSessionError(session, events);
+  return runtimeErrorFallback ?? null;
 }
 
 export function acpSessionLoadErrorReason(

@@ -80,6 +80,19 @@ export interface AcpRuntimeComposerState {
   message?: string | null;
 }
 
+export function shouldTreatAcpRuntimeErrorAsFallback(
+  isDirect: boolean,
+  lifecycle: ConversationAttemptLifecycleVm | null | undefined,
+) {
+  return Boolean(
+    isDirect
+    && lifecycle?.control.mode === 'non-runtime-controlled'
+    && lifecycle.runtime.pauseReason === 'runtime-abnormal'
+    && !lifecycle.runtimeDisplay.blockingError
+    && lifecycle.composer.submitTarget === 'acp-prompt'
+  );
+}
+
 export function deriveAcpRuntimeComposerState(
   input: AcpRuntimeComposerStateInput,
 ): AcpRuntimeComposerState {

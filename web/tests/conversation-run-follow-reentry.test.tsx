@@ -190,7 +190,7 @@ describe('ConversationRunPage follow mode reentry', () => {
     await act(async () => root.unmount());
   });
 
-  it('does not forward a superseded Direct runtime error after a follow-up turn starts', async () => {
+  it('does not forward a superseded Direct runtime error after a follow-up turn completes', async () => {
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
@@ -209,12 +209,13 @@ describe('ConversationRunPage follow mode reentry', () => {
       },
       control: { mode: 'non-runtime-controlled' },
       acp: {
-        revision: 5,
+        revision: 33,
         turnId: 'follow-up-turn',
         sessionAvailability: 'established',
-        liveTurnActivity: 'running',
-        latestTurnStatus: 'none',
+        liveTurnActivity: 'idle',
+        latestTurnStatus: 'completed',
         stopping: false,
+        stopReason: 'end_turn',
       },
       displayStatus: 'paused',
       runtimeDisplay: {
@@ -229,7 +230,7 @@ describe('ConversationRunPage follow mode reentry', () => {
         mode: 'normal',
         submitTarget: 'acp-prompt',
         processingKind: 'processing',
-        canStop: true,
+        canStop: false,
         lockInput: false,
       },
     };
@@ -257,30 +258,7 @@ describe('ConversationRunPage follow mode reentry', () => {
       runtimeErrorMessage: 'old provider failure',
       activeSessions: [],
       inputAttachments: [],
-      selectedSession: {
-        sessionId: 'session-direct',
-        provider: 'codex-acp',
-        status: 'running',
-        restored: true,
-        roundId: 'round-001',
-        nodeId: 'direct-agent',
-        attemptId: 'attempt-001',
-        events: [],
-        eventPage: {
-          loadedCount: 0,
-          total: 0,
-          hasOlder: false,
-          hasNewer: false,
-        },
-        pendingInteractions: [],
-        diagnostics: {
-          rawFrameCount: 10,
-          eventCount: 4,
-          errorCount: 1,
-          lastError: 'old provider failure',
-          lastErrorTimestamp: '10Z',
-        },
-      },
+      selectedSession: null,
       sessionTree: {
         selectedSessionKey: selectedKey,
         rounds: [{
@@ -327,43 +305,7 @@ describe('ConversationRunPage follow mode reentry', () => {
         runtimeComposerContext: expect.objectContaining({
           lifecycle,
           runtimeError: null,
-        }),
-      }),
-      undefined,
-    );
-
-    const runWithoutDiagnostic = {
-      ...run,
-      selectedSession: {
-        ...run.selectedSession,
-        diagnostics: {
-          ...run.selectedSession?.diagnostics,
-          lastError: null,
-          lastErrorTimestamp: null,
-        },
-      },
-    } as ConversationRunVm;
-    await act(async () => {
-      root.render(
-        <ConversationRunPage
-          run={runWithoutDiagnostic}
-          taskTitle="Direct run"
-          appConfig={{ turnFiles: { cardPreviewLimit: 10, attachmentCardPreviewLimit: 1 } } as AppConfigVm}
-          agentRegistry={null}
-          followMode="auto"
-          onRerun={vi.fn()}
-          onEditWorkflow={vi.fn()}
-          onSelectSession={vi.fn()}
-          onAutoFollowChange={vi.fn()}
-          initialSessionTreeExpansion={{}}
-          onSessionTreeExpansionChange={vi.fn()}
-        />,
-      );
-    });
-    expect(chatMocks.render).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        runtimeComposerContext: expect.objectContaining({
-          runtimeError: 'old provider failure',
+          runtimeErrorFallback: 'old provider failure',
         }),
       }),
       undefined,

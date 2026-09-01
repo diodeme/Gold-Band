@@ -72,6 +72,27 @@ function pausedLifecycle(): ConversationAttemptLifecycleVm {
   };
 }
 
+function runtimeAbnormalLifecycle(): ConversationAttemptLifecycleVm {
+  return {
+    ...pausedLifecycle(),
+    runtime: {
+      ...pausedLifecycle().runtime,
+      pauseReason: 'runtime-abnormal',
+    },
+    acp: {
+      ...pausedLifecycle().acp,
+      latestTurnStatus: 'failed',
+    },
+    displayStatus: 'runtime-abnormal',
+    runtimeDisplay: {
+      ...pausedLifecycle().runtimeDisplay,
+      code: 'runtime-abnormal',
+      tone: 'danger',
+      reasonCode: 'runtime-abnormal',
+    },
+  };
+}
+
 function runningLifecycle(): ConversationAttemptLifecycleVm {
   return {
     ...pausedLifecycle(),
@@ -166,6 +187,9 @@ function cancelledSession(id: string): AcpSessionVm {
 async function renderPausedDialog(options: {
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
   initialLifecycle?: ConversationAttemptLifecycleVm;
+  isOrchestrated?: boolean;
+  runtimeError?: string | null;
+  runtimeErrorFallback?: string | null;
   sessionStatus?: string;
   session?: Partial<AcpSessionVm>;
 } = {}) {
@@ -194,9 +218,11 @@ async function renderPausedDialog(options: {
           nodeId={session.nodeId}
           attemptId={session.attemptId}
           runtimeComposerContext={{
-            isOrchestrated: true,
+            isOrchestrated: options.isOrchestrated ?? true,
             lifecycle,
             workflowValid: true,
+            runtimeError: options.runtimeError,
+            runtimeErrorFallback: options.runtimeErrorFallback,
           }}
           showSystemPromptAction={false}
           showRawFramesAction={false}
@@ -647,6 +673,152 @@ describe('ACP runtime continue submission', () => {
 });
 
 describe('ACP Direct queue submission', () => {
+  it('invalidates a stale parent runtime error after the local Direct lifecycle recovers', async () => {
+    const recoveredLifecycle = {
+      ...runtimeAbnormalLifecycle(),
+      acp: {
+        ...runtimeAbnormalLifecycle().acp,
+        latestTurnStatus: 'completed' as const,
+      },
+    };
+    const result = await renderPausedDialog({
+      initialLifecycle: runtimeAbnormalLifecycle(),
+      isOrchestrated: false,
+      runtimeError: 'end_turn: old provider failure',
+      session: {
+        diagnostics: {
+          rawFrameCount: 8,
+          eventCount: 1,
+          errorCount: 1,
+          lastError: 'ACP prompt failed: old provider failure',
+          lastErrorTimestamp: '10Z',
+        },
+      },
+    });
+    try {
+      expect(result.container.textContent).toContain('old provider failure');
+      await result.render(recoveredLifecycle, {
+        ...result.session,
+        status: 'completed',
+        events: [{
+          id: 'recovered-response',
+          seq: 2,
+          timestamp: '11Z',
+          kind: 'textDelta',
+          sessionId: result.session.sessionId,
+          content: 'recovered',
+          status: 'completed',
+          startedSeq: 2,
+          endedSeq: 2,
+        }],
+        eventPage: {
+          loadedCount: 1,
+          total: 1,
+          oldestSeq: 2,
+          newestSeq: 2,
+          hasOlder: false,
+          hasNewer: false,
+          oldestCursor: '2',
+          newestCursor: '2',
+        },
+      });
+      expect(result.container.textContent).not.toContain('old provider failure');
+    } finally {
+      await unmount(result.root);
+    }
+  });
+
+  it('uses a stale run error only as fallback for ACP diagnostics', async () => {
+    const result = await renderPausedDialog({
+      runtimeErrorFallback: 'old provider failure',
+    });
+    try {
+      expect(result.container.textContent).toContain('old provider failure');
+      await result.render(pausedLifecycle(), {
+        ...result.session,
+        status: 'completed',
+        events: [{
+          id: 'recovered-thought',
+          seq: 2,
+          timestamp: '11Z',
+          kind: 'thoughtDelta',
+          sessionId: result.session.sessionId,
+          content: 'recovered',
+          status: 'completed',
+          startedSeq: 2,
+          endedSeq: 2,
+        }],
+        eventPage: {
+          loadedCount: 1,
+          total: 1,
+          oldestSeq: 2,
+          newestSeq: 2,
+          hasOlder: false,
+          hasNewer: false,
+          oldestCursor: '2',
+          newestCursor: '2',
+        },
+        diagnostics: {
+          rawFrameCount: 8,
+          eventCount: 2,
+          errorCount: 1,
+          lastError: 'old provider failure',
+          lastErrorTimestamp: '10Z',
+        },
+      });
+      expect(result.container.textContent).not.toContain('old provider failure');
+    } finally {
+      await unmount(result.root);
+    }
+  });
+
+  it('hides a stale run fallback after a diagnostic-free follow-up completes', async () => {
+    const recoveredLifecycle = {
+      ...runtimeAbnormalLifecycle(),
+      acp: {
+        ...runtimeAbnormalLifecycle().acp,
+        latestTurnStatus: 'completed' as const,
+        stopReason: 'end_turn',
+      },
+    };
+    const result = await renderPausedDialog({
+      initialLifecycle: runtimeAbnormalLifecycle(),
+      isOrchestrated: false,
+      runtimeErrorFallback: 'end_turn: old provider failure',
+    });
+    try {
+      expect(result.container.textContent).toContain('old provider failure');
+      await result.render(recoveredLifecycle, {
+        ...result.session,
+        status: 'completed',
+        events: [{
+          id: 'diagnostic-free-recovered-response',
+          seq: 2,
+          timestamp: '11Z',
+          kind: 'textDelta',
+          sessionId: result.session.sessionId,
+          content: 'recovered',
+          status: 'completed',
+          startedSeq: 2,
+          endedSeq: 2,
+        }],
+        eventPage: {
+          loadedCount: 1,
+          total: 1,
+          oldestSeq: 2,
+          newestSeq: 2,
+          hasOlder: false,
+          hasNewer: false,
+          oldestCursor: '2',
+          newestCursor: '2',
+        },
+      });
+      expect(result.container.textContent).not.toContain('old provider failure');
+    } finally {
+      await unmount(result.root);
+    }
+  });
+
   it('continues on the same page after startup is stopped before a provider session exists', async () => {
     apiMocks.submitConversationPrompt.mockResolvedValue({
       kind: 'acp-session-started',

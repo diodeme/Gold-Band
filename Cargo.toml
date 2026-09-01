@@ -18,6 +18,7 @@ iana-time-zone = "0.1"
 cron = "0.17"
 command-group = "5.0.1"
 dirs = "6"
+dunce = "1"
 clap = { version = "4", features = ["derive"] }
 indexmap = { version = "2", features = ["serde"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "ico"] }

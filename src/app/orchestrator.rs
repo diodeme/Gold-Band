@@ -51,7 +51,10 @@ use crate::dynamic_store::{
 };
 #[cfg(test)]
 use crate::git::{GitCommandOutput, GitCommandRunner};
-use crate::git::{GitRepositoryService, GitWorkspaceManager};
+use crate::git::{
+    GitCoordinationService, GitRepositoryService, GitSourceControlService, GitWorkspaceManager,
+    git_canonical_path_key, git_filesystem_paths_equal,
+};
 use crate::observability::{
     ExecutionContext, ProgressStage, append_run_event_best_effort, progress, run_event_data,
     write_progress_hint, write_run_progress_best_effort,
@@ -2874,11 +2877,6 @@ pub(crate) fn run_recover_completed_background(
         runtime_candidate.commit();
     }
 
-    let attempt_dir = app
-        .paths
-        .attempt_dir(task_id, run_id, round_id, node_id, attempt_id)
-        .to_string();
-    let completed_snapshot = completed_node_snapshot(&round, &node, Some(attempt_dir));
     let decision = decide_next_step(&validated, &run, &round, &node);
     let expected_execution_id = node.runtime_execution_id.clone();
     let Some(next) = apply_control_decision(
@@ -2903,8 +2901,6 @@ pub(crate) fn run_recover_completed_background(
         return Ok(run);
     };
 
-    run.last_executed_node = Some(completed_snapshot);
-    persist_runtime_state(app, task_id, &run, &round, &next.node)?;
     let initial_run = run.clone();
     let fallback_node = next.node.clone();
     let prompt_state = AcpInvocationPromptState::workflow_transition(
@@ -4292,6 +4288,17 @@ fn apply_control_decision(
         {
             return Ok(None);
         }
+    }
+    if node.status == RunStatus::Completed {
+        run.last_executed_node = Some(completed_node_snapshot(
+            round,
+            node,
+            Some(
+                app.paths
+                    .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id)
+                    .to_string(),
+            ),
+        ));
     }
     match decision {
         ControlDecision::TransitionToNode { node_id, session } => {
@@ -12655,19 +12662,7 @@ fn dynamic_proposal_repair_prompt(
     node: &DynamicNodeState,
     errors: &[DynamicProposalValidationError],
 ) -> String {
-    render_template(
-        prompt_by_language(
-            ctx.app.config.desktop_language,
-            AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN,
-            AI_DYNAMIC_PROPOSAL_REPAIR_EN,
-        ),
-        serde_json::json!({
-            "validation_errors": dynamic_validation_repair_lines(ctx, graph, errors),
-            "repair_reference": dynamic_repair_reference_summary(ctx, graph),
-            "remaining_budget": dynamic_remaining_budget_summary(graph, node),
-        }),
-    )
-    .expect("prompt template renders")
+    dynamic_structured_repair_prompt(ctx, graph, node, errors)
 }
 
 fn dynamic_text_repair_prompt(
@@ -12686,6 +12681,7 @@ fn dynamic_structured_repair_prompt(
     node: &DynamicNodeState,
     errors: &[DynamicProposalValidationError],
 ) -> String {
+    let has_coordination_snapshot = dynamic_node_reads_coordination_snapshot(node, true);
     render_template(
         prompt_by_language(
             ctx.app.config.desktop_language,
@@ -12696,6 +12692,14 @@ fn dynamic_structured_repair_prompt(
             "validation_errors": dynamic_validation_repair_lines(ctx, graph, errors),
             "repair_reference": dynamic_repair_reference_summary(ctx, graph),
             "remaining_budget": dynamic_remaining_budget_summary(graph, node),
+            "has_coordination_snapshot": has_coordination_snapshot,
+            "coordination_snapshot_path": ctx.app.paths.dynamic_coordination_snapshot_file(
+                ctx.task_id,
+                ctx.run_id,
+                ctx.round_id,
+                ctx.outer_node_id,
+                ctx.outer_attempt_id,
+            ),
         }),
     )
     .expect("prompt template renders")
@@ -13510,6 +13514,17 @@ fn dynamic_new_round_trigger_for_invocation<'a>(
     }
 }
 
+fn dynamic_node_reads_coordination_snapshot(
+    node: &DynamicNodeState,
+    has_output_contract: bool,
+) -> bool {
+    match node.kind {
+        DynamicNodeKind::Worker => !dynamic_node_is_bootstrap_dispatch(node),
+        DynamicNodeKind::Acceptance => has_output_contract,
+        DynamicNodeKind::WorkflowInvocation | DynamicNodeKind::Merge => false,
+    }
+}
+
 fn dynamic_hidden_sections(
     ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
@@ -13531,11 +13546,8 @@ fn dynamic_hidden_sections(
     let runtime_context = dynamic_runtime_context(ctx, &node.id, attempt_id);
     let projection = dynamic_context_projection(ctx, graph, node);
     let new_round_trigger = dynamic_new_round_trigger_for_invocation(ctx, node, session_mode);
-    let has_coordination_snapshot = match node.kind {
-        DynamicNodeKind::Worker => !dynamic_node_is_bootstrap_dispatch(node),
-        DynamicNodeKind::Acceptance => has_output_contract,
-        DynamicNodeKind::WorkflowInvocation | DynamicNodeKind::Merge => false,
-    };
+    let has_coordination_snapshot =
+        dynamic_node_reads_coordination_snapshot(node, has_output_contract);
     let coordination_snapshot_path = ctx.app.paths.dynamic_coordination_snapshot_file(
         ctx.task_id,
         ctx.run_id,
@@ -13727,6 +13739,159 @@ fn dynamic_worktree_dir(ctx: &DynamicExecutionContext<'_>, workspace_id: &str) -
     dynamic_worktree_base_dir(ctx).join(dynamic_worktree_short_id(ctx, workspace_id))
 }
 
+#[derive(Debug, Clone)]
+struct DynamicWorktreeNamespace {
+    task: Utf8PathBuf,
+    run: Utf8PathBuf,
+    leaf: Utf8PathBuf,
+}
+
+fn remove_empty_dynamic_worktree_directory_best_effort(path: &Utf8Path, scope: &str) -> bool {
+    match std::fs::remove_dir(path.as_std_path()) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => false,
+        Err(error) => {
+            tracing::warn!(
+                workspace_path = path.as_str(),
+                cleanup_scope = scope,
+                %error,
+                "failed to remove an empty released dynamic worktree directory"
+            );
+            false
+        }
+    }
+}
+
+fn canonical_existing_dynamic_namespace_path(path: &Utf8Path) -> Result<Option<Utf8PathBuf>> {
+    match std::fs::symlink_metadata(path.as_std_path()) {
+        Ok(_) => {
+            let canonical = std::fs::canonicalize(path.as_std_path())
+                .with_context(|| format!("failed to canonicalize dynamic namespace `{path}`"))?;
+            Utf8PathBuf::from_path_buf(canonical)
+                .map(Some)
+                .map_err(|_| anyhow!("dynamic namespace path is not UTF-8: `{path}`"))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => {
+            Err(error).with_context(|| format!("failed to inspect dynamic namespace `{path}`"))
+        }
+    }
+}
+
+fn ensure_dynamic_namespace_path_matches_canonical_location(
+    path: &Utf8Path,
+    expected: &Utf8Path,
+) -> Result<()> {
+    if let Some(actual) = canonical_existing_dynamic_namespace_path(path)? {
+        ensure!(
+            git_canonical_path_key(&actual) == git_canonical_path_key(expected),
+            "dynamic namespace `{path}` resolves to `{actual}` instead of `{expected}`"
+        );
+    }
+    Ok(())
+}
+
+fn preflight_dynamic_worktree_namespace(
+    ctx: &DynamicExecutionContext<'_>,
+    workspace_id: &str,
+    workspace_path: &Utf8Path,
+) -> Result<DynamicWorktreeNamespace> {
+    let worktrees_root = ctx.app.paths.repo_gold_band_root.join("worktrees");
+    let task_ref = safe_dynamic_ref(ctx.task_id);
+    let run_ref = safe_dynamic_ref(ctx.run_id);
+    ensure!(
+        !task_ref.is_empty() && !run_ref.is_empty(),
+        "dynamic worktree namespace contains an empty task or run component"
+    );
+    let task_namespace = worktrees_root.join(task_ref);
+    let run_namespace = task_namespace.join(run_ref);
+    let leaf = dynamic_worktree_dir(ctx, workspace_id);
+    ensure!(
+        task_namespace.parent() == Some(worktrees_root.as_path())
+            && run_namespace.parent() == Some(task_namespace.as_path())
+            && leaf.parent() == Some(run_namespace.as_path()),
+        "dynamic worktree namespace does not have the required task/run/leaf shape"
+    );
+    ensure!(
+        git_filesystem_paths_equal(workspace_path, &leaf)?,
+        "persisted dynamic workspace path `{workspace_path}` is not the runtime leaf `{leaf}`"
+    );
+
+    let config_dir_name = ctx
+        .app
+        .paths
+        .repo_gold_band_root
+        .file_name()
+        .ok_or_else(|| anyhow!("repository Gold Band root has no directory name"))?;
+    let canonical_repo_root = canonical_existing_dynamic_namespace_path(&ctx.app.paths.repo_root)?
+        .ok_or_else(|| anyhow!("repository root does not exist"))?;
+    let canonical_gold_band_root = canonical_repo_root.join(config_dir_name);
+    let canonical_worktrees_root = canonical_gold_band_root.join("worktrees");
+    let canonical_task_namespace = canonical_worktrees_root.join(
+        task_namespace
+            .file_name()
+            .expect("validated task namespace has one component"),
+    );
+    let canonical_run_namespace = canonical_task_namespace.join(
+        run_namespace
+            .file_name()
+            .expect("validated run namespace has one component"),
+    );
+    let canonical_leaf = canonical_run_namespace.join(
+        leaf.file_name()
+            .expect("dynamic worktree leaf always has one component"),
+    );
+
+    for (path, expected) in [
+        (
+            ctx.app.paths.repo_gold_band_root.as_path(),
+            canonical_gold_band_root.as_path(),
+        ),
+        (worktrees_root.as_path(), canonical_worktrees_root.as_path()),
+        (task_namespace.as_path(), canonical_task_namespace.as_path()),
+        (run_namespace.as_path(), canonical_run_namespace.as_path()),
+        (leaf.as_path(), canonical_leaf.as_path()),
+    ] {
+        ensure_dynamic_namespace_path_matches_canonical_location(path, expected)?;
+    }
+
+    Ok(DynamicWorktreeNamespace {
+        task: task_namespace,
+        run: run_namespace,
+        leaf,
+    })
+}
+
+fn prune_released_dynamic_worktree_namespace_best_effort(
+    ctx: &DynamicExecutionContext<'_>,
+    workspace_id: &str,
+    workspace_path: &Utf8Path,
+) {
+    let namespace = match preflight_dynamic_worktree_namespace(ctx, workspace_id, workspace_path) {
+        Ok(namespace) => namespace,
+        Err(error) => {
+            tracing::warn!(
+                workspace_id,
+                workspace_path = workspace_path.as_str(),
+                %error,
+                "refused to prune a released dynamic worktree outside its canonical namespace"
+            );
+            return;
+        }
+    };
+
+    for (scope, path) in [
+        ("leaf", namespace.leaf.as_path()),
+        ("run", namespace.run.as_path()),
+        ("task", namespace.task.as_path()),
+    ] {
+        if !remove_empty_dynamic_worktree_directory_best_effort(path, scope) {
+            break;
+        }
+    }
+}
+
 #[cfg(test)]
 fn git_output(cwd: &Utf8Path, args: &[&str]) -> Result<GitCommandOutput> {
     GitCommandRunner::default().run(cwd, args)
@@ -13874,24 +14039,101 @@ fn release_dynamic_workspace_best_effort(
         return false;
     };
     if workspace.ownership != WorkspaceOwnership::Runtime
-        || workspace.status == WorkspaceStatus::Released
+        || workspace.kind != WorkspaceKind::Worktree
     {
         return false;
     }
-    let Some(branch) = workspace.branch.as_deref() else {
-        return false;
-    };
+    let expected_path = dynamic_worktree_dir(ctx, workspace_id);
     let Ok(_guard) = DYNAMIC_WORKTREE_GIT_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
     else {
         return false;
     };
+    let expected_repo_root = &ctx.app.paths.repo_root;
+    let expected_branch = dynamic_worktree_branch_name(ctx, workspace_id);
+    if workspace.branch.as_deref() != Some(expected_branch.as_str()) {
+        tracing::warn!(
+            workspace_id,
+            persisted_branch = workspace.branch.as_deref(),
+            expected_branch,
+            "refused to release a dynamic worktree with a non-canonical runtime branch"
+        );
+        return false;
+    }
+    match git_filesystem_paths_equal(&workspace.repo_root, expected_repo_root) {
+        Ok(true) => {}
+        Ok(false) => {
+            tracing::warn!(
+                workspace_id,
+                persisted_repo_root = workspace.repo_root.as_str(),
+                expected_repo_root = expected_repo_root.as_str(),
+                "refused to release a dynamic worktree from a different repository"
+            );
+            return false;
+        }
+        Err(error) => {
+            tracing::warn!(
+                workspace_id,
+                persisted_repo_root = workspace.repo_root.as_str(),
+                expected_repo_root = expected_repo_root.as_str(),
+                %error,
+                "failed to validate the dynamic worktree repository identity"
+            );
+            return false;
+        }
+    }
+    if workspace.status == WorkspaceStatus::Released {
+        let Ok(repository) =
+            GitSourceControlService::default().repository_identity(expected_repo_root)
+        else {
+            return false;
+        };
+        if let Err(error) = GitCoordinationService.with_runtime_write(
+            &repository.common_dir,
+            Some(&expected_path),
+            "dynamic-worktree-prune",
+            || {
+                preflight_dynamic_worktree_namespace(ctx, workspace_id, &workspace.path)?;
+                prune_released_dynamic_worktree_namespace_best_effort(
+                    ctx,
+                    workspace_id,
+                    &expected_path,
+                );
+                Ok(())
+            },
+        ) {
+            tracing::warn!(
+                workspace_id,
+                workspace_path = workspace.path.as_str(),
+                %error,
+                "failed to coordinate released dynamic worktree pruning"
+            );
+        }
+        return false;
+    }
     if GitWorkspaceManager::default()
-        .remove_worktree(&workspace.repo_root, &workspace.path, branch)
-        .is_ok()
-        && let Ok(state) = dynamic_workspace_mut(graph, workspace_id)
+        .remove_worktree_with_cleanup(
+            expected_repo_root,
+            &expected_path,
+            &expected_branch,
+            || {
+                preflight_dynamic_worktree_namespace(ctx, workspace_id, &workspace.path)?;
+                Ok(())
+            },
+            || {
+                prune_released_dynamic_worktree_namespace_best_effort(
+                    ctx,
+                    workspace_id,
+                    &expected_path,
+                );
+            },
+        )
+        .is_err()
     {
+        return false;
+    }
+    if let Ok(state) = dynamic_workspace_mut(graph, workspace_id) {
         state.status = WorkspaceStatus::Released;
         state.updated_at = now_rfc3339_like();
         dynamic_event_best_effort(
@@ -15192,15 +15434,6 @@ fn drive_from_node_with_initial_session(
         }
 
         // NodeCompleted already emitted above inside the if-completed block.
-        let completed_snapshot = completed_node_snapshot(
-            round,
-            &node,
-            Some(
-                app.paths
-                    .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id)
-                    .to_string(),
-            ),
-        );
         let decision = decide_next_step(workflow, run, round, &node);
 
         if let Some(next) = apply_control_decision(
@@ -15214,7 +15447,6 @@ fn drive_from_node_with_initial_session(
             decision,
             node.runtime_execution_id.as_deref(),
         )? {
-            run.last_executed_node = Some(completed_snapshot);
             node = next.node;
             let prompt_state = AcpInvocationPromptState::workflow_transition(
                 app.config.desktop_language,
@@ -15243,7 +15475,6 @@ fn drive_from_node_with_initial_session(
                 run.execution.recovery_candidate_token.as_deref(),
             );
         }
-        run.last_executed_node = Some(completed_snapshot);
         return Ok(());
     }
 }
@@ -15951,6 +16182,22 @@ mod tests {
         .unwrap();
         assert_eq!(recovered.status, RunStatus::Completed);
         assert_eq!(recovered.outcome, Some(RunOutcome::Success));
+        assert_eq!(
+            recovered
+                .last_executed_node
+                .as_ref()
+                .map(|snapshot| snapshot.node_id.as_str()),
+            Some(node_id)
+        );
+        let durable = app.run_status(task_id, run_id).unwrap();
+        assert_eq!(
+            durable
+                .last_executed_node
+                .as_ref()
+                .map(|snapshot| snapshot.node_id.as_str()),
+            Some(node_id),
+            "terminal run.json must persist the actual final node"
+        );
         assert!(
             run_recover_completed_background(
                 &app, task_id, run_id, round_id, node_id, attempt_id, 1,
@@ -16048,6 +16295,29 @@ mod tests {
             "git {:?} failed: stdout={} stderr={}",
             args, output.stdout, output.stderr
         );
+    }
+
+    fn create_test_directory_link(target: &Utf8Path, link: &Utf8Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target.as_std_path(), link.as_std_path()).unwrap();
+
+        #[cfg(windows)]
+        {
+            if std::os::windows::fs::symlink_dir(target.as_std_path(), link.as_std_path()).is_ok() {
+                return;
+            }
+            let output = crate::process::background_command("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(link.as_std_path())
+                .arg(target.as_std_path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "failed to create test junction: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 
     fn init_repo() -> (tempfile::TempDir, Utf8PathBuf) {
@@ -17719,6 +17989,38 @@ mod tests {
         assert_ne!(invocations[0].0, invocations[1].0);
     }
 
+    #[test]
+    fn dynamic_post_turn_repair_refreshes_coordination_snapshot_but_bootstrap_does_not() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let worker = test_worktree_node("implementation");
+        let graph = test_dynamic_graph_at(repo_root, vec![worker.clone()]);
+        let snapshot_path = app.paths.dynamic_coordination_snapshot_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        );
+
+        let worker_prompt = dynamic_proposal_repair_prompt(&ctx, &graph, &worker, &[]);
+
+        assert!(worker_prompt.contains(snapshot_path.as_str()));
+        assert!(worker_prompt.contains("读取最新协调快照"));
+
+        let mut bootstrap = test_worktree_node(DYNAMIC_BOOTSTRAP_NODE_ID);
+        bootstrap.depth = 0;
+        let bootstrap_graph = test_dynamic_graph_at(
+            graph.workspaces[0].repo_root.clone(),
+            vec![bootstrap.clone()],
+        );
+        let bootstrap_prompt =
+            dynamic_proposal_repair_prompt(&ctx, &bootstrap_graph, &bootstrap, &[]);
+        assert!(!bootstrap_prompt.contains(snapshot_path.as_str()));
+    }
+
     fn write_dynamic_completion_artifact(app: &App, node_id: &str, content: String) {
         let artifacts_dir = app.paths.dynamic_node_artifacts_dir(
             "task-006",
@@ -18776,12 +19078,22 @@ mod tests {
             .as_ref()
             .and_then(|contract| contract.finalize_context.as_deref())
             .expect("acceptance finalizer needs dynamic routing context");
+        let coordination_snapshot_path = app.paths.dynamic_coordination_snapshot_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        );
+        assert!(finalize_context.contains("## Runtime 协调快照"));
+        assert!(finalize_context.contains(coordination_snapshot_path.as_str()));
         assert!(finalize_context.contains("## 会话复用"));
         assert!(finalize_context.contains("## 运行预算"));
         assert!(finalize_context.contains("## Agent 与 profile 选项"));
         let prompt = render_prompt_bundle(&invocation).unwrap();
 
         assert!(prompt.user_prompt.contains("## 当前 group"));
+        assert!(!prompt.user_prompt.contains("## Runtime 协调快照"));
         assert!(!prompt.user_prompt.contains("## 并行兄弟节点"));
         assert!(!prompt.user_prompt.contains("## 会话复用"));
         assert!(!prompt.user_prompt.contains("## 运行预算"));
@@ -19654,6 +19966,9 @@ mod tests {
         let workspace = dynamic_workspace(&graph, &child_workspace_id)
             .unwrap()
             .clone();
+        let run_namespace = dynamic_worktree_base_dir(&ctx);
+        let task_namespace = run_namespace.parent().unwrap().to_path_buf();
+        let worktrees_root = task_namespace.parent().unwrap().to_path_buf();
         git(
             &repo_root,
             &["worktree", "remove", "--force", workspace.path.as_str()],
@@ -19682,6 +19997,401 @@ mod tests {
                 .status,
             WorkspaceStatus::Released
         );
+        assert!(!workspace.path.exists());
+        assert!(!run_namespace.exists());
+        assert!(!task_namespace.exists());
+        assert!(worktrees_root.exists());
+    }
+
+    #[test]
+    fn active_dynamic_worktree_release_rejects_redirected_namespace_before_git_remove() {
+        let (temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let worktrees_root = app.paths.repo_gold_band_root.join("worktrees");
+        let task_namespace = worktrees_root.join(safe_dynamic_ref(ctx.task_id));
+        let outside_task = Utf8PathBuf::from_path_buf(temp.path().join("outside-task")).unwrap();
+        std::fs::create_dir_all(worktrees_root.as_std_path()).unwrap();
+        std::fs::create_dir_all(outside_task.as_std_path()).unwrap();
+        create_test_directory_link(&outside_task, &task_namespace);
+
+        let mut graph = test_dynamic_graph_at(repo_root, Vec::new());
+        let workspace_id = fork_dynamic_workspace(
+            &ctx,
+            &mut graph,
+            "workspace-main",
+            "redirected-group",
+            "redirected-child",
+        )
+        .unwrap();
+        let workspace = dynamic_workspace(&graph, &workspace_id).unwrap().clone();
+        let branch = workspace.branch.clone().unwrap();
+
+        assert!(!release_dynamic_workspace_best_effort(
+            &ctx,
+            &mut graph,
+            &workspace_id,
+        ));
+        assert_eq!(
+            dynamic_workspace(&graph, &workspace_id).unwrap().status,
+            WorkspaceStatus::Active
+        );
+        GitWorkspaceManager::default()
+            .validate_worktree(&workspace.path, &branch)
+            .unwrap();
+        assert!(outside_task.exists());
+    }
+
+    #[test]
+    fn active_dynamic_worktree_release_rejects_tampered_repository_before_branch_delete() {
+        let (_temp, repo_root) = init_repo();
+        let (_other_temp, other_repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph = test_dynamic_graph_at(repo_root, Vec::new());
+        let workspace_id = fork_dynamic_workspace(
+            &ctx,
+            &mut graph,
+            "workspace-main",
+            "tampered-repo-group",
+            "tampered-repo-child",
+        )
+        .unwrap();
+        let workspace = dynamic_workspace(&graph, &workspace_id).unwrap().clone();
+        let branch = workspace.branch.clone().unwrap();
+        git(&other_repo_root, &["branch", &branch]);
+        dynamic_workspace_mut(&mut graph, &workspace_id)
+            .unwrap()
+            .repo_root = other_repo_root.clone();
+
+        assert!(!release_dynamic_workspace_best_effort(
+            &ctx,
+            &mut graph,
+            &workspace_id,
+        ));
+        assert_eq!(
+            dynamic_workspace(&graph, &workspace_id).unwrap().status,
+            WorkspaceStatus::Active
+        );
+        GitWorkspaceManager::default()
+            .validate_worktree(&workspace.path, &branch)
+            .unwrap();
+        assert!(
+            git_output(
+                &other_repo_root,
+                &[
+                    "show-ref",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/heads/{branch}")
+                ],
+            )
+            .unwrap()
+            .success
+        );
+    }
+
+    #[test]
+    fn active_dynamic_worktree_release_rejects_tampered_runtime_branch() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph = test_dynamic_graph_at(repo_root.clone(), Vec::new());
+        let workspace_id = fork_dynamic_workspace(
+            &ctx,
+            &mut graph,
+            "workspace-main",
+            "tampered-branch-group",
+            "tampered-branch-child",
+        )
+        .unwrap();
+        let workspace = dynamic_workspace(&graph, &workspace_id).unwrap().clone();
+        let runtime_branch = workspace.branch.clone().unwrap();
+        let unrelated_branch = "preserve-unrelated-branch";
+        git(&repo_root, &["branch", unrelated_branch]);
+        dynamic_workspace_mut(&mut graph, &workspace_id)
+            .unwrap()
+            .branch = Some(unrelated_branch.to_string());
+
+        assert!(!release_dynamic_workspace_best_effort(
+            &ctx,
+            &mut graph,
+            &workspace_id,
+        ));
+        assert_eq!(
+            dynamic_workspace(&graph, &workspace_id).unwrap().status,
+            WorkspaceStatus::Active
+        );
+        GitWorkspaceManager::default()
+            .validate_worktree(&workspace.path, &runtime_branch)
+            .unwrap();
+        assert!(
+            git_output(
+                &repo_root,
+                &[
+                    "show-ref",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/heads/{unrelated_branch}")
+                ],
+            )
+            .unwrap()
+            .success
+        );
+    }
+
+    #[test]
+    fn released_dynamic_worktree_pruning_preserves_nonempty_and_outside_directories() {
+        let (temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let workspace_id = "workspace-dyn-safety";
+        let canonical_leaf = dynamic_worktree_dir(&ctx, workspace_id);
+        std::fs::create_dir_all(canonical_leaf.as_std_path()).unwrap();
+        let sentinel = canonical_leaf.join("preserve.txt");
+        std::fs::write(sentinel.as_std_path(), "preserve").unwrap();
+
+        prune_released_dynamic_worktree_namespace_best_effort(&ctx, workspace_id, &canonical_leaf);
+
+        assert!(sentinel.exists());
+
+        let outside = Utf8PathBuf::from_path_buf(temp.path().join("outside-empty")).unwrap();
+        std::fs::create_dir_all(outside.as_std_path()).unwrap();
+        prune_released_dynamic_worktree_namespace_best_effort(&ctx, workspace_id, &outside);
+        assert!(outside.exists());
+    }
+
+    #[test]
+    fn released_dynamic_worktree_pruning_keeps_shared_parents_until_last_leaf() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let first_workspace_id = "workspace-first";
+        let second_workspace_id = "workspace-second";
+        let first_leaf = dynamic_worktree_dir(&ctx, first_workspace_id);
+        let second_leaf = dynamic_worktree_dir(&ctx, second_workspace_id);
+        let run_namespace = dynamic_worktree_base_dir(&ctx);
+        let task_namespace = run_namespace.parent().unwrap().to_path_buf();
+        let worktrees_root = task_namespace.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(first_leaf.as_std_path()).unwrap();
+        std::fs::create_dir_all(second_leaf.as_std_path()).unwrap();
+
+        prune_released_dynamic_worktree_namespace_best_effort(
+            &ctx,
+            first_workspace_id,
+            &first_leaf,
+        );
+
+        assert!(!first_leaf.exists());
+        assert!(second_leaf.exists());
+        assert!(run_namespace.exists());
+        assert!(task_namespace.exists());
+        assert!(worktrees_root.exists());
+
+        prune_released_dynamic_worktree_namespace_best_effort(
+            &ctx,
+            second_workspace_id,
+            &second_leaf,
+        );
+
+        assert!(!second_leaf.exists());
+        assert!(!run_namespace.exists());
+        assert!(!task_namespace.exists());
+        assert!(worktrees_root.exists());
+    }
+
+    #[test]
+    fn already_released_dynamic_worktree_retries_empty_namespace_pruning() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph = test_dynamic_graph_at(repo_root.clone(), Vec::new());
+        let workspace_id = fork_dynamic_workspace(
+            &ctx,
+            &mut graph,
+            "workspace-main",
+            "closed-group",
+            "closed-child",
+        )
+        .unwrap();
+        let workspace = dynamic_workspace(&graph, &workspace_id).unwrap().clone();
+        git(
+            &repo_root,
+            &["worktree", "remove", "--force", workspace.path.as_str()],
+        );
+        std::fs::create_dir_all(workspace.path.as_std_path()).unwrap();
+        dynamic_workspace_mut(&mut graph, &workspace_id)
+            .unwrap()
+            .status = WorkspaceStatus::Released;
+
+        assert!(!release_dynamic_workspace_best_effort(
+            &ctx,
+            &mut graph,
+            &workspace_id,
+        ));
+        assert!(!workspace.path.exists());
+        assert!(!dynamic_worktree_base_dir(&ctx).exists());
+        assert!(!dynamic_worktree_base_dir(&ctx).parent().unwrap().exists());
+    }
+
+    #[test]
+    fn released_dynamic_worktree_pruning_waits_for_the_shared_repository_lock() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph = test_dynamic_graph_at(repo_root.clone(), Vec::new());
+        let workspace_id = fork_dynamic_workspace(
+            &ctx,
+            &mut graph,
+            "workspace-main",
+            "locked-group",
+            "locked-child",
+        )
+        .unwrap();
+        let workspace = dynamic_workspace(&graph, &workspace_id).unwrap().clone();
+        git(
+            &repo_root,
+            &["worktree", "remove", "--force", workspace.path.as_str()],
+        );
+        std::fs::create_dir_all(workspace.path.as_std_path()).unwrap();
+        dynamic_workspace_mut(&mut graph, &workspace_id)
+            .unwrap()
+            .status = WorkspaceStatus::Released;
+        let repository = crate::git::GitSourceControlService::default()
+            .repository_identity(&repo_root)
+            .unwrap();
+
+        std::thread::scope(|scope| {
+            let (locked_tx, locked_rx) = mpsc::channel();
+            let (unlock_tx, unlock_rx) = mpsc::channel();
+            let common_dir = repository.common_dir.clone();
+            let user_lock = scope.spawn(move || {
+                crate::git::GitCoordinationService
+                    .try_with_user_repository_write(
+                        &common_dir,
+                        "test-user-worktree-create",
+                        || {
+                            locked_tx.send(()).unwrap();
+                            unlock_rx.recv().unwrap();
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+            });
+            locked_rx.recv().unwrap();
+
+            let (started_tx, started_rx) = mpsc::channel();
+            let (done_tx, done_rx) = mpsc::channel();
+            let release = scope.spawn(move || {
+                started_tx.send(()).unwrap();
+                let released =
+                    release_dynamic_workspace_best_effort(&ctx, &mut graph, &workspace_id);
+                done_tx.send(()).unwrap();
+                released
+            });
+            started_rx.recv().unwrap();
+            let completed_while_user_lock_held =
+                done_rx.recv_timeout(Duration::from_millis(500)).is_ok();
+            let path_exists_while_user_lock_held = workspace.path.exists();
+            unlock_tx.send(()).unwrap();
+            let released = release.join().unwrap();
+            user_lock.join().unwrap();
+
+            assert!(!completed_while_user_lock_held);
+            assert!(path_exists_while_user_lock_held);
+            assert!(!released);
+        });
+    }
+
+    #[test]
+    fn already_released_dynamic_worktree_does_not_remove_reused_registered_workspace() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph = test_dynamic_graph_at(repo_root.clone(), Vec::new());
+        let workspace_id = fork_dynamic_workspace(
+            &ctx,
+            &mut graph,
+            "workspace-main",
+            "closed-group",
+            "closed-child",
+        )
+        .unwrap();
+        let workspace = dynamic_workspace(&graph, &workspace_id).unwrap().clone();
+        git(
+            &repo_root,
+            &["worktree", "remove", "--force", workspace.path.as_str()],
+        );
+        git(
+            &repo_root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "reused-runtime-worktree",
+                workspace.path.as_str(),
+                "HEAD",
+            ],
+        );
+        dynamic_workspace_mut(&mut graph, &workspace_id)
+            .unwrap()
+            .status = WorkspaceStatus::Released;
+
+        assert!(!release_dynamic_workspace_best_effort(
+            &ctx,
+            &mut graph,
+            &workspace_id,
+        ));
+        GitWorkspaceManager::default()
+            .validate_worktree(&workspace.path, "reused-runtime-worktree")
+            .unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dynamic_worktree_release_accepts_windows_case_equivalent_persisted_path() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph = test_dynamic_graph_at(repo_root, Vec::new());
+        let workspace_id = fork_dynamic_workspace(
+            &ctx,
+            &mut graph,
+            "workspace-main",
+            "closed-group",
+            "closed-child",
+        )
+        .unwrap();
+        let canonical_path = dynamic_worktree_dir(&ctx, &workspace_id);
+        let run_namespace = dynamic_worktree_base_dir(&ctx);
+        let task_namespace = run_namespace.parent().unwrap().to_path_buf();
+        let equivalent_path = Utf8PathBuf::from(canonical_path.as_str().to_ascii_uppercase());
+        assert_ne!(equivalent_path, canonical_path);
+        dynamic_workspace_mut(&mut graph, &workspace_id)
+            .unwrap()
+            .path = equivalent_path;
+
+        assert!(release_dynamic_workspace_best_effort(
+            &ctx,
+            &mut graph,
+            &workspace_id,
+        ));
+        assert_eq!(
+            dynamic_workspace(&graph, &workspace_id).unwrap().status,
+            WorkspaceStatus::Released
+        );
+        assert!(!canonical_path.exists());
+        assert!(!run_namespace.exists());
+        assert!(!task_namespace.exists());
     }
 
     #[test]

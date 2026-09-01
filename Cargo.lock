@@ -2068,6 +2068,7 @@ dependencies = [
  "cron",
  "crossterm",
  "dirs",
+ "dunce",
  "figlet-rs",
  "file-rotate",
  "iana-time-zone",

@@ -14,6 +14,8 @@ use uuid::Uuid;
 
 use crate::process::{ManagedProcessGroup, PROCESS_GROUP_TERMINATION_GRACE, background_command};
 
+use super::git_filesystem_path_identity;
+
 const HISTORY_PAGE_DEFAULT: usize = 300;
 const HISTORY_PAGE_MAX: usize = 1_000;
 const COMMIT_REVIEW_SELECTION_MAX: usize = 32;
@@ -282,10 +284,20 @@ fn lock_cell_snapshot(cell: &GitLockCell) -> GitLockSnapshot {
 }
 
 fn normalized_lock_path(path: &Utf8Path) -> Result<String> {
-    let mut value = canonical_utf8_path(path)?.as_str().replace('\\', "/");
-    #[cfg(windows)]
-    value.make_ascii_lowercase();
-    Ok(value)
+    Ok(git_filesystem_path_identity(path)?.to_string())
+}
+
+fn worktree_by_normalized_path(
+    worktrees: Vec<GitWorktree>,
+    requested_key: &str,
+) -> Result<Option<GitWorktree>> {
+    let mut matched = None;
+    for worktree in worktrees {
+        if normalized_lock_path(&worktree.path)? == requested_key && matched.is_none() {
+            matched = Some(worktree);
+        }
+    }
+    Ok(matched)
 }
 
 impl GitServiceError {
@@ -2964,13 +2976,7 @@ impl GitSourceControlService {
                 serde_json::json!({ "path": requested_path }),
             )
         })?;
-        let target = self
-            .worktrees(cwd)?
-            .into_iter()
-            .find(|worktree| {
-                normalized_lock_path(&worktree.path)
-                    .is_ok_and(|candidate| candidate == requested_key)
-            })
+        let target = worktree_by_normalized_path(self.worktrees(cwd)?, &requested_key)?
             .ok_or_else(|| {
                 GitServiceError::new(
                     "git.worktree-not-found",
@@ -5942,6 +5948,34 @@ mod tests {
         assert!(service.refs(&root).unwrap().iter().any(|git_ref| {
             git_ref.kind == GitRefKind::LocalBranch && git_ref.short_name == "worktree/removable"
         }));
+    }
+
+    #[test]
+    fn worktree_catalog_lookup_fails_closed_on_unresolvable_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let requested = root.join("requested-worktree");
+        let requested_key = normalized_lock_path(&requested).unwrap();
+        let worktree = |path: Utf8PathBuf| GitWorktree {
+            path,
+            head_oid: "test-head".to_string(),
+            branch: None,
+            main: false,
+            detached: false,
+            locked: false,
+            lock_reason: None,
+            prunable: false,
+            ownership: GitWorktreeOwnership::User,
+            runtime_status: None,
+        };
+
+        let invalid = root.join("missing").join("..").join("invalid");
+        for catalog in [
+            vec![worktree(invalid.clone()), worktree(requested.clone())],
+            vec![worktree(requested.clone()), worktree(invalid.clone())],
+        ] {
+            assert!(worktree_by_normalized_path(catalog, &requested_key).is_err());
+        }
     }
 
     #[test]

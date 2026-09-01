@@ -190,7 +190,7 @@
     {
       "id": "codebuddy-code",
       "name": "Codebuddy Code",
-      "version": "2.141.0",
+      "version": "2.143.0",
       "description": "Tencent Cloud's official intelligent coding tool",
       "website": "https://www.codebuddy.cn/cli/",
       "authors": [
@@ -199,7 +199,7 @@
       "license": "Proprietary",
       "distribution": {
         "npx": {
-          "package": "@tencent-ai/codebuddy-code@2.141.0",
+          "package": "@tencent-ai/codebuddy-code@2.143.0",
           "args": [
             "--acp"
           ]
@@ -514,7 +514,7 @@
     {
       "id": "dimcode",
       "name": "DimCode",
-      "version": "0.3.22",
+      "version": "0.3.25",
       "description": "A coding agent that puts leading models at your command.",
       "website": "https://dimcode.dev/docs/acp.html",
       "authors": [
@@ -523,7 +523,7 @@
       "license": "proprietary",
       "distribution": {
         "npx": {
-          "package": "dimcode@0.3.22",
+          "package": "dimcode@0.3.25",
           "args": [
             "acp"
           ]
@@ -534,7 +534,7 @@
     {
       "id": "dirac",
       "name": "Dirac",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "description": "Reduces API costs by more than 50%, produces better and faster work. Uses Hash anchored parallel edits, AST manipulation and a whole lot of neat optimizations. Fully Open Source.",
       "repository": "https://github.com/dirac-run/dirac",
       "website": "https://dirac.run",
@@ -545,7 +545,7 @@
       "icon": "https://cdn.agentclientprotocol.com/registry/v1/latest/dirac.svg",
       "distribution": {
         "npx": {
-          "package": "dirac-cli@0.5.1",
+          "package": "dirac-cli@0.5.2",
           "args": [
             "--acp"
           ]
@@ -555,7 +555,7 @@
     {
       "id": "factory-droid",
       "name": "Factory Droid",
-      "version": "0.208.1",
+      "version": "0.208.2",
       "description": "Factory Droid - AI coding agent powered by Factory AI",
       "website": "https://factory.ai/product/cli",
       "authors": [
@@ -564,7 +564,7 @@
       "license": "proprietary",
       "distribution": {
         "npx": {
-          "package": "droid@0.208.1",
+          "package": "droid@0.208.2",
           "args": [
             "exec",
             "--output-format",
@@ -647,7 +647,7 @@
     {
       "id": "glm-acp-agent",
       "name": "GLM Agent",
-      "version": "1.7.0",
+      "version": "1.8.0",
       "description": "ACP agent powered by Zhipu AI's GLM Coding Plan models (glm-5.1, glm-5-turbo, glm-4.7, glm-4.5-air). Supports streaming, tool calls, mid-session model switching, image input via Z.AI Coding Plan Vision MCP, and session load/fork/resume with on-disk persistence.",
       "repository": "https://github.com/stefandevo/glm-acp-agent",
       "authors": [
@@ -657,7 +657,7 @@
       "icon": "https://cdn.agentclientprotocol.com/registry/v1/latest/glm-acp-agent.svg",
       "distribution": {
         "npx": {
-          "package": "glm-acp-agent@1.7.0"
+          "package": "glm-acp-agent@1.8.0"
         }
       }
     },
@@ -721,7 +721,7 @@
     {
       "id": "grok-build",
       "name": "Grok Build",
-      "version": "1.0.13",
+      "version": "1.0.14",
       "description": "xAI's coding agent and CLI",
       "website": "https://x.ai/cli",
       "authors": [
@@ -730,7 +730,7 @@
       "license": "proprietary",
       "distribution": {
         "npx": {
-          "package": "@xai-official/grok@1.0.13",
+          "package": "@xai-official/grok@1.0.14",
           "args": [
             "agent",
             "stdio"
@@ -742,7 +742,7 @@
     {
       "id": "harn",
       "name": "Harn",
-      "version": "0.10.122",
+      "version": "0.10.124",
       "description": "Harn runs .harn agent pipelines as a native ACP coding agent over stdio.",
       "repository": "https://github.com/burin-labs/harn",
       "website": "https://harnlang.com",
@@ -753,49 +753,49 @@
       "distribution": {
         "binary": {
           "darwin-aarch64": {
-            "archive": "https://github.com/burin-labs/harn/releases/download/v0.10.122/harn-aarch64-apple-darwin.tar.gz",
+            "archive": "https://github.com/burin-labs/harn/releases/download/v0.10.124/harn-aarch64-apple-darwin.tar.gz",
             "cmd": "./harn",
             "args": [
               "serve",
               "acp"
             ],
-            "sha256": "c9a28253147f47fe517383204d6ab42c3fb09514dbc14b902310c657f18b2718"
+            "sha256": "611b9808768b52eb23fb48a1a28f5217a29b0c39c0b035dae8dc8db693c20fdb"
           },
           "darwin-x86_64": {
-            "archive": "https://github.com/burin-labs/harn/releases/download/v0.10.122/harn-x86_64-apple-darwin.tar.gz",
+            "archive": "https://github.com/burin-labs/harn/releases/download/v0.10.124/harn-x86_64-apple-darwin.tar.gz",
             "cmd": "./harn",
             "args": [
               "serve",
               "acp"
             ],
-            "sha256": "9fc983439668280c580929d588beecba1e83a40758e6bfaec69fa74cc93f66de"
+            "sha256": "f1432658f574ece6d8aa4c01299ba0a7c3b274f90666ee929c308a5d44ad7154"
           },
           "linux-aarch64": {
-            "archive": "https://github.com/burin-labs/harn/releases/download/v0.10.122/harn-aarch64-unknown-linux-gnu.tar.gz",
+            "archive": "https://github.com/burin-labs/harn/releases/download/v0.10.124/harn-aarch64-unknown-linux-gnu.tar.gz",
             "cmd": "./harn",
             "args": [
               "serve",
               "acp"
             ],
-            "sha256": "c80117baf1f943bfa1681a8685548cfd14e4e3006eb9459f050c40498ceb8aab"
+            "sha256": "c857c0966015d0cf7a9fbab2c2db38c04d9de535f158cb16db35567693fb54bb"
           },
           "linux-x86_64": {
-            "archive": "https://github.com/burin-labs/harn/releases/download/v0.10.122/harn-x86_64-unknown-linux-gnu.tar.gz",
+            "archive": "https://github.com/burin-labs/harn/releases/download/v0.10.124/harn-x86_64-unknown-linux-gnu.tar.gz",
             "cmd": "./harn",
             "args": [
               "serve",
               "acp"
             ],
-            "sha256": "2c372fb7bddcb5c910cde72354919d1985fdb6bc2b9f3e3aa5b796050c804e6f"
+            "sha256": "1250a1bba81d82448d396a67f05c00c420ad447a41277569fd9e0d548f9509e2"
           },
           "windows-x86_64": {
-            "archive": "https://github.com/burin-labs/harn/releases/download/v0.10.122/harn-x86_64-pc-windows-msvc.zip",
+            "archive": "https://github.com/burin-labs/harn/releases/download/v0.10.124/harn-x86_64-pc-windows-msvc.zip",
             "cmd": "harn.exe",
             "args": [
               "serve",
               "acp"
             ],
-            "sha256": "2314a6061a538034f4bcad2873f0f8a6c48b0af601d07b66ec37d79c9b171d53"
+            "sha256": "72b193e8a0a5ae5c00bbce571598e7c82e6a3383e0c8b45456c5f1943c76e41a"
           }
         }
       },

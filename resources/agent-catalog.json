@@ -3,7 +3,7 @@
   "source": {
     "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
     "registryVersion": "1.0.0",
-    "fetchedAt": "2026-08-30T03:17:06.024Z"
+    "fetchedAt": "2026-09-01T03:41:38.550Z"
   },
   "agents": [
     {
@@ -99,7 +99,7 @@
     {
       "id": "codebuddy-code",
       "label": "CodeBuddy",
-      "version": "2.141.0",
+      "version": "2.143.0",
       "description": "Tencent Cloud's official intelligent coding tool",
       "repository": null,
       "website": "https://www.codebuddy.cn/cli/",
@@ -108,7 +108,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@tencent-ai/codebuddy-code@2.141.0",
+        "@tencent-ai/codebuddy-code@2.143.0",
         "--acp"
       ],
       "env": {},

@@ -723,9 +723,7 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
         setJsonError(t('workflowEditor.outputSchemaInvalid'));
         return;
       }
-      workflowToSave = normalizeWorkflowEntryFromTopology(
-        normalizeWorkflowExecutionSlots(normalizeWorkflowSchemas(parsed), workflow),
-      );
+      workflowToSave = normalizeWorkflowJsonForAuthoring(parsed, workflow);
       setWorkflow(workflowToSave);
       setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(workflowToSave));
       queueExternalChange(workflowToSave);
@@ -939,8 +937,9 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
       setJsonError(t('workflowEditor.outputSchemaInvalid'));
       return;
     }
-    syncWorkflow(normalizeWorkflowSchemas(parsed));
-    setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(parsed));
+    const nextWorkflow = normalizeWorkflowJsonForAuthoring(parsed, workflowRef.current);
+    syncWorkflow(nextWorkflow);
+    setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(nextWorkflow));
     setTab('canvas');
   }, [jsonDraft, syncWorkflow, t, tab]);
 
@@ -1103,7 +1102,7 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
                 setJsonError(null);
                 const parsed = parseWorkflowJson(nextDraft);
                 if (!parsed) return;
-                const nextWorkflow = normalizeWorkflowSchemas(parsed);
+                const nextWorkflow = normalizeWorkflowJsonForAuthoring(parsed, workflowRef.current);
                 setWorkflow(nextWorkflow);
                 setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(nextWorkflow));
                 queueExternalChange(nextWorkflow);
@@ -2914,6 +2913,20 @@ export function normalizeWorkflowExecutionSlots(
       };
     }),
   };
+}
+
+export function normalizeWorkflowJsonForAuthoring(
+  nextWorkflow: WorkflowDsl,
+  previousWorkflow: WorkflowDsl,
+  createSlotId: () => string = () => crypto.randomUUID(),
+): WorkflowDsl {
+  return normalizeWorkflowEntryFromTopology(
+    normalizeWorkflowExecutionSlots(
+      normalizeWorkflowSchemas(nextWorkflow),
+      previousWorkflow,
+      createSlotId,
+    ),
+  );
 }
 
 function uniqueNodeId(workflow: WorkflowDsl, base: string) {

@@ -1772,6 +1772,16 @@ describe('ACP session re-entry reconciliation', () => {
         (call) => typeof call[6]?.afterSeq === 'number',
       )).toBe(true);
 
+      await act(async () => {
+        scroller!.scrollTop = 1_600;
+        scroller!.dispatchEvent(new WheelEvent('wheel', {
+          bubbles: true,
+          deltaY: -100,
+        }));
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 30));
+      });
+
       const anchorText = `当前窗口消息 ${currentWindowStart}`;
       const findAnchor = () => [...container.querySelectorAll<HTMLElement>('[data-acp-item-key]')]
         .find((element) => element.textContent?.includes(anchorText));
@@ -2073,7 +2083,7 @@ describe('ACP session re-entry reconciliation', () => {
     }
   });
 
-  it('keeps return-to-latest available while the viewport remains away from bottom', async () => {
+  it('shows return-to-latest only after the detached viewport crosses the distance threshold', async () => {
     const canonicalHead = session([
       event('canonical-head-message', 10, 'textDelta', '已经位于 canonical head'),
     ]);
@@ -2125,7 +2135,7 @@ describe('ACP session re-entry reconciliation', () => {
       Object.defineProperties(scroller!, {
         clientHeight: { configurable: true, value: 600 },
         scrollHeight: { configurable: true, value: 2_400 },
-        scrollTop: { configurable: true, value: 500, writable: true },
+        scrollTop: { configurable: true, value: 1_720, writable: true },
       });
 
       await act(async () => {
@@ -2137,6 +2147,13 @@ describe('ACP session re-entry reconciliation', () => {
         await new Promise((resolve) => window.setTimeout(resolve, 50));
       });
       expect(onAtBottomChange).toHaveBeenLastCalledWith(false);
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+
+      await act(async () => {
+        scroller!.scrollTop = 1_600;
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
       expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
 
       await act(async () => {
@@ -4180,6 +4197,13 @@ describe('ACP session re-entry reconciliation', () => {
       await act(async () => {
         scroller!.dispatchEvent(new Event('scroll'));
         await new Promise((resolve) => window.setTimeout(resolve, 30));
+      });
+      await act(async () => {
+        scroller!.scrollTop = 1_600;
+        scroller!.dispatchEvent(new WheelEvent('wheel', {
+          bubbles: true,
+          deltaY: -100,
+        }));
         scroller!.dispatchEvent(new Event('scroll'));
         await new Promise((resolve) => window.setTimeout(resolve, 30));
       });

@@ -22,6 +22,7 @@ import { conversationPageForSession } from '@/lib/conversation-navigation';
 import { findConversationLeafByKey } from '@/lib/conversation-run-snapshot';
 import { acpProviderConfigCatalog } from '@/lib/acp-session-config';
 import { acpRuntimeErrorBannerCopy } from '@/lib/acp-runtime-error';
+import { shouldTreatAcpRuntimeErrorAsFallback } from '@/lib/acp-runtime-composer-state';
 import {
   conversationRunCacheKey,
   type ConversationSessionTreeExpansion,
@@ -447,17 +448,16 @@ export function ConversationRunPage({
   );
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
   const runtimeControlErrorBase = localizedRuntimeErrorMessage ?? run.runtimeErrorMessage;
-  const selectedSessionOwnsNonBlockingDirectError = Boolean(
-    isDirect
-    && selectedLeaf?.lifecycle?.control.mode === 'non-runtime-controlled'
-    && selectedLeaf.lifecycle.runtime.pauseReason === 'runtime-abnormal'
-    && !selectedLeaf.lifecycle.runtimeDisplay.blockingError
-    && selectedLeaf.lifecycle.composer.submitTarget === 'acp-prompt'
-    && selectedSession?.diagnostics.lastError,
+  const selectedSessionUsesRuntimeErrorFallback = shouldTreatAcpRuntimeErrorAsFallback(
+    isDirect,
+    selectedLeaf?.lifecycle,
   );
   const selectedSessionRuntimeControlError = runtimeControlErrorBase && !(
     selectedLeaf?.lifecycle?.composer.mode === 'runtime-error' || selectedSessionDisplay?.code === 'error-blocked'
-  ) && !selectedSessionOwnsNonBlockingDirectError
+  ) && !selectedSessionUsesRuntimeErrorFallback
+    ? runtimeControlErrorBase
+    : null;
+  const selectedSessionRuntimeErrorFallback = selectedSessionUsesRuntimeErrorFallback
     ? runtimeControlErrorBase
     : null;
   const selectedSessionErrorDetails = run.runtimeErrorMessage ?? selectedSession?.diagnostics.lastError ?? null;
@@ -487,6 +487,7 @@ export function ConversationRunPage({
         workflowError: isDirect ? undefined : t('conversation.runtime.workflowInvalid'),
         pauseMessage: isDirect ? undefined : translatePauseReason(selectedSessionPauseReason),
         runtimeError: selectedRuntimeErrorMessage,
+        runtimeErrorFallback: selectedSessionRuntimeErrorFallback,
         onRepair: handleRepairWorkflow,
         supersededSessionNavigation: supersedingHref
           ? {

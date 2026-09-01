@@ -262,7 +262,26 @@ describe('ACP chat event handling', () => {
       timestamp: '11Z',
       kind: 'thoughtDelta',
       status: 'running',
-    })])).toBeNull();
+    })], 'old run failure')).toBeNull();
+  });
+
+  it('falls back to the run error when ACP has no diagnostic', () => {
+    expect(visibleAcpBannerError(
+      null,
+      session({}),
+      [],
+      'run failure without ACP diagnostic',
+    )).toBe('run failure without ACP diagnostic');
+  });
+
+  it('hides a stale run fallback when the canonical latest turn completed', () => {
+    expect(visibleAcpBannerError(
+      null,
+      session({}),
+      [],
+      'run failure superseded by a successful follow-up',
+      'completed',
+    )).toBeNull();
   });
 
   it('shows the latest ACP diagnostic when the follow-up turn also fails', () => {

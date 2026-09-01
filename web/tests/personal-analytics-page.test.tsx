@@ -68,6 +68,56 @@ afterEach(async () => {
 });
 
 describe('PersonalAnalyticsPage', () => {
+  it('does not surface historical failures or query the report while initial sync is active', async () => {
+    const historicalInsightFailure = {
+      ...insightOperation('failed', 3),
+      error: { code: 'execution-failed', params: {} },
+    };
+    api.getPersonalAnalytics.mockResolvedValueOnce({
+      ...snapshot('scanning', 3),
+      insightOperation: historicalInsightFailure,
+      latestReport: report(),
+    });
+
+    const container = await renderPage(registry(true));
+    await act(async () => { await Promise.resolve(); });
+
+    expect(api.queryPersonalAnalyticsReport).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('正在扫描全部历史');
+    expect(container.textContent).not.toContain('洞察生成失败');
+    expect(container.textContent).not.toContain('Agent 分析执行失败');
+    expect(document.activeElement).toBe(container.querySelector('main'));
+  });
+
+  it('enables insight generation after sync completes without changing the selected Agent', async () => {
+    let emit: ((next: PersonalAnalyticsSnapshotVm) => void) | undefined;
+    api.getPersonalAnalytics.mockResolvedValueOnce(snapshot('scanning', 3));
+    api.subscribePersonalAnalyticsUpdates.mockImplementation((listener: (next: PersonalAnalyticsSnapshotVm) => void) => {
+      emit = listener;
+      return Promise.resolve(() => {});
+    });
+    const container = await renderPage(registry(true));
+    const insightButton = container.querySelector('[data-personal-analytics-insight="true"]') as HTMLButtonElement;
+
+    expect(insightButton.disabled).toBe(true);
+    expect(api.queryPersonalAnalyticsReport).not.toHaveBeenCalled();
+
+    await act(async () => {
+      emit?.({ ...snapshot('completed', 4), latestReport: report() });
+      await Promise.resolve();
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(api.queryPersonalAnalyticsReport).toHaveBeenCalledWith(
+      { start: null, end: null },
+      'agent-a',
+      undefined,
+      undefined,
+      undefined,
+    );
+    expect(insightButton.disabled).toBe(false);
+  });
+
   it('restores and applies a remembered Agent, model, and thought level when the page is reopened', async () => {
     rememberPersonalAnalyticsSelection({
       agentType: 'agent-a',

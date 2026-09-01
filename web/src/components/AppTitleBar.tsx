@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { BarChart3, Copy, MessageSquareWarning, Minus, PanelLeft, PanelRight, Square, X } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useTranslation } from 'react-i18next';
@@ -45,6 +45,7 @@ export function AppTitleBar({
   const [helpMenuOpen, setHelpMenuOpen] = useState(false);
   const [helpTooltipOpen, setHelpTooltipOpen] = useState(false);
   const [helpTooltipSuppressed, setHelpTooltipSuppressed] = useState(false);
+  const helpNavigationPendingRef = useRef(false);
   const tauriRuntime = isTauriRuntime();
   const policy = resolveWindowControlsPolicy(platform);
 
@@ -178,10 +179,19 @@ export function AppTitleBar({
                 </TooltipTrigger>
                 <TooltipContent>{t('common.help')}</TooltipContent>
               </Tooltip>
-              <DropdownMenuContent align="end" className="min-w-40">
+              <DropdownMenuContent
+                align="end"
+                className="min-w-40"
+                onCloseAutoFocus={(event) => {
+                  if (!helpNavigationPendingRef.current) return;
+                  helpNavigationPendingRef.current = false;
+                  event.preventDefault();
+                }}
+              >
                 {onOpenPersonalAnalytics ? (
                   <DropdownMenuItem
                     onSelect={() => {
+                      helpNavigationPendingRef.current = true;
                       setHelpTooltipOpen(false);
                       setHelpTooltipSuppressed(true);
                       setHelpMenuOpen(false);
@@ -196,6 +206,7 @@ export function AppTitleBar({
                 {feedbackEnabled ? (
                 <DropdownMenuItem
                   onSelect={() => {
+                    helpNavigationPendingRef.current = true;
                     setHelpTooltipOpen(false);
                     setHelpTooltipSuppressed(true);
                     setHelpMenuOpen(false);

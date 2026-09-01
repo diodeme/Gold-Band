@@ -1698,6 +1698,7 @@ impl AcpProvider {
             finalize_req.resume_prompt = Some(render_artifact_finalize_prompt(
                 finalize_req.runtime_context.language,
                 &contract,
+                finalize_req.execution_surface,
             )?);
             finalize_req.user_prompt_render_mode = UserPromptRenderMode::RuntimeFinalize;
         }
@@ -2386,6 +2387,7 @@ struct RuntimeOutputContractTemplateContext {
     schema: String,
     success_condition: Option<String>,
     finalize_context: Option<String>,
+    can_read_runtime_snapshot: bool,
 }
 
 fn runtime_system_context(req: &WorkerInvocation) -> Result<RuntimePromptTemplateContext> {
@@ -2429,7 +2431,8 @@ fn runtime_system_context(req: &WorkerInvocation) -> Result<RuntimePromptTemplat
             id: req.profile.clone(),
             content: profile_content,
         },
-        output_contract: inline_output_contract.map(runtime_output_contract_context),
+        output_contract: inline_output_contract
+            .map(|contract| runtime_output_contract_context(contract, false)),
         output_deferred: req.output_contract.as_ref().is_some_and(|contract| {
             contract.emission_mode == OutputEmissionMode::PostTurnProjection
         }),
@@ -2439,8 +2442,12 @@ fn runtime_system_context(req: &WorkerInvocation) -> Result<RuntimePromptTemplat
 fn render_artifact_finalize_prompt(
     language: crate::config::DesktopLanguage,
     contract: &PromptOutputContract,
+    execution_surface: PromptExecutionSurface,
 ) -> Result<String> {
-    let context = runtime_output_contract_context(contract);
+    let context = runtime_output_contract_context(
+        contract,
+        execution_surface == PromptExecutionSurface::AiDynamic,
+    );
     render_template(
         prompt_by_language(
             language,
@@ -2697,6 +2704,7 @@ fn predecessor_attachment_lines(predecessors: &[PromptPredecessorContext]) -> St
 
 fn runtime_output_contract_context(
     contract: &PromptOutputContract,
+    can_read_runtime_snapshot: bool,
 ) -> RuntimeOutputContractTemplateContext {
     RuntimeOutputContractTemplateContext {
         artifact: contract.artifact.clone(),
@@ -2712,6 +2720,7 @@ fn runtime_output_contract_context(
             .unwrap_or_else(|| "当前节点未声明结构化 schema。".to_string()),
         success_condition: contract.success_condition.clone(),
         finalize_context: contract.finalize_context.clone(),
+        can_read_runtime_snapshot,
     }
 }
 
@@ -3325,9 +3334,19 @@ mod tests {
         );
 
         let contract = req.output_contract.as_mut().unwrap();
-        contract.finalize_context = Some("remaining nodes: 3".to_string());
-        let finalize_prompt =
-            render_artifact_finalize_prompt(req.runtime_context.language, contract).unwrap();
+        contract.finalize_context = Some(
+            "read-only runtime snapshot: /run/dynamic/coordination-snapshot.json\n\
+             read the latest snapshot before planning successors\n\
+             remaining nodes: 3"
+                .to_string(),
+        );
+        req.execution_surface = PromptExecutionSurface::AiDynamic;
+        let finalize_prompt = render_artifact_finalize_prompt(
+            req.runtime_context.language,
+            contract,
+            req.execution_surface,
+        )
+        .unwrap();
         req.session_mode = SessionMode::Continue;
         req.user_prompt_render_mode = UserPromptRenderMode::RuntimeFinalize;
         req.resume_prompt_visibility = PromptVisibility::Hidden;
@@ -3343,6 +3362,12 @@ mod tests {
         assert!(prompt.user_prompt.contains("required status field"));
         assert!(prompt.user_prompt.contains("remaining nodes: 3"));
         assert!(prompt.user_prompt.contains("不要继续执行任务"));
+        assert!(
+            prompt
+                .user_prompt
+                .contains("仅当下方 runtime 上下文明确要求刷新只读运行时快照时")
+        );
+        assert!(prompt.user_prompt.contains("只能读取其中声明的快照路径"));
         assert!(active_output_contract_for_turn(&req).is_some());
 
         req.user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
@@ -3358,6 +3383,44 @@ mod tests {
                 .contains("required status field")
         );
         assert!(active_output_contract_for_turn(&req).is_some());
+    }
+
+    #[test]
+    fn english_artifact_finalize_allows_only_an_explicit_runtime_snapshot_refresh() {
+        let mut contract = test_output_contract(OutputEmissionMode::PostTurnProjection);
+        contract.finalize_context = Some(
+            "read-only runtime snapshot: C:/run/dynamic/coordination-snapshot.json".to_string(),
+        );
+
+        let prompt = render_artifact_finalize_prompt(
+            crate::config::DesktopLanguage::En,
+            &contract,
+            PromptExecutionSurface::AiDynamic,
+        )
+        .unwrap();
+
+        assert!(prompt.contains(
+            "Only when the runtime context below explicitly requires refreshing a read-only runtime snapshot"
+        ));
+        assert!(prompt.contains("read only the declared snapshot path"));
+    }
+
+    #[test]
+    fn workflow_artifact_finalize_does_not_authorize_runtime_snapshot_tools() {
+        let mut contract = test_output_contract(OutputEmissionMode::PostTurnProjection);
+        contract.finalize_context = Some(
+            "read-only runtime snapshot: C:/run/dynamic/coordination-snapshot.json".to_string(),
+        );
+
+        let prompt = render_artifact_finalize_prompt(
+            crate::config::DesktopLanguage::ZhCn,
+            &contract,
+            PromptExecutionSurface::Workflow,
+        )
+        .unwrap();
+
+        assert!(prompt.contains("不要调用工具"));
+        assert!(!prompt.contains("可以调用工具"));
     }
 
     #[test]

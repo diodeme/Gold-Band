@@ -35,7 +35,7 @@ afterEach(async () => {
 });
 
 describe('AppTitleBar Help tooltip', () => {
-  it('closes the Help tooltip when Personal Analytics is selected', async () => {
+  it('closes the Help tooltip without restoring focus when Personal Analytics is selected', async () => {
     const onOpenPersonalAnalytics = vi.fn();
     const container = document.createElement('div');
     document.body.appendChild(container);
@@ -79,5 +79,6 @@ describe('AppTitleBar Help tooltip', () => {
 
     expect(onOpenPersonalAnalytics).toHaveBeenCalledTimes(1);
     expect(document.querySelector('[data-slot="tooltip-content"]')).toBeNull();
+    expect(document.activeElement).not.toBe(help);
   });
 });

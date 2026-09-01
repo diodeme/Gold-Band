@@ -57,6 +57,9 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
   const [rangeError, setRangeError] = useState<string | null>(null);
   const [insightSubmitting, setInsightSubmitting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  const [showSyncOperation, setShowSyncOperation] = useState(false);
+  const [showInsightOperation, setShowInsightOperation] = useState(false);
+  const pageRef = useRef<HTMLElement>(null);
   const range = useMemo(() => rangeValue(rangePreset, customStart, customEnd), [rangePreset, customStart, customEnd]);
   const availableAgents = useMemo(
     () => agentRegistry?.agents.filter((agent) => agent.diagnostic?.available === true) ?? [],
@@ -68,6 +71,10 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
   );
   const availableModels = useMemo(() => selectedAgent?.supportedModels ?? [], [selectedAgent]);
   const thoughtLevel = useMemo(() => findAcpThoughtLevel(selectedAgent?.configOptions), [selectedAgent]);
+
+  useEffect(() => {
+    pageRef.current?.focus({ preventScroll: true });
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -103,6 +110,16 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
   const active = isPersonalAnalyticsActive(snapshot);
   const insightActive = insightOperation?.status === 'queued' || insightOperation?.status === 'analyzing'
     || insightOperation?.status === 'validating-report' || insightOperation?.status === 'cancelling';
+  const insightMatchesSelection = insightOperation !== null
+    && insightOperation.agentType === selectedAgentType
+    && (insightOperation.modelId ?? '') === selectedModelId
+    && (insightOperation.thoughtLevelOptionId ?? '') === selectedThoughtLevelOptionId
+    && (insightOperation.thoughtLevelValue ?? '') === selectedThoughtLevelValue
+    && sameAnalyticsRange(insightOperation.range, range.value);
+  useEffect(() => {
+    if (active) setShowSyncOperation(true);
+    if (insightActive) setShowInsightOperation(true);
+  }, [active, insightActive]);
   const initialSyncRequestedRef = useRef(false);
   const reportRequestRef = useRef(0);
   useEffect(() => {
@@ -113,7 +130,9 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
     }
     if (initialSyncRequestedRef.current) return;
     initialSyncRequestedRef.current = true;
+    setShowSyncOperation(true);
     setSubmitting(true);
+    setRangeError(null);
     void syncPersonalAnalytics()
       .then((next) => setSnapshot((current) => mergePersonalAnalyticsSnapshot(current, next)))
       .catch(() => undefined)
@@ -127,7 +146,8 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
   const number = useMemo(() => new Intl.NumberFormat(locale), [locale]);
 
   useEffect(() => {
-    if (loading || snapshot === null || range.invalid) return;
+    if (loading || snapshot === null || range.invalid || active) return;
+    if (availableAgents.length > 0 && selectedAgent === null) return;
     let disposed = false;
     const requestId = ++reportRequestRef.current;
     setRangeQuerying(true);
@@ -193,8 +213,10 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
   }, [active, insightActive, insightRevision, loading, operationRevision, range, selectedAgentType, selectedModelId, selectedThoughtLevelOptionId, selectedThoughtLevelValue, snapshot === null, t]);
   const start = async () => {
     if (active || submitting) return;
+    setShowSyncOperation(true);
     setSubmitting(true);
     setStartError(null);
+    setRangeError(null);
     try {
       const next = await syncPersonalAnalytics();
       setSnapshot((current) => mergePersonalAnalyticsSnapshot(current, next));
@@ -206,12 +228,13 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
   };
 
   const startInsights = async () => {
-    if (!selectedAgentType || !report || insightActive || insightSubmitting || range.invalid) return;
+    if (!selectedAgent || !report || insightActive || insightSubmitting || range.invalid) return;
+    setShowInsightOperation(true);
     setInsightSubmitting(true);
     setStartError(null);
     try {
       const next = await startPersonalAnalyticsInsights(
-        selectedAgentType,
+        selectedAgent.agentType,
         range.value,
         selectedModelId || undefined,
         selectedThoughtLevelOptionId || undefined,
@@ -246,7 +269,7 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
   };
 
   return (
-    <main className="min-h-0 flex-1 bg-background text-foreground" data-personal-analytics-page="true">
+    <main ref={pageRef} tabIndex={-1} className="min-h-0 flex-1 bg-background text-foreground outline-none" data-personal-analytics-page="true">
       <ScrollArea className="h-full">
         <div className="mx-auto w-full max-w-7xl px-5 py-5 md:px-8 md:py-7">
           <header className="flex flex-wrap items-start justify-between gap-5 border-b border-border/70 pb-5">
@@ -274,6 +297,9 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
               <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2" data-personal-analytics-controls="true">
                 <Select value={selectedAgentType} onValueChange={(value) => {
                   const selection = resolvePersonalAnalyticsSelection(availableAgents, value);
+                  setStartError(null);
+                  setRangeError(null);
+                  setShowInsightOperation(false);
                   setSelectedAgentType(selection.agentType);
                   setSelectedModelId(selection.modelId);
                   setSelectedThoughtLevelOptionId(selection.thoughtLevelOptionId);
@@ -301,6 +327,9 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
                         thoughtValue={selectedThoughtLevelValue}
                         onModelChange={(value) => {
                           const modelId = value ?? '';
+                          setStartError(null);
+                          setRangeError(null);
+                          setShowInsightOperation(false);
                           setSelectedModelId(modelId);
                           rememberPersonalAnalyticsSelection({
                             agentType: selectedAgentType,
@@ -312,6 +341,9 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
                         onThoughtChange={(optionId, value) => {
                           const thoughtLevelValue = value ?? '';
                           const thoughtLevelOptionId = thoughtLevelValue ? optionId : '';
+                          setStartError(null);
+                          setRangeError(null);
+                          setShowInsightOperation(false);
                           setSelectedThoughtLevelOptionId(thoughtLevelOptionId);
                           setSelectedThoughtLevelValue(thoughtLevelValue);
                           rememberPersonalAnalyticsSelection({
@@ -332,7 +364,7 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
                   <RefreshCw className={`size-4${submitting ? ' animate-spin' : ''}`} />
                   {submitting ? t('personalAnalytics.syncing') : t('personalAnalytics.sync')}
                 </Button>
-                <Button variant="outline" className="flex-1 sm:flex-none" data-personal-analytics-insight="true" onClick={() => void startInsights()} disabled={active || !selectedAgentType || !report || insightActive || insightSubmitting || range.invalid || availableAgents.length === 0}>
+                <Button variant="outline" className="flex-1 sm:flex-none" data-personal-analytics-insight="true" onClick={() => void startInsights()} disabled={active || !selectedAgent || !report || insightActive || insightSubmitting || range.invalid || availableAgents.length === 0}>
                   <Sparkles className={`size-4${insightSubmitting || insightActive ? ' animate-pulse' : ''}`} />
                   {t('personalAnalytics.generateInsights')}
                 </Button>
@@ -349,7 +381,7 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
             </div>
           </header>
 
-          {operation ? (
+          {operation && (active || showSyncOperation) ? (
             <section className="border-b border-border/70 py-4" aria-live="polite">
               <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
                 <span className="flex items-center gap-2 font-medium">
@@ -366,7 +398,7 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
           {rangeQuerying ? <p className="border-b border-border/70 py-3 text-sm text-muted-foreground" role="status">{t('personalAnalytics.querying')}</p> : null}
           {rangeError ? <p className="border-b border-border/70 py-3 text-sm text-destructive" role="alert">{rangeError}</p> : null}
 
-          {insightOperation ? (
+          {insightOperation && (insightActive || (insightMatchesSelection && showInsightOperation)) ? (
             <section className="border-b border-border/70 py-4" aria-live="polite">
               <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
                 <span className="flex items-center gap-2 font-medium">

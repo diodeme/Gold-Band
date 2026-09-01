@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-01：AI-DYNAMIC 后继节点报告清单用途显式化
+
+- 根因与设计判断：`ai-dynamic-result.json` 作为小型业务交接、`ai-dynamic-report-manifest.json` 作为按需下钻的完整报告索引这一分层设计正确，外层 predecessor 投影也已传递权威 `summary`、manifest 路径和元数据；缺口是通用 hidden context 只原样展示 artifact preview，没有明确说明 manifest 的内容范围和读取时机，后继 Agent 只能从字段名自行推断。这属于正确设计在消费提示上的实现不完整，不修改 artifact schema、canonical graph 或 predecessor DTO。
+- 实现与边界：通用双语 hidden context 仅在有界前序链或新 Round trigger 中出现 `ai-dynamic-result` artifact 时，增加一段按需读取说明：`reportManifest.path` 指向包含节点/group 拓扑、依赖与时间关系、workspace、内部 summary 和附件地址的完整内部执行报告索引；默认使用业务交接 `summary`，仅在核对内部过程、查找报告附件或摘要不足时读取 manifest。条件由现有 artifact 名称派生为私有模板布尔值，不解析 preview、不内联 manifest，也不强制 Agent 读取。
+- 失败证据与接口验收：最小 prompt bundle 测试在修复前稳定失败于后继 hidden context 缺少清单用途标题；实现后由同一测试固定中英文说明、`reportManifest.path`、拓扑语义、默认 summary 行为及普通 artifact 不出现该段，AI-DYNAMIC 外层 successor 集成测试继续固定真实 `router -> worker` 交接同时包含 result preview、manifest locator 和用途说明。`provider_prompt_bundle` 31/31、`ai_dynamic_node` 28/28 全部通过。
+- 性能与过度设计评审：复用现有 `PromptPredecessorContext`、artifact 常量、双语模板和普通 successor 投影，不新增依赖、状态、schema、缓存、队列、I/O 或兼容层。每次 prompt 渲染只对受工作流规模约束的前序链执行一次 O(predecessors) 名称判断，并仅在 AI-DYNAMIC 后继场景增加固定长度文本；manifest 仍保持零默认读取，无需 benchmark。
+
 ## 2026-09-01：AI-DYNAMIC 最新协调、终态快照与 Worktree 释放收敛
 
 - 根因与设计判断：三处问题均属于正确设计下的实现覆盖不完整。AI-DYNAMIC 已规定 worker / acceptance 在 hidden finalize/repair 规划 `single/fanout` 前刷新 canonical coordination snapshot，但通用 finalize prompt 同时禁止工具且 repair 没有重新提供快照路径；workflow 控制决策已经统一负责终态持久化，却在 `$end` 分支写完 `run.json` 后才更新内存 `lastExecutedNode`；dynamic workspace release 已以 Git catalog 注销为权威事实，但 Git 已注销后遗留的空 leaf 没有继续收敛其受管目录。merge 继续保持纯执行、无 `dynamic-node-completion` 的既有语义，不增加 summary 或报告 locator。

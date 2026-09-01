@@ -8,6 +8,7 @@ use crate::domain::{
     DEFAULT_PROVIDER, InvocationKind, SessionMode, TurnControlMode, TurnControlTransitionCause,
     VERSION,
 };
+use crate::dynamic::AI_DYNAMIC_RESULT_ARTIFACT;
 use crate::prompts::{
     PromptExecutionSurface, RUNTIME_ARTIFACT_FINALIZE_EN, RUNTIME_ARTIFACT_FINALIZE_ZH_CN,
     RUNTIME_HIDDEN_CONTEXT_EN, RUNTIME_HIDDEN_CONTEXT_ZH_CN, RUNTIME_SYSTEM_EN,
@@ -2370,6 +2371,7 @@ struct RuntimePredecessorTemplateContext {
     chain: String,
     reason_lines: String,
     reason_lines_empty: bool,
+    has_ai_dynamic_report_manifest: bool,
     attachment_lines: String,
     attachment_lines_empty: bool,
 }
@@ -2530,11 +2532,22 @@ fn runtime_predecessor_context(
 ) -> RuntimePredecessorTemplateContext {
     let reason_lines = predecessor_reason_lines(predecessors, new_round_trigger, ctx.language);
     let attachment_lines = predecessor_attachment_lines(predecessors);
+    let has_ai_dynamic_report_manifest =
+        predecessors
+            .iter()
+            .chain(new_round_trigger)
+            .any(|predecessor| {
+                predecessor
+                    .output_artifact
+                    .as_ref()
+                    .is_some_and(|artifact| artifact.name == AI_DYNAMIC_RESULT_ARTIFACT)
+            });
     RuntimePredecessorTemplateContext {
         is_empty: predecessors.is_empty(),
         chain: predecessor_chain_text(predecessors, ctx),
         reason_lines_empty: reason_lines.is_empty(),
         reason_lines,
+        has_ai_dynamic_report_manifest,
         attachment_lines_empty: attachment_lines.is_empty(),
         attachment_lines,
     }

@@ -93,7 +93,7 @@ artifacts/
 └─ ai-dynamic-report-manifest.json
 ```
 
-`ai-dynamic-result.json` 是普通后继节点默认消费的小型业务交接，包含成功 outcome、一份权威 `summary`、摘要来源 node/group，以及完整报告清单的绝对路径、格式版本、unit/attachment 数量和生成时间。普通 workflow 的 predecessor 投影把它作为 AI-DYNAMIC 的 output artifact，因此后继节点可直接看到摘要和 manifest 路径；manifest 本体不内联进 prompt，节点需要时自行读取，避免长报告挤占上下文。
+`ai-dynamic-result.json` 是普通后继节点默认消费的小型业务交接，包含成功 outcome、一份权威 `summary`、摘要来源 node/group，以及完整报告清单的绝对路径、格式版本、unit/attachment 数量和生成时间。普通 workflow 的 predecessor 投影把它作为 AI-DYNAMIC 的 output artifact，因此后继节点可直接看到摘要和 manifest 路径；hidden context 同时明确说明 `reportManifest.path` 是包含节点/group 拓扑、依赖与时间关系、workspace、内部 summary 和附件地址的完整内部执行报告索引。后继节点默认消费业务交接 `summary`，仅在核对内部过程、查找报告附件或摘要信息不足时按需读取 manifest；manifest 本体不内联进 prompt，避免长报告挤占上下文。
 
 权威摘要不由额外总结 Agent 生成，也不拼接全部内部 summary：没有 fanout group 时，取最终 accepted `next=end` 节点的 summary；存在 group 时，取唯一顶层 group 最终 acceptance 的 accepted `next=end` summary。嵌套 acceptance、分支结束和中间路由 summary 只进入完整报告。多个顶层权威出口或缺少权威 accepted completion 属于 graph invariant 错误，不能静默任选。Runtime 通过 `end_summary_is_outer_handoff` 按当前节点位置渲染唯一摘要范围规则：可能结束整个 AI-DYNAMIC 的 `next=end.summary` 必须是完整业务交接；分支或嵌套 group 的 `next=end.summary` 是内部进度报告。变量名不暴露给 Agent，Agent 只看到已经选定的规则；acceptance 角色 prompt 不重复 group 层级判断，避免要求 Agent 从上下文自行推断并形成第二真源。
 

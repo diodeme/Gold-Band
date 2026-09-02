@@ -441,6 +441,50 @@ describe('ACP session re-entry reconciliation', () => {
     }
   });
 
+  it('hydrates a durable agent reply while the selected dynamic session stays mounted', async () => {
+    const dynamicLocator: TestLocator = {
+      ...locator,
+      outerNodeId: 'ai-dynamic',
+      outerAttemptId: 'attempt-001',
+    };
+    const prompt = event('prompt-mounted', 1, 'userTextDelta', '执行自动任务', {
+      raw: { source: 'goldBandPrompt', promptId: 'prompt-mounted' },
+    });
+    const stale = session([prompt], 'running');
+    const completed = session([
+      prompt,
+      event('answer-mounted', 2, 'textDelta', 'Agent 已经完成自动任务'),
+    ], 'completed');
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(stale)
+      .mockResolvedValueOnce(completed);
+
+    const { container, root } = await renderDialog(
+      stale,
+      'root',
+      undefined,
+      undefined,
+      dynamicLocator,
+    );
+    try {
+      expect(container.textContent).toContain('执行自动任务');
+      expect(container.textContent).not.toContain('Agent 已经完成自动任务');
+
+      await act(async () => {
+        runtime.listener?.({
+          ...dynamicLocator,
+          lifecycle: dynamicTerminalLifecycle(),
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+      expect(container.textContent).toContain('Agent 已经完成自动任务');
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('does not add a terminal content query for direct or normal workflow attempts', async () => {
     const completed = session([event('direct-result', 2, 'textDelta', 'done')], 'completed');
     vi.mocked(getAcpSession).mockResolvedValue(completed);

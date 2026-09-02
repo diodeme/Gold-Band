@@ -29,6 +29,7 @@ import {
 } from '@/lib/conversation-run-cache';
 import {
   isRuntimeControlledConversationLifecycle,
+  isRuntimeTerminalConversationLifecycle,
   isTerminalConversationSessionStatus,
   type ConversationSessionFollowMode,
 } from '@/lib/conversation-session-follow';
@@ -363,21 +364,20 @@ export function ConversationRunPage({
     }
     const restoreKey = pendingAutoFollowRestoreSessionKeyRef.current;
     const scrollPausedKey = scrollPausedAutoFollowSessionKeyRef.current;
-    const selectedDynamicLeafTerminal = Boolean(
-      selectedLeaf?.outerNodeId
-      && selectedLeaf.outerAttemptId
+    const selectedRuntimeTerminal = Boolean(
+      isRuntimeTerminalConversationLifecycle(selectedLeaf?.lifecycle)
       && isTerminalConversationSessionStatus(
-        selectedLeaf.lifecycle?.runtime.status ?? selectedLeaf.status,
+        selectedLeaf?.lifecycle?.runtime.status ?? selectedLeaf?.status,
       )
     );
     if (!isRuntimeControlledConversationLifecycle(selectedLeaf?.lifecycle)) {
-      if (selectedDynamicLeafTerminal && selectedKey && scrollPausedKey === selectedKey) {
+      if (selectedRuntimeTerminal && selectedKey && scrollPausedKey === selectedKey) {
         scrollPausedAutoFollowSessionKeyRef.current = null;
         manualAutoFollowDisabledRef.current = false;
         onAutoFollowChange?.(true);
         return;
       }
-      if (selectedDynamicLeafTerminal && !manualAutoFollowDisabledRef.current) {
+      if (selectedRuntimeTerminal && !manualAutoFollowDisabledRef.current) {
         onAutoFollowChange?.(true);
         return;
       }

@@ -2441,6 +2441,7 @@ export interface ConversationRuntimeFacetVm {
 
 export interface ConversationControlFacetVm {
   mode: 'runtime-controlled' | 'non-runtime-controlled';
+  transitionCause?: 'runtime-interrupted' | 'manual-follow-up' | 'workflow-continued' | 'runtime-terminal';
 }
 
 export interface ConversationAcpFacetVm {

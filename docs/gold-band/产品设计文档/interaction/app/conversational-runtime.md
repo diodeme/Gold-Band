@@ -151,6 +151,7 @@ Task 最近对话活动只在三类 durable 边界推进：Task 创建成功、�
 - 用户已有选中 session 且仍有效时保持
 - 多个 session 默认最近 session；最近 session 必须按 session/attempt 的实际开始时间选择，不能按 workflow DSL 节点顺序选择最后一个节点
 - run 结束时显示到达 end 状态的 session
+- AUTO 跟随离开已结束 session 时必须同时消费后端 `ConversationControlFacetVm.mode + transitionCause`：`runtime-terminal` 表示 Runtime 自然释放控制，当前消息窗口仍贴底且 follow mode 为 auto 时可以跨 AI-DYNAMIC outer attempt、普通 workflow node 和 round 跟随下一 canonical active session；`manual-follow-up` 与 `runtime-interrupted` 表示用户已进入自由会话或主动中断，必须保持当前 session。不得再按 dynamic locator 是否同父级猜测控制来源。
 - run 启动时必须先同步创建首个 `round/node/attempt` 的最小运行锚点并写入 `node.json`，再后台启动 agent/provider；`selectedSessionKey` 应能在首次 `getConversationRun` 中从当前 attempt 推导出来，不能依赖首个 ACP frame 到达后才出现。
 - 没有显式 `selectedSessionKey` 时，默认 session 选择顺序为：当前 runtime attempt → active/running attempt → 最近 session；只有不存在运行中锚点时才回退到最新历史 session。前端可用 `activeSessions` 做短暂兜底，但该兜底只用于极短竞态，不作为主事实源。
 - 历史 AUTO dynamic graph 的 workspace catalog 迁移在存储边界执行；读取 Git HEAD 失败时仅使用稳定的 legacy 占位提交身份继续生成只读历史投影，且该失败分支必须遵守 Git 服务的 `Result` 错误契约，不改变 graph/session 身份或迁移幂等性。

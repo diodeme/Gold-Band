@@ -19,7 +19,7 @@ GitHub capability、PR/Issue 查询和详情同样独立于 React 组件生命�
 
 用户在 Fetch、Push 或 Push Tag 对话框中主动选择的 remote 是仓库级持久偏好，以规范化 Git common directory 为身份保存，因此同仓库的 linked worktree 共享选择。重新打开对话框时按“仍然有效的用户偏好 → 当前 upstream remote → remote 列表第一项”解析默认值；已删除的 remote 不得继续成为可提交值。偏好使用集中、带版本号且有 64 个仓库上限的 schema，不把 localStorage key 散落在组件中。
 
-每个 repository/workspace 会话共享一个 `GitStateMonitor`：普通文件变化复用现有 workspace watcher，HEAD、index、refs、packed-refs 等元数据由 `git rev-parse --git-path` 定位后额外监听。两类事件经过去抖后只刷新匹配会话；LRU 淘汰会释放 watcher。fetch/pull/push/stash、GitHub 登录和 PR 创建等长操作通过 typed operation event 推送 running/terminal 状态，前端不轮询完成状态；本地 Git 操作终态立即刷新 snapshot/history，早于 command 返回的事件也必须合并而不能丢失。
+每个 repository/workspace 会话共享一个 `GitStateMonitor`：普通文件变化复用现有 workspace watcher，HEAD、index、refs、packed-refs 等元数据由 `git rev-parse --git-path` 定位后额外监听。首次加载必须先完成事件订阅并启动 monitor，再读取权威 snapshot/history，消除“快照完成但监听尚未建立”的丢事件窗口；`workspacePath = null` 是主工作区的合法作用域，必须原样交给后端解析，不能被当作路径缺失而跳过 monitor。加载或 Git 写操作期间到达的失效保留为一个 dirty follow-up，不能因当前状态不是 ready/pending 而丢弃。两类事件经过去抖后只刷新匹配会话，quiet window 同时受 1 秒最大延迟约束；普通 workspace 事件只刷新 worktree/status snapshot，不读取 history，Git metadata/ref 事件才刷新 repository snapshot/history。monitor 身份包含 `projectId + common directory + workspace path`，LRU 淘汰会对称释放 watcher。fetch/pull/push/stash、GitHub 登录和 PR 创建等长操作通过 typed operation event 推送 running/terminal 状态，前端不轮询完成状态；本地 Git 操作终态立即刷新 snapshot/history，早于 command 返回的事件也必须合并而不能丢失。notify 错误或有界事件通道溢出必须升级为一次 repository scope 失效并记录诊断，不能静默忽略。
 
 同一 workspace 任意时刻只允许一个 Git 写操作。pending action 由源码管理会话统一保存为结构化 `kind + path`，不得由各按钮维护旁路 loading：单文件 Stage/Unstage 时被点击行的操作按钮持续显示旋转状态，其他文件行的按钮不渲染，Commit 和其他仓库写操作保持禁用；后台只读刷新使用独立 `refreshing` 状态，不禁用 commit 草稿或文件操作。Commit、Fetch、Pull、Push 在各自主操作按钮显示旋转状态，直至权威结果收敛或结构化失败返回。
 

@@ -3479,7 +3479,7 @@ pub async fn stop_git_state_monitor(
             .map_err(command_error)
     })
     .await?;
-    monitor_runtime.stop(&identity.common_dir, &identity.workspace_path)?;
+    monitor_runtime.stop(&project_id, &identity.common_dir, &identity.workspace_path)?;
     watch_runtime.stop_workspace(&project_id, identity.workspace_path.as_std_path())
 }
 

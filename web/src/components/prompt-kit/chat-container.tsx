@@ -38,6 +38,18 @@ export type ChatContainerContentExpansionController = {
 export type ChatContainerContext = StickToBottomContext &
   ChatContainerContentExpansionController
 
+export type ChatContainerFollowIntentCause =
+  | "external-stop-scroll"
+  | "external-scroll-to-bottom"
+  | "user-wheel-up"
+  | "user-key-up"
+  | "user-scrollbar-up"
+  | "content-expansion-begin"
+  | "content-expansion-end"
+  | "content-expansion-user-scroll"
+  | "content-expansion-resize-at-bottom"
+  | "viewport-at-bottom"
+
 const ChatContainerContentExpansionContext =
   createContext<ChatContainerContentExpansionController | null>(null)
 
@@ -52,6 +64,10 @@ export type ChatContainerRootProps = {
   initial?: StickToBottomProps["initial"]
   contextRef?: React.Ref<ChatContainerContext>
   onAtBottomChange?: (atBottom: boolean) => void
+  onFollowIntentChange?: (
+    following: boolean,
+    cause: ChatContainerFollowIntentCause,
+  ) => void
   onViewportScroll?: (viewport: HTMLDivElement) => void
   onViewportUserScroll?: (viewport: HTMLDivElement) => void
 } & React.HTMLAttributes<HTMLDivElement>
@@ -107,6 +123,7 @@ function ChatContainerRoot({
   initial = "instant",
   contextRef,
   onAtBottomChange,
+  onFollowIntentChange,
   onViewportScroll,
   onViewportUserScroll,
   ...props
@@ -123,6 +140,7 @@ function ChatContainerRoot({
         contextRef={contextRef}
         initialFollowing={initial !== false}
         onAtBottomChange={onAtBottomChange}
+        onFollowIntentChange={onFollowIntentChange}
         onViewportScroll={onViewportScroll}
         onViewportUserScroll={onViewportUserScroll}
       >
@@ -157,11 +175,12 @@ function ChatContainerLifecycle({
   contextRef,
   initialFollowing,
   onAtBottomChange,
+  onFollowIntentChange,
   onViewportScroll,
   onViewportUserScroll,
 }: Pick<
   ChatContainerRootProps,
-  "children" | "contextRef" | "onAtBottomChange" | "onViewportScroll" | "onViewportUserScroll"
+  "children" | "contextRef" | "onAtBottomChange" | "onFollowIntentChange" | "onViewportScroll" | "onViewportUserScroll"
 > & { initialFollowing: boolean }) {
   const stickContext = useStickToBottomContext()
   const {
@@ -207,10 +226,14 @@ function ChatContainerLifecycle({
     scrollWriteCount: 0,
   })
 
-  const updateFollowIntent = useCallback((following: boolean) => {
+  const updateFollowIntent = useCallback((
+    following: boolean,
+    cause: ChatContainerFollowIntentCause,
+  ) => {
+    onFollowIntentChange?.(following, cause)
     isFollowingRef.current = following
     setIsFollowing((current) => current === following ? current : following)
-  }, [])
+  }, [onFollowIntentChange])
 
   const cancelContentExpansionRestore = useCallback(() => {
     contentExpansionTokensRef.current = null
@@ -223,7 +246,7 @@ function ChatContainerLifecycle({
   const stopScroll = useCallback(() => {
     cancelContentExpansionRestore()
     explicitEscapeScrollTopRef.current = scrollRef.current?.scrollTop ?? null
-    updateFollowIntent(false)
+    updateFollowIntent(false, "external-stop-scroll")
     libraryStopScroll()
   }, [cancelContentExpansionRestore, libraryStopScroll, scrollRef, updateFollowIntent])
 
@@ -231,7 +254,7 @@ function ChatContainerLifecycle({
     (options) => {
       cancelContentExpansionRestore()
       explicitEscapeScrollTopRef.current = null
-      updateFollowIntent(true)
+      updateFollowIntent(true, "external-scroll-to-bottom")
       return libraryScrollToBottom(options)
     },
     [cancelContentExpansionRestore, libraryScrollToBottom, updateFollowIntent],
@@ -243,7 +266,7 @@ function ChatContainerLifecycle({
       if (!isFollowingRef.current) return null
       expansionTokens = new Set<number>()
       contentExpansionTokensRef.current = expansionTokens
-      updateFollowIntent(false)
+      updateFollowIntent(false, "content-expansion-begin")
       libraryStopScroll()
     }
     const token = nextContentExpansionTokenRef.current + 1
@@ -260,7 +283,7 @@ function ChatContainerLifecycle({
     contentExpansionRestoreFrameRef.current = requestAnimationFrame(() => {
       contentExpansionRestoreFrameRef.current = null
       if (contentExpansionTokensRef.current || isFollowingRef.current) return
-      updateFollowIntent(true)
+      updateFollowIntent(true, "content-expansion-end")
       void libraryScrollToBottom({ animation: "instant" })
     })
     return true
@@ -398,12 +421,14 @@ function ChatContainerLifecycle({
         previousScrollTop !== null &&
         currentScrollTop !== previousScrollTop
       ) {
+        updateFollowIntent(false, "content-expansion-user-scroll")
         stopScroll()
       } else if (
         pointerScrollingRef.current &&
         previousScrollTop !== null &&
         currentScrollTop < previousScrollTop
       ) {
+        updateFollowIntent(false, "user-scrollbar-up")
         stopScroll()
       }
       const explicitEscapeScrollTop = explicitEscapeScrollTopRef.current
@@ -425,7 +450,7 @@ function ChatContainerLifecycle({
       ) {
         cancelContentExpansionRestore()
         explicitEscapeScrollTopRef.current = null
-        updateFollowIntent(true)
+        updateFollowIntent(true, "viewport-at-bottom")
       }
       onViewportScroll?.(viewport)
       scheduleFollowRecovery()
@@ -433,11 +458,13 @@ function ChatContainerLifecycle({
     const handleWheel = (event: WheelEvent) => {
       if (event.deltaX !== 0 || event.deltaY !== 0) onViewportUserScroll?.(viewport)
       if (contentExpansionTokensRef.current && event.deltaY !== 0) {
+        updateFollowIntent(false, "content-expansion-user-scroll")
         stopScroll()
       } else if (
         event.deltaY < 0 &&
         viewport.scrollHeight > viewport.clientHeight
       ) {
+        updateFollowIntent(false, "user-wheel-up")
         stopScroll()
       }
     }
@@ -449,8 +476,10 @@ function ChatContainerLifecycle({
         contentExpansionTokensRef.current &&
         CHAT_CONTAINER_SCROLL_KEYS.has(event.key)
       ) {
+        updateFollowIntent(false, "content-expansion-user-scroll")
         stopScroll()
       } else if (scrollsUp && viewport.scrollHeight > viewport.clientHeight) {
+        updateFollowIntent(false, "user-key-up")
         stopScroll()
       }
     }
@@ -514,7 +543,7 @@ function ChatContainerLifecycle({
         isChatContainerViewportAtBottom(viewport)
       ) {
         cancelContentExpansionRestore()
-        updateFollowIntent(true)
+        updateFollowIntent(true, "content-expansion-resize-at-bottom")
         void libraryScrollToBottom({ animation: "instant" })
       } else {
         scheduleFollowRecovery()

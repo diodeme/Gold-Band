@@ -174,6 +174,7 @@ function ChatContainerLifecycle({
   const isFollowingRef = useRef(initialFollowing)
   const pointerScrollingRef = useRef(false)
   const lastScrollTopRef = useRef<number | null>(null)
+  const explicitEscapeScrollTopRef = useRef<number | null>(null)
   const recoveryTimerRef = useRef<number | null>(null)
   const recoveryFrameRef = useRef<number | null>(null)
   const nextContentExpansionTokenRef = useRef(0)
@@ -221,13 +222,15 @@ function ChatContainerLifecycle({
 
   const stopScroll = useCallback(() => {
     cancelContentExpansionRestore()
+    explicitEscapeScrollTopRef.current = scrollRef.current?.scrollTop ?? null
     updateFollowIntent(false)
     libraryStopScroll()
-  }, [cancelContentExpansionRestore, libraryStopScroll, updateFollowIntent])
+  }, [cancelContentExpansionRestore, libraryStopScroll, scrollRef, updateFollowIntent])
 
   const scrollToBottom = useCallback<StickToBottomContext["scrollToBottom"]>(
     (options) => {
       cancelContentExpansionRestore()
+      explicitEscapeScrollTopRef.current = null
       updateFollowIntent(true)
       return libraryScrollToBottom(options)
     },
@@ -403,11 +406,25 @@ function ChatContainerLifecycle({
       ) {
         stopScroll()
       }
+      const explicitEscapeScrollTop = explicitEscapeScrollTopRef.current
+      let returnedTowardBottomAfterEscape = explicitEscapeScrollTop === null
+      if (explicitEscapeScrollTop !== null) {
+        if (currentScrollTop < explicitEscapeScrollTop) {
+          explicitEscapeScrollTopRef.current = currentScrollTop
+        } else if (
+          previousScrollTop !== null &&
+          currentScrollTop > previousScrollTop
+        ) {
+          returnedTowardBottomAfterEscape = true
+        }
+      }
       if (
         !isFollowingRef.current &&
+        returnedTowardBottomAfterEscape &&
         isChatContainerViewportAtBottom(viewport)
       ) {
         cancelContentExpansionRestore()
+        explicitEscapeScrollTopRef.current = null
         updateFollowIntent(true)
       }
       onViewportScroll?.(viewport)

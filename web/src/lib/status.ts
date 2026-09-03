@@ -23,10 +23,10 @@ export function statusBadgeClass(value?: string | null, explicitTone?: string | 
   const tone = normalizeTone(value, explicitTone);
   return cn(
     'font-semibold uppercase tracking-[0.12em]',
-    tone === 'running' && 'border-gold-running/35 bg-gold-running/10 text-gold-running',
-    tone === 'success' && 'border-gold-success/35 bg-gold-success/10 text-gold-success',
-    tone === 'warning' && 'border-gold-warning/35 bg-gold-warning/10 text-gold-warning',
-    tone === 'danger' && 'border-gold-danger/35 bg-gold-danger/10 text-gold-danger',
+    tone === 'running' && 'webview-status-surface-running border-gold-running/35 bg-gold-running/10 text-gold-running',
+    tone === 'success' && 'webview-status-surface-success border-gold-success/35 bg-gold-success/10 text-gold-success',
+    tone === 'warning' && 'webview-status-surface-warning border-gold-warning/35 bg-gold-warning/10 text-gold-warning',
+    tone === 'danger' && 'webview-status-surface-danger border-gold-danger/35 bg-gold-danger/10 text-gold-danger',
     tone === 'neutral' && 'border-border bg-secondary text-muted-foreground',
   );
 }
@@ -34,10 +34,10 @@ export function statusBadgeClass(value?: string | null, explicitTone?: string | 
 export function toneSurfaceClass(value?: string | null, explicitTone?: string | null) {
   const tone = normalizeTone(value, explicitTone);
   return cn(
-    tone === 'running' && 'border-gold-running/30 bg-gold-running/10 text-gold-running',
-    tone === 'success' && 'border-gold-success/30 bg-gold-success/10 text-gold-success',
-    tone === 'warning' && 'border-gold-warning/30 bg-gold-warning/10 text-gold-warning',
-    tone === 'danger' && 'border-gold-danger/30 bg-gold-danger/10 text-gold-danger',
+    tone === 'running' && 'webview-status-surface-running border-gold-running/30 bg-gold-running/10 text-gold-running',
+    tone === 'success' && 'webview-status-surface-success border-gold-success/30 bg-gold-success/10 text-gold-success',
+    tone === 'warning' && 'webview-status-surface-warning border-gold-warning/30 bg-gold-warning/10 text-gold-warning',
+    tone === 'danger' && 'webview-status-surface-danger border-gold-danger/30 bg-gold-danger/10 text-gold-danger',
     tone === 'neutral' && 'border-border bg-card text-muted-foreground',
   );
 }

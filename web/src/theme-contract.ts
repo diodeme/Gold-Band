@@ -42,7 +42,9 @@ export const semanticThemeTokensSchema = z.object({
   sidebarAccent: z.string(), sidebarAccentForeground: z.string(), sidebarBorder: z.string(), sidebarRing: z.string(),
   workspace: z.string(), surfaceLow: z.string(), surfaceHigh: z.string(), lineSoft: z.string(),
   windowOutline: z.string(), windowEdgeShadow: z.string(), link: z.string(), running: z.string(), success: z.string(),
-  warning: z.string(), danger: z.string(), permission: z.string(), titlebar: z.string(), titlebarForeground: z.string(),
+  warning: z.string(), danger: z.string(), statusRunningSurface: z.string(), statusRunningBorder: z.string(),
+  statusSuccessSurface: z.string(), statusSuccessBorder: z.string(), statusWarningSurface: z.string(), statusWarningBorder: z.string(),
+  statusDangerSurface: z.string(), statusDangerBorder: z.string(), permission: z.string(), titlebar: z.string(), titlebarForeground: z.string(),
   titlebarMuted: z.string(), titlebarBorder: z.string(), titlebarHover: z.string(), scrollbarTrack: z.string(),
   scrollbarThumb: z.string(), scrollbarThumbHover: z.string(),
 }).strict();

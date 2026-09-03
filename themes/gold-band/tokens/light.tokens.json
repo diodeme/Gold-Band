@@ -284,6 +284,14 @@
       "$type": "color",
       "$value": "#c83237"
     },
+    "statusRunningSurface": { "$type": "color", "$value": "rgba(37,99,235,.10)" },
+    "statusRunningBorder": { "$type": "color", "$value": "rgba(37,99,235,.30)" },
+    "statusSuccessSurface": { "$type": "color", "$value": "rgba(10,122,94,.10)" },
+    "statusSuccessBorder": { "$type": "color", "$value": "rgba(10,122,94,.30)" },
+    "statusWarningSurface": { "$type": "color", "$value": "rgba(164,101,8,.10)" },
+    "statusWarningBorder": { "$type": "color", "$value": "rgba(164,101,8,.30)" },
+    "statusDangerSurface": { "$type": "color", "$value": "rgba(200,50,55,.10)" },
+    "statusDangerBorder": { "$type": "color", "$value": "rgba(200,50,55,.30)" },
     "permission": {
       "$type": "color",
       "$value": "#8a651d"

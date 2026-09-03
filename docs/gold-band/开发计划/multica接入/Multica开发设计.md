@@ -1922,7 +1922,7 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **验证**：`cargo check --workspace --all-targets` exit 0（余量 warning 为 main 既有）；`tsc` 零错；`web:build` 成功；全量 vitest **1684/1684**（CRLF 修复后；一次 `acp-session-reentry` 全量负载时序抖动单独重跑 12/12、全量重跑全绿，判 flake）；Rust 定向 `multica::` **83/83**。冲突分析报告：`.claude/docs/merge/merge-conflict-analysis-2026-08-27.md`。
 
-### 12.34 改动三十二：multica 绑定 chip 配色改 accent 配对——深色主题可辨识（M5-av，2026-08-28）
+### 12.34 改动三十二：multica 绑定 chip 配色改 accent 配对——深色主题可辨识（2026-08-28）
 
 **背景（用户反馈）**：切换深色主题后，composer 内 multica 绑定 chip「颜色和背景颜色相近导致难以辨认」。
 
@@ -1938,6 +1938,26 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 **验收固化**：`web/tests/conversation-composer-multica-chip.test.ts` 新增 `multica binding chip theme contrast` describe——chip 渲染段（`multicaBinding ? (` 至 `<PromptInputTextarea`）必须含 accent 配对三件套，且不得再匹配任何 primary 染色（`/-primary(?!-)/`，`primary-foreground` 豁免）；断言均为单行字符串（CRLF 安全）。
 
 **验证**：vitest 16/16（multica-chip + composer-context-alignment）；`tsc -p web/tsconfig.build.json` 零错；`web:build` 成功；浏览器 light/dark × gold-band/tech-neutral 四组合 chip 静态 + 关闭按钮 hover 截图验证通过。
+
+### 12.35 改动三十三：五次合并 origin/main——侧栏 canonical 单飞管线对齐 + composer 测量容器底座替换（M5-av，2026-09-03）
+
+**背景**：M5-au 合并（`35c5be95`）后 origin/main 又新增 75 commit（`9eb71f58..9f9247c3`）。main 侧主要内容：**侧栏渐进加载重构**（`cdbadc7f`，`loadConversationSidebarBootstrap()` 单飞——`ConversationSidebarSingleFlight` 只去重并发不缓存结果、`invalidate(key)` 世代失效；旧 `getConversationSidebar`/`applyConversationSidebar` 直接对整体移除）、ACP 性能批处理系列（raw frame/timeline 持久化批处理、流式 tool update 合并、有界 chat 内存、长会话渲染降载 + 事件订阅 API 更名 `subscribeConversationEvents`）、会话身份与隔离（task UUID 隔离、删除时保身份、删任务前 retire run request）、webview 兼容分层（`useWebviewMeasuredContainer`、CSS 变量语义探测）、return-to-latest 触发改视口脱离（`22624727`）、个人分析系列、`.agents/skills` 文档。策略同前四次：冲突优先保 main，合并后在结果上修复 multica。
+
+**安全网**：合并前备份分支 `feature_multica_premerge4_20260902`；合并前暂存区整理（23 个换行符噪音文件回滚、acp 快照 09-02 例行刷新单独提交 `2742de5e`）。
+
+**冲突（8 文件 = 机械 7 + 业务 1）与解决**：
+- 机械并集：`.gitignore`（main 精简规则 + `.agents/*`/`.omc`）、`src/config/mod.rs` 测试 import、`web/src/api/desktop.ts` 类型 import、`WorkspaceShell.tsx` props（main `onDeleteTask` 加 `taskUuid` + 我方 `onNewConversationInWorkspace` 保持必填）、`conversation-navigation.test.ts`（main 新测试 + `readAppSource()` 泛化）。
+- 机械整取：`agent-catalog.json`/`acp-registry.snapshot.json` 本轮**反向取我方**（我方 09-02 fetch 比 main 09-01 新）。
+- 业务（唯一文本冲突）：`ConversationComposer.tsx` 9 处——main 的 `useWebviewMeasuredContainer` 测量容器为底座（`a0c9111d` webview 兼容分层），multica 增量按挂载点回插（chip/draft hook/Backspace 解绑/onSubmit 第二参数/text-indent）。M5-at 互斥状态机与 M5-au canSubmit 合取连续第三轮零触碰自动存活。
+
+**核心语义决策（隐藏接缝：对齐 canonical，不复活旧路）**：`web/src/App.tsx` multica 事件驱动侧栏刷新调用的旧 API 对被 main 整体删除（tsc 捕获）。决策：刷新目标改 `loadConversationSidebarBootstrap()`——单飞"只去重并发、不缓存结果"正合"事件到达要新数据"语义（风暴去重成一次真拉取），best-effort 吞错保持；不复活旧 API 对（那是绕过失效协议的旁路状态，违反 state-lifecycle 规则）。
+
+**main 自身缺陷分诊（合并验收浮出，两例代码修复）**：
+1. `acp-read-only-agent-panel` 的 return-to-latest 测试：`22624727` 改触发为视口脱离未更新 08-02 旧测试（clean origin/main worktree 同样失败证实）。修复（`389ff979`）：提取 `web/tests/acp/detach-conversation-viewport.ts` 共享 helper（伪造滚动几何 + wheel 派发），测试先脱离视口再断言。
+2. 根 crate lib 两条稳定失败（第三次全量确认仅此两条，run1 第三条为 flake）：a) `app_config_ignores_zero_conversation_auto_title_limit`——main `2c661a55` 把 embedded toml 的 `conversationAutoTitleMaxChars` 18→48 未同步常量与测试，修复：`DEFAULT_CONVERSATION_AUTO_TITLE_MAX_CHARS` 对齐 48（恢复"默认值==常量"不变量）；b) `dynamic_group_successor_creation_emits_session_update`——main `8ce80327` 新增 creator-scope 校验（creator.group_id 须等于 group.parent_group_id）未更新旧 fixture，旧 fixture 把创建者与组内成员压在一个节点上，修复：拆双节点（创建者顶层 + 成员携带 group_id），对齐生产语义。
+3. 依赖漂移伪装回归一例：node_modules remend 1.3.0 vs 锁文件 1.3.1，`npm install` 同步即绿；cargo 两起瞬时缓存损坏（后台任务被杀）重跑自愈。
+
+**验证**：`cargo check --workspace --all-targets` exit 0；`tsc -p web/tsconfig.build.json` 零错（含 tests 的全量 tsc 541 个既有错误为缺 @types/node，tests 从不在 typecheck 门禁）；全量 vitest **1880/1880**（259 文件）；Rust 定向 `multica::` **83/83**（与 M5-au 持平）；tauri bin 全量 **644/644**；根 lib 全量 1111/1111（两条 main 侧修复后）。冲突分析报告：`.claude/docs/merge/merge-conflict-analysis-2026-09-03.md`。
 
 ---
 

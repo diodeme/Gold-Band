@@ -52,9 +52,9 @@ impl MulticaError {
     /// 错误参数（上下文，无对客文案）。
     pub fn params(&self) -> Value {
         match self {
-            Self::AuthFailed(msg)
-            | Self::NetworkFailed(msg)
-            | Self::RegisterFailed(msg) => json!({ "message": msg }),
+            Self::AuthFailed(msg) | Self::NetworkFailed(msg) | Self::RegisterFailed(msg) => {
+                json!({ "message": msg })
+            }
             _ => json!({}),
         }
     }

@@ -33,8 +33,7 @@ use commands::{
     add_mcp_server, cancel_git_operation, cancel_github_operation, change_git_branch,
     check_local_claude, check_mcp_server_health, check_skill_name_conflict, check_update_manual,
     choose_workspace, clear_desktop_avatar, connect_multica, continue_conversation_runtime,
-    continue_run,
-    create_agent, create_profile, create_task, delete_agent, delete_auto_template,
+    continue_run, create_agent, create_profile, create_task, delete_agent, delete_auto_template,
     delete_conversation_queued_prompt, delete_mcp_server, delete_profile, delete_skill,
     delete_workflow_template, disconnect_multica, dismiss_update_announcement, doctor_agent,
     download_and_install_update, execute_git_mutation, get_acp_activity_detail, get_acp_raw_frames,
@@ -43,27 +42,27 @@ use commands::{
     get_git_branch_picker_snapshot, get_git_capability, get_git_commit_detail,
     get_git_commit_reachability, get_git_commit_review, get_git_comparison, get_git_history,
     get_git_operation, get_github_capability, get_github_issue, get_github_operation,
-    get_github_pull_request, get_log_page, get_metrics_settings, get_multica_settings,
-    get_profile, get_profiles, get_round_detail, get_run_detail, get_skill_sync_status,
+    get_github_pull_request, get_log_page, get_metrics_settings, get_multica_settings, get_profile,
+    get_profiles, get_round_detail, get_run_detail, get_skill_sync_status,
     get_source_control_snapshot, get_system_fonts, get_task_detail, get_task_list,
     get_turn_file_change_set, get_update_status, get_workflow, get_workflow_templates,
-    import_desktop_wallpaper, import_profiles_from_folder,
-    initialize_git_repository, list_conversation_directory, list_github_issues,
-    list_github_pull_requests, list_mcp_servers, list_mcp_tools, list_project_skills, list_skills,
-    mark_settings_advanced_update_seen, mark_settings_update_seen,
-    open_conversation_directory_path_in_file_manager, open_in_file_manager, pause_run,
-    preflight_github_pull_request, read_conversation_directory_file, read_skill, record_activity,
-    recover_conversation_runtime, remove_recent_workspace, renew_acp_session_lease,
-    reorder_conversation_queued_prompts, replace_auto_templates, report_frontend_error,
-    report_webview_environment, resolve_turn_attachment_file, respond_acp_permission,
-    respond_elicitation, restore_conversation_queued_prompt, restore_theme_desktop_wallpaper,
-    retry_run, save_auto_template, save_desktop_avatar, save_desktop_avatar_shape,
-    save_desktop_preferences, save_desktop_wallpaper_opacity, save_metrics_settings,
-    save_task_workflow, save_updater_settings, save_workflow_template, search_acp_prompts,
-    search_acp_sessions, search_tasks, select_recent_desktop_avatar,
-    select_recent_desktop_wallpaper, select_recent_workspace, set_acp_session_config_option,
-    set_acp_session_model, set_acp_session_permission_mode, show_artifact, show_attachment,
-    show_worker_ref, start_git_operation, start_git_state_monitor, start_github_login,
+    import_desktop_wallpaper, import_profiles_from_folder, initialize_git_repository,
+    list_conversation_directory, list_github_issues, list_github_pull_requests, list_mcp_servers,
+    list_mcp_tools, list_project_skills, list_skills, mark_settings_advanced_update_seen,
+    mark_settings_update_seen, open_conversation_directory_path_in_file_manager,
+    open_in_file_manager, pause_run, preflight_github_pull_request,
+    read_conversation_directory_file, read_skill, record_activity, recover_conversation_runtime,
+    remove_recent_workspace, renew_acp_session_lease, reorder_conversation_queued_prompts,
+    replace_auto_templates, report_frontend_error, report_webview_environment,
+    resolve_turn_attachment_file, respond_acp_permission, respond_elicitation,
+    restore_conversation_queued_prompt, restore_theme_desktop_wallpaper, retry_run,
+    save_auto_template, save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
+    save_desktop_wallpaper_opacity, save_metrics_settings, save_task_workflow,
+    save_updater_settings, save_workflow_template, search_acp_prompts, search_acp_sessions,
+    search_tasks, select_recent_desktop_avatar, select_recent_desktop_wallpaper,
+    select_recent_workspace, set_acp_session_config_option, set_acp_session_model,
+    set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref,
+    start_git_operation, start_git_state_monitor, start_github_login,
     start_github_pull_request_create, start_run, stop_active_session, stop_git_state_monitor,
     submit_conversation_prompt, submit_manual_check, toggle_mcp_server, update_agent,
     update_auto_template, update_mcp_server, update_notification_attention, update_profile,
@@ -88,12 +87,12 @@ use commands_conversation::{
 };
 use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::sqlite::init_search_index;
+use gold_band::storage::{GoldBandPaths, configure_storage_paths};
 use multica::commands::{
     add_multica_workspace, cancel_multica_task, get_multica_task_requirement, get_multica_tasks,
     list_server_multica_workspaces, recover_multica_work_dir_sessions, remove_multica_workspace,
     set_active_multica_workspace, start_multica_conversation_run,
 };
-use gold_band::storage::{GoldBandPaths, configure_storage_paths};
 // Heartbeat signals are projected by the RuntimeLifecycleBus metrics subscriber.
 use image_actions::{copy_image_to_clipboard, save_image_as};
 use notifications::send_scheduled_native_notification;
@@ -218,18 +217,22 @@ fn run() -> anyhow::Result<()> {
             ))?;
             if let Ok(runtime_app) = state.app() {
                 commands::register_lifecycle_subscribers(&runtime_app, app.handle());
-                // home repo 自愈后，再清扫 multica 远程任务落在各 work_dir 的孤儿 run（断点续跑根因修复：
-                // home 自愈够不到 task 自身 work_dir，残留 Running 会使 classify_resume 误落 Fresh）。
+                // home repo 自愈（单一 repo、有界）：multica work_dir 定点自愈移入下方 spawn_blocking
+                // 恢复管线（P2），不再阻塞窗口启动关键路径。
                 let _ = runtime_app.recover_interrupted_running_sessions();
-                recover_multica_work_dir_sessions(&runtime_app);
             }
             let recovery_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let blocking_handle = recovery_handle.clone();
                 let recovery = tauri::async_runtime::spawn_blocking(move || {
-                    blocking_handle
-                        .state::<DesktopState>()
-                        .recover_interrupted_conversation_workspaces()
+                    let state = blocking_handle.state::<DesktopState>();
+                    // multica work_dir 定点自愈先于 complete_startup_recovery：resume 判定等待的
+                    // 启动门（wait_for_startup_accepting）打开即意味着本步已收敛（断点续跑根因修复：
+                    // home 自愈够不到 task 自身 work_dir，残留 Running 会使 classify_resume 误落 Fresh）。
+                    if let Ok(runtime_app) = state.app() {
+                        recover_multica_work_dir_sessions(&runtime_app);
+                    }
+                    state.recover_interrupted_conversation_workspaces()
                 })
                 .await;
                 match recovery {

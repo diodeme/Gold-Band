@@ -4700,11 +4700,12 @@ pub async fn connect_multica(
         user.email.as_deref(),
     ) {
         clear_multica_workspace_bindings(&mut existing);
-        if let Ok(mut state_cfg) = app.load_state() {
-            clear_multica_state_indices(&mut state_cfg);
-            if let Err(error) = app.save_state(&state_cfg) {
-                warn!(%error, "multica connect: save_state after account-switch clear failed");
-            }
+        // 账号切换清索引经 with_state 原子 RMW（StateConfig 唯一读改写入口，防并发 lost-update）。
+        if let Err(error) = app.with_state(|state_cfg| {
+            clear_multica_state_indices(state_cfg);
+            (true, ())
+        }) {
+            warn!(%error, "multica connect: state rmw after account-switch clear failed");
         }
         if let Ok(mut guard) = shared.lock() {
             guard.clear_runtime_ids();
@@ -4747,13 +4748,13 @@ pub fn disconnect_multica(
     let app = context.app();
     let mut existing = app.load_settings().map_err(command_error)?;
     clear_multica_session(&mut existing);
-    // State 侧三索引同属账号作用域：随登录态一并作废。best-effort 落盘：state 读不出时不阻断断开
-    // （该次未清的索引下次启动自愈）。
-    if let Ok(mut state_cfg) = app.load_state() {
-        clear_multica_state_indices(&mut state_cfg);
-        if let Err(error) = app.save_state(&state_cfg) {
-            warn!(%error, "multica disconnect: save_state failed");
-        }
+    // State 侧三索引同属账号作用域：随登录态一并作废。best-effort 落盘经 with_state 原子 RMW
+    // （StateConfig 唯一读改写入口）；state 读不出时不阻断断开（该次未清的索引下次启动自愈）。
+    if let Err(error) = app.with_state(|state_cfg| {
+        clear_multica_state_indices(state_cfg);
+        (true, ())
+    }) {
+        warn!(%error, "multica disconnect: state rmw failed");
     }
     app.save_settings(&existing).map_err(command_error)?;
     state

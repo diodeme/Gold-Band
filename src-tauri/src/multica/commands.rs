@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, HashSet};
 use camino::Utf8PathBuf;
 use gold_band::app::{App, is_run_continuable};
 use gold_band::config::{MulticaTaskConversation, MulticaWorkspaceRef};
+use gold_band::domain::{PauseReason, RunStatus};
 use tauri::{AppHandle, State};
 use tracing::{info, warn};
 
@@ -32,6 +33,10 @@ use crate::view_models_conversation::{
     ConversationCreateInputVm, ConversationCreateResultVm, conversation_run_vm,
     conversation_task_row_vm, create_conversation_run_vm, validate_conversation_create_vm,
 };
+
+/// multica resume 判定前等待启动恢复管线的超时（P2）：正常管线为秒级；超时按 best-effort 继续
+/// 判定（不永久阻塞用户发送，不劣于无等待语义），下一轮重试自愈。
+const MULTICA_RESUME_STARTUP_GATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// 远程任务列表（按 workspace 分组，对齐 `ConversationSidebarVm` 形状）。
 ///
@@ -344,7 +349,7 @@ fn migrate_resume_index(
             local_run_id,
         );
         state.multica_task_conversations = Some(migrated);
-        true
+        (true, ())
     }) {
         warn!(
             child = child_task_id,
@@ -357,86 +362,102 @@ fn migrate_resume_index(
 
 /// 纯逻辑（可单测）：从续跑索引汇总需要启动自愈的 work_dir 集合。
 ///
-/// 取 `multica_task_conversations` 全部条目的 `work_dir`，trim 后去重、丢空。返回值即 multica 子系统
-/// 管理 run 的全部独立 repo——启动自愈需逐个覆盖（home repo 自愈够不到这些 work_dir）。
-fn collect_multica_work_dirs(
-    map: &std::collections::HashMap<String, MulticaTaskConversation>,
-) -> Vec<String> {
-    let mut dirs: Vec<String> = map
-        .values()
-        .filter_map(|conv| {
-            conv.work_dir
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-        })
-        .collect();
-    dirs.sort();
-    dirs.dedup();
-    dirs
-}
-
 /// 启动自愈：把 multica 远程任务落在各 `work_dir` 的孤儿 Running run pause 成 ProcessInterrupted。
 ///
 /// **根因修复**：`main.rs` 启动时的 `recover_interrupted_running_sessions()` 只跑在 home repo 上，其
 /// `pause_all_running_sessions` 仅遍历单一 repo 的 `task_list`；而 multica 远程任务的 run 落在 task 自身
 /// `work_dir`（独立 repo）→ 重启后残留 stale `Running` → `classify_resume` 读 `is_run_continuable` = false
-/// → 误落 Fresh（断点续跑失效）。此函数遍历 `multica_task_conversations` 的全部 work_dir 逐个自愈，
-/// 与 `classify_resume` 读同一张权威表，保证被判定为可续的 run 在判定前已被 pause。
+/// → 误落 Fresh（断点续跑失效）。此函数按 `multica_task_conversations` 每个 checkpoint 的
+/// `(work_dir, local_task_id, local_run_id)` **定点**收敛，与 `classify_resume` 读同一张权威表，
+/// 保证被判定为可续的 run 在判定前已被 pause。
+///
+/// 定点收敛 = `run_pause(ProcessInterrupted)` + `cancel_active_acp_attempts_for_run_best_effort`，
+/// 与 `teardown_active_run` 同款 run 级收尾；不扫工作区全量任务历史（旧实现按 work_dir 全量
+/// `recover_interrupted_running_sessions()`，最坏「checkpoint 工作区数 × 各工作区历史规模」直接
+/// 阻塞启动关键路径）。
+///
+/// 在启动 `spawn_blocking` 恢复管线内执行（不阻塞窗口启动）；仅 multica resume 经
+/// `wait_for_startup_accepting` 等待其完成后才判定续跑（P2）。
 ///
 /// 安全前提：启动瞬间磁盘上所有 `Running` 都是上一轮崩溃遗留的孤儿态（进程刚起，无在飞 run）。
-/// 单 work_dir 自愈失败（盘 I/O）仅 `warn!` 不阻断其余。
+/// 单条目收敛失败（盘 I/O）仅 `warn!` 不阻断其余。
 pub fn recover_multica_work_dir_sessions(home_app: &App) {
-    // 无条件打一条 beacon：存在即证明「改动十三」代码已编进二进制（区分旧 binary 仍落 Fresh）。
-    let conv_count = home_app
+    // 无条件打一条 beacon：存在即证明定点自愈代码已编进二进制（区分旧 binary 仍落 Fresh）。
+    let conversations = home_app
         .load_state()
         .ok()
         .and_then(|state_cfg| state_cfg.multica_task_conversations)
-        .map(|c| c.len())
-        .unwrap_or(0);
-    let convs = home_app
-        .load_state()
-        .ok()
-        .and_then(|state_cfg| state_cfg.multica_task_conversations);
-    let work_dirs = convs
-        .as_ref()
-        .map(collect_multica_work_dirs)
         .unwrap_or_default();
-    if work_dirs.is_empty() {
+    let conv_count = conversations.len();
+    if conversations.is_empty() {
         info!(
             conv_count,
-            "multica startup recovery: no multica work_dir to sweep (断点续跑根因修复代码已加载)"
+            "multica startup recovery: no multica checkpoint to recover (断点续跑根因修复代码已加载)"
         );
         return;
     }
     let mut recovered = 0usize;
-    for work_dir in &work_dirs {
-        let workspace_app =
-            home_app.with_repo_root(Utf8PathBuf::from(work_dir), home_app.config.clone());
-        match workspace_app.recover_interrupted_running_sessions() {
-            Ok(paused) => {
-                recovered += paused.len();
-                if !paused.is_empty() {
-                    info!(
-                        work_dir,
-                        count = paused.len(),
-                        "multica startup recovery: paused orphaned running sessions in work_dir"
-                    );
-                }
+    let mut skipped_missing = 0usize;
+    // 同一 work_dir 复用一个 workspace App（App 构造含目录初始化，避免逐 checkpoint 重建）。
+    let mut workspace_apps: std::collections::HashMap<String, App> =
+        std::collections::HashMap::new();
+    for conv in conversations.values() {
+        let Some(work_dir) = conv
+            .work_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let workspace_app = workspace_apps
+            .entry(work_dir.to_string())
+            .or_insert_with(|| {
+                home_app.with_repo_root(Utf8PathBuf::from(work_dir), home_app.config.clone())
+            });
+        let status = match workspace_app.run_status(&conv.local_task_id, &conv.local_run_id) {
+            Ok(status) => status,
+            Err(_) => {
+                // run.json 缺失（本地任务已删）或读失败：无孤儿可收敛，跳过该 checkpoint。
+                skipped_missing += 1;
+                continue;
             }
-            Err(error) => warn!(
-                work_dir,
-                %error,
-                "multica startup recovery: recover work_dir failed (skipped)"
-            ),
+        };
+        if status.status != RunStatus::Running {
+            continue; // 非 Running：上一轮已收敛（Paused/terminal），无需处理。
         }
+        if let Err(error) = workspace_app.run_pause(
+            &conv.local_task_id,
+            &conv.local_run_id,
+            PauseReason::ProcessInterrupted,
+        ) {
+            warn!(
+                work_dir,
+                task = %conv.local_task_id,
+                run = %conv.local_run_id,
+                %error,
+                "multica startup recovery: pause orphaned run failed (skipped)"
+            );
+            continue;
+        }
+        workspace_app.cancel_active_acp_attempts_for_run_best_effort(
+            &conv.local_task_id,
+            &conv.local_run_id,
+        );
+        recovered += 1;
+        info!(
+            work_dir,
+            task = %conv.local_task_id,
+            run = %conv.local_run_id,
+            "multica startup recovery: paused orphaned multica run in work_dir"
+        );
     }
     info!(
-        work_dir_count = work_dirs.len(),
-        conv_count,
+        checkpoint_count = conv_count,
+        work_dir_count = workspace_apps.len(),
         recovered,
-        "multica startup recovery: swept multica work_dir repos for orphaned runs"
+        skipped_missing,
+        "multica startup recovery: targeted per-checkpoint recovery completed"
     );
 }
 
@@ -706,6 +727,23 @@ pub async fn start_multica_conversation_run(
     // ⑤ 断点续跑判定（改动三）：命中可续跑 checkpoint → 续既有本地 run（冷重连 ACP session，
     //    prompt=None 纯续跑，沿用既有模型/模式）；续跑失败或无可续 checkpoint → 落下面的 Fresh 分支。
     //    决策依据：D1=纯续跑(prompt=None)、D2=仅 is_run_continuable 时续（不主动 pause-then-resume）。
+    //
+    //    判定前等待启动恢复管线完成（P2）：work_dir 定点自愈在 spawn_blocking 管线内异步执行，
+    //    未完成时 checkpoint 指向的孤儿 run 仍是 stale Running（is_run_continuable=false）→ 误落 Fresh。
+    //    仅 resume 判定等待；超时/关闭按 best-effort 继续（不劣于无等待的旧语义）。
+    let recovery = state.runtime_recovery();
+    let gate = tauri::async_runtime::spawn_blocking(move || {
+        recovery.wait_for_startup_accepting(MULTICA_RESUME_STARTUP_GATE_TIMEOUT)
+    })
+    .await
+    .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?;
+    if let Err(error) = gate {
+        warn!(
+            task = %remote_task_id,
+            code = error.code(),
+            "multica resume: startup recovery gate not open (proceed best-effort)"
+        );
+    }
     if let ResumeDecision::Resume {
         local_task_id,
         local_run_id,
@@ -890,7 +928,7 @@ pub async fn start_multica_conversation_run(
                 entry.session_id = None;
                 entry.work_dir = Some(ws_path.clone());
                 state.multica_task_conversations = Some(conversations);
-                true
+                (true, ())
             })?;
             Ok(created)
         },
@@ -1456,26 +1494,219 @@ mod tests {
         assert!(child.work_dir.is_none());
     }
 
-    // ---- 改动十三：启动自愈覆盖 multica work_dir（collect_multica_work_dirs 纯逻辑固化）----
-    #[test]
-    fn collect_multica_work_dirs_dedup_trims_and_drops_empty() {
-        // 续跑索引汇总待自愈 work_dir：去重 + trim + 丢空/None（home 自愈够不到这些独立 repo）。
-        let mut map = std::collections::HashMap::new();
-        map.insert("t-1".into(), checkpoint(Some("s-1"), Some("/ws-a")));
-        map.insert("t-2".into(), checkpoint(Some("s-2"), Some("  /ws-b  "))); // trim
-        map.insert("t-3".into(), checkpoint(Some("s-3"), Some("/ws-a"))); // 与 t-1 重复
-        map.insert("t-4".into(), checkpoint(Some("s-4"), Some("   "))); // 纯空白 → 丢
-        map.insert("t-5".into(), checkpoint(Some("s-5"), None)); // None → 丢
+    // ---- 启动定点自愈（P2：按 checkpoint 的 (work_dir, task, run) 收敛，不扫全量历史）----
+    use gold_band::config::RuntimeConfig;
+    use gold_band::domain::{NodeOutcome, NodeType, RoundTrigger, VERSION};
+    use gold_band::runtime::{NodeState, RoundState, TaskState};
+    use gold_band::storage::{StoragePathConfig, write_json};
+    use tempfile::tempdir;
 
-        let dirs = collect_multica_work_dirs(&map);
-        assert_eq!(dirs, vec!["/ws-a".to_string(), "/ws-b".to_string()]);
+    /// 在 work_dir 下落一套最小 task/run/round/node 存储（run 处于给定状态、locator 齐）。
+    fn seed_workspace_run(
+        home_app: &App,
+        work_dir: &str,
+        task_id: &str,
+        run_id: &str,
+        status: RunStatus,
+    ) {
+        let workspace_app =
+            home_app.with_repo_root(Utf8PathBuf::from(work_dir), home_app.config.clone());
+        let (round_id, node_id, attempt_id) = ("round-001", "node-001", "attempt-001");
+        write_json(
+            &workspace_app.paths.task_file(task_id),
+            &TaskState::new(task_id),
+        )
+        .unwrap();
+        write_json(
+            &workspace_app.paths.run_file(task_id, run_id),
+            &RunState {
+                version: VERSION.to_string(),
+                id: run_id.to_string(),
+                task_id: task_id.to_string(),
+                task_uuid: None,
+                status,
+                outcome: None,
+                started_at: "2026-09-03T00:00:00Z".into(),
+                updated_at: "2026-09-03T00:00:01Z".into(),
+                workflow_snapshot: "workflow.snapshot.json".into(),
+                current_round: Some(round_id.into()),
+                current_node: Some(node_id.into()),
+                current_attempt: Some(attempt_id.into()),
+                new_rounds_opened: 0,
+                pause_reason: None,
+                uuid: None,
+                last_executed_node: None,
+                worktree: None,
+                execution: Default::default(),
+            },
+        )
+        .unwrap();
+        write_json(
+            &workspace_app.paths.round_file(task_id, run_id, round_id),
+            &RoundState {
+                version: VERSION.to_string(),
+                id: round_id.to_string(),
+                run_id: run_id.to_string(),
+                index: 1,
+                status,
+                outcome: None,
+                trigger: RoundTrigger::Initial,
+                started_at: "2026-09-03T00:00:00Z".into(),
+                trace: Vec::new(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        write_json(
+            &workspace_app
+                .paths
+                .node_file(task_id, run_id, round_id, node_id, attempt_id),
+            &NodeState {
+                version: VERSION.to_string(),
+                acp_storage_schema_version: gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                node_id: node_id.to_string(),
+                node_type: NodeType::Worker,
+                run_id: run_id.to_string(),
+                round_id: round_id.to_string(),
+                attempt_id: attempt_id.to_string(),
+                status,
+                outcome: Some(NodeOutcome::Success),
+                started_at: "2026-09-03T00:00:00Z".into(),
+                finished_at: None,
+                manual_check_pending: false,
+                runtime_execution_id: None,
+                resolved_config: Default::default(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+    }
+
+    fn recovery_test_home_app(directory: &tempfile::TempDir) -> App {
+        let test_home = directory.path().join("home");
+        std::fs::create_dir_all(&test_home).unwrap();
+        let path_config = StoragePathConfig {
+            app_key: "gold-band-multica-recovery-test",
+            config_dir_name: ".gold-band-multica-recovery-test",
+            home_env_var: "GOLD_BAND_MULTICA_RECOVERY_TEST_HOME",
+        };
+        unsafe { std::env::set_var(path_config.home_env_var, &test_home) };
+        App::with_config_and_path_config(
+            Utf8PathBuf::from_path_buf(directory.path().join("home-repo")).unwrap(),
+            RuntimeConfig::default(),
+            path_config,
+        )
     }
 
     #[test]
-    fn collect_multica_work_dirs_empty_map_yields_empty() {
-        // 无续跑索引 → 无 work_dir 待自愈（recover_multica_work_dir_sessions 提前返回）。
-        let map = std::collections::HashMap::<String, MulticaTaskConversation>::new();
-        assert!(collect_multica_work_dirs(&map).is_empty());
+    fn recover_multica_work_dir_sessions_pauses_only_checkpointed_orphan_runs() {
+        let directory = tempdir().unwrap();
+        let work_dir = Utf8PathBuf::from_path_buf(directory.path().join("ws")).unwrap();
+        std::fs::create_dir_all(work_dir.as_std_path()).unwrap();
+        let home_app = recovery_test_home_app(&directory);
+        let work_dir_str = work_dir.as_str().to_string();
+
+        // checkpoint 指向的孤儿 run（崩溃遗留 Running）。
+        seed_workspace_run(
+            &home_app,
+            &work_dir_str,
+            "task-ckpt",
+            "run-ckpt",
+            RunStatus::Running,
+        );
+        // 同 work_dir 未登记 checkpoint 的 Running run：定点自愈不触碰（不扫全量历史）。
+        seed_workspace_run(
+            &home_app,
+            &work_dir_str,
+            "task-other",
+            "run-other",
+            RunStatus::Running,
+        );
+
+        home_app
+            .with_state(|state| {
+                state.multica_task_conversations = Some(std::collections::HashMap::from([(
+                    "t-remote".to_string(),
+                    MulticaTaskConversation {
+                        local_task_id: "task-ckpt".to_string(),
+                        local_run_id: "run-ckpt".to_string(),
+                        session_id: Some("acp-sess".to_string()),
+                        work_dir: Some(work_dir_str.clone()),
+                    },
+                )]));
+                (true, ())
+            })
+            .unwrap();
+
+        recover_multica_work_dir_sessions(&home_app);
+
+        let workspace_app = home_app.with_repo_root(work_dir, home_app.config.clone());
+        let checkpointed = workspace_app.run_status("task-ckpt", "run-ckpt").unwrap();
+        assert_eq!(checkpointed.status, RunStatus::Paused);
+        assert_eq!(
+            checkpointed.pause_reason,
+            Some(PauseReason::ProcessInterrupted)
+        );
+        let untouched = workspace_app.run_status("task-other", "run-other").unwrap();
+        assert_eq!(
+            untouched.status,
+            RunStatus::Running,
+            "未登记 checkpoint 的 run 不应被定点自愈触碰"
+        );
+    }
+
+    #[test]
+    fn recover_multica_work_dir_sessions_skips_missing_and_non_running_checkpoints() {
+        let directory = tempdir().unwrap();
+        let work_dir = Utf8PathBuf::from_path_buf(directory.path().join("ws")).unwrap();
+        std::fs::create_dir_all(work_dir.as_std_path()).unwrap();
+        let home_app = recovery_test_home_app(&directory);
+        let work_dir_str = work_dir.as_str().to_string();
+
+        // 已收敛（Paused）的 checkpoint run + 本地已删除（无 run.json）的 checkpoint。
+        seed_workspace_run(
+            &home_app,
+            &work_dir_str,
+            "task-paused",
+            "run-paused",
+            RunStatus::Paused,
+        );
+
+        home_app
+            .with_state(|state| {
+                state.multica_task_conversations = Some(std::collections::HashMap::from([
+                    (
+                        "t-paused".to_string(),
+                        MulticaTaskConversation {
+                            local_task_id: "task-paused".to_string(),
+                            local_run_id: "run-paused".to_string(),
+                            session_id: None,
+                            work_dir: Some(work_dir_str.clone()),
+                        },
+                    ),
+                    (
+                        "t-deleted".to_string(),
+                        MulticaTaskConversation {
+                            local_task_id: "task-deleted".to_string(),
+                            local_run_id: "run-deleted".to_string(),
+                            session_id: None,
+                            work_dir: Some(work_dir_str.clone()),
+                        },
+                    ),
+                ]));
+                (true, ())
+            })
+            .unwrap();
+
+        // 两者皆跳过：Paused 保持原状态（pause_reason 不被改写），缺失 run 不报错。
+        recover_multica_work_dir_sessions(&home_app);
+
+        let workspace_app = home_app.with_repo_root(work_dir, home_app.config.clone());
+        let paused = workspace_app
+            .run_status("task-paused", "run-paused")
+            .unwrap();
+        assert_eq!(paused.status, RunStatus::Paused);
+        assert_eq!(paused.pause_reason, None, "已收敛的 run 不应被重复处理");
     }
 
     #[test]

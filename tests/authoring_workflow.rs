@@ -67,6 +67,7 @@ impl ProviderAdapter for SuccessProvider {
             }),
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 
@@ -138,6 +139,7 @@ impl ProviderAdapter for InterruptThenSuccessProvider {
             }),
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 
@@ -650,16 +652,18 @@ fn built_in_review_profile_scopes_review_to_current_changes() {
 
 #[test]
 fn built_in_validation_profiles_do_not_block_on_missing_external_evidence() {
-    for (language, test_rule, review_rule) in [
+    for (language, test_rule, review_rule, accept_rule) in [
         (
             DesktopLanguage::ZhCn,
             "环境问题或需要人工验收导致当前验证无法继续时，应如实记录未执行项和证据缺口，但不构成阻塞条件",
             "前序存在开发节点但没有产出 `dev-report.md`，不构成阻塞条件",
+            "环境问题或需要人工验收导致当前验收无法继续时，应如实记录未执行项和证据缺口，但不构成阻塞条件",
         ),
         (
             DesktopLanguage::En,
             "Environment issues or required manual acceptance may prevent validation from continuing, but do not constitute blocking conditions",
             "If a predecessor dev node did not produce `dev-report.md`, that absence is not a blocking condition",
+            "Environment issues or required manual acceptance may prevent acceptance from continuing, but do not constitute blocking conditions",
         ),
     ] {
         let temp = tempdir().unwrap();
@@ -685,6 +689,14 @@ fn built_in_validation_profiles_do_not_block_on_missing_external_evidence() {
         assert!(
             review.content.contains("git working tree") || review.content.contains("git 工作区")
         );
+
+        let accept = profiles
+            .profiles
+            .iter()
+            .find(|profile| profile.id == "pf-builtin-accept")
+            .unwrap();
+        assert!(accept.content.contains(accept_rule));
+        assert!(accept.content.contains("BLOCKED"));
     }
 }
 

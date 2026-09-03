@@ -11,9 +11,9 @@ const imageActionMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@/lib/image-actions', () => ({
-  copyAttachmentImage: imageActionMocks.copy,
+  copyImageAsset: imageActionMocks.copy,
   IMAGE_ACTION_FEEDBACK_DURATION_MS: 1_800,
-  saveAttachmentImageAs: imageActionMocks.save,
+  saveImageAssetAs: imageActionMocks.save,
 }));
 
 vi.mock('react-zoom-pan-pinch', () => ({
@@ -62,7 +62,7 @@ describe('workspace image context menu', () => {
 
     try {
       await act(async () => root.render(
-        <WorkspaceImageCanvas src="asset://image" alt="image.png" attachment={attachment} />,
+        <WorkspaceImageCanvas src="asset://image" alt="image.png" imageActionAsset={attachment} />,
       ));
 
       const buttons = Array.from(container.querySelectorAll('button'));

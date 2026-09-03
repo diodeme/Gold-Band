@@ -8,6 +8,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const DYNAMIC_COMPLETION_ARTIFACT: &str = "dynamic-node-completion";
+pub const AI_DYNAMIC_RESULT_ARTIFACT: &str = "ai-dynamic-result";
+pub const AI_DYNAMIC_REPORT_MANIFEST_ARTIFACT: &str = "ai-dynamic-report-manifest";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -376,6 +378,246 @@ pub struct DynamicGraphState {
     pub groups: Vec<DynamicGroupState>,
     pub workspaces: Vec<WorkspaceState>,
     pub proposals: Vec<DynamicProposalState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicResult {
+    pub version: String,
+    pub kind: AiDynamicResultKind,
+    pub outcome: RunOutcome,
+    pub summary: String,
+    pub source_node_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_group_id: Option<String>,
+    pub report_manifest: AiDynamicReportManifestRef,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiDynamicResultKind {
+    AiDynamicResult,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicReportManifestRef {
+    pub path: Utf8PathBuf,
+    pub format_version: String,
+    pub unit_count: usize,
+    pub attachment_count: usize,
+    pub generated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicReportManifest {
+    pub version: String,
+    pub kind: AiDynamicReportManifestKind,
+    pub dynamic_run_id: String,
+    pub root_node_id: String,
+    pub outcome: RunOutcome,
+    pub generated_at: String,
+    pub nodes: Vec<AiDynamicReportNode>,
+    pub groups: Vec<AiDynamicReportGroup>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiDynamicReportManifestKind {
+    AiDynamicReportManifest,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicReportNode {
+    pub id: String,
+    pub kind: DynamicNodeKind,
+    pub title: String,
+    pub task: String,
+    pub status: DynamicNodeStatus,
+    pub outcome: Option<NodeOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spawned_by_node_id: Option<String>,
+    pub depends_on: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+    pub chain_id: String,
+    pub workspace: AiDynamicWorkspaceRef,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next: Option<AiDynamicReportNext>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_workflow: Option<AiDynamicChildWorkflowRef>,
+    pub attachments: Vec<AiDynamicReportAttachment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum AiDynamicReportNext {
+    End,
+    Single {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+    },
+    Fanout {
+        #[serde(rename = "groupId")]
+        group_id: String,
+        #[serde(rename = "rootNodeIds")]
+        root_node_ids: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicWorkspaceRef {
+    pub id: String,
+    pub kind: WorkspaceKind,
+    pub path: Utf8PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicChildWorkflowRef {
+    pub workflow_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow_snapshot_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicReportAttachment {
+    pub name: String,
+    pub path: Utf8PathBuf,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicReportGroup {
+    pub id: String,
+    pub status: DynamicGroupStatus,
+    pub depth: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_group_id: Option<String>,
+    pub created_by_node_id: String,
+    pub root_node_ids: Vec<String>,
+    pub terminal_node_ids: Vec<String>,
+    pub target_workspace_id: String,
+    pub child_workspace_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merge_node_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acceptance_node_id: Option<String>,
+    pub merge: AiDynamicTaskRef,
+    pub acceptance: AiDynamicTaskRef,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicTaskRef {
+    pub title: String,
+    pub task: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicCoordinationSnapshot {
+    pub version: String,
+    pub kind: AiDynamicCoordinationSnapshotKind,
+    pub dynamic_run_id: String,
+    pub generated_at: String,
+    pub workstreams: Vec<AiDynamicCoordinationWorkstream>,
+    pub groups: Vec<AiDynamicCoordinationGroup>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiDynamicCoordinationSnapshotKind {
+    AiDynamicCoordinationSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiDynamicWorkstreamStatus {
+    Pending,
+    Active,
+    Waiting,
+    Paused,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicCoordinationWorkstream {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_workstream_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_group_id: Option<String>,
+    pub title: String,
+    pub goal: String,
+    pub status: AiDynamicWorkstreamStatus,
+    pub workspace: AiDynamicWorkspaceRef,
+    pub child_group_ids: Vec<String>,
+    pub steps: Vec<AiDynamicCoordinationStep>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicCoordinationStep {
+    pub node_id: String,
+    pub kind: DynamicNodeKind,
+    pub title: String,
+    pub task: String,
+    pub status: DynamicNodeStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<NodeOutcome>,
+    pub depends_on: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicCoordinationGroup {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_group_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_by_workstream_id: Option<String>,
+    pub branch_workstream_ids: Vec<String>,
+    pub phase: DynamicGroupStatus,
+    pub target_workspace: AiDynamicWorkspaceRef,
+    pub merge: AiDynamicCoordinationGroupStage,
+    pub acceptance: AiDynamicCoordinationGroupStage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDynamicCoordinationGroupStage {
+    pub title: String,
+    pub task: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<DynamicNodeStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<NodeOutcome>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

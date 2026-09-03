@@ -28,6 +28,34 @@ export function getAgentRegistry() {
   return getRuntimeApi().getAgentRegistry();
 }
 
+export function getPersonalAnalytics() {
+  return getRuntimeApi().getPersonalAnalytics();
+}
+
+export function syncPersonalAnalytics() {
+  return getRuntimeApi().syncPersonalAnalytics();
+}
+
+export function queryPersonalAnalyticsReport(range: { start?: string | null; end?: string | null }, agentType?: string, modelId?: string | null, thoughtLevelOptionId?: string | null, thoughtLevelValue?: string | null) {
+  return getRuntimeApi().queryPersonalAnalyticsReport(range, agentType, modelId, thoughtLevelOptionId, thoughtLevelValue);
+}
+
+export function startPersonalAnalyticsInsights(agentType: string, range: { start?: string | null; end?: string | null }, modelId?: string | null, thoughtLevelOptionId?: string | null, thoughtLevelValue?: string | null) {
+  return getRuntimeApi().startPersonalAnalyticsInsights(agentType, range, modelId, thoughtLevelOptionId, thoughtLevelValue);
+}
+
+export function cancelPersonalAnalyticsInsights(operationId: string) {
+  return getRuntimeApi().cancelPersonalAnalyticsInsights(operationId);
+}
+
+export function cancelPersonalAnalytics(operationId: string) {
+  return getRuntimeApi().cancelPersonalAnalytics(operationId);
+}
+
+export function subscribePersonalAnalyticsUpdates(listener: Parameters<NonNullable<ReturnType<typeof getRuntimeApi>['subscribePersonalAnalyticsUpdates']>>[0]) {
+  return getRuntimeApi().subscribePersonalAnalyticsUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
 export function getAgentCommandCatalog(agentType: string, workspacePath: string) {
   return getRuntimeApi().getAgentCommandCatalog(agentType, workspacePath);
 }
@@ -325,6 +353,10 @@ export function getFileComparison(locator: Parameters<ReturnType<typeof getRunti
   return getRuntimeApi().getFileComparison(locator, changeSetId, changeId);
 }
 
+export function resolveTurnAttachmentFile(locator: Parameters<ReturnType<typeof getRuntimeApi>['resolveTurnAttachmentFile']>[0], changeSetId: string, attachmentId: string) {
+  return getRuntimeApi().resolveTurnAttachmentFile(locator, changeSetId, attachmentId);
+}
+
 export function subscribeAcpSessionUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeAcpSessionUpdates']>>[0]) {
   return getRuntimeApi().subscribeAcpSessionUpdates?.(listener) ?? Promise.resolve(() => {});
 }
@@ -570,8 +602,20 @@ export function saveDesktopUiMode(mode: 'conversation' | 'workbench') {
   return getRuntimeApi().saveDesktopUiMode(mode);
 }
 
-export function getConversationSidebar() {
-  return getRuntimeApi().getConversationSidebar();
+export function getConversationSidebarBootstrap() {
+  return getRuntimeApi().getConversationSidebarBootstrap();
+}
+
+export function getConversationTaskPage(projectId: string, cursor?: string | null, limit?: number) {
+  return getRuntimeApi().getConversationTaskPage(projectId, cursor, limit);
+}
+
+export function getConversationPinnedTaskPage(cursor?: string | null, limit?: number) {
+  return getRuntimeApi().getConversationPinnedTaskPage(cursor, limit);
+}
+
+export function getConversationRunSummaryPage(projectId: string, taskId: string, cursor?: string | null, limit?: number) {
+  return getRuntimeApi().getConversationRunSummaryPage(projectId, taskId, cursor, limit);
 }
 
 export function acknowledgeConversationTerminalResult(projectId: string, taskId: string, eventId: string) {

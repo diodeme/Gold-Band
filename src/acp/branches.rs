@@ -22,13 +22,13 @@ use crate::storage::atomic_write_file;
 #[cfg(test)]
 use crate::storage::ensure_parent_dir;
 use crate::storage::read_json;
-#[cfg(test)]
 use crate::storage::write_json;
 
 pub const ROOT_BRANCH_ID: &str = "root";
 const BRANCH_META_KEY: &str = "goldBandConversation";
 const BRANCH_TIMELINE_STORAGE_SCHEMA_VERSION: u32 = 1;
 const AGENT_RESULT_STORAGE_SCHEMA_VERSION: u32 = 2;
+const STANDALONE_ACP_STORAGE_STATE_FILE: &str = "acp.storage.json";
 const AGENT_NAMESPACE: Uuid = Uuid::from_u128(0x63c7f8ac_1498_4f6e_8f6d_62f2f04033f1);
 #[cfg(test)]
 const AGENT_INDEX_CACHE_CAPACITY: usize = 16;
@@ -876,6 +876,30 @@ pub fn prepare_agent_timeline_storage(attempt_dir: &Utf8Path) -> Result<bool> {
     Ok(changed)
 }
 
+/// Declares the ACP-owned storage schema for an attempt that is not backed by
+/// a workflow or dynamic-node lifecycle state file.
+pub fn initialize_standalone_agent_timeline_storage(attempt_dir: &Utf8Path) -> Result<()> {
+    std::fs::create_dir_all(attempt_dir)?;
+    let path = attempt_dir.join(STANDALONE_ACP_STORAGE_STATE_FILE);
+    if path.exists() {
+        let current = attempt_storage_schema_version(&path)?;
+        if current > CURRENT_ACP_STORAGE_SCHEMA_VERSION {
+            anyhow::bail!("acp.storage-schema-version-unsupported");
+        }
+        if current < CURRENT_ACP_STORAGE_SCHEMA_VERSION {
+            advance_node_acp_storage_schema_version(&path, CURRENT_ACP_STORAGE_SCHEMA_VERSION)?;
+        }
+        return Ok(());
+    }
+    write_json(
+        &path,
+        &json!({
+            "version": "1",
+            "acpStorageSchemaVersion": CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+        }),
+    )
+}
+
 fn attempt_storage_state_path(attempt_dir: &Utf8Path) -> Result<Utf8PathBuf> {
     let direct = attempt_dir.join("node.json");
     if direct.exists() {
@@ -885,7 +909,12 @@ fn attempt_storage_state_path(attempt_dir: &Utf8Path) -> Result<Utf8PathBuf> {
         .parent()
         .map(|parent| parent.join("node.json"))
         .filter(|path| path.exists());
-    dynamic_leaf.ok_or_else(|| anyhow::anyhow!("acp.attempt-state-missing"))
+    dynamic_leaf
+        .or_else(|| {
+            let standalone = attempt_dir.join(STANDALONE_ACP_STORAGE_STATE_FILE);
+            standalone.exists().then_some(standalone)
+        })
+        .ok_or_else(|| anyhow::anyhow!("acp.attempt-state-missing"))
 }
 
 fn attempt_storage_schema_version(path: &Utf8Path) -> Result<u32> {
@@ -1841,6 +1870,31 @@ mod tests {
         assert!(!prepare_agent_timeline_storage(&attempt).unwrap());
         assert!(!attempt.join(".acp-branch-timeline-migration-v1").exists());
         assert!(!attempt.join(".acp-agent-result-migration-v2").exists());
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn explicit_standalone_attempt_storage_skips_legacy_scan() {
+        let attempt = temp_attempt("standalone-current-storage-schema");
+        initialize_standalone_agent_timeline_storage(&attempt).unwrap();
+        std::fs::write(
+            branch_timeline_path(&attempt, ROOT_BRANCH_ID).as_std_path(),
+            b"malformed timeline",
+        )
+        .unwrap();
+
+        assert!(!prepare_agent_timeline_storage(&attempt).unwrap());
+        assert!(attempt.join("acp.storage.json").exists());
+        assert!(!attempt.join("node.json").exists());
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn missing_workflow_attempt_storage_is_still_rejected() {
+        let attempt = temp_attempt("missing-storage-state");
+
+        let error = prepare_agent_timeline_storage(&attempt).unwrap_err();
+        assert_eq!(error.to_string(), "acp.attempt-state-missing");
         std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
     }
 

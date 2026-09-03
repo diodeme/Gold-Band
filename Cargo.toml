@@ -18,6 +18,7 @@ iana-time-zone = "0.1"
 cron = "0.17"
 command-group = "5.0.1"
 dirs = "6"
+dunce = "1"
 clap = { version = "4", features = ["derive"] }
 indexmap = { version = "2", features = ["serde"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "ico"] }
@@ -45,7 +46,7 @@ file-rotate = "0.8"
 ratatui = "0.29"
 crossterm = "0.28"
 figlet-rs = "1.0.0"
-rusqlite = { version = "0.34", features = ["bundled"] }
+rusqlite = { version = "0.34", features = ["bundled", "hooks"] }
 reqwest = { version = "0.12", features = ["blocking", "json"] }
 url = "2"
 atomic-write-file = "0.2"

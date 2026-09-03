@@ -1,5 +1,7 @@
 acpSessionTitleRefreshEnabled = false
-acpChatEventPageSize = 200
+acpChatEventPageSize = 96
+acpChatEventWindowPageCount = 3
+acpChatResourceCacheSessionCount = 8
 acpRawMaxSizeBytes = 2097152
 acpRawTargetSizeBytes = 1048576
 acpSessionForegroundLeaseTtlSecs = 90
@@ -10,7 +12,7 @@ acpMaxIdleSessionRuntimes = 8
 acpMaxIdleAdapterConnections = 4
 acpTimelineCompactMaxSizeBytes = 8388608
 acpTimelineCompactPatchRatio = 4
-conversationAutoTitleMaxChars = 18
+conversationAutoTitleMaxChars = 48
 conversationInlineContentMaxBytes = 20000
 conversationInlineImageMaxBytes = 4194304
 conversationInlineImageMaxDimension = 2560
@@ -77,6 +79,7 @@ markdownEmbeddedImageMaxConcurrent = 4
 
 [turnFiles]
 cardPreviewLimit = 3
+attachmentCardPreviewLimit = 1
 captureMaxEntries = 256
 captureMaxFileBytes = 2097152
 captureMaxTotalBytes = 16777216

@@ -16,7 +16,8 @@ use gold_band::acp::prompt_queue::{
     settle_dispatching_prompt, suspend_auto_dispatch, take_queued_prompt,
 };
 use gold_band::acp::turn_files::{
-    CHANGE_SET_NOT_FOUND, TurnFileChangeSet, TurnFileStore, VERSION_NOT_FOUND,
+    ATTACHMENT_ACCESS_DENIED, ATTACHMENT_NOT_FOUND, CHANGE_SET_NOT_FOUND, TurnFileChangeSet,
+    TurnFileStore, VERSION_NOT_FOUND,
 };
 use gold_band::app::{
     AcpPromptLifecycleEvent, AcpTurnBatchProgress, AcpTurnOutcome, App, AutoTemplate,
@@ -55,9 +56,9 @@ use gold_band::config::{
 };
 use gold_band::observability::set_runtime_log_level;
 use gold_band::provider::{
-    ConversationPromptInput, MAX_USER_PROMPT_QUOTE_CHARS, MAX_USER_PROMPT_QUOTE_ID_BYTES,
-    MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES, MAX_USER_PROMPT_QUOTES, UserPromptQuote,
-    conversation_prompt_text, select_config_options_from_capabilities,
+    AcpLiveTimelinePosition, ConversationPromptInput, MAX_USER_PROMPT_QUOTE_CHARS,
+    MAX_USER_PROMPT_QUOTE_ID_BYTES, MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES, MAX_USER_PROMPT_QUOTES,
+    UserPromptQuote, conversation_prompt_text, select_config_options_from_capabilities,
     supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use serde::{Deserialize, Serialize};
@@ -73,7 +74,10 @@ use crate::avatar::{
 use crate::conversation_attention::{
     ConversationTerminalResultKind, ConversationTerminalResultVm, record_terminal_result,
 };
-use crate::conversation_workspace::{app_for_workspace, workspace_entry_for_project};
+use crate::conversation_workspace::{
+    RuntimeWorkspaceAccessError, app_for_workspace, validate_runtime_workspace_access,
+    workspace_entry_for_project,
+};
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
 use crate::multica::state::SharedMulticaState;
@@ -139,9 +143,37 @@ where
     T: Send + 'static,
     F: FnOnce() -> CommandResult<T> + Send + 'static,
 {
-    tauri::async_runtime::spawn_blocking(operation)
+    tauri::async_runtime::handle()
+        .inner()
+        .spawn_blocking(operation)
         .await
-        .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
+        .map_err(|error| {
+            let kind = if error.is_panic() {
+                "panic"
+            } else if error.is_cancelled() {
+                "cancelled"
+            } else {
+                "unknown"
+            };
+            let detail = if error.is_panic() {
+                let payload = error.into_panic();
+                payload
+                    .downcast_ref::<&str>()
+                    .map(|message| (*message).to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "non-string panic payload".to_string())
+            } else {
+                error.to_string()
+            };
+            warn!(join_kind = kind, %detail, "blocking command task failed to join");
+            CommandErrorVm::new(
+                "app.task-join-failed",
+                serde_json::json!({
+                    "kind": kind,
+                    "detail": detail,
+                }),
+            )
+        })?
 }
 
 #[derive(Debug, Clone)]
@@ -505,6 +537,7 @@ fn settle_failed_prompt_submission(
     expected_revision: u64,
 ) -> bool {
     let lifecycle_path = acp_lifecycle_path(&locator.attempt_dir(app));
+    let decided_at = gold_band::acp::events::current_timestamp();
     match gold_band::acp::events::persist_session_turn_terminal_owned(
         &lifecycle_path,
         turn_id,
@@ -512,10 +545,20 @@ fn settle_failed_prompt_submission(
         expected_revision,
         gold_band::acp::events::AcpLatestTurnStatus::Failed,
         "provider-error",
-        &gold_band::acp::events::current_timestamp(),
+        &decided_at,
     ) {
         Ok(Some(header)) => {
-            header.latest_turn_status == gold_band::acp::events::AcpLatestTurnStatus::Failed
+            let failed =
+                header.latest_turn_status == gold_band::acp::events::AcpLatestTurnStatus::Failed;
+            if failed {
+                touch_terminal_task_activity_best_effort(
+                    app,
+                    locator,
+                    Some(turn_id),
+                    "prompt-turn-failed",
+                );
+            }
+            failed
         }
         Ok(None) => {
             tracing::debug!(%turn_id, "skipping stale ACP prompt terminal notification");
@@ -583,6 +626,7 @@ fn admit_conversation_prompt_turn(
     let agent_label = acp_turn_agent_label(app, locator);
     let submission =
         conversation_prompt_submission(app, locator, turn_id.clone(), input, attachment_paths);
+    let admitted_at = submission.admitted_at.clone();
     let lifecycle_path = acp_lifecycle_path(&attempt_dir);
     if let Some(existing) =
         gold_band::acp::events::inspect_session_turn(&lifecycle_path, &submission)
@@ -595,6 +639,12 @@ fn admit_conversation_prompt_turn(
     let admission = gold_band::acp::events::begin_session_turn(&lifecycle_path, &submission)
         .map_err(prompt_submission_admission_error)?;
     if admission.started() {
+        touch_task_activity_at_best_effort(
+            app,
+            &locator.task_id,
+            &admitted_at,
+            "user-prompt-admitted",
+        );
         emit_direct_turn_started(app, locator);
         emit_acp_session_update(
             app_handle,
@@ -1086,6 +1136,7 @@ struct AcpSessionUpdatedEventVm {
     timeline_revision: Option<u64>,
     project_id: Option<String>,
     task_id: String,
+    task_uuid: Option<String>,
     run_id: String,
     round_id: String,
     node_id: String,
@@ -1096,6 +1147,7 @@ struct AcpSessionUpdatedEventVm {
     event: Option<AcpUiEvent>,
     lifecycle: Option<ConversationAttemptLifecycleVm>,
     activity: Option<ConversationTaskActivityVm>,
+    task_activity_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1104,6 +1156,7 @@ struct ConversationRunStateUpdatedEventVm {
     event_kind: String,
     project_id: String,
     task_id: String,
+    task_uuid: Option<String>,
     run_id: String,
     round_id: String,
     node_id: String,
@@ -1122,6 +1175,7 @@ pub(crate) fn emit_recovered_conversation_run_state(
             event_kind: "run-recovered".to_string(),
             project_id: recovered.project_id.clone(),
             task_id: recovered.task_id.clone(),
+            task_uuid: recovered.task_uuid.clone(),
             run_id: recovered.run_id.clone(),
             round_id: recovered.round_id.clone(),
             node_id: recovered.node_id.clone(),
@@ -1152,6 +1206,16 @@ pub(crate) fn resolve_command_app(
             Ok(global_app.with_repo_root(Utf8PathBuf::from(workspace_path), context.config))
         }
     }
+}
+
+async fn resolve_runtime_command_app(
+    state: &DesktopState,
+    project_id: Option<&str>,
+) -> Result<App, CommandErrorVm> {
+    let app = resolve_command_app(state, project_id)?;
+    validate_runtime_workspace_for_command(&app.paths.project_id, app.paths.repo_root.as_str())
+        .await?;
+    Ok(app)
 }
 
 pub(crate) fn register_lifecycle_subscribers(app: &App, app_handle: &AppHandle) {
@@ -1350,6 +1414,7 @@ fn conversation_run_state_update_for_event(
         RuntimeLifecycleEvent::NodeStarted {
             project_id,
             task_id,
+            task_uuid,
             run_id,
             round_id,
             node_id,
@@ -1360,6 +1425,7 @@ fn conversation_run_state_update_for_event(
             event_kind: "node-started".to_string(),
             project_id,
             task_id,
+            task_uuid,
             run_id,
             round_id,
             node_id,
@@ -1370,6 +1436,7 @@ fn conversation_run_state_update_for_event(
         RuntimeLifecycleEvent::RunPaused {
             project_id,
             task_id,
+            task_uuid,
             run_id,
             round_id,
             node_id,
@@ -1379,6 +1446,7 @@ fn conversation_run_state_update_for_event(
             event_kind: "run-paused".to_string(),
             project_id,
             task_id,
+            task_uuid,
             run_id,
             round_id,
             node_id,
@@ -1389,6 +1457,7 @@ fn conversation_run_state_update_for_event(
         RuntimeLifecycleEvent::RunCompleted {
             project_id,
             task_id,
+            task_uuid,
             run_id,
             round_id,
             node_id,
@@ -1399,6 +1468,7 @@ fn conversation_run_state_update_for_event(
             event_kind: "run-completed".to_string(),
             project_id,
             task_id,
+            task_uuid,
             run_id,
             round_id,
             node_id,
@@ -1418,7 +1488,7 @@ pub(crate) fn acp_live_update_emitter_for_app(
     dyn Fn(
             gold_band::app::AcpLiveEventContext,
             AcpUiEvent,
-            Option<(u64, u64)>,
+            AcpLiveTimelinePosition,
         ) -> anyhow::Result<()>
         + Send
         + Sync,
@@ -1438,6 +1508,20 @@ fn resolve_command_app_with_emitters(
 ) -> Result<ConfiguredConversationApp, CommandErrorVm> {
     let app = resolve_command_app(state, project_id)?;
     let pid = project_id.map(|s| s.to_string());
+    Ok(configure_conversation_runtime_callbacks(
+        app,
+        app_handle.clone(),
+        pid,
+    ))
+}
+
+async fn resolve_runtime_command_app_with_emitters(
+    app_handle: &AppHandle,
+    state: &DesktopState,
+    project_id: Option<&str>,
+) -> Result<ConfiguredConversationApp, CommandErrorVm> {
+    let app = resolve_runtime_command_app(state, project_id).await?;
+    let pid = project_id.map(str::to_string);
     Ok(configure_conversation_runtime_callbacks(
         app,
         app_handle.clone(),
@@ -1490,6 +1574,7 @@ fn prompt_turn_lifecycle_callback(
         + Sync,
 > {
     Arc::new(move |context, event| {
+        let terminal = matches!(&event, AcpPromptLifecycleEvent::Finished { .. });
         let locator = AttemptLocator::new(
             context.task_id,
             context.run_id,
@@ -1499,17 +1584,112 @@ fn prompt_turn_lifecycle_callback(
             context.outer_node_id,
             context.outer_attempt_id,
         );
-        process_prompt_turn_lifecycle(&app, locator, event, |locator, successful, completion| {
-            schedule_direct_prompt_queue_drain(
-                app_handle.clone(),
+        let result = process_prompt_turn_lifecycle(
+            &app,
+            locator.clone(),
+            event,
+            |locator, successful, completion| {
+                schedule_direct_prompt_queue_drain(
+                    app_handle.clone(),
+                    project_id.clone(),
+                    direct_prompt_queue_drain_app(&app),
+                    locator,
+                    successful,
+                    completion,
+                );
+            },
+        );
+        if result.is_ok() && terminal {
+            emit_acp_session_update(
+                &app_handle,
+                &app,
                 project_id.clone(),
-                direct_prompt_queue_drain_app(&app),
-                locator,
-                successful,
-                completion,
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                &locator.node_id,
+                &locator.attempt_id,
+                locator.outer_node_id.clone(),
+                locator.outer_attempt_id.clone(),
+                None,
             );
-        })
+        }
+        result
     })
+}
+
+fn touch_task_activity_at_best_effort(
+    app: &App,
+    task_id: &str,
+    activity_at: &str,
+    reason: &'static str,
+) {
+    if let Err(error) =
+        crate::view_models_conversation::touch_conversation_activity_at(app, task_id, activity_at)
+    {
+        warn!(
+            project_id = %app.paths.project_id,
+            %task_id,
+            %reason,
+            %error,
+            "failed to project durable Task conversation activity"
+        );
+    }
+}
+
+fn touch_terminal_task_activity_best_effort(
+    app: &App,
+    locator: &AttemptLocator,
+    expected_turn_id: Option<&str>,
+    reason: &'static str,
+) {
+    let result = (|| -> anyhow::Result<()> {
+        let lifecycle_path = acp_lifecycle_path(&locator.attempt_dir(app));
+        let metadata = gold_band::acp::events::read_session_metadata_value(&lifecycle_path, None)?;
+        if let Some(expected_turn_id) = expected_turn_id
+            && metadata.get("turnId").and_then(serde_json::Value::as_str) != Some(expected_turn_id)
+        {
+            tracing::debug!(
+                project_id = %app.paths.project_id,
+                task_id = %locator.task_id,
+                run_id = %locator.run_id,
+                %expected_turn_id,
+                "skipping stale terminal Task activity observation"
+            );
+            return Ok(());
+        }
+        anyhow::ensure!(
+            metadata
+                .get("liveTurnActivity")
+                .and_then(serde_json::Value::as_str)
+                == Some("idle")
+                && metadata
+                    .get("latestTurnStatus")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|status| status != "none"),
+            "canonical prompt turn has not reached terminal state"
+        );
+        let activity_at = metadata
+            .get("updatedAt")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("canonical terminal activity timestamp is missing"))?;
+        crate::view_models_conversation::touch_conversation_activity_at(
+            app,
+            &locator.task_id,
+            activity_at,
+        )
+    })();
+    if let Err(error) = result {
+        warn!(
+            project_id = %app.paths.project_id,
+            task_id = %locator.task_id,
+            run_id = %locator.run_id,
+            %reason,
+            %error,
+            "failed to project canonical terminal Task conversation activity"
+        );
+    }
 }
 
 fn process_prompt_turn_lifecycle(
@@ -1526,6 +1706,12 @@ fn process_prompt_turn_lifecycle(
             prompt_id,
             successful,
         } => {
+            touch_terminal_task_activity_best_effort(
+                app,
+                &locator,
+                prompt_id.as_deref(),
+                "prompt-turn-finished",
+            );
             let completion = prompt_id.map(|turn_id| DeferredTurnCompletion {
                 turn_id,
                 agent_label: acp_turn_agent_label(app, &locator),
@@ -1831,6 +2017,31 @@ impl CommandErrorVm {
             params,
         }
     }
+
+    fn from_runtime_workspace_access(error: RuntimeWorkspaceAccessError) -> Self {
+        Self::new(error.code(), error.params())
+    }
+}
+
+async fn run_runtime_workspace_validation<T, F>(operation: F) -> CommandResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> CommandResult<T> + Send + 'static,
+{
+    spawn_blocking_command(operation).await
+}
+
+pub(crate) async fn validate_runtime_workspace_for_command(
+    project_id: &str,
+    workspace_path: &str,
+) -> CommandResult<()> {
+    let project_id = project_id.to_string();
+    let workspace_path = workspace_path.to_string();
+    run_runtime_workspace_validation(move || {
+        validate_runtime_workspace_access(&project_id, &workspace_path)
+            .map_err(CommandErrorVm::from_runtime_workspace_access)
+    })
+    .await
 }
 
 pub(crate) async fn prepare_app_exit_inner(
@@ -3544,7 +3755,7 @@ pub async fn get_github_issue(
 }
 
 #[tauri::command]
-pub fn continue_run(
+pub async fn continue_run(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: Option<String>,
@@ -3552,7 +3763,12 @@ pub fn continue_run(
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
     let _ = state.record_heartbeat_activity();
-    let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
+    let app = resolve_runtime_command_app_with_emitters(
+        &app_handle,
+        state.inner(),
+        project_id.as_deref(),
+    )
+    .await?;
     app.record_metrics_resume_cause(
         &task_id,
         &run_id,
@@ -3654,7 +3870,12 @@ async fn continue_conversation_runtime_inner(
     prompt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<ConversationPromptSubmitVm> {
-    let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
+    let app = resolve_runtime_command_app_with_emitters(
+        &app_handle,
+        state.inner(),
+        project_id.as_deref(),
+    )
+    .await?;
     let locator = AttemptLocator::new(
         task_id,
         run_id,
@@ -3752,7 +3973,12 @@ pub async fn recover_conversation_runtime(
     attempt_id: String,
     expected_revision: u64,
 ) -> CommandResult<ConversationPromptSubmitVm> {
-    let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
+    let app = resolve_runtime_command_app_with_emitters(
+        &app_handle,
+        state.inner(),
+        project_id.as_deref(),
+    )
+    .await?;
     let locator = AttemptLocator::new(task_id, run_id, round_id, node_id, attempt_id, None, None);
     let app = app.clone_for_background();
     spawn_blocking_command(move || {
@@ -4204,6 +4430,209 @@ pub fn report_frontend_error(input: FrontendErrorReportInput) -> CommandResult<(
     Ok(())
 }
 
+const WEBVIEW_USER_AGENT_MAX_CHARS: usize = 2_048;
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum WebviewSupportTierInput {
+    Unsupported,
+    Compatible,
+    Full,
+}
+
+impl WebviewSupportTierInput {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unsupported => "unsupported",
+            Self::Compatible => "compatible",
+            Self::Full => "full",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum WebviewThemeRenderingInput {
+    FallbackTokens,
+    ModernCss,
+}
+
+impl WebviewThemeRenderingInput {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::FallbackTokens => "fallback-tokens",
+            Self::ModernCss => "modern-css",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum WebviewResponsiveLayoutInput {
+    Measured,
+    ContainerQuery,
+}
+
+impl WebviewResponsiveLayoutInput {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Measured => "measured",
+            Self::ContainerQuery => "container-query",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum WebviewCodeHighlightingInput {
+    Plain,
+    Wasm,
+}
+
+impl WebviewCodeHighlightingInput {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::Wasm => "wasm",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum WebviewVisualMaterialInput {
+    Solid,
+    Native,
+}
+
+impl WebviewVisualMaterialInput {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Solid => "solid",
+            Self::Native => "native",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WebviewCapabilitiesInput {
+    regexp_lookbehind: bool,
+    css_color_mix: bool,
+    css_container_queries: bool,
+    css_has_selector: bool,
+    css_backdrop_filter: bool,
+    css_oklch: bool,
+    css_grid: bool,
+    css_custom_properties: bool,
+    resize_observer: bool,
+    structured_clone: bool,
+    web_assembly: bool,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WebviewFeaturePolicyInput {
+    tier: WebviewSupportTierInput,
+    theme_rendering: WebviewThemeRenderingInput,
+    responsive_layout: WebviewResponsiveLayoutInput,
+    code_highlighting: WebviewCodeHighlightingInput,
+    visual_material: WebviewVisualMaterialInput,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WebviewEnvironmentReportInput {
+    user_agent: String,
+    capabilities: WebviewCapabilitiesInput,
+    policy: WebviewFeaturePolicyInput,
+}
+
+impl WebviewEnvironmentReportInput {
+    fn normalize(mut self) -> Self {
+        self.user_agent =
+            truncate_frontend_error_field(self.user_agent, WEBVIEW_USER_AGENT_MAX_CHARS);
+        self
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebviewRuntimeFactsVm {
+    platform: String,
+    architecture: String,
+    os_version: Option<String>,
+    webkit_bundle_version: Option<String>,
+}
+
+#[cfg(target_os = "macos")]
+fn system_plist_string(path: &Path, key: &str) -> Option<String> {
+    let value = plist::Value::from_file(path).ok()?;
+    value
+        .as_dictionary()?
+        .get(key)?
+        .as_string()
+        .map(ToOwned::to_owned)
+}
+
+fn webview_runtime_facts() -> WebviewRuntimeFactsVm {
+    #[cfg(target_os = "macos")]
+    let (os_version, webkit_bundle_version) = (
+        system_plist_string(
+            Path::new("/System/Library/CoreServices/SystemVersion.plist"),
+            "ProductVersion",
+        ),
+        system_plist_string(
+            Path::new("/System/Library/Frameworks/WebKit.framework/Resources/Info.plist"),
+            "CFBundleVersion",
+        ),
+    );
+    #[cfg(not(target_os = "macos"))]
+    let (os_version, webkit_bundle_version) = (None, None);
+
+    WebviewRuntimeFactsVm {
+        platform: std::env::consts::OS.to_string(),
+        architecture: std::env::consts::ARCH.to_string(),
+        os_version,
+        webkit_bundle_version,
+    }
+}
+
+#[tauri::command]
+pub async fn report_webview_environment(
+    input: WebviewEnvironmentReportInput,
+) -> CommandResult<WebviewRuntimeFactsVm> {
+    let report = input.normalize();
+    let facts = spawn_blocking_command(|| Ok(webview_runtime_facts())).await?;
+    tracing::info!(
+        target: "gold_band::frontend",
+        code = "webview.environment.detected",
+        platform = %facts.platform,
+        architecture = %facts.architecture,
+        os_version = facts.os_version.as_deref().unwrap_or(""),
+        webkit_bundle_version = facts.webkit_bundle_version.as_deref().unwrap_or(""),
+        tier = report.policy.tier.as_str(),
+        theme_rendering = report.policy.theme_rendering.as_str(),
+        responsive_layout = report.policy.responsive_layout.as_str(),
+        code_highlighting = report.policy.code_highlighting.as_str(),
+        visual_material = report.policy.visual_material.as_str(),
+        regexp_lookbehind = report.capabilities.regexp_lookbehind,
+        css_color_mix = report.capabilities.css_color_mix,
+        css_container_queries = report.capabilities.css_container_queries,
+        css_has_selector = report.capabilities.css_has_selector,
+        css_backdrop_filter = report.capabilities.css_backdrop_filter,
+        css_oklch = report.capabilities.css_oklch,
+        css_grid = report.capabilities.css_grid,
+        css_custom_properties = report.capabilities.css_custom_properties,
+        resize_observer = report.capabilities.resize_observer,
+        structured_clone = report.capabilities.structured_clone,
+        web_assembly = report.capabilities.web_assembly,
+        user_agent = %report.user_agent,
+        "webview environment detected"
+    );
+    Ok(facts)
+}
+
 /// Frontend activity signal: pointerdown, keydown, or business command.
 #[tauri::command]
 pub fn record_activity(state: State<'_, DesktopState>) -> CommandResult<()> {
@@ -4349,12 +4778,12 @@ pub(crate) fn acp_live_update_emitter(
     dyn Fn(
             gold_band::app::AcpLiveEventContext,
             AcpUiEvent,
-            Option<(u64, u64)>,
+            AcpLiveTimelinePosition,
         ) -> anyhow::Result<()>
         + Send
         + Sync,
 > {
-    Arc::new(move |context, mut event, timeline_watermark| {
+    Arc::new(move |context, mut event, timeline_position| {
         let refresh_agent_attention = matches!(
             event.kind.as_str(),
             "permissionRequest" | "elicitationRequest"
@@ -4393,6 +4822,7 @@ pub(crate) fn acp_live_update_emitter(
             &app_handle,
             notification_app.as_ref(),
             project_id.clone(),
+            context.task_uuid.clone(),
             &context.task_id,
             &context.run_id,
             &context.round_id,
@@ -4401,7 +4831,7 @@ pub(crate) fn acp_live_update_emitter(
             context.outer_node_id.clone(),
             context.outer_attempt_id.clone(),
             event,
-            timeline_watermark,
+            timeline_position,
         );
         if refresh_agent_attention && let Some(app) = notification_app.as_ref() {
             let session = if let (Some(outer_node_id), Some(outer_attempt_id)) = (
@@ -4917,10 +5347,15 @@ fn emit_acp_session_update(
     session: Option<AcpSessionVm>,
 ) {
     let activity = conversation_task_prompt_activity_vm(app, task_id);
+    let task_uuid = app
+        .run_status(task_id, run_id)
+        .ok()
+        .and_then(|run| run.task_uuid);
     emit_acp_update(
         app_handle,
         Some(app),
         project_id,
+        task_uuid,
         task_id,
         run_id,
         round_id,
@@ -4939,6 +5374,7 @@ fn emit_acp_event_update(
     app_handle: &AppHandle,
     activity_app: Option<&App>,
     project_id: Option<String>,
+    task_uuid: Option<String>,
     task_id: &str,
     run_id: &str,
     round_id: &str,
@@ -4947,13 +5383,14 @@ fn emit_acp_event_update(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
     event: AcpUiEvent,
-    timeline_watermark: Option<(u64, u64)>,
+    timeline_position: AcpLiveTimelinePosition,
 ) {
     let activity = activity_app.and_then(|app| conversation_task_prompt_activity_vm(app, task_id));
     emit_acp_update(
         app_handle,
         None,
         project_id,
+        task_uuid,
         task_id,
         run_id,
         round_id,
@@ -4963,7 +5400,7 @@ fn emit_acp_event_update(
         outer_attempt_id,
         None,
         Some(event),
-        timeline_watermark,
+        Some(timeline_position),
         activity,
     );
 }
@@ -4976,11 +5413,20 @@ fn conversation_task_prompt_activity_vm(
         .map(conversation_task_activity_from_prompt)
 }
 
+fn acp_timeline_position_fields(
+    timeline_position: Option<AcpLiveTimelinePosition>,
+) -> (Option<u64>, Option<u64>) {
+    timeline_position
+        .map(|position| (Some(position.generation), position.revision))
+        .unwrap_or((None, None))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_acp_update(
     app_handle: &AppHandle,
     app: Option<&App>,
     project_id: Option<String>,
+    task_uuid: Option<String>,
     task_id: &str,
     run_id: &str,
     round_id: &str,
@@ -4990,15 +5436,13 @@ fn emit_acp_update(
     outer_attempt_id: Option<String>,
     session: Option<AcpSessionVm>,
     event: Option<AcpUiEvent>,
-    timeline_watermark: Option<(u64, u64)>,
+    timeline_position: Option<AcpLiveTimelinePosition>,
     activity: Option<ConversationTaskActivityVm>,
 ) {
     let branch_id = event
         .as_ref()
         .map(gold_band::acp::branches::event_branch_id);
-    let (timeline_generation, timeline_revision) = timeline_watermark
-        .map(|(generation, revision)| (Some(generation), Some(revision)))
-        .unwrap_or((None, None));
+    let (timeline_generation, timeline_revision) = acp_timeline_position_fields(timeline_position);
     let lifecycle = app.and_then(|app| {
         conversation_attempt_lifecycle_vm(
             app,
@@ -5012,6 +5456,9 @@ fn emit_acp_update(
         )
         .ok()
     });
+    let task_activity_at = app.and_then(|app| {
+        crate::view_models_conversation::conversation_task_last_activity_at(app, task_id)
+    });
     let _ = app_handle.emit(
         ACP_SESSION_EVENT,
         AcpSessionUpdatedEventVm {
@@ -5020,6 +5467,7 @@ fn emit_acp_update(
             timeline_revision,
             project_id,
             task_id: task_id.to_string(),
+            task_uuid,
             run_id: run_id.to_string(),
             round_id: round_id.to_string(),
             node_id: node_id.to_string(),
@@ -5030,12 +5478,14 @@ fn emit_acp_update(
             event,
             lifecycle,
             activity,
+            task_activity_at,
         },
     );
 }
 
 fn acp_live_event_context(
     task_id: &str,
+    task_uuid: Option<String>,
     run_id: &str,
     round_id: &str,
     node_id: &str,
@@ -5045,6 +5495,7 @@ fn acp_live_event_context(
 ) -> gold_band::app::AcpLiveEventContext {
     gold_band::app::AcpLiveEventContext {
         task_id: task_id.to_string(),
+        task_uuid,
         run_id: run_id.to_string(),
         round_id: round_id.to_string(),
         node_id: node_id.to_string(),
@@ -5267,10 +5718,71 @@ pub fn get_file_comparison(
         .map_err(turn_file_command_error)
 }
 
+#[tauri::command]
+pub async fn resolve_turn_attachment_file(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    workspace_file_runtime: State<'_, crate::workspace_files::WorkspaceFileRuntime>,
+    workspace_file_watch_runtime: State<'_, crate::workspace_files::WorkspaceFileWatchRuntime>,
+    project_id: String,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    branch_id: String,
+    change_set_id: String,
+    attachment_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<crate::workspace_files::ResolvedWorkspaceFileLinkVm> {
+    gold_band::acp::branches::validate_conversation_branch_id(&branch_id)
+        .map_err(|_| CommandErrorVm::new(ATTACHMENT_ACCESS_DENIED, serde_json::json!({})))?;
+    let app = resolve_command_app(state.inner(), Some(&project_id))?.clone_for_background();
+    let locator = AttemptLocator::new(
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    let path = spawn_blocking_command(move || {
+        let store = TurnFileStore::new(locator.attempt_dir(&app), app.config.turn_files.into());
+        let change_set = store
+            .load_change_set(&change_set_id)
+            .map_err(turn_file_command_error)?;
+        if change_set.branch_id != branch_id {
+            return Err(CommandErrorVm::new(
+                ATTACHMENT_ACCESS_DENIED,
+                serde_json::json!({}),
+            ));
+        }
+        store
+            .resolve_attachment_path(&change_set_id, &attachment_id)
+            .map(|path| path.into_std_path_buf())
+            .map_err(turn_file_command_error)
+    })
+    .await?;
+    crate::workspace_files::resolve_trusted_file(
+        app_handle,
+        state.inner(),
+        workspace_file_runtime.inner(),
+        workspace_file_watch_runtime.inner(),
+        &project_id,
+        path,
+    )
+}
+
 fn turn_file_command_error(error: anyhow::Error) -> CommandErrorVm {
     let message = error.to_string();
     let code = if message.starts_with(VERSION_NOT_FOUND) {
         VERSION_NOT_FOUND
+    } else if message.starts_with(ATTACHMENT_NOT_FOUND) {
+        ATTACHMENT_NOT_FOUND
+    } else if message.starts_with(ATTACHMENT_ACCESS_DENIED) {
+        ATTACHMENT_ACCESS_DENIED
     } else if message.starts_with("turn-files.blob-corrupted") {
         "turn-files.blob-corrupted"
     } else {
@@ -5710,7 +6222,12 @@ async fn submit_conversation_prompt_inner(
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<ConversationPromptSubmitVm> {
     let _ = state.record_heartbeat_activity();
-    let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
+    let app = resolve_runtime_command_app_with_emitters(
+        &app_handle,
+        state.inner(),
+        project_id.as_deref(),
+    )
+    .await?;
     let locator = AttemptLocator::new(
         task_id,
         run_id,
@@ -5721,8 +6238,6 @@ async fn submit_conversation_prompt_inner(
         outer_attempt_id,
     );
     validate_conversation_prompt_input(&input, attachment_paths.as_deref())?;
-    crate::view_models_conversation::touch_conversation_activity(&app, &locator.task_id)
-        .map_err(command_error)?;
     let run = app
         .run_status(&locator.task_id, &locator.run_id)
         .map_err(command_error)?;
@@ -5761,8 +6276,14 @@ async fn submit_conversation_prompt_inner(
         )
     );
     if direct_mode && (live_prompt_active || run.status == RunStatus::Running) {
-        enqueue_prompt(&attempt_dir, input, attachment_paths.unwrap_or_default())
+        let queued = enqueue_prompt(&attempt_dir, input, attachment_paths.unwrap_or_default())
             .map_err(prompt_queue_command_error)?;
+        touch_task_activity_at_best_effort(
+            &app,
+            &locator.task_id,
+            &queued.created_at,
+            "user-prompt-queued",
+        );
         emit_acp_session_update(
             &app_handle,
             &app,
@@ -5785,6 +6306,7 @@ async fn submit_conversation_prompt_inner(
             if let Err(error) = app.notify_prompt_turn_finished(
                 acp_live_event_context(
                     &locator.task_id,
+                    run.task_uuid.clone(),
                     &locator.run_id,
                     &locator.round_id,
                     &locator.node_id,
@@ -5841,6 +6363,21 @@ async fn submit_conversation_prompt_inner(
         .clone()
         .expect("admitted ACP turn must carry its stable turn identity");
     let lifecycle = lifecycle_for_locator(&app, &locator);
+    if admission.started() {
+        emit_acp_session_update(
+            &app_handle,
+            &app,
+            project_id.clone(),
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+            locator.outer_node_id.clone(),
+            locator.outer_attempt_id.clone(),
+            None,
+        );
+    }
     if admission.started() {
         let background_app = app.clone_for_background();
         let background_app_handle = app_handle.clone();
@@ -6069,6 +6606,11 @@ async fn execute_admitted_acp_prompt_with_configured_app(
     let attempt_id_for_emit = attempt_id.clone();
     let outer_node_id_for_emit = outer_node_id.clone();
     let outer_attempt_id_for_emit = outer_attempt_id.clone();
+    let task_uuid_for_emit = app
+        .run_status(&task_id, &run_id)
+        .ok()
+        .and_then(|run| run.task_uuid);
+    let task_uuid_for_execution = task_uuid_for_emit.clone();
     let app_for_emit = app.clone_for_background();
     let app_handle_for_task = app_handle.clone();
     let lifecycle_path_for_stop = lifecycle_path.clone();
@@ -6179,6 +6721,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             );
             let session_update = app.acp_session_update_for(acp_live_event_context(
                 &task_id_for_live,
+                task_uuid_for_execution.clone(),
                 &run_id_for_live,
                 &round_id_for_live,
                 &node_id_for_live,
@@ -6188,6 +6731,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             ));
             let prompt_accepted = app.acp_prompt_accepted_for(acp_live_event_context(
                 &task_id_for_live,
+                task_uuid_for_execution.clone(),
                 &run_id_for_live,
                 &round_id_for_live,
                 &node_id_for_live,
@@ -6217,10 +6761,11 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                     .with_external_session_sync_enabled(agent_config.external_session_sync_enabled)
                     .with_system_prompt_support(agent_config.supports_system_prompt()),
                 claimed_owner.clone(),
-                Some(&|event, timeline_revision| {
+                Some(&|event, timeline_position| {
                     live_update(
                         acp_live_event_context(
                             &task_id_for_live,
+                            task_uuid_for_execution.clone(),
                             &run_id_for_live,
                             &round_id_for_live,
                             &node_id_for_live,
@@ -6229,7 +6774,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                             outer_attempt_id_for_live.clone(),
                         ),
                         event.clone(),
-                        timeline_revision,
+                        timeline_position,
                     )
                 }),
                 &app.acp_mcp_servers().unwrap_or_else(|error| {
@@ -6347,6 +6892,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
         );
         let session_update = app.acp_session_update_for(acp_live_event_context(
             &task_id_for_live,
+            task_uuid_for_execution.clone(),
             &run_id_for_live,
             &round_id_for_live,
             &node_id_for_live,
@@ -6356,6 +6902,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
         ));
         let prompt_accepted = app.acp_prompt_accepted_for(acp_live_event_context(
             &task_id_for_live,
+            task_uuid_for_execution.clone(),
             &run_id_for_live,
             &round_id_for_live,
             &node_id_for_live,
@@ -6386,10 +6933,11 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 .with_external_session_sync_enabled(agent_config.external_session_sync_enabled)
                 .with_system_prompt_support(agent_config.supports_system_prompt()),
             claimed_owner.clone(),
-            Some(&|event, timeline_revision| {
+            Some(&|event, timeline_position| {
                 live_update(
                     acp_live_event_context(
                         &task_id_for_live,
+                        task_uuid_for_execution.clone(),
                         &run_id_for_live,
                         &round_id_for_live,
                         &node_id_for_live,
@@ -6398,7 +6946,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                         None,
                     ),
                     event.clone(),
-                    timeline_revision,
+                    timeline_position,
                 )
             }),
             &app.acp_mcp_servers().unwrap_or_else(|error| {
@@ -6543,6 +7091,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
     let _ = app_for_emit.notify_prompt_turn_finished(
         acp_live_event_context(
             &locator.task_id,
+            task_uuid_for_emit,
             &locator.run_id,
             &locator.round_id,
             &locator.node_id,
@@ -6835,47 +7384,65 @@ fn spawn_active_session_stop_cleanup(
         // request_session_stop transferred lifecycle ownership away from the
         // provider runtime. The stop controller therefore owns terminal
         // settlement after dispatch; the old provider owner can only no-op.
-        match gold_band::acp::events::persist_session_turn_terminal_owned(
+        let decided_at = gold_band::acp::events::current_timestamp();
+        let terminal_persisted = match gold_band::acp::events::persist_session_turn_terminal_owned(
             &lifecycle_path,
             turn_id,
             Some(operation_id),
             *revision,
             gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
             "cancelled",
-            &gold_band::acp::events::current_timestamp(),
+            &decided_at,
         ) {
-            Ok(Some(_)) => info!(
-                project_id = %app.paths.project_id,
-                task_id = %locator.task_id,
-                run_id = %locator.run_id,
-                round_id = %locator.round_id,
-                node_id = %locator.node_id,
-                attempt_id = %locator.attempt_id,
-                outer_node_id = ?locator.outer_node_id,
-                outer_attempt_id = ?locator.outer_attempt_id,
-                %turn_id,
-                %operation_id,
-                outcome = "cancelled",
-                "conversation session stop reached terminal state"
-            ),
-            Ok(None) => tracing::debug!(
-                project_id = %app.paths.project_id,
-                task_id = %locator.task_id,
-                run_id = %locator.run_id,
-                turn_id = %turn_id,
-                "stale conversation session stop settlement skipped"
-            ),
-            Err(error) => warn!(
-                project_id = %app.paths.project_id,
-                task_id = %locator.task_id,
-                run_id = %locator.run_id,
-                round_id = %locator.round_id,
-                node_id = %locator.node_id,
-                attempt_id = %locator.attempt_id,
-                %error,
-                %turn_id,
-                "failed to settle accepted ACP stop ownership"
-            ),
+            Ok(Some(_)) => {
+                info!(
+                    project_id = %app.paths.project_id,
+                    task_id = %locator.task_id,
+                    run_id = %locator.run_id,
+                    round_id = %locator.round_id,
+                    node_id = %locator.node_id,
+                    attempt_id = %locator.attempt_id,
+                    outer_node_id = ?locator.outer_node_id,
+                    outer_attempt_id = ?locator.outer_attempt_id,
+                    %turn_id,
+                    %operation_id,
+                    outcome = "cancelled",
+                    "conversation session stop reached terminal state"
+                );
+                true
+            }
+            Ok(None) => {
+                tracing::debug!(
+                    project_id = %app.paths.project_id,
+                    task_id = %locator.task_id,
+                    run_id = %locator.run_id,
+                    turn_id = %turn_id,
+                    "stale conversation session stop settlement skipped"
+                );
+                false
+            }
+            Err(error) => {
+                warn!(
+                    project_id = %app.paths.project_id,
+                    task_id = %locator.task_id,
+                    run_id = %locator.run_id,
+                    round_id = %locator.round_id,
+                    node_id = %locator.node_id,
+                    attempt_id = %locator.attempt_id,
+                    %error,
+                    %turn_id,
+                    "failed to settle accepted ACP stop ownership"
+                );
+                false
+            }
+        };
+        if terminal_persisted {
+            touch_terminal_task_activity_best_effort(
+                &app,
+                &locator,
+                Some(turn_id),
+                "user-stop-terminal",
+            );
         }
         if let Err(error) = client::settle_attempt_prompt_interactions(&attempt_dir) {
             warn!(%error, %attempt_dir, "failed to settle ACP interactions after accepted stop dispatch");
@@ -6959,7 +7526,7 @@ fn canonical_permission_request_id(attempt_dir: &camino::Utf8Path, request_id: &
     for candidate in candidates {
         let path = gold_band::acp::permission::pending_permission_file(attempt_dir, &candidate);
         if let Ok(pending) = read_json::<PendingPermissionState>(&path) {
-            return pending.request_id;
+            return pending.identity.interaction_id;
         }
     }
     stripped_request_id
@@ -9796,6 +10363,70 @@ mod tests {
         assert!(report_frontend_error(frontend_error_input("render failed".to_string())).is_ok());
     }
 
+    fn webview_environment_input(user_agent: String) -> WebviewEnvironmentReportInput {
+        WebviewEnvironmentReportInput {
+            user_agent,
+            capabilities: WebviewCapabilitiesInput {
+                regexp_lookbehind: false,
+                css_color_mix: false,
+                css_container_queries: false,
+                css_has_selector: true,
+                css_backdrop_filter: true,
+                css_oklch: true,
+                css_grid: true,
+                css_custom_properties: true,
+                resize_observer: true,
+                structured_clone: true,
+                web_assembly: true,
+            },
+            policy: WebviewFeaturePolicyInput {
+                tier: WebviewSupportTierInput::Compatible,
+                theme_rendering: WebviewThemeRenderingInput::FallbackTokens,
+                responsive_layout: WebviewResponsiveLayoutInput::Measured,
+                code_highlighting: WebviewCodeHighlightingInput::Wasm,
+                visual_material: WebviewVisualMaterialInput::Solid,
+            },
+        }
+    }
+
+    #[test]
+    fn webview_environment_report_normalization_enforces_user_agent_bound() {
+        let report =
+            webview_environment_input("W".repeat(WEBVIEW_USER_AGENT_MAX_CHARS + 7)).normalize();
+        assert_eq!(
+            report.user_agent.chars().count(),
+            WEBVIEW_USER_AGENT_MAX_CHARS
+        );
+        assert_eq!(report.policy.tier, WebviewSupportTierInput::Compatible);
+    }
+
+    #[test]
+    fn webview_environment_policy_rejects_unknown_values() {
+        let result = serde_json::from_value::<WebviewFeaturePolicyInput>(serde_json::json!({
+            "tier": "compatible",
+            "themeRendering": "legacy-css",
+            "responsiveLayout": "measured",
+            "codeHighlighting": "wasm",
+            "visualMaterial": "solid"
+        }));
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn webview_environment_command_returns_platform_facts() {
+        let facts =
+            report_webview_environment(webview_environment_input("GoldBandWebView".to_string()))
+                .await
+                .expect("webview facts");
+        assert_eq!(facts.platform, std::env::consts::OS);
+        assert_eq!(facts.architecture, std::env::consts::ARCH);
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(facts.os_version, None);
+            assert_eq!(facts.webkit_bundle_version, None);
+        }
+    }
+
     fn direct_run_completed(outcome: RunOutcome) -> RuntimeLifecycleEvent {
         RuntimeLifecycleEvent::RunCompleted {
             event_id: "run-event-001".to_string(),
@@ -9803,6 +10434,7 @@ mod tests {
             scheduled_occurrence_id: None,
             project_id: "project-001".to_string(),
             task_id: "task-001".to_string(),
+            task_uuid: Some("task-uuid-001".to_string()),
             run_id: "run-001".to_string(),
             round_id: "round-001".to_string(),
             node_id: "direct-agent".to_string(),
@@ -10145,6 +10777,38 @@ mod tests {
 
         let worker_thread = tauri::async_runtime::block_on(async {
             spawn_blocking_command(|| Ok(std::thread::current().id()))
+                .await
+                .unwrap()
+        });
+
+        assert_ne!(worker_thread, caller_thread);
+    }
+
+    #[test]
+    fn blocking_command_preserves_panicking_join_diagnostics() {
+        let error = tauri::async_runtime::block_on(async {
+            spawn_blocking_command::<(), _>(|| {
+                panic!("simulated blocking command panic");
+            })
+            .await
+            .unwrap_err()
+        });
+
+        assert_eq!(error.code, "app.task-join-failed");
+        assert_eq!(error.params["kind"], "panic");
+        assert!(
+            error.params["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("simulated blocking command panic"))
+        );
+    }
+
+    #[test]
+    fn runtime_workspace_validation_runs_outside_the_caller_thread() {
+        let caller_thread = std::thread::current().id();
+
+        let worker_thread = tauri::async_runtime::block_on(async {
+            run_runtime_workspace_validation(|| Ok(std::thread::current().id()))
                 .await
                 .unwrap()
         });
@@ -10626,6 +11290,51 @@ mod tests {
     }
 
     #[test]
+    fn live_event_envelope_serializes_generation_without_revision() {
+        let (timeline_generation, timeline_revision) =
+            acp_timeline_position_fields(Some(AcpLiveTimelinePosition::transient(7)));
+        let envelope = AcpSessionUpdatedEventVm {
+            branch_id: Some("root".to_string()),
+            timeline_generation,
+            timeline_revision,
+            project_id: Some("project-a".to_string()),
+            task_id: "task-a".to_string(),
+            task_uuid: Some("task-uuid-a".to_string()),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "direct-agent".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            outer_node_id: None,
+            outer_attempt_id: None,
+            session: None,
+            event: Some(AcpUiEvent {
+                id: "acp-timing-1".to_string(),
+                seq: 1,
+                timestamp: "2026-08-31T00:00:00Z".to_string(),
+                kind: "timingUpdate".to_string(),
+                session_id: Some("session-1".to_string()),
+                content: None,
+                title: None,
+                tool_call_id: None,
+                status: Some("active".to_string()),
+                started_seq: None,
+                ended_seq: None,
+                started_at: None,
+                ended_at: None,
+                timing: None,
+                raw: None,
+            }),
+            lifecycle: None,
+            activity: None,
+            task_activity_at: None,
+        };
+
+        let value = serde_json::to_value(envelope).unwrap();
+        assert_eq!(value["timelineGeneration"], 7);
+        assert!(value["timelineRevision"].is_null());
+    }
+
+    #[test]
     fn acp_session_update_serializes_lightweight_prompt_activity_and_terminal_clear() {
         let active = AcpSessionUpdatedEventVm {
             branch_id: None,
@@ -10633,6 +11342,7 @@ mod tests {
             timeline_revision: None,
             project_id: Some("project-a".to_string()),
             task_id: "task-a".to_string(),
+            task_uuid: Some("task-uuid-a".to_string()),
             run_id: "run-001".to_string(),
             round_id: "round-001".to_string(),
             node_id: "direct-agent".to_string(),
@@ -10645,6 +11355,7 @@ mod tests {
             activity: Some(conversation_task_activity_from_prompt(
                 client::PromptActivity::Running,
             )),
+            task_activity_at: Some("2026-08-29T12:00:00Z".to_string()),
         };
         let active_json = serde_json::to_value(active).unwrap();
         assert_eq!(
@@ -10652,6 +11363,8 @@ mod tests {
             serde_json::json!({ "phase": "running", "stopping": false })
         );
         assert!(active_json["lifecycle"].is_null());
+        assert_eq!(active_json["taskUuid"], "task-uuid-a");
+        assert_eq!(active_json["taskActivityAt"], "2026-08-29T12:00:00Z");
 
         let terminal = AcpSessionUpdatedEventVm {
             branch_id: None,
@@ -10659,6 +11372,7 @@ mod tests {
             timeline_revision: None,
             project_id: Some("project-a".to_string()),
             task_id: "task-a".to_string(),
+            task_uuid: Some("task-uuid-a".to_string()),
             run_id: "run-001".to_string(),
             round_id: "round-001".to_string(),
             node_id: "direct-agent".to_string(),
@@ -10669,8 +11383,211 @@ mod tests {
             event: None,
             lifecycle: None,
             activity: None,
+            task_activity_at: None,
         };
         assert!(serde_json::to_value(terminal).unwrap()["activity"].is_null());
+    }
+
+    #[test]
+    fn repeated_finished_observation_reuses_the_canonical_terminal_activity_time() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-task-activity-terminal-idempotency-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap());
+        let locator = AttemptLocator::new(
+            "task-001".to_string(),
+            "run-001".to_string(),
+            "round-001".to_string(),
+            "direct-agent".to_string(),
+            "attempt-001".to_string(),
+            None,
+            None,
+        );
+        let terminal_at = "2026-08-30T10:00:00Z";
+        write_json(
+            &app.paths
+                .task_dir("task-001")
+                .join("authoring")
+                .join("conversation.json"),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "source": "conversation",
+                "runMode": "direct",
+                "workflowTemplateId": null,
+                "includeOptionalEntry": false,
+                "directConfig": null,
+                "agentIdentity": null,
+                "titleAutoGenerated": false,
+                "initialAttachmentNames": null,
+                "createdAt": "2026-08-30T09:00:00Z",
+                "lastActivityAt": terminal_at
+            }),
+        )
+        .unwrap();
+        write_json(
+            &acp_lifecycle_path(&locator.attempt_dir(&app)),
+            &serde_json::json!({
+                "availability": "established",
+                "liveTurnActivity": "idle",
+                "latestTurnStatus": "cancelled",
+                "acpRevision": 2,
+                "turnId": "turn-001",
+                "lifecycleOperationId": "stop-001",
+                "stopReason": "cancelled",
+                "restored": false,
+                "capabilities": {},
+                "createdAt": "2026-08-30T09:00:00Z",
+                "updatedAt": terminal_at
+            }),
+        )
+        .unwrap();
+
+        process_prompt_turn_lifecycle(
+            &app,
+            locator,
+            AcpPromptLifecycleEvent::Finished {
+                prompt_id: Some("turn-001".to_string()),
+                successful: false,
+            },
+            |_, _, _| {},
+        )
+        .unwrap();
+
+        let metadata: serde_json::Value = read_json(
+            &app.paths
+                .task_dir("task-001")
+                .join("authoring")
+                .join("conversation.json"),
+        )
+        .unwrap();
+        assert_eq!(metadata["lastActivityAt"], terminal_at);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task_activity_index_update_preserves_search_document_and_repairs_missing_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
+        let index = gold_band::storage::sqlite::SearchIndex::open(&db_path).unwrap();
+        let tasks_dir = Utf8PathBuf::from_path_buf(dir.path().join("tasks")).unwrap();
+        let schema = rusqlite::Connection::open(db_path.as_std_path()).unwrap();
+        let task_update_trigger_sql: String = schema
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'tasks_au'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            task_update_trigger_sql
+                .to_ascii_lowercase()
+                .contains("after update of title, description, requirement_text on tasks")
+        );
+
+        let indexed_task = tasks_dir.join("task-001");
+        std::fs::create_dir_all(indexed_task.join("authoring").as_std_path()).unwrap();
+        write_json(
+            &indexed_task.join("task.json"),
+            &TaskState {
+                version: gold_band::domain::VERSION.to_string(),
+                id: "task-001".to_string(),
+                title: Some("Indexed title".to_string()),
+                description: Some("Indexed description".to_string()),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        std::fs::write(
+            indexed_task
+                .join("authoring")
+                .join("requirement.md")
+                .as_std_path(),
+            "indexed-requirement-needle",
+        )
+        .unwrap();
+        index.index_task_with_retry(&indexed_task, "task-001");
+        std::fs::remove_file(indexed_task.join("task.json").as_std_path()).unwrap();
+        std::fs::remove_file(
+            indexed_task
+                .join("authoring")
+                .join("requirement.md")
+                .as_std_path(),
+        )
+        .unwrap();
+        index.index_task_activity_with_retry(&indexed_task, "task-001", "2026-08-30T12:00:00Z");
+        let preserved = index
+            .search_tasks_in_task_roots("indexed-requirement-needle", &[tasks_dir.to_string()], 10)
+            .unwrap();
+        assert_eq!(preserved.len(), 1);
+        assert_eq!(preserved[0].task_id, "task-001");
+
+        let missing_row_task = tasks_dir.join("task-002");
+        std::fs::create_dir_all(missing_row_task.join("authoring").as_std_path()).unwrap();
+        write_json(
+            &missing_row_task.join("task.json"),
+            &TaskState {
+                version: gold_band::domain::VERSION.to_string(),
+                id: "task-002".to_string(),
+                title: Some("Missing row repair".to_string()),
+                description: None,
+                uuid: None,
+            },
+        )
+        .unwrap();
+        index.index_task_activity_with_retry(&missing_row_task, "task-002", "2026-08-30T13:00:00Z");
+        let repaired = index
+            .search_tasks_in_task_roots("missing row repair", &[tasks_dir.to_string()], 10)
+            .unwrap();
+        assert_eq!(repaired.len(), 1);
+        assert_eq!(repaired[0].task_id, "task-002");
+    }
+
+    #[test]
+    fn task_activity_schema_v5_upgrade_only_replaces_the_task_update_trigger() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
+        drop(gold_band::storage::sqlite::SearchIndex::open(&db_path).unwrap());
+        let connection = rusqlite::Connection::open(db_path.as_std_path()).unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA user_version = 5;
+                 DROP TRIGGER tasks_au;
+                 CREATE TRIGGER tasks_au AFTER UPDATE ON tasks BEGIN
+                    INSERT INTO tasks_fts(tasks_fts, rowid, title, description, requirement_text)
+                    VALUES('delete', old.rowid, old.title, old.description, old.requirement_text);
+                    INSERT INTO tasks_fts(rowid, title, description, requirement_text)
+                    VALUES (new.rowid, new.title, new.description, new.requirement_text);
+                 END;
+                 INSERT INTO sessions (attempt_path, task_id, run_id, round_id, node_id, attempt_id)
+                 VALUES ('attempt-before-v6', 'task-001', 'run-001', 'round-001', 'node-001', 'attempt-001');",
+            )
+            .unwrap();
+        drop(connection);
+
+        drop(gold_band::storage::sqlite::SearchIndex::open(&db_path).unwrap());
+        let migrated = rusqlite::Connection::open(db_path.as_std_path()).unwrap();
+        let schema_version: i32 = migrated
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let session_count: i64 = migrated
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        let task_update_trigger_sql: String = migrated
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'tasks_au'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(schema_version, 6);
+        assert_eq!(session_count, 1);
+        assert!(
+            task_update_trigger_sql
+                .to_ascii_lowercase()
+                .contains("after update of title, description, requirement_text on tasks")
+        );
     }
 
     #[test]
@@ -11327,6 +12244,7 @@ mod tests {
             .notify_prompt_turn_finished(
                 acp_live_event_context(
                     "task-001",
+                    Some("task-uuid-001".to_string()),
                     "run-001",
                     "round-001",
                     "node-001",
@@ -11409,6 +12327,7 @@ mod tests {
     fn acp_live_event_context_preserves_standard_attempt_locator() {
         let context = acp_live_event_context(
             "task-001",
+            Some("task-uuid-001".to_string()),
             "run-001",
             "round-001",
             "dev",
@@ -11418,6 +12337,7 @@ mod tests {
         );
 
         assert_eq!(context.task_id, "task-001");
+        assert_eq!(context.task_uuid.as_deref(), Some("task-uuid-001"));
         assert_eq!(context.run_id, "run-001");
         assert_eq!(context.round_id, "round-001");
         assert_eq!(context.node_id, "dev");
@@ -11430,6 +12350,7 @@ mod tests {
     fn acp_live_event_context_preserves_dynamic_attempt_locator() {
         let context = acp_live_event_context(
             "task-001",
+            Some("task-uuid-001".to_string()),
             "run-001",
             "round-001",
             "bootstrap",
@@ -11626,6 +12547,7 @@ mod tests {
             scheduled_occurrence_id: None,
             project_id: "project-1".to_string(),
             task_id: "task-001".to_string(),
+            task_uuid: Some("task-uuid-001".to_string()),
             run_id: "run-001".to_string(),
             round_id: "round-001".to_string(),
             node_id: "plan".to_string(),
@@ -11638,12 +12560,17 @@ mod tests {
         assert_eq!(paused.event_kind, "run-paused");
         assert_eq!(paused.project_id, "project-1");
         assert_eq!(paused.task_id, "task-001");
+        assert_eq!(paused.task_uuid.as_deref(), Some("task-uuid-001"));
         assert_eq!(paused.run_id, "run-001");
         assert_eq!(paused.round_id, "round-001");
         assert_eq!(paused.node_id, "plan");
         assert_eq!(paused.attempt_id, "attempt-001");
         assert_eq!(paused.status, RunStatus::Paused);
         assert_eq!(paused.outcome, None);
+        assert_eq!(
+            serde_json::to_value(&paused).unwrap()["taskUuid"],
+            "task-uuid-001"
+        );
 
         let completed =
             conversation_run_state_update_for_event(RuntimeLifecycleEvent::RunCompleted {
@@ -11652,6 +12579,7 @@ mod tests {
                 scheduled_occurrence_id: None,
                 project_id: "project-1".to_string(),
                 task_id: "task-001".to_string(),
+                task_uuid: Some("task-uuid-001".to_string()),
                 run_id: "run-001".to_string(),
                 round_id: "round-001".to_string(),
                 node_id: "plan".to_string(),
@@ -12437,6 +13365,8 @@ mod tests {
         gold_band::acp::permission::write_pending_permission(
             &attempt_dir,
             "0",
+            "turn-1",
+            "prompt-event-1",
             serde_json::json!({}),
             "1778771541Z".to_string(),
         )
@@ -12483,6 +13413,8 @@ mod tests {
         gold_band::acp::permission::write_pending_permission(
             &attempt_dir,
             "0",
+            "turn-1",
+            "prompt-event-1",
             params.clone(),
             "1778771541Z".to_string(),
         )
@@ -12567,6 +13499,7 @@ mod tests {
             Some(&app),
             &gold_band::app::AcpLiveEventContext {
                 task_id: "task-001".to_string(),
+                task_uuid: None,
                 run_id: "run-001".to_string(),
                 round_id: "round-001".to_string(),
                 node_id: "plan".to_string(),
@@ -12598,6 +13531,7 @@ mod tests {
             Some(&app),
             &gold_band::app::AcpLiveEventContext {
                 task_id: "task-001".to_string(),
+                task_uuid: None,
                 run_id: "run-001".to_string(),
                 round_id: "round-001".to_string(),
                 node_id: "plan".to_string(),
@@ -12659,6 +13593,7 @@ mod tests {
         }));
         let context = gold_band::app::AcpLiveEventContext {
             task_id: "task-001".to_string(),
+            task_uuid: None,
             run_id: "run-001".to_string(),
             round_id: "round-001".to_string(),
             node_id: "plan".to_string(),
@@ -12729,6 +13664,7 @@ mod tests {
             None,
             &gold_band::app::AcpLiveEventContext {
                 task_id: "task-001".to_string(),
+                task_uuid: None,
                 run_id: "run-001".to_string(),
                 round_id: "round-001".to_string(),
                 node_id: "plan".to_string(),
@@ -12855,6 +13791,7 @@ mod tests {
             &app,
             &gold_band::app::AcpLiveEventContext {
                 task_id: task_id.to_string(),
+                task_uuid: None,
                 run_id: run_id.to_string(),
                 round_id: round_id.to_string(),
                 node_id: "plan".to_string(),
@@ -13036,6 +13973,7 @@ mod tests {
             &app,
             &gold_band::app::AcpLiveEventContext {
                 task_id: task_id.to_string(),
+                task_uuid: None,
                 run_id: run_id.to_string(),
                 round_id: round_id.to_string(),
                 node_id: "bootstrap".to_string(),

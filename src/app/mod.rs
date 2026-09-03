@@ -45,8 +45,8 @@ use crate::dynamic_store::load_dynamic_graph;
 use crate::mcp::McpManager;
 use crate::process::recover_persisted_process_group;
 use crate::provider::{
-    ConversationPromptInput, DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter,
-    ProviderCapabilities, ProviderInfo, UserPromptRenderMode, provider_from_agent,
+    AcpLiveTimelinePosition, ConversationPromptInput, DoctorResult, PromptBundle, PromptVisibility,
+    ProviderAdapter, ProviderCapabilities, ProviderInfo, UserPromptRenderMode, provider_from_agent,
     render_prompt_bundle, supported_modes_from_capabilities,
 };
 use crate::runtime::{
@@ -1047,6 +1047,7 @@ pub enum RuntimeLifecycleEvent {
         scheduled_occurrence_id: Option<String>,
         project_id: String,
         task_id: String,
+        task_uuid: Option<String>,
         run_id: String,
         round_id: String,
         node_id: String,
@@ -1075,6 +1076,7 @@ pub enum RuntimeLifecycleEvent {
         scheduled_occurrence_id: Option<String>,
         project_id: String,
         task_id: String,
+        task_uuid: Option<String>,
         run_id: String,
         round_id: String,
         node_id: String,
@@ -1170,7 +1172,7 @@ pub struct App {
             dyn Fn(
                     AcpLiveEventContext,
                     crate::acp::events::AcpUiEvent,
-                    Option<(u64, u64)>,
+                    AcpLiveTimelinePosition,
                 ) -> Result<()>
                 + Send
                 + Sync,
@@ -1211,6 +1213,7 @@ fn default_task_search_indexer() -> Arc<dyn Fn(&Utf8Path, &str) + Send + Sync> {
 #[derive(Debug, Clone)]
 pub struct AcpLiveEventContext {
     pub task_id: String,
+    pub task_uuid: Option<String>,
     pub run_id: String,
     pub round_id: String,
     pub node_id: String,
@@ -1590,7 +1593,7 @@ impl App {
             dyn Fn(
                     AcpLiveEventContext,
                     crate::acp::events::AcpUiEvent,
-                    Option<(u64, u64)>,
+                    AcpLiveTimelinePosition,
                 ) -> Result<()>
                 + Send
                 + Sync,
@@ -1687,13 +1690,13 @@ impl App {
     pub fn acp_live_update_for<'a>(
         &'a self,
         context: AcpLiveEventContext,
-    ) -> Option<impl Fn(&crate::acp::events::AcpUiEvent, Option<(u64, u64)>) -> Result<()> + 'a>
+    ) -> Option<impl Fn(&crate::acp::events::AcpUiEvent, AcpLiveTimelinePosition) -> Result<()> + 'a>
     {
         let live_update = self.acp_live_update.as_ref()?.clone();
         Some(
             move |event: &crate::acp::events::AcpUiEvent,
-                  timeline_watermark: Option<(u64, u64)>| {
-                live_update(context.clone(), event.clone(), timeline_watermark)
+                  timeline_position: AcpLiveTimelinePosition| {
+                live_update(context.clone(), event.clone(), timeline_position)
             },
         )
     }
@@ -3586,7 +3589,17 @@ impl App {
         let summary = self.task_summary(&task_id)?;
         owned_task_dir.disarm();
         (self.task_search_indexer)(&self.paths.task_dir(&task_id), &task_id);
+        let created_at = crate::acp::events::current_timestamp();
+        sqlite::index_task_activity_with_retry(
+            &self.paths.task_dir(&task_id),
+            &task_id,
+            &created_at,
+        );
         Ok(summary)
+    }
+
+    pub fn record_task_activity_index(&self, task_id: &str, activity_at: &str) {
+        sqlite::index_task_activity_with_retry(&self.paths.task_dir(task_id), task_id, activity_at);
     }
 
     pub fn update_task_metadata(
@@ -5443,7 +5456,7 @@ mod tests {
         AutoTemplateStore, CreateTaskInput, OwnedTaskDirectory, RuntimeLifecycleEvent,
         WorkflowTemplate, WorkflowTemplateStore, next_auto_template_id,
     };
-    use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
+    use crate::acp::elicitation::{pending_elicitation_file, pending_elicitation_state};
     use crate::config::{
         AppearancePreference, ColorSchemePreference, ConsoleThemeName, DesktopLanguage,
         DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, MulticaCompletedTask,
@@ -6069,6 +6082,7 @@ mod tests {
             scheduled_occurrence_id: None,
             project_id: "project-1".to_string(),
             task_id: "task-1".to_string(),
+            task_uuid: None,
             run_id: "run-1".to_string(),
             round_id: "round-1".to_string(),
             node_id: "node-1".to_string(),
@@ -6568,6 +6582,7 @@ mod tests {
             scheduled_occurrence_id: None,
             project_id: "project-001".to_string(),
             task_id: "task-001".to_string(),
+            task_uuid: None,
             run_id: "run-001".to_string(),
             round_id: "round-001".to_string(),
             node_id: "node-001".to_string(),
@@ -6982,6 +6997,7 @@ mod tests {
 
         app.emit_acp_session_update(AcpLiveEventContext {
             task_id: "task-001".to_string(),
+            task_uuid: None,
             run_id: "run-001".to_string(),
             round_id: "round-001".to_string(),
             node_id: "验收".to_string(),
@@ -7012,6 +7028,7 @@ mod tests {
 
         let context = AcpLiveEventContext {
             task_id: "task-001".to_string(),
+            task_uuid: None,
             run_id: "run-001".to_string(),
             round_id: "round-001".to_string(),
             node_id: "dev".to_string(),
@@ -7047,6 +7064,7 @@ mod tests {
             }));
         let context = AcpLiveEventContext {
             task_id: "task-001".to_string(),
+            task_uuid: None,
             run_id: "run-001".to_string(),
             round_id: "round-001".to_string(),
             node_id: "direct-agent".to_string(),
@@ -7711,19 +7729,20 @@ mod tests {
         .unwrap();
         write_json(
             &pending_elicitation_file(&attempt_dir, "elicit-001"),
-            &PendingElicitationState {
-                elicitation_id: "elicit-001".to_string(),
-                jsonrpc_id: serde_json::json!(1),
-                request: serde_json::from_value(serde_json::json!({
+            &pending_elicitation_state(
+                "elicit-001",
+                "turn-1",
+                "prompt-turn-1",
+                serde_json::json!(1),
+                serde_json::from_value(serde_json::json!({
                     "mode": "form",
                     "sessionId": "session-test",
                     "message": "继续吗",
                     "requestedSchema": { "type": "object", "properties": {} }
                 }))
                 .unwrap(),
-                created_at: "1Z".to_string(),
-                timeline_identity: None,
-            },
+                "1Z".to_string(),
+            ),
         )
         .unwrap();
 

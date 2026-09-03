@@ -1,4 +1,4 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentInsightOperationVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { ImageActionInput, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { GitCommitVm, GitHubOperationVm, GitOperationVm } from '../types';
@@ -45,6 +45,139 @@ let browserScheduledRuntimeSettings = {
   enabledJobCount: 0,
   occurrenceRetentionDays: 30,
   powerErrorCode: null,
+};
+
+const browserPersonalAnalytics: PersonalAnalyticsSnapshotVm = {
+  operation: {
+    operationId: 'browser-preview',
+    agentType: 'codex-acp',
+    status: 'completed',
+    revision: 6,
+    progress: { stage: 'completed', processedUnits: 3334, totalUnits: 3334 },
+    sourceWatermark: '2026-08-17T12:00:00Z',
+    reportId: 'preview-report',
+    error: null,
+    createdAt: '2026-08-17T12:00:00Z',
+    updatedAt: '2026-08-17T12:02:18Z',
+    completedAt: '2026-08-17T12:02:18Z',
+  },
+  insightOperation: null,
+  latestReport: {
+    schemaVersion: '2.2.0',
+    reportId: 'preview-report',
+    generatedAt: '2026-08-17T12:02:18Z',
+    sourceWatermark: '2026-08-17T12:00:00Z',
+    indexRevision: 6,
+    range: { start: null, end: null },
+    sourceCoverage: {
+      discoveredFiles: 3334,
+      eligibleFiles: 1310,
+      parsedFiles: 1304,
+      skippedFiles: 2024,
+      corruptFiles: 3,
+      unknownVersionFiles: 3,
+      discoveredBytes: 374080616,
+      semanticEligibleItems: 246,
+      semanticSampledItems: 120,
+    },
+    overview: {
+      projectCount: 4,
+      taskCount: 72,
+      conversationCount: 72,
+      runCount: 101,
+      turnCount: 2,
+      attemptCount: 263,
+      earliestAt: '2026-04-12T08:30:00Z',
+      latestAt: '2026-08-17T11:51:00Z',
+    },
+    recentTasks: [{
+      taskLocator: 'project-a/task-b', projectId: 'project-a', taskId: 'task-b', latestRunId: 'run-1', title: '优化个人数据分析', mode: 'workflow', status: 'completed', outcome: 'success',
+      agentNames: ['codex-acp'], totalTokens: 128400, activeDurationSeconds: 1842, activeDurationZeroFilled: false,
+      terminalNode: 'accept', lastActivityAt: '2026-08-17T11:51:00Z',
+    }],
+    reliability: {
+      directReplyCompletionRate: { metricId: 'direct.reply_completion_rate', numerator: 2, denominator: 2, unknownCount: 24, rate: 1, evidenceLocators: ['project-a/task-a/turn-1'] },
+      workflowRunTerminalSuccessRate: { metricId: 'workflow.run_terminal_success_rate', numerator: 17, denominator: 19, unknownCount: 0, rate: 0.8947, evidenceLocators: ['project-a/task-b/run-1'] },
+      autoOuterRunTerminalSuccessRate: { metricId: 'auto.outer_run_terminal_success_rate', numerator: 21, denominator: 27, unknownCount: 1, rate: 0.7778, evidenceLocators: ['project-b/task-c/run-1'] },
+      failedCount: 7,
+      cancelledCount: 2,
+      nonTerminalCount: 22,
+    },
+    quality: {
+      retryReentryRate: { metricId: 'node.retry_reentry_rate', numerator: 14, denominator: 87, unknownCount: 0, rate: 0.1609, evidenceLocators: ['project-a/task-b/node-1'] },
+      recoveredAfterRetryCount: 10,
+      terminalSignals: [{ name: 'status.paused', count: 21 }, { name: 'outcome.failure', count: 7 }],
+    },
+    efficiency: {
+      observedTerminalRunActiveSeconds: 148230,
+      averageTerminalRunActiveSeconds: 1842.6,
+      terminalRunSampleCount: 79,
+      activeDurationZeroFilledCount: 2,
+      pauseCount: 21,
+      resumeCount: 18,
+      manualContinueCount: 11,
+      topDurationTasks: [{
+        taskLocator: 'project-a/task-b', projectId: 'project-a', taskId: 'task-b', latestRunId: 'run-1', title: '优化个人数据分析', mode: 'workflow', status: 'completed', outcome: 'success',
+        agentNames: ['codex-acp'], totalTokens: 128400, activeDurationSeconds: 1842, activeDurationZeroFilled: false,
+        terminalNode: 'accept', lastActivityAt: '2026-08-17T11:51:00Z',
+      }],
+      nodeAggregates: [{ nodeId: 'dev', callCount: 31, retryCount: 4, totalActiveDurationSeconds: 6820, averageActiveDurationSeconds: 220, activeDurationShare: 0.46, activeDurationZeroFilledCount: 0 }],
+    },
+    tokenUsage: {
+      inputTokens: 1842521,
+      outputTokens: 386244,
+      cacheReadTokens: 964120,
+      cacheWriteTokens: 48211,
+      totalTokens: 3241096,
+      observedPromptCount: 238,
+      topTokenTasks: [{
+        taskLocator: 'project-a/task-b', projectId: 'project-a', taskId: 'task-b', latestRunId: 'run-1', title: '优化个人数据分析', mode: 'workflow', status: 'completed', outcome: 'success',
+        agentNames: ['codex-acp'], totalTokens: 128400, activeDurationSeconds: 1842, activeDurationZeroFilled: false,
+        terminalNode: 'accept', lastActivityAt: '2026-08-17T11:51:00Z',
+      }],
+    },
+    contextAndTools: {
+      toolCallCount: 1294,
+      permissionRequestCount: 18,
+      elicitationRequestCount: 4,
+      topTools: [{ name: 'exec_command', count: 382 }, { name: 'apply_patch', count: 164 }, { name: 'read_file', count: 143 }],
+      topAgents: [{ name: 'codex-acp', count: 96 }],
+      verifiedSkillCallCount: 0,
+      topSkills: [],
+      eventKinds: [{ name: 'tool-call', count: 1294 }, { name: 'agent-message', count: 621 }, { name: 'permission', count: 18 }],
+    },
+    insights: [{
+      section: 'efficiency',
+      title: '长流程更容易进入暂停状态',
+      summary: '在可观察的终局 run 中，持续时间较长的流程更常出现暂停与恢复事件。',
+      recommendation: '将长流程拆成带明确验收点的阶段，并在每个阶段结束时固化产物。',
+      confidence: 'medium',
+      sampleCount: 79,
+      evidenceLocators: ['project-a/task-b/run-1', 'project-b/task-c/run-1'],
+    }],
+    warnings: [{ code: 'analytics.active-duration-zero-filled', params: { count: 2 } }],
+  },
+};
+
+const browserInsightOperation: AgentInsightOperationVm = {
+  operationId: 'browser-insight-preview',
+  generation: 1,
+  agentType: 'codex-acp',
+  modelId: null,
+  thoughtLevelOptionId: null,
+  thoughtLevelValue: null,
+  range: { start: null, end: null },
+  schemaVersion: '2.2.0',
+  indexRevision: 6,
+  status: 'completed',
+  revision: 3,
+  progress: { stage: 'completed', processedUnits: 1, totalUnits: 1 },
+  sourceWatermark: '6',
+  reportId: 'preview-report',
+  error: null,
+  createdAt: '2026-08-17T12:02:18Z',
+  updatedAt: '2026-08-17T12:02:19Z',
+  completedAt: '2026-08-17T12:02:19Z',
 };
 
 function resolveBrowserOptionalEntry(
@@ -183,6 +316,7 @@ function browserCompletedConversationRun(): ConversationRunVm {
   const worktreePath = '/preview/gold-band/worktrees/browser-completed-run';
   const worktreeBranch = 'gold-band/conversation/browser-completed-run';
   run.runId = 'run-052';
+  run.taskUuid = 'browser-mock-task-uuid';
   run.runMode = 'direct';
   run.directConfig = { agentType: 'claude-acp' };
   run.agentIdentity = browserAgentIdentity('claude-acp');
@@ -301,6 +435,7 @@ function browserCompletedConversationRun(): ConversationRunVm {
         raw: {
           changeSetId: browserTurnFileChangeSet.id,
           summary: browserTurnFileChangeSet.summary,
+          attachmentCount: browserTurnFileChangeSet.attachments.length,
         },
       },
       {
@@ -539,6 +674,20 @@ const browserTurnFileChangeSet = {
       deletedLines: 1,
     },
   ],
+  attachments: [
+    {
+      id: 'browser-turn-attachment-report',
+      relativePath: 'report.md',
+      name: 'report.md',
+      byteLength: 62,
+    },
+    {
+      id: 'browser-turn-attachment-summary',
+      relativePath: 'summary.txt',
+      name: 'summary.txt',
+      byteLength: 28,
+    },
+  ],
   limitationCodes: [],
 };
 
@@ -548,6 +697,8 @@ const browserWorkspaceFiles = new Map<string, string>([
   ['/default/src/main.rs', 'fn main() {\n    println!("Gold Band");\n}\n'],
   ['/default/src/config.json', '{\n  "workspace": "default"\n}\n'],
   ['/default/assets/logo.svg', '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="120"><rect width="240" height="120" rx="24" fill="#b9922e"/><text x="120" y="70" text-anchor="middle" fill="#18140a" font-size="24">Gold Band</text></svg>'],
+  ['/browser-attempt/attachments/report.md', '# Turn report\n\nThis attachment is editable in the workspace.\n'],
+  ['/browser-attempt/attachments/summary.txt', 'Browser attachment summary.\n'],
 ]);
 const browserFileRevisions = new Map<string, number>();
 const browserWorkspaceFileListeners = new Set<(event: WorkspaceFileChangedEventVm) => void>();
@@ -1051,6 +1202,37 @@ export const browserApi: RuntimeApi = {
   getAgentRegistry() {
     return Promise.resolve(mockAgentRegistry);
   },
+  getPersonalAnalytics() {
+    return Promise.resolve(browserPersonalAnalytics);
+  },
+  syncPersonalAnalytics() {
+    return Promise.resolve(browserPersonalAnalytics);
+  },
+  queryPersonalAnalyticsReport(range: { start?: string | null; end?: string | null }, _agentType?: string, _modelId?: string | null, _thoughtLevelOptionId?: string | null, _thoughtLevelValue?: string | null) {
+    return Promise.resolve({
+      ...browserPersonalAnalytics.latestReport!,
+      range: { start: range.start ?? null, end: range.end ?? null },
+    });
+  },
+  startPersonalAnalyticsInsights(agentType: string, range: { start?: string | null; end?: string | null }, modelId?: string | null, thoughtLevelOptionId?: string | null, thoughtLevelValue?: string | null) {
+    return Promise.resolve({
+      ...browserInsightOperation,
+      agentType,
+      modelId: modelId ?? null,
+      thoughtLevelOptionId: thoughtLevelOptionId ?? null,
+      thoughtLevelValue: thoughtLevelValue ?? null,
+      range: { start: range.start ?? null, end: range.end ?? null },
+    });
+  },
+  cancelPersonalAnalyticsInsights(_operationId: string) {
+    return Promise.resolve(browserInsightOperation);
+  },
+  cancelPersonalAnalytics(_operationId: string) {
+    return Promise.resolve(browserPersonalAnalytics);
+  },
+  subscribePersonalAnalyticsUpdates(_listener) {
+    return Promise.resolve(() => {});
+  },
   getAgentCommandCatalog(agentType: string, workspacePath: string) {
     const commands = agentType === 'codex-acp'
       ? [
@@ -1338,6 +1520,7 @@ export const browserApi: RuntimeApi = {
       finishedAt: '',
       summary: { fileCount: 0, addedFiles: 0, modifiedFiles: 0, deletedFiles: 0, addedLines: 0, deletedLines: 0 },
       changes: [],
+      attachments: [],
       limitationCodes: [],
     });
   },
@@ -1381,6 +1564,23 @@ export const browserApi: RuntimeApi = {
       before: null,
       after: null,
       limitationCode: null,
+    });
+  },
+  resolveTurnAttachmentFile(locator, changeSetId, attachmentId) {
+    const attachment = changeSetId === browserTurnFileChangeSet.id
+      ? browserTurnFileChangeSet.attachments.find((candidate) => candidate.id === attachmentId)
+      : null;
+    if (!attachment) return Promise.reject({ code: 'turn-files.attachment-not-found', params: {} });
+    const canonicalPath = `/browser-attempt/attachments/${attachment.relativePath}`;
+    return Promise.resolve({
+      locator: {
+        projectId: locator.projectId,
+        canonicalPath,
+        relativePath: null,
+        scope: 'external' as const,
+      },
+      target: null,
+      externalAccessGrant: issueBrowserExternalFileGrant(canonicalPath),
     });
   },
   subscribeAcpSessionUpdates() {
@@ -1801,7 +2001,17 @@ export const browserApi: RuntimeApi = {
   saveDesktopUiMode(_mode) {
     return Promise.resolve();
   },
-  getConversationSidebar() {
+  getConversationSidebarBootstrap() {
+    return Promise.resolve({
+      workspaces: [{ projectId: 'default', workspacePath: '/default', name: 'Default Workspace' }],
+      pinRefs: [...browserConversationTasks.values()]
+        .filter((task) => task.pinned)
+        .map((task) => ({ projectId: task.projectId, taskId: task.taskId })),
+      lastActiveWorkspaceId: 'default',
+      preferences: {},
+    });
+  },
+  getConversationTaskPage(projectId, cursor, limit = 24) {
     const previewTask: ConversationTaskRowVm = {
       projectId: 'default',
       taskId: 'mock-task',
@@ -1810,15 +2020,44 @@ export const browserApi: RuntimeApi = {
       runMode: 'workflow',
       lastActivityAt: '2026-05-02T16:08:00Z',
       runs: [],
+      runHistoryStatus: 'ready-empty',
+      runsNextCursor: null,
       pinned: false,
       pinnedOrder: null,
     };
-    const sidebar: ConversationSidebarVm = {
-      workspaces: [{ projectId: 'default', workspacePath: '/default', name: 'Default Workspace' }],
-      pinnedTasks: [],
-      tasksByWorkspace: { default: [previewTask, ...browserConversationTasks.values()] },
-    };
-    return Promise.resolve(sidebar);
+    const tasks = [previewTask, ...browserConversationTasks.values()]
+      .filter((task) => task.projectId === projectId);
+    const start = cursor ? Math.max(0, tasks.findIndex((task) => task.taskId === cursor) + 1) : 0;
+    const page = tasks.slice(start, start + limit);
+    return Promise.resolve({
+      projectId,
+      tasks: page,
+      nextCursor: start + limit < tasks.length ? page.at(-1)?.taskId ?? null : null,
+      errors: [],
+    });
+  },
+  getConversationPinnedTaskPage(cursor, limit = 24) {
+    const tasks = [...browserConversationTasks.values()].filter((task) => task.pinned);
+    const start = cursor ? Math.max(0, tasks.findIndex((task) => task.taskId === cursor) + 1) : 0;
+    const page = tasks.slice(start, start + limit);
+    return Promise.resolve({
+      tasks: page,
+      nextCursor: start + limit < tasks.length ? page.at(-1)?.taskId ?? null : null,
+      errors: [],
+    });
+  },
+  getConversationRunSummaryPage(projectId, taskId, cursor, limit = 20) {
+    const task = browserConversationTasks.get(taskId);
+    const start = cursor ? Math.max(0, (task?.runs ?? []).findIndex((run) => run.runId === cursor) + 1) : 0;
+    const runs = (task?.runs ?? []).slice(start, start + limit);
+    return Promise.resolve({
+      projectId,
+      taskId,
+      taskUuid: task?.taskUuid ?? null,
+      runs,
+      nextCursor: start + limit < (task?.runs.length ?? 0) ? runs.at(-1)?.runId ?? null : null,
+      errors: [],
+    });
   },
   acknowledgeConversationTerminalResult(projectId, taskId, eventId) {
     const task = browserConversationTasks.get(taskId);
@@ -2070,6 +2309,8 @@ export const browserApi: RuntimeApi = {
         resumable: false,
       },
       runs: [],
+      runHistoryStatus: 'not-loaded',
+      runsNextCursor: null,
       pinned: false,
       pinnedOrder: null,
     };
@@ -2094,6 +2335,8 @@ export const browserApi: RuntimeApi = {
       autoTitle: false,
       runMode: 'workflow' as const,
       runs: [],
+      runHistoryStatus: 'ready-empty' as const,
+      runsNextCursor: null,
       pinned: false,
       pinnedOrder: null,
     };
@@ -2102,16 +2345,21 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve(task);
   },
   deleteConversationTask(_projectId, _taskId) {
-    return this.getConversationSidebar();
+    browserConversationTasks.delete(_taskId);
+    return this.getConversationSidebarBootstrap();
   },
   pinConversation(_projectId, _taskId) {
-    return this.getConversationSidebar();
+    const task = browserConversationTasks.get(_taskId);
+    if (task) task.pinned = true;
+    return this.getConversationSidebarBootstrap();
   },
   unpinConversation(_projectId, _taskId) {
-    return this.getConversationSidebar();
+    const task = browserConversationTasks.get(_taskId);
+    if (task) task.pinned = false;
+    return this.getConversationSidebarBootstrap();
   },
   reorderPinnedConversations(_pins) {
-    return this.getConversationSidebar();
+    return this.getConversationSidebarBootstrap();
   },
   searchConversationTasks(_query, _limit) {
     return Promise.resolve([]);
@@ -2129,13 +2377,13 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve(ws);
   },
   addConversationWorkspace() {
-    return this.getConversationSidebar();
+    return this.getConversationSidebarBootstrap();
   },
   removeConversationWorkspace(_projectId) {
-    return this.getConversationSidebar();
+    return this.getConversationSidebarBootstrap();
   },
   syncConversationWorkspace(_workspacePath) {
-    return this.getConversationSidebar();
+    return this.getConversationSidebarBootstrap();
   },
   saveConversationPreference(_key, _value) {
     return Promise.resolve();

@@ -220,6 +220,17 @@ describe('ACP live event flush policy', () => {
     }).scheduleDelayMs).toBe(40);
   });
 
+  it('evicts the oldest distinct identity when the latest-wins buffer reaches capacity', () => {
+    const pending = new AcpLatestWinsEventBuffer<string>(3);
+
+    for (let index = 0; index < 5; index += 1) {
+      pending.replace(`stream-${index}`, `value-${index}`);
+    }
+
+    expect(pending.size).toBe(3);
+    expect(pending.drain()).toEqual(['value-2', 'value-3', 'value-4']);
+  });
+
   it('replays the 6021-frame incident with a bounded latest-wins single flight', () => {
     type ReplayEvent = {
       id: string;
@@ -229,7 +240,7 @@ describe('ACP live event flush policy', () => {
       status?: string;
       seq: number;
     };
-    const pending = new AcpLatestWinsEventBuffer<ReplayEvent>();
+    const pending = new AcpLatestWinsEventBuffer<ReplayEvent>(64);
     const finalText = new Map<string, string>();
     const publishedText = new Map<string, string>();
     let rawFrameCount = 0;

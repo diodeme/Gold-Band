@@ -31,6 +31,39 @@ type FrameHarness = {
   pending: () => number;
 };
 
+type MutationObserverHarness = {
+  active: () => number;
+  constructed: ReturnType<typeof vi.fn>;
+  disconnected: ReturnType<typeof vi.fn>;
+};
+
+function installMutationObserverHarness(): MutationObserverHarness {
+  const NativeMutationObserver = window.MutationObserver;
+  const activeObservers = new Set<MutationObserver>();
+  const constructed = vi.fn();
+  const disconnected = vi.fn();
+
+  class TrackedMutationObserver extends NativeMutationObserver {
+    constructor(callback: MutationCallback) {
+      super(callback);
+      constructed();
+      activeObservers.add(this);
+    }
+
+    override disconnect() {
+      if (activeObservers.delete(this)) disconnected();
+      super.disconnect();
+    }
+  }
+
+  vi.stubGlobal('MutationObserver', TrackedMutationObserver);
+  return {
+    active: () => activeObservers.size,
+    constructed,
+    disconnected,
+  };
+}
+
 function installFrameHarness(): FrameHarness {
   let nextFrameId = 1;
   let now = 0;
@@ -68,9 +101,31 @@ afterEach(() => {
   document.body.replaceChildren();
   streamingDiagnostic.mockClear();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe('streaming Markdown render budget', () => {
+  it('does not create playback infrastructure for static history', async () => {
+    const observers = installMutationObserverHarness();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => root.render(<Markdown>完整历史正文</Markdown>));
+
+      expect(container.textContent).toBe('完整历史正文');
+      expect(observers.constructed).not.toHaveBeenCalled();
+      expect(observers.active()).toBe(0);
+      expect(streamingDiagnostic).not.toHaveBeenCalledWith(
+        'markdown-playback-init',
+        expect.any(Function),
+      );
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('uses one document playback frame and reveals renderer tokens as a strict prefix across blocks', async () => {
     const frames = installFrameHarness();
     const container = document.createElement('div');
@@ -141,6 +196,7 @@ describe('streaming Markdown render budget', () => {
 
   it('settles a static baseline before animating only content appended after re-entry', async () => {
     const frames = installFrameHarness();
+    const observers = installMutationObserverHarness();
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
@@ -150,9 +206,12 @@ describe('streaming Markdown render budget', () => {
       await act(async () => root.render(<Markdown>{baseline}</Markdown>));
       expect(container.textContent).toBe(baseline);
       expect(container.querySelector('[data-sd-animate]')).toBeNull();
+      expect(observers.constructed).not.toHaveBeenCalled();
 
       await act(async () => root.render(<Markdown streaming>{baseline}</Markdown>));
       await act(async () => Promise.resolve());
+      expect(observers.constructed).toHaveBeenCalledTimes(1);
+      expect(observers.active()).toBe(1);
       const baselineTokenCount = tokenStates(container).length;
       expect(baselineTokenCount).toBeGreaterThan(0);
       expect(tokenStates(container).every((state) => state === 'settled')).toBe(true);
@@ -203,6 +262,7 @@ describe('streaming Markdown render budget', () => {
 
   it('settles a non-append rewrite and the previous message without leaving a playback backlog', async () => {
     const frames = installFrameHarness();
+    const observers = installMutationObserverHarness();
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
@@ -221,6 +281,12 @@ describe('streaming Markdown render budget', () => {
       expect(container.textContent).toBe(rewrittenCanonical);
       expect(container.querySelector('[data-sd-animate]')).toBeNull();
       expect(frames.pending()).toBe(0);
+      expect(observers.disconnected).toHaveBeenCalledTimes(1);
+      expect(observers.active()).toBe(0);
+      const settleReasons = streamingDiagnostic.mock.calls
+        .filter(([stage]) => stage === 'markdown-playback-settle')
+        .map(([, createDetails]) => createDetails().reason);
+      expect(settleReasons.slice(-2)).toEqual(['stream-finished', 'dispose']);
     } finally {
       await act(async () => root.unmount());
     }

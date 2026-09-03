@@ -774,6 +774,10 @@ pub const MAX_SKILL_DESCRIPTION_LEN: usize = 1024;
 pub const DEFAULT_CONVERSATION_AUTO_TITLE_MAX_CHARS: usize = 18;
 pub const DEFAULT_NOTIFICATION_AUTO_DISMISS_TARGET_SECS: u64 = 20;
 pub const DEFAULT_SCHEDULED_OCCURRENCE_RETENTION_DAYS: u16 = 30;
+pub const DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS: u64 = 10_000;
+pub const DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE: usize = 96;
+pub const DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT: usize = 3;
+pub const DEFAULT_ACP_CHAT_RESOURCE_CACHE_SESSION_COUNT: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1274,6 +1278,8 @@ pub struct ProjectAppConfig {
     pub project_identity: Option<ProjectIdentityConfig>,
     pub acp_session_title_refresh_enabled: Option<bool>,
     pub acp_chat_event_page_size: Option<usize>,
+    pub acp_chat_event_window_page_count: Option<usize>,
+    pub acp_chat_resource_cache_session_count: Option<usize>,
     pub acp_raw_max_size_bytes: Option<u64>,
     pub acp_raw_target_size_bytes: Option<u64>,
     pub acp_session_foreground_lease_ttl_secs: Option<u64>,
@@ -1353,6 +1359,8 @@ impl ProjectIdentityConfig {
 #[serde(rename_all = "camelCase")]
 pub struct TurnFilesConfig {
     pub card_preview_limit: usize,
+    #[serde(default = "default_turn_attachment_card_preview_limit")]
+    pub attachment_card_preview_limit: usize,
     pub capture_max_entries: usize,
     pub capture_max_file_bytes: usize,
     pub capture_max_total_bytes: usize,
@@ -1362,10 +1370,15 @@ pub struct TurnFilesConfig {
     pub blob_retention_policy: TurnFileBlobRetentionPolicy,
 }
 
+const fn default_turn_attachment_card_preview_limit() -> usize {
+    1
+}
+
 impl Default for TurnFilesConfig {
     fn default() -> Self {
         Self {
             card_preview_limit: 3,
+            attachment_card_preview_limit: 1,
             capture_max_entries: 256,
             capture_max_file_bytes: 2 * 1024 * 1024,
             capture_max_total_bytes: 16 * 1024 * 1024,
@@ -1381,6 +1394,7 @@ impl TurnFilesConfig {
     fn normalized(self) -> Self {
         Self {
             card_preview_limit: self.card_preview_limit.max(1),
+            attachment_card_preview_limit: self.attachment_card_preview_limit.max(1),
             capture_max_entries: self.capture_max_entries.max(1),
             capture_max_file_bytes: self.capture_max_file_bytes.max(1),
             capture_max_total_bytes: self
@@ -1641,6 +1655,8 @@ pub struct RuntimeConfig {
     pub desktop_metrics_api_key: Option<String>,
     pub acp_session_title_refresh_enabled: bool,
     pub acp_chat_event_page_size: usize,
+    pub acp_chat_event_window_page_count: usize,
+    pub acp_chat_resource_cache_session_count: usize,
     pub acp_raw_max_size_bytes: u64,
     pub acp_raw_target_size_bytes: u64,
     pub acp_session_foreground_lease_ttl_secs: u64,
@@ -1707,12 +1723,14 @@ impl Default for RuntimeConfig {
             desktop_metrics_base_url: None,
             desktop_metrics_api_key: None,
             acp_session_title_refresh_enabled: false,
-            acp_chat_event_page_size: 360,
+            acp_chat_event_page_size: DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
+            acp_chat_event_window_page_count: DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT,
+            acp_chat_resource_cache_session_count: DEFAULT_ACP_CHAT_RESOURCE_CACHE_SESSION_COUNT,
             acp_raw_max_size_bytes: 5 * 1024 * 1024,
             acp_raw_target_size_bytes: 4 * 1024 * 1024,
             acp_session_foreground_lease_ttl_secs: 90,
             acp_session_foreground_lease_renew_interval_secs: 30,
-            acp_prompt_terminal_route_timeout_ms: 5_000,
+            acp_prompt_terminal_route_timeout_ms: DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS,
             acp_session_idle_ttl_secs: 600,
             acp_adapter_connection_idle_ttl_secs: 600,
             acp_max_idle_session_runtimes: 8,
@@ -1823,8 +1841,23 @@ impl RuntimeConfig {
         {
             self.acp_session_title_refresh_enabled = acp_session_title_refresh_enabled;
         }
-        if let Some(acp_chat_event_page_size) = app_config.acp_chat_event_page_size {
+        if let Some(acp_chat_event_page_size) = app_config
+            .acp_chat_event_page_size
+            .filter(|value| *value > 0)
+        {
             self.acp_chat_event_page_size = acp_chat_event_page_size;
+        }
+        if let Some(acp_chat_event_window_page_count) = app_config
+            .acp_chat_event_window_page_count
+            .filter(|value| *value > 0)
+        {
+            self.acp_chat_event_window_page_count = acp_chat_event_window_page_count;
+        }
+        if let Some(acp_chat_resource_cache_session_count) = app_config
+            .acp_chat_resource_cache_session_count
+            .filter(|value| *value > 0)
+        {
+            self.acp_chat_resource_cache_session_count = acp_chat_resource_cache_session_count;
         }
         if let Some(acp_raw_max_size_bytes) = app_config.acp_raw_max_size_bytes {
             self.acp_raw_max_size_bytes = acp_raw_max_size_bytes;
@@ -1968,12 +2001,13 @@ mod tests {
     use super::{
         AcpAdapterConfig, AppearancePreference, ColorSchemePreference, ConsoleThemeName,
         ConversationDirectConfig, ConversationRunMode, ConversationRunModeEntry,
-        DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT, DesktopAvailableUpdate, DesktopLanguage,
-        DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, ManagedAgentConfig,
-        ManagedAgentId, MulticaAccountRef, MulticaCompletedTask, MulticaTaskConversation,
-        MulticaWorkspaceRef, PersonalizationPreference, ProjectAppConfig, ProjectIdentityConfig,
-        RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery,
-        TurnFilesConfig, VisualQuality, WallpaperImagePreference, WorkspaceLayoutConfig,
+        DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS, DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+        DesktopAvailableUpdate, DesktopLanguage, DesktopUpdateBadgeState, FontSizePreference,
+        FontStackPreference, ManagedAgentConfig, ManagedAgentId, MulticaAccountRef,
+        MulticaCompletedTask, MulticaTaskConversation, MulticaWorkspaceRef,
+        PersonalizationPreference, ProjectAppConfig, ProjectIdentityConfig, RuntimeConfig,
+        RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery, TurnFilesConfig,
+        VisualQuality, WallpaperImagePreference, WorkspaceLayoutConfig,
         catalog_agent_default_config, project_identity_config,
     };
     use crate::agent_catalog::builtin_agent_catalog;
@@ -2075,6 +2109,9 @@ mod tests {
         assert_eq!(config.appearance, AppearancePreference::default());
         assert!(matches!(config.desktop_language, DesktopLanguage::ZhCn));
         assert_eq!(config.personalization, PersonalizationPreference::default());
+        assert_eq!(config.acp_chat_event_page_size, 96);
+        assert_eq!(config.acp_chat_event_window_page_count, 3);
+        assert_eq!(config.acp_chat_resource_cache_session_count, 8);
     }
 
     #[test]
@@ -2373,6 +2410,8 @@ mod tests {
         let app_config = ProjectAppConfig {
             acp_session_title_refresh_enabled: Some(true),
             acp_chat_event_page_size: Some(240),
+            acp_chat_event_window_page_count: Some(4),
+            acp_chat_resource_cache_session_count: Some(6),
             conversation_auto_title_max_chars: Some(20),
             conversation_inline_content_max_bytes: Some(64_000),
             conversation_inline_image_max_bytes: Some(4 * 1024 * 1024),
@@ -2393,6 +2432,8 @@ mod tests {
         let roundtripped: ProjectAppConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(roundtripped.acp_session_title_refresh_enabled, Some(true));
         assert_eq!(roundtripped.acp_chat_event_page_size, Some(240));
+        assert_eq!(roundtripped.acp_chat_event_window_page_count, Some(4));
+        assert_eq!(roundtripped.acp_chat_resource_cache_session_count, Some(6));
         assert_eq!(roundtripped.conversation_auto_title_max_chars, Some(20));
         assert_eq!(
             roundtripped.conversation_inline_content_max_bytes,
@@ -2415,7 +2456,22 @@ mod tests {
         );
         assert_eq!(roundtripped.acp_max_idle_session_runtimes, Some(12));
         assert_eq!(roundtripped.acp_timeline_compact_patch_ratio, Some(6));
-        assert_eq!(roundtripped.turn_files.unwrap().card_preview_limit, 5);
+        let turn_files = roundtripped.turn_files.unwrap();
+        assert_eq!(turn_files.card_preview_limit, 5);
+        assert_eq!(turn_files.attachment_card_preview_limit, 1);
+    }
+
+    #[test]
+    fn turn_files_config_defaults_the_attachment_card_preview_limit() {
+        let mut value = serde_json::to_value(TurnFilesConfig::default()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("attachmentCardPreviewLimit");
+
+        let config: TurnFilesConfig = serde_json::from_value(value).unwrap();
+
+        assert_eq!(config.attachment_card_preview_limit, 1);
     }
 
     #[test]
@@ -2470,6 +2526,8 @@ mod tests {
         let config = RuntimeConfig::default().apply_app_config(&ProjectAppConfig {
             acp_session_title_refresh_enabled: Some(true),
             acp_chat_event_page_size: Some(240),
+            acp_chat_event_window_page_count: Some(4),
+            acp_chat_resource_cache_session_count: Some(6),
             conversation_auto_title_max_chars: Some(20),
             conversation_inline_content_max_bytes: Some(32_000),
             conversation_inline_image_max_bytes: Some(1024 * 1024),
@@ -2480,12 +2538,28 @@ mod tests {
         });
         assert!(config.acp_session_title_refresh_enabled);
         assert_eq!(config.acp_chat_event_page_size, 240);
+        assert_eq!(config.acp_chat_event_window_page_count, 4);
+        assert_eq!(config.acp_chat_resource_cache_session_count, 6);
         assert_eq!(config.conversation_auto_title_max_chars, 20);
         assert_eq!(config.conversation_inline_content_max_bytes, 32_000);
         assert_eq!(config.conversation_inline_image_max_bytes, 1024 * 1024);
         assert_eq!(config.conversation_inline_image_max_dimension, 1_568);
         assert_eq!(config.notification_auto_dismiss_target_secs, 12);
         assert!(config.require_local_claude_executable);
+    }
+
+    #[test]
+    fn app_config_ignores_zero_acp_chat_memory_policy_values() {
+        let config = RuntimeConfig::default().apply_app_config(&ProjectAppConfig {
+            acp_chat_event_page_size: Some(0),
+            acp_chat_event_window_page_count: Some(0),
+            acp_chat_resource_cache_session_count: Some(0),
+            ..Default::default()
+        });
+
+        assert_eq!(config.acp_chat_event_page_size, 96);
+        assert_eq!(config.acp_chat_event_window_page_count, 3);
+        assert_eq!(config.acp_chat_resource_cache_session_count, 8);
     }
 
     #[test]
@@ -3087,7 +3161,10 @@ mod tests {
         assert_eq!(config.acp_session_foreground_lease_ttl_secs, 60);
         assert_eq!(config.acp_session_foreground_lease_renew_interval_secs, 20);
         assert_eq!(config.acp_session_idle_ttl_secs, 600);
-        assert_eq!(config.acp_prompt_terminal_route_timeout_ms, 5_000);
+        assert_eq!(
+            config.acp_prompt_terminal_route_timeout_ms,
+            DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS
+        );
         assert_eq!(config.acp_max_idle_session_runtimes, 8);
         assert_eq!(config.acp_timeline_compact_patch_ratio, 4);
     }

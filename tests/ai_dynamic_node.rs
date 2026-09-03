@@ -23,6 +23,8 @@ use tempfile::tempdir;
 
 #[derive(Clone)]
 enum DynamicScenario {
+    DirectEnd,
+    NewRoundFeedback,
     Fanout,
     WorktreeFanout,
     NestedFanout,
@@ -57,6 +59,14 @@ impl DynamicProvider {
 
     fn fanout() -> Self {
         Self::new(DynamicScenario::Fanout)
+    }
+
+    fn direct_end() -> Self {
+        Self::new(DynamicScenario::DirectEnd)
+    }
+
+    fn new_round_feedback() -> Self {
+        Self::new(DynamicScenario::NewRoundFeedback)
     }
 
     fn worktree_fanout() -> Self {
@@ -250,6 +260,7 @@ impl DynamicProvider {
                     "provider is temporarily unavailable",
                     json!({}),
                 )),
+                runtime_control_output: None,
             });
         }
         let (status, output_artifact) = match (
@@ -302,6 +313,7 @@ impl DynamicProvider {
             }),
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 
@@ -312,6 +324,25 @@ impl DynamicProvider {
         let is_runtime_repair = req.user_prompt_render_mode == UserPromptRenderMode::RuntimeRepair;
         let profile = req.profile.as_deref().unwrap_or("profile");
         match (&self.scenario, req.runtime_context.node_id.as_str()) {
+            (DynamicScenario::DirectEnd, "bootstrap") => Some(end_completion("outer handoff")),
+            (DynamicScenario::NewRoundFeedback, "bootstrap") => {
+                Some(if req.runtime_context.round_id == "round-001" {
+                    end_completion("round handoff")
+                } else {
+                    new_round_revision_completion()
+                })
+            }
+            (DynamicScenario::NewRoundFeedback, "revision") => {
+                Some(end_completion("revision completed"))
+            }
+            (DynamicScenario::NewRoundFeedback, "accept") => Some(
+                if req.runtime_context.round_id == "round-001" {
+                    r#"{"result":false,"reason":"ROUND_ONE_REVISION_REQUIRED"}"#
+                } else {
+                    r#"{"result":true,"reason":"accepted"}"#
+                }
+                .to_string(),
+            ),
             (DynamicScenario::Fanout, "bootstrap") => Some(fanout_completion(profile)),
             (DynamicScenario::Fanout, "branch-a" | "branch-b") => {
                 Some(end_completion("branch done"))
@@ -332,6 +363,12 @@ impl DynamicProvider {
             (DynamicScenario::NestedFanout, "branch-a") => Some(nested_fanout_completion(profile)),
             (DynamicScenario::NestedFanout, "branch-b" | "branch-a-1" | "branch-a-2") => {
                 Some(end_completion("branch done"))
+            }
+            (DynamicScenario::NestedFanout, "group-branch-a-accept") => {
+                Some(end_completion("child group accepted"))
+            }
+            (DynamicScenario::NestedFanout, "group-core-accept") => {
+                Some(end_completion("parent group accepted"))
             }
             (DynamicScenario::InvalidWorkflowInvocation, "bootstrap") => {
                 Some(invalid_workflow_invocation_completion(profile))
@@ -559,6 +596,27 @@ fn end_completion(summary: &str) -> String {
             "next": {{ "type": "end" }}
         }}"#
     )
+}
+
+fn new_round_revision_completion() -> String {
+    r#"{
+            "version": "0.1",
+            "kind": "dynamic-node-completion",
+            "status": "success",
+            "summary": "delegate the requested revision",
+            "next": {
+                "type": "single",
+                "node": {
+                    "id": "revision",
+                    "kind": "worker",
+                    "title": "Apply revision",
+                    "task": "Apply the previous Round acceptance feedback",
+                    "profile": "pf-builtin-dev",
+                    "dependsOn": ["bootstrap"]
+                }
+            }
+        }"#
+    .to_string()
 }
 
 fn invalid_workflow_invocation_completion(_profile: &str) -> String {
@@ -937,6 +995,108 @@ fn write_dynamic_workflow(app: &App, task_id: &str, _profile: &str, allowed_work
     );
 }
 
+fn write_dynamic_workflow_with_successor(app: &App, task_id: &str) {
+    std::fs::write(
+        app.paths.workflow_file(task_id).as_std_path(),
+        r#"{
+            "version": "0.1",
+            "id": "dynamic-flow-with-successor",
+            "entry": "router",
+            "control": { "max_attempts": 1, "max_rounds": 1 },
+            "nodes": [
+                {
+                    "id": "router",
+                    "type": "ai-dynamic",
+                    "agentStrategy": {
+                        "mode": "fixed",
+                        "provider": "claude-acp",
+                        "model": "test-model"
+                    },
+                    "control": {
+                        "maxDynamicNodes": 10,
+                        "maxFanout": 2,
+                        "maxDepth": 4,
+                        "maxParallel": 2,
+                        "maxGroupDepth": 2,
+                        "maxWorkflowInvocations": 2,
+                        "allowNestedDynamic": false
+                    },
+                    "allowedWorkflows": []
+                },
+                {
+                    "id": "after",
+                    "type": "worker",
+                    "provider": "claude-acp",
+                    "profile": "pf-builtin-dev",
+                    "goal": "Consume the AI-DYNAMIC handoff"
+                }
+            ],
+            "edges": [
+                { "from": "router", "to": "after", "on": "success" },
+                { "from": "after", "to": "$end", "on": "success" }
+            ]
+        }"#,
+    )
+    .unwrap();
+}
+
+fn write_dynamic_workflow_with_new_round_feedback(app: &App, task_id: &str) {
+    std::fs::write(
+        app.paths.workflow_file(task_id).as_std_path(),
+        r#"{
+            "version": "0.1",
+            "id": "dynamic-flow-with-new-round-feedback",
+            "entry": "router",
+            "control": { "max_attempts": 1, "max_rounds": 1 },
+            "nodes": [
+                {
+                    "id": "router",
+                    "type": "ai-dynamic",
+                    "agentStrategy": {
+                        "mode": "fixed",
+                        "provider": "claude-acp",
+                        "model": "test-model"
+                    },
+                    "control": {
+                        "maxDynamicNodes": 10,
+                        "maxFanout": 2,
+                        "maxDepth": 4,
+                        "maxParallel": 2,
+                        "maxGroupDepth": 2,
+                        "maxWorkflowInvocations": 2,
+                        "allowNestedDynamic": false
+                    },
+                    "allowedWorkflows": []
+                },
+                {
+                    "id": "accept",
+                    "type": "worker",
+                    "provider": "claude-acp",
+                    "profile": "pf-builtin-accept",
+                    "goal": "Accept the AI-DYNAMIC result",
+                    "output": {
+                        "kind": "json",
+                        "artifact": "accept-result",
+                        "schema": { "result": "boolean", "reason": "String" }
+                    },
+                    "success_condition": { "expression": "$.result == true" }
+                }
+            ],
+            "edges": [
+                { "from": "router", "to": "accept", "on": "success" },
+                {
+                    "from": "accept",
+                    "to": "$new-round",
+                    "on": "failure",
+                    "new_round_entry": "router"
+                },
+                { "from": "accept", "to": "$end", "on": "success" }
+            ]
+        }"#,
+    )
+    .unwrap();
+}
+
 fn write_dynamic_workflow_with_agent_strategy(
     app: &App,
     task_id: &str,
@@ -985,6 +1145,48 @@ fn dynamic_graph(app: &App, task_id: &str) -> DynamicGraphState {
         &app.paths.repo_root,
     )
     .unwrap()
+}
+
+fn coordination_snapshot(app: &App, task_id: &str) -> serde_json::Value {
+    gold_band::storage::read_json(
+        &app.paths
+            .dynamic_dir(task_id, "run-001", "round-001", "router", "attempt-001")
+            .join("coordination-snapshot.json"),
+    )
+    .unwrap()
+}
+
+fn coordination_workstream<'a>(
+    snapshot: &'a serde_json::Value,
+    workstream_id: &str,
+) -> &'a serde_json::Value {
+    snapshot["workstreams"]
+        .as_array()
+        .expect("coordination snapshot must expose workstream-first TODOs")
+        .iter()
+        .find(|workstream| workstream["id"] == workstream_id)
+        .unwrap_or_else(|| panic!("missing coordination workstream `{workstream_id}`"))
+}
+
+fn coordination_group<'a>(
+    snapshot: &'a serde_json::Value,
+    group_id: &str,
+) -> &'a serde_json::Value {
+    snapshot["groups"]
+        .as_array()
+        .expect("coordination snapshot must expose groups")
+        .iter()
+        .find(|group| group["id"] == group_id)
+        .unwrap_or_else(|| panic!("missing coordination group `{group_id}`"))
+}
+
+fn json_string_array(value: &serde_json::Value) -> Vec<&str> {
+    value
+        .as_array()
+        .expect("expected a JSON string array")
+        .iter()
+        .map(|item| item.as_str().expect("expected a JSON string"))
+        .collect()
 }
 
 fn wait_for_invocation(
@@ -1086,6 +1288,116 @@ fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
         proposal.validation_status == DynamicProposalValidationStatus::Accepted
     }));
 
+    let result_path = app.paths.artifact_file(
+        task_id,
+        "run-001",
+        "round-001",
+        "router",
+        "attempt-001",
+        "ai-dynamic-result",
+    );
+    let result: serde_json::Value = gold_band::storage::read_json(&result_path).unwrap();
+    assert_eq!(result["kind"], "ai-dynamic-result");
+    assert_eq!(result["summary"], "accepted");
+    assert_eq!(result["sourceNodeId"], "group-core-accept");
+    assert_eq!(result["sourceGroupId"], "group-core");
+    assert!(result.get("nodes").is_none());
+
+    let manifest_path = app.paths.artifact_file(
+        task_id,
+        "run-001",
+        "round-001",
+        "router",
+        "attempt-001",
+        "ai-dynamic-report-manifest",
+    );
+    assert_eq!(result["reportManifest"]["path"], manifest_path.as_str());
+    let manifest: serde_json::Value = gold_band::storage::read_json(&manifest_path).unwrap();
+    assert_eq!(manifest["kind"], "ai-dynamic-report-manifest");
+    assert_eq!(manifest["rootNodeId"], "bootstrap");
+    let manifest_nodes = manifest["nodes"].as_array().unwrap();
+    let bootstrap_report = manifest_nodes
+        .iter()
+        .find(|node| node["id"] == "bootstrap")
+        .unwrap();
+    assert_eq!(bootstrap_report["next"]["type"], "fanout");
+    assert_eq!(bootstrap_report["next"]["groupId"], "group-core");
+    let branch_report = manifest_nodes
+        .iter()
+        .find(|node| node["id"] == "branch-a")
+        .unwrap();
+    assert_eq!(branch_report["spawnedByNodeId"], "bootstrap");
+    assert_eq!(branch_report["next"]["type"], "end");
+    let merge_report = manifest_nodes
+        .iter()
+        .find(|node| node["id"] == "group-core-merge")
+        .unwrap();
+    assert_eq!(merge_report["spawnedByNodeId"], "bootstrap");
+    assert!(
+        merge_report["dependsOn"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node_id| node_id == "branch-a")
+    );
+    assert!(manifest["groups"].as_array().unwrap().iter().any(|group| {
+        group["id"] == "group-core"
+            && group["mergeNodeId"] == "group-core-merge"
+            && group["acceptanceNodeId"] == "group-core-accept"
+    }));
+
+    let coordination_path = app
+        .paths
+        .dynamic_dir(task_id, "run-001", "round-001", "router", "attempt-001")
+        .join("coordination-snapshot.json");
+    let coordination = coordination_snapshot(&app, task_id);
+    assert_eq!(coordination["kind"], "ai-dynamic-coordination-snapshot");
+    assert!(
+        coordination.get("nodes").is_none(),
+        "the runtime TODO projection must not duplicate the complete node history"
+    );
+    let workstreams = coordination["workstreams"]
+        .as_array()
+        .expect("coordination snapshot must expose workstream-first TODOs");
+    assert_eq!(workstreams.len(), 2);
+    assert!(
+        workstreams
+            .iter()
+            .all(|workstream| workstream["id"] != "bootstrap"),
+        "bootstrap is a control dispatcher, not a business workstream"
+    );
+    let branch_a_workstream = coordination_workstream(&coordination, "branch-a");
+    assert!(branch_a_workstream.get("parentWorkstreamId").is_none());
+    assert_eq!(branch_a_workstream["ownerGroupId"], "group-core");
+    assert_eq!(branch_a_workstream["title"], "Branch A");
+    assert_eq!(branch_a_workstream["goal"], "Finish branch A");
+    assert_eq!(branch_a_workstream["status"], "completed");
+    assert!(branch_a_workstream["workspace"]["path"].as_str().is_some());
+    let branch_a_steps = branch_a_workstream["steps"].as_array().unwrap();
+    assert_eq!(branch_a_steps.len(), 1);
+    assert_eq!(branch_a_steps[0]["nodeId"], "branch-a");
+    assert_eq!(branch_a_steps[0]["task"], "Finish branch A");
+    assert_eq!(branch_a_steps[0]["status"], "completed");
+    assert_eq!(branch_a_steps[0]["summary"], "branch done");
+
+    let group = coordination_group(&coordination, "group-core");
+    assert!(group.get("createdByWorkstreamId").is_none());
+    assert_eq!(
+        json_string_array(&group["branchWorkstreamIds"]),
+        vec!["branch-a", "branch-b"]
+    );
+    assert_eq!(group["phase"], "closed");
+    assert_eq!(group["merge"]["nodeId"], "group-core-merge");
+    assert_eq!(group["merge"]["status"], "completed");
+    assert_eq!(group["acceptance"]["nodeId"], "group-core-accept");
+    assert_eq!(group["acceptance"]["status"], "completed");
+    assert!(
+        workstreams.iter().all(|workstream| {
+            workstream["id"] != "group-core-merge" && workstream["id"] != "group-core-accept"
+        }),
+        "merge and acceptance are group phases, not business workstreams"
+    );
+
     let invocations = provider.invocations.lock().unwrap();
     let business_invocations = invocations
         .iter()
@@ -1142,6 +1454,233 @@ fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
     assert!(merge.user_prompt.contains("group-core"));
     assert!(merge.user_prompt.contains("branch-a"));
     assert!(merge.user_prompt.contains("branch-b"));
+
+    let coordination_path_text = coordination_path.as_str();
+    let bootstrap_hidden = business_invocations[0]
+        .extra_hidden_sections
+        .iter()
+        .map(|section| section.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!bootstrap_hidden.contains(coordination_path_text));
+    for branch_id in ["branch-a", "branch-b"] {
+        let branch = business_invocations
+            .iter()
+            .find(|invocation| invocation.runtime_context.node_id == branch_id)
+            .unwrap();
+        assert!(
+            branch
+                .extra_hidden_sections
+                .iter()
+                .any(|section| section.content.contains(coordination_path_text))
+        );
+        assert!(
+            branch
+                .output_contract
+                .as_ref()
+                .and_then(|contract| contract.finalize_context.as_deref())
+                .is_some_and(|context| context.contains(coordination_path_text))
+        );
+    }
+    let merge_invocation = business_invocations
+        .iter()
+        .find(|invocation| invocation.runtime_context.node_id == "group-core-merge")
+        .unwrap();
+    assert!(
+        !merge_invocation
+            .extra_hidden_sections
+            .iter()
+            .any(|section| section.content.contains(coordination_path_text))
+    );
+    let acceptance_invocation = business_invocations
+        .iter()
+        .find(|invocation| invocation.runtime_context.node_id == "group-core-accept")
+        .unwrap();
+    assert!(
+        !acceptance_invocation
+            .profile_content
+            .as_deref()
+            .unwrap()
+            .contains("如果当前 group 是顶层 group")
+    );
+    assert!(
+        acceptance_invocation
+            .output_contract
+            .as_ref()
+            .and_then(|contract| contract.schema_text.as_deref())
+            .is_some_and(|protocol| protocol.contains("完整业务交接摘要"))
+    );
+    assert!(
+        !acceptance_invocation
+            .extra_hidden_sections
+            .iter()
+            .any(|section| section.content.contains(coordination_path_text))
+    );
+    assert!(
+        acceptance_invocation
+            .output_contract
+            .as_ref()
+            .and_then(|contract| contract.finalize_context.as_deref())
+            .is_some_and(|context| context.contains(coordination_path_text))
+    );
+}
+
+#[test]
+fn ai_dynamic_without_groups_publishes_final_end_summary() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-direct-end";
+    let provider = DynamicProvider::direct_end();
+    let app = App::with_provider(repo_root, Box::new(provider));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+    let result: serde_json::Value = gold_band::storage::read_json(&app.paths.artifact_file(
+        task_id,
+        "run-001",
+        "round-001",
+        "router",
+        "attempt-001",
+        "ai-dynamic-result",
+    ))
+    .unwrap();
+    assert_eq!(result["summary"], "outer handoff");
+    assert_eq!(result["sourceNodeId"], "bootstrap");
+    assert!(result.get("sourceGroupId").is_none());
+}
+
+#[test]
+fn ai_dynamic_new_round_bootstrap_receives_acceptance_trigger_context() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-new-round-feedback";
+    let provider = DynamicProvider::new_round_feedback();
+    let app = with_available_claude_diagnostics(App::with_provider(
+        repo_root,
+        Box::new(provider.clone()),
+    ));
+    write_task_file(&app, task_id);
+    write_dynamic_workflow_with_new_round_feedback(&app, task_id);
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+    assert_eq!(run.new_rounds_opened, 1);
+
+    let invocations = provider.invocations.lock().unwrap();
+    let round_two_bootstrap = invocations
+        .iter()
+        .find(|invocation| {
+            invocation.runtime_context.round_id == "round-002"
+                && invocation.runtime_context.node_id == "bootstrap"
+                && is_business_invocation(invocation)
+        })
+        .expect("the second round should execute the AI-DYNAMIC bootstrap");
+    let trigger = round_two_bootstrap
+        .new_round_trigger
+        .as_ref()
+        .expect("the second-round bootstrap must receive the first-round acceptance trigger");
+    assert_eq!(trigger.round_id, "round-001");
+    assert_eq!(trigger.node_id, "accept");
+    assert_eq!(trigger.attempt_id, "attempt-001");
+    assert_eq!(trigger.outcome.as_deref(), Some("failure"));
+    assert_eq!(trigger.branch_direction.as_deref(), Some("$new-round"));
+
+    let artifact = trigger
+        .output_artifact
+        .as_ref()
+        .expect("the acceptance trigger must expose its output artifact");
+    let expected_artifact_path = app.paths.artifact_file(
+        task_id,
+        "run-001",
+        "round-001",
+        "accept",
+        "attempt-001",
+        "accept-result",
+    );
+    assert_eq!(artifact.name, "accept-result");
+    assert_eq!(artifact.path, expected_artifact_path);
+    assert!(
+        artifact
+            .preview
+            .as_deref()
+            .is_some_and(|preview| preview.contains("ROUND_ONE_REVISION_REQUIRED")),
+        "the trigger must include the prior acceptance artifact preview"
+    );
+    let round_two_revision = invocations
+        .iter()
+        .find(|invocation| {
+            invocation.runtime_context.round_id == "round-002"
+                && invocation.runtime_context.node_id == "revision"
+                && is_business_invocation(invocation)
+        })
+        .expect("the second-round bootstrap should dispatch an internal revision worker");
+    assert!(round_two_revision.new_round_trigger.is_none());
+    let revision_prompt = render_prompt_bundle(round_two_revision).unwrap();
+    assert!(!revision_prompt.user_prompt.contains("$new-round"));
+    assert!(
+        !revision_prompt
+            .user_prompt
+            .contains("ROUND_ONE_REVISION_REQUIRED")
+    );
+    assert!(
+        invocations
+            .iter()
+            .filter(|invocation| {
+                invocation.runtime_context.round_id == "round-002"
+                    && invocation.runtime_context.node_id != "bootstrap"
+            })
+            .all(|invocation| invocation.new_round_trigger.is_none()),
+        "the outer trigger must not be broadcast beyond the AI-DYNAMIC bootstrap"
+    );
+
+    let rendered = render_prompt_bundle(round_two_bootstrap).unwrap();
+    assert!(rendered.user_prompt.contains("$new-round"));
+    assert!(
+        rendered
+            .user_prompt
+            .contains("round-001/accept/attempt-001")
+    );
+    assert!(
+        rendered
+            .user_prompt
+            .contains(expected_artifact_path.as_str())
+    );
+    assert!(rendered.user_prompt.contains("ROUND_ONE_REVISION_REQUIRED"));
+}
+
+#[test]
+fn ai_dynamic_successor_receives_public_handoff_artifact() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-successor";
+    let provider = DynamicProvider::fanout();
+    let app = with_available_claude_diagnostics(App::with_provider(
+        repo_root,
+        Box::new(provider.clone()),
+    ));
+    write_task_file(&app, task_id);
+    write_dynamic_workflow_with_successor(&app, task_id);
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+
+    let invocations = provider.invocations.lock().unwrap();
+    let successor = invocations
+        .iter()
+        .find(|invocation| invocation.runtime_context.node_id == "after")
+        .unwrap();
+    let handoff = successor.predecessors[0]
+        .output_artifact
+        .as_ref()
+        .expect("AI-DYNAMIC successor should receive the public handoff artifact");
+    assert_eq!(handoff.name, "ai-dynamic-result");
+    let preview = handoff.preview.as_deref().unwrap();
+    assert!(preview.contains("\"summary\": \"accepted\""));
+    assert!(preview.contains("ai-dynamic-report-manifest.json"));
 }
 
 #[test]
@@ -1501,6 +2040,18 @@ fn ai_dynamic_nested_fanout_waits_for_child_group_before_parent_merge() {
     assert_eq!(run.status, RunStatus::Completed);
     assert_eq!(run.outcome, Some(RunOutcome::Success));
 
+    let result: serde_json::Value = gold_band::storage::read_json(&app.paths.artifact_file(
+        task_id,
+        "run-001",
+        "round-001",
+        "router",
+        "attempt-001",
+        "ai-dynamic-result",
+    ))
+    .unwrap();
+    assert_eq!(result["summary"], "parent group accepted");
+    assert_eq!(result["sourceNodeId"], "group-core-accept");
+
     let graph = dynamic_graph(&app, task_id);
     assert_eq!(graph.groups.len(), 2);
     let parent = graph
@@ -1549,6 +2100,34 @@ fn ai_dynamic_nested_fanout_waits_for_child_group_before_parent_merge() {
     );
 
     let invocations = provider.invocations.lock().unwrap();
+    let child_acceptance = invocations
+        .iter()
+        .find(|invocation| {
+            invocation.runtime_context.node_id == "group-branch-a-accept"
+                && is_business_invocation(invocation)
+        })
+        .unwrap();
+    assert!(
+        child_acceptance
+            .output_contract
+            .as_ref()
+            .and_then(|contract| contract.schema_text.as_deref())
+            .is_some_and(|protocol| protocol.contains("内部进度/分支报告"))
+    );
+    let parent_acceptance = invocations
+        .iter()
+        .find(|invocation| {
+            invocation.runtime_context.node_id == "group-core-accept"
+                && is_business_invocation(invocation)
+        })
+        .unwrap();
+    assert!(
+        parent_acceptance
+            .output_contract
+            .as_ref()
+            .and_then(|contract| contract.schema_text.as_deref())
+            .is_some_and(|protocol| protocol.contains("完整业务交接摘要"))
+    );
     let node_ids = invocations
         .iter()
         .map(|invocation| invocation.runtime_context.node_id.as_str())
@@ -1562,6 +2141,38 @@ fn ai_dynamic_nested_fanout_waits_for_child_group_before_parent_merge() {
         .position(|node_id| *node_id == "group-core-merge")
         .unwrap();
     assert!(child_accept_position < parent_merge_position);
+
+    let coordination = coordination_snapshot(&app, task_id);
+    let workstreams = coordination["workstreams"].as_array().unwrap();
+    assert_eq!(workstreams.len(), 4);
+    let branch_a = coordination_workstream(&coordination, "branch-a");
+    assert!(branch_a.get("parentWorkstreamId").is_none());
+    assert_eq!(branch_a["ownerGroupId"], "group-core");
+    for child_id in ["branch-a-1", "branch-a-2"] {
+        let child_workstream = coordination_workstream(&coordination, child_id);
+        assert_eq!(child_workstream["parentWorkstreamId"], "branch-a");
+        assert_eq!(child_workstream["ownerGroupId"], "group-branch-a");
+        assert_eq!(child_workstream["status"], "completed");
+    }
+    let child_group = coordination_group(&coordination, "group-branch-a");
+    assert_eq!(child_group["parentGroupId"], "group-core");
+    assert_eq!(child_group["createdByWorkstreamId"], "branch-a");
+    assert_eq!(
+        json_string_array(&child_group["branchWorkstreamIds"]),
+        vec!["branch-a-1", "branch-a-2"]
+    );
+    assert_eq!(child_group["phase"], "closed");
+    assert!(workstreams.iter().all(|workstream| {
+        !matches!(
+            workstream["id"].as_str(),
+            Some(
+                "group-branch-a-merge"
+                    | "group-branch-a-accept"
+                    | "group-core-merge"
+                    | "group-core-accept"
+            )
+        )
+    }));
 }
 
 #[test]
@@ -2039,6 +2650,36 @@ fn ai_dynamic_lists_resumable_session_nodes_and_uses_continue_session() {
         .unwrap();
     assert_eq!(branch_c.session_mode, SessionMode::Continue);
     assert!(branch_c.continue_ref.is_some());
+
+    let coordination = coordination_snapshot(&app, task_id);
+    let workstreams = coordination["workstreams"].as_array().unwrap();
+    assert_eq!(workstreams.len(), 2);
+    assert!(
+        workstreams
+            .iter()
+            .all(|workstream| workstream["id"] != "branch-c"),
+        "a single successor must remain a step in its source workstream"
+    );
+    let branch_b_workstream = coordination_workstream(&coordination, "branch-b");
+    assert!(branch_b_workstream.get("parentWorkstreamId").is_none());
+    assert_eq!(branch_b_workstream["ownerGroupId"], "group-core");
+    assert_eq!(branch_b_workstream["status"], "completed");
+    assert!(branch_b_workstream["workspace"]["path"].as_str().is_some());
+    let steps = branch_b_workstream["steps"].as_array().unwrap();
+    assert_eq!(
+        steps
+            .iter()
+            .map(|step| step["nodeId"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["branch-b", "branch-c"]
+    );
+    assert_eq!(steps[0]["status"], "completed");
+    assert_eq!(
+        steps[0]["summary"],
+        "continue branch B conversation into final wrap-up node"
+    );
+    assert_eq!(steps[1]["status"], "completed");
+    assert_eq!(steps[1]["summary"], "branch C done");
 }
 
 #[test]

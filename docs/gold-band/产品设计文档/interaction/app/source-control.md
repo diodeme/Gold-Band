@@ -45,6 +45,8 @@ Fetch 的可选 prune 行为对客描述为“移除远端已删除的分支记�
 
 Worktree 行提供 Git 原生安全删除。当前正在使用的 Worktree 禁止删除；其他 Worktree 删除前必须展示完整路径并二次确认，执行 `git worktree remove` 且不传 `--force`。含未提交或未跟踪改动时由 Git 拒绝并返回结构化原因；删除 Worktree 不删除关联 branch。请求路径必须先与后端 `git worktree list` 的规范化权威路径匹配，不能直接把前端路径作为任意文件系统删除目标。删除中的目标行显示旋转状态并禁用冲突写入口，完成后 watcher/命令结果刷新权威仓库快照。
 
+Git catalog 匹配、repository/workspace 协调锁 key 与 Worktree 删除目标必须共用同一个 `GitFilesystemPathIdentity`，不得分别使用字符串替换或要求目标 leaf 仍存在。完整路径存在时使用成熟的 Windows-aware canonicalize；leaf 已缺失时逐级找到最近存在祖先并解析 symlink/junction，只追加尚未解析的普通子组件。未解析 tail 中出现 `..` 必须拒绝，Windows drive/verbatim drive、UNC/verbatim UNC 与大小写必须规范到同一 filesystem identity，同时保留 UNC 的绝对根语义，不能与相似相对字符串冲突；`C:foo` 或根相对但非绝对的 Windows 路径必须显式拒绝，不能依赖进程隐藏的 drive current directory。删除命令只能使用 identity 精确匹配后的 catalog canonical target，不直接执行调用方原始路径；catalog 必须逐项解析，任一 identity 无法可靠解析时整体 fail closed，不得跳过坏项后继续匹配并删除其他项。
+
 Pull 采用 Git 原生冲突工作流，不实现三方合并编辑器。`status.operationInProgress` 是 Merge/Rebase 进行中状态的唯一事实源；冲突文件点击后打开普通文件编辑 Tab，用户直接修改冲突块。Merge 显示“完成 Merge / 放弃 Merge”，Rebase 显示“继续 Rebase”，并在危险菜单提供“跳过当前 Commit / 放弃 Rebase”。完成或继续必须先弹确认框；确认后后端在同一 workspace 写锁中读取当前 unmerged 路径，只对这些路径执行 `git add --`，随后调用 `git merge --continue` 或 `git rebase --continue`，不暂存其他普通改动。跳过会丢弃当前正在重放的整个 Commit，确认框必须展示短 SHA 和标题；中止分别调用 `git merge --abort`、`git rebase --abort`。进行中禁止普通 Commit、Pull/Push、Stage/Unstage 和仓库写操作，只允许流程控制动作。
 
 Git metadata watcher 必须覆盖 `MERGE_HEAD`、`REBASE_HEAD`、`rebase-merge`、`rebase-apply` 及 index/HEAD；所有 marker 都由 Git 原生 `rev-parse --path-format=absolute --git-path <marker>` 定位，禁止把相对输出按 Gold Band 进程目录判断。用户在其他 IDE 中编辑、暂存、继续、跳过或中止后，Gold Band 通过事件去抖重新读取权威 snapshot，不轮询、不保留旁路状态。Rebase 生命周期只由 `rebase-merge` / `rebase-apply` 目录判定，`REBASE_HEAD` 仅用于读取当前 Commit；Git 在成功结束后可能保留该文件，不能据此误报 Rebase 仍在进行。

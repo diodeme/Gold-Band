@@ -2,10 +2,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 
 use anyhow::{Context, Result, anyhow};
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use similar::{ChangeTag, TextDiff};
+use walkdir::WalkDir;
 
 use crate::storage::{
     append_jsonl_durable, atomic_write_file, ensure_parent_dir, read_json, write_json,
@@ -17,7 +18,12 @@ pub const BLOB_CORRUPTED: &str = "turn-files.blob-corrupted";
 pub const INVALID_TOOL_DIFF: &str = "turn-files.invalid-tool-diff";
 pub const NON_LINEAR_MUTATION: &str = "turn-files.non-linear-mutation";
 pub const CAPTURE_LIMIT_EXCEEDED: &str = "turn-files.capture-limit-exceeded";
-pub const TURN_FILE_CHANGE_SET_SCHEMA_VERSION: u32 = 4;
+pub const ATTACHMENT_BASELINE_MISSING: &str = "turn-files.attachment-baseline-missing";
+pub const ATTACHMENT_SCAN_FAILED: &str = "turn-files.attachment-scan-failed";
+pub const ATTACHMENT_SCAN_LIMIT_EXCEEDED: &str = "turn-files.attachment-scan-limit-exceeded";
+pub const ATTACHMENT_NOT_FOUND: &str = "turn-files.attachment-not-found";
+pub const ATTACHMENT_ACCESS_DENIED: &str = "turn-files.attachment-access-denied";
+pub const TURN_FILE_CHANGE_SET_SCHEMA_VERSION: u32 = 5;
 
 const UNIFIED_DIFF_NO_NEWLINE_MARKERS: [&str; 2] =
     [r"\ No newline at end of file", " No newline at end of file"];
@@ -91,6 +97,15 @@ pub struct TurnFileChange {
     pub limitation_code: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnAttachment {
+    pub id: String,
+    pub relative_path: String,
+    pub name: String,
+    pub byte_length: u64,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnFileChangeSummary {
@@ -146,7 +161,30 @@ pub struct TurnFileChangeSet {
     pub finished_at: Option<String>,
     pub summary: TurnFileChangeSummary,
     pub changes: Vec<TurnFileChange>,
+    #[serde(default)]
+    pub attachments: Vec<TurnAttachment>,
     pub limitation_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct TurnAttachmentBaseline {
+    schema_version: u32,
+    turn_id: String,
+    relative_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ScannedAttachment {
+    attachment: TurnAttachment,
+    canonical_path_key: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TurnAttachmentDelta {
+    attachments: Vec<TurnAttachment>,
+    canonical_path_keys: HashSet<String>,
+    limitation_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -309,6 +347,75 @@ impl TurnFileStore {
         Ok(captured)
     }
 
+    pub fn capture_attachment_baseline(&self, turn_id: &str) -> Result<()> {
+        let path = self.attachment_baseline_path(turn_id);
+        if path.exists() {
+            return Ok(());
+        }
+        let relative_paths = self
+            .scan_attachments(turn_id)?
+            .into_iter()
+            .map(|entry| entry.attachment.relative_path)
+            .collect();
+        write_json(
+            &path,
+            &TurnAttachmentBaseline {
+                schema_version: 1,
+                turn_id: turn_id.to_string(),
+                relative_paths,
+            },
+        )
+    }
+
+    pub fn collect_turn_attachment_delta(&self, turn_id: &str) -> Result<TurnAttachmentDelta> {
+        let baseline_path = self.attachment_baseline_path(turn_id);
+        if !baseline_path.exists() {
+            return Ok(TurnAttachmentDelta {
+                limitation_codes: vec![ATTACHMENT_BASELINE_MISSING.to_string()],
+                ..TurnAttachmentDelta::default()
+            });
+        }
+        let baseline = match read_json::<TurnAttachmentBaseline>(&baseline_path) {
+            Ok(baseline) if baseline.schema_version == 1 && baseline.turn_id == turn_id => baseline,
+            Ok(_) | Err(_) => {
+                return Ok(TurnAttachmentDelta {
+                    limitation_codes: vec![ATTACHMENT_SCAN_FAILED.to_string()],
+                    ..TurnAttachmentDelta::default()
+                });
+            }
+        };
+        let scanned = match self.scan_attachments(turn_id) {
+            Ok(scanned) => scanned,
+            Err(error) => {
+                let code = if error.to_string().contains(ATTACHMENT_SCAN_LIMIT_EXCEEDED) {
+                    ATTACHMENT_SCAN_LIMIT_EXCEEDED
+                } else {
+                    ATTACHMENT_SCAN_FAILED
+                };
+                return Ok(TurnAttachmentDelta {
+                    limitation_codes: vec![code.to_string()],
+                    ..TurnAttachmentDelta::default()
+                });
+            }
+        };
+        let baseline_paths = baseline.relative_paths.into_iter().collect::<HashSet<_>>();
+        let mut attachments = Vec::new();
+        let mut canonical_path_keys = HashSet::new();
+        for entry in scanned {
+            if baseline_paths.contains(&entry.attachment.relative_path) {
+                continue;
+            }
+            canonical_path_keys.insert(entry.canonical_path_key);
+            attachments.push(entry.attachment);
+        }
+        attachments.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        Ok(TurnAttachmentDelta {
+            attachments,
+            canonical_path_keys,
+            limitation_codes: Vec::new(),
+        })
+    }
+
     pub fn finalize_turn_branch(
         &self,
         turn_id: &str,
@@ -317,6 +424,32 @@ impl TurnFileStore {
         started_at: &str,
         finished_at: &str,
         tool_outcomes: &HashMap<String, TurnFileToolTerminalOutcome>,
+    ) -> Result<Option<TurnFileChangeSet>> {
+        self.finalize_turn_branch_with_attachments(
+            turn_id,
+            prompt_event_id,
+            branch_id,
+            started_at,
+            finished_at,
+            tool_outcomes,
+            None,
+            &TurnAttachmentDelta::default(),
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn finalize_turn_branch_with_attachments(
+        &self,
+        turn_id: &str,
+        prompt_event_id: &str,
+        branch_id: &str,
+        started_at: &str,
+        finished_at: &str,
+        tool_outcomes: &HashMap<String, TurnFileToolTerminalOutcome>,
+        workspace_dir: Option<&Utf8Path>,
+        attachment_delta: &TurnAttachmentDelta,
+        include_attachments: bool,
     ) -> Result<Option<TurnFileChangeSet>> {
         let mutations = self
             .load_mutations()?
@@ -329,9 +462,6 @@ impl TurnFileStore {
                         .is_some_and(|outcome| outcome.committed())
             })
             .collect::<Vec<_>>();
-        if mutations.is_empty() {
-            return Ok(None);
-        }
         let mut mutations = mutations
             .into_iter()
             .map(|mutation| self.normalize_mutation_versions(mutation))
@@ -399,7 +529,7 @@ impl TurnFileStore {
                 }
             };
             let change_id = stable_id(&format!("{turn_id}\0{branch_id}\0{path}"));
-            changes.push(TurnFileChange {
+            let change = TurnFileChange {
                 id: format!("turn-file-change-{change_id}"),
                 change_kind,
                 logical_path: path,
@@ -411,12 +541,28 @@ impl TurnFileStore {
                 before_version: before,
                 after_version: after,
                 limitation_code: limitation,
-            });
-        }
-        if changes.is_empty() {
-            return Ok(None);
+            };
+            let is_new_attachment = change.change_kind == FileChangeKind::Added
+                && canonical_change_path_key(&change.logical_path, workspace_dir)
+                    .is_some_and(|key| attachment_delta.canonical_path_keys.contains(&key));
+            if !is_new_attachment {
+                changes.push(change);
+            }
         }
         changes.sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
+        let attachments = include_attachments
+            .then(|| attachment_delta.attachments.clone())
+            .unwrap_or_default();
+        if include_attachments {
+            for code in &attachment_delta.limitation_codes {
+                if !limitations.contains(code) {
+                    limitations.push(code.clone());
+                }
+            }
+        }
+        if changes.is_empty() && attachments.is_empty() {
+            return Ok(None);
+        }
         let summary = summarize(&changes);
         let id = change_set_id(turn_id, branch_id);
         let change_set = TurnFileChangeSet {
@@ -434,6 +580,7 @@ impl TurnFileStore {
             finished_at: Some(finished_at.to_string()),
             summary,
             changes,
+            attachments,
             limitation_codes: limitations,
         };
         write_json(&self.change_set_path(&id), &change_set)?;
@@ -476,6 +623,7 @@ impl TurnFileStore {
             finished_at: change_set.finished_at,
             summary: TurnFileChangeSummary::default(),
             changes: Vec::new(),
+            attachments: Vec::new(),
             limitation_codes: Vec::new(),
         };
         write_json(&path, &empty)?;
@@ -523,6 +671,54 @@ impl TurnFileStore {
                 .then(|| "turn-files.diff-too-large".to_string())
                 .or_else(|| change.limitation_code.clone()),
         })
+    }
+
+    pub fn resolve_attachment_path(
+        &self,
+        change_set_id: &str,
+        attachment_id: &str,
+    ) -> Result<Utf8PathBuf> {
+        let change_set = self.load_change_set(change_set_id)?;
+        let attachment = change_set
+            .attachments
+            .iter()
+            .find(|attachment| attachment.id == attachment_id)
+            .ok_or_else(|| anyhow!(ATTACHMENT_NOT_FOUND))?;
+        let relative = Utf8Path::new(&attachment.relative_path);
+        if relative.is_absolute()
+            || relative.components().any(|component| {
+                matches!(
+                    component,
+                    camino::Utf8Component::ParentDir
+                        | camino::Utf8Component::RootDir
+                        | camino::Utf8Component::Prefix(_)
+                )
+            })
+        {
+            return Err(anyhow!(ATTACHMENT_ACCESS_DENIED));
+        }
+        let root = self.attempt_dir.join("attachments");
+        if std::fs::symlink_metadata(root.as_std_path())
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return Err(anyhow!(ATTACHMENT_ACCESS_DENIED));
+        }
+        let candidate = root.join(relative);
+        if std::fs::symlink_metadata(candidate.as_std_path())
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(true)
+        {
+            return Err(anyhow!(ATTACHMENT_ACCESS_DENIED));
+        }
+        let canonical_root =
+            std::fs::canonicalize(root.as_std_path()).map_err(|_| anyhow!(ATTACHMENT_NOT_FOUND))?;
+        let canonical_path = std::fs::canonicalize(candidate.as_std_path())
+            .map_err(|_| anyhow!(ATTACHMENT_NOT_FOUND))?;
+        if !canonical_path.is_file() || !canonical_path.starts_with(&canonical_root) {
+            return Err(anyhow!(ATTACHMENT_ACCESS_DENIED));
+        }
+        Utf8PathBuf::from_path_buf(canonical_path).map_err(|_| anyhow!(ATTACHMENT_ACCESS_DENIED))
     }
 
     pub fn snapshot(&self, version: &FileVersionRef) -> Result<CapturedTextSnapshot> {
@@ -637,6 +833,76 @@ impl TurnFileStore {
         Ok(outcomes)
     }
 
+    fn scan_attachments(&self, turn_id: &str) -> Result<Vec<ScannedAttachment>> {
+        let root = self.attempt_dir.join("attachments");
+        if !root.exists() {
+            return Ok(Vec::new());
+        }
+        if std::fs::symlink_metadata(root.as_std_path())
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(true)
+        {
+            return Err(anyhow!(ATTACHMENT_SCAN_FAILED));
+        }
+        let canonical_root = std::fs::canonicalize(root.as_std_path())
+            .with_context(|| format!("{ATTACHMENT_SCAN_FAILED}: {root}"))?;
+        let mut scanned = Vec::new();
+        let walker = WalkDir::new(root.as_std_path())
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| {
+                entry.depth() == 0
+                    || (!entry.file_type().is_symlink()
+                        && !entry.file_name().to_string_lossy().starts_with('.'))
+            });
+        let mut visited_entries = 0usize;
+        for entry in walker {
+            let entry = entry.with_context(|| ATTACHMENT_SCAN_FAILED.to_string())?;
+            if entry.depth() > 0 {
+                visited_entries = visited_entries.saturating_add(1);
+                if visited_entries > self.config.capture_max_entries {
+                    return Err(anyhow!(ATTACHMENT_SCAN_LIMIT_EXCEEDED));
+                }
+            }
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let canonical_path = std::fs::canonicalize(entry.path())
+                .with_context(|| ATTACHMENT_SCAN_FAILED.to_string())?;
+            if !canonical_path.starts_with(&canonical_root) {
+                continue;
+            }
+            let relative_path = entry
+                .path()
+                .strip_prefix(root.as_std_path())
+                .with_context(|| ATTACHMENT_SCAN_FAILED.to_string())?
+                .to_string_lossy()
+                .replace('\\', "/");
+            let Some(name) = entry
+                .path()
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+            else {
+                continue;
+            };
+            let byte_length = entry
+                .metadata()
+                .with_context(|| ATTACHMENT_SCAN_FAILED.to_string())?
+                .len();
+            let attachment_id = stable_id(&format!("{turn_id}\0{relative_path}"));
+            scanned.push(ScannedAttachment {
+                attachment: TurnAttachment {
+                    id: format!("turn-attachment-{attachment_id}"),
+                    relative_path,
+                    name,
+                    byte_length,
+                },
+                canonical_path_key: canonical_path_key(&canonical_path),
+            });
+        }
+        Ok(scanned)
+    }
+
     fn mutation_journal_path(&self) -> Utf8PathBuf {
         self.attempt_dir.join("acp.turn-file-mutations.jsonl")
     }
@@ -645,6 +911,12 @@ impl TurnFileStore {
         self.attempt_dir
             .join("turn-file-change-sets")
             .join(format!("{change_set_id}.json"))
+    }
+
+    fn attachment_baseline_path(&self, turn_id: &str) -> Utf8PathBuf {
+        self.attempt_dir
+            .join("turn-attachment-baselines")
+            .join(format!("{}.json", stable_id(turn_id)))
     }
 
     fn blob_path(&self, hash: &str) -> Utf8PathBuf {
@@ -728,6 +1000,30 @@ fn normalize_logical_path(path: &str) -> Result<String> {
         return Err(anyhow!(INVALID_TOOL_DIFF));
     }
     Ok(trimmed.replace('\\', "/"))
+}
+
+fn canonical_change_path_key(
+    logical_path: &str,
+    workspace_dir: Option<&Utf8Path>,
+) -> Option<String> {
+    let path = Utf8Path::new(logical_path);
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        workspace_dir?.join(path)
+    };
+    std::fs::canonicalize(resolved.as_std_path())
+        .ok()
+        .map(|path| canonical_path_key(&path))
+}
+
+fn canonical_path_key(path: &std::path::Path) -> String {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    if cfg!(windows) {
+        normalized.to_lowercase()
+    } else {
+        normalized
+    }
 }
 
 fn latest_tool_diff_revisions(mutations: Vec<TurnFileMutation>) -> Vec<TurnFileMutation> {
@@ -1016,6 +1312,184 @@ mod tests {
         let comparison = store.comparison(&set.id, &change.id).unwrap();
         assert_eq!(comparison.before.unwrap().content, "A\n");
         assert_eq!(comparison.after.unwrap().content, "C\nD\n");
+    }
+
+    #[test]
+    fn finalizes_new_attachments_and_regular_changes_as_mutually_exclusive_sets() {
+        let (dir, store) = store();
+        let attachments_dir = dir.path().join("attachments");
+        let workspace_dir = dir.path().join("workspace");
+        std::fs::create_dir_all(&attachments_dir).unwrap();
+        std::fs::create_dir_all(&workspace_dir).unwrap();
+        let existing_attachment = attachments_dir.join("existing.md");
+        let new_attachment = attachments_dir.join("report.md");
+        std::fs::write(&existing_attachment, "before\n").unwrap();
+        store.capture_attachment_baseline("turn").unwrap();
+
+        std::fs::write(&existing_attachment, "after\n").unwrap();
+        std::fs::write(&new_attachment, "report\n").unwrap();
+        store
+            .capture_event_diffs(
+                "turn",
+                "prompt",
+                "root",
+                "write",
+                2,
+                "2Z",
+                &raw(serde_json::json!([
+                    {
+                        "type": "diff",
+                        "path": existing_attachment.to_string_lossy().to_string(),
+                        "oldText": "before\n",
+                        "newText": "after\n"
+                    },
+                    {
+                        "type": "diff",
+                        "path": new_attachment.to_string_lossy().to_string(),
+                        "oldText": null,
+                        "newText": "report\n"
+                    }
+                ])),
+            )
+            .unwrap();
+
+        let attachment_delta = store.collect_turn_attachment_delta("turn").unwrap();
+        let workspace_dir = Utf8PathBuf::from_path_buf(workspace_dir).unwrap();
+        let set = store
+            .finalize_turn_branch_with_attachments(
+                "turn",
+                "prompt",
+                "root",
+                "1Z",
+                "3Z",
+                &succeeded_tools(&["write"]),
+                Some(&workspace_dir),
+                &attachment_delta,
+                true,
+            )
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(set.attachments.len(), 1);
+        assert_eq!(set.attachments[0].relative_path, "report.md");
+        assert_eq!(set.changes.len(), 1);
+        assert_eq!(set.changes[0].change_kind, FileChangeKind::Modified);
+        assert!(set.changes[0].logical_path.ends_with("existing.md"));
+        assert!(
+            set.changes
+                .iter()
+                .all(|change| !change.logical_path.ends_with("report.md"))
+        );
+    }
+
+    #[test]
+    fn finalizes_an_attachment_only_turn_and_keeps_the_baseline_idempotent() {
+        let (dir, store) = store();
+        let attachments_dir = dir.path().join("attachments");
+        std::fs::create_dir_all(&attachments_dir).unwrap();
+        store.capture_attachment_baseline("turn").unwrap();
+        std::fs::write(attachments_dir.join("report.md"), "report\n").unwrap();
+        store.capture_attachment_baseline("turn").unwrap();
+
+        let attachment_delta = store.collect_turn_attachment_delta("turn").unwrap();
+        let set = store
+            .finalize_turn_branch_with_attachments(
+                "turn",
+                "prompt",
+                "root",
+                "1Z",
+                "2Z",
+                &HashMap::new(),
+                None,
+                &attachment_delta,
+                true,
+            )
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(set.summary, TurnFileChangeSummary::default());
+        assert!(set.changes.is_empty());
+        assert_eq!(set.attachments.len(), 1);
+        assert_eq!(set.attachments[0].relative_path, "report.md");
+    }
+
+    #[test]
+    fn does_not_promote_existing_or_deleted_attachment_paths() {
+        let (dir, store) = store();
+        let attachments_dir = dir.path().join("attachments");
+        std::fs::create_dir_all(&attachments_dir).unwrap();
+        std::fs::write(attachments_dir.join("existing.md"), "before\n").unwrap();
+        store.capture_attachment_baseline("turn").unwrap();
+        std::fs::write(attachments_dir.join("existing.md"), "after\n").unwrap();
+        std::fs::write(attachments_dir.join("transient.md"), "temporary\n").unwrap();
+        std::fs::remove_file(attachments_dir.join("transient.md")).unwrap();
+
+        let attachment_delta = store.collect_turn_attachment_delta("turn").unwrap();
+
+        assert!(attachment_delta.attachments.is_empty());
+        assert!(attachment_delta.canonical_path_keys.is_empty());
+    }
+
+    #[test]
+    fn attachment_scan_limit_fails_closed_without_guessing_membership() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let store = TurnFileStore::new(
+            path,
+            TurnFileCaptureConfig {
+                capture_max_entries: 1,
+                ..TurnFileCaptureConfig::default()
+            },
+        );
+        std::fs::create_dir_all(dir.path().join("attachments")).unwrap();
+        store.capture_attachment_baseline("turn").unwrap();
+        std::fs::write(dir.path().join("attachments/one.md"), "one").unwrap();
+        std::fs::write(dir.path().join("attachments/two.md"), "two").unwrap();
+
+        let attachment_delta = store.collect_turn_attachment_delta("turn").unwrap();
+
+        assert!(attachment_delta.attachments.is_empty());
+        assert!(attachment_delta.canonical_path_keys.is_empty());
+        assert_eq!(
+            attachment_delta.limitation_codes,
+            vec![ATTACHMENT_SCAN_LIMIT_EXCEEDED.to_string()]
+        );
+    }
+
+    #[test]
+    fn resolves_only_attachment_manifest_members_inside_the_attempt_root() {
+        let (dir, store) = store();
+        let attachments_dir = dir.path().join("attachments");
+        std::fs::create_dir_all(&attachments_dir).unwrap();
+        store.capture_attachment_baseline("turn").unwrap();
+        std::fs::write(attachments_dir.join("report.md"), "report\n").unwrap();
+        let attachment_delta = store.collect_turn_attachment_delta("turn").unwrap();
+        let set = store
+            .finalize_turn_branch_with_attachments(
+                "turn",
+                "prompt",
+                "root",
+                "1Z",
+                "2Z",
+                &HashMap::new(),
+                None,
+                &attachment_delta,
+                true,
+            )
+            .unwrap()
+            .unwrap();
+
+        let resolved = store
+            .resolve_attachment_path(&set.id, &set.attachments[0].id)
+            .unwrap();
+        assert!(resolved.ends_with("attachments/report.md"));
+        assert!(
+            store
+                .resolve_attachment_path(&set.id, "missing")
+                .unwrap_err()
+                .to_string()
+                .starts_with(ATTACHMENT_NOT_FOUND)
+        );
     }
 
     #[test]

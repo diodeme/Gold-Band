@@ -15,6 +15,7 @@ mod image_actions;
 mod metrics;
 mod multica;
 mod notifications;
+mod personal_analytics;
 mod scheduled_runtime;
 mod scheduled_service;
 mod state;
@@ -54,11 +55,12 @@ use commands::{
     preflight_github_pull_request, read_conversation_directory_file, read_skill, record_activity,
     recover_conversation_runtime, remove_recent_workspace, renew_acp_session_lease,
     reorder_conversation_queued_prompts, replace_auto_templates, report_frontend_error,
-    respond_acp_permission, respond_elicitation, restore_conversation_queued_prompt,
-    restore_theme_desktop_wallpaper, retry_run, save_auto_template, save_desktop_avatar,
-    save_desktop_avatar_shape, save_desktop_preferences, save_desktop_wallpaper_opacity,
-    save_metrics_settings, save_task_workflow, save_updater_settings, save_workflow_template,
-    search_acp_prompts, search_acp_sessions, search_tasks, select_recent_desktop_avatar,
+    report_webview_environment, resolve_turn_attachment_file, respond_acp_permission,
+    respond_elicitation, restore_conversation_queued_prompt, restore_theme_desktop_wallpaper,
+    retry_run, save_auto_template, save_desktop_avatar, save_desktop_avatar_shape,
+    save_desktop_preferences, save_desktop_wallpaper_opacity, save_metrics_settings,
+    save_task_workflow, save_updater_settings, save_workflow_template, search_acp_prompts,
+    search_acp_sessions, search_tasks, select_recent_desktop_avatar,
     select_recent_desktop_wallpaper, select_recent_workspace, set_acp_session_config_option,
     set_acp_session_model, set_acp_session_permission_mode, show_artifact, show_attachment,
     show_worker_ref, start_git_operation, start_git_state_monitor, start_github_login,
@@ -71,8 +73,9 @@ use commands::{
 use commands_conversation::{
     acknowledge_conversation_terminal_result, add_conversation_workspace,
     choose_conversation_workspace, create_conversation_run, create_scheduled_task,
-    delete_conversation_task, delete_scheduled_task, get_conversation_run,
-    get_conversation_run_mode, get_conversation_sidebar, get_conversation_workspaces,
+    delete_conversation_task, delete_scheduled_task, get_conversation_pinned_task_page,
+    get_conversation_run, get_conversation_run_mode, get_conversation_run_summary_page,
+    get_conversation_sidebar_bootstrap, get_conversation_task_page, get_conversation_workspaces,
     get_scheduled_runtime_settings, get_scheduled_task, get_scheduled_task_diagnostics,
     get_supported_attachment_extensions, list_scheduled_task_occurrences, list_scheduled_tasks,
     materialize_conversation_attachments, pin_conversation, remove_conversation_workspace,
@@ -167,6 +170,8 @@ fn run() -> anyhow::Result<()> {
         .manage(desktop_lifecycle::DesktopLifecycleCoordinator::default())
         .manage(notifications::PendingInterventionNavigations::default())
         .manage(git_state_monitor::GitStateMonitorRuntime::default())
+        .manage(personal_analytics::PersonalAnalyticsRuntime::default())
+        .manage(personal_analytics::PersonalAnalyticsInsightRuntime::default())
         .manage(WorkspaceFileRuntime::default())
         .manage(WorkspaceFileWatchRuntime::default())
         .manage(multica::shared_state())
@@ -358,6 +363,12 @@ fn run() -> anyhow::Result<()> {
             get_system_fonts,
             check_local_claude,
             get_agent_registry,
+            personal_analytics::get_personal_analytics,
+            personal_analytics::sync_personal_analytics,
+            personal_analytics::query_personal_analytics_report,
+            personal_analytics::start_personal_analytics_insights,
+            personal_analytics::cancel_personal_analytics_insights,
+            personal_analytics::cancel_personal_analytics,
             get_agent_binding_usage,
             get_agent_command_catalog,
             create_agent,
@@ -393,6 +404,7 @@ fn run() -> anyhow::Result<()> {
             get_acp_session,
             get_turn_file_change_set,
             get_file_comparison,
+            resolve_turn_attachment_file,
             get_acp_activity_detail,
             get_acp_tool_detail,
             renew_acp_session_lease,
@@ -471,6 +483,7 @@ fn run() -> anyhow::Result<()> {
             set_active_multica_workspace,
             record_activity,
             report_frontend_error,
+            report_webview_environment,
             get_update_status,
             mark_settings_update_seen,
             mark_settings_advanced_update_seen,
@@ -482,7 +495,10 @@ fn run() -> anyhow::Result<()> {
             search_tasks,
             // Conversation UI
             save_desktop_ui_mode,
-            get_conversation_sidebar,
+            get_conversation_sidebar_bootstrap,
+            get_conversation_task_page,
+            get_conversation_pinned_task_page,
+            get_conversation_run_summary_page,
             list_scheduled_tasks,
             list_scheduled_task_occurrences,
             get_scheduled_task_diagnostics,

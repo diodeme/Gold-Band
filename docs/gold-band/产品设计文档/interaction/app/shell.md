@@ -98,12 +98,12 @@ Agent 管理
 - 资源以稳定 `resourceKey` 去重；关闭当前 Tab 后激活相邻 Tab，关闭最后一个 Tab 后同步收起右侧工作区并清空激活态；需要继续使用空白入口时，可通过顶栏右栏开关重新打开。不把资源集合是否为空当成自动恢复展开的理由。Tab 条允许原生横向滚动；只有 `scrollWidth` 实际超过 `clientWidth` 时才显示紧凑的完整 Tab 菜单，未溢出时不长期占用标题栏空间。Tab 条与会话正文、设置页和资源树共用 `gold-themed-scrollbar` 的平台能力分支，不得为了独立压缩高度而切换到另一套浏览器滚动条渲染路径。Tab 采用有间距的轻量标签布局：激活项使用圆角弱底色和正常前景色，关闭按钮常显但降低透明度；未激活项透明，仅在 hover 时出现弱底色和关闭按钮。不使用整格矩形填充、竖分隔线或底部选中横线。
 - 只挂载激活 Tab 的内容 DOM。非激活资源仅保留轻量定位、状态、attention、有限分页窗口与滚动恢复状态，不长期隐藏挂载多个消息视口。
 - Agent 分支的可展示条件由分支领域数据决定：非根 `branchId` 已返回 canonical `branchExecution` 时即为有效会话，不得继续等待只属于根会话的 system prompt、配置选项或 Gold Band user prompt。`interrupted` 等历史分支也必须在首次有效查询后停止初始化重试。
-- 已打开 Agent 的完整但有限语义窗口进入最多 12 个 branch key 的内存 LRU；切换 Tab 时先同步恢复会话、事件窗口和滚动锚点，再在后台刷新 canonical 数据。缓存未命中才展示加载壳，刷新不得把已经可审计的内容退回“加载中”。
+- 已打开 Agent 的完整但有限语义窗口进入由 `acpChatResourceCacheSessionCount` 控制的内存 LRU，默认最多 8 个 branch key；切换 Tab 时先同步恢复会话、事件窗口和滚动锚点，再在后台刷新 canonical 数据。缓存未命中才展示加载壳，刷新不得把已经可审计的内容退回“加载中”。
 - 右侧 Dock 与紧凑宽度 Sheet 共用同一 Tab state 和内容组件。窗口自动收窄只隐藏 Dock，不自动用 Sheet 覆盖中间内容；用户在紧凑模式显式点击资源链接时才打开 Sheet。
 - 用户手动关闭工作区只改变会话 Shell 级 `requestedOpen`，不删除 Tab；自动折叠、进入没有右栏能力的运行模式/管理页面以及资源 scope 切换都只改变有效呈现，不得覆盖手动开关意图。
 - `requestedOpen` 与 `tabs` 独立建模：共享顶栏右栏开关可以在 `tabs=[]` 时展开空白入口页。`requestedOpen`、打开动作 revision 与当前运行期宽度投影归属会话 Shell，由快速对话和具体会话详情共享；快速对话使用 `draft:<projectId>` scope，具体会话使用 `conversation:<projectId>:<taskId>:<runId>` scope，只有 Tab 与激活态在当前 scope 内读写。资源描述符必须携带相同 `scopeKey`，不允许旧会话资源写入新会话。
 - 会话资源轻量状态进入 24 项运行期 LRU，只在用户进入 scope、打开或操作资源时更新访问顺序，后台流式事件不 touch。第 25 个有状态 scope 淘汰最久未访问项；被淘汰会话再次进入时 Tab 与激活态为空，但右栏是否展开仍服从 Shell 级用户意图。快速对话创建新会话时删除 draft 资源，不迁移可能带会话归属的 Tab；Shell 级展开意图无需迁移。
-- ACP Session VM、有限事件窗口和滚动/分页锚点按同一 resource key 进入统一 12 项重资源 LRU；淘汰必须原子释放三类数据，禁止三套独立顺序造成部分大对象继续驻留。live branch snapshot 继续使用自身 64 项轻量上限，并保护仍有订阅者的条目。
+- ACP Session VM、有限事件窗口、正文 hydrate 标记和滚动/分页锚点按同一 resource key 进入统一重资源 LRU；容量由 `acpChatResourceCacheSessionCount` 控制，默认 8。淘汰必须原子释放同一 resource 的全部可重建投影，禁止独立顺序造成部分大对象继续驻留。live branch snapshot 继续使用自身 64 项轻量上限，并保护仍有订阅者的条目。
 - Tab 与激活态只保存在当前应用进程内，重启后清空；右侧工作区像素宽度不属于会话内容，继续写入用户级 conversation preference 并跨重启全局恢复，切换会话不得造成宽度跳变。
 - 会话模式的 `WorkspaceShell` 必须在中间主工作区、右侧 Dock 和紧凑 Sheet 的共同稳定边界提供一次 shadcn `TooltipProvider`。资源面板可以直接复用主会话中含 Tooltip 的标题、工具和操作组件；不得要求每种右侧资源自行补 Provider，否则 Agent 内容异步加载后会使整个工作区渲染树异常退出。
 - 资源 renderer 与关闭 resolver 按 `RightWorkspaceResource.kind` 注册，文件、工作流和诊断资源不能使用会相互覆盖的单例回调。文件资源切换、收起和关闭前由异步 resolver 冲刷自动保存；保存失败或 revision 冲突时保留 Tab。

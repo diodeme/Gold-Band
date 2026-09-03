@@ -20,8 +20,8 @@ vi.mock('@/components/workspace/files/ReadonlyTextWorkspaceViewer', () => ({
 }));
 
 vi.mock('@/components/workspace/files/WorkspaceImageCanvas', () => ({
-  WorkspaceImageCanvas: (props: { src: string; alt: string; attachment?: { id: string } }) => (
-    <div data-testid="workspace-image" data-src={props.src} data-attachment-id={props.attachment?.id}>{props.alt}</div>
+  WorkspaceImageCanvas: (props: { src: string; alt: string; imageActionAsset?: { id: string } }) => (
+    <div data-testid="workspace-image" data-src={props.src} data-attachment-id={props.imageActionAsset?.id}>{props.alt}</div>
   ),
 }));
 

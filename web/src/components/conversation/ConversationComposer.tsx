@@ -37,6 +37,7 @@ import { PromptInput, PromptInputTextarea } from '@/components/prompt-kit/prompt
 import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
 import { useOverflowTooltip } from '@/hooks/useOverflowTooltip';
+import { useWebviewMeasuredContainer } from '@/hooks/use-webview-measured-container';
 import { cn } from '@/lib/utils';
 import { hasUserPromptPayload } from '@/lib/composer-context';
 import { GitBranchSelector } from '@/components/git/GitBranchSelector';
@@ -257,6 +258,7 @@ export function ConversationWorkspaceInfoBar({
   onBranchChange,
   onBranchMutationPendingChange,
 }: ConversationWorkspaceInfoBarProps) {
+  const measuredContextRef = useWebviewMeasuredContainer<HTMLDivElement>('conversation-context');
   const { t } = useTranslation();
   const [checkingLocation, setCheckingLocation] = useState(false);
   const [locationMenuOpen, setLocationMenuOpen] = useState(false);
@@ -283,6 +285,7 @@ export function ConversationWorkspaceInfoBar({
   return (
     <TooltipProvider>
       <div
+        ref={measuredContextRef}
         data-conversation-workspace-info="true"
         className={CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName}
       >
@@ -445,6 +448,7 @@ export function ConversationComposer({
   onWorkLocationChange,
   onScheduledModeExit,
 }: ConversationComposerProps) {
+  const measuredComposerRef = useWebviewMeasuredContainer<HTMLDivElement>('conversation-composer');
   const { t } = useTranslation();
   const composerDraft = useConversationComposerDraft();
   const content = composerDraft.draft.content;
@@ -939,6 +943,7 @@ export function ConversationComposer({
   return (
     <>
       <div
+        ref={measuredComposerRef}
         data-conversation-composer="quick"
         data-attachment-dropzone="true"
         className={CONVERSATION_HOME_COMPOSER_LAYOUT.containerClassName}

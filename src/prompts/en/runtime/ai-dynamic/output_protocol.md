@@ -20,6 +20,9 @@ Constraint reminders:
 - Do not output `provider` for `workflow-invocation`.
 {% endif %}- {{ model_policy }}
 - When `next.type="end"`, do not include `node / groupId / nodes / merge / acceptance`.
+{% if end_summary_is_outer_handoff %}- If you use `next.type="end"`, `summary` must be a complete business handoff for the successor outside AI-DYNAMIC: state what was completed, key conclusions, important outputs, and any remaining concerns. Do not merely describe routing or say “accepted.”
+{% else %}- If you use `next.type="end"`, `summary` is an internal progress or branch report. Accurately state what this node completed for the Runtime report manifest and the enclosing group.
+{% endif %}
 - When `next.type="single"`, you must provide a complete `next.node`, and you must not provide `groupId / nodes / merge / acceptance`.
 - Do not output `workspace`, a workspace mode, a path, or a branch for any node. Runtime exclusively owns workspace assignment.
 - A `next.type="single"` successor automatically inherits the current node's actual workspace.

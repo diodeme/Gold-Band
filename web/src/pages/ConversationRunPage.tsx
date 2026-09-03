@@ -22,6 +22,7 @@ import { conversationPageForSession } from '@/lib/conversation-navigation';
 import { findConversationLeafByKey } from '@/lib/conversation-run-snapshot';
 import { acpProviderConfigCatalog } from '@/lib/acp-session-config';
 import { acpRuntimeErrorBannerCopy } from '@/lib/acp-runtime-error';
+import { shouldTreatAcpRuntimeErrorAsFallback } from '@/lib/acp-runtime-composer-state';
 import {
   conversationRunCacheKey,
   type ConversationSessionTreeExpansion,
@@ -144,7 +145,8 @@ export function ConversationRunPage({
   };
   const localizedRuntimeErrorMessage = acpRuntimeErrorBannerCopy(t, run.runtimeError);
   const [sessionSwitcherOpen, setSessionSwitcherOpen] = useState(false);
-  const sessionTreeExpansionRunKey = conversationRunCacheKey(run);
+  const sessionTreeExpansionRunKey = conversationRunCacheKey(run)
+    ?? `uncached:${run.projectId}:${run.taskId}:${run.runId}`;
   const [sessionTreeExpansionState, setSessionTreeExpansionState] = useState<{
     runKey: string;
     expansion: ConversationSessionTreeExpansion;
@@ -186,8 +188,9 @@ export function ConversationRunPage({
   const workflowLocator = useMemo(() => ({
     projectId: run.projectId,
     taskId: run.taskId,
+    taskUuid: run.taskUuid,
     runId: run.runId,
-  }), [run.projectId, run.runId, run.taskId]);
+  }), [run.projectId, run.runId, run.taskId, run.taskUuid]);
 
   const openWorkflowEditor = useCallback((mode: 'edit' | 'repair') => {
     onEditWorkflow();
@@ -445,9 +448,16 @@ export function ConversationRunPage({
   );
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
   const runtimeControlErrorBase = localizedRuntimeErrorMessage ?? run.runtimeErrorMessage;
+  const selectedSessionUsesRuntimeErrorFallback = shouldTreatAcpRuntimeErrorAsFallback(
+    isDirect,
+    selectedLeaf?.lifecycle,
+  );
   const selectedSessionRuntimeControlError = runtimeControlErrorBase && !(
     selectedLeaf?.lifecycle?.composer.mode === 'runtime-error' || selectedSessionDisplay?.code === 'error-blocked'
-  )
+  ) && !selectedSessionUsesRuntimeErrorFallback
+    ? runtimeControlErrorBase
+    : null;
+  const selectedSessionRuntimeErrorFallback = selectedSessionUsesRuntimeErrorFallback
     ? runtimeControlErrorBase
     : null;
   const selectedSessionErrorDetails = run.runtimeErrorMessage ?? selectedSession?.diagnostics.lastError ?? null;
@@ -477,6 +487,7 @@ export function ConversationRunPage({
         workflowError: isDirect ? undefined : t('conversation.runtime.workflowInvalid'),
         pauseMessage: isDirect ? undefined : translatePauseReason(selectedSessionPauseReason),
         runtimeError: selectedRuntimeErrorMessage,
+        runtimeErrorFallback: selectedSessionRuntimeErrorFallback,
         onRepair: handleRepairWorkflow,
         supersededSessionNavigation: supersedingHref
           ? {
@@ -576,6 +587,7 @@ export function ConversationRunPage({
             sessionReferenceId={selectedLeaf.sessionId}
             projectId={run.projectId}
             taskId={run.taskId}
+            taskUuid={run.taskUuid}
             runId={run.runId}
             roundId={selectedLeaf.roundId}
             nodeId={selectedLeaf.nodeId}
@@ -583,8 +595,10 @@ export function ConversationRunPage({
             outerNodeId={selectedLeaf.outerNodeId}
             outerAttemptId={selectedLeaf.outerAttemptId}
             eventPageSize={appConfig.acpChatEventPageSize}
+            eventWindowPageCount={appConfig.acpChatEventWindowPageCount}
             inlineContentMaxBytes={appConfig.conversationInlineContentMaxBytes}
             turnFileCardPreviewLimit={appConfig.turnFiles.cardPreviewLimit}
+            turnAttachmentCardPreviewLimit={appConfig.turnFiles.attachmentCardPreviewLimit}
             onLifecycleSnapshot={onLifecycleSnapshot}
             onAtBottomChange={handleAtBottomChange}
             onInitialSessionQueryStateChange={handleInitialSessionQueryStateChange}

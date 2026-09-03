@@ -91,6 +91,7 @@ impl ProviderAdapter for SequencedProvider {
             }),
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 
@@ -177,6 +178,13 @@ fn run_start_completes_worker_test_accept_happy_path() {
     assert_eq!(
         run_state.outcome,
         Some(gold_band::domain::RunOutcome::Success)
+    );
+    assert_eq!(
+        run_state
+            .last_executed_node
+            .as_ref()
+            .map(|snapshot| snapshot.node_id.as_str()),
+        Some("accept")
     );
 
     assert!(

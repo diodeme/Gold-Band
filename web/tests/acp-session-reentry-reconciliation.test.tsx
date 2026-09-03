@@ -48,6 +48,7 @@ vi.mock('@/components/prompt-kit/markdown', () => ({
 }));
 
 import { getAcpActivityDetail, getAcpSession, submitConversationPrompt } from '@/api';
+import { detachConversationViewport } from './acp/detach-conversation-viewport';
 import {
   ACPChatDialog,
   createAcpEventWindowCacheKey,
@@ -248,32 +249,6 @@ async function renderStoredOptimisticDialog(
     await new Promise((resolve) => window.setTimeout(resolve, 0));
   });
   return { container, root };
-}
-
-async function detachConversationViewport(container: HTMLElement) {
-  const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
-    .find((element) => element.classList.contains('h-full')
-      && element.classList.contains('overflow-y-auto'));
-  expect(scroller).toBeDefined();
-  if (scroller!.scrollHeight <= scroller!.clientHeight) {
-    Object.defineProperties(scroller!, {
-      clientHeight: { configurable: true, value: 100 },
-      scrollHeight: { configurable: true, value: 1_000 },
-      scrollTop: { configurable: true, value: 500, writable: true },
-    });
-  } else if (
-    scroller!.scrollHeight - scroller!.scrollTop - scroller!.clientHeight <= 2
-  ) {
-    scroller!.scrollTop = Math.max(
-      0,
-      scroller!.scrollHeight - scroller!.clientHeight - 100,
-    );
-  }
-  await act(async () => {
-    scroller!.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -1 }));
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-  });
-  return scroller!;
 }
 
 function terminalLifecycle(turnId: string): ConversationAttemptLifecycleVm {

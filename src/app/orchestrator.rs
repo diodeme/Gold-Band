@@ -18597,9 +18597,15 @@ mod tests {
         let mut source = test_worktree_node("bootstrap");
         source.status = DynamicNodeStatus::Completed;
         source.outcome = Some(NodeOutcome::Success);
-        source.group_id = Some("python-classes".to_string());
         source.chain_id = "bootstrap".to_string();
-        let mut graph = test_dynamic_graph_at(repo_root, vec![source]);
+        // 创建者居于父作用域（顶层组 parent 为 None，creator.group_id 须同为 None，
+        // 见 resolve_coordination_group_owner_workstream_id 的 scope 校验）；
+        // 组内成员单独建节点携带 group_id，推进完成判定按成员归属计算。
+        let mut member = test_worktree_node("python-classes-worker");
+        member.status = DynamicNodeStatus::Completed;
+        member.outcome = Some(NodeOutcome::Success);
+        member.group_id = Some("python-classes".to_string());
+        let mut graph = test_dynamic_graph_at(repo_root, vec![source, member]);
         let child_workspace_id = fork_dynamic_workspace(
             &ctx,
             &mut graph,
@@ -18608,7 +18614,7 @@ mod tests {
             "bootstrap",
         )
         .unwrap();
-        graph.nodes[0].workspace_id = child_workspace_id.clone();
+        graph.nodes[1].workspace_id = child_workspace_id.clone();
         graph.groups.push(DynamicGroupState {
             version: VERSION.to_string(),
             id: "python-classes".to_string(),
@@ -18616,8 +18622,8 @@ mod tests {
             status: DynamicGroupStatus::Open,
             depth: 1,
             parent_group_id: None,
-            root_node_ids: vec!["bootstrap".to_string()],
-            terminal_node_ids: vec!["bootstrap".to_string()],
+            root_node_ids: vec!["python-classes-worker".to_string()],
+            terminal_node_ids: vec!["python-classes-worker".to_string()],
             target_workspace_id: "workspace-main".to_string(),
             child_workspace_ids: vec![child_workspace_id],
             merge_node_id: None,
@@ -18631,6 +18637,10 @@ mod tests {
         graph.proposals.push(accepted_proposal(
             "bootstrap",
             serde_json::from_str(&test_end_completion("bootstrap completed")).unwrap(),
+        ));
+        graph.proposals.push(accepted_proposal(
+            "python-classes-worker",
+            serde_json::from_str(&test_end_completion("worker completed")).unwrap(),
         ));
 
         let advanced = advance_dynamic_groups(&ctx, &mut graph).unwrap();

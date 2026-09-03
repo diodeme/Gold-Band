@@ -23,6 +23,7 @@ export function routeFromPath(pathname: string): AppRoute {
     if (segments[1] === 'agents') return { uiMode: 'conversation', module: 'agent-management', taskPage: taskListPage, conversationPage: { kind: 'agents' } };
     if (segments[1] === 'contexts') return { uiMode: 'conversation', module: 'knowledge-base', taskPage: taskListPage, conversationPage: { kind: 'contexts' } };
     if (segments[1] === 'run-modes') return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'run-mode-management' } };
+    if (segments[1] === 'multica-tasks') return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'multica-tasks' } };
     if (segments[1] === 'scheduled-tasks') {
       if (segments[2] === 'new') return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'scheduled-task-create' } };
       if (segments[2]) return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'scheduled-task-detail', projectId: '', scheduledTaskId: segments[2] } };
@@ -75,6 +76,7 @@ export function pathFromRoute(module: PrimaryModule, taskPage: TaskPage, convers
     if (conversationPage.kind === 'agents') return '/chat/agents';
     if (conversationPage.kind === 'contexts') return '/chat/contexts';
     if (conversationPage.kind === 'run-mode-management') return '/chat/run-modes';
+    if (conversationPage.kind === 'multica-tasks') return '/chat/multica-tasks';
     if (conversationPage.kind === 'scheduled-tasks') return '/chat/scheduled-tasks';
     if (conversationPage.kind === 'scheduled-task-create') return '/chat/scheduled-tasks/new';
     if (conversationPage.kind === 'scheduled-task-detail') return `/chat/scheduled-tasks/${encodeURIComponent(conversationPage.scheduledTaskId)}`;

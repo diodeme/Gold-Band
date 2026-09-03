@@ -51,7 +51,7 @@ use gold_band::config::{
     ConversationAutoConfig, DEFAULT_CUSTOM_AGENT_ICON, DesktopLanguage, FontSizePreference,
     FontStackPreference, MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT, MAX_FONT_FAMILY_CHARS,
     MAX_FONT_STACK_FAMILIES, MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT, ManagedAgentConfig,
-    ManagedAgentId, PersonalizationAvatarShape, PersonalizationPreference,
+    ManagedAgentId, MulticaAccountRef, PersonalizationAvatarShape, PersonalizationPreference,
     WallpaperImagePreference, normalize_desktop_editor_font_size, normalize_desktop_ui_font_size,
 };
 use gold_band::observability::set_runtime_log_level;
@@ -80,6 +80,12 @@ use crate::conversation_workspace::{
 };
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
+use crate::multica::state::SharedMulticaState;
+use crate::multica::{
+    MulticaClient, MulticaError, MulticaSettingsVm, clear_multica_session,
+    clear_multica_state_indices, clear_multica_workspace_bindings, ensure_daemon_id,
+    multica_account_changed, multica_app_url, multica_base_url, multica_settings,
+};
 use crate::state::{
     DesktopState, NotificationAttentionInput, RecoveredConversationRun, UpdateBadgeSeenTarget,
 };
@@ -1238,6 +1244,10 @@ pub(crate) fn register_lifecycle_subscribers(app: &App, app_handle: &AppHandle) 
     app.lifecycle_bus.subscribe_named(
         "desktop.conversation-run-state",
         create_conversation_run_state_subscriber(app_handle.clone()),
+    );
+    app.lifecycle_bus.subscribe_named(
+        "desktop.multica",
+        crate::multica::bridge::create_multica_subscriber(app_handle.clone()),
     );
     app.lifecycle_bus.subscribe_named(
         "desktop.conversation-terminal-result",
@@ -4651,6 +4661,113 @@ pub fn save_metrics_settings(
     let updated_context = state.context().map_err(command_error)?;
     let _ = state.reevaluate_heartbeat_config();
     Ok(metrics_settings(&updated_context.config))
+}
+
+#[tauri::command]
+pub fn get_multica_settings(state: State<'_, DesktopState>) -> CommandResult<MulticaSettingsVm> {
+    let context = state.context().map_err(command_error)?;
+    Ok(multica_settings(&context.config))
+}
+
+/// 触发浏览器登录：开浏览器 → JWT → PAT → verify → 落盘 PAT + 首次生成 daemon_id。
+/// PAT 永不回显（VM 仅暴露 `pat_set`）。
+#[tauri::command]
+pub async fn connect_multica(
+    state: State<'_, DesktopState>,
+    shared: State<'_, SharedMulticaState>,
+    app_handle: AppHandle,
+) -> CommandResult<MulticaSettingsVm> {
+    let context = state.context().map_err(command_error)?;
+    let base_url = multica_base_url(&context.config)
+        .ok_or(MulticaError::NotConfigured)
+        .map_err(|e| command_error(e.into()))?;
+    let app_url = multica_app_url(&context.config)
+        .ok_or(MulticaError::NotConfigured)
+        .map_err(|e| command_error(e.into()))?;
+    let (pat, user) = MulticaClient::browser_login(&base_url, &app_url, "Maling Desktop", 90)
+        .await
+        .map_err(|e| command_error(e.into()))?;
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
+    let mut existing = app.load_settings().map_err(command_error)?;
+    // 换号检测：旧账号身份与新登录 email 不同 → 旧账号 PAT 发现的 workspace 绑定 + 任务/会话本地索引
+    // 均成脏数据（且跨账号泄漏，典型：旧账号 remote task 续跑索引/完成历史串到新账号）。
+    // 换号即统一作废账号作用域状态（Settings 绑定 + State 两索引）+ register 缓存；
+    // daemon_id 保留（本机持久），PAT/账号身份紧接着由新登录覆写。任一 email 缺失视为未切换
+    // （同账号重连主流派保留绑定；脏绑定由 register 404 自愈）。
+    if multica_account_changed(
+        existing.desktop_multica_account.as_ref(),
+        user.email.as_deref(),
+    ) {
+        clear_multica_workspace_bindings(&mut existing);
+        // 账号切换清索引经 with_state 原子 RMW（StateConfig 唯一读改写入口，防并发 lost-update）。
+        if let Err(error) = app.with_state(|state_cfg| {
+            clear_multica_state_indices(state_cfg);
+            (true, ())
+        }) {
+            warn!(%error, "multica connect: state rmw after account-switch clear failed");
+        }
+        if let Ok(mut guard) = shared.lock() {
+            guard.clear_runtime_ids();
+        }
+    }
+    existing.desktop_multica_pat = Some(pat);
+    ensure_daemon_id(&mut existing);
+    // 记录已连接账号身份（`/api/me`），供 UI 展示「已连接：<email>」，让用户核对浏览器 cookie
+    // 是否静默连到了非预期账号（码灵把认证委托给浏览器，cookie 不受控——见设计文档 M5-l）。
+    existing.desktop_multica_account = Some(MulticaAccountRef {
+        name: user.name,
+        email: user.email,
+    });
+    app.save_settings(&existing).map_err(command_error)?;
+    state
+        .update_settings_config(&existing)
+        .map_err(command_error)?;
+    // 连接态变更 → 通知任务列表 + 设置页 re-fetch（跨视图同步）。
+    crate::multica::bridge::emit_multica_settings_updated(&app_handle);
+    // 即时注册所有已绑定 workspace（根因修复 Bug 1：旧实现 connect 不注册，首连后心跳空转）。
+    // await：claim 需 runtime_id，注册完成后才返回，避免用户连上立即领取撞 RuntimeOffline。
+    crate::multica::loop_::register_all_bound_workspaces(&app_handle).await;
+    let updated_context = state.context().map_err(command_error)?;
+    Ok(multica_settings(&updated_context.config))
+}
+
+/// 断开 multica 连接：与 [`connect_multica`] 对称。清账号作用域状态——Settings 侧（PAT、账号身份、
+/// workspace 绑定、active workspace）与 State 侧任务/会话索引（`pending_issues`/`task_conversations`/
+/// `completed_tasks`，均以当前账号 remote id 为键）一并作废，杜绝跨账号泄漏（旧账号失败 issue 不残留
+/// 进新账号置顶列表）。保留 daemon_id（本机持久标识），并清运行期 register 缓存（重连后 loop 重建）。
+/// 断开后 `connected=false`，前端任务列表与设置页均回到空态（换账号 / 退出 / 本地反复联调用）；
+/// 重连同账号需重新绑定 workspace。
+#[tauri::command]
+pub fn disconnect_multica(
+    state: State<'_, DesktopState>,
+    shared: State<'_, SharedMulticaState>,
+    app_handle: AppHandle,
+) -> CommandResult<MulticaSettingsVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
+    let mut existing = app.load_settings().map_err(command_error)?;
+    clear_multica_session(&mut existing);
+    // State 侧三索引同属账号作用域：随登录态一并作废。best-effort 落盘经 with_state 原子 RMW
+    // （StateConfig 唯一读改写入口）；state 读不出时不阻断断开（该次未清的索引下次启动自愈）。
+    if let Err(error) = app.with_state(|state_cfg| {
+        clear_multica_state_indices(state_cfg);
+        (true, ())
+    }) {
+        warn!(%error, "multica disconnect: state rmw failed");
+    }
+    app.save_settings(&existing).map_err(command_error)?;
+    state
+        .update_settings_config(&existing)
+        .map_err(command_error)?;
+    // 清 register 缓存（active_runs 保留：在飞本地 run 的 remote 映射，断开不改其归属）。
+    if let Ok(mut guard) = shared.lock() {
+        guard.clear_runtime_ids();
+    }
+    // 连接态变更 → 通知任务列表 + 设置页 re-fetch（回到「连接 Multica」空状态）。
+    crate::multica::bridge::emit_multica_settings_updated(&app_handle);
+    let updated_context = state.context().map_err(command_error)?;
+    Ok(multica_settings(&updated_context.config))
 }
 
 pub(crate) fn acp_live_update_emitter(
@@ -8146,6 +8263,9 @@ pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
     }
     if let Some(error) = error.downcast_ref::<gold_band::acp::branches::ConversationBranchError>() {
         return CommandErrorVm::new(error.code(), serde_json::json!({}));
+    }
+    if let Some(error) = error.downcast_ref::<MulticaError>() {
+        return CommandErrorVm::new(error.code(), error.params());
     }
     let message = error.to_string();
     if let Some(code) = updater_command_error_code(&message) {

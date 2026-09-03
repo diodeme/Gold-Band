@@ -17,6 +17,11 @@ import type { ConversationPage, ConversationRunVm, ConversationSessionTreeVm } f
 import fs from 'node:fs';
 import path from 'node:path';
 
+// Normalize CRLF checkouts (Windows core.autocrlf) so literal source matching
+// stays portable against the LF-formatted repo content.
+const readAppSource = (relativePath = 'web/src/App.tsx') =>
+  fs.readFileSync(path.resolve(process.cwd(), relativePath), 'utf8').replace(/\r\n/g, '\n');
+
 const oldRun = {
   projectId: 'project-1',
   taskId: 'task-old',
@@ -348,7 +353,7 @@ describe('conversation navigation presentation transaction', () => {
 
 describe('conversation sidebar navigation wiring', () => {
   it('invalidates the active run request before deleting its task from disk', () => {
-    const source = fs.readFileSync(path.resolve(process.cwd(), 'web/src/App.tsx'), 'utf8');
+    const source = readAppSource();
     const deletion = source.match(/onConversationDeleteTask=\{[\s\S]*?onConversationPinTask=/)?.[0] ?? '';
     const deleteRequest = deletion.indexOf('deleteConversationTask(projectId, taskId)');
     const requestInvalidation = deletion.indexOf('conversationNavigationRequestRef.current += 1;');
@@ -359,8 +364,8 @@ describe('conversation sidebar navigation wiring', () => {
   });
 
   it('routes run exits plus sidebar task and run selections through the cache-aware conversation navigation entry', () => {
-    const source = fs.readFileSync(path.resolve(process.cwd(), 'web/src/App.tsx'), 'utf8');
-    const sidebarSource = fs.readFileSync(path.resolve(process.cwd(), 'web/src/components/conversation/ConversationSidebar.tsx'), 'utf8');
+    const source = readAppSource();
+    const sidebarSource = readAppSource('web/src/components/conversation/ConversationSidebar.tsx');
     const quickChatSelection = source.match(/onConversationNew=\{[\s\S]*?onConversationSearch=/)?.[0] ?? '';
     const workspaceQuickChatSelection = source.match(/onConversationNewInWorkspace=\{[\s\S]*?onConversationAddWorkspace=/)?.[0] ?? '';
     const sidebarRunSelection = sidebarSource.match(/const selectTaskRun[\s\S]*?const selectTask =/)?.[0] ?? '';
@@ -385,7 +390,7 @@ describe('conversation sidebar navigation wiring', () => {
   });
 
   it('commits session selection to React state, the latest-page ref, and history in one event', () => {
-    const source = fs.readFileSync(path.resolve(process.cwd(), 'web/src/App.tsx'), 'utf8');
+    const source = readAppSource();
     const selection = source.match(/onSelectSession=\{\(leaf, followActive\) => \{[\s\S]*?onLifecycleSnapshot=/)?.[0] ?? '';
 
     expect(selection).toContain('const nextPage = conversationPageForSession(conversationPage, leaf);');
@@ -398,7 +403,7 @@ describe('conversation sidebar navigation wiring', () => {
   });
 
   it('keeps one shell-level run-state listener and refreshes only the selected run detail', () => {
-    const source = fs.readFileSync(path.resolve(process.cwd(), 'web/src/App.tsx'), 'utf8');
+    const source = readAppSource();
     const subscriptions = source.match(/void subscribeConversationRunStateUpdates\(\(event\) =>/g) ?? [];
     const globalSubscription = source.match(/void subscribeConversationRunStateUpdates\(\(event\) => \{[\s\S]*?\}\)\.then/)?.[0] ?? '';
     const selectedRunRefresh = source.match(/const refreshConversationRun = \(\) => \{[\s\S]*?const queueConversationRunRefresh/)?.[0] ?? '';
@@ -416,7 +421,7 @@ describe('conversation sidebar navigation wiring', () => {
   });
 
   it('keeps one shell-level ACP listener and clears only the matching task activity', () => {
-    const source = fs.readFileSync(path.resolve(process.cwd(), 'web/src/App.tsx'), 'utf8');
+    const source = readAppSource();
     const nativeSubscriptions = source.match(/subscribeAcpSessionUpdates\(/g) ?? [];
     const subscriptions = source.match(/subscribeConversationEvents\(\(event\) =>/g) ?? [];
     const globalSubscription = source.match(/subscribeConversationEvents\(\(event\) => \{[\s\S]*?conversationAcpSessionRefreshRef\.current\?\.\(event\);[\s\S]*?\}\);/)?.[0] ?? '';

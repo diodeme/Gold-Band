@@ -1,4 +1,4 @@
-import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Settings, ChevronDown, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Globe, Settings, ChevronDown, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
@@ -47,6 +47,7 @@ export function conversationSidebarNavigationKey(page: ConversationPage): Conver
     case 'conversation-run':
     case 'personal-analytics':
     case 'settings':
+    case 'multica-tasks':
       return null;
   }
 }
@@ -302,6 +303,13 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             icon={<Route />}
             label={t('conversation.sidebar.runModeManagement')}
             onClick={() => onSelect({ kind: 'run-mode-management' })}
+          />
+          <SidebarButton
+            compact
+            active={active.kind === 'multica-tasks'}
+            icon={<Globe />}
+            label={t('conversation.sidebar.multicaTaskManagement')}
+            onClick={() => onSelect({ kind: 'multica-tasks' })}
           />
           <SidebarButton
             compact

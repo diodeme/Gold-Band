@@ -717,10 +717,27 @@ impl AdapterConfigSignature {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveAcpSession {
     pub key: AdapterConnectionKey,
+    pub connection_generation: u64,
     pub session_id: String,
+    pub route_generation: u64,
+}
+
+impl LiveAcpSession {
+    fn same_provider_session(&self, other: &Self) -> bool {
+        self.key == other.key
+            && self.connection_generation == other.connection_generation
+            && self.session_id == other.session_id
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttemptSessionUnregisterOutcome {
+    NotRegistered,
+    ProviderSessionStillReferenced,
+    LastProviderSessionReference,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1323,18 +1340,25 @@ impl AdapterConnection {
     }
 
     pub fn unregister_session_route(&self, session_id: &str) {
-        let route = if let Ok(mut routes) = self.session_routes.lock() {
-            let route = routes.remove(session_id);
-            if let Ok(mut early_frames) = self.early_session_frames.lock() {
-                early_frames.remove(session_id);
-            }
-            route
-        } else {
-            None
-        };
-        if let Some(route) = route {
-            route.close();
-        }
+        unregister_session_route_state(
+            session_id,
+            None,
+            &self.session_routes,
+            &self.early_session_frames,
+        );
+    }
+
+    pub fn unregister_session_route_if_generation(
+        &self,
+        session_id: &str,
+        route_generation: u64,
+    ) -> bool {
+        unregister_session_route_state(
+            session_id,
+            Some(route_generation),
+            &self.session_routes,
+            &self.early_session_frames,
+        )
     }
 
     pub fn begin_prompt(self: &Arc<Self>, session_id: &str) -> Result<ActivePromptGuard> {
@@ -1822,6 +1846,35 @@ fn register_session_route_state(
     rx
 }
 
+fn unregister_session_route_state(
+    session_id: &str,
+    expected_generation: Option<u64>,
+    session_routes: &Mutex<HashMap<String, SessionRouteSender>>,
+    early_session_frames: &Mutex<EarlySessionFrames>,
+) -> bool {
+    let route = if let Ok(mut routes) = session_routes.lock() {
+        let generation_matches = routes.get(session_id).is_some_and(|route| {
+            expected_generation.is_none_or(|expected| route.inner.generation == expected)
+        });
+        if !generation_matches {
+            return false;
+        }
+        let route = routes.remove(session_id);
+        if let Ok(mut early_frames) = early_session_frames.lock() {
+            early_frames.remove(session_id);
+        }
+        route
+    } else {
+        None
+    };
+    if let Some(route) = route {
+        route.close();
+        true
+    } else {
+        false
+    }
+}
+
 fn route_or_buffer_session_frame(
     session_routes: &Mutex<HashMap<String, SessionRouteSender>>,
     early_session_frames: &Mutex<EarlySessionFrames>,
@@ -2029,27 +2082,99 @@ impl AdapterConnectionManager {
         &self,
         attempt_dir: &Utf8Path,
         key: AdapterConnectionKey,
+        connection_generation: u64,
         session_id: String,
+        route_generation: u64,
     ) {
         if let Ok(mut attempts) = self.attempt_sessions.lock() {
-            attempts.insert(attempt_dir.to_string(), LiveAcpSession { key, session_id });
+            attempts.insert(
+                attempt_dir.to_string(),
+                LiveAcpSession {
+                    key,
+                    connection_generation,
+                    session_id,
+                    route_generation,
+                },
+            );
         }
     }
 
-    pub fn unregister_attempt_session(&self, attempt_dir: &Utf8Path) {
-        if let Ok(mut attempts) = self.attempt_sessions.lock() {
+    pub fn unregister_attempt_session(
+        &self,
+        attempt_dir: &Utf8Path,
+    ) -> AttemptSessionUnregisterOutcome {
+        self.unregister_attempt_session_matching(attempt_dir, None)
+    }
+
+    pub fn unregister_attempt_session_if_matches(
+        &self,
+        attempt_dir: &Utf8Path,
+        expected: &LiveAcpSession,
+    ) -> AttemptSessionUnregisterOutcome {
+        self.unregister_attempt_session_matching(attempt_dir, Some(expected))
+    }
+
+    pub fn begin_attempt_session_detach_if_matches(
+        &self,
+        attempt_dir: &Utf8Path,
+        expected: &LiveAcpSession,
+    ) -> AttemptSessionUnregisterOutcome {
+        let Ok(mut attempts) = self.attempt_sessions.lock() else {
+            return AttemptSessionUnregisterOutcome::NotRegistered;
+        };
+        let Some(current) = attempts.get(attempt_dir.as_str()) else {
+            return AttemptSessionUnregisterOutcome::NotRegistered;
+        };
+        if current != expected {
+            return AttemptSessionUnregisterOutcome::NotRegistered;
+        }
+        if attempts.iter().any(|(candidate_attempt, candidate)| {
+            candidate_attempt != attempt_dir.as_str() && candidate.same_provider_session(expected)
+        }) {
             attempts.remove(attempt_dir.as_str());
+            AttemptSessionUnregisterOutcome::ProviderSessionStillReferenced
+        } else {
+            // Keep the last binding registered until bounded close completes so
+            // connection pruning cannot race the provider session close.
+            AttemptSessionUnregisterOutcome::LastProviderSessionReference
+        }
+    }
+
+    fn unregister_attempt_session_matching(
+        &self,
+        attempt_dir: &Utf8Path,
+        expected: Option<&LiveAcpSession>,
+    ) -> AttemptSessionUnregisterOutcome {
+        let Ok(mut attempts) = self.attempt_sessions.lock() else {
+            return AttemptSessionUnregisterOutcome::NotRegistered;
+        };
+        let Some(current) = attempts.get(attempt_dir.as_str()) else {
+            return AttemptSessionUnregisterOutcome::NotRegistered;
+        };
+        if expected.is_some_and(|expected| current != expected) {
+            return AttemptSessionUnregisterOutcome::NotRegistered;
+        }
+        let detached = attempts
+            .remove(attempt_dir.as_str())
+            .expect("attempt session binding disappeared while locked");
+        if attempts
+            .values()
+            .any(|candidate| candidate.same_provider_session(&detached))
+        {
+            AttemptSessionUnregisterOutcome::ProviderSessionStillReferenced
+        } else {
+            AttemptSessionUnregisterOutcome::LastProviderSessionReference
         }
     }
 
     pub fn prune_idle_connections(&self, idle_ttl: Duration, max_idle: usize) {
-        let attached_keys = self
+        let attached_connections = self
             .attempt_sessions
             .lock()
             .map(|attempts| {
                 attempts
                     .values()
-                    .map(|session| session.key.clone())
+                    .map(|session| (session.key.clone(), session.connection_generation))
                     .collect::<std::collections::HashSet<_>>()
             })
             .unwrap_or_default();
@@ -2059,7 +2184,8 @@ impl AdapterConnectionManager {
             let mut idle = connections
                 .iter()
                 .filter(|(key, connection)| {
-                    !attached_keys.contains(*key) && connection.active_prompt_count() == 0
+                    !attached_connections.contains(&((*key).clone(), connection.generation()))
+                        && connection.active_prompt_count() == 0
                 })
                 .map(|(key, connection)| (key.clone(), connection.last_activity_at()))
                 .collect::<Vec<_>>();
@@ -2099,6 +2225,10 @@ impl AdapterConnectionManager {
             self.unregister_attempt_session(attempt_dir);
             return Ok(false);
         };
+        if connection.generation() != session.connection_generation {
+            self.unregister_attempt_session_if_matches(attempt_dir, &session);
+            return Ok(false);
+        }
         let frame = connection.send_cancel_notification(&session.session_id)?;
         let raw_path = attempt_dir.join("acp.raw.jsonl");
         let _ = append_raw_frame(
@@ -2129,28 +2259,47 @@ impl AdapterConnectionManager {
             self.unregister_attempt_session(attempt_dir);
             return Ok(false);
         };
-        let has_active_prompt = connection.active_prompt_count_for_session(&session.session_id) > 0;
-        if has_active_prompt {
-            if let Err(error) = connection.send_cancel_notification(&session.session_id) {
-                warn!(%attempt_dir, %error, "failed to cancel ACP prompt before session close");
-            }
+        if connection.generation() != session.connection_generation {
+            self.unregister_attempt_session_if_matches(attempt_dir, &session);
+            return Ok(false);
         }
-        settle_attempt_for_session_close(attempt_dir);
-        if has_active_prompt {
-            let drained = connection
-                .wait_for_prompt_drain(std::slice::from_ref(&session.session_id), timeout)?;
-            if !drained {
-                warn!(
-                    %attempt_dir,
-                    session_id = %session.session_id,
-                    active_prompts = connection.active_prompt_count_for_session(&session.session_id),
-                    "ACP prompt drain timed out before session close"
-                );
+        match self.begin_attempt_session_detach_if_matches(attempt_dir, &session) {
+            AttemptSessionUnregisterOutcome::NotRegistered => return Ok(false),
+            AttemptSessionUnregisterOutcome::ProviderSessionStillReferenced => {
+                settle_attempt_for_session_close(attempt_dir);
+                persist_cancelled_session_snapshot(attempt_dir);
+                return Ok(true);
             }
+            AttemptSessionUnregisterOutcome::LastProviderSessionReference => {}
         }
-        connection.close_session_bounded(&session.session_id, timeout)?;
+        let close_result = (|| -> Result<()> {
+            let has_active_prompt =
+                connection.active_prompt_count_for_session(&session.session_id) > 0;
+            if has_active_prompt {
+                if let Err(error) = connection.send_cancel_notification(&session.session_id) {
+                    warn!(%attempt_dir, %error, "failed to cancel ACP prompt before session close");
+                }
+            }
+            settle_attempt_for_session_close(attempt_dir);
+            if has_active_prompt {
+                let drained = connection
+                    .wait_for_prompt_drain(std::slice::from_ref(&session.session_id), timeout)?;
+                if !drained {
+                    warn!(
+                        %attempt_dir,
+                        session_id = %session.session_id,
+                        active_prompts = connection.active_prompt_count_for_session(&session.session_id),
+                        "ACP prompt drain timed out before session close"
+                    );
+                }
+            }
+            connection.close_session_bounded(&session.session_id, timeout)
+        })();
+        if let Err(error) = close_result {
+            return Err(error);
+        }
         persist_cancelled_session_snapshot(attempt_dir);
-        self.unregister_attempt_session(attempt_dir);
+        self.unregister_attempt_session_if_matches(attempt_dir, &session);
         Ok(true)
     }
 
@@ -2227,15 +2376,25 @@ impl AdapterConnectionManager {
             .map_err(|_| anyhow!("ACP attempt session lock poisoned"))?
             .iter()
             .filter(|(_, session)| &session.key == key)
-            .map(|(attempt_dir, session)| (attempt_dir.clone(), session.session_id.clone()))
+            .map(|(attempt_dir, session)| (attempt_dir.clone(), session.clone()))
             .collect::<Vec<_>>();
-        let session_ids = sessions
+        let current_generation = connection.generation();
+        let session_attempts = sessions
             .iter()
-            .map(|(_, session_id)| session_id.clone())
-            .collect::<Vec<_>>();
+            .filter(|(_, session)| session.connection_generation == current_generation)
+            .fold(
+                BTreeMap::<String, String>::new(),
+                |mut unique, (attempt_dir, session)| {
+                    unique
+                        .entry(session.session_id.clone())
+                        .or_insert_with(|| attempt_dir.clone());
+                    unique
+                },
+            );
+        let session_ids = session_attempts.keys().cloned().collect::<Vec<_>>();
         let mut closed_attempts = Vec::new();
         let mut close_errors = Vec::new();
-        for (attempt_dir, session_id) in &sessions {
+        for (session_id, attempt_dir) in &session_attempts {
             if connection.active_prompt_count_for_session(session_id) > 0
                 && let Err(error) = connection.send_cancel_notification(session_id)
             {
@@ -2254,7 +2413,7 @@ impl AdapterConnectionManager {
                 "ACP prompt drain timed out before adapter shutdown"
             );
         }
-        for (attempt_dir, session_id) in sessions {
+        for (session_id, attempt_dir) in session_attempts {
             let attempt_path = Utf8PathBuf::from(&attempt_dir);
             let raw_path = attempt_path.join("acp.raw.jsonl");
             if let Err(error) = connection.close_session_bounded_with_raw_log(
@@ -2264,6 +2423,9 @@ impl AdapterConnectionManager {
             ) {
                 close_errors.push(format!("{attempt_dir}: {error}"));
             }
+        }
+        for (attempt_dir, _) in sessions {
+            let attempt_path = Utf8PathBuf::from(&attempt_dir);
             persist_cancelled_session_snapshot(attempt_path.as_path());
             closed_attempts.push(attempt_dir);
         }
@@ -2358,13 +2520,14 @@ mod tests {
 
     use super::{
         AcpConnectionUnavailable, ActivePromptTracker, AdapterConnectionKey,
-        AdapterConnectionState, ConnectionCreationGate, ConnectionInitialization,
-        EarlySessionFrames, STDERR_LINE_MAX_BYTES, SessionConfigTransaction, SessionEventPump,
+        AdapterConnectionManager, AdapterConnectionState, AttemptSessionUnregisterOutcome,
+        ConnectionCreationGate, ConnectionInitialization, EarlySessionFrames,
+        STDERR_LINE_MAX_BYTES, SessionConfigTransaction, SessionEventPump,
         SessionRouteTryRecvError, is_same_connection_generation,
         persist_cancelled_session_snapshot, read_stderr, record_unrouted_warning,
         register_session_route_state, request_unavailability, route_or_buffer_session_frame,
         select_provider_connection_keys, session_id_from_frame, session_route_pair,
-        settle_attempt_for_session_close,
+        settle_attempt_for_session_close, unregister_session_route_state,
     };
 
     fn write_current_attempt_node(attempt_dir: &Utf8PathBuf) {
@@ -2387,6 +2550,161 @@ mod tests {
             }),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn unregistering_attempt_preserves_shared_provider_session_reference() {
+        let manager = AdapterConnectionManager::default();
+        let key = AdapterConnectionKey::new("claude", Utf8PathBuf::from("C:/workspace"));
+        let first_attempt = Utf8PathBuf::from("C:/attempt-1");
+        let second_attempt = Utf8PathBuf::from("C:/attempt-2");
+
+        manager.register_attempt_session(
+            first_attempt.as_path(),
+            key.clone(),
+            7,
+            "session-shared".to_string(),
+            11,
+        );
+        manager.register_attempt_session(
+            second_attempt.as_path(),
+            key,
+            7,
+            "session-shared".to_string(),
+            12,
+        );
+
+        assert_eq!(
+            manager.unregister_attempt_session(first_attempt.as_path()),
+            AttemptSessionUnregisterOutcome::ProviderSessionStillReferenced
+        );
+        assert_eq!(
+            manager.unregister_attempt_session(second_attempt.as_path()),
+            AttemptSessionUnregisterOutcome::LastProviderSessionReference
+        );
+    }
+
+    #[test]
+    fn last_provider_session_binding_stays_registered_during_bounded_close() {
+        let manager = AdapterConnectionManager::default();
+        let key = AdapterConnectionKey::new("claude", Utf8PathBuf::from("C:/workspace"));
+        let first_attempt = Utf8PathBuf::from("C:/attempt-1");
+        let second_attempt = Utf8PathBuf::from("C:/attempt-2");
+        manager.register_attempt_session(
+            first_attempt.as_path(),
+            key.clone(),
+            7,
+            "session-shared".to_string(),
+            11,
+        );
+        manager.register_attempt_session(
+            second_attempt.as_path(),
+            key,
+            7,
+            "session-shared".to_string(),
+            12,
+        );
+
+        let first = manager.attempt_session(first_attempt.as_path()).unwrap();
+        assert_eq!(
+            manager.begin_attempt_session_detach_if_matches(first_attempt.as_path(), &first),
+            AttemptSessionUnregisterOutcome::ProviderSessionStillReferenced
+        );
+        let last = manager.attempt_session(second_attempt.as_path()).unwrap();
+        assert_eq!(
+            manager.begin_attempt_session_detach_if_matches(second_attempt.as_path(), &last),
+            AttemptSessionUnregisterOutcome::LastProviderSessionReference
+        );
+        assert!(manager.attempt_session(second_attempt.as_path()).is_some());
+        assert_eq!(
+            manager.unregister_attempt_session_if_matches(second_attempt.as_path(), &last),
+            AttemptSessionUnregisterOutcome::LastProviderSessionReference
+        );
+    }
+
+    #[test]
+    fn provider_session_reference_identity_includes_connection_generation() {
+        let manager = AdapterConnectionManager::default();
+        let key = AdapterConnectionKey::new("claude", Utf8PathBuf::from("C:/workspace"));
+        let old_attempt = Utf8PathBuf::from("C:/attempt-old");
+        let new_attempt = Utf8PathBuf::from("C:/attempt-new");
+
+        manager.register_attempt_session(
+            old_attempt.as_path(),
+            key.clone(),
+            7,
+            "session-shared".to_string(),
+            11,
+        );
+        manager.register_attempt_session(
+            new_attempt.as_path(),
+            key,
+            8,
+            "session-shared".to_string(),
+            12,
+        );
+
+        assert_eq!(
+            manager.unregister_attempt_session(old_attempt.as_path()),
+            AttemptSessionUnregisterOutcome::LastProviderSessionReference
+        );
+    }
+
+    #[test]
+    fn stale_binding_cannot_unregister_replacement_route() {
+        let manager = AdapterConnectionManager::default();
+        let attempt = Utf8PathBuf::from("C:/attempt");
+        let key = AdapterConnectionKey::new("claude", Utf8PathBuf::from("C:/workspace"));
+        let stale = super::LiveAcpSession {
+            key: key.clone(),
+            connection_generation: 7,
+            session_id: "session-shared".to_string(),
+            route_generation: 11,
+        };
+        manager.register_attempt_session(
+            attempt.as_path(),
+            key,
+            7,
+            "session-shared".to_string(),
+            12,
+        );
+
+        assert_eq!(
+            manager.unregister_attempt_session_if_matches(attempt.as_path(), &stale),
+            AttemptSessionUnregisterOutcome::NotRegistered
+        );
+        assert_eq!(
+            manager
+                .attempt_session(attempt.as_path())
+                .unwrap()
+                .route_generation,
+            12
+        );
+    }
+
+    #[test]
+    fn stale_route_cleanup_preserves_replacement_route() {
+        let routes = Mutex::new(HashMap::new());
+        let early_frames = Mutex::new(EarlySessionFrames::default());
+        let stale =
+            register_session_route_state("claude", "session-shared", &routes, &early_frames);
+        let current =
+            register_session_route_state("claude", "session-shared", &routes, &early_frames);
+
+        assert!(!unregister_session_route_state(
+            "session-shared",
+            Some(stale.inner.generation),
+            &routes,
+            &early_frames,
+        ));
+        assert!(routes.lock().unwrap().contains_key("session-shared"));
+        assert!(unregister_session_route_state(
+            "session-shared",
+            Some(current.inner.generation),
+            &routes,
+            &early_frames,
+        ));
+        assert!(!routes.lock().unwrap().contains_key("session-shared"));
     }
 
     #[test]

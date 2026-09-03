@@ -129,10 +129,18 @@ Starting -> Ready -> Draining -> Closed
 职责：管理已经 attach 到某条 AdapterConnection 的 ACP session。
 
 ```text
-AcpSessionRuntimeKey
-  - attempt locator
+ProviderSessionIdentity
+  - AdapterConnectionKey
+  - connectionGeneration
   - acpSessionId
+
+AttemptSessionBinding
+  - attempt locator
+  - ProviderSessionIdentity
+  - routeGeneration
 ```
+
+Provider session identity 是 ACP adapter 内存 session 的 canonical 生命周期身份。attempt locator 只定位 Gold Band 的运行产物与 attachment，不拥有独立关闭同一 Provider session 的权力；多个 continuation attempt 在迁移期间可能短暂引用同一 identity。
 
 attempt locator 使用现有稳定运行定位：
 
@@ -151,6 +159,7 @@ AcpSessionRuntimeEntry
   - attemptDir
   - connectionKey
   - connectionGeneration
+  - routeGeneration
   - state
   - routeReceiver / eventPump
   - lastActivityAt
@@ -180,6 +189,8 @@ Detached
 ```
 
 Session runtime 必须拥有持续 event pump。只注册 route 而不持续消费会导致有界 route 队列填满，最终阻塞共享 connection 的 stdout 分发，因此不能保留没有消费者的“空 route”。
+
+新 continuation restore 前必须确认同一 Provider session identity 没有 active owner；restore 成功并登记新 binding 后再移除旧 idle attempt alias，使 manager 在转移期间始终至少保留一个引用。该转移不发送 `session/close`。注销 route 时必须比较 route generation，旧 alias 的迟到清理不能删除新 attachment 的 route。同一 identity 仍有 active attempt 时不允许并发接管。
 
 ### 4.3 PromptRun
 
@@ -523,8 +534,8 @@ acpMaxIdleSessionRuntimes = 8
 1. 仅选择 `IdleAttached`。
 2. 排除 foreground lease 未过期的 session。
 3. 排除 active prompt、permission、elicitation、cancel/close 中的 session。
-4. 先清理超过 TTL 的 session。
-5. 仍超过 idle 容量时按 LRU 清理。
+4. 先清理超过 TTL 的 attempt attachment。
+5. 仍超过 idle 容量时按 LRU 清理 attempt attachment。
 6. active session 数量可以临时超过容量；终态后立即重新收敛。
 
 驱逐 session 时：
@@ -532,11 +543,14 @@ acpMaxIdleSessionRuntimes = 8
 ```text
 flush timeline pending patch
   -> settle pending interaction
-  -> bounded session/close
-  -> unregister route
-  -> stop event pump
+  -> remove exact attempt binding
+  -> stop its event pump
+  -> unregister its matching route generation
+  -> if ProviderSessionIdentity has no remaining runtime reference:
+       retain the last binding during bounded session/close
+       remove the last binding after close completes
   -> drop TimelineWriteIndex/hot state
-  -> registry state = Detached
+  -> attachment state = Detached
 ```
 
 sessionId、worker-ref、timeline 和 snapshot 保留，后续可 reload。
@@ -809,6 +823,9 @@ timeline_bytes_before_after
 - prompt active 时 TTL/LRU 不驱逐。
 - permission/elicitation pending 时不驱逐。
 - idle session 超时后 bounded close，下一次 prompt load 一次。
+- 多个 attempt 短暂引用同一 Provider session 时，淘汰旧 alias 不发送 close；最后一个引用淘汰才 close。
+- 相同 sessionId 位于不同 connection generation 时互不计数，旧 generation 清理不得影响新 transport。
+- 旧 route generation 的迟到清理不得注销 replacement route。
 
 ### 16.3 Freshness
 
@@ -870,7 +887,7 @@ session/connection 被有界驱逐或失效：reload
 - 新增 `TimelineStore`，统一执行 canonical merge、语义指纹去重、外部文件变更检测与原子 compaction。相同稳定 ID 仅发生 replay `seq/timestamp` 变化时不再追加 patch；内容、状态和 `historyPlacement` 的真实变化仍追加 revision。
 - `acp.timeline.jsonl` 在文件大小超过 `acpTimelineCompactMaxSizeBytes`、patch 数超过唯一 item 数的 `acpTimelineCompactPatchRatio` 倍，或打开旧文件时检测到语义完全相同的重复 revision 时，原子改写为每个稳定 ID 一条 canonical item；因此 task-061 一类既有重复 replay 会在下次读取时自动收敛，`acp.raw.jsonl` 不参与压缩。
 - 新增有界 ACP session runtime registry。第一次 `session/new/load` 后保留 session route，并由独立 event pump 持续消费 connection route；下一次同 attempt prompt 可以直接复用 attachment，不再固定执行 `session/load`。
-- session runtime 以 attempt 目录为稳定身份，并使用 per-attempt prompt lock 串行化同一 session 的 prompt；Direct、Workflow/AUTO 手动追问、runtime continue 与 AI-DYNAMIC leaf 因为共用 `client::run_prompt`，统一进入该 registry。
+- attempt 目录作为本地 attachment 与产物 locator；Provider session 以 `AdapterConnectionKey + connection generation + sessionId` 作为 canonical 生命周期身份。per-attempt prompt lock 继续串行化同一 attempt 的 prompt；Direct、Workflow/AUTO 手动追问、runtime continue 与 AI-DYNAMIC leaf 因为共用 `client::run_prompt`，统一进入该 registry。
 - AdapterConnection 增加 connection generation 与最后活动时间；adapter 配置变化或 transport 重建后 generation 变化，旧 session attachment 不会跨连接复用。
 - 用户 prompt 前使用带超时、最多 8 页的 `session/list` freshness probe。`updatedAt` 作为 opaque revision：相同直接 prompt，变化先 reload；无 `updatedAt` 的 Provider 在 attached 状态降级为直接 prompt，detached 时正常 load；临时探测失败把 baseline 标记为 Unknown，恢复后 reload 一次。
 - MCP/cwd 使用规范化 session config fingerprint；MCP 数组顺序和对象字段顺序不影响 fingerprint，增删改 MCP 会在下一次 prompt 前触发携带最新 `mcpServers` 的 reload。model/permission mode 不进入 fingerprint，继续使用 session config API。
@@ -913,3 +930,11 @@ resume/load 请求都携带 `sessionId`、`cwd`、过滤后的 `mcpServers` 与�
 - index hit、bounded tail replay、full rebuild/compaction 会分别写入 restore diagnostics。index 不存在、版本变更、prefix 不匹配、tail 超限或 compaction 才允许 O(N) 重建，正常 continue/follow-up 的 I/O、解析和分配不随历史正文或 Blob 总量增长。
 
 回归门槛包括：stop 后 established/restorable availability 保持不变、cancel intent 胜过 provider completion、active stream 在 tool/revision/branch 场景与完整重放一致、attached/resume Blob hydrated bytes 为 0、load 只读取 prompt anchors，以及 restore mode 诊断不把 full rebuild 误报为 index hit。
+
+## 22. 共享 Provider session 的 attachment 所有权修复（2026-09-03）
+
+现场确认多个 continuation attempt 的 `worker-ref.json` 可以引用同一 ACP session。旧实现却按 attempt 目录分别登记 runtime，并在任一 idle alias 达到 600 秒 TTL/LRU 淘汰条件时无条件发送 `session/close`；这会删除 adapter 内存中的共享 session，使仍存活的新 attempt 在下一次 `session/set_config_option` 收到 `-32603 Session not found`。这属于 Provider session canonical identity 与 attempt 生命周期所有权错位的设计缺陷，不是 adapter 子进程随机退出。
+
+修复后，`LiveAcpSession` 记录 connection generation、sessionId 与 route generation。开始 detach 时在同一 registry 锁内按 `AdapterConnectionKey + connectionGeneration + sessionId` 判断剩余引用：旧 alias 直接移除，最后 binding 则保留到 bounded `session/close` 完成后再精确移除，防止 connection LRU 抢先关闭 transport。新 continuation 在 restore 前检查 active owner，成功登记新 binding 后再移除旧 idle alias，转移期间不产生 manager 零引用窗口；所有 route 清理按 route generation 条件执行。connection shutdown 也按当前 generation 去重 sessionId，避免共享 alias 导致重复 close。
+
+最小失败测试先稳定复现“注销第一个共享 attempt 被误判为最后引用”，随后由同一测试确认转绿；接口回归同时覆盖不同 connection generation 不共享所有权、最后 binding 在 bounded close 期间保持登记、迟到旧 binding 不能移除 replacement binding、迟到旧 route 不能移除 replacement route，以及 connection 层 38 项测试。本阶段不增加 `Session not found` 或 transport closed 后的自动 resume；恢复策略保持现状，避免把生命周期根因修复与容错重试混为一体。

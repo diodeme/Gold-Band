@@ -340,7 +340,8 @@ use crate::acp::branches::{
 use crate::acp::commands::{AcpCommandItem, parse_available_commands};
 use crate::acp::connection::{
     AcpConnectionUnavailable, AdapterConnection, AdapterConnectionKey, AdapterConnectionManager,
-    SessionEventPump, SessionObservedFrame, SessionRouteTryRecvError, SessionRouteWatermark,
+    AttemptSessionUnregisterOutcome, LiveAcpSession, SessionEventPump, SessionObservedFrame,
+    SessionRouteTryRecvError, SessionRouteWatermark,
 };
 use crate::acp::elicitation::{
     ELICITATION_DEFAULT_TIMEOUT, ElicitationAction, bind_pending_elicitation_timeline_identity,
@@ -1898,13 +1899,78 @@ impl AcpSessionRuntimeRegistry {
             .ok()
             .and_then(|mut sessions| sessions.remove(attempt_dir.as_str()));
         if let Some(stale) = stale {
-            stale.event_pump.close();
-            stale.connection.unregister_session_route(&stale.session_id);
-            AdapterConnectionManager::shared().unregister_attempt_session(&stale.attempt_dir);
+            detach_attached_session(stale);
             true
         } else {
             false
         }
+    }
+
+    fn detach_aliases_for_attachment(
+        &self,
+        attempt_dir: &Utf8Path,
+        session_id: &str,
+        connection: &Arc<AdapterConnection>,
+    ) -> Result<()> {
+        self.ensure_alias_transfer_available(attempt_dir, session_id, connection)?;
+        let detached = {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| anyhow!("ACP session runtime registry poisoned"))?;
+            let aliases = sessions
+                .iter()
+                .filter(|(key, entry)| {
+                    key.as_str() != attempt_dir.as_str()
+                        && same_provider_session(entry, session_id, connection)
+                })
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>();
+            aliases
+                .into_iter()
+                .filter_map(|key| sessions.remove(&key))
+                .collect::<Vec<_>>()
+        };
+        for entry in detached {
+            detach_attached_session(entry);
+        }
+        Ok(())
+    }
+
+    fn ensure_alias_transfer_available(
+        &self,
+        attempt_dir: &Utf8Path,
+        session_id: &str,
+        connection: &Arc<AdapterConnection>,
+    ) -> Result<()> {
+        let active_attempt_dir = self
+            .sessions
+            .lock()
+            .map_err(|_| anyhow!("ACP session runtime registry poisoned"))?
+            .iter()
+            .find(|(key, entry)| {
+                key.as_str() != attempt_dir.as_str()
+                    && same_provider_session(entry, session_id, connection)
+                    && entry.active
+            })
+            .map(|(_, entry)| entry.attempt_dir.clone());
+        if active_attempt_dir.is_none()
+            && connection.active_prompt_count_for_session(session_id) == 0
+        {
+            return Ok(());
+        }
+        let info = manual_runtime_error_info(
+            RuntimeErrorDomain::Internal,
+            "internal.acp-session-concurrent-attachment",
+            "ACP provider session is already attached to an active attempt",
+            json!({
+                "sessionId": session_id,
+                "activeAttemptDir": active_attempt_dir,
+                "requestedAttemptDir": attempt_dir,
+                "connectionGeneration": connection.generation(),
+            }),
+        );
+        Err(runtime_error(info))
     }
 
     fn detach_provider(&self, provider_id: &str) -> usize {
@@ -1926,7 +1992,10 @@ impl AcpSessionRuntimeRegistry {
         let count = detached.len();
         for entry in detached {
             entry.event_pump.close();
-            entry.connection.unregister_session_route(&entry.session_id);
+            entry.connection.unregister_session_route_if_generation(
+                &entry.session_id,
+                entry.event_pump.route_generation(),
+            );
         }
         count
     }
@@ -1989,12 +2058,51 @@ pub fn renew_session_foreground_lease(attempt_dir: &Utf8Path, ttl: Duration) -> 
 }
 
 fn evict_attached_session(entry: AttachedSessionRuntime) {
-    let _ = entry
-        .connection
-        .close_session_bounded(&entry.session_id, SESSION_EVICTION_CLOSE_TIMEOUT);
+    let binding = live_session_binding(&entry);
+    let unregister_outcome = AdapterConnectionManager::shared()
+        .begin_attempt_session_detach_if_matches(&entry.attempt_dir, &binding);
+    if unregister_outcome == AttemptSessionUnregisterOutcome::LastProviderSessionReference {
+        let _ = entry
+            .connection
+            .close_session_bounded(&entry.session_id, SESSION_EVICTION_CLOSE_TIMEOUT);
+        AdapterConnectionManager::shared()
+            .unregister_attempt_session_if_matches(&entry.attempt_dir, &binding);
+    }
     entry.event_pump.close();
-    entry.connection.unregister_session_route(&entry.session_id);
-    AdapterConnectionManager::shared().unregister_attempt_session(&entry.attempt_dir);
+    entry.connection.unregister_session_route_if_generation(
+        &entry.session_id,
+        entry.event_pump.route_generation(),
+    );
+}
+
+fn detach_attached_session(entry: AttachedSessionRuntime) {
+    let binding = live_session_binding(&entry);
+    AdapterConnectionManager::shared()
+        .unregister_attempt_session_if_matches(&entry.attempt_dir, &binding);
+    entry.event_pump.close();
+    entry.connection.unregister_session_route_if_generation(
+        &entry.session_id,
+        entry.event_pump.route_generation(),
+    );
+}
+
+fn live_session_binding(entry: &AttachedSessionRuntime) -> LiveAcpSession {
+    LiveAcpSession {
+        key: entry.connection_key.clone(),
+        connection_generation: entry.connection_generation,
+        session_id: entry.session_id.clone(),
+        route_generation: entry.event_pump.route_generation(),
+    }
+}
+
+fn same_provider_session(
+    entry: &AttachedSessionRuntime,
+    session_id: &str,
+    connection: &Arc<AdapterConnection>,
+) -> bool {
+    entry.session_id == session_id
+        && entry.connection_generation == connection.generation()
+        && Arc::ptr_eq(&entry.connection, connection)
 }
 
 struct AcpRuntime<'a> {
@@ -3793,6 +3901,11 @@ impl<'a> AcpRuntime<'a> {
                     mcp_servers,
                 );
             };
+            AcpSessionRuntimeRegistry::shared().ensure_alias_transfer_available(
+                &self.paths.attempt_dir,
+                session_id,
+                &self.connection,
+            )?;
             self.session_update_phase = match restore_method {
                 SessionRestoreMethod::Resume => SessionUpdatePhase::RestoringWithoutReplay,
                 SessionRestoreMethod::Load => SessionUpdatePhase::ReplayingHistory,
@@ -3818,6 +3931,11 @@ impl<'a> AcpRuntime<'a> {
                 Ok(result) => {
                     let catalog_updated = self.capture_session_config(&result);
                     self.set_session_id(session_id.to_string());
+                    AcpSessionRuntimeRegistry::shared().detach_aliases_for_attachment(
+                        &self.paths.attempt_dir,
+                        session_id,
+                        &self.connection,
+                    )?;
                     if catalog_updated {
                         self.persist_session_catalog_observation()?;
                     }
@@ -4082,14 +4200,25 @@ impl<'a> AcpRuntime<'a> {
 
     fn set_session_id(&mut self, session_id: String) {
         if let Some(existing) = self.session_id.take() {
-            self.connection.unregister_session_route(&existing);
+            if let Some(event_pump) = self.rx.as_ref() {
+                self.connection.unregister_session_route_if_generation(
+                    &existing,
+                    event_pump.route_generation(),
+                );
+            } else {
+                self.connection.unregister_session_route(&existing);
+            }
         }
-        self.rx = Some(self.connection.register_session_event_pump(&session_id));
+        let event_pump = self.connection.register_session_event_pump(&session_id);
+        let route_generation = event_pump.route_generation();
+        self.rx = Some(event_pump);
         if let Some(key) = self.connection_key.clone() {
             AdapterConnectionManager::shared().register_attempt_session(
                 &self.paths.attempt_dir,
                 key,
+                self.connection.generation(),
                 session_id.clone(),
+                route_generation,
             );
         }
         self.session_id = Some(session_id);
@@ -7203,7 +7332,14 @@ impl<'a> AcpRuntime<'a> {
             AcpSessionRuntimeRegistry::shared().invalidate(&self.paths.attempt_dir);
         }
         if let Some(session_id) = self.session_id.as_deref() {
-            self.connection.unregister_session_route(session_id);
+            if let Some(event_pump) = self.rx.as_ref() {
+                self.connection.unregister_session_route_if_generation(
+                    session_id,
+                    event_pump.route_generation(),
+                );
+            } else {
+                self.connection.unregister_session_route(session_id);
+            }
         }
         AdapterConnectionManager::shared().unregister_attempt_session(&self.paths.attempt_dir);
         if self.connection_key.is_none() {
@@ -7273,7 +7409,14 @@ impl Drop for AcpRuntime<'_> {
         if !self.retain_session_route
             && let Some(session_id) = self.session_id.as_deref()
         {
-            self.connection.unregister_session_route(session_id);
+            if let Some(event_pump) = self.rx.as_ref() {
+                self.connection.unregister_session_route_if_generation(
+                    session_id,
+                    event_pump.route_generation(),
+                );
+            } else {
+                self.connection.unregister_session_route(session_id);
+            }
         }
         unregister_provider_control(&self.paths.attempt_dir, &self.control);
     }

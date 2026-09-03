@@ -730,7 +730,7 @@ pub async fn start_multica_conversation_run(
     //
     //    判定前等待启动恢复管线完成（P2）：work_dir 定点自愈在 spawn_blocking 管线内异步执行，
     //    未完成时 checkpoint 指向的孤儿 run 仍是 stale Running（is_run_continuable=false）→ 误落 Fresh。
-    //    仅 resume 判定等待；超时/关闭按 best-effort 继续（不劣于无等待的旧语义）。
+    //    仅 resume 判定等待；恢复失败/超时/关闭按 best-effort 继续（不劣于无等待的旧语义）。
     let recovery = state.runtime_recovery();
     let gate = tauri::async_runtime::spawn_blocking(move || {
         recovery.wait_for_startup_accepting(MULTICA_RESUME_STARTUP_GATE_TIMEOUT)

@@ -1037,10 +1037,8 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
 - [x] **M5-ax**（本轮）PR review 三问题修复——teardown 定点取消 / with_state 全量统一 / 启动自愈管线化定点收敛（码灵 client，开发设计 §12.37，问题分析与修复记录 `.claude/docs/problem/2026-09-03-pr-problems-fix.md`）：
   - **P1-1 teardown 误伤同工作区会话**：`teardown_active_run` 复用全库扫描的 `cancel_all_active_acp_attempts_best_effort`（作用域=workspace，而取消主体=单 run）。新增 App 层 `cancel_active_acp_attempts_for_run_best_effort(task_id, run_id)`（与全量版共用逐 attempt 收尾），teardown 改用之；同工作区其他任务不再被连带取消。
   - **P1-2 StateConfig 并发丢写**：PR 侧 `with_state` 只保护 multica 写点、锁按 repo_root 分片，而 state.json 是用户级全局文件——既有 pin/preference/workspace 写点仍裸 load→save 且跨 repo_root 不互斥。修复：`with_state<T>`（闭包返回 `(dirty, T)`）成为唯一 RMW 入口；锁按 state 文件路径分片；`save_state` 降 `pub(crate)`；lib 5 setter + src-tauri multica 5 + connect/disconnect 2 + conversation 12 写点全量迁移，重 IO 全部留在锁外，add/sync 事务内权威复查关竞态。
-  - **P2 启动关键路径无界扫描**：`recover_multica_work_dir_sessions` 从 setup 同步全量扫描（work_dir × 任务历史）重写为 checkpoint 定点收敛（O(checkpoints) 定点 I/O）并移入 spawn_blocking 启动管线；`RuntimeRecoveryCoordinator` 增 `wait_for_startup_accepting`（Condvar 相位等待），resume 判定前等门 30s（超时 best-effort 继续）。
-  - **验证**：`cargo fmt --all -- --check` 过；`cargo test -p gold-band --lib` **1115/1115**（新增跨 repo_root 锁身份 + multica×用户偏好并发 2 测）；`cargo test -p gold-band-desktop --bin gold-band-desktop` **648/648**（新增定点自愈 2 测 + 启动门 1 测）。
+  - **P2 启动关键路径无界扫描**：`recover_multica_work_dir_sessions` 从 setup 同步全量扫描（work_dir × 任务历史）重写为 checkpoint 定点收敛（O(checkpoints) 定点 I/O）并移入 spawn_blocking 启动管线；`RuntimeRecoveryCoordinator` 以 `Recovering → Accepting | Failed | ShuttingDown` 表达完整启动生命周期，`wait_for_startup_accepting` 仅在真正恢复中等待。恢复成功进入 `Accepting`；恢复函数报错或 blocking task join/panic 进入 `Failed` 并唤醒等待者，后续 resume 立即按结构化错误 `runtime.startup-recovery-failed` 走既有 best-effort 语义，不再每次占用 blocking worker 等满 30 秒；只有恢复仍在执行时才保留 30 秒超时。
+  - **验证**：`cargo fmt --all -- --check` 过；`cargo test -p gold-band --lib` **1116 过 / 1 ignored（既有）**（新增跨 repo_root 锁身份 + multica×用户偏好并发 2 测）；`cargo test -p gold-band-desktop --bin gold-band-desktop` **648/648**（新增定点自愈 2 测 + 启动门 2 测，其中 `startup_failure_is_terminal_and_wakes_waiters` 覆盖失败终态即时唤醒、幂等和禁止回到 `Accepting`）。
 
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）
-
-      

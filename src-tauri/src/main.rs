@@ -235,61 +235,74 @@ fn run() -> anyhow::Result<()> {
                     state.recover_interrupted_conversation_workspaces()
                 })
                 .await;
-                match recovery {
-                    Ok(Ok(report)) => {
-                        let blocked_project_ids = report
-                            .blocked_project_ids
-                            .iter()
-                            .cloned()
-                            .collect::<std::collections::HashSet<_>>();
-                        let state = recovery_handle.state::<DesktopState>();
-                        if let Err(error) = state
-                            .runtime_recovery()
-                            .complete_startup_recovery(blocked_project_ids.clone())
-                        {
-                            warn!(
-                                error = %error,
-                                "runtime recovery startup gate could not be completed"
-                            );
-                            return;
-                        }
-                        for recovered in &report.recovered_runs {
-                            commands::emit_recovered_conversation_run_state(
-                                &recovery_handle,
-                                recovered,
-                            );
-                        }
-                        if let Err(error) =
-                            scheduled_runtime::start(recovery_handle.clone(), &blocked_project_ids)
-                        {
-                            warn!(error = %error, "scheduled task scheduler failed to start");
-                        }
-                        info!(
-                            workspace_count = report.workspace_count,
-                            candidate_count = report.candidate_count,
-                            recovered_run_count = report.recovered_run_count,
-                            consumed_candidate_count = report.consumed_candidate_count,
-                            blocked_workspace_count = report.blocked_project_ids.len(),
-                            failure_count = report.failures.len(),
-                            "conversation workspace startup recovery completed"
+                let report = match recovery {
+                    Ok(Ok(report)) => Some(report),
+                    Ok(Err(error)) => {
+                        warn!(
+                            error = %error,
+                            "failed to read runtime recovery candidates"
                         );
-                        for failure in report.failures {
-                            warn!(
-                                workspace_path = %failure.workspace_path,
-                                error_code = failure.code,
-                                error = %failure.message,
-                                "conversation workspace startup recovery failed"
-                            );
-                        }
+                        None
                     }
-                    Ok(Err(error)) => warn!(
+                    Err(error) => {
+                        warn!(
+                            error = %error,
+                            "runtime recovery blocking task failed"
+                        );
+                        None
+                    }
+                };
+                let Some(report) = report else {
+                    let state = recovery_handle.state::<DesktopState>();
+                    if let Err(error) = state.runtime_recovery().fail_startup_recovery() {
+                        warn!(
+                            error = %error,
+                            "runtime recovery startup gate could not transition to failed"
+                        );
+                    }
+                    return;
+                };
+
+                let blocked_project_ids = report
+                    .blocked_project_ids
+                    .iter()
+                    .cloned()
+                    .collect::<std::collections::HashSet<_>>();
+                let state = recovery_handle.state::<DesktopState>();
+                if let Err(error) = state
+                    .runtime_recovery()
+                    .complete_startup_recovery(blocked_project_ids.clone())
+                {
+                    warn!(
                         error = %error,
-                        "failed to read runtime recovery candidates"
-                    ),
-                    Err(error) => warn!(
-                        error = %error,
-                        "runtime recovery blocking task failed"
-                    ),
+                        "runtime recovery startup gate could not be completed"
+                    );
+                    return;
+                }
+                for recovered in &report.recovered_runs {
+                    commands::emit_recovered_conversation_run_state(&recovery_handle, recovered);
+                }
+                if let Err(error) =
+                    scheduled_runtime::start(recovery_handle.clone(), &blocked_project_ids)
+                {
+                    warn!(error = %error, "scheduled task scheduler failed to start");
+                }
+                info!(
+                    workspace_count = report.workspace_count,
+                    candidate_count = report.candidate_count,
+                    recovered_run_count = report.recovered_run_count,
+                    consumed_candidate_count = report.consumed_candidate_count,
+                    blocked_workspace_count = report.blocked_project_ids.len(),
+                    failure_count = report.failures.len(),
+                    "conversation workspace startup recovery completed"
+                );
+                for failure in report.failures {
+                    warn!(
+                        workspace_path = %failure.workspace_path,
+                        error_code = failure.code,
+                        error = %failure.message,
+                        "conversation workspace startup recovery failed"
+                    );
                 }
             });
             // Initialize SQLite search index (best-effort; failures are non-fatal).

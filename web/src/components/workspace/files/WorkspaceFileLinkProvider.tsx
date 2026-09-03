@@ -1,7 +1,12 @@
 import { useCallback, useMemo, useRef, type ReactNode } from 'react';
 import { resolveWorkspaceFileLink } from '@/api';
-import { MarkdownResourceLinkProvider } from '@/components/prompt-kit/markdown';
 import {
+  MarkdownResourceLinkProvider,
+  type MarkdownResourceLinkError,
+  type MarkdownResourceLinkOpenResult,
+} from '@/components/prompt-kit/markdown';
+import {
+  fileBrowserWorkspaceResourceKey,
   fileWorkspaceResourceKey,
   useRightWorkspaceCommands,
 } from '../right-workspace-context';
@@ -16,31 +21,58 @@ function fileName(path: string) {
   }
 }
 
+function fileLinkError(reason: unknown): MarkdownResourceLinkError {
+  if (typeof reason !== 'object' || !reason) {
+    return { code: 'workspace-file.path-invalid', params: {} };
+  }
+  const value = reason as { code?: unknown; params?: unknown };
+  return {
+    code: typeof value.code === 'string' ? value.code : 'workspace-file.path-invalid',
+    params: typeof value.params === 'object' && value.params
+      ? value.params as Record<string, unknown>
+      : {},
+  };
+}
+
 export function WorkspaceFileLinkProvider({ children }: { children: ReactNode }) {
   const workspace = useRightWorkspaceCommands();
   const targetRevisionsRef = useRef(new Map<string, number>());
-  const openLocalFile = useCallback(async (rawHref: string, baseCanonicalPath?: string | null) => {
-    if (!workspace.projectId || !workspace.scopeKey) return;
+  const openLocalFile = useCallback(async (
+    rawHref: string,
+    baseCanonicalPath?: string | null,
+  ): Promise<MarkdownResourceLinkOpenResult> => {
+    if (!workspace.projectId || !workspace.scopeKey) {
+      return {
+        status: 'error',
+        error: { code: 'workspace-file.project-not-found', params: {} },
+      };
+    }
     try {
       const resolved = await resolveWorkspaceFileLink(workspace.projectId, rawHref, baseCanonicalPath);
       const key = fileWorkspaceResourceKey(workspace.projectId, resolved.locator.canonicalPath);
-      fileContentStore.primeExternalGrant(
-        key,
-        workspace.projectId,
-        resolved.locator.canonicalPath,
-        resolved.externalAccessGrant,
+      const fileBrowser = workspace.getResource(fileBrowserWorkspaceResourceKey(workspace.projectId));
+      const existing = fileBrowser?.kind === 'file-browser'
+        && fileBrowser.selectedFile?.key === key
+        ? fileBrowser.selectedFile
+        : null;
+      const grantAdopted = Boolean(
+        resolved.externalAccessGrant
+        && await fileContentStore.reauthorize(key, resolved.externalAccessGrant),
       );
-      const resource = workspace.getResource(key);
-      const existing = resource?.kind === 'file' ? resource : null;
-      if (existing && resolved.externalAccessGrant) {
-        await fileContentStore.reauthorize(key, resolved.externalAccessGrant);
+      if (!grantAdopted) {
+        fileContentStore.primeExternalGrant(
+          key,
+          workspace.projectId,
+          resolved.locator.canonicalPath,
+          resolved.externalAccessGrant,
+        );
       }
       const targetRevision = Math.max(
         existing?.targetRevision ?? 0,
         targetRevisionsRef.current.get(key) ?? 0,
       ) + 1;
       targetRevisionsRef.current.set(key, targetRevision);
-      workspace.openResource({
+      await workspace.openResource({
         kind: 'file',
         key,
         scopeKey: workspace.scopeKey,
@@ -52,25 +84,9 @@ export function WorkspaceFileLinkProvider({ children }: { children: ReactNode })
         target: resolved.target,
         targetRevision,
       });
-    } catch {
-      const key = fileWorkspaceResourceKey(workspace.projectId, rawHref);
-      workspace.openResource({
-        kind: 'file',
-        key,
-        scopeKey: workspace.scopeKey,
-        projectId: workspace.projectId,
-        title: fileName(rawHref),
-        description: rawHref,
-        attention: true,
-        locator: {
-          projectId: workspace.projectId,
-          canonicalPath: rawHref,
-          relativePath: null,
-          scope: 'external',
-        },
-        target: null,
-        targetRevision: 1,
-      });
+      return { status: 'opened' };
+    } catch (reason) {
+      return { status: 'error', error: fileLinkError(reason) };
     }
   }, [workspace.getResource, workspace.openResource, workspace.projectId, workspace.scopeKey]);
   const handler = useMemo(

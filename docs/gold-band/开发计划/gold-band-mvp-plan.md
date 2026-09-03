@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-03：Windows 会话文件链接 slash-drive 解析收敛
+
+- 根因与设计判断：会话链接统一交给 Rust resolver、成功后才建立 canonical 文件资源的分层设计正确，但实现只识别 `C:/...` 与 `file:///C:/...`，没有覆盖 WebView/URL 会把 Windows 盘符绝对路径表示为 `/C:/...` 的平台输入；resolver 拒绝后，前端又用 raw href 伪造 external canonical locator 并创建 Tab，后续读取才以误导性的路径/授权错误失败。Win10 现场已确认真实 `E:/...` 文件存在而 `/E:/...` 不是 Win32 路径；问题与 Windows URL pathname 语义及失败分支越权有关，不是 Win10 文件系统差异。现有 resolver、canonical identity 与资源生命周期足以表达正确行为，属于正确设计的输入覆盖和失败消费不完整。
+- 实现与边界：Rust 文件链接入口新增平台限定规范化：仅在 Windows 对精确匹配 `/<盘符>:/` 的 pathname 移除一个前导 `/`，再复用既有 percent decode、canonicalize、工作空间边界与行列目标解析；Linux/macOS 的 `/...`（包括 `/E:/...`）保持不变。前端 resolver 改为显式 `opened/error` 结果，删除 raw href 构造 locator 的 fallback；解析失败只在被点击的 Markdown 链接旁显示既有结构化错误，再次点击自然从 resolver 重试，不创建 Tab，不触发读取、授权或系统打开。链接异步结果增加 `workspace handler + href + revision` 隔离，scope 切换会立即作废旧请求。重复解析外部文件时先按文档 key 让 `FileContentStore` 接管新 grant，仅在文档尚未加载时 prime；稳定 file-browser 的 `selectedFile` 只用于定位 revision，不再错误查询不存在的顶层 file key。浏览器开发后端同步模拟 Windows slash-drive 语义，不扩展真实 Rust 权威边界。
+- 失败证据与接口验收：Rust 最小测试在修复前以存在的 `/C:/.../roadmap.md:12` 稳定返回 `workspace-file.path-outside-workspace`；前端最小测试固定 resolver reject 后资源数应为 0，修复前实际创建 1 个伪造 Tab；浏览器 mock 测试修复前返回 `/D:/outside/roadmap.md`。复审补充的失败测试还确认，同一外部文件第二次点击只重复 prime、没有轮换已加载文档 grant，且 handler 切换后同 href 新点击会被旧请求锁住。修复后 Rust 路径模块 12/12、文件链接 Provider、Markdown 链接及浏览器 API 定向回归共 4 个文件 34/34 通过；`cargo fmt --all -- --check`、`cargo check -p gold-band-desktop --all-targets`、TypeScript 检查与 Web 生产构建通过。Web 全量 257 个文件共 1861 项中 1860 项通过；唯一失败为未改动的 `acp-read-only-agent-panel` 历史窗口“回到最新”按钮断言，隔离重跑仍失败，与文件链接调用链无重叠，不计为本修复通过。按规则启动本地 `/chat` 服务后，应用内浏览器没有可用实例；Windows Computer Use 连续两次无法连接 native pipe，因此不能执行真实 Win10 会话点击，服务已清理且不把客户端实操记为通过。
+- 性能与过度设计评审：复用现有 Rust resolver、`CommandErrorVm`、文件资源命令接口和 Markdown 链接组件，不新增依赖、持久字段、aggregate、状态机、缓存、队列、轮询或额外 I/O。每次用户显式点击只增加一次 O(路径长度) 的平台前缀判断；失败状态归属于单个已渲染链接，不扩大资源订阅或文件读取范围。没有为单一错误建立错误 Tab、专用重试资源或兼容层，复杂度与跨平台输入契约及安全边界匹配，无需专项 benchmark。
+
 ## 2026-09-01：AI-DYNAMIC 后继节点报告清单用途显式化
 
 - 根因与设计判断：`ai-dynamic-result.json` 作为小型业务交接、`ai-dynamic-report-manifest.json` 作为按需下钻的完整报告索引这一分层设计正确，外层 predecessor 投影也已传递权威 `summary`、manifest 路径和元数据；缺口是通用 hidden context 只原样展示 artifact preview，没有明确说明 manifest 的内容范围和读取时机，后继 Agent 只能从字段名自行推断。这属于正确设计在消费提示上的实现不完整，不修改 artifact schema、canonical graph 或 predecessor DTO。

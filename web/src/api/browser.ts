@@ -705,6 +705,10 @@ const browserWorkspaceFileListeners = new Set<(event: WorkspaceFileChangedEventV
 const browserExternalFileGrants = new Map<string, { canonicalPath: string; expiresAtMs: number }>();
 let browserExternalGrantRevision = 0;
 
+function normalizeBrowserWindowsFilePathname(path: string) {
+  return path.replace(/^\/(?=[A-Za-z]:[\\/])/u, '');
+}
+
 function issueBrowserExternalFileGrant(canonicalPath: string) {
   browserExternalGrantRevision += 1;
   const token = `browser-external:${browserExternalGrantRevision}:${canonicalPath}`;
@@ -2354,7 +2358,7 @@ export const browserApi: RuntimeApi = {
         href = href.slice(0, suffix.index);
       }
     }
-    const normalizedHref = href.replaceAll('\\', '/');
+    const normalizedHref = normalizeBrowserWindowsFilePathname(href).replaceAll('\\', '/');
     const baseDirectory = baseCanonicalPath
       ? baseCanonicalPath.replaceAll('\\', '/').replace(/\/[^/]*$/u, '')
       : browserWorkspaceRoot;

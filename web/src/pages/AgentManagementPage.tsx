@@ -19,6 +19,7 @@ import { AlertTriangle, Bot, CheckCircle2, CircleHelp, ImagePlus, LoaderCircle, 
 import { cn } from '@/lib/utils';
 import { formatLocalDateTime } from '@/lib/datetime';
 import { AGENT_ICON_ACCEPT, DEFAULT_AGENT_ICON_KEY, agentIconClass, agentIconSrc, readAgentIconFile } from '@/lib/agent-icons';
+import { toneSurfaceClass } from '@/lib/status';
 
 interface AgentManagementPageProps {
   vm: AgentRegistryVm | null;
@@ -384,9 +385,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
         <Alert
           className={cn(
             'rounded-xl px-4 py-3',
-            notice.tone === 'success'
-              ? 'border-gold-success/35 bg-gold-success/10 text-gold-success'
-              : 'border-destructive/45 bg-destructive/10 text-destructive',
+            toneSurfaceClass(notice.tone),
           )}
         >
           {notice.tone === 'success' ? <CheckCircle2 /> : <AlertTriangle />}

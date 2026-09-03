@@ -52,17 +52,27 @@ function fileResourceFromEntry(resource: FileWorkspacePanelProps['resource'], en
 export function FileWorkspacePanel({ resource, layout }: FileWorkspacePanelProps) {
   const workspace = useRightWorkspace();
   const selected = resource.kind === 'file' ? resource : (resource.selectedFile ?? null);
+  const activationFileKey = useRef(selected?.key ?? null);
 
   useEffect(() => {
+    let active = true;
     const unsubscribe = fileContentStore.subscribeChanges((event) => {
       if (event.projectId === resource.projectId) {
         fileExplorerStore.applyFileChange(event);
       }
     });
-    void fileContentStore.startProjectWatch(resource.projectId);
+    void (async () => {
+      await fileContentStore.startProjectWatch(resource.projectId);
+      if (!active) return;
+      await Promise.all([
+        fileExplorerStore.reconcile(resource.projectId),
+        activationFileKey.current ? fileContentStore.reconcile(activationFileKey.current) : Promise.resolve(),
+      ]);
+    })().catch(() => undefined);
     return () => {
+      active = false;
       unsubscribe();
-      void fileContentStore.stopProjectWatch(resource.projectId);
+      void fileContentStore.stopProjectWatch(resource.projectId).catch(() => undefined);
     };
   }, [resource.projectId]);
 

@@ -25,6 +25,7 @@ use gold_band::config::ConversationRunMode;
 use gold_band::config::StateConfig;
 use gold_band::domain::{
     NodeOutcome, NodeType, PauseReason, RunStatus, SessionMode, TurnControlMode,
+    TurnControlTransitionCause,
 };
 use gold_band::dsl::{
     AiDynamicAgentStrategy, AiDynamicNode, DynamicAgentRef, DynamicControlDsl, END_NODE, EdgeDsl,
@@ -723,6 +724,8 @@ pub struct ConversationRuntimeFacetVm {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationControlFacetVm {
     pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transition_cause: Option<TurnControlTransitionCause>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2505,16 +2508,36 @@ fn acp_latest_turn_status(session_status: Option<&str>) -> String {
     .to_string()
 }
 
-fn attempt_control_mode(attempt_dir: &Utf8Path, is_orchestrated: bool) -> TurnControlMode {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AttemptControlProjection {
+    mode: TurnControlMode,
+    transition_cause: Option<TurnControlTransitionCause>,
+}
+
+fn attempt_control_projection(
+    attempt_dir: &Utf8Path,
+    is_orchestrated: bool,
+) -> AttemptControlProjection {
     load_runtime_control_cursor(attempt_dir)
         .ok()
         .flatten()
-        .map(|cursor| cursor.current_mode)
-        .unwrap_or(if is_orchestrated {
-            TurnControlMode::RuntimeControlled
-        } else {
-            TurnControlMode::NonRuntimeControlled
+        .map(|cursor| AttemptControlProjection {
+            mode: cursor.current_mode,
+            transition_cause: Some(cursor.transition_cause),
         })
+        .unwrap_or(AttemptControlProjection {
+            mode: if is_orchestrated {
+                TurnControlMode::RuntimeControlled
+            } else {
+                TurnControlMode::NonRuntimeControlled
+            },
+            transition_cause: None,
+        })
+}
+
+#[cfg(test)]
+fn attempt_control_mode(attempt_dir: &Utf8Path, is_orchestrated: bool) -> TurnControlMode {
+    attempt_control_projection(attempt_dir, is_orchestrated).mode
 }
 
 fn composer_for_lifecycle(
@@ -2607,6 +2630,7 @@ fn derive_conversation_attempt_lifecycle_with_facets(
     runtime_execution: Option<&RuntimeExecutionState>,
     execution_current: bool,
     control_mode: TurnControlMode,
+    control_transition_cause: Option<TurnControlTransitionCause>,
     session_established: bool,
 ) -> ConversationAttemptLifecycleVm {
     let session_status = session_status
@@ -2730,6 +2754,13 @@ fn derive_conversation_attempt_lifecycle_with_facets(
         } else {
             control_mode
         };
+    let effective_control_transition_cause = if effective_control_mode == control_mode {
+        control_transition_cause
+    } else if runtime_terminal {
+        Some(TurnControlTransitionCause::RuntimeTerminal)
+    } else {
+        None
+    };
 
     ConversationAttemptLifecycleVm {
         runtime: ConversationRuntimeFacetVm {
@@ -2757,6 +2788,7 @@ fn derive_conversation_attempt_lifecycle_with_facets(
                 TurnControlMode::NonRuntimeControlled => "non-runtime-controlled",
             }
             .to_string(),
+            transition_cause: effective_control_transition_cause,
         },
         acp: ConversationAcpFacetVm {
             revision: 0,
@@ -2825,6 +2857,7 @@ fn derive_conversation_attempt_lifecycle(
         } else {
             TurnControlMode::NonRuntimeControlled
         },
+        None,
         session_status.is_some(),
     )
 }
@@ -2929,6 +2962,7 @@ pub fn conversation_attempt_lifecycle_vm(
         );
         let session_presence = acp_session_presence(&attempt_dir);
         let leaf_execution = dynamic_attempt_runtime_execution(&run, &dynamic_graph, dynamic_node);
+        let control = attempt_control_projection(&attempt_dir, is_orchestrated);
         let mut lifecycle = derive_conversation_attempt_lifecycle_with_facets(
             session_status.as_deref(),
             prompt_activity(&attempt_dir),
@@ -2943,7 +2977,8 @@ pub fn conversation_attempt_lifecycle_vm(
             leaf_execution.as_ref().map(|execution| execution.revision),
             leaf_execution.as_ref(),
             leaf_execution.is_some(),
-            attempt_control_mode(&attempt_dir, is_orchestrated),
+            control.mode,
+            control.transition_cause,
             session_presence.established,
         );
         attach_acp_lifecycle_header(&attempt_dir, &mut lifecycle);
@@ -2975,6 +3010,7 @@ pub fn conversation_attempt_lifecycle_vm(
         .paths
         .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
     let session_presence = acp_session_presence(&attempt_dir);
+    let control = attempt_control_projection(&attempt_dir, is_orchestrated);
     let mut lifecycle = derive_conversation_attempt_lifecycle_with_facets(
         session_status.as_deref(),
         prompt_activity(&attempt_dir),
@@ -2997,7 +3033,8 @@ pub fn conversation_attempt_lifecycle_vm(
                 None,
                 None,
             ),
-        attempt_control_mode(&attempt_dir, is_orchestrated),
+        control.mode,
+        control.transition_cause,
         session_presence.established,
     );
     attach_acp_lifecycle_header(&attempt_dir, &mut lifecycle);
@@ -3685,6 +3722,8 @@ pub fn conversation_run_vm(
                                     &dynamic_graph,
                                     dyn_node,
                                 );
+                                let control =
+                                    attempt_control_projection(&dyn_attempt_dir, is_orchestrated);
                                 let mut lifecycle =
                                     derive_conversation_attempt_lifecycle_with_facets(
                                         dyn_session_status.as_deref(),
@@ -3700,7 +3739,8 @@ pub fn conversation_run_vm(
                                         leaf_execution.as_ref().map(|execution| execution.revision),
                                         leaf_execution.as_ref(),
                                         leaf_execution.is_some(),
-                                        attempt_control_mode(&dyn_attempt_dir, is_orchestrated),
+                                        control.mode,
+                                        control.transition_cause,
                                         session_presence.established,
                                     );
                                 attach_direct_prompt_queue(
@@ -3847,6 +3887,7 @@ pub fn conversation_run_vm(
                         &attempt.attempt_id,
                     );
                     let session_presence = acp_session_presence(&attempt_dir);
+                    let control = attempt_control_projection(&attempt_dir, is_orchestrated);
                     let mut lifecycle = derive_conversation_attempt_lifecycle_with_facets(
                         session_status.as_deref(),
                         prompt_activity(&attempt_dir),
@@ -3869,7 +3910,8 @@ pub fn conversation_run_vm(
                                 None,
                                 None,
                             ),
-                        attempt_control_mode(&attempt_dir, is_orchestrated),
+                        control.mode,
+                        control.transition_cause,
                         session_presence.established,
                     );
                     attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
@@ -4988,9 +5030,9 @@ mod tests {
         ConversationAutoConfigVm, ConversationCreateInputVm, ConversationDirectConfigVm,
         ConversationDynamicAgentRefVm, ConversationRunSummaryVm, ConversationSessionLocator,
         ConversationTaskActivityVm, ConversationWorkLocationVm, ConversationWorkspaceSource,
-        ConversationWorkspaceVm, PromptActivity, attempt_control_mode, build_auto_workflow,
-        build_direct_workflow, conversation_attempt_lifecycle_vm, conversation_auto_title,
-        conversation_run_summary_page_vm, conversation_run_vm,
+        ConversationWorkspaceVm, PromptActivity, attempt_control_mode, attempt_control_projection,
+        build_auto_workflow, build_direct_workflow, conversation_attempt_lifecycle_vm,
+        conversation_auto_title, conversation_run_summary_page_vm, conversation_run_vm,
         conversation_session_successors_from_state, conversation_sidebar_bootstrap_vm,
         conversation_sidebar_vm_from_sources, conversation_status_from_session,
         conversation_task_activity, conversation_task_page_vm, conversation_task_row_vm,
@@ -5008,7 +5050,7 @@ mod tests {
         App, CreateTaskInput, OptionalEntryStage, RuntimeLifecycleEvent, WorkflowTemplate,
     };
     use gold_band::config::{ConversationRunMode, ProviderDiagnosticSnapshot};
-    use gold_band::domain::TurnControlMode;
+    use gold_band::domain::{TurnControlMode, TurnControlTransitionCause};
     use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, PromptEnvelopeMode};
     use gold_band::runtime::{RoundState, RuntimeExecutionPhase, RuntimeExecutionState};
     use gold_band::workflow_model_binding::WorkflowModelBindings;
@@ -5410,6 +5452,7 @@ mod tests {
             Some(&execution),
             true,
             TurnControlMode::RuntimeControlled,
+            None,
             true,
         );
 
@@ -5443,6 +5486,7 @@ mod tests {
             Some(&execution),
             true,
             TurnControlMode::RuntimeControlled,
+            None,
             false,
         );
 
@@ -5451,6 +5495,45 @@ mod tests {
         assert_eq!(
             lifecycle.composer.status_key.as_deref(),
             Some("conversation.runtime.preparingDevelopmentEnvironment")
+        );
+    }
+
+    #[test]
+    fn runtime_terminal_projects_the_auto_follow_transition_cause() {
+        let execution = RuntimeExecutionState {
+            revision: 9,
+            phase: RuntimeExecutionPhase::Terminal,
+            locator: None,
+            recovery_candidate_token: None,
+            updated_at: "t3".to_string(),
+        };
+        let lifecycle = derive_conversation_attempt_lifecycle_with_facets(
+            Some("completed"),
+            None,
+            "completed",
+            Some("success"),
+            true,
+            true,
+            None,
+            false,
+            false,
+            true,
+            Some(execution.revision),
+            Some(&execution),
+            true,
+            TurnControlMode::RuntimeControlled,
+            None,
+            true,
+        );
+
+        assert_eq!(lifecycle.control.mode, "non-runtime-controlled");
+        assert_eq!(
+            lifecycle.control.transition_cause,
+            Some(TurnControlTransitionCause::RuntimeTerminal)
+        );
+        assert_eq!(
+            serde_json::to_value(&lifecycle.control).unwrap()["transitionCause"],
+            "runtime-terminal"
         );
     }
 
@@ -5478,6 +5561,7 @@ mod tests {
             Some(&execution),
             false,
             TurnControlMode::NonRuntimeControlled,
+            None,
             true,
         );
 
@@ -5513,6 +5597,7 @@ mod tests {
             Some(&execution),
             true,
             TurnControlMode::NonRuntimeControlled,
+            Some(TurnControlTransitionCause::ManualFollowUp),
             true,
         );
 
@@ -5521,6 +5606,10 @@ mod tests {
         assert!(!lifecycle.runtime.continuable);
         assert_eq!(lifecycle.acp.latest_turn_status, "completed");
         assert_eq!(lifecycle.control.mode, "non-runtime-controlled");
+        assert_eq!(
+            lifecycle.control.transition_cause,
+            Some(TurnControlTransitionCause::ManualFollowUp)
+        );
     }
 
     #[test]
@@ -5548,6 +5637,10 @@ mod tests {
             attempt_control_mode(attempt_dir, true),
             TurnControlMode::NonRuntimeControlled
         );
+        assert_eq!(
+            attempt_control_projection(attempt_dir, true).transition_cause,
+            Some(TurnControlTransitionCause::ManualFollowUp)
+        );
     }
 
     #[test]
@@ -5567,6 +5660,7 @@ mod tests {
             None,
             false,
             TurnControlMode::NonRuntimeControlled,
+            None,
             true,
         );
 

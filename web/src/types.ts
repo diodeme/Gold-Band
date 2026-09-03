@@ -375,7 +375,7 @@ export interface WriteFileResourceInput {
 export interface WorkspaceFileChangedEventVm {
   projectId: string;
   canonicalPath: string;
-  kind: 'created' | 'modified' | 'removed' | 'renamed';
+  kind: 'created' | 'modified' | 'removed' | 'renamed' | 'invalidated';
   revision: FileRevisionVm | null;
   operationId: string | null;
 }
@@ -2499,6 +2499,7 @@ export interface ConversationRuntimeFacetVm {
 
 export interface ConversationControlFacetVm {
   mode: 'runtime-controlled' | 'non-runtime-controlled';
+  transitionCause?: 'runtime-interrupted' | 'manual-follow-up' | 'workflow-continued' | 'runtime-terminal';
 }
 
 export interface ConversationAcpFacetVm {

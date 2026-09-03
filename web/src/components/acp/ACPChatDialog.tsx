@@ -64,6 +64,7 @@ import {
   alignChatContainerViewportToBottomBeforePaint,
   type ChatContainerContentExpansionToken,
   type ChatContainerContext,
+  type ChatContainerFollowIntentCause,
   useOptionalChatContainerContentExpansion,
 } from "@/components/prompt-kit/chat-container";
 import { ConversationViewport } from "@/components/conversation/ConversationViewport";
@@ -1102,6 +1103,36 @@ function acpTimelineWatermarkCoversSequenceLoss(
   return (watermark.coveredSeq ?? 0) >= lossSeq;
 }
 
+function pendingAcpInteractionAdvancesCanonicalTimeline(
+  event: AcpUiEventVm,
+  timelineGeneration: number,
+  timelineRevision: number | null | undefined,
+  canonicalWatermark: AcpTimelineWatermark,
+) {
+  if (
+    (event.kind !== "permissionRequest" && event.kind !== "elicitationRequest")
+    || event.status?.toLowerCase() !== "pending"
+  ) {
+    return false;
+  }
+  if (timelineGeneration > canonicalWatermark.generation) return true;
+  if (timelineGeneration < canonicalWatermark.generation) return false;
+  if (timelineRevision != null) {
+    return timelineRevision > canonicalWatermark.coveredRevision;
+  }
+  const eventPosition = timelineEventPosition(event);
+  return canonicalWatermark.coveredSeq !== null
+    && eventPosition > canonicalWatermark.coveredSeq;
+}
+
+function acpSessionHasPendingInteractionSignal(session: AcpSessionVm) {
+  return session.pendingInteractions.length > 0
+    || session.events.some((event) => (
+      (event.kind === "permissionRequest" || event.kind === "elicitationRequest")
+      && event.status?.toLowerCase() === "pending"
+    ));
+}
+
 function hasAdvancedCanonicalAcpSessionRevision(
   previous: AcpSessionVm,
   next: AcpSessionVm,
@@ -1438,6 +1469,9 @@ export function ACPChatDialog(
   const preservingScrollRef = useRef(false);
   const chatContainerContextRef = useRef<ChatContainerContext | null>(null);
   const viewportAtBottomRef = useRef(restoredBranchViewState?.atBottom ?? true);
+  const viewportManualIntentRef = useRef(
+    !(restoredBranchViewState?.atBottom ?? true),
+  );
   const [showReturnToLatest, setShowReturnToLatest] = useState(false);
   const showReturnToLatestRef = useRef(false);
   const commitShowReturnToLatest = useCallback((next: boolean) => {
@@ -1458,6 +1492,13 @@ export function ACPChatDialog(
   const [queueMutationPending, setQueueMutationPending] = useState(false);
   const [queueRestorePending, setQueueRestorePending] = useState(false);
   const latestSessionRef = useRef<AcpSessionVm | null>(restoredSession);
+  const canonicalTimelineCoverageRef = useRef<{
+    eventWindowKey: string;
+    watermark: AcpTimelineWatermark;
+  }>({
+    eventWindowKey,
+    watermark: createAcpTimelineWatermark(),
+  });
   const sessionRefreshSeqRef = useRef(0);
   const sessionIdentityRef = useRef(sessionIdentity);
   sessionIdentityRef.current = sessionIdentity;
@@ -1556,6 +1597,11 @@ export function ACPChatDialog(
     hasNewerEventsRef.current
     || paginationDirectionRef.current !== null
     || !viewportAtBottomRef.current
+  ), []);
+
+  const hasExplicitHistoricalTimelineIntent = useCallback(() => (
+    paginationDirectionRef.current !== null
+    || viewportManualIntentRef.current
   ), []);
 
   const ownsPaginationRequest = useCallback((token: AcpPaginationRequestToken) => {
@@ -1727,7 +1773,20 @@ export function ACPChatDialog(
     ) {
       return;
     }
-    const preserveVisibleTimeline = !identityChanged
+    const pendingInteractionNeedsVisibleConvergence = Boolean(
+      !identityChanged
+      && session
+      && !liveUpdatesPausedRef.current
+      && !canonicalHeadRecoveryPendingRef.current
+      && !hasExplicitHistoricalTimelineIntent()
+      && acpSessionHasPendingInteractionSignal(session)
+      && acpSessionHasTimelineBeyondLoadedWindow(
+        loadedEventWindowRef.current,
+        session,
+      )
+    );
+    const preserveVisibleTimeline = !pendingInteractionNeedsVisibleConvergence
+      && !identityChanged
       && isHistoricalTimelineWindow()
       && (!session || compareAcpLoadedEventWindowToSession(
         loadedEventWindowRef.current,
@@ -1816,7 +1875,7 @@ export function ACPChatDialog(
       timelineGeneration: acpSessionTimelineGeneration(session),
       events: limited,
     });
-  }, [commitHasNewerEvents, commitLoadedEventWindow, effectiveLoadedEventBufferLimit, eventWindowKey, isHistoricalTimelineWindow, session, settleOptimisticPromptAdmissions]);
+  }, [commitHasNewerEvents, commitLoadedEventWindow, effectiveLoadedEventBufferLimit, eventWindowKey, hasExplicitHistoricalTimelineIntent, isHistoricalTimelineWindow, session, settleOptimisticPromptAdmissions]);
 
   useEffect(() => {
     const identityChanged = sessionResetIdentityRef.current !== eventWindowKey;
@@ -1892,6 +1951,7 @@ export function ACPChatDialog(
     pendingLiveEventsSinceRef.current = null;
     const restoredViewportAtBottom = storedBranchViewState?.atBottom ?? true;
     viewportAtBottomRef.current = restoredViewportAtBottom;
+    viewportManualIntentRef.current = !restoredViewportAtBottom;
     commitShowReturnToLatest(false);
     pendingBranchViewRestoreRef.current = storedBranchViewState;
     cancelRequestedRef.current = false;
@@ -2460,10 +2520,24 @@ export function ACPChatDialog(
   ) => {
     if (sessionIdentityRef.current !== eventWindowKey) return;
     const incoming = normalizeSessionUpdate(updated);
+    const pendingInteractionNeedsVisibleConvergence = Boolean(
+      incoming
+      && !liveUpdatesPausedRef.current
+      && !canonicalHeadRecoveryPendingRef.current
+      && !hasExplicitHistoricalTimelineIntent()
+      && acpSessionHasPendingInteractionSignal(incoming)
+      && acpSessionHasTimelineBeyondLoadedWindow(
+        loadedEventWindowRef.current,
+        incoming,
+      )
+    );
     const preserveVisibleTimeline = (
       liveUpdatesPausedRef.current
       || canonicalHeadRecoveryPendingRef.current
-      || isHistoricalTimelineWindow()
+      || (
+        isHistoricalTimelineWindow()
+        && !pendingInteractionNeedsVisibleConvergence
+      )
     )
       && (!incoming || compareAcpLoadedEventWindowToSession(
         loadedEventWindowRef.current,
@@ -2562,7 +2636,7 @@ export function ACPChatDialog(
       timelineGeneration: acpSessionTimelineGeneration(normalized),
       events: limited,
     });
-  }, [attemptId, commitHasNewerEvents, commitLoadedEventWindow, componentInstanceId, effectiveLoadedEventBufferLimit, eventWindowKey, isHistoricalTimelineWindow, markCanonicalHeadRecovery, nodeId, normalizeSessionUpdate, outerAttemptId, outerNodeId, projectId, roundId, runId, sessionIdentity, settleOptimisticPromptAdmissions, taskId, taskUuid]);
+  }, [attemptId, commitHasNewerEvents, commitLoadedEventWindow, componentInstanceId, effectiveLoadedEventBufferLimit, eventWindowKey, hasExplicitHistoricalTimelineIntent, isHistoricalTimelineWindow, markCanonicalHeadRecovery, nodeId, normalizeSessionUpdate, outerAttemptId, outerNodeId, projectId, roundId, runId, sessionIdentity, settleOptimisticPromptAdmissions, taskId, taskUuid]);
 
   const refreshSessionAfterConfigUnavailable = useCallback(async (error: unknown) => {
     if (!isAcpSessionConfigValueUnavailableError(error)) return;
@@ -2967,6 +3041,24 @@ export function ACPChatDialog(
     deferPendingLiveFlush();
   }, [deferPendingLiveFlush]);
 
+  const handleFollowIntentChange = useCallback((
+    following: boolean,
+    cause: ChatContainerFollowIntentCause,
+  ) => {
+    if (following) {
+      viewportManualIntentRef.current = false;
+      return;
+    }
+    if (
+      cause === "user-wheel-up"
+      || cause === "user-key-up"
+      || cause === "user-scrollbar-up"
+      || cause === "content-expansion-user-scroll"
+    ) {
+      viewportManualIntentRef.current = true;
+    }
+  }, []);
+
   const handleAtBottomChange = useCallback((viewportAtBottom: boolean) => {
     viewportAtBottomRef.current = viewportAtBottom;
     if (!viewportAtBottom && liveStreamingTargetRef.current) {
@@ -3349,6 +3441,27 @@ export function ACPChatDialog(
     // Visible/cache state may contain transient Router replay. ACK coverage is
     // rebuilt only from canonical responses observed by this effect.
     let snapshotWatermark = createAcpTimelineWatermark();
+    canonicalTimelineCoverageRef.current = {
+      eventWindowKey,
+      watermark: snapshotWatermark,
+    };
+    const reconcileCanonicalQueryWatermark = (
+      eventPage: AcpSessionVm["eventPage"],
+    ) => {
+      snapshotWatermark = reconcileAcpTimelineWatermark(
+        snapshotWatermark,
+        eventPage,
+      );
+      if (
+        active
+        && sessionIdentityRef.current === eventWindowKey
+      ) {
+        canonicalTimelineCoverageRef.current = {
+          eventWindowKey,
+          watermark: snapshotWatermark,
+        };
+      }
+    };
     let dynamicTerminalContentRefreshRequested = false;
     let branchRefreshInFlight = false;
     let branchRefreshTrailing = false;
@@ -3394,10 +3507,7 @@ export function ACPChatDialog(
           return;
         }
         applySessionUpdate(updated, 'subscription-branch-refresh');
-        snapshotWatermark = reconcileAcpTimelineWatermark(
-          snapshotWatermark,
-          updated.eventPage,
-        );
+        reconcileCanonicalQueryWatermark(updated.eventPage);
       }).catch(() => {}).finally(() => {
         branchRefreshInFlight = false;
         if (
@@ -3467,6 +3577,24 @@ export function ACPChatDialog(
             requestCanonicalHeadRecovery(!isHistoricalTimelineWindow());
             return;
           }
+          const pendingInteractionNeedsCanonicalRecovery =
+            initialFetchSucceeded
+            && compareAcpLoadedEventWindowToLiveEvent(
+              loadedEventWindowRef.current,
+              event.event,
+              event.timelineGeneration,
+            ) === "same"
+            && pendingAcpInteractionAdvancesCanonicalTimeline(
+              event.event,
+              event.timelineGeneration,
+              event.timelineRevision,
+              canonicalTimelineCoverageRef.current.eventWindowKey === eventWindowKey
+                ? canonicalTimelineCoverageRef.current.watermark
+                : snapshotWatermark,
+            );
+          if (pendingInteractionNeedsCanonicalRecovery) {
+            requestCanonicalHeadRecovery(!hasExplicitHistoricalTimelineIntent());
+          }
           const acceptedForVisibleGeneration = enqueueLiveEventUpdate(
             event.event,
             event.timelineGeneration,
@@ -3501,10 +3629,7 @@ export function ACPChatDialog(
                 return;
               }
               applySessionUpdate(updated, 'subscription-dynamic-terminal-refresh');
-              snapshotWatermark = reconcileAcpTimelineWatermark(
-                snapshotWatermark,
-                updated.eventPage,
-              );
+              reconcileCanonicalQueryWatermark(updated.eventPage);
             }).catch(() => {});
             return;
           }
@@ -3631,10 +3756,7 @@ export function ACPChatDialog(
             lastLoadError = null;
             setSessionLoadError(null);
             applySessionUpdate(updated, "initial-fetch");
-            snapshotWatermark = reconcileAcpTimelineWatermark(
-              snapshotWatermark,
-              updated.eventPage,
-            );
+            reconcileCanonicalQueryWatermark(updated.eventPage);
             if (isAcpSessionReadyForInitialDisplay(updated)) {
               markAcpSessionContentHydrated(eventWindowKey);
               initialFetchSucceeded = true;
@@ -3727,10 +3849,7 @@ export function ACPChatDialog(
             );
             applySessionUpdate(refreshed, source);
             catchUpCandidateSession = refreshed;
-            snapshotWatermark = reconcileAcpTimelineWatermark(
-              snapshotWatermark,
-              refreshResponse.eventPage,
-            );
+            reconcileCanonicalQueryWatermark(refreshResponse.eventPage);
             return true;
           };
 
@@ -3819,14 +3938,11 @@ export function ACPChatDialog(
                 "append-newer",
               ),
             };
-            snapshotWatermark = reconcileAcpTimelineWatermark(
-              snapshotWatermark,
-              {
-                ...delta.eventPage,
-                generation: snapshotWatermark.generation,
-                coveredRevision: nextRevision,
-              },
-            );
+            reconcileCanonicalQueryWatermark({
+              ...delta.eventPage,
+              generation: snapshotWatermark.generation,
+              coveredRevision: nextRevision,
+            });
           }
 
           let sequenceRetryAttempt = 0;
@@ -4019,6 +4135,7 @@ export function ACPChatDialog(
     effectiveEventPageSize,
     flushPendingLiveEvents,
     flushOrSchedulePendingLiveEvents,
+    hasExplicitHistoricalTimelineIntent,
     isHistoricalTimelineWindow,
     nodeId,
     observeLiveStreamingEvent,
@@ -4568,6 +4685,10 @@ export function ACPChatDialog(
     });
     setHasOlderEvents(hasOlder);
     commitHasNewerEvents(hasRemainingReplay);
+    canonicalTimelineCoverageRef.current = {
+      eventWindowKey,
+      watermark: canonicalWatermark,
+    };
     paginationCursorGenerationStaleRef.current = false;
     return true;
   }, [attemptId, attemptWorkspaceLocator, branchId, commitHasNewerEvents, commitLoadedEventWindow, commitShowReturnToLatest, effectiveEventPageSize, effectiveLoadedEventBufferLimit, eventIdPrefix, eventWindowKey, nodeId, normalizeSessionUpdate, outerAttemptId, outerNodeId, ownsPaginationWindowRequest, projectId, requestCanonicalHeadHandoff, roundId, runId, sessionIdentity, settleLiveStreamingMarkdown, settleOptimisticPromptAdmissions, taskId, taskUuid]);
@@ -4820,6 +4941,7 @@ export function ACPChatDialog(
   canonicalHeadHandoffRef.current = returnToLatestEvents;
 
   const handleReturnToLatestEvents = () => {
+    viewportManualIntentRef.current = false;
     if (!hasNewerEventsRef.current) {
       void chatContainerContextRef.current?.scrollToBottom({
         animation: "instant",
@@ -5718,6 +5840,7 @@ export function ACPChatDialog(
             contextRef={chatContainerContextRef}
             initialFollowing={shouldInitiallyFollowAcpBranch(restoredBranchViewState)}
             onAtBottomChange={handleAtBottomChange}
+            onFollowIntentChange={handleFollowIntentChange}
             onViewportScroll={handleScroll}
             onViewportUserScroll={handleLiveStreamUserInteraction}
           >

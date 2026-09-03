@@ -37,6 +37,11 @@ interface ProjectRuntime {
   searchRevision: number;
   searchTimer: ReturnType<typeof setTimeout> | null;
   refreshTimer: ReturnType<typeof setTimeout> | null;
+  refreshStartedAt: number | null;
+  refreshPromise: Promise<void> | null;
+  refreshDirty: boolean;
+  refreshAll: boolean;
+  pendingRefreshDirectories: Set<string>;
 }
 
 function commandErrorCode(reason: unknown, fallback: string) {
@@ -164,6 +169,8 @@ function idleSnapshot(projectId: string): FileExplorerSnapshot {
 export class FileExplorerStore {
   private static readonly MAX_PROJECTS = 24;
   private static readonly DIRECTORY_CHAIN_EXPANSION_LIMIT = 64;
+  private static readonly MAX_REFRESH_LATENCY_MS = 1_000;
+  private static readonly MAX_PENDING_REFRESH_DIRECTORIES = 64;
   private config: WorkspaceFilesVm = FALLBACK_WORKSPACE_FILES;
   private readonly projects = new Map<string, ProjectRuntime>();
   private readonly listeners = new Set<() => void>();
@@ -223,6 +230,12 @@ export class FileExplorerStore {
         errorCode: commandErrorCode(reason, 'workspace-file.read-failed'),
       });
     }
+  }
+
+  reconcile(projectId: string) {
+    const runtime = this.runtime(projectId);
+    if (runtime.snapshot.status !== 'ready') return this.loadRoot(projectId);
+    return this.runRefresh(projectId, true);
   }
 
   private async refreshRoot(projectId: string) {
@@ -345,13 +358,38 @@ export class FileExplorerStore {
 
   invalidate(projectId: string, canonicalPath?: string) {
     const runtime = this.runtime(projectId);
+    const parent = canonicalPath ? relativeParentFor(runtime.snapshot, canonicalPath) : null;
+    if (!parent) {
+      runtime.refreshAll = true;
+      runtime.pendingRefreshDirectories.clear();
+    } else if (!runtime.refreshAll) {
+      runtime.pendingRefreshDirectories.add(parent);
+      if (runtime.pendingRefreshDirectories.size > FileExplorerStore.MAX_PENDING_REFRESH_DIRECTORIES) {
+        runtime.refreshAll = true;
+        runtime.pendingRefreshDirectories.clear();
+      }
+    }
+    runtime.refreshStartedAt ??= Date.now();
+    if (runtime.refreshPromise) {
+      runtime.refreshDirty = true;
+      return;
+    }
+    this.armRefresh(projectId);
+  }
+
+  private armRefresh(projectId: string) {
+    const runtime = this.runtime(projectId);
     if (runtime.refreshTimer) clearTimeout(runtime.refreshTimer);
+    const elapsed = Date.now() - (runtime.refreshStartedAt ?? Date.now());
+    const delay = Math.min(
+      this.config.watchDebounceMs,
+      Math.max(0, FileExplorerStore.MAX_REFRESH_LATENCY_MS - elapsed),
+    );
     runtime.refreshTimer = setTimeout(() => {
       runtime.refreshTimer = null;
-      const parent = canonicalPath ? relativeParentFor(runtime.snapshot, canonicalPath) : null;
-      if (parent) void this.refreshDirectory(projectId, parent);
-      else void this.refreshRoot(projectId);
-    }, this.config.watchDebounceMs);
+      runtime.refreshStartedAt = null;
+      void this.runRefresh(projectId);
+    }, delay);
   }
 
   applyFileChange(event: WorkspaceFileChangedEventVm) {
@@ -381,7 +419,40 @@ export class FileExplorerStore {
     const descendants = [...runtime.snapshot.expanded]
       .filter((path) => path.startsWith(`${relativePath}/`))
       .sort((left, right) => pathDepth(left) - pathDepth(right));
-    for (const path of descendants) await this.loadDirectory(projectId, path);
+    for (const path of descendants) await this.loadDirectory(projectId, path, true);
+  }
+
+  private async runRefresh(projectId: string, forceAll = false) {
+    const runtime = this.runtime(projectId);
+    if (runtime.refreshPromise) {
+      runtime.refreshDirty = true;
+      runtime.refreshAll ||= forceAll;
+      return runtime.refreshPromise;
+    }
+    if (runtime.refreshTimer) clearTimeout(runtime.refreshTimer);
+    runtime.refreshTimer = null;
+    runtime.refreshStartedAt = null;
+    const refreshAll = forceAll || runtime.refreshAll || runtime.pendingRefreshDirectories.size === 0;
+    const directories = refreshAll
+      ? []
+      : minimalDirectorySet(runtime.pendingRefreshDirectories);
+    runtime.refreshAll = false;
+    runtime.pendingRefreshDirectories.clear();
+    const request = (refreshAll
+      ? this.refreshRoot(projectId)
+      : directories.reduce(
+          (previous, directory) => previous.then(() => this.refreshDirectory(projectId, directory)),
+          Promise.resolve(),
+        )).finally(() => {
+      if (runtime.refreshPromise === request) runtime.refreshPromise = null;
+      if (runtime.refreshDirty || runtime.refreshAll || runtime.pendingRefreshDirectories.size > 0) {
+        runtime.refreshDirty = false;
+        runtime.refreshStartedAt ??= Date.now();
+        this.armRefresh(projectId);
+      }
+    });
+    runtime.refreshPromise = request;
+    return request;
   }
 
   private runtime(projectId: string, touch = true) {
@@ -394,6 +465,11 @@ export class FileExplorerStore {
         searchRevision: 0,
         searchTimer: null,
         refreshTimer: null,
+        refreshStartedAt: null,
+        refreshPromise: null,
+        refreshDirty: false,
+        refreshAll: false,
+        pendingRefreshDirectories: new Set(),
       };
       this.projects.set(projectId, runtime);
       while (this.projects.size > FileExplorerStore.MAX_PROJECTS) {
@@ -423,6 +499,11 @@ export class FileExplorerStore {
 
 function pathDepth(path: string) {
   return path.split(/[\\/]/u).length;
+}
+
+function minimalDirectorySet(paths: ReadonlySet<string>) {
+  const sorted = [...paths].sort((left, right) => pathDepth(left) - pathDepth(right));
+  return sorted.filter((path, index) => !sorted.slice(0, index).some((parent) => path.startsWith(`${parent}/`)));
 }
 
 function relativeParentFor(snapshot: FileExplorerSnapshot, canonicalPath: string) {

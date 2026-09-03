@@ -8,6 +8,31 @@ const runtime = vi.hoisted(() => ({
   listener: null as ((event: unknown) => void) | null,
 }));
 
+const streamingDiagnostics = vi.hoisted(() => ({
+  enabled: false,
+  records: [] as Array<{
+    stage: string;
+    details: Record<string, unknown>;
+  }>,
+}));
+
+vi.mock('@/lib/acp-streaming-diagnostics', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/acp-streaming-diagnostics')>(
+    '@/lib/acp-streaming-diagnostics',
+  );
+  return {
+    ...actual,
+    isAcpStreamingDiagnosticsEnabled: () => streamingDiagnostics.enabled,
+    recordAcpStreamingDiagnostic: (
+      stage: string,
+      createDetails: () => Record<string, unknown>,
+    ) => {
+      if (stage !== 'return-to-latest-trace' && !streamingDiagnostics.enabled) return;
+      streamingDiagnostics.records.push({ stage, details: createDetails() });
+    },
+  };
+});
+
 vi.mock('@/api/client', async () => {
   const actual = await vi.importActual<typeof import('@/api/client')>('@/api/client');
   return {
@@ -392,6 +417,8 @@ async function setTextareaValue(textarea: HTMLTextAreaElement, value: string) {
 }
 
 beforeEach(() => {
+  streamingDiagnostics.enabled = false;
+  streamingDiagnostics.records = [];
   resetAcpResourceCache();
   resetConversationEventRouterSnapshots();
   vi.mocked(getAcpActivityDetail).mockReset();
@@ -2282,12 +2309,17 @@ describe('ACP session re-entry reconciliation', () => {
           '分页请求期间到达的最终内容',
         )));
         await new Promise((resolve) => window.setTimeout(resolve, 180));
+        Object.defineProperty(scroller!, 'scrollHeight', {
+          configurable: true,
+          value: 2_600,
+        });
         resolveNewer(serverHead);
         await new Promise((resolve) => window.setTimeout(resolve, 300));
       });
 
       expect(container.textContent).toContain('分页请求期间到达的最终内容');
       expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      expect(scroller!.scrollTop).toBe(2_000);
       expect(readConversationBranchReplaySnapshot(locator, 'root').events).toEqual([]);
       expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(3);
     } finally {
@@ -2547,7 +2579,64 @@ describe('ACP session re-entry reconciliation', () => {
         scroller!.dispatchEvent(new Event('scroll'));
         await new Promise((resolve) => window.setTimeout(resolve, 50));
       });
-      expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
+      const returnToLatestBeforeRefresh = container.querySelector<HTMLButtonElement>(
+        '[data-acp-return-to-latest="true"]',
+      );
+      expect(returnToLatestBeforeRefresh).not.toBeNull();
+      expect(streamingDiagnostics.records).toContainEqual({
+        stage: 'return-to-latest-trace',
+        details: expect.objectContaining({
+          event: 'visibility-change',
+          source: 'viewport-scroll',
+          previousVisible: false,
+          nextVisible: true,
+          distanceFromBottom: 200,
+          viewportManualIntent: true,
+        }),
+      });
+      const attachRecord = streamingDiagnostics.records.find(
+        (record) => record.details.event === 'dom-attach',
+      );
+      expect(attachRecord?.details).toEqual(expect.objectContaining({
+        visible: true,
+        mountSequence: 1,
+      }));
+
+      await act(async () => {
+        scroller!.scrollTop = 1_684;
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+      expect(container.querySelector('[data-acp-return-to-latest="true"]'))
+        .toBe(returnToLatestBeforeRefresh);
+      expect(streamingDiagnostics.records).not.toContainEqual({
+        stage: 'return-to-latest-trace',
+        details: expect.objectContaining({
+          event: 'visibility-change',
+          previousVisible: true,
+          nextVisible: false,
+          distanceFromBottom: 116,
+        }),
+      });
+
+      await act(async () => {
+        scroller!.scrollTop = 1_752;
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+      expect(container.querySelector('[data-acp-return-to-latest="true"]'))
+        .toBe(returnToLatestBeforeRefresh);
+
+      await act(async () => {
+        Object.defineProperty(scroller!, 'scrollHeight', {
+          configurable: true,
+          value: 2_520,
+        });
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+      expect(container.querySelector('[data-acp-return-to-latest="true"]'))
+        .toBe(returnToLatestBeforeRefresh);
 
       await act(async () => {
         runtime.listener?.({
@@ -2565,6 +2654,13 @@ describe('ACP session re-entry reconciliation', () => {
         '[data-acp-return-to-latest="true"]',
       );
       expect(returnToLatest).not.toBeNull();
+      expect(returnToLatest).toBe(returnToLatestBeforeRefresh);
+      expect(streamingDiagnostics.records.filter(
+        (record) => record.details.event === 'dom-attach',
+      )).toHaveLength(1);
+      expect(streamingDiagnostics.records.filter(
+        (record) => record.details.event === 'dom-detach',
+      )).toHaveLength(0);
 
       await act(async () => {
         returnToLatest!.click();
@@ -2573,7 +2669,342 @@ describe('ACP session re-entry reconciliation', () => {
 
       expect(onAtBottomChange).toHaveBeenLastCalledWith(true);
       expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      expect(streamingDiagnostics.records).toContainEqual({
+        stage: 'return-to-latest-trace',
+        details: expect.objectContaining({
+          event: 'dom-detach',
+          mountSequence: 1,
+        }),
+      });
       expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('keeps return-to-latest mounted until a downward user scroll settles at canonical head', async () => {
+    const canonicalHead = session([
+      event('streaming-canonical-head', 10, 'textDelta', '流式 canonical head'),
+    ]);
+    vi.mocked(getAcpSession).mockResolvedValue(canonicalHead);
+
+    const { container, root } = await renderDialog(canonicalHead);
+    try {
+      const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+        .find((element) => element.classList.contains('h-full')
+          && element.classList.contains('overflow-y-auto'));
+      expect(scroller).toBeDefined();
+      Object.defineProperties(scroller!, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: 2_400 },
+        scrollTop: { configurable: true, value: 1_600, writable: true },
+      });
+
+      await act(async () => {
+        scroller!.dispatchEvent(new WheelEvent('wheel', {
+          bubbles: true,
+          deltaY: -100,
+        }));
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+      const returnToLatest = container.querySelector<HTMLButtonElement>(
+        '[data-acp-return-to-latest="true"]',
+      );
+      expect(returnToLatest).not.toBeNull();
+
+      await act(async () => {
+        scroller!.dispatchEvent(new WheelEvent('wheel', {
+          bubbles: true,
+          deltaY: 100,
+        }));
+        scroller!.scrollTop = 1_800;
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+
+      expect(container.querySelector('[data-acp-return-to-latest="true"]'))
+        .toBe(returnToLatest);
+
+      await act(async () => {
+        scroller!.dispatchEvent(new Event('scrollend'));
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('keeps return-to-latest mounted at a loaded window bottom while canonical newer events remain', async () => {
+    const historicalWindow = session([
+      event('historical-window-message', 10, 'textDelta', '仍有 newer page 的历史窗口'),
+    ]);
+    Object.assign(historicalWindow.eventPage, {
+      generation: 1,
+      coveredRevision: 20,
+      newestRevision: 20,
+      oldestSeq: 10,
+      newestSeq: 10,
+      total: 20,
+      hasOlder: true,
+      hasNewer: true,
+    });
+    const pendingNewerPage = new Promise<AcpSessionVm>(() => undefined);
+    vi.mocked(getAcpSession).mockImplementation(async (...args) => (
+      typeof args[6]?.afterSeq === 'number' ? pendingNewerPage : historicalWindow
+    ));
+    const onAtBottomChange = vi.fn();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <TooltipProvider>
+          <ACPChatDialog
+            session={historicalWindow}
+            {...locator}
+            branchId="root"
+            onAtBottomChange={onAtBottomChange}
+            showSystemPromptAction={false}
+            showRawFramesAction={false}
+            usageCompact
+          />
+        </TooltipProvider>,
+      );
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    try {
+      const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+        .find((element) => element.classList.contains('h-full')
+          && element.classList.contains('overflow-y-auto'));
+      expect(scroller).toBeDefined();
+      Object.defineProperties(scroller!, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: 2_400 },
+        scrollTop: { configurable: true, value: 1_600, writable: true },
+      });
+
+      await act(async () => {
+        scroller!.dispatchEvent(new WheelEvent('wheel', {
+          bubbles: true,
+          deltaY: -100,
+        }));
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+      const returnToLatest = container.querySelector<HTMLButtonElement>(
+        '[data-acp-return-to-latest="true"]',
+      );
+      expect(returnToLatest).not.toBeNull();
+
+      await act(async () => {
+        scroller!.dispatchEvent(new WheelEvent('wheel', {
+          bubbles: true,
+          deltaY: 100,
+        }));
+        scroller!.scrollTop = 1_800;
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+
+      expect(onAtBottomChange).toHaveBeenLastCalledWith(false);
+      expect(container.querySelector('[data-acp-return-to-latest="true"]'))
+        .toBe(returnToLatest);
+      expect(streamingDiagnostics.records).not.toContainEqual({
+        stage: 'return-to-latest-trace',
+        details: expect.objectContaining({
+          event: 'visibility-change',
+          source: 'at-bottom-change',
+          previousVisible: true,
+          nextVisible: false,
+          viewportAtBottom: true,
+          hasNewerEvents: true,
+        }),
+      });
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('keeps return-to-latest enabled while automatic newer-edge catch-up is pending', async () => {
+    const historicalWindow = session([
+      event('automatic-catch-up-history', 1, 'textDelta', '自动追头前的历史窗口'),
+    ]);
+    Object.assign(historicalWindow.eventPage, {
+      coveredRevision: 2,
+      newestRevision: 2,
+      total: 2,
+      hasNewer: true,
+    });
+    const newerEdge = session([
+      event('automatic-catch-up-edge', 2, 'textDelta', '自动分页抵达的新边界'),
+    ]);
+    Object.assign(newerEdge.eventPage, {
+      coveredRevision: 2,
+      newestRevision: 2,
+      total: 2,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    let resolveCanonicalHead!: (value: AcpSessionVm) => void;
+    const pendingCanonicalHead = new Promise<AcpSessionVm>((resolve) => {
+      resolveCanonicalHead = resolve;
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(historicalWindow)
+      .mockResolvedValueOnce(newerEdge)
+      .mockReturnValueOnce(pendingCanonicalHead);
+
+    const { container, root } = await renderDialog(historicalWindow);
+    try {
+      const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+        .find((element) => element.classList.contains('h-full')
+          && element.classList.contains('overflow-y-auto'));
+      expect(scroller).toBeDefined();
+      Object.defineProperties(scroller!, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: 2_400 },
+        scrollTop: { configurable: true, value: 1_650, writable: true },
+      });
+
+      await act(async () => {
+        scroller!.dispatchEvent(new WheelEvent('wheel', {
+          bubbles: true,
+          deltaY: -1,
+        }));
+        scroller!.dispatchEvent(new Event('scroll'));
+        await vi.waitFor(() => {
+          expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(3);
+        });
+      });
+
+      const returnToLatest = container.querySelector<HTMLButtonElement>(
+        '[data-acp-return-to-latest="true"]',
+      );
+      expect(returnToLatest).not.toBeNull();
+      expect(returnToLatest?.disabled).toBe(false);
+    } finally {
+      await act(async () => {
+        resolveCanonicalHead(newerEdge);
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      await unmount(root);
+    }
+  });
+
+  it('disables return-to-latest while an explicit user catch-up is pending', async () => {
+    const historicalWindow = session([
+      event('manual-catch-up-history', 1, 'textDelta', '手动追头前的历史窗口'),
+    ]);
+    Object.assign(historicalWindow.eventPage, {
+      coveredRevision: 2,
+      newestRevision: 2,
+      total: 2,
+      hasNewer: true,
+    });
+    const canonicalHead = session([
+      event('manual-catch-up-head', 2, 'textDelta', '手动抵达的最新内容'),
+    ]);
+    Object.assign(canonicalHead.eventPage, {
+      coveredRevision: 2,
+      newestRevision: 2,
+      total: 2,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    let resolveCanonicalHead!: (value: AcpSessionVm) => void;
+    const pendingCanonicalHead = new Promise<AcpSessionVm>((resolve) => {
+      resolveCanonicalHead = resolve;
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(historicalWindow)
+      .mockReturnValueOnce(pendingCanonicalHead);
+
+    const { container, root } = await renderDialog(historicalWindow);
+    try {
+      await detachConversationViewport(container);
+      const returnToLatest = container.querySelector<HTMLButtonElement>(
+        '[data-acp-return-to-latest="true"]',
+      );
+      expect(returnToLatest).not.toBeNull();
+
+      await act(async () => {
+        returnToLatest!.click();
+        await vi.waitFor(() => {
+          expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+        });
+      });
+
+      expect(returnToLatest?.disabled).toBe(true);
+
+      await act(async () => {
+        resolveCanonicalHead(canonicalHead);
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('does not rewrite follow intent for every scroll while a newer window remains', async () => {
+    const historicalWindow = session([
+      event('historical-scroll-message', 10, 'textDelta', '仍有 newer page 的历史窗口'),
+    ]);
+    Object.assign(historicalWindow.eventPage, {
+      generation: 1,
+      coveredRevision: 20,
+      newestRevision: 20,
+      oldestSeq: 10,
+      newestSeq: 10,
+      total: 20,
+      hasOlder: true,
+      hasNewer: true,
+    });
+    vi.mocked(getAcpSession).mockResolvedValue(historicalWindow);
+
+    const { container, root } = await renderDialog(historicalWindow);
+    try {
+      const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+        .find((element) => element.classList.contains('h-full')
+          && element.classList.contains('overflow-y-auto'));
+      expect(scroller).toBeDefined();
+      Object.defineProperties(scroller!, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: 2_400 },
+        scrollTop: { configurable: true, value: 1_000, writable: true },
+      });
+      await act(async () => {
+        scroller!.dispatchEvent(new WheelEvent('wheel', {
+          bubbles: true,
+          deltaY: -1,
+        }));
+        scroller!.scrollTop = 1_000;
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+      streamingDiagnostics.enabled = true;
+      streamingDiagnostics.records = [];
+
+      await act(async () => {
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 30));
+        scroller!.scrollTop = 1_010;
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 30));
+        scroller!.scrollTop = 1_020;
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 30));
+      });
+
+      const externalStops = streamingDiagnostics.records.filter((record) => (
+        record.stage === 'chat-scroll-trace'
+        && record.details.event === 'follow-write'
+        && record.details.cause === 'external-stop-scroll'
+      ));
+      expect(externalStops.map((record) => record.details)).toEqual([]);
     } finally {
       await unmount(root);
     }
@@ -3759,6 +4190,82 @@ describe('ACP session re-entry reconciliation', () => {
     }
   });
 
+  it('preserves manual scroll when the viewport detaches during an in-flight canonical recovery', async () => {
+    const previous = session([
+      event('in-flight-scroll-old', 1, 'textDelta', '交接前仍在显示的旧内容'),
+    ]);
+    const compactedHead = session([
+      event('in-flight-scroll-current', 2, 'textDelta', '交接后更新的 canonical 内容'),
+    ]);
+    Object.assign(compactedHead.eventPage, {
+      generation: 2,
+      coveredRevision: 2,
+      newestRevision: 2,
+      total: 1,
+      hasOlder: true,
+      hasNewer: false,
+    });
+    let resolveCompactedHead!: (value: AcpSessionVm) => void;
+    const pendingCompactedHead = new Promise<AcpSessionVm>((resolve) => {
+      resolveCompactedHead = resolve;
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(previous)
+      .mockReturnValueOnce(pendingCompactedHead);
+
+    const { container, root } = await renderDialog(previous);
+    try {
+      const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+        .find((element) => element.classList.contains('h-full')
+          && element.classList.contains('overflow-y-auto'));
+      expect(scroller).toBeDefined();
+      Object.defineProperties(scroller!, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: 2_400 },
+        scrollTop: { configurable: true, value: 1_800, writable: true },
+      });
+
+      await act(async () => {
+        runtime.listener?.({
+          ...update(event(
+            'in-flight-scroll-current',
+            2,
+            'textDelta',
+            '交接后更新的 canonical 内容',
+          )),
+          timelineGeneration: 2,
+          timelineRevision: 2,
+        });
+        await vi.waitFor(() => {
+          expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+        });
+      });
+
+      await act(async () => {
+        scroller!.dispatchEvent(new WheelEvent('wheel', {
+          bubbles: true,
+          deltaY: -1,
+        }));
+        scroller!.scrollTop = 1_600;
+        scroller!.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
+
+      await act(async () => {
+        resolveCompactedHead(compactedHead);
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+      });
+
+      expect(container.textContent).toContain('交接后更新的 canonical 内容');
+      expect(container.textContent).not.toContain('交接前仍在显示的旧内容');
+      expect(scroller!.scrollTop).toBe(1_600);
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('keeps one trailing canonical recovery when another malformed event arrives in flight', async () => {
     const previous = session([
       event('malformed-recovery-old', 1, 'textDelta', 'malformed recovery 前的旧内容'),
@@ -4808,6 +5315,10 @@ describe('ACP session re-entry reconciliation', () => {
       });
 
       await act(async () => {
+        scroller!.dispatchEvent(new WheelEvent('wheel', {
+          bubbles: true,
+          deltaY: 100,
+        }));
         scroller!.dispatchEvent(new Event('scroll'));
         await new Promise((resolve) => window.setTimeout(resolve, 300));
       });
@@ -4819,6 +5330,12 @@ describe('ACP session re-entry reconciliation', () => {
       expect(vi.mocked(getAcpSession).mock.calls[2]?.[6]).not.toHaveProperty('afterSeq');
       expect(vi.mocked(getAcpSession).mock.calls[2]?.[6]).not.toHaveProperty('beforeSeq');
       expect(container.textContent).toContain('自然分页抵达的 canonical head');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
+
+      await act(async () => {
+        scroller!.dispatchEvent(new Event('scrollend'));
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
       expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
 
       await act(async () => {

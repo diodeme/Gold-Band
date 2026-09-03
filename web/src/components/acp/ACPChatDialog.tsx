@@ -67,7 +67,10 @@ import {
   type ChatContainerFollowIntentCause,
   useOptionalChatContainerContentExpansion,
 } from "@/components/prompt-kit/chat-container";
-import { ConversationViewport } from "@/components/conversation/ConversationViewport";
+import {
+  ConversationViewport,
+  ConversationViewportFooter,
+} from "@/components/conversation/ConversationViewport";
 import { InterventionLayer } from "@/components/conversation/InterventionLayer";
 import { ImageActionsContextMenu } from "@/components/shared/ImageActionsContextMenu";
 import { Markdown } from "@/components/prompt-kit/markdown";
@@ -282,9 +285,14 @@ import {
 } from "@/lib/conversation-event-router";
 import {
   acpStreamingLocatorMismatches,
+  isAcpStreamingDiagnosticsEnabled,
   recordAcpStreamingDiagnostic,
   summarizeAcpStreamingEvent,
 } from "@/lib/acp-streaming-diagnostics";
+import {
+  startAcpReturnToLatestVisualProbe,
+  type AcpReturnToLatestVisualProbe,
+} from "@/lib/acp-return-to-latest-visual-probe";
 import { displayAppError, displayStatus } from "@/i18n";
 import type {
   AcpElicitationRequestVm,
@@ -337,6 +345,12 @@ export interface AcpDirectSessionHeaderProps {
 }
 
 export type AcpInitialSessionQueryState = "loading" | "success" | "error";
+type AcpReturnToLatestVisibilitySource =
+  | "session-reset"
+  | "at-bottom-change"
+  | "branch-view-restore"
+  | "canonical-head-rejoin"
+  | "viewport-scroll";
 
 function isAcpSessionConfigValueUnavailableError(error: unknown) {
   return Boolean(
@@ -517,6 +531,19 @@ const LIVE_EVENT_MAX_DEFER_MS = 250;
 export const ACP_REPLAY_CATCH_UP_MAX_PAGES = 4;
 export const ACP_REPLAY_CATCH_UP_MAX_MS = 2_000;
 const ACP_SESSION_LEASE_RETRY_MS = 30_000;
+
+export function shouldShowReturnToLatest(
+  currentlyVisible: boolean,
+  viewportAtBottom: boolean,
+  hasNewerEvents: boolean,
+  activationEligible: boolean,
+  distanceFromBottom: number,
+) {
+  if (isAcpConversationAtBottom(viewportAtBottom, hasNewerEvents)) return false;
+  if (currentlyVisible) return true;
+  return activationEligible
+    && distanceFromBottom >= RETURN_TO_LATEST_SHOW_DISTANCE_PX;
+}
 
 async function awaitAcpReplayCatchUpRequest<T>(
   request: Promise<T>,
@@ -1416,7 +1443,7 @@ export function ACPChatDialog(
   ));
   const [sessionLoadError, setSessionLoadError] = useState<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const [loadingLatest, setLoadingLatest] = useState(false);
+  const [returnToLatestPending, setReturnToLatestPending] = useState(false);
   const [hasOlderEvents, setHasOlderEvents] = useState(
     () => restoredBranchViewState?.hasOlder
       ?? restoredSession?.eventPage.hasOlder
@@ -1474,11 +1501,9 @@ export function ACPChatDialog(
   );
   const [showReturnToLatest, setShowReturnToLatest] = useState(false);
   const showReturnToLatestRef = useRef(false);
-  const commitShowReturnToLatest = useCallback((next: boolean) => {
-    if (showReturnToLatestRef.current === next) return;
-    showReturnToLatestRef.current = next;
-    setShowReturnToLatest(next);
-  }, []);
+  const returnToLatestButtonRef = useRef<HTMLButtonElement | null>(null);
+  const returnToLatestButtonMountSequenceRef = useRef(0);
+  const returnToLatestVisualProbeRef = useRef<AcpReturnToLatestVisualProbe | null>(null);
   const pendingBranchViewRestoreRef = useRef<AcpBranchViewState | null>(restoredBranchViewState);
   const cancelRequestedRef = useRef(false);
   const awaitTerminalStopRef = useRef(false);
@@ -1530,8 +1555,97 @@ export function ACPChatDialog(
   >(null);
   const canonicalHeadHandoffEpochRef = useRef(0);
   const canonicalHeadRecoveryAutoHandoffRef = useRef(false);
+  const returnToLatestPendingRef = useRef(false);
   const sessionPropSyncIdentityRef = useRef(eventWindowKey);
   const sessionResetIdentityRef = useRef(eventWindowKey);
+  const createReturnToLatestDiagnosticDetails = useCallback((
+    scroller?: HTMLElement | null,
+  ) => {
+    const viewport = scroller
+      ?? chatContainerContextRef.current?.scrollRef.current
+      ?? null;
+    const scrollTop = viewport?.scrollTop ?? null;
+    const scrollHeight = viewport?.scrollHeight ?? null;
+    const clientHeight = viewport?.clientHeight ?? null;
+    return {
+      componentInstanceId,
+      sessionIdentity: sessionIdentityRef.current,
+      scrollTop,
+      scrollHeight,
+      clientHeight,
+      distanceFromBottom:
+        scrollHeight === null || scrollTop === null || clientHeight === null
+          ? null
+          : scrollHeight - scrollTop - clientHeight,
+      viewportAtBottom: viewportAtBottomRef.current,
+      viewportManualIntent: viewportManualIntentRef.current,
+      hasNewerEvents: hasNewerEventsRef.current,
+      liveStreamingTargetKey: liveStreamingTargetRef.current?.key ?? null,
+    };
+  }, [componentInstanceId]);
+  const commitShowReturnToLatest = useCallback((
+    next: boolean,
+    source: AcpReturnToLatestVisibilitySource,
+    scroller?: HTMLElement | null,
+  ) => {
+    const previous = showReturnToLatestRef.current;
+    if (previous === next) return;
+    recordAcpStreamingDiagnostic("return-to-latest-trace", () => ({
+      event: "visibility-change",
+      source,
+      previousVisible: previous,
+      nextVisible: next,
+      ...createReturnToLatestDiagnosticDetails(scroller),
+    }));
+    showReturnToLatestRef.current = next;
+    setShowReturnToLatest(next);
+  }, [createReturnToLatestDiagnosticDetails]);
+  const commitReturnToLatestPending = useCallback((next: boolean) => {
+    if (returnToLatestPendingRef.current === next) return;
+    returnToLatestPendingRef.current = next;
+    setReturnToLatestPending(next);
+  }, []);
+  const handleReturnToLatestButtonRef = useCallback((
+    node: HTMLButtonElement | null,
+  ) => {
+    const previous = returnToLatestButtonRef.current;
+    if (previous === node) return;
+    if (previous) {
+      returnToLatestVisualProbeRef.current?.stop(
+        node ? "button-replaced" : "button-detach",
+      );
+      returnToLatestVisualProbeRef.current = null;
+      recordAcpStreamingDiagnostic("return-to-latest-trace", () => ({
+        event: "dom-detach",
+        visible: showReturnToLatestRef.current,
+        mountSequence: returnToLatestButtonMountSequenceRef.current,
+        ...createReturnToLatestDiagnosticDetails(),
+      }));
+    }
+    returnToLatestButtonRef.current = node;
+    if (node) {
+      returnToLatestButtonMountSequenceRef.current += 1;
+      recordAcpStreamingDiagnostic("return-to-latest-trace", () => ({
+        event: "dom-attach",
+        visible: showReturnToLatestRef.current,
+        mountSequence: returnToLatestButtonMountSequenceRef.current,
+        ...createReturnToLatestDiagnosticDetails(),
+      }));
+    }
+  }, [createReturnToLatestDiagnosticDetails]);
+  useLayoutEffect(() => {
+    const button = returnToLatestButtonRef.current;
+    if (!button || !isAcpStreamingDiagnosticsEnabled()) return;
+    if (!returnToLatestVisualProbeRef.current) {
+      returnToLatestVisualProbeRef.current = startAcpReturnToLatestVisualProbe({
+        button,
+        viewport: chatContainerContextRef.current?.scrollRef.current ?? null,
+        content: chatContainerContextRef.current?.contentRef.current ?? null,
+        getDiagnosticDetails: createReturnToLatestDiagnosticDetails,
+      });
+    }
+    returnToLatestVisualProbeRef.current.recordReactCommit();
+  });
   const liveUpdatesPaused = Boolean(externalLiveUpdatesPaused || systemPromptOpen);
   liveUpdatesPausedRef.current = liveUpdatesPaused;
 
@@ -1935,7 +2049,7 @@ export function ACPChatDialog(
     setRawPage(null);
     setRawQuery({ page: 0, pageSize: 100, order: "desc" });
     setLoadingOlder(false);
-    setLoadingLatest(false);
+    commitReturnToLatestPending(false);
     setHasOlderEvents(
       storedBranchViewState?.hasOlder ?? cachedSession?.eventPage.hasOlder ?? false,
     );
@@ -1952,7 +2066,7 @@ export function ACPChatDialog(
     const restoredViewportAtBottom = storedBranchViewState?.atBottom ?? true;
     viewportAtBottomRef.current = restoredViewportAtBottom;
     viewportManualIntentRef.current = !restoredViewportAtBottom;
-    commitShowReturnToLatest(false);
+    commitShowReturnToLatest(false, "session-reset");
     pendingBranchViewRestoreRef.current = storedBranchViewState;
     cancelRequestedRef.current = false;
     awaitTerminalStopRef.current = false;
@@ -1964,7 +2078,7 @@ export function ACPChatDialog(
     pendingLatestLayoutCommitRef.current = null;
     setStreamingMarkdownItemKey(null);
     setCanvasMode("chat");
-  }, [commitHasNewerEvents, commitLoadedEventWindow, commitShowReturnToLatest, effectiveLoadedEventBufferLimit, eventWindowKey, sessionKey]);
+  }, [commitHasNewerEvents, commitLoadedEventWindow, commitReturnToLatestPending, commitShowReturnToLatest, effectiveLoadedEventBufferLimit, eventWindowKey, sessionKey]);
 
   useEffect(() => {
     if (branchId !== 'root' || !branchLiveSnapshot.acp) return;
@@ -3069,8 +3183,15 @@ export function ACPChatDialog(
       ? scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
       : 0;
     commitShowReturnToLatest(
-      !viewportAtBottom
-      && distanceFromBottom >= RETURN_TO_LATEST_SHOW_DISTANCE_PX,
+      shouldShowReturnToLatest(
+        showReturnToLatestRef.current,
+        viewportAtBottom,
+        hasNewerEventsRef.current,
+        viewportManualIntentRef.current || hasNewerEventsRef.current,
+        distanceFromBottom,
+      ),
+      "at-bottom-change",
+      scroller,
     );
     if (scroller) {
       storeAcpBranchViewState(
@@ -3156,6 +3277,7 @@ export function ACPChatDialog(
           return;
         }
 
+        commitReturnToLatestPending(false);
         if (!succeeded || nextIntent !== "recovery") return;
         canonicalHeadRecoveryPendingRef.current = false;
         canonicalHeadRecoveryAutoHandoffRef.current = false;
@@ -3168,7 +3290,7 @@ export function ACPChatDialog(
     };
 
     startHandoff(intent);
-  }, [commitHasNewerEvents, settleLiveStreamingMarkdown]);
+  }, [commitHasNewerEvents, commitReturnToLatestPending, settleLiveStreamingMarkdown]);
 
   const requestCanonicalHeadRecovery = useCallback((autoHandoff: boolean) => {
     requestCanonicalHeadHandoff("recovery", autoHandoff);
@@ -3344,7 +3466,15 @@ export function ACPChatDialog(
       - scroller.scrollTop
       - scroller.clientHeight;
     commitShowReturnToLatest(
-      distanceFromBottom >= RETURN_TO_LATEST_SHOW_DISTANCE_PX,
+      shouldShowReturnToLatest(
+        showReturnToLatestRef.current,
+        false,
+        hasNewerEventsRef.current,
+        viewportManualIntentRef.current || hasNewerEventsRef.current,
+        distanceFromBottom,
+      ),
+      "branch-view-restore",
+      scroller,
     );
   }, [commitShowReturnToLatest, eventWindowKey, timeline]);
 
@@ -4658,12 +4788,27 @@ export function ACPChatDialog(
       return false;
     }
 
+    const preserveDetachedViewport = viewportManualIntentRef.current;
+    const scroller = chatContainerContextRef.current?.scrollRef.current;
+    const detachedViewState = preserveDetachedViewport && scroller
+      ? captureAcpBranchViewState(
+          scroller,
+          false,
+          hasOlderEventsRef.current,
+          hasNewerEventsRef.current,
+        )
+      : null;
     settleOptimisticPromptAdmissions(latestEvents);
     latestSessionRef.current = committedSession;
-    viewportAtBottomRef.current = true;
-    commitShowReturnToLatest(false);
     paginationAnchorRef.current = null;
-    pendingLatestLayoutCommitRef.current = sessionIdentity;
+    if (preserveDetachedViewport) {
+      pendingBranchViewRestoreRef.current = detachedViewState;
+      pendingLatestLayoutCommitRef.current = null;
+    } else {
+      viewportAtBottomRef.current = true;
+      commitShowReturnToLatest(false, "canonical-head-rejoin", scroller);
+      pendingLatestLayoutCommitRef.current = sessionIdentity;
+    }
     liveAnimationReadyRef.current = !hasRemainingReplay;
     reconcileConversationBranchSession({
       projectId,
@@ -4904,7 +5049,6 @@ export function ACPChatDialog(
     liveAnimationReadyRef.current = false;
     settleLiveStreamingMarkdown();
     chatContainerContextRef.current?.stopScroll();
-    setLoadingLatest(true);
     try {
       const response = await getAcpSession(
           projectId,
@@ -4935,7 +5079,7 @@ export function ACPChatDialog(
       }
       return true;
     } finally {
-      if (finishPaginationRequest(requestToken)) setLoadingLatest(false);
+      finishPaginationRequest(requestToken);
     }
   };
   canonicalHeadHandoffRef.current = returnToLatestEvents;
@@ -4948,6 +5092,7 @@ export function ACPChatDialog(
       });
       return;
     }
+    commitReturnToLatestPending(true);
     requestCanonicalHeadHandoff(
       canonicalHeadRecoveryPendingRef.current ? "recovery" : "ordinary",
       true,
@@ -5673,14 +5818,22 @@ export function ACPChatDialog(
   const handleScrollRef = useRef<((scroller: HTMLDivElement) => void) | null>(null);
   handleScrollRef.current = (scroller) => {
     if (preservingScrollRef.current) return;
-    if (hasNewerEvents) chatContainerContextRef.current?.stopScroll();
+    // Scroll events also come from streaming layout. Follow intent is changed
+    // only by user input and explicit pagination/restore boundaries.
     const scrollTop = scroller.scrollTop;
     if (scrollTop < HISTORY_LOAD_THRESHOLD_PX) void loadOlderEvents();
     const distanceFromBottom =
       scroller.scrollHeight - scrollTop - scroller.clientHeight;
     commitShowReturnToLatest(
-      !viewportAtBottomRef.current
-      && distanceFromBottom >= RETURN_TO_LATEST_SHOW_DISTANCE_PX,
+      shouldShowReturnToLatest(
+        showReturnToLatestRef.current,
+        viewportAtBottomRef.current,
+        hasNewerEventsRef.current,
+        viewportManualIntentRef.current || hasNewerEventsRef.current,
+        distanceFromBottom,
+      ),
+      "viewport-scroll",
+      scroller,
     );
     if (distanceFromBottom < NEWER_PAGE_LOAD_THRESHOLD_PX && hasNewerEvents) {
       void loadNewerEvents();
@@ -5940,20 +6093,21 @@ export function ACPChatDialog(
                   />
                 ) : null}
               </InterventionLayer>
-              <div
+              <ConversationViewportFooter
                 className={cn(
-                  "sticky bottom-0 z-20 mt-auto shrink-0",
+                  "z-20",
                   wallpaperSurface ? "bg-transparent" : "bg-background",
                 )}
-                data-acp-conversation-footer="sticky"
+                data-acp-conversation-footer="viewport"
               >
                 {showReturnToLatest ? (
                   <Button
+                    ref={handleReturnToLatestButtonRef}
                     type="button"
                     size="sm"
                     variant="secondary"
                     className="absolute right-4 top-0 z-30 -translate-y-[calc(100%+1rem)] gap-1.5 rounded-full border border-border/60 bg-background/95 shadow-sm backdrop-blur"
-                    disabled={loadingLatest}
+                    disabled={returnToLatestPending}
                     onClick={handleReturnToLatestEvents}
                     data-acp-return-to-latest="true"
                   >
@@ -6080,7 +6234,7 @@ export function ACPChatDialog(
             )}
             </div>
           </div>
-              </div>
+              </ConversationViewportFooter>
           </ConversationViewport>
         )}
       </div>

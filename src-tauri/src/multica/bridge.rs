@@ -74,6 +74,10 @@ enum TerminalAction {
 /// 纯本地收尾，**不上报 multica 终态**（调用场景下 remote 已 terminal，或用户已主导取消）。
 /// 取 `workspace_app`（run_pause/杀 ACP）与 `home_app`（task_conversations 落 home-repo StateConfig）
 /// 两个不同 App 实例——索引与执行分属不同 repo root（开发设计 2.5）。
+///
+/// ACP 取消按 `(local_task_id, local_run_id)` **定点**（run 级）：单任务收尾不得波及同工作区
+/// 其他会话/任务的活动 ACP 会话（workspace 级 `cancel_all_active_acp_attempts_best_effort`
+/// 仅用于应用关闭/全局恢复，不可复用到 task 级生命周期）。
 pub(crate) fn teardown_active_run(
     workspace_app: &App,
     shared: &SharedMulticaState,
@@ -83,17 +87,18 @@ pub(crate) fn teardown_active_run(
     local_run_id: &str,
 ) {
     let _ = workspace_app.run_pause(local_task_id, local_run_id, PauseReason::ProcessInterrupted);
-    workspace_app.cancel_all_active_acp_attempts_best_effort();
+    workspace_app.cancel_active_acp_attempts_for_run_best_effort(local_task_id, local_run_id);
     if let Ok(mut guard) = shared.lock() {
         guard.drop_active_run(remote_task_id);
     }
     // 清断点续跑索引经 with_state 原子 RMW（防并发终态/取消收尾 lost-update）；dirty 由键是否存在决定。
     let _ = home_app.with_state(|state| {
-        state
+        let dirty = state
             .multica_task_conversations
             .as_mut()
             .map(|convs| convs.remove(remote_task_id).is_some())
-            .unwrap_or(false)
+            .unwrap_or(false);
+        (dirty, ())
     });
 }
 
@@ -232,7 +237,7 @@ async fn handle_node_completed(
             .and_then(|m| m.get(&remote_task_id))
             .and_then(|c| c.session_id.as_deref());
         if prev == Some(session_id.as_str()) {
-            return false; // session 未变 → 无需写/pin。
+            return (false, false); // session 未变 → 无需写/pin。
         }
         let mut conversations = state.multica_task_conversations.take().unwrap_or_default();
         conversations.insert(
@@ -249,7 +254,7 @@ async fn handle_node_completed(
             },
         );
         state.multica_task_conversations = Some(conversations);
-        true
+        (true, true)
     }) {
         Ok(c) => c,
         Err(e) => {
@@ -402,7 +407,7 @@ fn finalize_terminal(
                 completed_at: chrono::Utc::now().to_rfc3339(),
             },
         );
-        true
+        (true, ())
     }) {
         warn!(%e, "multica finalize: state rmw failed");
     }

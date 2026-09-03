@@ -1179,7 +1179,7 @@ if let Err(start_err) = client.start_task(&remote_task_id, false).await {
 1. ACP session 跨码灵完整重启可冷重连（adapter 自持 session 落盘，`session/load`）。
 2. 本地续跑链：`run_continue_background(task_id, run_id, prompt_id, prompt)`（app/mod.rs:2928）→ orchestrator 读 `<attempt_dir>/worker-ref.json` `continue_ref.acpSessionId` → `SessionMode::Continue`。
 3. `is_run_continuable(run)`（app/mod.rs:711）= Paused + outcome None + pause_reason ∈ {ProcessInterrupted, RuntimeAbnormal, WaitingForUserInput} + round/node/attempt 齐。
-4. 启动自愈：`main.rs` setup → `recover_interrupted_running_sessions` → `pause_all_running_sessions`（app/mod.rs:2370）把 stale-Running 翻成 Paused + ProcessInterrupted + outcome None → 崩溃重启后旧 run 自动满足 is_run_continuable。**原限制：仅覆盖 home repo（激活 workspace）**——multica 远程任务的 run 落在各 task 自身 `work_dir`（独立 repo），home 自愈够不到；**§12.15（改动十三）补全**：home 自愈后追加 `recover_multica_work_dir_sessions`，遍历 `multica_task_conversations` 的全部 work_dir 逐个自愈。
+4. 启动自愈：`main.rs` setup → `recover_interrupted_running_sessions` → `pause_all_running_sessions`（app/mod.rs:2370）把 stale-Running 翻成 Paused + ProcessInterrupted + outcome None → 崩溃重启后旧 run 自动满足 is_run_continuable。**原限制：仅覆盖 home repo（激活 workspace）**——multica 远程任务的 run 落在各 task 自身 `work_dir`（独立 repo），home 自愈够不到；**§12.15（改动十三）补全**：home 自愈后追加 `recover_multica_work_dir_sessions`，遍历 `multica_task_conversations` 的全部 work_dir 逐个自愈（**§12.37（M5-ax）重写为 checkpoint 定点自愈并移入 spawn_blocking 启动管线**）。
 5. `start_task(task_id, force_fresh_session)`（client.rs:592）：续跑与 Fresh 都传 false（force_fresh=true 仅整任务重跑）。
 
 **数据（先定数据）**：无新结构，复用 `MulticaTaskConversation`。新增：
@@ -1517,6 +1517,8 @@ if let Err(start_err) = client.start_task(&remote_task_id, false).await {
 
 **验证**：`cargo check -p gold-band-desktop` 通过（仅 4 既有死代码警告）；`cargo test -p gold-band-desktop multica::` **82 测全过**（新增 `collect_multica_work_dirs_dedup_trims_and_drops_empty` / `collect_multica_work_dirs_empty_map_yields_empty`）。前端 `multica-settings-block.test.tsx` 3 测过。运行时 e2e 复测**仍落 Fresh**——本节新增的诊断 `info!` 暴露 `session_present=false → decision=Fresh`，最终根因（`session_id` 门用错信号）与修复见 **§12.17（改动十五）**。
 
+> **更新（M5-ax，2026-09-03）**：本节的全量 work_dir 自愈（`collect_multica_work_dirs` + 逐 work_dir `recover_interrupted_running_sessions` + main.rs 同步调用）已被 **§12.37** 重写——按 checkpoint 的 local_task_id+local_run_id **定点** pause/cancel，并移入 spawn_blocking 启动恢复管线；`collect_multica_work_dirs` 已删除（破坏式更新，无兼容层）。
+
 ---
 
 ### 12.16 改动十四：multica 设置按钮改名（切换账号 / 退出登录）
@@ -1775,7 +1777,7 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 **方案（App 层加原子 RMW 原语，最小临界区）**：
 - **`App::with_state<F>(&self, update: F) -> Result<bool>`**：per-`repo_root` 分片 `Mutex`（32 shard，`DefaultHasher` 取模，镜像既有 `ATTEMPT_RUNTIME_STATE_LOCKS` 模式）——锁**仅**包住 `load_state → update → save_state` 的文件 RMW，**不含网络**（rule §6：临界区最小化、网络在锁外）。`update` 返回 `dirty: bool`，clean 则跳过 save（读改判不脏不写）。
 - **5 处写点迁移**：bridge 3 处（`teardown_active_run` / `handle_node_completed` / `finalize_terminal`）+ commands 2 处（`migrate_resume_index` / start-run `task_conversations` upsert）全改 `with_state(|state| {...; true/false})`。pin / 终态的**网络上报（HTTP）在锁外**——`handle_node_completed` 先 `with_state` 落库 + 判 session 是否变，再据返回值决定是否发 `pin_task_session` HTTP；`finalize_terminal` 先 `with_state` 落 completed 历史，终态 HTTP 在调用方 `handle_run_completed`（锁外）。
-- **诚实边界**：非 multica 的 StateConfig 写点（pin/unpin、workspace 等用户低并发操作）本期未迁移——`with_state` 作为**增量采用原语**，后续写点逐步迁入即可，不破坏现状。
+- **诚实边界**：非 multica 的 StateConfig 写点（pin/unpin、workspace 等用户低并发操作）本期未迁移——`with_state` 作为**增量采用原语**，后续写点逐步迁入即可，不破坏现状。**（已关闭，见 §12.37/M5-ax：全部写点迁入 `with_state`，锁身份从 repo_root 改为 state 文件路径，`save_state` 降 `pub(crate)`。）**
 
 **附带（非 multica，解锁验证）**：`src/config/mod.rs` 测试模块有 2 处死 import（`MANAGED_AGENT_PRESETS` / `managed_agent_preset`——符号早已不存在，仅 test `use` 残留；lib 测 crate 从未被编译故未暴露）。删除以解锁 `cargo test -p gold-band` 编译，使 `with_state` 单测可运行。
 
@@ -1968,6 +1970,39 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 **验证**：`cargo check --workspace --all-targets` exit 0；`tsc -p web/tsconfig.build.json` 零错；全量 vitest **1894/1894**（259 文件，main 新增 14 条全过）；`multica::` **83/83** 保持。合并提交 `75059f2d`（备份分支 `feature_multica_premerge5_20260903`）；报告并入 `merge-conflict-analysis-2026-09-03.md` §6。
 
 **结论**：同日追平兑现了 §12.35"缩短合并间隔"的建议——5 commit 间隔零冲突一轮全绿，对比 75 commit 间隔的 8 冲突 + 3 处 main 缺陷。"零冲突"仍需交集文件语义核验（本轮风险点 git 不报冲突）。
+
+---
+
+### 12.37 改动三十五：PR review 三问题修复——teardown 定点取消 / with_state 全量统一 / 启动自愈管线化定点收敛（M5-ax，2026-09-03）
+
+**背景**：`feature_multica` → `main` 的 PR review 提出三个问题（`.claude/docs/problem/2026-09-03-pr-problems.md`），分析与修复全记录见 `.claude/docs/problem/2026-09-03-pr-problems-fix.md`。三者的根因分类与处置：
+
+**P1-1 单任务 teardown 取消 workspace 内全部 ACP 会话（实现逻辑错误）**
+- **根因**：`teardown_active_run`（bridge.rs）复用了全库扫描原语 `cancel_all_active_acp_attempts_best_effort`——取消主体是"单个 remote task 的一个 run"，但取消原语的作用域是整个 workspace。run 级身份（`local_task_id` + `local_run_id`）早已存在，缺的只是 run 级取消原语。
+- **修复**：App 层新增 `cancel_active_acp_attempts_for_run_best_effort(task_id, run_id)`（与全量版共用逐 attempt 收尾 helper，筛选从"全部"收窄到目标 run）；`teardown_active_run` 改用之。同工作区其他任务的会话不再被连带取消。
+- **验证**：`cancel_active_acp_attempts_for_run_scopes_to_target_run_only`（同 workspace 两个 run，只取消目标 run 的 attempt）。
+
+**P1-2 StateConfig 并发写丢数据（正确设计但覆盖不完整 + 锁身份错位）**
+- **根因（两层）**：① §12.27 的 `with_state` 只迁移了 multica 5 写点，pin/preference/workspace/updater 等既有写点仍是裸 `load_state → mutate → save_state`；② 锁按 `repo_root` 分片，但 `state.json` 是**用户级全局单文件**（home 目录），不同 repo_root 的 App 写同一文件却落在不同锁分片——锁身份与被保护资源不一致，互斥失效。
+- **修复（`with_state` 成为 StateConfig 唯一 RMW 入口）**：
+  - 签名升级 `with_state<T, F>(&self, update: F) -> Result<T>`，闭包返回 `(dirty, T)` 双通道——落盘决策与回传值（如 `CommandResult<Vm>`）分离，错误先于变更返回时 `dirty=false` 不落盘。
+  - 锁身份改为 `normalize_workspace_path(user_state_file())`（状态文件路径）哈希分片——跨 repo_root 的并发写互斥。
+  - `save_state` 降为 `pub(crate)`（结构性防护：src-tauri 无法裸 save）；`load_state` 保持 pub（只读不改）。
+  - 全量迁移：lib 内部 5 个 setter + src-tauri multica 5 处 + `commands.rs` 2 处（connect/disconnect 账号清索引）+ `commands_conversation.rs` 12 处（pin/unpin/reorder/preference/last-workspace/workspace add/sync/remove/task-delete）。
+  - **临界区纪律**：重 IO（trash/sqlite/manifest provisioning/ACP 连接关闭/coordinator.send）一律在锁外；add/sync 在事务内做权威复查（先读快照预检仅作 fail-fast），关闭"先查后写"竞态窗口。
+- **新增测试**：`with_state_locks_by_state_file_across_repo_roots`（32 线程、不同 repo_root、同一 state 文件，全部写存活）；`with_state_mixes_multica_and_user_preference_writers_no_lost_update`（multica 后台写 vs 用户 recent-workspace 写并发，两列表完整）。
+
+**P2 启动关键路径同步执行无界 work_dir 扫描（设计缺陷：无界恢复塞进同步路径）**
+- **根因**：§12.15 的 `recover_multica_work_dir_sessions` 在 Tauri setup **同步**执行，且逐 work_dir 跑全量 `recover_interrupted_running_sessions()`（遍历该 repo 全部任务历史）——work_dir 数 × 任务历史数无界，阻塞首窗渲染。
+- **修复（管线化 + 定点化，缺一不可）**：
+  - **移入管线**：调用点移进既有 `spawn_blocking` 启动恢复任务（先于 `complete_startup_recovery`、与 conversation workspace 恢复同管线）；setup 同步路径只剩 home repo 单点自愈。
+  - **定点收敛**：删 `collect_multica_work_dirs`（破坏式更新）；改为遍历 `multica_task_conversations` checkpoint，逐条按 `local_task_id`+`local_run_id` `run_status` 定点判定，仅 Running 孤儿做 `run_pause(ProcessInterrupted)` + `cancel_active_acp_attempts_for_run_best_effort`（复用 P1-1 原语）——O(checkpoint 数) 次定点 I/O 替代 O(work_dir × 任务历史) 全量扫描；work_dir → workspace App 以 HashMap 缓存复用。
+  - **时序正确性（resume 等门）**：resume 判定依赖恢复收敛（未收敛时 checkpoint 指向的 run 仍残留 Running → `is_run_continuable`=false → 误落 Fresh）。`RuntimeRecoveryCoordinator` 增 `phase_change: Condvar` 与 `wait_for_startup_accepting(timeout)` 阻塞等待；`start_multica_conversation_run` 在 `classify_resume` 前 `spawn_blocking` 等门（30s 超时 best-effort 继续，不永久阻塞发送、不劣于无等待语义）。
+- **新增测试**：`recover_multica_work_dir_sessions_pauses_only_checkpointed_orphan_runs`（checkpoint 命中的孤儿 Running → Paused+ProcessInterrupted；未登记的 run 不受影响）；`recover_multica_work_dir_sessions_skips_missing_and_non_running_checkpoints`（非 Running 不动、run 缺失跳过不报错）；`wait_for_startup_accepting_blocks_until_phase_change_or_timeout`（超时/放行/shutdown 三分支）。
+
+**方案自评审**：过度设计——未新增持久字段、aggregate 或状态机；run 级取消与全量版共享收尾 helper；等门复用既有 RuntimeRecoveryCoordinator 相位（仅加 Condvar），均为"补完既有设计的缺块"。性能——P2 本身是性能修复（同步关键路径去掉无界扫描）；`with_state` 锁内只有校验+变更+一次读盘+一次写盘（原本裸 RMW 也需同样 I/O，锁只把交错排序，不放大 I/O）；定点恢复 O(checkpoints)。无新增轮询/缓存/队列。
+
+**验证**：`cargo fmt --all -- --check` 通过（review 指出的 fmt 失败已修复）；`cargo test -p gold-band --lib` **1115 过 / 1 ignored（既有）**；`cargo test -p gold-band-desktop --bin gold-band-desktop` **648 过**（multica 83 含新增 3、runtime_recovery 含新增 1）。
 
 ---
 

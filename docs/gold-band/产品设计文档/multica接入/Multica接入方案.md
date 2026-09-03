@@ -905,6 +905,7 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **根因（非补丁）**：启动自愈 `recover_interrupted_running_sessions()`（main.rs）跑在 home repo 上，其 `pause_all_running_sessions()`（app/mod.rs:2370）只遍历单一 repo 的 `task_list`；而 multica 远程任务的 run 落在**该任务自己的 `work_dir`**（独立 repo）→ 重启时从不被 pause → 残留 stale `Running` → `is_run_continuable`=false → Fresh。即 §12.5「仅覆盖激活 workspace」限制从「限制」升级为「bug」。
   - **修复**：新增 `recover_multica_work_dir_sessions(home_app)`——home 自愈后遍历 `multica_task_conversations` 的全部 work_dir 逐个自愈（与 `classify_resume` 读同一张权威表），把孤儿 Running run 翻成 Paused + ProcessInterrupted → 命中 Resume。安全前提：启动瞬间磁盘所有 `Running` 都是上一轮崩溃遗留孤儿态。`classify_resume` 加诊断 `info!`（resolved_via/continuable/decision）供复测确认。
   - **验证**：`cargo test -p gold-band-desktop multica::` 82 测全过（新增 `collect_multica_work_dirs` 2 测）。无需 webank server 改动。运行时 e2e 复测**仍落 Fresh**——诊断 `info!` 暴露 `session_present=false → decision=Fresh`，最终根因与修复见 **M5-ae**。
+  - **更新（M5-ax）**：本节的全量 work_dir 自愈已重写为 checkpoint 定点自愈（按 local_task_id+local_run_id 逐条定点 pause/cancel，`collect_multica_work_dirs` 删除），并移入 spawn_blocking 启动恢复管线、不再阻塞首窗；resume 判定前经启动门等待恢复收敛。见 **M5-ax** / 开发设计 §12.37。
 
 - [x] **M5-ad-fix**（本轮）multica 设置按钮改名「切换账号 / 退出登录」（纯 i18n，开发设计 §12.16）：zh `重新连接`→`切换账号`、`断开连接`→`退出登录`；en `Reconnect`→`Switch account`、`Disconnect`→`Sign out`；首连按钮「连接 Multica」不变。账号旁的「切换账号逃生口」外链保留（cookie 兜底：browser_login 见 cookie 即签 JWT，错 cookie 静默连错，需去 Web 手动登出/登录；点「切换账号」只是再跑一次 browser_login，同样的错 cookie 会再连错），仅同步其 tooltip 引用的旧按钮名。
 
@@ -992,6 +993,7 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **方案（App 层原子 RMW 原语，最小临界区）**：新增 `App::with_state(update) -> Result<bool>`——per-repo_root 分片 Mutex（32 shard，镜像 `ATTEMPT_RUNTIME_STATE_LOCKS`），锁**仅**包文件 RMW、**不含网络**（§6 临界区最小化）；update 返回 dirty、clean 跳过 save。bridge 3 处 + commands 2 处共 5 写点迁移；pin/终态 HTTP 在锁外。非 multica 写点（用户低并发）未迁移——`with_state` 作增量采用原语。
   - **附带（非 multica，解锁验证）**：删 `src/config/mod.rs` 测试模块 2 处死 import（`MANAGED_AGENT_PRESETS`/`managed_agent_preset`，符号早不存在、lib 测 crate 从未编译故未暴露），使 `cargo test -p gold-band` 可编译。
   - **验证**：`cargo test -p gold-band --lib with_state` 4 测全过（含 32 线程并发 RMW 终态 len==32、无 lost-update）；`cargo test multica` 83 测全过（5 迁移点零回归）。
+  - **更新（M5-ax）**：「非 multica 写点未迁移」边界已关闭——全部 StateConfig 写点（pin/preference/workspace/updater 等）迁入 `with_state`；锁身份从 repo_root 订正为 state 文件路径（state.json 为用户级全局文件，repo_root 分片跨工作区不互斥）；`save_state` 降 `pub(crate)` 结构性防护。见 **M5-ax** / 开发设计 §12.37。
 
 > **M5-al–ao** 为 multica 全链路审计（#75–#78）回溯加固：#75（🔴 running 孤儿）纠正「server running 无逐任务 liveness」下的终态上报契约；#76（M1）清理 M5-ah 起的 pinned/retryable 死管线（取代 M3 数据模型）；#77（M2）根治远程任务页订阅竞态 + 事件去重；#78（M3）补齐 StateConfig 并发 RMW 原子性。正文 §3 终态上报契约以 M5-al/ao 为准。
 
@@ -1031,6 +1033,12 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **multica 表面回插**：`forceSelector` 并进 main 的 Tooltip×下拉互斥逻辑；`emptyWorkspaceHint` 挂信息条；`multicaActive` 门进 `canSubmit`；App.tsx 全部 multica 增量（路由块/双路径发送/事件驱动侧栏刷新）自动合并存活。
   - **main 自身缺陷分诊（两例，合并验收浮出）**：① conversation-navigation 测试以字面 `\n` 匹配源码，Windows autocrlf 检出必挂（测试与被测代码均与 origin/main 字节一致）——读取边界 `readAppSource()` 归一化行尾修复（`4d06ae8e`）；② main release 0.14.1 未重新生成 Cargo.lock——本地 cargo 自动补齐（`8377eab3`）。
   - **验证**：`cargo check --workspace --all-targets` exit 0；tsc 零错；`web:build` 成功；全量 vitest **1684/1684**（一次 ACP 重试计数负载抖动单独重跑通过，判 flake）；Rust 定向 `multica::` 83/83。冲突分析报告：`.claude/docs/merge/merge-conflict-analysis-2026-08-27.md`。
+
+- [x] **M5-ax**（本轮）PR review 三问题修复——teardown 定点取消 / with_state 全量统一 / 启动自愈管线化定点收敛（码灵 client，开发设计 §12.37，问题分析与修复记录 `.claude/docs/problem/2026-09-03-pr-problems-fix.md`）：
+  - **P1-1 teardown 误伤同工作区会话**：`teardown_active_run` 复用全库扫描的 `cancel_all_active_acp_attempts_best_effort`（作用域=workspace，而取消主体=单 run）。新增 App 层 `cancel_active_acp_attempts_for_run_best_effort(task_id, run_id)`（与全量版共用逐 attempt 收尾），teardown 改用之；同工作区其他任务不再被连带取消。
+  - **P1-2 StateConfig 并发丢写**：PR 侧 `with_state` 只保护 multica 写点、锁按 repo_root 分片，而 state.json 是用户级全局文件——既有 pin/preference/workspace 写点仍裸 load→save 且跨 repo_root 不互斥。修复：`with_state<T>`（闭包返回 `(dirty, T)`）成为唯一 RMW 入口；锁按 state 文件路径分片；`save_state` 降 `pub(crate)`；lib 5 setter + src-tauri multica 5 + connect/disconnect 2 + conversation 12 写点全量迁移，重 IO 全部留在锁外，add/sync 事务内权威复查关竞态。
+  - **P2 启动关键路径无界扫描**：`recover_multica_work_dir_sessions` 从 setup 同步全量扫描（work_dir × 任务历史）重写为 checkpoint 定点收敛（O(checkpoints) 定点 I/O）并移入 spawn_blocking 启动管线；`RuntimeRecoveryCoordinator` 增 `wait_for_startup_accepting`（Condvar 相位等待），resume 判定前等门 30s（超时 best-effort 继续）。
+  - **验证**：`cargo fmt --all -- --check` 过；`cargo test -p gold-band --lib` **1115/1115**（新增跨 repo_root 锁身份 + multica×用户偏好并发 2 测）；`cargo test -p gold-band-desktop --bin gold-band-desktop` **648/648**（新增定点自愈 2 测 + 启动门 1 测）。
 
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

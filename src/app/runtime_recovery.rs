@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 use serde_json::Value;
 
@@ -98,6 +98,8 @@ pub struct RuntimeRecoveryCoordinator {
     database: CoreStateDatabase,
     runtime_instance_id: String,
     registry: Mutex<ActiveRuntimeRegistry>,
+    /// 相位变化（Recovering → Accepting / ShuttingDown）时唤醒 `wait_for_startup_accepting` 等待者。
+    phase_change: Condvar,
 }
 
 impl RuntimeRecoveryCoordinator {
@@ -106,6 +108,7 @@ impl RuntimeRecoveryCoordinator {
             database: CoreStateDatabase::new(core_db_path),
             runtime_instance_id: format!("desktop-{}", uuid::Uuid::new_v4().simple()),
             registry: Mutex::new(ActiveRuntimeRegistry::default()),
+            phase_change: Condvar::new(),
         })
     }
 
@@ -118,6 +121,7 @@ impl RuntimeRecoveryCoordinator {
             database: CoreStateDatabase::with_candidate_limit(core_db_path, candidate_limit),
             runtime_instance_id: format!("desktop-{}", uuid::Uuid::new_v4().simple()),
             registry: Mutex::new(ActiveRuntimeRegistry::default()),
+            phase_change: Condvar::new(),
         })
     }
 
@@ -136,6 +140,40 @@ impl RuntimeRecoveryCoordinator {
             RuntimeRecoveryPhase::Recovering => Err(RuntimeRecoveryError::RecoveryInProgress),
             RuntimeRecoveryPhase::Accepting => Ok(()),
             RuntimeRecoveryPhase::ShuttingDown => Err(RuntimeRecoveryError::ShuttingDown),
+        }
+    }
+
+    /// 阻塞等待启动恢复完成（相位离开 Recovering）：Accepting → Ok；ShuttingDown → Err；
+    /// 超时仍 Recovering → Err(RecoveryInProgress)。供 Multica 断点续跑在判定 resume 语义前
+    /// 等待启动管线完成定点恢复（恢复未完成时 checkpoint 指向的 run 状态尚未收敛）。
+    pub fn wait_for_startup_accepting(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<(), RuntimeRecoveryError> {
+        let mut registry = self
+            .registry
+            .lock()
+            .map_err(|_| RuntimeRecoveryError::RegistryUnavailable)?;
+        let deadline = std::time::Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(std::time::Instant::now);
+        loop {
+            match registry.phase {
+                RuntimeRecoveryPhase::Accepting => return Ok(()),
+                RuntimeRecoveryPhase::ShuttingDown => {
+                    return Err(RuntimeRecoveryError::ShuttingDown);
+                }
+                RuntimeRecoveryPhase::Recovering => {}
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return Err(RuntimeRecoveryError::RecoveryInProgress);
+            }
+            let (guard, _) = self
+                .phase_change
+                .wait_timeout(registry, deadline - now)
+                .map_err(|_| RuntimeRecoveryError::RegistryUnavailable)?;
+            registry = guard;
         }
     }
 
@@ -261,6 +299,7 @@ impl RuntimeRecoveryCoordinator {
         }
         registry.blocked_project_ids = blocked_project_ids;
         registry.phase = RuntimeRecoveryPhase::Accepting;
+        self.phase_change.notify_all();
         Ok(())
     }
 
@@ -270,6 +309,7 @@ impl RuntimeRecoveryCoordinator {
             .lock()
             .map_err(|_| RuntimeRecoveryError::RegistryUnavailable)?;
         registry.phase = RuntimeRecoveryPhase::ShuttingDown;
+        self.phase_change.notify_all();
         Ok(registry.active.values().cloned().collect())
     }
 
@@ -493,6 +533,37 @@ mod tests {
         let active = coordinator.begin_shutdown().unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].candidate_token, new_token);
+    }
+
+    #[test]
+    fn wait_for_startup_accepting_blocks_until_phase_change_or_timeout() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory, "workspace");
+        let coordinator = RuntimeRecoveryCoordinator::new(paths.core_db_path());
+
+        // Recovering 相位：超时返回 RecoveryInProgress（不永久阻塞调用方）。
+        assert!(matches!(
+            coordinator.wait_for_startup_accepting(std::time::Duration::from_millis(20)),
+            Err(RuntimeRecoveryError::RecoveryInProgress)
+        ));
+
+        // 相位翻转后立即放行；shutdown 同样唤醒等待者并返回 ShuttingDown。
+        let waiter = coordinator.clone();
+        let handle = std::thread::spawn(move || {
+            waiter
+                .wait_for_startup_accepting(std::time::Duration::from_secs(5))
+                .unwrap();
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        coordinator
+            .complete_startup_recovery(HashSet::new())
+            .unwrap();
+        handle.join().unwrap();
+        coordinator.begin_shutdown().unwrap();
+        assert!(matches!(
+            coordinator.wait_for_startup_accepting(std::time::Duration::from_secs(5)),
+            Err(RuntimeRecoveryError::ShuttingDown)
+        ));
     }
 
     #[test]

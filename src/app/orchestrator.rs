@@ -19257,6 +19257,14 @@ mod tests {
         assert!(prompt.user_prompt.contains("# 目标"));
         assert!(prompt.user_prompt.contains("# 任务"));
         assert!(prompt.user_prompt.contains("goodbye-step"));
+        assert!(prompt.user_prompt.contains("继续当前节点任务"));
+        assert!(prompt.user_prompt.contains("反馈是证据，不是新增授权"));
+        assert!(prompt.user_prompt.contains("只实施符合既定范围的修改"));
+        assert!(
+            prompt
+                .system_prompt
+                .contains("人类最新指令 > 原始需求与明确非目标")
+        );
         assert!(!prompt.user_prompt.contains("continueFromNodeId"));
         assert!(prompt.user_prompt.contains("hello-step"));
         assert!(
@@ -19277,6 +19285,55 @@ mod tests {
         assert!(!task_section.contains("This continue only reuses"));
         assert!(!task_section.contains("完成当前节点任务"));
         assert!(!task_section.contains("output contract 要求的控制 JSON"));
+    }
+
+    #[test]
+    fn dynamic_worker_accept_profile_receives_scope_classification_contract() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("independent-acceptance");
+        node.profile = Some("pf-builtin-accept".to_string());
+        let graph = test_dynamic_graph(vec![node.clone()]);
+
+        let invocation = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &node,
+            &dynamic_attempt_id(&node),
+            dynamic_output_contract_for_node(&ctx, &graph, &node),
+            SessionMode::New,
+            None,
+            None,
+            "test-turn".to_string(),
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(invocation.profile.as_deref(), Some("pf-builtin-accept"));
+
+        let prompt = render_prompt_bundle(&invocation).unwrap();
+        assert!(prompt.system_prompt.contains("AI-DYNAMIC 稳定规则"));
+        assert!(prompt.system_prompt.contains("`BLOCKER` 仅限"));
+        assert!(prompt.system_prompt.contains("`FOLLOW_UP`"));
+        assert!(prompt.system_prompt.contains("不创建修复任务"));
+        assert!(prompt.system_prompt.contains("当前改动造成的可达回归"));
+        assert!(prompt.system_prompt.contains("恢复最小范围内方案"));
+        assert!(
+            prompt
+                .system_prompt
+                .contains("不得修改代码、测试、配置或计划")
+        );
+        assert!(
+            !prompt
+                .system_prompt
+                .contains("你是 Gold Band 的 AI-DYNAMIC 验收智能体")
+        );
     }
 
     #[test]

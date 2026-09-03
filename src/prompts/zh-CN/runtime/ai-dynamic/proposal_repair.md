@@ -1,6 +1,7 @@
 上一轮 `dynamic-node-completion` proposal 不合法，已被 runtime 拒绝。
 
 你必须修复最终的 `dynamic-node-completion` 输出，使其满足下面这些 runtime 约束。
+只修复协议校验错误，不重新执行任务；后继任务仍须符合范围契约，越界项只删除或收窄。
 不要输出解释、Markdown、代码围栏或任何额外内容，只输出修复后的 `dynamic-node-completion` 内容。
 
 {% if has_coordination_snapshot %}最新协调快照：

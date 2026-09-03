@@ -528,7 +528,9 @@ fn render_prompt_bundle_workflow_resume_uses_hidden_context_and_goal() {
     assert!(prompt.user_prompt.contains("调用原因"));
     assert!(prompt.user_prompt.contains("继续"));
     assert!(prompt.user_prompt.contains("# 目标"));
-    assert!(prompt.user_prompt.contains("根据最新反馈进行调整"));
+    assert!(prompt.user_prompt.contains("继续当前节点任务"));
+    assert!(prompt.user_prompt.contains("反馈是证据，不是新增授权"));
+    assert!(prompt.user_prompt.contains("只实施符合既定范围的修改"));
     assert!(!prompt.user_prompt.contains("# 需求"));
     assert_eq!(prompt.prompt_id.as_deref(), Some("resume-001"));
 }

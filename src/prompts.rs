@@ -277,4 +277,177 @@ mod tests {
             "strict rendering must reject a missing operation context"
         );
     }
+
+    fn assert_prompt_contract(prompt: &str, required_fragments: &[&str]) {
+        for fragment in required_fragments {
+            assert!(
+                prompt.contains(fragment),
+                "prompt contract is missing `{fragment}`"
+            );
+        }
+    }
+
+    #[test]
+    fn ai_dynamic_system_prompts_define_scope_authority_and_the_scope_gate() {
+        assert_prompt_contract(
+            AI_DYNAMIC_SYSTEM_ZH_CN,
+            &[
+                "人类最新指令 > 原始需求与明确非目标",
+                "运行前已纳入范围的项目契约",
+                "低层内容只能细化执行，不能扩大高层范围",
+                "runtime 任务可以拆解已授权工作",
+                "本轮新增内容只能提供证据或建议",
+                "省略后会失败的既定结果",
+                "内部手段无需在需求中逐字出现",
+                "可归因到本轮变更的范围漂移",
+                "恢复最小范围内方案",
+            ],
+        );
+        assert_prompt_contract(
+            AI_DYNAMIC_SYSTEM_EN,
+            &[
+                "latest relevant human instruction > original requirement and explicit non-goals",
+                "pre-run project contracts already in scope",
+                "cannot expand higher-authority scope",
+                "runtime tasks may decompose authorized work",
+                "content added during this run provide evidence or suggestions",
+                "established outcome that would fail without it",
+                "need not appear verbatim in the requirement",
+                "scope drift proven by change evidence attributable to this run",
+                "Restore the minimum in-scope solution",
+            ],
+        );
+    }
+
+    #[test]
+    fn acceptance_prompts_separate_scope_or_regression_backed_blockers_from_follow_ups() {
+        for prompt in [AI_DYNAMIC_ACCEPTANCE_ZH_CN, PROFILE_ACCEPT_ZH_CN] {
+            assert_prompt_contract(
+                prompt,
+                &[
+                    "BLOCKER",
+                    "FOLLOW_UP",
+                    "范围内结果失败或无法验证",
+                    "可达回归",
+                    "可归因到本轮变更",
+                    "范围依据",
+                    "当前证据",
+                    "失败因果",
+                    "不影响通过",
+                    "不创建修复",
+                    "恢复最小范围内方案",
+                ],
+            );
+        }
+        for prompt in [AI_DYNAMIC_ACCEPTANCE_EN, PROFILE_ACCEPT_EN] {
+            assert_prompt_contract(
+                prompt,
+                &[
+                    "BLOCKER",
+                    "FOLLOW_UP",
+                    "in-scope outcome that fails or cannot be verified",
+                    "reachable regression",
+                    "change evidence attributable to this run",
+                    "scope basis",
+                    "current evidence",
+                    "failure causality",
+                    "does not affect acceptance",
+                    "create repair",
+                    "minimum in-scope solution",
+                ],
+            );
+        }
+
+        assert_prompt_contract(AI_DYNAMIC_ACCEPTANCE_ZH_CN, &["不得修改业务代码或测试代码"]);
+        assert_prompt_contract(
+            AI_DYNAMIC_ACCEPTANCE_EN,
+            &["Do not modify business code or test code"],
+        );
+    }
+
+    #[test]
+    fn development_role_removes_unnecessary_self_selected_mechanisms() {
+        assert_prompt_contract(
+            PROFILE_DEV_TEST_ZH_CN,
+            &[
+                "节点任务和反馈只能细化执行，不能扩大范围",
+                "省略后会失败的既定结果",
+                "内部手段无需在需求中逐字出现",
+                "首次执行完成既定范围",
+                "只修复有范围依据、当前证据和失败因果的 `BLOCKER`",
+                "恢复最小范围内方案",
+            ],
+        );
+        assert_prompt_contract(
+            PROFILE_DEV_TEST_EN,
+            &[
+                "Node tasks and feedback may refine execution, but cannot expand scope",
+                "established outcome that would fail without it",
+                "need not appear verbatim in the requirement",
+                "On initial execution, complete the established scope",
+                "repair only a `BLOCKER` with a scope basis, current evidence, and failure causality",
+                "minimum in-scope solution",
+            ],
+        );
+    }
+
+    #[test]
+    fn routing_prompts_do_not_promote_suggestions_into_successor_scope() {
+        assert_prompt_contract(
+            AI_DYNAMIC_OUTPUT_PROTOCOL_ZH_CN,
+            &[
+                "后继任务",
+                "既定范围内结果",
+                "BLOCKER",
+                "FOLLOW_UP",
+                "前序建议",
+            ],
+        );
+        assert_prompt_contract(
+            AI_DYNAMIC_OUTPUT_PROTOCOL_EN,
+            &[
+                "successor task",
+                "established in-scope outcome",
+                "BLOCKER",
+                "FOLLOW_UP",
+                "predecessor suggestion",
+            ],
+        );
+        assert_prompt_contract(
+            AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN,
+            &[
+                "只修复协议校验错误",
+                "不重新执行任务",
+                "符合范围契约",
+                "删除或收窄",
+            ],
+        );
+        assert_prompt_contract(
+            AI_DYNAMIC_PROPOSAL_REPAIR_EN,
+            &[
+                "Repair only protocol validation errors",
+                "do not re-execute the task",
+                "satisfy the scope contract",
+                "remove or narrow",
+            ],
+        );
+    }
+
+    #[test]
+    fn workflow_resume_optimizes_for_established_scope_not_reviewer_approval() {
+        assert_prompt_contract(
+            RUNTIME_WORKFLOW_RESUME_ZH_CN,
+            &["继续当前节点任务", "反馈是证据，不是新增授权", "既定范围"],
+        );
+        assert_prompt_contract(
+            RUNTIME_WORKFLOW_RESUME_EN,
+            &[
+                "Continue the current node task",
+                "Feedback is evidence, not new authorization",
+                "established scope",
+            ],
+        );
+        assert!(RUNTIME_WORKFLOW_RESUME_ZH_CN.chars().count() <= 60);
+        assert!(RUNTIME_WORKFLOW_RESUME_EN.chars().count() <= 180);
+    }
 }

@@ -162,12 +162,11 @@ fn fenced_json_spans(content: &str) -> Vec<JsonArtifactSpan> {
         let body = &content[body_start..close];
 
         if info.is_empty() || info == "json" || info.starts_with("json ") {
-            let leading = body.len() - body.trim_start().len();
-            let trailing = body.trim_end().len();
-            let json_start = body_start + leading;
-            let json_end = body_start + trailing;
-            let candidate = &content[json_start..json_end];
-            if looks_like_json_object(candidate) {
+            let candidate = body.trim();
+            if !candidate.is_empty() && looks_like_json_object(candidate) {
+                let leading = body.len() - body.trim_start().len();
+                let json_start = body_start + leading;
+                let json_end = json_start + candidate.len();
                 let parse_status = if serde_json::from_str::<serde_json::Value>(candidate).is_ok() {
                     "valid"
                 } else {
@@ -343,6 +342,11 @@ mod tests {
             &content[span.start..span.end],
             "```json\n{\"a\":\"unterminated}"
         );
+    }
+
+    #[test]
+    fn display_span_ignores_streaming_fence_with_only_whitespace() {
+        assert!(json_artifact_display_span("before\n```json\n \n").is_none());
     }
 
     #[test]

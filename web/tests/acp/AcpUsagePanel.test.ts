@@ -27,7 +27,48 @@ vi.mock("react-i18next", () => ({
   }),
 }));
 
+vi.mock("@/components/git/GitBranchSelector", () => ({
+  GitBranchSelector: () => createElement("button", { type: "button" }, "branch"),
+}));
+
 describe("AcpUsagePanel", () => {
+  it("uses the same CSS-native rounded connector for branch-only and complete information tabs", () => {
+    const branchOnlyHtml = renderToStaticMarkup(
+      createElement(AcpUsagePanel, {
+        usage: null,
+        branchProjectId: "project-1",
+      }),
+    );
+    const completeHtml = renderToStaticMarkup(
+      createElement(AcpUsagePanel, {
+        usage: { used: 32_000, size: 100_000 },
+        sessionSeconds: 1,
+        branchProjectId: "project-1",
+      }),
+    );
+    const connectorTag = (html: string) => html.match(
+      /<(\w+)[^>]*data-acp-session-info-connector="true"[^>]*>/,
+    )?.[0] ?? null;
+    const branchOnlyConnector = connectorTag(branchOnlyHtml);
+    const completeConnector = connectorTag(completeHtml);
+
+    expect(branchOnlyConnector).not.toBeNull();
+    expect(branchOnlyConnector).toBe(completeConnector);
+    expect(branchOnlyConnector).toMatch(/^<span\b/);
+    expect(branchOnlyConnector).toContain('overflow-hidden');
+    expect(branchOnlyConnector).toContain('[right:calc(-1*(var(--radius-md)+var(--acp-session-composer-border-width)))]');
+    expect(branchOnlyConnector).not.toContain('[right:calc(-1*var(--radius-md))]');
+    expect(branchOnlyConnector).toContain('[bottom:calc(-1*var(--acp-session-composer-border-width))]');
+    expect(branchOnlyConnector).toContain('before:rounded-full');
+    expect(branchOnlyConnector).toContain('before:border-border');
+    expect(branchOnlyConnector).toContain('before:[border-width:var(--acp-session-composer-border-width)]');
+    expect(branchOnlyConnector).toContain('style="background:radial-gradient(circle at 100% 0, transparent 0 var(--radius-md), var(--card) var(--radius-md))"');
+    expect(branchOnlyConnector).not.toContain('box-shadow');
+    expect(branchOnlyHtml).not.toContain('<svg');
+    expect(branchOnlyHtml).not.toContain('<path');
+    expect(branchOnlyHtml).not.toContain('stroke=');
+  });
+
   it("reports whether the information tab has visible usage content", () => {
     expect(hasAcpUsagePanelContent(null)).toBe(false);
     expect(hasAcpUsagePanelContent({})).toBe(false);

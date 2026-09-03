@@ -3,6 +3,11 @@
 你必须修复最终的 `dynamic-node-completion` 输出，使其满足下面这些 runtime 约束。
 不要输出解释、Markdown、代码围栏或任何额外内容，只输出修复后的 `dynamic-node-completion` 内容。
 
+{% if has_coordination_snapshot %}最新协调快照：
+- 只读快照：{{ coordination_snapshot_path }}
+- 修复并输出 `next.type="single"` 或 `next.type="fanout"` 前读取最新协调快照；只能读取，不要修改该文件。
+{% endif %}
+
 校验错误：
 {{ validation_errors }}
 

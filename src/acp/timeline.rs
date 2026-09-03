@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::time::Instant;
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -13,16 +13,24 @@ use crate::acp::events::{
     AcpTimelineItem, AcpTimelinePatch, AcpTimingPatch, AcpTimingStateSnapshot, AcpUiEvent,
     extract_agent_transcript_relation, extract_usage_fields,
     load_timeline_items_for_storage_unlocked, merge_timeline_item_revision,
+    normalize_timeline_items_for_storage,
 };
 use crate::acp::turn_files::{FileVersionRef, TurnFileCaptureConfig, TurnFileStore};
-use crate::artifacts::json_artifact_display_span;
+use crate::artifacts::JsonArtifactSpan;
 use crate::storage::{
-    append_jsonl_flushed_unlocked, atomic_write_file, ensure_parent_dir, with_jsonl_file_lock,
+    append_jsonl_flushed_unlocked, append_jsonl_lines_flushed_unlocked, atomic_write_file,
+    ensure_parent_dir, with_jsonl_file_lock,
 };
 
 pub const DEFAULT_TIMELINE_COMPACT_MAX_SIZE_BYTES: u64 = 8 * 1024 * 1024;
 pub const DEFAULT_TIMELINE_COMPACT_PATCH_RATIO: usize = 4;
+pub const DEFAULT_TIMELINE_COMPACT_MIN_PATCH_COUNT: usize = 4 * 1024;
 pub const TIMELINE_BLOB_MIN_BYTES: usize = 64 * 1024;
+// V10 removes runtime-control artifact inference from the generic timeline
+// index. Artifact selection belongs to Runtime output evaluation and the
+// selected source is annotated by its canonical branch and item identity.
+// V9 guarantees that each indexed locator points at a canonical full item, so
+// compaction can read only the latest locators instead of replaying every patch.
 // V8 keeps Agent launch links as standalone semantic blocks and recognizes
 // their canonical Gold Band conversation identity. V7 indexes grouped these
 // links into ordinary activity when provider-only metadata was absent.
@@ -38,7 +46,7 @@ pub const TIMELINE_BLOB_MIN_BYTES: usize = 64 * 1024;
 // V4 adds the retry-prompt role and its current pending identity. Treating a V2
 // index as compatible would leave stop unable to settle a processing retry in
 // the crash window between the timeline append and session metadata rewrite.
-pub const TIMELINE_INDEX_FORMAT_VERSION: u32 = 8;
+pub const TIMELINE_INDEX_FORMAT_VERSION: u32 = 10;
 pub const DEFAULT_TIMELINE_CHECKPOINT_PATCH_INTERVAL: usize = 256;
 pub const DEFAULT_TIMELINE_TAIL_REPLAY_LIMIT: usize = 256;
 // Internal result marker: tail replay exceeded its bound and the index was
@@ -130,8 +138,6 @@ struct TimelineItemLocator {
     agent_prompt: bool,
     #[serde(default)]
     agent_result: bool,
-    #[serde(default)]
-    runtime_control_candidate: bool,
     #[serde(default)]
     retry_prompt: bool,
     #[serde(default)]
@@ -307,8 +313,6 @@ struct TimelineMaterializedIndex {
     #[serde(default)]
     accepted_prompt_ids: HashSet<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    latest_runtime_control_candidate: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pending_retry_prompt_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     timing_state_snapshot: Option<AcpTimingStateSnapshot>,
@@ -338,7 +342,6 @@ impl Default for TimelineMaterializedIndex {
             latest_plan: None,
             agent_launches: HashMap::new(),
             accepted_prompt_ids: HashSet::new(),
-            latest_runtime_control_candidate: None,
             pending_retry_prompt_id: None,
             timing_state_snapshot: None,
             runtime_projection: TimelineRuntimeProjection::default(),
@@ -629,6 +632,7 @@ pub struct TimelineStore {
     checkpoint_policy: TimelineCheckpointPolicy,
     dirty_patch_count: usize,
     restore_mode: TimelineRestoreMode,
+    last_compaction_elapsed: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -638,6 +642,10 @@ struct TimelineFileSignature {
 }
 
 impl TimelineStore {
+    pub fn generation(&self) -> u64 {
+        self.index.generation
+    }
+
     pub fn durable_watermark_for_item_id(&self, item_id: &str) -> Option<(u64, u64)> {
         self.index
             .item_locators
@@ -671,6 +679,7 @@ impl TimelineStore {
                 replayed
             },
             restore_mode,
+            last_compaction_elapsed: None,
         };
         if store.dirty_patch_count > 0 {
             store.force_checkpoint()?;
@@ -710,8 +719,32 @@ impl TimelineStore {
     }
 
     pub fn upsert(&mut self, revision: u64, item: &AcpUiEvent) -> Result<TimelineUpsertOutcome> {
-        let mut storage_item = item.clone();
-        externalize_timeline_event(&self.blob_store, &mut storage_item)?;
+        self.upsert_batch(&[(revision, item.clone())])
+            .map(|mut outcomes| outcomes.pop().unwrap_or(TimelineUpsertOutcome::Unchanged))
+    }
+
+    /// Applies a set of distinct timeline identities with one timeline lock,
+    /// one append file open, one flush, and at most one checkpoint/compaction.
+    /// The returned outcomes are aligned with `updates`.
+    pub fn upsert_batch(
+        &mut self,
+        updates: &[(u64, AcpUiEvent)],
+    ) -> Result<Vec<TimelineUpsertOutcome>> {
+        self.last_compaction_elapsed = None;
+        if updates.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut identities = HashSet::with_capacity(updates.len());
+        let mut storage_updates = Vec::with_capacity(updates.len());
+        for (revision, item) in updates {
+            ensure!(
+                identities.insert(item.id.as_str()),
+                "acp.timeline-batch-duplicate-item"
+            );
+            let mut storage_item = item.clone();
+            externalize_timeline_event(&self.blob_store, &mut storage_item)?;
+            storage_updates.push((*revision, storage_item));
+        }
         let path = self.path.clone();
         let index_path = timeline_index_path(&path);
         let checkpoint_policy = self.checkpoint_policy;
@@ -722,71 +755,121 @@ impl TimelineStore {
                     load_or_rebuild_index_unlocked(&path, &index_path, checkpoint_policy)?;
                 self.replace_index_projection(index);
             }
-            let existing = self
-                .index
-                .item_locators
-                .get(&item.id)
-                .map(|locator| read_event_at_locator(&path, locator))
+            let mut outcomes = vec![TimelineUpsertOutcome::Unchanged; storage_updates.len()];
+            let mut next_offset = timeline_file_len(&path);
+            let mut covered_revision = self.index.covered_revision;
+            let mut prepared = Vec::with_capacity(storage_updates.len());
+            let mut encoded = Vec::with_capacity(storage_updates.len());
+            let mut existing_reader = storage_updates
+                .iter()
+                .any(|(_, item)| self.index.item_locators.contains_key(&item.id))
+                .then(|| File::open(path.as_std_path()))
                 .transpose()?;
-            let canonical_item = existing
-                .as_ref()
-                .map(|existing| merge_timeline_item_revision(existing, storage_item.clone()))
-                .unwrap_or(storage_item);
-            let fingerprint = semantic_fingerprint(&canonical_item)?;
-            if self
-                .index
-                .item_locators
-                .get(&item.id)
-                .map(|locator| locator.fingerprint)
-                == Some(fingerprint)
+            for (input_index, (requested_revision, storage_item)) in
+                storage_updates.iter().enumerate()
             {
-                return Ok(None);
+                let existing = if let Some(locator) = self.index.item_locators.get(&storage_item.id)
+                {
+                    Some(read_event_from_file_at_locator(
+                        existing_reader
+                            .as_mut()
+                            .expect("reader exists when an indexed item is present"),
+                        locator,
+                    )?)
+                } else {
+                    None
+                };
+                let canonical_item = existing
+                    .as_ref()
+                    .map(|existing| merge_timeline_item_revision(existing, storage_item.clone()))
+                    .unwrap_or_else(|| storage_item.clone());
+                let fingerprint = semantic_fingerprint(&canonical_item)?;
+                if self
+                    .index
+                    .item_locators
+                    .get(&storage_item.id)
+                    .map(|locator| locator.fingerprint)
+                    == Some(fingerprint)
+                {
+                    continue;
+                }
+
+                let revision = (*requested_revision).max(covered_revision.saturating_add(1));
+                covered_revision = revision;
+                let patch = AcpTimelinePatch {
+                    patch_type: "timelinePatch".to_string(),
+                    item_id: storage_item.id.clone(),
+                    revision,
+                    op: "upsert".to_string(),
+                    item: canonical_item.clone(),
+                };
+                let line = serde_json::to_vec(&patch)?;
+                let line_length = line.len().saturating_add(1) as u64;
+                prepared.push((
+                    input_index,
+                    revision,
+                    canonical_item,
+                    next_offset,
+                    line_length,
+                ));
+                encoded.push(line);
+                next_offset = next_offset.saturating_add(line_length);
             }
 
-            let revision = revision.max(self.index.covered_revision.saturating_add(1));
-            let patch = AcpTimelinePatch {
-                patch_type: "timelinePatch".to_string(),
-                item_id: item.id.clone(),
-                revision,
-                op: "upsert".to_string(),
-                item: canonical_item.clone(),
-            };
-            let offset = timeline_file_len(&path);
-            let line_length = serde_json::to_vec(&patch)?.len().saturating_add(1) as u64;
-            append_jsonl_flushed_unlocked(&path, &patch)?;
-            apply_index_event(
-                &mut self.index,
-                &canonical_item,
-                revision,
-                offset,
-                line_length,
-            )?;
-            self.index.event_count = self.index.event_count.saturating_add(1);
-            self.index.patch_count = self.index.patch_count.saturating_add(1);
-            self.index.patch_bytes = self.index.patch_bytes.saturating_add(line_length);
-            self.dirty_patch_count = self.dirty_patch_count.saturating_add(1);
+            append_jsonl_lines_flushed_unlocked(&path, &encoded)?;
+            let mut appended_bytes = 0u64;
+            for (input_index, revision, canonical_item, offset, line_length) in prepared {
+                apply_index_event(
+                    &mut self.index,
+                    &canonical_item,
+                    revision,
+                    offset,
+                    line_length,
+                )?;
+                self.index.event_count = self.index.event_count.saturating_add(1);
+                self.index.patch_count = self.index.patch_count.saturating_add(1);
+                self.index.patch_bytes = self.index.patch_bytes.saturating_add(line_length);
+                self.dirty_patch_count = self.dirty_patch_count.saturating_add(1);
+                appended_bytes = appended_bytes.saturating_add(line_length);
+                outcomes[input_index] = TimelineUpsertOutcome::Appended;
+            }
             if self.dirty_patch_count >= checkpoint_policy.patch_interval.max(1) {
                 checkpoint_index_unlocked(&path, &mut self.index)?;
                 self.dirty_patch_count = 0;
             }
-            Ok(Some(line_length))
+            Ok((outcomes, appended_bytes))
         })?;
-        let Some(line_length) = mutation else {
-            return Ok(TimelineUpsertOutcome::Unchanged);
-        };
-        self.patch_count = self.patch_count.saturating_add(1);
-        self.patch_bytes = self.patch_bytes.saturating_add(line_length);
-        self.file_signature = timeline_file_signature(&self.path);
-        if self.compact_if_needed()? {
-            Ok(TimelineUpsertOutcome::AppendedAndCompacted)
-        } else {
-            Ok(TimelineUpsertOutcome::Appended)
+        let (mut outcomes, appended_bytes) = mutation;
+        let appended_count = outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, TimelineUpsertOutcome::Appended))
+            .count();
+        if appended_count == 0 {
+            return Ok(outcomes);
         }
+        self.patch_count = self.patch_count.saturating_add(appended_count);
+        self.patch_bytes = self.patch_bytes.saturating_add(appended_bytes);
+        self.file_signature = timeline_file_signature(&self.path);
+        let compaction_started_at = Instant::now();
+        if self.compact_if_needed()? {
+            self.last_compaction_elapsed = Some(compaction_started_at.elapsed());
+            for outcome in &mut outcomes {
+                if matches!(outcome, TimelineUpsertOutcome::Appended) {
+                    *outcome = TimelineUpsertOutcome::AppendedAndCompacted;
+                }
+            }
+        }
+        Ok(outcomes)
+    }
+
+    pub fn take_last_compaction_elapsed(&mut self) -> Option<Duration> {
+        self.last_compaction_elapsed.take()
     }
 
     pub fn compact_if_needed(&mut self) -> Result<bool> {
         let unique_items = self.index.item_locators.len().max(1);
-        let patch_heavy = self.patch_count > unique_items.saturating_mul(self.policy.patch_ratio);
+        let patch_heavy = self.patch_count >= DEFAULT_TIMELINE_COMPACT_MIN_PATCH_COUNT
+            && self.patch_count > unique_items.saturating_mul(self.policy.patch_ratio);
         let patch_bytes_heavy = self.patch_bytes > self.policy.max_size_bytes;
         if !patch_bytes_heavy && !patch_heavy && self.redundant_revision_count == 0 {
             return Ok(false);
@@ -804,13 +887,16 @@ impl TimelineStore {
             let current_stats = timeline_file_stats_from_index(&current_index);
             let current_unique_items = current_index.item_locators.len().max(1);
             let current_patch_heavy = current_stats.patch_count
-                > current_unique_items.saturating_mul(self.policy.patch_ratio);
+                >= DEFAULT_TIMELINE_COMPACT_MIN_PATCH_COUNT
+                && current_stats.patch_count
+                    > current_unique_items.saturating_mul(self.policy.patch_ratio);
             let current_patch_bytes_heavy = current_stats.patch_bytes > self.policy.max_size_bytes;
             if !current_patch_bytes_heavy && !current_patch_heavy {
                 return Ok((current_index, false));
             }
 
-            let items = load_timeline_items_for_storage_unlocked(&self.path)?;
+            let items =
+                load_indexed_timeline_items_for_storage_unlocked(&self.path, &current_index)?;
             write_canonical_timeline_unlocked(&self.path, &self.blob_store, &items)?;
             let mut index = rebuild_index_unlocked(&self.path)?.0;
             index.generation = current_index.generation.saturating_add(1).max(1);
@@ -1114,9 +1200,6 @@ fn apply_index_event_inner(
     let previous_locator = index.item_locators.get(&item.id).cloned();
     index.covered_revision = index.covered_revision.max(revision).max(locator.ended_seq);
     apply_lightweight_projection(index, item);
-    let replaced_latest_candidate =
-        index.latest_runtime_control_candidate.as_deref() == Some(item.id.as_str());
-    let runtime_control_candidate = locator.runtime_control_candidate;
     let replaced_pending_retry = index.pending_retry_prompt_id.as_deref() == Some(item.id.as_str());
     let processing_retry = locator.retry_prompt && locator.status.as_deref() == Some("processing");
     let candidate_order = (locator.ended_seq, locator.seq, locator.revision);
@@ -1127,25 +1210,6 @@ fn apply_index_event_inner(
         previous_locator.as_ref(),
         rebuild_late_runtime_projection,
     );
-    if runtime_control_candidate {
-        let should_replace = index
-            .latest_runtime_control_candidate
-            .as_ref()
-            .and_then(|candidate_id| index.item_locators.get(candidate_id))
-            .is_none_or(|current| {
-                candidate_order >= (current.ended_seq, current.seq, current.revision)
-            });
-        if should_replace {
-            index.latest_runtime_control_candidate = Some(item.id.clone());
-        }
-    } else if replaced_latest_candidate {
-        index.latest_runtime_control_candidate = index
-            .item_locators
-            .iter()
-            .filter(|(_, locator)| locator.runtime_control_candidate)
-            .max_by_key(|(_, locator)| (locator.ended_seq, locator.seq, locator.revision))
-            .map(|(item_id, _)| item_id.clone());
-    }
     if processing_retry {
         let should_replace = index
             .pending_retry_prompt_id
@@ -1446,12 +1510,6 @@ fn timeline_item_locator(
             .and_then(|raw| raw.get("source"))
             .and_then(Value::as_str)
             == Some("agentBranchResult"),
-        runtime_control_candidate: item.kind == "textDelta"
-            && item
-                .content
-                .as_deref()
-                .and_then(json_artifact_display_span)
-                .is_some(),
         retry_prompt: item
             .raw
             .as_ref()
@@ -1913,6 +1971,35 @@ fn build_activity_summary(
 
 fn read_event_at_locator(path: &Utf8Path, locator: &TimelineItemLocator) -> Result<AcpUiEvent> {
     let mut file = File::open(path.as_std_path())?;
+    read_event_from_file_at_locator(&mut file, locator)
+}
+
+fn load_indexed_timeline_items_for_storage_unlocked(
+    path: &Utf8Path,
+    index: &TimelineMaterializedIndex,
+) -> Result<Vec<AcpUiEvent>> {
+    if index.item_locators.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut ordered = index.item_locators.iter().collect::<Vec<_>>();
+    ordered.sort_by(|(left_id, left), (right_id, right)| {
+        (left.started_seq, left.seq, left.revision)
+            .cmp(&(right.started_seq, right.seq, right.revision))
+            .then_with(|| left_id.cmp(right_id))
+    });
+    let mut file = File::open(path.as_std_path())?;
+    let mut items = Vec::with_capacity(ordered.len());
+    for (_, locator) in ordered {
+        items.push(read_event_from_file_at_locator(&mut file, locator)?);
+    }
+    normalize_timeline_items_for_storage(&mut items);
+    Ok(items)
+}
+
+fn read_event_from_file_at_locator(
+    file: &mut File,
+    locator: &TimelineItemLocator,
+) -> Result<AcpUiEvent> {
     file.seek(SeekFrom::Start(locator.offset))?;
     let mut bytes = vec![0u8; locator.line_length as usize];
     file.read_exact(&mut bytes)?;
@@ -1969,7 +2056,11 @@ pub fn read_indexed_timeline_page(
         let candidates = index
             .semantic_blocks
             .iter()
-            .filter(|block| block.newest_seq < cursor)
+            // Backward pagination follows the stable visual order established
+            // by rebuild_semantic_blocks. A cumulative item can start before
+            // the cursor and finish much later; its end revision must not move
+            // it out of the older page.
+            .filter(|block| block.oldest_seq < cursor)
             .collect::<Vec<_>>();
         let candidate_count = candidates.len();
         candidates
@@ -2454,28 +2545,45 @@ pub fn read_indexed_timeline_projection(path: &Utf8Path) -> Result<TimelineBranc
     })
 }
 
-pub fn annotate_latest_runtime_control_output(
+pub fn annotate_runtime_control_output(
     path: &Utf8Path,
+    item_id: &str,
     artifact_name: &str,
     kind: &str,
+    span: &JsonArtifactSpan,
 ) -> Result<bool> {
     with_jsonl_file_lock(path, || {
         let policy = TimelineCheckpointPolicy::default();
         let index_path = timeline_index_path(path);
         let (mut index, _) = load_or_rebuild_index_unlocked(path, &index_path, policy)?;
-        let Some(item_id) = index.latest_runtime_control_candidate.clone() else {
-            return Ok(false);
-        };
-        let Some(locator) = index.item_locators.get(&item_id).cloned() else {
+        let Some(locator) = index.item_locators.get(item_id).cloned() else {
             return Ok(false);
         };
         let mut event = read_event_at_locator(path, &locator)?;
         let Some(content) = event.content.as_deref() else {
             return Ok(false);
         };
-        let Some(span) = json_artifact_display_span(content) else {
-            return Ok(false);
-        };
+        ensure!(
+            event.id == item_id,
+            "runtime-control source locator identity mismatch"
+        );
+        ensure!(
+            span.start <= span.json_start
+                && span.json_start <= span.json_end
+                && span.json_end <= span.end
+                && span.end <= content.len(),
+            "runtime-control source span is outside the selected message"
+        );
+        ensure!(
+            [span.start, span.json_start, span.json_end, span.end]
+                .into_iter()
+                .all(|index| content.is_char_boundary(index)),
+            "runtime-control source span is not on UTF-8 character boundaries"
+        );
+        ensure!(
+            content[span.json_start..span.json_end] == span.json_text,
+            "runtime-control source content changed after output evaluation"
+        );
         let display = serde_json::json!({
             "artifactName": artifact_name,
             "kind": kind,
@@ -2757,12 +2865,14 @@ fn write_canonical_timeline_unlocked(
 ) -> Result<()> {
     ensure_parent_dir(path)?;
     atomic_write_file(path.as_std_path(), |file| -> Result<()> {
+        let mut writer = BufWriter::new(file);
         for item in items {
             let mut item = item.clone();
             externalize_timeline_event(blob_store, &mut item)?;
-            serde_json::to_writer(&mut *file, &AcpTimelineItem { item })?;
-            file.write_all(b"\n")?;
+            serde_json::to_writer(&mut writer, &AcpTimelineItem { item })?;
+            writer.write_all(b"\n")?;
         }
+        writer.flush()?;
         Ok(())
     })
 }
@@ -2922,9 +3032,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        DEFAULT_TIMELINE_TAIL_REPLAY_LIMIT, TIMELINE_BLOB_MIN_BYTES, TIMELINE_INDEX_FORMAT_VERSION,
-        TimelineCompactionPolicy, TimelineRestoreMode, TimelineSettleOutcome, TimelineStore,
-        TimelineUpsertOutcome, read_indexed_prompt_anchor_events, read_indexed_runtime_restore,
+        DEFAULT_TIMELINE_COMPACT_MIN_PATCH_COUNT, DEFAULT_TIMELINE_TAIL_REPLAY_LIMIT,
+        TIMELINE_BLOB_MIN_BYTES, TIMELINE_INDEX_FORMAT_VERSION, TimelineCompactionPolicy,
+        TimelineRestoreMode, TimelineSettleOutcome, TimelineStore, TimelineUpsertOutcome,
+        read_indexed_prompt_anchor_events, read_indexed_runtime_restore,
         read_indexed_runtime_restore_for_branch, read_indexed_timeline_page,
         read_indexed_timeline_projection, settle_latest_processing_retry_prompt,
         settle_timeline_item_status, timeline_index_path,
@@ -2995,6 +3106,78 @@ mod tests {
             load_timeline_items(&path).unwrap()[0].content.as_deref(),
             Some("hello")
         );
+    }
+
+    #[test]
+    fn batch_upsert_commits_distinct_identities_and_preserves_aligned_outcomes() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let policy = TimelineCompactionPolicy {
+            max_size_bytes: u64::MAX,
+            patch_ratio: usize::MAX,
+        };
+        let mut store = TimelineStore::open(path.clone(), policy).unwrap();
+        let updates = (1..=512)
+            .map(|seq| (seq, event(&format!("message-{seq}"), seq, "hello")))
+            .collect::<Vec<_>>();
+
+        let outcomes = store.upsert_batch(&updates).unwrap();
+
+        assert_eq!(outcomes.len(), updates.len());
+        assert!(
+            outcomes
+                .iter()
+                .all(|outcome| *outcome == TimelineUpsertOutcome::Appended)
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 512);
+        assert_eq!(
+            store.durable_watermark_for_item_id("message-512"),
+            Some((1, 512))
+        );
+
+        let unchanged = updates
+            .iter()
+            .map(|(revision, item)| {
+                let mut item = item.clone();
+                item.seq = item.seq.saturating_add(10_000);
+                (revision.saturating_add(10_000), item)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            store
+                .upsert_batch(&unchanged)
+                .unwrap()
+                .iter()
+                .all(|outcome| *outcome == TimelineUpsertOutcome::Unchanged)
+        );
+        assert_eq!(std::fs::read_to_string(path).unwrap().lines().count(), 512);
+    }
+
+    #[test]
+    fn upsert_exposes_exact_compaction_observation_once() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut store = TimelineStore::open(
+            path,
+            TimelineCompactionPolicy {
+                max_size_bytes: u64::MAX,
+                patch_ratio: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            store.upsert(1, &event("message-1", 1, "hel")).unwrap(),
+            TimelineUpsertOutcome::Appended
+        );
+        assert!(store.take_last_compaction_elapsed().is_none());
+        store.policy.max_size_bytes = 0;
+
+        assert_eq!(
+            store.upsert(2, &event("message-1", 2, "hello")).unwrap(),
+            TimelineUpsertOutcome::AppendedAndCompacted
+        );
+        assert!(store.take_last_compaction_elapsed().is_some());
+        assert!(store.take_last_compaction_elapsed().is_none());
     }
 
     #[test]
@@ -3313,7 +3496,7 @@ mod tests {
         let _store = TimelineStore::open(
             path.clone(),
             TimelineCompactionPolicy {
-                max_size_bytes: u64::MAX,
+                max_size_bytes: 0,
                 patch_ratio: 2,
             },
         )
@@ -3753,10 +3936,11 @@ mod tests {
         let index_path = timeline_index_path(&path);
         let mut latest: serde_json::Value = crate::storage::read_json(&index_path).unwrap();
         latest["generation"] = json!(41);
+        latest["patchCount"] = json!(DEFAULT_TIMELINE_COMPACT_MIN_PATCH_COUNT);
         crate::storage::write_json(&index_path, &latest).unwrap();
         store.policy.patch_ratio = 1;
         store.index.generation = 1;
-        store.patch_count = 2;
+        store.patch_count = DEFAULT_TIMELINE_COMPACT_MIN_PATCH_COUNT;
         store.patch_bytes = 1;
 
         assert!(store.compact_if_needed().unwrap());

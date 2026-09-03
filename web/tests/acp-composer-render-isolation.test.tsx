@@ -4,8 +4,9 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { getAgentCommandCatalog, streamdownRender } = vi.hoisted(() => ({
+const { getAgentCommandCatalog, mergeAcpEventWindowsCounter, streamdownRender } = vi.hoisted(() => ({
   getAgentCommandCatalog: vi.fn(),
+  mergeAcpEventWindowsCounter: vi.fn(),
   streamdownRender: vi.fn(),
 }));
 
@@ -27,7 +28,30 @@ vi.mock('@/api', async () => {
   };
 });
 
-import { ACPChatDialog } from '@/components/acp/ACPChatDialog';
+vi.mock('@/lib/acp-event-reducer', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/acp-event-reducer')>(
+    '@/lib/acp-event-reducer',
+  );
+  return {
+    ...actual,
+    mergeAcpEventWindows: (
+      ...args: Parameters<typeof actual.mergeAcpEventWindows>
+    ) => {
+      mergeAcpEventWindowsCounter();
+      return actual.mergeAcpEventWindows(...args);
+    },
+  };
+});
+
+import {
+  ACPChatDialog,
+  createAcpLoadedEventWindow,
+  createAcpEventWindowCacheKey,
+  resetAcpResourceCache,
+  restoreAcpLoadedEventWindow,
+  storeAcpLoadedEventWindow,
+} from '@/components/acp/ACPChatDialog';
+import { GitBranchPickerSnapshotProvider } from '@/components/git/GitBranchPickerSnapshotContext';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import type { AcpSessionVm, ConversationAttemptLifecycleVm } from '@/types';
 
@@ -72,8 +96,7 @@ function completedSession(): AcpSessionVm {
       newestCursor: null,
     },
     timelineProjection: { agents: [], todoEntries: [] },
-    pendingPermissions: [],
-    pendingElicitations: [],
+    pendingInteractions: [],
     diagnostics: { rawFrameCount: 0, eventCount: 1, errorCount: 0 },
   };
 }
@@ -120,6 +143,7 @@ function nonRuntimeControlledLifecycle(): ConversationAttemptLifecycleVm {
 }
 
 beforeEach(() => {
+  resetAcpResourceCache();
   getAgentCommandCatalog.mockResolvedValue({
     agentType: 'test',
     projectId: 'worktree-project',
@@ -146,6 +170,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetAcpResourceCache();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   streamdownRender.mockClear();
@@ -154,6 +179,188 @@ afterEach(() => {
 });
 
 describe('ACP composer render isolation', () => {
+  it('does not restore and merge the historical window on an unrelated parent render', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const session = completedSession();
+    const eventWindowKey = createAcpEventWindowCacheKey({
+      projectId: 'project-render',
+      taskId: 'task-render',
+      runId: 'run-render',
+      roundId: 'round-render',
+      nodeId: 'node-render',
+      attemptId: 'attempt-render',
+    });
+    storeAcpLoadedEventWindow(
+      eventWindowKey,
+      createAcpLoadedEventWindow(session),
+      288,
+    );
+    const view = (marker: string) => (
+      <div data-marker={marker}>
+        <TooltipProvider>
+          <ACPChatDialog
+            session={session}
+            projectId="project-render"
+            taskId="task-render"
+            runId="run-render"
+            roundId="round-render"
+            nodeId="node-render"
+            attemptId="attempt-render"
+            showSystemPromptAction={false}
+            showRawFramesAction={false}
+            usageCompact
+          />
+        </TooltipProvider>
+      </div>
+    );
+
+    try {
+      await act(async () => root.render(view('initial')));
+      expect(mergeAcpEventWindowsCounter).toHaveBeenCalled();
+      mergeAcpEventWindowsCounter.mockClear();
+
+      await act(async () => root.render(view('parent-update')));
+
+      expect(container.querySelector('[data-marker]')?.getAttribute('data-marker'))
+        .toBe('parent-update');
+      expect(mergeAcpEventWindowsCounter).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('never writes the previous event window under a newly selected eventWindowKey', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const sessionA = completedSession();
+    const sessionB: AcpSessionVm = {
+      ...completedSession(),
+      sessionId: 'composer-render-session-b',
+      nodeId: 'node-render-b',
+      attemptId: 'attempt-render-b',
+      events: [{
+        ...completedSession().events[0]!,
+        id: 'assistant-message-b',
+        sessionId: 'composer-render-session-b',
+        content: 'session B historical Markdown',
+      }],
+    };
+    const observations: Array<{
+      key: string;
+      sessionId: string | null;
+      eventIds: string[];
+    }> = [];
+
+    function Harness({ selected }: { selected: 'a' | 'b' }) {
+      const selectedSession = selected === 'a' ? sessionA : sessionB;
+      const selectedNodeId = selected === 'a' ? 'node-render' : 'node-render-b';
+      const selectedAttemptId = selected === 'a' ? 'attempt-render' : 'attempt-render-b';
+      const eventWindowKey = createAcpEventWindowCacheKey({
+        projectId: 'project-render',
+        taskId: 'task-render',
+        runId: 'run-render',
+        roundId: 'round-render',
+        nodeId: selectedNodeId,
+        attemptId: selectedAttemptId,
+      });
+      React.useEffect(() => {
+        const window = restoreAcpLoadedEventWindow(eventWindowKey, null, 288);
+        observations.push({
+          key: eventWindowKey,
+          sessionId: window.sessionId,
+          eventIds: window.events.map((event) => event.id),
+        });
+      }, [eventWindowKey]);
+      return (
+        <TooltipProvider>
+          <ACPChatDialog
+            session={selectedSession}
+            projectId="project-render"
+            taskId="task-render"
+            runId="run-render"
+            roundId="round-render"
+            nodeId={selectedNodeId}
+            attemptId={selectedAttemptId}
+            showSystemPromptAction={false}
+            showRawFramesAction={false}
+            usageCompact
+          />
+        </TooltipProvider>
+      );
+    }
+
+    try {
+      await act(async () => root.render(<Harness selected="a" />));
+      await act(async () => root.render(<Harness selected="b" />));
+
+      const keyB = createAcpEventWindowCacheKey({
+        projectId: 'project-render',
+        taskId: 'task-render',
+        runId: 'run-render',
+        roundId: 'round-render',
+        nodeId: 'node-render-b',
+        attemptId: 'attempt-render-b',
+      });
+      expect(observations.find((observation) => observation.key === keyB)).toEqual({
+        key: keyB,
+        sessionId: 'composer-render-session-b',
+        eventIds: ['assistant-message-b'],
+      });
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('joins a branch-only session info tab to the composer surface', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <GitBranchPickerSnapshotProvider>
+            <TooltipProvider>
+              <ACPChatDialog
+                session={completedSession()}
+                projectId="project-render"
+                taskId="task-render"
+                runId="run-render"
+                roundId="round-render"
+                nodeId="node-render"
+                attemptId="attempt-render"
+                showBranchControl
+                showSystemPromptAction={false}
+                showRawFramesAction={false}
+                usageCompact
+              />
+            </TooltipProvider>
+          </GitBranchPickerSnapshotProvider>,
+        );
+      });
+
+      expect(container.querySelector('[data-acp-session-info-item="branch"]')).not.toBeNull();
+      const composerRail = container.querySelector('[data-acp-conversation-rail="composer"]');
+      expect(composerRail?.classList.contains(
+        '[--acp-composer-rail-shadow:var(--gb-material-shadow)]',
+      )).toBe(true);
+      expect(composerRail?.classList.contains(
+        'dark:[--acp-composer-rail-shadow:var(--gb-elevation-overlay)]',
+      )).toBe(true);
+      expect(composerRail?.classList.contains(
+        '[filter:drop-shadow(var(--acp-composer-rail-shadow))]',
+      )).toBe(true);
+      expect(composerRail?.className.match(/drop-shadow\(/gu) ?? []).toHaveLength(1);
+      expect(composerRail?.className).not.toContain('--gb-material-edge-shadow');
+      const promptInput = container.querySelector('[data-slot="prompt-input"]');
+      expect(promptInput?.classList.contains('rounded-tl-none')).toBe(true);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('keeps the conversation shell mounted when an established session payload is temporarily absent', async () => {
     const container = document.createElement('div');
     document.body.append(container);

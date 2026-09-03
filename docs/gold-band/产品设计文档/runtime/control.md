@@ -200,6 +200,10 @@ AI-DYNAMIC 的 `DynamicRunState.phase` 统一管理 Graph + Git 一致性阶段�
 
 Runtime-owned workspace 的释放以 Git worktree catalog 是否仍登记该路径作为权威事实，物理目录删除和 runtime branch 删除是同一释放调用中的附属清理。`git worktree remove` 返回非零后必须重新读取 catalog：路径仍登记时释放失败并保留原 Graph 状态；路径已经注销时按释放成功继续清理 branch，不得因迟到的目录删除错误把 Graph 留在 `Active`。branch 已不存在、worktree 已注销或路径只剩空目录时，重复释放必须幂等成功；branch 清理失败记录 Git diagnostic，但不能逆转已经成立的 workspace release。
 
+Released dynamic Worktree 的物理命名空间只允许 Runtime 从 outer run identity 与 `workspaceId` 重新计算，不得把持久化路径或调用方字符串直接作为删除目标。Runtime 必须先确认 workspace 为 runtime-owned worktree，并用统一 `GitFilesystemPathIdentity` 确认持久化路径与重算 canonical leaf 指向同一位置；该 identity 在 leaf 缺失时解析最近存在祖先的 symlink/junction 后追加普通 tail，拒绝 unresolved `..` 与 Windows drive-relative/root-relative 输入，并正确区分 drive/UNC 的绝对路径语义。持久化 `repoRoot / branch` 也只是待校验状态：必须分别与当前项目 canonical repo identity、Runtime 从 outer identity + workspace ID 重算的 branch 完全一致，后续 Git catalog 查询、remove 和 branch 清理只消费重算值，不能把 durable 字段直接交给破坏性 API。Git catalog 的路径 identity 不得依赖物理目录仍存在，且 Git remove 必须使用匹配后的 catalog target；`Active -> Released` 才由既有 Git remove 路径收敛 catalog 与 runtime branch。已经 `Released` 的恢复重放不得再调用破坏性 Git remove，只尝试后续空目录收敛；若同一路径后来被新 Worktree 复用，其 `.git` 与内容使非递归删除必然停止，不得注销或删除该新 Worktree。
+
+Runtime 必须先持有既有 `DYNAMIC_WORKTREE_GIT_LOCK`，再持有与用户 Source Control Worktree create/remove 相同的 Git repository/workspace coordination lock；在这两把锁覆盖的临界区内、任何 Git remove 或文件删除之前，对 `repo -> .gold-band -> worktrees -> task -> run -> leaf` 每个已存在层级执行真实 canonical preflight。任一层被 junction / symlink 重定向、层级退化、越界或发生 `NotFound` 以外的检查错误时立即停止，保持 Worktree catalog、branch 与 `Active` 状态不变。Active release 必须让 preflight、Git remove 与 postflight prune 共享同一次 Git lock；`Released` 恢复重放的 prune 也必须进入同一 Git lock，不能在用户 `git worktree add` 创建目录与写入 `.git` 的间隙删除 leaf。Git remove 成功后必须再次执行同一 preflight 以覆盖检查与删除之间的路径变化；复验通过后仅以非递归 `remove_dir` best-effort 按 leaf、run、task 三级删除空目录，遇到非空或删除错误立即停止，清理边界止于且不得删除项目 `.gold-band/worktrees` 根。目录和 branch 清理只是已成立 `Released` 事实的附属收敛，失败只记录 diagnostic，不得把 workspace 状态回滚为 `Active`。
+
 加载持久化 Dynamic Graph 时，在全 catalog worktree 校验前重放已 `Closed` group 的 child workspace 释放，并将成功收敛的 workspace 持久化为 `Released`。该恢复只消费 group 与 workspace catalog 中已有 identity，不按路径或名称猜测归属；`Open / MergeReady / Merging / Merged / Accepting / Accepted` group 的 active workspace 缺失仍然是完整性错误，不能被恢复逻辑吞掉。
 
 用户在该阶段点击停止时，等待 workspace 交接的 completed leaf 没有可单独取消的 active execution，因此精确 session stop 升级为外层 run stop：Run / Round / Node 先写入 `Paused + ProcessInterrupted`，随后等待 dynamic state lock；仍为 active 的并行 leaf 则保持单 leaf stop，只在临界区结束后落盘 leaf pause。workspace transition 完整结束后，停止逻辑暂停对应 descendants 并返回。等待期间前端继续使用既有 stop pending overlay 显示“正在停止…”，不设置超时，不取消底层 Git 命令，也不报告伪失败。transition 已创建的 worktree 必须保留在 catalog；显式继续创建新的 execution generation，并复用该 workspace tree。
@@ -228,16 +232,23 @@ runtime 落盘完成后，前端可见状态必须继续通过 lifecycle/run-sta
 
 ## 11. 控制 JSON 展示标注
 
-当普通 worker 的 output contract 或 AI-DYNAMIC 的 `dynamic-node-completion` 被 runtime 作为控制输入提取后，runtime 会对当前 attempt 的 ACP timeline 写入展示标注：
+只有 `RuntimeControlled` turn 同时拥有本轮 active output contract 时，Runtime 才执行 output evaluation。`NonRuntimeControlled` / Direct 即使回复中包含合法 JSON 或历史 attempt 仍保留 output contract，也必须完全绕过候选扫描、artifact 提取与展示标注。
+
+`PostTurnProjection` 与 AI-DYNAMIC bootstrap 使用的 `InlineControl` 共享既有消息选择规则，不因本次标注修复改变业务语义：terminal message 有稳定 ID 时，在最近最多 3 条 Agent message 中倒序寻找第一个合法 JSON；全 turn 都没有稳定 ID 时只检查最后一条；曾观察到稳定消息但 terminal message 匿名时进入 `provider.acp-terminal-message-unidentified` Manual recovery。倒序窗口内允许较早的合法 JSON 覆盖较新的非法候选；只有没有合法 JSON 时，才保留离 terminal 最近的非法候选供 repair/阻塞展示；完全没有 JSON-like 候选时结果为 Missing，不写展示标注。
+
+output evaluation 必须在一次候选扫描中同时返回 artifact 结果和命中来源，来源使用当前 attempt 内 canonical `branchId + itemId`，并携带同次扫描得到的 JSON byte span。固定 workflow 与 AI-DYNAMIC 终局处理根据 `attempt directory + branchId + itemId` 定点写入标注，不得再次扫描 Timeline、按正文猜候选或回退到“最新 JSON 消息”。Timeline materialized index 只管理通用事件 locator，不保存或维护 runtime-control candidate 推断。
+
+当 output evaluation 命中合法或非法控制候选后，runtime 会对来源消息所在的 ACP timeline 写入展示标注：
 
 - 标注位置：对应 assistant `textDelta` item 的 `raw.runtimeControlOutputDisplay`。
 - 标注内容：`artifactName`、`kind`、`jsonText`、`start/end`、`jsonStart/jsonEnd`、`fenced`、`parseStatus`。
 - `parseStatus` 可以是 `valid` 或 `invalid`。runtime 控制和 artifact 解析仍只接受合法 JSON；`invalid` 只表示该 assistant 输出中存在 JSON-like 控制候选，且本轮将进入 repair 或阻塞处理。
 - 同一条 assistant 输出中同时存在合法完整 JSON 与更靠后的非法 JSON-like 嵌套片段时，展示标注必须优先选择合法完整 JSON；非法 span 只作为没有合法 JSON 时的 fallback。
+- 写入前必须验证 locator 的 item identity、span 顺序、UTF-8 字符边界以及 `jsonText` 与当前消息正文完全一致；任一事实不匹配即拒绝标注，不得转而污染其他消息。
 - `start/end` 使用前端 JavaScript 字符串可直接消费的 UTF-16 索引，用于展示层把自然语言和控制 JSON 拆分。
 - 前端展示为单行折叠控制条：收起态不展示 JSON 内容，展开后才展示完整格式化 JSON；`valid` 使用主色和控制清单图标，`invalid` 使用告警色和告警图标。
 - 该标注只服务 UI 展示，不参与 artifact 内容、schema 校验、success condition、edge control 或 repair 判断。
-- 标注失败不得阻断 runtime 主控制流；artifact 提取、落盘和校验仍以 Rust 端既有 JSON 扫描与 validation 为准。
+- 标注失败不得阻断 runtime 主控制流；artifact 提取、落盘和校验使用 output evaluation 已返回的结果，不依赖 UI 标注成功，也不重新执行候选扫描。
 
 ## 12. 2026-08-20 ACP turn stop 与运行态恢复
 
@@ -248,7 +259,8 @@ runtime 落盘完成后，前端可见状态必须继续通过 lifecycle/run-sta
 - 业务 turn 的 terminal CAS 是隐藏 finalize/repair prompt 的 durable admission barrier：只有 terminal 已成功提交、active owner 已释放后，编排器才能 admission finalize；不能通过绕过 `acp.prompt-session-busy`、固定延迟或清理内存标记来掩盖 metadata 尚未终态。共享文件字段 patch 必须保证 terminal CAS 不会因无关 projection 写入而变成 stale no-op。
 - continue/resume 初始化使用 Timeline index runtime snapshot 与有界 hot state；attached reuse、resume、new 不读取完整历史正文或 Blob，只有显式 load 且启用 external history sync 才读取 prompt anchors。index 缺失、损坏、版本不兼容、tail 超限或 compaction 才允许 full rebuild，并写入 restore mode 诊断。
 - usage journal 缺失 completion 时，只有 metadata 明确存在 active/cancelling turn 或 processing retry 才允许扫描 raw log 做 crash recovery；terminal session 的历史缺口不得阻塞 attached reuse、resume 或普通 follow-up。permission response file 是 ACP live waiter 的控制事实，必须先于 Timeline projection 落盘；timeline identity 尚未建立时仍必须接受响应，之后由 permission item 投影收敛。
-- 前端 pending permission/elicitation 只允许作为 lifecycle 的投影：stop accepted、stopping 或当前 turn terminal lifecycle 到达后，必须立即隐藏并在同一次本地 projection 提交中清空旧 session snapshot 中的交互卡片；不得等待重新进入会话或完整正文刷新。terminal 后旧 session body 不得重新建立同一 pending projection；只有 `eventPage.generation/coveredRevision/newestRevision/newestSeq` 明确前进的新 Timeline occurrence 才能建立下一轮卡片，因此 provider 复用 RPC request ID 也不会误隐藏真实新请求。迟到低 revision terminal 不能清理高 revision active turn。停止期间 composer 的 Stop 状态和输入锁定从同一 lifecycle 投影派生。
+- 所有会阻塞 ACP provider waiter、等待用户响应的 prompt-scoped interaction 统一使用 `interactionId / interactionKind / turnId / promptEventId` canonical identity。permission 与 elicitation 各自保留协议 payload、响应转换和 UI 卡片，但 durable pending envelope、Timeline metadata、session projection、terminal settlement、取消归属与 composer 占用必须复用同一交互协调逻辑。Session VM 只暴露判别联合 `pendingInteractions`；不得因 session status 或上一 turn 的 terminal lifecycle 丢弃属于后续 turn 的 pending occurrence。terminal 只能清理同一 `turnId` 的交互；缺少 owner identity 的旧投影不得推断为新 turn。stop accepted 或 stopping 仍立即隐藏当前交互，停止期间 composer 的 Stop 状态和输入锁定从同一 lifecycle 投影派生。
+- 2026-08-26 prompt interaction 竞态修复：未修复基线已固定“下一 turn 交互已推进 Timeline 水位但 lifecycle 仍描述上一 turn terminal”以及 Direct composer 错误锁死两个根因场景。实现以 Rust `struct + enum + coordinator` 取代 permission / elicitation 两套生命周期投影，不新增继承层、动态 trait registry、队列或缓存；permission 与 elicitation 均显式绑定 active prompt turn，Direct 等待任一交互时复用既有 durable prompt queue。自动化与桌面回归按用户要求留待验收执行。
 - optimistic 用户消息在 provider 已接受但 canonical Timeline prompt 尚未到达时仍显示“发送中”，不能把后台 turn 的“处理中”写到用户消息下方；停止时必须清理 `sending` 与 `processing` 两种尚未 canonical 化的 optimistic prompt，避免残留 turn 锁住后续发送。
 - attached provider session reuse 是 usage 恢复的第一分流点：live attached runtime 在 registry 中携带当前 `AcpUsageState`，reuse 命中时直接继承，不读取 usage journal、Timeline prompt locator 或 raw log；只有 reuse 未命中且需要 resume/load/new 时，才执行 durable usage repair。attached entry 因配置或 freshness 需要 reload 时，已取得的 live usage 仍可复用，不重复扫描磁盘。
 - Timeline materialized index V8 持久化现有 stream reducer 的有界运行态投影：`latestSeq`、active tool IDs、最新 context-compaction 候选、按 branch 隔离的 text/thought/plan 槽位，以及 provider history identity membership；同时把 canonical `launchedAgentExecutionId` 识别为独立 Agent launch 语义项。正常 upsert/tail replay 以 O(1) 增量维护；检测到改变语义顺序的迟到历史 patch 时在写入路径重建投影，V7 及更旧索引只在首次读取时重建一次。

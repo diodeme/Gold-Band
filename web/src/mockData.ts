@@ -27,6 +27,11 @@ import { FALLBACK_WORKSPACE_FILES } from './components/workspace/workspace-layou
 import { createDefaultAvatarPreferences } from './lib/avatar';
 import { createDefaultWallpaperPreferences } from './lib/wallpaper';
 import { defaultPersonalizationPreference } from './theme';
+import {
+  DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
+  DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT,
+} from './lib/acp-chat-pagination';
+import { DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT } from './lib/acp-chat-resource-cache';
 
 const preferences: PreferencesVm = { appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {} }, personalization: defaultPersonalizationPreference, language: 'zh-cn', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences(), wallpapers: createDefaultWallpaperPreferences() };
 export const mockAppInfo = {
@@ -262,8 +267,7 @@ export const mockErrorBlockedConversationSession: AcpSessionVm = {
   events: [],
   timelineProjection: null,
   eventPage: { loadedCount: 0, total: 0, oldestSeq: null, newestSeq: null, hasOlder: false, hasNewer: false, oldestCursor: null, newestCursor: null },
-  pendingPermissions: [],
-  pendingElicitations: [],
+  pendingInteractions: [],
   availableCommands: [],
   usage: null,
   diagnostics: { rawFrameCount: 0, eventCount: 0, errorCount: 0, lastError: null, lastErrorTimestamp: null },
@@ -373,9 +377,10 @@ const mockNodeDetail: NodeDetailVm = {
       totalTokens: 25_400,
     },
     eventPage: { loadedCount: 5, total: 7, oldestSeq: 1, newestSeq: 5, hasOlder: false, hasNewer: false },
-    pendingPermissions: [
+    pendingInteractions: [
       {
-        requestId: 'perm-001',
+        kind: 'permission',
+        interactionId: 'perm-001',
         title: '允许写入窗口管理文件',
         toolCallId: 'tool-2',
         options: [
@@ -392,7 +397,6 @@ const mockNodeDetail: NodeDetailVm = {
       { id: 'e4', seq: 4, timestamp: '2026-05-02 16:11', kind: 'plan', sessionId: 'acp-session-7f3', raw: { entries: [{ content: '重构窗口状态', status: 'completed' }, { content: '修正 DPI 偏移', status: 'in_progress' }] } },
       { id: 'e5', seq: 5, timestamp: '2026-05-02 16:12', kind: 'permissionRequest', title: '允许写入窗口管理文件', toolCallId: 'tool-2', status: 'pending', sessionId: 'acp-session-7f3', raw: { options: [{ optionId: 'allow-once', name: '允许一次', kind: 'allow_once' }, { optionId: 'reject-once', name: '拒绝', kind: 'reject_once' }] } },
     ],
-    pendingElicitations: [],
     timelineProjection: null,
   },
   artifacts: [
@@ -425,8 +429,7 @@ const errorBlockedNodeDetail: NodeDetailVm = {
     sessionElapsedSeconds: 62,
     diagnostics: { rawFrameCount: 5, eventCount: 2, errorCount: 1, lastError: 'ACP prompt failed: adapter returned malformed response', lastErrorTimestamp: '2026-05-15 10:02' },
     eventPage: { loadedCount: 3, total: 3, oldestSeq: 1, newestSeq: 3, hasOlder: false, hasNewer: false },
-    pendingPermissions: [],
-    pendingElicitations: [],
+    pendingInteractions: [],
     events: [
       { id: 'e1', seq: 1, timestamp: '2026-05-15 10:01', kind: 'userTextDelta', content: '初始需求 prompt', sessionId: 'acp-session-7f3', raw: { source: 'goldBandPrompt', synthetic: true } },
       { id: 'acp-diagnostic-error-1', seq: 2, timestamp: '2026-05-15 10:02', kind: 'runtimeError', content: 'ACP prompt failed: adapter returned malformed response', status: 'failed', raw: { source: 'acpDiagnostic', level: 'error' } },
@@ -477,11 +480,13 @@ export const mockBootstrap: AppBootstrapVm = {
   appInfo: mockAppInfo,
   appConfig: {
     acpSessionTitleRefreshEnabled: false,
-    acpChatEventPageSize: 360,
-    conversationInlineContentMaxBytes: 64_000,
+    acpChatEventPageSize: DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
+    acpChatEventWindowPageCount: DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT,
+    acpChatResourceCacheSessionCount: DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT,
+    conversationInlineContentMaxBytes: 20_000,
     conversationInlineImageMaxBytes: 4 * 1024 * 1024,
     conversationInlineImageMaxDimension: 2_560,
-    turnFiles: { cardPreviewLimit: 3 },
+    turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 1 },
     workspaceLayout: {
       shellMinWidth: 480,
       shellMinHeight: 680,

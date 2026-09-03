@@ -6,6 +6,7 @@ import type {
   ConversationTerminalResultVm,
 } from '@/types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm } from '@/api/client';
+import { parseTimestamp } from '@/lib/datetime';
 
 function isTerminalConversationRunStatus(status: string) {
   return ['completed', 'failed', 'cancelled', 'killed'].includes(status.trim().toLowerCase());
@@ -30,12 +31,20 @@ export function conversationTaskActivityFromLifecycle(
 export function conversationTaskActivityFromUpdate(
   event: AcpSessionUpdatedEventVm,
 ): ConversationTaskActivityVm | null | undefined {
+  const lifecycleActivity = event.lifecycle
+    ? conversationTaskActivityFromLifecycle(event.lifecycle)
+    : undefined;
+  // A quiescent canonical lifecycle is terminal for the task activity
+  // projection. A task-wide lightweight activity sample can be captured
+  // before the attempt control is released, so it must not resurrect the
+  // breathing indicator after the same update has settled the lifecycle.
+  if (lifecycleActivity === null) {
+    return null;
+  }
   if (event.activity !== undefined) {
     return event.activity ?? null;
   }
-  return event.lifecycle
-    ? conversationTaskActivityFromLifecycle(event.lifecycle)
-    : undefined;
+  return lifecycleActivity;
 }
 
 export function applyConversationSidebarTaskActivity(
@@ -43,27 +52,49 @@ export function applyConversationSidebarTaskActivity(
   projectId: string,
   taskId: string,
   activity: ConversationTaskActivityVm | null,
+  taskActivityAt?: string | null,
 ): ConversationSidebarVm {
+  const activityTimeAdvanced = (task: ConversationTaskRowVm) => {
+    if (!taskActivityAt || task.projectId !== projectId || task.taskId !== taskId) return false;
+    const current = parseTimestamp(task.lastActivityAt)?.getTime() ?? Number.NEGATIVE_INFINITY;
+    const incoming = parseTimestamp(taskActivityAt)?.getTime();
+    return incoming !== undefined && incoming !== null && incoming > current;
+  };
   const updateTask = (task: ConversationTaskRowVm) => {
     if (task.projectId !== projectId || task.taskId !== taskId) return task;
     const currentActivity = task.activity ?? null;
+    const timestampAdvanced = activityTimeAdvanced(task);
     if (
-      currentActivity === activity
-      || (
-        currentActivity !== null
-        && activity !== null
-        && currentActivity.phase === activity.phase
-        && currentActivity.stopping === activity.stopping
+      !timestampAdvanced
+      && (
+        currentActivity === activity
+        || (
+          currentActivity !== null
+          && activity !== null
+          && currentActivity.phase === activity.phase
+          && currentActivity.stopping === activity.stopping
+        )
       )
     ) {
       return task;
     }
-    return { ...task, activity };
+    return {
+      ...task,
+      activity,
+      lastActivityAt: timestampAdvanced ? taskActivityAt : task.lastActivityAt,
+    };
   };
 
   const pinnedTasks = sidebar.pinnedTasks.map(updateTask);
   const workspaceTasks = sidebar.tasksByWorkspace[projectId] ?? [];
-  const nextWorkspaceTasks = workspaceTasks.map(updateTask);
+  const shouldMoveToFront = workspaceTasks.some(activityTimeAdvanced);
+  const updatedWorkspaceTasks = workspaceTasks.map(updateTask);
+  const nextWorkspaceTasks = shouldMoveToFront
+    ? [
+        ...updatedWorkspaceTasks.filter((task) => task.projectId === projectId && task.taskId === taskId),
+        ...updatedWorkspaceTasks.filter((task) => task.projectId !== projectId || task.taskId !== taskId),
+      ]
+    : updatedWorkspaceTasks;
   const pinnedChanged = pinnedTasks.some((task, index) => task !== sidebar.pinnedTasks[index]);
   const workspaceChanged = nextWorkspaceTasks.some((task, index) => task !== workspaceTasks[index]);
   if (!pinnedChanged && !workspaceChanged) return sidebar;
@@ -176,13 +207,25 @@ export function applyConversationSidebarRunLifecycle(
     if (!runsChanged && latestRun === task.latestRun) return task;
     return { ...task, runs, latestRun };
   };
+  const pinnedTasks = sidebar.pinnedTasks.map(updateTask);
+  const currentWorkspaceTasks = sidebar.tasksByWorkspace[projectId] ?? [];
+  const workspaceTasks = currentWorkspaceTasks.map(updateTask);
+  const pinnedTasksChanged = pinnedTasks.some(
+    (task, index) => task !== sidebar.pinnedTasks[index],
+  );
+  const workspaceTasksChanged = workspaceTasks.some(
+    (task, index) => task !== currentWorkspaceTasks[index],
+  );
+  if (!pinnedTasksChanged && !workspaceTasksChanged) return sidebar;
   return {
     ...sidebar,
-    pinnedTasks: sidebar.pinnedTasks.map(updateTask),
-    tasksByWorkspace: {
-      ...sidebar.tasksByWorkspace,
-      [projectId]: (sidebar.tasksByWorkspace[projectId] ?? []).map(updateTask),
-    },
+    pinnedTasks: pinnedTasksChanged ? pinnedTasks : sidebar.pinnedTasks,
+    tasksByWorkspace: workspaceTasksChanged
+      ? {
+          ...sidebar.tasksByWorkspace,
+          [projectId]: workspaceTasks,
+        }
+      : sidebar.tasksByWorkspace,
   };
 }
 

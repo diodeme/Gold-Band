@@ -11,8 +11,12 @@ import { useFileContentEntry } from './files/file-content-store';
 
 export const RightWorkspaceDock = memo(function RightWorkspaceDock({
   sourceControlWorkspacePath = null,
+  acpChatEventPageSize,
+  acpChatEventWindowPageCount,
 }: {
   sourceControlWorkspacePath?: string | null;
+  acpChatEventPageSize?: number;
+  acpChatEventWindowPageCount?: number;
 }) {
   const { t } = useTranslation();
   const { tabs, activeTabKey, activateTab, closeTab, renderResource } = useRightWorkspace();
@@ -109,7 +113,14 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock({
         ) : null}
       </div> : null}
       <div className="flex min-h-0 flex-1 flex-col">
-        {active?.kind === 'agent-transcript' ? <AgentConversationPanel key={active.key} resource={active} /> : null}
+        {active?.kind === 'agent-transcript' ? (
+          <AgentConversationPanel
+            key={active.key}
+            resource={active}
+            eventPageSize={acpChatEventPageSize}
+            eventWindowPageCount={acpChatEventWindowPageCount}
+          />
+        ) : null}
         {active && active.kind !== 'agent-transcript' ? renderResource(active) : null}
         {!active ? (
           <div className="flex min-h-0 flex-1 flex-col p-3" data-right-workspace-empty="true">

@@ -21,6 +21,21 @@
 - Workspace capability:
 {{ workspace_capability }}
 
+{% if has_new_round_trigger %}
+## `$new-round` trigger feedback
+{{ new_round_trigger }}
+- This is the failed node output that opened the current new Round. Understand its failure reason and unfinished work before planning the internal tasks for this Round; do not simply repeat the original requirement unchanged.
+- The artifact preview may be truncated. Read the explicitly listed artifact or attachments when complete details are needed.
+{% endif %}
+
+{% if has_coordination_snapshot %}
+## Runtime coordination snapshot
+- Read-only snapshot: {{ coordination_snapshot_path }}
+- Runtime derives this file from the canonical dynamic graph and is its only writer. Do not modify it.
+- Read the latest snapshot before starting or continuing this task: use each `workstreams[]` goal, TODO status, parent relationship, and steps to understand other subtasks, then use `groups[]` nesting and phase to avoid duplicate or conflicting work.
+- Read the same path again before outputting `next.type="single"` or `next.type="fanout"`, and plan successors from the latest state.
+{% endif %}
+
 {% if has_direct_predecessors %}
 ## Direct predecessors
 {{ direct_predecessors }}

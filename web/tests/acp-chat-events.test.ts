@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  applyPendingElicitationEventsToSession,
+  applyPendingInteractionEventsToSession,
   buildAcpTimeline,
   applyAgentBranchResultToSession,
   calculateSessionElapsedSeconds,
@@ -12,10 +12,12 @@ import {
   latestLiveSessionTimingFromEvents,
   latestSessionTimingFromEvents,
   liveTimelineUpdatesFromEvents,
+  loadedEventBufferLimit,
   mergeAcpEvents,
   partitionAcpLiveTimingUpdates,
   pendingElicitationFromEvents,
   pendingPermissionFromEvents,
+  projectAcpSessionControlEvents,
   promptRetryFooterKind,
   reconcileAcpSessionForDisplay,
   runtimeControlMessageParts,
@@ -25,6 +27,7 @@ import {
   stabilizeAcpSessionTimingPatchForDisplay,
   useSessionTimingSeconds,
   acpSessionLoadErrorReason,
+  updateAcpOptimisticEvents,
   visibleAcpBannerError,
 } from '../src/components/acp/ACPChatDialog';
 import type { AcpSessionVm, AcpUiEventVm } from '../src/types';
@@ -74,8 +77,7 @@ function session(partial: Partial<AcpSessionVm>): AcpSessionVm {
       hasOlder: false,
       hasNewer: false,
     },
-    pendingPermissions: partial.pendingPermissions ?? [],
-    pendingElicitations: partial.pendingElicitations ?? [],
+    pendingInteractions: partial.pendingInteractions ?? [],
     diagnostics: partial.diagnostics ?? {
       rawFrameCount: 0,
       eventCount: 0,
@@ -85,6 +87,97 @@ function session(partial: Partial<AcpSessionVm>): AcpSessionVm {
 }
 
 describe('ACP chat event handling', () => {
+  it('bounds the per-session optimistic projection by the configured event window', () => {
+    const sessionKey = 'optimistic-bound-test';
+    const configuredWindowLimit = loadedEventBufferLimit(48, 2);
+    const oversized = Array.from(
+      { length: configuredWindowLimit + 7 },
+      (_, index) => event({
+        id: `optimistic-${index}`,
+        seq: index + 1,
+        kind: 'userTextDelta',
+        status: 'sending',
+        raw: { optimistic: true },
+      }),
+    );
+
+    const retained = updateAcpOptimisticEvents(
+      sessionKey,
+      () => oversized,
+      configuredWindowLimit,
+    );
+
+    expect(configuredWindowLimit).toBe(96);
+    expect(retained).toHaveLength(configuredWindowLimit);
+    expect(retained[0]?.id).toBe('optimistic-7');
+    updateAcpOptimisticEvents(sessionKey, () => [], configuredWindowLimit);
+  });
+
+  it('projects and settles permission through the shared pending interaction reducer', () => {
+    const current = session({ status: 'running' });
+    const request = event({
+      id: 'permission-rpc-live',
+      seq: 10,
+      kind: 'permissionRequest',
+      status: 'pending',
+      title: 'Allow write',
+      raw: {
+        requestId: 'rpc-live',
+        _meta: { goldBandConversation: {
+          turnId: 'turn-2',
+          promptEventId: 'prompt-turn-2',
+        } },
+        options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+      },
+    });
+    const pending = applyPendingInteractionEventsToSession(current, [request]);
+    const settled = applyPendingInteractionEventsToSession(pending, [{
+      ...request,
+      seq: 11,
+      status: 'selected',
+    }]);
+
+    expect(pending?.pendingInteractions).toMatchObject([{
+      kind: 'permission',
+      interactionId: 'rpc-live',
+      turnId: 'turn-2',
+      promptEventId: 'prompt-turn-2',
+    }]);
+    expect(settled?.pendingInteractions).toEqual([]);
+  });
+
+  it('projects replay-only usage and permission controls through one session reducer', () => {
+    const current = session({
+      status: 'running',
+      usage: { used: 1_000, size: 100_000 },
+    });
+    const projected = projectAcpSessionControlEvents(current, [
+      event({
+        id: 'usage-replay',
+        seq: 20,
+        kind: 'usageUpdate',
+        raw: { sessionUpdate: 'usage_update', used: 7_920, size: 258_400 },
+      }),
+      event({
+        id: 'permission-rpc-replay',
+        seq: 21,
+        kind: 'permissionRequest',
+        status: 'pending',
+        title: 'Allow replay command',
+        raw: {
+          requestId: 'rpc-replay',
+          options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+        },
+      }),
+    ]);
+
+    expect(projected?.usage).toMatchObject({ used: 7_920, size: 258_400 });
+    expect(projected?.pendingInteractions).toMatchObject([{
+      kind: 'permission',
+      interactionId: 'rpc-replay',
+    }]);
+  });
+
   it('stops the read-only Agent session when its canonical result arrives', () => {
     const current = session({
       status: 'running',
@@ -139,6 +232,77 @@ describe('ACP chat event handling', () => {
     ).toBe('Round 数已达上限：max rounds exceeded for $new-round: 2 > 1');
   });
 
+  it('shows the current ACP diagnostic before a follow-up response arrives', () => {
+    const acpSession = session({
+      diagnostics: {
+        rawFrameCount: 8,
+        eventCount: 3,
+        errorCount: 1,
+        lastError: 'first turn failed',
+        lastErrorTimestamp: '10Z',
+      },
+    });
+
+    expect(visibleAcpBannerError(null, acpSession, [])).toBe('first turn failed');
+  });
+
+  it('hides an ACP diagnostic after a newer normal follow-up response', () => {
+    const acpSession = session({
+      diagnostics: {
+        rawFrameCount: 12,
+        eventCount: 5,
+        errorCount: 1,
+        lastError: 'first turn failed',
+        lastErrorTimestamp: '10Z',
+      },
+    });
+
+    expect(visibleAcpBannerError(null, acpSession, [event({
+      seq: 5,
+      timestamp: '11Z',
+      kind: 'thoughtDelta',
+      status: 'running',
+    })], 'old run failure')).toBeNull();
+  });
+
+  it('falls back to the run error when ACP has no diagnostic', () => {
+    expect(visibleAcpBannerError(
+      null,
+      session({}),
+      [],
+      'run failure without ACP diagnostic',
+    )).toBe('run failure without ACP diagnostic');
+  });
+
+  it('hides a stale run fallback when the canonical latest turn completed', () => {
+    expect(visibleAcpBannerError(
+      null,
+      session({}),
+      [],
+      'run failure superseded by a successful follow-up',
+      'completed',
+    )).toBeNull();
+  });
+
+  it('shows the latest ACP diagnostic when the follow-up turn also fails', () => {
+    const acpSession = session({
+      diagnostics: {
+        rawFrameCount: 16,
+        eventCount: 7,
+        errorCount: 2,
+        lastError: 'follow-up turn failed',
+        lastErrorTimestamp: '20Z',
+      },
+    });
+
+    expect(visibleAcpBannerError(null, acpSession, [event({
+      seq: 6,
+      timestamp: '19Z',
+      kind: 'textDelta',
+      status: 'completed',
+    })])).toBe('follow-up turn failed');
+  });
+
   it('keeps the structured provider detail instead of replacing it with a generic adapter hint', () => {
     const providerError = 'ACP `initialize` failed: Already initialized (Internal error)';
     const acpSession = session({
@@ -173,7 +337,7 @@ describe('ACP chat event handling', () => {
       new Set(),
     );
 
-    expect(permission?.requestId).toBe('0');
+    expect(permission?.interactionId).toBe('0');
     expect(permission?.raw).toMatchObject({ requestId: '0' });
   });
 
@@ -191,7 +355,7 @@ describe('ACP chat event handling', () => {
       }),
     ];
 
-    expect(pendingPermissionFromEvents(events, new Set())?.requestId).toBe('0');
+    expect(pendingPermissionFromEvents(events, new Set())?.interactionId).toBe('0');
     expect(pendingPermissionFromEvents(events, new Set(['0']))).toBeNull();
   });
 
@@ -280,7 +444,7 @@ describe('ACP chat event handling', () => {
       }),
     ];
 
-    expect(pendingElicitationFromEvents(events, new Map())?.elicitationId).toBe('elicit-2');
+    expect(pendingElicitationFromEvents(events, new Map())?.interactionId).toBe('elicit-2');
   });
 
   it('projects a live elicitation into authoritative session state without relying on timing', () => {
@@ -296,7 +460,7 @@ describe('ACP chat event handling', () => {
       type: 'object',
       properties: { database: { type: 'string' } },
     };
-    const updated = applyPendingElicitationEventsToSession(current, [event({
+    const updated = applyPendingInteractionEventsToSession(current, [event({
       id: 'elicit-live',
       seq: 20,
       kind: 'elicitationRequest',
@@ -310,8 +474,11 @@ describe('ACP chat event handling', () => {
     })]);
 
     expect(updated?.timing?.paused).toBe(false);
-    expect(updated?.pendingElicitations).toEqual([{
-      elicitationId: 'elicit-live',
+    expect(updated?.pendingInteractions).toEqual([{
+      kind: 'elicitation',
+      interactionId: 'elicit-live',
+      turnId: null,
+      promptEventId: null,
       message,
       toolCallId: 'ask-tool-1',
       requestedSchema,
@@ -323,46 +490,48 @@ describe('ACP chat event handling', () => {
     }]);
   });
 
-  it('clears authoritative elicitation state on response or terminal session', () => {
+  it('settles elicitation on response without treating terminal session status as ownership', () => {
     const pending = session({
       status: 'running',
-      pendingElicitations: [{
-        elicitationId: 'elicit-live',
+      pendingInteractions: [{
+        kind: 'elicitation',
+        interactionId: 'elicit-live',
         message: 'Choose',
         requestedSchema: { type: 'object' },
         raw: {},
       }],
     });
-    const resolved = applyPendingElicitationEventsToSession(pending, [event({
+    const resolved = applyPendingInteractionEventsToSession(pending, [event({
       id: 'elicit-live-response',
       seq: 21,
       kind: 'elicitationResponse',
       status: 'completed',
       raw: { elicitationId: 'elicit-live', action: 'accept' },
     })]);
-    const terminal = applyPendingElicitationEventsToSession(
+    const terminal = applyPendingInteractionEventsToSession(
       { ...pending, status: 'cancelled' },
       [],
     );
 
-    expect(resolved?.pendingElicitations).toEqual([]);
-    expect(terminal?.pendingElicitations).toEqual([]);
+    expect(resolved?.pendingInteractions).toEqual([]);
+    expect(terminal?.pendingInteractions).toHaveLength(1);
   });
 
   it('preserves a live pending elicitation across a stale active session snapshot', () => {
     const pendingRequest = {
-      elicitationId: 'elicit-live',
+      kind: 'elicitation' as const,
+      interactionId: 'elicit-live',
       message: 'Choose',
       requestedSchema: { type: 'object' },
       raw: {},
     };
-    const live = session({ pendingElicitations: [pendingRequest] });
+    const live = session({ pendingInteractions: [pendingRequest] });
     const staleSnapshot = session({
-      pendingElicitations: [],
+      pendingInteractions: [],
       events: [],
     });
     const resolvedSnapshot = session({
-      pendingElicitations: [],
+      pendingInteractions: [],
       events: [event({
         id: 'elicit-live-response',
         seq: 22,
@@ -373,10 +542,10 @@ describe('ACP chat event handling', () => {
     });
 
     expect(
-      reconcileAcpSessionForDisplay(live, staleSnapshot)?.pendingElicitations,
+      reconcileAcpSessionForDisplay(live, staleSnapshot)?.pendingInteractions,
     ).toEqual([pendingRequest]);
     expect(
-      reconcileAcpSessionForDisplay(live, resolvedSnapshot)?.pendingElicitations,
+      reconcileAcpSessionForDisplay(live, resolvedSnapshot)?.pendingInteractions,
     ).toEqual([]);
   });
 
@@ -489,7 +658,7 @@ describe('ACP chat event handling', () => {
     ];
 
     expect(pendingElicitationFromEvents(events, new Map())).toEqual({
-      elicitationId: 'elicit-full-request',
+      interactionId: 'elicit-full-request',
       message,
       requestedSchema,
     });
@@ -775,6 +944,39 @@ describe('ACP chat event handling', () => {
     expect(parts.visibleText).toBe(content);
   });
 
+  it('keeps a later unmarked Direct JSON message separate from the selected Runtime output', () => {
+    const runtimeContent = 'result\n```json\n{"accepted":true}\n```';
+    const directContent = 'example\n```json\n{"example":true}\n```';
+    const messages = [
+      runtimeControlMessageParts(event({
+        id: 'runtime-output',
+        seq: 10,
+        kind: 'textDelta',
+        content: runtimeContent,
+        raw: {
+          runtimeControlOutputDisplay: {
+            kind: 'workflow-output',
+            artifactName: 'accept-result',
+            jsonText: '{"accepted":true}',
+            start: runtimeContent.indexOf('```json'),
+            end: runtimeContent.length,
+            parseStatus: 'valid',
+          },
+        },
+      })),
+      runtimeControlMessageParts(event({
+        id: 'direct-follow-up',
+        seq: 20,
+        kind: 'textDelta',
+        content: directContent,
+      })),
+    ];
+
+    expect(messages[0].display?.jsonText).toBe('{"accepted":true}');
+    expect(messages[1].display).toBeNull();
+    expect(messages[1].visibleText).toBe(directContent);
+  });
+
   it('splits every marked runtime repair attempt independently', () => {
     const attempts = ['A', 'B', 'C'].map((label, index) => {
       const content = `${label}\n{"try":${index + 1}}`;
@@ -1023,6 +1225,7 @@ describe('ACP chat event handling', () => {
       }),
       [assistant],
       100,
+      'live-head',
     );
 
     expect(visible.events.map((item) => item.id)).toEqual([
@@ -1037,6 +1240,44 @@ describe('ACP chat event handling', () => {
       hasOlder: false,
       hasNewer: false,
     });
+  });
+
+  it('keeps a historical loaded window authoritative over a newer session snapshot', () => {
+    const historical = event({
+      id: 'historical-message',
+      seq: 1,
+      kind: 'textDelta',
+      content: 'Earlier content',
+      status: 'completed',
+    });
+    const liveHead = event({
+      id: 'live-head-message',
+      seq: 12,
+      kind: 'textDelta',
+      content: 'Newest content',
+    });
+
+    const visible = createVisibleAcpSession(
+      session({ events: [liveHead] }),
+      [historical],
+      100,
+      'historical',
+    );
+
+    expect(visible.events.map((item) => item.id)).toEqual(['historical-message']);
+  });
+
+  it('does not fall back to the live head while a historical window is empty', () => {
+    const visible = createVisibleAcpSession(
+      session({
+        events: [event({ id: 'live-head-message', seq: 12 })],
+      }),
+      [],
+      100,
+      'historical',
+    );
+
+    expect(visible.events).toEqual([]);
   });
 
   it('uses backend timing as the session elapsed source of truth', () => {

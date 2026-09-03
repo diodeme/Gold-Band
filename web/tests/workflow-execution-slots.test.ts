@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createAuthoringWorkerNode, normalizeWorkflowExecutionSlots, upsertWorkerModelBinding } from '../src/components/WorkflowEditor';
-import type { WorkflowDsl, WorkflowWorkerNodeDsl } from '../src/types';
+import { createAuthoringWorkerNode, normalizeWorkflowExecutionSlots, normalizeWorkflowJsonForAuthoring, upsertWorkerModelBinding } from '../src/components/WorkflowEditor';
+import type { WorkflowAiDynamicNodeDsl, WorkflowDsl, WorkflowWorkerNodeDsl } from '../src/types';
 
 function workflow(nodes: WorkflowWorkerNodeDsl[]): WorkflowDsl {
   return {
@@ -78,5 +78,52 @@ describe('Workflow JSON execution slots', () => {
       'duplicate-slot',
     ]);
     expect(createSlotId).not.toHaveBeenCalled();
+  });
+
+  it('uses the same slot projection for every valid JSON authoring transition', () => {
+    const dynamic: WorkflowAiDynamicNodeDsl = {
+      type: 'ai-dynamic',
+      id: 'dynamic',
+      agentStrategy: { mode: 'fixed', provider: 'claude-acp' },
+      control: {
+        maxDynamicNodes: 20,
+        maxFanout: 5,
+        maxDepth: 6,
+        maxParallel: 3,
+        maxGroupDepth: 1,
+        maxWorkflowInvocations: 10,
+        allowNestedDynamic: false,
+      },
+      allowedWorkflows: [],
+    };
+    const previous: WorkflowDsl = {
+      ...workflow([{ type: 'worker', id: 'existing', executionSlotId: 'slot-existing' }]),
+      nodes: [dynamic, { type: 'worker', id: 'existing', executionSlotId: 'slot-existing' }],
+    };
+    const parsed: WorkflowDsl = {
+      ...previous,
+      entry: 'stale-entry',
+      nodes: [
+        dynamic,
+        { type: 'worker', id: 'existing' },
+        { type: 'worker', id: 'new-worker' },
+      ],
+      edges: [
+        { from: 'dynamic', to: 'existing', on: 'success' },
+        { from: 'existing', to: 'new-worker', on: 'success' },
+        { from: 'new-worker', to: '$end', on: 'success' },
+      ],
+    };
+    const createSlotId = vi.fn(() => 'slot-new');
+
+    const normalized = normalizeWorkflowJsonForAuthoring(parsed, previous, createSlotId);
+
+    expect(normalized.entry).toBe('dynamic');
+    expect(normalized.nodes).toEqual([
+      expect.not.objectContaining({ executionSlotId: expect.anything() }),
+      expect.objectContaining({ id: 'existing', executionSlotId: 'slot-existing' }),
+      expect.objectContaining({ id: 'new-worker', executionSlotId: 'slot-new' }),
+    ]);
+    expect(createSlotId).toHaveBeenCalledTimes(1);
   });
 });

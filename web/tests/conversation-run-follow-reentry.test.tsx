@@ -166,7 +166,7 @@ describe('ConversationRunPage follow mode reentry', () => {
         <ConversationRunPage
           run={run}
           taskTitle="AUTO run"
-          appConfig={{ turnFiles: { cardPreviewLimit: 10 } } as AppConfigVm}
+          appConfig={{ turnFiles: { cardPreviewLimit: 10, attachmentCardPreviewLimit: 1 } } as AppConfigVm}
           agentRegistry={null}
           followMode="manual"
           onRerun={vi.fn()}
@@ -190,6 +190,130 @@ describe('ConversationRunPage follow mode reentry', () => {
     await act(async () => root.unmount());
   });
 
+  it('does not forward a superseded Direct runtime error after a follow-up turn completes', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const selectedKey = 'round-001/direct-agent/attempt-001';
+    const lifecycle = {
+      runtime: {
+        status: 'paused',
+        outcome: null,
+        pauseReason: 'runtime-abnormal',
+        resumable: true,
+        current: true,
+        active: false,
+        continuable: false,
+        phase: 'idle',
+        revision: 4,
+      },
+      control: { mode: 'non-runtime-controlled' },
+      acp: {
+        revision: 33,
+        turnId: 'follow-up-turn',
+        sessionAvailability: 'established',
+        liveTurnActivity: 'idle',
+        latestTurnStatus: 'completed',
+        stopping: false,
+        stopReason: 'end_turn',
+      },
+      displayStatus: 'paused',
+      runtimeDisplay: {
+        code: 'runtime-abnormal',
+        tone: 'danger',
+        terminal: false,
+        resumable: true,
+        reasonCode: 'runtime-abnormal',
+        blockingError: false,
+      },
+      composer: {
+        mode: 'normal',
+        submitTarget: 'acp-prompt',
+        processingKind: 'processing',
+        canStop: false,
+        lockInput: false,
+      },
+    };
+    const leaf = {
+      roundId: 'round-001',
+      nodeId: 'direct-agent',
+      attemptId: 'attempt-001',
+      pathLabel: selectedKey,
+      status: 'paused',
+      current: true,
+      manualCheckPending: false,
+      sessionEstablished: true,
+      artifactCount: 0,
+      attachmentCount: 0,
+      runtimeDisplay: lifecycle.runtimeDisplay,
+      lifecycle,
+    };
+    const run = {
+      projectId: 'project-1',
+      taskId: 'task-333',
+      runId: 'run-001',
+      runStatus: 'paused',
+      runMode: 'direct',
+      pauseReason: 'runtime-abnormal',
+      runtimeErrorMessage: 'old provider failure',
+      activeSessions: [],
+      inputAttachments: [],
+      selectedSession: null,
+      sessionTree: {
+        selectedSessionKey: selectedKey,
+        rounds: [{
+          roundId: 'round-001',
+          index: 1,
+          label: 'Round 1',
+          status: 'paused',
+          nodes: [{
+            nodeId: 'direct-agent',
+            label: 'Direct Agent',
+            nodeType: 'worker',
+            status: 'paused',
+            attempts: [leaf],
+            outerNodes: [],
+          }],
+        }],
+      },
+      workflowStatus: 'valid',
+      workflowValid: true,
+      workflowGraph: { nodes: [], edges: [] },
+      resumable: true,
+    } as unknown as ConversationRunVm;
+
+    await act(async () => {
+      root.render(
+        <ConversationRunPage
+          run={run}
+          taskTitle="Direct run"
+          appConfig={{ turnFiles: { cardPreviewLimit: 10, attachmentCardPreviewLimit: 1 } } as AppConfigVm}
+          agentRegistry={null}
+          followMode="auto"
+          onRerun={vi.fn()}
+          onEditWorkflow={vi.fn()}
+          onSelectSession={vi.fn()}
+          onAutoFollowChange={vi.fn()}
+          initialSessionTreeExpansion={{}}
+          onSessionTreeExpansionChange={vi.fn()}
+        />,
+      );
+    });
+
+    expect(chatMocks.render).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtimeComposerContext: expect.objectContaining({
+          lifecycle,
+          runtimeError: null,
+          runtimeErrorFallback: 'old provider failure',
+        }),
+      }),
+      undefined,
+    );
+
+    await act(async () => root.unmount());
+  });
+
   it('restores dynamic session auto-follow after a scroll-only pause returns to bottom', async () => {
     const container = document.createElement('div');
     document.body.append(container);
@@ -203,7 +327,7 @@ describe('ConversationRunPage follow mode reentry', () => {
         <ConversationRunPage
           run={run}
           taskTitle="AUTO run"
-          appConfig={{ turnFiles: { cardPreviewLimit: 10 } } as AppConfigVm}
+          appConfig={{ turnFiles: { cardPreviewLimit: 10, attachmentCardPreviewLimit: 1 } } as AppConfigVm}
           agentRegistry={null}
           followMode={followMode}
           onRerun={vi.fn()}
@@ -240,7 +364,7 @@ describe('ConversationRunPage follow mode reentry', () => {
         <ConversationRunPage
           run={terminalDynamicRun()}
           taskTitle="AUTO run"
-          appConfig={{ turnFiles: { cardPreviewLimit: 10 } } as AppConfigVm}
+          appConfig={{ turnFiles: { cardPreviewLimit: 10, attachmentCardPreviewLimit: 1 } } as AppConfigVm}
           agentRegistry={null}
           followMode="manual"
           onRerun={vi.fn()}

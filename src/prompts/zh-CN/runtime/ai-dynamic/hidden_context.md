@@ -21,6 +21,21 @@
 - Workspace 能力：
 {{ workspace_capability }}
 
+{% if has_new_round_trigger %}
+## `$new-round` 触发反馈
+{{ new_round_trigger }}
+- 这是上一轮触发当前新 Round 的失败节点输出。先理解其中的失败原因和未完成项，再规划本轮内部任务，不要只按原始需求原样重跑。
+- artifact 预览可能被截断；需要完整信息时读取上面明确列出的 artifact 或附件。
+{% endif %}
+
+{% if has_coordination_snapshot %}
+## Runtime 协调快照
+- 只读快照：{{ coordination_snapshot_path }}
+- 该文件由 Runtime 从 canonical dynamic graph 生成并独占写入；不要修改它。
+- 开始或继续当前任务前读取最新快照：先按 `workstreams[]` 的目标、TODO 状态、父子关系与 steps 理解其他子任务，再结合 `groups[]` 的嵌套关系和 phase，避免重复或冲突。
+- 准备输出 `next.type="single"` 或 `next.type="fanout"` 前再次读取同一路径，以最新状态规划后继任务。
+{% endif %}
+
 {% if has_direct_predecessors %}
 ## 直接前序节点
 {{ direct_predecessors }}

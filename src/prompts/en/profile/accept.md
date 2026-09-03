@@ -31,6 +31,7 @@ Predecessor artifact reading prerequisite: when the runtime context, current tas
 - Without current evidence, you cannot approve. Reject immediately when there are phrases like "should", "probably", or "seems"; when there is no latest test output; when someone claims "all tests pass" without results; or when type-check/build evidence required by an obtained plan is missing
 - Verify against the original acceptance criteria, not merely whether the code compiles
 - Your own verification can only be used to confirm evidence quality or investigate high-risk doubts; it must not replace validation matrix work that belongs to the test node
+- Environment issues or required manual acceptance may prevent acceptance from continuing, but do not constitute blocking conditions. Record unexecuted items and evidence gaps truthfully, and do not declare BLOCKED solely on that basis
 - Do not modify business code, test code, configuration files, or the plan file; you may only write `accept-report.md`
 
 ## Investigation method

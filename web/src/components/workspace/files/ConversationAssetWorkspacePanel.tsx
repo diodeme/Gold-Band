@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { FileText, TriangleAlert } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { showArtifact, showConversationAttachment, showConversationMessageAttachment } from '@/api';
-import { imageSrcFromContent } from '@/lib/asset-preview';
+import { imageMimeTypeFromContent, imageSrcFromContent } from '@/lib/asset-preview';
 import type { ContentVm } from '@/types';
 import type { ConversationAssetWorkspaceResource } from '../right-workspace-context';
 import { ReadonlyTextWorkspaceViewer } from './ReadonlyTextWorkspaceViewer';
@@ -30,6 +30,7 @@ export function ConversationAssetWorkspacePanel({ resource }: { resource: Conver
   }, [resource]);
 
   const imageSrc = imageSrcFromContent(content);
+  const imageMime = imageMimeTypeFromContent(content);
 
   if (failed) {
     return <div className="flex min-h-0 flex-1 items-center justify-center gap-2 px-6 text-sm text-destructive"><TriangleAlert className="size-4" />{t('turnFiles.assetLoadFailed')}</div>;
@@ -46,7 +47,15 @@ export function ConversationAssetWorkspacePanel({ resource }: { resource: Conver
       </header>
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {imageSrc ? (
-          <WorkspaceImageCanvas src={imageSrc} alt={resource.name} />
+          <WorkspaceImageCanvas
+            src={imageSrc}
+            alt={resource.name}
+            imageActionAsset={{
+              name: resource.name,
+              mime: imageMime ?? 'application/octet-stream',
+              previewUrl: imageSrc,
+            }}
+          />
         ) : (
           <ReadonlyTextWorkspaceViewer
             documentKey={resource.key}

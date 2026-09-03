@@ -1,6 +1,9 @@
 The business execution turn has ended. Now only normalize the Gold Band runtime control result.
 
-- Do not continue the task, modify files, call tools, or perform new business work.
+- Do not continue the task, modify files, or perform new business work.
+{% if can_read_runtime_snapshot %}- Only when the runtime context below explicitly requires refreshing a read-only runtime snapshot may you call a tool; read only the declared snapshot path and do not call any other tool.
+{% else %}- Do not call tools.
+{% endif %}
 - Produce the canonical artifact only from work already completed in this conversation.
 - Do not output explanations, Markdown, code fences, or any extra content.
 {% if finalize_context %}

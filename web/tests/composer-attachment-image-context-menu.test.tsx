@@ -14,9 +14,9 @@ const imageActionMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@/lib/image-actions', () => ({
-  copyAttachmentImage: imageActionMocks.copy,
+  copyImageAsset: imageActionMocks.copy,
   IMAGE_ACTION_FEEDBACK_DURATION_MS: 1_800,
-  saveAttachmentImageAs: imageActionMocks.save,
+  saveImageAssetAs: imageActionMocks.save,
 }));
 
 import { ComposerContextArea } from '@/components/shared/ComposerContextArea';

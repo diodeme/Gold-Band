@@ -95,18 +95,18 @@ describe('Gold themed scrollbar', () => {
     expect(styles).toMatch(/\.gold-themed-scrollbar\.gold-conversation-scrollbar \{\s*scrollbar-color: var\(--gold-conversation-scrollbar-thumb\) transparent;/u);
   });
 
-  it('keeps the conversation scrollbar full-height while the composer stays pinned inside it', () => {
+  it('keeps the conversation scrollbar full-height while the composer uses a stable viewport layer', () => {
     const dialog = readFileSync(path.resolve(__dirname, '../src/components/acp/ACPChatDialog.tsx'), 'utf8');
-    const viewportStart = dialog.indexOf('<ConversationViewport');
-    const viewportEnd = dialog.indexOf('</ConversationViewport>', viewportStart);
-    const stickyFooter = dialog.indexOf('data-acp-conversation-footer="sticky"');
+    const viewport = readFileSync(path.resolve(__dirname, '../src/components/conversation/ConversationViewport.tsx'), 'utf8');
 
-    expect(viewportStart).toBeGreaterThanOrEqual(0);
-    expect(stickyFooter).toBeGreaterThan(viewportStart);
-    expect(stickyFooter).toBeLessThan(viewportEnd);
-    expect(dialog).toContain('"sticky bottom-0 z-20 mt-auto shrink-0",');
+    expect(dialog).toContain('<ConversationViewportFooter');
+    expect(dialog).toContain('data-acp-conversation-footer="viewport"');
+    expect(dialog).not.toContain('"sticky bottom-0 z-20 mt-auto shrink-0",');
     expect(dialog).toContain('wallpaperSurface ? "bg-transparent" : "bg-background"');
     expect(dialog).toContain('className="absolute right-4 top-0 z-30 -translate-y-[calc(100%+1rem)]');
+    expect(viewport).toContain('data-conversation-viewport-footer="true"');
+    expect(viewport).toContain('paddingBottom: hasFooter');
+    expect(viewport).toContain("new ResizeObserver");
   });
 
   it('keeps the right workspace Tab on the same themed native scrollbar path', () => {

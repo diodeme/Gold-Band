@@ -403,7 +403,7 @@ function terminalDynamicRun() {
     runtimeDisplay: { code: 'success', tone: 'success' },
     lifecycle: {
       runtime: { status: 'completed', active: false },
-      control: { mode: 'non-runtime-controlled' },
+      control: { mode: 'non-runtime-controlled', transitionCause: 'runtime-terminal' },
       acp: { liveTurnActivity: 'idle', stopping: false },
       composer: { mode: 'normal', supersededBy: null },
     },

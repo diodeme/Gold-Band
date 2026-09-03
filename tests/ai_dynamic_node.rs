@@ -1681,6 +1681,16 @@ fn ai_dynamic_successor_receives_public_handoff_artifact() {
     let preview = handoff.preview.as_deref().unwrap();
     assert!(preview.contains("\"summary\": \"accepted\""));
     assert!(preview.contains("ai-dynamic-report-manifest.json"));
+
+    let rendered = render_prompt_bundle(successor).unwrap();
+    assert!(
+        rendered
+            .user_prompt
+            .contains("## AI-DYNAMIC 完整报告清单（按需读取）")
+    );
+    assert!(rendered.user_prompt.contains("`reportManifest.path`"));
+    assert!(rendered.user_prompt.contains("节点/group 拓扑"));
+    assert!(rendered.user_prompt.contains("默认使用业务交接 `summary`"));
 }
 
 #[test]

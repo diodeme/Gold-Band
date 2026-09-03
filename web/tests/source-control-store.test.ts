@@ -571,6 +571,101 @@ describe('source control session store', () => {
     }
   });
 
+  it('establishes the repository monitor before taking the first authoritative snapshot', async () => {
+    const events = eventApi();
+    const monitorStarted = deferred<void>();
+    events.api.startMonitor.mockReturnValueOnce(monitorStarted.promise);
+    const store = new SourceControlStore(events.api);
+
+    const loading = store.ensureLoaded('project-1', 'D:/repo');
+    await vi.waitFor(() => expect(events.api.startMonitor).toHaveBeenCalledTimes(1));
+    expect(events.api.getSnapshot).not.toHaveBeenCalled();
+
+    monitorStarted.resolve();
+    await loading;
+    expect(events.api.getSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats a null workspace path as the main repository monitor scope', async () => {
+    const events = eventApi();
+    const monitorStarted = deferred<void>();
+    events.api.startMonitor.mockReturnValueOnce(monitorStarted.promise);
+    const store = new SourceControlStore(events.api);
+
+    const loading = store.ensureLoaded('project-1', null);
+    await vi.waitFor(() => expect(events.api.startMonitor).toHaveBeenCalledWith('project-1', null));
+    expect(events.api.getSnapshot).not.toHaveBeenCalled();
+
+    monitorStarted.resolve();
+    await loading;
+    expect(events.api.getSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes worktree status without reloading history for ordinary workspace changes', async () => {
+    vi.useFakeTimers();
+    try {
+      const events = eventApi();
+      const store = new SourceControlStore(events.api);
+      await store.ensureLoaded('project-1', 'D:/repo');
+
+      events.emitWorkspace('D:/repo/src/current.ts');
+      await vi.advanceTimersByTimeAsync(151);
+
+      expect(events.api.getSnapshot).toHaveBeenCalledTimes(2);
+      expect(events.api.getHistory).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds workspace-event debounce latency under continuous writes', async () => {
+    vi.useFakeTimers();
+    try {
+      const events = eventApi();
+      const store = new SourceControlStore(events.api);
+      await store.ensureLoaded('project-1', 'D:/repo');
+
+      for (let elapsed = 0; elapsed < 1_000; elapsed += 100) {
+        events.emitWorkspace('D:/repo/src/generated.ts');
+        await vi.advanceTimersByTimeAsync(100);
+      }
+
+      expect(events.api.getSnapshot).toHaveBeenCalledTimes(2);
+      expect(events.api.getHistory).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retains an invalidation received while a workspace mutation is pending', async () => {
+    vi.useFakeTimers();
+    try {
+      const events = eventApi();
+      const mutationResult = deferred<GitMutationResultVm>();
+      events.api.executeMutation.mockReturnValueOnce(mutationResult.promise);
+      const store = new SourceControlStore(events.api);
+      await store.ensureLoaded('project-1', 'D:/repo');
+
+      const mutation = store.mutate('project-1', 'D:/repo', { kind: 'stage-all' });
+      events.emitWorkspace('D:/repo/src/current.ts');
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(events.api.getSnapshot).toHaveBeenCalledTimes(1);
+
+      mutationResult.resolve({
+        scope: 'workspace',
+        status: repositorySnapshot('D:/repo', 'revision-2').status,
+        repositoryRevision: 'revision-2',
+      });
+      await mutation;
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(events.api.getSnapshot).toHaveBeenCalledTimes(2);
+      expect(events.api.getHistory).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('refreshes only the worktree containing a changed workspace file', async () => {
     vi.useFakeTimers();
     try {

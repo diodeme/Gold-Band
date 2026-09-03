@@ -13,6 +13,7 @@ interface ConversationViewportProps {
   scrollClassName: string;
   contextRef?: ChatContainerRootProps['contextRef'];
   onAtBottomChange?: ChatContainerRootProps['onAtBottomChange'];
+  onFollowIntentChange?: ChatContainerRootProps['onFollowIntentChange'];
   onViewportScroll?: ChatContainerRootProps['onViewportScroll'];
   onViewportUserScroll?: ChatContainerRootProps['onViewportUserScroll'];
   initialFollowing?: boolean;
@@ -25,6 +26,7 @@ export function ConversationViewport({
   scrollClassName,
   contextRef,
   onAtBottomChange,
+  onFollowIntentChange,
   onViewportScroll,
   onViewportUserScroll,
   initialFollowing = true,
@@ -39,6 +41,7 @@ export function ConversationViewport({
       initial={initialFollowing ? 'instant' : false}
       contextRef={contextRef}
       onAtBottomChange={onAtBottomChange}
+      onFollowIntentChange={onFollowIntentChange}
       onViewportScroll={onViewportScroll}
       onViewportUserScroll={onViewportUserScroll}
     >

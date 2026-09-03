@@ -1406,6 +1406,7 @@ export function App() {
     let refreshAgain = false;
     let pendingEventSessionKey: string | null = null;
     let pendingEventRuntimeControlled = false;
+    let pendingEventControlTransitionCause: ConversationAttemptLifecycleVm['control']['transitionCause'] = undefined;
     let pendingCanonicalRunBoundary = false;
     let canonicalRunBoundaryInFlight = false;
     const { projectId, taskId, runId } = conversationPage;
@@ -1433,11 +1434,14 @@ export function App() {
           currentSelectedLeaf?.lifecycle?.runtime.status ?? currentSelectedLeaf?.status,
         ),
         currentSelectedRuntimeControlled: isRuntimeControlledConversationLifecycle(currentSelectedLeaf?.lifecycle),
+        currentSelectedControlTransitionCause: currentSelectedLeaf?.lifecycle?.control.transitionCause,
         pendingEventRuntimeControlled,
+        pendingEventControlTransitionCause,
       });
       canonicalRunBoundaryInFlight = pendingCanonicalRunBoundary;
       pendingEventSessionKey = null;
       pendingEventRuntimeControlled = false;
+      pendingEventControlTransitionCause = undefined;
       pendingCanonicalRunBoundary = false;
       getConversationRun(projectId, taskId, runId, selectedKey)
         .then((run) => {
@@ -1459,7 +1463,9 @@ export function App() {
               latestSelectedLeaf?.lifecycle?.runtime.status ?? latestSelectedLeaf?.status,
             ),
             currentSelectedRuntimeControlled: isRuntimeControlledConversationLifecycle(latestSelectedLeaf?.lifecycle),
+            currentSelectedControlTransitionCause: latestSelectedLeaf?.lifecycle?.control.transitionCause,
             pendingEventRuntimeControlled: isRuntimeControlledConversationLifecycle(responseTargetLeaf?.lifecycle),
+            pendingEventControlTransitionCause: responseTargetLeaf?.lifecycle?.control.transitionCause,
           });
           applyConversationRunSnapshot(run, 'live-refresh', {
             selectedSessionKey: effectiveSelectedKey,
@@ -1481,6 +1487,7 @@ export function App() {
     const queueConversationRunRefresh = (
       sessionKey?: string | null,
       runtimeControlled = false,
+      controlTransitionCause?: ConversationAttemptLifecycleVm['control']['transitionCause'],
       delayMs = 120,
       canonicalRunBoundary = false,
     ) => {
@@ -1494,6 +1501,7 @@ export function App() {
       )) {
         pendingEventSessionKey = sessionKey;
         pendingEventRuntimeControlled = runtimeControlled;
+        pendingEventControlTransitionCause = controlTransitionCause;
         pendingCanonicalRunBoundary = canonicalRunBoundary;
       }
       if (refreshTimer !== null) {
@@ -1519,6 +1527,7 @@ export function App() {
         event.eventKind === 'node-started'
           ? true
           : isRuntimeControlledConversationLifecycle(eventLeaf?.lifecycle),
+        eventLeaf?.lifecycle?.control.transitionCause,
         0,
         true,
       );
@@ -1568,6 +1577,7 @@ export function App() {
         currentSelectedTerminal,
         incomingActive,
         currentSelectedRuntimeControlled,
+        currentSelectedControlTransitionCause: currentSelectedLeaf?.lifecycle?.control.transitionCause,
         incomingRuntimeControlled,
       });
       const followPending = currentSelectedKey !== sessionKey
@@ -1605,7 +1615,11 @@ export function App() {
       if (!updatePlan.queueRunRefresh) {
         return;
       }
-      queueConversationRunRefresh(eventSelectedSessionKey, incomingRuntimeControlled);
+      queueConversationRunRefresh(
+        eventSelectedSessionKey,
+        incomingRuntimeControlled,
+        (event.lifecycle ?? incomingLeaf?.lifecycle)?.control.transitionCause,
+      );
     };
     conversationAcpSessionRefreshRef.current = refreshSelectedRunFromAcpEvent;
 

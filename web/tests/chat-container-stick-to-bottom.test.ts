@@ -300,7 +300,9 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
       await act(async () => {
         emitObservedHeight(contentHeight);
         viewport?.dispatchEvent(new WheelEvent('wheel', { deltaY: -1 }));
-        scrollTop = 130;
+        // A one-pixel upward move still lands inside the bottom tolerance,
+        // but the explicit user escape must take precedence over geometry.
+        scrollTop = 138;
         viewport?.dispatchEvent(new Event('scroll'));
         await waitForScrollFrames();
       });
@@ -312,7 +314,7 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
         emitObservedHeight(contentHeight);
         await waitForScrollFrames();
       });
-      expect(scrollTop).toBe(130);
+      expect(scrollTop).toBe(138);
       expect(atBottomChanges.at(-1)).toBe(false);
 
       await act(async () => {

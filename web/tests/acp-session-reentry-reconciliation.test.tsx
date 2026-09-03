@@ -293,6 +293,37 @@ function terminalLifecycle(turnId: string): ConversationAttemptLifecycleVm {
   };
 }
 
+function activePermissionLifecycle(turnId: string): ConversationAttemptLifecycleVm {
+  const lifecycle = terminalLifecycle(turnId);
+  lifecycle.runtime = {
+    status: 'running',
+    outcome: null,
+    pauseReason: null,
+    resumable: false,
+    current: true,
+    active: true,
+    continuable: false,
+    phase: 'provider-running',
+    revision: 1,
+  };
+  lifecycle.acp = {
+    revision: 5,
+    turnId,
+    sessionAvailability: 'established',
+    liveTurnActivity: 'waiting-permission',
+    latestTurnStatus: 'running',
+    stopping: false,
+  };
+  lifecycle.composer = {
+    mode: 'runtime-active',
+    submitTarget: 'none',
+    processingKind: 'processing',
+    canStop: true,
+    lockInput: true,
+  };
+  return lifecycle;
+}
+
 function dynamicTerminalLifecycle(revision = 8): ConversationAttemptLifecycleVm {
   return {
     ...terminalLifecycle('turn-dynamic-completed'),
@@ -411,6 +442,50 @@ describe('ACP session re-entry reconciliation', () => {
 
       expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
       expect(container.querySelector('[data-theme-role="runtime-control"]')).not.toBeNull();
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('hydrates a durable agent reply while the selected dynamic session stays mounted', async () => {
+    const dynamicLocator: TestLocator = {
+      ...locator,
+      outerNodeId: 'ai-dynamic',
+      outerAttemptId: 'attempt-001',
+    };
+    const prompt = event('prompt-mounted', 1, 'userTextDelta', '执行自动任务', {
+      raw: { source: 'goldBandPrompt', promptId: 'prompt-mounted' },
+    });
+    const stale = session([prompt], 'running');
+    const completed = session([
+      prompt,
+      event('answer-mounted', 2, 'textDelta', 'Agent 已经完成自动任务'),
+    ], 'completed');
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(stale)
+      .mockResolvedValueOnce(completed);
+
+    const { container, root } = await renderDialog(
+      stale,
+      'root',
+      undefined,
+      undefined,
+      dynamicLocator,
+    );
+    try {
+      expect(container.textContent).toContain('执行自动任务');
+      expect(container.textContent).not.toContain('Agent 已经完成自动任务');
+
+      await act(async () => {
+        runtime.listener?.({
+          ...dynamicLocator,
+          lifecycle: dynamicTerminalLifecycle(),
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+      expect(container.textContent).toContain('Agent 已经完成自动任务');
     } finally {
       await unmount(root);
     }
@@ -836,6 +911,324 @@ describe('ACP session re-entry reconciliation', () => {
       expect(container.textContent).toContain('Editing · files');
       expect([...container.querySelectorAll('[data-testid="markdown"]')]
         .every((node) => node.getAttribute('data-streaming') === 'false')).toBe(true);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('recovers the canonical body when a pending permission arrives over an empty visible timeline', async () => {
+    const hiddenRuntimePrompt = event(
+      'permission-gap-prompt',
+      1,
+      'userTextDelta',
+      'runtime prompt',
+      {
+        raw: {
+          source: 'goldBandPrompt',
+          promptId: 'permission-gap-prompt',
+          hiddenFromChat: true,
+        },
+      },
+    );
+    const permission = event(
+      'permission-json-rpc-3',
+      5,
+      'permissionRequest',
+      null,
+      {
+        title: 'Run project search',
+        toolCallId: 'tool-permission-gap',
+        status: 'pending',
+        raw: {
+          requestId: '3',
+          options: [
+            { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
+            { optionId: 'reject_once', name: 'Reject', kind: 'reject_once' },
+          ],
+        },
+      },
+    );
+    const stale = session([hiddenRuntimePrompt]);
+    const canonical = session([
+      hiddenRuntimePrompt,
+      event('permission-gap-answer', 2, 'textDelta', '先前已经产生的回复'),
+      event('permission-gap-tool', 3, 'toolCall', null, {
+        title: 'Editing files',
+        toolCallId: 'tool-permission-gap',
+        status: 'running',
+      }),
+      permission,
+    ]);
+    for (const snapshot of [stale, canonical]) {
+      snapshot.systemPromptAppend = 'runtime context';
+      snapshot.config = {
+        currentModelId: 'test-model',
+        currentModeId: 'test-mode',
+      };
+    }
+    const activeLifecycle = activePermissionLifecycle('turn-permission-gap');
+    let canonicalAvailable = false;
+    vi.mocked(getAcpSession).mockImplementation(async () => (
+      canonicalAvailable ? canonical : stale
+    ));
+
+    const { container, root } = await renderDialog(
+      stale,
+      'root',
+      undefined,
+      undefined,
+      locator,
+      undefined,
+      activeLifecycle,
+    );
+    try {
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+      });
+      const initialReadCount = vi.mocked(getAcpSession).mock.calls.length;
+      expect(container.querySelector('[data-brand-loading-state="true"]')).not.toBeNull();
+
+      canonicalAvailable = true;
+      await act(async () => {
+        runtime.listener?.({
+          ...update(permission),
+          timelineRevision: 5,
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+      });
+
+      expect(container.textContent).toContain('Run project search');
+      await vi.waitFor(() => {
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(initialReadCount + 1);
+      });
+      expect(container.textContent).toContain('先前已经产生的回复');
+      expect(container.querySelector('[data-brand-loading-state="true"]')).toBeNull();
+      expect(container.textContent).toContain('Run project search');
+
+      await act(async () => {
+        runtime.listener?.({
+          ...update(permission),
+          timelineRevision: 5,
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+      });
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(initialReadCount + 1);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('refreshes stale visible body content when a pending permission advances the canonical revision', async () => {
+    const prompt = event('stale-permission-prompt', 1, 'userTextDelta', '检查项目', {
+      raw: { source: 'goldBandPrompt', promptId: 'stale-permission-prompt' },
+    });
+    const permission = event(
+      'permission-json-rpc-4',
+      5,
+      'permissionRequest',
+      null,
+      {
+        title: 'Approve project edit',
+        toolCallId: 'tool-stale-permission',
+        status: 'pending',
+        raw: {
+          requestId: '4',
+          options: [
+            { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
+            { optionId: 'reject_once', name: 'Reject', kind: 'reject_once' },
+          ],
+        },
+      },
+    );
+    const stale = session([
+      prompt,
+      event('stale-permission-answer', 2, 'textDelta', '仍停留在旧版本的回复'),
+    ]);
+    const canonical = session([
+      prompt,
+      event('stale-permission-answer', 4, 'textDelta', '后台已经产生的最新回复', {
+        startedSeq: 2,
+      }),
+      permission,
+    ]);
+    let canonicalAvailable = false;
+    vi.mocked(getAcpSession).mockImplementation(async () => (
+      canonicalAvailable ? canonical : stale
+    ));
+
+    const { container, root } = await renderDialog(
+      stale,
+      'root',
+      undefined,
+      undefined,
+      locator,
+      undefined,
+      activePermissionLifecycle('turn-stale-permission'),
+    );
+    try {
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+      });
+      const initialReadCount = vi.mocked(getAcpSession).mock.calls.length;
+      expect(container.textContent).toContain('仍停留在旧版本的回复');
+
+      canonicalAvailable = true;
+      await act(async () => {
+        runtime.listener?.({
+          ...update(permission),
+          timelineRevision: 5,
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+      });
+
+      expect(container.textContent).toContain('Approve project edit');
+      await vi.waitFor(() => {
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(initialReadCount + 1);
+      });
+      expect(container.textContent).toContain('后台已经产生的最新回复');
+      expect(container.textContent).not.toContain('仍停留在旧版本的回复');
+      expect(container.textContent).toContain('Approve project edit');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('projects a pending canonical body over a stale window without manual history intent', async () => {
+    const prompt = event('layout-permission-prompt', 1, 'userTextDelta', '检查布局恢复', {
+      raw: { source: 'goldBandPrompt', promptId: 'layout-permission-prompt' },
+    });
+    const permission = event(
+      'permission-json-rpc-layout',
+      5,
+      'permissionRequest',
+      null,
+      {
+        title: 'Approve after app switch',
+        toolCallId: 'tool-layout-permission',
+        status: 'pending',
+        raw: {
+          requestId: 'layout',
+          options: [
+            { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
+            { optionId: 'reject_once', name: 'Reject', kind: 'reject_once' },
+          ],
+        },
+      },
+    );
+    const stale = session([
+      prompt,
+      event('layout-permission-answer', 2, 'textDelta', '切换应用前的旧回复'),
+    ]);
+    stale.eventPage.hasNewer = true;
+    const canonical = session([
+      prompt,
+      event('layout-permission-answer', 4, 'textDelta', '切回应用后的 canonical 回复', {
+        startedSeq: 2,
+      }),
+      permission,
+    ]);
+    vi.mocked(getAcpSession).mockResolvedValue(stale);
+
+    const { container, root } = await renderDialog(
+      stale,
+      'root',
+      undefined,
+      undefined,
+      locator,
+      undefined,
+      activePermissionLifecycle('turn-layout-permission'),
+    );
+    try {
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+
+      await act(async () => {
+        runtime.listener?.({
+          ...locator,
+          branchId: 'root',
+          timelineGeneration: 1,
+          timelineRevision: 5,
+          session: canonical,
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+      });
+
+      expect(container.textContent).toContain('切回应用后的 canonical 回复');
+      expect(container.textContent).not.toContain('切换应用前的旧回复');
+      expect(container.textContent).toContain('Approve after app switch');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('preserves a manually detached history window when a pending permission advances the revision', async () => {
+    const prompt = event('manual-permission-prompt', 1, 'userTextDelta', '检查历史', {
+      raw: { source: 'goldBandPrompt', promptId: 'manual-permission-prompt' },
+    });
+    const permission = event(
+      'permission-json-rpc-5',
+      5,
+      'permissionRequest',
+      null,
+      {
+        title: 'Approve while reading history',
+        toolCallId: 'tool-manual-permission',
+        status: 'pending',
+        raw: {
+          requestId: '5',
+          options: [
+            { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
+            { optionId: 'reject_once', name: 'Reject', kind: 'reject_once' },
+          ],
+        },
+      },
+    );
+    const stale = session([
+      prompt,
+      event('manual-permission-answer', 2, 'textDelta', '用户正在阅读的历史回复'),
+    ]);
+    const canonical = session([
+      prompt,
+      event('manual-permission-answer', 4, 'textDelta', '最新回复不应强制覆盖历史窗口', {
+        startedSeq: 2,
+      }),
+      permission,
+    ]);
+    let canonicalAvailable = false;
+    vi.mocked(getAcpSession).mockImplementation(async () => (
+      canonicalAvailable ? canonical : stale
+    ));
+
+    const { container, root } = await renderDialog(
+      stale,
+      'root',
+      undefined,
+      undefined,
+      locator,
+      undefined,
+      activePermissionLifecycle('turn-manual-permission'),
+    );
+    try {
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+      });
+      await detachConversationViewport(container);
+      const initialReadCount = vi.mocked(getAcpSession).mock.calls.length;
+
+      canonicalAvailable = true;
+      await act(async () => {
+        runtime.listener?.({
+          ...update(permission),
+          timelineRevision: 5,
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+      });
+
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(initialReadCount);
+      expect(container.textContent).toContain('用户正在阅读的历史回复');
+      expect(container.textContent).not.toContain('最新回复不应强制覆盖历史窗口');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
     } finally {
       await unmount(root);
     }

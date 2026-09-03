@@ -35,6 +35,7 @@ impl RuntimeRunKey {
 enum RuntimeRecoveryPhase {
     Recovering,
     Accepting,
+    Failed,
     ShuttingDown,
 }
 
@@ -61,6 +62,8 @@ pub enum RuntimeRecoveryError {
     CoreState(#[from] CoreStateError),
     #[error("runtime recovery has not completed")]
     RecoveryInProgress,
+    #[error("runtime startup recovery failed")]
+    StartupRecoveryFailed,
     #[error("runtime recovery failed for project {project_id}")]
     ProjectBlocked { project_id: String },
     #[error("application shutdown has started")]
@@ -74,6 +77,7 @@ impl RuntimeRecoveryError {
         match self {
             Self::CoreState(error) => error.code(),
             Self::RecoveryInProgress => "runtime.recovery-in-progress",
+            Self::StartupRecoveryFailed => "runtime.startup-recovery-failed",
             Self::ProjectBlocked { .. } => "runtime.workspace-recovery-blocked",
             Self::ShuttingDown => "runtime.app-shutting-down",
             Self::RegistryUnavailable => "runtime.recovery-registry-unavailable",
@@ -86,7 +90,10 @@ impl RuntimeRecoveryError {
             Self::ProjectBlocked { project_id } => {
                 serde_json::json!({ "projectId": project_id })
             }
-            Self::RecoveryInProgress | Self::ShuttingDown | Self::RegistryUnavailable => {
+            Self::RecoveryInProgress
+            | Self::StartupRecoveryFailed
+            | Self::ShuttingDown
+            | Self::RegistryUnavailable => {
                 serde_json::json!({})
             }
         }
@@ -98,7 +105,7 @@ pub struct RuntimeRecoveryCoordinator {
     database: CoreStateDatabase,
     runtime_instance_id: String,
     registry: Mutex<ActiveRuntimeRegistry>,
-    /// 相位变化（Recovering → Accepting / ShuttingDown）时唤醒 `wait_for_startup_accepting` 等待者。
+    /// 相位离开 Recovering 时唤醒 `wait_for_startup_accepting` 等待者。
     phase_change: Condvar,
 }
 
@@ -139,13 +146,14 @@ impl RuntimeRecoveryCoordinator {
         match registry.phase {
             RuntimeRecoveryPhase::Recovering => Err(RuntimeRecoveryError::RecoveryInProgress),
             RuntimeRecoveryPhase::Accepting => Ok(()),
+            RuntimeRecoveryPhase::Failed => Err(RuntimeRecoveryError::StartupRecoveryFailed),
             RuntimeRecoveryPhase::ShuttingDown => Err(RuntimeRecoveryError::ShuttingDown),
         }
     }
 
-    /// 阻塞等待启动恢复完成（相位离开 Recovering）：Accepting → Ok；ShuttingDown → Err；
-    /// 超时仍 Recovering → Err(RecoveryInProgress)。供 Multica 断点续跑在判定 resume 语义前
-    /// 等待启动管线完成定点恢复（恢复未完成时 checkpoint 指向的 run 状态尚未收敛）。
+    /// 阻塞等待启动恢复完成（相位离开 Recovering）：Accepting → Ok；Failed / ShuttingDown → Err；
+    /// 超时仍 Recovering → Err(RecoveryInProgress)。供 Multica 断点续跑在判定 resume 语义前等待
+    /// 启动管线完成定点恢复（恢复未完成时 checkpoint 指向的 run 状态尚未收敛）。
     pub fn wait_for_startup_accepting(
         &self,
         timeout: std::time::Duration,
@@ -160,6 +168,9 @@ impl RuntimeRecoveryCoordinator {
         loop {
             match registry.phase {
                 RuntimeRecoveryPhase::Accepting => return Ok(()),
+                RuntimeRecoveryPhase::Failed => {
+                    return Err(RuntimeRecoveryError::StartupRecoveryFailed);
+                }
                 RuntimeRecoveryPhase::ShuttingDown => {
                     return Err(RuntimeRecoveryError::ShuttingDown);
                 }
@@ -294,12 +305,40 @@ impl RuntimeRecoveryCoordinator {
             .registry
             .lock()
             .map_err(|_| RuntimeRecoveryError::RegistryUnavailable)?;
-        if registry.phase == RuntimeRecoveryPhase::ShuttingDown {
-            return Err(RuntimeRecoveryError::ShuttingDown);
+        match registry.phase {
+            RuntimeRecoveryPhase::Failed => {
+                return Err(RuntimeRecoveryError::StartupRecoveryFailed);
+            }
+            RuntimeRecoveryPhase::ShuttingDown => {
+                return Err(RuntimeRecoveryError::ShuttingDown);
+            }
+            RuntimeRecoveryPhase::Recovering | RuntimeRecoveryPhase::Accepting => {}
         }
         registry.blocked_project_ids = blocked_project_ids;
         registry.phase = RuntimeRecoveryPhase::Accepting;
         self.phase_change.notify_all();
+        Ok(())
+    }
+
+    /// 以失败终态结束启动恢复并唤醒所有等待者。
+    ///
+    /// 转换是幂等且单调的：仅 Recovering 可进入 Failed；已经 Accepting 时忽略迟到失败，
+    /// Failed 重复调用保持原状态，ShuttingDown 不允许回退。
+    pub fn fail_startup_recovery(&self) -> Result<(), RuntimeRecoveryError> {
+        let mut registry = self
+            .registry
+            .lock()
+            .map_err(|_| RuntimeRecoveryError::RegistryUnavailable)?;
+        match registry.phase {
+            RuntimeRecoveryPhase::Recovering => {
+                registry.phase = RuntimeRecoveryPhase::Failed;
+                self.phase_change.notify_all();
+            }
+            RuntimeRecoveryPhase::Accepting | RuntimeRecoveryPhase::Failed => {}
+            RuntimeRecoveryPhase::ShuttingDown => {
+                return Err(RuntimeRecoveryError::ShuttingDown);
+            }
+        }
         Ok(())
     }
 
@@ -332,6 +371,7 @@ fn ensure_project_accepting(
 ) -> Result<(), RuntimeRecoveryError> {
     match registry.phase {
         RuntimeRecoveryPhase::Recovering => Err(RuntimeRecoveryError::RecoveryInProgress),
+        RuntimeRecoveryPhase::Failed => Err(RuntimeRecoveryError::StartupRecoveryFailed),
         RuntimeRecoveryPhase::ShuttingDown => Err(RuntimeRecoveryError::ShuttingDown),
         RuntimeRecoveryPhase::Accepting => {
             if registry.blocked_project_ids.contains(project_id) {
@@ -563,6 +603,45 @@ mod tests {
         assert!(matches!(
             coordinator.wait_for_startup_accepting(std::time::Duration::from_secs(5)),
             Err(RuntimeRecoveryError::ShuttingDown)
+        ));
+    }
+
+    #[test]
+    fn startup_failure_is_terminal_and_wakes_waiters() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory, "workspace");
+        let coordinator = RuntimeRecoveryCoordinator::new(paths.core_db_path());
+
+        let waiter = coordinator.clone();
+        let handle = std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            let result = waiter.wait_for_startup_accepting(std::time::Duration::from_secs(5));
+            (started.elapsed(), result)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        coordinator.fail_startup_recovery().unwrap();
+
+        let (elapsed, result) = handle.join().unwrap();
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "startup failure should wake waiters immediately, elapsed={elapsed:?}"
+        );
+        let error = result.unwrap_err();
+        assert!(matches!(error, RuntimeRecoveryError::StartupRecoveryFailed));
+        assert_eq!(error.code(), "runtime.startup-recovery-failed");
+        coordinator.fail_startup_recovery().unwrap();
+        assert!(matches!(
+            coordinator.complete_startup_recovery(HashSet::new()),
+            Err(RuntimeRecoveryError::StartupRecoveryFailed)
+        ));
+        assert!(matches!(
+            coordinator.ensure_scheduler_start_allowed(),
+            Err(RuntimeRecoveryError::StartupRecoveryFailed)
+        ));
+        assert!(matches!(
+            coordinator.begin(&paths, "task-001", "run-001"),
+            Err(RuntimeRecoveryError::StartupRecoveryFailed)
         ));
     }
 

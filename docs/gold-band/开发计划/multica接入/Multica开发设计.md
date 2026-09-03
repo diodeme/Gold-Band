@@ -1997,12 +1997,12 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 - **修复（管线化 + 定点化，缺一不可）**：
   - **移入管线**：调用点移进既有 `spawn_blocking` 启动恢复任务（先于 `complete_startup_recovery`、与 conversation workspace 恢复同管线）；setup 同步路径只剩 home repo 单点自愈。
   - **定点收敛**：删 `collect_multica_work_dirs`（破坏式更新）；改为遍历 `multica_task_conversations` checkpoint，逐条按 `local_task_id`+`local_run_id` `run_status` 定点判定，仅 Running 孤儿做 `run_pause(ProcessInterrupted)` + `cancel_active_acp_attempts_for_run_best_effort`（复用 P1-1 原语）——O(checkpoint 数) 次定点 I/O 替代 O(work_dir × 任务历史) 全量扫描；work_dir → workspace App 以 HashMap 缓存复用。
-  - **时序正确性（resume 等门）**：resume 判定依赖恢复收敛（未收敛时 checkpoint 指向的 run 仍残留 Running → `is_run_continuable`=false → 误落 Fresh）。`RuntimeRecoveryCoordinator` 增 `phase_change: Condvar` 与 `wait_for_startup_accepting(timeout)` 阻塞等待；`start_multica_conversation_run` 在 `classify_resume` 前 `spawn_blocking` 等门（30s 超时 best-effort 继续，不永久阻塞发送、不劣于无等待语义）。
-- **新增测试**：`recover_multica_work_dir_sessions_pauses_only_checkpointed_orphan_runs`（checkpoint 命中的孤儿 Running → Paused+ProcessInterrupted；未登记的 run 不受影响）；`recover_multica_work_dir_sessions_skips_missing_and_non_running_checkpoints`（非 Running 不动、run 缺失跳过不报错）；`wait_for_startup_accepting_blocks_until_phase_change_or_timeout`（超时/放行/shutdown 三分支）。
+  - **时序正确性（resume 等门）**：resume 判定依赖恢复收敛（未收敛时 checkpoint 指向的 run 仍残留 Running → `is_run_continuable`=false → 误落 Fresh）。`RuntimeRecoveryCoordinator` 增 `phase_change: Condvar` 与 `wait_for_startup_accepting(timeout)` 阻塞等待；`start_multica_conversation_run` 在 `classify_resume` 前 `spawn_blocking` 等门。相位完整定义为 `Recovering → Accepting | Failed | ShuttingDown`：成功进入 `Accepting`；候选读取错误或 blocking task join/panic 统一进入 `Failed` 并 `notify_all`，等待者立即得到 `runtime.startup-recovery-failed` 后按既有 best-effort 语义继续；仅真正处于 `Recovering` 时保留 30s 超时，杜绝持续失败后每次发送重复等待 30 秒。
+- **新增测试**：`recover_multica_work_dir_sessions_pauses_only_checkpointed_orphan_runs`（checkpoint 命中的孤儿 Running → Paused+ProcessInterrupted；未登记的 run 不受影响）；`recover_multica_work_dir_sessions_skips_missing_and_non_running_checkpoints`（非 Running 不动、run 缺失跳过不报错）；`wait_for_startup_accepting_blocks_until_phase_change_or_timeout`（超时/放行/shutdown 三分支）；`startup_failure_is_terminal_and_wakes_waiters`（失败即时唤醒、稳定错误码、重复失败幂等、失败后不可回到 Accepting，scheduler/run 注册同样拒绝）。
 
-**方案自评审**：过度设计——未新增持久字段、aggregate 或状态机；run 级取消与全量版共享收尾 helper；等门复用既有 RuntimeRecoveryCoordinator 相位（仅加 Condvar），均为"补完既有设计的缺块"。性能——P2 本身是性能修复（同步关键路径去掉无界扫描）；`with_state` 锁内只有校验+变更+一次读盘+一次写盘（原本裸 RMW 也需同样 I/O，锁只把交错排序，不放大 I/O）；定点恢复 O(checkpoints)。无新增轮询/缓存/队列。
+**方案自评审**：过度设计——未新增持久字段、aggregate、队列、缓存或依赖；run 级取消与全量版共享收尾 helper；等门复用既有 RuntimeRecoveryCoordinator，仅增加一个表达真实恢复结果所必需的 `Failed` 相位与 Condvar 唤醒，不复制 canonical state。性能——P2 本身是性能修复（同步关键路径去掉无界扫描）；`with_state` 锁内只有校验+变更+一次读盘+一次写盘（原本裸 RMW 也需同样 I/O，锁只把交错排序，不放大 I/O）；定点恢复 O(checkpoints)；失败路径从每次固定 30 秒等待改为一次状态转换后立即返回。无新增轮询或无界工作。
 
-**验证**：`cargo fmt --all -- --check` 通过（review 指出的 fmt 失败已修复）；`cargo test -p gold-band --lib` **1115 过 / 1 ignored（既有）**；`cargo test -p gold-band-desktop --bin gold-band-desktop` **648 过**（multica 83 含新增 3、runtime_recovery 含新增 1）。
+**验证**：`cargo fmt --all -- --check` 通过（review 指出的 fmt 失败已修复）；`cargo test -p gold-band --lib` **1116 过 / 1 ignored（既有）**；`cargo test -p gold-band-desktop --bin gold-band-desktop` **648 过**（multica 83 含新增 3、runtime_recovery 含新增 1）。
 
 ---
 

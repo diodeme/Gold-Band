@@ -1959,6 +1959,16 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **验证**：`cargo check --workspace --all-targets` exit 0；`tsc -p web/tsconfig.build.json` 零错（含 tests 的全量 tsc 541 个既有错误为缺 @types/node，tests 从不在 typecheck 门禁）；全量 vitest **1880/1880**（259 文件）；Rust 定向 `multica::` **83/83**（与 M5-au 持平）；tauri bin 全量 **644/644**；根 lib 全量 1111/1111（两条 main 侧修复后）。冲突分析报告：`.claude/docs/merge/merge-conflict-analysis-2026-09-03.md`。
 
+### 12.36 改动三十四：六次合并 origin/main——同日追平零冲突 + helper 提取接缝核验（M5-aw，2026-09-03）
+
+**背景**：M5-av 验收期间 origin/main 又进 5 commit（`9f9247c3..c9e82acb`，全为 fix）：pending interaction 与 canonical timeline 对账（`c9e82acb`，reentry 测试 +393 行）、跨工作流边界的 runtime session 跟随（`b81f5344`）、近底部手动滚动逃逸保留（`d8d0e7f0`）、外部工作区变更 watcher 对账（`d50bae89`）、ai-dynamic 报告清单传递后继（`c7bf84e5`）。
+
+**冲突**：**0 个**。两侧交集 4 文件（commands.rs / App.tsx / types.ts / reentry 测试）全部自动合并。关键接缝：`c9e82acb` 新增测试大量调用 `detachConversationViewport`，其本地定义恰是 3 小时前 §12.35 中我方提取到 `tests/acp/detach-conversation-viewport.ts` 的同一段代码（两侧逐字节一致）——自动合并取我方 import + main 调用点 + 删除本地定义，语义自洽，全量测试兜底确认。
+
+**验证**：`cargo check --workspace --all-targets` exit 0；`tsc -p web/tsconfig.build.json` 零错；全量 vitest **1894/1894**（259 文件，main 新增 14 条全过）；`multica::` **83/83** 保持。合并提交 `75059f2d`（备份分支 `feature_multica_premerge5_20260903`）；报告并入 `merge-conflict-analysis-2026-09-03.md` §6。
+
+**结论**：同日追平兑现了 §12.35"缩短合并间隔"的建议——5 commit 间隔零冲突一轮全绿，对比 75 commit 间隔的 8 冲突 + 3 处 main 缺陷。"零冲突"仍需交集文件语义核验（本轮风险点 git 不报冲突）。
+
 ---
 
 ## 附录 A：CLAUDE.md 合规自检

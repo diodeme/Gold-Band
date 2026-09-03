@@ -538,6 +538,58 @@ export function saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | n
   return getRuntimeApi().saveMetricsSettings(enabled, metricsBaseUrl, apiKey);
 }
 
+export function getMulticaSettings() {
+  return getRuntimeApi().getMulticaSettings();
+}
+
+export function connectMultica() {
+  return getRuntimeApi().connectMultica();
+}
+
+export function disconnectMultica() {
+  return getRuntimeApi().disconnectMultica();
+}
+
+export function getMulticaTasks() {
+  return getRuntimeApi().getMulticaTasks();
+}
+
+export function getMulticaTaskRequirement(taskId: string, workspaceId: string) {
+  return getRuntimeApi().getMulticaTaskRequirement(taskId, workspaceId);
+}
+
+export function startMulticaConversationRun(
+  input: Parameters<ReturnType<typeof getRuntimeApi>['startMulticaConversationRun']>[0],
+  remoteTaskId: string,
+  workspaceId: string,
+) {
+  return getRuntimeApi().startMulticaConversationRun(input, remoteTaskId, workspaceId);
+}
+
+export function cancelMulticaTask(taskId: string) {
+  return getRuntimeApi().cancelMulticaTask(taskId);
+}
+
+export function listServerMulticaWorkspaces() {
+  return getRuntimeApi().listServerMulticaWorkspaces();
+}
+
+export function pickLocalDirectory() {
+  return getRuntimeApi().pickLocalDirectory();
+}
+
+export function addMulticaWorkspace(workspaceId: string, workspaceName: string, provider: string) {
+  return getRuntimeApi().addMulticaWorkspace(workspaceId, workspaceName, provider);
+}
+
+export function removeMulticaWorkspace(workspaceId: string) {
+  return getRuntimeApi().removeMulticaWorkspace(workspaceId);
+}
+
+export function setActiveMulticaWorkspace(workspaceId: string) {
+  return getRuntimeApi().setActiveMulticaWorkspace(workspaceId);
+}
+
 export function recordActivity() {
   return getRuntimeApi().recordActivity();
 }
@@ -748,6 +800,14 @@ export function stopWorkspaceFileWatch(projectId: string) {
 
 export function subscribeWorkspaceFileChanges(listener: Parameters<NonNullable<RuntimeApi['subscribeWorkspaceFileChanges']>>[0]) {
   return getRuntimeApi().subscribeWorkspaceFileChanges?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function subscribeMulticaTaskUpdates(listener: () => void) {
+  return getRuntimeApi().subscribeMulticaTaskUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function subscribeMulticaSettingsUpdates(listener: () => void) {
+  return getRuntimeApi().subscribeMulticaSettingsUpdates?.(listener) ?? Promise.resolve(() => {});
 }
 
 export function workspaceFilePreviewUrl(token: string, staticFrame = false) {

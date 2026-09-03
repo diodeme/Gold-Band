@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { displayAppError } from '@/i18n';
-import { Send, Paperclip, Workflow, Route, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X, Laptop, GitFork, Check, Loader2 } from 'lucide-react';
+import { Send, Paperclip, Workflow, Route, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X, Laptop, GitFork, Check, Loader2, Globe } from 'lucide-react';
 import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkLocation, ConversationWorkspaceVm, ProfileVm, WorkflowRepairTarget, WorkflowTemplateStore } from '../../types';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
@@ -13,7 +14,8 @@ import { canOpenRunModeManagement, CONVERSATION_RUN_MODE_ORDER, directConfigForA
 import { groupSelectableAgentOptions, normalizeConfigOptionOverrides, selectableAgentOptions, type SelectableAgentOption, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles, workflowRepairTargetForTemplate } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
 import { ComposerContextArea } from '@/components/shared/ComposerContextArea';
-import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
+import { useConversationComposerDraft, type ConversationComposerMulticaBinding } from '@/lib/conversation-composer-draft';
+import { shouldBackspaceClearMulticaBinding } from '@/lib/conversation-composer-multica-chip';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { useAgentCommands } from '@/hooks/useAgentCommands';
 import { useSlashCommandController } from '@/hooks/useSlashCommandController';
@@ -62,7 +64,7 @@ interface ConversationComposerProps {
   workLocation: ConversationWorkLocation;
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
-  onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
+  onSubmit: (input: ConversationCreateInput, multica?: ConversationComposerMulticaBinding | null) => Promise<string | null | undefined> | string | null | undefined;
   onCreateScheduledTask?: (input: ConversationCreateInput & { schedule: ScheduledScheduleInput; overlapPolicy: 'skip_when_running' | 'retry_when_busy'; sessionPolicy?: 'new' | 'continuous' }) => Promise<void>;
   onScheduledTaskCreated?: () => void;
   onOpenAgentManagement: () => void;
@@ -80,6 +82,9 @@ interface ConversationWorkspaceControlProps {
   workspaces: ConversationWorkspaceVm[];
   onWorkspaceChange: (projectId: string) => void;
   variant?: 'toolbar' | 'info';
+  // multica decision d: while a remote task binding is active, render the selector even with a
+  // single local workspace so the local landing workspace stays an explicit choice.
+  forceSelector?: boolean;
 }
 
 const CONTEXT_CONTROL_INTERACTION_CLASS_NAME = 'bg-transparent text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground data-[state=open]:bg-accent data-[state=open]:text-accent-foreground dark:bg-transparent dark:hover:bg-accent/50 dark:focus-visible:bg-accent/50 dark:data-[state=open]:bg-accent/50';
@@ -111,6 +116,7 @@ export function ConversationWorkspaceControl({
   workspaces,
   onWorkspaceChange,
   variant = 'toolbar',
+  forceSelector = false,
 }: ConversationWorkspaceControlProps) {
   const { t } = useTranslation();
   const selectedWorkspaceName = workspaces.find((workspace) => workspace.projectId === projectId)?.name ?? workspaceName;
@@ -161,7 +167,7 @@ export function ConversationWorkspaceControl({
   return (
     <TooltipProvider>
       <Tooltip open={tooltipOpen && !selectOpen} onOpenChange={handleTooltipOpenChange}>
-        {workspaces.length > 1 ? (
+        {workspaces.length > 1 || forceSelector ? (
           <Select
             value={projectId}
             onValueChange={onWorkspaceChange}
@@ -228,6 +234,10 @@ interface ConversationWorkspaceInfoBarProps extends ConversationWorkspaceControl
   busy: boolean;
   onWorkLocationChange: (location: ConversationWorkLocation, projectId: string) => Promise<void> | void;
   showWorkLocation?: boolean;
+  // multica decision e: when a remote task binding is active but no local workspace exists,
+  // replace the workspace control with this hint guiding the user to add one first (send is
+  // already disabled by canSubmit).
+  emptyWorkspaceHint?: string;
   showBranch?: boolean;
   onBranchChange?: (branch: string | null) => void;
   onBranchMutationPendingChange?: (pending: boolean) => void;
@@ -242,6 +252,8 @@ export function ConversationWorkspaceInfoBar({
   onWorkspaceChange,
   onWorkLocationChange,
   showWorkLocation = true,
+  forceSelector = false,
+  emptyWorkspaceHint,
   showBranch,
   onBranchChange,
   onBranchMutationPendingChange,
@@ -303,13 +315,20 @@ export function ConversationWorkspaceInfoBar({
           <path d={CONVERSATION_WORKSPACE_INFO_CURVE_PATH} fill="currentColor" transform="translate(48 0) scale(-1 1)" />
         </svg>
         <div data-conversation-workspace-info-controls="true" className="relative z-10 flex min-w-0 items-center gap-0">
-          <ConversationWorkspaceControl
-            projectId={projectId}
-            workspaceName={workspaceName}
-            workspaces={workspaces}
-            onWorkspaceChange={onWorkspaceChange}
-            variant="info"
-          />
+          {workspaces.length === 0 && emptyWorkspaceHint ? (
+            <span className="flex h-7 items-center rounded-md border border-dashed border-border/60 px-1.5 text-sm text-muted-foreground">
+              {emptyWorkspaceHint}
+            </span>
+          ) : (
+            <ConversationWorkspaceControl
+              projectId={projectId}
+              workspaceName={workspaceName}
+              workspaces={workspaces}
+              onWorkspaceChange={onWorkspaceChange}
+              variant="info"
+              forceSelector={forceSelector}
+            />
+          )}
           {showWorkLocation ? (
             <Tooltip
               open={locationTooltipOpen && !locationMenuOpen}
@@ -512,13 +531,21 @@ export function ConversationComposer({
   const showRunModeManagement = canOpenRunModeManagement(runMode.mode);
   const autoStrategy = runMode.autoConfig?.agentStrategy ?? 'fixed';
   const isDynamicAuto = autoStrategy === 'dynamic';
+  // After a multica remote task is prefilled via "click to run", the draft carries a multica
+  // binding. While bound, the workspace dropdown is force-shown (decision d) so the local landing
+  // workspace becomes an explicit choice; with zero local workspaces, send is disabled and the
+  // user is guided to add one first (decision e).
+  const multicaBinding = composerDraft.draft.multica;
+  const multicaActive = multicaBinding !== null;
+  const hasLocalWorkspaces = workspaces.length > 0;
   const scheduledSummary = scheduledConfig
     ? formatScheduledScheduleInput(t, scheduledConfig.schedule)
     : t('scheduled.composer.unconfigured');
   const canSubmit = hasUserPromptPayload(content, attachments.length)
     && !busy
     && !submittingAttachments
-    && !branchMutationPending;
+    && !branchMutationPending
+    && !(multicaActive && !hasLocalWorkspaces);
   const canCreateScheduledTask = canSubmit && Boolean(onCreateScheduledTask);
   const scheduledConfigResourceKey = rightWorkspace?.scopeKey
     ? scheduledTaskConfigWorkspaceResourceKey(rightWorkspace.scopeKey)
@@ -647,7 +674,13 @@ export function ConversationComposer({
     [agentCommands.commands, content],
   );
   const visibleContent = committedSlashCommand?.suffix ?? content;
-  const committedInputLayout = useLeadingAdornmentTextIndent(Boolean(committedSlashCommand));
+  // The multica binding chip and the slash-command label are both leading adornments at the very
+  // front of the body. They are mutually exclusive (slash wins — the binding prefills task
+  // requirement text, not a slash command) and share the same text-indent mechanism: the first
+  // line indents to clear the label width, wrapped lines return to the left edge (standard CSS
+  // text-indent behavior, which only affects the first line).
+  const multicaChipActive = Boolean(multicaBinding) && !committedSlashCommand;
+  const committedInputLayout = useLeadingAdornmentTextIndent(Boolean(committedSlashCommand) || multicaChipActive);
 
   useEffect(() => {
     const fallbackAgent = runMode.directConfig?.agentType
@@ -808,10 +841,15 @@ export function ConversationComposer({
       }
       const paths = await resolveAttachmentPaths();
       setRunModeError(null);
-      const submitError = await onSubmit({
-        ...inputBase,
-        attachmentPaths: paths.length > 0 ? paths : undefined,
-      });
+      // Forward the draft's multica binding to onSubmit: the caller routes remote task vs. local
+      // new conversation accordingly. The composer itself makes no decision here — it only forwards.
+      const submitError = await onSubmit(
+        {
+          ...inputBase,
+          attachmentPaths: paths.length > 0 ? paths : undefined,
+        },
+        composerDraft.draft.multica,
+      );
       if (submitError) {
         setRunModeError(submitError);
         return;
@@ -869,8 +907,33 @@ export function ConversationComposer({
     }
   };
 
+  // Drop the multica binding (claim-at-send): the click only read the requirement without claiming
+  // the task, so removing the chip is a purely local unbind — the server is untouched (the task
+  // stays queued). Body text and attachments are kept: the draft degrades to a normal local
+  // conversation (send goes through create_conversation_run).
+  const handleUnbindMultica = useCallback(() => {
+    if (!composerDraft.draft.multica) return;
+    composerDraft.clearMultica();
+  }, [composerDraft]);
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (slashCommands.onKeyDown(e as React.KeyboardEvent<HTMLTextAreaElement>)) return;
+    // The multica binding chip is a leading adornment at the very front of the body; the Backspace
+    // removal rule lives in shouldBackspaceClearMulticaBinding: the chip is deleted only when the
+    // cursor sits at the very start with no selection (mimicking deleting the first token); all
+    // other cases delete a character normally. When a slash command is committed, the slash
+    // controller takes over.
+    if (shouldBackspaceClearMulticaBinding({
+      key: e.key,
+      multicaActive,
+      hasCommittedSlashCommand: Boolean(committedSlashCommand),
+      selectionStart: composerTextareaRef.current?.selectionStart ?? -1,
+      selectionEnd: composerTextareaRef.current?.selectionEnd ?? -1,
+    })) {
+      e.preventDefault();
+      handleUnbindMultica();
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void (scheduledMode ? createScheduledTask() : handleSubmit());
@@ -909,6 +972,8 @@ export function ConversationComposer({
             onWorkspaceChange={onWorkspaceChange}
             onWorkLocationChange={onWorkLocationChange}
             showWorkLocation={!scheduledMode}
+            forceSelector={multicaActive}
+            emptyWorkspaceHint={multicaActive ? t('conversation.composer.multicaNeedLocalWorkspace') : undefined}
             showBranch={!scheduledMode}
             onBranchChange={handleBranchChange}
             onBranchMutationPendingChange={setBranchMutationPending}
@@ -945,6 +1010,31 @@ export function ConversationComposer({
                     prefix={committedSlashCommand.prefix}
                     description={committedSlashCommand.command.description}
                   />
+                </span>
+              ) : multicaBinding ? (
+                <span ref={committedInputLayout.adornmentRef} className="absolute left-0 top-2 z-10 inline-flex">
+                  {/* accent/accent-foreground is the theme contract's guaranteed-contrast pair for
+                      emphasized surfaces (same pairing as permission-card and recipe hover/selected
+                      states). Never tint this chip from `primary` alone: in themes like
+                      tech-neutral dark, primary (#2d2d2d) sits nearly on the composer background
+                      (#1b1b1b) and the chip becomes unreadable. */}
+                  <Badge
+                    variant="secondary"
+                    className="gap-1 h-6 rounded-md border-accent-foreground/15 bg-accent px-2 text-[0.75rem] font-medium text-accent-foreground"
+                  >
+                    <Globe className="size-3 shrink-0" />
+                    <span className="max-w-[260px] truncate">
+                      {t('conversation.composer.multicaBindingTag', { title: multicaBinding.title })}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label={t('conversation.composer.removeMulticaBinding')}
+                      onClick={handleUnbindMultica}
+                      className="ml-0.5 inline-flex size-3.5 shrink-0 items-center justify-center rounded-sm hover:bg-accent-foreground/15"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </Badge>
                 </span>
               ) : null}
               <PromptInputTextarea

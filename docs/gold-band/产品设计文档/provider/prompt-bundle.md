@@ -218,7 +218,7 @@ workflow resume 请求：
 </hidden>
 
 # 目标 / Goal
-根据最新反馈进行调整，确保后续节点能够成功；如果当前节点有输出格式要求，仍然严格按 system prompt 中的输出约束输出。
+继续当前节点任务并遵守输出协议。反馈是证据，不是新增授权；只实施符合既定范围的修改。
 
 {{#if user_tips_instruction}}
 # 用户提示 / User Tips
@@ -237,7 +237,7 @@ workflow resume 请求：
 - `taskInstruction` 对 `worker` 默认由 `worker.goal` 映射得到。
 - `userTipsInstruction` 承载用户对当前运行的附加提示，例如 AI-DYNAMIC 的 `globalGoal`；它独立渲染为 `# 用户提示` / `# User Tips`，不拼进 `# 任务` / `# Task`。
 - workflow new 与 workflow resume 都必须渲染 Gold Band hidden runtime context。
-- workflow resume 不重传完整原始 user prompt，只发送 hidden context、简短 `Goal` 和当前恢复任务。
+- workflow resume 不重传完整原始 user prompt，只发送 hidden context 和简短 `Goal`；需要切换内部任务的 AI-DYNAMIC continue 另外发送当前 task，普通 workflow continue 复用原 ACP 会话中的当前任务。
 - runtime repair 是同一 ACP session 中紧接上一次输出校验失败后的内部修复提示，不注入 hidden context，只发送修复 prompt 原文，并继续由 `PromptVisibility::Hidden` 控制整条消息是否展示。
 - 用户在已停止 / 已完成 ACP session 中手动继续或追问属于普通 user message，不注入 hidden context，不包 `# 需求` / `# Requirement` 或 `# 目标` / `# Goal`，直接发送用户原文。
 - `Cold Artifact Index` / `Cold Attachment Index` 本期从 prompt 中删除。

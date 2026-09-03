@@ -15,6 +15,7 @@ The JSON Schema below is the effective output protocol for this run. Runtime gen
 ```
 
 Constraint reminders:
+- A successor task may only decompose an established in-scope outcome or repair a qualified `BLOCKER`. Do not promote a `FOLLOW_UP` or predecessor suggestion into a new outcome. Scope drift may only schedule restoration of the minimum in-scope solution.
 {% if agent_strategy_mode == "fixed" %}- Under the fixed-agent strategy, do not output any `provider` fields. Runtime injects the fixed agent automatically.
 {% else %}- Under the dynamic-agent strategy, workers must output a valid provider that follows the routing guidance in this prompt; `merge / acceptance` must omit provider because runtime always uses the bootstrap Agent.
 - Do not output `provider` for `workflow-invocation`.

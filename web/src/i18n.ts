@@ -706,6 +706,18 @@ const resources = {
           "no-update": "当前没有可安装更新。",
           "context-unavailable": "无法获取更新上下文，请先选择工作空间。",
         },
+        multica: {
+          "not-configured": "尚未配置 Multica，请先在设置中完成接入。",
+          "auth-failed": "Multica 鉴权失败：{{message}}",
+          "network-failed": "Multica 网络请求失败：{{message}}",
+          "register-failed": "Daemon 注册失败：{{message}}",
+          "claim-conflict": "该任务已被其他 Daemon 领取。",
+          "task-not-found": "找不到该 Multica 任务。",
+          "runtime-offline": "运行时未就绪，请稍后重试。",
+          "session-resume-failed": "会话恢复失败，将以全新任务重跑。",
+          "workspace-already-bound": "该工作空间已绑定。",
+          "workspace-not-found": "找不到该工作空间绑定。",
+        },
       },
       status: {
         running: "运行中",
@@ -2129,6 +2141,28 @@ const resources = {
           },
         },
       },
+      multica: {
+        taskManagement: {
+          title: "远程任务管理",
+          source: {
+            label: "任务来源",
+            multica: "Multica",
+          },
+          workspace: {
+            label: "工作空间",
+            remove: "移除工作空间",
+            removeConfirm: "确定移除该工作空间？该空间的远程任务将不再展示。",
+          },
+          column: {
+            empty: "暂无任务",
+          },
+          account: {
+            connected: "已连接",
+            switchAccount: "切换账号",
+            disconnect: "断开连接",
+          },
+        },
+      },
       conversation: {
         title: "会话",
         newConversation: "新会话",
@@ -2167,6 +2201,7 @@ const resources = {
           agentManagement: "Agent",
           contextManagement: "上下文",
           runModeManagement: "运行模式",
+          multicaTaskManagement: "远程任务管理",
           pinned: "置顶",
           noPinned: "置顶会话会显示在这里",
           noWorkspaces: "尚未添加工作空间",
@@ -2205,6 +2240,36 @@ const resources = {
             failed: "执行异常，尚未查看",
           },
           settings: "设置",
+          multica: {
+            sectionTitle: "远程任务",
+            emptyTitle: "尚未连接 Multica",
+            emptyDescription: "连接后可在此查看并领取 multica 远程任务。",
+            connectButton: "连接 Multica",
+            cancelTask: "取消任务",
+            executeTask: "执行",
+            addWorkspace: "添加工作空间",
+            noWorkspacesBound: "尚未绑定工作空间",
+            status: {
+              queued: "待办",
+              running: "进行中",
+              completed: "已完成",
+              failed: "失败",
+            },
+            dialog: {
+              title: "添加工作空间",
+              remoteWorkspace: "远程工作空间",
+              provider: "Provider",
+              add: "添加",
+              needWorkspace: "请选择远程工作空间",
+              noServerWorkspaces: "服务端暂无可绑定的工作空间，请先在 multica Web 创建工作空间。",
+              allWorkspacesBound: "所有远程工作空间均已绑定。",
+            },
+          },
+        },
+        composer: {
+          multicaNeedLocalWorkspace: "请先添加本地工作空间，再执行远程任务",
+          multicaBindingTag: "Multica · {{title}}",
+          removeMulticaBinding: "解除任务绑定",
         },
         branchPicker: {
           label: "分支",
@@ -3108,6 +3173,20 @@ const resources = {
           "context-unavailable":
             "Cannot check for updates without a workspace selected.",
           "no-update": "No update is available.",
+        },
+        multica: {
+          "not-configured":
+            "Multica is not configured. Complete setup in Settings first.",
+          "auth-failed": "Multica authentication failed: {{message}}",
+          "network-failed": "Multica network request failed: {{message}}",
+          "register-failed": "Daemon registration failed: {{message}}",
+          "claim-conflict": "This task has already been claimed by another daemon.",
+          "task-not-found": "This multica task could not be found.",
+          "runtime-offline": "Runtime is not ready. Please try again shortly.",
+          "session-resume-failed":
+            "Session resume failed. A fresh run will be started.",
+          "workspace-already-bound": "This workspace is already bound.",
+          "workspace-not-found": "This workspace binding could not be found.",
         },
       },
       status: {
@@ -4571,6 +4650,28 @@ const resources = {
           },
         },
       },
+      multica: {
+        taskManagement: {
+          title: "Remote Tasks",
+          source: {
+            label: "Task source",
+            multica: "Multica",
+          },
+          workspace: {
+            label: "Workspace",
+            remove: "Remove workspace",
+            removeConfirm: "Remove this workspace? Its remote tasks will no longer be shown.",
+          },
+          column: {
+            empty: "No tasks",
+          },
+          account: {
+            connected: "Connected",
+            switchAccount: "Switch account",
+            disconnect: "Disconnect",
+          },
+        },
+      },
       conversation: {
         title: "Conversation",
         newConversation: "New Conversation",
@@ -4612,6 +4713,7 @@ const resources = {
           agentManagement: "Agent",
           contextManagement: "Context",
           runModeManagement: "Run Mode",
+          multicaTaskManagement: "Remote Tasks",
           pinned: "Pinned",
           noPinned: "Pinned conversations appear here",
           noWorkspaces: "No workspaces added",
@@ -4650,6 +4752,36 @@ const resources = {
             failed: "Failed, not viewed",
           },
           settings: "Settings",
+          multica: {
+            sectionTitle: "Remote Tasks",
+            emptyTitle: "Not connected to Multica",
+            emptyDescription: "Connect to view and claim multica remote tasks.",
+            connectButton: "Connect Multica",
+            cancelTask: "Cancel task",
+            executeTask: "Run",
+            addWorkspace: "Add Workspace",
+            noWorkspacesBound: "No workspaces bound",
+            status: {
+              queued: "Todo",
+              running: "Running",
+              completed: "Done",
+              failed: "Failed",
+            },
+            dialog: {
+              title: "Add Workspace",
+              remoteWorkspace: "Remote workspace",
+              provider: "Provider",
+              add: "Add",
+              needWorkspace: "Please select a remote workspace",
+              noServerWorkspaces: "No bindable workspaces on the server yet. Create one in multica Web first.",
+              allWorkspacesBound: "All remote workspaces are already bound.",
+            },
+          },
+        },
+        composer: {
+          multicaNeedLocalWorkspace: "Add a local workspace before running a remote task",
+          multicaBindingTag: "Multica · {{title}}",
+          removeMulticaBinding: "Unbind task",
         },
         branchPicker: {
           label: "Branch",

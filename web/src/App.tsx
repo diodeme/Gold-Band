@@ -42,6 +42,7 @@ import {
   selectRecentDesktopAvatar,
   selectRecentDesktopWallpaper,
   restoreThemeDesktopWallpaper,
+  startMulticaConversationRun,
   startRun,
   unpinConversation,
   updateTaskMetadata,
@@ -55,6 +56,7 @@ import {
   getGitCapability,
   subscribeConversationRunStateUpdates,
   subscribeConversationTerminalResultUpdates,
+  subscribeMulticaTaskUpdates,
   subscribeScheduledTaskUpdates,
   updateNotificationAttention,
   recordActivity,
@@ -128,12 +130,14 @@ import {
   type ConversationSidebarWorkspaceRevealRequest,
 } from './components/conversation/ConversationSidebar';
 import { RunModeManagementPage } from './pages/RunModeManagementPage';
+import { MulticaTaskManagementPage } from './pages/MulticaTaskManagementPage';
 import { ScheduledTaskManagementPage } from './pages/ScheduledTaskManagementPage';
 import { ScheduledTaskDetailPage } from './pages/ScheduledTaskDetailPage';
 import { PersonalAnalyticsPage } from './pages/PersonalAnalyticsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { createInitialCreateTaskDraft, TaskListPage, type CreateTaskDraftState } from './pages/TaskListPage';
 import { resetConversationComposerDraft } from '@/lib/conversation-composer-draft';
+import { useEventDrivenRefresh } from '@/lib/use-event-driven-refresh';
 import { GitRequirementDialog } from '@/components/git/GitRequirementDialog';
 import { GitBranchPickerSnapshotProvider } from '@/components/git/GitBranchPickerSnapshotContext';
 import { resolveConversationWorkspaceRemovalTransition } from '@/lib/conversation-workspace-removal';
@@ -1673,6 +1677,23 @@ export function App() {
     };
   }, []);
 
+  // multica 任务生命周期（claim/start/terminal）→ 同步本地侧栏：multica 启动会在本地工作空间
+  // 创建会话任务、完成时更新状态。订阅 multica-task-updated 让本地侧栏即时反映这些变化
+  // （对齐正常 createConversationRun 路径的手动 sidebar refresh，避免 multica 路径漏刷新）。
+  // 复用 useEventDrivenRefresh：事件风暴去重 + 异步 unlisten 防泄漏。刷新直接走 main 的
+  // loadConversationSidebarBootstrap 单飞管线（bootstrap 合并 + 工作区任务补拉），
+  // best-effort 吞错。
+  useEventDrivenRefresh(
+    async () => {
+      try {
+        await loadConversationSidebarBootstrap();
+      } catch {
+        // best-effort：事件驱动刷新失败不阻断 UI，手动操作仍会触发正常刷新。
+      }
+    },
+    [subscribeMulticaTaskUpdates],
+  );
+
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
     let active = true;
@@ -2726,7 +2747,7 @@ export function App() {
           workLocation={conversationWorkLocation}
           onRunModeChange={updateConversationRunMode}
           onLoadProfiles={loadProfiles}
-          onSubmit={async (input) => {
+          onSubmit={async (input, multica) => {
             const nextMode: ConversationRunModeVm = input.runMode === 'direct'
               ? {
                 mode: 'direct',
@@ -2753,8 +2774,12 @@ export function App() {
                 setWorkflowRepairTarget(workflowRepairTargetFromMissingItems(validation.missingItems));
                 return validation.missingItems.map((m) => t(`conversation.validation.${m.code}`, { defaultValue: m.label || m.code })).join('\n');
               }
+              // draft 带 multica 绑定 = 远程任务「点击执行」后的发送：复用本地建会话链 + 叠加 multica 簿记；
+              // 否则普通本地新建会话。二者返回同一 ConversationCreateResultVm（task+run），后续导航/侧栏刷新完全复用。
               setWorkflowRepairTarget(null);
-              const { task, run } = await createConversationRun(input);
+              const { task, run } = multica
+                ? await startMulticaConversationRun(input, multica.remoteTaskId, multica.workspaceId)
+                : await createConversationRun(input);
               applyConversationTask(task);
               conversationWorkspaceStore.promoteDraft(
                 createDraftConversationWorkspaceScope(input.projectId),
@@ -2879,6 +2904,22 @@ export function App() {
           }}
           onSave={(mode) => updateConversationRunMode(mode, defaultProjectId)}
           onWorkflowTemplatesChange={setConversationWorkflowTemplates}
+        />
+      );
+    }
+    if (conversationPage.kind === 'multica-tasks') {
+      return (
+        <MulticaTaskManagementPage
+          onSelectRun={(projectId, taskId, runId) => {
+            setConversationPage({ kind: 'conversation-run', projectId, taskId, runId });
+          }}
+          onPrepareMulticaTask={() => {
+            // 决策 c：远程任务本地工作区延迟到执行时选，落 conversation-home 时预选最近活跃本地工作区
+            //（activeWorkspaceId ?? 持久化 lastActiveWorkspaceId），让 composer 下拉带着合理默认值并可改。
+            const preselect = activeWorkspaceIdRef.current ?? conversationSidebar.lastActiveWorkspaceId ?? null;
+            setDraftConversationWorkspaceId(preselect);
+            setConversationPage({ kind: 'conversation-home' });
+          }}
         />
       );
     }

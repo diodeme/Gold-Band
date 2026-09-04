@@ -63,6 +63,11 @@ import type {
   UpdateStatusVm,
   UpdaterSettingsVm,
   MetricsSettingsVm,
+  MulticaSettingsVm,
+  MulticaServerWorkspaceVm,
+  MulticaWorkspaceRefVm,
+  RemoteConversationSidebarVm,
+  RemoteTaskVm,
   WorkflowDsl,
   WorkflowModelBindings,
   ConversationAttemptLifecycleVm,
@@ -390,6 +395,22 @@ export interface RuntimeApi {
   updateNotificationAttention?(input: NotificationAttentionInput): Promise<void>;
   getMetricsSettings(): Promise<MetricsSettingsVm>;
   saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null): Promise<MetricsSettingsVm>;
+  getMulticaSettings(): Promise<MulticaSettingsVm>;
+  connectMultica(): Promise<MulticaSettingsVm>;
+  disconnectMultica(): Promise<MulticaSettingsVm>;
+  getMulticaTasks(): Promise<RemoteConversationSidebarVm>;
+  /// claim-at-send 的只读取：点击 queued 任务时拉取需求正文（pending 列表只有 thread_name，正文仅任务详情里有）。
+  /// **不改动服务端任务状态**（任务仍 queued）；本地仅据此预填 composer + 绑定 chip。
+  getMulticaTaskRequirement(taskId: string, workspaceId: string): Promise<RemoteTaskVm>;
+  /// 远程任务「发送」时复用本地 composer 链：claim（pending→dispatched）+ start（dispatched→running）+ 建会话
+  /// + 叠加 multica 簿记（register_active_run）。claim 成功但 start 失败时后端自动 release（dispatched→queued）回滚。
+  startMulticaConversationRun(input: ConversationCreateInput, remoteTaskId: string, workspaceId: string): Promise<ConversationCreateResultVm>;
+  cancelMulticaTask(taskId: string): Promise<void>;
+  listServerMulticaWorkspaces(): Promise<MulticaServerWorkspaceVm[]>;
+  pickLocalDirectory(): Promise<string | null>;
+  addMulticaWorkspace(workspaceId: string, workspaceName: string, provider: string): Promise<MulticaSettingsVm>;
+  removeMulticaWorkspace(workspaceId: string): Promise<MulticaSettingsVm>;
+  setActiveMulticaWorkspace(workspaceId: string): Promise<MulticaSettingsVm>;
   recordActivity(): Promise<void>;
   reportFrontendError(input: FrontendErrorReportInput): Promise<void>;
   getUpdateStatus(): Promise<UpdateStatusVm>;
@@ -449,6 +470,8 @@ export interface RuntimeApi {
   startWorkspaceFileWatch(projectId: string): Promise<void>;
   stopWorkspaceFileWatch(projectId: string): Promise<void>;
   subscribeWorkspaceFileChanges?(listener: (event: WorkspaceFileChangedEventVm) => void): Promise<() => void>;
+  subscribeMulticaTaskUpdates?(listener: () => void): Promise<() => void>;
+  subscribeMulticaSettingsUpdates?(listener: () => void): Promise<() => void>;
   workspaceFilePreviewUrl(token: string, staticFrame?: boolean): string;
   openExternalUrl(url: string): Promise<void>;
   openFileWithSystemApp(path: string): Promise<void>;

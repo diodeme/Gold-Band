@@ -1,0 +1,14 @@
+# 项目级 Cargo 源配置（中国大陆访问 crates.io 优化）
+# 仅影响本项目，覆盖用户全局 ~/.cargo/config.toml。
+# rsproxy.cn 为字节跳动维护的 crates.io 完整镜像，与 crates.io 1:1 同步。
+# 若需还原：删除本文件即可。
+
+[source.crates-io]
+replace-with = "rsproxy-sparse"
+
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"
+
+[http]
+timeout = 120
+low-speed-limit = 10240

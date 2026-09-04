@@ -89,7 +89,7 @@ runtime 需要解析 acceptance 的 `dynamic-node-completion` 并 materialize �
 
 - Dynamic identity：outer node、outer attempt、dynamic run、internal node、kind、title、group、chain、depth。
 - Continue context：session mode、continueFromNodeId、continue source summary。
-- Filesystem：dynamic root、node dir、attempt dir、attachments dir。
+- Filesystem：Dynamic root 只展示一次；node dir 相对 Dynamic root、attempt dir 相对 node dir、attachments dir 相对 attempt dir，coordination snapshot 相对 Dynamic root；branch workspace 另声明一次 Runtime 权威 worktree root。
 - Workspace：mode、path、capability。
 - Graph context projection：direct predecessors、active group、inherited group、siblings、resumable sessions；siblings 只给 group 内普通 worker / workflow invocation 分支展示，merge / acceptance 不展示。
 - Agent context：agent strategy、available providers、available profiles、allowed workflow snapshots；只在启用 output contract 的 worker / acceptance 中展示。
@@ -459,6 +459,43 @@ acp.diagnostics.jsonl
 
 空 section 不渲染，避免出现大量“无”。当前 task 不在 hidden context 中重复，始终由 visible `# 任务` / `# Task` 表达。
 
+### 6.7 路径投影压缩
+
+#### 设计判断与边界
+
+长程运行中 hidden context 膨胀的原因不是 canonical locator 或文件布局错误，而是文本渲染对每个附件、节点目录与 branch workspace 重复输出相同绝对路径前缀。修复应停留在 `DynamicContextProjection` 的显示层：graph、attachment locator、workspace catalog、磁盘目录及后续工具读取仍使用原始完整路径，不新增缩写路径 schema、持久字段或第二事实源。
+
+#### 数据与算法
+
+- 当前 invocation 先声明一次 Dynamic root；node dir 相对 Dynamic root，attempt dir 相对 node dir，attachments dir 相对 attempt dir，`coordination-snapshot.json` 相对 Dynamic root。
+- 可用附件以 Dynamic root 为 `pathRoot`；branch workspace 以 Runtime 已有的 dynamic worktree base dir 为 `pathRoot`，叶子继续携带 workspaceId、branch、commit、head 和 status 等既有 metadata，并遵守与附件相同的相对路径与跨根回退契约。
+- 对每一组已经枚举、已经过可见性过滤的路径，按路径组件而不是字符串字符或固定目录层级写入 trie。任意层级都可以形成分叉；渲染时按组件稳定排序，并把“不是终点且只有一个 child”的连续节点压缩为一条 `a/b/c` 路径。
+- 条目既可以是另一个条目的祖先，也可以在不同父目录下具有相同文件名；terminal 标记和父子结构必须同时保留，不能按文件名去重或丢失后代。
+- 无法相对该组 `pathRoot` 的跨盘符、跨根或其他越界条目不参与相对 trie，按稳定顺序显式渲染为顶层 `absolutePath=<完整路径>`。`absolutePath` 本身是 Agent 可直接使用的 locator，不得与 `pathRoot` 再次拼接；该规则同样适用于 branch workspace，确保显示压缩不改变 locator 含义。
+
+算法不能假设差异固定发生在 node、attempt 或 attachments 层。例如根为 `A` 时：
+
+```text
+A/B/C/D
+A/C/D
+A/B/C/E
+A/B/D/E
+```
+
+应投影为：
+
+```text
+pathRoot=A
+- B/
+  - C/
+    - D
+    - E
+  - D/E
+- C/D
+```
+
+该投影只遍历本次 prompt 原本已经枚举的路径，时间和内存复杂度均为 `O(total path components)`；不新增文件系统扫描、I/O、依赖、缓存、队列、锁或并发机制。相比重复绝对路径，输出长度与 provider token 占用随公共前缀长度显著下降。
+
 ## 7. 实施步骤
 
 ### 任务 1：新增 AI-DYNAMIC hidden context prompt
@@ -679,6 +716,9 @@ acp.diagnostics.jsonl
 - group 后 single 展示 group exit attachments。
 - single 后 single 展示直接前序 attachments，并只保留 inherited group 摘要。
 - nested fanout 展示 active group 详细信息和 parent group 摘要。
+- Dynamic root 在同一 hidden context 中只声明一次；node 相对 Dynamic root、attempt 相对 node、attachments 相对 attempt，coordination snapshot 相对 Dynamic root。
+- 附件与 branch workspace 路径树覆盖任意深度分叉、单子链压缩、祖先条目、不同父目录同名叶子和稳定排序。
+- 附件或 branch workspace 无法相对 `pathRoot` 时渲染 `absolutePath=<完整路径>`；该值可直接使用且不得再拼接 root，不因压缩被遗漏或错误归组。
 
 ### 7.2 回归场景
 
@@ -718,6 +758,7 @@ npm run web:build
 - [x] AI-DYNAMIC runtime context 由 `DynamicContextProjection` 或等价投影层统一生成。
 - [x] AI-DYNAMIC prompt 不展示内部控制 artifact，只展示可消费 attachments。
 - [x] group 内、group 后 single、single 后 single、nested fanout 的上下文投影规则清晰且有测试覆盖。
+- [x] hidden context 只重复声明一次 Dynamic root，并按 node→attempt→attachments 的逐级相对关系展示运行目录；附件与 branch workspace 按路径组件做任意深度树形分组和单子链压缩，跨根路径安全回退为可直接使用的 `absolutePath=` locator。
 - [x] 中英文 prompt 同步维护。
 - [x] 产品设计文档与开发计划同步更新。
 - [x] 后端单元测试覆盖 prompt 分层、continue、acceptance end/repair、repair 流程。

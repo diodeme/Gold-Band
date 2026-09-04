@@ -13,9 +13,9 @@
 
 ## Runtime location
 - Dynamic root: {{ dynamic_root }}
-- Internal node dir: {{ node_dir }}
-- Internal attempt dir: {{ attempt_dir }}
-- Internal attachments dir: {{ attachments_dir }}
+- Internal node (relative to Dynamic root): {{ node_dir }}
+- Current attempt (relative to the internal node): {{ attempt_dir }}
+- Attachments (relative to the current attempt): {{ attachments_dir }}
 - Workspace ID: {{ workspace_id }}
 - Workspace path: {{ workspace_path }}
 - Workspace capability:
@@ -30,7 +30,7 @@
 
 {% if has_coordination_snapshot %}
 ## Runtime coordination snapshot
-- Read-only snapshot: {{ coordination_snapshot_path }}
+- Read-only snapshot (relative to Dynamic root): {{ coordination_snapshot_path }}
 - Runtime derives this file from the canonical dynamic graph and is its only writer. Do not modify it.
 - Read the latest snapshot before starting or continuing this task: use each `workstreams[]` goal, TODO status, parent relationship, and steps to understand other subtasks, then use `groups[]` nesting and phase to avoid duplicate or conflicting work.
 - Read the same path again before outputting `next.type="single"` or `next.type="fanout"`, and plan successors from the latest state.
@@ -58,6 +58,7 @@
 
 {% if has_available_attachments %}
 ## Available attachments
+- This is a path tree relative to Dynamic root. Form a regular entry's complete path by joining `Dynamic root` with its successive tree levels; a top-level `absolutePath=` entry is already complete and must be used as-is.
 {{ available_attachments }}
 {% endif %}
 

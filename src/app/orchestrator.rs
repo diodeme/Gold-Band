@@ -13415,8 +13415,7 @@ fn dynamic_attachment_manifest_projection(
     if matches!(
         node.kind,
         DynamicNodeKind::Merge | DynamicNodeKind::Acceptance
-    )
-        && let Some(group_id) = node.group_id.as_deref()
+    ) && let Some(group_id) = node.group_id.as_deref()
         && let Some(group) = graph.groups.iter().find(|group| group.id == group_id)
     {
         for node_id in group
@@ -13424,7 +13423,10 @@ fn dynamic_attachment_manifest_projection(
             .iter()
             .chain(group.root_node_ids.iter())
         {
-            if let Some(branch) = graph.nodes.iter().find(|candidate| candidate.id == *node_id)
+            if let Some(branch) = graph
+                .nodes
+                .iter()
+                .find(|candidate| candidate.id == *node_id)
                 && seen.insert(branch.id.clone())
             {
                 group_evidence_nodes.push(branch);
@@ -13950,6 +13952,23 @@ fn dynamic_hidden_sections(
         AI_DYNAMIC_HIDDEN_CONTEXT_ZH_CN,
         AI_DYNAMIC_HIDDEN_CONTEXT_EN,
     );
+    let attachment_template_context = serde_json::json!({
+        "source_predecessor_limit": DYNAMIC_PROMPT_SOURCE_PREDECESSOR_LIMIT,
+        "attachments_per_source_limit": DYNAMIC_PROMPT_ATTACHMENTS_PER_SOURCE_LIMIT,
+        "predecessor_attachments": projection.attachments.predecessor_chain.paths.as_str(),
+        "has_predecessor_attachments": projection.attachments.predecessor_chain.has_attachments(),
+        "predecessor_attachment_overflow_directories": projection.attachments.predecessor_chain.overflow_directories.as_str(),
+        "has_predecessor_attachment_overflow": projection.attachments.predecessor_chain.has_overflow(),
+        "dependency_attachments": projection.attachments.explicit_dependencies.paths.as_str(),
+        "has_dependency_attachments": projection.attachments.explicit_dependencies.has_attachments(),
+        "dependency_attachment_overflow_directories": projection.attachments.explicit_dependencies.overflow_directories.as_str(),
+        "has_dependency_attachment_overflow": projection.attachments.explicit_dependencies.has_overflow(),
+        "group_evidence_attachments": projection.attachments.group_evidence.paths.as_str(),
+        "has_group_evidence_attachments": projection.attachments.group_evidence.has_attachments(),
+        "group_evidence_attachment_overflow_directories": projection.attachments.group_evidence.overflow_directories.as_str(),
+        "has_group_evidence_attachment_overflow": projection.attachments.group_evidence.has_overflow(),
+        "has_available_attachments": projection.has_available_attachments,
+    });
     let mut template_context = serde_json::json!({
         "outer_node_id": ctx.outer_node_id,
         "outer_attempt_id": ctx.outer_attempt_id,
@@ -13982,21 +14001,6 @@ fn dynamic_hidden_sections(
         "has_inherited_groups": projection.has_inherited_groups,
         "siblings": projection.siblings,
         "has_siblings": projection.has_siblings,
-        "source_predecessor_limit": DYNAMIC_PROMPT_SOURCE_PREDECESSOR_LIMIT,
-        "attachments_per_source_limit": DYNAMIC_PROMPT_ATTACHMENTS_PER_SOURCE_LIMIT,
-        "predecessor_attachments": projection.attachments.predecessor_chain.paths.as_str(),
-        "has_predecessor_attachments": projection.attachments.predecessor_chain.has_attachments(),
-        "predecessor_attachment_overflow_directories": projection.attachments.predecessor_chain.overflow_directories.as_str(),
-        "has_predecessor_attachment_overflow": projection.attachments.predecessor_chain.has_overflow(),
-        "dependency_attachments": projection.attachments.explicit_dependencies.paths.as_str(),
-        "has_dependency_attachments": projection.attachments.explicit_dependencies.has_attachments(),
-        "dependency_attachment_overflow_directories": projection.attachments.explicit_dependencies.overflow_directories.as_str(),
-        "has_dependency_attachment_overflow": projection.attachments.explicit_dependencies.has_overflow(),
-        "group_evidence_attachments": projection.attachments.group_evidence.paths.as_str(),
-        "has_group_evidence_attachments": projection.attachments.group_evidence.has_attachments(),
-        "group_evidence_attachment_overflow_directories": projection.attachments.group_evidence.overflow_directories.as_str(),
-        "has_group_evidence_attachment_overflow": projection.attachments.group_evidence.has_overflow(),
-        "has_available_attachments": projection.has_available_attachments,
         "has_output_contract": has_output_contract,
         "allowed_workflow_snapshots": allowed_workflow_snapshot_summary(&graph.run.allowed_workflow_snapshots),
         "agent_strategy_mode": dynamic_agent_strategy_mode(ctx.dynamic),
@@ -14029,6 +14033,10 @@ fn dynamic_hidden_sections(
     let template_fields = template_context
         .as_object_mut()
         .expect("AI-DYNAMIC hidden context must be an object");
+    let serde_json::Value::Object(attachment_template_fields) = attachment_template_context else {
+        unreachable!("AI-DYNAMIC attachment template context must be an object");
+    };
+    template_fields.extend(attachment_template_fields);
     template_fields.insert(
         "has_new_round_trigger".to_string(),
         serde_json::Value::Bool(new_round_trigger.is_some()),
@@ -19658,7 +19666,7 @@ mod tests {
 
     #[test]
     fn dynamic_attachment_manifest_counts_files_and_empty_directories_but_not_container_directories()
-    {
+     {
         let (_temp, repo_root) = init_repo();
         let app = App::with_config(repo_root, RuntimeConfig::default());
         let dynamic = test_dynamic();
@@ -19688,7 +19696,11 @@ mod tests {
         }
         let nested_dir = attachments_dir.join("nested/container");
         std::fs::create_dir_all(nested_dir.as_std_path()).unwrap();
-        std::fs::write(nested_dir.join("report.md").as_std_path(), "nested evidence").unwrap();
+        std::fs::write(
+            nested_dir.join("report.md").as_std_path(),
+            "nested evidence",
+        )
+        .unwrap();
 
         let exact_limit_scan = dynamic_prompt_attachment_entries_for_node(&ctx, &source);
         assert!(!exact_limit_scan.truncated);
@@ -19897,11 +19909,9 @@ mod tests {
         .unwrap();
         let prompt = render_prompt_bundle(&invocation).unwrap();
 
-        assert!(
-            prompt
-                .user_prompt
-                .contains("### Group 证据（当前 merge / acceptance 输入或相关 group 最近一轮合并与验收）")
-        );
+        assert!(prompt.user_prompt.contains(
+            "### Group 证据（当前 merge / acceptance 输入或相关 group 最近一轮合并与验收）"
+        ));
         assert_eq!(prompt.user_prompt.matches("latest-merge-").count(), 10);
         assert_eq!(prompt.user_prompt.matches("latest-acceptance-").count(), 10);
         assert!(prompt.user_prompt.contains("accept-report.md"));
@@ -19916,12 +19926,12 @@ mod tests {
         assert!(
             prompt
                 .user_prompt
-                .contains("nodes/group-core-merge-2/attempt-001/attachments")
+                .contains("group-core-merge-2/attempt-001/attachments")
         );
         assert!(
             prompt
                 .user_prompt
-                .contains("nodes/group-core-accept-2/attempt-001/attachments")
+                .contains("group-core-accept-2/attempt-001/attachments")
         );
         assert!(!prompt.user_prompt.contains("## 并行兄弟节点"));
         assert!(
@@ -20352,13 +20362,7 @@ mod tests {
             "branch-b-report.md",
             "branch evidence",
         );
-        write_dynamic_attachment_for_test(
-            &app,
-            &ctx,
-            &merge,
-            "merge-report.md",
-            "merge evidence",
-        );
+        write_dynamic_attachment_for_test(&app, &ctx, &merge, "merge-report.md", "merge evidence");
 
         let invocation = build_dynamic_worker_invocation(
             &ctx,

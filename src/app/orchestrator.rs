@@ -12141,28 +12141,53 @@ fn create_dynamic_acceptance_node(
 }
 
 fn dynamic_group_workspace_summary(
-    _ctx: &DynamicExecutionContext<'_>,
+    ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     group: &DynamicGroupState,
 ) -> String {
     let repository = GitRepositoryService::default();
-    let lines = group.child_workspace_ids.iter().filter_map(|workspace_id| {
-        let workspace = dynamic_workspace(graph, workspace_id).ok()?;
-        let head = repository.head(&workspace.path).unwrap_or_else(|_| "unknown".to_string());
-        let status = repository.status_porcelain(&workspace.path)
-            .map(|value| if value.is_empty() { "clean".to_string() } else { value.replace('\n', "; ") })
-            .unwrap_or_else(|_| "unavailable".to_string());
-        Some(format!(
-            "- workspaceId={} path={} branch={} parentWorkspaceId={} forkCommit={} checkpointCommit={} head={} status={}",
-            workspace.id, workspace.path, workspace.branch.as_deref().unwrap_or("none"),
-            workspace.parent_workspace_id.as_deref().unwrap_or("none"), workspace.fork_commit,
-            workspace.checkpoint_commit.as_deref().unwrap_or("none"), head, status,
-        ))
-    }).collect::<Vec<_>>();
-    if lines.is_empty() {
+    let entries = group
+        .child_workspace_ids
+        .iter()
+        .filter_map(|workspace_id| {
+            let workspace = dynamic_workspace(graph, workspace_id).ok()?;
+            let head = repository
+                .head(&workspace.path)
+                .unwrap_or_else(|_| "unknown".to_string());
+            let status = repository
+                .status_porcelain(&workspace.path)
+                .map(|value| {
+                    if value.is_empty() {
+                        "clean".to_string()
+                    } else {
+                        value.replace('\n', "; ")
+                    }
+                })
+                .unwrap_or_else(|_| "unavailable".to_string());
+            Some(PromptPathTreeEntry {
+                path: workspace.path.clone(),
+                detail: Some(format!(
+                    "workspaceId={} branch={} parentWorkspaceId={} forkCommit={} checkpointCommit={} head={} status={}",
+                    workspace.id,
+                    workspace.branch.as_deref().unwrap_or("none"),
+                    workspace.parent_workspace_id.as_deref().unwrap_or("none"),
+                    workspace.fork_commit,
+                    workspace.checkpoint_commit.as_deref().unwrap_or("none"),
+                    head,
+                    status,
+                )),
+            })
+        })
+        .collect::<Vec<_>>();
+    if entries.is_empty() {
         "none".to_string()
     } else {
-        lines.join("\n")
+        let root = dynamic_worktree_base_dir(ctx);
+        format!(
+            "- pathRoot={}\n{}",
+            root,
+            render_prompt_path_tree(&root, entries)
+        )
     }
 }
 
@@ -12936,10 +12961,130 @@ struct DynamicContextProjection {
     has_available_attachments: bool,
 }
 
+struct PromptPathTreeEntry {
+    path: Utf8PathBuf,
+    detail: Option<String>,
+}
+
+#[derive(Default)]
+struct PromptPathTreeNode {
+    terminal: bool,
+    details: Vec<String>,
+    children: BTreeMap<String, PromptPathTreeNode>,
+}
+
+fn prompt_path_components(root: &Utf8Path, path: &Utf8Path) -> Option<Vec<String>> {
+    let relative = path.strip_prefix(root).ok()?;
+    let mut components = Vec::new();
+    for component in relative.components() {
+        match component {
+            camino::Utf8Component::CurDir => {}
+            camino::Utf8Component::Normal(segment) => components.push(segment.to_string()),
+            camino::Utf8Component::Prefix(_)
+            | camino::Utf8Component::RootDir
+            | camino::Utf8Component::ParentDir => return None,
+        }
+    }
+    Some(components)
+}
+
+fn insert_prompt_path_tree_entry(
+    tree: &mut PromptPathTreeNode,
+    components: Vec<String>,
+    detail: Option<String>,
+) {
+    let mut current = tree;
+    for component in components {
+        current = current.children.entry(component).or_default();
+    }
+    current.terminal = true;
+    if let Some(detail) = detail
+        && !current.details.contains(&detail)
+    {
+        current.details.push(detail);
+    }
+}
+
+fn render_prompt_path_tree_node(
+    segment: &str,
+    node: &PromptPathTreeNode,
+    depth: usize,
+    lines: &mut Vec<String>,
+) {
+    let mut path = segment.to_string();
+    let mut current = node;
+    while !current.terminal && current.children.len() == 1 {
+        let (next_segment, next_node) = current
+            .children
+            .first_key_value()
+            .expect("single-child path tree node has a child");
+        path.push('/');
+        path.push_str(next_segment);
+        current = next_node;
+    }
+
+    let mut line = format!("{}- {}", "  ".repeat(depth), path);
+    if !current.terminal {
+        line.push('/');
+    }
+    if !current.details.is_empty() {
+        line.push_str(" [");
+        line.push_str(&current.details.join("; "));
+        line.push(']');
+    }
+    lines.push(line);
+
+    for (child_segment, child) in &current.children {
+        render_prompt_path_tree_node(child_segment, child, depth + 1, lines);
+    }
+}
+
+fn render_prompt_path_tree(root: &Utf8Path, entries: Vec<PromptPathTreeEntry>) -> String {
+    let mut tree = PromptPathTreeNode::default();
+    let mut unrooted = Vec::new();
+    for entry in entries {
+        if let Some(components) = prompt_path_components(root, &entry.path) {
+            insert_prompt_path_tree_entry(&mut tree, components, entry.detail);
+        } else {
+            unrooted.push(entry);
+        }
+    }
+
+    let mut lines = Vec::new();
+    if tree.terminal {
+        let mut line = "- .".to_string();
+        if !tree.details.is_empty() {
+            line.push_str(" [");
+            line.push_str(&tree.details.join("; "));
+            line.push(']');
+        }
+        lines.push(line);
+    }
+    for (segment, child) in &tree.children {
+        render_prompt_path_tree_node(segment, child, 0, &mut lines);
+    }
+    unrooted.sort_by(|left, right| left.path.cmp(&right.path));
+    for entry in unrooted {
+        let mut line = format!("- absolutePath={}", entry.path);
+        if let Some(detail) = entry.detail {
+            line.push_str(" [");
+            line.push_str(&detail);
+            line.push(']');
+        }
+        lines.push(line);
+    }
+    lines.join("\n")
+}
+
+fn prompt_path_relative_to(root: &Utf8Path, path: &Utf8Path) -> String {
+    prompt_path_components(root, path)
+        .filter(|components| !components.is_empty())
+        .map(|components| components.join("/"))
+        .unwrap_or_else(|| path.to_string())
+}
+
 #[derive(Clone)]
 struct DynamicAttachmentEntry {
-    node_id: String,
-    attempt_id: String,
     name: String,
     path: Utf8PathBuf,
 }
@@ -13077,7 +13222,10 @@ fn dynamic_active_group_summary(
         node.kind,
         DynamicNodeKind::Merge | DynamicNodeKind::Acceptance
     ) {
-        lines.push("- branch workspaces:".to_string());
+        lines.push(
+            "- branch workspaces (relative tree under pathRoot; absolutePath entries are complete):"
+                .to_string(),
+        );
         lines.push(dynamic_group_workspace_summary(ctx, graph, group));
     }
     lines.join("\n")
@@ -13207,16 +13355,23 @@ fn dynamic_attachment_manifest_summary(
     if entries.is_empty() {
         return String::new();
     }
-    entries
-        .into_iter()
-        .map(|entry| {
-            format!(
-                "- {}/{}/attachments/{}: {}",
-                entry.node_id, entry.attempt_id, entry.name, entry.path
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let dynamic_root = ctx.app.paths.dynamic_dir(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+    );
+    render_prompt_path_tree(
+        &dynamic_root,
+        entries
+            .into_iter()
+            .map(|entry| PromptPathTreeEntry {
+                path: entry.path,
+                detail: None,
+            })
+            .collect(),
+    )
 }
 
 fn collect_group_exit_attachment_node_ids(
@@ -13263,12 +13418,7 @@ fn dynamic_attachment_entries_for_node(
     files.sort_by(|left, right| left.0.cmp(&right.0));
     files
         .into_iter()
-        .map(|(name, path)| DynamicAttachmentEntry {
-            node_id: node.id.clone(),
-            attempt_id: attempt_id.clone(),
-            name,
-            path,
-        })
+        .map(|(name, path)| DynamicAttachmentEntry { name, path })
         .collect()
 }
 
@@ -13558,6 +13708,15 @@ fn dynamic_hidden_sections(
         ctx.outer_node_id,
         ctx.outer_attempt_id,
     );
+    let node_dir = prompt_path_relative_to(&dynamic_root, &runtime_context.node_dir);
+    let attempt_dir =
+        prompt_path_relative_to(&runtime_context.node_dir, &runtime_context.attempt_dir);
+    let attachments_dir = prompt_path_relative_to(
+        &runtime_context.attempt_dir,
+        &runtime_context.attachments_dir,
+    );
+    let coordination_snapshot_path =
+        prompt_path_relative_to(&dynamic_root, &coordination_snapshot_path);
     let template = prompt_by_language(
         ctx.app.config.desktop_language,
         AI_DYNAMIC_HIDDEN_CONTEXT_ZH_CN,
@@ -13579,9 +13738,9 @@ fn dynamic_hidden_sections(
         },
         "continue_from_node_id": node.continue_from_node_id.as_deref().unwrap_or("none"),
         "dynamic_root": dynamic_root,
-        "node_dir": runtime_context.node_dir,
-        "attempt_dir": runtime_context.attempt_dir,
-        "attachments_dir": runtime_context.attachments_dir,
+        "node_dir": node_dir,
+        "attempt_dir": attempt_dir,
+        "attachments_dir": attachments_dir,
         "workspace_id": node.workspace_id,
         "workspace_path": workspace_path,
         "workspace_capability": dynamic_workspace_capability_summary(ctx),
@@ -18847,11 +19006,10 @@ mod tests {
             &dynamic_attempt_id(&source),
         );
         std::fs::create_dir_all(attachments_dir.as_std_path()).unwrap();
-        std::fs::write(
-            attachments_dir.join("dev-report.md").as_std_path(),
-            "GoodMorning verified.",
-        )
-        .unwrap();
+        let report_path = attachments_dir.join("dev-report.md");
+        let details_path = attachments_dir.join("verification-details.json");
+        std::fs::write(report_path.as_std_path(), "GoodMorning verified.").unwrap();
+        std::fs::write(details_path.as_std_path(), r#"{ "status": "passed" }"#).unwrap();
 
         let invocation = build_dynamic_worker_invocation(
             &ctx,
@@ -18877,6 +19035,56 @@ mod tests {
         assert!(prompt.user_prompt.contains("dev-good-morning"));
         assert!(prompt.user_prompt.contains("## 可用附件"));
         assert!(prompt.user_prompt.contains("dev-report.md"));
+        assert!(prompt.user_prompt.contains("verification-details.json"));
+        let dynamic_root = app.paths.dynamic_dir(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        );
+        let coordination_snapshot_path = app.paths.dynamic_coordination_snapshot_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        );
+        assert_eq!(
+            prompt.user_prompt.matches(dynamic_root.as_str()).count(),
+            1,
+            "the hidden context must declare the shared Dynamic root only once"
+        );
+        assert!(
+            prompt
+                .user_prompt
+                .contains("- 内部节点（相对 Dynamic 根目录）：nodes/verify-good-morning")
+        );
+        assert!(
+            prompt
+                .user_prompt
+                .contains("- 当前 attempt（相对内部节点）：attempt-001")
+        );
+        assert!(
+            prompt
+                .user_prompt
+                .contains("- attachments（相对当前 attempt）：attachments")
+        );
+        assert!(
+            prompt
+                .user_prompt
+                .contains("- 只读快照（相对 Dynamic 根目录）：coordination-snapshot.json")
+        );
+        assert!(prompt.user_prompt.contains(
+            "- nodes/dev-good-morning/attempt-001/attachments/\n  - dev-report.md\n  - verification-details.json"
+        ));
+        assert!(!prompt.user_prompt.contains(report_path.as_str()));
+        assert!(!prompt.user_prompt.contains(details_path.as_str()));
+        assert!(
+            !prompt
+                .user_prompt
+                .contains(coordination_snapshot_path.as_str())
+        );
         assert!(
             !prompt
                 .user_prompt
@@ -18900,6 +19108,267 @@ mod tests {
                 .contains("本次 invocation 是执行型节点")
         );
         assert!(prompt.system_prompt.contains("隐藏 finalize turn"));
+    }
+
+    #[test]
+    fn dynamic_prompt_path_projection_has_matching_english_contract() {
+        let (_temp, repo_root) = init_repo();
+        let mut config = RuntimeConfig::default();
+        config.desktop_language = DesktopLanguage::En;
+        let app = App::with_config(repo_root, config);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut source = test_worktree_node("source-node");
+        source.status = DynamicNodeStatus::Completed;
+        source.outcome = Some(NodeOutcome::Success);
+        let mut node = test_worktree_node("consumer-node");
+        node.depends_on = vec![source.id.clone()];
+        let graph = test_dynamic_graph(vec![source.clone(), node.clone()]);
+        let report_path =
+            write_dynamic_attachment_for_test(&app, &ctx, &source, "summary.md", "done");
+
+        let invocation = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &node,
+            &dynamic_attempt_id(&node),
+            dynamic_output_contract_for_node(&ctx, &graph, &node),
+            SessionMode::New,
+            None,
+            None,
+            "test-turn".to_string(),
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        let prompt = render_prompt_bundle(&invocation).unwrap();
+        let dynamic_root = app.paths.dynamic_dir(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        );
+        let coordination_snapshot_path = app.paths.dynamic_coordination_snapshot_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        );
+
+        assert!(prompt.user_prompt.contains("## Runtime location"));
+        assert!(
+            prompt
+                .user_prompt
+                .contains("Internal node (relative to Dynamic root): nodes/consumer-node")
+        );
+        assert!(
+            prompt
+                .user_prompt
+                .contains("Current attempt (relative to the internal node): attempt-001")
+        );
+        assert!(
+            prompt
+                .user_prompt
+                .contains("Attachments (relative to the current attempt): attachments")
+        );
+        assert!(
+            prompt.user_prompt.contains(
+                "Read-only snapshot (relative to Dynamic root): coordination-snapshot.json"
+            )
+        );
+        assert!(prompt.user_prompt.contains("## Available attachments"));
+        assert!(
+            prompt
+                .user_prompt
+                .contains("a top-level `absolutePath=` entry")
+        );
+        assert!(
+            prompt
+                .user_prompt
+                .contains("- nodes/source-node/attempt-001/attachments/summary.md")
+        );
+        assert_eq!(prompt.user_prompt.matches(dynamic_root.as_str()).count(), 1);
+        assert!(!prompt.user_prompt.contains(report_path.as_str()));
+        assert!(
+            !prompt
+                .user_prompt
+                .contains(coordination_snapshot_path.as_str())
+        );
+    }
+
+    #[test]
+    fn dynamic_prompt_path_tree_groups_variable_depth_prefixes() {
+        let root = Utf8PathBuf::from("A");
+        let rendered = render_prompt_path_tree(
+            &root,
+            ["A/B/C/D", "A/C/D", "A/B/C/E", "A/B/D/E"]
+                .into_iter()
+                .map(|path| PromptPathTreeEntry {
+                    path: Utf8PathBuf::from(path),
+                    detail: None,
+                })
+                .collect(),
+        );
+
+        assert_eq!(rendered, "- B/\n  - C/\n    - D\n    - E\n  - D/E\n- C/D");
+    }
+
+    #[test]
+    fn dynamic_prompt_path_tree_preserves_same_name_and_ancestor_entries() {
+        let root = Utf8PathBuf::from("A");
+        let rendered = render_prompt_path_tree(
+            &root,
+            ["A/B", "A/B/summary.md", "A/C/summary.md"]
+                .into_iter()
+                .map(|path| PromptPathTreeEntry {
+                    path: Utf8PathBuf::from(path),
+                    detail: None,
+                })
+                .collect(),
+        );
+
+        assert_eq!(rendered, "- B\n  - summary.md\n- C/summary.md");
+        assert_eq!(rendered.matches("summary.md").count(), 2);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn dynamic_prompt_path_tree_keeps_out_of_root_paths_absolute_and_sorted() {
+        let root = Utf8PathBuf::from("/runtime/dynamic");
+        let rendered = render_prompt_path_tree(
+            &root,
+            [
+                "/outside/z.md",
+                "/runtime/dynamic/nodes/a/report.md",
+                "/runtime/dynamic/../escape.md",
+                "/runtime/dynamic-other/prefix.md",
+                "/other/x.md",
+            ]
+            .into_iter()
+            .map(|path| PromptPathTreeEntry {
+                path: Utf8PathBuf::from(path),
+                detail: None,
+            })
+            .collect(),
+        );
+
+        assert_eq!(
+            rendered,
+            "- nodes/a/report.md\n- absolutePath=/other/x.md\n- absolutePath=/outside/z.md\n- absolutePath=/runtime/dynamic/../escape.md\n- absolutePath=/runtime/dynamic-other/prefix.md"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dynamic_prompt_path_tree_handles_windows_drive_and_unc_roots() {
+        let drive_rendered = render_prompt_path_tree(
+            Utf8Path::new(r"C:\runtime\dynamic"),
+            [
+                PromptPathTreeEntry {
+                    path: Utf8PathBuf::from(r"C:\runtime\dynamic\nodes\a\report.md"),
+                    detail: None,
+                },
+                PromptPathTreeEntry {
+                    path: Utf8PathBuf::from(r"D:\outside\z.md"),
+                    detail: None,
+                },
+                PromptPathTreeEntry {
+                    path: Utf8PathBuf::from(r"C:\runtime\dynamic-other\prefix.md"),
+                    detail: None,
+                },
+                PromptPathTreeEntry {
+                    path: Utf8PathBuf::from(r"C:\runtime\dynamic\..\escape.md"),
+                    detail: None,
+                },
+                PromptPathTreeEntry {
+                    path: Utf8PathBuf::from(r"C:\other\x.md"),
+                    detail: None,
+                },
+            ]
+            .into_iter()
+            .collect(),
+        );
+        assert_eq!(
+            drive_rendered,
+            "- nodes/a/report.md\n- absolutePath=C:\\other\\x.md\n- absolutePath=C:\\runtime\\dynamic\\..\\escape.md\n- absolutePath=C:\\runtime\\dynamic-other\\prefix.md\n- absolutePath=D:\\outside\\z.md"
+        );
+
+        let unc_rendered = render_prompt_path_tree(
+            Utf8Path::new(r"\\server\share\dynamic"),
+            vec![PromptPathTreeEntry {
+                path: Utf8PathBuf::from(r"\\server\share\dynamic\nodes\report.md"),
+                detail: None,
+            }],
+        );
+        assert_eq!(unc_rendered, "- nodes/report.md");
+    }
+
+    #[test]
+    fn dynamic_group_workspace_summary_uses_one_root_and_absolute_fallback() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let root = dynamic_worktree_base_dir(&ctx);
+        let mut graph = test_dynamic_graph_at(repo_root.clone(), Vec::new());
+
+        let mut workspace_z = test_workspace(repo_root.clone());
+        workspace_z.id = "workspace-z".to_string();
+        workspace_z.kind = WorkspaceKind::Worktree;
+        workspace_z.ownership = WorkspaceOwnership::Runtime;
+        workspace_z.path = root.join("branch-z");
+        workspace_z.branch = Some("branch-z".to_string());
+        let workspace_z_path = workspace_z.path.clone();
+
+        let mut workspace_a = test_workspace(repo_root.clone());
+        workspace_a.id = "workspace-a".to_string();
+        workspace_a.kind = WorkspaceKind::Worktree;
+        workspace_a.ownership = WorkspaceOwnership::Runtime;
+        workspace_a.path = root.join("branch-a");
+        workspace_a.branch = Some("branch-a".to_string());
+        let workspace_a_path = workspace_a.path.clone();
+
+        let mut workspace_external = test_workspace(repo_root.clone());
+        workspace_external.id = "workspace-external".to_string();
+        workspace_external.kind = WorkspaceKind::Worktree;
+        workspace_external.ownership = WorkspaceOwnership::Runtime;
+        workspace_external.path = repo_root.join("external-worktree");
+        workspace_external.branch = Some("branch-external".to_string());
+        let workspace_external_path = workspace_external.path.clone();
+
+        graph
+            .workspaces
+            .extend([workspace_z, workspace_external, workspace_a]);
+        let mut group = test_group_state("group-test", "bootstrap", Vec::new(), Vec::new());
+        group.child_workspace_ids = vec![
+            "workspace-z".to_string(),
+            "workspace-external".to_string(),
+            "workspace-a".to_string(),
+        ];
+
+        let rendered = dynamic_group_workspace_summary(&ctx, &graph, &group);
+
+        assert!(rendered.starts_with(&format!("- pathRoot={root}\n")));
+        assert_eq!(rendered.matches(root.as_str()).count(), 1);
+        assert!(!rendered.contains(workspace_a_path.as_str()));
+        assert!(!rendered.contains(workspace_z_path.as_str()));
+        assert!(rendered.contains(&format!(
+            "absolutePath={workspace_external_path} [workspaceId=workspace-external"
+        )));
+        let branch_a = rendered
+            .find("- branch-a [workspaceId=workspace-a")
+            .unwrap();
+        assert!(rendered.contains("workspaceId=workspace-a branch=branch-a"));
+        let branch_z = rendered
+            .find("- branch-z [workspaceId=workspace-z")
+            .unwrap();
+        assert!(branch_a < branch_z);
     }
 
     #[test]
@@ -18987,6 +19456,18 @@ mod tests {
         );
         group.status = DynamicGroupStatus::Merging;
         group.merge_node_id = Some("group-core-merge".to_string());
+        let worktree_root = dynamic_worktree_base_dir(&ctx);
+        let worktree_path = worktree_root.join("branch-a-worktree");
+        let mut workspace = test_workspace(app.paths.repo_root.clone());
+        workspace.id = "workspace-branch-a".to_string();
+        workspace.kind = WorkspaceKind::Worktree;
+        workspace.ownership = WorkspaceOwnership::Runtime;
+        workspace.path = worktree_path.clone();
+        workspace.branch = Some("branch-a".to_string());
+        workspace.parent_workspace_id = Some("workspace-main".to_string());
+        workspace.created_by_group_id = Some(group.id.clone());
+        group.child_workspace_ids = vec![workspace.id.clone()];
+        graph.workspaces.push(workspace);
         graph.groups.push(group);
         write_dynamic_attachment_for_test(&app, &ctx, &branch_a, "a-report.md", "a evidence");
         write_dynamic_attachment_for_test(&app, &ctx, &branch_b, "b-report.md", "b evidence");
@@ -19015,6 +19496,20 @@ mod tests {
         assert!(prompt.user_prompt.contains("## 可用附件"));
         assert!(prompt.user_prompt.contains("a-report.md"));
         assert!(prompt.user_prompt.contains("b-report.md"));
+        assert!(prompt.user_prompt.contains(
+            "branch workspaces (relative tree under pathRoot; absolutePath entries are complete)"
+        ));
+        assert!(
+            prompt
+                .user_prompt
+                .contains(&format!("pathRoot={worktree_root}"))
+        );
+        assert!(
+            prompt
+                .user_prompt
+                .contains("- branch-a-worktree [workspaceId=workspace-branch-a branch=branch-a")
+        );
+        assert!(!prompt.user_prompt.contains(worktree_path.as_str()));
         assert!(!prompt.user_prompt.contains("## 并行兄弟节点"));
         assert!(!prompt.user_prompt.contains("## 会话复用"));
         assert!(!prompt.user_prompt.contains("## 运行预算"));
@@ -19098,8 +19593,21 @@ mod tests {
             ctx.outer_node_id,
             ctx.outer_attempt_id,
         );
+        let dynamic_root = app.paths.dynamic_dir(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        );
         assert!(finalize_context.contains("## Runtime 协调快照"));
-        assert!(finalize_context.contains(coordination_snapshot_path.as_str()));
+        assert!(finalize_context.contains(&format!("- Dynamic 根目录：{dynamic_root}")));
+        assert!(
+            finalize_context
+                .contains("- 只读快照（相对 Dynamic 根目录）：coordination-snapshot.json")
+        );
+        assert_eq!(finalize_context.matches(dynamic_root.as_str()).count(), 1);
+        assert!(!finalize_context.contains(coordination_snapshot_path.as_str()));
         assert!(finalize_context.contains("## 会话复用"));
         assert!(finalize_context.contains("## 运行预算"));
         assert!(finalize_context.contains("## Agent 与 profile 选项"));

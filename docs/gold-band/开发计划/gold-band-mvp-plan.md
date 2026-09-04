@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-04：AI-DYNAMIC hidden context 路径树投影压缩
+
+- 根因与设计判断：AI-DYNAMIC 的 canonical graph、attachment locator、workspace catalog 和文件布局已经正确，长程运行上下文膨胀来自 hidden context 渲染层反复输出相同绝对路径前缀；现场样本中 Dynamic root 在附件与运行位置等区段重复出现，随着节点和附件增加持续浪费 provider token。这属于正确设计下消费投影实现不完整，不修改 locator、磁盘目录、workspace identity 或文件读取协议。
+- 数据与实现：每次 invocation 只声明一次 Dynamic root；当前 node dir 相对 Dynamic root、attempt dir 相对 node dir、attachments dir 相对 attempt dir，`coordination-snapshot.json` 相对 Dynamic root 展示。可用附件以 Dynamic root、branch workspace 以既有 Runtime dynamic worktree base dir 分组；两者只消费原本已经枚举且通过可见性过滤的路径，按路径组件构建任意深度 trie，以稳定顺序保留分叉、祖先条目和不同父目录下的同名叶子，并压缩非终点的单子链。任何无法相对当前 `pathRoot` 的跨盘符或跨根条目，包括 branch workspace，都显式显示为顶层 `absolutePath=<完整路径>`；Agent 直接使用该 locator，不再拼接 `pathRoot`。
+- 回归约束：接口测试固定同一 hidden context 只出现一次 Dynamic root、node→attempt→attachments 保持逐级相对关系且附件正文仍完整可发现；独立路径树测试覆盖 `A/B/C/D`、`A/C/D`、`A/B/C/E`、`A/B/D/E` 的非固定层级分叉、单子链压缩、祖先与后代并存及同名叶子不丢失，并要求 coordination snapshot 与 branch workspace 使用各自权威 root、越界条目回退为可直接使用且不能再拼 root 的 `absolutePath=` locator。中英文模板保持相同语义。
+- 性能与过度设计评审：投影只对本次 prompt 已有路径执行一次 `O(total path components)` 的内存构建与渲染，不新增目录扫描、文件 I/O、依赖、持久状态、aggregate、缓存、队列、锁或并发机制；组件 trie 是表达公共前缀和层级关系的最小临时结构，输出长度和 token 使用低于逐条重复绝对路径，无需专项 benchmark。
+
 ## 2026-09-03：Windows 会话文件链接 slash-drive 解析收敛
 
 - 根因与设计判断：会话链接统一交给 Rust resolver、成功后才建立 canonical 文件资源的分层设计正确，但实现只识别 `C:/...` 与 `file:///C:/...`，没有覆盖 WebView/URL 会把 Windows 盘符绝对路径表示为 `/C:/...` 的平台输入；resolver 拒绝后，前端又用 raw href 伪造 external canonical locator 并创建 Tab，后续读取才以误导性的路径/授权错误失败。Win10 现场已确认真实 `E:/...` 文件存在而 `/E:/...` 不是 Win32 路径；问题与 Windows URL pathname 语义及失败分支越权有关，不是 Win10 文件系统差异。现有 resolver、canonical identity 与资源生命周期足以表达正确行为，属于正确设计的输入覆盖和失败消费不完整。

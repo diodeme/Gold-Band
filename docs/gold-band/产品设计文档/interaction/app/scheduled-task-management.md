@@ -103,7 +103,7 @@ Workflow/AUTO 隐藏 Direct session policy，并强制新会话。
 - 顶部提供“全部工作区”和具体工作区筛选；工作区筛选复用 shadcn/ui Select，并使用固定宽度 token，异步加入工作区选项时不得改变工具栏宽度；任务行标题下的副信息按“模式 · Direct 会话策略（仅 Direct）· 窄屏计划摘要（仅窄屏）· 工作空间”排列，工作空间始终位于末尾，整行与标题一样单行截断，不展示 `scheduled-UUID`。
 - 定时任务的 `AlarmClock / CalendarClock / ListChecks` 等静态功能标识统一使用主题 `foreground`，任务行图标底色使用 `foreground/10`；该规则覆盖管理列表、会话侧栏与标题、创建摘要、配置面板及执行历史，保证明暗主题下均有稳定对比度。运行中、失败、启停和选中态仍使用各自语义色，不得通过全局替换抹平状态层级。
 - 管理页不因调度事件自动重新加载列表；手动刷新和 CRUD 成功后只更新必要行。启停操作按任务行携带的 `projectId` 执行。
-- 后台创建 Task 或新 Run 后，App 根层刷新左侧会话列表，无需手动切换页面。
+- `gold-band://scheduled-task-updated` 只表达定时任务定义与调度投影变化，由定时任务列表和详情局部合并；App 根层不得据此刷新会话侧栏。后台实际创建 Task 或新 Run 后，由 `gold-band://conversation-run-state-updated` 携带 `projectId/taskId/taskUuid/runId` 驱动会话域更新：已加载 Run 直接增量合并，已知 Task 的新 Run 只刷新该 Task 的首批 Run 摘要，当前工作区的新 Task 只刷新该工作区首批 Task 摘要。置顶关系未变化时不得刷新置顶分页。
 - 创建定时任务成功后的确认反馈由 App 根层持有，不得归属会随“定时任务创建”路由退出而卸载的 composer；返回普通会话首页后仍显示可进入定时任务管理页的链接，并在 5 秒后自动清理。
 
 ## 8. CRUD

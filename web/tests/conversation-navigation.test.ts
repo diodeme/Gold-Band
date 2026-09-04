@@ -467,6 +467,17 @@ describe('conversation sidebar navigation wiring', () => {
     expect(source).toContain('pendingCanonicalRunBoundary');
   });
 
+  it('discovers background conversation changes without coupling sidebar refresh to scheduled definition updates', () => {
+    const source = readAppSource();
+    const globalSubscription = source.match(/void subscribeConversationRunStateUpdates\(\(event\) => \{[\s\S]*?\}\)\.then/)?.[0] ?? '';
+
+    expect(source).not.toContain('subscribeScheduledTaskUpdates');
+    expect(globalSubscription).toContain('conversationSidebarRunStateRefreshTarget(');
+    expect(globalSubscription).toContain('loadConversationWorkspaceTasks(refreshTarget.projectId)');
+    expect(globalSubscription).toContain('loadConversationRunHistory(refreshTarget.task)');
+    expect(globalSubscription).not.toContain('loadConversationPinnedTasks');
+  });
+
   it('keeps one shell-level ACP listener and clears only the matching task activity', () => {
     const source = readAppSource();
     const nativeSubscriptions = source.match(/subscribeAcpSessionUpdates\(/g) ?? [];

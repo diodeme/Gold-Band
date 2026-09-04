@@ -57,7 +57,6 @@ import {
   subscribeConversationRunStateUpdates,
   subscribeConversationTerminalResultUpdates,
   subscribeMulticaTaskUpdates,
-  subscribeScheduledTaskUpdates,
   updateNotificationAttention,
   recordActivity,
 } from './api';
@@ -79,6 +78,7 @@ import {
   applyConversationSidebarTaskActivity,
   applyConversationSidebarTerminalResultAcknowledgement,
   applyConversationSidebarTerminalResultUpdate,
+  conversationSidebarRunStateRefreshTarget,
   conversationTaskActivityFromLifecycle,
   conversationTaskActivityFromUpdate,
 } from './lib/conversation-sidebar-activity';
@@ -1147,8 +1147,23 @@ export function App() {
     let dispose: (() => void) | undefined;
     void subscribeConversationRunStateUpdates((event) => {
       if (!active) return;
-      const task = findConversationTask(conversationSidebarRef.current, event.projectId, event.taskId);
-      if (!event.taskUuid || task?.taskUuid !== event.taskUuid) return;
+      const currentSidebar = conversationSidebarRef.current;
+      const task = findConversationTask(currentSidebar, event.projectId, event.taskId);
+      if (!event.taskUuid) return;
+      const activeProjectId = activeWorkspaceIdRef.current
+        ?? currentSidebar.lastActiveWorkspaceId
+        ?? currentSidebar.workspaces[0]?.projectId;
+      const refreshTarget = conversationSidebarRunStateRefreshTarget(
+        currentSidebar,
+        event,
+        activeProjectId,
+      );
+      if (refreshTarget?.kind === 'workspace-tasks') {
+        void loadConversationWorkspaceTasks(refreshTarget.projectId).catch(() => {});
+      } else if (refreshTarget?.kind === 'task-runs') {
+        void loadConversationRunHistory(refreshTarget.task).catch(() => {});
+      }
+      if (!task || task.taskUuid !== event.taskUuid) return;
       setConversationSidebar((current) => {
         const next = applyConversationSidebarRunStateUpdate(current, event);
         if (next !== current) conversationSidebarRef.current = next;
@@ -1163,7 +1178,7 @@ export function App() {
       active = false;
       dispose?.();
     };
-  }, [bootstrap, uiMode]);
+  }, [bootstrap, loadConversationRunHistory, loadConversationWorkspaceTasks, uiMode]);
 
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation') return undefined;
@@ -1257,29 +1272,6 @@ export function App() {
       dispose();
     };
   }, [applyConversationLifecycleSnapshotToSidebar, applyConversationTaskActivity, bootstrap, uiMode]);
-
-  useEffect(() => {
-    if (!bootstrap || uiMode !== 'conversation') return;
-    let active = true;
-    let dispose: (() => void) | undefined;
-    void subscribeScheduledTaskUpdates(() => {
-      if (!active) return;
-      const projectId = activeWorkspaceIdRef.current
-        ?? conversationSidebarRef.current.lastActiveWorkspaceId
-        ?? conversationSidebarRef.current.workspaces[0]?.projectId;
-      if (projectId) void loadConversationWorkspaceTasks(projectId).catch(() => {});
-      if (conversationSidebarRef.current.pinRefs.length > 0) {
-        void loadConversationPinnedTasks().catch(() => {});
-      }
-    }).then((unlisten) => {
-      if (active) dispose = unlisten;
-      else unlisten();
-    }).catch(() => {});
-    return () => {
-      active = false;
-      dispose?.();
-    };
-  }, [bootstrap, loadConversationPinnedTasks, loadConversationWorkspaceTasks, uiMode]);
 
   useEffect(() => {
     if (!bootstrap) return;

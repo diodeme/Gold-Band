@@ -11,6 +11,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use jsonschema::JSONSchema;
 use jsonschema::error::{ValidationError, ValidationErrorKind};
 use parking_lot::ReentrantMutex;
+use walkdir::WalkDir;
 
 use crate::acp::elicitation::cancel_pending_elicitation_requests;
 use crate::acp::events::annotate_runtime_control_output;
@@ -183,6 +184,8 @@ struct AcpInvocationPromptState {
 
 const MAX_INVALID_OUTPUT_REPAIR_PROMPTS: u32 = 3;
 const MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS: u32 = 3;
+const DYNAMIC_PROMPT_SOURCE_PREDECESSOR_LIMIT: usize = 5;
+const DYNAMIC_PROMPT_ATTACHMENTS_PER_SOURCE_LIMIT: usize = 10;
 const AUTO_RETRY_STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const DYNAMIC_RUNTIME_CONTINUE_LAUNCH_TIMEOUT: Duration = Duration::from_secs(60);
 const DYNAMIC_BOOTSTRAP_NODE_ID: &str = "bootstrap";
@@ -7587,20 +7590,7 @@ fn dynamic_spawned_by_node_ids(
     graph: &DynamicGraphState,
     completions: &HashMap<String, DynamicNodeCompletion>,
 ) -> HashMap<String, String> {
-    let mut spawned_by = HashMap::new();
-    for (source_node_id, completion) in completions {
-        match &completion.next {
-            DynamicNext::End => {}
-            DynamicNext::Single { node } => {
-                spawned_by.insert(node.id.clone(), source_node_id.clone());
-            }
-            DynamicNext::Fanout { nodes, .. } => {
-                for node in nodes {
-                    spawned_by.insert(node.id.clone(), source_node_id.clone());
-                }
-            }
-        }
-    }
+    let mut spawned_by = dynamic_materialized_by_node_ids(completions);
     for group in &graph.groups {
         if let Some(merge_node_id) = &group.merge_node_id {
             spawned_by.insert(merge_node_id.clone(), group.created_by_node_id.clone());
@@ -7610,6 +7600,26 @@ fn dynamic_spawned_by_node_ids(
         }
     }
     spawned_by
+}
+
+fn dynamic_materialized_by_node_ids(
+    completions: &HashMap<String, DynamicNodeCompletion>,
+) -> HashMap<String, String> {
+    let mut materialized_by = HashMap::new();
+    for (source_node_id, completion) in completions {
+        match &completion.next {
+            DynamicNext::End => {}
+            DynamicNext::Single { node } => {
+                materialized_by.insert(node.id.clone(), source_node_id.clone());
+            }
+            DynamicNext::Fanout { nodes, .. } => {
+                for node in nodes {
+                    materialized_by.insert(node.id.clone(), source_node_id.clone());
+                }
+            }
+        }
+    }
+    materialized_by
 }
 
 fn ai_dynamic_workspace_ref(
@@ -12957,8 +12967,39 @@ struct DynamicContextProjection {
     has_inherited_groups: bool,
     siblings: String,
     has_siblings: bool,
-    available_attachments: String,
+    attachments: DynamicAttachmentManifestProjection,
     has_available_attachments: bool,
+}
+
+#[derive(Default)]
+struct DynamicAttachmentSectionProjection {
+    paths: String,
+    overflow_directories: String,
+}
+
+impl DynamicAttachmentSectionProjection {
+    fn has_attachments(&self) -> bool {
+        !self.paths.is_empty() || self.has_overflow()
+    }
+
+    fn has_overflow(&self) -> bool {
+        !self.overflow_directories.is_empty()
+    }
+}
+
+#[derive(Default)]
+struct DynamicAttachmentManifestProjection {
+    predecessor_chain: DynamicAttachmentSectionProjection,
+    explicit_dependencies: DynamicAttachmentSectionProjection,
+    group_evidence: DynamicAttachmentSectionProjection,
+}
+
+impl DynamicAttachmentManifestProjection {
+    fn has_attachments(&self) -> bool {
+        self.predecessor_chain.has_attachments()
+            || self.explicit_dependencies.has_attachments()
+            || self.group_evidence.has_attachments()
+    }
 }
 
 struct PromptPathTreeEntry {
@@ -13089,18 +13130,32 @@ struct DynamicAttachmentEntry {
     path: Utf8PathBuf,
 }
 
+struct DynamicPromptAttachmentScan {
+    entries: Vec<DynamicAttachmentEntry>,
+    directory: Utf8PathBuf,
+    truncated: bool,
+}
+
 fn dynamic_context_projection(
     ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     node: &DynamicNodeState,
 ) -> DynamicContextProjection {
-    let direct_nodes = dynamic_direct_predecessor_nodes(graph, node);
+    let predecessor_chain = dynamic_source_predecessor_nodes(graph, node);
+    let explicit_dependencies = dynamic_explicit_dependency_nodes(graph, node);
+    let direct_nodes = dynamic_direct_predecessor_nodes(&predecessor_chain, &explicit_dependencies);
     let direct_predecessors = dynamic_node_list_summary(&direct_nodes);
     let active_group = dynamic_active_group_summary(ctx, graph, node);
     let inherited_groups = dynamic_inherited_group_summary(graph, node);
     let siblings = dynamic_sibling_summary(graph, node);
-    let available_attachments =
-        dynamic_attachment_manifest_summary(ctx, graph, node, &direct_nodes);
+    let attachments = dynamic_attachment_manifest_projection(
+        ctx,
+        graph,
+        node,
+        &predecessor_chain,
+        &explicit_dependencies,
+    );
+    let has_available_attachments = attachments.has_attachments();
     DynamicContextProjection {
         has_direct_predecessors: !direct_predecessors.is_empty(),
         direct_predecessors,
@@ -13110,17 +13165,59 @@ fn dynamic_context_projection(
         inherited_groups,
         has_siblings: !siblings.is_empty(),
         siblings,
-        has_available_attachments: !available_attachments.is_empty(),
-        available_attachments,
+        attachments,
+        has_available_attachments,
     }
 }
 
-fn dynamic_direct_predecessor_nodes<'a>(
+fn dynamic_materialization_sources(graph: &DynamicGraphState) -> HashMap<String, String> {
+    let completions = graph
+        .proposals
+        .iter()
+        .filter(|proposal| proposal.validation_status == DynamicProposalValidationStatus::Accepted)
+        .filter_map(|proposal| {
+            serde_json::from_value::<DynamicNodeCompletion>(proposal.parsed.clone())
+                .ok()
+                .map(|completion| (proposal.source_node_id.clone(), completion))
+        })
+        .collect::<HashMap<_, _>>();
+    dynamic_materialized_by_node_ids(&completions)
+}
+
+fn dynamic_source_predecessor_nodes<'a>(
+    graph: &'a DynamicGraphState,
+    node: &DynamicNodeState,
+) -> Vec<&'a DynamicNodeState> {
+    let sources = dynamic_materialization_sources(graph);
+    let mut nodes = Vec::new();
+    let mut seen = HashSet::from([node.id.clone()]);
+    let mut current_node_id = node.id.clone();
+    for _ in 0..DYNAMIC_PROMPT_SOURCE_PREDECESSOR_LIMIT {
+        let Some(source_node_id) = sources.get(&current_node_id) else {
+            break;
+        };
+        if !seen.insert(source_node_id.clone()) {
+            break;
+        }
+        let Some(source) = graph
+            .nodes
+            .iter()
+            .find(|candidate| candidate.id == *source_node_id)
+        else {
+            break;
+        };
+        nodes.push(source);
+        current_node_id = source.id.clone();
+    }
+    nodes
+}
+
+fn dynamic_explicit_dependency_nodes<'a>(
     graph: &'a DynamicGraphState,
     node: &DynamicNodeState,
 ) -> Vec<&'a DynamicNodeState> {
     let mut nodes = Vec::new();
-    let mut seen = HashSet::<String>::new();
+    let mut seen = HashSet::new();
     for dependency_id in &node.depends_on {
         if let Some(dependency) = graph.nodes.iter().find(|item| item.id == *dependency_id) {
             if seen.insert(dependency.id.clone()) {
@@ -13128,35 +13225,22 @@ fn dynamic_direct_predecessor_nodes<'a>(
             }
         }
     }
-    if nodes.is_empty() {
-        if let Some(previous) = graph
-            .nodes
-            .iter()
-            .filter(|candidate| candidate.id != node.id)
-            .filter(|candidate| candidate.chain_id == node.chain_id)
-            .filter(|candidate| candidate.group_id == node.group_id)
-            .filter(|candidate| candidate.depth < node.depth)
-            .max_by_key(|candidate| candidate.depth)
-        {
-            if seen.insert(previous.id.clone()) {
-                nodes.push(previous);
-            }
-        }
-    }
-    if nodes.is_empty() {
-        if let Some(group_id) = node.group_id.as_deref()
-            && let Some(group) = graph.groups.iter().find(|group| group.id == group_id)
-            && group
-                .root_node_ids
-                .iter()
-                .any(|node_id| node_id == &node.id)
-            && let Some(created_by) = graph
-                .nodes
-                .iter()
-                .find(|candidate| candidate.id == group.created_by_node_id)
-            && seen.insert(created_by.id.clone())
-        {
-            nodes.push(created_by);
+    nodes
+}
+
+fn dynamic_direct_predecessor_nodes<'a>(
+    predecessor_chain: &[&'a DynamicNodeState],
+    explicit_dependencies: &[&'a DynamicNodeState],
+) -> Vec<&'a DynamicNodeState> {
+    let mut nodes = Vec::new();
+    let mut seen = HashSet::new();
+    for predecessor in predecessor_chain
+        .first()
+        .into_iter()
+        .chain(explicit_dependencies.iter())
+    {
+        if seen.insert(predecessor.id.as_str()) {
+            nodes.push(*predecessor);
         }
     }
     nodes
@@ -13269,10 +13353,20 @@ fn dynamic_sibling_summary(graph: &DynamicGraphState, node: &DynamicNodeState) -
     let Some(group) = graph.groups.iter().find(|group| group.id == group_id) else {
         return String::new();
     };
+    let Some(current_root_node_id) = group.root_node_ids.iter().find_map(|root_node_id| {
+        graph
+            .nodes
+            .iter()
+            .find(|candidate| candidate.id == *root_node_id)
+            .filter(|root| root.chain_id == node.chain_id)
+            .map(|_| root_node_id.as_str())
+    }) else {
+        return String::new();
+    };
     group
         .root_node_ids
         .iter()
-        .filter(|node_id| *node_id != &node.id)
+        .filter(|node_id| node_id.as_str() != current_root_node_id)
         .filter_map(|node_id| graph.nodes.iter().find(|candidate| candidate.id == *node_id))
         .map(|sibling| {
             format!(
@@ -13290,71 +13384,13 @@ fn dynamic_sibling_summary(graph: &DynamicGraphState, node: &DynamicNodeState) -
         .join("\n")
 }
 
-fn dynamic_attachment_manifest_summary(
+fn dynamic_attachment_manifest_projection(
     ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     node: &DynamicNodeState,
-    direct_nodes: &[&DynamicNodeState],
-) -> String {
-    let mut attachment_node_ids = Vec::<String>::new();
-    let mut seen = HashSet::<String>::new();
-    for direct in direct_nodes {
-        if seen.insert(direct.id.clone()) {
-            attachment_node_ids.push(direct.id.clone());
-        }
-    }
-    if let Some(group_id) = node.group_id.as_deref()
-        && let Some(group) = graph.groups.iter().find(|group| group.id == group_id)
-    {
-        match node.kind {
-            DynamicNodeKind::Merge => {
-                for node_id in group
-                    .terminal_node_ids
-                    .iter()
-                    .chain(group.root_node_ids.iter())
-                {
-                    if seen.insert(node_id.clone()) {
-                        attachment_node_ids.push(node_id.clone());
-                    }
-                }
-            }
-            DynamicNodeKind::Acceptance => {
-                if let Some(merge_node_id) = group.merge_node_id.as_ref()
-                    && seen.insert(merge_node_id.clone())
-                {
-                    attachment_node_ids.push(merge_node_id.clone());
-                }
-                for node_id in group
-                    .terminal_node_ids
-                    .iter()
-                    .chain(group.root_node_ids.iter())
-                {
-                    if seen.insert(node_id.clone()) {
-                        attachment_node_ids.push(node_id.clone());
-                    }
-                }
-            }
-            DynamicNodeKind::Worker | DynamicNodeKind::WorkflowInvocation => {
-                if let Some(parent_group_id) = group.parent_group_id.as_deref() {
-                    collect_group_exit_attachment_node_ids(
-                        graph,
-                        parent_group_id,
-                        &mut seen,
-                        &mut attachment_node_ids,
-                    );
-                }
-            }
-        }
-    }
-    let mut entries = Vec::new();
-    for node_id in attachment_node_ids {
-        if let Some(source_node) = graph.nodes.iter().find(|candidate| candidate.id == node_id) {
-            entries.extend(dynamic_attachment_entries_for_node(ctx, source_node));
-        }
-    }
-    if entries.is_empty() {
-        return String::new();
-    }
+    predecessor_chain: &[&DynamicNodeState],
+    explicit_dependencies: &[&DynamicNodeState],
+) -> DynamicAttachmentManifestProjection {
     let dynamic_root = ctx.app.paths.dynamic_dir(
         ctx.task_id,
         ctx.run_id,
@@ -13362,38 +13398,230 @@ fn dynamic_attachment_manifest_summary(
         ctx.outer_node_id,
         ctx.outer_attempt_id,
     );
-    render_prompt_path_tree(
-        &dynamic_root,
-        entries
-            .into_iter()
-            .map(|entry| PromptPathTreeEntry {
-                path: entry.path,
-                detail: None,
-            })
-            .collect(),
-    )
-}
-
-fn collect_group_exit_attachment_node_ids(
-    graph: &DynamicGraphState,
-    group_id: &str,
-    seen: &mut HashSet<String>,
-    ids: &mut Vec<String>,
-) {
-    let Some(group) = graph.groups.iter().find(|group| group.id == group_id) else {
-        return;
-    };
-    for node_id in [
-        group.acceptance_node_id.as_ref(),
-        group.merge_node_id.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if seen.insert(node_id.clone()) {
-            ids.push(node_id.clone());
+    let mut seen = HashSet::new();
+    let mut predecessor_nodes = Vec::new();
+    for predecessor in predecessor_chain {
+        if seen.insert(predecessor.id.clone()) {
+            predecessor_nodes.push(*predecessor);
         }
     }
+    let mut dependency_nodes = Vec::new();
+    for dependency in explicit_dependencies {
+        if seen.insert(dependency.id.clone()) {
+            dependency_nodes.push(*dependency);
+        }
+    }
+    let mut group_evidence_nodes = Vec::new();
+    if matches!(
+        node.kind,
+        DynamicNodeKind::Merge | DynamicNodeKind::Acceptance
+    )
+        && let Some(group_id) = node.group_id.as_deref()
+        && let Some(group) = graph.groups.iter().find(|group| group.id == group_id)
+    {
+        for node_id in group
+            .terminal_node_ids
+            .iter()
+            .chain(group.root_node_ids.iter())
+        {
+            if let Some(branch) = graph.nodes.iter().find(|candidate| candidate.id == *node_id)
+                && seen.insert(branch.id.clone())
+            {
+                group_evidence_nodes.push(branch);
+            }
+        }
+    }
+    for group_exit in dynamic_related_group_exit_nodes(graph, node) {
+        if seen.insert(group_exit.id.clone()) {
+            group_evidence_nodes.push(group_exit);
+        }
+    }
+
+    DynamicAttachmentManifestProjection {
+        predecessor_chain: dynamic_attachment_section_projection(
+            ctx,
+            &dynamic_root,
+            &predecessor_nodes,
+        ),
+        explicit_dependencies: dynamic_attachment_section_projection(
+            ctx,
+            &dynamic_root,
+            &dependency_nodes,
+        ),
+        group_evidence: dynamic_attachment_section_projection(
+            ctx,
+            &dynamic_root,
+            &group_evidence_nodes,
+        ),
+    }
+}
+
+fn dynamic_related_group_exit_nodes<'a>(
+    graph: &'a DynamicGraphState,
+    node: &DynamicNodeState,
+) -> Vec<&'a DynamicNodeState> {
+    let mut nodes = Vec::new();
+    let mut seen_group_ids = HashSet::new();
+    let mut next_group_id = node.group_id.as_deref();
+    while let Some(group_id) = next_group_id {
+        if !seen_group_ids.insert(group_id.to_string()) {
+            break;
+        }
+        let Some(group) = graph.groups.iter().find(|group| group.id == group_id) else {
+            break;
+        };
+        let latest_acceptance = graph.nodes.iter().rev().find(|candidate| {
+            candidate.id != node.id
+                && candidate.group_id.as_deref() == Some(group_id)
+                && candidate.kind == DynamicNodeKind::Acceptance
+        });
+        let latest_merge = match latest_acceptance {
+            Some(acceptance) => acceptance.depends_on.iter().find_map(|dependency_id| {
+                graph.nodes.iter().find(|candidate| {
+                    candidate.id == *dependency_id
+                        && candidate.group_id.as_deref() == Some(group_id)
+                        && candidate.kind == DynamicNodeKind::Merge
+                })
+            }),
+            None => graph.nodes.iter().rev().find(|candidate| {
+                candidate.id != node.id
+                    && candidate.group_id.as_deref() == Some(group_id)
+                    && candidate.kind == DynamicNodeKind::Merge
+            }),
+        };
+        if let Some(merge) = latest_merge {
+            nodes.push(merge);
+        }
+        if let Some(acceptance) = latest_acceptance {
+            nodes.push(acceptance);
+        }
+        next_group_id = group.parent_group_id.as_deref();
+    }
+    nodes
+}
+
+fn dynamic_attachment_section_projection(
+    ctx: &DynamicExecutionContext<'_>,
+    dynamic_root: &Utf8Path,
+    nodes: &[&DynamicNodeState],
+) -> DynamicAttachmentSectionProjection {
+    let mut paths = Vec::new();
+    let mut overflow_directories = Vec::new();
+    for node in nodes {
+        let scan = dynamic_prompt_attachment_entries_for_node(ctx, node);
+        paths.extend(scan.entries.into_iter().map(|entry| PromptPathTreeEntry {
+            path: entry.path,
+            detail: None,
+        }));
+        if scan.truncated {
+            overflow_directories.push(PromptPathTreeEntry {
+                path: scan.directory,
+                detail: None,
+            });
+        }
+    }
+    DynamicAttachmentSectionProjection {
+        paths: render_prompt_path_tree(dynamic_root, paths),
+        overflow_directories: render_prompt_path_tree(dynamic_root, overflow_directories),
+    }
+}
+
+fn dynamic_prompt_attachment_entries_for_node(
+    ctx: &DynamicExecutionContext<'_>,
+    node: &DynamicNodeState,
+) -> DynamicPromptAttachmentScan {
+    let attempt_id = dynamic_attempt_id(node);
+    let root = ctx.app.paths.dynamic_node_attachments_dir(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+        &node.id,
+        &attempt_id,
+    );
+    let mut scan = DynamicPromptAttachmentScan {
+        entries: Vec::new(),
+        directory: root.clone(),
+        truncated: false,
+    };
+    let root_metadata = match std::fs::symlink_metadata(root.as_std_path()) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return scan,
+        Err(_) => {
+            scan.truncated = true;
+            return scan;
+        }
+    };
+    if root_metadata.file_type().is_symlink() {
+        scan.truncated = true;
+        return scan;
+    }
+    if !root_metadata.is_dir() {
+        scan.truncated = true;
+        return scan;
+    }
+    let mut counted_entries = 0usize;
+    // WalkDir is pre-order, so a directory is empty when the next entry is not deeper.
+    let mut pending_directory_depth = None;
+    for entry in WalkDir::new(root.as_std_path())
+        .follow_links(false)
+        .follow_root_links(false)
+        .into_iter()
+    {
+        let Ok(entry) = entry else {
+            scan.truncated = true;
+            break;
+        };
+        if entry.depth() == 0 {
+            continue;
+        }
+        if let Some(directory_depth) = pending_directory_depth.take()
+            && entry.depth() <= directory_depth
+        {
+            if counted_entries == DYNAMIC_PROMPT_ATTACHMENTS_PER_SOURCE_LIMIT {
+                scan.truncated = true;
+                break;
+            }
+            counted_entries = counted_entries.saturating_add(1);
+        }
+        if entry.file_type().is_symlink() {
+            scan.truncated = true;
+            break;
+        }
+        if entry.file_type().is_dir() {
+            pending_directory_depth = Some(entry.depth());
+            continue;
+        }
+        if !entry.file_type().is_file() {
+            scan.truncated = true;
+            break;
+        }
+        if counted_entries == DYNAMIC_PROMPT_ATTACHMENTS_PER_SOURCE_LIMIT {
+            scan.truncated = true;
+            break;
+        }
+        counted_entries = counted_entries.saturating_add(1);
+        let Ok(path) = Utf8PathBuf::from_path_buf(entry.into_path()) else {
+            scan.truncated = true;
+            break;
+        };
+        let name = path
+            .strip_prefix(&root)
+            .map(|relative| relative.to_string())
+            .unwrap_or_else(|_| {
+                path.file_name()
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| path.to_string())
+            });
+        scan.entries.push(DynamicAttachmentEntry { name, path });
+    }
+    if !scan.truncated && pending_directory_depth.is_some() {
+        scan.truncated = counted_entries == DYNAMIC_PROMPT_ATTACHMENTS_PER_SOURCE_LIMIT;
+    }
+    scan.entries
+        .sort_by(|left, right| left.name.cmp(&right.name));
+    scan
 }
 
 fn dynamic_attachment_entries_for_node(
@@ -13754,7 +13982,20 @@ fn dynamic_hidden_sections(
         "has_inherited_groups": projection.has_inherited_groups,
         "siblings": projection.siblings,
         "has_siblings": projection.has_siblings,
-        "available_attachments": projection.available_attachments,
+        "source_predecessor_limit": DYNAMIC_PROMPT_SOURCE_PREDECESSOR_LIMIT,
+        "attachments_per_source_limit": DYNAMIC_PROMPT_ATTACHMENTS_PER_SOURCE_LIMIT,
+        "predecessor_attachments": projection.attachments.predecessor_chain.paths.as_str(),
+        "has_predecessor_attachments": projection.attachments.predecessor_chain.has_attachments(),
+        "predecessor_attachment_overflow_directories": projection.attachments.predecessor_chain.overflow_directories.as_str(),
+        "has_predecessor_attachment_overflow": projection.attachments.predecessor_chain.has_overflow(),
+        "dependency_attachments": projection.attachments.explicit_dependencies.paths.as_str(),
+        "has_dependency_attachments": projection.attachments.explicit_dependencies.has_attachments(),
+        "dependency_attachment_overflow_directories": projection.attachments.explicit_dependencies.overflow_directories.as_str(),
+        "has_dependency_attachment_overflow": projection.attachments.explicit_dependencies.has_overflow(),
+        "group_evidence_attachments": projection.attachments.group_evidence.paths.as_str(),
+        "has_group_evidence_attachments": projection.attachments.group_evidence.has_attachments(),
+        "group_evidence_attachment_overflow_directories": projection.attachments.group_evidence.overflow_directories.as_str(),
+        "has_group_evidence_attachment_overflow": projection.attachments.group_evidence.has_overflow(),
         "has_available_attachments": projection.has_available_attachments,
         "has_output_contract": has_output_contract,
         "allowed_workflow_snapshots": allowed_workflow_snapshot_summary(&graph.run.allowed_workflow_snapshots),
@@ -19121,11 +19362,23 @@ mod tests {
         let mut source = test_worktree_node("source-node");
         source.status = DynamicNodeStatus::Completed;
         source.outcome = Some(NodeOutcome::Success);
+        let mut overflow = test_worktree_node("overflow-node");
+        overflow.status = DynamicNodeStatus::Completed;
+        overflow.outcome = Some(NodeOutcome::Success);
         let mut node = test_worktree_node("consumer-node");
-        node.depends_on = vec![source.id.clone()];
-        let graph = test_dynamic_graph(vec![source.clone(), node.clone()]);
+        node.depends_on = vec![source.id.clone(), overflow.id.clone()];
+        let graph = test_dynamic_graph(vec![source.clone(), overflow.clone(), node.clone()]);
         let report_path =
             write_dynamic_attachment_for_test(&app, &ctx, &source, "summary.md", "done");
+        for index in 0..=10 {
+            write_dynamic_attachment_for_test(
+                &app,
+                &ctx,
+                &overflow,
+                &format!("overflow-{index:02}.md"),
+                "extra",
+            );
+        }
 
         let invocation = build_dynamic_worker_invocation(
             &ctx,
@@ -19183,6 +19436,12 @@ mod tests {
             )
         );
         assert!(prompt.user_prompt.contains("## Available attachments"));
+        assert!(prompt.user_prompt.contains(
+            "### Explicit dependencies (input nodes explicitly named through dependsOn by the current node)"
+        ));
+        assert!(prompt.user_prompt.contains(
+            "At most 10 files or empty directories are inspected per node; non-empty directories are traversed and do not consume a slot themselves"
+        ));
         assert!(
             prompt
                 .user_prompt
@@ -19191,7 +19450,7 @@ mod tests {
         assert!(
             prompt
                 .user_prompt
-                .contains("- nodes/source-node/attempt-001/attachments/summary.md")
+                .contains("source-node/attempt-001/attachments/summary.md")
         );
         assert_eq!(prompt.user_prompt.matches(dynamic_root.as_str()).count(), 1);
         assert!(!prompt.user_prompt.contains(report_path.as_str()));
@@ -19199,6 +19458,476 @@ mod tests {
             !prompt
                 .user_prompt
                 .contains(coordination_snapshot_path.as_str())
+        );
+    }
+
+    #[test]
+    fn dynamic_attachment_manifest_limits_causal_handoff_to_five_nodes_and_ten_files_each() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut nodes = (0..=5)
+            .map(|index| {
+                let mut node = test_worktree_node(&format!("predecessor-{index}"));
+                node.status = DynamicNodeStatus::Completed;
+                node.outcome = Some(NodeOutcome::Success);
+                node.depth = index + 1;
+                node
+            })
+            .collect::<Vec<_>>();
+        let mut current = test_worktree_node("current-node");
+        current.depth = 7;
+        current.depends_on = vec!["predecessor-5".to_string()];
+        nodes.push(current.clone());
+        let mut graph = test_dynamic_graph(nodes.clone());
+        for index in 0..5 {
+            graph.proposals.push(accepted_single_proposal(
+                &format!("predecessor-{index}"),
+                &format!("predecessor-{}", index + 1),
+            ));
+        }
+        graph
+            .proposals
+            .push(accepted_single_proposal("predecessor-5", "current-node"));
+        write_dynamic_attachment_for_test(
+            &app,
+            &ctx,
+            &nodes[0],
+            "too-old.md",
+            "outside the five-node handoff window",
+        );
+        for (index, node) in nodes.iter().enumerate().take(5).skip(1) {
+            write_dynamic_attachment_for_test(
+                &app,
+                &ctx,
+                node,
+                &format!("marker-{index}.md"),
+                "handoff evidence",
+            );
+        }
+        for index in 0..=10 {
+            write_dynamic_attachment_for_test(
+                &app,
+                &ctx,
+                &nodes[5],
+                &format!("handoff-{index:02}.md"),
+                "latest predecessor evidence",
+            );
+        }
+
+        let invocation = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &current,
+            &dynamic_attempt_id(&current),
+            dynamic_output_contract_for_node(&ctx, &graph, &current),
+            SessionMode::New,
+            None,
+            None,
+            "test-turn".to_string(),
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        let prompt = render_prompt_bundle(&invocation).unwrap();
+
+        assert!(
+            prompt
+                .user_prompt
+                .contains("### 前序链路（创建当前节点的任务接力链，最多回溯 5 个节点）")
+        );
+        for index in 1..=4 {
+            assert!(prompt.user_prompt.contains(&format!("marker-{index}.md")));
+        }
+        assert!(!prompt.user_prompt.contains("too-old.md"));
+        assert_eq!(prompt.user_prompt.matches("handoff-").count(), 10);
+        assert!(!prompt.user_prompt.contains("### 显式依赖（"));
+        assert_eq!(
+            prompt
+                .user_prompt
+                .matches("以下来源节点的附件清单已截断或未完整读取")
+                .count(),
+            1
+        );
+        assert!(prompt.user_prompt.contains(
+            "以下来源节点的附件清单已截断或未完整读取；每个节点最多检查 10 个文件或空目录"
+        ));
+        assert!(
+            prompt
+                .user_prompt
+                .contains("nodes/predecessor-5/attempt-001/attachments")
+        );
+    }
+
+    #[test]
+    fn dynamic_attachment_manifest_unions_causal_source_with_explicit_dependencies() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut source = test_worktree_node("source-node");
+        source.status = DynamicNodeStatus::Completed;
+        source.outcome = Some(NodeOutcome::Success);
+        let mut dependency = test_worktree_node("dependency-node");
+        dependency.status = DynamicNodeStatus::Completed;
+        dependency.outcome = Some(NodeOutcome::Success);
+        let mut current = test_worktree_node("current-node");
+        current.depth = 2;
+        current.depends_on = vec![dependency.id.clone()];
+        let mut graph =
+            test_dynamic_graph(vec![source.clone(), dependency.clone(), current.clone()]);
+        graph
+            .proposals
+            .push(accepted_single_proposal(&source.id, &current.id));
+        for index in 0..=10 {
+            write_dynamic_attachment_for_test(
+                &app,
+                &ctx,
+                &source,
+                &format!("source-{index:02}.md"),
+                "source evidence",
+            );
+            write_dynamic_attachment_for_test(
+                &app,
+                &ctx,
+                &dependency,
+                &format!("dependency-{index:02}.md"),
+                "dependency evidence",
+            );
+        }
+
+        let invocation = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &current,
+            &dynamic_attempt_id(&current),
+            dynamic_output_contract_for_node(&ctx, &graph, &current),
+            SessionMode::New,
+            None,
+            None,
+            "test-turn".to_string(),
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        let prompt = render_prompt_bundle(&invocation).unwrap();
+
+        assert!(
+            prompt
+                .user_prompt
+                .contains("### 前序链路（创建当前节点的任务接力链，最多回溯 5 个节点）")
+        );
+        assert!(
+            prompt
+                .user_prompt
+                .contains("### 显式依赖（当前节点通过 dependsOn 明确指定的输入节点）")
+        );
+        let source_occurrences = (0..=10)
+            .map(|index| {
+                prompt
+                    .user_prompt
+                    .matches(&format!("source-{index:02}.md"))
+                    .count()
+            })
+            .sum::<usize>();
+        let dependency_occurrences = (0..=10)
+            .map(|index| {
+                prompt
+                    .user_prompt
+                    .matches(&format!("dependency-{index:02}.md"))
+                    .count()
+            })
+            .sum::<usize>();
+        assert_eq!(source_occurrences, 10);
+        assert_eq!(dependency_occurrences, 10);
+        assert!(
+            prompt
+                .user_prompt
+                .contains("nodes/dependency-node/attempt-001/attachments")
+        );
+    }
+
+    #[test]
+    fn dynamic_attachment_manifest_counts_files_and_empty_directories_but_not_container_directories()
+    {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut source = test_worktree_node("directory-heavy-source");
+        source.status = DynamicNodeStatus::Completed;
+        source.outcome = Some(NodeOutcome::Success);
+        let mut current = test_worktree_node("current-node");
+        current.depends_on = vec![source.id.clone()];
+        let graph = test_dynamic_graph(vec![source.clone(), current.clone()]);
+        let attachments_dir = app.paths.dynamic_node_attachments_dir(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+            &source.id,
+            &dynamic_attempt_id(&source),
+        );
+        for index in 0..9 {
+            std::fs::create_dir_all(
+                attachments_dir
+                    .join(format!("empty-{index:02}"))
+                    .as_std_path(),
+            )
+            .unwrap();
+        }
+        let nested_dir = attachments_dir.join("nested/container");
+        std::fs::create_dir_all(nested_dir.as_std_path()).unwrap();
+        std::fs::write(nested_dir.join("report.md").as_std_path(), "nested evidence").unwrap();
+
+        let exact_limit_scan = dynamic_prompt_attachment_entries_for_node(&ctx, &source);
+        assert!(!exact_limit_scan.truncated);
+        assert_eq!(exact_limit_scan.entries.len(), 1);
+        assert!(
+            exact_limit_scan.entries[0]
+                .path
+                .ends_with("nested/container/report.md")
+        );
+
+        std::fs::create_dir_all(attachments_dir.join("empty-09").as_std_path()).unwrap();
+        let overflow_scan = dynamic_prompt_attachment_entries_for_node(&ctx, &source);
+        assert!(overflow_scan.truncated);
+
+        let invocation = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &current,
+            &dynamic_attempt_id(&current),
+            dynamic_output_contract_for_node(&ctx, &graph, &current),
+            SessionMode::New,
+            None,
+            None,
+            "test-turn".to_string(),
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        let prompt = render_prompt_bundle(&invocation).unwrap();
+
+        assert!(prompt.user_prompt.contains("## 可用附件"));
+        assert!(
+            prompt
+                .user_prompt
+                .contains("### 显式依赖（当前节点通过 dependsOn 明确指定的输入节点）")
+        );
+        assert!(prompt.user_prompt.contains(
+            "以下来源节点的附件清单已截断或未完整读取；每个节点最多检查 10 个文件或空目录"
+        ));
+        assert!(
+            prompt
+                .user_prompt
+                .contains("nodes/directory-heavy-source/attempt-001/attachments")
+        );
+    }
+
+    #[test]
+    fn dynamic_prompt_repair_chain_keeps_latest_group_exit_without_old_siblings() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut root_a = test_worktree_node("root-a");
+        root_a.group_id = Some("group-core".to_string());
+        root_a.chain_id = root_a.id.clone();
+        root_a.status = DynamicNodeStatus::Completed;
+        root_a.outcome = Some(NodeOutcome::Success);
+        let mut root_b = test_worktree_node("root-b");
+        root_b.group_id = Some("group-core".to_string());
+        root_b.chain_id = root_b.id.clone();
+        root_b.status = DynamicNodeStatus::Completed;
+        root_b.outcome = Some(NodeOutcome::Success);
+        let mut old_merge = test_worktree_node("group-core-merge");
+        old_merge.kind = DynamicNodeKind::Merge;
+        old_merge.group_id = Some("group-core".to_string());
+        old_merge.status = DynamicNodeStatus::Completed;
+        old_merge.outcome = Some(NodeOutcome::Success);
+        let mut old_acceptance = test_worktree_node("group-core-accept");
+        old_acceptance.kind = DynamicNodeKind::Acceptance;
+        old_acceptance.group_id = Some("group-core".to_string());
+        old_acceptance.depends_on = vec![old_merge.id.clone()];
+        old_acceptance.status = DynamicNodeStatus::Completed;
+        old_acceptance.outcome = Some(NodeOutcome::Success);
+        let mut latest_merge = test_worktree_node("group-core-merge-2");
+        latest_merge.kind = DynamicNodeKind::Merge;
+        latest_merge.group_id = Some("group-core".to_string());
+        latest_merge.status = DynamicNodeStatus::Completed;
+        latest_merge.outcome = Some(NodeOutcome::Failure);
+        let mut latest_acceptance = test_worktree_node("group-core-accept-2");
+        latest_acceptance.kind = DynamicNodeKind::Acceptance;
+        latest_acceptance.group_id = Some("group-core".to_string());
+        latest_acceptance.chain_id = latest_acceptance.id.clone();
+        latest_acceptance.depends_on = vec![latest_merge.id.clone()];
+        latest_acceptance.status = DynamicNodeStatus::Completed;
+        latest_acceptance.outcome = Some(NodeOutcome::Failure);
+        let mut unaccepted_merge = test_worktree_node("group-core-merge-3");
+        unaccepted_merge.kind = DynamicNodeKind::Merge;
+        unaccepted_merge.group_id = Some("group-core".to_string());
+        unaccepted_merge.status = DynamicNodeStatus::Completed;
+        unaccepted_merge.outcome = Some(NodeOutcome::Success);
+        let repairs = (1..=5)
+            .map(|index| {
+                let mut node = test_worktree_node(&format!("repair-{index}"));
+                node.group_id = Some("group-core".to_string());
+                node.chain_id = latest_acceptance.chain_id.clone();
+                node.depth = index + 1;
+                node.status = DynamicNodeStatus::Completed;
+                node.outcome = Some(NodeOutcome::Success);
+                node
+            })
+            .collect::<Vec<_>>();
+        let mut current = test_worktree_node("reaccept-current");
+        current.group_id = Some("group-core".to_string());
+        current.chain_id = latest_acceptance.chain_id.clone();
+        current.depth = 7;
+        let mut all_nodes = vec![
+            root_a.clone(),
+            root_b.clone(),
+            old_merge.clone(),
+            old_acceptance.clone(),
+            latest_merge.clone(),
+            latest_acceptance.clone(),
+            unaccepted_merge.clone(),
+        ];
+        all_nodes.extend(repairs.iter().cloned());
+        all_nodes.push(current.clone());
+        let mut graph = test_dynamic_graph(all_nodes);
+        graph.groups.push(test_group_state(
+            "group-core",
+            "bootstrap",
+            vec!["root-a", "root-b"],
+            vec!["root-a", "root-b"],
+        ));
+        graph.groups[0].status = DynamicGroupStatus::Open;
+        graph.groups[0].merge_node_id = None;
+        graph.groups[0].acceptance_node_id = None;
+        graph.proposals.push(accepted_single_proposal(
+            &latest_acceptance.id,
+            &repairs[0].id,
+        ));
+        for index in 0..4 {
+            graph.proposals.push(accepted_single_proposal(
+                &repairs[index].id,
+                &repairs[index + 1].id,
+            ));
+        }
+        graph
+            .proposals
+            .push(accepted_single_proposal(&repairs[4].id, &current.id));
+        write_dynamic_attachment_for_test(
+            &app,
+            &ctx,
+            &root_a,
+            "root-a-report.md",
+            "old branch evidence",
+        );
+        write_dynamic_attachment_for_test(
+            &app,
+            &ctx,
+            &root_b,
+            "root-b-report.md",
+            "old branch evidence",
+        );
+        write_dynamic_attachment_for_test(
+            &app,
+            &ctx,
+            &repairs[3],
+            "accept-report.md",
+            "acceptance evidence on the source handoff chain",
+        );
+        for (node, name) in [
+            (&old_merge, "old-merge.md"),
+            (&old_acceptance, "old-acceptance.md"),
+            (&unaccepted_merge, "unaccepted-merge.md"),
+        ] {
+            write_dynamic_attachment_for_test(&app, &ctx, node, name, "stale evidence");
+        }
+        for index in 0..=10 {
+            write_dynamic_attachment_for_test(
+                &app,
+                &ctx,
+                &latest_merge,
+                &format!("latest-merge-{index:02}.md"),
+                "latest merge evidence",
+            );
+            write_dynamic_attachment_for_test(
+                &app,
+                &ctx,
+                &latest_acceptance,
+                &format!("latest-acceptance-{index:02}.md"),
+                "latest acceptance evidence",
+            );
+        }
+
+        let invocation = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &current,
+            &dynamic_attempt_id(&current),
+            dynamic_output_contract_for_node(&ctx, &graph, &current),
+            SessionMode::New,
+            None,
+            None,
+            "test-turn".to_string(),
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        let prompt = render_prompt_bundle(&invocation).unwrap();
+
+        assert!(
+            prompt
+                .user_prompt
+                .contains("### Group 证据（当前 merge / acceptance 输入或相关 group 最近一轮合并与验收）")
+        );
+        assert_eq!(prompt.user_prompt.matches("latest-merge-").count(), 10);
+        assert_eq!(prompt.user_prompt.matches("latest-acceptance-").count(), 10);
+        assert!(prompt.user_prompt.contains("accept-report.md"));
+        assert!(!prompt.user_prompt.contains("root-a-report.md"));
+        assert!(!prompt.user_prompt.contains("root-b-report.md"));
+        assert!(!prompt.user_prompt.contains("old-merge.md"));
+        assert!(!prompt.user_prompt.contains("old-acceptance.md"));
+        assert!(!prompt.user_prompt.contains("unaccepted-merge.md"));
+        assert!(prompt.user_prompt.contains(
+            "以下来源节点的附件清单已截断或未完整读取；每个节点最多检查 10 个文件或空目录"
+        ));
+        assert!(
+            prompt
+                .user_prompt
+                .contains("nodes/group-core-merge-2/attempt-001/attachments")
+        );
+        assert!(
+            prompt
+                .user_prompt
+                .contains("nodes/group-core-accept-2/attempt-001/attachments")
+        );
+        assert!(!prompt.user_prompt.contains("## 并行兄弟节点"));
+        assert!(
+            !prompt
+                .user_prompt
+                .contains("parallel sibling; not an input dependency")
         );
     }
 
@@ -19435,10 +20164,15 @@ mod tests {
         let app = App::with_config(repo_root, RuntimeConfig::default());
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
-        let mut branch_a = test_worktree_node("branch-a");
-        branch_a.group_id = Some("group-core".to_string());
-        branch_a.status = DynamicNodeStatus::Completed;
-        branch_a.outcome = Some(NodeOutcome::Success);
+        let mut branch_a_root = test_worktree_node("branch-a-root");
+        branch_a_root.group_id = Some("group-core".to_string());
+        branch_a_root.status = DynamicNodeStatus::Completed;
+        branch_a_root.outcome = Some(NodeOutcome::Success);
+        let mut branch_a_terminal = test_worktree_node("branch-a-terminal");
+        branch_a_terminal.group_id = Some("group-core".to_string());
+        branch_a_terminal.chain_id = branch_a_root.chain_id.clone();
+        branch_a_terminal.status = DynamicNodeStatus::Completed;
+        branch_a_terminal.outcome = Some(NodeOutcome::Success);
         let mut branch_b = test_worktree_node("branch-b");
         branch_b.group_id = Some("group-core".to_string());
         branch_b.status = DynamicNodeStatus::Completed;
@@ -19446,13 +20180,18 @@ mod tests {
         let mut merge = test_worktree_node("group-core-merge");
         merge.kind = DynamicNodeKind::Merge;
         merge.group_id = Some("group-core".to_string());
-        merge.depends_on = vec!["branch-a".to_string(), "branch-b".to_string()];
-        let mut graph = test_dynamic_graph(vec![branch_a.clone(), branch_b.clone(), merge.clone()]);
+        merge.depends_on = vec![branch_a_terminal.id.clone(), branch_b.id.clone()];
+        let mut graph = test_dynamic_graph(vec![
+            branch_a_root.clone(),
+            branch_a_terminal.clone(),
+            branch_b.clone(),
+            merge.clone(),
+        ]);
         let mut group = test_group_state(
             "group-core",
             "bootstrap",
-            vec!["branch-a", "branch-b"],
-            vec!["branch-a", "branch-b"],
+            vec!["branch-a-root", "branch-b"],
+            vec!["branch-a-terminal", "branch-b"],
         );
         group.status = DynamicGroupStatus::Merging;
         group.merge_node_id = Some("group-core-merge".to_string());
@@ -19469,8 +20208,27 @@ mod tests {
         group.child_workspace_ids = vec![workspace.id.clone()];
         graph.workspaces.push(workspace);
         graph.groups.push(group);
-        write_dynamic_attachment_for_test(&app, &ctx, &branch_a, "a-report.md", "a evidence");
-        write_dynamic_attachment_for_test(&app, &ctx, &branch_b, "b-report.md", "b evidence");
+        write_dynamic_attachment_for_test(
+            &app,
+            &ctx,
+            &branch_a_root,
+            "branch-a-root-report.md",
+            "root evidence",
+        );
+        write_dynamic_attachment_for_test(
+            &app,
+            &ctx,
+            &branch_a_terminal,
+            "branch-a-terminal-report.md",
+            "terminal evidence",
+        );
+        write_dynamic_attachment_for_test(
+            &app,
+            &ctx,
+            &branch_b,
+            "branch-b-report.md",
+            "branch evidence",
+        );
 
         let invocation = build_dynamic_worker_invocation(
             &ctx,
@@ -19494,8 +20252,12 @@ mod tests {
 
         assert!(prompt.user_prompt.contains("## 当前 group"));
         assert!(prompt.user_prompt.contains("## 可用附件"));
-        assert!(prompt.user_prompt.contains("a-report.md"));
-        assert!(prompt.user_prompt.contains("b-report.md"));
+        assert!(prompt.user_prompt.contains(
+            "### Group 证据（当前 merge / acceptance 输入或相关 group 最近一轮合并与验收）"
+        ));
+        assert!(prompt.user_prompt.contains("branch-a-root-report.md"));
+        assert!(prompt.user_prompt.contains("branch-a-terminal-report.md"));
+        assert!(prompt.user_prompt.contains("branch-b-report.md"));
         assert!(prompt.user_prompt.contains(
             "branch workspaces (relative tree under pathRoot; absolutePath entries are complete)"
         ));
@@ -19529,10 +20291,15 @@ mod tests {
         let app = App::with_config(repo_root, RuntimeConfig::default());
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
-        let mut branch_a = test_worktree_node("branch-a");
-        branch_a.group_id = Some("group-core".to_string());
-        branch_a.status = DynamicNodeStatus::Completed;
-        branch_a.outcome = Some(NodeOutcome::Success);
+        let mut branch_a_root = test_worktree_node("branch-a-root");
+        branch_a_root.group_id = Some("group-core".to_string());
+        branch_a_root.status = DynamicNodeStatus::Completed;
+        branch_a_root.outcome = Some(NodeOutcome::Success);
+        let mut branch_a_terminal = test_worktree_node("branch-a-terminal");
+        branch_a_terminal.group_id = Some("group-core".to_string());
+        branch_a_terminal.chain_id = branch_a_root.chain_id.clone();
+        branch_a_terminal.status = DynamicNodeStatus::Completed;
+        branch_a_terminal.outcome = Some(NodeOutcome::Success);
         let mut branch_b = test_worktree_node("branch-b");
         branch_b.group_id = Some("group-core".to_string());
         branch_b.status = DynamicNodeStatus::Completed;
@@ -19540,6 +20307,7 @@ mod tests {
         let mut merge = test_worktree_node("group-core-merge");
         merge.kind = DynamicNodeKind::Merge;
         merge.group_id = Some("group-core".to_string());
+        merge.depends_on = vec![branch_a_terminal.id.clone(), branch_b.id.clone()];
         merge.status = DynamicNodeStatus::Completed;
         merge.outcome = Some(NodeOutcome::Success);
         let mut acceptance = test_worktree_node("group-core-acceptance");
@@ -19547,7 +20315,8 @@ mod tests {
         acceptance.group_id = Some("group-core".to_string());
         acceptance.depends_on = vec![merge.id.clone()];
         let mut graph = test_dynamic_graph(vec![
-            branch_a.clone(),
+            branch_a_root.clone(),
+            branch_a_terminal.clone(),
             branch_b.clone(),
             merge.clone(),
             acceptance.clone(),
@@ -19555,13 +20324,41 @@ mod tests {
         let mut group = test_group_state(
             "group-core",
             "bootstrap",
-            vec!["branch-a", "branch-b"],
-            vec!["branch-a", "branch-b"],
+            vec!["branch-a-root", "branch-b"],
+            vec!["branch-a-terminal", "branch-b"],
         );
         group.status = DynamicGroupStatus::Accepting;
         group.merge_node_id = Some("group-core-merge".to_string());
         group.acceptance_node_id = Some("group-core-acceptance".to_string());
         graph.groups.push(group);
+        write_dynamic_attachment_for_test(
+            &app,
+            &ctx,
+            &branch_a_root,
+            "branch-a-root-report.md",
+            "root evidence",
+        );
+        write_dynamic_attachment_for_test(
+            &app,
+            &ctx,
+            &branch_a_terminal,
+            "branch-a-terminal-report.md",
+            "terminal evidence",
+        );
+        write_dynamic_attachment_for_test(
+            &app,
+            &ctx,
+            &branch_b,
+            "branch-b-report.md",
+            "branch evidence",
+        );
+        write_dynamic_attachment_for_test(
+            &app,
+            &ctx,
+            &merge,
+            "merge-report.md",
+            "merge evidence",
+        );
 
         let invocation = build_dynamic_worker_invocation(
             &ctx,
@@ -19614,6 +20411,13 @@ mod tests {
         let prompt = render_prompt_bundle(&invocation).unwrap();
 
         assert!(prompt.user_prompt.contains("## 当前 group"));
+        assert!(prompt.user_prompt.contains(
+            "### Group 证据（当前 merge / acceptance 输入或相关 group 最近一轮合并与验收）"
+        ));
+        assert!(prompt.user_prompt.contains("branch-a-root-report.md"));
+        assert!(prompt.user_prompt.contains("branch-a-terminal-report.md"));
+        assert!(prompt.user_prompt.contains("branch-b-report.md"));
+        assert!(prompt.user_prompt.contains("merge-report.md"));
         assert!(!prompt.user_prompt.contains("## Runtime 协调快照"));
         assert!(!prompt.user_prompt.contains("## 并行兄弟节点"));
         assert!(!prompt.user_prompt.contains("## 会话复用"));
@@ -19990,6 +20794,33 @@ mod tests {
             materialized_event_ids: Vec::new(),
             created_at: "2026-06-16T00:00:00Z".to_string(),
         }
+    }
+
+    fn accepted_single_proposal(
+        source_node_id: &str,
+        target_node_id: &str,
+    ) -> DynamicProposalState {
+        accepted_proposal(
+            source_node_id,
+            serde_json::json!({
+                "version": "0.1",
+                "kind": "dynamic-node-completion",
+                "status": "success",
+                "summary": format!("materialize {target_node_id}"),
+                "next": {
+                    "type": "single",
+                    "node": {
+                        "id": target_node_id,
+                        "kind": "worker",
+                        "title": target_node_id,
+                        "task": target_node_id,
+                        "provider": null,
+                        "profile": null,
+                        "workflowId": null
+                    }
+                }
+            }),
+        )
     }
 
     #[test]

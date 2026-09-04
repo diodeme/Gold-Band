@@ -3375,12 +3375,14 @@ mod tests {
         assert!(prompt.user_prompt.contains("required status field"));
         assert!(prompt.user_prompt.contains("remaining nodes: 3"));
         assert!(prompt.user_prompt.contains("不要继续执行任务"));
+        assert!(prompt.user_prompt.contains(
+            "工具只可用于上述附件收尾，或在下方 runtime 上下文明确要求时刷新只读运行时快照"
+        ));
         assert!(
             prompt
                 .user_prompt
-                .contains("仅当下方 runtime 上下文明确要求刷新只读运行时快照时")
+                .contains("后者只能读取其中声明的快照路径")
         );
-        assert!(prompt.user_prompt.contains("只能读取其中声明的快照路径"));
         assert!(active_output_contract_for_turn(&req).is_some());
 
         req.user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
@@ -3399,7 +3401,7 @@ mod tests {
     }
 
     #[test]
-    fn english_artifact_finalize_allows_only_an_explicit_runtime_snapshot_refresh() {
+    fn english_artifact_finalize_limits_tools_to_wrap_up_and_explicit_snapshot_refresh() {
         let mut contract = test_output_contract(OutputEmissionMode::PostTurnProjection);
         contract.finalize_context = Some(
             "read-only runtime snapshot: C:/run/dynamic/coordination-snapshot.json".to_string(),
@@ -3413,13 +3415,46 @@ mod tests {
         .unwrap();
 
         assert!(prompt.contains(
-            "Only when the runtime context below explicitly requires refreshing a read-only runtime snapshot"
+            "when explicitly required by the runtime context below, to refresh a read-only runtime snapshot"
         ));
         assert!(prompt.contains("read only the declared snapshot path"));
+        assert!(prompt.contains("Tools may be used only for the attachment wrap-up above"));
+        assert!(!prompt.contains("do not call any other tool"));
     }
 
     #[test]
-    fn workflow_artifact_finalize_does_not_authorize_runtime_snapshot_tools() {
+    fn artifact_finalize_allows_only_missing_attachment_wrap_up() {
+        let contract = test_output_contract(OutputEmissionMode::PostTurnProjection);
+
+        let zh = render_artifact_finalize_prompt(
+            crate::config::DesktopLanguage::ZhCn,
+            &contract,
+            PromptExecutionSurface::Workflow,
+        )
+        .unwrap();
+        assert!(zh.contains("如果当前任务需要报告或其他附件且尚未写入"));
+        assert!(zh.contains("本次 attempt 的 attachments 目录"));
+        assert!(zh.contains("不需要或已经完成则跳过"));
+        assert!(zh.contains("不要继续执行任务"));
+        assert!(zh.contains("工具只可用于上述附件收尾"));
+
+        let en = render_artifact_finalize_prompt(
+            crate::config::DesktopLanguage::En,
+            &contract,
+            PromptExecutionSurface::Workflow,
+        )
+        .unwrap();
+        assert!(en.contains(
+            "If the current task requires a report or another attachment and it has not yet been written"
+        ));
+        assert!(en.contains("current attempt's attachments directory"));
+        assert!(en.contains("skip this step if it is unnecessary or already complete"));
+        assert!(en.contains("do not continue the task"));
+        assert!(en.contains("Tools may be used only for the attachment wrap-up above"));
+    }
+
+    #[test]
+    fn workflow_artifact_finalize_does_not_authorize_runtime_snapshot_refresh() {
         let mut contract = test_output_contract(OutputEmissionMode::PostTurnProjection);
         contract.finalize_context = Some(
             "read-only runtime snapshot: C:/run/dynamic/coordination-snapshot.json".to_string(),
@@ -3432,8 +3467,9 @@ mod tests {
         )
         .unwrap();
 
-        assert!(prompt.contains("不要调用工具"));
-        assert!(!prompt.contains("可以调用工具"));
+        assert!(prompt.contains("工具只可用于上述附件收尾"));
+        assert!(prompt.contains("无需收尾时不要调用工具"));
+        assert!(!prompt.contains("明确要求时刷新只读运行时快照"));
     }
 
     #[test]

@@ -309,10 +309,13 @@ Gold Band 不再依赖 resume/load 时动态刷新 system prompt。prompt 渲染
 | --- | --- | --- |
 | `RequirementTask` | workflow runtime 发起新节点 / 新 attempt | hidden runtime context + `# 需求` / `# Requirement`、可选 `# 用户提示` / `# User Tips`、`# 任务` / `# Task` |
 | `WorkflowResume` | workflow paused 恢复、edge 回到已有 ACP session、dynamic leaf runtime resume | hidden runtime context + 简短 `# 目标` / `# Goal`、可选 `# 用户提示` / `# User Tips`、当前 `# 任务` / `# Task` |
+| `RuntimeFinalize` | `PostTurnProjection` 业务 turn 正常结束后的隐藏收尾与控制归一化 | 仅允许把当前任务尚缺的报告或其他交付物写入当前 attempt 的 attachments；无需或已经完成时跳过，随后输出完整 artifact 协议要求的控制结果，不得继续业务任务或修改 workspace 文件 |
 | `RuntimeRepair` | output schema / success condition / dynamic proposal 校验失败后立即让同一 session 修复 | repair prompt 原文；不注入 hidden |
 | `UserMessage` | 用户在 stopped/completed/paused ACP 会话中手动追问或补充上下文，不触发 workflow edge | 用户原文；不注入 hidden，不包标题 |
 
 `RequirementTask` 与 `WorkflowResume` 使用同一结构：稳定规则在 `systemPrompt`，本次 invocation 事实在 user prompt hidden context。
+
+`RuntimeFinalize` 不是第二个业务 turn。它只补齐已经由当前任务要求、但业务 turn 尚未落入 attachments 的终端交付物，并根据已完成工作生成 canonical artifact；除当前 attempt 的 attachments 外不得写文件。AI-DYNAMIC 可按本次 finalize context 额外只读一个明确声明的 coordination snapshot，普通 workflow 不获得该读取权限。
 
 AI-DYNAMIC 的外层 `run_continue` 也必须先按是否存在用户显式输入决定 render mode。父级 continue 没有明确内部 leaf 目标时，只允许恢复 workflow-invocation child run；如果本次带用户输入，该输入继续传入 child run 的 paused worker 并保持 `UserMessage`，不得被转换成 `WorkflowResume` 的 hidden context + `# 目标` / `# Goal`。
 

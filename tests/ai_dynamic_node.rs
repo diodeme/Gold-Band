@@ -1346,10 +1346,10 @@ fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
             && group["acceptanceNodeId"] == "group-core-accept"
     }));
 
-    let coordination_path = app
-        .paths
-        .dynamic_dir(task_id, "run-001", "round-001", "router", "attempt-001")
-        .join("coordination-snapshot.json");
+    let dynamic_root =
+        app.paths
+            .dynamic_dir(task_id, "run-001", "round-001", "router", "attempt-001");
+    let coordination_path = dynamic_root.join("coordination-snapshot.json");
     let coordination = coordination_snapshot(&app, task_id);
     assert_eq!(coordination["kind"], "ai-dynamic-coordination-snapshot");
     assert!(
@@ -1468,19 +1468,30 @@ fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
             .iter()
             .find(|invocation| invocation.runtime_context.node_id == branch_id)
             .unwrap();
+        let branch_hidden = branch
+            .extra_hidden_sections
+            .iter()
+            .map(|section| section.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(branch_hidden.contains(&format!("- Dynamic 根目录：{dynamic_root}")));
         assert!(
-            branch
-                .extra_hidden_sections
-                .iter()
-                .any(|section| section.content.contains(coordination_path_text))
+            branch_hidden.contains("- 只读快照（相对 Dynamic 根目录）：coordination-snapshot.json")
         );
+        assert_eq!(branch_hidden.matches(dynamic_root.as_str()).count(), 1);
+        assert!(!branch_hidden.contains(coordination_path_text));
+        let finalize_context = branch
+            .output_contract
+            .as_ref()
+            .and_then(|contract| contract.finalize_context.as_deref())
+            .expect("dynamic branch finalizer needs the coordination snapshot");
+        assert!(finalize_context.contains(&format!("- Dynamic 根目录：{dynamic_root}")));
         assert!(
-            branch
-                .output_contract
-                .as_ref()
-                .and_then(|contract| contract.finalize_context.as_deref())
-                .is_some_and(|context| context.contains(coordination_path_text))
+            finalize_context
+                .contains("- 只读快照（相对 Dynamic 根目录）：coordination-snapshot.json")
         );
+        assert_eq!(finalize_context.matches(dynamic_root.as_str()).count(), 1);
+        assert!(!finalize_context.contains(coordination_path_text));
     }
     let merge_invocation = business_invocations
         .iter()
@@ -1490,7 +1501,7 @@ fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
         !merge_invocation
             .extra_hidden_sections
             .iter()
-            .any(|section| section.content.contains(coordination_path_text))
+            .any(|section| section.content.contains("## Runtime 协调快照"))
     );
     let acceptance_invocation = business_invocations
         .iter()
@@ -1514,15 +1525,25 @@ fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
         !acceptance_invocation
             .extra_hidden_sections
             .iter()
-            .any(|section| section.content.contains(coordination_path_text))
+            .any(|section| section.content.contains("## Runtime 协调快照"))
     );
+    let acceptance_finalize_context = acceptance_invocation
+        .output_contract
+        .as_ref()
+        .and_then(|contract| contract.finalize_context.as_deref())
+        .expect("dynamic acceptance finalizer needs the coordination snapshot");
+    assert!(acceptance_finalize_context.contains(&format!("- Dynamic 根目录：{dynamic_root}")));
     assert!(
-        acceptance_invocation
-            .output_contract
-            .as_ref()
-            .and_then(|contract| contract.finalize_context.as_deref())
-            .is_some_and(|context| context.contains(coordination_path_text))
+        acceptance_finalize_context
+            .contains("- 只读快照（相对 Dynamic 根目录）：coordination-snapshot.json")
     );
+    assert_eq!(
+        acceptance_finalize_context
+            .matches(dynamic_root.as_str())
+            .count(),
+        1
+    );
+    assert!(!acceptance_finalize_context.contains(coordination_path_text));
 }
 
 #[test]

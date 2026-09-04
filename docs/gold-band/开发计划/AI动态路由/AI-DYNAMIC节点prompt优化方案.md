@@ -535,6 +535,7 @@ acp.diagnostics.jsonl
 
 - `node_task.md` 不追加固定尾巴；当前任务与 continue 来源的区别由 hidden context 和 system prompt 表达。
 - `acceptance.md` 明确最终必须输出 `dynamic-node-completion`。
+- 通用 `artifact_finalize.md` 在输出控制 artifact 前允许一次有界收尾：仅当当前任务要求的报告或其他附件尚未落盘时写入当前 attempt 的 attachments；无需或已经完成时跳过，不得继续业务任务或修改 workspace。
 - acceptance pass/fail 映射：
   - pass：`next.type="end"`。
   - fail：`next.type="single"` 或 `fanout` 创建修复节点。
@@ -654,6 +655,7 @@ acp.diagnostics.jsonl
   - worker / acceptance 的 `PostTurnProjection` 展示后置控制规则，不出现 `dynamic-node-completion` 或 `next.type`
   - merge 的无 emission mode 分支只展示纯执行规则
 - PostTurn 业务 turn 明确禁止提前拆分任务、选择 Agent 或规划/执行后继节点，中英文语义一致。
+- PostTurn hidden finalize 中英文模板允许且只允许补齐尚缺的当前 attempt attachments，并继续禁止业务 workspace 修改；AI-DYNAMIC 另可只读明确声明的协调快照。
 - AI-DYNAMIC hidden context 包含：
   - 当前 node id/title/kind/task
   - workspace mode/path/capability
@@ -714,10 +716,11 @@ npm run web:build
 - [x] worker 继续保持“按 profile 执行任务 + 最终输出 `dynamic-node-completion`”模式。
 - [x] merge 不强制输出控制协议。
 - [x] acceptance 强制输出 `dynamic-node-completion`，并可决定 end 或继续修复。
+- [x] hidden finalize 可有界补齐尚缺的报告或其他 attachments，不把 finalize 扩展为第二个业务 turn。
 - [x] dynamic context 重复注入显著减少，branch/group/workspace 信息有唯一权威来源。
 - [x] AI-DYNAMIC runtime context 由 `DynamicContextProjection` 或等价投影层统一生成。
 - [x] AI-DYNAMIC prompt 不展示内部控制 artifact，只展示可消费 attachments。
-- [x] group 内、group 后 single、single 后 single、nested fanout 的上下文投影规则清晰且有测试覆盖。
+- [ ] group 内、group 后 single、single 后 single、nested fanout 的上下文投影规则清晰且有测试覆盖。2026-09-04 审阅确认当前 acceptance 后首个无显式依赖的 single 可读取验收附件，但显式 `dependsOn`、第二个 single 与 nested repair merge/acceptance 尚未稳定继承原 acceptance 附件；现有 nested fixture 未覆盖 acceptance repair 时清空当前阶段槽的真实路径。
 - [x] 中英文 prompt 同步维护。
 - [x] 产品设计文档与开发计划同步更新。
 - [x] 后端单元测试覆盖 prompt 分层、continue、acceptance end/repair、repair 流程。
@@ -729,3 +732,10 @@ npm run web:build
 - 不改变普通 workflow prompt 分层。
 - 不改变 `dynamic-node-completion` 作为 AI-DYNAMIC 内部控制协议唯一入口的定位。
 - 不把 merge 改成控制决策节点。
+
+## 11. 2026-09-04 附件链路审阅待办
+
+- 上下文投影应把 proposal materialization source 与 `dependsOn` 视为可并存的因果来源，不得因存在调度依赖而丢失 acceptance 请求修复的报告。
+- acceptance repair 的历史出口附件应沿 single 链和 nested group 继承；可变的 group 当前 `mergeNodeId / acceptanceNodeId` 只表达当前生命周期阶段，不应兼任历史证据索引。
+- attachment manifest 扫描应复用现有有界、拒绝 symlink、校验 canonical root 的文件收集策略，并对截断或读取失败保留可审计提示，避免长程任务产生无界同步扫描和 prompt 膨胀。
+- 修复前分别建立三条最小失败测试：显式 `dependsOn` 的首个 fix、acceptance 后第二个 single、nested repair group 的 merge；本次仅完成 finalize 收尾 prompt，不以局部条件分支掩盖该拓扑缺陷。

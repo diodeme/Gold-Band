@@ -3,13 +3,13 @@
   "source": {
     "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
     "registryVersion": "1.0.0",
-    "fetchedAt": "2026-09-01T03:41:38.550Z"
+    "fetchedAt": "2026-09-02T06:33:12.830Z"
   },
   "agents": [
     {
       "id": "claude-acp",
       "label": "Claude",
-      "version": "0.70.0",
+      "version": "0.73.0",
       "description": "ACP wrapper for Anthropic's Claude",
       "repository": "https://github.com/agentclientprotocol/claude-agent-acp",
       "website": null,
@@ -18,7 +18,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@agentclientprotocol/claude-agent-acp@0.70.0"
+        "@agentclientprotocol/claude-agent-acp@0.73.0"
       ],
       "env": {},
       "primaryAgentDir": ".claude",
@@ -30,7 +30,7 @@
     {
       "id": "codex-acp",
       "label": "Codex",
-      "version": "1.7.0",
+      "version": "1.8.0",
       "description": "ACP adapter for OpenAI's coding assistant",
       "repository": "https://github.com/agentclientprotocol/codex-acp",
       "website": null,
@@ -39,7 +39,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@agentclientprotocol/codex-acp@1.7.0"
+        "@agentclientprotocol/codex-acp@1.8.0"
       ],
       "env": {},
       "primaryAgentDir": ".codex",
@@ -53,7 +53,7 @@
     {
       "id": "cursor",
       "label": "Cursor",
-      "version": "2026.08.11",
+      "version": "2026.08.31",
       "description": "Cursor's coding agent",
       "repository": null,
       "website": "https://cursor.com/docs/cli/acp",
@@ -75,7 +75,7 @@
     {
       "id": "gemini",
       "label": "Gemini",
-      "version": "0.57.0",
+      "version": "0.58.0",
       "description": "Google's official CLI for Gemini",
       "repository": "https://github.com/google-gemini/gemini-cli",
       "website": "https://geminicli.com",
@@ -84,7 +84,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@google/gemini-cli@0.57.0",
+        "@google/gemini-cli@0.58.0",
         "--acp"
       ],
       "env": {},
@@ -164,7 +164,7 @@
     {
       "id": "opencode",
       "label": "OpenCode",
-      "version": "1.18.25",
+      "version": "1.18.26",
       "description": "The open source coding agent",
       "repository": "https://github.com/anomalyco/opencode",
       "website": "https://opencode.ai",
@@ -186,7 +186,7 @@
     {
       "id": "kimi",
       "label": "Kimi Code",
-      "version": "1.49.0",
+      "version": "1.50.0",
       "description": "Moonshot AI's coding assistant",
       "repository": "https://github.com/MoonshotAI/kimi-cli",
       "website": "https://moonshotai.github.io/kimi-cli/",

@@ -215,12 +215,14 @@ fn validate_direct_capabilities(
 #[tauri::command]
 pub fn save_desktop_ui_mode(state: State<'_, DesktopState>, mode: String) -> CommandResult<()> {
     let app = state.app().map_err(command_error)?;
-    let mut state = app.load_state().map_err(command_error)?;
-    state.desktop_ui_mode = Some(match mode.as_str() {
-        "workbench" => DesktopUiMode::Workbench,
-        _ => DesktopUiMode::Conversation,
-    });
-    app.save_state(&state).map_err(command_error)?;
+    app.with_state(|state| {
+        state.desktop_ui_mode = Some(match mode.as_str() {
+            "workbench" => DesktopUiMode::Workbench,
+            _ => DesktopUiMode::Conversation,
+        });
+        (true, ())
+    })
+    .map_err(command_error)?;
     Ok(())
 }
 
@@ -921,32 +923,39 @@ pub async fn pin_conversation(
     let context = state.context().map_err(command_error)?;
     spawn_blocking_command(move || {
         let app = context.app();
-        let mut state = app.load_state().map_err(command_error)?;
-        let (_, resolved_project_id) = workspace_entry_for_project(&state, &project_id)
-            .ok_or_else(|| {
-                CommandErrorVm::new(
-                    "workspace.not-found",
-                    serde_json::json!({ "projectId": project_id }),
-                )
-            })?;
-        if state.conversation_pins.iter().any(|pin| {
-            project_ids_match(&pin.project_id, &resolved_project_id) && pin.task_id == task_id
-        }) {
-            return conversation_sidebar_bootstrap_for_state(&state);
-        }
-        let max_order = state
-            .conversation_pins
-            .iter()
-            .map(|p| p.order)
-            .max()
-            .unwrap_or(0);
-        state.conversation_pins.push(ConversationPin {
-            project_id: resolved_project_id,
-            task_id,
-            order: max_order + 1,
-        });
-        app.save_state(&state).map_err(command_error)?;
-        conversation_sidebar_bootstrap_for_state(&state)
+        // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+        app.with_state(|state| {
+            let (_, resolved_project_id) = match workspace_entry_for_project(state, &project_id) {
+                Some(entry) => entry,
+                None => {
+                    return (
+                        false,
+                        Err(CommandErrorVm::new(
+                            "workspace.not-found",
+                            serde_json::json!({ "projectId": project_id }),
+                        )),
+                    );
+                }
+            };
+            if state.conversation_pins.iter().any(|pin| {
+                project_ids_match(&pin.project_id, &resolved_project_id) && pin.task_id == task_id
+            }) {
+                return (false, conversation_sidebar_bootstrap_for_state(state));
+            }
+            let max_order = state
+                .conversation_pins
+                .iter()
+                .map(|p| p.order)
+                .max()
+                .unwrap_or(0);
+            state.conversation_pins.push(ConversationPin {
+                project_id: resolved_project_id,
+                task_id,
+                order: max_order + 1,
+            });
+            (true, conversation_sidebar_bootstrap_for_state(state))
+        })
+        .map_err(command_error)?
     })
     .await
 }
@@ -960,19 +969,28 @@ pub async fn unpin_conversation(
     let context = state.context().map_err(command_error)?;
     spawn_blocking_command(move || {
         let app = context.app();
-        let mut state = app.load_state().map_err(command_error)?;
-        let (_, resolved_project_id) = workspace_entry_for_project(&state, &project_id)
-            .ok_or_else(|| {
-                CommandErrorVm::new(
-                    "workspace.not-found",
-                    serde_json::json!({ "projectId": project_id }),
-                )
-            })?;
-        state.conversation_pins.retain(|p| {
-            !project_ids_match(&p.project_id, &resolved_project_id) || p.task_id != task_id
-        });
-        app.save_state(&state).map_err(command_error)?;
-        conversation_sidebar_bootstrap_for_state(&state)
+        // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+        app.with_state(|state| {
+            let (_, resolved_project_id) = match workspace_entry_for_project(state, &project_id) {
+                Some(entry) => entry,
+                None => {
+                    return (
+                        false,
+                        Err(CommandErrorVm::new(
+                            "workspace.not-found",
+                            serde_json::json!({ "projectId": project_id }),
+                        )),
+                    );
+                }
+            };
+            let before = state.conversation_pins.len();
+            state.conversation_pins.retain(|p| {
+                !project_ids_match(&p.project_id, &resolved_project_id) || p.task_id != task_id
+            });
+            let dirty = state.conversation_pins.len() != before;
+            (dirty, conversation_sidebar_bootstrap_for_state(state))
+        })
+        .map_err(command_error)?
     })
     .await
 }
@@ -985,26 +1003,37 @@ pub async fn reorder_pinned_conversations(
     let context = state.context().map_err(command_error)?;
     spawn_blocking_command(move || {
         let app = context.app();
-        let mut state = app.load_state().map_err(command_error)?;
-        let normalized_pins = ordered
-            .into_iter()
-            .enumerate()
-            .map(|(i, mut pin)| {
-                let (_, resolved_project_id) = workspace_entry_for_project(&state, &pin.project_id)
-                    .ok_or_else(|| {
-                        CommandErrorVm::new(
-                            "workspace.not-found",
-                            serde_json::json!({ "projectId": pin.project_id }),
-                        )
-                    })?;
-                pin.project_id = resolved_project_id;
-                pin.order = i;
-                Ok(pin)
-            })
-            .collect::<CommandResult<Vec<_>>>()?;
-        state.conversation_pins = normalized_pins;
-        app.save_state(&state).map_err(command_error)?;
-        conversation_sidebar_bootstrap_for_state(&state)
+        // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+        app.with_state(|state| {
+            let normalized_pins = ordered
+                .into_iter()
+                .enumerate()
+                .map(|(i, mut pin)| {
+                    let (_, resolved_project_id) =
+                        match workspace_entry_for_project(state, &pin.project_id) {
+                            Some(entry) => entry,
+                            None => {
+                                return Err(CommandErrorVm::new(
+                                    "workspace.not-found",
+                                    serde_json::json!({ "projectId": pin.project_id }),
+                                ));
+                            }
+                        };
+                    pin.project_id = resolved_project_id;
+                    pin.order = i;
+                    Ok(pin)
+                })
+                .collect::<CommandResult<Vec<_>>>();
+            match normalized_pins {
+                Ok(pins) => {
+                    state.conversation_pins = pins;
+                    (true, conversation_sidebar_bootstrap_for_state(state))
+                }
+                // 校验失败 → 不落盘，原样返回错误。
+                Err(error) => (false, Err(error)),
+            }
+        })
+        .map_err(command_error)?
     })
     .await
 }
@@ -1146,17 +1175,21 @@ fn extract_project_from_task_path(
 }
 
 fn persist_last_conversation_workspace(app: &App, project_id: &str) -> CommandResult<()> {
-    let mut state = app.load_state().map_err(command_error)?;
-    let (_, resolved_project_id) =
-        workspace_entry_for_project(&state, project_id).ok_or_else(|| {
-            CommandErrorVm::new(
-                "workspace.not-found",
-                serde_json::json!({ "projectId": project_id }),
-            )
-        })?;
-    state.last_conversation_workspace = Some(resolved_project_id);
-    app.save_state(&state).map_err(command_error)?;
-    Ok(())
+    // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+    app.with_state(|state| {
+        let Some((_, resolved_project_id)) = workspace_entry_for_project(state, project_id) else {
+            return (
+                false,
+                Err(CommandErrorVm::new(
+                    "workspace.not-found",
+                    serde_json::json!({ "projectId": project_id }),
+                )),
+            );
+        };
+        state.last_conversation_workspace = Some(resolved_project_id);
+        (true, Ok(()))
+    })
+    .map_err(command_error)?
 }
 
 fn conversation_sidebar_sources(
@@ -1307,92 +1340,96 @@ pub fn save_conversation_run_mode(
     settings: ConversationRunModeSettingsVm,
 ) -> CommandResult<()> {
     let app = state.app().map_err(command_error)?;
-    let mut state = app.load_state().map_err(command_error)?;
-    let (_, resolved_project_id) =
-        workspace_entry_for_project(&state, &project_id).ok_or_else(|| {
-            CommandErrorVm::new(
-                "workspace.not-found",
-                serde_json::json!({ "projectId": project_id }),
-            )
-        })?;
-    state.conversation_run_modes.insert(
-        resolved_project_id,
-        ConversationRunModeEntry {
-            mode: settings.mode,
-            workflow_template_id: settings.workflow_template_id,
-            optional_entry_preferences: settings.optional_entry_preferences,
-            direct_config: settings
-                .direct_config
-                .map(|config| ConversationDirectConfig {
-                    agent_type: config.agent_type,
-                    model_id: config.model_id,
-                    permission_mode: config.permission_mode,
-                    config_options: config.config_options,
+    // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+    app.with_state(|state| {
+        let Some((_, resolved_project_id)) = workspace_entry_for_project(state, &project_id) else {
+            return (
+                false,
+                Err(CommandErrorVm::new(
+                    "workspace.not-found",
+                    serde_json::json!({ "projectId": project_id }),
+                )),
+            );
+        };
+        state.conversation_run_modes.insert(
+            resolved_project_id,
+            ConversationRunModeEntry {
+                mode: settings.mode,
+                workflow_template_id: settings.workflow_template_id,
+                optional_entry_preferences: settings.optional_entry_preferences,
+                direct_config: settings
+                    .direct_config
+                    .map(|config| ConversationDirectConfig {
+                        agent_type: config.agent_type,
+                        model_id: config.model_id,
+                        permission_mode: config.permission_mode,
+                        config_options: config.config_options,
+                    }),
+                direct_preferences: settings
+                    .direct_preferences
+                    .into_iter()
+                    .map(|(agent_type, config)| {
+                        (
+                            agent_type,
+                            ConversationDirectConfig {
+                                agent_type: config.agent_type,
+                                model_id: config.model_id,
+                                permission_mode: config.permission_mode,
+                                config_options: config.config_options,
+                            },
+                        )
+                    })
+                    .collect(),
+                auto_config: settings.auto_config.map(|cfg| ConversationAutoConfig {
+                    agent_strategy: cfg.agent_strategy,
+                    agent_type: cfg.agent_type,
+                    bootstrap_agent_type: cfg.bootstrap_agent_type,
+                    bootstrap_model_id: cfg.bootstrap_model_id,
+                    bootstrap_config_options: cfg.bootstrap_config_options,
+                    acceptance_model_id: cfg.acceptance_model_id,
+                    acceptance_config_options: cfg.acceptance_config_options,
+                    model_id: cfg.model_id,
+                    permission_mode: cfg.permission_mode,
+                    config_options: cfg.config_options,
+                    available_agents: cfg.available_agents.map(|agents| {
+                        agents
+                            .into_iter()
+                            .map(|agent| ConversationDynamicAgentRef {
+                                provider: agent.provider,
+                                model: agent.model,
+                                permission_mode: agent.permission_mode,
+                                config_options: agent.config_options,
+                            })
+                            .collect()
+                    }),
+                    routing_prompt: cfg.routing_prompt,
+                    allowed_workflows: cfg.allowed_workflows.map(|workflows| {
+                        workflows
+                            .into_iter()
+                            .map(|workflow| ConversationAllowedWorkflowRef {
+                                workflow_id: workflow.workflow_id,
+                            })
+                            .collect()
+                    }),
+                    allowed_profiles: cfg.allowed_profiles,
+                    global_goal: cfg.global_goal,
+                    control: cfg.control.map(|control| ConversationDynamicControl {
+                        max_dynamic_nodes: control.max_dynamic_nodes,
+                        max_fanout: control.max_fanout,
+                        max_depth: control.max_depth,
+                        max_parallel: control.max_parallel,
+                        max_group_depth: control.max_group_depth,
+                        max_workflow_invocations: control.max_workflow_invocations,
+                        allow_nested_dynamic: control.allow_nested_dynamic,
+                    }),
+                    active_template_id: cfg.active_template_id,
+                    active_template_name: cfg.active_template_name,
                 }),
-            direct_preferences: settings
-                .direct_preferences
-                .into_iter()
-                .map(|(agent_type, config)| {
-                    (
-                        agent_type,
-                        ConversationDirectConfig {
-                            agent_type: config.agent_type,
-                            model_id: config.model_id,
-                            permission_mode: config.permission_mode,
-                            config_options: config.config_options,
-                        },
-                    )
-                })
-                .collect(),
-            auto_config: settings.auto_config.map(|cfg| ConversationAutoConfig {
-                agent_strategy: cfg.agent_strategy,
-                agent_type: cfg.agent_type,
-                bootstrap_agent_type: cfg.bootstrap_agent_type,
-                bootstrap_model_id: cfg.bootstrap_model_id,
-                bootstrap_config_options: cfg.bootstrap_config_options,
-                acceptance_model_id: cfg.acceptance_model_id,
-                acceptance_config_options: cfg.acceptance_config_options,
-                model_id: cfg.model_id,
-                permission_mode: cfg.permission_mode,
-                config_options: cfg.config_options,
-                available_agents: cfg.available_agents.map(|agents| {
-                    agents
-                        .into_iter()
-                        .map(|agent| ConversationDynamicAgentRef {
-                            provider: agent.provider,
-                            model: agent.model,
-                            permission_mode: agent.permission_mode,
-                            config_options: agent.config_options,
-                        })
-                        .collect()
-                }),
-                routing_prompt: cfg.routing_prompt,
-                allowed_workflows: cfg.allowed_workflows.map(|workflows| {
-                    workflows
-                        .into_iter()
-                        .map(|workflow| ConversationAllowedWorkflowRef {
-                            workflow_id: workflow.workflow_id,
-                        })
-                        .collect()
-                }),
-                allowed_profiles: cfg.allowed_profiles,
-                global_goal: cfg.global_goal,
-                control: cfg.control.map(|control| ConversationDynamicControl {
-                    max_dynamic_nodes: control.max_dynamic_nodes,
-                    max_fanout: control.max_fanout,
-                    max_depth: control.max_depth,
-                    max_parallel: control.max_parallel,
-                    max_group_depth: control.max_group_depth,
-                    max_workflow_invocations: control.max_workflow_invocations,
-                    allow_nested_dynamic: control.allow_nested_dynamic,
-                }),
-                active_template_id: cfg.active_template_id,
-                active_template_name: cfg.active_template_name,
-            }),
-        },
-    );
-    app.save_state(&state).map_err(command_error)?;
-    Ok(())
+            },
+        );
+        (true, Ok(()))
+    })
+    .map_err(command_error)?
 }
 
 #[tauri::command]
@@ -1411,6 +1448,36 @@ pub fn choose_conversation_workspace(
         workspace_path,
         name,
     })
+}
+
+/// add_conversation_workspace 的重复/冲突守卫（path 归一化比对 + project_id 比对）。
+/// 入库事务内、外各校验一次：事务外 fail-fast，事务内权威判定（防并发添加竞态入库）。
+fn conversation_workspace_add_error(
+    state: &gold_band::config::StateConfig,
+    selected: &GoldBandPaths,
+    name: &str,
+    project_id: &str,
+) -> Option<CommandErrorVm> {
+    if state.conversation_workspaces.iter().any(|workspace| {
+        GoldBandPaths::new(Utf8PathBuf::from(&workspace.workspace_path)).normalized_repo_root
+            == selected.normalized_repo_root
+    }) {
+        return Some(CommandErrorVm::new(
+            "workspace.already-exists",
+            serde_json::json!({ "name": name }),
+        ));
+    }
+    if state
+        .conversation_workspaces
+        .iter()
+        .any(|workspace| workspace.project_id == project_id)
+    {
+        return Some(CommandErrorVm::new(
+            "workspace.project-id-collision",
+            serde_json::json!({ "projectId": project_id }),
+        ));
+    }
+    None
 }
 
 #[tauri::command]
@@ -1432,57 +1499,46 @@ pub async fn add_conversation_workspace(
             .unwrap_or_else(|| workspace_path_str.clone());
         let selected_paths = GoldBandPaths::new(workspace_path.clone());
         let project_id = selected_paths.project_id.clone();
-        let mut state = gold_band_app.load_state().map_err(command_error)?;
 
-        if state
-            .conversation_workspaces
-            .iter()
-            .any(|workspace| {
-                GoldBandPaths::new(Utf8PathBuf::from(&workspace.workspace_path))
-                    .normalized_repo_root
-                    == selected_paths.normalized_repo_root
-            })
+        // 预检（只读 load）：fail-fast，重复/冲突时不做 manifest 预置。
+        let pre_state = gold_band_app.load_state().map_err(command_error)?;
+        if let Some(error) =
+            conversation_workspace_add_error(&pre_state, &selected_paths, &name, &project_id)
         {
-            return Err(CommandErrorVm::new(
-                "workspace.already-exists",
-                serde_json::json!({ "name": name }),
-            ));
-        }
-        if state
-            .conversation_workspaces
-            .iter()
-            .any(|workspace| workspace.project_id == project_id)
-        {
-            return Err(CommandErrorVm::new(
-                "workspace.project-id-collision",
-                serde_json::json!({ "projectId": project_id }),
-            ));
+            return Err(error);
         }
 
         provision_project_manifest_for_desktop(&selected_paths).map_err(command_error)?;
 
-        state
-            .conversation_workspaces
-            .push(ConversationWorkspaceEntry {
-                project_id: project_id.clone(),
-                workspace_path: workspace_path_str,
-                name: name.clone(),
-                added_at: chrono::Utc::now().to_rfc3339(),
-            });
-        state.last_conversation_workspace = Some(project_id.clone());
-        gold_band_app.save_state(&state).map_err(command_error)?;
+        // 入库经 with_state 原子 RMW（StateConfig 唯一读改写入口）：事务内权威重校验，
+        // 防并发添加竞态产生重复条目；与 Multica 后台写入并发互不覆盖。
+        let bootstrap = gold_band_app
+            .with_state(|state| {
+                if let Some(error) =
+                    conversation_workspace_add_error(state, &selected_paths, &name, &project_id)
+                {
+                    return (false, Err(error));
+                }
+                state
+                    .conversation_workspaces
+                    .push(ConversationWorkspaceEntry {
+                        project_id: project_id.clone(),
+                        workspace_path: workspace_path_str,
+                        name: name.clone(),
+                        added_at: chrono::Utc::now().to_rfc3339(),
+                    });
+                state.last_conversation_workspace = Some(project_id.clone());
+                (true, conversation_sidebar_bootstrap_for_state(state))
+            })
+            .map_err(command_error)??;
         coordinator
             .send(crate::scheduled_runtime::SchedulerCommand::RegisterWorkspace {
                 workspace_path: workspace_path.clone(),
             })
             .map_err(scheduled_service_error)?;
-        info!(
-            project_id = %project_id,
-            workspace_count = state.conversation_workspaces.len(),
-            "conversation workspace added"
-        );
+        info!(project_id = %project_id, "conversation workspace added");
 
-        conversation_sidebar_bootstrap_for_state(&state)
+        Ok(bootstrap)
     })
     .await
 }
@@ -1494,9 +1550,12 @@ pub fn save_conversation_preference(
     value: serde_json::Value,
 ) -> CommandResult<()> {
     let app = state.app().map_err(command_error)?;
-    let mut app_state = app.load_state().map_err(command_error)?;
-    app_state.preferences.insert(key, value);
-    app.save_state(&app_state).map_err(command_error)?;
+    // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+    app.with_state(|app_state| {
+        app_state.preferences.insert(key, value);
+        (true, ())
+    })
+    .map_err(command_error)?;
     Ok(())
 }
 
@@ -1506,17 +1565,22 @@ pub fn save_last_conversation_workspace(
     project_id: String,
 ) -> CommandResult<()> {
     let app = state.app().map_err(command_error)?;
-    let mut app_state = app.load_state().map_err(command_error)?;
-    let (_, resolved_project_id) = workspace_entry_for_project(&app_state, &project_id)
-        .ok_or_else(|| {
-            CommandErrorVm::new(
-                "workspace.not-found",
-                serde_json::json!({ "projectId": project_id }),
-            )
-        })?;
-    app_state.last_conversation_workspace = Some(resolved_project_id);
-    app.save_state(&app_state).map_err(command_error)?;
-    Ok(())
+    // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+    app.with_state(|app_state| {
+        let Some((_, resolved_project_id)) = workspace_entry_for_project(app_state, &project_id)
+        else {
+            return (
+                false,
+                Err(CommandErrorVm::new(
+                    "workspace.not-found",
+                    serde_json::json!({ "projectId": project_id }),
+                )),
+            );
+        };
+        app_state.last_conversation_workspace = Some(resolved_project_id);
+        (true, Ok(()))
+    })
+    .map_err(command_error)?
 }
 
 #[tauri::command]
@@ -1534,37 +1598,61 @@ pub async fn sync_conversation_workspace(
             .unwrap_or_else(|| workspace_path.clone());
         let selected_paths = GoldBandPaths::new(Utf8PathBuf::from(&workspace_path));
         let project_id = selected_paths.project_id.clone();
-        let mut state = app.load_state().map_err(command_error)?;
 
-        let existing_path = state.conversation_workspaces.iter().find(|workspace| {
-            GoldBandPaths::new(Utf8PathBuf::from(&workspace.workspace_path)).normalized_repo_root
-                == selected_paths.normalized_repo_root
-        });
-        let resolved_project_id = if let Some(workspace) = existing_path {
-            workspace.project_id.clone()
-        } else if state
-            .conversation_workspaces
-            .iter()
-            .any(|workspace| workspace.project_id == project_id)
-        {
-            return Err(CommandErrorVm::new(
-                "workspace.project-id-collision",
-                serde_json::json!({ "projectId": project_id }),
-            ));
-        } else {
-            provision_project_manifest_for_desktop(&selected_paths).map_err(command_error)?;
-            state
+        // 预读（只读）：仅新增工作区需要预置 manifest；既有条目同步不触碰目标目录。
+        let needs_provision = {
+            let pre_state = app.load_state().map_err(command_error)?;
+            pre_state.conversation_workspaces.iter().all(|workspace| {
+                GoldBandPaths::new(Utf8PathBuf::from(&workspace.workspace_path))
+                    .normalized_repo_root
+                    != selected_paths.normalized_repo_root
+            }) && pre_state
                 .conversation_workspaces
-                .push(ConversationWorkspaceEntry {
-                    project_id: project_id.clone(),
-                    workspace_path: workspace_path.clone(),
-                    name: name.clone(),
-                    added_at: chrono::Utc::now().to_rfc3339(),
-                });
-            project_id
+                .iter()
+                .all(|workspace| workspace.project_id != project_id)
         };
-        state.last_conversation_workspace = Some(resolved_project_id);
-        app.save_state(&state).map_err(command_error)?;
+        if needs_provision {
+            provision_project_manifest_for_desktop(&selected_paths).map_err(command_error)?;
+        }
+
+        // 入库经 with_state 原子 RMW（StateConfig 唯一读改写入口）：事务内权威重判定，
+        // 并发添加已存在时幂等采用既有条目；与 Multica 后台写入并发互不覆盖。
+        let bootstrap = app
+            .with_state(|state| {
+                let resolved_project_id = if let Some(workspace) =
+                    state.conversation_workspaces.iter().find(|workspace| {
+                        GoldBandPaths::new(Utf8PathBuf::from(&workspace.workspace_path))
+                            .normalized_repo_root
+                            == selected_paths.normalized_repo_root
+                    }) {
+                    workspace.project_id.clone()
+                } else if state
+                    .conversation_workspaces
+                    .iter()
+                    .any(|workspace| workspace.project_id == project_id)
+                {
+                    return (
+                        false,
+                        Err(CommandErrorVm::new(
+                            "workspace.project-id-collision",
+                            serde_json::json!({ "projectId": project_id }),
+                        )),
+                    );
+                } else {
+                    state
+                        .conversation_workspaces
+                        .push(ConversationWorkspaceEntry {
+                            project_id: project_id.clone(),
+                            workspace_path: workspace_path.clone(),
+                            name: name.clone(),
+                            added_at: chrono::Utc::now().to_rfc3339(),
+                        });
+                    project_id.clone()
+                };
+                state.last_conversation_workspace = Some(resolved_project_id);
+                (true, conversation_sidebar_bootstrap_for_state(state))
+            })
+            .map_err(command_error)??;
         coordinator
             .send(
                 crate::scheduled_runtime::SchedulerCommand::RegisterWorkspace {
@@ -1573,7 +1661,7 @@ pub async fn sync_conversation_workspace(
             )
             .map_err(scheduled_service_error)?;
 
-        conversation_sidebar_bootstrap_for_state(&state)
+        Ok(bootstrap)
     })
     .await
 }
@@ -1588,7 +1676,8 @@ pub async fn delete_conversation_task(
     let conversation_attention_write_lock = state.conversation_attention_write_lock();
     spawn_blocking_command(move || {
         let app = context.app();
-        let mut app_state = app.load_state().map_err(command_error)?;
+        // 只读 load 解析工作区归属；重操作（trash/sqlite/attention）不持 state 锁。
+        let app_state = app.load_state().map_err(command_error)?;
         let Some((workspace_path, normalized_project_id)) =
             workspace_entry_for_project(&app_state, &project_id)
         else {
@@ -1631,11 +1720,18 @@ pub async fn delete_conversation_task(
             })?;
             remove_task_attention(&workspace_app, &task_id).map_err(command_error)?;
         }
-        app_state
-            .conversation_pins
-            .retain(|p| p.project_id != normalized_project_id || p.task_id != task_id);
-        app.save_state(&app_state).map_err(command_error)?;
-        conversation_sidebar_bootstrap_for_state(&app_state)
+        // 清 pin 经 with_state 原子 RMW（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+        app.with_state(|state| {
+            let before = state.conversation_pins.len();
+            state
+                .conversation_pins
+                .retain(|p| p.project_id != normalized_project_id || p.task_id != task_id);
+            (
+                state.conversation_pins.len() != before,
+                conversation_sidebar_bootstrap_for_state(state),
+            )
+        })
+        .map_err(command_error)?
     })
     .await
 }
@@ -1649,7 +1745,8 @@ pub async fn remove_conversation_workspace(
     let coordinator = state.scheduler_coordinator().map_err(command_error)?;
     spawn_blocking_command(move || {
         let app = context.app();
-        let mut state = app.load_state().map_err(command_error)?;
+        // 只读 load 解析工作区路径；关闭 ACP 连接等重操作不持 state 锁。
+        let state = app.load_state().map_err(command_error)?;
         let workspace_path = workspace_entry_for_project(&state, &project_id)
             .map(|(workspace_path, _)| workspace_path)
             .ok_or_else(|| {
@@ -1663,13 +1760,22 @@ pub async fn remove_conversation_workspace(
         ))
         .map_err(command_error)?;
 
-        remove_workspace_from_state(&mut state, &project_id).ok_or_else(|| {
-            CommandErrorVm::new(
-                "conversation.workspace-not-found",
-                serde_json::json!({ "projectId": project_id }),
+        // 移除工作区状态经 with_state 原子 RMW（StateConfig 唯一读改写入口）：
+        // 事务内重新解析（并发下已移除则报 not-found），与 Multica 后台写入并发互不覆盖。
+        let bootstrap = app
+            .with_state(
+                |state| match remove_workspace_from_state(state, &project_id) {
+                    Some(_) => (true, conversation_sidebar_bootstrap_for_state(state)),
+                    None => (
+                        false,
+                        Err(CommandErrorVm::new(
+                            "conversation.workspace-not-found",
+                            serde_json::json!({ "projectId": project_id }),
+                        )),
+                    ),
+                },
             )
-        })?;
-        app.save_state(&state).map_err(command_error)?;
+            .map_err(command_error)??;
         coordinator
             .send(
                 crate::scheduled_runtime::SchedulerCommand::UnregisterWorkspace {
@@ -1678,7 +1784,7 @@ pub async fn remove_conversation_workspace(
             )
             .map_err(scheduled_service_error)?;
 
-        conversation_sidebar_bootstrap_for_state(&state)
+        Ok(bootstrap)
     })
     .await
 }

@@ -3835,6 +3835,7 @@ fn emit_run_paused_lifecycle_event(
     let reason = run.pause_reason.unwrap_or(PauseReason::ProcessInterrupted);
     let event_id = super::notification::make_dedup_key(
         &app.paths.project_id,
+        task_id,
         &run.id,
         &round.id,
         &node.node_id,
@@ -3879,6 +3880,7 @@ fn emit_intervention_requested(
     let pause_reason = super::notification::pause_reason_for_intervention(kind);
     let event_id = super::notification::make_dedup_key(
         &app.paths.project_id,
+        task_id,
         &run.id,
         &round.id,
         &node.node_id,
@@ -3896,6 +3898,9 @@ fn emit_intervention_requested(
         round_id: round.id.clone(),
         node_id: node.node_id.clone(),
         attempt_id: node.attempt_id.clone(),
+        outer_node_id: None,
+        outer_attempt_id: None,
+        request: super::intervention::InterventionRequestIdentity::ManualCheck,
         node_label: node_label(node),
         kind,
         task_title: task_title(app, task_id),
@@ -3922,6 +3927,7 @@ fn emit_run_completed_lifecycle_event(
 ) {
     let event_id = super::notification::make_completion_dedup_key(
         &app.paths.project_id,
+        task_id,
         &run.id,
         &round.id,
         &node.node_id,
@@ -6217,15 +6223,6 @@ fn unregister_dynamic_resume_driver(key: &str, driver_id: &str) -> Vec<DynamicRe
     failed
 }
 
-fn clear_dynamic_resume_starting_window(key: &str) -> Result<Vec<DynamicResumeOverride>> {
-    let mut coordinator = DYNAMIC_RESUME_COORDINATOR
-        .get_or_init(|| Mutex::new(DynamicResumeCoordinator::default()))
-        .lock()
-        .map_err(|_| anyhow!("dynamic resume coordinator poisoned"))?;
-    coordinator.starting.remove(key);
-    Ok(coordinator.pending.remove(key).unwrap_or_default())
-}
-
 fn execute_ai_dynamic_node(
     app: &App,
     task_id: &str,
@@ -7543,98 +7540,6 @@ fn dynamic_node_uses_completion_contract(kind: DynamicNodeKind) -> bool {
     matches!(
         kind,
         DynamicNodeKind::Worker | DynamicNodeKind::WorkflowInvocation | DynamicNodeKind::Acceptance
-    )
-}
-
-fn outer_attempt_is_current_recoverable_pause(ctx: &DynamicExecutionContext<'_>) -> Result<bool> {
-    let run: RunState = read_json(&ctx.app.paths.run_file(ctx.task_id, ctx.run_id))?;
-    Ok(run.current_round.as_deref() == Some(ctx.round_id)
-        && run.current_node.as_deref() == Some(ctx.outer_node_id)
-        && run.current_attempt.as_deref() == Some(ctx.outer_attempt_id)
-        && run.status == RunStatus::Paused
-        && matches!(
-            run.pause_reason,
-            Some(PauseReason::ProcessInterrupted | PauseReason::RuntimeAbnormal)
-        ))
-}
-
-fn restore_outer_attempt_running_for_dynamic_resume(
-    app: &App,
-    task_id: &str,
-    run_id: &str,
-    round_id: &str,
-    outer_node_id: &str,
-    outer_attempt_id: &str,
-) -> Result<bool> {
-    let mut run: RunState = read_json(&app.paths.run_file(task_id, run_id))?;
-    if run.current_round.as_deref() != Some(round_id)
-        || run.current_node.as_deref() != Some(outer_node_id)
-        || run.current_attempt.as_deref() != Some(outer_attempt_id)
-        || run.status != RunStatus::Paused
-        || !matches!(
-            run.pause_reason,
-            Some(PauseReason::ProcessInterrupted | PauseReason::RuntimeAbnormal)
-        )
-    {
-        return Ok(false);
-    }
-    let mut round: RoundState = read_json(&app.paths.round_file(task_id, run_id, round_id))?;
-    let mut node: NodeState = read_json(&app.paths.node_file(
-        task_id,
-        run_id,
-        round_id,
-        outer_node_id,
-        outer_attempt_id,
-    ))?;
-    if round.status != RunStatus::Paused || node.status != RunStatus::Paused {
-        return Ok(false);
-    }
-    let runtime_candidate = app.begin_runtime_candidate(task_id, run_id)?;
-    let previous_pause_reason = run.pause_reason.unwrap_or(PauseReason::ProcessInterrupted);
-    let now = now_rfc3339_like();
-    run.status = RunStatus::Running;
-    run.pause_reason = None;
-    run.updated_at = now;
-    if let Some(runtime_candidate) = runtime_candidate.as_ref() {
-        run.execution.recovery_candidate_token = Some(runtime_candidate.token().to_string());
-    }
-    round.status = RunStatus::Running;
-    round.outcome = None;
-    node.status = RunStatus::Running;
-    node.outcome = None;
-    node.finished_at = None;
-    persist_runtime_state(app, task_id, &run, &round, &node)?;
-    if let Some(runtime_candidate) = runtime_candidate {
-        runtime_candidate.commit();
-    }
-    app.record_metrics_resume_cause(
-        task_id,
-        run_id,
-        super::observability::ResumeCause::AutomaticRecovery,
-    );
-    emit_run_metrics_fact(
-        app,
-        &run,
-        super::observability::LifecycleEventType::ExecutionResumed,
-        uuid::Uuid::new_v4().to_string(),
-        now_rfc3339_like(),
-        Some(previous_pause_reason),
-        None,
-        None,
-    );
-    Ok(true)
-}
-
-fn try_restore_outer_attempt_running_for_dynamic_completion(
-    ctx: &DynamicExecutionContext<'_>,
-) -> Result<bool> {
-    restore_outer_attempt_running_for_dynamic_resume(
-        ctx.app,
-        ctx.task_id,
-        ctx.run_id,
-        ctx.round_id,
-        ctx.outer_node_id,
-        ctx.outer_attempt_id,
     )
 }
 
@@ -11547,8 +11452,7 @@ fn build_dynamic_worker_invocation(
     let control_emission_mode = output_contract
         .as_ref()
         .map(|contract| contract.emission_mode);
-    let has_output_contract =
-        control_emission_mode == Some(OutputEmissionMode::InlineControl);
+    let has_output_contract = control_emission_mode == Some(OutputEmissionMode::InlineControl);
     let extra_system_sections = dynamic_system_sections(ctx, control_emission_mode)?;
     let extra_hidden_sections = dynamic_hidden_sections(
         ctx,
@@ -17544,7 +17448,11 @@ mod tests {
         assert!(prompt.system_prompt.contains("AI-DYNAMIC 稳定规则"));
         assert!(prompt.system_prompt.contains("用户主动打断当前工作"));
         assert!(prompt.system_prompt.contains("dynamic-node-completion"));
-        assert!(!prompt.system_prompt.contains("本次业务 turn 使用后置控制流程"));
+        assert!(
+            !prompt
+                .system_prompt
+                .contains("本次业务 turn 使用后置控制流程")
+        );
         assert!(!prompt.system_prompt.contains("内部 attempt 目录"));
         assert!(!prompt.system_prompt.contains("remaining dynamic nodes"));
         assert!(!prompt.system_prompt.contains("当前链路可复用会话节点"));
@@ -17686,7 +17594,11 @@ mod tests {
                 .system_prompt
                 .contains("不要在当前 turn 拆分任务、选择 Agent、规划或执行后继节点")
         );
-        assert!(!prompt.system_prompt.contains("本次 invocation 是执行型节点"));
+        assert!(
+            !prompt
+                .system_prompt
+                .contains("本次 invocation 是执行型节点")
+        );
         assert!(prompt.system_prompt.contains("隐藏 finalize turn"));
     }
 
@@ -18147,10 +18059,9 @@ mod tests {
         assert!(!inline.contains("本次业务 turn 使用后置控制流程"));
         assert!(!inline.contains("本次 invocation 是执行型节点"));
 
-        let deferred =
-            dynamic_system_sections(&ctx, Some(OutputEmissionMode::PostTurnProjection))
-                .unwrap()
-                .join("\n");
+        let deferred = dynamic_system_sections(&ctx, Some(OutputEmissionMode::PostTurnProjection))
+            .unwrap()
+            .join("\n");
         assert!(deferred.contains("本次业务 turn 使用后置控制流程"));
         assert!(deferred.contains("立即停止执行并自然结束本 turn"));
         assert!(deferred.contains("只有收到 runtime 的 hidden finalize 提示后"));
@@ -18167,14 +18078,14 @@ mod tests {
         english_config.desktop_language = DesktopLanguage::En;
         let english_app = App::with_config(repo_root, english_config);
         let english_ctx = test_context(&english_app, &dynamic);
-        let english_deferred = dynamic_system_sections(
-            &english_ctx,
-            Some(OutputEmissionMode::PostTurnProjection),
-        )
-        .unwrap()
-        .join("\n");
+        let english_deferred =
+            dynamic_system_sections(&english_ctx, Some(OutputEmissionMode::PostTurnProjection))
+                .unwrap()
+                .join("\n");
         assert!(english_deferred.contains("This business turn uses deferred control"));
-        assert!(english_deferred.contains("stop execution immediately and end this turn naturally"));
+        assert!(
+            english_deferred.contains("stop execution immediately and end this turn naturally")
+        );
         assert!(english_deferred.contains("Only after receiving runtime's hidden finalize prompt"));
         assert!(!english_deferred.contains("dynamic-node-completion"));
         assert!(!english_deferred.contains("next.type"));
@@ -18619,7 +18530,7 @@ mod tests {
             ctx.outer_node_id,
             ctx.outer_attempt_id,
         );
-        clear_dynamic_resume_starting_window(&key).unwrap();
+        clear_test_dynamic_resume_coordinator(&key);
         if let Some(coordinator) = DYNAMIC_RESUME_COORDINATOR.get() {
             let mut coordinator = coordinator.lock().unwrap();
             coordinator.drivers.remove(&key);
@@ -18687,7 +18598,7 @@ mod tests {
         assert_eq!(second_dispatch, DynamicResumeDispatch::QueuedStarting);
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].node_id, "good-night");
-        clear_dynamic_resume_starting_window(&key).unwrap();
+        clear_test_dynamic_resume_coordinator(&key);
     }
 
     #[test]

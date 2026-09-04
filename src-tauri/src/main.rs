@@ -11,6 +11,7 @@ mod desktop_lifecycle;
 mod feedback;
 mod git_state_monitor;
 mod i18n;
+mod im_runtime;
 mod image_actions;
 mod metrics;
 mod notifications;
@@ -199,10 +200,25 @@ fn run() -> anyhow::Result<()> {
         .setup(|app| {
             let state = app.state::<DesktopState>();
             let _ = state.cleanup_agent_diagnostic_processes();
+            if let Ok(ctx) = state.context() {
+                let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root);
+                touch_log_file_best_effort(&paths);
+                if let Some(runtime_log_guard) = init_tracing(&paths, &ctx.config, true) {
+                    let _ = app.manage(runtime_log_guard);
+                }
+            }
             state.install_scheduled_service(std::sync::Arc::new(
                 scheduled_service::ScheduledTaskService::desktop(app.handle().clone()),
             ))?;
             if let Ok(runtime_app) = state.app() {
+                match im_runtime::DesktopImRuntime::new(runtime_app.paths.core_db_path()) {
+                    Ok(im_runtime) => {
+                        state.install_im_runtime(im_runtime.clone())?;
+                        im_runtime.start(app.handle().clone());
+                        im_runtime.register_lifecycle_subscriber(&runtime_app, app.handle());
+                    }
+                    Err(error) => warn!(error = %error, "IM runtime failed to initialize"),
+                }
                 commands::register_lifecycle_subscribers(&runtime_app, app.handle());
             }
             let recovery_handle = app.handle().clone();
@@ -275,10 +291,6 @@ fn run() -> anyhow::Result<()> {
             // On first run (empty DB), a background thread backfills existing tasks/sessions.
             if let Ok(ctx) = state.context() {
                 let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root);
-                touch_log_file_best_effort(&paths);
-                if let Some(runtime_log_guard) = init_tracing(&paths, &ctx.config, true) {
-                    let _ = app.manage(runtime_log_guard);
-                }
                 info!(
                     repo_root = %paths.repo_root,
                     project_id = %paths.project_id,
@@ -335,6 +347,15 @@ fn run() -> anyhow::Result<()> {
         })
         .invoke_handler(tauri::generate_handler![
             get_app_bootstrap,
+            im_runtime::get_im_settings,
+            im_runtime::start_wecom_scan_authorization,
+            im_runtime::complete_wecom_scan_authorization,
+            im_runtime::cancel_wecom_scan_authorization,
+            im_runtime::set_im_channel_enabled,
+            im_runtime::save_im_notification_preferences,
+            im_runtime::reset_im_channel_binding,
+            im_runtime::reconnect_im_channel,
+            im_runtime::delete_im_channel,
             desktop_lifecycle::complete_main_window_close,
             desktop_lifecycle::resolve_app_exit,
             notifications::take_pending_intervention_navigations,

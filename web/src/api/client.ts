@@ -55,6 +55,13 @@ import type {
   UpdateStatusVm,
   UpdaterSettingsVm,
   MetricsSettingsVm,
+  ImChannelKind,
+  ImChannelSnapshotVm,
+  ImGenerationInputVm,
+  ImSettingsVm,
+  SaveImNotificationPreferencesInputVm,
+  SetImChannelEnabledInputVm,
+  WeComScanAuthorizationVm,
   WorkflowDsl,
   WorkflowModelBindings,
   ConversationAttemptLifecycleVm,
@@ -326,6 +333,16 @@ export interface RuntimeApi {
   sendScheduledNativeNotification(input: ScheduledNativeNotificationInputVm): Promise<void>;
   getScheduledRuntimeSettings(): Promise<ScheduledRuntimeSettingsVm>;
   saveScheduledRuntimeSettings(input: ScheduledRuntimeSettingsInputVm): Promise<ScheduledRuntimeSettingsVm>;
+  getImSettings(): Promise<ImSettingsVm>;
+  startWeComScanAuthorization(sessionId: string): Promise<WeComScanAuthorizationVm>;
+  completeWeComScanAuthorization(sessionId: string): Promise<ImSettingsVm>;
+  cancelWeComScanAuthorization(sessionId: string): Promise<void>;
+  setImChannelEnabled(input: SetImChannelEnabledInputVm): Promise<ImSettingsVm>;
+  saveImNotificationPreferences(input: SaveImNotificationPreferencesInputVm): Promise<ImSettingsVm>;
+  resetImChannelBinding(input: ImGenerationInputVm): Promise<ImSettingsVm>;
+  reconnectImChannel(input: ImGenerationInputVm): Promise<ImChannelSnapshotVm>;
+  deleteImChannel(kind: ImChannelKind): Promise<ImSettingsVm>;
+  subscribeImChannelStateUpdates?(listener: (snapshot: ImChannelSnapshotVm) => void): Promise<() => void>;
   // 干预通知：OS Toast「查看详情」点击后后端转发导航事件，前端订阅做 deep-link。
   subscribeInterventionNavigate?(listener: (event: InterventionNavigateEventVm) => void): Promise<() => void>;
   subscribeAppExitRequested?(listener: (event: AppExitRequestVm) => void): Promise<() => void>;

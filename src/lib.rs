@@ -13,6 +13,7 @@ pub mod dynamic;
 pub mod dynamic_store;
 pub mod frontmatter;
 pub mod git;
+pub mod im;
 pub mod inspect;
 pub mod mcp;
 pub mod observability;

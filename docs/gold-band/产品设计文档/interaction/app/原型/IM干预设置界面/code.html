@@ -1,0 +1,827 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gold Band - IM 远程干预设置原型</title>
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
+  <style>
+    :root {
+      color-scheme: light;
+      --background: #f7f7f7;
+      --surface: #ffffff;
+      --surface-subtle: #fafafa;
+      --foreground: #171717;
+      --muted-foreground: #666666;
+      --faint-foreground: #8a8a8a;
+      --border: #e5e5e5;
+      --border-strong: #d4d4d4;
+      --primary: #171717;
+      --primary-foreground: #ffffff;
+      --accent: #0f766e;
+      --accent-soft: #ecfdf5;
+      --warning: #a16207;
+      --warning-soft: #fffbeb;
+      --danger: #b42318;
+      --danger-soft: #fff1f0;
+      --shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 8px 24px rgb(0 0 0 / 0.04);
+      --radius: 8px;
+    }
+
+    [data-theme="dark"] {
+      color-scheme: dark;
+      --background: #111111;
+      --surface: #171717;
+      --surface-subtle: #1d1d1d;
+      --foreground: #f5f5f5;
+      --muted-foreground: #a3a3a3;
+      --faint-foreground: #7c7c7c;
+      --border: #2b2b2b;
+      --border-strong: #3b3b3b;
+      --primary: #f5f5f5;
+      --primary-foreground: #171717;
+      --accent: #5eead4;
+      --accent-soft: #123c37;
+      --warning: #facc15;
+      --warning-soft: #352d0b;
+      --danger: #fda29b;
+      --danger-soft: #3b1717;
+      --shadow: 0 1px 2px rgb(0 0 0 / 0.28), 0 12px 30px rgb(0 0 0 / 0.22);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { min-width: 320px; min-height: 100%; }
+    body {
+      margin: 0;
+      background: var(--background);
+      color: var(--foreground);
+      font-family: Inter, "Segoe UI", "Microsoft YaHei UI", sans-serif;
+      font-size: 14px;
+      letter-spacing: 0;
+    }
+    button, input { font: inherit; }
+    button { color: inherit; }
+    button:focus-visible, input:focus-visible, summary:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    [hidden] { display: none !important; }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    .icon { width: 18px; height: 18px; stroke-width: 1.8; flex: 0 0 auto; }
+    .icon-sm { width: 15px; height: 15px; }
+    .app-shell { min-height: 100dvh; display: grid; grid-template-columns: 232px minmax(0, 1fr); }
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--border);
+      background: var(--surface-subtle);
+      padding: 18px 14px;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 10px; font-weight: 650; }
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 7px;
+      background: var(--primary);
+      color: var(--primary-foreground);
+      font-size: 11px;
+      font-weight: 750;
+    }
+    .workspace {
+      margin: 16px 0 20px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+    .workspace strong, .workspace span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .workspace strong { font-size: 12px; font-weight: 600; }
+    .workspace span { margin-top: 3px; color: var(--muted-foreground); font-size: 11px; }
+    .nav { display: grid; gap: 4px; }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 42px;
+      padding: 0 12px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--muted-foreground);
+      text-align: left;
+    }
+    .nav-item.active { margin-top: auto; background: var(--surface); color: var(--foreground); box-shadow: inset 0 0 0 1px var(--border); }
+    .sidebar-spacer { flex: 1; }
+    .main { min-width: 0; padding: 38px 40px 112px; }
+    .content { width: min(860px, 100%); margin: 0 auto; }
+    .page-header { margin-bottom: 22px; }
+    .page-header h1 { margin: 0; font-size: 26px; line-height: 1.25; font-weight: 680; }
+    .tabs {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      width: min(448px, 100%);
+      height: 38px;
+      margin-bottom: 22px;
+      padding: 3px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface-subtle);
+    }
+    .tab {
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--muted-foreground);
+      cursor: pointer;
+    }
+    .tab[aria-selected="true"] { background: var(--surface); color: var(--foreground); box-shadow: 0 1px 2px rgb(0 0 0 / 0.08); }
+    .settings-surface { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow: clip; box-shadow: var(--shadow); }
+    .section { padding: 24px; }
+    .section + .section { border-top: 1px solid var(--border); }
+    .section-heading { margin: 0 0 18px; font-size: 15px; font-weight: 650; }
+    .channel-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+    .channel-identity { min-width: 0; display: flex; align-items: flex-start; gap: 12px; }
+    .channel-icon {
+      display: grid;
+      place-items: center;
+      width: 38px;
+      height: 38px;
+      border-radius: 8px;
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+    .channel-copy { min-width: 0; }
+    .channel-title-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .channel-title { margin: 0; font-size: 15px; line-height: 1.45; font-weight: 650; }
+    .channel-description { margin: 4px 0 0; color: var(--muted-foreground); font-size: 12px; line-height: 1.55; }
+    .header-actions { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 24px;
+      padding: 3px 8px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface-subtle);
+      color: var(--muted-foreground);
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .badge.success { border-color: color-mix(in srgb, var(--accent) 24%, transparent); background: var(--accent-soft); color: var(--accent); }
+    .badge.warning { border-color: color-mix(in srgb, var(--warning) 28%, transparent); background: var(--warning-soft); color: var(--warning); }
+    .badge.danger { border-color: color-mix(in srgb, var(--danger) 25%, transparent); background: var(--danger-soft); color: var(--danger); }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 38px;
+      padding: 0 14px;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      background: var(--primary);
+      color: var(--primary-foreground);
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .button:hover { opacity: 0.9; }
+    .button:disabled { cursor: not-allowed; opacity: 0.46; }
+    .button.secondary { border-color: var(--border-strong); background: var(--surface); color: var(--foreground); }
+    .button.ghost { background: transparent; color: var(--muted-foreground); }
+    .button.danger { background: var(--danger); color: #fff; }
+    .icon-button { width: 38px; padding: 0; }
+    .master-switch { display: flex; align-items: center; gap: 9px; }
+    .master-switch > span { font-size: 12px; font-weight: 600; }
+    .switch {
+      position: relative;
+      width: 38px;
+      height: 22px;
+      padding: 0;
+      border: 0;
+      border-radius: 999px;
+      background: #c8c8c8;
+      cursor: pointer;
+      transition: background 160ms ease;
+    }
+    .switch::after {
+      content: "";
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 3px rgb(0 0 0 / 0.2);
+      transition: transform 160ms ease;
+    }
+    .switch[aria-checked="true"] { background: var(--primary); }
+    .switch[aria-checked="true"]::after { transform: translateX(16px); background: var(--primary-foreground); }
+    .status-content { margin-top: 20px; }
+    .setup-panel, .status-panel, .error-panel {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface-subtle);
+    }
+    .error-panel { border-color: color-mix(in srgb, var(--danger) 25%, var(--border)); background: var(--danger-soft); }
+    .panel-copy { min-width: 0; }
+    .panel-copy strong { display: block; font-size: 13px; line-height: 1.45; }
+    .panel-copy p { margin: 4px 0 0; color: var(--muted-foreground); font-size: 12px; line-height: 1.55; }
+    .steps { display: grid; grid-template-columns: repeat(3, 1fr); margin: 20px 0 0; }
+    .step { position: relative; display: flex; align-items: center; gap: 9px; min-width: 0; color: var(--faint-foreground); font-size: 12px; }
+    .step:not(:last-child)::after { content: ""; position: absolute; top: 11px; left: 27px; right: 8px; height: 1px; background: var(--border); }
+    .step-dot { position: relative; z-index: 1; display: grid; place-items: center; width: 23px; height: 23px; border: 1px solid var(--border-strong); border-radius: 50%; background: var(--surface); font-size: 11px; font-weight: 650; }
+    .step.active { color: var(--foreground); font-weight: 600; }
+    .step.done { color: var(--accent); }
+    .step.done .step-dot { border-color: var(--accent); background: var(--accent-soft); }
+    .step-label { position: relative; z-index: 1; padding-right: 8px; background: var(--surface); white-space: nowrap; }
+    .spinner { width: 16px; height: 16px; border: 2px solid var(--border-strong); border-top-color: var(--accent); border-radius: 50%; animation: spin 850ms linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .facts { display: flex; flex-wrap: wrap; gap: 7px 18px; margin-top: 8px; color: var(--muted-foreground); font-size: 12px; }
+    .fact { display: inline-flex; align-items: center; gap: 6px; }
+    details.connection-details { margin-top: 14px; border-top: 1px solid var(--border); }
+    details.connection-details summary { display: flex; align-items: center; gap: 8px; min-height: 42px; color: var(--muted-foreground); font-size: 12px; cursor: pointer; list-style: none; }
+    details.connection-details summary::-webkit-details-marker { display: none; }
+    details.connection-details[open] summary .chevron { transform: rotate(90deg); }
+    .detail-grid { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 9px 18px; padding: 2px 0 14px 23px; font-size: 12px; }
+    .detail-grid dt { color: var(--muted-foreground); }
+    .detail-grid dd { margin: 0; overflow-wrap: anywhere; }
+    .notification-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+    .notification-group + .notification-group { border-left: 1px solid var(--border); padding-left: 28px; }
+    .group-title { margin: 0; font-size: 13px; font-weight: 650; }
+    .group-help { margin: 4px 0 10px; color: var(--muted-foreground); font-size: 12px; line-height: 1.5; }
+    .check-row { display: flex; align-items: center; gap: 10px; min-height: 44px; cursor: pointer; }
+    .check-row input {
+      width: 17px;
+      height: 17px;
+      margin: 0;
+      accent-color: var(--primary);
+      cursor: pointer;
+    }
+    .check-row span { font-size: 13px; }
+    .save-strip {
+      position: sticky;
+      bottom: 0;
+      z-index: 5;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      min-height: 64px;
+      padding: 12px 24px;
+      border-top: 1px solid var(--border);
+      background: color-mix(in srgb, var(--surface) 94%, transparent);
+      backdrop-filter: blur(12px);
+    }
+    .save-copy { display: flex; align-items: center; gap: 8px; color: var(--muted-foreground); font-size: 12px; }
+    .save-actions { display: flex; gap: 8px; }
+    .menu-wrap { position: relative; }
+    .menu {
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      z-index: 20;
+      width: 188px;
+      padding: 5px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+    .menu button { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 38px; padding: 0 10px; border: 0; border-radius: 5px; background: transparent; text-align: left; cursor: pointer; }
+    .menu button:hover, .menu button:focus-visible { background: var(--surface-subtle); }
+    .menu .menu-danger { color: var(--danger); }
+    .prototype-toolbar {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 40;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      max-width: calc(100vw - 36px);
+      padding: 7px;
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+    .prototype-label { padding: 0 5px; color: var(--muted-foreground); font-size: 11px; white-space: nowrap; }
+    .state-picker { display: flex; align-items: center; gap: 2px; padding: 2px; border-radius: 6px; background: var(--surface-subtle); }
+    .state-picker button { min-height: 32px; padding: 0 9px; border: 0; border-radius: 5px; background: transparent; color: var(--muted-foreground); font-size: 11px; cursor: pointer; }
+    .state-picker button[aria-pressed="true"] { background: var(--surface); color: var(--foreground); box-shadow: 0 1px 2px rgb(0 0 0 / 0.1); }
+    .dialog-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 60;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      background: rgb(0 0 0 / 0.52);
+    }
+    .dialog {
+      width: min(410px, 100%);
+      max-height: calc(100dvh - 40px);
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      box-shadow: 0 22px 60px rgb(0 0 0 / 0.25);
+    }
+    .dialog-header { padding: 22px 22px 0; }
+    .dialog-header h2 { margin: 0; font-size: 17px; font-weight: 680; }
+    .dialog-header p { margin: 6px 0 0; color: var(--muted-foreground); font-size: 12px; line-height: 1.55; }
+    .dialog-body { display: grid; place-items: center; min-height: 270px; padding: 24px 22px; text-align: center; }
+    .dialog-footer { display: flex; justify-content: flex-end; gap: 8px; padding: 0 22px 22px; }
+    .qr { display: grid; grid-template-columns: repeat(13, 8px); grid-template-rows: repeat(13, 8px); gap: 2px; padding: 14px; border: 1px solid #ddd; border-radius: 7px; background: #fff; }
+    .qr span { width: 8px; height: 8px; border-radius: 1px; background: transparent; }
+    .qr span.on { background: #111; }
+    .dialog-state-icon { display: grid; place-items: center; width: 54px; height: 54px; margin: 0 auto 16px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); }
+    .dialog-body strong { display: block; margin-top: 16px; font-size: 14px; }
+    .dialog-body p { max-width: 300px; margin: 7px auto 0; color: var(--muted-foreground); font-size: 12px; line-height: 1.6; }
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: 24px;
+      z-index: 80;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-height: 42px;
+      padding: 0 14px;
+      border: 1px solid var(--border-strong);
+      border-radius: 7px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      transform: translate(-50%, 18px);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 180ms ease, transform 180ms ease;
+    }
+    .toast.show { transform: translate(-50%, 0); opacity: 1; }
+
+    @media (max-width: 900px) {
+      .app-shell { grid-template-columns: 72px minmax(0, 1fr); }
+      .sidebar { padding-inline: 10px; align-items: center; }
+      .brand span, .workspace, .nav-item span { display: none; }
+      .brand, .nav-item { justify-content: center; width: 44px; padding: 0; }
+      .main { padding-inline: 24px; }
+    }
+    @media (max-width: 640px) {
+      .app-shell { display: block; }
+      .sidebar { display: none; }
+      .main { padding: 24px 14px 164px; }
+      .section { padding: 18px; }
+      .channel-header, .setup-panel, .status-panel, .error-panel { align-items: stretch; flex-direction: column; }
+      .header-actions { justify-content: space-between; }
+      .steps { grid-template-columns: 1fr; gap: 10px; }
+      .step:not(:last-child)::after { top: 23px; bottom: -10px; left: 11px; right: auto; width: 1px; height: auto; }
+      .step-label { white-space: normal; }
+      .notification-layout { grid-template-columns: 1fr; gap: 18px; }
+      .notification-group + .notification-group { border-top: 1px solid var(--border); border-left: 0; padding-top: 18px; padding-left: 0; }
+      .detail-grid { grid-template-columns: 1fr; gap: 4px; padding-left: 0; }
+      .detail-grid dd + dt { margin-top: 7px; }
+      .save-strip { align-items: stretch; flex-direction: column; }
+      .save-actions .button { flex: 1; }
+      .prototype-toolbar { left: 10px; right: 10px; bottom: 10px; align-items: stretch; flex-direction: column; }
+      .state-picker { display: grid; grid-template-columns: repeat(3, 1fr); }
+      .prototype-label { text-align: center; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="主导航">
+      <div class="brand"><div class="brand-mark">GB</div><span>Gold Band</span></div>
+      <div class="workspace"><strong>Gold-Band</strong><span>D:\IdeaProjects\Gold-Band</span></div>
+      <nav class="nav">
+        <button class="nav-item" type="button"><i class="icon" data-lucide="workflow"></i><span>任务编排</span></button>
+        <button class="nav-item" type="button"><i class="icon" data-lucide="bot"></i><span>Agent 管理</span></button>
+        <button class="nav-item" type="button"><i class="icon" data-lucide="boxes"></i><span>上下文管理</span></button>
+      </nav>
+      <div class="sidebar-spacer"></div>
+      <button class="nav-item active" type="button" aria-current="page"><i class="icon" data-lucide="settings"></i><span>设置</span></button>
+    </aside>
+
+    <main class="main" id="main-content">
+      <div class="content">
+        <header class="page-header"><h1>设置</h1></header>
+        <div class="tabs" role="tablist" aria-label="设置分类">
+          <button class="tab" type="button" role="tab" aria-selected="true" tabindex="0">通用</button>
+          <button class="tab" type="button" role="tab" aria-selected="false" tabindex="-1">个性化</button>
+          <button class="tab" type="button" role="tab" aria-selected="false" tabindex="-1">高级</button>
+        </div>
+
+        <div class="settings-surface">
+          <section class="section" aria-labelledby="remote-title">
+            <h2 class="section-heading" id="remote-title">远程干预</h2>
+            <div id="channel-content"></div>
+          </section>
+          <section class="section" id="notification-section" aria-labelledby="notifications-title"></section>
+          <div class="save-strip" id="save-strip" hidden aria-live="polite"></div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div class="prototype-toolbar" aria-label="原型状态控制">
+    <span class="prototype-label">查看状态</span>
+    <div class="state-picker" id="state-picker">
+      <button type="button" data-state="unconfigured" aria-pressed="true">未接入</button>
+      <button type="button" data-state="binding" aria-pressed="false">待绑定</button>
+      <button type="button" data-state="connecting" aria-pressed="false">连接中</button>
+      <button type="button" data-state="connected" aria-pressed="false">可用</button>
+      <button type="button" data-state="paused" aria-pressed="false">已暂停</button>
+      <button type="button" data-state="error" aria-pressed="false">重连中</button>
+      <button type="button" data-state="auth" aria-pressed="false">需授权</button>
+      <button type="button" data-state="conflict" aria-pressed="false">连接占用</button>
+    </div>
+    <button class="button secondary icon-button" type="button" data-action="theme" aria-label="切换明暗主题" data-tooltip="切换明暗主题">
+      <i class="icon" data-lucide="moon"></i>
+    </button>
+  </div>
+
+  <div class="dialog-backdrop" id="setup-dialog" hidden>
+    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="setup-dialog-title" aria-describedby="setup-dialog-description">
+      <div class="dialog-header">
+        <h2 id="setup-dialog-title">扫码接入企业微信</h2>
+        <p id="setup-dialog-description">使用手机企业微信扫码并确认授权。</p>
+      </div>
+      <div class="dialog-body" id="setup-dialog-body"></div>
+      <div class="dialog-footer" id="setup-dialog-footer"></div>
+    </section>
+  </div>
+
+  <div class="dialog-backdrop" id="reset-dialog" hidden>
+    <section class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="reset-title" aria-describedby="reset-description">
+      <div class="dialog-header">
+        <h2 id="reset-title">更换接收账号？</h2>
+        <p id="reset-description">将清除当前私聊绑定，但保留机器人授权、启用状态和通知偏好。</p>
+      </div>
+      <div class="dialog-footer" style="padding-top: 24px">
+        <button class="button secondary" type="button" data-action="close-reset">取消</button>
+        <button class="button" type="button" data-action="confirm-reset">更换账号</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="dialog-backdrop" id="delete-dialog" hidden>
+    <section class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-title" aria-describedby="delete-description">
+      <div class="dialog-header">
+        <h2 id="delete-title">删除企业微信配置？</h2>
+        <p id="delete-description">这会停用远程干预，并从系统凭据存储中删除授权信息。</p>
+      </div>
+      <div class="dialog-footer" style="padding-top: 24px">
+        <button class="button secondary" type="button" data-action="close-delete">取消</button>
+        <button class="button danger" type="button" data-action="confirm-delete">删除配置</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite">
+    <i class="icon icon-sm" data-lucide="check"></i><span id="toast-message">设置已保存</span>
+  </div>
+
+  <script>
+    const stateMeta = {
+      unconfigured: { label: "未接入", badge: "", configured: false, enabled: false },
+      binding: { label: "等待绑定", badge: "warning", configured: true, enabled: true },
+      connecting: { label: "连接中", badge: "warning", configured: true, enabled: true },
+      connected: { label: "可用", badge: "success", configured: true, enabled: true },
+      paused: { label: "已暂停", badge: "", configured: true, enabled: false },
+      error: { label: "正在重连", badge: "warning", configured: true, enabled: true },
+      auth: { label: "需要重新授权", badge: "danger", configured: true, enabled: true },
+      conflict: { label: "连接被占用", badge: "danger", configured: true, enabled: true }
+    };
+
+    const defaultNotifications = {
+      permission: true,
+      elicitation: true,
+      manualCheck: true,
+      runSuccess: false,
+      runFailure: true,
+      acpTurnFinished: false
+    };
+
+    let viewState = "unconfigured";
+    let draftEnabled = false;
+    let dirty = false;
+    let notifications = { ...defaultNotifications };
+    let savedNotifications = { ...defaultNotifications };
+    let setupStep = "scan";
+    let toggleBusy = false;
+    let toastTimer;
+    let lastFocus = null;
+
+    const channelContent = document.querySelector("#channel-content");
+    const notificationSection = document.querySelector("#notification-section");
+    const saveStrip = document.querySelector("#save-strip");
+    const setupDialog = document.querySelector("#setup-dialog");
+    const resetDialog = document.querySelector("#reset-dialog");
+    const deleteDialog = document.querySelector("#delete-dialog");
+
+    function icon(name, extra = "") {
+      return `<i class="icon ${extra}" data-lucide="${name}"></i>`;
+    }
+
+    function refreshIcons() {
+      if (window.lucide) window.lucide.createIcons({ attrs: { "aria-hidden": "true" } });
+    }
+
+    function stepsHtml(activeIndex) {
+      const labels = ["扫码授权", "发送一条私聊", "开始接收"];
+      return `<div class="steps" aria-label="接入进度">${labels.map((label, index) => {
+        const className = index < activeIndex ? "step done" : index === activeIndex ? "step active" : "step";
+        const symbol = index < activeIndex ? icon("check", "icon-sm") : String(index + 1);
+        return `<div class="${className}"><span class="step-dot">${symbol}</span><span class="step-label">${label}</span></div>`;
+      }).join("")}</div>`;
+    }
+
+    function menuHtml() {
+      const resetItem = ["connected", "paused", "error", "auth", "conflict"].includes(viewState)
+        ? `<button type="button" role="menuitem" data-action="reset-binding">${icon("user-round-cog", "icon-sm")}更换接收账号</button>`
+        : "";
+      return `<div class="menu-wrap">
+        <button class="button secondary icon-button" type="button" data-action="toggle-menu" aria-label="更多连接操作" aria-haspopup="menu" aria-expanded="false">${icon("ellipsis")}</button>
+        <div class="menu" role="menu" hidden>
+          ${resetItem}
+          <button type="button" role="menuitem" data-action="reauthorize">${icon("scan-line", "icon-sm")}重新授权</button>
+          <button class="menu-danger" type="button" role="menuitem" data-action="delete">${icon("trash-2", "icon-sm")}删除配置</button>
+        </div>
+      </div>`;
+    }
+
+    function renderChannel() {
+      const meta = stateMeta[viewState];
+      const canToggle = meta.configured;
+      const switchHtml = canToggle ? `<div class="master-switch">${toggleBusy ? `<span class="spinner" aria-hidden="true"></span>` : ""}<span>启用</span><button class="switch" type="button" role="switch" aria-label="启用企业微信远程干预" aria-checked="${draftEnabled}" aria-busy="${toggleBusy}" ${toggleBusy ? "disabled" : ""} data-action="toggle-enabled"></button></div>` : "";
+      const actions = meta.configured ? `${switchHtml}${menuHtml()}` : "";
+
+      let statusContent = "";
+      if (viewState === "unconfigured") {
+        statusContent = `${stepsHtml(0)}<div class="status-content"><div class="setup-panel"><div class="panel-copy"><strong>接入企业微信机器人</strong><p>接入后，可以在企业微信中处理权限请求、Agent 追问和人工检查。</p></div><button class="button" type="button" data-action="open-setup">${icon("scan-line")}扫码接入</button></div></div>`;
+      } else if (viewState === "binding") {
+        statusContent = `${stepsHtml(1)}<div class="status-content"><div class="setup-panel"><div class="panel-copy"><strong>请向机器人发送一条私聊消息</strong><p>收到消息后会自动完成绑定。群聊消息不会被绑定。</p></div><span class="badge warning"><span class="spinner" aria-hidden="true"></span>等待消息</span></div></div>`;
+      } else if (viewState === "connecting") {
+        statusContent = `${stepsHtml(2)}<div class="status-content"><div class="status-panel"><div class="panel-copy"><strong>正在连接企业微信</strong><p>连接建立后会自动开始接收远程干预。</p></div><div class="spinner" aria-label="正在连接"></div></div></div>`;
+      } else if (viewState === "error") {
+        statusContent = `<div class="status-content"><div class="error-panel" role="status"><div class="panel-copy"><strong>正在自动重连企业微信</strong><p>系统正在使用有界退避重试。已有授权和通知选择不会丢失。</p></div><span class="spinner" aria-label="正在重连"></span></div></div>${detailsHtml()}`;
+      } else if (viewState === "auth") {
+        statusContent = `<div class="status-content"><div class="error-panel" role="alert"><div class="panel-copy"><strong>需要重新授权</strong><p>当前凭据不可用，请重新扫码授权。</p></div><button class="button secondary" type="button" data-action="reauthorize">${icon("scan-line")}重新授权</button></div></div>${detailsHtml()}`;
+      } else if (viewState === "conflict") {
+        statusContent = `<div class="status-content"><div class="error-panel" role="alert"><div class="panel-copy"><strong>机器人正在其他客户端连接</strong><p>请先关闭其他客户端，再发起一次真实重连。</p></div><button class="button secondary" type="button" data-action="retry">${icon("refresh-cw")}重新连接</button></div></div>${detailsHtml()}`;
+      } else {
+        const paused = viewState === "paused";
+        statusContent = `<div class="status-content"><div class="status-panel"><div class="panel-copy"><strong>${paused ? "远程干预已暂停" : "企业微信已可用"}</strong><div class="facts"><span class="fact">${icon("user-round", "icon-sm")}接收账号：Kelvin</span><span class="fact">${icon("clock-3", "icon-sm")}最近连接：刚刚</span></div></div></div></div>${detailsHtml()}`;
+      }
+
+      channelContent.innerHTML = `<div class="channel-header">
+        <div class="channel-identity">
+          <div class="channel-icon">${icon("messages-square")}</div>
+          <div class="channel-copy">
+            <div class="channel-title-line"><h3 class="channel-title">企业微信</h3><span class="badge ${meta.badge}">${meta.label}</span></div>
+            <p class="channel-description">在企业微信中接收并处理需要你关注的工作流消息。</p>
+          </div>
+        </div>
+        <div class="header-actions">${actions}</div>
+      </div>${statusContent}`;
+    }
+
+    function detailsHtml() {
+      return `<details class="connection-details"><summary>${icon("chevron-right", "icon-sm chevron")}连接详情</summary><dl class="detail-grid"><dt>已绑定账号</dt><dd>Kelvin</dd><dt>机器人标识</dt><dd>ww-bot-7f3a••••91c2</dd><dt>投递范围</dt><dd>仅限已绑定的一对一私聊</dd></dl></details>`;
+    }
+
+    function renderNotifications() {
+      const visible = stateMeta[viewState].configured;
+      notificationSection.hidden = !visible;
+      if (!visible) {
+        notificationSection.innerHTML = "";
+        return;
+      }
+      const groups = [
+        { title: "需要你处理", help: "在企业微信中直接完成决策", items: [["permission", "权限请求"], ["elicitation", "Agent 追问"], ["manualCheck", "人工检查"]] },
+        { title: "执行结果提醒", help: "仅用于了解进度，不包含操作", items: [["runSuccess", "工作流成功"], ["runFailure", "工作流失败"], ["acpTurnFinished", "Agent 回复完成"]] }
+      ];
+      notificationSection.innerHTML = `<h2 class="section-heading" id="notifications-title">通知范围</h2><div class="notification-layout">${groups.map((group) => `<fieldset class="notification-group"><legend class="group-title">${group.title}</legend><p class="group-help">${group.help}</p>${group.items.map(([key, label]) => `<label class="check-row"><input type="checkbox" data-notification="${key}" ${notifications[key] ? "checked" : ""}><span>${label}</span></label>`).join("")}</fieldset>`).join("")}</div>`;
+    }
+
+    function renderSaveStrip() {
+      saveStrip.hidden = !dirty;
+      if (!dirty) return;
+      saveStrip.innerHTML = `<div class="save-copy">${icon("circle-dot", "icon-sm")}<span>你有未保存的通知设置</span></div><div class="save-actions"><button class="button ghost" type="button" data-action="discard">放弃</button><button class="button" type="button" data-action="save">${icon("save", "icon-sm")}保存通知设置</button></div>`;
+    }
+
+    function updateDirty() {
+      const notificationChanged = Object.keys(notifications).some((key) => notifications[key] !== savedNotifications[key]);
+      dirty = notificationChanged;
+    }
+
+    function render() {
+      document.querySelectorAll("[data-state]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.state === viewState)));
+      renderChannel();
+      renderNotifications();
+      renderSaveStrip();
+      refreshIcons();
+    }
+
+    function showToast(message) {
+      document.querySelector("#toast-message").textContent = message;
+      document.querySelector("#toast").classList.add("show");
+      window.clearTimeout(toastTimer);
+      toastTimer = window.setTimeout(() => document.querySelector("#toast").classList.remove("show"), 2600);
+    }
+
+    function createQr() {
+      const pattern = "1111111010101110000010111101010111011101010111010001010111011111111010101000000000101011011101110110010010010111011110101010001010101111111010111";
+      return `<div class="qr" role="img" aria-label="企业微信授权二维码示意">${Array.from({ length: 169 }, (_, index) => `<span class="${pattern[index % pattern.length] === "1" ? "on" : ""}"></span>`).join("")}</div>`;
+    }
+
+    function renderSetupDialog() {
+      const body = document.querySelector("#setup-dialog-body");
+      const footer = document.querySelector("#setup-dialog-footer");
+      if (setupStep === "scan") {
+        body.innerHTML = `<div>${createQr()}<strong>等待扫码确认</strong><p>二维码将在 04:52 后过期。</p></div>`;
+        footer.innerHTML = `<button class="button secondary" type="button" data-action="close-setup">取消</button><button class="button" type="button" data-action="scan-success">模拟授权成功</button>`;
+      } else if (setupStep === "binding") {
+        body.innerHTML = `<div><div class="dialog-state-icon">${icon("message-circle-more")}</div><strong>授权成功，等待一条私聊消息</strong><p>请在企业微信中打开机器人并发送任意消息。Gold Band 收到后会自动绑定这个私聊。</p></div>`;
+        footer.innerHTML = `<button class="button secondary" type="button" data-action="close-setup">稍后完成</button><button class="button" type="button" data-action="binding-success">模拟收到私聊</button>`;
+      } else {
+        body.innerHTML = `<div><div class="dialog-state-icon">${icon("check")}</div><strong>企业微信已可用</strong><p>远程干预已经启用，可以在设置页选择需要接收的通知。</p></div>`;
+        footer.innerHTML = `<button class="button" type="button" data-action="finish-setup">完成</button>`;
+      }
+      refreshIcons();
+    }
+
+    function openDialog(dialog) {
+      lastFocus = document.activeElement;
+      dialog.hidden = false;
+      document.body.style.overflow = "hidden";
+      window.setTimeout(() => dialog.querySelector("button")?.focus(), 0);
+    }
+
+    function closeDialog(dialog) {
+      dialog.hidden = true;
+      document.body.style.overflow = "";
+      lastFocus?.focus?.();
+    }
+
+    function setPrototypeState(next) {
+      viewState = next;
+      draftEnabled = stateMeta[next].enabled;
+      dirty = false;
+      notifications = { ...defaultNotifications };
+      savedNotifications = { ...defaultNotifications };
+      render();
+    }
+
+    document.addEventListener("change", (event) => {
+      const input = event.target.closest("[data-notification]");
+      if (!input) return;
+      notifications[input.dataset.notification] = input.checked;
+      updateDirty();
+      renderSaveStrip();
+      refreshIcons();
+    });
+
+    document.addEventListener("click", (event) => {
+      const stateButton = event.target.closest("[data-state]");
+      if (stateButton) return setPrototypeState(stateButton.dataset.state);
+      const actionButton = event.target.closest("[data-action]");
+      if (!actionButton) {
+        document.querySelectorAll(".menu").forEach((menu) => menu.hidden = true);
+        return;
+      }
+      const action = actionButton.dataset.action;
+      if (action === "theme") {
+        document.documentElement.dataset.theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      } else if (action === "open-setup" || action === "reauthorize") {
+        setupStep = "scan";
+        renderSetupDialog();
+        openDialog(setupDialog);
+      } else if (action === "close-setup") {
+        closeDialog(setupDialog);
+      } else if (action === "scan-success") {
+        setupStep = "binding";
+        viewState = "binding";
+        draftEnabled = true;
+        render();
+        renderSetupDialog();
+      } else if (action === "binding-success") {
+        setupStep = "success";
+        viewState = "connected";
+        draftEnabled = true;
+        render();
+        renderSetupDialog();
+      } else if (action === "finish-setup") {
+        closeDialog(setupDialog);
+        showToast("企业微信已接入");
+      } else if (action === "toggle-enabled") {
+        draftEnabled = !draftEnabled;
+        toggleBusy = true;
+        render();
+        window.setTimeout(() => {
+          viewState = draftEnabled ? "connected" : "paused";
+          toggleBusy = false;
+          render();
+          showToast(draftEnabled ? "远程干预已启用" : "远程干预已暂停");
+        }, 500);
+      } else if (action === "discard") {
+        notifications = { ...savedNotifications };
+        dirty = false;
+        render();
+      } else if (action === "save") {
+        actionButton.disabled = true;
+        actionButton.innerHTML = `<span class="spinner" aria-hidden="true"></span>保存中`;
+        window.setTimeout(() => {
+          savedNotifications = { ...notifications };
+          dirty = false;
+          render();
+          showToast("设置已保存");
+        }, 650);
+      } else if (action === "retry") {
+        setPrototypeState("connecting");
+        window.setTimeout(() => { setPrototypeState("connected"); showToast("已重新连接"); }, 900);
+      } else if (action === "toggle-menu") {
+        const menu = actionButton.parentElement.querySelector(".menu");
+        const nextOpen = menu.hidden;
+        document.querySelectorAll(".menu").forEach((item) => item.hidden = true);
+        menu.hidden = !nextOpen;
+        actionButton.setAttribute("aria-expanded", String(nextOpen));
+        if (nextOpen) menu.querySelector("button")?.focus();
+      } else if (action === "delete") {
+        document.querySelectorAll(".menu").forEach((menu) => menu.hidden = true);
+        openDialog(deleteDialog);
+      } else if (action === "reset-binding") {
+        document.querySelectorAll(".menu").forEach((menu) => menu.hidden = true);
+        openDialog(resetDialog);
+      } else if (action === "close-reset") {
+        closeDialog(resetDialog);
+      } else if (action === "confirm-reset") {
+        closeDialog(resetDialog);
+        setPrototypeState("binding");
+        showToast("接收账号已清除，等待新账号私聊绑定");
+      } else if (action === "close-delete") {
+        closeDialog(deleteDialog);
+      } else if (action === "confirm-delete") {
+        closeDialog(deleteDialog);
+        setPrototypeState("unconfigured");
+        showToast("企业微信配置已删除");
+      }
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        if (!setupDialog.hidden) closeDialog(setupDialog);
+        else if (!resetDialog.hidden) closeDialog(resetDialog);
+        else if (!deleteDialog.hidden) closeDialog(deleteDialog);
+        else document.querySelectorAll(".menu").forEach((menu) => menu.hidden = true);
+      }
+      const tabs = [...document.querySelectorAll('[role="tab"]')];
+      if (tabs.includes(document.activeElement) && ["ArrowLeft", "ArrowRight"].includes(event.key)) {
+        event.preventDefault();
+        const current = tabs.indexOf(document.activeElement);
+        const next = event.key === "ArrowRight" ? (current + 1) % tabs.length : (current - 1 + tabs.length) % tabs.length;
+        tabs.forEach((tab, index) => { tab.setAttribute("aria-selected", String(index === next)); tab.tabIndex = index === next ? 0 : -1; });
+        tabs[next].focus();
+      }
+      const openDialogElement = [setupDialog, deleteDialog].find((dialog) => !dialog.hidden);
+      if (openDialogElement && event.key === "Tab") {
+        const focusable = [...openDialogElement.querySelectorAll("button:not(:disabled)")];
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }
+    });
+
+    window.addEventListener("load", () => { render(); refreshIcons(); });
+    render();
+  </script>
+</body>
+</html>

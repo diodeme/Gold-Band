@@ -58,12 +58,58 @@ describe('conversation navigation presentation transaction', () => {
       projectId: 'project-b',
       taskId: 'task-001',
       runId: 'run-001',
+      roundId: 'round-001',
+      nodeId: 'direct-agent',
+      attemptId: 'attempt-001',
     });
     expect(conversationPageMatchesRun(page, {
       ...oldRun,
       projectId: 'project-a',
       taskId: 'task-001',
       runId: 'run-001',
+    })).toBe(false);
+  });
+
+  it('preserves canonical task and attempt identity from a notification navigation', () => {
+    const page = conversationPageForIntervention({
+      targetType: 'conversation',
+      projectId: 'project-b',
+      taskId: 'task-001',
+      taskUuid: 'task-uuid-001',
+      runId: 'run-001',
+      roundId: 'round-001',
+      nodeId: 'worker',
+      attemptId: 'attempt-001',
+      outerNodeId: 'ai-dynamic',
+      outerAttemptId: 'attempt-002',
+      dedupKey: 'permission-request-001',
+    });
+
+    expect(page).toEqual({
+      kind: 'conversation-run',
+      projectId: 'project-b',
+      taskId: 'task-001',
+      taskUuid: 'task-uuid-001',
+      runId: 'run-001',
+      roundId: 'round-001',
+      nodeId: 'worker',
+      attemptId: 'attempt-001',
+      outerNodeId: 'ai-dynamic',
+      outerAttemptId: 'attempt-002',
+    });
+
+    const cachedRun = {
+      ...oldRun,
+      projectId: page.projectId,
+      taskId: page.taskId,
+      taskUuid: page.taskUuid,
+      runId: page.runId,
+    } as ConversationRunVm;
+    expect(conversationPageMatchesRun(page, cachedRun)).toBe(true);
+    expect(isConversationRunNavigationLoading(page, cachedRun)).toBe(false);
+    expect(shouldCommitConversationNavigation(1, 1, page, {
+      ...cachedRun,
+      taskUuid: 'recreated-task-uuid',
     })).toBe(false);
   });
 
@@ -375,7 +421,8 @@ describe('conversation sidebar navigation wiring', () => {
     expect(sidebarRunSelection).toContain('taskUuid: task.taskUuid');
     expect(searchSelection).toContain('onSelectConversation(page)');
     expect(interventionNavigation).toContain('onSelectConversation(page)');
-    expect(interventionNavigation).toContain('onSelectConversation(runPage)');
+    expect(interventionNavigation).toContain('onSelectConversation(conversationPageForIntervention(event))');
+    expect(interventionNavigation).not.toContain('getConversationRun(');
     expect(quickChatSelection).not.toContain('setConversationPage(');
     expect(workspaceQuickChatSelection).not.toContain('setConversationPage(');
     expect(searchSelection).not.toContain('setConversationPage(');

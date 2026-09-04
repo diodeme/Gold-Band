@@ -835,6 +835,7 @@ fn emit_acp_turn_finished(
     outcome: AcpTurnOutcome,
     batch_progress: AcpTurnBatchProgress,
 ) {
+    let task = app.task_show(&locator.task_id).ok();
     info!(
         project_id = %app.paths.project_id,
         task_id = %locator.task_id,
@@ -863,18 +864,18 @@ fn emit_acp_turn_finished(
         scheduled_occurrence_id: None,
         project_id: app.paths.project_id.clone(),
         task_id: locator.task_id.clone(),
+        task_uuid: task.as_ref().and_then(|task| task.uuid.clone()),
         run_id: locator.run_id.clone(),
         round_id: locator.round_id.clone(),
         node_id: locator.node_id.clone(),
         attempt_id: locator.attempt_id.clone(),
+        outer_node_id: locator.outer_node_id.clone(),
+        outer_attempt_id: locator.outer_attempt_id.clone(),
         turn_id: turn_id.to_string(),
         agent_label: agent_label.to_string(),
         outcome,
         batch_progress,
-        task_title: app
-            .task_show(&locator.task_id)
-            .ok()
-            .and_then(|task| task.title),
+        task_title: task.and_then(|task| task.title),
     });
     if let Some(sender) = direct_metrics_sender() {
         let _ = sender.try_send(DirectMetricsJob::TurnFinished {
@@ -4836,10 +4837,13 @@ fn maybe_emit_permission_intervention(
             .and_then(|value| value.scheduled_occurrence_id().map(str::to_string)),
         project_id: project_id.to_string(),
         task_id: context.task_id.clone(),
+        task_uuid: context.task_uuid.clone(),
         run_id: context.run_id.clone(),
         round_id: context.round_id.clone(),
         node_id: context.node_id.clone(),
         attempt_id: context.attempt_id.clone(),
+        outer_node_id: context.outer_node_id.clone(),
+        outer_attempt_id: context.outer_attempt_id.clone(),
         node_label: acp_intervention_node_label(app, context),
         kind: RuntimeInterventionKind::PermissionRequested,
         task_title: None,
@@ -4885,10 +4889,13 @@ fn maybe_emit_elicitation_intervention(
             .and_then(|value| value.scheduled_occurrence_id().map(str::to_string)),
         project_id: project_id.to_string(),
         task_id: context.task_id.clone(),
+        task_uuid: context.task_uuid.clone(),
         run_id: context.run_id.clone(),
         round_id: context.round_id.clone(),
         node_id: context.node_id.clone(),
         attempt_id: context.attempt_id.clone(),
+        outer_node_id: context.outer_node_id.clone(),
+        outer_attempt_id: context.outer_attempt_id.clone(),
         node_label: acp_intervention_node_label(app, context),
         kind: RuntimeInterventionKind::ElicitationRequested,
         task_title: None,
@@ -10334,10 +10341,13 @@ mod tests {
             scheduled_occurrence_id: None,
             project_id: "project-001".to_string(),
             task_id: "task-001".to_string(),
+            task_uuid: Some("task-uuid-001".to_string()),
             run_id: "run-001".to_string(),
             round_id: "round-001".to_string(),
             node_id: "direct-agent".to_string(),
             attempt_id: "attempt-001".to_string(),
+            outer_node_id: None,
+            outer_attempt_id: None,
             turn_id: "turn-001".to_string(),
             agent_label: "Claude".to_string(),
             outcome,

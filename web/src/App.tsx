@@ -1805,36 +1805,8 @@ export function App() {
     pushRoute('task-orchestration', page);
   };
 
-  // 在会话模式 sessionTree 中按 (roundId, nodeId, attemptId) 匹配出叶子（含 outer 字段）。
-  const findSessionLeaf = (
-    tree: ConversationSessionTreeVm | undefined | null,
-    roundId: string,
-    nodeId: string,
-    attemptId: string,
-  ): ConversationSessionLeafVm | null => {
-    if (!tree) return null;
-    const walkNode = (node: ConversationTreeNodeVm): ConversationSessionLeafVm | null => {
-      if (node.nodeId === nodeId) {
-        const hit = node.attempts.find((a) => a.attemptId === attemptId && a.roundId === roundId);
-        if (hit) return hit;
-      }
-      for (const child of node.outerNodes ?? []) {
-        const found = walkNode(child);
-        if (found) return found;
-      }
-      return null;
-    };
-    for (const round of tree.rounds) {
-      for (const node of round.nodes) {
-        const found = walkNode(node);
-        if (found) return found;
-      }
-    }
-    return null;
-  };
-
   // 干预弹窗「查看详情」导航：按 uiMode deep link 到对应节点。
-  const handleInterventionNavigate = useCallback(async (event: InterventionNavigateEventVm) => {
+  const handleInterventionNavigate = useCallback((event: InterventionNavigateEventVm) => {
     setWorkspacePickerOpen(false);
     if ('scheduledTaskId' in event) {
       const target = scheduledNotificationNavigation(event);
@@ -1858,50 +1830,9 @@ export function App() {
       onSelectConversation(page);
       return;
     }
-    // 统一进入 canonical conversation run，并在 sessionTree 内匹配叶子后切换 session。
-    const runPage = conversationPageForIntervention(event);
-    const targetProjectId = event.projectId;
-    onSelectConversation(runPage);
-
-    let run = conversationRunRef.current
-      && conversationPageMatchesRun(runPage, conversationRunRef.current)
-      ? conversationRunRef.current
-      : null;
-    if (!run) {
-      try {
-        const loaded = await getConversationRun(targetProjectId, event.taskId, event.runId, null);
-        applyConversationRunSnapshot(loaded, 'initial-load', { selectedSessionKey: null, preserveSelectedSession: false });
-        run = loaded;
-      } catch {
-        return;
-      }
-    }
-
-    const resolvedRun = run;
-
-    const leaf = findSessionLeaf(resolvedRun.sessionTree, event.roundId, event.nodeId, event.attemptId);
-    if (!leaf) return;
-    const key = conversationSessionKeyFromParts({
-      roundId: leaf.roundId,
-      nodeId: leaf.nodeId,
-      attemptId: leaf.attemptId,
-      outerNodeId: leaf.outerNodeId,
-      outerAttemptId: leaf.outerAttemptId,
-    });
-    conversationSelectedSessionKeyRef.current = key;
-    updateConversationSessionFollow('manual', key, resolvedRun);
-    setConversationRun((current) => {
-      const base = current && conversationPageMatchesRun(runPage, current) ? current : resolvedRun;
-      const next = beginConversationSessionSelection(base, key);
-      conversationRunRef.current = next;
-      return next;
-    });
-  }, [
-    uiMode,
-    taskPage,
-    applyConversationRunSnapshot,
-    updateConversationSessionFollow,
-  ]);
+    // The route effect is the sole run loader; complete identity lets this entry restore cache first.
+    onSelectConversation(conversationPageForIntervention(event));
+  }, []);
 
   useInterventionNotifications(handleInterventionNavigate);
   useScheduledNotifications();

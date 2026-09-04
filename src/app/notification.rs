@@ -74,11 +74,15 @@ pub struct InterventionNotification {
     pub dedup_key: String,
     pub project_id: String,
     pub task_id: String,
+    /// Canonical task identity used by the client cache and stale-navigation guard.
+    pub task_uuid: Option<String>,
     pub task_title: Option<String>,
     pub run_id: String,
     pub round_id: String,
     pub node_id: String,
     pub attempt_id: String,
+    pub outer_node_id: Option<String>,
+    pub outer_attempt_id: Option<String>,
     /// 路径 A：节点可读标签；路径 B：node_id 或一般性描述（低成本，方案 §6.2/§9.4）。
     pub node_label: String,
     pub pause_reason: PauseReason,
@@ -238,11 +242,14 @@ impl InterventionNotification {
             dedup_key,
             project_id: project_id.to_string(),
             task_id: task_id.to_string(),
+            task_uuid: None,
             task_title: task_title.map(str::to_string),
             run_id: run_id.to_string(),
             round_id: round_id.to_string(),
             node_id: node_id.to_string(),
             attempt_id: attempt_id.to_string(),
+            outer_node_id: None,
+            outer_attempt_id: None,
             node_label: node_label.to_string(),
             pause_reason,
             title: title.to_string(),
@@ -274,11 +281,14 @@ impl InterventionNotification {
             dedup_key: make_completion_dedup_key(project_id, run_id, round_id, node_id, attempt_id),
             project_id: project_id.to_string(),
             task_id: task_id.to_string(),
+            task_uuid: None,
             task_title: task_title.map(str::to_string),
             run_id: run_id.to_string(),
             round_id: round_id.to_string(),
             node_id: node_id.to_string(),
             attempt_id: attempt_id.to_string(),
+            outer_node_id: None,
+            outer_attempt_id: None,
             node_label: node_label.to_string(),
             pause_reason,
             title: "任务完成".to_string(),
@@ -373,17 +383,37 @@ impl InterventionNotification {
             ),
             project_id: project_id.to_string(),
             task_id: task_id.to_string(),
+            task_uuid: None,
             task_title: task_title.map(str::to_string),
             run_id: run_id.to_string(),
             round_id: round_id.to_string(),
             node_id: node_id.to_string(),
             attempt_id: attempt_id.to_string(),
+            outer_node_id: None,
+            outer_attempt_id: None,
             node_label: agent_label.to_string(),
             pause_reason: PauseReason::WaitingForUserInput,
             title,
             body,
             intervention_type: InterventionType::AgentTurnFinished,
         })
+    }
+
+    pub fn with_navigation_identity(
+        mut self,
+        task_uuid: Option<&str>,
+        outer_node_id: Option<&str>,
+        outer_attempt_id: Option<&str>,
+    ) -> Self {
+        self.task_uuid = task_uuid
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if let (Some(outer_node_id), Some(outer_attempt_id)) = (outer_node_id, outer_attempt_id) {
+            self.outer_node_id = Some(outer_node_id.to_string());
+            self.outer_attempt_id = Some(outer_attempt_id.to_string());
+        }
+        self
     }
 }
 

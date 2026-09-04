@@ -1904,10 +1904,13 @@ export type AcpPromptInteractionVm =
 export interface InterventionAttemptNavigateEventVm {
   projectId: string;
   taskId: string;
+  taskUuid?: string | null;
   runId: string;
   roundId: string;
   nodeId: string;
   attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
   dedupKey: string;
 }
 

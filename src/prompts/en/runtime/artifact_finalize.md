@@ -1,8 +1,9 @@
-The business execution turn has ended. Now only normalize the Gold Band runtime control result.
+The business execution turn has ended. First perform any necessary wrap-up, then normalize the Gold Band runtime control result.
 
-- Do not continue the task, modify files, or perform new business work.
-{% if can_read_runtime_snapshot %}- Only when the runtime context below explicitly requires refreshing a read-only runtime snapshot may you call a tool; read only the declared snapshot path and do not call any other tool.
-{% else %}- Do not call tools.
+- If the current task requires a report or another attachment and it has not yet been written, write it to the current attempt's attachments directory; skip this step if it is unnecessary or already complete.
+- Except for the attachment wrap-up above, do not continue the task, modify business workspace files, or perform new business work.
+{% if can_read_runtime_snapshot %}- Tools may be used only for the attachment wrap-up above or, when explicitly required by the runtime context below, to refresh a read-only runtime snapshot; for the latter, read only the declared snapshot path and perform no other operation.
+{% else %}- Tools may be used only for the attachment wrap-up above; if no wrap-up is needed, do not call tools.
 {% endif %}
 - Produce the canonical artifact only from work already completed in this conversation.
 - Do not output explanations, Markdown, code fences, or any extra content.

@@ -24,6 +24,7 @@ import {
   applyConversationEventToBranchSnapshots,
   resetConversationEventRouterSnapshots,
 } from '@/lib/conversation-event-router';
+import { detachConversationViewport } from './acp/detach-conversation-viewport';
 import type { AcpSessionVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -287,11 +288,12 @@ describe('read-only Agent conversation boundary', () => {
     }
   });
 
-  it('offers an explicit return to the latest semantic window', async () => {
+  it('offers an explicit return to the latest when the viewport detaches from a historical window', async () => {
     const historical = session('agent-1');
     historical.eventPage.hasNewer = true;
     const { container, root } = await renderDialog(historical, true);
     try {
+      await detachConversationViewport(container);
       expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
     } finally {
       await act(async () => root.unmount());

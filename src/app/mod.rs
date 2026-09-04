@@ -55,7 +55,8 @@ use crate::runtime::{
     validate_task_state, validate_worker_ref_state, write_node_state,
 };
 use crate::storage::{
-    GoldBandPaths, StoragePathConfig, load_settings_file, read_json, sqlite, write_json,
+    GoldBandPaths, StoragePathConfig, load_settings_file, normalize_workspace_path, read_json,
+    sqlite, write_json,
 };
 use crate::workflow_model_binding::{
     TaskAuthoringWorkflow, TaskAuthoringWorkflowCompat, WorkflowModelBindings,
@@ -153,6 +154,11 @@ pub(crate) fn attempt_runtime_state_lock(
             .collect()
     })[shard]
 }
+
+/// `StateConfig` RMW 串行锁分片数（与 `ATTEMPT_RUNTIME_STATE_LOCKS` 同模式：进程级 `OnceLock` 分片，
+/// 按规范化后的 `user_state_file()` 路径取同一把锁）。
+const STATE_CONFIG_LOCK_SHARDS: usize = 32;
+static STATE_CONFIG_LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
 pub use self::profiles::{
     ImportProfilesInput, ImportProfilesResult, ProfileCommandError, ProfileEntry, ProfileInput,
     ProfileList, ProfileScope,
@@ -2546,6 +2552,11 @@ impl App {
         write_json(&self.paths.user_settings_file(), settings)
     }
 
+    /// 读取全局 `state.json`（只读路径，任意调用）。
+    ///
+    /// **写入协议**：所有读改写（RMW）必须经 [`Self::with_state`]（唯一事务边界）。
+    /// `save_state` 为 `pub(crate)` 即为结构性约束：crate 外（desktop 层）无法绕过 `with_state`
+    /// 裸 `load → save`，杜绝并发 lost-update（后写覆盖前写的 pinned/preferences/multica checkpoint）。
     pub fn load_state(&self) -> Result<StateConfig> {
         let path = self.paths.user_state_file();
         if !path.exists() {
@@ -2554,8 +2565,53 @@ impl App {
         read_json(&path)
     }
 
-    pub fn save_state(&self, state: &StateConfig) -> Result<()> {
+    /// 落盘 `state.json`（底层单次原子写入，临时文件替换）。
+    ///
+    /// `pub(crate)`：仅供 [`Self::with_state`] 事务边界与 crate 内测试 seeding 使用；
+    /// 跨 crate 的整文件 RMW 必须走 [`Self::with_state`]（同一把锁串行），否则与并发写者相互覆盖。
+    pub(crate) fn save_state(&self, state: &StateConfig) -> Result<()> {
         write_json(&self.paths.user_state_file(), state)
+    }
+
+    /// 取本 `state.json` 文件的 RMW 串行锁（按规范化后的 `user_state_file()` 路径归属）。
+    ///
+    /// 锁身份 = 实际文件路径而非 `repo_root`：`user_state_file()` 是**全局**文件（与 repo_root 无关），
+    /// 不同 repo_root 的 App 实例（home repo / 各 workspace-bound App）共享同一份 state.json，
+    /// 按 repo_root 分片会使它们落在不同分片上互不互斥（锁身份边界错误）。
+    fn state_config_lock(&self) -> &'static Mutex<()> {
+        let mut hasher = DefaultHasher::new();
+        normalize_workspace_path(&self.paths.user_state_file()).hash(&mut hasher);
+        let shard = hasher.finish() as usize % STATE_CONFIG_LOCK_SHARDS;
+        &STATE_CONFIG_LOCKS.get_or_init(|| {
+            (0..STATE_CONFIG_LOCK_SHARDS)
+                .map(|_| Mutex::new(()))
+                .collect()
+        })[shard]
+    }
+
+    /// 原子 read-modify-write `StateConfig`（**唯一**写入事务边界，按 state.json 文件路径串行）。
+    ///
+    /// 持锁期间 `load → update(&mut state) → 若 dirty 则 save`。锁只覆盖文件 RMW，
+    /// **不含网络/长计算**（state-integrity §6 最小临界区）；`update` 为同步闭包，天然排除 async 网络。
+    /// 同一份 `state.json` 的所有写者（pin/preference/workspace 等用户操作与 multica 后台收尾）
+    /// 经同一把锁串行，杜绝「两写者各 load v0、各自 save、后写覆盖前写」。
+    ///
+    /// `update` 返回 `(dirty, value)`：
+    /// - `dirty`：是否实际改动。`false` → 跳过 save（热路径如 bridge `NodeCompleted` 在 session
+    ///   未变时不落盘）。
+    /// - `value`：从变更后（或未变更）的 state 计算的任意回传值（如 sidebar bootstrap VM），
+    ///   供调用方直接使用，避免二次 `load_state` 与窗口期不一致。
+    pub fn with_state<T, F>(&self, update: F) -> Result<T>
+    where
+        F: FnOnce(&mut StateConfig) -> (bool, T),
+    {
+        let _guard = self.state_config_lock().lock().unwrap();
+        let mut state = self.load_state()?;
+        let (dirty, value) = update(&mut state);
+        if dirty {
+            self.save_state(&state)?;
+        }
+        Ok(value)
     }
 
     pub fn set_user_console_theme(&self, theme: ConsoleThemeName) -> Result<SettingsConfig> {
@@ -2628,53 +2684,52 @@ impl App {
         &self,
         checked_at: Option<String>,
     ) -> Result<StateConfig> {
-        let mut state = self.load_state()?;
-        state.desktop_updater_last_checked_at = checked_at;
-        self.save_state(&state)?;
-        Ok(state)
+        self.with_state(|state| {
+            state.desktop_updater_last_checked_at = checked_at;
+            (true, state.clone())
+        })
     }
 
     pub fn set_user_desktop_update_badges(
         &self,
         update_badges: DesktopUpdateBadgeState,
     ) -> Result<StateConfig> {
-        let mut state = self.load_state()?;
-        state.desktop_update_badges = update_badges;
-        self.save_state(&state)?;
-        Ok(state)
+        self.with_state(|state| {
+            state.desktop_update_badges = update_badges;
+            (true, state.clone())
+        })
     }
 
     pub fn set_user_desktop_available_update(
         &self,
         available_update: Option<DesktopAvailableUpdate>,
     ) -> Result<StateConfig> {
-        let mut state = self.load_state()?;
-        state.desktop_available_update = available_update;
-        self.save_state(&state)?;
-        Ok(state)
+        self.with_state(|state| {
+            state.desktop_available_update = available_update;
+            (true, state.clone())
+        })
     }
 
     pub fn record_user_recent_desktop_workspace(&self, workspace: &str) -> Result<StateConfig> {
-        let mut state = self.load_state()?;
-        state
-            .recent_desktop_workspaces
-            .retain(|item| item != workspace);
-        state
-            .recent_desktop_workspaces
-            .insert(0, workspace.to_string());
-        state.recent_desktop_workspaces.truncate(8);
-        self.save_state(&state)?;
-
-        Ok(state)
+        self.with_state(|state| {
+            state
+                .recent_desktop_workspaces
+                .retain(|item| item != workspace);
+            state
+                .recent_desktop_workspaces
+                .insert(0, workspace.to_string());
+            state.recent_desktop_workspaces.truncate(8);
+            (true, state.clone())
+        })
     }
 
     pub fn remove_user_recent_desktop_workspace(&self, workspace: &str) -> Result<StateConfig> {
-        let mut state = self.load_state()?;
-        state
-            .recent_desktop_workspaces
-            .retain(|item| item != workspace);
-        self.save_state(&state)?;
-        Ok(state)
+        self.with_state(|state| {
+            state
+                .recent_desktop_workspaces
+                .retain(|item| item != workspace);
+            (true, state.clone())
+        })
     }
 
     pub fn set_user_agents(
@@ -4627,6 +4682,18 @@ impl App {
         Ok(())
     }
 
+    /// 取消单个 attempt 的活动 ACP 会话（prompt 取消 + cancelled 快照，best-effort）。
+    ///
+    /// workspace 级（[`Self::cancel_all_active_acp_attempts_best_effort`]）与 run 级
+    /// （[`Self::cancel_active_acp_attempts_for_run_best_effort`]）共用的逐 attempt 收尾。
+    fn cancel_attempt_acp_session_best_effort(&self, attempt_dir: &Utf8Path) {
+        if !attempt_dir.exists() || !self.attempt_has_active_acp_session(attempt_dir) {
+            return;
+        }
+        self.request_attempt_prompt_cancel_best_effort(attempt_dir);
+        self.persist_cancelled_session_snapshot_best_effort(attempt_dir);
+    }
+
     pub fn cancel_all_active_acp_attempts_best_effort(&self) {
         let Ok(tasks) = self.task_list() else {
             return;
@@ -4657,17 +4724,41 @@ impl App {
                                 &node.node_id,
                                 &attempt.attempt_id,
                             );
-                            if !attempt_dir.exists()
-                                || !self.attempt_has_active_acp_session(attempt_dir.as_path())
-                            {
-                                continue;
-                            }
-                            self.request_attempt_prompt_cancel_best_effort(attempt_dir.as_path());
-                            self.persist_cancelled_session_snapshot_best_effort(
-                                attempt_dir.as_path(),
-                            );
+                            self.cancel_attempt_acp_session_best_effort(attempt_dir.as_path());
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /// 定点取消单个 run 的活动 ACP 会话（task 级生命周期收尾专用）。
+    ///
+    /// 与 [`Self::cancel_all_active_acp_attempts_best_effort`]（workspace 级：应用关闭 / 全局恢复
+    /// 场景，扫描全部 task/run 历史）不同，本方法只遍历目标 run 自身的 rounds/nodes/attempts
+    /// （有界：单个会话 run 的历史），不影响同工作区其他会话/任务的活动 ACP 会话。
+    pub fn cancel_active_acp_attempts_for_run_best_effort(&self, task_id: &str, run_id: &str) {
+        let Ok(rounds) = self.round_list(task_id, run_id) else {
+            return;
+        };
+        for round in rounds {
+            let Ok(nodes) = self.node_list(task_id, run_id, &round.id) else {
+                continue;
+            };
+            for node in nodes {
+                let Ok(attempts) = self.attempt_list(task_id, run_id, &round.id, &node.node_id)
+                else {
+                    continue;
+                };
+                for attempt in attempts {
+                    let attempt_dir = self.paths.attempt_dir(
+                        task_id,
+                        run_id,
+                        &round.id,
+                        &node.node_id,
+                        &attempt.attempt_id,
+                    );
+                    self.cancel_attempt_acp_session_best_effort(attempt_dir.as_path());
                 }
             }
         }
@@ -5427,9 +5518,9 @@ mod tests {
     use crate::acp::elicitation::{pending_elicitation_file, pending_elicitation_state};
     use crate::config::{
         AppearancePreference, ColorSchemePreference, ConsoleThemeName, DesktopLanguage,
-        DesktopUpdateBadgeState, FontSizePreference, FontStackPreference,
+        DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, MulticaCompletedTask,
         PersonalizationPreference, ProviderDiagnosticSnapshot, RuntimeConfig, RuntimeLogLevel,
-        catalog_agent_default_config,
+        StateConfig, catalog_agent_default_config,
     };
     use crate::domain::{
         NodeOutcome, NodeType, PauseReason, RoundTrigger, RunOutcome, RunStatus, SessionMode,
@@ -7729,6 +7820,148 @@ mod tests {
         );
     }
 
+    /// 写一个可被 round/node/attempt 列表发现、且带活动 ACP 会话（snapshot latestTurnStatus=none）
+    /// 的 attempt fixture（run 级定点取消测试用）。
+    fn seed_attempt_with_active_session(
+        app: &App,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) {
+        write_json(&app.paths.task_file(task_id), &TaskState::new(task_id)).unwrap();
+        write_json(
+            &app.paths.run_file(task_id, run_id),
+            &RunState {
+                version: VERSION.to_string(),
+                id: run_id.to_string(),
+                task_id: task_id.to_string(),
+                task_uuid: None,
+                status: RunStatus::Running,
+                outcome: None,
+                started_at: "2026-09-03T00:00:00Z".to_string(),
+                updated_at: "2026-09-03T00:00:00Z".to_string(),
+                workflow_snapshot: "workflow.snapshot.json".to_string(),
+                current_round: Some(round_id.to_string()),
+                current_node: Some(node_id.to_string()),
+                current_attempt: Some(attempt_id.to_string()),
+                new_rounds_opened: 0,
+                pause_reason: None,
+                uuid: None,
+                last_executed_node: None,
+                worktree: None,
+                execution: Default::default(),
+            },
+        )
+        .unwrap();
+        write_json(
+            &app.paths.round_file(task_id, run_id, round_id),
+            &RoundState {
+                version: VERSION.to_string(),
+                id: round_id.to_string(),
+                run_id: run_id.to_string(),
+                index: 1,
+                status: RunStatus::Running,
+                outcome: None,
+                trigger: RoundTrigger::Initial,
+                started_at: "2026-09-03T00:00:00Z".to_string(),
+                trace: Vec::new(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .node_file(task_id, run_id, round_id, node_id, attempt_id),
+            &NodeState {
+                version: VERSION.to_string(),
+                acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                node_id: node_id.to_string(),
+                node_type: NodeType::Worker,
+                run_id: run_id.to_string(),
+                round_id: round_id.to_string(),
+                attempt_id: attempt_id.to_string(),
+                status: RunStatus::Running,
+                outcome: None,
+                started_at: "2026-09-03T00:00:00Z".to_string(),
+                finished_at: None,
+                manual_check_pending: false,
+                runtime_execution_id: None,
+                resolved_config: Default::default(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        let attempt_dir = app
+            .paths
+            .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({
+                "sessionId": format!("session-{task_id}-{run_id}"),
+                "availability": "established",
+                "latestTurnStatus": "none"
+            }),
+        )
+        .unwrap();
+    }
+
+    /// 读 attempt 的 snapshot latestTurnStatus（断言被取消 / 未被触碰）。
+    fn attempt_turn_status(
+        app: &App,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) -> String {
+        let snapshot: serde_json::Value = read_json(
+            &app.paths
+                .attempt_dir(task_id, run_id, round_id, node_id, attempt_id)
+                .join("acp.snapshot.json"),
+        )
+        .unwrap();
+        snapshot
+            .get("latestTurnStatus")
+            .and_then(|value| value.as_str())
+            .unwrap()
+            .to_string()
+    }
+
+    /// run 级定点取消（PR review P1-1 回归）：只取消目标 run 的活动 ACP 会话，
+    /// 同任务其他 run、同工作区其他任务的会话不受影响。
+    #[test]
+    fn cancel_active_acp_attempts_for_run_scopes_to_target_run_only() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = test_app(repo_root);
+
+        // 同工作区三个活动会话：目标 run、同任务另一 run、另一任务。
+        seed_attempt_with_active_session(&app, "task-A", "run-1", "round-1", "plan", "attempt-1");
+        seed_attempt_with_active_session(&app, "task-A", "run-2", "round-1", "plan", "attempt-1");
+        seed_attempt_with_active_session(&app, "task-B", "run-1", "round-1", "plan", "attempt-1");
+
+        app.cancel_active_acp_attempts_for_run_best_effort("task-A", "run-1");
+
+        // 目标 run 的会话被取消。
+        assert_eq!(
+            attempt_turn_status(&app, "task-A", "run-1", "round-1", "plan", "attempt-1"),
+            "cancelled"
+        );
+        // 同任务其他 run / 其他任务的会话保持原状（不被 task 级收尾波及）。
+        assert_eq!(
+            attempt_turn_status(&app, "task-A", "run-2", "round-1", "plan", "attempt-1"),
+            "none"
+        );
+        assert_eq!(
+            attempt_turn_status(&app, "task-B", "run-1", "round-1", "plan", "attempt-1"),
+            "none"
+        );
+    }
+
     #[test]
     fn runtime_control_only_metadata_is_not_an_active_acp_session() {
         let _guard = env_guard();
@@ -7982,6 +8215,263 @@ mod tests {
         assert!(
             interview.output.is_none() && interview.success_condition.is_none(),
             "interview node must declare no output contract or success condition"
+        );
+    }
+
+    // ── with_state：原子 StateConfig RMW（state-integrity §6 最小临界区 + §9 回归验收）──────────
+
+    fn completed_entry(remote: &str) -> MulticaCompletedTask {
+        MulticaCompletedTask {
+            remote_task_id: remote.into(),
+            local_task_id: format!("task-{remote}"),
+            local_run_id: format!("run-{remote}"),
+            workspace_id: "ws-1".into(),
+            local_project_id: "proj-1".into(),
+            issue_id: None,
+            status: "completed".into(),
+            title: format!("title-{remote}"),
+            completed_at: "2026-08-13T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn with_state_persists_mutation_and_reports_dirty() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app(repo_root);
+
+        let persisted = app
+            .with_state(|state| {
+                state.multica_completed_tasks.push(completed_entry("rt-1"));
+                (true, state.multica_completed_tasks.len())
+            })
+            .unwrap();
+
+        assert_eq!(persisted, 1, "dirty=true → 修改落盘并带回当前条目数");
+        let state = app.load_state().unwrap();
+        assert_eq!(state.multica_completed_tasks.len(), 1);
+        assert_eq!(state.multica_completed_tasks[0].remote_task_id, "rt-1");
+    }
+
+    #[test]
+    fn with_state_skips_save_when_not_dirty_and_reports_clean() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app(repo_root);
+        // 先落一条种子。
+        app.with_state(|state| {
+            state
+                .multica_completed_tasks
+                .push(completed_entry("rt-seed"));
+            (true, ())
+        })
+        .unwrap();
+
+        // 未改不存（dirty=false）→ 磁盘上种子仍在，未被空 RMW 覆盖/清空。
+        app.with_state(|_| (false, ())).unwrap();
+
+        let state = app.load_state().unwrap();
+        assert_eq!(
+            state.multica_completed_tasks.len(),
+            1,
+            "未 dirty 的 with_state 不应清空或覆盖既有状态"
+        );
+        assert_eq!(state.multica_completed_tasks[0].remote_task_id, "rt-seed");
+    }
+
+    #[test]
+    fn with_state_reads_current_disk_state() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app(repo_root);
+        let mut seed = StateConfig::default();
+        seed.multica_completed_tasks
+            .push(completed_entry("rt-seed"));
+        app.save_state(&seed).unwrap();
+
+        let mut seen = None;
+        app.with_state(|state| {
+            seen = state
+                .multica_completed_tasks
+                .first()
+                .map(|c| c.remote_task_id.clone());
+            (false, ())
+        })
+        .unwrap();
+
+        assert_eq!(
+            seen.as_deref(),
+            Some("rt-seed"),
+            "with_state 应加载磁盘当前状态"
+        );
+    }
+
+    /// 并发 RMW 不丢失写入（lost-update 回归）：N 个线程各 with_state 追加一条唯一条目，
+    /// 串行锁保证每条都落盘。无锁时多线程 load v0→push→save 会相互覆盖，最终条目数远小于 N。
+    #[test]
+    fn with_state_serializes_concurrent_rmw_no_lost_update() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        set_test_home(&repo_root);
+        // 主线程 App：初始化 home + state 文件，并在 join 后校验最终条目数。
+        let verifier = App::with_config_and_path_config(
+            repo_root.clone(),
+            RuntimeConfig::default(),
+            test_path_config(),
+        );
+        verifier.with_state(|_| (false, ())).unwrap(); // 确保 state 文件存在
+
+        const N: usize = 32;
+        let repo_root_arc = Arc::new(repo_root);
+        let handles: Vec<_> = (0..N)
+            .map(|i| {
+                let repo_root = Arc::clone(&repo_root_arc);
+                std::thread::spawn(move || {
+                    let app = App::with_config_and_path_config(
+                        (*repo_root).clone(),
+                        RuntimeConfig::default(),
+                        test_path_config(),
+                    );
+                    app.with_state(|state| {
+                        state
+                            .multica_completed_tasks
+                            .push(completed_entry(&format!("rt-{i}")));
+                        (true, ())
+                    })
+                    .unwrap();
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let final_state = verifier.load_state().unwrap();
+        assert_eq!(
+            final_state.multica_completed_tasks.len(),
+            N,
+            "并发 RMW 不应丢失任何写入（lost-update）"
+        );
+    }
+
+    /// 锁身份回归：不同 repo_root 的 App 共享同一份全局 user_state_file 时，
+    /// 并发 RMW 也必须串行。旧实现按 repo_root 分片加锁，跨 repo 写同一份
+    /// state.json 会落入不同分片而相互覆盖；锁身份必须取自 state 文件路径本身。
+    #[test]
+    fn with_state_locks_by_state_file_across_repo_roots() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let home_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        set_test_home(&home_root);
+        let verifier = App::with_config_and_path_config(
+            home_root.clone(),
+            RuntimeConfig::default(),
+            test_path_config(),
+        );
+        verifier.with_state(|_| (false, ())).unwrap(); // 确保 state 文件存在
+
+        const N: usize = 32;
+        let home_arc = Arc::new(home_root);
+        let handles: Vec<_> = (0..N)
+            .map(|i| {
+                let home_root = Arc::clone(&home_arc);
+                std::thread::spawn(move || {
+                    // 每个 writer 持有不同的 repo_root（模拟不同工作区），
+                    // 但共享同一 test home → 同一份 user_state_file。
+                    let repo_root = (*home_root).join(format!("ws-{i}"));
+                    let app = App::with_config_and_path_config(
+                        repo_root,
+                        RuntimeConfig::default(),
+                        test_path_config(),
+                    );
+                    app.with_state(|state| {
+                        state
+                            .multica_completed_tasks
+                            .push(completed_entry(&format!("rt-{i}")));
+                        (true, ())
+                    })
+                    .unwrap();
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let final_state = verifier.load_state().unwrap();
+        assert_eq!(
+            final_state.multica_completed_tasks.len(),
+            N,
+            "跨 repo_root 写同一份 state.json 不应丢失更新（锁身份 = state 文件路径）"
+        );
+    }
+
+    /// 真实新旧写者并发回归：Multica 后台 with_state 写入与已迁移的
+    /// 偏好/recent-workspace 写入（原裸 load→save 路径）并发时互不覆盖。
+    #[test]
+    fn with_state_mixes_multica_and_user_preference_writers_no_lost_update() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        set_test_home(&repo_root);
+        let verifier = App::with_config_and_path_config(
+            repo_root.clone(),
+            RuntimeConfig::default(),
+            test_path_config(),
+        );
+        verifier.with_state(|_| (false, ())).unwrap(); // 确保 state 文件存在
+
+        const N: usize = 8; // recent 列表上限为 8，N 取 8 使断言无截断干扰
+        let multica_writer = {
+            let repo_root = repo_root.clone();
+            std::thread::spawn(move || {
+                let app = App::with_config_and_path_config(
+                    repo_root,
+                    RuntimeConfig::default(),
+                    test_path_config(),
+                );
+                for i in 0..N {
+                    app.with_state(|state| {
+                        state
+                            .multica_completed_tasks
+                            .push(completed_entry(&format!("rt-{i}")));
+                        (true, ())
+                    })
+                    .unwrap();
+                }
+            })
+        };
+        let preference_writer = {
+            let repo_root = repo_root.clone();
+            std::thread::spawn(move || {
+                let app = App::with_config_and_path_config(
+                    repo_root,
+                    RuntimeConfig::default(),
+                    test_path_config(),
+                );
+                for i in 0..N {
+                    app.record_user_recent_desktop_workspace(&format!("D:/Projects/Repo{i}"))
+                        .unwrap();
+                }
+            })
+        };
+        multica_writer.join().unwrap();
+        preference_writer.join().unwrap();
+
+        let final_state = verifier.load_state().unwrap();
+        assert_eq!(
+            final_state.multica_completed_tasks.len(),
+            N,
+            "Multica 后台写入不应被偏好写入覆盖"
+        );
+        assert_eq!(
+            final_state.recent_desktop_workspaces.len(),
+            N,
+            "偏好写入不应被 Multica 后台写入覆盖"
         );
     }
 }

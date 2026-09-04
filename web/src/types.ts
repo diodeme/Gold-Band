@@ -106,6 +106,63 @@ export interface MetricsSettingsVm {
   apiKeySet: boolean;
 }
 
+export interface MulticaWorkspaceRefVm {
+  id: string;
+  name: string;
+  slug: string;
+  provider: string;
+}
+
+export interface MulticaServerWorkspaceVm {
+  id: string;
+  name: string;
+}
+
+/// 已连接 multica 账号身份（`/api/me`）；仅 UI 展示用，非凭证。
+export interface MulticaAccountRefVm {
+  name: string | null;
+  email: string | null;
+}
+
+export interface MulticaSettingsVm {
+  enabled: boolean;
+  toggleLocked: boolean;
+  multicaBaseUrl: string | null;
+  multicaAppUrl: string | null;
+  patSet: boolean;
+  daemonIdSet: boolean;
+  workspaces: MulticaWorkspaceRefVm[];
+  activeWorkspaceId: string | null;
+  defaultProvider: string;
+  connected: boolean;
+  connectedAccount: MulticaAccountRefVm | null;
+}
+
+export interface RemoteTaskVm {
+  id: string;
+  issueId: string | null;
+  status: string;
+  workspaceId: string;
+  title: string;
+  /// claim 响应里解析出的需求正文（quick-create/chat/comment/autopilot/handoff 来源优先级取首个非空，无则 null）。
+  /// 仅 claim 后回填；pending 列表（get_multica_tasks）该字段恒为 null——预填 composer 必须先 claim。
+  requirement: string | null;
+  lastActivityAt: string | null;
+  /// 终态行（completed/failed）才回填：本地 run 链接，供整行点击 onSelectRun(projectId, taskId, runId) 直达会话。
+  /// active 行（queued/running）恒 null。
+  localTaskId: string | null;
+  runId: string | null;
+  projectId: string | null;
+}
+
+export interface RemoteConversationSidebarVm {
+  workspaces: MulticaWorkspaceRefVm[];
+  /// 该工作空间的全部远程任务（active queued/running + 终态 completed/failed）；终态行带 localTaskId/runId/projectId 可直达会话。
+  tasksByWorkspace: Record<string, RemoteTaskVm[]>;
+  lastActiveWorkspaceId: string | null;
+  connected: boolean;
+}
+
 export interface UpdateInfoVm {
   version: string;
   currentVersion: string;
@@ -2141,6 +2198,7 @@ export type ConversationPage =
       outerAttemptId?: string;
     }
   | { kind: 'run-mode-management' }
+  | { kind: 'multica-tasks' }
   | { kind: 'agents' }
   | { kind: 'contexts' }
   | { kind: 'scheduled-tasks' }

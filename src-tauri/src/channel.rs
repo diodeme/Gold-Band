@@ -19,6 +19,10 @@ pub struct DesktopChannelConfig {
     pub metrics_api_key: &'static str,
     pub silent_update_enabled: bool,
     pub builtin_mcp_servers_json: &'static str,
+    pub multica_enabled: bool,
+    pub multica_toggle_locked: bool,
+    pub multica_base_url: &'static str,
+    pub multica_app_url: &'static str,
 }
 
 pub fn current_channel_config() -> DesktopChannelConfig {
@@ -39,6 +43,10 @@ pub fn current_channel_config() -> DesktopChannelConfig {
         metrics_api_key: option_env!("GOLD_BAND_METRICS_API_KEY").unwrap_or(""),
         silent_update_enabled: option_env!("GOLD_BAND_SILENT_UPDATE_ENABLED") == Some("true"),
         builtin_mcp_servers_json: option_env!("GOLD_BAND_BUILTIN_MCP_SERVERS").unwrap_or("[]"),
+        multica_enabled: option_env!("GOLD_BAND_MULTICA_ENABLED") == Some("true"),
+        multica_toggle_locked: option_env!("GOLD_BAND_MULTICA_TOGGLE_LOCKED") == Some("true"),
+        multica_base_url: option_env!("GOLD_BAND_MULTICA_BASE_URL").unwrap_or(""),
+        multica_app_url: option_env!("GOLD_BAND_MULTICA_APP_URL").unwrap_or(""),
     };
     config
 }

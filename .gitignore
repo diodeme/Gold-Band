@@ -25,5 +25,6 @@ node_modules/
 draft/*
 .agents/*
 !.agents/skills
+.omc
 .codex-*/
 coverage

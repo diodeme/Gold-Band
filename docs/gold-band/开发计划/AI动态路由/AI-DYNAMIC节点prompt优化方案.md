@@ -783,6 +783,7 @@ npm run web:build
 
 - 附件来源收敛为三类：accepted proposal materialization source 接力链最多回溯 5 节点；当前节点显式 `dependsOn` 的直接节点；group 证据仅为 merge / acceptance 加入当前 group terminal/root branch 输入，并为 active / inherited 相关 group 以最新 acceptance 及其 `dependsOn` merge 表达最近一轮，尚无 acceptance 时取最新 merge，历史附件不按节点状态或结果过滤，最近节点无附件时不回退到旧一轮证据。
 - 三类来源按 nodeId 跨类去重；每个来源节点最多检查 10 个文件或空目录末端项，含内容的目录继续递归且不单独计数；超出时显式给出完整 `attachments` 目录并提示到目录查看；只投影文件路径，不读取附件正文。
+- hidden context 的基础运行字段与附件投影字段分片构造后合并，保持同一模板变量接口，同时避免字段增长触发单个 `serde_json::json!` 宏的递归深度上限。
 - acceptance repair 后 group 继续使用既有 `open` 状态，不新增 phase。历史 merge / acceptance 证据从 canonical node 与 accepted proposal 历史解析，不依赖为下一轮重置的当前 `mergeNodeId / acceptanceNodeId`。
 - sibling 投影只面向当前 active fanout cohort：只有当前 chain 映射到 group root branch 时才显示同批其他 roots；repair / reaccept chain 即使处于 `open` group 也不显示旧 fanout roots。
 - 修复前建立最小失败测试，覆盖 source 两跳中的 `accept-report.md` 及 5 节点边界、显式 `dependsOn` 与 source 并存、merge / acceptance 在 root 与 terminal 不同时仍可读两端原始证据、group 历史证据不受可变槽重置影响、nodeId 去重、每来源节点第 10/11 个附件目录提示，以及 repair / reaccept 不读取旧 branch 附件且不显示旧 siblings；不得用针对具体 node 名称的条件分支修补。

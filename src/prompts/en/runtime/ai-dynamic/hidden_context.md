@@ -58,8 +58,31 @@
 
 {% if has_available_attachments %}
 ## Available attachments
-- This is a path tree relative to Dynamic root. Form a regular entry's complete path by joining `Dynamic root` with its successive tree levels; a top-level `absolutePath=` entry is already complete and must be used as-is.
-{{ available_attachments }}
+- Only attachment paths are listed; attachment contents are not read or inlined. Form a regular entry's complete path by joining `Dynamic root` with its successive path-tree levels; a top-level `absolutePath=` entry is already complete and must be used as-is.
+{% if has_predecessor_attachments %}
+### Predecessor chain (task handoff chain that created the current node; up to {{ source_predecessor_limit }} nodes)
+{{ predecessor_attachments }}
+{% if has_predecessor_attachment_overflow %}
+- The attachment listings for the source nodes below are truncated or incomplete. At most {{ attachments_per_source_limit }} files or empty directories are inspected per node; non-empty directories are traversed and do not consume a slot themselves. Only found files are listed above; inspect the complete attachments directories as needed:
+{{ predecessor_attachment_overflow_directories }}
+{% endif %}
+{% endif %}
+{% if has_dependency_attachments %}
+### Explicit dependencies (input nodes explicitly named through dependsOn by the current node)
+{{ dependency_attachments }}
+{% if has_dependency_attachment_overflow %}
+- The attachment listings for the source nodes below are truncated or incomplete. At most {{ attachments_per_source_limit }} files or empty directories are inspected per node; non-empty directories are traversed and do not consume a slot themselves. Only found files are listed above; inspect the complete attachments directories as needed:
+{{ dependency_attachment_overflow_directories }}
+{% endif %}
+{% endif %}
+{% if has_group_evidence_attachments %}
+### Group evidence (current merge / acceptance inputs or the latest merge and acceptance from related groups)
+{{ group_evidence_attachments }}
+{% if has_group_evidence_attachment_overflow %}
+- The attachment listings for the source nodes below are truncated or incomplete. At most {{ attachments_per_source_limit }} files or empty directories are inspected per node; non-empty directories are traversed and do not consume a slot themselves. Only found files are listed above; inspect the complete attachments directories as needed:
+{{ group_evidence_attachment_overflow_directories }}
+{% endif %}
+{% endif %}
 {% endif %}
 
 {% if has_output_contract %}

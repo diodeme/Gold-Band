@@ -2143,7 +2143,7 @@ const resources = {
       },
       multica: {
         taskManagement: {
-          title: "远程任务管理",
+          title: "需求管理",
           source: {
             label: "任务来源",
             multica: "Multica",
@@ -2151,7 +2151,7 @@ const resources = {
           workspace: {
             label: "工作空间",
             remove: "移除工作空间",
-            removeConfirm: "确定移除该工作空间？该空间的远程任务将不再展示。",
+            removeConfirm: "确定移除该工作空间？该空间的需求将不再展示。",
           },
           column: {
             empty: "暂无任务",
@@ -2201,7 +2201,8 @@ const resources = {
           agentManagement: "Agent",
           contextManagement: "上下文",
           runModeManagement: "运行模式",
-          multicaTaskManagement: "远程任务管理",
+          more: "更多",
+          multicaTaskManagement: "需求管理",
           pinned: "置顶",
           noPinned: "置顶会话会显示在这里",
           noWorkspaces: "尚未添加工作空间",
@@ -2241,9 +2242,9 @@ const resources = {
           },
           settings: "设置",
           multica: {
-            sectionTitle: "远程任务",
+            sectionTitle: "需求",
             emptyTitle: "尚未连接 Multica",
-            emptyDescription: "连接后可在此查看并领取 multica 远程任务。",
+            emptyDescription: "连接后可在此查看并领取 Multica 需求。",
             connectButton: "连接 Multica",
             cancelTask: "取消任务",
             executeTask: "执行",
@@ -2267,7 +2268,7 @@ const resources = {
           },
         },
         composer: {
-          multicaNeedLocalWorkspace: "请先添加本地工作空间，再执行远程任务",
+          multicaNeedLocalWorkspace: "请先添加本地工作空间，再执行需求",
           multicaBindingTag: "Multica · {{title}}",
           removeMulticaBinding: "解除任务绑定",
         },
@@ -4652,7 +4653,7 @@ const resources = {
       },
       multica: {
         taskManagement: {
-          title: "Remote Tasks",
+          title: "Requirements",
           source: {
             label: "Task source",
             multica: "Multica",
@@ -4660,7 +4661,7 @@ const resources = {
           workspace: {
             label: "Workspace",
             remove: "Remove workspace",
-            removeConfirm: "Remove this workspace? Its remote tasks will no longer be shown.",
+            removeConfirm: "Remove this workspace? Its requirements will no longer be shown.",
           },
           column: {
             empty: "No tasks",
@@ -4713,7 +4714,8 @@ const resources = {
           agentManagement: "Agent",
           contextManagement: "Context",
           runModeManagement: "Run Mode",
-          multicaTaskManagement: "Remote Tasks",
+          more: "More",
+          multicaTaskManagement: "Requirements",
           pinned: "Pinned",
           noPinned: "Pinned conversations appear here",
           noWorkspaces: "No workspaces added",
@@ -4753,9 +4755,9 @@ const resources = {
           },
           settings: "Settings",
           multica: {
-            sectionTitle: "Remote Tasks",
+            sectionTitle: "Requirements",
             emptyTitle: "Not connected to Multica",
-            emptyDescription: "Connect to view and claim multica remote tasks.",
+            emptyDescription: "Connect to view and claim Multica requirements.",
             connectButton: "Connect Multica",
             cancelTask: "Cancel task",
             executeTask: "Run",
@@ -4779,7 +4781,7 @@ const resources = {
           },
         },
         composer: {
-          multicaNeedLocalWorkspace: "Add a local workspace before running a remote task",
+          multicaNeedLocalWorkspace: "Add a local workspace before running a requirement",
           multicaBindingTag: "Multica · {{title}}",
           removeMulticaBinding: "Unbind task",
         },

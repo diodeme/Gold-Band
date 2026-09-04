@@ -1548,6 +1548,7 @@ export function ACPChatDialog(
   const liveStreamingTargetRef = useRef<LiveStreamingMarkdownTarget | null>(null);
   const pendingLatestLayoutCommitRef = useRef<string | null>(null);
   const canonicalHeadHandoffRef = useRef<AcpCanonicalHeadHandoff | null>(null);
+  const requestCanonicalHeadRecoveryRef = useRef<((autoHandoff: boolean) => void) | null>(null);
   const canonicalHeadRecoveryPendingRef = useRef(false);
   const canonicalHeadHandoffInFlightRef = useRef(false);
   const canonicalHeadHandoffTrailingIntentRef = useRef<
@@ -1717,6 +1718,23 @@ export function ACPChatDialog(
     paginationDirectionRef.current !== null
     || viewportManualIntentRef.current
   ), []);
+
+  const resumePendingCanonicalHeadRecoveryForSnapshot = useCallback((
+    previous: AcpSessionVm | null | undefined,
+    next: AcpSessionVm | null | undefined,
+  ) => {
+    if (
+      !canonicalHeadRecoveryPendingRef.current
+      || !canonicalHeadRecoveryAutoHandoffRef.current
+      || liveUpdatesPausedRef.current
+      || hasExplicitHistoricalTimelineIntent()
+      || !previous
+      || !next
+      || !isSameAcpSessionForMetadata(previous, next)
+      || !hasAdvancedAcpSessionProjection(previous, next)
+    ) return;
+    requestCanonicalHeadRecoveryRef.current?.(true);
+  }, [hasExplicitHistoricalTimelineIntent]);
 
   const ownsPaginationRequest = useCallback((token: AcpPaginationRequestToken) => {
     const owner = paginationRequestOwnerRef.current;
@@ -1942,6 +1960,10 @@ export function ACPChatDialog(
     }
     if (!session) return;
     settleOptimisticPromptAdmissions(session.events);
+    resumePendingCanonicalHeadRecoveryForSnapshot(
+      previousCanonicalSession,
+      session,
+    );
     if (preserveVisibleTimeline) {
       commitHasNewerEvents(
         hasNewerEventsRef.current
@@ -1989,7 +2011,7 @@ export function ACPChatDialog(
       timelineGeneration: acpSessionTimelineGeneration(session),
       events: limited,
     });
-  }, [commitHasNewerEvents, commitLoadedEventWindow, effectiveLoadedEventBufferLimit, eventWindowKey, hasExplicitHistoricalTimelineIntent, isHistoricalTimelineWindow, session, settleOptimisticPromptAdmissions]);
+  }, [commitHasNewerEvents, commitLoadedEventWindow, effectiveLoadedEventBufferLimit, eventWindowKey, hasExplicitHistoricalTimelineIntent, isHistoricalTimelineWindow, resumePendingCanonicalHeadRecoveryForSnapshot, session, settleOptimisticPromptAdmissions]);
 
   useEffect(() => {
     const identityChanged = sessionResetIdentityRef.current !== eventWindowKey;
@@ -2718,6 +2740,7 @@ export function ACPChatDialog(
       ) {
         markCanonicalHeadRecovery(true);
       }
+      resumePendingCanonicalHeadRecoveryForSnapshot(previous, normalized);
       return;
     }
     commitHasNewerEvents(normalized.eventPage.hasNewer);
@@ -2750,7 +2773,7 @@ export function ACPChatDialog(
       timelineGeneration: acpSessionTimelineGeneration(normalized),
       events: limited,
     });
-  }, [attemptId, commitHasNewerEvents, commitLoadedEventWindow, componentInstanceId, effectiveLoadedEventBufferLimit, eventWindowKey, hasExplicitHistoricalTimelineIntent, isHistoricalTimelineWindow, markCanonicalHeadRecovery, nodeId, normalizeSessionUpdate, outerAttemptId, outerNodeId, projectId, roundId, runId, sessionIdentity, settleOptimisticPromptAdmissions, taskId, taskUuid]);
+  }, [attemptId, commitHasNewerEvents, commitLoadedEventWindow, componentInstanceId, effectiveLoadedEventBufferLimit, eventWindowKey, hasExplicitHistoricalTimelineIntent, isHistoricalTimelineWindow, markCanonicalHeadRecovery, nodeId, normalizeSessionUpdate, outerAttemptId, outerNodeId, projectId, resumePendingCanonicalHeadRecoveryForSnapshot, roundId, runId, sessionIdentity, settleOptimisticPromptAdmissions, taskId, taskUuid]);
 
   const refreshSessionAfterConfigUnavailable = useCallback(async (error: unknown) => {
     if (!isAcpSessionConfigValueUnavailableError(error)) return;
@@ -3295,6 +3318,7 @@ export function ACPChatDialog(
   const requestCanonicalHeadRecovery = useCallback((autoHandoff: boolean) => {
     requestCanonicalHeadHandoff("recovery", autoHandoff);
   }, [requestCanonicalHeadHandoff]);
+  requestCanonicalHeadRecoveryRef.current = requestCanonicalHeadRecovery;
 
   const enqueueLiveEventUpdate = useCallback(
     (event: AcpUiEventVm, timelineGeneration: number) => {
@@ -4209,6 +4233,7 @@ export function ACPChatDialog(
         }
         commitHasNewerEvents(hasRemainingReplay || !replayAcknowledged);
         if (!replayAcknowledged) {
+          markCanonicalHeadRecovery(true);
           recordAcpStreamingDiagnostic("animation-readiness", () => ({
             componentInstanceId,
             sessionIdentity,
@@ -4267,6 +4292,7 @@ export function ACPChatDialog(
     flushOrSchedulePendingLiveEvents,
     hasExplicitHistoricalTimelineIntent,
     isHistoricalTimelineWindow,
+    markCanonicalHeadRecovery,
     nodeId,
     observeLiveStreamingEvent,
     outerAttemptId,
@@ -4835,8 +4861,22 @@ export function ACPChatDialog(
       watermark: canonicalWatermark,
     };
     paginationCursorGenerationStaleRef.current = false;
+    if (intent === "recovery") {
+      if (hasRemainingReplay) {
+        requestCanonicalHeadHandoff(
+          "recovery",
+          canonicalHeadRecoveryAutoHandoffRef.current,
+        );
+      } else if (canonicalHeadHandoffTrailingIntentRef.current !== "recovery") {
+        // Close the recovery gate in the same commit that installs the
+        // canonical window, before a newly delivered live tail can be deferred.
+        canonicalHeadRecoveryPendingRef.current = false;
+        canonicalHeadRecoveryAutoHandoffRef.current = false;
+      }
+    }
+    finishPaginationRequest(requestToken);
     return true;
-  }, [attemptId, attemptWorkspaceLocator, branchId, commitHasNewerEvents, commitLoadedEventWindow, commitShowReturnToLatest, effectiveEventPageSize, effectiveLoadedEventBufferLimit, eventIdPrefix, eventWindowKey, nodeId, normalizeSessionUpdate, outerAttemptId, outerNodeId, ownsPaginationWindowRequest, projectId, requestCanonicalHeadHandoff, roundId, runId, sessionIdentity, settleLiveStreamingMarkdown, settleOptimisticPromptAdmissions, taskId, taskUuid]);
+  }, [attemptId, attemptWorkspaceLocator, branchId, commitHasNewerEvents, commitLoadedEventWindow, commitShowReturnToLatest, effectiveEventPageSize, effectiveLoadedEventBufferLimit, eventIdPrefix, eventWindowKey, finishPaginationRequest, nodeId, normalizeSessionUpdate, outerAttemptId, outerNodeId, ownsPaginationWindowRequest, projectId, requestCanonicalHeadHandoff, roundId, runId, sessionIdentity, settleLiveStreamingMarkdown, settleOptimisticPromptAdmissions, taskId, taskUuid]);
 
   const loadOlderEvents = async () => {
     const previousWindow = loadedEventWindowRef.current;
@@ -5072,9 +5112,8 @@ export function ACPChatDialog(
         intent,
         discardReplayThroughCut,
       );
-      if (!ownsPaginationRequest(requestToken)) return false;
       if (!rejoined) {
-        commitHasNewerEvents(true);
+        if (ownsPaginationRequest(requestToken)) commitHasNewerEvents(true);
         return false;
       }
       return true;

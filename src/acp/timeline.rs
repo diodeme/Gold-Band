@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::acp::events::{
     AcpTimelineItem, AcpTimelinePatch, AcpTimingPatch, AcpTimingStateSnapshot, AcpUiEvent,
-    extract_agent_transcript_relation, extract_usage_fields,
+    extract_agent_transcript_relation, extract_usage_fields, is_semantically_empty_agent_content,
     load_timeline_items_for_storage_unlocked, merge_timeline_item_revision,
 };
 use crate::acp::turn_files::{FileVersionRef, TurnFileCaptureConfig, TurnFileStore};
@@ -2050,6 +2050,48 @@ pub fn timeline_has_agent_launches(path: &Utf8Path) -> Result<bool> {
     })
 }
 
+/// Reads the newest visible Agent text from the root branch through the
+/// timeline index. Manual-check IM delivery only needs this presentation
+/// snapshot, so it must not hydrate the complete attempt history.
+pub fn read_indexed_latest_root_agent_output(path: &Utf8Path) -> Result<Option<String>> {
+    let policy = TimelineCheckpointPolicy::default();
+    let index_path = timeline_index_path(path);
+    with_jsonl_file_lock(path, || {
+        let (index, _) = load_or_rebuild_index_unlocked(path, &index_path, policy)?;
+        let mut candidates = index
+            .item_locators
+            .values()
+            .filter(|locator| {
+                locator.kind == "textDelta"
+                    && locator.branch_id == "root"
+                    && !locator.hidden_from_chat
+                    && locator.session_timeline_event
+                    && !locator.agent_launch
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|locator| {
+            (
+                std::cmp::Reverse(locator.ended_seq),
+                std::cmp::Reverse(locator.seq),
+            )
+        });
+        for locator in candidates {
+            let event = read_event_at_locator(path, locator)?;
+            if is_semantically_empty_agent_content(&event) {
+                continue;
+            }
+            if let Some(output) = event
+                .content
+                .as_deref()
+                .filter(|content| !content.is_empty())
+            {
+                return Ok(Some(output.to_string()));
+            }
+        }
+        Ok(None)
+    })
+}
+
 pub fn read_indexed_accepted_prompt_ids(path: &Utf8Path) -> Result<HashSet<String>> {
     let policy = TimelineCheckpointPolicy::default();
     let index_path = timeline_index_path(path);
@@ -2326,6 +2368,45 @@ pub fn read_indexed_pending_permission(
     request_id: &str,
 ) -> Result<Option<TimelineIndexedItem>> {
     read_indexed_pending_interaction(path, request_id, true)
+}
+
+pub fn read_indexed_permission_request_by_request_id(
+    path: &Utf8Path,
+    request_id: &str,
+) -> Result<Option<TimelineIndexedItem>> {
+    let policy = TimelineCheckpointPolicy::default();
+    let index_path = timeline_index_path(path);
+    with_jsonl_file_lock(path, || {
+        let (index, _) = load_or_rebuild_index_unlocked(path, &index_path, policy)?;
+        let mut locators = index
+            .item_locators
+            .values()
+            .filter(|locator| locator.kind == "permissionRequest")
+            .collect::<Vec<_>>();
+        locators.sort_by_key(|locator| {
+            (
+                std::cmp::Reverse(locator.ended_seq),
+                std::cmp::Reverse(locator.seq),
+            )
+        });
+        for locator in locators {
+            let event = read_event_at_locator(path, locator)?;
+            if event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("requestId"))
+                .and_then(Value::as_str)
+                == Some(request_id)
+            {
+                return Ok(Some(TimelineIndexedItem {
+                    event,
+                    generation: index.generation,
+                    revision: locator.revision,
+                }));
+            }
+        }
+        Ok(None)
+    })
 }
 
 pub fn read_indexed_pending_elicitation(
@@ -2924,10 +3005,11 @@ mod tests {
     use super::{
         DEFAULT_TIMELINE_TAIL_REPLAY_LIMIT, TIMELINE_BLOB_MIN_BYTES, TIMELINE_INDEX_FORMAT_VERSION,
         TimelineCompactionPolicy, TimelineRestoreMode, TimelineSettleOutcome, TimelineStore,
-        TimelineUpsertOutcome, read_indexed_prompt_anchor_events, read_indexed_runtime_restore,
-        read_indexed_runtime_restore_for_branch, read_indexed_timeline_page,
-        read_indexed_timeline_projection, settle_latest_processing_retry_prompt,
-        settle_timeline_item_status, timeline_index_path,
+        TimelineUpsertOutcome, read_indexed_latest_root_agent_output,
+        read_indexed_permission_request_by_request_id, read_indexed_prompt_anchor_events,
+        read_indexed_runtime_restore, read_indexed_runtime_restore_for_branch,
+        read_indexed_timeline_page, read_indexed_timeline_projection,
+        settle_latest_processing_retry_prompt, settle_timeline_item_status, timeline_index_path,
     };
     use crate::acp::events::{AcpTimelinePatch, AcpTimingPatch, AcpUiEvent, load_timeline_items};
 
@@ -2994,6 +3076,65 @@ mod tests {
         assert_eq!(
             load_timeline_items(&path).unwrap()[0].content.as_deref(),
             Some("hello")
+        );
+    }
+
+    #[test]
+    fn latest_root_agent_output_skips_empty_hidden_and_nested_text() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        store
+            .upsert(1, &event("root-old", 1, "old output"))
+            .unwrap();
+        store.upsert(2, &event("root-empty", 2, "")).unwrap();
+
+        let mut nested = event("nested-new", 3, "nested output");
+        nested.raw = Some(json!({
+            "_meta": { "goldBandConversation": { "branchId": "agent-branch" } }
+        }));
+        store.upsert(3, &nested).unwrap();
+
+        store
+            .upsert(4, &event("root-new", 4, "final root output"))
+            .unwrap();
+
+        let mut hidden = event("root-hidden", 5, "hidden output");
+        hidden.raw = Some(json!({ "hiddenFromChat": true }));
+        store.upsert(5, &hidden).unwrap();
+
+        assert_eq!(
+            read_indexed_latest_root_agent_output(&path).unwrap(),
+            Some("final root output".to_string())
+        );
+    }
+
+    #[test]
+    fn permission_request_is_readable_by_raw_request_id_after_signal_cleanup() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        let mut request = event("permission-1", 1, "");
+        request.kind = "permissionRequest".to_string();
+        request.raw = Some(json!({
+            "requestId": "0",
+            "optionId": "allow-once"
+        }));
+        store.upsert(1, &request).unwrap();
+
+        let found = read_indexed_permission_request_by_request_id(&path, "0")
+            .unwrap()
+            .expect("permission request exists");
+        assert_eq!(found.event.id, "permission-1");
+        assert_eq!(
+            found.event.raw.and_then(|raw| {
+                raw.get("optionId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            }),
+            Some("allow-once".to_string())
         );
     }
 

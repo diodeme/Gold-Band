@@ -1628,6 +1628,65 @@ mod tests {
     }
 
     #[test]
+    fn load_settings_file_removes_retired_im_notification_preferences() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("settings.json")).unwrap();
+        let legacy = serde_json::json!({
+            "settingsSchemaVersion": 11,
+            "imIntegrations": {
+                "channels": [{
+                    "kind": "weCom",
+                    "enabled": false,
+                    "publicIdentity": "bot-id",
+                    "notifications": {
+                        "permission": true,
+                        "elicitation": false,
+                        "manualCheck": true,
+                        "runSuccess": false,
+                        "runFailure": true,
+                        "acpTurnFinished": false,
+                        "scheduledCompletion": true,
+                        "scheduledFailure": true,
+                        "scheduledAttention": true,
+                        "scheduledMissed": true
+                    }
+                }]
+            }
+        });
+        write_json(&path, &legacy).unwrap();
+
+        let settings = load_settings_file(&path).unwrap();
+        let notifications = &settings.im_integrations.channels[0].notifications;
+        assert!(notifications.permission);
+        assert!(!notifications.elicitation);
+        assert!(notifications.manual_check);
+
+        let persisted: serde_json::Value = read_json(&path).unwrap();
+        assert_eq!(
+            persisted["settingsSchemaVersion"],
+            serde_json::json!(CURRENT_SETTINGS_SCHEMA_VERSION)
+        );
+        let persisted_notifications = persisted
+            .pointer("/imIntegrations/channels/0/notifications")
+            .and_then(serde_json::Value::as_object)
+            .unwrap();
+        for retired in [
+            "scheduledCompletion",
+            "scheduledFailure",
+            "scheduledAttention",
+            "scheduledMissed",
+        ] {
+            assert!(persisted_notifications.get(retired).is_none());
+        }
+
+        let reloaded = load_settings_file(&path).unwrap();
+        assert_eq!(
+            serde_json::to_value(reloaded).unwrap(),
+            serde_json::to_value(settings).unwrap()
+        );
+    }
+
+    #[test]
     fn roll_jsonl_trims_oldest_lines_when_over_max() {
         let dir = tempfile::tempdir().unwrap();
         let path = Utf8PathBuf::from_path_buf(dir.path().join("test.jsonl")).unwrap();

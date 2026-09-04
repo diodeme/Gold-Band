@@ -295,8 +295,10 @@ function providerHistoryItemIndex(event: AcpUiEventVm) {
 }
 
 export function acpEventKey(event: AcpUiEventVm) {
-  if (event.kind === "permissionRequest")
-    return `permission:${permissionRequestIdFromEvent(event)}`;
+  if (event.kind === "permissionRequest") {
+    const requestId = permissionRequestIdFromEvent(event);
+    if (requestId) return `permission:${requestId}`;
+  }
   const attemptId = attemptIdFromAcpEvent(event) ?? event.sessionId ?? "";
   return `${attemptId}:${event.kind}:${event.id}`;
 }
@@ -324,18 +326,7 @@ export function acpSessionEventsSignature(
 
 export function permissionRequestIdFromEvent(event: AcpUiEventVm) {
   const raw = rawObject(event.raw);
-  const requestId = stringValue(raw?.requestId);
-  if (requestId) return canonicalPermissionRequestId(requestId);
-  const id = event.id;
-  const prefixes = ["permission-permission-", "permission-", "request-"];
-  for (const prefix of prefixes) {
-    if (id.startsWith(prefix)) return canonicalPermissionRequestId(id.slice(prefix.length));
-  }
-  return canonicalPermissionRequestId(id);
-}
-
-function canonicalPermissionRequestId(value: string) {
-  return value.replace(/^(permission-)+/, "");
+  return stringValue(raw?.requestId);
 }
 
 function rawObject(value: unknown): RawObject | null {

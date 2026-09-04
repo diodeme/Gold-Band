@@ -938,7 +938,7 @@ mod tests {
             round_id: "round-1".to_string(),
             node_id: "node-1".to_string(),
             attempt_id: "attempt-1".to_string(),
-            dedup_key: "project-1:run-1:round-1:node-1:attempt-1:waiting-for-user-input"
+            dedup_key: "project-1:task-1:run-1:round-1:node-1:attempt-1:waiting-for-user-input"
                 .to_string(),
         }
     }
@@ -963,7 +963,8 @@ mod tests {
     #[test]
     fn dismiss_action_roundtrip() {
         let payload = DismissActionPayload {
-            dedup_key: "project-1:run-1:round-1:node-1:attempt-1:permission-requested".to_string(),
+            dedup_key: "project-1:task-1:run-1:round-1:node-1:attempt-1:permission-requested"
+                .to_string(),
         };
         let encoded = encode_dismiss_action(&payload);
         assert!(encoded.starts_with(ACTION_DISMISS));

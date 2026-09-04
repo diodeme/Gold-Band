@@ -7067,6 +7067,7 @@ export function pendingPermissionFromEvents(
     if (event.kind !== "permissionRequest" || event.status !== "pending")
       continue;
     const requestId = permissionRequestIdFromEvent(event);
+    if (!requestId) continue;
     if (dismissedIds.has(requestId)) continue;
     return permissionRequestFromEvent(event);
   }
@@ -7078,6 +7079,7 @@ export function permissionRequestFromEvent(
 ): AcpPermissionRequestVm | null {
   if (event.kind !== "permissionRequest") return null;
   const requestId = permissionRequestIdFromEvent(event);
+  if (!requestId) return null;
   const raw: Record<string, unknown> = {
     ...(rawObject(event.raw) ?? {}),
     requestId,
@@ -8273,7 +8275,11 @@ function preserveAcpSessionMetadataForDisplay(
     previous.pendingPermissions.length === 0
     && next.pendingPermissions.length > 0
     && !pendingProjectionAdvanced;
-  const preservePendingElicitations = shouldPreservePendingElicitations(previous, next);
+  const preservePendingElicitations = shouldPreservePendingElicitations(
+    previous,
+    next,
+    pendingProjectionAdvanced,
+  );
   const preserveSettledElicitations =
     previous.pendingElicitations.length === 0
     && next.pendingElicitations.length > 0
@@ -8347,10 +8353,12 @@ function hasAdvancedAcpSessionProjection(
 function shouldPreservePendingElicitations(
   previous: AcpSessionVm,
   next: AcpSessionVm,
+  pendingProjectionAdvanced: boolean,
 ) {
   if (
     previous.pendingElicitations.length === 0 ||
     next.pendingElicitations.length > 0 ||
+    pendingProjectionAdvanced ||
     !isSessionActiveStatus(next.status)
   ) {
     return false;

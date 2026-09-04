@@ -13,7 +13,7 @@ use crate::{
             read_indexed_pending_permission, read_indexed_timeline_item, settle_permission_item,
         },
     },
-    storage::{ensure_parent_dir, read_json, write_json},
+    storage::{ensure_parent_dir, read_json, with_file_lock, write_json},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,24 +164,27 @@ pub fn write_permission_response_if_pending(
     decided_at: String,
 ) -> Result<bool> {
     let pending_path = pending_permission_file(attempt_dir, request_id);
-    if !pending_path.exists() {
+    let response_path = permission_response_file(attempt_dir, request_id);
+    let pending = with_file_lock(&response_path, || {
+        if !pending_path.exists() || response_path.exists() {
+            return Ok(None);
+        }
+        // The response file is the Runtime hand-off reservation. Persist it
+        // before settling the timeline so concurrent desktop/IM writers have
+        // one first-writer-wins boundary.
+        let pending: PendingPermissionState = read_json(&pending_path)?;
+        write_permission_response(
+            attempt_dir,
+            request_id,
+            option_id.clone(),
+            cancelled,
+            decided_at.clone(),
+        )?;
+        Ok(Some(pending))
+    })?;
+    let Some(pending) = pending else {
         return Ok(false);
-    }
-    if permission_response_file(attempt_dir, request_id).exists() {
-        return Ok(false);
-    }
-    // The provider waiter is the control-plane consumer. Persist its response
-    // before attempting to settle the timeline projection: the permission
-    // event can still be between the pending-file write and timeline/index
-    // persistence when the user responds.
-    let pending: PendingPermissionState = read_json(&pending_path)?;
-    write_permission_response(
-        attempt_dir,
-        request_id,
-        option_id.clone(),
-        cancelled,
-        decided_at.clone(),
-    )?;
+    };
     if let Some((identity, indexed)) = resolve_permission_identity(attempt_dir, &pending)? {
         if indexed.event.status.as_deref() == Some("pending") {
             let timeline_path =

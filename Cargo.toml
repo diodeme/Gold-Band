@@ -11,9 +11,13 @@ resolver = "3"
 [dependencies]
 agent-client-protocol-schema = { version = "1.6.0", features = ["unstable_elicitation"] }
 anyhow = "1"
+async-trait = "0.1"
+base64 = "0.22"
 camino = { version = "1", features = ["serde1"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 chrono-tz = "0.10"
+hmac = "0.12"
+futures-util = "0.3"
 iana-time-zone = "0.1"
 cron = "0.17"
 command-group = "5.0.1"
@@ -31,11 +35,13 @@ config = { version = "0.15", default-features = false, features = ["toml"] }
 serde_path_to_error = "0.1"
 schemars = { version = "0.8", features = ["derive"] }
 jsonschema = { version = "0.17", default-features = false }
+keyring = "4.2.0"
 minijinja = "2"
 parking_lot = "0.12"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "fs", "io-util", "sync", "time", "test-util"] }
 tokio-util = { version = "0.7", features = ["time"] }
+tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
 uuid = { version = "1", features = ["v4", "v5"] }
 tracing = "0.1"
 tracing-appender = "0.2"

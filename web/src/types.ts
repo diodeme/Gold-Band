@@ -1751,6 +1751,91 @@ export interface ScheduledRuntimeSettingsInputVm {
   occurrenceRetentionDays: number;
 }
 
+export type ImChannelKind = 'weCom';
+export type ImConnectionState = 'disabled' | 'connecting' | 'connected' | 'authenticationRequired' | 'error';
+
+export interface ImNotificationPreferencesVm {
+  permission: boolean;
+  elicitation: boolean;
+  manualCheck: boolean;
+  runSuccess: boolean;
+  runFailure: boolean;
+  acpTurnFinished: boolean;
+}
+
+export interface ImBindingSummaryVm {
+  destinationId: string;
+  conversationId: string;
+  authorizedActorId: string;
+  displayName: string;
+}
+
+export interface ImObservedBindingVm {
+  destinationId: string;
+  conversationId: string;
+  actorId: string;
+  isPrivate: boolean;
+}
+
+export interface ImChannelCapabilitiesVm {
+  proactiveDelivery: boolean;
+  cardActions: boolean;
+  messageUpdate: boolean;
+  privateChat: boolean;
+}
+
+export interface ImConnectionIdentityVm {
+  botId: string;
+  displayName: string;
+}
+
+export interface ImChannelSnapshotVm {
+  kind: ImChannelKind;
+  enabled: boolean;
+  generation: number;
+  state: ImConnectionState;
+  capabilities: ImChannelCapabilitiesVm;
+  identity: ImConnectionIdentityVm | null;
+  binding: ImObservedBindingVm | null;
+  lastConnectedAtMs: number | null;
+  lastErrorCode: string | null;
+}
+
+export interface ImChannelSettingsVm {
+  kind: ImChannelKind;
+  enabled: boolean;
+  publicIdentity: string;
+  credentialConfigured: boolean;
+  binding: ImBindingSummaryVm | null;
+  notifications: ImNotificationPreferencesVm;
+  connection: ImChannelSnapshotVm | null;
+}
+
+export interface ImSettingsVm {
+  channels: ImChannelSettingsVm[];
+}
+
+export interface SetImChannelEnabledInputVm {
+    kind: ImChannelKind;
+    enabled: boolean;
+}
+
+export interface SaveImNotificationPreferencesInputVm {
+    kind: ImChannelKind;
+    notifications: ImNotificationPreferencesVm;
+}
+
+export interface ImGenerationInputVm {
+    kind: ImChannelKind;
+    expectedGeneration: number;
+}
+
+export interface WeComScanAuthorizationVm {
+  sessionId: string;
+  authUrl: string;
+  expiresAtMs: number;
+}
+
 export interface NotificationAttentionInput {
   windowFocused: boolean;
   windowMinimized: boolean;

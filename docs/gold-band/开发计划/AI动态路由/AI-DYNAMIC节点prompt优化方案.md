@@ -67,7 +67,7 @@ runtime 需要解析 acceptance 的 `dynamic-node-completion` 并 materialize �
 - 文件系统与 workspace 的稳定规则。
 - fan-out / merge / acceptance 的稳定职责。
 - `dynamic-node-completion` 是内部控制协议。
-- 所有动态事实以本次 user hidden context 为准。
+- 节点身份、workspace、预算等动态运行事实以本次 user hidden context 为准；业务范围和验收标准仍服从用户需求与批准输入。
 
 从 system prompt 移除以下会随 invocation 变化的字段：
 
@@ -202,7 +202,7 @@ acceptance 不再完全复用普通 `execute_dynamic_agent_stage` 的终止逻�
 - 用户需求和当前任务：visible user prompt。
 - output JSON schema：output contract。
 
-如果 system、hidden、task 中出现同类信息，模型应以本次 hidden context 为准。
+如果 system、hidden、task 中出现同类运行事实，模型应以本次 hidden context 为准；hidden context 不得覆盖业务范围、明确排除项或批准验收标准。
 
 ### 5.2 需要去重的信息
 

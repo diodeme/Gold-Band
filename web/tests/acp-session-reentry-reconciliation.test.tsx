@@ -73,6 +73,7 @@ vi.mock('@/components/prompt-kit/markdown', () => ({
 }));
 
 import { getAcpActivityDetail, getAcpSession, submitConversationPrompt } from '@/api';
+import { detachConversationViewport } from './acp/detach-conversation-viewport';
 import {
   ACPChatDialog,
   createAcpEventWindowCacheKey,
@@ -189,6 +190,7 @@ async function renderDialog(
   eventPageSize?: number,
   lifecycle?: ConversationAttemptLifecycleVm,
   allowEventOnlySessionShell = true,
+  onAtBottomChange?: (atBottom: boolean) => void,
 ) {
   const container = document.createElement('div');
   document.body.append(container);
@@ -224,6 +226,7 @@ async function renderDialog(
           } : undefined}
           allowEventOnlySessionShell={allowEventOnlySessionShell}
           onInitialSessionQueryStateChange={onInitialSessionQueryStateChange}
+          onAtBottomChange={onAtBottomChange}
           showSystemPromptAction={false}
           showRawFramesAction={false}
           usageCompact
@@ -273,32 +276,6 @@ async function renderStoredOptimisticDialog(
     await new Promise((resolve) => window.setTimeout(resolve, 0));
   });
   return { container, root };
-}
-
-async function detachConversationViewport(container: HTMLElement) {
-  const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
-    .find((element) => element.classList.contains('h-full')
-      && element.classList.contains('overflow-y-auto'));
-  expect(scroller).toBeDefined();
-  if (scroller!.scrollHeight <= scroller!.clientHeight) {
-    Object.defineProperties(scroller!, {
-      clientHeight: { configurable: true, value: 100 },
-      scrollHeight: { configurable: true, value: 1_000 },
-      scrollTop: { configurable: true, value: 500, writable: true },
-    });
-  } else if (
-    scroller!.scrollHeight - scroller!.scrollTop - scroller!.clientHeight <= 2
-  ) {
-    scroller!.scrollTop = Math.max(
-      0,
-      scroller!.scrollHeight - scroller!.clientHeight - 100,
-    );
-  }
-  await act(async () => {
-    scroller!.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -1 }));
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-  });
-  return scroller!;
 }
 
 function terminalLifecycle(turnId: string): ConversationAttemptLifecycleVm {
@@ -5181,6 +5158,303 @@ describe('ACP session re-entry reconciliation', () => {
         requiresCatchUp: true,
         lossWatermarkRevision: 10,
       });
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('retries a pending automatic recovery when a covering subscription snapshot advances only revision', async () => {
+    const initial = session([
+      event('snapshot-retry-visible', 1, 'textDelta', 'revision-only 恢复前后的可见内容'),
+    ]);
+    initial.eventPage.coveredRevision = 1;
+    initial.eventPage.newestRevision = 1;
+    const canonicalHead = session([
+      event('snapshot-retry-visible', 1, 'textDelta', 'revision-only 恢复前后的可见内容'),
+    ], 'completed');
+    canonicalHead.eventPage.coveredRevision = 11;
+    canonicalHead.eventPage.newestRevision = 11;
+    canonicalHead.eventPage.newestSeq = 1;
+    let canonicalSnapshotReads = 0;
+    let resolveCanonicalRetry!: (value: AcpSessionVm) => void;
+    const pendingCanonicalRetry = new Promise<AcpSessionVm>((resolve) => {
+      resolveCanonicalRetry = resolve;
+    });
+    const requestedAfterRevisions: number[] = [];
+    const atBottomChanges: boolean[] = [];
+    vi.mocked(getAcpSession).mockImplementation(async (...args) => {
+      const afterRevision = args[6]?.afterRevision;
+      if (afterRevision == null) {
+        canonicalSnapshotReads += 1;
+        return canonicalSnapshotReads === 1 ? initial : pendingCanonicalRetry;
+      }
+      requestedAfterRevisions.push(afterRevision);
+      const nextRevision = afterRevision + 1;
+      const delta = session([
+        event(
+          `snapshot-retry-delta-${nextRevision}`,
+          nextRevision,
+          'textDelta',
+          `首次恢复追平到 revision ${nextRevision}`,
+        ),
+      ]);
+      delta.eventPage.coveredRevision = nextRevision;
+      delta.eventPage.newestRevision = nextRevision;
+      return delta;
+    });
+    applyConversationEventToBranchSnapshots({
+      ...update(event(
+        'snapshot-retry-loss',
+        1,
+        'textDelta',
+        '首次预算无法覆盖的大事件',
+        { raw: { oversized: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes) } },
+      )),
+      timelineRevision: 10,
+    });
+
+    const { container, root } = await renderDialog(
+      initial,
+      'root',
+      undefined,
+      undefined,
+      locator,
+      undefined,
+      undefined,
+      true,
+      (atBottom) => atBottomChanges.push(atBottom),
+    );
+    try {
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 120));
+      });
+      expect(requestedAfterRevisions).toEqual([1, 2, 3, 4]);
+      expect(readConversationBranchReplaySnapshot(locator, 'root').requiresCatchUp).toBe(true);
+      expect(container.textContent).toContain('revision-only 恢复前后的可见内容');
+      const readsBeforeCoveringSnapshot = canonicalSnapshotReads;
+
+      await act(async () => {
+        runtime.listener?.({
+          ...locator,
+          branchId: 'root',
+          timelineGeneration: 1,
+          timelineRevision: 11,
+          session: canonicalHead,
+        });
+      });
+
+      await vi.waitFor(() => {
+        expect(canonicalSnapshotReads).toBeGreaterThan(readsBeforeCoveringSnapshot);
+      });
+      const recoveryQuery = vi.mocked(getAcpSession).mock.calls.at(-1)?.[6];
+      expect(recoveryQuery).not.toHaveProperty('afterRevision');
+      expect(recoveryQuery).not.toHaveProperty('afterSeq');
+      expect(recoveryQuery).not.toHaveProperty('beforeSeq');
+      expect(readConversationBranchReplaySnapshot(locator, 'root').requiresCatchUp).toBe(true);
+
+      await act(async () => {
+        resolveCanonicalRetry(canonicalHead);
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+      });
+      expect(readConversationBranchReplaySnapshot(locator, 'root').requiresCatchUp).toBe(false);
+
+      await act(async () => {
+        runtime.listener?.({
+          ...update(event(
+            'snapshot-retry-live-tail',
+            2,
+            'textDelta',
+            'revision-only ACK 后继续投影的 live tail',
+          )),
+          timelineRevision: 12,
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+      });
+
+      expect(container.textContent).toContain('revision-only ACK 后继续投影的 live tail');
+      expect(atBottomChanges.at(-1)).toBe(true);
+    } finally {
+      resolveCanonicalRetry(canonicalHead);
+      await unmount(root);
+    }
+  });
+
+  it('retries a pending automatic recovery when a covering snapshot arrives only through session props', async () => {
+    const initial = session([
+      event('prop-snapshot-retry-visible', 1, 'textDelta', 'prop recovery 前的可见内容'),
+    ]);
+    initial.eventPage.coveredRevision = 1;
+    initial.eventPage.newestRevision = 1;
+    const canonicalHead = session([
+      event('prop-snapshot-retry-visible', 1, 'textDelta', 'prop recovery 前的可见内容'),
+    ], 'completed');
+    canonicalHead.eventPage.coveredRevision = 11;
+    canonicalHead.eventPage.newestRevision = 11;
+    canonicalHead.eventPage.newestSeq = 1;
+    let canonicalSnapshotReads = 0;
+    let resolveCanonicalRetry!: (value: AcpSessionVm) => void;
+    const pendingCanonicalRetry = new Promise<AcpSessionVm>((resolve) => {
+      resolveCanonicalRetry = resolve;
+    });
+    const requestedAfterRevisions: number[] = [];
+    vi.mocked(getAcpSession).mockImplementation(async (...args) => {
+      const afterRevision = args[6]?.afterRevision;
+      if (afterRevision == null) {
+        canonicalSnapshotReads += 1;
+        return canonicalSnapshotReads === 1 ? initial : pendingCanonicalRetry;
+      }
+      requestedAfterRevisions.push(afterRevision);
+      const nextRevision = afterRevision + 1;
+      const delta = session([
+        event(
+          `prop-snapshot-retry-delta-${nextRevision}`,
+          nextRevision,
+          'textDelta',
+          `prop 首次恢复追平到 revision ${nextRevision}`,
+        ),
+      ]);
+      delta.eventPage.coveredRevision = nextRevision;
+      delta.eventPage.newestRevision = nextRevision;
+      return delta;
+    });
+    applyConversationEventToBranchSnapshots({
+      ...update(event(
+        'prop-snapshot-retry-loss',
+        1,
+        'textDelta',
+        'prop 首次预算无法覆盖的大事件',
+        { raw: { oversized: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes) } },
+      )),
+      timelineRevision: 10,
+    });
+
+    const { container, root } = await renderDialog(initial);
+    try {
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 120));
+      });
+      expect(requestedAfterRevisions).toEqual([1, 2, 3, 4]);
+      expect(readConversationBranchReplaySnapshot(locator, 'root').requiresCatchUp).toBe(true);
+      const readsBeforePropRefresh = canonicalSnapshotReads;
+
+      await act(async () => {
+        root.render(
+          <TooltipProvider>
+            <ACPChatDialog
+              session={canonicalHead}
+              {...locator}
+              branchId="root"
+              showSystemPromptAction={false}
+              showRawFramesAction={false}
+              usageCompact
+            />
+          </TooltipProvider>,
+        );
+      });
+
+      expect(container.textContent).toContain('prop recovery 前的可见内容');
+      await vi.waitFor(() => {
+        expect(canonicalSnapshotReads).toBeGreaterThan(readsBeforePropRefresh);
+      });
+      const recoveryQuery = vi.mocked(getAcpSession).mock.calls.at(-1)?.[6];
+      expect(recoveryQuery).not.toHaveProperty('afterRevision');
+      expect(recoveryQuery).not.toHaveProperty('afterSeq');
+      expect(recoveryQuery).not.toHaveProperty('beforeSeq');
+      expect(readConversationBranchReplaySnapshot(locator, 'root').requiresCatchUp).toBe(true);
+
+      await act(async () => {
+        resolveCanonicalRetry(canonicalHead);
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+      });
+      expect(readConversationBranchReplaySnapshot(locator, 'root').requiresCatchUp).toBe(false);
+    } finally {
+      resolveCanonicalRetry(canonicalHead);
+      await unmount(root);
+    }
+  });
+
+  it('keeps a live tail visible when it arrives after recovery ACK but before handoff settles', async () => {
+    const initial = session([
+      event('recovery-ack-race-answer', 1, 'textDelta', 'recovery 前的旧内容'),
+    ]);
+    const recoveredAnswer = event(
+      'recovery-ack-race-answer',
+      2,
+      'textDelta',
+      'recovery ACK 前缀',
+      { startedSeq: 1, endedSeq: 2 },
+    );
+    const liveTail = event(
+      'recovery-ack-race-answer',
+      2,
+      'textDelta',
+      'ACK 后 live tail 最终内容',
+      { startedSeq: 1, endedSeq: 3 },
+    );
+    const canonicalHead = session([recoveredAnswer]);
+    Object.assign(canonicalHead.eventPage, {
+      coveredRevision: 2,
+      newestRevision: 2,
+      newestSeq: 2,
+    });
+    let resolveRecovery!: (value: AcpSessionVm) => void;
+    const pendingRecovery = new Promise<AcpSessionVm>((resolve) => {
+      resolveRecovery = resolve;
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(initial)
+      .mockReturnValueOnce(pendingRecovery)
+      .mockResolvedValue(session([liveTail]));
+    const onAtBottomChange = vi.fn();
+
+    const { container, root } = await renderDialog(
+      initial,
+      'root',
+      undefined,
+      undefined,
+      locator,
+      undefined,
+      undefined,
+      true,
+      onAtBottomChange,
+    );
+    try {
+      await vi.waitFor(() => {
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
+      });
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 20));
+      });
+      applyConversationEventToBranchSnapshots(update(recoveredAnswer));
+      await act(async () => {
+        runtime.listener?.({
+          ...locator,
+          branchId: 'root',
+          timelineGeneration: 1,
+          timelineRecoveryRequired: true,
+        });
+        await vi.waitFor(() => {
+          expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+        });
+      });
+      expect(vi.mocked(getAcpSession).mock.calls[1]?.[6]).not.toHaveProperty('afterRevision');
+      expect(vi.mocked(getAcpSession).mock.calls[1]?.[6]).not.toHaveProperty('afterSeq');
+      onAtBottomChange.mockClear();
+
+      await act(async () => {
+        resolveRecovery(canonicalHead);
+        queueMicrotask(() => {
+          queueMicrotask(() => runtime.listener?.(update(liveTail)));
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+      });
+
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain('ACK 后 live tail 最终内容');
+      });
+      expect(container.textContent).not.toContain('recovery ACK 前缀');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      expect(onAtBottomChange).toHaveBeenLastCalledWith(true);
     } finally {
       await unmount(root);
     }

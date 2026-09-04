@@ -21,6 +21,7 @@
 - 项目工作空间始终只有一个稳定的 `file-browser:<projectId>` 文件 Tab；树点击、搜索结果和会话文件链接均在该 Tab 内更新当前选中文件。`projectId + canonicalPath` 仅作为 `FileContentStore` 的文档身份；再次点击同一文件的不同链接位置只更新 `target/targetRevision`，不创建任何文件级 Tab。
 - 关闭最后一个资源 Tab 时右侧工作区同步收起。接口级验收必须按稳定 file-browser key 查询资源，并从 `selectedFile` 读取当前文件与定位 revision；连续打开任意数量的项目文件后 Tab 数仍为 1，测试和消费者不得继续依赖旧的 file key 或“每文件一 Tab”结构。
 - 会话中的本地文件链接使用“文件图标 + 语义链接文字”的轻量文本按钮形态，不使用背景、边框或阴影；图标与文字统一消费主题包的 `link` 语义色，不得复用“运行中”状态色，保留主题 `font-medium` 层级，默认不显示下划线，hover 时显示下划线，键盘 focus 使用同一 `link` 语义色保留清晰 focus ring，不可用时统一切换为 `muted-foreground`。链接目标带 `:line[:column]` 或 `#Lline[-LendLine]` 时，可见名称必须连续显示为紧凑的 `文件名:位置`，位置与文件名完全继承同一字号、字体、字重和颜色；不得用间隙、独立颜色、独立 badge、小号等宽文本或第二层底色把位置拆成附属标签。Markdown label 已含等价位置时不得重复追加。路径解析得到的 `target/targetRevision` 属于绑定 `projectId + canonicalPath` 的一次定位意图：相同链接每次点击都产生新 revision。Adapter 以 `documentKey + contentRevision + 当前 EditorView ref` 判断文档实例，不得用全文字符串相等判断，因为 CodeMirror 会规范化 CRLF。`onCreateEditor` 只初始化 View 插件；外部定位必须等受控 `value` 同步后的 React effect，再在同一个 CodeMirror transaction 中提交 selection 与官方 `EditorView.scrollIntoView(range, { y: 'center' })` effect。滚动测量、虚拟高度换算与视口更新完全交给 CodeMirror，不得用 rAF/ResizeObserver 轮询、`coordsAtPos`、估算块高度或直接写 `scrollTop` 实现第二套滚动器。transaction 成功 dispatch 后按文档身份消费 revision，文件切换不能沿用其他文件的已消费 revision。
+- 会话本地文件链接必须先经过统一 Rust resolver，再创建或更新文件资源。resolver 接受工作空间相对路径、平台绝对路径与 `file://` URL；WebView 在 Windows 会把盘符绝对路径投影成 `/C:/...` URL pathname，Rust 仅在 Windows 对满足 `/<盘符>:/` 的输入移除一个前导 `/`，Linux/macOS 必须把 `/...`（包括 `/E:/...`）保留为 Unix 绝对路径。只有 resolver 成功返回的 canonical locator 才能进入 Tab、读取、外部文件授权或系统打开链路；失败时在被点击链接旁展示结构化错误，不创建错误资源或伪造 canonical path。用户再次点击同一链接即从 resolver 重新尝试，不维护独立重试状态。同一链接请求按 `workspace handler + href + revision` 隔离；工作空间或 handler 改变后，旧请求不得阻塞新点击或把迟到错误投影到新作用域。
 - 工作空间外文件仅能由用户显式点击会话本地文件链接打开。详情显示不可点击的绝对路径，右侧目录树仍属于当前工作空间；文本、代码、配置和 SVG 源码允许编辑，图片保持只读。
 
 ## 3. 查看格式
@@ -68,8 +69,8 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 
 ## 5. 权限与安全
 
-- 前端只提交 `projectId + canonicalPath`；Rust 权威解析项目根、规范化路径并判断工作空间内外。
-- 工作空间外文件使用绑定单个 canonical path、项目、读写权限和 TTL 的 access grant。token 不进入 Tab、持久化、日志或 URL，关闭 Tab 时主动释放。
+- 链接解析阶段前端只提交 `projectId + rawHref + 可选 baseCanonicalPath`，canonical locator 只能由 Rust resolver 在解析、规范化并判断工作空间内外后返回；后续文件命令前端只提交 `projectId + canonicalPath`，不得从 raw href 自行构造 canonical path。
+- 工作空间外文件使用绑定单个 canonical path、项目、读写权限和 TTL 的 access grant。token 不进入 Tab、持久化、日志或 URL，关闭 Tab 时主动释放。同一 canonical 文件再次解析得到新 grant 时，必须先由 `FileContentStore` 按文档 identity 尝试接管并轮换运行期授权；文档尚未加载时才保存为 primed grant，不能以 file-browser 当前选中项代替真实文档生命周期。
 - 工作空间外 watcher 在每批事件发出前重新校验并读取轮换后的 grant；授权过期或释放后立即停止向前端发送该文件事件。
 - `turn-attachment` 不接受前端绝对路径。后端必须先以完整 attempt locator、branch、changeSetId 和 attachmentId 查询 finalized manifest，验证 branch ownership，再在 attempt `attachments/` 根内解析 manifest 相对路径；canonicalize 后越界、缺失、非普通文件或 symlink escape 一律拒绝。验证通过后才可复用工作空间外精确读写 grant 与 watcher。
 - 图片不使用 `file://`。Rust 完成文件签名、字节数、像素数和 revision 校验后签发 `WorkspaceFilePreviewGrantVm { token, expiresAtMs }`；SVG 禁止原始 DOM 注入和外部资源加载。

@@ -1,5 +1,89 @@
 # Changelog
 
+## [0.15.0](https://github.com/diodeme/Gold-Band/compare/v0.14.1...v0.15.0) (2026-09-04)
+
+
+### Features
+
+* **acp:** add streaming pipeline latency diagnostics ([0ff9911](https://github.com/diodeme/Gold-Band/commit/0ff99118cdba781aad3ffc416596fb30aef7ff60))
+* add multica support ([94492c4](https://github.com/diodeme/Gold-Band/commit/94492c4b4f814984ade57f9afa010bb19d905b29))
+* **ai-dynamic:** project coordination as workstreams ([8ce8032](https://github.com/diodeme/Gold-Band/commit/8ce803271e6cd3ccdb54daa0427650507aaeccb8))
+* **ai-dynamic:** publish handoff and coordination reports ([d59c63e](https://github.com/diodeme/Gold-Band/commit/d59c63edadb86aa8438ce786d394489bbd8d4ab6))
+* **collaboration:** add reviewed issue and PR workflows ([dfed2a2](https://github.com/diodeme/Gold-Band/commit/dfed2a2722175846e356a62f0a43f93b3a2c138f))
+* **conversation:** expand automatic title length ([2c661a5](https://github.com/diodeme/Gold-Band/commit/2c661a5557416f34405cdcefa2006ee3f1cafd72))
+* **conversation:** group secondary sidebar navigation ([5e25a94](https://github.com/diodeme/Gold-Band/commit/5e25a9430a59afa36f64ae531b19020677f4c174))
+* **personal-analytics:** add incremental reports and Agent insights ([0dffc1b](https://github.com/diodeme/Gold-Band/commit/0dffc1bc665e25eee18654b1379ca3746e86f686))
+* **personal-analytics:** add model and reasoning selection ([ce1c7a8](https://github.com/diodeme/Gold-Band/commit/ce1c7a801e791d855891f6cd896bb820204338c3))
+* **turn-files:** add generated attachment cards ([5a13aa2](https://github.com/diodeme/Gold-Band/commit/5a13aa2cfd0f202676672ac957b1c08489f1e92e))
+
+
+### Bug Fixes
+
+* **acp:** extend terminal route convergence timeout ([c724065](https://github.com/diodeme/Gold-Band/commit/c724065834c10aea221f005fc7a7fc57abfcaf38))
+* **acp:** offload workspace admission validation ([9cbf2b5](https://github.com/diodeme/Gold-Band/commit/9cbf2b559d3dbff2c92ec02b81d392d55efbc742)), closes [#108](https://github.com/diodeme/Gold-Band/issues/108)
+* **acp:** preserve cumulative items in history pagination ([3025b28](https://github.com/diodeme/Gold-Band/commit/3025b28ec4027b35def1db52806ab31ad5e4a036))
+* **acp:** preserve shared session ownership during eviction ([cbd51bb](https://github.com/diodeme/Gold-Band/commit/cbd51bbbbc3391decd0e1c67d22cff29d0fa363d))
+* **acp:** reconcile pending interactions with canonical timeline ([c9e82ac](https://github.com/diodeme/Gold-Band/commit/c9e82acbf88725d3a940a51cc1fd344c23627ff6))
+* **acp:** reconcile terminal state on session reentry ([b1124f8](https://github.com/diodeme/Gold-Band/commit/b1124f846448c20860fbe51589341ec220327364))
+* **acp:** recover event router subscriptions ([5d3980a](https://github.com/diodeme/Gold-Band/commit/5d3980ab82ad3c06f137719115fc8683b902759f))
+* **acp:** refine session recovery feedback ([1f16273](https://github.com/diodeme/Gold-Band/commit/1f16273199320c68d711db2b60c3d0f8f010ada3))
+* **acp:** resume canonical recovery after snapshot advances ([1161717](https://github.com/diodeme/Gold-Band/commit/1161717a1be6462dadf00aed2509eb04b8635df2))
+* **acp:** show return-to-latest when viewport detaches ([2262472](https://github.com/diodeme/Gold-Band/commit/22624727584600d83e98d4294dce5730d29c0510))
+* **acp:** stabilize timeline recovery and session isolation ([94ef947](https://github.com/diodeme/Gold-Band/commit/94ef9471769f9dc7b029c739bcf45c93010a76fc))
+* **acp:** unify user prompt interactions ([2934bf1](https://github.com/diodeme/Gold-Band/commit/2934bf148326becce7f67385cd2cc29f7643a387))
+* **acp:** validate workspace access before session admission ([77f4f98](https://github.com/diodeme/Gold-Band/commit/77f4f98c47f098082d7f6f87a14bbc56de155e5a))
+* **acp:** validate workspace before session admission ([dec34cd](https://github.com/diodeme/Gold-Band/commit/dec34cd666699db7c3fa4c7a4f65bc6084e46d78))
+* **ai-dynamic:** constrain scope across agent handoffs ([4df8ede](https://github.com/diodeme/Gold-Band/commit/4df8ede77f567ab38404fc10e366819139f439bb))
+* **ai-dynamic:** explain report manifest to successors ([c7bf84e](https://github.com/diodeme/Gold-Band/commit/c7bf84e544283e5844bf053fcd1528423280258a))
+* **ai-dynamic:** forward new-round feedback to bootstrap ([41c1adf](https://github.com/diodeme/Gold-Band/commit/41c1adfadb53d73dd12892f4b751bb88f0a60040))
+* **ai-dynamic:** harden completion and worktree lifecycle ([9f9247c](https://github.com/diodeme/Gold-Band/commit/9f9247c39590921b85a4ee85a241d8aa755e01ef))
+* **ai-dynamic:** preserve causal attachment context ([0a94fa4](https://github.com/diodeme/Gold-Band/commit/0a94fa4448a1adcb93be245b39938133b9c1649f))
+* **ai-dynamic:** split attachment prompt context ([90fb3a4](https://github.com/diodeme/Gold-Band/commit/90fb3a43f7db7ad96fbe496cad2a4ce0e23bc2ec))
+* **analytics:** correct initial state and help focus ([88ef3bc](https://github.com/diodeme/Gold-Band/commit/88ef3bcdde4c945402d3a1213b3838347fd73510))
+* **chat:** preserve manual scroll escape near bottom ([d8d0e7f](https://github.com/diodeme/Gold-Band/commit/d8d0e7f00cc035907467f4cbb94d8f25de2636b1))
+* **chat:** stabilize streaming scroll controls ([d7937ff](https://github.com/diodeme/Gold-Band/commit/d7937ff44d68de3551c3f0ded74df222bf1eea51))
+* **collaboration:** simplify issue submission forms ([a3bb9f5](https://github.com/diodeme/Gold-Band/commit/a3bb9f5815df7692e49012828231091b5ada6c62))
+* **collaboration:** validate GitHub issue forms ([cd3d480](https://github.com/diodeme/Gold-Band/commit/cd3d48026a647122010a93dabf133cb4c89c7160))
+* **composer:** multica binding chip uses accent pair for theme-safe contrast ([4dedd1d](https://github.com/diodeme/Gold-Band/commit/4dedd1d26a608cb55a00228d74fbd33c58c8f9bc))
+* **composer:** unify attached tab outline and shadow ([f040dca](https://github.com/diodeme/Gold-Band/commit/f040dca8b2498fd3a972eac8a9d03de76a9dc614))
+* **conversation:** enable image actions after sending ([b90d0ad](https://github.com/diodeme/Gold-Band/commit/b90d0adea6b87b74a95fe3baf658c43e66e2eee5))
+* **conversation:** follow runtime sessions across workflow boundaries ([b81f534](https://github.com/diodeme/Gold-Band/commit/b81f5344f633efbe6fbfcb3441b108c5c18daad7))
+* **conversation:** hide superseded Direct errors ([c22bee9](https://github.com/diodeme/Gold-Band/commit/c22bee9978fb1a27aba0accb6f4963b7a7943f3c))
+* **conversation:** isolate recreated sessions by task UUID ([f3e856a](https://github.com/diodeme/Gold-Band/commit/f3e856ad1286a16b4f36da842895635186c2df93))
+* **conversation:** make pinned session navigation independent ([0859b2a](https://github.com/diodeme/Gold-Band/commit/0859b2ad5b5aa5a9b65bd7300a78ac7389d81726))
+* **conversation:** preserve composer after runtime errors ([4beb1f8](https://github.com/diodeme/Gold-Band/commit/4beb1f812b1c720fdd3005e3fe78c3ac147ff62b))
+* **conversation:** preserve task identity during deletion ([0f23d37](https://github.com/diodeme/Gold-Band/commit/0f23d378fa88917e41542cd5e684518fa70925c6))
+* **conversation:** retire run requests before task deletion ([06163af](https://github.com/diodeme/Gold-Band/commit/06163af4d973edf77f429a125f5c007d0714be7f))
+* **conversation:** scope scheduled sidebar refresh ([552db23](https://github.com/diodeme/Gold-Band/commit/552db23b80a79c25c03ebb653c29ee07b79f872e))
+* **conversation:** settle terminal sidebar activity ([25b5e80](https://github.com/diodeme/Gold-Band/commit/25b5e806913eaab15cf8f4cd4d9746862bcf9e59))
+* **multica:** run-scoped teardown, unified state RMW, pipelined recovery ([6b44e64](https://github.com/diodeme/Gold-Band/commit/6b44e643c4ee3e3f928358320c9399719e54fbc2))
+* **notifications:** preserve conversation navigation identity ([984e65a](https://github.com/diodeme/Gold-Band/commit/984e65a6054c498406a474b8f3e59af3acae270e))
+* **personal-analytics:** align index with latest runtime ([1e00af9](https://github.com/diodeme/Gold-Band/commit/1e00af935441187173bcff8b32bf6b1b1bb5e501))
+* **prompts:** align acceptance blocking semantics ([c032c96](https://github.com/diodeme/Gold-Band/commit/c032c96104fe51247c0979dff0a9d802153cc1a1))
+* **runtime:** allow bounded attachment wrap-up on finalize ([2260e92](https://github.com/diodeme/Gold-Band/commit/2260e92f6e43b6a79764f1af18f1b358912badb6))
+* **runtime:** recover ACP panic and bind control output source ([3023509](https://github.com/diodeme/Gold-Band/commit/3023509b2604d9ffe705795eba07270a4b485746))
+* **runtime:** terminate failed startup recovery gate ([a05da91](https://github.com/diodeme/Gold-Band/commit/a05da914312ae85a13937f54ae84c85fa6e523ae))
+* **test:** align return-to-latest test with viewport-detach semantics ([389ff97](https://github.com/diodeme/Gold-Band/commit/389ff97909f069cd179d17eb8f23dde55c728234))
+* **test:** repair two main-side test defects surfaced by merge acceptance ([da0b9a4](https://github.com/diodeme/Gold-Band/commit/da0b9a469eee193cf02dc534ece0e3f75f1c8e99))
+* **watcher:** reconcile external workspace changes ([d50bae8](https://github.com/diodeme/Gold-Band/commit/d50bae893e510677ce8ff879bed852f2eae47a25))
+* **webview:** add capability-based compatibility tiers ([a0c9111](https://github.com/diodeme/Gold-Band/commit/a0c9111d90f760401be081d6107983c8167d4e7a))
+* **webview:** preserve status contrast on legacy WebKit ([96b1737](https://github.com/diodeme/Gold-Band/commit/96b1737a9f4418511018327f5175d83e1fe533df))
+* **webview:** probe CSS custom properties semantically ([d334386](https://github.com/diodeme/Gold-Band/commit/d3343863c7326f6dd7f4840e529116b33501277f))
+* **workflow:** preserve worker slots in JSON authoring ([377e1a6](https://github.com/diodeme/Gold-Band/commit/377e1a65fe68bd25b62b25e8db3cfd9f52bee5d6))
+* **workspace:** resolve Windows file link paths ([7e66cbd](https://github.com/diodeme/Gold-Band/commit/7e66cbdc1b0b644eb1b3206bd908b22c4823ae5f))
+
+
+### Performance Improvements
+
+* **acp:** batch raw frame persistence ([253e0d4](https://github.com/diodeme/Gold-Band/commit/253e0d463c4b752d57612e95970e55d6b4c61673))
+* **acp:** batch timeline persistence ([2320287](https://github.com/diodeme/Gold-Band/commit/2320287ccbe8aa6cfe729ab1f37ce8c60c9aeee6))
+* **acp:** coalesce streaming tool updates ([a5cd23b](https://github.com/diodeme/Gold-Band/commit/a5cd23b7f131aafa31ebd6d84ecdf6ba46bdac78))
+* **acp:** configure bounded chat memory limits ([e3f4894](https://github.com/diodeme/Gold-Band/commit/e3f4894f40b1a4bee68e5531d01d94ea0a05484f))
+* **acp:** reduce long-session rendering work ([f818250](https://github.com/diodeme/Gold-Band/commit/f8182504e77cc42991eebbaa5c2ee6dbe44b7fc6))
+* **ai-dynamic:** compact hidden context paths ([149b70b](https://github.com/diodeme/Gold-Band/commit/149b70b4c3bcd1d5f96ba3e6b8551eefa8715da9))
+* **conversation:** load sidebar data progressively ([cdbadc7](https://github.com/diodeme/Gold-Band/commit/cdbadc7fa343e3fd94e1c8fb245c8846b59c5d39))
+* **conversation:** optimize task activity projection ([0aaeb29](https://github.com/diodeme/Gold-Band/commit/0aaeb2945e8836bd825ee59e4cb6f6a367228781))
+
 ## [0.14.1](https://github.com/diodeme/Gold-Band/compare/v0.14.0...v0.14.1) (2026-08-26)
 
 

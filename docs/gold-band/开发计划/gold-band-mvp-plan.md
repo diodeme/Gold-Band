@@ -1428,6 +1428,15 @@ attempt-001/
 - 本轮验收：已完成导航决策、回归契约与文档静态复核；按用户要求未运行 Vitest、TypeScript、Web 生产构建或页面交互验证。
 - 性能与过度设计评审：决策为固定三项的 O(1) 分支，只在用户点击导航时执行；不新增 effect、状态、持久字段、I/O、依赖、缓存、队列或渲染订阅，现有 App 级 draft 已足以表达跨页面生命周期，无需升级为跨重启偏好。
 
+## 2026-09-05：修复渐进加载后的 ACP 配置目录关联
+
+- 根因：8 月 19 日将 ACP 详情读取移至聊天组件后，Run 聚合固定返回空 `selectedSession`，但父页面仍依赖该详情的 provider 派生 Doctor 目录。聊天组件已有会话正文与旧配置，却收不到最新目录，属于正确加载设计的消费端迁移不完整。
+- 修复：父页面传递现有 Agent registry，聊天组件按自身有效 Session provider 复用 `acpProviderConfigCatalog` 与原有新旧目录投影。不恢复 Run 聚合的详情加载，不依赖生命周期回传，不新增持久字段或缓存。
+- 失败证据：DOM 测试模拟 `session=null`、聊天组件通过接口独立加载旧模型会话；Doctor 先到、后到两种顺序均在未修复代码上得到仅含 `Old model` 的菜单，缺少 `New model`，失败原因与现场一致。
+- 验收：复现测试修复后转绿；接口投影、真实聊天 DOM、父页面传参、会话重新进入共 5 个文件 112 项测试通过；固定 Doctor 先到/后到、当前模型不被覆盖、切换 provider 后目录隔离、无关 registry 更新保持菜单 DOM 与历史 Markdown 渲染次数、目录刷新不增加正文请求。TypeScript 与 Web 生产构建通过（保留构建器现有 chunk 大小及混合导入警告）。
+- 浏览器：内置浏览器连接不可用（发现列表为空），改用 agent-browser 独立 Chromium，通过既有预览会话 deep link 验证；仅在测试页面内存中构造父 `selectedSession=null`、缓存旧目录与 registry 新目录，不读取或写入真实业务会话。1280px 菜单显示 Astra，选择后触发器变为 `GPT-6-Astra · Xhigh`；720×900 仍显示新模型，页面 `scrollWidth === clientWidth === 720`，但左侧栏展开时原有二级菜单左侧越界 36px，作为独立布局问题记录，本次不改菜单定位；重新拉宽后菜单与选择正常，浏览器无运行错误。测试浏览器与前端服务验证后清理。
+- 性能与过度设计评审：复用 React 与现有 shadcn/prompt-kit 菜单，无新增依赖、I/O、全量历史加载、轮询、队列、锁或缓存；仅 registry 或有效 provider 改变时做 Agent 查找与当前小目录投影，成本与 Agent/能力目录大小相关，不随消息历史增长。目录更新不增加正文请求、不重挂菜单、不重渲染历史 Markdown，由 DOM 测试固定，无需专项 benchmark。
+
 ## 2026-08-17：已发起 ACP 会话动态配置目录
 
 - 根因与数据边界：此前把 Run 发起时的不可变配置快照和 ACP Provider 的可变能力目录绑定在一起，导致 Doctor 已发现新模型、权限或 select config option 后，历史 session 仍只能看到旧目录。修复后 Run 初始绑定继续不可变；session override 继续按 attempt 持久化；可选目录改为 Doctor / Session 最近成功观测的投影，不新增独立 catalog aggregate。

@@ -130,9 +130,9 @@ import {
   normalizeAcpResourceCacheSessionCount,
 } from "@/lib/acp-chat-resource-cache";
 import {
+  acpProviderConfigCatalog,
   createAcpSessionConfigViewModel,
   findAcpConfigOption,
-  type AcpProviderConfigCatalog,
   type AcpSessionConfigViewModel,
 } from "@/lib/acp-session-config";
 import {
@@ -307,6 +307,7 @@ import type {
   AcpSessionVm,
   AcpUiEventVm,
   AcpUsageVm,
+  AgentRegistryVm,
   ConversationAttemptLifecycleVm,
 } from "@/types";
 
@@ -362,7 +363,7 @@ function isAcpSessionConfigValueUnavailableError(error: unknown) {
 
 interface ACPChatDialogProps {
   session?: AcpSessionVm | null;
-  providerCatalog?: AcpProviderConfigCatalog | null;
+  agentRegistry?: AgentRegistryVm | null;
   sessionEstablished?: boolean;
   sessionReferenceId?: string | null;
   projectId: string;
@@ -1245,7 +1246,7 @@ export function reconcileAcpEventPageForUpdate(
 export function ACPChatDialog(
   {
     session,
-    providerCatalog,
+    agentRegistry,
     sessionEstablished = false,
     sessionReferenceId,
     projectId,
@@ -2273,6 +2274,10 @@ export function ACPChatDialog(
   const committedSlashCommand = useMemo(
     () => parseCommittedSlashCommand(prompt, agentCommands.commands),
     [agentCommands.commands, prompt],
+  );
+  const providerCatalog = useMemo(
+    () => acpProviderConfigCatalog(agentRegistry, effective?.provider),
+    [agentRegistry, effective?.provider],
   );
   const sessionConfigViewModel = useMemo(
     () => createAcpSessionConfigViewModel(effective?.config, providerCatalog),

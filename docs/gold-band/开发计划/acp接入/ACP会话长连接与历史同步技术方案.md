@@ -938,3 +938,24 @@ resume/load 请求都携带 `sessionId`、`cwd`、过滤后的 `mcpServers` 与�
 修复后，`LiveAcpSession` 记录 connection generation、sessionId 与 route generation。开始 detach 时在同一 registry 锁内按 `AdapterConnectionKey + connectionGeneration + sessionId` 判断剩余引用：旧 alias 直接移除，最后 binding 则保留到 bounded `session/close` 完成后再精确移除，防止 connection LRU 抢先关闭 transport。新 continuation 在 restore 前检查 active owner，成功登记新 binding 后再移除旧 idle alias，转移期间不产生 manager 零引用窗口；所有 route 清理按 route generation 条件执行。connection shutdown 也按当前 generation 去重 sessionId，避免共享 alias 导致重复 close。
 
 最小失败测试先稳定复现“注销第一个共享 attempt 被误判为最后引用”，随后由同一测试确认转绿；接口回归同时覆盖不同 connection generation 不共享所有权、最后 binding 在 bounded close 期间保持登记、迟到旧 binding 不能移除 replacement binding、迟到旧 route 不能移除 replacement route，以及 connection 层 38 项测试。本阶段不增加 `Session not found` 或 transport closed 后的自动 resume；恢复策略保持现状，避免把生命周期根因修复与容错重试混为一体。
+
+## 23. 连接关闭因果日志（2026-09-05）
+
+### 范围与判断
+
+偶现追问失败现场只确认发送前 `session/resume` 遇到 `ACP adapter transport is closed`，无法确认最初关闭者。第 22 节共享 session 所有权修复仍在，不能把本次事件直接归因于同一缺陷。原设计要求旁路日志解释运行故障，但主动 shutdown 只有缺少原因和连接代次的 DEBUG 日志，属于可观测性实现不完整。本阶段仅补日志，不宣称复现或修复偶发断连，不改变回收、恢复、取消或 optimistic message 语义。
+
+### 实现与边界
+
+- 复用 `tracing` 和现有 `runtime.log` INFO 管线，不新增依赖、日志文件或配置。`AdapterShutdownReason` 要求所有主动关闭入口显式提供原因；底层读写关闭原因在 transport 所有者处记录。
+- 既有 connection generation 加 PID 关联 adapter resolved、draining、shutdown requested、first closed、later close observed、exit status；resolved 同时保留 attempt locator，并向 attempt diagnostics 写入 connection generation。首次关闭的判定复用原 `Open/Draining/Closed` 状态锁，不新建生命周期事实源；晚到 EOF 或 cleanup 不伪装为首次关闭。
+- 闲置清理保留决策时 idle 时长、TTL、max idle 和 attachment 快照；关闭请求记录 caller。单独记录 Provider `session/close` 的 sessionId/caller，便于区分共享 session 被关闭与物理 transport 被关闭。
+- 关闭前以 `try_lock` 采集 pending/active/routes 数量和 idle 时长；request ID/method 最多采样 8 条并标记截断，不采集 params、正文、附件或历史。各字段是相邻时间点的诊断快照，竞争时未知不能当作零。PID 在进程创建时保存为不可变诊断元数据，避免日志等待 child 终止锁。进程退出只记录当前可获得的状态；stdout EOF 与退出状态未知不等价于崩溃。
+
+### 验证与评审
+
+- 新增 `tests/acp_connection_logging.rs`，用测试二进制自身模拟 adapter，不依赖真实 Provider 或外部服务。修改实现前，`idle_close_is_diagnosable_at_info_level_without_payloads` 在原实现稳定失败于缺少默认 INFO 关闭事件；同一测试在补日志后转绿。这是日志缺失的复现证据，不是原偶发断连的复现证据。
+- 接口回归覆盖 TTL/容量回收、恢复 RPC 在途、active prompt 与 route 快照、workspace/provider/all 关闭、初始化失败淘汰、配置替换、standalone 释放、异常 stdout EOF 与可读退出码，以及首次原因不被后续清理覆盖、request 方法采样有界和正文不泄露。测试 fixture 进程均由现有 managed process group 启动并有界关闭。
+- 验收：`cargo test --test acp_connection_logging` 通过（1 项集成测试，另 1 项为仅供子进程调用的 ignored fixture）；`cargo test --lib acp::` 通过 448 项、忽略 1 项外部历史 fixture 测试。未通过真实 Provider 复现原偶发断连，未覆盖操作系统级管道读写错误注入；未替换或重启用户当前运行的 EXE，新增日志需使用包含本次改动的构建。
+- 过度设计评审：只增加原因枚举、有限请求元数据与统一日志投影，复用现有连接身份和生命周期；不增加 aggregate、队列、缓存、轮询或容错策略。
+- 性能评审：只在连接生命周期事件和请求拒绝/写失败时写日志，不进入 token/frame 成功热路径；每个既有 pending request 增加一个 method 字符串，随原请求回收。日志请求采样最多 8 条，计数使用既有容器长度，active prompt 求和规模为当前活跃 session 数；无历史扫描、全量加载、N+1 或新增 I/O 等待，沿用现有有界非阻塞日志与轮转，无需额外 benchmark。

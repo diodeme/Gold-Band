@@ -340,8 +340,8 @@ use crate::acp::branches::{
 use crate::acp::commands::{AcpCommandItem, parse_available_commands};
 use crate::acp::connection::{
     AcpConnectionUnavailable, AdapterConnection, AdapterConnectionKey, AdapterConnectionManager,
-    AttemptSessionUnregisterOutcome, LiveAcpSession, SessionEventPump, SessionObservedFrame,
-    SessionRouteTryRecvError, SessionRouteWatermark,
+    AdapterShutdownReason, AttemptSessionUnregisterOutcome, LiveAcpSession, SessionEventPump,
+    SessionObservedFrame, SessionRouteTryRecvError, SessionRouteWatermark,
 };
 use crate::acp::elicitation::{
     ELICITATION_DEFAULT_TIMEOUT, ElicitationAction, bind_pending_elicitation_timeline_identity,
@@ -3403,6 +3403,9 @@ impl<'a> AcpRuntime<'a> {
             provider_id,
             workspace_root = cwd.as_str(),
             outcome = resolution.outcome.as_str(),
+            pid = connection.pid(),
+            connection_generation = connection.generation(),
+            attempt_dir = paths.attempt_dir.as_str(),
             elapsed_ms = adapter_started_at.elapsed().as_millis(),
             "ACP adapter connection resolved"
         );
@@ -3417,6 +3420,7 @@ impl<'a> AcpRuntime<'a> {
                 "workspaceRoot": cwd.as_str(),
                 "outcome": resolution.outcome.as_str(),
                 "pid": connection.pid(),
+                "connectionGeneration": connection.generation(),
             })),
         );
         let runtime = Self::from_connection(
@@ -3792,9 +3796,13 @@ impl<'a> AcpRuntime<'a> {
             Ok(outcome) => outcome,
             Err(error) => {
                 if let Some(key) = self.connection_key.as_ref() {
-                    AdapterConnectionManager::shared().evict_if_current(key, &connection);
+                    AdapterConnectionManager::shared().evict_if_current(
+                        key,
+                        &connection,
+                        AdapterShutdownReason::InitializationFailed,
+                    );
                 } else {
-                    connection.shutdown();
+                    connection.shutdown(AdapterShutdownReason::InitializationFailed);
                 }
                 return Err(error);
             }
@@ -7343,7 +7351,8 @@ impl<'a> AcpRuntime<'a> {
         }
         AdapterConnectionManager::shared().unregister_attempt_session(&self.paths.attempt_dir);
         if self.connection_key.is_none() {
-            self.connection.shutdown();
+            self.connection
+                .shutdown(AdapterShutdownReason::StandaloneRelease);
         }
         unregister_provider_control(&self.paths.attempt_dir, &self.control);
     }

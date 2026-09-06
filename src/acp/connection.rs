@@ -1144,6 +1144,7 @@ impl AdapterConnection {
         require_local_claude_executable: bool,
     ) -> Result<Arc<Self>> {
         let (adapter, mut child) = spawn_adapter(
+            provider_id,
             config,
             cwd.as_std_path(),
             use_local_claude,
@@ -1278,7 +1279,7 @@ impl AdapterConnection {
     fn begin_request_with_policy(
         &self,
         method: &str,
-        params: Value,
+        mut params: Value,
         allow_draining: bool,
     ) -> Result<PendingRequest> {
         self.touch();
@@ -1294,6 +1295,7 @@ impl AdapterConnection {
             );
             return Err(error);
         }
+        super::adapter::apply_session_execution_policy(&self.provider_id, method, &mut params)?;
         let id = {
             let mut next_id = self
                 .next_id

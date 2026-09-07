@@ -1,4 +1,4 @@
-import { AcpImageStrip } from './AcpImageStrip';
+import { AcpImageStrip, useAcpToolImageReadiness } from './AcpImageStrip';
 import { MessageAttachmentPreviewButton } from './MessageAttachmentPreviewButton';
 export { MessageAttachmentPreviewButton } from './MessageAttachmentPreviewButton';
 import { acpImagesFromRaw, acpActivityImages } from '@/lib/acp-image-cache';
@@ -8900,7 +8900,13 @@ const ToolBlock = memo(function ToolBlock({
     ? detailError.message
     : null;
   const summaryDetails = toolDetails(event, false);
-  const details = open ? toolDetails(detailEvent, true) : summaryDetails;
+  const detailContainer = useRef<HTMLDivElement>(null);
+  const availableDetails = open ? toolDetails(detailEvent, true) : summaryDetails;
+  const detailLoaded = !toolDetailAvailable(event) || Boolean(activeDetailState) || availableDetails.output != null || !branchLocator || !sessionId?.trim();
+  const detailImages = acpImagesFromRaw(detailEvent.raw);
+  const thumbnailReadiness = useAcpToolImageReadiness(branchLocator, detailImages, open && detailLoaded, detailContainer);
+  const showDetail = open && detailLoaded && thumbnailReadiness.ready;
+  const details = showDetail ? availableDetails : summaryDetails;
   const ToolIcon = toolIcon(details.name);
   const orderedInput: ToolParam[] = details.queryBlocks.map((block) => ({
     label: t(block.labelKey),
@@ -8991,7 +8997,8 @@ const ToolBlock = memo(function ToolBlock({
       branchLocator.outerNodeId,
       branchLocator.outerAttemptId,
     ).then((detail) => {
-      if (!ownsToolDetailRequest(token) || !detail.event) return;
+      if (!ownsToolDetailRequest(token)) return;
+      if (!detail.event) throw { code: 'acp.tool-detail-query-failed', params: {} };
       const currentEvent = currentEventRef.current;
       const currentSourceSignature = currentSourceSignatureRef.current;
       const detailEvent = detail.event as AcpTimelineEvent;
@@ -9055,7 +9062,7 @@ const ToolBlock = memo(function ToolBlock({
   ]);
   return (
     <AssistantTimelineRow timestamp={event.timestamp} nested={nested}>
-      <div className="min-w-0 max-w-full">
+      <div ref={detailContainer} className="min-w-0 max-w-full">
         <Tool
           toolPart={toolPart}
           labels={toolLabels(t)}
@@ -9068,10 +9075,15 @@ const ToolBlock = memo(function ToolBlock({
             setOpen(next);
           }}
           animated={false}
+          renderContent={showDetail}
           variant={compact ? "audit" : "card"}
           className={compact ? "acp-activity-audit-tool" : undefined}
         />
-        {open ? <AcpImageStrip images={acpImagesFromRaw(event.raw)} locator={branchLocator} /> : null}
+        {open && !showDetail && !activeDetailError ? <div role="status" data-acp-tool-detail-loading="true"
+          className="flex h-8 items-center gap-2 px-2 text-xs text-muted-foreground">
+          <Loader2 className="size-3 animate-spin" />{t("common.loading")}
+        </div> : null}
+        {showDetail ? <AcpImageStrip images={detailImages} locator={branchLocator} prepared={thumbnailReadiness.assets} /> : null}
         {activeDetailError ? (
           <div className="mt-1 flex min-w-0 items-center justify-between gap-2 px-2 text-xs text-destructive">
             <span className="min-w-0 truncate">{activeDetailError}</span>

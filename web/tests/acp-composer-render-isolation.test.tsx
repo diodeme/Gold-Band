@@ -4,6 +4,26 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const runtime = vi.hoisted(() => ({ tauri: false }));
+
+vi.mock('@/api/shared', async () => {
+  const actual = await vi.importActual<typeof import('@/api/shared')>('@/api/shared');
+  return { ...actual, isTauriRuntime: () => runtime.tauri };
+});
+
+vi.mock('@/api/client', async () => {
+  const actual = await vi.importActual<typeof import('@/api/client')>('@/api/client');
+  return {
+    ...actual,
+    getRuntimeApi: () => ({
+      subscribeAcpSessionUpdates: async () => () => undefined,
+      getSupportedAttachmentExtensions: async () => [],
+    }),
+  };
+});
+
+vi.mock('@tauri-apps/api/event', () => ({ listen: async () => () => undefined }));
+
 const { getAgentCommandCatalog, mergeAcpEventWindowsCounter, streamdownRender } = vi.hoisted(() => ({
   getAgentCommandCatalog: vi.fn(),
   mergeAcpEventWindowsCounter: vi.fn(),
@@ -53,7 +73,8 @@ import {
 } from '@/components/acp/ACPChatDialog';
 import { GitBranchPickerSnapshotProvider } from '@/components/git/GitBranchPickerSnapshotContext';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import type { AcpSessionVm, ConversationAttemptLifecycleVm } from '@/types';
+import { getAcpSession } from '@/api';
+import type { AcpSessionVm, AgentRegistryVm, ConversationAttemptLifecycleVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -143,7 +164,9 @@ function nonRuntimeControlledLifecycle(): ConversationAttemptLifecycleVm {
 }
 
 beforeEach(() => {
+  runtime.tauri = false;
   resetAcpResourceCache();
+  vi.mocked(getAcpSession).mockReset().mockResolvedValue(null);
   getAgentCommandCatalog.mockResolvedValue({
     agentType: 'test',
     projectId: 'worktree-project',
@@ -179,6 +202,92 @@ afterEach(() => {
 });
 
 describe('ACP composer render isolation', () => {
+  it.each([false, true])('uses the loaded session provider for the Doctor catalog (registry arrives late: %s)', async (lateRegistry) => {
+    runtime.tauri = true;
+    const session: AcpSessionVm = {
+      ...completedSession(),
+      config: {
+        catalogObservedAt: '100Z',
+        modelOverrideId: 'old-model',
+        currentModelId: 'old-model',
+        models: { availableModels: [{ modelId: 'old-model', name: 'Old model' }] },
+      },
+    };
+    const registry = {
+      agents: [{
+        agentType: session.provider,
+        diagnostic: { available: true, checkedAt: '200Z' },
+        supportedModels: [
+          { id: 'old-model', name: 'Old model' },
+          { id: 'new-model', name: 'New model' },
+        ],
+      }, {
+        agentType: 'other-provider',
+        diagnostic: { available: true, checkedAt: '300Z' },
+        supportedModels: [{ id: 'other-model', name: 'Other provider model' }],
+      }],
+      catalog: [],
+    } as unknown as AgentRegistryVm;
+    let resolveSession!: (value: AcpSessionVm) => void;
+    vi.mocked(getAcpSession).mockImplementation(() => new Promise((resolve) => {
+      resolveSession = resolve;
+    }));
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const view = (agentRegistry: AgentRegistryVm | null, taskId = 'task-render') => (
+      <TooltipProvider>
+        <ACPChatDialog
+          key={taskId}
+          session={null}
+          agentRegistry={agentRegistry}
+          projectId="project-render"
+          taskId={taskId}
+          runId="run-render"
+          roundId="round-render"
+          nodeId="node-render"
+          attemptId="attempt-render"
+          sessionEstablished
+          showSystemPromptAction={false}
+          showRawFramesAction={false}
+          usageCompact
+        />
+      </TooltipProvider>
+    );
+    try {
+      await act(async () => root.render(view(lateRegistry ? null : registry)));
+      expect(getAcpSession).toHaveBeenCalledTimes(1);
+      await act(async () => resolveSession(session));
+      expect(container.textContent).toContain('historical');
+      if (lateRegistry) await act(async () => root.render(view(registry)));
+
+      const trigger = container.querySelector('[data-acp-session-config-bar] button');
+      expect(trigger?.textContent).toContain('Old model');
+      await act(async () => trigger?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+      const modelNames = () => Array.from(document.querySelectorAll('[role="menuitemradio"]')).map((item) => item.textContent);
+      expect(modelNames()).toContain('New model');
+      expect(modelNames()).not.toContain('Other provider model');
+      expect(document.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent).toBe('Old model');
+
+      const markdownRenders = streamdownRender.mock.calls.length;
+      await act(async () => root.render(view({ ...registry, agents: [registry.agents[0]!] })));
+      expect(modelNames()).toContain('New model');
+      expect(container.querySelector('[data-acp-session-config-bar] button')).toBe(trigger);
+      expect(streamdownRender).toHaveBeenCalledTimes(markdownRenders);
+      expect(getAcpSession).toHaveBeenCalledTimes(1);
+
+      await act(async () => root.render(view(registry, 'other-task')));
+      expect(getAcpSession).toHaveBeenCalledTimes(2);
+      await act(async () => resolveSession({ ...session, provider: 'other-provider' }));
+      const otherTrigger = container.querySelector('[data-acp-session-config-bar] button');
+      await act(async () => otherTrigger?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+      expect(modelNames()).toContain('Other provider model');
+      expect(modelNames()).not.toContain('New model');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('does not restore and merge the historical window on an unrelated parent render', async () => {
     const container = document.createElement('div');
     document.body.append(container);

@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::process::ChildStdin;
 use std::sync::{
     Arc, Condvar, LazyLock, Mutex, MutexGuard,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     mpsc,
 };
 use std::thread;
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Error, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde_json::{Value, json};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::acp::adapter::{ResolvedAcpAdapter, spawn_adapter};
 use crate::acp::elicitation::cancel_pending_elicitation_requests;
@@ -36,6 +36,7 @@ const EARLY_SESSION_FRAME_MAX_FRAMES: usize = 64;
 const STDERR_READ_BUFFER_SIZE: usize = 4096;
 const STDERR_LINE_MAX_BYTES: usize = 16 * 1024;
 const STDERR_RAW_PREVIEW_BYTES: usize = 256;
+const CONNECTION_DIAGNOSTIC_REQUEST_LIMIT: usize = 8;
 static NEXT_CONNECTION_GENERATION: AtomicU64 = AtomicU64::new(1);
 static NEXT_SESSION_ROUTE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
@@ -754,6 +755,56 @@ enum AdapterConnectionState {
     Closed,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum AdapterShutdownReason {
+    IdleTtl,
+    IdleCapacity,
+    ConfigChanged,
+    ProcessExited,
+    TransportUnavailable,
+    InitializationFailed,
+    WorkspaceClose,
+    ProviderClose,
+    AllConnectionsClose,
+    StandaloneRelease,
+}
+
+impl AdapterShutdownReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::IdleTtl => "idle-ttl",
+            Self::IdleCapacity => "idle-capacity",
+            Self::ConfigChanged => "config-changed",
+            Self::ProcessExited => "process-exited",
+            Self::TransportUnavailable => "transport-unavailable",
+            Self::InitializationFailed => "initialization-failed",
+            Self::WorkspaceClose => "workspace-close",
+            Self::ProviderClose => "provider-close",
+            Self::AllConnectionsClose => "all-connections-close",
+            Self::StandaloneRelease => "standalone-release",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TransportCloseReason {
+    Shutdown(AdapterShutdownReason),
+    StdoutEof,
+    StdoutReadError,
+    StdinWriteError,
+}
+
+impl TransportCloseReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Shutdown(reason) => reason.as_str(),
+            Self::StdoutEof => "stdout-eof",
+            Self::StdoutReadError => "stdout-read-error",
+            Self::StdinWriteError => "stdin-write-error",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcpConnectionUnavailable {
     Draining,
@@ -854,8 +905,37 @@ impl AdapterConnectionOutcome {
 }
 
 pub struct AdapterConnectionResolution {
-    pub connection: Arc<AdapterConnection>,
+    pub connection: AdapterConnectionUse,
     pub outcome: AdapterConnectionOutcome,
+}
+
+/// Scoped use, separate from session-specific prompt cancellation/draining.
+#[must_use]
+pub struct AdapterConnectionUse {
+    connection: Arc<AdapterConnection>,
+}
+
+impl AdapterConnectionUse {
+    // Managed connections must acquire this under the manager map lock, or
+    // before publication. A bare Arc held by readers/caches is not usage.
+    pub(crate) fn new(connection: Arc<AdapterConnection>) -> Self {
+        connection.active_users.fetch_add(1, Ordering::AcqRel);
+        Self { connection }
+    }
+}
+
+impl std::ops::Deref for AdapterConnectionUse {
+    type Target = Arc<AdapterConnection>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.connection
+    }
+}
+
+impl Drop for AdapterConnectionUse {
+    fn drop(&mut self) {
+        self.connection.active_users.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 fn is_same_connection_generation<T>(
@@ -905,6 +985,7 @@ impl PendingRequest {
 struct PendingRequestSender {
     tx: mpsc::Sender<PendingRequestResponse>,
     route_session_id: Option<String>,
+    method: String,
 }
 
 pub struct AdapterConnection {
@@ -913,6 +994,7 @@ pub struct AdapterConnection {
     adapter: ResolvedAcpAdapter,
     signature: AdapterConfigSignature,
     child: Mutex<ManagedProcessGroup>,
+    pid: u32,
     stdin: Mutex<ChildStdin>,
     next_id: Mutex<u64>,
     pending: Mutex<HashMap<u64, PendingRequestSender>>,
@@ -921,6 +1003,7 @@ pub struct AdapterConnection {
     unrouted_warnings: Mutex<HashMap<String, UnroutedWarningState>>,
     initialization: ConnectionInitialization,
     active_prompts: ActivePromptTracker,
+    active_users: AtomicUsize,
     generation: u64,
     last_activity_at: Mutex<Instant>,
     session_config_transaction: SessionConfigTransaction,
@@ -1091,6 +1174,7 @@ impl AdapterConnection {
         require_local_claude_executable: bool,
     ) -> Result<Arc<Self>> {
         let (adapter, mut child) = spawn_adapter(
+            provider_id,
             config,
             cwd.as_std_path(),
             use_local_claude,
@@ -1121,6 +1205,7 @@ impl AdapterConnection {
                 use_local_claude,
                 require_local_claude_executable,
             ),
+            pid: child.id(),
             child: Mutex::new(child),
             stdin: Mutex::new(stdin),
             next_id: Mutex::new(1),
@@ -1130,6 +1215,7 @@ impl AdapterConnection {
             unrouted_warnings: Mutex::new(HashMap::new()),
             initialization: ConnectionInitialization::default(),
             active_prompts: ActivePromptTracker::default(),
+            active_users: AtomicUsize::new(0),
             generation: NEXT_CONNECTION_GENERATION.fetch_add(1, Ordering::Relaxed),
             last_activity_at: Mutex::new(Instant::now()),
             session_config_transaction: SessionConfigTransaction::default(),
@@ -1183,10 +1269,7 @@ impl AdapterConnection {
     }
 
     pub fn pid(&self) -> u32 {
-        self.child
-            .lock()
-            .map(|child| child.id())
-            .unwrap_or_default()
+        self.pid
     }
 
     pub fn is_exited(&self) -> bool {
@@ -1227,11 +1310,23 @@ impl AdapterConnection {
     fn begin_request_with_policy(
         &self,
         method: &str,
-        params: Value,
+        mut params: Value,
         allow_draining: bool,
     ) -> Result<PendingRequest> {
         self.touch();
-        self.ensure_request_allowed(allow_draining)?;
+        if let Err(error) = self.ensure_request_allowed(allow_draining) {
+            warn!(
+                event = "acp_connection_request_rejected",
+                provider = %self.provider_id,
+                pid = self.pid,
+                connection_generation = self.generation,
+                method,
+                %error,
+                "ACP request rejected before transport write"
+            );
+            return Err(error);
+        }
+        super::adapter::apply_session_execution_policy(&self.provider_id, method, &mut params)?;
         let id = {
             let mut next_id = self
                 .next_id
@@ -1260,6 +1355,7 @@ impl AdapterConnection {
                 PendingRequestSender {
                     tx,
                     route_session_id,
+                    method: method.to_string(),
                 },
             );
         if let Err(error) = self.send_raw_frame(&frame) {
@@ -1319,7 +1415,16 @@ impl AdapterConnection {
             .and_then(|_| stdin.flush());
         if let Err(error) = write_result {
             drop(stdin);
-            self.mark_transport_closed();
+            warn!(
+                event = "acp_connection_write_failed",
+                provider = %self.provider_id,
+                pid = self.pid,
+                connection_generation = self.generation,
+                error_kind = ?error.kind(),
+                os_error = error.raw_os_error(),
+                "ACP transport write failed"
+            );
+            self.mark_transport_closed(TransportCloseReason::StdinWriteError);
             return Err(anyhow!(AcpConnectionUnavailable::Closed)
                 .context(format!("failed to write ACP adapter frame: {error}")));
         }
@@ -1412,10 +1517,22 @@ impl AdapterConnection {
             .unwrap_or(true)
     }
 
-    fn mark_transport_closed(&self) {
-        if let Ok(mut state) = self.state.lock() {
+    fn mark_transport_closed(&self, reason: TransportCloseReason) {
+        let first_close = if let Ok(mut state) = self.state.lock() {
+            let first_close = *state != AdapterConnectionState::Closed;
             *state = AdapterConnectionState::Closed;
-        }
+            Some(first_close)
+        } else {
+            None
+        };
+        self.log_lifecycle(
+            if first_close == Some(true) {
+                "acp_connection_closed"
+            } else {
+                "acp_connection_close_observed"
+            },
+            reason.as_str(),
+        );
         if let Ok(mut pending) = self.pending.lock() {
             pending.clear();
         }
@@ -1427,6 +1544,55 @@ impl AdapterConnection {
                 *early_frames = EarlySessionFrames::default();
             }
         }
+    }
+
+    fn log_lifecycle(&self, event: &'static str, reason: &'static str) {
+        // Diagnostic snapshots must not wait for cleanup locks or copy RPC payloads.
+        let pending = self.pending.try_lock().ok().map(|pending| {
+            (
+                pending.len(),
+                pending
+                    .iter()
+                    .take(CONNECTION_DIAGNOSTIC_REQUEST_LIMIT)
+                    .map(|(id, request)| (*id, request.method.clone()))
+                    .collect::<Vec<_>>(),
+            )
+        });
+        let session_routes = self
+            .session_routes
+            .try_lock()
+            .ok()
+            .map(|routes| routes.len());
+        let active_prompts = self
+            .active_prompts
+            .counts
+            .try_lock()
+            .ok()
+            .map(|counts| counts.values().copied().sum::<usize>());
+        let idle_ms = self
+            .last_activity_at
+            .try_lock()
+            .ok()
+            .map(|last| last.elapsed().as_millis() as u64);
+        info!(
+            event,
+            reason,
+            provider = %self.provider_id,
+            adapter = %self.adapter.adapter_id,
+            command = %self.adapter.command,
+            workspace = self.key.as_ref().map(|key| key.workspace_root.as_str()),
+            pid = self.pid,
+            connection_generation = self.generation,
+            state = ?self.state.try_lock().ok().map(|state| *state),
+            active_prompts,
+            active_connection_users = self.active_users.load(Ordering::Acquire),
+            pending_requests = pending.as_ref().map(|(count, _)| *count),
+            pending_methods = ?pending.as_ref().map(|(_, methods)| methods),
+            pending_methods_truncated = pending.as_ref().map(|(count, _)| *count > CONNECTION_DIAGNOSTIC_REQUEST_LIMIT),
+            session_routes,
+            idle_ms,
+            "ACP connection lifecycle"
+        );
     }
 
     fn warn_unrouted_frame(&self, value: &Value, frame_bytes: usize) {
@@ -1463,16 +1629,27 @@ impl AdapterConnection {
         );
     }
 
+    #[track_caller]
     pub fn close_session_bounded(&self, session_id: &str, timeout: Duration) -> Result<()> {
         self.close_session_bounded_with_raw_log(session_id, timeout, None)
     }
 
+    #[track_caller]
     pub fn close_session_bounded_with_raw_log(
         &self,
         session_id: &str,
         timeout: Duration,
         raw_path: Option<&Utf8Path>,
     ) -> Result<()> {
+        info!(
+            event = "acp_session_close_requested",
+            provider = %self.provider_id,
+            pid = self.pid,
+            connection_generation = self.generation,
+            session_id,
+            caller = %std::panic::Location::caller(),
+            "ACP provider session close requested"
+        );
         let request = self.begin_shutdown_request(
             "session/close",
             json!({
@@ -1569,27 +1746,42 @@ impl AdapterConnection {
         }
     }
 
-    pub fn shutdown(&self) {
-        self.mark_transport_closed();
-        if let Some(key) = &self.key {
-            debug!(provider = %key.provider_id, workspace = %key.workspace_root, "shutting down ACP adapter connection");
-        }
+    #[track_caller]
+    pub fn shutdown(&self, reason: AdapterShutdownReason) {
+        info!(
+            event = "acp_connection_shutdown_requested",
+            reason = reason.as_str(),
+            caller = %std::panic::Location::caller(),
+            pid = self.pid,
+            connection_generation = self.generation,
+            "ACP connection shutdown requested"
+        );
+        self.mark_transport_closed(TransportCloseReason::Shutdown(reason));
         if let Ok(mut stdin) = self.stdin.lock() {
             let _ = stdin.flush();
         }
         if let Ok(mut child) = self.child.lock() {
-            let _ = child.terminate(PROCESS_GROUP_TERMINATION_GRACE);
+            if let Err(error) = child.terminate(PROCESS_GROUP_TERMINATION_GRACE) {
+                warn!(
+                    event = "acp_connection_termination_failed",
+                    pid = self.pid,
+                    connection_generation = self.generation,
+                    %error,
+                    "ACP adapter process termination failed"
+                );
+            }
         }
+        log_adapter_exit(self, true);
     }
 }
 
 fn read_stdout(connection: Arc<AdapterConnection>, stdout: impl Read + Send + 'static) {
     let mut reader = BufReader::new(stdout);
     let mut line = Vec::new();
-    loop {
+    let close_reason = loop {
         line.clear();
         match reader.read_until(b'\n', &mut line) {
-            Ok(0) => break,
+            Ok(0) => break TransportCloseReason::StdoutEof,
             Ok(_) if line.iter().all(u8::is_ascii_whitespace) => {}
             Ok(frame_bytes) => {
                 let received_at = Instant::now();
@@ -1610,15 +1802,17 @@ fn read_stdout(connection: Arc<AdapterConnection>, stdout: impl Read + Send + 's
                     provider = %connection.provider_id,
                     adapter = %connection.adapter.adapter_id,
                     command = %connection.adapter.command,
+                    pid = connection.pid,
+                    connection_generation = connection.generation,
                     %error,
                     "failed reading ACP stdout"
                 );
-                break;
+                break TransportCloseReason::StdoutReadError;
             }
         }
-    }
+    };
     let transport_was_already_closed = connection.is_transport_closed();
-    connection.mark_transport_closed();
+    connection.mark_transport_closed(close_reason);
     log_adapter_exit(&connection, transport_was_already_closed);
 }
 
@@ -1722,7 +1916,20 @@ fn log_stderr_line(connection: &AdapterConnection, line: StderrLine) {
 }
 
 fn log_adapter_exit(connection: &AdapterConnection, transport_was_already_closed: bool) {
-    match connection.try_wait() {
+    let result = connection.try_wait();
+    info!(
+        event = "acp_adapter_exit_status",
+        provider = %connection.provider_id,
+        adapter = %connection.adapter.adapter_id,
+        command = %connection.adapter.command,
+        pid = connection.pid,
+        connection_generation = connection.generation,
+        transport_was_already_closed,
+        status_available = result.as_ref().is_ok_and(|status| status.is_some()),
+        exit_code = result.as_ref().ok().and_then(|status| status.as_ref()).and_then(|status| status.code()),
+        "ACP adapter exit status observed"
+    );
+    match result {
         Ok(Some(status)) => {
             if !transport_was_already_closed {
                 warn!(
@@ -1971,7 +2178,7 @@ impl AdapterConnectionManager {
         workspace_root: Utf8PathBuf,
         use_local_claude: bool,
         require_local_claude_executable: bool,
-    ) -> Result<Arc<AdapterConnection>> {
+    ) -> Result<AdapterConnectionUse> {
         Ok(self
             .get_or_spawn_with_outcome(
                 provider_id,
@@ -2015,7 +2222,14 @@ impl AdapterConnectionManager {
             .map_err(|_| anyhow!("ACP connection manager lock poisoned"))?
             .remove(&key);
         let outcome = if let Some(stale) = stale {
-            stale.shutdown();
+            let reason = if stale.signature != signature {
+                AdapterShutdownReason::ConfigChanged
+            } else if stale.is_exited() {
+                AdapterShutdownReason::ProcessExited
+            } else {
+                AdapterShutdownReason::TransportUnavailable
+            };
+            stale.shutdown(reason);
             AdapterConnectionOutcome::ReplacedStale
         } else {
             AdapterConnectionOutcome::Spawned
@@ -2029,6 +2243,7 @@ impl AdapterConnectionManager {
             use_local_claude,
             require_local_claude_executable,
         )?;
+        let connection = AdapterConnectionUse::new(connection);
         self.connections
             .lock()
             .map_err(|_| anyhow!("ACP connection manager lock poisoned"))?
@@ -2043,6 +2258,7 @@ impl AdapterConnectionManager {
         &self,
         key: &AdapterConnectionKey,
         expected: &Arc<AdapterConnection>,
+        reason: AdapterShutdownReason,
     ) -> bool {
         let removed = self.connections.lock().ok().and_then(|mut connections| {
             let matches = connections.get(key).is_some_and(|current| {
@@ -2056,7 +2272,7 @@ impl AdapterConnectionManager {
             matches.then(|| connections.remove(key)).flatten()
         });
         if let Some(connection) = removed {
-            connection.shutdown();
+            connection.shutdown(reason);
             true
         } else {
             false
@@ -2067,7 +2283,7 @@ impl AdapterConnectionManager {
         &self,
         key: &AdapterConnectionKey,
         signature: &AdapterConfigSignature,
-    ) -> Option<Arc<AdapterConnection>> {
+    ) -> Option<AdapterConnectionUse> {
         let connection = self.connections.lock().ok()?.get(key).cloned()?;
         if connection.signature != *signature
             || connection.is_exited()
@@ -2075,7 +2291,14 @@ impl AdapterConnectionManager {
         {
             return None;
         }
-        Some(connection)
+        // Health checks may touch the child lock; do not hold the pool lock
+        // across them. Revalidate membership before atomically borrowing.
+        let connections = self.connections.lock().ok()?;
+        let current = connections.get(key)?;
+        if !Arc::ptr_eq(current, &connection) {
+            return None;
+        }
+        Some(AdapterConnectionUse::new(connection))
     }
 
     pub fn register_attempt_session(
@@ -2185,6 +2408,7 @@ impl AdapterConnectionManager {
                 .iter()
                 .filter(|(key, connection)| {
                     !attached_connections.contains(&((*key).clone(), connection.generation()))
+                        && connection.active_users.load(Ordering::Acquire) == 0
                         && connection.active_prompt_count() == 0
                 })
                 .map(|(key, connection)| (key.clone(), connection.last_activity_at()))
@@ -2194,13 +2418,29 @@ impl AdapterConnectionManager {
             for (index, (key, last_activity_at)) in idle.into_iter().enumerate() {
                 if now.duration_since(last_activity_at) >= idle_ttl || index < overflow {
                     if let Some(connection) = connections.remove(&key) {
-                        removed.push(connection);
+                        let reason = if now.duration_since(last_activity_at) >= idle_ttl {
+                            AdapterShutdownReason::IdleTtl
+                        } else {
+                            AdapterShutdownReason::IdleCapacity
+                        };
+                        removed.push((connection, reason, now.duration_since(last_activity_at)));
                     }
                 }
             }
         }
-        for connection in removed {
-            connection.shutdown();
+        for (connection, reason, idle_at_selection) in removed {
+            info!(
+                event = "acp_connection_idle_eviction",
+                pid = connection.pid,
+                connection_generation = connection.generation,
+                reason = reason.as_str(),
+                idle_ttl_ms = idle_ttl.as_millis() as u64,
+                idle_ms_at_selection = idle_at_selection.as_millis() as u64,
+                attached_in_prune_snapshot = false,
+                max_idle,
+                "ACP idle connection selected for eviction"
+            );
+            connection.shutdown(reason);
         }
     }
 
@@ -2317,7 +2557,7 @@ impl AdapterConnectionManager {
             .cloned()
             .collect::<Vec<_>>();
         for key in keys {
-            self.close_connection_bounded(&key, timeout)?;
+            self.close_connection_bounded(&key, timeout, AdapterShutdownReason::WorkspaceClose)?;
         }
         Ok(())
     }
@@ -2334,7 +2574,7 @@ impl AdapterConnectionManager {
         let keys = select_provider_connection_keys(connections.keys(), provider_id);
         drop(connections);
         for key in keys {
-            self.close_connection_bounded(&key, timeout)?;
+            self.close_connection_bounded(&key, timeout, AdapterShutdownReason::ProviderClose)?;
         }
         Ok(())
     }
@@ -2348,7 +2588,11 @@ impl AdapterConnectionManager {
             .cloned()
             .collect::<Vec<_>>();
         for key in keys {
-            self.close_connection_bounded(&key, timeout)?;
+            self.close_connection_bounded(
+                &key,
+                timeout,
+                AdapterShutdownReason::AllConnectionsClose,
+            )?;
         }
         Ok(())
     }
@@ -2357,6 +2601,7 @@ impl AdapterConnectionManager {
         &self,
         key: &AdapterConnectionKey,
         timeout: Duration,
+        reason: AdapterShutdownReason,
     ) -> Result<()> {
         let connection = {
             let mut connections = self
@@ -2370,6 +2615,7 @@ impl AdapterConnectionManager {
             connections.remove(key);
             connection
         };
+        connection.log_lifecycle("acp_connection_draining", reason.as_str());
         let sessions = self
             .attempt_sessions
             .lock()
@@ -2434,7 +2680,7 @@ impl AdapterConnectionManager {
                 attempts.remove(&attempt_dir);
             }
         }
-        connection.shutdown();
+        connection.shutdown(reason);
         if close_errors.is_empty() {
             Ok(())
         } else {

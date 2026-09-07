@@ -340,8 +340,8 @@ use crate::acp::branches::{
 use crate::acp::commands::{AcpCommandItem, parse_available_commands};
 use crate::acp::connection::{
     AcpConnectionUnavailable, AdapterConnection, AdapterConnectionKey, AdapterConnectionManager,
-    AttemptSessionUnregisterOutcome, LiveAcpSession, SessionEventPump, SessionObservedFrame,
-    SessionRouteTryRecvError, SessionRouteWatermark,
+    AdapterConnectionUse, AdapterShutdownReason, AttemptSessionUnregisterOutcome, LiveAcpSession,
+    SessionEventPump, SessionObservedFrame, SessionRouteTryRecvError, SessionRouteWatermark,
 };
 use crate::acp::elicitation::{
     ELICITATION_DEFAULT_TIMEOUT, ElicitationAction, bind_pending_elicitation_timeline_identity,
@@ -2109,7 +2109,7 @@ struct AcpRuntime<'a> {
     paths: AcpAttemptPaths,
     lifecycle_owner: Option<AcpLifecycleOwner>,
     connection_key: Option<AdapterConnectionKey>,
-    connection: Arc<AdapterConnection>,
+    connection: AdapterConnectionUse,
     rx: Option<Arc<SessionEventPump>>,
     seq: u64,
     timeline_revision: u64,
@@ -3403,6 +3403,9 @@ impl<'a> AcpRuntime<'a> {
             provider_id,
             workspace_root = cwd.as_str(),
             outcome = resolution.outcome.as_str(),
+            pid = connection.pid(),
+            connection_generation = connection.generation(),
+            attempt_dir = paths.attempt_dir.as_str(),
             elapsed_ms = adapter_started_at.elapsed().as_millis(),
             "ACP adapter connection resolved"
         );
@@ -3417,6 +3420,7 @@ impl<'a> AcpRuntime<'a> {
                 "workspaceRoot": cwd.as_str(),
                 "outcome": resolution.outcome.as_str(),
                 "pid": connection.pid(),
+                "connectionGeneration": connection.generation(),
             })),
         );
         let runtime = Self::from_connection(
@@ -3474,6 +3478,7 @@ impl<'a> AcpRuntime<'a> {
             );
             error
         })?;
+        let connection = AdapterConnectionUse::new(connection);
         let runtime = Self::from_connection(
             provider_id,
             cwd,
@@ -3497,7 +3502,7 @@ impl<'a> AcpRuntime<'a> {
         _provider_id: &str,
         _workspace_dir: Utf8PathBuf,
         connection_key: Option<AdapterConnectionKey>,
-        connection: Arc<AdapterConnection>,
+        connection: AdapterConnectionUse,
         paths: AcpAttemptPaths,
         control: Arc<ProviderControl>,
         raw_max_size: u64,
@@ -3792,9 +3797,13 @@ impl<'a> AcpRuntime<'a> {
             Ok(outcome) => outcome,
             Err(error) => {
                 if let Some(key) = self.connection_key.as_ref() {
-                    AdapterConnectionManager::shared().evict_if_current(key, &connection);
+                    AdapterConnectionManager::shared().evict_if_current(
+                        key,
+                        &connection,
+                        AdapterShutdownReason::InitializationFailed,
+                    );
                 } else {
-                    connection.shutdown();
+                    connection.shutdown(AdapterShutdownReason::InitializationFailed);
                 }
                 return Err(error);
             }
@@ -7187,6 +7196,14 @@ impl<'a> AcpRuntime<'a> {
         event: &crate::acp::events::AcpUiEvent,
     ) -> crate::acp::events::AcpUiEvent {
         let mut item = event.clone();
+        if matches!(item.kind.as_str(), "toolCall" | "toolCallUpdate") {
+            if let Some(tool_call_id) = item.tool_call_id.as_deref() {
+                item.id = format!("tool-call-{tool_call_id}");
+            }
+            if let Some(previous) = self.timeline_items.get(&item.id) {
+                merge_tool_revision(&mut item, previous);
+            }
+        }
         let branch_id = event_branch_id(&item);
         let mut streams = self
             .active_timeline_streams
@@ -7252,14 +7269,6 @@ impl<'a> AcpRuntime<'a> {
                 );
             }
             "toolCall" | "toolCallUpdate" => {
-                if let Some(tool_call_id) = item.tool_call_id.clone() {
-                    item.id = format!("tool-call-{tool_call_id}");
-                }
-                // Preserve input and diff evidence from earlier revisions when
-                // the provider's terminal update only carries status/output.
-                if let Some(prev) = self.timeline_items.get(&item.id) {
-                    merge_tool_revision(&mut item, prev);
-                }
                 item.kind = "toolCall".to_string();
                 Self::finalize_non_streaming_event(
                     (&mut streams.text, &mut streams.thought, &mut streams.plan),
@@ -7343,7 +7352,8 @@ impl<'a> AcpRuntime<'a> {
         }
         AdapterConnectionManager::shared().unregister_attempt_session(&self.paths.attempt_dir);
         if self.connection_key.is_none() {
-            self.connection.shutdown();
+            self.connection
+                .shutdown(AdapterShutdownReason::StandaloneRelease);
         }
         unregister_provider_control(&self.paths.attempt_dir, &self.control);
     }
@@ -7471,6 +7481,7 @@ fn merge_tool_revision(
     new_item: &mut crate::acp::events::AcpUiEvent,
     prev: &crate::acp::events::AcpUiEvent,
 ) {
+    crate::acp::branches::preserve_tool_call_origin(new_item, prev);
     if new_item.title.is_none() {
         new_item.title.clone_from(&prev.title);
     }
@@ -9949,6 +9960,79 @@ mod tests {
         assert!(text.is_none());
         assert!(thought.is_none());
         assert!(plan.is_none());
+    }
+
+    #[test]
+    fn agent_progress_revision_preserves_launch_ownership() {
+        use crate::acp::branches::{
+            annotate_event_branch, event_branch_id, stable_agent_execution_id,
+        };
+        use crate::acp::events::normalize_session_update;
+
+        for parent in [None, Some("outer-agent")] {
+            let mut launch = normalize_session_update(
+                2,
+                Some("session-1".into()),
+                &json!({
+                    "sessionUpdate": "tool_call", "toolCallId": "agent-a", "status": "pending",
+                    "_meta": { "claudeCode": { "toolName": "Agent", "subagent": true,
+                        "parentToolUseId": parent } }
+                }),
+            );
+            annotate_event_branch(&mut launch);
+            let mut progress = normalize_session_update(
+                4,
+                Some("session-1".into()),
+                &json!({
+                    "sessionUpdate": "tool_call_update", "toolCallId": "agent-a", "status": "in_progress",
+                    "_meta": { "claudeCode": { "toolName": "Agent", "parentToolUseId": "agent-a",
+                        "toolResponse": { "elapsedTimeSeconds": 30 } } }
+                }),
+            );
+            merge_tool_revision(&mut progress, &launch);
+            assert_eq!(
+                progress
+                    .raw
+                    .as_ref()
+                    .unwrap()
+                    .pointer("/_meta/claudeCode/toolResponse/elapsedTimeSeconds"),
+                Some(&json!(30))
+            );
+            annotate_event_branch(&mut progress);
+            let expected = parent
+                .map(|id| stable_agent_execution_id("session-1", id))
+                .unwrap_or_else(|| "root".into());
+            assert_eq!(event_branch_id(&progress), expected);
+            assert_eq!(progress.started_seq, Some(2));
+            assert_eq!(progress.status.as_deref(), Some("in_progress"));
+            assert_eq!(
+                crate::acp::branches::agent_relation(&progress)
+                    .unwrap()
+                    .parent_tool_call_id
+                    .as_deref(),
+                parent
+            );
+
+            let mut terminal = normalize_session_update(
+                6,
+                Some("session-1".into()),
+                &json!({
+                    "sessionUpdate": "tool_call_update", "toolCallId": "agent-a", "status": "completed",
+                    "_meta": { "claudeCode": { "toolResponse": { "content": "Audit complete" } } }
+                }),
+            );
+            merge_tool_revision(&mut terminal, &progress);
+            let result = crate::acp::branches::agent_result_event(&terminal).unwrap();
+            assert_eq!(
+                event_branch_id(&result),
+                stable_agent_execution_id("session-1", "agent-a")
+            );
+            assert_eq!(result.content.as_deref(), Some("Audit complete"));
+            annotate_event_branch(&mut terminal);
+            assert_eq!(event_branch_id(&terminal), expected);
+            assert_eq!(terminal.started_seq, Some(2));
+            assert_eq!(terminal.status.as_deref(), Some("completed"));
+        }
     }
 
     #[test]

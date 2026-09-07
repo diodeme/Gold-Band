@@ -1,3 +1,7 @@
+import { AcpImageStrip } from './AcpImageStrip';
+import { MessageAttachmentPreviewButton } from './MessageAttachmentPreviewButton';
+export { MessageAttachmentPreviewButton } from './MessageAttachmentPreviewButton';
+import { acpImagesFromRaw, acpActivityImages } from '@/lib/acp-image-cache';
 import {
   createContext,
   memo,
@@ -23,7 +27,6 @@ import {
   Copy,
   Eye,
   FileText,
-  Image as ImageIcon,
   ListTodo,
   Loader2,
   Search,
@@ -66,13 +69,13 @@ import {
   type ChatContainerContext,
   type ChatContainerFollowIntentCause,
   useOptionalChatContainerContentExpansion,
+  useChatContainerDisclosure,
 } from "@/components/prompt-kit/chat-container";
 import {
   ConversationViewport,
   ConversationViewportFooter,
 } from "@/components/conversation/ConversationViewport";
 import { InterventionLayer } from "@/components/conversation/InterventionLayer";
-import { ImageActionsContextMenu } from "@/components/shared/ImageActionsContextMenu";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import {
   Message,
@@ -109,7 +112,6 @@ import {
 } from "@/lib/system-prompt-view-pref";
 import { goldThemedScrollbarClassName } from "@/lib/themed-scrollbar";
 import { BoundedLruCache } from "@/lib/bounded-lru-cache";
-import { useImageActions } from "@/hooks/useImageActions";
 import {
   AcpLatestWinsEventBuffer,
   decideAcpLiveEventFlush,
@@ -137,8 +139,6 @@ import {
 } from "@/lib/acp-session-config";
 import {
   groupMessageAttachmentPreviews,
-  imageSrcFromContent,
-  isImageMessageAttachment,
   isTaskInputMessageAttachment,
   messageAttachmentPreviewsFromRaw,
   type MessageAttachmentPreview,
@@ -258,8 +258,6 @@ import {
   setAcpSessionPermissionMode,
   showArtifact,
   showAttachment,
-  showConversationAttachment,
-  showConversationMessageAttachment,
   stopActiveSession,
   submitManualCheck,
 } from "@/api";
@@ -293,7 +291,7 @@ import {
   startAcpReturnToLatestVisualProbe,
   type AcpReturnToLatestVisualProbe,
 } from "@/lib/acp-return-to-latest-visual-probe";
-import { displayAppError, displayStatus } from "@/i18n";
+import i18n, { displayAppError, displayStatus } from "@/i18n";
 import type {
   AcpElicitationRequestVm,
   AcpPermissionRequestVm,
@@ -481,6 +479,7 @@ type AcpTimelineWindowOwner = {
 const AcpTimelineWindowOwnerContext = createContext<AcpTimelineWindowOwner | null>(null);
 
 type AcpActivityBatch = {
+  images?: import('@/types').AcpImageRef[];
   kind: "activityBatch";
   id: string;
   seq: number;
@@ -541,6 +540,7 @@ export function shouldShowReturnToLatest(
   distanceFromBottom: number,
 ) {
   if (isAcpConversationAtBottom(viewportAtBottom, hasNewerEvents)) return false;
+  if (hasNewerEvents) return true;
   if (currentlyVisible) return true;
   return activationEligible
     && distanceFromBottom >= RETURN_TO_LATEST_SHOW_DISTANCE_PX;
@@ -1712,7 +1712,7 @@ export function ACPChatDialog(
   const isHistoricalTimelineWindow = useCallback(() => (
     hasNewerEventsRef.current
     || paginationDirectionRef.current !== null
-    || !viewportAtBottomRef.current
+    || viewportManualIntentRef.current
   ), []);
 
   const hasExplicitHistoricalTimelineIntent = useCallback(() => (
@@ -2148,7 +2148,7 @@ export function ACPChatDialog(
       eventWindowKey,
       captureAcpBranchViewState(
         scroller,
-        viewportAtBottomRef.current,
+        chatContainerContextRef.current?.getContentExpansionFollowIntent() ?? viewportAtBottomRef.current,
         hasOlderEventsRef.current,
         hasNewerEventsRef.current,
       ),
@@ -3046,11 +3046,7 @@ export function ACPChatDialog(
       commitHasNewerEvents(true);
       return;
     }
-    if (
-      hasNewerEventsRef.current
-      || paginationDirectionRef.current !== null
-      || !viewportAtBottomRef.current
-    ) {
+    if (isHistoricalTimelineWindow()) {
       // The visible list is a historical window. The router has already
       // retained this live event for replay, so keep the user's window and
       // anchor intact and expose the existing newer-pagination path.
@@ -3060,6 +3056,11 @@ export function ACPChatDialog(
     commitHasNewerEvents(false);
     const activeWindow = loadedEventWindowRef.current;
     const merged = mergeAcpEvents(activeWindow.events, normalizedUpdates);
+    if (!viewportAtBottomRef.current && merged.length > effectiveLoadedEventBufferLimit) {
+      // Keep the reading anchor instead of evicting it to make room for live data.
+      commitHasNewerEvents(true);
+      return;
+    }
     const limited = limitAcpEvents(
       merged,
       "start",
@@ -3074,7 +3075,7 @@ export function ACPChatDialog(
       ...activeWindow,
       events: limited,
     });
-  }, [commitHasNewerEvents, commitLoadedEventWindow, effectiveLoadedEventBufferLimit, eventWindowKey, normalizeEventUpdate, settleOptimisticPromptAdmissions]);
+  }, [commitHasNewerEvents, commitLoadedEventWindow, effectiveLoadedEventBufferLimit, eventWindowKey, isHistoricalTimelineWindow, normalizeEventUpdate, settleOptimisticPromptAdmissions]);
 
   const applyEventUpdate = useCallback((
     event: AcpUiEventVm | null | undefined,
@@ -3189,6 +3190,9 @@ export function ACPChatDialog(
   ) => {
     if (following) {
       viewportManualIntentRef.current = false;
+      if (cause !== "external-scroll-to-bottom" && hasNewerEventsRef.current) {
+        requestCanonicalHeadRecoveryRef.current?.(true);
+      }
       return;
     }
     if (
@@ -3215,7 +3219,7 @@ export function ACPChatDialog(
         showReturnToLatestRef.current,
         viewportAtBottom,
         hasNewerEventsRef.current,
-        viewportManualIntentRef.current || hasNewerEventsRef.current,
+        !viewportAtBottom || hasNewerEventsRef.current,
         distanceFromBottom,
       ),
       "at-bottom-change",
@@ -3226,7 +3230,7 @@ export function ACPChatDialog(
         eventWindowKey,
         captureAcpBranchScrollState(
           scroller,
-          viewportAtBottom,
+          chatContainerContextRef.current?.getContentExpansionFollowIntent() ?? viewportAtBottom,
           hasOlderEventsRef.current,
           hasNewerEventsRef.current,
         ),
@@ -3490,7 +3494,9 @@ export function ACPChatDialog(
     } else {
       scroller.scrollTop = pending.scrollTop;
     }
-    chatContainerContextRef.current?.stopScroll();
+    if (chatContainerContextRef.current?.getContentExpansionFollowIntent() == null) {
+      chatContainerContextRef.current?.stopScroll();
+    }
     const distanceFromBottom = scroller.scrollHeight
       - scroller.scrollTop
       - scroller.clientHeight;
@@ -4819,7 +4825,8 @@ export function ACPChatDialog(
       return false;
     }
 
-    const preserveDetachedViewport = viewportManualIntentRef.current;
+    const preserveDetachedViewport = viewportManualIntentRef.current
+      || chatContainerContextRef.current?.getContentExpansionFollowIntent() != null;
     const scroller = chatContainerContextRef.current?.scrollRef.current;
     const detachedViewState = preserveDetachedViewport && scroller
       ? captureAcpBranchViewState(
@@ -5130,6 +5137,7 @@ export function ACPChatDialog(
 
   const handleReturnToLatestEvents = () => {
     viewportManualIntentRef.current = false;
+    chatContainerContextRef.current?.stopScroll();
     if (!hasNewerEventsRef.current) {
       void chatContainerContextRef.current?.scrollToBottom({
         animation: "instant",
@@ -5884,7 +5892,7 @@ export function ACPChatDialog(
     }
     storeAcpBranchViewState(eventWindowKey, captureAcpBranchScrollState(
       scroller,
-      viewportAtBottomRef.current,
+      chatContainerContextRef.current?.getContentExpansionFollowIntent() ?? viewportAtBottomRef.current,
       hasOlderEventsRef.current,
       hasNewerEventsRef.current,
     ));
@@ -5975,6 +5983,7 @@ export function ACPChatDialog(
       effectiveEvents,
       bannerRuntimeErrorFallback,
       localLifecycle?.acp.latestTurnStatus,
+      localLifecycle ? localLifecycle.acp.turnError ?? null : undefined,
     );
 
   return (
@@ -6650,7 +6659,7 @@ function AcpErrorBanner({ reason, title }: { reason: string; title?: string }) {
       <span className="font-semibold text-destructive">
         {title ?? t("acp.sessionFailed")}
       </span>
-      <span className="ml-2 text-muted-foreground">{reason}</span>
+      <span className="ml-2 whitespace-pre-wrap text-muted-foreground [overflow-wrap:anywhere]">{reason}</span>
     </div>
   );
 }
@@ -7692,6 +7701,8 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
   currentRequestScopeRef.current = requestScopeKey;
   currentEventRef.current = event;
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const collapseRef = useRef<HTMLButtonElement>(null);
+  const pendingExpansionPositionRef = useRef(false);
   const detailListRef = useRef<HTMLDivElement>(null);
   const pendingDetailAnchorRef = useRef<{ key: string; top: number } | null>(null);
   const disclosureTokenRef = useRef<ChatContainerContentExpansionToken | null>(null);
@@ -7702,6 +7713,12 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
   const activeDetailError = activeDetailWindow.error?.scopeKey === requestScopeKey
     ? activeDetailWindow.error
     : null;
+  useLayoutEffect(() => {
+    if (!open || !pendingExpansionPositionRef.current || !collapseRef.current) return;
+    if (event.detailAvailable && !activeDetailWindow.detailLoaded && !activeDetailError) return;
+    pendingExpansionPositionRef.current = false;
+    contentExpansion?.positionContentExpansion(disclosureTokenRef.current, collapseRef.current);
+  }, [open, activeDetailWindow.detailLoaded, activeDetailError, event.detailAvailable, contentExpansion]);
   const summary = activityBatchSummary(event, t);
   useEffect(() => {
     mountedRef.current = true;
@@ -7864,6 +7881,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
   ]);
   const handleOpenChange = (next: boolean) => {
     openRef.current = next;
+    pendingExpansionPositionRef.current = next;
     if (!next) trailingDetailRequestRef.current = null;
     let restoringBottom = false;
     if (next) {
@@ -7872,6 +7890,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
       const token = disclosureTokenRef.current;
       disclosureTokenRef.current = null;
       restoringBottom = contentExpansion?.endContentExpansion(token) ?? false;
+      restoringBottom ||= contentExpansion?.getContentExpansionFollowIntent() === true;
     }
     setOpen(next);
     if (next && !activeDetailWindow.detailLoaded && event.detailAvailable) {
@@ -7879,6 +7898,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
     }
     if (!next && !restoringBottom) {
       requestAnimationFrame(() => {
+        if (!mountedRef.current || openRef.current) return;
         triggerRef.current?.scrollIntoView?.({ block: "nearest" });
       });
     }
@@ -7992,6 +8012,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
                   variant="ghost"
                   size="sm"
                   className="acp-activity-collapse-button h-7 gap-1.5 px-2 text-xs font-normal text-muted-foreground hover:bg-muted/40 hover:text-foreground"
+                  ref={collapseRef}
                   onClick={() => handleOpenChange(false)}
                 >
                   <ChevronDown className="size-3.5 rotate-180" aria-hidden="true" />
@@ -8002,6 +8023,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
           </CollapsibleContent>
         ) : null}
       </Collapsible>
+      {!event.live ? <AcpImageStrip images={event.images ?? []} locator={branchLocator} /> : null}
     </AssistantTimelineRow>
   );
 });
@@ -8702,133 +8724,6 @@ function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-export const MessageAttachmentPreviewButton = memo(function MessageAttachmentPreviewButton({
-  attachment,
-  locator,
-  onClick,
-}: {
-  attachment: MessageAttachmentPreview;
-  locator?: MessageAttachmentLocator;
-  onClick?: (attachment: MessageAttachmentPreview) => void;
-}) {
-  const isImage = isImageMessageAttachment(attachment);
-  const attachmentLabel = `${attachment.name} (${formatAttachmentSize(attachment.size)})`;
-  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!isImage || !locator) {
-      setPreviewSrc(null);
-      return;
-    }
-    let cancelled = false;
-    setPreviewSrc(null);
-    const contentPromise = isTaskInputMessageAttachment(attachment)
-      ? showConversationAttachment(locator.projectId, locator.taskId, attachment.name)
-      : showConversationMessageAttachment(
-          locator.projectId,
-          locator.taskId,
-          locator.runId,
-          locator.roundId,
-          locator.nodeId,
-          locator.attemptId,
-          attachment.name,
-          attachment.path,
-          locator.outerNodeId,
-          locator.outerAttemptId,
-        );
-    contentPromise
-      .then((content) => {
-        if (!cancelled) setPreviewSrc(imageSrcFromContent(content));
-      })
-      .catch(() => {
-        if (!cancelled) setPreviewSrc(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [attachment.name, attachment.path, isImage, locator]);
-
-  const imageActions = useImageActions(isImage && previewSrc ? {
-    name: attachment.name,
-    mime: attachment.type,
-    previewUrl: previewSrc,
-  } : null);
-
-  if (isImage) {
-    const previewButton = (
-      <button
-        type="button"
-        className={cn(
-          "relative size-[72px] overflow-hidden rounded-lg border border-border/60 bg-card/80 text-muted-foreground shadow-sm transition-colors hover:border-primary/45 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-          imageActions.state === 'failed' && "ring-1 ring-destructive/70",
-        )}
-        aria-label={attachment.name}
-        aria-busy={imageActions.pending || undefined}
-        onClick={() => onClick?.(attachment)}
-      >
-        {previewSrc ? (
-          <img
-            src={previewSrc}
-            alt={attachment.name}
-            loading="lazy"
-            draggable={false}
-            className="size-full object-cover"
-          />
-        ) : (
-          <span className="flex size-full items-center justify-center bg-muted/40">
-            <ImageIcon className="size-5 text-blue-400" />
-          </span>
-        )}
-        {imageActions.pending ? (
-          <span className="absolute inset-0 flex items-center justify-center bg-background/65">
-            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-          </span>
-        ) : imageActions.state === 'copied' || imageActions.state === 'saved' ? (
-          <span className="absolute right-1 top-1 flex size-5 items-center justify-center rounded-full bg-background/85 text-emerald-600 shadow-sm">
-            <Check className="size-3" aria-hidden="true" />
-          </span>
-        ) : imageActions.state === 'failed' ? (
-          <span className="absolute right-1 top-1 flex size-5 items-center justify-center rounded-full bg-background/85 text-destructive shadow-sm">
-            <CircleAlert className="size-3" aria-hidden="true" />
-          </span>
-        ) : null}
-      </button>
-    );
-    return (
-      <Tooltip>
-        {previewSrc ? (
-          <ImageActionsContextMenu actions={imageActions}>
-            <TooltipTrigger asChild>{previewButton}</TooltipTrigger>
-          </ImageActionsContextMenu>
-        ) : (
-          <TooltipTrigger asChild>{previewButton}</TooltipTrigger>
-        )}
-        <TooltipContent className="max-w-[360px] break-all">
-          {imageActions.message ?? attachmentLabel}
-        </TooltipContent>
-        {imageActions.message ? (
-          <span className="sr-only" aria-live="polite">{imageActions.message}</span>
-        ) : null}
-      </Tooltip>
-    );
-  }
-
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          className="inline-flex h-9 w-fit max-w-full shrink-0 items-center gap-1.5 rounded-full border border-border/60 bg-card/80 px-3 text-ui-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          onClick={() => onClick?.(attachment)}
-        >
-          <FileText className="size-3 text-muted-foreground" />
-          <span className="max-w-[120px] truncate">{attachment.name}</span>
-        </button>
-      </TooltipTrigger>
-      <TooltipContent className="max-w-[360px] break-all">{attachmentLabel}</TooltipContent>
-    </Tooltip>
-  );
-});
 
 const AnimatedEllipsis = memo(function AnimatedEllipsis() {
   return (
@@ -8856,6 +8751,7 @@ const ThoughtBlock = memo(function ThoughtBlock({
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const changeDisclosure = useChatContainerDisclosure();
   if (!event.content?.trim()) return null;
   const itemKey = timelineEventKey(event);
   const streaming = itemKey === streamingMarkdownItemKey;
@@ -8873,7 +8769,10 @@ const ThoughtBlock = memo(function ThoughtBlock({
       >
         <ChainOfThoughtStep
           open={open}
-          onOpenChange={setOpen}
+          onOpenChange={(next) => {
+            changeDisclosure(next);
+            setOpen(next);
+          }}
         >
           <ChainOfThoughtTrigger
             leftIcon={<Clock className="size-4" />}
@@ -8948,6 +8847,7 @@ const ToolBlock = memo(function ToolBlock({
     observedRevision,
   );
   const [open, setOpen] = useState(false);
+  const changeDisclosure = useChatContainerDisclosure();
   const [detailState, setDetailState] = useState<AcpToolDetailState | null>(null);
   const [detailError, setDetailError] = useState<{
     scopeKey: string;
@@ -9154,6 +9054,7 @@ const ToolBlock = memo(function ToolBlock({
           icon={<ToolIcon className="size-4" />}
           open={open}
           onOpenChange={(next) => {
+            changeDisclosure(next);
             openRef.current = next;
             if (!next) trailingToolDetailRequestRef.current = false;
             setOpen(next);
@@ -9162,6 +9063,7 @@ const ToolBlock = memo(function ToolBlock({
           variant={compact ? "audit" : "card"}
           className={compact ? "acp-activity-audit-tool" : undefined}
         />
+        {open ? <AcpImageStrip images={acpImagesFromRaw(event.raw)} locator={branchLocator} /> : null}
         {activeDetailError ? (
           <div className="mt-1 flex min-w-0 items-center justify-between gap-2 px-2 text-xs text-destructive">
             <span className="min-w-0 truncate">{activeDetailError}</span>
@@ -10128,10 +10030,29 @@ export function visibleAcpBannerError(
   events: AcpUiEventVm[],
   runtimeErrorFallback?: string | null,
   latestTurnStatus?: ConversationAttemptLifecycleVm['acp']['latestTurnStatus'],
+  canonicalTurnError?: AcpSessionVm['turnError'],
 ) {
   if (runtimeError) return runtimeError;
   if (latestTurnStatus === 'completed') return null;
-  if (session.diagnostics.lastError) return visibleSessionError(session, events);
+  const failed = latestTurnStatus === 'failed'
+    || (latestTurnStatus == null && session.status === 'failed');
+  const error = canonicalTurnError === undefined ? session.turnError : canonicalTurnError;
+  if (failed && error) {
+    const summary = displayAppError(i18n.t, { code: error.code.code, params: error.params ?? {} });
+    const raw = rawObject(error.raw);
+    const data = rawObject(raw?.data);
+    const detail = stringValue(data?.details) ?? stringValue(data?.message)
+      ?? stringValue(raw?.message) ?? error.diagnostic;
+    return detail ? `${summary}\n${detail}` : summary;
+  }
+  if (failed && canonicalTurnError !== undefined) {
+    return runtimeErrorFallback ?? i18n.t('errors.acp.turn-execution-failed');
+  }
+  if (session.diagnostics.lastError) {
+    const diagnostic = visibleSessionError(session, events);
+    if (diagnostic || !failed) return diagnostic;
+  }
+  if (failed) return runtimeErrorFallback ?? i18n.t('errors.acp.turn-execution-failed');
   return runtimeErrorFallback ?? null;
 }
 
@@ -10141,7 +10062,8 @@ export function acpSessionLoadErrorReason(
   session: AcpSessionVm | null | undefined,
   fallback: string,
 ) {
-  return runtimeError ?? sessionLoadError ?? session?.diagnostics.lastError ?? fallback;
+  return runtimeError ?? sessionLoadError
+    ?? (session ? visibleAcpBannerError(null, session, session.events) : null) ?? fallback;
 }
 
 function visibleSessionError(session: AcpSessionVm, events: AcpUiEventVm[]) {
@@ -10574,6 +10496,7 @@ function batchAcpActivities(
     );
     result.push({
       kind: "activityBatch",
+      images: acpActivityImages(activityEvents),
       id: `activity-${activityStartSeq}`,
       seq: first.startedSeq ?? first.seq,
       timestamp: first.startedAt ?? first.timestamp,
@@ -10693,11 +10616,6 @@ function arrayValue(value: unknown): unknown[] | null {
   return Array.isArray(value) ? value : null;
 }
 
-function formatAttachmentSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function mergeRaw(previous: unknown, next: unknown) {
   return mergeRawObject(previous, next);

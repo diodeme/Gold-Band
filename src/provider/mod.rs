@@ -2441,7 +2441,7 @@ fn runtime_system_context(req: &WorkerInvocation) -> Result<RuntimePromptTemplat
     })
 }
 
-fn render_artifact_finalize_prompt(
+pub(crate) fn render_artifact_finalize_prompt(
     language: crate::config::DesktopLanguage,
     contract: &PromptOutputContract,
     execution_surface: PromptExecutionSurface,

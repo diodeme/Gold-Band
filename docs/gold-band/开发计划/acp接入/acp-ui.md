@@ -2,6 +2,9 @@
 
 ## 0. 当前实现状态
 
+- 2026-09-07 工具返回图片：按标准工具 content 优先、`rawOutput.result.content[]` 兜底识别，基于原工具身份建立轻量图片投影。新图片复用 Timeline 内容哈希 blob，过程摘要携带引用；结束后的过程栏下方、附件/diff 卡片之前显示横向缩略栏，工具详情与该栏复用一个有界资源缓存。已发送图片控件提取为共享组件，复用右键复制/另存为和工作区大图看板，操作按需读取原图并使用实际 MIME。原因是既有多模态工具结果没有进入展示投影，修复范围不依赖特定 Agent 或截图工具。详细契约见产品设计 `interaction/app/acp-tool-images.md`。
+- 图片验收：先观察 Rust 小图片没有 blob 引用及 DOM 过程后不存在图片栏的失败，再修改实现；回归覆盖标准/扩展选择、两个来源图片正文剥离、blob 与摘要无 Base64、引用版本和作用域、真实格式/尺寸限制、共享请求/URL、缓存淘汰及原图操作。ACP 核心首轮 452 项通过（1 项忽略），最后补充的图片解析/正文剥离 2 项及 Timeline 图片回归通过；桌面解码测试、指定真实会话的存储读取/解码回放通过。前端相关 28 项测试、TypeScript 检查和生产构建通过。生产构建浏览器验证明暗主题、720px 窄窗口、横向多图、过程展开、右键菜单与图片 Tab：18 张仅请求首屏可见 9 张，展开工具详情复用相同 URL 且不增加请求，原图另按需读取。验证未启动 EXE，临时浏览器入口和进程在结束时清理。
+
 - 2026-08-31 删除已废弃的 `RoundDetailPage` 及 workbench `round-detail` 路由/状态消费路径；工作流 Round 行与系统干预通知统一进入 canonical `conversation-run`。旧 workbench Round deep link 不再恢复已删除页面，前端不保留兼容分支。
 - 2026-08-31 修复 ACP terminal error 后重进会话关闭输入框：根因是全局 branch snapshot 把一次过渡态完整 lifecycle（含 `runtimeDisplay/composer` 派生结果）按 ACP revision 长期缓存，并在 canonical lifecycle 之后回放。缓存现只保留独立 revision 的 ACP/queue 事实与 branch/timeline 投影；后端 Runtime display 保持 composer 阻塞语义权威，`runtime-abnormal` 仍可输入。Direct Runtime facet 补 run execution revision 水位但不消费 Workflow phase。最小重进 DOM 测试、facet 合并测试与 router 结构测试固定该契约，不新增请求、订阅、缓存或兼容层。
 - 2026-09-01 修复 Direct follow-up 已正常响应但旧错误横幅仍常驻：首次修复只在父页面按 leaf lifecycle 降级 run error，且第二次实现仍假设 effective session 一定携带 `diagnostics.lastError`；生产续轮的 ACP live/submit lifecycle 会先在对话组件内收敛，父页面 leaf 可能保留旧投影，同时 session diagnostics 可能为空，导致 fallback 被无条件重新展示。现将非阻塞 Direct fallback 判定收敛为共享纯函数，页面初始投影与 `ACPChatDialog` 内最新合并 lifecycle 共同消费；横幅优先保留当前 runtime error，随后以 canonical `latestTurnStatus=completed` 直接判定最新 turn 已成功并清除历史 diagnostic/fallback，不依赖当前分页事件窗口。生产等价 DOM 测试固定“无 diagnostics、父 fallback 仍旧、组件 latest turn 已 completed”时横幅消失；不新增 I/O、订阅、缓存或持久字段。
@@ -339,6 +342,15 @@ docs/gold-band/开发计划/acp接入/acp功能模块todo列表.md
 ```
 
 ## 9. 一句话总结
+
+### 2026-09-07 后台恢复失败展示
+
+- 根因：异步 admission 已成功，但 session setup 在 timeline 用户消息建立前失败；终态 guard 只写 failed/runtime-error，轻量 Session VM 不加载诊断历史，错误横幅缺少可消费原因。属于正确设计下的失败链路实现不完整。
+- 实现：复用 RuntimeErrorInfo，将 turnError 纳入现有 ACP lifecycle 的原子终态；保留 session RPC 的结构化原因，Session VM 直接投影快照，复用现有横幅和中英文错误文案。新 admission 清除旧错误，原有 owner/CAS 阻止迟到失败污染新 turn。
+- UI 使用现有 ACP lifecycle facet 的 revision 和 turnId 合并同一份 turnError，优先当前生命周期携带的原因；详情快照尚未追上时不得回退展示上一轮原因。初次会话建立失败和无具体原因的失败均保留可见提示。
+- 最小失败证据：Rust guard 测试原先获得 Null 错误字段；前端 failed 无 diagnostics 的横幅测试原先返回 null。回归覆盖失败原因持久化、无诊断历史查询、跨 turn 隔离、真实聊天组件错误展示和重试清除。
+- 范围与性能评审：不修复 Provider writer 占用，不引入重试、缓存、依赖或平行状态机；每 attempt 只保存当前 turn 的错误，复用已有 snapshot 写锁、更新事件与查询，无新增日志扫描或历史请求，无需额外 benchmark。
+- 验收通过：ACP events 104 项、ACP client 131 项、桌面 Session VM 4 项和 lifecycle projection 2 项 Rust 测试；前端聊天事件、实际聊天组件、生命周期合并和错误本地化共 163 项；TypeScript 检查与生产构建通过（保留现有 chunk size / 混合导入警告）。Chrome 验证实际聊天组件的错误摘要、原始原因、普通宽度及 390px 换行无横向溢出，成功状态清除横幅。内置浏览器不可用时使用 Chrome；本次验证 tab、1439 端口服务和临时页面均已清理，未替换已安装 EXE。
 
 > Gold Band ACP UI 应是一个 Dialog / Chat UI：用户通过 composer 输入，agent 输出以消息、thought block、tool card、plan block、permission dialog 和诊断视图呈现；UI 的唯一数据源是 ACP 统一事件，而不是 terminal/log 或 Claude Code legacy CLI 输出。
 

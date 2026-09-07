@@ -69,6 +69,7 @@ import {
   type ChatContainerContext,
   type ChatContainerFollowIntentCause,
   useOptionalChatContainerContentExpansion,
+  useChatContainerDisclosure,
 } from "@/components/prompt-kit/chat-container";
 import {
   ConversationViewport,
@@ -539,6 +540,7 @@ export function shouldShowReturnToLatest(
   distanceFromBottom: number,
 ) {
   if (isAcpConversationAtBottom(viewportAtBottom, hasNewerEvents)) return false;
+  if (hasNewerEvents) return true;
   if (currentlyVisible) return true;
   return activationEligible
     && distanceFromBottom >= RETURN_TO_LATEST_SHOW_DISTANCE_PX;
@@ -1710,7 +1712,7 @@ export function ACPChatDialog(
   const isHistoricalTimelineWindow = useCallback(() => (
     hasNewerEventsRef.current
     || paginationDirectionRef.current !== null
-    || !viewportAtBottomRef.current
+    || viewportManualIntentRef.current
   ), []);
 
   const hasExplicitHistoricalTimelineIntent = useCallback(() => (
@@ -2146,7 +2148,7 @@ export function ACPChatDialog(
       eventWindowKey,
       captureAcpBranchViewState(
         scroller,
-        viewportAtBottomRef.current,
+        chatContainerContextRef.current?.getContentExpansionFollowIntent() ?? viewportAtBottomRef.current,
         hasOlderEventsRef.current,
         hasNewerEventsRef.current,
       ),
@@ -3044,11 +3046,7 @@ export function ACPChatDialog(
       commitHasNewerEvents(true);
       return;
     }
-    if (
-      hasNewerEventsRef.current
-      || paginationDirectionRef.current !== null
-      || !viewportAtBottomRef.current
-    ) {
+    if (isHistoricalTimelineWindow()) {
       // The visible list is a historical window. The router has already
       // retained this live event for replay, so keep the user's window and
       // anchor intact and expose the existing newer-pagination path.
@@ -3058,6 +3056,11 @@ export function ACPChatDialog(
     commitHasNewerEvents(false);
     const activeWindow = loadedEventWindowRef.current;
     const merged = mergeAcpEvents(activeWindow.events, normalizedUpdates);
+    if (!viewportAtBottomRef.current && merged.length > effectiveLoadedEventBufferLimit) {
+      // Keep the reading anchor instead of evicting it to make room for live data.
+      commitHasNewerEvents(true);
+      return;
+    }
     const limited = limitAcpEvents(
       merged,
       "start",
@@ -3072,7 +3075,7 @@ export function ACPChatDialog(
       ...activeWindow,
       events: limited,
     });
-  }, [commitHasNewerEvents, commitLoadedEventWindow, effectiveLoadedEventBufferLimit, eventWindowKey, normalizeEventUpdate, settleOptimisticPromptAdmissions]);
+  }, [commitHasNewerEvents, commitLoadedEventWindow, effectiveLoadedEventBufferLimit, eventWindowKey, isHistoricalTimelineWindow, normalizeEventUpdate, settleOptimisticPromptAdmissions]);
 
   const applyEventUpdate = useCallback((
     event: AcpUiEventVm | null | undefined,
@@ -3187,6 +3190,9 @@ export function ACPChatDialog(
   ) => {
     if (following) {
       viewportManualIntentRef.current = false;
+      if (cause !== "external-scroll-to-bottom" && hasNewerEventsRef.current) {
+        requestCanonicalHeadRecoveryRef.current?.(true);
+      }
       return;
     }
     if (
@@ -3213,7 +3219,7 @@ export function ACPChatDialog(
         showReturnToLatestRef.current,
         viewportAtBottom,
         hasNewerEventsRef.current,
-        viewportManualIntentRef.current || hasNewerEventsRef.current,
+        !viewportAtBottom || hasNewerEventsRef.current,
         distanceFromBottom,
       ),
       "at-bottom-change",
@@ -3224,7 +3230,7 @@ export function ACPChatDialog(
         eventWindowKey,
         captureAcpBranchScrollState(
           scroller,
-          viewportAtBottom,
+          chatContainerContextRef.current?.getContentExpansionFollowIntent() ?? viewportAtBottom,
           hasOlderEventsRef.current,
           hasNewerEventsRef.current,
         ),
@@ -3488,7 +3494,9 @@ export function ACPChatDialog(
     } else {
       scroller.scrollTop = pending.scrollTop;
     }
-    chatContainerContextRef.current?.stopScroll();
+    if (chatContainerContextRef.current?.getContentExpansionFollowIntent() == null) {
+      chatContainerContextRef.current?.stopScroll();
+    }
     const distanceFromBottom = scroller.scrollHeight
       - scroller.scrollTop
       - scroller.clientHeight;
@@ -4817,7 +4825,8 @@ export function ACPChatDialog(
       return false;
     }
 
-    const preserveDetachedViewport = viewportManualIntentRef.current;
+    const preserveDetachedViewport = viewportManualIntentRef.current
+      || chatContainerContextRef.current?.getContentExpansionFollowIntent() != null;
     const scroller = chatContainerContextRef.current?.scrollRef.current;
     const detachedViewState = preserveDetachedViewport && scroller
       ? captureAcpBranchViewState(
@@ -5128,6 +5137,7 @@ export function ACPChatDialog(
 
   const handleReturnToLatestEvents = () => {
     viewportManualIntentRef.current = false;
+    chatContainerContextRef.current?.stopScroll();
     if (!hasNewerEventsRef.current) {
       void chatContainerContextRef.current?.scrollToBottom({
         animation: "instant",
@@ -5882,7 +5892,7 @@ export function ACPChatDialog(
     }
     storeAcpBranchViewState(eventWindowKey, captureAcpBranchScrollState(
       scroller,
-      viewportAtBottomRef.current,
+      chatContainerContextRef.current?.getContentExpansionFollowIntent() ?? viewportAtBottomRef.current,
       hasOlderEventsRef.current,
       hasNewerEventsRef.current,
     ));
@@ -7691,6 +7701,8 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
   currentRequestScopeRef.current = requestScopeKey;
   currentEventRef.current = event;
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const collapseRef = useRef<HTMLButtonElement>(null);
+  const pendingExpansionPositionRef = useRef(false);
   const detailListRef = useRef<HTMLDivElement>(null);
   const pendingDetailAnchorRef = useRef<{ key: string; top: number } | null>(null);
   const disclosureTokenRef = useRef<ChatContainerContentExpansionToken | null>(null);
@@ -7701,6 +7713,12 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
   const activeDetailError = activeDetailWindow.error?.scopeKey === requestScopeKey
     ? activeDetailWindow.error
     : null;
+  useLayoutEffect(() => {
+    if (!open || !pendingExpansionPositionRef.current || !collapseRef.current) return;
+    if (event.detailAvailable && !activeDetailWindow.detailLoaded && !activeDetailError) return;
+    pendingExpansionPositionRef.current = false;
+    contentExpansion?.positionContentExpansion(disclosureTokenRef.current, collapseRef.current);
+  }, [open, activeDetailWindow.detailLoaded, activeDetailError, event.detailAvailable, contentExpansion]);
   const summary = activityBatchSummary(event, t);
   useEffect(() => {
     mountedRef.current = true;
@@ -7863,6 +7881,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
   ]);
   const handleOpenChange = (next: boolean) => {
     openRef.current = next;
+    pendingExpansionPositionRef.current = next;
     if (!next) trailingDetailRequestRef.current = null;
     let restoringBottom = false;
     if (next) {
@@ -7871,6 +7890,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
       const token = disclosureTokenRef.current;
       disclosureTokenRef.current = null;
       restoringBottom = contentExpansion?.endContentExpansion(token) ?? false;
+      restoringBottom ||= contentExpansion?.getContentExpansionFollowIntent() === true;
     }
     setOpen(next);
     if (next && !activeDetailWindow.detailLoaded && event.detailAvailable) {
@@ -7878,6 +7898,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
     }
     if (!next && !restoringBottom) {
       requestAnimationFrame(() => {
+        if (!mountedRef.current || openRef.current) return;
         triggerRef.current?.scrollIntoView?.({ block: "nearest" });
       });
     }
@@ -7991,6 +8012,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
                   variant="ghost"
                   size="sm"
                   className="acp-activity-collapse-button h-7 gap-1.5 px-2 text-xs font-normal text-muted-foreground hover:bg-muted/40 hover:text-foreground"
+                  ref={collapseRef}
                   onClick={() => handleOpenChange(false)}
                 >
                   <ChevronDown className="size-3.5 rotate-180" aria-hidden="true" />
@@ -8729,6 +8751,7 @@ const ThoughtBlock = memo(function ThoughtBlock({
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const changeDisclosure = useChatContainerDisclosure();
   if (!event.content?.trim()) return null;
   const itemKey = timelineEventKey(event);
   const streaming = itemKey === streamingMarkdownItemKey;
@@ -8746,7 +8769,10 @@ const ThoughtBlock = memo(function ThoughtBlock({
       >
         <ChainOfThoughtStep
           open={open}
-          onOpenChange={setOpen}
+          onOpenChange={(next) => {
+            changeDisclosure(next);
+            setOpen(next);
+          }}
         >
           <ChainOfThoughtTrigger
             leftIcon={<Clock className="size-4" />}
@@ -8821,6 +8847,7 @@ const ToolBlock = memo(function ToolBlock({
     observedRevision,
   );
   const [open, setOpen] = useState(false);
+  const changeDisclosure = useChatContainerDisclosure();
   const [detailState, setDetailState] = useState<AcpToolDetailState | null>(null);
   const [detailError, setDetailError] = useState<{
     scopeKey: string;
@@ -9027,6 +9054,7 @@ const ToolBlock = memo(function ToolBlock({
           icon={<ToolIcon className="size-4" />}
           open={open}
           onOpenChange={(next) => {
+            changeDisclosure(next);
             openRef.current = next;
             if (!next) trailingToolDetailRequestRef.current = false;
             setOpen(next);

@@ -30,7 +30,15 @@
 
 ## 剩余边界
 
-确认阶段仅修改 prompt，不承诺普通文本后自动进入新的独立确认循环；agent 被要求直接续做并在认为结束时输出 artifact。若再次结束而没有有效 artifact，仍由已有校验/repair 流程处理。策略不是 sandbox，也不会停止已存在的后台工作；未完整流被 SDK 误报成功的根因仍在 issue #114 中保留为未知。
+AI-DYNAMIC 的 PostTurn 确认调用正常结束但没有 Artifact 时，重新确认结束意图；有无效候选输出时才修复协议。确认与修复共享原有最多 3 次后续请求上限，达到上限仍按原错误边界处理，不会无限询问。本次不调整普通 Workflow 的输出重试分支或 InlineControl 语义。策略不是 sandbox，也不会停止已存在的后台工作；未完整流被 SDK 误报成功的根因仍在 issue #114 中保留为未知。
+
+## 缺失 Artifact 的后续确认（2026-09-07）
+
+- 根因：AI-DYNAMIC 原实现把缺失 Artifact 与提交无效 Artifact 合并为 repair，导致第二次成功返回但只含普通文本时重新禁止业务执行；属于结束意图确认设计落实不完整。现场 finalize 期间发生压缩，但压缩是否造成协议遗漏尚未确定。
+- 修改：PostTurn 正常结束、无 Artifact 文件且无控制输出候选时，复用双语 finalize 模板及完整 schema，保留同一 session、节点和工作区；使用新的 prompt identity 和 FinalizingArtifact 阶段。有候选输出不合法时保留 repair，停止和失败不进入该分支。
+- 最小失败证据：`dynamic_post_turn_missing_artifact_reconfirms_after_each_normal_end` 在旧实现失败，实际 RuntimeRepair，预期 RuntimeFinalize；修改分支后同一测试通过。
+- 验证：47 项定向测试通过（dynamic_post_turn 3 项、InlineControl repair 1 项、provider::tests 43 项），覆盖连续缺失、完整 schema、隐藏提示、不同请求 identity、无效 Artifact 保留 repair，以及 provider 的停止和失败分类。旧 InlineControl 测试实际用 depth=1 构造了 PostTurn 节点，现改为 depth=0 并显式断言 emission mode 后通过。rustfmt 与改动文件的 git diff --check 通过；仅有原有 3 项 dead-code 警告，未打包或替换 EXE。
+- 过度设计与性能评审：复用现有循环、模板、阶段和请求上限，不新增持久状态、依赖或后台任务；只检查已知 Artifact 路径，不扫描会话历史。额外模型调用受原有后续请求上限约束。本次无 UI 变更。
 
 ## 设计与性能评审
 

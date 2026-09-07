@@ -2872,7 +2872,7 @@ mod tests {
 
     #[test]
     fn embedded_app_config_defines_wecom_scan_source() {
-        assert_eq!(super::wecom_scan_auth_config().source, "halo");
+        assert_eq!(super::wecom_scan_auth_config().source, "maling");
         assert!(super::wecom_scan_auth_config().validate().is_ok());
     }
 

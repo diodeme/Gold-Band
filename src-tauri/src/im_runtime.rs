@@ -162,6 +162,14 @@ impl DesktopImRuntime {
         let signing_key = credential_store
             .load_or_create_action_signing_key()
             .context("initialize IM action signing key")?;
+        Self::with_signing_key(core_db_path, signing_key)
+    }
+
+    fn with_signing_key(
+        core_db_path: camino::Utf8PathBuf,
+        signing_key: Vec<u8>,
+    ) -> Result<Arc<Self>> {
+        let credential_store = OsImCredentialStore;
         let token_codec =
             ImActionTokenCodec::new(signing_key).map_err(|error| anyhow::anyhow!(error.code()))?;
         let repository = Arc::new(ImRepository::new(core_db_path));
@@ -202,6 +210,16 @@ impl DesktopImRuntime {
             last_projection_alert_at_ms: AtomicI64::new(i64::MIN),
             cancellation: CancellationToken::new(),
         }))
+    }
+
+    pub fn configure_projection_targets(&self, settings: &ImIntegrationSettings) -> Result<usize> {
+        let targets = projection_targets(settings, &self.connectors);
+        let target_count = targets.len();
+        *self
+            .targets
+            .write()
+            .map_err(|_| anyhow::anyhow!("IM_RUNTIME_UNAVAILABLE"))? = targets;
+        Ok(target_count)
     }
 
     pub fn start(self: &Arc<Self>, app_handle: AppHandle) {
@@ -561,12 +579,7 @@ impl DesktopImRuntime {
         let settings = tauri::async_runtime::spawn_blocking(move || app.load_settings())
             .await
             .map_err(|_| anyhow::anyhow!("IM_STORAGE_UNAVAILABLE"))??;
-        let targets = projection_targets(&settings.im_integrations, &self.connectors);
-        let target_count = targets.len();
-        *self
-            .targets
-            .write()
-            .map_err(|_| anyhow::anyhow!("IM_RUNTIME_UNAVAILABLE"))? = targets;
+        let target_count = self.configure_projection_targets(&settings.im_integrations)?;
         tracing::info!(target_count, "IM projection targets configured");
         let locale = match settings.desktop_language {
             Some(gold_band::config::DesktopLanguage::En) => ImLocale::En,
@@ -2533,6 +2546,40 @@ mod tests {
             }],
         };
         let targets = projection_targets(&settings, &connectors);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(
+            targets[0].destination.as_ref().unwrap().authorized_actor_id,
+            "user-1"
+        );
+    }
+
+    #[test]
+    fn startup_configures_projection_targets_before_lifecycle_subscription() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = DesktopImRuntime::with_signing_key(
+            camino::Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap(),
+            vec![7; 32],
+        )
+        .unwrap();
+        let settings = ImIntegrationSettings {
+            channels: vec![ImChannelSettings {
+                kind: ImChannelKind::WeCom,
+                enabled: true,
+                public_identity: "bot-id".into(),
+                credential_ref: Some(uuid::Uuid::new_v4().to_string()),
+                binding: Some(ImBindingSummary {
+                    destination_id: "user-1".into(),
+                    conversation_id: "private-chat".into(),
+                    authorized_actor_id: "user-1".into(),
+                    display_name: "User".into(),
+                }),
+                notifications: Default::default(),
+            }],
+        };
+
+        assert!(runtime.targets.read().unwrap().is_empty());
+        assert_eq!(runtime.configure_projection_targets(&settings).unwrap(), 1);
+        let targets = runtime.targets.read().unwrap();
         assert_eq!(targets.len(), 1);
         assert_eq!(
             targets[0].destination.as_ref().unwrap().authorized_actor_id,

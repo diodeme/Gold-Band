@@ -10,7 +10,7 @@ use super::{
     MAX_IM_PRESENTATION_BYTES, desktop_resolution_event_id,
 };
 
-const IM_SCHEMA_VERSION: i64 = 2;
+const IM_SCHEMA_VERSION: i64 = 3;
 pub const DEFAULT_IM_OUTBOX_ACTIVE_LIMIT: usize = 1_000;
 pub const MAX_IM_DUE_BATCH: usize = 32;
 pub const MAX_IM_CLEANUP_BATCH: usize = 200;
@@ -20,6 +20,50 @@ const IM_DELIVERY_DISPLAY_REF_MODULUS: i64 = 10_000;
 pub enum ImDeliveryInsertResult {
     Inserted,
     Duplicate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImDeliverySettlementResult {
+    Applied,
+    StaleClaim,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImChannelCleanupPhase {
+    Prepared,
+    SettingsRemoved,
+    ProjectionDrained,
+    OutboxRemoved,
+}
+
+impl ImChannelCleanupPhase {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Prepared => "prepared",
+            Self::SettingsRemoved => "settings_removed",
+            Self::ProjectionDrained => "projection_drained",
+            Self::OutboxRemoved => "outbox_removed",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "prepared" => Some(Self::Prepared),
+            "settings_removed" => Some(Self::SettingsRemoved),
+            "projection_drained" => Some(Self::ProjectionDrained),
+            "outbox_removed" => Some(Self::OutboxRemoved),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImChannelCleanupOperation {
+    pub operation_id: String,
+    pub channel: ImChannelKind,
+    pub credential_ref: Option<String>,
+    pub phase: ImChannelCleanupPhase,
+    pub last_error_code: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -379,7 +423,9 @@ impl ImRepository {
         self.with_connection(|connection| {
             let changed = connection.execute(
                 "UPDATE im_outbox
-                 SET state = 'pending', next_attempt_at_ms = ?1, updated_at_ms = ?1
+                 SET state = CASE WHEN expires_at_ms <= ?1 THEN 'expired' ELSE 'pending' END,
+                     next_attempt_at_ms = CASE WHEN expires_at_ms <= ?1 THEN NULL ELSE ?1 END,
+                     updated_at_ms = ?1
                  WHERE delivery_id IN (
                     SELECT delivery_id FROM im_outbox INDEXED BY idx_im_outbox_due
                     WHERE state = 'sending' AND next_attempt_at_ms <= ?1
@@ -395,19 +441,28 @@ impl ImRepository {
         &self,
         delivery_id: &str,
         channel: ImChannelKind,
+        expected_attempt_count: u32,
         binding: Option<&ImDeliveryBinding>,
         now_ms: i64,
-    ) -> Result<(), ImRepositoryError> {
+    ) -> Result<ImDeliverySettlementResult, ImRepositoryError> {
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            transaction.execute(
+            let changed = transaction.execute(
                 "UPDATE im_outbox SET state = 'sent', next_attempt_at_ms = NULL,
-                         last_error_code = NULL, updated_at_ms = ?1
-                 WHERE delivery_id = ?2 AND channel_kind = ?3",
-                params![now_ms, delivery_id, channel.as_str()],
+                          last_error_code = NULL, updated_at_ms = ?1
+                 WHERE delivery_id = ?2 AND channel_kind = ?3
+                   AND state = 'sending' AND attempt_count = ?4",
+                params![
+                    now_ms,
+                    delivery_id,
+                    channel.as_str(),
+                    expected_attempt_count
+                ],
             )?;
-            if let Some(binding) = binding {
+            if changed == 1
+                && let Some(binding) = binding
+            {
                 transaction.execute(
                     "INSERT INTO im_delivery_bindings (
                         delivery_id, channel_kind, platform_message_id,
@@ -429,31 +484,47 @@ impl ImRepository {
                 )?;
             }
             transaction.commit()?;
-            Ok(())
+            Ok(if changed == 1 {
+                ImDeliverySettlementResult::Applied
+            } else {
+                ImDeliverySettlementResult::StaleClaim
+            })
         })
     }
 
     pub fn mark_failed(
         &self,
         delivery_id: &str,
+        expected_attempt_count: u32,
         retry_at_ms: Option<i64>,
         error_code: &str,
         now_ms: i64,
-    ) -> Result<(), ImRepositoryError> {
+    ) -> Result<ImDeliverySettlementResult, ImRepositoryError> {
         let state = if retry_at_ms.is_some() {
             ImDeliveryState::Pending
         } else {
             ImDeliveryState::DeadLetter
         };
         self.with_connection(|connection| {
-            connection.execute(
+            let changed = connection.execute(
                 "UPDATE im_outbox
                  SET state = ?1, next_attempt_at_ms = ?2,
                      last_error_code = ?3, updated_at_ms = ?4
-                 WHERE delivery_id = ?5 AND state = 'sending'",
-                params![state.as_str(), retry_at_ms, error_code, now_ms, delivery_id],
+                 WHERE delivery_id = ?5 AND state = 'sending' AND attempt_count = ?6",
+                params![
+                    state.as_str(),
+                    retry_at_ms,
+                    error_code,
+                    now_ms,
+                    delivery_id,
+                    expected_attempt_count
+                ],
             )?;
-            Ok(())
+            Ok(if changed == 1 {
+                ImDeliverySettlementResult::Applied
+            } else {
+                ImDeliverySettlementResult::StaleClaim
+            })
         })
     }
 
@@ -670,6 +741,84 @@ impl ImRepository {
         })
     }
 
+    pub fn create_channel_cleanup(
+        &self,
+        operation_id: &str,
+        channel: ImChannelKind,
+        credential_ref: Option<&str>,
+        now_ms: i64,
+    ) -> Result<(), ImRepositoryError> {
+        self.with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO im_channel_cleanup_operations (
+                    operation_id, channel_kind, credential_ref, phase,
+                    created_at_ms, updated_at_ms, last_error_code
+                 ) VALUES (?1, ?2, ?3, 'prepared', ?4, ?4, NULL)",
+                params![operation_id, channel.as_str(), credential_ref, now_ms],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn channel_cleanup(
+        &self,
+        channel: ImChannelKind,
+    ) -> Result<Option<ImChannelCleanupOperation>, ImRepositoryError> {
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT operation_id, channel_kind, credential_ref, phase, last_error_code
+                     FROM im_channel_cleanup_operations WHERE channel_kind = ?1",
+                    params![channel.as_str()],
+                    cleanup_operation_from_row,
+                )
+                .optional()?
+                .map(parse_cleanup_operation)
+                .transpose()
+        })
+    }
+
+    pub fn pending_channel_cleanups(
+        &self,
+    ) -> Result<Vec<ImChannelCleanupOperation>, ImRepositoryError> {
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT operation_id, channel_kind, credential_ref, phase, last_error_code
+                 FROM im_channel_cleanup_operations ORDER BY created_at_ms, operation_id",
+            )?;
+            statement
+                .query_map([], cleanup_operation_from_row)?
+                .map(|row| parse_cleanup_operation(row?))
+                .collect()
+        })
+    }
+
+    pub fn update_channel_cleanup(
+        &self,
+        operation_id: &str,
+        phase: ImChannelCleanupPhase,
+        last_error_code: Option<&str>,
+        now_ms: i64,
+    ) -> Result<bool, ImRepositoryError> {
+        self.with_connection(|connection| {
+            Ok(connection.execute(
+                "UPDATE im_channel_cleanup_operations
+                 SET phase = ?1, last_error_code = ?2, updated_at_ms = ?3
+                 WHERE operation_id = ?4",
+                params![phase.as_str(), last_error_code, now_ms, operation_id],
+            )? == 1)
+        })
+    }
+
+    pub fn finish_channel_cleanup(&self, operation_id: &str) -> Result<bool, ImRepositoryError> {
+        self.with_connection(|connection| {
+            Ok(connection.execute(
+                "DELETE FROM im_channel_cleanup_operations WHERE operation_id = ?1",
+                params![operation_id],
+            )? == 1)
+        })
+    }
+
     #[cfg(test)]
     fn state(&self, delivery_id: &str) -> Result<ImDeliveryState, ImRepositoryError> {
         self.with_connection(|connection| {
@@ -699,6 +848,36 @@ impl ImRepository {
                 .expect("IM repository connection initialized"),
         )
     }
+}
+
+fn cleanup_operation_from_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<(String, String, Option<String>, String, Option<String>), rusqlite::Error> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+    ))
+}
+
+fn parse_cleanup_operation(
+    (operation_id, channel, credential_ref, phase, last_error_code): (
+        String,
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+    ),
+) -> Result<ImChannelCleanupOperation, ImRepositoryError> {
+    Ok(ImChannelCleanupOperation {
+        operation_id,
+        channel: ImChannelKind::parse(&channel).ok_or(ImRepositoryError::InvalidStoredData)?,
+        credential_ref,
+        phase: ImChannelCleanupPhase::parse(&phase).ok_or(ImRepositoryError::InvalidStoredData)?,
+        last_error_code,
+    })
 }
 
 struct StoredDeliveryRow {
@@ -862,7 +1041,18 @@ fn ensure_schema(connection: &mut Connection) -> Result<(), ImRepositoryError> {
          CREATE INDEX IF NOT EXISTS idx_im_inbound_actions_retention
          ON im_inbound_actions(completed_at_ms);
          CREATE INDEX IF NOT EXISTS idx_im_inbound_actions_canonical_event
-         ON im_inbound_actions(channel_kind, canonical_event_id, completed_at_ms);",
+         ON im_inbound_actions(channel_kind, canonical_event_id, completed_at_ms);
+
+         CREATE TABLE IF NOT EXISTS im_channel_cleanup_operations (
+            operation_id TEXT PRIMARY KEY NOT NULL,
+            channel_kind TEXT NOT NULL UNIQUE,
+            credential_ref TEXT,
+            phase TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            last_error_code TEXT,
+            CHECK (phase IN ('prepared', 'settings_removed', 'projection_drained', 'outbox_removed'))
+         );",
     )?;
     transaction.execute(
         "INSERT INTO core_schema(component, version)
@@ -1102,7 +1292,13 @@ mod tests {
             .claim_due(ImChannelKind::WeCom, 100, Duration::from_secs(30), 1)
             .unwrap();
         repository
-            .mark_sent(&source.delivery_id, source.channel, None, 110)
+            .mark_sent(
+                &source.delivery_id,
+                source.channel,
+                claimed[0].attempt_count,
+                None,
+                110,
+            )
             .unwrap();
         let resolution = resolution_delivery(&claimed[0].delivery);
         repository
@@ -1144,6 +1340,162 @@ mod tests {
     }
 
     #[test]
+    fn lease_recovery_expires_invalid_delivery_and_fences_late_settlement() {
+        let (_temp, repository) = repository(10);
+        let valid = information_delivery(ImChannelKind::WeCom, "user-1", "event-valid");
+        let mut expired = information_delivery(ImChannelKind::WeCom, "user-1", "event-expired");
+        expired.expires_at_ms = 120;
+        repository.enqueue(&valid, 100).unwrap();
+        repository.enqueue(&expired, 100).unwrap();
+        let first_claim = repository
+            .claim_due(ImChannelKind::WeCom, 100, Duration::from_millis(50), 2)
+            .unwrap();
+        assert_eq!(repository.recover_expired_leases(150, 2).unwrap(), 2);
+        assert_eq!(
+            repository.state(&expired.delivery_id).unwrap(),
+            ImDeliveryState::Expired
+        );
+
+        let second_claim = repository
+            .claim_due(ImChannelKind::WeCom, 150, Duration::from_millis(50), 2)
+            .unwrap();
+        assert_eq!(second_claim.len(), 1);
+        assert_eq!(second_claim[0].delivery.delivery_id, valid.delivery_id);
+        assert_eq!(second_claim[0].attempt_count, 2);
+        let stale_attempt = first_claim
+            .iter()
+            .find(|claim| claim.delivery.delivery_id == valid.delivery_id)
+            .unwrap();
+        assert_eq!(
+            repository
+                .mark_sent(
+                    &valid.delivery_id,
+                    valid.channel,
+                    stale_attempt.attempt_count,
+                    None,
+                    151,
+                )
+                .unwrap(),
+            ImDeliverySettlementResult::StaleClaim
+        );
+        assert_eq!(
+            repository.state(&valid.delivery_id).unwrap(),
+            ImDeliveryState::Sending
+        );
+        assert_eq!(
+            repository
+                .mark_failed(
+                    &valid.delivery_id,
+                    second_claim[0].attempt_count,
+                    None,
+                    "IM_PROTOCOL_INVALID",
+                    152,
+                )
+                .unwrap(),
+            ImDeliverySettlementResult::Applied
+        );
+        assert_eq!(
+            repository.state(&valid.delivery_id).unwrap(),
+            ImDeliveryState::DeadLetter
+        );
+    }
+
+    #[test]
+    fn channel_cleanup_journal_is_durable_and_idempotently_advanced() {
+        let (temp, repository) = repository(10);
+        repository
+            .create_channel_cleanup(
+                "operation-1",
+                ImChannelKind::WeCom,
+                Some("credential-1"),
+                100,
+            )
+            .unwrap();
+        for (index, phase) in [
+            ImChannelCleanupPhase::SettingsRemoved,
+            ImChannelCleanupPhase::ProjectionDrained,
+            ImChannelCleanupPhase::OutboxRemoved,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(
+                repository
+                    .update_channel_cleanup(
+                        "operation-1",
+                        phase,
+                        Some("IM_STORAGE_UNAVAILABLE"),
+                        101 + index as i64,
+                    )
+                    .unwrap()
+            );
+            assert_eq!(
+                repository
+                    .channel_cleanup(ImChannelKind::WeCom)
+                    .unwrap()
+                    .unwrap()
+                    .phase,
+                phase
+            );
+        }
+        drop(repository);
+
+        let reopened =
+            ImRepository::new(Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap());
+        let operation = reopened
+            .channel_cleanup(ImChannelKind::WeCom)
+            .unwrap()
+            .unwrap();
+        assert_eq!(operation.operation_id, "operation-1");
+        assert_eq!(operation.credential_ref.as_deref(), Some("credential-1"));
+        assert_eq!(operation.phase, ImChannelCleanupPhase::OutboxRemoved);
+        assert_eq!(
+            operation.last_error_code.as_deref(),
+            Some("IM_STORAGE_UNAVAILABLE")
+        );
+        assert_eq!(
+            reopened.pending_channel_cleanups().unwrap(),
+            vec![operation]
+        );
+        assert!(reopened.finish_channel_cleanup("operation-1").unwrap());
+        assert!(!reopened.finish_channel_cleanup("operation-1").unwrap());
+    }
+
+    #[test]
+    fn channel_cleanup_removes_active_deliveries_but_preserves_sent_audit() {
+        let (_temp, repository) = repository(10);
+        let sent = information_delivery(ImChannelKind::WeCom, "user-1", "event-sent");
+        let active = information_delivery(ImChannelKind::WeCom, "user-1", "event-active");
+        repository.enqueue(&sent, 100).unwrap();
+        repository.enqueue(&active, 101).unwrap();
+        let claimed = repository
+            .claim_due(ImChannelKind::WeCom, 101, Duration::from_secs(30), 2)
+            .unwrap();
+        let sent_claim = claimed
+            .iter()
+            .find(|claim| claim.delivery.delivery_id == sent.delivery_id)
+            .unwrap();
+        repository
+            .mark_sent(
+                &sent.delivery_id,
+                sent.channel,
+                sent_claim.attempt_count,
+                None,
+                102,
+            )
+            .unwrap();
+
+        assert_eq!(
+            repository
+                .delete_active_for_channel(ImChannelKind::WeCom)
+                .unwrap(),
+            1
+        );
+        assert!(repository.delivery(&active.delivery_id).unwrap().is_none());
+        assert!(repository.delivery(&sent.delivery_id).unwrap().is_some());
+    }
+
+    #[test]
     fn recent_delivery_display_refs_are_distinct_and_stable_across_retries() {
         let (_temp, repository) = repository(10);
         let first = information_delivery(ImChannelKind::WeCom, "user-1", "event-1");
@@ -1176,7 +1528,7 @@ mod tests {
         let (temp, repository) = repository(10);
         let delivery = information_delivery(ImChannelKind::WeCom, "user-1", "event-1");
         repository.enqueue(&delivery, 100).unwrap();
-        repository
+        let claimed = repository
             .claim_due(ImChannelKind::WeCom, 100, Duration::from_secs(30), 1)
             .unwrap();
         let binding = ImDeliveryBinding {
@@ -1187,7 +1539,13 @@ mod tests {
             update_token_ref: None,
         };
         repository
-            .mark_sent(&delivery.delivery_id, delivery.channel, Some(&binding), 200)
+            .mark_sent(
+                &delivery.delivery_id,
+                delivery.channel,
+                claimed[0].attempt_count,
+                Some(&binding),
+                200,
+            )
             .unwrap();
         assert_eq!(
             repository.state(&delivery.delivery_id).unwrap(),
@@ -1231,12 +1589,18 @@ mod tests {
         let (_temp, repository) = repository(10);
         let delivery = information_delivery(ImChannelKind::WeCom, "user-1", "event-1");
         repository.enqueue(&delivery, 100).unwrap();
-        repository
+        let claimed = repository
             .claim_due(ImChannelKind::WeCom, 100, Duration::from_secs(30), 1)
             .unwrap();
 
         repository
-            .mark_sent(&delivery.delivery_id, delivery.channel, None, 200)
+            .mark_sent(
+                &delivery.delivery_id,
+                delivery.channel,
+                claimed[0].attempt_count,
+                None,
+                200,
+            )
             .unwrap();
 
         assert_eq!(
@@ -1247,7 +1611,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_inbound_index_is_added_to_existing_schema_v1() {
+    fn current_schema_is_added_to_existing_schema_v1() {
         let (temp, repository) = repository(10);
         repository.with_connection(|_| Ok(())).unwrap();
         drop(repository);
@@ -1270,13 +1634,19 @@ mod tests {
                     [],
                     |row| row.get::<_, i64>(0),
                 )?;
-                assert_eq!(version, 2);
+                assert_eq!(version, 3);
                 let index_count = connection.query_row(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_im_inbound_actions_canonical_event'",
                     [],
                     |row| row.get::<_, i64>(0),
                 )?;
                 assert_eq!(index_count, 1);
+                let cleanup_table_count = connection.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'im_channel_cleanup_operations'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?;
+                assert_eq!(cleanup_table_count, 1);
                 Ok(())
             })
             .unwrap();

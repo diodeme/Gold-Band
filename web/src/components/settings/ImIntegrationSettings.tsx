@@ -207,7 +207,11 @@ const ImChannelEditor = memo(function ImChannelEditor({
     setDestructiveBusy(true);
     setError(null);
     try {
-      onSettings(await deleteImChannel(channel.kind));
+      const result = await deleteImChannel(channel.kind);
+      onSettings(result.settings);
+      if (result.cleanupStatus === 'pending') {
+        setError({ code: 'IM_CHANNEL_CLEANUP_PENDING', params: { operationId: result.operationId } });
+      }
       setDeleteOpen(false);
     } catch (caught) {
       setError(caught);

@@ -318,6 +318,16 @@ CREATE TABLE im_inbound_actions (
 
 CREATE INDEX idx_im_inbound_actions_retention
 ON im_inbound_actions(completed_at_ms);
+
+CREATE TABLE im_channel_cleanup_operations (
+    operation_id         TEXT PRIMARY KEY NOT NULL,
+    channel_kind         TEXT NOT NULL UNIQUE,
+    credential_ref       TEXT,
+    phase                TEXT NOT NULL,
+    created_at_ms        INTEGER NOT NULL,
+    updated_at_ms        INTEGER NOT NULL,
+    last_error_code      TEXT
+);
 ```
 
 约束：
@@ -326,6 +336,8 @@ ON im_inbound_actions(completed_at_ms);
 - `payload_json` 不保存 Secret、token、用户回答正文或完整用户对话。
 - `update_token_ref` 只能是可安全持久化的平台消息引用；若平台 update token 属于敏感材料，则改存 keyring reference。
 - `sending` 是租约态，需有 repository 方法在启动时把超时租约恢复为 `pending`；不可永久卡住。
+- `attempt_count` 同时是 claim revision；`mark_sent/mark_failed` 只允许结算 `state=sending AND attempt_count=expected` 的当前 claim。业务已过期的租约恢复为 `expired`，其余恢复为 `pending`，迟到 settlement 返回 `StaleClaim`。
+- `im_channel_cleanup_operations` 是跨 settings、projection queue、outbox 与 keyring 删除的恢复日志，不保存 Secret；phase 固定为 `prepared -> settings_removed -> projection_drained -> outbox_removed`，完成凭据删除后移除 journal。
 - 查询 due outbox 使用索引并固定 batch size，默认每批 32 条。
 
 ### 7.3 原子顺序
@@ -334,7 +346,7 @@ ON im_inbound_actions(completed_at_ms);
 
 1. lifecycle subscriber 以 `delivery_id = hash(channel + destination + notification_kind + canonical_event_id)` 幂等插入 `pending`。
 2. worker 短事务 claim due rows 为 `sending`，提交事务后才调用网络。
-3. 成功后短事务写 `sent` 和 delivery binding；失败后写 retry/dead-letter。
+3. 成功后用 claim revision CAS 在短事务写 `sent` 和 delivery binding；失败后同样用 revision CAS 写 retry/dead-letter。租约已被恢复并重新 claim 时，旧网络请求的迟到结果不得结算。
 4. 发送后数据库写失败允许平台侧重复消息，但必须依靠稳定 delivery key/平台幂等能力和本地去重收敛，不能在锁内持有网络请求。
 
 入站：
@@ -353,6 +365,7 @@ ON im_inbound_actions(completed_at_ms);
 - sent/expired/dead-letter 默认保留 7 天。
 - inbound action 默认保留 30 天。
 - 每次清理最多 200 条，低频执行；VACUUM 不放在应用正常运行热路径。
+- 启动先执行一次租约恢复和 retention；运行期租约恢复间隔 30 秒、retention 间隔 6 小时，每轮最多 4 批。SQLite 调用全部进入 blocking pool。
 - 单条 presentation 最大 32 KiB，用户回答在进入领域服务前最大 8 KiB。
 
 ## 8. 设置 schema 与凭据
@@ -408,6 +421,8 @@ credential payload 是版本化 JSON，只包含该 connector 需要的敏感字
 
 设置更新失败时删除本次新建 credential，避免孤儿记录。读取凭据失败返回 `ImCredentialUnavailable`，不得把内容带入错误 details。
 
+删除配置不尝试伪造跨存储事务：先持久化 cleanup journal 与 settings 删除这一 canonical 事实，再移除 target、推进 connector generation，随后等待 projection barrier、删除 active outbox、最后删除 journal 中记录的旧 credential。后续步骤失败返回 `cleanupStatus=pending` 并由启动/周期恢复继续；pending operation 存在时拒绝同 channel 重装，防止旧清理误删新资源。
+
 ## 9. 生命周期与并发
 
 ### 9.1 启动顺序
@@ -430,6 +445,9 @@ credential payload 是版本化 JSON，只包含该 connector 需要的敏感字
 3. 取消旧任务。
 4. 在锁外解析凭据并启动新 connector。
 5. connector event 携带 generation；manager 丢弃不匹配事件。
+6. connector sender slot 同样携带 generation；安装、读取和清理都校验 owner，禁用、重配和退出时先推进 generation，使旧会话无法清除或继续暴露新 sender。
+
+每个 channel 的凭据读取和连接启动独立收敛错误：缺失/不可读凭据把当前 generation 提交为稳定错误终态并继续处理下一个 channel，不允许循环内 `?` 把一个配置故障升级为全局重配置失败。
 
 ### 9.3 退出顺序
 
@@ -446,7 +464,8 @@ credential payload 是版本化 JSON，只包含该 connector 需要的敏感字
 ### 9.4 背压
 
 - lifecycle 到 service 使用有界 MPSC，建议容量 256。
-- 满载时不在 publisher 上等待；写结构化告警并触发一次局部桌面提醒。由于事件本身可从当前 Runtime 状态重建投递，service 应提供按单个 locator 补投入口，不扫描所有历史。
+- 满载时不在 publisher 上等待，也不得回退到 publisher 同步执行 Runtime 查询、文件读取或 SQLite 写入；只写结构化告警并按 30 秒冷却触发局部桌面诊断。由于事件本身可从当前 Runtime 状态重建投递，service 后续可提供按单个 locator 补投入口，不扫描所有历史。
+- 删除配置通过同一 FIFO queue 的 barrier 等待此前 job 完成，再删除 active outbox；lifecycle subscriber 在持有 target read guard 时完成有界 `try_send`，删除先取得 write guard 移除 target 后再入 barrier，从而保证旧 target job 位于 barrier 之前。
 - connector inbound channel 有界，建议容量 128；平台回调先做最小协议确认，再排队领域处理。
 - 每 channel 出站并发默认 1，后续只有在真实吞吐数据证明不足时调整。
 
@@ -497,16 +516,19 @@ set_im_channel_enabled(kind, enabled) -> ImSettingsVm
 save_im_notification_preferences(kind, notifications) -> ImSettingsVm
 reset_im_channel_binding(kind, expected_generation) -> ImSettingsVm
 reconnect_im_channel(kind, expected_generation) -> ImChannelSnapshotVm
-delete_im_channel(kind) -> ImSettingsVm
+delete_im_channel(kind) -> { settings: ImSettingsVm, operationId, cleanupStatus }
 ```
 
 Typed events：
 
 ```text
 im-channel-state-updated
+im-projection-diagnostic
 ```
 
 所有 command 使用统一 `CommandErrorVm { code, details }` 边界。
+
+删除返回中的 `settings` 一旦显示 channel 已删除就不回滚；`cleanupStatus=pending` 表示本机残余资源由 durable cleanup operation 后台重试，前端展示非阻断提示。
 
 ### 12.2 设置页 UI
 
@@ -522,16 +544,15 @@ im-channel-state-updated
 
 前端 state 以 channel kind 归一化，只订阅企业微信 snapshot。不得把连接 tick、heartbeat 或原始平台事件放进 React state。
 
-#### 12.2.1 清晰度优化交互原型（2026-09-04）
+#### 12.2.1 清晰度优化实施（2026-09-04）
 
-- 已新增单文件交互原型：`docs/gold-band/产品设计文档/interaction/app/原型/IM干预设置界面/code.html`。
-- 原型覆盖未接入、等待绑定、连接中、正在重连、可用、已暂停、需要重新授权和连接被占用八种派生态，以及扫码授权、私聊绑定、即时启停、通知 dirty 保存/放弃、重新授权、真实重连、更换接收账号、删除确认、键盘页签和明暗主题。
-- 生产实施时复用现有 shadcn/ui Badge、Alert、Switch、Checkbox、Dialog、AlertDialog、DropdownMenu、Separator/Collapsible；不把原型内的原生控件实现复制进生产代码。
-- credential、enabled、connection generation、binding 与六字段 notifications 继续是唯一事实来源；生产接口按各自数据所有权收窄，删除通用保存与重复断开命令。原型状态控制器和模拟按钮不得进入产品。
-- 对客文案候选：`IM 远程干预与通知` 收敛为 `远程干预`，`Run 成功/失败` 收敛为 `工作流成功/失败`，`ACP 回合结束` 收敛为 `Agent 回复完成`，删除“安装级目标”等实现表达。中英文文案须在生产迁移时同步。
+- 生产界面覆盖未接入、等待绑定、连接中、正在重连、可用、已暂停、需要重新授权和连接被占用八种派生态，以及扫码授权、私聊绑定、即时启停、通知 dirty 保存/放弃、重新授权、真实重连、更换接收账号、删除确认和键盘操作。
+- 生产界面复用现有 shadcn/ui Badge、Alert、Switch、Checkbox、Dialog、AlertDialog、DropdownMenu、Separator/Collapsible。
+- credential、enabled、connection generation、binding 与六字段 notifications 继续是唯一事实来源；生产接口按各自数据所有权收窄，删除通用保存与重复断开命令，不引入模拟状态或测试连接。
+- 对客文案已将 `IM 远程干预与通知` 收敛为 `远程干预`，`Run 成功/失败` 收敛为 `工作流成功/失败`，`ACP 回合结束` 收敛为 `Agent 回复完成`，并删除“安装级目标”等实现表达；中英文文案同步维护。
 - 已迁移 `ImIntegrationSettings.tsx`：显示模型为纯投影，总开关即时执行；通知草稿下沉到独立表单，不被 snapshot、扫码或启停响应重置；扫码 Dialog 在授权后进入可关闭的等待绑定态，只有持久 binding 与当前 snapshot 一致才完成。
 - `BindingObserved` 已改为先校验、再落盘并重建 target、最后提交 snapshot；IM settings 写入通过同一最小临界区与 generation 推进避免旧事件交错。`IM_STORAGE_UNAVAILABLE` 使用单 channel+generation、最多三次的 1/2/4 秒可取消重试。
-- 原型接口回归位于 `scripts/im-settings-prototype.test.mjs`，固定渐进披露、扫码到私聊绑定、即时启停、通知保存/放弃、分类恢复、更换账号、删除确认和无障碍语义。
+- 生产 React 界面与 `web/tests/im-settings-ui.test.tsx` 是设置流程的唯一实现和自动化验收入口，固定渐进披露、扫码到私聊绑定、即时启停、通知保存/放弃、分类恢复、更换账号、删除确认和无障碍语义。
 - 性能预算：继续使用当前单 channel 增量订阅；六项通知渲染为 O(1)，不新增轮询、全量设置刷新或无界状态。持久化重试为单任务、有限次数且 generation 变化即取消。过度设计复核确认不增加向导状态机、通知预设、测试连接状态或第二套持久模型。
 
 ## 13. 结构化错误码
@@ -593,6 +614,9 @@ Rust 定义 typed `ImErrorCode`，Tauri 和 connector 只传 code、retryable �
 - [x] lifecycle subscriber 完成有界 outbox projection。
 - [x] lifecycle projection 补齐每 job completion：blocking/repository 错误使用稳定码可观测，成功持久化后才唤醒 worker，单条失败后 consumer 继续处理下一事件。
 - [x] canonical lifecycle event ID 补齐 `task_id`，固定不同 task 复用本地 `run-001` 时产生独立 delivery；Direct Run completed 后的 ACP pending permission/elicitation 继续按当前 owner 与 request identity 可操作，manual check 仍拒绝 completed Run。
+- [x] 补齐生产 maintenance：启动恢复超时 `sending` 并执行 retention，运行期按 30 秒/6 小时调度；claim 使用 `attempt_count` fencing，迟到 settlement 不覆盖新 claim；所有批次和 blocking I/O 有界。
+- [x] `core.db` IM component schema 升至 v3，新增 channel cleanup journal；删除命令以 settings 删除为 canonical commit，projection barrier、active outbox 与 keyring 清理由 phase 恢复，失败返回 durable pending。
+- [x] 投影队列满载路径删除同步 `project_event()` 回退，改为 O(1) 诊断；barrier 接口测试固定删除前序投影已持久化。
 
 退出条件：使用 fake connector 可验证入队、发送、失败重试、重启恢复、容量、过期、幂等和 generation。
 
@@ -600,6 +624,8 @@ Rust 定义 typed `ImErrorCode`，Tauri 和 connector 只传 code、retryable �
 
 - [x] 实现 connector、binding、卡片与回调 fixture。
 - [x] 接入设置 API/UI 和 typed state event。
+- [x] connector sender 改为 generation-owned slot，旧会话取消/退出不能清除新 sender；重配置凭据失败提交当前 generation 错误终态，单 channel 失败不阻断其他 channel。
+- [x] 前端 ACP reducer 使用 `attempt/session + kind + event.id` 合并 occurrence；`raw.requestId` 仅用于权限提交，provider 重启后复用 request ID 的不同事件保持独立。
 - [x] 用有界可取消的扫码会话替换 Bot ID/Secret 手工入口，后端直接写 keyring；`source` 进入安装级配置。
 - [x] 修复单聊事件缺少 `chatid` 时的 actor/conversation identity，并将 `disconnected_event` 映射为非重试连接冲突。
 - [x] 修复 ACP permission/`askUserQuestion` lifecycle bridge 依赖 raw identity 字段导致事件缺失；两类 request identity 统一取 canonical `AcpUiEvent.id`，设置页在线未绑定时持续显示“等待绑定”。
@@ -645,9 +671,9 @@ Rust 定义 typed `ImErrorCode`，Tauri 和 connector 只传 code、retryable �
 |---|---|
 | 领域服务 | 三种请求路由、完整 locator、revision CAS、first-writer-wins、manual owner、outer locator |
 | action token | 随机性、作用域、签名/引用、过期、一次性消费、删除配置后失效 |
-| repository | schema migration、幂等 insert、due index、claim lease、crash recovery、retention、capacity |
-| manager | generation、重配、取消、迟到 event、退避上限、auth required 不重试、shutdown timeout |
-| service | `Intervention/Information` 隔离、canonical event 重放、不同 event ID 不聚合、scheduled information event 无 IM delivery、已解决/过期过滤、多目标 delivery、queue full、projection completion 在 delivery 持久化后发布且单条错误不终止 consumer |
+| repository | schema v3 migration、幂等 insert、due index、claim lease、启动/周期 crash recovery、attempt fencing、retention 调度、cleanup journal phase 恢复、channel active delete、capacity |
+| manager/connector | generation、generation-owned sender、重配、取消、旧会话清理、迟到 event、单 channel 配置失败隔离、退避上限、auth required 不重试、shutdown timeout |
+| service | `Intervention/Information` 隔离、canonical event 重放、不同 event ID 不聚合、scheduled information event 无 IM delivery、已解决/过期过滤、多目标 delivery、queue full O(1)、projection completion 在 delivery 持久化后发布、projection barrier 顺序且单条错误不终止 consumer |
 | inbound | 私聊 binding、actor/conversation 校验、群聊拒绝、重复 event/action ID、Runtime 成功但审计未写的恢复 |
 | connector fixtures | 官方主动推送帧不含 `chat_type`、顶层 `errcode` 必填且 ACK 可无 `msgid`、未知平台数字码脱敏；真实 `event.template_card_event` 使用 `body.msgid` 幂等、嵌套短 `event_key` 指向 delivery/action index、可选嵌套 `task_id` 缺失时恢复原卡 identity、显式 task 不匹配拒绝、私聊/actor/task 校验、嵌套断开、去重、回调确认与限流；SDK 1.0.7 的平铺 event 字段形状不作为运行时回调接受 |
 | 企微 Permission/ManualCheck 双发 | mock WebSocket 断言详情 ACK 前 100ms 内不发送 vote 卡；详情 ACK 后按序收到 vote 卡，卡片 ACK 的 msgid 才进入 delivery receipt；Permission 详情包含完整命令、说明、路径、参数且不含 `permissionTitle`，ManualCheck 详情包含最新 root 模型输出并与 vote 卡共享 4 位 `display_ref`；终态保持 POC 同形 `main_title.title + desc`，标题保留同编号，checkbox 与 submit 均禁用；Permission/ManualCheck 共享提交必须与桌面路径一致收敛前端投影、node outcome、manual pending 与 Run 续跑/完成 |
@@ -661,7 +687,7 @@ Rust 定义 typed `ImErrorCode`，Tauri 和 connector 只传 code、retryable �
 - 企业微信状态行、credential stored/missing、binding required 和 error code i18n。
 - 六类通知安静默认值、逐类持久化与中英文文案；接口拒绝已移除的 scheduled 通知偏好字段。
 - 企业微信扫码 Dialog 打开/关闭、重新生成、到期、取消、成功与错误状态；Secret 不进入 response/store，保存时禁用、错误聚焦。
-- ACP permission 使用接收 JSON-RPC 时固化的 typed `raw.requestId` 做 Runtime pending/response 查找；timeline/lifecycle 使用 Gold Band 从 `requestId + toolCallId` 生成的 `_goldBandPermissionItemId`，provider 缺失 toolCallId 时使用 durable sequence。elicitation 使用 Gold Band 生成并同时写入 pending state/`AcpUiEvent.id` 的 identity。测试必须证明同一 requestId 的不同 toolCall 不被 outbox 聚合、同一 replay 仍幂等，且两者不靠前缀裁剪或 event ID 反查；在线但未收到私聊 binding 时显示“等待绑定”，收到同一 actor 私聊后局部收敛为已连接。
+- ACP permission 使用接收 JSON-RPC 时固化的 typed `raw.requestId` 做 Runtime pending/response 查找；timeline/lifecycle 使用 Gold Band 从 `requestId + toolCallId` 生成的 `_goldBandPermissionItemId`，provider 缺失 toolCallId 时使用 durable sequence。前端 reducer 以 attempt/session scope、event kind 与 `AcpUiEvent.id` 作为 occurrence key，同 occurrence 的 pending/terminal snapshot 合并。elicitation 使用 Gold Band 生成并同时写入 pending state/`AcpUiEvent.id` 的 identity。测试必须证明同一 requestId 的不同 event ID 不被前端或 outbox 聚合、同一 occurrence/replay 仍幂等、不同 attempt 不串项，且两者不靠前缀裁剪或 event ID 反查；在线但未收到私聊 binding 时显示“等待绑定”，收到同一 actor 私聊后局部收敛为已连接。
 - `askUserQuestion` 卡片包含真实 message、全部问题标题/描述、单选/多选类型和固定选项；fixture 覆盖 scalar `oneOf/enum`、array `items.anyOf/oneOf/enum`、自由文本与 custom-answer companion。企微仅对单题 scalar 单选、单题 scalar 多选、2-3 个 scalar 单选题生成远程表单；unsupported 场景无 outbox 行且不得静默丢字段或生成无内容接受动作。
 - typed event 只更新目标 channel，旧 generation 不覆盖新 snapshot。
 - 窄宽度下标签、状态和操作不溢出；键盘导航与 screen reader label 完整。
@@ -703,6 +729,8 @@ npm run web:build
 | inbound queue | 每 channel <= 128 |
 | lifecycle queue | <= 256 |
 | retention cleanup | 单批 <= 200 |
+| maintenance pass | 单轮 <= 4 批；lease 30 秒，retention 6 小时 |
+| channel delete | 单 channel journal；低频 projection barrier <= 30 秒；不持锁等待 I/O |
 | 用户回答 | <= 8 KiB |
 | presentation payload | <= 32 KiB |
 | 企微 Permission 双发 | 每个当前 delivery 最多 2 个出站帧，仍只有 1 个 outbox/delivery/task identity |
@@ -730,6 +758,9 @@ npm run web:build
 - inbound action dedup：平台会重复回调，必须避免同一外部事件重复进入领域层。
 - keyring：敏感凭据不能安全地存入现有 settings 或 SQLite。
 - permission occurrence identity：JSON-RPC request id 只在 provider 连接内稳定，session resume 后可能重置；timeline/lifecycle 幂等需要 Gold Band 生成的稳定发生身份。
+- claim revision fencing：发送租约恢复后旧网络请求仍可能迟到，现有 delivery identity 无法区分两次 claim，必须复用单调 `attempt_count` 约束 settlement。
+- channel cleanup journal：settings、SQLite 与 keyring 无法共享事务，删除后的残余清理必须可恢复；仅记录单 channel、旧 credential reference、phase 和稳定错误码。
+- projection barrier：删除 target 与旧投影 job 并发时需要 FIFO 顺序点，现有 canonical event identity 不能表达“此前队列工作已落库”。
 
 这些机制分别对应具体不变量，没有为假设性规模增加通用抽象。
 
@@ -746,7 +777,9 @@ npm run web:build
 
 ## 20. 2026-08-30 本地验收记录
 
-- 2026-09-04 IM 设置清晰度优化：根因属于既有 durable settings、OS credential、generation runtime snapshot 与通知投影设计正确，但设置命令粒度、binding 持久化提交顺序和前端草稿边界实现不完整。后端删除通用保存/断开命令，拆分启停、通知保存、更换接收账号、真实重连和删除接口；binding 经 generation 校验后按 settings 落盘、DesktopState 更新、target 重建、connection snapshot 发布的顺序提交，存储失败只对同一 channel + generation 做 1/2/4 秒、最多三次且可取消的有界重试。前端按八类可决策状态渐进呈现，凭据存在后始终显示六项通知，启停即时提交，NotificationDraft 只由通知保存/放弃收敛；旧入口、旧 DTO 和消费路径已删除，不提供兼容层或测试连接。验收：`cargo test im:: --lib -j 1` 75/75、`cargo test -p gold-band-desktop im_runtime::tests -j 1` 15/15、`npm run web:test` 242 个文件共 1647/1647、IM 定向 Web 测试 14/14、HTML 原型测试 6/6、`cargo check --lib -j 1`、`cargo check -p gold-band-desktop -j 1`、`cargo fmt --all -- --check`、`git diff --check` 与 `npm run web:build` 通过。内置浏览器 deep link 覆盖未接入、等待绑定、连接中、可用、暂停、网络重连、凭据失效、连接冲突和长 Bot ID；1024px 正常宽度与 640px 窄窗、重新拉宽、中英文、浅色/深色、扫码弹窗、配置菜单、两类确认、键盘开关/焦点及通知草稿跨启停保持均通过，页面无横向溢出或控制台 warning/error。性能复核确认单通道固定六项配置均为 O(1)，没有轮询、全量刷新、无界缓存/队列或网络 await 持锁；过度设计复核确认未新增持久 UI 状态、global store、aggregate、依赖或兼容模型。真实企业微信授权/冲突/重连、Windows/macOS/Linux 凭据库与发布构建矩阵仍需外部验收；生产构建保留既有混合 import 和大 chunk warning，desktop check 保留既有 dead-code warning。
+- 2026-09-04 IM 可靠性闭环：根因属于已有 outbox lease、connection generation、occurrence identity、有界 projection 与 retention 设计正确，但生产编排和消费端契约未闭环。实现以 `attempt_count` fencing 保护租约恢复后的 settlement，增加启动/周期 maintenance、generation-owned WeCom sender、schema v3 channel cleanup journal 与最长 30 秒 projection barrier；删除配置以 settings 为 canonical commit，残余清理失败返回 pending 并后台恢复；重配置按 channel 隔离失败，前端使用 `attempt/session + kind + event.id` 合并 occurrence，queue Full 不再同步执行磁盘投影。验收：核心 IM 83/83、桌面 IM runtime 16/16、完整 Web 242 个文件共 1651/1651、Web 生产构建、`cargo check -p gold-band-desktop`、`cargo fmt --all --check` 与 `git diff --check` 通过；桌面测试默认 debuginfo 首次在 Windows 链接阶段因 LLVM 内存不足退出，使用 `CARGO_BUILD_JOBS=1`、`CARGO_PROFILE_TEST_DEBUG=0` 后同一套测试通过。内置浏览器 deep link `/settings` 验证 1280px 中文未接入状态、说明与扫码操作无重叠或横向溢出，测试页和服务已清理。性能复核确认 lifecycle Full 分支为 O(1)，SQLite maintenance 单批 200、单轮 4 批且全部位于 blocking pool，删除 barrier 仅低频执行且有 30 秒上限；没有全量扫描、无界队列、跨 await 锁或新增网络帧。过度设计复核确认未新增通用 scheduler、第二 outbox、配置 revision、租约表或前端 canonical 副本；唯一新增持久结构是三个存储无法共享事务时必需的单 channel cleanup journal。真实企业微信断线/重启、keyring 删除失败注入与 Windows/macOS/Linux 凭据库仍需外部集成验收。
+
+- 2026-09-04 IM 设置清晰度优化：根因属于既有 durable settings、OS credential、generation runtime snapshot 与通知投影设计正确，但设置命令粒度、binding 持久化提交顺序和前端草稿边界实现不完整。后端删除通用保存/断开命令，拆分启停、通知保存、更换接收账号、真实重连和删除接口；binding 经 generation 校验后按 settings 落盘、DesktopState 更新、target 重建、connection snapshot 发布的顺序提交，存储失败只对同一 channel + generation 做 1/2/4 秒、最多三次且可取消的有界重试。前端按八类可决策状态渐进呈现，凭据存在后始终显示六项通知，启停即时提交，NotificationDraft 只由通知保存/放弃收敛；旧入口、旧 DTO 和消费路径已删除，不提供兼容层或测试连接。验收：`cargo test im:: --lib -j 1` 75/75、`cargo test -p gold-band-desktop im_runtime::tests -j 1` 15/15、`npm run web:test` 242 个文件共 1647/1647、IM 定向 Web 测试 14/14、`cargo check --lib -j 1`、`cargo check -p gold-band-desktop -j 1`、`cargo fmt --all -- --check`、`git diff --check` 与 `npm run web:build` 通过。内置浏览器 deep link 覆盖未接入、等待绑定、连接中、可用、暂停、网络重连、凭据失效、连接冲突和长 Bot ID；1024px 正常宽度与 640px 窄窗、重新拉宽、中英文、浅色/深色、扫码弹窗、配置菜单、两类确认、键盘开关/焦点及通知草稿跨启停保持均通过，页面无横向溢出或控制台 warning/error。性能复核确认单通道固定六项配置均为 O(1)，没有轮询、全量刷新、无界缓存/队列或网络 await 持锁；过度设计复核确认未新增持久 UI 状态、global store、aggregate、依赖或兼容模型。真实企业微信授权/冲突/重连、Windows/macOS/Linux 凭据库与发布构建矩阵仍需外部验收；生产构建保留既有混合 import 和大 chunk warning，desktop check 保留既有 dead-code warning。
 
 - 2026-09-04 settings v12 启动迁移修复：上次删除四个 scheduled IM 偏好字段后，领域 DTO 已严格拒绝废弃键，但 `settingsSchemaVersion` 仍停留在 v11，导致已有 v11 `settings.json` 在迁移前反序列化失败，桌面端无法启动；根因属于目标设计正确但持久化迁移不完整。当前将 schema 升至 v12，在既有 `SettingsConfig::from_json_value_with_migration` 边界定点删除每个 channel notifications 中的四个废弃键，再由 `load_settings_file` 原子写回；v12 输入仍严格拒绝这些键，不恢复旧字段、兼容读取或消费路径。接口回归固定 v11 文件迁移、六类有效偏好保留、落盘清理、二次加载幂等以及 v12 废弃键拒绝。验收：迁移定向测试 2/2、配置测试 47/47、核心 IM 73/73、`cargo check --lib -j 1`、`cargo check -p gold-band-desktop -j 1`、`cargo fmt --all --check` 与 `git diff --check` 通过；desktop check 仅保留 10 条既有非 IM dead-code warning。使用本机真实 schema 11 设置执行 `cargo run -p gold-band-desktop`，进程成功启动并保持响应，设置被写回 schema 12，原 channel 通知键只剩六项；测试实例随后关闭。迁移只在旧 schema 启动时对已有 channel 数组做一次 `O(C)` 定点处理，不读取 outbox 或历史运行数据；无新增状态、缓存、队列、依赖或热路径开销。过度设计复核确认复用既有版本迁移和原子写入机制，不增加专用 repair 文件或双模型。
 

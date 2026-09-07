@@ -254,6 +254,7 @@ impl ImConnectorEvent {
 pub trait ImConnector: Send + Sync {
     fn kind(&self) -> ImChannelKind;
     fn capabilities(&self) -> ImChannelCapabilities;
+    fn advance_generation(&self, generation: u64);
 
     async fn connect(
         &self,

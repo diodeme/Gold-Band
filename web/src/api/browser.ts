@@ -812,7 +812,11 @@ export const browserApi: RuntimeApi = {
         connection: null,
       } : channel),
     };
-    return structuredClone(browserImSettings);
+    return {
+      settings: structuredClone(browserImSettings),
+      operationId: crypto.randomUUID(),
+      cleanupStatus: 'complete' as const,
+    };
   },
   async subscribeImChannelStateUpdates(listener) {
     browserImChannelListeners.add(listener);

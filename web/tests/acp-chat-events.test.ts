@@ -35,7 +35,7 @@ function event(partial: Partial<AcpUiEventVm>): AcpUiEventVm {
     seq: partial.seq ?? 1,
     timestamp: partial.timestamp ?? `${partial.seq ?? 1}Z`,
     kind: partial.kind ?? 'textDelta',
-    sessionId: partial.sessionId ?? 'session-1',
+    sessionId: Object.hasOwn(partial, 'sessionId') ? partial.sessionId : 'session-1',
     content: partial.content,
     title: partial.title,
     toolCallId: partial.toolCallId,
@@ -1744,7 +1744,7 @@ describe('ACP chat event handling', () => {
       ],
       [
         event({
-          id: 'permission-permission-0',
+          id: 'permission-0',
           seq: 11,
           kind: 'permissionRequest',
           status: 'selected',

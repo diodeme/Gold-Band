@@ -80,7 +80,13 @@ enum PendingRequest {
 pub struct WeComConnector {
     token_codec: ImActionTokenCodec,
     endpoint: String,
-    commands: Mutex<Option<mpsc::Sender<WeComCommand>>>,
+    commands: Mutex<GenerationSenderSlot>,
+}
+
+#[derive(Default)]
+struct GenerationSenderSlot {
+    generation: u64,
+    sender: Option<mpsc::Sender<WeComCommand>>,
 }
 
 impl WeComConnector {
@@ -88,7 +94,7 @@ impl WeComConnector {
         Self {
             token_codec,
             endpoint: WECOM_WEBSOCKET_ENDPOINT.to_owned(),
-            commands: Mutex::new(None),
+            commands: Mutex::new(GenerationSenderSlot::default()),
         }
     }
 
@@ -102,15 +108,33 @@ impl WeComConnector {
         self.commands
             .lock()
             .expect("WeCom connector command lock poisoned")
+            .sender
             .clone()
             .ok_or_else(|| ImIntegrationError::retryable(ImErrorCode::NetworkUnavailable, None))
     }
 
-    fn clear_sender(&self) {
-        self.commands
+    fn install_sender(&self, generation: u64, sender: mpsc::Sender<WeComCommand>) -> bool {
+        let mut slot = self
+            .commands
             .lock()
-            .expect("WeCom connector command lock poisoned")
-            .take();
+            .expect("WeCom connector command lock poisoned");
+        if slot.generation != generation {
+            return false;
+        }
+        slot.sender = Some(sender);
+        true
+    }
+
+    fn clear_sender(&self, generation: u64) -> bool {
+        let mut slot = self
+            .commands
+            .lock()
+            .expect("WeCom connector command lock poisoned");
+        if slot.generation != generation {
+            return false;
+        }
+        slot.sender.take();
+        true
     }
 
     async fn run_session(
@@ -128,10 +152,9 @@ impl WeComConnector {
         subscribe(&mut socket, bot_id, secret).await?;
 
         let (command_tx, mut command_rx) = mpsc::channel(WECOM_COMMAND_CAPACITY);
-        *self
-            .commands
-            .lock()
-            .expect("WeCom connector command lock poisoned") = Some(command_tx.clone());
+        if !self.install_sender(generation, command_tx.clone()) {
+            return Ok(());
+        }
         events
             .send(ImConnectorEvent::Connected {
                 generation,
@@ -151,7 +174,7 @@ impl WeComConnector {
         loop {
             tokio::select! {
                 _ = cancellation.cancelled() => {
-                    self.clear_sender();
+                    self.clear_sender(generation);
                     fail_pending(pending);
                     return Ok(());
                 }
@@ -164,7 +187,7 @@ impl WeComConnector {
                 }
                 command = command_rx.recv() => {
                     let Some(command) = command else {
-                        self.clear_sender();
+                        self.clear_sender(generation);
                         fail_pending(pending);
                         return Ok(());
                     };
@@ -240,13 +263,13 @@ impl WeComConnector {
                 }
                 message = socket.next() => {
                     let Some(message) = message else {
-                        self.clear_sender();
+                        self.clear_sender(generation);
                         fail_pending(pending);
                         return Err(ImIntegrationError::retryable(ImErrorCode::NetworkUnavailable, None));
                     };
                     let message = message.map_err(map_websocket_error)?;
                     if message.is_close() {
-                        self.clear_sender();
+                        self.clear_sender(generation);
                         fail_pending(pending);
                         return Err(ImIntegrationError::retryable(ImErrorCode::NetworkUnavailable, None));
                     }
@@ -316,6 +339,17 @@ impl ImConnector for WeComConnector {
         }
     }
 
+    fn advance_generation(&self, generation: u64) {
+        let mut slot = self
+            .commands
+            .lock()
+            .expect("WeCom connector command lock poisoned");
+        if generation >= slot.generation {
+            slot.generation = generation;
+            slot.sender = None;
+        }
+    }
+
     async fn connect(
         &self,
         config: ResolvedImChannelConfig,
@@ -323,6 +357,7 @@ impl ImConnector for WeComConnector {
         events: mpsc::Sender<ImConnectorEvent>,
         cancellation: CancellationToken,
     ) -> Result<(), ImIntegrationError> {
+        self.advance_generation(generation);
         let bot_id = non_empty(&config.public_identity)?;
         let secret = config
             .credential_fields
@@ -332,10 +367,10 @@ impl ImConnector for WeComConnector {
 
         for reconnect in 0..=WECOM_MAX_RECONNECTS {
             if cancellation.is_cancelled() {
-                self.clear_sender();
+                self.clear_sender(generation);
                 return Ok(());
             }
-            match self
+            let session_result = self
                 .run_session(
                     &bot_id,
                     &secret,
@@ -344,12 +379,13 @@ impl ImConnector for WeComConnector {
                     &cancellation,
                     config.locale,
                 )
-                .await
-            {
+                .await;
+            self.clear_sender(generation);
+            match session_result {
                 Ok(()) => return Ok(()),
                 Err(error) if !error.retryable => return Err(error),
                 Err(error) => {
-                    self.clear_sender();
+                    self.clear_sender(generation);
                     let _ = events
                         .send(ImConnectorEvent::Disconnected {
                             generation,
@@ -3622,6 +3658,23 @@ mod tests {
         let connector = WeComConnector::new(ImActionTokenCodec::new(vec![7; 32]).unwrap())
             .with_endpoint("ws://127.0.0.1:1");
         assert_eq!(connector.endpoint, "ws://127.0.0.1:1");
+    }
+
+    #[test]
+    fn old_generation_cannot_install_or_clear_new_sender() {
+        let connector = WeComConnector::new(ImActionTokenCodec::new(vec![7; 32]).unwrap());
+        let (old_sender, _old_receiver) = mpsc::channel(1);
+        let (new_sender, _new_receiver) = mpsc::channel(1);
+        connector.advance_generation(1);
+        assert!(connector.install_sender(1, old_sender));
+        connector.advance_generation(2);
+        assert!(connector.command_sender().is_err());
+        assert!(connector.install_sender(2, new_sender));
+        assert!(!connector.clear_sender(1));
+        assert!(!connector.install_sender(1, mpsc::channel(1).0));
+        assert!(connector.command_sender().is_ok());
+        assert!(connector.clear_sender(2));
+        assert!(connector.command_sender().is_err());
     }
 
     #[tokio::test]

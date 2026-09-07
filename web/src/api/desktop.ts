@@ -383,6 +383,9 @@ export const desktopApi: RuntimeApi = {
   getAcpToolDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId) {
     return invokeCommand<import('../types').AcpToolDetailVm>('get_acp_tool_detail', { projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
   },
+  getAcpImage(locator, image, thumbnail) {
+    return invokeCommand<import('../types').AcpImageContentVm>('get_acp_image', { ...locator, image, thumbnail });
+  },
   getTurnFileChangeSet(locator, changeSetId) {
     return invokeCommand<import('../types').TurnFileChangeSetVm>('get_turn_file_change_set', { ...locator, changeSetId });
   },

@@ -1,3 +1,7 @@
+import { AcpImageStrip } from './AcpImageStrip';
+import { MessageAttachmentPreviewButton } from './MessageAttachmentPreviewButton';
+export { MessageAttachmentPreviewButton } from './MessageAttachmentPreviewButton';
+import { acpImagesFromRaw, acpActivityImages } from '@/lib/acp-image-cache';
 import {
   createContext,
   memo,
@@ -23,7 +27,6 @@ import {
   Copy,
   Eye,
   FileText,
-  Image as ImageIcon,
   ListTodo,
   Loader2,
   Search,
@@ -72,7 +75,6 @@ import {
   ConversationViewportFooter,
 } from "@/components/conversation/ConversationViewport";
 import { InterventionLayer } from "@/components/conversation/InterventionLayer";
-import { ImageActionsContextMenu } from "@/components/shared/ImageActionsContextMenu";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import {
   Message,
@@ -109,7 +111,6 @@ import {
 } from "@/lib/system-prompt-view-pref";
 import { goldThemedScrollbarClassName } from "@/lib/themed-scrollbar";
 import { BoundedLruCache } from "@/lib/bounded-lru-cache";
-import { useImageActions } from "@/hooks/useImageActions";
 import {
   AcpLatestWinsEventBuffer,
   decideAcpLiveEventFlush,
@@ -137,8 +138,6 @@ import {
 } from "@/lib/acp-session-config";
 import {
   groupMessageAttachmentPreviews,
-  imageSrcFromContent,
-  isImageMessageAttachment,
   isTaskInputMessageAttachment,
   messageAttachmentPreviewsFromRaw,
   type MessageAttachmentPreview,
@@ -258,8 +257,6 @@ import {
   setAcpSessionPermissionMode,
   showArtifact,
   showAttachment,
-  showConversationAttachment,
-  showConversationMessageAttachment,
   stopActiveSession,
   submitManualCheck,
 } from "@/api";
@@ -481,6 +478,7 @@ type AcpTimelineWindowOwner = {
 const AcpTimelineWindowOwnerContext = createContext<AcpTimelineWindowOwner | null>(null);
 
 type AcpActivityBatch = {
+  images?: import('@/types').AcpImageRef[];
   kind: "activityBatch";
   id: string;
   seq: number;
@@ -8002,6 +8000,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
           </CollapsibleContent>
         ) : null}
       </Collapsible>
+      {!event.live ? <AcpImageStrip images={event.images ?? []} locator={branchLocator} /> : null}
     </AssistantTimelineRow>
   );
 });
@@ -8702,133 +8701,6 @@ function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-export const MessageAttachmentPreviewButton = memo(function MessageAttachmentPreviewButton({
-  attachment,
-  locator,
-  onClick,
-}: {
-  attachment: MessageAttachmentPreview;
-  locator?: MessageAttachmentLocator;
-  onClick?: (attachment: MessageAttachmentPreview) => void;
-}) {
-  const isImage = isImageMessageAttachment(attachment);
-  const attachmentLabel = `${attachment.name} (${formatAttachmentSize(attachment.size)})`;
-  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!isImage || !locator) {
-      setPreviewSrc(null);
-      return;
-    }
-    let cancelled = false;
-    setPreviewSrc(null);
-    const contentPromise = isTaskInputMessageAttachment(attachment)
-      ? showConversationAttachment(locator.projectId, locator.taskId, attachment.name)
-      : showConversationMessageAttachment(
-          locator.projectId,
-          locator.taskId,
-          locator.runId,
-          locator.roundId,
-          locator.nodeId,
-          locator.attemptId,
-          attachment.name,
-          attachment.path,
-          locator.outerNodeId,
-          locator.outerAttemptId,
-        );
-    contentPromise
-      .then((content) => {
-        if (!cancelled) setPreviewSrc(imageSrcFromContent(content));
-      })
-      .catch(() => {
-        if (!cancelled) setPreviewSrc(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [attachment.name, attachment.path, isImage, locator]);
-
-  const imageActions = useImageActions(isImage && previewSrc ? {
-    name: attachment.name,
-    mime: attachment.type,
-    previewUrl: previewSrc,
-  } : null);
-
-  if (isImage) {
-    const previewButton = (
-      <button
-        type="button"
-        className={cn(
-          "relative size-[72px] overflow-hidden rounded-lg border border-border/60 bg-card/80 text-muted-foreground shadow-sm transition-colors hover:border-primary/45 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-          imageActions.state === 'failed' && "ring-1 ring-destructive/70",
-        )}
-        aria-label={attachment.name}
-        aria-busy={imageActions.pending || undefined}
-        onClick={() => onClick?.(attachment)}
-      >
-        {previewSrc ? (
-          <img
-            src={previewSrc}
-            alt={attachment.name}
-            loading="lazy"
-            draggable={false}
-            className="size-full object-cover"
-          />
-        ) : (
-          <span className="flex size-full items-center justify-center bg-muted/40">
-            <ImageIcon className="size-5 text-blue-400" />
-          </span>
-        )}
-        {imageActions.pending ? (
-          <span className="absolute inset-0 flex items-center justify-center bg-background/65">
-            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-          </span>
-        ) : imageActions.state === 'copied' || imageActions.state === 'saved' ? (
-          <span className="absolute right-1 top-1 flex size-5 items-center justify-center rounded-full bg-background/85 text-emerald-600 shadow-sm">
-            <Check className="size-3" aria-hidden="true" />
-          </span>
-        ) : imageActions.state === 'failed' ? (
-          <span className="absolute right-1 top-1 flex size-5 items-center justify-center rounded-full bg-background/85 text-destructive shadow-sm">
-            <CircleAlert className="size-3" aria-hidden="true" />
-          </span>
-        ) : null}
-      </button>
-    );
-    return (
-      <Tooltip>
-        {previewSrc ? (
-          <ImageActionsContextMenu actions={imageActions}>
-            <TooltipTrigger asChild>{previewButton}</TooltipTrigger>
-          </ImageActionsContextMenu>
-        ) : (
-          <TooltipTrigger asChild>{previewButton}</TooltipTrigger>
-        )}
-        <TooltipContent className="max-w-[360px] break-all">
-          {imageActions.message ?? attachmentLabel}
-        </TooltipContent>
-        {imageActions.message ? (
-          <span className="sr-only" aria-live="polite">{imageActions.message}</span>
-        ) : null}
-      </Tooltip>
-    );
-  }
-
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          className="inline-flex h-9 w-fit max-w-full shrink-0 items-center gap-1.5 rounded-full border border-border/60 bg-card/80 px-3 text-ui-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          onClick={() => onClick?.(attachment)}
-        >
-          <FileText className="size-3 text-muted-foreground" />
-          <span className="max-w-[120px] truncate">{attachment.name}</span>
-        </button>
-      </TooltipTrigger>
-      <TooltipContent className="max-w-[360px] break-all">{attachmentLabel}</TooltipContent>
-    </Tooltip>
-  );
-});
 
 const AnimatedEllipsis = memo(function AnimatedEllipsis() {
   return (
@@ -9162,6 +9034,7 @@ const ToolBlock = memo(function ToolBlock({
           variant={compact ? "audit" : "card"}
           className={compact ? "acp-activity-audit-tool" : undefined}
         />
+        {open ? <AcpImageStrip images={acpImagesFromRaw(event.raw)} locator={branchLocator} /> : null}
         {activeDetailError ? (
           <div className="mt-1 flex min-w-0 items-center justify-between gap-2 px-2 text-xs text-destructive">
             <span className="min-w-0 truncate">{activeDetailError}</span>
@@ -10574,6 +10447,7 @@ function batchAcpActivities(
     );
     result.push({
       kind: "activityBatch",
+      images: acpActivityImages(activityEvents),
       id: `activity-${activityStartSeq}`,
       seq: first.startedSeq ?? first.seq,
       timestamp: first.startedAt ?? first.timestamp,
@@ -10693,11 +10567,6 @@ function arrayValue(value: unknown): unknown[] | null {
   return Array.isArray(value) ? value : null;
 }
 
-function formatAttachmentSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function mergeRaw(previous: unknown, next: unknown) {
   return mergeRawObject(previous, next);

@@ -5715,6 +5715,18 @@ pub fn acp_tool_detail_vm_for_attempt(
         );
     }
     if let Some(event) = detail.as_mut() {
+        if let Some(raw) = event.raw.as_mut() {
+            let images = gold_band::acp::images::image_refs_from_raw(&event.id, &event.kind, raw);
+            gold_band::acp::images::strip_image_bodies(raw);
+            if !images.is_empty()
+                && let Some(raw) = raw.as_object_mut()
+            {
+                raw.insert(
+                    "goldBandImages".into(),
+                    serde_json::to_value(images).expect("image references serialize"),
+                );
+            }
+        }
         hydrate_timeline_events(&timeline_path, std::slice::from_mut(event))?;
     }
     Ok(AcpToolDetailVm { event: detail })
@@ -6540,10 +6552,27 @@ fn extract_system_prompt_append(path: &camino::Utf8Path) -> Option<String> {
 }
 
 fn compact_event_for_session(mut event: AcpUiEventVm) -> AcpUiEventVm {
+    let images = event
+        .raw
+        .as_ref()
+        .map(|raw| gold_band::acp::images::image_refs_from_raw(&event.id, &event.kind, raw))
+        .unwrap_or_default();
     if let Some(raw) = event.raw.as_mut() {
+        gold_band::acp::images::strip_image_bodies(raw);
         remove_provider_agent_metadata(raw);
     }
     event.raw = event.raw.map(compact_raw_value);
+    if !images.is_empty()
+        && let Some(raw) = event
+            .raw
+            .as_mut()
+            .and_then(serde_json::Value::as_object_mut)
+    {
+        raw.insert(
+            "goldBandImages".into(),
+            serde_json::to_value(images).expect("image references serialize"),
+        );
+    }
     event.content = event
         .content
         .map(|content| truncate_string(content, 64_000));
@@ -6560,6 +6589,7 @@ fn compact_event_for_activity_audit(event: AcpUiEventVm) -> AcpUiEventVm {
         return event;
     };
     for path in [
+        &["rawOutput"][..],
         &["output"][..],
         &["fields", "output"][..],
         &["content", "output"][..],

@@ -46,7 +46,8 @@ pub const TIMELINE_BLOB_MIN_BYTES: usize = 64 * 1024;
 // V4 adds the retry-prompt role and its current pending identity. Treating a V2
 // index as compatible would leave stop unable to settle a processing retry in
 // the crash window between the timeline append and session metadata rewrite.
-pub const TIMELINE_INDEX_FORMAT_VERSION: u32 = 10;
+// V11 indexes lightweight image references, including images in paginated activity.
+pub const TIMELINE_INDEX_FORMAT_VERSION: u32 = 11;
 pub const DEFAULT_TIMELINE_CHECKPOINT_PATCH_INTERVAL: usize = 256;
 pub const DEFAULT_TIMELINE_TAIL_REPLAY_LIMIT: usize = 256;
 // Internal result marker: tail replay exceeded its bound and the index was
@@ -107,6 +108,8 @@ pub struct TimelineUsageProjection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TimelineItemLocator {
+    #[serde(default)]
+    images: Vec<crate::acp::images::AcpImageRef>,
     offset: u64,
     line_length: u64,
     revision: u64,
@@ -1476,6 +1479,7 @@ fn timeline_item_locator(
         TimelineSemanticKind::None
     };
     Ok(TimelineItemLocator {
+        images: crate::acp::images::image_refs(item),
         offset,
         line_length,
         revision,
@@ -1913,8 +1917,10 @@ fn build_activity_summary(
     let mut error_count = 0usize;
     let mut read_files = HashSet::new();
     let mut written_files = HashSet::new();
+    let mut images = Vec::new();
     for item_id in &block.item_ids {
         let locator = index.item_locators.get(item_id)?;
+        images.extend(locator.images.iter().take(crate::acp::images::MAX_PROJECTED_IMAGES.saturating_sub(images.len())).cloned());
         match locator.kind.as_str() {
             "thoughtDelta" => thought_count = thought_count.saturating_add(1),
             "error" => error_count = error_count.saturating_add(1),
@@ -1955,6 +1961,7 @@ fn build_activity_summary(
         timing: None,
         raw: Some(serde_json::json!({
             "goldBandActivity": {
+                "images": images,
                 "activityStartSeq": block.oldest_seq,
                 "activityEndSeq": block.newest_seq,
                 "totalEventCount": block.item_ids.len(),
@@ -2884,7 +2891,7 @@ struct TimelineFileStats {
     redundant_revision_count: usize,
 }
 
-fn timeline_attempt_dir(path: &Utf8Path) -> Utf8PathBuf {
+pub(crate) fn timeline_attempt_dir(path: &Utf8Path) -> Utf8PathBuf {
     if path.file_name() == Some("timeline.jsonl")
         && path
             .parent()
@@ -2915,6 +2922,14 @@ pub(crate) fn externalize_timeline_event_for_storage(
 
 fn externalize_timeline_event(store: &TurnFileStore, item: &mut AcpUiEvent) -> Result<()> {
     if let Some(raw) = item.raw.as_mut() {
+        for pointer in crate::acp::images::image_pointers(&item.kind, raw) {
+            if let Some(data) = raw.pointer_mut(&format!("{pointer}/data"))
+                && let Some(content) = data.as_str()
+            {
+                let version = store.write_blob(content)?;
+                *data = serde_json::json!({ TIMELINE_BLOB_REF_KEY: version });
+            }
+        }
         externalize_large_strings(store, raw)?;
     }
     Ok(())
@@ -3598,6 +3613,42 @@ mod tests {
         assert!(blob_dir.exists());
         std::fs::remove_dir_all(blob_dir).unwrap();
         TimelineStore::open(path, TimelineCompactionPolicy::default()).unwrap();
+    }
+
+    #[test]
+    fn tool_images_are_blob_backed_and_projected_without_bodies() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut item = event("tool-image", 1, "");
+        item.kind = "toolCall".into();
+        item.raw = Some(json!({
+            "sessionUpdate": "tool_call_update",
+            "rawOutput": { "result": { "content": [
+                { "type": "image", "mimeType": "image/png", "data": "AQIDBA==" }
+            ] } }
+        }));
+        let mut store = TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        store.upsert(1, &item).unwrap();
+        let stored = super::read_indexed_timeline_item(&path, "tool-image").unwrap().unwrap().event;
+        assert!(stored.raw.as_ref().unwrap().pointer("/rawOutput/result/content/0/data/$goldBandBlob").is_some());
+        store.force_checkpoint().unwrap();
+        let summary = store.index.semantic_blocks[0].summary.as_ref().unwrap();
+        let images = summary.raw.as_ref().unwrap().pointer("/goldBandActivity/images").unwrap().as_array().unwrap();
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0]["eventId"], "tool-image");
+        assert!(!serde_json::to_string(summary).unwrap().contains("AQIDBA=="));
+        let reference = serde_json::from_value::<crate::acp::images::AcpImageRef>(images[0].clone()).unwrap();
+        assert_eq!(crate::acp::images::read_image_base64(&path, &reference).unwrap(), "AQIDBA==");
+        let mut invalid = reference.clone();
+        invalid.content_hash = "wrong-version".into();
+        assert!(crate::acp::images::read_image_base64(&path, &invalid).is_err());
+        invalid = reference.clone();
+        invalid.pointer = "/rawInput/data".into();
+        assert!(crate::acp::images::read_image_base64(&path, &invalid).is_err());
+        let mut live = item.clone();
+        crate::acp::events::compact_live_conversation_event(&mut live);
+        assert_eq!(live.raw.as_ref().unwrap()["goldBandImages"][0], serde_json::to_value(reference).unwrap());
+        assert!(!serde_json::to_string(&live).unwrap().contains("AQIDBA=="));
     }
 
     #[test]

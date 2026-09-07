@@ -136,6 +136,53 @@ const CHAT_CONTAINER_SCROLL_KEYS = new Set([
   " ",
 ])
 
+function isNestedScrollInput(
+  viewport: HTMLElement,
+  target: EventTarget | null,
+  direction: number,
+  keyboard = false,
+) {
+  let element = target instanceof Element ? target : null
+  while (element && element !== viewport) {
+    const style = getComputedStyle(element)
+    const overflow = style.overflowY || style.overflow
+    if (overflow === "auto" || overflow === "scroll") {
+      const canScroll = element.scrollHeight > element.clientHeight
+      const hasRoom = direction < 0
+        ? element.scrollTop > 0
+        : element.scrollTop + element.clientHeight < element.scrollHeight
+      const overscroll = style.overscrollBehaviorY || style.overscrollBehavior
+      // Keyboard scrolling stays with its focused scroller; wheel input can
+      // chain to the conversation only at an uncontained boundary.
+      if ((canScroll && (keyboard || hasRoom)) || overscroll === "contain" || overscroll === "none") {
+        return true
+      }
+    }
+    element = element.parentElement
+  }
+  return false
+}
+
+function isScrollbarPointerDown(viewport: HTMLElement, event: PointerEvent) {
+  if (event.target !== viewport || event.button !== 0 || event.pointerType !== "mouse") return false
+  if (viewport.scrollHeight <= viewport.clientHeight || !viewport.offsetWidth) return false
+  const rect = viewport.getBoundingClientRect()
+  const scale = rect.width / viewport.offsetWidth
+  if (!scale) return false
+  const style = getComputedStyle(viewport)
+  const borderLeft = Number.parseFloat(style.borderLeftWidth) || 0
+  const borderRight = Number.parseFloat(style.borderRightWidth) || 0
+  const x = (event.clientX - rect.left) / scale
+  // The dependency reserves both gutters. Only the direction's scrollbar
+  // side is interactive; the opposite gutter is ordinary empty space.
+  return event.clientY >= rect.top + viewport.clientTop * scale
+    && event.clientY < rect.top + (viewport.clientTop + viewport.clientHeight) * scale
+    && (style.direction === "rtl"
+      ? x >= borderLeft && x < viewport.clientLeft
+      : x >= viewport.clientLeft + viewport.clientWidth
+        && x < viewport.offsetWidth - borderRight)
+}
+
 export function isChatContainerViewportAtBottom(
   viewport: Pick<HTMLDivElement, "clientHeight" | "scrollHeight" | "scrollTop">,
 ) {
@@ -256,7 +303,7 @@ function ChatContainerLifecycle({
   const canResumeFollowingAfterDisclosureRef = useRef(canResumeFollowingAfterDisclosure)
   canResumeFollowingAfterDisclosureRef.current = canResumeFollowingAfterDisclosure
   const isFollowingRef = useRef(initialFollowing)
-  const pointerScrollingRef = useRef(false)
+  const scrollbarPointerIdRef = useRef<number | null>(null)
   const lastScrollTopRef = useRef<number | null>(null)
   const resumeFollowFromUserInputRef = useRef<ChatFollowResumeCause | null>(null)
   const diagnosticInstanceIdRef = useRef<string | null>(null)
@@ -304,7 +351,7 @@ function ChatContainerLifecycle({
       event,
       followIntent: isFollowingRef.current,
       resumeCause: resumeFollowFromUserInputRef.current,
-      pointerScrolling: pointerScrollingRef.current,
+      pointerScrolling: scrollbarPointerIdRef.current !== null,
       contentExpansionActive: Boolean(contentExpansionTokensRef.current),
       anchorCompensationActive: contentAnchorCompensationActiveRef.current,
       scrollTop: roundChatScrollDiagnostic(scrollTop),
@@ -666,7 +713,7 @@ function ChatContainerLifecycle({
       }
       if (
         (contentExpansionTokensRef.current || contentExpansionRestoreFrameRef.current !== null) &&
-        pointerScrollingRef.current &&
+        scrollbarPointerIdRef.current !== null &&
         previousScrollTop !== null &&
         currentScrollTop !== previousScrollTop
       ) {
@@ -678,7 +725,7 @@ function ChatContainerLifecycle({
         }
         stopScrollForCause("content-expansion-user-scroll")
       } else if (
-        pointerScrollingRef.current &&
+        scrollbarPointerIdRef.current !== null &&
         previousScrollTop !== null &&
         currentScrollTop < previousScrollTop
       ) {
@@ -689,7 +736,7 @@ function ChatContainerLifecycle({
         stopScrollForCause("user-scrollbar-up")
       }
       if (
-        pointerScrollingRef.current &&
+        scrollbarPointerIdRef.current !== null &&
         previousScrollTop !== null &&
         currentScrollTop > previousScrollTop
       ) {
@@ -703,6 +750,9 @@ function ChatContainerLifecycle({
       completeFollowResumeFromUserInput()
     }
     const handleWheel = (event: WheelEvent) => {
+      if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.shiftKey
+        || event.deltaY === 0 || Math.abs(event.deltaX) > Math.abs(event.deltaY)
+        || isNestedScrollInput(viewport, event.target, event.deltaY)) return
       if (event.deltaX !== 0 || event.deltaY !== 0) onViewportUserScroll?.(viewport)
       const createWheelDetails = () => ({
         deltaX: roundChatScrollDiagnostic(event.deltaX),
@@ -727,11 +777,16 @@ function ChatContainerLifecycle({
       }
     }
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (CHAT_CONTAINER_SCROLL_KEYS.has(event.key)) onViewportUserScroll?.(viewport)
+      if (event.defaultPrevented || event.altKey || event.metaKey || !CHAT_CONTAINER_SCROLL_KEYS.has(event.key)) return
+      const target = event.target instanceof Element ? event.target : null
+      if (target?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="combobox"], [role="slider"], [role="spinbutton"]')) return
+      if (event.key === " " && target?.closest('button, a[href], [role="button"], [role="checkbox"], [role="switch"]')) return
       const scrollsUp = CHAT_CONTAINER_SCROLL_UP_KEYS.has(event.key)
         || (event.key === " " && event.shiftKey)
       const scrollsDown = CHAT_CONTAINER_SCROLL_DOWN_KEYS.has(event.key)
         || (event.key === " " && !event.shiftKey)
+      if (isNestedScrollInput(viewport, event.target, scrollsUp ? -1 : 1, true)) return
+      onViewportUserScroll?.(viewport)
       const createKeyDetails = () => ({
         key: event.key,
         shiftKey: event.shiftKey,
@@ -752,17 +807,23 @@ function ChatContainerLifecycle({
       if (scrollsDown) requestFollowResumeFromUserInput("user-key-down")
     }
     const handlePointerDown = (event: PointerEvent) => {
-      pointerScrollingRef.current = event.target === viewport
+      if (!isScrollbarPointerDown(viewport, event)) return
+      scrollbarPointerIdRef.current = event.pointerId
       recordScrollTrace("pointer-down", () => ({
         pointerId: event.pointerId,
         pointerType: event.pointerType,
-        targetIsViewport: pointerScrollingRef.current,
+        targetIsViewport: event.target === viewport,
       }))
-      if (pointerScrollingRef.current) onViewportUserScroll?.(viewport)
+      onViewportUserScroll?.(viewport)
     }
-    const handlePointerEnd = () => {
+    const handlePointerEnd = (event: PointerEvent) => {
+      if (event.pointerId !== scrollbarPointerIdRef.current) return
       recordScrollTrace("pointer-end")
-      pointerScrollingRef.current = false
+      scrollbarPointerIdRef.current = null
+    }
+    const clearPointerGesture = () => {
+      scrollbarPointerIdRef.current = null
+      resumeFollowFromUserInputRef.current = null
     }
     viewport.addEventListener("scroll", handleScroll, { passive: true })
     viewport.addEventListener("scrollend", handleScrollEnd, { passive: true })
@@ -777,6 +838,7 @@ function ChatContainerLifecycle({
     })
     window.addEventListener("pointerup", handlePointerEnd, { passive: true })
     window.addEventListener("pointercancel", handlePointerEnd, { passive: true })
+    window.addEventListener("blur", clearPointerGesture)
     return () => {
       viewport.removeEventListener("scroll", handleScroll)
       viewport.removeEventListener("scrollend", handleScrollEnd)
@@ -785,6 +847,7 @@ function ChatContainerLifecycle({
       viewport.removeEventListener("pointerdown", handlePointerDown, { capture: true })
       window.removeEventListener("pointerup", handlePointerEnd)
       window.removeEventListener("pointercancel", handlePointerEnd)
+      window.removeEventListener("blur", clearPointerGesture)
     }
   }, [
     onViewportScroll,
@@ -802,6 +865,7 @@ function ChatContainerLifecycle({
   ])
 
   useEffect(() => () => {
+    scrollbarPointerIdRef.current = null
     if (contentAnchorCompensationFrameRef.current !== null) {
       cancelAnimationFrame(contentAnchorCompensationFrameRef.current)
     }

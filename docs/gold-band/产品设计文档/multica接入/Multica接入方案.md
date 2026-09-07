@@ -317,12 +317,12 @@ run 终局（订阅器穷举 4 分支，源码依据 provider/mod.rs:1086-1100 +
 
 #### 3.2.5 数据 / 接口 / 错误码规范
 
-**SettingsConfig 新增字段**（`src/config/mod.rs`，用户可编辑，设置页读写）：
+**SettingsConfig 新增字段**（`src/config/mod.rs`，用户可编辑；**连接地址运行期可由远程任务管理页「连接地址」弹窗读写（M5-ay）**，其余为内部管理）：
 ```jsonc
 {
   "desktop_multica_enabled": false,
-  "desktop_multica_base_url": "",             // multica server API 根地址（daemon/业务接口）
-  "desktop_multica_app_url": "",              // multica Web 前端地址（浏览器登录页 cli_callback 用；常与 base_url 同源，分离配置便于 API/Web 分部署）
+  "desktop_multica_base_url": "",             // multica server API 根地址（daemon/业务接口）。空 = 渠道编译期默认（default: localhost:8080 / wb: maling:5005）；**运行期可由远程任务管理页设置弹窗覆盖（M5-ay），单一「连接地址」输入、保存即两值同址**
+  "desktop_multica_app_url": "",              // multica Web 前端地址（浏览器登录页 cli_callback 用；常与 base_url 同源，分离配置便于 API/Web 分部署）。与 base_url 同生命周期：**分端口形态（API 8080 / 登录页 3000）只由渠道编译期默认产生，运行期保存一律两值同址**
   "desktop_multica_pat": "",                  // 明文 PAT，永不回显，只暴露 pat_set: bool
   "desktop_multica_daemon_id": "",            // 本机持久 UUID v7，首次启动生成
   "desktop_multica_workspaces": [],           // 已添加的 multica workspace 列表，**只绑 provider 不绑本地目录**：[{ "id": "<uuid>", "name": "...", "slug": "...", "provider": "claude-acp" }]。本地工作目录在每次执行时由 composer 下拉选并写入任务级结构（`ActiveRemoteRun.local_project_id` / `MulticaCompletedTask.local_project_id`）；provider 选定后不可变（变了=新 runtime=需重绑 agent，见 3.2.6）
@@ -376,7 +376,7 @@ multica.session-resume-failed   // 保留在码表但 M4-d 起不 emit（resume 
 ```
 
 **Tauri 命令**（新增，注册到 `generate_handler!`，参考 `save_metrics_settings`(`commands.rs:1501`) 风格）：
-`connect_multica`（PAT 失效时触发 3.2.6 浏览器登录 + localhost callback + 换 PAT）/ `list_server_multica_workspaces`（拉 server 全量供添加）/ `add_multica_workspace`（**M5-z：签名只剩 `workspace_id + provider`，name 从 server 列表取，无 local_path**；下拉单选添加 + register）/ `remove_multica_workspace` / `set_active_multica_workspace`（纯视图切换，不 register）/ `save_multica_settings` / `get_multica_settings` / `get_multica_tasks` / `claim_multica_task`（Req D：claim-at-click，只 claim + 写 prepare lease + 回 requirement，不立即 start）/ `start_multica_conversation_run`（Req D：复用本地 `create_conversation_run_vm`，发送时调，**M5-z：用 composer 下拉选中的 `project_id` 写入 `ActiveRemoteRun.local_project_id`**，含 start + 会话级续跑 classify_resume 分支）/ `cancel_multica_prepare_lease`（Req D：放弃 compose 时释放 lease，任务回 queued）/ `cancel_multica_task` / `rerun_multica_task`（用户手动整 task 重跑，新会话）。原 `start_multica_remote_task` / `resume_multica_task` 已删除（Req D）；原 `rebind_multica_workspace` 已删除（M5-z，绑定模型下沉到任务级，全链路删除无兼容层）。
+`connect_multica`（PAT 失效时触发 3.2.6 浏览器登录 + localhost callback + 换 PAT）/ `list_server_multica_workspaces`（拉 server 全量供添加）/ `add_multica_workspace`（**M5-z：签名只剩 `workspace_id + provider`，name 从 server 列表取，无 local_path**；下拉单选添加 + register）/ `remove_multica_workspace` / `set_active_multica_workspace`（纯视图切换，不 register）/ `save_multica_settings` / `get_multica_settings` / `save_multica_connection_address`（**M5-ay**：运行期保存连接地址覆盖 `desktop_multica_base_url/_app_url`，双 None=恢复渠道默认；生效地址变化且已连接时作废 server 作用域凭证/缓存） / `cancel_multica_connect`（**M5-ay**：取消进行中的连接登录等待段——命令层 `tokio::select!` + 取消槽，连接命令以 `multica.connect-cancelled` 非失败码收尾；无进行中连接时幂等 no-op） / `get_multica_tasks` / `claim_multica_task`（Req D：claim-at-click，只 claim + 写 prepare lease + 回 requirement，不立即 start）/ `start_multica_conversation_run`（Req D：复用本地 `create_conversation_run_vm`，发送时调，**M5-z：用 composer 下拉选中的 `project_id` 写入 `ActiveRemoteRun.local_project_id`**，含 start + 会话级续跑 classify_resume 分支）/ `cancel_multica_prepare_lease`（Req D：放弃 compose 时释放 lease，任务回 queued）/ `cancel_multica_task` / `rerun_multica_task`（用户手动整 task 重跑，新会话）。原 `start_multica_remote_task` / `resume_multica_task` 已删除（Req D）；原 `rebind_multica_workspace` 已删除（M5-z，绑定模型下沉到任务级，全链路删除无兼容层）。
 
 **前端事件常量**（加在 `commands.rs:62` 旁，`gold-band://` 前缀）：
 `gold-band://multica-task-updated`、`gold-band://multica-runtime-status`。
@@ -391,7 +391,7 @@ multica.session-resume-failed   // 保留在码表但 M4-d 起不 emit（resume 
 **触发条件（登录复用）**：每次启动客户端先检查本地 PAT 配置——`GET /api/me` 校验，**有效则直接复用 PAT**（跳过①-⑩，直接进入启动全量 register，见下「workspace」段）；**无 PAT 或校验失败（401）则静默、不弹任何 UI**——等用户主动切到「远程任务列表」、在未连接空状态点【连接 Multica】（或设置页辅助入口）才走下面的浏览器登录连接流程（①-⑩）。**首启绝不自动弹登录**（本地任务列表零变化）。
 
 ```
-① 用户切到「远程任务列表」（未连接时显示空状态卡）点【连接 Multica】（设置页 multica 区块同步可见，作辅助入口；**首启不自动触发登录**；按钮**直接 `connect_multica` 触发浏览器登录、不跳转设置页**，默认配置由 channel 预填、用户无需调整）
+① 用户切到「远程任务列表」（未连接时显示空状态卡）点【连接 Multica】（**首启不自动触发登录**；**M5-ay：按钮先弹「连接 Multica」确认弹窗（可直接改地址）**——预填当前生效地址、可编辑（校验 http(s)，非法禁用连接、无提示文案行），确认时**地址有变才保存**（`saveMulticaConnectionAddress(v, v)`，未变不写——防原样确认把分端口默认 8080/3000 误覆盖成同址）再调 `connect_multica` 触发浏览器登录；连接中主按钮禁用转「连接中…」、取消按钮变「取消连接」→ `cancel_multica_connect` 取消登录等待段（取消为非失败语义，弹窗静默关闭）；地址也可走按钮旁设置 icon 开的「连接地址设置」弹窗——单一「连接地址」输入、保存 = API 与登录页同址、与当前生效值相同禁用保存（防分端口默认被同址覆盖）、「恢复默认地址」双 null 回落渠道编译期默认；生效地址变化且已连接时作废 server 作用域凭证/缓存——PAT/runtime_id 是对旧 server 签发的）
 ② 码灵随机选一个空闲本地端口 port，起一个临时 HTTP server 监听 127.0.0.1:<port>，
    注册 callback 路径（如 /callback），设超时（如 5min）后自动关停
 ③ 码灵打开系统默认浏览器到 <MULTICA_APP_URL>/login?cli_callback=http://127.0.0.1:<port>/callback
@@ -1011,7 +1011,7 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **验证**：`cargo check` multica 零 warning（仅 main 既有 9 条非 multica）；`cargo test multica::` 83 过；tsc 零错；vitest 1124/1124。
 
 - [x] **M5-ar**（本轮）wb 渠道 multica 地址修正——默认端口 80 → nginx 统一入口 `:5005`（开发设计 §12.30）：
-  - **背景 / 根因**：跨机器部署连远程 multica（172.21.18.88，nginx 对外统一 `http://maling.weoa.com:5005`，前后端同源）。核查发现 `wb.json` 的 `multicaBaseUrl`/`multicaAppUrl` 仍是 `http://maling.weoa.com`（默认 80，过时）——渠道配置链路正确（json→build.rs 编译期 env→channel.rs），仅值滞后于服务端 nginx 端口；运行期不可改（connect 不收 URL、设置页区块已删、`save_multica_settings` 已删），须修正编译期值而非加运行期旁路。
+  - **背景 / 根因**：跨机器部署连远程 multica（172.21.18.88，nginx 对外统一 `http://maling.weoa.com:5005`，前后端同源）。核查发现 `wb.json` 的 `multicaBaseUrl`/`multicaAppUrl` 仍是 `http://maling.weoa.com`（默认 80，过时）——渠道配置链路正确（json→build.rs 编译期 env→channel.rs），仅值滞后于服务端 nginx 端口；运行期不可改（connect 不收 URL、设置页区块已删、`save_multica_settings` 已删），须修正编译期值而非加运行期旁路。**（M5-ay 注记：「运行期不可改」结论已被 M5-ay 取代——连接地址现为运行期可配置，渠道值退为默认兜底；wb 渠道修正本身不变。）**
   - **方案（修正过时值）**：wb 渠道本属 maling 生态（appName MALING、updater/metrics/内置 MCP 均指向 maling.weoa.com），multica 地址同生态，直接把 `multicaBaseUrl`/`multicaAppUrl` 改为 `http://maling.weoa.com:5005`（前后端同入口，消除前端 API 地址硬编码 localhost 隐患、无 CORS）；`browser_login` 的 `cli_callback` 仍走 Gold-Band 本机 127.0.0.1，nginx 透传 multica 后端登录成功的 302，跨机器 connect 不受影响（§3.2.6）。服务端 nginx 入口已由用户确认就绪。
   - **验证**：`GOLD_BAND_RELEASE_CHANNEL=wb cargo check -p gold-band-desktop` 绿——build.rs 正确解析 wb.json 新值、编译期 env 生效 `maling.weoa.com:5005`；default 渠道无回归。纯渠道配置值修正，无运行时逻辑变化、无性能影响。
 
@@ -1040,6 +1040,12 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **P1-2 StateConfig 并发丢写**：PR 侧 `with_state` 只保护 multica 写点、锁按 repo_root 分片，而 state.json 是用户级全局文件——既有 pin/preference/workspace 写点仍裸 load→save 且跨 repo_root 不互斥。修复：`with_state<T>`（闭包返回 `(dirty, T)`）成为唯一 RMW 入口；锁按 state 文件路径分片；`save_state` 降 `pub(crate)`；lib 5 setter + src-tauri multica 5 + connect/disconnect 2 + conversation 12 写点全量迁移，重 IO 全部留在锁外，add/sync 事务内权威复查关竞态。
   - **P2 启动关键路径无界扫描**：`recover_multica_work_dir_sessions` 从 setup 同步全量扫描（work_dir × 任务历史）重写为 checkpoint 定点收敛（O(checkpoints) 定点 I/O）并移入 spawn_blocking 启动管线；`RuntimeRecoveryCoordinator` 以 `Recovering → Accepting | Failed | ShuttingDown` 表达完整启动生命周期，`wait_for_startup_accepting` 仅在真正恢复中等待。恢复成功进入 `Accepting`；恢复函数报错或 blocking task join/panic 进入 `Failed` 并唤醒等待者，后续 resume 立即按结构化错误 `runtime.startup-recovery-failed` 走既有 best-effort 语义，不再每次占用 blocking worker 等满 30 秒；只有恢复仍在执行时才保留 30 秒超时。
   - **验证**：`cargo fmt --all -- --check` 过；`cargo test -p gold-band --lib` **1116 过 / 1 ignored（既有）**（新增跨 repo_root 锁身份 + multica×用户偏好并发 2 测）；`cargo test -p gold-band-desktop --bin gold-band-desktop` **648/648**（新增定点自愈 2 测 + 启动门 2 测，其中 `startup_failure_is_terminal_and_wakes_waiters` 覆盖失败终态即时唤醒、幂等和禁止回到 `Accepting`）。
+
+- [x] **M5-ay**（本轮）连接地址运行期可配置——连接确认弹窗 + 设置 icon 地址入口 + 取消连接（开发设计 §12.38）：
+  - **背景 / 根因**：M5-ah 删除设置页 multica 区块与 `save_multica_settings` 后，`SettingsConfig.desktop_multica_base_url/_app_url` 成死字段，地址只能靠渠道 json（M5-ar）编译期决定，运行期无法切换内网/外网。**复活既有死字段为运行期覆盖（破坏式复兴，无兼容层），M5-ar「运行期不可改」结论被本里程碑取代**；渠道值退为默认兜底，解析链路（settings 优先 → channel 兜底）本就存在，零新增持久字段。
+  - **方案**：新命令 `save_multica_connection_address(base_url, app_url)`——纯函数 `apply_multica_connection_address`（两参数须同 Some/同 None，各过 `normalize_multica_base_url`，非法报 `multica.invalid-address`）写两字段；**生效地址变化且已连接时作废 server 作用域状态**（`clear_multica_session` + `clear_multica_state_indices` + `clear_runtime_ids`——PAT/runtime_id 对旧 server 签发，M5-af 账号作用域不变量向服务器身份维度延伸）；心跳每 tick 重新解析地址 → 改地址 ≤15s 生效、无需重启。
+  - **方案（调整轮，最终形态）**：初版「环境预设（内网/外网）+ 弹窗内改地址」经用户两轮反馈调整为——① 设置弹窗（gear 入口 `MulticaConnectionSettingsDialog`）：删「环境」下拉与登录页提示行，单一「连接地址」输入，保存 = API 与登录页同址（`(v, v)`）；**与当前生效值相同禁用保存**（防「打开看看就保存」把分端口渠道默认 8080/3000 误覆盖成同址 8080/8080）；`addressOverrideSet` 时提供「恢复默认地址」（双 null 回落渠道编译期默认，用返回 VM 刷新弹窗字段留窗继续编辑）。② 连接弹窗（连接按钮入口 `MulticaConnectDialog`）：**确认 + 可改地址 AlertDialog**——预填当前生效地址、可直接编辑（校验 http(s)，非法禁用连接、无提示文案行）；确认时**地址有变才保存**（`(v, v)`，未变不写——与设置弹窗「未变更禁用保存」是同一防分端口覆盖不变量的两种 UI 表达）再 `connect_multica`。③ 取消连接：`browser_login` 全程 tokio，命令层 `tokio::select!` 挂 `CancellationToken` 即可取消（future drop 释放资源、无状态写入，client.rs 零改动）；取消槽 `MulticaConnectCancel` 以**单调递增登记 id** 认领（CancellationToken 无 PartialEq，id 比较防迟到清理误删下一次连接），新命令 `cancel_multica_connect` + 错误码 `multica.connect-cancelled`（非失败语义，前端静默关窗）；弹窗「取消连接」只发取消信号不直接关窗——关窗统一走连接命令的 cancelled 收尾路径（单一关闭事实源）。破坏式更新：删旧双模式组件/预设常量/预设、登录页提示与 changeHint i18n 键（zh+en）；URL 校验抽 `@/lib/multica-address.ts` 两弹窗共用。已连接态无入口（改地址须先退出登录）。
+  - **验证**：`cargo test -p gold-band-desktop multica::` **91 过**（新增 apply/gate/命令级/取消槽 3 测）；tsc 零错；vitest connect+settings 两个弹窗套件 **12 过** + page 套件 13 过；multica 回归 4 套件 34 过（add-workspace-dialog / remote-task-board / composer-multica-chip / app-error-i18n）。
 
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

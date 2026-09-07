@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, Folders, Globe, Loader2, Plus, RotateCw, Trash2, User, Wifi, WifiOff } from 'lucide-react';
+import { ChevronDown, Folders, Globe, Loader2, Plus, RotateCw, Settings, Trash2, User, Wifi, WifiOff } from 'lucide-react';
 import {
   Select,
   SelectContent,
@@ -31,12 +31,13 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { Page, PageHeader } from '@/components/PageScaffold';
 import { MulticaRemoteTaskBoard } from '@/components/conversation/MulticaRemoteTaskBoard';
 import { MulticaAddWorkspaceDialog } from '@/components/conversation/MulticaAddWorkspaceDialog';
+import { MulticaConnectDialog } from '@/components/conversation/MulticaConnectDialog';
+import { MulticaConnectionSettingsDialog } from '@/components/conversation/MulticaConnectionSettingsDialog';
 import { cn } from '@/lib/utils';
 import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
 import { useEventDrivenRefresh } from '@/lib/use-event-driven-refresh';
 import {
   cancelMulticaTask,
-  connectMultica,
   disconnectMultica,
   getMulticaSettings,
   getMulticaTaskRequirement,
@@ -95,7 +96,9 @@ export function MulticaTaskManagementPage({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
-  const [connecting, setConnecting] = useState(false);
+  // 连接弹窗（M5-ay）：null=关闭；'connect'=连接按钮入口（纯确认后连接）；'settings'=设置
+  // icon 入口（地址设置，只保存不连接）。两弹窗互斥单飞行（同一时刻至多一个连接流程）。
+  const [connectionDialog, setConnectionDialog] = useState<'connect' | 'settings' | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [source, setSource] = useState<RemoteTaskSource>('multica');
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>('');
@@ -166,19 +169,6 @@ export function MulticaTaskManagementPage({
   const hasWorkspaces = workspaces.length > 0;
   const selectedTasks = vm?.tasksByWorkspace[effectiveWorkspaceId] ?? [];
   const activeWorkspaceName = workspaces.find((w) => w.id === effectiveWorkspaceId)?.name ?? '';
-
-  async function handleConnect() {
-    setConnecting(true);
-    setError(null);
-    try {
-      await connectMultica();
-      refreshAll();
-    } catch (err) {
-      setError(displayAppError(t, err));
-    } finally {
-      setConnecting(false);
-    }
-  }
 
   async function handlePrepareRemoteTask(task: RemoteTaskVm) {
     if (!task.workspaceId) return;
@@ -308,10 +298,27 @@ export function MulticaTaskManagementPage({
             <WifiOff className="size-5 text-muted-foreground" />
             <p className="text-sm font-medium text-sidebar-foreground">{t('conversation.sidebar.multica.emptyTitle')}</p>
             <p className="text-xs text-muted-foreground">{t('conversation.sidebar.multica.emptyDescription')}</p>
-            <Button size="sm" variant="outline" disabled={connecting} onClick={() => void handleConnect()}>
-              {connecting ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : <Wifi className="mr-1.5 size-3.5" />}
-              {t('conversation.sidebar.multica.connectButton')}
-            </Button>
+            <div className="flex items-center gap-1.5">
+              {/* 连接按钮先弹纯确认弹窗（展示生效地址，可连接中取消）；改地址走旁边的设置 icon */}
+              <Button size="sm" variant="outline" onClick={() => setConnectionDialog('connect')}>
+                <Wifi className="mr-1.5 size-3.5" />
+                {t('conversation.sidebar.multica.connectButton')}
+              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="size-7 text-muted-foreground"
+                    aria-label={t('conversation.sidebar.multica.connectionSettings')}
+                    onClick={() => setConnectionDialog('settings')}
+                  >
+                    <Settings className="size-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="text-xs">{t('conversation.sidebar.multica.connectionSettings')}</TooltipContent>
+              </Tooltip>
+            </div>
           </div>
         ) : !hasWorkspaces ? (
           /* 未绑定任何工作空间 -> 引导添加（工作空间 picker 内亦可进添加弹窗） */
@@ -455,6 +462,19 @@ export function MulticaTaskManagementPage({
         onOpenChange={setAddWorkspaceOpen}
         boundWorkspaceIds={workspaces.map((w) => w.id)}
         onAdded={refreshAll}
+      />
+
+      {/* 连接确认弹窗（纯确认 + 连接中取消）与地址设置弹窗（只保存）互斥单飞行 */}
+      <MulticaConnectDialog
+        open={connectionDialog === 'connect'}
+        onOpenChange={(open) => { if (!open) setConnectionDialog(null); }}
+        settingsVm={settingsVm}
+        onConnected={refreshAll}
+      />
+      <MulticaConnectionSettingsDialog
+        open={connectionDialog === 'settings'}
+        onOpenChange={(open) => { if (!open) setConnectionDialog(null); }}
+        settingsVm={settingsVm}
       />
 
       {/* 移除工作空间确认（对齐定时任务 delete 模式 + ui-interaction §1 删除确认用 Dialog） */}

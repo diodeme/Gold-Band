@@ -501,6 +501,12 @@ export const desktopApi: RuntimeApi = {
   disconnectMultica() {
     return invokeCommand<MulticaSettingsVm>('disconnect_multica');
   },
+  saveMulticaConnectionAddress(baseUrl: string | null, appUrl: string | null) {
+    return invokeCommand<MulticaSettingsVm>('save_multica_connection_address', { baseUrl, appUrl });
+  },
+  cancelMulticaConnect() {
+    return invokeCommand<void>('cancel_multica_connect');
+  },
   getMulticaTasks() {
     return invokeCommand<RemoteConversationSidebarVm>('get_multica_tasks');
   },

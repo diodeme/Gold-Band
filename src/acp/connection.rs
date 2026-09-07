@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::process::ChildStdin;
 use std::sync::{
     Arc, Condvar, LazyLock, Mutex, MutexGuard,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     mpsc,
 };
 use std::thread;
@@ -905,8 +905,37 @@ impl AdapterConnectionOutcome {
 }
 
 pub struct AdapterConnectionResolution {
-    pub connection: Arc<AdapterConnection>,
+    pub connection: AdapterConnectionUse,
     pub outcome: AdapterConnectionOutcome,
+}
+
+/// Scoped use, separate from session-specific prompt cancellation/draining.
+#[must_use]
+pub struct AdapterConnectionUse {
+    connection: Arc<AdapterConnection>,
+}
+
+impl AdapterConnectionUse {
+    // Managed connections must acquire this under the manager map lock, or
+    // before publication. A bare Arc held by readers/caches is not usage.
+    pub(crate) fn new(connection: Arc<AdapterConnection>) -> Self {
+        connection.active_users.fetch_add(1, Ordering::AcqRel);
+        Self { connection }
+    }
+}
+
+impl std::ops::Deref for AdapterConnectionUse {
+    type Target = Arc<AdapterConnection>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.connection
+    }
+}
+
+impl Drop for AdapterConnectionUse {
+    fn drop(&mut self) {
+        self.connection.active_users.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 fn is_same_connection_generation<T>(
@@ -974,6 +1003,7 @@ pub struct AdapterConnection {
     unrouted_warnings: Mutex<HashMap<String, UnroutedWarningState>>,
     initialization: ConnectionInitialization,
     active_prompts: ActivePromptTracker,
+    active_users: AtomicUsize,
     generation: u64,
     last_activity_at: Mutex<Instant>,
     session_config_transaction: SessionConfigTransaction,
@@ -1185,6 +1215,7 @@ impl AdapterConnection {
             unrouted_warnings: Mutex::new(HashMap::new()),
             initialization: ConnectionInitialization::default(),
             active_prompts: ActivePromptTracker::default(),
+            active_users: AtomicUsize::new(0),
             generation: NEXT_CONNECTION_GENERATION.fetch_add(1, Ordering::Relaxed),
             last_activity_at: Mutex::new(Instant::now()),
             session_config_transaction: SessionConfigTransaction::default(),
@@ -1554,6 +1585,7 @@ impl AdapterConnection {
             connection_generation = self.generation,
             state = ?self.state.try_lock().ok().map(|state| *state),
             active_prompts,
+            active_connection_users = self.active_users.load(Ordering::Acquire),
             pending_requests = pending.as_ref().map(|(count, _)| *count),
             pending_methods = ?pending.as_ref().map(|(_, methods)| methods),
             pending_methods_truncated = pending.as_ref().map(|(count, _)| *count > CONNECTION_DIAGNOSTIC_REQUEST_LIMIT),
@@ -2146,7 +2178,7 @@ impl AdapterConnectionManager {
         workspace_root: Utf8PathBuf,
         use_local_claude: bool,
         require_local_claude_executable: bool,
-    ) -> Result<Arc<AdapterConnection>> {
+    ) -> Result<AdapterConnectionUse> {
         Ok(self
             .get_or_spawn_with_outcome(
                 provider_id,
@@ -2211,6 +2243,7 @@ impl AdapterConnectionManager {
             use_local_claude,
             require_local_claude_executable,
         )?;
+        let connection = AdapterConnectionUse::new(connection);
         self.connections
             .lock()
             .map_err(|_| anyhow!("ACP connection manager lock poisoned"))?
@@ -2250,7 +2283,7 @@ impl AdapterConnectionManager {
         &self,
         key: &AdapterConnectionKey,
         signature: &AdapterConfigSignature,
-    ) -> Option<Arc<AdapterConnection>> {
+    ) -> Option<AdapterConnectionUse> {
         let connection = self.connections.lock().ok()?.get(key).cloned()?;
         if connection.signature != *signature
             || connection.is_exited()
@@ -2258,7 +2291,14 @@ impl AdapterConnectionManager {
         {
             return None;
         }
-        Some(connection)
+        // Health checks may touch the child lock; do not hold the pool lock
+        // across them. Revalidate membership before atomically borrowing.
+        let connections = self.connections.lock().ok()?;
+        let current = connections.get(key)?;
+        if !Arc::ptr_eq(current, &connection) {
+            return None;
+        }
+        Some(AdapterConnectionUse::new(connection))
     }
 
     pub fn register_attempt_session(
@@ -2368,6 +2408,7 @@ impl AdapterConnectionManager {
                 .iter()
                 .filter(|(key, connection)| {
                     !attached_connections.contains(&((*key).clone(), connection.generation()))
+                        && connection.active_users.load(Ordering::Acquire) == 0
                         && connection.active_prompt_count() == 0
                 })
                 .map(|(key, connection)| (key.clone(), connection.last_activity_at()))

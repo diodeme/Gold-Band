@@ -340,8 +340,8 @@ use crate::acp::branches::{
 use crate::acp::commands::{AcpCommandItem, parse_available_commands};
 use crate::acp::connection::{
     AcpConnectionUnavailable, AdapterConnection, AdapterConnectionKey, AdapterConnectionManager,
-    AdapterShutdownReason, AttemptSessionUnregisterOutcome, LiveAcpSession, SessionEventPump,
-    SessionObservedFrame, SessionRouteTryRecvError, SessionRouteWatermark,
+    AdapterConnectionUse, AdapterShutdownReason, AttemptSessionUnregisterOutcome, LiveAcpSession,
+    SessionEventPump, SessionObservedFrame, SessionRouteTryRecvError, SessionRouteWatermark,
 };
 use crate::acp::elicitation::{
     ELICITATION_DEFAULT_TIMEOUT, ElicitationAction, bind_pending_elicitation_timeline_identity,
@@ -2109,7 +2109,7 @@ struct AcpRuntime<'a> {
     paths: AcpAttemptPaths,
     lifecycle_owner: Option<AcpLifecycleOwner>,
     connection_key: Option<AdapterConnectionKey>,
-    connection: Arc<AdapterConnection>,
+    connection: AdapterConnectionUse,
     rx: Option<Arc<SessionEventPump>>,
     seq: u64,
     timeline_revision: u64,
@@ -3478,6 +3478,7 @@ impl<'a> AcpRuntime<'a> {
             );
             error
         })?;
+        let connection = AdapterConnectionUse::new(connection);
         let runtime = Self::from_connection(
             provider_id,
             cwd,
@@ -3501,7 +3502,7 @@ impl<'a> AcpRuntime<'a> {
         _provider_id: &str,
         _workspace_dir: Utf8PathBuf,
         connection_key: Option<AdapterConnectionKey>,
-        connection: Arc<AdapterConnection>,
+        connection: AdapterConnectionUse,
         paths: AcpAttemptPaths,
         control: Arc<ProviderControl>,
         raw_max_size: u64,

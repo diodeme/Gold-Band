@@ -5,6 +5,7 @@ import type { AppErrorVm, DesktopLanguage, WorkflowErrorVm } from "./types";
 const resources = {
   "zh-CN": {
     translation: {
+      acpImages: { title: "工具图片", image: "图片 {{index}}", failed: "图片无法加载，请重试" },
       scheduled: {
         unnamed: "未命名定时任务",
         neverRun: "尚未运行",
@@ -559,6 +560,8 @@ const resources = {
           "command-required": "请填写 Agent 启动命令。",
         },
         acp: {
+          "turn-execution-failed": "本次消息处理失败，请重试。",
+          "session-request-failed": "会话准备失败，请重试。",
           "missing-provider": "当前节点缺少 provider 配置。",
           "session-config-value-unavailable": "所选会话配置已不可用，请从最新列表中重新选择。",
           "active-prompt-blocks-config-save": "当前有会话正在运行，请先停止会话后再保存配置。",
@@ -2484,6 +2487,7 @@ const resources = {
   },
   en: {
     translation: {
+      acpImages: { title: "Tool images", image: "Image {{index}}", failed: "Unable to load image. Please retry." },
       scheduled: {
         unnamed: "Unnamed scheduled task",
         neverRun: "Never run",
@@ -3038,6 +3042,8 @@ const resources = {
           "command-required": "Enter an Agent launch command.",
         },
         acp: {
+          "turn-execution-failed": "This message could not be processed. Try again.",
+          "session-request-failed": "The session could not be prepared. Try again.",
           "missing-provider":
             "The current node is missing provider configuration.",
           "session-config-value-unavailable":

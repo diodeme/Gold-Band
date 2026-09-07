@@ -9153,6 +9153,7 @@ fn execute_dynamic_worker(
             }
         }
         let provider_status = result.status;
+        let has_control_output = result.runtime_control_output.is_some();
         let interrupted_output_artifact = accept_interrupted_completion
             .then(|| interrupted_dynamic_output_artifact_candidate(&result))
             .flatten();
@@ -9325,6 +9326,16 @@ fn execute_dynamic_worker(
                 return Ok(DynamicExecutionResult { node, proposals });
             }
             Err(err) if proposal_repair_prompts < MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS => {
+                let confirm_completion = dynamic_output_emission_mode(&node)
+                    == OutputEmissionMode::PostTurnProjection
+                    && !has_control_output
+                    && !dynamic_output_artifact_path(
+                        ctx,
+                        &node.id,
+                        &attempt_id,
+                        DYNAMIC_COMPLETION_ARTIFACT,
+                    )
+                    .try_exists()?;
                 let schema_validation_errors = err
                     .downcast_ref::<DynamicCompletionSchemaValidationError>()
                     .map(|error| error.errors.clone());
@@ -9335,11 +9346,18 @@ fn execute_dynamic_worker(
                     return Err(err);
                 };
                 proposal_repair_prompts += 1;
-                current_prompt_id =
-                    dynamic_proposal_repair_prompt_id(&logical_prompt_id, proposal_repair_prompts);
+                current_prompt_id = if confirm_completion {
+                    format!("{logical_prompt_id}-finalize-{proposal_repair_prompts}")
+                } else {
+                    dynamic_proposal_repair_prompt_id(&logical_prompt_id, proposal_repair_prompts)
+                };
                 append_dynamic_event(
                     ctx,
-                    "dynamic_proposal_repair_requested",
+                    if confirm_completion {
+                        "dynamic_artifact_finalize_requested"
+                    } else {
+                        "dynamic_proposal_repair_requested"
+                    },
                     serde_json::json!({
                         "nodeId": node.id,
                         "attemptId": attempt_id,
@@ -9352,13 +9370,32 @@ fn execute_dynamic_worker(
                 )?;
                 session_mode = SessionMode::Continue;
                 continue_ref = Some(repair_continue_ref);
-                resume_prompt = Some(match schema_validation_errors {
-                    Some(errors) => dynamic_structured_repair_prompt(ctx, graph, &node, &errors),
-                    None => dynamic_text_repair_prompt(ctx, graph, &node, err.to_string()),
+                resume_prompt = Some(if confirm_completion {
+                    crate::provider::render_artifact_finalize_prompt(
+                        ctx.app.config.desktop_language,
+                        &dynamic_output_contract(
+                            ctx,
+                            graph,
+                            &node,
+                            OutputEmissionMode::PostTurnProjection,
+                        ),
+                        PromptExecutionSurface::AiDynamic,
+                    )?
+                } else {
+                    match schema_validation_errors {
+                        Some(errors) => {
+                            dynamic_structured_repair_prompt(ctx, graph, &node, &errors)
+                        }
+                        None => dynamic_text_repair_prompt(ctx, graph, &node, err.to_string()),
+                    }
                 });
                 prompt_display = None;
                 resume_prompt_visibility = PromptVisibility::Hidden;
-                user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
+                user_prompt_render_mode = if confirm_completion {
+                    UserPromptRenderMode::RuntimeFinalize
+                } else {
+                    UserPromptRenderMode::RuntimeRepair
+                };
                 runtime_control_intent = RuntimeControlIntent::Unchanged;
                 node.status = DynamicNodeStatus::Running;
                 node.outcome = None;
@@ -9368,7 +9405,11 @@ fn execute_dynamic_worker(
                     &node.id,
                     &attempt_id,
                     &expected_execution_id,
-                    RuntimeExecutionPhase::RepairingArtifact,
+                    if confirm_completion {
+                        RuntimeExecutionPhase::FinalizingArtifact
+                    } else {
+                        RuntimeExecutionPhase::RepairingArtifact
+                    },
                 )?;
                 refresh_dynamic_leaf_runtime_execution(ctx, &mut node)?;
                 continue;
@@ -15906,6 +15947,8 @@ mod tests {
 
     struct DynamicRepairIdentityProvider {
         invocations: Arc<Mutex<Vec<(String, SessionMode, UserPromptRenderMode)>>>,
+        missing_turns: usize,
+        initial_output: Option<String>,
     }
 
     impl ProviderAdapter for DynamicRepairIdentityProvider {
@@ -15932,6 +15975,13 @@ mod tests {
         }
 
         fn run_worker(&self, req: WorkerInvocation) -> Result<ProviderRunResult> {
+            if req.user_prompt_render_mode == UserPromptRenderMode::RuntimeFinalize {
+                let prompt = req.resume_prompt.as_deref().expect("confirmation prompt");
+                assert!(prompt.contains("请直接继续执行"));
+                assert!(prompt.contains("无需重新核对任务目标或验收要求"));
+                assert!(prompt.contains("\"DynamicNext\""));
+                assert_eq!(req.resume_prompt_visibility, PromptVisibility::Hidden);
+            }
             let prompt_id = req
                 .resume_prompt_id
                 .clone()
@@ -15942,8 +15992,15 @@ mod tests {
             drop(invocations);
 
             let output_artifact = match invocation_index {
-                0 => None,
-                1 => Some(OutputArtifactPayload {
+                index if index < self.missing_turns => {
+                    self.initial_output
+                        .clone()
+                        .map(|content| OutputArtifactPayload {
+                            name: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
+                            content,
+                        })
+                }
+                index if index == self.missing_turns => Some(OutputArtifactPayload {
                     name: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
                     content: test_end_completion("repaired completion"),
                 }),
@@ -18367,12 +18424,19 @@ mod tests {
             repo_root.clone(),
             Box::new(DynamicRepairIdentityProvider {
                 invocations: invocations.clone(),
+                missing_turns: 1,
+                initial_output: None,
             }),
         );
         write_test_outer_run(&app);
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
         let mut node = test_worktree_node("bootstrap");
+        node.depth = 0;
+        assert_eq!(
+            dynamic_output_emission_mode(&node),
+            OutputEmissionMode::InlineControl
+        );
         node.status = DynamicNodeStatus::Running;
         node.begin_runtime_execution("execution-bootstrap", "2026-06-16T00:00:01Z");
         let mut graph = test_dynamic_graph_at(repo_root, vec![node.clone()]);
@@ -18398,6 +18462,55 @@ mod tests {
             dynamic_proposal_repair_prompt_id(&invocations[0].0, 1)
         );
         assert_ne!(invocations[0].0, invocations[1].0);
+    }
+
+    #[test]
+    fn dynamic_post_turn_missing_artifact_reconfirms_after_each_normal_end() {
+        assert_dynamic_post_turn_follow_up(None, UserPromptRenderMode::RuntimeFinalize);
+    }
+
+    #[test]
+    fn dynamic_post_turn_invalid_artifact_still_requests_repair() {
+        assert_dynamic_post_turn_follow_up(
+            Some("{}".to_string()),
+            UserPromptRenderMode::RuntimeRepair,
+        );
+    }
+
+    fn assert_dynamic_post_turn_follow_up(
+        initial_output: Option<String>,
+        expected_mode: UserPromptRenderMode,
+    ) {
+        let (_temp, repo_root) = init_repo();
+        let invocations = Arc::new(Mutex::new(Vec::new()));
+        let app = App::with_provider(
+            repo_root.clone(),
+            Box::new(DynamicRepairIdentityProvider {
+                invocations: invocations.clone(),
+                missing_turns: 2,
+                initial_output,
+            }),
+        );
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("implementation");
+        node.status = DynamicNodeStatus::Running;
+        node.begin_runtime_execution("execution-implementation", "2026-06-16T00:00:01Z");
+        let mut graph = test_dynamic_graph_at(repo_root, vec![node.clone()]);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+
+        let result = execute_dynamic_worker(&ctx, &graph, node).unwrap();
+
+        assert_eq!(result.node.status, DynamicNodeStatus::Completed);
+        assert_eq!(result.node.outcome, Some(NodeOutcome::Success));
+        let invocations = invocations.lock().unwrap();
+        assert_eq!(invocations.len(), 3);
+        for invocation in &invocations[1..] {
+            assert_eq!(invocation.1, SessionMode::Continue);
+            assert_eq!(invocation.2, expected_mode);
+        }
+        assert_ne!(invocations[1].0, invocations[2].0);
     }
 
     #[test]

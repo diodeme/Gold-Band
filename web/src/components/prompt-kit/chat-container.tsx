@@ -39,6 +39,9 @@ export type ChatContainerContext = StickToBottomContext &
   ChatContainerContentExpansionController
 
 export type ChatContainerFollowIntentCause =
+  | "user-wheel-down"
+  | "user-key-down"
+  | "user-scrollbar-down"
   | "external-stop-scroll"
   | "external-scroll-to-bottom"
   | "user-wheel-up"
@@ -48,7 +51,6 @@ export type ChatContainerFollowIntentCause =
   | "content-expansion-end"
   | "content-expansion-user-scroll"
   | "content-expansion-resize-at-bottom"
-  | "viewport-at-bottom"
 
 const ChatContainerContentExpansionContext =
   createContext<ChatContainerContentExpansionController | null>(null)
@@ -86,6 +88,15 @@ export type ChatContainerScrollAnchorProps = {
 export const CHAT_CONTAINER_BOTTOM_REJOIN_TOLERANCE_PX = 2
 const CHAT_CONTAINER_FOLLOW_RECOVERY_DELAY_MS = 4
 const CHAT_CONTAINER_DIAGNOSTIC_SAMPLE_MS = 500
+const CHAT_CONTAINER_SCROLL_TRACE_DURATION_MS = 5_000
+const CHAT_CONTAINER_SCROLL_TRACE_EVENT_LIMIT = 160
+
+type ChatFollowResumeCause =
+  | "user-wheel-down"
+  | "user-key-down"
+  | "user-scrollbar-down"
+
+let nextChatContainerDiagnosticInstanceId = 0
 
 const CHAT_CONTAINER_SCROLL_UP_KEYS = new Set([
   "ArrowUp",
@@ -93,11 +104,15 @@ const CHAT_CONTAINER_SCROLL_UP_KEYS = new Set([
   "PageUp",
 ])
 
-const CHAT_CONTAINER_SCROLL_KEYS = new Set([
-  ...CHAT_CONTAINER_SCROLL_UP_KEYS,
+const CHAT_CONTAINER_SCROLL_DOWN_KEYS = new Set([
   "ArrowDown",
   "End",
   "PageDown",
+])
+
+const CHAT_CONTAINER_SCROLL_KEYS = new Set([
+  ...CHAT_CONTAINER_SCROLL_UP_KEYS,
+  ...CHAT_CONTAINER_SCROLL_DOWN_KEYS,
   " ",
 ])
 
@@ -114,6 +129,10 @@ export function alignChatContainerViewportToBottomBeforePaint(
   viewport: Pick<HTMLElement, "clientHeight" | "scrollHeight" | "scrollTop">,
 ) {
   viewport.scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight)
+}
+
+function roundChatScrollDiagnostic(value: number | null | undefined) {
+  return Number.isFinite(value) ? Math.round(Number(value) * 10) / 10 : null
 }
 
 function ChatContainerRoot({
@@ -193,7 +212,13 @@ function ChatContainerLifecycle({
   const isFollowingRef = useRef(initialFollowing)
   const pointerScrollingRef = useRef(false)
   const lastScrollTopRef = useRef<number | null>(null)
-  const explicitEscapeScrollTopRef = useRef<number | null>(null)
+  const resumeFollowFromUserInputRef = useRef<ChatFollowResumeCause | null>(null)
+  const diagnosticInstanceIdRef = useRef<string | null>(null)
+  if (diagnosticInstanceIdRef.current === null) {
+    nextChatContainerDiagnosticInstanceId += 1
+    diagnosticInstanceIdRef.current = `chat-container-${nextChatContainerDiagnosticInstanceId}`
+  }
+  const scrollTraceWindowRef = useRef({ expiresAt: 0, remaining: 0 })
   const recoveryTimerRef = useRef<number | null>(null)
   const recoveryFrameRef = useRef<number | null>(null)
   const nextContentExpansionTokenRef = useRef(0)
@@ -211,6 +236,66 @@ function ChatContainerLifecycle({
     maxHeightDelta: 0,
   })
 
+  const recordScrollTrace = useCallback((
+    event: string,
+    createDetails: () => Record<string, unknown> = () => ({}),
+    always = false,
+  ) => {
+    if (!isAcpStreamingDiagnosticsEnabled()) return
+    const now = performance.now()
+    const traceWindow = scrollTraceWindowRef.current
+    if (!always) {
+      if (now > traceWindow.expiresAt || traceWindow.remaining <= 0) return
+      traceWindow.remaining -= 1
+    }
+    const viewport = scrollRef.current as HTMLDivElement | null
+    const scrollTop = viewport?.scrollTop ?? null
+    const scrollHeight = viewport?.scrollHeight ?? null
+    const clientHeight = viewport?.clientHeight ?? null
+    recordAcpStreamingDiagnostic("chat-scroll-trace", () => ({
+      instanceId: diagnosticInstanceIdRef.current,
+      event,
+      followIntent: isFollowingRef.current,
+      resumeCause: resumeFollowFromUserInputRef.current,
+      pointerScrolling: pointerScrollingRef.current,
+      contentExpansionActive: Boolean(contentExpansionTokensRef.current),
+      anchorCompensationActive: contentAnchorCompensationActiveRef.current,
+      scrollTop: roundChatScrollDiagnostic(scrollTop),
+      scrollHeight: roundChatScrollDiagnostic(scrollHeight),
+      clientHeight: roundChatScrollDiagnostic(clientHeight),
+      distanceFromBottom: viewport
+        ? roundChatScrollDiagnostic(scrollHeight! - scrollTop! - clientHeight!)
+        : null,
+      wrapperAtBottom: viewport
+        ? isChatContainerViewportAtBottom(viewport)
+        : null,
+      libraryIsAtBottom: stickContext.state.isAtBottom,
+      libraryIsNearBottom: stickContext.state.isNearBottom,
+      libraryEscapedFromLock: stickContext.state.escapedFromLock,
+      libraryAnimationActive: Boolean(stickContext.state.animation),
+      libraryAnimationIgnoreEscapes:
+        stickContext.state.animation?.ignoreEscapes ?? null,
+      libraryResizeDifference: roundChatScrollDiagnostic(
+        stickContext.state.resizeDifference,
+      ),
+      ...createDetails(),
+    }))
+  }, [scrollRef, stickContext.state])
+
+  const beginScrollTrace = useCallback((
+    event: string,
+    createDetails: () => Record<string, unknown>,
+  ) => {
+    if (!isAcpStreamingDiagnosticsEnabled()) return
+    const now = performance.now()
+    const traceWindow = scrollTraceWindowRef.current
+    if (now > traceWindow.expiresAt || traceWindow.remaining <= 0) {
+      traceWindow.expiresAt = now + CHAT_CONTAINER_SCROLL_TRACE_DURATION_MS
+      traceWindow.remaining = CHAT_CONTAINER_SCROLL_TRACE_EVENT_LIMIT
+    }
+    recordScrollTrace(event, createDetails)
+  }, [recordScrollTrace])
+
   useLayoutEffect(() => {
     if (initialViewportAlignedRef.current || !initialFollowing) return
     const viewport = scrollRef.current
@@ -226,14 +311,29 @@ function ChatContainerLifecycle({
     scrollWriteCount: 0,
   })
 
+  useEffect(() => {
+    recordScrollTrace("lifecycle-mount", () => ({ initialFollowing }), true)
+    return () => {
+      recordScrollTrace("lifecycle-unmount", () => ({ initialFollowing }), true)
+    }
+  }, [initialFollowing, recordScrollTrace])
+
   const updateFollowIntent = useCallback((
     following: boolean,
     cause: ChatContainerFollowIntentCause,
   ) => {
+    const previous = isFollowingRef.current
+    recordScrollTrace("follow-write", () => ({
+      cause,
+      previous,
+      next: following,
+      changed: previous !== following,
+    }), true)
     onFollowIntentChange?.(following, cause)
+    if (following) resumeFollowFromUserInputRef.current = null
     isFollowingRef.current = following
     setIsFollowing((current) => current === following ? current : following)
-  }, [onFollowIntentChange])
+  }, [onFollowIntentChange, recordScrollTrace])
 
   const cancelContentExpansionRestore = useCallback(() => {
     contentExpansionTokensRef.current = null
@@ -243,22 +343,71 @@ function ChatContainerLifecycle({
     }
   }, [])
 
-  const stopScroll = useCallback(() => {
+  const stopScrollForCause = useCallback((cause: ChatContainerFollowIntentCause) => {
     cancelContentExpansionRestore()
-    explicitEscapeScrollTopRef.current = scrollRef.current?.scrollTop ?? null
-    updateFollowIntent(false, "external-stop-scroll")
-    libraryStopScroll()
-  }, [cancelContentExpansionRestore, libraryStopScroll, scrollRef, updateFollowIntent])
+    const wasFollowing = isFollowingRef.current
+    if (wasFollowing || cause !== "external-stop-scroll") {
+      resumeFollowFromUserInputRef.current = null
+    }
+    updateFollowIntent(false, cause)
+    if (wasFollowing) libraryStopScroll()
+  }, [cancelContentExpansionRestore, libraryStopScroll, updateFollowIntent])
+
+  const stopScroll = useCallback(() => {
+    stopScrollForCause("external-stop-scroll")
+  }, [stopScrollForCause])
 
   const scrollToBottom = useCallback<StickToBottomContext["scrollToBottom"]>(
     (options) => {
+      recordScrollTrace("scroll-to-bottom-call", () => ({
+        animation: typeof options === "string"
+          ? options
+          : typeof options?.animation === "string"
+            ? options.animation
+            : options?.animation
+              ? "spring"
+              : null,
+        ignoreEscapes:
+          typeof options === "object" ? options.ignoreEscapes ?? false : false,
+        preserveScrollPosition:
+          typeof options === "object"
+            ? options.preserveScrollPosition ?? false
+            : false,
+        wait: typeof options === "object" ? options.wait ?? false : false,
+      }), true)
       cancelContentExpansionRestore()
-      explicitEscapeScrollTopRef.current = null
       updateFollowIntent(true, "external-scroll-to-bottom")
       return libraryScrollToBottom(options)
     },
-    [cancelContentExpansionRestore, libraryScrollToBottom, updateFollowIntent],
+    [
+      cancelContentExpansionRestore,
+      libraryScrollToBottom,
+      recordScrollTrace,
+      updateFollowIntent,
+    ],
   )
+
+  const requestFollowResumeFromUserInput = useCallback((
+    cause: ChatFollowResumeCause,
+  ) => {
+    if (isFollowingRef.current) return
+    resumeFollowFromUserInputRef.current = cause
+    recordScrollTrace("follow-resume-eligible", () => ({ cause }))
+  }, [recordScrollTrace])
+
+  const completeFollowResumeFromUserInput = useCallback(() => {
+    const cause = resumeFollowFromUserInputRef.current
+    resumeFollowFromUserInputRef.current = null
+    if (!cause || isFollowingRef.current) return
+    const viewport = scrollRef.current as HTMLDivElement | null
+    if (!viewport || !isChatContainerViewportAtBottom(viewport)) return
+    cancelContentExpansionRestore()
+    updateFollowIntent(true, cause)
+  }, [
+    cancelContentExpansionRestore,
+    scrollRef,
+    updateFollowIntent,
+  ])
 
   const beginContentExpansion = useCallback(() => {
     let expansionTokens = contentExpansionTokensRef.current
@@ -292,6 +441,9 @@ function ChatContainerLifecycle({
   const compensateContentAnchor = useCallback((delta: number) => {
     const viewport = scrollRef.current
     if (!viewport || !Number.isFinite(delta) || delta === 0) return false
+    recordScrollTrace("content-anchor-compensation", () => ({
+      delta: roundChatScrollDiagnostic(delta),
+    }))
     contentAnchorCompensationActiveRef.current = true
     viewport.scrollTop += delta
     if (contentAnchorCompensationFrameRef.current !== null) {
@@ -302,7 +454,7 @@ function ChatContainerLifecycle({
       contentAnchorCompensationActiveRef.current = false
     })
     return true
-  }, [scrollRef])
+  }, [recordScrollTrace, scrollRef])
 
   const contentExpansionController = useMemo<ChatContainerContentExpansionController>(
     () => ({
@@ -362,6 +514,10 @@ function ChatContainerLifecycle({
           (!isChatContainerViewportAtBottom(viewport) ||
             !stickContext.state.isAtBottom)
         )
+        recordScrollTrace("follow-recovery-check", () => ({
+          shouldRecover,
+          beforeScrollTop: roundChatScrollDiagnostic(beforeScrollTop),
+        }))
         if (shouldRecover) {
           void libraryScrollToBottom({ animation: "instant" })
         }
@@ -403,7 +559,7 @@ function ChatContainerLifecycle({
         }
       })
     }, CHAT_CONTAINER_FOLLOW_RECOVERY_DELAY_MS)
-  }, [libraryScrollToBottom, scrollRef, stickContext.state])
+  }, [libraryScrollToBottom, recordScrollTrace, scrollRef, stickContext.state])
 
   useEffect(() => {
     const viewport = scrollRef.current as HTMLDivElement | null
@@ -414,83 +570,121 @@ function ChatContainerLifecycle({
       const previousScrollTop = lastScrollTopRef.current
       const currentScrollTop = viewport.scrollTop
       lastScrollTopRef.current = currentScrollTop
-      if (contentAnchorCompensationActiveRef.current) return
+      recordScrollTrace("scroll", () => ({
+        previousScrollTop: roundChatScrollDiagnostic(previousScrollTop),
+        currentScrollTop: roundChatScrollDiagnostic(currentScrollTop),
+        direction: previousScrollTop === null || currentScrollTop === previousScrollTop
+          ? "none"
+          : currentScrollTop < previousScrollTop
+            ? "up"
+            : "down",
+      }))
+      if (contentAnchorCompensationActiveRef.current) {
+        recordScrollTrace("scroll-ignored-anchor-compensation")
+        return
+      }
       if (
         contentExpansionTokensRef.current &&
         pointerScrollingRef.current &&
         previousScrollTop !== null &&
         currentScrollTop !== previousScrollTop
       ) {
-        updateFollowIntent(false, "content-expansion-user-scroll")
-        stopScroll()
+        if (currentScrollTop < previousScrollTop) {
+          beginScrollTrace("pointer-scroll-up", () => ({
+            previousScrollTop: roundChatScrollDiagnostic(previousScrollTop),
+            currentScrollTop: roundChatScrollDiagnostic(currentScrollTop),
+          }))
+        }
+        stopScrollForCause("content-expansion-user-scroll")
       } else if (
         pointerScrollingRef.current &&
         previousScrollTop !== null &&
         currentScrollTop < previousScrollTop
       ) {
-        updateFollowIntent(false, "user-scrollbar-up")
-        stopScroll()
-      }
-      const explicitEscapeScrollTop = explicitEscapeScrollTopRef.current
-      let returnedTowardBottomAfterEscape = explicitEscapeScrollTop === null
-      if (explicitEscapeScrollTop !== null) {
-        if (currentScrollTop < explicitEscapeScrollTop) {
-          explicitEscapeScrollTopRef.current = currentScrollTop
-        } else if (
-          previousScrollTop !== null &&
-          currentScrollTop > previousScrollTop
-        ) {
-          returnedTowardBottomAfterEscape = true
-        }
+        beginScrollTrace("pointer-scroll-up", () => ({
+          previousScrollTop: roundChatScrollDiagnostic(previousScrollTop),
+          currentScrollTop: roundChatScrollDiagnostic(currentScrollTop),
+        }))
+        stopScrollForCause("user-scrollbar-up")
       }
       if (
-        !isFollowingRef.current &&
-        returnedTowardBottomAfterEscape &&
-        isChatContainerViewportAtBottom(viewport)
+        pointerScrollingRef.current &&
+        previousScrollTop !== null &&
+        currentScrollTop > previousScrollTop
       ) {
-        cancelContentExpansionRestore()
-        explicitEscapeScrollTopRef.current = null
-        updateFollowIntent(true, "viewport-at-bottom")
+        requestFollowResumeFromUserInput("user-scrollbar-down")
       }
       onViewportScroll?.(viewport)
       scheduleFollowRecovery()
     }
+    const handleScrollEnd = () => {
+      recordScrollTrace("scroll-end")
+      completeFollowResumeFromUserInput()
+    }
     const handleWheel = (event: WheelEvent) => {
       if (event.deltaX !== 0 || event.deltaY !== 0) onViewportUserScroll?.(viewport)
+      const createWheelDetails = () => ({
+        deltaX: roundChatScrollDiagnostic(event.deltaX),
+        deltaY: roundChatScrollDiagnostic(event.deltaY),
+        deltaMode: event.deltaMode,
+      })
+      if (event.deltaY < 0) {
+        beginScrollTrace("wheel-up", createWheelDetails)
+      } else {
+        recordScrollTrace("wheel", createWheelDetails)
+      }
       if (contentExpansionTokensRef.current && event.deltaY !== 0) {
-        updateFollowIntent(false, "content-expansion-user-scroll")
-        stopScroll()
+        stopScrollForCause("content-expansion-user-scroll")
       } else if (
         event.deltaY < 0 &&
         viewport.scrollHeight > viewport.clientHeight
       ) {
-        updateFollowIntent(false, "user-wheel-up")
-        stopScroll()
+        stopScrollForCause("user-wheel-up")
+      }
+      if (event.deltaY > 0) {
+        requestFollowResumeFromUserInput("user-wheel-down")
       }
     }
     const handleKeyDown = (event: KeyboardEvent) => {
       if (CHAT_CONTAINER_SCROLL_KEYS.has(event.key)) onViewportUserScroll?.(viewport)
       const scrollsUp = CHAT_CONTAINER_SCROLL_UP_KEYS.has(event.key)
         || (event.key === " " && event.shiftKey)
+      const scrollsDown = CHAT_CONTAINER_SCROLL_DOWN_KEYS.has(event.key)
+        || (event.key === " " && !event.shiftKey)
+      const createKeyDetails = () => ({
+        key: event.key,
+        shiftKey: event.shiftKey,
+      })
+      if (scrollsUp) {
+        beginScrollTrace("key-up", createKeyDetails)
+      } else if (scrollsDown) {
+        recordScrollTrace("key-down", createKeyDetails)
+      }
       if (
         contentExpansionTokensRef.current &&
         CHAT_CONTAINER_SCROLL_KEYS.has(event.key)
       ) {
-        updateFollowIntent(false, "content-expansion-user-scroll")
-        stopScroll()
+        stopScrollForCause("content-expansion-user-scroll")
       } else if (scrollsUp && viewport.scrollHeight > viewport.clientHeight) {
-        updateFollowIntent(false, "user-key-up")
-        stopScroll()
+        stopScrollForCause("user-key-up")
       }
+      if (scrollsDown) requestFollowResumeFromUserInput("user-key-down")
     }
     const handlePointerDown = (event: PointerEvent) => {
       pointerScrollingRef.current = event.target === viewport
+      recordScrollTrace("pointer-down", () => ({
+        pointerId: event.pointerId,
+        pointerType: event.pointerType,
+        targetIsViewport: pointerScrollingRef.current,
+      }))
       if (pointerScrollingRef.current) onViewportUserScroll?.(viewport)
     }
     const handlePointerEnd = () => {
+      recordScrollTrace("pointer-end")
       pointerScrollingRef.current = false
     }
     viewport.addEventListener("scroll", handleScroll, { passive: true })
+    viewport.addEventListener("scrollend", handleScrollEnd, { passive: true })
     viewport.addEventListener("wheel", handleWheel, {
       capture: true,
       passive: true,
@@ -504,6 +698,7 @@ function ChatContainerLifecycle({
     window.addEventListener("pointercancel", handlePointerEnd, { passive: true })
     return () => {
       viewport.removeEventListener("scroll", handleScroll)
+      viewport.removeEventListener("scrollend", handleScrollEnd)
       viewport.removeEventListener("wheel", handleWheel, { capture: true })
       viewport.removeEventListener("keydown", handleKeyDown, { capture: true })
       viewport.removeEventListener("pointerdown", handlePointerDown, { capture: true })
@@ -513,10 +708,15 @@ function ChatContainerLifecycle({
   }, [
     onViewportScroll,
     onViewportUserScroll,
+    beginScrollTrace,
+    completeFollowResumeFromUserInput,
+    recordScrollTrace,
+    requestFollowResumeFromUserInput,
     scheduleFollowRecovery,
     cancelContentExpansionRestore,
     scrollRef,
     stopScroll,
+    stopScrollForCause,
     updateFollowIntent,
   ])
 
@@ -536,6 +736,10 @@ function ChatContainerLifecycle({
       const heightDelta = previousHeight === null ? 0 : height - previousHeight
       previousHeight = height
       const viewport = scrollRef.current as HTMLDivElement | null
+      recordScrollTrace("content-resize", () => ({
+        height: roundChatScrollDiagnostic(height),
+        heightDelta: roundChatScrollDiagnostic(heightDelta),
+      }))
       if (
         contentExpansionTokensRef.current &&
         !isFollowingRef.current &&
@@ -594,6 +798,7 @@ function ChatContainerLifecycle({
     cancelContentExpansionRestore,
     contentRef,
     libraryScrollToBottom,
+    recordScrollTrace,
     scheduleFollowRecovery,
     scrollRef,
     updateFollowIntent,

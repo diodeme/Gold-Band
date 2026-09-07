@@ -54,6 +54,8 @@ Markdown 继续使用 prompt-kit/Streamdown。项目本地文件链接不使用 
 
 兼容 CSS 统一由 `webview-compatibility.css` 承担：自定义 `color-mix()` 使用稳定语义 token 回退；composer、dialog、sheet、popover 和 wallpaper overlay 收敛为实色；复杂 filter 和纯装饰动画关闭。业务组件不得读取平台或版本。
 
+状态 badge、提示和结果表面统一由 `status.ts` 投影 `running / success / warning / danger` marker。Theme Contract 为每档状态分别提供 surface 和 border token；现代档继续使用 Tailwind 透明主题色，缺少 `color-mix()` 时由兼容层消费对应 token 并保留原状态前景色。状态 token 不复用文件 Diff 或其他业务领域的颜色。不得依赖 Tailwind 透明 utility 的基础声明作为兼容 fallback，因为该声明会退化为不透明源色，可能使同色文字和图标不可见。
+
 缺失 container query 时，已登记的命名容器使用共享 measured adapter。每个可见容器使用 ResizeObserver，连续变化每动画帧最多发布一次，只在 Tailwind 离散 breakpoint token 变化时改写容器数据属性；不写 React state，不扩大页面订阅。完整档不创建该 observer。
 
 ## 8. 诊断与隐私
@@ -70,4 +72,4 @@ Markdown 继续使用 prompt-kit/Streamdown。项目本地文件链接不使用 
 
 ## 10. 验收边界
 
-Windows 自动化负责三档能力 fixture、接口测试、类型检查、生产构建和 bundle 审计；它不能替代 WKWebView 613 真机结论。Intel macOS Monterey/WebKit 613 必须使用 DevTools DMG 验证启动、runtime.log 诊断、主业务路径、Markdown/WASM 高亮、弹层和窗口缩放。2026-08-31 的首次用户真机结果发现 `CSS.supports(custom-property, value)` 会假阴性并被错误拦截，现已改用语义探测；修正版 DMG 尚需在同一设备确认转为 `compatible`。真机修正版完成前不得宣称已完全验证。
+Windows 自动化负责三档能力 fixture、接口测试、类型检查、生产构建和 bundle 审计；它不能替代 WKWebView 613 真机结论。Intel macOS Monterey/WebKit 613 必须使用 DevTools DMG 验证启动、runtime.log 诊断、主业务路径、Markdown/WASM 高亮、弹层和窗口缩放。2026-08-31 的首次用户真机结果发现 `CSS.supports(custom-property, value)` 会假阴性并被错误拦截，现已改用语义探测；后续真机已确认应用可以进入业务界面，并发现 Tailwind 透明状态背景退化为不透明源色。该状态表面问题已由公共 marker 和主题软表面 fallback 修复，仍需用修正版 DMG 在同一设备确认成功、警告和错误提示的图标及文字可见。真机复验完成前不得宣称已完全验证。

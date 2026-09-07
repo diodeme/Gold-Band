@@ -1,10 +1,11 @@
-import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Globe, Settings, ChevronDown, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Globe, Settings, ChevronDown, Ellipsis, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
 import { saveConversationPreference } from '../../api';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
@@ -50,6 +51,12 @@ export function conversationSidebarNavigationKey(page: ConversationPage): Conver
     case 'multica-tasks':
       return null;
   }
+}
+
+export function isConversationSidebarMoreNavigationActive(page: ConversationPage): boolean {
+  return page.kind === 'multica-tasks'
+    || page.kind === 'scheduled-tasks'
+    || page.kind === 'scheduled-task-detail';
 }
 
 interface ConversationSidebarProps {
@@ -107,6 +114,8 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   const [collapsedPinnedWorkspaces, setCollapsedPinnedWorkspaces] = useState<Record<string, boolean>>({});
   const [workspaceToRemove, setWorkspaceToRemove] = useState<ConversationWorkspaceVm | null>(null);
   const [workspaceRemovalPending, setWorkspaceRemovalPending] = useState(false);
+  const moreNavigationActive = isConversationSidebarMoreNavigationActive(active);
+  const [moreNavigationOpen, setMoreNavigationOpen] = useState(moreNavigationActive);
   const pinnedTasksByWorkspace = useMemo(() => vm.pinnedTasks.reduce<Record<string, ConversationTaskRowVm[]>>((acc, task) => {
     (acc[task.projectId] ??= []).push(task);
     return acc;
@@ -120,6 +129,10 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     [vm.workspaces],
   );
   const activeNavigationKey = conversationSidebarNavigationKey(active);
+
+  useEffect(() => {
+    if (moreNavigationActive) setMoreNavigationOpen(true);
+  }, [moreNavigationActive]);
 
   // Sync pinned collapse from persisted preferences when sidebar VM reloads
   useEffect(() => {
@@ -304,20 +317,46 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             label={t('conversation.sidebar.runModeManagement')}
             onClick={() => onSelect({ kind: 'run-mode-management' })}
           />
-          <SidebarButton
-            compact
-            active={active.kind === 'multica-tasks'}
-            icon={<Globe />}
-            label={t('conversation.sidebar.multicaTaskManagement')}
-            onClick={() => onSelect({ kind: 'multica-tasks' })}
-          />
-          <SidebarButton
-            compact
-            active={activeNavigationKey === 'scheduled-tasks'}
-            icon={<AlarmClock />}
-            label={t('scheduled.management.title')}
-            onClick={() => onSelect({ kind: 'scheduled-tasks' })}
-          />
+          <Collapsible open={moreNavigationOpen} onOpenChange={setMoreNavigationOpen}>
+            <CollapsibleTrigger asChild>
+              <Button
+                variant="ghost"
+                className={cn(
+                  'h-6.5 w-full justify-start gap-2 rounded-md px-2 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+                  moreNavigationActive && !moreNavigationOpen && 'bg-sidebar-accent text-sidebar-accent-foreground',
+                )}
+              >
+                <Ellipsis className="size-3.5" />
+                <span className="min-w-0 flex-1 truncate text-left">{t('conversation.sidebar.more')}</span>
+                <ChevronDown className={cn('size-3.5 shrink-0 transition-transform', moreNavigationOpen && 'rotate-180')} />
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent
+              data-conversation-sidebar-more-content
+              className="flex flex-col gap-0.5 overflow-hidden pt-0.5 data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down"
+            >
+              <SidebarButton
+                compact
+                active={active.kind === 'multica-tasks'}
+                icon={<Globe />}
+                label={t('conversation.sidebar.multicaTaskManagement')}
+                onClick={() => {
+                  setMoreNavigationOpen(true);
+                  onSelect({ kind: 'multica-tasks' });
+                }}
+              />
+              <SidebarButton
+                compact
+                active={activeNavigationKey === 'scheduled-tasks'}
+                icon={<AlarmClock />}
+                label={t('scheduled.management.title')}
+                onClick={() => {
+                  setMoreNavigationOpen(true);
+                  onSelect({ kind: 'scheduled-tasks' });
+                }}
+              />
+            </CollapsibleContent>
+          </Collapsible>
         </div>
         </div>
 

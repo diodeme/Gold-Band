@@ -75,10 +75,13 @@ pub const ACTION_DISMISS: &str = "dismiss:";
 pub struct ViewActionPayload {
     pub project_id: String,
     pub task_id: String,
+    pub task_uuid: Option<String>,
     pub run_id: String,
     pub round_id: String,
     pub node_id: String,
     pub attempt_id: String,
+    pub outer_node_id: Option<String>,
+    pub outer_attempt_id: Option<String>,
     pub dedup_key: String,
 }
 
@@ -440,10 +443,13 @@ fn send_windows_toast(
     let payload = ViewActionPayload {
         project_id: notification.project_id.clone(),
         task_id: notification.task_id.clone(),
+        task_uuid: notification.task_uuid.clone(),
         run_id: notification.run_id.clone(),
         round_id: notification.round_id.clone(),
         node_id: notification.node_id.clone(),
         attempt_id: notification.attempt_id.clone(),
+        outer_node_id: notification.outer_node_id.clone(),
+        outer_attempt_id: notification.outer_attempt_id.clone(),
         dedup_key: notification.dedup_key.clone(),
     };
     let dismiss_payload = DismissActionPayload {
@@ -679,10 +685,13 @@ fn send_notify_rust(
         let payload = ViewActionPayload {
             project_id: notification.project_id.clone(),
             task_id: notification.task_id.clone(),
+            task_uuid: notification.task_uuid.clone(),
             run_id: notification.run_id.clone(),
             round_id: notification.round_id.clone(),
             node_id: notification.node_id.clone(),
             attempt_id: notification.attempt_id.clone(),
+            outer_node_id: notification.outer_node_id.clone(),
+            outer_attempt_id: notification.outer_attempt_id.clone(),
             dedup_key: notification.dedup_key.clone(),
         };
         let handle = match Notification::new()
@@ -785,30 +794,41 @@ fn intervention_notification_for_event(
             event_id,
             project_id,
             task_id,
+            task_uuid,
             task_title,
             run_id,
             round_id,
             node_id,
             attempt_id,
+            outer_node_id,
+            outer_attempt_id,
             node_label,
             kind,
             ..
-        } => Some(InterventionNotification::from_intervention_event(
-            &event_id,
-            &project_id,
-            &task_id,
-            task_title.as_deref(),
-            &run_id,
-            &round_id,
-            &node_id,
-            &attempt_id,
-            &node_label,
-            *kind,
-        )),
+        } => Some(
+            InterventionNotification::from_intervention_event(
+                &event_id,
+                &project_id,
+                &task_id,
+                task_title.as_deref(),
+                &run_id,
+                &round_id,
+                &node_id,
+                &attempt_id,
+                &node_label,
+                *kind,
+            )
+            .with_navigation_identity(
+                task_uuid.as_deref(),
+                outer_node_id.as_deref(),
+                outer_attempt_id.as_deref(),
+            ),
+        ),
         RuntimeLifecycleEvent::RunCompleted {
             event_id,
             project_id,
             task_id,
+            task_uuid,
             task_title,
             run_id,
             round_id,
@@ -838,16 +858,22 @@ fn intervention_notification_for_event(
                     *outcome,
                     completion_agent_label.as_deref(),
                 )
+                .map(|notification| {
+                    notification.with_navigation_identity(task_uuid.as_deref(), None, None)
+                })
             }
         }
         RuntimeLifecycleEvent::AcpTurnFinished {
             project_id,
             task_id,
+            task_uuid,
             task_title,
             run_id,
             round_id,
             node_id,
             attempt_id,
+            outer_node_id,
+            outer_attempt_id,
             turn_id,
             agent_label,
             outcome,
@@ -870,6 +896,13 @@ fn intervention_notification_for_event(
                     *outcome,
                     batch_progress.completed_reply_count,
                 )
+                .map(|notification| {
+                    notification.with_navigation_identity(
+                        task_uuid.as_deref(),
+                        outer_node_id.as_deref(),
+                        outer_attempt_id.as_deref(),
+                    )
+                })
             }
         }
         _ => None,
@@ -934,10 +967,13 @@ mod tests {
         ViewActionPayload {
             project_id: "project-1".to_string(),
             task_id: "task-1".to_string(),
+            task_uuid: Some("task-uuid-1".to_string()),
             run_id: "run-1".to_string(),
             round_id: "round-1".to_string(),
             node_id: "node-1".to_string(),
             attempt_id: "attempt-1".to_string(),
+            outer_node_id: Some("outer-node-1".to_string()),
+            outer_attempt_id: Some("outer-attempt-1".to_string()),
             dedup_key: "project-1:run-1:round-1:node-1:attempt-1:waiting-for-user-input"
                 .to_string(),
         }
@@ -955,9 +991,30 @@ mod tests {
         let decoded: ViewActionPayload = serde_json::from_value(value).unwrap();
         assert_eq!(decoded.project_id, "project-1");
         assert_eq!(decoded.task_id, "task-1");
+        assert_eq!(decoded.task_uuid.as_deref(), Some("task-uuid-1"));
         assert_eq!(decoded.dedup_key, payload.dedup_key);
         assert_eq!(decoded.node_id, "node-1");
         assert_eq!(decoded.attempt_id, "attempt-1");
+        assert_eq!(decoded.outer_node_id.as_deref(), Some("outer-node-1"));
+        assert_eq!(decoded.outer_attempt_id.as_deref(), Some("outer-attempt-1"));
+    }
+
+    #[test]
+    fn view_action_from_an_older_notification_defaults_new_identity_fields() {
+        let decoded: ViewActionPayload = serde_json::from_value(serde_json::json!({
+            "projectId": "project-1",
+            "taskId": "task-1",
+            "runId": "run-1",
+            "roundId": "round-1",
+            "nodeId": "node-1",
+            "attemptId": "attempt-1",
+            "dedupKey": "old-notification"
+        }))
+        .expect("decode old notification payload");
+
+        assert!(decoded.task_uuid.is_none());
+        assert!(decoded.outer_node_id.is_none());
+        assert!(decoded.outer_attempt_id.is_none());
     }
 
     #[test]
@@ -1034,6 +1091,45 @@ mod tests {
             task_title: Some("Task A".to_string()),
             completion_agent_label: None,
         }
+    }
+
+    #[test]
+    fn run_completion_notification_preserves_canonical_task_identity() {
+        let notification = intervention_notification_for_event(&run_completed_event(None))
+            .expect("run completion notification");
+        let value = serde_json::to_value(notification).expect("serialize notification");
+
+        assert_eq!(value["taskUuid"], "task-uuid-a");
+    }
+
+    #[test]
+    fn intervention_notification_preserves_canonical_dynamic_attempt_identity() {
+        let event = RuntimeLifecycleEvent::InterventionRequested {
+            event_id: "permission-request-a".to_string(),
+            occurred_at: "2026-09-04T10:00:00Z".to_string(),
+            scheduled_occurrence_id: None,
+            project_id: "project-a".to_string(),
+            task_id: "task-a".to_string(),
+            task_uuid: Some("task-uuid-a".to_string()),
+            run_id: "run-a".to_string(),
+            round_id: "round-a".to_string(),
+            node_id: "worker-a".to_string(),
+            attempt_id: "attempt-a".to_string(),
+            outer_node_id: Some("ai-dynamic-a".to_string()),
+            outer_attempt_id: Some("outer-attempt-a".to_string()),
+            node_label: "Worker A".to_string(),
+            kind: gold_band::app::RuntimeInterventionKind::PermissionRequested,
+            task_title: Some("Task A".to_string()),
+        };
+
+        let notification =
+            intervention_notification_for_event(&event).expect("permission notification");
+        assert_eq!(notification.task_uuid.as_deref(), Some("task-uuid-a"));
+        assert_eq!(notification.outer_node_id.as_deref(), Some("ai-dynamic-a"));
+        assert_eq!(
+            notification.outer_attempt_id.as_deref(),
+            Some("outer-attempt-a")
+        );
     }
 
     #[test]

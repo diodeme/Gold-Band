@@ -13,9 +13,9 @@
 
 ## Runtime location
 - Dynamic root: {{ dynamic_root }}
-- Internal node dir: {{ node_dir }}
-- Internal attempt dir: {{ attempt_dir }}
-- Internal attachments dir: {{ attachments_dir }}
+- Internal node (relative to Dynamic root): {{ node_dir }}
+- Current attempt (relative to the internal node): {{ attempt_dir }}
+- Attachments (relative to the current attempt): {{ attachments_dir }}
 - Workspace ID: {{ workspace_id }}
 - Workspace path: {{ workspace_path }}
 - Workspace capability:
@@ -30,7 +30,7 @@
 
 {% if has_coordination_snapshot %}
 ## Runtime coordination snapshot
-- Read-only snapshot: {{ coordination_snapshot_path }}
+- Read-only snapshot (relative to Dynamic root): {{ coordination_snapshot_path }}
 - Runtime derives this file from the canonical dynamic graph and is its only writer. Do not modify it.
 - Read the latest snapshot before starting or continuing this task: use each `workstreams[]` goal, TODO status, parent relationship, and steps to understand other subtasks, then use `groups[]` nesting and phase to avoid duplicate or conflicting work.
 - Read the same path again before outputting `next.type="single"` or `next.type="fanout"`, and plan successors from the latest state.
@@ -58,7 +58,31 @@
 
 {% if has_available_attachments %}
 ## Available attachments
-{{ available_attachments }}
+- Only attachment paths are listed; attachment contents are not read or inlined. Form a regular entry's complete path by joining `Dynamic root` with its successive path-tree levels; a top-level `absolutePath=` entry is already complete and must be used as-is.
+{% if has_predecessor_attachments %}
+### Predecessor chain (task handoff chain that created the current node; up to {{ source_predecessor_limit }} nodes)
+{{ predecessor_attachments }}
+{% if has_predecessor_attachment_overflow %}
+- The attachment listings for the source nodes below are truncated or incomplete. At most {{ attachments_per_source_limit }} files or empty directories are inspected per node; non-empty directories are traversed and do not consume a slot themselves. Only found files are listed above; inspect the complete attachments directories as needed:
+{{ predecessor_attachment_overflow_directories }}
+{% endif %}
+{% endif %}
+{% if has_dependency_attachments %}
+### Explicit dependencies (input nodes explicitly named through dependsOn by the current node)
+{{ dependency_attachments }}
+{% if has_dependency_attachment_overflow %}
+- The attachment listings for the source nodes below are truncated or incomplete. At most {{ attachments_per_source_limit }} files or empty directories are inspected per node; non-empty directories are traversed and do not consume a slot themselves. Only found files are listed above; inspect the complete attachments directories as needed:
+{{ dependency_attachment_overflow_directories }}
+{% endif %}
+{% endif %}
+{% if has_group_evidence_attachments %}
+### Group evidence (current merge / acceptance inputs or the latest merge and acceptance from related groups)
+{{ group_evidence_attachments }}
+{% if has_group_evidence_attachment_overflow %}
+- The attachment listings for the source nodes below are truncated or incomplete. At most {{ attachments_per_source_limit }} files or empty directories are inspected per node; non-empty directories are traversed and do not consume a slot themselves. Only found files are listed above; inspect the complete attachments directories as needed:
+{{ group_evidence_attachment_overflow_directories }}
+{% endif %}
+{% endif %}
 {% endif %}
 
 {% if has_output_contract %}

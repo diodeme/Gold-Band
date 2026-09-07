@@ -27,7 +27,13 @@ export function conversationPageForIntervention(
     kind: 'conversation-run',
     projectId: event.projectId,
     taskId: event.taskId,
+    ...(event.taskUuid ? { taskUuid: event.taskUuid } : {}),
     runId: event.runId,
+    roundId: event.roundId,
+    nodeId: event.nodeId,
+    attemptId: event.attemptId,
+    ...(event.outerNodeId ? { outerNodeId: event.outerNodeId } : {}),
+    ...(event.outerAttemptId ? { outerAttemptId: event.outerAttemptId } : {}),
   };
 }
 

@@ -9,7 +9,10 @@ import {
   ChatContainerRoot,
   type ChatContainerContext,
 } from '@/components/prompt-kit/chat-container';
-import { ConversationViewport } from '@/components/conversation/ConversationViewport';
+import {
+  ConversationViewport,
+  ConversationViewportFooter,
+} from '@/components/conversation/ConversationViewport';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -65,6 +68,64 @@ afterEach(() => {
 });
 
 describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
+  it('keeps a dynamic footer outside streaming scroll content without remounting it', async () => {
+    vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
+    const contextRef = React.createRef<ChatContainerContext>();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const view = (content: string) => React.createElement(
+      ConversationViewport,
+      {
+        scrollClassName: 'overflow-y-auto',
+        contextRef,
+      },
+      [
+        React.createElement('div', { key: 'content', 'data-testid': 'streaming-content' }, content),
+        React.createElement(
+          ConversationViewportFooter,
+          { key: 'footer' },
+          React.createElement('div', { 'data-testid': 'dynamic-footer' }, 'composer'),
+        ),
+      ],
+    );
+
+    try {
+      await act(async () => root.render(view('first chunk')));
+
+      const viewport = contextRef.current?.scrollRef.current as HTMLDivElement | null;
+      const content = contextRef.current?.contentRef.current as HTMLDivElement | null;
+      const frame = container.querySelector<HTMLElement>('[data-conversation-viewport-frame="true"]');
+      const footerLayer = container.querySelector<HTMLElement>('[data-conversation-viewport-footer="true"]');
+      const footer = container.querySelector<HTMLElement>('[data-testid="dynamic-footer"]');
+
+      expect(viewport).not.toBeNull();
+      expect(content).not.toBeNull();
+      expect(frame).not.toBeNull();
+      expect(footerLayer).not.toBeNull();
+      expect(footer).not.toBeNull();
+      expect(viewport?.contains(footer)).toBe(false);
+      expect(content?.style.paddingBottom).toBe(
+        'var(--conversation-viewport-footer-height, 0px)',
+      );
+
+      const footerObserver = ControlledResizeObserver.instances.find(
+        (observer) => observer.element === footerLayer,
+      );
+      expect(footerObserver).toBeDefined();
+      await act(async () => footerObserver?.emitHeight(96));
+      expect(frame?.style.getPropertyValue('--conversation-viewport-footer-height')).toBe('96px');
+
+      await act(async () => root.render(view('second streaming chunk')));
+      expect(container.querySelector('[data-testid="dynamic-footer"]')).toBe(footer);
+      expect(container.querySelector('[data-testid="streaming-content"]')?.textContent).toBe(
+        'second streaming chunk',
+      );
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('aligns the initial followed viewport before the first paint', () => {
     const viewport = {
       clientHeight: 320,
@@ -309,17 +370,36 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
       expect(contextRef.current?.isAtBottom).toBe(false);
       expect(atBottomChanges.at(-1)).toBe(false);
 
+      contentHeight = 241;
+      await act(async () => {
+        emitObservedHeight(contentHeight);
+        // Streaming layout and browser scroll anchoring can move the viewport
+        // downward without any user intent to return to the latest message.
+        scrollTop = 139;
+        viewport?.dispatchEvent(new Event('scroll'));
+        await waitForScrollFrames();
+      });
+      expect(contextRef.current?.isAtBottom).toBe(false);
+      expect(atBottomChanges.at(-1)).toBe(false);
+
       contentHeight = 300;
       await act(async () => {
         emitObservedHeight(contentHeight);
         await waitForScrollFrames();
       });
-      expect(scrollTop).toBe(138);
+      expect(scrollTop).toBe(139);
       expect(atBottomChanges.at(-1)).toBe(false);
 
       await act(async () => {
+        viewport?.dispatchEvent(new WheelEvent('wheel', { deltaY: 1 }));
         scrollTop = 199;
         viewport?.dispatchEvent(new Event('scroll'));
+        await waitForScrollFrames();
+      });
+      expect(atBottomChanges.at(-1)).toBe(false);
+
+      await act(async () => {
+        viewport?.dispatchEvent(new Event('scrollend'));
         await waitForScrollFrames();
       });
       expect(atBottomChanges.at(-1)).toBe(true);

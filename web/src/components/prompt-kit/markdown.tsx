@@ -29,8 +29,20 @@ export type MarkdownProps = {
   streaming?: boolean;
 };
 
+export interface MarkdownResourceLinkError {
+  code: string;
+  params: Record<string, unknown>;
+}
+
+export type MarkdownResourceLinkOpenResult =
+  | { status: 'opened' }
+  | { status: 'error'; error: MarkdownResourceLinkError };
+
 export interface MarkdownResourceLinkHandler {
-  openLocalFile: (rawHref: string, baseCanonicalPath?: string | null) => void | Promise<void>;
+  openLocalFile: (
+    rawHref: string,
+    baseCanonicalPath?: string | null,
+  ) => void | MarkdownResourceLinkOpenResult | Promise<void | MarkdownResourceLinkOpenResult>;
 }
 
 const MarkdownResourceLinkContext = createContext<MarkdownResourceLinkHandler | null>(null);
@@ -90,10 +102,25 @@ const markdownControls: NonNullable<StreamdownProps['controls']> = {
 };
 
 function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) {
+  const { t } = useTranslation();
   const handler = useContext(MarkdownResourceLinkContext);
   const localHref = localHrefFromRenderedHref(href);
   const local = Boolean(localHref);
   const enabledLocal = Boolean(handler && localHref);
+  const requestRevisionRef = useRef(0);
+  const openingRef = useRef<{
+    handler: MarkdownResourceLinkHandler;
+    href: string;
+    revision: number;
+  } | null>(null);
+  const [openFailure, setOpenFailure] = useState<{
+    handler: MarkdownResourceLinkHandler;
+    href: string;
+    error: MarkdownResourceLinkError;
+  } | null>(null);
+  const openError = openFailure?.handler === handler && openFailure.href === localHref
+    ? openFailure.error
+    : null;
   const external = Boolean(href && isExternalUrlHref(href));
   const target = localHref ? parseLocalFileLinkTarget(localHref) : null;
   const visibleLabel = target ? renderedLinkText(children).trim() : '';
@@ -102,46 +129,90 @@ function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<H
     && !visibleLabel.endsWith(target.displayText)
     && !visibleLabel.endsWith(target.sourceSuffix),
   );
+  useLayoutEffect(() => {
+    requestRevisionRef.current += 1;
+    openingRef.current = null;
+    return () => {
+      requestRevisionRef.current += 1;
+      openingRef.current = null;
+    };
+  }, [handler, localHref]);
+  const openResolvedLocalFile = useCallback(async () => {
+    if (!localHref || !handler) return;
+    if (openingRef.current?.handler === handler && openingRef.current.href === localHref) return;
+    const revision = requestRevisionRef.current + 1;
+    requestRevisionRef.current = revision;
+    openingRef.current = { handler, href: localHref, revision };
+    setOpenFailure(null);
+    try {
+      const result = await handler.openLocalFile(localHref);
+      if (requestRevisionRef.current !== revision) return;
+      if (result?.status === 'error') {
+        setOpenFailure({ handler, href: localHref, error: result.error });
+      }
+    } catch {
+      if (requestRevisionRef.current !== revision) return;
+      setOpenFailure({
+        handler,
+        href: localHref,
+        error: { code: 'workspace-file.path-invalid', params: {} },
+      });
+    } finally {
+      if (openingRef.current?.revision === revision) openingRef.current = null;
+    }
+  }, [handler, localHref]);
   return (
-    <a
-      {...props}
-      className={cn(
-        'font-medium [overflow-wrap:anywhere] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-link/45',
-        enabledLocal
-          ? 'mx-0.5 inline-flex items-center gap-1 rounded-sm align-baseline text-link no-underline decoration-link/45 underline-offset-2 transition-colors hover:underline hover:decoration-link'
-          : local
-            ? 'mx-0.5 inline-flex cursor-not-allowed items-center gap-1 rounded-sm align-baseline text-muted-foreground no-underline opacity-60'
-            : 'text-link underline decoration-link/45 underline-offset-2 hover:decoration-link',
-      )}
-      href={enabledLocal ? localHref ?? undefined : local ? undefined : href}
-      target={local || external ? undefined : props.target}
-      rel={local || external ? undefined : props.rel}
-      aria-disabled={local && !handler ? true : undefined}
-      onClick={local
-        ? (event) => {
-          event.preventDefault();
-          if (localHref && handler) void handler.openLocalFile(localHref);
-        }
-        : external
+    <>
+      <a
+        {...props}
+        className={cn(
+          'font-medium [overflow-wrap:anywhere] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-link/45',
+          enabledLocal
+            ? 'mx-0.5 inline-flex items-center gap-1 rounded-sm align-baseline text-link no-underline decoration-link/45 underline-offset-2 transition-colors hover:underline hover:decoration-link'
+            : local
+              ? 'mx-0.5 inline-flex cursor-not-allowed items-center gap-1 rounded-sm align-baseline text-muted-foreground no-underline opacity-60'
+              : 'text-link underline decoration-link/45 underline-offset-2 hover:decoration-link',
+          openError && 'text-destructive decoration-destructive/45 hover:decoration-destructive',
+        )}
+        href={enabledLocal ? localHref ?? undefined : local ? undefined : href}
+        target={local || external ? undefined : props.target}
+        rel={local || external ? undefined : props.rel}
+        aria-disabled={local && !handler ? true : undefined}
+        onClick={local
           ? (event) => {
             event.preventDefault();
-            if (href) void openExternalUrl(href);
+            void openResolvedLocalFile();
           }
-          : props.onClick}
-    >
-      {local ? <FileCode2 className="size-[0.9em] shrink-0 self-center stroke-[1.85]" aria-hidden="true" /> : null}
-      <span className="min-w-0 [overflow-wrap:anywhere]">
-        {children}
-        {showTarget ? (
-          <span
-            className="whitespace-nowrap"
-            data-gb-file-link-target="true"
-          >
-            {target?.displayText}
-          </span>
-        ) : null}
-      </span>
-    </a>
+          : external
+            ? (event) => {
+              event.preventDefault();
+              if (href) void openExternalUrl(href);
+            }
+            : props.onClick}
+      >
+        {local ? <FileCode2 className="size-[0.9em] shrink-0 self-center stroke-[1.85]" aria-hidden="true" /> : null}
+        <span className="min-w-0 [overflow-wrap:anywhere]">
+          {children}
+          {showTarget ? (
+            <span
+              className="whitespace-nowrap"
+              data-gb-file-link-target="true"
+            >
+              {target?.displayText}
+            </span>
+          ) : null}
+        </span>
+      </a>
+      {openError ? (
+        <span
+          role="alert"
+          className="ml-1 text-xs font-normal text-destructive"
+          data-workspace-file-link-error={openError.code}
+        >
+          {t(`workspace.filesPanel.errors.${openError.code}`, openError.code)}
+        </span>
+      ) : null}
+    </>
   );
 }
 

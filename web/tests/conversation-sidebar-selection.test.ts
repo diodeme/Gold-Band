@@ -20,6 +20,7 @@ import {
   applyConversationSidebarRunLifecycle,
   applyConversationSidebarRunStateUpdate,
   applyConversationSidebarTaskActivity,
+  conversationSidebarRunStateRefreshTarget,
   conversationTaskActivityFromLifecycle,
   conversationTaskActivityFromUpdate,
 } from '@/lib/conversation-sidebar-activity';
@@ -311,6 +312,71 @@ describe('ConversationSidebar run selection identity', () => {
       outcome: null,
     });
     expect(stale).toBe(next);
+  });
+
+  it('requests only the missing conversation page for a run-state event', () => {
+    const loadedRun = {
+      runId: 'run-001',
+      status: 'running',
+      outcome: null,
+      startedAt: '2026-08-17T00:00:00Z',
+      updatedAt: '2026-08-17T00:01:00Z',
+      resumable: false,
+    };
+    const task = {
+      projectId: 'project-a',
+      taskId: 'task-001',
+      taskUuid: 'uuid-001',
+      title: 'Task',
+      autoTitle: false,
+      runMode: 'workflow' as const,
+      latestRun: loadedRun,
+      runs: [loadedRun],
+      pinned: false,
+    };
+    const sidebar = {
+      workspaces: [
+        { projectId: 'project-a', workspacePath: 'D:/A', name: 'A' },
+        { projectId: 'project-b', workspacePath: 'D:/B', name: 'B' },
+      ],
+      pinnedTasks: [],
+      tasksByWorkspace: { 'project-a': [task], 'project-b': [] },
+      preferences: {},
+    };
+    const event = {
+      eventKind: 'node-started' as const,
+      projectId: 'project-a',
+      taskId: 'task-001',
+      taskUuid: 'uuid-001',
+      runId: 'run-001',
+      roundId: 'round-001',
+      nodeId: 'start',
+      attemptId: 'attempt-001',
+      status: 'running',
+      outcome: null,
+    };
+
+    expect(conversationSidebarRunStateRefreshTarget(sidebar, event, 'project-a')).toBeNull();
+    expect(conversationSidebarRunStateRefreshTarget(
+      sidebar,
+      { ...event, runId: 'run-002' },
+      'project-a',
+    )).toEqual({ kind: 'task-runs', task });
+    expect(conversationSidebarRunStateRefreshTarget(
+      sidebar,
+      { ...event, taskId: 'task-002', taskUuid: 'uuid-002', runId: 'run-001' },
+      'project-a',
+    )).toEqual({ kind: 'workspace-tasks', projectId: 'project-a' });
+    expect(conversationSidebarRunStateRefreshTarget(
+      sidebar,
+      { ...event, projectId: 'project-b', taskId: 'task-002', taskUuid: 'uuid-002' },
+      'project-a',
+    )).toBeNull();
+    expect(conversationSidebarRunStateRefreshTarget(
+      sidebar,
+      { ...event, taskUuid: 'stale-uuid' },
+      'project-a',
+    )).toBeNull();
   });
 
 

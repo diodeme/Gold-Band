@@ -16,6 +16,27 @@
   --workspace-editor-collapsed-background: var(--muted);
 }
 
+/* Tailwind's opacity utilities fall back to the opaque source color without color-mix(). */
+:root[data-webview-theme-rendering='fallback-tokens'] .webview-status-surface-running {
+  border-color: var(--gb-status-running-border);
+  background-color: var(--gb-status-running-surface);
+}
+
+:root[data-webview-theme-rendering='fallback-tokens'] .webview-status-surface-success {
+  border-color: var(--gb-status-success-border);
+  background-color: var(--gb-status-success-surface);
+}
+
+:root[data-webview-theme-rendering='fallback-tokens'] .webview-status-surface-warning {
+  border-color: var(--gb-status-warning-border);
+  background-color: var(--gb-status-warning-surface);
+}
+
+:root[data-webview-theme-rendering='fallback-tokens'] .webview-status-surface-danger {
+  border-color: var(--gb-status-danger-border);
+  background-color: var(--gb-status-danger-surface);
+}
+
 :root[data-webview-theme-rendering='fallback-tokens'] .workspace-markdown-live-preview {
   --atomic-editor-fg-faint: var(--muted-foreground);
   --atomic-editor-accent-soft: var(--accent);

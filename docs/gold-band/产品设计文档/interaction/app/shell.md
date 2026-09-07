@@ -68,6 +68,8 @@ Agent 管理
 - 一级菜单只控制中间主工作区的根模块。
 - 点击“任务编排”应回到任务列表根页面，而不是保留任务工作流或 Round 详情等深层页面。
 - 当前实现任务编排、Agent 管理、上下文管理和设置。
+- 会话侧栏把高频配置入口与低频管理入口分层：`Agent / 上下文 / 运行模式` 保持一级可见；其后使用带 `Ellipsis` 图标、可见文案“更多”和展开箭头的 shadcn/ui `Collapsible`，原位展开“需求管理 / 定时任务”。三个点是独立导航项，不附着到“运行模式”行；展开的两个入口与其他一级导航共用同一图标和文字左对齐轨道，不增加子级缩进，因为“更多”只控制同级入口显隐，不建立业务父子关系。
+- “更多”默认折叠，展开意图只属于当前侧栏运行期，不写入持久化偏好。路由或 deep link 进入需求管理、定时任务列表或定时任务详情时必须自动展开，并由真实子项承担选中态；创建定时任务仍归属快速对话。折叠只改变导航投影，不卸载、合并或改写两个独立页面及其领域状态。
 - 上下文管理当前提供角色管理（Profile Management），用于维护工作流节点引用的 profile；列表拆成“自定义角色 / 内置角色”双 tab，自定义角色维护独立分页与过滤，内置角色单独浏览。内置角色与自定义角色卡片使用同一套紧凑密度基线，桌面常见宽度下优先维持一行 3 张卡片，再按宽度退化。浏览器预览 mock 与桌面端 Tauri 数据通路必须分层隔离，不能在正式路径复用 mock 状态；该分层由前端 Vitest 回归测试持续覆盖 runtime 选择、facade 透传和 desktop/browser 双实现语义。
 - 上下文管理的 MCP 管理页按“自定义 MCP / 内置 MCP”分段展示。自定义 MCP 允许用户新增、编辑、删除和启停；内置 MCP 由渠道配置注入，只允许用户查看、诊断、查看工具列表和启停，不能编辑或删除。内置 MCP 仅在对应渠道声明 `builtinMcpServers` 时注入，首次注入使用渠道配置的 `enabled` 默认值；后续启动同步只刷新名称、连接方式和帮助信息，必须保留用户在本机选择的启停状态。MCP 工具列表通过后端 `tools/list` 获取，stdio transport 必须在同一个子进程会话中先完成 `initialize`，再等待 `tools/list` 的 JSON-RPC 响应，不能把 initialize 响应误当作工具列表结果。Gold Band 设置页和存储层继续使用内部 transport + map 结构；发送 ACP `session/new|load` 时必须转换为 ACP `mcpServers` wire format：stdio 不带 `type`，HTTP/SSE 使用 `type: "http"|"sse"`，`env` 与 `headers` 均为 `{ name, value }` 数组，不能透传内部 `id`、`transport` 或对象 map。
 - 模型管理保持占位，可显示 disabled 或 coming soon 状态。
@@ -98,12 +100,12 @@ Agent 管理
 - 资源以稳定 `resourceKey` 去重；关闭当前 Tab 后激活相邻 Tab，关闭最后一个 Tab 后同步收起右侧工作区并清空激活态；需要继续使用空白入口时，可通过顶栏右栏开关重新打开。不把资源集合是否为空当成自动恢复展开的理由。Tab 条允许原生横向滚动；只有 `scrollWidth` 实际超过 `clientWidth` 时才显示紧凑的完整 Tab 菜单，未溢出时不长期占用标题栏空间。Tab 条与会话正文、设置页和资源树共用 `gold-themed-scrollbar` 的平台能力分支，不得为了独立压缩高度而切换到另一套浏览器滚动条渲染路径。Tab 采用有间距的轻量标签布局：激活项使用圆角弱底色和正常前景色，关闭按钮常显但降低透明度；未激活项透明，仅在 hover 时出现弱底色和关闭按钮。不使用整格矩形填充、竖分隔线或底部选中横线。
 - 只挂载激活 Tab 的内容 DOM。非激活资源仅保留轻量定位、状态、attention、有限分页窗口与滚动恢复状态，不长期隐藏挂载多个消息视口。
 - Agent 分支的可展示条件由分支领域数据决定：非根 `branchId` 已返回 canonical `branchExecution` 时即为有效会话，不得继续等待只属于根会话的 system prompt、配置选项或 Gold Band user prompt。`interrupted` 等历史分支也必须在首次有效查询后停止初始化重试。
-- 已打开 Agent 的完整但有限语义窗口进入最多 12 个 branch key 的内存 LRU；切换 Tab 时先同步恢复会话、事件窗口和滚动锚点，再在后台刷新 canonical 数据。缓存未命中才展示加载壳，刷新不得把已经可审计的内容退回“加载中”。
+- 已打开 Agent 的完整但有限语义窗口进入由 `acpChatResourceCacheSessionCount` 控制的内存 LRU，默认最多 8 个 branch key；切换 Tab 时先同步恢复会话、事件窗口和滚动锚点，再在后台刷新 canonical 数据。缓存未命中才展示加载壳，刷新不得把已经可审计的内容退回“加载中”。
 - 右侧 Dock 与紧凑宽度 Sheet 共用同一 Tab state 和内容组件。窗口自动收窄只隐藏 Dock，不自动用 Sheet 覆盖中间内容；用户在紧凑模式显式点击资源链接时才打开 Sheet。
 - 用户手动关闭工作区只改变会话 Shell 级 `requestedOpen`，不删除 Tab；自动折叠、进入没有右栏能力的运行模式/管理页面以及资源 scope 切换都只改变有效呈现，不得覆盖手动开关意图。
 - `requestedOpen` 与 `tabs` 独立建模：共享顶栏右栏开关可以在 `tabs=[]` 时展开空白入口页。`requestedOpen`、打开动作 revision 与当前运行期宽度投影归属会话 Shell，由快速对话和具体会话详情共享；快速对话使用 `draft:<projectId>` scope，具体会话使用 `conversation:<projectId>:<taskId>:<runId>` scope，只有 Tab 与激活态在当前 scope 内读写。资源描述符必须携带相同 `scopeKey`，不允许旧会话资源写入新会话。
 - 会话资源轻量状态进入 24 项运行期 LRU，只在用户进入 scope、打开或操作资源时更新访问顺序，后台流式事件不 touch。第 25 个有状态 scope 淘汰最久未访问项；被淘汰会话再次进入时 Tab 与激活态为空，但右栏是否展开仍服从 Shell 级用户意图。快速对话创建新会话时删除 draft 资源，不迁移可能带会话归属的 Tab；Shell 级展开意图无需迁移。
-- ACP Session VM、有限事件窗口和滚动/分页锚点按同一 resource key 进入统一 12 项重资源 LRU；淘汰必须原子释放三类数据，禁止三套独立顺序造成部分大对象继续驻留。live branch snapshot 继续使用自身 64 项轻量上限，并保护仍有订阅者的条目。
+- ACP Session VM、有限事件窗口、正文 hydrate 标记和滚动/分页锚点按同一 resource key 进入统一重资源 LRU；容量由 `acpChatResourceCacheSessionCount` 控制，默认 8。淘汰必须原子释放同一 resource 的全部可重建投影，禁止独立顺序造成部分大对象继续驻留。live branch snapshot 继续使用自身 64 项轻量上限，并保护仍有订阅者的条目。
 - Tab 与激活态只保存在当前应用进程内，重启后清空；右侧工作区像素宽度不属于会话内容，继续写入用户级 conversation preference 并跨重启全局恢复，切换会话不得造成宽度跳变。
 - 会话模式的 `WorkspaceShell` 必须在中间主工作区、右侧 Dock 和紧凑 Sheet 的共同稳定边界提供一次 shadcn `TooltipProvider`。资源面板可以直接复用主会话中含 Tooltip 的标题、工具和操作组件；不得要求每种右侧资源自行补 Provider，否则 Agent 内容异步加载后会使整个工作区渲染树异常退出。
 - 资源 renderer 与关闭 resolver 按 `RightWorkspaceResource.kind` 注册，文件、工作流和诊断资源不能使用会相互覆盖的单例回调。文件资源切换、收起和关闭前由异步 resolver 冲刷自动保存；保存失败或 revision 冲突时保留 Tab。

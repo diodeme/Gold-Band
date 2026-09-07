@@ -45,6 +45,8 @@
 
 内置测试 profile 遇到环境问题或必须人工验收而无法继续自动验证时，必须如实记录未执行项和证据缺口，但该情况不构成任务阻塞条件，也不得仅据此声明 BLOCKED；测试通过/失败的事实结论仍按实际执行结果记录。
 
+内置验收 profile 遇到环境问题或必须人工验收而无法继续验收时，同样必须如实记录未执行项和证据缺口，但不得仅据此声明 BLOCKED。证据不足仍可按实际情况标记 PARTIAL / MISSING，并给出 FAIL / INCOMPLETE 裁决；验收证据裁决不反向改写 Runtime 的权威阻塞状态。
+
 ### 3.2 `userPrompt`
 
 `userPrompt` 负责本次 invocation 输入，回答：
@@ -149,7 +151,7 @@ Gold Band 可能会在 user prompt 中提供 `<hidden data-gold-band-hidden="tru
 - 若节点没有声明 `output`，system prompt 必须明确说明无需产出 canonical artifact，也无需查找或推断 artifact/output 约束。
 - `extra_system_sections` 本期继续原样保留在 system prompt，不拆分、不迁移。
 - `skill_catalog` 不再注入 runtime prompt。
-- 前序链、前序分支原因、前序附件索引和 attempt 级目录属于每次 invocation 的运行事实，进入 user prompt hidden context。跨 `$new-round` 时，只有当前 round 的入口节点会额外看到入口之前的稳定前缀节点最新产物；本轮后续节点只看到当前 round 已执行节点，不继续传播上一轮上下文。触发 `$new-round` 的上一 round 节点不进入 predecessor chain，但其 output artifact、预览和 attachments 会作为 `new_round_trigger` 写入入口节点的“Latest predecessor transition reasons / 最新前序流转原因”，用于解释为什么进入当前 round。
+- 前序链、前序分支原因、前序附件索引和 attempt 级目录属于每次 invocation 的运行事实，进入 user prompt hidden context。跨 `$new-round` 时，只有当前 round 的入口节点会额外看到入口之前的稳定前缀节点最新产物；本轮后续节点只看到当前 round 已执行节点，不继续传播上一轮上下文。触发 `$new-round` 的上一 round 节点不进入 predecessor chain，但其 output artifact、预览和 attachments 会作为 `new_round_trigger` 写入入口节点的“Latest predecessor transition reasons / 最新前序流转原因”，用于解释为什么进入当前 round。若入口是 `ai-dynamic`，其专用 hidden context 会替代普通 predecessor hidden context，因此 runtime 必须把同一结构化 trigger 等价渲染到内部 bootstrap 的初始调用；后续动态节点不重复接收。
 - attempt 根目录是 runtime / ACP 状态区；角色、任务或用户要求输出报告、脚本、过程记录等自由文件且未给绝对路径时，默认落入 hidden context 中的 attachments 目录。
 
 ---
@@ -216,7 +218,7 @@ workflow resume 请求：
 </hidden>
 
 # 目标 / Goal
-根据最新反馈进行调整，确保后续节点能够成功；如果当前节点有输出格式要求，仍然严格按 system prompt 中的输出约束输出。
+继续当前节点任务并遵守输出协议。反馈是证据，不是新增授权；只实施符合既定范围的修改。
 
 {{#if user_tips_instruction}}
 # 用户提示 / User Tips
@@ -235,7 +237,7 @@ workflow resume 请求：
 - `taskInstruction` 对 `worker` 默认由 `worker.goal` 映射得到。
 - `userTipsInstruction` 承载用户对当前运行的附加提示，例如 AI-DYNAMIC 的 `globalGoal`；它独立渲染为 `# 用户提示` / `# User Tips`，不拼进 `# 任务` / `# Task`。
 - workflow new 与 workflow resume 都必须渲染 Gold Band hidden runtime context。
-- workflow resume 不重传完整原始 user prompt，只发送 hidden context、简短 `Goal` 和当前恢复任务。
+- workflow resume 不重传完整原始 user prompt，只发送 hidden context 和简短 `Goal`；需要切换内部任务的 AI-DYNAMIC continue 另外发送当前 task，普通 workflow continue 复用原 ACP 会话中的当前任务。
 - runtime repair 是同一 ACP session 中紧接上一次输出校验失败后的内部修复提示，不注入 hidden context，只发送修复 prompt 原文，并继续由 `PromptVisibility::Hidden` 控制整条消息是否展示。
 - 用户在已停止 / 已完成 ACP session 中手动继续或追问属于普通 user message，不注入 hidden context，不包 `# 需求` / `# Requirement` 或 `# 目标` / `# Goal`，直接发送用户原文。
 - `Cold Artifact Index` / `Cold Attachment Index` 本期从 prompt 中删除。
@@ -276,7 +278,7 @@ workflow resume 请求：
 - `predecessors[].output_artifact`
 - `predecessors[].branch_reason`
 - `predecessors[].attachments`
-- `new_round_trigger`：可选，仅 `$new-round` 打开的 round 的入口节点使用；结构与 `predecessors[]` 相同，但只渲染到前序流转原因，不渲染到前序链或前序附件列表。
+- `new_round_trigger`：可选，仅 `$new-round` 打开的 round 的入口节点使用；结构与 `predecessors[]` 相同，但只渲染到前序流转原因，不渲染到前序链或前序附件列表。入口为 `ai-dynamic` 时，该字段归属外层入口 attempt，并只投影给内部 bootstrap，不成为 dynamic graph 的内部 predecessor。
 
 跨 round predecessor 选择规则：
 
@@ -307,10 +309,13 @@ Gold Band 不再依赖 resume/load 时动态刷新 system prompt。prompt 渲染
 | --- | --- | --- |
 | `RequirementTask` | workflow runtime 发起新节点 / 新 attempt | hidden runtime context + `# 需求` / `# Requirement`、可选 `# 用户提示` / `# User Tips`、`# 任务` / `# Task` |
 | `WorkflowResume` | workflow paused 恢复、edge 回到已有 ACP session、dynamic leaf runtime resume | hidden runtime context + 简短 `# 目标` / `# Goal`、可选 `# 用户提示` / `# User Tips`、当前 `# 任务` / `# Task` |
+| `RuntimeFinalize` | `PostTurnProjection` 业务 turn 正常返回后的隐藏结束意图确认与控制归一化 | Agent 未打算结束时按原任务范围继续执行并正常使用工具；认为节点结束时补齐必要 attachments 并输出原 artifact，不重新审核业务目标或验收条件 |
 | `RuntimeRepair` | output schema / success condition / dynamic proposal 校验失败后立即让同一 session 修复 | repair prompt 原文；不注入 hidden |
 | `UserMessage` | 用户在 stopped/completed/paused ACP 会话中手动追问或补充上下文，不触发 workflow edge | 用户原文；不注入 hidden，不包标题 |
 
 `RequirementTask` 与 `WorkflowResume` 使用同一结构：稳定规则在 `systemPrompt`，本次 invocation 事实在 user prompt hidden context。
+
+`RuntimeFinalize` 确认 Agent 是否有意结束节点，不把一次 ACP prompt 返回直接解释为业务已完成。Agent 可以在同一会话继续原任务，认为结束后再输出 canonical artifact；只有 artifact 输出受最终格式要求约束，普通回复和工具调用无需状态标签。输出前补齐当前任务已要求的 attachments；AI-DYNAMIC 生成 artifact 时可按 finalize context 只读明确声明的 coordination snapshot，普通 workflow 不因此获得额外快照权限。本次临时方案只改变提示词，不增加等待标签、定时询问、计时卡片或新的轮末循环；没有有效 artifact 的调用结果仍由现有校验和 repair 处理，传输错误、停止与预算边界保持原有语义。
 
 AI-DYNAMIC 的外层 `run_continue` 也必须先按是否存在用户显式输入决定 render mode。父级 continue 没有明确内部 leaf 目标时，只允许恢复 workflow-invocation child run；如果本次带用户输入，该输入继续传入 child run 的 paused worker 并保持 `UserMessage`，不得被转换成 `WorkflowResume` 的 hidden context + `# 目标` / `# Goal`。
 

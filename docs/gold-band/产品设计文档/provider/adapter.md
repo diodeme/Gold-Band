@@ -159,6 +159,18 @@ Provider 只有在归约结果为 `Success` 或可接受中断结果时才提取
 
 ## 3. 最小能力分级
 
+### Claude ACP 临时执行约束
+
+为缓解 [#114](https://github.com/diodeme/Gold-Band/issues/114) 的后台续做与客户端 prompt 归属冲突，Gold Band 对 canonical provider ID `claude-acp` 统一施加执行策略，不按用户显示名或命令路径推断类型：
+
+- 启动适配器时在用户环境之后注入 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`。
+- `session/new/load/resume/fork` 请求在 `_meta.claudeCode.options.disallowedTools` 追加 `Monitor`，幂等保留其他工具限制；同时在 options env 和内联 settings env 中强制同一禁用变量，防止 Claude 读取项目 settings 后覆盖进程环境。
+- 策略只合并本次启动和请求参数，不改写已保存实例、默认模板或用户文件；已有与新建 Claude 实例都适用。其他 provider 不注入 Claude 私有字段。
+- 不新增 UI 提示或可编辑设置。已运行的会话及后台任务不追溯中断；新进程及新建/恢复的 SDK 会话应用策略。
+- 该策略不是沙箱，不阻止 shell 命令手动脱离进程，也不修复 SDK 不完整流误报成功的根因。必须以隔离会话验证后台工具不可用及前台执行可用。
+
+2026-09-07 已使用实际 Gold Band 连接入口与已安装 ACP 0.75.1 / SDK 0.3.257 / CLI 2.1.257 验证：Bash/Agent schema 移除后台参数，Monitor 不在工具列表，强行后台调用被拒绝；12 秒同步命令和同步子 agent 正常返回。模拟模型只连接本地 fixture。测试入口为 `tests/acp_claude_execution_policy.rs` 与 `scripts/diagnostics/verify-claude-background-policy.mjs`；不完整流的上游原因仍未解决。
+
 ### Level 1：基础执行能力
 - `describeProvider`
 - `doctor`

@@ -138,6 +138,68 @@ describe('desktopApi', () => {
     });
   });
 
+  it('preserves the project-scoped runtime admission command contracts', async () => {
+    const createInput = { projectId: 'project-1' } as Parameters<typeof desktopApi.createConversationRun>[0];
+    const promptInput = { displayText: '继续', quotes: [] };
+
+    await desktopApi.validateConversationCreate(createInput);
+    await desktopApi.createConversationRun(createInput);
+    await desktopApi.rerunConversationTask('project-1', 'task-1');
+    await desktopApi.continueRun('project-1', 'task-1', 'run-1');
+    await desktopApi.recoverConversationRuntime(
+      'project-1',
+      'task-1',
+      'run-1',
+      'round-1',
+      'node-1',
+      'attempt-1',
+      7,
+    );
+    await desktopApi.submitConversationPrompt(
+      'project-1',
+      'task-1',
+      'run-1',
+      'round-1',
+      'node-1',
+      'attempt-1',
+      promptInput,
+      'prompt-1',
+      null,
+      'outer-node-1',
+      'outer-attempt-1',
+      ['D:/attachments/context.md'],
+    );
+
+    expect(vi.mocked(invokeCommand).mock.calls.slice(-6)).toEqual([
+      ['validate_conversation_create', { input: createInput }],
+      ['create_conversation_run', { input: createInput }],
+      ['rerun_conversation_task', { projectId: 'project-1', taskId: 'task-1' }],
+      ['continue_run', { projectId: 'project-1', taskId: 'task-1', runId: 'run-1' }],
+      ['recover_conversation_runtime', {
+        projectId: 'project-1',
+        taskId: 'task-1',
+        runId: 'run-1',
+        roundId: 'round-1',
+        nodeId: 'node-1',
+        attemptId: 'attempt-1',
+        expectedRevision: 7,
+      }],
+      ['submit_conversation_prompt', {
+        projectId: 'project-1',
+        taskId: 'task-1',
+        runId: 'run-1',
+        roundId: 'round-1',
+        nodeId: 'node-1',
+        attemptId: 'attempt-1',
+        input: promptInput,
+        promptId: 'prompt-1',
+        outerNodeId: 'outer-node-1',
+        outerAttemptId: 'outer-attempt-1',
+        attachmentPaths: ['D:/attachments/context.md'],
+      }],
+    ]);
+  });
+
   it('routes ordinary run stop to the Tauri pause command', async () => {
     await desktopApi.pauseRun('task-1', 'run-1', 'project-1');
 
@@ -222,6 +284,32 @@ describe('desktopApi', () => {
     await desktopApi.getConversationWorkspaces();
 
     expect(invokeCommand).toHaveBeenCalledWith('get_conversation_workspaces');
+  });
+
+  it('loads the conversation sidebar through bounded progressive commands', async () => {
+    await desktopApi.getConversationSidebarBootstrap();
+    expect(invokeCommand).toHaveBeenCalledWith('get_conversation_sidebar_bootstrap');
+
+    await desktopApi.getConversationTaskPage('project-1', 'task-24', 24);
+    expect(invokeCommand).toHaveBeenCalledWith('get_conversation_task_page', {
+      projectId: 'project-1',
+      cursor: 'task-24',
+      limit: 24,
+    });
+
+    await desktopApi.getConversationPinnedTaskPage('pin-24', 24);
+    expect(invokeCommand).toHaveBeenCalledWith('get_conversation_pinned_task_page', {
+      cursor: 'pin-24',
+      limit: 24,
+    });
+
+    await desktopApi.getConversationRunSummaryPage('project-1', 'task-1', 'run-20', 20);
+    expect(invokeCommand).toHaveBeenCalledWith('get_conversation_run_summary_page', {
+      projectId: 'project-1',
+      taskId: 'task-1',
+      cursor: 'run-20',
+      limit: 20,
+    });
   });
 
   it('exposes branch picker reads and mutations through the desktop runtime contract', async () => {

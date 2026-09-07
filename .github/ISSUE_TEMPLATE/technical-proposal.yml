@@ -1,0 +1,65 @@
+name: Technical proposal
+description: Propose an architectural, data, lifecycle, migration, or maintainability change.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for contributor-facing technical changes without a primary new user-facing feature. Explain the problem and direction; optional sections can capture deeper design work when it already exists.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Current problem
+      description: Describe the concrete failure mode, maintenance cost, or missing technical capability.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed direction
+      description: Describe the intended technical outcome and its main boundaries without requiring a complete implementation plan.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Note relevant existing libraries, platform capabilities, repository mechanisms, or other credible approaches.
+    validations:
+      required: true
+
+  - type: textarea
+    id: design-context
+    attributes:
+      label: Design context
+      description: Optionally identify relevant ownership, authoritative data, invariants, lifecycle, interfaces, or design documents.
+
+  - type: textarea
+    id: migration
+    attributes:
+      label: Migration and deletion considerations
+      description: Optionally note replaced fields, paths, entry points, consumers, or compatibility constraints.
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks and performance impact
+      description: Optionally note data scale, I/O, rendering, memory, concurrency, failure recovery, or overdesign risks.
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance considerations
+      description: Optionally describe observable outcomes or interface-level invariants that would demonstrate success.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Submission checklist
+      options:
+        - label: I searched open and closed issues for duplicates.
+          required: true
+        - label: I removed secrets, personal data, and unnecessary private paths.
+          required: true

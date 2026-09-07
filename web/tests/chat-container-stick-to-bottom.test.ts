@@ -9,7 +9,10 @@ import {
   ChatContainerRoot,
   type ChatContainerContext,
 } from '@/components/prompt-kit/chat-container';
-import { ConversationViewport } from '@/components/conversation/ConversationViewport';
+import {
+  ConversationViewport,
+  ConversationViewportFooter,
+} from '@/components/conversation/ConversationViewport';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -51,10 +54,6 @@ function waitForScrollFrames() {
   return new Promise<void>((resolve) => window.setTimeout(resolve, 24));
 }
 
-function waitForFollowRecovery() {
-  return new Promise<void>((resolve) => window.setTimeout(resolve, 80));
-}
-
 function emitObservedHeight(height: number) {
   for (const observer of ControlledResizeObserver.instances) {
     if (observer.element) observer.emitHeight(height);
@@ -69,6 +68,64 @@ afterEach(() => {
 });
 
 describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
+  it('keeps a dynamic footer outside streaming scroll content without remounting it', async () => {
+    vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
+    const contextRef = React.createRef<ChatContainerContext>();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const view = (content: string) => React.createElement(
+      ConversationViewport,
+      {
+        scrollClassName: 'overflow-y-auto',
+        contextRef,
+      },
+      [
+        React.createElement('div', { key: 'content', 'data-testid': 'streaming-content' }, content),
+        React.createElement(
+          ConversationViewportFooter,
+          { key: 'footer' },
+          React.createElement('div', { 'data-testid': 'dynamic-footer' }, 'composer'),
+        ),
+      ],
+    );
+
+    try {
+      await act(async () => root.render(view('first chunk')));
+
+      const viewport = contextRef.current?.scrollRef.current as HTMLDivElement | null;
+      const content = contextRef.current?.contentRef.current as HTMLDivElement | null;
+      const frame = container.querySelector<HTMLElement>('[data-conversation-viewport-frame="true"]');
+      const footerLayer = container.querySelector<HTMLElement>('[data-conversation-viewport-footer="true"]');
+      const footer = container.querySelector<HTMLElement>('[data-testid="dynamic-footer"]');
+
+      expect(viewport).not.toBeNull();
+      expect(content).not.toBeNull();
+      expect(frame).not.toBeNull();
+      expect(footerLayer).not.toBeNull();
+      expect(footer).not.toBeNull();
+      expect(viewport?.contains(footer)).toBe(false);
+      expect(content?.style.paddingBottom).toBe(
+        'var(--conversation-viewport-footer-height, 0px)',
+      );
+
+      const footerObserver = ControlledResizeObserver.instances.find(
+        (observer) => observer.element === footerLayer,
+      );
+      expect(footerObserver).toBeDefined();
+      await act(async () => footerObserver?.emitHeight(96));
+      expect(frame?.style.getPropertyValue('--conversation-viewport-footer-height')).toBe('96px');
+
+      await act(async () => root.render(view('second streaming chunk')));
+      expect(container.querySelector('[data-testid="dynamic-footer"]')).toBe(footer);
+      expect(container.querySelector('[data-testid="streaming-content"]')?.textContent).toBe(
+        'second streaming chunk',
+      );
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('aligns the initial followed viewport before the first paint', () => {
     const viewport = {
       clientHeight: 320,
@@ -220,7 +277,9 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
       await act(async () => {
         scrollTop = 96;
         viewport?.dispatchEvent(new Event('scroll'));
-        await waitForFollowRecovery();
+        await vi.waitFor(() => {
+          expect(scrollTop).toBe(139);
+        }, { timeout: 5_000, interval: 10 });
       });
       expect(scrollTop).toBe(139);
       expect(contextRef.current?.state.isAtBottom).toBe(true);
@@ -302,7 +361,21 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
       await act(async () => {
         emitObservedHeight(contentHeight);
         viewport?.dispatchEvent(new WheelEvent('wheel', { deltaY: -1 }));
-        scrollTop = 130;
+        // A one-pixel upward move still lands inside the bottom tolerance,
+        // but the explicit user escape must take precedence over geometry.
+        scrollTop = 138;
+        viewport?.dispatchEvent(new Event('scroll'));
+        await waitForScrollFrames();
+      });
+      expect(contextRef.current?.isAtBottom).toBe(false);
+      expect(atBottomChanges.at(-1)).toBe(false);
+
+      contentHeight = 241;
+      await act(async () => {
+        emitObservedHeight(contentHeight);
+        // Streaming layout and browser scroll anchoring can move the viewport
+        // downward without any user intent to return to the latest message.
+        scrollTop = 139;
         viewport?.dispatchEvent(new Event('scroll'));
         await waitForScrollFrames();
       });
@@ -314,12 +387,19 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
         emitObservedHeight(contentHeight);
         await waitForScrollFrames();
       });
-      expect(scrollTop).toBe(130);
+      expect(scrollTop).toBe(139);
       expect(atBottomChanges.at(-1)).toBe(false);
 
       await act(async () => {
+        viewport?.dispatchEvent(new WheelEvent('wheel', { deltaY: 1 }));
         scrollTop = 199;
         viewport?.dispatchEvent(new Event('scroll'));
+        await waitForScrollFrames();
+      });
+      expect(atBottomChanges.at(-1)).toBe(false);
+
+      await act(async () => {
+        viewport?.dispatchEvent(new Event('scrollend'));
         await waitForScrollFrames();
       });
       expect(atBottomChanges.at(-1)).toBe(true);
@@ -393,6 +473,59 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
       await act(async () => {
         root.unmount();
       });
+    }
+  });
+
+  it('compensates a prepended detail anchor without retriggering pagination in the same frame', async () => {
+    vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (
+      window.setTimeout(() => callback(performance.now()), 0)
+    ));
+    vi.stubGlobal('cancelAnimationFrame', (frameId: number) => window.clearTimeout(frameId));
+
+    const onViewportScroll = vi.fn();
+    const contextRef = React.createRef<ChatContainerContext>();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          React.createElement(
+            ChatContainerRoot,
+            { contextRef, onViewportScroll },
+            React.createElement(ChatContainerContent, null, 'bounded activity detail'),
+          ),
+        );
+      });
+      const viewport = contextRef.current?.scrollRef.current as HTMLDivElement;
+      let scrollTop = 120;
+      Object.defineProperties(viewport, {
+        clientHeight: { configurable: true, get: () => 100 },
+        scrollHeight: { configurable: true, get: () => 500 },
+        scrollTop: {
+          configurable: true,
+          get: () => scrollTop,
+          set: (value: number) => { scrollTop = Number(value); },
+        },
+      });
+      onViewportScroll.mockClear();
+
+      await act(async () => {
+        expect(contextRef.current?.compensateContentAnchor(80)).toBe(true);
+        viewport.dispatchEvent(new Event('scroll'));
+      });
+      expect(scrollTop).toBe(200);
+      expect(onViewportScroll).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await waitForScrollFrames();
+        viewport.dispatchEvent(new Event('scroll'));
+      });
+      expect(onViewportScroll).toHaveBeenCalledOnce();
+    } finally {
+      await act(async () => root.unmount());
     }
   });
 

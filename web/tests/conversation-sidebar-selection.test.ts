@@ -20,6 +20,7 @@ import {
   applyConversationSidebarRunLifecycle,
   applyConversationSidebarRunStateUpdate,
   applyConversationSidebarTaskActivity,
+  conversationSidebarRunStateRefreshTarget,
   conversationTaskActivityFromLifecycle,
   conversationTaskActivityFromUpdate,
 } from '@/lib/conversation-sidebar-activity';
@@ -99,6 +100,45 @@ describe('ConversationSidebar run selection identity', () => {
 
     expect(sidebar.pinnedTasks[0].activity).toEqual({ phase: 'running', stopping: false });
     expect(sidebar.tasksByWorkspace['project-a'][0].activity).toEqual({ phase: 'running', stopping: false });
+  });
+
+  it('moves only a newly active Task to the front while preserving pinned order', () => {
+    const older = {
+      projectId: 'project-a', taskId: 'task-001', title: 'Older', autoTitle: false,
+      runMode: 'direct' as const, runs: [], pinned: true, pinnedOrder: 0,
+      lastActivityAt: '2026-08-29T10:00:00Z',
+    };
+    const active = {
+      projectId: 'project-a', taskId: 'task-002', title: 'Active', autoTitle: false,
+      runMode: 'direct' as const, runs: [], pinned: true, pinnedOrder: 1,
+      lastActivityAt: '2026-08-29T09:00:00Z',
+    };
+    const sidebar = {
+      workspaces: [],
+      pinnedTasks: [older, active],
+      tasksByWorkspace: { 'project-a': [older, active] },
+    };
+
+    const unchanged = applyConversationSidebarTaskActivity(
+      sidebar,
+      'project-a',
+      'task-002',
+      null,
+      '2026-08-29T09:00:00Z',
+    );
+    expect(unchanged.tasksByWorkspace['project-a'].map((task) => task.taskId)).toEqual(['task-001', 'task-002']);
+
+    const next = applyConversationSidebarTaskActivity(
+      sidebar,
+      'project-a',
+      'task-002',
+      { phase: 'running', stopping: false },
+      '2026-08-29T12:00:00Z',
+    );
+
+    expect(next.tasksByWorkspace['project-a'].map((task) => task.taskId)).toEqual(['task-002', 'task-001']);
+    expect(next.tasksByWorkspace['project-a'][0].lastActivityAt).toBe('2026-08-29T12:00:00Z');
+    expect(next.pinnedTasks.map((task) => task.taskId)).toEqual(['task-001', 'task-002']);
   });
 
   it('clears a background Direct activity globally without replacing unrelated sidebar data', () => {
@@ -185,6 +225,13 @@ describe('ConversationSidebar run selection identity', () => {
     expect(sidebar.pinnedTasks[0].runs[0].status).toBe('running');
     expect(sidebar.tasksByWorkspace['project-a'][0].latestRun?.status).toBe('running');
     expect(sidebar.tasksByWorkspace['project-a'][0].runs[0].resumable).toBe(false);
+    expect(applyConversationSidebarRunLifecycle(
+      sidebar,
+      'project-a',
+      'task-a',
+      'run-001',
+      lifecycle,
+    )).toBe(sidebar);
   });
 
   it('projects a background terminal run across workspaces without replacing unrelated sidebar data', () => {
@@ -267,6 +314,71 @@ describe('ConversationSidebar run selection identity', () => {
     expect(stale).toBe(next);
   });
 
+  it('requests only the missing conversation page for a run-state event', () => {
+    const loadedRun = {
+      runId: 'run-001',
+      status: 'running',
+      outcome: null,
+      startedAt: '2026-08-17T00:00:00Z',
+      updatedAt: '2026-08-17T00:01:00Z',
+      resumable: false,
+    };
+    const task = {
+      projectId: 'project-a',
+      taskId: 'task-001',
+      taskUuid: 'uuid-001',
+      title: 'Task',
+      autoTitle: false,
+      runMode: 'workflow' as const,
+      latestRun: loadedRun,
+      runs: [loadedRun],
+      pinned: false,
+    };
+    const sidebar = {
+      workspaces: [
+        { projectId: 'project-a', workspacePath: 'D:/A', name: 'A' },
+        { projectId: 'project-b', workspacePath: 'D:/B', name: 'B' },
+      ],
+      pinnedTasks: [],
+      tasksByWorkspace: { 'project-a': [task], 'project-b': [] },
+      preferences: {},
+    };
+    const event = {
+      eventKind: 'node-started' as const,
+      projectId: 'project-a',
+      taskId: 'task-001',
+      taskUuid: 'uuid-001',
+      runId: 'run-001',
+      roundId: 'round-001',
+      nodeId: 'start',
+      attemptId: 'attempt-001',
+      status: 'running',
+      outcome: null,
+    };
+
+    expect(conversationSidebarRunStateRefreshTarget(sidebar, event, 'project-a')).toBeNull();
+    expect(conversationSidebarRunStateRefreshTarget(
+      sidebar,
+      { ...event, runId: 'run-002' },
+      'project-a',
+    )).toEqual({ kind: 'task-runs', task });
+    expect(conversationSidebarRunStateRefreshTarget(
+      sidebar,
+      { ...event, taskId: 'task-002', taskUuid: 'uuid-002', runId: 'run-001' },
+      'project-a',
+    )).toEqual({ kind: 'workspace-tasks', projectId: 'project-a' });
+    expect(conversationSidebarRunStateRefreshTarget(
+      sidebar,
+      { ...event, projectId: 'project-b', taskId: 'task-002', taskUuid: 'uuid-002' },
+      'project-a',
+    )).toBeNull();
+    expect(conversationSidebarRunStateRefreshTarget(
+      sidebar,
+      { ...event, taskUuid: 'stale-uuid' },
+      'project-a',
+    )).toBeNull();
+  });
+
 
   it('projects lightweight ACP activity without requiring a lifecycle snapshot and clears it explicitly', () => {
     const event = {
@@ -301,17 +413,42 @@ describe('ConversationSidebar run selection identity', () => {
     expect(conversationTaskActivityFromUpdate(event)).toBeUndefined();
   });
 
-  it('binds an active run to its parent project and task', () => {
-    const activeRunKey = conversationSidebarRunKey('project-a', 'task-a', 'run-003');
+  it('lets a canonical terminal lifecycle clear a stale lightweight activity projection', () => {
+    expect(conversationTaskActivityFromUpdate({
+      taskId: 'task-a',
+      runId: 'run-001',
+      roundId: 'round-001',
+      nodeId: 'direct-agent',
+      attemptId: 'attempt-001',
+      lifecycle: {
+        runtime: { status: 'completed', outcome: 'success', resumable: false, current: true, active: false, continuable: false, phase: 'terminal' },
+        control: { mode: 'non-runtime-controlled' },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'completed', stopping: false },
+        displayStatus: 'completed',
+        runtimeDisplay: { code: 'success', tone: 'success', icon: 'check', terminal: true, resumable: false, reasonCode: null, blockingError: false },
+        continueKind: null,
+        composer: { mode: 'normal', submitTarget: 'acp-prompt', processingKind: 'processing', statusKey: null, canStop: false, lockInput: false },
+      },
+      activity: { phase: 'running', stopping: false },
+    })).toBeNull();
+  });
 
-    expect(isConversationSidebarRunActive(activeRunKey, 'project-a', 'task-a', 'run-003')).toBe(true);
-    expect(isConversationSidebarRunActive(activeRunKey, 'project-a', 'task-b', 'run-003')).toBe(false);
-    expect(isConversationSidebarRunActive(activeRunKey, 'project-b', 'task-a', 'run-003')).toBe(false);
+  it('binds an active run to its canonical task entity', () => {
+    const activeRunKey = conversationSidebarRunKey('project-a', 'task-a', 'run-003', 'task-uuid-a');
+
+    expect(isConversationSidebarRunActive(activeRunKey, 'project-a', 'task-a', 'run-003', 'task-uuid-a')).toBe(true);
+    expect(isConversationSidebarRunActive(activeRunKey, 'project-a', 'task-a', 'run-003', 'task-uuid-b')).toBe(false);
+    expect(isConversationSidebarRunActive(activeRunKey, 'project-b', 'task-a', 'run-003', 'task-uuid-a')).toBe(false);
   });
 
   it('uses distinct task keys for the single-expanded sidebar task state', () => {
     expect(conversationSidebarTaskKey('project-a', 'task-1')).not.toBe(conversationSidebarTaskKey('project-a', 'task-2'));
     expect(conversationSidebarTaskKey('project-a', 'task-1')).not.toBe(conversationSidebarTaskKey('project-b', 'task-1'));
+  });
+
+  it('does not reuse sidebar row state after a task locator is recreated', () => {
+    expect(conversationSidebarTaskKey('project-a', 'task-004', 'task-uuid-old'))
+      .not.toBe(conversationSidebarTaskKey('project-a', 'task-004', 'task-uuid-new'));
   });
 
   it('moves the active workspace to the top of the sidebar immediately', () => {

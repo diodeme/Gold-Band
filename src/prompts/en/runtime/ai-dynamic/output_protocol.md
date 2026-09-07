@@ -15,11 +15,15 @@ The JSON Schema below is the effective output protocol for this run. Runtime gen
 ```
 
 Constraint reminders:
+- A successor task may only decompose an established in-scope outcome or repair a qualified `BLOCKER`. Do not promote a `FOLLOW_UP` or predecessor suggestion into a new outcome. Scope drift may only schedule restoration of the minimum in-scope solution.
 {% if agent_strategy_mode == "fixed" %}- Under the fixed-agent strategy, do not output any `provider` fields. Runtime injects the fixed agent automatically.
 {% else %}- Under the dynamic-agent strategy, workers must output a valid provider that follows the routing guidance in this prompt; `merge / acceptance` must omit provider because runtime always uses the bootstrap Agent.
 - Do not output `provider` for `workflow-invocation`.
 {% endif %}- {{ model_policy }}
 - When `next.type="end"`, do not include `node / groupId / nodes / merge / acceptance`.
+{% if end_summary_is_outer_handoff %}- If you use `next.type="end"`, `summary` must be a complete business handoff for the successor outside AI-DYNAMIC: state what was completed, key conclusions, important outputs, and any remaining concerns. Do not merely describe routing or say “accepted.”
+{% else %}- If you use `next.type="end"`, `summary` is an internal progress or branch report. Accurately state what this node completed for the Runtime report manifest and the enclosing group.
+{% endif %}
 - When `next.type="single"`, you must provide a complete `next.node`, and you must not provide `groupId / nodes / merge / acceptance`.
 - Do not output `workspace`, a workspace mode, a path, or a branch for any node. Runtime exclusively owns workspace assignment.
 - A `next.type="single"` successor automatically inherits the current node's actual workspace.

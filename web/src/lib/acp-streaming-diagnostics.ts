@@ -20,6 +20,8 @@ export type AcpStreamingDiagnosticStage =
   | 'browser-long-animation-frame'
   | 'chat-layout-sample'
   | 'chat-follow-sample'
+  | 'chat-scroll-trace'
+  | 'return-to-latest-trace'
   | 'stream-settle';
 
 export type AcpStreamingDiagnosticRecord = {

@@ -143,7 +143,9 @@ describe('WorkspaceShell sidebar width hydration', () => {
       appConfig: {
         acpSessionTitleRefreshEnabled: false,
         acpChatEventPageSize: 360,
-        turnFiles: { cardPreviewLimit: 3 },
+        acpChatEventWindowPageCount: 3,
+        acpChatResourceCacheSessionCount: 8,
+        turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 1 },
         workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
       },
       active: { kind: 'conversation-home' } as const,
@@ -153,8 +155,6 @@ describe('WorkspaceShell sidebar width hydration', () => {
       onToggleSidebar: () => {},
       onNewConversation: () => {},
       onSearch: () => {},
-      onSelectTask: () => {},
-      onSelectRun: () => {},
       onPinTask: () => {},
       onUnpinTask: () => {},
       onRenameTask: () => {},
@@ -210,7 +210,9 @@ describe('WorkspaceShell sidebar width hydration', () => {
       appConfig: {
         acpSessionTitleRefreshEnabled: false,
         acpChatEventPageSize: 360,
-        turnFiles: { cardPreviewLimit: 3 },
+        acpChatEventWindowPageCount: 3,
+        acpChatResourceCacheSessionCount: 8,
+        turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 1 },
         workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
       },
       vm: {
@@ -225,8 +227,6 @@ describe('WorkspaceShell sidebar width hydration', () => {
       onToggleSidebar: () => {},
       onNewConversation: () => {},
       onSearch: () => {},
-      onSelectTask: () => {},
-      onSelectRun: () => {},
       onPinTask: () => {},
       onUnpinTask: () => {},
       onRenameTask: () => {},
@@ -311,7 +311,9 @@ describe('WorkspaceShell sidebar width hydration', () => {
       appConfig: {
         acpSessionTitleRefreshEnabled: false,
         acpChatEventPageSize: 360,
-        turnFiles: { cardPreviewLimit: 3 },
+        acpChatEventWindowPageCount: 3,
+        acpChatResourceCacheSessionCount: 8,
+        turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 1 },
         workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
       },
       vm: {
@@ -326,8 +328,6 @@ describe('WorkspaceShell sidebar width hydration', () => {
       onToggleSidebar: () => {},
       onNewConversation: () => {},
       onSearch: () => {},
-      onSelectTask: () => {},
-      onSelectRun: () => {},
       onPinTask: () => {},
       onUnpinTask: () => {},
       onRenameTask: () => {},
@@ -399,7 +399,9 @@ describe('WorkspaceShell sidebar width hydration', () => {
             appConfig={{
               acpSessionTitleRefreshEnabled: false,
               acpChatEventPageSize: 360,
-              turnFiles: { cardPreviewLimit: 3 },
+              acpChatEventWindowPageCount: 3,
+              acpChatResourceCacheSessionCount: 8,
+              turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 1 },
               workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
             }}
             vm={{
@@ -415,8 +417,6 @@ describe('WorkspaceShell sidebar width hydration', () => {
             onToggleSidebar={() => {}}
             onNewConversation={() => {}}
             onSearch={() => {}}
-            onSelectTask={() => {}}
-            onSelectRun={() => {}}
             onPinTask={() => {}}
             onUnpinTask={() => {}}
             onRenameTask={() => {}}

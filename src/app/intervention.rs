@@ -15,6 +15,7 @@ use crate::{
             write_elicitation_response_if_pending,
         },
         events::current_timestamp,
+        interaction::AcpPromptInteractionKind,
         permission::{
             PendingPermissionState, PermissionResponseState, pending_permission_file,
             permission_response_file, write_permission_response_if_pending,
@@ -505,15 +506,16 @@ impl<'a> InterventionCommandService<'a> {
                 InterventionError::new(InterventionErrorCode::InterventionRequestNotFound)
                     .with_detail("requestKind", "permission")
             })?;
-        if pending.request_id != request_id
+        if pending.identity.interaction_id != request_id
+            || pending.identity.kind != AcpPromptInteractionKind::Permission
             || permission_response_file(&attempt_dir, request_id).exists()
         {
             return Err(InterventionError::new(
                 InterventionErrorCode::InterventionAlreadyHandled,
             ));
         }
-        let allowed_actions = permission_options(&pending.params);
-        let prompt = permission_prompt(&pending.params, &allowed_actions);
+        let allowed_actions = permission_options(&pending.payload);
+        let prompt = permission_prompt(&pending.payload, &allowed_actions);
         let expected_state = permission_expected_state(&locator, &pending, &allowed_actions)?;
         Ok(InterventionSnapshot {
             locator,
@@ -537,14 +539,16 @@ impl<'a> InterventionCommandService<'a> {
                 InterventionError::new(InterventionErrorCode::InterventionRequestNotFound)
                     .with_detail("requestKind", "elicitation")
             })?;
-        if pending.elicitation_id != elicitation_id
+        if pending.identity.interaction_id != elicitation_id
+            || pending.identity.kind != AcpPromptInteractionKind::Elicitation
             || elicitation_response_file(&attempt_dir, elicitation_id).exists()
         {
             return Err(InterventionError::new(
                 InterventionErrorCode::InterventionAlreadyHandled,
             ));
         }
-        let (mut prompt, allowed_actions) = elicitation_prompt_and_actions(&pending.request)?;
+        let (mut prompt, allowed_actions) =
+            elicitation_prompt_and_actions(&pending.payload.request)?;
         let timeline_path = self.attempt_dir(&locator).join("acp.timeline.jsonl");
         prompt.context = read_indexed_latest_root_agent_output(&timeline_path)
             .ok()
@@ -777,7 +781,7 @@ impl<'a> InterventionCommandService<'a> {
                 InterventionError::new(InterventionErrorCode::InterventionStorageUnavailable)
             })?;
         if !elicitation_response_is_valid(
-            &pending.request,
+            &pending.payload.request,
             &snapshot.allowed_actions,
             &action,
             content.as_ref(),
@@ -1810,8 +1814,8 @@ fn permission_expected_state(
     state_fingerprint(&serde_json::json!({
         "locator": locator,
         "request": {
-            "requestId": &pending.request_id,
-            "params": &pending.params,
+            "identity": &pending.identity,
+            "params": &pending.payload,
             "createdAt": &pending.created_at,
         },
         "allowedActions": allowed_actions,
@@ -1826,9 +1830,9 @@ fn elicitation_expected_state(
     state_fingerprint(&serde_json::json!({
         "locator": locator,
         "request": {
-            "elicitationId": &pending.elicitation_id,
-            "jsonrpcId": &pending.jsonrpc_id,
-            "request": &pending.request,
+            "identity": &pending.identity,
+            "jsonrpcId": &pending.payload.jsonrpc_id,
+            "request": &pending.payload.request,
             "createdAt": &pending.created_at,
         },
         "allowedActions": allowed_actions,
@@ -1859,10 +1863,7 @@ mod tests {
     use super::*;
     use crate::{
         acp::{
-            elicitation::{
-                PendingElicitationState, bind_pending_elicitation_timeline_identity,
-                write_pending_elicitation,
-            },
+            elicitation::{bind_pending_elicitation_timeline_identity, write_pending_elicitation},
             permission::{bind_pending_permission_timeline_identity, write_pending_permission},
             timeline::TimelineItemIdentity,
         },
@@ -1957,6 +1958,8 @@ mod tests {
         write_pending_permission(
             &attempt_dir,
             "permission-001",
+            "turn-1",
+            "prompt-event-1",
             json!({
                 "sessionId": "session-001",
                 "options": [
@@ -2034,13 +2037,14 @@ mod tests {
             InterventionCommandService::new(&fixture.app).attempt_dir(&fixture.locator);
         write_pending_elicitation(
             &attempt_dir,
-            &PendingElicitationState {
-                elicitation_id: "elicit-001".into(),
-                jsonrpc_id: serde_json::json!(7),
+            &crate::acp::elicitation::pending_elicitation_state(
+                "elicit-001",
+                "turn-1",
+                "prompt-event-1",
+                serde_json::json!(7),
                 request,
-                created_at: "2026-08-30T00:00:01Z".into(),
-                timeline_identity: None,
-            },
+                "2026-08-30T00:00:01Z".into(),
+            ),
         )
         .unwrap();
     }
@@ -2112,6 +2116,8 @@ mod tests {
         write_pending_permission(
             &attempt_dir,
             "permission-001",
+            "turn-1",
+            "prompt-event-1",
             json!({ "options": [{ "optionId": "allow", "name": "Allow", "kind": "allow_once" }] }),
             "2026-08-30T00:00:02Z".into(),
         )
@@ -2160,6 +2166,8 @@ mod tests {
         write_pending_permission(
             &attempt_dir,
             "permission-001",
+            "turn-1",
+            "prompt-event-1",
             json!({
                 "sessionId": "session-001",
                 "toolCall": {
@@ -2234,6 +2242,8 @@ mod tests {
         write_pending_permission(
             &service.attempt_dir(&fixture.locator),
             "permission-001",
+            "turn-1",
+            "prompt-event-1",
             json!({
                 "toolCall": {
                     "title": "Run command",
@@ -2281,6 +2291,8 @@ mod tests {
             write_pending_permission(
                 &service.attempt_dir(&fixture.locator),
                 "permission-001",
+                "turn-1",
+                "prompt-event-1",
                 json!({
                     "options": [
                         { "optionId": kind, "name": kind, "kind": kind },

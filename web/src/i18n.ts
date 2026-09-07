@@ -5,6 +5,7 @@ import type { AppErrorVm, DesktopLanguage, WorkflowErrorVm } from "./types";
 const resources = {
   "zh-CN": {
     translation: {
+      acpImages: { title: "工具图片", image: "图片 {{index}}", failed: "图片无法加载，请重试" },
       scheduled: {
         unnamed: "未命名定时任务",
         neverRun: "尚未运行",
@@ -2466,6 +2467,7 @@ const resources = {
   },
   en: {
     translation: {
+      acpImages: { title: "Tool images", image: "Image {{index}}", failed: "Unable to load image. Please retry." },
       scheduled: {
         unnamed: "Unnamed scheduled task",
         neverRun: "Never run",

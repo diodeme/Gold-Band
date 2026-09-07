@@ -7,6 +7,7 @@ pub mod control;
 pub mod elicitation;
 pub mod events;
 pub mod history;
+pub mod images;
 pub mod interaction;
 pub mod permission;
 mod pipeline_diagnostics;

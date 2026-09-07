@@ -290,7 +290,7 @@ import {
   startAcpReturnToLatestVisualProbe,
   type AcpReturnToLatestVisualProbe,
 } from "@/lib/acp-return-to-latest-visual-probe";
-import { displayAppError, displayStatus } from "@/i18n";
+import i18n, { displayAppError, displayStatus } from "@/i18n";
 import type {
   AcpElicitationRequestVm,
   AcpPermissionRequestVm,
@@ -5973,6 +5973,7 @@ export function ACPChatDialog(
       effectiveEvents,
       bannerRuntimeErrorFallback,
       localLifecycle?.acp.latestTurnStatus,
+      localLifecycle ? localLifecycle.acp.turnError ?? null : undefined,
     );
 
   return (
@@ -6648,7 +6649,7 @@ function AcpErrorBanner({ reason, title }: { reason: string; title?: string }) {
       <span className="font-semibold text-destructive">
         {title ?? t("acp.sessionFailed")}
       </span>
-      <span className="ml-2 text-muted-foreground">{reason}</span>
+      <span className="ml-2 whitespace-pre-wrap text-muted-foreground [overflow-wrap:anywhere]">{reason}</span>
     </div>
   );
 }
@@ -10001,10 +10002,29 @@ export function visibleAcpBannerError(
   events: AcpUiEventVm[],
   runtimeErrorFallback?: string | null,
   latestTurnStatus?: ConversationAttemptLifecycleVm['acp']['latestTurnStatus'],
+  canonicalTurnError?: AcpSessionVm['turnError'],
 ) {
   if (runtimeError) return runtimeError;
   if (latestTurnStatus === 'completed') return null;
-  if (session.diagnostics.lastError) return visibleSessionError(session, events);
+  const failed = latestTurnStatus === 'failed'
+    || (latestTurnStatus == null && session.status === 'failed');
+  const error = canonicalTurnError === undefined ? session.turnError : canonicalTurnError;
+  if (failed && error) {
+    const summary = displayAppError(i18n.t, { code: error.code.code, params: error.params ?? {} });
+    const raw = rawObject(error.raw);
+    const data = rawObject(raw?.data);
+    const detail = stringValue(data?.details) ?? stringValue(data?.message)
+      ?? stringValue(raw?.message) ?? error.diagnostic;
+    return detail ? `${summary}\n${detail}` : summary;
+  }
+  if (failed && canonicalTurnError !== undefined) {
+    return runtimeErrorFallback ?? i18n.t('errors.acp.turn-execution-failed');
+  }
+  if (session.diagnostics.lastError) {
+    const diagnostic = visibleSessionError(session, events);
+    if (diagnostic || !failed) return diagnostic;
+  }
+  if (failed) return runtimeErrorFallback ?? i18n.t('errors.acp.turn-execution-failed');
   return runtimeErrorFallback ?? null;
 }
 
@@ -10014,7 +10034,8 @@ export function acpSessionLoadErrorReason(
   session: AcpSessionVm | null | undefined,
   fallback: string,
 ) {
-  return runtimeError ?? sessionLoadError ?? session?.diagnostics.lastError ?? fallback;
+  return runtimeError ?? sessionLoadError
+    ?? (session ? visibleAcpBannerError(null, session, session.events) : null) ?? fallback;
 }
 
 function visibleSessionError(session: AcpSessionVm, events: AcpUiEventVm[]) {

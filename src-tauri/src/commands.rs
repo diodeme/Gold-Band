@@ -535,16 +535,26 @@ fn settle_failed_prompt_submission(
     turn_id: &str,
     operation_id: Option<&str>,
     expected_revision: u64,
+    error: &CommandErrorVm,
 ) -> bool {
     let lifecycle_path = acp_lifecycle_path(&locator.attempt_dir(app));
     let decided_at = gold_band::acp::events::current_timestamp();
-    match gold_band::acp::events::persist_session_turn_terminal_owned(
+    let Some(operation_id) = operation_id else {
+        return false;
+    };
+    match gold_band::acp::events::persist_session_turn_failure_owned(
         &lifecycle_path,
-        turn_id,
-        operation_id,
-        expected_revision,
-        gold_band::acp::events::AcpLatestTurnStatus::Failed,
-        "provider-error",
+        &gold_band::acp::events::AcpLifecycleOwner {
+            turn_id: turn_id.to_string(),
+            operation_id: operation_id.to_string(),
+            revision: expected_revision,
+        },
+        &gold_band::runtime_error::manual_runtime_error_info(
+            gold_band::runtime_error::RuntimeErrorDomain::Internal,
+            &error.code,
+            "",
+            error.params.clone(),
+        ),
         &decided_at,
     ) {
         Ok(Some(header)) => {
@@ -7074,6 +7084,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 &turn_id,
                 Some(&claimed_operation_id),
                 claimed_revision,
+                &error,
             );
             if settled {
                 emit_acp_turn_finished(
@@ -7101,6 +7112,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             return Err(error);
         }
         Err(_) => {
+            let error = CommandErrorVm::new("app.task-join-failed", serde_json::json!({}));
             let _ = clear_auto_dispatch_reply_batch(&locator.attempt_dir(&app_for_emit));
             let settled = settle_failed_prompt_submission(
                 &app_for_emit,
@@ -7108,6 +7120,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 &turn_id,
                 Some(&claimed_operation_id),
                 claimed_revision,
+                &error,
             );
             if settled {
                 emit_acp_turn_finished(
@@ -7132,10 +7145,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 outer_attempt_id_for_emit.clone(),
                 None,
             );
-            return Err(CommandErrorVm::new(
-                "app.task-join-failed",
-                serde_json::json!({}),
-            ));
+            return Err(error);
         }
     };
     emit_acp_session_update(

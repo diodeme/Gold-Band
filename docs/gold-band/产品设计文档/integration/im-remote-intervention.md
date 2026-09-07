@@ -129,6 +129,8 @@ ManualCheck 详情先读取当前 attempt ACP timeline 的最新可见 root `tex
 
 模板卡片事件只接受官方 `cmd=aibot_event_callback` 且 `body.event.eventtype=template_card_event` 的一对一私聊结构。真实运行时把业务 payload 放在 `body.event.template_card_event` 中，`event_key`、`task_id` 与 vote/multiple 选择必须从该嵌套对象读取；官方 SDK 1.0.7 类型中的平铺字段形状不代表平台实际回调。官方回调中的 `chattype` 可选：显式 `single/private` 为私聊；缺失 `chattype` 且缺失群聊 `chatid` 时按私聊候选处理，以 `from.userid` 作为 conversation/destination identity；显式群聊或存在群聊 `chatid` 时拒绝。`body.msgid` 是平台单次回调幂等 identity；同一 canonical intervention event 后续点击可能携带新的 msgid，Gold Band 必须用入站审计表的 `channel + canonical_event_id` 索引将其收敛为 `ALREADY_APPLIED`。opaque `headers.req_id` 只在内存中随 `ImActionResponseContext` 传递。button 先解析短 `event_key` 取得 delivery identity 与 action index，显式 task 不一致即拒绝，缺失时用该 delivery identity 更新原卡；vote/multiple 先验证 submit key 与必填 task 一致，再解析 question key 与 option id。Permission 的 question key 为 `permission_choice` 且只能返回唯一 option；Elicitation 转换为泛型 Form selection 后由 outbox 的 `RemoteElicitationForm` 还原原始 scalar value。不得用 `req_id` 替代 callback identity，不得生成新 `req_id`，也不得因发送 ACK 没有 `msgid` 而跳过点击响应。解析失败只记录稳定 `parse_reason` 与字段存在性；若私聊回调仍可定位原卡，先尝试把原卡更新为失败态。嵌套 `eventtype=disconnected_event` 进入稳定 `IM_CONNECTION_CONFLICT`，不持续重连争抢。
 
+历史 delivery 中的 destination 只表示发送时接收人，不是后续动作的持续授权事实。每次可操作回调在进入 `InterventionCommandService` 前，必须在 IM settings 写边界内重新读取当前 durable binding，并严格比较 channel、destination、conversation 与 authorized actor；当前 binding 缺失或任一字段变化时返回 `IM_BINDING_REVOKED`，不得 inspect、resume 或修改 Runtime canonical pending state。解绑持久化是授权撤销的线性化点：此前已通过 admission 的动作允许完成，此后进入 admission 的旧卡动作必须拒绝；settings 锁只覆盖读取与比较，不跨 Runtime 执行或网络响应持有。平台已展示的历史内容无法召回，撤销契约只保证旧卡不再执行。
+
 `InterventionCommandService` 的 expected state 校验保持 first-writer-wins，但指纹输入必须与数据所有权一致：pending permission/elicitation 文件中的 `timelineIdentity` 只是展示索引回写，不改变用户待决策的问题、选项、expiry 或 canonical request。指纹序列化显式排除该字段；修改 params/request schema 或允许动作仍必须产生 `INTERVENTION_REVISION_CONFLICT`。
 
 企微 Permission 终态更新帧必须与已验证 POC 保持同形：`main_title.title` 使用“id=xxxx 已处理：<动作>”，`main_title.desc` 为 `Agent 请求执行命令`；同时保持 `vote_interaction`、原 `task_id`、原 `submit_button.key`、`checkbox.disable=true` 和最终选中项 `is_checked=true`。ManualCheck 终态标题同样使用“id=xxxx 已处理：<检查结果>”，并保持禁用 vote、原 task/submit key 和最终选中项，描述使用人工检查摘要。Elicitation 终态必须保持原 vote/multiple 卡：vote `mode=0/1` 均设置 `checkbox.disable=true`，提交项 `is_checked=true`；multiple 每个 `select_list[].disable=true` 并把 `selected_id` 指向最终选择。官方更新协议没有 `submit_button.disable` 字段，Gold Band 不得发送该无效字段；即使客户端仍允许点击提交按钮，重复的新 msgid 也必须在 Gold Band 按 `channel + canonical intervention event` 收敛为 `ALREADY_APPLIED`，不得再次执行 Runtime 或把卡片更新为失败。终态标题把 `display_ref` 放在最前，摘要可截断但编号不可丢失；AlreadyHandled/RevisionConflict 收敛为已处理，业务失败更新失败态但仍保持原结构。若平台拒绝更新 ACK，只记录是否存在 `cmd`、顶层/body 字段名、数字错误码层级和稳定错误码，不记录用户、凭据、文案或完整回调 JSON。
@@ -303,8 +305,10 @@ UI 不展示协议地址、心跳、轮询、数据库或 token 等实现细节�
 - 生命周期订阅者只执行 O(1) 转换与有界入队，不执行网络 I/O。
 - active outbox 默认上限 1,000 条；达到上限时先小批量清理已过期/终态记录，仍满则拒绝新的远程投递并记录结构化错误与桌面提醒，不得淘汰尚未处理的 active 干预，也不能无界增长。
 - 未发送干预在领域请求过期后直接标记 `expired`，不得迟到投递为可操作消息。
-- 网络错误使用带 jitter 的指数退避，建议 1 秒起步、60 秒封顶；鉴权错误不自动重试，进入 `auth_required`。
+- 网络错误使用带 jitter 的指数退避，1 秒起步、60 秒封顶并持续重试，直到连接成功、generation 被取消或出现鉴权失败、连接冲突、配置错误等永久错误；成功建立连接后重置退避。`ReconnectScheduled` 表示重试循环仍存活，`ConnectionFailed` 只表示终态，UI 不得根据错误码猜测二者。
 - 平台限流遵守 `Retry-After` 或 SDK 返回的重试时间；单 channel 串行化同一消息更新，其他消息可受控并发。
+- `claim_due` 每次只读取最多 32 条候选并在 SQLite 写事务前完成 typed 解析；有效行以 rowid、state、attempt count 做 CAS claim，单条损坏行原子转为 `dead_letter + IM_PAYLOAD_INVALID`，不得把同批健康行改为 sending 后再让整批解析失败。SQLite/锁/事务错误仍是批次级错误。
+- 企业微信单 session 最多保留 64 条 pending request。调用端创建的 15 秒总 deadline 随 command 进入 session，由同一 session 使用 `DelayQueue` 在 ACK、发送失败、断连、取消或超时时删除；linked-detail 两帧共享同一 deadline，迟到 ACK 不得重新匹配，达到上限返回 retryable `IM_QUEUE_CAPACITY_EXCEEDED`。
 - outbox 已发送/过期记录默认保留 7 天，入站动作幂等记录默认保留 30 天；周期清理采用有上限的小批次。
 - 应用启动时先恢复过期发送租约并执行一次 retention；运行期每 30 秒恢复租约、每 6 小时清理 retention。单轮最多 4 批、每批最多 200 条，所有 SQLite 工作在 blocking pool 中执行。
 - 应用正常退出时先停止接收新 IM 动作，再取消连接与长轮询，等待有界任务结束；不能因此延迟退出超过设定超时。
@@ -329,6 +333,7 @@ enum ImErrorCode {
     ImConnectionUnavailable,
     ImPlatformRateLimited,
     ImBindingRequired,
+    ImBindingRevoked,
     ImActorForbidden,
     ImActionInvalid,
     ImActionExpired,
@@ -360,8 +365,8 @@ enum ImErrorCode {
 ### 12.3 安全与隐私
 
 - 仓库、workspace、`settings.json`、`core.db`、日志和前端 state 中均无明文 Secret/token。
-- 未绑定会话和 actor 的动作被拒绝且可审计。
-- 删除配置后凭据不可再读取，旧卡片不可继续操作。
+- 未绑定会话、错误 actor 以及不再匹配当前 durable binding 的历史卡动作被拒绝且不改变 Runtime。
+- 解绑、更换接收账号或删除配置后，旧卡片不可继续操作；删除后凭据不可再读取。
 
 ### 12.4 性能
 
@@ -383,7 +388,7 @@ enum ImErrorCode {
 
 IM runtime 的 tracing 必须先于连接、配置加载和 lifecycle subscriber 启动，以便稳定区分“没有投影”“投影失败”“outbox 发送失败”和“平台拒绝”。该顺序只补齐可观测性，不新增业务状态或旁路发送；真实平台验收必须以新 canonical event 的 projection completion、outbox 终态和用户实际接收三项证据共同确认。
 
-Connector task 结束时必须先排空其有界事件队列，再把返回错误投影为同 generation 的 terminal `Disconnected`；不得 abort 转发器或忽略 `connect()` 返回值。连接日志只记录 channel、generation、稳定错误码、retryable 和平台数字码，不记录 Bot ID、Secret、目标、payload 或平台错误文案。
+Connector task 结束时必须先排空其有界事件队列，再把返回错误投影为同 generation 的 terminal `ConnectionFailed`；retryable 网络错误必须在 connector 内发布 `ReconnectScheduled` 并继续有界退避，不能返回伪终态。不得 abort 转发器或忽略 `connect()` 返回值。连接日志只记录 channel、generation、稳定错误码、retryable 和平台数字码，不记录 Bot ID、Secret、目标、payload 或平台错误文案。
 
 2026-08-31 IM 卡片展示与点击问题属于正确领域设计下的 connector/projection 实现不完整，而非 Runtime 状态模型缺陷：elicitation parser 只识别“恰好一个 scalar oneOf”，权限 label 又未覆盖实际 `allow_once/allow_for_session/cancel`；企微 callback 错把不存在的 `body.event_id`/`req_id` 当幂等 identity，并用新 `req_id + message binding` 更新卡片。修复保留 Runtime canonical state 与 `InterventionCommandService`，补齐 typed question projection、稳定语义文案和 transient callback response context，不新增 SQLite 业务状态或兼容入口。
 
@@ -407,11 +412,15 @@ Connector task 结束时必须先排空其有界事件队列，再把返回错�
 
 2026-09-04 可靠性复核确认七处问题均属于已有设计正确但生产编排或消费契约未闭环：repository 已有租约恢复和 retention API 却没有生产调度；manager 已按 generation 拒绝旧事件但 connector sender 没有相同 ownership；删除跨三个存储却仍按一次性顺序执行；重配置循环把单 channel 故障提升为全局失败；前端仍用 transport requestId 覆盖 occurrence identity；有界投影队列满载时回退到 publisher 同步磁盘 I/O。修复分别补齐 claim revision fencing、maintenance worker、generation-owned sender、durable cleanup journal、逐 channel 错误收敛、canonical event key 和 O(1) 满载诊断，不修改 Runtime 审批模型或增加旁路发送。
 
+2026-09-07 四项 IM 修复分别补齐授权 admission、坏行隔离、请求 deadline 所有权和连接生命周期契约。历史 delivery 的 actor 只是发送快照，当前 durable binding 才是执行授权；outbox 的问题来自 claim 提交早于 typed decode；pending 泄漏来自外层 timeout 与 session map 所有权分离；错误 UI 来自 retry progress 与 terminal failure 共用 `Disconnected`。修复复用 settings、dead letter、Tokio deadline、generation 和 connection manager，不修改 Runtime 审批模型。
+
 ### 13.2 过度设计评审
 
 首期不引入云端网关、Kafka、通用事件平台、独立 helper 进程、新审批 aggregate 或自然语言 Agent。新增的连接管理器、outbox 和幂等表分别对应长连接生命周期、进程离线重试和外部事件至少一次投递三个真实不变量，复杂度与风险相匹配。
 
 2026-09-04 可靠性闭环不新增通用 scheduler、第二 outbox、配置 revision、租约表或前端 canonical 副本。现有 `state + next_attempt_at_ms + attempt_count` 已能表达 claim lease，现有 connection generation 已能表达 sender ownership，现有 `AcpUiEvent.id` 已是 occurrence identity；只新增 cleanup journal，因为 settings、SQLite 与系统凭据库无法共享事务，而删除必须具备可恢复进度。
+
+2026-09-07 修复不新增 binding epoch、撤销表、outbox 状态、数据库迁移、重连 supervisor 或外部依赖。现有 durable binding 足以表达当前授权，现有 `dead_letter + last_error_code` 足以隔离坏行，已有 `tokio-util::DelayQueue` 足以统一 pending deadline；`Reconnecting` 只是连接管理器的 transient lifecycle 状态，不形成第二份持久事实。
 
 2026-08-31 权限/企微回调补齐不新增展示事实源：`InterventionPrompt.fields` 是 pending params 的一次性 transport projection，按钮容量降级发生在 IM projection/connector 边界，callback 失败态仍复用 outbox 与原 delivery identity。现有 canonical pending state、delivery ID、msgid 幂等和 `InterventionCommandService` 已能表达不变量，因此不为平台容量或解析失败增加第二套状态机。2026-09-01 的短 action 引用与 vote option id 同样只复用 delivery ID 与 outbox action index，不新增映射表、缓存或第二套 token；`ImWeComVoteSelection` 是回调到终态更新之间的一次性 transport context，成功更新后即释放。Permission 双发只新增 connector 内存中的“详情 ACK 后发送卡片”pending 分支，不新增第二条 outbox、平台消息 identity 或持久状态。
 
@@ -444,6 +453,8 @@ Permission occurrence identity 的生成只对当前事件的两个短字符串�
 2026-09-03 桌面终态发送分流只增加一次 enum variant 判断，为 O(1) 且不增加网络帧、SQLite 查询、锁、队列或缓存。局部构建失败在写 socket 前完成对应 oneshot，不占用 pending map，也不触发重连或后续 outbox 的网络失败风暴；正常终态仍为单条 markdown。
 
 2026-09-04 maintenance 的租约扫描和 retention 删除均命中既有索引，单批 200、单轮 4 批；周期分别为 30 秒与 6 小时，不执行 VACUUM 或全量 payload 加载。投影队列 Full 分支只做常数级状态判断、结构化日志和 30 秒冷却的诊断事件，不再执行 Runtime 查询、文件读取或 SQLite 写入。projection barrier 只用于低频删除清理，且不持有 settings/SQLite 锁；重配置按 channel 顺序执行但单个失败不阻断后续 channel，当前仅一个 channel，不引入无收益并行化。
+
+2026-09-07 `claim_due` 的 typed decode 仍受 32 条批次和 32 KiB payload 上限约束，并移到 SQLite immediate transaction 之前；事务只做有索引候选的 rowid/CAS 更新。每次入站动作增加一次小型 settings 读取，settings 锁在 Runtime 执行前释放。pending map 与 `DelayQueue` 同为最多 64 条，超时删除为 `O(log 64)`；空 queue 分支不参与 `select`，不会空转。持续重连最多一个 WebSocket，间隔 60 秒封顶且 generation cancellation 可立即停止，不引入全量扫描、无界内存、长锁或紧密重试。
 
 ## 14. 外部协议依据
 

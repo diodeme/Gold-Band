@@ -166,6 +166,29 @@ describe('IM settings production interaction', () => {
     expect(api.setImChannelEnabled).toHaveBeenCalledTimes(1);
   });
 
+  it('shows reconnect progress only while the canonical lifecycle is reconnecting', async () => {
+    currentSettings.channels[0].connection = {
+      ...currentSettings.channels[0].connection!,
+      state: 'reconnecting',
+      lastErrorCode: 'IM_NETWORK_UNAVAILABLE',
+    };
+    await renderSettings();
+    const reconnecting = host.querySelector('[data-im-status="reconnecting"]')!;
+    expect(reconnecting.querySelector('.animate-spin')).not.toBeNull();
+
+    await act(async () => {
+      channelListener?.({
+        ...currentSettings.channels[0].connection!,
+        generation: 2,
+        state: 'error',
+        lastErrorCode: 'IM_NETWORK_UNAVAILABLE',
+      });
+    });
+    const failed = host.querySelector('[data-im-status="connectionFailed"]')!;
+    expect(failed.querySelector('.animate-spin')).toBeNull();
+    expect(host.textContent).toContain('重新连接');
+  });
+
   it('keeps change-recipient and delete as separately confirmed menu actions', async () => {
     currentSettings.channels[0].binding = {
       destinationId: 'user-1',

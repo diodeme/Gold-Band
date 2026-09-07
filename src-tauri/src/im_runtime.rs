@@ -10,7 +10,7 @@ use gold_band::im::{
     ImChannelCleanupOperation, ImChannelCleanupPhase, ImChannelKind, ImChannelSettings,
     ImConnectionManager, ImConnector, ImConnectorEvent, ImCredentialStore, ImDelivery,
     ImDeliveryInsertResult, ImDeliveryPayload, ImDeliveryWorker, ImDestination,
-    ImInboundActionService, ImIntegrationSettings, ImLifecycleProjectionJob,
+    ImInboundActionService, ImInboundError, ImIntegrationSettings, ImLifecycleProjectionJob,
     ImLifecycleProjectionQueueItem, ImLifecycleProjector, ImLocale, ImMaintenanceWorker,
     ImMessageState, ImNavigationLocator, ImNotificationKind, ImObservedBinding,
     ImProjectionCompletion, ImProjectionEnqueueOutcome, ImProjectionResult, ImProjectionTarget,
@@ -866,7 +866,7 @@ impl DesktopImRuntime {
     ) {
         self.connection_manager.apply_event(
             channel,
-            ImConnectorEvent::Disconnected {
+            ImConnectorEvent::ConnectionFailed {
                 generation,
                 error: gold_band::im::ImIntegrationError::permanent(code),
             },
@@ -961,13 +961,21 @@ impl DesktopImRuntime {
                     generation,
                     "IM channel connected"
                 ),
-                ImConnectorEvent::Disconnected { generation, error } => warn!(
+                ImConnectorEvent::ReconnectScheduled { generation, error } => warn!(
                     channel = channel.as_str(),
                     generation,
                     error_code = error.code.as_str(),
                     retryable = error.retryable,
                     platform_code = ?error.platform_code,
-                    "IM channel disconnected"
+                    "IM channel reconnect scheduled"
+                ),
+                ImConnectorEvent::ConnectionFailed { generation, error } => warn!(
+                    channel = channel.as_str(),
+                    generation,
+                    error_code = error.code.as_str(),
+                    retryable = error.retryable,
+                    platform_code = ?error.platform_code,
+                    "IM channel connection failed"
                 ),
                 _ => {}
             }
@@ -1161,6 +1169,29 @@ impl DesktopImRuntime {
                 Err(anyhow::anyhow!("IM_WORKSPACE_UNAVAILABLE")),
             );
         };
+        let binding_authorized = (|| -> Result<bool, ImInboundError> {
+            let _settings_guard = self
+                .settings_write_lock
+                .lock()
+                .map_err(|_| ImInboundError::BindingUnavailable)?;
+            let settings = app
+                .load_settings()
+                .map_err(|_| ImInboundError::BindingUnavailable)?;
+            Ok(current_binding_authorizes_delivery(
+                &settings.im_integrations,
+                &delivery,
+            ))
+        })();
+        match binding_authorized {
+            Ok(true) => {}
+            Ok(false) => {
+                return (
+                    response_context,
+                    Err(anyhow::Error::new(ImInboundError::BindingRevoked)),
+                );
+            }
+            Err(error) => return (response_context, Err(anyhow::Error::new(error))),
+        }
         let service =
             ImInboundActionService::new(Arc::clone(&self.repository), self.token_codec.clone());
         let result = service.handle_with_delivery(
@@ -2116,7 +2147,21 @@ fn terminal_connector_event(
 ) -> Option<ImConnectorEvent> {
     result
         .err()
-        .map(|error| ImConnectorEvent::Disconnected { generation, error })
+        .map(|error| ImConnectorEvent::ConnectionFailed { generation, error })
+}
+
+fn current_binding_authorizes_delivery(
+    settings: &ImIntegrationSettings,
+    delivery: &ImDelivery,
+) -> bool {
+    settings.channels.iter().any(|channel| {
+        channel.kind == delivery.channel
+            && channel.binding.as_ref().is_some_and(|binding| {
+                binding.destination_id == delivery.destination.destination_id
+                    && binding.conversation_id == delivery.destination.conversation_id
+                    && binding.authorized_actor_id == delivery.destination.authorized_actor_id
+            })
+    })
 }
 
 fn event_project_id(event: &RuntimeLifecycleEvent) -> Option<&str> {
@@ -2496,6 +2541,56 @@ mod tests {
     }
 
     #[test]
+    fn current_binding_must_match_the_complete_historical_delivery_destination() {
+        let delivery = vote_delivery();
+        let matching = ImBindingSummary {
+            destination_id: "user-1".into(),
+            conversation_id: "user-1".into(),
+            authorized_actor_id: "user-1".into(),
+            display_name: "User".into(),
+        };
+        let settings = |binding| ImIntegrationSettings {
+            channels: vec![ImChannelSettings {
+                kind: ImChannelKind::WeCom,
+                enabled: true,
+                public_identity: "bot-id".into(),
+                credential_ref: Some("credential-ref".into()),
+                binding,
+                notifications: Default::default(),
+            }],
+        };
+
+        assert!(current_binding_authorizes_delivery(
+            &settings(Some(matching.clone())),
+            &delivery,
+        ));
+        assert!(!current_binding_authorizes_delivery(
+            &settings(None),
+            &delivery,
+        ));
+        for mismatched in [
+            ImBindingSummary {
+                destination_id: "user-2".into(),
+                ..matching.clone()
+            },
+            ImBindingSummary {
+                conversation_id: "chat-2".into(),
+                ..matching.clone()
+            },
+            ImBindingSummary {
+                authorized_actor_id: "user-2".into(),
+                ..matching.clone()
+            },
+        ] {
+            assert!(!current_binding_authorizes_delivery(
+                &settings(Some(mismatched)),
+                &delivery,
+            ));
+        }
+        assert_eq!(ImInboundError::BindingRevoked.code(), "IM_BINDING_REVOKED");
+    }
+
+    #[test]
     fn desktop_resolution_projects_all_intervention_kinds_and_wakes_the_worker() {
         let temp = tempfile::tempdir().unwrap();
         let repository = ImRepository::new(
@@ -2837,8 +2932,8 @@ mod tests {
             )),
         )
         .expect("terminal connector failure must update connection state");
-        let ImConnectorEvent::Disconnected { generation, error } = event else {
-            panic!("expected disconnected event")
+        let ImConnectorEvent::ConnectionFailed { generation, error } = event else {
+            panic!("expected terminal connection failure event")
         };
         assert_eq!(generation, 7);
         assert_eq!(error.code.as_str(), "IM_AUTHENTICATION_REQUIRED");

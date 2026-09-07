@@ -1877,7 +1877,7 @@ const resources = {
             wecom: { title: "企业微信", description: "安装级目标，仅支持授权用户与机器人的一对一私聊。" },
           },
           status: {
-            notConfigured: "未接入", waitingBinding: "等待绑定", connecting: "连接中", reconnecting: "正在重连",
+            notConfigured: "未接入", waitingBinding: "等待绑定", connecting: "连接中", reconnecting: "正在重连", connectionFailed: "连接失败",
             ready: "可用", paused: "已暂停", reauthorize: "需要重新授权", conflict: "连接被占用",
           },
           guidance: {
@@ -1885,6 +1885,7 @@ const resources = {
             waitingBinding: { title: "绑定接收账号", description: "请在企业微信中给机器人发送一条消息。持久绑定完成后即可接收干预。" },
             connecting: { title: "正在建立连接", description: "连接建立后会自动恢复远程干预。" },
             reconnecting: { title: "正在自动重连", description: "系统正在使用有界退避重试，无需重复操作。" },
+            connectionFailed: { title: "连接已停止", description: "自动恢复无法继续，请重新连接。" },
             ready: { title: "企业微信可用", description: "远程干预和已启用的通知会发送到已绑定私聊。" },
             paused: { title: "远程干预已暂停", description: "通知偏好会保留，重新启用后继续生效。" },
             reauthorize: { title: "需要重新授权", description: "当前凭据不可用，请重新扫码授权。" },
@@ -4210,7 +4211,7 @@ const resources = {
             wecom: { title: "WeCom", description: "Installation-wide destination. Only a private chat with the authorized user is supported." },
           },
           status: {
-            notConfigured: "Not connected", waitingBinding: "Waiting for binding", connecting: "Connecting", reconnecting: "Reconnecting",
+            notConfigured: "Not connected", waitingBinding: "Waiting for binding", connecting: "Connecting", reconnecting: "Reconnecting", connectionFailed: "Connection failed",
             ready: "Ready", paused: "Paused", reauthorize: "Authorization required", conflict: "Connection in use",
           },
           guidance: {
@@ -4218,6 +4219,7 @@ const resources = {
             waitingBinding: { title: "Bind a recipient", description: "Send the bot a message in WeCom. Remote intervention becomes available after the binding is persisted." },
             connecting: { title: "Establishing connection", description: "Remote intervention resumes automatically when the connection is ready." },
             reconnecting: { title: "Reconnecting automatically", description: "The bounded retry policy is active. No repeated action is needed." },
+            connectionFailed: { title: "Connection stopped", description: "Automatic recovery cannot continue. Reconnect to try again." },
             ready: { title: "WeCom is ready", description: "Remote interventions and enabled notifications are sent to the bound private chat." },
             paused: { title: "Remote intervention is paused", description: "Notification preferences are preserved and resume when enabled." },
             reauthorize: { title: "Authorization required", description: "The current credentials are unavailable. Authorize the bot again." },

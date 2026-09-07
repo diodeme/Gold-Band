@@ -66,14 +66,16 @@ function initialBrowserImSettings(): ImSettingsVm {
   const generation = configured ? 4 : 0;
   const state = browserImPreview === 'connecting'
     ? 'connecting'
+    : browserImPreview === 'network'
+      ? 'reconnecting'
     : browserImPreview === 'auth'
       ? 'authenticationRequired'
-      : browserImPreview === 'network' || browserImPreview === 'conflict'
+      : browserImPreview === 'failed' || browserImPreview === 'conflict'
         ? 'error'
         : enabled ? 'connected' : 'disabled';
   const lastErrorCode = browserImPreview === 'auth'
     ? 'IM_AUTHENTICATION_REQUIRED'
-    : browserImPreview === 'network'
+    : browserImPreview === 'network' || browserImPreview === 'failed'
       ? 'IM_NETWORK_UNAVAILABLE'
       : browserImPreview === 'conflict'
         ? 'IM_CONNECTION_CONFLICT'

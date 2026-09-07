@@ -1510,6 +1510,9 @@ export const browserApi: RuntimeApi = {
   getAcpToolDetail() {
     return Promise.resolve({ event: null });
   },
+  getAcpImage() {
+    return Promise.reject({ code: 'acp.image-not-found', params: {} });
+  },
   getTurnFileChangeSet(locator, changeSetId) {
     if (changeSetId === browserTurnFileChangeSet.id) {
       return Promise.resolve({ ...browserTurnFileChangeSet, branchId: locator.branchId });

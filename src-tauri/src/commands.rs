@@ -5852,6 +5852,74 @@ pub fn get_acp_activity_detail(
 }
 
 #[tauri::command]
+pub async fn get_acp_image(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    branch_id: String,
+    image: gold_band::acp::images::AcpImageRef,
+    thumbnail: bool,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<crate::acp_images::AcpImageContentVm> {
+    static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    let denied = || CommandErrorVm::new("acp.image-not-found", serde_json::json!({}));
+    for part in [&task_id, &run_id, &round_id, &node_id, &attempt_id]
+        .into_iter()
+        .chain(outer_node_id.iter())
+        .chain(outer_attempt_id.iter())
+    {
+        let mut components = Path::new(part).components();
+        if !matches!(components.next(), Some(Component::Normal(_)))
+            || components.next().is_some()
+            || part.contains(['/', '\\', ':'])
+        {
+            return Err(denied());
+        }
+    }
+    gold_band::acp::branches::validate_conversation_branch_id(&branch_id).map_err(|_| denied())?;
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let attempt_dir = resolve_acp_attempt_dir(
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outer_node_id.as_deref(),
+        outer_attempt_id.as_deref(),
+    );
+    let runtime_root = app.paths.runtime_root.clone();
+    let permit = SLOTS
+        .try_acquire()
+        .map_err(|_| CommandErrorVm::new("acp.image-busy", serde_json::json!({})))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        let timeline = gold_band::acp::branches::branch_timeline_path(&attempt_dir, &branch_id);
+        let root = fs::canonicalize(runtime_root)
+            .map_err(|_| CommandErrorVm::new("acp.image-not-found", serde_json::json!({})))?;
+        let canonical = fs::canonicalize(&timeline)
+            .map_err(|_| CommandErrorVm::new("acp.image-not-found", serde_json::json!({})))?;
+        if !canonical.starts_with(root) {
+            return Err(CommandErrorVm::new(
+                "acp.image-not-found",
+                serde_json::json!({}),
+            ));
+        }
+        let data = gold_band::acp::images::read_image_base64(&timeline, &image)
+            .map_err(|error| CommandErrorVm::new(error.to_string(), serde_json::json!({})))?;
+        crate::acp_images::decode_image(&data, thumbnail)
+            .map_err(|error| CommandErrorVm::new(error.to_string(), serde_json::json!({})))
+    })
+    .await
+    .map_err(|_| CommandErrorVm::new("acp.image-invalid", serde_json::json!({})))?
+}
+
+#[tauri::command]
 pub fn get_acp_tool_detail(
     state: State<'_, DesktopState>,
     project_id: Option<String>,

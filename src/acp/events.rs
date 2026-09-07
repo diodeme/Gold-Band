@@ -3044,6 +3044,7 @@ pub fn agent_transcript_tool_output(raw: &Value) -> Option<&Value> {
 /// queried through the single-tool detail API. Live consumers only need the
 /// stable Gold Band relation metadata, tool input, status, and summary fields.
 pub fn compact_live_conversation_event(event: &mut AcpUiEvent) {
+    crate::acp::images::project_image_refs(event);
     let Some(raw) = event.raw.as_mut() else {
         return;
     };
@@ -3052,6 +3053,7 @@ pub fn compact_live_conversation_event(event: &mut AcpUiEvent) {
         return;
     }
     for path in [
+        &["rawOutput"][..],
         &["output"][..],
         &["fields", "output"][..],
         &["content", "output"][..],

@@ -2883,3 +2883,16 @@ export interface AppExitPreparationWarningVm {
 export interface AppExitPreparationVm {
   warnings: AppExitPreparationWarningVm[];
 }
+export interface AcpImageRef {
+  eventId: string;
+  pointer: string;
+  contentHash: string;
+  mimeType: string;
+}
+
+export interface AcpImageContentVm {
+  dataUrl: string;
+  mimeType: string;
+  width: number;
+  height: number;
+}

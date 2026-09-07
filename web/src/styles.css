@@ -2,6 +2,7 @@
 @import "tw-animate-css";
 @import "streamdown/styles.css";
 @import "./themes/generated/builtin-themes.css";
+@source "./";
 @source "../../node_modules/streamdown/dist/*.js";
 
 [data-streamdown="code-block"] {

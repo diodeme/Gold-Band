@@ -3155,7 +3155,12 @@ pub fn extract_agent_transcript_relation(value: &Value) -> Option<AgentTranscrip
     let relation = AgentTranscriptRelation {
         agent_launch: standard_launch.unwrap_or(claude_subagent || claude_agent_tool),
         tool_name: standard_tool_name.or(claude_tool_name),
-        parent_tool_call_id: standard_parent.or(claude_parent),
+        parent_tool_call_id: if standard.is_some_and(|meta| meta.get("parentToolCallId").is_some())
+        {
+            standard_parent
+        } else {
+            claude_parent
+        },
     };
     (!relation.is_empty()).then_some(relation)
 }

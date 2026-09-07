@@ -13,9 +13,9 @@
 
 ## 运行位置
 - Dynamic 根目录：{{ dynamic_root }}
-- 内部节点目录：{{ node_dir }}
-- 内部 attempt 目录：{{ attempt_dir }}
-- 内部 attachments 目录：{{ attachments_dir }}
+- 内部节点（相对 Dynamic 根目录）：{{ node_dir }}
+- 当前 attempt（相对内部节点）：{{ attempt_dir }}
+- attachments（相对当前 attempt）：{{ attachments_dir }}
 - Workspace ID：{{ workspace_id }}
 - Workspace 路径：{{ workspace_path }}
 - Workspace 能力：
@@ -30,7 +30,7 @@
 
 {% if has_coordination_snapshot %}
 ## Runtime 协调快照
-- 只读快照：{{ coordination_snapshot_path }}
+- 只读快照（相对 Dynamic 根目录）：{{ coordination_snapshot_path }}
 - 该文件由 Runtime 从 canonical dynamic graph 生成并独占写入；不要修改它。
 - 开始或继续当前任务前读取最新快照：先按 `workstreams[]` 的目标、TODO 状态、父子关系与 steps 理解其他子任务，再结合 `groups[]` 的嵌套关系和 phase，避免重复或冲突。
 - 准备输出 `next.type="single"` 或 `next.type="fanout"` 前再次读取同一路径，以最新状态规划后继任务。
@@ -58,7 +58,31 @@
 
 {% if has_available_attachments %}
 ## 可用附件
-{{ available_attachments }}
+- 以下只列附件路径，不读取或内联附件正文。普通条目的完整路径按 `Dynamic 根目录` 与路径树各层依次拼接；顶层 `absolutePath=` 条目已经是完整路径，直接使用。
+{% if has_predecessor_attachments %}
+### 前序链路（创建当前节点的任务接力链，最多回溯 {{ source_predecessor_limit }} 个节点）
+{{ predecessor_attachments }}
+{% if has_predecessor_attachment_overflow %}
+- 以下来源节点的附件清单已截断或未完整读取；每个节点最多检查 {{ attachments_per_source_limit }} 个文件或空目录，含内容的目录会继续递归且不单独计数。上方只列找到的文件，其余请按需查看完整 attachments 目录：
+{{ predecessor_attachment_overflow_directories }}
+{% endif %}
+{% endif %}
+{% if has_dependency_attachments %}
+### 显式依赖（当前节点通过 dependsOn 明确指定的输入节点）
+{{ dependency_attachments }}
+{% if has_dependency_attachment_overflow %}
+- 以下来源节点的附件清单已截断或未完整读取；每个节点最多检查 {{ attachments_per_source_limit }} 个文件或空目录，含内容的目录会继续递归且不单独计数。上方只列找到的文件，其余请按需查看完整 attachments 目录：
+{{ dependency_attachment_overflow_directories }}
+{% endif %}
+{% endif %}
+{% if has_group_evidence_attachments %}
+### Group 证据（当前 merge / acceptance 输入或相关 group 最近一轮合并与验收）
+{{ group_evidence_attachments }}
+{% if has_group_evidence_attachment_overflow %}
+- 以下来源节点的附件清单已截断或未完整读取；每个节点最多检查 {{ attachments_per_source_limit }} 个文件或空目录，含内容的目录会继续递归且不单独计数。上方只列找到的文件，其余请按需查看完整 attachments 目录：
+{{ group_evidence_attachment_overflow_directories }}
+{% endif %}
+{% endif %}
 {% endif %}
 
 {% if has_output_contract %}

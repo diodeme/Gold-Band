@@ -252,8 +252,9 @@ Tauri/Rust 运行诊断事实
    - wallpaper overlay。
 4. 关闭依赖 `@property`、模糊或复杂 filter 的装饰动画，保留 focus、hover、loading 和状态反馈。
 5. 审计项目手写 `color-mix()`，将业务组件中的直接声明收敛为语义 token 或中央样式。
+6. 公共状态投影必须附带 `running / success / warning / danger` 兼容 marker；Theme Contract 为每档状态分别定义 surface 和 border token，缺少 `color-mix()` 时由兼容层消费，不复用文件 Diff 等其他业务领域 token，也不使用 Tailwind 会退化为不透明源色的透明 utility 基础声明。
 
-验收：模拟不支持 `color-mix/backdrop-filter/@property` 时，浅色和深色主题的文字、边界、按钮、输入框和弹层仍具有可用对比度。
+验收：模拟不支持 `color-mix/backdrop-filter/@property` 时，浅色和深色主题的文字、边界、按钮、输入框和弹层仍具有可用对比度；公共四档状态的背景不得与其前景退化为同一个不透明颜色。
 
 ### 阶段 G：容器响应式降级
 
@@ -442,3 +443,4 @@ Windows 可以完成能力注入、接口回归、生产 bundle 审计和 UI 模
 - 产品设计文档、App overview 和 MVP 开发计划已同步。
 - Intel macOS Monterey/WebKit 613 真机冒烟结果已记录；若尚未获得真机结果，必须明确标记“自动化完成、真机待验收”，不得宣称已完全验证。
 - 首次真机暴露的 CSS 自定义属性假阴性已由最小失败测试固定，修正版需在同一设备确认不再被错误拦截。
+- 真机进入 compatible 档后暴露的 Tailwind 状态透明色退化已由四档最小失败测试固定；修正版需在同一设备确认 Agent 诊断成功和失败提示均可读。

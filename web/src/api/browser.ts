@@ -708,6 +708,10 @@ let browserExternalGrantRevision = 0;
 // null = 使用渠道编译期默认。保存后 getMulticaSettings 回显，模拟弹窗重开时的字段预填。
 let browserMulticaAddressOverride: { baseUrl: string; appUrl: string } | null = null;
 
+function normalizeBrowserWindowsFilePathname(path: string) {
+  return path.replace(/^\/(?=[A-Za-z]:[\\/])/u, '');
+}
+
 function issueBrowserExternalFileGrant(canonicalPath: string) {
   browserExternalGrantRevision += 1;
   const token = `browser-external:${browserExternalGrantRevision}:${canonicalPath}`;
@@ -2446,7 +2450,7 @@ export const browserApi: RuntimeApi = {
         href = href.slice(0, suffix.index);
       }
     }
-    const normalizedHref = href.replaceAll('\\', '/');
+    const normalizedHref = normalizeBrowserWindowsFilePathname(href).replaceAll('\\', '/');
     const baseDirectory = baseCanonicalPath
       ? baseCanonicalPath.replaceAll('\\', '/').replace(/\/[^/]*$/u, '')
       : browserWorkspaceRoot;

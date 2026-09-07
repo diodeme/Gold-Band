@@ -758,6 +758,14 @@ impl TurnFileStore {
         String::from_utf8(bytes).map_err(|_| anyhow!(BLOB_CORRUPTED))
     }
 
+    pub(crate) fn validate_blob_scope(&self, version: &FileVersionRef) -> Result<()> {
+        validate_hash(&version.content_hash)?;
+        let root = std::fs::canonicalize(&self.attempt_dir)?;
+        let path = std::fs::canonicalize(self.blob_path(&version.content_hash))?;
+        anyhow::ensure!(path.starts_with(root.join("acp.file-blobs")), BLOB_CORRUPTED);
+        Ok(())
+    }
+
     fn normalize_mutation_versions(
         &self,
         mut mutation: TurnFileMutation,

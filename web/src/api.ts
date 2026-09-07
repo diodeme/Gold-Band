@@ -947,3 +947,6 @@ export function checkSkillNameConflict(
     syncTargets,
   );
 }
+export function getAcpImage(locator: import('./types').TurnFileLocatorVm, image: import('./types').AcpImageRef, thumbnail: boolean) {
+  return getRuntimeApi().getAcpImage(locator, image, thumbnail);
+}

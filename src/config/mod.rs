@@ -23,6 +23,13 @@ fn embedded_project_app_config() -> &'static ProjectAppConfig {
             .validate()
             .expect("embedded projectIdentity config is valid");
         config
+            .im
+            .as_ref()
+            .expect("embedded app-config.toml defines im")
+            .wecom_scan_auth
+            .validate()
+            .expect("embedded WeCom scan auth config is valid");
+        config
     })
 }
 
@@ -824,6 +831,8 @@ pub struct SettingsConfig {
     pub scheduled_completion_notifications_enabled: Option<bool>,
     pub scheduled_occurrence_retention_days: Option<u16>,
     #[serde(default)]
+    pub im_integrations: crate::im::ImIntegrationSettings,
+    #[serde(default)]
     pub context_servers: Option<Vec<McpServerConfig>>,
     // —— multica（全 Option<T>，对照 metrics 三字段）——
     pub desktop_multica_enabled: Option<bool>,
@@ -838,7 +847,15 @@ pub struct SettingsConfig {
     pub desktop_multica_account: Option<MulticaAccountRef>,
 }
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 10;
+pub fn wecom_scan_auth_config() -> &'static WeComScanAuthConfig {
+    &embedded_project_app_config()
+        .im
+        .as_ref()
+        .expect("embedded app-config.toml defines im")
+        .wecom_scan_auth
+}
+
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 12;
 const USE_LOCAL_CLAUDE: bool = false;
 
 const LEGACY_CODEX_ACP_PACKAGE_PREFIX: &str = "@zed-industries/codex-acp";
@@ -905,6 +922,16 @@ impl SettingsConfig {
         }
         if version < 10 {
             migrate_desktop_wallpaper_color_schemes(settings);
+            migrated = true;
+        }
+        if version < 11 {
+            settings
+                .entry("imIntegrations".to_string())
+                .or_insert_with(|| serde_json::json!({ "channels": [] }));
+            migrated = true;
+        }
+        if version < 12 {
+            migrate_removed_im_notification_preferences(settings);
             migrated = true;
         }
         if migrated {
@@ -1094,6 +1121,37 @@ fn migrate_scheduled_runtime_settings(settings: &mut serde_json::Map<String, ser
     settings
         .entry("scheduledOccurrenceRetentionDays".to_string())
         .or_insert_with(|| serde_json::json!(DEFAULT_SCHEDULED_OCCURRENCE_RETENTION_DAYS));
+}
+
+fn migrate_removed_im_notification_preferences(
+    settings: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    let Some(channels) = settings
+        .get_mut("imIntegrations")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|integrations| integrations.get_mut("channels"))
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+
+    for channel in channels {
+        let Some(notifications) = channel
+            .as_object_mut()
+            .and_then(|channel| channel.get_mut("notifications"))
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            continue;
+        };
+        for field in [
+            "scheduledCompletion",
+            "scheduledFailure",
+            "scheduledAttention",
+            "scheduledMissed",
+        ] {
+            notifications.remove(field);
+        }
+    }
 }
 
 fn migrate_codex_acp_package(
@@ -1298,11 +1356,37 @@ pub struct ProjectAppConfig {
     pub notification_auto_dismiss_target_secs: Option<u64>,
     pub require_local_claude_executable: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub im: Option<ImAppConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_layout: Option<WorkspaceLayoutConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_files: Option<WorkspaceFilesConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_files: Option<TurnFilesConfig>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImAppConfig {
+    pub wecom_scan_auth: WeComScanAuthConfig,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeComScanAuthConfig {
+    pub source: String,
+}
+
+impl WeComScanAuthConfig {
+    fn validate(&self) -> Result<()> {
+        let source = self.source.trim();
+        if source.is_empty() || source.len() > 64 || !source.is_ascii() {
+            return Err(anyhow!(
+                "WeCom scan auth source must be non-empty ASCII with at most 64 bytes"
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2915,6 +2999,57 @@ mod tests {
             Some(true)
         );
         assert_eq!(settings.scheduled_occurrence_retention_days, Some(30));
+    }
+
+    #[test]
+    fn embedded_app_config_defines_wecom_scan_source() {
+        assert_eq!(super::wecom_scan_auth_config().source, "maling");
+        assert!(super::wecom_scan_auth_config().validate().is_ok());
+    }
+
+    #[test]
+    fn settings_v10_adds_empty_im_integrations_without_credentials() {
+        let (settings, migrated) =
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "settingsSchemaVersion": 10
+            }))
+            .unwrap();
+
+        assert!(migrated);
+        assert_eq!(
+            settings.settings_schema_version.0,
+            super::CURRENT_SETTINGS_SCHEMA_VERSION
+        );
+        assert!(settings.im_integrations.channels.is_empty());
+        let serialized = serde_json::to_string(&settings).unwrap();
+        for forbidden in ["secret", "accessToken", "refreshToken", "updateToken"] {
+            assert!(!serialized.contains(forbidden), "found {forbidden}");
+        }
+    }
+
+    #[test]
+    fn current_settings_reject_removed_im_notification_preferences() {
+        let result = SettingsConfig::from_json_value_with_migration(serde_json::json!({
+            "settingsSchemaVersion": super::CURRENT_SETTINGS_SCHEMA_VERSION,
+            "imIntegrations": {
+                "channels": [{
+                    "kind": "weCom",
+                    "enabled": false,
+                    "publicIdentity": "bot-id",
+                    "notifications": {
+                        "permission": true,
+                        "elicitation": true,
+                        "manualCheck": true,
+                        "runSuccess": false,
+                        "runFailure": true,
+                        "acpTurnFinished": false,
+                        "scheduledCompletion": true
+                    }
+                }]
+            }
+        }));
+
+        assert!(result.is_err());
     }
 
     #[test]

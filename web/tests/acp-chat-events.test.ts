@@ -39,7 +39,7 @@ function event(partial: Partial<AcpUiEventVm>): AcpUiEventVm {
     seq: partial.seq ?? 1,
     timestamp: partial.timestamp ?? `${partial.seq ?? 1}Z`,
     kind: partial.kind ?? 'textDelta',
-    sessionId: partial.sessionId ?? 'session-1',
+    sessionId: Object.hasOwn(partial, 'sessionId') ? partial.sessionId : 'session-1',
     content: partial.content,
     title: partial.title,
     toolCallId: partial.toolCallId,
@@ -347,7 +347,7 @@ describe('ACP chat event handling', () => {
     expect(permission?.raw).toMatchObject({ requestId: '0' });
   });
 
-  it('derives legacy permission request id from display id and dismisses by canonical id', () => {
+  it('does not derive a permission request identity from an opaque display event id', () => {
     const events = [
       event({
         id: 'permission-permission-0',
@@ -361,8 +361,7 @@ describe('ACP chat event handling', () => {
       }),
     ];
 
-    expect(pendingPermissionFromEvents(events, new Set())?.interactionId).toBe('0');
-    expect(pendingPermissionFromEvents(events, new Set(['0']))).toBeNull();
+    expect(pendingPermissionFromEvents(events, new Set())).toBeNull();
   });
 
   it('does not surface answered elicitation requests after a response event arrives', () => {
@@ -552,6 +551,49 @@ describe('ACP chat event handling', () => {
     ).toEqual([pendingRequest]);
     expect(
       reconcileAcpSessionForDisplay(live, resolvedSnapshot)?.pendingInteractions,
+    ).toEqual([]);
+  });
+
+  it('clears a pending elicitation when a newer authoritative projection omits the response event', () => {
+    const pendingRequest = {
+      interactionId: 'elicit-live',
+      kind: 'elicitation' as const,
+      turnId: 'turn-live',
+      promptEventId: 'prompt-event-live',
+      message: 'Choose',
+      requestedSchema: { type: 'object' },
+      raw: {},
+    };
+    const live = session({
+      pendingInteractions: [pendingRequest],
+      eventPage: {
+        generation: 4,
+        coveredRevision: 20,
+        newestRevision: 20,
+        newestSeq: 40,
+        loadedCount: 20,
+        total: 40,
+        hasOlder: true,
+        hasNewer: false,
+      },
+    });
+    const settledProjection = session({
+      pendingInteractions: [],
+      events: [],
+      eventPage: {
+        generation: 4,
+        coveredRevision: 21,
+        newestRevision: 21,
+        newestSeq: 41,
+        loadedCount: 20,
+        total: 41,
+        hasOlder: true,
+        hasNewer: false,
+      },
+    });
+
+    expect(
+      reconcileAcpSessionForDisplay(live, settledProjection)?.pendingInteractions,
     ).toEqual([]);
   });
 
@@ -1952,11 +1994,11 @@ describe('ACP chat event handling', () => {
       ],
       [
         event({
-          id: 'permission-permission-0',
+          id: 'permission-0',
           seq: 11,
           kind: 'permissionRequest',
           status: 'selected',
-          raw: { requestId: 'permission-0', optionId: 'allow' },
+          raw: { requestId: '0', optionId: 'allow' },
         }),
       ],
     );

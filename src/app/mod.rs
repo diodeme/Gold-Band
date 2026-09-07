@@ -1,4 +1,5 @@
 mod ids;
+pub mod intervention;
 mod node_executor;
 mod notification;
 pub mod observability;
@@ -12,8 +13,8 @@ mod transition_context;
 
 pub use self::notification::{
     INITIAL_DIRECT_TURN_ID, InterventionNotification, InterventionType, NotificationDedup,
-    direct_conversation_agent_label, make_dedup_key, make_dedup_key_with_suffix,
-    make_turn_dedup_key, reason_key,
+    direct_conversation_agent_label, make_completion_dedup_key, make_dedup_key,
+    make_dedup_key_with_suffix, make_turn_dedup_key, reason_key,
 };
 pub use self::orchestrator::{AcceptedRun, PreparedRun};
 pub use self::runtime_recovery::{
@@ -1070,6 +1071,7 @@ pub enum RuntimeLifecycleEvent {
         attempt_id: String,
         outer_node_id: Option<String>,
         outer_attempt_id: Option<String>,
+        request: intervention::InterventionRequestIdentity,
         node_label: String,
         kind: RuntimeInterventionKind,
         task_title: Option<String>,
@@ -6135,7 +6137,8 @@ mod tests {
 
     fn sample_run_paused_event() -> RuntimeLifecycleEvent {
         RuntimeLifecycleEvent::RunPaused {
-            event_id: "project-1:run-1:round-1:node-1:attempt-1:waiting-for-user-input".to_string(),
+            event_id: "project-1:task-1:run-1:round-1:node-1:attempt-1:waiting-for-user-input"
+                .to_string(),
             occurred_at: "2026-01-01T00:00:00".to_string(),
             scheduled_occurrence_id: None,
             project_id: "project-1".to_string(),

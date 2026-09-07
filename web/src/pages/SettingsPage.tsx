@@ -42,6 +42,7 @@ import { normalizeFontCatalogFamilies } from '@/lib/font-families';
 import { ScheduledRuntimeSettings } from '@/components/scheduled-tasks/ScheduledRuntimeSettings';
 import { AvatarSettings } from '@/components/settings/AvatarSettings';
 import { WallpaperSettings } from '@/components/settings/WallpaperSettings';
+import { ImIntegrationSettings } from '@/components/settings/ImIntegrationSettings';
 import { useWebviewMeasuredContainer } from '@/hooks/use-webview-measured-container';
 
 type TypographySection = 'ui' | 'editor';
@@ -296,10 +297,10 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
       <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5 xl:p-6">
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'general' | 'appearance' | 'advanced')} className="space-y-4">
         <TabsList className="grid w-full max-w-md grid-cols-3">
-          <TabsTrigger value="general">{t('settings.tabs.general')}</TabsTrigger>
-          <TabsTrigger value="appearance">{t('settings.tabs.appearance')}</TabsTrigger>
-          <TabsTrigger value="advanced">
-            <span className="inline-flex items-center gap-2">
+          <TabsTrigger value="general" className="min-w-0 px-1">{t('settings.tabs.general')}</TabsTrigger>
+          <TabsTrigger value="appearance" className="min-w-0 px-1">{t('settings.tabs.appearance')}</TabsTrigger>
+          <TabsTrigger value="advanced" className="min-w-0 px-1">
+            <span className="inline-flex min-w-0 items-center gap-1">
               <span>{t('settings.tabs.advanced')}</span>
               {showAdvancedUpdateDot ? <UpdateDot /> : null}
             </span>
@@ -321,6 +322,9 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
             </SettingsSection>
             <SettingsSection title={t('scheduled.settings.title')} divided>
               <ScheduledRuntimeSettings />
+            </SettingsSection>
+            <SettingsSection title={t('settings.im.title')} divided>
+              <ImIntegrationSettings />
             </SettingsSection>
           </AppCard>
         </TabsContent>

@@ -288,6 +288,7 @@ pub struct DesktopState {
     mcp_health: Mutex<BTreeMap<String, gold_band::config::McpServerState>>,
     /// 进程级心跳上报器（由生命周期总线驱动六类 reason）。
     heartbeat_reporter: Arc<crate::metrics::heartbeat::HeartbeatReporter>,
+    im_runtime: Mutex<Option<Arc<crate::im_runtime::DesktopImRuntime>>>,
 }
 
 impl DesktopState {
@@ -325,7 +326,26 @@ impl DesktopState {
             heartbeat_reporter: crate::metrics::heartbeat::HeartbeatReporter::new(
                 env!("CARGO_PKG_VERSION").to_string(),
             ),
+            im_runtime: Mutex::new(None),
         }
+    }
+
+    pub fn install_im_runtime(
+        &self,
+        runtime: Arc<crate::im_runtime::DesktopImRuntime>,
+    ) -> Result<()> {
+        *self
+            .im_runtime
+            .lock()
+            .map_err(|_| anyhow::anyhow!("IM runtime lock poisoned"))? = Some(runtime);
+        Ok(())
+    }
+
+    pub fn im_runtime(&self) -> Option<Arc<crate::im_runtime::DesktopImRuntime>> {
+        self.im_runtime
+            .lock()
+            .ok()
+            .and_then(|runtime| runtime.clone())
     }
 
     /// 发布真实用户活动事实；heartbeat 由异步 metrics subscriber 投影。

@@ -1,4 +1,4 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentInsightOperationVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentInsightOperationVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, ImChannelKind, ImChannelSnapshotVm, ImNotificationPreferencesVm, ImSettingsVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { ImageActionInput, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { GitCommitVm, GitHubOperationVm, GitOperationVm } from '../types';
@@ -46,6 +46,71 @@ let browserScheduledRuntimeSettings = {
   occurrenceRetentionDays: 30,
   powerErrorCode: null,
 };
+
+const defaultImNotifications = (): ImNotificationPreferencesVm => ({
+  permission: true,
+  elicitation: true,
+  manualCheck: true,
+  runSuccess: false,
+  runFailure: true,
+  acpTurnFinished: false,
+});
+
+const browserImPreview = typeof window === 'undefined'
+  ? null
+  : new URLSearchParams(window.location.search).get('imState');
+
+function initialBrowserImSettings(): ImSettingsVm {
+  const configured = Boolean(browserImPreview && browserImPreview !== 'unconfigured');
+  const enabled = configured && browserImPreview !== 'paused';
+  const generation = configured ? 4 : 0;
+  const state = browserImPreview === 'connecting'
+    ? 'connecting'
+    : browserImPreview === 'network'
+      ? 'reconnecting'
+    : browserImPreview === 'auth'
+      ? 'authenticationRequired'
+      : browserImPreview === 'failed' || browserImPreview === 'conflict'
+        ? 'error'
+        : enabled ? 'connected' : 'disabled';
+  const lastErrorCode = browserImPreview === 'auth'
+    ? 'IM_AUTHENTICATION_REQUIRED'
+    : browserImPreview === 'network' || browserImPreview === 'failed'
+      ? 'IM_NETWORK_UNAVAILABLE'
+      : browserImPreview === 'conflict'
+        ? 'IM_CONNECTION_CONFLICT'
+        : null;
+  const bound = browserImPreview === 'connected' || browserImPreview === 'paused';
+  return {
+    channels: [{
+      kind: 'weCom',
+      enabled,
+      publicIdentity: configured
+        ? (browserImPreview === 'long' ? 'wecom-bot-with-an-extremely-long-public-identity-for-narrow-window-validation-0123456789' : 'scan-authorized-bot')
+        : '',
+      credentialConfigured: Boolean(configured),
+      binding: bound ? {
+        destinationId: 'user-1', conversationId: 'user-1', authorizedActorId: 'user-1', displayName: 'Kelvin Zhou',
+      } : null,
+      notifications: defaultImNotifications(),
+      connection: configured ? {
+        kind: 'weCom', enabled, generation, state,
+        capabilities: { proactiveDelivery: true, cardActions: true, messageUpdate: true, privateChat: true },
+        identity: { botId: 'scan-authorized-bot', displayName: 'WeCom Bot' },
+        binding: bound ? { destinationId: 'user-1', conversationId: 'user-1', actorId: 'user-1', isPrivate: true } : null,
+        lastConnectedAtMs: state === 'connected' ? Date.now() : null,
+        lastErrorCode,
+      } : null,
+    }],
+  };
+}
+
+let browserImSettings: ImSettingsVm = initialBrowserImSettings();
+const browserImChannelListeners = new Set<(snapshot: ImChannelSnapshotVm) => void>();
+const browserWeComScanSessions = new Set<string>();
+const browserWeComScanPreview = typeof window === 'undefined'
+  ? null
+  : new URLSearchParams(window.location.search).get('imScan');
 
 const browserPersonalAnalytics: PersonalAnalyticsSnapshotVm = {
   operation: {
@@ -789,6 +854,130 @@ export const browserApi: RuntimeApi = {
       keepAwakeEffective: false,
     };
     return structuredClone(browserScheduledRuntimeSettings);
+  },
+  async getImSettings() {
+    return structuredClone(browserImSettings);
+  },
+  async startWeComScanAuthorization(sessionId) {
+    browserWeComScanSessions.add(sessionId);
+    return {
+      sessionId,
+      authUrl: `https://work.weixin.qq.com/ai/qc/c?s=${encodeURIComponent(sessionId)}`,
+      expiresAtMs: Date.now() + 5 * 60_000,
+    };
+  },
+  async completeWeComScanAuthorization(sessionId) {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    if (!browserWeComScanSessions.delete(sessionId)) throw { code: 'IM_SCAN_CANCELLED', params: {} };
+    if (browserWeComScanPreview === 'error') throw { code: 'IM_SCAN_NETWORK_UNAVAILABLE', params: {} };
+    const current = browserImSettings.channels.find((channel) => channel.kind === 'weCom');
+    browserImSettings = {
+      channels: browserImSettings.channels.map((channel) => channel.kind === 'weCom' ? {
+        ...channel,
+        enabled: true,
+        publicIdentity: 'scan-authorized-bot',
+        credentialConfigured: true,
+        binding: null,
+        connection: {
+          kind: 'weCom', enabled: true, generation: (current?.connection?.generation ?? 0) + 1,
+          state: 'connected', capabilities: { proactiveDelivery: true, cardActions: true, messageUpdate: true, privateChat: true },
+          identity: { botId: 'scan-authorized-bot', displayName: 'WeCom Bot' }, binding: null, lastConnectedAtMs: Date.now(), lastErrorCode: null,
+        },
+      } : channel),
+    };
+    return structuredClone(browserImSettings);
+  },
+  async cancelWeComScanAuthorization(sessionId) {
+    browserWeComScanSessions.delete(sessionId);
+  },
+  async setImChannelEnabled(input) {
+    const current = browserImSettings.channels.find((channel) => channel.kind === input.kind);
+    const credentialConfigured = current?.credentialConfigured === true;
+    if (input.enabled && !credentialConfigured) throw { code: 'IM_CREDENTIAL_REQUIRED', params: {} };
+    const connection: ImChannelSnapshotVm = {
+      kind: input.kind,
+      enabled: input.enabled,
+      generation: (current?.connection?.generation ?? 0) + 1,
+      state: input.enabled ? 'connecting' : 'disabled',
+      capabilities: { proactiveDelivery: true, cardActions: true, messageUpdate: true, privateChat: true },
+      identity: null,
+      binding: null,
+      lastConnectedAtMs: null,
+      lastErrorCode: null,
+    };
+    browserImSettings = {
+      channels: browserImSettings.channels.map((channel) => channel.kind === input.kind ? {
+        ...channel,
+        enabled: input.enabled,
+        connection,
+      } : channel),
+    };
+    browserImChannelListeners.forEach((listener) => listener(structuredClone(connection)));
+    return structuredClone(browserImSettings);
+  },
+  async saveImNotificationPreferences(input) {
+    browserImSettings = {
+      channels: browserImSettings.channels.map((channel) => channel.kind === input.kind ? {
+        ...channel,
+        notifications: structuredClone(input.notifications),
+      } : channel),
+    };
+    return structuredClone(browserImSettings);
+  },
+  async resetImChannelBinding(input) {
+    const current = browserImSettings.channels.find((channel) => channel.kind === input.kind);
+    if (!current?.binding) return structuredClone(browserImSettings);
+    if (current.connection?.generation !== input.expectedGeneration) throw { code: 'IM_STALE_GENERATION', params: {} };
+    browserImSettings = {
+      channels: browserImSettings.channels.map((channel) => channel.kind === input.kind ? {
+        ...channel,
+        binding: null,
+        connection: channel.connection ? {
+          ...channel.connection,
+          generation: channel.connection.generation + 1,
+          state: channel.enabled ? 'connecting' : 'disabled',
+          binding: null,
+          lastErrorCode: null,
+        } : null,
+      } : channel),
+    };
+    return structuredClone(browserImSettings);
+  },
+  async reconnectImChannel(input) {
+    const current = browserImSettings.channels.find((channel) => channel.kind === input.kind);
+    if (!current?.enabled || !current.credentialConfigured || !current.connection) throw { code: 'IM_CREDENTIAL_REQUIRED', params: {} };
+    if (current.connection.generation !== input.expectedGeneration) throw { code: 'IM_STALE_GENERATION', params: {} };
+    const connection: ImChannelSnapshotVm = {
+      ...current.connection,
+      generation: current.connection.generation + 1,
+      state: 'connecting',
+      lastErrorCode: null,
+    };
+    current.connection = connection;
+    browserImChannelListeners.forEach((listener) => listener(structuredClone(connection)));
+    return structuredClone(connection);
+  },
+  async deleteImChannel(kind) {
+    browserImSettings = {
+      channels: browserImSettings.channels.map((channel) => channel.kind === kind ? {
+        kind,
+        enabled: false,
+        publicIdentity: '',
+        credentialConfigured: false,
+        binding: null,
+        notifications: defaultImNotifications(),
+        connection: null,
+      } : channel),
+    };
+    return {
+      settings: structuredClone(browserImSettings),
+      operationId: crypto.randomUUID(),
+      cleanupStatus: 'complete' as const,
+    };
+  },
+  async subscribeImChannelStateUpdates(listener) {
+    browserImChannelListeners.add(listener);
+    return () => browserImChannelListeners.delete(listener);
   },
   async subscribeScheduledTaskUpdates(listener) {
     browserScheduledTaskListeners.add(listener);

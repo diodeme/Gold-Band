@@ -1,6 +1,6 @@
 ﻿# Gold Band 文档导航
 
-Gold Band 当前文档按目录式结构整理为 5 个主板块：
+Gold Band 当前文档按目录式结构整理为 6 个主板块：
 
 ## 1. 产品设计
 - [产品概览](product/overview.md)
@@ -48,6 +48,9 @@ Gold Band 当前文档按目录式结构整理为 5 个主板块：
   - [run.json](runtime/state/run.json.md)
   - [round.json](runtime/state/round.json.md)
   - [node.json](runtime/state/node.json.md)
+
+## 6. 外部集成
+- [客户端直连 IM 的远程干预与信息通知设计（企微扫码、先落盘后发布的私聊绑定、渐进式设置与窄命令、typed askUserQuestion 全问题投影、permission/manual-check 结构化详情与 vote 双发已完成本地验证，真实平台验收待完成）](integration/im-remote-intervention.md)
 
 ## 当前原则
 - 文档主内容统一维护在 `docs/gold-band/` 下

@@ -59,6 +59,7 @@ class ControlledResizeObserver {
 const locator = (branchId: string): AgentTranscriptLocator => ({
   projectId: 'project-1',
   taskId: 'task-1',
+  taskUuid: 'task-uuid-1',
   runId: 'run-1',
   roundId: 'round-1',
   nodeId: 'node-1',
@@ -228,8 +229,8 @@ describe('right workspace DOM lifecycle', () => {
     document.body.append(container);
     const root = createRoot(container);
     const store = new ConversationWorkspaceStore();
-    const first = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', runId: 'run-1' });
-    const second = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-2', runId: 'run-1' });
+    const first = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', taskUuid: 'task-uuid-1', runId: 'run-1' });
+    const second = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-2', taskUuid: 'task-uuid-2', runId: 'run-1' });
     store.save(first, {
       tabs: [{ ...resource('agent-a'), scopeKey: first.key }],
       activeTabKey: resource('agent-a').key,

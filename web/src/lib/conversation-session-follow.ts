@@ -49,6 +49,7 @@ export function resolveConversationEventSelectedSessionKey(args: {
   currentSelectedTerminal?: boolean;
   incomingActive?: boolean;
   currentSelectedRuntimeControlled?: boolean;
+  currentSelectedControlTransitionCause?: ConversationAttemptLifecycleVm['control']['transitionCause'];
   incomingRuntimeControlled?: boolean;
 }) {
   const {
@@ -59,6 +60,7 @@ export function resolveConversationEventSelectedSessionKey(args: {
     currentSelectedTerminal = false,
     incomingActive = true,
     currentSelectedRuntimeControlled = false,
+    currentSelectedControlTransitionCause,
     incomingRuntimeControlled = false,
   } = args;
   if (currentSelectedKey && isNestedConversationSessionKey(currentSelectedKey, incomingSessionKey)) {
@@ -68,9 +70,9 @@ export function resolveConversationEventSelectedSessionKey(args: {
   if (followMode !== 'auto') return currentSelectedKey;
   if (!incomingActive) return currentSelectedKey;
   if (!incomingRuntimeControlled) return currentSelectedKey;
-  const followsDynamicSuccessor = currentSelectedTerminal
-    && areDynamicConversationSiblingSessionKeys(currentSelectedKey, incomingSessionKey);
-  if (!currentSelectedRuntimeControlled && !followsDynamicSuccessor) return currentSelectedKey;
+  const followsRuntimeTerminal = currentSelectedTerminal
+    && currentSelectedControlTransitionCause === 'runtime-terminal';
+  if (!currentSelectedRuntimeControlled && !followsRuntimeTerminal) return currentSelectedKey;
   return currentSelectedActive ? currentSelectedKey : incomingSessionKey;
 }
 
@@ -80,7 +82,9 @@ export function resolveConversationRefreshSelectedSessionKey(args: {
   currentSelectedKey?: string | null;
   currentSelectedTerminal?: boolean;
   currentSelectedRuntimeControlled?: boolean;
+  currentSelectedControlTransitionCause?: ConversationAttemptLifecycleVm['control']['transitionCause'];
   pendingEventRuntimeControlled?: boolean;
+  pendingEventControlTransitionCause?: ConversationAttemptLifecycleVm['control']['transitionCause'];
 }) {
   const {
     followMode,
@@ -88,7 +92,9 @@ export function resolveConversationRefreshSelectedSessionKey(args: {
     currentSelectedKey,
     currentSelectedTerminal = false,
     currentSelectedRuntimeControlled = false,
+    currentSelectedControlTransitionCause,
     pendingEventRuntimeControlled = false,
+    pendingEventControlTransitionCause,
   } = args;
   if (
     currentSelectedKey &&
@@ -100,13 +106,15 @@ export function resolveConversationRefreshSelectedSessionKey(args: {
   if (
     followMode === 'auto'
     && pendingEventSessionKey
-    && pendingEventRuntimeControlled
+    && (
+      pendingEventRuntimeControlled
+      || pendingEventControlTransitionCause === 'runtime-terminal'
+    )
     && (
       currentSelectedRuntimeControlled
-      || Boolean(
-        currentSelectedKey
-        && currentSelectedTerminal
-        && areDynamicConversationSiblingSessionKeys(currentSelectedKey, pendingEventSessionKey)
+      || (
+        currentSelectedTerminal
+        && currentSelectedControlTransitionCause === 'runtime-terminal'
       )
     )
   ) return pendingEventSessionKey;
@@ -119,19 +127,14 @@ export function isRuntimeControlledConversationLifecycle(
   return lifecycle?.control.mode === 'runtime-controlled';
 }
 
+export function isRuntimeTerminalConversationLifecycle(
+  lifecycle?: Pick<ConversationAttemptLifecycleVm, 'control'> | null,
+) {
+  return lifecycle?.control.transitionCause === 'runtime-terminal';
+}
+
 export function isNestedConversationSessionKey(currentSelectedKey: string, incomingSessionKey: string) {
   return currentSelectedKey.startsWith(`${incomingSessionKey}/`);
-}
-
-export function areDynamicConversationSiblingSessionKeys(firstKey: string, secondKey: string) {
-  const firstScope = dynamicConversationOuterAttemptScope(firstKey);
-  return firstScope !== null && firstScope === dynamicConversationOuterAttemptScope(secondKey);
-}
-
-function dynamicConversationOuterAttemptScope(sessionKey: string) {
-  const parts = sessionKey.split('/');
-  if (parts.length !== 5 || parts.some((part) => part.length === 0)) return null;
-  return parts.slice(0, 3).join('/');
 }
 
 export function shouldEnableConversationAutoFollow(

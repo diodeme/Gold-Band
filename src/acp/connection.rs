@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::process::ChildStdin;
 use std::sync::{
     Arc, Condvar, LazyLock, Mutex, MutexGuard,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     mpsc,
 };
 use std::thread;
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Error, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde_json::{Value, json};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::acp::adapter::{ResolvedAcpAdapter, spawn_adapter};
 use crate::acp::elicitation::cancel_pending_elicitation_requests;
@@ -36,6 +36,7 @@ const EARLY_SESSION_FRAME_MAX_FRAMES: usize = 64;
 const STDERR_READ_BUFFER_SIZE: usize = 4096;
 const STDERR_LINE_MAX_BYTES: usize = 16 * 1024;
 const STDERR_RAW_PREVIEW_BYTES: usize = 256;
+const CONNECTION_DIAGNOSTIC_REQUEST_LIMIT: usize = 8;
 static NEXT_CONNECTION_GENERATION: AtomicU64 = AtomicU64::new(1);
 static NEXT_SESSION_ROUTE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
@@ -65,6 +66,34 @@ struct SessionRouteFrame {
     value: Value,
     bytes: usize,
     sequence: u64,
+    received_at: Instant,
+}
+
+#[derive(Debug)]
+pub(crate) struct SessionObservedFrame {
+    pub(crate) value: Value,
+    pub(crate) bytes: usize,
+    pub(crate) sequence: u64,
+    pub(crate) received_at: Instant,
+}
+
+impl From<SessionRouteFrame> for SessionObservedFrame {
+    fn from(frame: SessionRouteFrame) -> Self {
+        Self {
+            value: frame.value,
+            bytes: frame.bytes,
+            sequence: frame.sequence,
+            received_at: frame.received_at,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SessionQueueHighWatermarks {
+    pub(crate) ingress_frames: usize,
+    pub(crate) ingress_bytes: usize,
+    pub(crate) pump_frames: usize,
+    pub(crate) pump_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -107,7 +136,7 @@ impl EarlySessionFrames {
         true
     }
 
-    fn take(&mut self, session_id: &str, now: Instant) -> Vec<(Value, usize)> {
+    fn take(&mut self, session_id: &str, now: Instant) -> Vec<EarlySessionFrame> {
         self.purge_expired(now);
         let Some(frames) = self.by_session.remove(session_id) else {
             return Vec::new();
@@ -116,7 +145,7 @@ impl EarlySessionFrames {
         for frame in frames {
             self.total_bytes = self.total_bytes.saturating_sub(frame.bytes);
             self.total_frames = self.total_frames.saturating_sub(1);
-            drained.push((frame.value, frame.bytes));
+            drained.push(frame);
         }
         drained
     }
@@ -224,7 +253,12 @@ struct SessionRouteSender {
 }
 
 impl SessionRouteSender {
+    #[cfg(test)]
     fn send(&self, value: Value, bytes: usize) -> bool {
+        self.send_at(value, bytes, Instant::now())
+    }
+
+    fn send_at(&self, value: Value, bytes: usize, received_at: Instant) -> bool {
         let Ok(mut state) = self.inner.state.lock() else {
             return false;
         };
@@ -256,6 +290,7 @@ impl SessionRouteSender {
             value,
             bytes,
             sequence,
+            received_at,
         });
         state.high_water_bytes = state.high_water_bytes.max(state.queued_bytes);
         state.high_water_frames = state.high_water_frames.max(state.queue.len());
@@ -284,12 +319,31 @@ pub enum SessionRouteTryRecvError {
     Disconnected,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum SessionRouteAcknowledgeError {
+    #[error("ACP session route acknowledgement state is unavailable")]
+    StateUnavailable,
+    #[error(
+        "ACP session route acknowledgement is out of order: expected sequence {expected_sequence}, got {actual_sequence}"
+    )]
+    OutOfOrder {
+        expected_sequence: u64,
+        actual_sequence: u64,
+    },
+}
+
 pub struct SessionRouteReceiver {
     inner: Arc<SessionRouteInner>,
 }
 
 impl SessionRouteReceiver {
     pub fn try_recv(&self) -> std::result::Result<Value, SessionRouteTryRecvError> {
+        self.try_recv_observed().map(|frame| frame.value)
+    }
+
+    pub(crate) fn try_recv_observed(
+        &self,
+    ) -> std::result::Result<SessionObservedFrame, SessionRouteTryRecvError> {
         let Ok(mut state) = self.inner.state.lock() else {
             return Err(SessionRouteTryRecvError::Disconnected);
         };
@@ -297,7 +351,7 @@ impl SessionRouteReceiver {
             state.queued_bytes = state.queued_bytes.saturating_sub(frame.bytes);
             drop(state);
             self.inner.not_full.notify_all();
-            return Ok(frame.value);
+            return Ok(frame.into());
         }
         if state.closed || !state.receiver_alive {
             Err(SessionRouteTryRecvError::Disconnected)
@@ -354,6 +408,8 @@ impl Drop for SessionRouteReceiver {
 struct SessionEventPumpState {
     queue: VecDeque<SessionRouteFrame>,
     queued_bytes: usize,
+    high_water_bytes: usize,
+    high_water_frames: usize,
     last_consumed_sequence: u64,
     closed: bool,
 }
@@ -367,6 +423,7 @@ struct SessionEventPumpInner {
 
 pub struct SessionEventPump {
     inner: Arc<SessionEventPumpInner>,
+    route_inner: Arc<SessionRouteInner>,
     shutdown: Arc<AtomicBool>,
     route_generation: u64,
 }
@@ -380,8 +437,10 @@ impl SessionEventPump {
         });
         let shutdown = Arc::new(AtomicBool::new(false));
         let route_generation = receiver.inner.generation;
+        let route_inner = Arc::clone(&receiver.inner);
         let pump = Arc::new(Self {
             inner: Arc::clone(&inner),
+            route_inner,
             shutdown: Arc::clone(&shutdown),
             route_generation,
         });
@@ -409,6 +468,8 @@ impl SessionEventPump {
                         }
                         state.queued_bytes = state.queued_bytes.saturating_add(bytes);
                         state.queue.push_back(frame);
+                        state.high_water_bytes = state.high_water_bytes.max(state.queued_bytes);
+                        state.high_water_frames = state.high_water_frames.max(state.queue.len());
                         drop(state);
                         inner.not_empty.notify_one();
                     }
@@ -426,15 +487,21 @@ impl SessionEventPump {
     }
 
     pub fn try_recv(&self) -> std::result::Result<Value, SessionRouteTryRecvError> {
+        let frame = self.try_recv_observed()?;
+        self.acknowledge_consumed(frame.sequence)
+            .map_err(|_| SessionRouteTryRecvError::Disconnected)?;
+        Ok(frame.value)
+    }
+
+    pub(crate) fn try_recv_observed(
+        &self,
+    ) -> std::result::Result<SessionObservedFrame, SessionRouteTryRecvError> {
         let Ok(mut state) = self.inner.state.lock() else {
             return Err(SessionRouteTryRecvError::Disconnected);
         };
         if let Some(frame) = state.queue.pop_front() {
             state.queued_bytes = state.queued_bytes.saturating_sub(frame.bytes);
-            state.last_consumed_sequence = frame.sequence;
-            drop(state);
-            self.inner.not_full.notify_all();
-            return Ok(frame.value);
+            return Ok(frame.into());
         }
         if state.closed {
             Err(SessionRouteTryRecvError::Disconnected)
@@ -447,6 +514,16 @@ impl SessionEventPump {
         &self,
         timeout: Duration,
     ) -> std::result::Result<Value, mpsc::RecvTimeoutError> {
+        let frame = self.recv_timeout_observed(timeout)?;
+        self.acknowledge_consumed(frame.sequence)
+            .map_err(|_| mpsc::RecvTimeoutError::Disconnected)?;
+        Ok(frame.value)
+    }
+
+    pub(crate) fn recv_timeout_observed(
+        &self,
+        timeout: Duration,
+    ) -> std::result::Result<SessionObservedFrame, mpsc::RecvTimeoutError> {
         let deadline = Instant::now() + timeout;
         let Ok(mut state) = self.inner.state.lock() else {
             return Err(mpsc::RecvTimeoutError::Disconnected);
@@ -454,10 +531,7 @@ impl SessionEventPump {
         loop {
             if let Some(frame) = state.queue.pop_front() {
                 state.queued_bytes = state.queued_bytes.saturating_sub(frame.bytes);
-                state.last_consumed_sequence = frame.sequence;
-                drop(state);
-                self.inner.not_full.notify_all();
-                return Ok(frame.value);
+                return Ok(frame.into());
             }
             if state.closed {
                 return Err(mpsc::RecvTimeoutError::Disconnected);
@@ -488,6 +562,62 @@ impl SessionEventPump {
 
     pub fn route_generation(&self) -> u64 {
         self.route_generation
+    }
+
+    pub(crate) fn take_queue_high_watermarks(&self) -> SessionQueueHighWatermarks {
+        let (ingress_frames, ingress_bytes) = self
+            .route_inner
+            .state
+            .lock()
+            .map(|mut state| {
+                let high_water = (state.high_water_frames, state.high_water_bytes);
+                state.high_water_frames = state.queue.len();
+                state.high_water_bytes = state.queued_bytes;
+                high_water
+            })
+            .unwrap_or_default();
+        let (pump_frames, pump_bytes) = self
+            .inner
+            .state
+            .lock()
+            .map(|mut state| {
+                let high_water = (state.high_water_frames, state.high_water_bytes);
+                state.high_water_frames = state.queue.len();
+                state.high_water_bytes = state.queued_bytes;
+                high_water
+            })
+            .unwrap_or_default();
+        SessionQueueHighWatermarks {
+            ingress_frames,
+            ingress_bytes,
+            pump_frames,
+            pump_bytes,
+        }
+    }
+
+    pub(crate) fn acknowledge_consumed(
+        &self,
+        sequence: u64,
+    ) -> std::result::Result<(), SessionRouteAcknowledgeError> {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .map_err(|_| SessionRouteAcknowledgeError::StateUnavailable)?;
+        if sequence <= state.last_consumed_sequence {
+            return Ok(());
+        }
+        let expected_sequence = state.last_consumed_sequence.saturating_add(1);
+        if sequence != expected_sequence {
+            return Err(SessionRouteAcknowledgeError::OutOfOrder {
+                expected_sequence,
+                actual_sequence: sequence,
+            });
+        }
+        state.last_consumed_sequence = sequence;
+        drop(state);
+        self.inner.not_full.notify_all();
+        Ok(())
     }
 
     pub fn close(&self) {
@@ -588,10 +718,27 @@ impl AdapterConfigSignature {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveAcpSession {
     pub key: AdapterConnectionKey,
+    pub connection_generation: u64,
     pub session_id: String,
+    pub route_generation: u64,
+}
+
+impl LiveAcpSession {
+    fn same_provider_session(&self, other: &Self) -> bool {
+        self.key == other.key
+            && self.connection_generation == other.connection_generation
+            && self.session_id == other.session_id
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttemptSessionUnregisterOutcome {
+    NotRegistered,
+    ProviderSessionStillReferenced,
+    LastProviderSessionReference,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -606,6 +753,56 @@ enum AdapterConnectionState {
     Open,
     Draining,
     Closed,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum AdapterShutdownReason {
+    IdleTtl,
+    IdleCapacity,
+    ConfigChanged,
+    ProcessExited,
+    TransportUnavailable,
+    InitializationFailed,
+    WorkspaceClose,
+    ProviderClose,
+    AllConnectionsClose,
+    StandaloneRelease,
+}
+
+impl AdapterShutdownReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::IdleTtl => "idle-ttl",
+            Self::IdleCapacity => "idle-capacity",
+            Self::ConfigChanged => "config-changed",
+            Self::ProcessExited => "process-exited",
+            Self::TransportUnavailable => "transport-unavailable",
+            Self::InitializationFailed => "initialization-failed",
+            Self::WorkspaceClose => "workspace-close",
+            Self::ProviderClose => "provider-close",
+            Self::AllConnectionsClose => "all-connections-close",
+            Self::StandaloneRelease => "standalone-release",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TransportCloseReason {
+    Shutdown(AdapterShutdownReason),
+    StdoutEof,
+    StdoutReadError,
+    StdinWriteError,
+}
+
+impl TransportCloseReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Shutdown(reason) => reason.as_str(),
+            Self::StdoutEof => "stdout-eof",
+            Self::StdoutReadError => "stdout-read-error",
+            Self::StdinWriteError => "stdin-write-error",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -708,8 +905,37 @@ impl AdapterConnectionOutcome {
 }
 
 pub struct AdapterConnectionResolution {
-    pub connection: Arc<AdapterConnection>,
+    pub connection: AdapterConnectionUse,
     pub outcome: AdapterConnectionOutcome,
+}
+
+/// Scoped use, separate from session-specific prompt cancellation/draining.
+#[must_use]
+pub struct AdapterConnectionUse {
+    connection: Arc<AdapterConnection>,
+}
+
+impl AdapterConnectionUse {
+    // Managed connections must acquire this under the manager map lock, or
+    // before publication. A bare Arc held by readers/caches is not usage.
+    pub(crate) fn new(connection: Arc<AdapterConnection>) -> Self {
+        connection.active_users.fetch_add(1, Ordering::AcqRel);
+        Self { connection }
+    }
+}
+
+impl std::ops::Deref for AdapterConnectionUse {
+    type Target = Arc<AdapterConnection>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.connection
+    }
+}
+
+impl Drop for AdapterConnectionUse {
+    fn drop(&mut self) {
+        self.connection.active_users.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 fn is_same_connection_generation<T>(
@@ -759,6 +985,7 @@ impl PendingRequest {
 struct PendingRequestSender {
     tx: mpsc::Sender<PendingRequestResponse>,
     route_session_id: Option<String>,
+    method: String,
 }
 
 pub struct AdapterConnection {
@@ -767,6 +994,7 @@ pub struct AdapterConnection {
     adapter: ResolvedAcpAdapter,
     signature: AdapterConfigSignature,
     child: Mutex<ManagedProcessGroup>,
+    pid: u32,
     stdin: Mutex<ChildStdin>,
     next_id: Mutex<u64>,
     pending: Mutex<HashMap<u64, PendingRequestSender>>,
@@ -775,6 +1003,7 @@ pub struct AdapterConnection {
     unrouted_warnings: Mutex<HashMap<String, UnroutedWarningState>>,
     initialization: ConnectionInitialization,
     active_prompts: ActivePromptTracker,
+    active_users: AtomicUsize,
     generation: u64,
     last_activity_at: Mutex<Instant>,
     session_config_transaction: SessionConfigTransaction,
@@ -945,6 +1174,7 @@ impl AdapterConnection {
         require_local_claude_executable: bool,
     ) -> Result<Arc<Self>> {
         let (adapter, mut child) = spawn_adapter(
+            provider_id,
             config,
             cwd.as_std_path(),
             use_local_claude,
@@ -975,6 +1205,7 @@ impl AdapterConnection {
                 use_local_claude,
                 require_local_claude_executable,
             ),
+            pid: child.id(),
             child: Mutex::new(child),
             stdin: Mutex::new(stdin),
             next_id: Mutex::new(1),
@@ -984,6 +1215,7 @@ impl AdapterConnection {
             unrouted_warnings: Mutex::new(HashMap::new()),
             initialization: ConnectionInitialization::default(),
             active_prompts: ActivePromptTracker::default(),
+            active_users: AtomicUsize::new(0),
             generation: NEXT_CONNECTION_GENERATION.fetch_add(1, Ordering::Relaxed),
             last_activity_at: Mutex::new(Instant::now()),
             session_config_transaction: SessionConfigTransaction::default(),
@@ -1037,10 +1269,7 @@ impl AdapterConnection {
     }
 
     pub fn pid(&self) -> u32 {
-        self.child
-            .lock()
-            .map(|child| child.id())
-            .unwrap_or_default()
+        self.pid
     }
 
     pub fn is_exited(&self) -> bool {
@@ -1081,11 +1310,23 @@ impl AdapterConnection {
     fn begin_request_with_policy(
         &self,
         method: &str,
-        params: Value,
+        mut params: Value,
         allow_draining: bool,
     ) -> Result<PendingRequest> {
         self.touch();
-        self.ensure_request_allowed(allow_draining)?;
+        if let Err(error) = self.ensure_request_allowed(allow_draining) {
+            warn!(
+                event = "acp_connection_request_rejected",
+                provider = %self.provider_id,
+                pid = self.pid,
+                connection_generation = self.generation,
+                method,
+                %error,
+                "ACP request rejected before transport write"
+            );
+            return Err(error);
+        }
+        super::adapter::apply_session_execution_policy(&self.provider_id, method, &mut params)?;
         let id = {
             let mut next_id = self
                 .next_id
@@ -1114,6 +1355,7 @@ impl AdapterConnection {
                 PendingRequestSender {
                     tx,
                     route_session_id,
+                    method: method.to_string(),
                 },
             );
         if let Err(error) = self.send_raw_frame(&frame) {
@@ -1173,7 +1415,16 @@ impl AdapterConnection {
             .and_then(|_| stdin.flush());
         if let Err(error) = write_result {
             drop(stdin);
-            self.mark_transport_closed();
+            warn!(
+                event = "acp_connection_write_failed",
+                provider = %self.provider_id,
+                pid = self.pid,
+                connection_generation = self.generation,
+                error_kind = ?error.kind(),
+                os_error = error.raw_os_error(),
+                "ACP transport write failed"
+            );
+            self.mark_transport_closed(TransportCloseReason::StdinWriteError);
             return Err(anyhow!(AcpConnectionUnavailable::Closed)
                 .context(format!("failed to write ACP adapter frame: {error}")));
         }
@@ -1194,18 +1445,25 @@ impl AdapterConnection {
     }
 
     pub fn unregister_session_route(&self, session_id: &str) {
-        let route = if let Ok(mut routes) = self.session_routes.lock() {
-            let route = routes.remove(session_id);
-            if let Ok(mut early_frames) = self.early_session_frames.lock() {
-                early_frames.remove(session_id);
-            }
-            route
-        } else {
-            None
-        };
-        if let Some(route) = route {
-            route.close();
-        }
+        unregister_session_route_state(
+            session_id,
+            None,
+            &self.session_routes,
+            &self.early_session_frames,
+        );
+    }
+
+    pub fn unregister_session_route_if_generation(
+        &self,
+        session_id: &str,
+        route_generation: u64,
+    ) -> bool {
+        unregister_session_route_state(
+            session_id,
+            Some(route_generation),
+            &self.session_routes,
+            &self.early_session_frames,
+        )
     }
 
     pub fn begin_prompt(self: &Arc<Self>, session_id: &str) -> Result<ActivePromptGuard> {
@@ -1259,10 +1517,22 @@ impl AdapterConnection {
             .unwrap_or(true)
     }
 
-    fn mark_transport_closed(&self) {
-        if let Ok(mut state) = self.state.lock() {
+    fn mark_transport_closed(&self, reason: TransportCloseReason) {
+        let first_close = if let Ok(mut state) = self.state.lock() {
+            let first_close = *state != AdapterConnectionState::Closed;
             *state = AdapterConnectionState::Closed;
-        }
+            Some(first_close)
+        } else {
+            None
+        };
+        self.log_lifecycle(
+            if first_close == Some(true) {
+                "acp_connection_closed"
+            } else {
+                "acp_connection_close_observed"
+            },
+            reason.as_str(),
+        );
         if let Ok(mut pending) = self.pending.lock() {
             pending.clear();
         }
@@ -1274,6 +1544,55 @@ impl AdapterConnection {
                 *early_frames = EarlySessionFrames::default();
             }
         }
+    }
+
+    fn log_lifecycle(&self, event: &'static str, reason: &'static str) {
+        // Diagnostic snapshots must not wait for cleanup locks or copy RPC payloads.
+        let pending = self.pending.try_lock().ok().map(|pending| {
+            (
+                pending.len(),
+                pending
+                    .iter()
+                    .take(CONNECTION_DIAGNOSTIC_REQUEST_LIMIT)
+                    .map(|(id, request)| (*id, request.method.clone()))
+                    .collect::<Vec<_>>(),
+            )
+        });
+        let session_routes = self
+            .session_routes
+            .try_lock()
+            .ok()
+            .map(|routes| routes.len());
+        let active_prompts = self
+            .active_prompts
+            .counts
+            .try_lock()
+            .ok()
+            .map(|counts| counts.values().copied().sum::<usize>());
+        let idle_ms = self
+            .last_activity_at
+            .try_lock()
+            .ok()
+            .map(|last| last.elapsed().as_millis() as u64);
+        info!(
+            event,
+            reason,
+            provider = %self.provider_id,
+            adapter = %self.adapter.adapter_id,
+            command = %self.adapter.command,
+            workspace = self.key.as_ref().map(|key| key.workspace_root.as_str()),
+            pid = self.pid,
+            connection_generation = self.generation,
+            state = ?self.state.try_lock().ok().map(|state| *state),
+            active_prompts,
+            active_connection_users = self.active_users.load(Ordering::Acquire),
+            pending_requests = pending.as_ref().map(|(count, _)| *count),
+            pending_methods = ?pending.as_ref().map(|(_, methods)| methods),
+            pending_methods_truncated = pending.as_ref().map(|(count, _)| *count > CONNECTION_DIAGNOSTIC_REQUEST_LIMIT),
+            session_routes,
+            idle_ms,
+            "ACP connection lifecycle"
+        );
     }
 
     fn warn_unrouted_frame(&self, value: &Value, frame_bytes: usize) {
@@ -1310,16 +1629,27 @@ impl AdapterConnection {
         );
     }
 
+    #[track_caller]
     pub fn close_session_bounded(&self, session_id: &str, timeout: Duration) -> Result<()> {
         self.close_session_bounded_with_raw_log(session_id, timeout, None)
     }
 
+    #[track_caller]
     pub fn close_session_bounded_with_raw_log(
         &self,
         session_id: &str,
         timeout: Duration,
         raw_path: Option<&Utf8Path>,
     ) -> Result<()> {
+        info!(
+            event = "acp_session_close_requested",
+            provider = %self.provider_id,
+            pid = self.pid,
+            connection_generation = self.generation,
+            session_id,
+            caller = %std::panic::Location::caller(),
+            "ACP provider session close requested"
+        );
         let request = self.begin_shutdown_request(
             "session/close",
             json!({
@@ -1416,53 +1746,73 @@ impl AdapterConnection {
         }
     }
 
-    pub fn shutdown(&self) {
-        self.mark_transport_closed();
-        if let Some(key) = &self.key {
-            debug!(provider = %key.provider_id, workspace = %key.workspace_root, "shutting down ACP adapter connection");
-        }
+    #[track_caller]
+    pub fn shutdown(&self, reason: AdapterShutdownReason) {
+        info!(
+            event = "acp_connection_shutdown_requested",
+            reason = reason.as_str(),
+            caller = %std::panic::Location::caller(),
+            pid = self.pid,
+            connection_generation = self.generation,
+            "ACP connection shutdown requested"
+        );
+        self.mark_transport_closed(TransportCloseReason::Shutdown(reason));
         if let Ok(mut stdin) = self.stdin.lock() {
             let _ = stdin.flush();
         }
         if let Ok(mut child) = self.child.lock() {
-            let _ = child.terminate(PROCESS_GROUP_TERMINATION_GRACE);
+            if let Err(error) = child.terminate(PROCESS_GROUP_TERMINATION_GRACE) {
+                warn!(
+                    event = "acp_connection_termination_failed",
+                    pid = self.pid,
+                    connection_generation = self.generation,
+                    %error,
+                    "ACP adapter process termination failed"
+                );
+            }
         }
+        log_adapter_exit(self, true);
     }
 }
 
 fn read_stdout(connection: Arc<AdapterConnection>, stdout: impl Read + Send + 'static) {
     let mut reader = BufReader::new(stdout);
     let mut line = Vec::new();
-    loop {
+    let close_reason = loop {
         line.clear();
         match reader.read_until(b'\n', &mut line) {
-            Ok(0) => break,
+            Ok(0) => break TransportCloseReason::StdoutEof,
             Ok(_) if line.iter().all(u8::is_ascii_whitespace) => {}
-            Ok(frame_bytes) => match serde_json::from_slice::<Value>(&line) {
-                Ok(value) => route_inbound_frame(&connection, value, frame_bytes),
-                Err(error) => warn!(
-                    provider = %connection.provider_id,
-                    adapter = %connection.adapter.adapter_id,
-                    command = %connection.adapter.command,
-                    %error,
-                    frame_bytes,
-                    "invalid ACP stdout frame"
-                ),
-            },
+            Ok(frame_bytes) => {
+                let received_at = Instant::now();
+                match serde_json::from_slice::<Value>(&line) {
+                    Ok(value) => route_inbound_frame(&connection, value, frame_bytes, received_at),
+                    Err(error) => warn!(
+                        provider = %connection.provider_id,
+                        adapter = %connection.adapter.adapter_id,
+                        command = %connection.adapter.command,
+                        %error,
+                        frame_bytes,
+                        "invalid ACP stdout frame"
+                    ),
+                }
+            }
             Err(error) => {
                 warn!(
                     provider = %connection.provider_id,
                     adapter = %connection.adapter.adapter_id,
                     command = %connection.adapter.command,
+                    pid = connection.pid,
+                    connection_generation = connection.generation,
                     %error,
                     "failed reading ACP stdout"
                 );
-                break;
+                break TransportCloseReason::StdoutReadError;
             }
         }
-    }
+    };
     let transport_was_already_closed = connection.is_transport_closed();
-    connection.mark_transport_closed();
+    connection.mark_transport_closed(close_reason);
     log_adapter_exit(&connection, transport_was_already_closed);
 }
 
@@ -1566,7 +1916,20 @@ fn log_stderr_line(connection: &AdapterConnection, line: StderrLine) {
 }
 
 fn log_adapter_exit(connection: &AdapterConnection, transport_was_already_closed: bool) {
-    match connection.try_wait() {
+    let result = connection.try_wait();
+    info!(
+        event = "acp_adapter_exit_status",
+        provider = %connection.provider_id,
+        adapter = %connection.adapter.adapter_id,
+        command = %connection.adapter.command,
+        pid = connection.pid,
+        connection_generation = connection.generation,
+        transport_was_already_closed,
+        status_available = result.as_ref().is_ok_and(|status| status.is_some()),
+        exit_code = result.as_ref().ok().and_then(|status| status.as_ref()).and_then(|status| status.code()),
+        "ACP adapter exit status observed"
+    );
+    match result {
         Ok(Some(status)) => {
             if !transport_was_already_closed {
                 warn!(
@@ -1605,7 +1968,12 @@ fn log_adapter_exit(connection: &AdapterConnection, transport_was_already_closed
     }
 }
 
-fn route_inbound_frame(connection: &AdapterConnection, value: Value, frame_bytes: usize) {
+fn route_inbound_frame(
+    connection: &AdapterConnection,
+    value: Value,
+    frame_bytes: usize,
+    received_at: Instant,
+) {
     if value.get("method").is_none() {
         if let Some(id) = value.get("id").and_then(Value::as_u64) {
             if let Some(pending) = connection
@@ -1635,7 +2003,7 @@ fn route_inbound_frame(connection: &AdapterConnection, value: Value, frame_bytes
             session_id,
             value.clone(),
             frame_bytes,
-            Instant::now(),
+            received_at,
         ) {
             return;
         }
@@ -1677,12 +2045,41 @@ fn register_session_route_state(
     if let Some(previous) = previous {
         previous.close();
     }
-    for (value, bytes) in buffered {
-        if !tx.send(value, bytes) {
+    for frame in buffered {
+        if !tx.send_at(frame.value, frame.bytes, frame.received_at) {
             break;
         }
     }
     rx
+}
+
+fn unregister_session_route_state(
+    session_id: &str,
+    expected_generation: Option<u64>,
+    session_routes: &Mutex<HashMap<String, SessionRouteSender>>,
+    early_session_frames: &Mutex<EarlySessionFrames>,
+) -> bool {
+    let route = if let Ok(mut routes) = session_routes.lock() {
+        let generation_matches = routes.get(session_id).is_some_and(|route| {
+            expected_generation.is_none_or(|expected| route.inner.generation == expected)
+        });
+        if !generation_matches {
+            return false;
+        }
+        let route = routes.remove(session_id);
+        if let Ok(mut early_frames) = early_session_frames.lock() {
+            early_frames.remove(session_id);
+        }
+        route
+    } else {
+        None
+    };
+    if let Some(route) = route {
+        route.close();
+        true
+    } else {
+        false
+    }
 }
 
 fn route_or_buffer_session_frame(
@@ -1698,7 +2095,7 @@ fn route_or_buffer_session_frame(
     };
     if let Some(route) = routes.get(session_id).cloned() {
         drop(routes);
-        return route.send(value, frame_bytes);
+        return route.send_at(value, frame_bytes, now);
     }
     let buffered = early_session_frames
         .lock()
@@ -1781,7 +2178,7 @@ impl AdapterConnectionManager {
         workspace_root: Utf8PathBuf,
         use_local_claude: bool,
         require_local_claude_executable: bool,
-    ) -> Result<Arc<AdapterConnection>> {
+    ) -> Result<AdapterConnectionUse> {
         Ok(self
             .get_or_spawn_with_outcome(
                 provider_id,
@@ -1825,7 +2222,14 @@ impl AdapterConnectionManager {
             .map_err(|_| anyhow!("ACP connection manager lock poisoned"))?
             .remove(&key);
         let outcome = if let Some(stale) = stale {
-            stale.shutdown();
+            let reason = if stale.signature != signature {
+                AdapterShutdownReason::ConfigChanged
+            } else if stale.is_exited() {
+                AdapterShutdownReason::ProcessExited
+            } else {
+                AdapterShutdownReason::TransportUnavailable
+            };
+            stale.shutdown(reason);
             AdapterConnectionOutcome::ReplacedStale
         } else {
             AdapterConnectionOutcome::Spawned
@@ -1839,6 +2243,7 @@ impl AdapterConnectionManager {
             use_local_claude,
             require_local_claude_executable,
         )?;
+        let connection = AdapterConnectionUse::new(connection);
         self.connections
             .lock()
             .map_err(|_| anyhow!("ACP connection manager lock poisoned"))?
@@ -1853,6 +2258,7 @@ impl AdapterConnectionManager {
         &self,
         key: &AdapterConnectionKey,
         expected: &Arc<AdapterConnection>,
+        reason: AdapterShutdownReason,
     ) -> bool {
         let removed = self.connections.lock().ok().and_then(|mut connections| {
             let matches = connections.get(key).is_some_and(|current| {
@@ -1866,7 +2272,7 @@ impl AdapterConnectionManager {
             matches.then(|| connections.remove(key)).flatten()
         });
         if let Some(connection) = removed {
-            connection.shutdown();
+            connection.shutdown(reason);
             true
         } else {
             false
@@ -1877,7 +2283,7 @@ impl AdapterConnectionManager {
         &self,
         key: &AdapterConnectionKey,
         signature: &AdapterConfigSignature,
-    ) -> Option<Arc<AdapterConnection>> {
+    ) -> Option<AdapterConnectionUse> {
         let connection = self.connections.lock().ok()?.get(key).cloned()?;
         if connection.signature != *signature
             || connection.is_exited()
@@ -1885,34 +2291,113 @@ impl AdapterConnectionManager {
         {
             return None;
         }
-        Some(connection)
+        // Health checks may touch the child lock; do not hold the pool lock
+        // across them. Revalidate membership before atomically borrowing.
+        let connections = self.connections.lock().ok()?;
+        let current = connections.get(key)?;
+        if !Arc::ptr_eq(current, &connection) {
+            return None;
+        }
+        Some(AdapterConnectionUse::new(connection))
     }
 
     pub fn register_attempt_session(
         &self,
         attempt_dir: &Utf8Path,
         key: AdapterConnectionKey,
+        connection_generation: u64,
         session_id: String,
+        route_generation: u64,
     ) {
         if let Ok(mut attempts) = self.attempt_sessions.lock() {
-            attempts.insert(attempt_dir.to_string(), LiveAcpSession { key, session_id });
+            attempts.insert(
+                attempt_dir.to_string(),
+                LiveAcpSession {
+                    key,
+                    connection_generation,
+                    session_id,
+                    route_generation,
+                },
+            );
         }
     }
 
-    pub fn unregister_attempt_session(&self, attempt_dir: &Utf8Path) {
-        if let Ok(mut attempts) = self.attempt_sessions.lock() {
+    pub fn unregister_attempt_session(
+        &self,
+        attempt_dir: &Utf8Path,
+    ) -> AttemptSessionUnregisterOutcome {
+        self.unregister_attempt_session_matching(attempt_dir, None)
+    }
+
+    pub fn unregister_attempt_session_if_matches(
+        &self,
+        attempt_dir: &Utf8Path,
+        expected: &LiveAcpSession,
+    ) -> AttemptSessionUnregisterOutcome {
+        self.unregister_attempt_session_matching(attempt_dir, Some(expected))
+    }
+
+    pub fn begin_attempt_session_detach_if_matches(
+        &self,
+        attempt_dir: &Utf8Path,
+        expected: &LiveAcpSession,
+    ) -> AttemptSessionUnregisterOutcome {
+        let Ok(mut attempts) = self.attempt_sessions.lock() else {
+            return AttemptSessionUnregisterOutcome::NotRegistered;
+        };
+        let Some(current) = attempts.get(attempt_dir.as_str()) else {
+            return AttemptSessionUnregisterOutcome::NotRegistered;
+        };
+        if current != expected {
+            return AttemptSessionUnregisterOutcome::NotRegistered;
+        }
+        if attempts.iter().any(|(candidate_attempt, candidate)| {
+            candidate_attempt != attempt_dir.as_str() && candidate.same_provider_session(expected)
+        }) {
             attempts.remove(attempt_dir.as_str());
+            AttemptSessionUnregisterOutcome::ProviderSessionStillReferenced
+        } else {
+            // Keep the last binding registered until bounded close completes so
+            // connection pruning cannot race the provider session close.
+            AttemptSessionUnregisterOutcome::LastProviderSessionReference
+        }
+    }
+
+    fn unregister_attempt_session_matching(
+        &self,
+        attempt_dir: &Utf8Path,
+        expected: Option<&LiveAcpSession>,
+    ) -> AttemptSessionUnregisterOutcome {
+        let Ok(mut attempts) = self.attempt_sessions.lock() else {
+            return AttemptSessionUnregisterOutcome::NotRegistered;
+        };
+        let Some(current) = attempts.get(attempt_dir.as_str()) else {
+            return AttemptSessionUnregisterOutcome::NotRegistered;
+        };
+        if expected.is_some_and(|expected| current != expected) {
+            return AttemptSessionUnregisterOutcome::NotRegistered;
+        }
+        let detached = attempts
+            .remove(attempt_dir.as_str())
+            .expect("attempt session binding disappeared while locked");
+        if attempts
+            .values()
+            .any(|candidate| candidate.same_provider_session(&detached))
+        {
+            AttemptSessionUnregisterOutcome::ProviderSessionStillReferenced
+        } else {
+            AttemptSessionUnregisterOutcome::LastProviderSessionReference
         }
     }
 
     pub fn prune_idle_connections(&self, idle_ttl: Duration, max_idle: usize) {
-        let attached_keys = self
+        let attached_connections = self
             .attempt_sessions
             .lock()
             .map(|attempts| {
                 attempts
                     .values()
-                    .map(|session| session.key.clone())
+                    .map(|session| (session.key.clone(), session.connection_generation))
                     .collect::<std::collections::HashSet<_>>()
             })
             .unwrap_or_default();
@@ -1922,7 +2407,9 @@ impl AdapterConnectionManager {
             let mut idle = connections
                 .iter()
                 .filter(|(key, connection)| {
-                    !attached_keys.contains(*key) && connection.active_prompt_count() == 0
+                    !attached_connections.contains(&((*key).clone(), connection.generation()))
+                        && connection.active_users.load(Ordering::Acquire) == 0
+                        && connection.active_prompt_count() == 0
                 })
                 .map(|(key, connection)| (key.clone(), connection.last_activity_at()))
                 .collect::<Vec<_>>();
@@ -1931,13 +2418,29 @@ impl AdapterConnectionManager {
             for (index, (key, last_activity_at)) in idle.into_iter().enumerate() {
                 if now.duration_since(last_activity_at) >= idle_ttl || index < overflow {
                     if let Some(connection) = connections.remove(&key) {
-                        removed.push(connection);
+                        let reason = if now.duration_since(last_activity_at) >= idle_ttl {
+                            AdapterShutdownReason::IdleTtl
+                        } else {
+                            AdapterShutdownReason::IdleCapacity
+                        };
+                        removed.push((connection, reason, now.duration_since(last_activity_at)));
                     }
                 }
             }
         }
-        for connection in removed {
-            connection.shutdown();
+        for (connection, reason, idle_at_selection) in removed {
+            info!(
+                event = "acp_connection_idle_eviction",
+                pid = connection.pid,
+                connection_generation = connection.generation,
+                reason = reason.as_str(),
+                idle_ttl_ms = idle_ttl.as_millis() as u64,
+                idle_ms_at_selection = idle_at_selection.as_millis() as u64,
+                attached_in_prune_snapshot = false,
+                max_idle,
+                "ACP idle connection selected for eviction"
+            );
+            connection.shutdown(reason);
         }
     }
 
@@ -1962,6 +2465,10 @@ impl AdapterConnectionManager {
             self.unregister_attempt_session(attempt_dir);
             return Ok(false);
         };
+        if connection.generation() != session.connection_generation {
+            self.unregister_attempt_session_if_matches(attempt_dir, &session);
+            return Ok(false);
+        }
         let frame = connection.send_cancel_notification(&session.session_id)?;
         let raw_path = attempt_dir.join("acp.raw.jsonl");
         let _ = append_raw_frame(
@@ -1992,28 +2499,47 @@ impl AdapterConnectionManager {
             self.unregister_attempt_session(attempt_dir);
             return Ok(false);
         };
-        let has_active_prompt = connection.active_prompt_count_for_session(&session.session_id) > 0;
-        if has_active_prompt {
-            if let Err(error) = connection.send_cancel_notification(&session.session_id) {
-                warn!(%attempt_dir, %error, "failed to cancel ACP prompt before session close");
-            }
+        if connection.generation() != session.connection_generation {
+            self.unregister_attempt_session_if_matches(attempt_dir, &session);
+            return Ok(false);
         }
-        settle_attempt_for_session_close(attempt_dir);
-        if has_active_prompt {
-            let drained = connection
-                .wait_for_prompt_drain(std::slice::from_ref(&session.session_id), timeout)?;
-            if !drained {
-                warn!(
-                    %attempt_dir,
-                    session_id = %session.session_id,
-                    active_prompts = connection.active_prompt_count_for_session(&session.session_id),
-                    "ACP prompt drain timed out before session close"
-                );
+        match self.begin_attempt_session_detach_if_matches(attempt_dir, &session) {
+            AttemptSessionUnregisterOutcome::NotRegistered => return Ok(false),
+            AttemptSessionUnregisterOutcome::ProviderSessionStillReferenced => {
+                settle_attempt_for_session_close(attempt_dir);
+                persist_cancelled_session_snapshot(attempt_dir);
+                return Ok(true);
             }
+            AttemptSessionUnregisterOutcome::LastProviderSessionReference => {}
         }
-        connection.close_session_bounded(&session.session_id, timeout)?;
+        let close_result = (|| -> Result<()> {
+            let has_active_prompt =
+                connection.active_prompt_count_for_session(&session.session_id) > 0;
+            if has_active_prompt {
+                if let Err(error) = connection.send_cancel_notification(&session.session_id) {
+                    warn!(%attempt_dir, %error, "failed to cancel ACP prompt before session close");
+                }
+            }
+            settle_attempt_for_session_close(attempt_dir);
+            if has_active_prompt {
+                let drained = connection
+                    .wait_for_prompt_drain(std::slice::from_ref(&session.session_id), timeout)?;
+                if !drained {
+                    warn!(
+                        %attempt_dir,
+                        session_id = %session.session_id,
+                        active_prompts = connection.active_prompt_count_for_session(&session.session_id),
+                        "ACP prompt drain timed out before session close"
+                    );
+                }
+            }
+            connection.close_session_bounded(&session.session_id, timeout)
+        })();
+        if let Err(error) = close_result {
+            return Err(error);
+        }
         persist_cancelled_session_snapshot(attempt_dir);
-        self.unregister_attempt_session(attempt_dir);
+        self.unregister_attempt_session_if_matches(attempt_dir, &session);
         Ok(true)
     }
 
@@ -2031,7 +2557,7 @@ impl AdapterConnectionManager {
             .cloned()
             .collect::<Vec<_>>();
         for key in keys {
-            self.close_connection_bounded(&key, timeout)?;
+            self.close_connection_bounded(&key, timeout, AdapterShutdownReason::WorkspaceClose)?;
         }
         Ok(())
     }
@@ -2048,7 +2574,7 @@ impl AdapterConnectionManager {
         let keys = select_provider_connection_keys(connections.keys(), provider_id);
         drop(connections);
         for key in keys {
-            self.close_connection_bounded(&key, timeout)?;
+            self.close_connection_bounded(&key, timeout, AdapterShutdownReason::ProviderClose)?;
         }
         Ok(())
     }
@@ -2062,7 +2588,11 @@ impl AdapterConnectionManager {
             .cloned()
             .collect::<Vec<_>>();
         for key in keys {
-            self.close_connection_bounded(&key, timeout)?;
+            self.close_connection_bounded(
+                &key,
+                timeout,
+                AdapterShutdownReason::AllConnectionsClose,
+            )?;
         }
         Ok(())
     }
@@ -2071,6 +2601,7 @@ impl AdapterConnectionManager {
         &self,
         key: &AdapterConnectionKey,
         timeout: Duration,
+        reason: AdapterShutdownReason,
     ) -> Result<()> {
         let connection = {
             let mut connections = self
@@ -2084,21 +2615,32 @@ impl AdapterConnectionManager {
             connections.remove(key);
             connection
         };
+        connection.log_lifecycle("acp_connection_draining", reason.as_str());
         let sessions = self
             .attempt_sessions
             .lock()
             .map_err(|_| anyhow!("ACP attempt session lock poisoned"))?
             .iter()
             .filter(|(_, session)| &session.key == key)
-            .map(|(attempt_dir, session)| (attempt_dir.clone(), session.session_id.clone()))
+            .map(|(attempt_dir, session)| (attempt_dir.clone(), session.clone()))
             .collect::<Vec<_>>();
-        let session_ids = sessions
+        let current_generation = connection.generation();
+        let session_attempts = sessions
             .iter()
-            .map(|(_, session_id)| session_id.clone())
-            .collect::<Vec<_>>();
+            .filter(|(_, session)| session.connection_generation == current_generation)
+            .fold(
+                BTreeMap::<String, String>::new(),
+                |mut unique, (attempt_dir, session)| {
+                    unique
+                        .entry(session.session_id.clone())
+                        .or_insert_with(|| attempt_dir.clone());
+                    unique
+                },
+            );
+        let session_ids = session_attempts.keys().cloned().collect::<Vec<_>>();
         let mut closed_attempts = Vec::new();
         let mut close_errors = Vec::new();
-        for (attempt_dir, session_id) in &sessions {
+        for (session_id, attempt_dir) in &session_attempts {
             if connection.active_prompt_count_for_session(session_id) > 0
                 && let Err(error) = connection.send_cancel_notification(session_id)
             {
@@ -2117,7 +2659,7 @@ impl AdapterConnectionManager {
                 "ACP prompt drain timed out before adapter shutdown"
             );
         }
-        for (attempt_dir, session_id) in sessions {
+        for (session_id, attempt_dir) in session_attempts {
             let attempt_path = Utf8PathBuf::from(&attempt_dir);
             let raw_path = attempt_path.join("acp.raw.jsonl");
             if let Err(error) = connection.close_session_bounded_with_raw_log(
@@ -2127,6 +2669,9 @@ impl AdapterConnectionManager {
             ) {
                 close_errors.push(format!("{attempt_dir}: {error}"));
             }
+        }
+        for (attempt_dir, _) in sessions {
+            let attempt_path = Utf8PathBuf::from(&attempt_dir);
             persist_cancelled_session_snapshot(attempt_path.as_path());
             closed_attempts.push(attempt_dir);
         }
@@ -2135,7 +2680,7 @@ impl AdapterConnectionManager {
                 attempts.remove(&attempt_dir);
             }
         }
-        connection.shutdown();
+        connection.shutdown(reason);
         if close_errors.is_empty() {
             Ok(())
         } else {
@@ -2221,13 +2766,14 @@ mod tests {
 
     use super::{
         AcpConnectionUnavailable, ActivePromptTracker, AdapterConnectionKey,
-        AdapterConnectionState, ConnectionCreationGate, ConnectionInitialization,
-        EarlySessionFrames, STDERR_LINE_MAX_BYTES, SessionConfigTransaction, SessionEventPump,
+        AdapterConnectionManager, AdapterConnectionState, AttemptSessionUnregisterOutcome,
+        ConnectionCreationGate, ConnectionInitialization, EarlySessionFrames,
+        STDERR_LINE_MAX_BYTES, SessionConfigTransaction, SessionEventPump,
         SessionRouteTryRecvError, is_same_connection_generation,
         persist_cancelled_session_snapshot, read_stderr, record_unrouted_warning,
         register_session_route_state, request_unavailability, route_or_buffer_session_frame,
         select_provider_connection_keys, session_id_from_frame, session_route_pair,
-        settle_attempt_for_session_close,
+        settle_attempt_for_session_close, unregister_session_route_state,
     };
 
     fn write_current_attempt_node(attempt_dir: &Utf8PathBuf) {
@@ -2250,6 +2796,161 @@ mod tests {
             }),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn unregistering_attempt_preserves_shared_provider_session_reference() {
+        let manager = AdapterConnectionManager::default();
+        let key = AdapterConnectionKey::new("claude", Utf8PathBuf::from("C:/workspace"));
+        let first_attempt = Utf8PathBuf::from("C:/attempt-1");
+        let second_attempt = Utf8PathBuf::from("C:/attempt-2");
+
+        manager.register_attempt_session(
+            first_attempt.as_path(),
+            key.clone(),
+            7,
+            "session-shared".to_string(),
+            11,
+        );
+        manager.register_attempt_session(
+            second_attempt.as_path(),
+            key,
+            7,
+            "session-shared".to_string(),
+            12,
+        );
+
+        assert_eq!(
+            manager.unregister_attempt_session(first_attempt.as_path()),
+            AttemptSessionUnregisterOutcome::ProviderSessionStillReferenced
+        );
+        assert_eq!(
+            manager.unregister_attempt_session(second_attempt.as_path()),
+            AttemptSessionUnregisterOutcome::LastProviderSessionReference
+        );
+    }
+
+    #[test]
+    fn last_provider_session_binding_stays_registered_during_bounded_close() {
+        let manager = AdapterConnectionManager::default();
+        let key = AdapterConnectionKey::new("claude", Utf8PathBuf::from("C:/workspace"));
+        let first_attempt = Utf8PathBuf::from("C:/attempt-1");
+        let second_attempt = Utf8PathBuf::from("C:/attempt-2");
+        manager.register_attempt_session(
+            first_attempt.as_path(),
+            key.clone(),
+            7,
+            "session-shared".to_string(),
+            11,
+        );
+        manager.register_attempt_session(
+            second_attempt.as_path(),
+            key,
+            7,
+            "session-shared".to_string(),
+            12,
+        );
+
+        let first = manager.attempt_session(first_attempt.as_path()).unwrap();
+        assert_eq!(
+            manager.begin_attempt_session_detach_if_matches(first_attempt.as_path(), &first),
+            AttemptSessionUnregisterOutcome::ProviderSessionStillReferenced
+        );
+        let last = manager.attempt_session(second_attempt.as_path()).unwrap();
+        assert_eq!(
+            manager.begin_attempt_session_detach_if_matches(second_attempt.as_path(), &last),
+            AttemptSessionUnregisterOutcome::LastProviderSessionReference
+        );
+        assert!(manager.attempt_session(second_attempt.as_path()).is_some());
+        assert_eq!(
+            manager.unregister_attempt_session_if_matches(second_attempt.as_path(), &last),
+            AttemptSessionUnregisterOutcome::LastProviderSessionReference
+        );
+    }
+
+    #[test]
+    fn provider_session_reference_identity_includes_connection_generation() {
+        let manager = AdapterConnectionManager::default();
+        let key = AdapterConnectionKey::new("claude", Utf8PathBuf::from("C:/workspace"));
+        let old_attempt = Utf8PathBuf::from("C:/attempt-old");
+        let new_attempt = Utf8PathBuf::from("C:/attempt-new");
+
+        manager.register_attempt_session(
+            old_attempt.as_path(),
+            key.clone(),
+            7,
+            "session-shared".to_string(),
+            11,
+        );
+        manager.register_attempt_session(
+            new_attempt.as_path(),
+            key,
+            8,
+            "session-shared".to_string(),
+            12,
+        );
+
+        assert_eq!(
+            manager.unregister_attempt_session(old_attempt.as_path()),
+            AttemptSessionUnregisterOutcome::LastProviderSessionReference
+        );
+    }
+
+    #[test]
+    fn stale_binding_cannot_unregister_replacement_route() {
+        let manager = AdapterConnectionManager::default();
+        let attempt = Utf8PathBuf::from("C:/attempt");
+        let key = AdapterConnectionKey::new("claude", Utf8PathBuf::from("C:/workspace"));
+        let stale = super::LiveAcpSession {
+            key: key.clone(),
+            connection_generation: 7,
+            session_id: "session-shared".to_string(),
+            route_generation: 11,
+        };
+        manager.register_attempt_session(
+            attempt.as_path(),
+            key,
+            7,
+            "session-shared".to_string(),
+            12,
+        );
+
+        assert_eq!(
+            manager.unregister_attempt_session_if_matches(attempt.as_path(), &stale),
+            AttemptSessionUnregisterOutcome::NotRegistered
+        );
+        assert_eq!(
+            manager
+                .attempt_session(attempt.as_path())
+                .unwrap()
+                .route_generation,
+            12
+        );
+    }
+
+    #[test]
+    fn stale_route_cleanup_preserves_replacement_route() {
+        let routes = Mutex::new(HashMap::new());
+        let early_frames = Mutex::new(EarlySessionFrames::default());
+        let stale =
+            register_session_route_state("claude", "session-shared", &routes, &early_frames);
+        let current =
+            register_session_route_state("claude", "session-shared", &routes, &early_frames);
+
+        assert!(!unregister_session_route_state(
+            "session-shared",
+            Some(stale.inner.generation),
+            &routes,
+            &early_frames,
+        ));
+        assert!(routes.lock().unwrap().contains_key("session-shared"));
+        assert!(unregister_session_route_state(
+            "session-shared",
+            Some(current.inner.generation),
+            &routes,
+            &early_frames,
+        ));
+        assert!(!routes.lock().unwrap().contains_key("session-shared"));
     }
 
     #[test]
@@ -2470,7 +3171,7 @@ mod tests {
     use crate::{
         acp::{
             elicitation::{
-                ELICITATION_DEFAULT_TIMEOUT, ElicitationAction, PendingElicitationState,
+                ELICITATION_DEFAULT_TIMEOUT, ElicitationAction, pending_elicitation_state,
                 wait_for_elicitation_response, write_pending_elicitation,
             },
             events::{load_timeline_items, permission_request_event, write_timeline_items},
@@ -2535,19 +3236,20 @@ mod tests {
         let elicitation_id = "elicit-close";
         write_pending_elicitation(
             &attempt_dir,
-            &PendingElicitationState {
-                elicitation_id: elicitation_id.to_string(),
-                jsonrpc_id: json!(1),
-                request: serde_json::from_value(json!({
+            &pending_elicitation_state(
+                elicitation_id,
+                "turn-1",
+                "prompt-turn-1",
+                json!(1),
+                serde_json::from_value(json!({
                     "mode": "form",
                     "sessionId": session_id,
                     "message": "Choose",
                     "requestedSchema": { "type": "object", "properties": {} }
                 }))
                 .unwrap(),
-                created_at: "1Z".to_string(),
-                timeline_identity: None,
-            },
+                "1Z".to_string(),
+            ),
         )
         .unwrap();
 
@@ -2654,6 +3356,47 @@ mod tests {
     }
 
     #[test]
+    fn session_route_preserves_stdout_receipt_time() {
+        let (sender, receiver) = session_route_pair("test-adapter", "session-observed");
+        let received_at = std::time::Instant::now() - Duration::from_millis(75);
+        assert!(sender.send_at(json!({ "kind": "observed" }), 48, received_at));
+
+        let observed = receiver.try_recv_observed().unwrap();
+        assert_eq!(observed.value, json!({ "kind": "observed" }));
+        assert_eq!(observed.bytes, 48);
+        assert_eq!(observed.received_at, received_at);
+    }
+
+    #[test]
+    fn early_session_route_preserves_stdout_receipt_time() {
+        let routes = Mutex::new(HashMap::new());
+        let early_frames = Mutex::new(EarlySessionFrames::default());
+        let received_at = std::time::Instant::now() - Duration::from_millis(50);
+        let frame = json!({
+            "method": "session/update",
+            "params": { "sessionId": "session-early-observed" }
+        });
+        assert!(route_or_buffer_session_frame(
+            &routes,
+            &early_frames,
+            "session-early-observed",
+            frame.clone(),
+            96,
+            received_at,
+        ));
+
+        let receiver = register_session_route_state(
+            "test-adapter",
+            "session-early-observed",
+            &routes,
+            &early_frames,
+        );
+        let observed = receiver.try_recv_observed().unwrap();
+        assert_eq!(observed.value, frame);
+        assert_eq!(observed.received_at, received_at);
+    }
+
+    #[test]
     fn session_event_pump_drains_route_while_runtime_is_idle() {
         let (sender, receiver) = session_route_pair("test-adapter", "session-pump");
         let pump = SessionEventPump::start(receiver);
@@ -2740,6 +3483,32 @@ mod tests {
             json!("response-adjacent")
         );
         assert!(pump.has_consumed(response_watermark));
+        pump.close();
+    }
+
+    #[test]
+    fn session_event_pump_does_not_consume_prefetched_frames_before_processing() {
+        let (sender, receiver) = session_route_pair("test-adapter", "session-prefetched");
+        let pump = SessionEventPump::start(receiver);
+        assert!(sender.send(json!({ "index": 1 }), 32));
+        let first_watermark = sender.watermark().expect("first watermark");
+        assert!(sender.send(json!({ "index": 2 }), 32));
+        let second_watermark = sender.watermark().expect("second watermark");
+
+        let first = pump.recv_timeout_observed(Duration::from_secs(1)).unwrap();
+        let second = pump.recv_timeout_observed(Duration::from_secs(1)).unwrap();
+        assert_eq!(first.sequence, first_watermark.sequence());
+        assert_eq!(second.sequence, second_watermark.sequence());
+
+        assert!(!pump.has_consumed(first_watermark));
+        assert!(!pump.has_consumed(second_watermark));
+
+        pump.acknowledge_consumed(first.sequence).unwrap();
+        assert!(pump.has_consumed(first_watermark));
+        assert!(!pump.has_consumed(second_watermark));
+
+        pump.acknowledge_consumed(second.sequence).unwrap();
+        assert!(pump.has_consumed(second_watermark));
         pump.close();
     }
 
@@ -2935,6 +3704,8 @@ mod tests {
         write_pending_permission(
             &attempt_dir,
             request_id,
+            "turn-1",
+            "prompt-event-1",
             json!({
                 "sessionId": "session-1",
                 "toolCall": {

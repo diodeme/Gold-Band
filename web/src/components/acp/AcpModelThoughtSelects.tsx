@@ -94,6 +94,7 @@ type Props = {
   contentSide?: 'top' | 'bottom';
   align?: 'start' | 'end';
   triggerClassName?: string;
+  disabled?: boolean;
 };
 
 export function AcpModelThoughtSelects({
@@ -111,6 +112,7 @@ export function AcpModelThoughtSelects({
   contentSide = 'bottom',
   align = DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
   triggerClassName,
+  disabled = false,
 }: Props) {
   const { t } = useTranslation();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -158,6 +160,7 @@ export function AcpModelThoughtSelects({
         contentSide={contentSide}
         align={align}
         triggerClassName={triggerClassName}
+        disabled={disabled}
       />
     ) : null;
   }
@@ -176,6 +179,7 @@ export function AcpModelThoughtSelects({
     >
       <Tooltip open={tooltipOpen} onOpenChange={handleTooltipOpenChange}>
         <DropdownMenuTrigger
+          disabled={disabled}
           className={cn(triggerClass, triggerClassName)}
           onPointerEnter={showTooltipIfOverflowing}
           onPointerLeave={hideTooltip}

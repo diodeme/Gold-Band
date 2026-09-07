@@ -674,6 +674,7 @@ mod tests {
             scheduled_occurrence_id: scheduled.then(|| "occurrence-1".into()),
             project_id: "project-1".into(),
             task_id: "task-1".into(),
+            task_uuid: None,
             run_id: "run-1".into(),
             round_id: "round-1".into(),
             node_id: "node-1".into(),
@@ -692,6 +693,7 @@ mod tests {
             scheduled_occurrence_id: None,
             project_id: project_id.into(),
             task_id: "task-1".into(),
+            task_uuid: None,
             run_id: "run-1".into(),
             round_id: "round-1".into(),
             node_id: "node-1".into(),
@@ -714,6 +716,7 @@ mod tests {
             scheduled_occurrence_id: None,
             project_id: project_id.into(),
             task_id: "task-1".into(),
+            task_uuid: None,
             run_id: "run-1".into(),
             round_id: "round-1".into(),
             node_id: "node-1".into(),
@@ -736,6 +739,7 @@ mod tests {
             scheduled_occurrence_id: None,
             project_id: project_id.into(),
             task_id: "task-1".into(),
+            task_uuid: None,
             run_id: "run-1".into(),
             round_id: "round-1".into(),
             node_id: "node-1".into(),
@@ -756,6 +760,7 @@ mod tests {
             scheduled_occurrence_id: None,
             project_id: project_id.into(),
             task_id: "task-1".into(),
+            task_uuid: None,
             run_id: "run-1".into(),
             round_id: "round-1".into(),
             node_id: "node-1".into(),
@@ -851,6 +856,8 @@ mod tests {
         crate::acp::permission::write_pending_permission(
             &attempt_dir,
             "permission-1",
+            "turn-1",
+            "prompt-event-1",
             serde_json::json!({
                 "toolCall": {
                     "title": "Edit files",
@@ -1088,13 +1095,14 @@ mod tests {
                 &locator.node_id,
                 &locator.attempt_id,
             ),
-            &crate::acp::elicitation::PendingElicitationState {
-                elicitation_id: "elicit-001".into(),
-                jsonrpc_id: serde_json::json!(1),
+            &crate::acp::elicitation::pending_elicitation_state(
+                "elicit-001",
+                "turn-1",
+                "prompt-event-1",
+                serde_json::json!(1),
                 request,
-                created_at: "2026-09-03T00:00:01Z".into(),
-                timeline_identity: None,
-            },
+                "2026-09-03T00:00:01Z".into(),
+            ),
         )
         .unwrap();
     }
@@ -1428,6 +1436,8 @@ mod tests {
         crate::acp::permission::write_pending_permission(
             &attempt_dir,
             "0",
+            "turn-first",
+            "prompt-event-first",
             serde_json::json!({
                 "toolCall": { "toolCallId": "call-first", "title": "Write first.txt" },
                 "options": [{ "optionId": "allow", "name": "Allow", "kind": "allow_once" }]
@@ -1457,6 +1467,8 @@ mod tests {
         crate::acp::permission::write_pending_permission(
             &attempt_dir,
             "0",
+            "turn-second",
+            "prompt-event-second",
             serde_json::json!({
                 "toolCall": { "toolCallId": "call-second", "title": "Write second.txt" },
                 "options": [{ "optionId": "allow", "name": "Allow", "kind": "allow_once" }]
@@ -1499,6 +1511,8 @@ mod tests {
         crate::acp::permission::write_pending_permission(
             &attempt_dir,
             "permission-1",
+            "turn-1",
+            "prompt-event-1",
             serde_json::json!({
                 "options": [
                     { "optionId": "allow", "name": "Allow", "kind": "allow_once" },
@@ -1554,6 +1568,8 @@ mod tests {
         crate::acp::permission::write_pending_permission(
             &attempt_dir,
             "permission-1",
+            "turn-1",
+            "prompt-event-1",
             serde_json::json!({ "options": options }),
             "2026-08-30T00:00:01Z".into(),
         )

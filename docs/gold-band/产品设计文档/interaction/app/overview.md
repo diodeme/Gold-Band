@@ -1,5 +1,9 @@
 # Gold Band 桌面客户端交互概览
 
+## 0. 当前执行详情入口
+
+2026-08-31 起，旧 workbench Round 详情页已废弃并删除。任务工作流中的 Round 操作统一进入会话模式 `conversation-run`；Round、node、attempt、ACP timeline 与右侧工作区由同一会话运行页承载。本文后续早期 Round 工作台记录仅作为历史设计演进，不再定义当前路由或页面实现。
+
 ## 1. 一句话定义
 Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工具。
 
@@ -55,16 +59,16 @@ Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工
 ```text
 任务列表
   -> 任务工作流
-    -> Round 详情
+    -> 会话运行页（定位到 Round / Attempt）
 ```
 
-任务详情不再作为独立页面出现，它的 requirement 摘要、当前状态与运行入口合并到任务工作流页顶部。run 也不再作为独立详情页出现，而是任务工作流页中的分组行；round 是唯一的执行详情下钻页。
+任务详情不再作为独立页面出现，它的 requirement 摘要、当前状态与运行入口合并到任务工作流页顶部。run 也不再作为独立详情页出现，而是任务工作流页中的分组行；Round 下钻进入 canonical 会话运行页，不再创建第二套 workbench 执行详情状态。
 
 页面顶部显示面包屑导航：
 
 ```text
 任务列表 > 任务01 > 工作流
-任务列表 > 任务01 > 工作流列表 > run01 > round01
+会话 > task01 > run01 > round01 / attempt01
 ```
 
 用户点击面包屑中的任意层级，可返回对应上级页面。
@@ -76,10 +80,11 @@ Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工
 - [任务列表页](task-list.md)
 - [任务详情页（已并入任务工作流页）](task-detail.md)
 - [任务工作流页](task-workflow.md)
-- [Round 详情页](round-detail.md)
+- [Round 详情页退役与迁移说明](round-detail.md)
 - [Agent 管理页](agent-management.md)
 - [上下文管理与角色批量导入](context-management.md)
 - [设置页](settings.md)
+- [WebView 兼容能力与分级降级](webview-compatibility.md)
 
 ---
 
@@ -87,7 +92,7 @@ Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工
 
 ### 5.1 一级功能与业务页面分离
 - 左侧一级菜单只切换功能模块。
-- 任务列表、任务工作流、round 详情都属于右侧任务编排功能区内部页面。
+- 任务列表、任务工作流属于 workbench 任务编排页面；Round 执行详情进入会话运行页。
 - 不应把 workflow DAG 直接放在应用首页。
 
 ### 5.2 桌面端使用直接操作

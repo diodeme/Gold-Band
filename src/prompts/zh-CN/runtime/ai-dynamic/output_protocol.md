@@ -15,11 +15,15 @@
 ```
 
 约束提醒：
+- 后继任务只能分解既定范围内结果或修复合格 `BLOCKER`；不得把 `FOLLOW_UP` 或前序建议升级为新结果。范围漂移只安排恢复最小范围内方案。
 {% if agent_strategy_mode == "fixed" %}- 固定 agent 策略下，不要输出任何 `provider` 字段；runtime 会自动填充固定 agent。
 {% else %}- 动态 agent 策略下，worker 必须输出合法 provider，且必须符合当前 prompt 给出的节点 agent 选择说明；`merge / acceptance` 不要输出 provider，runtime 会固定使用初始分发 Agent。
 - `workflow-invocation` 不要输出 `provider`。
 {% endif %}- {{ model_policy }}
 - `next.type="end"` 时，`next` 中不要再放 `node / groupId / nodes / merge / acceptance`。
+{% if end_summary_is_outer_handoff %}- 如果本次使用 `next.type="end"`，`summary` 必须是交给 AI-DYNAMIC 外层后继节点的完整业务交接摘要：说明已完成内容、关键结论、重要产物及仍需关注事项；不要只写路由动作或“验收通过”。
+{% else %}- 如果本次使用 `next.type="end"`，`summary` 是内部进度/分支报告，准确说明本节点完成内容，供 Runtime 报告清单和上层 group 使用。
+{% endif %}
 - `next.type="single"` 时，必须提供完整的 `next.node`，不要提供 `groupId / nodes / merge / acceptance`。
 - 不要为任何节点输出 `workspace`、workspace mode、路径或分支；runtime 独占工作空间分配权。
 - `next.type="single"` 会自动继承当前节点的实际 workspace。

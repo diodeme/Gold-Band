@@ -43,6 +43,7 @@ import { ScheduledRuntimeSettings } from '@/components/scheduled-tasks/Scheduled
 import { AvatarSettings } from '@/components/settings/AvatarSettings';
 import { WallpaperSettings } from '@/components/settings/WallpaperSettings';
 import { ImIntegrationSettings } from '@/components/settings/ImIntegrationSettings';
+import { useWebviewMeasuredContainer } from '@/hooks/use-webview-measured-container';
 
 type TypographySection = 'ui' | 'editor';
 
@@ -108,6 +109,7 @@ interface SettingsPageProps {
 }
 
 export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSettings = null, onSaveMetricsSettings, updateStatus, availableUpdate = null, showAdvancedUpdateDot, showUpdatesSectionDot, downloadProgress, clientVersion, busy, initialTab, onSave, onSaveAvatar, onSelectRecentAvatar, onSaveAvatarShape, onClearAvatar, onImportWallpaper, onSelectRecentWallpaper, onSaveWallpaperOpacity, onRestoreThemeWallpaper, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
+  const measuredThemeDrawerRef = useWebviewMeasuredContainer<HTMLDivElement>('theme-drawer');
   useThemeWallpaperSurface();
   const { t } = useTranslation();
   const [appearance, setAppearance] = useState(preferences.appearance);
@@ -347,7 +349,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                     <SheetHeader className="border-b px-5 py-4">
                       <SheetTitle>{t('settings.themeDrawerTitle')}</SheetTitle>
                     </SheetHeader>
-                    <div className="@container/theme-drawer min-h-0 flex-1 overflow-y-auto p-5">
+                    <div ref={measuredThemeDrawerRef} className="@container/theme-drawer min-h-0 flex-1 overflow-y-auto p-5">
                       <div className="grid gap-3 @2xl/theme-drawer:grid-cols-2">
                         {themePackageSummaries.map((summary) => (
                           <ThemePackageCard
@@ -675,11 +677,13 @@ function formatCheckedAt(value: string) {
 }
 
 function SettingsSection({ title, children, divided = false }: { title: ReactNode; children: ReactNode; divided?: boolean }) {
+  const measuredSectionRef = useWebviewMeasuredContainer<HTMLElement>('settings-section');
+  const measuredContentRef = useWebviewMeasuredContainer<HTMLDivElement>('settings-content');
   return (
-    <section className={cn('@container/settings-section', divided && 'border-t border-border/45')}>
+    <section ref={measuredSectionRef} className={cn('@container/settings-section', divided && 'border-t border-border/45')}>
       <div className="grid gap-4 px-5 py-5 @3xl/settings-section:grid-cols-[160px_minmax(0,1fr)]">
         <h2 className="text-base font-semibold text-foreground">{title}</h2>
-        <div className="@container/settings-content min-w-0 space-y-4">{children}</div>
+        <div ref={measuredContentRef} className="@container/settings-content min-w-0 space-y-4">{children}</div>
       </div>
     </section>
   );
@@ -732,10 +736,11 @@ function CurrentThemeSummary({ summary, scheme }: {
   summary: (typeof themePackageSummaries)[number];
   scheme: 'light' | 'dark';
 }) {
+  const measuredSummaryRef = useWebviewMeasuredContainer<HTMLDivElement>('theme-summary');
   const { i18n, t } = useTranslation();
   const language = i18n.resolvedLanguage?.startsWith('zh') ? 'zh-CN' : 'en';
   return (
-    <div className="@container/theme-summary">
+    <div ref={measuredSummaryRef} className="@container/theme-summary">
       <div className="grid gap-3 rounded-lg border border-border/35 bg-transparent p-3 @lg/theme-summary:grid-cols-[auto_minmax(0,1fr)] @lg/theme-summary:items-center @xl/theme-summary:grid-cols-[auto_minmax(0,1fr)_auto]">
         <TerminalPreview palette={summary.preview[scheme]} compact />
         <div className="min-w-0">

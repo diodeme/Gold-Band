@@ -10,6 +10,7 @@ function run(index: number): ConversationRunVm {
   return {
     projectId: 'project-1',
     taskId: `task-${index}`,
+    taskUuid: `task-uuid-${index}`,
     runId: `run-${index}`,
     sessionTree: { rounds: [], selectedSessionKey: null },
   } as ConversationRunVm;
@@ -24,12 +25,14 @@ describe('ConversationRunCache', () => {
       kind: 'conversation-run',
       projectId: 'project-1',
       taskId: 'task-1',
+      taskUuid: 'task-uuid-1',
       runId: 'run-1',
     })?.runId).toBe('run-1');
     expect(cache.restore({
       kind: 'conversation-run',
       projectId: 'project-2',
       taskId: 'task-1',
+      taskUuid: 'task-uuid-1',
       runId: 'run-1',
     })).toBeNull();
   });
@@ -102,10 +105,20 @@ describe('ConversationRunCache', () => {
     expect(cache.restore(run(CONVERSATION_RUN_CACHE_LIMIT))?.runId)
       .toBe(`run-${CONVERSATION_RUN_CACHE_LIMIT}`);
   });
+
+  it('does not restore a deleted task entity when its readable locator is reused', () => {
+    const cache = new ConversationRunCache();
+    const oldRun = run(1);
+    const newRun = { ...oldRun, taskUuid: 'replacement-task-uuid' };
+    cache.store(oldRun);
+
+    expect(cache.restore(newRun)).toBeNull();
+    expect(cache.restore({ ...newRun, taskUuid: null })).toBeNull();
+  });
 });
 
 describe('conversationRunCacheKey', () => {
   it('includes every canonical run identity field', () => {
-    expect(conversationRunCacheKey(run(3))).toBe('project-1:task-3:run-3');
+    expect(conversationRunCacheKey(run(3))).toBe('["project-1","task-uuid-3","run-3"]');
   });
 });

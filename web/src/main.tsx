@@ -9,6 +9,7 @@ import { disposeAcpComposerDrafts } from '@/lib/acp-composer-draft';
 import { installDesktopPageZoomGuard } from '@/lib/desktop-page-zoom';
 import '@xyflow/react/dist/style.css';
 import './styles.css';
+import './webview-compatibility.css';
 
 const uiErrorDiagnostics = installUiErrorDiagnostics();
 const disposeDesktopPageZoomGuard = installDesktopPageZoomGuard();

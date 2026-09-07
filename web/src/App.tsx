@@ -14,14 +14,16 @@ import {
   getAgentRegistry,
   getConversationRun,
   getConversationRunMode,
-  getConversationSidebar,
+  getConversationPinnedTaskPage,
+  getConversationRunSummaryPage,
+  getConversationSidebarBootstrap,
+  getConversationTaskPage,
   acknowledgeConversationTerminalResult,
   getProfiles,
   getWorkflowTemplates,
   markSettingsAdvancedUpdateSeen,
   markSettingsUpdateSeen,
   getAppBootstrap,
-  getRoundDetail,
   getTaskList,
   getWorkflow,
   clearDesktopAvatar,
@@ -40,6 +42,7 @@ import {
   selectRecentDesktopAvatar,
   selectRecentDesktopWallpaper,
   restoreThemeDesktopWallpaper,
+  startMulticaConversationRun,
   startRun,
   unpinConversation,
   updateTaskMetadata,
@@ -51,15 +54,23 @@ import {
   saveConversationPreference,
   saveLastConversationWorkspace,
   getGitCapability,
-  subscribeAcpSessionUpdates,
   subscribeConversationRunStateUpdates,
   subscribeConversationTerminalResultUpdates,
-  subscribeScheduledTaskUpdates,
+  subscribeMulticaTaskUpdates,
   updateNotificationAttention,
   recordActivity,
 } from './api';
 import { isTauriRuntime } from './api/shared';
 import { registerHeartbeatActivityListeners } from './lib/heartbeat-activity';
+import {
+  DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
+  DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT,
+} from './lib/acp-chat-pagination';
+import {
+  DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT,
+} from './lib/acp-chat-resource-cache';
+import { configureAcpResourceCacheSessionCount } from '@/components/acp/ACPChatDialog';
+import { subscribeConversationEvents } from './lib/conversation-event-router';
 import { prefetchScheduledRuntimeSettings } from '@/components/scheduled-tasks/useScheduledRuntimeSettings';
 import {
   applyConversationSidebarRunLifecycle,
@@ -67,6 +78,7 @@ import {
   applyConversationSidebarTaskActivity,
   applyConversationSidebarTerminalResultAcknowledgement,
   applyConversationSidebarTerminalResultUpdate,
+  conversationSidebarRunStateRefreshTarget,
   conversationTaskActivityFromLifecycle,
   conversationTaskActivityFromUpdate,
 } from './lib/conversation-sidebar-activity';
@@ -118,12 +130,14 @@ import {
   type ConversationSidebarWorkspaceRevealRequest,
 } from './components/conversation/ConversationSidebar';
 import { RunModeManagementPage } from './pages/RunModeManagementPage';
+import { MulticaTaskManagementPage } from './pages/MulticaTaskManagementPage';
 import { ScheduledTaskManagementPage } from './pages/ScheduledTaskManagementPage';
 import { ScheduledTaskDetailPage } from './pages/ScheduledTaskDetailPage';
-import { RoundDetailPage } from './pages/RoundDetailPage';
+import { PersonalAnalyticsPage } from './pages/PersonalAnalyticsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { createInitialCreateTaskDraft, TaskListPage, type CreateTaskDraftState } from './pages/TaskListPage';
 import { resetConversationComposerDraft } from '@/lib/conversation-composer-draft';
+import { useEventDrivenRefresh } from '@/lib/use-event-driven-refresh';
 import { GitRequirementDialog } from '@/components/git/GitRequirementDialog';
 import { GitBranchPickerSnapshotProvider } from '@/components/git/GitBranchPickerSnapshotContext';
 import { resolveConversationWorkspaceRemovalTransition } from '@/lib/conversation-workspace-removal';
@@ -168,15 +182,18 @@ import {
 import { conversationPageForSearchResult } from '@/lib/conversation-search';
 import {
   beginConversationSessionSelection,
+  canonicalizeConversationPageIdentity,
   conversationPageForSession,
   conversationPageForIntervention,
   conversationPageMatchesRun,
+  conversationPageTargetsTask,
   conversationSourceControlWorkspacePath,
   conversationTerminalResultAcknowledgementTarget,
   findConversationLeafForPage,
   isConversationRunNavigationLoading,
   resolveConversationHomeWorkspaceId,
   shouldCommitConversationNavigation,
+  shouldSurfaceConversationNavigationError,
 } from '@/lib/conversation-navigation';
 import { preloadConversationTurnFileChangeSets } from '@/lib/turn-file-change-set-cache';
 import { ConversationRunCache, conversationRunCacheKey } from '@/lib/conversation-run-cache';
@@ -184,6 +201,25 @@ import {
   applyConversationTaskSnapshot,
   findConversationTask,
 } from '@/lib/conversation-task-state';
+import {
+  CONVERSATION_RUN_PAGE_SIZE,
+  CONVERSATION_TASK_PAGE_SIZE,
+  ConversationSidebarSingleFlight,
+  applyConversationPinnedTaskPage,
+  applyConversationRunSummaryPage,
+  applyConversationSidebarBootstrap as mergeConversationSidebarBootstrap,
+  applyConversationTaskPage,
+  beginConversationPinnedTaskLoad,
+  beginConversationRunHistoryLoad,
+  beginConversationSidebarBootstrap,
+  beginConversationWorkspaceTaskLoad,
+  createEmptyConversationSidebar,
+  failConversationPinnedTaskLoad,
+  failConversationRunHistoryLoad,
+  failConversationSidebarBootstrap,
+  failConversationWorkspaceTaskLoad,
+  removeConversationSidebarTask,
+} from '@/lib/conversation-sidebar-loading';
 import {
   INITIAL_DESKTOP_WINDOW_MINIMUM_SYNC_STATE,
   syncDesktopWindowMinimum,
@@ -210,6 +246,7 @@ import type {
   ConversationSessionTreeVm,
   ConversationTreeNodeVm,
   WorkflowTemplateStore,
+  ConversationSidebarBootstrapVm,
   ConversationSidebarVm,
   CreateTaskInput,
   ProfileVm,
@@ -221,8 +258,6 @@ import type {
   PreferencesVm,
   UpdateBadgeStateVm,
   PrimaryModule,
-  RoundDetailVm,
-  RoundSelection,
   TaskListVm,
   TaskPage,
   UpdateStatusVm,
@@ -315,11 +350,13 @@ const defaultAppInfo: AppInfoVm = {
 };
 const defaultAppConfig: AppConfigVm = {
   acpSessionTitleRefreshEnabled: false,
-  acpChatEventPageSize: 360,
-  conversationInlineContentMaxBytes: 64_000,
+  acpChatEventPageSize: DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
+  acpChatEventWindowPageCount: DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT,
+  acpChatResourceCacheSessionCount: DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT,
+  conversationInlineContentMaxBytes: 20_000,
   conversationInlineImageMaxBytes: 4 * 1024 * 1024,
   conversationInlineImageMaxDimension: 2_560,
-  turnFiles: { cardPreviewLimit: 3 },
+  turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 1 },
   workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
   workspaceFiles: FALLBACK_WORKSPACE_FILES,
 };
@@ -424,10 +461,14 @@ export function App() {
   const conversationPageRef = useRef<ConversationPage>(initialRoute.conversationPage);
   const conversationStopRequestRef = useRef(0);
   const conversationRunStopPendingRef = useRef(false);
-  const [conversationSidebar, setConversationSidebar] = useState<ConversationSidebarVm>({ workspaces: [], pinnedTasks: [], tasksByWorkspace: {} });
-  const conversationSidebarRef = useRef<ConversationSidebarVm>({ workspaces: [], pinnedTasks: [], tasksByWorkspace: {} });
+  const [conversationSidebar, setConversationSidebar] = useState<ConversationSidebarVm>(createEmptyConversationSidebar);
+  const conversationSidebarRef = useRef<ConversationSidebarVm>(createEmptyConversationSidebar());
+  const [conversationSidebarFlights] = useState(() => new ConversationSidebarSingleFlight());
+  const invalidateConversationSidebarLoad = useCallback((key: string) => {
+    conversationSidebarFlights.invalidate(key);
+  }, [conversationSidebarFlights]);
   const conversationRunStateRefreshRef = useRef<Parameters<typeof subscribeConversationRunStateUpdates>[0] | null>(null);
-  const conversationAcpSessionRefreshRef = useRef<Parameters<typeof subscribeAcpSessionUpdates>[0] | null>(null);
+  const conversationAcpSessionRefreshRef = useRef<Parameters<typeof subscribeConversationEvents>[0] | null>(null);
   const conversationTerminalAcknowledgementsInFlightRef = useRef(new Set<string>());
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationRunModesByWorkspace, setConversationRunModesByWorkspace] = useState<ConversationRunModesByWorkspace>({});
@@ -520,12 +561,149 @@ export function App() {
   const workspaceRevealRequestIdRef = useRef(0);
   const [workspaceRevealRequest, setWorkspaceRevealRequest] = useState<ConversationSidebarWorkspaceRevealRequest | null>(null);
 
-  const applyConversationSidebar = useCallback((sidebar: ConversationSidebarVm, projectId?: string | null) => {
-    const activeProjectId = projectId ?? activeWorkspaceIdRef.current ?? sidebar.lastActiveWorkspaceId ?? null;
-    const nextSidebar = prioritizeConversationSidebarWorkspace(sidebar, activeProjectId);
-    conversationSidebarRef.current = nextSidebar;
-    setConversationSidebar(nextSidebar);
+  const applyConversationSidebarBootstrap = useCallback((bootstrap: ConversationSidebarBootstrapVm, projectId?: string | null) => {
+    setConversationSidebar((current) => {
+      const merged = mergeConversationSidebarBootstrap(current, bootstrap);
+      const activeProjectId = projectId ?? activeWorkspaceIdRef.current ?? merged.lastActiveWorkspaceId ?? null;
+      const next = prioritizeConversationSidebarWorkspace(merged, activeProjectId);
+      conversationSidebarRef.current = next;
+      return next;
+    });
   }, []);
+
+  const loadConversationWorkspaceTasks = useCallback((projectId: string, cursor?: string | null) => {
+    const append = Boolean(cursor);
+    const flightKey = `workspace:${projectId}`;
+    return conversationSidebarFlights.run(flightKey, async () => {
+      const generation = conversationSidebarFlights.generation(flightKey);
+      setConversationSidebar((current) => {
+        const next = beginConversationWorkspaceTaskLoad(current, projectId);
+        conversationSidebarRef.current = next;
+        return next;
+      });
+      try {
+        const page = await getConversationTaskPage(projectId, cursor, CONVERSATION_TASK_PAGE_SIZE);
+        if (!conversationSidebarFlights.isCurrent(flightKey, generation)) return page;
+        setConversationSidebar((current) => {
+          const next = applyConversationTaskPage(current, page, append);
+          conversationSidebarRef.current = next;
+          return next;
+        });
+        return page;
+      } catch (error) {
+        if (!conversationSidebarFlights.isCurrent(flightKey, generation)) throw error;
+        setConversationSidebar((current) => {
+          const next = failConversationWorkspaceTaskLoad(current, projectId);
+          conversationSidebarRef.current = next;
+          return next;
+        });
+        throw error;
+      }
+    });
+  }, [conversationSidebarFlights]);
+
+  const loadConversationPinnedTasks = useCallback((cursor?: string | null) => {
+    const append = Boolean(cursor);
+    const flightKey = 'pinned';
+    return conversationSidebarFlights.run(flightKey, async () => {
+      const generation = conversationSidebarFlights.generation(flightKey);
+      setConversationSidebar((current) => {
+        const next = beginConversationPinnedTaskLoad(current);
+        conversationSidebarRef.current = next;
+        return next;
+      });
+      try {
+        const page = await getConversationPinnedTaskPage(cursor, CONVERSATION_TASK_PAGE_SIZE);
+        if (!conversationSidebarFlights.isCurrent(flightKey, generation)) return page;
+        setConversationSidebar((current) => {
+          const next = applyConversationPinnedTaskPage(current, page, append);
+          conversationSidebarRef.current = next;
+          return next;
+        });
+        return page;
+      } catch (error) {
+        if (!conversationSidebarFlights.isCurrent(flightKey, generation)) throw error;
+        setConversationSidebar((current) => {
+          const next = failConversationPinnedTaskLoad(current);
+          conversationSidebarRef.current = next;
+          return next;
+        });
+        throw error;
+      }
+    });
+  }, [conversationSidebarFlights]);
+
+  const loadConversationRunHistory = useCallback((
+    task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>,
+    cursor?: string | null,
+  ) => {
+    const append = Boolean(cursor);
+    const flightKey = `runs:${task.projectId}:${task.taskUuid ?? task.taskId}`;
+    return conversationSidebarFlights.run(flightKey, async () => {
+      const generation = conversationSidebarFlights.generation(flightKey);
+      setConversationSidebar((current) => {
+        const next = beginConversationRunHistoryLoad(current, task);
+        conversationSidebarRef.current = next;
+        return next;
+      });
+      try {
+        const page = await getConversationRunSummaryPage(
+          task.projectId,
+          task.taskId,
+          cursor,
+          CONVERSATION_RUN_PAGE_SIZE,
+        );
+        if (!conversationSidebarFlights.isCurrent(flightKey, generation)) return page;
+        setConversationSidebar((current) => {
+          const next = applyConversationRunSummaryPage(current, page, append);
+          conversationSidebarRef.current = next;
+          return next;
+        });
+        return page;
+      } catch (error) {
+        if (!conversationSidebarFlights.isCurrent(flightKey, generation)) throw error;
+        setConversationSidebar((current) => {
+          const next = failConversationRunHistoryLoad(current, task);
+          conversationSidebarRef.current = next;
+          return next;
+        });
+        throw error;
+      }
+    });
+  }, [conversationSidebarFlights]);
+
+  const loadConversationSidebarBootstrap = useCallback(() => conversationSidebarFlights.run('bootstrap', async () => {
+    const generation = conversationSidebarFlights.generation('bootstrap');
+    setConversationSidebar((current) => {
+      const next = beginConversationSidebarBootstrap(current);
+      conversationSidebarRef.current = next;
+      return next;
+    });
+    try {
+      const sidebarBootstrap = await getConversationSidebarBootstrap();
+      if (!conversationSidebarFlights.isCurrent('bootstrap', generation)) return sidebarBootstrap;
+      applyConversationSidebarBootstrap(sidebarBootstrap);
+      const projectId = activeWorkspaceIdRef.current
+        ?? sidebarBootstrap.lastActiveWorkspaceId
+        ?? sidebarBootstrap.workspaces[0]?.projectId;
+      if (projectId) void loadConversationWorkspaceTasks(projectId).catch(() => {});
+      if (sidebarBootstrap.pinRefs.length > 0) void loadConversationPinnedTasks().catch(() => {});
+      return sidebarBootstrap;
+    } catch (error) {
+      if (!conversationSidebarFlights.isCurrent('bootstrap', generation)) throw error;
+      setConversationSidebar((current) => {
+        const next = failConversationSidebarBootstrap(current);
+        conversationSidebarRef.current = next;
+        return next;
+      });
+      throw error;
+    }
+  }), [
+    applyConversationSidebarBootstrap,
+    conversationSidebarFlights,
+    loadConversationPinnedTasks,
+    loadConversationWorkspaceTasks,
+  ]);
 
   const applyConversationTask = useCallback((task: ConversationTaskRowVm) => {
     setConversationSidebar((current) => {
@@ -539,6 +717,7 @@ export function App() {
     projectId: string,
     taskId: string,
     activity: ConversationTaskActivityVm | null,
+    taskActivityAt?: string | null,
   ) => {
     setConversationSidebar((current) => {
       const next = applyConversationSidebarTaskActivity(
@@ -546,6 +725,7 @@ export function App() {
         projectId,
         taskId,
         activity,
+        taskActivityAt,
       );
       conversationSidebarRef.current = next;
       return next;
@@ -558,6 +738,7 @@ export function App() {
     runId: string,
     lifecycle: Parameters<typeof conversationTaskActivityFromLifecycle>[0],
     activity = conversationTaskActivityFromLifecycle(lifecycle),
+    taskActivityAt?: string | null,
   ) => {
     setConversationSidebar((current) => {
       const withActivity = applyConversationSidebarTaskActivity(
@@ -565,6 +746,7 @@ export function App() {
         projectId,
         taskId,
         activity,
+        taskActivityAt,
       );
       const next = applyConversationSidebarRunLifecycle(
         withActivity,
@@ -596,7 +778,11 @@ export function App() {
       return next;
     });
     saveLastConversationWorkspace(projectId).catch(() => {});
-  }, []);
+    const taskPageStatus = conversationSidebarRef.current.workspaceTaskPages[projectId]?.status ?? 'not-loaded';
+    if (taskPageStatus === 'not-loaded' || taskPageStatus === 'error') {
+      void loadConversationWorkspaceTasks(projectId).catch(() => {});
+    }
+  }, [loadConversationWorkspaceTasks]);
   const activeWorkspace = conversationSidebar.workspaces.find((w) => w.projectId === effectiveWorkspaceId)
     ?? conversationSidebar.workspaces[0];
   const draftWorkspace = conversationSidebar.workspaces.find((w) => w.projectId === draftConversationWorkspaceId)
@@ -609,6 +795,9 @@ export function App() {
     ? presentedConversationPage.projectId
     : effectiveWorkspaceId;
   const defaultProjectId = draftWorkspace?.projectId ?? 'default';
+  const workbenchProjectId = conversationSidebar.workspaces.find(
+    (workspace) => workspace.workspacePath === bootstrap?.repoRoot,
+  )?.projectId ?? defaultProjectId;
   const defaultWorkspaceName = draftWorkspace?.name ?? 'Default Workspace';
   const conversationWorkLocationPreference = parseConversationWorkLocationPreference(
     conversationSidebar.preferences?.[CONVERSATION_WORK_LOCATION_PREFERENCE_KEY],
@@ -618,14 +807,12 @@ export function App() {
     defaultProjectId,
   );
   const conversationRunMode = conversationRunModeForWorkspace(conversationRunModesByWorkspace, defaultProjectId);
-  const [roundSelection, setRoundSelection] = useState<RoundSelection>({ kind: 'round' });
   const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
   const [profiles, setProfiles] = useState<ProfileVm[]>([]);
   const [taskList, setTaskList] = useState<TaskListVm | null>(null);
   const [createTaskDraft, setCreateTaskDraft] = useState<CreateTaskDraftState>(() => createInitialCreateTaskDraft());
   const composerDraftRef = useRef<ConversationComposerDraftBoundaryHandle | null>(null);
   const [workflow, setWorkflow] = useState<WorkflowVm | null>(null);
-  const [roundDetail, setRoundDetail] = useState<RoundDetailVm | null>(null);
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [loading, setLoading] = useState<VisibleRefreshMode | null>(null);
   const [busy, setBusy] = useState(false);
@@ -926,7 +1113,6 @@ export function App() {
       setPrimaryModule(nextRoute.module);
       setTaskPage(nextRoute.taskPage);
       setConversationPage(nextRoute.conversationPage);
-      setRoundSelection({ kind: 'round' });
       setWorkspacePickerOpen(false);
     };
     window.addEventListener('popstate', onPopState);
@@ -936,6 +1122,9 @@ export function App() {
   useEffect(() => {
     getAppBootstrap()
       .then((bootstrap) => {
+        configureAcpResourceCacheSessionCount(
+          bootstrap.appConfig.acpChatResourceCacheSessionCount,
+        );
         setBootstrap(bootstrap);
         // 静默预取定时任务运行时设置，让首次进入「设置 → 定时任务」也免加载闪烁。
         void prefetchScheduledRuntimeSettings();
@@ -946,13 +1135,11 @@ export function App() {
       .catch((err) => setError(displayAppError(t, err)));
   }, [t, uiMode]);
 
-  // Load conversation sidebar data when in conversation mode
+  // Publish workspace identity first, then load only the visible task page and pinned summaries.
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation') return;
-    getConversationSidebar()
-      .then((sidebar) => applyConversationSidebar(sidebar))
-      .catch(() => {}); // Silently fail - sidebar will show empty state
-  }, [applyConversationSidebar, bootstrap, uiMode]);
+    void loadConversationSidebarBootstrap().catch(() => {});
+  }, [bootstrap, loadConversationSidebarBootstrap, uiMode]);
 
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation') return undefined;
@@ -960,6 +1147,23 @@ export function App() {
     let dispose: (() => void) | undefined;
     void subscribeConversationRunStateUpdates((event) => {
       if (!active) return;
+      const currentSidebar = conversationSidebarRef.current;
+      const task = findConversationTask(currentSidebar, event.projectId, event.taskId);
+      if (!event.taskUuid) return;
+      const activeProjectId = activeWorkspaceIdRef.current
+        ?? currentSidebar.lastActiveWorkspaceId
+        ?? currentSidebar.workspaces[0]?.projectId;
+      const refreshTarget = conversationSidebarRunStateRefreshTarget(
+        currentSidebar,
+        event,
+        activeProjectId,
+      );
+      if (refreshTarget?.kind === 'workspace-tasks') {
+        void loadConversationWorkspaceTasks(refreshTarget.projectId).catch(() => {});
+      } else if (refreshTarget?.kind === 'task-runs') {
+        void loadConversationRunHistory(refreshTarget.task).catch(() => {});
+      }
+      if (!task || task.taskUuid !== event.taskUuid) return;
       setConversationSidebar((current) => {
         const next = applyConversationSidebarRunStateUpdate(current, event);
         if (next !== current) conversationSidebarRef.current = next;
@@ -974,7 +1178,7 @@ export function App() {
       active = false;
       dispose?.();
     };
-  }, [bootstrap, uiMode]);
+  }, [bootstrap, loadConversationRunHistory, loadConversationWorkspaceTasks, uiMode]);
 
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation') return undefined;
@@ -1032,11 +1236,14 @@ export function App() {
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation') return undefined;
     let active = true;
-    let dispose: (() => void) | undefined;
-    void subscribeAcpSessionUpdates((event) => {
+    const dispose = subscribeConversationEvents((event) => {
       if (!active) return;
       const projectId = event.projectId?.trim();
-      if (projectId) {
+      const taskUuid = event.taskUuid?.trim();
+      const sidebarTask = projectId
+        ? findConversationTask(conversationSidebarRef.current, projectId, event.taskId)
+        : null;
+      if (projectId && taskUuid && sidebarTask?.taskUuid === taskUuid) {
         const sidebarActivity = conversationTaskActivityFromUpdate(event);
         if (event.lifecycle) {
           applyConversationLifecycleSnapshotToSidebar(
@@ -1047,41 +1254,24 @@ export function App() {
             sidebarActivity === undefined
               ? conversationTaskActivityFromLifecycle(event.lifecycle)
               : sidebarActivity,
+            event.taskActivityAt,
           );
         } else if (sidebarActivity !== undefined) {
-          applyConversationTaskActivity(projectId, event.taskId, sidebarActivity);
+          applyConversationTaskActivity(
+            projectId,
+            event.taskId,
+            sidebarActivity,
+            event.taskActivityAt,
+          );
         }
       }
       conversationAcpSessionRefreshRef.current?.(event);
-    }).then((unlisten) => {
-      if (active) dispose = unlisten;
-      else unlisten();
-    }).catch(() => {});
+    });
     return () => {
       active = false;
-      dispose?.();
+      dispose();
     };
   }, [applyConversationLifecycleSnapshotToSidebar, applyConversationTaskActivity, bootstrap, uiMode]);
-
-  useEffect(() => {
-    if (!bootstrap || uiMode !== 'conversation') return;
-    let active = true;
-    let dispose: (() => void) | undefined;
-    void subscribeScheduledTaskUpdates(() => {
-      void getConversationSidebar()
-        .then((sidebar) => {
-          if (active) applyConversationSidebar(sidebar);
-        })
-        .catch(() => {});
-    }).then((unlisten) => {
-      if (active) dispose = unlisten;
-      else unlisten();
-    }).catch(() => {});
-    return () => {
-      active = false;
-      dispose?.();
-    };
-  }, [applyConversationSidebar, bootstrap, uiMode]);
 
   useEffect(() => {
     if (!bootstrap) return;
@@ -1141,6 +1331,13 @@ export function App() {
           conversationPageRef.current,
           run,
         )) return;
+        const currentPage = conversationPageRef.current;
+        if (currentPage.kind !== 'conversation-run') return;
+        const canonicalPage = canonicalizeConversationPageIdentity(currentPage, run.taskUuid);
+        conversationPageRef.current = canonicalPage;
+        if (canonicalPage !== currentPage) {
+          setConversationPage(canonicalPage);
+        }
         const latestFollowState = conversationSessionFollowRef.current.runKey === targetRunKey
           ? conversationSessionFollowRef.current
           : followStateAtRequest;
@@ -1177,11 +1374,13 @@ export function App() {
         void preloadConversationTurnFileChangeSets(run);
       })
       .catch((err: unknown) => {
-        if (cancelled || requestId !== conversationNavigationRequestRef.current) return;
-        if (conversationPageRef.current.kind === 'conversation-run'
-          && conversationPageRef.current.projectId === projectId
-          && conversationPageRef.current.taskId === taskId
-          && conversationPageRef.current.runId === runId) {
+        if (cancelled) return;
+        if (shouldSurfaceConversationNavigationError(
+          requestId,
+          conversationNavigationRequestRef.current,
+          conversationPage,
+          conversationPageRef.current,
+        )) {
           setError(displayAppError(t, err));
         }
       });
@@ -1191,12 +1390,15 @@ export function App() {
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation' || conversationPage.kind !== 'conversation-run') return undefined;
     if (!conversationPageMatchesRun(conversationPage, conversationRun)) return undefined;
+    const taskUuid = conversationRun?.taskUuid?.trim();
+    if (!taskUuid) return undefined;
     let active = true;
     let refreshTimer: number | null = null;
     let refreshInFlight = false;
     let refreshAgain = false;
     let pendingEventSessionKey: string | null = null;
     let pendingEventRuntimeControlled = false;
+    let pendingEventControlTransitionCause: ConversationAttemptLifecycleVm['control']['transitionCause'] = undefined;
     let pendingCanonicalRunBoundary = false;
     let canonicalRunBoundaryInFlight = false;
     const { projectId, taskId, runId } = conversationPage;
@@ -1224,15 +1426,18 @@ export function App() {
           currentSelectedLeaf?.lifecycle?.runtime.status ?? currentSelectedLeaf?.status,
         ),
         currentSelectedRuntimeControlled: isRuntimeControlledConversationLifecycle(currentSelectedLeaf?.lifecycle),
+        currentSelectedControlTransitionCause: currentSelectedLeaf?.lifecycle?.control.transitionCause,
         pendingEventRuntimeControlled,
+        pendingEventControlTransitionCause,
       });
       canonicalRunBoundaryInFlight = pendingCanonicalRunBoundary;
       pendingEventSessionKey = null;
       pendingEventRuntimeControlled = false;
+      pendingEventControlTransitionCause = undefined;
       pendingCanonicalRunBoundary = false;
       getConversationRun(projectId, taskId, runId, selectedKey)
         .then((run) => {
-          if (!active) return;
+          if (!active || run.taskUuid !== taskUuid) return;
           const latestFollowState = conversationSessionFollowRef.current;
           const latestSelectedKey = latestFollowState.selectedSessionKey
             ?? conversationSelectedSessionKeyRef.current
@@ -1250,7 +1455,9 @@ export function App() {
               latestSelectedLeaf?.lifecycle?.runtime.status ?? latestSelectedLeaf?.status,
             ),
             currentSelectedRuntimeControlled: isRuntimeControlledConversationLifecycle(latestSelectedLeaf?.lifecycle),
+            currentSelectedControlTransitionCause: latestSelectedLeaf?.lifecycle?.control.transitionCause,
             pendingEventRuntimeControlled: isRuntimeControlledConversationLifecycle(responseTargetLeaf?.lifecycle),
+            pendingEventControlTransitionCause: responseTargetLeaf?.lifecycle?.control.transitionCause,
           });
           applyConversationRunSnapshot(run, 'live-refresh', {
             selectedSessionKey: effectiveSelectedKey,
@@ -1272,6 +1479,7 @@ export function App() {
     const queueConversationRunRefresh = (
       sessionKey?: string | null,
       runtimeControlled = false,
+      controlTransitionCause?: ConversationAttemptLifecycleVm['control']['transitionCause'],
       delayMs = 120,
       canonicalRunBoundary = false,
     ) => {
@@ -1285,6 +1493,7 @@ export function App() {
       )) {
         pendingEventSessionKey = sessionKey;
         pendingEventRuntimeControlled = runtimeControlled;
+        pendingEventControlTransitionCause = controlTransitionCause;
         pendingCanonicalRunBoundary = canonicalRunBoundary;
       }
       if (refreshTimer !== null) {
@@ -1299,7 +1508,7 @@ export function App() {
 
     const refreshSelectedRunFromStateEvent: Parameters<typeof subscribeConversationRunStateUpdates>[0] = (event) => {
       if (!active) return;
-      if (event.projectId !== projectId || event.taskId !== taskId || event.runId !== runId) return;
+      if (event.projectId !== projectId || event.taskUuid !== taskUuid || event.runId !== runId) return;
       const sessionKey = conversationSessionKeyFromParts(event);
       const currentRun = conversationRunRef.current;
       const eventLeaf = currentRun
@@ -1310,15 +1519,16 @@ export function App() {
         event.eventKind === 'node-started'
           ? true
           : isRuntimeControlledConversationLifecycle(eventLeaf?.lifecycle),
+        eventLeaf?.lifecycle?.control.transitionCause,
         0,
         true,
       );
     };
     conversationRunStateRefreshRef.current = refreshSelectedRunFromStateEvent;
 
-    const refreshSelectedRunFromAcpEvent: Parameters<typeof subscribeAcpSessionUpdates>[0] = (event) => {
+    const refreshSelectedRunFromAcpEvent: Parameters<typeof subscribeConversationEvents>[0] = (event) => {
       if (!active) return;
-      if (event.projectId !== projectId || event.taskId !== taskId || event.runId !== runId) return;
+      if (event.projectId !== projectId || event.taskUuid !== taskUuid || event.runId !== runId) return;
       const sessionKey = conversationSessionKeyFromParts(event);
       const currentRun = conversationRunRef.current;
       const currentSelectedKey = conversationSelectedSessionKeyRef.current
@@ -1359,6 +1569,7 @@ export function App() {
         currentSelectedTerminal,
         incomingActive,
         currentSelectedRuntimeControlled,
+        currentSelectedControlTransitionCause: currentSelectedLeaf?.lifecycle?.control.transitionCause,
         incomingRuntimeControlled,
       });
       const followPending = currentSelectedKey !== sessionKey
@@ -1374,7 +1585,9 @@ export function App() {
         hasRuntimeSnapshot,
         hasLiveEvent: Boolean(event.event),
         sessionStatus: refreshStatus,
-        pendingPermissionCount: event.session?.pendingPermissions?.length ?? 0,
+        pendingPermissionCount: event.session?.pendingInteractions?.filter(
+          (interaction) => interaction.kind === 'permission',
+        ).length ?? 0,
         followPending,
       });
       if (hasRuntimeSnapshot && updatePlan.patchSelectedSession) {
@@ -1394,7 +1607,11 @@ export function App() {
       if (!updatePlan.queueRunRefresh) {
         return;
       }
-      queueConversationRunRefresh(eventSelectedSessionKey, incomingRuntimeControlled);
+      queueConversationRunRefresh(
+        eventSelectedSessionKey,
+        incomingRuntimeControlled,
+        (event.lifecycle ?? incomingLeaf?.lifecycle)?.control.transitionCause,
+      );
     };
     conversationAcpSessionRefreshRef.current = refreshSelectedRunFromAcpEvent;
 
@@ -1408,7 +1625,7 @@ export function App() {
         conversationAcpSessionRefreshRef.current = null;
       }
     };
-  }, [applyConversationRunSnapshot, bootstrap, uiMode, conversationPage, conversationRun?.projectId, conversationRun?.taskId, conversationRun?.runId]);
+  }, [applyConversationRunSnapshot, bootstrap, uiMode, conversationPage, conversationRun?.projectId, conversationRun?.taskId, conversationRun?.taskUuid, conversationRun?.runId]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -1451,6 +1668,23 @@ export function App() {
       unlisten?.();
     };
   }, []);
+
+  // multica 任务生命周期（claim/start/terminal）→ 同步本地侧栏：multica 启动会在本地工作空间
+  // 创建会话任务、完成时更新状态。订阅 multica-task-updated 让本地侧栏即时反映这些变化
+  // （对齐正常 createConversationRun 路径的手动 sidebar refresh，避免 multica 路径漏刷新）。
+  // 复用 useEventDrivenRefresh：事件风暴去重 + 异步 unlisten 防泄漏。刷新直接走 main 的
+  // loadConversationSidebarBootstrap 单飞管线（bootstrap 合并 + 工作区任务补拉），
+  // best-effort 吞错。
+  useEventDrivenRefresh(
+    async () => {
+      try {
+        await loadConversationSidebarBootstrap();
+      } catch {
+        // best-effort：事件驱动刷新失败不阻断 UI，手动操作仍会触发正常刷新。
+      }
+    },
+    [subscribeMulticaTaskUpdates],
+  );
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -1498,12 +1732,10 @@ export function App() {
 
   const resetWorkspaceViews = () => {
     setTaskPage({ kind: 'task-list' });
-    setRoundSelection({ kind: 'round' });
     setAgentRegistry(null);
     setTaskList(null);
     setCreateTaskDraft(createInitialCreateTaskDraft());
     setWorkflow(null);
-    setRoundDetail(null);
     setPrimaryModule('task-orchestration');
     setWorkspacePickerOpen(false);
   };
@@ -1514,9 +1746,7 @@ export function App() {
       ? true
       : taskPage.kind === 'task-list'
       ? taskList !== null
-      : taskPage.kind === 'workflow'
-        ? workflow !== null
-        : roundDetail !== null;
+      : workflow !== null;
 
   const refresh = useCallback(async (mode: RefreshMode = 'manual') => {
     if (!bootstrap) return;
@@ -1534,10 +1764,8 @@ export function App() {
         return;
       } else if (taskPage.kind === 'task-list') {
         setTaskList(await getTaskList());
-      } else if (taskPage.kind === 'workflow') {
+      } else {
         setWorkflow(await getWorkflow(taskPage.taskId));
-      } else if (taskPage.kind === 'round-detail') {
-        setRoundDetail(await getRoundDetail(taskPage.taskId, taskPage.runId, taskPage.roundId, roundSelection));
       }
     } catch (err) {
       setError(displayAppError(t, err));
@@ -1548,7 +1776,7 @@ export function App() {
         setLoading(null);
       }
     }
-  }, [bootstrap, primaryModule, roundSelection, t, taskPage]);
+  }, [bootstrap, primaryModule, t, taskPage]);
 
   useEffect(() => {
     if (uiMode !== 'workbench') return;
@@ -1587,40 +1815,11 @@ export function App() {
     setPrimaryModule('task-orchestration');
     setWorkspacePickerOpen(false);
     setTaskPage(page);
-    setRoundSelection({ kind: 'round' });
     pushRoute('task-orchestration', page);
   };
 
-  // 在会话模式 sessionTree 中按 (roundId, nodeId, attemptId) 匹配出叶子（含 outer 字段）。
-  const findSessionLeaf = (
-    tree: ConversationSessionTreeVm | undefined | null,
-    roundId: string,
-    nodeId: string,
-    attemptId: string,
-  ): ConversationSessionLeafVm | null => {
-    if (!tree) return null;
-    const walkNode = (node: ConversationTreeNodeVm): ConversationSessionLeafVm | null => {
-      if (node.nodeId === nodeId) {
-        const hit = node.attempts.find((a) => a.attemptId === attemptId && a.roundId === roundId);
-        if (hit) return hit;
-      }
-      for (const child of node.outerNodes ?? []) {
-        const found = walkNode(child);
-        if (found) return found;
-      }
-      return null;
-    };
-    for (const round of tree.rounds) {
-      for (const node of round.nodes) {
-        const found = walkNode(node);
-        if (found) return found;
-      }
-    }
-    return null;
-  };
-
   // 干预弹窗「查看详情」导航：按 uiMode deep link 到对应节点。
-  const handleInterventionNavigate = useCallback(async (event: InterventionNavigateEventVm) => {
+  const handleInterventionNavigate = useCallback((event: InterventionNavigateEventVm) => {
     setWorkspacePickerOpen(false);
     if ('scheduledTaskId' in event) {
       const target = scheduledNotificationNavigation(event);
@@ -1644,59 +1843,9 @@ export function App() {
       onSelectConversation(page);
       return;
     }
-    if (uiMode !== 'conversation') {
-      // 工作台模式：定位到 round-detail 并选中节点。
-      setPrimaryModule('task-orchestration');
-      const page: TaskPage = { kind: 'round-detail', taskId: event.taskId, runId: event.runId, roundId: event.roundId };
-      setTaskPage(page);
-      setRoundSelection({ kind: 'node', nodeId: event.nodeId, attemptId: event.attemptId });
-      pushRoute('task-orchestration', page);
-      return;
-    }
-
-    // 会话模式：定位到 run，并在 sessionTree 内匹配叶子后切换 session。
-    const runPage = conversationPageForIntervention(event);
-    const targetProjectId = event.projectId;
-    onSelectConversation(runPage);
-
-    let run = conversationRunRef.current
-      && conversationPageMatchesRun(runPage, conversationRunRef.current)
-      ? conversationRunRef.current
-      : null;
-    if (!run) {
-      try {
-        const loaded = await getConversationRun(targetProjectId, event.taskId, event.runId, null);
-        applyConversationRunSnapshot(loaded, 'initial-load', { selectedSessionKey: null, preserveSelectedSession: false });
-        run = loaded;
-      } catch {
-        return;
-      }
-    }
-
-    const leaf = findSessionLeaf(run.sessionTree, event.roundId, event.nodeId, event.attemptId);
-    if (!leaf) return;
-    const key = conversationSessionKeyFromParts({
-      roundId: leaf.roundId,
-      nodeId: leaf.nodeId,
-      attemptId: leaf.attemptId,
-      outerNodeId: leaf.outerNodeId,
-      outerAttemptId: leaf.outerAttemptId,
-    });
-    conversationSelectedSessionKeyRef.current = key;
-    updateConversationSessionFollow('manual', key, run);
-    const selectedRun = run;
-    setConversationRun((current) => {
-      const base = current && conversationPageMatchesRun(runPage, current) ? current : selectedRun;
-      const next = beginConversationSessionSelection(base, key);
-      conversationRunRef.current = next;
-      return next;
-    });
-  }, [
-    uiMode,
-    taskPage,
-    applyConversationRunSnapshot,
-    updateConversationSessionFollow,
-  ]);
+    // The route effect is the sole run loader; complete identity lets this entry restore cache first.
+    onSelectConversation(conversationPageForIntervention(event));
+  }, []);
 
   useInterventionNotifications(handleInterventionNavigate);
   useScheduledNotifications();
@@ -1760,12 +1909,9 @@ export function App() {
         && conversationPageRef.current.projectId === projectId
         && conversationPageRef.current.taskId === taskId
         && conversationPageRef.current.runId === runId;
-      const [refreshed, sidebar] = await Promise.all([
-        refreshSelectedRun
-          ? getConversationRun(projectId, taskId, runId, selectedKey)
-          : Promise.resolve(null),
-        getConversationSidebar(),
-      ]);
+      const refreshed = refreshSelectedRun
+        ? await getConversationRun(projectId, taskId, runId, selectedKey)
+        : null;
       if (conversationStopRequestRef.current !== requestVersion) return;
       const currentPage = conversationPageRef.current;
       if (refreshed
@@ -1778,7 +1924,8 @@ export function App() {
           preserveSelectedSession: conversationSessionFollowRef.current.mode === 'manual',
         });
       }
-      applyConversationSidebar(sidebar);
+      const sidebarTask = findConversationTask(conversationSidebarRef.current, projectId, taskId);
+      if (sidebarTask) void loadConversationRunHistory(sidebarTask).catch(() => {});
     } catch (err) {
       if (conversationStopRequestRef.current === requestVersion) {
         setError(displayAppError(t, err));
@@ -1809,6 +1956,9 @@ export function App() {
   };
 
   const applyWorkspace = (nextBootstrap: AppBootstrapVm) => {
+    configureAcpResourceCacheSessionCount(
+      nextBootstrap.appConfig.acpChatResourceCacheSessionCount,
+    );
     setBootstrap(nextBootstrap);
     resetWorkspaceViews();
     replaceRoute('task-orchestration', { kind: 'task-list' });
@@ -1846,6 +1996,9 @@ export function App() {
     setError(null);
     try {
       const nextBootstrap = await removeRecentWorkspace(workspace);
+      configureAcpResourceCacheSessionCount(
+        nextBootstrap.appConfig.acpChatResourceCacheSessionCount,
+      );
       setBootstrap(nextBootstrap);
     } catch (err) {
       setError(displayAppError(t, err));
@@ -2069,6 +2222,7 @@ export function App() {
 
   function onSelectConversation(page: ConversationPage) {
     setWorkspacePickerOpen(false);
+    setUiMode('conversation');
     if (conversationRunRef.current) {
       const currentRun = conversationRunRef.current;
       const currentRunKey = conversationRunCacheKey(currentRun);
@@ -2204,10 +2358,8 @@ export function App() {
       workspaceRevealRequest={workspaceRevealRequest}
       conversationTaskUuid={
         presentedConversationPage.kind === 'conversation-run'
-        && conversationRun?.projectId === presentedConversationPage.projectId
-        && conversationRun.taskId === presentedConversationPage.taskId
-        && conversationRun.runId === presentedConversationPage.runId
-          ? conversationRun.taskUuid
+        && conversationPageMatchesRun(presentedConversationPage, conversationRun)
+          ? conversationRun?.taskUuid
           : null
       }
       sourceControlWorkspacePath={conversationSourceControlWorkspacePath(
@@ -2233,6 +2385,14 @@ export function App() {
       }}
       onSelectConversation={onSelectConversation}
       onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+      onOpenPersonalAnalytics={() => {
+        const page: ConversationPage = { kind: 'personal-analytics' };
+        setWorkspacePickerOpen(false);
+        setUiMode('conversation');
+        setPrimaryModule('task-orchestration');
+        setConversationPage(page);
+        pushRoute('task-orchestration', taskListPage, page);
+      }}
       onChooseWorkspace={() => setWorkspacePickerOpen(true)}
       onConversationNew={() => {
         const targetPid = resolveConversationHomeWorkspaceId(
@@ -2244,16 +2404,15 @@ export function App() {
         onSelectConversation({ kind: 'conversation-home' });
       }}
       onConversationSearch={() => setConversationSearchOpen(true)}
-      onConversationSelectTask={(projectId, taskId) => {
-        const tasks = conversationSidebar.tasksByWorkspace[projectId] ?? [];
-        const task = tasks.find((t) => t.taskId === taskId);
-        const runId = task?.latestRun?.runId;
-        if (runId) {
-          onSelectConversation({ kind: 'conversation-run', projectId, taskId, runId });
-        }
+      onConversationRetrySidebar={() => { void loadConversationSidebarBootstrap().catch(() => {}); }}
+      onConversationRequestWorkspaceTasks={(projectId, cursor) => {
+        void loadConversationWorkspaceTasks(projectId, cursor).catch(() => {});
       }}
-      onConversationSelectRun={(projectId, taskId, runId) => {
-        onSelectConversation({ kind: 'conversation-run', projectId, taskId, runId });
+      onConversationRequestPinnedTasks={(cursor) => {
+        void loadConversationPinnedTasks(cursor).catch(() => {});
+      }}
+      onConversationRequestTaskRuns={(task, cursor) => {
+        void loadConversationRunHistory(task, cursor).catch(() => {});
       }}
       onConversationPauseRun={onConversationPauseRun}
       onConversationRenameTask={(projectId, taskId, title) => {
@@ -2262,39 +2421,92 @@ export function App() {
           .then(applyConversationTask)
           .catch((err) => setError(displayAppError(t, err)));
       }}
-      onConversationDeleteTask={(projectId, taskId) => {
+      onConversationDeleteTask={(projectId, taskId, taskUuid) => {
+        const deletionTarget = { projectId, taskId, taskUuid };
+        invalidateConversationSidebarLoad(`workspace:${projectId}`);
+        invalidateConversationSidebarLoad(`runs:${projectId}:${taskUuid ?? taskId}`);
+        invalidateConversationSidebarLoad('pinned');
+        invalidateConversationSidebarLoad('bootstrap');
+        if (conversationPageTargetsTask(conversationPageRef.current, deletionTarget)) {
+          conversationNavigationRequestRef.current += 1;
+        }
+        setError(null);
         deleteConversationTask(projectId, taskId)
-          .then((sidebar) => {
+          .then((sidebarBootstrap) => {
             conversationWorkspaceStore.deleteConversation(projectId, taskId);
-            applyConversationSidebar(sidebar);
-            if (conversationPage.kind === 'conversation-run' && conversationPage.projectId === projectId && conversationPage.taskId === taskId) {
+            if (taskUuid) {
+              conversationRunCache.deleteTask({ projectId, taskId, taskUuid });
+            }
+            setConversationSidebar((current) => {
+              const next = removeConversationSidebarTask(current, projectId, taskId);
+              conversationSidebarRef.current = next;
+              return next;
+            });
+            applyConversationSidebarBootstrap(sidebarBootstrap);
+            if (conversationPageTargetsTask(conversationPageRef.current, deletionTarget)) {
+              conversationNavigationRequestRef.current += 1;
+              conversationRunRef.current = null;
+              conversationSelectedSessionKeyRef.current = null;
+              conversationSessionFollowRef.current = {
+                runKey: null,
+                mode: 'auto',
+                selectedSessionKey: null,
+                version: conversationSessionFollowRef.current.version + 1,
+              };
               setConversationRun(null);
-              setConversationPage({ kind: 'conversation-home' });
+              const homePage: ConversationPage = { kind: 'conversation-home' };
+              conversationPageRef.current = homePage;
+              setConversationPage(homePage);
+              pushRoute(primaryModule, taskPage, homePage);
             }
           })
-          .catch((err) => setError(displayAppError(t, err)));
+          .catch((err) => {
+            const currentPage = conversationPageRef.current;
+            if (conversationPageTargetsTask(currentPage, deletionTarget)) {
+              setConversationPage({ ...currentPage });
+            }
+            setError(displayAppError(t, err));
+          });
       }}
       onConversationPinTask={(projectId, taskId) => {
-        pinConversation(projectId, taskId).then((sidebar) => applyConversationSidebar(sidebar)).catch(() => {});
+        invalidateConversationSidebarLoad('pinned');
+        invalidateConversationSidebarLoad('bootstrap');
+        pinConversation(projectId, taskId).then((sidebarBootstrap) => {
+          applyConversationSidebarBootstrap(sidebarBootstrap);
+          void loadConversationPinnedTasks().catch(() => {});
+        }).catch(() => {});
       }}
       onConversationUnpinTask={(projectId, taskId) => {
-        unpinConversation(projectId, taskId).then((sidebar) => applyConversationSidebar(sidebar)).catch(() => {});
+        invalidateConversationSidebarLoad('pinned');
+        invalidateConversationSidebarLoad('bootstrap');
+        unpinConversation(projectId, taskId).then((sidebarBootstrap) => {
+          applyConversationSidebarBootstrap(sidebarBootstrap);
+          if (sidebarBootstrap.pinRefs.length > 0) void loadConversationPinnedTasks().catch(() => {});
+        }).catch(() => {});
       }}
       onConversationNewInWorkspace={(projectId) => {
         setDraftConversationWorkspaceId(projectId);
         onSelectConversation({ kind: 'conversation-home' });
       }}
       onConversationAddWorkspace={() => {
-        addConversationWorkspace().then((sidebar) => applyConversationSidebar(sidebar)).catch(() => {});
+        invalidateConversationSidebarLoad('bootstrap');
+        addConversationWorkspace().then((sidebarBootstrap) => {
+          applyConversationSidebarBootstrap(sidebarBootstrap);
+          const projectId = sidebarBootstrap.lastActiveWorkspaceId ?? sidebarBootstrap.workspaces[0]?.projectId;
+          if (projectId) void loadConversationWorkspaceTasks(projectId).catch(() => {});
+        }).catch(() => {});
       }}
       onConversationRemoveWorkspace={(projectId) => {
+        invalidateConversationSidebarLoad(`workspace:${projectId}`);
+        invalidateConversationSidebarLoad('pinned');
+        invalidateConversationSidebarLoad('bootstrap');
         setError(null);
         return removeConversationWorkspace(projectId)
-          .then((sidebar) => {
+          .then((sidebarBootstrap) => {
             conversationWorkspaceStore.deleteProject(projectId);
             const transition = resolveConversationWorkspaceRemovalTransition({
               removedProjectId: projectId,
-              lastActiveWorkspaceId: sidebar.lastActiveWorkspaceId,
+              lastActiveWorkspaceId: sidebarBootstrap.lastActiveWorkspaceId,
               activeWorkspaceId: activeWorkspaceIdRef.current,
               draftWorkspaceId: draftConversationWorkspaceId,
               page: conversationPage,
@@ -2307,7 +2519,10 @@ export function App() {
               setConversationRun(null);
               setConversationPage({ kind: 'conversation-home' });
             }
-            applyConversationSidebar(sidebar, transition.activeWorkspaceId);
+            applyConversationSidebarBootstrap(sidebarBootstrap, transition.activeWorkspaceId);
+            if (transition.activeWorkspaceId) {
+              void loadConversationWorkspaceTasks(transition.activeWorkspaceId).catch(() => {});
+            }
           })
           .catch((err) => {
             setError(displayAppError(t, err));
@@ -2380,6 +2595,22 @@ export function App() {
 
   function renderConversationContent() {
     const conversationPage = presentedConversationPage;
+    if (conversationPage.kind === 'personal-analytics') {
+      return (
+        <PersonalAnalyticsPage
+          agentRegistry={agentRegistry}
+          onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
+          onOpenTask={(task) => {
+            onSelectConversation({
+              kind: 'conversation-run',
+              projectId: task.projectId,
+              taskId: task.taskId,
+              runId: task.latestRunId,
+            });
+          }}
+        />
+      );
+    }
     if (conversationPage.kind === 'agents') {
       return <AgentManagementPage vm={agentRegistry} loading={loading !== null} onRefresh={() => void refresh('manual')} onRegistryChange={setAgentRegistry} />;
     }
@@ -2439,7 +2670,7 @@ export function App() {
           workLocation={conversationWorkLocation}
           onRunModeChange={updateConversationRunMode}
           onLoadProfiles={loadProfiles}
-          onSubmit={async (input) => {
+          onSubmit={async (input, multica) => {
             const nextMode: ConversationRunModeVm = input.runMode === 'direct'
               ? {
                 mode: 'direct',
@@ -2466,8 +2697,12 @@ export function App() {
                 setWorkflowRepairTarget(workflowRepairTargetFromMissingItems(validation.missingItems));
                 return validation.missingItems.map((m) => t(`conversation.validation.${m.code}`, { defaultValue: m.label || m.code })).join('\n');
               }
+              // draft 带 multica 绑定 = 远程任务「点击执行」后的发送：复用本地建会话链 + 叠加 multica 簿记；
+              // 否则普通本地新建会话。二者返回同一 ConversationCreateResultVm（task+run），后续导航/侧栏刷新完全复用。
               setWorkflowRepairTarget(null);
-              const { task, run } = await createConversationRun(input);
+              const { task, run } = multica
+                ? await startMulticaConversationRun(input, multica.remoteTaskId, multica.workspaceId)
+                : await createConversationRun(input);
               applyConversationTask(task);
               conversationWorkspaceStore.promoteDraft(
                 createDraftConversationWorkspaceScope(input.projectId),
@@ -2486,12 +2721,14 @@ export function App() {
                 kind: 'conversation-run',
                 projectId: run.projectId,
                 taskId: run.taskId,
+                taskUuid: run.taskUuid,
                 runId: run.runId,
               });
               pushRoute('task-orchestration', taskListPage, {
                 kind: 'conversation-run',
                 projectId: run.projectId,
                 taskId: run.taskId,
+                taskUuid: run.taskUuid,
                 runId: run.runId,
               });
               return null;
@@ -2593,6 +2830,22 @@ export function App() {
         />
       );
     }
+    if (conversationPage.kind === 'multica-tasks') {
+      return (
+        <MulticaTaskManagementPage
+          onSelectRun={(projectId, taskId, runId) => {
+            setConversationPage({ kind: 'conversation-run', projectId, taskId, runId });
+          }}
+          onPrepareMulticaTask={() => {
+            // 决策 c：远程任务本地工作区延迟到执行时选，落 conversation-home 时预选最近活跃本地工作区
+            //（activeWorkspaceId ?? 持久化 lastActiveWorkspaceId），让 composer 下拉带着合理默认值并可改。
+            const preselect = activeWorkspaceIdRef.current ?? conversationSidebar.lastActiveWorkspaceId ?? null;
+            setDraftConversationWorkspaceId(preselect);
+            setConversationPage({ kind: 'conversation-home' });
+          }}
+        />
+      );
+    }
     if (conversationPage.kind === 'conversation-run') {
       if (isConversationRunNavigationLoading(conversationPage, conversationRun) || !conversationRun) {
         return (
@@ -2626,13 +2879,20 @@ export function App() {
                   kind: 'conversation-run',
                   projectId: run.projectId,
                   taskId: run.taskId,
+                  taskUuid: run.taskUuid,
                   runId: run.runId,
                 });
-                getConversationSidebar().then((sidebar) => applyConversationSidebar(sidebar)).catch(() => {});
+                const sidebarTask = findConversationTask(
+                  conversationSidebarRef.current,
+                  run.projectId,
+                  run.taskId,
+                );
+                if (sidebarTask) void loadConversationRunHistory(sidebarTask).catch(() => {});
                 pushRoute('task-orchestration', taskListPage, {
                   kind: 'conversation-run',
                   projectId: run.projectId,
                   taskId: run.taskId,
+                  taskUuid: run.taskUuid,
                   runId: run.runId,
                 });
               })
@@ -2746,15 +3006,20 @@ export function App() {
         />
       );
     }
-    if (taskPage.kind === 'workflow') {
-      return (
+    return (
         <>
         <WorkflowPage
           vm={workflow}
           busy={busy}
           refreshing={loading === 'manual'}
           breadcrumbs={pageBreadcrumbs}
-          onNavigate={navigate}
+          onOpenRound={(taskId, runId, roundId) => onSelectConversation({
+            kind: 'conversation-run',
+            projectId: workbenchProjectId,
+            taskId,
+            runId,
+            roundId,
+          })}
           onRefresh={() => void refresh('manual')}
           onStartRun={(taskId) => runAction(() => startRun(taskId))}
           onContinueRun={(taskId, runId) => void runAction(() => continueRun(undefined, taskId, runId))}
@@ -2781,7 +3046,5 @@ export function App() {
         ) : null}
         </>
       );
-    }
-    return <RoundDetailPage vm={roundDetail} breadcrumbs={pageBreadcrumbs} selection={roundSelection} refreshing={loading === 'manual'} busy={busy} appConfig={appConfig} workspaceProjectId={bootstrap?.repoRoot ? bootstrap.repoRoot.toLowerCase().replace(/[^a-z0-9\-_]/g, '-') : undefined} onRefresh={() => void refresh('manual')} onSelect={setRoundSelection} />;
   }
 }

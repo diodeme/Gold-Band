@@ -294,6 +294,59 @@ fn render_prompt_bundle_marks_new_round_transitions() {
 }
 
 #[test]
+fn render_prompt_bundle_explains_ai_dynamic_report_manifest_on_demand() {
+    let mut req = invocation();
+    req.predecessors[0].output_artifact = Some(PromptArtifactRef {
+        name: "ai-dynamic-result".to_string(),
+        path: Utf8PathBuf::from(
+            "/run/rounds/round-001/nodes/router/attempt-001/artifacts/ai-dynamic-result.json",
+        ),
+        preview: Some(
+            r#"{"outcome":"success","summary":"accepted","reportManifest":{"path":"/run/rounds/round-001/nodes/router/attempt-001/artifacts/ai-dynamic-report-manifest.json"}}"#
+                .to_string(),
+        ),
+    });
+
+    let chinese_prompt = render_prompt_bundle(&req).unwrap();
+    assert!(
+        chinese_prompt
+            .user_prompt
+            .contains("## AI-DYNAMIC 完整报告清单（按需读取）")
+    );
+    assert!(chinese_prompt.user_prompt.contains("`reportManifest.path`"));
+    assert!(chinese_prompt.user_prompt.contains("节点/group 拓扑"));
+    assert!(
+        chinese_prompt
+            .user_prompt
+            .contains("默认使用业务交接 `summary`")
+    );
+
+    req.runtime_context.language = gold_band::config::DesktopLanguage::En;
+    let english_prompt = render_prompt_bundle(&req).unwrap();
+    assert!(
+        english_prompt
+            .user_prompt
+            .contains("## AI-DYNAMIC full report manifest (read on demand)")
+    );
+    assert!(english_prompt.user_prompt.contains("`reportManifest.path`"));
+    assert!(english_prompt.user_prompt.contains("node/group topology"));
+    assert!(
+        english_prompt
+            .user_prompt
+            .contains("By default, use the business handoff `summary`")
+    );
+
+    req.runtime_context.language = gold_band::config::DesktopLanguage::ZhCn;
+    req.predecessors[0].output_artifact.as_mut().unwrap().name = "plan-result".to_string();
+    let ordinary_prompt = render_prompt_bundle(&req).unwrap();
+    assert!(
+        !ordinary_prompt
+            .user_prompt
+            .contains("AI-DYNAMIC 完整报告清单")
+    );
+}
+
+#[test]
 fn render_prompt_bundle_removes_skill_catalog_and_cold_indexes() {
     let prompt = render_prompt_bundle(&invocation()).unwrap();
 
@@ -475,7 +528,9 @@ fn render_prompt_bundle_workflow_resume_uses_hidden_context_and_goal() {
     assert!(prompt.user_prompt.contains("调用原因"));
     assert!(prompt.user_prompt.contains("继续"));
     assert!(prompt.user_prompt.contains("# 目标"));
-    assert!(prompt.user_prompt.contains("根据最新反馈进行调整"));
+    assert!(prompt.user_prompt.contains("继续当前节点任务"));
+    assert!(prompt.user_prompt.contains("反馈是证据，不是新增授权"));
+    assert!(prompt.user_prompt.contains("只实施符合既定范围的修改"));
     assert!(!prompt.user_prompt.contains("# 需求"));
     assert_eq!(prompt.prompt_id.as_deref(), Some("resume-001"));
 }
@@ -794,6 +849,24 @@ fn render_prompt_bundle_shows_new_round_trigger_reason() {
         !prompt
             .user_prompt
             .contains("- round-001/accept/attempt-001: attachments/accept-report.md")
+    );
+
+    req.runtime_context.language = gold_band::config::DesktopLanguage::En;
+    let english_prompt = render_prompt_bundle(&req).unwrap();
+    assert!(
+        english_prompt
+            .user_prompt
+            .contains("$new-round was triggered by this node")
+    );
+    assert!(
+        english_prompt
+            .user_prompt
+            .contains("output artifact=accept-result")
+    );
+    assert!(
+        english_prompt
+            .user_prompt
+            .contains("output preview={\"result\":false")
     );
 }
 

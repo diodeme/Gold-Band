@@ -19,7 +19,7 @@ GitHub capability、PR/Issue 查询和详情同样独立于 React 组件生命�
 
 用户在 Fetch、Push 或 Push Tag 对话框中主动选择的 remote 是仓库级持久偏好，以规范化 Git common directory 为身份保存，因此同仓库的 linked worktree 共享选择。重新打开对话框时按“仍然有效的用户偏好 → 当前 upstream remote → remote 列表第一项”解析默认值；已删除的 remote 不得继续成为可提交值。偏好使用集中、带版本号且有 64 个仓库上限的 schema，不把 localStorage key 散落在组件中。
 
-每个 repository/workspace 会话共享一个 `GitStateMonitor`：普通文件变化复用现有 workspace watcher，HEAD、index、refs、packed-refs 等元数据由 `git rev-parse --git-path` 定位后额外监听。两类事件经过去抖后只刷新匹配会话；LRU 淘汰会释放 watcher。fetch/pull/push/stash、GitHub 登录和 PR 创建等长操作通过 typed operation event 推送 running/terminal 状态，前端不轮询完成状态；本地 Git 操作终态立即刷新 snapshot/history，早于 command 返回的事件也必须合并而不能丢失。
+每个 repository/workspace 会话共享一个 `GitStateMonitor`：普通文件变化复用现有 workspace watcher，HEAD、index、refs、packed-refs 等元数据由 `git rev-parse --git-path` 定位后额外监听。首次加载必须先完成事件订阅并启动 monitor，再读取权威 snapshot/history，消除“快照完成但监听尚未建立”的丢事件窗口；`workspacePath = null` 是主工作区的合法作用域，必须原样交给后端解析，不能被当作路径缺失而跳过 monitor。加载或 Git 写操作期间到达的失效保留为一个 dirty follow-up，不能因当前状态不是 ready/pending 而丢弃。两类事件经过去抖后只刷新匹配会话，quiet window 同时受 1 秒最大延迟约束；普通 workspace 事件只刷新 worktree/status snapshot，不读取 history，Git metadata/ref 事件才刷新 repository snapshot/history。monitor 身份包含 `projectId + common directory + workspace path`，LRU 淘汰会对称释放 watcher。fetch/pull/push/stash、GitHub 登录和 PR 创建等长操作通过 typed operation event 推送 running/terminal 状态，前端不轮询完成状态；本地 Git 操作终态立即刷新 snapshot/history，早于 command 返回的事件也必须合并而不能丢失。notify 错误或有界事件通道溢出必须升级为一次 repository scope 失效并记录诊断，不能静默忽略。
 
 同一 workspace 任意时刻只允许一个 Git 写操作。pending action 由源码管理会话统一保存为结构化 `kind + path`，不得由各按钮维护旁路 loading：单文件 Stage/Unstage 时被点击行的操作按钮持续显示旋转状态，其他文件行的按钮不渲染，Commit 和其他仓库写操作保持禁用；后台只读刷新使用独立 `refreshing` 状态，不禁用 commit 草稿或文件操作。Commit、Fetch、Pull、Push 在各自主操作按钮显示旋转状态，直至权威结果收敛或结构化失败返回。
 
@@ -44,6 +44,8 @@ Fetch 的可选 prune 行为对客描述为“移除远端已删除的分支记�
 仓库页内部使用同层级二级 Tabs：`分支 / 标签 / Worktree / Stash`，一次只挂载一个领域列表；选中的 repository Tab 保存在 repository/workspace 会话中，离开仓库页、打开文件或 Diff 后返回仍恢复原分区。创建入口按当前领域提供对应操作，不把四个长列表同时平铺。所有行使用面板宽度作为硬边界：主文案与 SHA/ref/path 在剩余空间内省略，固定操作区不参与压缩，长 Stash message 或 Worktree path 不得产生横向滚动或撑宽客户端。
 
 Worktree 行提供 Git 原生安全删除。当前正在使用的 Worktree 禁止删除；其他 Worktree 删除前必须展示完整路径并二次确认，执行 `git worktree remove` 且不传 `--force`。含未提交或未跟踪改动时由 Git 拒绝并返回结构化原因；删除 Worktree 不删除关联 branch。请求路径必须先与后端 `git worktree list` 的规范化权威路径匹配，不能直接把前端路径作为任意文件系统删除目标。删除中的目标行显示旋转状态并禁用冲突写入口，完成后 watcher/命令结果刷新权威仓库快照。
+
+Git catalog 匹配、repository/workspace 协调锁 key 与 Worktree 删除目标必须共用同一个 `GitFilesystemPathIdentity`，不得分别使用字符串替换或要求目标 leaf 仍存在。完整路径存在时使用成熟的 Windows-aware canonicalize；leaf 已缺失时逐级找到最近存在祖先并解析 symlink/junction，只追加尚未解析的普通子组件。未解析 tail 中出现 `..` 必须拒绝，Windows drive/verbatim drive、UNC/verbatim UNC 与大小写必须规范到同一 filesystem identity，同时保留 UNC 的绝对根语义，不能与相似相对字符串冲突；`C:foo` 或根相对但非绝对的 Windows 路径必须显式拒绝，不能依赖进程隐藏的 drive current directory。删除命令只能使用 identity 精确匹配后的 catalog canonical target，不直接执行调用方原始路径；catalog 必须逐项解析，任一 identity 无法可靠解析时整体 fail closed，不得跳过坏项后继续匹配并删除其他项。
 
 Pull 采用 Git 原生冲突工作流，不实现三方合并编辑器。`status.operationInProgress` 是 Merge/Rebase 进行中状态的唯一事实源；冲突文件点击后打开普通文件编辑 Tab，用户直接修改冲突块。Merge 显示“完成 Merge / 放弃 Merge”，Rebase 显示“继续 Rebase”，并在危险菜单提供“跳过当前 Commit / 放弃 Rebase”。完成或继续必须先弹确认框；确认后后端在同一 workspace 写锁中读取当前 unmerged 路径，只对这些路径执行 `git add --`，随后调用 `git merge --continue` 或 `git rebase --continue`，不暂存其他普通改动。跳过会丢弃当前正在重放的整个 Commit，确认框必须展示短 SHA 和标题；中止分别调用 `git merge --abort`、`git rebase --abort`。进行中禁止普通 Commit、Pull/Push、Stage/Unstage 和仓库写操作，只允许流程控制动作。
 

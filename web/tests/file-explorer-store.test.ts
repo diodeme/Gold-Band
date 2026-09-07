@@ -216,6 +216,29 @@ describe('FileExplorerStore lifecycle', () => {
     expect(store.snapshot('project-1').treeScrollTop).toBe(beforeRefresh.treeScrollTop);
   });
 
+  it('reconciles a cached tree on workspace reactivation without resetting ready UI state', async () => {
+    const store = createStore();
+    await store.loadRoot('project-1');
+    store.setTreeScrollTop('project-1', 240);
+    api.listWorkspaceDirectory.mockResolvedValueOnce([
+      directory('src'),
+      file('README.md'),
+      directory('third-party-folder'),
+    ]);
+
+    const reconciliation = store.reconcile('project-1');
+
+    expect(store.snapshot('project-1').status).toBe('ready');
+    expect(store.snapshot('project-1').treeScrollTop).toBe(240);
+    await reconciliation;
+    expect(store.snapshot('project-1').roots.map((entry) => entry.name)).toEqual([
+      'src',
+      'README.md',
+      'third-party-folder',
+    ]);
+    expect(api.listWorkspaceDirectory).toHaveBeenCalledTimes(2);
+  });
+
   it('invalidates directory structure when a known node is removed', async () => {
     const store = createStore();
     await store.loadRoot('project-1');

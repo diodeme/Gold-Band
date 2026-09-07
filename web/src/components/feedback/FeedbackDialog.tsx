@@ -45,19 +45,22 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps) {
   const [sessionOptions, setSessionOptions] = useState<SessionOption[]>([]);
   const [archivePreview, setArchivePreview] = useState<FeedbackArchivePreview | null>(null);
 
-  // Load the cross-workspace conversation list when the dialog opens so the
-  // user can optionally associate a session. Stays empty if there are none.
+  // Load one bounded summary page per workspace only when the dialog opens.
   useEffect(() => {
     if (!open) return;
     let active = true;
-    void getRuntimeApi().getConversationSidebar().then((sidebar) => {
+    const api = getRuntimeApi();
+    void api.getConversationSidebarBootstrap().then(async (bootstrap) => {
+      const pages = await Promise.all(bootstrap.workspaces.map((workspace) =>
+        api.getConversationTaskPage(workspace.projectId, null, 24)
+          .catch(() => ({ projectId: workspace.projectId, tasks: [], nextCursor: null, errors: [] }))));
       if (!active) return;
       const workspaceByProject = new Map(
-        sidebar.workspaces.map((w) => [w.projectId, w] as const),
+        bootstrap.workspaces.map((w) => [w.projectId, w] as const),
       );
-      const multiWorkspace = sidebar.workspaces.length > 1;
+      const multiWorkspace = bootstrap.workspaces.length > 1;
       const options: SessionOption[] = [];
-      for (const [projectId, tasks] of Object.entries(sidebar.tasksByWorkspace)) {
+      for (const { projectId, tasks } of pages) {
         const ws = workspaceByProject.get(projectId);
         if (!ws) continue;
         for (const task of tasks) {

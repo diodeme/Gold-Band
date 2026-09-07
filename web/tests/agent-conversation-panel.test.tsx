@@ -12,6 +12,8 @@ vi.mock('@/components/acp/ACPChatDialog', () => ({
       data-show-system-prompt={String(props.showSystemPromptAction)}
       data-show-raw-frames={String(props.showRawFramesAction)}
       data-usage-compact={String(props.usageCompact)}
+      data-event-page-size={String(props.eventPageSize)}
+      data-event-window-page-count={String(props.eventWindowPageCount)}
     />
   ),
 }));
@@ -48,7 +50,13 @@ describe('AgentConversationPanel', () => {
     const root = createRoot(container);
     try {
       await act(async () => {
-        root.render(<AgentConversationPanel resource={resource} />);
+        root.render(
+          <AgentConversationPanel
+            resource={resource}
+            eventPageSize={96}
+            eventWindowPageCount={3}
+          />,
+        );
       });
       const renderer = container.querySelector('output');
       expect(renderer?.getAttribute('data-branch-id')).toBe('agent-01');
@@ -56,6 +64,8 @@ describe('AgentConversationPanel', () => {
       expect(renderer?.getAttribute('data-show-system-prompt')).toBe('true');
       expect(renderer?.getAttribute('data-show-raw-frames')).toBe('true');
       expect(renderer?.getAttribute('data-usage-compact')).toBe('true');
+      expect(renderer?.getAttribute('data-event-page-size')).toBe('96');
+      expect(renderer?.getAttribute('data-event-window-page-count')).toBe('3');
     } finally {
       await act(async () => root.unmount());
     }

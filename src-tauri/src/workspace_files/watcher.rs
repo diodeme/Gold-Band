@@ -1,7 +1,11 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
+use std::time::{Duration, Instant};
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tauri::{AppHandle, Emitter};
@@ -14,6 +18,9 @@ use super::runtime::WorkspaceFileRuntime;
 use super::service::revision_for_path;
 
 pub(crate) const WORKSPACE_FILE_CHANGED_EVENT: &str = "gold-band://workspace-file-changed";
+const EVENT_QUEUE_CAPACITY: usize = 4_096;
+const MAX_PENDING_PATHS: usize = 4_096;
+const MAX_BATCH_LATENCY: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Default)]
 pub struct WorkspaceFileWatchRuntime {
@@ -159,9 +166,13 @@ fn create_watcher(
     recursive_mode: RecursiveMode,
     external_token: Option<Arc<Mutex<String>>>,
 ) -> CommandResult<RecommendedWatcher> {
-    let (sender, receiver) = mpsc::channel::<notify::Result<Event>>();
-    let mut watcher = notify::recommended_watcher(move |event| {
-        let _ = sender.send(event);
+    let (sender, receiver) = mpsc::sync_channel::<notify::Result<Event>>(EVENT_QUEUE_CAPACITY);
+    let queue_overflowed = Arc::new(AtomicBool::new(false));
+    let callback_overflowed = queue_overflowed.clone();
+    let mut watcher = notify::recommended_watcher(move |event| match sender.try_send(event) {
+        Ok(()) => {}
+        Err(mpsc::TrySendError::Full(_)) => callback_overflowed.store(true, Ordering::Release),
+        Err(mpsc::TrySendError::Disconnected(_)) => {}
     })
     .map_err(|_| {
         error(
@@ -180,16 +191,40 @@ fn create_watcher(
     })?;
 
     let debounce = Duration::from_millis(debounce_ms.max(1));
+    let invalidation_path = target_file.clone().unwrap_or_else(|| watched_path.clone());
     std::thread::spawn(move || {
         while let Ok(first) = receiver.recv() {
+            let batch_started = Instant::now();
             let mut pending = HashMap::<PathBuf, String>::new();
-            collect_event(first, target_file.as_deref(), &mut pending);
+            let mut invalidated = queue_overflowed.swap(false, Ordering::AcqRel)
+                | collect_event(first, target_file.as_deref(), &mut pending);
             loop {
-                match receiver.recv_timeout(debounce) {
-                    Ok(event) => collect_event(event, target_file.as_deref(), &mut pending),
+                let wait = next_batch_wait(debounce, batch_started.elapsed());
+                if wait.is_zero() {
+                    break;
+                }
+                match receiver.recv_timeout(wait) {
+                    Ok(event) => {
+                        invalidated |= collect_event(event, target_file.as_deref(), &mut pending);
+                    }
                     Err(mpsc::RecvTimeoutError::Timeout) => break,
                     Err(mpsc::RecvTimeoutError::Disconnected) => return,
                 }
+            }
+            invalidated |= queue_overflowed.swap(false, Ordering::AcqRel);
+            if invalidated {
+                pending.clear();
+                emit_change(
+                    &app_handle,
+                    WorkspaceFileChangedEventVm {
+                        project_id: project_id.clone(),
+                        canonical_path: display_path(&invalidation_path),
+                        kind: "invalidated".to_string(),
+                        revision: None,
+                        operation_id: None,
+                    },
+                );
+                continue;
             }
             for (path, kind) in pending {
                 if let Some(token) = &external_token {
@@ -197,18 +232,18 @@ fn create_watcher(
                         continue;
                     }
                 }
-                let revision = path
-                    .is_file()
-                    .then(|| revision_for_path(&path))
-                    .and_then(Result::ok);
+                let recent_write = file_runtime.recent_write_for(&path);
+                let revision = recent_write
+                    .as_ref()
+                    .filter(|_| path.is_file())
+                    .and_then(|_| revision_for_path(&path).ok());
                 let operation_id = revision.as_ref().and_then(|revision| {
-                    file_runtime
-                        .recent_write_for(&path)
+                    recent_write
                         .filter(|(_, written_revision)| written_revision == revision)
                         .map(|(operation_id, _)| operation_id)
                 });
-                let _ = app_handle.emit(
-                    WORKSPACE_FILE_CHANGED_EVENT,
+                emit_change(
+                    &app_handle,
                     WorkspaceFileChangedEventVm {
                         project_id: project_id.clone(),
                         canonical_path: display_path(&path),
@@ -221,6 +256,16 @@ fn create_watcher(
         }
     });
     Ok(watcher)
+}
+
+fn emit_change(app_handle: &AppHandle, event: WorkspaceFileChangedEventVm) {
+    if let Err(error) = app_handle.emit(WORKSPACE_FILE_CHANGED_EVENT, event) {
+        tracing::warn!(%error, "failed to emit workspace file invalidation");
+    }
+}
+
+fn next_batch_wait(debounce: Duration, elapsed: Duration) -> Duration {
+    debounce.min(MAX_BATCH_LATENCY.saturating_sub(elapsed))
 }
 
 fn external_watch_authorized(
@@ -240,8 +285,11 @@ fn collect_event(
     event: notify::Result<Event>,
     target_file: Option<&Path>,
     pending: &mut HashMap<PathBuf, String>,
-) {
-    let Ok(event) = event else { return };
+) -> bool {
+    let Ok(event) = event else {
+        pending.clear();
+        return true;
+    };
     let kind = event_kind(&event.kind).to_string();
     for path in event.paths {
         if let Some(target) = target_file
@@ -250,8 +298,13 @@ fn collect_event(
         {
             continue;
         }
+        if !pending.contains_key(&path) && pending.len() >= MAX_PENDING_PATHS {
+            pending.clear();
+            return true;
+        }
         pending.insert(path, kind.clone());
     }
+    false
 }
 
 fn event_kind(kind: &EventKind) -> &'static str {
@@ -323,6 +376,42 @@ mod tests {
         );
 
         assert_eq!(pending.get(&path).map(String::as_str), Some("modified"));
+    }
+
+    #[test]
+    fn watcher_errors_and_path_overflow_invalidate_the_scope() {
+        let dir = tempdir().unwrap();
+        let mut pending = HashMap::new();
+        assert!(collect_event(
+            Err(notify::Error::generic("watch failed")),
+            None,
+            &mut pending,
+        ));
+
+        let mut invalidated = false;
+        for index in 0..=MAX_PENDING_PATHS {
+            invalidated |= collect_event(
+                Ok(Event::new(EventKind::Modify(ModifyKind::Any))
+                    .add_path(dir.path().join(format!("{index}.txt")))),
+                None,
+                &mut pending,
+            );
+        }
+
+        assert!(invalidated);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn continuous_events_cannot_extend_a_batch_past_the_max_latency() {
+        assert_eq!(
+            next_batch_wait(Duration::from_millis(150), Duration::from_millis(999)),
+            Duration::from_millis(1),
+        );
+        assert_eq!(
+            next_batch_wait(Duration::from_millis(150), Duration::from_millis(1_000)),
+            Duration::ZERO,
+        );
     }
 
     #[test]

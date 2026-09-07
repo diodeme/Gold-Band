@@ -29,8 +29,11 @@ afterEach(() => {
 describe('ConversationSidebar Direct terminal result dot', () => {
   it('overlays a semantic unread result on the Agent identity without replacing breathing activity', async () => {
     const vm: ConversationSidebarVm = {
+      loadStatus: 'ready',
       workspaces: [{ projectId: 'project-001', workspacePath: 'D:/project', name: 'Project' }],
+      pinRefs: [],
       pinnedTasks: [],
+      pinnedTaskPage: { status: 'ready-empty', nextCursor: null },
       tasksByWorkspace: {
         'project-001': [{
           projectId: 'project-001',
@@ -47,9 +50,12 @@ describe('ConversationSidebar Direct terminal result dot', () => {
             occurredAt: '2026-08-18T10:00:00Z',
           },
           runs: [],
+          runHistoryStatus: 'ready-empty',
+          runsNextCursor: null,
           pinned: false,
         }],
       },
+      workspaceTaskPages: { 'project-001': { status: 'ready', nextCursor: null } },
     };
     const container = document.createElement('div');
     document.body.append(container);
@@ -65,12 +71,14 @@ describe('ConversationSidebar Direct terminal result dot', () => {
             onSelect={() => {}}
             onNewConversation={() => {}}
             onSearch={() => {}}
-            onSelectTask={() => {}}
-            onSelectRun={() => {}}
             onPinTask={() => {}}
             onUnpinTask={() => {}}
             onRenameTask={() => {}}
             onDeleteTask={() => {}}
+            onRetryBootstrap={() => {}}
+            onRequestWorkspaceTasks={() => {}}
+            onRequestPinnedTasks={() => {}}
+            onRequestTaskRuns={() => {}}
           />,
         );
       });

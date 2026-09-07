@@ -89,6 +89,8 @@ pub struct AppBootstrapVm {
 pub struct AppConfigVm {
     pub acp_session_title_refresh_enabled: bool,
     pub acp_chat_event_page_size: usize,
+    pub acp_chat_event_window_page_count: usize,
+    pub acp_chat_resource_cache_session_count: usize,
     pub conversation_inline_content_max_bytes: u64,
     pub conversation_inline_image_max_bytes: u64,
     pub conversation_inline_image_max_dimension: u32,
@@ -101,6 +103,7 @@ pub struct AppConfigVm {
 #[serde(rename_all = "camelCase")]
 pub struct TurnFilesVm {
     pub card_preview_limit: usize,
+    pub attachment_card_preview_limit: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -774,8 +777,7 @@ pub struct AcpSessionVm {
     pub events: Vec<AcpUiEventVm>,
     pub event_page: AcpEventPageVm,
     pub timeline_projection: AcpTimelineProjectionVm,
-    pub pending_permissions: Vec<AcpPermissionRequestVm>,
-    pub pending_elicitations: Vec<AcpElicitationRequestVm>,
+    pub pending_interactions: Vec<AcpPromptInteractionVm>,
     pub available_commands: Option<Vec<serde_json::Value>>,
     pub usage: Option<AcpUsageVm>,
     pub diagnostics: AcpDiagnosticsVm,
@@ -959,13 +961,30 @@ pub struct AcpSessionTimingVm {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AcpPermissionRequestVm {
-    pub request_id: String,
-    pub title: String,
-    pub tool_call_id: Option<String>,
-    pub options: Vec<AcpPermissionOptionVm>,
-    pub raw: serde_json::Value,
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum AcpPromptInteractionVm {
+    Permission {
+        interaction_id: String,
+        turn_id: Option<String>,
+        prompt_event_id: Option<String>,
+        title: String,
+        tool_call_id: Option<String>,
+        options: Vec<AcpPermissionOptionVm>,
+        raw: serde_json::Value,
+    },
+    Elicitation {
+        interaction_id: String,
+        turn_id: Option<String>,
+        prompt_event_id: Option<String>,
+        message: String,
+        tool_call_id: Option<String>,
+        requested_schema: serde_json::Value,
+        raw: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -974,16 +993,6 @@ pub struct AcpPermissionOptionVm {
     pub option_id: String,
     pub name: String,
     pub kind: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AcpElicitationRequestVm {
-    pub elicitation_id: String,
-    pub message: String,
-    pub tool_call_id: Option<String>,
-    pub requested_schema: serde_json::Value,
-    pub raw: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1088,6 +1097,7 @@ pub struct AcpRawFramePageVm {
 #[serde(rename_all = "camelCase")]
 pub struct AcpActivityDetailQueryInput {
     pub branch_id: String,
+    pub session_id: String,
     pub activity_start_seq: u64,
     pub activity_end_seq: u64,
     pub earlier_cursor: Option<String>,
@@ -1106,6 +1116,7 @@ pub struct AcpActivityDetailVm {
 #[serde(rename_all = "camelCase")]
 pub struct AcpToolDetailQueryInput {
     pub branch_id: String,
+    pub session_id: String,
     pub event_id: String,
     pub tool_call_id: Option<String>,
 }
@@ -1240,11 +1251,14 @@ fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
     AppConfigVm {
         acp_session_title_refresh_enabled: config.acp_session_title_refresh_enabled,
         acp_chat_event_page_size: config.acp_chat_event_page_size,
+        acp_chat_event_window_page_count: config.acp_chat_event_window_page_count,
+        acp_chat_resource_cache_session_count: config.acp_chat_resource_cache_session_count,
         conversation_inline_content_max_bytes: config.conversation_inline_content_max_bytes,
         conversation_inline_image_max_bytes: config.conversation_inline_image_max_bytes,
         conversation_inline_image_max_dimension: config.conversation_inline_image_max_dimension,
         turn_files: TurnFilesVm {
             card_preview_limit: config.turn_files.card_preview_limit,
+            attachment_card_preview_limit: config.turn_files.attachment_card_preview_limit,
         },
         workspace_layout: WorkspaceLayoutVm {
             shell_min_width: config.workspace_layout.shell_min_width,
@@ -3663,7 +3677,6 @@ pub fn dynamic_acp_session_vm(
     };
     let branch_record = conversation_branch_record(&agent_index, &branch_id);
     let status = conversation_branch_status(&root_status, &branch_id, branch_record);
-    let stopping = is_acp_session_stopping_status(&status);
     let active_status = is_acp_session_active_status(&status);
     let branch_timeline_path =
         gold_band::acp::branches::branch_timeline_path(&attempt_dir, &branch_id);
@@ -3687,21 +3700,13 @@ pub fn dynamic_acp_session_vm(
     );
     let parent_branch_id =
         branch_record.and_then(|record| record.parent_agent_execution_id.clone());
-    let pending_permissions = if stopping || !active_status {
-        Vec::new()
-    } else {
-        event_scan
-            .latest_permission_events
-            .into_values()
-            .filter(|event| event.status.as_deref() == Some("pending"))
-            .map(|event| permission_vm_from_event(&event))
-            .collect::<Vec<_>>()
-    };
-    let pending_elicitations = if stopping || !active_status {
-        Vec::new()
-    } else {
-        event_scan.pending_elicitations.clone()
-    };
+    let pending_interactions = event_scan
+        .latest_permission_events
+        .into_values()
+        .filter(|event| event.status.as_deref() == Some("pending"))
+        .map(|event| permission_vm_from_event(&event))
+        .chain(event_scan.pending_elicitations.clone())
+        .collect::<Vec<_>>();
     let provider = worker_ref
         .as_ref()
         .map(|state| state.provider.clone())
@@ -3826,8 +3831,7 @@ pub fn dynamic_acp_session_vm(
         events: event_scan.events,
         event_page: event_scan.event_page,
         timeline_projection: event_scan.timeline_projection,
-        pending_permissions,
-        pending_elicitations,
+        pending_interactions,
         available_commands: event_scan.available_commands,
         usage: if branch_id != gold_band::acp::branches::ROOT_BRANCH_ID {
             None
@@ -4050,7 +4054,6 @@ pub fn acp_session_vm(
     );
     let branch_record = conversation_branch_record(&agent_index, &branch_id);
     let status = conversation_branch_status(&root_status, &branch_id, branch_record);
-    let stopping = is_acp_session_stopping_status(&status);
     let active_status = is_acp_session_active_status(&status);
     let branch_timeline_path =
         gold_band::acp::branches::branch_timeline_path(&attempt_dir, &branch_id);
@@ -4110,21 +4113,13 @@ pub fn acp_session_vm(
     );
     let parent_branch_id =
         branch_record.and_then(|record| record.parent_agent_execution_id.clone());
-    let pending_permissions = if stopping || !active_status {
-        Vec::new()
-    } else {
-        event_scan
-            .latest_permission_events
-            .into_values()
-            .filter(|event| event.status.as_deref() == Some("pending"))
-            .map(|event| permission_vm_from_event(&event))
-            .collect::<Vec<_>>()
-    };
-    let pending_elicitations = if stopping || !active_status {
-        Vec::new()
-    } else {
-        event_scan.pending_elicitations.clone()
-    };
+    let pending_interactions = event_scan
+        .latest_permission_events
+        .into_values()
+        .filter(|event| event.status.as_deref() == Some("pending"))
+        .map(|event| permission_vm_from_event(&event))
+        .chain(event_scan.pending_elicitations.clone())
+        .collect::<Vec<_>>();
 
     let provider = worker_ref
         .as_ref()
@@ -4265,8 +4260,7 @@ pub fn acp_session_vm(
         events: event_scan.events,
         event_page: event_scan.event_page,
         timeline_projection: event_scan.timeline_projection,
-        pending_permissions,
-        pending_elicitations,
+        pending_interactions,
     };
     trace_acp_session_query(
         &mut query_trace,
@@ -4346,7 +4340,7 @@ struct AcpEventScan {
     session_elapsed_seconds: Option<u64>,
     session_timing: Option<AcpSessionTimingVm>,
     latest_permission_events: HashMap<String, AcpUiEventVm>,
-    pending_elicitations: Vec<AcpElicitationRequestVm>,
+    pending_elicitations: Vec<AcpPromptInteractionVm>,
     available_commands: Option<Vec<serde_json::Value>>,
     usage: Option<AcpUsageVm>,
 }
@@ -4470,6 +4464,8 @@ struct AcpTimelineEventHeaderVm {
     seq: u64,
     kind: String,
     #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
     started_seq: Option<u64>,
     #[serde(default)]
     raw: Option<AcpTimelineEventRawHeaderVm>,
@@ -4561,19 +4557,15 @@ fn indexed_timeline_page_to_scan(
     order_provider_history_by_prompt_anchors_vm(&mut events);
     hydrate_timeline_events(timeline_path, &mut events)?;
 
-    let pending_elicitations = if session_active {
-        indexed
-            .pending_elicitations
-            .into_iter()
-            .map(|event| {
-                serde_json::from_value::<AcpUiEventVm>(serde_json::to_value(event)?)
-                    .map(|event| elicitation_vm_from_event(&event))
-                    .map_err(Into::into)
-            })
-            .collect::<Result<Vec<_>>>()?
-    } else {
-        Vec::new()
-    };
+    let pending_elicitations = indexed
+        .pending_elicitations
+        .into_iter()
+        .map(|event| {
+            serde_json::from_value::<AcpUiEventVm>(serde_json::to_value(event)?)
+                .map(|event| elicitation_vm_from_event(&event))
+                .map_err(Into::into)
+        })
+        .collect::<Result<Vec<_>>>()?;
     let projection_events = indexed
         .latest_plan
         .into_iter()
@@ -5187,7 +5179,7 @@ fn paginate_timeline(
     let semantic_blocks = conversation_semantic_blocks(all_events);
     let total = semantic_blocks.len();
     let session_timing = latest_session_timing_from_events(all_events);
-    let pending_elicitations = pending_elicitation_vms(all_events, session_active);
+    let pending_elicitations = pending_elicitation_vms(all_events);
     let timeline_projection =
         build_acp_timeline_projection(all_events, latest_permission_events, session_active);
     let (selected_blocks, after_cursor_has_newer) = if let Some(cursor) = after_seq {
@@ -5492,6 +5484,7 @@ pub fn acp_activity_detail_vm_for_attempt(
         .clamp(1, 200);
     let candidates = scan_activity_detail_candidates(
         &timeline_path,
+        &query.session_id,
         query.activity_start_seq,
         query.activity_end_seq,
         before_seq,
@@ -5503,7 +5496,8 @@ pub fn acp_activity_detail_vm_for_attempt(
         .skip(usize::from(has_more_earlier))
         .map(|(item_id, _)| item_id.clone())
         .collect::<HashSet<_>>();
-    let audit = load_selected_activity_detail_events(&timeline_path, &selected_ids)?;
+    let audit =
+        load_selected_activity_detail_events(&timeline_path, &query.session_id, &selected_ids)?;
     let mut audit = audit;
     hydrate_timeline_events(&timeline_path, &mut audit)?;
     let items = audit
@@ -5522,6 +5516,7 @@ pub fn acp_activity_detail_vm_for_attempt(
 
 fn scan_activity_detail_candidates(
     timeline_path: &camino::Utf8Path,
+    session_id: &str,
     activity_start_seq: u64,
     activity_end_seq: u64,
     before_seq: Option<u64>,
@@ -5539,7 +5534,8 @@ fn scan_activity_detail_candidates(
             continue;
         }
         let started_seq = header.item.started_seq.unwrap_or(header.item.seq);
-        if started_seq < activity_start_seq
+        if header.item.session_id.as_deref() != Some(session_id)
+            || started_seq < activity_start_seq
             || started_seq > activity_end_seq
             || before_seq.is_some_and(|cursor| started_seq >= cursor)
             || header
@@ -5598,6 +5594,7 @@ fn scan_activity_detail_candidates(
 
 fn load_selected_activity_detail_events(
     timeline_path: &camino::Utf8Path,
+    session_id: &str,
     selected_ids: &HashSet<String>,
 ) -> Result<Vec<AcpUiEventVm>> {
     if selected_ids.is_empty() {
@@ -5610,6 +5607,9 @@ fn load_selected_activity_detail_events(
         let Ok(header) = serde_json::from_str::<AcpTimelineEntryHeaderVm>(&line) else {
             continue;
         };
+        if header.item.session_id.as_deref() != Some(session_id) {
+            continue;
+        }
         let item_id = header.item_id.unwrap_or(header.item.id);
         if !selected_ids.contains(&item_id) {
             continue;
@@ -5680,11 +5680,13 @@ pub fn acp_tool_detail_vm_for_attempt(
         .filter(|value| !value.is_empty())
         .map(|value| serde_json::to_string(value).unwrap_or_else(|_| format!("\"{value}\"")))
         .collect::<Vec<_>>();
+    let session_needle = serde_json::to_string(&query.session_id)
+        .unwrap_or_else(|_| format!("\"{}\"", query.session_id));
     let file = fs::File::open(timeline_path.as_std_path())?;
     let mut detail: Option<AcpUiEventVm> = None;
     for line in BufReader::new(file).lines() {
         let line = line?;
-        if !needles.iter().any(|needle| line.contains(needle)) {
+        if !line.contains(&session_needle) || !needles.iter().any(|needle| line.contains(needle)) {
             continue;
         }
         let candidate = if let Ok(patch) = serde_json::from_str::<AcpTimelinePatchVm>(&line) {
@@ -5699,7 +5701,10 @@ pub fn acp_tool_detail_vm_for_attempt(
             || query.tool_call_id.as_deref().is_some_and(|tool_call_id| {
                 candidate.tool_call_id.as_deref() == Some(tool_call_id)
             });
-        if !identity_matches || !matches!(candidate.kind.as_str(), "toolCall" | "toolCallUpdate") {
+        if candidate.session_id.as_deref() != Some(query.session_id.as_str())
+            || !identity_matches
+            || !matches!(candidate.kind.as_str(), "toolCall" | "toolCallUpdate")
+        {
             continue;
         }
         detail = Some(
@@ -7089,7 +7094,7 @@ fn insert_latest_permission_event(
     }
 }
 
-fn permission_vm_from_event(event: &AcpUiEventVm) -> AcpPermissionRequestVm {
+fn permission_vm_from_event(event: &AcpUiEventVm) -> AcpPromptInteractionVm {
     let request_id = permission_request_id_from_event(event);
     let mut raw = event
         .raw
@@ -7125,8 +7130,18 @@ fn permission_vm_from_event(event: &AcpUiEventVm) -> AcpPermissionRequestVm {
                 .to_string(),
         })
         .collect::<Vec<_>>();
-    AcpPermissionRequestVm {
-        request_id,
+    AcpPromptInteractionVm::Permission {
+        interaction_id: request_id,
+        turn_id: raw
+            .pointer("/_meta/goldBandConversation/turnId")
+            .or_else(|| raw.get("turnId"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        prompt_event_id: raw
+            .pointer("/_meta/goldBandConversation/promptEventId")
+            .or_else(|| raw.get("promptEventId"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
         title: event
             .title
             .clone()
@@ -7138,13 +7153,7 @@ fn permission_vm_from_event(event: &AcpUiEventVm) -> AcpPermissionRequestVm {
 }
 
 #[cfg(test)]
-fn pending_elicitation_vms(
-    events: &[AcpUiEventVm],
-    session_active: bool,
-) -> Vec<AcpElicitationRequestVm> {
-    if !session_active {
-        return Vec::new();
-    }
+fn pending_elicitation_vms(events: &[AcpUiEventVm]) -> Vec<AcpPromptInteractionVm> {
     let resolved_ids = events
         .iter()
         .filter(|event| event.kind == "elicitationResponse")
@@ -7167,7 +7176,7 @@ fn pending_elicitation_vms(
     vec![elicitation_vm_from_event(request)]
 }
 
-fn elicitation_vm_from_event(event: &AcpUiEventVm) -> AcpElicitationRequestVm {
+fn elicitation_vm_from_event(event: &AcpUiEventVm) -> AcpPromptInteractionVm {
     let raw = event
         .raw
         .clone()
@@ -7180,8 +7189,18 @@ fn elicitation_vm_from_event(event: &AcpUiEventVm) -> AcpElicitationRequestVm {
             (raw.get("type").and_then(Value::as_str) == Some("object")).then(|| raw.clone())
         })
         .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} }));
-    AcpElicitationRequestVm {
-        elicitation_id: event.id.clone(),
+    AcpPromptInteractionVm::Elicitation {
+        interaction_id: event.id.clone(),
+        turn_id: raw
+            .pointer("/_meta/goldBandConversation/turnId")
+            .or_else(|| raw.get("turnId"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        prompt_event_id: raw
+            .pointer("/_meta/goldBandConversation/promptEventId")
+            .or_else(|| raw.get("promptEventId"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
         message: raw
             .get("message")
             .and_then(Value::as_str)
@@ -7865,7 +7884,10 @@ mod tests {
         let vm = app_config_vm(&RuntimeConfig::default());
         let value = serde_json::to_value(vm).unwrap();
 
-        assert_eq!(value["conversationInlineContentMaxBytes"], 64_000);
+        assert_eq!(value["acpChatEventPageSize"], 96);
+        assert_eq!(value["acpChatEventWindowPageCount"], 3);
+        assert_eq!(value["acpChatResourceCacheSessionCount"], 8);
+        assert_eq!(value["conversationInlineContentMaxBytes"], 20_000);
         assert_eq!(value["conversationInlineImageMaxBytes"], 4 * 1024 * 1024);
         assert_eq!(value["conversationInlineImageMaxDimension"], 2_560);
         assert_eq!(value["workspaceLayout"]["shellMinWidth"], 480);
@@ -9402,6 +9424,10 @@ mod tests {
             110,
             Some(json!({
                 "requestId": "0",
+                "_meta": { "goldBandConversation": {
+                    "turnId": "turn-2",
+                    "promptEventId": "prompt-2"
+                }},
                 "options": [
                     { "optionId": "allow", "name": "Allow", "kind": "allow_once" }
                 ]
@@ -9410,9 +9436,21 @@ mod tests {
 
         let vm = permission_vm_from_event(&event);
 
-        assert_eq!(vm.request_id, "0");
+        let AcpPromptInteractionVm::Permission {
+            interaction_id,
+            turn_id,
+            prompt_event_id,
+            raw,
+            ..
+        } = vm
+        else {
+            panic!("expected permission interaction");
+        };
+        assert_eq!(interaction_id, "0");
+        assert_eq!(turn_id.as_deref(), Some("turn-2"));
+        assert_eq!(prompt_event_id.as_deref(), Some("prompt-2"));
         assert_eq!(
-            vm.raw.get("requestId").and_then(|value| value.as_str()),
+            raw.get("requestId").and_then(|value| value.as_str()),
             Some("0")
         );
     }
@@ -9432,7 +9470,12 @@ mod tests {
         );
 
         assert_eq!(permission_request_id_from_event(&event), "0");
-        assert_eq!(permission_vm_from_event(&event).request_id, "0");
+        let AcpPromptInteractionVm::Permission { interaction_id, .. } =
+            permission_vm_from_event(&event)
+        else {
+            panic!("expected permission interaction");
+        };
+        assert_eq!(interaction_id, "0");
     }
 
     #[test]
@@ -9634,6 +9677,64 @@ mod tests {
     }
 
     #[test]
+    fn detail_queries_are_scoped_by_canonical_session() {
+        let dir =
+            std::env::temp_dir().join(format!("gb-detail-session-scope-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let mut first = acp_event_at(
+            "shared-tool",
+            "toolCall",
+            Some("completed"),
+            1_000,
+            Some(json!({ "output": "session-a-output" })),
+        );
+        first.session_id = Some("session-a".to_string());
+        first.seq = 1;
+        first.started_seq = Some(1);
+        first.ended_seq = Some(1);
+        first.tool_call_id = Some("shared-call".to_string());
+        let mut second = first.clone();
+        second.session_id = Some("session-b".to_string());
+        second.seq = 2;
+        second.started_seq = Some(2);
+        second.ended_seq = Some(2);
+        second.raw = Some(json!({ "output": "session-b-output" }));
+        write_timeline_file(&attempt, "acp.timeline.jsonl", &[first, second]);
+
+        let tool = acp_tool_detail_vm_for_attempt(
+            &attempt,
+            AcpToolDetailQueryInput {
+                branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.to_string(),
+                session_id: "session-a".to_string(),
+                event_id: "shared-tool".to_string(),
+                tool_call_id: Some("shared-call".to_string()),
+            },
+        )
+        .unwrap()
+        .event
+        .expect("session-scoped tool detail");
+        assert_eq!(tool.session_id.as_deref(), Some("session-a"));
+        assert_eq!(tool.raw.unwrap()["output"], "session-a-output");
+
+        let activity = acp_activity_detail_vm_for_attempt(
+            &attempt,
+            AcpActivityDetailQueryInput {
+                branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.to_string(),
+                session_id: "session-a".to_string(),
+                activity_start_seq: 1,
+                activity_end_seq: 2,
+                earlier_cursor: None,
+                limit: Some(40),
+            },
+        )
+        .unwrap();
+        assert_eq!(activity.items.len(), 1);
+        assert_eq!(activity.items[0].session_id.as_deref(), Some("session-a"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn tool_detail_keeps_intermediate_diff_when_terminal_revision_has_only_status() {
         let dir = std::env::temp_dir().join(format!(
             "gb-tool-detail-diff-revision-{}",
@@ -9644,6 +9745,7 @@ mod tests {
         let mut intermediate = event_sequence(1, 1_000).remove(0);
         intermediate.id = "tool-call-call-1".to_string();
         intermediate.kind = "toolCall".to_string();
+        intermediate.session_id = Some("session-tool-detail".to_string());
         intermediate.tool_call_id = Some("call-1".to_string());
         intermediate.status = None;
         intermediate.raw = Some(json!({
@@ -9673,6 +9775,7 @@ mod tests {
             &attempt,
             AcpToolDetailQueryInput {
                 branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.to_string(),
+                session_id: "session-tool-detail".to_string(),
                 event_id: "tool-call-call-1".to_string(),
                 tool_call_id: Some("call-1".to_string()),
             },
@@ -10276,6 +10379,143 @@ mod tests {
     }
 
     #[test]
+    fn acp_session_vm_preserves_newer_prompt_interactions_when_session_status_is_terminal() {
+        let dir = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap());
+        let node_path = app.paths.node_file(
+            "task-permission",
+            "run-001",
+            "round-001",
+            "direct-agent",
+            "attempt-001",
+        );
+        write_json(
+            &node_path,
+            &NodeState {
+                version: gold_band::domain::VERSION.to_string(),
+                acp_storage_schema_version: gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                node_id: "direct-agent".to_string(),
+                node_type: NodeType::Worker,
+                run_id: "run-001".to_string(),
+                round_id: "round-001".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                status: RunStatus::Completed,
+                outcome: Some(gold_band::domain::NodeOutcome::Success),
+                started_at: "1787036945Z".to_string(),
+                finished_at: Some("1787036947Z".to_string()),
+                manual_check_pending: false,
+                runtime_execution_id: None,
+                resolved_config: gold_band::domain::ResolvedConfig::new(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        write_json(
+            &app.paths.acp_snapshot_file(
+                "task-permission",
+                "run-001",
+                "round-001",
+                "direct-agent",
+                "attempt-001",
+            ),
+            &json!({
+                "sessionId": "session-1",
+                "status": "completed",
+                "latestTurnStatus": "completed",
+                "restored": false,
+                "createdAt": "1787036946Z"
+            }),
+        )
+        .unwrap();
+        let attempt_dir = node_path.parent().unwrap().to_path_buf();
+        let mut permission = gold_band::acp::events::permission_request_event(
+            3,
+            "request-turn-2".to_string(),
+            json!({
+                "sessionId": "session-1",
+                "_meta": { "goldBandConversation": {
+                    "branchId": "root",
+                    "turnId": "turn-2",
+                    "promptEventId": "prompt-turn-2"
+                }},
+                "options": [{ "optionId": "allow", "name": "Allow", "kind": "allow_once" }]
+            }),
+        );
+        permission.id = "permission-request-turn-2".to_string();
+        let elicitation_request = serde_json::from_value(json!({
+            "mode": "form",
+            "sessionId": "session-1",
+            "message": "Choose",
+            "requestedSchema": { "type": "object", "properties": {} }
+        }))
+        .unwrap();
+        let mut elicitation = gold_band::acp::events::elicitation_request_event(
+            4,
+            "elicit-turn-2".to_string(),
+            &elicitation_request,
+        );
+        gold_band::acp::branches::annotate_event_branch(&mut elicitation);
+        gold_band::acp::interaction::annotate_prompt_interaction_identity(
+            &mut elicitation,
+            &gold_band::acp::interaction::AcpPromptInteractionIdentity::new(
+                "elicit-turn-2",
+                gold_band::acp::interaction::AcpPromptInteractionKind::Elicitation,
+                "turn-2",
+                "prompt-turn-2",
+            ),
+        );
+        gold_band::acp::events::write_timeline_items(
+            &gold_band::acp::branches::branch_timeline_path(&attempt_dir, "root"),
+            &[permission, elicitation],
+        )
+        .unwrap();
+
+        let session = acp_session_vm(
+            &app,
+            "task-permission",
+            "run-001",
+            "round-001",
+            "direct-agent",
+            "attempt-001",
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(session.pending_interactions.len(), 2);
+        let AcpPromptInteractionVm::Permission {
+            interaction_id,
+            turn_id,
+            prompt_event_id,
+            ..
+        } = &session.pending_interactions[0]
+        else {
+            panic!("expected permission interaction");
+        };
+        assert_eq!(interaction_id, "request-turn-2");
+        assert_eq!(turn_id.as_deref(), Some("turn-2"));
+        assert_eq!(prompt_event_id.as_deref(), Some("prompt-turn-2"));
+        let elicitation = session
+            .pending_interactions
+            .iter()
+            .find(|interaction| matches!(interaction, AcpPromptInteractionVm::Elicitation { .. }))
+            .expect("expected elicitation interaction");
+        let AcpPromptInteractionVm::Elicitation {
+            interaction_id,
+            turn_id,
+            prompt_event_id,
+            ..
+        } = elicitation
+        else {
+            unreachable!();
+        };
+        assert_eq!(interaction_id, "elicit-turn-2");
+        assert_eq!(turn_id.as_deref(), Some("turn-2"));
+        assert_eq!(prompt_event_id.as_deref(), Some("prompt-turn-2"));
+    }
+
+    #[test]
     fn dynamic_acp_session_vm_keeps_attempt_cwd_separate_from_provider_cwd() {
         let dir =
             std::env::temp_dir().join(format!("gb-dynamic-session-cwd-{}", std::process::id()));
@@ -10676,14 +10916,16 @@ mod tests {
         assert_eq!(scan.events.len(), 1);
         assert_eq!(scan.events[0].kind, "elicitationRequest");
         assert_eq!(scan.pending_elicitations.len(), 1);
-        assert_eq!(
-            scan.pending_elicitations[0].elicitation_id,
-            "elicit-pending"
-        );
-        assert_eq!(
-            scan.pending_elicitations[0].requested_schema["properties"]["database"]["type"],
-            "string"
-        );
+        let AcpPromptInteractionVm::Elicitation {
+            interaction_id,
+            requested_schema,
+            ..
+        } = &scan.pending_elicitations[0]
+        else {
+            panic!("expected elicitation interaction");
+        };
+        assert_eq!(interaction_id, "elicit-pending");
+        assert_eq!(requested_schema["properties"]["database"]["type"], "string");
     }
 
     #[test]
@@ -10713,21 +10955,23 @@ mod tests {
                 .all(|event| event.kind != "elicitationRequest")
         );
         assert_eq!(scan.pending_elicitations.len(), 1);
-        assert_eq!(
-            scan.pending_elicitations[0].elicitation_id,
-            "elicit-authoritative"
-        );
+        let AcpPromptInteractionVm::Elicitation { interaction_id, .. } =
+            &scan.pending_elicitations[0]
+        else {
+            panic!("expected elicitation interaction");
+        };
+        assert_eq!(interaction_id, "elicit-authoritative");
     }
 
     #[test]
-    fn elicitation_response_and_terminal_session_clear_authoritative_pending_state() {
+    fn elicitation_response_settles_pending_but_terminal_status_alone_does_not() {
         let request = elicitation_request_event_at("elicit-resolved", 1_000);
         let response = elicitation_response_event_at("elicit-resolved", 2_000);
-        let resolved = pending_elicitation_vms(&[request.clone(), response], true);
-        let terminal = pending_elicitation_vms(&[request], false);
+        let resolved = pending_elicitation_vms(&[request.clone(), response]);
+        let terminal = pending_elicitation_vms(&[request]);
 
         assert!(resolved.is_empty());
-        assert!(terminal.is_empty());
+        assert_eq!(terminal.len(), 1);
     }
 
     #[test]
@@ -10736,7 +10980,7 @@ mod tests {
         let newer = elicitation_request_event_at("elicit-new", 2_000);
         let response = elicitation_response_event_at("elicit-new", 3_000);
 
-        assert!(pending_elicitation_vms(&[older, newer, response], true).is_empty());
+        assert!(pending_elicitation_vms(&[older, newer, response]).is_empty());
     }
 
     #[test]
@@ -10855,6 +11099,7 @@ mod tests {
                     Some(json!({ "rawInput": { "path": format!("file-{seq}.rs") } })),
                 );
                 event.seq = seq;
+                event.session_id = Some("session-activity-detail".to_string());
                 event.started_seq = Some(seq);
                 event.ended_seq = Some(seq);
                 if event.kind == "toolCall" {
@@ -10866,11 +11111,13 @@ mod tests {
             .collect::<Vec<_>>();
         let mut resolved_permission = permission_event_at("resolved", "selected", 1_050);
         resolved_permission.seq = 50;
+        resolved_permission.session_id = Some("session-activity-detail".to_string());
         resolved_permission.started_seq = Some(50);
         resolved_permission.ended_seq = Some(50);
         events.push(resolved_permission);
         let mut answer = text_event_at(2_000);
         answer.id = "answer".to_string();
+        answer.session_id = Some("session-activity-detail".to_string());
         answer.seq = 101;
         answer.started_seq = Some(101);
         answer.ended_seq = Some(101);
@@ -10900,6 +11147,7 @@ mod tests {
             &attempt,
             AcpActivityDetailQueryInput {
                 branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.to_string(),
+                session_id: "session-activity-detail".to_string(),
                 activity_start_seq: 1,
                 activity_end_seq: 100,
                 earlier_cursor: None,
@@ -10931,6 +11179,7 @@ mod tests {
             &attempt,
             AcpToolDetailQueryInput {
                 branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.to_string(),
+                session_id: "session-activity-detail".to_string(),
                 event_id: "tool-99".to_string(),
                 tool_call_id: Some("call-99".to_string()),
             },
@@ -10947,6 +11196,7 @@ mod tests {
             &attempt,
             AcpActivityDetailQueryInput {
                 branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.to_string(),
+                session_id: "session-activity-detail".to_string(),
                 activity_start_seq: 1,
                 activity_end_seq: 100,
                 earlier_cursor: detail.earlier_cursor.clone(),
@@ -11020,6 +11270,7 @@ mod tests {
             1_000,
             Some(json!({ "output": large_output })),
         );
+        event.session_id = Some("session-blob-detail".to_string());
         event.tool_call_id = Some("call-large".to_string());
         let stored_event: gold_band::acp::events::AcpUiEvent =
             serde_json::from_value(serde_json::to_value(event).unwrap()).unwrap();
@@ -11031,6 +11282,7 @@ mod tests {
             &attempt,
             AcpToolDetailQueryInput {
                 branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.to_string(),
+                session_id: "session-blob-detail".to_string(),
                 event_id: "tool-large".to_string(),
                 tool_call_id: Some("call-large".to_string()),
             },

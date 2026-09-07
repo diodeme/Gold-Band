@@ -604,6 +604,12 @@ ACP live event(branchId)
 
 ### 16.3 生命周期与交互
 
+- 2026-09-07 Agent 自引用进度修复：工具更新先沿用稳定调用归属再选择 transcript；索引统一合并最早启动归属与最新执行证据。覆盖顶层和嵌套 Agent 的自身进度、取消后继续、索引与完整重建结果一致性。
+- 红测证据：运行时合并错误返回 Agent 自身 branch；索引错误返回自身 parent；前端摘要缺失错误返回 queued，DOM 随父会话状态显示“等待执行／已中断／已完成”。修复后缺失摘要显示“状态未知”，已有终态仍优先，禁止恢复父会话状态兜底。
+- 自评审：复用现有调用 identity、timeline 和 branch index，无新增依赖、持久字段、状态机或缓存；每次工具更新只合并常数级归属字段，索引查询不增加历史读取范围。
+- 验收：`cargo test -p gold-band --lib acp::` 450 项通过、1 项原有忽略；前端 indexing、read-only-agent-panel、conversation-event-router 共 72 项通过；类型检查与生产构建通过。补充的 status-only 完成结果测试确认正文仍进入正确 Agent 分支。实际 task-015 / run-001 / phase-6-finish-after-capacity-blocker 落盘记录在临时副本上查询后得到 root parent、interrupted、原取消时间 `1788749938Z`，未修改用户日志。
+- 浏览器验收：内置浏览器无可用连接，改用独立 agent-browser 会话挂载实际 ACPChatDialog；验证父会话 cancelled → running 后仍显示“已中断”，无摘要行显示“状态未知”。1440×900、640×800、重新拉宽和明暗主题下均无行溢出，测试页面、进程和临时副本在验收后清理。未替换当前运行的正式 EXE。
+
 - Agent launch tool 已完成但分支仍在生成时，Agent 状态保持 running。
 - Agent 只有 launch、尚无内容时显示 queued；产生工具或文字后进入 running。
 - 根会话停止后所有活动 Agent 收敛为 interrupted。
@@ -620,7 +626,7 @@ ACP live event(branchId)
 - 更新 Agent B 时，Agent A 和根历史项保持对象引用。
 - 非激活 Tab 不挂载 ConversationViewport DOM。
 - 非激活 Agent streaming 不持续驱动完整 Tab React render。
-- 切换 Tab 能从最多 12 个 branch key 的有限 LRU 同步恢复完整 Session VM、滚动位置、分页窗口和贴底状态；后台刷新期间不得重新展示加载壳。
+- 切换 Tab 能从 `acpChatResourceCacheSessionCount` 控制的有限 LRU（默认最多 8 个 branch key）同步恢复完整 Session VM、滚动位置、分页窗口、正文 hydrate 标记和贴底状态；后台刷新期间不得重新展示加载壳。
 - canonical 非根分支一旦带有 `branchExecution` 即结束首次加载；不能因缺少根会话 metadata 或状态为 `interrupted` 进入 `missingAcpSessionRetryDelay` 退避链。
 - ACP session 查询支持可选 `traceId`，前端 effect/request 与 Rust command/view-model 各阶段使用同一 ID 记录耗时。调试开关为 `goldBand.debug.acpTiming=1`；关闭时不传 trace、不输出逐请求日志。
 - 工具大输出在活动和工具折叠时不解析。

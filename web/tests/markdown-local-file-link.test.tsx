@@ -55,6 +55,60 @@ describe('Markdown local file link routing', () => {
     }
   });
 
+  it('preserves a slash-prefixed Windows drive pathname for the runtime resolver', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const openLocalFile = vi.fn();
+    try {
+      await act(async () => root.render(
+        <MarkdownResourceLinkProvider handler={{ openLocalFile }}>
+          <Markdown>{'[roadmap.md](/D:/repo/roadmap.md:12)'}</Markdown>
+        </MarkdownResourceLinkProvider>,
+      ));
+
+      await act(async () => container.querySelector<HTMLAnchorElement>('a')?.click());
+
+      expect(openLocalFile).toHaveBeenCalledWith('/D:/repo/roadmap.md:12');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('invalidates an in-flight link request when the workspace handler changes', async () => {
+    let rejectFirst: ((reason: unknown) => void) | null = null;
+    const firstRequest = new Promise<void>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    const firstHandler = vi.fn(() => firstRequest);
+    const secondHandler = vi.fn(async () => ({ status: 'opened' as const }));
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const content = '[roadmap.md](/D:/repo/roadmap.md:12)';
+    try {
+      await act(async () => root.render(
+        <MarkdownResourceLinkProvider handler={{ openLocalFile: firstHandler }}>
+          <Markdown>{content}</Markdown>
+        </MarkdownResourceLinkProvider>,
+      ));
+      await act(async () => container.querySelector<HTMLAnchorElement>('a')?.click());
+
+      await act(async () => root.render(
+        <MarkdownResourceLinkProvider handler={{ openLocalFile: secondHandler }}>
+          <Markdown>{content}</Markdown>
+        </MarkdownResourceLinkProvider>,
+      ));
+      await act(async () => container.querySelector<HTMLAnchorElement>('a')?.click());
+
+      expect(secondHandler).toHaveBeenCalledOnce();
+      await act(async () => rejectFirst?.({ code: 'workspace-file.path-invalid', params: {} }));
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('shows line ranges once when the Markdown label already contains the target', async () => {
     const container = document.createElement('div');
     document.body.append(container);

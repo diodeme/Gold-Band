@@ -30,6 +30,11 @@
 {{ predecessors.reason_lines }}
 {% endif %}
 
+{% if predecessors.has_ai_dynamic_report_manifest %}
+## AI-DYNAMIC 完整报告清单（按需读取）
+前序 `ai-dynamic-result` 中的 `reportManifest.path` 指向完整内部执行报告索引，包含节点/group 拓扑、依赖与时间关系、workspace、内部 summary 和附件地址。默认使用业务交接 `summary`；仅当需要核对内部过程、查找报告附件，或 `summary` 信息不足时，才读取该清单。
+{% endif %}
+
 {% if not predecessors.attachment_lines_empty %}
 ## 最新前序附件
 {{ predecessors.attachment_lines }}

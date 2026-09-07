@@ -94,7 +94,7 @@ fn accumulate_optional_token(total: &mut Option<u64>, delta: Option<u64>) {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
-enum AcpPromptUsageJournalEntry {
+pub(crate) enum AcpPromptUsageJournalEntry {
     AttemptBaseline {
         timestamp: String,
         totals: AcpAttemptTokenTotals,

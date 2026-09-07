@@ -7,12 +7,12 @@ vi.mock('@/api', () => ({
 
 import { copyImageToClipboard, saveImageAs } from '@/api';
 import {
-  attachmentImageActionInput,
-  copyAttachmentImage,
-  saveAttachmentImageAs,
+  copyImageAsset,
+  imageActionInput,
+  saveImageAssetAs,
 } from '@/lib/image-actions';
 
-describe('attachment image actions', () => {
+describe('image asset actions', () => {
   beforeEach(() => {
     vi.mocked(copyImageToClipboard).mockClear();
     vi.mocked(saveImageAs).mockClear();
@@ -24,8 +24,8 @@ describe('attachment image actions', () => {
       path: 'D:/images/shot.png', previewUrl: 'asset://shot', source: 'dialog' as const,
     };
 
-    const input = await attachmentImageActionInput(attachment);
-    await copyAttachmentImage(attachment);
+    const input = await imageActionInput(attachment);
+    await copyImageAsset(attachment);
 
     expect(input).toEqual({
       source: { kind: 'path', path: 'D:/images/shot.png' },
@@ -43,7 +43,7 @@ describe('attachment image actions', () => {
     };
 
     expect(copyImageToClipboard).not.toHaveBeenCalled();
-    await saveAttachmentImageAs(attachment);
+    await saveImageAssetAs(attachment);
 
     expect(saveImageAs).toHaveBeenCalledWith({
       source: { kind: 'bytes', dataBase64: 'AQIDBA==' },
@@ -53,8 +53,8 @@ describe('attachment image actions', () => {
   });
 
   it('rejects an unavailable source with a stable structured error code', async () => {
-    await expect(attachmentImageActionInput({
-      id: 'missing', name: 'missing.png', size: 4, mime: 'image/png', source: 'paste',
+    await expect(imageActionInput({
+      name: 'missing.png', mime: 'image/png',
     })).rejects.toMatchObject({ code: 'image-action.source-unreadable', params: {} });
   });
 });

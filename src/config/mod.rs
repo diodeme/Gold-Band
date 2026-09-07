@@ -778,9 +778,13 @@ pub const SKILLS_DIR_NAME: &str = "skills";
 pub const SKILL_FILE_NAME: &str = "SKILL.md";
 pub const MAX_SKILL_FILE_SIZE: usize = 100 * 1024;
 pub const MAX_SKILL_DESCRIPTION_LEN: usize = 1024;
-pub const DEFAULT_CONVERSATION_AUTO_TITLE_MAX_CHARS: usize = 18;
+pub const DEFAULT_CONVERSATION_AUTO_TITLE_MAX_CHARS: usize = 48;
 pub const DEFAULT_NOTIFICATION_AUTO_DISMISS_TARGET_SECS: u64 = 20;
 pub const DEFAULT_SCHEDULED_OCCURRENCE_RETENTION_DAYS: u16 = 30;
+pub const DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS: u64 = 10_000;
+pub const DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE: usize = 96;
+pub const DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT: usize = 3;
+pub const DEFAULT_ACP_CHAT_RESOURCE_CACHE_SESSION_COUNT: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -830,6 +834,17 @@ pub struct SettingsConfig {
     pub im_integrations: crate::im::ImIntegrationSettings,
     #[serde(default)]
     pub context_servers: Option<Vec<McpServerConfig>>,
+    // —— multica（全 Option<T>，对照 metrics 三字段）——
+    pub desktop_multica_enabled: Option<bool>,
+    pub desktop_multica_base_url: Option<String>,
+    pub desktop_multica_app_url: Option<String>,
+    pub desktop_multica_pat: Option<String>,
+    pub desktop_multica_daemon_id: Option<String>,
+    pub desktop_multica_workspaces: Option<Vec<MulticaWorkspaceRef>>,
+    pub desktop_multica_active_workspace_id: Option<String>,
+    pub desktop_multica_default_provider: Option<String>,
+    /// 已连接 multica 账号身份（connect 写、disconnect 清）；仅 UI 展示用，非凭证。
+    pub desktop_multica_account: Option<MulticaAccountRef>,
 }
 
 pub fn wecom_scan_auth_config() -> &'static WeComScanAuthConfig {
@@ -1304,6 +1319,14 @@ pub struct StateConfig {
     pub conversation_pins: Vec<ConversationPin>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub conversation_run_modes: std::collections::HashMap<String, ConversationRunModeEntry>,
+    // —— multica 持久化状态（程序写入/恢复）——
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multica_runtime_ids: Option<std::collections::HashMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multica_task_conversations:
+        Option<std::collections::HashMap<String, MulticaTaskConversation>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub multica_completed_tasks: Vec<MulticaCompletedTask>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1313,6 +1336,8 @@ pub struct ProjectAppConfig {
     pub project_identity: Option<ProjectIdentityConfig>,
     pub acp_session_title_refresh_enabled: Option<bool>,
     pub acp_chat_event_page_size: Option<usize>,
+    pub acp_chat_event_window_page_count: Option<usize>,
+    pub acp_chat_resource_cache_session_count: Option<usize>,
     pub acp_raw_max_size_bytes: Option<u64>,
     pub acp_raw_target_size_bytes: Option<u64>,
     pub acp_session_foreground_lease_ttl_secs: Option<u64>,
@@ -1418,6 +1443,8 @@ impl ProjectIdentityConfig {
 #[serde(rename_all = "camelCase")]
 pub struct TurnFilesConfig {
     pub card_preview_limit: usize,
+    #[serde(default = "default_turn_attachment_card_preview_limit")]
+    pub attachment_card_preview_limit: usize,
     pub capture_max_entries: usize,
     pub capture_max_file_bytes: usize,
     pub capture_max_total_bytes: usize,
@@ -1427,10 +1454,15 @@ pub struct TurnFilesConfig {
     pub blob_retention_policy: TurnFileBlobRetentionPolicy,
 }
 
+const fn default_turn_attachment_card_preview_limit() -> usize {
+    1
+}
+
 impl Default for TurnFilesConfig {
     fn default() -> Self {
         Self {
             card_preview_limit: 3,
+            attachment_card_preview_limit: 1,
             capture_max_entries: 256,
             capture_max_file_bytes: 2 * 1024 * 1024,
             capture_max_total_bytes: 16 * 1024 * 1024,
@@ -1446,6 +1478,7 @@ impl TurnFilesConfig {
     fn normalized(self) -> Self {
         Self {
             card_preview_limit: self.card_preview_limit.max(1),
+            attachment_card_preview_limit: self.attachment_card_preview_limit.max(1),
             capture_max_entries: self.capture_max_entries.max(1),
             capture_max_file_bytes: self.capture_max_file_bytes.max(1),
             capture_max_total_bytes: self
@@ -1706,6 +1739,8 @@ pub struct RuntimeConfig {
     pub desktop_metrics_api_key: Option<String>,
     pub acp_session_title_refresh_enabled: bool,
     pub acp_chat_event_page_size: usize,
+    pub acp_chat_event_window_page_count: usize,
+    pub acp_chat_resource_cache_session_count: usize,
     pub acp_raw_max_size_bytes: u64,
     pub acp_raw_target_size_bytes: u64,
     pub acp_session_foreground_lease_ttl_secs: u64,
@@ -1731,6 +1766,16 @@ pub struct RuntimeConfig {
     pub turn_files: TurnFilesConfig,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub provider_diagnostics: BTreeMap<String, ProviderDiagnosticSnapshot>,
+    // —— multica 镜像（非 Option，apply_settings 灌入）——
+    pub desktop_multica_enabled: bool,
+    pub desktop_multica_base_url: Option<String>,
+    pub desktop_multica_app_url: Option<String>,
+    pub desktop_multica_pat: Option<String>,
+    pub desktop_multica_daemon_id: Option<String>,
+    pub desktop_multica_workspaces: Vec<MulticaWorkspaceRef>,
+    pub desktop_multica_active_workspace_id: Option<String>,
+    pub desktop_multica_default_provider: String,
+    pub desktop_multica_account: Option<MulticaAccountRef>,
 }
 
 impl Default for RuntimeConfig {
@@ -1762,12 +1807,14 @@ impl Default for RuntimeConfig {
             desktop_metrics_base_url: None,
             desktop_metrics_api_key: None,
             acp_session_title_refresh_enabled: false,
-            acp_chat_event_page_size: 360,
+            acp_chat_event_page_size: DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
+            acp_chat_event_window_page_count: DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT,
+            acp_chat_resource_cache_session_count: DEFAULT_ACP_CHAT_RESOURCE_CACHE_SESSION_COUNT,
             acp_raw_max_size_bytes: 5 * 1024 * 1024,
             acp_raw_target_size_bytes: 4 * 1024 * 1024,
             acp_session_foreground_lease_ttl_secs: 90,
             acp_session_foreground_lease_renew_interval_secs: 30,
-            acp_prompt_terminal_route_timeout_ms: 5_000,
+            acp_prompt_terminal_route_timeout_ms: DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS,
             acp_session_idle_ttl_secs: 600,
             acp_adapter_connection_idle_ttl_secs: 600,
             acp_max_idle_session_runtimes: 8,
@@ -1787,6 +1834,15 @@ impl Default for RuntimeConfig {
             workspace_files: WorkspaceFilesConfig::default(),
             turn_files: TurnFilesConfig::default(),
             provider_diagnostics: BTreeMap::new(),
+            desktop_multica_enabled: false,
+            desktop_multica_base_url: None,
+            desktop_multica_app_url: None,
+            desktop_multica_pat: None,
+            desktop_multica_daemon_id: None,
+            desktop_multica_workspaces: Vec::new(),
+            desktop_multica_active_workspace_id: None,
+            desktop_multica_default_provider: "claude-acp".to_string(),
+            desktop_multica_account: None,
         };
         base.apply_app_config(embedded_project_app_config())
     }
@@ -1828,6 +1884,24 @@ impl RuntimeConfig {
         }
         self.desktop_metrics_base_url = settings.desktop_metrics_base_url.clone();
         self.desktop_metrics_api_key = settings.desktop_metrics_api_key.clone();
+        if let Some(value) = settings.desktop_multica_enabled {
+            self.desktop_multica_enabled = value;
+        }
+        self.desktop_multica_base_url = settings.desktop_multica_base_url.clone();
+        self.desktop_multica_app_url = settings.desktop_multica_app_url.clone();
+        self.desktop_multica_pat = settings.desktop_multica_pat.clone();
+        self.desktop_multica_daemon_id = settings.desktop_multica_daemon_id.clone();
+        self.desktop_multica_workspaces = settings
+            .desktop_multica_workspaces
+            .clone()
+            .unwrap_or_default();
+        self.desktop_multica_active_workspace_id =
+            settings.desktop_multica_active_workspace_id.clone();
+        self.desktop_multica_default_provider = settings
+            .desktop_multica_default_provider
+            .clone()
+            .unwrap_or_else(|| "claude-acp".to_string());
+        self.desktop_multica_account = settings.desktop_multica_account.clone();
         if let Some(scheduled_keep_awake_enabled) = settings.scheduled_keep_awake_enabled {
             self.scheduled_keep_awake_enabled = scheduled_keep_awake_enabled;
         }
@@ -1851,8 +1925,23 @@ impl RuntimeConfig {
         {
             self.acp_session_title_refresh_enabled = acp_session_title_refresh_enabled;
         }
-        if let Some(acp_chat_event_page_size) = app_config.acp_chat_event_page_size {
+        if let Some(acp_chat_event_page_size) = app_config
+            .acp_chat_event_page_size
+            .filter(|value| *value > 0)
+        {
             self.acp_chat_event_page_size = acp_chat_event_page_size;
+        }
+        if let Some(acp_chat_event_window_page_count) = app_config
+            .acp_chat_event_window_page_count
+            .filter(|value| *value > 0)
+        {
+            self.acp_chat_event_window_page_count = acp_chat_event_window_page_count;
+        }
+        if let Some(acp_chat_resource_cache_session_count) = app_config
+            .acp_chat_resource_cache_session_count
+            .filter(|value| *value > 0)
+        {
+            self.acp_chat_resource_cache_session_count = acp_chat_resource_cache_session_count;
         }
         if let Some(acp_raw_max_size_bytes) = app_config.acp_raw_max_size_bytes {
             self.acp_raw_max_size_bytes = acp_raw_max_size_bytes;
@@ -1996,11 +2085,13 @@ mod tests {
     use super::{
         AcpAdapterConfig, AppearancePreference, ColorSchemePreference, ConsoleThemeName,
         ConversationDirectConfig, ConversationRunMode, ConversationRunModeEntry,
-        DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT, DesktopAvailableUpdate, DesktopLanguage,
-        DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, ManagedAgentConfig,
-        ManagedAgentId, PersonalizationPreference, ProjectAppConfig, ProjectIdentityConfig,
-        RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery,
-        TurnFilesConfig, VisualQuality, WallpaperImagePreference, WorkspaceLayoutConfig,
+        DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS, DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+        DesktopAvailableUpdate, DesktopLanguage, DesktopUpdateBadgeState, FontSizePreference,
+        FontStackPreference, ManagedAgentConfig, ManagedAgentId, MulticaAccountRef,
+        MulticaCompletedTask, MulticaTaskConversation, MulticaWorkspaceRef,
+        PersonalizationPreference, ProjectAppConfig, ProjectIdentityConfig, RuntimeConfig,
+        RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery, TurnFilesConfig,
+        VisualQuality, WallpaperImagePreference, WorkspaceLayoutConfig,
         catalog_agent_default_config, project_identity_config,
     };
     use crate::agent_catalog::builtin_agent_catalog;
@@ -2102,6 +2193,9 @@ mod tests {
         assert_eq!(config.appearance, AppearancePreference::default());
         assert!(matches!(config.desktop_language, DesktopLanguage::ZhCn));
         assert_eq!(config.personalization, PersonalizationPreference::default());
+        assert_eq!(config.acp_chat_event_page_size, 96);
+        assert_eq!(config.acp_chat_event_window_page_count, 3);
+        assert_eq!(config.acp_chat_resource_cache_session_count, 8);
     }
 
     #[test]
@@ -2400,6 +2494,8 @@ mod tests {
         let app_config = ProjectAppConfig {
             acp_session_title_refresh_enabled: Some(true),
             acp_chat_event_page_size: Some(240),
+            acp_chat_event_window_page_count: Some(4),
+            acp_chat_resource_cache_session_count: Some(6),
             conversation_auto_title_max_chars: Some(20),
             conversation_inline_content_max_bytes: Some(64_000),
             conversation_inline_image_max_bytes: Some(4 * 1024 * 1024),
@@ -2420,6 +2516,8 @@ mod tests {
         let roundtripped: ProjectAppConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(roundtripped.acp_session_title_refresh_enabled, Some(true));
         assert_eq!(roundtripped.acp_chat_event_page_size, Some(240));
+        assert_eq!(roundtripped.acp_chat_event_window_page_count, Some(4));
+        assert_eq!(roundtripped.acp_chat_resource_cache_session_count, Some(6));
         assert_eq!(roundtripped.conversation_auto_title_max_chars, Some(20));
         assert_eq!(
             roundtripped.conversation_inline_content_max_bytes,
@@ -2442,7 +2540,22 @@ mod tests {
         );
         assert_eq!(roundtripped.acp_max_idle_session_runtimes, Some(12));
         assert_eq!(roundtripped.acp_timeline_compact_patch_ratio, Some(6));
-        assert_eq!(roundtripped.turn_files.unwrap().card_preview_limit, 5);
+        let turn_files = roundtripped.turn_files.unwrap();
+        assert_eq!(turn_files.card_preview_limit, 5);
+        assert_eq!(turn_files.attachment_card_preview_limit, 1);
+    }
+
+    #[test]
+    fn turn_files_config_defaults_the_attachment_card_preview_limit() {
+        let mut value = serde_json::to_value(TurnFilesConfig::default()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("attachmentCardPreviewLimit");
+
+        let config: TurnFilesConfig = serde_json::from_value(value).unwrap();
+
+        assert_eq!(config.attachment_card_preview_limit, 1);
     }
 
     #[test]
@@ -2497,6 +2610,8 @@ mod tests {
         let config = RuntimeConfig::default().apply_app_config(&ProjectAppConfig {
             acp_session_title_refresh_enabled: Some(true),
             acp_chat_event_page_size: Some(240),
+            acp_chat_event_window_page_count: Some(4),
+            acp_chat_resource_cache_session_count: Some(6),
             conversation_auto_title_max_chars: Some(20),
             conversation_inline_content_max_bytes: Some(32_000),
             conversation_inline_image_max_bytes: Some(1024 * 1024),
@@ -2507,12 +2622,28 @@ mod tests {
         });
         assert!(config.acp_session_title_refresh_enabled);
         assert_eq!(config.acp_chat_event_page_size, 240);
+        assert_eq!(config.acp_chat_event_window_page_count, 4);
+        assert_eq!(config.acp_chat_resource_cache_session_count, 6);
         assert_eq!(config.conversation_auto_title_max_chars, 20);
         assert_eq!(config.conversation_inline_content_max_bytes, 32_000);
         assert_eq!(config.conversation_inline_image_max_bytes, 1024 * 1024);
         assert_eq!(config.conversation_inline_image_max_dimension, 1_568);
         assert_eq!(config.notification_auto_dismiss_target_secs, 12);
         assert!(config.require_local_claude_executable);
+    }
+
+    #[test]
+    fn app_config_ignores_zero_acp_chat_memory_policy_values() {
+        let config = RuntimeConfig::default().apply_app_config(&ProjectAppConfig {
+            acp_chat_event_page_size: Some(0),
+            acp_chat_event_window_page_count: Some(0),
+            acp_chat_resource_cache_session_count: Some(0),
+            ..Default::default()
+        });
+
+        assert_eq!(config.acp_chat_event_page_size, 96);
+        assert_eq!(config.acp_chat_event_window_page_count, 3);
+        assert_eq!(config.acp_chat_resource_cache_session_count, 8);
     }
 
     #[test]
@@ -3165,7 +3296,10 @@ mod tests {
         assert_eq!(config.acp_session_foreground_lease_ttl_secs, 60);
         assert_eq!(config.acp_session_foreground_lease_renew_interval_secs, 20);
         assert_eq!(config.acp_session_idle_ttl_secs, 600);
-        assert_eq!(config.acp_prompt_terminal_route_timeout_ms, 5_000);
+        assert_eq!(
+            config.acp_prompt_terminal_route_timeout_ms,
+            DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS
+        );
         assert_eq!(config.acp_max_idle_session_runtimes, 8);
         assert_eq!(config.acp_timeline_compact_patch_ratio, 4);
     }
@@ -3282,6 +3416,186 @@ mod tests {
             Some("bypassPermissions")
         );
     }
+
+    #[test]
+    fn multica_workspace_ref_serializes_camel_case() {
+        // 前端契约：JSON key 必须是 camelCase，防止 rename_all 被误删。
+        let workspace = MulticaWorkspaceRef {
+            id: "ws-1".to_string(),
+            name: "Gold Band".to_string(),
+            slug: "gold-band".to_string(),
+            provider: "claude-acp".to_string(),
+        };
+        let json = serde_json::to_value(&workspace).unwrap();
+        assert_eq!(json["id"], "ws-1");
+        assert_eq!(json["provider"], "claude-acp");
+        let roundtripped: MulticaWorkspaceRef = serde_json::from_value(json).unwrap();
+        assert_eq!(roundtripped.provider, "claude-acp");
+    }
+
+    #[test]
+    fn multica_task_conversation_serializes_camel_case() {
+        let conversation = MulticaTaskConversation {
+            local_task_id: "task-1".to_string(),
+            local_run_id: "run-1".to_string(),
+            session_id: Some("acp-session-1".to_string()),
+            work_dir: Some("/repo".to_string()),
+        };
+        let json = serde_json::to_value(&conversation).unwrap();
+        assert_eq!(json["localTaskId"], "task-1");
+        assert_eq!(json["localRunId"], "run-1");
+        assert_eq!(json["sessionId"], "acp-session-1");
+        assert_eq!(json["workDir"], "/repo");
+        serde_json::from_value::<MulticaTaskConversation>(json).unwrap();
+    }
+
+    #[test]
+    fn runtime_config_defaults_multica_disabled_with_default_provider() {
+        let config = RuntimeConfig::default();
+        assert!(!config.desktop_multica_enabled);
+        assert_eq!(config.desktop_multica_default_provider, "claude-acp");
+        assert!(config.desktop_multica_base_url.is_none());
+        assert!(config.desktop_multica_workspaces.is_empty());
+    }
+
+    #[test]
+    fn apply_settings_propagates_multica_fields_with_provider_fallback() {
+        let config = RuntimeConfig::default().apply_settings(&SettingsConfig {
+            desktop_multica_enabled: Some(true),
+            desktop_multica_base_url: Some("http://maling.weoa.com".to_string()),
+            desktop_multica_app_url: Some("http://maling.weoa.com".to_string()),
+            desktop_multica_default_provider: None,
+            desktop_multica_workspaces: Some(vec![MulticaWorkspaceRef {
+                id: "ws-1".to_string(),
+                name: "Gold Band".to_string(),
+                slug: "gold-band".to_string(),
+                provider: "claude-acp".to_string(),
+            }]),
+            ..SettingsConfig::default()
+        });
+        assert!(config.desktop_multica_enabled);
+        assert_eq!(
+            config.desktop_multica_base_url.as_deref(),
+            Some("http://maling.weoa.com")
+        );
+        // default_provider=None 时 fallback 到 claude-acp（与 Default 一致）。
+        assert_eq!(config.desktop_multica_default_provider, "claude-acp");
+        assert_eq!(config.desktop_multica_workspaces.len(), 1);
+        assert_eq!(config.desktop_multica_workspaces[0].id, "ws-1");
+
+        // 显式 provider 覆盖 fallback。
+        let with_provider = RuntimeConfig::default().apply_settings(&SettingsConfig {
+            desktop_multica_default_provider: Some("codex-acp".to_string()),
+            ..SettingsConfig::default()
+        });
+        assert_eq!(with_provider.desktop_multica_default_provider, "codex-acp");
+    }
+
+    #[test]
+    fn settings_config_multica_fields_roundtrip_json() {
+        let settings = SettingsConfig {
+            desktop_multica_enabled: Some(true),
+            desktop_multica_base_url: Some("http://maling.weoa.com".to_string()),
+            desktop_multica_pat: Some("secret-token".to_string()),
+            desktop_multica_daemon_id: Some("daemon-1".to_string()),
+            desktop_multica_workspaces: Some(vec![MulticaWorkspaceRef {
+                id: "ws-1".to_string(),
+                name: "Gold Band".to_string(),
+                slug: "gold-band".to_string(),
+                provider: "claude-acp".to_string(),
+            }]),
+            desktop_multica_default_provider: Some("claude-acp".to_string()),
+            desktop_multica_account: Some(MulticaAccountRef {
+                name: Some("张三".to_string()),
+                email: Some("zhangsan@maling.local".to_string()),
+            }),
+            ..SettingsConfig::default()
+        };
+        let json = serde_json::to_string_pretty(&settings).unwrap();
+        assert!(json.contains("\"desktopMulticaEnabled\": true"));
+        assert!(json.contains("\"desktopMulticaBaseUrl\""));
+        assert!(json.contains("\"zhangsan@maling.local\""));
+        let roundtripped: SettingsConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtripped.desktop_multica_enabled, Some(true));
+        assert_eq!(
+            roundtripped.desktop_multica_pat.as_deref(),
+            Some("secret-token")
+        );
+        assert_eq!(
+            roundtripped
+                .desktop_multica_workspaces
+                .as_ref()
+                .unwrap()
+                .len(),
+            1
+        );
+        // 账号身份 roundtrip（camelCase name/email）。
+        let account = roundtripped
+            .desktop_multica_account
+            .expect("account roundtripped");
+        assert_eq!(account.name.as_deref(), Some("张三"));
+        assert_eq!(account.email.as_deref(), Some("zhangsan@maling.local"));
+    }
+
+    #[test]
+    fn state_config_multica_task_conversations_roundtrip_json() {
+        let state = StateConfig {
+            multica_task_conversations: Some(std::collections::HashMap::from([(
+                "remote-task-1".to_string(),
+                MulticaTaskConversation {
+                    local_task_id: "task-1".to_string(),
+                    local_run_id: "run-1".to_string(),
+                    session_id: Some("acp-session-1".to_string()),
+                    work_dir: Some("/repo".to_string()),
+                },
+            )])),
+            ..StateConfig::default()
+        };
+        let json = serde_json::to_string_pretty(&state).unwrap();
+        let roundtripped: StateConfig = serde_json::from_str(&json).unwrap();
+        let entry = roundtripped
+            .multica_task_conversations
+            .as_ref()
+            .unwrap()
+            .get("remote-task-1")
+            .unwrap();
+        assert_eq!(entry.local_task_id, "task-1");
+        assert_eq!(entry.session_id.as_deref(), Some("acp-session-1"));
+    }
+
+    #[test]
+    fn state_config_multica_completed_tasks_roundtrip_json() {
+        // 「最近完成」历史（Issue 3C）roundtrip：camelCase 键 + 空列表不序列化。
+        let state = StateConfig {
+            multica_completed_tasks: vec![MulticaCompletedTask {
+                remote_task_id: "remote-1".to_string(),
+                local_task_id: "task-1".to_string(),
+                local_run_id: "run-1".to_string(),
+                workspace_id: "ws-1".to_string(),
+                local_project_id: "proj-1".to_string(),
+                issue_id: Some("iss-1".to_string()),
+                status: "completed".to_string(),
+                title: "Fix bug".to_string(),
+                completed_at: "2026-08-06T01:00:00Z".to_string(),
+            }],
+            ..StateConfig::default()
+        };
+        let json = serde_json::to_string_pretty(&state).unwrap();
+        // 空字段不序列化，非空 completed 列表序列化为 camelCase 键。
+        assert!(json.contains("\"multicaCompletedTasks\""));
+        assert!(json.contains("\"remoteTaskId\": \"remote-1\""));
+        assert!(json.contains("\"completedAt\": \"2026-08-06T01:00:00Z\""));
+        let roundtripped: StateConfig = serde_json::from_str(&json).unwrap();
+        let entry = &roundtripped.multica_completed_tasks[0];
+        assert_eq!(entry.remote_task_id, "remote-1");
+        assert_eq!(entry.local_run_id, "run-1");
+        assert_eq!(entry.status, "completed");
+        assert_eq!(entry.issue_id.as_deref(), Some("iss-1"));
+
+        // 空列表序列化后不含该键（skip_serializing_if = Vec::is_empty）。
+        let empty_json = serde_json::to_string(&StateConfig::default()).unwrap();
+        assert!(!empty_json.contains("multicaCompletedTasks"));
+    }
 }
 
 fn is_zero_u32(value: &u32) -> bool {
@@ -3328,6 +3642,66 @@ pub struct ConversationPin {
     pub project_id: String,
     pub task_id: String,
     pub order: usize,
+}
+
+/// multica 远程工作区引用（SettingsConfig.desktop_multica_workspaces 条目）。
+///
+/// 一个 multica workspace 只绑定一个执行 provider（绑定后不可变）；**本地工作目录不在
+/// 工作区级绑定**，推迟到每次任务执行时由用户在 composer 下拉选定，并随任务生命周期落到
+/// 任务级结构体（`ActiveRemoteRun` / `MulticaCompletedTask`）。详见 Multica远程任务管理设计 §3。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MulticaWorkspaceRef {
+    pub id: String,
+    pub name: String,
+    pub slug: String,
+    pub provider: String,
+}
+
+/// multica 登录账号身份（connect 时由 `/api/me` 返回的 `UserInfo`，disconnect 时清空）。
+///
+/// 生命周期与 PAT 绑定（connect 一起写、disconnect 一起清），故合并为单结构体统一管理。
+/// 仅用于 UI 展示「已连接：<name> \<email\>」，让用户核对/发现浏览器 cookie 静默连错账号；
+/// **非凭证**（凭证是 PAT，PAT 永不回显）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MulticaAccountRef {
+    pub name: Option<String>,
+    pub email: Option<String>,
+}
+
+/// multica remote_task ↔ 本地会话的断点续跑索引（StateConfig.multica_task_conversations 条目，
+/// 键 = remote_task_id）。续跑判定按「字面 id → parent_task_id」两级反查（断点续跑方案 §3.3）；
+/// 续跑成功后索引迁移到子任务 id；complete 后清条目。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MulticaTaskConversation {
+    pub local_task_id: String,
+    pub local_run_id: String,
+    pub session_id: Option<String>,
+    pub work_dir: Option<String>,
+}
+
+/// multica 远程任务完成历史（StateConfig.multica_completed_tasks，Issue 3C「最近完成」回看）。
+///
+/// `finalize_terminal` 在任务终态时从 `ActiveRemoteRun` 快照写入：保留 remote↔local 链接 + 行标签
+/// （title）+ 终态（completed/failed），让远程 tab「最近完成」分区能点击直达本地会话。有界（最新在前，
+/// 按 `remote_task_id` 去重，截断至上限），非每查询读盘——title 在终态时快照（来自 claim 的 thread_name）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MulticaCompletedTask {
+    pub remote_task_id: String,
+    pub local_task_id: String,
+    pub local_run_id: String,
+    pub workspace_id: String,
+    /// 该任务执行时选定的本地工作区 project_id（finalize 时从 `ActiveRemoteRun` 快照，
+    /// terminal 行本地深链用）。
+    pub local_project_id: String,
+    pub issue_id: Option<String>,
+    /// `completed` | `failed`（由 finalize 的 PendingUpdate 决定）。
+    pub status: String,
+    pub title: String,
+    pub completed_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

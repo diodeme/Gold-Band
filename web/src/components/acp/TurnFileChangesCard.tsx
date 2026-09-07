@@ -7,7 +7,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
-import { ChevronDown, FileDiff, FileMinus2, FilePlus2 } from 'lucide-react';
+import { ChevronDown, FileDiff, FileMinus2, FilePlus2, FileText, Paperclip } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -22,6 +22,7 @@ import {
 } from '@/lib/turn-file-change-set-cache';
 import type {
   AcpUiEventVm,
+  TurnAttachmentVm,
   TurnFileChangeSetVm,
   TurnFileChangeSummaryVm,
   TurnFileChangeVm,
@@ -31,10 +32,12 @@ import { useOptionalRightWorkspaceCommands } from '@/components/workspace/right-
 import { TurnFileDiffPreview } from './TurnFileDiffPreview';
 
 export const DEFAULT_TURN_FILE_CARD_PREVIEW_LIMIT = 3;
+export const DEFAULT_TURN_ATTACHMENT_CARD_PREVIEW_LIMIT = 1;
 export const TURN_FILE_HOVER_OPEN_DELAY_MS = 350;
 export const TURN_FILE_HOVER_CLOSE_DELAY_MS = 150;
 export const TURN_FILE_HOVER_DEBUG_STORAGE_KEY = 'goldBand.debug.turnFileHover';
 export const TurnFileCardPreviewLimitContext = createContext(DEFAULT_TURN_FILE_CARD_PREVIEW_LIMIT);
+export const TurnAttachmentCardPreviewLimitContext = createContext(DEFAULT_TURN_ATTACHMENT_CARD_PREVIEW_LIMIT);
 
 const TURN_FILE_HOVER_LOG_PREFIX = '[GoldBand][Turn file hover]';
 let turnFileHoverInstanceSequence = 0;
@@ -54,6 +57,7 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
   const raw = objectValue(event.raw);
   const changeSetId = stringValue(raw?.changeSetId);
   const inlineSummary = summaryValue(raw?.summary);
+  const inlineAttachmentCount = numberValue(raw?.attachmentCount);
   const locatorKey = locator
     ? [locator.projectId, locator.taskId, locator.runId, locator.roundId, locator.nodeId, locator.attemptId, locator.branchId, locator.outerNodeId, locator.outerAttemptId].join('\0')
     : '';
@@ -83,9 +87,12 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
   const error = loadState.key === requestKey && loadState.error;
   const summary = changeSet?.summary ?? inlineSummary;
   const changes = changeSet?.changes ?? [];
+  const attachments = changeSet?.attachments ?? [];
   const previewChanges = changes.slice(0, previewLimit);
   const hiddenCount = Math.max(0, changes.length - previewLimit);
-  if (!summary || summary.fileCount === 0 || !changeSetId) return null;
+  const attachmentCount = changeSet ? attachments.length : inlineAttachmentCount;
+  const hasRegularChanges = (summary?.fileCount ?? 0) > 0;
+  if (!changeSetId || (!hasRegularChanges && attachmentCount === 0)) return null;
 
   const handleOpenChange = (open: boolean) => {
     setHasUserToggled(true);
@@ -111,7 +118,16 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
   };
 
   return (
-    <Card className="mb-3 w-full max-w-[46rem] gap-0 overflow-hidden py-0" data-turn-file-changes-card={changeSetId}>
+    <>
+      <TurnAttachmentsCard
+        attachments={attachments}
+        count={attachmentCount}
+        error={error}
+        locator={locator}
+        changeSetId={changeSetId}
+      />
+      {hasRegularChanges && summary ? (
+      <Card className="mb-3 w-full max-w-[46rem] gap-0 overflow-hidden py-0" data-turn-file-changes-card={changeSetId}>
       <CardHeader className="grid-cols-[1fr_auto] items-center gap-3 px-3 py-2.5">
         <CardTitle className="flex min-w-0 items-center gap-2 text-sm font-medium">
           <FileDiff className="size-4 shrink-0 text-foreground" />
@@ -159,7 +175,123 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
           </Collapsible>
         )}
       </CardContent>
+      </Card>
+      ) : null}
+    </>
+  );
+}
+
+function TurnAttachmentsCard({
+  attachments,
+  count,
+  error,
+  locator,
+  changeSetId,
+}: {
+  attachments: TurnAttachmentVm[];
+  count: number;
+  error: boolean;
+  locator: TurnFileLocatorVm | null;
+  changeSetId: string;
+}) {
+  const { t } = useTranslation();
+  const workspace = useOptionalRightWorkspaceCommands();
+  const configuredPreviewLimit = useContext(TurnAttachmentCardPreviewLimitContext);
+  const previewLimit = Math.max(1, Math.floor(configuredPreviewLimit));
+  const [expanded, setExpanded] = useState(false);
+  const [hasUserToggled, setHasUserToggled] = useState(false);
+  const previewAttachments = attachments.slice(0, previewLimit);
+  const hiddenCount = Math.max(0, attachments.length - previewLimit);
+  if (count === 0) return null;
+
+  const openAttachment = (attachment: TurnAttachmentVm) => {
+    if (!workspace?.scopeKey || !locator) return;
+    void workspace.openResource({
+      kind: 'turn-attachment',
+      key: `turn-attachment:${changeSetId}:${attachment.id}`,
+      scopeKey: workspace.scopeKey,
+      title: attachment.name,
+      description: attachment.relativePath,
+      attention: false,
+      locator,
+      changeSetId,
+      attachmentId: attachment.id,
+    });
+  };
+  const handleOpenChange = (open: boolean) => {
+    setHasUserToggled(true);
+    setExpanded(open);
+  };
+
+  return (
+    <Card className="mb-3 w-full max-w-[46rem] gap-0 overflow-hidden py-0" data-turn-attachments-card={changeSetId}>
+      <CardHeader className="px-3 py-2.5">
+        <CardTitle className="flex min-w-0 items-center gap-2 text-sm font-medium">
+          <Paperclip className="size-4 shrink-0 text-foreground" />
+          <span>{t('turnFiles.attachmentsTitle', { count })}</span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="border-t border-border/50 px-0 py-0">
+        {error ? (
+          <div className="px-3 py-2 text-xs text-destructive">{t('turnFiles.loadFailed')}</div>
+        ) : attachments.length === 0 ? (
+          <div className="px-3 py-2 text-xs text-muted-foreground">{t('turnFiles.loading')}</div>
+        ) : (
+          <Collapsible open={expanded} onOpenChange={handleOpenChange}>
+            {!expanded ? (
+              <div role="list" aria-label={t('turnFiles.attachmentList')}>
+                {previewAttachments.map((attachment) => (
+                  <TurnAttachmentRow key={attachment.id} attachment={attachment} onOpen={openAttachment} />
+                ))}
+              </div>
+            ) : null}
+            <CollapsibleContent className={cn(
+              'overflow-hidden',
+              hasUserToggled && 'data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down',
+            )}>
+              <ScrollArea className={cn(attachments.length > 8 ? 'h-64' : 'h-auto')}>
+                <div role="list" aria-label={t('turnFiles.attachmentList')}>
+                  {attachments.map((attachment) => (
+                    <TurnAttachmentRow key={attachment.id} attachment={attachment} onOpen={openAttachment} />
+                  ))}
+                </div>
+              </ScrollArea>
+            </CollapsibleContent>
+            {hiddenCount > 0 ? (
+              <CollapsibleTrigger asChild>
+                <Button type="button" variant="ghost" className="h-8 w-full justify-center gap-1 rounded-none border-t border-border/40 text-xs text-muted-foreground" aria-label={expanded ? t('turnFiles.collapse') : t('turnFiles.showMoreAttachments', { count: hiddenCount })}>
+                  <ChevronDown className={cn('size-3.5 transition-transform motion-reduce:transition-none', expanded && 'rotate-180')} />
+                  {expanded ? t('turnFiles.collapse') : t('turnFiles.showMoreAttachments', { count: hiddenCount })}
+                </Button>
+              </CollapsibleTrigger>
+            ) : null}
+          </Collapsible>
+        )}
+      </CardContent>
     </Card>
+  );
+}
+
+function TurnAttachmentRow({
+  attachment,
+  onOpen,
+}: {
+  attachment: TurnAttachmentVm;
+  onOpen: (attachment: TurnAttachmentVm) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <button
+      type="button"
+      role="listitem"
+      className="flex h-10 w-full items-center gap-2 px-3 text-left outline-none hover:bg-muted/40 focus-visible:bg-muted/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      onClick={() => onOpen(attachment)}
+      aria-label={t('turnFiles.openAttachment', { path: attachment.relativePath })}
+    >
+      <FileText className="size-4 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1 truncate text-xs text-foreground">{attachment.name}</span>
+      <span className="shrink-0 text-ui-micro tabular-nums text-muted-foreground">{formatByteLength(attachment.byteLength)}</span>
+    </button>
   );
 }
 
@@ -434,6 +566,12 @@ function numberValue(value: unknown) {
 
 function fileName(path: string) {
   return path.replaceAll('\\', '/').split('/').at(-1) || path;
+}
+
+function formatByteLength(byteLength: number) {
+  if (byteLength < 1024) return `${byteLength} B`;
+  if (byteLength < 1024 * 1024) return `${Math.max(0.1, byteLength / 1024).toFixed(1)} KB`;
+  return `${Math.max(0.1, byteLength / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function isTurnFileHoverDebugEnabled() {

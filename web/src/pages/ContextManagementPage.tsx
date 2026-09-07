@@ -40,6 +40,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatLocalDateTime } from '@/lib/datetime';
+import { useWebviewMeasuredContainer } from '@/hooks/use-webview-measured-container';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { configuredSkillAgents, selectableSyncAgents, skillAvailableAgentTypes, skillSourceAgents, type ConfiguredSkillAgentMeta } from '@/lib/skill-agent-display';
 import {
@@ -78,6 +79,7 @@ function EntityRefreshButton({ label, loading, onRefresh }: { label: string; loa
 }
 
 export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: ContextManagementPageProps) {
+  const measuredProfileListRef = useWebviewMeasuredContainer<HTMLDivElement>('profile-list');
   const { t } = useTranslation();
   const [vm, setVm] = useState<ProfileListVm | null>(null);
   const [loading, setLoading] = useState(false);
@@ -555,7 +557,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
         >
           {loading && !vm ? <EmptyState>{t('common.loading')}</EmptyState> : null}
           {vm && profileListTab === 'built-in' ? (
-            <div className="@container/profile-list">
+            <div ref={measuredProfileListRef} className="@container/profile-list">
               <div className="grid gap-3 p-4 @2xl/profile-list:grid-cols-2 @6xl/profile-list:grid-cols-3">
                 {builtInProfiles.map((profile) => (
                   <BuiltInProfileCard
@@ -569,7 +571,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
             </div>
           ) : null}
           {vm && profileListTab === 'custom' ? (
-            <div className="@container/profile-list">
+            <div ref={measuredProfileListRef} className="@container/profile-list">
               <div className="grid gap-3 p-4 @2xl/profile-list:grid-cols-2 @6xl/profile-list:grid-cols-3">
                 {pagedCustomProfiles.map((profile) => (
                   <CustomProfileCard

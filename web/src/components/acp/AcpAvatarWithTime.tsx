@@ -46,13 +46,13 @@ export function AcpAvatar({ tone, className, fallbackClassName }: AcpAvatarProps
         'mt-0.5 size-9',
         tone === 'assistant'
           ? 'bg-card text-muted-foreground'
-          : 'border-[color-mix(in_srgb,var(--primary)_24%,var(--border))] bg-[color-mix(in_srgb,var(--primary)_12%,var(--card))] text-[color-mix(in_srgb,var(--primary)_72%,white)]',
+          : 'border-border bg-card text-primary border-[color-mix(in_srgb,var(--primary)_24%,var(--border))] bg-[color-mix(in_srgb,var(--primary)_12%,var(--card))] text-[color-mix(in_srgb,var(--primary)_72%,white)]',
         className,
       )}
       fallbackClassName={cn(
         tone === 'assistant'
           ? 'bg-card text-muted-foreground'
-          : 'bg-[color-mix(in_srgb,var(--primary)_12%,var(--card))] text-[color-mix(in_srgb,var(--primary)_72%,white)]',
+          : 'bg-card text-primary bg-[color-mix(in_srgb,var(--primary)_12%,var(--card))] text-[color-mix(in_srgb,var(--primary)_72%,white)]',
         fallbackClassName,
       )}
     />

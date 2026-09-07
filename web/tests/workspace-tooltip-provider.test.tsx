@@ -128,7 +128,9 @@ describe('WorkspaceShell tooltip boundary', () => {
             appConfig={{
               acpSessionTitleRefreshEnabled: false,
               acpChatEventPageSize: 360,
-              turnFiles: { cardPreviewLimit: 3 },
+              acpChatEventWindowPageCount: 3,
+              acpChatResourceCacheSessionCount: 8,
+              turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 1 },
               workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
             }}
             vm={{ workspaces: [], pinnedTasks: [], tasksByWorkspace: {}, preferences: null }}
@@ -139,8 +141,6 @@ describe('WorkspaceShell tooltip boundary', () => {
             onToggleSidebar={() => {}}
             onNewConversation={() => {}}
             onSearch={() => {}}
-            onSelectTask={() => {}}
-            onSelectRun={() => {}}
             onPinTask={() => {}}
             onUnpinTask={() => {}}
             onRenameTask={() => {}}
@@ -173,7 +173,9 @@ describe('WorkspaceShell tooltip boundary', () => {
             appConfig={{
               acpSessionTitleRefreshEnabled: false,
               acpChatEventPageSize: 360,
-              turnFiles: { cardPreviewLimit: 3 },
+              acpChatEventWindowPageCount: 3,
+              acpChatResourceCacheSessionCount: 8,
+              turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 1 },
               workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
             }}
             vm={{ workspaces: [], pinnedTasks: [], tasksByWorkspace: {}, preferences: null }}
@@ -184,8 +186,6 @@ describe('WorkspaceShell tooltip boundary', () => {
             onToggleSidebar={() => {}}
             onNewConversation={() => {}}
             onSearch={() => {}}
-            onSelectTask={() => {}}
-            onSelectRun={() => {}}
             onPinTask={() => {}}
             onUnpinTask={() => {}}
             onRenameTask={() => {}}

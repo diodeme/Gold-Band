@@ -44,8 +44,9 @@ describe('prompt-kit Markdown', () => {
   });
 
   it('proxies only local Markdown destinations through the safe render URL', () => {
-    const proxied = proxyLocalFileLinks('[file](D:/repo/client.rs:10) [web](https://example.com) ![image](D:/repo/a.png)');
+    const proxied = proxyLocalFileLinks('[file](D:/repo/client.rs:10) [web](https://example.com) ![image](D:/repo/a.png)\n[file2](D:/repo/next.rs:20)');
     expect(proxied).toContain('https://gold-band.local-file.invalid/?href=');
+    expect(proxied.match(/https:\/\/gold-band\.local-file\.invalid/g)).toHaveLength(2);
     expect(proxied).toContain('[web](https://example.com)');
     expect(proxied).toContain('![image](D:/repo/a.png)');
   });

@@ -4,8 +4,29 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { getAgentCommandCatalog, streamdownRender } = vi.hoisted(() => ({
+const runtime = vi.hoisted(() => ({ tauri: false }));
+
+vi.mock('@/api/shared', async () => {
+  const actual = await vi.importActual<typeof import('@/api/shared')>('@/api/shared');
+  return { ...actual, isTauriRuntime: () => runtime.tauri };
+});
+
+vi.mock('@/api/client', async () => {
+  const actual = await vi.importActual<typeof import('@/api/client')>('@/api/client');
+  return {
+    ...actual,
+    getRuntimeApi: () => ({
+      subscribeAcpSessionUpdates: async () => () => undefined,
+      getSupportedAttachmentExtensions: async () => [],
+    }),
+  };
+});
+
+vi.mock('@tauri-apps/api/event', () => ({ listen: async () => () => undefined }));
+
+const { getAgentCommandCatalog, mergeAcpEventWindowsCounter, streamdownRender } = vi.hoisted(() => ({
   getAgentCommandCatalog: vi.fn(),
+  mergeAcpEventWindowsCounter: vi.fn(),
   streamdownRender: vi.fn(),
 }));
 
@@ -27,9 +48,33 @@ vi.mock('@/api', async () => {
   };
 });
 
-import { ACPChatDialog } from '@/components/acp/ACPChatDialog';
+vi.mock('@/lib/acp-event-reducer', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/acp-event-reducer')>(
+    '@/lib/acp-event-reducer',
+  );
+  return {
+    ...actual,
+    mergeAcpEventWindows: (
+      ...args: Parameters<typeof actual.mergeAcpEventWindows>
+    ) => {
+      mergeAcpEventWindowsCounter();
+      return actual.mergeAcpEventWindows(...args);
+    },
+  };
+});
+
+import {
+  ACPChatDialog,
+  createAcpLoadedEventWindow,
+  createAcpEventWindowCacheKey,
+  resetAcpResourceCache,
+  restoreAcpLoadedEventWindow,
+  storeAcpLoadedEventWindow,
+} from '@/components/acp/ACPChatDialog';
+import { GitBranchPickerSnapshotProvider } from '@/components/git/GitBranchPickerSnapshotContext';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import type { AcpSessionVm, ConversationAttemptLifecycleVm } from '@/types';
+import { getAcpSession } from '@/api';
+import type { AcpSessionVm, AgentRegistryVm, ConversationAttemptLifecycleVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -72,8 +117,7 @@ function completedSession(): AcpSessionVm {
       newestCursor: null,
     },
     timelineProjection: { agents: [], todoEntries: [] },
-    pendingPermissions: [],
-    pendingElicitations: [],
+    pendingInteractions: [],
     diagnostics: { rawFrameCount: 0, eventCount: 1, errorCount: 0 },
   };
 }
@@ -120,6 +164,9 @@ function nonRuntimeControlledLifecycle(): ConversationAttemptLifecycleVm {
 }
 
 beforeEach(() => {
+  runtime.tauri = false;
+  resetAcpResourceCache();
+  vi.mocked(getAcpSession).mockReset().mockResolvedValue(null);
   getAgentCommandCatalog.mockResolvedValue({
     agentType: 'test',
     projectId: 'worktree-project',
@@ -146,6 +193,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetAcpResourceCache();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   streamdownRender.mockClear();
@@ -154,6 +202,274 @@ afterEach(() => {
 });
 
 describe('ACP composer render isolation', () => {
+  it.each([false, true])('uses the loaded session provider for the Doctor catalog (registry arrives late: %s)', async (lateRegistry) => {
+    runtime.tauri = true;
+    const session: AcpSessionVm = {
+      ...completedSession(),
+      config: {
+        catalogObservedAt: '100Z',
+        modelOverrideId: 'old-model',
+        currentModelId: 'old-model',
+        models: { availableModels: [{ modelId: 'old-model', name: 'Old model' }] },
+      },
+    };
+    const registry = {
+      agents: [{
+        agentType: session.provider,
+        diagnostic: { available: true, checkedAt: '200Z' },
+        supportedModels: [
+          { id: 'old-model', name: 'Old model' },
+          { id: 'new-model', name: 'New model' },
+        ],
+      }, {
+        agentType: 'other-provider',
+        diagnostic: { available: true, checkedAt: '300Z' },
+        supportedModels: [{ id: 'other-model', name: 'Other provider model' }],
+      }],
+      catalog: [],
+    } as unknown as AgentRegistryVm;
+    let resolveSession!: (value: AcpSessionVm) => void;
+    vi.mocked(getAcpSession).mockImplementation(() => new Promise((resolve) => {
+      resolveSession = resolve;
+    }));
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const view = (agentRegistry: AgentRegistryVm | null, taskId = 'task-render') => (
+      <TooltipProvider>
+        <ACPChatDialog
+          key={taskId}
+          session={null}
+          agentRegistry={agentRegistry}
+          projectId="project-render"
+          taskId={taskId}
+          runId="run-render"
+          roundId="round-render"
+          nodeId="node-render"
+          attemptId="attempt-render"
+          sessionEstablished
+          showSystemPromptAction={false}
+          showRawFramesAction={false}
+          usageCompact
+        />
+      </TooltipProvider>
+    );
+    try {
+      await act(async () => root.render(view(lateRegistry ? null : registry)));
+      expect(getAcpSession).toHaveBeenCalledTimes(1);
+      await act(async () => resolveSession(session));
+      expect(container.textContent).toContain('historical');
+      if (lateRegistry) await act(async () => root.render(view(registry)));
+
+      const trigger = container.querySelector('[data-acp-session-config-bar] button');
+      expect(trigger?.textContent).toContain('Old model');
+      await act(async () => trigger?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+      const modelNames = () => Array.from(document.querySelectorAll('[role="menuitemradio"]')).map((item) => item.textContent);
+      expect(modelNames()).toContain('New model');
+      expect(modelNames()).not.toContain('Other provider model');
+      expect(document.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent).toBe('Old model');
+
+      const markdownRenders = streamdownRender.mock.calls.length;
+      await act(async () => root.render(view({ ...registry, agents: [registry.agents[0]!] })));
+      expect(modelNames()).toContain('New model');
+      expect(container.querySelector('[data-acp-session-config-bar] button')).toBe(trigger);
+      expect(streamdownRender).toHaveBeenCalledTimes(markdownRenders);
+      expect(getAcpSession).toHaveBeenCalledTimes(1);
+
+      await act(async () => root.render(view(registry, 'other-task')));
+      expect(getAcpSession).toHaveBeenCalledTimes(2);
+      await act(async () => resolveSession({ ...session, provider: 'other-provider' }));
+      const otherTrigger = container.querySelector('[data-acp-session-config-bar] button');
+      await act(async () => otherTrigger?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+      expect(modelNames()).toContain('Other provider model');
+      expect(modelNames()).not.toContain('New model');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('does not restore and merge the historical window on an unrelated parent render', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const session = completedSession();
+    const eventWindowKey = createAcpEventWindowCacheKey({
+      projectId: 'project-render',
+      taskId: 'task-render',
+      runId: 'run-render',
+      roundId: 'round-render',
+      nodeId: 'node-render',
+      attemptId: 'attempt-render',
+    });
+    storeAcpLoadedEventWindow(
+      eventWindowKey,
+      createAcpLoadedEventWindow(session),
+      288,
+    );
+    const view = (marker: string) => (
+      <div data-marker={marker}>
+        <TooltipProvider>
+          <ACPChatDialog
+            session={session}
+            projectId="project-render"
+            taskId="task-render"
+            runId="run-render"
+            roundId="round-render"
+            nodeId="node-render"
+            attemptId="attempt-render"
+            showSystemPromptAction={false}
+            showRawFramesAction={false}
+            usageCompact
+          />
+        </TooltipProvider>
+      </div>
+    );
+
+    try {
+      await act(async () => root.render(view('initial')));
+      expect(mergeAcpEventWindowsCounter).toHaveBeenCalled();
+      mergeAcpEventWindowsCounter.mockClear();
+
+      await act(async () => root.render(view('parent-update')));
+
+      expect(container.querySelector('[data-marker]')?.getAttribute('data-marker'))
+        .toBe('parent-update');
+      expect(mergeAcpEventWindowsCounter).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('never writes the previous event window under a newly selected eventWindowKey', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const sessionA = completedSession();
+    const sessionB: AcpSessionVm = {
+      ...completedSession(),
+      sessionId: 'composer-render-session-b',
+      nodeId: 'node-render-b',
+      attemptId: 'attempt-render-b',
+      events: [{
+        ...completedSession().events[0]!,
+        id: 'assistant-message-b',
+        sessionId: 'composer-render-session-b',
+        content: 'session B historical Markdown',
+      }],
+    };
+    const observations: Array<{
+      key: string;
+      sessionId: string | null;
+      eventIds: string[];
+    }> = [];
+
+    function Harness({ selected }: { selected: 'a' | 'b' }) {
+      const selectedSession = selected === 'a' ? sessionA : sessionB;
+      const selectedNodeId = selected === 'a' ? 'node-render' : 'node-render-b';
+      const selectedAttemptId = selected === 'a' ? 'attempt-render' : 'attempt-render-b';
+      const eventWindowKey = createAcpEventWindowCacheKey({
+        projectId: 'project-render',
+        taskId: 'task-render',
+        runId: 'run-render',
+        roundId: 'round-render',
+        nodeId: selectedNodeId,
+        attemptId: selectedAttemptId,
+      });
+      React.useEffect(() => {
+        const window = restoreAcpLoadedEventWindow(eventWindowKey, null, 288);
+        observations.push({
+          key: eventWindowKey,
+          sessionId: window.sessionId,
+          eventIds: window.events.map((event) => event.id),
+        });
+      }, [eventWindowKey]);
+      return (
+        <TooltipProvider>
+          <ACPChatDialog
+            session={selectedSession}
+            projectId="project-render"
+            taskId="task-render"
+            runId="run-render"
+            roundId="round-render"
+            nodeId={selectedNodeId}
+            attemptId={selectedAttemptId}
+            showSystemPromptAction={false}
+            showRawFramesAction={false}
+            usageCompact
+          />
+        </TooltipProvider>
+      );
+    }
+
+    try {
+      await act(async () => root.render(<Harness selected="a" />));
+      await act(async () => root.render(<Harness selected="b" />));
+
+      const keyB = createAcpEventWindowCacheKey({
+        projectId: 'project-render',
+        taskId: 'task-render',
+        runId: 'run-render',
+        roundId: 'round-render',
+        nodeId: 'node-render-b',
+        attemptId: 'attempt-render-b',
+      });
+      expect(observations.find((observation) => observation.key === keyB)).toEqual({
+        key: keyB,
+        sessionId: 'composer-render-session-b',
+        eventIds: ['assistant-message-b'],
+      });
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('joins a branch-only session info tab to the composer surface', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <GitBranchPickerSnapshotProvider>
+            <TooltipProvider>
+              <ACPChatDialog
+                session={completedSession()}
+                projectId="project-render"
+                taskId="task-render"
+                runId="run-render"
+                roundId="round-render"
+                nodeId="node-render"
+                attemptId="attempt-render"
+                showBranchControl
+                showSystemPromptAction={false}
+                showRawFramesAction={false}
+                usageCompact
+              />
+            </TooltipProvider>
+          </GitBranchPickerSnapshotProvider>,
+        );
+      });
+
+      expect(container.querySelector('[data-acp-session-info-item="branch"]')).not.toBeNull();
+      const composerRail = container.querySelector('[data-acp-conversation-rail="composer"]');
+      expect(composerRail?.classList.contains(
+        '[--acp-composer-rail-shadow:var(--gb-material-shadow)]',
+      )).toBe(true);
+      expect(composerRail?.classList.contains(
+        'dark:[--acp-composer-rail-shadow:var(--gb-elevation-overlay)]',
+      )).toBe(true);
+      expect(composerRail?.classList.contains(
+        '[filter:drop-shadow(var(--acp-composer-rail-shadow))]',
+      )).toBe(true);
+      expect(composerRail?.className.match(/drop-shadow\(/gu) ?? []).toHaveLength(1);
+      expect(composerRail?.className).not.toContain('--gb-material-edge-shadow');
+      const promptInput = container.querySelector('[data-slot="prompt-input"]');
+      expect(promptInput?.classList.contains('rounded-tl-none')).toBe(true);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('keeps the conversation shell mounted when an established session payload is temporarily absent', async () => {
     const container = document.createElement('div');
     document.body.append(container);

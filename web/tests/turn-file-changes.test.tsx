@@ -108,6 +108,7 @@ function changeSet(id = 'change-set-1'): TurnFileChangeSetVm {
         deletedLines: 1,
       },
     ],
+    attachments: [],
     limitationCodes: [],
   };
 }
@@ -183,6 +184,61 @@ afterEach(() => {
 });
 
 describe('turn file changes card', () => {
+  it('renders new attachments once, defaults to one row, and opens the attachment tab immediately', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const set = changeSet('attachments');
+    set.summary = {
+      fileCount: 1,
+      addedFiles: 0,
+      modifiedFiles: 1,
+      deletedFiles: 0,
+      addedLines: 1,
+      deletedLines: 1,
+    };
+    set.changes = [{
+      id: 'existing-attachment-modified',
+      changeKind: 'modified',
+      logicalPath: 'C:/attempt/attachments/existing.md',
+      text: true,
+      addedLines: 1,
+      deletedLines: 1,
+    }];
+    set.attachments = [
+      { id: 'attachment-report', relativePath: 'report.md', name: 'report.md', byteLength: 2048 },
+      { id: 'attachment-summary', relativePath: 'summary.txt', name: 'summary.txt', byteLength: 24 },
+    ];
+    getTurnFileChangeSetMock.mockResolvedValue(set);
+    const event = pointerEvent(set.id);
+    event.raw = { changeSetId: set.id, summary: set.summary, attachmentCount: 2 };
+    const root = await renderCard(container, event);
+    try {
+      const attachmentCard = container.querySelector<HTMLElement>('[data-turn-attachments-card]');
+      const changeCard = container.querySelector<HTMLElement>('[data-turn-file-changes-card]');
+      expect(attachmentCard).not.toBeNull();
+      expect(changeCard).not.toBeNull();
+      expect(attachmentCard?.textContent).toContain('report.md');
+      expect(attachmentCard?.textContent).not.toContain('summary.txt');
+      expect(changeCard?.textContent).toContain('existing.md');
+      expect(changeCard?.textContent).not.toContain('report.md');
+      expect(getTurnFileChangeSetMock).toHaveBeenCalledTimes(1);
+
+      const firstAttachment = attachmentCard?.querySelector<HTMLButtonElement>('[role="listitem"]');
+      await act(async () => firstAttachment?.click());
+      const probe = container.querySelector('output');
+      expect(probe?.dataset.activeKind).toBe('turn-attachment');
+      expect(probe?.dataset.activeKey).toContain('attachments:attachment-report');
+      expect(probe?.dataset.tabCount).toBe('1');
+
+      const expand = attachmentCard?.querySelector<HTMLButtonElement>('button[aria-expanded="false"]');
+      await act(async () => expand?.click());
+      expect(attachmentCard?.textContent).toContain('summary.txt');
+      expect(attachmentCard?.querySelectorAll('[role="listitem"]')).toHaveLength(2);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('uses the shared assistant content rail for compaction and file-change timeline items', async () => {
     const container = document.createElement('div');
     document.body.append(container);

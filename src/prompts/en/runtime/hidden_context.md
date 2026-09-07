@@ -30,6 +30,11 @@ All previous nodes were ordinary transitions based on node outcome.
 {{ predecessors.reason_lines }}
 {% endif %}
 
+{% if predecessors.has_ai_dynamic_report_manifest %}
+## AI-DYNAMIC full report manifest (read on demand)
+The `reportManifest.path` in the predecessor `ai-dynamic-result` points to the complete internal execution report index, including node/group topology, dependencies and timing, workspaces, internal summaries, and attachment locators. By default, use the business handoff `summary`; read the manifest only when you need to verify internal execution, locate report attachments, or the `summary` lacks required detail.
+{% endif %}
+
 {% if not predecessors.attachment_lines_empty %}
 ## Latest predecessor attachments
 {{ predecessors.attachment_lines }}

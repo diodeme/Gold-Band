@@ -151,7 +151,7 @@ cancel_pending_elicitation_requests() → 批量写入 Decline 响应文件
 核心数据结构：
 
 - **`ElicitationAction`** — enum `{ Accept, Decline }`，杜绝字符串硬编码
-- **`PendingElicitationState`** — 持久化的待处理请求（含 `jsonrpc_id` 与官方类型 `CreateElicitationRequest`，完整保留 scope/schema/meta）
+- **`PendingAcpPromptInteractionState<PendingElicitationPayload>`** — 通用 pending envelope 保存 `interactionId/kind/turnId/promptEventId`，elicitation payload 保存 `jsonrpc_id` 与官方类型 `CreateElicitationRequest`，完整保留 scope/schema/meta
 - **`ElicitationResponseState`** — 持久化的用户响应（含 `action`, `content`）
 
 单元测试覆盖（12/12）：
@@ -573,7 +573,7 @@ Agent 消费结构化 elicitation `content`；UI 不再生成第二份格式化�
 
 ### Pending 状态权威投影 ✅ 已收敛
 
-`elicitationRequest / elicitationResponse` 是持久化生命周期事实，但有限分页窗口和 `timing.waitReason` 都不是当前 pending 的权威来源。后端 session view model 必须提供从完整 timeline 生成的 `pendingElicitations`，字段结构包含 `elicitationId / message / toolCallId / requestedSchema / raw`；active session 中仅保留尚无 response 的 pending request，terminal session 返回空集合。前端全量 session 刷新直接采用该字段，live request/response 通过 session reducer 更新同一字段；ElicitationCard 只消费该权威状态。禁止重新从当前分页窗口加 timing 条件推断提问可见性，否则会在 snapshot/timing 竞态下形成“后台等待回答、前台仍显示工具调用中”的不可操作状态。
+`elicitationRequest / elicitationResponse` 是 prompt-scoped interaction 的持久化生命周期事实。elicitation 与 permission 共同投影为 `AcpSessionVm.pendingInteractions` 判别联合，统一携带 `interactionId / kind / turnId / promptEventId`；message、toolCallId、requestedSchema、raw 等保持在 elicitation variant。有限分页窗口和 `timing.waitReason` 都不是当前 pending 的权威来源；session status terminal 也不能单独清空交互，必须由 owner `turnId` 相同的 terminal lifecycle 或对应 response 结算。前端全量刷新、live reducer、陈旧 snapshot 协调和 composer 共同消费这一字段，ElicitationCard 只负责协议专属表单呈现与响应。
 
 ### 回答历史展示决策 ✅ 已收敛
 

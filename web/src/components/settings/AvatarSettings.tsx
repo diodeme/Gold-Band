@@ -28,6 +28,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { avatarShapeClass } from '@/lib/avatar';
 import { cropAvatarImage, readAvatarFile } from '@/lib/avatar-image';
 import { cn } from '@/lib/utils';
+import { useWebviewMeasuredContainer } from '@/hooks/use-webview-measured-container';
 
 const Cropper = lazy(() => import('react-easy-crop'));
 
@@ -80,6 +81,7 @@ interface AvatarEditorProps {
 }
 
 function AvatarEditor({ kind, profile, shapePreference, busy, onSaveAvatar, onSelectRecentAvatar, onSaveAvatarShape, onClearAvatar }: AvatarEditorProps) {
+  const measuredAvatarEditorRef = useWebviewMeasuredContainer<HTMLDivElement>('avatar-editor');
   const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
   const [source, setSource] = useState<string | null>(null);
@@ -135,7 +137,7 @@ function AvatarEditor({ kind, profile, shapePreference, busy, onSaveAvatar, onSe
   };
 
   return (
-    <div data-testid={`avatar-editor-${kind}`} className="@container/avatar-editor grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-2 rounded-lg border border-border/40 px-3 py-3 @xl/avatar-editor:grid-cols-[auto_minmax(0,1fr)_auto]">
+    <div ref={measuredAvatarEditorRef} data-testid={`avatar-editor-${kind}`} className="@container/avatar-editor grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-2 rounded-lg border border-border/40 px-3 py-3 @xl/avatar-editor:grid-cols-[auto_minmax(0,1fr)_auto]">
       <div className="group/avatar relative row-span-2 shrink-0 @xl/avatar-editor:row-span-1">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

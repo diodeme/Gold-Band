@@ -72,6 +72,27 @@ function pausedLifecycle(): ConversationAttemptLifecycleVm {
   };
 }
 
+function runtimeAbnormalLifecycle(): ConversationAttemptLifecycleVm {
+  return {
+    ...pausedLifecycle(),
+    runtime: {
+      ...pausedLifecycle().runtime,
+      pauseReason: 'runtime-abnormal',
+    },
+    acp: {
+      ...pausedLifecycle().acp,
+      latestTurnStatus: 'failed',
+    },
+    displayStatus: 'runtime-abnormal',
+    runtimeDisplay: {
+      ...pausedLifecycle().runtimeDisplay,
+      code: 'runtime-abnormal',
+      tone: 'danger',
+      reasonCode: 'runtime-abnormal',
+    },
+  };
+}
+
 function runningLifecycle(): ConversationAttemptLifecycleVm {
   return {
     ...pausedLifecycle(),
@@ -158,8 +179,7 @@ function cancelledSession(id: string): AcpSessionVm {
       newestCursor: null,
     },
     timelineProjection: { agents: [], todoEntries: [] },
-    pendingPermissions: [],
-    pendingElicitations: [],
+    pendingInteractions: [],
     diagnostics: { rawFrameCount: 0, eventCount: 0, errorCount: 0 },
   };
 }
@@ -167,6 +187,9 @@ function cancelledSession(id: string): AcpSessionVm {
 async function renderPausedDialog(options: {
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
   initialLifecycle?: ConversationAttemptLifecycleVm;
+  isOrchestrated?: boolean;
+  runtimeError?: string | null;
+  runtimeErrorFallback?: string | null;
   sessionStatus?: string;
   session?: Partial<AcpSessionVm>;
 } = {}) {
@@ -195,9 +218,11 @@ async function renderPausedDialog(options: {
           nodeId={session.nodeId}
           attemptId={session.attemptId}
           runtimeComposerContext={{
-            isOrchestrated: true,
+            isOrchestrated: options.isOrchestrated ?? true,
             lifecycle,
             workflowValid: true,
+            runtimeError: options.runtimeError,
+            runtimeErrorFallback: options.runtimeErrorFallback,
           }}
           showSystemPromptAction={false}
           showRawFramesAction={false}
@@ -357,6 +382,45 @@ afterEach(() => {
 });
 
 describe('ACP runtime continue submission', () => {
+  it('keeps a newer-turn permission visible while lifecycle is terminal for the prior turn', async () => {
+    const terminal = pausedLifecycle();
+    terminal.acp = {
+      ...terminal.acp,
+      revision: 2,
+      turnId: 'turn-1',
+    };
+    const { container, root, render, session } = await renderPausedDialog({
+      initialLifecycle: terminal,
+      sessionStatus: 'completed',
+    });
+    try {
+      await render(terminal, {
+        ...session,
+        status: 'completed',
+        eventPage: {
+          ...session.eventPage,
+          generation: 1,
+          coveredRevision: 3,
+          newestRevision: 3,
+          newestSeq: 3,
+        },
+        pendingInteractions: [{
+          kind: 'permission',
+          interactionId: 'request-turn-2',
+          turnId: 'turn-2',
+          promptEventId: 'prompt-turn-2',
+          title: 'NEW_TURN_PERMISSION_CARD',
+          options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+          raw: { requestId: 'request-turn-2' },
+        }],
+      });
+
+      expect(container.textContent).toContain('NEW_TURN_PERMISSION_CARD');
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('settles an old permission card once and still accepts a real permission from the next turn', async () => {
     const firstTurn = runningLifecycle();
     firstTurn.acp = {
@@ -377,7 +441,10 @@ describe('ACP runtime continue submission', () => {
       turnId: 'turn-2',
     };
     const oldPermission = {
-      requestId: 'request-old',
+      kind: 'permission' as const,
+      interactionId: 'request-old',
+      turnId: 'turn-1',
+      promptEventId: 'prompt-turn-1',
       title: 'OLD_PERMISSION_CARD',
       options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
       raw: { requestId: 'request-old' },
@@ -386,7 +453,7 @@ describe('ACP runtime continue submission', () => {
       initialLifecycle: firstTurn,
       sessionStatus: 'running',
       session: {
-        pendingPermissions: [oldPermission],
+        pendingInteractions: [oldPermission],
       },
     });
     try {
@@ -406,8 +473,10 @@ describe('ACP runtime continue submission', () => {
           newestRevision: 4,
           newestSeq: 4,
         },
-        pendingPermissions: [{
+        pendingInteractions: [{
           ...oldPermission,
+          turnId: 'turn-2',
+          promptEventId: 'prompt-turn-2',
           title: 'NEW_PERMISSION_CARD',
           raw: { requestId: 'request-old' },
         }],
@@ -426,7 +495,10 @@ describe('ACP runtime continue submission', () => {
     const nextTurn = runningLifecycle();
     nextTurn.acp = { ...nextTurn.acp, revision: 3, turnId: 'turn-2' };
     const oldElicitation = {
-      elicitationId: 'elicitation-old',
+      kind: 'elicitation' as const,
+      interactionId: 'elicitation-old',
+      turnId: 'turn-1',
+      promptEventId: 'prompt-turn-1',
       message: 'OLD_ELICITATION_CARD',
       requestedSchema: {
         type: 'object',
@@ -437,7 +509,9 @@ describe('ACP runtime continue submission', () => {
     const { container, root, render, session } = await renderPausedDialog({
       initialLifecycle: firstTurn,
       sessionStatus: 'running',
-      session: { pendingElicitations: [oldElicitation] },
+      session: {
+        pendingInteractions: [oldElicitation],
+      },
     });
     try {
       expect(container.textContent).toContain('OLD_ELICITATION_CARD');
@@ -456,9 +530,11 @@ describe('ACP runtime continue submission', () => {
           newestRevision: 4,
           newestSeq: 4,
         },
-        pendingElicitations: [{
+        pendingInteractions: [{
           ...oldElicitation,
-          elicitationId: 'elicitation-new',
+          interactionId: 'elicitation-new',
+          turnId: 'turn-2',
+          promptEventId: 'prompt-turn-2',
           message: 'NEW_ELICITATION_CARD',
           raw: { elicitationId: 'elicitation-new' },
         }],
@@ -597,6 +673,152 @@ describe('ACP runtime continue submission', () => {
 });
 
 describe('ACP Direct queue submission', () => {
+  it('invalidates a stale parent runtime error after the local Direct lifecycle recovers', async () => {
+    const recoveredLifecycle = {
+      ...runtimeAbnormalLifecycle(),
+      acp: {
+        ...runtimeAbnormalLifecycle().acp,
+        latestTurnStatus: 'completed' as const,
+      },
+    };
+    const result = await renderPausedDialog({
+      initialLifecycle: runtimeAbnormalLifecycle(),
+      isOrchestrated: false,
+      runtimeError: 'end_turn: old provider failure',
+      session: {
+        diagnostics: {
+          rawFrameCount: 8,
+          eventCount: 1,
+          errorCount: 1,
+          lastError: 'ACP prompt failed: old provider failure',
+          lastErrorTimestamp: '10Z',
+        },
+      },
+    });
+    try {
+      expect(result.container.textContent).toContain('old provider failure');
+      await result.render(recoveredLifecycle, {
+        ...result.session,
+        status: 'completed',
+        events: [{
+          id: 'recovered-response',
+          seq: 2,
+          timestamp: '11Z',
+          kind: 'textDelta',
+          sessionId: result.session.sessionId,
+          content: 'recovered',
+          status: 'completed',
+          startedSeq: 2,
+          endedSeq: 2,
+        }],
+        eventPage: {
+          loadedCount: 1,
+          total: 1,
+          oldestSeq: 2,
+          newestSeq: 2,
+          hasOlder: false,
+          hasNewer: false,
+          oldestCursor: '2',
+          newestCursor: '2',
+        },
+      });
+      expect(result.container.textContent).not.toContain('old provider failure');
+    } finally {
+      await unmount(result.root);
+    }
+  });
+
+  it('uses a stale run error only as fallback for ACP diagnostics', async () => {
+    const result = await renderPausedDialog({
+      runtimeErrorFallback: 'old provider failure',
+    });
+    try {
+      expect(result.container.textContent).toContain('old provider failure');
+      await result.render(pausedLifecycle(), {
+        ...result.session,
+        status: 'completed',
+        events: [{
+          id: 'recovered-thought',
+          seq: 2,
+          timestamp: '11Z',
+          kind: 'thoughtDelta',
+          sessionId: result.session.sessionId,
+          content: 'recovered',
+          status: 'completed',
+          startedSeq: 2,
+          endedSeq: 2,
+        }],
+        eventPage: {
+          loadedCount: 1,
+          total: 1,
+          oldestSeq: 2,
+          newestSeq: 2,
+          hasOlder: false,
+          hasNewer: false,
+          oldestCursor: '2',
+          newestCursor: '2',
+        },
+        diagnostics: {
+          rawFrameCount: 8,
+          eventCount: 2,
+          errorCount: 1,
+          lastError: 'old provider failure',
+          lastErrorTimestamp: '10Z',
+        },
+      });
+      expect(result.container.textContent).not.toContain('old provider failure');
+    } finally {
+      await unmount(result.root);
+    }
+  });
+
+  it('hides a stale run fallback after a diagnostic-free follow-up completes', async () => {
+    const recoveredLifecycle = {
+      ...runtimeAbnormalLifecycle(),
+      acp: {
+        ...runtimeAbnormalLifecycle().acp,
+        latestTurnStatus: 'completed' as const,
+        stopReason: 'end_turn',
+      },
+    };
+    const result = await renderPausedDialog({
+      initialLifecycle: runtimeAbnormalLifecycle(),
+      isOrchestrated: false,
+      runtimeErrorFallback: 'end_turn: old provider failure',
+    });
+    try {
+      expect(result.container.textContent).toContain('old provider failure');
+      await result.render(recoveredLifecycle, {
+        ...result.session,
+        status: 'completed',
+        events: [{
+          id: 'diagnostic-free-recovered-response',
+          seq: 2,
+          timestamp: '11Z',
+          kind: 'textDelta',
+          sessionId: result.session.sessionId,
+          content: 'recovered',
+          status: 'completed',
+          startedSeq: 2,
+          endedSeq: 2,
+        }],
+        eventPage: {
+          loadedCount: 1,
+          total: 1,
+          oldestSeq: 2,
+          newestSeq: 2,
+          hasOlder: false,
+          hasNewer: false,
+          oldestCursor: '2',
+          newestCursor: '2',
+        },
+      });
+      expect(result.container.textContent).not.toContain('old provider failure');
+    } finally {
+      await unmount(result.root);
+    }
+  });
+
   it('continues on the same page after startup is stopped before a provider session exists', async () => {
     apiMocks.submitConversationPrompt.mockResolvedValue({
       kind: 'acp-session-started',

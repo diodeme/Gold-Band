@@ -24,6 +24,7 @@ import {
   applyConversationEventToBranchSnapshots,
   resetConversationEventRouterSnapshots,
 } from '@/lib/conversation-event-router';
+import { detachConversationViewport } from './acp/detach-conversation-viewport';
 import type { AcpSessionVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -79,14 +80,14 @@ function session(branchId: string, withPermission = false): AcpSessionVm {
       newestCursor: null,
     },
     timelineProjection: { agents: [], todoEntries: [] },
-    pendingPermissions: withPermission ? [{
-      requestId: 'permission-1',
+    pendingInteractions: withPermission ? [{
+      kind: 'permission',
+      interactionId: 'permission-1',
       title: 'Read file',
       toolCallId: 'tool-1',
       raw: { rawInput: { path: 'README.md' } },
       options: [{ optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' }],
     }] : [],
-    pendingElicitations: [],
     diagnostics: { rawFrameCount: 0, eventCount: 0, errorCount: 0 },
   };
 }
@@ -125,6 +126,27 @@ afterEach(() => {
 });
 
 describe('read-only Agent conversation boundary', () => {
+  it.each(['running', 'cancelled', 'completed'])('shows unknown Agent status without a summary while parent is %s', async (status) => {
+    const rootSession = session('root');
+    rootSession.status = status;
+    rootSession.events = [{
+      id: 'agent-launch-unknown', seq: 1, timestamp: '1Z', kind: 'toolCall',
+      sessionId: 'session-1', content: null, title: 'Audit', toolCallId: 'launch-unknown',
+      status: 'completed', raw: { _meta: { goldBandConversation: {
+        branchId: 'root', launchedAgentExecutionId: 'agent-unknown', toolName: 'Agent',
+      } } },
+    }];
+    const { container, root } = await renderDialog(rootSession, true);
+    try {
+      const row = container.querySelector('[data-agent-link-branch-id="agent-unknown"]');
+      expect(row).not.toBeNull();
+      expect(row?.textContent).toContain('状态未知');
+      expect(row?.textContent).not.toContain('等待执行');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('mounts the shared viewport but no composer, stop, continue, or retry controls', async () => {
     const { container, root } = await renderDialog(session('agent-1'), true);
     try {
@@ -287,11 +309,12 @@ describe('read-only Agent conversation boundary', () => {
     }
   });
 
-  it('offers an explicit return to the latest semantic window', async () => {
+  it('offers an explicit return to the latest when the viewport detaches from a historical window', async () => {
     const historical = session('agent-1');
     historical.eventPage.hasNewer = true;
     const { container, root } = await renderDialog(historical, true);
     try {
+      await detachConversationViewport(container);
       expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
     } finally {
       await act(async () => root.unmount());

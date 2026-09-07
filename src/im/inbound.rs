@@ -477,6 +477,8 @@ mod tests {
         write_pending_permission(
             &attempt_dir,
             "request-1",
+            "turn-1",
+            "prompt-event-1",
             serde_json::json!({
                 "options": [
                     {

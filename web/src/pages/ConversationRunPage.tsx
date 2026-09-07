@@ -20,14 +20,15 @@ import { conversationRunWorkspaceResourceKey, useRightWorkspace, type Conversati
 import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode } from '@/lib/conversation-runtime-workflow';
 import { conversationPageForSession } from '@/lib/conversation-navigation';
 import { findConversationLeafByKey } from '@/lib/conversation-run-snapshot';
-import { acpProviderConfigCatalog } from '@/lib/acp-session-config';
 import { acpRuntimeErrorBannerCopy } from '@/lib/acp-runtime-error';
+import { shouldTreatAcpRuntimeErrorAsFallback } from '@/lib/acp-runtime-composer-state';
 import {
   conversationRunCacheKey,
   type ConversationSessionTreeExpansion,
 } from '@/lib/conversation-run-cache';
 import {
   isRuntimeControlledConversationLifecycle,
+  isRuntimeTerminalConversationLifecycle,
   isTerminalConversationSessionStatus,
   type ConversationSessionFollowMode,
 } from '@/lib/conversation-session-follow';
@@ -144,7 +145,8 @@ export function ConversationRunPage({
   };
   const localizedRuntimeErrorMessage = acpRuntimeErrorBannerCopy(t, run.runtimeError);
   const [sessionSwitcherOpen, setSessionSwitcherOpen] = useState(false);
-  const sessionTreeExpansionRunKey = conversationRunCacheKey(run);
+  const sessionTreeExpansionRunKey = conversationRunCacheKey(run)
+    ?? `uncached:${run.projectId}:${run.taskId}:${run.runId}`;
   const [sessionTreeExpansionState, setSessionTreeExpansionState] = useState<{
     runKey: string;
     expansion: ConversationSessionTreeExpansion;
@@ -186,8 +188,9 @@ export function ConversationRunPage({
   const workflowLocator = useMemo(() => ({
     projectId: run.projectId,
     taskId: run.taskId,
+    taskUuid: run.taskUuid,
     runId: run.runId,
-  }), [run.projectId, run.runId, run.taskId]);
+  }), [run.projectId, run.runId, run.taskId, run.taskUuid]);
 
   const openWorkflowEditor = useCallback((mode: 'edit' | 'repair') => {
     onEditWorkflow();
@@ -360,21 +363,20 @@ export function ConversationRunPage({
     }
     const restoreKey = pendingAutoFollowRestoreSessionKeyRef.current;
     const scrollPausedKey = scrollPausedAutoFollowSessionKeyRef.current;
-    const selectedDynamicLeafTerminal = Boolean(
-      selectedLeaf?.outerNodeId
-      && selectedLeaf.outerAttemptId
+    const selectedRuntimeTerminal = Boolean(
+      isRuntimeTerminalConversationLifecycle(selectedLeaf?.lifecycle)
       && isTerminalConversationSessionStatus(
-        selectedLeaf.lifecycle?.runtime.status ?? selectedLeaf.status,
+        selectedLeaf?.lifecycle?.runtime.status ?? selectedLeaf?.status,
       )
     );
     if (!isRuntimeControlledConversationLifecycle(selectedLeaf?.lifecycle)) {
-      if (selectedDynamicLeafTerminal && selectedKey && scrollPausedKey === selectedKey) {
+      if (selectedRuntimeTerminal && selectedKey && scrollPausedKey === selectedKey) {
         scrollPausedAutoFollowSessionKeyRef.current = null;
         manualAutoFollowDisabledRef.current = false;
         onAutoFollowChange?.(true);
         return;
       }
-      if (selectedDynamicLeafTerminal && !manualAutoFollowDisabledRef.current) {
+      if (selectedRuntimeTerminal && !manualAutoFollowDisabledRef.current) {
         onAutoFollowChange?.(true);
         return;
       }
@@ -439,15 +441,18 @@ export function ConversationRunPage({
 
   const selectedSessionMatchesLeaf = sessionBelongsToLeaf(run.selectedSession, run, selectedLeaf);
   const selectedSession = selectedSessionMatchesLeaf ? run.selectedSession : null;
-  const selectedProviderCatalog = useMemo(
-    () => acpProviderConfigCatalog(agentRegistry, selectedSession?.provider),
-    [agentRegistry, selectedSession?.provider],
-  );
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
   const runtimeControlErrorBase = localizedRuntimeErrorMessage ?? run.runtimeErrorMessage;
+  const selectedSessionUsesRuntimeErrorFallback = shouldTreatAcpRuntimeErrorAsFallback(
+    isDirect,
+    selectedLeaf?.lifecycle,
+  );
   const selectedSessionRuntimeControlError = runtimeControlErrorBase && !(
     selectedLeaf?.lifecycle?.composer.mode === 'runtime-error' || selectedSessionDisplay?.code === 'error-blocked'
-  )
+  ) && !selectedSessionUsesRuntimeErrorFallback
+    ? runtimeControlErrorBase
+    : null;
+  const selectedSessionRuntimeErrorFallback = selectedSessionUsesRuntimeErrorFallback
     ? runtimeControlErrorBase
     : null;
   const selectedSessionErrorDetails = run.runtimeErrorMessage ?? selectedSession?.diagnostics.lastError ?? null;
@@ -477,6 +482,7 @@ export function ConversationRunPage({
         workflowError: isDirect ? undefined : t('conversation.runtime.workflowInvalid'),
         pauseMessage: isDirect ? undefined : translatePauseReason(selectedSessionPauseReason),
         runtimeError: selectedRuntimeErrorMessage,
+        runtimeErrorFallback: selectedSessionRuntimeErrorFallback,
         onRepair: handleRepairWorkflow,
         supersededSessionNavigation: supersedingHref
           ? {
@@ -571,11 +577,12 @@ export function ConversationRunPage({
           <ACPChatDialog
             key={`${run.taskUuid ?? run.taskId}:${selectedSessionKey ?? 'empty'}`}
             session={selectedSession}
-            providerCatalog={selectedProviderCatalog}
+            agentRegistry={agentRegistry}
             sessionEstablished={selectedLeaf.sessionEstablished}
             sessionReferenceId={selectedLeaf.sessionId}
             projectId={run.projectId}
             taskId={run.taskId}
+            taskUuid={run.taskUuid}
             runId={run.runId}
             roundId={selectedLeaf.roundId}
             nodeId={selectedLeaf.nodeId}
@@ -583,8 +590,10 @@ export function ConversationRunPage({
             outerNodeId={selectedLeaf.outerNodeId}
             outerAttemptId={selectedLeaf.outerAttemptId}
             eventPageSize={appConfig.acpChatEventPageSize}
+            eventWindowPageCount={appConfig.acpChatEventWindowPageCount}
             inlineContentMaxBytes={appConfig.conversationInlineContentMaxBytes}
             turnFileCardPreviewLimit={appConfig.turnFiles.cardPreviewLimit}
+            turnAttachmentCardPreviewLimit={appConfig.turnFiles.attachmentCardPreviewLimit}
             onLifecycleSnapshot={onLifecycleSnapshot}
             onAtBottomChange={handleAtBottomChange}
             onInitialSessionQueryStateChange={handleInitialSessionQueryStateChange}

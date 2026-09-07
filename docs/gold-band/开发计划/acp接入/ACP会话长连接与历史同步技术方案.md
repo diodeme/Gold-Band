@@ -566,6 +566,7 @@ acpMaxIdleAdapterConnections = 4
 
 Connection 只有在以下条件同时满足时才可驱逐：
 
+- scoped connection use count 为 0（初始化、恢复、执行与收尾期间由 runtime 持有）。
 - active prompt count 为 0。
 - attached session count 为 0。
 - 不在 Starting/Draining。
@@ -959,3 +960,25 @@ resume/load 请求都携带 `sessionId`、`cwd`、过滤后的 `mcpServers` 与�
 - 验收：`cargo test --test acp_connection_logging` 通过（1 项集成测试，另 1 项为仅供子进程调用的 ignored fixture）；`cargo test --lib acp::` 通过 448 项、忽略 1 项外部历史 fixture 测试。未通过真实 Provider 复现原偶发断连，未覆盖操作系统级管道读写错误注入；未替换或重启用户当前运行的 EXE，新增日志需使用包含本次改动的构建。
 - 过度设计评审：只增加原因枚举、有限请求元数据与统一日志投影，复用现有连接身份和生命周期；不增加 aggregate、队列、缓存、轮询或容错策略。
 - 性能评审：只在连接生命周期事件和请求拒绝/写失败时写日志，不进入 token/frame 成功热路径；每个既有 pending request 增加一个 method 字符串，随原请求回收。日志请求采样最多 8 条，计数使用既有容器长度，active prompt 求和规模为当前活跃 session 数；无历史扫描、全量加载、N+1 或新增 I/O 等待，沿用现有有界非阻塞日志与轮转，无需额外 benchmark。
+
+## 24. 恢复阶段的连接使用保护（2026-09-07）
+
+### 根因与范围
+
+现场日志在 09:10:49.072 记录复用 PID 49616 / generation 4，09:10:49.089 将同一连接按 `idle-ttl` 回收，09:10:49.115 拒绝 `session/resume`。原始设计已要求 connection lease 保护，但实现只有 active prompt 和 attachment 保护；`get_or_spawn` 先交出连接，后续 session `acquire` 同步 prune，且真正的 `ActivePromptGuard` 直到 prompt 执行才建立。无 attachment、无 active prompt 且过期的连接因此能被同一恢复调用链回收，不依赖低概率并发时序。这属于原有设计正确但生命周期保护实现不完整。
+
+### 实现
+
+- 复用 Rust RAII/Drop 与现有连接池锁，新增小型 `AdapterConnectionUse` 和连接内存使用计数；managed 获取接口返回 guard，本次 `AcpRuntime` 直接持有它，不能将 guard 存入长期 attachment。普通 Arc 保持对象存活，但不代表正在使用 transport。
+- 已有连接先在池锁外做健康检查，再持池锁验证相同连接仍在池内并登记使用；与闲置清理的选择和移除互斥。新连接在入池前取得 guard，保持原有进程创建 single-flight，不持全局池锁执行 spawn、RPC 或进程等待。
+- TTL 与容量回收均额外排除使用计数非零的连接。错误返回、取消和正常收尾自动释放 guard；初始化失败后的 replacement 必须携带新 guard，旧 guard 只影响旧 generation。
+- `ActivePromptGuard` 及其 session 取消、drain 和 active owner 语义保持不变；显式 workspace/provider/all 关闭与初始化失败淘汰不受闲置使用保护阻止。standalone 不在全局池中，但在 runtime 中使用同一作用域持有方式。
+- 保留既有懒清理入口、TTL/LRU 配置和恢复协议；不增加后台调度、凭证 ID、数据库字段或自动重试。此变更修复已证明的 transport 被误回收，不将所有 Provider 恢复失败归为同一原因，也不修改前端消息投影。
+
+### 验证与自评审
+
+- 最小失败测试 `acquired_connection_survives_idle_cleanup_before_resume` 在修改实现前失败于 `idle cleanup closed a connection already handed to its caller`，证明没有 prompt/session 绑定时已交出的连接会被回收；同一断言修复后转绿。扩展场景确认复用同一代已初始化连接、TTL/容量清理后直接完成一次 resume，并在 guard 释放后恢复可回收状态。
+- 接口测试覆盖多个并发借用者、最后借用者释放、获取与清理并发、早期错误自动释放、初始化失败淘汰后的新旧代隔离及显式关闭；原关闭日志测试改为明确释放 guard 后观察回收，继续验收日志原因与正文不泄露。
+- 过度设计评审：原 prompt/session 计数无法表达初始化和恢复阶段的连接使用，新增一个作用域计数恰好补足这一不变量；不重复 canonical session 模型，不引入依赖或后台系统。
+- 性能评审：每次取得/释放 guard 为 O(1) 原子计数，复用路径增加一次短暂池锁用于成员重验证；回收候选判断增加一次 O(1) 读取，原 TTL/LRU 扫描复杂度不变。无新增全量历史读取、网络 I/O、队列或 token 热路径日志，锁外进行进程检查与创建，风险不需要单独 benchmark。
+- 验收结果：`cargo test --lib acp:: --quiet` 通过 448 项、忽略 1 项外部历史 fixture；`cargo test --test acp_connection_logging --test acp_claude_execution_policy --quiet` 分别通过 6 项连接测试和 4 项策略测试，3 项子进程 fixture 按设计 ignored。`git diff --check` 通过。未运行真实 Provider 会话或替换用户当前 EXE，桌面安装包需后续构建部署后生效。

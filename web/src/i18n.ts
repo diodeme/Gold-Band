@@ -708,6 +708,8 @@ const resources = {
         },
         multica: {
           "not-configured": "尚未配置 Multica，请先在设置中完成接入。",
+          "invalid-address": "连接地址无效：必须是合法的 http(s) 地址。",
+          "connect-cancelled": "已取消连接。",
           "auth-failed": "Multica 鉴权失败：{{message}}",
           "network-failed": "Multica 网络请求失败：{{message}}",
           "register-failed": "Daemon 注册失败：{{message}}",
@@ -2162,6 +2164,21 @@ const resources = {
             disconnect: "断开连接",
           },
         },
+        connection: {
+          title: "连接地址设置",
+          addressLabel: "连接地址",
+          save: "保存",
+          invalidUrl: "请输入合法的 http(s) 地址",
+          restoreDefault: "恢复默认地址",
+          restoring: "恢复中…",
+        },
+        connect: {
+          title: "连接 Multica",
+          body: "即将连接以下地址：",
+          confirm: "连接",
+          connecting: "连接中…",
+          cancelConnect: "取消连接",
+        },
       },
       conversation: {
         title: "会话",
@@ -2245,6 +2262,7 @@ const resources = {
             emptyTitle: "尚未连接 Multica",
             emptyDescription: "连接后可在此查看并领取 multica 远程任务。",
             connectButton: "连接 Multica",
+            connectionSettings: "连接地址设置",
             cancelTask: "取消任务",
             executeTask: "执行",
             addWorkspace: "添加工作空间",
@@ -3177,6 +3195,9 @@ const resources = {
         multica: {
           "not-configured":
             "Multica is not configured. Complete setup in Settings first.",
+          "invalid-address":
+            "Invalid connection address: must be a valid http(s) URL.",
+          "connect-cancelled": "Connection cancelled.",
           "auth-failed": "Multica authentication failed: {{message}}",
           "network-failed": "Multica network request failed: {{message}}",
           "register-failed": "Daemon registration failed: {{message}}",
@@ -4671,6 +4692,21 @@ const resources = {
             disconnect: "Disconnect",
           },
         },
+        connection: {
+          title: "Connection Address",
+          addressLabel: "Connection address",
+          save: "Save",
+          invalidUrl: "Enter a valid http(s) address",
+          restoreDefault: "Restore default address",
+          restoring: "Restoring…",
+        },
+        connect: {
+          title: "Connect Multica",
+          body: "About to connect to:",
+          confirm: "Connect",
+          connecting: "Connecting…",
+          cancelConnect: "Cancel connection",
+        },
       },
       conversation: {
         title: "Conversation",
@@ -4757,6 +4793,7 @@ const resources = {
             emptyTitle: "Not connected to Multica",
             emptyDescription: "Connect to view and claim multica remote tasks.",
             connectButton: "Connect Multica",
+            connectionSettings: "Connection address settings",
             cancelTask: "Cancel task",
             executeTask: "Run",
             addWorkspace: "Add Workspace",

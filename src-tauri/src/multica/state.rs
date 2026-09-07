@@ -47,6 +47,59 @@ pub fn shared_state() -> SharedMulticaState {
     Arc::new(Mutex::new(MulticaRuntimeState::default()))
 }
 
+/// 进行中 connect 的取消槽（M5-ay：连接弹窗「取消连接」）。
+///
+/// [`connect_multica`](crate::commands::connect_multica) 注册当前浏览器登录的
+/// `CancellationToken`，[`cancel_multica_connect`](crate::commands::cancel_multica_connect)
+/// 触发之；命令结束（任意路径）凭 [`Self::register`] 返回的登记 id 经 [`Self::clear_if_same`]
+/// 只清理自己的登记——迟到的清理不误删下一次连接（`CancellationToken` 无相等语义，以单调
+/// 登记id 认领）。UI 上连接弹窗互斥（单飞行），注册时若仍有旧 token（异常残留）先取消之。
+/// 独立于 [`MulticaRuntimeState`]：这是连接生命周期的一次性槽，不是任务运行态。
+#[derive(Default)]
+pub struct MulticaConnectCancel(Mutex<MulticaConnectCancelSlot>);
+
+/// 槽内状态：单调递增登记 id + 当前 token（id 凭据 =「clear 时只清自己的」判据）。
+#[derive(Default)]
+struct MulticaConnectCancelSlot {
+    next_id: u64,
+    current: Option<(u64, tokio_util::sync::CancellationToken)>,
+}
+
+impl MulticaConnectCancel {
+    /// 注册本次连接的取消 token，返回登记 id（结束时凭 id 清理）；槽内仍有旧 token
+    /// （异常残留）时先取消再覆盖。
+    pub fn register(&self, token: &tokio_util::sync::CancellationToken) -> u64 {
+        let mut guard = self.0.lock().expect("multica connect cancel slot poisoned");
+        guard.next_id += 1;
+        let id = guard.next_id;
+        if let Some((_, stale)) = guard.current.replace((id, token.clone())) {
+            stale.cancel();
+        }
+        id
+    }
+
+    /// 取消当前进行中的连接（若有）；无进行中连接时为幂等 no-op。
+    pub fn cancel_current(&self) {
+        if let Some((_, token)) = self
+            .0
+            .lock()
+            .expect("multica connect cancel slot poisoned")
+            .current
+            .as_ref()
+        {
+            token.cancel();
+        }
+    }
+
+    /// 命令结束时清理：仅当槽内仍是自己的登记（防迟到清理误删下一次连接的注册）。
+    pub fn clear_if_same(&self, id: u64) {
+        let mut guard = self.0.lock().expect("multica connect cancel slot poisoned");
+        if guard.current.as_ref().map(|(cur, _)| *cur) == Some(id) {
+            guard.current = None;
+        }
+    }
+}
+
 impl MulticaRuntimeState {
     /// 写入 workspace → runtime_id 映射（register 成功后调用）。
     pub fn set_runtime_id(&mut self, workspace_id: &str, runtime_id: &str) {
@@ -252,5 +305,55 @@ mod tests {
         assert_eq!(found.local_run_id, "run-9");
         assert_eq!(found.workspace_id, "ws-1");
         assert!(state.active_run("remote-x").is_none());
+    }
+
+    // ---- M5-ay：connect 取消槽（连接弹窗「取消连接」）----
+
+    #[test]
+    fn connect_cancel_cancel_current_cancels_registered_token_idempotently() {
+        let slot = MulticaConnectCancel::default();
+        let token = tokio_util::sync::CancellationToken::new();
+        slot.register(&token);
+
+        // 无 token 时 no-op；注册后 cancel_current 触发之（幂等：重复取消无副作用）。
+        MulticaConnectCancel::default().cancel_current();
+        assert!(!token.is_cancelled());
+        slot.cancel_current();
+        slot.cancel_current();
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn connect_cancel_clear_if_same_does_not_remove_next_registration() {
+        let slot = MulticaConnectCancel::default();
+        let first = tokio_util::sync::CancellationToken::new();
+        let first_id = slot.register(&first);
+
+        // 第一连接结束：清掉自己的登记 → 后续 cancel 不影响任何人。
+        slot.clear_if_same(first_id);
+        slot.cancel_current();
+        assert!(!first.is_cancelled());
+
+        // 第二连接注册后，第一连接凭旧 id 的迟到清理已是 no-op，不误删第二连接的登记。
+        let second = tokio_util::sync::CancellationToken::new();
+        slot.register(&second);
+        slot.clear_if_same(first_id);
+        slot.cancel_current();
+        assert!(second.is_cancelled());
+    }
+
+    #[test]
+    fn connect_cancel_register_replaces_and_cancels_stale_token() {
+        // 异常残留（前次连接未正常收尾）：新注册先取消旧 token，杜绝孤儿登录等待。
+        let slot = MulticaConnectCancel::default();
+        let stale = tokio_util::sync::CancellationToken::new();
+        let fresh = tokio_util::sync::CancellationToken::new();
+        slot.register(&stale);
+        slot.register(&fresh);
+
+        assert!(stale.is_cancelled(), "被顶替的旧 token 应立即取消");
+        assert!(!fresh.is_cancelled(), "新 token 不受影响");
+        slot.cancel_current();
+        assert!(fresh.is_cancelled());
     }
 }

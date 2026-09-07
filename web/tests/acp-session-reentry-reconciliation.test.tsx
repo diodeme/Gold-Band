@@ -490,8 +490,15 @@ describe('ACP session re-entry reconciliation', () => {
       vi.mocked(getAcpSession).mockResolvedValue(latest);
       if (finish === 'failure') vi.mocked(getAcpSession).mockRejectedValueOnce(new Error('Read failed'));
       if (finish !== 'reentry') {
+        const readsBeforeCollapse = vi.mocked(getAcpSession).mock.calls.length;
         await act(async () => {
           trigger!.click();
+          await new Promise((resolve) => window.setTimeout(resolve, 300));
+        });
+        expect(view.container.textContent).not.toContain(reply.content);
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(readsBeforeCollapse);
+        await act(async () => {
+          view.container.querySelector<HTMLButtonElement>('[data-acp-return-to-latest]')!.click();
           await new Promise((resolve) => window.setTimeout(resolve, 300));
         });
         if (finish === 'failure') {

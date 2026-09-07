@@ -85,6 +85,7 @@ export type ChatContainerRootProps = {
   initial?: StickToBottomProps["initial"]
   contextRef?: React.Ref<ChatContainerContext>
   onAtBottomChange?: (atBottom: boolean) => void
+  canResumeFollowingAfterDisclosure?: () => boolean
   onFollowIntentChange?: (
     following: boolean,
     cause: ChatContainerFollowIntentCause,
@@ -150,6 +151,25 @@ export function alignChatContainerViewportToBottomBeforePaint(
   viewport.scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight)
 }
 
+export function syncChatContainerFooterHeight(
+  footer: HTMLElement,
+  overhangs: Iterable<Element> = footer.querySelectorAll('[data-conversation-viewport-overhang]'),
+) {
+  const footerRect = footer.getBoundingClientRect()
+  let top = footerRect.top
+  for (const overhang of overhangs) {
+    const rect = overhang.getBoundingClientRect()
+    if (rect.height > 0) top = Math.min(top, rect.top)
+  }
+  const height = Math.max(0, footerRect.bottom - top)
+  const frame = footer.closest<HTMLElement>('[data-conversation-viewport-frame]')
+  const next = `${height}px`
+  if (frame && frame.style.getPropertyValue('--conversation-viewport-footer-height') !== next) {
+    frame.style.setProperty('--conversation-viewport-footer-height', next)
+  }
+  return height
+}
+
 function roundChatScrollDiagnostic(value: number | null | undefined) {
   return Number.isFinite(value) ? Math.round(Number(value) * 10) / 10 : null
 }
@@ -161,6 +181,7 @@ function ChatContainerRoot({
   initial = "instant",
   contextRef,
   onAtBottomChange,
+  canResumeFollowingAfterDisclosure,
   onFollowIntentChange,
   onViewportScroll,
   onViewportUserScroll,
@@ -178,6 +199,7 @@ function ChatContainerRoot({
         contextRef={contextRef}
         initialFollowing={initial !== false}
         onAtBottomChange={onAtBottomChange}
+        canResumeFollowingAfterDisclosure={canResumeFollowingAfterDisclosure}
         onFollowIntentChange={onFollowIntentChange}
         onViewportScroll={onViewportScroll}
         onViewportUserScroll={onViewportUserScroll}
@@ -213,12 +235,13 @@ function ChatContainerLifecycle({
   contextRef,
   initialFollowing,
   onAtBottomChange,
+  canResumeFollowingAfterDisclosure,
   onFollowIntentChange,
   onViewportScroll,
   onViewportUserScroll,
 }: Pick<
   ChatContainerRootProps,
-  "children" | "contextRef" | "onAtBottomChange" | "onFollowIntentChange" | "onViewportScroll" | "onViewportUserScroll"
+  "children" | "contextRef" | "onAtBottomChange" | "canResumeFollowingAfterDisclosure" | "onFollowIntentChange" | "onViewportScroll" | "onViewportUserScroll"
 > & { initialFollowing: boolean }) {
   const stickContext = useStickToBottomContext()
   const {
@@ -230,6 +253,8 @@ function ChatContainerLifecycle({
   const [isFollowing, setIsFollowing] = useState(initialFollowing)
   const onAtBottomChangeRef = useRef(onAtBottomChange)
   onAtBottomChangeRef.current = onAtBottomChange
+  const canResumeFollowingAfterDisclosureRef = useRef(canResumeFollowingAfterDisclosure)
+  canResumeFollowingAfterDisclosureRef.current = canResumeFollowingAfterDisclosure
   const isFollowingRef = useRef(initialFollowing)
   const pointerScrollingRef = useRef(false)
   const lastScrollTopRef = useRef<number | null>(null)
@@ -244,7 +269,7 @@ function ChatContainerLifecycle({
   const recoveryFrameRef = useRef<number | null>(null)
   const nextContentExpansionTokenRef = useRef(0)
   const contentExpansionTokensRef = useRef<Set<number> | null>(null)
-  const contentExpansionResumeFollowingRef = useRef(false)
+  const contentExpansionPreviousFollowIntentRef = useRef(false)
   const contentExpansionRestoreFrameRef = useRef<number | null>(null)
   const contentAnchorCompensationFrameRef = useRef<number | null>(null)
   const contentAnchorCompensationActiveRef = useRef(false)
@@ -438,7 +463,7 @@ function ChatContainerLifecycle({
         cancelAnimationFrame(contentExpansionRestoreFrameRef.current)
         contentExpansionRestoreFrameRef.current = null
       } else {
-        contentExpansionResumeFollowingRef.current = isFollowingRef.current
+        contentExpansionPreviousFollowIntentRef.current = isFollowingRef.current
       }
       expansionTokens = new Set<number>()
       contentExpansionTokensRef.current = expansionTokens
@@ -453,18 +478,22 @@ function ChatContainerLifecycle({
 
   const endContentExpansion = useCallback((token: number | null) => {
     const expansionTokens = contentExpansionTokensRef.current
-    if (token === null || !expansionTokens?.delete(token)) return false
+    if (token === null || !scrollRef.current || !expansionTokens?.delete(token)) return false
     if (expansionTokens.size > 0) return false
     contentExpansionTokensRef.current = null
-    if (!contentExpansionResumeFollowingRef.current) return false
     contentExpansionRestoreFrameRef.current = requestAnimationFrame(() => {
       contentExpansionRestoreFrameRef.current = null
       if (contentExpansionTokensRef.current || isFollowingRef.current) return
+      const viewport = scrollRef.current
+      if (!viewport || !isChatContainerViewportAtBottom(viewport)
+        || canResumeFollowingAfterDisclosureRef.current?.() === false) {
+        return
+      }
       updateFollowIntent(true, "content-expansion-end")
       void libraryScrollToBottom({ animation: "instant" })
     })
     return true
-  }, [libraryScrollToBottom, updateFollowIntent])
+  }, [libraryScrollToBottom, scrollRef, updateFollowIntent])
 
   const compensateContentAnchor = useCallback((delta: number) => {
     const viewport = scrollRef.current
@@ -487,17 +516,19 @@ function ChatContainerLifecycle({
   const positionContentExpansion = useCallback((token: number | null, target: HTMLElement) => {
     const viewport = scrollRef.current
     if (token === null || !contentExpansionTokensRef.current?.has(token) || !viewport) return false
-    const footerHeight = Number.parseFloat(
-      getComputedStyle(viewport).getPropertyValue("--conversation-viewport-footer-height"),
-    ) || 0
-    return compensateContentAnchor(
+    const footer = viewport.parentElement?.querySelector<HTMLElement>(
+      ':scope > [data-conversation-viewport-footer]',
+    )
+    // A disclosure can commit before the footer's next ResizeObserver frame.
+    const footerHeight = footer ? syncChatContainerFooterHeight(footer) : 0
+    return compensateContentAnchor(Math.max(0,
       target.getBoundingClientRect().bottom
         - (viewport.getBoundingClientRect().top + viewport.clientHeight - footerHeight),
-    )
+    ))
   }, [compensateContentAnchor, scrollRef])
 
   const getContentExpansionFollowIntent = useCallback(() => (
-    contentExpansionTokensRef.current ? contentExpansionResumeFollowingRef.current : null
+    contentExpansionTokensRef.current ? contentExpansionPreviousFollowIntentRef.current : null
   ), [])
 
   const contentExpansionController = useMemo<ChatContainerContentExpansionController>(
@@ -634,7 +665,7 @@ function ChatContainerLifecycle({
         return
       }
       if (
-        contentExpansionTokensRef.current &&
+        (contentExpansionTokensRef.current || contentExpansionRestoreFrameRef.current !== null) &&
         pointerScrollingRef.current &&
         previousScrollTop !== null &&
         currentScrollTop !== previousScrollTop
@@ -683,7 +714,7 @@ function ChatContainerLifecycle({
       } else {
         recordScrollTrace("wheel", createWheelDetails)
       }
-      if (contentExpansionTokensRef.current && event.deltaY !== 0) {
+      if ((contentExpansionTokensRef.current || contentExpansionRestoreFrameRef.current !== null) && event.deltaY !== 0) {
         stopScrollForCause("content-expansion-user-scroll")
       } else if (
         event.deltaY < 0 &&
@@ -711,7 +742,7 @@ function ChatContainerLifecycle({
         recordScrollTrace("key-down", createKeyDetails)
       }
       if (
-        contentExpansionTokensRef.current &&
+        (contentExpansionTokensRef.current || contentExpansionRestoreFrameRef.current !== null) &&
         CHAT_CONTAINER_SCROLL_KEYS.has(event.key)
       ) {
         stopScrollForCause("content-expansion-user-scroll")
@@ -791,7 +822,12 @@ function ChatContainerLifecycle({
         heightDelta: roundChatScrollDiagnostic(heightDelta),
       }))
       scheduleFollowRecovery()
-      if (!isFollowingRef.current) onAtBottomChangeRef.current?.(false)
+      if (!isFollowingRef.current) {
+        // The library re-locks on shrinking content within its near-bottom
+        // threshold. Geometry alone must not override the wrapper's intent.
+        libraryStopScroll()
+        onAtBottomChangeRef.current?.(false)
+      }
       if (isAcpStreamingDiagnosticsEnabled()) {
         const durationMs = performance.now() - startedAt
         const diagnostic = layoutDiagnosticRef.current
@@ -842,6 +878,7 @@ function ChatContainerLifecycle({
     scheduleFollowRecovery,
     scrollRef,
     updateFollowIntent,
+    libraryStopScroll,
   ])
 
   useEffect(() => () => {

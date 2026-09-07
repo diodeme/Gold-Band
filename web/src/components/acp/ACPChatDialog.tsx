@@ -2101,6 +2101,10 @@ export function ACPChatDialog(
     pendingLatestLayoutCommitRef.current = null;
     setStreamingMarkdownItemKey(null);
     setCanvasMode("chat");
+    if (restoredViewportAtBottom && storedBranchViewState?.hasNewer
+      && storedLoadedEventWindow.sessionId != null) {
+      requestCanonicalHeadRecoveryRef.current?.(true);
+    }
   }, [commitHasNewerEvents, commitLoadedEventWindow, commitReturnToLatestPending, commitShowReturnToLatest, effectiveLoadedEventBufferLimit, eventWindowKey, sessionKey]);
 
   useEffect(() => {
@@ -3204,6 +3208,12 @@ export function ACPChatDialog(
       viewportManualIntentRef.current = true;
     }
   }, []);
+
+  const canResumeFollowingAfterDisclosure = useCallback(() => (
+    !hasNewerEventsRef.current
+    && paginationDirectionRef.current === null
+    && !canonicalHeadRecoveryPendingRef.current
+  ), []);
 
   const handleAtBottomChange = useCallback((viewportAtBottom: boolean) => {
     viewportAtBottomRef.current = viewportAtBottom;
@@ -6046,6 +6056,7 @@ export function ACPChatDialog(
             contextRef={chatContainerContextRef}
             initialFollowing={shouldInitiallyFollowAcpBranch(restoredBranchViewState)}
             onAtBottomChange={handleAtBottomChange}
+            canResumeFollowingAfterDisclosure={canResumeFollowingAfterDisclosure}
             onFollowIntentChange={handleFollowIntentChange}
             onViewportScroll={handleScroll}
             onViewportUserScroll={handleLiveStreamUserInteraction}
@@ -6174,18 +6185,23 @@ export function ACPChatDialog(
               data-acp-conversation-rail="composer"
               style={ACP_SESSION_COMPOSER_BORDER_STYLE}
             >
-              <AcpUsagePanel
-                usage={effective?.usage}
-                processingLabel={showComposerStatus ? composerStatusLabel : null}
-                sessionSeconds={composerSessionSeconds}
-                worktreePath={worktreePath}
-                branchProjectId={showBranchInfo ? projectId : null}
-                managedWorktreeBranch={effective?.worktreeBranch ?? managedWorktreeBranch}
-                className={cn(
-                  ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
-                  "absolute left-0 top-0 z-20 w-max max-w-[calc(100%-0.625rem)] -translate-y-full flex-nowrap gap-x-2 rounded-t-md border-b-0 bg-card py-0.5 pl-2.5 pr-3 !shadow-none after:pointer-events-none after:absolute after:inset-x-0 after:bottom-[calc(-1*var(--acp-session-composer-border-width))] after:h-[var(--acp-session-composer-border-width)] after:bg-card after:content-['']",
-                )}
-              />
+              <div
+                data-conversation-viewport-overhang="true"
+                className="absolute left-0 top-0 z-20 w-full -translate-y-full"
+              >
+                <AcpUsagePanel
+                  usage={effective?.usage}
+                  processingLabel={showComposerStatus ? composerStatusLabel : null}
+                  sessionSeconds={composerSessionSeconds}
+                  worktreePath={worktreePath}
+                  branchProjectId={showBranchInfo ? projectId : null}
+                  managedWorktreeBranch={effective?.worktreeBranch ?? managedWorktreeBranch}
+                  className={cn(
+                    ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
+                    "relative w-max max-w-[calc(100%-0.625rem)] flex-nowrap gap-x-2 rounded-t-md border-b-0 bg-card py-0.5 pl-2.5 pr-3 !shadow-none after:pointer-events-none after:absolute after:inset-x-0 after:bottom-[calc(-1*var(--acp-session-composer-border-width))] after:h-[var(--acp-session-composer-border-width)] after:bg-card after:content-['']",
+                  )}
+                />
+              </div>
             {!readOnly && showManualCheckActions ? (
               <AcpManualCheckPanel
                 submitting={manualCheckSubmitting}
@@ -7700,7 +7716,6 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
   openRef.current = open;
   currentRequestScopeRef.current = requestScopeKey;
   currentEventRef.current = event;
-  const triggerRef = useRef<HTMLButtonElement>(null);
   const collapseRef = useRef<HTMLButtonElement>(null);
   const pendingExpansionPositionRef = useRef(false);
   const detailListRef = useRef<HTMLDivElement>(null);
@@ -7883,24 +7898,16 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
     openRef.current = next;
     pendingExpansionPositionRef.current = next;
     if (!next) trailingDetailRequestRef.current = null;
-    let restoringBottom = false;
     if (next) {
       disclosureTokenRef.current = contentExpansion?.beginContentExpansion() ?? null;
     } else {
       const token = disclosureTokenRef.current;
       disclosureTokenRef.current = null;
-      restoringBottom = contentExpansion?.endContentExpansion(token) ?? false;
-      restoringBottom ||= contentExpansion?.getContentExpansionFollowIntent() === true;
+      contentExpansion?.endContentExpansion(token);
     }
     setOpen(next);
     if (next && !activeDetailWindow.detailLoaded && event.detailAvailable) {
       void loadDetail(null);
-    }
-    if (!next && !restoringBottom) {
-      requestAnimationFrame(() => {
-        if (!mountedRef.current || openRef.current) return;
-        triggerRef.current?.scrollIntoView?.({ block: "nearest" });
-      });
     }
   };
   return (
@@ -7913,7 +7920,6 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
       >
         <CollapsibleTrigger asChild>
           <Button
-            ref={triggerRef}
             variant="ghost"
             className="h-auto min-h-7 w-full min-w-0 justify-start gap-1.5 rounded-none bg-transparent px-1 py-0.5 text-left font-normal text-muted-foreground hover:bg-transparent hover:text-foreground focus-visible:bg-transparent focus-visible:text-foreground data-[state=open]:bg-transparent data-[state=open]:text-foreground"
           >

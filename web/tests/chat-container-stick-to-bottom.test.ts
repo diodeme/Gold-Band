@@ -21,6 +21,7 @@ class ControlledResizeObserver implements ResizeObserver {
 
   readonly callback: ResizeObserverCallback;
   element: Element | null = null;
+  elements = new Set<Element>();
 
   constructor(callback: ResizeObserverCallback) {
     this.callback = callback;
@@ -29,14 +30,17 @@ class ControlledResizeObserver implements ResizeObserver {
 
   disconnect() {
     this.element = null;
+    this.elements.clear();
   }
 
   observe(target: Element) {
     this.element = target;
+    this.elements.add(target);
   }
 
   unobserve(target: Element) {
     if (this.element === target) this.element = null;
+    this.elements.delete(target);
   }
 
   emitHeight(height: number) {
@@ -85,7 +89,9 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
         React.createElement(
           ConversationViewportFooter,
           { key: 'footer' },
-          React.createElement('div', { 'data-testid': 'dynamic-footer' }, 'composer'),
+          React.createElement('div', { 'data-testid': 'dynamic-footer' },
+            React.createElement('div', { 'data-conversation-viewport-overhang': true }, 'usage'),
+            'composer'),
         ),
       ],
     );
@@ -110,10 +116,48 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
       );
 
       const footerObserver = ControlledResizeObserver.instances.find(
-        (observer) => observer.element === footerLayer,
+        (observer) => observer.elements.has(footerLayer!),
       );
       expect(footerObserver).toBeDefined();
-      await act(async () => footerObserver?.emitHeight(96));
+      const badge = footer!.querySelector<HTMLElement>('[data-conversation-viewport-overhang]')!;
+      let badgeHeight = 24;
+      let footerHeight = 96;
+      vi.spyOn(footerLayer!, 'getBoundingClientRect').mockImplementation(() => (
+        { top: 400 - footerHeight, bottom: 400, height: footerHeight } as DOMRect
+      ));
+      vi.spyOn(badge, 'getBoundingClientRect').mockImplementation(() => (
+        { top: 400 - footerHeight - badgeHeight, bottom: 400 - footerHeight, height: badgeHeight } as DOMRect
+      ));
+      let scrollTop = 100;
+      const availableHeight = () => 600 + Number.parseFloat(
+        frame!.style.getPropertyValue('--conversation-viewport-footer-height'),
+      );
+      Object.defineProperties(viewport, {
+        clientHeight: { configurable: true, value: 400 },
+        scrollHeight: { configurable: true, get: availableHeight },
+        scrollTop: { configurable: true, get: () => scrollTop, set: (value: number) => {
+          scrollTop = Math.min(value, availableHeight() - 400);
+        } },
+      });
+      vi.spyOn(viewport!, 'getBoundingClientRect').mockReturnValue({ top: 0, bottom: 400 } as DOMRect);
+      const target = container.querySelector<HTMLElement>('[data-testid="streaming-content"]')!;
+      vi.spyOn(target, 'getBoundingClientRect').mockReturnValue({ bottom: 500 } as DOMRect);
+      await act(async () => {
+        const token = contextRef.current!.beginContentExpansion();
+        contextRef.current!.positionContentExpansion(token, target);
+      });
+      // Geometry is authoritative even before the footer observer publishes padding.
+      expect(viewport!.scrollTop).toBe(320);
+      await act(async () => { footerObserver?.emitHeight(96); await waitForScrollFrames(); });
+      expect(frame?.style.getPropertyValue('--conversation-viewport-footer-height')).toBe('120px');
+      expect(footerObserver?.elements.has(badge)).toBe(true);
+      footerHeight = 160;
+      badgeHeight = 32;
+      await act(async () => { footerObserver?.emitHeight(32); await waitForScrollFrames(); });
+      expect(frame?.style.getPropertyValue('--conversation-viewport-footer-height')).toBe('192px');
+      badgeHeight = 0;
+      footerHeight = 96;
+      await act(async () => { footerObserver?.emitHeight(0); await waitForScrollFrames(); });
       expect(frame?.style.getPropertyValue('--conversation-viewport-footer-height')).toBe('96px');
 
       await act(async () => root.render(view('second streaming chunk')));
@@ -529,7 +573,12 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
     }
   });
 
-  it('lets bottom content expand downward and restores following after it collapses', async () => {
+  it.each([
+    { newReply: false, userScroll: false, initiallyFollowing: true },
+    { newReply: true, userScroll: false, initiallyFollowing: true },
+    { newReply: false, userScroll: true, initiallyFollowing: true },
+    { newReply: false, userScroll: false, initiallyFollowing: false },
+  ])('resumes after collapse only if still at bottom: %j', async ({ newReply, userScroll, initiallyFollowing }) => {
     vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (
       window.setTimeout(() => callback(performance.now()), 0)
@@ -546,7 +595,7 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
         root.render(
           React.createElement(
             ChatContainerRoot,
-            { resize: 'instant', initial: 'instant', contextRef },
+            { resize: 'instant', initial: initiallyFollowing ? 'instant' : false, contextRef },
             React.createElement(
               ChatContainerContent,
               { scrollClassName: 'overflow-y-auto' },
@@ -583,21 +632,22 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
       expect(scrollTop).toBe(139);
       expect(contextRef.current?.isAtBottom).toBe(false);
 
-      contentHeight = 240;
+      contentHeight = newReply ? 300 : 240;
       await act(async () => {
         expect(contextRef.current?.endContentExpansion(expansionToken)).toBe(true);
+        if (userScroll) viewport?.dispatchEvent(new WheelEvent('wheel', { deltaY: 1 }));
         emitObservedHeight(contentHeight);
         await waitForScrollFrames();
       });
       expect(scrollTop).toBe(139);
-      expect(contextRef.current?.isAtBottom).toBe(true);
+      expect(contextRef.current?.isAtBottom).toBe(!newReply && !userScroll);
 
       contentHeight = 300;
       await act(async () => {
         emitObservedHeight(contentHeight);
         await waitForScrollFrames();
       });
-      expect(scrollTop).toBe(199);
+      expect(scrollTop).toBe(newReply || userScroll ? 139 : 199);
     } finally {
       await act(async () => root.unmount());
     }

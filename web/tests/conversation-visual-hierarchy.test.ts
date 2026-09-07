@@ -55,7 +55,9 @@ describe('conversation visual hierarchy contract', () => {
     expect(composerRailClassName).not.toContain('[filter:drop-shadow(var(--gb-elevation-overlay))]');
     expect(composerRailClassName).not.toContain('--gb-material-edge-shadow');
     expect(dialog).not.toContain('focus-within:[filter:');
-    expect(dialog).toContain('absolute left-0 top-0 z-20 w-max max-w-[calc(100%-0.625rem)] -translate-y-full');
+    expect(dialog).toContain('data-conversation-viewport-overhang="true"');
+    expect(dialog).toContain('absolute left-0 top-0 z-20 w-full -translate-y-full');
+    expect(dialog).toContain('relative w-max max-w-[calc(100%-0.625rem)]');
     expect(dialog).toContain('rounded-t-md border-b-0 bg-card py-0.5 pl-2.5 pr-3 !shadow-none');
     expect(dialog).toContain('style={ACP_SESSION_COMPOSER_BORDER_STYLE}');
     expect(dialog).toContain("after:inset-x-0 after:bottom-[calc(-1*var(--acp-session-composer-border-width))] after:h-[var(--acp-session-composer-border-width)] after:bg-card after:content-['']");

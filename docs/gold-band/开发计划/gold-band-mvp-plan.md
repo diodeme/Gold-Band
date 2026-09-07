@@ -1,5 +1,11 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-07：IM lifecycle subscriber 启动 readiness
+
+- 根因与实现：IM 异步 bootstrap 的方向正确，但 runtime 以空投递目标构造后立即注册 lifecycle subscriber，订阅早于异步 `reconfigure` 完成时，新事件会把空目标永久固化进 projection job。桌面 setup 现以 settings 为唯一权威源，先同步建立 projection targets，成功后才安装 runtime、启动后台任务并注册订阅；读取失败只禁用本次 IM 初始化并记录错误，不阻断桌面主体。连接、凭据、maintenance 与后续重配置仍保持异步。
+- 验收固化：desktop IM runtime 接口测试直接固定“初始空目标 -> 按已有企业微信 binding 建立目标”的启动契约；desktop IM runtime 18/18、core IM 87/87、`cargo check -p gold-band-desktop -j 1` 通过，仅保留既有 dead-code warning，格式与差异检查通过。
+- 性能与过度设计评审：复用现有 settings、`projection_targets`、`RwLock` 与有界 MPSC，不新增 readiness 状态机、持久字段、事件回放、缓存、队列或兼容路径。启动只增加一次小型 settings 读取与 `O(C)` 投影，当前 `C=1`；不涉及网络 I/O、历史扫描、全量加载、长锁或运行期热路径，无需专项 benchmark。
+
 ## 2026-08-26：AI-DYNAMIC PostTurn 分发规划后置
 
 - 根因与实现：PostTurn 两阶段设计正确，但 AI-DYNAMIC system prompt 渲染把现有 `OutputEmissionMode` 压缩为 `has_output_contract` 布尔值，导致 `PostTurnProjection` worker / acceptance 与没有控制协议的 merge 同时落入“执行型节点”分支，agent 无法得知正常结束业务 turn 后仍可由 hidden finalize 决定继续分发。现让 AI-DYNAMIC system prompt 直接消费既有 emission mode：InlineControl 保持当前 turn 内联控制；PostTurnProjection 明确 agent 可以直接完成任务，或在判断应继续分发时立即停止并自然结束，且不得在业务 turn 提前拆分任务、选择 Agent 或规划/执行后继节点；只有 hidden finalize 提供完整 artifact 协议与路由上下文后才规划并输出控制结果；无 emission mode 的 merge 保持纯执行语义。continue 规则同步收窄为处理当前节点任务而非继续来源节点旧任务。
@@ -1618,7 +1624,7 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 桌面与 IM 共用 `InterventionCommandService`；Runtime canonical state、完整 locator、request identity、owner、allowed actions、expiry 和 expected state 保持唯一权威来源，并由接口测试固定 first-writer-wins。
 - [x] IM outbox 使用 `Intervention` / `Information` typed payload，每个 channel + destination 分别投递；设置页提供 permission、elicitation、manual check、Run success、Run failure、ACP turn finished 六类通知开关和安静默认值。scheduled occurrence 的 completion、failure、attention 与 missed 不进入 IM outbox，继续使用桌面原生通知。
 - [ ] 用户级 `core.db` 的有界 outbox、入站幂等和消息绑定、OS credential store、Settings schema v12、企业微信渐进式设置 UI 与本地接口回归已完成；v11 -> v12 会清理四个已退役的 scheduled IM 偏好键，当前版本继续严格拒绝这些键。设置命令已按启停、通知、更换账号、真实重连和删除拆分，旧通用保存/断开入口已删除；binding 只在落盘并重建 target 后发布。剩余真实平台、Windows/macOS/Linux 凭据库与发布构建矩阵验收。
-- [x] 企业微信配置入口已改为官方 CLI 同源扫码授权：安装配置暂用 `source=halo`，后端有界轮询并直接写 keyring，前端不接收 Secret；单聊缺失 `chatid` 与同机器人连接冲突已按官方协议语义修正。临时 source 的跨企业适用范围仍需真实公司账号验收。
+- [x] 企业微信配置入口已改为官方 CLI 同源扫码授权：安装配置的产品来源标识已明确为 `source=maling`，后端有界轮询并直接写 keyring，前端不接收 Secret；单聊缺失 `chatid` 与同机器人连接冲突已按官方协议语义修正。`source=maling` 的跨企业适用范围仍需真实公司账号验收。
 - [x] ACP permission 的 IM request identity 使用接收 JSON-RPC 时固化到 pending state 与 typed `raw.requestId` 的原始 ID，timeline `permission-<id>` 仅作展示 identity，不做前缀解析；elicitation 继续使用 Gold Band 生成的 canonical ID。`askUserQuestion` 从 canonical pending schema typed 投影 scalar/array/free-text 全部问题与选项，仅单题单选生成 `{ fieldName: value }` 动作；permission 按钮按 ACP option 内的 typed `kind` 覆盖四类 canonical 语义与 Claude ExitPlanMode 模式选项，提交仍返回原始 `optionId`。
 - [x] permission IM 展示补齐结构化摘要：从 pending params 投影权限标题、正文、工具标题、最多 3 条路径与关键 scalar 参数，并合并任务/节点字段；企微权限卡把标题与描述提升到 `main_title`，完整描述进入 `sub_title_text`，`permissionTitle` 不再占用横向字段。企微远程最多渲染 2 个 typed 优先动作，超过容量时优先保留 `reject_once/allow_once`，其余选择引导桌面端处理；未知 kind、重复且不可区分选项不提交模糊授权。
 - [x] 企微主动推送协议已按官方 `@wecom/aibot-node-sdk` 修正为 `chatid + typed payload`，删除未定义的 `chat_type`；ACK 只依据顶层 `errcode`，平台未返回 `msgid` 时 delivery 仍可靠标记 sent 但不写伪 binding。Run success、permission 与 elicitation 的真实重新接收仍需重启客户端验证。

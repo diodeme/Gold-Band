@@ -56,7 +56,7 @@
 
 当前工具链基线是 Rust/Cargo 1.95。所有新增 crate 必须通过 `cargo tree` 检查重复 TLS/runtime 依赖、许可证和目标平台构建。企微 vote 协议闸门已用本机真实账号完成手机端/PC 端受控 PoC；微信能力仍不得把 fixture/接口测试记录成真实平台验收。
 
-企业微信扫码授权采用官方 `@wecom/cli` 已公开的 device-flow：`generate` 取得 `scode/auth_url`，每 3 秒查询 `query_result`，5 分钟到期。`source` 是安装级产品来源标识，写入 `configs/app-config.toml` 的 `[im.wecomScanAuth]`；当前按用户明确决定临时设置为 `halo`。官方资料未找到该标识的公开申请/分配规则，因此真实企业范围能力仍是平台验收阻塞项，不把当前可生成二维码等同于正式授权资格。
+企业微信扫码授权采用官方 `@wecom/cli` 已公开的 device-flow：`generate` 取得 `scode/auth_url`，每 3 秒查询 `query_result`，5 分钟到期。`source` 是安装级产品来源标识，写入 `configs/app-config.toml` 的 `[im.wecomScanAuth]`；当前按用户明确决定设置为 `maling`。真实企业范围能力仍是平台验收项，不把当前可生成二维码等同于跨企业授权已验收通过。
 
 ## 4. 模块布局
 
@@ -588,7 +588,7 @@ Rust 定义 typed `ImErrorCode`，Tauri 和 connector 只传 code、retryable �
 - [x] 完成候选 crate 源码、许可证、维护状态、Rust 1.95 和 TLS/runtime 审计。
 - [x] 确认微信延期，未把 `weixin-agent` 或官方 npm 包加入生产依赖。
 - [x] 把依赖决定和精确版本更新到本计划，不把 PoC 代码直接带入生产模块。
-- [x] 核对企业微信官方 CLI 扫码协议、Halo 参考实现与实际 `generate` 响应；确认 `source=halo` 可生成短期二维码，但未宣称跨企业真实授权通过。
+- [x] 核对企业微信官方 CLI 扫码协议、Halo 参考实现与实际 `generate` 响应；安装级产品来源标识已明确为 `source=maling`，跨企业真实授权仍需独立验收。
 
 退出条件：企业微信有明确 SDK/传输实现决策；无法满足主动投递的平台能力在产品文档中降级，不通过非官方逆向方案补齐。
 
@@ -835,6 +835,8 @@ npm run web:build
 - 本轮回归：canonical notification identity 22/22、`InterventionCommandService` 5/5、IM lifecycle projection 4/4、桌面通知 action/owner 12/12 通过；`cargo check -p gold-band-desktop -j 1` 与 `git diff --check` 通过，仅保留既有 dead-code 与 LF/CRLF 提示。真实企微尚未用修复后新 canonical event 验收，不宣称平台接收通过。
 - Connector terminal 契约修复：runtime 不再忽略 `connect()` 结果或 abort 128 容量事件转发器；先排空当前 generation 的事件，再将 terminal error 统一投影为 `Disconnected`。accepted 连接事件只记录 channel、generation、稳定错误码、retryable 与平台数字码，凭据、Bot/目标 identity、payload 和平台文案均不进入日志。
 - Connector terminal error 接口回归 1/1 通过，固定 terminal `Disconnected` 保留当前 generation、稳定错误码与 retryable 语义，正常退出不生成伪错误事件。
+- 启动 readiness 修复：桌面 setup 先读取现有 settings，并通过 runtime 的统一目标配置接口建立 projection targets；只有该步骤成功后才安装 runtime、启动异步 bootstrap 并注册 lifecycle subscriber。这样启动瞬间到达的 canonical lifecycle event 不会把空目标固化进 job；配置读取失败时跳过 IM runtime/subscriber 并记录错误，不阻断桌面主体。凭据、maintenance、连接和后续重配置仍异步执行。
+- 启动目标接口回归固定 runtime 从空目标初始化为现有企业微信 binding 对应目标；desktop IM runtime 18/18、core IM 87/87、`cargo check -p gold-band-desktop -j 1` 通过，仅保留既有 dead-code warning。不新增状态机、回放、缓存或队列。启动只增加一次小型 settings 读取与 `O(C)` 目标投影，当前 `C=1`，不增加网络 I/O、历史扫描、持锁等待或运行期热路径成本。
 
 ## 21. 官方参考
 

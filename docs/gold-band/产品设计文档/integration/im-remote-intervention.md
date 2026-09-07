@@ -101,7 +101,7 @@ ImConnectionManager ------ platform connector ------ IM platform
 7. 领域提交成功后使用同一回调的 `req_id` 与原卡 delivery identity 更新卡片为最终结果；显式返回的 `event.template_card_event.task_id` 必须等于该 delivery identity。button 回调省略可选 task 时可从 `event_key` 恢复原卡 identity；vote 回调的 task 为必填契约。若请求已被桌面端或另一消息处理，则显示“已处理”。发送 ACK 是否返回平台消息 ID 不影响这条回调更新路径。
 8. IM outbox 固化的 `expected_state` 只包含决策语义：完整 locator、canonical request、原始 params/request schema、创建时间与完整允许动作。`timelineIdentity` 属于 Runtime 展示投影元数据，可在 outbox snapshot 之后绑定，不参与 CAS 指纹；ManualCheck 详情中的模型输出同样是投影快照，不参与 CAS 指纹。企微三类干预终态都必须保持原 `card_type`、原 `task_id`、原 `submit_button.key`，显式禁用协议支持禁用的 `checkbox` / `select_list` 并标记最终选择；官方 `submit_button` 类型没有 `disable` 字段，不得发送无效字段，也不得把可交互卡降级为只有标题的 `text_notice`。平台仍允许再次提交时，由入站 canonical event 幂等保证不重复执行 Runtime。
 
-企业微信扫码协议复用官方 CLI 的 `/ai/qc/generate` 与 `/ai/qc/query_result`，3 秒轮询、5 分钟到期；安装级 `source` 位于 `configs/app-config.toml`，当前经用户批准临时为 `halo`，在取得 Gold Band 正式来源标识前不得宣称跨企业授权已完成真实验收。企业微信心跳默认 30 秒；卡片回调的协议响应目标小于 5 秒，领域处理不得阻塞回调确认。同一机器人被其他客户端的新长连接替换时进入稳定连接冲突错误，不持续抢占重连。
+企业微信扫码协议复用官方 CLI 的 `/ai/qc/generate` 与 `/ai/qc/query_result`，3 秒轮询、5 分钟到期；安装级 `source` 位于 `configs/app-config.toml`，当前明确为 `maling`。跨企业授权能力仍须使用真实企业账号完成验收，不得仅根据可生成二维码宣称验收通过。企业微信心跳默认 30 秒；卡片回调的协议响应目标小于 5 秒，领域处理不得阻塞回调确认。同一机器人被其他客户端的新长连接替换时进入稳定连接冲突错误，不持续抢占重连。
 
 主动推送严格对齐官方 `@wecom/aibot-node-sdk` 的 `aibot_send_msg` 帧：body 只包含 `chatid + typed message payload`，不得附加未定义的 `chat_type`。WebSocket 帧分发以是否携带 `cmd` 为第一契约：带 `cmd` 的帧是事件或业务请求，即使 `headers.req_id` 与 pending request 相同也不得消费回执；只有无 `cmd` 的帧才允许按 `req_id` 匹配 ACK。投递成功以存在且为数字的回执顶层 `errcode == 0` 为准，缺失或错误层级不得默认成功；官方回执未承诺 `msgid`，因此 ACK 可将 delivery 标记为 sent，但只有平台真实返回消息 ID 时才写 `im_delivery_bindings`，禁止构造伪平台消息 ID。未知平台错误只在脱敏诊断中保留数字码，对客和 SQLite outbox 仍只保存稳定错误码。
 
@@ -303,6 +303,7 @@ UI 不展示协议地址、心跳、轮询、数据库或 token 等实现细节�
 ## 10. 离线、重试与容量
 
 - 生命周期订阅者只执行 O(1) 转换与有界入队，不执行网络 I/O。
+- 桌面启动必须先从现有 settings 同步构建 IM 投递目标快照，再启动后台 bootstrap 并注册 lifecycle subscriber；后台凭据读取、maintenance、连接和后续重配置仍保持异步。初始 settings 读取或目标构建失败时不得注册携带空目标的订阅者，也不得阻断桌面主体启动，错误通过启动日志暴露。
 - active outbox 默认上限 1,000 条；达到上限时先小批量清理已过期/终态记录，仍满则拒绝新的远程投递并记录结构化错误与桌面提醒，不得淘汰尚未处理的 active 干预，也不能无界增长。
 - 未发送干预在领域请求过期后直接标记 `expired`，不得迟到投递为可操作消息。
 - 网络错误使用带 jitter 的指数退避，1 秒起步、60 秒封顶并持续重试，直到连接成功、generation 被取消或出现鉴权失败、连接冲突、配置错误等永久错误；成功建立连接后重置退避。`ReconnectScheduled` 表示重试循环仍存活，`ConnectionFailed` 只表示终态，UI 不得根据错误码猜测二者。
@@ -413,6 +414,8 @@ Connector task 结束时必须先排空其有界事件队列，再把返回错�
 2026-09-04 可靠性复核确认七处问题均属于已有设计正确但生产编排或消费契约未闭环：repository 已有租约恢复和 retention API 却没有生产调度；manager 已按 generation 拒绝旧事件但 connector sender 没有相同 ownership；删除跨三个存储却仍按一次性顺序执行；重配置循环把单 channel 故障提升为全局失败；前端仍用 transport requestId 覆盖 occurrence identity；有界投影队列满载时回退到 publisher 同步磁盘 I/O。修复分别补齐 claim revision fencing、maintenance worker、generation-owned sender、durable cleanup journal、逐 channel 错误收敛、canonical event key 和 O(1) 满载诊断，不修改 Runtime 审批模型或增加旁路发送。
 
 2026-09-07 四项 IM 修复分别补齐授权 admission、坏行隔离、请求 deadline 所有权和连接生命周期契约。历史 delivery 的 actor 只是发送快照，当前 durable binding 才是执行授权；outbox 的问题来自 claim 提交早于 typed decode；pending 泄漏来自外层 timeout 与 session map 所有权分离；错误 UI 来自 retry progress 与 terminal failure 共用 `Disconnected`。修复复用 settings、dead letter、Tokio deadline、generation 和 connection manager，不修改 Runtime 审批模型。
+
+2026-09-07 启动期通知丢失属于正确异步 bootstrap 设计下的 readiness 边界缺失：runtime 初始目标为空，lifecycle subscriber 却在异步 `reconfigure` 完成前开始接收事件，导致事件把空目标固化进投影 job。修复以现有 settings 为权威源，在订阅前同步建立目标快照；异步 bootstrap 继续负责连接、维护和再次读取最新配置，不新增 readiness 状态机、事件回放或第二套目标事实源。
 
 ### 13.2 过度设计评审
 

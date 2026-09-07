@@ -213,9 +213,26 @@ fn run() -> anyhow::Result<()> {
             if let Ok(runtime_app) = state.app() {
                 match im_runtime::DesktopImRuntime::new(runtime_app.paths.core_db_path()) {
                     Ok(im_runtime) => {
-                        state.install_im_runtime(im_runtime.clone())?;
-                        im_runtime.start(app.handle().clone());
-                        im_runtime.register_lifecycle_subscriber(&runtime_app, app.handle());
+                        match runtime_app.load_settings().and_then(|settings| {
+                            im_runtime
+                                .configure_projection_targets(&settings.im_integrations)
+                                .map(|target_count| {
+                                    tracing::info!(
+                                        target_count,
+                                        "initial IM projection targets configured"
+                                    );
+                                })
+                        }) {
+                            Ok(()) => {
+                                state.install_im_runtime(im_runtime.clone())?;
+                                im_runtime.start(app.handle().clone());
+                                im_runtime
+                                    .register_lifecycle_subscriber(&runtime_app, app.handle());
+                            }
+                            Err(error) => {
+                                warn!(error = %error, "IM runtime failed to initialize")
+                            }
+                        }
                     }
                     Err(error) => warn!(error = %error, "IM runtime failed to initialize"),
                 }

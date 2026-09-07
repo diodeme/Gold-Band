@@ -772,6 +772,12 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 诊断数据不得包含 prompt、正文、文件内容、工具输出或任意 provider payload。每帧热路径只更新固定长度计数器和 8 桶 histogram；不得逐帧落盘、保存任意 kind map 或创建随帧数增长的队列。30 分钟详细会话的目标增量为约 200～400 KiB，默认常开摘要通常为每 prompt 2～10 KiB。
 - 该埋点用于形成可证伪的阶段耗时证据，不预设 Timeline compaction 就是完整根因。只有现场 summary/window 显示某一阶段占据主要延迟后，才能进入对应数据边界的根因修复。
 
+# 2026-09-07 单页发送与最新正文交接
+
+- 用户直接发送 ACP prompt（包括 runtime continue 携带的 prompt）表示恢复当前会话最新内容与持续跟随。发送在写入 optimistic prompt 后复用“回到最新”的同一入口，取消尚未执行的旧阅读位置恢复；正文因主动上翻而积压时，即使总消息数未达到分页阈值，也必须通过既有 canonical-head coordinator 完成追平。
+- 无积压时不新增正文请求，复用已有 layout commit，在包含新 prompt 的 DOM 提交后、首次 paint 前同步贴底；随后由 prompt-kit/use-stick-to-bottom 继续处理内容高度变化，用户后续主动上翻仍可解除跟随。
+- 此修正不改变用户阅读历史时冻结正文、工具展开暂停跟随、分页锚点、replay 水位和排队发送的既有语义。离开前始终跟随、切回后正文滞后的独立现场尚未复现，不据此删除阅读保护或声称已修复全部切回问题。
+
 # 2026-08-30：ACP 历史反向分页位置语义
 
 - ACP timeline 的可见历史继续以有限语义块窗口为单位分页。`startedSeq/oldestSeq` 表示逻辑项在会话中的稳定阅读位置；`endedSeq/newestSeq/lastRevision` 表示累计内容或生命周期最后更新水位。累计用户消息、Assistant 消息、Thought 或 Tool 可以较早开始并在较晚 revision 结算，这不会改变其阅读位置。

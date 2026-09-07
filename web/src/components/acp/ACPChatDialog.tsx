@@ -5146,6 +5146,7 @@ export function ACPChatDialog(
   canonicalHeadHandoffRef.current = returnToLatestEvents;
 
   const handleReturnToLatestEvents = () => {
+    pendingBranchViewRestoreRef.current = null;
     viewportManualIntentRef.current = false;
     chatContainerContextRef.current?.stopScroll();
     if (!hasNewerEventsRef.current) {
@@ -5262,15 +5263,16 @@ export function ACPChatDialog(
       requestAnimationFrame(() => composerTextareaRef.current?.focus());
     }
     setSendError(null);
-    chatContainerContextRef.current?.scrollToBottom({
-      animation: "instant",
-      ignoreEscapes: true,
-    });
     setActiveTurnPrompt(effectivePrompt);
     setActiveTurnPromptId(promptId);
     setActiveTurnStartedAt(null);
     setAwaitingResponse(true);
     updateOptimisticEvents((current) => [...current, optimisticEvent]);
+    handleReturnToLatestEvents();
+    if (!hasNewerEventsRef.current) {
+      // Align after the submitted prompt is in the DOM, even while RAF is paused.
+      pendingLatestLayoutCommitRef.current = sessionIdentity;
+    }
     const acceptedPromptAdmission = () => findMatchingGoldBandUserPrompt(
       mergeAcpEvents(
         mergeAcpEvents(

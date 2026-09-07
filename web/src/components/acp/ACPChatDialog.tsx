@@ -7485,7 +7485,7 @@ const AgentLinkRow = memo(function AgentLinkRow({ event }: { event: AcpAgentLink
       scopeKey: workspace.scopeKey,
       title: label || t('acp.subAgent'),
       description,
-      status: displayedStatus ?? 'queued',
+      status: displayedStatus ?? 'unknown',
       attention,
       locator,
     });
@@ -8278,7 +8278,7 @@ function childAgentStatusLabel(
   if (status === "queued") return t("acp.subAgentQueued");
   if (status === "waiting_permission") return t("acp.subAgentWaitingPermission");
   if (status === "interrupted") return t("acp.subAgentInterrupted");
-  return status ? displayStatus(t, status) : t("acp.subAgentRunning");
+  return status ? displayStatus(t, status) : t("acp.subAgentStatusUnknown");
 }
 
 const AssistantTimelineRow = memo(function AssistantTimelineRow({
@@ -10368,7 +10368,7 @@ function buildAcpTimelineProjection(
       : latest;
   }, null);
   const flatTimeline = buildFlatAcpTimeline(events);
-  const linkedTimeline = projectAgentLinks(flatTimeline, sessionStatus, persistedAgents);
+  const linkedTimeline = projectAgentLinks(flatTimeline, persistedAgents);
   return {
     timeline: batchAcpActivities(
       linkedTimeline,
@@ -10498,7 +10498,6 @@ function buildFlatAcpTimeline(events: AcpUiEventVm[]) {
 
 function projectAgentLinks(
   events: AcpTimelineEvent[],
-  sessionStatus?: string | null,
   persistedAgents = new Map<string, AcpAgentExecutionVm>(),
 ): AcpTimelineItem[] {
   return events.map((event): AcpTimelineItem => {
@@ -10507,8 +10506,7 @@ function projectAgentLinks(
     const eventAttemptId = attemptIdFromAcpEvent(event);
     const persisted = persistedAgents.get(agentProjectionKey(agentExecutionId, eventAttemptId))
       ?? persistedAgents.get(agentExecutionId);
-    const status = persisted?.executionStatus
-      ?? fallbackAgentExecutionStatus(sessionStatus, event.status);
+    const status = persisted?.executionStatus ?? null;
     const terminal = isTerminalToolStatus(status);
     const startSeq = event.startedSeq ?? event.seq;
     const endSeq = event.endedSeq ?? event.seq;
@@ -10536,15 +10534,6 @@ function projectAgentLinks(
       writtenFileCount: persisted?.writtenFileCount ?? 0,
     };
   });
-}
-
-function fallbackAgentExecutionStatus(
-  sessionStatus?: string | null,
-  launchStatus?: string | null,
-) {
-  if (toolStatusTone(launchStatus) === "danger") return "failed";
-  if (!isSessionTerminalStatus(sessionStatus)) return "queued";
-  return isSessionCompletedStatus(sessionStatus) ? "completed" : "interrupted";
 }
 
 function agentProjectionKey(agentExecutionId: string, attemptId?: string | null) {

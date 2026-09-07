@@ -126,6 +126,27 @@ afterEach(() => {
 });
 
 describe('read-only Agent conversation boundary', () => {
+  it.each(['running', 'cancelled', 'completed'])('shows unknown Agent status without a summary while parent is %s', async (status) => {
+    const rootSession = session('root');
+    rootSession.status = status;
+    rootSession.events = [{
+      id: 'agent-launch-unknown', seq: 1, timestamp: '1Z', kind: 'toolCall',
+      sessionId: 'session-1', content: null, title: 'Audit', toolCallId: 'launch-unknown',
+      status: 'completed', raw: { _meta: { goldBandConversation: {
+        branchId: 'root', launchedAgentExecutionId: 'agent-unknown', toolName: 'Agent',
+      } } },
+    }];
+    const { container, root } = await renderDialog(rootSession, true);
+    try {
+      const row = container.querySelector('[data-agent-link-branch-id="agent-unknown"]');
+      expect(row).not.toBeNull();
+      expect(row?.textContent).toContain('状态未知');
+      expect(row?.textContent).not.toContain('等待执行');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('mounts the shared viewport but no composer, stop, continue, or retry controls', async () => {
     const { container, root } = await renderDialog(session('agent-1'), true);
     try {

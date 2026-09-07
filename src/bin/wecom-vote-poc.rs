@@ -223,8 +223,8 @@ fn vote_poc_card(task_id: &str, device: &str) -> Value {
                 "mode": 0,
                 "option_list": [
                     { "id": "0", "text": "拒绝", "is_checked": true },
-                    { "id": "1", "text": "允许一次" },
-                    { "id": "2", "text": "本会话允许" },
+                    { "id": "1", "text": "仅允许一次" },
+                    { "id": "2", "text": "本次会话允许" },
                 ],
             },
             "submit_button": {
@@ -244,8 +244,8 @@ fn vote_poc_update(task_id: &str, selected_option_id: &str) -> Value {
                 "id": option_id,
                 "text": match option_id {
                     "0" => "拒绝",
-                    "1" => "允许一次",
-                    _ => "本会话允许",
+                    "1" => "仅允许一次",
+                    _ => "本次会话允许",
                 },
                 "is_checked": option_id == selected_option_id,
             })

@@ -13,6 +13,9 @@ use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 
 use crate::acp::control::AcpRuntimeControlCursor;
 use crate::provider::{ConversationPromptInput, UserPromptQuote};
+use crate::runtime_error::{
+    RuntimeErrorDomain, RuntimeErrorInfo, manual_runtime_error_info, normalize_runtime_error,
+};
 use crate::storage::{
     append_jsonl, append_jsonl_lines_flushed_unlocked, atomic_write_file, ensure_parent_dir,
     read_json, with_jsonl_file_lock, write_json,
@@ -72,6 +75,8 @@ pub struct AcpSessionMetadata {
     pub lifecycle_operation_id: Option<String>,
     pub restored: bool,
     pub stop_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_error: Option<RuntimeErrorInfo>,
     pub capabilities: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub models: Option<Value>,
@@ -189,6 +194,8 @@ pub struct AcpLifecycleHeader {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_error: Option<RuntimeErrorInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation_id: Option<String>,
 }
 
@@ -244,6 +251,20 @@ impl AcpLifecycleTerminalGuard {
     pub(crate) fn disarm(&mut self) {
         self.armed = false;
     }
+
+    pub(crate) fn execute<T>(&mut self, execute: impl FnOnce() -> Result<T>) -> Result<T> {
+        let result = execute();
+        if let Err(error) = &result {
+            persist_session_turn_failure_owned(
+                &self.path,
+                &self.owner,
+                &normalize_runtime_error(error),
+                &current_timestamp(),
+            )?;
+        }
+        self.disarm();
+        result
+    }
 }
 
 impl Drop for AcpLifecycleTerminalGuard {
@@ -251,13 +272,15 @@ impl Drop for AcpLifecycleTerminalGuard {
         if !self.armed {
             return;
         }
-        let _ = persist_session_turn_terminal_owned(
+        let _ = persist_session_turn_failure_owned(
             &self.path,
-            &self.owner.turn_id,
-            Some(&self.owner.operation_id),
-            self.owner.revision,
-            AcpLatestTurnStatus::Failed,
-            "runtime-error",
+            &self.owner,
+            &manual_runtime_error_info(
+                RuntimeErrorDomain::Internal,
+                "acp.turn-execution-failed",
+                "",
+                serde_json::json!({}),
+            ),
             &current_timestamp(),
         );
     }
@@ -1914,6 +1937,10 @@ fn lifecycle_header_from_value(value: &Value) -> AcpLifecycleHeader {
             .get("stopReason")
             .and_then(Value::as_str)
             .map(str::to_string),
+        turn_error: value
+            .get("turnError")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok()),
         operation_id: value
             .get("lifecycleOperationId")
             .and_then(Value::as_str)
@@ -1946,6 +1973,11 @@ fn session_availability_from_value(
 /// activity and the previous turn outcome. `closing` is a legacy transport
 /// value and must never survive as the availability of a turn lifecycle.
 fn normalize_lifecycle_header(value: &Value, header: &mut AcpLifecycleHeader) {
+    if header.live_turn_activity != AcpLiveTurnActivity::Idle
+        || header.latest_turn_status != AcpLatestTurnStatus::Failed
+    {
+        header.turn_error = None;
+    }
     if header.availability == AcpSessionAvailability::Closing {
         header.availability = session_availability_from_value(value, header.availability);
     }
@@ -2077,6 +2109,11 @@ fn apply_lifecycle_header(value: &mut Value, header: &AcpLifecycleHeader) {
         serde_json::to_value(header.live_turn_activity).unwrap_or(Value::Null);
     value["latestTurnStatus"] =
         serde_json::to_value(header.latest_turn_status).unwrap_or(Value::Null);
+    if let Some(error) = &header.turn_error {
+        value["turnError"] = serde_json::to_value(error).unwrap_or(Value::Null);
+    } else if let Some(object) = value.as_object_mut() {
+        object.remove("turnError");
+    }
     for (key, field) in [
         ("turnId", header.turn_id.as_ref()),
         ("promptEventId", header.prompt_event_id.as_ref()),
@@ -2454,6 +2491,9 @@ fn merge_session_lifecycle(current: Option<&Value>, incoming: &mut Value) {
         return;
     }
     if same_owner {
+        if lifecycle_is_terminal(&current_header) {
+            incoming_header.turn_error = current_header.turn_error.clone();
+        }
         // Running metadata is produced by the executor that owns this
         // generation. Keeping its revision stable lets that executor settle a
         // provider failure with an exact CAS check. A terminal write closes
@@ -2580,6 +2620,46 @@ pub fn persist_session_turn_terminal_owned(
     stop_reason: &str,
     decided_at: &str,
 ) -> Result<Option<AcpLifecycleHeader>> {
+    persist_session_turn_terminal_with_error_owned(
+        path,
+        turn_id,
+        operation_id,
+        expected_revision,
+        latest_turn_status,
+        stop_reason,
+        decided_at,
+        None,
+    )
+}
+
+pub fn persist_session_turn_failure_owned(
+    path: &Utf8Path,
+    owner: &AcpLifecycleOwner,
+    error: &RuntimeErrorInfo,
+    decided_at: &str,
+) -> Result<Option<AcpLifecycleHeader>> {
+    persist_session_turn_terminal_with_error_owned(
+        path,
+        &owner.turn_id,
+        Some(&owner.operation_id),
+        owner.revision,
+        AcpLatestTurnStatus::Failed,
+        "runtime-error",
+        decided_at,
+        Some(error),
+    )
+}
+
+fn persist_session_turn_terminal_with_error_owned(
+    path: &Utf8Path,
+    turn_id: &str,
+    operation_id: Option<&str>,
+    expected_revision: u64,
+    latest_turn_status: AcpLatestTurnStatus,
+    stop_reason: &str,
+    decided_at: &str,
+    error: Option<&RuntimeErrorInfo>,
+) -> Result<Option<AcpLifecycleHeader>> {
     let _guard = session_metadata_lock(path).lock().unwrap();
     if !path.exists() {
         return Ok(None);
@@ -2595,7 +2675,7 @@ pub fn persist_session_turn_terminal_owned(
     if lifecycle_is_terminal(&current) {
         return Ok(Some(current));
     }
-    let terminal = reduce_lifecycle_header(
+    let mut terminal = reduce_lifecycle_header(
         &value,
         current,
         AcpLifecycleTransition::TurnSettled {
@@ -2603,6 +2683,9 @@ pub fn persist_session_turn_terminal_owned(
             reason: stop_reason,
         },
     )?;
+    if terminal.latest_turn_status == AcpLatestTurnStatus::Failed {
+        terminal.turn_error = error.cloned();
+    }
     apply_lifecycle_header(&mut value, &terminal);
     value["updatedAt"] = Value::String(decided_at.to_string());
     write_json(path, &value)?;
@@ -3613,6 +3696,98 @@ mod tests {
             header.live_turn_activity,
             AcpLiveTurnActivity::CancelRequested
         );
+    }
+
+    #[test]
+    fn abandoned_execution_persists_displayable_turn_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        crate::storage::write_json(
+            &path,
+            &serde_json::json!({
+                "acpRevision": 2, "turnId": "turn-a", "lifecycleOperationId": "operation-a",
+                "availability": "established", "sessionId": "session-a",
+                "liveTurnActivity": "accepted", "latestTurnStatus": "none"
+            }),
+        )
+        .unwrap();
+        drop(super::AcpLifecycleTerminalGuard::new(
+            path.clone(),
+            super::AcpLifecycleOwner {
+                turn_id: "turn-a".into(),
+                operation_id: "operation-a".into(),
+                revision: 2,
+            },
+        ));
+        let snapshot: serde_json::Value = crate::storage::read_json(&path).unwrap();
+        assert_eq!(snapshot["latestTurnStatus"], "failed");
+        assert_eq!(
+            snapshot["turnError"]["code"]["code"],
+            "acp.turn-execution-failed"
+        );
+    }
+
+    #[test]
+    fn background_turn_error_preserves_reason_and_cannot_leak_into_next_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        crate::storage::write_json(
+            &path,
+            &serde_json::json!({
+                "acpRevision": 2, "turnId": "turn-a", "lifecycleOperationId": "operation-a",
+                "availability": "established", "sessionId": "session-a",
+                "liveTurnActivity": "accepted", "latestTurnStatus": "none"
+            }),
+        )
+        .unwrap();
+        let owner = super::AcpLifecycleOwner {
+            turn_id: "turn-a".into(),
+            operation_id: "operation-a".into(),
+            revision: 2,
+        };
+        let mut error = crate::runtime_error::manual_runtime_error_info(
+            crate::runtime_error::RuntimeErrorDomain::Provider,
+            "acp.session-request-failed",
+            "resume failed",
+            serde_json::json!({"method": "session/resume"}),
+        );
+        error.raw = Some(
+            serde_json::json!({"code": -32603, "message": "Internal error",
+            "data": {"details": "thread session-a already has an active writer"}}),
+        );
+        let mut guard = super::AcpLifecycleTerminalGuard::new(path.clone(), owner.clone());
+        let result: anyhow::Result<()> =
+            guard.execute(|| Err(crate::runtime_error::runtime_error(error.clone())));
+        assert!(result.is_err());
+        let failed = super::read_lifecycle_header_snapshot(&path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(failed.turn_error.as_ref(), Some(&error));
+        assert_eq!(failed.revision, 3);
+        let next = AcpPromptSubmission {
+            turn_id: "turn-b".into(),
+            operation_id: "operation-b".into(),
+            adapter_id: "codex-acp".into(),
+            adapter_display_name: "Codex".into(),
+            cwd: "C:/tmp".into(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "retry".into(),
+                quotes: vec![],
+            },
+            attachment_paths: vec![],
+            admitted_at: "4Z".into(),
+        };
+        begin_session_turn(&path, &next).unwrap();
+        assert!(
+            super::persist_session_turn_failure_owned(&path, &owner, &error, "5Z")
+                .unwrap()
+                .is_none()
+        );
+        let latest = super::read_lifecycle_header_snapshot(&path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.turn_id.as_deref(), Some("turn-b"));
+        assert!(latest.turn_error.is_none());
     }
 
     #[test]

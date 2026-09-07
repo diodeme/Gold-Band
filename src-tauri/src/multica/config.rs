@@ -10,6 +10,7 @@ use serde::Serialize;
 use url::Url;
 
 use crate::channel::current_channel_config;
+use crate::multica::error::MulticaError;
 
 /// 前端 multica 设置 VM（开发设计 2.2.5）。
 ///
@@ -33,6 +34,9 @@ pub struct MulticaSettingsVm {
     pub connected: bool,
     /// 已连接 multica 账号身份（`/api/me`）；仅 UI 展示，让用户核对连了哪个账号。非凭证。
     pub connected_account: Option<MulticaAccountRef>,
+    /// 是否存在运行期地址覆盖（`desktop_multica_base_url` 已设置）；false = 使用渠道编译期默认。
+    /// 供前端区分「默认（渠道）」与「自定义」，决定是否显示「恢复默认地址」。
+    pub address_override_set: bool,
 }
 
 /// 容错归一化 multica 根 URL（同 `normalize_metrics_base_url` 的 scheme/host 校验）。
@@ -80,6 +84,19 @@ pub fn multica_app_url(config: &RuntimeConfig) -> Option<String> {
         .or_else(|| normalize_multica_base_url(channel.multica_app_url))
 }
 
+/// 以 `SettingsConfig` 的地址覆盖为准计算生效 base URL（`save_multica_connection_address` 的
+/// 服务器变更判定用）：把 settings 两地址字段镜像到 config 上再走统一解析链
+/// （settings 优先 → 渠道兜底），保证判定与运行期实际消费的地址同源。
+pub fn multica_base_url_for_settings(
+    config: &RuntimeConfig,
+    settings: &SettingsConfig,
+) -> Option<String> {
+    let mut mirrored = config.clone();
+    mirrored.desktop_multica_base_url = settings.desktop_multica_base_url.clone();
+    mirrored.desktop_multica_app_url = settings.desktop_multica_app_url.clone();
+    multica_base_url(&mirrored)
+}
+
 /// PAT（用户配置；channel 无 PAT——PAT 登录后生成）。明文，调用方负责不回显。
 pub fn get_pat(config: &RuntimeConfig) -> Option<String> {
     config
@@ -117,6 +134,7 @@ pub fn multica_settings(config: &RuntimeConfig) -> MulticaSettingsVm {
         default_provider: config.desktop_multica_default_provider.clone(),
         connected: pat_set,
         connected_account: config.desktop_multica_account.clone(),
+        address_override_set: config.desktop_multica_base_url.is_some(),
     }
 }
 
@@ -188,12 +206,44 @@ pub fn clear_multica_session(settings: &mut SettingsConfig) {
     clear_multica_workspace_bindings(settings);
 }
 
+/// 应用连接地址覆盖（运行期可配置，M5-ay）：写入 `desktop_multica_base_url/_app_url`。
+///
+/// 纯函数（无 I/O，可单测）。契约：
+/// - 两参数须「同为 Some 或同为 None」——前端的「连接地址」是单一输入（手动输入时 API 与登录页
+///   同址），分离两址只经预设（内网 8080/3000）整体产生；半覆盖（一 Some 一 None）会让解析链路的
+///   两个地址来自不同来源（一个用户覆盖、一个渠道默认），无从判定用户意图 → [`MulticaError::InvalidAddress`]。
+/// - 各自经 [`normalize_multica_base_url`] 规范化，非法（非 http/https、无 host）→ [`MulticaError::InvalidAddress`]。
+/// - 双 None = 清除覆盖，回落渠道编译期默认（M5-ar 之前的死字段就此复活为运行期覆盖）。
+pub fn apply_multica_connection_address(
+    settings: &mut SettingsConfig,
+    base_url: Option<&str>,
+    app_url: Option<&str>,
+) -> Result<(), MulticaError> {
+    match (base_url, app_url) {
+        (Some(base), Some(app)) => {
+            let base = normalize_multica_base_url(base).ok_or(MulticaError::InvalidAddress)?;
+            let app = normalize_multica_base_url(app).ok_or(MulticaError::InvalidAddress)?;
+            settings.desktop_multica_base_url = Some(base);
+            settings.desktop_multica_app_url = Some(app);
+        }
+        (None, None) => {
+            settings.desktop_multica_base_url = None;
+            settings.desktop_multica_app_url = None;
+        }
+        _ => return Err(MulticaError::InvalidAddress),
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_multica_session, clear_multica_state_indices, clear_multica_workspace_bindings,
-        ensure_daemon_id, multica_account_changed, multica_settings, normalize_multica_base_url,
+        apply_multica_connection_address, clear_multica_session, clear_multica_state_indices,
+        clear_multica_workspace_bindings, ensure_daemon_id, multica_account_changed,
+        multica_base_url, multica_base_url_for_settings, multica_settings,
+        normalize_multica_base_url,
     };
+    use crate::multica::error::MulticaError;
     use gold_band::config::{
         MulticaAccountRef, MulticaCompletedTask, MulticaTaskConversation, MulticaWorkspaceRef,
         RuntimeConfig, StateConfig,
@@ -424,5 +474,143 @@ mod tests {
         assert_eq!(vm.active_workspace_id.as_deref(), Some("ws-2"));
         // slug=id 兜底（add_multica_workspace 路径，server list_workspaces 不含 slug）。
         assert_eq!(vm.workspaces[0].slug, "ws-1");
+    }
+
+    // ---- M5-ay：运行期连接地址覆盖（apply_multica_connection_address 纯逻辑固化）----
+
+    #[test]
+    fn apply_multica_connection_address_roundtrip_normalizes_and_writes_both() {
+        let mut settings = gold_band::config::SettingsConfig::default();
+        apply_multica_connection_address(
+            &mut settings,
+            Some(" http://maling.weoa.com:5005/ "),
+            Some("http://maling.weoa.com:5005"),
+        )
+        .unwrap();
+        // 规范化后写入两字段（trim + 去尾斜杠）。
+        assert_eq!(
+            settings.desktop_multica_base_url.as_deref(),
+            Some("http://maling.weoa.com:5005")
+        );
+        assert_eq!(
+            settings.desktop_multica_app_url.as_deref(),
+            Some("http://maling.weoa.com:5005")
+        );
+        let vm = multica_settings(&{
+            let mut config = RuntimeConfig::default();
+            config.desktop_multica_base_url = settings.desktop_multica_base_url.clone();
+            config.desktop_multica_app_url = settings.desktop_multica_app_url.clone();
+            config
+        });
+        assert!(
+            vm.address_override_set,
+            "覆盖写入后 VM 应报告 override 已设置"
+        );
+    }
+
+    #[test]
+    fn apply_multica_connection_address_rejects_half_none_pair() {
+        // 半覆盖（一 Some 一 None）：API 与登录页将来自不同来源，无从判定用户意图 → 拒绝且不落任何字段。
+        let mut settings = gold_band::config::SettingsConfig::default();
+        assert!(matches!(
+            apply_multica_connection_address(&mut settings, Some("http://a.local"), None),
+            Err(MulticaError::InvalidAddress)
+        ));
+        assert!(matches!(
+            apply_multica_connection_address(&mut settings, None, Some("http://a.local")),
+            Err(MulticaError::InvalidAddress)
+        ));
+        assert!(settings.desktop_multica_base_url.is_none());
+        assert!(settings.desktop_multica_app_url.is_none());
+    }
+
+    #[test]
+    fn apply_multica_connection_address_rejects_invalid_url() {
+        let mut settings = gold_band::config::SettingsConfig::default();
+        for bad in ["not-a-url", "ftp://maling.weoa.com", ""] {
+            assert!(
+                matches!(
+                    apply_multica_connection_address(&mut settings, Some(bad), Some(bad)),
+                    Err(MulticaError::InvalidAddress)
+                ),
+                "非法地址 {bad:?} 应报 invalid-address"
+            );
+        }
+        assert!(settings.desktop_multica_base_url.is_none());
+    }
+
+    #[test]
+    fn apply_multica_connection_address_double_none_clears_override() {
+        // 双 None = 清除覆盖，回落渠道编译期默认。
+        let mut settings = gold_band::config::SettingsConfig::default();
+        apply_multica_connection_address(
+            &mut settings,
+            Some("http://localhost:8080"),
+            Some("http://localhost:3000"),
+        )
+        .unwrap();
+        assert!(
+            multica_settings(&{
+                let mut config = RuntimeConfig::default();
+                config.desktop_multica_base_url = settings.desktop_multica_base_url.clone();
+                config
+            })
+            .address_override_set
+        );
+
+        apply_multica_connection_address(&mut settings, None, None).unwrap();
+        assert!(settings.desktop_multica_base_url.is_none());
+        assert!(settings.desktop_multica_app_url.is_none());
+        assert!(
+            !multica_settings(&RuntimeConfig::default()).address_override_set,
+            "fresh config 无覆盖，VM 应报告使用渠道默认"
+        );
+    }
+
+    // ---- M5-ay：服务器变更判定（save_multica_connection_address 的作废门，纯逻辑固化）----
+    // 命令内判定形态：`multica_base_url(&context.config) != multica_base_url_for_settings(...)`
+    // 且 pat_set 才作废 server 作用域状态。此处固化判定的地址侧契约。
+
+    #[test]
+    fn server_change_gate_triggers_only_on_effective_url_change() {
+        let config = RuntimeConfig::default();
+
+        // 「清除覆盖但渠道值相同 → 不作废」：覆盖值恰好等于渠道编译期默认时，
+        // 双 None 清除后生效地址不变（before == after），不应作废 server 作用域凭证/缓存。
+        let channel_effective =
+            multica_base_url(&config).expect("渠道默认应可解析（default/wb 均预填）");
+        let mut settings = gold_band::config::SettingsConfig::default();
+        settings.desktop_multica_base_url = Some(channel_effective.clone());
+        let before = multica_base_url_for_settings(&config, &settings);
+        apply_multica_connection_address(&mut settings, None, None).unwrap();
+        let after = multica_base_url_for_settings(&config, &settings);
+        assert_eq!(
+            before, after,
+            "覆盖值与渠道默认相同：清除覆盖不改变生效地址 → 不作废"
+        );
+
+        // 覆盖到不同地址 → 生效地址变化 → 作废。注意须真正偏离渠道默认：
+        // default 渠道的编译期兜底就是 localhost:8080，用它当「不同地址」判定恒假。
+        apply_multica_connection_address(
+            &mut settings,
+            Some("http://maling.weoa.com:5005"),
+            Some("http://maling.weoa.com:5005"),
+        )
+        .unwrap();
+        let changed = multica_base_url_for_settings(&config, &settings);
+        assert_ne!(
+            after, changed,
+            "覆盖到不同地址：生效地址变化 → 触发 server 作用域作废"
+        );
+
+        // 「设覆盖但与渠道值相同 → 不作废」：从 fresh 态写入与渠道相同的覆盖，生效值不变。
+        let mut same_as_channel = gold_band::config::SettingsConfig::default();
+        let fresh = multica_base_url_for_settings(&config, &same_as_channel);
+        same_as_channel.desktop_multica_base_url = Some(channel_effective);
+        let overridden = multica_base_url_for_settings(&config, &same_as_channel);
+        assert_eq!(
+            fresh, overridden,
+            "覆盖值与渠道默认相同：写入覆盖不改变生效地址 → 不作废"
+        );
     }
 }

@@ -179,6 +179,16 @@ describe('browserApi', () => {
     expect(resolved.target).toEqual({ line: 47, column: null, endLine: null });
   });
 
+  it('mirrors Windows slash-prefixed drive pathname normalization', async () => {
+    const resolved = await browserApi.resolveWorkspaceFileLink(
+      'default',
+      '/D:/outside/roadmap.md:12',
+    );
+
+    expect(resolved.locator.canonicalPath).toBe('D:/outside/roadmap.md');
+    expect(resolved.target).toEqual({ line: 12, column: null, endLine: null });
+  });
+
   it('derives materialized attachment size from the decoded snapshot bytes', async () => {
     const [attachment] = await browserApi.materializeConversationAttachments([{
       name: 'active.log',

@@ -101,11 +101,12 @@ describe('ConversationRunPage follow mode reentry', () => {
     await act(async () => root.unmount());
   });
 
-  it('passes the selected dynamic session worktree to the composer instead of the run worktree', async () => {
+  it('passes the selected dynamic worktree and registry without requiring a parent session payload', async () => {
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
     const selectedKey = 'round-001/ai-dynamic/attempt-001/goodbye-worker/attempt-001';
+    const registry: AgentRegistryVm = { agents: [], catalog: [] };
     const leaf = {
       roundId: 'round-001',
       nodeId: 'goodbye-worker',
@@ -167,7 +168,7 @@ describe('ConversationRunPage follow mode reentry', () => {
           run={run}
           taskTitle="AUTO run"
           appConfig={{ turnFiles: { cardPreviewLimit: 10, attachmentCardPreviewLimit: 1 } } as AppConfigVm}
-          agentRegistry={null}
+          agentRegistry={registry}
           followMode="manual"
           onRerun={vi.fn()}
           onEditWorkflow={vi.fn()}
@@ -183,6 +184,8 @@ describe('ConversationRunPage follow mode reentry', () => {
       expect.objectContaining({
         worktreePath: 'D:/repo/.gold-band/worktrees/child',
         managedWorktreeBranch: 'gb-dynamic-child',
+        session: null,
+        agentRegistry: registry,
       }),
       undefined,
     );

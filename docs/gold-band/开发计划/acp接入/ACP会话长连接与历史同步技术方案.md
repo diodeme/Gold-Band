@@ -129,10 +129,18 @@ Starting -> Ready -> Draining -> Closed
 职责：管理已经 attach 到某条 AdapterConnection 的 ACP session。
 
 ```text
-AcpSessionRuntimeKey
-  - attempt locator
+ProviderSessionIdentity
+  - AdapterConnectionKey
+  - connectionGeneration
   - acpSessionId
+
+AttemptSessionBinding
+  - attempt locator
+  - ProviderSessionIdentity
+  - routeGeneration
 ```
+
+Provider session identity 是 ACP adapter 内存 session 的 canonical 生命周期身份。attempt locator 只定位 Gold Band 的运行产物与 attachment，不拥有独立关闭同一 Provider session 的权力；多个 continuation attempt 在迁移期间可能短暂引用同一 identity。
 
 attempt locator 使用现有稳定运行定位：
 
@@ -151,6 +159,7 @@ AcpSessionRuntimeEntry
   - attemptDir
   - connectionKey
   - connectionGeneration
+  - routeGeneration
   - state
   - routeReceiver / eventPump
   - lastActivityAt
@@ -180,6 +189,8 @@ Detached
 ```
 
 Session runtime 必须拥有持续 event pump。只注册 route 而不持续消费会导致有界 route 队列填满，最终阻塞共享 connection 的 stdout 分发，因此不能保留没有消费者的“空 route”。
+
+新 continuation restore 前必须确认同一 Provider session identity 没有 active owner；restore 成功并登记新 binding 后再移除旧 idle attempt alias，使 manager 在转移期间始终至少保留一个引用。该转移不发送 `session/close`。注销 route 时必须比较 route generation，旧 alias 的迟到清理不能删除新 attachment 的 route。同一 identity 仍有 active attempt 时不允许并发接管。
 
 ### 4.3 PromptRun
 
@@ -523,8 +534,8 @@ acpMaxIdleSessionRuntimes = 8
 1. 仅选择 `IdleAttached`。
 2. 排除 foreground lease 未过期的 session。
 3. 排除 active prompt、permission、elicitation、cancel/close 中的 session。
-4. 先清理超过 TTL 的 session。
-5. 仍超过 idle 容量时按 LRU 清理。
+4. 先清理超过 TTL 的 attempt attachment。
+5. 仍超过 idle 容量时按 LRU 清理 attempt attachment。
 6. active session 数量可以临时超过容量；终态后立即重新收敛。
 
 驱逐 session 时：
@@ -532,11 +543,14 @@ acpMaxIdleSessionRuntimes = 8
 ```text
 flush timeline pending patch
   -> settle pending interaction
-  -> bounded session/close
-  -> unregister route
-  -> stop event pump
+  -> remove exact attempt binding
+  -> stop its event pump
+  -> unregister its matching route generation
+  -> if ProviderSessionIdentity has no remaining runtime reference:
+       retain the last binding during bounded session/close
+       remove the last binding after close completes
   -> drop TimelineWriteIndex/hot state
-  -> registry state = Detached
+  -> attachment state = Detached
 ```
 
 sessionId、worker-ref、timeline 和 snapshot 保留，后续可 reload。
@@ -552,6 +566,7 @@ acpMaxIdleAdapterConnections = 4
 
 Connection 只有在以下条件同时满足时才可驱逐：
 
+- scoped connection use count 为 0（初始化、恢复、执行与收尾期间由 runtime 持有）。
 - active prompt count 为 0。
 - attached session count 为 0。
 - 不在 Starting/Draining。
@@ -809,6 +824,9 @@ timeline_bytes_before_after
 - prompt active 时 TTL/LRU 不驱逐。
 - permission/elicitation pending 时不驱逐。
 - idle session 超时后 bounded close，下一次 prompt load 一次。
+- 多个 attempt 短暂引用同一 Provider session 时，淘汰旧 alias 不发送 close；最后一个引用淘汰才 close。
+- 相同 sessionId 位于不同 connection generation 时互不计数，旧 generation 清理不得影响新 transport。
+- 旧 route generation 的迟到清理不得注销 replacement route。
 
 ### 16.3 Freshness
 
@@ -870,7 +888,7 @@ session/connection 被有界驱逐或失效：reload
 - 新增 `TimelineStore`，统一执行 canonical merge、语义指纹去重、外部文件变更检测与原子 compaction。相同稳定 ID 仅发生 replay `seq/timestamp` 变化时不再追加 patch；内容、状态和 `historyPlacement` 的真实变化仍追加 revision。
 - `acp.timeline.jsonl` 在文件大小超过 `acpTimelineCompactMaxSizeBytes`、patch 数超过唯一 item 数的 `acpTimelineCompactPatchRatio` 倍，或打开旧文件时检测到语义完全相同的重复 revision 时，原子改写为每个稳定 ID 一条 canonical item；因此 task-061 一类既有重复 replay 会在下次读取时自动收敛，`acp.raw.jsonl` 不参与压缩。
 - 新增有界 ACP session runtime registry。第一次 `session/new/load` 后保留 session route，并由独立 event pump 持续消费 connection route；下一次同 attempt prompt 可以直接复用 attachment，不再固定执行 `session/load`。
-- session runtime 以 attempt 目录为稳定身份，并使用 per-attempt prompt lock 串行化同一 session 的 prompt；Direct、Workflow/AUTO 手动追问、runtime continue 与 AI-DYNAMIC leaf 因为共用 `client::run_prompt`，统一进入该 registry。
+- attempt 目录作为本地 attachment 与产物 locator；Provider session 以 `AdapterConnectionKey + connection generation + sessionId` 作为 canonical 生命周期身份。per-attempt prompt lock 继续串行化同一 attempt 的 prompt；Direct、Workflow/AUTO 手动追问、runtime continue 与 AI-DYNAMIC leaf 因为共用 `client::run_prompt`，统一进入该 registry。
 - AdapterConnection 增加 connection generation 与最后活动时间；adapter 配置变化或 transport 重建后 generation 变化，旧 session attachment 不会跨连接复用。
 - 用户 prompt 前使用带超时、最多 8 页的 `session/list` freshness probe。`updatedAt` 作为 opaque revision：相同直接 prompt，变化先 reload；无 `updatedAt` 的 Provider 在 attached 状态降级为直接 prompt，detached 时正常 load；临时探测失败把 baseline 标记为 Unknown，恢复后 reload 一次。
 - MCP/cwd 使用规范化 session config fingerprint；MCP 数组顺序和对象字段顺序不影响 fingerprint，增删改 MCP 会在下一次 prompt 前触发携带最新 `mcpServers` 的 reload。model/permission mode 不进入 fingerprint，继续使用 session config API。
@@ -913,3 +931,54 @@ resume/load 请求都携带 `sessionId`、`cwd`、过滤后的 `mcpServers` 与�
 - index hit、bounded tail replay、full rebuild/compaction 会分别写入 restore diagnostics。index 不存在、版本变更、prefix 不匹配、tail 超限或 compaction 才允许 O(N) 重建，正常 continue/follow-up 的 I/O、解析和分配不随历史正文或 Blob 总量增长。
 
 回归门槛包括：stop 后 established/restorable availability 保持不变、cancel intent 胜过 provider completion、active stream 在 tool/revision/branch 场景与完整重放一致、attached/resume Blob hydrated bytes 为 0、load 只读取 prompt anchors，以及 restore mode 诊断不把 full rebuild 误报为 index hit。
+
+## 22. 共享 Provider session 的 attachment 所有权修复（2026-09-03）
+
+现场确认多个 continuation attempt 的 `worker-ref.json` 可以引用同一 ACP session。旧实现却按 attempt 目录分别登记 runtime，并在任一 idle alias 达到 600 秒 TTL/LRU 淘汰条件时无条件发送 `session/close`；这会删除 adapter 内存中的共享 session，使仍存活的新 attempt 在下一次 `session/set_config_option` 收到 `-32603 Session not found`。这属于 Provider session canonical identity 与 attempt 生命周期所有权错位的设计缺陷，不是 adapter 子进程随机退出。
+
+修复后，`LiveAcpSession` 记录 connection generation、sessionId 与 route generation。开始 detach 时在同一 registry 锁内按 `AdapterConnectionKey + connectionGeneration + sessionId` 判断剩余引用：旧 alias 直接移除，最后 binding 则保留到 bounded `session/close` 完成后再精确移除，防止 connection LRU 抢先关闭 transport。新 continuation 在 restore 前检查 active owner，成功登记新 binding 后再移除旧 idle alias，转移期间不产生 manager 零引用窗口；所有 route 清理按 route generation 条件执行。connection shutdown 也按当前 generation 去重 sessionId，避免共享 alias 导致重复 close。
+
+最小失败测试先稳定复现“注销第一个共享 attempt 被误判为最后引用”，随后由同一测试确认转绿；接口回归同时覆盖不同 connection generation 不共享所有权、最后 binding 在 bounded close 期间保持登记、迟到旧 binding 不能移除 replacement binding、迟到旧 route 不能移除 replacement route，以及 connection 层 38 项测试。本阶段不增加 `Session not found` 或 transport closed 后的自动 resume；恢复策略保持现状，避免把生命周期根因修复与容错重试混为一体。
+
+## 23. 连接关闭因果日志（2026-09-05）
+
+### 范围与判断
+
+偶现追问失败现场只确认发送前 `session/resume` 遇到 `ACP adapter transport is closed`，无法确认最初关闭者。第 22 节共享 session 所有权修复仍在，不能把本次事件直接归因于同一缺陷。原设计要求旁路日志解释运行故障，但主动 shutdown 只有缺少原因和连接代次的 DEBUG 日志，属于可观测性实现不完整。本阶段仅补日志，不宣称复现或修复偶发断连，不改变回收、恢复、取消或 optimistic message 语义。
+
+### 实现与边界
+
+- 复用 `tracing` 和现有 `runtime.log` INFO 管线，不新增依赖、日志文件或配置。`AdapterShutdownReason` 要求所有主动关闭入口显式提供原因；底层读写关闭原因在 transport 所有者处记录。
+- 既有 connection generation 加 PID 关联 adapter resolved、draining、shutdown requested、first closed、later close observed、exit status；resolved 同时保留 attempt locator，并向 attempt diagnostics 写入 connection generation。首次关闭的判定复用原 `Open/Draining/Closed` 状态锁，不新建生命周期事实源；晚到 EOF 或 cleanup 不伪装为首次关闭。
+- 闲置清理保留决策时 idle 时长、TTL、max idle 和 attachment 快照；关闭请求记录 caller。单独记录 Provider `session/close` 的 sessionId/caller，便于区分共享 session 被关闭与物理 transport 被关闭。
+- 关闭前以 `try_lock` 采集 pending/active/routes 数量和 idle 时长；request ID/method 最多采样 8 条并标记截断，不采集 params、正文、附件或历史。各字段是相邻时间点的诊断快照，竞争时未知不能当作零。PID 在进程创建时保存为不可变诊断元数据，避免日志等待 child 终止锁。进程退出只记录当前可获得的状态；stdout EOF 与退出状态未知不等价于崩溃。
+
+### 验证与评审
+
+- 新增 `tests/acp_connection_logging.rs`，用测试二进制自身模拟 adapter，不依赖真实 Provider 或外部服务。修改实现前，`idle_close_is_diagnosable_at_info_level_without_payloads` 在原实现稳定失败于缺少默认 INFO 关闭事件；同一测试在补日志后转绿。这是日志缺失的复现证据，不是原偶发断连的复现证据。
+- 接口回归覆盖 TTL/容量回收、恢复 RPC 在途、active prompt 与 route 快照、workspace/provider/all 关闭、初始化失败淘汰、配置替换、standalone 释放、异常 stdout EOF 与可读退出码，以及首次原因不被后续清理覆盖、request 方法采样有界和正文不泄露。测试 fixture 进程均由现有 managed process group 启动并有界关闭。
+- 验收：`cargo test --test acp_connection_logging` 通过（1 项集成测试，另 1 项为仅供子进程调用的 ignored fixture）；`cargo test --lib acp::` 通过 448 项、忽略 1 项外部历史 fixture 测试。未通过真实 Provider 复现原偶发断连，未覆盖操作系统级管道读写错误注入；未替换或重启用户当前运行的 EXE，新增日志需使用包含本次改动的构建。
+- 过度设计评审：只增加原因枚举、有限请求元数据与统一日志投影，复用现有连接身份和生命周期；不增加 aggregate、队列、缓存、轮询或容错策略。
+- 性能评审：只在连接生命周期事件和请求拒绝/写失败时写日志，不进入 token/frame 成功热路径；每个既有 pending request 增加一个 method 字符串，随原请求回收。日志请求采样最多 8 条，计数使用既有容器长度，active prompt 求和规模为当前活跃 session 数；无历史扫描、全量加载、N+1 或新增 I/O 等待，沿用现有有界非阻塞日志与轮转，无需额外 benchmark。
+
+## 24. 恢复阶段的连接使用保护（2026-09-07）
+
+### 根因与范围
+
+现场日志在 09:10:49.072 记录复用 PID 49616 / generation 4，09:10:49.089 将同一连接按 `idle-ttl` 回收，09:10:49.115 拒绝 `session/resume`。原始设计已要求 connection lease 保护，但实现只有 active prompt 和 attachment 保护；`get_or_spawn` 先交出连接，后续 session `acquire` 同步 prune，且真正的 `ActivePromptGuard` 直到 prompt 执行才建立。无 attachment、无 active prompt 且过期的连接因此能被同一恢复调用链回收，不依赖低概率并发时序。这属于原有设计正确但生命周期保护实现不完整。
+
+### 实现
+
+- 复用 Rust RAII/Drop 与现有连接池锁，新增小型 `AdapterConnectionUse` 和连接内存使用计数；managed 获取接口返回 guard，本次 `AcpRuntime` 直接持有它，不能将 guard 存入长期 attachment。普通 Arc 保持对象存活，但不代表正在使用 transport。
+- 已有连接先在池锁外做健康检查，再持池锁验证相同连接仍在池内并登记使用；与闲置清理的选择和移除互斥。新连接在入池前取得 guard，保持原有进程创建 single-flight，不持全局池锁执行 spawn、RPC 或进程等待。
+- TTL 与容量回收均额外排除使用计数非零的连接。错误返回、取消和正常收尾自动释放 guard；初始化失败后的 replacement 必须携带新 guard，旧 guard 只影响旧 generation。
+- `ActivePromptGuard` 及其 session 取消、drain 和 active owner 语义保持不变；显式 workspace/provider/all 关闭与初始化失败淘汰不受闲置使用保护阻止。standalone 不在全局池中，但在 runtime 中使用同一作用域持有方式。
+- 保留既有懒清理入口、TTL/LRU 配置和恢复协议；不增加后台调度、凭证 ID、数据库字段或自动重试。此变更修复已证明的 transport 被误回收，不将所有 Provider 恢复失败归为同一原因，也不修改前端消息投影。
+
+### 验证与自评审
+
+- 最小失败测试 `acquired_connection_survives_idle_cleanup_before_resume` 在修改实现前失败于 `idle cleanup closed a connection already handed to its caller`，证明没有 prompt/session 绑定时已交出的连接会被回收；同一断言修复后转绿。扩展场景确认复用同一代已初始化连接、TTL/容量清理后直接完成一次 resume，并在 guard 释放后恢复可回收状态。
+- 接口测试覆盖多个并发借用者、最后借用者释放、获取与清理并发、早期错误自动释放、初始化失败淘汰后的新旧代隔离及显式关闭；原关闭日志测试改为明确释放 guard 后观察回收，继续验收日志原因与正文不泄露。
+- 过度设计评审：原 prompt/session 计数无法表达初始化和恢复阶段的连接使用，新增一个作用域计数恰好补足这一不变量；不重复 canonical session 模型，不引入依赖或后台系统。
+- 性能评审：每次取得/释放 guard 为 O(1) 原子计数，复用路径增加一次短暂池锁用于成员重验证；回收候选判断增加一次 O(1) 读取，原 TTL/LRU 扫描复杂度不变。无新增全量历史读取、网络 I/O、队列或 token 热路径日志，锁外进行进程检查与创建，风险不需要单独 benchmark。
+- 验收结果：`cargo test --lib acp:: --quiet` 通过 448 项、忽略 1 项外部历史 fixture；`cargo test --test acp_connection_logging --test acp_claude_execution_policy --quiet` 分别通过 6 项连接测试和 4 项策略测试，3 项子进程 fixture 按设计 ignored。`git diff --check` 通过。未运行真实 Provider 会话或替换用户当前 EXE，桌面安装包需后续构建部署后生效。

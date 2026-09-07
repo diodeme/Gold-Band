@@ -57,7 +57,6 @@ import {
   subscribeConversationRunStateUpdates,
   subscribeConversationTerminalResultUpdates,
   subscribeMulticaTaskUpdates,
-  subscribeScheduledTaskUpdates,
   updateNotificationAttention,
   recordActivity,
 } from './api';
@@ -79,6 +78,7 @@ import {
   applyConversationSidebarTaskActivity,
   applyConversationSidebarTerminalResultAcknowledgement,
   applyConversationSidebarTerminalResultUpdate,
+  conversationSidebarRunStateRefreshTarget,
   conversationTaskActivityFromLifecycle,
   conversationTaskActivityFromUpdate,
 } from './lib/conversation-sidebar-activity';
@@ -1147,8 +1147,23 @@ export function App() {
     let dispose: (() => void) | undefined;
     void subscribeConversationRunStateUpdates((event) => {
       if (!active) return;
-      const task = findConversationTask(conversationSidebarRef.current, event.projectId, event.taskId);
-      if (!event.taskUuid || task?.taskUuid !== event.taskUuid) return;
+      const currentSidebar = conversationSidebarRef.current;
+      const task = findConversationTask(currentSidebar, event.projectId, event.taskId);
+      if (!event.taskUuid) return;
+      const activeProjectId = activeWorkspaceIdRef.current
+        ?? currentSidebar.lastActiveWorkspaceId
+        ?? currentSidebar.workspaces[0]?.projectId;
+      const refreshTarget = conversationSidebarRunStateRefreshTarget(
+        currentSidebar,
+        event,
+        activeProjectId,
+      );
+      if (refreshTarget?.kind === 'workspace-tasks') {
+        void loadConversationWorkspaceTasks(refreshTarget.projectId).catch(() => {});
+      } else if (refreshTarget?.kind === 'task-runs') {
+        void loadConversationRunHistory(refreshTarget.task).catch(() => {});
+      }
+      if (!task || task.taskUuid !== event.taskUuid) return;
       setConversationSidebar((current) => {
         const next = applyConversationSidebarRunStateUpdate(current, event);
         if (next !== current) conversationSidebarRef.current = next;
@@ -1163,7 +1178,7 @@ export function App() {
       active = false;
       dispose?.();
     };
-  }, [bootstrap, uiMode]);
+  }, [bootstrap, loadConversationRunHistory, loadConversationWorkspaceTasks, uiMode]);
 
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation') return undefined;
@@ -1257,29 +1272,6 @@ export function App() {
       dispose();
     };
   }, [applyConversationLifecycleSnapshotToSidebar, applyConversationTaskActivity, bootstrap, uiMode]);
-
-  useEffect(() => {
-    if (!bootstrap || uiMode !== 'conversation') return;
-    let active = true;
-    let dispose: (() => void) | undefined;
-    void subscribeScheduledTaskUpdates(() => {
-      if (!active) return;
-      const projectId = activeWorkspaceIdRef.current
-        ?? conversationSidebarRef.current.lastActiveWorkspaceId
-        ?? conversationSidebarRef.current.workspaces[0]?.projectId;
-      if (projectId) void loadConversationWorkspaceTasks(projectId).catch(() => {});
-      if (conversationSidebarRef.current.pinRefs.length > 0) {
-        void loadConversationPinnedTasks().catch(() => {});
-      }
-    }).then((unlisten) => {
-      if (active) dispose = unlisten;
-      else unlisten();
-    }).catch(() => {});
-    return () => {
-      active = false;
-      dispose?.();
-    };
-  }, [bootstrap, loadConversationPinnedTasks, loadConversationWorkspaceTasks, uiMode]);
 
   useEffect(() => {
     if (!bootstrap) return;
@@ -1826,36 +1818,8 @@ export function App() {
     pushRoute('task-orchestration', page);
   };
 
-  // 在会话模式 sessionTree 中按 (roundId, nodeId, attemptId) 匹配出叶子（含 outer 字段）。
-  const findSessionLeaf = (
-    tree: ConversationSessionTreeVm | undefined | null,
-    roundId: string,
-    nodeId: string,
-    attemptId: string,
-  ): ConversationSessionLeafVm | null => {
-    if (!tree) return null;
-    const walkNode = (node: ConversationTreeNodeVm): ConversationSessionLeafVm | null => {
-      if (node.nodeId === nodeId) {
-        const hit = node.attempts.find((a) => a.attemptId === attemptId && a.roundId === roundId);
-        if (hit) return hit;
-      }
-      for (const child of node.outerNodes ?? []) {
-        const found = walkNode(child);
-        if (found) return found;
-      }
-      return null;
-    };
-    for (const round of tree.rounds) {
-      for (const node of round.nodes) {
-        const found = walkNode(node);
-        if (found) return found;
-      }
-    }
-    return null;
-  };
-
   // 干预弹窗「查看详情」导航：按 uiMode deep link 到对应节点。
-  const handleInterventionNavigate = useCallback(async (event: InterventionNavigateEventVm) => {
+  const handleInterventionNavigate = useCallback((event: InterventionNavigateEventVm) => {
     setWorkspacePickerOpen(false);
     if ('scheduledTaskId' in event) {
       const target = scheduledNotificationNavigation(event);
@@ -1879,50 +1843,9 @@ export function App() {
       onSelectConversation(page);
       return;
     }
-    // 统一进入 canonical conversation run，并在 sessionTree 内匹配叶子后切换 session。
-    const runPage = conversationPageForIntervention(event);
-    const targetProjectId = event.projectId;
-    onSelectConversation(runPage);
-
-    let run = conversationRunRef.current
-      && conversationPageMatchesRun(runPage, conversationRunRef.current)
-      ? conversationRunRef.current
-      : null;
-    if (!run) {
-      try {
-        const loaded = await getConversationRun(targetProjectId, event.taskId, event.runId, null);
-        applyConversationRunSnapshot(loaded, 'initial-load', { selectedSessionKey: null, preserveSelectedSession: false });
-        run = loaded;
-      } catch {
-        return;
-      }
-    }
-
-    const resolvedRun = run;
-
-    const leaf = findSessionLeaf(resolvedRun.sessionTree, event.roundId, event.nodeId, event.attemptId);
-    if (!leaf) return;
-    const key = conversationSessionKeyFromParts({
-      roundId: leaf.roundId,
-      nodeId: leaf.nodeId,
-      attemptId: leaf.attemptId,
-      outerNodeId: leaf.outerNodeId,
-      outerAttemptId: leaf.outerAttemptId,
-    });
-    conversationSelectedSessionKeyRef.current = key;
-    updateConversationSessionFollow('manual', key, resolvedRun);
-    setConversationRun((current) => {
-      const base = current && conversationPageMatchesRun(runPage, current) ? current : resolvedRun;
-      const next = beginConversationSessionSelection(base, key);
-      conversationRunRef.current = next;
-      return next;
-    });
-  }, [
-    uiMode,
-    taskPage,
-    applyConversationRunSnapshot,
-    updateConversationSessionFollow,
-  ]);
+    // The route effect is the sole run loader; complete identity lets this entry restore cache first.
+    onSelectConversation(conversationPageForIntervention(event));
+  }, []);
 
   useInterventionNotifications(handleInterventionNavigate);
   useScheduledNotifications();

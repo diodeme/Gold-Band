@@ -17,6 +17,7 @@ export type ImChannelDisplayStatus =
   | 'waitingBinding'
   | 'connecting'
   | 'reconnecting'
+  | 'connectionFailed'
   | 'ready'
   | 'paused'
   | 'reauthorize'
@@ -46,21 +47,26 @@ export function imChannelDisplayModel(channel: ImChannelSettingsVm): ImChannelDi
     return { status: 'paused', tone: 'muted', recoveryAction: 'none', showNotifications: true, canToggle: true };
   }
   const errorCode = channel.connection?.lastErrorCode;
-  if (errorCode && reauthorizationErrors.has(errorCode)) {
+  const connectionState = channel.connection?.state;
+  if (connectionState === 'authenticationRequired'
+      || (connectionState === 'error' && errorCode && reauthorizationErrors.has(errorCode))) {
     return { status: 'reauthorize', tone: 'destructive', recoveryAction: 'reauthorize', showNotifications: true, canToggle: true };
   }
-  if (errorCode === 'IM_CONNECTION_CONFLICT') {
-    return { status: 'conflict', tone: 'destructive', recoveryAction: 'reconnect', showNotifications: true, canToggle: true };
-  }
-  if (errorCode === 'IM_NETWORK_UNAVAILABLE' || errorCode === 'IM_RATE_LIMITED') {
+  if (connectionState === 'reconnecting') {
     return { status: 'reconnecting', tone: 'warning', recoveryAction: 'none', showNotifications: true, canToggle: true };
   }
-  if (channel.connection?.state === 'connecting') {
+  if (connectionState === 'connecting') {
     return { status: 'connecting', tone: 'warning', recoveryAction: 'none', showNotifications: true, canToggle: true };
+  }
+  if (connectionState === 'error' && errorCode === 'IM_CONNECTION_CONFLICT') {
+    return { status: 'conflict', tone: 'destructive', recoveryAction: 'reconnect', showNotifications: true, canToggle: true };
+  }
+  if (connectionState === 'error') {
+    return { status: 'connectionFailed', tone: 'destructive', recoveryAction: 'reconnect', showNotifications: true, canToggle: true };
   }
   const durableBinding = channel.binding;
   const currentBinding = channel.connection?.binding;
-  if (channel.connection?.state === 'connected' && durableBinding && currentBinding
+  if (connectionState === 'connected' && durableBinding && currentBinding
       && durableBinding.destinationId === currentBinding.destinationId
       && durableBinding.conversationId === currentBinding.conversationId
       && durableBinding.authorizedActorId === currentBinding.actorId) {

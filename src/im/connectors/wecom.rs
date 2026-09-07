@@ -8,8 +8,10 @@ use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
+use tokio_util::time::{DelayQueue, delay_queue::Key as DelayKey};
 use uuid::Uuid;
 
 use super::{
@@ -32,10 +34,10 @@ use crate::im::{
 pub const WECOM_WEBSOCKET_ENDPOINT: &str = "wss://openws.work.weixin.qq.com";
 const WECOM_SECRET_FIELD: &str = "secret";
 const WECOM_COMMAND_CAPACITY: usize = 64;
+const WECOM_MAX_PENDING_REQUESTS: usize = WECOM_COMMAND_CAPACITY;
 const WECOM_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const WECOM_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
-const WECOM_MAX_RECONNECTS: usize = 8;
-const WECOM_MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
+const WECOM_MAX_RECONNECT_DELAY: Duration = Duration::from_secs(60);
 const WECOM_MAX_CARD_BUTTONS: usize = 2;
 const WECOM_MAX_VOTE_OPTIONS: usize = 20;
 const WECOM_MAX_BUTTON_KEY_BYTES: usize = 1024;
@@ -52,11 +54,13 @@ const PERMISSION_FIELD_PRIORITY: [&str; 4] = [
 enum WeComCommand {
     Send {
         delivery: ImDelivery,
+        deadline: Instant,
         response: oneshot::Sender<Result<ImDeliveryReceipt, ImIntegrationError>>,
     },
     RespondToAction {
         context: ImActionResponseContext,
         state: ImMessageState,
+        deadline: Instant,
         response: oneshot::Sender<Result<(), ImIntegrationError>>,
     },
 }
@@ -77,10 +81,18 @@ enum PendingRequest {
     },
 }
 
+struct PendingRequestEntry {
+    request: PendingRequest,
+    deadline: Instant,
+    deadline_key: DelayKey,
+}
+
 pub struct WeComConnector {
     token_codec: ImActionTokenCodec,
     endpoint: String,
     commands: Mutex<GenerationSenderSlot>,
+    #[cfg(test)]
+    reconnect_delay_override: Option<Duration>,
 }
 
 #[derive(Default)]
@@ -95,6 +107,8 @@ impl WeComConnector {
             token_codec,
             endpoint: WECOM_WEBSOCKET_ENDPOINT.to_owned(),
             commands: Mutex::new(GenerationSenderSlot::default()),
+            #[cfg(test)]
+            reconnect_delay_override: None,
         }
     }
 
@@ -102,6 +116,23 @@ impl WeComConnector {
     fn with_endpoint(mut self, endpoint: impl Into<String>) -> Self {
         self.endpoint = endpoint.into();
         self
+    }
+
+    #[cfg(test)]
+    fn with_reconnect_delay(mut self, delay: Duration) -> Self {
+        self.reconnect_delay_override = Some(delay);
+        self
+    }
+
+    fn reconnect_delay_for(&self, error: &ImIntegrationError, attempt: u32) -> Duration {
+        if let Some(retry_after) = error.retry_after {
+            return retry_after;
+        }
+        #[cfg(test)]
+        if let Some(delay) = self.reconnect_delay_override {
+            return delay;
+        }
+        reconnect_delay(attempt)
     }
 
     fn command_sender(&self) -> Result<mpsc::Sender<WeComCommand>, ImIntegrationError> {
@@ -145,6 +176,7 @@ impl WeComConnector {
         events: &mpsc::Sender<ImConnectorEvent>,
         cancellation: &CancellationToken,
         locale: ImLocale,
+        reached_connected: &mut bool,
     ) -> Result<(), ImIntegrationError> {
         let (mut socket, _) = tokio_tungstenite::connect_async(&self.endpoint)
             .await
@@ -165,8 +197,10 @@ impl WeComConnector {
             })
             .await
             .map_err(|_| ImIntegrationError::permanent(ImErrorCode::NetworkUnavailable))?;
+        *reached_connected = true;
 
-        let mut pending = HashMap::<String, PendingRequest>::new();
+        let mut pending = HashMap::<String, PendingRequestEntry>::new();
+        let mut pending_deadlines = DelayQueue::<String>::new();
         let mut heartbeat = tokio::time::interval(WECOM_HEARTBEAT_INTERVAL);
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         heartbeat.tick().await;
@@ -191,8 +225,18 @@ impl WeComConnector {
                         fail_pending(pending);
                         return Ok(());
                     };
-                    let (req_id, request, pending_request) = match command {
-                        WeComCommand::Send { delivery, response } => {
+                    if pending.len() >= WECOM_MAX_PENDING_REQUESTS {
+                        fail_command(
+                            command,
+                            ImIntegrationError::retryable(
+                                ImErrorCode::QueueCapacityExceeded,
+                                Some(Duration::from_secs(1)),
+                            ),
+                        );
+                        continue;
+                    }
+                    let (req_id, request, pending_request, deadline) = match command {
+                        WeComCommand::Send { delivery, deadline, response } => {
                             let req_id = request_id();
                             if delivery_requires_linked_detail(&delivery) {
                                 let card_req_id = request_id();
@@ -218,6 +262,7 @@ impl WeComConnector {
                                         card_req_id,
                                         response,
                                     },
+                                    deadline,
                                 )
                             } else {
                                 let request = match send_request(
@@ -232,10 +277,15 @@ impl WeComConnector {
                                         continue;
                                     }
                                 };
-                                (req_id, request, PendingRequest::Send { delivery, response })
+                                (
+                                    req_id,
+                                    request,
+                                    PendingRequest::Send { delivery, response },
+                                    deadline,
+                                )
                             }
                         }
-                        WeComCommand::RespondToAction { context, state, response } => {
+                        WeComCommand::RespondToAction { context, state, deadline, response } => {
                             let ImActionResponseContext::WeCom {
                                 req_id,
                                 task_id,
@@ -250,12 +300,31 @@ impl WeComConnector {
                                 vote_selection.as_ref(),
                                 form_selection.as_ref(),
                             );
-                            (req_id, request, PendingRequest::ActionResponse { response })
+                            (
+                                req_id,
+                                request,
+                                PendingRequest::ActionResponse { response },
+                                deadline,
+                            )
                         }
                     };
-                    pending.insert(req_id.clone(), pending_request);
+                    if deadline <= Instant::now() {
+                        fail_request(pending_request, request_timeout_error());
+                        continue;
+                    }
+                    insert_pending(
+                        &mut pending,
+                        &mut pending_deadlines,
+                        req_id.clone(),
+                        pending_request,
+                        deadline,
+                    );
                     if let Err(error) = socket.send(Message::Text(request.to_string().into())).await {
-                        if let Some(request) = pending.remove(&req_id) {
+                        if let Some((request, _)) = take_pending(
+                            &mut pending,
+                            &mut pending_deadlines,
+                            &req_id,
+                        ) {
                             fail_request(request, map_websocket_error(error));
                         }
                         return Err(ImIntegrationError::retryable(ImErrorCode::NetworkUnavailable, None));
@@ -276,7 +345,11 @@ impl WeComConnector {
                     let Some(value) = parse_json_message(&message)? else { continue; };
                     if is_request_ack(&value)
                         && let Some(req_id) = header_req_id(&value)
-                        && let Some(request) = pending.remove(req_id)
+                        && let Some((request, deadline)) = take_pending(
+                            &mut pending,
+                            &mut pending_deadlines,
+                            req_id,
+                        )
                     {
                         match request {
                             PendingRequest::LinkedDetail {
@@ -297,6 +370,13 @@ impl WeComConnector {
                                     );
                                     continue;
                                 }
+                                if deadline <= Instant::now() {
+                                    fail_request(
+                                        PendingRequest::Send { delivery, response },
+                                        request_timeout_error(),
+                                    );
+                                    continue;
+                                }
                                 if let Err(error) = socket
                                     .send(Message::Text(card_request.to_string().into()))
                                     .await
@@ -305,12 +385,15 @@ impl WeComConnector {
                                     let _ = response.send(Err(error.clone()));
                                     return Err(error);
                                 }
-                                pending.insert(
+                                insert_pending(
+                                    &mut pending,
+                                    &mut pending_deadlines,
                                     card_req_id,
                                     PendingRequest::Send {
                                         delivery,
                                         response,
                                     },
+                                    deadline,
                                 );
                             }
                             request => settle_response(request, &value),
@@ -318,6 +401,12 @@ impl WeComConnector {
                         continue;
                     }
                     handle_callback(generation, events, &command_tx, value).await?;
+                }
+                expired = pending_deadlines.next(), if !pending.is_empty() => {
+                    let Some(expired) = expired else { continue; };
+                    if let Some(entry) = pending.remove(expired.get_ref()) {
+                        fail_request(entry.request, request_timeout_error());
+                    }
                 }
             }
         }
@@ -365,11 +454,13 @@ impl ImConnector for WeComConnector {
             .and_then(|value| (!value.trim().is_empty()).then_some(value.clone()))
             .ok_or_else(|| ImIntegrationError::permanent(ImErrorCode::CredentialUnavailable))?;
 
-        for reconnect in 0..=WECOM_MAX_RECONNECTS {
+        let mut reconnect_attempt = 0_u32;
+        loop {
             if cancellation.is_cancelled() {
                 self.clear_sender(generation);
                 return Ok(());
             }
+            let mut reached_connected = false;
             let session_result = self
                 .run_session(
                     &bot_id,
@@ -378,24 +469,26 @@ impl ImConnector for WeComConnector {
                     &events,
                     &cancellation,
                     config.locale,
+                    &mut reached_connected,
                 )
                 .await;
             self.clear_sender(generation);
+            if reached_connected {
+                reconnect_attempt = 0;
+            }
             match session_result {
                 Ok(()) => return Ok(()),
                 Err(error) if !error.retryable => return Err(error),
                 Err(error) => {
                     self.clear_sender(generation);
                     let _ = events
-                        .send(ImConnectorEvent::Disconnected {
+                        .send(ImConnectorEvent::ReconnectScheduled {
                             generation,
                             error: error.clone(),
                         })
                         .await;
-                    if reconnect == WECOM_MAX_RECONNECTS {
-                        return Err(error);
-                    }
-                    let delay = reconnect_delay(reconnect);
+                    let delay = self.reconnect_delay_for(&error, reconnect_attempt);
+                    reconnect_attempt = reconnect_attempt.saturating_add(1);
                     tokio::select! {
                         _ = cancellation.cancelled() => return Ok(()),
                         _ = tokio::time::sleep(delay) => {}
@@ -403,25 +496,26 @@ impl ImConnector for WeComConnector {
                 }
             }
         }
-        Err(ImIntegrationError::retryable(
-            ImErrorCode::NetworkUnavailable,
-            None,
-        ))
     }
 
     async fn send(&self, delivery: ImDelivery) -> Result<ImDeliveryReceipt, ImIntegrationError> {
         let sender = self.command_sender()?;
         let (response_tx, response_rx) = oneshot::channel();
-        sender
-            .send(WeComCommand::Send {
+        let deadline = Instant::now() + WECOM_REQUEST_TIMEOUT;
+        tokio::time::timeout_at(
+            deadline,
+            sender.send(WeComCommand::Send {
                 delivery,
+                deadline,
                 response: response_tx,
-            })
+            }),
+        )
+        .await
+        .map_err(|_| request_timeout_error())?
+        .map_err(|_| ImIntegrationError::retryable(ImErrorCode::NetworkUnavailable, None))?;
+        tokio::time::timeout_at(deadline, response_rx)
             .await
-            .map_err(|_| ImIntegrationError::retryable(ImErrorCode::NetworkUnavailable, None))?;
-        tokio::time::timeout(WECOM_REQUEST_TIMEOUT, response_rx)
-            .await
-            .map_err(|_| ImIntegrationError::retryable(ImErrorCode::NetworkUnavailable, None))?
+            .map_err(|_| request_timeout_error())?
             .map_err(|_| ImIntegrationError::retryable(ImErrorCode::NetworkUnavailable, None))?
     }
 
@@ -432,17 +526,22 @@ impl ImConnector for WeComConnector {
     ) -> Result<(), ImIntegrationError> {
         let sender = self.command_sender()?;
         let (response_tx, response_rx) = oneshot::channel();
-        sender
-            .send(WeComCommand::RespondToAction {
+        let deadline = Instant::now() + WECOM_REQUEST_TIMEOUT;
+        tokio::time::timeout_at(
+            deadline,
+            sender.send(WeComCommand::RespondToAction {
                 context,
                 state,
+                deadline,
                 response: response_tx,
-            })
+            }),
+        )
+        .await
+        .map_err(|_| request_timeout_error())?
+        .map_err(|_| ImIntegrationError::retryable(ImErrorCode::NetworkUnavailable, None))?;
+        tokio::time::timeout_at(deadline, response_rx)
             .await
-            .map_err(|_| ImIntegrationError::retryable(ImErrorCode::NetworkUnavailable, None))?;
-        tokio::time::timeout(WECOM_REQUEST_TIMEOUT, response_rx)
-            .await
-            .map_err(|_| ImIntegrationError::retryable(ImErrorCode::NetworkUnavailable, None))?
+            .map_err(|_| request_timeout_error())?
             .map_err(|_| ImIntegrationError::retryable(ImErrorCode::NetworkUnavailable, None))?
     }
 }
@@ -1502,6 +1601,7 @@ fn queue_failed_action_response(
         .try_send(WeComCommand::RespondToAction {
             context: context.clone(),
             state: ImMessageState::Failed,
+            deadline: Instant::now() + WECOM_REQUEST_TIMEOUT,
             response,
         })
         .is_ok()
@@ -2059,12 +2159,51 @@ fn is_request_ack(value: &Value) -> bool {
     value.get("cmd").is_none()
 }
 
-fn fail_pending(pending: HashMap<String, PendingRequest>) {
-    for request in pending.into_values() {
-        fail_request(
+fn insert_pending(
+    pending: &mut HashMap<String, PendingRequestEntry>,
+    deadlines: &mut DelayQueue<String>,
+    req_id: String,
+    request: PendingRequest,
+    deadline: Instant,
+) {
+    let deadline_key = deadlines.insert_at(req_id.clone(), deadline);
+    pending.insert(
+        req_id,
+        PendingRequestEntry {
             request,
+            deadline,
+            deadline_key,
+        },
+    );
+}
+
+fn take_pending(
+    pending: &mut HashMap<String, PendingRequestEntry>,
+    deadlines: &mut DelayQueue<String>,
+    req_id: &str,
+) -> Option<(PendingRequest, Instant)> {
+    let entry = pending.remove(req_id)?;
+    deadlines.remove(&entry.deadline_key);
+    Some((entry.request, entry.deadline))
+}
+
+fn fail_pending(pending: HashMap<String, PendingRequestEntry>) {
+    for entry in pending.into_values() {
+        fail_request(
+            entry.request,
             ImIntegrationError::retryable(ImErrorCode::NetworkUnavailable, None),
         );
+    }
+}
+
+fn fail_command(command: WeComCommand, error: ImIntegrationError) {
+    match command {
+        WeComCommand::Send { response, .. } => {
+            let _ = response.send(Err(error));
+        }
+        WeComCommand::RespondToAction { response, .. } => {
+            let _ = response.send(Err(error));
+        }
     }
 }
 
@@ -2086,9 +2225,22 @@ fn request_id() -> String {
     Uuid::new_v4().to_string()
 }
 
-fn reconnect_delay(reconnect: usize) -> Duration {
-    let shift = u32::try_from(reconnect.min(5)).unwrap_or(5);
-    Duration::from_secs(1_u64 << shift).min(WECOM_MAX_RECONNECT_DELAY)
+fn request_timeout_error() -> ImIntegrationError {
+    ImIntegrationError::retryable(ImErrorCode::NetworkUnavailable, None)
+}
+
+fn reconnect_delay(reconnect: u32) -> Duration {
+    let shift = reconnect.min(6);
+    let ceiling = Duration::from_secs(1_u64 << shift).min(WECOM_MAX_RECONNECT_DELAY);
+    let ceiling_millis = u64::try_from(ceiling.as_millis()).unwrap_or(u64::MAX);
+    let floor_millis = ceiling_millis.saturating_mul(4) / 5;
+    let jitter_range = ceiling_millis.saturating_sub(floor_millis);
+    let jitter = if jitter_range == 0 {
+        0
+    } else {
+        u64::try_from(Uuid::new_v4().as_u128() % u128::from(jitter_range + 1)).unwrap_or(0)
+    };
+    Duration::from_millis(floor_millis.saturating_add(jitter))
 }
 
 fn non_empty(value: &str) -> Result<String, ImIntegrationError> {
@@ -3615,6 +3767,7 @@ mod tests {
             WeComCommand::RespondToAction {
                 context,
                 state,
+                deadline: _,
                 response: _,
             } => {
                 assert_eq!(
@@ -3653,11 +3806,97 @@ mod tests {
 
     #[test]
     fn reconnect_backoff_is_bounded() {
-        assert_eq!(reconnect_delay(0), Duration::from_secs(1));
-        assert_eq!(reconnect_delay(99), WECOM_MAX_RECONNECT_DELAY);
+        for _ in 0..16 {
+            assert!(reconnect_delay(0) >= Duration::from_millis(800));
+            assert!(reconnect_delay(0) <= Duration::from_secs(1));
+            assert!(reconnect_delay(99) >= Duration::from_secs(48));
+            assert!(reconnect_delay(99) <= WECOM_MAX_RECONNECT_DELAY);
+        }
         let connector = WeComConnector::new(ImActionTokenCodec::new(vec![7; 32]).unwrap())
             .with_endpoint("ws://127.0.0.1:1");
         assert_eq!(connector.endpoint, "ws://127.0.0.1:1");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pending_deadline_releases_the_session_owned_entry() {
+        let mut pending = HashMap::new();
+        let mut deadlines = DelayQueue::new();
+        let (response, receiver) = oneshot::channel();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        insert_pending(
+            &mut pending,
+            &mut deadlines,
+            "request-1".into(),
+            PendingRequest::ActionResponse { response },
+            deadline,
+        );
+        assert_eq!(pending.len(), 1);
+
+        tokio::time::advance(Duration::from_secs(15)).await;
+        let expired = deadlines.next().await.unwrap();
+        let entry = pending.remove(expired.get_ref()).unwrap();
+        fail_request(entry.request, request_timeout_error());
+
+        assert!(pending.is_empty());
+        let error = receiver.await.unwrap().unwrap_err();
+        assert_eq!(error.code, ImErrorCode::NetworkUnavailable);
+        assert!(error.retryable);
+        assert_eq!(WECOM_MAX_PENDING_REQUESTS, WECOM_COMMAND_CAPACITY);
+    }
+
+    #[tokio::test]
+    async fn retryable_connection_failures_continue_past_the_previous_limit() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let server_task = tokio::spawn(async move {
+            for _ in 0..10 {
+                let (stream, _) = listener.accept().await.unwrap();
+                drop(stream);
+            }
+        });
+        let connector = std::sync::Arc::new(
+            WeComConnector::new(ImActionTokenCodec::new(vec![7; 32]).unwrap())
+                .with_endpoint(endpoint)
+                .with_reconnect_delay(Duration::from_millis(1)),
+        );
+        let (events, mut event_receiver) = mpsc::channel(32);
+        let cancellation = CancellationToken::new();
+        let connect_cancellation = cancellation.clone();
+        let connect_connector = std::sync::Arc::clone(&connector);
+        let task = tokio::spawn(async move {
+            connect_connector
+                .connect(
+                    ResolvedImChannelConfig {
+                        public_identity: "bot-1".into(),
+                        credential_fields: std::collections::BTreeMap::from([(
+                            WECOM_SECRET_FIELD.into(),
+                            "secret".into(),
+                        )]),
+                        locale: ImLocale::ZhCn,
+                    },
+                    1,
+                    events,
+                    connect_cancellation,
+                )
+                .await
+        });
+
+        for _ in 0..10 {
+            let event = tokio::time::timeout(Duration::from_secs(2), event_receiver.recv())
+                .await
+                .expect("retryable connection failure must publish progress")
+                .expect("connector event channel must stay open");
+            assert!(matches!(event, ImConnectorEvent::ReconnectScheduled { .. }));
+        }
+        assert!(!task.is_finished());
+
+        cancellation.cancel();
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        server_task.await.unwrap();
     }
 
     #[test]

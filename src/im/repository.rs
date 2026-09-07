@@ -365,6 +365,45 @@ impl ImRepository {
             .unwrap_or(i64::MAX)
             .max(1);
         let lease_expires_at = now_ms.saturating_add(lease_ms);
+        let rows = self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT rowid, delivery_id, destination_json, notification_kind,
+                        canonical_event_id, payload_json, expires_at_ms, attempt_count
+                 FROM im_outbox INDEXED BY idx_im_outbox_due
+                 WHERE channel_kind = ?1 AND state = 'pending'
+                   AND next_attempt_at_ms <= ?2 AND expires_at_ms > ?2
+                 ORDER BY next_attempt_at_ms, created_at_ms, delivery_id
+                 LIMIT ?3",
+            )?;
+            let mapped = statement.query_map(params![channel.as_str(), now_ms, limit], |row| {
+                Ok(StoredDeliveryRow {
+                    row_id: row.get(0)?,
+                    delivery_id: row.get(1)?,
+                    destination_json: row.get(2)?,
+                    notification_kind: row.get(3)?,
+                    canonical_event_id: row.get(4)?,
+                    payload_json: row.get(5)?,
+                    expires_at_ms: row.get(6)?,
+                    attempt_count: row.get(7)?,
+                })
+            })?;
+            Ok(mapped.collect::<Result<Vec<_>, _>>()?)
+        })?;
+        let mut valid = Vec::with_capacity(rows.len());
+        let mut invalid = Vec::new();
+        for row in rows {
+            let row_id = row.row_id;
+            let attempt_count = row.attempt_count;
+            match row.into_claimed(channel) {
+                Ok(claimed) => valid.push((row_id, attempt_count, claimed)),
+                Err(error @ ImRepositoryError::InvalidPayload)
+                | Err(error @ ImRepositoryError::InvalidStoredData)
+                | Err(error @ ImRepositoryError::PayloadTooLarge { .. }) => {
+                    invalid.push((row_id, attempt_count, error.code()));
+                }
+                Err(error) => return Err(error),
+            }
+        }
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -373,44 +412,40 @@ impl ImRepository {
                  WHERE channel_kind = ?2 AND state = 'pending' AND expires_at_ms <= ?1",
                 params![now_ms, channel.as_str()],
             )?;
-            let rows = {
-                let mut statement = transaction.prepare(
-                    "SELECT rowid, delivery_id, destination_json, notification_kind,
-                            canonical_event_id, payload_json, expires_at_ms, attempt_count
-                     FROM im_outbox INDEXED BY idx_im_outbox_due
-                     WHERE channel_kind = ?1 AND state = 'pending'
-                       AND next_attempt_at_ms <= ?2 AND expires_at_ms > ?2
-                     ORDER BY next_attempt_at_ms, created_at_ms, delivery_id
-                     LIMIT ?3",
-                )?;
-                let mapped =
-                    statement.query_map(params![channel.as_str(), now_ms, limit], |row| {
-                        Ok(StoredDeliveryRow {
-                            row_id: row.get(0)?,
-                            delivery_id: row.get(1)?,
-                            destination_json: row.get(2)?,
-                            notification_kind: row.get(3)?,
-                            canonical_event_id: row.get(4)?,
-                            payload_json: row.get(5)?,
-                            expires_at_ms: row.get(6)?,
-                            attempt_count: row.get(7)?,
-                        })
-                    })?;
-                mapped.collect::<Result<Vec<_>, _>>()?
-            };
-            for row in &rows {
-                transaction.execute(
+            let mut claimed = Vec::with_capacity(valid.len());
+            for (row_id, attempt_count, delivery) in valid {
+                let changed = transaction.execute(
                     "UPDATE im_outbox
                      SET state = 'sending', attempt_count = attempt_count + 1,
                          next_attempt_at_ms = ?1, updated_at_ms = ?2
-                     WHERE delivery_id = ?3 AND state = 'pending'",
-                    params![lease_expires_at, now_ms, row.delivery_id],
+                     WHERE rowid = ?3 AND channel_kind = ?4 AND state = 'pending'
+                       AND next_attempt_at_ms <= ?2 AND expires_at_ms > ?2
+                       AND attempt_count = ?5",
+                    params![
+                        lease_expires_at,
+                        now_ms,
+                        row_id,
+                        channel.as_str(),
+                        attempt_count
+                    ],
+                )?;
+                if changed == 1 {
+                    claimed.push(delivery);
+                }
+            }
+            for (row_id, attempt_count, error_code) in invalid {
+                transaction.execute(
+                    "UPDATE im_outbox
+                     SET state = 'dead_letter', next_attempt_at_ms = NULL,
+                         last_error_code = ?1, updated_at_ms = ?2
+                     WHERE rowid = ?3 AND channel_kind = ?4 AND state = 'pending'
+                       AND next_attempt_at_ms <= ?2 AND expires_at_ms > ?2
+                       AND attempt_count = ?5",
+                    params![error_code, now_ms, row_id, channel.as_str(), attempt_count],
                 )?;
             }
             transaction.commit()?;
-            rows.into_iter()
-                .map(|row| row.into_claimed(channel))
-                .collect()
+            Ok(claimed)
         })
     }
 
@@ -1337,6 +1372,46 @@ mod tests {
         );
         assert_eq!(repository.recover_expired_leases(149, 200).unwrap(), 0);
         assert_eq!(repository.recover_expired_leases(150, 1).unwrap(), 1);
+    }
+
+    #[test]
+    fn corrupt_due_row_is_dead_lettered_without_blocking_healthy_rows() {
+        let (_temp, repository) = repository(10);
+        let corrupt = information_delivery(ImChannelKind::WeCom, "user-1", "event-corrupt");
+        let healthy = information_delivery(ImChannelKind::WeCom, "user-1", "event-healthy");
+        repository.enqueue(&corrupt, 100).unwrap();
+        repository.enqueue(&healthy, 101).unwrap();
+        repository
+            .with_connection(|connection| {
+                connection.execute(
+                    "UPDATE im_outbox SET payload_json = '{' WHERE delivery_id = ?1",
+                    params![corrupt.delivery_id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        let claimed = repository
+            .claim_due(ImChannelKind::WeCom, 101, Duration::from_secs(30), 2)
+            .unwrap();
+
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].delivery.delivery_id, healthy.delivery_id);
+        assert_eq!(
+            repository.state(&corrupt.delivery_id).unwrap(),
+            ImDeliveryState::DeadLetter
+        );
+        let error_code = repository
+            .with_connection(|connection| {
+                Ok(connection.query_row(
+                    "SELECT last_error_code FROM im_outbox WHERE delivery_id = ?1",
+                    params![corrupt.delivery_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(error_code.as_deref(), Some("IM_PAYLOAD_INVALID"));
+        assert_eq!(repository.recover_expired_leases(200, 10).unwrap(), 0);
     }
 
     #[test]

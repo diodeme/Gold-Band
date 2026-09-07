@@ -14,6 +14,7 @@ use super::{
 pub enum ImConnectionState {
     Disabled,
     Connecting,
+    Reconnecting,
     Connected,
     AuthenticationRequired,
     Error,
@@ -136,7 +137,11 @@ impl ImConnectionManager {
                 slot.snapshot.last_connected_at_ms = Some(now_ms);
                 slot.snapshot.last_error_code = None;
             }
-            ImConnectorEvent::Disconnected { error, .. } => {
+            ImConnectorEvent::ReconnectScheduled { error, .. } => {
+                slot.snapshot.state = ImConnectionState::Reconnecting;
+                slot.snapshot.last_error_code = Some(error.code);
+            }
+            ImConnectorEvent::ConnectionFailed { error, .. } => {
                 slot.snapshot.state = connection_state_for_error(&error);
                 slot.snapshot.last_error_code = Some(error.code);
             }
@@ -284,6 +289,42 @@ mod tests {
         let snapshot = manager.snapshot(ImChannelKind::WeCom).unwrap();
         assert_eq!(snapshot.generation, second.generation);
         assert_eq!(snapshot.identity.unwrap().bot_id, "new");
+    }
+
+    #[test]
+    fn retry_progress_and_terminal_failure_have_distinct_states() {
+        let manager = ImConnectionManager::default();
+        let start = manager.replace(ImChannelKind::WeCom, true, ImChannelCapabilities::default());
+        let network_error = ImIntegrationError::retryable(ImErrorCode::NetworkUnavailable, None);
+        assert!(manager.apply_event(
+            ImChannelKind::WeCom,
+            ImConnectorEvent::ReconnectScheduled {
+                generation: start.generation,
+                error: network_error,
+            },
+            10,
+        ));
+        let reconnecting = manager.snapshot(ImChannelKind::WeCom).unwrap();
+        assert_eq!(reconnecting.state, ImConnectionState::Reconnecting);
+        assert_eq!(
+            reconnecting.last_error_code,
+            Some(ImErrorCode::NetworkUnavailable)
+        );
+
+        assert!(manager.apply_event(
+            ImChannelKind::WeCom,
+            ImConnectorEvent::ConnectionFailed {
+                generation: start.generation,
+                error: ImIntegrationError::permanent(ImErrorCode::ConnectionConflict),
+            },
+            20,
+        ));
+        let failed = manager.snapshot(ImChannelKind::WeCom).unwrap();
+        assert_eq!(failed.state, ImConnectionState::Error);
+        assert_eq!(
+            failed.last_error_code,
+            Some(ImErrorCode::ConnectionConflict)
+        );
     }
 
     #[test]

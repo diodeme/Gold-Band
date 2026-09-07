@@ -101,6 +101,10 @@ pub enum ImInboundError {
     ConversationMismatch,
     #[error("actor does not match binding")]
     ActorMismatch,
+    #[error("current channel binding no longer authorizes this delivery")]
+    BindingRevoked,
+    #[error("current channel binding could not be loaded")]
+    BindingUnavailable,
     #[error("action identity is invalid")]
     ActionIdentityInvalid,
     #[error("action was not published for this delivery")]
@@ -119,6 +123,8 @@ impl ImInboundError {
             Self::InformationNotActionable => "IM_INFORMATION_NOT_ACTIONABLE",
             Self::ConversationMismatch => "IM_CONVERSATION_MISMATCH",
             Self::ActorMismatch => "IM_ACTOR_MISMATCH",
+            Self::BindingRevoked => "IM_BINDING_REVOKED",
+            Self::BindingUnavailable => "IM_STORAGE_UNAVAILABLE",
             Self::ActionIdentityInvalid => "IM_ACTION_ID_INVALID",
             Self::ActionNotAllowed => "IM_ACTION_INVALID",
             Self::Repository(error) => error.code(),

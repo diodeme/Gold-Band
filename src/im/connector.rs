@@ -59,6 +59,7 @@ pub enum ImErrorCode {
     ActorMismatch,
     ConversationMismatch,
     UnsupportedCapability,
+    QueueCapacityExceeded,
     StorageUnavailable,
     ConnectionConflict,
 }
@@ -76,6 +77,7 @@ impl ImErrorCode {
             Self::ActorMismatch => "IM_ACTOR_MISMATCH",
             Self::ConversationMismatch => "IM_CONVERSATION_MISMATCH",
             Self::UnsupportedCapability => "IM_CAPABILITY_UNSUPPORTED",
+            Self::QueueCapacityExceeded => "IM_QUEUE_CAPACITY_EXCEEDED",
             Self::StorageUnavailable => "IM_STORAGE_UNAVAILABLE",
             Self::ConnectionConflict => "IM_CONNECTION_CONFLICT",
         }
@@ -152,7 +154,11 @@ pub enum ImConnectorEvent {
         generation: u64,
         identity: ImConnectionIdentity,
     },
-    Disconnected {
+    ReconnectScheduled {
+        generation: u64,
+        error: ImIntegrationError,
+    },
+    ConnectionFailed {
         generation: u64,
         error: ImIntegrationError,
     },
@@ -243,7 +249,8 @@ impl ImConnectorEvent {
     pub const fn generation(&self) -> u64 {
         match self {
             Self::Connected { generation, .. }
-            | Self::Disconnected { generation, .. }
+            | Self::ReconnectScheduled { generation, .. }
+            | Self::ConnectionFailed { generation, .. }
             | Self::InboundAction { generation, .. }
             | Self::BindingObserved { generation, .. } => *generation,
         }

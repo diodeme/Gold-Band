@@ -75,8 +75,11 @@ describe('IM settings boundary', () => {
     expect(imChannelDisplayModel(channelFixture({}, 'connecting')).status).toBe('connecting');
     expect(imChannelDisplayModel(channelFixture({ enabled: false }, 'disabled')).status).toBe('paused');
     expect(imChannelDisplayModel(channelFixture({
-      connection: { ...channelFixture().connection!, lastErrorCode: 'IM_NETWORK_UNAVAILABLE', state: 'error' },
+      connection: { ...channelFixture().connection!, lastErrorCode: 'IM_NETWORK_UNAVAILABLE', state: 'reconnecting' },
     })).status).toBe('reconnecting');
+    expect(imChannelDisplayModel(channelFixture({
+      connection: { ...channelFixture().connection!, lastErrorCode: 'IM_NETWORK_UNAVAILABLE', state: 'error' },
+    }))).toMatchObject({ status: 'connectionFailed', recoveryAction: 'reconnect' });
     expect(imChannelDisplayModel(channelFixture({
       connection: { ...channelFixture().connection!, lastErrorCode: 'IM_AUTHENTICATION_REQUIRED', state: 'authenticationRequired' },
     }))).toMatchObject({ status: 'reauthorize', recoveryAction: 'reauthorize' });
@@ -114,6 +117,7 @@ describe('IM settings boundary', () => {
       channelFixture(),
       channelFixture({}, 'connecting'),
       channelFixture({ enabled: false }, 'disabled'),
+      channelFixture({ connection: { ...channelFixture().connection!, state: 'reconnecting', lastErrorCode: 'IM_NETWORK_UNAVAILABLE' } }),
       channelFixture({ connection: { ...channelFixture().connection!, state: 'error', lastErrorCode: 'IM_NETWORK_UNAVAILABLE' } }),
       channelFixture({ connection: { ...channelFixture().connection!, state: 'authenticationRequired', lastErrorCode: 'IM_AUTHENTICATION_REQUIRED' } }),
       channelFixture({ connection: { ...channelFixture().connection!, state: 'error', lastErrorCode: 'IM_CONNECTION_CONFLICT' } }),
@@ -178,7 +182,7 @@ describe('IM settings boundary', () => {
 
   it('has Chinese and English copy for statuses, actions, and stable errors', () => {
     for (const language of ['zh-CN', 'en']) {
-      for (const status of ['notConfigured', 'waitingBinding', 'connecting', 'reconnecting', 'ready', 'paused', 'reauthorize', 'conflict']) {
+      for (const status of ['notConfigured', 'waitingBinding', 'connecting', 'reconnecting', 'connectionFailed', 'ready', 'paused', 'reauthorize', 'conflict']) {
         expect(i18n.t(`settings.im.status.${status}`, { lng: language })).not.toContain('settings.im');
       }
       for (const code of ['IM_CONNECTION_CONFLICT', 'IM_STORAGE_UNAVAILABLE', 'IM_STALE_GENERATION']) {

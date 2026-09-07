@@ -1752,7 +1752,7 @@ export interface ScheduledRuntimeSettingsInputVm {
 }
 
 export type ImChannelKind = 'weCom';
-export type ImConnectionState = 'disabled' | 'connecting' | 'connected' | 'authenticationRequired' | 'error';
+export type ImConnectionState = 'disabled' | 'connecting' | 'reconnecting' | 'connected' | 'authenticationRequired' | 'error';
 
 export interface ImNotificationPreferencesVm {
   permission: boolean;

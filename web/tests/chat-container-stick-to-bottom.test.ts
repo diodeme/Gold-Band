@@ -213,7 +213,7 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
     }
   });
 
-  it('reports only explicit wheel, keyboard, or scrollbar-pointer input as user scrolling', async () => {
+  it('reports wheel and keyboard input but not an unqualified pointer press as user scrolling', async () => {
     vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
     const contextRef = React.createRef<ChatContainerContext>();
     const userScrolls: number[] = [];
@@ -243,7 +243,7 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
         viewport.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp' }));
         viewport.dispatchEvent(new Event('pointerdown', { bubbles: true }));
       });
-      expect(userScrolls).toHaveLength(3);
+      expect(userScrolls).toHaveLength(2);
     } finally {
       await act(async () => root.unmount());
     }

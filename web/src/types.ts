@@ -1738,6 +1738,7 @@ export interface AcpSessionVm {
   timing?: AcpSessionTimingVm | null;
   restored: boolean;
   stopReason?: string | null;
+  turnError?: RuntimeErrorInfoVm | null;
   systemPromptAppend?: string | null;
   config?: AcpSessionConfigVm | null;
   events: AcpUiEventVm[];
@@ -2514,6 +2515,7 @@ export interface ConversationAcpFacetVm {
   latestTurnStatus: 'none' | 'completed' | 'cancelled' | 'failed';
   stopping: boolean;
   stopReason?: string | null;
+  turnError?: RuntimeErrorInfoVm | null;
   operationId?: string | null;
 }
 

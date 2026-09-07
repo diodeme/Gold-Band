@@ -88,6 +88,31 @@ function session(partial: Partial<AcpSessionVm>): AcpSessionVm {
 }
 
 describe('ACP chat event handling', () => {
+  it('shows a failed background turn even without timeline or diagnostic errors', () => {
+    expect(visibleAcpBannerError(null, session({ status: 'failed' }), [], undefined, 'failed'))
+      .toBeTruthy();
+  });
+
+  it('does not let an obsolete diagnostic suppress a newer failed turn', () => {
+    const failed = session({ status: 'failed', diagnostics: {
+      rawFrameCount: 0, eventCount: 1, errorCount: 1,
+      lastError: 'obsolete error', lastErrorTimestamp: '1Z',
+    } });
+    const message = visibleAcpBannerError(null, failed,
+      [event({ timestamp: '2Z', kind: 'textDelta', status: 'completed' })], null, 'failed');
+    expect(message).toBeTruthy();
+    expect(message).not.toContain('obsolete error');
+  });
+
+  it('uses the canonical failure instead of an older session detail failure', () => {
+    const oldSession = { ...session({ status: 'failed' }), turnError: {
+      code: { domain: 'provider', code: 'acp.session-request-failed' },
+      domain: 'provider', recovery: 'manual', diagnostic: 'OLD_TURN_FAILURE',
+    } };
+    expect(visibleAcpBannerError(null, oldSession, [], null, 'failed', null))
+      .not.toContain('OLD_TURN_FAILURE');
+  });
+
   it('bounds the per-session optimistic projection by the configured event window', () => {
     const sessionKey = 'optimistic-bound-test';
     const configuredWindowLimit = loadedEventBufferLimit(48, 2);
@@ -217,6 +242,7 @@ describe('ACP chat event handling', () => {
 
   it('keeps return-to-latest latched at a truncated event window bottom', () => {
     expect(shouldShowReturnToLatest(true, true, true, true, 0)).toBe(true);
+    expect(shouldShowReturnToLatest(false, true, true, true, 0)).toBe(true);
     expect(shouldShowReturnToLatest(true, true, false, true, 0)).toBe(false);
   });
 

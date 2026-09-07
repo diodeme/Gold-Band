@@ -382,6 +382,34 @@ afterEach(() => {
 });
 
 describe('ACP runtime continue submission', () => {
+  it('shows the background restore failure without diagnostic history and clears it on retry', async () => {
+    const lifecycle = pausedLifecycle();
+    lifecycle.acp.latestTurnStatus = 'failed';
+    lifecycle.acp.revision = 3;
+    lifecycle.acp.turnId = 'turn-a';
+    lifecycle.acp.turnError = {
+      code: { domain: 'provider', code: 'acp.session-request-failed' },
+      domain: 'provider', recovery: 'manual', params: { method: 'session/resume' },
+      diagnostic: 'restore failed',
+      raw: { code: -32603, message: 'Internal error', data: { details: 'thread session-a already has an active writer' } },
+    };
+    const { container, root, render, session } = await renderPausedDialog({
+      isOrchestrated: false,
+      initialLifecycle: lifecycle,
+      sessionStatus: 'failed',
+      session: { turnError: lifecycle.acp.turnError },
+    });
+    try {
+      expect(container.textContent).toContain('thread session-a already has an active writer');
+      const retry = pausedLifecycle();
+      retry.acp = { ...retry.acp, revision: 4, turnId: 'turn-b', latestTurnStatus: 'none', liveTurnActivity: 'starting', turnError: null };
+      await render(retry, { ...session, status: 'pending', turnError: null });
+      expect(container.textContent).not.toContain('already has an active writer');
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('keeps a newer-turn permission visible while lifecycle is terminal for the prior turn', async () => {
     const terminal = pausedLifecycle();
     terminal.acp = {

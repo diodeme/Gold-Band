@@ -739,6 +739,7 @@ pub struct ConversationAcpFacetVm {
     pub latest_turn_status: String,
     pub stopping: bool,
     pub stop_reason: Option<String>,
+    pub turn_error: Option<gold_band::runtime_error::RuntimeErrorInfo>,
     pub operation_id: Option<String>,
 }
 
@@ -2802,6 +2803,7 @@ fn derive_conversation_attempt_lifecycle_with_facets(
             latest_turn_status: acp_latest_turn_status(session_status.as_deref()),
             stopping: acp_stopping,
             stop_reason: None,
+            turn_error: None,
             operation_id: None,
         },
         display_status,
@@ -3084,6 +3086,7 @@ fn attach_acp_lifecycle_header(
     lifecycle.acp.stopping =
         header.live_turn_activity == gold_band::acp::events::AcpLiveTurnActivity::CancelRequested;
     lifecycle.acp.stop_reason = header.stop_reason;
+    lifecycle.acp.turn_error = header.turn_error;
     lifecycle.acp.operation_id = header.operation_id;
     // The snapshot header may arrive after the broader runtime facet. Rebuild
     // the derived projection from the merged canonical facets so a terminal
@@ -7932,6 +7935,47 @@ mod tests {
 
         assert_eq!(lifecycle.runtime.status, "completed");
         assert_eq!(lifecycle.runtime.phase, "terminal");
+    }
+
+    #[test]
+    fn lifecycle_projection_carries_current_turn_error_without_timeline_detail() {
+        let app = App::new(temp_repo_root());
+        write_conversation_assets_fixture(&app);
+        let snapshot =
+            app.paths
+                .acp_snapshot_file("task-046", "run-060", "round-001", "测试", "attempt-002");
+        let mut metadata: serde_json::Value =
+            gold_band::storage::read_json(&snapshot).unwrap_or_else(|_| json!({}));
+        let error = gold_band::runtime_error::manual_runtime_error_info(
+            gold_band::runtime_error::RuntimeErrorDomain::Provider,
+            "acp.session-request-failed",
+            "active writer",
+            json!({"method": "session/resume"}),
+        );
+        metadata["acpRevision"] = json!(7);
+        metadata["turnId"] = json!("failed-turn");
+        metadata["latestTurnStatus"] = json!("failed");
+        metadata["liveTurnActivity"] = json!("idle");
+        metadata["turnError"] = serde_json::to_value(&error).unwrap();
+        gold_band::storage::write_json(&snapshot, &metadata).unwrap();
+        let timeline =
+            app.paths
+                .acp_timeline_file("task-046", "run-060", "round-001", "测试", "attempt-002");
+        std::fs::create_dir_all(timeline).unwrap();
+        let lifecycle = conversation_attempt_lifecycle_vm(
+            &app,
+            "task-046",
+            "run-060",
+            "round-001",
+            "测试",
+            "attempt-002",
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(lifecycle.acp.revision, 7);
+        assert_eq!(lifecycle.acp.turn_id.as_deref(), Some("failed-turn"));
+        assert_eq!(lifecycle.acp.turn_error.as_ref(), Some(&error));
     }
 
     #[test]

@@ -4,6 +4,7 @@ mod avatar;
 mod builtin_mcp;
 mod channel;
 mod commands;
+mod acp_images;
 mod commands_conversation;
 mod conversation_attention;
 mod conversation_workspace;
@@ -38,14 +39,14 @@ use commands::{
     delete_profile, delete_skill, delete_workflow_template, disconnect_multica,
     dismiss_update_announcement, doctor_agent, download_and_install_update, execute_git_mutation,
     get_acp_activity_detail, get_acp_raw_frames, get_acp_session, get_acp_tool_detail,
-    get_agent_binding_usage, get_agent_command_catalog, get_agent_registry, get_app_bootstrap,
-    get_auto_templates, get_file_comparison, get_git_branch_picker_snapshot, get_git_capability,
-    get_git_commit_detail, get_git_commit_reachability, get_git_commit_review, get_git_comparison,
-    get_git_history, get_git_operation, get_github_capability, get_github_issue,
-    get_github_operation, get_github_pull_request, get_log_page, get_metrics_settings,
-    get_multica_settings, get_profile, get_profiles, get_round_detail, get_run_detail,
-    get_skill_sync_status, get_source_control_snapshot, get_system_fonts, get_task_detail,
-    get_task_list, get_turn_file_change_set, get_update_status, get_workflow,
+    get_acp_image, get_agent_binding_usage, get_agent_command_catalog, get_agent_registry,
+    get_app_bootstrap, get_auto_templates, get_file_comparison, get_git_branch_picker_snapshot,
+    get_git_capability, get_git_commit_detail, get_git_commit_reachability, get_git_commit_review,
+    get_git_comparison, get_git_history, get_git_operation, get_github_capability,
+    get_github_issue, get_github_operation, get_github_pull_request, get_log_page,
+    get_metrics_settings, get_multica_settings, get_profile, get_profiles, get_round_detail,
+    get_run_detail, get_skill_sync_status, get_source_control_snapshot, get_system_fonts,
+    get_task_detail, get_task_list, get_turn_file_change_set, get_update_status, get_workflow,
     get_workflow_templates, import_desktop_wallpaper, import_profiles_from_folder,
     initialize_git_repository, list_conversation_directory, list_github_issues,
     list_github_pull_requests, list_mcp_servers, list_mcp_tools, list_project_skills, list_skills,
@@ -424,6 +425,7 @@ fn run() -> anyhow::Result<()> {
             resolve_turn_attachment_file,
             get_acp_activity_detail,
             get_acp_tool_detail,
+            get_acp_image,
             renew_acp_session_lease,
             submit_conversation_prompt,
             reorder_conversation_queued_prompts,

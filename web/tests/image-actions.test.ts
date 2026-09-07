@@ -57,4 +57,12 @@ describe('image asset actions', () => {
       name: 'missing.png', mime: 'image/png',
     })).rejects.toMatchObject({ code: 'image-action.source-unreadable', params: {} });
   });
+
+  it('loads original bytes and actual MIME on demand instead of copying the thumbnail', async () => {
+    const loadOriginal = vi.fn(async () => new Blob([Uint8Array.from([1, 2, 3])], { type: 'image/jpeg' }));
+    const asset = { name: 'Image 1', mime: 'image/png', previewUrl: 'blob:thumbnail', loadOriginal };
+    expect(loadOriginal).not.toHaveBeenCalled();
+    expect(await imageActionInput(asset)).toEqual({ fileName: 'Image 1', mime: 'image/jpeg', source: { kind: 'bytes', dataBase64: 'AQID' } });
+    expect(loadOriginal).toHaveBeenCalledTimes(1);
+  });
 });

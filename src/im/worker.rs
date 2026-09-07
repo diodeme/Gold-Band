@@ -93,14 +93,14 @@ impl ImDeliveryWorker {
             let Some(claimed) = pending.next() else {
                 break;
             };
-            spawn_send(&mut sends, Arc::clone(&self.connector), claimed.delivery);
+            spawn_send(&mut sends, Arc::clone(&self.connector), claimed);
         }
         while let Some(result) = sends.join_next().await {
-            if let Ok((delivery, send_result)) = result {
-                self.settle_send(delivery, send_result, now_ms).await?;
+            if let Ok((claimed, send_result)) = result {
+                self.settle_send(claimed, send_result, now_ms).await?;
             }
             if let Some(claimed) = pending.next() {
-                spawn_send(&mut sends, Arc::clone(&self.connector), claimed.delivery);
+                spawn_send(&mut sends, Arc::clone(&self.connector), claimed);
             }
         }
         Ok(count)
@@ -108,18 +108,26 @@ impl ImDeliveryWorker {
 
     async fn settle_send(
         &self,
-        delivery: super::ImDelivery,
+        claimed: super::ClaimedImDelivery,
         result: Result<super::ImDeliveryReceipt, super::ImIntegrationError>,
         now_ms: i64,
     ) -> Result<(), ImRepositoryError> {
         let repository = Arc::clone(&self.repository);
+        let delivery = claimed.delivery;
+        let expected_attempt_count = claimed.attempt_count;
         match result {
             Ok(receipt) => {
                 let delivery_id = delivery.delivery_id;
                 let channel = delivery.channel;
                 let binding = receipt.into_binding(channel, delivery_id.clone());
                 tokio::task::spawn_blocking(move || {
-                    repository.mark_sent(&delivery_id, channel, binding.as_ref(), now_ms)
+                    repository.mark_sent(
+                        &delivery_id,
+                        channel,
+                        expected_attempt_count,
+                        binding.as_ref(),
+                        now_ms,
+                    )
                 })
                 .await
                 .map_err(|_| ImRepositoryError::LockUnavailable)??;
@@ -140,7 +148,13 @@ impl ImDeliveryWorker {
                     "IM delivery failed"
                 );
                 tokio::task::spawn_blocking(move || {
-                    repository.mark_failed(&delivery_id, retry_at_ms, error_code, now_ms)
+                    repository.mark_failed(
+                        &delivery_id,
+                        expected_attempt_count,
+                        retry_at_ms,
+                        error_code,
+                        now_ms,
+                    )
                 })
                 .await
                 .map_err(|_| ImRepositoryError::LockUnavailable)??;
@@ -152,15 +166,16 @@ impl ImDeliveryWorker {
 
 fn spawn_send(
     sends: &mut JoinSet<(
-        super::ImDelivery,
+        super::ClaimedImDelivery,
         Result<super::ImDeliveryReceipt, super::ImIntegrationError>,
     )>,
     connector: Arc<dyn ImConnector>,
-    delivery: super::ImDelivery,
+    claimed: super::ClaimedImDelivery,
 ) {
     sends.spawn(async move {
+        let delivery = claimed.delivery.clone();
         let result = connector.send(delivery.clone()).await;
-        (delivery, result)
+        (claimed, result)
     });
 }
 
@@ -201,6 +216,8 @@ mod tests {
         fn capabilities(&self) -> ImChannelCapabilities {
             ImChannelCapabilities::default()
         }
+
+        fn advance_generation(&self, _generation: u64) {}
 
         async fn connect(
             &self,

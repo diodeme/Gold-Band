@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImChannelSnapshotVm, ImSettingsVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, PersonalizationPreference, PreferencesVm, ProfileInput, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DeleteImChannelResultVm, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImChannelSnapshotVm, ImSettingsVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, PersonalizationPreference, PreferencesVm, ProfileInput, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -528,7 +528,7 @@ export const desktopApi: RuntimeApi = {
     return invokeCommand<ImChannelSnapshotVm>('reconnect_im_channel', { input });
   },
   deleteImChannel(kind) {
-    return invokeCommand<ImSettingsVm>('delete_im_channel', { input: { kind } });
+    return invokeCommand<DeleteImChannelResultVm>('delete_im_channel', { input: { kind } });
   },
   async subscribeImChannelStateUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;

@@ -1916,7 +1916,7 @@ const resources = {
             IM_SCAN_NETWORK_UNAVAILABLE: "暂时无法连接企业微信授权服务。", IM_SCAN_PROTOCOL_INVALID: "企业微信授权响应无效，请重新生成。",
             IM_SCAN_SESSION_INVALID: "扫码会话无效，请重新打开。", IM_SCAN_SESSION_CONFLICT: "扫码授权正在处理中。",
             IM_STALE_GENERATION: "连接状态已更新，请根据最新状态重试。",
-            IM_RUNTIME_UNAVAILABLE: "IM 运行时尚未就绪。", IM_OPERATION_FAILED: "操作失败，请重试。",
+            IM_RUNTIME_UNAVAILABLE: "IM 运行时尚未就绪。", IM_CHANNEL_CLEANUP_PENDING: "配置已删除，本地清理将在后台自动重试。", IM_OPERATION_FAILED: "操作失败，请重试。",
           },
         },
         avatar: {
@@ -4249,7 +4249,7 @@ const resources = {
             IM_SCAN_NETWORK_UNAVAILABLE: "The WeCom authorization service is temporarily unreachable.", IM_SCAN_PROTOCOL_INVALID: "The WeCom authorization response was invalid. Generate a new code.",
             IM_SCAN_SESSION_INVALID: "The QR session is invalid. Reopen it.", IM_SCAN_SESSION_CONFLICT: "QR authorization is already in progress.",
             IM_STALE_GENERATION: "The connection state changed. Retry from the latest state.",
-            IM_RUNTIME_UNAVAILABLE: "The IM runtime is not ready.", IM_OPERATION_FAILED: "The operation failed. Try again.",
+            IM_RUNTIME_UNAVAILABLE: "The IM runtime is not ready.", IM_CHANNEL_CLEANUP_PENDING: "The configuration was deleted. Local cleanup will retry in the background.", IM_OPERATION_FAILED: "The operation failed. Try again.",
           },
         },
         avatar: {

@@ -1815,6 +1815,12 @@ export interface ImSettingsVm {
   channels: ImChannelSettingsVm[];
 }
 
+export interface DeleteImChannelResultVm {
+  settings: ImSettingsVm;
+  operationId: string;
+  cleanupStatus: 'complete' | 'pending';
+}
+
 export interface SetImChannelEnabledInputVm {
     kind: ImChannelKind;
     enabled: boolean;

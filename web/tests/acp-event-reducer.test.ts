@@ -39,6 +39,65 @@ function session(events: AcpUiEventVm[]): Pick<AcpSessionVm, "events" | "eventPa
 }
 
 describe("ACP event reducer", () => {
+  it("keeps reused permission request ids as distinct occurrences", () => {
+    const first = event({
+      id: "permission-occurrence-1",
+      kind: "permissionRequest",
+      seq: 10,
+      status: "pending",
+      raw: { requestId: "json-rpc-7", attemptId: "attempt-1" },
+    });
+    const second = event({
+      id: "permission-occurrence-2",
+      kind: "permissionRequest",
+      seq: 20,
+      status: "pending",
+      raw: { requestId: "json-rpc-7", attemptId: "attempt-1" },
+    });
+
+    expect(mergeAcpEventWindows([first], [second])).toHaveLength(2);
+  });
+
+  it("merges lifecycle snapshots for the same permission occurrence", () => {
+    const pending = event({
+      id: "permission-occurrence-1",
+      kind: "permissionRequest",
+      seq: 10,
+      endedSeq: 10,
+      status: "pending",
+      raw: { requestId: "json-rpc-7", attemptId: "attempt-1" },
+    });
+    const resolved = event({
+      id: "permission-occurrence-1",
+      kind: "permissionRequest",
+      seq: 10,
+      endedSeq: 11,
+      status: "completed",
+      raw: { requestId: "json-rpc-7", attemptId: "attempt-1", optionId: "allow" },
+    });
+
+    const merged = mergeAcpEventWindows([pending], [resolved]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({ status: "completed", endedSeq: 11 });
+  });
+
+  it("does not merge identical event ids across attempts", () => {
+    const first = event({
+      id: "permission-occurrence-1",
+      kind: "permissionRequest",
+      seq: 10,
+      raw: { requestId: "json-rpc-7", attemptId: "attempt-1" },
+    });
+    const second = event({
+      id: "permission-occurrence-1",
+      kind: "permissionRequest",
+      seq: 20,
+      raw: { requestId: "json-rpc-7", attemptId: "attempt-2" },
+    });
+
+    expect(mergeAcpEventWindows([first], [second])).toHaveLength(2);
+  });
+
   it("projects the latest hidden usage update into the current session", () => {
     const current = {
       usage: { used: 128_399, size: 258_400, inputTokens: 42 },

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::app::intervention::{
     ElicitationQuestionKind, InterventionCommandService, InterventionError, InterventionLocator,
@@ -80,9 +80,45 @@ pub struct ImLifecycleProjectionJob {
     pub now_ms: i64,
 }
 
+pub enum ImLifecycleProjectionQueueItem {
+    Event(ImLifecycleProjectionJob),
+    Barrier(oneshot::Sender<()>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImProjectionEnqueueOutcome {
+    Enqueued,
+    Saturated,
+    Closed,
+}
+
+pub fn try_enqueue_projection(
+    sender: &mpsc::Sender<ImLifecycleProjectionQueueItem>,
+    job: ImLifecycleProjectionJob,
+) -> ImProjectionEnqueueOutcome {
+    match sender.try_send(ImLifecycleProjectionQueueItem::Event(job)) {
+        Ok(()) => ImProjectionEnqueueOutcome::Enqueued,
+        Err(mpsc::error::TrySendError::Full(_)) => ImProjectionEnqueueOutcome::Saturated,
+        Err(mpsc::error::TrySendError::Closed(_)) => ImProjectionEnqueueOutcome::Closed,
+    }
+}
+
+pub async fn drain_projection_queue(
+    sender: &mpsc::Sender<ImLifecycleProjectionQueueItem>,
+) -> Result<(), &'static str> {
+    let (barrier_sender, barrier_receiver) = oneshot::channel();
+    sender
+        .send(ImLifecycleProjectionQueueItem::Barrier(barrier_sender))
+        .await
+        .map_err(|_| "IM_PROJECTION_QUEUE_CLOSED")?;
+    barrier_receiver
+        .await
+        .map_err(|_| "IM_PROJECTION_QUEUE_CLOSED")
+}
+
 pub fn im_lifecycle_projection_channel() -> (
-    mpsc::Sender<ImLifecycleProjectionJob>,
-    mpsc::Receiver<ImLifecycleProjectionJob>,
+    mpsc::Sender<ImLifecycleProjectionQueueItem>,
+    mpsc::Receiver<ImLifecycleProjectionQueueItem>,
 ) {
     mpsc::channel(IM_LIFECYCLE_QUEUE_CAPACITY)
 }
@@ -114,12 +150,19 @@ impl ImLifecycleProjector {
 
     pub async fn run<F>(
         self,
-        mut receiver: mpsc::Receiver<ImLifecycleProjectionJob>,
+        mut receiver: mpsc::Receiver<ImLifecycleProjectionQueueItem>,
         on_complete: F,
     ) where
         F: Fn(ImProjectionCompletion) + Send + Sync + 'static,
     {
-        while let Some(job) = receiver.recv().await {
+        while let Some(item) = receiver.recv().await {
+            let job = match item {
+                ImLifecycleProjectionQueueItem::Event(job) => job,
+                ImLifecycleProjectionQueueItem::Barrier(completion) => {
+                    let _ = completion.send(());
+                    continue;
+                }
+            };
             let repository = Arc::clone(&self.repository);
             let ImLifecycleProjectionJob {
                 app,
@@ -1566,12 +1609,14 @@ mod tests {
             run_completed(false, "event-durable"),
         ] {
             sender
-                .send(ImLifecycleProjectionJob {
-                    app: app.clone_for_background(),
-                    event,
-                    targets: vec![target.clone()],
-                    now_ms: 100,
-                })
+                .send(ImLifecycleProjectionQueueItem::Event(
+                    ImLifecycleProjectionJob {
+                        app: app.clone_for_background(),
+                        event,
+                        targets: vec![target.clone()],
+                        now_ms: 100,
+                    },
+                ))
                 .await
                 .unwrap();
         }
@@ -1604,5 +1649,67 @@ mod tests {
             .unwrap();
         assert_eq!(claimed.len(), 1);
         assert_eq!(claimed[0].delivery.canonical_event_id, "event-durable");
+    }
+
+    #[tokio::test]
+    async fn projection_barrier_waits_for_prior_events_to_be_durable() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        let repository = Arc::new(ImRepository::new(
+            Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap(),
+        ));
+        let projector = ImLifecycleProjector::new(Arc::clone(&repository));
+        let (sender, receiver) = im_lifecycle_projection_channel();
+        let run = tokio::spawn(projector.run(receiver, |_| {}));
+
+        sender
+            .send(ImLifecycleProjectionQueueItem::Event(
+                ImLifecycleProjectionJob {
+                    app: app.clone_for_background(),
+                    event: run_completed(false, "event-before-barrier"),
+                    targets: vec![target(ImChannelKind::WeCom)],
+                    now_ms: 100,
+                },
+            ))
+            .await
+            .unwrap();
+        drain_projection_queue(&sender).await.unwrap();
+
+        let claimed = repository
+            .claim_due(
+                ImChannelKind::WeCom,
+                100,
+                std::time::Duration::from_secs(60),
+                1,
+            )
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(
+            claimed[0].delivery.canonical_event_id,
+            "event-before-barrier"
+        );
+        drop(sender);
+        run.await.unwrap();
+    }
+
+    #[test]
+    fn saturated_projection_enqueue_is_bounded_and_does_not_project() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        let (sender, _receiver) = mpsc::channel(1);
+        let job = || ImLifecycleProjectionJob {
+            app: app.clone_for_background(),
+            event: run_completed(false, "event-1"),
+            targets: vec![target(ImChannelKind::WeCom)],
+            now_ms: 100,
+        };
+        assert_eq!(
+            try_enqueue_projection(&sender, job()),
+            ImProjectionEnqueueOutcome::Enqueued
+        );
+        assert_eq!(
+            try_enqueue_projection(&sender, job()),
+            ImProjectionEnqueueOutcome::Saturated
+        );
     }
 }

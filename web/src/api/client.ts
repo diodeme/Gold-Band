@@ -57,6 +57,7 @@ import type {
   MetricsSettingsVm,
   ImChannelKind,
   ImChannelSnapshotVm,
+  DeleteImChannelResultVm,
   ImGenerationInputVm,
   ImSettingsVm,
   SaveImNotificationPreferencesInputVm,
@@ -341,7 +342,7 @@ export interface RuntimeApi {
   saveImNotificationPreferences(input: SaveImNotificationPreferencesInputVm): Promise<ImSettingsVm>;
   resetImChannelBinding(input: ImGenerationInputVm): Promise<ImSettingsVm>;
   reconnectImChannel(input: ImGenerationInputVm): Promise<ImChannelSnapshotVm>;
-  deleteImChannel(kind: ImChannelKind): Promise<ImSettingsVm>;
+  deleteImChannel(kind: ImChannelKind): Promise<DeleteImChannelResultVm>;
   subscribeImChannelStateUpdates?(listener: (snapshot: ImChannelSnapshotVm) => void): Promise<() => void>;
   // 干预通知：OS Toast「查看详情」点击后后端转发导航事件，前端订阅做 deep-link。
   subscribeInterventionNavigate?(listener: (event: InterventionNavigateEventVm) => void): Promise<() => void>;

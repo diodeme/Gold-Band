@@ -81,7 +81,11 @@ describe('IM settings production interaction', () => {
       return structuredClone(currentSettings);
     });
     api.resetImChannelBinding.mockImplementation(async () => structuredClone(currentSettings));
-    api.deleteImChannel.mockImplementation(async () => settingsFixture(false));
+    api.deleteImChannel.mockImplementation(async () => ({
+      settings: settingsFixture(false),
+      operationId: 'cleanup-1',
+      cleanupStatus: 'complete',
+    }));
     api.reconnectImChannel.mockImplementation(async () => structuredClone(currentSettings.channels[0].connection!));
     host = document.createElement('div');
     document.body.appendChild(host);
@@ -190,5 +194,33 @@ describe('IM settings production interaction', () => {
     });
     expect(document.body.textContent).toContain('更换接收账号？');
     expect(document.body.textContent).not.toContain('测试连接');
+  });
+
+  it('shows durable pending cleanup after the configuration is already deleted', async () => {
+    api.deleteImChannel.mockResolvedValue({
+      settings: settingsFixture(false),
+      operationId: 'cleanup-pending-1',
+      cleanupStatus: 'pending',
+    });
+    await renderSettings();
+    const menu = host.querySelector<HTMLButtonElement>('[aria-label="配置管理"]')!;
+
+    await act(async () => {
+      menu.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+    });
+    const deleteItem = [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+      .find((item) => item.textContent === '删除配置');
+    await act(async () => {
+      deleteItem?.focus();
+      deleteItem?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')!;
+    const confirm = [...dialog.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === '删除')!;
+    await act(async () => confirm.click());
+
+    expect(api.deleteImChannel).toHaveBeenCalledWith('weCom');
+    expect(host.querySelector('[role="alert"]')?.textContent)
+      .toContain('配置已删除，本地清理将在后台自动重试。');
   });
 });

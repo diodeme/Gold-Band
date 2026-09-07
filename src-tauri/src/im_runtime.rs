@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::{Context, Result};
@@ -6,15 +7,18 @@ use gold_band::app::intervention::InterventionLocator;
 use gold_band::app::{App, RuntimeLifecycleEvent};
 use gold_band::im::{
     IM_PAYLOAD_VERSION, ImActionResponseContext, ImActionTokenCodec, ImBindingSummary,
-    ImChannelKind, ImChannelSettings, ImConnectionManager, ImConnector, ImConnectorEvent,
-    ImCredentialStore, ImDelivery, ImDeliveryInsertResult, ImDeliveryPayload, ImDeliveryWorker,
-    ImDestination, ImInboundActionService, ImIntegrationSettings, ImLifecycleProjectionJob,
-    ImLifecycleProjector, ImLocale, ImMessageState, ImNavigationLocator, ImNotificationKind,
-    ImObservedBinding, ImProjectionCompletion, ImProjectionResult, ImProjectionTarget,
+    ImChannelCleanupOperation, ImChannelCleanupPhase, ImChannelKind, ImChannelSettings,
+    ImConnectionManager, ImConnector, ImConnectorEvent, ImCredentialStore, ImDelivery,
+    ImDeliveryInsertResult, ImDeliveryPayload, ImDeliveryWorker, ImDestination,
+    ImInboundActionService, ImIntegrationSettings, ImLifecycleProjectionJob,
+    ImLifecycleProjectionQueueItem, ImLifecycleProjector, ImLocale, ImMaintenanceWorker,
+    ImMessageState, ImNavigationLocator, ImNotificationKind, ImObservedBinding,
+    ImProjectionCompletion, ImProjectionEnqueueOutcome, ImProjectionResult, ImProjectionTarget,
     ImRepository, ImRepositoryError, ImWorkerSignal, InterventionResolutionNotification,
     OsImCredentialStore, ResolvedImChannelConfig, WECOM_SCAN_SESSION_TTL, WeComConnector,
     WeComScanAuthClient, WeComScanAuthError, WeComScanCredentials, desktop_resolution_event_id,
-    im_lifecycle_projection_channel, im_worker_channel,
+    drain_projection_queue, im_lifecycle_projection_channel, im_worker_channel,
+    try_enqueue_projection,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -30,8 +34,12 @@ use crate::commands::{
 use crate::state::DesktopState;
 
 pub const IM_CHANNEL_STATE_EVENT: &str = "im-channel-state-updated";
+pub const IM_PROJECTION_DIAGNOSTIC_EVENT: &str = "im-projection-diagnostic";
 const TERMINAL_CONFIRMATION_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
 const BINDING_PERSISTENCE_RETRY_LIMIT: usize = 3;
+const IM_PROJECTION_ALERT_COOLDOWN_MS: i64 = 30_000;
+const IM_PROJECTION_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const IM_CHANNEL_CLEANUP_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -49,6 +57,29 @@ pub struct ImChannelSettingsVm {
 #[serde(rename_all = "camelCase")]
 pub struct ImSettingsVm {
     pub channels: Vec<ImChannelSettingsVm>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ImChannelCleanupStatusVm {
+    Complete,
+    Pending,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteImChannelResultVm {
+    pub settings: ImSettingsVm,
+    pub operation_id: String,
+    pub cleanup_status: ImChannelCleanupStatusVm,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImProjectionDiagnosticVm {
+    code: &'static str,
+    canonical_event_id: String,
+    project_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -111,8 +142,8 @@ pub struct DesktopImRuntime {
     connection_manager: Arc<ImConnectionManager>,
     connectors: HashMap<ImChannelKind, Arc<dyn ImConnector>>,
     targets: RwLock<Vec<ImProjectionTarget>>,
-    projection_sender: mpsc::Sender<ImLifecycleProjectionJob>,
-    projection_receiver: Mutex<Option<mpsc::Receiver<ImLifecycleProjectionJob>>>,
+    projection_sender: mpsc::Sender<ImLifecycleProjectionQueueItem>,
+    projection_receiver: Mutex<Option<mpsc::Receiver<ImLifecycleProjectionQueueItem>>>,
     connector_event_sender: mpsc::Sender<(ImChannelKind, ImConnectorEvent)>,
     connector_event_receiver: Mutex<Option<mpsc::Receiver<(ImChannelKind, ImConnectorEvent)>>>,
     worker_senders: HashMap<ImChannelKind, mpsc::Sender<ImWorkerSignal>>,
@@ -121,6 +152,7 @@ pub struct DesktopImRuntime {
     wecom_scan_session: Mutex<Option<ActiveWeComScanSession>>,
     settings_write_lock: Mutex<()>,
     binding_persistence_retries: Mutex<HashMap<ImChannelKind, ActiveBindingPersistenceRetry>>,
+    last_projection_alert_at_ms: AtomicI64,
     cancellation: CancellationToken,
 }
 
@@ -167,27 +199,72 @@ impl DesktopImRuntime {
             wecom_scan_session: Mutex::new(None),
             settings_write_lock: Mutex::new(()),
             binding_persistence_retries: Mutex::new(HashMap::new()),
+            last_projection_alert_at_ms: AtomicI64::new(i64::MIN),
             cancellation: CancellationToken::new(),
         }))
     }
 
     pub fn start(self: &Arc<Self>, app_handle: AppHandle) {
-        if let Some(receiver) = self
+        let projection_receiver = self
             .projection_receiver
             .lock()
             .expect("IM projection receiver lock poisoned")
-            .take()
+            .take();
+        let worker_receivers = std::mem::take(
+            &mut *self
+                .worker_receivers
+                .lock()
+                .expect("IM worker receiver lock poisoned"),
+        );
+        let connector_event_receiver = self
+            .connector_event_receiver
+            .lock()
+            .expect("IM event receiver lock poisoned")
+            .take();
+        let runtime = Arc::clone(self);
+        tauri::async_runtime::spawn(async move {
+            runtime
+                .bootstrap(
+                    app_handle,
+                    projection_receiver,
+                    worker_receivers,
+                    connector_event_receiver,
+                )
+                .await;
+        });
+    }
+
+    async fn bootstrap(
+        self: Arc<Self>,
+        app_handle: AppHandle,
+        projection_receiver: Option<mpsc::Receiver<ImLifecycleProjectionQueueItem>>,
+        mut worker_receivers: HashMap<ImChannelKind, mpsc::Receiver<ImWorkerSignal>>,
+        connector_event_receiver: Option<mpsc::Receiver<(ImChannelKind, ImConnectorEvent)>>,
+    ) {
+        if let Err(error) = self.recover_channel_cleanups(&app_handle, false).await {
+            warn!(error = %error, "recover IM channel cleanup operations failed");
+        }
+        let maintenance = ImMaintenanceWorker::new(Arc::clone(&self.repository));
+        match maintenance
+            .run_startup_pass(chrono::Utc::now().timestamp_millis())
+            .await
         {
+            Ok(result) => tracing::info!(
+                recovered_leases = result.recovered_leases,
+                removed_outbox = result.removed_outbox,
+                removed_inbound = result.removed_inbound,
+                "IM startup maintenance completed"
+            ),
+            Err(error) => warn!(error_code = error.code(), "IM startup maintenance failed"),
+        }
+
+        if let Some(receiver) = projection_receiver {
             let projector = ImLifecycleProjector::new(Arc::clone(&self.repository));
             let worker_senders = self.worker_senders.clone();
             tauri::async_runtime::spawn(projector.run(receiver, move |completion| {
                 handle_projection_completion(&worker_senders, completion);
             }));
         }
-        let mut worker_receivers = self
-            .worker_receivers
-            .lock()
-            .expect("IM worker receiver lock poisoned");
         for channel in ImChannelKind::ALL {
             let Some(receiver) = worker_receivers.remove(&channel) else {
                 continue;
@@ -199,26 +276,203 @@ impl DesktopImRuntime {
             let cancellation = self.cancellation.child_token();
             tauri::async_runtime::spawn(worker.run(receiver, cancellation));
         }
-        drop(worker_receivers);
 
-        if let Some(receiver) = self
-            .connector_event_receiver
-            .lock()
-            .expect("IM event receiver lock poisoned")
-            .take()
-        {
-            let runtime = Arc::clone(self);
+        if let Some(receiver) = connector_event_receiver {
+            let runtime = Arc::clone(&self);
             let handle = app_handle.clone();
             tauri::async_runtime::spawn(async move {
                 runtime.consume_connector_events(handle, receiver).await;
             });
         }
-        let runtime = Arc::clone(self);
+        if let Err(error) = self.reconfigure(&app_handle).await {
+            warn!(error = %error, "IM runtime configuration failed");
+        }
+        let maintenance = ImMaintenanceWorker::new(Arc::clone(&self.repository));
+        tauri::async_runtime::spawn(maintenance.run(self.cancellation.child_token()));
+        let cleanup_runtime = Arc::clone(&self);
+        let cleanup_handle = app_handle.clone();
+        let cleanup_cancellation = self.cancellation.child_token();
         tauri::async_runtime::spawn(async move {
-            if let Err(error) = runtime.reconfigure(&app_handle).await {
-                warn!(error = %error, "IM runtime configuration failed");
-            }
+            cleanup_runtime
+                .run_channel_cleanup_recovery(cleanup_handle, cleanup_cancellation)
+                .await;
         });
+    }
+
+    async fn run_channel_cleanup_recovery(
+        self: Arc<Self>,
+        app_handle: AppHandle,
+        cancellation: CancellationToken,
+    ) {
+        let mut interval = tokio::time::interval(IM_CHANNEL_CLEANUP_RETRY_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await;
+        loop {
+            tokio::select! {
+                _ = cancellation.cancelled() => break,
+                _ = interval.tick() => {
+                    if let Err(error) = self.recover_channel_cleanups(&app_handle, true).await {
+                        warn!(error = %error, "retry IM channel cleanup operations failed");
+                    }
+                }
+            }
+        }
+    }
+
+    async fn recover_channel_cleanups(
+        &self,
+        app_handle: &AppHandle,
+        drain_projection: bool,
+    ) -> Result<()> {
+        let state = app_handle.state::<DesktopState>();
+        let app = state.app()?;
+        let settings = tauri::async_runtime::spawn_blocking(move || app.load_settings())
+            .await
+            .map_err(|_| anyhow::anyhow!("IM_STORAGE_UNAVAILABLE"))??;
+        let repository = Arc::clone(&self.repository);
+        let operations =
+            tauri::async_runtime::spawn_blocking(move || repository.pending_channel_cleanups())
+                .await
+                .map_err(|_| anyhow::anyhow!("IM_STORAGE_UNAVAILABLE"))??;
+
+        for operation in operations {
+            let setting = settings
+                .im_integrations
+                .channels
+                .iter()
+                .find(|channel| channel.kind == operation.channel);
+            if setting.is_some_and(|channel| channel.credential_ref == operation.credential_ref) {
+                let repository = Arc::clone(&self.repository);
+                let operation_id = operation.operation_id.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    repository.finish_channel_cleanup(&operation_id)
+                })
+                .await
+                .map_err(|_| anyhow::anyhow!("IM_STORAGE_UNAVAILABLE"))??;
+                continue;
+            }
+            if let Err(code) = self
+                .complete_channel_cleanup(operation, drain_projection)
+                .await
+            {
+                warn!(
+                    error_code = code,
+                    "IM channel cleanup recovery remains pending"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    async fn complete_channel_cleanup(
+        &self,
+        operation: ImChannelCleanupOperation,
+        drain_projection: bool,
+    ) -> std::result::Result<(), &'static str> {
+        let mut phase = operation.phase;
+        if drain_projection {
+            tokio::time::timeout(
+                IM_PROJECTION_DRAIN_TIMEOUT,
+                drain_projection_queue(&self.projection_sender),
+            )
+            .await
+            .map_err(|_| "IM_PROJECTION_DRAIN_TIMEOUT")??;
+        }
+        if phase != ImChannelCleanupPhase::ProjectionDrained
+            && phase != ImChannelCleanupPhase::OutboxRemoved
+        {
+            phase = ImChannelCleanupPhase::ProjectionDrained;
+            self.update_cleanup_phase(&operation.operation_id, phase, None)
+                .await?;
+        }
+
+        if phase != ImChannelCleanupPhase::OutboxRemoved {
+            let repository = Arc::clone(&self.repository);
+            let channel = operation.channel;
+            match tauri::async_runtime::spawn_blocking(move || {
+                repository.delete_active_for_channel(channel)
+            })
+            .await
+            {
+                Ok(Ok(_)) => {
+                    phase = ImChannelCleanupPhase::OutboxRemoved;
+                    self.update_cleanup_phase(&operation.operation_id, phase, None)
+                        .await?;
+                }
+                Ok(Err(error)) => {
+                    let code = error.code();
+                    let _ = self
+                        .update_cleanup_phase(&operation.operation_id, phase, Some(code))
+                        .await;
+                    return Err(code);
+                }
+                Err(_) => {
+                    let code = "IM_STORAGE_UNAVAILABLE";
+                    let _ = self
+                        .update_cleanup_phase(&operation.operation_id, phase, Some(code))
+                        .await;
+                    return Err(code);
+                }
+            }
+        }
+
+        if let Some(reference) = operation.credential_ref {
+            let channel = operation.channel;
+            match tauri::async_runtime::spawn_blocking(move || {
+                OsImCredentialStore.delete(channel, &reference)
+            })
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    let code = error.code();
+                    let _ = self
+                        .update_cleanup_phase(&operation.operation_id, phase, Some(code))
+                        .await;
+                    return Err(code);
+                }
+                Err(_) => {
+                    let code = "IM_CREDENTIAL_UNAVAILABLE";
+                    let _ = self
+                        .update_cleanup_phase(&operation.operation_id, phase, Some(code))
+                        .await;
+                    return Err(code);
+                }
+            }
+        }
+
+        let repository = Arc::clone(&self.repository);
+        let operation_id = operation.operation_id;
+        tauri::async_runtime::spawn_blocking(move || {
+            repository.finish_channel_cleanup(&operation_id)
+        })
+        .await
+        .map_err(|_| "IM_STORAGE_UNAVAILABLE")?
+        .map_err(|error| error.code())?;
+        Ok(())
+    }
+
+    async fn update_cleanup_phase(
+        &self,
+        operation_id: &str,
+        phase: ImChannelCleanupPhase,
+        error_code: Option<&str>,
+    ) -> std::result::Result<(), &'static str> {
+        let repository = Arc::clone(&self.repository);
+        let operation_id = operation_id.to_owned();
+        let error_code = error_code.map(str::to_owned);
+        tauri::async_runtime::spawn_blocking(move || {
+            repository.update_channel_cleanup(
+                &operation_id,
+                phase,
+                error_code.as_deref(),
+                chrono::Utc::now().timestamp_millis(),
+            )
+        })
+        .await
+        .map_err(|_| "IM_STORAGE_UNAVAILABLE")?
+        .map_err(|error| error.code())?;
+        Ok(())
     }
 
     pub fn register_lifecycle_subscriber(self: &Arc<Self>, app: &App, app_handle: &AppHandle) {
@@ -231,6 +485,7 @@ impl DesktopImRuntime {
                 let Some(project_id) = event_project_id(&event) else {
                     return;
                 };
+                let project_id = project_id.to_owned();
                 let Some(state) = handle.try_state::<DesktopState>() else {
                     warn!(
                         canonical_event_id,
@@ -239,7 +494,7 @@ impl DesktopImRuntime {
                     );
                     return;
                 };
-                let runtime_app = match resolve_command_app(&state, Some(project_id)) {
+                let runtime_app = match resolve_command_app(&state, Some(&project_id)) {
                     Ok(app) => app,
                     Err(error) => {
                         warn!(
@@ -250,13 +505,12 @@ impl DesktopImRuntime {
                         return;
                     }
                 };
-                let targets = match runtime.targets() {
+                let targets = match runtime.targets.read() {
                     Ok(targets) => targets,
-                    Err(error) => {
+                    Err(_) => {
                         warn!(
                             canonical_event_id,
                             error_code = "IM_RUNTIME_UNAVAILABLE",
-                            error = %error,
                             "IM lifecycle projection could not read targets"
                         );
                         return;
@@ -265,35 +519,31 @@ impl DesktopImRuntime {
                 let job = ImLifecycleProjectionJob {
                     app: runtime_app,
                     event,
-                    targets,
+                    targets: targets.clone(),
                     now_ms: chrono::Utc::now().timestamp_millis(),
                 };
-                if let Err(error) = runtime.projection_sender.try_send(job) {
-                    match error {
-                        tokio::sync::mpsc::error::TrySendError::Full(job) => {
-                            let projector =
-                                ImLifecycleProjector::new(Arc::clone(&runtime.repository));
-                            let result = projector.project_event(
-                                &job.app,
-                                &job.event,
-                                &job.targets,
-                                job.now_ms,
-                            );
-                            handle_projection_completion(
-                                &runtime.worker_senders,
-                                ImProjectionCompletion {
-                                    canonical_event_id: event_canonical_id(&job.event).to_string(),
-                                    result: result.map_err(|error| error.code()),
-                                },
-                            );
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(job) => {
-                            warn!(
-                                canonical_event_id = event_canonical_id(&job.event),
-                                error_code = "IM_PROJECTION_QUEUE_CLOSED",
-                                "IM lifecycle projection queue is closed"
-                            );
-                        }
+                match try_enqueue_projection(&runtime.projection_sender, job) {
+                    ImProjectionEnqueueOutcome::Enqueued => {}
+                    ImProjectionEnqueueOutcome::Saturated => {
+                        warn!(
+                            canonical_event_id,
+                            project_id,
+                            error_code = "IM_PROJECTION_QUEUE_FULL",
+                            "IM lifecycle projection queue is full"
+                        );
+                        runtime.emit_projection_diagnostic(
+                            &handle,
+                            "IM_PROJECTION_QUEUE_FULL",
+                            canonical_event_id,
+                            project_id,
+                        );
+                    }
+                    ImProjectionEnqueueOutcome::Closed => {
+                        warn!(
+                            canonical_event_id,
+                            error_code = "IM_PROJECTION_QUEUE_CLOSED",
+                            "IM lifecycle projection queue is closed"
+                        );
                     }
                 }
             }),
@@ -307,7 +557,10 @@ impl DesktopImRuntime {
     }
 
     pub async fn reconfigure(self: &Arc<Self>, app_handle: &AppHandle) -> Result<()> {
-        let settings = app_handle.state::<DesktopState>().app()?.load_settings()?;
+        let app = app_handle.state::<DesktopState>().app()?;
+        let settings = tauri::async_runtime::spawn_blocking(move || app.load_settings())
+            .await
+            .map_err(|_| anyhow::anyhow!("IM_STORAGE_UNAVAILABLE"))??;
         let targets = projection_targets(&settings.im_integrations, &self.connectors);
         let target_count = targets.len();
         *self
@@ -320,8 +573,16 @@ impl DesktopImRuntime {
             _ => ImLocale::ZhCn,
         };
         for channel in ImChannelKind::ALL {
-            self.reconfigure_channel(app_handle, channel, &settings.im_integrations, locale)
-                .await?;
+            if let Err(error) = self
+                .reconfigure_channel(app_handle, channel, &settings.im_integrations, locale)
+                .await
+            {
+                warn!(
+                    channel = channel.as_str(),
+                    error = %error,
+                    "IM channel reconfiguration failed"
+                );
+            }
         }
         Ok(())
     }
@@ -343,8 +604,12 @@ impl DesktopImRuntime {
                 .get(&channel)
                 .map(|connector| connector.capabilities())
                 .unwrap_or_default();
-            self.connection_manager
+            let start = self
+                .connection_manager
                 .replace(channel, false, capabilities);
+            if let Some(connector) = self.connectors.get(&channel) {
+                connector.advance_generation(start.generation);
+            }
             if let Some(sender) = self.worker_senders.get(&channel) {
                 let _ = sender.send(ImWorkerSignal::Shutdown).await;
             }
@@ -468,11 +733,31 @@ impl DesktopImRuntime {
         )
     }
 
-    fn targets(&self) -> Result<Vec<ImProjectionTarget>> {
-        self.targets
-            .read()
-            .map(|targets| targets.clone())
-            .map_err(|_| anyhow::anyhow!("IM_RUNTIME_UNAVAILABLE"))
+    fn emit_projection_diagnostic(
+        &self,
+        app_handle: &AppHandle,
+        code: &'static str,
+        canonical_event_id: String,
+        project_id: String,
+    ) {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let previous = self.last_projection_alert_at_ms.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(previous) < IM_PROJECTION_ALERT_COOLDOWN_MS
+            || self
+                .last_projection_alert_at_ms
+                .compare_exchange(previous, now_ms, Ordering::AcqRel, Ordering::Relaxed)
+                .is_err()
+        {
+            return;
+        }
+        let _ = app_handle.emit(
+            IM_PROJECTION_DIAGNOSTIC_EVENT,
+            ImProjectionDiagnosticVm {
+                code,
+                canonical_event_id,
+                project_id,
+            },
+        );
     }
 
     async fn reconfigure_channel(
@@ -499,18 +784,51 @@ impl DesktopImRuntime {
             connector.capabilities(),
             existing_binding,
         );
+        connector.advance_generation(start.generation);
         emit_snapshot(app_handle, self.connection_manager.snapshot(channel));
         if !channel_settings.enabled {
             return Ok(());
         }
-        let credential_ref = channel_settings
-            .credential_ref
-            .as_deref()
-            .context("enabled IM channel has no credential reference")?;
-        let credentials = self
-            .credential_store
-            .load(channel, credential_ref)
-            .map_err(|error| anyhow::anyhow!(error.code()))?;
+        let Some(credential_ref) = channel_settings.credential_ref.clone() else {
+            self.settle_reconfigure_failure(
+                app_handle,
+                channel,
+                start.generation,
+                gold_band::im::ImErrorCode::ConfigInvalid,
+            );
+            return Ok(());
+        };
+        let credential_store = self.credential_store;
+        let credentials = match tauri::async_runtime::spawn_blocking(move || {
+            credential_store.load(channel, &credential_ref)
+        })
+        .await
+        {
+            Ok(Ok(credentials)) => credentials,
+            Ok(Err(error)) => {
+                warn!(
+                    channel = channel.as_str(),
+                    error_code = error.code(),
+                    "load IM credential failed"
+                );
+                self.settle_reconfigure_failure(
+                    app_handle,
+                    channel,
+                    start.generation,
+                    gold_band::im::ImErrorCode::CredentialUnavailable,
+                );
+                return Ok(());
+            }
+            Err(_) => {
+                self.settle_reconfigure_failure(
+                    app_handle,
+                    channel,
+                    start.generation,
+                    gold_band::im::ImErrorCode::CredentialUnavailable,
+                );
+                return Ok(());
+            }
+        };
         let config = ResolvedImChannelConfig {
             public_identity: channel_settings.public_identity,
             credential_fields: credentials.fields,
@@ -537,6 +855,24 @@ impl DesktopImRuntime {
             }
         });
         Ok(())
+    }
+
+    fn settle_reconfigure_failure(
+        &self,
+        app_handle: &AppHandle,
+        channel: ImChannelKind,
+        generation: u64,
+        code: gold_band::im::ImErrorCode,
+    ) {
+        self.connection_manager.apply_event(
+            channel,
+            ImConnectorEvent::Disconnected {
+                generation,
+                error: gold_band::im::ImIntegrationError::permanent(code),
+            },
+            chrono::Utc::now().timestamp_millis(),
+        );
+        emit_snapshot(app_handle, self.connection_manager.snapshot(channel));
     }
 
     async fn consume_connector_events(
@@ -776,33 +1112,6 @@ impl DesktopImRuntime {
         {
             retry.cancellation.cancel();
         }
-    }
-
-    fn advance_generation_from_settings(
-        &self,
-        app_handle: &AppHandle,
-        channel: ImChannelKind,
-        settings: &ImIntegrationSettings,
-    ) {
-        self.cancel_binding_persistence_retry(channel);
-        let configured = settings
-            .channels
-            .iter()
-            .find(|candidate| candidate.kind == channel)
-            .cloned()
-            .unwrap_or_else(|| disabled_channel(channel));
-        let capabilities = self
-            .connectors
-            .get(&channel)
-            .map(|connector| connector.capabilities())
-            .unwrap_or_default();
-        self.connection_manager.replace_with_binding(
-            channel,
-            configured.enabled,
-            capabilities,
-            configured.binding.as_ref().map(observed_binding),
-        );
-        emit_snapshot(app_handle, self.connection_manager.snapshot(channel));
     }
 
     fn process_inbound(
@@ -1280,11 +1589,6 @@ pub async fn set_im_channel_enabled(
             state
                 .update_settings_config(&settings)
                 .map_err(im_command_error)?;
-            runtime.advance_generation_from_settings(
-                &app_handle,
-                input.kind,
-                &settings.im_integrations,
-            );
         }
         (settings, changed)
     };
@@ -1371,11 +1675,6 @@ pub async fn reset_im_channel_binding(
             .write()
             .map_err(|_| im_error("IM_RUNTIME_UNAVAILABLE"))? =
             projection_targets(&settings.im_integrations, &runtime.connectors);
-        runtime.advance_generation_from_settings(
-            &app_handle,
-            input.kind,
-            &settings.im_integrations,
-        );
         (settings, true)
     };
     debug_assert!(changed);
@@ -1428,76 +1727,129 @@ pub async fn delete_im_channel(
     app_handle: AppHandle,
     state: tauri::State<'_, DesktopState>,
     input: ImChannelInput,
-) -> CommandResult<ImSettingsVm> {
-    let app = state.app().map_err(im_command_error)?;
+) -> CommandResult<DeleteImChannelResultVm> {
     let runtime = state
         .im_runtime()
         .ok_or_else(|| im_error("IM_RUNTIME_UNAVAILABLE"))?;
-    let (settings, original_settings, credential_ref) = {
-        let _write_guard = runtime
+    let transition_runtime = Arc::clone(&runtime);
+    let transition_handle = app_handle.clone();
+    let channel = input.kind;
+    let (settings, operation) = tauri::async_runtime::spawn_blocking(move || {
+        let state = transition_handle.state::<DesktopState>();
+        let app = state.app().map_err(im_command_error)?;
+        let _write_guard = transition_runtime
             .settings_write_lock
             .lock()
             .map_err(|_| im_error("IM_STORAGE_UNAVAILABLE"))?;
         let mut settings = app.load_settings().map_err(im_command_error)?;
-        let original_settings = settings.clone();
-        let credential_ref = settings
+        let configured = settings
             .im_integrations
             .channels
             .iter()
-            .find(|channel| channel.kind == input.kind)
-            .and_then(|channel| channel.credential_ref.clone());
+            .find(|candidate| candidate.kind == channel)
+            .cloned();
+        let existing = transition_runtime
+            .repository
+            .channel_cleanup(channel)
+            .map_err(|error| im_error(error.code()))?;
+        let operation = if let Some(operation) = existing {
+            operation
+        } else {
+            let operation = ImChannelCleanupOperation {
+                operation_id: Uuid::new_v4().to_string(),
+                channel,
+                credential_ref: configured
+                    .as_ref()
+                    .and_then(|configured| configured.credential_ref.clone()),
+                phase: ImChannelCleanupPhase::Prepared,
+                last_error_code: None,
+            };
+            transition_runtime
+                .repository
+                .create_channel_cleanup(
+                    &operation.operation_id,
+                    channel,
+                    operation.credential_ref.as_deref(),
+                    chrono::Utc::now().timestamp_millis(),
+                )
+                .map_err(|error| im_error(error.code()))?;
+            operation
+        };
         settings
             .im_integrations
             .channels
-            .retain(|channel| channel.kind != input.kind);
-        app.save_settings(&settings).map_err(im_command_error)?;
-        state
-            .update_settings_config(&settings)
-            .map_err(im_command_error)?;
-        runtime.advance_generation_from_settings(
-            &app_handle,
-            input.kind,
-            &settings.im_integrations,
-        );
-        (settings, original_settings, credential_ref)
-    };
-    if let Some(reference) = credential_ref {
-        let channel = input.kind;
-        let delete_result = tauri::async_runtime::spawn_blocking(move || {
-            OsImCredentialStore.delete(channel, &reference)
-        })
-        .await
-        .map_err(|_| im_error("IM_CREDENTIAL_UNAVAILABLE"))?;
-        if let Err(error) = delete_result {
-            let _write_guard = runtime
-                .settings_write_lock
-                .lock()
-                .map_err(|_| im_error("IM_STORAGE_UNAVAILABLE"))?;
-            if let Err(rollback_error) = app.save_settings(&original_settings) {
-                warn!(error = %rollback_error, "rollback IM settings after credential delete failure failed");
-            } else if let Err(rollback_error) = state.update_settings_config(&original_settings) {
-                warn!(error = %rollback_error, "rollback in-memory IM settings failed");
-            } else {
-                runtime.advance_generation_from_settings(
-                    &app_handle,
-                    input.kind,
-                    &original_settings.im_integrations,
-                );
+            .retain(|candidate| candidate.kind != channel);
+        if configured.is_some() {
+            if let Err(error) = app.save_settings(&settings) {
+                if operation.phase == ImChannelCleanupPhase::Prepared {
+                    let _ = transition_runtime
+                        .repository
+                        .finish_channel_cleanup(&operation.operation_id);
+                }
+                return Err(im_command_error(error));
             }
-            return Err(im_error(error.code()));
         }
-    }
-    let repository = Arc::clone(&runtime.repository);
-    let channel = input.kind;
-    tauri::async_runtime::spawn_blocking(move || repository.delete_active_for_channel(channel))
-        .await
-        .map_err(|_| im_error("IM_STORAGE_UNAVAILABLE"))?
-        .map_err(|error| im_error(error.code()))?;
-    runtime
-        .reconfigure(&app_handle)
-        .await
-        .map_err(im_command_error)?;
-    Ok(settings_vm(&settings.im_integrations, Some(&runtime)))
+        *transition_runtime
+            .targets
+            .write()
+            .map_err(|_| im_error("IM_RUNTIME_UNAVAILABLE"))? =
+            projection_targets(&settings.im_integrations, &transition_runtime.connectors);
+        let capabilities = transition_runtime
+            .connectors
+            .get(&channel)
+            .map(|connector| connector.capabilities())
+            .unwrap_or_default();
+        let start = transition_runtime
+            .connection_manager
+            .replace(channel, false, capabilities);
+        if let Some(connector) = transition_runtime.connectors.get(&channel) {
+            connector.advance_generation(start.generation);
+        }
+        emit_snapshot(
+            &transition_handle,
+            transition_runtime.connection_manager.snapshot(channel),
+        );
+        if let Err(error) = state.update_settings_config(&settings) {
+            warn!(error = %error, "update in-memory IM settings after durable delete failed");
+        }
+        transition_runtime
+            .repository
+            .update_channel_cleanup(
+                &operation.operation_id,
+                ImChannelCleanupPhase::SettingsRemoved,
+                None,
+                chrono::Utc::now().timestamp_millis(),
+            )
+            .map_err(|error| im_error(error.code()))?;
+        Ok::<_, CommandErrorVm>((
+            settings,
+            ImChannelCleanupOperation {
+                phase: ImChannelCleanupPhase::SettingsRemoved,
+                ..operation
+            },
+        ))
+    })
+    .await
+    .map_err(|_| im_error("IM_STORAGE_UNAVAILABLE"))??;
+
+    let operation_id = operation.operation_id.clone();
+    let cleanup_status = match runtime.complete_channel_cleanup(operation, true).await {
+        Ok(()) => ImChannelCleanupStatusVm::Complete,
+        Err(code) => {
+            warn!(
+                channel = channel.as_str(),
+                operation_id,
+                error_code = code,
+                "IM channel cleanup remains pending"
+            );
+            ImChannelCleanupStatusVm::Pending
+        }
+    };
+    Ok(DeleteImChannelResultVm {
+        settings: settings_vm(&settings.im_integrations, Some(&runtime)),
+        operation_id,
+        cleanup_status,
+    })
 }
 
 fn settings_vm(
@@ -1622,6 +1974,20 @@ async fn install_scanned_wecom_credentials(
         .settings_write_lock
         .lock()
         .map_err(|_| im_error("IM_STORAGE_UNAVAILABLE"))?;
+    if runtime
+        .repository
+        .channel_cleanup(ImChannelKind::WeCom)
+        .map_err(|error| im_error(error.code()))?
+        .is_some()
+    {
+        drop(write_guard);
+        let reference_for_delete = reference.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            OsImCredentialStore.delete(ImChannelKind::WeCom, &reference_for_delete)
+        })
+        .await;
+        return Err(im_error("IM_CHANNEL_CLEANUP_PENDING"));
+    }
     let mut settings = match app.load_settings() {
         Ok(settings) => settings,
         Err(error) => {
@@ -1676,11 +2042,6 @@ async fn install_scanned_wecom_credentials(
         let _ = OsImCredentialStore.delete(ImChannelKind::WeCom, &reference);
         return Err(im_command_error(error));
     }
-    runtime.advance_generation_from_settings(
-        app_handle,
-        ImChannelKind::WeCom,
-        &settings.im_integrations,
-    );
     drop(write_guard);
     if let Some(old_reference) = old_reference {
         let delete_result = tauri::async_runtime::spawn_blocking(move || {
@@ -1807,6 +2168,30 @@ fn handle_projection_completion(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delete_channel_result_uses_stable_cleanup_status_contract() {
+        let result = DeleteImChannelResultVm {
+            settings: ImSettingsVm {
+                channels: Vec::new(),
+            },
+            operation_id: "cleanup-1".into(),
+            cleanup_status: ImChannelCleanupStatusVm::Pending,
+        };
+
+        assert_eq!(
+            serde_json::to_value(result).unwrap(),
+            serde_json::json!({
+                "settings": { "channels": [] },
+                "operationId": "cleanup-1",
+                "cleanupStatus": "pending",
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(ImChannelCleanupStatusVm::Complete).unwrap(),
+            serde_json::json!("complete")
+        );
+    }
 
     fn vote_delivery() -> gold_band::im::ImDelivery {
         gold_band::im::ImDelivery {

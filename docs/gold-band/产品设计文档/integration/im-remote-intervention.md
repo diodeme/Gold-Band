@@ -5,6 +5,7 @@
 - 状态：已批准，实施中
 - 首期仅支持企业微信；微信延期，等待稳定主动推送真实 PoC
 - 2026-09-03 范围收缩：删除第二平台 connector、SDK、通道枚举、设置接口和 UI，不保留隐藏入口或兼容消费路径
+- 2026-09-04 可靠性闭环：补齐发送租约恢复、保留清理调度、generation-owned connector sender、删除清理 journal、局部重配置失败隔离、前端 occurrence identity 与投影队列背压契约
 - 运行形态：Gold Band 桌面客户端进程内直连，不部署 Gold Band 云端 IM 网关
 - 关联开发计划：[客户端直连 IM 远程干预实施计划](../../开发计划/IM接入/客户端直连IM远程干预实施计划.md)
 
@@ -24,7 +25,7 @@ Gold Band 在桌面客户端内连接用户自己的企业微信机器人，把�
 4. 连接器只处理平台协议，平台 SDK DTO 不进入领域层。
 5. 首期只使用平台交互卡片的明确控件提交动作（button 或 vote），不做自然语言 ChatOps。
 
-ACP 权限请求的 canonical request identity 是接收 JSON-RPC 请求时固化到 pending state 和 typed `raw.requestId` 的原始 ID；该 ID 只用于 provider response 关联与 pending/response 文件查找。权限发生的 timeline/lifecycle identity 由 Gold Band 从 `requestId + provider toolCallId` 生成有界 `permission-<hash>`，provider 缺失 toolCallId 时使用已持久化的 Gold Band sequence，并写入 timeline raw 的 `_goldBandPermissionItemId`；同一 replay 保持相同，provider 重启后复用 requestId 的不同工具调用保持不同。用户追问继续使用 Gold Band 创建并同时写入 pending state 与 `AcpUiEvent.id` 的 `elicitationId`。lifecycle bridge 只读取这些结构化 identity，不做前缀裁剪、消息解析或 event ID 反查。
+ACP 权限请求的 canonical request identity 是接收 JSON-RPC 请求时固化到 pending state 和 typed `raw.requestId` 的原始 ID；该 ID 只用于 provider response 关联与 pending/response 文件查找。权限发生的 timeline/lifecycle identity 由 Gold Band 从 `requestId + provider toolCallId` 生成有界 `permission-<hash>`，provider 缺失 toolCallId 时使用已持久化的 Gold Band sequence，并写入 timeline raw 的 `_goldBandPermissionItemId`；同一 replay 保持相同，provider 重启后复用 requestId 的不同工具调用保持不同。前端 timeline reducer 必须以 `attempt/session scope + event kind + AcpUiEvent.id` 作为 occurrence key；同一 occurrence 的 pending/terminal snapshot 合并，复用同一 `raw.requestId` 的不同 occurrence 不得合并。用户追问继续使用 Gold Band 创建并同时写入 pending state 与 `AcpUiEvent.id` 的 `elicitationId`。lifecycle bridge 只读取这些结构化 identity，不做前缀裁剪、消息解析或 event ID 反查。
 
 现有 `src/app/notification.rs` 的 `InterventionNotification` 和 `NotificationDedup` 继续服务于系统原生通知。它们表达的是“一次提醒、关闭后允许再提醒、点击后导航”，不具备远程动作所需的 request、revision、allowed actions 和持久幂等语义，因此不能充当 IM outbox 或入站动作账本。两者可以共享 lifecycle event identity 和 intervention kind 映射，但必须保持各自的投递生命周期。
 
@@ -240,6 +241,9 @@ enum ImNotificationKind {
 5. 权限请求只能调用权限响应接口；追问只能调用 elicitation 接口；人工成功/失败只能调用人工检查接口。
 6. `manual_check` 只在当前 attempt 为 `manual_check_pending` 且 locator 仍为当前 owner 时接受。
 7. 连接 generation 单调递增；旧连接迟到的回调、断线和重连结果不得覆盖新连接状态。
+8. connector 内部可发送句柄也由 generation 所有；只有同 generation 可安装或清除 sender，旧会话退出不得清除新会话 sender。
+9. `sending` 是有期限的 claim，不是终态；worker settlement 必须携带 claim 时的 `attempt_count` revision，租约恢复后的迟到成功/失败不得覆盖新 claim。
+10. 删除配置以 settings 中“不再存在该 channel”为 canonical 事实；跨 settings、投影队列、SQLite 与 keyring 的后续清理由 durable operation journal 推进，失败返回 pending 并由后台重试，不把旧配置复活。
 
 ## 8. 设置与连接管理
 
@@ -251,8 +255,6 @@ Settings schema v12 在严格反序列化前一次性删除 v11 channel notifica
 
 ### 8.1 设置界面清晰度优化（2026-09-04）
 
-交互原型位于 [`interaction/app/原型/IM干预设置界面/code.html`](../interaction/app/原型/IM干预设置界面/code.html)，生产设置页已按相同契约迁移。
-
 - 根因判断：credential、enabled、connection generation、private binding 与 notifications 的权威状态设计正确；现有界面把不同生命周期阶段平铺成一个表单，属于正确设计下的展示和操作层级不完整，不需要新增 IM 状态机。
 - 未接入时只展示“扫码接入”主操作；扫码授权后进入“发送一条私聊”步骤，收到 canonical private binding 后才进入可用态。接入进度完全由既有字段派生，不持久化 UI step。
 - 页面顶部只给出一个用户结论：未接入、等待绑定、连接中、正在重连、可用、已暂停、需要重新授权或连接被占用；错误态在原位置给出对应恢复动作，不增加会伪造成功语义的本地测试状态。
@@ -260,9 +262,9 @@ Settings schema v12 在严格反序列化前一次性删除 v11 channel notifica
 - 只有未配置凭据时隐藏通知选项；等待绑定、连接中、暂停、网络错误、鉴权错误和连接冲突时仍允许编辑通知。Bot ID 使用安全断行，不展示敏感凭据。
 - 总开关是即时运行命令，目标控件在 100ms 内进入处理中并以后端最新 VM 收敛；通知偏好使用独立本地草稿和窄保存接口，连接事件及启停响应不得清除 dirty 草稿。
 - 重新授权、更换接收账号和删除配置进入更多菜单。更换账号与删除分别使用 AlertDialog：前者只清除 binding 和 delivery target，保留凭据、Bot identity、enabled 与通知偏好；后者删除配置、凭据和未发送数据。
-- 原型提供状态切换和明暗主题切换作为评审工具，它们不属于生产 UI，也不形成业务状态或持久字段。
-
 后端命令按数据所有权拆分为 `set_im_channel_enabled(kind, enabled)`、`save_im_notification_preferences(kind, notifications)`、`reset_im_channel_binding(kind, expected_generation)`、`reconnect_im_channel(kind, expected_generation)` 与 `delete_im_channel(kind)`。旧通用保存和独立断开入口已经删除，不保留兼容层。snapshot 继续按 generation 单调合并；重连只启动真实新 generation，不提供测试连接。
+
+`delete_im_channel` 先在同一 settings 写临界区创建 cleanup operation、持久化删除配置、移除投影 target，并立即推进 connection/connector generation；之后通过最长 30 秒的 projection barrier 确认旧 target job 已消费，再删除该 channel 的 active outbox 和旧 credential，最后完成 journal。后续清理失败或 barrier 超时时 command 返回已删除 settings、`operationId` 与 `cleanupStatus=pending`，启动阶段和运行期定时恢复按 phase 幂等续做；cleanup operation 存在时拒绝同 channel 重新授权，避免旧清理触碰新配置。
 
 `BindingObserved` 不得直接进入公开 snapshot。connection manager 先校验 generation、私聊属性与既有 actor/conversation；设置写入与命令写入共享最小 IM settings 临界区。binding 可靠落盘并更新 DesktopState 后重建 delivery target，最后才提交同 generation snapshot。存储失败保持 connected-without-binding，并以 `IM_STORAGE_UNAVAILABLE` 启动每个 channel+generation 至多一个、最多三次、1/2/4 秒的可取消重试；generation 前进立即取消，旧结果不得提交。
 
@@ -304,6 +306,7 @@ UI 不展示协议地址、心跳、轮询、数据库或 token 等实现细节�
 - 网络错误使用带 jitter 的指数退避，建议 1 秒起步、60 秒封顶；鉴权错误不自动重试，进入 `auth_required`。
 - 平台限流遵守 `Retry-After` 或 SDK 返回的重试时间；单 channel 串行化同一消息更新，其他消息可受控并发。
 - outbox 已发送/过期记录默认保留 7 天，入站动作幂等记录默认保留 30 天；周期清理采用有上限的小批次。
+- 应用启动时先恢复过期发送租约并执行一次 retention；运行期每 30 秒恢复租约、每 6 小时清理 retention。单轮最多 4 批、每批最多 200 条，所有 SQLite 工作在 blocking pool 中执行。
 - 应用正常退出时先停止接收新 IM 动作，再取消连接与长轮询，等待有界任务结束；不能因此延迟退出超过设定超时。
 
 客户端退出、休眠或无网络时没有云端在线实体，这是无网关方案的明确产品限制。恢复在线后只补发仍然有效且尚未处理的干预。
@@ -402,9 +405,13 @@ Connector task 结束时必须先排空其有界事件队列，再把返回错�
 
 2026-09-03 真实复测发现“终态后仍可重复点击”不是首次执行失败：outbox 与 inbound 成功记录证明 Runtime 首写正确，重复点击携带新的 msgid，且 ACP waiter 已按设计清理 pending/response signal，旧实现随后把迟到点击误判为 RequestNotFound/RuntimeStateMismatch。另一复核确认企微更新协议支持 checkbox/select disable，不支持 submit_button.disable。修复保留原控件与 task/submit key，删除无效 submit disable 字段，并为入站审计增加 canonical intervention event 索引；Permission/Elicitation 的桌面先处理场景另从 durable timeline response/request 恢复 AlreadyApplied。
 
+2026-09-04 可靠性复核确认七处问题均属于已有设计正确但生产编排或消费契约未闭环：repository 已有租约恢复和 retention API 却没有生产调度；manager 已按 generation 拒绝旧事件但 connector sender 没有相同 ownership；删除跨三个存储却仍按一次性顺序执行；重配置循环把单 channel 故障提升为全局失败；前端仍用 transport requestId 覆盖 occurrence identity；有界投影队列满载时回退到 publisher 同步磁盘 I/O。修复分别补齐 claim revision fencing、maintenance worker、generation-owned sender、durable cleanup journal、逐 channel 错误收敛、canonical event key 和 O(1) 满载诊断，不修改 Runtime 审批模型或增加旁路发送。
+
 ### 13.2 过度设计评审
 
 首期不引入云端网关、Kafka、通用事件平台、独立 helper 进程、新审批 aggregate 或自然语言 Agent。新增的连接管理器、outbox 和幂等表分别对应长连接生命周期、进程离线重试和外部事件至少一次投递三个真实不变量，复杂度与风险相匹配。
+
+2026-09-04 可靠性闭环不新增通用 scheduler、第二 outbox、配置 revision、租约表或前端 canonical 副本。现有 `state + next_attempt_at_ms + attempt_count` 已能表达 claim lease，现有 connection generation 已能表达 sender ownership，现有 `AcpUiEvent.id` 已是 occurrence identity；只新增 cleanup journal，因为 settings、SQLite 与系统凭据库无法共享事务，而删除必须具备可恢复进度。
 
 2026-08-31 权限/企微回调补齐不新增展示事实源：`InterventionPrompt.fields` 是 pending params 的一次性 transport projection，按钮容量降级发生在 IM projection/connector 边界，callback 失败态仍复用 outbox 与原 delivery identity。现有 canonical pending state、delivery ID、msgid 幂等和 `InterventionCommandService` 已能表达不变量，因此不为平台容量或解析失败增加第二套状态机。2026-09-01 的短 action 引用与 vote option id 同样只复用 delivery ID 与 outbox action index，不新增映射表、缓存或第二套 token；`ImWeComVoteSelection` 是回调到终态更新之间的一次性 transport context，成功更新后即释放。Permission 双发只新增 connector 内存中的“详情 ACK 后发送卡片”pending 分支，不新增第二条 outbox、平台消息 identity 或持久状态。
 
@@ -435,6 +442,8 @@ Permission occurrence identity 的生成只对当前事件的两个短字符串�
 2026-09-03 重复新 msgid 点击增加一次 `channel + canonical_event_id + completed_at` 索引查询；命中后只写一条 AlreadyApplied 审计结果，不进入 Runtime、scheduled resume 或 session 重建。Elicitation 前序输出读取复用 timeline index 的最新 root 文本定位并最多读取一个事件、快照 4096 字符；详情去重只比较当前请求内的 message/description/context。
 
 2026-09-03 桌面终态发送分流只增加一次 enum variant 判断，为 O(1) 且不增加网络帧、SQLite 查询、锁、队列或缓存。局部构建失败在写 socket 前完成对应 oneshot，不占用 pending map，也不触发重连或后续 outbox 的网络失败风暴；正常终态仍为单条 markdown。
+
+2026-09-04 maintenance 的租约扫描和 retention 删除均命中既有索引，单批 200、单轮 4 批；周期分别为 30 秒与 6 小时，不执行 VACUUM 或全量 payload 加载。投影队列 Full 分支只做常数级状态判断、结构化日志和 30 秒冷却的诊断事件，不再执行 Runtime 查询、文件读取或 SQLite 写入。projection barrier 只用于低频删除清理，且不持有 settings/SQLite 锁；重配置按 channel 顺序执行但单个失败不阻断后续 channel，当前仅一个 channel，不引入无收益并行化。
 
 ## 14. 外部协议依据
 

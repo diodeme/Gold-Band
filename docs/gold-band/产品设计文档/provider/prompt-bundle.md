@@ -315,7 +315,7 @@ Gold Band 不再依赖 resume/load 时动态刷新 system prompt。prompt 渲染
 
 `RequirementTask` 与 `WorkflowResume` 使用同一结构：稳定规则在 `systemPrompt`，本次 invocation 事实在 user prompt hidden context。
 
-`RuntimeFinalize` 确认 Agent 是否有意结束节点，不把一次 ACP prompt 返回直接解释为业务已完成。Agent 可以在同一会话继续原任务，认为结束后再输出 canonical artifact；只有 artifact 输出受最终格式要求约束，普通回复和工具调用无需状态标签。输出前补齐当前任务已要求的 attachments；AI-DYNAMIC 生成 artifact 时可按 finalize context 只读明确声明的 coordination snapshot，普通 workflow 不因此获得额外快照权限。本次临时方案只改变提示词，不增加等待标签、定时询问、计时卡片或新的轮末循环；没有有效 artifact 的调用结果仍由现有校验和 repair 处理，传输错误、停止与预算边界保持原有语义。
+`RuntimeFinalize` 确认 Agent 是否有意结束节点，不把一次 ACP prompt 返回直接解释为业务已完成。Agent 可以在同一会话继续原任务，认为结束后再输出 canonical artifact；只有 artifact 输出受最终格式要求约束，普通回复和工具调用无需状态标签。输出前补齐当前任务已要求的 attachments；AI-DYNAMIC 生成 artifact 时可按 finalize context 只读明确声明的 coordination snapshot，普通 workflow 不因此获得额外快照权限。AI-DYNAMIC 的 PostTurn 调用正常结束后，若没有 Artifact 文件也没有可识别的控制输出候选，复用现有后续请求循环，再发送带完整 schema 的 finalize 确认，阶段为 FinalizingArtifact；已存在但不合法的 Artifact 或可识别的无效控制输出仍走 repair。确认与修复共享原有最多 3 次后续请求上限；InlineControl 保持原修复语义。没有新增等待标签、定时询问、计时卡片或无限循环，传输错误、停止与预算边界保持原有语义。
 
 AI-DYNAMIC 的外层 `run_continue` 也必须先按是否存在用户显式输入决定 render mode。父级 continue 没有明确内部 leaf 目标时，只允许恢复 workflow-invocation child run；如果本次带用户输入，该输入继续传入 child run 的 paused worker 并保持 `UserMessage`，不得被转换成 `WorkflowResume` 的 hidden context + `# 目标` / `# Goal`。
 

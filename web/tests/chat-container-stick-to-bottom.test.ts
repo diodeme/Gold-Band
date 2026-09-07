@@ -603,7 +603,7 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
     }
   });
 
-  it('resumes following when collapsing one of several expansions reaches the bottom', async () => {
+  it('stays paused at geometric bottom until the last expansion closes', async () => {
     vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (
       window.setTimeout(() => callback(performance.now()), 0)
@@ -667,9 +667,12 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
         await waitForScrollFrames();
       });
       expect(scrollTop).toBe(139);
-      expect(contextRef.current?.isAtBottom).toBe(true);
+      expect(contextRef.current?.isAtBottom).toBe(false);
 
-      expect(contextRef.current?.endContentExpansion(secondToken)).toBe(false);
+      await act(async () => {
+        expect(contextRef.current?.endContentExpansion(secondToken)).toBe(true);
+        await waitForScrollFrames();
+      });
       contentHeight = 300;
       await act(async () => {
         emitObservedHeight(contentHeight);

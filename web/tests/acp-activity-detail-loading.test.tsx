@@ -11,6 +11,8 @@ vi.mock('@/api', async () => {
 
 import { getAcpActivityDetail, getAcpToolDetail } from '@/api';
 import { ACPMessageList, buildAcpTimelineProjection } from '@/components/acp/ACPChatDialog';
+import { ConversationViewport } from '@/components/conversation/ConversationViewport';
+import type { ChatContainerContext } from '@/components/prompt-kit/chat-container';
 import type { AgentTranscriptLocator } from '@/components/workspace/right-workspace-context';
 import type { AcpActivityDetailVm, AcpUiEventVm } from '@/types';
 
@@ -94,11 +96,93 @@ function findButtonByText(container: HTMLElement, text: string) {
 }
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.clearAllMocks();
   document.body.replaceChildren();
 });
 
 describe('ACP activity detail loading', () => {
+  it.each(['toolCall', 'thoughtDelta'])('expands an individual %s in place after following was resumed', async (kind) => {
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    const contextRef = React.createRef<ChatContainerContext>();
+    const item = { ...activityToolEvent(10), kind, content: kind === 'thoughtDelta' ? 'Detailed reasoning' : null };
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(
+        <ConversationViewport contextRef={contextRef} scrollClassName="overflow-y-auto">
+          <ACPMessageList timeline={buildAcpTimelineProjection([item], 'completed').timeline} sessionStatus="completed" sending={false} />
+        </ConversationViewport>,
+      ));
+      await clickButton(container.querySelector('[data-theme-role="activity"] > button'));
+      await act(async () => { void contextRef.current!.scrollToBottom({ animation: 'instant' }); });
+      expect(contextRef.current!.isAtBottom).toBe(true);
+      const viewport = contextRef.current!.scrollRef.current!;
+      Object.defineProperties(viewport, {
+        clientHeight: { configurable: true, value: 400 },
+        scrollHeight: { configurable: true, value: 1000 },
+        scrollTop: { configurable: true, value: 600, writable: true },
+      });
+      const trigger = container.querySelector<HTMLButtonElement>('[data-acp-activity-detail-item-key] [data-slot="collapsible-trigger"]');
+      await clickButton(trigger);
+      expect(trigger!.getAttribute('aria-expanded')).toBe('true');
+      expect(container.textContent).toContain(kind === 'thoughtDelta' ? 'Detailed reasoning' : 'output-10');
+      expect(contextRef.current!.isAtBottom).toBe(false);
+      expect(viewport.scrollTop).toBe(600);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it.each([false, true])('positions a loaded expansion once unless the user scrolled (cancel: %s)', async (cancel) => {
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    let resolveDetail!: (detail: AcpActivityDetailVm) => void;
+    vi.mocked(getAcpActivityDetail).mockReturnValueOnce(new Promise((resolve) => { resolveDetail = resolve; }));
+    const contextRef = React.createRef<ChatContainerContext>();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    let toolBottom = 900;
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      return { top: 0, bottom: this.classList.contains('acp-activity-collapse-button') ? toolBottom : 400, height: 400 } as DOMRect;
+    });
+    try {
+      await act(async () => root.render(
+        <ConversationViewport contextRef={contextRef} initialFollowing={false} scrollClassName="overflow-y-auto">
+          <ACPMessageList timeline={buildAcpTimelineProjection([activitySummary()], 'completed').timeline} sessionStatus="completed" sending={false} branchLocator={locator} />
+        </ConversationViewport>,
+      ));
+      const viewport = contextRef.current!.scrollRef.current!;
+      Object.defineProperties(viewport, {
+        clientHeight: { configurable: true, value: 400 },
+        scrollHeight: { configurable: true, value: 2000 },
+        scrollTop: { configurable: true, value: 100, writable: true },
+      });
+      await clickButton(container.querySelector('[data-slot="collapsible-trigger"]'));
+      expect(viewport.scrollTop).toBe(100);
+      if (cancel) await act(async () => viewport.dispatchEvent(new WheelEvent('wheel', { deltaY: -10 })));
+      await act(async () => resolveDetail(activityDetailPage(70, 109, 'before-70')));
+      expect(viewport.scrollTop).toBe(cancel ? 100 : 600);
+      expect(contextRef.current!.isAtBottom).toBe(false);
+      toolBottom = 1200;
+      await clickButton(container.querySelector('[data-acp-activity-detail-item-key] [data-slot="collapsible-trigger"]'));
+      expect(viewport.scrollTop).toBe(cancel ? 100 : 600);
+      expect(getAcpActivityDetail).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => root.unmount());
+      rect.mockRestore();
+    }
+  });
+
   it('loads the authoritative detail when a compact summary is mixed with only a partial live tail', async () => {
     const partialThought: AcpUiEventVm = {
       id: 'thought-partial',

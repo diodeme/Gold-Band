@@ -399,6 +399,10 @@ export interface RuntimeApi {
   getMulticaSettings(): Promise<MulticaSettingsVm>;
   connectMultica(): Promise<MulticaSettingsVm>;
   disconnectMultica(): Promise<MulticaSettingsVm>;
+  /// 保存连接地址覆盖（双 null = 清除覆盖回落渠道默认）；返回新 VM。
+  saveMulticaConnectionAddress(baseUrl: string | null, appUrl: string | null): Promise<MulticaSettingsVm>;
+  /// 取消进行中的 multica 连接（连接确认弹窗「取消连接」）；无进行中连接时幂等 no-op。
+  cancelMulticaConnect(): Promise<void>;
   getMulticaTasks(): Promise<RemoteConversationSidebarVm>;
   /// claim-at-send 的只读取：点击 queued 任务时拉取需求正文（pending 列表只有 thread_name，正文仅任务详情里有）。
   /// **不改动服务端任务状态**（任务仍 queued）；本地仅据此预填 composer + 绑定 chip。

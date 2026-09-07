@@ -550,6 +550,14 @@ export function disconnectMultica() {
   return getRuntimeApi().disconnectMultica();
 }
 
+export function saveMulticaConnectionAddress(baseUrl: string | null, appUrl: string | null) {
+  return getRuntimeApi().saveMulticaConnectionAddress(baseUrl, appUrl);
+}
+
+export function cancelMulticaConnect() {
+  return getRuntimeApi().cancelMulticaConnect();
+}
+
 export function getMulticaTasks() {
   return getRuntimeApi().getMulticaTasks();
 }

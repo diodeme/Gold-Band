@@ -80,11 +80,12 @@ use crate::conversation_workspace::{
 };
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
-use crate::multica::state::SharedMulticaState;
+use crate::multica::state::{MulticaConnectCancel, SharedMulticaState};
 use crate::multica::{
-    MulticaClient, MulticaError, MulticaSettingsVm, clear_multica_session,
-    clear_multica_state_indices, clear_multica_workspace_bindings, ensure_daemon_id,
-    multica_account_changed, multica_app_url, multica_base_url, multica_settings,
+    MulticaClient, MulticaError, MulticaSettingsVm, apply_multica_connection_address,
+    clear_multica_session, clear_multica_state_indices, clear_multica_workspace_bindings,
+    ensure_daemon_id, get_pat, multica_account_changed, multica_app_url, multica_base_url,
+    multica_base_url_for_settings, multica_settings,
 };
 use crate::state::{
     DesktopState, NotificationAttentionInput, RecoveredConversationRun, UpdateBadgeSeenTarget,
@@ -117,6 +118,7 @@ use crate::wallpaper::{
     load_resolved_wallpaper_preferences, reconcile_wallpaper_personalization,
     select_recent_wallpaper,
 };
+use tokio_util::sync::CancellationToken;
 
 const ACP_SESSION_EVENT: &str = "gold-band://acp-session-updated";
 const AGENT_REGISTRY_UPDATED_EVENT: &str = "gold-band://agent-registry-updated";
@@ -4682,10 +4684,15 @@ pub fn get_multica_settings(state: State<'_, DesktopState>) -> CommandResult<Mul
 
 /// 触发浏览器登录：开浏览器 → JWT → PAT → verify → 落盘 PAT + 首次生成 daemon_id。
 /// PAT 永不回显（VM 仅暴露 `pat_set`）。
+///
+/// 浏览器登录等待段挂 [`MulticaConnectCancel`] 取消槽（M5-ay：连接弹窗「取消连接」）——
+/// [`cancel_multica_connect`] 触发后 select 立即返回 `multica.connect-cancelled`（非失败，
+/// 前端静默关窗）；落盘/注册是本地快操作，不挂取消。
 #[tauri::command]
 pub async fn connect_multica(
     state: State<'_, DesktopState>,
     shared: State<'_, SharedMulticaState>,
+    connect_cancel: State<'_, MulticaConnectCancel>,
     app_handle: AppHandle,
 ) -> CommandResult<MulticaSettingsVm> {
     let context = state.context().map_err(command_error)?;
@@ -4695,9 +4702,17 @@ pub async fn connect_multica(
     let app_url = multica_app_url(&context.config)
         .ok_or(MulticaError::NotConfigured)
         .map_err(|e| command_error(e.into()))?;
-    let (pat, user) = MulticaClient::browser_login(&base_url, &app_url, "Maling Desktop", 90)
-        .await
-        .map_err(|e| command_error(e.into()))?;
+    // browser_login 全程 tokio（TcpListener/accept/timeout 均 async），select 分支 drop future
+    // 即释放本地 listener，无状态写入（create_token 未拿到 PAT，server 侧无残留影响本地）。
+    let cancel_token = CancellationToken::new();
+    let cancel_id = connect_cancel.register(&cancel_token);
+    let login = MulticaClient::browser_login(&base_url, &app_url, "Maling Desktop", 90);
+    let login_result = tokio::select! {
+        result = login => result,
+        _ = cancel_token.cancelled() => Err(MulticaError::ConnectCancelled),
+    };
+    connect_cancel.clear_if_same(cancel_id);
+    let (pat, user) = login_result.map_err(|e| command_error(e.into()))?;
     let context = state.context().map_err(command_error)?;
     let app = context.app();
     let mut existing = app.load_settings().map_err(command_error)?;
@@ -4776,6 +4791,71 @@ pub fn disconnect_multica(
         guard.clear_runtime_ids();
     }
     // 连接态变更 → 通知任务列表 + 设置页 re-fetch（回到「连接 Multica」空状态）。
+    crate::multica::bridge::emit_multica_settings_updated(&app_handle);
+    let updated_context = state.context().map_err(command_error)?;
+    Ok(multica_settings(&updated_context.config))
+}
+
+/// 取消进行中的 multica 连接（M5-ay：连接弹窗「取消连接」按钮）。
+///
+/// 触发 [`MulticaConnectCancel::cancel_current`]，使 [`connect_multica`] 浏览器登录等待段的
+/// select 立即返回 `multica.connect-cancelled`。非失败语义：前端收到该错误码静默关窗、
+/// 不作错误展示。无进行中连接时幂等 no-op（弹窗互斥单飞行，正常不会命中）。
+#[tauri::command]
+pub fn cancel_multica_connect(
+    connect_cancel: State<'_, MulticaConnectCancel>,
+) -> CommandResult<()> {
+    connect_cancel.cancel_current();
+    Ok(())
+}
+
+/// 保存 multica 连接地址覆盖（M5-ay：运行期可配置，远程任务管理页弹窗调用）。
+///
+/// 复活 M5-ah 后的死字段 `desktop_multica_base_url/_app_url` 作为运行期覆盖（settings 优先 →
+/// 渠道编译期兜底的解析链路本就在，心跳每 tick 重解析 → 保存 ≤15s 生效、无需重启）。
+/// 双 None = 清除覆盖回落渠道默认。地址经 [`apply_multica_connection_address`] 校验/规范化，
+/// 非法或半覆盖（一 Some 一 None）→ `multica.invalid-address`。
+///
+/// **服务器变更作废**：PAT/runtime_id 是对具体 server 签发/注册的 server 作用域凭证。生效 base URL
+/// 变化且已登录（`pat_set`）时，按 M5-af 账号作用域不变量向「服务器身份」维度作废：清 session
+/// （PAT/账号身份/workspace 绑定）+ State 任务/会话索引 + register 缓存。UI 主路径上 gear 只在
+/// 未连接空态出现（作废分支不触发），此判定是并发/未来入口的正确性兜底。生效地址不变
+/// （如清除覆盖但渠道值相同）则完全无副作用。
+#[tauri::command]
+pub fn save_multica_connection_address(
+    state: State<'_, DesktopState>,
+    shared: State<'_, SharedMulticaState>,
+    app_handle: AppHandle,
+    base_url: Option<String>,
+    app_url: Option<String>,
+) -> CommandResult<MulticaSettingsVm> {
+    let context = state.context().map_err(command_error)?;
+    // 服务器变更判定基准：保存前的生效地址（settings 覆盖优先 → 渠道兜底）。
+    let before = multica_base_url(&context.config);
+    let app = context.app();
+    let mut existing = app.load_settings().map_err(command_error)?;
+    apply_multica_connection_address(&mut existing, base_url.as_deref(), app_url.as_deref())
+        .map_err(|e| command_error(e.into()))?;
+    let after = multica_base_url_for_settings(&context.config, &existing);
+    if before != after && get_pat(&context.config).is_some() {
+        // server 作用域作废：旧 server 签发的 PAT / 发现的绑定与索引 / 注册的 runtime_id
+        // 对新 server 全部无效（与 connect 换号作废、disconnect 断开作废同一套原语）。
+        clear_multica_session(&mut existing);
+        if let Err(error) = app.with_state(|state_cfg| {
+            clear_multica_state_indices(state_cfg);
+            (true, ())
+        }) {
+            warn!(%error, "multica save-address: state rmw after server-change clear failed");
+        }
+        if let Ok(mut guard) = shared.lock() {
+            guard.clear_runtime_ids();
+        }
+    }
+    app.save_settings(&existing).map_err(command_error)?;
+    state
+        .update_settings_config(&existing)
+        .map_err(command_error)?;
+    // 地址覆盖变更 → 通知任务列表 + 设置页 re-fetch（弹窗回显与侧栏连接态同步）。
     crate::multica::bridge::emit_multica_settings_updated(&app_handle);
     let updated_context = state.context().map_err(command_error)?;
     Ok(multica_settings(&updated_context.config))

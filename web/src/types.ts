@@ -136,6 +136,8 @@ export interface MulticaSettingsVm {
   defaultProvider: string;
   connected: boolean;
   connectedAccount: MulticaAccountRefVm | null;
+  /// 是否存在运行期地址覆盖（desktop_multica_base_url 已设置）；false = 使用渠道编译期默认。
+  addressOverrideSet: boolean;
 }
 
 export interface RemoteTaskVm {

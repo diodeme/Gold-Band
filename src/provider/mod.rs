@@ -3374,15 +3374,13 @@ mod tests {
         assert!(prompt.user_prompt.contains("dynamic-node-completion"));
         assert!(prompt.user_prompt.contains("required status field"));
         assert!(prompt.user_prompt.contains("remaining nodes: 3"));
-        assert!(prompt.user_prompt.contains("不要继续执行任务"));
-        assert!(prompt.user_prompt.contains(
-            "工具只可用于上述附件收尾，或在下方 runtime 上下文明确要求时刷新只读运行时快照"
-        ));
+        assert!(prompt.user_prompt.contains("请直接继续执行"));
         assert!(
             prompt
                 .user_prompt
-                .contains("后者只能读取其中声明的快照路径")
+                .contains("如下方 runtime 上下文明确要求刷新只读运行时快照")
         );
+        assert!(prompt.user_prompt.contains("只能读取其中声明的快照路径"));
         assert!(active_output_contract_for_turn(&req).is_some());
 
         req.user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
@@ -3401,7 +3399,38 @@ mod tests {
     }
 
     #[test]
-    fn english_artifact_finalize_limits_tools_to_wrap_up_and_explicit_snapshot_refresh() {
+    fn artifact_finalize_confirms_intent_and_allows_business_continuation() {
+        let contract = test_output_contract(OutputEmissionMode::PostTurnProjection);
+        for (language, continuation, intent_only, forbidden) in [
+            (
+                crate::config::DesktopLanguage::ZhCn,
+                "请直接继续执行",
+                "无需重新核对任务目标或验收要求",
+                "不要继续执行任务",
+            ),
+            (
+                crate::config::DesktopLanguage::En,
+                "continue executing directly",
+                "Do not re-audit the task goals or acceptance requirements",
+                "do not continue the task",
+            ),
+        ] {
+            for surface in [
+                PromptExecutionSurface::Workflow,
+                PromptExecutionSurface::AiDynamic,
+            ] {
+                let prompt = render_artifact_finalize_prompt(language, &contract, surface).unwrap();
+                assert!(prompt.contains(continuation), "{prompt}");
+                assert!(prompt.contains(intent_only), "{prompt}");
+                assert!(!prompt.contains(forbidden));
+                assert!(prompt.contains("dynamic-node-completion"));
+                assert!(!prompt.contains("wait_background_task"));
+            }
+        }
+    }
+
+    #[test]
+    fn english_artifact_finalize_preserves_explicit_snapshot_scope() {
         let mut contract = test_output_contract(OutputEmissionMode::PostTurnProjection);
         contract.finalize_context = Some(
             "read-only runtime snapshot: C:/run/dynamic/coordination-snapshot.json".to_string(),
@@ -3414,16 +3443,16 @@ mod tests {
         )
         .unwrap();
 
-        assert!(prompt.contains(
-            "when explicitly required by the runtime context below, to refresh a read-only runtime snapshot"
-        ));
+        assert!(
+            prompt.contains("refresh a read-only runtime snapshot only when explicitly required")
+        );
         assert!(prompt.contains("read only the declared snapshot path"));
-        assert!(prompt.contains("Tools may be used only for the attachment wrap-up above"));
+        assert!(prompt.contains("reply and use tools normally"));
         assert!(!prompt.contains("do not call any other tool"));
     }
 
     #[test]
-    fn artifact_finalize_allows_only_missing_attachment_wrap_up() {
+    fn artifact_finalize_keeps_missing_attachments_before_emission() {
         let contract = test_output_contract(OutputEmissionMode::PostTurnProjection);
 
         let zh = render_artifact_finalize_prompt(
@@ -3435,8 +3464,8 @@ mod tests {
         assert!(zh.contains("如果当前任务需要报告或其他附件且尚未写入"));
         assert!(zh.contains("本次 attempt 的 attachments 目录"));
         assert!(zh.contains("不需要或已经完成则跳过"));
-        assert!(zh.contains("不要继续执行任务"));
-        assert!(zh.contains("工具只可用于上述附件收尾"));
+        assert!(zh.contains("输出 artifact 前"));
+        assert!(!zh.contains("工具只可用于上述附件收尾"));
 
         let en = render_artifact_finalize_prompt(
             crate::config::DesktopLanguage::En,
@@ -3445,12 +3474,12 @@ mod tests {
         )
         .unwrap();
         assert!(en.contains(
-            "If the current task requires a report or another attachment and it has not yet been written"
+            "if the current task requires a report or another attachment and it has not yet been written"
         ));
         assert!(en.contains("current attempt's attachments directory"));
         assert!(en.contains("skip this step if it is unnecessary or already complete"));
-        assert!(en.contains("do not continue the task"));
-        assert!(en.contains("Tools may be used only for the attachment wrap-up above"));
+        assert!(en.contains("Before emitting the artifact"));
+        assert!(!en.contains("Tools may be used only for the attachment wrap-up above"));
     }
 
     #[test]
@@ -3467,8 +3496,8 @@ mod tests {
         )
         .unwrap();
 
-        assert!(prompt.contains("工具只可用于上述附件收尾"));
-        assert!(prompt.contains("无需收尾时不要调用工具"));
+        assert!(prompt.contains("继续执行期间可以正常回复和使用工具"));
+        assert!(!prompt.contains("生成 artifact 时，如下方 runtime 上下文"));
         assert!(!prompt.contains("明确要求时刷新只读运行时快照"));
     }
 

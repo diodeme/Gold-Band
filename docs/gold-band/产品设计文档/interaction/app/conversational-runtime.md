@@ -4,6 +4,13 @@
 
 会话运行时窗口是用户与 agent 交互的核心区域。左侧选中最小单位是 run，右侧主区域永远展示当前选中 session 的具体对话。
 
+### Agent 调用归属与进度更新
+
+- 同一 session 中的 tool call ID 标识既有调用；更新在选择 transcript 和流边界前复用既有调用的 branch、起始 sequence 与时间，仅更新执行状态、输入输出等可变证据。Provider 进度通知的 `parentToolUseId` 等于当前 tool call ID 时，不得将其解释成新建下级或更改启动归属；真正的新调用仍按其父调用建立嵌套关系。
+- Agent 索引合并保留最早启动记录的归属和起始边界，较新记录只更新执行证据。即使进度记录位于 Agent 自身 transcript，重建投影也不得把 Agent 变成自己的父级；不改写原始审计日志，不新增持久身份、兼容状态或全量历史读取。
+- 父会话继续只开启新轮次，已取消轮次的 Agent 保持 interrupted。前端缺少 Agent 摘要与 live 状态时展示“状态未知”，不能按当前父会话状态推测 queued/completed/interrupted；已知权威或 live 终态仍按原有规则保留。
+- 性能：复用活动工具 HashMap 与现有 branch index，每次工具更新增加常数级归属字段合并；不增加 I/O、历史扫描、状态订阅或缓存。启动归属和最新证据来自现有 timeline，不引入第二套生命周期。
+
 ## 上下文压缩状态
 
 上下文压缩属于 ACP 运行阶段，不是 assistant 普通消息：
@@ -70,6 +77,8 @@ Task 最近对话活动只在三类 durable 边界推进：Task 创建成功、�
 - ACP adapter stderr 属于不可信外部字节流，不能假设为 UTF-8，也不能因单行解码失败停止消费。stderr reader 按固定 4 KiB buffer 流式读取，单行最多保留 16 KiB、超限部分继续排空但不扩容；合法 UTF-8、lossy 文本、非 UTF-8 编码摘要及最多 256 字节的十六进制前缀都只在“记录详细日志”开启时写入 `DEBUG`。真正的 stderr/stdout 读取失败或进程异常退出保留 `WARN`。所有 stderr/stdout/退出诊断必须同时携带 canonical provider id、adapter identity 和实际 command；stdout 异常关闭时记录可获得的 exit code/status，不能再把多个 `npx` Agent 混为同一来源，也不能只留下 `transport interrupted` 下游症状。
 - `runtime.log` 的会话审计边界固定为：用户主动创建会话、prompt admission/queue、continue、stop 与 terminal 使用结构化 `INFO`；同步拒绝、accepted 后的后台失败、队列 load/claim/release/settle 失败及 MCP 配置降级使用 `WARN`；周期 doctor、ACP RPC/raw frame、stderr 正文和重复诊断使用 `DEBUG`。会话日志必须携带可获得的 `projectId/taskId/runId/roundId/nodeId/attemptId/turnId/operationId/revision/outcome`，不得记录 prompt 正文、引用内容、附件路径、工具输入输出、Token 或完整 ACP frame。
 - `runtime.log`、`acp.raw.jsonl` 与 `acp.diagnostics.jsonl` 都是 canonical lifecycle 之外的旁路诊断。任何创建目录、追加、轮转或格式化失败都只能 best-effort 记录并丢弃，不得改变 provider RPC、prompt admission、取消、continue、queue settlement 或 terminal 的返回值与状态转换；`acp.timeline.jsonl`、session metadata、worker ref、run/node/dynamic graph 等恢复所需事实不属于旁路日志，写入失败仍必须按业务错误处理。
+- ACP 连接关闭因果链必须在默认 `INFO` 日志可见：主动关闭入口传递类型化原因，区分 idle TTL、idle capacity、配置替换、失效连接替换、初始化失败、workspace/provider/all 关闭和 standalone 释放；stdout EOF、stdout 读取失败与 stdin 写入失败分别记录。复用连接时记录 attempt locator、PID 和既有 connection generation，用同一身份关联 draining、关闭请求、首次 `acp_connection_closed`、后续 `acp_connection_close_observed` 与可获得的进程退出状态。主动关闭记录调用位置，闲置回收记录决策时的 idle 时长、TTL、容量限制和 attachment 快照；`session/close` 单独记录 sessionId 与调用位置，不与 transport 关闭混淆。关闭前诊断仅 best-effort 采集 active prompt 数、pending request 数、session route 数及至多 8 个 request ID/method，不读取请求参数、消息正文或历史；各字段不是跨锁原子快照，锁不可得时表示未知而不是零。stdout EOF 只证明输出流关闭，退出状态尚不可得时不得推断为进程崩溃。诊断沿用原有有界日志管线，不新增轮询、重连、状态机或业务持久化字段。
+- ACP managed connection 在从池中取出时必须同时取得作用域使用保护。保护由本次 `AcpRuntime` 持有，覆盖本地恢复准备、initialize、session resume/load、prompt 和收尾，失败或取消时随 runtime 自动释放；初始化失败替换连接时同样先保护新连接。复用连接的登记与 TTL/LRU 回收必须在同一连接池锁下互斥；进程健康检查在锁外完成后，要在锁内重新验证连接仍为当前实例，新建连接则先取得保护再发布入池。后台 reader、event pump 和长期 attached session 只持普通引用，不能因此永久阻止回收。连接使用计数不替代 session 级 `ActivePromptGuard`，不驱动取消或 prompt drain；只限制闲置回收，不阻止用户主动关闭、Provider 重载或初始化失败淘汰。保持现有 acquire/release 触发的懒清理和 TTL/LRU 配置，不新增后台回收任务、自动重试或持久化凭证。关闭诊断增加 `active_connection_users` 以区分“准备使用”和“prompt 执行中”。
 - 以上均为隐性稳定性约束：不得改变消息内容、事件顺序、工具详情、流式节奏、权限语义、页面交互、ViewModel/API JSON、工作流并行度或既有 `acpChatEventPageSize` 配置值。本边界不包含 WebView 自动恢复、自动重载或内存压力下降低并行度。
 
 ## 顶部信息栏
@@ -547,6 +556,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 运行时应用顺序固定为模型、权限模式、其余通用 config option。模型切换后以 Agent 返回的新 `configOptions` 作为后续配置事实源，通用选项必须按实际 option ID 和可选值校验。
 - Run 发起时的 Agent、模型和权限配置继续作为不可变执行快照，保证历史定义与审计可复现；用户在已建立 ACP session 中选择的 `modelOverride / permissionModeOverride / configOptionOverrides` 属于该 session 的可变持久状态；模型、权限和通用 select 的可选目录属于 Provider 能力观测，不得随 Run 快照冻结，也不得复制成第三套 canonical 配置。
 - 会话配置目录只比较最近一次成功观测：Session 在 `session/new / session/resume / session/load` 响应中观测并持久化 `models / modes / configOptions + configCatalogObservedAt`；Doctor 成功结果由 Agent registry 提供同一套 Provider 解析投影。Doctor 严格晚于 Session 时，已发起会话展示 Doctor 目录；时间相同或 Session 更新时以 Session 为准。Doctor 失败、无 capabilities 或未诊断不得清空 Session 最近一次成功目录；Doctor 临时诊断 session 的 `currentValue` 不得覆盖业务 Session 当前值。
+- 渐进加载时 Run 聚合只承载导航与生命周期，`selectedSession` 可以为空。父页面向 `ACPChatDialog` 传递现有 Agent registry，由聊天组件根据自身已加载或恢复的有效 Session provider 关联 Doctor 目录；不能依赖父页面的 Session 详情或生命周期回传来获得 provider。Session 与 registry 任意先后到达都必须更新当前目录，跨 provider 不得串用能力，registry 更新不重读会话正文。
 - 用户选择只存在于更新 Doctor 目录、尚不存在于 Session 最近目录的配置时，选择接口先按 Doctor 目录校验并持久化 override，同时写入 `configCatalogRefreshRequiredAt`。下一次继续该会话时，复用既有 attached-session registry 与 `session/resume` / `session/load` 链路，强制对同一 ACP session 惰性重载一次；响应中的新目录必须先原子写回 session metadata，再应用 override。不得在 Doctor 更新时扫描或批量 resume 历史会话。
 - 惰性重载后的 Session 目录拥有最终权威。若所选 override 仍不存在，runtime 返回 `acp.session-config-value-unavailable`（Config domain、Manual recovery，参数包含 `category / configId / value / availableValues`），阻止本次 prompt 且不得静默退回 Provider 默认值。持久化 override 作为“当前值已不可用”的可恢复事实保留，UI 将其显示为禁用项并补拉最新 Session 目录；用户改选最新可用值后可继续会话。
 - 复合下拉第一层未选择的子栏不显示占位值，触发器和已选态只展示名称；长描述只在具体选项中换行展示，不允许撑破触发器或越出窗口边界。协议解析统一收敛在 ACP session config 工具中，展示组件只消费归一化后的 id/name/description。

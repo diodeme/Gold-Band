@@ -224,6 +224,60 @@ pub fn agent_relation(event: &AcpUiEvent) -> Option<AgentTranscriptRelation> {
         .and_then(extract_agent_transcript_relation)
 }
 
+/// A tool revision can change execution evidence, but not its established owner.
+pub(crate) fn preserve_tool_call_origin(incoming: &mut AcpUiEvent, origin: &AcpUiEvent) {
+    if incoming.tool_call_id.is_none()
+        || incoming.tool_call_id != origin.tool_call_id
+        || incoming.session_id != origin.session_id
+    {
+        return;
+    }
+    incoming.started_seq = Some(origin.started_seq.unwrap_or(origin.seq));
+    incoming.started_at = Some(
+        origin
+            .started_at
+            .clone()
+            .unwrap_or_else(|| origin.timestamp.clone()),
+    );
+    annotate_event_branch_override(incoming, &event_branch_id(origin));
+    if let Some(relation) = agent_relation(origin) {
+        let raw = incoming
+            .raw
+            .as_mut()
+            .expect("branch override creates metadata");
+        let meta = raw.get_mut("_meta").and_then(Value::as_object_mut).unwrap();
+        let transcript = meta.entry("agentTranscript").or_insert_with(|| json!({}));
+        if !transcript.is_object() {
+            *transcript = json!({});
+        }
+        transcript["agentLaunch"] = json!(relation.agent_launch);
+        transcript["parentToolCallId"] = json!(relation.parent_tool_call_id);
+        transcript["toolName"] = json!(relation.tool_name);
+    }
+}
+
+fn merge_agent_launch(launches: &mut HashMap<String, AcpUiEvent>, mut incoming: AcpUiEvent) {
+    let Some(id) = incoming.tool_call_id.clone() else {
+        return;
+    };
+    if let Some(current) = launches.get_mut(&id) {
+        // The earliest valid launch owns the execution. Later revisions may be
+        // stored in its transcript, including provider self-referencing progress.
+        let origin_is_incoming = incoming.started_seq.unwrap_or(incoming.seq)
+            < current.started_seq.unwrap_or(current.seq);
+        if incoming.ended_seq.unwrap_or(incoming.seq) >= current.ended_seq.unwrap_or(current.seq) {
+            if !origin_is_incoming {
+                preserve_tool_call_origin(&mut incoming, current);
+            }
+            *current = incoming;
+        } else if origin_is_incoming {
+            preserve_tool_call_origin(current, &incoming);
+        }
+    } else {
+        launches.insert(id, incoming);
+    }
+}
+
 pub fn branch_route_for_event(event: &AcpUiEvent) -> ConversationBranchRoute {
     let relation = agent_relation(event);
     let session_id = event.session_id.as_deref().unwrap_or("unknown-session");
@@ -1077,16 +1131,7 @@ pub fn rebuild_agent_index(
         if !relation.agent_launch {
             continue;
         }
-        let Some(tool_call_id) = event.tool_call_id.as_ref() else {
-            continue;
-        };
-        let should_replace = launches
-            .get(tool_call_id)
-            .map(|current| event.seq >= current.seq)
-            .unwrap_or(true);
-        if should_replace {
-            launches.insert(tool_call_id.clone(), event.clone());
-        }
+        merge_agent_launch(&mut launches, event.clone());
     }
     let prompt_turns = prompt_turn_projection_from_events(&all_events);
     let launches_by_execution_id = launches
@@ -1242,12 +1287,7 @@ pub fn indexed_agent_index(
             .clone()
             .unwrap_or_else(|| "unknown-session".to_string());
         let agent_execution_id = stable_agent_execution_id(&session_id, &launch_tool_call_id);
-        let replace = launches.get(&launch_tool_call_id).is_none_or(|current| {
-            launch.ended_seq.unwrap_or(launch.seq) >= current.ended_seq.unwrap_or(current.seq)
-        });
-        if replace {
-            launches.insert(launch_tool_call_id, launch);
-        }
+        merge_agent_launch(&mut launches, launch);
         if projections.contains_key(&agent_execution_id) {
             continue;
         }
@@ -2447,6 +2487,64 @@ mod tests {
             "interrupted"
         );
         std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn self_referencing_progress_does_not_replace_indexed_launch_ownership() {
+        for nested in [false, true] {
+            let attempt = temp_attempt("self-referencing-agent-progress");
+            let outer = event_at(
+                "outer",
+                2,
+                "toolCall",
+                Some("outer"),
+                Some("pending"),
+                json!({ "agentLaunch": true }),
+                None,
+            );
+            let launch = event_at(
+                "child",
+                3,
+                "toolCall",
+                Some("child"),
+                Some("pending"),
+                if nested {
+                    json!({ "agentLaunch": true, "parentToolCallId": "outer" })
+                } else {
+                    json!({ "agentLaunch": true })
+                },
+                None,
+            );
+            let progress = event_at(
+                "child",
+                5,
+                "toolCall",
+                Some("child"),
+                Some("in_progress"),
+                json!({ "agentLaunch": true, "parentToolCallId": "child" }),
+                None,
+            );
+            let mut events = vec![prompt_turn_event("turn-1", 1, Some(("cancelled", 6)))];
+            if nested {
+                events.push(outer);
+            }
+            events.extend([launch, progress, prompt_turn_event("turn-2", 7, None)]);
+            persist_partitioned(&attempt, events);
+            let indexed = indexed_agent_index(&attempt, "running").unwrap();
+            let child = indexed
+                .iter()
+                .find(|r| r.launch_tool_call_id == "child")
+                .unwrap();
+            assert_eq!(
+                child.parent_agent_execution_id,
+                nested.then(|| stable_agent_execution_id("session-1", "outer"))
+            );
+            assert_eq!(child.status, "interrupted");
+            assert_eq!(child.started_at, "3Z");
+            assert_eq!(child.ended_at.as_deref(), Some("6Z"));
+            assert_eq!(rebuild_agent_index(&attempt, "running").unwrap(), indexed);
+            std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+        }
     }
 
     #[test]

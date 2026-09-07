@@ -4,6 +4,13 @@
 
 会话运行时窗口是用户与 agent 交互的核心区域。左侧选中最小单位是 run，右侧主区域永远展示当前选中 session 的具体对话。
 
+### Agent 调用归属与进度更新
+
+- 同一 session 中的 tool call ID 标识既有调用；更新在选择 transcript 和流边界前复用既有调用的 branch、起始 sequence 与时间，仅更新执行状态、输入输出等可变证据。Provider 进度通知的 `parentToolUseId` 等于当前 tool call ID 时，不得将其解释成新建下级或更改启动归属；真正的新调用仍按其父调用建立嵌套关系。
+- Agent 索引合并保留最早启动记录的归属和起始边界，较新记录只更新执行证据。即使进度记录位于 Agent 自身 transcript，重建投影也不得把 Agent 变成自己的父级；不改写原始审计日志，不新增持久身份、兼容状态或全量历史读取。
+- 父会话继续只开启新轮次，已取消轮次的 Agent 保持 interrupted。前端缺少 Agent 摘要与 live 状态时展示“状态未知”，不能按当前父会话状态推测 queued/completed/interrupted；已知权威或 live 终态仍按原有规则保留。
+- 性能：复用活动工具 HashMap 与现有 branch index，每次工具更新增加常数级归属字段合并；不增加 I/O、历史扫描、状态订阅或缓存。启动归属和最新证据来自现有 timeline，不引入第二套生命周期。
+
 ## 上下文压缩状态
 
 上下文压缩属于 ACP 运行阶段，不是 assistant 普通消息：

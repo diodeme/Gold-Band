@@ -27,6 +27,12 @@ pub enum MulticaError {
     TaskNotFound,
     #[error("multica runtime offline")]
     RuntimeOffline,
+    /// 连接地址非法或两参数（base/app）不配套（一 Some 一 None）。
+    #[error("multica invalid connection address")]
+    InvalidAddress,
+    /// 用户在浏览器登录等待期间主动取消（连接弹窗「取消连接」）。非失败：前端静默关闭弹窗。
+    #[error("multica connect cancelled by user")]
+    ConnectCancelled,
     // M4-d：保留在错误码表（multica.session-resume-failed），但断点续跑路径不 emit——任何 resume Err
     // 改走 silent fresh-fallback（更稳，无需 fragile 串匹配）。见开发设计 §2.2.8。
     #[allow(dead_code)]
@@ -45,6 +51,8 @@ impl MulticaError {
             Self::ClaimConflict => "multica.claim-conflict",
             Self::TaskNotFound => "multica.task-not-found",
             Self::RuntimeOffline => "multica.runtime-offline",
+            Self::InvalidAddress => "multica.invalid-address",
+            Self::ConnectCancelled => "multica.connect-cancelled",
             Self::SessionResumeFailed => "multica.session-resume-failed",
         }
     }
@@ -84,6 +92,14 @@ mod tests {
         assert_eq!(
             MulticaError::RuntimeOffline.code(),
             "multica.runtime-offline"
+        );
+        assert_eq!(
+            MulticaError::InvalidAddress.code(),
+            "multica.invalid-address"
+        );
+        assert_eq!(
+            MulticaError::ConnectCancelled.code(),
+            "multica.connect-cancelled"
         );
         assert_eq!(
             MulticaError::SessionResumeFailed.code(),

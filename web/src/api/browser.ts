@@ -704,6 +704,9 @@ const browserFileRevisions = new Map<string, number>();
 const browserWorkspaceFileListeners = new Set<(event: WorkspaceFileChangedEventVm) => void>();
 const browserExternalFileGrants = new Map<string, { canonicalPath: string; expiresAtMs: number }>();
 let browserExternalGrantRevision = 0;
+// multica 连接地址覆盖（浏览器桩）：与 desktop 的 desktop_multica_base_url/_app_url 死字段对应，
+// null = 使用渠道编译期默认。保存后 getMulticaSettings 回显，模拟弹窗重开时的字段预填。
+let browserMulticaAddressOverride: { baseUrl: string; appUrl: string } | null = null;
 
 function issueBrowserExternalFileGrant(canonicalPath: string) {
   browserExternalGrantRevision += 1;
@@ -1895,8 +1898,8 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve({
       enabled: false,
       toggleLocked: false,
-      multicaBaseUrl: null,
-      multicaAppUrl: null,
+      multicaBaseUrl: browserMulticaAddressOverride?.baseUrl ?? null,
+      multicaAppUrl: browserMulticaAddressOverride?.appUrl ?? null,
       patSet: false,
       daemonIdSet: false,
       workspaces: [],
@@ -1904,6 +1907,7 @@ export const browserApi: RuntimeApi = {
       defaultProvider: 'claude-acp',
       connected: false,
       connectedAccount: null,
+      addressOverrideSet: browserMulticaAddressOverride !== null,
     });
   },
   connectMultica() {
@@ -1925,6 +1929,15 @@ export const browserApi: RuntimeApi = {
       workspaces: [],
       activeWorkspaceId: null,
     }));
+  },
+  saveMulticaConnectionAddress(baseUrl: string | null, appUrl: string | null) {
+    // 双 null = 清除覆盖回落渠道默认（与 desktop apply_multica_connection_address 双 None 分支对齐）。
+    browserMulticaAddressOverride = baseUrl && appUrl ? { baseUrl, appUrl } : null;
+    return this.getMulticaSettings();
+  },
+  cancelMulticaConnect() {
+    // 浏览器态无连接流程，取消为幂等 no-op（与 desktop cancel_multica_connect 语义对齐）。
+    return Promise.resolve();
   },
   getMulticaTasks() {
     return Promise.resolve({

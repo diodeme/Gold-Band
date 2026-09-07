@@ -11,7 +11,7 @@ vi.mock('@/api', async () => {
 
 import { getAcpActivityDetail, getAcpToolDetail } from '@/api';
 import { ACPMessageList, buildAcpTimelineProjection } from '@/components/acp/ACPChatDialog';
-import { ConversationViewport } from '@/components/conversation/ConversationViewport';
+import { ConversationViewport, ConversationViewportFooter } from '@/components/conversation/ConversationViewport';
 import type { ChatContainerContext } from '@/components/prompt-kit/chat-container';
 import type { AgentTranscriptLocator } from '@/components/workspace/right-workspace-context';
 import type { AcpActivityDetailVm, AcpUiEventVm } from '@/types';
@@ -139,7 +139,12 @@ describe('ACP activity detail loading', () => {
     }
   });
 
-  it.each([false, true])('positions a loaded expansion once unless the user scrolled (cancel: %s)', async (cancel) => {
+  it.each([
+    { cancel: false, bottom: 900, expected: 600 },
+    { cancel: true, bottom: 900, expected: 100 },
+    { cancel: false, bottom: 300, expected: 100 },
+    { cancel: false, bottom: 900, expected: 800, footerHeight: 200 },
+  ])('positions a loaded expansion only for overflow: %j', async ({ cancel, bottom, expected, footerHeight = 0 }) => {
     vi.stubGlobal('ResizeObserver', class {
       observe() {}
       unobserve() {}
@@ -151,14 +156,19 @@ describe('ACP activity detail loading', () => {
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
-    let toolBottom = 900;
+    let toolBottom = bottom;
+    let measuredFooterHeight = 0;
     const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.hasAttribute('data-conversation-viewport-footer')) {
+        return { top: 400 - measuredFooterHeight, bottom: 400, height: measuredFooterHeight } as DOMRect;
+      }
       return { top: 0, bottom: this.classList.contains('acp-activity-collapse-button') ? toolBottom : 400, height: 400 } as DOMRect;
     });
     try {
       await act(async () => root.render(
         <ConversationViewport contextRef={contextRef} initialFollowing={false} scrollClassName="overflow-y-auto">
           <ACPMessageList timeline={buildAcpTimelineProjection([activitySummary()], 'completed').timeline} sessionStatus="completed" sending={false} branchLocator={locator} />
+          <ConversationViewportFooter><div /></ConversationViewportFooter>
         </ConversationViewport>,
       ));
       const viewport = contextRef.current!.scrollRef.current!;
@@ -169,13 +179,15 @@ describe('ACP activity detail loading', () => {
       });
       await clickButton(container.querySelector('[data-slot="collapsible-trigger"]'));
       expect(viewport.scrollTop).toBe(100);
+      measuredFooterHeight = footerHeight;
       if (cancel) await act(async () => viewport.dispatchEvent(new WheelEvent('wheel', { deltaY: -10 })));
       await act(async () => resolveDetail(activityDetailPage(70, 109, 'before-70')));
-      expect(viewport.scrollTop).toBe(cancel ? 100 : 600);
+      expect(viewport.scrollTop).toBe(expected);
       expect(contextRef.current!.isAtBottom).toBe(false);
+      measuredFooterHeight += 100;
       toolBottom = 1200;
       await clickButton(container.querySelector('[data-acp-activity-detail-item-key] [data-slot="collapsible-trigger"]'));
-      expect(viewport.scrollTop).toBe(cancel ? 100 : 600);
+      expect(viewport.scrollTop).toBe(expected);
       expect(getAcpActivityDetail).toHaveBeenCalledTimes(1);
     } finally {
       await act(async () => root.unmount());

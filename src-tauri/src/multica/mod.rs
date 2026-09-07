@@ -25,10 +25,11 @@ pub mod vm;
 
 pub use client::MulticaClient;
 pub use config::{
-    MulticaSettingsVm, clear_multica_session, clear_multica_state_indices,
-    clear_multica_workspace_bindings, ensure_daemon_id, multica_account_changed, multica_app_url,
-    multica_base_url, multica_settings,
+    MulticaSettingsVm, apply_multica_connection_address, clear_multica_session,
+    clear_multica_state_indices, clear_multica_workspace_bindings, ensure_daemon_id, get_pat,
+    multica_account_changed, multica_app_url, multica_base_url, multica_base_url_for_settings,
+    multica_settings,
 };
 pub use error::MulticaError;
 pub use loop_::start_multica_loop;
-pub use state::shared_state;
+pub use state::{MulticaConnectCancel, shared_state};

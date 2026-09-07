@@ -2004,6 +2004,25 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **验证**：`cargo fmt --all -- --check` 通过（review 指出的 fmt 失败已修复）；`cargo test -p gold-band --lib` **1116 过 / 1 ignored（既有）**；`cargo test -p gold-band-desktop --bin gold-band-desktop` **648 过**（multica 83 含新增 3、runtime_recovery 含新增 1）。
 
+### 12.38 改动三十六：连接地址运行期可配置——连接确认弹窗 + 设置 icon 地址入口 + 取消连接（M5-ay，2026-09-07）
+
+**背景 / 根因分类**：用户需要在内网（webank dev，API 8080 / 登录页 3000）与外网（maling:5005 统一入口）间切换 multica 服务器。M5-ah 删除设置页 multica 区块与 `save_multica_settings` 后，`SettingsConfig.desktop_multica_base_url/_app_url` 成死字段，地址只能靠渠道 json（M5-ar）编译期决定——**好设计（settings 优先 → channel 兜底的解析链路）但写入方缺失**。修复方向：复活既有死字段为运行期覆盖（破坏式复兴，无兼容层），而非新增旁路配置。M5-ar「运行期不可改」结论就此被取代，渠道值退为默认兜底。初版实现「环境预设 + 弹窗内改地址」后按用户反馈两轮调整为最终形态：去环境概念、地址修改独立到设置弹窗、连接弹窗恢复可改地址（有变才保存、无提示文案行）、新增取消连接。
+
+**数据 / 接口**（先定数据再定接口）：
+- 零新增持久字段：复用 `desktop_multica_base_url/_app_url`；VM 增 `addressOverrideSet: bool`（`base_url.is_some()`）驱动「恢复默认地址」可见性。
+- 纯函数 `apply_multica_connection_address(&mut SettingsConfig, base, app)`（config.rs）：两参数须「同为 Some 或同为 None」（前端是单一地址输入、保存即两值同址；半覆盖无从判定用户意图）→ `multica.invalid-address`；各过 `normalize_multica_base_url`；双 None=清除覆盖回落渠道默认。分端口形态（API 8080 / 登录页 3000）只由渠道编译期默认产生，运行期无预设选择。
+- 命令 `save_multica_connection_address`：保存前后各算一次生效地址（`multica_base_url_for_settings` 把 settings 镜像到克隆 config 走统一解析链，判定与运行期消费同源），**生效地址变化且 `pat_set`** → 作废 server 作用域状态（`clear_multica_session` + `with_state(clear_multica_state_indices)` + `clear_runtime_ids`——PAT/runtime_id 对旧 server 签发，M5-af 账号作用域不变量向服务器身份维度延伸）；`save_settings` + `update_settings_config` + emit settings-updated。`connect_multica` 仅增取消接线（见下），地址获取零改动（从解析链拿新地址）。
+- 取消链：`browser_login` 全程 tokio → 命令层 `tokio::select!` 挂 `CancellationToken`（future drop 即释放资源、无状态写入，client.rs 零改动；取消只作用登录等待段，落盘/注册是本地快操作不挂取消）。取消槽 `MulticaConnectCancel`（state.rs）：**单调递增登记 id 认领**（CancellationToken 无 PartialEq；register 替换并 cancel 旧 token 防异常残留，clear_if_same 按 id 比较防迟到清理误删下一次连接）。新命令 `cancel_multica_connect`（无进行中连接时幂等 no-op）+ 错误码 `multica.connect-cancelled`（非失败语义，前端静默关窗不作错误展示）。
+- 前端两弹窗互斥单飞行（页面级 `'connect' | 'settings' | null` 状态）：
+  - `MulticaConnectionSettingsDialog`（gear 入口）：单一「连接地址」输入（无环境下拉、无登录页提示行），保存 = API 与登录页同址（`saveMulticaConnectionAddress(v, v)`）；**与当前生效值相同禁用保存**（防「打开看看就保存」把分端口渠道默认 8080/3000 误覆盖成同址 8080/8080）；预填走 settingsRef 模式（ref 读最新值、仅以 open 触发，不覆写用户编辑中输入）；`addressOverrideSet` 时「恢复默认地址」双 null 回落渠道默认、用返回 VM 刷新弹窗字段留窗继续编辑。
+  - `MulticaConnectDialog`（连接按钮入口）：**确认 + 可改地址 AlertDialog**——预填当前生效地址、可直接编辑（校验 http(s)，非法禁用连接、无提示文案行）；确认时**地址有变才保存**（`saveMulticaConnectionAddress(v, v)`，未变不写——与设置弹窗「未变更禁用保存」是同一防分端口覆盖不变量的两种 UI 表达）再 `connect_multica`；连接中主按钮禁用转「连接中…」、取消按钮变「取消连接」→ `cancelMulticaConnect`；**「取消连接」只发取消信号不直接关窗**——关窗统一走连接命令的 cancelled 收尾路径（单一关闭事实源，避免取消竞态下状态悬空）；取消判定本地窄化 `{code === 'multica.connect-cancelled'}`。
+  - API 四层（client/desktop/api/browser）+ `cancelMulticaConnect` browser 幂等 no-op mock 同步。破坏式更新：删旧双模式组件 + `MULTICA_ADDRESS_PRESETS` + 预设/登录页提示与 changeHint i18n 键（zh+en）。URL 校验抽 `@/lib/multica-address.ts` 两弹窗共用（`isValidHttpUrl`）。已连接态无入口（改地址须先退出登录）。
+- 生效时延：心跳每 tick 经 `build_client` 重新解析（既有行为），命令保存后 `update_settings_config` 刷新内存配置 → 改地址 ≤15s 生效、无需重启。
+
+**方案自评审**：过度设计——零新增持久字段/循环/缓存/队列；保存侧一个命令一个纯函数，取消侧复用 tokio select 语义 + 一个 id 认领槽（不引入 per-request 句柄表/请求 id 路由）；服务器变更作废复用 M5-af 既有原语，仅一个字符串比较判定；拆两弹窗后各自无内部 mode 分支，比双模式组件更简。性能——保存是一条命令一次 settings.json 写；取消槽是 O(1) Mutex 单槽无争用面；地址解析是既有心跳路径的微秒级字符串规范化；弹窗按需挂载、复用既有 settings-updated 事件，无新增订阅。无风险点，不需 benchmark。
+
+**验证**：`cargo test -p gold-band-desktop multica::` **91 过 / 0 失败**（新增 apply roundtrip/半覆盖拒绝/非法拒绝/双 None 清除、生效地址变化门（含「清除覆盖但渠道值相同 → 不作废」）、命令级作废链、取消槽 3 测：cancel 幂等取消 / clear_if_same 不误删下一次登记 / register 替换并取消残留 token）；tsc `tsconfig.build.json` 零错；vitest `multica-connect-dialog`（7 用例：预填可编辑+无 hint/地址未变直连不保存/编辑后先 save(v,v) 再 connect/非法禁用+invalidUrl/失败显错留窗/cancelled 静默关/连接中禁用+取消触发）+ `multica-connection-settings-dialog`（5 用例：预填/保存 (v,v)+关窗/未变更禁用/非法禁用/恢复默认刷新留窗）+ `multica-task-management-page`（13 用例：连接按钮开确认弹窗、gear 开地址设置弹窗、互斥单飞行）**25 过**；multica 回归 4 套件 34 过（add-workspace-dialog / remote-task-board / composer-multica-chip / app-error-i18n）。
+
 ---
 
 ## 附录 A：CLAUDE.md 合规自检

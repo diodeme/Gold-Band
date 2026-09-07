@@ -50,7 +50,9 @@ export const SEMANTIC_TOKEN_NAMES = [
   'sidebarForeground', 'sidebarPrimary', 'sidebarPrimaryForeground', 'sidebarAccent',
   'sidebarAccentForeground', 'sidebarBorder', 'sidebarRing', 'workspace', 'surfaceLow',
   'surfaceHigh', 'lineSoft', 'windowOutline', 'windowEdgeShadow', 'link', 'running',
-  'success', 'warning', 'danger', 'permission', 'titlebar', 'titlebarForeground',
+  'success', 'warning', 'danger', 'statusRunningSurface', 'statusRunningBorder',
+  'statusSuccessSurface', 'statusSuccessBorder', 'statusWarningSurface', 'statusWarningBorder',
+  'statusDangerSurface', 'statusDangerBorder', 'permission', 'titlebar', 'titlebarForeground',
   'titlebarMuted', 'titlebarBorder', 'titlebarHover', 'scrollbarTrack', 'scrollbarThumb',
   'scrollbarThumbHover',
 ];

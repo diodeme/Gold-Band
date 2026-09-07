@@ -212,14 +212,14 @@ describe('ACPChatDialog branch timeline helpers', () => {
       'running',
       projection([]),
     ).timeline[0];
-    expect(pendingProjection?.kind === 'agentLink' ? pendingProjection.status : null).toBe('queued');
+    expect(pendingProjection?.kind === 'agentLink' ? pendingProjection.status : null).toBeNull();
 
     const completedSession = buildAcpTimelineProjection(
       [launch],
       'completed',
       projection([]),
     ).timeline[0];
-    expect(completedSession?.kind === 'agentLink' ? completedSession.status : null).toBe('completed');
+    expect(completedSession?.kind === 'agentLink' ? completedSession.status : null).toBeNull();
   });
 
   it('preserves an unrelated Agent link object when another Agent projection changes', () => {

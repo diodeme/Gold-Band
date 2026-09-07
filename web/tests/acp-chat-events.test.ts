@@ -23,6 +23,7 @@ import {
   runtimeControlMessageParts,
   isAcpSessionReadyForInitialDisplay,
   isAcpConversationAtBottom,
+  shouldShowReturnToLatest,
   stabilizeAcpSessionTimingForDisplay,
   stabilizeAcpSessionTimingPatchForDisplay,
   useSessionTimingSeconds,
@@ -212,6 +213,11 @@ describe('ACP chat event handling', () => {
     expect(isAcpConversationAtBottom(true, true)).toBe(false);
     expect(isAcpConversationAtBottom(true, false)).toBe(true);
     expect(isAcpConversationAtBottom(false, false)).toBe(false);
+  });
+
+  it('keeps return-to-latest latched at a truncated event window bottom', () => {
+    expect(shouldShowReturnToLatest(true, true, true, true, 0)).toBe(true);
+    expect(shouldShowReturnToLatest(true, true, false, true, 0)).toBe(false);
   });
 
   it('shows runtime control failures in the session banner', () => {

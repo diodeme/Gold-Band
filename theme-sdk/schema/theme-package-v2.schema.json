@@ -227,6 +227,14 @@
                 "success",
                 "warning",
                 "danger",
+                "statusRunningSurface",
+                "statusRunningBorder",
+                "statusSuccessSurface",
+                "statusSuccessBorder",
+                "statusWarningSurface",
+                "statusWarningBorder",
+                "statusDangerSurface",
+                "statusDangerBorder",
                 "permission",
                 "titlebar",
                 "titlebarForeground",
@@ -515,6 +523,38 @@
                   "minLength": 1
                 },
                 "danger": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "statusRunningSurface": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "statusRunningBorder": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "statusSuccessSurface": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "statusSuccessBorder": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "statusWarningSurface": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "statusWarningBorder": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "statusDangerSurface": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "statusDangerBorder": {
                   "type": "string",
                   "minLength": 1
                 },
@@ -1065,6 +1105,14 @@
                 "success",
                 "warning",
                 "danger",
+                "statusRunningSurface",
+                "statusRunningBorder",
+                "statusSuccessSurface",
+                "statusSuccessBorder",
+                "statusWarningSurface",
+                "statusWarningBorder",
+                "statusDangerSurface",
+                "statusDangerBorder",
                 "permission",
                 "titlebar",
                 "titlebarForeground",
@@ -1353,6 +1401,38 @@
                   "minLength": 1
                 },
                 "danger": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "statusRunningSurface": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "statusRunningBorder": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "statusSuccessSurface": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "statusSuccessBorder": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "statusWarningSurface": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "statusWarningBorder": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "statusDangerSurface": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "statusDangerBorder": {
                   "type": "string",
                   "minLength": 1
                 },

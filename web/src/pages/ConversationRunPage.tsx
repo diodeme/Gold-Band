@@ -20,7 +20,6 @@ import { conversationRunWorkspaceResourceKey, useRightWorkspace, type Conversati
 import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode } from '@/lib/conversation-runtime-workflow';
 import { conversationPageForSession } from '@/lib/conversation-navigation';
 import { findConversationLeafByKey } from '@/lib/conversation-run-snapshot';
-import { acpProviderConfigCatalog } from '@/lib/acp-session-config';
 import { acpRuntimeErrorBannerCopy } from '@/lib/acp-runtime-error';
 import { shouldTreatAcpRuntimeErrorAsFallback } from '@/lib/acp-runtime-composer-state';
 import {
@@ -442,10 +441,6 @@ export function ConversationRunPage({
 
   const selectedSessionMatchesLeaf = sessionBelongsToLeaf(run.selectedSession, run, selectedLeaf);
   const selectedSession = selectedSessionMatchesLeaf ? run.selectedSession : null;
-  const selectedProviderCatalog = useMemo(
-    () => acpProviderConfigCatalog(agentRegistry, selectedSession?.provider),
-    [agentRegistry, selectedSession?.provider],
-  );
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
   const runtimeControlErrorBase = localizedRuntimeErrorMessage ?? run.runtimeErrorMessage;
   const selectedSessionUsesRuntimeErrorFallback = shouldTreatAcpRuntimeErrorAsFallback(
@@ -582,7 +577,7 @@ export function ConversationRunPage({
           <ACPChatDialog
             key={`${run.taskUuid ?? run.taskId}:${selectedSessionKey ?? 'empty'}`}
             session={selectedSession}
-            providerCatalog={selectedProviderCatalog}
+            agentRegistry={agentRegistry}
             sessionEstablished={selectedLeaf.sessionEstablished}
             sessionReferenceId={selectedLeaf.sessionId}
             projectId={run.projectId}

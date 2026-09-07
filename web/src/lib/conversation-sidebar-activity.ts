@@ -7,6 +7,29 @@ import type {
 } from '@/types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm } from '@/api/client';
 import { parseTimestamp } from '@/lib/datetime';
+import { findConversationTask } from '@/lib/conversation-task-state';
+
+export type ConversationSidebarRunStateRefreshTarget =
+  | { kind: 'workspace-tasks'; projectId: string }
+  | { kind: 'task-runs'; task: ConversationTaskRowVm };
+
+export function conversationSidebarRunStateRefreshTarget(
+  sidebar: ConversationSidebarVm,
+  event: ConversationRunStateUpdatedEventVm,
+  activeProjectId: string | null | undefined,
+): ConversationSidebarRunStateRefreshTarget | null {
+  if (!event.taskUuid) return null;
+  const task = findConversationTask(sidebar, event.projectId, event.taskId);
+  if (!task) {
+    return event.projectId === activeProjectId
+      ? { kind: 'workspace-tasks', projectId: event.projectId }
+      : null;
+  }
+  if (task.taskUuid !== event.taskUuid) return null;
+  const runIsLoaded = task.latestRun?.runId === event.runId
+    || task.runs.some((run) => run.runId === event.runId);
+  return runIsLoaded ? null : { kind: 'task-runs', task };
+}
 
 function isTerminalConversationRunStatus(status: string) {
   return ['completed', 'failed', 'cancelled', 'killed'].includes(status.trim().toLowerCase());

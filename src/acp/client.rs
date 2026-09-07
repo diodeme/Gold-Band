@@ -2519,6 +2519,60 @@ pub fn run_prompt(
         attempt_dir.join("acp.snapshot.json"),
         lifecycle_owner.clone(),
     );
+    lifecycle_terminal_guard.execute(|| {
+        run_prompt_inner(
+            provider_id,
+            config,
+            adapter_workspace_dir,
+            workspace_dir,
+            attempt_dir,
+            prompt,
+            session_mode,
+            permission_mode,
+            model,
+            config_options,
+            continue_ref,
+            use_local_claude,
+            require_local_claude_executable,
+            acp_session_title_refresh_enabled,
+            acp_raw_max_size_bytes,
+            acp_raw_target_size_bytes,
+            runtime_policy,
+            lifecycle_owner,
+            live_update,
+            mcp_servers,
+            session_update,
+            prompt_accepted,
+            stop_probe,
+        )
+    })
+}
+
+fn run_prompt_inner(
+    provider_id: &str,
+    config: &AcpAdapterConfig,
+    adapter_workspace_dir: Utf8PathBuf,
+    workspace_dir: Utf8PathBuf,
+    attempt_dir: Utf8PathBuf,
+    prompt: &PromptBundle,
+    session_mode: SessionMode,
+    permission_mode: Option<String>,
+    model: Option<String>,
+    config_options: BTreeMap<String, String>,
+    continue_ref: Option<Value>,
+    use_local_claude: bool,
+    require_local_claude_executable: bool,
+    acp_session_title_refresh_enabled: bool,
+    acp_raw_max_size_bytes: u64,
+    acp_raw_target_size_bytes: u64,
+    runtime_policy: AcpRuntimePolicy,
+    lifecycle_owner: AcpLifecycleOwner,
+    live_update: Option<&dyn Fn(&AcpUiEvent, AcpLiveTimelinePosition) -> Result<()>>,
+    mcp_servers: &[Value],
+    session_update: Option<&dyn Fn() -> Result<()>>,
+    prompt_accepted: Option<&dyn Fn(&str) -> Result<()>>,
+    stop_probe: Option<RuntimeStopProbe>,
+) -> Result<AcpPromptRun> {
     let run_prompt_started_at = Instant::now();
     let prompt_lock = AcpSessionRuntimeRegistry::shared().prompt_lock(&attempt_dir);
     let _prompt_guard = prompt_lock
@@ -2832,7 +2886,6 @@ pub fn run_prompt(
     } else {
         runtime.release_managed_session();
     }
-    lifecycle_terminal_guard.disarm();
     Ok(run)
 }
 
@@ -3979,13 +4032,15 @@ impl<'a> AcpRuntime<'a> {
                         return Err(err);
                     }
                     if required_sync {
-                        bail!("failed to synchronize existing ACP session before prompt: {err}");
+                        return Err(
+                            err.context("failed to synchronize existing ACP session before prompt")
+                        );
                     }
                     if strict_continue {
-                        bail!(
-                            "failed to restore existing ACP session for continue via {}: {err}",
+                        return Err(err.context(format!(
+                            "failed to restore existing ACP session for continue via {}",
                             restore_method.rpc_method()
-                        );
+                        )));
                     }
                 }
             }
@@ -5054,7 +5109,14 @@ impl<'a> AcpRuntime<'a> {
                                 "sessionId": self.session_id,
                             }),
                         );
-                        bail!("ACP `{method}` failed: {error}");
+                        let mut info = manual_runtime_error_info(
+                            RuntimeErrorDomain::Provider,
+                            "acp.session-request-failed",
+                            format!("ACP `{method}` failed: {error}"),
+                            json!({ "method": method }),
+                        );
+                        info.raw = Some(error.clone());
+                        return Err(runtime_error(info));
                     }
                     self.append_timing_diagnostic(
                         "acp_rpc_end",
@@ -6556,6 +6618,7 @@ impl<'a> AcpRuntime<'a> {
                 }),
             restored,
             stop_reason,
+            turn_error: None,
             capabilities,
             models: self.models.clone(),
             modes: self.modes.clone(),

@@ -537,16 +537,26 @@ fn settle_failed_prompt_submission(
     turn_id: &str,
     operation_id: Option<&str>,
     expected_revision: u64,
+    error: &CommandErrorVm,
 ) -> bool {
     let lifecycle_path = acp_lifecycle_path(&locator.attempt_dir(app));
     let decided_at = gold_band::acp::events::current_timestamp();
-    match gold_band::acp::events::persist_session_turn_terminal_owned(
+    let Some(operation_id) = operation_id else {
+        return false;
+    };
+    match gold_band::acp::events::persist_session_turn_failure_owned(
         &lifecycle_path,
-        turn_id,
-        operation_id,
-        expected_revision,
-        gold_band::acp::events::AcpLatestTurnStatus::Failed,
-        "provider-error",
+        &gold_band::acp::events::AcpLifecycleOwner {
+            turn_id: turn_id.to_string(),
+            operation_id: operation_id.to_string(),
+            revision: expected_revision,
+        },
+        &gold_band::runtime_error::manual_runtime_error_info(
+            gold_band::runtime_error::RuntimeErrorDomain::Internal,
+            &error.code,
+            "",
+            error.params.clone(),
+        ),
         &decided_at,
     ) {
         Ok(Some(header)) => {
@@ -5932,6 +5942,74 @@ pub fn get_acp_activity_detail(
 }
 
 #[tauri::command]
+pub async fn get_acp_image(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    branch_id: String,
+    image: gold_band::acp::images::AcpImageRef,
+    thumbnail: bool,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<crate::acp_images::AcpImageContentVm> {
+    static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    let denied = || CommandErrorVm::new("acp.image-not-found", serde_json::json!({}));
+    for part in [&task_id, &run_id, &round_id, &node_id, &attempt_id]
+        .into_iter()
+        .chain(outer_node_id.iter())
+        .chain(outer_attempt_id.iter())
+    {
+        let mut components = Path::new(part).components();
+        if !matches!(components.next(), Some(Component::Normal(_)))
+            || components.next().is_some()
+            || part.contains(['/', '\\', ':'])
+        {
+            return Err(denied());
+        }
+    }
+    gold_band::acp::branches::validate_conversation_branch_id(&branch_id).map_err(|_| denied())?;
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let attempt_dir = resolve_acp_attempt_dir(
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outer_node_id.as_deref(),
+        outer_attempt_id.as_deref(),
+    );
+    let runtime_root = app.paths.runtime_root.clone();
+    let permit = SLOTS
+        .try_acquire()
+        .map_err(|_| CommandErrorVm::new("acp.image-busy", serde_json::json!({})))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        let timeline = gold_band::acp::branches::branch_timeline_path(&attempt_dir, &branch_id);
+        let root = fs::canonicalize(runtime_root)
+            .map_err(|_| CommandErrorVm::new("acp.image-not-found", serde_json::json!({})))?;
+        let canonical = fs::canonicalize(&timeline)
+            .map_err(|_| CommandErrorVm::new("acp.image-not-found", serde_json::json!({})))?;
+        if !canonical.starts_with(root) {
+            return Err(CommandErrorVm::new(
+                "acp.image-not-found",
+                serde_json::json!({}),
+            ));
+        }
+        let data = gold_band::acp::images::read_image_base64(&timeline, &image)
+            .map_err(|error| CommandErrorVm::new(error.to_string(), serde_json::json!({})))?;
+        crate::acp_images::decode_image(&data, thumbnail)
+            .map_err(|error| CommandErrorVm::new(error.to_string(), serde_json::json!({})))
+    })
+    .await
+    .map_err(|_| CommandErrorVm::new("acp.image-invalid", serde_json::json!({})))?
+}
+
+#[tauri::command]
 pub fn get_acp_tool_detail(
     state: State<'_, DesktopState>,
     project_id: Option<String>,
@@ -7086,6 +7164,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 &turn_id,
                 Some(&claimed_operation_id),
                 claimed_revision,
+                &error,
             );
             if settled {
                 emit_acp_turn_finished(
@@ -7113,6 +7192,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             return Err(error);
         }
         Err(_) => {
+            let error = CommandErrorVm::new("app.task-join-failed", serde_json::json!({}));
             let _ = clear_auto_dispatch_reply_batch(&locator.attempt_dir(&app_for_emit));
             let settled = settle_failed_prompt_submission(
                 &app_for_emit,
@@ -7120,6 +7200,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 &turn_id,
                 Some(&claimed_operation_id),
                 claimed_revision,
+                &error,
             );
             if settled {
                 emit_acp_turn_finished(
@@ -7144,10 +7225,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 outer_attempt_id_for_emit.clone(),
                 None,
             );
-            return Err(CommandErrorVm::new(
-                "app.task-join-failed",
-                serde_json::json!({}),
-            ));
+            return Err(error);
         }
     };
     emit_acp_session_update(

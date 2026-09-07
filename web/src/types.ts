@@ -1740,6 +1740,7 @@ export interface AcpSessionVm {
   timing?: AcpSessionTimingVm | null;
   restored: boolean;
   stopReason?: string | null;
+  turnError?: RuntimeErrorInfoVm | null;
   systemPromptAppend?: string | null;
   config?: AcpSessionConfigVm | null;
   events: AcpUiEventVm[];
@@ -2516,6 +2517,7 @@ export interface ConversationAcpFacetVm {
   latestTurnStatus: 'none' | 'completed' | 'cancelled' | 'failed';
   stopping: boolean;
   stopReason?: string | null;
+  turnError?: RuntimeErrorInfoVm | null;
   operationId?: string | null;
 }
 
@@ -2884,4 +2886,17 @@ export interface AppExitPreparationWarningVm {
 
 export interface AppExitPreparationVm {
   warnings: AppExitPreparationWarningVm[];
+}
+export interface AcpImageRef {
+  eventId: string;
+  pointer: string;
+  contentHash: string;
+  mimeType: string;
+}
+
+export interface AcpImageContentVm {
+  dataUrl: string;
+  mimeType: string;
+  width: number;
+  height: number;
 }

@@ -343,6 +343,15 @@ docs/gold-band/开发计划/acp接入/acp功能模块todo列表.md
 
 ## 9. 一句话总结
 
+### 2026-09-07 后台恢复失败展示
+
+- 根因：异步 admission 已成功，但 session setup 在 timeline 用户消息建立前失败；终态 guard 只写 failed/runtime-error，轻量 Session VM 不加载诊断历史，错误横幅缺少可消费原因。属于正确设计下的失败链路实现不完整。
+- 实现：复用 RuntimeErrorInfo，将 turnError 纳入现有 ACP lifecycle 的原子终态；保留 session RPC 的结构化原因，Session VM 直接投影快照，复用现有横幅和中英文错误文案。新 admission 清除旧错误，原有 owner/CAS 阻止迟到失败污染新 turn。
+- UI 使用现有 ACP lifecycle facet 的 revision 和 turnId 合并同一份 turnError，优先当前生命周期携带的原因；详情快照尚未追上时不得回退展示上一轮原因。初次会话建立失败和无具体原因的失败均保留可见提示。
+- 最小失败证据：Rust guard 测试原先获得 Null 错误字段；前端 failed 无 diagnostics 的横幅测试原先返回 null。回归覆盖失败原因持久化、无诊断历史查询、跨 turn 隔离、真实聊天组件错误展示和重试清除。
+- 范围与性能评审：不修复 Provider writer 占用，不引入重试、缓存、依赖或平行状态机；每 attempt 只保存当前 turn 的错误，复用已有 snapshot 写锁、更新事件与查询，无新增日志扫描或历史请求，无需额外 benchmark。
+- 验收通过：ACP events 104 项、ACP client 131 项、桌面 Session VM 4 项和 lifecycle projection 2 项 Rust 测试；前端聊天事件、实际聊天组件、生命周期合并和错误本地化共 163 项；TypeScript 检查与生产构建通过（保留现有 chunk size / 混合导入警告）。Chrome 验证实际聊天组件的错误摘要、原始原因、普通宽度及 390px 换行无横向溢出，成功状态清除横幅。内置浏览器不可用时使用 Chrome；本次验证 tab、1439 端口服务和临时页面均已清理，未替换已安装 EXE。
+
 > Gold Band ACP UI 应是一个 Dialog / Chat UI：用户通过 composer 输入，agent 输出以消息、thought block、tool card、plan block、permission dialog 和诊断视图呈现；UI 的唯一数据源是 ACP 统一事件，而不是 terminal/log 或 Claude Code legacy CLI 输出。
 
 ### 斜杠命令验收固化

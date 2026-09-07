@@ -772,6 +772,7 @@ pub struct AcpSessionVm {
     pub timing: Option<AcpSessionTimingVm>,
     pub restored: bool,
     pub stop_reason: Option<String>,
+    pub turn_error: Option<gold_band::runtime_error::RuntimeErrorInfo>,
     pub system_prompt_append: Option<String>,
     pub config: Option<AcpSessionConfigVm>,
     pub events: Vec<AcpUiEventVm>,
@@ -3826,6 +3827,10 @@ pub fn dynamic_acp_session_vm(
             .get("stopReason")
             .and_then(|value| value.as_str())
             .map(str::to_string),
+        turn_error: session
+            .get("turnError")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok()),
         system_prompt_append,
         config,
         events: event_scan.events,
@@ -4224,6 +4229,10 @@ pub fn acp_session_vm(
             .get("stopReason")
             .and_then(|value| value.as_str())
             .map(str::to_string),
+        turn_error: session
+            .get("turnError")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok()),
         system_prompt_append,
         config,
         available_commands: event_scan.available_commands,
@@ -10406,6 +10415,79 @@ mod tests {
         .unwrap();
 
         assert!(session.is_none(), "unexpected ACP session VM: {session:#?}");
+    }
+
+    #[test]
+    fn acp_session_vm_reads_background_failure_without_diagnostic_history() {
+        let dir = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap());
+        write_json(
+            &app.paths.node_file(
+                "task-error",
+                "run-001",
+                "round-001",
+                "direct-agent",
+                "attempt-001",
+            ),
+            &NodeState {
+                version: gold_band::domain::VERSION.to_string(),
+                acp_storage_schema_version: gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                node_id: "direct-agent".to_string(),
+                node_type: NodeType::Worker,
+                run_id: "run-001".to_string(),
+                round_id: "round-001".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                status: RunStatus::Completed,
+                outcome: Some(gold_band::domain::NodeOutcome::Success),
+                started_at: "1788772927Z".to_string(),
+                finished_at: Some("1788772928Z".to_string()),
+                manual_check_pending: false,
+                runtime_execution_id: None,
+                resolved_config: gold_band::domain::ResolvedConfig::new(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        let snapshot = app.paths.acp_snapshot_file(
+            "task-error",
+            "run-001",
+            "round-001",
+            "direct-agent",
+            "attempt-001",
+        );
+        let error = gold_band::runtime_error::manual_runtime_error_info(
+            gold_band::runtime_error::RuntimeErrorDomain::Provider,
+            "acp.session-request-failed",
+            "thread session-a already has an active writer",
+            json!({"method": "session/resume"}),
+        );
+        write_json(
+            &snapshot,
+            &json!({
+                "adapterId": "codex-acp", "adapterDisplayName": "Codex", "cwd": dir.path().to_str(),
+                "sessionId": "session-a", "availability": "established",
+                "latestTurnStatus": "failed", "liveTurnActivity": "idle", "turnError": error,
+                "restored": true, "createdAt": "1788772927Z", "updatedAt": "1788772928Z",
+                "capabilities": {}, "runtimeControlTimelineScanComplete": true
+            }),
+        )
+        .unwrap();
+        let session = acp_session_vm(
+            &app,
+            "task-error",
+            "run-001",
+            "round-001",
+            "direct-agent",
+            "attempt-001",
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(session.status, "failed");
+        assert_eq!(session.turn_error.as_ref(), Some(&error));
+        assert_eq!(session.diagnostics.error_count, 0);
+        assert!(session.events.is_empty());
     }
 
     #[test]

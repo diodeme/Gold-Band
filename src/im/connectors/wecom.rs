@@ -2753,10 +2753,10 @@ mod tests {
         let options = card["checkbox"]["option_list"].as_array().unwrap();
         assert_eq!(options.len(), 3);
         assert_eq!(options[0]["id"], "1");
-        assert_eq!(options[0]["text"], "记住选择");
+        assert_eq!(options[0]["text"], "本次会话允许");
         assert_eq!(options[0]["is_checked"], true);
         assert_eq!(options[1]["id"], "0");
-        assert_eq!(options[1]["text"], "允许一次");
+        assert_eq!(options[1]["text"], "仅允许一次");
         assert_eq!(options[1]["is_checked"], false);
         assert_eq!(options[2]["id"], "2");
         assert_eq!(options[2]["text"], "拒绝");
@@ -2808,7 +2808,7 @@ mod tests {
 
         assert_eq!(options.len(), 2);
         assert_eq!(options[0].action_index, 1);
-        assert_eq!(options[0].label, "记住选择");
+        assert_eq!(options[0].label, "本次会话允许");
         assert_eq!(options[1].action_index, 0);
         assert_eq!(options[1].label, "保持计划");
         assert!(options[1].safe_fallback);
@@ -3551,15 +3551,15 @@ mod tests {
         assert_eq!(card["checkbox"]["mode"], 0);
         assert_eq!(card["submit_button"]["key"], "delivery-1:submit");
         assert!(card["submit_button"].get("disable").is_none());
-        assert_eq!(card["main_title"]["title"], "id=0080 已处理：允许一次");
+        assert_eq!(card["main_title"]["title"], "id=0080 已处理：仅允许一次");
         assert_eq!(card["main_title"]["desc"], "Agent 请求执行命令");
         let options = card["checkbox"]["option_list"].as_array().unwrap();
         assert_eq!(options.len(), 3);
         assert_eq!(options[0]["id"], "1");
-        assert_eq!(options[0]["text"], "记住选择");
+        assert_eq!(options[0]["text"], "本次会话允许");
         assert_eq!(options[0]["is_checked"], false);
         assert_eq!(options[1]["id"], "0");
-        assert_eq!(options[1]["text"], "允许一次");
+        assert_eq!(options[1]["text"], "仅允许一次");
         assert_eq!(options[1]["is_checked"], true);
         assert_eq!(options[2]["id"], "2");
         assert_eq!(options[2]["text"], "拒绝");

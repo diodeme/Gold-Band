@@ -218,42 +218,42 @@ fn action_label(locale: ImLocale, action: &InterventionAllowedAction) -> String 
                 (ImLocale::ZhCn, PermissionActionQualifier::Standard)
                     if *permission_kind == PermissionActionKind::AllowOnce =>
                 {
-                    "允许一次".into()
+                    localized(locale, "im.permission.action.allowOnce").into()
                 }
                 (ImLocale::ZhCn, PermissionActionQualifier::Standard)
                     if *permission_kind == PermissionActionKind::AllowAlways =>
                 {
-                    "记住选择".into()
+                    localized(locale, "im.permission.action.allowForSession").into()
                 }
                 (ImLocale::ZhCn, PermissionActionQualifier::Standard)
                     if *permission_kind == PermissionActionKind::RejectOnce =>
                 {
-                    "拒绝".into()
+                    localized(locale, "im.permission.action.deny").into()
                 }
                 (ImLocale::ZhCn, PermissionActionQualifier::Standard)
                     if *permission_kind == PermissionActionKind::RejectAlways =>
                 {
-                    "记住拒绝".into()
+                    localized(locale, "im.permission.action.denyAlways").into()
                 }
                 (ImLocale::En, PermissionActionQualifier::Standard)
                     if *permission_kind == PermissionActionKind::AllowOnce =>
                 {
-                    "Allow once".into()
+                    localized(locale, "im.permission.action.allowOnce").into()
                 }
                 (ImLocale::En, PermissionActionQualifier::Standard)
                     if *permission_kind == PermissionActionKind::AllowAlways =>
                 {
-                    "Remember choice".into()
+                    localized(locale, "im.permission.action.allowForSession").into()
                 }
                 (ImLocale::En, PermissionActionQualifier::Standard)
                     if *permission_kind == PermissionActionKind::RejectOnce =>
                 {
-                    "Deny".into()
+                    localized(locale, "im.permission.action.deny").into()
                 }
                 (ImLocale::En, PermissionActionQualifier::Standard)
                     if *permission_kind == PermissionActionKind::RejectAlways =>
                 {
-                    "Deny all".into()
+                    localized(locale, "im.permission.action.denyAlways").into()
                 }
                 (ImLocale::ZhCn, _) => "桌面处理".into(),
                 (ImLocale::En, _) => "Desktop".into(),
@@ -332,6 +332,10 @@ pub(crate) fn localized(locale: ImLocale, key: &str) -> &str {
         (ImLocale::ZhCn, "im.permission.action.autoMode") => "自动模式",
         (ImLocale::ZhCn, "im.permission.action.manualApproval") => "手动确认",
         (ImLocale::ZhCn, "im.permission.action.keepPlanning") => "保持计划",
+        (ImLocale::ZhCn, "im.permission.action.allowOnce") => "仅允许一次",
+        (ImLocale::ZhCn, "im.permission.action.allowForSession") => "本次会话允许",
+        (ImLocale::ZhCn, "im.permission.action.deny") => "拒绝",
+        (ImLocale::ZhCn, "im.permission.action.denyAlways") => "始终拒绝",
         (ImLocale::ZhCn, "im.elicitation.form.label") => "远程表单",
         (ImLocale::ZhCn, "im.elicitation.card.titleWithRef") => "补充信息（id={ref}）",
         (ImLocale::ZhCn, "im.elicitation.vote.linkedSubtitle") => {
@@ -400,6 +404,10 @@ pub(crate) fn localized(locale: ImLocale, key: &str) -> &str {
         (ImLocale::En, "im.permission.action.autoMode") => "Auto mode",
         (ImLocale::En, "im.permission.action.manualApproval") => "Manual",
         (ImLocale::En, "im.permission.action.keepPlanning") => "Keep plan",
+        (ImLocale::En, "im.permission.action.allowOnce") => "Allow once",
+        (ImLocale::En, "im.permission.action.allowForSession") => "Allow for session",
+        (ImLocale::En, "im.permission.action.deny") => "Deny",
+        (ImLocale::En, "im.permission.action.denyAlways") => "Always deny",
         (ImLocale::En, "im.elicitation.form.label") => "Remote form",
         (ImLocale::En, "im.elicitation.card.titleWithRef") => "More information (id={ref})",
         (ImLocale::En, "im.elicitation.vote.linkedSubtitle") => {
@@ -451,7 +459,18 @@ mod tests {
                     PermissionActionKind::AllowAlways
                 )
             ),
-            "记住选择"
+            "本次会话允许"
+        );
+        assert_eq!(
+            action_label(
+                ImLocale::En,
+                &action(
+                    "allow_for_session",
+                    "Yes, and don't ask again for these files",
+                    PermissionActionKind::AllowAlways
+                )
+            ),
+            "Allow for session"
         );
         assert_eq!(
             action_label(
@@ -469,7 +488,18 @@ mod tests {
                     PermissionActionKind::RejectAlways
                 )
             ),
-            "记住拒绝"
+            "始终拒绝"
+        );
+        assert_eq!(
+            action_label(
+                ImLocale::En,
+                &action(
+                    "reject_always",
+                    "Always deny",
+                    PermissionActionKind::RejectAlways
+                )
+            ),
+            "Always deny"
         );
         for (option_id, name, expected) in [
             ("auto", "Yes, and use \"auto\" mode", "自动模式"),

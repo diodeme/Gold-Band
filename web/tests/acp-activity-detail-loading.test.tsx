@@ -6,11 +6,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/api', async () => {
   const actual = await vi.importActual<typeof import('@/api')>('@/api');
-  return { ...actual, getAcpActivityDetail: vi.fn(), getAcpToolDetail: vi.fn() };
+  return { ...actual, getAcpActivityDetail: vi.fn(), getAcpToolDetail: vi.fn(), getAcpImage: vi.fn() };
 });
 
-import { getAcpActivityDetail, getAcpToolDetail } from '@/api';
+import { getAcpActivityDetail, getAcpToolDetail, getAcpImage } from '@/api';
 import { ACPMessageList, buildAcpTimelineProjection } from '@/components/acp/ACPChatDialog';
+import { TooltipProvider } from '@/components/ui/tooltip';
 import { ConversationViewport, ConversationViewportFooter } from '@/components/conversation/ConversationViewport';
 import type { ChatContainerContext } from '@/components/prompt-kit/chat-container';
 import type { AgentTranscriptLocator } from '@/components/workspace/right-workspace-context';
@@ -102,6 +103,49 @@ afterEach(() => {
 });
 
 describe('ACP activity detail loading', () => {
+  it.each(['ready', 'failed', 'closed'])('waits for tool-detail thumbnails before revealing the tool body (%s)', async (outcome) => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    let finishImage!: (value: import('@/types').AcpImageContentVm) => void;
+    vi.mocked(getAcpImage).mockReturnValue(new Promise(resolve => { finishImage = resolve; }));
+    let finishDecode!: () => void;
+    let failDecode!: () => void;
+    const decoding = new Promise<void>((resolve, reject) => { finishDecode = resolve; failDecode = () => reject(new Error('invalid image')); });
+    vi.stubGlobal('Image', class { src = ''; decode() { return decoding; } });
+    vi.stubGlobal('fetch', vi.fn(async () => ({ blob: async () => new Blob(['image'], { type: 'image/png' }) })));
+    vi.stubGlobal('URL', class extends URL { static createObjectURL() { return 'blob:tool-ready'; } static revokeObjectURL() {} });
+    const tool = activityToolEvent(10);
+    tool.raw = { _meta: { goldBandConversation: { toolDetailAvailable: true } } };
+    vi.mocked(getAcpActivityDetail).mockResolvedValue({ items:[tool], hasMoreEarlier:false, earlierCursor:null });
+    vi.mocked(getAcpToolDetail).mockResolvedValue({ event: { ...tool, raw: { output:'loaded tool body',
+      goldBandImages:[{eventId:tool.id, pointer:'/content/0/content', contentHash:`readiness-test-${outcome}`, mimeType:'image/png'}],
+      _meta:{goldBandConversation:{toolDetailAvailable:true}} } } });
+    const container = document.createElement('div'); document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<TooltipProvider><ACPMessageList timeline={buildAcpTimelineProjection([activitySummary()], 'completed').timeline}
+        sessionStatus="completed" sending={false} branchLocator={locator} /></TooltipProvider>));
+      await clickButton(container.querySelector('[data-theme-role="activity"] > button'));
+      expect(getAcpToolDetail).not.toHaveBeenCalled();
+      expect(getAcpImage).not.toHaveBeenCalled();
+      await clickButton(container.querySelector('[data-acp-activity-detail-item-key] [data-slot="collapsible-trigger"]'));
+      expect(getAcpToolDetail).toHaveBeenCalledTimes(1);
+      expect(container.querySelector('[data-tool-detail]')).toBeNull();
+      expect(container.querySelector('[data-acp-tool-detail-loading]')).not.toBeNull();
+      expect(getAcpImage).toHaveBeenCalledTimes(1);
+      await act(async () => { finishImage({dataUrl:'data:image/png;base64,AQID', mimeType:'image/png', width:1, height:1}); });
+      expect(container.querySelector('[data-tool-detail]')).toBeNull();
+      if (outcome === 'closed') await clickButton(container.querySelector('[data-acp-activity-detail-item-key] [data-slot="collapsible-trigger"]'));
+      await act(async () => { if (outcome === 'failed') failDecode(); else finishDecode(); });
+      if (outcome === 'closed') {
+        expect(container.querySelector('[data-tool-detail]')).toBeNull();
+        return;
+      }
+      expect(container.querySelector('[data-tool-detail]')?.textContent).toContain('loaded tool body');
+      expect(container.querySelector('[data-acp-tool-detail-loading]')).toBeNull();
+      if (outcome === 'ready') expect(container.querySelector('[data-acp-image-thumbnail] img')?.getAttribute('src')).toBe('blob:tool-ready');
+      if (outcome === 'failed') expect(container.querySelector('[data-acp-image-thumbnail] button[aria-label="重试"]')).not.toBeNull();
+    } finally { await act(async () => root.unmount()); }
+  });
   it.each(['toolCall', 'thoughtDelta'])('expands an individual %s in place after following was resumed', async (kind) => {
     vi.stubGlobal('ResizeObserver', class {
       observe() {}

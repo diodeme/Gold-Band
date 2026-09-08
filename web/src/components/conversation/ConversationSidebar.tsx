@@ -5,6 +5,7 @@ import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, Co
 import { saveConversationPreference } from '../../api';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -102,6 +103,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   onRequestPinnedTasks,
   onRequestTaskRuns,
 }: ConversationSidebarProps) {
+  const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   const [expandedWorkspaces, setExpandedWorkspaces] = useState<Record<string, boolean>>({});
   const [expandedTaskKeys, setExpandedTaskKeys] = useState<ConversationSidebarExpandedTaskKeys>({ pinned: null, workspace: null });
@@ -285,11 +287,11 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             label={t('conversation.sidebar.newChat')}
             onClick={onNewConversation}
           />
-          <SidebarButton
+          {!readOnly && <SidebarButton
             icon={<Search />}
             label={t('conversation.sidebar.search')}
             onClick={onSearch}
-          />
+          />}
         </div>
 
         <Separator className="mx-1 my-1 opacity-45" />
@@ -317,7 +319,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             label={t('conversation.sidebar.runModeManagement')}
             onClick={() => onSelect({ kind: 'run-mode-management' })}
           />
-          <Collapsible open={moreNavigationOpen} onOpenChange={setMoreNavigationOpen}>
+          {!readOnly && <Collapsible open={moreNavigationOpen} onOpenChange={setMoreNavigationOpen}>
             <CollapsibleTrigger asChild>
               <Button
                 variant="ghost"
@@ -356,7 +358,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                 }}
               />
             </CollapsibleContent>
-          </Collapsible>
+          </Collapsible>}
         </div>
         </div>
 
@@ -489,7 +491,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                     </TooltipContent>
                   </Tooltip>
                   <span className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
-                    {onNewConversationInWorkspace ? (
+                    {!readOnly && onNewConversationInWorkspace ? (
                       <Button variant="ghost" size="icon" className="size-5 active:scale-90 transition-transform" onClick={(e) => { e.stopPropagation(); onNewConversationInWorkspace(ws.projectId); }}>
                         <Plus className="size-3" />
                       </Button>
@@ -774,6 +776,7 @@ function TaskRow({
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   const [editing, setEditing] = useState(false);
+  const readOnly = useReadOnlyExperience();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [openRunMenuId, setOpenRunMenuId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState(task.title);
@@ -903,23 +906,23 @@ function TaskRow({
           <span className="shrink-0 text-ui-caption font-normal leading-4 tabular-nums text-muted-foreground/55">{relativeTime}</span>
         ) : null}
       </div>
-      <span className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-1 group-hover:flex group-hover:pointer-events-auto">
+      <span data-demo-task-actions={readOnly || undefined} className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-1 bg-sidebar group-hover:flex group-hover:pointer-events-auto group-focus-within:flex">
         {onRename ? (
-          <Button variant="ghost" size="icon" className="size-5 shrink-0" onClick={startRename}>
+          <Button disabled={readOnly} title={t('conversation.sidebar.rename')} aria-label={t('conversation.sidebar.rename')} variant="ghost" size="icon" className="size-5 shrink-0" onClick={startRename}>
             <Pencil className="size-3" />
           </Button>
         ) : null}
         {pinned && onUnpin ? (
-          <Button variant="ghost" size="icon" className="size-5 shrink-0" onClick={(e) => { e.stopPropagation(); onUnpin(); }}>
+          <Button disabled={readOnly} title={t('conversation.sidebar.unpin')} aria-label={t('conversation.sidebar.unpin')} variant="ghost" size="icon" className="size-5 shrink-0" onClick={(e) => { e.stopPropagation(); onUnpin(); }}>
             <PinOff className="size-3" />
           </Button>
         ) : onPin ? (
-          <Button variant="ghost" size="icon" className="size-5 shrink-0" onClick={(e) => { e.stopPropagation(); onPin(); }}>
+          <Button disabled={readOnly} title={t('conversation.sidebar.pinToTop')} aria-label={t('conversation.sidebar.pinToTop')} variant="ghost" size="icon" className="size-5 shrink-0" onClick={(e) => { e.stopPropagation(); onPin(); }}>
             <Pin className="size-3" />
           </Button>
         ) : null}
         {onDelete ? (
-          <Button variant="ghost" size="icon" className="size-5 shrink-0 text-muted-foreground hover:text-destructive" onClick={openDeleteDialog}>
+          <Button disabled={readOnly} title={t('common.delete')} aria-label={t('common.delete')} variant="ghost" size="icon" className="size-5 shrink-0 text-muted-foreground hover:text-destructive" onClick={openDeleteDialog}>
             <Trash2 className="size-3" />
           </Button>
         ) : null}

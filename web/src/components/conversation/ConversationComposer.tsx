@@ -15,6 +15,7 @@ import { groupSelectableAgentOptions, normalizeConfigOptionOverrides, selectable
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
 import { ComposerContextArea } from '@/components/shared/ComposerContextArea';
 import { useConversationComposerDraft, type ConversationComposerMulticaBinding } from '@/lib/conversation-composer-draft';
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { shouldBackspaceClearMulticaBinding } from '@/lib/conversation-composer-multica-chip';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { useAgentCommands } from '@/hooks/useAgentCommands';
@@ -451,6 +452,7 @@ export function ConversationComposer({
   const measuredComposerRef = useWebviewMeasuredContainer<HTMLDivElement>('conversation-composer');
   const { t } = useTranslation();
   const composerDraft = useConversationComposerDraft();
+  const readOnly = useReadOnlyExperience();
   const content = composerDraft.draft.content;
   const setContent = composerDraft.setContent;
   const scheduledMode = composerDraft.draft.submission.kind === 'scheduled-task';
@@ -541,7 +543,7 @@ export function ConversationComposer({
   const scheduledSummary = scheduledConfig
     ? formatScheduledScheduleInput(t, scheduledConfig.schedule)
     : t('scheduled.composer.unconfigured');
-  const canSubmit = hasUserPromptPayload(content, attachments.length)
+  const canSubmit = !readOnly && hasUserPromptPayload(content, attachments.length)
     && !busy
     && !submittingAttachments
     && !branchMutationPending
@@ -947,7 +949,7 @@ export function ConversationComposer({
         data-conversation-composer="quick"
         data-attachment-dropzone="true"
         className={CONVERSATION_HOME_COMPOSER_LAYOUT.containerClassName}
-        {...dropZoneHandlers}
+        {...(readOnly ? { onDragOver: (event: React.DragEvent) => event.preventDefault(), onDrop: (event: React.DragEvent) => event.preventDefault() } : dropZoneHandlers)}
       >
         {scheduledMode ? (
           <div className="flex min-h-8 items-center gap-2 px-2 text-xs text-muted-foreground">
@@ -974,7 +976,7 @@ export function ConversationComposer({
             showWorkLocation={!scheduledMode}
             forceSelector={multicaActive}
             emptyWorkspaceHint={multicaActive ? t('conversation.composer.multicaNeedLocalWorkspace') : undefined}
-            showBranch={!scheduledMode}
+            showBranch={!scheduledMode && !readOnly}
             onBranchChange={handleBranchChange}
             onBranchMutationPendingChange={setBranchMutationPending}
           />
@@ -983,7 +985,7 @@ export function ConversationComposer({
           onValueChange={(value) => setContent(`${committedSlashCommand?.prefix ?? ''}${value}`)}
           maxHeight={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaMaxHeightPx}
           onSubmit={() => { void handleSubmit(); }}
-          disabled={busy || submittingAttachments || branchMutationPending}
+          disabled={readOnly || busy || submittingAttachments || branchMutationPending}
           className={cn(
             CONVERSATION_HOME_COMPOSER_LAYOUT.promptInputClassName,
             slashCommands.isOpen && 'z-50',
@@ -1041,13 +1043,13 @@ export function ConversationComposer({
                 ref={composerTextareaRef}
                 style={committedInputLayout.textareaStyle}
                 className={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaClassName}
-                placeholder={t('conversation.home.inputPlaceholder')}
+                placeholder={t(readOnly ? 'demo.inputDisabled' : 'conversation.home.inputPlaceholder')}
                 onKeyDown={handleKeyDown}
-                onPaste={(e) => { void handlePaste(e); }}
+                onPaste={(e) => { if (readOnly) e.preventDefault(); else void handlePaste(e); }}
                 onDragEnter={dropZoneHandlers.onDragEnter}
                 onDragOver={dropZoneHandlers.onDragOver}
-                onDrop={dropZoneHandlers.onDrop}
-                disabled={busy || submittingAttachments}
+                onDrop={(e) => { if (readOnly) e.preventDefault(); else dropZoneHandlers.onDrop(e); }}
+                disabled={readOnly || busy || submittingAttachments}
               />
             </div>
           </SlashCommandMenu>
@@ -1065,14 +1067,15 @@ export function ConversationComposer({
                 type="file"
                 multiple
                 className="hidden"
-                onChange={handleFilesFromInput}
+                disabled={readOnly}
+                onChange={readOnly ? undefined : handleFilesFromInput}
               />
               <Button
                 variant="ghost"
                 size="icon"
                 className="size-7 rounded-full"
                 onClick={() => { void pickFiles(); }}
-                disabled={busy || submittingAttachments}
+                disabled={readOnly || busy || submittingAttachments}
                 aria-label={t('acp.attachHint')}
               >
                 <Paperclip className="size-3.5" />

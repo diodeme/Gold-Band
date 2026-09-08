@@ -9,7 +9,7 @@
     {
       "id": "claude-acp",
       "label": "Claude",
-      "version": "0.73.0",
+      "version": "0.72.0",
       "description": "ACP wrapper for Anthropic's Claude",
       "repository": "https://github.com/agentclientprotocol/claude-agent-acp",
       "website": null,
@@ -18,7 +18,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@agentclientprotocol/claude-agent-acp@0.73.0"
+        "@agentclientprotocol/claude-agent-acp@0.72.0"
       ],
       "env": {},
       "primaryAgentDir": ".claude",

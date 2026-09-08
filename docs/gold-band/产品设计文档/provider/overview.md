@@ -28,7 +28,17 @@ Gold Band 核心 runtime 不应直接了解：
 - `gemini` ACP mode
 - 其他 ACP-compatible agent adapter
 
-Claude ACP 默认通过 `npx -y @agentclientprotocol/claude-agent-acp@latest` 启动；Windows 桌面运行时仅在进程启动边界把 bare `npx` 解析为 `npx.cmd`，其他平台不做命令改写。
+Claude ACP 默认通过 `npx -y @agentclientprotocol/claude-agent-acp@<catalog-version>` 启动；Windows 桌面运行时仅在进程启动边界把 bare `npx` 解析为 `npx.cmd`，其他平台不做命令改写。
+
+### 构建期 Agent 版本策略
+
+`configs/agent-catalog-policy.json` 的 `versionPins` 以 Catalog Agent ID 为 key、精确 npm 版本字符串为 value。当前 `claude-acp` 固定为 `0.72.0`，规避其后 SDK `0.3.257` 在 macOS 12 上的启动回归。删除对应项即可恢复跟随 Registry，不支持 `-1`、范围或 `latest`。
+
+正式 build 继续在线刷新 Registry，再应用本地 pin，生成 Catalog 并编译进应用。原始 `acp-registry.snapshot.json` 不应用覆盖，保留上游事实；`agent-catalog.json` 的版本字段与 npx 包参数同步应用覆盖。离线生成也读取同一策略，基于本地 snapshot 应用相同规则。在线生成额外检查固定 npm 版本是否存在，失败则终止；离线生成仅校验配置与包规格，不访问网络。
+
+版本 pin 仅适用于实际使用 Registry npx 分发的模板；未知 ID、非法版本、错误策略字段或 PATH 可执行文件模板的 pin 均报错。解析复用 `npm-package-arg`，不自行拆解 scoped 包名。用户已经保存的 `ManagedAgentConfig` 不随 Catalog 更新，需在 Agent 管理中自行修改参数。
+
+策略仅由构建脚本消费，每次生成读取一次，对精选十一项做线性处理；没有新增运行时 I/O、状态、缓存或队列。
 
 用户开启“使用本地 Claude”时，桌面端只负责为 ACP adapter 注入 `CLAUDE_CODE_EXECUTABLE`，不改变 adapter 命令本身。Windows 下必须避免把 npm 暴露的 extensionless `claude` shell shim 传给 adapter：优先使用 PATH 中的原生 `claude.exe`；若 PATH 目录暴露了 `claude.cmd`，则读取 `.cmd` wrapper 内容并解析其实际指向的 native `.exe`，例如 npm 生成的 `%dp0%\node_modules\@anthropic-ai\claude-code\bin\claude.exe`；若无法从 `.cmd` 解析并验证 native binary，则不注入该环境变量，让 adapter 使用自身 fallback。macOS / Linux 继续按 PATH 查找可执行 `claude`；Unix npm shim 本身是可执行脚本，不需要像 Windows 一样解析 `.cmd` wrapper。
 

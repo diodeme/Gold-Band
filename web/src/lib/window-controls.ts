@@ -5,7 +5,8 @@ export interface WindowControlsPolicy {
   leadingInsetClassName: string;
 }
 
-export function resolveWindowControlsPolicy(platform?: DesktopPlatform | null): WindowControlsPolicy {
+export function resolveWindowControlsPolicy(platform?: DesktopPlatform | null, presentation: 'desktop' | 'browser' = 'desktop'): WindowControlsPolicy {
+  if (presentation === 'browser') return { showCustomControls: false, leadingInsetClassName: '' };
   if (platform === 'macos') {
     return {
       showCustomControls: false,

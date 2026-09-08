@@ -5,6 +5,7 @@ import type { AppErrorVm, DesktopLanguage, WorkflowErrorVm } from "./types";
 const resources = {
   "zh-CN": {
     translation: {
+      demo: { inputDisabled: "Demo 演示，暂不支持输入或发起会话", saveDisabled: "Demo 演示，配置不可保存", resizeWindow: "调整客户端宽度" },
       acpImages: { title: "工具图片", image: "图片 {{index}}", failed: "图片无法加载，请重试" },
       scheduled: {
         unnamed: "未命名定时任务",
@@ -2231,6 +2232,7 @@ const resources = {
           dragToReorder: "拖拽排序",
           unpin: "取消置顶",
           pinToTop: "置顶",
+          rename: "重命名",
           delete: "删除",
           deleteConfirmTitle: "删除会话？",
           deleteConfirmDescription:
@@ -2488,6 +2490,7 @@ const resources = {
   },
   en: {
     translation: {
+      demo: { inputDisabled: "Demo only. Input and starting sessions are disabled.", saveDisabled: "Demo only. Configuration cannot be saved.", resizeWindow: "Resize client window" },
       acpImages: { title: "Tool images", image: "Image {{index}}", failed: "Unable to load image. Please retry." },
       scheduled: {
         unnamed: "Unnamed scheduled task",
@@ -4767,6 +4770,7 @@ const resources = {
           dragToReorder: "Drag to reorder",
           unpin: "Unpin",
           pinToTop: "Pin to top",
+          rename: "Rename",
           delete: "Delete",
           deleteConfirmTitle: "Delete conversation?",
           deleteConfirmDescription:

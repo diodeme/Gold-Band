@@ -375,6 +375,7 @@ interface ACPChatDialogProps {
   outerAttemptId?: string | null;
   branchId?: string;
   readOnly?: boolean;
+  showDisabledComposer?: boolean;
   runtimeComposerContext?: AcpRuntimeComposerContext;
   manualCheckPending?: boolean;
   systemPromptOptions?: Array<{ attemptId: string; prompt?: string | null }>;
@@ -1260,6 +1261,7 @@ export function ACPChatDialog(
     outerAttemptId,
     branchId: requestedBranchId,
     readOnly = false,
+    showDisabledComposer = false,
     runtimeComposerContext,
     manualCheckPending = false,
     systemPromptOptions,
@@ -6233,7 +6235,7 @@ export function ACPChatDialog(
                 onDelete={deleteQueuedPrompt}
               />
             ) : null}
-            {readOnly ? null : composerState.externalKind ? (
+            {readOnly && !showDisabledComposer ? null : composerState.externalKind && !showDisabledComposer ? (
               <AcpExternalComposerState
                 kind={composerState.externalKind}
                 message={composerState.externalMessage ?? ""}

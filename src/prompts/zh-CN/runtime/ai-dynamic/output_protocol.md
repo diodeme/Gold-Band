@@ -27,6 +27,7 @@
 - `next.type="single"` 时，必须提供完整的 `next.node`，不要提供 `groupId / nodes / merge / acceptance`。
 - 不要为任何节点输出 `workspace`、workspace mode、路径或分支；runtime 独占工作空间分配权。
 - `next.type="single"` 会自动继承当前节点的实际 workspace。
+- 当前节点若为 group acceptance，合法输出被接受后该 group 关闭：`single` 接回父作用域的原业务分支；`fanout` 在父作用域创建新 group；只有 `end` 才结束该分支。有后继时父 group 继续等待，修复和复验必须显式安排，旧 group 不自动重开。
 - `next.type="fanout"` 时，必须同时提供 `groupId / nodes / merge / acceptance`，且 `nodes` 至少包含两个分支；只有一个后继节点时使用 `next.type="single"`。
 - `next.type="fanout"` 的每个 child 会自动获得隔离 worktree；merge 与 acceptance 自动回到该 group 的父 workspace。
 - `profile` 只允许在 worker 节点中使用，选填；如果填写，必须使用 schema enum 或当前 prompt 中 `profileId=...` 后面的 ID，不要填写 displayName。

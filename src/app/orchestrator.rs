@@ -5928,7 +5928,7 @@ fn resolve_coordination_group_owner_workstream_id(
             })?;
         let creator = &graph.nodes[creator_index];
         ensure!(
-            creator.group_id == group.parent_group_id,
+            dynamic_outgoing_scope_owner(graph, creator)?.group_id == group.parent_group_id,
             "dynamic.coordination.group-creator-scope-mismatch: group `{}` creator `{}`",
             group.id,
             creator.id
@@ -7661,62 +7661,27 @@ fn authoritative_dynamic_completion<'a>(
     graph: &'a DynamicGraphState,
     completions: &'a HashMap<String, DynamicNodeCompletion>,
 ) -> Result<(&'a DynamicNodeState, &'a DynamicNodeCompletion)> {
-    let top_level_groups = graph
-        .groups
-        .iter()
-        .filter(|group| group.parent_group_id.is_none())
-        .collect::<Vec<_>>();
-    if top_level_groups.is_empty() {
-        let candidates = graph
-            .nodes
-            .iter()
-            .filter(|node| {
-                node.group_id.is_none()
-                    && node.status == DynamicNodeStatus::Completed
-                    && node.outcome == Some(NodeOutcome::Success)
-            })
-            .filter_map(|node| {
-                completions
-                    .get(&node.id)
-                    .filter(|completion| matches!(completion.next, DynamicNext::End))
-                    .map(|completion| (node, completion))
-            })
-            .collect::<Vec<_>>();
-        ensure!(
-            candidates.len() == 1,
-            "AI-DYNAMIC success requires exactly one authoritative top-level end completion; found {}",
-            candidates.len()
-        );
-        return Ok(candidates[0]);
-    }
-
-    ensure!(
-        top_level_groups.len() == 1,
-        "AI-DYNAMIC success requires exactly one authoritative top-level group; found {}",
-        top_level_groups.len()
-    );
-    let group = top_level_groups[0];
-    let acceptance_node_id = group.acceptance_node_id.as_deref().ok_or_else(|| {
-        anyhow!(
-            "authoritative top-level group `{}` has no acceptance node",
-            group.id
-        )
-    })?;
-    let node = graph
+    let candidates = graph
         .nodes
         .iter()
-        .find(|node| node.id == acceptance_node_id)
-        .ok_or_else(|| {
-            anyhow!("authoritative acceptance node `{acceptance_node_id}` is missing")
-        })?;
-    let completion = completions.get(acceptance_node_id).ok_or_else(|| {
-        anyhow!("authoritative acceptance node `{acceptance_node_id}` has no accepted completion")
-    })?;
+        .filter(|node| {
+            dynamic_end_summary_is_outer_handoff(graph, node)
+                && node.status == DynamicNodeStatus::Completed
+                && node.outcome == Some(NodeOutcome::Success)
+        })
+        .filter_map(|node| {
+            completions
+                .get(&node.id)
+                .filter(|completion| matches!(completion.next, DynamicNext::End))
+                .map(|completion| (node, completion))
+        })
+        .collect::<Vec<_>>();
     ensure!(
-        matches!(completion.next, DynamicNext::End),
-        "authoritative acceptance node `{acceptance_node_id}` did not terminate with next=end"
+        candidates.len() == 1,
+        "AI-DYNAMIC success requires exactly one authoritative top-level end completion; found {}",
+        candidates.len()
     );
-    Ok((node, completion))
+    Ok(candidates[0])
 }
 
 fn build_ai_dynamic_report_manifest(
@@ -10770,6 +10735,17 @@ fn validate_dynamic_completion(
         ));
         return errors;
     };
+    let outgoing_owner = match dynamic_outgoing_scope_owner(graph, source) {
+        Ok(owner) => owner,
+        Err(_) => {
+            errors.push(dynamic_validation_error(
+                "dynamic.source.scope-invalid",
+                "dynamic source has an invalid outgoing scope",
+                serde_json::json!({"nodeId": source.id}),
+            ));
+            return errors;
+        }
+    };
     match &completion.next {
         DynamicNext::End => {}
         DynamicNext::Single { node } => {
@@ -10845,7 +10821,7 @@ fn validate_dynamic_completion(
                 acceptance,
                 "acceptance",
             ));
-            let group_depth = source
+            let group_depth = outgoing_owner
                 .group_id
                 .as_deref()
                 .and_then(|group_id| graph.groups.iter().find(|group| group.id == group_id))
@@ -11468,59 +11444,114 @@ fn materialize_dynamic_next(
     source_index: usize,
     next: DynamicNext,
 ) -> Result<Vec<String>> {
-    let mut visible_node_ids = Vec::new();
-    let source_node_id = graph
+    let source = graph
         .nodes
         .get(source_index)
-        .map(|source| source.id.clone())
+        .cloned()
         .ok_or_else(|| anyhow!("dynamic proposal source node is missing"))?;
-    let source_is_acceptance = graph
-        .nodes
-        .get(source_index)
-        .map(|source| source.kind == DynamicNodeKind::Acceptance)
-        .unwrap_or(false);
-    let source_group_id = graph
-        .nodes
-        .get(source_index)
-        .and_then(|source| source.group_id.clone());
-    match next {
-        DynamicNext::End => {
-            with_dynamic_workspace_transition(
+    if source.kind != DynamicNodeKind::Acceptance && matches!(next, DynamicNext::Single { .. }) {
+        return materialize_dynamic_next_in_scope(ctx, graph, &source, next);
+    }
+    let owner = dynamic_outgoing_scope_owner(graph, &source)?;
+    let mut outgoing = source.clone();
+    outgoing.group_id = owner.group_id.clone();
+    outgoing.chain_id = owner.chain_id.clone();
+    let closing_group = if source.kind == DynamicNodeKind::Acceptance {
+        let group = graph
+            .groups
+            .iter()
+            .find(|group| Some(&group.id) == source.group_id.as_ref())
+            .ok_or_else(|| anyhow!("dynamic.acceptance.group-missing: {}", source.id))?;
+        ensure!(
+            group.status == DynamicGroupStatus::Accepting
+                && group.acceptance_node_id.as_deref() == Some(source.id.as_str()),
+            "dynamic.acceptance.not-current: {}",
+            source.id
+        );
+        outgoing.workspace_id = group.target_workspace_id.clone();
+        Some(group.clone())
+    } else {
+        None
+    };
+    with_dynamic_workspace_transition(ctx, graph, std::slice::from_ref(&source.id), |graph| {
+        if closing_group.is_some() {
+            let target = dynamic_workspace_mut(graph, &outgoing.workspace_id)?;
+            target.status = WorkspaceStatus::Active;
+            target.updated_at = now_rfc3339_like();
+        }
+        let visible = materialize_dynamic_next_in_scope(ctx, graph, &outgoing, next)?;
+        if let Some(group) = closing_group {
+            let current = graph
+                .groups
+                .iter_mut()
+                .find(|candidate| candidate.id == group.id)
+                .unwrap();
+            current.status = DynamicGroupStatus::Closed;
+            current.updated_at = now_rfc3339_like();
+            for workspace_id in &group.child_workspace_ids {
+                release_dynamic_workspace_best_effort(ctx, graph, workspace_id);
+            }
+            append_dynamic_event(
                 ctx,
-                graph,
-                std::slice::from_ref(&source_node_id),
-                |graph| {
-                    let source = graph.nodes[source_index].clone();
-                    checkpoint_dynamic_workspace(
-                        graph,
-                        &source.workspace_id,
-                        source.group_id.as_deref(),
-                    )?;
-                    if let Some(group_id) = source.group_id.as_deref() {
-                        if let Some(group) =
-                            graph.groups.iter_mut().find(|group| group.id == group_id)
-                        {
-                            if !group.terminal_node_ids.iter().any(|id| id == &source.id) {
-                                group.terminal_node_ids.push(source.id.clone());
-                            }
-                            group.updated_at = now_rfc3339_like();
-                        }
-                    }
-                    Ok(())
-                },
+                "dynamic_group_closed",
+                serde_json::json!({"groupId": group.id}),
             )?;
         }
+        Ok(visible)
+    })
+}
+
+// Acceptance retains its historical identity, but its outgoing edge resumes the creator's scope.
+fn dynamic_outgoing_scope_owner<'a>(
+    graph: &'a DynamicGraphState,
+    node: &'a DynamicNodeState,
+) -> Result<&'a DynamicNodeState> {
+    let mut owner = node;
+    let mut seen = HashSet::new();
+    while owner.kind == DynamicNodeKind::Acceptance {
+        ensure!(
+            seen.insert(owner.id.as_str()),
+            "dynamic.scope.creator-cycle: {}",
+            owner.id
+        );
+        let group = graph
+            .groups
+            .iter()
+            .find(|group| Some(&group.id) == owner.group_id.as_ref())
+            .ok_or_else(|| anyhow!("dynamic.scope.group-missing: {}", owner.id))?;
+        owner = graph
+            .nodes
+            .iter()
+            .find(|candidate| candidate.id == group.created_by_node_id)
+            .ok_or_else(|| anyhow!("dynamic.scope.creator-missing: {}", group.id))?;
+    }
+    Ok(owner)
+}
+
+fn materialize_dynamic_next_in_scope(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &mut DynamicGraphState,
+    source: &DynamicNodeState,
+    next: DynamicNext,
+) -> Result<Vec<String>> {
+    let mut visible_node_ids = Vec::new();
+    match next {
+        DynamicNext::End => {
+            checkpoint_dynamic_workspace(graph, &source.workspace_id, source.group_id.as_deref())?;
+            if let Some(group_id) = source.group_id.as_deref() {
+                if let Some(group) = graph.groups.iter_mut().find(|group| group.id == group_id) {
+                    if !group.terminal_node_ids.iter().any(|id| id == &source.id) {
+                        group.terminal_node_ids.push(source.id.clone());
+                    }
+                    group.updated_at = now_rfc3339_like();
+                }
+            }
+        }
         DynamicNext::Single { node } => {
-            reopen_acceptance_group_for_repair(
-                graph,
-                source_is_acceptance,
-                source_group_id.as_deref(),
-            );
-            let source = graph.nodes[source_index].clone();
             let new_node = dynamic_node_state_from_spec(
                 ctx,
                 graph,
-                &source,
+                source,
                 node,
                 source.group_id.clone(),
                 source.chain_id.clone(),
@@ -11545,99 +11576,83 @@ fn materialize_dynamic_next(
             merge,
             acceptance,
         } => {
-            with_dynamic_workspace_transition(
+            let merge = dynamic_agent_task_spec_with_resolved_provider(ctx, merge)?;
+            let acceptance = dynamic_agent_task_spec_with_resolved_provider(ctx, acceptance)?;
+            let group_depth = source
+                .group_id
+                .as_deref()
+                .and_then(|group_id| graph.groups.iter().find(|group| group.id == group_id))
+                .map(|group| group.depth + 1)
+                .unwrap_or(1);
+            let root_node_ids = nodes.iter().map(|node| node.id.clone()).collect::<Vec<_>>();
+            let mut child_workspace_ids = Vec::with_capacity(nodes.len());
+            for node in &nodes {
+                child_workspace_ids.push(fork_dynamic_workspace(
+                    ctx,
+                    graph,
+                    &source.workspace_id,
+                    &group_id,
+                    &node.id,
+                )?);
+            }
+            {
+                let parent = dynamic_workspace_mut(graph, &source.workspace_id)?;
+                parent.status = WorkspaceStatus::Frozen;
+                parent.updated_at = now_rfc3339_like();
+            }
+            let group = DynamicGroupState {
+                version: VERSION.to_string(),
+                id: group_id.clone(),
+                dynamic_run_id: graph.run.id.clone(),
+                status: DynamicGroupStatus::Open,
+                depth: group_depth,
+                parent_group_id: source.group_id.clone(),
+                root_node_ids: root_node_ids.clone(),
+                terminal_node_ids: Vec::new(),
+                target_workspace_id: source.workspace_id.clone(),
+                child_workspace_ids: child_workspace_ids.clone(),
+                merge_node_id: None,
+                acceptance_node_id: None,
+                created_by_node_id: source.id.clone(),
+                merge,
+                acceptance,
+                created_at: now_rfc3339_like(),
+                updated_at: now_rfc3339_like(),
+            };
+            validate_dynamic_group_state(&group)?;
+            graph.groups.push(group);
+            for (node, workspace_id) in nodes.into_iter().zip(child_workspace_ids) {
+                let chain_id = node.id.clone();
+                let new_node = dynamic_node_state_from_spec(
+                    ctx,
+                    graph,
+                    source,
+                    node,
+                    Some(group_id.clone()),
+                    chain_id,
+                    workspace_id,
+                )?;
+                append_dynamic_event(
+                    ctx,
+                    "dynamic_node_materialized",
+                    serde_json::json!({
+                        "nodeId": new_node.id,
+                        "sourceNodeId": source.id,
+                        "kind": new_node.kind,
+                        "groupId": group_id,
+                    }),
+                )?;
+                let new_node_id = new_node.id.clone();
+                graph.nodes.push(new_node);
+                visible_node_ids.push(new_node_id);
+            }
+            append_dynamic_event(
                 ctx,
-                graph,
-                std::slice::from_ref(&source_node_id),
-                |graph| {
-                    reopen_acceptance_group_for_repair(
-                        graph,
-                        source_is_acceptance,
-                        source_group_id.as_deref(),
-                    );
-                    let source = graph.nodes[source_index].clone();
-                    let merge = dynamic_agent_task_spec_with_resolved_provider(ctx, merge)?;
-                    let acceptance =
-                        dynamic_agent_task_spec_with_resolved_provider(ctx, acceptance)?;
-                    let group_depth = source
-                        .group_id
-                        .as_deref()
-                        .and_then(|group_id| graph.groups.iter().find(|group| group.id == group_id))
-                        .map(|group| group.depth + 1)
-                        .unwrap_or(1);
-                    let root_node_ids =
-                        nodes.iter().map(|node| node.id.clone()).collect::<Vec<_>>();
-                    let mut child_workspace_ids = Vec::with_capacity(nodes.len());
-                    for node in &nodes {
-                        child_workspace_ids.push(fork_dynamic_workspace(
-                            ctx,
-                            graph,
-                            &source.workspace_id,
-                            &group_id,
-                            &node.id,
-                        )?);
-                    }
-                    {
-                        let parent = dynamic_workspace_mut(graph, &source.workspace_id)?;
-                        parent.status = WorkspaceStatus::Frozen;
-                        parent.updated_at = now_rfc3339_like();
-                    }
-                    let group = DynamicGroupState {
-                        version: VERSION.to_string(),
-                        id: group_id.clone(),
-                        dynamic_run_id: graph.run.id.clone(),
-                        status: DynamicGroupStatus::Open,
-                        depth: group_depth,
-                        parent_group_id: source.group_id.clone(),
-                        root_node_ids: root_node_ids.clone(),
-                        terminal_node_ids: Vec::new(),
-                        target_workspace_id: source.workspace_id.clone(),
-                        child_workspace_ids: child_workspace_ids.clone(),
-                        merge_node_id: None,
-                        acceptance_node_id: None,
-                        created_by_node_id: source.id.clone(),
-                        merge,
-                        acceptance,
-                        created_at: now_rfc3339_like(),
-                        updated_at: now_rfc3339_like(),
-                    };
-                    validate_dynamic_group_state(&group)?;
-                    graph.groups.push(group);
-                    for (node, workspace_id) in nodes.into_iter().zip(child_workspace_ids) {
-                        let chain_id = node.id.clone();
-                        let new_node = dynamic_node_state_from_spec(
-                            ctx,
-                            graph,
-                            &source,
-                            node,
-                            Some(group_id.clone()),
-                            chain_id,
-                            workspace_id,
-                        )?;
-                        append_dynamic_event(
-                            ctx,
-                            "dynamic_node_materialized",
-                            serde_json::json!({
-                                "nodeId": new_node.id,
-                                "sourceNodeId": source.id,
-                                "kind": new_node.kind,
-                                "groupId": group_id,
-                            }),
-                        )?;
-                        let new_node_id = new_node.id.clone();
-                        graph.nodes.push(new_node);
-                        visible_node_ids.push(new_node_id);
-                    }
-                    append_dynamic_event(
-                        ctx,
-                        "dynamic_group_created",
-                        serde_json::json!({
-                            "groupId": group_id,
-                            "rootNodeIds": root_node_ids,
-                        }),
-                    )?;
-                    Ok(())
-                },
+                "dynamic_group_created",
+                serde_json::json!({
+                    "groupId": group_id,
+                    "rootNodeIds": root_node_ids,
+                }),
             )?;
         }
     }
@@ -11645,25 +11660,6 @@ fn materialize_dynamic_next(
     visible_node_ids.retain(|node_id| promoted_node_ids.iter().any(|promoted| promoted == node_id));
     graph.run.updated_at = now_rfc3339_like();
     Ok(visible_node_ids)
-}
-
-fn reopen_acceptance_group_for_repair(
-    graph: &mut DynamicGraphState,
-    source_is_acceptance: bool,
-    group_id: Option<&str>,
-) {
-    if !source_is_acceptance {
-        return;
-    }
-    let Some(group_id) = group_id else {
-        return;
-    };
-    if let Some(group) = graph.groups.iter_mut().find(|group| group.id == group_id) {
-        group.status = DynamicGroupStatus::Open;
-        group.merge_node_id = None;
-        group.acceptance_node_id = None;
-        group.updated_at = now_rfc3339_like();
-    }
 }
 
 fn dynamic_node_state_from_spec(
@@ -11852,49 +11848,6 @@ fn advance_dynamic_groups(
                 )?;
                 changed = true;
             }
-            DynamicGroupStatus::Accepting
-                if acceptance_completed_with_end(
-                    graph,
-                    graph.groups[group_index].acceptance_node_id.as_deref(),
-                ) =>
-            {
-                let transition_owner_node_ids = graph.groups[group_index]
-                    .acceptance_node_id
-                    .clone()
-                    .into_iter()
-                    .collect::<Vec<_>>();
-                with_dynamic_workspace_transition(
-                    ctx,
-                    graph,
-                    &transition_owner_node_ids,
-                    |graph| {
-                        let group_id = graph.groups[group_index].id.clone();
-                        let child_workspace_ids =
-                            graph.groups[group_index].child_workspace_ids.clone();
-                        let target_workspace_id =
-                            graph.groups[group_index].target_workspace_id.clone();
-                        graph.groups[group_index].status = DynamicGroupStatus::Closed;
-                        graph.groups[group_index].updated_at = now_rfc3339_like();
-                        for workspace_id in child_workspace_ids {
-                            release_dynamic_workspace_best_effort(ctx, graph, &workspace_id);
-                        }
-                        if let Ok(target) = dynamic_workspace_mut(graph, &target_workspace_id) {
-                            target.status = WorkspaceStatus::Active;
-                            target.updated_at = now_rfc3339_like();
-                        }
-                        attach_closed_child_group_to_parent(graph, group_index);
-                        append_dynamic_event(
-                            ctx,
-                            "dynamic_group_closed",
-                            serde_json::json!({
-                                "groupId": group_id,
-                            }),
-                        )?;
-                        Ok(())
-                    },
-                )?;
-                changed = true;
-            }
             _ => {}
         }
     }
@@ -11956,33 +11909,6 @@ fn accepted_completion_exists(graph: &DynamicGraphState, source_node_id: &str) -
     })
 }
 
-fn attach_closed_child_group_to_parent(graph: &mut DynamicGraphState, group_index: usize) {
-    let Some(child) = graph.groups.get(group_index) else {
-        return;
-    };
-    let Some(parent_group_id) = child.parent_group_id.clone() else {
-        return;
-    };
-    let Some(acceptance_node_id) = child.acceptance_node_id.clone() else {
-        return;
-    };
-    let Some(parent) = graph
-        .groups
-        .iter_mut()
-        .find(|group| group.id == parent_group_id)
-    else {
-        return;
-    };
-    if !parent
-        .terminal_node_ids
-        .iter()
-        .any(|node_id| node_id == &acceptance_node_id)
-    {
-        parent.terminal_node_ids.push(acceptance_node_id);
-        parent.updated_at = now_rfc3339_like();
-    }
-}
-
 fn terminal_belongs_to_group_boundary(
     graph: &DynamicGraphState,
     group: &DynamicGroupState,
@@ -12002,6 +11928,7 @@ fn terminal_belongs_to_group_boundary(
         child.parent_group_id.as_deref() == Some(group.id.as_str())
             && child.status == DynamicGroupStatus::Closed
             && child.acceptance_node_id.as_deref() == Some(node_id)
+            && acceptance_completed_with_end(graph, Some(node_id))
     })
 }
 
@@ -12043,6 +11970,7 @@ fn terminal_chain_id(
         .nodes
         .iter()
         .find(|node| node.id == child.created_by_node_id)
+        .and_then(|node| dynamic_outgoing_scope_owner(graph, node).ok())
         .map(|node| node.chain_id.clone())
 }
 
@@ -13505,6 +13433,7 @@ fn dynamic_related_group_exit_nodes<'a>(
 ) -> Vec<&'a DynamicNodeState> {
     let mut nodes = Vec::new();
     let mut seen_group_ids = HashSet::new();
+    let mut related_group_ids = Vec::new();
     let mut next_group_id = node.group_id.as_deref();
     while let Some(group_id) = next_group_id {
         if !seen_group_ids.insert(group_id.to_string()) {
@@ -13513,6 +13442,50 @@ fn dynamic_related_group_exit_nodes<'a>(
         let Some(group) = graph.groups.iter().find(|group| group.id == group_id) else {
             break;
         };
+        related_group_ids.push(group_id);
+        next_group_id = group.parent_group_id.as_deref();
+    }
+    // Keep the nearest exited group per parent scope, even after the five-node handoff window.
+    let sources = dynamic_materialization_sources(graph);
+    let by_id = graph
+        .nodes
+        .iter()
+        .map(|candidate| (candidate.id.as_str(), candidate))
+        .collect::<HashMap<_, _>>();
+    let groups = graph
+        .groups
+        .iter()
+        .map(|group| (group.id.as_str(), group))
+        .collect::<HashMap<_, _>>();
+    let mut seen_nodes = HashSet::new();
+    let mut exited_scopes = HashSet::new();
+    let mut current = Some(node);
+    while let Some(candidate) = current {
+        if !seen_nodes.insert(candidate.id.as_str()) {
+            break;
+        }
+        let group = candidate
+            .group_id
+            .as_deref()
+            .and_then(|id| groups.get(id).copied());
+        if candidate.id != node.id && candidate.kind == DynamicNodeKind::Acceptance {
+            if let Some(group) = group {
+                if group.status == DynamicGroupStatus::Closed
+                    && exited_scopes.insert(group.parent_group_id.as_deref())
+                    && seen_group_ids.insert(group.id.clone())
+                {
+                    related_group_ids.push(group.id.as_str());
+                }
+            }
+        }
+        let source_id = sources.get(&candidate.id).map(String::as_str).or_else(|| {
+            (candidate.kind == DynamicNodeKind::Acceptance)
+                .then(|| group.map(|group| group.created_by_node_id.as_str()))
+                .flatten()
+        });
+        current = source_id.and_then(|id| by_id.get(id).copied());
+    }
+    for group_id in related_group_ids {
         let latest_acceptance = graph.nodes.iter().rev().find(|candidate| {
             candidate.id != node.id
                 && candidate.group_id.as_deref() == Some(group_id)
@@ -13538,7 +13511,6 @@ fn dynamic_related_group_exit_nodes<'a>(
         if let Some(acceptance) = latest_acceptance {
             nodes.push(acceptance);
         }
-        next_group_id = group.parent_group_id.as_deref();
     }
     nodes
 }
@@ -13829,7 +13801,8 @@ fn dynamic_remaining_budget_summary(graph: &DynamicGraphState, node: &DynamicNod
         .iter()
         .filter(|candidate| candidate.kind == DynamicNodeKind::WorkflowInvocation)
         .count() as u32;
-    let parent_group_depth = node
+    let parent_group_depth = dynamic_outgoing_scope_owner(graph, node)
+        .unwrap_or(node)
         .group_id
         .as_deref()
         .and_then(|group_id| graph.groups.iter().find(|group| group.id == group_id))
@@ -13869,6 +13842,9 @@ fn dynamic_resumable_session_nodes<'a>(
     graph: &'a DynamicGraphState,
     source: &DynamicNodeState,
 ) -> Vec<&'a DynamicNodeState> {
+    let Ok(source) = dynamic_outgoing_scope_owner(graph, source) else {
+        return Vec::new();
+    };
     let boundary_group_id = source.group_id.clone();
     graph
         .nodes
@@ -19865,7 +19841,7 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_prompt_repair_chain_keeps_latest_group_exit_without_old_siblings() {
+    fn dynamic_prompt_closed_group_evidence_survives_five_node_handoff_window() {
         let (_temp, repo_root) = init_repo();
         let app = App::with_config(repo_root, RuntimeConfig::default());
         let dynamic = test_dynamic();
@@ -19911,8 +19887,8 @@ mod tests {
         let repairs = (1..=5)
             .map(|index| {
                 let mut node = test_worktree_node(&format!("repair-{index}"));
-                node.group_id = Some("group-core".to_string());
-                node.chain_id = latest_acceptance.chain_id.clone();
+                node.group_id = None;
+                node.chain_id = "bootstrap".to_string();
                 node.depth = index + 1;
                 node.status = DynamicNodeStatus::Completed;
                 node.outcome = Some(NodeOutcome::Success);
@@ -19920,8 +19896,8 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let mut current = test_worktree_node("reaccept-current");
-        current.group_id = Some("group-core".to_string());
-        current.chain_id = latest_acceptance.chain_id.clone();
+        current.group_id = None;
+        current.chain_id = "bootstrap".to_string();
         current.depth = 7;
         let mut all_nodes = vec![
             root_a.clone(),
@@ -19941,9 +19917,9 @@ mod tests {
             vec!["root-a", "root-b"],
             vec!["root-a", "root-b"],
         ));
-        graph.groups[0].status = DynamicGroupStatus::Open;
-        graph.groups[0].merge_node_id = None;
-        graph.groups[0].acceptance_node_id = None;
+        graph.groups[0].status = DynamicGroupStatus::Closed;
+        graph.groups[0].merge_node_id = Some(latest_merge.id.clone());
+        graph.groups[0].acceptance_node_id = Some(latest_acceptance.id.clone());
         graph.proposals.push(accepted_single_proposal(
             &latest_acceptance.id,
             &repairs[0].id,
@@ -20941,7 +20917,7 @@ mod tests {
     }
 
     #[test]
-    fn acceptance_group_closes_only_after_end_completion() {
+    fn acceptance_is_parent_terminal_only_after_end_completion() {
         let mut acceptance = test_worktree_node("python-classes-accept");
         acceptance.kind = DynamicNodeKind::Acceptance;
         acceptance.status = DynamicNodeStatus::Completed;
@@ -20987,9 +20963,10 @@ mod tests {
     }
 
     #[test]
-    fn acceptance_repair_materialization_reopens_group() {
+    fn acceptance_repair_materialization_closes_group_and_restores_parent_scope() {
         let (_temp, repo_root) = init_repo();
-        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
         let mut acceptance = test_worktree_node("python-classes-accept");
@@ -20998,7 +20975,31 @@ mod tests {
         acceptance.outcome = Some(NodeOutcome::Success);
         acceptance.group_id = Some("python-classes".to_string());
         acceptance.chain_id = "python-classes-accept".to_string();
-        let mut graph = test_dynamic_graph(vec![acceptance]);
+        let mut creator = test_worktree_node("root");
+        creator.chain_id = "bootstrap".to_string();
+        creator.status = DynamicNodeStatus::Completed;
+        creator.outcome = Some(NodeOutcome::Success);
+        let mut graph = test_dynamic_graph_at(repo_root, vec![acceptance, creator]);
+        let child_workspace_id = fork_dynamic_workspace(
+            &ctx,
+            &mut graph,
+            "workspace-main",
+            "python-classes",
+            "branch",
+        )
+        .unwrap();
+        let mut branch = test_worktree_node("branch");
+        branch.group_id = Some("python-classes".to_string());
+        branch.workspace_id = child_workspace_id.clone();
+        branch.status = DynamicNodeStatus::Completed;
+        branch.outcome = Some(NodeOutcome::Success);
+        graph.nodes.push(branch);
+        let mut merge = test_worktree_node("python-classes-merge");
+        merge.kind = DynamicNodeKind::Merge;
+        merge.group_id = Some("python-classes".to_string());
+        merge.status = DynamicNodeStatus::Completed;
+        merge.outcome = Some(NodeOutcome::Success);
+        graph.nodes.push(merge);
         graph.groups.push(DynamicGroupState {
             version: VERSION.to_string(),
             id: "python-classes".to_string(),
@@ -21006,10 +21007,10 @@ mod tests {
             status: DynamicGroupStatus::Accepting,
             depth: 1,
             parent_group_id: None,
-            root_node_ids: vec!["root".to_string()],
-            terminal_node_ids: vec!["root".to_string()],
+            root_node_ids: vec!["branch".to_string()],
+            terminal_node_ids: vec!["branch".to_string()],
             target_workspace_id: "workspace-main".to_string(),
-            child_workspace_ids: Vec::new(),
+            child_workspace_ids: vec![child_workspace_id],
             merge_node_id: Some("python-classes-merge".to_string()),
             acceptance_node_id: Some("python-classes-accept".to_string()),
             created_by_node_id: "root".to_string(),
@@ -21042,10 +21043,18 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(graph.groups[0].status, DynamicGroupStatus::Open);
-        assert_eq!(graph.groups[0].merge_node_id, None);
-        assert_eq!(graph.groups[0].acceptance_node_id, None);
-        assert!(graph.nodes.iter().any(|node| node.id == "repair"));
+        assert_eq!(graph.groups[0].status, DynamicGroupStatus::Closed);
+        assert_eq!(
+            graph.groups[0].merge_node_id.as_deref(),
+            Some("python-classes-merge")
+        );
+        assert_eq!(
+            graph.groups[0].acceptance_node_id.as_deref(),
+            Some("python-classes-accept")
+        );
+        let repair = graph.nodes.iter().find(|node| node.id == "repair").unwrap();
+        assert_eq!(repair.group_id, None);
+        assert_eq!(repair.chain_id, "bootstrap");
         assert_eq!(visible, vec!["repair".to_string()]);
     }
 
@@ -21097,9 +21106,10 @@ mod tests {
     }
 
     #[test]
-    fn coordination_snapshot_projects_acceptance_repair_as_group_owned_workstream() {
+    fn coordination_snapshot_projects_acceptance_successor_in_original_workstream() {
         let mut root = test_worktree_node("root");
         root.depth = 0;
+        root.chain_id = "root".to_string();
         root.status = DynamicNodeStatus::Completed;
         root.outcome = Some(NodeOutcome::Success);
 
@@ -21124,8 +21134,8 @@ mod tests {
         acceptance.outcome = Some(NodeOutcome::Success);
 
         let mut repair = test_worktree_node("repair");
-        repair.group_id = Some("group-core".to_string());
-        repair.chain_id = "group-core-accept".to_string();
+        repair.group_id = None;
+        repair.chain_id = "root".to_string();
         repair.status = DynamicNodeStatus::Ready;
 
         let mut graph = test_dynamic_graph(vec![root, branch, merge, acceptance, repair]);
@@ -21133,15 +21143,15 @@ mod tests {
             version: VERSION.to_string(),
             id: "group-core".to_string(),
             dynamic_run_id: graph.run.id.clone(),
-            status: DynamicGroupStatus::Open,
+            status: DynamicGroupStatus::Closed,
             depth: 1,
             parent_group_id: None,
             root_node_ids: vec!["branch".to_string()],
             terminal_node_ids: vec!["branch".to_string()],
             target_workspace_id: "workspace-main".to_string(),
             child_workspace_ids: Vec::new(),
-            merge_node_id: None,
-            acceptance_node_id: None,
+            merge_node_id: Some("group-core-merge".to_string()),
+            acceptance_node_id: Some("group-core-accept".to_string()),
             created_by_node_id: "root".to_string(),
             merge: test_agent_task("merge"),
             acceptance: test_agent_task("accept"),
@@ -21151,24 +21161,24 @@ mod tests {
 
         let snapshot = build_ai_dynamic_coordination_snapshot(&graph).unwrap();
 
-        assert_eq!(snapshot.workstreams.len(), 3);
+        assert_eq!(snapshot.workstreams.len(), 2);
         let root = snapshot
             .workstreams
             .iter()
             .find(|workstream| workstream.id == "root")
             .unwrap();
-        assert_eq!(root.status, AiDynamicWorkstreamStatus::Waiting);
+        assert_eq!(root.status, AiDynamicWorkstreamStatus::Active);
         assert_eq!(root.child_group_ids, vec!["group-core"]);
         let repair = snapshot
             .workstreams
             .iter()
-            .find(|workstream| workstream.id == "repair")
+            .find(|workstream| workstream.id == "root")
             .unwrap();
-        assert_eq!(repair.parent_workstream_id.as_deref(), Some("root"));
-        assert_eq!(repair.owner_group_id.as_deref(), Some("group-core"));
+        assert_eq!(repair.parent_workstream_id, None);
+        assert_eq!(repair.owner_group_id, None);
         assert_eq!(repair.status, AiDynamicWorkstreamStatus::Active);
-        assert_eq!(repair.steps.len(), 1);
-        assert_eq!(repair.steps[0].node_id, "repair");
+        assert_eq!(repair.steps.len(), 2);
+        assert_eq!(repair.steps[1].node_id, "repair");
         assert!(snapshot.workstreams.iter().all(|workstream| {
             workstream.id != "group-core-merge" && workstream.id != "group-core-accept"
         }));
@@ -21176,12 +21186,15 @@ mod tests {
             snapshot.groups[0].created_by_workstream_id.as_deref(),
             Some("root")
         );
+        assert_eq!(snapshot.groups[0].branch_workstream_ids, vec!["branch"]);
         assert_eq!(
-            snapshot.groups[0].branch_workstream_ids,
-            vec!["branch", "repair"]
+            snapshot.groups[0].merge.node_id.as_deref(),
+            Some("group-core-merge")
         );
-        assert_eq!(snapshot.groups[0].merge.node_id, None);
-        assert_eq!(snapshot.groups[0].acceptance.node_id, None);
+        assert_eq!(
+            snapshot.groups[0].acceptance.node_id.as_deref(),
+            Some("group-core-accept")
+        );
 
         graph
             .nodes
@@ -21194,7 +21207,7 @@ mod tests {
             paused_snapshot
                 .workstreams
                 .iter()
-                .find(|workstream| workstream.id == "repair")
+                .find(|workstream| workstream.id == "root")
                 .unwrap()
                 .status,
             AiDynamicWorkstreamStatus::Paused
@@ -21231,7 +21244,7 @@ mod tests {
             version: VERSION.to_string(),
             id: "group-core".to_string(),
             dynamic_run_id: graph.run.id.clone(),
-            status: DynamicGroupStatus::Open,
+            status: DynamicGroupStatus::Closed,
             depth: 1,
             parent_group_id: None,
             root_node_ids: vec!["branch".to_string()],
@@ -21251,8 +21264,8 @@ mod tests {
             id: "group-repair".to_string(),
             dynamic_run_id: graph.run.id.clone(),
             status: DynamicGroupStatus::Open,
-            depth: 2,
-            parent_group_id: Some("group-core".to_string()),
+            depth: 1,
+            parent_group_id: None,
             root_node_ids: vec!["repair-branch".to_string()],
             terminal_node_ids: Vec::new(),
             target_workspace_id: "workspace-main".to_string(),
@@ -21280,7 +21293,7 @@ mod tests {
             .iter()
             .find(|group| group.id == "group-repair")
             .unwrap();
-        assert_eq!(repair_group.parent_group_id.as_deref(), Some("group-core"));
+        assert_eq!(repair_group.parent_group_id, None);
         assert_eq!(
             repair_group.created_by_workstream_id.as_deref(),
             Some("root")

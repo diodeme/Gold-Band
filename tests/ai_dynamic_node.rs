@@ -28,6 +28,11 @@ enum DynamicScenario {
     Fanout,
     WorktreeFanout,
     NestedFanout,
+    AcceptanceContinuation {
+        nested: bool,
+        fanout: bool,
+        end_after_fanout: bool,
+    },
     InvalidWorkflowInvocation,
     SingleWorktreeRepair,
     FanoutRepair,
@@ -39,8 +44,12 @@ enum DynamicScenario {
     InvalidSessionContinue,
     ProviderRuntimeError,
     MergePauseThenContinue,
-    WorkflowInvocation { workflow_id: Arc<Mutex<String>> },
-    WorkflowInvocationPauseThenContinue { workflow_id: Arc<Mutex<String>> },
+    WorkflowInvocation {
+        workflow_id: Arc<Mutex<String>>,
+    },
+    WorkflowInvocationPauseThenContinue {
+        workflow_id: Arc<Mutex<String>>,
+    },
 }
 
 #[derive(Clone)]
@@ -247,6 +256,100 @@ impl DynamicProvider {
             "acp.prompt-turn-id-required"
         );
         self.invocations.lock().unwrap().push(req.clone());
+        if let DynamicScenario::AcceptanceContinuation { nested, fanout, .. } = self.scenario {
+            let id = req.runtime_context.node_id.as_str();
+            if id.ends_with("-merge") || id.ends_with("-accept") {
+                std::fs::create_dir_all(&req.runtime_context.attachments_dir)?;
+                std::fs::write(
+                    req.runtime_context
+                        .attachments_dir
+                        .join(format!("{id}-report.md")),
+                    "group evidence",
+                )?;
+            }
+            if id == "after-group" || id == "next-0" || id == "next-1" {
+                let graph_path = req
+                    .runtime_context
+                    .attachments_dir
+                    .ancestors()
+                    .nth(4)
+                    .unwrap()
+                    .join("graph.json");
+                let graph: DynamicGraphState = gold_band::storage::read_json(&graph_path)?;
+                let exited_id = if nested {
+                    "group-branch-a"
+                } else {
+                    "group-core"
+                };
+                let exited = graph
+                    .groups
+                    .iter()
+                    .find(|group| group.id == exited_id)
+                    .unwrap();
+                assert_eq!(exited.status, DynamicGroupStatus::Closed);
+                for workspace_id in &exited.child_workspace_ids {
+                    assert_eq!(
+                        graph
+                            .workspaces
+                            .iter()
+                            .find(|workspace| &workspace.id == workspace_id)
+                            .unwrap()
+                            .status,
+                        WorkspaceStatus::Released
+                    );
+                }
+                if nested {
+                    let parent = graph
+                        .groups
+                        .iter()
+                        .find(|group| group.id == "group-core")
+                        .unwrap();
+                    assert_eq!(parent.status, DynamicGroupStatus::Open);
+                    assert!(parent.merge_node_id.is_none());
+                    assert!(
+                        !parent
+                            .terminal_node_ids
+                            .iter()
+                            .any(|terminal| terminal == "group-branch-a-accept"
+                                || terminal == "group-next-accept")
+                    );
+                }
+                let target = graph
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == exited.target_workspace_id)
+                    .unwrap();
+                assert_eq!(
+                    target.status,
+                    if id.starts_with("next-") {
+                        WorkspaceStatus::Frozen
+                    } else {
+                        WorkspaceStatus::Active
+                    }
+                );
+                if is_business_invocation(&req) {
+                    let prompt = render_prompt_bundle(&req)?;
+                    let evidence_group = if fanout && id == "after-group" {
+                        "group-next"
+                    } else {
+                        exited_id
+                    };
+                    assert!(
+                        prompt
+                            .user_prompt
+                            .contains(&format!("{evidence_group}-accept-report.md")),
+                        "{id} {:?}: {}",
+                        req.user_prompt_render_mode,
+                        prompt.user_prompt
+                    );
+                    assert!(
+                        prompt
+                            .user_prompt
+                            .contains(&format!("{evidence_group}-merge-report.md"))
+                    );
+                }
+            }
+        }
         if matches!(self.scenario, DynamicScenario::ProviderRuntimeError) {
             return Ok(ProviderRunResult {
                 status: ProviderRunStatus::Failure,
@@ -323,6 +426,42 @@ impl DynamicProvider {
         }
         let is_runtime_repair = req.user_prompt_render_mode == UserPromptRenderMode::RuntimeRepair;
         let profile = req.profile.as_deref().unwrap_or("profile");
+        if let DynamicScenario::AcceptanceContinuation {
+            nested,
+            fanout,
+            end_after_fanout,
+        } = self.scenario
+        {
+            let id = req.runtime_context.node_id.as_str();
+            let exit = if nested {
+                "group-branch-a-accept"
+            } else {
+                "group-core-accept"
+            };
+            return Some(match id {
+                "bootstrap" => fanout_completion(profile),
+                "branch-a" if nested => nested_fanout_completion(profile),
+                id if id == exit && fanout => {
+                    let mut completion: serde_json::Value = serde_json::from_str(&fanout_completion(profile)).unwrap();
+                    completion["next"]["groupId"] = json!("group-next");
+                    for (index, node) in completion["next"]["nodes"].as_array_mut().unwrap().iter_mut().enumerate() {
+                        node["id"] = json!(format!("next-{index}"));
+                        node["dependsOn"] = json!([]);
+                    }
+                    completion.to_string()
+                }
+                "group-next-accept" if end_after_fanout => end_completion("continuation finished"),
+                id if id == exit || id == "group-next-accept" => json!({
+                    "version": "0.1", "kind": "dynamic-node-completion", "status": "success",
+                    "summary": "continue after acceptance", "next": { "type": "single", "node": {
+                        "id": "after-group", "kind": "worker", "title": "Continue", "task": "Finish remaining work"
+                    }}
+                }).to_string(),
+                "after-group" => end_completion("continuation finished"),
+                "group-core-accept" => end_completion("parent group accepted"),
+                _ => end_completion("branch done"),
+            });
+        }
         match (&self.scenario, req.runtime_context.node_id.as_str()) {
             (DynamicScenario::DirectEnd, "bootstrap") => Some(end_completion("outer handoff")),
             (DynamicScenario::NewRoundFeedback, "bootstrap") => {
@@ -1282,7 +1421,7 @@ fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
     );
     assert_eq!(graph.groups.len(), 1);
     assert_eq!(graph.groups[0].status, DynamicGroupStatus::Closed);
-    assert_eq!(graph.groups[0].terminal_node_ids.len(), 3);
+    assert_eq!(graph.groups[0].terminal_node_ids.len(), 2);
     assert_eq!(graph.proposals.len(), 4);
     assert!(graph.proposals.iter().all(|proposal| {
         proposal.validation_status == DynamicProposalValidationStatus::Accepted
@@ -2204,6 +2343,154 @@ fn ai_dynamic_nested_fanout_waits_for_child_group_before_parent_merge() {
             )
         )
     }));
+}
+
+#[test]
+fn ai_dynamic_acceptance_continues_single_at_top_level() {
+    assert_acceptance_continuation(false, false, false);
+}
+
+#[test]
+fn ai_dynamic_acceptance_continues_fanout_at_top_level() {
+    assert_acceptance_continuation(false, true, false);
+}
+
+#[test]
+fn ai_dynamic_acceptance_continues_single_in_parent_branch() {
+    assert_acceptance_continuation(true, false, false);
+}
+
+#[test]
+fn ai_dynamic_acceptance_continues_fanout_in_parent_branch() {
+    assert_acceptance_continuation(true, true, false);
+}
+
+#[test]
+fn ai_dynamic_acceptance_fanout_end_terminates_top_level_chain() {
+    assert_acceptance_continuation(false, true, true);
+}
+
+#[test]
+fn ai_dynamic_acceptance_fanout_end_terminates_parent_branch() {
+    assert_acceptance_continuation(true, true, true);
+}
+
+fn assert_acceptance_continuation(nested: bool, fanout: bool, end_after_fanout: bool) {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-group-continuation";
+    let provider = DynamicProvider::new(DynamicScenario::AcceptanceContinuation {
+        nested,
+        fanout,
+        end_after_fanout,
+    });
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &first_profile_id(&app), "[]");
+    let workflow_path = app.paths.workflow_file(task_id);
+    let mut workflow: serde_json::Value = gold_band::storage::read_json(&workflow_path).unwrap();
+    workflow["nodes"][0]["control"]["maxDynamicNodes"] = json!(24);
+    workflow["nodes"][0]["control"]["maxDepth"] = json!(20);
+    workflow["nodes"][0]["control"]["maxGroupDepth"] = json!(if nested { 2 } else { 1 });
+    gold_band::storage::write_json(&workflow_path, &workflow).unwrap();
+
+    let run = app.run_start(task_id, None).unwrap();
+    let graph = dynamic_graph(&app, task_id);
+    let exited_id = if nested {
+        "group-branch-a"
+    } else {
+        "group-core"
+    };
+    let exited = graph
+        .groups
+        .iter()
+        .find(|group| group.id == exited_id)
+        .unwrap();
+    assert_eq!(
+        exited.status,
+        DynamicGroupStatus::Closed,
+        "acceptance must close the old group before continuing"
+    );
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+    if !end_after_fanout {
+        let successor = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "after-group")
+            .unwrap();
+        assert_eq!(
+            successor.group_id.as_deref(),
+            nested.then_some("group-core")
+        );
+        assert_eq!(
+            successor.chain_id,
+            if nested { "branch-a" } else { "bootstrap" }
+        );
+        assert_eq!(successor.workspace_id, exited.target_workspace_id);
+    }
+    assert!(!graph.nodes.iter().any(|node| node.id.ends_with("-merge-2")));
+    if fanout {
+        let next = graph
+            .groups
+            .iter()
+            .find(|group| group.id == "group-next")
+            .unwrap();
+        assert_eq!(
+            next.parent_group_id.as_deref(),
+            nested.then_some("group-core")
+        );
+        assert_eq!(next.depth, if nested { 2 } else { 1 });
+        assert_eq!(next.created_by_node_id, format!("{exited_id}-accept"));
+    }
+    if nested {
+        let terminal_id = if end_after_fanout {
+            "group-next-accept"
+        } else {
+            "after-group"
+        };
+        let parent = graph
+            .groups
+            .iter()
+            .find(|group| group.id == "group-core")
+            .unwrap();
+        assert!(parent.terminal_node_ids.iter().any(|id| id == terminal_id));
+        assert!(
+            !parent
+                .terminal_node_ids
+                .iter()
+                .any(|id| id == "group-branch-a-accept"
+                    || (!end_after_fanout && id == "group-next-accept"))
+        );
+        let invocations = provider.invocations.lock().unwrap();
+        let after = invocations
+            .iter()
+            .rposition(|req| req.runtime_context.node_id == terminal_id)
+            .unwrap();
+        let merge = invocations
+            .iter()
+            .position(|req| req.runtime_context.node_id == "group-core-merge")
+            .unwrap();
+        assert!(after < merge, "parent merge must wait for the continuation");
+    }
+    let _: serde_json::Value = coordination_snapshot(&app, task_id);
+    let result: serde_json::Value = gold_band::storage::read_json(&app.paths.artifact_file(
+        task_id,
+        "run-001",
+        "round-001",
+        "router",
+        "attempt-001",
+        "ai-dynamic-result",
+    ))
+    .unwrap();
+    assert_eq!(
+        result["summary"],
+        if nested {
+            "parent group accepted"
+        } else {
+            "continuation finished"
+        }
+    );
 }
 
 #[test]

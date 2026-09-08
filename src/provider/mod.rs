@@ -399,6 +399,7 @@ pub enum OutputEmissionMode {
 }
 
 const ARTIFACT_EMISSION_STATE_FILE: &str = "artifact-emission.json";
+const MAX_ARTIFACT_FINALIZE_REMINDERS: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -452,6 +453,7 @@ fn artifact_emission_checkpoint(attempt_dir: &Utf8Path) -> Result<Option<Artifac
     Ok(Some(state))
 }
 
+#[cfg(test)]
 fn write_artifact_emission_phase(
     attempt_dir: &Utf8Path,
     phase: ArtifactEmissionPhase,
@@ -521,17 +523,9 @@ fn prepare_post_turn_projection(req: &WorkerInvocation) -> Result<PostTurnProjec
     }
 
     match artifact_emission_checkpoint(&req.attempt_dir)?.map(|state| state.phase) {
-        Some(ArtifactEmissionPhase::Finalizing)
-            if req.user_prompt_render_mode == UserPromptRenderMode::UserMessage =>
-        {
-            // A continue-with-message at the finalize boundary opens a new durable
-            // business turn. If that turn is interrupted, the next continue must
-            // resume business work instead of skipping directly back to artifact
-            // finalization.
-            write_artifact_emission_phase(&req.attempt_dir, ArtifactEmissionPhase::BusinessTurn)?;
-            Ok(PostTurnProjectionEntry::RunBusinessTurn)
-        }
-        Some(ArtifactEmissionPhase::Finalizing) => Ok(PostTurnProjectionEntry::ResumeFinalization),
+        // User resumes retain their own prompt. The checkpoint controls result
+        // collection, not which instruction is sent to the Agent.
+        Some(ArtifactEmissionPhase::Finalizing) => Ok(PostTurnProjectionEntry::RunBusinessTurn),
         Some(ArtifactEmissionPhase::BusinessTurn) | None => {
             Ok(PostTurnProjectionEntry::RunBusinessTurn)
         }
@@ -1629,88 +1623,148 @@ impl AcpProvider {
         prompt_accepted: Option<AcpPromptAccepted<'_>>,
         runtime_phase_update: Option<ProviderRuntimePhaseUpdate<'_>>,
     ) -> Result<ProviderRunResult> {
+        Self::drive_post_turn_projection(
+            req,
+            |req| {
+                self.run_worker_once_with_callbacks(
+                    req,
+                    live_update,
+                    session_update,
+                    prompt_accepted,
+                )
+            },
+            runtime_phase_update,
+        )
+    }
+
+    fn drive_post_turn_projection(
+        mut req: WorkerInvocation,
+        mut run_once: impl FnMut(WorkerInvocation) -> Result<ProviderRunResult>,
+        runtime_phase_update: Option<ProviderRuntimePhaseUpdate<'_>>,
+    ) -> Result<ProviderRunResult> {
         let contract = req
             .output_contract
             .clone()
             .expect("post-turn projection requires output contract");
-        let resumed_control_turn = matches!(
+        let mut resumed_control_turn = matches!(
             req.user_prompt_render_mode,
             UserPromptRenderMode::RuntimeFinalize | UserPromptRenderMode::RuntimeRepair
         );
         let entry = prepare_post_turn_projection(&req)?;
+        let collecting = post_turn_projection_checkpoint_is_finalizing(&req.attempt_dir)?;
+        let mut reminders = 0;
+        let mut is_reminder = false;
 
         if entry == PostTurnProjectionEntry::RunBusinessTurn {
-            let work_result = self.run_worker_once_with_callbacks(
-                req.clone(),
-                live_update,
-                session_update,
-                prompt_accepted,
-            )?;
+            let work_result = run_once(req.clone())?;
             if work_result.runtime_error.is_some()
                 || work_result.status != ProviderRunStatus::Success
             {
                 return Ok(work_result);
             }
+            if collecting {
+                if provider_result_has_artifact_candidate(&work_result) {
+                    return Ok(work_result);
+                }
+                is_reminder = true;
+            }
         }
 
-        let finalize_generation = next_artifact_finalize_generation(&req.attempt_dir)?;
-        write_artifact_emission_phase_with_generation(
-            &req.attempt_dir,
-            ArtifactEmissionPhase::Finalizing,
-            Some(finalize_generation.clone()),
-        )?;
-        if let Some(runtime_phase_update) = runtime_phase_update {
-            runtime_phase_update(ProviderRuntimePhase::FinalizingArtifact)?;
-        }
-        let worker_ref: WorkerRefState = read_json(&req.attempt_dir.join("worker-ref.json"))
-            .context("post-turn artifact finalization requires durable worker-ref")?;
-        ensure!(
-            worker_ref.supports_continue_session,
-            "post-turn artifact finalization requires a continuable provider session"
-        );
-        let continue_ref = worker_ref
-            .continue_ref
-            .context("post-turn artifact finalization requires provider continue reference")?;
+        loop {
+            if is_reminder {
+                if reminders == MAX_ARTIFACT_FINALIZE_REMINDERS {
+                    let mut result = interrupted_acp_provider_run_result();
+                    result.runtime_error = Some(crate::runtime_error::manual_runtime_error_info(
+                        RuntimeErrorDomain::Provider,
+                        "provider.artifact-finalize-reminders-exhausted",
+                        "Artifact is still missing after automatic finalize reminders",
+                        serde_json::json!({ "maxReminders": MAX_ARTIFACT_FINALIZE_REMINDERS }),
+                    ));
+                    return Ok(result);
+                }
+                reminders += 1;
+            }
+            let finalize_generation = if is_reminder {
+                // The preceding call returned normally, so this is a new turn even
+                // if the lifecycle snapshot has not yet published its terminal state.
+                uuid::Uuid::new_v4().simple().to_string()
+            } else {
+                next_artifact_finalize_generation(&req.attempt_dir)?
+            };
+            write_artifact_emission_phase_with_generation(
+                &req.attempt_dir,
+                ArtifactEmissionPhase::Finalizing,
+                Some(finalize_generation.clone()),
+            )?;
+            if let Some(runtime_phase_update) = runtime_phase_update {
+                runtime_phase_update(ProviderRuntimePhase::FinalizingArtifact)?;
+            }
+            let worker_ref: WorkerRefState = read_json(&req.attempt_dir.join("worker-ref.json"))
+                .context("post-turn artifact finalization requires durable worker-ref")?;
+            ensure!(
+                worker_ref.supports_continue_session,
+                "post-turn artifact finalization requires a continuable provider session"
+            );
+            let continue_ref = worker_ref
+                .continue_ref
+                .context("post-turn artifact finalization requires provider continue reference")?;
 
-        let preserve_control_prompt = resumed_control_turn
-            && req
-                .resume_prompt
-                .as_deref()
-                .is_some_and(|prompt| !prompt.trim().is_empty());
-        let mut finalize_req = req;
-        finalize_req.output_contract = Some(contract.clone());
-        finalize_req.session_mode = SessionMode::Continue;
-        finalize_req.continue_ref = Some(continue_ref);
-        finalize_req.resume_prompt_visibility = PromptVisibility::Hidden;
-        finalize_req.task_input_attachment_paths.clear();
-        finalize_req.user_input_attachment_paths.clear();
-        let control_turn_kind = if preserve_control_prompt
-            && finalize_req.user_prompt_render_mode == UserPromptRenderMode::RuntimeRepair
-        {
-            "artifact-repair"
-        } else {
-            "artifact-finalize"
-        };
-        finalize_req.resume_prompt_id = Some(format!(
-            "{control_turn_kind}-{}-{finalize_generation}",
-            finalize_req.runtime_context.attempt_id
-        ));
-        if !preserve_control_prompt {
-            finalize_req.resume_prompt = Some(render_artifact_finalize_prompt(
-                finalize_req.runtime_context.language,
-                &contract,
-                finalize_req.execution_surface,
-            )?);
-            finalize_req.user_prompt_render_mode = UserPromptRenderMode::RuntimeFinalize;
-        }
+            let preserve_control_prompt = resumed_control_turn
+                && req
+                    .resume_prompt
+                    .as_deref()
+                    .is_some_and(|prompt| !prompt.trim().is_empty());
+            let mut finalize_req = req.clone();
+            if entry == PostTurnProjectionEntry::RunBusinessTurn || is_reminder {
+                finalize_req.runtime_control_intent = RuntimeControlIntent::Unchanged;
+            }
+            finalize_req.output_contract = Some(contract.clone());
+            finalize_req.session_mode = SessionMode::Continue;
+            finalize_req.continue_ref = Some(continue_ref);
+            finalize_req.resume_prompt_visibility = PromptVisibility::Hidden;
+            finalize_req.task_input_attachment_paths.clear();
+            finalize_req.user_input_attachment_paths.clear();
+            let control_turn_kind = if preserve_control_prompt
+                && finalize_req.user_prompt_render_mode == UserPromptRenderMode::RuntimeRepair
+            {
+                "artifact-repair"
+            } else {
+                "artifact-finalize"
+            };
+            finalize_req.resume_prompt_id = Some(format!(
+                "{control_turn_kind}-{}-{finalize_generation}",
+                finalize_req.runtime_context.attempt_id
+            ));
+            if !preserve_control_prompt {
+                finalize_req.resume_prompt = Some(render_artifact_finalize_prompt(
+                    finalize_req.runtime_context.language,
+                    &contract,
+                    finalize_req.execution_surface,
+                )?);
+                finalize_req.user_prompt_render_mode = UserPromptRenderMode::RuntimeFinalize;
+            }
 
-        self.run_worker_once_with_callbacks(
-            finalize_req,
-            live_update,
-            session_update,
-            prompt_accepted,
-        )
+            let result = run_once(finalize_req.clone())?;
+            if result.runtime_error.is_some()
+                || result.status != ProviderRunStatus::Success
+                || provider_result_has_artifact_candidate(&result)
+            {
+                return Ok(result);
+            }
+            req = finalize_req;
+            resumed_control_turn = false;
+            is_reminder = true;
+        }
     }
+}
+
+fn provider_result_has_artifact_candidate(result: &ProviderRunResult) -> bool {
+    result.runtime_control_output.is_some()
+        || result
+            .result_payload
+            .as_ref()
+            .and_then(|payload| payload.output_artifact.as_ref())
+            .is_some_and(|artifact| !artifact.content.trim().is_empty())
 }
 
 fn active_output_contract_for_turn(req: &WorkerInvocation) -> Option<&PromptOutputContract> {
@@ -1993,7 +2047,7 @@ fn evaluate_output_artifact_from_run(
     } else {
         vec![terminal_message]
     };
-    let mut invalid = None;
+    let mut invalid: Option<OutputArtifactEvaluation> = None;
     for message in candidates {
         let Some(span) = json_artifact_display_span(&message.text) else {
             continue;
@@ -2015,14 +2069,24 @@ fn evaluate_output_artifact_from_run(
             });
         }
         if invalid.is_none() {
-            invalid = runtime_control_output;
+            // Without a source locator, retain the candidate text so downstream
+            // validation can distinguish malformed output from missing output.
+            let payload = runtime_control_output
+                .is_none()
+                .then(|| ProviderResultPayload {
+                    output_artifact: Some(OutputArtifactPayload {
+                        name: contract.artifact.clone(),
+                        content: span.json_text,
+                    }),
+                });
+            invalid = Some(OutputArtifactEvaluation {
+                payload,
+                runtime_control_output,
+            });
         }
     }
 
-    Ok(OutputArtifactEvaluation {
-        payload: None,
-        runtime_control_output: invalid,
-    })
+    Ok(invalid.unwrap_or_default())
 }
 
 fn evaluate_runtime_control_output_for_run(
@@ -2038,7 +2102,30 @@ fn evaluate_runtime_control_output_for_run(
     {
         return Ok(OutputArtifactEvaluation::default());
     }
+    let resumed_contract =
+        if matches!(
+            req.user_prompt_render_mode,
+            UserPromptRenderMode::RuntimeResume
+                | UserPromptRenderMode::WorkflowResume
+                | UserPromptRenderMode::UserMessage
+        ) && req.output_contract.as_ref().is_some_and(|contract| {
+            contract.emission_mode == OutputEmissionMode::PostTurnProjection
+        }) {
+            let collecting = post_turn_projection_checkpoint_is_finalizing(&req.attempt_dir)
+                .map_err(|error| {
+                    blocked_runtime_error_info(
+                        RuntimeErrorDomain::Internal,
+                        "runtime.artifact-emission-state-invalid",
+                        error.to_string(),
+                        serde_json::json!({}),
+                    )
+                })?;
+            collecting.then_some(req.output_contract.as_ref()).flatten()
+        } else {
+            None
+        };
     active_output_contract_for_turn(req)
+        .or(resumed_contract)
         .map(|contract| evaluate_output_artifact_from_run(contract, output))
         .unwrap_or(Ok(OutputArtifactEvaluation::default()))
 }
@@ -3574,7 +3661,7 @@ mod tests {
         req.user_prompt_render_mode = UserPromptRenderMode::RuntimeResume;
         assert_eq!(
             prepare_post_turn_projection(&req).unwrap(),
-            PostTurnProjectionEntry::ResumeFinalization
+            PostTurnProjectionEntry::RunBusinessTurn
         );
         assert!(post_turn_projection_checkpoint_is_finalizing(&attempt_dir).unwrap());
 
@@ -3684,7 +3771,7 @@ mod tests {
     }
 
     #[test]
-    fn continue_with_message_at_finalize_boundary_reopens_a_durable_business_turn() {
+    fn continue_with_message_preserves_artifact_collection_without_replacing_prompt() {
         let temp = tempfile::tempdir().unwrap();
         let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         write_artifact_emission_phase(&attempt_dir, ArtifactEmissionPhase::Finalizing).unwrap();
@@ -3698,11 +3785,11 @@ mod tests {
             prepare_post_turn_projection(&user_message_req).unwrap(),
             PostTurnProjectionEntry::RunBusinessTurn
         );
-        assert!(!post_turn_projection_checkpoint_is_finalizing(&attempt_dir).unwrap());
+        assert!(post_turn_projection_checkpoint_is_finalizing(&attempt_dir).unwrap());
         let state = artifact_emission_checkpoint(&attempt_dir)
             .unwrap()
             .expect("continue-with-message persists the business checkpoint");
-        assert_eq!(state.phase, ArtifactEmissionPhase::BusinessTurn);
+        assert_eq!(state.phase, ArtifactEmissionPhase::Finalizing);
 
         let mut pure_resume_req = test_worker_invocation(attempt_dir.clone());
         pure_resume_req.session_mode = SessionMode::Continue;
@@ -3715,6 +3802,286 @@ mod tests {
 
         write_artifact_emission_phase(&attempt_dir, ArtifactEmissionPhase::Finalizing).unwrap();
         assert!(post_turn_projection_checkpoint_is_finalizing(&attempt_dir).unwrap());
+    }
+
+    #[test]
+    fn resumed_work_collects_artifact_after_protocol_was_provided() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        write_artifact_emission_phase(&attempt_dir, ArtifactEmissionPhase::Finalizing).unwrap();
+        let mut req = test_worker_invocation(attempt_dir);
+        req.output_contract = Some(test_output_contract(OutputEmissionMode::PostTurnProjection));
+        req.user_prompt_render_mode = UserPromptRenderMode::RuntimeResume;
+        let output = client::AcpPromptOutput {
+            recent_messages: vec![client::AcpPromptMessageOutput {
+                text: r#"{"status":"success"}"#.to_string(),
+                has_stable_id: false,
+                source: None,
+            }],
+            ..Default::default()
+        };
+        assert!(
+            evaluate_runtime_control_output_for_run(&req, ProviderRunStatus::Success, &output)
+                .unwrap()
+                .payload
+                .is_some()
+        );
+    }
+
+    fn projection_test_request(attempt_dir: Utf8PathBuf) -> WorkerInvocation {
+        write_json(
+            &attempt_dir.join("worker-ref.json"),
+            &WorkerRefState {
+                version: VERSION.to_string(),
+                provider: "claude-acp".to_string(),
+                mode: SessionMode::New,
+                supports_open_session: true,
+                supports_continue_session: true,
+                continue_ref: Some(serde_json::json!({"sessionId": "test-session"})),
+                open_command: None,
+            },
+        )
+        .unwrap();
+        let mut req = test_worker_invocation(attempt_dir);
+        req.output_contract = Some(test_output_contract(OutputEmissionMode::PostTurnProjection));
+        req
+    }
+
+    fn empty_success_result() -> ProviderRunResult {
+        let mut result = interrupted_acp_provider_run_result();
+        result.status = ProviderRunStatus::Success;
+        result
+    }
+
+    #[test]
+    fn projection_missing_artifact_pauses_after_five_additional_reminders() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let req = projection_test_request(attempt_dir.clone());
+        let mut calls = Vec::new();
+        let result = AcpProvider::drive_post_turn_projection(
+            req.clone(),
+            |call| {
+                calls.push(call);
+                Ok(empty_success_result())
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(calls.len(), 7); // Business + protocol + five reminders.
+        assert_eq!(
+            calls[0].user_prompt_render_mode,
+            UserPromptRenderMode::RequirementTask
+        );
+        let ids = calls[1..]
+            .iter()
+            .map(|call| {
+                assert_eq!(
+                    call.user_prompt_render_mode,
+                    UserPromptRenderMode::RuntimeFinalize
+                );
+                assert_eq!(call.resume_prompt_visibility, PromptVisibility::Hidden);
+                call.resume_prompt_id.clone().unwrap()
+            })
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(ids.len(), 6);
+        assert_eq!(result.status, ProviderRunStatus::Interrupted);
+        let error = result.runtime_error.unwrap();
+        assert_eq!(
+            error.code.code,
+            "provider.artifact-finalize-reminders-exhausted"
+        );
+        assert_eq!(error.recovery, crate::runtime_error::RecoveryMode::Manual);
+        assert!(post_turn_projection_checkpoint_is_finalizing(&attempt_dir).unwrap());
+
+        let mut resumed = req;
+        resumed.user_prompt_render_mode = UserPromptRenderMode::RuntimeResume;
+        resumed.resume_prompt = Some("Resume the interrupted work".to_string());
+        resumed.runtime_control_intent = RuntimeControlIntent::Resume;
+        calls.clear();
+        AcpProvider::drive_post_turn_projection(
+            resumed,
+            |call| {
+                calls.push(call);
+                Ok(empty_success_result())
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(calls.len(), 6); // Explicit continue grants five new reminders.
+        assert_eq!(
+            calls[0].resume_prompt.as_deref(),
+            Some("Resume the interrupted work")
+        );
+        assert_eq!(
+            calls[0].user_prompt_render_mode,
+            UserPromptRenderMode::RuntimeResume
+        );
+        assert!(
+            calls[1..]
+                .iter()
+                .all(|call| call.runtime_control_intent == RuntimeControlIntent::Unchanged)
+        );
+    }
+
+    #[test]
+    fn projection_stop_and_non_success_never_trigger_reminders() {
+        for status in [
+            ProviderRunStatus::Interrupted,
+            ProviderRunStatus::Failure,
+            ProviderRunStatus::WaitingForUserInput,
+            ProviderRunStatus::PermissionRequested,
+        ] {
+            for stop_at in [1, 2, 4] {
+                let temp = tempfile::tempdir().unwrap();
+                let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+                let req = projection_test_request(attempt_dir.clone());
+                let mut calls = 0;
+                let result = AcpProvider::drive_post_turn_projection(
+                    req,
+                    |_| {
+                        calls += 1;
+                        let mut result = empty_success_result();
+                        if calls == stop_at {
+                            result.status = status;
+                        }
+                        Ok(result)
+                    },
+                    None,
+                )
+                .unwrap();
+                assert_eq!(calls, stop_at);
+                assert_eq!(result.status, status);
+                assert_eq!(
+                    post_turn_projection_checkpoint_is_finalizing(&attempt_dir).unwrap(),
+                    stop_at > 1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn projection_runtime_error_and_stale_artifact_do_not_trigger_success() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let req = projection_test_request(attempt_dir.clone());
+        write_json(
+            &attempt_dir.join("artifacts/dynamic-node-completion.json"),
+            &serde_json::json!({"status": "success"}),
+        )
+        .unwrap();
+        let mut calls = 0;
+        let result = AcpProvider::drive_post_turn_projection(
+            req,
+            |_| {
+                calls += 1;
+                let mut result = empty_success_result();
+                if calls == 3 {
+                    result.runtime_error = Some(crate::runtime_error::manual_runtime_error_info(
+                        RuntimeErrorDomain::Provider,
+                        "provider.test-error",
+                        "Test provider error",
+                        serde_json::json!({}),
+                    ));
+                }
+                Ok(result)
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(calls, 3);
+        assert_eq!(
+            result.runtime_error.unwrap().code.code,
+            "provider.test-error"
+        );
+        assert!(result.result_payload.is_none());
+    }
+
+    #[test]
+    fn projection_resumed_valid_or_invalid_candidate_returns_without_reminder() {
+        for content in [r#"{"status":"success"}"#, r#"{"status":"broken}"#] {
+            let temp = tempfile::tempdir().unwrap();
+            let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+            let mut req = projection_test_request(attempt_dir.clone());
+            write_artifact_emission_phase(&attempt_dir, ArtifactEmissionPhase::Finalizing).unwrap();
+            req.user_prompt_render_mode = UserPromptRenderMode::RuntimeResume;
+            let mut calls = 0;
+            let result = AcpProvider::drive_post_turn_projection(
+                req,
+                |call| {
+                    calls += 1;
+                    assert_eq!(
+                        call.user_prompt_render_mode,
+                        UserPromptRenderMode::RuntimeResume
+                    );
+                    let output = client::AcpPromptOutput {
+                        recent_messages: vec![client::AcpPromptMessageOutput {
+                            text: content.to_string(),
+                            has_stable_id: false,
+                            source: None,
+                        }],
+                        ..Default::default()
+                    };
+                    let evaluation = evaluate_runtime_control_output_for_run(
+                        &call,
+                        ProviderRunStatus::Success,
+                        &output,
+                    )
+                    .unwrap();
+                    let mut result = empty_success_result();
+                    result.result_payload = evaluation.payload;
+                    result.runtime_control_output = evaluation.runtime_control_output;
+                    Ok(result)
+                },
+                None,
+            )
+            .unwrap();
+            assert_eq!(calls, 1);
+            assert!(provider_result_has_artifact_candidate(&result));
+        }
+    }
+
+    #[test]
+    fn projection_cancelled_repair_resumes_work_not_repair_prompt() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let mut req = projection_test_request(attempt_dir);
+        req.user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
+        req.resume_prompt = Some("Repair the invalid next field".to_string());
+        AcpProvider::drive_post_turn_projection(
+            req.clone(),
+            |call| {
+                assert_eq!(
+                    call.user_prompt_render_mode,
+                    UserPromptRenderMode::RuntimeRepair
+                );
+                assert_eq!(
+                    call.resume_prompt.as_deref(),
+                    Some("Repair the invalid next field")
+                );
+                Ok(interrupted_acp_provider_run_result())
+            },
+            None,
+        )
+        .unwrap();
+        req.user_prompt_render_mode = UserPromptRenderMode::RuntimeResume;
+        req.resume_prompt = Some("Continue work".to_string());
+        let mut calls = 0;
+        AcpProvider::drive_post_turn_projection(
+            req,
+            |call| {
+                calls += 1;
+                assert_eq!(
+                    call.user_prompt_render_mode,
+                    UserPromptRenderMode::RuntimeResume
+                );
+                assert_eq!(call.resume_prompt.as_deref(), Some("Continue work"));
+                Ok(interrupted_acp_provider_run_result())
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(calls, 1);
     }
 
     #[test]

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import npa from 'npm-package-arg';
 
 export const ACP_REGISTRY_URL = 'https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json';
 export const BUILTIN_AGENT_IDS = [
@@ -21,6 +22,7 @@ export const BUILTIN_AGENT_IDS = [
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const snapshotPath = join(repoRoot, 'resources', 'acp-registry.snapshot.json');
 const catalogPath = join(repoRoot, 'resources', 'agent-catalog.json');
+const policyPath = join(repoRoot, 'configs', 'agent-catalog-policy.json');
 const iconDir = join(repoRoot, 'web', 'public', 'agent-icons');
 
 const overrides = {
@@ -66,7 +68,21 @@ const overrides = {
   },
 };
 
-export function buildAgentCatalog(registry, fetchedAt = new Date().toISOString()) {
+export function buildAgentCatalog(registry, fetchedAt = new Date().toISOString(), policy = {}) {
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy)
+      || Object.keys(policy).some((key) => key !== 'versionPins')) {
+    throw new Error('Invalid Agent catalog policy; expected versionPins.');
+  }
+  const pins = policy.versionPins === undefined ? {} : policy.versionPins;
+  if (!pins || typeof pins !== 'object' || Array.isArray(pins)) {
+    throw new Error('versionPins must be an object.');
+  }
+  for (const [id, version] of Object.entries(pins)) {
+    if (!BUILTIN_AGENT_IDS.includes(id)) throw new Error(`Unknown Agent version pin: ${id}`);
+    if (typeof version !== 'string' || !version || npa.resolve('version-pin', version).type !== 'version') {
+      throw new Error(`Agent ${id} version pin must be an exact npm version.`);
+    }
+  }
   if (!registry || !Array.isArray(registry.agents)) {
     throw new Error('ACP Registry response does not contain an agents array.');
   }
@@ -80,10 +96,21 @@ export function buildAgentCatalog(registry, fetchedAt = new Date().toISOString()
     const agent = byId.get(id);
     const override = overrides[id];
     const distribution = resolveDistributionDefaults(agent.distribution);
+    const pin = pins[id];
+    if (pin !== undefined) {
+      if (!agent.distribution?.npx || override.command || override.args) {
+        throw new Error(`Agent ${id} version pin requires an npx-managed template.`);
+      }
+      const spec = npa(agent.distribution.npx.package);
+      if (!spec.registry || !spec.name || !['version', 'range', 'tag'].includes(spec.type)) {
+        throw new Error(`Agent ${id} version pin requires an npm registry package.`);
+      }
+      distribution.args[1] = `${spec.name}@${pin}`;
+    }
     return {
       id,
       label: override.label ?? agent.name,
-      version: String(agent.version ?? ''),
+      version: pin ?? String(agent.version ?? ''),
       description: String(agent.description ?? ''),
       repository: agent.repository ?? null,
       website: agent.website ?? null,
@@ -151,6 +178,7 @@ async function downloadIcons(catalog) {
 
 async function main() {
   const offline = process.argv.includes('--offline');
+  const policy = JSON.parse(await readFile(policyPath, 'utf8'));
   const registry = offline
     ? JSON.parse(await readFile(snapshotPath, 'utf8'))
     : await fetchJson(ACP_REGISTRY_URL);
@@ -158,7 +186,17 @@ async function main() {
   const fetchedAt = process.env.SOURCE_DATE_EPOCH
     ? new Date(Number(process.env.SOURCE_DATE_EPOCH) * 1000).toISOString()
     : new Date().toISOString();
-  const catalog = buildAgentCatalog(registry, fetchedAt);
+  const catalog = buildAgentCatalog(registry, fetchedAt, policy);
+  if (!offline) {
+    for (const agent of catalog.agents) {
+      if (!Object.hasOwn(policy.versionPins ?? {}, agent.id)) continue;
+      const spec = npa(agent.args[1]);
+      const url = `https://registry.npmjs.org/${encodeURIComponent(spec.name)}/${encodeURIComponent(spec.fetchSpec)}`;
+      const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+      if (!response.ok) throw new Error(`Pinned package ${agent.args[1]} validation failed: HTTP ${response.status}`);
+      await response.json();
+    }
+  }
 
   await mkdir(dirname(snapshotPath), { recursive: true });
   if (!offline) await writeFile(snapshotPath, raw, 'utf8');

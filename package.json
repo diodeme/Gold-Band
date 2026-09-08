@@ -110,6 +110,7 @@
     "fontkit": "^2.0.4",
     "image-size": "^2.0.2",
     "jsdom": "^26.1.0",
+    "npm-package-arg": "^14.0.0",
     "patch-package": "^8.0.1",
     "rrweb": "2.1.1",
     "rrweb-player": "2.1.1",

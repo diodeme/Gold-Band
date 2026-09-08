@@ -18,6 +18,7 @@ Catalog 与实例必须分域管理：
 - 新建时将模板完整深拷贝到实例，之后 Catalog 更新不得修改任何既有实例
 - 构建/发版前拉取 `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`，校验精选十一项齐全后生成 Registry 快照、Catalog JSON 和官方 SVG 图标并打包
 - 提供显式离线脚本，允许基于已提交 Registry 快照重建 Catalog；常规发版刷新失败时必须失败退出，不发布残缺 Catalog
+- 构建期版本覆盖由 `configs/agent-catalog-policy.json` 的 `versionPins` 统一管理，例如 `"claude-acp": "0.72.0"`；无对应项时使用 Registry 版本。在线刷新与离线生成共用覆盖逻辑，同步覆盖 Catalog 版本和 npx 包参数，不修改原始 snapshot 或已有用户实例。仅支持 npx Registry 包的精确版本，未知 ID、非法策略和不支持的分发类型必须失败。在线生成检查固定 npm 版本存在性；离线生成不联网检查。
 - Kimi 的主/兼容 Skills 目录为 `.kimi-code` / `.agents`；Amp 为 `.agents` / `.claude`；Pi 的全局主目录为 `.pi/agent`、项目主目录为 `.pi`、两端兼容目录均为 `.agents`
 
 主 Skills 目录默认由全局与项目作用域共用。编辑 Sheet 在标题右侧提供带 Tooltip 的分裂图标按钮；开启后按钮呈选中态，单输入框拆为“全局主目录 / 项目主目录”，关闭后恢复共用主目录。数据层以可选项目主目录字段表达拆分状态，不维护独立布尔值。目录策略按作用域生成：全局写入全局主目录，项目写入项目主目录；两端读取时都在各自主目录后追加共用兼容目录，兼容目录始终只读。Catalog、设置实例、Tauri 输入/VM、SkillManager、原生命令扫描和同步状态必须消费同一目录策略接口，禁止在 Pi 调用点判断 Agent ID。
@@ -51,6 +52,13 @@ Agent 实例新增两个独立能力配置：
 - ACP 权限模式与节点 Profile 分层生效：权限模式使用 Agent 实际暴露的 mode API 控制工具授权，Profile 继续约束角色职责。实时切换权限成功后不得改写 Profile；例如 `pf-builtin-plan` 在 `yolo` 下仍然只负责规划。验收时必须同时检查 outbound mode 请求、Agent 响应中的 current mode 与节点 Profile，不能仅根据模型是否愿意改代码判断权限是否生效
 
 ## 本轮实现与验收记录（2026-08-07）
+
+### 2026-09-08 构建期本地版本覆盖
+
+- 原设计以在线 Registry 提供模板，发布方缺少固定版本能力；补齐生成期策略覆盖，保留每次 build 在线刷新的行为。当前 Claude 固定 `0.72.0`，删除配置项即可解除固定，不使用 `-1`。
+- 最小失败测试确认旧生成器忽略本地 pin，输出 `0.73.0` 而非 `0.72.0`；实现后 Catalog Node 测试 7 项通过，覆盖版本和启动参数一致性、原始快照不变、未配置项、scoped/unscoped 包、附加参数与环境保留、非法配置及上游版本变化。
+- 使用现有 snapshot 离线重建本地 Catalog，Claude 元数据与包参数均为 `0.72.0`；npm 元数据确认该版本存在并依赖 SDK `0.3.252`。未执行应用编译或 macOS 真机验证。
+- 过度设计与性能评审：复用现有 catalog 生成管道与成熟 npm 包规格解析库，仅增加小型 JSON 配置和构建期校验。每次生成对十一项线性处理，在线校验仅对固定项请求 npm 元数据，单次请求超时 30 秒；无运行时开销。已有用户实例保持独立，不自动迁移。
 
 - 已新增 Registry 快照准备脚本、离线重建脚本和 Node 单元测试，精选列表固定为十一项，包含 Amp、Pi 且排除 GLM
 - 已将 Catalog 通过 Rust `include_str!` 和 Vite public assets 打包；创建时复制模板，已有实例不读取 Catalog 默认值

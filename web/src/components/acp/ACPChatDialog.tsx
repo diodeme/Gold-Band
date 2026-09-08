@@ -7625,6 +7625,8 @@ type AcpActivityDetailWindow = {
   totalEventCount: number;
   events: AcpTimelineEvent[];
   detailLoaded: boolean;
+  // Readiness survives live-range refreshes; positioning must not wait for a quiet stream.
+  initialPageLoaded: boolean;
   hasMoreEarlier: boolean;
   earlierCursor: string | null;
   hasNewer: boolean;
@@ -7680,12 +7682,12 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
   const timelineWindowOwner = useContext(AcpTimelineWindowOwnerContext);
   const contentExpansion = useOptionalChatContainerContentExpansion();
   const sessionId = timelineWindowOwner?.sessionId ?? event.sessionId ?? null;
-  const ownerKey = acpDetailOwnerKey(
+  const ownerKey = `${acpDetailOwnerKey(
     branchLocator,
     timelineWindowOwner,
     sessionId,
     `activity:${event.activityStartSeq}`,
-  );
+  )}:generation:${timelineWindowOwner?.timelineGeneration ?? 0}`;
   const requestScopeKey = acpDetailRequestScopeKey(
     ownerKey,
     timelineWindowOwner?.timelineGeneration ?? 0,
@@ -7713,10 +7715,10 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
   const detailRequestSeqRef = useRef(0);
   const mountedRef = useRef(true);
   const openRef = useRef(open);
-  const currentRequestScopeRef = useRef(requestScopeKey);
+  const currentOwnerRef = useRef(ownerKey);
   const currentEventRef = useRef(event);
   openRef.current = open;
-  currentRequestScopeRef.current = requestScopeKey;
+  currentOwnerRef.current = ownerKey;
   currentEventRef.current = event;
   const collapseRef = useRef<HTMLButtonElement>(null);
   const pendingExpansionPositionRef = useRef(false);
@@ -7732,10 +7734,10 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
     : null;
   useLayoutEffect(() => {
     if (!open || !pendingExpansionPositionRef.current || !collapseRef.current) return;
-    if (event.detailAvailable && !activeDetailWindow.detailLoaded && !activeDetailError) return;
+    if (event.detailAvailable && !activeDetailWindow.initialPageLoaded && !activeDetailError) return;
     pendingExpansionPositionRef.current = false;
     contentExpansion?.positionContentExpansion(disclosureTokenRef.current, collapseRef.current);
-  }, [open, activeDetailWindow.detailLoaded, activeDetailError, event.detailAvailable, contentExpansion]);
+  }, [open, activeDetailWindow.initialPageLoaded, activeDetailError, event.detailAvailable, contentExpansion]);
   const summary = activityBatchSummary(event, t);
   useEffect(() => {
     mountedRef.current = true;
@@ -7751,6 +7753,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
   useEffect(() => {
     setDetailWindow((current) => syncAcpActivityDetailWindow(current, event, ownerKey));
   }, [
+    event.activityEndSeq,
     event.detailAvailable,
     event.earlierCursor,
     event.events,
@@ -7775,7 +7778,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
       && active
       && active.requestSeq === token.requestSeq
       && active.scopeKey === token.scopeKey
-      && currentRequestScopeRef.current === token.scopeKey,
+      && currentOwnerRef.current === token.ownerKey,
     );
   };
   const loadDetail = async (cursor: string | null, replaceWithLatest = false) => {
@@ -7841,6 +7844,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
       setDetailWindow((current) => mergeAcpActivityDetailPage({
         current,
         event: currentEvent,
+        requestEvent,
         ownerKey,
         items: detail.items.filter(isVisibleActivityAuditEvent) as AcpTimelineEvent[],
         hasMoreEarlier: detail.hasMoreEarlier,
@@ -7979,7 +7983,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
                   </Button>
                 ) : null}
               </div>
-              {loadingEarlier && activeDetailWindow.events.length === 0 ? (
+              {detailRequestInFlight && !activeDetailWindow.initialPageLoaded ? (
                 <div className="flex h-8 items-center gap-2 px-2 text-xs text-muted-foreground">
                   <Loader2 className="size-3 animate-spin" />
                   {t("common.loading")}
@@ -8103,6 +8107,7 @@ function createAcpActivityDetailWindow(
     totalEventCount: event.totalEventCount,
     events,
     detailLoaded: hasCompleteLocalActivityDetail(event),
+    initialPageLoaded: hasCompleteLocalActivityDetail(event),
     hasMoreEarlier: event.hasMoreEarlier,
     earlierCursor: event.earlierCursor ?? null,
     hasNewer: false,
@@ -8142,17 +8147,21 @@ function syncAcpActivityDetailWindow(
   ) as AcpTimelineEvent[];
   const detailLoaded = hasCompleteLocalActivityDetail(event)
     || (current.detailLoaded && !canonicalRangeChanged);
+  const trimmedEarlier = merged.length > events.length;
   return {
     ...current,
     activityEndSeq: event.activityEndSeq,
     totalEventCount: event.totalEventCount,
     events,
     detailLoaded,
-    hasMoreEarlier: detailLoaded && !canonicalRangeChanged
-      ? current.hasMoreEarlier
+    initialPageLoaded: current.initialPageLoaded || detailLoaded,
+    hasMoreEarlier: current.initialPageLoaded
+      ? current.hasMoreEarlier || trimmedEarlier
       : event.hasMoreEarlier,
-    earlierCursor: detailLoaded && !canonicalRangeChanged
-      ? current.earlierCursor
+    earlierCursor: current.initialPageLoaded
+      ? (trimmedEarlier && events[0]
+          ? formatTimelineCursor(events[0].startedSeq ?? events[0].seq)
+          : current.earlierCursor)
       : (event.earlierCursor ?? null),
   };
 }
@@ -8160,6 +8169,7 @@ function syncAcpActivityDetailWindow(
 function mergeAcpActivityDetailPage({
   current,
   event,
+  requestEvent,
   ownerKey,
   items,
   hasMoreEarlier,
@@ -8168,6 +8178,7 @@ function mergeAcpActivityDetailPage({
 }: {
   current: AcpActivityDetailWindow;
   event: AcpActivityBatch;
+  requestEvent: AcpActivityBatch;
   ownerKey: string;
   items: AcpTimelineEvent[];
   hasMoreEarlier: boolean;
@@ -8179,24 +8190,21 @@ function mergeAcpActivityDetailPage({
     : createAcpActivityDetailWindow(event, ownerKey);
   if (!loadingEarlierPage) {
     const latest = mergeAcpEvents(
-      items,
+      mergeAcpEvents(items, active.hasNewer ? [] : active.events),
       event.events.filter(isVisibleActivityAuditEvent),
     ) as AcpTimelineEvent[];
-    return {
+    return syncAcpActivityDetailWindow({
       ownerKey,
-      activityEndSeq: event.activityEndSeq,
-      totalEventCount: event.totalEventCount,
-      events: limitAcpEvents(
-        latest,
-        "start",
-        ACP_ACTIVITY_DETAIL_WINDOW_LIMIT,
-      ) as AcpTimelineEvent[],
+      activityEndSeq: requestEvent.activityEndSeq,
+      totalEventCount: requestEvent.totalEventCount,
+      events: latest,
       detailLoaded: true,
+      initialPageLoaded: true,
       hasMoreEarlier,
       earlierCursor,
       hasNewer: false,
       error: null,
-    };
+    }, event, ownerKey);
   }
 
   const merged = mergeAcpEvents(items, active.events) as AcpTimelineEvent[];
@@ -8211,6 +8219,7 @@ function mergeAcpActivityDetailPage({
       ACP_ACTIVITY_DETAIL_WINDOW_LIMIT,
     ) as AcpTimelineEvent[],
     detailLoaded: true,
+    initialPageLoaded: true,
     hasMoreEarlier,
     earlierCursor,
     hasNewer: active.hasNewer || overflowed,
@@ -8226,8 +8235,8 @@ function acpActivityDetailBelongsToRequest(
   return items.every((item) => {
     if (item.sessionId !== sessionId) return false;
     const start = item.startedSeq ?? item.seq;
-    const end = item.endedSeq ?? item.seq;
-    return start >= event.activityStartSeq && end <= event.activityEndSeq;
+    // The query bounds select item starts; the backend returns their latest versions.
+    return start >= event.activityStartSeq && start <= event.activityEndSeq;
   });
 }
 

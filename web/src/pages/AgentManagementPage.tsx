@@ -436,12 +436,13 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
               <TextInput value={editor.form.displayName} onChange={(event: ChangeEvent<HTMLInputElement>) => setEditor((current) => ({ ...current, form: { ...current.form, displayName: event.target.value } }))} />
             </Field>
             <Field label={t('agentManagement.command')}>
-              <TextInput value={editor.form.command} onChange={(event: ChangeEvent<HTMLInputElement>) => setEditor((current) => ({ ...current, form: { ...current.form, command: event.target.value } }))} />
+              <TextInput readOnly={editor.context.source === 'catalog'} value={editor.form.command} onChange={(event: ChangeEvent<HTMLInputElement>) => setEditor((current) => ({ ...current, form: { ...current.form, command: event.target.value } }))} />
             </Field>
-            <Field label={t('agentManagement.args')} description={t('agentManagement.argsDescription')}>
+            <Field label={t('agentManagement.args')} description={editor.context.source === 'custom' ? t('agentManagement.argsDescription') : undefined}>
               <ConfigTextarea
                 className="min-h-24"
                 value={editor.argsText}
+                readOnly={editor.context.source === 'catalog'}
                 placeholder={'-y\n@agentclientprotocol/claude-agent-acp@latest'}
                 onChange={(event) => setEditor((current) => ({ ...current, argsText: event.target.value }))}
               />

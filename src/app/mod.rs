@@ -2734,8 +2734,11 @@ impl App {
 
     pub fn set_user_agents(
         &self,
-        agents: std::collections::BTreeMap<ManagedAgentId, ManagedAgentConfig>,
+        mut agents: std::collections::BTreeMap<ManagedAgentId, ManagedAgentConfig>,
     ) -> Result<SettingsConfig> {
+        for (id, config) in &mut agents {
+            config.adapter.apply_catalog_launch(id);
+        }
         let mut settings = self.load_settings()?;
         settings.agents = Some(agents);
         self.save_settings(&settings)?;

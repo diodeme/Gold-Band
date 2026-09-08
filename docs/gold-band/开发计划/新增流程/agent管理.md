@@ -14,11 +14,13 @@ agent卡片支持删除、修改、环境诊断操作（检查agent环境是否�
 新增 Agent 使用带搜索框的 shadcn/ui `Command + Popover` 选择器，支持从十一个内置模板或“自定义 Agent”进入同一编辑 Sheet。内置模板按构建期 Registry 快照预填命令和参数；npx 类 Agent 使用 Registry package，其他 Agent 默认调用 PATH 中用户已安装的可执行文件。Gold Band 不下载、解压或托管 Agent 二进制。已新增过的内置类型不可重复新增。Pi ACP 使用 Registry 生成的 `npx -y pi-acp@<version>`，用户仍需自行安装 Pi coding agent 并保证 `pi` 位于 PATH。
 
 Catalog 与实例必须分域管理：
+- 2026-09-08 启动配置归属修正：schema 11 不再保存内置实例的命令和参数，旧设置加载时原子回写移除，读取时投影当前 Catalog；覆盖历史内置启动定制，保留名称、图标、环境、目录和能力配置。保存接口忽略内置命令/参数输入，编辑器对应字段只读，自定义 Agent 继续全部可编辑。复用稳定 ID、现有设置序列化与 Catalog，不增加依赖、持久身份、缓存或队列；开销限于小型配置内存处理，无新增网络、全量历史加载或热路径 I/O。
+- 验证记录：旧配置迁移最小测试已确认修改前失败。清理磁盘后重新编译验证通过：启动配置集成测试 2 项、配置模块单测 53 项、设置加载与持久化测试 2 项、桌面 Agent 保存接口测试 5 项；前端三组共 20 项测试、TypeScript 检查及 `npm run web:build` 生产前端构建通过，内置浏览器验证内置只读与自定义可编辑。构建仅有现有未使用代码、混合导入和包体积警告；本轮未制作安装包或运行 macOS 真机验证。
 - `AgentCatalogEntry` 是构建期模板；`ManagedAgentConfig` 是用户实例
-- 新建时将模板完整深拷贝到实例，之后 Catalog 更新不得修改任何既有实例
+- 新建时复制模板用户字段；内置 Agent 的命令和参数始终由当前 Catalog 提供，既有实例随客户端升级更新启动配置，其余用户字段不受影响。自定义 Agent 全部配置由用户维护。
 - 构建/发版前拉取 `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`，校验精选十一项齐全后生成 Registry 快照、Catalog JSON 和官方 SVG 图标并打包
 - 提供显式离线脚本，允许基于已提交 Registry 快照重建 Catalog；常规发版刷新失败时必须失败退出，不发布残缺 Catalog
-- 构建期版本覆盖由 `configs/agent-catalog-policy.json` 的 `versionPins` 统一管理，例如 `"claude-acp": "0.72.0"`；无对应项时使用 Registry 版本。在线刷新与离线生成共用覆盖逻辑，同步覆盖 Catalog 版本和 npx 包参数，不修改原始 snapshot 或已有用户实例。仅支持 npx Registry 包的精确版本，未知 ID、非法策略和不支持的分发类型必须失败。在线生成检查固定 npm 版本存在性；离线生成不联网检查。
+- 构建期版本覆盖由 `configs/agent-catalog-policy.json` 的 `versionPins` 统一管理，例如 `"claude-acp": "0.72.0"`；无对应项时使用 Registry 版本。在线刷新与离线生成共用覆盖逻辑，同步覆盖 Catalog 版本和 npx 包参数，不修改原始 snapshot；已有内置实例在新客户端中使用覆盖后的启动配置。仅支持 npx Registry 包的精确版本，未知 ID、非法策略和不支持的分发类型必须失败。在线生成检查固定 npm 版本存在性；离线生成不联网检查。
 - Kimi 的主/兼容 Skills 目录为 `.kimi-code` / `.agents`；Amp 为 `.agents` / `.claude`；Pi 的全局主目录为 `.pi/agent`、项目主目录为 `.pi`、两端兼容目录均为 `.agents`
 
 主 Skills 目录默认由全局与项目作用域共用。编辑 Sheet 在标题右侧提供带 Tooltip 的分裂图标按钮；开启后按钮呈选中态，单输入框拆为“全局主目录 / 项目主目录”，关闭后恢复共用主目录。数据层以可选项目主目录字段表达拆分状态，不维护独立布尔值。目录策略按作用域生成：全局写入全局主目录，项目写入项目主目录；两端读取时都在各自主目录后追加共用兼容目录，兼容目录始终只读。Catalog、设置实例、Tauri 输入/VM、SkillManager、原生命令扫描和同步状态必须消费同一目录策略接口，禁止在 Pi 调用点判断 Agent ID。
@@ -58,10 +60,10 @@ Agent 实例新增两个独立能力配置：
 - 原设计以在线 Registry 提供模板，发布方缺少固定版本能力；补齐生成期策略覆盖，保留每次 build 在线刷新的行为。当前 Claude 固定 `0.72.0`，删除配置项即可解除固定，不使用 `-1`。
 - 最小失败测试确认旧生成器忽略本地 pin，输出 `0.73.0` 而非 `0.72.0`；实现后 Catalog Node 测试 7 项通过，覆盖版本和启动参数一致性、原始快照不变、未配置项、scoped/unscoped 包、附加参数与环境保留、非法配置及上游版本变化。
 - 使用现有 snapshot 离线重建本地 Catalog，Claude 元数据与包参数均为 `0.72.0`；npm 元数据确认该版本存在并依赖 SDK `0.3.252`。未执行应用编译或 macOS 真机验证。
-- 过度设计与性能评审：复用现有 catalog 生成管道与成熟 npm 包规格解析库，仅增加小型 JSON 配置和构建期校验。每次生成对十一项线性处理，在线校验仅对固定项请求 npm 元数据，单次请求超时 30 秒；无运行时开销。已有用户实例保持独立，不自动迁移。
+- 过度设计与性能评审：复用现有 catalog 生成管道与成熟 npm 包规格解析库，仅增加小型 JSON 配置和构建期校验。每次生成对十一项线性处理，在线校验仅对固定项请求 npm 元数据，单次请求超时 30 秒；运行时只投影当前内嵌 Catalog，无额外联网。
 
 - 已新增 Registry 快照准备脚本、离线重建脚本和 Node 单元测试，精选列表固定为十一项，包含 Amp、Pi 且排除 GLM
-- 已将 Catalog 通过 Rust `include_str!` 和 Vite public assets 打包；创建时复制模板，已有实例不读取 Catalog 默认值
+- 已将 Catalog 通过 Rust `include_str!` 和 Vite public assets 打包；内置实例的启动配置读取当前 Catalog，其余设置保留用户值。
 - 已开放自定义 Agent 创建、保存、doctor、Provider 和 workflow 运行链路，移除 preset 白名单门禁
 - 已新增 Agent 搜索选择器、自定义入口、本地图标选择和可选 Skills 目录编辑项，并复用现有 shadcn/ui 组件；system prompt 与跨端会话能力当前均不向用户开放
 - 图标编辑已收敛为预览、选择本地图片和恢复默认 Logo，不向用户暴露 icon key、URL 或 data URI 文本输入；既有图标引用保持兼容

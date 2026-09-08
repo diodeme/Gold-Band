@@ -3,6 +3,7 @@ import { AlertTriangle, ExternalLink, FileQuestion, FolderOpen, LoaderCircle, Ma
 import { useTranslation } from 'react-i18next';
 import { openExternalUrl, openFileWithSystemApp, resolveWorkspaceFileLink, workspaceFilePreviewUrl } from '@/api';
 import { Button } from '@/components/ui/button';
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useMarkdownResourceLinkHandler } from '@/components/prompt-kit/markdown';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
@@ -275,6 +276,7 @@ function FileSnapshotContent({
 }
 
 function ImagePreview({ resource }: { resource: FileWorkspaceResource }) {
+  const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   const entry = useFileContentEntry(resource.key);
   const snapshot = entry.snapshot?.kind === 'image' ? entry.snapshot : null;
@@ -345,7 +347,7 @@ function ImagePreview({ resource }: { resource: FileWorkspaceResource }) {
           if (viewport) viewport.scrollTo({ left: 0, top: 0 });
         }} aria-label={t('workspace.filesPanel.resetImage')}><RotateCcw className="size-3.5" /></Button>
         <Button size="icon" variant="ghost" className="size-7" onClick={() => setZoom((value) => Math.min(8, value + 0.15))} aria-label={t('workspace.filesPanel.zoomIn')}><ZoomIn className="size-3.5" /></Button>
-        <Button size="icon" variant="ghost" className="size-7" onClick={() => void openFileWithSystemApp(resource.locator.canonicalPath)} aria-label={t('workspace.filesPanel.openWithSystem')}><ExternalLink className="size-3.5" /></Button>
+        {!readOnly && <Button size="icon" variant="ghost" className="size-7" onClick={() => void openFileWithSystemApp(resource.locator.canonicalPath)} aria-label={t('workspace.filesPanel.openWithSystem')}><ExternalLink className="size-3.5" /></Button>}
       </div>
       <div
         ref={viewportRef}
@@ -385,6 +387,7 @@ function ImagePreview({ resource }: { resource: FileWorkspaceResource }) {
 }
 
 function UnsupportedFile({ resource }: { resource: FileWorkspaceResource }) {
+  const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   const entry = useFileContentEntry(resource.key);
   const snapshot = entry.snapshot?.kind === 'unsupported' ? entry.snapshot : null;
@@ -395,7 +398,7 @@ function UnsupportedFile({ resource }: { resource: FileWorkspaceResource }) {
         <FileQuestion className="mx-auto mb-3 size-8 text-muted-foreground" />
         <p className="text-sm font-medium">{t('workspace.filesPanel.unsupportedTitle')}</p>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">{t(`workspace.filesPanel.limitations.${snapshot.limitationCode}`, snapshot.limitationCode)}</p>
-        <Button className="mt-4" size="sm" variant="outline" onClick={() => void openFileWithSystemApp(resource.locator.canonicalPath)}><ExternalLink className="size-3.5" />{t('workspace.filesPanel.openWithSystem')}</Button>
+        {!readOnly && <Button className="mt-4" size="sm" variant="outline" onClick={() => void openFileWithSystemApp(resource.locator.canonicalPath)}><ExternalLink className="size-3.5" />{t('workspace.filesPanel.openWithSystem')}</Button>}
       </div>
     </div>
   );

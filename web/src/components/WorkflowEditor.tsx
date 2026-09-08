@@ -2851,7 +2851,7 @@ export function createAuthoringFlowProjection(
       animated: false,
       markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color },
       style: { stroke: color, strokeWidth: edge.on === 'success' ? 2.2 : 2, strokeDasharray: '3 17' },
-      className: cn('workflow-edge-flow', (edge.on !== 'success' || branchRoute !== undefined) && 'workflow-edge-branch', id === selectedEdgeId && 'workflow-edge-selected'),
+      className: cn('workflow-edge-flow', (edge.on !== 'success' || branchRoute?.detour === true) && 'workflow-edge-branch', id === selectedEdgeId && 'workflow-edge-selected'),
       selected: id === selectedEdgeId,
       data: { outcome: edge.on, route: branchRoute },
       zIndex: 0,

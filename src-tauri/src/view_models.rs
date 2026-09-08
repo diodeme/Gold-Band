@@ -16,7 +16,10 @@ use gold_band::config::{
 };
 use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
-use gold_band::dynamic::{DynamicGraphState, WorkspaceKind};
+use gold_band::dynamic::{
+    DynamicGraphState, DynamicNext, DynamicNodeCompletion, DynamicProposalValidationStatus,
+    WorkspaceKind,
+};
 use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::provider::{
     attachment_meta_for_path, mcp_capabilities_from_capabilities,
@@ -2729,53 +2732,76 @@ fn dynamic_internal_graph_vm(
         })
         .collect::<Vec<_>>();
 
+    let edges = dynamic_graph_relations(graph)
+        .into_iter()
+        .map(|mut edge| {
+            edge.from = dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, &edge.from);
+            edge.to = dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, &edge.to);
+            edge
+        })
+        .collect();
+
+    GraphVm { nodes, edges }
+}
+
+fn dynamic_graph_relations(graph: &DynamicGraphState) -> Vec<GraphEdgeVm> {
+    let node_ids: HashSet<&str> = graph.nodes.iter().map(|node| node.id.as_str()).collect();
+    let mut seen = HashSet::new();
     let mut edges = Vec::new();
-    for node in &graph.nodes {
-        let to = dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, &node.id);
-        let mut has_dependency = false;
-        for dependency in &node.depends_on {
-            has_dependency = true;
+    let mut add = |from: &str, to: &str, label: &str| {
+        if from == to || !node_ids.contains(from) || !node_ids.contains(to) {
+            return;
+        }
+        // Dependencies and creation describe one structural edge; session reuse is distinct.
+        let relation = if label == "continue" {
+            "continue"
+        } else {
+            "structural"
+        };
+        if seen.insert((from.to_string(), to.to_string(), relation)) {
             edges.push(GraphEdgeVm {
-                from: dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, dependency),
-                to: to.clone(),
-                label: "depends-on".to_string(),
+                from: from.to_string(),
+                to: to.to_string(),
+                label: label.to_string(),
                 traversal_count: 1,
-                last_outcome: None,
+                last_outcome: (label == "success").then(|| "success".to_string()),
                 blocked_reason: None,
             });
         }
-        if !has_dependency {
-            let upstream = dynamic_implicit_upstream_node(graph, node);
-            if let Some(upstream) = upstream {
-                edges.push(GraphEdgeVm {
-                    from: dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, &upstream.id),
-                    to: to.clone(),
-                    label: "success".to_string(),
-                    traversal_count: 1,
-                    last_outcome: Some("success".to_string()),
-                    blocked_reason: None,
-                });
-            }
+    };
+    for node in &graph.nodes {
+        for dependency in &node.depends_on {
+            add(dependency, &node.id, "depends-on");
         }
         if node.session_mode == SessionMode::Continue {
             if let Some(continue_from_node_id) = &node.continue_from_node_id {
-                edges.push(GraphEdgeVm {
-                    from: dynamic_graph_node_vm_id(
-                        outer_node_id,
-                        outer_attempt_id,
-                        continue_from_node_id,
-                    ),
-                    to: to.clone(),
-                    label: "continue".to_string(),
-                    traversal_count: 1,
-                    last_outcome: None,
-                    blocked_reason: None,
-                });
+                add(continue_from_node_id, &node.id, "continue");
             }
         }
     }
-
-    GraphVm { nodes, edges }
+    for proposal in &graph.proposals {
+        if proposal.validation_status != DynamicProposalValidationStatus::Accepted {
+            continue;
+        }
+        let Ok(completion) = DynamicNodeCompletion::deserialize(&proposal.parsed) else {
+            continue;
+        };
+        match completion.next {
+            DynamicNext::End => {}
+            DynamicNext::Single { node } => add(&proposal.source_node_id, &node.id, "success"),
+            DynamicNext::Fanout { nodes, .. } => {
+                for node in nodes {
+                    add(&proposal.source_node_id, &node.id, "success");
+                }
+            }
+        }
+    }
+    for group in &graph.groups {
+        for root in &group.root_node_ids {
+            add(&group.created_by_node_id, root, "success");
+        }
+    }
+    edges
 }
 
 fn dynamic_graph_node_vm_id(outer_node_id: &str, outer_attempt_id: &str, node_id: &str) -> String {
@@ -2787,20 +2813,10 @@ fn dynamic_external_exit_graph_node_ids(
     outer_attempt_id: &str,
     graph: &DynamicGraphState,
 ) -> Vec<String> {
-    let mut non_exit_node_ids = HashSet::<String>::new();
-    for node in &graph.nodes {
-        for dependency in &node.depends_on {
-            non_exit_node_ids.insert(dependency.clone());
-        }
-        if let Some(upstream) = dynamic_implicit_upstream_node(graph, node) {
-            non_exit_node_ids.insert(upstream.id.clone());
-        }
-        if node.session_mode == SessionMode::Continue {
-            if let Some(continue_from_node_id) = &node.continue_from_node_id {
-                non_exit_node_ids.insert(continue_from_node_id.clone());
-            }
-        }
-    }
+    let non_exit_node_ids: HashSet<String> = dynamic_graph_relations(graph)
+        .into_iter()
+        .map(|edge| edge.from)
+        .collect();
 
     graph
         .nodes
@@ -2808,36 +2824,6 @@ fn dynamic_external_exit_graph_node_ids(
         .filter(|node| !non_exit_node_ids.contains(&node.id))
         .map(|node| dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, &node.id))
         .collect()
-}
-
-fn dynamic_implicit_upstream_node<'a>(
-    graph: &'a DynamicGraphState,
-    node: &gold_band::dynamic::DynamicNodeState,
-) -> Option<&'a gold_band::dynamic::DynamicNodeState> {
-    if !node.depends_on.is_empty() || node.depth == 0 {
-        return None;
-    }
-    graph
-        .nodes
-        .iter()
-        .find(|candidate| candidate.chain_id == node.chain_id && candidate.depth + 1 == node.depth)
-        .or_else(|| {
-            node.group_id.as_deref().and_then(|group_id| {
-                graph
-                    .groups
-                    .iter()
-                    .find(|group| {
-                        group.id == group_id && group.root_node_ids.iter().any(|id| id == &node.id)
-                    })
-                    .map(|group| &group.created_by_node_id)
-                    .and_then(|source_id| {
-                        graph
-                            .nodes
-                            .iter()
-                            .find(|candidate| candidate.id == *source_id)
-                    })
-            })
-        })
 }
 
 pub fn dynamic_runtime_graph_vm(
@@ -8699,10 +8685,148 @@ mod tests {
                     "createdAt": "2026-06-17T10:00:00Z",
                     "updatedAt": "2026-06-17T10:00:00Z"
                 }],
-                "proposals": []
+                "proposals": [graph_test_proposal("bootstrap", "create-hello-world-py")]
             }),
         )
         .unwrap();
+    }
+
+    fn graph_test_proposal(source: &str, target: &str) -> Value {
+        json!({
+            "version": "0.1", "id": format!("proposal-{target}"),
+            "dynamicRunId": "dynamic-run-001", "sourceNodeId": source,
+            "artifactPath": "completion.json", "rawOutputPath": "raw.jsonl",
+            "validationStatus": "accepted", "validationErrors": [],
+            "materializedEventIds": [], "createdAt": "2026-06-17T10:00:00Z",
+            "parsed": {
+                "version": "0.1", "kind": "dynamic-node-completion",
+                "status": "success", "summary": "Done",
+                "next": { "type": "single", "node": {
+                    "id": target, "kind": "worker", "title": target, "task": "Continue"
+                }}
+            }
+        })
+    }
+
+    #[test]
+    fn dynamic_graph_connects_acceptance_scope_handoffs() {
+        let directory = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap());
+        seed_dynamic_round_graph_fixture(&app);
+        let path = app.paths.dynamic_graph_file(
+            "task-dynamic-round-graph",
+            "run-001",
+            "round-001",
+            "ai-dynamic1",
+            "attempt-001",
+        );
+        let mut graph: DynamicGraphState = read_json(&path).unwrap();
+        let mut previous = "create-hello-world-py".to_string();
+        for (id, chain, depth) in [
+            ("group-a-accept", "group-a", 8),
+            ("a-followup-1", "b1", 3),
+            ("group-c-accept", "group-c", 6),
+            ("final-check", "bootstrap", 2),
+        ] {
+            let mut node = graph.nodes[1].clone();
+            node.id = id.to_string();
+            node.chain_id = chain.to_string();
+            node.depth = depth;
+            if id == "a-followup-1" {
+                node.depends_on = vec!["bootstrap".to_string()];
+            }
+            graph.nodes.push(node);
+            graph
+                .proposals
+                .push(serde_json::from_value(graph_test_proposal(&previous, id)).unwrap());
+            previous = id.to_string();
+        }
+        let mut rejected = graph_test_proposal("final-check", "bootstrap");
+        rejected["validationStatus"] = json!("rejected");
+        graph
+            .proposals
+            .push(serde_json::from_value(rejected).unwrap());
+        let vm = dynamic_internal_graph_vm(
+            &app,
+            "task-dynamic-round-graph",
+            "run-001",
+            "round-001",
+            "ai-dynamic1",
+            "attempt-001",
+            &graph,
+        );
+        let vm_id = |id: &str| dynamic_graph_node_vm_id("ai-dynamic1", "attempt-001", id);
+        for (from, to) in [
+            ("group-a-accept", "a-followup-1"),
+            ("group-c-accept", "final-check"),
+            ("bootstrap", "a-followup-1"),
+        ] {
+            assert!(
+                vm.edges
+                    .iter()
+                    .any(|edge| edge.from == vm_id(from) && edge.to == vm_id(to)),
+                "missing {from} -> {to}"
+            );
+        }
+        assert_eq!(
+            dynamic_external_exit_graph_node_ids("ai-dynamic1", "attempt-001", &graph),
+            vec![vm_id("final-check")]
+        );
+        assert!(
+            !vm.edges
+                .iter()
+                .any(|edge| edge.from == vm_id("final-check"))
+        );
+        assert!(
+            !vm.edges
+                .iter()
+                .any(|edge| edge.from == vm_id("create-hello-world-py")
+                    && edge.to == vm_id("final-check"))
+        );
+    }
+
+    #[test]
+    fn dynamic_graph_unions_fanout_dependencies_and_session_reuse() {
+        let directory = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap());
+        seed_dynamic_round_graph_fixture(&app);
+        let mut graph: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
+            "task-dynamic-round-graph",
+            "run-001",
+            "round-001",
+            "ai-dynamic1",
+            "attempt-001",
+        ))
+        .unwrap();
+        let first = graph.nodes[1].id.clone();
+        let mut second = graph.nodes[1].clone();
+        second.id = "branch-2".to_string();
+        graph.nodes.push(second);
+        graph.nodes[1].depends_on = vec!["bootstrap".to_string()];
+        graph.nodes[1].session_mode = SessionMode::Continue;
+        graph.nodes[1].continue_from_node_id = Some("bootstrap".to_string());
+        let mut proposal = graph_test_proposal("bootstrap", &first);
+        proposal["parsed"]["next"] = json!({
+            "type": "fanout", "groupId": "group-1",
+            "nodes": [graph_test_proposal("bootstrap", &first)["parsed"]["next"]["node"],
+                graph_test_proposal("bootstrap", "branch-2")["parsed"]["next"]["node"]],
+            "merge": {"title":"Merge", "task":"Merge"},
+            "acceptance": {"title":"Accept", "task":"Accept"}
+        });
+        graph.proposals = vec![serde_json::from_value(proposal).unwrap()];
+        let edges = dynamic_graph_relations(&graph);
+        assert_eq!(edges.len(), 3);
+        for (to, label) in [
+            (first.as_str(), "depends-on"),
+            (first.as_str(), "continue"),
+            ("branch-2", "success"),
+        ] {
+            assert!(
+                edges
+                    .iter()
+                    .any(|edge| edge.from == "bootstrap" && edge.to == to && edge.label == label)
+            );
+        }
     }
 
     #[test]

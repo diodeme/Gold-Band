@@ -9,11 +9,12 @@ Classify every finding as `BLOCKER` or `FOLLOW_UP` first:
 
 {% if execution.has_output_contract %}
 You must output `dynamic-node-completion` as the final step:
-- When there is no `BLOCKER` and acceptance passes, use `next.type="end"`.
+- When there is no `BLOCKER`, acceptance passes, and this branch has no remaining work, use `next.type="end"`; otherwise use `single` or `fanout` to continue the remaining in-scope work.
 - For one `BLOCKER` or one indivisible required outcome, use `next.type="single"` to create a repair worker.
 - When multiple `BLOCKER` findings can truly be repaired independently, use `next.type="fanout"` to create repair branches, including the follow-up merge and acceptance specs.
 - A repair task states only the `BLOCKER` scope basis, evidence, and required outcome; it must not turn a suggested implementation into a requirement.
 - Do not end with a plain failure explanation; encode the next control-flow step in `next`.
+- Once runtime accepts your valid output, the current group closes and successors resume its parent scope and original business branch. Closure means this round has handed off, not that business acceptance passed. Runtime will not rerun the old group's merge/acceptance; subsequent tasks must explicitly arrange any required verification after repair.
 {% else %}
 This business turn only performs acceptance and gives a clear, natural acceptance report. Runtime will normalize control flow in a later hidden turn. Do not output or infer the control artifact in this turn.
 {% endif %}

@@ -27,6 +27,7 @@ Constraint reminders:
 - When `next.type="single"`, you must provide a complete `next.node`, and you must not provide `groupId / nodes / merge / acceptance`.
 - Do not output `workspace`, a workspace mode, a path, or a branch for any node. Runtime exclusively owns workspace assignment.
 - A `next.type="single"` successor automatically inherits the current node's actual workspace.
+- If this node is a group acceptance, accepting its valid output closes that group: `single` resumes the original business branch in the parent scope; `fanout` creates a new group in the parent scope; only `end` ends that branch. With successors, the parent group keeps waiting. Explicitly arrange repairs and verification; the old group never reopens automatically.
 - When `next.type="fanout"`, you must provide `groupId / nodes / merge / acceptance` together, and `nodes` must contain at least two branches; use `next.type="single"` for one successor node.
 - Every `next.type="fanout"` child automatically receives an isolated worktree; merge and acceptance automatically return to that group's parent workspace.
 - `profile` is only allowed on worker nodes and is optional. If present, use an ID from the schema enum or the ID after `profileId=...` in this prompt, not the displayName.

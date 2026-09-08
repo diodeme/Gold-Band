@@ -1,5 +1,14 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-08 AI-DYNAMIC Group 验收交接生命周期修复
+
+- 根因：旧协议把 acceptance 的 single/fanout 固定解释为重开旧 group 的修复循环，但 Agent 可以沿同一链继续下一阶段，最终 end 会再次触发旧 merge。属于原生命周期设计缺陷。
+- 实现：复用 end/single/fanout；当前 acceptance 合法完成后关闭 group，后继恢复父作用域、原业务 chain 和 target workspace。end 才登记父 terminal；有后继时父 group 等待真实链路结束。连续 acceptance 创建新 group 通过统一出站 owner 解析；同步调整深度、会话候选、协调快照、实际顶层 end 摘要与已关闭 group 因果附件。
+- 文档和提示词：同步中英文 acceptance/output protocol，明确 closed 不等于业务 PASS，修复后复验由显式后继安排，旧 group 不重开。
+- 红测证据：新增 4 个接口测试在旧实现均失败；single 后继错误保留旧 groupId，fanout 错误占用嵌套深度。改动后同 4 项通过，覆盖顶层/嵌套 single/fanout、父 merge 等待、workspace、最终摘要与无旧 merge-2。
+- 最终验收：orchestrator 单元测试 123/123、AI-DYNAMIC 接口测试 34/34 全部通过；后续补充连续 group 的 acceptance end 两种场景。接口在后继真实启动时检查旧 group closed、旧 child workspace released、新 fanout target frozen、父 group 未提前 merge，以及实际业务 prompt 可见最近 merge/acceptance 报告路径。单测固定超过五节点接力仍保留已退出 group 证据；定向 rustfmt 检查和 git diff --check 通过。未启动或改写现场 run；未执行 EXE/UI 验证。
+- 方案审视：内部图生命周期无需外部组件；不新增持久字段、身份、控制类型、缓存或队列。图关系解析受既有 maxDynamicNodes 限制，附件扫描仍每来源最多 10 个文件或空目录，正文不读取；未新增历史目录全量扫描。
+
 ## 2026-09-04：AI-DYNAMIC hidden context 路径树投影压缩
 
 - 根因与设计判断：AI-DYNAMIC 的 canonical graph、attachment locator、workspace catalog 和文件布局已经正确，长程运行上下文膨胀来自 hidden context 渲染层反复输出相同绝对路径前缀；现场样本中 Dynamic root 在附件与运行位置等区段重复出现，随着节点和附件增加持续浪费 provider token。这属于正确设计下消费投影实现不完整，不修改 locator、磁盘目录、workspace identity 或文件读取协议。

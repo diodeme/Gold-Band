@@ -6,12 +6,14 @@ import type { DesktopPlatform } from '../types';
 import { isTauriRuntime } from '../api/shared';
 import { resolveWindowControlsPolicy } from '../lib/window-controls';
 import { Button } from '@/components/ui/button';
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { FeedbackDialog } from './feedback/FeedbackDialog';
 import { cn } from '@/lib/utils';
 
 interface AppTitleBarProps {
+  trailingContent?: React.ReactNode;
   appName: string;
   feedbackEnabled?: boolean;
   platform?: DesktopPlatform | null;
@@ -30,6 +32,7 @@ export const APP_TITLE_BAR_LAYOUT = {
 } as const;
 
 export function AppTitleBar({
+  trailingContent,
   appName,
   feedbackEnabled = false,
   platform,
@@ -39,6 +42,7 @@ export function AppTitleBar({
   onToggleRightWorkspace,
   onOpenPersonalAnalytics,
 }: AppTitleBarProps) {
+  const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   const [isMaximized, setIsMaximized] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -47,7 +51,7 @@ export function AppTitleBar({
   const [helpTooltipSuppressed, setHelpTooltipSuppressed] = useState(false);
   const helpNavigationPendingRef = useRef(false);
   const tauriRuntime = isTauriRuntime();
-  const policy = resolveWindowControlsPolicy(platform);
+  const policy = resolveWindowControlsPolicy(platform, readOnly ? 'browser' : 'desktop');
 
   useEffect(() => {
     if (!tauriRuntime) return undefined;
@@ -141,6 +145,7 @@ export function AppTitleBar({
         className="min-w-0 flex-1 self-stretch"
       />
 
+      {trailingContent}
       {feedbackEnabled || onOpenPersonalAnalytics || onToggleRightWorkspace ? (
         <div
           className={cn(
@@ -150,7 +155,7 @@ export function AppTitleBar({
           data-titlebar-no-drag="true"
           data-titlebar-trailing-actions="true"
         >
-          {feedbackEnabled || onOpenPersonalAnalytics ? (
+          {!readOnly && (feedbackEnabled || onOpenPersonalAnalytics) ? (
             <DropdownMenu open={helpMenuOpen} onOpenChange={(open) => {
               setHelpMenuOpen(open);
               if (open) setHelpTooltipOpen(false);

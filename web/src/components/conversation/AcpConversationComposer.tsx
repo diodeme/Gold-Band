@@ -14,6 +14,7 @@ import type {
   Ref,
 } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 
 import { SlashCommandInputTag } from '@/components/conversation/SlashCommandInputTag';
 import { SlashCommandMenu } from '@/components/conversation/SlashCommandMenu';
@@ -92,7 +93,24 @@ export interface AcpConversationComposerProps {
  * subtree behind one component boundary makes that read-only contract visible
  * in the DOM and prevents Agent Tabs from paying for input-only rendering.
  */
-export function AcpConversationComposer({
+export function AcpConversationComposer(props: AcpConversationComposerProps) {
+  const readOnly = useReadOnlyExperience();
+  const { t } = useTranslation();
+  if (!readOnly) return <AcpConversationComposerContent {...props} />;
+  const noop = () => {};
+  return <AcpConversationComposerContent {...props}
+    prompt="" onPromptChange={noop} onSubmit={noop} sending={false}
+    attachments={[]} quotes={[]} contextError={null} fileError={null}
+    slashCommands={[]} slashMenuOpen={false} committedSlashCommand={null}
+    placeholder={t('demo.inputDisabled')} inputDisabled={true}
+    onTextareaKeyDown={noop} onDragEnter={(event) => event.preventDefault()}
+    onDragOver={(event) => event.preventDefault()} onDrop={(event) => event.preventDefault()}
+    onPaste={(event) => event.preventDefault()} onFilesChange={noop} onPickFiles={noop}
+    canStop={false} canSubmit={false} sendButtonBusy={false} showRuntimeContinue={false}
+    configBar={null} supersededSession={null} />;
+}
+
+function AcpConversationComposerContent({
   prompt,
   onPromptChange,
   onSubmit,

@@ -2812,10 +2812,12 @@ pub fn provider_from_agent(
     acp_raw_target_size_bytes: u64,
     runtime_policy: client::AcpRuntimePolicy,
 ) -> Result<Box<dyn ProviderAdapter>> {
+    let mut adapter = config.adapter.clone();
+    adapter.apply_catalog_launch(agent_id);
     Ok(Box::new(
         AcpProvider::new(
             agent_id.as_str(),
-            config.adapter.clone(),
+            adapter,
             use_local_claude,
             require_local_claude_executable,
             acp_session_title_refresh_enabled,

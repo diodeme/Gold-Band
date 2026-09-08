@@ -1653,7 +1653,7 @@ mod tests {
         let codex = &settings.agents.unwrap()[&codex_id];
         assert_eq!(
             codex.adapter.args,
-            vec!["-y", "@agentclientprotocol/codex-acp@latest"]
+            crate::config::catalog_agent_default_config("codex-acp").unwrap().adapter.args
         );
 
         let persisted: serde_json::Value = read_json(&path).unwrap();
@@ -1661,10 +1661,9 @@ mod tests {
             persisted["settingsSchemaVersion"],
             serde_json::json!(CURRENT_SETTINGS_SCHEMA_VERSION)
         );
-        assert_eq!(
-            persisted["agents"]["codex-acp"]["adapter"]["args"],
-            serde_json::json!(["-y", "@agentclientprotocol/codex-acp@latest"])
-        );
+        let adapter = &persisted["agents"]["codex-acp"]["adapter"];
+        assert!(adapter.get("command").is_none());
+        assert!(adapter.get("args").is_none());
     }
 
     #[test]

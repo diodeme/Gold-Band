@@ -5459,7 +5459,6 @@ pub fn acp_activity_detail_vm_for_attempt(
     query: AcpActivityDetailQueryInput,
 ) -> Result<AcpActivityDetailVm> {
     gold_band::acp::branches::validate_conversation_branch_id(&query.branch_id)?;
-    gold_band::acp::branches::migrate_legacy_agent_timeline(attempt_dir)?;
     let timeline_path =
         gold_band::acp::branches::branch_timeline_path(attempt_dir, &query.branch_id);
     if query.activity_end_seq < query.activity_start_seq || !timeline_path.exists() {
@@ -5494,6 +5493,10 @@ pub fn acp_activity_detail_vm_for_attempt(
     let audit =
         load_selected_activity_detail_events(&timeline_path, &query.session_id, &selected_ids)?;
     let mut audit = audit;
+    // List rows must not hydrate tool output blobs, including image bodies.
+    for event in &mut audit {
+        strip_activity_tool_output(event);
+    }
     hydrate_timeline_events(&timeline_path, &mut audit)?;
     let items = audit
         .into_iter()
@@ -5663,7 +5666,6 @@ pub fn acp_tool_detail_vm_for_attempt(
     query: AcpToolDetailQueryInput,
 ) -> Result<AcpToolDetailVm> {
     gold_band::acp::branches::validate_conversation_branch_id(&query.branch_id)?;
-    gold_band::acp::branches::migrate_legacy_agent_timeline(attempt_dir)?;
     let timeline_path =
         gold_band::acp::branches::branch_timeline_path(attempt_dir, &query.branch_id);
     if !timeline_path.exists() {
@@ -6576,14 +6578,21 @@ fn compact_event_for_session(mut event: AcpUiEventVm) -> AcpUiEventVm {
 }
 
 fn compact_event_for_activity_audit(event: AcpUiEventVm) -> AcpUiEventVm {
-    let mut event = compact_event_for_session(event);
+    let mut event = event;
+    strip_activity_tool_output(&mut event);
+    compact_event_for_session(event)
+}
+
+fn strip_activity_tool_output(event: &mut AcpUiEventVm) {
     if !matches!(event.kind.as_str(), "toolCall" | "toolCallUpdate") {
-        return event;
+        return;
     }
     let Some(raw) = event.raw.as_mut() else {
-        return event;
+        return;
     };
+    remove_provider_agent_metadata(raw);
     for path in [
+        &["goldBandImages"][..],
         &["rawOutput"][..],
         &["output"][..],
         &["fields", "output"][..],
@@ -6628,7 +6637,6 @@ fn compact_event_for_activity_audit(event: AcpUiEventVm) -> AcpUiEventVm {
             "toolDetailAvailable".to_string(),
             serde_json::Value::Bool(true),
         );
-    event
 }
 
 fn remove_provider_agent_metadata(raw: &mut serde_json::Value) {
@@ -11443,6 +11451,40 @@ mod tests {
         assert_eq!(earlier.items.len(), 40);
         assert!(earlier.items.last().unwrap().seq < detail.items.first().unwrap().seq);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn activity_list_does_not_read_tool_image_blobs_or_return_image_refs() {
+        let dir = tempdir().unwrap();
+        let attempt = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let blob = json!({"$goldBandBlob": {
+            "id":"unavailable-image", "storageKind":"capturedBlob", "contentHash":"missing",
+            "byteLength":8, "encoding":"utf-8", "lineEnding":null
+        }});
+        let mut tool = acp_event_at("image-tool", "toolCall", Some("completed"), 1,
+            Some(json!({"rawInput":{"path":"screenshot"},
+                "content":[{"type":"content", "content":{"type":"image", "mimeType":"image/png", "data":blob}}],
+                "rawOutput":{"result":{"content":[{"type":"image", "mimeType":"image/png", "data":blob}]}},
+                "goldBandImages":[{"eventId":"image-tool"}]})));
+        tool.seq = 1;
+        tool.session_id = Some("image-session".into());
+        write_timeline_file(&attempt, "acp.timeline.jsonl", &[tool]);
+        let list = acp_activity_detail_vm_for_attempt(&attempt, AcpActivityDetailQueryInput {
+            branch_id:gold_band::acp::branches::ROOT_BRANCH_ID.into(), session_id:"image-session".into(),
+            activity_start_seq:1, activity_end_seq:1, earlier_cursor:None, limit:Some(40),
+        }).expect("a list must not depend on image blob availability");
+        assert_eq!(list.items.len(), 1);
+        let raw = list.items[0].raw.as_ref().unwrap();
+        assert_eq!(raw["rawInput"]["path"], "screenshot");
+        for field in ["goldBandImages", "content", "rawOutput"] { assert!(raw.get(field).is_none()); }
+        let detail = acp_tool_detail_vm_for_attempt(&attempt, AcpToolDetailQueryInput {
+            branch_id:gold_band::acp::branches::ROOT_BRANCH_ID.into(), session_id:"image-session".into(),
+            event_id:"image-tool".into(), tool_call_id:None,
+        }).expect("tool detail returns image references without reading image blobs");
+        let raw = detail.event.unwrap().raw.unwrap();
+        assert_eq!(raw["goldBandImages"][0]["pointer"], "/content/0/content");
+        assert!(raw.pointer("/content/0/content/data").is_none());
+        assert!(raw.pointer("/rawOutput/result/content/0/data").is_none());
     }
 
     #[test]

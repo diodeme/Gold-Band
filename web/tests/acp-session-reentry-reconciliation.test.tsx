@@ -422,6 +422,56 @@ afterEach(() => {
 });
 
 describe('ACP session re-entry reconciliation', () => {
+  it('rejoins deferred single-page content when sending without a pagination gesture', async () => {
+    const initial = session([event('single-old', 1, 'textDelta', 'Single page original reply')], 'completed');
+    const deferred = event('single-deferred', 2, 'textDelta', 'Single page deferred reply');
+    const latest = session([...initial.events, deferred], 'completed');
+    vi.mocked(getAcpSession).mockResolvedValue(initial);
+    vi.mocked(submitConversationPrompt).mockResolvedValue({ kind: 'acp-session', session: null, run: null, lifecycle: null });
+    const { container, root } = await renderDialog(initial, 'root', undefined, undefined, locator, 30, terminalLifecycle('single-turn'));
+    try {
+      await detachConversationViewport(container);
+      await act(async () => { runtime.listener?.(update(deferred)); });
+      expect(container.textContent).not.toContain(deferred.content);
+      const readsBeforeSend = vi.mocked(getAcpSession).mock.calls.length;
+      vi.mocked(getAcpSession).mockResolvedValue(latest);
+      await setTextareaValue(container.querySelector('textarea')!, 'Single page follow-up');
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-acp-send="true"]')!.click(); });
+      expect(container.textContent).toContain(deferred.content);
+      expect(container.textContent).toContain('Single page follow-up');
+      expect(container.querySelector('[data-acp-return-to-latest]')).toBeNull();
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(readsBeforeSend + 1);
+      expect(vi.mocked(getAcpSession).mock.calls.every((call) => !call[6]?.beforeSeq && !call[6]?.afterSeq)).toBe(true);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it.each([false, true])('aligns a single-page send before animation frames (reading history: %s)', async (readingHistory) => {
+    const initial = session([event('single-layout', 1, 'textDelta', 'Single page layout reply')], 'completed');
+    vi.mocked(getAcpSession).mockResolvedValue(initial);
+    vi.mocked(submitConversationPrompt).mockResolvedValue({ kind: 'acp-session', session: null, run: null, lifecycle: null });
+    const { container, root } = await renderDialog(initial, 'root', undefined, undefined, locator, 30, terminalLifecycle('single-layout-turn'));
+    try {
+      const scroller = container.querySelector<HTMLDivElement>('[data-conversation-viewport] .overflow-y-auto')!;
+      Object.defineProperties(scroller, {
+        clientHeight: { configurable: true, value: 100 },
+        scrollHeight: { configurable: true, get: () => container.textContent?.includes('Single page layout follow-up') ? 1400 : 1000 },
+        scrollTop: { configurable: true, value: readingHistory ? 500 : 900, writable: true },
+      });
+      if (readingHistory) await detachConversationViewport(container);
+      await setTextareaValue(container.querySelector('textarea')!, 'Single page layout follow-up');
+      const readsBeforeSend = vi.mocked(getAcpSession).mock.calls.length;
+      vi.stubGlobal('requestAnimationFrame', () => 987654);
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-acp-send="true"]')!.click(); });
+      expect(container.textContent).toContain('Single page layout follow-up');
+      expect(scroller.scrollTop).toBe(1300);
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(readsBeforeSend);
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('offers local return to latest when content grows during disclosure without a scroll event', async () => {
     const observers = new Set<() => void>();
     vi.stubGlobal('ResizeObserver', class {
@@ -3218,7 +3268,7 @@ describe('ACP session re-entry reconciliation', () => {
     }
   });
 
-  it('keeps a submitted prompt static when its canonical submit response arrives over a historical window', async () => {
+  it('rejoins the canonical prompt when sending from a historical window', async () => {
     const historical = session([
       event('submit-history', 1, 'textDelta', '提交响应到达前的历史窗口'),
     ], 'completed');
@@ -3271,12 +3321,12 @@ describe('ACP session re-entry reconciliation', () => {
       const promptItems = [...container.querySelectorAll<HTMLElement>('[data-acp-item-key]')]
         .filter((item) => item.textContent?.includes('历史窗口内发送的问题'));
       expect(promptItems).toHaveLength(1);
-      expect(promptItems[0]?.dataset.acpItemKey).not.toBe(
+      expect(promptItems[0]?.dataset.acpItemKey).toBe(
         'userTextDelta-submit-canonical-prompt',
       );
       expect(container.textContent).not.toContain('发送中');
-      expect(container.textContent).toContain('提交响应到达前的历史窗口');
-      expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
+      expect(container.textContent).not.toContain('提交响应到达前的历史窗口');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
     } finally {
       await unmount(root);
     }

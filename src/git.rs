@@ -496,6 +496,21 @@ impl GitRepositoryService {
         ensure!(output.success, "git status failed: {}", details(&output));
         Ok(output.stdout)
     }
+
+    pub fn is_clean(&self, cwd: &Utf8Path) -> Result<bool> {
+        // A boolean consumer does not need every path in an untracked directory.
+        let output = self.runner.run(
+            cwd,
+            &[
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=normal",
+                "--ignore-submodules=none",
+            ],
+        )?;
+        ensure!(output.success, "git status failed: {}", details(&output));
+        Ok(output.stdout.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, Default)]

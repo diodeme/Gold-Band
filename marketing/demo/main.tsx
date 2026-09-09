@@ -6,12 +6,16 @@ import i18n, { i18nLanguage } from '@/i18n';
 import { initializeWebviewEnvironment, applyWebviewEnvironmentToDocument } from '@/lib/webview-environment';
 import { browserApi } from './runtime';
 import { DemoApp } from './DemoApp';
+import { entryPreferences } from './entry';
 import '@xyflow/react/dist/style.css';
 import '@/styles.css';
 import '@/webview-compatibility.css';
 
 applyWebviewEnvironmentToDocument(initializeWebviewEnvironment());
 const [bootstrap, sidebar] = await Promise.all([browserApi.getAppBootstrap(), browserApi.getConversationSidebarBootstrap()]);
+bootstrap.preferences = entryPreferences(bootstrap.preferences, location.search);
+await browserApi.saveDesktopPreferences(bootstrap.preferences.appearance, bootstrap.preferences.personalization, bootstrap.preferences.language, bootstrap.preferences.useLocalClaude, bootstrap.preferences.verboseLogging);
+document.documentElement.lang = i18nLanguage(bootstrap.preferences.language);
 applyAppearance(bootstrap.preferences.appearance);
 applyPersonalization(bootstrap.preferences.personalization);
 await i18n.changeLanguage(i18nLanguage(bootstrap.preferences.language));

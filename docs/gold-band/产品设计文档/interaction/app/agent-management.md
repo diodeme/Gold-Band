@@ -156,7 +156,7 @@ Agent Cards
 - 当前固定参考官方 Registry 中的 Claude、Codex、Cursor、Gemini、CodeBuddy、Goose、Qwen Code、OpenCode、Kimi Code、Amp、Pi 十一类精选 Agent，同时允许任意合法自定义 ACP Agent
 - 单个 Agent 每轮诊断从取得执行资格起共享 3 分钟截止时间，覆盖 adapter 启动后的初始化、会话创建、命令发现和诊断会话清理；周期失败重试沿用同一截止时间，预算耗尽后不再启动重试。超时以 `acp.doctor-timeout` 和当前阶段记录原因，回收进程树并保留有界失败日志；进程回收复用既有平台机制，Unix 的 2 秒终止宽限不计入协议等待预算。正常业务会话的请求期限不随 Doctor 改变
 - 所有诊断入口和命令目录刷新按稳定 Agent ID 互斥，不再持有跨 Agent 的全局运行锁；同一 Agent 在全局与 workspace 命令目录刷新之间仍不能重叠，因为它们共享该 Agent 的 doctor 目录。全应用最多同时运行 4 个诊断 adapter，批量诊断最多使用 4 个 worker；等待同一 Agent 的请求不提前占用 adapter 名额，运行集合随 guard 释放删除，不持久化
-- 周期诊断每完成一项并可靠写入后，立即发布既有 registry/commands 更新事件，不等待其他 Agent 完成。手动诊断使用 blocking 执行器，不能在 Tauri 异步线程上同步等待；保存提交、配置版本校验和按版本合并继续沿用既有机制。批次末尾清理失效诊断时也必须进入短时提交锁，避免覆盖并行诊断的新结果
+- 周期诊断每完成一项并可靠写入后，立即发布该 Agent 的 registry 投影，不等待其他 Agent 完成；前端按配置及诊断时间局部合并，不重读全局 registry。只有命令目录内容变化并成功落盘后才发布含 Agent ID、project ID 的 commands 更新事件；同一挂载范围合并请求，批次结束不再全局广播。落盘失败不得提前推进内存目录，否则相同内容的重试会被错误跳过。手动诊断与目录扫描使用 blocking 执行器；保存提交、配置版本校验和按版本合并沿用既有机制。批次末尾清理失效诊断进入短时提交锁。性能预算和验收见 [0.15.1 性能修复](performance-0.15.1.md)。
 - 诊断结果除健康状态外，还要缓存 agent 返回的 `modes` / `configOptions` 能力摘要，供工作流编辑器直接复用
 - 诊断缓存需要持久化到当前 workspace 的本地运行时目录，客户端重启后仍可直接为节点展示可选权限模式，不要求用户每次重新手动诊断
 

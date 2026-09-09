@@ -1,4 +1,4 @@
-import { AcpImageStrip, useAcpToolImageReadiness } from './AcpImageStrip';
+import { AcpActivityImageStrip, AcpImageStrip, useAcpToolImageReadiness } from './AcpImageStrip';
 import { MessageAttachmentPreviewButton } from './MessageAttachmentPreviewButton';
 export { MessageAttachmentPreviewButton } from './MessageAttachmentPreviewButton';
 import { acpImagesFromRaw, acpActivityImages } from '@/lib/acp-image-cache';
@@ -479,6 +479,7 @@ type AcpTimelineWindowOwner = {
 const AcpTimelineWindowOwnerContext = createContext<AcpTimelineWindowOwner | null>(null);
 
 type AcpActivityBatch = {
+  imagesPending?: boolean;
   images?: import('@/types').AcpImageRef[];
   kind: "activityBatch";
   id: string;
@@ -8030,7 +8031,10 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
           </CollapsibleContent>
         ) : null}
       </Collapsible>
-      {!event.live ? <AcpImageStrip images={event.images ?? []} locator={branchLocator} /> : null}
+      {!event.live ? event.imagesPending && branchLocator
+        ? <AcpActivityImageStrip locator={branchLocator} start={event.activityStartSeq} end={event.activityEndSeq}
+            generation={timelineWindowOwner?.timelineGeneration ?? undefined} />
+        : <AcpImageStrip images={event.images ?? []} locator={branchLocator} /> : null}
     </AssistantTimelineRow>
   );
 });
@@ -10521,6 +10525,7 @@ function batchAcpActivities(
     result.push({
       kind: "activityBatch",
       images: acpActivityImages(activityEvents),
+      imagesPending: activityMeta?.imagesPending === true,
       id: `activity-${activityStartSeq}`,
       seq: first.startedSeq ?? first.seq,
       timestamp: first.startedAt ?? first.timestamp,

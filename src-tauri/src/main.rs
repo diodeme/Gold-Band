@@ -325,20 +325,26 @@ fn run() -> anyhow::Result<()> {
                 let _ = init_search_index(&paths.sqlite_db_path(), &paths.projects_dir());
             }
             let handle = app.handle().clone();
+            let command_handle = handle.clone();
+            handle
+                .state::<DesktopState>()
+                .set_agent_command_update(move |catalog| {
+                    commands::emit_agent_commands_updated(&command_handle, catalog);
+                });
             std::thread::spawn(move || {
                 loop {
                     let state = handle.state::<DesktopState>();
                     debug!("periodic agent maintenance cycle started");
-                    let diagnostics_refreshed = match state.refresh_all_agent_diagnostics(|| {
-                        commands::emit_agent_registry_updated(&handle);
-                        commands::emit_agent_commands_updated(&handle, None);
-                    }) {
-                        Ok(()) => true,
-                        Err(error) => {
-                            warn!(%error, "periodic agent diagnostic refresh failed");
-                            false
-                        }
-                    };
+                    let diagnostics_refreshed =
+                        match state.refresh_all_agent_diagnostics(|agent_id| {
+                            commands::emit_agent_registry_updated(&handle, agent_id);
+                        }) {
+                            Ok(()) => true,
+                            Err(error) => {
+                                warn!(%error, "periodic agent diagnostic refresh failed");
+                                false
+                            }
+                        };
                     let commands_refreshed =
                         match state.refresh_agent_command_catalogs_for_active_workspaces() {
                             Ok(()) => true,
@@ -347,12 +353,6 @@ fn run() -> anyhow::Result<()> {
                                 false
                             }
                         };
-                    if diagnostics_refreshed {
-                        commands::emit_agent_registry_updated(&handle);
-                    }
-                    if diagnostics_refreshed || commands_refreshed {
-                        commands::emit_agent_commands_updated(&handle, None);
-                    }
                     debug!(
                         diagnostics_refreshed,
                         commands_refreshed, "periodic agent maintenance cycle completed"
@@ -429,6 +429,7 @@ fn run() -> anyhow::Result<()> {
             get_acp_activity_detail,
             get_acp_tool_detail,
             get_acp_image,
+            commands::get_acp_activity_images,
             renew_acp_session_lease,
             submit_conversation_prompt,
             reorder_conversation_queued_prompts,

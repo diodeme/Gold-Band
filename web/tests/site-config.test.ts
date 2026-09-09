@@ -14,5 +14,6 @@ describe('production website entrances', () => {
   });
   it('preserves demo hash and supplies explicit language through the URL API', () => {
     expect(demoHref('/demo/#/session/one', 'en', 'https://example.com')).toBe('https://example.com/demo/?language=en#/session/one');
+    expect(demoHref('/demo/#conversation-run', 'zh', 'https://example.com')).toBe('https://example.com/demo/?language=zh-cn#conversation-run');
   });
 });

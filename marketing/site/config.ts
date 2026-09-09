@@ -18,6 +18,6 @@ export function siteConfig(env: Environment, production: boolean) {
   return { base, demoUrl, downloadUrl };
 }
 export function demoHref(value: string, language: string, origin: string) {
-  const url = new URL(value, origin); url.searchParams.set('language', language);
+  const url = new URL(value, origin); url.searchParams.set('language', language === 'zh' ? 'zh-cn' : 'en');
   return url.href;
 }

@@ -1,3 +1,4 @@
 # Recording hashes cover exact bytes, including JSON and SVG line endings.
 marketing/site/media/workflow/** -text
 marketing/site/media/before/** -text
+marketing/site/media/after/** -text

@@ -23,6 +23,12 @@ if (selectedScenes.includes('before')) {
     env: { ...process.env, RECORDING_SCENE: 'before', RECORDING_OUTPUT: resolve(output, 'before') },
   });
 }
+if (selectedScenes.includes('after')) {
+  execFileSync(process.execPath, [resolve('scripts/record-workflow.mjs')], {
+    windowsHide: true, stdio: 'inherit',
+    env: { ...process.env, RECORDING_SCENE: 'after', RECORDING_OUTPUT: resolve(output, 'after') },
+  });
+}
 mkdirSync(output, { recursive: true });
 mkdirSync(temporary, { recursive: true });
 function browser(...args) {
@@ -48,13 +54,13 @@ function screenshot(name) {
 const report = [];
 let opened = false;
 try {
-  for (const language of (process.env.SITE_LANGUAGES?.split(',') || ['zh', 'en'])) for (const scene of selectedScenes.filter(scene => scene !== 'during' && scene !== 'before')) {
+  for (const language of (process.env.SITE_LANGUAGES?.split(',') || ['zh', 'en'])) for (const scene of selectedScenes.filter(scene => scene === 'personalize')) {
     browser('open', `${url}/?language=${language}&scene=${scene}`);
     opened = true;
     browser('set', 'viewport', '1440', '880');
     waitFor(`Boolean(document.getElementById('workspace-center')) && document.querySelector('img').getBoundingClientRect().width < 100`);
     evaluate('localStorage.clear()');
-    if (scene === 'after' || scene === 'personalize') {
+    if (scene === 'personalize') {
       waitFor(`Array.from(document.querySelectorAll('button[aria-label]')).some(e=>e.getAttribute('aria-label').includes('docs/workspace-notes.md'))`);
       clickFile('docs/workspace-notes.md');
       waitFor(`Boolean(document.querySelector('[data-right-workspace-dock]'))`);
@@ -63,11 +69,7 @@ try {
     hold(800);
     evaluate('window.goldBandPreview.start()');
     const layouts = [];
-    if (scene === 'after') {
-      hold(2600); screenshot(`${language}-${scene}`);
-      clickFile('src/config.json'); hold(4000);
-      clickFile('docs/workspace-notes.md'); hold(2500);
-    } else {
+    {
       screenshot(`${language}-${scene}`);
       for (const width of [1440, 900, 600, 900, 1440]) {
         browser('set', 'viewport', String(width), '880'); hold(1800);

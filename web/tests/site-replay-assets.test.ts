@@ -18,7 +18,7 @@ function fixture() {
 }
 afterEach(() => vi.unstubAllGlobals());
 describe('published scene event loading', () => {
-  it.each([['workflow', 'during'], ['before', 'before']])('ships %s variants and dependencies at the normal build input', async (folder, scene) => {
+  it.each([['workflow', 'during'], ['before', 'before'], ['after', 'after']])('ships %s variants and dependencies at the normal build input', async (folder, scene) => {
     const directory = resolve(`marketing/site/media/${folder}`);
     const manifest = SceneManifestSchema.parse(JSON.parse(await readFile(resolve(directory, 'manifest.json'), 'utf8')));
     const localFile = (url: string) => {

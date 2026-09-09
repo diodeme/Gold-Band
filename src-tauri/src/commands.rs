@@ -2722,18 +2722,21 @@ pub async fn get_agent_binding_usage(
 #[tauri::command]
 pub async fn doctor_agent(
     app_handle: AppHandle,
-    state: State<'_, DesktopState>,
     agent_type: String,
 ) -> CommandResult<AgentRegistryVm> {
     let agent_id = ManagedAgentId::from_str(&agent_type).map_err(command_error)?;
-    state
-        .refresh_agent_diagnostic(&agent_id)
-        .map_err(command_error)?;
-    emit_agent_registry_updated(&app_handle);
-    emit_agent_commands_updated(&app_handle, None);
-    let app = state.app().map_err(command_error)?;
-    let diagnostics = state.agent_diagnostics().map_err(command_error)?;
-    Ok(agent_registry_vm(&app, &diagnostics))
+    spawn_blocking_command(move || {
+        let state = app_handle.state::<DesktopState>();
+        state
+            .refresh_agent_diagnostic(&agent_id)
+            .map_err(command_error)?;
+        emit_agent_registry_updated(&app_handle);
+        emit_agent_commands_updated(&app_handle, None);
+        let app = state.app().map_err(command_error)?;
+        let diagnostics = state.agent_diagnostics().map_err(command_error)?;
+        Ok(agent_registry_vm(&app, &diagnostics))
+    })
+    .await
 }
 
 fn schedule_agent_diagnostic(app_handle: &AppHandle, agent_id: ManagedAgentId) {

@@ -46,7 +46,7 @@
 - 所有会调用 ACP provider 的内部节点都必须在 orchestration 边界获得非空、稳定的 logical turn ID，包括不接入 output contract 的 merge。turn identity 与 `sessionMode`、output contract 相互独立：同一业务 turn 的自动重试必须复用原 ID，新的 worker / merge / acceptance 业务 turn 必须使用新 ID。动态 invocation 构建接口必须把该 ID 表达为必填输入，不能让节点类型各自决定是否生成，也不能由 provider 临时补造。
 - fanout 必须创建至少两个 child 节点；只有一个后继任务时必须使用 `next.type=single`。workspace 属于 Runtime 领域，proposal 不允许输出 `workspace`、mode、路径或 branch：`single` 自动继承当前实际 workspace；`fanout` 的每个 child 自动获得隔离 Git worktree 与稳定 branch；merge / acceptance 回到该 group 的父 workspace。worktree 目录放在目标 repo 的 `.gold-band/worktrees/<task>/<run>/<short-id>` 下，`short-id` 由 round、外层节点、attempt 和内部节点稳定生成，避免 Windows 长路径 checkout 失败并保证同一 run 内不冲突。merge 前 Runtime 先 checkpoint 各 child workspace，再把 workspace path、branch、head、forkCommit、checkpointCommit 与 status 注入 prompt；merge agent 基于这些权威字段解决冲突并验证结果。
 - `next.type=single` 不创建隔离 worktree，也不创建配套 merge / acceptance；需要并行隔离时必须使用 `next.type=fanout` 并提供 merge / acceptance。任何 proposal 显式输出 `workspace` 都由有效 schema 以 `dynamic.schema.additional-property` 拒绝并进入统一 repair 回路，避免 Agent 与 Runtime 同时决定 workspace 生命周期。
-- AI-DYNAMIC run 创建前要求项目根目录是具有 HEAD 的 Git repository；不满足时直接返回结构化错误 `run.git-repository-required`，不启动 provider。Git/worktree 探测、fanout checkpoint/fork、merge 前 checkpoint 和 release 都由 Runtime 的 workspace catalog 统一管理，proposal 层不再暴露 `supportsWorktree` 或 workspace mode 选择。
+- AI-DYNAMIC run 创建前要求项目根目录是具有 HEAD 的 Git repository；不满足时直接返回结构化错误 `run.git-repository-required`，不启动 provider。Git/worktree 探测、fanout 一次性提交提醒及固定提交 fork、merge 前 checkpoint 和 release 都由 Runtime 的 workspace catalog 统一管理，proposal 层不再暴露 `supportsWorktree` 或 workspace mode 选择。
 - AI-DYNAMIC `graph.json.workspaces` 是 workspace catalog 的 canonical state，`dynamic/workspaces/*.json` 只是投影。workspace identity 迁移仅在 `WorkspaceState.path` 命中旧用户 runtime root 时改写并重建投影，即外层 AI-DYNAMIC 运行于普通会话 worktree 的场景；外层主工作区路径与 AI-DYNAMIC 在仓库 `.gold-band/worktrees/` 下创建的隔离 worktree 不受用户 runtime 目录改名影响。单条损坏 graph 必须局部隔离，不得阻断桌面启动。
 - 内部 worker / acceptance 只能提交 `dynamic-node-completion` proposal；子线程负责执行并产出 proposal，主线程负责校验、记录 accepted/rejected proposal，并作为 graph 的唯一写入者执行 materialize。merge 只负责合并和报告，不提交控制 proposal。acceptance 的合法 proposal 被接受后统一关闭 group；关闭与后继物化由主线程在同一受锁保护的 workspace transition 内完成，后继进入父作用域，历史 acceptance 身份保持不变。同一 dynamic run 的 run/graph/node/group/proposal 状态快照读写必须通过 run 级状态锁串行化，JSON 状态文件采用同目录临时文件原子替换写入，避免调度线程在 graph 更新中途读到半写入或新旧内容混合导致 `trailing characters` 一类解析错误。driver 热循环的快照持久化必须以 `DynamicGraphState` 内容指纹为门禁：首次或 graph 实际变化时写出整组派生文件，等待 worker 消息的 scheduler 心跳不重复重写磁盘。
 - group 是一次 fanout → merge → acceptance 的执行单元；acceptance 的合法 `end/single/fanout` completion 均关闭当前 group，不再重开或清空 merge/acceptance 引用。`closed` 表示本轮验收交接已结束，不代表业务 PASS。执行失败、中断或非法 proposal 不关闭 group；修复后必要复验由显式后继链安排。
@@ -82,6 +82,17 @@
 - 当前阶段采用 prompt 软约束，不新增 scope judge Agent、依赖、持久字段、队列、缓存或语义 validator。Runtime 继续硬校验 schema、provider、预算、workspace 和图不变量；若后续固定评测仍出现范围漂移，再评估冻结 requirement snapshot、criterion 引用和 blocker ID 等最小结构化约束。
 
 ## 4. 内部控制 artifact
+
+### Fanout 一次性提交提醒与本轮 Artifact（2026-09-09）
+
+提醒引导句为“本次fanout即将从HEAD开始创建worktree，检测到源工作区仍有未提交代码，故提醒：”，英文同步表达从 HEAD 创建 worktree 的原因；下方可选提交规则及一次性语义不变。
+
+- 工作区干净不是 `next.type=fanout` 的强制门禁。首次发现实际源 workspace 有脏文件时，追加 `dynamic.fanout.workspace-dirty` 一次性提醒：有本次任务产生、后续分支需要且尚未提交的业务改动才按具体路径 commit，可使用 Conventional Commits；没有则不进行 Git 操作，直接重新输出 artifact。不要求新 commit，不要求 stash、清理工作区、修改忽略规则或移动其他 worktree；无关内容保持原样。
+- 提醒复用 proposal 记录和 repair prompt。发送提醒前持久化该来源节点的 rejected proposal，后续重试或停止恢复读取该记录，不再检查或拒绝脏状态。纯提交提醒不占用协议 repair 次数；同时存在 schema / semantic 错误时合并列出，协议错误仍受原有最多 3 次 repair 限制。重新输出必须是本轮有效 artifact，提醒不是绕过其他校验的授权。
+- 普通 worker 使用当前 workspace，acceptance 使用当前 group 的 target workspace；用户主工作区和 Runtime worktree 使用相同提醒规则。实际分叉只读取一次 HEAD，整批 children 绑定同一 commit，未提交内容不会自动继承，也不检查最终提交了哪些文件。fanout 不自动 checkpoint；原有 end / merge 前的 Runtime worktree checkpoint 保留，single 不新增限制。
+- Git 探测或 HEAD 读取失败仍返回 `dynamic.fanout.workspace-check-failed` 运行异常，不消耗协议 repair 次数；HEAD 读取发生在 workspace transition 前，失败不创建 child、不留下 accepted proposal、不关闭 acceptance group。
+- 当前 provider 成功结果独占 canonical artifact：有 payload 使用 payload，否则保留当前 runtime control span 的原始候选供解析，包括坏 JSON；无候选清除旧 canonical 文件，不能回退接受上轮输出。原始会话记录保留，停止/交互等待不当作成功结果收集；不修改人工判定和无 output 节点路径。
+- 性能/复杂度：复用 Git、proposal 和现有结果字段，不新增依赖、状态机、持久字段或缓存。提醒后不再调用 status，首次检查采用 normal untracked 目录粒度、不读取正文；提醒记录只在当前 graph 中按 source node 查找并至多追加一次，不扫描历史会话。固定一次 HEAD 保证同批基线一致，不承诺冻结外部写入。
 
 PostTurnProjection 节点遵守 [worker 的 artifact 提交与停止恢复规则](worker.md)：首次提供协议之后，无候选最多追加 5 次 finalize 提醒，耗尽后运行异常暂停并允许显式继续，不占用 proposal repair 次数。停止／恢复保留协议收集阶段，但恢复 prompt 不替换为 finalize/repair；有候选仍交给原有 completion/proposal 校验。InlineControl 节点不进入此提醒循环。
 

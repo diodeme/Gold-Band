@@ -16502,7 +16502,7 @@ mod tests {
                 .resume_prompt
                 .as_deref()
                 .unwrap_or_default()
-                .contains("用户已选择将当前节点重新交由 Runtime 控制")
+                .contains("请继续执行当前节点尚未完成的任务")
         );
     }
 
@@ -16522,7 +16522,7 @@ mod tests {
         assert_eq!(state.resume_prompt_visibility, PromptVisibility::Hidden);
         assert_eq!(
             state.resume_prompt.as_deref(),
-            Some("用户已选择将当前节点重新交由 Runtime 控制。当前输出契约（如有）重新生效。")
+            Some("请继续执行当前节点尚未完成的任务，并遵循用户针对该任务的最新指引（如果有）")
         );
     }
 

@@ -397,7 +397,49 @@ const STOP_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 const LIVE_STREAM_UPDATE_INTERVAL: Duration = Duration::from_millis(75);
 const LIVE_TIMING_UPDATE_INTERVAL: Duration = Duration::from_secs(1);
 const ACP_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(60);
-const DOCTOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+const DOCTOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DoctorDeadline {
+    expires_at: Instant,
+    timeout: Duration,
+}
+
+impl Default for DoctorDeadline {
+    fn default() -> Self {
+        Self::new(DOCTOR_REQUEST_TIMEOUT)
+    }
+}
+
+impl DoctorDeadline {
+    pub fn new(timeout: Duration) -> Self {
+        Self {
+            expires_at: Instant::now() + timeout,
+            timeout,
+        }
+    }
+
+    pub fn is_expired(self) -> bool {
+        Instant::now() >= self.expires_at
+    }
+
+    fn remaining(self, method: &str) -> Result<Duration> {
+        self.expires_at
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| {
+                runtime_error(manual_runtime_error_info(
+                    RuntimeErrorDomain::Provider,
+                    "acp.doctor-timeout",
+                    format!(
+                        "ACP doctor `{method}` timed out after {} seconds",
+                        self.timeout.as_secs()
+                    ),
+                    json!({ "method": method, "timeoutSeconds": self.timeout.as_secs() }),
+                ))
+            })
+    }
+}
 const DOCTOR_DIAGNOSTIC_MAX_SIZE: u64 = 512 * 1024;
 const DOCTOR_DIAGNOSTIC_TARGET_SIZE: u64 = 384 * 1024;
 const DOCTOR_COMMAND_DISCOVERY_TIMEOUT: Duration = Duration::from_millis(500);
@@ -2106,6 +2148,7 @@ fn same_provider_session(
 }
 
 struct AcpRuntime<'a> {
+    doctor_deadline: Option<DoctorDeadline>,
     paths: AcpAttemptPaths,
     lifecycle_owner: Option<AcpLifecycleOwner>,
     connection_key: Option<AdapterConnectionKey>,
@@ -2417,8 +2460,47 @@ pub fn doctor(
     use_local_claude: bool,
     require_local_claude_executable: bool,
 ) -> Result<AcpDoctorProbe> {
+    doctor_with_deadline(
+        agent_id,
+        config,
+        cwd,
+        use_local_claude,
+        require_local_claude_executable,
+        DoctorDeadline::default(),
+    )
+}
+
+pub fn doctor_with_deadline(
+    agent_id: &ManagedAgentId,
+    config: &AcpAdapterConfig,
+    cwd: Utf8PathBuf,
+    use_local_claude: bool,
+    require_local_claude_executable: bool,
+    deadline: DoctorDeadline,
+) -> Result<AcpDoctorProbe> {
     let paths = GoldBandPaths::new(cwd.clone());
     let doctor_acp_dir = paths.doctor_acp_dir(agent_id);
+    doctor_in_dir(
+        agent_id,
+        config,
+        cwd,
+        use_local_claude,
+        require_local_claude_executable,
+        doctor_acp_dir,
+        deadline,
+    )
+}
+
+fn doctor_in_dir(
+    agent_id: &ManagedAgentId,
+    config: &AcpAdapterConfig,
+    cwd: Utf8PathBuf,
+    use_local_claude: bool,
+    require_local_claude_executable: bool,
+    doctor_acp_dir: Utf8PathBuf,
+    deadline: DoctorDeadline,
+) -> Result<AcpDoctorProbe> {
+    deadline.remaining("adapter/start")?;
     cleanup_doctor_acp_dir_before_run(&doctor_acp_dir);
     let mut runtime = AcpRuntime::start_standalone(
         agent_id.as_str(),
@@ -2432,8 +2514,10 @@ pub fn doctor(
         None,
         None,
     )?;
+    runtime.doctor_deadline = Some(deadline);
     let result = (|| {
-        let mut capabilities = runtime.initialize_with_timeout(Some(DOCTOR_REQUEST_TIMEOUT))?;
+        let mut capabilities =
+            runtime.initialize_with_timeout(Some(deadline.remaining("initialize")?))?;
         runtime.setup_session(
             agent_id.as_str(),
             cwd,
@@ -2450,6 +2534,7 @@ pub fn doctor(
         runtime.wait_for_available_commands(DOCTOR_COMMAND_DISCOVERY_TIMEOUT)?;
         let commands = runtime.available_commands.clone().unwrap_or_default();
         runtime.cleanup_diagnostic_session()?;
+        deadline.remaining("session/cleanup")?;
         runtime.merge_session_config_into_capabilities(&mut capabilities);
         Ok(AcpDoctorProbe {
             capabilities,
@@ -3658,6 +3743,7 @@ impl<'a> AcpRuntime<'a> {
         // Timeline prompt-index, or raw-log recovery before reuse.
         let usage = AcpUsageState::from_prior(prior, context_compaction);
         Ok(Self {
+            doctor_deadline: None,
             paths,
             lifecycle_owner,
             connection_key,
@@ -4609,20 +4695,27 @@ impl<'a> AcpRuntime<'a> {
         let Some(session_id) = self.session_id.clone() else {
             return Ok(());
         };
-        if self
-            .delete_session_bounded(&session_id, SESSION_CLOSE_TIMEOUT)
-            .is_ok()
-        {
-            return Ok(());
+        match self.delete_session_bounded(&session_id, SESSION_CLOSE_TIMEOUT) {
+            Ok(_) => return Ok(()),
+            Err(error) if self.doctor_deadline.is_some_and(DoctorDeadline::is_expired) => {
+                return Err(error);
+            }
+            Err(_) => {}
         }
-        let _ = self.close_session_bounded(&session_id, SESSION_CLOSE_TIMEOUT);
+        let result = self.close_session_bounded(&session_id, SESSION_CLOSE_TIMEOUT);
+        if self.doctor_deadline.is_some_and(DoctorDeadline::is_expired) {
+            result?;
+        }
         Ok(())
     }
 
     fn wait_for_available_commands(&mut self, timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
         loop {
-            self.drain_available_inbound()?;
+            if let Some(doctor_deadline) = self.doctor_deadline {
+                doctor_deadline.remaining("session/available_commands")?;
+            }
+            self.drain_available_inbound_bounded()?;
             if self.available_commands.is_some() || Instant::now() >= deadline {
                 return Ok(());
             }
@@ -5041,6 +5134,9 @@ impl<'a> AcpRuntime<'a> {
         title_refresh: Option<(&Utf8Path, &str, bool, Option<String>, &Value)>,
         observe_attempt_cancellation: bool,
     ) -> Result<Value> {
+        if let Some(deadline) = self.doctor_deadline {
+            deadline.remaining(method)?;
+        }
         if observe_attempt_cancellation && self.is_prompt_cancel_requested() {
             self.observe_prompt_cancel_request()?;
             return Err(anyhow!(AcpCancelled));
@@ -5059,6 +5155,22 @@ impl<'a> AcpRuntime<'a> {
         let started_at = Instant::now();
         let mut last_title_refresh_at = Instant::now();
         loop {
+            let doctor_remaining = match self
+                .doctor_deadline
+                .map(|deadline| deadline.remaining(method))
+                .transpose()
+            {
+                Ok(remaining) => remaining,
+                Err(error) => {
+                    self.connection.cancel_pending(request.id);
+                    self.append_timing_diagnostic("acp_rpc_end", json!({
+                        "event": "acp_rpc_end", "method": method, "requestId": request.id,
+                        "elapsedMs": diagnostic_started_at.elapsed().as_millis(), "status": "timeout",
+                        "code": "acp.doctor-timeout",
+                    }));
+                    return Err(error);
+                }
+            };
             if observe_attempt_cancellation && self.is_prompt_cancel_requested() {
                 self.observe_prompt_cancel_request()?;
                 self.connection.cancel_pending(request.id);
@@ -5089,10 +5201,18 @@ impl<'a> AcpRuntime<'a> {
                 },
                 None => STOP_CHECK_INTERVAL,
             };
+            let wait_for = doctor_remaining.map_or(wait_for, |remaining| remaining.min(wait_for));
             match request.recv_timeout(wait_for) {
                 Ok(value) => {
+                    if let Some(deadline) = self.doctor_deadline {
+                        deadline.remaining(method)?;
+                    }
                     self.append_inbound_frame(&value);
-                    self.drain_available_inbound()?;
+                    if self.doctor_deadline.is_some() {
+                        self.drain_available_inbound_bounded()?;
+                    } else {
+                        self.drain_available_inbound()?;
+                    }
                     if observe_attempt_cancellation && self.is_prompt_cancel_requested() {
                         self.observe_prompt_cancel_request()?;
                         return Err(anyhow!(AcpCancelled));
@@ -6693,6 +6813,44 @@ impl<'a> AcpRuntime<'a> {
         emit_live_update: bool,
         prompt_interaction: Option<&AcpPromptInteractionIdentity>,
     ) -> Result<()> {
+        if event.kind == "contextCompaction" {
+            let existing = if let Some(id) = compaction_tool_item_id(event) {
+                let branch_id = event_branch_id(event);
+                if branch_id == ROOT_BRANCH_ID {
+                    self.timeline_store.read_item(&id)?
+                } else if let Some(store) = self.branch_timeline_stores.get_mut(&branch_id) {
+                    store.read_item(&id)?
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let active = self
+                .usage
+                .compaction
+                .as_ref()
+                .and_then(|state| self.timeline_items.get(&state.item_id))
+                .cloned();
+            for item in context_compaction_updates(
+                &mut self.usage,
+                event,
+                existing.as_ref(),
+                active.as_ref(),
+            ) {
+                self.persist_projected_event(&item, emit_live_update, prompt_interaction)?;
+            }
+            return Ok(());
+        }
+        self.persist_projected_event(event, emit_live_update, prompt_interaction)
+    }
+
+    fn persist_projected_event(
+        &mut self,
+        event: &crate::acp::events::AcpUiEvent,
+        emit_live_update: bool,
+        prompt_interaction: Option<&AcpPromptInteractionIdentity>,
+    ) -> Result<()> {
         let mut timeline_item = self.timeline_item_for_event(event);
         if is_semantically_empty_agent_content(event) {
             return Ok(());
@@ -7157,7 +7315,7 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn apply_context_compaction_event(
-        &mut self,
+        usage: &mut AcpUsageState,
         item: &mut crate::acp::events::AcpUiEvent,
         seq: u64,
         timestamp: &str,
@@ -7174,45 +7332,31 @@ impl<'a> AcpRuntime<'a> {
             .and_then(|raw| raw.pointer("/contextCompaction/reason"))
             .and_then(Value::as_str)
             .map(str::to_string);
-        let canonical_item_id = item
-            .tool_call_id
-            .as_deref()
-            .filter(|tool_call_id| !tool_call_id.trim().is_empty())
-            .map(|tool_call_id| format!("context-compaction-tool-{tool_call_id}"))
-            .unwrap_or_else(|| format!("context-compaction-{seq}"));
+        let canonical_item_id =
+            compaction_tool_item_id(item).unwrap_or_else(|| format!("context-compaction-{seq}"));
 
-        let mut state = if status == "running" {
-            AcpContextCompactionState {
-                item_id: canonical_item_id.clone(),
+        let mut state = usage
+            .compaction
+            .as_ref()
+            .filter(|state| {
+                (compaction_tool_item_id(item).is_none() || state.item_id == canonical_item_id)
+                    && (status != "running" || state.completed_seq.is_none())
+            })
+            .cloned()
+            .unwrap_or_else(|| AcpContextCompactionState {
+                item_id: canonical_item_id,
                 started_seq: seq,
                 started_at: timestamp.to_string(),
-                context_used_before: self.usage.context.confirmed_used,
-                context_size: self.usage.context.window_size,
+                context_used_before: usage.context.confirmed_used,
+                context_size: usage.context.window_size,
                 completed_seq: None,
                 completed_at: None,
                 saw_context_reset: false,
                 pending_context_used_after: None,
-            }
-        } else {
-            self.usage
-                .compaction
-                .clone()
-                .unwrap_or_else(|| AcpContextCompactionState {
-                    item_id: canonical_item_id,
-                    started_seq: seq,
-                    started_at: timestamp.to_string(),
-                    context_used_before: self.usage.context.confirmed_used,
-                    context_size: self.usage.context.window_size,
-                    completed_seq: None,
-                    completed_at: None,
-                    saw_context_reset: false,
-                    pending_context_used_after: None,
-                })
-        };
+            });
 
         let context_used_after =
-            self.usage
-                .confirm_context_used_after_compaction(&status, &state, context_used_after);
+            usage.confirm_context_used_after_compaction(&status, &state, context_used_after);
 
         item.id = state.item_id.clone();
         item.started_seq = Some(state.started_seq);
@@ -7251,7 +7395,7 @@ impl<'a> AcpRuntime<'a> {
         {
             compaction.insert("reason".to_string(), Value::String(reason));
         }
-        self.usage.compaction =
+        usage.compaction =
             (status != "interrupted" && context_used_after.is_none()).then_some(state);
     }
 
@@ -7317,7 +7461,6 @@ impl<'a> AcpRuntime<'a> {
             }
             "contextCompaction" => {
                 Self::clear_timeline_streams(&mut streams);
-                self.apply_context_compaction_event(&mut item, seq, &timestamp);
             }
             "usageUpdate" => {
                 item.id = item
@@ -7494,6 +7637,70 @@ impl Drop for AcpRuntime<'_> {
         }
         unregister_provider_control(&self.paths.attempt_dir, &self.control);
     }
+}
+
+fn compaction_tool_item_id(event: &AcpUiEvent) -> Option<String> {
+    event
+        .tool_call_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| format!("context-compaction-tool-{id}"))
+}
+
+fn context_compaction_updates(
+    usage: &mut AcpUsageState,
+    event: &AcpUiEvent,
+    existing: Option<&AcpUiEvent>,
+    active: Option<&AcpUiEvent>,
+) -> Vec<AcpUiEvent> {
+    if let Some(previous) = existing.filter(|item| item.status.as_deref() != Some("running")) {
+        // Completion can still receive its confirmed usage, but never restart its lifecycle.
+        let confirms_usage = previous.status.as_deref() == Some("completed")
+            && event.status.as_deref() == Some("completed")
+            && event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/contextCompaction/contextUsedAfter"))
+                .and_then(Value::as_u64)
+                .is_some()
+            && usage
+                .compaction
+                .as_ref()
+                .is_some_and(|state| state.item_id == previous.id);
+        if !confirms_usage {
+            return Vec::new();
+        }
+    }
+    let tool_id = compaction_tool_item_id(event);
+    let different_operation = usage
+        .compaction
+        .as_ref()
+        .is_some_and(|state| tool_id.as_ref().is_some_and(|id| *id != state.item_id));
+    if different_operation && event.status.as_deref() != Some("running") {
+        return Vec::new();
+    }
+    let mut updates = Vec::with_capacity(2);
+    if different_operation
+        && let Some(previous) = active.filter(|item| item.status.as_deref() == Some("running"))
+    {
+        let mut interrupted = previous.clone();
+        interrupted.seq = event.seq;
+        interrupted.timestamp = event.timestamp.clone();
+        interrupted.status = Some("interrupted".to_string());
+        interrupted.raw.get_or_insert_with(|| json!({}))["contextCompaction"]["reason"] =
+            json!("superseded");
+        AcpRuntime::apply_context_compaction_event(
+            usage,
+            &mut interrupted,
+            event.seq,
+            &event.timestamp,
+        );
+        updates.push(interrupted);
+    }
+    let mut item = event.clone();
+    AcpRuntime::apply_context_compaction_event(usage, &mut item, event.seq, &event.timestamp);
+    updates.push(item);
+    updates
 }
 
 fn upsert_context_compaction_raw(
@@ -8191,6 +8398,156 @@ mod tests {
         timeline_position_for_live_event, unregister_provider_control,
         validate_session_restore_target,
     };
+
+    #[test]
+    fn doctor_session_new_timeout_reclaims_adapter_and_retains_evidence() {
+        assert_doctor_stage_timeout("session/new", Duration::from_millis(500));
+    }
+
+    #[test]
+    fn doctor_initialize_and_cleanup_share_the_deadline() {
+        for method in ["initialize", "session/delete", "session/close"] {
+            assert_doctor_stage_timeout(method, Duration::from_secs(1));
+        }
+    }
+
+    fn doctor_fixture_config(stall_method: &str) -> crate::config::AcpAdapterConfig {
+        crate::config::AcpAdapterConfig {
+            command: std::env::current_exe()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string(),
+            args: [
+                "--ignored",
+                "--exact",
+                "acp::client::tests::doctor_adapter_fixture",
+                "--nocapture",
+            ]
+            .map(str::to_string)
+            .to_vec(),
+            display_name: "Doctor timeout fixture".into(),
+            env: [("GOLD_BAND_DOCTOR_FIXTURE".into(), stall_method.into())]
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    fn assert_doctor_stage_timeout(stall_method: &str, timeout: Duration) {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("doctor");
+        let config = doctor_fixture_config(stall_method);
+        let error = super::doctor_in_dir(
+            &"doctor-timeout-fixture".parse().unwrap(),
+            &config,
+            cwd.clone(),
+            false,
+            false,
+            attempt.clone(),
+            super::DoctorDeadline::new(timeout),
+        )
+        .unwrap_err();
+        let diagnostic = std::fs::read_to_string(attempt.join("acp.diagnostics.jsonl")).unwrap();
+        assert!(
+            diagnostic.contains(stall_method),
+            "fixture must reach {stall_method}: {diagnostic}"
+        );
+        assert!(!attempt.join("provider.pid").exists());
+        assert!(
+            error.to_string().contains("timed out"),
+            "expected diagnostic deadline, got {error:#}"
+        );
+        let error = error
+            .downcast_ref::<crate::runtime_error::RuntimeError>()
+            .unwrap();
+        assert_eq!(error.info.code_str(), "acp.doctor-timeout");
+        assert_eq!(error.info.params["method"], stall_method);
+        let address = std::fs::read_to_string(cwd.join("fixture-address")).unwrap();
+        assert!(
+            std::net::TcpStream::connect(address).is_err(),
+            "adapter still owns its listener after timeout"
+        );
+    }
+
+    #[test]
+    fn doctor_success_removes_artifacts_and_preserves_session_capabilities() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("doctor");
+        let result = super::doctor_in_dir(
+            &"healthy-fixture".parse().unwrap(),
+            &doctor_fixture_config("none"),
+            cwd,
+            false,
+            false,
+            attempt.clone(),
+            super::DoctorDeadline::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            result.capabilities["models"]["currentModelId"],
+            "test-model"
+        );
+        assert!(!attempt.exists());
+    }
+
+    #[test]
+    fn doctor_default_budget_is_three_minutes_and_expired_budget_cannot_restart() {
+        assert_eq!(
+            super::DoctorDeadline::default().timeout,
+            Duration::from_secs(180)
+        );
+        let deadline = super::DoctorDeadline::new(Duration::ZERO);
+        assert!(deadline.is_expired());
+        for method in [
+            "initialize",
+            "session/new",
+            "session/available_commands",
+            "session/delete",
+        ] {
+            assert!(deadline.remaining(method).is_err());
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn doctor_adapter_fixture() {
+        use std::io::{BufRead, Write};
+        let Ok(stall_method) = std::env::var("GOLD_BAND_DOCTOR_FIXTURE") else {
+            return;
+        };
+        let _listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std::fs::write(
+            "fixture-address",
+            _listener.local_addr().unwrap().to_string(),
+        )
+        .unwrap();
+        println!();
+        std::io::stdout().flush().unwrap();
+        for line in std::io::stdin().lock().lines() {
+            let frame: Value = serde_json::from_str(&line.unwrap()).unwrap();
+            if frame.get("id").is_none() {
+                continue;
+            }
+            let response = if frame["method"] == stall_method {
+                // Rescue the unfixed implementation without mistaking rescue for a timeout.
+                std::thread::sleep(Duration::from_secs(2));
+                json!({"error": {"code": -32000, "message": "fixture rescue"}})
+            } else if frame["method"] == "session/delete" && stall_method == "session/close" {
+                json!({"error": {"code": -32601, "message": "unsupported"}})
+            } else if frame["method"] == "initialize" {
+                json!({"result": {"protocolVersion": 1, "agentCapabilities": {}}})
+            } else {
+                json!({"result": {"sessionId": "doctor-fixture-session", "models": {"currentModelId": "test-model", "availableModels": [{"modelId": "test-model", "name": "Test"}]}}})
+            };
+            let mut response = response;
+            response["jsonrpc"] = json!("2.0");
+            response["id"] = frame["id"].clone();
+            println!("{response}");
+            std::io::stdout().flush().unwrap();
+        }
+    }
 
     #[test]
     fn timeline_patch_deadline_is_not_expired_by_the_previous_slow_write() {
@@ -11918,6 +12275,190 @@ mod tests {
         assert_eq!(prior.input_tokens, None);
         assert_eq!(prior.output_tokens, None);
         assert_eq!(prior.total_tokens, None);
+    }
+
+    fn compaction_update(
+        seq: u64,
+        seconds: u64,
+        status: &str,
+        tool_id: Option<&str>,
+    ) -> AcpUiEvent {
+        let update = match tool_id {
+            Some(id) => json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": id,
+                "status": if status == "running" { "in_progress" } else { status },
+                "_meta": { "contextCompaction": {} }
+            }),
+            None => json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "type": "text", "text": if status == "running" {
+                    "Compacting..."
+                } else { "Compacting completed." } }
+            }),
+        };
+        let mut item = crate::acp::events::normalize_session_update(
+            seq,
+            Some("session-1".to_string()),
+            &update,
+        );
+        item.timestamp = format!("{seconds}Z");
+        item
+    }
+
+    #[test]
+    fn compaction_repeated_start_preserves_one_durable_item_and_first_start() {
+        for tool_id in [None, Some("compact-1")] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = camino::Utf8Path::from_path(dir.path())
+                .unwrap()
+                .join("acp.timeline.jsonl");
+            let mut store =
+                crate::acp::timeline::TimelineStore::open(path.clone(), Default::default())
+                    .unwrap();
+            let mut usage = AcpUsageState::default();
+            usage.context.confirmed_used = Some(166_919);
+            usage.context.window_size = Some(200_000);
+            let mut ids = HashSet::new();
+            for (seq, seconds, status) in [
+                (10, 100, "running"),
+                (11, 130, "running"),
+                (12, 160, "running"),
+                (13, 190, "running"),
+                (14, 207, "completed"),
+            ] {
+                let mut item = compaction_update(seq, seconds, status, tool_id);
+                let timestamp = item.timestamp.clone();
+                AcpRuntime::apply_context_compaction_event(&mut usage, &mut item, seq, &timestamp);
+                ids.insert(item.id.clone());
+                store.upsert(seq, &item).unwrap();
+                assert_eq!(item.started_at.as_deref(), Some("100Z"));
+                if status == "completed" {
+                    assert_eq!(item.ended_at.as_deref(), Some("207Z"));
+                }
+            }
+            assert_eq!(ids.len(), 1);
+            let item =
+                crate::acp::timeline::read_indexed_timeline_item(&path, ids.iter().next().unwrap())
+                    .unwrap()
+                    .unwrap()
+                    .event;
+            assert_eq!(item.status.as_deref(), Some("completed"));
+            assert_eq!(item.started_seq, Some(10));
+        }
+    }
+
+    #[test]
+    fn compaction_repeated_start_keeps_pending_usage_and_next_cycle_gets_new_identity() {
+        let mut usage = AcpUsageState::default();
+        usage.context.confirmed_used = Some(166_919);
+        let mut first = compaction_update(10, 100, "running", None);
+        AcpRuntime::apply_context_compaction_event(&mut usage, &mut first, 10, "100Z");
+        let state = usage.compaction.as_mut().unwrap();
+        state.saw_context_reset = true;
+        state.pending_context_used_after = Some(1_987);
+        let mut repeat = compaction_update(11, 130, "running", None);
+        AcpRuntime::apply_context_compaction_event(&mut usage, &mut repeat, 11, "130Z");
+        let state = usage.compaction.as_ref().unwrap();
+        assert!(state.saw_context_reset);
+        assert_eq!(state.pending_context_used_after, Some(1_987));
+        let mut done = compaction_update(12, 207, "completed", None);
+        AcpRuntime::apply_context_compaction_event(&mut usage, &mut done, 12, "207Z");
+        assert_eq!(done.id, first.id);
+        assert_eq!(
+            done.raw.unwrap()["contextCompaction"]["contextUsedAfter"],
+            1_987
+        );
+        assert!(usage.compaction.is_none());
+        let mut next = compaction_update(13, 300, "running", None);
+        AcpRuntime::apply_context_compaction_event(&mut usage, &mut next, 13, "300Z");
+        assert_ne!(next.id, first.id);
+        assert_eq!(next.started_at.as_deref(), Some("300Z"));
+    }
+
+    #[test]
+    fn compaction_structured_identity_settles_superseded_and_rejects_late_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.timeline.jsonl");
+        let mut store =
+            crate::acp::timeline::TimelineStore::open(path.clone(), Default::default()).unwrap();
+        let mut usage = AcpUsageState::default();
+        let mut apply = |usage: &mut AcpUsageState, event: AcpUiEvent| {
+            let existing =
+                super::compaction_tool_item_id(&event).and_then(|id| store.read_item(&id).unwrap());
+            let active = usage
+                .compaction
+                .as_ref()
+                .and_then(|state| store.read_item(&state.item_id).unwrap());
+            let items = super::context_compaction_updates(
+                usage,
+                &event,
+                existing.as_ref(),
+                active.as_ref(),
+            );
+            for item in &items {
+                store.upsert(item.seq, item).unwrap();
+            }
+            items
+        };
+        apply(&mut usage, compaction_update(10, 100, "running", Some("a")));
+        let items = apply(&mut usage, compaction_update(11, 130, "running", Some("b")));
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].status.as_deref(), Some("interrupted"));
+        assert_eq!(items[0].started_at.as_deref(), Some("100Z"));
+        assert_eq!(items[0].ended_at.as_deref(), Some("130Z"));
+        assert_eq!(
+            items[0].raw.as_ref().unwrap()["contextCompaction"]["reason"],
+            "superseded"
+        );
+        for (seq, status) in [(12, "running"), (13, "completed")] {
+            assert!(apply(&mut usage, compaction_update(seq, 140, status, Some("a"))).is_empty());
+            assert_eq!(
+                usage.compaction.as_ref().unwrap().item_id,
+                "context-compaction-tool-b"
+            );
+        }
+        let done = apply(
+            &mut usage,
+            compaction_update(14, 160, "completed", Some("b")),
+        );
+        assert_eq!(done[0].started_at.as_deref(), Some("130Z"));
+        assert!(apply(&mut usage, compaction_update(15, 170, "running", Some("b"))).is_empty());
+        let mut confirmed = compaction_update(16, 180, "completed", Some("b"));
+        confirmed.raw.as_mut().unwrap()["contextCompaction"]["contextUsedAfter"] = json!(1_987);
+        let confirmed = apply(&mut usage, confirmed);
+        assert_eq!(confirmed[0].ended_at.as_deref(), Some("160Z"));
+        assert!(usage.compaction.is_none());
+        assert!(apply(&mut usage, compaction_update(17, 190, "running", Some("b"))).is_empty());
+        apply(&mut usage, compaction_update(18, 200, "running", Some("c")));
+        assert!(
+            apply(
+                &mut usage,
+                compaction_update(19, 210, "completed", Some("unknown"))
+            )
+            .is_empty()
+        );
+        let interrupted = apply(&mut usage, compaction_update(20, 220, "failed", Some("c")));
+        assert_eq!(interrupted[0].status.as_deref(), Some("interrupted"));
+        assert!(usage.compaction.is_none());
+        drop(apply);
+        drop(store);
+        let mut reopened =
+            crate::acp::timeline::TimelineStore::open(path, Default::default()).unwrap();
+        let previous = reopened
+            .read_item("context-compaction-tool-b")
+            .unwrap()
+            .unwrap();
+        assert!(
+            super::context_compaction_updates(
+                &mut usage,
+                &compaction_update(21, 230, "running", Some("b")),
+                Some(&previous),
+                None
+            )
+            .is_empty()
+        );
     }
 
     #[test]

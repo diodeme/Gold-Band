@@ -648,6 +648,26 @@ struct TimelineFileSignature {
 }
 
 impl TimelineStore {
+    /// Read one canonical item using the resident index, refreshing only after external writes.
+    pub fn read_item(&mut self, item_id: &str) -> Result<Option<AcpUiEvent>> {
+        let path = self.path.clone();
+        with_jsonl_file_lock(&path, || {
+            if timeline_file_signature(&path) != self.file_signature {
+                let (index, _) = load_or_rebuild_index_unlocked(
+                    &path,
+                    &timeline_index_path(&path),
+                    self.checkpoint_policy,
+                )?;
+                self.replace_index_projection(index);
+            }
+            self.index
+                .item_locators
+                .get(item_id)
+                .map(|locator| read_event_at_locator(&path, locator))
+                .transpose()
+        })
+    }
+
     pub fn generation(&self) -> u64 {
         self.index.generation
     }

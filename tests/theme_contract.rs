@@ -20,6 +20,20 @@ fn rust_catalog_deserializes_every_generated_declarative_theme() {
         assert!(!theme.name.en.is_empty());
         assert!(!theme.schemes.light.semantic.foreground.is_empty());
         assert!(!theme.schemes.dark.semantic.foreground.is_empty());
+        for scheme in [&theme.schemes.light, &theme.schemes.dark] {
+            for token in [
+                &scheme.semantic.status_running_surface,
+                &scheme.semantic.status_running_border,
+                &scheme.semantic.status_success_surface,
+                &scheme.semantic.status_success_border,
+                &scheme.semantic.status_warning_surface,
+                &scheme.semantic.status_warning_border,
+                &scheme.semantic.status_danger_surface,
+                &scheme.semantic.status_danger_border,
+            ] {
+                assert!(!token.is_empty(), "status surfaces and borders must survive Rust decoding");
+            }
+        }
         let ui_stack = theme
             .fonts
             .as_ref()

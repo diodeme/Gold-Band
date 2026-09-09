@@ -1,5 +1,13 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-09 ACP 压缩开始通知幂等
+
+- 根因与现场：task-029 的 round-001/dev/attempt-002 在 14:16:20、14:16:50、14:17:20、14:17:50 连续收到无 ID 的 `Compacting...`；14:18:07 完成只结束最后一张，前三张持久化为 running。原位更新设计正确，但实现把每次开始序号当作新生命周期并覆盖活动引用。
+- 实现：复用既有 `AcpUsageState.compaction`，重复开始保留首次身份、时间和用量观察；不同结构化 ID 先中断旧活动条目再开始新条目，终态与迟到事件按 ID 隔离，完成后的用量确认保持原结束时间。复用 TimelineStore 常驻索引读取单个终态条目，不增加历史状态缓存、持久字段、依赖或前端去重逻辑。
+- 红测证据：最小协议事件测试在第二次开始时失败，实际 startedAt=`130Z`，期望 `100Z`。同一测试转绿，四次开始和一次完成只保留一条 completed，耗时 107 秒；补充 reset/候选用量保留、新周期、不同 ID 替换、中断、迟到通知与重开文件后的终态保护。
+- 验证：ACP Rust 单测 458 通过、1 项原有忽略；Web 定向测试 95 通过，DOM 固定同一行原位完成、107 秒耗时和继续推进两分钟不再计时；TypeScript 检查与 Vite 生产构建通过。内置 iab 不可用，使用已连接 Chrome 在临时组件验证页验证重复开始与完成显示；验证页面及服务完成后清理。未启动外部 Agent，也未改写用户归档历史。
+- 性能与过度设计评审：无 ID 重复通知只访问当前状态；结构化 ID 通过既有索引定位单条记录，正常路径不扫描或重新解析全量历史，外部写入时沿用索引校准。每次通知最多产生旧中断、新开始两项更新，无新增无界缓存、队列、定时器或模型；前端复用原有组件并减少多余 running 行刷新。历史损坏数据不在本次自动迁移范围。
+
 ## 2026-09-08 AI-DYNAMIC Group 验收交接生命周期修复
 
 - 根因：旧协议把 acceptance 的 single/fanout 固定解释为重开旧 group 的修复循环，但 Agent 可以沿同一链继续下一阶段，最终 end 会再次触发旧 merge。属于原生命周期设计缺陷。
@@ -1262,7 +1270,7 @@ attempt-001/
 
 - 根因修复：将“Agent turn 是否由 Runtime 消费”从 prompt 内容与节点暂停状态中抽离为 invocation 级 `RuntimeControlled / NonRuntimeControlled`。普通消息不会再因为回复结束而读取 artifact、计算 outcome 或推进 workflow。
 - 交互收敛：`Paused + ProcessInterrupted` 不新增状态；composer 保持普通聊天，并提供独立继续动作。发送按钮与 Enter 固定走 NonRuntime ACP prompt；没有可发送输入时继续动作显示“继续工作流”，调用 `continue_conversation_runtime` 并发送隐藏 `RuntimeResume`，不创建可见用户消息；存在可发送输入时显示“继续并发送”，以一次 continue command 原子提交用户输入与恢复意图，用户气泡只显示用户输入。
-- 边界提示：Workflow/AUTO 的中英文基础 runtime system prompt 预先声明用户主动打断并转向其他内容时，在 Runtime 明确恢复前无需遵守 artifact 输出语义；中断期间针对当前任务的最新用户指引在恢复后继续有效，可调整任务内容、交付结果与角色流程，但不能覆盖 artifact contract、文件规则及安全边界。AI-DYNAMIC 通过既有 system 组合自然继承且不重复提示。停止后的普通消息保持用户原文，不再追加一次性 suspended hidden context；显式继续的隐藏 `runtimeControlResume` 只用一句短提示声明 Runtime 控制与当前输出契约恢复，不重复 system 规则，也不自动恢复中断前的角色流程。
+- 边界提示：Workflow/AUTO 的中英文基础 runtime system prompt 预先声明用户主动打断并转向其他内容时，在 Runtime 明确恢复前无需遵守 artifact 输出语义；中断期间针对当前任务的最新用户指引在恢复后继续有效，可调整任务内容、交付结果与角色流程，但不能覆盖 artifact contract、文件规则及安全边界。AI-DYNAMIC 通过既有 system 组合自然继承且不重复提示。停止后的普通消息保持用户原文，不再追加一次性 suspended hidden context；纯继续的隐藏 `runtimeControlResume` 固定为“请继续执行当前节点尚未完成的任务，并遵循用户针对该任务的最新指引（如果有）”，同步英文模板与既有断言，避免控制权移交措辞触发提前收尾。2026-09-09 按用户要求直接修改，未运行编译和测试；本次复用既有模板，不新增状态、依赖或 I/O，无额外性能风险。
 - artifact 完整性：PostTurn finalize 中断输出一律不可信；`artifact-emission.json(finalizing)` 的纯恢复只跳过上一业务 turn并重新请求完整 finalize；继续并发送原子切换为 `business-turn`，先执行用户新消息再重新 finalize。InlineControl、PostTurnProjection 与 AI-DYNAMIC 精确 leaf resume 继续复用现有 contract 和 scheduler。
 - 并发与接受边界：`WorkflowContinued` 只在 accepted prompt event 落盘后以 source transition CAS 提交，迟到 resume 不覆盖新 stop。固定工作流 continue 使用 per-run starting lease 拦截双击，且不持有全局锁等待 Agent turn。
 - 性能收口：legacy cursor 缺失时只回扫 timeline 一次并持久化 negative cache；cursor 并发写入使用固定 64 路路径哈希短锁，不维护随 attempt 数增长并在热路径全表清理的锁注册表。Direct / `RawAgent` 首轮直接派生为 NonRuntimeControlled。

@@ -23,8 +23,16 @@ it.each([true, false])('launch fields are read-only only for catalog agents: %s'
   const edit = [...container.querySelectorAll('button')].find((button) => button.textContent === i18n.t('agentManagement.edit'))!;
   await act(async () => edit.click());
   const field = (key: string) => [...document.querySelectorAll('label')].find((label) => label.textContent?.startsWith(i18n.t(key)))!;
-  expect(field('agentManagement.command').querySelector('input')!.readOnly).toBe(builtin);
-  expect(field('agentManagement.args').querySelector('textarea')!.readOnly).toBe(builtin);
+  const command = field('agentManagement.command').querySelector('input')!;
+  const args = field('agentManagement.args').querySelector('textarea')!;
+  expect(command.readOnly).toBe(builtin);
+  expect(args.readOnly).toBe(builtin);
+  expect(command.disabled).toBe(false);
+  expect(args.disabled).toBe(false);
+  expect(command.classList.contains('bg-muted/50')).toBe(builtin);
+  expect(args.classList.contains('bg-muted/50')).toBe(builtin);
+  expect(command.classList.contains('text-muted-foreground')).toBe(builtin);
+  expect(args.classList.contains('text-muted-foreground')).toBe(builtin);
   expect(field('agentManagement.displayName').querySelector('input')!.readOnly).toBe(false);
   expect(field('agentManagement.env').querySelector('textarea')!.readOnly).toBe(false);
 });

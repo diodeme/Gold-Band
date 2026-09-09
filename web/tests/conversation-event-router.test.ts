@@ -587,7 +587,33 @@ describe('conversation event router', () => {
     });
   });
 
-  it('uses sequence coverage to recover an oversized transient timing update', () => {
+  it.each([false, true])('does not require root transcript catch-up for child-advanced clocks (evicted=%s)', (evicted) => {
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('toolCall'), id: 'agent-launch', seq: 118, endedSeq: 118,
+    }, 118));
+    const initial = readConversationBranchReplaySnapshot(locator, 'root');
+    expect(acknowledgeConversationBranchReplay(locator, 'root', 'session-1', 1, 118, 118, initial.generation)).toBe(true);
+    applyConversationEventToBranchSnapshots(live('agent-child', {
+      ...uiEvent('thoughtDelta'), id: 'child-thought', seq: 388, endedSeq: 388,
+    }, 388));
+    const count = CONVERSATION_EVENT_REPLAY_LIMITS.eventsPerBranch + Number(evicted);
+    for (let index = 0; index < count; index += 1) {
+      applyConversationEventToBranchSnapshots(live('root', {
+        ...uiEvent('timingUpdate'), id: `acp-timing-388-${index}`, seq: 388,
+        timing: { sessionElapsedSeconds: index, revision: 389 },
+      }, null));
+    }
+    const replay = readConversationBranchReplaySnapshot(locator, 'root');
+    expect(replay.events.some(item => item.id === 'child-thought')).toBe(false);
+    expect(replay.lossWatermarkRevision).toBe(0);
+    expect(replay.events).toHaveLength(0);
+    expect(replay.headSeq).toBe(118);
+    // The root query already covers all durable root content at seq 118.
+    expect(acknowledgeConversationBranchReplay(locator, 'root', 'session-1', 1, 118, 118, replay.generation)).toBe(true);
+    expect(readConversationBranchReplaySnapshot(locator, 'root').requiresCatchUp).toBe(false);
+  });
+
+  it('does not create a transcript gap for a display-only timing update', () => {
     applyConversationEventToBranchSnapshots(live('root', {
       ...uiEvent('timingUpdate'),
       id: 'large-timing',
@@ -597,8 +623,26 @@ describe('conversation event router', () => {
     expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
       headRevision: 0,
       lossWatermarkRevision: 0,
-      lossWatermarkSeq: 1,
-      requiresCatchUp: true,
+      lossWatermarkSeq: 0,
+      requiresCatchUp: false,
+    });
+  });
+
+  it.each(['textDelta', 'plan', 'usageUpdate', 'permissionRequest'])('keeps durable %s replay when clocks arrive and preserves its revision loss', (kind) => {
+    applyConversationEventToBranchSnapshots(live('root', { ...uiEvent(kind), endedSeq: 10 }, 10));
+    for (let index = 0; index <= CONVERSATION_EVENT_REPLAY_LIMITS.eventsPerBranch; index += 1) {
+      applyConversationEventToBranchSnapshots(live('root', {
+        ...uiEvent('timingUpdate'), id: `clock-${index}`, seq: 388,
+      }, null));
+    }
+    expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+      events: [expect.objectContaining({ kind })], headSeq: 10, headRevision: 10, requiresCatchUp: false,
+    });
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent(kind), endedSeq: 11, content: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes),
+    }, 11));
+    expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+      lossWatermarkRevision: 11, requiresCatchUp: true,
     });
   });
 

@@ -64,6 +64,37 @@ afterEach(() => {
 });
 
 describe('ConversationSidebar workspace expansion intent', () => {
+  it('renders lifecycle priority for workflow task and expanded run dots', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const vm = sidebarVm();
+    const run = { runId: 'run-001', status: 'running', outcome: null, startedAt: '', updatedAt: '' };
+    vm.pinnedTaskPage = { status: 'ready', nextCursor: null };
+    vm.pinnedTasks = [{ projectId: 'workspace-a', taskId: 'task-colors', taskUuid: 'uuid-colors', title: 'Parallel workflow', autoTitle: false, runMode: 'workflow', latestRun: run, runs: [run], runHistoryStatus: 'ready', runsNextCursor: null, pinned: true }];
+    try {
+      for (const [status, outcome, color] of [
+        ['running', 'success', 'bg-gold-running'],
+        ['running', 'failure', 'bg-gold-running'],
+        ['paused', 'success', 'bg-yellow-500/50'],
+        ['completed', 'success', 'bg-emerald-500/50'],
+        ['completed', 'failure', 'bg-red-500/50'],
+      ]) {
+        const nextRun = { ...run, status, outcome };
+        const nextVm = { ...vm, pinnedTasks: [{ ...vm.pinnedTasks[0], latestRun: nextRun, runs: [nextRun] }] };
+        await act(async () => root.render(<ConversationSidebar {...callbacks} vm={nextVm} active={{ kind: 'conversation-home' }} />));
+        if (!container.textContent?.includes('run-001')) {
+          const title = Array.from(container.querySelectorAll('span')).find((element) => element.textContent === 'Parallel workflow')!;
+          await act(async () => title.click());
+        }
+        expect(container.querySelectorAll(`span[class~="${color}"]`).length).toBe(2);
+        expect(container.textContent).toContain('Parallel workflow');
+      }
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('keeps task actions transparent and in the row flow for hover and keyboard focus', async () => {
     const container = document.createElement('div');
     document.body.append(container);

@@ -1,5 +1,5 @@
 import type { RuntimeApi } from '@/api/client';
-import type { AcpSessionVm, AcpUiEventVm, ConversationRunVm, ConversationSessionTargetVm, TurnFileChangeSetVm, FileComparisonVm, WorkspaceFileSnapshotVm } from '@/types';
+import type { AcpRawFrameVm, AcpSessionVm, AcpUiEventVm, ConversationRunVm, ConversationSessionTargetVm, TurnFileChangeSetVm, FileComparisonVm, WorkspaceFileSnapshotVm } from '@/types';
 import { cursorSequence, missing, pageLimit, pageSession, sessionIdentity } from './history-query';
 
 export const REAL_PROJECT_ID = 'e-projects-code-ai-ji--a40d4379';
@@ -14,6 +14,8 @@ export interface DemoDataset {
   title: string;
   source: { revision: number; status: string; outcome: string | null; pauseReason: string; startedAt?: string; updatedAt?: string };
   run: Resource;
+  task: Resource;
+  workflow: Resource;
   sessions: SessionReference[];
   resources?: Resource;
 }
@@ -32,6 +34,7 @@ interface SessionIndex {
   eventRefs: Record<string, EventReference>;
   pages: Resource[];
   activityPages: Resource[];
+  raw?: Resource;
 }
 export function createDatasetReader(base: string, fetcher: typeof fetch = fetch) {
   let datasetPromise: Promise<DemoDataset> | undefined;
@@ -103,7 +106,37 @@ export function createDatasetReader(base: string, fetcher: typeof fetch = fetch)
     if (currentIndex?.path !== ref.path) currentIndex = { path: ref.path, promise: read<SessionIndex>(ref).catch((error) => { if (currentIndex?.path === ref.path) currentIndex = undefined; throw error; }) };
     return currentIndex.promise;
   }
-  const api: Pick<RuntimeApi, 'getConversationRun' | 'getAcpSession' | 'getAcpActivityDetail' | 'getAcpToolDetail' | 'getTurnFileChangeSet' | 'getFileComparison' | 'resolveTurnAttachmentFile' | 'readFileResource' | 'listConversationDirectory' | 'readConversationDirectoryFile'> = {
+  const api: Pick<RuntimeApi, 'getConversationRun' | 'getAcpSession' | 'getAcpActivityDetail' | 'getAcpToolDetail' | 'getAcpRawFrames' | 'getTurnFileChangeSet' | 'getFileComparison' | 'resolveTurnAttachmentFile' | 'readFileResource' | 'listConversationDirectory' | 'readConversationDirectoryFile' | 'workspaceFilePreviewUrl'> = {
+    workspaceFilePreviewUrl(token) {
+      if (!/^demo-history\/sessions\/[a-f0-9]{24}\/images\/[a-f0-9]{64}\.(png|jpg|gif|webp|bmp|ico|avif)$/.test(token)) missing({ token });
+      return `${base}${token.slice('demo-history/'.length)}`;
+    },
+    async getAcpRawFrames(projectId, taskId, runId, roundId, nodeId, attemptId, query = {}, outerNodeId, outerAttemptId) {
+      const index = await session(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
+      if (!index.raw) missing({ resource: 'raw' });
+      const page = query.page ?? 0;
+      if (!Number.isSafeInteger(page) || page < 0 || (query.pageSize != null && (!Number.isSafeInteger(query.pageSize) || query.pageSize < 1))) throw { code: 'demo.invalid-query', params: {} };
+      const pageSize = Math.max(25, Math.min(200, query.pageSize ?? 100));
+      const order = query.order ?? 'desc';
+      if (order !== 'asc' && order !== 'desc') throw { code: 'demo.invalid-query', params: {} };
+      const search = query.search?.trim().toLowerCase() || null;
+      const kind = query.kind?.trim().toLowerCase() || null;
+      const direction = query.direction?.trim().toLowerCase() || null;
+      const raw = await read<{ frames: (Omit<AcpRawFrameVm, 'content'> & { page: number })[]; pages: Resource[] }>(index.raw);
+      let refs = raw.frames.filter((frame) => (!kind || frame.kind.toLowerCase().includes(kind)) && (!direction || frame.direction?.toLowerCase() === direction));
+      if (search) {
+        const matching = new Set<string>();
+        for (const id of new Set(refs.map((frame) => frame.page))) {
+          for (const frame of await read<AcpRawFrameVm[]>(raw.pages[id])) if (frame.content.toLowerCase().includes(search)) matching.add(frame.id);
+        }
+        refs = refs.filter((frame) => matching.has(frame.id));
+      }
+      if (order === 'desc') refs.reverse();
+      const selected = refs.slice(page * pageSize, (page + 1) * pageSize);
+      const pages = await Promise.all([...new Set(selected.map((frame) => frame.page))].map((id) => read<AcpRawFrameVm[]>(raw.pages[id])));
+      const byId = new Map(pages.flat().map((frame) => [frame.id, frame]));
+      return { items: selected.map((frame) => byId.get(frame.id)!), page, pageSize, total: refs.length, hasPrevious: page > 0 && refs.length > 0, hasNext: (page + 1) * pageSize < refs.length, order, search, kind, direction };
+    },
     async getTurnFileChangeSet(locator, id) {
       const ref = (await filesFor(locator)).changes[id];
       if (!ref) missing({ id });
@@ -123,12 +156,12 @@ export function createDatasetReader(base: string, fetcher: typeof fetch = fetch)
       const changes = await api.getTurnFileChangeSet(locator, changeSetId);
       const attachment = changes.attachments.find((item) => item.id === attachmentId);
       if (!attachment) missing({ attachmentId });
-      const entry = await findAttachment(locator, attachment.relativePath);
+      const entry = await findAttachment(locator, `attachments/${attachment.relativePath}`);
       return { locator: { projectId: locator.projectId, canonicalPath: entry.canonicalPath, relativePath: attachment.relativePath, scope: 'workspace' }, target: null, externalAccessGrant: null };
     },
     async readFileResource(projectId, path) {
       if (projectId !== (await dataset()).projectId) missing({ projectId });
-      const match = /^\/demo-history\/(sessions\/[a-f0-9]{24})\/attachments\/(.+)$/.exec(path);
+      const match = /^\/demo-history\/(sessions\/[a-f0-9]{24})\/files\/(.+)$/.exec(path);
       if (!match) missing({ path });
       const entry = await attachment((await sessionResources(match[1])).directory, match[2]);
       return read<WorkspaceFileSnapshotVm>(entry.resource);

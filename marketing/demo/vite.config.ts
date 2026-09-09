@@ -3,8 +3,7 @@ import { defineConfig, normalizePath } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { identitySensitiveDependencies } from '../../web/config/identity-sensitive-dependencies';
-import { cpSync } from 'node:fs';
-import { checkDataset } from './build-dataset.mjs';
+import { checkDataset, copyDataset } from './build-dataset.mjs';
 
 export default defineConfig({
   base: process.env.VITE_DEMO_BASE ?? '/',
@@ -17,9 +16,9 @@ export default defineConfig({
       buildStart() {
         checkDataset(process.env.DEMO_DATASET_PATH ?? resolve('marketing/demo/data/ji-history'), process.env.DEMO_ALLOW_INCOMPLETE_DATASET === '1');
       },
-      closeBundle() {
+      writeBundle(options) {
         const source = process.env.DEMO_DATASET_PATH ?? resolve('marketing/demo/data/ji-history');
-        cpSync(source, resolve(process.env.DEMO_DIST ?? '.codex-temp/demo-dist', 'data/ji-history'), { recursive: true });
+        copyDataset(source, resolve(options.dir!, 'data/ji-history'));
       },
     },
     {

@@ -5,8 +5,14 @@ import { createDatasetReader, REAL_PROJECT_ID } from '../../marketing/demo/datas
 import { createDemoApi } from '../../marketing/demo/api';
 import { demoHashForPage, demoPageFromHash, demoLinkParameters } from '../../marketing/demo/routes';
 import { entryPreferences } from '../../marketing/demo/entry';
+import type { RuntimeApi } from '../src/api/client';
+import { gunzipSync } from 'node:zlib';
 
 describe('demo entry and immutable source', () => {
+  it('never resolves a real-project workflow through the recording fixture', async () => {
+    await expect(createDemoApi().getWorkflow('task-015', REAL_PROJECT_ID)).rejects.toMatchObject({ code: 'demo.operation-unavailable' });
+    expect(await createDemoApi().getWorkflow('mock-task', 'default')).toBeTruthy();
+  });
   it('round-trips complete navigation identity', () => {
     const page = { kind: 'conversation-run' as const, projectId: REAL_PROJECT_ID, taskId: 'task-015', runId: 'run-001' };
     const leaf = { roundId: 'round-001', nodeId: 'nested', attemptId: 'attempt-002', outerNodeId: 'ai-dynamic', outerAttemptId: 'attempt-001', pathLabel: '' };
@@ -39,6 +45,35 @@ describe.skipIf(!process.env.DEMO_DATASET_PATH)('exported source reader', () => 
   it('keeps the resource catalog lightweight instead of loading every filename', async () => {
     const data = await reader.dataset();
     expect(data.resources!.byteLength).toBeLessThan(64 * 1024);
+  });
+  it('includes task metadata and the executable workflow snapshot in the publication closure', async () => {
+    const data = await reader.dataset() as unknown as { task: { path: string }; workflow: { path: string } };
+    expect(data.task?.path).toBe('task.json');
+    expect(data.workflow?.path).toBe('workflow.json');
+    expect(JSON.parse(await readFile(resolve(root, data.task.path), 'utf8'))).toBeTruthy();
+    expect(JSON.parse(await readFile(resolve(root, data.workflow.path), 'utf8'))).toBeTruthy();
+  });
+  it('reads raw frames in pages with the existing filter and ordering contract', async () => {
+    const data = await reader.dataset(); const ref = data.sessions[0];
+    const args = [data.projectId, data.taskId, data.runId, ref.roundId, ref.nodeId, ref.attemptId] as const;
+    const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
+    const prefix = `rounds/${ref.roundId}/nodes/${ref.outerNodeId}/${ref.outerAttemptId}/dynamic/nodes/${ref.nodeId}/${ref.attemptId}/`;
+    const raw = manifest.files.find((file: { source: string }) => file.source === prefix + 'acp.raw.jsonl');
+    const lines = gunzipSync(await readFile(resolve(root, raw.path))).toString('utf8').trimEnd().split('\n');
+    const api = reader.api as RuntimeApi;
+    const first = await api.getAcpRawFrames(...args, { pageSize: 25, order: 'asc' }, ref.outerNodeId, ref.outerAttemptId);
+    expect(first.total).toBe(lines.length);
+    expect(first.items[0]).toMatchObject({ id: 'raw-1', lineNumber: 1, content: lines[0], contentTruncated: false });
+    const second = await api.getAcpRawFrames(...args, { page: 1, pageSize: 25, order: 'asc' }, ref.outerNodeId, ref.outerAttemptId);
+    expect(second.items[0].lineNumber).toBe(26);
+    const last = await api.getAcpRawFrames(...args, { pageSize: 25 }, ref.outerNodeId, ref.outerAttemptId);
+    expect(last.items[0].lineNumber).toBe(lines.length);
+    const filtered = await api.getAcpRawFrames(...args, { direction: 'outbound', search: 'initialize', kind: 'initialize' }, ref.outerNodeId, ref.outerAttemptId);
+    expect(filtered.total).toBeGreaterThan(0);
+    expect(filtered.items.every((item) => item.direction === 'outbound' && item.kind.includes('initialize') && item.content.toLowerCase().includes('initialize'))).toBe(true);
+    const beyond = await api.getAcpRawFrames(...args, { page: lines.length }, ref.outerNodeId, ref.outerAttemptId);
+    expect(beyond.items).toEqual([]);
+    await expect(api.getAcpRawFrames(...args, {}, 'wrong', ref.outerAttemptId)).rejects.toMatchObject({ code: 'demo.resource-not-found' });
   });
   it('covers every root/child history exactly once across cursor boundaries', async () => {
     const data = await reader.dataset();
@@ -76,6 +111,24 @@ describe.skipIf(!process.env.DEMO_DATASET_PATH)('exported source reader', () => 
     await expect(reader.api.getFileComparison({ ...locator, branchId: 'wrong' }, id, changes.changes[0].id)).rejects.toMatchObject({ code: 'demo.resource-not-found' });
     await expect(reader.api.readFileResource('wrong', resolved.locator.canonicalPath)).rejects.toMatchObject({ code: 'demo.resource-not-found' });
     await expect(reader.api.readConversationDirectoryFile({ ...locator, relativePath: '../run.json', kind: 'attachments' } as any)).rejects.toMatchObject({ code: 'demo.resource-not-found' });
+  });
+  it('exposes the actual attempt directory and image attachments', async () => {
+    const data = await reader.dataset();
+    const ref = data.sessions.find((item) => item.nodeId === 'phase-1-dev' && item.branchId === 'root')!;
+    const locator = { ...ref, projectId: data.projectId, taskId: data.taskId, runId: data.runId };
+    const entries = await reader.api.listConversationDirectory(locator);
+    expect(entries.map((entry) => entry.name)).toContain('attachments');
+    expect(entries.map((entry) => entry.name)).toContain('acp.raw.jsonl');
+    const file = await reader.api.readConversationDirectoryFile({ ...locator, relativePath: 'attachments/browser/mobile.png' });
+    expect(file).toMatchObject({ kind: 'image', sourceEditable: false });
+    if (file.kind === 'image') {
+      expect(file.width).toBeGreaterThan(0);
+      const url = (reader.api as RuntimeApi).workspaceFilePreviewUrl(file.previewGrant.token);
+      expect(url).toMatch(/^\/data\/sessions\/[a-f0-9]{24}\/images\//);
+      expect((await readFile(resolve(root, url.replace('/data/', '')))).byteLength).toBe(Number(file.revision.byteLength));
+    }
+    const run = await reader.api.getConversationRun(data.projectId, data.taskId, data.runId);
+    expect(run.sessionTree.rounds[0].nodes.find((node) => node.nodeId === ref.nodeId)!.attempts[0].attachmentCount).toBeGreaterThan(0);
   });
   it('rejects wrong outer/branch and returns the requested tool rather than the first', async () => {
     const data = await reader.dataset(); const ref = data.sessions[0];

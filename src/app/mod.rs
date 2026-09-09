@@ -3431,13 +3431,22 @@ impl App {
     }
 
     pub fn provider_doctor_probe(&self, provider: &str) -> Result<ProviderDoctorProbe> {
+        self.provider_doctor_probe_with_deadline(provider, acp_client::DoctorDeadline::default())
+    }
+
+    pub fn provider_doctor_probe_with_deadline(
+        &self,
+        provider: &str,
+        deadline: acp_client::DoctorDeadline,
+    ) -> Result<ProviderDoctorProbe> {
         let (agent_id, config) = self.managed_agent(provider)?;
-        match acp_client::doctor(
+        match acp_client::doctor_with_deadline(
             &agent_id,
             &config.adapter,
             self.paths.repo_root.clone(),
             self.config.use_local_claude,
             self.config.require_local_claude_executable,
+            deadline,
         ) {
             Ok(probe) => Ok(ProviderDoctorProbe {
                 doctor: DoctorResult {

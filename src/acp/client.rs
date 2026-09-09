@@ -397,7 +397,49 @@ const STOP_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 const LIVE_STREAM_UPDATE_INTERVAL: Duration = Duration::from_millis(75);
 const LIVE_TIMING_UPDATE_INTERVAL: Duration = Duration::from_secs(1);
 const ACP_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(60);
-const DOCTOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+const DOCTOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DoctorDeadline {
+    expires_at: Instant,
+    timeout: Duration,
+}
+
+impl Default for DoctorDeadline {
+    fn default() -> Self {
+        Self::new(DOCTOR_REQUEST_TIMEOUT)
+    }
+}
+
+impl DoctorDeadline {
+    pub fn new(timeout: Duration) -> Self {
+        Self {
+            expires_at: Instant::now() + timeout,
+            timeout,
+        }
+    }
+
+    pub fn is_expired(self) -> bool {
+        Instant::now() >= self.expires_at
+    }
+
+    fn remaining(self, method: &str) -> Result<Duration> {
+        self.expires_at
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| {
+                runtime_error(manual_runtime_error_info(
+                    RuntimeErrorDomain::Provider,
+                    "acp.doctor-timeout",
+                    format!(
+                        "ACP doctor `{method}` timed out after {} seconds",
+                        self.timeout.as_secs()
+                    ),
+                    json!({ "method": method, "timeoutSeconds": self.timeout.as_secs() }),
+                ))
+            })
+    }
+}
 const DOCTOR_DIAGNOSTIC_MAX_SIZE: u64 = 512 * 1024;
 const DOCTOR_DIAGNOSTIC_TARGET_SIZE: u64 = 384 * 1024;
 const DOCTOR_COMMAND_DISCOVERY_TIMEOUT: Duration = Duration::from_millis(500);
@@ -2106,6 +2148,7 @@ fn same_provider_session(
 }
 
 struct AcpRuntime<'a> {
+    doctor_deadline: Option<DoctorDeadline>,
     paths: AcpAttemptPaths,
     lifecycle_owner: Option<AcpLifecycleOwner>,
     connection_key: Option<AdapterConnectionKey>,
@@ -2417,8 +2460,47 @@ pub fn doctor(
     use_local_claude: bool,
     require_local_claude_executable: bool,
 ) -> Result<AcpDoctorProbe> {
+    doctor_with_deadline(
+        agent_id,
+        config,
+        cwd,
+        use_local_claude,
+        require_local_claude_executable,
+        DoctorDeadline::default(),
+    )
+}
+
+pub fn doctor_with_deadline(
+    agent_id: &ManagedAgentId,
+    config: &AcpAdapterConfig,
+    cwd: Utf8PathBuf,
+    use_local_claude: bool,
+    require_local_claude_executable: bool,
+    deadline: DoctorDeadline,
+) -> Result<AcpDoctorProbe> {
     let paths = GoldBandPaths::new(cwd.clone());
     let doctor_acp_dir = paths.doctor_acp_dir(agent_id);
+    doctor_in_dir(
+        agent_id,
+        config,
+        cwd,
+        use_local_claude,
+        require_local_claude_executable,
+        doctor_acp_dir,
+        deadline,
+    )
+}
+
+fn doctor_in_dir(
+    agent_id: &ManagedAgentId,
+    config: &AcpAdapterConfig,
+    cwd: Utf8PathBuf,
+    use_local_claude: bool,
+    require_local_claude_executable: bool,
+    doctor_acp_dir: Utf8PathBuf,
+    deadline: DoctorDeadline,
+) -> Result<AcpDoctorProbe> {
+    deadline.remaining("adapter/start")?;
     cleanup_doctor_acp_dir_before_run(&doctor_acp_dir);
     let mut runtime = AcpRuntime::start_standalone(
         agent_id.as_str(),
@@ -2432,8 +2514,10 @@ pub fn doctor(
         None,
         None,
     )?;
+    runtime.doctor_deadline = Some(deadline);
     let result = (|| {
-        let mut capabilities = runtime.initialize_with_timeout(Some(DOCTOR_REQUEST_TIMEOUT))?;
+        let mut capabilities =
+            runtime.initialize_with_timeout(Some(deadline.remaining("initialize")?))?;
         runtime.setup_session(
             agent_id.as_str(),
             cwd,
@@ -2450,6 +2534,7 @@ pub fn doctor(
         runtime.wait_for_available_commands(DOCTOR_COMMAND_DISCOVERY_TIMEOUT)?;
         let commands = runtime.available_commands.clone().unwrap_or_default();
         runtime.cleanup_diagnostic_session()?;
+        deadline.remaining("session/cleanup")?;
         runtime.merge_session_config_into_capabilities(&mut capabilities);
         Ok(AcpDoctorProbe {
             capabilities,
@@ -3658,6 +3743,7 @@ impl<'a> AcpRuntime<'a> {
         // Timeline prompt-index, or raw-log recovery before reuse.
         let usage = AcpUsageState::from_prior(prior, context_compaction);
         Ok(Self {
+            doctor_deadline: None,
             paths,
             lifecycle_owner,
             connection_key,
@@ -4609,20 +4695,27 @@ impl<'a> AcpRuntime<'a> {
         let Some(session_id) = self.session_id.clone() else {
             return Ok(());
         };
-        if self
-            .delete_session_bounded(&session_id, SESSION_CLOSE_TIMEOUT)
-            .is_ok()
-        {
-            return Ok(());
+        match self.delete_session_bounded(&session_id, SESSION_CLOSE_TIMEOUT) {
+            Ok(_) => return Ok(()),
+            Err(error) if self.doctor_deadline.is_some_and(DoctorDeadline::is_expired) => {
+                return Err(error);
+            }
+            Err(_) => {}
         }
-        let _ = self.close_session_bounded(&session_id, SESSION_CLOSE_TIMEOUT);
+        let result = self.close_session_bounded(&session_id, SESSION_CLOSE_TIMEOUT);
+        if self.doctor_deadline.is_some_and(DoctorDeadline::is_expired) {
+            result?;
+        }
         Ok(())
     }
 
     fn wait_for_available_commands(&mut self, timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
         loop {
-            self.drain_available_inbound()?;
+            if let Some(doctor_deadline) = self.doctor_deadline {
+                doctor_deadline.remaining("session/available_commands")?;
+            }
+            self.drain_available_inbound_bounded()?;
             if self.available_commands.is_some() || Instant::now() >= deadline {
                 return Ok(());
             }
@@ -5040,6 +5133,9 @@ impl<'a> AcpRuntime<'a> {
         title_refresh: Option<(&Utf8Path, &str, bool, Option<String>, &Value)>,
         observe_attempt_cancellation: bool,
     ) -> Result<Value> {
+        if let Some(deadline) = self.doctor_deadline {
+            deadline.remaining(method)?;
+        }
         if observe_attempt_cancellation && self.is_prompt_cancel_requested() {
             self.observe_prompt_cancel_request()?;
             return Err(anyhow!(AcpCancelled));
@@ -5058,6 +5154,22 @@ impl<'a> AcpRuntime<'a> {
         let started_at = Instant::now();
         let mut last_title_refresh_at = Instant::now();
         loop {
+            let doctor_remaining = match self
+                .doctor_deadline
+                .map(|deadline| deadline.remaining(method))
+                .transpose()
+            {
+                Ok(remaining) => remaining,
+                Err(error) => {
+                    self.connection.cancel_pending(request.id);
+                    self.append_timing_diagnostic("acp_rpc_end", json!({
+                        "event": "acp_rpc_end", "method": method, "requestId": request.id,
+                        "elapsedMs": diagnostic_started_at.elapsed().as_millis(), "status": "timeout",
+                        "code": "acp.doctor-timeout",
+                    }));
+                    return Err(error);
+                }
+            };
             if observe_attempt_cancellation && self.is_prompt_cancel_requested() {
                 self.observe_prompt_cancel_request()?;
                 self.connection.cancel_pending(request.id);
@@ -5088,10 +5200,18 @@ impl<'a> AcpRuntime<'a> {
                 },
                 None => STOP_CHECK_INTERVAL,
             };
+            let wait_for = doctor_remaining.map_or(wait_for, |remaining| remaining.min(wait_for));
             match request.recv_timeout(wait_for) {
                 Ok(value) => {
+                    if let Some(deadline) = self.doctor_deadline {
+                        deadline.remaining(method)?;
+                    }
                     self.append_inbound_frame(&value);
-                    self.drain_available_inbound()?;
+                    if self.doctor_deadline.is_some() {
+                        self.drain_available_inbound_bounded()?;
+                    } else {
+                        self.drain_available_inbound()?;
+                    }
                     if observe_attempt_cancellation && self.is_prompt_cancel_requested() {
                         self.observe_prompt_cancel_request()?;
                         return Err(anyhow!(AcpCancelled));
@@ -8277,6 +8397,156 @@ mod tests {
         timeline_position_for_live_event, unregister_provider_control,
         validate_session_restore_target,
     };
+
+    #[test]
+    fn doctor_session_new_timeout_reclaims_adapter_and_retains_evidence() {
+        assert_doctor_stage_timeout("session/new", Duration::from_millis(500));
+    }
+
+    #[test]
+    fn doctor_initialize_and_cleanup_share_the_deadline() {
+        for method in ["initialize", "session/delete", "session/close"] {
+            assert_doctor_stage_timeout(method, Duration::from_secs(1));
+        }
+    }
+
+    fn doctor_fixture_config(stall_method: &str) -> crate::config::AcpAdapterConfig {
+        crate::config::AcpAdapterConfig {
+            command: std::env::current_exe()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string(),
+            args: [
+                "--ignored",
+                "--exact",
+                "acp::client::tests::doctor_adapter_fixture",
+                "--nocapture",
+            ]
+            .map(str::to_string)
+            .to_vec(),
+            display_name: "Doctor timeout fixture".into(),
+            env: [("GOLD_BAND_DOCTOR_FIXTURE".into(), stall_method.into())]
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    fn assert_doctor_stage_timeout(stall_method: &str, timeout: Duration) {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("doctor");
+        let config = doctor_fixture_config(stall_method);
+        let error = super::doctor_in_dir(
+            &"doctor-timeout-fixture".parse().unwrap(),
+            &config,
+            cwd.clone(),
+            false,
+            false,
+            attempt.clone(),
+            super::DoctorDeadline::new(timeout),
+        )
+        .unwrap_err();
+        let diagnostic = std::fs::read_to_string(attempt.join("acp.diagnostics.jsonl")).unwrap();
+        assert!(
+            diagnostic.contains(stall_method),
+            "fixture must reach {stall_method}: {diagnostic}"
+        );
+        assert!(!attempt.join("provider.pid").exists());
+        assert!(
+            error.to_string().contains("timed out"),
+            "expected diagnostic deadline, got {error:#}"
+        );
+        let error = error
+            .downcast_ref::<crate::runtime_error::RuntimeError>()
+            .unwrap();
+        assert_eq!(error.info.code_str(), "acp.doctor-timeout");
+        assert_eq!(error.info.params["method"], stall_method);
+        let address = std::fs::read_to_string(cwd.join("fixture-address")).unwrap();
+        assert!(
+            std::net::TcpStream::connect(address).is_err(),
+            "adapter still owns its listener after timeout"
+        );
+    }
+
+    #[test]
+    fn doctor_success_removes_artifacts_and_preserves_session_capabilities() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("doctor");
+        let result = super::doctor_in_dir(
+            &"healthy-fixture".parse().unwrap(),
+            &doctor_fixture_config("none"),
+            cwd,
+            false,
+            false,
+            attempt.clone(),
+            super::DoctorDeadline::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            result.capabilities["models"]["currentModelId"],
+            "test-model"
+        );
+        assert!(!attempt.exists());
+    }
+
+    #[test]
+    fn doctor_default_budget_is_three_minutes_and_expired_budget_cannot_restart() {
+        assert_eq!(
+            super::DoctorDeadline::default().timeout,
+            Duration::from_secs(180)
+        );
+        let deadline = super::DoctorDeadline::new(Duration::ZERO);
+        assert!(deadline.is_expired());
+        for method in [
+            "initialize",
+            "session/new",
+            "session/available_commands",
+            "session/delete",
+        ] {
+            assert!(deadline.remaining(method).is_err());
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn doctor_adapter_fixture() {
+        use std::io::{BufRead, Write};
+        let Ok(stall_method) = std::env::var("GOLD_BAND_DOCTOR_FIXTURE") else {
+            return;
+        };
+        let _listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std::fs::write(
+            "fixture-address",
+            _listener.local_addr().unwrap().to_string(),
+        )
+        .unwrap();
+        println!();
+        std::io::stdout().flush().unwrap();
+        for line in std::io::stdin().lock().lines() {
+            let frame: Value = serde_json::from_str(&line.unwrap()).unwrap();
+            if frame.get("id").is_none() {
+                continue;
+            }
+            let response = if frame["method"] == stall_method {
+                // Rescue the unfixed implementation without mistaking rescue for a timeout.
+                std::thread::sleep(Duration::from_secs(2));
+                json!({"error": {"code": -32000, "message": "fixture rescue"}})
+            } else if frame["method"] == "session/delete" && stall_method == "session/close" {
+                json!({"error": {"code": -32601, "message": "unsupported"}})
+            } else if frame["method"] == "initialize" {
+                json!({"result": {"protocolVersion": 1, "agentCapabilities": {}}})
+            } else {
+                json!({"result": {"sessionId": "doctor-fixture-session", "models": {"currentModelId": "test-model", "availableModels": [{"modelId": "test-model", "name": "Test"}]}}})
+            };
+            let mut response = response;
+            response["jsonrpc"] = json!("2.0");
+            response["id"] = frame["id"].clone();
+            println!("{response}");
+            std::io::stdout().flush().unwrap();
+        }
+    }
 
     #[test]
     fn timeline_patch_deadline_is_not_expired_by_the_previous_slow_write() {

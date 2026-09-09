@@ -29,10 +29,15 @@ it.each([true, false])('launch fields are read-only only for catalog agents: %s'
   expect(args.readOnly).toBe(builtin);
   expect(command.disabled).toBe(false);
   expect(args.disabled).toBe(false);
-  expect(command.classList.contains('bg-muted/50')).toBe(builtin);
-  expect(args.classList.contains('bg-muted/50')).toBe(builtin);
   expect(command.classList.contains('text-muted-foreground')).toBe(builtin);
   expect(args.classList.contains('text-muted-foreground')).toBe(builtin);
+  expect(command.classList.contains('!bg-muted')).toBe(builtin);
+  expect(args.classList.contains('!bg-muted')).toBe(builtin);
+  expect(field('agentManagement.env').querySelector('textarea')!.classList.contains('text-muted-foreground')).toBe(false);
+  expect(field('agentManagement.env').querySelector('textarea')!.classList.contains('bg-background')).toBe(true);
+  expect(field('agentManagement.displayName').querySelector('input')!.classList.contains('bg-background')).toBe(true);
+  expect(command.classList.contains('bg-muted/50')).toBe(false);
+  expect(args.classList.contains('bg-muted/50')).toBe(false);
   expect(field('agentManagement.displayName').querySelector('input')!.readOnly).toBe(false);
   expect(field('agentManagement.env').querySelector('textarea')!.readOnly).toBe(false);
 });

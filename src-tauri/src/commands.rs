@@ -2188,6 +2188,7 @@ pub struct ManagedAgentInput {
     pub display_name: String,
     #[serde(default)]
     pub icon: String,
+    #[serde(default)]
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
@@ -2206,6 +2207,19 @@ pub struct ManagedAgentInput {
 }
 
 impl ManagedAgentInput {
+    fn into_config_for_agent(
+        mut self,
+        agent_id: &ManagedAgentId,
+        system_prompt_delivery: gold_band::config::SystemPromptDelivery,
+        default_icon: &str,
+    ) -> CommandResult<ManagedAgentConfig> {
+        if let Some(entry) = gold_band::agent_catalog::builtin_agent(agent_id.as_str()) {
+            self.command.clone_from(&entry.command);
+            self.args.clone_from(&entry.args);
+        }
+        self.into_config(system_prompt_delivery, default_icon)
+    }
+
     fn into_config(
         self,
         system_prompt_delivery: gold_band::config::SystemPromptDelivery,
@@ -2417,7 +2431,7 @@ pub fn create_agent(
     let settings = app
         .save_managed_agent(
             agent_id.clone(),
-            input.into_config(system_prompt_delivery, &default_icon)?,
+            input.into_config_for_agent(&agent_id, system_prompt_delivery, &default_icon)?,
         )
         .map_err(command_error)?;
     state
@@ -2463,7 +2477,7 @@ pub fn update_agent(
     let settings = app
         .save_managed_agent(
             agent_id.clone(),
-            input.into_config(system_prompt_delivery, &default_icon)?,
+            input.into_config_for_agent(&agent_id, system_prompt_delivery, &default_icon)?,
         )
         .map_err(command_error)?;
     state
@@ -11947,6 +11961,55 @@ mod tests {
             })
         );
         assert!(!value.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn managed_agent_launch_input_respects_catalog_ownership() {
+        for id in ["claude-acp", "private-agent"] {
+            let input: ManagedAgentInput = serde_json::from_value(serde_json::json!({
+                "displayName": "My Agent",
+                "command": "custom-command",
+                "args": ["custom-version"],
+                "env": {"CUSTOM": "value"}
+            }))
+            .unwrap();
+            let config = input
+                .into_config_for_agent(
+                    &id.parse().unwrap(),
+                    gold_band::config::SystemPromptDelivery::None,
+                    DEFAULT_CUSTOM_AGENT_ICON,
+                )
+                .unwrap();
+            if let Some(entry) = gold_band::agent_catalog::builtin_agent(id) {
+                assert_eq!(config.adapter.command, entry.command);
+                assert_eq!(config.adapter.args, entry.args);
+            } else {
+                assert_eq!(config.adapter.command, "custom-command");
+                assert_eq!(config.adapter.args, vec!["custom-version"]);
+            }
+            assert_eq!(config.adapter.display_name, "My Agent");
+            assert_eq!(config.adapter.env["CUSTOM"], "value");
+        }
+    }
+
+    #[test]
+    fn managed_agent_command_required_only_for_custom_input() {
+        for id in ["claude-acp", "private-agent"] {
+            let input: ManagedAgentInput = serde_json::from_value(serde_json::json!({
+                "displayName": "My Agent"
+            }))
+            .unwrap();
+            let result = input.into_config_for_agent(
+                &id.parse().unwrap(),
+                gold_band::config::SystemPromptDelivery::None,
+                DEFAULT_CUSTOM_AGENT_ICON,
+            );
+            if id == "claude-acp" {
+                assert!(result.is_ok());
+            } else {
+                assert_eq!(result.unwrap_err().code, "agent.command-required");
+            }
+        }
     }
 
     #[test]

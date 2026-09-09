@@ -4,6 +4,8 @@ use anyhow::{Result, anyhow};
 use serde::{Deserialize, Deserializer, Serialize};
 use tracing::Level;
 
+mod managed_agents;
+
 fn embedded_project_app_config() -> &'static ProjectAppConfig {
     static CONFIG: OnceLock<ProjectAppConfig> = OnceLock::new();
     CONFIG.get_or_init(|| {
@@ -490,6 +492,15 @@ pub struct AcpAdapterConfig {
     pub env: BTreeMap<String, String>,
 }
 
+impl AcpAdapterConfig {
+    pub fn apply_catalog_launch(&mut self, agent_id: &ManagedAgentId) {
+        if let Some(entry) = crate::agent_catalog::builtin_agent(agent_id.as_str()) {
+            self.command.clone_from(&entry.command);
+            self.args.clone_from(&entry.args);
+        }
+    }
+}
+
 impl Default for AcpAdapterConfig {
     fn default() -> Self {
         catalog_agent_default_config("claude-acp")
@@ -815,6 +826,7 @@ pub struct SettingsConfig {
     pub personalization: Option<PersonalizationPreference>,
     pub desktop_language: Option<DesktopLanguage>,
     pub desktop_updater_url_override: Option<String>,
+    #[serde(default, with = "managed_agents")]
     pub agents: Option<BTreeMap<ManagedAgentId, ManagedAgentConfig>>,
     pub use_local_claude: Option<bool>,
     pub desktop_metrics_enabled: Option<bool>,
@@ -838,7 +850,7 @@ pub struct SettingsConfig {
     pub desktop_multica_account: Option<MulticaAccountRef>,
 }
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 10;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 11;
 const USE_LOCAL_CLAUDE: bool = false;
 
 const LEGACY_CODEX_ACP_PACKAGE_PREFIX: &str = "@zed-industries/codex-acp";
@@ -905,6 +917,10 @@ impl SettingsConfig {
         }
         if version < 10 {
             migrate_desktop_wallpaper_color_schemes(settings);
+            migrated = true;
+        }
+        if version < 11 {
+            // The agents serde boundary now omits built-in launch fields on writeback.
             migrated = true;
         }
         if migrated {
@@ -1793,6 +1809,9 @@ impl RuntimeConfig {
         self.desktop_updater_url_override = settings.desktop_updater_url_override.clone();
         if let Some(agents) = &settings.agents {
             self.agents = agents.clone();
+            for (id, config) in &mut self.agents {
+                config.adapter.apply_catalog_launch(id);
+            }
         }
         self.use_local_claude = USE_LOCAL_CLAUDE;
         if let Some(desktop_metrics_enabled) = settings.desktop_metrics_enabled {
@@ -2842,7 +2861,7 @@ mod tests {
         let codex = &agents[&ManagedAgentId::from_str("codex-acp").unwrap()];
         assert_eq!(
             codex.adapter.args,
-            vec!["-y", "@agentclientprotocol/codex-acp@latest"]
+            catalog_agent_default_config("codex-acp").unwrap().adapter.args
         );
     }
 
@@ -2869,7 +2888,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_v1_preserves_custom_codex_adapter_args() {
+    fn settings_v1_restores_catalog_codex_launch() {
         let (settings, migrated) =
             SettingsConfig::from_json_value_with_migration(serde_json::json!({
                 "settingsSchemaVersion": 1,
@@ -2892,8 +2911,10 @@ mod tests {
         assert!(migrated);
         let agents = settings.agents.unwrap();
         let codex = &agents[&ManagedAgentId::from_str("codex-acp").unwrap()];
-        assert_eq!(codex.adapter.command, "custom-codex-acp.exe");
-        assert_eq!(codex.adapter.args, vec!["--stdio"]);
+        let expected = catalog_agent_default_config("codex-acp").unwrap();
+        assert_eq!(codex.adapter.command, expected.adapter.command);
+        assert_eq!(codex.adapter.args, expected.adapter.args);
+        assert_eq!(codex.adapter.display_name, "Custom Codex");
     }
 
     #[test]
@@ -3107,7 +3128,10 @@ mod tests {
         assert!(migrated);
         let agents = settings.agents.unwrap();
         let claude = &agents[&ManagedAgentId::from_str("claude-acp").unwrap()];
-        assert_eq!(claude.adapter.command, "custom-claude-acp");
+        assert_eq!(
+            claude.adapter.command,
+            catalog_agent_default_config("claude-acp").unwrap().adapter.command
+        );
         assert_eq!(claude.icon, "claude");
         assert!(claude.supports_system_prompt());
 

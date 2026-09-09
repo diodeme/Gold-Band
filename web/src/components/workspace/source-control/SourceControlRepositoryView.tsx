@@ -1,6 +1,7 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { Ellipsis, LoaderCircle, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -64,6 +65,7 @@ export function SourceControlRepositoryView({
   onTabChange: (tab: SourceControlRepositoryTab) => void;
 }) {
   const { t } = useTranslation();
+  const readOnly = useReadOnlyExperience();
   const [action, setAction] = useState<RepositoryAction | null>(null);
   const [name, setName] = useState('');
   const [target, setTarget] = useState('HEAD');
@@ -99,6 +101,7 @@ export function SourceControlRepositoryView({
   };
 
   const submit = () => {
+    if (readOnly) return;
     if (!action) return;
     switch (action.kind) {
       case 'branch-create':
@@ -159,9 +162,9 @@ export function SourceControlRepositoryView({
             <Button className="ml-auto" size="icon-xs" variant="ghost" disabled={busy} aria-label={t('sourceControl.repositoryActions')}><Plus className="size-3.5" /></Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={() => openAction({ kind: 'branch-create' })}>{t('sourceControl.createBranch')}</DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => openAction({ kind: 'tag-create' })}>{t('sourceControl.createTag')}</DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => openAction({ kind: 'worktree-create' })}>{t('sourceControl.createWorktree')}</DropdownMenuItem>
+            <DropdownMenuItem disabled={readOnly} onSelect={() => openAction({ kind: 'branch-create' })}>{t('sourceControl.createBranch')}</DropdownMenuItem>
+            <DropdownMenuItem disabled={readOnly} onSelect={() => openAction({ kind: 'tag-create' })}>{t('sourceControl.createTag')}</DropdownMenuItem>
+            <DropdownMenuItem disabled={readOnly} onSelect={() => openAction({ kind: 'worktree-create' })}>{t('sourceControl.createWorktree')}</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
@@ -175,7 +178,7 @@ export function SourceControlRepositoryView({
                   <DropdownMenuItem disabled={locked || ref.shortName === snapshot.repository.currentBranch || ref.checkedOutWorktreePaths.length > 0} onSelect={() => onMutation({ kind: 'branch-switch', name: ref.shortName })}>{t('sourceControl.switchBranch')}</DropdownMenuItem>
                   <DropdownMenuItem disabled={locked} onSelect={() => openAction({ kind: 'branch-rename', target: ref.shortName })}>{t('sourceControl.rename')}</DropdownMenuItem>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem variant="destructive" disabled={ref.shortName === snapshot.repository.currentBranch || ref.checkedOutWorktreePaths.length > 0} onSelect={() => openAction({ kind: 'branch-delete', target: ref.shortName })}>{t('common.delete')}</DropdownMenuItem>
+                  <DropdownMenuItem variant="destructive" disabled={readOnly || ref.shortName === snapshot.repository.currentBranch || ref.checkedOutWorktreePaths.length > 0} onSelect={() => openAction({ kind: 'branch-delete', target: ref.shortName })}>{t('common.delete')}</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
             </RepositoryRow>
@@ -188,9 +191,9 @@ export function SourceControlRepositoryView({
               <DropdownMenu>
                 <DropdownMenuTrigger asChild><Button size="icon-xs" variant="ghost" disabled={busy}><Ellipsis className="size-3.5" /></Button></DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem disabled={!defaultRemote} onSelect={() => openAction({ kind: 'push-tag', target: ref.shortName })}>{t('sourceControl.pushTag')}</DropdownMenuItem>
+                  <DropdownMenuItem disabled={readOnly || !defaultRemote} onSelect={() => openAction({ kind: 'push-tag', target: ref.shortName })}>{t('sourceControl.pushTag')}</DropdownMenuItem>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem variant="destructive" onSelect={() => openAction({ kind: 'tag-delete', target: ref.shortName })}>{t('common.delete')}</DropdownMenuItem>
+                  <DropdownMenuItem disabled={readOnly} variant="destructive" onSelect={() => openAction({ kind: 'tag-delete', target: ref.shortName })}>{t('common.delete')}</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
             </RepositoryRow>

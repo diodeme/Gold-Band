@@ -184,6 +184,8 @@ struct AcpInvocationPromptState {
 
 const MAX_INVALID_OUTPUT_REPAIR_PROMPTS: u32 = 3;
 const MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS: u32 = 3;
+const DYNAMIC_FANOUT_WORKSPACE_DIRTY: &str = "dynamic.fanout.workspace-dirty";
+const DYNAMIC_FANOUT_WORKSPACE_CHECK_FAILED: &str = "dynamic.fanout.workspace-check-failed";
 const DYNAMIC_PROMPT_SOURCE_PREDECESSOR_LIMIT: usize = 5;
 const DYNAMIC_PROMPT_ATTACHMENTS_PER_SOURCE_LIMIT: usize = 10;
 const AUTO_RETRY_STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -8212,7 +8214,14 @@ fn apply_dynamic_execution_message(
     for proposal in result.proposals {
         if proposal.validation_status == DynamicProposalValidationStatus::Rejected {
             rejected_source_node_id = Some(proposal.source_node_id.clone());
-            graph.proposals.push(proposal);
+            if !proposal_has_fanout_commit_reminder(&proposal)
+                || !graph.proposals.iter().any(|previous| {
+                    previous.source_node_id == proposal.source_node_id
+                        && proposal_has_fanout_commit_reminder(previous)
+                })
+            {
+                graph.proposals.push(proposal);
+            }
             continue;
         }
         accepted_any = true;
@@ -8276,7 +8285,24 @@ fn accept_dynamic_completion_proposal(
     let proposal_id = proposal.id.clone();
     let source_node_id = proposal.source_node_id.clone();
     graph.proposals.push(proposal);
-    let visible_node_ids = materialize_dynamic_next(ctx, graph, source_index, completion.next)?;
+    let visible_node_ids = match materialize_dynamic_next(ctx, graph, source_index, completion.next)
+    {
+        Ok(visible) => visible,
+        Err(error) => {
+            let info = normalize_runtime_error(&error);
+            if info.code_str() == DYNAMIC_FANOUT_WORKSPACE_CHECK_FAILED {
+                // Reading the fork baseline happens before any workspace transition.
+                graph.proposals.pop();
+                mark_dynamic_node_paused(
+                    &mut graph.nodes[source_index],
+                    PauseReason::RuntimeAbnormal,
+                    Some(info),
+                );
+                persist_dynamic_graph(ctx, graph)?;
+            }
+            return Err(error);
+        }
+    };
     append_dynamic_event(
         ctx,
         "dynamic_proposal_accepted",
@@ -9209,7 +9235,13 @@ fn execute_dynamic_worker(
                 )?;
                 return Ok(DynamicExecutionResult { node, proposals });
             }
-            Ok(proposal) if proposal_repair_prompts < MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS => {
+            Ok(proposal)
+                if proposal_repair_prompts < MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS
+                    || proposal
+                        .validation_errors
+                        .iter()
+                        .all(|error| error.code == DYNAMIC_FANOUT_WORKSPACE_DIRTY) =>
+            {
                 let repair_continue_ref = read_json::<WorkerRefState>(&worker_ref_path)
                     .ok()
                     .and_then(|worker_ref| worker_ref.continue_ref);
@@ -9231,9 +9263,23 @@ fn execute_dynamic_worker(
                     )?;
                     return Ok(DynamicExecutionResult { node, proposals });
                 };
-                proposal_repair_prompts += 1;
-                current_prompt_id =
-                    dynamic_proposal_repair_prompt_id(&logical_prompt_id, proposal_repair_prompts);
+                let commit_reminder = validation_errors
+                    .iter()
+                    .any(|error| error.code == DYNAMIC_FANOUT_WORKSPACE_DIRTY);
+                if validation_errors
+                    .iter()
+                    .any(|error| error.code != DYNAMIC_FANOUT_WORKSPACE_DIRTY)
+                {
+                    proposal_repair_prompts += 1;
+                }
+                if commit_reminder {
+                    persist_dynamic_fanout_commit_reminder(ctx, proposals.last().unwrap())?;
+                }
+                current_prompt_id = if commit_reminder {
+                    format!("{logical_prompt_id}-fanout-commit")
+                } else {
+                    dynamic_proposal_repair_prompt_id(&logical_prompt_id, proposal_repair_prompts)
+                };
                 append_dynamic_event(
                     ctx,
                     "dynamic_proposal_repair_requested",
@@ -9243,6 +9289,7 @@ fn execute_dynamic_worker(
                         "repairAttempt": proposal_repair_prompts,
                         "maxRepairAttempts": MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS,
                         "promptId": current_prompt_id,
+                        "commitReminder": commit_reminder,
                         "error": validation_error,
                         "validationErrors": validation_errors,
                     }),
@@ -9289,6 +9336,12 @@ fn execute_dynamic_worker(
                     }),
                 )?;
                 return Ok(DynamicExecutionResult { node, proposals });
+            }
+            Err(err)
+                if normalize_runtime_error(&err).code_str()
+                    == DYNAMIC_FANOUT_WORKSPACE_CHECK_FAILED =>
+            {
+                return Err(err);
             }
             Err(err) if proposal_repair_prompts < MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS => {
                 let confirm_completion = dynamic_output_emission_mode(&node)
@@ -9918,9 +9971,34 @@ fn finalize_dynamic_worker_result(
     }
     match status {
         ProviderRunStatus::Success => {
-            if let Some(payload) = result.result_payload
-                && let Some(output_artifact) = payload.output_artifact
-            {
+            // A canonical artifact represents this result, never a prior repair turn.
+            let artifact_path = dynamic_output_artifact_path(
+                ctx,
+                &node_id,
+                attempt_id,
+                DYNAMIC_COMPLETION_ARTIFACT,
+            );
+            match std::fs::remove_file(&artifact_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("failed to replace current dynamic artifact: {artifact_path}")
+                    });
+                }
+            }
+            let output_artifact = result
+                .result_payload
+                .and_then(|payload| payload.output_artifact)
+                .or_else(|| {
+                    result.runtime_control_output.map(|output| {
+                        crate::provider::OutputArtifactPayload {
+                            name: output.artifact_name,
+                            content: output.span.json_text,
+                        }
+                    })
+                });
+            if let Some(output_artifact) = output_artifact {
                 write_dynamic_output_artifact(ctx, &node_id, attempt_id, &output_artifact)?;
             }
             node.status = DynamicNodeStatus::Completed;
@@ -10616,6 +10694,19 @@ fn build_dynamic_completion_proposal(
     };
     let mut validation_errors = pre_validation_errors;
     validation_errors.extend(validate_dynamic_completion(ctx, &graph, index, &completion));
+    if matches!(completion.next, DynamicNext::Fanout { .. })
+        && !graph.proposals.iter().any(|proposal| {
+            proposal.source_node_id == node.id && proposal_has_fanout_commit_reminder(proposal)
+        })
+    {
+        let workspace = dynamic_fanout_source_workspace(&graph, &graph.nodes[index])?;
+        if !GitRepositoryService::default()
+            .is_clean(&workspace.path)
+            .map_err(|error| dynamic_fanout_workspace_check_error(workspace, error))?
+        {
+            validation_errors.push(dynamic_fanout_workspace_dirty_error(workspace));
+        }
+    }
     if validation_errors.is_empty() {
         Ok(DynamicProposalState {
             version: VERSION.to_string(),
@@ -11450,7 +11541,7 @@ fn materialize_dynamic_next(
         .cloned()
         .ok_or_else(|| anyhow!("dynamic proposal source node is missing"))?;
     if source.kind != DynamicNodeKind::Acceptance && matches!(next, DynamicNext::Single { .. }) {
-        return materialize_dynamic_next_in_scope(ctx, graph, &source, next);
+        return materialize_dynamic_next_in_scope(ctx, graph, &source, next, None);
     }
     let owner = dynamic_outgoing_scope_owner(graph, &source)?;
     let mut outgoing = source.clone();
@@ -11473,13 +11564,22 @@ fn materialize_dynamic_next(
     } else {
         None
     };
+    let fork_commit = if matches!(next, DynamicNext::Fanout { .. }) {
+        Some(dynamic_fanout_head(dynamic_workspace(
+            graph,
+            &outgoing.workspace_id,
+        )?)?)
+    } else {
+        None
+    };
     with_dynamic_workspace_transition(ctx, graph, std::slice::from_ref(&source.id), |graph| {
         if closing_group.is_some() {
             let target = dynamic_workspace_mut(graph, &outgoing.workspace_id)?;
             target.status = WorkspaceStatus::Active;
             target.updated_at = now_rfc3339_like();
         }
-        let visible = materialize_dynamic_next_in_scope(ctx, graph, &outgoing, next)?;
+        let visible =
+            materialize_dynamic_next_in_scope(ctx, graph, &outgoing, next, fork_commit.as_deref())?;
         if let Some(group) = closing_group {
             let current = graph
                 .groups
@@ -11533,6 +11633,7 @@ fn materialize_dynamic_next_in_scope(
     graph: &mut DynamicGraphState,
     source: &DynamicNodeState,
     next: DynamicNext,
+    fork_commit: Option<&str>,
 ) -> Result<Vec<String>> {
     let mut visible_node_ids = Vec::new();
     match next {
@@ -11576,6 +11677,8 @@ fn materialize_dynamic_next_in_scope(
             merge,
             acceptance,
         } => {
+            let fork_commit =
+                fork_commit.context("fanout requires a fixed source commit")?;
             let merge = dynamic_agent_task_spec_with_resolved_provider(ctx, merge)?;
             let acceptance = dynamic_agent_task_spec_with_resolved_provider(ctx, acceptance)?;
             let group_depth = source
@@ -11587,12 +11690,13 @@ fn materialize_dynamic_next_in_scope(
             let root_node_ids = nodes.iter().map(|node| node.id.clone()).collect::<Vec<_>>();
             let mut child_workspace_ids = Vec::with_capacity(nodes.len());
             for node in &nodes {
-                child_workspace_ids.push(fork_dynamic_workspace(
+                child_workspace_ids.push(fork_dynamic_workspace_from_commit(
                     ctx,
                     graph,
                     &source.workspace_id,
                     &group_id,
                     &node.id,
+                    fork_commit,
                 )?);
             }
             {
@@ -12697,6 +12801,10 @@ fn dynamic_structured_repair_prompt(
         ),
         serde_json::json!({
             "validation_errors": dynamic_validation_repair_lines(ctx, graph, errors),
+            "fanout_workspace_dirty": errors.iter().any(|error| error.code == DYNAMIC_FANOUT_WORKSPACE_DIRTY),
+            "fanout_workspace_path": errors.iter()
+                .find(|error| error.code == DYNAMIC_FANOUT_WORKSPACE_DIRTY)
+                .and_then(|error| error.params.get("workspacePath")),
             "repair_reference": dynamic_repair_reference_summary(ctx, graph),
             "remaining_budget": dynamic_remaining_budget_summary(graph, node),
             "has_coordination_snapshot": has_coordination_snapshot,
@@ -14407,14 +14515,96 @@ fn checkpoint_dynamic_workspace(
     Ok(head)
 }
 
-fn fork_dynamic_workspace(
+fn dynamic_fanout_source_workspace<'a>(
+    graph: &'a DynamicGraphState,
+    node: &DynamicNodeState,
+) -> Result<&'a WorkspaceState> {
+    let workspace_id = if node.kind == DynamicNodeKind::Acceptance {
+        &graph
+            .groups
+            .iter()
+            .find(|group| Some(&group.id) == node.group_id.as_ref())
+            .ok_or_else(|| anyhow!("dynamic.acceptance.group-missing: {}", node.id))?
+            .target_workspace_id
+    } else {
+        &node.workspace_id
+    };
+    dynamic_workspace(graph, workspace_id)
+}
+
+fn proposal_has_fanout_commit_reminder(proposal: &DynamicProposalState) -> bool {
+    proposal
+        .validation_errors
+        .iter()
+        .any(|error| error.code == DYNAMIC_FANOUT_WORKSPACE_DIRTY)
+}
+
+fn persist_dynamic_fanout_commit_reminder(
+    ctx: &DynamicExecutionContext<'_>,
+    proposal: &DynamicProposalState,
+) -> Result<()> {
+    let lock = dynamic_state_lock(ctx)?;
+    let _guard = lock.lock();
+    let mut graph = load_dynamic_graph(
+        &ctx.app.paths.dynamic_graph_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        ),
+        &ctx.app.paths.repo_root,
+    )?;
+    if !graph.proposals.iter().any(|previous| {
+        previous.source_node_id == proposal.source_node_id
+            && proposal_has_fanout_commit_reminder(previous)
+    }) {
+        graph.proposals.push(proposal.clone());
+        persist_dynamic_graph(ctx, &mut graph)?;
+    }
+    Ok(())
+}
+
+fn dynamic_fanout_workspace_dirty_error(
+    workspace: &WorkspaceState,
+) -> DynamicProposalValidationError {
+    dynamic_validation_error(
+        DYNAMIC_FANOUT_WORKSPACE_DIRTY,
+        "review uncommitted task changes before fanout; one-time commit reminder",
+        serde_json::json!({
+            "path": "next", "workspaceId": workspace.id, "workspacePath": workspace.path,
+            "actual": "dirty", "expected": "review task changes and resubmit; clean workspace not required",
+        }),
+    )
+}
+
+fn dynamic_fanout_workspace_check_error(
+    workspace: &WorkspaceState,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    runtime_error(manual_runtime_error_info(
+        RuntimeErrorDomain::Workspace,
+        DYNAMIC_FANOUT_WORKSPACE_CHECK_FAILED,
+        format!("fanout source Git check failed: {error:#}"),
+        serde_json::json!({ "workspaceId": workspace.id, "workspacePath": workspace.path }),
+    ))
+}
+
+fn dynamic_fanout_head(workspace: &WorkspaceState) -> Result<String> {
+    let repository = GitRepositoryService::default();
+    repository
+        .head(&workspace.path)
+        .map_err(|error| dynamic_fanout_workspace_check_error(workspace, error))
+}
+
+fn fork_dynamic_workspace_from_commit(
     ctx: &DynamicExecutionContext<'_>,
     graph: &mut DynamicGraphState,
     parent_workspace_id: &str,
     group_id: &str,
     node_id: &str,
+    fork_commit: &str,
 ) -> Result<String> {
-    let fork_commit = checkpoint_dynamic_workspace(graph, parent_workspace_id, Some(group_id))?;
     let workspace_id = format!(
         "workspace-{}",
         dynamic_worktree_short_id(ctx, &format!("{group_id}:{node_id}"))
@@ -14430,7 +14620,7 @@ fn fork_dynamic_workspace(
         &parent.repo_root,
         &path,
         &branch,
-        &fork_commit,
+        fork_commit,
     ) {
         return Err(error)
             .with_context(|| format!("failed to fork dynamic workspace `{workspace_id}`"));
@@ -14447,7 +14637,7 @@ fn fork_dynamic_workspace(
         branch: Some(branch),
         parent_workspace_id: Some(parent_workspace_id.to_string()),
         created_by_group_id: Some(group_id.to_string()),
-        fork_commit,
+        fork_commit: fork_commit.to_string(),
         checkpoint_commit: None,
         status: WorkspaceStatus::Active,
         created_at: now.clone(),
@@ -16769,6 +16959,12 @@ mod tests {
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
         std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
         git(&repo_root, &["init"]);
+        // Test runtime storage is colocated with the fixture repository.
+        std::fs::write(
+            repo_root.join(".git/info/exclude"),
+            "gold-band-home/\n.gold-band/\n",
+        )
+        .unwrap();
         git(&repo_root, &["config", "user.email", "test@example.com"]);
         git(&repo_root, &["config", "user.name", "Test User"]);
         std::fs::write(repo_root.join("README.md").as_std_path(), "hello\n").unwrap();
@@ -21475,6 +21671,530 @@ mod tests {
             release_dynamic_workspace_best_effort(&ctx, &mut graph, &child_id);
         }
         release_dynamic_workspace_best_effort(&ctx, &mut graph, &parent_workspace_id);
+    }
+
+    fn fanout_workspace_test_completion() -> DynamicNodeCompletion {
+        let branch = |id: &str| DynamicNodeSpec {
+            id: id.to_string(),
+            kind: DynamicNodeSpecKind::Worker,
+            title: id.to_string(),
+            task: format!("Implement {id}."),
+            provider: None,
+            profile: None,
+            model: None,
+            permission_mode: None,
+            session_mode: SessionMode::New,
+            continue_from_node_id: None,
+            depends_on: Vec::new(),
+            workflow_id: None,
+        };
+        let mut merge = test_agent_task("merge");
+        merge.provider.clear();
+        let mut acceptance = test_agent_task("accept");
+        acceptance.provider.clear();
+        DynamicNodeCompletion {
+            version: VERSION.to_string(),
+            kind: DynamicNodeCompletionKind::DynamicNodeCompletion,
+            status: DynamicCompletionStatus::Success,
+            summary: "Ready for fanout".to_string(),
+            next: DynamicNext::Fanout {
+                group_id: "clean-source-group".to_string(),
+                nodes: vec![branch("clean-child-a"), branch("clean-child-b")],
+                merge,
+                acceptance,
+            },
+            source: None,
+        }
+    }
+
+    fn fork_dynamic_workspace(
+        ctx: &DynamicExecutionContext<'_>,
+        graph: &mut DynamicGraphState,
+        parent_workspace_id: &str,
+        group_id: &str,
+        node_id: &str,
+    ) -> Result<String> {
+        let commit = dynamic_fanout_head(dynamic_workspace(graph, parent_workspace_id)?)?;
+        fork_dynamic_workspace_from_commit(
+            ctx,
+            graph,
+            parent_workspace_id,
+            group_id,
+            node_id,
+            &commit,
+        )
+    }
+
+    #[test]
+    fn fanout_workspace_dirty_proposal_batches_errors_without_changing_git() {
+        for change in ["unstaged", "staged", "untracked"] {
+            let (_temp, repo_root) = init_repo();
+            let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+            write_test_outer_run(&app);
+            let dynamic = test_dynamic();
+            let ctx = test_context(&app, &dynamic);
+            let source = test_worktree_node("source");
+            let mut graph = test_dynamic_graph_at(repo_root.clone(), vec![source.clone()]);
+            persist_dynamic_graph(&ctx, &mut graph).unwrap();
+            let path = if change == "untracked" {
+                "local-note.txt"
+            } else {
+                "README.md"
+            };
+            std::fs::write(repo_root.join(path), "uncommitted foundation\n").unwrap();
+            if change == "staged" {
+                git(&repo_root, &["add", "README.md"]);
+            }
+            let repository = GitRepositoryService::default();
+            let head = repository.head(&repo_root).unwrap();
+            let status = repository.status_porcelain(&repo_root).unwrap();
+            let mut completion = fanout_workspace_test_completion();
+            completion.summary.clear();
+            let proposal = build_dynamic_completion_proposal(
+                &ctx,
+                &source,
+                completion,
+                None,
+                None,
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+            assert!(
+                proposal
+                    .validation_errors
+                    .iter()
+                    .any(|error| error.code == "dynamic.summary.blank")
+            );
+            assert!(
+                proposal
+                    .validation_errors
+                    .iter()
+                    .any(|error| error.code == "dynamic.fanout.workspace-dirty"),
+                "{change}: {:?}",
+                proposal.validation_errors
+            );
+            assert_eq!(repository.head(&repo_root).unwrap(), head);
+            assert_eq!(repository.status_porcelain(&repo_root).unwrap(), status);
+        }
+    }
+
+    #[test]
+    fn fanout_reminder_does_not_repeat_after_recorded_proposal() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let source = test_worktree_node("source");
+        let mut graph = test_dynamic_graph_at(repo_root.clone(), vec![source.clone()]);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        std::fs::write(repo_root.join("README.md"), "unrelated work\n").unwrap();
+        let proposal = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            fanout_workspace_test_completion(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            proposal.validation_status,
+            DynamicProposalValidationStatus::Rejected
+        );
+        graph.proposals.push(proposal);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        let proposal = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            fanout_workspace_test_completion(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            proposal.validation_status,
+            DynamicProposalValidationStatus::Accepted
+        );
+        accept_dynamic_completion_proposal(&ctx, &mut graph, proposal).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repo_root.join("README.md")).unwrap(),
+            "unrelated work\n"
+        );
+    }
+
+    #[test]
+    fn dynamic_current_result_without_artifact_cannot_reuse_old_file() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("source");
+        let mut graph = test_dynamic_graph_at(repo_root, vec![node.clone()]);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        write_dynamic_output_artifact(
+            &ctx,
+            &node.id,
+            "attempt-001",
+            &OutputArtifactPayload {
+                name: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
+                content: test_end_completion("stale"),
+            },
+        )
+        .unwrap();
+        finalize_dynamic_worker_result(
+            &ctx,
+            &mut node,
+            "attempt-001",
+            ProviderRunResult {
+                status: ProviderRunStatus::Success,
+                exit_code: Some(0),
+                result_payload: None,
+                worker_ref_seed: None,
+                stream_path: None,
+                runtime_error: None,
+                runtime_control_output: None,
+            },
+        )
+        .unwrap();
+        assert!(build_dynamic_completion_from_artifact(&ctx, "attempt-001", &node).is_err());
+    }
+
+    #[test]
+    fn dynamic_current_invalid_candidate_replaces_old_artifact() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("source");
+        let mut graph = test_dynamic_graph_at(repo_root, vec![node.clone()]);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        write_dynamic_output_artifact(
+            &ctx,
+            &node.id,
+            "attempt-001",
+            &OutputArtifactPayload {
+                name: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
+                content: test_end_completion("stale"),
+            },
+        )
+        .unwrap();
+        let malformed = "{\"version\":\"0.1\",\"kind\":\"dynamic-node-completion\"";
+        finalize_dynamic_worker_result(
+            &ctx,
+            &mut node,
+            "attempt-001",
+            ProviderRunResult {
+                status: ProviderRunStatus::Success,
+                exit_code: Some(0),
+                result_payload: None,
+                worker_ref_seed: None,
+                stream_path: None,
+                runtime_error: None,
+                runtime_control_output: Some(crate::provider::RuntimeControlOutput {
+                    artifact_name: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
+                    source: crate::acp::client::AcpPromptMessageSource {
+                        branch_id: "root".to_string(),
+                        item_id: "current".to_string(),
+                    },
+                    span: crate::artifacts::json_artifact_display_span(malformed).unwrap(),
+                }),
+            },
+        )
+        .unwrap();
+        assert!(build_dynamic_completion_from_artifact(&ctx, "attempt-001", &node).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dynamic_output_artifact_path(
+                &ctx,
+                &node.id,
+                "attempt-001",
+                DYNAMIC_COMPLETION_ARTIFACT
+            ))
+            .unwrap(),
+            malformed
+        );
+    }
+
+    #[test]
+    fn fanout_workspace_dirty_materialization_uses_committed_head() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph =
+            test_dynamic_graph_at(repo_root.clone(), vec![test_worktree_node("source")]);
+        std::fs::write(repo_root.join("README.md"), "late edit\n").unwrap();
+        let result =
+            materialize_dynamic_next(&ctx, &mut graph, 0, fanout_workspace_test_completion().next);
+        result.unwrap();
+        assert_eq!(graph.groups.len(), 1);
+        assert_eq!(graph.workspaces.len(), 3);
+        for workspace in graph.workspaces.iter().skip(1) {
+            assert_eq!(
+                std::fs::read_to_string(workspace.path.join("README.md"))
+                    .unwrap()
+                    .trim(),
+                "hello"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(repo_root.join("README.md")).unwrap(),
+            "late edit\n"
+        );
+    }
+
+    #[test]
+    fn fanout_workspace_late_edit_does_not_block_accepted_proposal() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let source = test_worktree_node("source");
+        let mut graph = test_dynamic_graph_at(repo_root.clone(), vec![source.clone()]);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        let proposal = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            fanout_workspace_test_completion(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            proposal.validation_status,
+            DynamicProposalValidationStatus::Accepted
+        );
+        std::fs::write(repo_root.join("README.md"), "late edit\n").unwrap();
+        accept_dynamic_completion_proposal(&ctx, &mut graph, proposal).unwrap();
+        assert_eq!(graph.proposals.len(), 1);
+        assert_eq!(graph.groups.len(), 1);
+        let persisted = load_dynamic_graph(
+            &ctx.app.paths.dynamic_graph_file(
+                ctx.task_id,
+                ctx.run_id,
+                ctx.round_id,
+                ctx.outer_node_id,
+                ctx.outer_attempt_id,
+            ),
+            &repo_root,
+        )
+        .unwrap();
+        assert_eq!(persisted.proposals.len(), 1);
+        assert_eq!(persisted.groups.len(), 1);
+    }
+
+    #[test]
+    fn fanout_workspace_git_failure_is_runtime_error_without_accepted_proposal() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let source = test_worktree_node("source");
+        let mut graph = test_dynamic_graph_at(repo_root.clone(), vec![source.clone()]);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        let proposal = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            fanout_workspace_test_completion(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        std::fs::rename(repo_root.join(".git"), repo_root.join("saved-git")).unwrap();
+        let error = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            fanout_workspace_test_completion(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            normalize_runtime_error(&error).code_str(),
+            "dynamic.fanout.workspace-check-failed"
+        );
+        let error = accept_dynamic_completion_proposal(&ctx, &mut graph, proposal).unwrap_err();
+        assert_eq!(
+            normalize_runtime_error(&error).code_str(),
+            "dynamic.fanout.workspace-check-failed"
+        );
+        assert!(graph.proposals.is_empty());
+        assert!(graph.groups.is_empty());
+        assert_eq!(graph.nodes[0].status, DynamicNodeStatus::Paused);
+    }
+
+    #[test]
+    fn fanout_workspace_runtime_source_is_checked_and_ignored_files_are_allowed() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph = test_dynamic_graph_at(repo_root, vec![test_worktree_node("source")]);
+        let workspace_id =
+            fork_dynamic_workspace(&ctx, &mut graph, "workspace-main", "parent", "source").unwrap();
+        graph.nodes[0].workspace_id = workspace_id.clone();
+        let source = graph.nodes[0].clone();
+        let workspace = dynamic_workspace(&graph, &workspace_id).unwrap().clone();
+        std::fs::write(workspace.path.join("README.md"), "nested foundation\n").unwrap();
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        let proposal = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            fanout_workspace_test_completion(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(
+            proposal
+                .validation_errors
+                .iter()
+                .any(|error| error.code == DYNAMIC_FANOUT_WORKSPACE_DIRTY)
+        );
+        assert!(dynamic_fanout_head(&workspace).is_ok());
+        git(&workspace.path, &["add", "README.md"]);
+        git(
+            &workspace.path,
+            &["commit", "-m", "feat: nested foundation"],
+        );
+        std::fs::create_dir_all(workspace.path.join(".gold-band")).unwrap();
+        std::fs::write(workspace.path.join(".gold-band/local-cache"), "ignored\n").unwrap();
+        let proposal = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            fanout_workspace_test_completion(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            proposal.validation_status,
+            DynamicProposalValidationStatus::Accepted
+        );
+        let commit = dynamic_fanout_head(&workspace).unwrap();
+        materialize_dynamic_next(&ctx, &mut graph, 0, fanout_workspace_test_completion().next)
+            .unwrap();
+        let group = graph
+            .groups
+            .iter()
+            .find(|group| group.id == "clean-source-group")
+            .unwrap();
+        for child_id in &group.child_workspace_ids {
+            let child = dynamic_workspace(&graph, child_id).unwrap();
+            assert_eq!(child.fork_commit, commit);
+            assert_eq!(
+                std::fs::read_to_string(child.path.join("README.md"))
+                    .unwrap()
+                    .trim(),
+                "nested foundation"
+            );
+        }
+    }
+
+    #[test]
+    fn fanout_workspace_acceptance_uses_target_and_end_does_not_require_clean() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut source = test_worktree_node("accept");
+        source.kind = DynamicNodeKind::Acceptance;
+        source.group_id = Some("group".to_string());
+        source.workspace_id = "not-the-fork-target".to_string();
+        let mut graph = test_dynamic_graph_at(
+            repo_root.clone(),
+            vec![test_worktree_node("creator"), source.clone()],
+        );
+        let mut group = test_group_state("group", "creator", vec![], vec![]);
+        group.target_workspace_id = "workspace-main".to_string();
+        graph.groups.push(group);
+        std::fs::write(repo_root.join("README.md"), "pending\n").unwrap();
+        assert_eq!(
+            dynamic_fanout_source_workspace(&graph, &source).unwrap().id,
+            "workspace-main"
+        );
+        // End and single do not need to move uncommitted work into a new worktree.
+        graph.groups.clear();
+        graph.nodes.truncate(1);
+        source = graph.nodes[0].clone();
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        let mut completion = fanout_workspace_test_completion();
+        completion.next = DynamicNext::End;
+        let proposal = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            completion,
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            proposal.validation_status,
+            DynamicProposalValidationStatus::Accepted
+        );
+    }
+
+    #[test]
+    fn fanout_workspace_prompts_are_optional_commit_reminders_in_both_languages() {
+        let (_temp, repo_root) = init_repo();
+        for language in [DesktopLanguage::ZhCn, DesktopLanguage::En] {
+            let mut config = RuntimeConfig::default();
+            config.desktop_language = language;
+            let app = App::with_config(repo_root.clone(), config);
+            let dynamic = test_dynamic();
+            let ctx = test_context(&app, &dynamic);
+            let node = test_worktree_node("source");
+            let graph = test_dynamic_graph_at(repo_root.clone(), vec![node.clone()]);
+            let error = dynamic_fanout_workspace_dirty_error(&graph.workspaces[0]);
+            let repair = dynamic_proposal_repair_prompt(&ctx, &graph, &node, &[error]);
+            let contract = dynamic_output_contract(
+                &ctx,
+                &graph,
+                &node,
+                OutputEmissionMode::PostTurnProjection,
+            );
+            for prompt in [repair.as_str(), contract.schema_text.as_deref().unwrap()] {
+                for term in ["Conventional Commits", "artifact"] {
+                    assert!(prompt.contains(term), "missing {term} in {language:?}");
+                }
+                assert!(prompt.contains(if language == DesktopLanguage::ZhCn {
+                    "不要求"
+                } else {
+                    "resubmit"
+                }));
+            }
+            assert!(repair.contains(repo_root.as_str()));
+            assert!(repair.contains(if language == DesktopLanguage::ZhCn {
+                "本次fanout即将从HEAD开始创建worktree，检测到源工作区仍有未提交代码，故提醒："
+            } else {
+                "This fanout is about to create worktrees from HEAD."
+            }));
+            let unrelated_repair = dynamic_proposal_repair_prompt(&ctx, &graph, &node, &[]);
+            assert!(!unrelated_repair.contains("Conventional Commits"));
+        }
     }
 
     #[test]

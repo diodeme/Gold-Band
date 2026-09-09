@@ -674,6 +674,20 @@ ACP live event(branchId)
 - 浏览器：iab 不可用后使用已连接 Chrome，真实 ACPMessageList + ConversationViewport 配合可控延迟接口。40 条首批详情在流式范围前进后显示，桌面列表底部与角标顶边误差小于 1px；随后详情刷新增加行数，scrollTop 保持 668、following=false。420px 内容区首批同样定位到角标上沿，误差小于 1px；直接点击单条长输出标题维持 601.89px，重新拉宽无横向溢出。浏览器只模拟接口延迟与流式竞态，未重放正式 EXE 原会话。
 - 完成自评审：复用 prompt-kit、有界详情窗口 40×3、事件 reducer 和 single-flight，无新依赖、持久字段、缓存或并发队列；只增加详情窗口自身的首批就绪标记，表达新鲜度不能替代的阅读生命周期。合并限定于已有窗口与单页，不增加全量加载或扩大订阅；后端原查询耗时未改变，不宣称消除了首次 I/O 延迟。规则目录已有生命周期、单调合并与分页锚点约束，不新增经验规则。
 
+## 2026-09-08 计时回放水位溯源与修复（已验证）
+
+- 授权范围：完成溯源、最小失败复现后，经用户确认实施根因修复。复用 session-scroll-pagination 的消息身份与阅读恢复检查，以及现有 live/session timing 接口；不引入新库、缓存、队列或运行状态。
+- 引入链路：`3ec88f06`（2026-07-03，stabilize live session timing）增加约每秒的临时计时事件，ID 包含时间、seq 使用执行实例当前 seq，目的是在工具运行和等待阶段持续更新计时。`280ad51e`（2026-08-19，harden prompt turn admission）以 durable revision 建立有界回放的丢失确认，计时无 revision，不要求 durable catch-up。`94ef9471`（2026-08-31，stabilize timeline recovery and session isolation）为未落盘正文补独立 sequence fence，并以 canonical newestSeq 确认；同次提交明确把原测试“does not make transient timing updates part of durable catch-up”替换为“uses sequence coverage to recover an oversized transient timing update”，将纯展示计时也纳入恢复要求。
+- 根因分类：恢复契约的数据分类缺陷。暂未落盘但会进入消息历史的内容与永不作为正文落盘的计时都没有 revision，不能仅凭该字段缺失赋予相同的消息追齐要求。有界缓存和会话隔离初衷正确；子分支使用独立正文与 replay key，但主分支计时沿用全局 seq，可把子分支进度间接带入主分支 sequence fence。不是最近 Activity 展开提交 `8319e92f` 引入。
+- 接口复现：先确认主正文 seq=118，再向 child 分支发布 seq=388，随后向 root 发布正常大小、独立时间 ID、无 revision 的计时事件。容量来自 `CONVERSATION_EVENT_REPLAY_LIMITS.eventsPerBranch=64`，64 条对照组 ACK 成功；65 条触发淘汰，root 没有 child 正文、loss revision=0，但 ACK(coveredSeq=118) 返回 false。失败位置是明确布尔断言，不是等待超时。
+- DOM 复现：真实 ACPChatDialog 在相同回放条件下重新进入，getAcpSession 始终成功返回已完整覆盖的 root 正文，子正文不显示；等待生产有界恢复预算结束后点击“回到最新”，确认新查询发生且按钮结束 loading，最终按钮仍存在。失败位置是 DOM 按钮应移除断言。测试等待预算只用于观察恢复完成，不参与构造竞态；与接口无等待对照共同证明原因。
+- 修复前红测：`node node_modules/vitest/vitest.mjs run --config web/vitest.config.ts web/tests/conversation-event-router.test.ts web/tests/acp-session-reentry-reconciliation.test.tsx -t "child-advanced"`，结果 1 通过、2 预期验收失败。修复后保留 ACK 成功及最终按钮移除断言转绿；重入已能自动清除按钮时无需再点击。
+- 实现：Router 在 session/generation 校验及换代清理后，让 timingUpdate 继续 live 分发，但跳过正文回放存储、head 推进、payload 计量及淘汰。审视既有消费者后不增加“最新计时缓存”：活动页面已有 live 分发，重入已有 canonical session timing，避免复制权威状态。其他事件保留原 revision/sequence fence 行为。
+- 验证：Router、订阅、会话重入、贴底、Activity 详情加载 5 个测试文件共 178 项通过；TypeScript 构建类型检查及 Vite 生产构建通过（保留现有静态/动态混合导入及大 chunk 警告）。新增保护用例覆盖连续计时不挤掉正文、计划、用量和权限事件，以及这些持久事件真正超限时仍建立 revision loss。
+- 浏览器：iab 不可用后使用 Chrome，在模拟运行时数据的真实 ACPChatDialog 中验证 24 条长消息、主正文 seq=24/计时 seq=388、累计 195 次计时。实时累计由 1m5s 更新到 2m10s；上滑出现按钮、点击后消失；离开期间再推进计时，重入显示 3m15s 且按钮消失。宽窗口及 420px 容器截图可读，窄容器距物理底部 1px。临时入口、页面和开发服务在验收后清理。
+- 证据范围：证明这条水位链路可导致按钮无法消失；未在正式 EXE 重放 task-021 原现场，也未证明截图重入锚点的具体像素位置由同一原因唯一决定。原现场没有前端 replay 淘汰/点击 trace，不能把代码复现当成该次点击的完整审计。
+- 性能与过度设计评审：生产改动限于 Router 6 行，复用现有数据边界，无新增依赖、状态、I/O、全量扫描或缓存；减少每次计时的 replay payload 计量、缓存占用与无效恢复请求，实时展示频率不变。容量仍使用现有 64 条配置，回归覆盖临界 64/65 条；无需另建计时状态机或 benchmark。未提交。
+
 ## 17. 文档同步要求
 
 实现阶段必须同步维护：

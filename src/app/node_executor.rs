@@ -1238,7 +1238,7 @@ mod tests {
 
     #[test]
     fn workflow_output_contract_uses_post_turn_projection() {
-        let worker = WorkerNode {
+        let mut worker = WorkerNode {
             id: "review".to_string(),
             execution_slot_id: None,
             provider: Some("claude-acp".to_string()),
@@ -1263,6 +1263,10 @@ mod tests {
             contract.emission_mode,
             OutputEmissionMode::PostTurnProjection
         );
+        worker.output = None;
+        assert!(worker_output_contract(&worker).is_none());
+        worker.manual_check = Some(true);
+        assert!(worker_output_contract(&worker).is_none());
     }
 
     #[test]

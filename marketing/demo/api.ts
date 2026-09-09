@@ -7,6 +7,7 @@ import { readDemoLayout, readDemoPreferences, writeDemoLayout, writeDemoPreferen
 import { demoAgentRegistry, demoProfiles, demoProfileContent, demoWorkflowTemplates } from './catalog';
 import { DEMO_REPORT_PATH, demoDevelopmentFiles, demoReportContent, validateDemoFileLocator } from './turn-files';
 import { demoRunIds } from './scenarios';
+import { demoManagementApi } from './management';
 
 export const DEMO_READ_METHODS = [
   'getAgentRegistry', 'getProfiles', 'getProfile', 'getWorkflowTemplates', 'getWorkflow',
@@ -15,6 +16,8 @@ export const DEMO_READ_METHODS = [
   'listWorkspaceDirectory', 'searchWorkspaceFiles', 'resolveWorkspaceFileLink',
   'readFileResource', 'resolveMarkdownImage', 'getConversationWorkspaces',
   'getSkillSyncStatus',
+  'getSourceControlSnapshot', 'getGitHistory', 'getGitCommitDetail', 'getGitCommitReview',
+  'getGitCommitReachability', 'getGitComparison', 'getGitBranchPickerSnapshot',
 ] as const satisfies readonly (keyof RuntimeApi)[];
 
 const quietMethods = new Set<keyof RuntimeApi>([
@@ -26,6 +29,8 @@ const subscriptions = new Set<keyof RuntimeApi>([
   'subscribeAcpSessionUpdates', 'subscribeConversationRunStateUpdates',
   'subscribeConversationTerminalResultUpdates', 'subscribeWorkspaceFileChanges',
   'subscribeInterventionNavigate', 'subscribeMulticaTaskUpdates',
+  'subscribeMulticaSettingsUpdates', 'subscribeScheduledTaskUpdates', 'subscribeScheduledOccurrenceUpdates',
+  'subscribeGitStateChanges', 'subscribeGitOperationUpdates', 'subscribeGitHubOperationUpdates',
 ]);
 
 export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): RuntimeApi {
@@ -37,6 +42,28 @@ export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): R
   const readMethods = new Set<string>(DEMO_READ_METHODS);
   const methods = new Map<PropertyKey, unknown>();
   const overrides: Partial<RuntimeApi> = {
+    ...demoManagementApi(() => state.getPreferences().language),
+    async getGitCapability() {
+      return { status: 'ready', installedVersion: '2.53.0', minimumVersion: '2.36.0', repoRoot: '/default', commonDir: '/default/.git', head: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241' };
+    },
+    async getGitHubCapability() {
+      return { status: 'repository-unresolved', version: null, host: null, account: null, repository: null, remote: null, defaultBranch: null };
+    },
+    async listConversationDirectory(input) {
+      await overrides.getAcpSession!(input.projectId ?? 'default', input.taskId, input.runId, input.roundId, input.nodeId, input.attemptId);
+      const path = input.relativePath ?? '';
+      if (path !== '' && path !== 'reports') throw { code: 'demo.resource-not-found', params: { path } };
+      const entries = path === '' ? [{ name: 'reports', kind: 'directory' as const }] : [{ name: 'review.md', kind: 'file' as const }];
+      return entries.map((entry) => ({ ...entry, relativePath: path ? `${path}/${entry.name}` : entry.name,
+        canonicalPath: `/demo/runs/${input.taskId}/${input.runId}/${input.roundId}/${input.nodeId}/${path ? `${path}/` : ''}${entry.name}`,
+        hasChildren: entry.kind === 'directory', byteLength: null, modifiedAtNs: null }));
+    },
+    async readConversationDirectoryFile(input) {
+      await overrides.getAcpSession!(input.projectId ?? 'default', input.taskId, input.runId, input.roundId, input.nodeId, input.attemptId);
+      if (input.relativePath !== 'reports/review.md') throw { code: 'demo.resource-not-found', params: { path: input.relativePath } };
+      const snapshot = await overrides.readFileResource!('default', DEMO_REPORT_PATH);
+      return { ...snapshot, name: 'review.md', locator: { projectId: 'default', canonicalPath: `/demo/runs/${input.taskId}/${input.runId}/${input.roundId}/${input.nodeId}/reports/review.md`, relativePath: 'reports/review.md', scope: 'workspace' } };
+    },
     async getTurnFileChangeSet(locator, changeSetId) {
       validateDemoFileLocator(locator, changeSetId);
       const manifest = structuredClone(demoDevelopmentFiles);

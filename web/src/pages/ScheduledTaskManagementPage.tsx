@@ -1,3 +1,4 @@
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
@@ -41,6 +42,7 @@ export function formatTimestamp(value?: string | null) {
 
 export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, onOpenDetail }: { projectId?: string; onCreate?: () => void; onOpenDetail?: (task: ScheduledTaskVm) => void }) {
   const { t } = useTranslation();
+  const readOnly = useReadOnlyExperience();
   const [tasks, setTasks] = useState<ScheduledTaskVm[]>([]);
   const [filter, setFilter] = useState<StatusFilter>('all');
   const [workspaceFilter, setWorkspaceFilter] = useState('all');
@@ -120,7 +122,7 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
   };
 
   const updateEnabled = async (task: ScheduledTaskVm, enabled: boolean) => {
-    if (pendingTaskActionsRef.current[task.id]) return;
+    if (readOnly || pendingTaskActionsRef.current[task.id]) return;
     setTaskPending(task.id, 'enable');
     setActionError(false);
     try {
@@ -135,7 +137,7 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
   };
 
   const runNow = async (task: ScheduledTaskVm) => {
-    if (pendingTaskActionsRef.current[task.id]) return;
+    if (readOnly || pendingTaskActionsRef.current[task.id]) return;
     setTaskPending(task.id, 'run');
     setActionError(false);
     try {
@@ -253,7 +255,7 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
                   <div className="mt-1 truncate text-muted-foreground">{task.lastTriggerStatus === 'skipped' ? t('scheduled.management.queueSkipped') : scheduledTaskStatusLabel(t, task.status)}</div>
                 </div>
                 <div onClick={(e) => e.stopPropagation()}>
-                  <Switch checked={task.enabled} disabled={Boolean(pendingTaskActions[task.id])} onCheckedChange={(enabled) => void updateEnabled(task, enabled)} aria-label={t(task.enabled ? 'scheduled.management.disableAria' : 'scheduled.management.enableAria')} />
+                  <Switch checked={task.enabled} disabled={readOnly || Boolean(pendingTaskActions[task.id])} onCheckedChange={(enabled) => void updateEnabled(task, enabled)} aria-label={t(task.enabled ? 'scheduled.management.disableAria' : 'scheduled.management.enableAria')} />
                 </div>
                 <div onClick={(e) => e.stopPropagation()}>
                   <DropdownMenu>
@@ -262,13 +264,13 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem onClick={() => onOpenDetail?.(task)}><MoreHorizontal className="size-4" />{t('scheduled.management.detail')}</DropdownMenuItem>
-                      <DropdownMenuItem disabled={Boolean(pendingTaskActions[task.id])} onClick={() => void runNow(task)}><Play className="size-4" />{t('scheduled.management.runNow')}</DropdownMenuItem>
+                      <DropdownMenuItem disabled={readOnly || Boolean(pendingTaskActions[task.id])} onClick={() => void runNow(task)}><Play className="size-4" />{t('scheduled.management.runNow')}</DropdownMenuItem>
                       <DropdownMenuItem onClick={() => void openEdit(task)} disabled={editLoading || Boolean(pendingTaskActions[task.id])}><Pencil className="size-4" />{t('scheduled.management.edit')}</DropdownMenuItem>
-                      <DropdownMenuItem disabled={Boolean(pendingTaskActions[task.id])} onClick={() => void updateEnabled(task, !task.enabled)}>
+                      <DropdownMenuItem disabled={readOnly || Boolean(pendingTaskActions[task.id])} onClick={() => void updateEnabled(task, !task.enabled)}>
                         {task.enabled ? <Pause className="size-4" /> : <Play className="size-4" />}
                         {t(task.enabled ? 'scheduled.management.disable' : 'scheduled.management.enable')}
                       </DropdownMenuItem>
-                      <DropdownMenuItem disabled={Boolean(pendingTaskActions[task.id])} className="text-destructive focus:text-destructive" onClick={() => setDeleting(task)}><Trash2 className="size-4" />{t('scheduled.management.delete')}</DropdownMenuItem>
+                      <DropdownMenuItem disabled={readOnly || Boolean(pendingTaskActions[task.id])} className="text-destructive focus:text-destructive" onClick={() => setDeleting(task)}><Trash2 className="size-4" />{t('scheduled.management.delete')}</DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>
@@ -284,6 +286,7 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
           {editing ? (
             <ScheduledTaskDialog
               open
+              saveDisabled={readOnly}
               presentation="workspace"
               onOpenChange={(open) => { if (!open) setEditing(null); }}
               allowContinuous={editing.definition.runMode === 'direct'}
@@ -291,6 +294,7 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
               initialContent={editing.definition.content}
               showContent
               onSave={async (config, content) => {
+                if (readOnly) return;
                 const definition = editing.definition;
                 await updateScheduledTask({
                   scheduledTaskId: definition.scheduledTaskId,
@@ -323,7 +327,7 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
             <AlertDialogCancel>{t('scheduled.management.cancel')}</AlertDialogCancel>
             <AlertDialogAction disabled={Boolean(deleting && pendingTaskActions[deleting.id])} className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={(event) => {
               event.preventDefault();
-              if (!deleting) return;
+              if (readOnly || !deleting) return;
               const task = deleting;
               setTaskPending(task.id, 'delete');
               setActionError(false);

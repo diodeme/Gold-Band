@@ -154,7 +154,9 @@ Agent Cards
 - doctor 与正式 ACP 连接共用 adapter stderr 字节流诊断：Windows 本地代码页或任意非法 UTF-8 输出不得中止 stderr 消费，详细日志必须保留 lossy 可读文本与有界原始字节前缀，并携带具体 Agent id、adapter command 和可获得的进程退出状态。常规日志不得直接展开 stderr 正文；用户开启“记录详细日志”后无需重启即可在下一次诊断中取得真实 npm/npx 错误，而不是只看到 `stream did not contain valid UTF-8` 或无法归因的 `adapter=npx`。
 - 周期 Agent doctor、命令目录刷新、adapter stderr 行与非 UTF-8 摘要属于高频且可自动复现的诊断过程，只写 `DEBUG`，默认 `INFO` 的 `runtime.log` 不重复记录每分钟诊断结果。doctor 返回 unavailable 是可展示的业务诊断结果，不升级为 `WARN`；只有调度锁、持久化、线程启动、命令目录刷新或传输读取等基础设施实际失败才写 `WARN`，并携带稳定 Agent id。手动诊断的 UI 结果继续来自 canonical diagnostic snapshot，不能依赖日志级别。
 - 当前固定参考官方 Registry 中的 Claude、Codex、Cursor、Gemini、CodeBuddy、Goose、Qwen Code、OpenCode、Kimi Code、Amp、Pi 十一类精选 Agent，同时允许任意合法自定义 ACP Agent
-- 诊断 initialize 设置 5 分钟超时，超时视为异常诊断并返回页面，不允许阻塞客户端
+- 单个 Agent 每轮诊断从取得执行资格起共享 3 分钟截止时间，覆盖 adapter 启动后的初始化、会话创建、命令发现和诊断会话清理；周期失败重试沿用同一截止时间，预算耗尽后不再启动重试。超时以 `acp.doctor-timeout` 和当前阶段记录原因，回收进程树并保留有界失败日志；进程回收复用既有平台机制，Unix 的 2 秒终止宽限不计入协议等待预算。正常业务会话的请求期限不随 Doctor 改变
+- 所有诊断入口和命令目录刷新按稳定 Agent ID 互斥，不再持有跨 Agent 的全局运行锁；同一 Agent 在全局与 workspace 命令目录刷新之间仍不能重叠，因为它们共享该 Agent 的 doctor 目录。全应用最多同时运行 4 个诊断 adapter，批量诊断最多使用 4 个 worker；等待同一 Agent 的请求不提前占用 adapter 名额，运行集合随 guard 释放删除，不持久化
+- 周期诊断每完成一项并可靠写入后，立即发布既有 registry/commands 更新事件，不等待其他 Agent 完成。手动诊断使用 blocking 执行器，不能在 Tauri 异步线程上同步等待；保存提交、配置版本校验和按版本合并继续沿用既有机制。批次末尾清理失效诊断时也必须进入短时提交锁，避免覆盖并行诊断的新结果
 - 诊断结果除健康状态外，还要缓存 agent 返回的 `modes` / `configOptions` 能力摘要，供工作流编辑器直接复用
 - 诊断缓存需要持久化到当前 workspace 的本地运行时目录，客户端重启后仍可直接为节点展示可选权限模式，不要求用户每次重新手动诊断
 

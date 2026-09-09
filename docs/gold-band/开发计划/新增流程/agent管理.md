@@ -3,7 +3,7 @@
 agent管理主要是负责管理支持接入的ACP agent
 当前改为维护构建期精选 ACP Agent Catalog，固定提供 `claude-acp`、`codex-acp`、`cursor`、`gemini`、`codebuddy-code`、`goose`、`qwen-code`、`opencode`、`kimi`、`amp-acp`、`pi-acp` 十一类模板，并支持用户自定义 ACP Agent；GLM 不进入本轮范围
 agent管理页面主要就是agent卡片和新增agent按钮
-agent卡片支持删除、修改、环境诊断操作（检查agent环境是否正常，提供手动检测能力，后台每1分钟自动检测一次agent环境），并显示agent的诊断状态（最好用对应图标）；doctor 失败时在状态旁显示问号帮助入口，该帮助入口统一使用随主题变化的浅色 shadcn/ui `Tooltip` 展示错误原因与配置帮助，悬浮或聚焦即可出现；提示参考 ACP Registry 配置命令、参数、环境、网络和认证状态，ACP Registry 链接到 `https://agentclientprotocol.com/get-started/registry`，点击后通过系统默认浏览器打开。卡片内容需要有稳定左右内边距；最近检测时间展示为本地系统时区 `YYYY-MM-DD HH:MM:SS`；手动诊断运行中显示圆形加载动效，完成后根据结果显示数秒成功或异常横幅；成功态横幅与成功状态图标需复用主题 success token，避免页面硬编码颜色；诊断命令 `npx -y @agentclientprotocol/claude-agent-acp@latest` 用于启动 Claude ACP adapter，首次运行可能通过 npm 下载依赖而耗时 1 分钟以上；诊断 initialize 最多等待 5 分钟，结束、失败、超时或客户端关闭都必须退出诊断进程树，不能阻塞客户端
+agent卡片支持删除、修改、环境诊断操作（检查agent环境是否正常，提供手动检测能力，后台每1分钟自动检测一次agent环境），并显示agent的诊断状态（最好用对应图标）；doctor 失败时在状态旁显示问号帮助入口，该帮助入口统一使用随主题变化的浅色 shadcn/ui `Tooltip` 展示错误原因与配置帮助，悬浮或聚焦即可出现；提示参考 ACP Registry 配置命令、参数、环境、网络和认证状态，ACP Registry 链接到 `https://agentclientprotocol.com/get-started/registry`，点击后通过系统默认浏览器打开。卡片内容需要有稳定左右内边距；最近检测时间展示为本地系统时区 `YYYY-MM-DD HH:MM:SS`；手动诊断运行中显示圆形加载动效，完成后根据结果显示数秒成功或异常横幅；成功态横幅与成功状态图标需复用主题 success token，避免页面硬编码颜色；诊断命令 `npx -y @agentclientprotocol/claude-agent-acp@latest` 用于启动 Claude ACP adapter，首次运行可能通过 npm 下载依赖而耗时 1 分钟以上；每个 Agent 每轮诊断的初始化、会话创建、命令发现、清理和周期重试共享 3 分钟预算，结束、失败、超时或客户端关闭都必须退出诊断进程树，不能阻塞客户端
 补充诊断环境要求：
 - ACP adapter 与 doctor 必须复用 `process` 模块的跨平台 PATH 解析接口，并以首次出现项为准去重。Windows 优先级固定为“Agent 显式配置 PATH → 当前桌面进程 PATH → 用户注册表 PATH → 系统注册表 PATH → 平台通用目录”；每次创建 ACP 进程前直接通过注册表 API 读取 `HKCU\Environment\Path` 和 `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment\Path`，展开 `%VAR%` 并按大小写不敏感去重，不调用 `reg.exe`。macOS / Linux 优先级固定为“Agent 显式配置 PATH → 用户登录 Shell PATH → 当前桌面进程 PATH → 平台通用目录”；首次使用时从 Unix 账户信息选择默认 Shell，以 `-ilc` 登录交互模式读取环境，设置 2 秒总超时并回收超时进程，成功或失败结果按应用生命周期缓存。Shell profile 噪声通过输出边界隔离，只读取 `PATH`；失败时回退当前进程 PATH。Unix 按大小写敏感语义合并，并补全 `~/.nvm/versions/node/*/bin`、`~/.local/bin`、`~/.cargo/bin`、`~/.volta/bin`、`/opt/homebrew/bin`、`/usr/local/bin` 等通用位置；所有平台都禁止维护 Kimi、Cursor、OpenCode、Scoop、npm 等 Agent 或安装器目录特判。该解析仅位于 doctor / ACP 进程创建边界，不进入会话消息热路径
 - Windows 裸命令 PATH 查找统一限定为 `.exe`、`.com`、`.cmd`、`.bat` 候选，优先原生可执行文件并允许 npm `.cmd` wrapper；忽略 `.ps1` 和无扩展名 Unix shim，避免把 `#!/bin/sh` 文件交给 Win32 `CreateProcess` 后产生 OS error 193。显式带扩展名命令保持原名；PowerShell 脚本必须由用户显式配置 `pwsh` / `powershell -NoProfile -File`
@@ -55,6 +55,17 @@ Agent 实例新增两个独立能力配置：
 - ACP 权限模式与节点 Profile 分层生效：权限模式使用 Agent 实际暴露的 mode API 控制工具授权，Profile 继续约束角色职责。实时切换权限成功后不得改写 Profile；例如 `pf-builtin-plan` 在 `yolo` 下仍然只负责规划。验收时必须同时检查 outbound mode 请求、Agent 响应中的 current mode 与节点 Profile，不能仅根据模型是否愿意改代码判断权限是否生效
 
 ## 本轮实现与验收记录（2026-08-07）
+
+### 2026-09-09 Doctor 超时与跨 Agent 隔离
+
+- 根因：早期 Doctor 只做有超时的 initialize，增加 session/new 以发现模型与权限能力后未扩展超时；周期诊断改为并行、目录改为 Agent 隔离后，仍持有整个批次的全局运行锁。一个存活但不响应的 adapter 因而可以阻塞后续其他 Agent 的诊断。
+- 修复前证据：模拟 adapter 正常 initialize 后不回答 session/new，500ms 测试预算未生效，旧实现直到 2 秒后 fixture rescue 才返回，断言失败；另一个测试以 channel 保持首个诊断运行，第二个诊断无法取得执行资格，独立执行断言失败。两项均已实际观察到失败。
+- 实现：单 Agent 每轮共享 180 秒截止时间，周期重试沿用剩余预算；所有诊断与命令目录入口按 Agent ID 互斥，总 adapter/批次 worker 上限均为 4。周期结果逐项发布，手动 IPC 进入 blocking 执行器，保留配置版本校验、保存解耦、请求合并和失败日志回收。
+- 过度设计评审：复用标准库 Mutex/Condvar、既有 ACP 请求轮询、RuntimeErrorInfo 和进程组管理；运行集合仅表达正在占用的 Agent ID，最多 4 项，无新增依赖、持久字段、并行业务身份或通用调度框架。
+- 性能评审：内置 Catalog 为 11 项，并允许自定义 Agent，批次输入规模为已配置 Agent 数 N。遍历 O(N)，批次线程与活动 adapter 均至多 4，互斥集合至多 4 项；无新增历史读取或持续轮询，结果事件仅在单项完成时发送。配置/结果短锁不覆盖 provider 等待。验收检查一个阻塞 Agent 下其他项可完成、相同 Agent 不重叠、并发上限以及完成后的资源释放。
+- 验收完成：原 session/new 与跨 Agent 阻塞复现测试转绿；ACP client 138 项通过（另有 1 个仅由父测试启动的 ignored adapter fixture），桌面 state 相关 38 项通过，前端 Agent 诊断/启动字段/workflow 健康相关 6 项通过。覆盖 initialize、session/new、session/delete、session/close 超时及阶段错误码，超时后 adapter 的 TCP listener 已关闭、PID 文件移除，成功后能力保留且临时目录删除。
+- 接口与规模验收：Codex probe 由 channel 保持运行时，CodeBuddy probe 可完成，最终两者结果均正确落盘；同 Agent 等待不占额外 adapter 名额，释放后可继续运行；1,000 个模拟 Agent 全部处理且 worker 数不超过 4。重试使用完全相同的截止时间，已耗尽预算不重试；保存提交不等待运行中 doctor、连续保存请求合并等既有测试继续通过。
+- 前端验收：DOM 测试确认等待时按钮 loading/disabled、重复点击不重发，失败结果到达后停止旋转并恢复重试，其他 Agent 的按钮不受影响。`tsc -p web/tsconfig.build.json --noEmit` 和 Vite 生产构建通过；保留既有大 chunk、混合静态/动态 import 和 Rust dead-code 警告。内置 iab 不可用，按项目规则使用已连接 Chrome deep link `/chat/agents`，确认页面渲染及诊断完成后的按钮恢复；浏览器使用前端 mock，实际 ACP 超时与进程回收由 Rust 子进程测试验证，未重新连接用户真实 Codex/CodeBuddy 账号。测试页面与本次 Vite 进程在验收后关闭。
 
 ### 2026-09-08 构建期本地版本覆盖
 

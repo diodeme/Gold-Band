@@ -2,13 +2,14 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     str::FromStr,
     sync::{
-        Arc, Mutex, MutexGuard,
-        atomic::{AtomicU64, Ordering},
+        Arc, Condvar, Mutex, MutexGuard,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
+use gold_band::acp::client::DoctorDeadline;
 use gold_band::acp::commands::{
     AcpCommandCatalog, AcpCommandItem, catalog_key, merge_command_sources,
     merge_native_skill_commands, project_id, scan_native_skill_commands,
@@ -259,6 +260,64 @@ impl NotificationAttentionState {
     }
 }
 
+const MAX_CONCURRENT_AGENT_DIAGNOSTICS: usize = 4;
+
+#[derive(Default)]
+struct AgentDiagnosticRuns {
+    active: Mutex<BTreeSet<ManagedAgentId>>,
+    available: Condvar,
+}
+
+struct AgentDiagnosticGuard<'a> {
+    runs: &'a AgentDiagnosticRuns,
+    agent_id: ManagedAgentId,
+}
+
+impl AgentDiagnosticRuns {
+    fn acquire(&self, agent_id: &ManagedAgentId) -> Result<AgentDiagnosticGuard<'_>> {
+        let active = self
+            .active
+            .lock()
+            .map_err(|_| anyhow::anyhow!("agent diagnostic lock poisoned"))?;
+        let mut active = self
+            .available
+            .wait_while(active, |active| {
+                active.contains(agent_id) || active.len() >= MAX_CONCURRENT_AGENT_DIAGNOSTICS
+            })
+            .map_err(|_| anyhow::anyhow!("agent diagnostic lock poisoned"))?;
+        active.insert(agent_id.clone());
+        Ok(AgentDiagnosticGuard {
+            runs: self,
+            agent_id: agent_id.clone(),
+        })
+    }
+}
+
+impl Drop for AgentDiagnosticGuard<'_> {
+    fn drop(&mut self) {
+        let mut active = self
+            .runs
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        active.remove(&self.agent_id);
+        self.runs.available.notify_all();
+    }
+}
+
+fn for_each_diagnostic_agent(agent_ids: &[ManagedAgentId], probe: impl Fn(&ManagedAgentId) + Sync) {
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..agent_ids.len().min(MAX_CONCURRENT_AGENT_DIAGNOSTICS) {
+            scope.spawn(|| {
+                while let Some(agent_id) = agent_ids.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    probe(agent_id);
+                }
+            });
+        }
+    });
+}
+
 pub struct DesktopState {
     context: Mutex<DesktopContext>,
     scheduled_service: Mutex<Option<Arc<crate::scheduled_service::ScheduledTaskService>>>,
@@ -269,7 +328,7 @@ pub struct DesktopState {
         >,
     >,
     agent_diagnostics: Arc<Mutex<BTreeMap<ManagedAgentId, AgentDiagnosticState>>>,
-    agent_diagnostic_run_lock: Mutex<()>,
+    agent_diagnostic_runs: AgentDiagnosticRuns,
     agent_config_diagnostic_commit_lock: Mutex<()>,
     scheduled_agent_diagnostics: Mutex<BTreeMap<ManagedAgentId, u64>>,
     agent_command_catalogs: Mutex<BTreeMap<String, AcpCommandCatalog>>,
@@ -308,7 +367,7 @@ impl DesktopState {
                 ),
             ),
             agent_diagnostics: Arc::new(Mutex::new(persisted_diagnostics)),
-            agent_diagnostic_run_lock: Mutex::new(()),
+            agent_diagnostic_runs: AgentDiagnosticRuns::default(),
             agent_config_diagnostic_commit_lock: Mutex::new(()),
             scheduled_agent_diagnostics: Mutex::new(BTreeMap::new()),
             agent_command_catalogs: Mutex::new(persisted_command_catalogs),
@@ -866,10 +925,11 @@ impl DesktopState {
         Ok(())
     }
 
-    pub fn agent_diagnostic_guard(&self) -> Result<MutexGuard<'_, ()>> {
-        self.agent_diagnostic_run_lock
-            .lock()
-            .map_err(|_| anyhow::anyhow!("agent diagnostic lock poisoned"))
+    fn agent_diagnostic_guard(
+        &self,
+        agent_id: &ManagedAgentId,
+    ) -> Result<AgentDiagnosticGuard<'_>> {
+        self.agent_diagnostic_runs.acquire(agent_id)
     }
 
     pub fn agent_config_diagnostic_commit_guard(&self) -> Result<MutexGuard<'_, ()>> {
@@ -912,10 +972,7 @@ impl DesktopState {
                 .get(agent_id)
                 .copied()
                 .ok_or_else(|| anyhow::anyhow!("agent diagnostic request was cancelled"))?;
-            let result = {
-                let _run_guard = self.agent_diagnostic_guard()?;
-                self.refresh_agent_diagnostic_unlocked(agent_id)
-            };
+            let result = self.refresh_agent_diagnostic(agent_id);
             let should_retry = {
                 let mut scheduled = self
                     .scheduled_agent_diagnostics
@@ -941,37 +998,30 @@ impl DesktopState {
         &self,
         agent_id: &ManagedAgentId,
     ) -> Result<AgentDiagnosticState> {
-        let _run_guard = self.agent_diagnostic_guard()?;
-        self.refresh_agent_diagnostic_unlocked(agent_id)
-    }
-
-    fn refresh_agent_diagnostic_unlocked(
-        &self,
-        agent_id: &ManagedAgentId,
-    ) -> Result<AgentDiagnosticState> {
-        self.refresh_agent_diagnostic_unlocked_with_probe(agent_id, |app, agent_id| {
-            doctor_probe_with_retry(DoctorRetryPolicy::NoRetry, || {
-                app.provider_doctor_probe(agent_id.as_str())
+        self.refresh_agent_diagnostic_with_probe(agent_id, |app, agent_id| {
+            doctor_probe_with_retry(DoctorRetryPolicy::NoRetry, |deadline| {
+                app.provider_doctor_probe_with_deadline(agent_id.as_str(), deadline)
             })
         })
     }
 
-    fn refresh_background_agent_diagnostic_unlocked(
+    fn refresh_background_agent_diagnostic(
         &self,
         agent_id: &ManagedAgentId,
     ) -> Result<AgentDiagnosticState> {
-        self.refresh_agent_diagnostic_unlocked_with_probe(agent_id, |app, agent_id| {
-            doctor_probe_with_retry(DoctorRetryPolicy::RetryOnce, || {
-                app.provider_doctor_probe(agent_id.as_str())
+        self.refresh_agent_diagnostic_with_probe(agent_id, |app, agent_id| {
+            doctor_probe_with_retry(DoctorRetryPolicy::RetryOnce, |deadline| {
+                app.provider_doctor_probe_with_deadline(agent_id.as_str(), deadline)
             })
         })
     }
 
-    fn refresh_agent_diagnostic_unlocked_with_probe(
+    fn refresh_agent_diagnostic_with_probe(
         &self,
         agent_id: &ManagedAgentId,
         probe: impl FnOnce(&App, &ManagedAgentId) -> Result<ProviderDoctorProbe>,
     ) -> Result<AgentDiagnosticState> {
+        let _run_guard = self.agent_diagnostic_guard(agent_id)?;
         let expected_config = self.managed_agent_config_revision(agent_id)?;
         let app = self.app()?;
         let probe = probe(&app, agent_id)?;
@@ -995,8 +1045,7 @@ impl DesktopState {
         Ok(diagnostic)
     }
 
-    pub fn refresh_all_agent_diagnostics(&self) -> Result<()> {
-        let _run_guard = self.agent_diagnostic_guard()?;
+    pub fn refresh_all_agent_diagnostics(&self, on_completed: impl Fn() + Sync) -> Result<()> {
         let app = self.app()?;
         let agent_ids = app.managed_agents().keys().cloned().collect::<Vec<_>>();
         let scheduled = self
@@ -1016,32 +1065,27 @@ impl DesktopState {
             "periodic agent diagnostics started"
         );
         if to_probe.is_empty() {
+            let _commit_guard = self.agent_config_diagnostic_commit_guard()?;
             return self.prune_agent_diagnostics();
         }
-        // 不同 agent 使用各自的 doctor/acp/<agent-id> attempt 目录，可安全并行；
-        // 同一 agent 仍由 agent_diagnostic_run_lock / scheduled queue 保持 singleflight。
-        // 定时诊断仅在首次 doctor 返回 unavailable 时重试一次，手动与保存后自动诊断不重试。
-        // 诊断 map 为 Arc<Mutex> 细粒度锁，持久化为原子写（AtomicWriteFile），并发安全；
-        // 单个 agent 最终失败不中断其他 agent。
-        std::thread::scope(|s| {
-            for agent_id in &to_probe {
-                let agent_id = agent_id.clone();
-                s.spawn(move || {
-                    match self.refresh_background_agent_diagnostic_unlocked(&agent_id) {
-                        Ok(diagnostic) => debug!(
-                            agent_type = agent_id.as_str(),
-                            available = diagnostic.available,
-                            "periodic agent diagnostic completed"
-                        ),
-                        Err(error) => warn!(
-                            agent_type = agent_id.as_str(),
-                            %error,
-                            "periodic agent diagnostic infrastructure failed"
-                        ),
-                    }
-                });
+        for_each_diagnostic_agent(&to_probe, |agent_id| {
+            match self.refresh_background_agent_diagnostic(agent_id) {
+                Ok(diagnostic) => {
+                    on_completed();
+                    debug!(
+                        agent_type = agent_id.as_str(),
+                        available = diagnostic.available,
+                        "periodic agent diagnostic completed"
+                    );
+                }
+                Err(error) => warn!(
+                    agent_type = agent_id.as_str(),
+                    %error,
+                    "periodic agent diagnostic infrastructure failed"
+                ),
             }
         });
+        let _commit_guard = self.agent_config_diagnostic_commit_guard()?;
         self.prune_agent_diagnostics()
     }
 
@@ -1165,15 +1209,7 @@ impl DesktopState {
         agent_id: &ManagedAgentId,
         workspace: Utf8PathBuf,
     ) -> Result<()> {
-        let _run_guard = self.agent_diagnostic_guard()?;
-        self.refresh_agent_command_catalog_for_workspace_unlocked(agent_id, workspace)
-    }
-
-    fn refresh_agent_command_catalog_for_workspace_unlocked(
-        &self,
-        agent_id: &ManagedAgentId,
-        workspace: Utf8PathBuf,
-    ) -> Result<()> {
+        let _run_guard = self.agent_diagnostic_guard(agent_id)?;
         let expected_config = self.managed_agent_config_revision(agent_id)?;
         let config = self.context()?.config;
         let app = App::with_config(workspace, config);
@@ -1192,13 +1228,12 @@ impl DesktopState {
         &self,
         workspace: Utf8PathBuf,
     ) -> Result<()> {
-        let _run_guard = self.agent_diagnostic_guard()?;
         let config = self.context()?.config;
         let app = App::with_config(workspace.clone(), config);
         let agent_ids = app.managed_agents().keys().cloned().collect::<Vec<_>>();
-        for agent_id in agent_ids {
-            if let Err(error) = self
-                .refresh_agent_command_catalog_for_workspace_unlocked(&agent_id, workspace.clone())
+        for_each_diagnostic_agent(&agent_ids, |agent_id| {
+            if let Err(error) =
+                self.refresh_agent_command_catalog_for_workspace(agent_id, workspace.clone())
             {
                 warn!(
                     agent_type = agent_id.as_str(),
@@ -1207,7 +1242,7 @@ impl DesktopState {
                     "periodic agent command catalog refresh failed"
                 );
             }
-        }
+        });
         Ok(())
     }
 
@@ -1314,13 +1349,22 @@ fn diagnostic_state_from_result(result: DoctorResult) -> AgentDiagnosticState {
 
 fn doctor_probe_with_retry(
     retry_policy: DoctorRetryPolicy,
-    mut probe: impl FnMut() -> Result<ProviderDoctorProbe>,
+    probe: impl FnMut(DoctorDeadline) -> Result<ProviderDoctorProbe>,
 ) -> Result<ProviderDoctorProbe> {
-    let first = probe()?;
-    if first.doctor.available || retry_policy == DoctorRetryPolicy::NoRetry {
+    doctor_probe_with_retry_until(retry_policy, DoctorDeadline::default(), probe)
+}
+
+fn doctor_probe_with_retry_until(
+    retry_policy: DoctorRetryPolicy,
+    deadline: DoctorDeadline,
+    mut probe: impl FnMut(DoctorDeadline) -> Result<ProviderDoctorProbe>,
+) -> Result<ProviderDoctorProbe> {
+    let first = probe(deadline)?;
+    if first.doctor.available || retry_policy == DoctorRetryPolicy::NoRetry || deadline.is_expired()
+    {
         return Ok(first);
     }
-    probe()
+    probe(deadline)
 }
 
 fn doctor_provider_pid_files(doctor_acp_root: &Utf8Path) -> Vec<Utf8PathBuf> {
@@ -2054,7 +2098,7 @@ mod tests {
     #[test]
     fn background_doctor_retries_once_after_an_unavailable_result() {
         let mut attempts = 0;
-        let result = doctor_probe_with_retry(DoctorRetryPolicy::RetryOnce, || {
+        let result = doctor_probe_with_retry(DoctorRetryPolicy::RetryOnce, |_| {
             attempts += 1;
             Ok(if attempts == 1 {
                 doctor_probe(false, Some("transient failure"))
@@ -2069,9 +2113,33 @@ mod tests {
     }
 
     #[test]
+    fn background_doctor_retry_reuses_deadline_and_does_not_retry_expired_budget() {
+        let deadline = DoctorDeadline::default();
+        let mut deadlines = Vec::new();
+        doctor_probe_with_retry_until(DoctorRetryPolicy::RetryOnce, deadline, |observed| {
+            deadlines.push(observed);
+            Ok(doctor_probe(false, Some("unavailable")))
+        })
+        .unwrap();
+        assert_eq!(deadlines, vec![deadline, deadline]);
+        let mut calls = 0;
+        let result = doctor_probe_with_retry_until(
+            DoctorRetryPolicy::RetryOnce,
+            DoctorDeadline::new(std::time::Duration::ZERO),
+            |_| {
+                calls += 1;
+                Ok(doctor_probe(false, Some("deadline expired")))
+            },
+        )
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(result.doctor.reason.as_deref(), Some("deadline expired"));
+    }
+
+    #[test]
     fn background_doctor_persists_the_second_failure_without_more_retries() {
         let mut attempts = 0;
-        let result = doctor_probe_with_retry(DoctorRetryPolicy::RetryOnce, || {
+        let result = doctor_probe_with_retry(DoctorRetryPolicy::RetryOnce, |_| {
             attempts += 1;
             Ok(doctor_probe(
                 false,
@@ -2088,7 +2156,7 @@ mod tests {
     #[test]
     fn background_doctor_does_not_retry_a_successful_result() {
         let mut attempts = 0;
-        let result = doctor_probe_with_retry(DoctorRetryPolicy::RetryOnce, || {
+        let result = doctor_probe_with_retry(DoctorRetryPolicy::RetryOnce, |_| {
             attempts += 1;
             Ok(doctor_probe(true, None))
         })
@@ -2101,7 +2169,7 @@ mod tests {
     #[test]
     fn manual_doctor_does_not_retry_an_unavailable_result() {
         let mut attempts = 0;
-        let result = doctor_probe_with_retry(DoctorRetryPolicy::NoRetry, || {
+        let result = doctor_probe_with_retry(DoctorRetryPolicy::NoRetry, |_| {
             attempts += 1;
             Ok(doctor_probe(false, Some("manual failure")))
         })
@@ -2133,6 +2201,39 @@ mod tests {
     }
 
     #[test]
+    fn agent_diagnostic_other_agent_does_not_wait_for_running_doctor() {
+        let (_root, state) = desktop_state();
+        let state = Arc::new(state);
+        let (locked_tx, locked_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let first = state.clone();
+        let first_thread = std::thread::spawn(move || {
+            let _guard = first
+                .agent_diagnostic_guard(&"codex-acp".parse().unwrap())
+                .unwrap();
+            locked_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        locked_rx.recv().unwrap();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let second = state.clone();
+        let second_thread = std::thread::spawn(move || {
+            let _guard = second
+                .agent_diagnostic_guard(&"codebuddy-code".parse().unwrap())
+                .unwrap();
+            finished_tx.send(()).unwrap();
+        });
+        let independent = finished_rx.recv_timeout(Duration::from_secs(1)).is_ok();
+        release_tx.send(()).unwrap();
+        first_thread.join().unwrap();
+        second_thread.join().unwrap();
+        assert!(
+            independent,
+            "another Agent must start while the first probe is held open"
+        );
+    }
+
+    #[test]
     fn agent_config_commit_does_not_wait_for_running_doctor() {
         let (_root, state) = desktop_state();
         let state = Arc::new(state);
@@ -2140,7 +2241,9 @@ mod tests {
         let (release_doctor_tx, release_doctor_rx) = mpsc::channel();
         let doctor_state = state.clone();
         let doctor_thread = std::thread::spawn(move || {
-            let _guard = doctor_state.agent_diagnostic_guard().unwrap();
+            let _guard = doctor_state
+                .agent_diagnostic_guard(&"codex-acp".parse().unwrap())
+                .unwrap();
             doctor_locked_tx.send(()).unwrap();
             release_doctor_rx.recv().unwrap();
         });
@@ -2160,5 +2263,136 @@ mod tests {
         doctor_thread.join().unwrap();
         commit_thread.join().unwrap();
         assert!(acquired_without_waiting);
+    }
+
+    #[test]
+    fn agent_diagnostic_same_agent_waits_without_consuming_another_slot() {
+        let runs = Arc::new(AgentDiagnosticRuns::default());
+        let agent_id: ManagedAgentId = "codex-acp".parse().unwrap();
+        let first = runs.acquire(&agent_id).unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let other = runs.clone();
+        let second = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let _guard = other.acquire(&agent_id).unwrap();
+            acquired_tx.send(()).unwrap();
+        });
+        started_rx.recv().unwrap();
+        let duplicate_started = acquired_rx.recv_timeout(Duration::from_millis(100)).is_ok();
+        let independent = runs.acquire(&"codebuddy-code".parse().unwrap()).unwrap();
+        assert_eq!(runs.active.lock().unwrap().len(), 2);
+        drop(first);
+        second.join().unwrap();
+        drop(independent);
+        assert!(!duplicate_started);
+        assert!(runs.active.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn agent_diagnostic_admission_caps_adapters_and_releases_slots() {
+        let runs = Arc::new(AgentDiagnosticRuns::default());
+        let mut guards = (0..MAX_CONCURRENT_AGENT_DIAGNOSTICS)
+            .map(|index| {
+                runs.acquire(&format!("agent-{index}").parse().unwrap())
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let other = runs.clone();
+        let waiting = std::thread::spawn(move || {
+            let _guard = other.acquire(&"waiting-agent".parse().unwrap()).unwrap();
+            acquired_tx.send(()).unwrap();
+        });
+        let exceeded_limit = acquired_rx.recv_timeout(Duration::from_millis(100)).is_ok();
+        guards.pop();
+        waiting.join().unwrap();
+        drop(guards);
+        assert!(!exceeded_limit);
+        assert!(runs.active.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn agent_diagnostic_batch_finishes_other_agent_before_stalled_probe() {
+        let agent_ids = [
+            "codex-acp".parse().unwrap(),
+            "codebuddy-code".parse().unwrap(),
+        ];
+        let (started_tx, started_rx) = mpsc::channel();
+        let (completed_tx, completed_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
+        let batch = std::thread::spawn(move || {
+            for_each_diagnostic_agent(&agent_ids, |agent_id| {
+                if agent_id.as_str() == "codex-acp" {
+                    started_tx.send(()).unwrap();
+                    release_rx.lock().unwrap().recv().unwrap();
+                } else {
+                    completed_tx.send(agent_id.clone()).unwrap();
+                }
+            });
+        });
+        started_rx.recv().unwrap();
+        let completed = completed_rx.recv_timeout(Duration::from_secs(1));
+        release_tx.send(()).unwrap();
+        batch.join().unwrap();
+        assert_eq!(completed.unwrap().as_str(), "codebuddy-code");
+    }
+
+    #[test]
+    fn agent_diagnostic_probe_commits_other_agent_while_first_is_stalled() {
+        let (_root, state) = desktop_state();
+        let state = Arc::new(state);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let first = state.clone();
+        let stalled = std::thread::spawn(move || {
+            first
+                .refresh_agent_diagnostic_with_probe(&"codex-acp".parse().unwrap(), |_, _| {
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(doctor_probe(false, Some("acp.doctor-timeout")))
+                })
+                .unwrap()
+        });
+        started_rx.recv().unwrap();
+        let (completed_tx, completed_rx) = mpsc::channel();
+        let second = state.clone();
+        let healthy = std::thread::spawn(move || {
+            let diagnostic = second
+                .refresh_agent_diagnostic_with_probe(&"codebuddy-code".parse().unwrap(), |_, _| {
+                    Ok(doctor_probe(true, None))
+                })
+                .unwrap();
+            completed_tx.send(diagnostic).unwrap();
+        });
+        let completed = completed_rx.recv_timeout(Duration::from_secs(2));
+        release_tx.send(()).unwrap();
+        stalled.join().unwrap();
+        healthy.join().unwrap();
+        assert!(completed.unwrap().available);
+        let diagnostics: BTreeMap<ManagedAgentId, AgentDiagnosticState> =
+            read_json(&state.app().unwrap().paths.agent_diagnostics_file()).unwrap();
+        assert!(diagnostics[&"codebuddy-code".parse().unwrap()].available);
+        assert_eq!(
+            diagnostics[&"codex-acp".parse().unwrap()].reason.as_deref(),
+            Some("acp.doctor-timeout")
+        );
+    }
+
+    #[test]
+    fn agent_diagnostic_large_batch_uses_bounded_workers() {
+        let ids = (0..1000)
+            .map(|index| format!("agent-{index}").parse().unwrap())
+            .collect::<Vec<_>>();
+        let observed = Mutex::new((BTreeSet::new(), std::collections::HashSet::new()));
+        for_each_diagnostic_agent(&ids, |agent_id| {
+            let mut observed = observed.lock().unwrap();
+            assert!(observed.0.insert(agent_id.clone()));
+            observed.1.insert(std::thread::current().id());
+        });
+        let observed = observed.into_inner().unwrap();
+        assert_eq!(observed.0.len(), ids.len());
+        assert!(observed.1.len() <= MAX_CONCURRENT_AGENT_DIAGNOSTICS);
     }
 }

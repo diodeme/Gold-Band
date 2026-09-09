@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
-import { cp } from 'node:fs/promises';
+import { publishSceneAssets } from '../../scripts/site-publish-assets.mjs';
 import { loadEnv } from 'vite';
 import { siteConfig } from './config';
 
@@ -15,10 +15,9 @@ export default defineConfig(({ command, mode }) => {
   plugins: [react(), tailwindcss(), {
     name: 'workflow-recording-assets',
     async writeBundle(options) {
-      await cp(resolve(process.env.SITE_WORKFLOW_ASSETS || 'marketing/site/media/workflow'), resolve(options.dir!, 'media/workflow'), { recursive: true });
-      await cp(resolve(process.env.SITE_BEFORE_ASSETS || 'marketing/site/media/before'), resolve(options.dir!, 'media/before'), { recursive: true });
-      await cp(resolve(process.env.SITE_AFTER_ASSETS || 'marketing/site/media/after'), resolve(options.dir!, 'media/after'), { recursive: true });
-      await cp(resolve(process.env.SITE_PERSONALIZE_ASSETS || 'marketing/site/media/personalize'), resolve(options.dir!, 'media/personalize'), { recursive: true });
+      for (const directory of ['workflow', 'before', 'after', 'personalize']) {
+        await publishSceneAssets({ sourceRoot: resolve(process.env[`SITE_${directory.toUpperCase()}_ASSETS`] || `marketing/site/media/${directory}`), outputRoot: resolve(options.dir!, `media/${directory}`), directory, base: config.base });
+      }
     },
   }],
   resolve: { alias: { '@': resolve('web/src') } },

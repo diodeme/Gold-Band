@@ -6,18 +6,20 @@ export const GITHUB = 'https://github.com/diodeme/Gold-Band';
 export const DESKTOP_QUERY = '(min-width: 1024px)';
 export const CAPTURE = { width: 1440, height: 880, minimum: 560 };
 
-export function parseRoute(path: string): { language: Language; page: Page } {
+export function parseRoute(path: string, fallback: Language = 'zh'): { language: Language; page: Page } {
   const parts = path.split('/').filter(Boolean);
-  const language = parts[0] === 'en' ? 'en' : 'zh';
+  const language = parts[0] === 'en' ? 'en' : parts[0] === 'zh' ? 'zh' : fallback;
   if (parts[0] === 'en' || parts[0] === 'zh') parts.shift();
   const page = parts.length === 0 ? 'home' : parts.length === 1 && (parts[0] === 'documentation' || parts[0] === 'demo') ? parts[0] : 'not-found';
   return { language, page };
 }
-export function pageHref(language: Language, page: Page) {
-  return `/${language}/${page === 'home' ? '' : page === 'not-found' ? '404' : page}`;
+export function pageHref(language: Language, page: Page, base = '/') {
+  return `${base}${language}/${page === 'home' ? '' : page === 'not-found' ? '404' : page}`;
 }
-export function mediaPath(language: Language, chapter: ChapterId, kind: 'json' | 'png') {
-  return new URL(`./media/${language}-${chapter}.${kind}`, import.meta.url).href;
+export const SCENE_DIRECTORIES = { before: 'before', during: 'workflow', after: 'after', personalize: 'personalize' } as const;
+const POSTER_STEPS = { before: 'establish', during: 'result-menu', after: 'attachment', personalize: 'theme' } as const;
+export function posterPath(base: string, language: Language, chapter: ChapterId, theme: 'light' | 'dark', mobile: boolean) {
+  return `${base}media/${SCENE_DIRECTORIES[chapter]}/${language}-${theme}${mobile ? '-mobile' : ''}/${POSTER_STEPS[chapter]}.png`;
 }
 export const copy = {
   zh: {
@@ -27,13 +29,13 @@ export const copy = {
     foot: '在自己的桌面，掌握每一步。', footText: '连接你选择的 Agent，让对话与工程流程一起工作。',
     play: '播放演示', loading: '正在加载演示', retry: '重新加载', error: '演示暂时无法加载',
     interactive: '亲手试试', recording: '观看演示', preview: '交互预览', resize: '调整预览宽度',
-    dark: '深色', light: '浅色', font: '字体', defaultFont: '默认', monoFont: '等宽', reset: '重置预览',
+    dark: '深色', light: '浅色', system: '跟随系统', appearance: '外观', openDemo: '打开 Demo', font: '字体', defaultFont: '默认', monoFont: '等宽', reset: '重置预览',
     placeholder: '正在准备中', docsText: '文档正在整理，当前可在 GitHub 查看安装与使用说明。', demoText: '更多示例正在准备中。首页可查看产品演示。',
     back: '返回首页', missing: '页面不存在',
     chapters: [
-      { id: 'before', eyebrow: '会话前', title: '准备好，再开始。', body: '选择 Agent，带上角色与技能。直接对话、运行工作流，或交给 Auto 编排，按任务选择合适的起点。', points: ['Direct / Workflow / Auto', '主工作区或独立 Worktree', '立即开始，或安排定时任务'] },
-      { id: 'during', eyebrow: '会话中', title: '看得见进展，接得住变化。', body: '对话、思考与工具调用在同一条时间线上。需要调整方向时，停下流程继续交流，准备好后再继续工作流。', points: ['会话与工具调用', '上下文用量与运行状态', '人工介入与流程继续'] },
-      { id: 'after', eyebrow: '会话后', title: '结果，不止一句“完成”。', body: '回看每轮文件变化，打开文档，逐项审阅 Diff。在右侧工作区检查产出，再决定如何提交。', points: ['每轮文件变更快照', 'Markdown 与源码预览', 'Git Diff 与源代码管理'] },
+      { id: 'before', eyebrow: '会话前', title: '配置你的 Harness。', body: '选择 Agent，组合角色与 Skill，让 Direct、Workflow 或 AUTO 适合这次任务。', points: ['Agent、角色与 Skill', '多 Agent 管理与同步', 'Direct / Workflow / AUTO'] },
+      { id: 'during', eyebrow: '会话中', title: '输出决定下一步。', body: '看清思考与工具调用，回应提问和权限请求；依据结构化输出，让工作流进入修正或继续。', points: ['输出约束与结果判定', '提问与权限处理', '修正或继续的真实路径'] },
+      { id: 'after', eyebrow: '会话后', title: '审阅你的任务。', body: '打开附件与 Diff，检查工作区的最新文件，再暂存并提交确认过的修改。', points: ['附件与悬浮 Diff', '最新文件与源码审阅', '暂存和本地提交'] },
       { id: 'personalize', eyebrow: '个性化', title: '定制你的应用。', body: '选择主题、字体和头像；窗口从三栏收成单栏，再展开回你的工作区。', points: ['主题、字体与头像', '真实窗口自适应', '三栏、双栏、单栏往返'] },
     ],
   },
@@ -44,13 +46,13 @@ export const copy = {
     foot: 'Make every step your own.', footText: 'Connect your agent of choice. Bring conversation and engineering together.',
     play: 'Play demo', loading: 'Loading demo', retry: 'Retry', error: 'Demo could not be loaded',
     interactive: 'Try it yourself', recording: 'Watch demo', preview: 'Interactive preview', resize: 'Resize preview',
-    dark: 'Dark', light: 'Light', font: 'Font', defaultFont: 'Default', monoFont: 'Monospace', reset: 'Reset preview',
+    dark: 'Dark', light: 'Light', system: 'System', appearance: 'Appearance', openDemo: 'Open Demo', font: 'Font', defaultFont: 'Default', monoFont: 'Monospace', reset: 'Reset preview',
     placeholder: 'Coming soon', docsText: 'Documentation is being prepared. Installation and usage instructions are available on GitHub.', demoText: 'More examples are on the way. Explore the product on the home page.',
     back: 'Back to home', missing: 'Page not found',
     chapters: [
-      { id: 'before', eyebrow: 'Before the session', title: 'Start with the right setup.', body: 'Choose an agent, bring your roles and skills, then pick your starting point: a direct conversation, a workflow, or Auto orchestration.', points: ['Direct / Workflow / Auto', 'Main workspace or isolated worktree', 'Start now or schedule a task'] },
-      { id: 'during', eyebrow: 'During the session', title: 'Stay with the work.', body: 'Follow conversations, reasoning and tool calls in one timeline. Pause the flow to discuss a new direction, then continue the workflow when you are ready.', points: ['Conversations and tool calls', 'Context usage and execution status', 'Human intervention and workflow continuation'] },
-      { id: 'after', eyebrow: 'After the session', title: 'Inspect what changed.', body: 'Revisit each turn’s file changes, open the documents and review the diff. Check the result in the workspace before deciding what to commit.', points: ['Per-turn file snapshots', 'Markdown and source previews', 'Git diffs and source control'] },
+      { id: 'before', eyebrow: 'Before the session', title: 'Configure your harness.', body: 'Choose an agent, combine roles and skills, and use Direct, Workflow or AUTO for the task.', points: ['Agents, roles and skills', 'Multi-agent management and sync', 'Direct / Workflow / AUTO'] },
+      { id: 'during', eyebrow: 'During the session', title: 'Let the output decide what comes next.', body: 'Follow reasoning and tools, respond to questions and permission requests, and route the workflow from structured output.', points: ['Output constraints and validation', 'Questions and permission requests', 'Routes to repair or continue'] },
+      { id: 'after', eyebrow: 'After the session', title: 'Review your task.', body: 'Open attachments and diffs, inspect the latest workspace files, then stage and commit the changes you have reviewed.', points: ['Attachments and hover diffs', 'Latest files and source review', 'Staging and local commits'] },
       { id: 'personalize', eyebrow: 'Make it yours', title: 'Make the app yours.', body: 'Choose a theme, fonts and avatars. Narrow three columns to one, then widen the window to restore your workspace.', points: ['Themes, fonts and avatars', 'Responsive workspace', 'Three, two, one and back'] },
     ],
   },

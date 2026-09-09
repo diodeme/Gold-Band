@@ -8,7 +8,7 @@ const fail = (code, params = {}) => { throw { code, params }; };
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 
 // Discover transitive dependencies before writing any deployable files.
-export async function bundleRecording({ recording, captureOrigin, sourceRoot, outputRoot, publicPath }) {
+export async function bundleRecording({ recording, captureOrigin, sourceRoot, outputRoot, publicPath, sourcePublicPath = '/' }) {
   const source = await realpath(sourceRoot);
   const origin = new URL(captureOrigin).origin;
   const files = new Map();
@@ -18,7 +18,8 @@ export async function bundleRecording({ recording, captureOrigin, sourceRoot, ou
     if (!value || value.startsWith('#') || value.startsWith('data:')) return value;
     const url = new URL(value, base);
     if (url.origin !== origin) fail('site.resource-external', { url: url.href });
-    const path = decodeURIComponent(url.pathname).replace(/^\/+/, '');
+    if (!url.pathname.startsWith(sourcePublicPath)) fail('site.resource-path', { path: url.pathname });
+    const path = decodeURIComponent(url.pathname.slice(sourcePublicPath.length)).replace(/^\/+/, '');
     if (path.includes('\\') || path.split('/').includes('..')) fail('site.resource-path', { path });
     pending.set(path, url.href);
     return `${publicPath}resources/${path}${url.search}${url.hash}`;

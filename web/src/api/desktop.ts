@@ -386,6 +386,9 @@ export const desktopApi: RuntimeApi = {
   getAcpImage(locator, image, thumbnail) {
     return invokeCommand<import('../types').AcpImageContentVm>('get_acp_image', { ...locator, image, thumbnail });
   },
+  getAcpActivityImages(input) {
+    return invokeCommand<import('../types').AcpActivityImagesPage>('get_acp_activity_images', { input });
+  },
   getTurnFileChangeSet(locator, changeSetId) {
     return invokeCommand<import('../types').TurnFileChangeSetVm>('get_turn_file_change_set', { ...locator, changeSetId });
   },

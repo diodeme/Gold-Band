@@ -1,3 +1,4 @@
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { useState, type ReactNode } from 'react';
 import {
   Archive,
@@ -46,6 +47,7 @@ export function SourceControlSyncActions({ snapshot, busyActionKind, locked, onO
   onOperation: (input: GitOperationRequestVm) => void;
 }) {
   const { t } = useTranslation();
+  const readOnly = useReadOnlyExperience();
   const [action, setAction] = useState<Exclude<ChangesActionKind, 'stash-create'> | null>(null);
   const [flag, setFlag] = useState(false);
   const [remote, setRemote] = useState('');
@@ -100,7 +102,7 @@ export function SourceControlSyncActions({ snapshot, busyActionKind, locked, onO
       </Tooltip>
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button type="button" size="icon-xs" variant="ghost" disabled={busy || !defaultRemote} aria-label={t('sourceControl.fetch')} onClick={() => openAction('fetch')}>
+          <Button type="button" size="icon-xs" variant="ghost" disabled={readOnly || busy || !defaultRemote} aria-label={t('sourceControl.fetch')} onClick={() => openAction('fetch')}>
             {busyActionKind === 'fetch' ? <LoaderCircle className="size-3.5 animate-spin" /> : <CloudDownload className="size-3.5" />}
           </Button>
         </TooltipTrigger>

@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AcpConversationComposer } from '@/components/conversation/AcpConversationComposer';
+import { ReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { SlashCommandMenu } from '@/components/conversation/SlashCommandMenu';
 import { ACP_SESSION_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 import '@/i18n';
@@ -91,6 +92,23 @@ describe('AcpConversationComposer', () => {
   async function renderComposer(props: Partial<ComposerProps> = {}) {
     await act(async () => root.render(<AcpConversationComposer {...baseProps(props)} />));
   }
+
+  it('keeps the demo composer visible while blocking input, attachments and submission', async () => {
+    const props = baseProps({ prompt: 'existing draft', canSubmit: true, canStop: true, showRuntimeContinue: true });
+    await act(async () => root.render(<ReadOnlyExperience.Provider value={true}><AcpConversationComposer {...props} /></ReadOnlyExperience.Provider>));
+    const textarea = host.querySelector('textarea')!;
+    expect(textarea).not.toBeNull();
+    expect(textarea.disabled).toBe(true);
+    expect(textarea.value).toBe('');
+    expect(textarea.placeholder).toContain('Demo');
+    const buttons = [...host.querySelectorAll('button')];
+    expect(buttons.length).toBeGreaterThan(0);
+    await act(async () => buttons.forEach((button) => button.click()));
+    expect(props.onSubmit).not.toHaveBeenCalled();
+    expect(props.onPickFiles).not.toHaveBeenCalled();
+    expect(props.onStop).not.toHaveBeenCalled();
+    expect(props.onRuntimeContinue).not.toHaveBeenCalled();
+  });
 
   it('does not render an empty attachment spacer between an attached queue and the prompt input', async () => {
     await renderComposer({ attachments: [], attachedPanelVisible: true });

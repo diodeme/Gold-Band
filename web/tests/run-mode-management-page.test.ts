@@ -4,12 +4,23 @@ import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { WorkflowDsl } from '@/types';
+import { ReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { autoNoticeAutoDismiss, autoNoticeDismissDelay, autoSaveTarget, createBlankAutoTemplateEditorState, createBlankWorkflowTemplateEditorState, findSavedWorkflowTemplate, isNoAutoTemplateSelected, RunModeManagementPage, RunModeProjectSelector, RunModeTabsToolbar, templatePickerSavedListClass, TemplateActionRow } from '@/pages/RunModeManagementPage';
 import { pruneMissingAutoAllowedProfileIds, pruneMissingAutoAllowedWorkflowIds, pruneMissingAutoConfigReferences } from '@/lib/run-mode-validation';
 
 const pageSource = readFileSync(fileURLToPath(new URL('../src/pages/RunModeManagementPage.tsx', import.meta.url)), 'utf8');
 
 describe('RunModeTabsToolbar', () => {
+  it('disables both persistence actions only in the Demo boundary', () => {
+    const row = React.createElement(TemplateActionRow, {
+      label: 'Template', picker: null, saving: false, saveCurrentLabel: 'Save', savingLabel: 'Saving',
+      onSaveCurrent: () => undefined, name: 'Temporary template', namePlaceholder: 'Name',
+      onNameChange: () => undefined, saveAsLabel: 'Save as', onSaveAs: () => undefined,
+    });
+    expect(renderToStaticMarkup(row)).not.toContain('disabled=""');
+    const demo = renderToStaticMarkup(React.createElement(ReadOnlyExperience.Provider, { value: true }, row));
+    expect(demo.match(/disabled=""/g)).toHaveLength(2);
+  });
   it('renders a title-only page header, without a mode description or duplicate back action', () => {
     const html = renderToStaticMarkup(
       React.createElement(RunModeManagementPage, {

@@ -1,3 +1,4 @@
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, Folders, Globe, Loader2, Plus, RotateCw, Settings, Trash2, User, Wifi, WifiOff } from 'lucide-react';
@@ -90,6 +91,7 @@ export function MulticaTaskManagementPage({
   onPrepareMulticaTask,
 }: MulticaTaskManagementPageProps) {
   const { t } = useTranslation();
+  const readOnly = useReadOnlyExperience();
   const composerDraft = useConversationComposerDraft();
   const [vm, setVm] = useState<RemoteConversationSidebarVm | null>(null);
   const [settingsVm, setSettingsVm] = useState<MulticaSettingsVm | null>(null);
@@ -197,6 +199,7 @@ export function MulticaTaskManagementPage({
   }
 
   async function handleCancel(task: RemoteTaskVm) {
+    if (readOnly) return;
     setBusyTaskId(task.id);
     setError(null);
     try {
@@ -210,6 +213,7 @@ export function MulticaTaskManagementPage({
   }
 
   async function handleDisconnect() {
+    if (readOnly) return;
     setError(null);
     try {
       await disconnectMultica();
@@ -223,6 +227,7 @@ export function MulticaTaskManagementPage({
   // 此处打开 multica Web（在浏览器内登出当前账号 / 登录目标账号），再回此页重连。
   // 根因（webank 见 cookie 即签 JWT）需在 multica-webank 侧加授权确认屏，见设计文档 M5-l。
   async function handleSwitchAccount() {
+    if (readOnly) return;
     const appUrl = settingsVm?.multicaAppUrl;
     if (!appUrl) return;
     await openExternalUrl(appUrl);
@@ -230,6 +235,7 @@ export function MulticaTaskManagementPage({
 
   async function handleWorkspaceChange(id: string) {
     setSelectedWorkspaceId(id);
+    if (readOnly) return;
     // 持久化活跃工作空间（best-effort；本地已即时切换，失败只回显错误，不回滚选择）。
     try {
       await setActiveMulticaWorkspace(id);
@@ -240,11 +246,13 @@ export function MulticaTaskManagementPage({
 
   // 行级移除：Popover 列表每行一个 Trash2 -> 走 AlertDialog 确认（对齐定时任务 delete 模式）。
   function handleRemoveWorkspaceRequest(id: string) {
+    if (readOnly) return;
     const target = workspaces.find((w) => w.id === id) ?? null;
     setPendingRemoveWorkspace(target);
   }
 
   async function handleConfirmRemove() {
+    if (readOnly) return;
     const target = pendingRemoveWorkspace;
     if (!target) return;
     setError(null);
@@ -365,6 +373,7 @@ export function MulticaTaskManagementPage({
                         variant="ghost"
                         size="sm"
                         className="w-full justify-start gap-1.5"
+                        disabled={readOnly}
                         onClick={() => {
                           setWorkspacePickerOpen(false);
                           setAddWorkspaceOpen(true);
@@ -399,6 +408,7 @@ export function MulticaTaskManagementPage({
                             variant="ghost"
                             size="icon"
                             className="size-6 shrink-0 hover:text-destructive"
+                            disabled={readOnly}
                             data-testid={`ws-remove-${w.id}`}
                             aria-label={t('multica.taskManagement.workspace.remove')}
                             onClick={() => handleRemoveWorkspaceRequest(w.id)}
@@ -425,12 +435,12 @@ export function MulticaTaskManagementPage({
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56">
                   <DropdownMenuItem
-                    disabled={!settingsVm?.multicaAppUrl}
+                    disabled={readOnly || !settingsVm?.multicaAppUrl}
                     onClick={() => void handleSwitchAccount()}
                   >
                     {t('multica.taskManagement.account.switchAccount')}
                   </DropdownMenuItem>
-                  <DropdownMenuItem className="text-destructive" onClick={() => void handleDisconnect()}>
+                  <DropdownMenuItem disabled={readOnly} className="text-destructive" onClick={() => void handleDisconnect()}>
                     {t('multica.taskManagement.account.disconnect')}
                   </DropdownMenuItem>
                 </DropdownMenuContent>

@@ -12,19 +12,19 @@ export async function indexResources(root, resources) {
   const sessions = {};
   for (const [key, session] of Object.entries(resources.sessions)) {
     const tree = { directories: new Map(), entries: [] };
-    for (const [path, ref] of Object.entries(session.attachments)) {
+    for (const [path, ref] of Object.entries(session.files)) {
       const segments = path.split('/'); let directory = tree;
       for (const segment of segments.slice(0, -1)) {
         if (!directory.directories.has(segment)) directory.directories.set(segment, { directories: new Map(), entries: [] });
         directory = directory.directories.get(segment);
       }
-      directory.entries.push({ name: segments.at(-1), relativePath: path, canonicalPath: ref.canonicalPath, kind: 'file', hasChildren: false, byteLength: null, modifiedAtNs: null, resource: ref });
+      directory.entries.push({ name: segments.at(-1), relativePath: path, canonicalPath: ref.canonicalPath, kind: 'file', hasChildren: false, byteLength: ref.fileByteLength, modifiedAtNs: null, resource: ref });
     }
     const emitDirectory = async (directory, path = '') => {
       const entries = [...directory.entries];
       for (const [name, child] of directory.directories) {
         const relativePath = path ? `${path}/${name}` : name;
-        entries.push({ name, relativePath, canonicalPath: `/demo-history/${key}/attachments/${relativePath}`, kind: 'directory', hasChildren: true, byteLength: null, modifiedAtNs: null, resource: await emitDirectory(child, relativePath) });
+        entries.push({ name, relativePath, canonicalPath: `/demo-history/${key}/files/${relativePath}`, kind: 'directory', hasChildren: true, byteLength: null, modifiedAtNs: null, resource: await emitDirectory(child, relativePath) });
       }
       entries.sort((a, b) => a.name.localeCompare(b.name));
       return publish(`${key}/directories/${hash(path)}.json`, entries);

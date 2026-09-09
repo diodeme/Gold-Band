@@ -7,6 +7,7 @@ import { initializeWebviewEnvironment, applyWebviewEnvironmentToDocument } from 
 import { browserApi } from './runtime';
 import { DemoApp } from './DemoApp';
 import { entryPreferences } from './entry';
+import './i18n';
 import '@xyflow/react/dist/style.css';
 import '@/styles.css';
 import '@/webview-compatibility.css';

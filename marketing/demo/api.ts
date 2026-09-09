@@ -46,6 +46,11 @@ export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): R
   const methods = new Map<PropertyKey, unknown>();
   const overrides: Partial<RuntimeApi> = {
     ...demoManagementApi(() => state.getPreferences().language),
+    async getAcpRawFrames(...args) {
+      if (args[0] === REAL_PROJECT_ID) return history.api.getAcpRawFrames(...args);
+      await overrides.getAcpSession!(...args.slice(0, 6) as [string, string, string, string, string, string], undefined, undefined, args[7], args[8]);
+      return previewApi.getAcpRawFrames(...args);
+    },
     async getGitCapability() {
       return { status: 'ready', installedVersion: '2.53.0', minimumVersion: '2.36.0', repoRoot: '/default', commonDir: '/default/.git', head: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241' };
     },
@@ -89,6 +94,11 @@ export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): R
       return { locator: { projectId: locator.projectId, canonicalPath: DEMO_REPORT_PATH, relativePath: demoDevelopmentFiles.attachments[0].relativePath, scope: 'workspace' }, target: null, externalAccessGrant: null };
     },
     async getWorkflowTemplates() { return structuredClone(demoWorkflowTemplates); },
+    async getWorkflow(taskId, projectId) {
+      if (projectId && projectId !== 'default') throw { code: 'demo.operation-unavailable', params: { operation: 'getWorkflow', projectId } };
+      if (!DEMO_TASKS.includes(taskId as typeof DEMO_TASKS[number])) missing({ taskId });
+      return structuredClone(await previewApi.getWorkflow(taskId, projectId));
+    },
     async getAutoTemplates() { return { version: '0.1', templates: [] }; },
     async listMcpServers() {
       return [
@@ -193,7 +203,7 @@ export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): R
       }
       return snapshot.kind === 'text' ? { ...snapshot, editable: false } : snapshot;
     },
-    workspaceFilePreviewUrl: (...args) => previewApi.workspaceFilePreviewUrl(...args),
+    workspaceFilePreviewUrl: (...args) => args[0].startsWith('demo-history/') ? history.api.workspaceFilePreviewUrl(...args) : previewApi.workspaceFilePreviewUrl(...args),
     async getSystemFonts() { return ['Arial', 'Georgia', 'Consolas', 'Courier New']; },
   };
   function skill(): SkillContentVm {

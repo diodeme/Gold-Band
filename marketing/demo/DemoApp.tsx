@@ -11,7 +11,9 @@ import { applyAppearance, applyPersonalization } from '@/theme';
 import i18n, { i18nLanguage } from '@/i18n';
 import type { AppBootstrapVm, ConversationPage, ConversationRunVm, ConversationRunModeVm, PreferencesVm } from '@/types';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Languages } from 'lucide-react';
+import { Languages, AlertCircle, RotateCw } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
 import { ConversationComposerDraftBoundary } from '@/components/conversation/ConversationComposerDraftBoundary';
 import { DemoFrame } from './DemoFrame';
 import { demoAgentRegistry, demoProfiles, demoWorkflowTemplates } from './catalog';
@@ -50,12 +52,15 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
   const clientRef = useRef<HTMLDivElement>(null);
   const [runMode, setRunMode] = useState<ConversationRunModeVm>(() => demoRunModeFromHash(location.hash));
   const [store] = useState(() => new ConversationWorkspaceStore());
-  const [history, setHistory] = useState<DemoDataset | null>(null);
+  const [historyState, setHistoryState] = useState<{ status: 'loading' | 'error' } | { status: 'ready'; data: DemoDataset }>({ status: 'loading' });
+  const [historyRequest, setHistoryRequest] = useState(0);
+  const history = historyState.status === 'ready' ? historyState.data : null;
   useEffect(() => {
     let active = true;
-    void historyReader.dataset().then((value) => { if (active) setHistory(value); }).catch(() => {});
+    setHistoryState({ status: 'loading' });
+    void historyReader.dataset().then((data) => { if (active) setHistoryState({ status: 'ready', data }); }).catch(() => { if (active) setHistoryState({ status: 'error' }); });
     return () => { active = false; };
-  }, []);
+  }, [historyRequest]);
   const sidebar = useMemo(() => {
     const sidebar = { ...demoSidebar(preferences.language), preferences: layoutPreferences };
     if (history) {
@@ -117,6 +122,7 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
       sourceControlWorkspacePath={page.kind === 'conversation-run' && page.projectId !== DEMO_PROJECT_ID ? undefined : '/default'}
     >
       <Suspense fallback={<div className="p-5 text-sm text-muted-foreground">{t('common.loading')}</div>}>
+        {historyState.status === 'error' ? <Alert variant="destructive" className="rounded-none border-0"><AlertCircle /><AlertDescription className="flex flex-wrap items-center gap-2">{t('demo.historyLoadFailed')}<Button variant="ghost" size="sm" onClick={() => setHistoryRequest((value) => value + 1)}><RotateCw className="size-4" />{t('common.retry')}</Button></AlertDescription></Alert> : null}
         {page.kind === 'contexts' ? <ContextManagementPage key={linkParameters.get('tab')} initialTab={linkParameters.get('tab') === 'mcp' ? 'mcp' : linkParameters.get('tab') === 'skills' ? 'skills' : 'profiles'} agentRegistry={demoAgentRegistry} onAgentRegistryChange={noop} />
           : page.kind === 'agents' ? <AgentManagementPage vm={demoAgentRegistry} loading={false} onRefresh={noop} onRegistryChange={noop} />
           : page.kind === 'multica-tasks' ? <MulticaTaskManagementPage key={preferences.language} onSelectRun={(projectId, taskId, runId) => navigate({ kind: 'conversation-run', projectId, taskId, runId })} onPrepareMulticaTask={() => navigate({ kind: 'conversation-home' })} />

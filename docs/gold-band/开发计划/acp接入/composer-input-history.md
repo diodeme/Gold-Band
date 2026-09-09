@@ -51,3 +51,11 @@
 验收后已关闭验证浏览器页和自建 Vite 服务，删除仓库内临时验证页面与示例。系统临时目录中的隔离会话副本删除被自动安全策略拦截，副本保留在临时目录，不进入工作区。
 
 用户随后要求取消输入历史旋转图标：移除图标、空白占位和中英文加载文案；保留既有查询、重复按键控制及错误反馈。复用 prompt-kit composer，无新增组件、依赖、状态或 I/O，减少工具栏 DOM，不引入性能风险。18 项相关前端测试通过；内置浏览器验证宽窗、窄窗及重新拉宽时无加载图标、原文可回填、加载前后按钮坐标一致。
+
+## PR #120 格式验收修正
+
+GitHub verify 在 `Check formatting` 失败，后续 Rust 测试、前端测试和构建被跳过；本地同一 `cargo fmt --all -- --check` 命令已复现退出码 1。根因为提交前验收遗漏全量格式检查，包含本次 branches/provider 改动以及既有代码的排版差异，不是功能设计缺陷。使用官方 `cargo fmt --all` 统一修正，原失败命令转绿；不修改 CI 门禁。PR 标题应按 Conventional Commits 使用 `feat(acp): add input history navigation and pin raw frame controls`，由用户自行更新与提交。
+
+验证：`cargo fmt --all -- --check` 和 `git diff --check` 通过；`cargo test -p gold-band --lib -- acp::timeline::composer_history::tests render_prompt_bundle_does_not_add_builtin_output_contracts` 共 7 项通过。格式修正与本节记录作为独立提交推送，远程 CI 需在推送后重新验证；PR 标题由用户自行更新。
+
+性能与过度设计审视：本次仅格式化和交付文档修正，不新增依赖、状态、缓存、I/O 或运行期逻辑；使用既有格式检查作为回归契约，无需新增重复断言。

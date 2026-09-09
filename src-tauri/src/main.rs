@@ -1,10 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod acp_images;
 mod avatar;
 mod builtin_mcp;
 mod channel;
 mod commands;
-mod acp_images;
 mod commands_conversation;
 mod conversation_attention;
 mod conversation_workspace;
@@ -38,8 +38,8 @@ use commands::{
     delete_agent, delete_auto_template, delete_conversation_queued_prompt, delete_mcp_server,
     delete_profile, delete_skill, delete_workflow_template, disconnect_multica,
     dismiss_update_announcement, doctor_agent, download_and_install_update, execute_git_mutation,
-    get_acp_activity_detail, get_acp_raw_frames, get_acp_session, get_acp_tool_detail,
-    get_acp_image, get_agent_binding_usage, get_agent_command_catalog, get_agent_registry,
+    get_acp_activity_detail, get_acp_image, get_acp_raw_frames, get_acp_session,
+    get_acp_tool_detail, get_agent_binding_usage, get_agent_command_catalog, get_agent_registry,
     get_app_bootstrap, get_auto_templates, get_file_comparison, get_git_branch_picker_snapshot,
     get_git_capability, get_git_commit_detail, get_git_commit_reachability, get_git_commit_review,
     get_git_comparison, get_git_history, get_git_operation, get_github_capability,

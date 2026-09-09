@@ -757,6 +757,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - Timeline 仍为持久化事实源，不能从已加载的聊天窗口拼接历史。用户事件写入 `raw.originalUserText`，表明 content 来自独立 `display_text`；仅消费明确为 true、根分支、可见、非空的 goldBandPrompt。RawAgent 新会话首轮 RequirementTask 必须将原样 requirement 填入 display_text；运行时组装文本不作为原文。runtimeControl 是控制权转换元数据，可能附着在手动追问或“继续并发送”的真实输入上，不能仅凭该字段排除消息。无可靠来源的旧记录不猜测回填；未派发队列、提交前失败、provider 回显、隐藏修复与纯运行时提示词不纳入。相同文本的不同 promptId 保留，重试的相同身份去重。
 - 输入历史没有按时间清理规则。缓存淘汰、组件卸载和重新打开会话只释放投影，原文仍从 Timeline 分页读取。一小时后以及超过 40 条摘要缓存后，最早合格输入仍必须可达。索引 V12 重建旧的输入资格投影；存储 schema V3 在既有 attempt 准备阶段进行一次性来源修正：只对 canonical locator 匹配、不可变 workflow snapshot 为 RawAgent、sessionMode 为 new、首条根用户记录非隐藏且明确被错误标记为 false、非运行时控制输入的情况置回原文标记，保持正文和消息身份不变；无来源标记、RuntimeManaged、continue 和隐藏记录不予推测修复。写入成功后推进已有 schema 水位，重试幂等，不在按键查询路径迁移。
 - 输入历史查询不展示旋转加载图标，也不保留图标占位；查询开始、完成与缓存命中不得增删工具栏布局轨道或挤动 Agent、模型、模式等按钮。窄窗口与重新拉宽均需验证加载前中后的按钮位置一致。
+- 交付验收包含仓库 CI 的 `cargo fmt --all -- --check`；编译与功能测试通过不能替代格式检查。PR #120 的格式修正仅调整 Rust 排版，不改变输入历史的数据、接口和交互契约。
 - `list_composer_history` 返回有界原文摘要和 generation/position/messageId 游标；`get_composer_history_text` 定位读取单条原文。Timeline 索引投影保存合格原文的 composerTextBytes，页默认返回 20 条、上限 50 条，摘要查询不读取正文；一次翻阅冻结 head，过期 generation 拒绝继续。前端最多保留 40 个摘要、3 条且约 1 MiB 的 UTF-16 正文缓存，超预算单条只进入当前草稿。错误只在 composer 局部反馈。
 - 复用 prompt-kit、现有草稿、Timeline 索引与后台 IPC，没有新增消息存储、全局历史 Context 或加载时预取。索引元数据仍有随会话规模增长的反序列化成本，分页候选排序为 O(N log N)；正文接口定位读取一条。不得声称整条查询为 O(1)，也不得让历史翻阅触发 transcript 翻页或主动滚动。
 

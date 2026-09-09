@@ -1653,7 +1653,10 @@ mod tests {
         let codex = &settings.agents.unwrap()[&codex_id];
         assert_eq!(
             codex.adapter.args,
-            crate::config::catalog_agent_default_config("codex-acp").unwrap().adapter.args
+            crate::config::catalog_agent_default_config("codex-acp")
+                .unwrap()
+                .adapter
+                .args
         );
 
         let persisted: serde_json::Value = read_json(&path).unwrap();

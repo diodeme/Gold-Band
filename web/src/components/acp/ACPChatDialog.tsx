@@ -259,7 +259,6 @@ import {
   showArtifact,
   showAttachment,
   stopActiveSession,
-  submitManualCheck,
 } from "@/api";
 import { AcpModelThoughtSelects } from '@/components/acp/AcpModelThoughtSelects';
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
@@ -388,7 +387,7 @@ interface ACPChatDialogProps {
   inlineContentMaxBytes?: number;
   liveUpdatesPaused?: boolean;
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
-  onManualCheckSubmitted?: () => void;
+  onSubmitManualCheck?: (outcome: "success" | "failure") => Promise<void>;
   onSessionStopped?: () => void;
   onLifecycleSnapshot?: (snapshot: AcpLifecycleSnapshot) => void;
   onAtBottomChange?: (atBottom: boolean) => void;
@@ -1274,7 +1273,7 @@ export function ACPChatDialog(
     inlineContentMaxBytes,
     liveUpdatesPaused: externalLiveUpdatesPaused = false,
     onOptimisticEventsChange,
-    onManualCheckSubmitted,
+    onSubmitManualCheck,
     onSessionStopped,
     onLifecycleSnapshot,
     onAtBottomChange,
@@ -5602,25 +5601,19 @@ export function ACPChatDialog(
   };
 
   const submitManualDecision = async (outcome: "success" | "failure") => {
-    if (!showManualCheckActions || manualCheckSubmitting) return;
+    if (!showManualCheckActions || manualCheckSubmitting || !onSubmitManualCheck) return;
+    const ownerKey = sessionIdentityRef.current;
     setManualCheckError(null);
     setManualCheckSubmitting(true);
     try {
-      await submitManualCheck(
-        projectId,
-        taskId,
-        runId,
-        roundId,
-        nodeId,
-        attemptId,
-        outcome,
-      );
+      await onSubmitManualCheck(outcome);
+      if (sessionIdentityRef.current !== ownerKey) return;
       setManualCheckResolved(true);
-      onManualCheckSubmitted?.();
     } catch (error) {
+      if (sessionIdentityRef.current !== ownerKey) return;
       setManualCheckError(displayAppError(t, error));
     } finally {
-      setManualCheckSubmitting(false);
+      if (sessionIdentityRef.current === ownerKey) setManualCheckSubmitting(false);
     }
   };
 

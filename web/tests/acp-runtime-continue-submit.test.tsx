@@ -185,6 +185,7 @@ function cancelledSession(id: string): AcpSessionVm {
 }
 
 async function renderPausedDialog(options: {
+  onSubmitManualCheck?: (outcome: 'success' | 'failure') => Promise<void>;
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
   initialLifecycle?: ConversationAttemptLifecycleVm;
   isOrchestrated?: boolean;
@@ -206,6 +207,7 @@ async function renderPausedDialog(options: {
   const render = async (
     lifecycle: ConversationAttemptLifecycleVm,
     nextSession: AcpSessionVm = session,
+    locator = session,
   ) => act(async () => {
     root.render(
       <TooltipProvider>
@@ -214,9 +216,9 @@ async function renderPausedDialog(options: {
           projectId={`project-${id}`}
           taskId={`task-${id}`}
           runId={`run-${id}`}
-          roundId={session.roundId}
-          nodeId={session.nodeId}
-          attemptId={session.attemptId}
+          roundId={locator.roundId}
+          nodeId={locator.nodeId}
+          attemptId={locator.attemptId}
           runtimeComposerContext={{
             isOrchestrated: options.isOrchestrated ?? true,
             lifecycle,
@@ -227,6 +229,8 @@ async function renderPausedDialog(options: {
           showSystemPromptAction={false}
           showRawFramesAction={false}
           usageCompact
+          manualCheckPending={Boolean(options.onSubmitManualCheck)}
+          onSubmitManualCheck={options.onSubmitManualCheck}
           onOptimisticEventsChange={options.onOptimisticEventsChange}
         />
       </TooltipProvider>,
@@ -382,6 +386,47 @@ afterEach(() => {
 });
 
 describe('ACP runtime continue submission', () => {
+  it('does not hide a new attempt decision after an old manual-check response arrives', async () => {
+    let resolve!: () => void;
+    const submit = vi.fn(() => new Promise<void>((done) => { resolve = done; }));
+    const { container, root, render, session } = await renderPausedDialog({ onSubmitManualCheck: submit });
+    const decision = () => [...container.querySelectorAll('button')].find((item) =>
+      item.textContent === '成功' || item.textContent === 'acp.manualCheckSuccess',
+    );
+    try {
+      await flushInteraction(() => decision()!.click());
+      const next = { ...session, attemptId: 'replacement-attempt' };
+      await render(pausedLifecycle(), next, next);
+      expect(decision()?.disabled).toBe(false);
+      await act(async () => resolve());
+      expect(decision()?.disabled).toBe(false);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it.each(['success', 'failure'] as const)('submits manual-check %s once and settles the decision buttons', async (outcome) => {
+    let resolve!: () => void;
+    const submit = vi.fn(() => new Promise<void>((done) => { resolve = done; }));
+    const { container, root } = await renderPausedDialog({ onSubmitManualCheck: submit });
+    try {
+      const button = [...container.querySelectorAll('button')].find((item) =>
+        item.textContent === (outcome === 'success' ? '成功' : '失败')
+        || item.textContent === `acp.manualCheck${outcome === 'success' ? 'Success' : 'Failure'}`,
+      );
+      expect(button).toBeDefined();
+      await flushInteraction(() => button!.click());
+      expect(submit).toHaveBeenCalledExactlyOnceWith(outcome);
+      expect(button!.disabled).toBe(true);
+      await flushInteraction(() => button!.click());
+      expect(submit).toHaveBeenCalledTimes(1);
+      await act(async () => resolve());
+      expect(container.contains(button!)).toBe(false);
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('shows the background restore failure without diagnostic history and clears it on retry', async () => {
     const lifecycle = pausedLifecycle();
     lifecycle.acp.latestTurnStatus = 'failed';

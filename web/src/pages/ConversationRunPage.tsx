@@ -20,6 +20,8 @@ import { confirmCloseConversationRunWorkspaceResource, ConversationRunWorkspaceR
 import { conversationRunWorkspaceResourceKey, useRightWorkspace, type ConversationDirectoryWorkspaceEntry, type RightWorkspaceResource } from '@/components/workspace/right-workspace-context';
 import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode } from '@/lib/conversation-runtime-workflow';
 import { conversationPageForSession } from '@/lib/conversation-navigation';
+import type { ConversationSessionLocator } from '@/lib/conversation-navigation';
+import { submitManualCheck } from '@/api';
 import { findConversationLeafByKey } from '@/lib/conversation-run-snapshot';
 import { acpRuntimeErrorBannerCopy } from '@/lib/acp-runtime-error';
 import { shouldTreatAcpRuntimeErrorAsFallback } from '@/lib/acp-runtime-composer-state';
@@ -95,7 +97,7 @@ interface ConversationRunPageProps {
   onRerun: () => void;
   onEditWorkflow: () => void;
   onSaveWorkflow?: (json: string, modelBindings: WorkflowModelBindings) => Promise<WorkflowVm>;
-  onSelectSession: (leaf: ConversationSessionLeafVm, followActive?: boolean) => void;
+  onSelectSession: (leaf: ConversationSessionLocator, followActive?: boolean) => void;
   onLifecycleSnapshot?: (snapshot: AcpLifecycleSnapshot) => void;
   onAutoFollowChange?: (enabled: boolean) => void;
   followMode: ConversationSessionFollowMode;
@@ -164,6 +166,7 @@ export function ConversationRunPage({
   const manualAutoFollowDisabledRef = useRef(followMode === 'manual');
   const pendingAutoFollowRestoreSessionKeyRef = useRef<string | null>(null);
   const scrollPausedAutoFollowSessionKeyRef = useRef<string | null>(null);
+  const manualCheckNavigationVersionRef = useRef(0);
   const activeSessionKeys = useMemo(
     () => run.activeSessions.map((session) => activeSessionKey(session)),
     [run.activeSessions],
@@ -280,6 +283,29 @@ export function ConversationRunPage({
   const isDirect = run.runMode === 'direct';
   const selectedLeaf = findSelectedLeaf(run);
   const selectedSessionKey = run.sessionTree.selectedSessionKey ?? (selectedLeaf ? leafKey(selectedLeaf) : null);
+  useEffect(() => () => {
+    manualCheckNavigationVersionRef.current += 1;
+  }, [run.projectId, run.taskUuid, run.taskId, run.runId, selectedSessionKey]);
+
+  const handleSubmitManualCheck = async (outcome: 'success' | 'failure') => {
+    if (!selectedLeaf?.manualCheckPending || !selectedLeaf.current) return;
+    const version = manualCheckNavigationVersionRef.current;
+    const result = await submitManualCheck(
+      run.projectId, run.taskId, run.runId,
+      selectedLeaf.roundId, selectedLeaf.nodeId, selectedLeaf.attemptId, outcome,
+    );
+    if (version !== manualCheckNavigationVersionRef.current) return;
+    if (result.taskId !== run.taskId || result.id !== run.runId) return;
+    if (!result.currentRound || !result.currentNode || !result.currentAttempt) return;
+    const target: ConversationSessionLocator = {
+      roundId: result.currentRound, nodeId: result.currentNode, attemptId: result.currentAttempt,
+    };
+    if (activeSessionKey(target) === selectedSessionKey) return;
+    pendingAutoFollowRestoreSessionKeyRef.current = null;
+    scrollPausedAutoFollowSessionKeyRef.current = null;
+    manualAutoFollowDisabledRef.current = false;
+    onSelectSession(target, true);
+  };
   const selectedRoundId = selectedLeaf?.roundId ?? null;
   const selectedNodeId = selectedLeaf?.nodeId ?? null;
   const selectedAttemptId = selectedLeaf?.attemptId ?? null;
@@ -408,6 +434,7 @@ export function ConversationRunPage({
   }, [isAutoFollowRestorableLeaf, onAutoFollowChange, run.sessionTree.selectedSessionKey, selectedLeaf]);
 
   const handleSessionSelection = useCallback((leaf: ConversationSessionLeafVm, followActive = false) => {
+    manualCheckNavigationVersionRef.current += 1;
     const key = leafKey(leaf);
     const canRestoreAutoFollow = followActive && isAutoFollowRestorableLeaf(leaf);
     if (canRestoreAutoFollow && isAtBottomRef.current) {
@@ -608,6 +635,7 @@ export function ConversationRunPage({
             managedWorktreeBranch={selectedLeaf.worktreeBranch}
             runtimeComposerContext={runtimeComposerContext}
             manualCheckPending={selectedLeaf.manualCheckPending && selectedLeaf.current}
+            onSubmitManualCheck={handleSubmitManualCheck}
             showSystemPromptAction={!isDirect}
             directSessionHeader={isDirect ? {
               title: taskTitle,

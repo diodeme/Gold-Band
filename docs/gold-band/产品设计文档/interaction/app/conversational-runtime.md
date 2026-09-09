@@ -220,6 +220,7 @@ Task 最近对话活动只在三类 durable 边界推进：Task 创建成功、�
 - 点击“隐藏系统提示”或“隐藏运行上下文”必须通过右侧工作区的统一 `openResource` 事务打开或激活 Tab，不在消息气泡内展开。Tab 身份使用完整 attempt/branch locator、canonical user event `id + endedSeq` 和隐藏段 part index；工作区状态只保存 locator，不保存 prompt 正文。激活内容区后通过既有 ACP 分页接口只读取覆盖该 revision 的一个语义块，以精确 event identity 解析目标隐藏段；不得按标题、文案或数组中的当前可见位置反查。内容展示复用现有 `SystemPromptPanel`：渲染模式使用 prompt-kit `Markdown / Streamdown` 生成真正的只读 Markdown DOM，源码模式使用只读 `WorkspaceFileEditor`；两种重型内容视图二选一挂载，共享复制与模式切换工具栏，不得把 CodeMirror live-preview 当作产品层的“已渲染”结果。失败显示本地化错误且迟到响应不得覆盖已切换资源。
 - 历史会话初始化可以瞬时定位到底部，但该定位必须允许用户逃逸；不得使用 `ignoreEscapes` 等不可中断选项跨越 Markdown、折叠节点或图片的异步布局阶段。发送新消息等由用户明确触发的“查看最新内容”动作可以主动贴底，但后续向上滚动仍拥有最高优先级。
 - 用户手动查看历史 session 后，只有再次明确选中最新 active/current runtime leaf 并回到底部，才恢复 session auto-follow；仅把历史 session 滚到底部不能恢复 auto，也不能让后续 background active session 抢焦点。
+- 人工 Check 的成功 / 失败判定是显式继续意图：提交成功后，使用 `submit_manual_check` 返回的 `currentRound / currentNode / currentAttempt` 确定实际后继；与原 attempt 不同时，一次性导航到该 locator 并恢复自动跟随，不受提交前是否贴底或 manual follow mode 限制。不根据静态图猜测后继，不等待 ACP 事件或新增轮询。无后继、返回原 locator 或提交失败时保留原会话；请求期间用户主动选择其他会话、切换 Run 或离开页面后，迟到响应不得再导航。普通同会话实时刷新不能取消该显式意图。导航复用已有路由、选中态和目标详情加载链，判定按钮继续复用现有提交中、禁用和错误状态。
 - 顶部运行中节点 chip 是显式“跟随当前活跃 session”入口：点击 active chip 且消息窗口位于底部时，重新进入自动跟随；live event 到达或完整 run VM 刷新不能单独恢复自动跟随
 - 刷新 run VM 时若未满足自动跟随条件，前端必须继续保留当前 `selectedSessionKey` 与当前 session payload，不能因为其他 session 的 live event 或后端默认 selected key 回退到最新 running attempt；若手动切换与已排队的 live refresh 同时发生，仍以最新手动选择为准
 - 会话页内“进入 run 时重置自动跟随”的前端 effect 只能绑定 `runId` 等稳定 run 身份，不能依赖父组件每次重建的回调引用；否则 live refresh 触发父组件重渲染后会误把手动关闭的自动跟随重新打开
@@ -227,6 +228,8 @@ Task 最近对话活动只在三类 durable 边界推进：Task 创建成功、�
 - 前端所有完整 `ConversationRunVm` 快照进入 React state 时必须走统一合并入口，不允许调用点直接覆盖；合并入口负责保留当前 selected key、阻止 ACP `unknown` 空快照降级 runtime active 状态，并在 run 仍运行但 activeSessions 暂空时从 selected leaf 补出临时 active session。合并后 `selectedSessionKey` 与 `selectedSession / artifacts / attachments` 必须属于同一个 leaf；若 live refresh 或旧的手动切换请求返回了其他 session 的 payload，前端必须丢弃该 payload，而不是把它套到当前选中 key 上。用户通过 session tree 切换到目标 session 后，目标 `selectedSession` payload 回填前属于详情加载中状态，右侧主区域显示中性加载，不得短暂展示 ACP 会话失败横幅；若目标 leaf 的 runtime 仍 active 但 `selectedSession/effective session` 暂为空，也继续显示同一中性加载态，不展示内部 runtime 状态 key 或“拉起下一节点中”。只有目标 session 详情请求完成后仍确认没有 session/live shell 且 runtime 不再 active，才展示缺失 ACP session 错误。
 - 只有一个 session 运行中 → 自动展开该 session
 - 多个 session 运行中 → 显示折叠行（session 名 + 实时状态），用户点击进入
+
+- 人工判定请求的成功、错误与 submitting 收敛必须校验原 ACP session identity；切到另一个 attempt 后，旧响应不得隐藏新 attempt 的判定按钮或覆盖其提交状态。
 
 ## Composer 上下文功能区与引用
 

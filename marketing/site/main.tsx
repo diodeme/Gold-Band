@@ -20,7 +20,7 @@ function Media({ language, chapter, active, desktop, onActivate, theme }: { lang
   const [requested, setRequested] = useState(false);
   const surface = useRef<HTMLDivElement>(null);
   const [mobilePoster, setMobilePoster] = useState(false);
-  const structuredPoster = chapter === 'before' || chapter === 'after';
+  const structuredPoster = chapter !== 'during';
   useEffect(() => {
     if (!structuredPoster || !surface.current) return;
     const observer = new ResizeObserver(entries => setMobilePoster(entries[0].contentRect.width < MOBILE_REPLAY_WIDTH));
@@ -33,7 +33,7 @@ function Media({ language, chapter, active, desktop, onActivate, theme }: { lang
   return <div className="chapter-media" data-chapter-media={chapter}>
     <div className="media-label"><span><img src="/logo.svg" alt="" />Gold Band</span><span>{t.chapters[CHAPTER_IDS.indexOf(chapter)].eyebrow}</span></div>
     <div ref={surface} className="media-surface">
-      <img className="poster" src={structuredPoster ? `${import.meta.env.BASE_URL}media/${chapter}/${language}-${theme}${mobilePoster ? '-mobile' : ''}/${chapter === 'before' ? 'establish' : 'attachment'}.png` : mediaPath(language, chapter, 'png')} width={structuredPoster && mobilePoster ? 320 : 1440} height={structuredPoster ? (mobilePoster ? 780 : 900) : 880} alt={`${t.chapters[CHAPTER_IDS.indexOf(chapter)].eyebrow} · Gold Band`} loading={chapter === 'before' ? 'eager' : 'lazy'} />
+      <img className="poster" src={structuredPoster ? `${import.meta.env.BASE_URL}media/${chapter}/${language}-${theme}${mobilePoster ? '-mobile' : ''}/${chapter === 'before' ? 'establish' : chapter === 'after' ? 'attachment' : 'theme'}.png` : mediaPath(language, chapter, 'png')} width={structuredPoster && mobilePoster ? 320 : 1440} height={structuredPoster ? (mobilePoster ? 780 : 900) : 880} alt={`${t.chapters[CHAPTER_IDS.indexOf(chapter)].eyebrow} · Gold Band`} loading={chapter === 'before' ? 'eager' : 'lazy'} />
       {replay ? <Suspense fallback={<MediaLoading language={language} />}><Replay language={language} chapter={chapter} theme={theme} autoPlay={requested || !reducedMotion} /></Suspense> : <Button className="poster-play" variant="secondary" onClick={() => { setRequested(true); onActivate(chapter); }} aria-label={t.play}><Play />{t.play}</Button>}
     </div>
   </div>;

@@ -1,4 +1,4 @@
-import { lazy, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Replayer } from 'rrweb';
 import type { eventWithTime } from '@rrweb/types';
 import { Loader2, Pause, Play, RotateCcw } from 'lucide-react';
@@ -10,17 +10,17 @@ import { loadSceneEvents, loadSceneManifest } from './replay-assets';
 import { MOBILE_REPLAY_WIDTH, playbackPosition, selectSceneAsset, type SceneAsset } from './replay-model';
 import 'rrweb/dist/style.css';
 
-const ArchiveReplay = lazy(() => import('./ArchiveReplay'));
 export function createSceneEngine(data: unknown, source: SceneAsset, root: HTMLDivElement) {
-  // rrweb's virtual fast-forward drops the before scene's reused composer nodes.
-  return new Replayer(data as eventWithTime[], { root, showWarning: false, showDebug: false, skipInactive: false, mouseTail: false, UNSAFE_replayCanvas: false, useVirtualDom: source.scene !== 'before',
+  // Virtual fast-forward drops reused nodes when these scenes return to chat.
+  return new Replayer(data as eventWithTime[], { root, showWarning: false, showDebug: false, skipInactive: false, mouseTail: false, UNSAFE_replayCanvas: false, useVirtualDom: source.scene !== 'before' && source.scene !== 'personalize',
     insertStyleRules: source.scene === 'before' ? ['html.rrweb-paused :is([data-state="open"], [data-state="delayed-open"], [data-state="instant-open"]), html.rrweb-paused :is([data-state="open"], [data-state="delayed-open"], [data-state="instant-open"]) * { animation: none !important; }']
-      : source.scene === 'after' ? ['html.rrweb-paused :is([data-slot="sheet-content"], [data-slot="sheet-overlay"])[data-state="open"] { animation: none !important; }'] : [],
+      : source.scene === 'after' ? ['html.rrweb-paused :is([data-slot="sheet-content"], [data-slot="sheet-overlay"])[data-state="open"] { animation: none !important; }']
+      : source.scene === 'personalize' ? ['html.rrweb-paused [data-slot="popover-content"][data-state="open"] { animation: none !important; }'] : [],
   });
 }
 type Props = { language: Language; chapter: ChapterId; autoPlay: boolean; theme?: 'dark' | 'light' };
 export default function Replay(props: Props) {
-  return props.chapter !== 'personalize' ? <SceneReplay {...props} /> : <ArchiveReplay {...props} />;
+  return <SceneReplay {...props} />;
 }
 function SceneReplay({ language, chapter, autoPlay, theme = 'dark' }: Props) {
   const host = useRef<HTMLDivElement>(null);

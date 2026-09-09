@@ -39,7 +39,7 @@ describe('curated product preview projections', () => {
     expect(original).toEqual(mockErrorBlockedConversationRun);
   });
   it('ships portable, bounded bilingual recordings with actual changes', () => {
-    for (const language of ['zh', 'en']) for (const chapter of CHAPTER_IDS.filter(id => id !== 'before' && id !== 'after')) {
+    for (const language of ['zh', 'en']) for (const chapter of CHAPTER_IDS.filter(id => id === 'during')) {
       const text = readFileSync(`marketing/site/media/${language}-${chapter}.json`, 'utf8');
       const recording = JSON.parse(text);
       expect(text).not.toContain('127.0.0.1');

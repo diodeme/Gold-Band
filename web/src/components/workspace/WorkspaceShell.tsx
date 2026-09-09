@@ -50,6 +50,7 @@ import {
 } from './workspace-layout';
 
 interface WorkspaceShellProps {
+  titleBarTrailingContent?: React.ReactNode;
   appName: string;
   feedbackEnabled?: boolean;
   platform?: DesktopPlatform | null;
@@ -268,6 +269,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
 
 function WorkspaceShellLayout({
   appName,
+  titleBarTrailingContent,
   feedbackEnabled,
   platform,
   windowFrameStyle,
@@ -675,6 +677,7 @@ function WorkspaceShellLayout({
         layout={appConfig.workspaceLayout.rightWorkspace.file}
       />
       <AppTitleBar
+        trailingContent={titleBarTrailingContent}
         appName={appName}
         feedbackEnabled={feedbackEnabled}
         platform={platform}

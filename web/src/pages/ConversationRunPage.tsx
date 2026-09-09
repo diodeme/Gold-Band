@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { useTranslation } from 'react-i18next';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -119,6 +120,7 @@ export function ConversationRunPage({
   onSessionTreeExpansionChange,
   onTitleChange,
 }: ConversationRunPageProps) {
+  const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   useThemeWallpaperSurface();
   const workspace = useRightWorkspace();
@@ -509,7 +511,7 @@ export function ConversationRunPage({
             taskTitle={taskTitle}
             selectedSessionLeaf={selectedLeaf}
             canViewWorkflow={canViewWorkflow}
-            canEditWorkflow={run.runMode === 'workflow'}
+            canEditWorkflow={!readOnly && run.runMode === 'workflow'}
             onRerun={handleRerun}
             onEditWorkflow={handleEditWorkflow}
             onViewWorkflow={handleViewWorkflow}
@@ -575,6 +577,8 @@ export function ConversationRunPage({
       <div className="min-h-0 flex-1">
         {selectedLeaf ? (
           <ACPChatDialog
+            readOnly={readOnly}
+            showDisabledComposer={readOnly}
             key={`${run.taskUuid ?? run.taskId}:${selectedSessionKey ?? 'empty'}`}
             session={selectedSession}
             agentRegistry={agentRegistry}
@@ -600,7 +604,7 @@ export function ConversationRunPage({
             allowEventOnlySessionShell={false}
             wallpaperSurface
             worktreePath={selectedLeaf.worktreePath}
-            showBranchControl
+            showBranchControl={!readOnly}
             managedWorktreeBranch={selectedLeaf.worktreeBranch}
             runtimeComposerContext={runtimeComposerContext}
             manualCheckPending={selectedLeaf.manualCheckPending && selectedLeaf.current}

@@ -44,6 +44,7 @@ vi.mock('@/components/ui/dialog', () => ({
 }));
 
 import { SourceControlRepositoryView } from '@/components/workspace/source-control/SourceControlRepositoryView';
+import { ReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import type { GitSourceControlSnapshotVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -54,6 +55,16 @@ afterEach(() => {
 });
 
 describe('source control repository view', () => {
+  it('keeps repository inspection but disables demo creation commands', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<ReadOnlyExperience.Provider value={true}><SourceControlRepositoryView {...props({})} /></ReadOnlyExperience.Provider>));
+      for (const label of ['sourceControl.createBranch', 'sourceControl.createTag', 'sourceControl.createWorktree']) {
+        expect([...container.querySelectorAll('button')].find((button) => button.textContent === label)?.disabled).toBe(true);
+      }
+    } finally { await act(async () => root.unmount()); }
+  });
   it('keeps long stash rows inside the narrow repository pane', async () => {
     const container = document.createElement('div');
     document.body.append(container);

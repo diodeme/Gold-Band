@@ -1,3 +1,4 @@
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
@@ -56,6 +57,7 @@ interface DetailSnapshotRefreshRequest {
 
 export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, onOpenOccurrence }: { projectId: string; scheduledTaskId: string; onBack: () => void; onOpenOccurrence?: (page: ConversationPage) => void }) {
   const { t } = useTranslation();
+  const readOnly = useReadOnlyExperience();
   const [task, setTask] = useState<ScheduledTaskVm | null>(null);
   const [diagnostics, setDiagnostics] = useState<ScheduledTaskDiagnosticsVm | null>(null);
   const [occurrences, setOccurrences] = useState<ScheduledOccurrenceVm[]>([]);
@@ -197,7 +199,7 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
   }, [historyCursorStack.length, requestSnapshotRefresh, scheduledTaskId, statusFilter, task]);
 
   const updateEnabled = useCallback(async (enabled: boolean) => {
-    if (!task) return;
+    if (readOnly || !task) return;
     if (pendingActionRef.current) return;
     pendingActionRef.current = 'enable';
     setPendingAction('enable');
@@ -212,10 +214,10 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
       pendingActionRef.current = null;
       setPendingAction(null);
     }
-  }, [requestSnapshotRefresh, statusFilter, t, task]);
+  }, [readOnly, requestSnapshotRefresh, statusFilter, t, task]);
 
   const runNow = useCallback(async () => {
-    if (!task || pendingActionRef.current) return;
+    if (readOnly || !task || pendingActionRef.current) return;
     pendingActionRef.current = 'run';
     setRunning(true);
     setError(null);
@@ -229,7 +231,7 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
       pendingActionRef.current = null;
       setRunning(false);
     }
-  }, [requestSnapshotRefresh, statusFilter, t, task]);
+  }, [readOnly, requestSnapshotRefresh, statusFilter, t, task]);
 
   const openEdit = useCallback(async () => {
     if (!task) return;
@@ -346,21 +348,21 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" variant="secondary" className="h-8 gap-1.5" onClick={() => void runNow()} disabled={running}>
+          <Button size="sm" variant="secondary" className="h-8 gap-1.5" onClick={() => void runNow()} disabled={readOnly || running}>
             <Play className="size-3.5" />{t(running ? 'scheduled.detail.starting' : 'scheduled.detail.runNow')}
           </Button>
-          <Switch checked={task.enabled} disabled={Boolean(pendingAction)} onCheckedChange={(enabled) => void updateEnabled(enabled)} aria-label={t(task.enabled ? 'scheduled.management.disableAria' : 'scheduled.management.enableAria')} />
+          <Switch checked={task.enabled} disabled={readOnly || Boolean(pendingAction)} onCheckedChange={(enabled) => void updateEnabled(enabled)} aria-label={t(task.enabled ? 'scheduled.management.disableAria' : 'scheduled.management.enableAria')} />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" className="size-8" aria-label={t('scheduled.management.more')}><MoreHorizontal className="size-4" /></Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuItem onClick={() => void openEdit()} disabled={editLoading}><Pencil className="size-4" />{t('scheduled.management.edit')}</DropdownMenuItem>
-              <DropdownMenuItem disabled={Boolean(pendingAction)} onClick={() => void updateEnabled(!task.enabled)}>
+              <DropdownMenuItem disabled={readOnly || Boolean(pendingAction)} onClick={() => void updateEnabled(!task.enabled)}>
                 {task.enabled ? <Pause className="size-4" /> : <Play className="size-4" />}
                 {t(task.enabled ? 'scheduled.management.disable' : 'scheduled.management.enable')}
               </DropdownMenuItem>
-              <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setDeleting(true)}><Trash2 className="size-4" />{t('scheduled.management.delete')}</DropdownMenuItem>
+              <DropdownMenuItem disabled={readOnly} className="text-destructive focus:text-destructive" onClick={() => setDeleting(true)}><Trash2 className="size-4" />{t('scheduled.management.delete')}</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -436,6 +438,7 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
           {editing ? (
             <ScheduledTaskDialog
               open
+              saveDisabled={readOnly}
               presentation="workspace"
               onOpenChange={(open) => { if (!open) setEditing(null); }}
               allowContinuous={editing.definition.runMode === 'direct'}
@@ -443,6 +446,7 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
               initialContent={editing.definition.content}
               showContent
               onSave={async (config, content) => {
+                if (readOnly) return;
                 const definition = editing.definition;
                 await updateScheduledTask({
                   scheduledTaskId: definition.scheduledTaskId,
@@ -474,7 +478,7 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{t('scheduled.management.cancel')}</AlertDialogCancel>
-            <AlertDialogAction disabled={pendingAction === 'delete'} className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={(event) => {
+            <AlertDialogAction disabled={readOnly || pendingAction === 'delete'} className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={(event) => {
               event.preventDefault();
               if (!task) return;
               const currentTask = task;

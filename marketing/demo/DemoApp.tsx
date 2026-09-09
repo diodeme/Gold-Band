@@ -24,6 +24,9 @@ const SettingsPage = lazy(() => import('@/pages/SettingsPage').then((m) => ({ de
 const AgentManagementPage = lazy(() => import('@/pages/AgentManagementPage').then((m) => ({ default: m.AgentManagementPage })));
 const ConversationHomePage = lazy(() => import('@/pages/ConversationHomePage').then((m) => ({ default: m.ConversationHomePage })));
 const RunModeManagementPage = lazy(() => import('@/pages/RunModeManagementPage').then((m) => ({ default: m.RunModeManagementPage })));
+const MulticaTaskManagementPage = lazy(() => import('@/pages/MulticaTaskManagementPage').then((m) => ({ default: m.MulticaTaskManagementPage })));
+const ScheduledTaskManagementPage = lazy(() => import('@/pages/ScheduledTaskManagementPage').then((m) => ({ default: m.ScheduledTaskManagementPage })));
+const ScheduledTaskDetailPage = lazy(() => import('@/pages/ScheduledTaskDetailPage').then((m) => ({ default: m.ScheduledTaskDetailPage })));
 const noop = () => {};
 const unusedAction = async () => undefined;
 const emptyExpansion = {};
@@ -61,8 +64,8 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
   }, []);
   function navigate(next: ConversationPage) {
     const hash = next.kind === 'conversation-run' ? next.taskId : next.kind;
-    if (![...DEMO_TASKS, 'contexts', 'settings', 'run-mode-management', 'agents', 'conversation-home'].includes(hash)) return;
-    location.hash = next.kind === 'conversation-run' ? `${hash}?${new URLSearchParams({ run: next.runId })}` : hash;
+    if (![...DEMO_TASKS, 'contexts', 'settings', 'run-mode-management', 'agents', 'conversation-home', 'multica-tasks', 'scheduled-tasks', 'scheduled-task-create', 'scheduled-task-detail'].includes(hash)) return;
+    location.hash = next.kind === 'conversation-run' ? `${hash}?${new URLSearchParams({ run: next.runId })}` : next.kind === 'scheduled-task-detail' ? `${hash}?${new URLSearchParams({ id: next.scheduledTaskId })}` : hash;
     setPage(pageFromHash());
     setNavigationOpen(false);
   }
@@ -80,7 +83,7 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
   }
   return <AvatarPreferencesProvider preferences={preferences.avatars}>
     <DemoFrame clientRef={clientRef}>
-    <WorkspaceShell
+    <ConversationComposerDraftBoundary><WorkspaceShell
       titleBarTrailingContent={<Select value={preferences.language} onValueChange={(language) => {
         void browserApi.saveDesktopPreferences(preferences.appearance, preferences.personalization, language as PreferencesVm['language'], preferences.useLocalClaude, preferences.verboseLogging).then(updatePreferences);
       }}><SelectTrigger aria-label={t('settings.language')} className="demo-language mr-2 h-7 w-auto gap-2 border-0 bg-transparent shadow-none"><Languages className="size-3.5" /><SelectValue /></SelectTrigger><SelectContent><SelectItem value="zh-cn">简体中文</SelectItem><SelectItem value="en">English</SelectItem></SelectContent></Select>}
@@ -94,19 +97,26 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
       activeWorkspaceId={DEMO_PROJECT_ID} defaultExpandedWorkspaceId={DEMO_PROJECT_ID}
       conversationTaskUuid={page.kind === 'conversation-run' ? `demo-${page.taskId}` : null}
       conversationWorkspaceStore={store}
+      sourceControlWorkspacePath="/default"
     >
       <Suspense fallback={<div className="p-5 text-sm text-muted-foreground">{t('common.loading')}</div>}>
         {page.kind === 'contexts' ? <ContextManagementPage key={linkParameters.get('tab')} initialTab={linkParameters.get('tab') === 'mcp' ? 'mcp' : linkParameters.get('tab') === 'skills' ? 'skills' : 'profiles'} agentRegistry={demoAgentRegistry} onAgentRegistryChange={noop} />
           : page.kind === 'agents' ? <AgentManagementPage vm={demoAgentRegistry} loading={false} onRefresh={noop} onRegistryChange={noop} />
-          : page.kind === 'conversation-home' ? <ConversationComposerDraftBoundary><ConversationHomePage
+          : page.kind === 'multica-tasks' ? <MulticaTaskManagementPage key={preferences.language} onSelectRun={(projectId, taskId, runId) => navigate({ kind: 'conversation-run', projectId, taskId, runId })} onPrepareMulticaTask={() => navigate({ kind: 'conversation-home' })} />
+          : page.kind === 'scheduled-tasks' ? <ScheduledTaskManagementPage key={preferences.language} onCreate={() => navigate({ kind: 'scheduled-task-create' })} onOpenDetail={(task) => navigate({ kind: 'scheduled-task-detail', projectId: task.projectId, scheduledTaskId: task.id })} />
+          : page.kind === 'scheduled-task-detail' ? <ScheduledTaskDetailPage key={`${page.scheduledTaskId}:${preferences.language}`} projectId={page.projectId} scheduledTaskId={page.scheduledTaskId} onBack={() => navigate({ kind: 'scheduled-tasks' })} onOpenOccurrence={navigate} />
+          : page.kind === 'conversation-home' || page.kind === 'scheduled-task-create' ? <ConversationHomePage
+            initialScheduledMode={page.kind === 'scheduled-task-create'}
+            onScheduledModeExit={() => navigate({ kind: 'conversation-home' })}
             projectId={DEMO_PROJECT_ID} workspaceName="Gold Band" workspaces={demoWorkspaces}
             runMode={runMode} onRunModeChange={setRunMode} agentRegistry={demoAgentRegistry}
             workflowTemplates={demoWorkflowTemplates} profiles={demoProfiles(preferences.language)}
             busy={false} inlineContentMaxBytes={0} workLocation="main"
             onLoadProfiles={async () => (await browserApi.getProfiles()).profiles} onSubmit={unusedAction}
-            onOpenAgentManagement={() => navigate({ kind: 'agents' })} onOpenScheduledTasks={noop}
+            onCreateScheduledTask={unusedAction}
+            onOpenAgentManagement={() => navigate({ kind: 'agents' })} onOpenScheduledTasks={() => navigate({ kind: 'scheduled-tasks' })}
             onOpenRunModeSettings={() => navigate({ kind: 'run-mode-management' })}
-            onWorkspaceChange={noop} onWorkLocationChange={noop} /> </ConversationComposerDraftBoundary>
+            onWorkspaceChange={noop} onWorkLocationChange={noop} />
           : page.kind === 'run-mode-management' ? <RunModeManagementPage key={preferences.language}
             projectId={DEMO_PROJECT_ID} workspaceName="Gold Band" workspaces={demoWorkspaces}
             runMode={runMode} agentRegistry={demoAgentRegistry} workflowTemplates={demoWorkflowTemplates}
@@ -123,7 +133,7 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
             onViewSettings={noop} onViewAdvanced={noop}
           /> : page.kind === 'conversation-run' ? <DemoConversation key={`${page.taskId}:${page.runId}:${preferences.language}`} taskId={page.taskId} runId={page.runId} roundId={linkParameters.get('round')} nodeId={linkParameters.get('node')} bootstrap={bootstrap} language={preferences.language} /> : null}
       </Suspense>
-    </WorkspaceShell>
+    </WorkspaceShell></ConversationComposerDraftBoundary>
     </DemoFrame>
     <Sheet open={navigationOpen} onOpenChange={setNavigationOpen}>
       <SheetContent side="left" className="w-[min(85vw,320px)] gap-0 p-0" closeLabel={t('common.close')}>

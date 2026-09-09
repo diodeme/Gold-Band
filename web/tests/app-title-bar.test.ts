@@ -38,6 +38,10 @@ describe('AppTitleBar', () => {
     expect(APP_TITLE_BAR_LAYOUT.brandMarkClassName).toContain('size-7');
     expect(APP_TITLE_BAR_LAYOUT.brandTitleClassName).toContain('text-base');
     expect(APP_TITLE_BAR_LAYOUT.brandTitleClassName).toContain('font-[700]');
+    expect(APP_TITLE_BAR_LAYOUT.brandTitleClassName).toContain('min-w-0 truncate');
+    expect(APP_TITLE_BAR_LAYOUT.rootClassName).toContain('@container/titlebar');
+    expect(APP_TITLE_BAR_LAYOUT.brandTitleClassName).toContain('@sm/titlebar:block');
+    expect(html).toContain('flex h-full min-w-0 items-center gap-2 pr-3');
     expect(APP_TITLE_BAR_LAYOUT.brandTitleClassName).not.toContain('font-bold');
     expect(html).toContain('src="/logo.svg"');
     expect(html).toContain('min-h-0 min-w-0');

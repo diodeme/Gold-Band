@@ -3,7 +3,7 @@ export type Page = 'home' | 'documentation' | 'demo' | 'not-found';
 export const CHAPTER_IDS = ['before', 'during', 'after', 'personalize'] as const;
 export type ChapterId = typeof CHAPTER_IDS[number];
 export const GITHUB = 'https://github.com/diodeme/Gold-Band';
-export const DESKTOP_QUERY = '(min-width: 1024px) and (pointer: fine)';
+export const DESKTOP_QUERY = '(min-width: 1024px)';
 export const CAPTURE = { width: 1440, height: 880, minimum: 560 };
 
 export function parseRoute(path: string): { language: Language; page: Page } {

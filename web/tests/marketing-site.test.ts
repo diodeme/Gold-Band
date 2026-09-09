@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { CHAPTER_IDS, copy, pageHref, parseRoute } from '../../marketing/site/content';
-import { createPreviewRun } from '../../marketing/site/fixture';
+import { createPreviewRun } from '../../marketing/shared/fixture';
 import { mockErrorBlockedConversationRun } from '../src/mockData';
 
 describe('website routing and bilingual content', () => {

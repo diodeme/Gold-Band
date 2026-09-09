@@ -1,5 +1,5 @@
 import type { ConversationRunVm, ConversationSidebarVm, ConversationTaskRowVm, DesktopLanguage, RuntimeDisplayVm } from '@/types';
-import { createPreviewRun } from '../site/fixture';
+import { createPreviewRun } from '../shared/fixture';
 import { mockWorkflowTemplates } from '@/mockData';
 import { demoAgentRegistry, demoProfiles } from './catalog';
 import { demoDevelopmentFiles } from './turn-files';

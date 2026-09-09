@@ -45,8 +45,8 @@ export function ConversationRunHeader({
   const selectedSessionDotClass = runtimeStatusDotClass(selectedSessionDisplay?.tone);
 
   return (
-    <div className="shrink-0 bg-content-header px-5 py-0.5">
-      <div className="flex min-w-0 items-center gap-3">
+    <div className="@container shrink-0 bg-content-header px-5 py-0.5">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
         {run.scheduledTaskId ? (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -60,7 +60,7 @@ export function ConversationRunHeader({
         <EditableConversationTitle
           title={taskTitle}
           metadata={!isDirect ? run.runId : null}
-          className="flex-1"
+          className="flex-1 basis-full @md:basis-0"
           onTitleChange={onTitleChange}
         />
 
@@ -71,7 +71,7 @@ export function ConversationRunHeader({
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-7 gap-1.5 px-2 text-xs font-normal"
+                className="h-7 min-w-0 max-w-full flex-1 gap-1.5 px-2 text-xs font-normal @md:flex-initial"
                 aria-expanded={sessionSwitcherOpen}
               >
                 {selectedSessionLeaf ? (

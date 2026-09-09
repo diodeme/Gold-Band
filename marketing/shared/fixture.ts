@@ -1,5 +1,5 @@
 import type { AcpUiEventVm, ConversationRunVm, RuntimeDisplayVm } from '@/types';
-import type { Language } from './content';
+import type { Language } from '../site/content';
 
 export const PREVIEW_ROUTE = '/chat/projects/default/tasks/mock-task/runs/run-052';
 const sessionStartedAt = new Date(Date.now() - 62_000).toISOString();

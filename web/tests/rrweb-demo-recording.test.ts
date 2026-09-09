@@ -24,11 +24,15 @@ describe('rrweb demo recording boundary', () => {
   });
   it('counts UTF-8 bytes and refuses the event that exceeds the limit', () => {
     const data = { ...event(5), data: { tag: '中文', payload: {} } } as eventWithTime;
-    const exact = new TextEncoder().encode(JSON.stringify([data])).byteLength;
+    const probe = createRecordingBuffer();
+    probe.append(data);
+    const exact = probe.stop('duration').bytes;
     const buffer = createRecordingBuffer({ bytes: exact, events: 5 });
     expect(buffer.append(data)).toBeUndefined();
     expect(buffer.append(data)).toBe('bytes');
-    expect(buffer.stop('bytes').bytes).toBe(exact);
+    const result = buffer.stop('bytes');
+    expect(result.bytes).toBe(new TextEncoder().encode(JSON.stringify(result)).byteLength);
+    expect(result.bytes).toBeLessThanOrEqual(exact);
     expect(buffer.count).toBe(1);
   });
   it('stops idempotently and rejects late events', () => {
@@ -39,5 +43,17 @@ describe('rrweb demo recording boundary', () => {
     expect(buffer.stop()).toBe(result);
     expect(result.reason).toBe('duration');
     expect(result.events).toHaveLength(1);
+  });
+  it('retains the first budget stop even when the caller stops manually', () => {
+    const buffer = createRecordingBuffer({ events: 1, bytes: 10000 });
+    buffer.append(event(2));
+    expect(buffer.append(event(3))).toBe('events');
+    expect(buffer.stop().reason).toBe('events');
+  });
+  it('reports the actual serialized recording bytes, including the envelope', () => {
+    const buffer = createRecordingBuffer();
+    buffer.append({ ...event(5), data: { tag: '中文', payload: {} } } as eventWithTime);
+    const result = buffer.stop();
+    expect(result.bytes).toBe(new TextEncoder().encode(JSON.stringify(result)).byteLength);
   });
 });

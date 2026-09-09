@@ -1,17 +1,20 @@
 import { record } from 'rrweb';
-import { browserApi } from '@/api/browser';
-import { browserPreviewState } from '@/api/browserState';
+import { browserApi } from './runtime';
+import { browserApi as seedApi } from '@/api/browser';
 import { applyAppearance, applyPersonalization } from '@/theme';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm } from '@/api/client';
-import { createRecordingBuffer, RECORDING_LIMITS } from '../../web/rrweb-demo/recording';
-import { createPreviewRun, PREVIEW_ROUTE, taskTitle } from './fixture';
-import type { Language } from './content';
+import { createRecordingBuffer, RECORDING_LIMITS, type StopReason } from '../../web/rrweb-demo/recording';
+import { createPreviewRun, PREVIEW_ROUTE, taskTitle } from '../shared/fixture';
+import type { Language } from '../site/content';
+import type { WorkflowCue } from './workflow-source';
 
 const options = new URLSearchParams(location.search);
 const language: Language = options.get('language') === 'en' ? 'en' : 'zh';
 const scene = options.get('scene') || 'after';
-const preferences = browserPreviewState.getPreferences();
-browserPreviewState.setPreferences({ ...preferences, language: language === 'en' ? 'en' : 'zh-cn', appearance: { ...preferences.appearance, colorScheme: 'dark' } });
+const preferences = (await browserApi.getAppBootstrap()).preferences;
+let currentPreferences = await browserApi.saveDesktopPreferences({ ...preferences.appearance, colorScheme: options.get('theme') === 'light' ? 'light' : 'dark' }, preferences.personalization, language === 'en' ? 'en' : 'zh-cn', preferences.useLocalClaude, preferences.verboseLogging);
+let advance: (step: number | WorkflowCue) => void | Promise<void> = step => browserApi.scenario!.advance(step as WorkflowCue);
+if (scene !== 'during') {
 const base = await browserApi.getConversationRun('default', 'mock-task', 'run-052');
 let run = createPreviewRun(base, language, scene === 'during' ? 1 : 5);
 const sessions = new Set<(event: AcpSessionUpdatedEventVm) => void>();
@@ -24,12 +27,12 @@ browserApi.getConversationSidebarBootstrap = async () => ({ workspaces: [{ proje
 browserApi.getConversationTaskPage = async (projectId) => ({ projectId, tasks: [{ projectId, taskId: run.taskId, taskUuid: run.taskUuid, title: taskTitle(language), autoTitle: false, runMode: 'direct', lastActivityAt: run.selectedSession!.sessionStartedAt!, runs: [], runHistoryStatus: 'ready-empty', runsNextCursor: null, pinned: false, pinnedOrder: null }], nextCursor: null, errors: [] });
 browserApi.subscribeAcpSessionUpdates = async (listener) => { sessions.add(listener); return () => { sessions.delete(listener); }; };
 browserApi.subscribeConversationRunStateUpdates = async (listener) => { runs.add(listener); return () => { runs.delete(listener); }; };
-const originalChanges = browserApi.getTurnFileChangeSet.bind(browserApi);
+const originalChanges = seedApi.getTurnFileChangeSet.bind(seedApi);
 browserApi.getTurnFileChangeSet = async (...args) => {
   const changes = await originalChanges(...args);
   return { ...changes, changes: changes.changes.slice(0, 2), attachments: [], summary: { fileCount: 2, addedFiles: 1, modifiedFiles: 1, deletedFiles: 0, addedLines: 8, deletedLines: 2 } };
 };
-const originalComparison = browserApi.getFileComparison.bind(browserApi);
+const originalComparison = seedApi.getFileComparison.bind(seedApi);
 browserApi.getFileComparison = async (...args) => {
   const comparison = await originalComparison(...args);
   if (comparison.path.endsWith('.md') && comparison.after) {
@@ -41,41 +44,45 @@ browserApi.getFileComparison = async (...args) => {
   return comparison;
 };
 
-function advance(step: number) {
+advance = (value: number | WorkflowCue) => {
+  const step = Number(value);
   run = createPreviewRun(base, language, Math.max(1, Math.min(5, step)));
   const locator = { projectId: run.projectId, taskId: run.taskId, taskUuid: run.taskUuid, runId: run.runId, roundId: 'round-001', nodeId: 'dev', attemptId: 'attempt-001' };
   for (const listener of sessions) listener({ ...locator, session: structuredClone(run.selectedSession), lifecycle: run.sessionTree.rounds[0].nodes[0].attempts[0].lifecycle });
   for (const listener of runs) listener({ ...locator, eventKind: step >= 5 ? 'run-completed' : 'node-started', status: run.runStatus, outcome: run.runOutcome });
+};
 }
-function appearance(scheme: 'dark' | 'light', font: 'default' | 'mono') {
-  const current = browserPreviewState.getPreferences();
+async function appearance(scheme: 'dark' | 'light', font: 'default' | 'mono') {
+  const current = currentPreferences;
   const updated = structuredClone(current);
   updated.appearance.colorScheme = scheme;
   updated.personalization.typography.ui.fontStack = font === 'default' ? { source: 'theme' } : { source: 'custom', families: ['Consolas', 'Courier New'] };
-  browserPreviewState.setPreferences(updated);
+  currentPreferences = await browserApi.saveDesktopPreferences(updated.appearance, updated.personalization, updated.language, updated.useLocalClaude, updated.verboseLogging);
   applyAppearance(updated.appearance);
   applyPersonalization(updated.personalization);
 }
 let buffer = createRecordingBuffer();
 let dispose: (() => void) | undefined;
 let timer: ReturnType<typeof setTimeout> | undefined;
-function stop() {
-  if (dispose) record.addCustomEvent('recording-end', {});
+function stop(reason: StopReason = 'manual') {
+  if (dispose && reason === 'manual') record.addCustomEvent('recording-end', {});
   dispose?.(); dispose = undefined; clearTimeout(timer);
-  return buffer.stop('manual');
+  return buffer.stop(reason);
 }
 const api = {
   advance, appearance,
+  snapshot: () => browserApi.scenario?.snapshot(),
+  marker(stepId: string) { if (dispose) record.addCustomEvent('semantic-checkpoint', { stepId, viewport: { width: innerWidth, height: innerHeight } }); },
   start() {
     if (dispose) return;
     buffer = createRecordingBuffer();
-    dispose = record({ emit(event) { if (buffer.append(event)) queueMicrotask(stop); }, inlineStylesheet: true, inlineImages: true, collectFonts: true, maskInputOptions: { password: true }, sampling: { mousemove: 80, scroll: 100 } });
-    timer = setTimeout(stop, RECORDING_LIMITS.durationMs);
+    dispose = record({ emit(event) { const reason = buffer.append(event); if (reason) queueMicrotask(() => stop(reason)); }, inlineStylesheet: true, inlineImages: true, collectFonts: true, maskInputOptions: { password: true }, sampling: { mousemove: 80, scroll: 100 } });
+    timer = setTimeout(() => stop('duration'), RECORDING_LIMITS.durationMs);
   },
   stop,
 };
 declare global { interface Window { goldBandPreview: typeof api } }
 window.goldBandPreview = api;
-window.addEventListener('pagehide', stop, { once: true });
-history.replaceState(null, '', scene === 'before' ? '/chat' : PREVIEW_ROUTE);
+window.addEventListener('pagehide', () => { stop(); if (scene === 'during') browserApi.scenario?.dispose(); }, { once: true });
+history.replaceState(null, '', `${scene === 'before' ? '/chat' : PREVIEW_ROUTE}?${options}`);
 void import('@/webview-bootstrap');

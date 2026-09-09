@@ -2201,13 +2201,18 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         content_blocks.push(resolved.block);
     }
 
+    let display_text = req.prompt_display.as_ref().map(|input| input.display_text.clone())
+        .or_else(|| {
+            // A new RawAgent turn receives the requirement verbatim, before any runtime assembly.
+            (req.prompt_envelope == crate::dsl::PromptEnvelopeMode::RawAgent
+                && req.session_mode == SessionMode::New
+                && req.user_prompt_render_mode == UserPromptRenderMode::RequirementTask)
+                .then(|| requirement_text.clone())
+        });
     Ok(PromptBundle {
         system_prompt,
         user_prompt,
-        display_text: req
-            .prompt_display
-            .as_ref()
-            .map(|input| input.display_text.clone()),
+        display_text,
         quotes: req
             .prompt_display
             .as_ref()
@@ -4260,6 +4265,7 @@ mod tests {
         let prompt = render_prompt_bundle(&req).unwrap();
         assert_eq!(prompt.system_prompt, "");
         assert_eq!(prompt.user_prompt, "  original direct prompt\n");
+        assert_eq!(prompt.display_text.as_deref(), Some("  original direct prompt\n"));
 
         req.session_mode = SessionMode::Continue;
         req.user_prompt_render_mode = UserPromptRenderMode::UserMessage;

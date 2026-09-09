@@ -7800,6 +7800,98 @@ pub async fn get_acp_raw_frames(
     .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerHistoryLocator {
+    project_id: String,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+}
+
+fn composer_history_path(
+    state: &DesktopState,
+    locator: &ComposerHistoryLocator,
+) -> CommandResult<camino::Utf8PathBuf> {
+    let invalid = || CommandErrorVm::new("acp.composer-history-not-found", serde_json::json!({}));
+    if locator.outer_node_id.is_some() != locator.outer_attempt_id.is_some() {
+        return Err(invalid());
+    }
+    for part in [
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        &locator.node_id,
+        &locator.attempt_id,
+    ]
+    .into_iter()
+    .chain(locator.outer_node_id.iter())
+    .chain(locator.outer_attempt_id.iter())
+    {
+        let mut parts = Path::new(part).components();
+        if !matches!(parts.next(), Some(Component::Normal(_)))
+            || parts.next().is_some()
+            || part.contains(['/', '\\', ':'])
+        {
+            return Err(invalid());
+        }
+    }
+    let app = resolve_command_app(state, Some(&locator.project_id))?;
+    Ok(resolve_acp_attempt_dir(
+        &app,
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        &locator.node_id,
+        &locator.attempt_id,
+        locator.outer_node_id.as_deref(),
+        locator.outer_attempt_id.as_deref(),
+    )
+    .join("acp.timeline.jsonl"))
+}
+
+fn composer_history_error(error: anyhow::Error) -> CommandErrorVm {
+    use gold_band::acp::timeline::composer_history::HistoryError;
+    let code = match error.downcast_ref::<HistoryError>() {
+        Some(HistoryError::Stale) => "acp.composer-history-stale",
+        Some(HistoryError::NotFound) => "acp.composer-history-not-found",
+        None => "acp.composer-history-query-failed",
+    };
+    CommandErrorVm::new(code, serde_json::json!({}))
+}
+
+#[tauri::command]
+pub async fn list_composer_history(
+    state: State<'_, DesktopState>,
+    locator: ComposerHistoryLocator,
+    query: gold_band::acp::timeline::composer_history::HistoryQuery,
+) -> CommandResult<gold_band::acp::timeline::composer_history::HistoryPage> {
+    let path = composer_history_path(state.inner(), &locator)?;
+    spawn_blocking_command(move || {
+        gold_band::acp::timeline::composer_history::read_page(&path, query)
+            .map_err(composer_history_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_composer_history_text(
+    state: State<'_, DesktopState>,
+    locator: ComposerHistoryLocator,
+    cursor: gold_band::acp::timeline::composer_history::HistoryCursor,
+) -> CommandResult<gold_band::acp::timeline::composer_history::HistoryText> {
+    let path = composer_history_path(state.inner(), &locator)?;
+    spawn_blocking_command(move || {
+        gold_band::acp::timeline::composer_history::read_text(&path, cursor)
+            .map_err(composer_history_error)
+    })
+    .await
+}
+
 #[tauri::command]
 pub fn show_attachment(
     state: State<'_, DesktopState>,

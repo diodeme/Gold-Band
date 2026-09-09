@@ -491,6 +491,8 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 
 ### 边栏 Run 状态投影边界（2026-09-09）
 
+聊天停止的固定 attempt 与 AI-DYNAMIC leaf 状态写入路径，在本次确实将整体 Run 从 Running 持久化为 Paused 后，必须在释放状态锁后发布已有 `RunPaused` 通知。发布前校验当前 Run 仍为同一 execution revision 的暂停事实；重复停止、历史节点停止、已被继续取代的快照和仍有其他 active leaf 的局部暂停不发布整体暂停。只发状态事件，不调用附带 MetricsFact 或 InterventionRequested 的 helper。现有桌面消费者局部更新边栏，并仅对当前打开 Run 读取详情；定时 occurrence、Multica、通知和未读结果不因单独 RunPaused 结算或产生结果。
+
 上述 continue snapshot 同步边栏的要求仅表示：已持久化的 Runtime active 可以将非终态 Run 摘要投影为 Running，并清空结果、关闭 resumable；不允许复制 attempt 的 status/outcome/resumable 作为整体 Run 事实。单个节点成功、失败、暂停或普通 ACP 追问不能结算整体状态；整体暂停和终态只由 Run 摘要及 Run 状态事件收敛，整体终态不被迟到 active snapshot 回退。会话行和 Run 行先判断 Running（蓝色），再判断 Paused（黄色），最后按整体 outcome 展示成功绿色或失败红色。并行聚合仍由既有运行时负责，边栏不读取节点历史另建聚合状态。
 
 ## 会话信息栏（ACPSessionHeader）

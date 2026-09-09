@@ -583,6 +583,10 @@ Conversation VM 在外层仍 Running 且 phase 为 `PreparingWorkspace` 时，�
 
 ### 14.3 页面验证
 
+本轮停止通知验收：除固定 attempt、最后活跃 leaf 外，补齐工作区准备阶段所走的整体 `run_pause()` 通知；第三项失败测试同样先证明事件数为 0，再确认重复整体停止只发一次 RunPaused。最终 Rust 暂停领域 16/16、桌面 Run 事件映射 1/1、定时 occurrence 暂停不结算 1/1、Web 边栏/导航 58/58 通过，定向 diff check 通过。Rust 构建保留既有 dead-code 警告。Chrome 启动验证确认 `/chat` 与边栏挂载，测试服务和标签已清理；没有操作用户正在运行的 EXE 或重新执行真实 Agent 任务。新测试断言事件集合仅含 RunPaused，不产生 MetricsFact/InterventionRequested；恢复后的旧暂停快照在发布前被 execution 校验拒绝。复核不增加持久字段、依赖、缓存、队列或前端订阅，通知在状态锁外发布，读取量固定，不改变既有停止/并行判定和消费者业务分支。
+
+2026-09-09 聊天停止通知补齐：现场 task-007/run-001 的 Run 与 dev/attempt-002 均已 paused（execution revision 36），raw frame 确认 cancel/cancelled，边栏仍蓝。根因为 attempt 停止写入没有发布 RunPaused；前次修复移除节点终态覆盖后暴露通知缺口。固定 attempt 和 AI-DYNAMIC 最后活跃 leaf 两项最小测试均先观察到已 paused 但事件数为 0；并行 sibling 仍 active 时不发整体事件的基线通过。修复限定实际 Running -> Paused 转换，在锁外复核现有 execution 后只发布 RunPaused，不调用指标/介入 helper，不修改停止判定或执行逻辑。复用现有事件总线、桌面订阅及状态模型；每次整体转换仅增加一次小型 Run 读取，无历史扫描、轮询、新缓存或队列。验证结果见本轮后续验收记录。
+
 2026-09-09 边栏投影修复验收：回溯 `0c641edc9` 确认原路径用于继续后立即变蓝；最小失败测试证明单个 completed/success attempt 会把普通区与置顶区的 running Run 摘要同时覆盖为 completed/success。修复后同一测试转绿，覆盖单节点成功、失败、暂停不结算整体、普通 ACP 活跃不推进 Run、继续立即变蓝、Run 暂停及成功/失败收敛、迟到 active 不回退终态。边栏/导航定向 3 文件 58 项通过，DOM 验证会话行及展开 Run 行颜色优先级；TypeScript 和 Vite 生产构建通过（保留既有混合静态/动态导入提示）。iab 不可用，改用已连接 Chrome，在临时实际组件验证页检查浅色/深色四种状态和 Run 展开；未执行真实 Agent 并行任务，事件顺序由接口测试固定。临时页面、标签和测试服务验收后清理。范围仅限边栏消费，复用既有组件和事件，无后端执行改动；inactive snapshot 在 O(1) 返回，active 更新维持已加载目标页的 O(tasks + runs)，不增加 I/O、全量历史、缓存、队列或订阅，未引入过度设计或新增性能风险。
 
 1. 普通 workflow worker 输出中点击停止；停止后连续追问两轮，确认两轮均可正常回复且 workflow 不推进；点击继续后恢复原节点并最终进入后继节点。

@@ -45,7 +45,7 @@ export function cameraAt(asset: SceneAsset, rawMs: number, width: number, height
 
 type Dependencies = {
   load: (asset: SceneAsset, signal: AbortSignal) => Promise<unknown>;
-  create: (data: unknown) => ReplayEngine;
+  create: (data: unknown, asset: SceneAsset) => ReplayEngine;
   requestFrame: (callback: () => void) => number;
   cancelFrame: (id: number) => void;
   paint: (asset: SceneAsset, rawMs: number, reduced: boolean) => void;
@@ -94,7 +94,7 @@ export class ReplayController {
       const data = await this.dependencies.load(asset, request.signal);
       if (request.signal.aborted || this.disposed || this.request !== request) return;
       const rawMs = this.position ? playbackTime(asset, this.position) : 0;
-      this.engine = this.dependencies.create(data);
+      this.engine = this.dependencies.create(data, asset);
       this.engine.pause(rawMs);
       this.dependencies.paint(asset, rawMs, this.reduced);
       this.reconcile();

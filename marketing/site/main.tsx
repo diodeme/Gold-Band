@@ -6,6 +6,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { CHAPTER_IDS, copy, DESKTOP_QUERY, GITHUB, mediaPath, pageHref, parseRoute, type ChapterId, type Language, type Page } from './content';
 import './style.css';
 import { demoHref, siteConfig } from './config';
+import { MOBILE_REPLAY_WIDTH } from './replay-model';
 
 const config = siteConfig(import.meta.env, import.meta.env.PROD);
 
@@ -17,13 +18,21 @@ function useDesktop() {
 }
 function Media({ language, chapter, active, desktop, onActivate, theme }: { language: Language; chapter: ChapterId; active: boolean; desktop: boolean; onActivate: (chapter: ChapterId) => void; theme: 'light' | 'dark' }) {
   const [requested, setRequested] = useState(false);
+  const surface = useRef<HTMLDivElement>(null);
+  const [mobilePoster, setMobilePoster] = useState(false);
+  useEffect(() => {
+    if (chapter !== 'before' || !surface.current) return;
+    const observer = new ResizeObserver(entries => setMobilePoster(entries[0].contentRect.width < MOBILE_REPLAY_WIDTH));
+    observer.observe(surface.current);
+    return () => observer.disconnect();
+  }, [chapter]);
   const t = copy[language];
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const replay = active && (requested || !reducedMotion);
   return <div className="chapter-media" data-chapter-media={chapter}>
     <div className="media-label"><span><img src="/logo.svg" alt="" />Gold Band</span><span>{t.chapters[CHAPTER_IDS.indexOf(chapter)].eyebrow}</span></div>
-    <div className="media-surface">
-      <img className="poster" src={mediaPath(language, chapter, 'png')} width="1440" height="880" alt={`${t.chapters[CHAPTER_IDS.indexOf(chapter)].eyebrow} · Gold Band`} loading={chapter === 'before' ? 'eager' : 'lazy'} />
+    <div ref={surface} className="media-surface">
+      <img className="poster" src={chapter === 'before' ? `${import.meta.env.BASE_URL}media/before/${language}-${theme}${mobilePoster ? '-mobile' : ''}/establish.png` : mediaPath(language, chapter, 'png')} width={chapter === 'before' && mobilePoster ? 320 : 1440} height={chapter === 'before' ? (mobilePoster ? 780 : 900) : 880} alt={`${t.chapters[CHAPTER_IDS.indexOf(chapter)].eyebrow} · Gold Band`} loading={chapter === 'before' ? 'eager' : 'lazy'} />
       {replay ? <Suspense fallback={<MediaLoading language={language} />}><Replay language={language} chapter={chapter} theme={theme} autoPlay={requested || !reducedMotion} /></Suspense> : <Button className="poster-play" variant="secondary" onClick={() => { setRequested(true); onActivate(chapter); }} aria-label={t.play}><Play />{t.play}</Button>}
     </div>
   </div>;

@@ -16,6 +16,7 @@ export default defineConfig(({ command, mode }) => {
     name: 'workflow-recording-assets',
     async writeBundle(options) {
       await cp(resolve(process.env.SITE_WORKFLOW_ASSETS || 'marketing/site/media/workflow'), resolve(options.dir!, 'media/workflow'), { recursive: true });
+      await cp(resolve(process.env.SITE_BEFORE_ASSETS || 'marketing/site/media/before'), resolve(options.dir!, 'media/before'), { recursive: true });
     },
   }],
   resolve: { alias: { '@': resolve('web/src') } },

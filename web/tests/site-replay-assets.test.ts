@@ -18,19 +18,19 @@ function fixture() {
 }
 afterEach(() => vi.unstubAllGlobals());
 describe('published scene event loading', () => {
-  it('ships the accepted workflow variants and dependencies at the normal build input', async () => {
-    const directory = resolve('marketing/site/media/workflow');
+  it.each([['workflow', 'during'], ['before', 'before']])('ships %s variants and dependencies at the normal build input', async (folder, scene) => {
+    const directory = resolve(`marketing/site/media/${folder}`);
     const manifest = SceneManifestSchema.parse(JSON.parse(await readFile(resolve(directory, 'manifest.json'), 'utf8')));
     const localFile = (url: string) => {
-      expect(url.startsWith('/media/workflow/')).toBe(true);
-      const path = resolve(directory, url.slice('/media/workflow/'.length));
+      expect(url.startsWith(`/media/${folder}/`)).toBe(true);
+      const path = resolve(directory, url.slice(`/media/${folder}/`.length));
       expect(path.startsWith(directory + sep)).toBe(true);
       return path;
     };
     for (const variants of [manifest.assets, manifest.mobileAssets!]) {
-      expect(variants.filter(asset => asset.scene === 'during').map(asset => `${asset.language}/${asset.theme}`).sort())
+      expect(variants.filter(asset => asset.scene === scene).map(asset => `${asset.language}/${asset.theme}`).sort())
         .toEqual(['en/dark', 'en/light', 'zh/dark', 'zh/light']);
-      for (const asset of variants.filter(asset => asset.scene === 'during')) {
+      for (const asset of variants.filter(asset => asset.scene === scene)) {
         const bytes = await readFile(localFile(asset.eventsUrl));
         vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array(bytes))));
         expect(await loadSceneEvents(asset, new AbortController().signal)).toHaveLength(asset.eventCount);

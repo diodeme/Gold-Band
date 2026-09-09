@@ -7,19 +7,23 @@ import { workflowSourceStoryboard, WORKFLOW_CAMERA_TRANSITION_MS } from './workf
 import { bundleRecording } from './site-recording-bundle.mjs';
 import { SceneAssetSchema, SceneManifestSchema } from '../marketing/site/replay-model.ts';
 import { measureWorkflowCamera } from './workflow-camera.mjs';
+import { beforeSourceStoryboard, measureBeforeCamera, BEFORE_STEPS, BEFORE_CAMERA_TRANSITION_MS } from './before-source-storyboard.mjs';
 
 assert(process.env.RECORDING_ATTACHMENTS && process.env.RECORDING_OUTPUT && process.env.RECORDING_SOURCE_DIST,
   'RECORDING_ATTACHMENTS, RECORDING_OUTPUT and RECORDING_SOURCE_DIST are required');
 const attachments = resolve(process.env.RECORDING_ATTACHMENTS);
 const output = resolve(process.env.RECORDING_OUTPUT);
-const publicRoot = process.env.RECORDING_PUBLIC_PATH || '/media/workflow/';
+const before = process.env.RECORDING_SCENE === 'before';
+const scene = before ? 'before' : 'during';
+const publicRoot = process.env.RECORDING_PUBLIC_PATH || (before ? '/media/before/' : '/media/workflow/');
 const origin = process.env.RECORDING_URL || 'http://127.0.0.1:1443/';
 await mkdir(attachments, { recursive: true });
-const session = 'workflow-paired-035';
+const session = before ? 'before-paired-035' : 'workflow-paired-035';
 function browser(...args) {
   const path = resolve(attachments, 'browser-response.json');
   const fd = openSync(path, 'w');
   try { execFileSync(process.env.AGENT_BROWSER_BIN || 'agent-browser', ['--session', session, '--json', ...args], { windowsHide: true, timeout: 30000, stdio: ['ignore', fd, 'inherit'] }); }
+  catch (error) { throw new Error(`Browser command ${JSON.stringify(args)} failed: ${readFileSync(path, 'utf8')}`, { cause: error }); }
   finally { closeSync(fd); }
   const response = JSON.parse(readFileSync(path, 'utf8'));
   assert.equal(response.success, true, JSON.stringify(response));
@@ -37,20 +41,24 @@ try {
     const variant = `${language}-${theme}${format === 'mobile' ? '-mobile' : ''}`;
     const directory = resolve(attachments, variant);
     await mkdir(directory, { recursive: true });
-    browser('open', `${origin}?scene=during&language=${language}&theme=${theme}`);
+    browser('open', `${origin}?scene=${scene}&language=${language}&theme=${theme}`);
     browser('set', 'viewport', String(width), String(height));
     browser('wait', '--fn', 'Boolean(window.goldBandPreview && document.querySelector("#workspace-center"))');
     evaluate('document.fonts.ready.then(()=>true)');
     const measurements = [];
     const cameraMeasurements = [];
-    const recording = workflowSourceStoryboard({ browser, evaluate, language, camera(stepId, { overview = false } = {}) {
+    const recording = (before ? beforeSourceStoryboard : workflowSourceStoryboard)({ browser, evaluate, language, camera(stepId, { overview = false } = {}) {
+      if (before) {
+        cameraMeasurements.push({ stepId, overview, ...evaluate(`({timestamp:Date.now(),...(${measureBeforeCamera.toString()})(${JSON.stringify(overview ? 'overview' : stepId)})})`) });
+        return;
+      }
       const measurement = evaluate(`window.goldBandPreview.snapshot().then(snapshot => {
         const view = ${overview ? '{ width: innerWidth, height: innerHeight, desktop: { x: 0, y: 0, width: 1, height: 1 }, mobile: { x: 0, y: 0, width: 1, height: 1 } }' : `(${measureWorkflowCamera.toString()})(${JSON.stringify(stepId)}, snapshot.workflowGraph.edges, snapshot.workflowGraph.nodes)`};
         return { timestamp: Date.now(), ...view };
       })`);
       cameraMeasurements.push({ stepId, overview, ...measurement });
     }, screenshot(stepId) {
-      const measurement = evaluate(`window.goldBandPreview.snapshot().then(snapshot => (${measureWorkflowCamera.toString()})(${JSON.stringify(stepId)}, snapshot.workflowGraph.edges, snapshot.workflowGraph.nodes))`);
+      const measurement = evaluate(before ? `(${measureBeforeCamera.toString()})(${JSON.stringify(stepId)})` : `window.goldBandPreview.snapshot().then(snapshot => (${measureWorkflowCamera.toString()})(${JSON.stringify(stepId)}, snapshot.workflowGraph.edges, snapshot.workflowGraph.nodes))`);
       assert.equal(measurement.width, width); assert.equal(measurement.height, height);
       measurements.push({ stepId, timestamp: evaluate('Date.now()'), ...measurement });
       browser('screenshot', resolve(directory, `${stepId}-${width}.png`));
@@ -62,7 +70,7 @@ try {
     const assetPath = `${publicRoot}${variant}/`;
     const bundle = await bundleRecording({ recording, captureOrigin: origin, sourceRoot: process.env.RECORDING_SOURCE_DIST, outputRoot: assetOutput, publicPath: assetPath });
     const markers = recording.events.filter(event => event.type === 5 && event.data.tag === 'semantic-checkpoint');
-    assert.equal(markers.length, 11);
+    assert.equal(markers.length, before ? BEFORE_STEPS.length : 11);
     const start = recording.events[0].timestamp;
     const checkpoints = markers.map((marker, index) => ({ stepId: marker.data.payload.stepId,
       startMs: index ? marker.timestamp - start : 0,
@@ -71,9 +79,9 @@ try {
     for (const point of checkpoints) await copyFile(resolve(directory, `${point.stepId}-${width}.png`), resolve(assetOutput, `${point.stepId}.png`));
     const frames = track => cameraMeasurements.map((measurement, index) => ({
       timeMs: index ? measurement.timestamp - start : 0,
-      rect: measurement[track], zoom: 1, transitionMs: index ? WORKFLOW_CAMERA_TRANSITION_MS : 0,
+      rect: measurement[track], zoom: 1, transitionMs: index ? (before ? BEFORE_CAMERA_TRANSITION_MS : WORKFLOW_CAMERA_TRANSITION_MS) : 0,
     }));
-    const asset = SceneAssetSchema.parse({ version: 1, scene: 'during', language, theme, rrwebVersion: '2.1.1', ...bundle.metadata,
+    const asset = SceneAssetSchema.parse({ version: 1, scene, language, theme, rrwebVersion: '2.1.1', ...bundle.metadata,
       width, height, poster: checkpoints[0].poster, checkpoints,
       camera: { desktop: frames('desktop'), mobile: frames('mobile') },
       pace: checkpoints.map(point => ({ startMs: point.startMs, endMs: point.endMs, fromRate: point.stepId.startsWith('branch-') ? 1.5 : 1, toRate: 1 })),

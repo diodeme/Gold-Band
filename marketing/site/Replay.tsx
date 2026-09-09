@@ -7,14 +7,19 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { copy, type ChapterId, type Language } from './content';
 import { cameraAt, ReplayController, type ReplayView } from './replay-controller';
 import { loadSceneEvents, loadSceneManifest } from './replay-assets';
-import { MOBILE_REPLAY_WIDTH, playbackPosition, selectSceneAsset } from './replay-model';
+import { MOBILE_REPLAY_WIDTH, playbackPosition, selectSceneAsset, type SceneAsset } from './replay-model';
 import 'rrweb/dist/style.css';
 
 const ArchiveReplay = lazy(() => import('./ArchiveReplay'));
+export function createSceneEngine(data: unknown, source: SceneAsset, root: HTMLDivElement) {
+  // rrweb's virtual fast-forward drops the before scene's reused composer nodes.
+  return new Replayer(data as eventWithTime[], { root, showWarning: false, showDebug: false, skipInactive: false, mouseTail: false, UNSAFE_replayCanvas: false, useVirtualDom: source.scene !== 'before',
+    insertStyleRules: source.scene === 'before' ? ['html.rrweb-paused :is([data-state="open"], [data-state="delayed-open"], [data-state="instant-open"]), html.rrweb-paused :is([data-state="open"], [data-state="delayed-open"], [data-state="instant-open"]) * { animation: none !important; }'] : [],
+  });
+}
 type Props = { language: Language; chapter: ChapterId; autoPlay: boolean; theme?: 'dark' | 'light' };
 export default function Replay(props: Props) {
-  // Other scenes retain their existing recordings until the workflow pilot passes review.
-  return props.chapter === 'during' ? <SceneReplay {...props} /> : <ArchiveReplay {...props} />;
+  return props.chapter === 'before' || props.chapter === 'during' ? <SceneReplay {...props} /> : <ArchiveReplay {...props} />;
 }
 function SceneReplay({ language, chapter, autoPlay, theme = 'dark' }: Props) {
   const host = useRef<HTMLDivElement>(null);
@@ -33,7 +38,7 @@ function SceneReplay({ language, chapter, autoPlay, theme = 'dark' }: Props) {
     const motion = matchMedia('(prefers-reduced-motion: reduce)');
     const replay = new ReplayController({
       load: loadSceneEvents,
-      create: data => new Replayer(data as eventWithTime[], { root, showWarning: false, showDebug: false, skipInactive: false, mouseTail: false, UNSAFE_replayCanvas: false }),
+      create: (data, source) => createSceneEngine(data, source, root),
       requestFrame: callback => window.requestAnimationFrame(callback), cancelFrame: id => window.cancelAnimationFrame(id),
       paint(source, rawMs, reduced) {
         root.style.width = `${source.width}px`; root.style.height = `${source.height}px`;
@@ -69,12 +74,12 @@ function SceneReplay({ language, chapter, autoPlay, theme = 'dark' }: Props) {
     setManifest(null);
     setView(current => ({ ...current, status: 'loading' }));
     controller.current?.suspend();
-    void loadSceneManifest(`${import.meta.env.BASE_URL}media/workflow/manifest.json`, request.signal).then(manifest => {
+    void loadSceneManifest(`${import.meta.env.BASE_URL}media/${chapter === 'before' ? 'before' : 'workflow'}/manifest.json`, request.signal).then(manifest => {
       if (request.signal.aborted) return;
       setManifest(manifest);
     }).catch(() => { if (!request.signal.aborted) setView(current => ({ ...current, status: 'error' })); });
     return () => request.abort();
-  }, [retry]);
+  }, [chapter, retry]);
   useEffect(() => {
     if (!manifest) return;
     const selected = selectSceneAsset(manifest, chapter, language, theme, mobile);

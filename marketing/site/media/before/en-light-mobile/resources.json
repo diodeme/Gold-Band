@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "resources": [
+    {
+      "url": "/media/before/en-light-mobile/resources/logo.svg",
+      "byteLength": 75480,
+      "sha256": "5a8d2326a49d459d3429e6a792b441955b6eebca5ae7a54636a57465e69b7b7a"
+    },
+    {
+      "url": "/media/before/en-light-mobile/resources/theme-assets/builtin.gold-band/3100e775e8616cd2-inter-latin-variable.woff2",
+      "byteLength": 48256,
+      "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+    },
+    {
+      "url": "/media/before/en-light-mobile/resources/theme-assets/builtin.gold-band/c905ab46ff4f0bcf-misans-vf.woff2",
+      "byteLength": 2615016,
+      "sha256": "c905ab46ff4f0bcf17ceebc79e6149cecc4165281690c2fd825637d7ad42be27"
+    },
+    {
+      "url": "/media/before/en-light-mobile/resources/theme-assets/builtin.tech-neutral/3100e775e8616cd2-inter-latin-variable.woff2",
+      "byteLength": 48256,
+      "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+    },
+    {
+      "url": "/media/before/en-light-mobile/resources/theme-assets/builtin.tech-neutral/c905ab46ff4f0bcf-misans-vf.woff2",
+      "byteLength": 2615016,
+      "sha256": "c905ab46ff4f0bcf17ceebc79e6149cecc4165281690c2fd825637d7ad42be27"
+    },
+    {
+      "url": "/media/before/en-light-mobile/resources/agent-icons/claude.svg",
+      "byteLength": 3952,
+      "sha256": "6ab909e92679754c5169add2a800da93406622b5f592add61cdfdd92ea9fcb84"
+    },
+    {
+      "url": "/media/before/en-light-mobile/resources/agent-icons/codex.svg",
+      "byteLength": 1376,
+      "sha256": "5792b129c13dbe2ccb29ce512f4bbbefe0cd8580f8bf4165e3dc56d55c0649b7"
+    },
+    {
+      "url": "/media/before/en-light-mobile/resources/agent-icons/cursor.svg",
+      "byteLength": 572,
+      "sha256": "fee7611088eb24eb70153406111e266e5b6c419ac1cd648d08a84b3d0e7359fc"
+    },
+    {
+      "url": "/media/before/en-light-mobile/resources/agent-icons/gemini.svg",
+      "byteLength": 409,
+      "sha256": "e09a21b554cc22ca917fec392f302c20f7a1c36fc79a8b54cf7e3420d4dae5ca"
+    },
+    {
+      "url": "/media/before/en-light-mobile/resources/agent-icons/codebuddy-code.svg",
+      "byteLength": 1517,
+      "sha256": "302cd24aeb9d61c8a1c3c6b7468c9aaac077c5299ab7ddcbd520bff16e53af6b"
+    },
+    {
+      "url": "/media/before/en-light-mobile/resources/agent-icons/goose.svg",
+      "byteLength": 4863,
+      "sha256": "9c16c18df38c41da67a699cb0f76003bd22bcf49dd7b57ddbabd9921ee8d1d8c"
+    },
+    {
+      "url": "/media/before/en-light-mobile/resources/agent-icons/qwen-code.svg",
+      "byteLength": 987,
+      "sha256": "3d8111d0b871cd80bad55c4bb3011da3c411dd806ba03e0f8fb9c0c9d7daaee5"
+    },
+    {
+      "url": "/media/before/en-light-mobile/resources/agent-icons/opencode.svg",
+      "byteLength": 220,
+      "sha256": "a919fc930114048120a9ad2bb723aa0eabceb5e773dc374444519c460c62e386"
+    },
+    {
+      "url": "/media/before/en-light-mobile/resources/agent-icons/kimi.svg",
+      "byteLength": 645,
+      "sha256": "85f4e0d5f109ed221a1c0670f7793e409ec7f48db42467029b6ae0e6d1cb1777"
+    },
+    {
+      "url": "/media/before/en-light-mobile/resources/agent-icons/amp-acp.svg",
+      "byteLength": 649,
+      "sha256": "2d5b887a84eb7c1b812d5cd8164aeb34dc31a10b43d470e26e35edd41d63dcc2"
+    },
+    {
+      "url": "/media/before/en-light-mobile/resources/agent-icons/pi-acp.svg",
+      "byteLength": 306,
+      "sha256": "dc236b2cca74f357da1c32fda7f2adc42d27f8a57f733ce6ede328e189483e3a"
+    }
+  ]
+}

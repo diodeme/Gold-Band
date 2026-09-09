@@ -8,6 +8,8 @@ import { demoAgentRegistry, demoProfiles, demoProfileContent, demoWorkflowTempla
 import { DEMO_REPORT_PATH, demoDevelopmentFiles, demoReportContent, validateDemoFileLocator } from './turn-files';
 import { demoRunIds } from './scenarios';
 import { demoManagementApi } from './management';
+import { cursorSequence, missing, pageLimit, pageSession, sessionIdentity } from './history-query';
+import { createDatasetReader, REAL_PROJECT_ID } from './dataset';
 
 export const DEMO_READ_METHODS = [
   'getAgentRegistry', 'getProfiles', 'getProfile', 'getWorkflowTemplates', 'getWorkflow',
@@ -34,6 +36,7 @@ const subscriptions = new Set<keyof RuntimeApi>([
 ]);
 
 export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): RuntimeApi {
+  const history = createDatasetReader(`${import.meta.env.BASE_URL ?? '/'}data/ji-history/`);
   const state = new BrowserPreviewState();
   const initial = state.getPreferences();
   initial.appearance.colorScheme = 'dark';
@@ -43,6 +46,11 @@ export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): R
   const methods = new Map<PropertyKey, unknown>();
   const overrides: Partial<RuntimeApi> = {
     ...demoManagementApi(() => state.getPreferences().language),
+    async getAcpRawFrames(...args) {
+      if (args[0] === REAL_PROJECT_ID) return history.api.getAcpRawFrames(...args);
+      await overrides.getAcpSession!(...args.slice(0, 6) as [string, string, string, string, string, string], undefined, undefined, args[7], args[8]);
+      return previewApi.getAcpRawFrames(...args);
+    },
     async getGitCapability() {
       return { status: 'ready', installedVersion: '2.53.0', minimumVersion: '2.36.0', repoRoot: '/default', commonDir: '/default/.git', head: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241' };
     },
@@ -50,7 +58,8 @@ export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): R
       return { status: 'repository-unresolved', version: null, host: null, account: null, repository: null, remote: null, defaultBranch: null };
     },
     async listConversationDirectory(input) {
-      await overrides.getAcpSession!(input.projectId ?? 'default', input.taskId, input.runId, input.roundId, input.nodeId, input.attemptId);
+      if (input.projectId === REAL_PROJECT_ID) return history.api.listConversationDirectory(input);
+      await overrides.getAcpSession!(input.projectId ?? 'default', input.taskId, input.runId, input.roundId, input.nodeId, input.attemptId, undefined, undefined, input.outerNodeId, input.outerAttemptId);
       const path = input.relativePath ?? '';
       if (path !== '' && path !== 'reports') throw { code: 'demo.resource-not-found', params: { path } };
       const entries = path === '' ? [{ name: 'reports', kind: 'directory' as const }] : [{ name: 'review.md', kind: 'file' as const }];
@@ -59,28 +68,37 @@ export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): R
         hasChildren: entry.kind === 'directory', byteLength: null, modifiedAtNs: null }));
     },
     async readConversationDirectoryFile(input) {
-      await overrides.getAcpSession!(input.projectId ?? 'default', input.taskId, input.runId, input.roundId, input.nodeId, input.attemptId);
+      if (input.projectId === REAL_PROJECT_ID) return history.api.readConversationDirectoryFile(input);
+      await overrides.getAcpSession!(input.projectId ?? 'default', input.taskId, input.runId, input.roundId, input.nodeId, input.attemptId, undefined, undefined, input.outerNodeId, input.outerAttemptId);
       if (input.relativePath !== 'reports/review.md') throw { code: 'demo.resource-not-found', params: { path: input.relativePath } };
       const snapshot = await overrides.readFileResource!('default', DEMO_REPORT_PATH);
       return { ...snapshot, name: 'review.md', locator: { projectId: 'default', canonicalPath: `/demo/runs/${input.taskId}/${input.runId}/${input.roundId}/${input.nodeId}/reports/review.md`, relativePath: 'reports/review.md', scope: 'workspace' } };
     },
     async getTurnFileChangeSet(locator, changeSetId) {
+      if (locator.projectId === REAL_PROJECT_ID) return history.api.getTurnFileChangeSet(locator, changeSetId);
       validateDemoFileLocator(locator, changeSetId);
       const manifest = structuredClone(demoDevelopmentFiles);
       manifest.attachments[0].byteLength = new TextEncoder().encode(demoReportContent(state.getPreferences().language)).length;
       return manifest;
     },
     async getFileComparison(locator, changeSetId, changeId) {
+      if (locator.projectId === REAL_PROJECT_ID) return history.api.getFileComparison(locator, changeSetId, changeId);
       validateDemoFileLocator(locator, changeSetId);
       if (!demoDevelopmentFiles.changes.some((change) => change.id === changeId)) throw { code: 'demo.resource-not-found', params: { changeId } };
       return structuredClone(await previewApi.getFileComparison(locator, changeSetId, changeId));
     },
     async resolveTurnAttachmentFile(locator, changeSetId, attachmentId) {
+      if (locator.projectId === REAL_PROJECT_ID) return history.api.resolveTurnAttachmentFile(locator, changeSetId, attachmentId);
       validateDemoFileLocator(locator, changeSetId);
       if (attachmentId !== demoDevelopmentFiles.attachments[0].id) throw { code: 'demo.resource-not-found', params: { attachmentId } };
       return { locator: { projectId: locator.projectId, canonicalPath: DEMO_REPORT_PATH, relativePath: demoDevelopmentFiles.attachments[0].relativePath, scope: 'workspace' }, target: null, externalAccessGrant: null };
     },
     async getWorkflowTemplates() { return structuredClone(demoWorkflowTemplates); },
+    async getWorkflow(taskId, projectId) {
+      if (projectId && projectId !== 'default') throw { code: 'demo.operation-unavailable', params: { operation: 'getWorkflow', projectId } };
+      if (!DEMO_TASKS.includes(taskId as typeof DEMO_TASKS[number])) missing({ taskId });
+      return structuredClone(await previewApi.getWorkflow(taskId, projectId));
+    },
     async getAutoTemplates() { return { version: '0.1', templates: [] }; },
     async listMcpServers() {
       return [
@@ -106,24 +124,41 @@ export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): R
       return profile.isBuiltIn ? { ...profile, content: await demoProfileContent(id, state.getPreferences().language) } : profile;
     },
     async getConversationRun(projectId, taskId, runId) {
+      if (projectId === REAL_PROJECT_ID) return history.api.getConversationRun(projectId, taskId, runId);
       if (projectId !== 'default' || !DEMO_TASKS.includes(taskId as typeof DEMO_TASKS[number]) || !demoRunIds(taskId).includes(runId)) {
         throw { code: 'demo.resource-not-found', params: { projectId, taskId, runId } };
       }
-      return demoRun(await previewApi.getConversationRun('default', 'mock-task', DEMO_RUN_ID), taskId, state.getPreferences().language, runId);
+      const run = demoRun(await previewApi.getConversationRun('default', 'mock-task', DEMO_RUN_ID), taskId, state.getPreferences().language, runId);
+      if (run.selectedSession) run.selectedSession = pageSession(run.selectedSession);
+      return run;
     },
-    async getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId) {
+    async getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, _fallback, outerNodeId, outerAttemptId) {
+      if (projectId === REAL_PROJECT_ID) return history.api.getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, _fallback, outerNodeId, outerAttemptId);
+      if (outerNodeId || outerAttemptId) missing({ outerNodeId, outerAttemptId });
       const run = await overrides.getConversationRun!(projectId ?? 'default', taskId, runId);
       const leaf = run.sessionTree.rounds.find((round) => round.roundId === roundId)?.nodes.find((node) => node.nodeId === nodeId)?.attempts.find((attempt) => attempt.attemptId === attemptId);
       if (!leaf) throw { code: 'demo.resource-not-found', params: { roundId, nodeId, attemptId } };
-      return demoSessionForNode(run, roundId, nodeId, state.getPreferences().language);
+      return pageSession(demoSessionForNode(run, roundId, nodeId, state.getPreferences().language), query);
     },
-    async getAcpActivityDetail(projectId, taskId, runId, roundId, nodeId, attemptId) {
-      const session = await overrides.getAcpSession!(projectId, taskId, runId, roundId, nodeId, attemptId);
-      return { items: session!.events.filter((event) => event.kind === 'toolCall'), hasMoreEarlier: false, earlierCursor: null };
+    async getAcpActivityDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId) {
+      if (projectId === REAL_PROJECT_ID) return history.api.getAcpActivityDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId);
+      const session = (await overrides.getAcpSession!(projectId, taskId, runId, roundId, nodeId, attemptId, { pageSize: 100 }, undefined, outerNodeId, outerAttemptId))!;
+      sessionIdentity(session, query);
+      const matches = session.events.filter((event) => event.kind === 'toolCall' && event.seq >= query.activityStartSeq && event.seq <= query.activityEndSeq);
+      const before = cursorSequence(query.earlierCursor);
+      const end = before != null ? matches.findIndex((event) => (event.startedSeq ?? event.seq) >= before) : matches.length;
+      if (end < 0) throw { code: 'demo.invalid-cursor', params: {} };
+      const items = matches.slice(Math.max(0, end - pageLimit(query.limit)), end);
+      const hasMoreEarlier = end > items.length;
+      return { items, hasMoreEarlier, earlierCursor: hasMoreEarlier ? `rev:${items[0].startedSeq ?? items[0].seq}` : null };
     },
-    async getAcpToolDetail(projectId, taskId, runId, roundId, nodeId, attemptId) {
-      const session = await overrides.getAcpSession!(projectId, taskId, runId, roundId, nodeId, attemptId);
-      return { event: session!.events.find((event) => event.kind === 'toolCall') ?? null };
+    async getAcpToolDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId) {
+      if (projectId === REAL_PROJECT_ID) return history.api.getAcpToolDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId);
+      const session = (await overrides.getAcpSession!(projectId, taskId, runId, roundId, nodeId, attemptId, { pageSize: 100 }, undefined, outerNodeId, outerAttemptId))!;
+      sessionIdentity(session, query);
+      const event = session.events.find((event) => event.kind === 'toolCall' && event.id === query.eventId && (!query.toolCallId || event.toolCallId === query.toolCallId));
+      if (!event) missing({ eventId: query.eventId });
+      return { event };
     },
     async getAppBootstrap() { return { ...state.getAppBootstrap(), repoRoot: '/default', recentWorkspaces: ['/default'] }; },
     async saveDesktopPreferences(appearance, personalization, language) {
@@ -150,6 +185,8 @@ export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): R
     },
     async getSkillSyncStatus() { return demoAgentRegistry.agents.map((agent) => ({ agentType: agent.agentType, isSynced: true })); },
     async readFileResource(...args) {
+      if (args[0] === REAL_PROJECT_ID) return history.api.readFileResource(...args);
+      if (args[0] !== 'default') missing({ projectId: args[0] });
       if (args[0] === 'default' && args[1] === DEMO_REPORT_PATH) {
         const content = demoReportContent(state.getPreferences().language);
         return { kind: 'text', locator: { projectId: 'default', canonicalPath: DEMO_REPORT_PATH, relativePath: 'demo-report.md', scope: 'workspace' },
@@ -166,7 +203,7 @@ export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): R
       }
       return snapshot.kind === 'text' ? { ...snapshot, editable: false } : snapshot;
     },
-    workspaceFilePreviewUrl: (...args) => previewApi.workspaceFilePreviewUrl(...args),
+    workspaceFilePreviewUrl: (...args) => args[0].startsWith('demo-history/') ? history.api.workspaceFilePreviewUrl(...args) : previewApi.workspaceFilePreviewUrl(...args),
     async getSystemFonts() { return ['Arial', 'Georgia', 'Consolas', 'Courier New']; },
   };
   function skill(): SkillContentVm {
@@ -185,7 +222,12 @@ export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): R
       if (!method && subscriptions.has(key)) method = async () => () => {};
       if (!method && quietMethods.has(key)) method = async () => {};
       if (!method && readMethods.has(property)) {
-        method = async (...args: unknown[]) => structuredClone(await Reflect.apply(previewApi[key] as (...args: unknown[]) => unknown, previewApi, args));
+        method = async (...args: unknown[]) => {
+          if (args[0] === REAL_PROJECT_ID || (args[0] && typeof args[0] === 'object' && 'projectId' in args[0] && (args[0] as { projectId: string }).projectId === REAL_PROJECT_ID)) {
+            throw { code: 'demo.operation-unavailable', params: { operation: property } };
+          }
+          return structuredClone(await Reflect.apply(previewApi[key] as (...args: unknown[]) => unknown, previewApi, args));
+        };
       }
       if (!method) method = async () => { throw { code: 'demo.operation-unavailable', params: { operation: property } }; };
       methods.set(property, method);

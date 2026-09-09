@@ -5,7 +5,7 @@ describe('demo deep links', () => {
   it('restores a historical run and preserves the round parameter', () => {
     expect(demoPageFromHash('#demo-review?run=run-051&round=round-002&node=dev-test')).toMatchObject({ runId: 'run-051' });
     expect(demoLinkParameters('#demo-review?run=run-051&round=round-002&node=dev-test').get('round')).toBe('round-002');
-    expect(demoPageFromHash('#mock-task?run=run-051')).toMatchObject({ runId: 'run-052' });
+    expect(demoPageFromHash('#mock-task?run=run-051')).toMatchObject({ runId: 'run-051' });
   });
   it('restores the requested run mode on initial load', () => {
     expect(demoRunModeFromHash('#conversation-home?mode=workflow').mode).toBe('workflow');
@@ -23,6 +23,6 @@ describe('demo deep links', () => {
     expect(demoLinkParameters('#demo-review?node=dev-test').get('node')).toBe('dev-test');
     expect(demoLinkParameters('#contexts?tab=mcp').get('tab')).toBe('mcp');
     expect(demoLinkParameters('#run-mode-management?template=default-lightweight').get('template')).toBe('default-lightweight');
-    expect(demoPageFromHash('#unknown')).toMatchObject({ taskId: 'mock-task' });
+    expect(demoPageFromHash('#unknown')).toMatchObject({ taskId: 'unknown' });
   });
 });

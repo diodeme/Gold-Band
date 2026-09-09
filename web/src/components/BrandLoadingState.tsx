@@ -27,7 +27,7 @@ export function BrandLoadingState({
     >
       <div className="brand-loading-logo flex shrink-0 items-center justify-center">
         <img
-          src="/logo.svg"
+          src={`${import.meta.env.BASE_URL}logo.svg`}
           alt=""
           aria-hidden="true"
           className={cn('h-auto w-20 select-none object-contain', logoClassName)}

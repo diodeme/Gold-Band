@@ -112,7 +112,7 @@ export function AppTitleBar({
         {hasLeadingInset ? <div aria-hidden="true" className={cn('shrink-0', policy.leadingInsetClassName)} /> : null}
         <div data-tauri-drag-region data-titlebar-brand="true" aria-label={appName} className="flex h-full min-w-0 items-center gap-2 pr-3">
           <span data-tauri-drag-region className={APP_TITLE_BAR_LAYOUT.brandMarkClassName}>
-            <img src="/logo.svg" alt="" className="block size-full min-h-0 min-w-0 object-contain pointer-events-none" />
+            <img src={`${import.meta.env.BASE_URL}logo.svg`} alt="" className="block size-full min-h-0 min-w-0 object-contain pointer-events-none" />
           </span>
           <span data-tauri-drag-region className={APP_TITLE_BAR_LAYOUT.brandTitleClassName}>
             {appName}

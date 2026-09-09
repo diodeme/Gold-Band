@@ -13,6 +13,7 @@ interface ConversationRunHeaderProps {
   run: ConversationRunVm;
   taskTitle: string;
   onRerun: () => void;
+  readOnly?: boolean;
   onEditWorkflow: () => void;
   onViewWorkflow: () => void;
   onSessionSwitcherOpenChange: (open: boolean) => void;
@@ -28,6 +29,7 @@ export function ConversationRunHeader({
   run,
   taskTitle,
   onRerun,
+  readOnly = false,
   onEditWorkflow,
   onViewWorkflow,
   onSessionSwitcherOpenChange,
@@ -125,7 +127,7 @@ export function ConversationRunHeader({
 
           {!isDirect ? <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="size-5.5" aria-label={isRunning ? t('conversation.runtime.rerunConfirmAction') : t('conversation.runtime.rerun')} onClick={onRerun}>
+              <Button variant="ghost" size="icon" className="size-5.5" disabled={readOnly} aria-label={isRunning ? t('conversation.runtime.rerunConfirmAction') : t('conversation.runtime.rerun')} onClick={onRerun}>
                 <RotateCcw className="size-3.5" />
               </Button>
             </TooltipTrigger>

@@ -76,6 +76,7 @@ import { getAcpActivityDetail, getAcpSession, submitConversationPrompt } from '@
 import { detachConversationViewport } from './acp/detach-conversation-viewport';
 import {
   ACPChatDialog,
+  ACP_REPLAY_CATCH_UP_MAX_MS,
   createAcpEventWindowCacheKey,
   createAcpSessionCacheKey,
   loadedEventBufferLimit,
@@ -1490,6 +1491,43 @@ describe('ACP session re-entry reconciliation', () => {
     } finally {
       await unmount(root);
     }
+  });
+
+  it('clears return-to-latest on reentry when only child-advanced root clocks were evicted', async () => {
+    const canonical = session([event('root-answer', 118, 'textDelta', 'Latest durable root answer')]);
+    vi.mocked(getAcpSession).mockResolvedValue(canonical);
+    applyConversationEventToBranchSnapshots({
+      ...update(event('child-thought', 388, 'thoughtDelta', 'Child-only content')),
+      branchId: 'agent-child',
+    });
+    for (let index = 0; index <= CONVERSATION_EVENT_REPLAY_LIMITS.eventsPerBranch; index += 1) {
+      applyConversationEventToBranchSnapshots({
+        ...update(event(`acp-timing-388-${index}`, 388, 'timingUpdate', null, {
+          startedSeq: undefined, endedSeq: undefined,
+          timing: { sessionElapsedSeconds: index, revision: 389 },
+        })),
+        timelineRevision: null,
+      });
+    }
+    const { container, root } = await renderDialog(canonical);
+    try {
+      // Let the production bounded recovery attempt finish before observing its result.
+      const recoverySettleMs = ACP_REPLAY_CATCH_UP_MAX_MS + 250;
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, recoverySettleMs)); });
+      expect(container.textContent).toContain('Latest durable root answer');
+      expect(container.textContent).not.toContain('Child-only content');
+      const button = container.querySelector<HTMLButtonElement>('[data-acp-return-to-latest="true"]');
+      // A correct reentry may already have removed the return action.
+      if (button) {
+        const requestsBeforeClick = vi.mocked(getAcpSession).mock.calls.length;
+        await act(async () => { button.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, recoverySettleMs)); });
+        expect(vi.mocked(getAcpSession).mock.calls.length).toBeGreaterThan(requestsBeforeClick);
+      }
+      expect(container.querySelector<HTMLButtonElement>('[data-acp-return-to-latest="true"]')?.disabled ?? false).toBe(false);
+      expect(getAcpSession).toHaveBeenCalled();
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+    } finally { await unmount(root); }
   });
 
   it('automatically rereads the canonical head until a sequence-only replay loss is covered', async () => {

@@ -1,5 +1,15 @@
 # AI-DYNAMIC 节点 Prompt 优化方案
 
+## 2026-09-08 Artifact Finalize 停止恢复修复
+
+- 根因属于正确的两阶段设计下恢复实现不完整：原 provider 用 durable `finalizing` 同时决定结果收集和恢复 prompt，导致用户停止后继续被替换为 finalize；普通 resume 又不收集 artifact，缺失输出落入 proposal repair 的 3 次额度。
+- 复用现有 checkpoint、prompt generation 和 Manual recovery，不引入新状态机、持久字段或外部组件。checkpoint 只控制是否收集结果，用户继续仍发送已有 resume / 用户消息 prompt；自动提醒不携带重复的 Resume 控制意图。
+- 首次业务正常结束提供协议；之后先检查当前回复候选，无候选最多追加 5 次 finalize 提醒，耗尽后运行异常暂停并允许显式继续。首次协议不计数，显式继续重新给予 5 次提醒；停止、交互等待和 provider 错误立即返回，不算 artifact repair。
+- 有候选仍走原有解析、schema / proposal 校验、repair 与业务判定；没有 source locator 的错误 JSON 保留候选文本，避免被误当无输出。人工 check、无 output、InlineControl 不进入新循环。停止恢复与 repair 保持独立，不新增恢复 repair 的专用 prompt。
+- 最小失败证据：`resumed_work_collects_artifact_after_protocol_was_provided` 在旧实现无法收集 resume 输出；后续驱动测试分别复现错误 JSON 被转换为 RuntimeFinalize、自动提醒重复携带 Resume。修复后同一批测试转绿，覆盖首次协议加 5 次提醒、暂停再继续、取消 repair 后普通恢复、停止及非成功状态、候选输出立即返回和 prompt identity 去重。
+- 性能及过度设计评审：仅当前 attempt 的 checkpoint / worker-ref 小文件常数次读写，结果提取保持既有最多 3 条消息窗口；每次自动循环至多 5 次追加请求，无历史扫描、旧 artifact 回读、新增缓存、并发任务或长时间持锁。通过私有可注入 runner 固定请求次数及边界，无需引入外部模拟服务或基准测试。
+- 验收：完整 Rust 单元测试 1152 通过、1 忽略；AI-DYNAMIC 集成测试 34 通过、control engine 10 通过、provider prompt bundle 31 通过。最后补充旧 artifact 隔离和无 output / manual check 边界后，provider 49 项及 node executor 11 项复测通过；`git diff --check` 通过。保留既有 orchestrator dead-code 警告；未连接真实 Agent、未修改用户运行记录。已有状态生命周期规则覆盖本次根因，不重复新增经验规则。
+
 ## 1. 背景与目标
 
 当前普通 workflow 节点的 prompt 已经拆分为稳定 system prompt、每次 invocation 刷新的 user hidden context、以及可见 user prompt。这个拆分解决了 ACP `session/load` / continue 场景下 system prompt 不能可靠刷新动态事实的问题。
@@ -581,7 +591,7 @@ pathRoot=A
 
 - `node_task.md` 不追加固定尾巴；当前任务与 continue 来源的区别由 hidden context 和 system prompt 表达。
 - `acceptance.md` 明确最终必须输出 `dynamic-node-completion`。
-- 通用 `artifact_finalize.md` 在输出控制 artifact 前允许一次有界收尾：仅当当前任务要求的报告或其他附件尚未落盘时写入当前 attempt 的 attachments；无需或已经完成时跳过，不得继续业务任务或修改 workspace。
+- 通用 `artifact_finalize.md` 在输出控制 artifact 前允许补写当前任务要求且尚未落盘的 attachments；无需或已经完成时跳过。2026-09-08 更新：协议不强制收尾，尚未结束时可在既有任务范围、工作区和工具权限内继续，决定提交时不因协议提示新增业务工作。
 - acceptance pass/fail 映射：
   - pass：`next.type="end"`。
   - fail：`next.type="single"` 或 `fanout` 创建修复节点。

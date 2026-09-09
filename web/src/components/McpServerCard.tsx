@@ -3,6 +3,7 @@ import { Info, Loader2, Pencil, Stethoscope, Trash2, Wrench } from 'lucide-react
 import { McpAgentOverflow } from '@/components/McpAgentOverflow';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { Card } from '@/components/ui/card';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -65,6 +66,7 @@ export function McpServerCard({
   onDiagnoseAgent,
   diagnosingAgentType,
 }: McpServerCardProps) {
+  const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   const transportLabel = TRANSPORT_LABEL[server.transport] ?? server.transport;
   return (
@@ -115,6 +117,7 @@ export function McpServerCard({
             'relative h-5 w-9 shrink-0 rounded-full border transition-colors',
             server.enabled ? 'border-primary bg-primary' : 'border-border/70 bg-muted-foreground/20',
           )}
+          disabled={readOnly}
           onClick={() => onToggle(!server.enabled)}
         >
           <span className={cn('block size-4 rounded-full bg-background shadow-sm transition-transform', server.enabled && 'translate-x-4')} />
@@ -129,7 +132,7 @@ export function McpServerCard({
               transport={server.transport}
               transportLabel={transportLabel}
               diagnosingAgentType={diagnosingAgentType}
-              onDiagnoseAgent={onDiagnoseAgent}
+              onDiagnoseAgent={readOnly ? undefined : onDiagnoseAgent}
             />
           ) : agentCompatLoading ? (
             <div className="flex items-center gap-1.5 px-1 text-ui-caption text-muted-foreground">
@@ -142,7 +145,7 @@ export function McpServerCard({
           <TooltipProvider delayDuration={300}>
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button size="icon" variant="ghost" className="size-8" disabled={isChecking} onClick={onHealthCheck}>
+                <Button size="icon" variant="ghost" className="size-8" disabled={readOnly || isChecking} onClick={onHealthCheck}>
                   {isChecking ? <Loader2 className="size-3.5 animate-spin" /> : <Stethoscope className="size-3.5" />}
                 </Button>
               </TooltipTrigger>
@@ -163,7 +166,7 @@ export function McpServerCard({
             <TooltipProvider delayDuration={300}>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button size="icon" variant="ghost" className="size-8" onClick={onEdit}>
+                  <Button size="icon" variant="ghost" className="size-8" disabled={readOnly} onClick={onEdit}>
                     <Pencil className="size-3.5" />
                   </Button>
                 </TooltipTrigger>
@@ -175,7 +178,7 @@ export function McpServerCard({
             <TooltipProvider delayDuration={300}>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button size="icon" variant="ghost" className="size-8 text-muted-foreground hover:text-destructive" onClick={onDelete}>
+                  <Button size="icon" variant="ghost" className="size-8 text-muted-foreground hover:text-destructive" disabled={readOnly} onClick={onDelete}>
                     <Trash2 className="size-3.5" />
                   </Button>
                 </TooltipTrigger>

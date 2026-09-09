@@ -13,13 +13,13 @@ describe('context management loading boundaries', () => {
     expect(source).toContain('if (!needsSkillContext) return;');
     expect(source).toContain('getConversationWorkspaces().then(setWorkspaces)');
     expect(source).not.toContain('getAgentRegistry().then(setAgentRegistry)');
-    expect(source).toContain('useEffect(() => { void refresh(); }, []);');
+    expect(source).toContain('useEffect(() => { void refresh(); }, [readOnly ? t : null]);');
     expect(source).toContain("useEffect(() => { if (activeTab === 'mcp'");
     expect(source).toContain("if (activeTab !== 'skills') return;");
   });
 
   it('reuses the app-level persisted agent registry for MCP compatibility', () => {
-    expect(source).toContain('export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: ContextManagementPageProps)');
+    expect(source).toContain("export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, initialTab = 'profiles' }: ContextManagementPageProps)");
     expect(source).not.toContain('useState<AgentRegistryVm | null>(null)');
     expect(appSource).toContain('<ContextManagementPage agentRegistry={agentRegistry} onAgentRegistryChange={setAgentRegistry} />');
     expect(appSource).toContain("listen('gold-band://agent-registry-updated'");

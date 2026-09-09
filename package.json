@@ -5,6 +5,9 @@
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
+    "demo:dev": "vite --config marketing/demo/vite.config.ts --host 127.0.0.1 --port 1450",
+    "demo:build": "tsc -p marketing/demo/tsconfig.json && vite build --config marketing/demo/vite.config.ts",
+    "demo:preview": "vite preview --config marketing/demo/vite.config.ts --host 127.0.0.1 --port 1451",
     "site:dev": "vite --config marketing/site/vite.config.ts --host 127.0.0.1 --port 1440",
     "site:build": "tsc -p marketing/site/tsconfig.json && vite build --config marketing/site/vite.config.ts",
     "site:preview": "vite preview --config marketing/site/vite.config.ts --host 127.0.0.1 --port 1441",

@@ -36,7 +36,15 @@ Claude ACP 默认通过 `npx -y @agentclientprotocol/claude-agent-acp@<catalog-v
 
 正式 build 继续在线刷新 Registry，再应用本地 pin，生成 Catalog 并编译进应用。原始 `acp-registry.snapshot.json` 不应用覆盖，保留上游事实；`agent-catalog.json` 的版本字段与 npx 包参数同步应用覆盖。离线生成也读取同一策略，基于本地 snapshot 应用相同规则。在线生成额外检查固定 npm 版本是否存在，失败则终止；离线生成仅校验配置与包规格，不访问网络。
 
-版本 pin 仅适用于实际使用 Registry npx 分发的模板；未知 ID、非法版本、错误策略字段或 PATH 可执行文件模板的 pin 均报错。解析复用 `npm-package-arg`，不自行拆解 scoped 包名。用户已经保存的 `ManagedAgentConfig` 不随 Catalog 更新，需在 Agent 管理中自行修改参数。
+版本 pin 仅适用于实际使用 Registry npx 分发的模板；未知 ID、非法版本、错误策略字段或 PATH 可执行文件模板的 pin 均报错。解析复用 `npm-package-arg`，不自行拆解 scoped 包名。
+
+### Agent 启动配置归属
+
+内置 Agent 以已有稳定 Catalog ID 识别，命令与参数由当前客户端内嵌 Catalog 唯一维护，管理界面只读；升级客户端后，已有实例也使用新 Catalog 的启动配置，包括构建期版本 pin。自定义 Agent 的命令与参数继续由用户维护，不受 Catalog 更新影响。
+
+Settings schema 11 不再持久化内置 Agent 的 `adapter.command` / `adapter.args`，读取时补入当前 Catalog，生成可执行配置；旧设置首次加载时通过既有原子保存路径去除这两个字段。此前用户修改过的内置启动配置也被替换，不增加兼容开关。名称、图标、环境变量、目录和既有能力设置继续保留；自定义 Agent 设置原样保留。
+
+保存接口、RuntimeConfig 合并和 Provider 构造统一复用 Catalog 启动配置投影，不能通过直接调用接口覆盖内置命令。复用现有 ID、Catalog 和 settings 生命周期，不新增身份、缓存或后台更新任务；仅在小型 Agent 配置读写与启动时进行内存查找，无新增网络或历史扫描。
 
 策略仅由构建脚本消费，每次生成读取一次，对精选十一项做线性处理；没有新增运行时 I/O、状态、缓存或队列。
 

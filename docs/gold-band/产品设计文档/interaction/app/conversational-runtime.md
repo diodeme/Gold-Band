@@ -19,6 +19,7 @@
 
 - 后端在唯一的 ACP session-update 归一化边界将 provider 信号投影为 `contextCompaction` canonical lifecycle，前端和 runtime 不按 Agent 类型、工具标题或自然语言关键词自行判断。ACP 正式 schema 尚未提供 compaction update；过渡期优先识别工具事件上的结构化 `_meta.contextCompaction`，并以同一 `toolCallId` 作为该 provider 生命周期的稳定身份；Claude-compatible adapter 仅保留对独立且全文精确等于 `Compacting...` / `Compacting completed.` 的控制消息兼容。普通正文提及这些文字、标题恰为 `Compact conversation` 但没有结构化 metadata 的工具调用均不得误判。未来 ACP `compaction_update` 进入正式 schema 后，由同一归一化边界优先消费标准事件并删除 provider 兼容入口，不改变内部 lifecycle 或前端组件。
 - 消息流使用无头像的轻量结构化行，保留 assistant 结构行的横向位置；不使用大卡片、嵌套面板或粗边框。
+- 压缩开始通知必须幂等：无操作 ID 的控制消息在当前压缩结束前复用同一 canonical item；结构化事件按 `toolCallId` 关联。重复开始保留首次 ID、开始时间、压缩前占用、reset 观察和待确认用量。不同操作 ID 的开始先将旧活动压缩收敛为 interrupted（reason=`superseded`），再创建新条目；迟到的旧操作完成不得结束新操作，已终结的相同 ID 不得因开始通知回退为 running。已完成但尚待用量确认的条目仍允许原位补充有效用量，不重置结束时间。无 ID 协议不能区分重复通知与上游内部重启，以开始至完成/中断作为一个周期，不通过时间间隔猜测新操作。
 - running 状态展示“正在压缩上下文”、压缩前占用、已耗时和不定进度动画；动画必须遵守 `prefers-reduced-motion`。
 - 运行超过 120 秒后展示“耗时较长，仍在等待 Agent”，但仍不得伪造失败或百分比。
 - completed 状态原位更新为“上下文压缩完成”和总耗时。压缩条目可以继续只展示压缩前占用与窗口上限；会话底部的“上下文窗口”在 runtime 观察到 reset 后首个有效正数时切换为 compact 后 ACP 当前上下文占用。provider 若在 completed 信号前上报低于压缩前确认值的正数，或先上报 `used=0` reset 再上报正数，runtime 只在 active compaction 内暂存最新候选，completed 到达后才原子确认、写入同一个 canonical item，并复用既有 canonical `usageUpdate` 通道发布确认值；客户端 live reducer 将该隐藏事件投影到当前 session usage，但不把它加入消息流。不得要求用户再发送消息或增加前端轮询才能刷新。interrupted 时丢弃候选。reset 过程中的 `used=0` 不进入 UI，尚未获得有效值时保持上一次确认值或展示 `--`。
@@ -484,6 +485,10 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - runtime 异常、agent/provider 异常与 workflow DSL 无效必须分开提示：只有 `workflowValid=false` 或明确的 workflow validation error 才展示“修改/修复工作流”入口；`runtime-abnormal` 表示异常但可继续，恢复输入框并保留异常提示；provider/model/catalog/workspace 等 manual 可恢复异常也归入 `runtime-abnormal`；`error-blocked`、session failure、session killed 等不可继续运行期异常只提示查看错误原因，不默认引导用户修改工作流。
 - 当前选中 session 已有 `diagnostics.lastError` 时，错误面板文案应直接拼接具体错误原因，避免用户再额外寻找日志入口。
 - 新 UI 中，`process-interrupted` 都恢复普通输入框，但只有 `runMode=workflow/auto` 且后端 lifecycle 返回 `continueKind=action` 时展示“继续工作流”。该动作位于 composer 发送按钮旁；前端不得在 stop 响应后自行合成继续资格。发送文本只产生 `UserMessage + NonRuntimeControlled`，不调用 `run_continue()`；点击按钮才产生隐藏 `RuntimeResume + RuntimeControlled`，且不携带用户可见文本。continue command 返回的已持久化 active lifecycle 必须立即用于当前 leaf、composer 以及左侧 sidebar 中同一 task/run 的 `latestRun` 和 `runs[]` 摘要，使按钮从“正在继续”直接切换为“停止”、两级侧栏圆点同步变为 Running；不能等到下一节点启动后才校准，也不能把仅 ACP active 的 NonRuntime 普通追问误投影为 workflow run Running。本地 pending 只在权威 lifecycle 离开 continuable 后释放，不能因父级刷新稍晚而短暂回退成“继续工作流”。Direct 停止后只保留普通发送，即使首个 session 尚未完整建立也不进入工作流重跑提示。AI-DYNAMIC 的继续动作必须携带精确 leaf locator，不能通过外层 parent continue 批量恢复 paused worker。
+
+### 边栏 Run 状态投影边界（2026-09-09）
+
+上述 continue snapshot 同步边栏的要求仅表示：已持久化的 Runtime active 可以将非终态 Run 摘要投影为 Running，并清空结果、关闭 resumable；不允许复制 attempt 的 status/outcome/resumable 作为整体 Run 事实。单个节点成功、失败、暂停或普通 ACP 追问不能结算整体状态；整体暂停和终态只由 Run 摘要及 Run 状态事件收敛，整体终态不被迟到 active snapshot 回退。会话行和 Run 行先判断 Running（蓝色），再判断 Paused（黄色），最后按整体 outcome 展示成功绿色或失败红色。并行聚合仍由既有运行时负责，边栏不读取节点历史另建聚合状态。
 
 ## 会话信息栏（ACPSessionHeader）
 

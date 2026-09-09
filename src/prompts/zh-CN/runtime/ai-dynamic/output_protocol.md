@@ -30,6 +30,8 @@
 - 当前节点若为 group acceptance，合法输出被接受后该 group 关闭：`single` 接回父作用域的原业务分支；`fanout` 在父作用域创建新 group；只有 `end` 才结束该分支。有后继时父 group 继续等待，修复和复验必须显式安排，旧 group 不自动重开。
 - `next.type="fanout"` 时，必须同时提供 `groupId / nodes / merge / acceptance`，且 `nodes` 至少包含两个分支；只有一个后继节点时使用 `next.type="single"`。
 - `next.type="fanout"` 的每个 child 会自动获得隔离 worktree；merge 与 acceptance 自动回到该 group 的父 workspace。
+- `fanout` 的子 worktree 只继承同一个已提交的 commit，不继承未提交内容；Runtime 不会自动 checkpoint。若本次任务存在后续分支需要、但尚未提交的业务改动，请审阅后按具体路径提交，可使用 Conventional Commits；没有需要提交的改动则不进行 Git 操作。
+- 工作区干净不是 fanout 门禁。Runtime 首次检测到脏文件时只提醒一次，之后重新输出 artifact 即可，不要求产生新 commit。不要为此清理工作区、stash 无关内容、移动其他 worktree、盲目 `git add -A` 或改变忽略规则；不属于本次交付的内容保持原样。
 - `profile` 只允许在 worker 节点中使用，选填；如果填写，必须使用 schema enum 或当前 prompt 中 `profileId=...` 后面的 ID，不要填写 displayName。
 - `merge` / `acceptance` 不要输出 `profile`；它们统一使用 runtime 内置的 AI-DYNAMIC merge / acceptance prompt。
 {% if agent_strategy_mode == "dynamic" %}- `provider` 如果填写，必须是 schema enum 或当前 prompt 中列出的可用 provider 之一。

@@ -37,6 +37,9 @@ enum DynamicScenario {
     SingleWorktreeRepair,
     FanoutRepair,
     MultiValidationRepair,
+    DirtyWorkspaceRepair,
+    DirtyWorkspaceNoCommit,
+    StaleFanoutRepair,
     MergeAcceptanceProfileRepair,
     ParseRepair,
     MissingArtifactRepair,
@@ -416,7 +419,31 @@ impl DynamicProvider {
             }),
             stream_path: None,
             runtime_error: None,
-            runtime_control_output: None,
+            runtime_control_output: if matches!(self.scenario, DynamicScenario::StaleFanoutRepair)
+                && req.runtime_context.node_id == "bootstrap"
+                && self
+                    .invocations
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|invocation| invocation.runtime_context.node_id == "bootstrap")
+                    .count()
+                    == 2
+            {
+                Some(gold_band::provider::RuntimeControlOutput {
+                    artifact_name: "dynamic-node-completion".to_string(),
+                    source: gold_band::acp::client::AcpPromptMessageSource {
+                        branch_id: "root".to_string(),
+                        item_id: "invalid-repair".to_string(),
+                    },
+                    span: gold_band::artifacts::json_artifact_display_span(
+                        "{\"kind\":\"dynamic-node-completion\"",
+                    )
+                    .unwrap(),
+                })
+            } else {
+                None
+            },
         })
     }
 
@@ -539,6 +566,74 @@ impl DynamicProvider {
                     Some(invalid_profile_and_overflow_completion())
                 }
             }
+            (DynamicScenario::DirtyWorkspaceRepair, "bootstrap") => {
+                if is_runtime_repair {
+                    fixture_git(&req.workspace_dir, &["add", "foundation.txt"]);
+                    fixture_git(
+                        &req.workspace_dir,
+                        &[
+                            "-c",
+                            "user.name=Test",
+                            "-c",
+                            "user.email=test@example.com",
+                            "commit",
+                            "-m",
+                            "feat: prepare foundation",
+                        ],
+                    );
+                    Some(fanout_completion(profile))
+                } else {
+                    std::fs::write(
+                        req.workspace_dir.join("foundation.txt"),
+                        "shared foundation\n",
+                    )
+                    .unwrap();
+                    std::fs::write(
+                        req.workspace_dir.join("local-reference.txt"),
+                        "user reference\n",
+                    )
+                    .unwrap();
+                    Some(invalid_profile_and_overflow_completion())
+                }
+            }
+            (DynamicScenario::DirtyWorkspaceRepair, "branch-a" | "branch-b") => {
+                assert_eq!(
+                    std::fs::read_to_string(req.workspace_dir.join("foundation.txt"))
+                        .unwrap()
+                        .trim(),
+                    "shared foundation"
+                );
+                assert!(!req.workspace_dir.join("local-reference.txt").exists());
+                Some(end_completion("branch inherited committed foundation"))
+            }
+            (
+                DynamicScenario::DirtyWorkspaceNoCommit | DynamicScenario::StaleFanoutRepair,
+                "bootstrap",
+            ) => {
+                let count = self
+                    .invocations
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|invocation| invocation.runtime_context.node_id == "bootstrap")
+                    .count();
+                match count {
+                    1 => {
+                        std::fs::write(
+                            req.workspace_dir.join("local-reference.txt"),
+                            "user reference\n",
+                        )
+                        .unwrap();
+                        Some(fanout_completion(profile))
+                    }
+                    2 if matches!(self.scenario, DynamicScenario::StaleFanoutRepair) => None,
+                    2 => Some(invalid_profile_and_overflow_completion()),
+                    _ if matches!(self.scenario, DynamicScenario::StaleFanoutRepair) => {
+                        Some(end_completion("fresh completion after invalid repair"))
+                    }
+                    _ => Some(fanout_completion(profile)),
+                }
+            }
             (DynamicScenario::MergeAcceptanceProfileRepair, "bootstrap") => {
                 if is_runtime_repair {
                     Some(fanout_completion(profile))
@@ -565,6 +660,9 @@ impl DynamicProvider {
             }
             (DynamicScenario::MultiValidationRepair, "branch-a" | "branch-b") => {
                 Some(end_completion("branch done"))
+            }
+            (DynamicScenario::DirtyWorkspaceNoCommit, "branch-a" | "branch-b") => {
+                Some(end_completion("branch uses existing baseline"))
             }
             (DynamicScenario::MergeAcceptanceProfileRepair, "branch-a" | "branch-b") => {
                 Some(end_completion("branch done"))
@@ -1366,6 +1464,11 @@ fn init_git_repo(repo_root: &camino::Utf8Path) {
         .output()
         .unwrap();
     assert!(init.status.success());
+    std::fs::write(
+        repo_root.join(".git/info/exclude"),
+        "gold-band-home/\n.gold-band/\n",
+    )
+    .unwrap();
     std::fs::write(repo_root.join("README.md"), "fixture").unwrap();
     let add = gold_band::process::background_command("git")
         .arg("-C")
@@ -1389,6 +1492,188 @@ fn init_git_repo(repo_root: &camino::Utf8Path) {
         .output()
         .unwrap();
     assert!(commit.status.success());
+}
+
+fn fixture_git(repo: &camino::Utf8Path, args: &[&str]) -> String {
+    let output = gold_band::process::background_command("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+#[test]
+fn ai_dynamic_dirty_workspace_reminder_commits_only_delivery_and_forks_one_baseline() {
+    let temp = tempdir().unwrap();
+    let repo = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let provider = DynamicProvider::new(DynamicScenario::DirtyWorkspaceRepair);
+    let app = App::with_provider(repo.clone(), Box::new(provider.clone()));
+    let task = "task-dirty";
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task);
+    write_dynamic_workflow(&app, task, &profile, "[]");
+    let run = app.run_start(task, None).unwrap();
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+    let graph = dynamic_graph(&app, task);
+    let rejected = graph
+        .proposals
+        .iter()
+        .find(|proposal| proposal.validation_status == DynamicProposalValidationStatus::Rejected)
+        .unwrap();
+    for code in [
+        "dynamic.fanout.workspace-dirty",
+        "dynamic.fanout.max-fanout-exceeded",
+        "dynamic.profile.unknown",
+    ] {
+        assert!(
+            rejected
+                .validation_errors
+                .iter()
+                .any(|error| error.code == code),
+            "missing {code}"
+        );
+    }
+    let invocations = provider.invocations.lock().unwrap();
+    let repairs = invocations
+        .iter()
+        .filter(|req| req.user_prompt_render_mode == UserPromptRenderMode::RuntimeRepair)
+        .collect::<Vec<_>>();
+    assert_eq!(repairs.len(), 1);
+    let prompt = repairs[0].resume_prompt.as_ref().unwrap();
+    for text in [
+        "dynamic.fanout.workspace-dirty",
+        "maxFanout",
+        "missing-profile",
+        "Conventional Commits",
+        "不要求工作区干净",
+    ] {
+        assert!(prompt.contains(text), "missing {text}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(repo.join("local-reference.txt")).unwrap(),
+        "user reference\n"
+    );
+    assert!(fixture_git(&repo, &["stash", "list"]).is_empty());
+    let heads = graph
+        .workspaces
+        .iter()
+        .filter(|workspace| workspace.parent_workspace_id.as_deref() == Some("workspace-main"))
+        .map(|workspace| workspace.fork_commit.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(heads.len(), 1);
+    assert_eq!(
+        fixture_git(
+            &repo,
+            &[
+                "show",
+                &format!("{}:foundation.txt", heads.iter().next().unwrap())
+            ]
+        ),
+        "shared foundation"
+    );
+}
+
+#[test]
+fn ai_dynamic_dirty_workspace_no_commit_is_allowed_but_protocol_still_repairs() {
+    let temp = tempdir().unwrap();
+    let repo = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let provider = DynamicProvider::new(DynamicScenario::DirtyWorkspaceNoCommit);
+    let app = App::with_provider(repo.clone(), Box::new(provider.clone()));
+    let task = "task-no-commit";
+    write_task_file(&app, task);
+    write_dynamic_workflow(&app, task, &first_profile_id(&app), "[]");
+    let baseline = fixture_git(&repo, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        app.run_start(task, None).unwrap().outcome,
+        Some(RunOutcome::Success)
+    );
+    let graph = dynamic_graph(&app, task);
+    assert_eq!(
+        graph
+            .proposals
+            .iter()
+            .filter(|proposal| proposal
+                .validation_errors
+                .iter()
+                .any(|error| error.code == "dynamic.fanout.workspace-dirty"))
+            .count(),
+        1
+    );
+    assert!(graph.proposals.iter().any(|proposal| {
+        proposal
+            .validation_errors
+            .iter()
+            .any(|error| error.code == "dynamic.profile.unknown")
+    }));
+    for workspace in graph
+        .workspaces
+        .iter()
+        .filter(|workspace| workspace.parent_workspace_id.is_some())
+    {
+        assert_eq!(workspace.fork_commit, baseline);
+    }
+    let invocations = provider.invocations.lock().unwrap();
+    let repairs = invocations
+        .iter()
+        .filter(|req| req.user_prompt_render_mode == UserPromptRenderMode::RuntimeRepair)
+        .collect::<Vec<_>>();
+    assert_eq!(repairs.len(), 2);
+    assert!(
+        repairs[0]
+            .resume_prompt
+            .as_ref()
+            .unwrap()
+            .contains("从HEAD开始创建worktree")
+    );
+    assert!(
+        !repairs[1]
+            .resume_prompt
+            .as_ref()
+            .unwrap()
+            .contains("dynamic.fanout.workspace-dirty")
+    );
+    assert_eq!(fixture_git(&repo, &["rev-parse", "HEAD"]), baseline);
+    assert!(repo.join("local-reference.txt").exists());
+    assert!(fixture_git(&repo, &["stash", "list"]).is_empty());
+}
+
+#[test]
+fn ai_dynamic_invalid_repair_cannot_accept_previous_fanout_artifact() {
+    let temp = tempdir().unwrap();
+    let repo = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let provider = DynamicProvider::new(DynamicScenario::StaleFanoutRepair);
+    let app = App::with_provider(repo, Box::new(provider.clone()));
+    let task = "task-fresh-artifact";
+    write_task_file(&app, task);
+    write_dynamic_workflow(&app, task, &first_profile_id(&app), "[]");
+    assert_eq!(
+        app.run_start(task, None).unwrap().outcome,
+        Some(RunOutcome::Success)
+    );
+    let graph = dynamic_graph(&app, task);
+    assert!(graph.groups.is_empty());
+    let accepted = graph
+        .proposals
+        .iter()
+        .find(|proposal| proposal.validation_status == DynamicProposalValidationStatus::Accepted)
+        .unwrap();
+    assert_eq!(
+        accepted.parsed["summary"],
+        "fresh completion after invalid repair"
+    );
+    let invocations = provider.invocations.lock().unwrap();
+    assert_eq!(invocations.len(), 3);
+    assert_eq!(
+        invocations[2].user_prompt_render_mode,
+        UserPromptRenderMode::RuntimeRepair
+    );
 }
 
 #[test]

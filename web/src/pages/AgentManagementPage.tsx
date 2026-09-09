@@ -67,6 +67,7 @@ export const agentEditorSheetPresentation = {
   modal: false,
   showOverlay: false,
 } as const;
+const catalogLaunchFieldReadOnlyClassName = 'cursor-text select-text border-border/50 bg-muted/50 text-muted-foreground shadow-none focus:border-border/50 focus:ring-0 focus-visible:border-border/50 focus-visible:ring-0';
 
 const defaultForm = (): ManagedAgentInput => ({
   displayName: '',
@@ -440,11 +441,16 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
               <TextInput value={editor.form.displayName} onChange={(event: ChangeEvent<HTMLInputElement>) => setEditor((current) => ({ ...current, form: { ...current.form, displayName: event.target.value } }))} />
             </Field>
             <Field label={t('agentManagement.command')}>
-              <TextInput readOnly={editor.context.source === 'catalog'} value={editor.form.command} onChange={(event: ChangeEvent<HTMLInputElement>) => setEditor((current) => ({ ...current, form: { ...current.form, command: event.target.value } }))} />
+              <TextInput
+                className={editor.context.source === 'catalog' ? catalogLaunchFieldReadOnlyClassName : undefined}
+                readOnly={editor.context.source === 'catalog'}
+                value={editor.form.command}
+                onChange={(event: ChangeEvent<HTMLInputElement>) => setEditor((current) => ({ ...current, form: { ...current.form, command: event.target.value } }))}
+              />
             </Field>
             <Field label={t('agentManagement.args')} description={editor.context.source === 'custom' ? t('agentManagement.argsDescription') : undefined}>
               <ConfigTextarea
-                className="min-h-24"
+                className={cn('min-h-24', editor.context.source === 'catalog' && catalogLaunchFieldReadOnlyClassName)}
                 value={editor.argsText}
                 readOnly={editor.context.source === 'catalog'}
                 placeholder={'-y\n@agentclientprotocol/claude-agent-acp@latest'}

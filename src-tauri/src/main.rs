@@ -329,7 +329,10 @@ fn run() -> anyhow::Result<()> {
                 loop {
                     let state = handle.state::<DesktopState>();
                     debug!("periodic agent maintenance cycle started");
-                    let diagnostics_refreshed = match state.refresh_all_agent_diagnostics() {
+                    let diagnostics_refreshed = match state.refresh_all_agent_diagnostics(|| {
+                        commands::emit_agent_registry_updated(&handle);
+                        commands::emit_agent_commands_updated(&handle, None);
+                    }) {
                         Ok(()) => true,
                         Err(error) => {
                             warn!(%error, "periodic agent diagnostic refresh failed");

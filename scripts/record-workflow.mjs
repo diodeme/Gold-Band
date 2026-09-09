@@ -5,10 +5,12 @@ import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { workflowSourceStoryboard, WORKFLOW_CAMERA_TRANSITION_MS } from './workflow-source-storyboard.mjs';
 import { bundleRecording } from './site-recording-bundle.mjs';
-import { SceneAssetSchema, SceneManifestSchema } from '../marketing/site/replay-model.ts';
+import { SceneAssetSchema } from '../marketing/site/replay-model.ts';
+import { publishSceneManifest } from './site-recording-manifest.mjs';
 import { measureWorkflowCamera } from './workflow-camera.mjs';
 import { beforeSourceStoryboard, measureBeforeCamera, BEFORE_STEPS, BEFORE_CAMERA_TRANSITION_MS } from './before-source-storyboard.mjs';
 import { afterSourceStoryboard, measureAfterCamera, AFTER_STEPS, AFTER_CAMERA_TRANSITION_MS } from './after-source-storyboard.mjs';
+import { personalizeSourceStoryboard, measurePersonalizeCamera, PERSONALIZE_STEPS, PERSONALIZE_CAMERA_TRANSITION_MS } from './personalize-source-storyboard.mjs';
 
 assert(process.env.RECORDING_ATTACHMENTS && process.env.RECORDING_OUTPUT && process.env.RECORDING_SOURCE_DIST,
   'RECORDING_ATTACHMENTS, RECORDING_OUTPUT and RECORDING_SOURCE_DIST are required');
@@ -16,11 +18,15 @@ const attachments = resolve(process.env.RECORDING_ATTACHMENTS);
 const output = resolve(process.env.RECORDING_OUTPUT);
 const before = process.env.RECORDING_SCENE === 'before';
 const after = process.env.RECORDING_SCENE === 'after';
-const scene = before ? 'before' : after ? 'after' : 'during';
-const publicRoot = process.env.RECORDING_PUBLIC_PATH || (before ? '/media/before/' : after ? '/media/after/' : '/media/workflow/');
+const personalize = process.env.RECORDING_SCENE === 'personalize';
+const scene = before ? 'before' : after ? 'after' : personalize ? 'personalize' : 'during';
+const publicRoot = process.env.RECORDING_PUBLIC_PATH || `/media/${scene === 'during' ? 'workflow' : scene}/`;
 const origin = process.env.RECORDING_URL || 'http://127.0.0.1:1443/';
 await mkdir(attachments, { recursive: true });
-const session = before ? 'before-paired-035' : after ? 'after-paired-035' : 'workflow-paired-035';
+const session = `${scene}-paired-035`;
+const measure = before ? measureBeforeCamera : after ? measureAfterCamera : measurePersonalizeCamera;
+const storyboard = before ? beforeSourceStoryboard : after ? afterSourceStoryboard : personalize ? personalizeSourceStoryboard : workflowSourceStoryboard;
+const transitionMs = before ? BEFORE_CAMERA_TRANSITION_MS : after ? AFTER_CAMERA_TRANSITION_MS : personalize ? PERSONALIZE_CAMERA_TRANSITION_MS : WORKFLOW_CAMERA_TRANSITION_MS;
 function browser(...args) {
   const path = resolve(attachments, 'browser-response.json');
   const fd = openSync(path, 'w');
@@ -32,8 +38,6 @@ function browser(...args) {
   return response.data;
 }
 const evaluate = code => browser('eval', '-b', Buffer.from(code).toString('base64')).result;
-const assets = [];
-const mobileAssets = [];
 try {
   for (const format of (process.env.RECORDING_FORMATS || 'desktop,mobile').split(','))
   for (const language of (process.env.SITE_LANGUAGES || 'zh,en').split(',')) for (const theme of (process.env.SITE_THEMES || 'dark,light').split(',')) {
@@ -49,9 +53,9 @@ try {
     evaluate('document.fonts.ready.then(()=>true)');
     const measurements = [];
     const cameraMeasurements = [];
-    const recording = (before ? beforeSourceStoryboard : after ? afterSourceStoryboard : workflowSourceStoryboard)({ browser, evaluate, language, camera(stepId, { overview = false } = {}) {
-      if (before || after) {
-        cameraMeasurements.push({ stepId, overview, ...evaluate(`({timestamp:Date.now(),...(${(before ? measureBeforeCamera : measureAfterCamera).toString()})(${JSON.stringify(overview ? 'overview' : stepId)})})`) });
+    const recording = storyboard({ browser, evaluate, language, camera(stepId, { overview = false } = {}) {
+      if (before || after || personalize) {
+        cameraMeasurements.push({ stepId, overview, ...evaluate(`({timestamp:Date.now(),...(${measure.toString()})(${JSON.stringify(overview ? 'overview' : stepId)})})`) });
         return;
       }
       const measurement = evaluate(`window.goldBandPreview.snapshot().then(snapshot => {
@@ -60,8 +64,9 @@ try {
       })`);
       cameraMeasurements.push({ stepId, overview, ...measurement });
     }, screenshot(stepId) {
-      const measurement = evaluate(before || after ? `(${(before ? measureBeforeCamera : measureAfterCamera).toString()})(${JSON.stringify(stepId)})` : `window.goldBandPreview.snapshot().then(snapshot => (${measureWorkflowCamera.toString()})(${JSON.stringify(stepId)}, snapshot.workflowGraph.edges, snapshot.workflowGraph.nodes))`);
-      assert.equal(measurement.width, width); assert.equal(measurement.height, height);
+      const measurement = evaluate(before || after || personalize ? `(${measure.toString()})(${JSON.stringify(stepId)})` : `window.goldBandPreview.snapshot().then(snapshot => (${measureWorkflowCamera.toString()})(${JSON.stringify(stepId)}, snapshot.workflowGraph.edges, snapshot.workflowGraph.nodes))`);
+      if (!personalize) assert.equal(measurement.width, width);
+      assert.equal(measurement.height, height);
       measurements.push({ stepId, timestamp: evaluate('Date.now()'), ...measurement });
       browser('screenshot', resolve(directory, `${stepId}-${width}.png`));
     } });
@@ -72,27 +77,27 @@ try {
     const assetPath = `${publicRoot}${variant}/`;
     const bundle = await bundleRecording({ recording, captureOrigin: origin, sourceRoot: process.env.RECORDING_SOURCE_DIST, outputRoot: assetOutput, publicPath: assetPath });
     const markers = recording.events.filter(event => event.type === 5 && event.data.tag === 'semantic-checkpoint');
-    assert.equal(markers.length, before ? BEFORE_STEPS.length : after ? AFTER_STEPS.length : 11);
+    assert.equal(markers.length, before ? BEFORE_STEPS.length : after ? AFTER_STEPS.length : personalize ? PERSONALIZE_STEPS.length : 11);
     const start = recording.events[0].timestamp;
     const checkpoints = markers.map((marker, index) => ({ stepId: marker.data.payload.stepId,
       startMs: index ? marker.timestamp - start : 0,
       endMs: markers[index + 1] ? markers[index + 1].timestamp - start : bundle.metadata.durationMs,
       poster: `${assetPath}${marker.data.payload.stepId}.png` }));
     for (const point of checkpoints) await copyFile(resolve(directory, `${point.stepId}-${width}.png`), resolve(assetOutput, `${point.stepId}.png`));
+    const canvasWidth = personalize ? 1440 : width;
     const frames = track => cameraMeasurements.map((measurement, index) => ({
       timeMs: index ? measurement.timestamp - start : 0,
-      rect: measurement[track], zoom: 1, transitionMs: index ? (before ? BEFORE_CAMERA_TRANSITION_MS : after ? AFTER_CAMERA_TRANSITION_MS : WORKFLOW_CAMERA_TRANSITION_MS) : 0,
+      rect: personalize ? { ...measurement[track], x: measurement[track].x * (measurement.width / canvasWidth), width: Math.min(1 - measurement[track].x * (measurement.width / canvasWidth), measurement[track].width * (measurement.width / canvasWidth)) } : measurement[track], zoom: 1, transitionMs: index ? transitionMs : 0,
     }));
     const asset = SceneAssetSchema.parse({ version: 1, scene, language, theme, rrwebVersion: '2.1.1', ...bundle.metadata,
-      width, height, poster: checkpoints[0].poster, checkpoints,
+      width: canvasWidth, height, poster: checkpoints[0].poster, checkpoints,
       camera: { desktop: frames('desktop'), mobile: frames('mobile') },
       pace: checkpoints.map(point => ({ startMs: point.startMs, endMs: point.endMs, fromRate: point.stepId.startsWith('branch-') ? 1.5 : 1, toRate: 1 })),
     });
-    (format === 'mobile' ? mobileAssets : assets).push(asset);
     await writeFile(resolve(assetOutput, 'asset.json'), JSON.stringify(asset, null, 2));
     console.log(JSON.stringify({ variant, ...bundle.metadata, resources: bundle.resources.length }));
   }
-  await writeFile(resolve(output, 'manifest.json'), JSON.stringify(SceneManifestSchema.parse({ version: 1, assets, ...(mobileAssets.length ? { mobileAssets } : {}) }), null, 2));
+  await publishSceneManifest(output, scene);
 } catch (error) {
   await writeFile(resolve(attachments, 'failed-snapshot.json'), JSON.stringify(browser('snapshot', '-i'), null, 2));
   browser('screenshot', resolve(attachments, 'failed.png'));

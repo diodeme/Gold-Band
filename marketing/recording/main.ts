@@ -1,7 +1,6 @@
 import { record } from 'rrweb';
 import { browserApi } from './runtime';
 import { browserApi as seedApi } from '@/api/browser';
-import { applyAppearance, applyPersonalization } from '@/theme';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm } from '@/api/client';
 import { createRecordingBuffer, RECORDING_LIMITS, type StopReason } from '../../web/rrweb-demo/recording';
 import { createPreviewRun, PREVIEW_ROUTE, taskTitle } from '../shared/fixture';
@@ -12,7 +11,7 @@ const options = new URLSearchParams(location.search);
 const language: Language = options.get('language') === 'en' ? 'en' : 'zh';
 const scene = options.get('scene') || 'after';
 const preferences = (await browserApi.getAppBootstrap()).preferences;
-let currentPreferences = await browserApi.saveDesktopPreferences({ ...preferences.appearance, colorScheme: options.get('theme') === 'light' ? 'light' : 'dark' }, preferences.personalization, language === 'en' ? 'en' : 'zh-cn', preferences.useLocalClaude, preferences.verboseLogging);
+await browserApi.saveDesktopPreferences({ ...preferences.appearance, colorScheme: options.get('theme') === 'light' ? 'light' : 'dark' }, preferences.personalization, language === 'en' ? 'en' : 'zh-cn', preferences.useLocalClaude, preferences.verboseLogging);
 let advance: (step: number | WorkflowCue) => void | Promise<void> = step => browserApi.scenario!.advance(step as WorkflowCue);
 if (scene !== 'during' && scene !== 'after') {
 const base = await browserApi.getConversationRun('default', 'mock-task', 'run-052');
@@ -52,15 +51,6 @@ advance = (value: number | WorkflowCue) => {
   for (const listener of runs) listener({ ...locator, eventKind: step >= 5 ? 'run-completed' : 'node-started', status: run.runStatus, outcome: run.runOutcome });
 };
 }
-async function appearance(scheme: 'dark' | 'light', font: 'default' | 'mono') {
-  const current = currentPreferences;
-  const updated = structuredClone(current);
-  updated.appearance.colorScheme = scheme;
-  updated.personalization.typography.ui.fontStack = font === 'default' ? { source: 'theme' } : { source: 'custom', families: ['Consolas', 'Courier New'] };
-  currentPreferences = await browserApi.saveDesktopPreferences(updated.appearance, updated.personalization, updated.language, updated.useLocalClaude, updated.verboseLogging);
-  applyAppearance(updated.appearance);
-  applyPersonalization(updated.personalization);
-}
 let buffer = createRecordingBuffer();
 let dispose: (() => void) | undefined;
 let timer: ReturnType<typeof setTimeout> | undefined;
@@ -70,7 +60,7 @@ function stop(reason: StopReason = 'manual') {
   return buffer.stop(reason);
 }
 const api = {
-  advance, appearance,
+  advance,
   snapshot: () => browserApi.scenario?.snapshot(),
   marker(stepId: string) { if (dispose) record.addCustomEvent('semantic-checkpoint', { stepId, viewport: { width: innerWidth, height: innerHeight } }); },
   start() {

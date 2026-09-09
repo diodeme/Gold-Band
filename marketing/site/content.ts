@@ -34,7 +34,7 @@ export const copy = {
       { id: 'before', eyebrow: '会话前', title: '准备好，再开始。', body: '选择 Agent，带上角色与技能。直接对话、运行工作流，或交给 Auto 编排，按任务选择合适的起点。', points: ['Direct / Workflow / Auto', '主工作区或独立 Worktree', '立即开始，或安排定时任务'] },
       { id: 'during', eyebrow: '会话中', title: '看得见进展，接得住变化。', body: '对话、思考与工具调用在同一条时间线上。需要调整方向时，停下流程继续交流，准备好后再继续工作流。', points: ['会话与工具调用', '上下文用量与运行状态', '人工介入与流程继续'] },
       { id: 'after', eyebrow: '会话后', title: '结果，不止一句“完成”。', body: '回看每轮文件变化，打开文档，逐项审阅 Diff。在右侧工作区检查产出，再决定如何提交。', points: ['每轮文件变更快照', 'Markdown 与源码预览', 'Git Diff 与源代码管理'] },
-      { id: 'personalize', eyebrow: '个性化', title: '让工作区适合你。', body: '调整主题与字体，为自己的工作方式留出空间。窗口缩小时，三栏自然收成双栏、单栏；拉宽后，工作区回到原位。', points: ['主题与字体', '可拖动的工作区', '三栏、双栏、单栏自适应'] },
+      { id: 'personalize', eyebrow: '个性化', title: '定制你的应用。', body: '选择主题、字体和头像；窗口从三栏收成单栏，再展开回你的工作区。', points: ['主题、字体与头像', '真实窗口自适应', '三栏、双栏、单栏往返'] },
     ],
   },
   en: {
@@ -51,7 +51,7 @@ export const copy = {
       { id: 'before', eyebrow: 'Before the session', title: 'Start with the right setup.', body: 'Choose an agent, bring your roles and skills, then pick your starting point: a direct conversation, a workflow, or Auto orchestration.', points: ['Direct / Workflow / Auto', 'Main workspace or isolated worktree', 'Start now or schedule a task'] },
       { id: 'during', eyebrow: 'During the session', title: 'Stay with the work.', body: 'Follow conversations, reasoning and tool calls in one timeline. Pause the flow to discuss a new direction, then continue the workflow when you are ready.', points: ['Conversations and tool calls', 'Context usage and execution status', 'Human intervention and workflow continuation'] },
       { id: 'after', eyebrow: 'After the session', title: 'Inspect what changed.', body: 'Revisit each turn’s file changes, open the documents and review the diff. Check the result in the workspace before deciding what to commit.', points: ['Per-turn file snapshots', 'Markdown and source previews', 'Git diffs and source control'] },
-      { id: 'personalize', eyebrow: 'Make it yours', title: 'Room for your way of working.', body: 'Choose your theme and fonts. As the window narrows, three columns become two, then one. Widen it again and your workspace returns.', points: ['Themes and typography', 'Resizable workspace', 'Three, two or one column'] },
+      { id: 'personalize', eyebrow: 'Make it yours', title: 'Make the app yours.', body: 'Choose a theme, fonts and avatars. Narrow three columns to one, then widen the window to restore your workspace.', points: ['Themes, fonts and avatars', 'Responsive workspace', 'Three, two, one and back'] },
     ],
   },
 } as const;

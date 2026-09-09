@@ -88,6 +88,15 @@ function session(partial: Partial<AcpSessionVm>): AcpSessionVm {
 }
 
 describe('ACP chat event handling', () => {
+  it('shows an unmapped canonical error verbatim without a generic prefix', () => {
+    const error = {
+      code: { domain: 'internal', code: 'internal.unknown' },
+      domain: 'internal', recovery: 'manual' as const,
+      diagnostic: '磁盘空间不足。 (os error 112)',
+    };
+    expect(visibleAcpBannerError(null, session({ status: 'failed' }), [], null, 'failed', error))
+      .toBe(error.diagnostic);
+  });
   it('shows a failed background turn even without timeline or diagnostic errors', () => {
     expect(visibleAcpBannerError(null, session({ status: 'failed' }), [], undefined, 'failed'))
       .toBeTruthy();

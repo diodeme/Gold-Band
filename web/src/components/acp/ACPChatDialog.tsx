@@ -291,6 +291,7 @@ import {
   type AcpReturnToLatestVisualProbe,
 } from "@/lib/acp-return-to-latest-visual-probe";
 import i18n, { displayAppError, displayStatus } from "@/i18n";
+import { acpRuntimeErrorBannerCopy } from '@/lib/acp-runtime-error';
 import type {
   AcpElicitationRequestVm,
   AcpPermissionRequestVm,
@@ -10066,12 +10067,7 @@ export function visibleAcpBannerError(
     || (latestTurnStatus == null && session.status === 'failed');
   const error = canonicalTurnError === undefined ? session.turnError : canonicalTurnError;
   if (failed && error) {
-    const summary = displayAppError(i18n.t, { code: error.code.code, params: error.params ?? {} });
-    const raw = rawObject(error.raw);
-    const data = rawObject(raw?.data);
-    const detail = stringValue(data?.details) ?? stringValue(data?.message)
-      ?? stringValue(raw?.message) ?? error.diagnostic;
-    return detail ? `${summary}\n${detail}` : summary;
+    return acpRuntimeErrorBannerCopy(i18n.t, error) ?? i18n.t('errors.acp.turn-execution-failed');
   }
   if (failed && canonicalTurnError !== undefined) {
     return runtimeErrorFallback ?? i18n.t('errors.acp.turn-execution-failed');

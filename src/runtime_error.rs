@@ -180,7 +180,7 @@ pub fn normalize_runtime_error(error: &anyhow::Error) -> RuntimeErrorInfo {
         );
     }
     normalize_error_text(&diagnostic).unwrap_or_else(|| {
-        blocked_runtime_error_info(
+        manual_runtime_error_info(
             RuntimeErrorDomain::Internal,
             "internal.unknown",
             diagnostic,
@@ -537,8 +537,32 @@ mod tests {
     }
 
     #[test]
-    fn unknown_internal_error_is_blocked() {
-        let info = normalize_runtime_error(&anyhow!("dynamic graph invariant broken"));
+    fn unknown_error_preserves_diagnostic_and_allows_manual_continue() {
+        for error in [
+            anyhow!("unrecognized external failure"),
+            std::io::Error::from_raw_os_error(112).into(),
+        ] {
+            let diagnostic = format!("{error:#}");
+            let info = normalize_runtime_error(&error);
+            assert_eq!(info.code_str(), "internal.unknown");
+            assert_eq!(info.diagnostic, diagnostic);
+            assert_eq!(info.recovery, RecoveryMode::Manual);
+            assert!(info.retry_policy.is_none());
+            assert_eq!(
+                info.pause_reason_after_retry_boundary(),
+                PauseReason::RuntimeAbnormal
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_invariant_error_remains_blocked() {
+        let info = normalize_runtime_error(&runtime_error(blocked_runtime_error_info(
+            RuntimeErrorDomain::Internal,
+            "internal.invariant-violated",
+            "dynamic graph invariant broken",
+            serde_json::json!({}),
+        )));
         assert_eq!(info.recovery, RecoveryMode::Blocked);
         assert_eq!(
             info.pause_reason_after_retry_boundary(),

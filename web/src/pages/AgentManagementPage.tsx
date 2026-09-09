@@ -791,7 +791,7 @@ export function AgentIdInput({
 }
 
 function ConfigTextarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <Textarea {...props} className={cn('resize-y border-border/70 bg-background font-mono text-sm leading-6 shadow-inner outline-none placeholder:text-muted-foreground/55 focus-visible:ring-primary/35', props.className)} />;
+  return <Textarea {...props} className={cn('resize-y border-border/70 !bg-background font-mono text-sm leading-6 shadow-inner outline-none placeholder:text-muted-foreground/55 focus-visible:ring-primary/35', props.className)} />;
 }
 
 function Info({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {

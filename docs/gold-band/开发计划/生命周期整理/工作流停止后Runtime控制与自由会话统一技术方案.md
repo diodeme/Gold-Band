@@ -576,12 +576,14 @@ Conversation VM 在外层仍 Running 且 phase 为 `PreparingWorkspace` 时，�
 3. 无有效输入时点击“继续工作流”调用 continue command，不携带可见用户 prompt；有有效输入时按钮切换为“继续并发送”，只调用一次 continue command，发送按钮与 Enter 仍只调用 conversation command。
 4. `<hidden>` runtime context 保持默认收缩且可打开右侧工作区；`show=false` 的 Runtime control hidden 段仍可按事件 revision/part index 精确解析，但不生成气泡链接。纯 resume / finalize / repair 继续使用既有隐藏消息策略。
 5. Agent 普通回复结束后 run 仍 paused，“继续工作流”按钮仍存在。
-6. 点击继续后，composer 使用 command 返回的 durable active lifecycle 立即从“正在继续”单调收敛到“停止”；同一 snapshot 同步更新 session tree、sidebar task 的 `latestRun` 与 `runs[]`，两级侧栏圆点立即进入 Running。父级 run/sidebar 刷新只做校准，不能在两者之间重新显示“继续工作流”，也不能等待下一节点启动才显示运行态。
+6. 点击继续后，composer 使用 command 返回的 durable active lifecycle 立即从“正在继续”单调收敛到“停止”；同一 snapshot 同步更新 session tree，sidebar task 的 `latestRun` 与 `runs[]` 仅在非终态且 Runtime active 时投影 Running、清空 outcome 并关闭 resumable，两级侧栏圆点立即变蓝。不得把 attempt 的暂停或终态复制到整体 Run，整体暂停和终态由 Run 摘要及 Run 状态事件更新；整体终态拒绝迟到 active snapshot。父级 run/sidebar 刷新只做校准，不能在两者之间重新显示“继续工作流”，也不能等待下一节点启动才显示运行态。
 7. Direct、completed follow-up 和 manual check 普通消息行为不回归。
 8. AI-DYNAMIC 选中 paused leaf 时 continue action 只携带目标 leaf locator。
 9. session tree/header 的 Running 圆点复用侧边栏 `gold-running + motion-safe:animate-pulse`，不保留额外 ping halo；暂停和终态保持静态。
 
 ### 14.3 页面验证
+
+2026-09-09 边栏投影修复验收：回溯 `0c641edc9` 确认原路径用于继续后立即变蓝；最小失败测试证明单个 completed/success attempt 会把普通区与置顶区的 running Run 摘要同时覆盖为 completed/success。修复后同一测试转绿，覆盖单节点成功、失败、暂停不结算整体、普通 ACP 活跃不推进 Run、继续立即变蓝、Run 暂停及成功/失败收敛、迟到 active 不回退终态。边栏/导航定向 3 文件 58 项通过，DOM 验证会话行及展开 Run 行颜色优先级；TypeScript 和 Vite 生产构建通过（保留既有混合静态/动态导入提示）。iab 不可用，改用已连接 Chrome，在临时实际组件验证页检查浅色/深色四种状态和 Run 展开；未执行真实 Agent 并行任务，事件顺序由接口测试固定。临时页面、标签和测试服务验收后清理。范围仅限边栏消费，复用既有组件和事件，无后端执行改动；inactive snapshot 在 O(1) 返回，active 更新维持已加载目标页的 O(tasks + runs)，不增加 I/O、全量历史、缓存、队列或订阅，未引入过度设计或新增性能风险。
 
 1. 普通 workflow worker 输出中点击停止；停止后连续追问两轮，确认两轮均可正常回复且 workflow 不推进；点击继续后恢复原节点并最终进入后继节点。
 2. AI-DYNAMIC bootstrap 输出中停止；发送普通问题，确认 raw prompt 只有用户原文、Agent 依据 system 规则自然回复且不被判 artifact invalid；点击继续后重新输出控制 artifact。

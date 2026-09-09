@@ -12,6 +12,19 @@
 
 ## 1. 背景与目标
 
+### 2026-09-09 Fanout 软提醒与旧 Artifact 隔离
+
+- 提醒文案调整：按用户指定改为“本次fanout即将从HEAD开始创建worktree，检测到源工作区仍有未提交代码，故提醒：”，同步英文及提示词断言；仅替换引导句，不改变提交策略、状态或 I/O，无新增抽象和性能影响。
+
+- 根因与实测证据：task-004 bootstrap 最后一次 repair 输出缺少闭合括号，provider 返回当前 invalid control span 但没有 payload，结果收集未清除旧 artifact，最终接受了上一轮文件，属于正确的逐轮校验设计下实现不完整。此前强制干净门禁又促使 Agent 迁移 task-003 的旧 worktree，说明对异构用户工作区强制清理属于设计边界问题。
+- 实现：首次 fanout 脏状态仅提醒检查并提交本次业务需要的改动，没有则不操作、重新输出 artifact。移除强制干净复检、stash 授权及新 commit 要求；保留固定一次 HEAD、整批 children 同基线，以及原 end / merge checkpoint。第三个附件写错目录问题按用户要求不处理。
+- 一次性记录：复用现有 rejected proposal，提醒调度前持久化，之后按 source node 跳过 status；恢复不重置提醒。纯提醒不计入协议 repair，混合协议错误仍批量列出并遵守最多 3 次上限。不新增持久字段或状态机。
+- 结果隔离：成功结果只发布本轮 payload 或 control span；坏 JSON 保留给解析器，无候选清除旧 canonical artifact。历史 raw 记录不删除，停止/交互等待不当作成功收集；人工 check、无 output 和已有 provider finalize 提醒规则不改。
+- 最小失败证据：`dynamic_current_result_without_artifact_cannot_reuse_old_file` 与 `dynamic_current_invalid_candidate_replaces_old_artifact` 在旧实现均错误接受旧 completion；`fanout_reminder_does_not_repeat_after_recorded_proposal` 第二次仍被 dirty 拒绝。修改后同一组测试转绿。
+- 覆盖：有业务改动只 commit 交付、无关文件保留；没有新 commit 仍可 fanout；提醒后协议错误仍 repair；坏 JSON 后不能物化旧 fanout；提醒持久化、双语软提示、late edit 放行、Git 失败、nested worktree、acceptance target、ignored 和 end 边界。
+- 过度设计/性能评审：复用 Git、当前 provider 候选与 graph proposal 事实，无新增依赖、持久字段、归属分类器或缓存。status 仅首次提醒前使用 normal 目录粒度，提醒后不再探测；按现有 graph 做线性 source 查询、至多追加一次小记录，不扫描历史会话。分叉只读一次 HEAD，不扩大 Git 锁范围。
+- 验收：`cargo test --lib --test ai_dynamic_node --test provider_prompt_bundle --test control_engine --quiet` 全部通过：单元测试 1163 通过、1 忽略，AI-DYNAMIC 37 通过，control engine 10 通过，provider prompt bundle 31 通过；`git diff --check` 通过。保留既有 dead-code 警告。已有状态生命周期规则覆盖当前结果权威性与持久化边界，不重复新增规则。未操作真实 task-004/task-003 仓库或运行记录。
+
 当前普通 workflow 节点的 prompt 已经拆分为稳定 system prompt、每次 invocation 刷新的 user hidden context、以及可见 user prompt。这个拆分解决了 ACP `session/load` / continue 场景下 system prompt 不能可靠刷新动态事实的问题。
 
 AI-DYNAMIC 内部节点目前复用了普通 workflow 的 prompt bundle，但仍通过 `extra_system_sections` 把大量动态运行事实注入 system prompt，包括 dynamic graph、预算、workspace、resumable sessions、group context 等。这会让 AI-DYNAMIC 的 prompt 分层和普通 workflow 不一致，也会在 `sessionMode=continue` 时放大歧义：模型复用了旧 session，但 user prompt 只收到通用 `# Goal`，当前动态节点任务不够明确。

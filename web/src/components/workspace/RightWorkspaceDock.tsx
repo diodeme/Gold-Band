@@ -2,7 +2,6 @@ import { AlarmClock, Bot, Braces, Check, ChevronDown, FileCode2, FileDiff, FileT
 import { memo, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
-import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
 import { useConversationBranchLiveSnapshot } from '@/lib/conversation-event-router';
@@ -145,7 +144,6 @@ function WorkspaceEntryOptions({ presentation, sourceControlWorkspacePath }: {
   presentation: 'empty' | 'menu';
   sourceControlWorkspacePath: string | null;
 }) {
-  const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   const { conversationDirectoryEntry, openResource, projectId, scopeKey } = useRightWorkspace();
   const options = useMemo<WorkspaceEntryOption[]>(() => {
@@ -198,8 +196,8 @@ function WorkspaceEntryOptions({ presentation, sourceControlWorkspacePath }: {
         },
       });
     }
-    return readOnly ? entries.filter((entry) => entry.id === 'file-browser') : entries;
-  }, [conversationDirectoryEntry, openResource, projectId, readOnly, scopeKey, sourceControlWorkspacePath, t]);
+    return entries;
+  }, [conversationDirectoryEntry, openResource, projectId, scopeKey, sourceControlWorkspacePath, t]);
 
   if (presentation === 'menu') {
     return (

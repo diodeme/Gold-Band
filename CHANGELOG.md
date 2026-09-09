@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.15.1](https://github.com/diodeme/Gold-Band/compare/v0.15.0...v0.15.1) (2026-09-09)
+
+
+### Bug Fixes
+
+* **acp:** accept activity detail pages during live updates ([8319e92](https://github.com/diodeme/Gold-Band/commit/8319e92f422104c0d678c3aa1278b93ac427d4a8))
+* **acp:** defer tool images until detail expansion ([896404f](https://github.com/diodeme/Gold-Band/commit/896404fbbfc6587238b9b121bba076bab9f717c5))
+* **acp:** display tool images with shared thumbnail resources ([e6d04ca](https://github.com/diodeme/Gold-Band/commit/e6d04ca160abeec15e915b46c1d4353f0cbd9226))
+* **acp:** exclude clock ticks from transcript replay recovery ([443c323](https://github.com/diodeme/Gold-Band/commit/443c323658967b8c220e379dcd14d1b7ab88b448))
+* **acp:** respect disclosure reading position and footer bounds ([d6e691e](https://github.com/diodeme/Gold-Band/commit/d6e691e5d5e69812930bc0369e508ee766582743))
+* **acp:** respect scroll input ownership when following messages ([9e6700d](https://github.com/diodeme/Gold-Band/commit/9e6700dfa7ca5504ee3b652eebb9ca6acf674948))
+* **acp:** restore latest content and bottom follow on send ([b185482](https://github.com/diodeme/Gold-Band/commit/b185482dcdf4f10675b2c5450d9d829915874c2e))
+* **acp:** separate disclosure scrolling from timeline updates ([3d16e77](https://github.com/diodeme/Gold-Band/commit/3d16e770b710e40b3603f147654368aa99960b5d))
+* **acp:** surface background prompt failures in chat ([35df87a](https://github.com/diodeme/Gold-Band/commit/35df87aa1db2f98dbf1ab5f9d1b6df8ba47b6338))
+* **agents:** derive built-in launch settings from bundled catalog ([9f3571f](https://github.com/diodeme/Gold-Band/commit/9f3571f81f860d592e5bd648d6d47267bd57e7a7))
+* **ai-dynamic:** correct group handoffs and workflow graph routing ([109e643](https://github.com/diodeme/Gold-Band/commit/109e64393550441cd2f8ef4abd8051827791dcc0))
+* **ai-dynamic:** isolate artifacts and soften fanout commit checks ([7ff400e](https://github.com/diodeme/Gold-Band/commit/7ff400e0733784f424b512383f6d9761e2aeca74))
+* improve multica ([ffbb0f4](https://github.com/diodeme/Gold-Band/commit/ffbb0f449aa4be68c866d54c2d6c82c3bf023725))
+* **multica:** runtime-configurable connection address + connect cancel (M5-ay) ([33c0906](https://github.com/diodeme/Gold-Band/commit/33c090613d34d6ee8d46d322228e424f01811f05))
+* **provider:** preserve resume prompts and bound artifact reminders ([74257e4](https://github.com/diodeme/Gold-Band/commit/74257e4cf7fd43adb2b397206cf5771d2db630ee))
+* **runtime:** reconfirm dynamic completion when artifact is missing ([1ba7104](https://github.com/diodeme/Gold-Band/commit/1ba710460769eb62e93d449f7c46e4c8257d7a54)), closes [#114](https://github.com/diodeme/Gold-Band/issues/114)
+* **ui:** constrain scrollbar thumb length to its scroll axis ([3cbd49e](https://github.com/diodeme/Gold-Band/commit/3cbd49e34e05f86413d7aa1ccd7efa2f73031a47))
+
 ## [0.15.0](https://github.com/diodeme/Gold-Band/compare/v0.14.1...v0.15.0) (2026-09-07)
 
 

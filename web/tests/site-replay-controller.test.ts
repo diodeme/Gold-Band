@@ -28,6 +28,7 @@ function harness(load = vi.fn(async () => ({}))) {
 describe('independent replay lifetime', () => {
   it('reads the engine clock for camera and pace and freezes user pause across visibility changes', async () => {
     const h = harness(); await h.controller.select(asset());
+    expect(h.dependencies.create).toHaveBeenCalledWith({}, asset());
     h.setTime(250); h.tick();
     expect(h.dependencies.paint).toHaveBeenLastCalledWith(asset(), 250, false);
     expect(h.engines[0].setConfig).toHaveBeenLastCalledWith({ speed: 1.25 });

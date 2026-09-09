@@ -17,6 +17,12 @@ if (selectedScenes.includes('during')) {
     env: { ...process.env, RECORDING_OUTPUT: resolve(output, 'workflow') },
   });
 }
+if (selectedScenes.includes('before')) {
+  execFileSync(process.execPath, [resolve('scripts/record-workflow.mjs')], {
+    windowsHide: true, stdio: 'inherit',
+    env: { ...process.env, RECORDING_SCENE: 'before', RECORDING_OUTPUT: resolve(output, 'before') },
+  });
+}
 mkdirSync(output, { recursive: true });
 mkdirSync(temporary, { recursive: true });
 function browser(...args) {
@@ -42,16 +48,12 @@ function screenshot(name) {
 const report = [];
 let opened = false;
 try {
-  for (const language of (process.env.SITE_LANGUAGES?.split(',') || ['zh', 'en'])) for (const scene of selectedScenes.filter(scene => scene !== 'during')) {
+  for (const language of (process.env.SITE_LANGUAGES?.split(',') || ['zh', 'en'])) for (const scene of selectedScenes.filter(scene => scene !== 'during' && scene !== 'before')) {
     browser('open', `${url}/?language=${language}&scene=${scene}`);
     opened = true;
     browser('set', 'viewport', '1440', '880');
     waitFor(`Boolean(document.getElementById('workspace-center')) && document.querySelector('img').getBoundingClientRect().width < 100`);
     evaluate('localStorage.clear()');
-    if (scene === 'before') {
-      evaluate(`Array.from(document.querySelectorAll('[role=tab]')).find(e=>e.textContent==='Direct').dispatchEvent(new MouseEvent('mousedown',{bubbles:true,button:0}))`);
-      waitFor(`Array.from(document.querySelectorAll('[role=tab]')).some(e=>e.textContent==='Direct'&&e.getAttribute('data-state')==='active')`);
-    }
     if (scene === 'after' || scene === 'personalize') {
       waitFor(`Array.from(document.querySelectorAll('button[aria-label]')).some(e=>e.getAttribute('aria-label').includes('docs/workspace-notes.md'))`);
       clickFile('docs/workspace-notes.md');
@@ -61,19 +63,7 @@ try {
     hold(800);
     evaluate('window.goldBandPreview.start()');
     const layouts = [];
-    if (scene === 'before') {
-      const text = language === 'zh' ? '请为这个项目完善工作区配置，并补充一份使用说明。保留每轮文件变更，方便审阅。' : 'Update the workspace configuration and add a usage guide. Keep per-turn file changes available for review.';
-      evaluate(`(async()=>{ const e=document.querySelector('textarea'); e.focus(); const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set; for(let i=1;i<=${text.length};i++){setter.call(e,${JSON.stringify(text)}.slice(0,i));e.dispatchEvent(new Event('input',{bubbles:true})); await new Promise(r=>setTimeout(r,30));}})()`);
-      hold(1400);
-      screenshot(`${language}-${scene}`);
-      const label = language === 'zh' ? '工作位置:' : 'Working location:';
-      const button = evaluate(`Array.from(document.querySelectorAll('button[aria-label]')).find(e=>e.getAttribute('aria-label').includes(${JSON.stringify(label)}))?.getAttribute('aria-label')`);
-      if (button) {
-        evaluate(`document.querySelector('button[aria-label=${JSON.stringify(button)}]').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0,pointerType:'mouse'}))`);
-        hold(1600); browser('press', 'Escape');
-      }
-      hold(2200);
-    } else if (scene === 'after') {
+    if (scene === 'after') {
       hold(2600); screenshot(`${language}-${scene}`);
       clickFile('src/config.json'); hold(4000);
       clickFile('docs/workspace-notes.md'); hold(2500);

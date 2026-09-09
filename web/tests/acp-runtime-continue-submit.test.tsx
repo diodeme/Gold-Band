@@ -427,6 +427,27 @@ describe('ACP runtime continue submission', () => {
     }
   });
 
+  it('shows an unknown runtime failure verbatim and clears it when a new turn starts', async () => {
+    const lifecycle = runtimeAbnormalLifecycle();
+    lifecycle.acp = { ...lifecycle.acp, revision: 3, turnId: 'unknown-turn', turnError: {
+      code: { domain: 'internal', code: 'internal.unknown' },
+      domain: 'internal', recovery: 'manual', diagnostic: '磁盘空间不足。 (os error 112)',
+    } };
+    const { container, root, render, session } = await renderPausedDialog({
+      initialLifecycle: lifecycle, sessionStatus: 'failed', session: { turnError: lifecycle.acp.turnError },
+    });
+    try {
+      expect(container.textContent).toContain('磁盘空间不足。 (os error 112)');
+      expect(container.textContent).not.toContain('检查所选 Agent');
+      const next = pausedLifecycle();
+      next.acp = { ...next.acp, revision: 4, turnId: 'next-turn', latestTurnStatus: 'none', liveTurnActivity: 'starting', turnError: null };
+      await render(next, { ...session, status: 'pending', turnError: null });
+      expect(container.textContent).not.toContain('os error 112');
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('shows the background restore failure without diagnostic history and clears it on retry', async () => {
     const lifecycle = pausedLifecycle();
     lifecycle.acp.latestTurnStatus = 'failed';

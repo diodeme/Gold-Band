@@ -255,12 +255,21 @@ impl AcpLifecycleTerminalGuard {
     pub(crate) fn execute<T>(&mut self, execute: impl FnOnce() -> Result<T>) -> Result<T> {
         let result = execute();
         if let Err(error) = &result {
-            persist_session_turn_failure_owned(
+            let mut info = normalize_runtime_error(error);
+            if let Err(persistence_error) = persist_session_turn_failure_owned(
                 &self.path,
                 &self.owner,
-                &normalize_runtime_error(error),
+                &info,
                 &current_timestamp(),
-            )?;
+            ) {
+                tracing::error!(path = %self.path, error = %persistence_error, "ACP terminal persistence failed");
+                info.diagnostic.push_str(&format!(
+                    "\nACP terminal persistence failed: {persistence_error:#}"
+                ));
+                // Do not let Drop retry with an empty, generic replacement error.
+                self.disarm();
+                return Err(crate::runtime_error::runtime_error(info));
+            }
         }
         self.disarm();
         result
@@ -3788,6 +3797,30 @@ mod tests {
             .unwrap();
         assert_eq!(latest.turn_id.as_deref(), Some("turn-b"));
         assert!(latest.turn_error.is_none());
+    }
+
+    #[test]
+    fn terminal_persistence_failure_does_not_replace_original_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let owner = super::AcpLifecycleOwner {
+            turn_id: "turn-a".into(),
+            operation_id: "operation-a".into(),
+            revision: 2,
+        };
+        let mut guard = super::AcpLifecycleTerminalGuard::new(path, owner);
+        let result: anyhow::Result<()> =
+            guard.execute(|| Err(anyhow::anyhow!("ORIGINAL_IO_FAILURE")));
+        let error = result.unwrap_err();
+        let info = crate::runtime_error::normalize_runtime_error(&error);
+        assert!(info.diagnostic.starts_with("ORIGINAL_IO_FAILURE\n"));
+        assert!(info.diagnostic.contains("ACP terminal persistence failed:"));
+        assert_eq!(info.recovery, crate::runtime_error::RecoveryMode::Manual);
+        assert!(
+            !guard.armed,
+            "a generic Drop failure must not replace the original error"
+        );
     }
 
     #[test]

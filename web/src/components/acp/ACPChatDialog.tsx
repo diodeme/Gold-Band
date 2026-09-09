@@ -627,7 +627,7 @@ export const ACP_SESSION_SCROLL_AREA_CLASS_NAME = goldThemedScrollbarClassName(
   "h-full min-w-0 overflow-y-auto",
 );
 export const ACP_RAW_SCROLL_AREA_CLASS_NAME = goldThemedScrollbarClassName(
-  "h-full overflow-y-auto p-5",
+  "min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto overscroll-contain",
 );
 
 export const ACP_SYSTEM_PROMPT_DIALOG_LAYOUT = {
@@ -6045,7 +6045,7 @@ export function ACPChatDialog(
       {visibleError ? <AcpErrorBanner reason={visibleError} /> : null}
       <div className="relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
         {canvasMode === "raw" ? (
-          <div className={ACP_RAW_SCROLL_AREA_CLASS_NAME}>
+          <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden p-5">
             <RawFrameViewer
               loading={rawLoading}
               page={rawPage}
@@ -9351,8 +9351,8 @@ export function RawFrameViewer({
   }
 
   return (
-    <div className="@container/raw-frame w-full min-w-0 max-w-full space-y-3 overflow-hidden">
-      <div className="rounded-2xl border border-border/60 bg-card/50 p-3 shadow-sm shadow-background/20">
+    <div className="@container/raw-frame flex min-h-0 w-full min-w-0 max-w-full flex-1 flex-col gap-3 overflow-hidden">
+      <div className="shrink-0 rounded-2xl border border-border/60 bg-card/50 p-3 shadow-sm shadow-background/20" data-raw-frame-toolbar="true">
         <div className="flex min-w-0 flex-col gap-3">
           <div className="relative min-w-0">
               <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -9508,19 +9508,21 @@ export function RawFrameViewer({
         </div>
       </div>
 
-      {page && page.items.length > 0 ? (
-        page.items.map((frame) => (
-          <RawFrameRow
-            key={frame.id}
-            frame={frame}
-            onLayoutChange={onLayoutChange}
-          />
-        ))
-      ) : (
-        <div className="rounded-2xl border border-dashed bg-muted/10 p-8 text-center text-sm text-muted-foreground">
-          {t("acp.rawNoFrames")}
-        </div>
-      )}
+      <div className={ACP_RAW_SCROLL_AREA_CLASS_NAME} data-raw-frame-scroll-area="true">
+        {page && page.items.length > 0 ? (
+          page.items.map((frame) => (
+            <RawFrameRow
+              key={frame.id}
+              frame={frame}
+              onLayoutChange={onLayoutChange}
+            />
+          ))
+        ) : (
+          <div className="rounded-2xl border border-dashed bg-muted/10 p-8 text-center text-sm text-muted-foreground">
+            {t("acp.rawNoFrames")}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

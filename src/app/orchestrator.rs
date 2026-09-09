@@ -1696,6 +1696,7 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
     }
     let mut run: RunState = read_json(&run_path)?;
     let mut run_became_inactive = run.status != RunStatus::Running;
+    let mut run_transitioned_to_paused = false;
     if run.status == RunStatus::Running
         && run.current_round.as_deref() == Some(round_id)
         && run.current_node.as_deref() == Some(outer_node_id)
@@ -1709,6 +1710,7 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
         validate_run_state(&run)?;
         write_json(&run_path, &run)?;
         run_became_inactive = true;
+        run_transitioned_to_paused = true;
     }
 
     let round_path = app.paths.round_file(task_id, run_id, round_id);
@@ -1765,6 +1767,9 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
         )?;
     }
     drop(_guard);
+    if run_transitioned_to_paused {
+        app.publish_committed_attempt_pause(&run);
+    }
     if run_became_inactive {
         app.finish_runtime_candidate_best_effort(
             task_id,

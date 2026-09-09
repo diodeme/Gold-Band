@@ -1944,7 +1944,13 @@ fn build_activity_summary(
     let mut images = Vec::new();
     for item_id in &block.item_ids {
         let locator = index.item_locators.get(item_id)?;
-        images.extend(locator.images.iter().take(crate::acp::images::MAX_PROJECTED_IMAGES.saturating_sub(images.len())).cloned());
+        images.extend(
+            locator
+                .images
+                .iter()
+                .take(crate::acp::images::MAX_PROJECTED_IMAGES.saturating_sub(images.len()))
+                .cloned(),
+        );
         match locator.kind.as_str() {
             "thoughtDelta" => thought_count = thought_count.saturating_add(1),
             "error" => error_count = error_count.saturating_add(1),
@@ -3653,18 +3659,40 @@ mod tests {
                 { "type": "image", "mimeType": "image/png", "data": "AQIDBA==" }
             ] } }
         }));
-        let mut store = TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
         store.upsert(1, &item).unwrap();
-        let stored = super::read_indexed_timeline_item(&path, "tool-image").unwrap().unwrap().event;
-        assert!(stored.raw.as_ref().unwrap().pointer("/rawOutput/result/content/0/data/$goldBandBlob").is_some());
+        let stored = super::read_indexed_timeline_item(&path, "tool-image")
+            .unwrap()
+            .unwrap()
+            .event;
+        assert!(
+            stored
+                .raw
+                .as_ref()
+                .unwrap()
+                .pointer("/rawOutput/result/content/0/data/$goldBandBlob")
+                .is_some()
+        );
         store.force_checkpoint().unwrap();
         let summary = store.index.semantic_blocks[0].summary.as_ref().unwrap();
-        let images = summary.raw.as_ref().unwrap().pointer("/goldBandActivity/images").unwrap().as_array().unwrap();
+        let images = summary
+            .raw
+            .as_ref()
+            .unwrap()
+            .pointer("/goldBandActivity/images")
+            .unwrap()
+            .as_array()
+            .unwrap();
         assert_eq!(images.len(), 1);
         assert_eq!(images[0]["eventId"], "tool-image");
         assert!(!serde_json::to_string(summary).unwrap().contains("AQIDBA=="));
-        let reference = serde_json::from_value::<crate::acp::images::AcpImageRef>(images[0].clone()).unwrap();
-        assert_eq!(crate::acp::images::read_image_base64(&path, &reference).unwrap(), "AQIDBA==");
+        let reference =
+            serde_json::from_value::<crate::acp::images::AcpImageRef>(images[0].clone()).unwrap();
+        assert_eq!(
+            crate::acp::images::read_image_base64(&path, &reference).unwrap(),
+            "AQIDBA=="
+        );
         let mut invalid = reference.clone();
         invalid.content_hash = "wrong-version".into();
         assert!(crate::acp::images::read_image_base64(&path, &invalid).is_err());
@@ -3673,7 +3701,10 @@ mod tests {
         assert!(crate::acp::images::read_image_base64(&path, &invalid).is_err());
         let mut live = item.clone();
         crate::acp::events::compact_live_conversation_event(&mut live);
-        assert_eq!(live.raw.as_ref().unwrap()["goldBandImages"][0], serde_json::to_value(reference).unwrap());
+        assert_eq!(
+            live.raw.as_ref().unwrap()["goldBandImages"][0],
+            serde_json::to_value(reference).unwrap()
+        );
         assert!(!serde_json::to_string(&live).unwrap().contains("AQIDBA=="));
     }
 

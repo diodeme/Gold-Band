@@ -196,7 +196,10 @@ mod tests {
         assert!(raw.pointer("/content/0/content/data").is_none());
         assert!(raw.pointer("/rawOutput/result/content/0/data").is_none());
         assert_eq!(raw.pointer("/content/1/content/text"), Some(&json!("keep")));
-        assert_eq!(raw.pointer("/rawOutput/result/content/1/text"), Some(&json!("also keep")));
+        assert_eq!(
+            raw.pointer("/rawOutput/result/content/1/text"),
+            Some(&json!("also keep"))
+        );
         assert_eq!(image_pointers("toolCall", &raw), ["/content/0/content"]);
     }
 

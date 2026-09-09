@@ -929,8 +929,12 @@ pub fn prepare_agent_timeline_storage(attempt_dir: &Utf8Path) -> Result<bool> {
         advance_node_acp_storage_schema_version(&node_path, AGENT_RESULT_STORAGE_SCHEMA_VERSION)?;
     }
     if current < COMPOSER_PROVENANCE_STORAGE_SCHEMA_VERSION {
-        changed |= crate::acp::timeline::composer_history::migrate_raw_agent_initial_text(attempt_dir)?;
-        advance_node_acp_storage_schema_version(&node_path, COMPOSER_PROVENANCE_STORAGE_SCHEMA_VERSION)?;
+        changed |=
+            crate::acp::timeline::composer_history::migrate_raw_agent_initial_text(attempt_dir)?;
+        advance_node_acp_storage_schema_version(
+            &node_path,
+            COMPOSER_PROVENANCE_STORAGE_SCHEMA_VERSION,
+        )?;
     }
     Ok(changed)
 }

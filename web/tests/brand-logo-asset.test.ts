@@ -158,7 +158,7 @@ describe('brand logo asset', () => {
     ].map(relative => readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8'));
 
     for (const source of consumers) {
-      expect(source).toContain('/logo.svg');
+      expect(source).toMatch(/(?:\/|\$\{import\.meta\.env\.BASE_URL\})logo\.svg/);
     }
   });
 });

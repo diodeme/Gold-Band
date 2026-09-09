@@ -46,10 +46,10 @@ export async function readAgentIconFile(file: File): Promise<string> {
 export function agentIconSrc(iconKey: string) {
   const icon = iconKey.trim();
   if (!icon || icon === DEFAULT_AGENT_ICON_KEY) {
-    return '/logo.svg';
+    return `${import.meta.env.BASE_URL}logo.svg`;
   }
   if (/^(?:https?:|data:|asset:|blob:|\/)/i.test(icon)) return icon;
-  return `/agent-icons/${icon}.svg`;
+  return `${import.meta.env.BASE_URL}agent-icons/${icon}.svg`;
 }
 
 export function agentIconClass(iconKey: string, className?: string) {

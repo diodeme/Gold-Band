@@ -109,6 +109,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@noble/hashes": "2.0.1",
     "@tauri-apps/cli": "^2.11.0",
     "@types/dagre": "^0.7.54",
     "@vitejs/plugin-react": "^4.3.4",

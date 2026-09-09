@@ -513,6 +513,7 @@ export function ConversationRunPage({
             canViewWorkflow={canViewWorkflow}
             canEditWorkflow={!readOnly && run.runMode === 'workflow'}
             onRerun={handleRerun}
+            readOnly={readOnly}
             onEditWorkflow={handleEditWorkflow}
             onViewWorkflow={handleViewWorkflow}
             onSessionSwitcherOpenChange={setSessionSwitcherOpen}

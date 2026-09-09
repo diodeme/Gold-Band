@@ -11,13 +11,17 @@ import { applyAppearance, applyPersonalization } from '@/theme';
 import i18n, { i18nLanguage } from '@/i18n';
 import type { AppBootstrapVm, ConversationPage, ConversationRunVm, ConversationRunModeVm, PreferencesVm } from '@/types';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Languages } from 'lucide-react';
+import { Languages, AlertCircle, RotateCw } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
 import { ConversationComposerDraftBoundary } from '@/components/conversation/ConversationComposerDraftBoundary';
 import { DemoFrame } from './DemoFrame';
 import { demoAgentRegistry, demoProfiles, demoWorkflowTemplates } from './catalog';
 import { browserApi } from './runtime';
-import { demoSidebar, demoTitle, DEMO_TASKS, DEMO_PROJECT_ID } from './fixtures';
-import { demoPageFromHash, demoLinkParameters, demoRunModeFromHash } from './routes';
+import { demoSidebar, demoTitle, DEMO_PROJECT_ID } from './fixtures';
+import { demoPageFromHash, demoLinkParameters, demoRunModeFromHash, demoHashForPage } from './routes';
+import { createDatasetReader, type DemoDataset } from './dataset';
+import { missing } from './history-query';
 
 const ContextManagementPage = lazy(() => import('@/pages/ContextManagementPage').then((m) => ({ default: m.ContextManagementPage })));
 const SettingsPage = lazy(() => import('@/pages/SettingsPage').then((m) => ({ default: m.SettingsPage })));
@@ -31,6 +35,7 @@ const noop = () => {};
 const unusedAction = async () => undefined;
 const emptyExpansion = {};
 const demoWorkspaces = [{ projectId: DEMO_PROJECT_ID, workspacePath: '/default', name: 'Gold Band' }];
+const historyReader = createDatasetReader(`${import.meta.env.BASE_URL}data/ji-history/`);
 
 function pageFromHash(): ConversationPage {
   return demoPageFromHash(location.hash);
@@ -47,7 +52,25 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
   const clientRef = useRef<HTMLDivElement>(null);
   const [runMode, setRunMode] = useState<ConversationRunModeVm>(() => demoRunModeFromHash(location.hash));
   const [store] = useState(() => new ConversationWorkspaceStore());
-  const sidebar = useMemo(() => ({ ...demoSidebar(preferences.language), preferences: layoutPreferences }), [preferences.language, layoutPreferences]);
+  const [historyState, setHistoryState] = useState<{ status: 'loading' | 'error' } | { status: 'ready'; data: DemoDataset }>({ status: 'loading' });
+  const [historyRequest, setHistoryRequest] = useState(0);
+  const history = historyState.status === 'ready' ? historyState.data : null;
+  useEffect(() => {
+    let active = true;
+    setHistoryState({ status: 'loading' });
+    void historyReader.dataset().then((data) => { if (active) setHistoryState({ status: 'ready', data }); }).catch(() => { if (active) setHistoryState({ status: 'error' }); });
+    return () => { active = false; };
+  }, [historyRequest]);
+  const sidebar = useMemo(() => {
+    const sidebar = { ...demoSidebar(preferences.language), preferences: layoutPreferences };
+    if (history) {
+      const summary = { runId: history.runId, status: history.source.status, outcome: history.source.outcome, resumable: false, startedAt: history.source.startedAt ?? '', updatedAt: history.source.updatedAt ?? '' };
+      sidebar.workspaces.push({ projectId: history.projectId, workspacePath: '/export/workspace', name: 'JI' });
+      sidebar.tasksByWorkspace[history.projectId] = [{ projectId: history.projectId, taskId: history.taskId, taskUuid: history.taskUuid, title: history.title, autoTitle: false, runMode: 'workflow', latestRun: summary, runs: [summary], runHistoryStatus: 'ready', pinned: false }];
+      sidebar.workspaceTaskPages[history.projectId] = { status: 'ready' };
+    }
+    return sidebar;
+  }, [preferences.language, layoutPreferences, history]);
   useEffect(() => {
     const changed = () => {
       setPage(pageFromHash());
@@ -63,9 +86,7 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
     return () => window.removeEventListener('hashchange', changed);
   }, []);
   function navigate(next: ConversationPage) {
-    const hash = next.kind === 'conversation-run' ? next.taskId : next.kind;
-    if (![...DEMO_TASKS, 'contexts', 'settings', 'run-mode-management', 'agents', 'conversation-home', 'multica-tasks', 'scheduled-tasks', 'scheduled-task-create', 'scheduled-task-detail'].includes(hash)) return;
-    location.hash = next.kind === 'conversation-run' ? `${hash}?${new URLSearchParams({ run: next.runId })}` : next.kind === 'scheduled-task-detail' ? `${hash}?${new URLSearchParams({ id: next.scheduledTaskId })}` : hash;
+    location.hash = demoHashForPage(next);
     setPage(pageFromHash());
     setNavigationOpen(false);
   }
@@ -79,6 +100,7 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
     applyAppearance(next.appearance);
     applyPersonalization(next.personalization);
     void i18n.changeLanguage(i18nLanguage(next.language));
+    document.documentElement.lang = i18nLanguage(next.language);
     setPreferences(next);
   }
   return <AvatarPreferencesProvider preferences={preferences.avatars}>
@@ -94,12 +116,13 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
       onPinTask={noop} onUnpinTask={noop} onRenameTask={noop} onDeleteTask={noop}
       onNewConversationInWorkspace={noop} onRetryBootstrap={noop} onRequestWorkspaceTasks={noop}
       onRequestPinnedTasks={noop} onRequestTaskRuns={noop}
-      activeWorkspaceId={DEMO_PROJECT_ID} defaultExpandedWorkspaceId={DEMO_PROJECT_ID}
-      conversationTaskUuid={page.kind === 'conversation-run' ? `demo-${page.taskId}` : null}
+      activeWorkspaceId={page.kind === 'conversation-run' ? page.projectId : DEMO_PROJECT_ID} defaultExpandedWorkspaceId={page.kind === 'conversation-run' ? page.projectId : DEMO_PROJECT_ID}
+      conversationTaskUuid={page.kind === 'conversation-run' ? page.projectId === history?.projectId ? history.taskUuid : `demo-${page.taskId}` : null}
       conversationWorkspaceStore={store}
-      sourceControlWorkspacePath="/default"
+      sourceControlWorkspacePath={page.kind === 'conversation-run' && page.projectId !== DEMO_PROJECT_ID ? undefined : '/default'}
     >
       <Suspense fallback={<div className="p-5 text-sm text-muted-foreground">{t('common.loading')}</div>}>
+        {historyState.status === 'error' ? <Alert variant="destructive" className="rounded-none border-0"><AlertCircle /><AlertDescription className="flex flex-wrap items-center gap-2">{t('demo.historyLoadFailed')}<Button variant="ghost" size="sm" onClick={() => setHistoryRequest((value) => value + 1)}><RotateCw className="size-4" />{t('common.retry')}</Button></AlertDescription></Alert> : null}
         {page.kind === 'contexts' ? <ContextManagementPage key={linkParameters.get('tab')} initialTab={linkParameters.get('tab') === 'mcp' ? 'mcp' : linkParameters.get('tab') === 'skills' ? 'skills' : 'profiles'} agentRegistry={demoAgentRegistry} onAgentRegistryChange={noop} />
           : page.kind === 'agents' ? <AgentManagementPage vm={demoAgentRegistry} loading={false} onRefresh={noop} onRegistryChange={noop} />
           : page.kind === 'multica-tasks' ? <MulticaTaskManagementPage key={preferences.language} onSelectRun={(projectId, taskId, runId) => navigate({ kind: 'conversation-run', projectId, taskId, runId })} onPrepareMulticaTask={() => navigate({ kind: 'conversation-home' })} />
@@ -131,7 +154,7 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
             onSaveWallpaperOpacity={unusedAction} onRestoreThemeWallpaper={unusedAction}
             onSaveUpdaterSettings={unusedAction} onCheckUpdate={unusedAction} onInstallUpdate={async () => {}}
             onViewSettings={noop} onViewAdvanced={noop}
-          /> : page.kind === 'conversation-run' ? <DemoConversation key={`${page.taskId}:${page.runId}:${preferences.language}`} taskId={page.taskId} runId={page.runId} roundId={linkParameters.get('round')} nodeId={linkParameters.get('node')} bootstrap={bootstrap} language={preferences.language} /> : null}
+          /> : page.kind === 'conversation-run' ? <DemoConversation key={`${page.projectId}:${page.taskId}:${page.runId}:${preferences.language}`} page={page} parameters={linkParameters} bootstrap={bootstrap} language={preferences.language} title={page.projectId === history?.projectId ? history.title : demoTitle(page.taskId, preferences.language)} /> : null}
       </Suspense>
     </WorkspaceShell></ConversationComposerDraftBoundary>
     </DemoFrame>
@@ -147,7 +170,8 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
   </AvatarPreferencesProvider>;
 }
 
-function DemoConversation({ taskId, runId, roundId, nodeId, bootstrap, language }: { taskId: string; runId: string; roundId: string | null; nodeId: string | null; bootstrap: AppBootstrapVm; language: PreferencesVm['language'] }) {
+function DemoConversation({ page, parameters, bootstrap, title }: { page: Extract<ConversationPage, { kind: 'conversation-run' }>; parameters: URLSearchParams; bootstrap: AppBootstrapVm; language: PreferencesVm['language']; title: string }) {
+  const { projectId, taskId, runId } = page;
   const { t } = useTranslation();
   const [run, setRun] = useState<ConversationRunVm | null>(null);
   const [failed, setFailed] = useState(false);
@@ -155,19 +179,22 @@ function DemoConversation({ taskId, runId, roundId, nodeId, bootstrap, language 
     let active = true;
     setRun(null);
     setFailed(false);
-    browserApi.getConversationRun(DEMO_PROJECT_ID, taskId, runId).then(async (next) => {
-      const selectedRound = next.sessionTree.rounds.find((round) => round.roundId === roundId) ?? next.sessionTree.rounds.at(-1)!;
-      const leaf = selectedRound.nodes.flatMap((node) => node.attempts).find((leaf) => leaf.nodeId === (nodeId ?? next.selectedSession?.nodeId));
+    browserApi.getConversationRun(projectId, taskId, runId).then(async (next) => {
+      const leaves = next.sessionTree.rounds.flatMap((round) => round.nodes.flatMap((node) => [...node.attempts, ...(node.outerNodes ?? []).flatMap((outer) => outer.attempts)]));
+      const explicit = ['round', 'node', 'attempt', 'outerNode', 'outerAttempt'].some((key) => parameters.has(key));
+      const key = (leaf: typeof leaves[number]) => leaf.outerNodeId ? `${leaf.roundId}/${leaf.outerNodeId}/${leaf.outerAttemptId}/${leaf.nodeId}/${leaf.attemptId}` : `${leaf.roundId}/${leaf.nodeId}/${leaf.attemptId}`;
+      const leaf = explicit ? leaves.find((leaf) => (!parameters.has('round') || leaf.roundId === parameters.get('round')) && (!parameters.has('node') || leaf.nodeId === parameters.get('node')) && (!parameters.has('attempt') || leaf.attemptId === parameters.get('attempt')) && (leaf.outerNodeId ?? null) === parameters.get('outerNode') && (leaf.outerAttemptId ?? null) === parameters.get('outerAttempt')) : leaves.find((leaf) => key(leaf) === next.sessionTree.selectedSessionKey);
+      if (!leaf) missing({ taskId, runId });
       if (leaf) {
-        next.selectedSession = await browserApi.getAcpSession(DEMO_PROJECT_ID, taskId, runId, leaf.roundId, leaf.nodeId, leaf.attemptId);
-        next.sessionTree.selectedSessionKey = `${leaf.roundId}/${leaf.nodeId}/${leaf.attemptId}`;
+        next.selectedSession = await browserApi.getAcpSession(projectId, taskId, runId, leaf.roundId, leaf.nodeId, leaf.attemptId, undefined, undefined, leaf.outerNodeId, leaf.outerAttemptId);
+        next.sessionTree.selectedSessionKey = key(leaf);
       }
       if (active) setRun(next);
     }).catch(() => { if (active) setFailed(true); });
     return () => { active = false; };
-  }, [taskId, runId, roundId, nodeId]);
-  if (!run) return <div className="p-5 text-sm text-muted-foreground">{t(failed ? 'common.error' : 'common.loading')}</div>;
-  return <ConversationRunPage run={run} taskTitle={demoTitle(taskId, language)} appConfig={bootstrap.appConfig}
-    agentRegistry={demoAgentRegistry} onRerun={noop} onEditWorkflow={noop} onSelectSession={(leaf) => { location.hash = `${taskId}?${new URLSearchParams({ run: runId, round: leaf.roundId, node: leaf.nodeId })}`; }}
+  }, [projectId, taskId, runId, parameters]);
+  if (!run) return <div role={failed ? 'alert' : 'status'} className="p-5 text-sm text-muted-foreground">{t(failed ? 'common.operationFailed' : 'common.loading')}</div>;
+  return <ConversationRunPage run={run} taskTitle={title} appConfig={bootstrap.appConfig}
+    agentRegistry={demoAgentRegistry} onRerun={noop} onEditWorkflow={noop} onSelectSession={(leaf) => { location.hash = demoHashForPage(page, leaf); }}
     followMode="manual" initialSessionTreeExpansion={emptyExpansion} onSessionTreeExpansionChange={noop} />;
 }

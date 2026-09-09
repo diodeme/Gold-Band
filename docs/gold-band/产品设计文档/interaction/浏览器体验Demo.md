@@ -8,7 +8,7 @@ Demo 是复用客户端界面的产品体验入口，独立构建、独立部署
 - 工作流图和节点配置可查看；角色、Skill 的预设内容可查看。
 - 会话中的 Markdown 链接打开现有右侧文件工作区，文件只读。
 - 可调整主题、深浅色、语言、字体、字号以及侧栏布局。
-- 不开放 Git、Agent 执行、消息发送、业务编辑、系统文件操作、安装、反馈提交或远程连接。
+- 不开放 Git 执行、Agent 执行、消息发送、业务保存、系统文件操作、安装、反馈提交或远程连接；源码管理可浏览预设假数据。
 - 不实现业务 CRUD、浏览器文件系统或业务数据持久化。
 
 ## 模拟客户端体验（2026-09-09）
@@ -40,6 +40,14 @@ Direct 会话摘要提供与详情一致的 agentIdentity，沿用客户端列�
 手机宽度移除外框两侧留白，覆盖 resizable panel 的内联 display 样式，让模拟客户端占满视口。hover 继续按浏览器输入设备能力判断：普通鼠标设备保留悬浮效果，hover:none 的触摸/测试环境沿用客户端触摸规则，不按 Chrome 品牌禁用悬浮。
 
 ## 复用与隔离
+
+“更多”与客户端保持一致，包含需求管理和定时任务。需求管理复用原看板，固定四条待办、进行中、完成、失败样例；已完成记录可回看会话，待办准备只读取正文并预填快速对话，不领取任务。工作空间选择仅为内存展示，添加、移除、取消、账号切换与断开禁用。
+
+定时任务固定两条 Direct/Workflow 样例，每条两次执行记录。支持列表筛选、详情、历史会话跳转和配置查看；启停、立即执行、删除与保存禁用。快速对话复用发送组合按钮、定时配置工作区；配置“完成”只更新原 composer 内存草稿，发送与创建任务始终禁用。配置与需求准备共享原草稿边界，不引入第二份草稿。
+
+右侧保留文件、源码管理和运行目录入口。源码管理使用已有 browser preview 的变更、分支、工作树、提交历史与 Diff，所有 Git 写操作禁用，GitHub 不连接远程仓库。运行目录固定 reports/review.md，按完整会话 locator 和相对路径校验后读取，文件只读，不允许打开系统文件管理器。
+
+新增 hash 深链接：#multica-tasks、#scheduled-tasks、#scheduled-task-create、#scheduled-task-detail?id=demo-daily（或 demo-weekly）。管理页面懒加载，需求正文、执行历史与目录正文按需读取，样例无增长、不轮询、不持久化业务修改。
 
 `marketing/demo` 装配现有 WorkspaceShell、ConversationRunPage、ContextManagementPage、SettingsPage、GraphView 和文件查看组件。Demo 的 Vite 配置仅在本次构建中把 RuntimeApi 的适配器导入解析到 Demo runtime；桌面 API 契约、client.ts、desktop.ts 和 Rust 后端不变。
 

@@ -319,7 +319,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             label={t('conversation.sidebar.runModeManagement')}
             onClick={() => onSelect({ kind: 'run-mode-management' })}
           />
-          {!readOnly && <Collapsible open={moreNavigationOpen} onOpenChange={setMoreNavigationOpen}>
+          <Collapsible open={moreNavigationOpen} onOpenChange={setMoreNavigationOpen}>
             <CollapsibleTrigger asChild>
               <Button
                 variant="ghost"
@@ -358,7 +358,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                 }}
               />
             </CollapsibleContent>
-          </Collapsible>}
+          </Collapsible>
         </div>
         </div>
 

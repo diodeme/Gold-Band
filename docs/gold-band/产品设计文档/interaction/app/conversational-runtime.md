@@ -19,6 +19,7 @@
 
 - 后端在唯一的 ACP session-update 归一化边界将 provider 信号投影为 `contextCompaction` canonical lifecycle，前端和 runtime 不按 Agent 类型、工具标题或自然语言关键词自行判断。ACP 正式 schema 尚未提供 compaction update；过渡期优先识别工具事件上的结构化 `_meta.contextCompaction`，并以同一 `toolCallId` 作为该 provider 生命周期的稳定身份；Claude-compatible adapter 仅保留对独立且全文精确等于 `Compacting...` / `Compacting completed.` 的控制消息兼容。普通正文提及这些文字、标题恰为 `Compact conversation` 但没有结构化 metadata 的工具调用均不得误判。未来 ACP `compaction_update` 进入正式 schema 后，由同一归一化边界优先消费标准事件并删除 provider 兼容入口，不改变内部 lifecycle 或前端组件。
 - 消息流使用无头像的轻量结构化行，保留 assistant 结构行的横向位置；不使用大卡片、嵌套面板或粗边框。
+- 压缩开始通知必须幂等：无操作 ID 的控制消息在当前压缩结束前复用同一 canonical item；结构化事件按 `toolCallId` 关联。重复开始保留首次 ID、开始时间、压缩前占用、reset 观察和待确认用量。不同操作 ID 的开始先将旧活动压缩收敛为 interrupted（reason=`superseded`），再创建新条目；迟到的旧操作完成不得结束新操作，已终结的相同 ID 不得因开始通知回退为 running。已完成但尚待用量确认的条目仍允许原位补充有效用量，不重置结束时间。无 ID 协议不能区分重复通知与上游内部重启，以开始至完成/中断作为一个周期，不通过时间间隔猜测新操作。
 - running 状态展示“正在压缩上下文”、压缩前占用、已耗时和不定进度动画；动画必须遵守 `prefers-reduced-motion`。
 - 运行超过 120 秒后展示“耗时较长，仍在等待 Agent”，但仍不得伪造失败或百分比。
 - completed 状态原位更新为“上下文压缩完成”和总耗时。压缩条目可以继续只展示压缩前占用与窗口上限；会话底部的“上下文窗口”在 runtime 观察到 reset 后首个有效正数时切换为 compact 后 ACP 当前上下文占用。provider 若在 completed 信号前上报低于压缩前确认值的正数，或先上报 `used=0` reset 再上报正数，runtime 只在 active compaction 内暂存最新候选，completed 到达后才原子确认、写入同一个 canonical item，并复用既有 canonical `usageUpdate` 通道发布确认值；客户端 live reducer 将该隐藏事件投影到当前 session usage，但不把它加入消息流。不得要求用户再发送消息或增加前端轮询才能刷新。interrupted 时丢弃候选。reset 过程中的 `used=0` 不进入 UI，尚未获得有效值时保持上一次确认值或展示 `--`。

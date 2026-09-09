@@ -604,9 +604,9 @@ export function ConversationRunPage({
       <div className="min-h-0 flex-1">
         {selectedLeaf ? (
           <ACPChatDialog
+            key={selectedContentIdentity}
             readOnly={readOnly}
             showDisabledComposer={readOnly}
-            key={`${run.taskUuid ?? run.taskId}:${selectedSessionKey ?? 'empty'}`}
             session={selectedSession}
             agentRegistry={agentRegistry}
             sessionEstablished={selectedLeaf.sessionEstablished}

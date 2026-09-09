@@ -229,6 +229,8 @@ Task 最近对话活动只在三类 durable 边界推进：Task 创建成功、�
 - 只有一个 session 运行中 → 自动展开该 session
 - 多个 session 运行中 → 显示折叠行（session 名 + 实时状态），用户点击进入
 
+- 会话组件的生命周期身份必须取自实际渲染 leaf 的完整 content identity，与传入的 locator、正文窗口和缓存作用域一致。显式导航可以先更新目标 selectedSessionKey、再收到目标摘要；期间仍渲染旧 leaf 时不得提前以目标 key 挂载旧内容。目标摘要到达后才切换组件 owner，同一 leaf 的后台刷新保持组件和消息 DOM，不重置阅读状态。
+- 消息区处于无正文的 `pending` 首屏时，不展示“回到最新”。实时事件领先首个 canonical 正文窗口时，内部 recovery/newer 标记仍驱动既有自动追平，但不能直接投影为历史导航按钮；正文到达后自然退出 pending。已有历史正文的阅读、分页和手动恢复仍按原契约提供“回到最新”，不增加人工 Check 专属加载路径。
 - 人工判定请求的成功、错误与 submitting 收敛必须校验原 ACP session identity；切到另一个 attempt 后，旧响应不得隐藏新 attempt 的判定按钮或覆盖其提交状态。
 
 ## Composer 上下文功能区与引用

@@ -6163,7 +6163,7 @@ export function ACPChatDialog(
                 )}
                 data-acp-conversation-footer="viewport"
               >
-                {showReturnToLatest ? (
+                {showReturnToLatest && timelineSurfaceState !== 'pending' ? (
                   <Button
                     ref={handleReturnToLatestButtonRef}
                     type="button"

@@ -6692,6 +6692,44 @@ impl<'a> AcpRuntime<'a> {
         emit_live_update: bool,
         prompt_interaction: Option<&AcpPromptInteractionIdentity>,
     ) -> Result<()> {
+        if event.kind == "contextCompaction" {
+            let existing = if let Some(id) = compaction_tool_item_id(event) {
+                let branch_id = event_branch_id(event);
+                if branch_id == ROOT_BRANCH_ID {
+                    self.timeline_store.read_item(&id)?
+                } else if let Some(store) = self.branch_timeline_stores.get_mut(&branch_id) {
+                    store.read_item(&id)?
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let active = self
+                .usage
+                .compaction
+                .as_ref()
+                .and_then(|state| self.timeline_items.get(&state.item_id))
+                .cloned();
+            for item in context_compaction_updates(
+                &mut self.usage,
+                event,
+                existing.as_ref(),
+                active.as_ref(),
+            ) {
+                self.persist_projected_event(&item, emit_live_update, prompt_interaction)?;
+            }
+            return Ok(());
+        }
+        self.persist_projected_event(event, emit_live_update, prompt_interaction)
+    }
+
+    fn persist_projected_event(
+        &mut self,
+        event: &crate::acp::events::AcpUiEvent,
+        emit_live_update: bool,
+        prompt_interaction: Option<&AcpPromptInteractionIdentity>,
+    ) -> Result<()> {
         let mut timeline_item = self.timeline_item_for_event(event);
         if is_semantically_empty_agent_content(event) {
             return Ok(());
@@ -7156,7 +7194,7 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn apply_context_compaction_event(
-        &mut self,
+        usage: &mut AcpUsageState,
         item: &mut crate::acp::events::AcpUiEvent,
         seq: u64,
         timestamp: &str,
@@ -7173,45 +7211,31 @@ impl<'a> AcpRuntime<'a> {
             .and_then(|raw| raw.pointer("/contextCompaction/reason"))
             .and_then(Value::as_str)
             .map(str::to_string);
-        let canonical_item_id = item
-            .tool_call_id
-            .as_deref()
-            .filter(|tool_call_id| !tool_call_id.trim().is_empty())
-            .map(|tool_call_id| format!("context-compaction-tool-{tool_call_id}"))
-            .unwrap_or_else(|| format!("context-compaction-{seq}"));
+        let canonical_item_id =
+            compaction_tool_item_id(item).unwrap_or_else(|| format!("context-compaction-{seq}"));
 
-        let mut state = if status == "running" {
-            AcpContextCompactionState {
-                item_id: canonical_item_id.clone(),
+        let mut state = usage
+            .compaction
+            .as_ref()
+            .filter(|state| {
+                (compaction_tool_item_id(item).is_none() || state.item_id == canonical_item_id)
+                    && (status != "running" || state.completed_seq.is_none())
+            })
+            .cloned()
+            .unwrap_or_else(|| AcpContextCompactionState {
+                item_id: canonical_item_id,
                 started_seq: seq,
                 started_at: timestamp.to_string(),
-                context_used_before: self.usage.context.confirmed_used,
-                context_size: self.usage.context.window_size,
+                context_used_before: usage.context.confirmed_used,
+                context_size: usage.context.window_size,
                 completed_seq: None,
                 completed_at: None,
                 saw_context_reset: false,
                 pending_context_used_after: None,
-            }
-        } else {
-            self.usage
-                .compaction
-                .clone()
-                .unwrap_or_else(|| AcpContextCompactionState {
-                    item_id: canonical_item_id,
-                    started_seq: seq,
-                    started_at: timestamp.to_string(),
-                    context_used_before: self.usage.context.confirmed_used,
-                    context_size: self.usage.context.window_size,
-                    completed_seq: None,
-                    completed_at: None,
-                    saw_context_reset: false,
-                    pending_context_used_after: None,
-                })
-        };
+            });
 
         let context_used_after =
-            self.usage
-                .confirm_context_used_after_compaction(&status, &state, context_used_after);
+            usage.confirm_context_used_after_compaction(&status, &state, context_used_after);
 
         item.id = state.item_id.clone();
         item.started_seq = Some(state.started_seq);
@@ -7250,7 +7274,7 @@ impl<'a> AcpRuntime<'a> {
         {
             compaction.insert("reason".to_string(), Value::String(reason));
         }
-        self.usage.compaction =
+        usage.compaction =
             (status != "interrupted" && context_used_after.is_none()).then_some(state);
     }
 
@@ -7316,7 +7340,6 @@ impl<'a> AcpRuntime<'a> {
             }
             "contextCompaction" => {
                 Self::clear_timeline_streams(&mut streams);
-                self.apply_context_compaction_event(&mut item, seq, &timestamp);
             }
             "usageUpdate" => {
                 item.id = item
@@ -7493,6 +7516,70 @@ impl Drop for AcpRuntime<'_> {
         }
         unregister_provider_control(&self.paths.attempt_dir, &self.control);
     }
+}
+
+fn compaction_tool_item_id(event: &AcpUiEvent) -> Option<String> {
+    event
+        .tool_call_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| format!("context-compaction-tool-{id}"))
+}
+
+fn context_compaction_updates(
+    usage: &mut AcpUsageState,
+    event: &AcpUiEvent,
+    existing: Option<&AcpUiEvent>,
+    active: Option<&AcpUiEvent>,
+) -> Vec<AcpUiEvent> {
+    if let Some(previous) = existing.filter(|item| item.status.as_deref() != Some("running")) {
+        // Completion can still receive its confirmed usage, but never restart its lifecycle.
+        let confirms_usage = previous.status.as_deref() == Some("completed")
+            && event.status.as_deref() == Some("completed")
+            && event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/contextCompaction/contextUsedAfter"))
+                .and_then(Value::as_u64)
+                .is_some()
+            && usage
+                .compaction
+                .as_ref()
+                .is_some_and(|state| state.item_id == previous.id);
+        if !confirms_usage {
+            return Vec::new();
+        }
+    }
+    let tool_id = compaction_tool_item_id(event);
+    let different_operation = usage
+        .compaction
+        .as_ref()
+        .is_some_and(|state| tool_id.as_ref().is_some_and(|id| *id != state.item_id));
+    if different_operation && event.status.as_deref() != Some("running") {
+        return Vec::new();
+    }
+    let mut updates = Vec::with_capacity(2);
+    if different_operation
+        && let Some(previous) = active.filter(|item| item.status.as_deref() == Some("running"))
+    {
+        let mut interrupted = previous.clone();
+        interrupted.seq = event.seq;
+        interrupted.timestamp = event.timestamp.clone();
+        interrupted.status = Some("interrupted".to_string());
+        interrupted.raw.get_or_insert_with(|| json!({}))["contextCompaction"]["reason"] =
+            json!("superseded");
+        AcpRuntime::apply_context_compaction_event(
+            usage,
+            &mut interrupted,
+            event.seq,
+            &event.timestamp,
+        );
+        updates.push(interrupted);
+    }
+    let mut item = event.clone();
+    AcpRuntime::apply_context_compaction_event(usage, &mut item, event.seq, &event.timestamp);
+    updates.push(item);
+    updates
 }
 
 fn upsert_context_compaction_raw(
@@ -11917,6 +12004,190 @@ mod tests {
         assert_eq!(prior.input_tokens, None);
         assert_eq!(prior.output_tokens, None);
         assert_eq!(prior.total_tokens, None);
+    }
+
+    fn compaction_update(
+        seq: u64,
+        seconds: u64,
+        status: &str,
+        tool_id: Option<&str>,
+    ) -> AcpUiEvent {
+        let update = match tool_id {
+            Some(id) => json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": id,
+                "status": if status == "running" { "in_progress" } else { status },
+                "_meta": { "contextCompaction": {} }
+            }),
+            None => json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "type": "text", "text": if status == "running" {
+                    "Compacting..."
+                } else { "Compacting completed." } }
+            }),
+        };
+        let mut item = crate::acp::events::normalize_session_update(
+            seq,
+            Some("session-1".to_string()),
+            &update,
+        );
+        item.timestamp = format!("{seconds}Z");
+        item
+    }
+
+    #[test]
+    fn compaction_repeated_start_preserves_one_durable_item_and_first_start() {
+        for tool_id in [None, Some("compact-1")] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = camino::Utf8Path::from_path(dir.path())
+                .unwrap()
+                .join("acp.timeline.jsonl");
+            let mut store =
+                crate::acp::timeline::TimelineStore::open(path.clone(), Default::default())
+                    .unwrap();
+            let mut usage = AcpUsageState::default();
+            usage.context.confirmed_used = Some(166_919);
+            usage.context.window_size = Some(200_000);
+            let mut ids = HashSet::new();
+            for (seq, seconds, status) in [
+                (10, 100, "running"),
+                (11, 130, "running"),
+                (12, 160, "running"),
+                (13, 190, "running"),
+                (14, 207, "completed"),
+            ] {
+                let mut item = compaction_update(seq, seconds, status, tool_id);
+                let timestamp = item.timestamp.clone();
+                AcpRuntime::apply_context_compaction_event(&mut usage, &mut item, seq, &timestamp);
+                ids.insert(item.id.clone());
+                store.upsert(seq, &item).unwrap();
+                assert_eq!(item.started_at.as_deref(), Some("100Z"));
+                if status == "completed" {
+                    assert_eq!(item.ended_at.as_deref(), Some("207Z"));
+                }
+            }
+            assert_eq!(ids.len(), 1);
+            let item =
+                crate::acp::timeline::read_indexed_timeline_item(&path, ids.iter().next().unwrap())
+                    .unwrap()
+                    .unwrap()
+                    .event;
+            assert_eq!(item.status.as_deref(), Some("completed"));
+            assert_eq!(item.started_seq, Some(10));
+        }
+    }
+
+    #[test]
+    fn compaction_repeated_start_keeps_pending_usage_and_next_cycle_gets_new_identity() {
+        let mut usage = AcpUsageState::default();
+        usage.context.confirmed_used = Some(166_919);
+        let mut first = compaction_update(10, 100, "running", None);
+        AcpRuntime::apply_context_compaction_event(&mut usage, &mut first, 10, "100Z");
+        let state = usage.compaction.as_mut().unwrap();
+        state.saw_context_reset = true;
+        state.pending_context_used_after = Some(1_987);
+        let mut repeat = compaction_update(11, 130, "running", None);
+        AcpRuntime::apply_context_compaction_event(&mut usage, &mut repeat, 11, "130Z");
+        let state = usage.compaction.as_ref().unwrap();
+        assert!(state.saw_context_reset);
+        assert_eq!(state.pending_context_used_after, Some(1_987));
+        let mut done = compaction_update(12, 207, "completed", None);
+        AcpRuntime::apply_context_compaction_event(&mut usage, &mut done, 12, "207Z");
+        assert_eq!(done.id, first.id);
+        assert_eq!(
+            done.raw.unwrap()["contextCompaction"]["contextUsedAfter"],
+            1_987
+        );
+        assert!(usage.compaction.is_none());
+        let mut next = compaction_update(13, 300, "running", None);
+        AcpRuntime::apply_context_compaction_event(&mut usage, &mut next, 13, "300Z");
+        assert_ne!(next.id, first.id);
+        assert_eq!(next.started_at.as_deref(), Some("300Z"));
+    }
+
+    #[test]
+    fn compaction_structured_identity_settles_superseded_and_rejects_late_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.timeline.jsonl");
+        let mut store =
+            crate::acp::timeline::TimelineStore::open(path.clone(), Default::default()).unwrap();
+        let mut usage = AcpUsageState::default();
+        let mut apply = |usage: &mut AcpUsageState, event: AcpUiEvent| {
+            let existing =
+                super::compaction_tool_item_id(&event).and_then(|id| store.read_item(&id).unwrap());
+            let active = usage
+                .compaction
+                .as_ref()
+                .and_then(|state| store.read_item(&state.item_id).unwrap());
+            let items = super::context_compaction_updates(
+                usage,
+                &event,
+                existing.as_ref(),
+                active.as_ref(),
+            );
+            for item in &items {
+                store.upsert(item.seq, item).unwrap();
+            }
+            items
+        };
+        apply(&mut usage, compaction_update(10, 100, "running", Some("a")));
+        let items = apply(&mut usage, compaction_update(11, 130, "running", Some("b")));
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].status.as_deref(), Some("interrupted"));
+        assert_eq!(items[0].started_at.as_deref(), Some("100Z"));
+        assert_eq!(items[0].ended_at.as_deref(), Some("130Z"));
+        assert_eq!(
+            items[0].raw.as_ref().unwrap()["contextCompaction"]["reason"],
+            "superseded"
+        );
+        for (seq, status) in [(12, "running"), (13, "completed")] {
+            assert!(apply(&mut usage, compaction_update(seq, 140, status, Some("a"))).is_empty());
+            assert_eq!(
+                usage.compaction.as_ref().unwrap().item_id,
+                "context-compaction-tool-b"
+            );
+        }
+        let done = apply(
+            &mut usage,
+            compaction_update(14, 160, "completed", Some("b")),
+        );
+        assert_eq!(done[0].started_at.as_deref(), Some("130Z"));
+        assert!(apply(&mut usage, compaction_update(15, 170, "running", Some("b"))).is_empty());
+        let mut confirmed = compaction_update(16, 180, "completed", Some("b"));
+        confirmed.raw.as_mut().unwrap()["contextCompaction"]["contextUsedAfter"] = json!(1_987);
+        let confirmed = apply(&mut usage, confirmed);
+        assert_eq!(confirmed[0].ended_at.as_deref(), Some("160Z"));
+        assert!(usage.compaction.is_none());
+        assert!(apply(&mut usage, compaction_update(17, 190, "running", Some("b"))).is_empty());
+        apply(&mut usage, compaction_update(18, 200, "running", Some("c")));
+        assert!(
+            apply(
+                &mut usage,
+                compaction_update(19, 210, "completed", Some("unknown"))
+            )
+            .is_empty()
+        );
+        let interrupted = apply(&mut usage, compaction_update(20, 220, "failed", Some("c")));
+        assert_eq!(interrupted[0].status.as_deref(), Some("interrupted"));
+        assert!(usage.compaction.is_none());
+        drop(apply);
+        drop(store);
+        let mut reopened =
+            crate::acp::timeline::TimelineStore::open(path, Default::default()).unwrap();
+        let previous = reopened
+            .read_item("context-compaction-tool-b")
+            .unwrap()
+            .unwrap();
+        assert!(
+            super::context_compaction_updates(
+                &mut usage,
+                &compaction_update(21, 230, "running", Some("b")),
+                Some(&previous),
+                None
+            )
+            .is_empty()
+        );
     }
 
     #[test]

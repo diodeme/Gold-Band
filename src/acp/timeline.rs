@@ -47,7 +47,8 @@ pub const TIMELINE_BLOB_MIN_BYTES: usize = 64 * 1024;
 // index as compatible would leave stop unable to settle a processing retry in
 // the crash window between the timeline append and session metadata rewrite.
 // V11 indexes lightweight image references, including images in paginated activity.
-pub const TIMELINE_INDEX_FORMAT_VERSION: u32 = 11;
+// V12 derives composer eligibility from user-text provenance, including manual transitions.
+pub const TIMELINE_INDEX_FORMAT_VERSION: u32 = 12;
 pub const DEFAULT_TIMELINE_CHECKPOINT_PATCH_INTERVAL: usize = 256;
 pub const DEFAULT_TIMELINE_TAIL_REPLAY_LIMIT: usize = 256;
 // Internal result marker: tail replay exceeded its bound and the index was
@@ -147,6 +148,8 @@ struct TimelineItemLocator {
     branch_id: String,
     #[serde(default)]
     gold_band_prompt: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    composer_text_bytes: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider_history_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1534,6 +1537,7 @@ fn timeline_item_locator(
             .and_then(|raw| raw.get("source"))
             .and_then(Value::as_str)
             == Some("goldBandPrompt"),
+        composer_text_bytes: composer_history::original_user_text(item).map(str::len),
         provider_history_item_id: timeline_provider_history_item_id(item),
         prompt_id: timeline_prompt_id(item),
     })
@@ -2015,6 +2019,8 @@ fn read_event_from_file_at_locator(
         .map(|(_, item, _)| item)
         .ok_or_else(|| anyhow::anyhow!("acp.timeline-index-locator-corrupt"))
 }
+
+pub mod composer_history;
 
 pub fn read_indexed_timeline_page(
     path: &Utf8Path,

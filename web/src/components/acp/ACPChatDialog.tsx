@@ -6248,6 +6248,7 @@ export function ACPChatDialog(
               />
             ) : (
               <AcpConversationComposer
+                historyLocator={projectId ? { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId } : null}
                 prompt={prompt}
                 onPromptChange={setPrompt}
                 onSubmit={send}

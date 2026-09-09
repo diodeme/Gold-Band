@@ -13,6 +13,10 @@ import type {
   ReactNode,
   Ref,
 } from 'react';
+import { useMemo } from 'react';
+import { getRuntimeApi } from '@/api/client';
+import { useComposerHistory } from '@/hooks/useComposerHistory';
+import type { ComposerHistoryLocator } from '@/lib/composer-history';
 import { Trans, useTranslation } from 'react-i18next';
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 
@@ -33,6 +37,7 @@ import { cn } from '@/lib/utils';
 import { ACP_SESSION_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 
 export interface AcpConversationComposerProps {
+  historyLocator?: ComposerHistoryLocator | null;
   prompt: string;
   onPromptChange: (value: string) => void;
   onSubmit: () => void;
@@ -111,6 +116,7 @@ export function AcpConversationComposer(props: AcpConversationComposerProps) {
 }
 
 function AcpConversationComposerContent({
+  historyLocator,
   prompt,
   onPromptChange,
   onSubmit,
@@ -157,6 +163,20 @@ function AcpConversationComposerContent({
   supersededSession,
 }: AcpConversationComposerProps) {
   const { t } = useTranslation();
+  const historyScope = JSON.stringify(historyLocator ?? null);
+  const historySource = useMemo(() => {
+    const locator = JSON.parse(historyScope) as ComposerHistoryLocator | null;
+    return locator ? {
+      list: (query: import('@/lib/composer-history').HistoryQuery) => getRuntimeApi().listComposerHistory(locator, query),
+      text: (cursor: import('@/lib/composer-history').HistoryCursor) => getRuntimeApi().getComposerHistoryText(locator, cursor),
+    } : null;
+  }, [historyScope]);
+  const history = useComposerHistory({
+    scope: historyScope, source: historySource, input: prompt,
+    occupied: attachments.length > 0 || quotes.length > 0,
+    disabled: inputDisabled, onChange: onPromptChange,
+  });
+  const submit = () => { history.reset(); onSubmit(); };
   const continueAndSend = runtimeContinueKind === 'continue-current-attempt' && canSubmit;
   const runtimeContinueLabel = runtimeContinueKind === 'recover-completed-attempt'
     ? t('acp.recoverWorkflow')
@@ -182,7 +202,7 @@ function AcpConversationComposerContent({
         </div>
       ) : null}
       <SlashCommandMenu
-        open={slashMenuOpen}
+        open={slashMenuOpen && !history.browsing}
         commands={slashCommands}
         activeIndex={slashMenuActiveIndex}
         onActiveIndexChange={onSlashMenuActiveIndexChange}
@@ -191,8 +211,8 @@ function AcpConversationComposerContent({
       >
         <PromptInput
           value={prompt}
-          onValueChange={onPromptChange}
-          onSubmit={onSubmit}
+          onValueChange={history.onChange}
+          onSubmit={submit}
           isLoading={sending}
           maxHeight={320}
           className={cn(
@@ -245,8 +265,8 @@ function AcpConversationComposerContent({
             <PromptInputTextarea
               ref={textareaRef}
               className={ACP_SESSION_COMPOSER_LAYOUT.textareaClassName}
-              valuePrefix={committedSlashCommand?.prefix}
-              leadingAdornment={committedSlashCommand ? (
+              valuePrefix={history.browsing ? undefined : committedSlashCommand?.prefix}
+              leadingAdornment={committedSlashCommand && !history.browsing ? (
                 <SlashCommandInputTag
                   prefix={committedSlashCommand.prefix}
                   description={committedSlashCommand.description}
@@ -254,13 +274,21 @@ function AcpConversationComposerContent({
               ) : null}
               placeholder={placeholder}
               textareaDisabled={inputDisabled}
-              onKeyDown={onTextareaKeyDown}
+              onKeyDown={(event) => {
+                const composing = history.isComposing() || event.nativeEvent.isComposing || event.keyCode === 229;
+                const modified = event.altKey || event.ctrlKey || event.metaKey || event.shiftKey;
+                if (!history.browsing && !composing && !modified) onTextareaKeyDown(event);
+                history.onKeyDown(event);
+              }}
+              onCompositionStart={history.onCompositionStart}
+              onCompositionEnd={history.onCompositionEnd}
               onDragEnter={inputDisabled ? undefined : onDragEnter}
               onDragOver={inputDisabled ? undefined : onDragOver}
               onDrop={inputDisabled ? undefined : onDrop}
               onPaste={inputDisabled ? undefined : onPaste}
             />
           )}
+          {history.error ? <div role="alert" className="px-2.5 text-xs text-destructive">{t('acp.composerHistoryError')}</div> : null}
           <div className={ACP_SESSION_COMPOSER_LAYOUT.commandBarClassName} data-acp-composer-command-bar="true">
             <div className={ACP_SESSION_COMPOSER_LAYOUT.leadingActionsClassName}>
               <input
@@ -312,7 +340,7 @@ function AcpConversationComposerContent({
                     variant="secondary"
                     disabled={runtimeContinueSubmitting}
                     aria-label={runtimeContinueHint}
-                    onClick={() => { void onRuntimeContinue(); }}
+                    onClick={() => { history.reset(); void onRuntimeContinue(); }}
                     data-acp-continue-workflow="true"
                   >
                     {runtimeContinueSubmitting ? (
@@ -332,7 +360,7 @@ function AcpConversationComposerContent({
                   size="sm"
                   disabled={!canSubmit}
                   aria-label={queueSubmit ? t('acp.promptQueue.enqueue') : t('acp.sendMessage')}
-                  onClick={onSubmit}
+                  onClick={submit}
                   data-acp-send="true"
                 >
                   {sendButtonBusy ? (

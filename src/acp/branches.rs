@@ -28,6 +28,7 @@ pub const ROOT_BRANCH_ID: &str = "root";
 const BRANCH_META_KEY: &str = "goldBandConversation";
 const BRANCH_TIMELINE_STORAGE_SCHEMA_VERSION: u32 = 1;
 const AGENT_RESULT_STORAGE_SCHEMA_VERSION: u32 = 2;
+const COMPOSER_PROVENANCE_STORAGE_SCHEMA_VERSION: u32 = 3;
 const STANDALONE_ACP_STORAGE_STATE_FILE: &str = "acp.storage.json";
 const AGENT_NAMESPACE: Uuid = Uuid::from_u128(0x63c7f8ac_1498_4f6e_8f6d_62f2f04033f1);
 #[cfg(test)]
@@ -926,6 +927,10 @@ pub fn prepare_agent_timeline_storage(attempt_dir: &Utf8Path) -> Result<bool> {
     if current < AGENT_RESULT_STORAGE_SCHEMA_VERSION {
         changed |= migrate_legacy_agent_results(attempt_dir)?;
         advance_node_acp_storage_schema_version(&node_path, AGENT_RESULT_STORAGE_SCHEMA_VERSION)?;
+    }
+    if current < COMPOSER_PROVENANCE_STORAGE_SCHEMA_VERSION {
+        changed |= crate::acp::timeline::composer_history::migrate_raw_agent_initial_text(attempt_dir)?;
+        advance_node_acp_storage_schema_version(&node_path, COMPOSER_PROVENANCE_STORAGE_SCHEMA_VERSION)?;
     }
     Ok(changed)
 }

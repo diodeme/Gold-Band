@@ -885,7 +885,7 @@ function TaskRow({
           <span className={cn('size-1.5 rounded-full', latestColor)} />
         )}
       </span>
-      <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden group-hover:pr-20">
+      <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
         {editing ? (
           <input
             ref={editInputRef}
@@ -906,7 +906,7 @@ function TaskRow({
           <span className="shrink-0 text-ui-caption font-normal leading-4 tabular-nums text-muted-foreground/55">{relativeTime}</span>
         ) : null}
       </div>
-      <span data-demo-task-actions={readOnly || undefined} className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-1 bg-sidebar group-hover:flex group-hover:pointer-events-auto group-focus-within:flex">
+      <span data-demo-task-actions={readOnly || undefined} className="hidden shrink-0 items-center gap-1 group-hover:flex group-focus-within:flex">
         {onRename ? (
           <Button disabled={readOnly} title={t('conversation.sidebar.rename')} aria-label={t('conversation.sidebar.rename')} variant="ghost" size="icon" className="size-5 shrink-0" onClick={startRename}>
             <Pencil className="size-3" />

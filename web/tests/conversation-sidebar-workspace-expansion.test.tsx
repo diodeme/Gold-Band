@@ -64,6 +64,36 @@ afterEach(() => {
 });
 
 describe('ConversationSidebar workspace expansion intent', () => {
+  it('keeps task actions transparent and in the row flow for hover and keyboard focus', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const vm = sidebarVm();
+    vm.pinnedTasks = [{
+      projectId: 'workspace-a', taskId: 'task-actions', taskUuid: 'uuid-actions',
+      title: 'C:\\very-long-workspace-path\\conversation-title', autoTitle: false,
+      runMode: 'direct', latestRun: null, runs: [], runHistoryStatus: 'ready-empty',
+      runsNextCursor: null, pinned: true, pinnedOrder: 0,
+    }];
+    vm.pinnedTaskPage = { status: 'ready', nextCursor: null };
+    try {
+      await act(async () => root.render(
+        <ConversationSidebar {...callbacks} vm={vm} active={{ kind: 'conversation-home' }} />,
+      ));
+      const rename = container.querySelector<HTMLButtonElement>('[aria-label="conversation.sidebar.rename"]')!;
+      const actions = rename.parentElement!;
+      expect(actions.classList.contains('bg-sidebar')).toBe(false);
+      expect(actions.classList.contains('absolute')).toBe(false);
+      expect(actions.classList.contains('shrink-0')).toBe(true);
+      expect(actions.classList.contains('group-hover:flex')).toBe(true);
+      expect(actions.classList.contains('group-focus-within:flex')).toBe(true);
+      await act(async () => rename.click());
+      expect(container.querySelector('input')?.value).toBe(vm.pinnedTasks[0].title);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('navigates a pinned-only Direct task without loading its workspace task page first', async () => {
     const container = document.createElement('div');
     document.body.append(container);

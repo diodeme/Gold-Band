@@ -8,17 +8,19 @@ import { bundleRecording } from './site-recording-bundle.mjs';
 import { SceneAssetSchema, SceneManifestSchema } from '../marketing/site/replay-model.ts';
 import { measureWorkflowCamera } from './workflow-camera.mjs';
 import { beforeSourceStoryboard, measureBeforeCamera, BEFORE_STEPS, BEFORE_CAMERA_TRANSITION_MS } from './before-source-storyboard.mjs';
+import { afterSourceStoryboard, measureAfterCamera, AFTER_STEPS, AFTER_CAMERA_TRANSITION_MS } from './after-source-storyboard.mjs';
 
 assert(process.env.RECORDING_ATTACHMENTS && process.env.RECORDING_OUTPUT && process.env.RECORDING_SOURCE_DIST,
   'RECORDING_ATTACHMENTS, RECORDING_OUTPUT and RECORDING_SOURCE_DIST are required');
 const attachments = resolve(process.env.RECORDING_ATTACHMENTS);
 const output = resolve(process.env.RECORDING_OUTPUT);
 const before = process.env.RECORDING_SCENE === 'before';
-const scene = before ? 'before' : 'during';
-const publicRoot = process.env.RECORDING_PUBLIC_PATH || (before ? '/media/before/' : '/media/workflow/');
+const after = process.env.RECORDING_SCENE === 'after';
+const scene = before ? 'before' : after ? 'after' : 'during';
+const publicRoot = process.env.RECORDING_PUBLIC_PATH || (before ? '/media/before/' : after ? '/media/after/' : '/media/workflow/');
 const origin = process.env.RECORDING_URL || 'http://127.0.0.1:1443/';
 await mkdir(attachments, { recursive: true });
-const session = before ? 'before-paired-035' : 'workflow-paired-035';
+const session = before ? 'before-paired-035' : after ? 'after-paired-035' : 'workflow-paired-035';
 function browser(...args) {
   const path = resolve(attachments, 'browser-response.json');
   const fd = openSync(path, 'w');
@@ -47,9 +49,9 @@ try {
     evaluate('document.fonts.ready.then(()=>true)');
     const measurements = [];
     const cameraMeasurements = [];
-    const recording = (before ? beforeSourceStoryboard : workflowSourceStoryboard)({ browser, evaluate, language, camera(stepId, { overview = false } = {}) {
-      if (before) {
-        cameraMeasurements.push({ stepId, overview, ...evaluate(`({timestamp:Date.now(),...(${measureBeforeCamera.toString()})(${JSON.stringify(overview ? 'overview' : stepId)})})`) });
+    const recording = (before ? beforeSourceStoryboard : after ? afterSourceStoryboard : workflowSourceStoryboard)({ browser, evaluate, language, camera(stepId, { overview = false } = {}) {
+      if (before || after) {
+        cameraMeasurements.push({ stepId, overview, ...evaluate(`({timestamp:Date.now(),...(${(before ? measureBeforeCamera : measureAfterCamera).toString()})(${JSON.stringify(overview ? 'overview' : stepId)})})`) });
         return;
       }
       const measurement = evaluate(`window.goldBandPreview.snapshot().then(snapshot => {
@@ -58,7 +60,7 @@ try {
       })`);
       cameraMeasurements.push({ stepId, overview, ...measurement });
     }, screenshot(stepId) {
-      const measurement = evaluate(before ? `(${measureBeforeCamera.toString()})(${JSON.stringify(stepId)})` : `window.goldBandPreview.snapshot().then(snapshot => (${measureWorkflowCamera.toString()})(${JSON.stringify(stepId)}, snapshot.workflowGraph.edges, snapshot.workflowGraph.nodes))`);
+      const measurement = evaluate(before || after ? `(${(before ? measureBeforeCamera : measureAfterCamera).toString()})(${JSON.stringify(stepId)})` : `window.goldBandPreview.snapshot().then(snapshot => (${measureWorkflowCamera.toString()})(${JSON.stringify(stepId)}, snapshot.workflowGraph.edges, snapshot.workflowGraph.nodes))`);
       assert.equal(measurement.width, width); assert.equal(measurement.height, height);
       measurements.push({ stepId, timestamp: evaluate('Date.now()'), ...measurement });
       browser('screenshot', resolve(directory, `${stepId}-${width}.png`));
@@ -70,7 +72,7 @@ try {
     const assetPath = `${publicRoot}${variant}/`;
     const bundle = await bundleRecording({ recording, captureOrigin: origin, sourceRoot: process.env.RECORDING_SOURCE_DIST, outputRoot: assetOutput, publicPath: assetPath });
     const markers = recording.events.filter(event => event.type === 5 && event.data.tag === 'semantic-checkpoint');
-    assert.equal(markers.length, before ? BEFORE_STEPS.length : 11);
+    assert.equal(markers.length, before ? BEFORE_STEPS.length : after ? AFTER_STEPS.length : 11);
     const start = recording.events[0].timestamp;
     const checkpoints = markers.map((marker, index) => ({ stepId: marker.data.payload.stepId,
       startMs: index ? marker.timestamp - start : 0,
@@ -79,7 +81,7 @@ try {
     for (const point of checkpoints) await copyFile(resolve(directory, `${point.stepId}-${width}.png`), resolve(assetOutput, `${point.stepId}.png`));
     const frames = track => cameraMeasurements.map((measurement, index) => ({
       timeMs: index ? measurement.timestamp - start : 0,
-      rect: measurement[track], zoom: 1, transitionMs: index ? (before ? BEFORE_CAMERA_TRANSITION_MS : WORKFLOW_CAMERA_TRANSITION_MS) : 0,
+      rect: measurement[track], zoom: 1, transitionMs: index ? (before ? BEFORE_CAMERA_TRANSITION_MS : after ? AFTER_CAMERA_TRANSITION_MS : WORKFLOW_CAMERA_TRANSITION_MS) : 0,
     }));
     const asset = SceneAssetSchema.parse({ version: 1, scene, language, theme, rrwebVersion: '2.1.1', ...bundle.metadata,
       width, height, poster: checkpoints[0].poster, checkpoints,

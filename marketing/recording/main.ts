@@ -14,7 +14,7 @@ const scene = options.get('scene') || 'after';
 const preferences = (await browserApi.getAppBootstrap()).preferences;
 let currentPreferences = await browserApi.saveDesktopPreferences({ ...preferences.appearance, colorScheme: options.get('theme') === 'light' ? 'light' : 'dark' }, preferences.personalization, language === 'en' ? 'en' : 'zh-cn', preferences.useLocalClaude, preferences.verboseLogging);
 let advance: (step: number | WorkflowCue) => void | Promise<void> = step => browserApi.scenario!.advance(step as WorkflowCue);
-if (scene !== 'during') {
+if (scene !== 'during' && scene !== 'after') {
 const base = await browserApi.getConversationRun('default', 'mock-task', 'run-052');
 let run = createPreviewRun(base, language, scene === 'during' ? 1 : 5);
 const sessions = new Set<(event: AcpSessionUpdatedEventVm) => void>();

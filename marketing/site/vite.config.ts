@@ -17,6 +17,7 @@ export default defineConfig(({ command, mode }) => {
     async writeBundle(options) {
       await cp(resolve(process.env.SITE_WORKFLOW_ASSETS || 'marketing/site/media/workflow'), resolve(options.dir!, 'media/workflow'), { recursive: true });
       await cp(resolve(process.env.SITE_BEFORE_ASSETS || 'marketing/site/media/before'), resolve(options.dir!, 'media/before'), { recursive: true });
+      await cp(resolve(process.env.SITE_AFTER_ASSETS || 'marketing/site/media/after'), resolve(options.dir!, 'media/after'), { recursive: true });
     },
   }],
   resolve: { alias: { '@': resolve('web/src') } },

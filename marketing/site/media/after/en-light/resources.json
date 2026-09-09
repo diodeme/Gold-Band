@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "resources": [
+    {
+      "url": "/media/after/en-light/resources/logo.svg",
+      "byteLength": 75480,
+      "sha256": "5a8d2326a49d459d3429e6a792b441955b6eebca5ae7a54636a57465e69b7b7a"
+    },
+    {
+      "url": "/media/after/en-light/resources/theme-assets/builtin.gold-band/3100e775e8616cd2-inter-latin-variable.woff2",
+      "byteLength": 48256,
+      "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+    },
+    {
+      "url": "/media/after/en-light/resources/theme-assets/builtin.gold-band/c905ab46ff4f0bcf-misans-vf.woff2",
+      "byteLength": 2615016,
+      "sha256": "c905ab46ff4f0bcf17ceebc79e6149cecc4165281690c2fd825637d7ad42be27"
+    },
+    {
+      "url": "/media/after/en-light/resources/theme-assets/builtin.tech-neutral/3100e775e8616cd2-inter-latin-variable.woff2",
+      "byteLength": 48256,
+      "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+    },
+    {
+      "url": "/media/after/en-light/resources/theme-assets/builtin.tech-neutral/c905ab46ff4f0bcf-misans-vf.woff2",
+      "byteLength": 2615016,
+      "sha256": "c905ab46ff4f0bcf17ceebc79e6149cecc4165281690c2fd825637d7ad42be27"
+    },
+    {
+      "url": "/media/after/en-light/resources/agent-icons/claude.svg",
+      "byteLength": 3952,
+      "sha256": "6ab909e92679754c5169add2a800da93406622b5f592add61cdfdd92ea9fcb84"
+    }
+  ]
+}

@@ -332,12 +332,21 @@ pub fn assemble_pulled_skill_md(
     render_frontmatter_document(&updates, &body)
 }
 
-/// 拉取「已存在」判定：全局自有库中存在同名目录（`agent_source == ".gold-band"`）。
-pub fn own_global_skill_exists(skills: &[SkillMeta], dir_name: &str) -> bool {
-    skills.iter().any(|meta| {
-        meta.agent_source == OWN_LIBRARY_AGENT_SOURCE
-            && skill_dir_name_from_str(&meta.directory_path) == Some(dir_name)
-    })
+/// 拉取「已存在」判定 + 覆盖定位：全局自有库（`agent_source == ".gold-band"`）中存在同名目录时，
+/// 返回该 skill 的 `directory_path`（**绝对路径**）。
+///
+/// 返回值直接作为 `write_instance` 的 `current_directory_path`——该参数是路径而非目录名
+/// （`save_target_dir` 原样取其作目标目录、`write_instance` 校验其存在），传裸目录名会被当作
+/// 相对路径按进程 CWD 解析而报 `SKILL dir not found`。同时该目录也是覆盖时读取旧内容
+/// （保留本地未知 frontmatter 字段）的基准。
+pub fn own_global_skill_dir(skills: &[SkillMeta], dir_name: &str) -> Option<String> {
+    skills
+        .iter()
+        .find(|meta| {
+            meta.agent_source == OWN_LIBRARY_AGENT_SOURCE
+                && skill_dir_name_from_str(&meta.directory_path) == Some(dir_name)
+        })
+        .map(|meta| meta.directory_path.clone())
 }
 
 // ── 心跳 ack 待办处理（loop_.rs spawn 调用；绝不阻塞心跳 tick）──────────────────────
@@ -461,6 +470,7 @@ fn failed_list_report(error: String) -> LocalSkillListReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gold_band::skill::SkillManager;
 
     #[test]
     fn dir_name_is_idempotent_for_regular_names() {
@@ -584,15 +594,72 @@ mod tests {
     }
 
     #[test]
-    fn exists_check_scopes_to_own_library_by_dir_name() {
+    fn own_global_skill_dir_returns_absolute_dir_of_matching_own_library_skill() {
         let skills = vec![
+            meta("C:/home/.gold-band/skills/to-spec", ".gold-band"),
             meta("C:/home/.gold-band/skills/pr-review", ".gold-band"),
             meta("C:/home/.claude/skills/other", ".claude"),
         ];
-        assert!(own_global_skill_exists(&skills, "pr-review"));
+        // 命中自有库同名目录 → 返回既有 skill 的 directory_path（绝对路径，覆盖写入定位用）。
+        assert_eq!(
+            own_global_skill_dir(&skills, "to-spec").as_deref(),
+            Some("C:/home/.gold-band/skills/to-spec")
+        );
         // 仅 agent 来源命中（.claude）不算存在——那是外部库，覆盖会误伤。
-        assert!(!own_global_skill_exists(&skills, "other"));
-        assert!(!own_global_skill_exists(&skills, "absent"));
+        assert_eq!(own_global_skill_dir(&skills, "other"), None);
+        assert_eq!(own_global_skill_dir(&skills, "absent"), None);
+    }
+
+    /// 回归用户实测症状：覆盖拉取必须把**既有目录绝对路径**交给 `write_instance`，
+    /// 传裸目录名会被当作相对路径解析，报 `SKILL dir not found: "<name>"`。
+    #[test]
+    fn overwrite_requires_absolute_existing_dir_not_bare_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = write_skill::<&str, &str>(
+            tmp.path().join("to-spec").as_path(),
+            "---\nname: to-spec\n---\nold body",
+            &[],
+        );
+        let bare_name = format!("to-spec-bare-{}", std::process::id());
+        let manager = SkillManager::new(
+            GoldBandPaths::new(camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap()),
+            std::collections::BTreeMap::new(),
+        );
+
+        // 裸目录名（相对路径）→ 既有目录校验失败，即用户所见错误。
+        let err = manager
+            .write_instance(
+                "to-spec",
+                SkillSource::Global,
+                "---\nname: to-spec\n---\nnew body",
+                None,
+                None,
+                Some(&bare_name),
+                None,
+            )
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("SKILL dir not found"),
+            "{err:#}"
+        );
+
+        // 既有目录绝对路径 → 覆盖成功（发现端返回的 directory_path 语义）。
+        manager
+            .write_instance(
+                "to-spec",
+                SkillSource::Global,
+                "---\nname: to-spec\n---\nnew body",
+                None,
+                None,
+                Some(dir.as_str()),
+                None,
+            )
+            .unwrap();
+        let written = fs::read_to_string(dir.join("SKILL.md").as_std_path()).unwrap();
+        assert!(written.contains("new body"), "{written}");
+        assert!(!written.contains("old body"), "{written}");
+        // 覆盖写在既有目录内（本地身份/目录名不变）——不是新建到别处。
+        assert!(dir.join("SKILL.md").is_file());
     }
 
     fn write_skill<S: AsRef<str>, C: AsRef<str>>(

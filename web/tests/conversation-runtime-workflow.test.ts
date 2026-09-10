@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode, isAiDynamicInnerSession } from '../src/lib/conversation-runtime-workflow';
+import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode, isAiDynamicInnerSession, runtimeGraphNodeForSession } from '../src/lib/conversation-runtime-workflow';
 import type { ConversationRunVm, ConversationSessionLeafVm, ConversationSessionTreeVm, GraphVm, RuntimeDisplayVm } from '../src/types';
 
 const successDisplay: RuntimeDisplayVm = {
@@ -12,6 +12,21 @@ const successDisplay: RuntimeDisplayVm = {
 };
 
 const emptyGraph: GraphVm = { nodes: [], edges: [] };
+
+describe('runtime graph session focus', () => {
+  it('resolves the exact attempt and outer scope without name fallback', () => {
+    const nodes = [
+      { id: 'outer-a', nodeId: 'accept', outerNodeId: 'group-a', outerAttemptId: 'outer-1', attemptId: 'attempt-1' },
+      { id: 'outer-b', nodeId: 'accept', outerNodeId: 'group-b', outerAttemptId: 'outer-1', attemptId: 'attempt-1' },
+      { id: 'retry', nodeId: 'accept', outerNodeId: 'group-b', outerAttemptId: 'outer-1', attemptId: 'attempt-2' },
+    ] as GraphVm['nodes'];
+    const session = { nodeId: 'accept', outerNodeId: 'group-b', outerAttemptId: 'outer-1', attemptId: 'attempt-2' };
+    expect(runtimeGraphNodeForSession({ nodes, edges: [] }, session)?.id).toBe('retry');
+    expect(runtimeGraphNodeForSession({ nodes, edges: [] }, { ...session, outerAttemptId: 'missing' })).toBeNull();
+    expect(runtimeGraphNodeForSession({ nodes: [nodes[2], { ...nodes[2], id: 'duplicate' }], edges: [] }, session)).toBeNull();
+    expect(runtimeGraphNodeForSession({ nodes, edges: [] }, null)).toBeNull();
+  });
+});
 const runtimeGraph: GraphVm = {
   nodes: [{
     id: 'ai-dynamic::attempt-001::bootstrap',

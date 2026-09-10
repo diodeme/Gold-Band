@@ -14,11 +14,12 @@ const api = vi.hoisted(() => ({
 }));
 
 const workflow: WorkflowDsl = {
+  version: '0.1',
   id: 'workflow-1',
   entry: 'worker-1',
   nodes: [{ type: 'worker', id: 'worker-1', executionSlotId: 'slot-1', goal: 'Implement' }],
   edges: [],
-  control: { maxAttempts: 1, maxRounds: 1 },
+  control: { max_attempts: 1, max_rounds: 1 },
 };
 
 const modelBindings: WorkflowModelBindings = {
@@ -50,7 +51,6 @@ vi.mock('react-i18next', async (importOriginal) => ({
 }));
 
 vi.mock('@/components/WorkflowEditor', () => ({
-  parseWorkflowJson: (json: string) => JSON.parse(json),
   WorkflowEditor: ({ value, modelBindings: bindings, onSave }: {
     value: WorkflowDsl;
     modelBindings: WorkflowModelBindings;
@@ -72,6 +72,14 @@ vi.mock('@/components/acp/ACPChatDialog', () => ({
   RawFrameViewer: () => null,
   SystemPromptPanel: () => null,
 }));
+const workspace = vi.hoisted(() => ({ getResource: vi.fn(), synchronizeResource: vi.fn(), graphProps: null as any }));
+vi.mock('@/components/workspace/right-workspace-context', async importOriginal => ({
+  ...await importOriginal<typeof import('@/components/workspace/right-workspace-context')>(),
+  useRightWorkspaceCommands: () => workspace,
+}));
+vi.mock('@/components/GraphView', () => ({
+  GraphView: (props: any) => { workspace.graphProps = props; return <div data-selected-graph-node={props.selectedNodeId ?? ''} />; },
+}));
 
 import { ConversationRunWorkspaceResourcePanel } from '@/components/workspace/ConversationRunWorkspaceResourcePanel';
 
@@ -83,6 +91,29 @@ afterEach(() => {
 });
 
 describe('conversation run workflow save contract', () => {
+  it('locates the selected session in the runtime graph', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<ConversationRunWorkspaceResourcePanel
+      resource={{ kind: 'workflow-view', key: 'view', scopeKey: 'run' } as any}
+      run={{ selectedSession: { nodeId: 'accept', attemptId: 'attempt-2' }, workflowGraph: {
+        nodes: [{ id: 'accept-1', nodeId: 'accept', attemptId: 'attempt-1' }, { id: 'accept-2', nodeId: 'accept', attemptId: 'attempt-2' }], edges: [],
+      } } as ConversationRunVm}
+      agentRegistry={null}
+    />));
+    expect(container.querySelector('[data-selected-graph-node]')?.getAttribute('data-selected-graph-node')).toBe('accept-2');
+    const current = { kind: 'workflow-view', key: 'view', scopeKey: 'run', title: 'Updated title' };
+    const readingPosition = { intent: 'manual', centerX: 400, centerY: 200, zoom: 1 };
+    workspace.getResource.mockReturnValue(current);
+    workspace.graphProps.onReadingPositionChange(readingPosition);
+    expect(workspace.synchronizeResource).toHaveBeenCalledWith({ ...current, readingPosition });
+    workspace.synchronizeResource.mockClear();
+    workspace.getResource.mockReturnValue(null);
+    workspace.graphProps.onReadingPositionChange(readingPosition);
+    expect(workspace.synchronizeResource).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
   it('forwards the editor model bindings with the serialized workflow', async () => {
     api.getProfiles.mockResolvedValue({ profiles: [] });
     api.getWorkflow.mockResolvedValue(workflowVm);

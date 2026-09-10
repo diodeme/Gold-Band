@@ -104,7 +104,7 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock({
                   onSelect={() => activateTab(tab.key)}
                 >
                   {workspaceTabIcon(tab)}
-                  <span className="min-w-0 flex-1 truncate">{tab.title}</span>
+                  <span className="min-w-0 flex-1 truncate"><WorkspaceTabTitle tab={tab} /></span>
                   {tab.key === activeTabKey ? <Check className="size-3.5 text-primary" aria-hidden="true" /> : null}
                 </DropdownMenuItem>
               ))}
@@ -318,6 +318,21 @@ function workspaceTabIcon(tab: RightWorkspaceResource) {
               : <FileText className="size-3.5 shrink-0" />;
 }
 
+function WorkspaceTabTitle({ tab }: { tab: RightWorkspaceResource }) {
+  const { t } = useTranslation();
+  switch (tab.kind) {
+    case 'file-browser': return t('workspace.files');
+    case 'source-control': return t('sourceControl.title');
+    case 'conversation-directory': return t('workspace.runDirectory');
+    case 'workflow-view': return t('conversation.runtime.viewWorkflow');
+    case 'workflow-edit': return t(tab.mode === 'repair' ? 'workflow.repairWorkflowTitle' : 'conversation.runtime.editWorkflow');
+    case 'system-prompt': return t('acp.systemPrompt');
+    case 'raw-frames': return t('acp.rawFrames');
+    case 'scheduled-task-config': return t('scheduled.dialog.title');
+    default: return tab.title;
+  }
+}
+
 const AgentWorkspaceTab = memo(function AgentWorkspaceTab({
   tab,
   active,
@@ -377,7 +392,7 @@ function RightWorkspaceTabButton({
         onClick={() => onActivate(tab.key)}
       >
         {icon}
-        <span className="min-w-0 flex-1 truncate">{tab.title}</span>
+        <span className="min-w-0 flex-1 truncate"><WorkspaceTabTitle tab={tab} /></span>
         {attention ? <span className="size-1.5 shrink-0 rounded-full bg-amber-500" aria-label={t('workspace.attention')} /> : null}
       </button>
       <Button

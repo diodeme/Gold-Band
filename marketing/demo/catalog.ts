@@ -1,5 +1,5 @@
 import { mockAgentRegistry, mockProfileList, mockWorkflowTemplates } from '@/mockData';
-import type { AgentRegistryVm, DesktopLanguage } from '@/types';
+import type { AgentRegistryVm, AutoTemplateStore, DesktopLanguage } from '@/types';
 
 export const demoAgentRegistry: AgentRegistryVm = {
   catalog: mockAgentRegistry.catalog.map((entry) => ({ ...entry, configured: true })),
@@ -22,6 +22,19 @@ export const demoAgentRegistry: AgentRegistryVm = {
 };
 
 export const demoWorkflowTemplates = structuredClone(mockWorkflowTemplates);
+export function demoAutoTemplates(language: DesktopLanguage): AutoTemplateStore {
+  return { version: '0.1', templates: [{
+    id: 'demo-project-auto', name: language === 'en' ? 'Project implementation' : '项目实施',
+    createdAt: '2026-09-09T01:00:00Z', updatedAt: '2026-09-09T01:00:00Z',
+    config: {
+      agentStrategy: 'fixed', agentType: 'claude-acp',
+      allowedWorkflows: demoWorkflowTemplates.templates.map(template => ({ workflowId: template.workflow.id })),
+      allowedProfiles: ['pf-builtin-plan', 'pf-builtin-dev', 'pf-builtin-review', 'pf-builtin-test', 'pf-builtin-accept'],
+      control: { maxDynamicNodes: 20, maxFanout: 5, maxDepth: 6, maxParallel: 3,
+        maxGroupDepth: 1, maxWorkflowInvocations: 10, allowNestedDynamic: false },
+    },
+  }] };
+}
 for (const template of demoWorkflowTemplates.templates) {
   for (const binding of template.modelBindings.bindings) {
     const agent = demoAgentRegistry.agents.find((agent) => agent.agentType === binding.agentId);

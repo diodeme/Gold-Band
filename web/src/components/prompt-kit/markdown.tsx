@@ -1,5 +1,5 @@
 import type React from 'react';
-import { createContext, isValidElement, memo, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createContext, isValidElement, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Download, FileCode2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -14,6 +14,7 @@ import {
 } from 'streamdown';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { openExternalUrl } from '@/api';
+import type { WorkspaceFileLinkOrigin } from '@/api/client';
 import { cn } from '@/lib/utils';
 import { isExternalUrlHref, isLocalFileHref, parseLocalFileLinkTarget } from '@/lib/file-link';
 import { createIncrementalMarkdownBlockParser } from '@/lib/incremental-markdown-blocks';
@@ -27,6 +28,7 @@ export type MarkdownProps = {
   children: string;
   className?: string;
   streaming?: boolean;
+  resourceOrigin?: WorkspaceFileLinkOrigin;
 };
 
 export interface MarkdownResourceLinkError {
@@ -42,6 +44,7 @@ export interface MarkdownResourceLinkHandler {
   openLocalFile: (
     rawHref: string,
     baseCanonicalPath?: string | null,
+    origin?: WorkspaceFileLinkOrigin,
   ) => void | MarkdownResourceLinkOpenResult | Promise<void | MarkdownResourceLinkOpenResult>;
 }
 
@@ -440,8 +443,12 @@ function StreamingMarkdownBlock(props: BlockProps) {
   );
 }
 
-export const Markdown = memo(function Markdown({ children, className, streaming = false }: MarkdownProps) {
+export const Markdown = memo(function Markdown({ children, className, streaming = false, resourceOrigin }: MarkdownProps) {
   const { t } = useTranslation();
+  const parentResourceHandler = useContext(MarkdownResourceLinkContext);
+  const resourceHandler = useMemo<MarkdownResourceLinkHandler | null>(() => resourceOrigin && parentResourceHandler ? {
+    openLocalFile: (href, baseCanonicalPath) => parentResourceHandler.openLocalFile(href, baseCanonicalPath, resourceOrigin),
+  } : parentResourceHandler, [parentResourceHandler, resourceOrigin]);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const playbackRef = useRef<StreamingMarkdownPlayback | null>(null);
   const previousStreamingRef = useRef(streaming);
@@ -490,6 +497,7 @@ export const Markdown = memo(function Markdown({ children, className, streaming 
   }, []);
 
   return (
+    <MarkdownResourceLinkProvider handler={resourceHandler}>
     <div
       className={cn('min-w-0 max-w-full space-y-2 break-words text-sm leading-6 [overflow-wrap:anywhere]', className)}
       data-gb-streaming-markdown={streaming ? 'true' : undefined}
@@ -517,5 +525,6 @@ export const Markdown = memo(function Markdown({ children, className, streaming 
         {proxyLocalFileLinks(children)}
       </Streamdown>
     </div>
+    </MarkdownResourceLinkProvider>
   );
 });

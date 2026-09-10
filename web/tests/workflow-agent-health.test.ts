@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  isWorkflowAgentDoctorReady,
-  validateWorkflowForSave,
-  workflowAgentIconKeys,
-  workflowEditorSupportedAgents,
-} from '@/components/WorkflowEditor';
+import { isWorkflowAgentDoctorReady, workflowAgentIconKeys, workflowEditorSupportedAgents } from "@/components/WorkflowEditor";
+import { validateWorkflowForSave } from "@/lib/workflow-validation";
 import type { AgentRegistryVm, ManagedAgentVm, WorkflowDsl } from '@/types';
 import { readyWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
 

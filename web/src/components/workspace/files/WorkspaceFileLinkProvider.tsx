@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef, type ReactNode } from 'react';
 import { resolveWorkspaceFileLink } from '@/api';
+import type { WorkspaceFileLinkOrigin } from '@/api/client';
 import {
   MarkdownResourceLinkProvider,
   type MarkdownResourceLinkError,
@@ -40,6 +41,7 @@ export function WorkspaceFileLinkProvider({ children }: { children: ReactNode })
   const openLocalFile = useCallback(async (
     rawHref: string,
     baseCanonicalPath?: string | null,
+    origin?: WorkspaceFileLinkOrigin,
   ): Promise<MarkdownResourceLinkOpenResult> => {
     if (!workspace.projectId || !workspace.scopeKey) {
       return {
@@ -48,7 +50,9 @@ export function WorkspaceFileLinkProvider({ children }: { children: ReactNode })
       };
     }
     try {
-      const resolved = await resolveWorkspaceFileLink(workspace.projectId, rawHref, baseCanonicalPath);
+      const resolved = origin
+        ? await resolveWorkspaceFileLink(workspace.projectId, rawHref, baseCanonicalPath, origin)
+        : await resolveWorkspaceFileLink(workspace.projectId, rawHref, baseCanonicalPath);
       const key = fileWorkspaceResourceKey(workspace.projectId, resolved.locator.canonicalPath);
       const fileBrowser = workspace.getResource(fileBrowserWorkspaceResourceKey(workspace.projectId));
       const existing = fileBrowser?.kind === 'file-browser'

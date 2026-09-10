@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { layoutSuccessPath, workflowSuccessTopologyOrder } from '../src/components/workflowGraph';
+import { layoutSuccessPath } from "../src/components/workflowGraph";
+import { workflowSuccessTopologyOrder } from "@/lib/workflow-validation";
 import type { WorkflowDsl } from '../src/types';
 
 function worker(id: string) {

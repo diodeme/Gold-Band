@@ -47,6 +47,39 @@ const agent = (branchId: string): RightWorkspaceResource => ({
 });
 
 describe('right workspace resource model', () => {
+  it('keeps graph reading position when reopening a tab and releases it on close', () => {
+    const resource: RightWorkspaceResource = { ...agent('root'), kind: 'workflow-view', locator: locator('root'),
+      readingPosition: { intent: 'manual', centerX: 400, centerY: 200, zoom: 1 } };
+    let state = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open', resource });
+    state = rightWorkspaceReducer(state, { type: 'open', resource: { ...resource, readingPosition: undefined } });
+    expect(state.tabs[0]).toMatchObject({ readingPosition: resource.readingPosition });
+    const changedScope = rightWorkspaceReducer(state, { type: 'synchronize', resource: { ...resource, readingPosition: undefined, locator: { ...resource.locator, runId: 'other-run' } } });
+    expect(changedScope.tabs[0]).not.toHaveProperty('readingPosition', resource.readingPosition);
+    state = rightWorkspaceReducer(state, { type: 'close', key: resource.key });
+    state = rightWorkspaceReducer(state, { type: 'open', resource: { ...resource, readingPosition: undefined } });
+    expect(state.tabs[0]).not.toHaveProperty('readingPosition', resource.readingPosition);
+  });
+  it('retains lightweight reading positions only for the same resource identity', () => {
+    const raw: RightWorkspaceResource = { ...agent('root'), kind: 'raw-frames', locator: locator('root'), query: { page: 2, search: 'needle' } };
+    let state = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open', resource: raw });
+    state = rightWorkspaceReducer(state, { type: 'open', resource: { ...raw, query: undefined } });
+    expect(state.tabs[0]).toMatchObject({ query: raw.query });
+    state = rightWorkspaceReducer(state, { type: 'synchronize', resource: { ...raw, query: undefined, locator: locator('other') } });
+    expect(state.tabs[0]).toMatchObject({ query: undefined });
+    const directory: RightWorkspaceResource = { ...agent('root'), kind: 'conversation-directory', locator: locator('root'), expandedPaths: ['reports'], selectedFile: {
+      name: 'report.md', relativePath: 'report.md', canonicalPath: '/attempt/report.md', kind: 'file', hasChildren: false, byteLength: 12, modifiedAtNs: null,
+    } };
+    state = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open', resource: directory });
+    state = rightWorkspaceReducer(state, { type: 'synchronize', resource: { ...directory, selectedFile: undefined, expandedPaths: undefined } });
+    expect(state.tabs[0]).toMatchObject({ selectedFile: directory.selectedFile, expandedPaths: ['reports'] });
+    state = rightWorkspaceReducer(state, { type: 'synchronize', resource: { ...directory, expandedPaths: [] } });
+    expect(state.tabs[0]).toMatchObject({ expandedPaths: [] });
+    state = rightWorkspaceReducer(state, { type: 'synchronize', resource: { ...directory, selectedFile: undefined, expandedPaths: undefined, locator: { ...directory.locator, attemptId: 'other' } } });
+    expect(state.tabs[0]).toMatchObject({ selectedFile: undefined, expandedPaths: undefined });
+    state = rightWorkspaceReducer(state, { type: 'close', key: directory.key });
+    expect(rightWorkspaceReducer(state, { type: 'synchronize', resource: directory })).toBe(state);
+  });
+
   it('keeps one source-control tab and only projects a different workspace identity', () => {
     const resource: RightWorkspaceResource = {
       kind: 'source-control',

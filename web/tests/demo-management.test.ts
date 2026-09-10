@@ -1,8 +1,46 @@
 import { describe, expect, it } from 'vitest';
 import { createDemoApi } from '../../marketing/demo/api';
 import { demoPageFromHash } from '../../marketing/demo/routes';
+import { validateAutoConfig } from '@/lib/run-mode-validation';
+import i18n, { displayAppError } from '@/i18n';
 
 describe('demo management read contracts', () => {
+  it('explains unavailable demo resources in both shared errors and the file tree', () => {
+    for (const language of ['zh-CN', 'en']) {
+      const t = i18n.getFixedT(language);
+      const expected = language === 'en' ? 'This resource is not included in the demo.' : '演示中未收录此资源。';
+      expect(displayAppError(t, { code: 'demo.resource-not-found', params: {} })).toBe(expected);
+      expect(t('workspace.filesPanel.errors.demo.resource-not-found')).toBe(expected);
+    }
+  });
+  it('offers a valid localized AUTO preset without allowing template writes or shared mutation', async () => {
+    const names: string[] = [];
+    for (const language of ['zh-cn', 'en'] as const) {
+      const api = createDemoApi();
+      const { preferences } = await api.getAppBootstrap();
+      await api.saveDesktopPreferences(preferences.appearance, preferences.personalization, language, false, false);
+      const store = await api.getAutoTemplates();
+      expect(store.templates.length).toBeGreaterThan(0);
+      const template = store.templates[0];
+      names.push(template.name);
+      expect(validateAutoConfig(template.config, await api.getAgentRegistry(), await api.getWorkflowTemplates(), key => key)).toEqual([]);
+      expect(template.config.agentType).toBeTruthy();
+      expect(template.config.control?.maxDynamicNodes).toBeGreaterThan(0);
+      const original = structuredClone(template);
+      template.config.agentType = 'visitor-edit';
+      expect((await api.getAutoTemplates()).templates[0]).toEqual(original);
+      for (const method of ['saveAutoTemplate', 'updateAutoTemplate', 'deleteAutoTemplate', 'replaceAutoTemplates'] as const) {
+        await expect(Reflect.apply(api[method], api, [])).rejects.toMatchObject({ code: 'demo.operation-unavailable' });
+      }
+    }
+    expect(names[0]).not.toBe(names[1]);
+  });
+  it('localizes both dynamic-template states in role details', () => {
+    for (const language of ['zh-CN', 'en']) {
+      const t = i18n.getFixedT(language);
+      for (const key of ['common.enabled', 'common.disabled']) expect(t(key)).not.toBe(key);
+    }
+  });
   it('routes management pages and schedule creation without a server rewrite', () => {
     for (const kind of ['multica-tasks', 'scheduled-tasks', 'scheduled-task-create']) expect(demoPageFromHash(`#${kind}`)).toEqual({ kind });
     expect(demoPageFromHash('#scheduled-task-detail?id=demo-weekly')).toEqual({ kind: 'scheduled-task-detail', projectId: 'default', scheduledTaskId: 'demo-weekly' });

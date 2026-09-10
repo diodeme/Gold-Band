@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateWorkflowForSave } from '../src/components/WorkflowEditor';
+import { validateWorkflowForSave } from "@/lib/workflow-validation";
 import type { ManagedAgentVm, ProfileVm, WorkflowDsl } from '../src/types';
 import { readyWorkflowProfileCatalog } from '../src/lib/workflow-profile-catalog';
 

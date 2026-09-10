@@ -8361,6 +8361,8 @@ const MessageBubble = memo(function MessageBubble({
 }) {
   const { t } = useTranslation();
   const branchLocator = useContext(AcpBranchLocatorContext);
+  const resourceOrigin = useMemo(() => branchLocator && !event.optimistic
+    ? { locator: branchLocator, eventId: event.id } : undefined, [branchLocator, event.id, event.optimistic]);
   const workspace = useOptionalRightWorkspaceCommands();
   const isUser = event.kind === "userTextDelta";
   // Provider failures are surfaced by the session error state. A user prompt
@@ -8471,7 +8473,7 @@ const MessageBubble = memo(function MessageBubble({
                 />
               </UserMessageDisclosure>
             ) : (
-              <Markdown streaming={streamingDraft}>{messageText}</Markdown>
+              <Markdown streaming={streamingDraft} resourceOrigin={resourceOrigin}>{messageText}</Markdown>
             )}
           </MessageContent>
         ) : null}

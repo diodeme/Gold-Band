@@ -10,6 +10,7 @@ import {
   Position,
   ReactFlow,
   getSmoothStepPath,
+  getViewportForBounds,
   type Edge,
   type EdgeProps,
   type Node,
@@ -19,22 +20,8 @@ import {
 } from '@xyflow/react';
 import type { GraphNodeVm, GraphVm } from '../types';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
-import {
-  NODE_WIDTH,
-  NODE_HEIGHT,
-  calculateCenteredViewport,
-  runtimeNodeOrder,
-  isBackwardEdge,
-  isRuntimePrimaryEdge,
-  layoutSuccessPath,
-  routeWorkflowBranchEdges,
-  runtimeGraphEdgeClassName,
-  runtimeGraphEdgeDisplayLabel,
-  runtimeGraphTopologySignature,
-  runtimeEdgeColor,
-  topLeft,
-  type WorkflowGraphBranchRoute,
-} from './workflowGraph';
+import { NODE_WIDTH, NODE_HEIGHT, calculateCenteredViewport, runtimeNodeOrder, isRuntimePrimaryEdge, layoutSuccessPath, routeWorkflowBranchEdges, runtimeGraphEdgeClassName, runtimeGraphEdgeDisplayLabel, runtimeGraphTopologySignature, runtimeEdgeColor, topLeft, type WorkflowGraphBranchRoute } from "./workflowGraph";
+import { isBackwardEdge } from "@/lib/workflow-validation";
 import { displayStatus } from '../i18n';
 import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -49,8 +36,17 @@ const MIN_ZOOM = 0.35;
 const MAX_ZOOM = 1.2;
 const WORKFLOW_FIT_MAX_ZOOM = 0.88;
 const ACTUAL_FIT_MAX_ZOOM = 0.82;
+const READABLE_ZOOM = 0.8;
+const NODE_FOCUS_PADDING = 0.1;
 
 type GraphMode = 'readonly' | 'interactive';
+
+export interface GraphReadingPosition {
+  intent: 'reading' | 'overview' | 'manual';
+  centerX: number;
+  centerY: number;
+  zoom: number;
+}
 
 type WorkflowNodeData = {
   node: GraphNodeVm;
@@ -70,6 +66,8 @@ type WorkflowNodeData = {
 };
 
 interface GraphViewProps {
+  initialReadingPosition?: GraphReadingPosition;
+  onReadingPositionChange?: (position: GraphReadingPosition) => void;
   graph: GraphVm;
   selectedNodeId?: string | null;
   activeNodeId?: string | null;
@@ -95,7 +93,7 @@ type RuntimeGraphLayout = {
   bounds: { x: number; y: number; width: number; height: number } | null;
 };
 
-export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, onNodeOpenDetail, onNodeOpenSession, onNodeOpenLog, onNodeContextMenuStart, variant = 'grid' }: GraphViewProps) {
+export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, onNodeOpenDetail, onNodeOpenSession, onNodeOpenLog, onNodeContextMenuStart, variant = 'grid', initialReadingPosition, onReadingPositionChange }: GraphViewProps) {
   const { t } = useTranslation();
   const mode: GraphMode = variant === 'actual' ? 'interactive' : 'readonly';
   const graphSignature = useMemo(() => runtimeGraphTopologySignature(graph, variant), [graph, variant]);
@@ -106,6 +104,9 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
   const contextMenuTimerRef = useRef<number | null>(null);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
+  const navigationIntent = useRef<GraphReadingPosition['intent']>(initialReadingPosition?.intent ?? (variant === 'actual' ? 'reading' : 'overview'));
+  const restoredPosition = useRef(initialReadingPosition);
+  const previousViewportSize = useRef({ width: 0, height: 0 });
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<Node<WorkflowNodeData>, Edge> | null>(null);
   const fitViewOptions = useMemo(() => ({ padding: variant === 'workflow' ? 0.2 : 0.22, maxZoom: variant === 'workflow' ? WORKFLOW_FIT_MAX_ZOOM : ACTUAL_FIT_MAX_ZOOM }), [variant]);
   const viewportHorizontalAnchor = variant === 'actual' ? 0.40 : 0.5;
@@ -115,6 +116,27 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
     if (viewportSize.width === 0 || viewportSize.height === 0 || !graphBounds) return null;
     return calculateCenteredViewport(graphBounds, viewportSize, fitViewOptions.padding, fitViewOptions.maxZoom, viewportHorizontalAnchor, viewportVerticalAnchor);
   }, [fitViewOptions.maxZoom, fitViewOptions.padding, graphBounds, viewportHorizontalAnchor, viewportSize.height, viewportSize.width, viewportVerticalAnchor]);
+  const focusNode = graph.nodes.find(node => matchesNodeId(node, selectedNodeId))
+    ?? graph.nodes.find(node => matchesNodeId(node, activeNodeId))
+    ?? graph.nodes.find(node => node.current)
+    ?? graph.nodes[0];
+  const focusedViewport = useMemo(() => {
+    const position = focusNode && graphLayout.layoutPositions.get(focusNode.id);
+    if (!position || !viewportSize.width || !viewportSize.height) return null;
+    return getViewportForBounds(
+      { ...topLeft(position.x, position.y, NODE_WIDTH, RUNTIME_NODE_HEIGHT), width: NODE_WIDTH, height: RUNTIME_NODE_HEIGHT },
+      viewportSize.width, viewportSize.height, 0, ACTUAL_FIT_MAX_ZOOM, NODE_FOCUS_PADDING,
+    );
+  }, [focusNode?.id, graphLayout, viewportSize.width, viewportSize.height]);
+  const rememberReadingPosition = useCallback((value: Viewport) => {
+    if (!viewportSize.width || !viewportSize.height) return;
+    onReadingPositionChange?.({
+      intent: navigationIntent.current,
+      centerX: (viewportSize.width / 2 - value.x) / value.zoom,
+      centerY: (viewportSize.height / 2 - value.y) / value.zoom,
+      zoom: value.zoom,
+    });
+  }, [onReadingPositionChange, viewportSize]);
 
   useEffect(() => {
     if (!containerElement) return undefined;
@@ -132,8 +154,24 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
   }, [containerElement]);
 
   useEffect(() => {
-    if (centeredViewport) setViewport(centeredViewport);
-  }, [centeredViewport, graphSignature]);
+    if (!centeredViewport) return;
+    const previous = previousViewportSize.current;
+    previousViewportSize.current = viewportSize;
+    if (navigationIntent.current === 'manual') {
+      if (!previous.width && restoredPosition.current) {
+        const saved = restoredPosition.current;
+        setViewport({ x: viewportSize.width / 2 - saved.centerX * saved.zoom, y: viewportSize.height / 2 - saved.centerY * saved.zoom, zoom: saved.zoom });
+      }
+      if (previous.width && previous.height) {
+        const dx = (viewportSize.width - previous.width) / 2;
+        const dy = (viewportSize.height - previous.height) / 2;
+        if (dx || dy) setViewport(current => ({ ...current, x: current.x + dx, y: current.y + dy }));
+      }
+      return;
+    }
+    setViewport(navigationIntent.current === 'reading' && centeredViewport.zoom < READABLE_ZOOM
+      ? focusedViewport ?? centeredViewport : centeredViewport);
+  }, [centeredViewport, focusedViewport, viewportSize]);
 
   useEffect(() => {
     if (!menu) return undefined;
@@ -193,6 +231,8 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
         edgeTypes={edgeTypes}
         viewport={viewport}
         onViewportChange={setViewport}
+        onMoveStart={event => { if (event) navigationIntent.current = 'manual'; }}
+        onMoveEnd={(_, value) => rememberReadingPosition(value)}
         minZoom={Math.min(MIN_ZOOM, centeredViewport?.zoom ?? MIN_ZOOM)}
         maxZoom={MAX_ZOOM}
         nodesDraggable={false}
@@ -212,9 +252,17 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
         <Background color="var(--border)" gap={28} size={1} />
         <GraphControls
           disabled={!flowInstance}
-          onZoomIn={() => { void flowInstance?.zoomIn(); }}
-          onZoomOut={() => { void flowInstance?.zoomOut(); }}
-          onFitView={() => { if (centeredViewport) setViewport(centeredViewport); }}
+          onZoomIn={() => { navigationIntent.current = 'manual'; void flowInstance?.zoomIn(); }}
+          onZoomOut={() => { navigationIntent.current = 'manual'; void flowInstance?.zoomOut(); }}
+          onFitView={() => {
+            navigationIntent.current = 'overview';
+            if (centeredViewport) { setViewport(centeredViewport); rememberReadingPosition(centeredViewport); }
+          }}
+          onFocusNode={variant === 'actual' && focusedViewport ? () => {
+            navigationIntent.current = 'reading';
+            setViewport(focusedViewport);
+            rememberReadingPosition(focusedViewport);
+          } : undefined}
         />
       </ReactFlow>
       <div className="pointer-events-none absolute left-4 top-4 rounded-full border bg-card/85 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground shadow-sm backdrop-blur">

@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import { BoundedLruCache } from '@/lib/bounded-lru-cache';
 import type { AttachmentItem } from '@/lib/attachment-service';
+import type { GraphReadingPosition } from '@/components/GraphView';
 import { RIGHT_WORKSPACE_DEFAULT_WIDTH } from './workspace-layout';
 import {
   normalizeSourceControlWorkspacePath,
@@ -63,6 +64,8 @@ export type FileBrowserWorkspaceResource = RightWorkspaceResourceBase & {
 export type ConversationDirectoryWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'conversation-directory';
   locator: ConversationRunLocator & { roundId: string; nodeId: string; attemptId: string; outerNodeId?: string | null; outerAttemptId?: string | null };
+  selectedFile?: import('@/types').WorkspaceDirectoryEntryVm | null;
+  expandedPaths?: string[];
 };
 
 export type ConversationDirectoryWorkspaceEntry = Omit<ConversationDirectoryWorkspaceResource, 'key'>;
@@ -127,6 +130,7 @@ export type DraftAttachmentWorkspaceResource = RightWorkspaceResourceBase & {
 export type WorkflowViewWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'workflow-view';
   locator: ConversationRunLocator;
+  readingPosition?: GraphReadingPosition;
 };
 
 export type WorkflowEditWorkspaceResource = RightWorkspaceResourceBase & {
@@ -148,6 +152,7 @@ export type HiddenPromptSectionWorkspaceResource = RightWorkspaceResourceBase & 
 export type RawFramesWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'raw-frames';
   locator: AcpAttemptWorkspaceLocator;
+  query?: import('@/types').AcpRawFrameQueryInput;
 };
 
 export type ScheduledTaskConfigWorkspaceResource = RightWorkspaceResourceBase & {
@@ -217,6 +222,7 @@ export interface RightWorkspaceCommands {
   openResource: (resource: RightWorkspaceResource) => void | Promise<void>;
   closeTab: (key: string) => void | Promise<void>;
   getResource: (key: string) => RightWorkspaceResource | null;
+  synchronizeResource: (resource: RightWorkspaceResource) => void;
 }
 
 export type RightWorkspaceResourceKind = RightWorkspaceResource['kind'];
@@ -418,7 +424,7 @@ export function rightWorkspaceReducer(state: RightWorkspaceSessionState, action:
       const existing = state.tabs.findIndex((tab) => tab.key === resource.key);
       const tabs = existing < 0
         ? [...state.tabs, resource]
-        : state.tabs.map((tab, index) => index === existing ? resource : tab);
+        : state.tabs.map((tab, index) => index === existing ? retainWorkspaceReadingPosition(tab, resource) : tab);
       return {
         ...state,
         tabs,
@@ -430,7 +436,7 @@ export function rightWorkspaceReducer(state: RightWorkspaceSessionState, action:
       if (existing < 0) return state;
       return {
         ...state,
-        tabs: state.tabs.map((tab, index) => index === existing ? action.resource : tab),
+        tabs: state.tabs.map((tab, index) => index === existing ? retainWorkspaceReadingPosition(tab, action.resource) : tab),
       };
     }
     case 'activate':
@@ -451,6 +457,24 @@ export function rightWorkspaceReducer(state: RightWorkspaceSessionState, action:
       };
     }
   }
+}
+
+function retainWorkspaceReadingPosition(previous: RightWorkspaceResource, next: RightWorkspaceResource): RightWorkspaceResource {
+  if (previous.kind === 'workflow-view' && next.kind === 'workflow-view' && next.readingPosition === undefined
+    && previous.scopeKey === next.scopeKey && previous.locator.taskId === next.locator.taskId
+    && conversationRunWorkspaceResourceKey('workflow-view', previous.locator) === conversationRunWorkspaceResourceKey('workflow-view', next.locator)) {
+    return { ...next, readingPosition: previous.readingPosition };
+  }
+  if (previous.kind === 'raw-frames' && next.kind === 'raw-frames' && next.query === undefined
+    && acpAttemptWorkspaceResourceKey('raw-frames', previous.locator) === acpAttemptWorkspaceResourceKey('raw-frames', next.locator)) {
+    return { ...next, query: previous.query };
+  }
+  if (previous.kind === 'conversation-directory' && next.kind === 'conversation-directory'
+    && conversationDirectoryWorkspaceDataKey(previous.locator) === conversationDirectoryWorkspaceDataKey(next.locator)) {
+    return { ...next, selectedFile: next.selectedFile === undefined ? previous.selectedFile : next.selectedFile,
+      expandedPaths: next.expandedPaths === undefined ? previous.expandedPaths : next.expandedPaths };
+  }
+  return next;
 }
 
 function promoteDraftWorkspaceResource(
@@ -575,6 +599,9 @@ export function RightWorkspaceProvider({
     if (!currentScope) return null;
     return peekProjectedState(currentScope).tabs.find((tab) => tab.key === key) ?? null;
   }, [peekProjectedState]);
+  const synchronizeResource = useCallback((resource: RightWorkspaceResource) => {
+    if (commit({ type: 'synchronize', resource })) render();
+  }, [commit]);
   const openWorkspace = useCallback(() => {
     const currentScope = scopeRef.current;
     if (!currentScope) return;
@@ -660,7 +687,8 @@ export function RightWorkspaceProvider({
     openResource,
     closeTab,
     getResource,
-  }), [closeTab, getResource, openResource, scope?.key, scope?.projectId]);
+    synchronizeResource,
+  }), [closeTab, getResource, openResource, synchronizeResource, scope?.key, scope?.projectId]);
   return (
     <RightWorkspaceCommandsContext.Provider value={commands}>
       <RightWorkspaceContext.Provider value={value}>{children}</RightWorkspaceContext.Provider>

@@ -6,7 +6,8 @@ import type { AgentRegistryVm, CreateTaskInput, TaskListVm, TaskPage, TaskRowVm,
 import { displayAppError, displayStatus, displayWorkflowError } from '../i18n';
 import { deleteWorkflowTemplate, getAgentRegistry, getWorkflowTemplates, saveWorkflowTemplate, updateWorkflowTemplate } from '../api';
 import { StatusBadge } from '../components/StatusBadge';
-import { validateWorkflowForSave, WorkflowEditor } from '../components/WorkflowEditor';
+import { WorkflowEditor } from "../components/WorkflowEditor";
+import { validateWorkflowForSave } from "@/lib/workflow-validation";
 import { AppCard } from '@/components/AppCard';
 import { CodeBlock, EmptyState, Page, PageHeader } from '@/components/PageScaffold';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';

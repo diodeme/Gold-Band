@@ -1,4 +1,4 @@
-import { validateWorkflowForSave } from '@/components/WorkflowEditor';
+import { validateWorkflowForSave } from "@/lib/workflow-validation";
 import type {
   AgentRegistryVm,
   ConversationAutoConfigVm,

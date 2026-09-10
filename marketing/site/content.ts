@@ -1,9 +1,23 @@
 export type Language = 'zh' | 'en';
+export type SiteTheme = 'dark' | 'light';
 export type Page = 'home' | 'documentation' | 'demo' | 'not-found';
 export const CHAPTER_IDS = ['before', 'during', 'after', 'personalize'] as const;
 export type ChapterId = typeof CHAPTER_IDS[number];
+export function chapterFromHash(hash: string): ChapterId | null {
+  const id = hash.startsWith('#') ? hash.slice(1) : hash;
+  return CHAPTER_IDS.find(chapter => chapter === id) ?? null;
+}
 export const GITHUB = 'https://github.com/diodeme/Gold-Band';
-export const DESKTOP_QUERY = '(min-width: 1024px) and (pointer: fine)';
+export const DESKTOP_QUERY = '(min-width: 1024px)';
+export const SITE_LINKS = {
+  download: import.meta.env.VITE_DOWNLOAD_URL || `${GITHUB}/releases/latest`,
+  demo: import.meta.env.VITE_DEMO_URL || (import.meta.env.DEV ? 'http://127.0.0.1:1450/' : '/demo/'),
+};
+export function demoHref(language: Language) {
+  const url = new URL(SITE_LINKS.demo, 'https://site.invalid');
+  url.searchParams.set('language', language);
+  return SITE_LINKS.demo.startsWith('/') ? `${url.pathname}${url.search}${url.hash}` : url.href;
+}
 export const CAPTURE = { width: 1440, height: 880, minimum: 560 };
 
 export function parseRoute(path: string): { language: Language; page: Page } {
@@ -16,8 +30,8 @@ export function parseRoute(path: string): { language: Language; page: Page } {
 export function pageHref(language: Language, page: Page) {
   return `/${language}/${page === 'home' ? '' : page === 'not-found' ? '404' : page}`;
 }
-export function mediaPath(language: Language, chapter: ChapterId, kind: 'json' | 'png') {
-  return new URL(`./media/${language}-${chapter}.${kind}`, import.meta.url).href;
+export function mediaPath(language: Language, chapter: ChapterId, kind: 'json' | 'png', theme: SiteTheme = 'dark') {
+  return new URL(`./media/${language}-${chapter}${theme === 'light' ? '-light' : ''}.${kind}`, import.meta.url).href;
 }
 export const copy = {
   zh: {
@@ -25,7 +39,7 @@ export const copy = {
     tagline: '你的 Agent，你的工作方式。', intro: '把 AI 对话、工作流和代码审阅，放进同一个桌面工作区。',
     kicker: '开源 · 本地优先 · ACP', story: '从一个想法，到一次交付。',
     foot: '在自己的桌面，掌握每一步。', footText: '连接你选择的 Agent，让对话与工程流程一起工作。',
-    play: '播放演示', loading: '正在加载演示', retry: '重新加载', error: '演示暂时无法加载',
+    play: '播放演示', pause: '暂停演示', resume: '继续演示', loading: '正在加载演示', retry: '重新加载', error: '演示暂时无法加载',
     interactive: '亲手试试', recording: '观看演示', preview: '交互预览', resize: '调整预览宽度',
     dark: '深色', light: '浅色', font: '字体', defaultFont: '默认', monoFont: '等宽', reset: '重置预览',
     placeholder: '正在准备中', docsText: '文档正在整理，当前可在 GitHub 查看安装与使用说明。', demoText: '更多示例正在准备中。首页可查看产品演示。',
@@ -42,7 +56,7 @@ export const copy = {
     tagline: 'Your agents. Your way of working.', intro: 'AI conversations, workflows and code review, together in one desktop workspace.',
     kicker: 'Open source · Local first · ACP', story: 'From an idea to a delivery.',
     foot: 'Make every step your own.', footText: 'Connect your agent of choice. Bring conversation and engineering together.',
-    play: 'Play demo', loading: 'Loading demo', retry: 'Retry', error: 'Demo could not be loaded',
+    play: 'Play demo', pause: 'Pause demo', resume: 'Resume demo', loading: 'Loading demo', retry: 'Retry', error: 'Demo could not be loaded',
     interactive: 'Try it yourself', recording: 'Watch demo', preview: 'Interactive preview', resize: 'Resize preview',
     dark: 'Dark', light: 'Light', font: 'Font', defaultFont: 'Default', monoFont: 'Monospace', reset: 'Reset preview',
     placeholder: 'Coming soon', docsText: 'Documentation is being prepared. Installation and usage instructions are available on GitHub.', demoText: 'More examples are on the way. Explore the product on the home page.',

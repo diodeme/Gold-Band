@@ -52,6 +52,21 @@ function FailingFileLinkHarness() {
 }
 
 describe('workspace file link target lifecycle', () => {
+  it('forwards the exact message origin from Markdown to the runtime resolver', async () => {
+    vi.mocked(resolveWorkspaceFileLink).mockResolvedValue({ locator: { projectId: 'project-1', canonicalPath: '/source/main.rs', relativePath: 'main.rs', scope: 'workspace' },
+      target: { line: 2, column: null, endLine: null }, externalAccessGrant: null });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const origin = { locator: { projectId: 'project-1', taskId: 'task', runId: 'run', roundId: 'round', nodeId: 'node', attemptId: 'attempt', branchId: 'root' }, eventId: 'message' };
+    try {
+      await act(async () => root.render(<RightWorkspaceProvider scope={createDraftConversationWorkspaceScope('project-1')} store={new ConversationWorkspaceStore()}>
+        <WorkspaceFileLinkProvider><Markdown resourceOrigin={origin}>{'[Source](/E:/source/main.rs:2)'}</Markdown></WorkspaceFileLinkProvider>
+      </RightWorkspaceProvider>));
+      await act(async () => container.querySelector<HTMLAnchorElement>('a')!.click());
+      expect(resolveWorkspaceFileLink).toHaveBeenCalledWith('project-1', '/E:/source/main.rs:2', undefined, origin);
+    } finally { await act(async () => root.unmount()); }
+  });
   it('creates a new positioning intent when the same line link is clicked again', async () => {
     vi.mocked(resolveWorkspaceFileLink).mockResolvedValue({
       locator: {

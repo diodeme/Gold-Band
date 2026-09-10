@@ -143,6 +143,8 @@
 
 `pauseReason` 是外层生命周期字段。更细的异常语义由 run progress / run events 中的 `RuntimeErrorInfo` 表达：`recovery=auto` 表示 runtime 正在或已经进行 bounded retry，耗尽后降级为 `runtime-abnormal`；`recovery=manual` 表示用户处理外部条件后可继续；`recovery=blocked` 表示不能普通 continue。旧 run 没有 `RuntimeErrorInfo` 时，`runtime-abnormal` 默认视为 manual，`error-blocked` 默认视为 blocked。
 
+未识别异常保留原始 `diagnostic`，默认 `internal.unknown + recovery=manual`，暂停为 `runtime-abnormal`，允许用户处理后显式继续，不自动重放 prompt。只有已明确判定的控制流、DSL 或不变量错误使用 `recovery=blocked`；不能仅因错误未列入映射表就禁止继续。未知错误码的 UI 直接展示原始原因；已映射错误显示本地化摘要并保留原始详情。
+
 ### `execution.recoveryCandidateToken`
 
 - 类型：string | null

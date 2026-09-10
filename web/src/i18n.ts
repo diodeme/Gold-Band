@@ -1918,7 +1918,7 @@ const resources = {
         retryStopped: "重试 {{count}} 次后已停止",
         sessionInterrupted: "会话发起中断，请重跑该任务",
         missingSessionReason:
-          "本次任务没有成功建立 ACP 会话。请检查所选 Agent 的 ACP adapter 能否启动，以及相关依赖与认证是否有效。",
+          "当前无法获取会话，未获取到具体错误原因。",
         thought: "思考过程",
         thinkingDuration: "{{seconds}} 秒",
         toolCall: "工具调用",
@@ -4476,7 +4476,7 @@ const resources = {
         retryStopped: "Stopped after {{count}} retries",
         sessionInterrupted: "Session launch was interrupted. Rerun the task.",
         missingSessionReason:
-          "This task did not establish an ACP session. Check that the selected Agent's ACP adapter can start and that its dependencies and authentication are valid.",
+          "The session is unavailable. No specific error reason was received.",
         thought: "Thought process",
         thinkingDuration: "{{seconds}}s",
         toolCall: "Tool call",

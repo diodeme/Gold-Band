@@ -448,6 +448,15 @@ export interface AgentRegistryVm {
   catalog: AgentCatalogEntryVm[];
 }
 
+export type AcpActivityImagesInput = TurnFileLocatorVm & {
+  start: number; end: number; after?: string | null; generation?: number | null;
+};
+export interface AcpActivityImagesPage {
+  images: AcpImageRef[];
+  nextCursor: string | null;
+  generation: number;
+}
+
 export interface ManagedAgentVm {
   agentType: string;
   displayName: string;

@@ -1,5 +1,4 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { createRoot } from 'react-dom/client';
 import { ArrowRight, ArrowUpRight, Download, Code2, Languages, Loader2, Play, BookOpen, PanelsTopLeft, Sun, Moon, Monitor } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -8,6 +7,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenu
 import { browserStorage, effectiveTheme, readPreferences, writePreferences, type SitePreferences } from './preferences';
 import './style.css';
 import { demoHref, siteConfig } from './config';
+import { isPlainNavigation } from './navigation';
+import { DemoPage } from './DemoPage';
 import { MOBILE_REPLAY_WIDTH } from './replay-model';
 
 const config = siteConfig(import.meta.env, import.meta.env.PROD);
@@ -74,7 +75,7 @@ function Story({ language, theme }: { language: Language; theme: 'light' | 'dark
     </section>)}</div>
   </div>;
 }
-function App() {
+export function App() {
   const [preferences, setPreferences] = useState(() => readPreferences(browserStorage(), navigator.language));
   const [{ language, page }, setRoute] = useState(() => parseRoute(location.pathname.slice(config.base.length - 1), preferences.language));
   const [systemDark, setSystemDark] = useState(() => matchMedia('(prefers-color-scheme: dark)').matches);
@@ -91,24 +92,36 @@ function App() {
   }, []);
   const demo = demoHref(config.demoUrl, language, location.origin);
   useEffect(() => { document.documentElement.dataset.theme = theme; document.documentElement.classList.toggle('dark', theme === 'dark'); }, [theme]);
-  useEffect(() => { if (page === 'demo') location.replace(demo); }, [page, demo]);
+
   useEffect(() => { const changed = () => setRoute(parseRoute(location.pathname.slice(config.base.length - 1), preferences.language)); window.addEventListener('popstate', changed); return () => window.removeEventListener('popstate', changed); }, [preferences.language]);
   const t = copy[language];
   useEffect(() => { document.documentElement.lang = language === 'zh' ? 'zh-CN' : 'en'; document.title = `${page === 'home' ? 'Gold Band' : page === 'documentation' ? 'Documentation · Gold Band' : page === 'demo' ? 'Demo · Gold Band' : '404 · Gold Band'}`; }, [language, page]);
-  return <TooltipProvider><div className="site">
+  return <TooltipProvider><div className="site" onClick={event => {
+    if (!isPlainNavigation(event)) return;
+    const anchor = (event.target as Element).closest('a');
+    if (!anchor || anchor.target || anchor.hasAttribute('download')) return;
+    const url = new URL(anchor.href);
+    if (url.origin !== location.origin || !url.pathname.startsWith(config.base)) return;
+    const destination = parseRoute(url.pathname.slice(config.base.length - 1), preferences.language);
+    if (destination.page === 'not-found') return;
+    if (url.pathname === location.pathname && url.hash && url.hash !== location.hash) return;
+    event.preventDefault();
+    history.pushState(null, '', url.pathname + url.search + url.hash);
+    setRoute(destination);
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  }}>
     <a className="skip-link" href="#main">{language === 'zh' ? '跳到正文' : 'Skip to content'}</a>
     <header className="site-header"><a className="brand" href={href(language, 'home')}><img src={`${config.base}logo.svg`} alt="" /><span>Gold Band</span></a>
-      <nav aria-label={language === 'zh' ? '主导航' : 'Main navigation'}>{(['home', 'documentation', 'demo'] as Page[]).map((item, index) => <a key={item} href={item === 'demo' ? demo : href(language, item)} aria-current={page === item ? 'page' : undefined}>{t.nav[index]}</a>)}</nav>
+      <nav aria-label={language === 'zh' ? '主导航' : 'Main navigation'}>{(['home', 'documentation', 'demo'] as Page[]).map((item, index) => <a key={item} href={href(language, item)} aria-current={page === item ? 'page' : undefined}>{t.nav[index]}</a>)}</nav>
       <div className="header-actions"><Tooltip><TooltipTrigger asChild><Button asChild variant="ghost" size="sm"><a href={`${href(language === 'zh' ? 'en' : 'zh', page)}${location.hash}`} onClick={event => { event.preventDefault(); const next = language === 'zh' ? 'en' : 'zh'; history.pushState(null, '', `${href(next, page)}${location.hash}`); const updated = { ...preferences, language: next } as SitePreferences; setPreferences(updated); writePreferences(browserStorage(), updated); setRoute({ language: next, page }); }} hrefLang={language === 'zh' ? 'en' : 'zh-CN'} aria-label={language === 'zh' ? 'Switch to English' : '切换为中文'}><Languages /><span>{language === 'zh' ? 'EN' : '中文'}</span></a></Button></TooltipTrigger><TooltipContent>{language === 'zh' ? 'English' : '中文'}</TooltipContent></Tooltip>
       <DropdownMenu><Tooltip><TooltipTrigger asChild><DropdownMenuTrigger asChild><Button size="icon" variant="ghost" aria-label={t.appearance}>{preferences.theme === 'system' ? <Monitor /> : theme === 'dark' ? <Moon /> : <Sun />}</Button></DropdownMenuTrigger></TooltipTrigger><TooltipContent>{t.appearance}</TooltipContent></Tooltip><DropdownMenuContent align="end"><DropdownMenuRadioGroup value={preferences.theme} onValueChange={chooseTheme}>{(['system', 'light', 'dark'] as const).map(value => <DropdownMenuRadioItem key={value} value={value}>{t[value]}</DropdownMenuRadioItem>)}</DropdownMenuRadioGroup></DropdownMenuContent></DropdownMenu>
       <Tooltip><TooltipTrigger asChild><Button asChild size="icon" variant="ghost"><a href={GITHUB} aria-label="GitHub"><Code2 /></a></Button></TooltipTrigger><TooltipContent>GitHub</TooltipContent></Tooltip></div>
     </header>
-    <main id="main">{page === 'home' ? <>
-      <section className="intro"><div className="eyebrow">{t.kicker}</div><h1>Gold Band</h1><p className="tagline">{t.tagline}</p><p className="intro-copy">{t.intro}</p><div className="intro-actions"><Button asChild size="lg"><a href={config.downloadUrl}><Download />{t.download}<ArrowUpRight /></a></Button><a className="text-link" href={demo}>{t.openDemo}<ArrowUpRight size={16} /></a></div></section>
+    <main id="main" className={page === 'demo' ? 'site-demo-main' : undefined}>{page === 'home' ? <>
+      <section className="intro"><div className="eyebrow">{t.kicker}</div><h1>Gold Band</h1><p className="tagline">{t.tagline}</p><p className="intro-copy">{t.intro}</p><div className="intro-actions"><Button asChild size="lg"><a href={config.downloadUrl}><Download />{t.download}<ArrowUpRight /></a></Button><a className="text-link" href={href(language, 'demo')}>{t.openDemo}<ArrowRight size={16} /></a></div></section>
       <div className="story-heading"><span>{t.story}</span><span>01 / 04</span></div><Story language={language} theme={theme} />
       <section className="closing"><img src={`${config.base}logo.svg`} alt="" /><h2>{t.foot}</h2><p>{t.footText}</p><Button asChild size="lg"><a href={config.downloadUrl}><Download />{t.download}<ArrowUpRight /></a></Button></section>
-    </> : page === 'demo' ? <section className="placeholder-page"><a className="text-link" href={demo}>{t.openDemo}<ArrowUpRight /></a></section> : <section className="placeholder-page">{page === 'documentation' ? <BookOpen /> : <PanelsTopLeft />}<p className="eyebrow">Gold Band</p><h1>{page === 'documentation' ? t.nav[1] : t.missing}</h1>{page === 'documentation' && <><h2>{t.placeholder}</h2><p>{t.docsText}</p></>}<div className="intro-actions"><Button asChild><a href={href(language, 'home')}>{t.back}<ArrowRight /></a></Button>{page === 'documentation' && <a className="text-link" href={`${GITHUB}#readme`}>GitHub<ArrowUpRight size={16} /></a>}</div></section>}</main>
-    <footer><a className="brand" href={href(language, 'home')}><img src={`${config.base}logo.svg`} alt="" /><span>Gold Band</span></a><span>AGPL-3.0 · Open source</span><a href={GITHUB}>{t.source}<ArrowUpRight size={14} /></a></footer>
+    </> : page === 'demo' ? <DemoPage key={language} src={demo} language={language} /> : <section className="placeholder-page">{page === 'documentation' ? <BookOpen /> : <PanelsTopLeft />}<p className="eyebrow">Gold Band</p><h1>{page === 'documentation' ? t.nav[1] : t.missing}</h1>{page === 'documentation' && <><h2>{t.placeholder}</h2><p>{t.docsText}</p></>}<div className="intro-actions"><Button asChild><a href={href(language, 'home')}>{t.back}<ArrowRight /></a></Button>{page === 'documentation' && <a className="text-link" href={`${GITHUB}#readme`}>GitHub<ArrowUpRight size={16} /></a>}</div></section>}</main>
+    {page !== 'demo' && <footer><a className="brand" href={href(language, 'home')}><img src={`${config.base}logo.svg`} alt="" /><span>Gold Band</span></a><span>AGPL-3.0 · Open source</span><a href={GITHUB}>{t.source}<ArrowUpRight size={14} /></a></footer>}
   </div></TooltipProvider>;
 }
-createRoot(document.getElementById('root')!).render(<App />);

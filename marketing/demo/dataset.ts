@@ -1,6 +1,7 @@
 import type { RuntimeApi } from '@/api/client';
 import type { AcpRawFrameVm, AcpSessionVm, AcpUiEventVm, ConversationRunVm, ConversationSessionTargetVm, TurnFileChangeSetVm, FileComparisonVm, WorkspaceFileSnapshotVm } from '@/types';
 import { cursorSequence, missing, pageLimit, pageSession, sessionIdentity } from './history-query';
+import { includesDemoSession, selectDemoSessions } from './session-selection';
 
 export const REAL_PROJECT_ID = 'e-projects-code-ai-ji--a40d4379';
 type Resource = { path: string; byteLength: number; sha256: string };
@@ -56,7 +57,7 @@ export function createDatasetReader(base: string, fetcher: typeof fetch = fetch)
   function dataset() {
     datasetPromise ??= read<DemoDataset>('dataset.json').then((value) => {
       if (value.version !== 1 || value.projectId !== REAL_PROJECT_ID) throw { code: 'demo.resource-integrity', params: {} };
-      return value;
+      return { ...value, sessions: value.sessions.filter(ref => includesDemoSession(value, ref)) };
     }).catch((error) => { datasetPromise = undefined; throw error; });
     return datasetPromise;
   }
@@ -175,7 +176,7 @@ export function createDatasetReader(base: string, fetcher: typeof fetch = fetch)
       return read<WorkspaceFileSnapshotVm>(entry.resource);
     },
     async getConversationRun(projectId, taskId, runId) {
-      return read<ConversationRunVm>((await scope(projectId, taskId, runId)).run);
+      return selectDemoSessions(await read<ConversationRunVm>((await scope(projectId, taskId, runId)).run));
     },
     async getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, _fallback, outerNodeId, outerAttemptId) {
       const index = await session(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId, query?.branchId);

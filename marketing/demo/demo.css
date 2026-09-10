@@ -1,6 +1,7 @@
 .demo-stage { height: 100dvh; padding-block: 24px; background: #080909; }
 .demo-client { height: 100%; overflow: hidden; container-type: inline-size; border: 1px solid #363839; border-radius: 8px; box-shadow: 0 12px 40px #0008; }
 .demo-client > .app-window-shell { height: 100%; }
+.demo-client [data-task-status-project="e-projects-code-ai-ji--a40d4379"] { background-color: var(--color-emerald-500); opacity: 0.5; }
 .demo-client [data-titlebar-brand] { white-space: nowrap; }
 .demo-window-edge { width: 6px; background: transparent; }
 .demo-window-edge:hover, .demo-window-edge:focus-visible { background: #5ca88b; }

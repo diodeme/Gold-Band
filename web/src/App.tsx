@@ -1,4 +1,5 @@
 import { listen } from '@tauri-apps/api/event';
+import { applyAgentDiagnosticUpdate } from '@/lib/agent-diagnostic-update';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import {
@@ -232,6 +233,7 @@ import {
 } from '@/components/workspace/workspace-layout';
 import type {
   AgentRegistryVm,
+  ManagedAgentVm,
   AppBootstrapVm,
   AppConfigVm,
   AppInfoVm,
@@ -1630,32 +1632,9 @@ export function App() {
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
     let active = true;
-    let refreshInFlight = false;
-    let refreshPending = false;
     let unlisten: (() => void) | undefined;
-
-    const refreshAgentRegistry = async () => {
-      if (refreshInFlight) {
-        refreshPending = true;
-        return;
-      }
-      refreshInFlight = true;
-      try {
-        const next = await getAgentRegistry();
-        if (active) setAgentRegistry(next);
-      } catch {
-        // The periodic/background diagnostic remains best-effort; manual refresh still surfaces errors.
-      } finally {
-        refreshInFlight = false;
-        if (active && refreshPending) {
-          refreshPending = false;
-          void refreshAgentRegistry();
-        }
-      }
-    };
-
-    void listen('gold-band://agent-registry-updated', () => {
-      if (active) void refreshAgentRegistry();
+    void listen<ManagedAgentVm>('gold-band://agent-registry-updated', ({ payload }) => {
+      if (active) setAgentRegistry(current => applyAgentDiagnosticUpdate(current, payload));
     }).then((dispose) => {
       if (active) {
         unlisten = dispose;

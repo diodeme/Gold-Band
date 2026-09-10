@@ -5,20 +5,27 @@ use std::sync::{Mutex, OnceLock};
 const MAX_READ_INDEXES: usize = 4;
 const MAX_READ_INDEX_BYTES: usize = 32 * 1024 * 1024;
 
-struct Position {
-    offset: u64,
-    length: u64,
-    revision: u64,
-    started_seq: u64,
-    tool: bool,
+pub(super) struct ComposerPosition {
+    pub(super) text_bytes: usize,
+    pub(super) prompt_identity: String,
 }
-struct ReadIndex {
+pub(super) struct Position {
+    pub(super) offset: u64,
+    pub(super) length: u64,
+    pub(super) revision: u64,
+    pub(super) started_seq: u64,
+    tool: bool,
+    pub(super) composer: Option<ComposerPosition>,
+}
+pub(super) struct ReadIndex {
     key: String,
     signature: TimelineFileSignature,
-    generation: u64,
+    pub(super) generation: u64,
     fingerprint: u64,
-    positions: HashMap<String, Position>,
+    pub(super) positions: HashMap<String, Position>,
     tools: BTreeSet<(u64, String)>,
+    pub(super) composer: BTreeSet<(u64, String)>,
+    pub(super) composer_by_prompt: HashMap<String, BTreeSet<(u64, String)>>,
     string_bytes: usize,
 }
 
@@ -28,25 +35,78 @@ impl ReadIndex {
             + self.string_bytes
             + self.key.capacity()
             + self.tools.len() * 96
+            + self.composer.len() * 192
+            + self.composer_by_prompt.capacity()
+                * (std::mem::size_of::<(String, BTreeSet<(u64, String)>)>() + 1)
+    }
+
+    fn remove_secondary_indexes(&mut self, id: &str, position: &Position) {
+        if position.tool {
+            self.tools.remove(&(position.started_seq, id.to_owned()));
+            self.string_bytes = self.string_bytes.saturating_sub(id.len());
+        }
+        let Some(composer) = position.composer.as_ref() else {
+            return;
+        };
+        let order = (position.started_seq, id.to_owned());
+        if self.composer.remove(&order) {
+            self.string_bytes = self.string_bytes.saturating_sub(id.len());
+        }
+        let remove_prompt = self
+            .composer_by_prompt
+            .get_mut(&composer.prompt_identity)
+            .is_some_and(|positions| {
+                if positions.remove(&order) {
+                    self.string_bytes = self.string_bytes.saturating_sub(id.len());
+                }
+                positions.is_empty()
+            });
+        if remove_prompt
+            && let Some((prompt, _)) = self
+                .composer_by_prompt
+                .remove_entry(&composer.prompt_identity)
+        {
+            self.string_bytes = self.string_bytes.saturating_sub(prompt.capacity());
+        }
+        self.string_bytes = self
+            .string_bytes
+            .saturating_sub(composer.prompt_identity.capacity());
+    }
+
+    fn add_secondary_indexes(&mut self, id: &str, position: &Position) {
+        if position.tool {
+            self.tools.insert((position.started_seq, id.to_owned()));
+            self.string_bytes += id.len();
+        }
+        let Some(composer) = position.composer.as_ref() else {
+            return;
+        };
+        let order = (position.started_seq, id.to_owned());
+        self.composer.insert(order.clone());
+        self.string_bytes += id.len() + composer.prompt_identity.capacity();
+        match self
+            .composer_by_prompt
+            .entry(composer.prompt_identity.clone())
+        {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                entry.get_mut().insert(order);
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                self.string_bytes += composer.prompt_identity.len();
+                entry.insert(BTreeSet::from([order]));
+            }
+        }
+        self.string_bytes += id.len();
     }
 
     fn insert(&mut self, id: String, position: Position) {
-        if let Some(previous) = self.positions.get_mut(&id) {
-            if previous.tool && (!position.tool || previous.started_seq != position.started_seq) {
-                self.tools.remove(&(previous.started_seq, id.clone()));
-                self.string_bytes -= id.len();
-            }
-            if position.tool && (!previous.tool || previous.started_seq != position.started_seq) {
-                self.tools.insert((position.started_seq, id.clone()));
-                self.string_bytes += id.len();
-            }
-            *previous = position;
+        if let Some((stored_id, previous)) = self.positions.remove_entry(&id) {
+            self.remove_secondary_indexes(&stored_id, &previous);
+            self.add_secondary_indexes(&stored_id, &position);
+            self.positions.insert(stored_id, position);
         } else {
             self.string_bytes += id.capacity();
-            if position.tool {
-                self.string_bytes += id.len();
-                self.tools.insert((position.started_seq, id.clone()));
-            }
+            self.add_secondary_indexes(&id, &position);
             self.positions.insert(id, position);
         }
     }
@@ -75,6 +135,7 @@ impl ReadIndex {
             if let Some((revision, event, _)) = parse_timeline_record(&line) {
                 let started_seq = event.started_seq.unwrap_or(event.seq);
                 let tool = matches!(event.kind.as_str(), "toolCall" | "toolCallUpdate");
+                let composer = composer_position_from_event(&event);
                 self.insert(
                     event.id,
                     Position {
@@ -83,6 +144,7 @@ impl ReadIndex {
                         revision,
                         started_seq,
                         tool,
+                        composer,
                     },
                 );
             }
@@ -119,7 +181,7 @@ pub(super) fn read(path: &Utf8Path, id: &str) -> Result<Option<TimelineIndexedIt
     with_index(path, |index| read_position(path, index, id))
 }
 
-fn read_position(
+pub(super) fn read_position(
     path: &Utf8Path,
     index: &ReadIndex,
     id: &str,
@@ -144,7 +206,10 @@ fn read_position(
         .transpose()
 }
 
-fn with_index<T>(path: &Utf8Path, operation: impl FnOnce(&ReadIndex) -> Result<T>) -> Result<T> {
+pub(super) fn with_index<T>(
+    path: &Utf8Path,
+    operation: impl FnOnce(&ReadIndex) -> Result<T>,
+) -> Result<T> {
     let key = crate::storage::normalize_workspace_path(path);
     with_jsonl_file_lock(path, || {
         // The per-file lock provides single-flight. The LRU lock never covers I/O.
@@ -173,9 +238,12 @@ fn with_index<T>(path: &Utf8Path, operation: impl FnOnce(&ReadIndex) -> Result<T
                 fingerprint: timeline_prefix_fingerprint(path, timeline_file_len(path))?,
                 positions: HashMap::with_capacity(index.item_locators.len()),
                 tools: BTreeSet::new(),
+                composer: BTreeSet::new(),
+                composer_by_prompt: HashMap::new(),
                 string_bytes: 0,
             };
             for (id, locator) in index.item_locators {
+                let composer = composer_position_from_locator(&id, &locator);
                 projection.insert(
                     id,
                     Position {
@@ -184,6 +252,7 @@ fn with_index<T>(path: &Utf8Path, operation: impl FnOnce(&ReadIndex) -> Result<T
                         revision: locator.revision,
                         started_seq: locator.started_seq,
                         tool: matches!(locator.kind.as_str(), "toolCall" | "toolCallUpdate"),
+                        composer,
                     },
                 );
             }
@@ -196,6 +265,39 @@ fn with_index<T>(path: &Utf8Path, operation: impl FnOnce(&ReadIndex) -> Result<T
             index,
         );
         result
+    })
+}
+
+fn composer_position_from_locator(
+    id: &str,
+    locator: &TimelineItemLocator,
+) -> Option<ComposerPosition> {
+    super::composer_history::eligible(locator).then(|| ComposerPosition {
+        text_bytes: locator.composer_text_bytes.unwrap_or_default(),
+        prompt_identity: locator.prompt_id.clone().unwrap_or_else(|| id.to_owned()),
+    })
+}
+
+fn composer_position_from_event(event: &AcpUiEvent) -> Option<ComposerPosition> {
+    let raw = event.raw.as_ref()?;
+    if event.kind != "userTextDelta"
+        || raw.get("source").and_then(Value::as_str) != Some("goldBandPrompt")
+        || raw
+            .get("hiddenFromChat")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        || raw
+            .pointer("/_meta/goldBandConversation/branchId")
+            .and_then(Value::as_str)
+            .filter(|branch_id| !branch_id.trim().is_empty())
+            .unwrap_or("root")
+            != "root"
+    {
+        return None;
+    }
+    Some(ComposerPosition {
+        text_bytes: super::composer_history::original_user_text(event)?.len(),
+        prompt_identity: timeline_prompt_id(event).unwrap_or_else(|| event.id.clone()),
     })
 }
 
@@ -277,6 +379,8 @@ mod tests {
             fingerprint: 0,
             positions: HashMap::new(),
             tools: BTreeSet::new(),
+            composer: BTreeSet::new(),
+            composer_by_prompt: HashMap::new(),
             string_bytes: 0,
         };
         let mut entries = VecDeque::new();
@@ -312,6 +416,8 @@ mod tests {
             fingerprint: 0,
             positions: HashMap::new(),
             tools: BTreeSet::new(),
+            composer: BTreeSet::new(),
+            composer_by_prompt: HashMap::new(),
             string_bytes: 0,
         };
         index.insert(
@@ -322,6 +428,7 @@ mod tests {
                 revision: 1,
                 started_seq: 1,
                 tool: true,
+                composer: None,
             },
         );
         index.insert(
@@ -332,6 +439,7 @@ mod tests {
                 revision: 2,
                 started_seq: 2,
                 tool: true,
+                composer: None,
             },
         );
         assert_eq!(
@@ -346,6 +454,7 @@ mod tests {
                 revision: 3,
                 started_seq: 2,
                 tool: false,
+                composer: None,
             },
         );
         assert!(index.tools.is_empty());

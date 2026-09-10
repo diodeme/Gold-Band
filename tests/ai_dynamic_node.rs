@@ -25,6 +25,7 @@ use tempfile::tempdir;
 enum DynamicScenario {
     DirectEnd,
     NewRoundFeedback,
+    NewRoundAfterResume,
     Fanout,
     WorktreeFanout,
     NestedFanout,
@@ -375,6 +376,22 @@ impl DynamicProvider {
             req.runtime_context.node_id.as_str(),
             req.session_mode,
         ) {
+            (DynamicScenario::NewRoundAfterResume, _, "bootstrap", SessionMode::New)
+                if req.runtime_context.round_id == "round-001"
+                    && self
+                        .invocations
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter(|invocation| {
+                            invocation.runtime_context.round_id == "round-001"
+                                && invocation.runtime_context.node_id == "bootstrap"
+                        })
+                        .count()
+                        == 1 =>
+            {
+                (ProviderRunStatus::Interrupted, None)
+            }
             (
                 DynamicScenario::WorkflowInvocationPauseThenContinue { .. },
                 "run-002",
@@ -491,17 +508,22 @@ impl DynamicProvider {
         }
         match (&self.scenario, req.runtime_context.node_id.as_str()) {
             (DynamicScenario::DirectEnd, "bootstrap") => Some(end_completion("outer handoff")),
-            (DynamicScenario::NewRoundFeedback, "bootstrap") => {
-                Some(if req.runtime_context.round_id == "round-001" {
-                    end_completion("round handoff")
-                } else {
-                    new_round_revision_completion()
-                })
-            }
-            (DynamicScenario::NewRoundFeedback, "revision") => {
-                Some(end_completion("revision completed"))
-            }
-            (DynamicScenario::NewRoundFeedback, "accept") => Some(
+            (
+                DynamicScenario::NewRoundFeedback | DynamicScenario::NewRoundAfterResume,
+                "bootstrap",
+            ) => Some(if req.runtime_context.round_id == "round-001" {
+                end_completion("round handoff")
+            } else {
+                new_round_revision_completion()
+            }),
+            (
+                DynamicScenario::NewRoundFeedback | DynamicScenario::NewRoundAfterResume,
+                "revision",
+            ) => Some(end_completion("revision completed")),
+            (
+                DynamicScenario::NewRoundFeedback | DynamicScenario::NewRoundAfterResume,
+                "accept",
+            ) => Some(
                 if req.runtime_context.round_id == "round-001" {
                     r#"{"result":false,"reason":"ROUND_ONE_REVISION_REQUIRED"}"#
                 } else {
@@ -1995,6 +2017,104 @@ fn ai_dynamic_without_groups_publishes_final_end_summary() {
     assert_eq!(result["summary"], "outer handoff");
     assert_eq!(result["sourceNodeId"], "bootstrap");
     assert!(result.get("sourceGroupId").is_none());
+}
+
+#[test]
+fn ai_dynamic_inner_resume_does_not_leak_into_new_round() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-resume-scope";
+    let provider = DynamicProvider::new(DynamicScenario::NewRoundAfterResume);
+    let app = with_available_claude_diagnostics(App::with_provider(
+        repo_root,
+        Box::new(provider.clone()),
+    ));
+    write_task_file(&app, task_id);
+    write_dynamic_workflow_with_new_round_feedback(&app, task_id);
+    let paused = app.run_start(task_id, None).unwrap();
+    assert_eq!(paused.pause_reason, Some(PauseReason::ProcessInterrupted));
+    let run = {
+        app.run_continue_dynamic_inner_background(
+            task_id,
+            "run-001",
+            "round-001",
+            "router",
+            "attempt-001",
+            "bootstrap",
+            "attempt-001",
+            Some("original-resume-prompt".into()),
+            Some("ORIGINAL_RESUME_ONLY".to_string().into()),
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            let run = app.run_status(task_id, "run-001").unwrap();
+            if run.status != RunStatus::Running {
+                break run;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "resume driver did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    };
+    let events = std::fs::read_to_string(app.paths.run_events_file(task_id, "run-001")).unwrap();
+    assert_eq!(
+        run.status,
+        RunStatus::Completed,
+        "unexpected pause: {:?}; events: {events}",
+        run.pause_reason
+    );
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+    assert_eq!(run.new_rounds_opened, 1);
+    let invocations = provider.invocations.lock().unwrap();
+    let resumed = invocations
+        .iter()
+        .find(|req| {
+            req.runtime_context.round_id == "round-001"
+                && req.runtime_context.node_id == "bootstrap"
+                && req.user_prompt_render_mode == UserPromptRenderMode::UserMessage
+        })
+        .unwrap();
+    assert!(
+        resumed
+            .resume_prompt
+            .as_deref()
+            .unwrap_or_default()
+            .contains("ORIGINAL_RESUME_ONLY")
+    );
+    let fresh = invocations
+        .iter()
+        .find(|req| {
+            req.runtime_context.round_id == "round-002"
+                && req.runtime_context.node_id == "bootstrap"
+                && is_business_invocation(req)
+        })
+        .unwrap();
+    assert_eq!(fresh.session_mode, SessionMode::New);
+    for req in invocations.iter().filter(|req| {
+        req.runtime_context.round_id == "round-002" || req.runtime_context.node_id == "accept"
+    }) {
+        assert_ne!(
+            req.resume_prompt_id.as_deref(),
+            Some("original-resume-prompt")
+        );
+        assert!(
+            !req.resume_prompt
+                .as_deref()
+                .unwrap_or_default()
+                .contains("ORIGINAL_RESUME_ONLY")
+        );
+        assert!(
+            !req.prompt_display
+                .as_ref()
+                .is_some_and(|input| input.display_text.contains("ORIGINAL_RESUME_ONLY"))
+        );
+    }
 }
 
 #[test]

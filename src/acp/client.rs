@@ -2604,7 +2604,7 @@ pub fn run_prompt(
         attempt_dir.join("acp.snapshot.json"),
         lifecycle_owner.clone(),
     );
-    lifecycle_terminal_guard.execute(|| {
+    let result = lifecycle_terminal_guard.execute(|| {
         run_prompt_inner(
             provider_id,
             config,
@@ -2630,7 +2630,13 @@ pub fn run_prompt(
             prompt_accepted,
             stop_probe,
         )
-    })
+    });
+    if result.is_err() {
+        if let Some(session_update) = session_update {
+            let _ = session_update();
+        }
+    }
+    result
 }
 
 fn run_prompt_inner(
@@ -2881,13 +2887,22 @@ fn run_prompt_inner(
                 format!("ACP prompt failed: {error}"),
                 None,
             );
-            runtime.write_worker_ref(
+            if let Err(worker_ref_error) = runtime.write_worker_ref(
                 provider_id,
                 &workspace_dir,
                 session_mode,
                 restored,
                 Some("error".to_string()),
-            )?;
+            ) {
+                append_structured_diagnostic_best_effort(
+                    &runtime.paths.diagnostics,
+                    "error",
+                    "acp.worker-ref-finalize-failed",
+                    Some(
+                        json!({ "error": worker_ref_error.to_string(), "turnId": prompt_turn.id }),
+                    ),
+                );
+            }
             if let Err(capture_error) =
                 runtime.finalize_turn_file_changes(&prompt_turn, &workspace_dir)
             {
@@ -2902,10 +2917,8 @@ fn run_prompt_inner(
                 );
             }
             runtime.control.mark_stopped();
-            runtime.write_session("failed", restored, Some("error".to_string()), capabilities)?;
-            if let Some(session_update) = session_update {
-                let _ = session_update();
-            }
+            // The outer lifecycle guard commits failure and its reason together.
+            // A metadata-only failed write here would close its owner revision.
             runtime.shutdown();
             return Err(error);
         }
@@ -8530,7 +8543,18 @@ mod tests {
             if frame.get("id").is_none() {
                 continue;
             }
-            let response = if frame["method"] == stall_method {
+            let response = if frame["method"] == "session/prompt"
+                && stall_method.starts_with("prompt-failure")
+            {
+                if stall_method == "prompt-failure-worker-ref" {
+                    let worker_ref = std::path::Path::new("attempt/worker-ref.json");
+                    if worker_ref.is_file() {
+                        std::fs::remove_file(worker_ref).unwrap();
+                    }
+                    std::fs::create_dir(worker_ref).unwrap();
+                }
+                json!({"error": {"code": -32000, "message": "ORIGINAL_PROMPT_FAILURE"}})
+            } else if frame["method"] == stall_method {
                 // Rescue the unfixed implementation without mistaking rescue for a timeout.
                 std::thread::sleep(Duration::from_secs(2));
                 json!({"error": {"code": -32000, "message": "fixture rescue"}})
@@ -8635,6 +8659,109 @@ mod tests {
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
         }
+    }
+
+    #[test]
+    fn prompt_execution_failure_persists_reason_before_publishing_terminal() {
+        assert_prompt_execution_failure("prompt-failure");
+    }
+
+    #[test]
+    fn prompt_execution_failure_survives_worker_ref_cleanup_failure() {
+        assert_prompt_execution_failure("prompt-failure-worker-ref");
+    }
+
+    fn assert_prompt_execution_failure(fixture: &str) {
+        use crate::acp::events::{
+            AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        let snapshot = attempt.join("acp.snapshot.json");
+        crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-fixture".into(),
+            operation_id: "operation-fixture".into(),
+            adapter_id: "prompt-failure-fixture".into(),
+            adapter_display_name: "Fixture".into(),
+            cwd: cwd.to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "test".into(),
+                quotes: vec![],
+            },
+            attachment_paths: vec![],
+            admitted_at: super::current_timestamp(),
+        };
+        let AcpTurnExecutionClaim::Claimed(owner) =
+            admit_session_turn_for_execution(&snapshot, &submission).unwrap()
+        else {
+            panic!("fixture must own its turn")
+        };
+        let published = std::cell::RefCell::new(Vec::new());
+        let on_update = || {
+            published
+                .borrow_mut()
+                .push(crate::storage::read_json::<Value>(&snapshot)?);
+            Ok(())
+        };
+        let result = super::run_prompt(
+            "prompt-failure-fixture",
+            &doctor_fixture_config(fixture),
+            cwd.clone(),
+            cwd.clone(),
+            attempt.clone(),
+            &non_runtime_control_test_prompt("turn-fixture"),
+            SessionMode::New,
+            None,
+            None,
+            Default::default(),
+            None,
+            false,
+            false,
+            false,
+            1_000_000,
+            500_000,
+            AcpRuntimePolicy::default(),
+            owner,
+            None,
+            &[],
+            Some(&on_update),
+            None,
+            None,
+        );
+        super::AdapterConnectionManager::shared()
+            .close_workspace_connections_bounded(&cwd, Duration::from_secs(2))
+            .unwrap();
+        let error = result
+            .err()
+            .expect("fixture must fail inside session/prompt");
+        assert!(
+            format!("{error:#}").contains("ORIGINAL_PROMPT_FAILURE"),
+            "{error:#}"
+        );
+        let terminal = crate::storage::read_json::<Value>(&snapshot).unwrap();
+        assert_eq!(terminal["latestTurnStatus"], "failed");
+        assert!(
+            terminal["turnError"]["diagnostic"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("ORIGINAL_PROMPT_FAILURE")
+        );
+        let published = published.borrow();
+        let failed: Vec<_> = published
+            .iter()
+            .filter(|value| value["latestTurnStatus"] == "failed")
+            .collect();
+        assert!(
+            !failed.is_empty(),
+            "terminal must be published after persistence"
+        );
+        assert!(
+            failed
+                .iter()
+                .all(|value| value["turnError"] == terminal["turnError"])
+        );
     }
 
     #[test]

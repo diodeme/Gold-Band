@@ -1696,6 +1696,7 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
     }
     let mut run: RunState = read_json(&run_path)?;
     let mut run_became_inactive = run.status != RunStatus::Running;
+    let mut run_transitioned_to_paused = false;
     if run.status == RunStatus::Running
         && run.current_round.as_deref() == Some(round_id)
         && run.current_node.as_deref() == Some(outer_node_id)
@@ -1709,6 +1710,7 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
         validate_run_state(&run)?;
         write_json(&run_path, &run)?;
         run_became_inactive = true;
+        run_transitioned_to_paused = true;
     }
 
     let round_path = app.paths.round_file(task_id, run_id, round_id);
@@ -1765,6 +1767,9 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
         )?;
     }
     drop(_guard);
+    if run_transitioned_to_paused {
+        app.publish_committed_attempt_pause(&run);
+    }
     if run_became_inactive {
         app.finish_runtime_candidate_best_effort(
             task_id,
@@ -15271,9 +15276,9 @@ fn drive_from_node_with_initial_session(
     initial_user_prompt_render_mode: UserPromptRenderMode,
     initial_resume_input_attachment_paths: Vec<String>,
     initial_runtime_control_intent: RuntimeControlIntent,
-    parent_continue_input: Option<ConversationPromptInput>,
-    parent_continue_prompt_id: Option<String>,
-    dynamic_resume_override: Option<DynamicResumeOverride>,
+    mut parent_continue_input: Option<ConversationPromptInput>,
+    mut parent_continue_prompt_id: Option<String>,
+    mut dynamic_resume_override: Option<DynamicResumeOverride>,
     initial_model_override: Option<String>,
     initial_permission_mode_override: Option<String>,
     mut launch: Option<mpsc::Sender<RuntimeContinueLaunch>>,
@@ -16081,6 +16086,11 @@ fn drive_from_node_with_initial_session(
             runtime_control_intent = prompt_state.runtime_control_intent;
             model_override = prompt_state.model_override;
             permission_mode_override = prompt_state.permission_mode_override;
+            // Explicit recovery belongs to the initial outer attempt, including
+            // its retries, but never to a workflow successor or a new round.
+            parent_continue_input = None;
+            parent_continue_prompt_id = None;
+            dynamic_resume_override = None;
             invalid_output_repair_prompts = 0;
             continue;
         }

@@ -122,6 +122,25 @@ describe('ACP chat event handling', () => {
       .not.toContain('OLD_TURN_FAILURE');
   });
 
+  it('does not restore an older run fallback while a new turn is active', () => {
+    expect(visibleAcpBannerError(
+      null,
+      session({ status: 'running' }),
+      [],
+      'old run failure: Reconnecting... 5/5',
+      'none',
+      null,
+    )).toBeNull();
+    expect(visibleAcpBannerError(
+      null,
+      session({ status: 'running' }),
+      [],
+      'old run failure: Reconnecting... 5/5',
+      'cancelled',
+      null,
+    )).toBeNull();
+  });
+
   it('bounds the per-session optimistic projection by the configured event window', () => {
     const sessionKey = 'optimistic-bound-test';
     const configuredWindowLimit = loadedEventBufferLimit(48, 2);

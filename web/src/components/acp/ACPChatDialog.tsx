@@ -10063,6 +10063,11 @@ export function visibleAcpBannerError(
 ) {
   if (runtimeError) return runtimeError;
   if (latestTurnStatus === 'completed') return null;
+  // A run-level runtime-abnormal error is only a fallback for sessions that
+  // have no current turn result. Once the lifecycle projection identifies the
+  // current turn as running, cancelled, or otherwise non-failed, an older run
+  // error must not reappear in the banner.
+  if (latestTurnStatus !== undefined && latestTurnStatus !== 'failed') return null;
   const failed = latestTurnStatus === 'failed'
     || (latestTurnStatus == null && session.status === 'failed');
   const error = canonicalTurnError === undefined ? session.turnError : canonicalTurnError;

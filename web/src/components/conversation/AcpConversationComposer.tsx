@@ -40,7 +40,8 @@ export interface AcpConversationComposerProps {
   historyLocator?: ComposerHistoryLocator | null;
   prompt: string;
   onPromptChange: (value: string) => void;
-  onSubmit: () => void;
+  onHistoryTextCommit: (value: string) => void;
+  onSubmit: (historyText?: string) => void;
   sending: boolean;
   attachments: AttachmentItem[];
   quotes: readonly ComposerQuote[];
@@ -75,11 +76,12 @@ export interface AcpConversationComposerProps {
   stopInProgress: boolean;
   onStop: () => void | Promise<void>;
   canSubmit: boolean;
+  canSubmitHistory: boolean;
   sendButtonBusy: boolean;
   showRuntimeContinue: boolean;
   runtimeContinueKind: 'continue-current-attempt' | 'recover-completed-attempt' | null;
   runtimeContinueSubmitting: boolean;
-  onRuntimeContinue: () => void | Promise<void>;
+  onRuntimeContinue: (historyText?: string) => void | Promise<void>;
   configBar: ReactNode;
   attachedPanelVisible: boolean;
   integratedInfoTab: boolean;
@@ -105,13 +107,14 @@ export function AcpConversationComposer(props: AcpConversationComposerProps) {
   const noop = () => {};
   return <AcpConversationComposerContent {...props}
     prompt="" onPromptChange={noop} onSubmit={noop} sending={false}
+    onHistoryTextCommit={noop}
     attachments={[]} quotes={[]} contextError={null} fileError={null}
     slashCommands={[]} slashMenuOpen={false} committedSlashCommand={null}
     placeholder={t('demo.inputDisabled')} inputDisabled={true}
     onTextareaKeyDown={noop} onDragEnter={(event) => event.preventDefault()}
     onDragOver={(event) => event.preventDefault()} onDrop={(event) => event.preventDefault()}
     onPaste={(event) => event.preventDefault()} onFilesChange={noop} onPickFiles={noop}
-    canStop={false} canSubmit={false} sendButtonBusy={false} showRuntimeContinue={false}
+    canStop={false} canSubmit={false} canSubmitHistory={false} sendButtonBusy={false} showRuntimeContinue={false}
     configBar={null} supersededSession={null} />;
 }
 
@@ -119,6 +122,7 @@ function AcpConversationComposerContent({
   historyLocator,
   prompt,
   onPromptChange,
+  onHistoryTextCommit,
   onSubmit,
   sending,
   attachments,
@@ -151,6 +155,7 @@ function AcpConversationComposerContent({
   stopInProgress,
   onStop,
   canSubmit,
+  canSubmitHistory,
   sendButtonBusy,
   showRuntimeContinue,
   runtimeContinueKind,
@@ -171,13 +176,17 @@ function AcpConversationComposerContent({
       text: (cursor: import('@/lib/composer-history').HistoryCursor) => getRuntimeApi().getComposerHistoryText(locator, cursor),
     } : null;
   }, [historyScope]);
+  const draftIdentity = useMemo(() => ({ attachments, quotes }), [attachments, quotes]);
   const history = useComposerHistory({
     scope: historyScope, source: historySource, input: prompt,
-    occupied: attachments.length > 0 || quotes.length > 0,
-    disabled: inputDisabled, onChange: onPromptChange,
+    draftIdentity, disabled: inputDisabled, onChange: onPromptChange,
+    onCommitHistory: onHistoryTextCommit,
   });
-  const submit = () => { history.reset(); onSubmit(); };
-  const continueAndSend = runtimeContinueKind === 'continue-current-attempt' && canSubmit;
+  const effectiveCanSubmit = history.browsing ? canSubmitHistory && Boolean(history.value.trim()) : canSubmit;
+  const submit = () => {
+    if (effectiveCanSubmit) onSubmit(history.commitHistory() ?? undefined);
+  };
+  const continueAndSend = runtimeContinueKind === 'continue-current-attempt' && effectiveCanSubmit;
   const runtimeContinueLabel = runtimeContinueKind === 'recover-completed-attempt'
     ? t('acp.recoverWorkflow')
     : continueAndSend
@@ -210,7 +219,7 @@ function AcpConversationComposerContent({
         onSelect={onSlashMenuSelect}
       >
         <PromptInput
-          value={prompt}
+          value={history.value}
           onValueChange={history.onChange}
           onSubmit={submit}
           isLoading={sending}
@@ -224,8 +233,8 @@ function AcpConversationComposerContent({
           )}
         >
           <ComposerContextArea
-            quotes={quotes}
-            attachments={attachments}
+            quotes={history.browsing ? [] : quotes}
+            attachments={history.browsing ? [] : attachments}
             error={contextError}
             onRemoveQuote={onRemoveQuote}
             onRemoveAttachment={onRemoveAttachment}
@@ -340,7 +349,7 @@ function AcpConversationComposerContent({
                     variant="secondary"
                     disabled={runtimeContinueSubmitting}
                     aria-label={runtimeContinueHint}
-                    onClick={() => { history.reset(); void onRuntimeContinue(); }}
+                    onClick={() => { void onRuntimeContinue(continueAndSend ? history.commitHistory() ?? undefined : undefined); }}
                     data-acp-continue-workflow="true"
                   >
                     {runtimeContinueSubmitting ? (
@@ -358,7 +367,7 @@ function AcpConversationComposerContent({
                 <Button
                   className={ACP_SESSION_COMPOSER_LAYOUT.actionButtonClassName}
                   size="sm"
-                  disabled={!canSubmit}
+                  disabled={!effectiveCanSubmit}
                   aria-label={queueSubmit ? t('acp.promptQueue.enqueue') : t('acp.sendMessage')}
                   onClick={submit}
                   data-acp-send="true"

@@ -2549,6 +2549,9 @@ export function ACPChatDialog(
   const canSubmitPrompt = composerState.canSubmit
     && !queueSubmitPending
     && !queueRestorePending;
+  const canSubmitHistory = composerState.canSubmitContent
+    && !queueSubmitPending
+    && !queueRestorePending;
   const promptQueue = localRuntimeLifecycle?.promptQueue
     ?? runtimeComposerContext?.lifecycle?.promptQueue
     ?? null;
@@ -5170,13 +5173,23 @@ export function ACPChatDialog(
     revokeAttachmentPreviewUrls(attachments);
   };
 
+  const adoptHistoryText = (content: string): AcpComposerDraft | null => {
+    const previous = composerDraft.draft;
+    const next = { content, attachments: [], quotes: [] };
+    if (!composerDraft.clearIfUnchanged(previous)) return null;
+    composerDraft.restoreIfEmpty(next);
+    releaseSubmittedAttachments(previous.attachments);
+    setComposerContextError(null);
+    return next;
+  };
+
   const submitPrompt = async (
     submission: ConversationPromptInput,
     draftSnapshot?: AcpComposerDraft,
     target: "conversation" | "runtime-continue" = "conversation",
   ) => {
     const { displayText: draftContent, quotes: submittedQuotes } = submission;
-    if (!composerState.canSubmit || composerState.stopInProgress) return false;
+    if (!composerState.canSubmitContent || composerState.stopInProgress) return false;
     const enqueueing = target === "conversation"
       && composerState.submitTarget === "queue-prompt";
     if (enqueueing) {
@@ -5186,7 +5199,7 @@ export function ACPChatDialog(
       let detachedDraft: AcpComposerDraft | null = null;
       let submissionAccepted = false;
       try {
-        const attachmentPaths = await resolveAttachmentPaths();
+        const attachmentPaths = await resolveAttachmentPaths(draftSnapshot?.attachments);
         detachedDraft = draftSnapshot && composerDraft.clearIfUnchanged(draftSnapshot)
           ? draftSnapshot
           : null;
@@ -5235,9 +5248,10 @@ export function ACPChatDialog(
     setSendError(null);
     let attPaths: string[];
     try {
-      attPaths = await resolveAttachmentPaths();
+      attPaths = await resolveAttachmentPaths(draftSnapshot?.attachments);
     } catch {
       setSending(false);
+      setPromptCommandPending(false);
       return false;
     }
     const effectivePrompt = serializeUserPromptSubmission(submission);
@@ -5330,7 +5344,7 @@ export function ACPChatDialog(
       if (target === "runtime-continue" && result.kind === "runtime-continue-started") {
         submissionAccepted = true;
         setActiveTurnStartedAt(optimisticEvent.timestamp);
-      } else if (!updated && isAcceptedAcpPromptSubmitKind(result.kind)) {
+      } else if (isAcceptedAcpPromptSubmitKind(result.kind)) {
         submissionAccepted = true;
         setActiveTurnStartedAt(optimisticEvent.timestamp);
       } else if (authoritativeAdmission) {
@@ -5366,17 +5380,6 @@ export function ACPChatDialog(
         );
       }
     } catch (error) {
-      if (cancelRequestedRef.current) {
-        submissionAccepted = true;
-        setAwaitingResponse(true);
-        setActiveTurnPrompt(null);
-        setActiveTurnPromptId(null);
-        setActiveTurnStartedAt(null);
-        updateOptimisticEvents((current) =>
-          current.filter((event) => event.id !== optimisticEvent.id),
-        );
-        return true;
-      }
       const admittedBeforeRecovery = acceptedPromptAdmission();
       if (admittedBeforeRecovery) {
         submissionAccepted = true;
@@ -5515,10 +5518,11 @@ export function ACPChatDialog(
     }
   };
 
-  const send = async () => {
-    if (!canSubmitPrompt) return;
-    const draftSnapshot = composerDraft.draft;
-    const submission = createUserPromptSubmission(prompt, quotes);
+  const send = async (historyText?: string) => {
+    if (historyText !== undefined ? !canSubmitHistory || !historyText.trim() : !canSubmitPrompt) return;
+    const draftSnapshot = historyText !== undefined ? adoptHistoryText(historyText) : composerDraft.draft;
+    if (!draftSnapshot) return;
+    const submission = createUserPromptSubmission(draftSnapshot.content, draftSnapshot.quotes);
     if (composerState.submitTarget !== "none") {
       await submitPrompt(submission, draftSnapshot);
     }
@@ -5619,18 +5623,20 @@ export function ACPChatDialog(
     }
   };
 
-  const continueRuntime = async () => {
+  const continueRuntime = async (historyText?: string) => {
     if (!showRuntimeContinueAction || runtimeContinueSubmitting) return;
     setRuntimeContinueError(null);
     setRuntimeContinueSubmitting(true);
     try {
       if (
         localLifecycle?.continueKind === 'continue-current-attempt'
-        && canSubmitPrompt
+        && (historyText !== undefined ? canSubmitHistory && Boolean(historyText.trim()) : canSubmitPrompt)
       ) {
+        const draftSnapshot = historyText !== undefined ? adoptHistoryText(historyText) : composerDraft.draft;
+        if (!draftSnapshot) { setRuntimeContinueSubmitting(false); return; }
         const accepted = await submitPrompt(
-          createUserPromptSubmission(prompt, quotes),
-          composerDraft.draft,
+          createUserPromptSubmission(draftSnapshot.content, draftSnapshot.quotes),
+          draftSnapshot,
           "runtime-continue",
         );
         if (!accepted) {
@@ -6247,6 +6253,7 @@ export function ACPChatDialog(
                 prompt={prompt}
                 onPromptChange={setPrompt}
                 onSubmit={send}
+                onHistoryTextCommit={adoptHistoryText}
                 sending={sending}
                 attachments={pendingAttachments}
                 quotes={quotes}
@@ -6281,6 +6288,7 @@ export function ACPChatDialog(
                 stopInProgress={stopInProgress}
                 onStop={stopSession}
                 canSubmit={canSubmitPrompt}
+                canSubmitHistory={canSubmitHistory}
                 sendButtonBusy={composerState.submitTarget === "queue-prompt" ? queueSubmitPending : sendButtonBusy}
                 showRuntimeContinue={showRuntimeContinueAction}
                 runtimeContinueKind={localLifecycle?.continueKind ?? null}

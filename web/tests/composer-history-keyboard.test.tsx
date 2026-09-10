@@ -13,12 +13,21 @@ let scope = 'session-a';
 let occupied = false;
 let disabled = false;
 let current: ReturnType<typeof useComposerHistory>;
+let setInput: React.Dispatch<React.SetStateAction<string>>;
 const submit = vi.fn();
 
 function Harness() {
-  const [input, setInput] = useState('');
-  current = useComposerHistory({ scope, source, input, onChange: setInput, occupied, disabled });
-  return <PromptInput value={input} onValueChange={current.onChange} onSubmit={submit}>
+  const [input, updateInput] = useState('');
+  setInput = updateInput;
+  current = useComposerHistory({
+    scope,
+    source,
+    input,
+    onChange: updateInput,
+    draftIdentity: occupied ? 'occupied' : 'empty',
+    disabled,
+  });
+  return <PromptInput value={current.value} onValueChange={current.onChange} onSubmit={submit}>
     <PromptInputTextarea onKeyDown={current.onKeyDown} onCompositionStart={current.onCompositionStart} onCompositionEnd={current.onCompositionEnd} />
   </PromptInput>;
 }
@@ -63,13 +72,33 @@ it('loads lazily, wraps oldest to newest, and restores empty after newest', asyn
   expect(submit).not.toHaveBeenCalled();
 });
 
-it('keeps edited text as a draft and Escape only clears a browsing draft', async () => {
+it('keeps edited history as a draft and Escape restores it after another recall', async () => {
   await press('ArrowUp');
   await act(async () => current.onChange('edited'));
-  expect((await press('ArrowUp')).defaultPrevented).toBe(false);
+  expect((await press('ArrowUp')).defaultPrevented).toBe(true);
   await press('Escape'); expect(textarea().value).toBe('edited');
   await act(async () => current.onChange(''));
   await press('ArrowUp'); await press('Escape'); expect(textarea().value).toBe('');
+});
+
+it.each([
+  ['text draft', false],
+  ['draft with attachments or quotes', true],
+] as const)('round trips a %s through history without losing it', async (_label, hasContext) => {
+  occupied = hasContext;
+  await act(async () => setInput('unfinished draft'));
+  await render();
+
+  expect((await press('ArrowUp')).defaultPrevented).toBe(true);
+  expect(textarea().value).toBe('hello3');
+  await press('ArrowDown');
+  expect(textarea().value).toBe('unfinished draft');
+  expect(current.browsing).toBe(false);
+
+  await press('ArrowUp');
+  await press('Escape');
+  expect(textarea().value).toBe('unfinished draft');
+  expect(current.browsing).toBe(false);
 });
 
 it('reserves selection, modifiers, IME, and multiline interior for native editing', async () => {
@@ -90,26 +119,42 @@ it('reserves selection, modifiers, IME, and multiline interior for native editin
   expect(textarea().selectionStart).toBe(textarea().value.length);
 });
 
-it.each(['edit', 'scope', 'attachment', 'disabled', 'escape', 'composition', 'submit'] as const)('ignores a pending result after %s', async (cause) => {
+it.each(['edit', 'external-input', 'scope', 'attachment', 'disabled', 'escape', 'down', 'composition', 'submit'] as const)('ignores a pending result after %s', async (cause) => {
   let resolve!: (value: HistoryText) => void;
   vi.mocked(source.text).mockImplementation((cursor) => new Promise((done) => { resolve = (value) => done({ ...value, cursor }); }));
   await press('ArrowUp');
   await press('ArrowUp', { repeat: true }); expect(source.text).toHaveBeenCalledTimes(1);
   if (cause === 'edit') await act(async () => current.onChange('new draft'));
+  if (cause === 'external-input') await act(async () => setInput('new draft'));
   if (cause === 'scope') { scope = 'session-b'; await render(); }
   if (cause === 'attachment') { occupied = true; await render(); }
   if (cause === 'disabled') { disabled = true; await render(); }
   if (cause === 'escape') await press('Escape');
+  if (cause === 'down') await press('ArrowDown');
   if (cause === 'composition') await act(async () => current.onCompositionStart());
   if (cause === 'submit') await act(async () => current.reset());
   await act(async () => resolve({ cursor: { generation: 1, position: 3, messageId: '3' }, text: 'late' }));
-  expect(textarea().value).toBe(cause === 'edit' ? 'new draft' : '');
+  expect(textarea().value).toBe(cause === 'edit' || cause === 'external-input' ? 'new draft' : '');
   expect(current.busy).toBe(false);
 });
 
-it('blocks recall with attachments or quotes and reports failures without replacing input', async () => {
+it('adopts visible history before IME composition and retains it as the next draft', async () => {
+  await act(async () => setInput('original draft'));
+  await press('ArrowUp');
+  await act(async () => current.onCompositionStart());
+  expect(textarea().value).toBe('hello3');
+  expect(current.browsing).toBe(false);
+  await act(async () => current.onChange('hello3 composed'));
+  await act(async () => current.onCompositionEnd());
+  await press('ArrowUp');
+  await press('Escape');
+  expect(textarea().value).toBe('hello3 composed');
+});
+
+it('allows recall with attachments or quotes and reports failures without replacing input', async () => {
   occupied = true; await render();
-  await press('ArrowUp'); expect(source.list).not.toHaveBeenCalled();
+  await press('ArrowUp'); expect(textarea().value).toBe('hello3');
+  await press('ArrowDown'); expect(textarea().value).toBe('');
   occupied = false; await render();
   vi.mocked(source.list).mockRejectedValueOnce({ code: 'acp.composer-history-stale' });
   await press('ArrowUp'); expect(current.error).toBe(true); expect(textarea().value).toBe('');

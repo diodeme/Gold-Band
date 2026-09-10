@@ -6,9 +6,10 @@ interface Options {
   scope: string;
   source: ComposerHistorySource | null;
   input: string;
-  occupied: boolean;
+  draftIdentity?: unknown;
   disabled: boolean;
   onChange: (value: string) => void;
+  onCommitHistory?: (value: string) => void;
 }
 
 export function useComposerHistory(options: Options) {
@@ -18,9 +19,9 @@ export function useComposerHistory(options: Options) {
   const cursor = useRef<HistoryCursor | null>(null);
   const revision = useRef(0);
   const pending = useRef(false);
-  const expected = useRef(options.input);
   const composing = useRef(false);
   const caret = useRef<{ element: HTMLTextAreaElement; direction: 'older' | 'newer' } | null>(null);
+  const [historyText, setHistoryText] = useState<string | null>(null);
   const [browsing, setBrowsing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
@@ -31,6 +32,7 @@ export function useComposerHistory(options: Options) {
     cursor.current = null;
     caret.current = null;
     pending.current = false;
+    setHistoryText(null);
     setBusy(false);
     setBrowsing(false);
     setError(false);
@@ -42,20 +44,34 @@ export function useComposerHistory(options: Options) {
   }, [options.scope, options.source]);
 
   useLayoutEffect(() => {
-    if (options.disabled || options.occupied || options.input !== expected.current) reset();
-    expected.current = options.input;
+    if (options.disabled) reset();
     if (caret.current) {
       const { element, direction } = caret.current;
       const position = direction === 'older' && element.value.includes('\n') ? 0 : element.value.length;
       element.setSelectionRange(position, position);
       caret.current = null;
     }
-  }, [options.input, options.occupied, options.disabled, busy]);
+  }, [historyText, options.input, options.disabled, busy]);
+
+  useLayoutEffect(() => {
+    if (cursor.current || pending.current) reset();
+  }, [options.input, options.draftIdentity]);
 
   function onChange(value: string) {
+    const commitHistory = cursor.current !== null;
     reset();
-    expected.current = value;
-    options.onChange(value);
+    if (commitHistory) (options.onCommitHistory ?? options.onChange)(value);
+    else options.onChange(value);
+  }
+
+  function commitHistory(): string | null {
+    if (!cursor.current || historyText === null) {
+      reset();
+      return null;
+    }
+    const value = historyText;
+    reset();
+    return value;
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -68,16 +84,19 @@ export function useComposerHistory(options: Options) {
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
     if (event.key === 'Escape' && (cursor.current || pending.current)) {
       event.preventDefault();
-      onChange('');
+      reset();
       return;
     }
     if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
-    if (!options.source || options.disabled || options.occupied) return;
+    if (!options.source || options.disabled) return;
     const element = event.currentTarget;
     if (element.selectionStart !== element.selectionEnd) return;
     const direction = event.key === 'ArrowUp' ? 'older' : 'newer';
-    if (!cursor.current && (options.input.length > 0 || direction === 'newer')) return;
-    if (cursor.current && element.value.includes('\n')
+    if (!cursor.current && direction === 'newer') {
+      if (pending.current) { event.preventDefault(); reset(); }
+      return;
+    }
+    if (element.value.includes('\n')
       && element.selectionStart !== (direction === 'older' ? 0 : element.value.length)) return;
     event.preventDefault();
     if (pending.current) return;
@@ -86,22 +105,22 @@ export function useComposerHistory(options: Options) {
     const snapshot = options;
     const active = () => request === revision.current
       && latest.current.scope === snapshot.scope
-      && latest.current.input === expected.current
-      && !latest.current.disabled && !latest.current.occupied;
+      && latest.current.input === snapshot.input
+      && latest.current.draftIdentity === snapshot.draftIdentity
+      && !latest.current.disabled;
     pending.current = true;
     setBusy(true);
     setError(false);
     void reader.current.move(cursor.current, direction, active).then((result) => {
       if (!active()) return;
       cursor.current = result?.cursor ?? null;
-      expected.current = result?.text ?? '';
+      setHistoryText(result?.text ?? null);
       if (!result) reader.current = null;
       caret.current = { element, direction };
       setBrowsing(result !== null);
-      latest.current.onChange(expected.current);
     }).catch(() => {
       if (!active()) return;
-      // Keep the displayed text as a normal draft; retry begins from an empty draft.
+      // Failed history reads return to the untouched canonical draft.
       reset();
       setError(true);
     }).finally(() => {
@@ -112,8 +131,13 @@ export function useComposerHistory(options: Options) {
   }
 
   return {
-    browsing, busy, error, onChange, onKeyDown, reset,
-    onCompositionStart: () => { composing.current = true; reset(); },
+    value: historyText ?? options.input,
+    browsing, busy, error, onChange, onKeyDown, reset, commitHistory,
+    onCompositionStart: () => {
+      composing.current = true;
+      const value = commitHistory();
+      if (value !== null) (options.onCommitHistory ?? options.onChange)(value);
+    },
     onCompositionEnd: () => { composing.current = false; },
     isComposing: () => composing.current,
   };

@@ -450,16 +450,16 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
     return attachments.filter((a) => !!a.path).map((a) => a.path!);
   }, [attachments]);
 
-  const resolveAttachmentPaths = useCallback(async (): Promise<string[]> => {
-    const pendingFiles = attachments.filter((a) => !a.path && !!a.file);
-    const unresolved = attachments.filter((a) => !a.path && !a.file);
+  const resolveAttachmentPaths = useCallback(async (snapshot: readonly AttachmentItem[] = attachments): Promise<string[]> => {
+    const pendingFiles = snapshot.filter((a) => !a.path && !!a.file);
+    const unresolved = snapshot.filter((a) => !a.path && !a.file);
     if (unresolved.length > 0) {
       const message = t('conversation.attachmentMaterializeFailed');
       showTransientFileError(message);
       throw new Error(message);
     }
     if (pendingFiles.length === 0) {
-      return attachments.filter((a) => !!a.path).map((a) => a.path!);
+      return snapshot.filter((a) => !!a.path).map((a) => a.path!);
     }
     try {
       const files = await Promise.all(
@@ -471,7 +471,7 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
       );
       const materialized = await materializeConversationAttachments(files);
       let materializedIndex = 0;
-      return attachments.flatMap((item) => {
+      return snapshot.flatMap((item) => {
         if (item.path) return [item.path];
         if (!item.file) return [];
         const path = materialized[materializedIndex]?.path;

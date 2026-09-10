@@ -16,6 +16,7 @@ const noop = () => {};
 const submit = vi.fn();
 const commands = [{ name: 'review', description: 'Review', input: null }, { name: 'reset', description: 'Reset', input: null }];
 const defaults: Omit<AcpConversationComposerProps, 'prompt' | 'onPromptChange'> = {
+  onHistoryTextCommit: noop, canSubmitHistory: true,
   onSubmit: submit, sending: false, attachments: [], quotes: [], contextError: null, fileError: null,
   onRemoveQuote: noop, onRemoveAttachment: noop, onPreviewAttachment: noop, onClearAttachments: noop,
   slashCommands: [], slashMenuOpen: false, slashMenuActiveIndex: 0, onSlashMenuActiveIndexChange: noop,
@@ -31,7 +32,8 @@ function Harness({ initial = '' }: { initial?: string }) {
   const [prompt, setPrompt] = useState(initial);
   const slash = useSlashCommandController({ input: prompt, commands, onInputChange: setPrompt });
   return <TooltipProvider><AcpConversationComposer {...defaults} prompt={prompt} onPromptChange={setPrompt}
-    onSubmit={() => { submit(prompt); setPrompt(''); }} slashCommands={slash.filteredCommands}
+    onHistoryTextCommit={setPrompt}
+    onSubmit={(historyText) => { submit(historyText ?? prompt); setPrompt(''); }} slashCommands={slash.filteredCommands}
     slashMenuOpen={slash.isOpen} slashMenuActiveIndex={slash.activeIndex} onSlashMenuActiveIndexChange={slash.setActiveIndex}
     onSlashMenuDismiss={slash.dismiss} onSlashMenuSelect={slash.selectByIndex} onTextareaKeyDown={slash.onKeyDown} /></TooltipProvider>;
 }

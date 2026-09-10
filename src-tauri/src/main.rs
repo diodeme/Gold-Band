@@ -91,8 +91,9 @@ use gold_band::storage::sqlite::init_search_index;
 use gold_band::storage::{GoldBandPaths, configure_storage_paths};
 use multica::commands::{
     add_multica_workspace, cancel_multica_task, get_multica_task_requirement, get_multica_tasks,
-    list_server_multica_workspaces, recover_multica_work_dir_sessions, remove_multica_workspace,
-    set_active_multica_workspace, start_multica_conversation_run,
+    list_multica_skills, list_server_multica_workspaces, pull_multica_skills,
+    recover_multica_work_dir_sessions, remove_multica_workspace, set_active_multica_workspace,
+    start_multica_conversation_run,
 };
 // Heartbeat signals are projected by the RuntimeLifecycleBus metrics subscriber.
 use image_actions::{copy_image_to_clipboard, save_image_as};
@@ -502,6 +503,8 @@ fn run() -> anyhow::Result<()> {
             start_multica_conversation_run,
             cancel_multica_task,
             list_server_multica_workspaces,
+            list_multica_skills,
+            pull_multica_skills,
             add_multica_workspace,
             remove_multica_workspace,
             set_active_multica_workspace,

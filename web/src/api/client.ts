@@ -65,6 +65,8 @@ import type {
   MetricsSettingsVm,
   MulticaSettingsVm,
   MulticaServerWorkspaceVm,
+  MulticaSkillListItemVm,
+  MulticaPullReportVm,
   MulticaWorkspaceRefVm,
   RemoteConversationSidebarVm,
   RemoteTaskVm,
@@ -416,6 +418,10 @@ export interface RuntimeApi {
   addMulticaWorkspace(workspaceId: string, workspaceName: string, provider: string): Promise<MulticaSettingsVm>;
   removeMulticaWorkspace(workspaceId: string): Promise<MulticaSettingsVm>;
   setActiveMulticaWorkspace(workspaceId: string): Promise<MulticaSettingsVm>;
+  /// 「从 Multica 同步」勾选列表：远端 workspace skill + 本地同名匹配（1 次 GET + 本地匹配）。
+  listMulticaSkills(workspaceId: string): Promise<MulticaSkillListItemVm[]>;
+  /// 拉取选中项落全局库；返回逐项结果（created/overwritten/skipped/failed + 结构化错误码）。
+  pullMulticaSkills(workspaceId: string, skillIds: string[]): Promise<MulticaPullReportVm>;
   recordActivity(): Promise<void>;
   reportFrontendError(input: FrontendErrorReportInput): Promise<void>;
   getUpdateStatus(): Promise<UpdateStatusVm>;

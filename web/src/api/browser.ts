@@ -1990,6 +1990,12 @@ export const browserApi: RuntimeApi = {
   setActiveMulticaWorkspace(_workspaceId: string) {
     return this.getMulticaSettings();
   },
+  listMulticaSkills(_workspaceId: string) {
+    return Promise.resolve([]);
+  },
+  pullMulticaSkills(_workspaceId: string, _skillIds: string[]) {
+    return Promise.resolve({ results: [] });
+  },
   getUpdateStatus() {
     return Promise.resolve(browserPreviewState.getUpdateStatus());
   },

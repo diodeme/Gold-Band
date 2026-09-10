@@ -18,7 +18,7 @@ use tracing::{info, warn};
 
 use crate::commands::{
     CommandErrorVm, CommandResult, acp_live_update_emitter_for_app, acp_session_update_emitter,
-    command_error,
+    command_error, schedule_agent_command_catalog_refresh,
 };
 use crate::conversation_workspace::workspace_entry_for_project;
 use crate::multica::client::{MULTICA_ISSUE_IN_PROGRESS_STATUS, MulticaClient, WorkspaceInfo};
@@ -26,8 +26,14 @@ use crate::multica::config::{
     MulticaSettingsVm, get_daemon_id, get_pat, multica_base_url, multica_settings,
 };
 use crate::multica::error::MulticaError;
+use crate::multica::local_skills::{
+    assemble_pulled_skill_md, multica_skill_dir_name, own_global_skill_exists,
+};
 use crate::multica::state::{ActiveRemoteRun, SharedMulticaState};
-use crate::multica::vm::{RemoteConversationSidebarVm, RemoteTaskVm};
+use crate::multica::vm::{
+    MulticaPullItemResultVm, MulticaPullReportVm, MulticaSkillListItemVm, RemoteConversationSidebarVm,
+    RemoteTaskVm,
+};
 use crate::state::DesktopState;
 use crate::view_models_conversation::{
     ConversationCreateInputVm, ConversationCreateResultVm, conversation_run_vm,
@@ -1275,6 +1281,208 @@ pub fn set_active_multica_workspace(
     crate::multica::bridge::emit_multica_settings_updated(&app_handle);
     let updated_context = state.context().map_err(command_error)?;
     Ok(multica_settings(&updated_context.config))
+}
+
+// ===== SKILL 同步：「从 Multica 同步」拉取落库（设计 §5-§6）=====
+
+/// 「从 Multica 同步」列表（设计 §5.1）：远端 workspace skills + 本地全局自有库**一次性**扫描，
+/// 逐项标记 `local_state`（"new" 默认勾选 / "exists" 同步将覆盖默认不勾选）。
+///
+/// 列表阶段不预取详情/文件（无 N+1）：文件数判空推迟到拉取落库时逐项做（设计 §5.3）。
+/// 命令级失败（未连接 / 网络错误）走 `multica.*` 错误码，前端引导连接或提示重载。
+#[tauri::command]
+pub async fn list_multica_skills(
+    state: State<'_, DesktopState>,
+    workspace_id: String,
+) -> CommandResult<Vec<MulticaSkillListItemVm>> {
+    let context = state.context().map_err(command_error)?;
+    if !multica_settings(&context.config).connected {
+        return Err(command_error(MulticaError::NotConfigured.into()));
+    }
+    let base_url = multica_base_url(&context.config).unwrap_or_default();
+    let pat = get_pat(&context.config).unwrap_or_default();
+    let client = MulticaClient::new(base_url, Some(pat)).map_err(|e| command_error(e.into()))?;
+
+    let remote = client
+        .list_remote_skills(&workspace_id)
+        .await
+        .map_err(|e| command_error(e.into()))?;
+
+    // 本地全局自有库单次扫描（exists 判定基准；与 discovery 上报同源，spawn_blocking 隔离盘 I/O）。
+    let scan_app = context.app();
+    let local = tauri::async_runtime::spawn_blocking(move || scan_app.skill_manager().list())
+        .await
+        .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
+        .map_err(command_error)?;
+
+    Ok(remote
+        .into_iter()
+        .map(|s| {
+            let dir_name = multica_skill_dir_name(&s.name, &s.id);
+            let exists = own_global_skill_exists(&local.global, &dir_name);
+            MulticaSkillListItemVm {
+                id: s.id,
+                name: s.name,
+                description: s.description,
+                local_state: if exists { "exists" } else { "new" },
+            }
+        })
+        .collect())
+}
+
+/// 「从 Multica 同步」拉取落库（设计 §5.3-§5.4）：逐项 详情 → 文件数判空 → 清洗目录名 →
+/// 批内重名判定 → [`SkillManager::write_instance`] 落全局自有库（与本地 SKILL 编辑同一写入链路）。
+///
+/// 逐项独立成败（per-item report，单项失败不阻断批次）：
+/// - 404 → skipped `multica.skill.not-found`（远端已删）；
+/// - 文件数 >1（本地单 SKILL.md 模型）→ skipped `multica.skill.has-files`；
+/// - 批内清洗后同名（含前项 created 造成的同名）→ skipped `multica.skill.name-collision`；
+/// - 网络类失败 → failed `multica.remote-error`；
+/// - 本地落库失败 → failed 且 reason 透传原始错误文本（诊断用）。
+///
+/// exists 判定基于**批前**扫描 + `seen` 集合：同批先 created 的目录名会被 seen 捕获为
+/// name-collision，不会误判 overwritten。落库后统一刷新 agent 命令目录（与 `write_skill` 同款）。
+#[tauri::command]
+pub async fn pull_multica_skills(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    workspace_id: String,
+    skill_ids: Vec<String>,
+) -> CommandResult<MulticaPullReportVm> {
+    let context = state.context().map_err(command_error)?;
+    if !multica_settings(&context.config).connected {
+        return Err(command_error(MulticaError::NotConfigured.into()));
+    }
+    let base_url = multica_base_url(&context.config).unwrap_or_default();
+    let pat = get_pat(&context.config).unwrap_or_default();
+    let client = MulticaClient::new(base_url, Some(pat)).map_err(|e| command_error(e.into()))?;
+
+    // 批前一次性扫描本地全局自有库（exists 判定基准）。
+    let scan_app = context.app();
+    let local = tauri::async_runtime::spawn_blocking(move || scan_app.skill_manager().list())
+        .await
+        .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
+        .map_err(command_error)?;
+    let global_metas = local.global;
+
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut results: Vec<MulticaPullItemResultVm> = Vec::new();
+    let mut any_written = false;
+
+    for skill_id in skill_ids {
+        // ① 详情（含 SKILL.md 正文）。
+        let detail = match client.get_remote_skill(&workspace_id, &skill_id).await {
+            Ok(detail) => detail,
+            Err(MulticaError::TaskNotFound) => {
+                results.push(skipped_result(&skill_id, &skill_id, "multica.skill.not-found"));
+                continue;
+            }
+            Err(error) => {
+                warn!(skill = %skill_id, %error, "multica pull: get skill detail failed");
+                results.push(failed_result(&skill_id, &skill_id, "multica.remote-error"));
+                continue;
+            }
+        };
+        let name = detail.name.clone();
+
+        // ② 文件数判空：本地模型单 SKILL.md，多文件 skill 整项跳过（设计 §4.4）。
+        match client
+            .list_remote_skill_files(&workspace_id, &skill_id)
+            .await
+        {
+            Ok(files) if files.len() > 1 => {
+                results.push(skipped_result(&skill_id, &name, "multica.skill.has-files"));
+                continue;
+            }
+            Err(MulticaError::TaskNotFound) => {
+                results.push(skipped_result(&skill_id, &name, "multica.skill.not-found"));
+                continue;
+            }
+            Err(error) => {
+                warn!(skill = %skill_id, %error, "multica pull: list skill files failed");
+                results.push(failed_result(&skill_id, &name, "multica.remote-error"));
+                continue;
+            }
+            Ok(_) => {}
+        }
+
+        // ③ 清洗目录名 + 批内重名（seen 含本批已 created 的目录名）。
+        let dir_name = multica_skill_dir_name(&detail.name, &skill_id);
+        if !seen.insert(dir_name.clone()) {
+            results.push(skipped_result(&skill_id, &name, "multica.skill.name-collision"));
+            continue;
+        }
+        let exists = own_global_skill_exists(&global_metas, &dir_name);
+
+        // ④ 落库：SKILL.md = 远端正文 + 名称/描述覆写组装（设计 §5.3）；new 建目录，
+        //    exists 经 directory_path 定位既有目录（frontmatter 重写、未知字段保留）。
+        let content = assemble_pulled_skill_md(&detail.name, &detail.description, &detail.content);
+        let write_app = context.app();
+        let write_name = if exists { detail.name.clone() } else { dir_name.clone() };
+        let write_dir: Option<String> = exists.then(|| dir_name.clone());
+        let write = tauri::async_runtime::spawn_blocking(move || {
+            write_app.skill_manager().write_instance(
+                &write_name,
+                gold_band::config::SkillSource::Global,
+                &content,
+                None,
+                None,
+                write_dir.as_deref(),
+                None,
+            )
+        })
+        .await
+        .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?;
+
+        match write {
+            Ok(_) => {
+                any_written = true;
+                results.push(MulticaPullItemResultVm {
+                    id: skill_id,
+                    name,
+                    outcome: if exists { "overwritten" } else { "created" },
+                    reason: None,
+                });
+            }
+            Err(error) => {
+                warn!(skill = %skill_id, %error, "multica pull: write_instance failed");
+                results.push(MulticaPullItemResultVm {
+                    id: skill_id,
+                    name,
+                    outcome: "failed",
+                    reason: Some(format!("{error:#}")),
+                });
+            }
+        }
+    }
+
+    // 落库后统一刷新 agent 命令目录（后台线程，与 write_skill 同款；全局库 → home repo root）。
+    if any_written {
+        let app = context.app();
+        schedule_agent_command_catalog_refresh(app_handle, app.paths.repo_root.clone());
+    }
+
+    Ok(MulticaPullReportVm { results })
+}
+
+/// 逐项报告构造助手：skipped + 结构化原因码（前端 i18n 映射）。
+fn skipped_result(id: &str, name: &str, reason: &str) -> MulticaPullItemResultVm {
+    MulticaPullItemResultVm {
+        id: id.to_string(),
+        name: name.to_string(),
+        outcome: "skipped",
+        reason: Some(reason.to_string()),
+    }
+}
+
+/// 逐项报告构造助手：failed + 结构化原因码。
+fn failed_result(id: &str, name: &str, reason: &str) -> MulticaPullItemResultVm {
+    MulticaPullItemResultVm {
+        id: id.to_string(),
+        name: name.to_string(),
+        outcome: "failed",
+        reason: Some(reason.to_string()),
+    }
 }
 
 #[cfg(test)]

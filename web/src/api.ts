@@ -598,6 +598,14 @@ export function setActiveMulticaWorkspace(workspaceId: string) {
   return getRuntimeApi().setActiveMulticaWorkspace(workspaceId);
 }
 
+export function listMulticaSkills(workspaceId: string) {
+  return getRuntimeApi().listMulticaSkills(workspaceId);
+}
+
+export function pullMulticaSkills(workspaceId: string, skillIds: string[]) {
+  return getRuntimeApi().pullMulticaSkills(workspaceId, skillIds);
+}
+
 export function recordActivity() {
   return getRuntimeApi().recordActivity();
 }

@@ -10374,7 +10374,10 @@ pub fn update_skill_sync_targets(
     Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
 }
 
-fn schedule_agent_command_catalog_refresh(app_handle: AppHandle, workspace: Utf8PathBuf) {
+pub(crate) fn schedule_agent_command_catalog_refresh(
+    app_handle: AppHandle,
+    workspace: Utf8PathBuf,
+) {
     std::thread::spawn(move || {
         let state = app_handle.state::<DesktopState>();
         let _ = state.refresh_all_agent_command_catalogs_for_workspace(workspace);

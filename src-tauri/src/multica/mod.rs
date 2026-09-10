@@ -19,6 +19,7 @@ pub mod client;
 pub mod commands;
 pub mod config;
 pub mod error;
+pub mod local_skills;
 pub mod loop_;
 pub mod state;
 pub mod vm;

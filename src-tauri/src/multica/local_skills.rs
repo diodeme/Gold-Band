@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use camino::Utf8Path;
 use gold_band::app::App;
-use gold_band::config::{SkillMeta, SkillSource};
+use gold_band::config::{SkillMeta, SkillSource, SKILL_FILE_NAME};
 use gold_band::frontmatter::{
     parse_optional_frontmatter_document, render_frontmatter_document, FrontmatterUpdate,
 };
@@ -46,20 +46,23 @@ pub const IMPORT_MAX_DEPTH: usize = 4;
 
 /// 清洗远端展示名为本地 skill 目录名（设计 §5.2，无映射表方案）。
 ///
-/// 最小清洗：文件系统非法字符（Windows `<>:"/\|?*` 与控制符）删除、连续空白折叠为单个 `-`、
+/// 最小清洗：文件系统非法字符（Windows `<>:"/\|?*`）与其余控制符删除、连续空白折叠为单个 `-`、
 /// 首尾 `-` 去除、保留大小写与中文。清洗后为空回退 `skill-{id 前 8 位}`。
 /// 纯函数、确定性、幂等（对已合规名无变化）。
+///
+/// **空白优先于控制符删除**：`\t`/`\n`/`\r` 等既是空白又是控制符，须按空白折叠为段落分隔符
+/// （`a\tb` → `a-b`），否则「连续空白 → `-`」对这类字符永久失效、把两个词粘连成 `ab`
+/// （设计 §5.2 两条规则的优先级在此显式化）。
 pub fn multica_skill_dir_name(remote_name: &str, remote_id: &str) -> String {
     let mut out = String::with_capacity(remote_name.len());
     for c in remote_name.chars() {
-        if c.is_control() || is_windows_illegal(c) {
-            continue;
-        }
         if c.is_whitespace() {
             // 连续空白折叠为单个 `-`（含与已有 `-` 相邻的空白）。
             if !out.ends_with('-') {
                 out.push('-');
             }
+        } else if c.is_control() || is_windows_illegal(c) {
+            continue;
         } else {
             out.push(c);
         }
@@ -147,7 +150,7 @@ pub fn read_local_skill_bundle(
     if !dir.is_dir() {
         return Err(format!("skill not found: {skill_key}"));
     }
-    let skill_md_path = dir.join("SKILL.md");
+    let skill_md_path = dir.join(SKILL_FILE_NAME);
     if !skill_md_path.is_file() {
         return Err(format!("SKILL.md missing in skill: {skill_key}"));
     }
@@ -202,7 +205,11 @@ pub fn read_local_skill_bundle(
     })
 }
 
-/// 递归收集支撑文件：`(相对路径 "/" 分隔, 绝对路径, 字节数)`。
+/// 递归收集**支撑文件**：`(相对路径 "/" 分隔, 绝对路径, 字节数)`。
+///
+/// 根 `SKILL.md` 不是支撑文件——它由 [`LocalSkillBundle::content`] 承载，故在根层跳过：
+/// 重复收集会把正文再上报一次，并让同一个文件同时占掉「1（content）+ 1（支撑）」两份
+/// 文件数与字节限额，使恰好 256 文件的 skill 被误判超限（子目录内的 `SKILL.md` 仍是支撑文件）。
 fn collect_files_recursive(
     dir: &Path,
     rel_prefix: &mut Vec<String>,
@@ -215,6 +222,9 @@ fn collect_files_recursive(
         }
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
+        if rel_prefix.is_empty() && name == SKILL_FILE_NAME {
+            continue;
+        }
         if path.is_dir() {
             if rel_prefix.len() + 1 > IMPORT_MAX_DEPTH {
                 let rel = rel_prefix.join("/");
@@ -513,11 +523,13 @@ mod tests {
     #[test]
     fn assemble_strips_remote_frontmatter_and_keeps_extra_fields() {
         // 远端 content 含 frontmatter + 附加字段：剥离重组，name 固定远端展示名列，附加字段保留。
+        // 渲染走 canonical `render_frontmatter_document`（与编辑器写盘同源）：值含非
+        // `[A-Za-z0-9._-]` 字符时按 YAML 规则加引号，`allowed-tools: Read` 为纯字母故不加。
         let content = "---\nname: old-name\nallowed-tools: Read\n---\n\nBody here\n";
         let out = assemble_pulled_skill_md("PR review", "Review PRs", content);
         assert_eq!(
             out,
-            "---\nname: PR review\ndescription: Review PRs\nallowed-tools: Read\n---\n\nBody here\n"
+            "---\nname: \"PR review\"\ndescription: \"Review PRs\"\nallowed-tools: Read\n---\n\nBody here\n"
         );
     }
 
@@ -526,16 +538,16 @@ mod tests {
         let out = assemble_pulled_skill_md("PR review", "Review PRs", "Just body\n");
         assert_eq!(
             out,
-            "---\nname: PR review\ndescription: Review PRs\n---\nJust body\n"
+            "---\nname: \"PR review\"\ndescription: \"Review PRs\"\n---\nJust body\n"
         );
     }
 
     #[test]
     fn assemble_description_falls_back_to_content_then_omits() {
-        // 远端 description 列为空 → 回退 content 内 description。
+        // 远端 description 列为空 → 回退 content 内 description（含空格的值得加引号）。
         let with_content_desc = "---\nname: x\ndescription: from content\n---\nbody";
         let out = assemble_pulled_skill_md("N", "", with_content_desc);
-        assert_eq!(out, "---\nname: N\ndescription: from content\n---\nbody");
+        assert_eq!(out, "---\nname: N\ndescription: \"from content\"\n---\nbody");
 
         // 两侧均无 → 省略 description。
         let out = assemble_pulled_skill_md("N", "  ", "plain body");
@@ -560,7 +572,7 @@ mod tests {
         // 远端 description 列非空时优先（Web 改名/改描述后列名为权威）。
         let content = "---\nname: x\ndescription: from content\n---\nbody";
         let out = assemble_pulled_skill_md("N", "from column", content);
-        assert!(out.contains("description: from column\n"));
+        assert!(out.contains("description: \"from column\"\n"));
         assert!(!out.contains("from content"));
     }
 
@@ -692,13 +704,31 @@ mod tests {
             "---\nname: PR review\nallowed-tools: Read\n---\n\nBody\n"
         );
         assert_eq!(bundle.name, "PR review");
-        // 支撑文件按路径排序、相对路径 / 分隔。
+        // 支撑文件按路径排序、相对路径 / 分隔；根 SKILL.md 由 content 承载，不得混入支撑文件。
         assert_eq!(bundle.files.len(), 2);
         assert_eq!(bundle.files[0].path, "assets/template.md");
         assert_eq!(bundle.files[0].content, "# tpl");
         assert_eq!(bundle.files[1].path, "nested/deep/ref.md");
+        assert!(!bundle.files.iter().any(|file| file.path == "SKILL.md"));
         assert_eq!(bundle.provider, "claude-acp");
         assert_eq!(bundle.source_path, dir.as_str());
+    }
+
+    #[test]
+    fn bundle_does_not_count_root_skill_md_toward_file_limit() {
+        // 限额口径是「SKILL.md + 支撑文件」总数 256：255 个支撑文件恰好到顶，必须通过。
+        // 根 SKILL.md 重复计入支撑文件会让第 256 个文件被误判超限（且把正文重复上报为支撑文件）。
+        let tmp = tempfile::tempdir().unwrap();
+        let files: Vec<(String, &str)> = (0..IMPORT_MAX_FILES - 1)
+            .map(|i| (format!("f{i:03}.md"), "x"))
+            .collect();
+        let dir = write_skill(
+            tmp.path().join("edge-files").as_path(),
+            "---\nname: e\n---\nbody",
+            &files,
+        );
+        let bundle = read_local_skill_bundle(&dir, "edge-files", "claude-acp").unwrap();
+        assert_eq!(bundle.files.len(), IMPORT_MAX_FILES - 1);
     }
 
     #[test]

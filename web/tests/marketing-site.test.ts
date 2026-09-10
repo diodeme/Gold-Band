@@ -7,6 +7,12 @@ import { mockErrorBlockedConversationRun } from '../src/mockData';
 import { conversationPageForRun, conversationSourceControlWorkspacePath } from '../src/lib/conversation-navigation';
 
 describe('website routing and bilingual content', () => {
+  it('gives the embedded Demo a full viewport with a scrolling outer header', () => {
+    const css = readFileSync('marketing/site/style.css', 'utf8');
+    expect(css).toMatch(/\.site-demo-frame\s*\{[^}]*height:\s*100dvh/);
+    expect(css).toMatch(/\.site-with-demo \.site-header\s*\{[^}]*position:\s*relative/);
+    expect(css.match(/\.site\.site-with-demo\s*\{([^}]*)\}/)?.[1]).not.toMatch(/height:|overflow:/);
+  });
   it('keeps complete workflow interactions readable after real viewport changes and restores the overview', () => {
     const index = JSON.parse(readFileSync('marketing/site/media/checkpoints/index.json', 'utf8'));
     for (const language of ['zh', 'en']) for (const suffix of ['', '-light']) {

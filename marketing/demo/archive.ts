@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isExcludedDemoSession, selectVisibleDemoSessions } from './session-selection';
 import type { AcpActivityDetailQueryInput, AcpRawFrameQueryInput, AcpRawFrameVm, AcpSessionQueryInput, AcpUiEventVm, FileComparisonVm, FileVersionRefVm, TurnFileLocatorVm } from '@/types';
 import { boundedBytes } from './archive-http';
 import { normalizeRawQuery, rawFrame } from './archive-raw-query';
@@ -44,6 +45,7 @@ type ArchiveLocator = Omit<TurnFileLocatorVm, 'branchId'>;
 const locatorFields = ['projectId', 'taskId', 'runId', 'roundId', 'nodeId', 'attemptId', 'outerNodeId', 'outerAttemptId'] as const;
 const failure = (code: string) => ({ code, params: {} });
 export function archiveSession(catalog: ArchiveCatalog, locator: ArchiveLocator) {
+  if (isExcludedDemoSession(locator)) throw failure('demo.resource-not-found');
   const session = catalog.sessions.find(candidate => locatorFields.every(key => (candidate[key] ?? null) === (locator[key] ?? null)));
   if (!session) throw failure('demo.resource-not-found');
   return session;
@@ -150,8 +152,11 @@ export function createArchiveReader(baseUrl: string, fetcher: typeof fetch = fet
       const lines = [before, after].reduce((count, side) => count + (side?.content.split('\n').length ?? 0), 0);
       return lines > ARCHIVE_FILE_LIMITS.diffLines ? { ...result, limitationCode: 'turn-files.diff-too-large' } : { ...result, before, after };
     },
-    catalog: (signal?: AbortSignal) => read('catalog.json', catalogSchema, signal),
-    run: (catalog: ArchiveCatalog, signal?: AbortSignal) => read(catalog.runView, archiveRunSchema, signal),
+    catalog: async (signal?: AbortSignal) => {
+      const catalog = await read('catalog.json', catalogSchema, signal);
+      return { ...catalog, sessions: catalog.sessions.filter(session => !isExcludedDemoSession(session)) };
+    },
+    run: async (catalog: ArchiveCatalog, signal?: AbortSignal) => selectVisibleDemoSessions(await read(catalog.runView, archiveRunSchema, signal)),
     detail: (session: ArchiveSession, signal?: AbortSignal) => read(session.detail, detailSchema, signal),
     async history(session: ArchiveSession, query: AcpSessionQueryInput = {}, signal?: AbortSignal) {
       const detail = await read(session.detail, detailSchema, signal);

@@ -1,5 +1,13 @@
 # Website Acceptance Evidence
 
+## JI Demo Editorial Selection, 2026-09-10
+
+At the user's request, the exact round-001/ai-dynamic/attempt-001/phase-2-parallel-capabilities-merge-2/attempt-001 session in project e-projects-code-ai-ji--a40d4379/task-015/run-001 is excluded from Demo catalog, session tree and reads. The same-title earlier merge remains. The default selection moves to an existing visible session; source archives and workflow facts remain intact. JI's sidebar dot uses the theme green through Demo-only CSS without changing paused status.27 tests, Demo type checking/build and real-archive browser checks passed; computed dot color matches theme green. Evidence: `.codex-temp/ji-selection-verification.json` and `ji-selection.png`. Preview1461 uses a local archive junction for verification; this is not a portable archive deployment. Browser session closed.
+
+## Full-Viewport Demo Height, 2026-09-10
+
+The latest requirement replaces remaining-height sizing: the iframe is100dvh and the Demo route header scrolls with the outer document. Four production flows (English/Chinese,1280/390px) verify iframe height equals the880px viewport, scrolling aligns its top/bottom to0/880 and moves the header above it, without horizontal overflow. Deep-link/navigation checks continue to pass. The mobile screenshot was reviewed;20 related tests and site type checking/build passed. This changes only CSS layout, with no new runtime state, dependency, requests or render loop. Preview1461 is updated and test sessions closed.
+
 ## Embedded Demo, 2026-09-10
 
 The website now preserves its header while client-side navigation switches Documentation/Home/Demo. The lazy Demo route embeds the existing independent build, isolating global styles, theme and portals. A validated message bridge synchronizes hash deep links without importing desktop APIs into the website. Four production flows (English/Chinese,1280/390px) confirm the same outer document/header, remaining-height bounds, no overflow, internal context navigation, departure/unmount, browser Back and direct deep-link reload. Evidence: `.codex-temp/embedded-demo/report.json` and four screenshots; the Chinese mobile image was visually reviewed. Site and Demo type checks/builds and36 targeted tests passed. The unified site:test command also passed; its Node phase passed28 tests with2 environment-dependent skips. No new business state or history preload was introduced; the lazy wrapper is0.50KB gzip. Scoped browser sessions closed; preview1461 retained.

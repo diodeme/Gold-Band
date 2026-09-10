@@ -721,6 +721,7 @@ const resources = {
           "claim-conflict": "该任务已被其他 Daemon 领取。",
           "task-not-found": "找不到该 Multica 任务。",
           "runtime-offline": "运行时未就绪，请稍后重试。",
+          "task-not-ready": "该测试任务尚未就绪：需对应的开发任务完成后才能执行。",
           "session-resume-failed": "会话恢复失败，将以全新任务重跑。",
           "workspace-already-bound": "该工作空间已绑定。",
           "workspace-not-found": "找不到该工作空间绑定。",
@@ -2187,6 +2188,21 @@ const resources = {
             remove: "移除工作空间",
             removeConfirm: "确定移除该工作空间？该空间的需求将不再展示。",
           },
+          issueKind: {
+            dev: "开发",
+            test: "测试",
+            bug: "缺陷",
+          },
+          issueKindFilter: {
+            label: "类型",
+            all: "全部",
+            dev: "开发",
+            test: "测试",
+          },
+          readiness: {
+            notReady: "未就绪",
+            notReadyHint: "等待对应开发任务完成后可执行",
+          },
           column: {
             empty: "暂无任务",
           },
@@ -3243,6 +3259,8 @@ const resources = {
           "claim-conflict": "This task has already been claimed by another daemon.",
           "task-not-found": "This multica task could not be found.",
           "runtime-offline": "Runtime is not ready. Please try again shortly.",
+          "task-not-ready":
+            "This test task is not ready yet: it can run only after the matching dev task is done.",
           "session-resume-failed":
             "Session resume failed. A fresh run will be started.",
           "workspace-already-bound": "This workspace is already bound.",
@@ -4748,6 +4766,21 @@ const resources = {
             label: "Workspace",
             remove: "Remove workspace",
             removeConfirm: "Remove this workspace? Its requirements will no longer be shown.",
+          },
+          issueKind: {
+            dev: "Dev",
+            test: "Test",
+            bug: "Bug",
+          },
+          issueKindFilter: {
+            label: "Type",
+            all: "All",
+            dev: "Dev",
+            test: "Test",
+          },
+          readiness: {
+            notReady: "Not ready",
+            notReadyHint: "Runs after the matching dev task is done",
           },
           column: {
             empty: "No tasks",

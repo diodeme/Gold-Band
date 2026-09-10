@@ -1967,6 +1967,8 @@ export const browserApi: RuntimeApi = {
       localTaskId: null,
       runId: null,
       projectId: null,
+      issueKind: null,
+      isReady: null,
     });
   },
   startMulticaConversationRun(input, _remoteTaskId, _workspaceId) {

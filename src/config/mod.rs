@@ -3587,6 +3587,11 @@ pub struct MulticaCompletedTask {
     /// terminal 行本地深链用）。
     pub local_project_id: String,
     pub issue_id: Option<String>,
+    /// issue 类型快照（claim 响应的 `issue_kind`，story dev/test 拆分，multica C1）——
+    /// 终态行类型徽标不丢。旧历史条目无此字段 → serde 缺省 None，徽标不渲染。
+    /// `is_ready` 不持久化：终态无「就绪」语义。
+    #[serde(default)]
+    pub issue_kind: Option<String>,
     /// `completed` | `failed`（由 finalize 的 PendingUpdate 决定）。
     pub status: String,
     pub title: String,

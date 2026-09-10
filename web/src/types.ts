@@ -155,6 +155,12 @@ export interface RemoteTaskVm {
   localTaskId: string | null;
   runId: string | null;
   projectId: string | null;
+  /// issue 类型（`dev` | `test` | `bug` | `general`；story dev/test 拆分）。旧 server 不发 → null，
+  /// 看板不渲染类型徽标、无门控——行为与拆分前一致（版本解耦）。
+  issueKind: string | null;
+  /// test 任务就绪标记（服务端派生：父 dev issue 已 done 才 true）。仅 pending/detail 行有值，
+  /// running/completed 行恒 null（已领取/终态无「能否执行」语义）。旧 server 不发 → null。
+  isReady: boolean | null;
 }
 
 export interface RemoteConversationSidebarVm {

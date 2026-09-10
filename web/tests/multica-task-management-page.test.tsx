@@ -18,6 +18,7 @@ vi.mock('lucide-react', () => ({
   ChevronDown: () => null,
   Folders: () => null,
   Globe: () => null,
+  ListFilter: () => null,
   Loader2: () => null,
   Plus: () => null,
   RotateCw: () => null,
@@ -177,7 +178,7 @@ vi.mock('@/api', () => ({
   subscribeMulticaSettingsUpdates: mocks.subscribeMulticaSettingsUpdates,
 }));
 
-import { MulticaTaskManagementPage } from '@/pages/MulticaTaskManagementPage';
+import { MulticaTaskManagementPage, filterTasksByIssueKind } from '@/pages/MulticaTaskManagementPage';
 import type { RemoteConversationSidebarVm, RemoteTaskVm } from '@/types';
 
 const noopUnlisten = () => {};
@@ -481,5 +482,101 @@ describe('MulticaTaskManagementPage (container)', () => {
 
     // 刷新触发再次拉取（count → 2），无需重进页面。
     expect(getMulticaTasks).toHaveBeenCalledTimes(2);
+  });
+
+  it('filters the board by issue kind and restores the full list on "all"', async () => {
+    getMulticaTasks.mockResolvedValue(baseVm({
+      workspaces: [ws004],
+      lastActiveWorkspaceId: 'ws-004',
+      tasksByWorkspace: {
+        'ws-004': [
+          { id: 'rt-dev', workspaceId: 'ws-004', title: 'DevTask', status: 'queued', issueKind: 'dev' },
+          { id: 'rt-test', workspaceId: 'ws-004', title: 'TestTask', status: 'queued', issueKind: 'test', isReady: false },
+          { id: 'rt-general', workspaceId: 'ws-004', title: 'GeneralTask', status: 'queued', issueKind: 'general' },
+        ] as RemoteTaskVm[],
+      },
+    }));
+    const { container } = await renderPage();
+
+    // 定位类型过滤器：两个 Select 里唯一选项集为 all/dev/test 的那个（另一个是任务来源）。
+    const filterSelect = Array.from(container.querySelectorAll('select')).find(
+      (s) => Array.from(s.options).map((o) => o.value).join(',') === 'all,dev,test',
+    ) as HTMLSelectElement;
+    expect(filterSelect).toBeTruthy();
+
+    // 默认 all：三类任务都在。
+    expect(container.querySelector('[data-testid="task-rt-dev"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="task-rt-test"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="task-rt-general"]')).toBeTruthy();
+
+    // 切到 dev：只剩 dev（test/general 被过滤掉）。
+    await act(async () => {
+      filterSelect.value = 'dev';
+      filterSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="task-rt-dev"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="task-rt-test"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-rt-general"]')).toBeNull();
+
+    // 切到 test：只剩 test。
+    await act(async () => {
+      filterSelect.value = 'test';
+      filterSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="task-rt-dev"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-rt-test"]')).toBeTruthy();
+
+    // 切回 all：完整列表恢复（过滤不改动数据源，仅影响投影）。
+    await act(async () => {
+      filterSelect.value = 'all';
+      filterSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="task-rt-dev"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="task-rt-test"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="task-rt-general"]')).toBeTruthy();
+    // 过滤纯客户端：不产生额外拉取。
+    expect(getMulticaTasks).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides the issue-kind filter when no workspace is connected', async () => {
+    getMulticaTasks.mockResolvedValue(baseVm({
+      workspaces: [],
+      lastActiveWorkspaceId: null,
+      tasksByWorkspace: {},
+    }));
+    const { container } = await renderPage();
+
+    const filterSelect = Array.from(container.querySelectorAll('select')).find(
+      (s) => Array.from(s.options).map((o) => o.value).join(',') === 'all,dev,test',
+    );
+    expect(filterSelect).toBeUndefined();
+  });
+});
+
+// 类型过滤纯函数：接口层不变量（all 恒等 + dev/test 精确匹配 + 缺失/未知类型只归 all）。
+describe('filterTasksByIssueKind', () => {
+  const dev = { id: 'd', issueKind: 'dev' } as RemoteTaskVm;
+  const test = { id: 't', issueKind: 'test' } as RemoteTaskVm;
+  const bug = { id: 'b', issueKind: 'bug' } as RemoteTaskVm;
+  const general = { id: 'g', issueKind: 'general' } as RemoteTaskVm;
+  const missing = { id: 'm', issueKind: null } as RemoteTaskVm;
+  const all = [dev, test, bug, general, missing];
+
+  it('returns the same list for "all"', () => {
+    expect(filterTasksByIssueKind(all, 'all')).toBe(all);
+  });
+
+  it('keeps only the matching kind for dev/test', () => {
+    expect(filterTasksByIssueKind(all, 'dev')).toEqual([dev]);
+    expect(filterTasksByIssueKind(all, 'test')).toEqual([test]);
+  });
+
+  it('treats bug/general/missing as non-dev and non-test', () => {
+    expect(filterTasksByIssueKind([bug, general, missing], 'dev')).toEqual([]);
+    expect(filterTasksByIssueKind([bug, general, missing], 'test')).toEqual([]);
+  });
+
+  it('handles the empty list', () => {
+    expect(filterTasksByIssueKind([], 'dev')).toEqual([]);
   });
 });

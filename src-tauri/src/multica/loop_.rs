@@ -221,6 +221,18 @@ async fn run_heartbeat_loop<R: Runtime>(app: AppHandle<R>) {
             for (workspace_id, runtime_id) in &pairs {
                 match client.heartbeat(runtime_id).await {
                     Ok(ack) => {
+                        // story dev/test 拆分（R8 方案 1）：ack 回传就绪变化 diff，非空即表示某 test
+                        // 任务的可执行性已翻转——典型来自「父 dev 由**其它 agent** 完成」，本机没有任何
+                        // 信号源，必须靠此通道感知。
+                        //
+                        // 只当**刷新信号**：不本地增量 patch（pending 列表是唯一事实源，本地 map 会与之漂移
+                        // ——state 规约「投影不得反向成为事实源」）。发既有事件 → 页面经
+                        // useEventDrivenRefresh 重取 pending（自带最新 is_ready）。
+                        //
+                        // 与 skill 待办解耦：不并入 dispatch_pending_skill_work 的早返回（两件事各自独立）。
+                        if ack_signals_readiness_change(&ack) {
+                            emit_multica_task_updated(&app);
+                        }
                         dispatch_pending_skill_work(&app, &client, workspace_id, runtime_id, ack)
                     }
                     Err(error) => {
@@ -442,6 +454,15 @@ fn dispatch_pending_skill_work<R: Runtime>(
     }
 }
 
+/// 心跳 ack 是否携带就绪变化（story dev/test 拆分，R8 方案 1）。
+///
+/// 提取为纯谓词：空 diff / 缺失（旧 server）→ false，不发事件（避免无变化时的空刷新）。
+fn ack_signals_readiness_change(ack: &HeartbeatAck) -> bool {
+    ack.pending_readiness_changes
+        .as_ref()
+        .is_some_and(|changes| !changes.is_empty())
+}
+
 /// 绑定配置中 workspace 的 provider（发现/导入上报 body 字段；绑定已删则 None）。
 fn provider_for_workspace<R: Runtime>(app: &AppHandle<R>, workspace_id: &str) -> Option<String> {
     let desktop = app.try_state::<DesktopState>()?;
@@ -584,7 +605,8 @@ fn invalidate_remote_task<R: Runtime>(app: &AppHandle<R>, remote: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_active_terminal, is_orphan_terminal};
+    use super::{ack_signals_readiness_change, is_active_terminal, is_orphan_terminal};
+    use crate::multica::client::HeartbeatAck;
 
     #[test]
     fn active_terminal_flags_failed_and_cancelled() {
@@ -605,5 +627,24 @@ mod tests {
         assert!(!is_orphan_terminal("failed"));
         assert!(!is_orphan_terminal("running"));
         assert!(!is_orphan_terminal("queued"));
+    }
+
+    #[test]
+    fn readiness_diff_signal_fires_only_on_non_empty_changes() {
+        // 非空 diff → 发刷新信号（页面重取 pending，拿到最新 is_ready）。
+        let fired: HeartbeatAck = serde_json::from_str(
+            r#"{"status":"ok","pending_readiness_changes":[{"task_id":"t-1","is_ready":true}]}"#,
+        )
+        .unwrap();
+        assert!(ack_signals_readiness_change(&fired));
+
+        // 空 diff（显式 []）→ 不发事件（无变化时空刷新没有意义）。
+        let empty: HeartbeatAck =
+            serde_json::from_str(r#"{"status":"ok","pending_readiness_changes":[]}"#).unwrap();
+        assert!(!ack_signals_readiness_change(&empty));
+
+        // 字段缺失（旧 server / 无就绪字段的任务）→ 不发事件（版本解耦：行为与现状一致）。
+        let legacy: HeartbeatAck = serde_json::from_str(r#"{"status":"ok"}"#).unwrap();
+        assert!(!ack_signals_readiness_change(&legacy));
     }
 }

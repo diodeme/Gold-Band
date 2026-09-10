@@ -1,7 +1,7 @@
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, Folders, Globe, Loader2, Plus, RotateCw, Settings, Trash2, User, Wifi, WifiOff } from 'lucide-react';
+import { ChevronDown, Folders, Globe, ListFilter, Loader2, Plus, RotateCw, Settings, Trash2, User, Wifi, WifiOff } from 'lucide-react';
 import {
   Select,
   SelectContent,
@@ -67,6 +67,24 @@ const REMOTE_TASK_SOURCES = [
 ] as const;
 type RemoteTaskSource = (typeof REMOTE_TASK_SOURCES)[number]['value'];
 
+/**
+ * issue 类型过滤（story dev/test 拆分）：`all` = 不过滤；`dev`/`test` = 仅该类型。
+ *
+ * `bug`/`general` 只在「全部」出现——三档贴合本次拆分场景（开发/测试两条主线），
+ * 不为闭集枚举铺全量过滤 UI；后续需要再扩一档，成本为零。
+ * 纯客户端过滤已加载列表（O(n)，无新请求）：multica 已确认无需 `?kind=` 服务端过滤。
+ * 瞬时 UI 状态（useState），不持久化（ui-interaction §7：不记忆临时业务输入）。
+ */
+const ISSUE_KIND_FILTERS = ['all', 'dev', 'test'] as const;
+type IssueKindFilter = (typeof ISSUE_KIND_FILTERS)[number];
+
+/// 纯函数：按类型过滤任务（接口层可单测）。`all` 原样返回；dev/test 仅保留该类型。
+/// 未知/缺失 issueKind 只在「全部」出现（版本解耦：旧 server 无类型字段时不过滤掉任何任务）。
+export function filterTasksByIssueKind(tasks: RemoteTaskVm[], filter: IssueKindFilter): RemoteTaskVm[] {
+  if (filter === 'all') return tasks;
+  return tasks.filter((task) => task.issueKind === filter);
+}
+
 interface MulticaTaskManagementPageProps {
   /// 直达指定远程/本地 run 的会话页（复用本地侧栏 onSelectRun 同路径）。
   onSelectRun: (projectId: string, taskId: string, runId: string) => void;
@@ -103,6 +121,7 @@ export function MulticaTaskManagementPage({
   const [connectionDialog, setConnectionDialog] = useState<'connect' | 'settings' | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [source, setSource] = useState<RemoteTaskSource>('multica');
+  const [issueKindFilter, setIssueKindFilter] = useState<IssueKindFilter>('all');
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>('');
   const [addWorkspaceOpen, setAddWorkspaceOpen] = useState(false);
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
@@ -169,7 +188,11 @@ export function MulticaTaskManagementPage({
   }, [workspaces, selectedWorkspaceId, vm?.lastActiveWorkspaceId]);
 
   const hasWorkspaces = workspaces.length > 0;
-  const selectedTasks = vm?.tasksByWorkspace[effectiveWorkspaceId] ?? [];
+  const workspaceTasks = vm?.tasksByWorkspace[effectiveWorkspaceId] ?? [];
+  const selectedTasks = useMemo(
+    () => filterTasksByIssueKind(workspaceTasks, issueKindFilter),
+    [workspaceTasks, issueKindFilter],
+  );
   const activeWorkspaceName = workspaces.find((w) => w.id === effectiveWorkspaceId)?.name ?? '';
 
   async function handlePrepareRemoteTask(task: RemoteTaskVm) {
@@ -420,6 +443,23 @@ export function MulticaTaskManagementPage({
                     </div>
                   </PopoverContent>
                 </Popover>
+              )}
+
+              {/* 类型过滤（story dev/test 拆分）：纯客户端过滤已加载列表，瞬时状态不持久化。 */}
+              {hasWorkspaces && (
+                <Select value={issueKindFilter} onValueChange={(v) => setIssueKindFilter(v as IssueKindFilter)}>
+                  <SelectTrigger size="sm" className="w-[120px]" aria-label={t('multica.taskManagement.issueKindFilter.label')}>
+                    <ListFilter className="size-3.5 shrink-0 text-muted-foreground" />
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="start">
+                    {ISSUE_KIND_FILTERS.map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {t(`multica.taskManagement.issueKindFilter.${value}`)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               )}
             </div>
 

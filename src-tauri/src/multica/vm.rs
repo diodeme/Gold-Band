@@ -34,6 +34,16 @@ pub struct RemoteTaskVm {
     pub local_task_id: Option<String>,
     pub run_id: Option<String>,
     pub project_id: Option<String>,
+    /// issue 类型（`dev`|`test`|`bug`|`general`，story dev/test 拆分）。序列化为 `issueKind: string | null`。
+    ///
+    /// pending / detail 透传 wire 字段；active / completed 行取本地快照（`ActiveRemoteRun` /
+    /// `MulticaCompletedTask` 的同名字段）。旧 server 不发、旧历史缺字段 → None，前端不渲染徽标。
+    pub issue_kind: Option<String>,
+    /// test 任务就绪标记（服务端派生）。序列化为 `isReady: boolean | null`。
+    ///
+    /// 仅 pending / detail 行有意义（queued 才有「能否执行」的问题）；active（已领取执行中）
+    /// 与 completed（终态）行恒 None，前端不渲染就绪态。旧 server 不发 → None。
+    pub is_ready: Option<bool>,
 }
 
 /// 远程任务列表 sidebar（对齐 ConversationSidebarVm 形状，line 652-658）。
@@ -87,6 +97,9 @@ impl RemoteTaskVm {
             local_task_id: Some(c.local_task_id.clone()),
             run_id: Some(c.local_run_id.clone()),
             project_id: Some(project_id.to_string()),
+            // 类型取本地快照（multica C1：终态行类型徽标不丢）；终态无「就绪」语义 → 恒 None。
+            issue_kind: c.issue_kind.clone(),
+            is_ready: None,
         }
     }
 
@@ -111,6 +124,9 @@ impl RemoteTaskVm {
             local_task_id: Some(run.local_task_id.clone()),
             run_id: Some(run.local_run_id.clone()),
             project_id: Some(project_id.to_string()),
+            // 类型取 claim 时随 ActiveRemoteRun 落的快照；已领取执行中无「就绪」语义 → 恒 None。
+            issue_kind: run.issue_kind.clone(),
+            is_ready: None,
         }
     }
 
@@ -133,6 +149,9 @@ impl RemoteTaskVm {
             local_task_id: None,
             run_id: None,
             project_id: None,
+            // wire 字段透传（from_pending / from_detail 共用本构造；claim-at-send 门控数据源）。
+            issue_kind: task.issue_kind.clone(),
+            is_ready: task.is_ready,
         }
     }
 }
@@ -223,6 +242,8 @@ mod tests {
             handoff_note: None,
             issue_description: None,
             last_activity_at: Some("2026-08-04T10:00:00Z".into()),
+            issue_kind: Some("dev".into()),
+            is_ready: None,
         };
         let vm = RemoteTaskVm::from_pending(&task, "ws-1");
         assert_eq!(vm.id, "t-1");
@@ -232,7 +253,41 @@ mod tests {
         assert_eq!(vm.title, "Fix bug");
         // pending 列表无正文来源 → requirement 留 None（预填只在 claim 后才有）。
         assert!(vm.requirement.is_none());
+        // story 拆分：pending 行透传 wire 类型；无就绪标记（dev 不受门控）→ None。
+        assert_eq!(vm.issue_kind.as_deref(), Some("dev"));
+        assert!(vm.is_ready.is_none());
         // auth_token 永不入 VM（执行凭证不回显）。
+    }
+
+    #[test]
+    fn from_pending_passes_through_test_readiness() {
+        // test 行：issue_kind 与 is_ready 均透传（看板置灰 + canClaim 谓词的数据源）。
+        let task = RemoteTask {
+            id: "t-9".into(),
+            issue_id: None,
+            status: "queued".into(),
+            auth_token: None,
+            prior_session_id: None,
+            parent_task_id: None,
+            title: Some("Test login".into()),
+            quick_create_prompt: None,
+            chat_message: None,
+            trigger_comment_content: None,
+            autopilot_description: None,
+            handoff_note: None,
+            issue_description: None,
+            last_activity_at: None,
+            issue_kind: Some("test".into()),
+            is_ready: Some(false),
+        };
+        let vm = RemoteTaskVm::from_pending(&task, "ws-1");
+        assert_eq!(vm.issue_kind.as_deref(), Some("test"));
+        assert_eq!(vm.is_ready, Some(false));
+
+        // detail 同源（claim-at-send 门控读它）——两构造共用 from_remote，一并锁定。
+        let detail = RemoteTaskVm::from_detail(&task, "ws-1");
+        assert_eq!(detail.issue_kind.as_deref(), Some("test"));
+        assert_eq!(detail.is_ready, Some(false));
     }
 
     #[test]
@@ -253,6 +308,8 @@ mod tests {
             handoff_note: None,
             issue_description: None,
             last_activity_at: Some("2026-08-04T10:00:00Z".into()),
+            issue_kind: None,
+            is_ready: None,
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1");
         assert_eq!(vm.requirement.as_deref(), Some("Full prompt body"));
@@ -275,6 +332,8 @@ mod tests {
             handoff_note: None,
             issue_description: None,
             last_activity_at: None,
+            issue_kind: None,
+            is_ready: None,
         };
         assert_eq!(
             RemoteTaskVm::from_detail(&issue, "ws-1")
@@ -299,6 +358,8 @@ mod tests {
             handoff_note: None,
             issue_description: Some("Steps to repro...".into()),
             last_activity_at: None,
+            issue_kind: None,
+            is_ready: None,
         };
         let vm_body = RemoteTaskVm::from_detail(&issue_body, "ws-1");
         assert_eq!(vm_body.requirement.as_deref(), Some("Steps to repro..."));
@@ -324,6 +385,8 @@ mod tests {
             handoff_note: None,
             issue_description: None,
             last_activity_at: None,
+            issue_kind: None,
+            is_ready: None,
         };
         assert_eq!(RemoteTaskVm::from_pending(&task, "ws-1").title, "t-7");
 
@@ -349,6 +412,8 @@ mod tests {
             local_task_id: None,
             run_id: None,
             project_id: None,
+            issue_kind: Some("test".into()),
+            is_ready: Some(true),
         };
         let json = serde_json::to_value(&vm).unwrap();
         // 锁定 camelCase 键名（对齐 line 650 TS，前端按这些键取值）。
@@ -359,6 +424,9 @@ mod tests {
         assert_eq!(json["title"], "Fix bug");
         assert_eq!(json["lastActivityAt"], "2026-08-04T10:00:00Z");
         assert_eq!(json["requirement"], "prefill body");
+        // story 拆分字段（web/src/types.ts 的 issueKind / isReady）。
+        assert_eq!(json["issueKind"], "test");
+        assert_eq!(json["isReady"], true);
         // active 行无本地 run 链接（终态行才填）。
         assert!(json["localTaskId"].is_null());
         assert!(json["runId"].is_null());
@@ -397,6 +465,7 @@ mod tests {
             workspace_id: "ws-1".into(),
             local_project_id: "proj-1".into(),
             issue_id: Some("iss-1".into()),
+            issue_kind: Some("test".into()),
             status: "completed".into(),
             title: "Done thing".into(),
             completed_at: "2026-08-06T01:23:45Z".into(),
@@ -413,6 +482,18 @@ mod tests {
         assert_eq!(vm.local_task_id.as_deref(), Some("task-1"));
         assert_eq!(vm.run_id.as_deref(), Some("run-1"));
         assert_eq!(vm.project_id.as_deref(), Some("proj-1"));
+        // story 拆分：终态行类型取本地快照（徽标不丢）；终态无就绪语义 → 恒 None。
+        assert_eq!(vm.issue_kind.as_deref(), Some("test"));
+        assert!(vm.is_ready.is_none());
+
+        // 旧历史条目（缺 issue_kind）→ None，徽标不渲染（无迁移、无兼容层）。
+        let legacy = MulticaCompletedTask {
+            issue_kind: None,
+            ..c.clone()
+        };
+        let legacy_vm = RemoteTaskVm::from_completed(&legacy, "proj-1");
+        assert!(legacy_vm.issue_kind.is_none());
+        assert!(legacy_vm.is_ready.is_none());
 
         // title 空白 → 用 remote_task_id 兜底（不留空标签）。
         let blank = MulticaCompletedTask {
@@ -443,6 +524,7 @@ mod tests {
             issue_id: Some("iss-9".into()),
             title: Some("In flight".into()),
             started_at: "2026-08-07T03:00:00Z".into(),
+            issue_kind: Some("test".into()),
         };
         let vm = RemoteTaskVm::from_active_run("remote-9", &run, "proj-1");
         assert_eq!(vm.id, "remote-9");
@@ -457,6 +539,9 @@ mod tests {
         assert_eq!(vm.local_task_id.as_deref(), Some("task-9"));
         assert_eq!(vm.run_id.as_deref(), Some("run-9"));
         assert_eq!(vm.project_id.as_deref(), Some("proj-1"));
+        // story 拆分：类型取 ActiveRemoteRun 快照（claim 时落盘）；已领取执行中无就绪语义 → 恒 None。
+        assert_eq!(vm.issue_kind.as_deref(), Some("test"));
+        assert!(vm.is_ready.is_none());
 
         // title 空/纯空白 → remote_task_id 兜底（不留空标签，与其它构造器一致）。
         let blank = ActiveRemoteRun {

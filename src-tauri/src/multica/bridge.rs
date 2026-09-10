@@ -398,6 +398,8 @@ fn finalize_terminal(
                 workspace_id: run.workspace_id.clone(),
                 local_project_id: run.local_project_id.clone(),
                 issue_id: run.issue_id.clone(),
+                // 类型快照自 ActiveRemoteRun（claim 响应落盘的值）→ 终态行类型徽标不丢（multica C1）。
+                issue_kind: run.issue_kind.clone(),
                 status: status.to_string(),
                 title: run
                     .title
@@ -561,6 +563,7 @@ mod tests {
             workspace_id: "ws-1".into(),
             local_project_id: "proj-1".into(),
             issue_id: None,
+            issue_kind: Some("dev".into()),
             status: "completed".into(),
             title: format!("title-{remote}"),
             completed_at: completed_at.into(),

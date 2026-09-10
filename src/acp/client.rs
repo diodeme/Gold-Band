@@ -4957,6 +4957,7 @@ impl<'a> AcpRuntime<'a> {
             raw["reason"] = Value::String(reason.to_string());
         }
         if let Some(raw) = user_event.raw.as_mut() {
+            raw["originalUserText"] = Value::Bool(prompt.display_text.is_some());
             raw["turnControlMode"] = serde_json::to_value(prompt.turn_control_mode)?;
             if let (Some(transition_id), Some(transition_cause)) = (
                 prompt.runtime_control_transition_id.as_deref(),

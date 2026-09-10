@@ -562,6 +562,9 @@ const resources = {
           "command-required": "请填写 Agent 启动命令。",
         },
         acp: {
+          "composer-history-stale": "输入历史已更新，请清空输入后重试。",
+          "composer-history-not-found": "该条输入历史已不可用。",
+          "composer-history-query-failed": "输入历史加载失败，请重试。",
           "turn-execution-failed": "本次消息处理失败，请重试。",
           "session-request-failed": "会话准备失败，请重试。",
           "missing-provider": "当前节点缺少 provider 配置。",
@@ -1750,6 +1753,7 @@ const resources = {
         noChangedFiles: "没有可查看的变更文件",
       },
       acp: {
+        composerHistoryError: "输入历史加载失败，清空输入后可重试。",
         restored: "已恢复",
         sessionSuperseded:
           "此会话已由 <attempt>{{target}}</attempt> 接续，请前往该 attempt 继续。",
@@ -3047,6 +3051,9 @@ const resources = {
           "command-required": "Enter an Agent launch command.",
         },
         acp: {
+          "composer-history-stale": "Input history has changed. Clear the input and try again.",
+          "composer-history-not-found": "This history entry is no longer available.",
+          "composer-history-query-failed": "Could not load input history. Please try again.",
           "turn-execution-failed": "This message could not be processed. Try again.",
           "session-request-failed": "The session could not be prepared. Try again.",
           "missing-provider":
@@ -4280,6 +4287,7 @@ const resources = {
         noChangedFiles: "No changed files are available",
       },
       acp: {
+        composerHistoryError: "Could not load input history. Clear the input to retry.",
         restored: "Restored",
         sessionSuperseded:
           "This session was continued by <attempt>{{target}}</attempt>. Continue in that attempt.",

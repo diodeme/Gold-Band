@@ -353,6 +353,7 @@ mod tests {
                 workspace_id: "ws-1".into(),
                 local_project_id: "proj-1".into(),
                 issue_id: Some("issue-1".into()),
+                issue_kind: Some("dev".into()),
                 status: "completed".into(),
                 title: "T1".into(),
                 completed_at: "2026-08-11T00:00:00".into(),
@@ -378,6 +379,36 @@ mod tests {
             state.multica_completed_tasks.is_empty(),
             "完成历史清空（不再串号到新账号）"
         );
+    }
+
+    #[test]
+    fn completed_task_roundtrips_issue_kind_and_tolerates_legacy_entries() {
+        // story dev/test 拆分（multica C1）：终态历史持久化 issue_kind，回看行类型徽标不丢。
+        let task = MulticaCompletedTask {
+            remote_task_id: "rt-1".into(),
+            local_task_id: "task-1".into(),
+            local_run_id: "run-1".into(),
+            workspace_id: "ws-1".into(),
+            local_project_id: "proj-1".into(),
+            issue_id: Some("iss-1".into()),
+            issue_kind: Some("test".into()),
+            status: "completed".into(),
+            title: "T1".into(),
+            completed_at: "2026-09-10T00:00:00Z".into(),
+        };
+        let json = serde_json::to_string(&task).unwrap();
+        // camelCase 键名（与 StateConfig 其余索引一致）。
+        assert!(json.contains(r#""issueKind":"test""#));
+        let back: MulticaCompletedTask = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, task);
+
+        // 旧条目（本次改造前落盘的 JSON，无 issue_kind 键）→ 缺省 None，徽标不渲染；
+        // 无迁移、无兼容层（开发阶段破坏式更新规约）。
+        let legacy: MulticaCompletedTask = serde_json::from_str(
+            r#"{"remoteTaskId":"rt-0","localTaskId":"task-0","localRunId":"run-0","workspaceId":"ws-1","localProjectId":"proj-1","issueId":null,"status":"completed","title":"T0","completedAt":"2026-08-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+        assert!(legacy.issue_kind.is_none());
     }
 
     #[test]

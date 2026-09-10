@@ -428,6 +428,8 @@ multica.session-resume-failed   // 保留在码表但 M4-d 起不 emit（resume 
 - **页头 UX（M5-aa）**：页头右侧含「任务来源」下拉（i18n `multica.taskManagement.source.label`，当前唯一项 Multica，由 `REMOTE_TASK_SOURCES` 配置数组驱动、页级 `source` state 作渲染分流唯一键，为未来多来源接入保留切换位）+ 副标题 `multica.taskManagement.subtitle`「查看并执行远程任务」（M5-ab 再精简：页头「任务来源」下拉已点名来源，副标题不再重复 "multica" 限定词；原尾部关于执行时选本地目录的半句早已删除——该流程已被 claim-at-click → composer 覆盖）；列表区内右侧常驻手动刷新按钮（`RotateCw` ghost 图标，`aria-label="common.refresh"`，`refreshing` 态驱动 `animate-spin`，调与 mount/事件订阅同源的 `fetchTasks()`）；状态词以有色 Badge 呈现，色调按看板词汇锁定并由导出常量 `MULTICA_STATUS_TONE` 集中管理（待办=灰 / 进行中=黄 / 已完成=绿 / 失败=红），`queued` 文案对齐看板列为「待办」（码灵作为 daemon 直接驱动 board issue.status，本地任务生命周期与看板词汇 1:1，不再用暗示独立「领取」中间态的旧词）。
 - **列表视觉/层级系统（M5-ab，统一一次做完非补丁）**：workspace→任务树状列表建立一致的间距节奏与层级表达——**workspace 分组头**=可折叠容器（统一 `ChevronDown` 折叠箭头规格 + 名称左侧 `Server` 图标标识「工作空间容器行」+ 名称右侧轻量任务计数 `（N个任务）`/`(N tasks)`，仅在该工作空间有任务时显示 + 整行 `rounded-md hover:bg-muted/40` 容器 hover 底色）；**任务行**=其下叶子节点（标题 14px font-medium 主文本、Badge 居左 + 时间戳 `ml-auto` 推右、相对组头统一缩进）；组间距 `mb-2` 加大、任务间距 `space-y-0.5`、水平 padding 组头 `px-1.5`/任务行 `px-2` 对齐；组内空状态居中带垂直留白（`px-2 py-4 text-center`），文案「该工作空间下暂无远程任务」明确所属与对象。pinned 失败段同规格（折叠箭头 + hover 底色 + 间距），但非 workspace 故不加 Server 图标。「服务器图标 = workspace 容器行 / 无图标 = 任务叶子行」一眼可读。
 
+- **issue 类型标记 / 类型过滤 / 未就绪可查（M5-ba，§12.40）**：适配 multica 的 story dev/test 拆分。任务卡片在状态徽标左侧增加**类型徽标**（仅 dev/test/bug 渲染，`general` 与未知值不渲染——对齐 multica 自有 views 的 `hideGeneral` 惯例，新类型不猜文案）；页脚工具条增加**类型过滤**下拉（全部/开发/测试，纯客户端过滤已加载列表，bug/general 归「全部」，过滤态是瞬时 UI 状态、不持久化）。**未就绪的 test 任务**（父 dev issue 未 done）：卡片整体弱化 + 「未就绪」标记（原因「等待对应开发任务完成后可执行」经 Tooltip 说明）+ 执行入口保留但禁用——置灰表达「暂时不能执行」而非入口消失（入口消失会被读成任务不可用）。准入判定由客户端负责（server 对 pending 不做就绪过滤），且**显示层与契约层同源**：看板置灰 / prepare 直通 / claim 拦截共用同一 `executable_ready` 谓词（前端 `isTaskExecutable` 与其同构）。
+
 **PAT 串号防护**：换机器/换账号重连时强制重新走浏览器登录 + mint PAT、不复用前任 PAT。
 
 #### 3.2.7 断点续跑（会话级 resume）
@@ -533,12 +535,15 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 - `GET /api/daemon/runtimes/{runtimeId}/tasks/pending` ｜ PAT
 - 响应：任务数组，含 `status ∈ ('queued','dispatched')` 的任务
 - 说明：**只读、不锁任务、不改状态**。客户端按 `status=='queued'` 过滤得到真正可领取的列表，展示给用户。
+- **story dev/test 拆分（§12.40）**：任务另带 `issue_kind`（dev/test/bug/general）与 `is_ready`（仅 test 型有意义：父 dev issue 是否 done）。**server 对 pending 不做任何就绪过滤——未就绪的 test 任务照常下发，门控是客户端的责任**（码灵三层：看板置灰 / prepare 只读直通 / claim 时拦截）。码灵两字段皆 serde-optional：旧 server 缺失 → 行为与拆分前逐字节一致。
 
 **B2. 领取指定任务（selective claim）** ★ 核心 ｜ **新增接口（需 server 改造，见 3.1）**
 - `POST /api/daemon/runtimes/{runtimeId}/tasks/{taskId}/claim` ｜ PAT ｜ 请求体 `{}`
 - 响应：`{ "task": <Task> }`（含 `auth_token`；auto-retry 子任务还会带 `parent_task_id`（指向父任务）+ `prior_session_id`（服务端回填的父 session）——客户端按 `parent_task_id` 反查父任务本地索引续跑，见 3.2.7 / 开发设计 §12.14）
 - 说明：原子把用户点的这条任务（`runtime_id` 匹配 + `status='queued'`）置为 dispatched。任务不存在/不属该 runtime/非 queued → 404/409。
 - ⚠️ 现有的 `POST /api/daemon/tasks/claim`（批量 FIFO）和 `POST /api/daemon/runtimes/{runtimeId}/tasks/claim`（逐 runtime FIFO）**不能指定 task_id**，不满足「点哪领哪」，所以才需要本接口。
+
+- **story dev/test 拆分（§12.40）**：claim 响应同带 `issue_kind` / `is_ready`。码灵 claim 成功后先判 `executable_ready()`（非 test 恒真；test 需 `is_ready==true`），不通过则**立即回滚**自己的 claim（`release_after_run_start_failure`，dispatched→queued CAS）并回错误码 `multica.task-not-ready`——覆盖 prepare→send 之间父 dev 任务被回退的就绪翻转窗口。
 
 > claim 之后**没有退回/释放接口**，唯一出路是执行到 complete 或 fail。因此列表展示用只读的 B1，确认要做了再用 B2 领取。
 
@@ -548,6 +553,7 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 - `POST /api/daemon/heartbeat` ｜ PAT
 - 请求：`{ "runtime_id": "<runtime_id>", "supports_batch_import": true }`
 - 说明：Req D 起为常驻--与 multica 建立连接后即持续每 15s 一次（对所有已连接 workspace 的 runtime），不再仅任务执行期。150s 无心跳 -> runtime 离线 -> 在飞任务 fail。
+- **story dev/test 拆分（§12.40）**：ack 增加就绪变更 diff（`pending_readiness_changes: [{task_id, is_ready}]`）。码灵**只把它当刷新信号**：diff 非空 → 发既有 `multica-task-updated` 事件 → 页面按既有订阅重拉 pending（事实源始终是 pending 列表，不用 diff 直接改本地状态）。diff 线格式仍是码灵侧提议，待 multica 侧最终确认；若形状不同仅需改 `client.rs` 反序列化。
 
 **C2. 标记开始**（Req D：claim-at-click 后，用户在 composer 点「发送」时调）
 - `POST /api/daemon/tasks/{taskId}/start` ｜ PAT ｜ 请求体 `{}`
@@ -702,6 +708,9 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - [x] `server/cmd/server/router.go` 注册 `POST /api/daemon/runtimes/{runtimeId}/tasks/{taskId}/claim`
   - [x] `sqlc generate`（v1.31.1）重新生成
 - [ ] **S2 · 运维准备**（非代码）：开发者在 multica web 自行注册账号（邮箱登录，**无需管理员预建 user / 预绑 `os_username`**）；为各 workspace 的 agent 绑定对应 runtime_id（首次 register 的新 workspace 需在 web 绑 agent）
+
+- [x] **S3 · story dev/test 拆分对接**（详 3.2 / §12.40）：`AgentTaskResponse`（pending/claim/detail 共用）暴露 `issue_kind`(string omitempty) + `is_ready`(bool)；**server 侧不做就绪过滤**（未就绪 test 任务照常下发，门控归客户端）
+- [ ] **S4 · 心跳 ack 就绪 diff**（待 multica 侧最终确认线格式）：`POST /api/daemon/heartbeat` 的 ack 增加就绪变更 diff（码灵侧提议 `pending_readiness_changes: [{task_id, is_ready}]`，仅在父 dev issue done 使 test 任务就绪翻转时下发）。**不阻塞码灵上线**——缺失时页面不自动刷新（用户仍可手动刷新，期间 claim 拦截仍兜底）；形状不同仅需改 `client.rs` 反序列化
 
 > 其余需求（任务列表 `GET /tasks/pending`、失败恢复 `POST /api/issues/{id}/rerun`、注册 `POST /api/daemon/register`、心跳、recover-orphans、complete/fail）均用 multica 现有接口，**无需改源码**。
 
@@ -1054,6 +1063,14 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **验证**：Rust 单测已编写（client wire 序列化 / local_skills 扫描·组装·目录名清洗·限额·非 UTF-8 共 16 项 / loop ack 分发），`cargo check --bin gold-band-desktop -j 1` 通过；`cargo test` 运行被本机内存阻塞（`windows` crate rlib 编码单进程峰值 ~4GB commit > 实测可用 1.9GB，rustc OOM——环境问题，待内存释放后以 `cargo test -p gold-band-desktop --bin gold-band-desktop multica::` 固化回归）；tsc 零错；vitest multica 8 套件 **54 过**（新增 `multica-skill-sync-i18n` 3 测：全 key 双语解析、含点错误码 reason 子 key（固化 i18next ignoreJSONStructure 前提）、插值；回归 add-workspace / connect / connection-settings / requirements-i18n / remote-task-board / task-management-page / conversation-composer-multica-chip 7 套件 51 过）；内置浏览器双主题验收通过（dark 以 tech-neutral 深色 token 实测，无浅色残留）。
   - **修复（2026-09-10，用户实测覆盖拉取失败）**：症状 `SKILL dir not found: "<目录名>"`。根因分类「设计正确、实现走样」——设计 §5.3 要求 `current_directory_path` 传既有目录，实现却传了**裸目录名**（`write_instance` 把该参数当路径，裸名按进程 CWD 解析相对路径 → 既有目录校验必然失败）。上游诱因是判定函数只返回 bool、丢弃了 SkillMeta 上唯一可用的 `directory_path`。修复：`own_global_skill_exists` 改为 `own_global_skill_dir`（返回既有 skill 的绝对 `directory_path`，无命中为 None），`pull_multica_skills` 原样作为 `current_directory_path` 传入；设计文档 §5.3 同步收紧该参数语义。回归测试：`own_global_skill_dir_returns_absolute_dir_of_matching_own_library_skill`、`overwrite_requires_absolute_existing_dir_not_bare_name`（裸名失败 / 绝对路径覆盖成功且写在既有目录内），`cargo test -p gold-band-desktop --bin gold-band-desktop multica::` 110 过。
   - **修复（2026-09-10，本批次 6 例失败用例）**：修复覆盖拉取失败后，`multica::local_skills` 另有 6 例稳定失败（修复前后一致，仓库 HEAD 可复现）。按 `bug-fix-verification.md` 逐项建立红态证据后分诊为三类根因——**① 推送链路真实功能缺陷（设计正确、实现不完整）**：`collect_files_recursive` 未跳过根 `SKILL.md`，与调用方注释及 `LocalSkillFile`「支撑文件（不含 SKILL.md）」定义相悖，正文被上报两遍并使同一文件重复占用 content 与支撑两份限额，恰好 256 个文件的 skill 被误判超限；**② 设计表述不完整**：制表符/换行同时满足「控制符删除」与「空白折叠」，设计未定义优先级，实现先判控制符使其永久绕过折叠，`a\tb` 粘成 `ab` 而非 `a-b`（粘连会改变 skill 身份）；**③ 测试期望错误**：4 例 `assemble_*` 按字面未加引号格式断言，实现走 canonical `render_frontmatter_document`/`yaml_scalar`（与编辑器写盘同源，值含非 `[A-Za-z0-9._-]` 字符即加双引号）。修复分别落地为：引入 `SKILL_FILE_NAME` 常量并在根层跳过同名文件（子目录内同名文件仍是普通支撑文件）、判定顺序改为空白优先、断言按 canonical 引号规则更新；设计文档 §4.5（计数口径）/ §5.2（优先级）/ §9（测试项）同步显式化。回归新增边界用例 `bundle_does_not_count_root_skill_md_toward_file_limit`（255 支撑文件 + SKILL.md 恰好到顶必须通过），修复前实测报 `skill bundle exceeds 256 file limit: edge-files (257 files)`，精确复现「257 = 255 + 重复计 2 次」。修复后 `cargo test -p gold-band-desktop --bin gold-band-desktop multica::` **117 过 / 0 失败**（110 基线 + 6 修复 + 1 新增）。
+
+- [x] **M5-ba**（本轮）需求管理适配 story dev/test 拆分——类型标记 + 类型过滤 + 未就绪可查（开发设计 §12.40，契约见 `.claude/design/multica-story-refactor/`）：
+  - **契约（需 multica 侧保证，码灵零依赖旧行为）**：`AgentTaskResponse`（pending/claim/detail 共用）新增 `issue_kind`(string, omitempty) 与 `is_ready`(bool)；**复用问题**：不复用既有 `kind`（那是任务来源判别符，语义不同）。码灵两字段全 `#[serde(default)]`/Option，旧 server 缺失时行为与拆分前逐字节一致（可先于 server 上线）。
+  - **门控归客户端**：server 对 pending **不做就绪过滤**（未就绪 test 照常下发）。码灵三层同源：看板置灰（显示）/ prepare 只读直通（数据）/ claim 时拦截 + `release_after_run_start_failure` 回滚 + 错误码 `multica.task-not-ready`（契约，覆盖 prepare→send 的就绪翻转窗口）；判定统一收敛到 `RemoteTask::executable_ready()`（前端 `isTaskExecutable` 同构）。
+  - **数据**：`ActiveRemoteRun.issue_kind`（内存 per-claim 快照）+ `MulticaCompletedTask.issue_kind`（终态历史，serde default 兼容旧条目）；**`is_ready` 不落盘**（终态无就绪语义）。VM `RemoteTaskVm.issueKind/isReady`。
+  - **就绪刷新（信号而非 patch）**：心跳 ack `pending_readiness_changes:[{task_id,is_ready}]` 非空 → 发既有 `multica-task-updated` → 页面重拉 pending；**不用 diff 直接改本地列表**（避免第二份事实源）。纯函数 `ack_signals_readiness_change` 承载判定。该 diff 线格式**仍是码灵侧提议，待 multica 最终确认**（形状不同仅改反序列化）。
+  - **前端**：类型徽标（仅 dev/test/bug 渲染，general/未知不渲染）+ 未就绪置灰与禁用执行入口（原因 Tooltip，用既有 span+tabIndex 惯例）+ 页脚类型过滤 Select（全部/开发/测试，纯客户端、瞬时状态不持久化）+ i18n zh/en（类型、过滤、就绪、新错误码）。
+  - **验证**：Rust `cargo test --manifest-path src-tauri/Cargo.toml --bin gold-band-desktop multica::` **127 过 / 0 失败**；web vitest multica **8 套件 69 过**（含新增 i18n 双语精确值）；tsc 零错；`npm run web:build` 生产构建通过。**未做的验证**：浏览器视觉验收未跑——本会话无内置浏览器工具且 `agent-browser` 未安装，同时看板数据需已连接的 multica server（内网地址本机不可达），故双主题视觉（类型徽标色调 / 未就绪置灰）待用户在桌面端连上 multica 后目视确认；**未覆盖项**：`commands.rs` 的 claim 拦截接线无自动化覆盖（该模块无 HTTP stub 基建），契约改由包装层固化（`ClaimResponse`/`TasksListResponse` + `executable_ready`），拦截动作本身依赖人工验收。
 
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

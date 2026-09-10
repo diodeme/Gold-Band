@@ -187,6 +187,19 @@ pub struct RemoteTask {
     pub issue_description: Option<String>,
     #[serde(default)]
     pub last_activity_at: Option<String>,
+    /// issue 类型（`dev`|`test`|`bug`|`general`，story dev/test 拆分改造）。
+    ///
+    /// wire 键名 `issue_kind`（**不复用 `kind`**——该键是任务来源判别符
+    /// `comment|autopilot|chat|quick_create|direct`，与 issue 类型是两个概念）。旧 server 不发 → None，
+    /// 看板不渲染类型徽标、无门控——行为与拆分前一致（版本解耦：码灵可先于服务端发版）。
+    #[serde(default)]
+    pub issue_kind: Option<String>,
+    /// test 任务就绪标记（服务端派生：父 dev issue `Effective(status)==done` 才 true）。
+    ///
+    /// 服务端零特判（spec Assumptions）：未就绪 test 仍下发，门控责任在码灵
+    /// （[`RemoteTask::executable_ready`]）。旧 server 不发 → None，按 kind 推导。
+    #[serde(default)]
+    pub is_ready: Option<bool>,
 }
 
 impl RemoteTask {
@@ -210,6 +223,17 @@ impl RemoteTask {
         .flatten()
         .find(|s| !s.trim().is_empty())
         .map(str::to_string)
+    }
+
+    /// 执行准入谓词（story dev/test 拆分：test 任务按服务端派生的就绪信号门控）。
+    ///
+    /// - 非 test（含无 kind 的旧 server 任务、无 issue 的 chat/quick-create 任务）→ 恒可执行；
+    /// - test：`is_ready == true` 才可执行；`is_ready` 缺失按未就绪（保守——覆盖服务端灰度窗口，
+    ///   避免「字段未填默认放行」击穿门控）。
+    ///
+    /// 旧 server（两字段皆无）→ `None != Some("test")` → true，行为与拆分前逐字节一致。
+    pub fn executable_ready(&self) -> bool {
+        self.issue_kind.as_deref() != Some("test") || self.is_ready.unwrap_or(false)
     }
 }
 
@@ -306,12 +330,29 @@ pub struct HeartbeatAck {
     pub pending_update: Option<serde_json::Value>,
     /// v1 占位不消费。
     pub pending_model_list: Option<serde_json::Value>,
+    /// 就绪变化 diff（story dev/test 拆分，R8 方案 1；wire 最终形态由 multica 定稿，
+    /// 码灵按此提案实现，不一致时仅调整本结构反序列化）。
+    ///
+    /// 码灵**只把它当刷新信号**：非空 → 发 `multica-task-updated` 事件 → 页面重取 pending
+    /// （pending 列表是唯一事实源，不做本地 is_ready 增量 patch）。旧 server 不发 → None。
+    #[serde(default)]
+    pub pending_readiness_changes: Option<Vec<ReadinessChange>>,
 }
 
 /// 心跳 ack：本地 skill 发现待办引用（仅 requestId，详情由发现处理自行扫描）。
 #[derive(Debug, Deserialize)]
 pub struct PendingLocalSkillsRef {
     pub id: String,
+}
+
+/// 心跳 ack：就绪变化 diff 的单条记录（`{task_id, is_ready}`）。
+///
+/// 与 ack 现有 `pending_local_skill_imports` 等复数 pending 字段同构。仅作刷新信号消费，
+/// `is_ready` 的权威事实源是 pending/claim/detail 载荷（见 [`HeartbeatAck`] 注释）。
+#[derive(Debug, Deserialize)]
+pub struct ReadinessChange {
+    pub task_id: String,
+    pub is_ready: bool,
 }
 
 /// 心跳 ack：本地 skill 导入待办引用（requestId + 目标 skill_key）。
@@ -1431,6 +1472,110 @@ mod tests {
         assert!(first.parent_task_id.is_none());
     }
 
+    // ===== story dev/test 拆分：issue_kind / is_ready / executable_ready 契约 =====
+
+    #[test]
+    fn remote_task_parses_issue_kind_and_is_ready() {
+        // 键名 `issue_kind`（multica 已确认；`kind` 已被任务来源判别符占用，不可复用）。
+        // pending / claim / detail 三接口共用 AgentTaskResponse，三处载荷均带此两键。
+        let task: RemoteTask = serde_json::from_str(
+            r#"{"id":"t-1","status":"queued","issue_kind":"test","is_ready":false}"#,
+        )
+        .unwrap();
+        assert_eq!(task.issue_kind.as_deref(), Some("test"));
+        assert_eq!(task.is_ready, Some(false));
+
+        let ready: RemoteTask = serde_json::from_str(
+            r#"{"id":"t-2","status":"queued","issue_kind":"test","is_ready":true}"#,
+        )
+        .unwrap();
+        assert_eq!(ready.issue_kind.as_deref(), Some("test"));
+        assert_eq!(ready.is_ready, Some(true));
+    }
+
+    #[test]
+    fn remote_task_missing_issue_fields_stays_executable() {
+        // 旧 server 契约（版本解耦）：两字段皆无 → None/None。
+        // None != Some("test") → 可执行，行为与拆分前逐字节一致（回归固化）。
+        let legacy: RemoteTask =
+            serde_json::from_str(r#"{"id":"t-1","status":"queued"}"#).unwrap();
+        assert!(legacy.issue_kind.is_none());
+        assert!(legacy.is_ready.is_none());
+        assert!(legacy.executable_ready());
+    }
+
+    #[test]
+    fn executable_ready_gates_only_test_kind() {
+        // 非 test（dev/bug/general/缺失）恒可执行，is_ready 值不影响判定。
+        for kind in ["dev", "bug", "general"] {
+            let task: RemoteTask = serde_json::from_str(&format!(
+                r#"{{"id":"t","issue_kind":"{kind}","is_ready":false}}"#
+            ))
+            .unwrap();
+            assert!(task.executable_ready(), "{kind} 不受就绪门控");
+        }
+
+        // test：仅 is_ready==true 可执行。
+        let not_ready: RemoteTask =
+            serde_json::from_str(r#"{"id":"t","issue_kind":"test","is_ready":false}"#).unwrap();
+        assert!(!not_ready.executable_ready());
+        let ready: RemoteTask =
+            serde_json::from_str(r#"{"id":"t","issue_kind":"test","is_ready":true}"#).unwrap();
+        assert!(ready.executable_ready());
+
+        // 保守缺省：test 且 is_ready 缺失 → 按未就绪（覆盖服务端灰度窗口，不放行）。
+        let unknown: RemoteTask =
+            serde_json::from_str(r#"{"id":"t","issue_kind":"test"}"#).unwrap();
+        assert!(!unknown.executable_ready());
+    }
+
+    #[test]
+    fn claim_response_surfaces_readiness_for_gate() {
+        // claim 响应是 `{task: <AgentTaskResponse>}` 包装（client.rs ClaimResponse）；
+        // 锁定「服务端 claim 载荷 → 解包后的 RemoteTask → 命令层门控判定」整条链路：
+        // 命令层 start_multica_conversation_run 在 claim 后立即按 executable_ready() 拦截。
+        let denied: ClaimResponse = serde_json::from_str(
+            r#"{"task":{"id":"t-1","status":"dispatched","issue_kind":"test","is_ready":false}}"#,
+        )
+        .unwrap();
+        assert!(!denied.task.executable_ready(), "未就绪 test → 拦截 + release 回滚");
+
+        let allowed: ClaimResponse = serde_json::from_str(
+            r#"{"task":{"id":"t-2","status":"dispatched","issue_kind":"test","is_ready":true}}"#,
+        )
+        .unwrap();
+        assert!(allowed.task.executable_ready(), "已就绪 test → 放行");
+
+        // dev 任务即使 is_ready=false（服务端对非 test 亦可能回传）也不受门控。
+        let dev: ClaimResponse = serde_json::from_str(
+            r#"{"task":{"id":"t-3","status":"dispatched","issue_kind":"dev","is_ready":false}}"#,
+        )
+        .unwrap();
+        assert!(dev.task.executable_ready());
+    }
+
+    #[test]
+    fn pending_list_response_carries_readiness_fields() {
+        // pending 列表是看板的数据源：包装形态与裸数组形态都必须带出两字段
+        // （看板置灰 / canClaim 谓词依赖它们）。
+        let wrapped: TasksListResponse = serde_json::from_str(
+            r#"{"tasks":[{"id":"t-1","status":"queued","issue_kind":"test","is_ready":false},{"id":"t-2","status":"queued","issue_kind":"dev"}]}"#,
+        )
+        .unwrap();
+        let TasksListResponse::Wrapped { tasks } = wrapped else {
+            panic!("包装形态应解为 Wrapped");
+        };
+        assert_eq!(tasks[0].issue_kind.as_deref(), Some("test"));
+        assert!(!tasks[0].executable_ready());
+        assert_eq!(tasks[1].issue_kind.as_deref(), Some("dev"));
+        assert!(tasks[1].executable_ready());
+
+        // 裸数组形态（旧 server 兼容路径）同样解析且缺字段不阻断。
+        let bare: TasksListResponse =
+            serde_json::from_str(r#"[{"id":"t-1","status":"queued"}]"#).unwrap();
+        assert!(matches!(bare, TasksListResponse::Bare(v) if v.len() == 1));
+    }
+
     #[test]
     fn remote_task_requirement_text_picks_source_by_priority() {
         // 镜像 server computeTaskKind 来源互斥优先级：
@@ -1693,6 +1838,31 @@ mod tests {
         // v1 不消费，仅反序列化占位（解析不失败即契约成立）。
         assert!(ack.pending_update.is_some());
         assert!(ack.pending_model_list.is_some());
+    }
+
+    // ===== story dev/test 拆分：心跳 ack 就绪变化 diff 契约（R8 方案 1）=====
+
+    #[test]
+    fn heartbeat_ack_parses_pending_readiness_changes() {
+        // diff 列表形态 [{task_id, is_ready}]，与 ack 现有复数 pending_* 字段同构。
+        // 码灵只作刷新信号消费：非空 → multica-task-updated 事件 → 重取 pending。
+        let ack: HeartbeatAck = serde_json::from_str(
+            r#"{"status":"ok","pending_readiness_changes":[{"task_id":"t-1","is_ready":true},{"task_id":"t-2","is_ready":false}]}"#,
+        )
+        .unwrap();
+        let changes = ack.pending_readiness_changes.expect("diff 应解析");
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0].task_id, "t-1");
+        assert!(changes[0].is_ready);
+        assert_eq!(changes[1].task_id, "t-2");
+        assert!(!changes[1].is_ready);
+    }
+
+    #[test]
+    fn heartbeat_ack_without_readiness_changes() {
+        // 旧 server / 无变化 → 字段缺失（None），不触发刷新信号。
+        let ack: HeartbeatAck = serde_json::from_str(r#"{"status":"ok"}"#).unwrap();
+        assert!(ack.pending_readiness_changes.is_none());
     }
 
     #[test]

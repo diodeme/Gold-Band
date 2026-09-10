@@ -668,6 +668,12 @@ pub async fn start_multica_conversation_run(
         .claim_specific_task(&runtime_id, &remote_task_id)
         .await
         .map_err(|e| command_error(e.into()))?;
+    // 服务端不筛除未就绪 test，客户端在 claim 后、创建本地 run 前做契约级拦截。
+    // claim 已将任务置为 dispatched，必须复用 CAS 回滚，否则未就绪任务会悬挂在不可领取态。
+    if !task.executable_ready() {
+        release_after_run_start_failure(&client, &runtime_id, &remote_task_id).await;
+        return Err(command_error(MulticaError::TaskNotReady.into()));
+    }
     // claim 响应携带的任务身份（替代旧 lease 缓存）：供后续 register_active_run / 续跑判定 / issue 流转消费。
     // prior_session_id 当前未消费（保留 claim 响应既有字段，不扩范围）。
     let issue_id = task.issue_id.clone();
@@ -820,6 +826,7 @@ pub async fn start_multica_conversation_run(
                             issue_id: issue_id.clone(),
                             title: title.clone(),
                             started_at: chrono::Utc::now().to_rfc3339(),
+                            issue_kind: task.issue_kind.clone(),
                         },
                     );
                 }
@@ -910,6 +917,7 @@ pub async fn start_multica_conversation_run(
                         issue_id: issue,
                         title,
                         started_at: chrono::Utc::now().to_rfc3339(),
+                        issue_kind: task.issue_kind.clone(),
                     },
                 );
                 // 建成 run + 登记 active_run（claim-at-send 无 lease 需释放）。
@@ -1987,6 +1995,8 @@ mod tests {
             local_task_id: None,
             run_id: None,
             project_id: None,
+            issue_kind: None,
+            is_ready: None,
         }
     }
 

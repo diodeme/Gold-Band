@@ -37,6 +37,10 @@ pub struct ActiveRemoteRun {
     /// 行标签（claim 时的 thread_name，Issue 3C「最近完成」快照用，避免终态读盘）。
     pub title: Option<String>,
     pub started_at: String,
+    /// issue 类型快照（claim 响应的 `issue_kind`，story dev/test 拆分）。终态历史
+    /// `MulticaCompletedTask.issue_kind` 的写入源——running 行与终态行的类型徽标都由它供给。
+    /// `is_ready` 不快照：领取后无「就绪」语义。
+    pub issue_kind: Option<String>,
 }
 
 /// 共享句柄：loop 创建（managed），bridge（M4）取同一份。
@@ -185,6 +189,7 @@ mod tests {
             issue_id: Some(format!("issue-{local}")),
             title: Some(format!("title-{local}")),
             started_at: "2026-08-05T00:00:00".into(),
+            issue_kind: Some("dev".into()),
         }
     }
 

@@ -44,8 +44,11 @@ import { formatLocalDateTime } from '@/lib/datetime';
 import {
   MulticaRemoteTaskBoard,
   bucketTasksByStatus,
+  visibleIssueKind,
+  isTaskExecutable,
   BOARD_COLUMNS,
   MULTICA_STATUS_TONE,
+  MULTICA_ISSUE_KIND_TONE,
 } from '@/components/conversation/MulticaRemoteTaskBoard';
 import type { RemoteTaskVm } from '@/types';
 
@@ -61,6 +64,8 @@ function task(overrides: Partial<RemoteTaskVm> = {}): RemoteTaskVm {
     localTaskId: null,
     runId: null,
     projectId: null,
+    issueKind: null,
+    isReady: null,
     ...overrides,
   };
 }
@@ -119,6 +124,37 @@ describe('multica status tone config', () => {
     expect(MULTICA_STATUS_TONE.completed).toMatch(/emerald/);
     expect(MULTICA_STATUS_TONE.failed).toMatch(/destructive/);
     expect(Object.keys(MULTICA_STATUS_TONE).sort()).toEqual(['completed', 'failed', 'queued', 'running']);
+  });
+});
+
+// issue 类型徽标 + 执行准入谓词（story dev/test 拆分；与后端 RemoteTask::executable_ready 同构）。
+describe('multica issue kind badge and admission predicate', () => {
+  it('renders badges only for dev/test/bug and hides general/missing kinds', () => {
+    expect(visibleIssueKind('dev')).toBe('dev');
+    expect(visibleIssueKind('test')).toBe('test');
+    expect(visibleIssueKind('bug')).toBe('bug');
+    // general 与缺字段不渲染徽标（对齐 multica 自有 views 的 hideGeneral 惯例）。
+    expect(visibleIssueKind('general')).toBeNull();
+    expect(visibleIssueKind(null)).toBeNull();
+    // 未知类型同样不渲染（前向兼容：新类型不猜文案）。
+    expect(visibleIssueKind('epic')).toBeNull();
+  });
+
+  it('maps every badge kind to its own tone', () => {
+    expect(MULTICA_ISSUE_KIND_TONE.dev).toMatch(/sky/);
+    expect(MULTICA_ISSUE_KIND_TONE.test).toMatch(/violet/);
+    expect(MULTICA_ISSUE_KIND_TONE.bug).toMatch(/destructive/);
+  });
+
+  it('gates only test kind on readiness (保守缺省：test 无 isReady 不可执行)', () => {
+    // 非 test（含旧 server 的 null）恒可执行，不受 isReady 影响。
+    expect(isTaskExecutable({ issueKind: 'dev', isReady: false })).toBe(true);
+    expect(isTaskExecutable({ issueKind: 'bug', isReady: null })).toBe(true);
+    expect(isTaskExecutable({ issueKind: null, isReady: null })).toBe(true);
+    // test：仅 isReady === true 放行；false / null 均拦截。
+    expect(isTaskExecutable({ issueKind: 'test', isReady: true })).toBe(true);
+    expect(isTaskExecutable({ issueKind: 'test', isReady: false })).toBe(false);
+    expect(isTaskExecutable({ issueKind: 'test', isReady: null })).toBe(false);
   });
 });
 
@@ -232,6 +268,66 @@ describe('MulticaRemoteTaskBoard render', () => {
     );
     expect(btn).toBeUndefined();
     expect(container.textContent).toContain('NoLink');
+  });
+
+  it('renders the issue-kind badge for dev/test/bug but not for general', async () => {
+    const { container } = await renderBoard({
+      tasks: [
+        task({ id: 'd', status: 'queued', title: 'DevTask', issueKind: 'dev' }),
+        task({ id: 't', status: 'queued', title: 'TestTask', issueKind: 'test', isReady: true }),
+        task({ id: 'b', status: 'queued', title: 'BugTask', issueKind: 'bug' }),
+        task({ id: 'g', status: 'queued', title: 'GeneralTask', issueKind: 'general' }),
+      ],
+    });
+    expect(container.textContent).toContain('multica.taskManagement.issueKind.dev');
+    expect(container.textContent).toContain('multica.taskManagement.issueKind.test');
+    expect(container.textContent).toContain('multica.taskManagement.issueKind.bug');
+    // general 不渲染类型徽标（仅有状态徽标）。
+    expect(container.textContent).not.toContain('multica.taskManagement.issueKind.general');
+  });
+
+  it('marks a queued test task whose dev parent is not done as not-ready and blocks execution', async () => {
+    const onPrepare = vi.fn();
+    const { container } = await renderBoard({
+      tasks: [task({ id: 't', status: 'queued', title: 'TestTask', issueKind: 'test', isReady: false })],
+      onPrepare,
+    });
+    // 未就绪标记 + 原因提示（Tooltip 文案）都在卡片上。
+    expect(container.textContent).toContain('multica.taskManagement.readiness.notReady');
+    expect(container.textContent).toContain('multica.taskManagement.readiness.notReadyHint');
+    // 执行入口保留但禁用 → 点击不触发（看板展示层门控）。
+    const claimBtn = container.querySelector('button[aria-label="conversation.sidebar.multica.executeTask"]') as HTMLButtonElement;
+    expect(claimBtn).toBeTruthy();
+    expect(claimBtn.disabled).toBe(true);
+    await act(async () => { claimBtn.click(); });
+    expect(onPrepare).not.toHaveBeenCalled();
+  });
+
+  it('allows executing a ready test task and shows no not-ready marker', async () => {
+    const onPrepare = vi.fn();
+    const { container } = await renderBoard({
+      tasks: [task({ id: 't', status: 'queued', title: 'TestTask', issueKind: 'test', isReady: true })],
+      onPrepare,
+    });
+    expect(container.textContent).not.toContain('multica.taskManagement.readiness.notReady');
+    const claimBtn = container.querySelector('button[aria-label="conversation.sidebar.multica.executeTask"]') as HTMLButtonElement;
+    expect(claimBtn.disabled).toBe(false);
+    await act(async () => { claimBtn.click(); });
+    expect(onPrepare).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a queued dev task executable even when the server reports isReady=false', async () => {
+    // 非 test 不受就绪字段影响（服务端对非 test 亦可能回传 is_ready=false）。
+    const onPrepare = vi.fn();
+    const { container } = await renderBoard({
+      tasks: [task({ id: 'd', status: 'queued', title: 'DevTask', issueKind: 'dev', isReady: false })],
+      onPrepare,
+    });
+    expect(container.textContent).not.toContain('multica.taskManagement.readiness.notReady');
+    const claimBtn = container.querySelector('button[aria-label="conversation.sidebar.multica.executeTask"]') as HTMLButtonElement;
+    expect(claimBtn.disabled).toBe(false);
+    await act(async () => { claimBtn.click(); });
+    expect(onPrepare).toHaveBeenCalledTimes(1);
   });
 
   it('renders task timestamps in the local timezone, not raw UTC', async () => {

@@ -15277,9 +15277,9 @@ fn drive_from_node_with_initial_session(
     initial_user_prompt_render_mode: UserPromptRenderMode,
     initial_resume_input_attachment_paths: Vec<String>,
     initial_runtime_control_intent: RuntimeControlIntent,
-    parent_continue_input: Option<ConversationPromptInput>,
-    parent_continue_prompt_id: Option<String>,
-    dynamic_resume_override: Option<DynamicResumeOverride>,
+    mut parent_continue_input: Option<ConversationPromptInput>,
+    mut parent_continue_prompt_id: Option<String>,
+    mut dynamic_resume_override: Option<DynamicResumeOverride>,
     initial_model_override: Option<String>,
     initial_permission_mode_override: Option<String>,
     mut launch: Option<mpsc::Sender<RuntimeContinueLaunch>>,
@@ -16087,6 +16087,11 @@ fn drive_from_node_with_initial_session(
             runtime_control_intent = prompt_state.runtime_control_intent;
             model_override = prompt_state.model_override;
             permission_mode_override = prompt_state.permission_mode_override;
+            // Explicit recovery belongs to the initial outer attempt, including
+            // its retries, but never to a workflow successor or a new round.
+            parent_continue_input = None;
+            parent_continue_prompt_id = None;
+            dynamic_resume_override = None;
             invalid_output_repair_prompts = 0;
             continue;
         }

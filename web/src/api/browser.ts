@@ -1648,6 +1648,12 @@ export const browserApi: RuntimeApi = {
   respondElicitation(_projectId: string | null | undefined, _taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _elicitationId: string, _action: string, _content?: Record<string, unknown> | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve();
   },
+  listComposerHistory() {
+    return Promise.resolve({ items: [], head: null, nextCursor: null });
+  },
+  getComposerHistoryText() {
+    return Promise.reject({ code: 'acp.composer-history-not-found', params: {} });
+  },
   getAcpRawFrames(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, query, _outerNodeId, _outerAttemptId) {
     const empty: AcpRawFramePageVm = {
       items: [],

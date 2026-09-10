@@ -762,7 +762,10 @@ impl TurnFileStore {
         validate_hash(&version.content_hash)?;
         let root = std::fs::canonicalize(&self.attempt_dir)?;
         let path = std::fs::canonicalize(self.blob_path(&version.content_hash))?;
-        anyhow::ensure!(path.starts_with(root.join("acp.file-blobs")), BLOB_CORRUPTED);
+        anyhow::ensure!(
+            path.starts_with(root.join("acp.file-blobs")),
+            BLOB_CORRUPTED
+        );
         Ok(())
     }
 

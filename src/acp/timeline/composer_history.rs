@@ -1,5 +1,11 @@
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    static COMPOSER_HISTORY_LOCATOR_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static COMPOSER_HISTORY_CANDIDATE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub const COMPOSER_HISTORY_PAGE_SIZE: usize = 20;
 pub const MAX_COMPOSER_HISTORY_PAGE_SIZE: usize = 50;
 
@@ -59,7 +65,9 @@ pub enum HistoryError {
     NotFound,
 }
 
-fn eligible(locator: &TimelineItemLocator) -> bool {
+pub(super) fn eligible(locator: &TimelineItemLocator) -> bool {
+    #[cfg(test)]
+    COMPOSER_HISTORY_LOCATOR_SCANS.set(COMPOSER_HISTORY_LOCATOR_SCANS.get() + 1);
     locator.gold_band_prompt
         && locator.composer_text_bytes.is_some()
         && !locator.hidden_from_chat
@@ -67,20 +75,20 @@ fn eligible(locator: &TimelineItemLocator) -> bool {
         && locator.kind == "userTextDelta"
 }
 
-fn cursor(generation: u64, id: &str, locator: &TimelineItemLocator) -> HistoryCursor {
+fn cursor(generation: u64, id: &str, position: &item_reader::Position) -> HistoryCursor {
     HistoryCursor {
         generation,
         message_id: id.to_owned(),
-        position: locator.started_seq,
+        position: position.started_seq,
     }
 }
 
-fn validate_cursor(index: &TimelineMaterializedIndex, value: &HistoryCursor) -> Result<()> {
+fn validate_cursor(index: &item_reader::ReadIndex, value: &HistoryCursor) -> Result<()> {
     if value.generation != index.generation
         || !index
-            .item_locators
+            .positions
             .get(&value.message_id)
-            .is_some_and(|item| eligible(item) && item.started_seq == value.position)
+            .is_some_and(|item| item.composer.is_some() && item.started_seq == value.position)
     {
         return Err(HistoryError::Stale.into());
     }
@@ -184,73 +192,85 @@ pub(crate) fn migrate_raw_agent_initial_text(attempt_dir: &Utf8Path) -> Result<b
 }
 
 pub fn read_page(path: &Utf8Path, query: HistoryQuery) -> Result<HistoryPage> {
-    with_jsonl_file_lock(path, || {
-        let (index, _) = load_or_rebuild_index_unlocked(
-            path,
-            &timeline_index_path(path),
-            TimelineCheckpointPolicy::default(),
-        )?;
+    item_reader::with_index(path, |index| {
         for value in query.cursor.iter().chain(query.head.iter()) {
             validate_cursor(&index, value)?;
         }
-        let mut candidates = index
-            .item_locators
-            .iter()
-            .filter(|(_, item)| eligible(item))
-            .collect::<Vec<_>>();
-        candidates.sort_by(|(a_id, a), (b_id, b)| {
-            (b.started_seq, b_id.as_str()).cmp(&(a.started_seq, a_id.as_str()))
-        });
         let head = query.head.clone().or_else(|| {
-            candidates
-                .first()
-                .map(|(id, item)| cursor(index.generation, id, item))
-        });
-        candidates.retain(|(id, item)| {
-            head.as_ref().is_none_or(|head| {
-                (item.started_seq, id.as_str()) <= (head.position, head.message_id.as_str())
+            index.composer.iter().next_back().and_then(|(_, id)| {
+                index
+                    .positions
+                    .get(id)
+                    .map(|position| cursor(index.generation, id, position))
             })
         });
-        let mut seen = HashSet::new();
-        candidates
-            .retain(|(id, item)| seen.insert(item.prompt_id.as_deref().unwrap_or(id.as_str())));
-        candidates.retain(|(id, item)| {
-            let position = (item.started_seq, id.as_str());
-            query
-                .cursor
-                .as_ref()
-                .is_none_or(|bound| match query.direction {
-                    HistoryDirection::Older => {
-                        position < (bound.position, bound.message_id.as_str())
-                    }
-                    HistoryDirection::Newer => {
-                        position > (bound.position, bound.message_id.as_str())
-                    }
-                })
-        });
-        if matches!(query.direction, HistoryDirection::Newer) {
-            candidates.reverse();
-        }
         let limit = query
             .limit
             .unwrap_or(COMPOSER_HISTORY_PAGE_SIZE)
             .clamp(1, MAX_COMPOSER_HISTORY_PAGE_SIZE);
-        let more = candidates.len() > limit;
-        candidates.truncate(limit);
-        let next_cursor = more
-            .then(|| {
-                candidates
-                    .last()
-                    .map(|(id, item)| cursor(index.generation, id, item))
-            })
-            .flatten();
-        let mut items = Vec::with_capacity(candidates.len());
-        for (id, locator) in candidates {
-            items.push(HistorySummary {
-                cursor: cursor(index.generation, id, locator),
-                text_bytes: locator.composer_text_bytes.unwrap_or_default(),
+        let Some(head_cursor) = head.as_ref() else {
+            return Ok(HistoryPage {
+                items: Vec::new(),
+                head,
+                next_cursor: None,
             });
+        };
+        let head_order = (head_cursor.position, head_cursor.message_id.clone());
+        let candidates: Box<dyn Iterator<Item = &(u64, String)> + '_> = match query.direction {
+            HistoryDirection::Older => {
+                let upper = query
+                    .cursor
+                    .as_ref()
+                    .map(|bound| {
+                        std::ops::Bound::Excluded((bound.position, bound.message_id.clone()))
+                    })
+                    .unwrap_or_else(|| std::ops::Bound::Included(head_order.clone()));
+                Box::new(
+                    index
+                        .composer
+                        .range((std::ops::Bound::Unbounded, upper))
+                        .rev(),
+                )
+            }
+            HistoryDirection::Newer => {
+                let lower = query
+                    .cursor
+                    .as_ref()
+                    .map(|bound| {
+                        std::ops::Bound::Excluded((bound.position, bound.message_id.clone()))
+                    })
+                    .unwrap_or(std::ops::Bound::Unbounded);
+                Box::new(
+                    index
+                        .composer
+                        .range((lower, std::ops::Bound::Included(head_order.clone()))),
+                )
+            }
+        };
+        let mut items = Vec::with_capacity(limit + 1);
+        for order @ (_, id) in candidates {
+            #[cfg(test)]
+            COMPOSER_HISTORY_CANDIDATE_VISITS.set(COMPOSER_HISTORY_CANDIDATE_VISITS.get() + 1);
+            let position = index.positions.get(id).ok_or(HistoryError::NotFound)?;
+            let composer = position.composer.as_ref().ok_or(HistoryError::NotFound)?;
+            let latest_at_head = index
+                .composer_by_prompt
+                .get(&composer.prompt_identity)
+                .and_then(|positions| positions.range(..=head_order.clone()).next_back());
+            if latest_at_head != Some(order) {
+                continue;
+            }
+            items.push(HistorySummary {
+                cursor: cursor(index.generation, id, position),
+                text_bytes: composer.text_bytes,
+            });
+            if items.len() > limit {
+                break;
+            }
         }
+        let more = items.len() > limit;
+        items.truncate(limit);
+        let next_cursor = more.then(|| items.last().unwrap().cursor.clone());
         Ok(HistoryPage {
             items,
             head,
@@ -260,18 +280,11 @@ pub fn read_page(path: &Utf8Path, query: HistoryQuery) -> Result<HistoryPage> {
 }
 
 pub fn read_text(path: &Utf8Path, value: HistoryCursor) -> Result<HistoryText> {
-    with_jsonl_file_lock(path, || {
-        let (index, _) = load_or_rebuild_index_unlocked(
-            path,
-            &timeline_index_path(path),
-            TimelineCheckpointPolicy::default(),
-        )?;
+    item_reader::with_index(path, |index| {
         validate_cursor(&index, &value)?;
-        let locator = index
-            .item_locators
-            .get(&value.message_id)
-            .ok_or(HistoryError::NotFound)?;
-        let event = read_event_at_locator(path, locator)?;
+        let event = item_reader::read_position(path, index, &value.message_id)?
+            .ok_or(HistoryError::NotFound)?
+            .event;
         let text = original_user_text(&event)
             .ok_or(HistoryError::NotFound)?
             .to_owned();
@@ -634,7 +647,10 @@ mod tests {
             writer.write_all(b"\n").unwrap();
         }
         writer.flush().unwrap();
-        read_page(&path, HistoryQuery::default()).unwrap();
+        let warm = read_page(&path, HistoryQuery::default()).unwrap();
+        super::INDEX_DISK_LOADS.set(0);
+        COMPOSER_HISTORY_LOCATOR_SCANS.set(0);
+        COMPOSER_HISTORY_CANDIDATE_VISITS.set(0);
         let started = std::time::Instant::now();
         let page = read_page(
             &path,
@@ -657,5 +673,19 @@ mod tests {
         );
         assert!(page.next_cursor.is_some());
         assert!(serde_json::to_vec(&page).unwrap().len() < 16 * 1024);
+        assert_eq!(
+            super::INDEX_DISK_LOADS.get(),
+            0,
+            "warm page and text reads must reuse the bounded read projection"
+        );
+        assert!(
+            COMPOSER_HISTORY_LOCATOR_SCANS.get() <= MAX_COMPOSER_HISTORY_PAGE_SIZE + 4,
+            "warm page and text reads must not scan the complete timeline index"
+        );
+        assert!(
+            COMPOSER_HISTORY_CANDIDATE_VISITS.get() <= MAX_COMPOSER_HISTORY_PAGE_SIZE + 1,
+            "the ordered range query must visit only enough candidates to fill the bounded page"
+        );
+        assert_eq!(warm.items.len(), COMPOSER_HISTORY_PAGE_SIZE);
     }
 }

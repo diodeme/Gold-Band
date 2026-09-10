@@ -772,7 +772,8 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 输入历史查询不展示旋转加载图标，也不保留图标占位；查询开始、完成与缓存命中不得增删工具栏布局轨道或挤动 Agent、模型、模式等按钮。窄窗口与重新拉宽均需验证加载前中后的按钮位置一致。
 - 交付验收包含仓库 CI 的 `cargo fmt --all -- --check`；编译与功能测试通过不能替代格式检查。PR #120 的格式修正仅调整 Rust 排版，不改变输入历史的数据、接口和交互契约。
 - `list_composer_history` 返回有界原文摘要和 generation/position/messageId 游标；`get_composer_history_text` 定位读取单条原文。Timeline 索引投影保存合格原文的 composerTextBytes，页默认返回 20 条、上限 50 条，摘要查询不读取正文；一次翻阅冻结 head，过期 generation 拒绝继续。前端最多保留 40 个摘要、3 条且约 1 MiB 的 UTF-16 正文缓存，超预算单条只进入当前草稿。错误只在 composer 局部反馈。
-- 复用 prompt-kit、现有草稿、Timeline 索引与后台 IPC，没有新增消息存储、全局历史 Context 或加载时预取。索引元数据仍有随会话规模增长的反序列化成本，分页候选排序为 O(N log N)；正文接口定位读取一条。不得声称整条查询为 O(1)，也不得让历史翻阅触发 transcript 翻页或主动滚动。
+- Composer 历史与通用 item reader 共用可删除重建的进程内读取投影。投影在既有 4 项、32 MiB LRU 内保存 item locator、按 `startedSeq + messageId` 排序的合格输入集合及按 prompt identity 分组的去重位置；timeline append 只回放新增尾记录并同步维护二级索引。热分页从游标执行有序范围查询，只访问达到页上限所需的候选；正文通过同一投影定位单条 JSONL 记录。冷启动、缓存淘汰、索引失效或超出缓存预算时允许一次 O(N) 的物化索引加载或重建，之后的按键路径不得重复反序列化全索引、扫描全部 locator 或执行 O(N log N) 排序。
+- 复用 prompt-kit、现有草稿、Timeline 物化索引、item reader LRU 与后台 IPC，没有新增消息存储、持久字段、全局历史 Context 或加载时预取。10,000 条合格输入的回归测试必须在预热后验证分页与正文读取不再加载完整索引，分页候选检查量保持在页大小同阶；不得让历史翻阅触发 transcript 翻页或主动滚动。
 
 ## Composer 附件与资源工作区
 

@@ -1412,7 +1412,7 @@ pub fn agent_registry_vm(
     AgentRegistryVm { agents, catalog }
 }
 
-fn managed_agent_vm(
+pub(crate) fn managed_agent_vm(
     agent_id: &ManagedAgentId,
     config: &ManagedAgentConfig,
     diagnostic: Option<&AgentDiagnosticState>,

@@ -1,4 +1,4 @@
-import { AcpImageStrip, useAcpToolImageReadiness } from './AcpImageStrip';
+import { AcpActivityImageStrip, AcpImageStrip, useAcpToolImageReadiness } from './AcpImageStrip';
 import { MessageAttachmentPreviewButton } from './MessageAttachmentPreviewButton';
 export { MessageAttachmentPreviewButton } from './MessageAttachmentPreviewButton';
 import { acpImagesFromRaw, acpActivityImages } from '@/lib/acp-image-cache';
@@ -259,7 +259,6 @@ import {
   showArtifact,
   showAttachment,
   stopActiveSession,
-  submitManualCheck,
 } from "@/api";
 import { AcpModelThoughtSelects } from '@/components/acp/AcpModelThoughtSelects';
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
@@ -292,6 +291,7 @@ import {
   type AcpReturnToLatestVisualProbe,
 } from "@/lib/acp-return-to-latest-visual-probe";
 import i18n, { displayAppError, displayStatus } from "@/i18n";
+import { acpRuntimeErrorBannerCopy } from '@/lib/acp-runtime-error';
 import type {
   AcpElicitationRequestVm,
   AcpPermissionRequestVm,
@@ -388,7 +388,7 @@ interface ACPChatDialogProps {
   inlineContentMaxBytes?: number;
   liveUpdatesPaused?: boolean;
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
-  onManualCheckSubmitted?: () => void;
+  onSubmitManualCheck?: (outcome: "success" | "failure") => Promise<void>;
   onSessionStopped?: () => void;
   onLifecycleSnapshot?: (snapshot: AcpLifecycleSnapshot) => void;
   onAtBottomChange?: (atBottom: boolean) => void;
@@ -480,6 +480,7 @@ type AcpTimelineWindowOwner = {
 const AcpTimelineWindowOwnerContext = createContext<AcpTimelineWindowOwner | null>(null);
 
 type AcpActivityBatch = {
+  imagesPending?: boolean;
   images?: import('@/types').AcpImageRef[];
   kind: "activityBatch";
   id: string;
@@ -1274,7 +1275,7 @@ export function ACPChatDialog(
     inlineContentMaxBytes,
     liveUpdatesPaused: externalLiveUpdatesPaused = false,
     onOptimisticEventsChange,
-    onManualCheckSubmitted,
+    onSubmitManualCheck,
     onSessionStopped,
     onLifecycleSnapshot,
     onAtBottomChange,
@@ -5602,25 +5603,19 @@ export function ACPChatDialog(
   };
 
   const submitManualDecision = async (outcome: "success" | "failure") => {
-    if (!showManualCheckActions || manualCheckSubmitting) return;
+    if (!showManualCheckActions || manualCheckSubmitting || !onSubmitManualCheck) return;
+    const ownerKey = sessionIdentityRef.current;
     setManualCheckError(null);
     setManualCheckSubmitting(true);
     try {
-      await submitManualCheck(
-        projectId,
-        taskId,
-        runId,
-        roundId,
-        nodeId,
-        attemptId,
-        outcome,
-      );
+      await onSubmitManualCheck(outcome);
+      if (sessionIdentityRef.current !== ownerKey) return;
       setManualCheckResolved(true);
-      onManualCheckSubmitted?.();
     } catch (error) {
+      if (sessionIdentityRef.current !== ownerKey) return;
       setManualCheckError(displayAppError(t, error));
     } finally {
-      setManualCheckSubmitting(false);
+      if (sessionIdentityRef.current === ownerKey) setManualCheckSubmitting(false);
     }
   };
 
@@ -6168,7 +6163,7 @@ export function ACPChatDialog(
                 )}
                 data-acp-conversation-footer="viewport"
               >
-                {showReturnToLatest ? (
+                {showReturnToLatest && timelineSurfaceState !== 'pending' ? (
                   <Button
                     ref={handleReturnToLatestButtonRef}
                     type="button"
@@ -8038,7 +8033,10 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
           </CollapsibleContent>
         ) : null}
       </Collapsible>
-      {!event.live ? <AcpImageStrip images={event.images ?? []} locator={branchLocator} /> : null}
+      {!event.live ? event.imagesPending && branchLocator
+        ? <AcpActivityImageStrip locator={branchLocator} start={event.activityStartSeq} end={event.activityEndSeq}
+            generation={timelineWindowOwner?.timelineGeneration ?? undefined} />
+        : <AcpImageStrip images={event.images ?? []} locator={branchLocator} /> : null}
     </AssistantTimelineRow>
   );
 });
@@ -10072,12 +10070,7 @@ export function visibleAcpBannerError(
     || (latestTurnStatus == null && session.status === 'failed');
   const error = canonicalTurnError === undefined ? session.turnError : canonicalTurnError;
   if (failed && error) {
-    const summary = displayAppError(i18n.t, { code: error.code.code, params: error.params ?? {} });
-    const raw = rawObject(error.raw);
-    const data = rawObject(raw?.data);
-    const detail = stringValue(data?.details) ?? stringValue(data?.message)
-      ?? stringValue(raw?.message) ?? error.diagnostic;
-    return detail ? `${summary}\n${detail}` : summary;
+    return acpRuntimeErrorBannerCopy(i18n.t, error) ?? i18n.t('errors.acp.turn-execution-failed');
   }
   if (failed && canonicalTurnError !== undefined) {
     return runtimeErrorFallback ?? i18n.t('errors.acp.turn-execution-failed');
@@ -10531,6 +10524,7 @@ function batchAcpActivities(
     result.push({
       kind: "activityBatch",
       images: acpActivityImages(activityEvents),
+      imagesPending: activityMeta?.imagesPending === true,
       id: `activity-${activityStartSeq}`,
       seq: first.startedSeq ?? first.seq,
       timestamp: first.startedAt ?? first.timestamp,

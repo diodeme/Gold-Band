@@ -85,7 +85,17 @@ pub struct RetryPolicy {
 }
 ```
 
-`diagnostic` 与 `raw` 只用于日志、开发排查和错误详情，不作为前端对客文案。前端只根据 `code + params + recovery` 做文案映射和交互状态。
+`diagnostic` 与 `raw` 保留原始错误事实，后端不生成对客文案。前端根据 `code + params` 显示已有本地化摘要并保留原始详情；没有文案映射时直接展示原始诊断，不能替换成连接或认证故障猜测。交互状态只根据结构化 recovery 和 canonical lifecycle 决定，不从诊断文本反推状态。
+
+### 2026-09-09 未知异常与 ACP 错误收敛补全（已验收）
+
+- 未识别异常默认 `internal.unknown/manual/runtime-abnormal`；明确结构化阻塞保持 blocked，不自动重试未知错误。
+- prompt 执行中失败与初始化、恢复失败统一遵守失败状态和 turnError 的原子提交，不先写无原因的失败终态；保留 owner/revision 隔离。worker ref、文件变更收尾和持久化失败不能覆盖最初原因。
+- 快照写入失败返回原始结构化错误并附加持久化失败详情，不能宣称已提交终态，也不能由 Drop 改写为空原因失败。
+- 复现证据：未知异常测试得到 Blocked 而非 Manual；故障注入用目录占据快照文件位置，原错误被 os error 5 覆盖；前端原文测试分别得到 null 和附加通用失败前缀。完整模拟 ACP adapter 在 session/prompt 返回 ORIGINAL_PROMPT_FAILURE，修复前快照已有 failed 但 turnError 缺失；修复后同一测试确认快照和终态更新均包含原始原因。另覆盖 worker ref 写入失败仍保留原始错误、旧 turn 隔离、下一轮清除、明确阻塞保持 blocked。
+- 性能与过度设计评审：复用 RuntimeErrorInfo、终态 guard、现有横幅；不新增依赖、状态机或日志扫描。每次失败只处理当前错误和轻量快照，不扩大页面订阅范围。
+- 验收：Rust 完整 lib 单测串行执行 1182 项通过、3 项忽略；ACP 并行测试首次有两个既有 doctor 时限用例失败，单独串行及完整串行均通过。前端错误映射、聊天事件、实际聊天组件和 composer 状态共 165 项通过；TypeScript 检查与生产构建通过，保留既有 chunk size 和混合导入警告。共享 Cargo 增量目录曾出现缺失对象文件，最终使用 CARGO_INCREMENTAL=0 构建并测试。
+- 浏览器：iab 与连接 Chrome 均因工具初始化缺失路径不可用，按顺序降级到 agent-browser；实际 ACPChatDialog 在桌面、390px 和重新拉宽后均显示原始错误且无横向溢出，中英文界面保留相同诊断，下一轮清除旧横幅。测试页面、浏览器、1439 服务及截图已清理；未修改现场会话数据或替换已安装 EXE。磁盘完全不可写时无法保证终态落盘，返回错误明确保留原始原因与持久化失败详情，不宣称恢复成功。
 
 ## 5. 错误域
 

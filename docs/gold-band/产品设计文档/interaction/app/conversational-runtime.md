@@ -1,5 +1,11 @@
 # 会话式运行时
 
+## 2026-09-10：AI-DYNAMIC 恢复上下文边界
+
+- 显式恢复的 `dynamic_resume_override`、`parent_continue_input` 和 `parent_continue_prompt_id` 只属于入口 AI-DYNAMIC outer attempt。同一 attempt 内部重试保留上下文；工作流切换到后继节点、下一 attempt 或新 round 时，与普通 invocation 参数一起重置，不得把旧恢复 lease 或用户指令交给新的 AI-DYNAMIC。
+- `Session: new` 的新 round 独立启动；验收 `false` 只负责选择工作流失败边，不包含内部 resume 指令。过期 lease 校验继续保留，不把运行时参数泄漏归因于 Agent artifact，也不要求 Agent 修复有效产物。
+- 复用现有控制流切换和 canonical locator，不新增状态机、持久字段、缓存或依赖；重置为常数成本，减少旧输入持有，不增加历史扫描、I/O 或锁范围。
+
 ## 信息架构
 
 工具返回图片的识别、存储、过程后缩略栏与资源预算见 [ACP 工具返回图片](acp-tool-images.md)。

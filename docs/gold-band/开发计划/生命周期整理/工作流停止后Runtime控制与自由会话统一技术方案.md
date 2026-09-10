@@ -1,5 +1,13 @@
 # 工作流停止后 Runtime 控制与自由会话统一技术方案
 
+## 2026-09-10：恢复参数跨节点泄漏修复验收
+
+- 根因：`drive_from_node_with_initial_session` 在流程切换时重置了普通 invocation 参数，却持续克隆三个 AI-DYNAMIC 恢复参数。旧子节点恢复完成后，验收失败进入新 round，旧 lease 在新作用域触发 `runtime.continue-superseded`。属于已有作用域设计的实现遗漏；artifact 和工作流 `Session: new` 配置无误。
+- 在现有 transition 边界统一清空 `dynamic_resume_override`、`parent_continue_input`、`parent_continue_prompt_id`；同 attempt 重试不清空。审计确认 session mode/reference、prompt/identity/display/visibility、附件、control intent、model/permission override 和 repair 计数已有切换重置。后两项 parent 参数用于动态节点中已有子工作流的继续输入，本次一并收紧生命周期；不宣称普通动态 Worker 测试复现了该输入消费路径。
+- 最小接口测试先复现“round1 bootstrap 暂停、显式继续、验收 false、round2 paused/runtime-abnormal”，事件原因精确为 `runtime.continue-superseded`；同一测试修复后完成 success，验证新 round 使用 New 且验收/round2 不继承旧恢复 prompt ID、正文或 display。AI-DYNAMIC 集成测试 38/38、dynamic resume 单元测试 11/11 通过，包含原有子工作流恢复、lease 撤销和 completion reconciliation。
+- 现场 task-035/run-001 已备份到用户 diagnostics 的 `task-035-before-restore-1789005026`。保留原 ACP session、历史和附件，将 round2 与已接受的验收 artifacts 移入备份；run/round/验收 node 恢复 Paused、outcome 清空、pause reason 为 ProcessInterrupted，execution revision 从 56 前进至 57，artifact checkpoint 为 business-turn 且无旧 generation。通过正式状态校验和 control cursor 接口确认可继续当前验收、普通对话为 NonRuntimeControlled。本次未启动 Agent 或重发消息，未替换已安装 EXE。
+- 过度设计与性能验收：仅三个可选参数在既有切换点释放；无新抽象、依赖、查询、缓存、队列或并发机制。使用已有接口测试，无需额外 benchmark。横幅保持本次约定范围外。
+
 ## 1. 背景
 
 Gold Band 当前已经具备 Direct、固定工作流、AI-DYNAMIC、人工 check、节点结束后追问、ACP stop / continue 等多种会话入口，但“Agent 可以继续对话”和“Runtime 应继续推进工作流”仍然存在语义耦合。

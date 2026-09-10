@@ -53,6 +53,14 @@
 - 契约测试除 SchemaStore 语法校验外，还固定各模板的最小必填字段、禁止普通反馈模板重新引入维护者字段，并把提交检查项收敛为查重与敏感信息清理两项。
 
 
+## 2026-09-10 multica SKILL 双向同步补充
+
+- 与 multica 的 SKILL 同步分两条链路：**推送**（码灵 → multica）复用 daemon 心跳 ack 的 pending 待办，按待办完成「发现上报」与「导入内容上报」；**拉取**（multica → 码灵）由码灵以 PAT 调 `GET /api/skills` 系列接口主动落库。不新增独立同步通道与常驻轮询。
+- **发现上报只覆盖码灵自有全局库** `~/.gold-band/skills`。原生 agent 目录（`~/.claude/skills` 等只读来源）与项目级 SKILL 都不上报——发现列表等价于用户在「SKILL 管理 → 全局」看到的 Gold Band 自建条目；agent 原生 SKILL 的归属与生命周期由对应 agent 自己维护，不冒充码灵内容。
+- **拉取落库以目录名为本地身份**：远端展示名经最小清洗（删除 Windows 非法字符、连续空白折叠为 `-`、首尾 `-` 去除，清洗后为空回退 `skill-<id 前 8 位>`）得到目录名。覆盖既有 SKILL 时目录保持不变、只重写 `SKILL.md`（frontmatter `name` 取远端展示名，本地未知字段保留）；任一端改名后视为新 SKILL，旧条目留存为孤儿。
+- **覆盖写入以既有目录的绝对路径定位**（`directoryPath` 即身份）。远端展示名只影响 frontmatter 与卡片标题，不参与目录定位，也不触发目录改名。
+- 拉取默认不建立 agent 同步软链：码灵会话通过 system prompt catalog 注入 SKILL，不依赖软链；外部 CLI agent 的可见性由用户在卡片上手动开启「同步到 <agent>」，与本地自建 SKILL 行为一致。
+
 ---
 
 ## 一、架构总览

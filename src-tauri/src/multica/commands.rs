@@ -27,7 +27,7 @@ use crate::multica::config::{
 };
 use crate::multica::error::MulticaError;
 use crate::multica::local_skills::{
-    assemble_pulled_skill_md, multica_skill_dir_name, own_global_skill_exists,
+    assemble_pulled_skill_md, multica_skill_dir_name, own_global_skill_dir,
 };
 use crate::multica::state::{ActiveRemoteRun, SharedMulticaState};
 use crate::multica::vm::{
@@ -1319,7 +1319,7 @@ pub async fn list_multica_skills(
         .into_iter()
         .map(|s| {
             let dir_name = multica_skill_dir_name(&s.name, &s.id);
-            let exists = own_global_skill_exists(&local.global, &dir_name);
+            let exists = own_global_skill_dir(&local.global, &dir_name).is_some();
             MulticaSkillListItemVm {
                 id: s.id,
                 name: s.name,
@@ -1412,14 +1412,17 @@ pub async fn pull_multica_skills(
             results.push(skipped_result(&skill_id, &name, "multica.skill.name-collision"));
             continue;
         }
-        let exists = own_global_skill_exists(&global_metas, &dir_name);
+        // 既有目录绝对路径（None = 新建）；作为 write_instance 的 current_directory_path，
+        // 不能传裸目录名（会被当作相对路径按进程 CWD 解析 → `SKILL dir not found`）。
+        let existing_dir = own_global_skill_dir(&global_metas, &dir_name);
+        let exists = existing_dir.is_some();
 
         // ④ 落库：SKILL.md = 远端正文 + 名称/描述覆写组装（设计 §5.3）；new 建目录，
         //    exists 经 directory_path 定位既有目录（frontmatter 重写、未知字段保留）。
         let content = assemble_pulled_skill_md(&detail.name, &detail.description, &detail.content);
         let write_app = context.app();
         let write_name = if exists { detail.name.clone() } else { dir_name.clone() };
-        let write_dir: Option<String> = exists.then(|| dir_name.clone());
+        let write_dir = existing_dir;
         let write = tauri::async_runtime::spawn_blocking(move || {
             write_app.skill_manager().write_instance(
                 &write_name,

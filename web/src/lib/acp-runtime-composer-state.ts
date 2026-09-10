@@ -89,7 +89,6 @@ export function shouldTreatAcpRuntimeErrorAsFallback(
     && lifecycle?.control.mode === 'non-runtime-controlled'
     && lifecycle.runtime.pauseReason === 'runtime-abnormal'
     && !lifecycle.runtimeDisplay.blockingError
-    && lifecycle.composer.submitTarget === 'acp-prompt'
   );
 }
 

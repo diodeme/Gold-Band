@@ -1,0 +1,14 @@
+import { spawnSync } from 'node:child_process';
+import { cpSync, mkdirSync, rmSync } from 'node:fs';
+import { resolve } from 'node:path';
+const root = resolve('.');
+const output = resolve(process.env.WEBSITE_DIST ?? 'release/website');
+const siteDist = resolve('.codex-temp/site-bundle-site');
+const demoDist = resolve('.codex-temp/site-bundle-demo');
+const run = (command, env) => { const result = spawnSync(command, { cwd: root, env: { ...process.env, ...env }, shell: true, stdio: 'inherit' }); if (result.status !== 0) process.exit(result.status ?? 1); };
+rmSync(output, { recursive: true, force: true }); rmSync(siteDist, { recursive: true, force: true }); rmSync(demoDist, { recursive: true, force: true });
+const siteBase = process.env.VITE_SITE_BASE ?? '/'; const demoBase = siteBase.replace(/\/$/, '') + '/demo/';
+run('npm run site:build', { VITE_SITE_BASE: siteBase, VITE_DEMO_URL: demoBase, VITE_DOWNLOAD_URL: process.env.VITE_DOWNLOAD_URL ?? 'https://github.com/diodeme/Gold-Band/releases', SITE_DIST: siteDist });
+run('npm run demo:build', { VITE_DEMO_BASE: demoBase, DEMO_DIST: demoDist });
+mkdirSync(output, { recursive: true }); cpSync(siteDist, output, { recursive: true }); mkdirSync(resolve(output, 'demo'), { recursive: true }); cpSync(demoDist, resolve(output, 'demo'), { recursive: true });
+console.log('Static bundle ready: ' + output);

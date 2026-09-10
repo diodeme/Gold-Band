@@ -11,6 +11,7 @@ export default defineConfig(({ command, mode }) => {
   return {
   base: config.base,
   root: 'marketing/site',
+  cacheDir: 'node_modules/.vite-site',
   publicDir: '../../web/public',
   plugins: [react(), tailwindcss(), {
     name: 'workflow-recording-assets',
@@ -24,7 +25,7 @@ export default defineConfig(({ command, mode }) => {
   server: { strictPort: true },
   build: {
     target: 'safari15.4',
-    outDir: '../../.codex-temp/site-dist', emptyOutDir: true,
+    outDir: process.env.SITE_DIST || '../../.codex-temp/site-dist', emptyOutDir: true,
     rollupOptions: { input: { site: resolve('marketing/site/index.html') } },
   },
 }; });

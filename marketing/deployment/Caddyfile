@@ -1,0 +1,36 @@
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+(static_app) {
+	root * {args[0]}
+	encode gzip
+	header ?Cache-Control "no-cache"
+	@fingerprint path_regexp fingerprint ^/assets/[^/]+-[A-Za-z0-9_-]{8,}\.(js|css|woff2?|png|svg|webp)$
+	header @fingerprint Cache-Control "public, max-age=31536000, immutable"
+	@navigation {
+		not path /assets/* /media/* /data/* /theme-assets/* /agent-icons/*
+		not path_regexp extension /[^/]*\.[^/]*$
+	}
+	route @navigation {
+		try_files {path} /index.html
+	}
+	file_server
+}
+
+{$PREVIEW_ADDRESS:http://127.0.0.1:15671} {
+	bind 127.0.0.1
+	redir {$SITE_MOUNT} {$SITE_MOUNT}/ 308
+	redir {$DEMO_MOUNT} {$DEMO_MOUNT}/ 308
+	handle_path {$SITE_MOUNT}/* {
+		import static_app "{$SITE_DIST}"
+	}
+	handle_path {$DEMO_MOUNT}/* {
+		import static_app "{$DEMO_DIST}"
+	}
+	handle {
+		respond 404
+	}
+}

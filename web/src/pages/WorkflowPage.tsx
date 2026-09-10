@@ -6,7 +6,8 @@ import type { AgentRegistryVm, GraphVm, RoundSummaryVm, RunGroupVm, RunSummaryVm
 import { displayAppError, displayStatus, displayWorkflowError } from '../i18n';
 import { getAgentRegistry, getWorkflowTemplates } from '../api';
 import { GraphView } from '../components/GraphView';
-import { WorkflowEditor, parseWorkflowJson } from '../components/WorkflowEditor';
+import { WorkflowEditor } from "../components/WorkflowEditor";
+import { parseWorkflowJson } from "@/lib/workflow-validation";
 import { StatusBadge } from '../components/StatusBadge';
 import { AppCard } from '@/components/AppCard';
 import { CodeBlock, EmptyState, Metric, MetricsBar, OverflowTooltip, Page, PageHeader } from '@/components/PageScaffold';

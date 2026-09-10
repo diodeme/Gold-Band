@@ -93,6 +93,8 @@ const resources = {
         confirm: "确认",
         delete: "删除",
         operationFailed: "操作失败",
+        enabled: "已启用",
+        disabled: "已停用",
         back: "返回",
         save: "保存",
         open: "打开",
@@ -426,6 +428,7 @@ const resources = {
             },
           },
           errors: {
+            demo: { "resource-not-found": "$t(errors.demo.resource-not-found)" },
             "workspace-file": {
               "project-not-found": "当前工作空间已不存在，请返回并重新选择。",
               "path-invalid": "文件路径无效。",
@@ -451,6 +454,7 @@ const resources = {
         discardWorkflowChanges: "工作流还有未保存的修改。确定要放弃这些修改并关闭吗？",
       },
       errors: {
+        demo: { "resource-not-found": "演示中未收录此资源。" },
         "workflow-model-binding": {
           "binding-duplicate": "执行槽位 {{executionSlotId}} 存在重复模型绑定，请删除重复项后重试。",
         },
@@ -1965,6 +1969,7 @@ const resources = {
         zoomIn: "放大",
         zoomOut: "缩小",
         fitView: "适应视图",
+        focusNode: "定位当前节点",
         viewNodeDetail: "查看节点详情",
         viewSession: "查看会话",
         viewLog: "查看日志",
@@ -2578,6 +2583,8 @@ const resources = {
         confirm: "Confirm",
         delete: "Delete",
         operationFailed: "Operation failed",
+        enabled: "Enabled",
+        disabled: "Disabled",
         back: "Back",
         save: "Save",
         open: "Open",
@@ -2911,6 +2918,7 @@ const resources = {
             },
           },
           errors: {
+            demo: { "resource-not-found": "$t(errors.demo.resource-not-found)" },
             "workspace-file": {
               "project-not-found": "This workspace no longer exists. Go back and choose it again.",
               "path-invalid": "The file path is invalid.",
@@ -2936,6 +2944,7 @@ const resources = {
         discardWorkflowChanges: "This workflow has unsaved changes. Discard them and close the tab?",
       },
       errors: {
+        demo: { "resource-not-found": "This resource is not included in the demo." },
         "workflow-model-binding": {
           "binding-duplicate": "Execution slot {{executionSlotId}} has duplicate model bindings. Remove the duplicate and try again.",
         },
@@ -4496,6 +4505,7 @@ const resources = {
         zoomIn: "Zoom in",
         zoomOut: "Zoom out",
         fitView: "Fit view",
+        focusNode: "Focus current node",
         viewNodeDetail: "View node detail",
         viewSession: "View session",
         viewLog: "View log",

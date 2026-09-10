@@ -263,6 +263,11 @@ export interface FrontendErrorReportInput {
   userAgent?: string | null;
 }
 
+export interface WorkspaceFileLinkOrigin {
+  locator: TurnFileLocatorVm;
+  eventId: string;
+}
+
 export interface RuntimeApi {
   getGitCapability(projectId?: string | null): Promise<GitCapabilityVm>;
   initializeGitRepository(projectId?: string | null): Promise<GitCapabilityVm>;
@@ -465,7 +470,7 @@ export interface RuntimeApi {
   openConversationDirectoryPathInFileManager(input: ConversationDirectoryInput): Promise<void>;
   readConversationDirectoryFile(input: ConversationDirectoryInput): Promise<WorkspaceFileSnapshotVm>;
   searchWorkspaceFiles(projectId: string, query: string, requestId: string, limit: number): Promise<WorkspaceFileSearchVm>;
-  resolveWorkspaceFileLink(projectId: string, rawHref: string, baseCanonicalPath?: string | null): Promise<ResolvedWorkspaceFileLinkVm>;
+  resolveWorkspaceFileLink(projectId: string, rawHref: string, baseCanonicalPath?: string | null, origin?: WorkspaceFileLinkOrigin): Promise<ResolvedWorkspaceFileLinkVm>;
   readFileResource(projectId: string, canonicalPath: string, externalAccessToken?: string | null, preferSource?: boolean): Promise<WorkspaceFileSnapshotVm>;
   resolveMarkdownImage(input: ResolveMarkdownImageInput): Promise<MarkdownImagePreviewVm>;
   writeFileResource(input: WriteFileResourceInput): Promise<FileRevisionVm>;

@@ -12,6 +12,6 @@ export default defineConfig({
   build: {
     target: 'safari15.4',
     outDir: '../../.codex-temp/site-dist', emptyOutDir: true,
-    rollupOptions: { input: { site: resolve('marketing/site/index.html'), preview: resolve('marketing/site/preview.html') } },
+    rollupOptions: { input: resolve('marketing/site/index.html') },
   },
 });

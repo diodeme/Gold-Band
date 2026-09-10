@@ -38,6 +38,15 @@ async function loadMarkdownPreviewContract() {
 }
 
 describe('Markdown preview DOM contract', () => {
+  it('opens a readonly link when its text is clicked', async () => {
+    const onLinkClick = vi.fn();
+    const view = createView('[Open notes](notes.md#L3)', [await loadMarkdownLanguageExtension(),
+      ...await loadMarkdownPreviewExtensions(onLinkClick, true, true), EditorState.readOnly.of(true), EditorView.editable.of(false)]);
+    const link = view.dom.querySelector('.cm-atomic-link > span');
+    expect(link).not.toBeNull();
+    link!.dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0 }));
+    expect(onLinkClick).toHaveBeenCalledWith('notes.md#L3');
+  });
   it('renders a normal GFM table from the real long-form todo document shape', async () => {
     const { languageExtension, previewExtensions } = await loadMarkdownPreviewContract();
     const todo = readFileSync('docs/gold-band/开发计划/功能点todo列表.md', 'utf8');

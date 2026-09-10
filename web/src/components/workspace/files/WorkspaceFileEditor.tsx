@@ -388,7 +388,7 @@ export function WorkspaceFileEditor({
       setMarkdownPreviewProfile(null);
       return () => { active = false; };
     }
-    void loadMarkdownPreviewExtensions(routeMarkdownLink, !markdownHasTableImages).then((extensions) => {
+    void loadMarkdownPreviewExtensions(routeMarkdownLink, !markdownHasTableImages, !editable).then((extensions) => {
       if (active) {
         setMarkdownPreviewProfile((current) => ({
           revision: (current?.revision ?? 0) + 1,
@@ -397,7 +397,7 @@ export function WorkspaceFileEditor({
       }
     });
     return () => { active = false; };
-  }, [markdownHasTableImages, markdownLivePreviewAvailable, markdownMode === null, routeMarkdownLink]);
+  }, [editable, markdownHasTableImages, markdownLivePreviewAvailable, markdownMode === null, routeMarkdownLink]);
 
   const previewMode = markdownMode === 'live-preview' && markdownLivePreviewAvailable;
   const desiredEditorMode: MarkdownEditorMode = previewMode && markdownPreviewProfile ? 'live-preview' : 'source';

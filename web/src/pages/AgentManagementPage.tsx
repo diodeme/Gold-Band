@@ -13,7 +13,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from '@/components/ui/command';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { AlertTriangle, Bot, CheckCircle2, CircleHelp, ImagePlus, LoaderCircle, Pencil, Plus, RefreshCw, RotateCcw, Split, Stethoscope, Trash2 } from 'lucide-react';
@@ -423,7 +423,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
         if (!open) setEditor(closeAgentEditorState);
       }}>
         <SheetContent showOverlay={agentEditorSheetPresentation.showOverlay} className="gap-0 overflow-hidden" resizeStorageKey="agent-management/editor" defaultSize={720} minSize={520} maxSize={960}>
-          <SheetHeader className="border-b border-border/60 px-6 py-4">
+          <SheetHeader className="shrink-0 border-b border-border/60 px-6 py-4">
             <SheetTitle>{editor.context.mode === 'create' ? t('agentManagement.createTitle') : t('agentManagement.editTitle')}</SheetTitle>
             <SheetDescription>{editor.context.mode === 'create' ? t('agentManagement.createDescription') : t('agentManagement.editDescription')}</SheetDescription>
           </SheetHeader>
@@ -572,11 +572,11 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
               />
             </Field>
             {error ? <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">{error}</div> : null}
-            <div className="flex justify-end gap-2 pt-1">
+          </div>
+          <SheetFooter className="shrink-0 flex-row justify-end border-t border-border/60 px-6 py-4">
               <Button variant="outline" onClick={() => setEditor(closeAgentEditorState)}>{t('common.close')}</Button>
               <Button title={readOnly ? t('demo.saveDisabled') : undefined} disabled={readOnly || saving || !editor.selectedType.trim() || !editor.form.displayName.trim() || !editor.form.command.trim() || !hasFormChanges} onClick={() => void submit()}>{t('common.save')}</Button>
-            </div>
-          </div>
+          </SheetFooter>
         </SheetContent>
       </Sheet>
 

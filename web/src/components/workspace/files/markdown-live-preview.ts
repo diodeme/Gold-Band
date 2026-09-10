@@ -31,9 +31,11 @@ export async function loadMarkdownLanguageExtension(): Promise<Extension> {
 export async function loadMarkdownPreviewExtensions(
   onLinkClick: (href: string) => void,
   enableTables: boolean,
+  readOnly = false,
 ): Promise<Extension[]> {
   const atomic = await import('@atomic-editor/editor');
   return [
+    atomic.readOnlyExtension(readOnly),
     atomic.atomicMarkdownSyntax,
     ...(enableTables ? [atomic.tables({ onLinkClick })] : []),
     atomic.inlinePreview({ onLinkClick }),

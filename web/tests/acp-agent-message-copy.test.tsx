@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ACPMessageList } from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { MarkdownResourceLinkProvider } from '@/components/prompt-kit/markdown';
 import type { AcpUiEventVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -68,6 +69,23 @@ async function renderTimeline(
 }
 
 describe('completed Agent message Markdown copy action', () => {
+  it('carries the full branch and message origin on file clicks while copying the original Markdown', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const openLocalFile = vi.fn();
+    const branchLocator = { projectId: 'project', taskId: 'task', runId: 'run', roundId: 'round', nodeId: 'node', attemptId: 'attempt', branchId: 'child', outerNodeId: 'outer', outerAttemptId: 'outer-attempt' };
+    const markdown = '[Source](/E:/source/main.rs:2)';
+    try {
+      await act(async () => root.render(<TooltipProvider><MarkdownResourceLinkProvider handler={{ openLocalFile }}>
+        <ACPMessageList branchLocator={branchLocator} timeline={[event({ content: markdown })]} sessionStatus="completed" sending={false} />
+      </MarkdownResourceLinkProvider></TooltipProvider>));
+      await act(async () => container.querySelector<HTMLAnchorElement>('a')!.click());
+      expect(openLocalFile).toHaveBeenCalledWith('/E:/source/main.rs:2', undefined, { locator: branchLocator, eventId: 'assistant-message' });
+      await act(async () => container.querySelector<HTMLButtonElement>('[data-agent-message-copy="true"]')!.click());
+      expect(writeText).toHaveBeenCalledWith(markdown);
+    } finally { await act(async () => root.unmount()); }
+  });
   it('copies the canonical Markdown source and shows local success feedback', async () => {
     const markdown = '# 原始标题\n\n**加粗正文**';
     const { container, root } = await renderTimeline([event({ content: markdown })]);

@@ -16,6 +16,22 @@ afterEach(() => {
 });
 
 describe('Markdown local file link routing', () => {
+  it('passes the message origin with a local file click without rewriting its content', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const openLocalFile = vi.fn();
+    const resourceOrigin = { locator: { projectId: 'project', taskId: 'task', runId: 'run', roundId: 'round', nodeId: 'node', attemptId: 'attempt', branchId: 'root', outerNodeId: 'outer', outerAttemptId: 'outer-attempt' }, eventId: 'message' };
+    try {
+      await act(async () => root.render(<MarkdownResourceLinkProvider handler={{ openLocalFile }}>
+        <Markdown resourceOrigin={resourceOrigin}>{'[Source](/E:/source/main.rs:2)'}</Markdown>
+      </MarkdownResourceLinkProvider>));
+      const link = container.querySelector('a')!;
+      await act(async () => link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })));
+      expect(openLocalFile).toHaveBeenCalledWith('/E:/source/main.rs:2', undefined, resourceOrigin);
+      expect(link.textContent).toBe('Source:2');
+    } finally { await act(async () => root.unmount()); }
+  });
   it('routes a local path to the workspace handler without opening a new browser target', async () => {
     const container = document.createElement('div');
     document.body.append(container);

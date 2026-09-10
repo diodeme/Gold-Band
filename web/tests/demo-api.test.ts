@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createDemoApi } from '../../marketing/demo/api';
 import { DEMO_PREFERENCES_KEY } from '../../marketing/demo/preferences';
 import { browserApi } from '../src/api/browser';
@@ -7,6 +7,60 @@ import { mcpAgentSupportStatus } from '../src/lib/mcp-agent-compatibility';
 import { configuredSkillAgents, skillSourceAgents } from '../src/lib/skill-agent-display';
 
 describe('public demo runtime', () => {
+  it('rejects an unknown future operation without falling through to a desktop adapter', async () => {
+    const api = createDemoApi();
+    const operation = 'unimplementedFutureOperation';
+    await expect(Reflect.apply(Reflect.get(api, operation), api, [])).rejects.toMatchObject({
+      code: 'demo.operation-unavailable', params: { operation },
+    });
+  });
+  it('does not project preset workspace files or Git facts into a different project', async () => {
+    const api = createDemoApi();
+    for (const operation of ['listWorkspaceDirectory', 'searchWorkspaceFiles', 'getGitCapability', 'getGitHubCapability',
+      'getSourceControlSnapshot', 'getGitHistory', 'getGitCommitDetail', 'getGitCommitReview',
+      'getGitCommitReachability', 'getGitComparison', 'getGitBranchPickerSnapshot'] as const) {
+      await expect(Reflect.apply(api[operation], api, ['source'])).rejects.toMatchObject({ code: 'demo.resource-not-found' });
+    }
+    expect((await api.listWorkspaceDirectory('default', '')).some(entry => entry.name === 'README.md')).toBe(true);
+    expect((await api.searchWorkspaceFiles('default', 'README', 'request', 20)).entries.length).toBeGreaterThan(0);
+    expect((await api.getGitCapability()).status).toBe('ready');
+    expect((await api.getSourceControlSnapshot('default')).repository.projectId).toBe('default');
+  });
+  it('opens web references through the browser without enabling system protocols or business writes', async () => {
+    const open = vi.fn();
+    vi.stubGlobal('window', { open });
+    try {
+      const api = createDemoApi();
+      await expect(api.openExternalUrl('https://example.com/docs#overview')).resolves.toBeUndefined();
+      expect(open).toHaveBeenCalledWith('https://example.com/docs#overview', '_blank', 'noopener,noreferrer');
+      await api.openExternalUrl('http://example.com/guide');
+      expect(open).toHaveBeenCalledTimes(2);
+      for (const href of ['javascript:alert(1)', 'data:text/html,test', 'file:///C:/private.txt', 'mailto:test@example.com', 'tel:123', '//example.com', '/docs', 'https://', 'https://user:password@example.com']) {
+        await expect(api.openExternalUrl(href)).rejects.toMatchObject({ code: 'demo.operation-unavailable' });
+      }
+      await expect(api.openFileWithSystemApp('C:/private.txt')).rejects.toMatchObject({ code: 'demo.operation-unavailable' });
+      expect(open).toHaveBeenCalledTimes(2);
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it('matches tool details by session and event identity and validates raw frame locators', async () => {
+    const api = createDemoApi();
+    const args = ['default', 'mock-task', DEMO_RUN_ID, 'round-001', 'dev', 'attempt-001'] as const;
+    const session = (await api.getAcpSession(...args))!;
+    const event = session.events.find(event => event.kind === 'toolCall')!;
+    const query = { branchId: 'root', sessionId: session.sessionId!, eventId: event.id };
+    expect((await api.getAcpToolDetail(...args, { ...query, eventId: 'missing' })).event).toBeNull();
+    await expect(api.getAcpToolDetail(...args, { ...query, sessionId: 'wrong' })).rejects.toMatchObject({ code: 'demo.resource-not-found' });
+    expect((await api.getAcpToolDetail(...args, query)).event?.id).toBe(event.id);
+  });
+  it('validates raw frame locators before returning empty preset data', async () => {
+    await expect(createDemoApi().getAcpRawFrames('wrong', 'mock-task', DEMO_RUN_ID, 'round-001', 'dev', 'attempt-001')).rejects.toMatchObject({ code: 'demo.resource-not-found' });
+  });
+  it('rejects outer and branch locators that do not belong to preset sessions', async () => {
+    const api = createDemoApi();
+    const args = ['default', 'mock-task', DEMO_RUN_ID, 'round-001', 'dev', 'attempt-001'] as const;
+    await expect(api.getAcpSession(...args, { branchId: 'missing' })).rejects.toMatchObject({ code: 'demo.resource-not-found' });
+    await expect(api.getAcpSession(...args, {}, null, 'outer', 'outer-attempt')).rejects.toMatchObject({ code: 'demo.resource-not-found' });
+  });
   it('exposes multiple workflow runs and rounds without crossing session identities', async () => {
     const api = createDemoApi();
     const row = demoSidebar('en').tasksByWorkspace.default.find((task) => task.taskId === 'demo-review')!;

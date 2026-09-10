@@ -11,7 +11,8 @@ import {
   updateAcpConfigOptionOverride,
 } from '@/components/acp/AcpModelThoughtSelects';
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
-import { WorkflowEditor, validateWorkflowForSave } from '@/components/WorkflowEditor';
+import { WorkflowEditor } from "@/components/WorkflowEditor";
+import { validateWorkflowForSave } from "@/lib/workflow-validation";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';

@@ -770,8 +770,10 @@ export function searchWorkspaceFiles(projectId: string, query: string, requestId
   return getRuntimeApi().searchWorkspaceFiles(projectId, query, requestId, limit);
 }
 
-export function resolveWorkspaceFileLink(projectId: string, rawHref: string, baseCanonicalPath?: string | null) {
-  return getRuntimeApi().resolveWorkspaceFileLink(projectId, rawHref, baseCanonicalPath);
+export function resolveWorkspaceFileLink(projectId: string, rawHref: string, baseCanonicalPath?: string | null, origin?: import('./api/client').WorkspaceFileLinkOrigin) {
+  return origin
+    ? getRuntimeApi().resolveWorkspaceFileLink(projectId, rawHref, baseCanonicalPath, origin)
+    : getRuntimeApi().resolveWorkspaceFileLink(projectId, rawHref, baseCanonicalPath);
 }
 
 export function readFileResource(projectId: string, canonicalPath: string, externalAccessToken?: string | null, preferSource = false) {

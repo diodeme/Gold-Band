@@ -2,17 +2,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { getSmoothStepPath, Position } from '@xyflow/react';
-import {
-  createAuthoringFlowProjection,
-  createAuthoringGraphLayout,
-  mergeBufferedNodePatches,
-  nodeSupportsFailureOutcome,
-  recordWorkflowHistory,
-  redoWorkflowHistory,
-  removeTerminalFromWorkflow,
-  undoWorkflowHistory,
-  validateWorkflowForSave,
-} from '@/components/WorkflowEditor';
+import { createAuthoringFlowProjection, createAuthoringGraphLayout, mergeBufferedNodePatches, recordWorkflowHistory, redoWorkflowHistory, removeTerminalFromWorkflow, undoWorkflowHistory } from "@/components/WorkflowEditor";
+import { nodeSupportsFailureOutcome, validateWorkflowForSave } from "@/lib/workflow-validation";
 import type { WorkflowDsl, WorkflowWorkerNodeDsl } from '@/types';
 import { readyWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
 import {

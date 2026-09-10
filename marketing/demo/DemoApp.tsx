@@ -15,9 +15,11 @@ import { Languages } from 'lucide-react';
 import { ConversationComposerDraftBoundary } from '@/components/conversation/ConversationComposerDraftBoundary';
 import { DemoFrame } from './DemoFrame';
 import { demoAgentRegistry, demoProfiles, demoWorkflowTemplates } from './catalog';
-import { browserApi } from './runtime';
+import { browserApi, demoArchive } from './runtime';
+import type { ArchiveCatalog } from './archive';
+import { withArchiveSidebar } from './archive-run';
 import { demoSidebar, demoTitle, DEMO_TASKS, DEMO_PROJECT_ID } from './fixtures';
-import { demoPageFromHash, demoLinkParameters, demoRunModeFromHash } from './routes';
+import { demoPageFromHash, demoLinkParameters, demoRunModeFromHash, demoSessionLink, selectDemoSession } from './routes';
 
 const ContextManagementPage = lazy(() => import('@/pages/ContextManagementPage').then((m) => ({ default: m.ContextManagementPage })));
 const SettingsPage = lazy(() => import('@/pages/SettingsPage').then((m) => ({ default: m.SettingsPage })));
@@ -47,7 +49,16 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
   const clientRef = useRef<HTMLDivElement>(null);
   const [runMode, setRunMode] = useState<ConversationRunModeVm>(() => demoRunModeFromHash(location.hash));
   const [store] = useState(() => new ConversationWorkspaceStore());
-  const sidebar = useMemo(() => ({ ...demoSidebar(preferences.language), preferences: layoutPreferences }), [preferences.language, layoutPreferences]);
+  const [archive, setArchive] = useState<ArchiveCatalog | null>(null);
+  useEffect(() => {
+    let active = true;
+    void demoArchive?.catalog().then(value => { if (active) setArchive(value); }).catch(() => {});
+    return () => { active = false; };
+  }, []);
+  const sidebar = useMemo(() => {
+    const base = { ...demoSidebar(preferences.language), preferences: layoutPreferences };
+    return archive ? withArchiveSidebar(base, archive) : base;
+  }, [preferences.language, layoutPreferences, archive]);
   useEffect(() => {
     const changed = () => {
       setPage(pageFromHash());
@@ -56,7 +67,8 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
       const mode = params.get('mode');
       const template = params.get('template');
       if (mode === 'auto' || mode === 'workflow' || mode === 'direct' || template) {
-        setRunMode(demoRunModeFromHash(location.hash));
+        const nextHash = location.hash;
+        setRunMode(current => demoRunModeFromHash(nextHash, current));
       }
     };
     window.addEventListener('hashchange', changed);
@@ -64,8 +76,8 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
   }, []);
   function navigate(next: ConversationPage) {
     const hash = next.kind === 'conversation-run' ? next.taskId : next.kind;
-    if (![...DEMO_TASKS, 'contexts', 'settings', 'run-mode-management', 'agents', 'conversation-home', 'multica-tasks', 'scheduled-tasks', 'scheduled-task-create', 'scheduled-task-detail'].includes(hash)) return;
-    location.hash = next.kind === 'conversation-run' ? `${hash}?${new URLSearchParams({ run: next.runId })}` : next.kind === 'scheduled-task-detail' ? `${hash}?${new URLSearchParams({ id: next.scheduledTaskId })}` : hash;
+    if (next.kind !== 'conversation-run' && ![...DEMO_TASKS, 'contexts', 'settings', 'run-mode-management', 'agents', 'conversation-home', 'multica-tasks', 'scheduled-tasks', 'scheduled-task-create', 'scheduled-task-detail'].includes(hash)) return;
+    location.hash = next.kind === 'conversation-run' ? `${hash}?${new URLSearchParams({ project: next.projectId ?? DEMO_PROJECT_ID, run: next.runId })}` : next.kind === 'scheduled-task-detail' ? `${hash}?${new URLSearchParams({ id: next.scheduledTaskId })}` : hash;
     setPage(pageFromHash());
     setNavigationOpen(false);
   }
@@ -94,7 +106,7 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
       onPinTask={noop} onUnpinTask={noop} onRenameTask={noop} onDeleteTask={noop}
       onNewConversationInWorkspace={noop} onRetryBootstrap={noop} onRequestWorkspaceTasks={noop}
       onRequestPinnedTasks={noop} onRequestTaskRuns={noop}
-      activeWorkspaceId={DEMO_PROJECT_ID} defaultExpandedWorkspaceId={DEMO_PROJECT_ID}
+      activeWorkspaceId={page.kind === 'conversation-run' ? page.projectId : DEMO_PROJECT_ID} defaultExpandedWorkspaceId={page.kind === 'conversation-run' ? page.projectId : DEMO_PROJECT_ID}
       conversationTaskUuid={page.kind === 'conversation-run' ? `demo-${page.taskId}` : null}
       conversationWorkspaceStore={store}
       sourceControlWorkspacePath="/default"
@@ -131,7 +143,7 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
             onSaveWallpaperOpacity={unusedAction} onRestoreThemeWallpaper={unusedAction}
             onSaveUpdaterSettings={unusedAction} onCheckUpdate={unusedAction} onInstallUpdate={async () => {}}
             onViewSettings={noop} onViewAdvanced={noop}
-          /> : page.kind === 'conversation-run' ? <DemoConversation key={`${page.taskId}:${page.runId}:${preferences.language}`} taskId={page.taskId} runId={page.runId} roundId={linkParameters.get('round')} nodeId={linkParameters.get('node')} bootstrap={bootstrap} language={preferences.language} /> : null}
+          /> : page.kind === 'conversation-run' ? <DemoConversation key={`${hash}:${preferences.language}`} projectId={page.projectId ?? DEMO_PROJECT_ID} taskId={page.taskId} runId={page.runId} parameters={linkParameters} bootstrap={bootstrap} language={preferences.language} title={archive?.projectId === page.projectId && archive.task.id === page.taskId ? archive.task.title : undefined} /> : null}
       </Suspense>
     </WorkspaceShell></ConversationComposerDraftBoundary>
     </DemoFrame>
@@ -147,7 +159,7 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
   </AvatarPreferencesProvider>;
 }
 
-function DemoConversation({ taskId, runId, roundId, nodeId, bootstrap, language }: { taskId: string; runId: string; roundId: string | null; nodeId: string | null; bootstrap: AppBootstrapVm; language: PreferencesVm['language'] }) {
+function DemoConversation({ projectId, taskId, runId, parameters, bootstrap, language, title }: { projectId: string; taskId: string; runId: string; parameters: URLSearchParams; bootstrap: AppBootstrapVm; language: PreferencesVm['language']; title?: string }) {
   const { t } = useTranslation();
   const [run, setRun] = useState<ConversationRunVm | null>(null);
   const [failed, setFailed] = useState(false);
@@ -155,19 +167,17 @@ function DemoConversation({ taskId, runId, roundId, nodeId, bootstrap, language 
     let active = true;
     setRun(null);
     setFailed(false);
-    browserApi.getConversationRun(DEMO_PROJECT_ID, taskId, runId).then(async (next) => {
-      const selectedRound = next.sessionTree.rounds.find((round) => round.roundId === roundId) ?? next.sessionTree.rounds.at(-1)!;
-      const leaf = selectedRound.nodes.flatMap((node) => node.attempts).find((leaf) => leaf.nodeId === (nodeId ?? next.selectedSession?.nodeId));
-      if (leaf) {
-        next.selectedSession = await browserApi.getAcpSession(DEMO_PROJECT_ID, taskId, runId, leaf.roundId, leaf.nodeId, leaf.attemptId);
-        next.sessionTree.selectedSessionKey = `${leaf.roundId}/${leaf.nodeId}/${leaf.attemptId}`;
-      }
+    browserApi.getConversationRun(projectId, taskId, runId).then(async (next) => {
+      const leaf = selectDemoSession(next, parameters);
+      next.selectedSession = await browserApi.getAcpSession(projectId, taskId, runId, leaf.roundId, leaf.nodeId, leaf.attemptId,
+        { branchId: parameters.get('branch') ?? 'root' }, null, leaf.outerNodeId, leaf.outerAttemptId);
+      next.sessionTree.selectedSessionKey = [leaf.roundId, leaf.outerNodeId, leaf.outerAttemptId, leaf.nodeId, leaf.attemptId].filter(Boolean).join('/');
       if (active) setRun(next);
     }).catch(() => { if (active) setFailed(true); });
     return () => { active = false; };
-  }, [taskId, runId, roundId, nodeId]);
-  if (!run) return <div className="p-5 text-sm text-muted-foreground">{t(failed ? 'common.error' : 'common.loading')}</div>;
-  return <ConversationRunPage run={run} taskTitle={demoTitle(taskId, language)} appConfig={bootstrap.appConfig}
-    agentRegistry={demoAgentRegistry} onRerun={noop} onEditWorkflow={noop} onSelectSession={(leaf) => { location.hash = `${taskId}?${new URLSearchParams({ run: runId, round: leaf.roundId, node: leaf.nodeId })}`; }}
+  }, [projectId, taskId, runId, parameters]);
+  if (!run) return <div role={failed ? 'alert' : 'status'} className="p-5 text-sm text-muted-foreground">{t(failed ? 'common.operationFailed' : 'common.loading')}</div>;
+  return <ConversationRunPage run={run} taskTitle={title ?? (projectId === DEMO_PROJECT_ID ? demoTitle(taskId, language) : taskId)} appConfig={bootstrap.appConfig}
+    agentRegistry={demoAgentRegistry} onRerun={noop} onEditWorkflow={noop} onSelectSession={(leaf) => { location.hash = demoSessionLink(projectId, taskId, runId, leaf); }}
     followMode="manual" initialSessionTreeExpansion={emptyExpansion} onSessionTreeExpansionChange={noop} />;
 }

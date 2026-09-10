@@ -358,6 +358,36 @@ describe('FileContentStore autosave contract', () => {
 });
 
 describe('FileContentStore Markdown runtime contract', () => {
+  it('adopts an already read snapshot without IO and prevents edits', async () => {
+    const store = new FileContentStore();
+    store.adoptReadonlySnapshot(resource, snapshot('captured'));
+    expect(api.readFileResource).not.toHaveBeenCalled();
+    store.updateText(resource.key, 'changed');
+    await store.flush(resource.key);
+    expect(store.snapshot(resource.key).snapshot).toMatchObject({ content: 'captured', editable: false });
+    expect(api.writeFileResource).not.toHaveBeenCalled();
+    await store.release(resource.key);
+  });
+  it('rejects a late image grant after the same document is released and loaded again', async () => {
+    const store = new FileContentStore();
+    let resolveOld!: (value: unknown) => void;
+    const old = new Promise(resolve => { resolveOld = resolve; });
+    const image = (token: string) => ({ kind: 'ready', canonicalPath: 'D:/repo/image.png', width: 10, height: 10, mimeType: 'image/png', animated: false,
+      previewGrant: { token, expiresAtMs: String(Date.now() + 300_000) } });
+    api.resolveMarkdownImage.mockReturnValueOnce(old).mockResolvedValueOnce(image('current'));
+    await store.load(resource);
+    const pending = store.syncMarkdownImages(resource.key, ['image.png']);
+    await Promise.resolve();
+    expect(api.resolveMarkdownImage).toHaveBeenCalledTimes(1);
+    await store.release(resource.key);
+    await store.load(resource);
+    await store.syncMarkdownImages(resource.key, ['image.png']);
+    resolveOld(image('obsolete'));
+    await pending;
+    expect(store.markdownImages(resource.key).get('image.png')).toMatchObject({ previewGrant: { token: 'current' } });
+    expect(api.releaseWorkspaceFilePreview).toHaveBeenCalledWith('obsolete');
+    await store.release(resource.key);
+  });
   const markdownResource: FileWorkspaceResource = {
     ...resource,
     key: 'file:project-1:D:/repo/readme.md',

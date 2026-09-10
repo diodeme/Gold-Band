@@ -1,4 +1,16 @@
-import type { ConversationRunVm, ConversationSessionLeafVm, ConversationSessionTreeVm, GraphNodeVm } from '../types';
+import type { AcpSessionVm, ConversationRunVm, ConversationSessionLeafVm, ConversationSessionTreeVm, GraphNodeVm, GraphVm } from '../types';
+
+export function runtimeGraphNodeForSession(
+  graph: GraphVm,
+  session: Pick<AcpSessionVm, 'nodeId' | 'attemptId' | 'outerNodeId' | 'outerAttemptId'> | null | undefined,
+): GraphNodeVm | null {
+  if (!session?.nodeId) return null;
+  const matches = graph.nodes.filter(node => node.nodeId === session.nodeId
+    && (!node.attemptId || node.attemptId === session.attemptId)
+    && (node.outerNodeId ?? null) === (session.outerNodeId ?? null)
+    && (node.outerAttemptId ?? null) === (session.outerAttemptId ?? null));
+  return matches.length === 1 ? matches[0] : null;
+}
 
 type RuntimeWorkflowRun = Pick<ConversationRunVm, 'runMode' | 'workflowGraph'>;
 type RuntimeWorkflowLeaf = Pick<ConversationSessionLeafVm, 'outerNodeId' | 'outerAttemptId'>;

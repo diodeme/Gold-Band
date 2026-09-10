@@ -1,5 +1,5 @@
 {
   "extends": "../../web/tsconfig.json",
   "include": ["*.ts", "*.tsx", "../../web/src/vite-env.d.ts"],
-  "exclude": ["vite.config.ts"]
+  "exclude": ["*.vite.config.ts", "vite.config.ts"]
 }

@@ -1,0 +1,24 @@
+{
+  "files": [
+    {
+      "path": "src/config.json",
+      "before": "{\n  \"workspace\": \"default\",\n  \"captureFileChanges\": false\n}\n",
+      "after": {
+        "zh": "{\n  \"workspace\": \"default\",\n  \"captureFileChanges\": true\n}\n",
+        "en": "{\n  \"workspace\": \"default\",\n  \"captureFileChanges\": true\n}\n"
+      }
+    },
+    {
+      "path": "docs/workspace-notes.md",
+      "before": null,
+      "after": {
+        "zh": "# 工作区说明\n\n- 每轮会话保留文件变更快照。\n- 审阅 Diff 后再提交修改。\n",
+        "en": "# Workspace notes\n\n- Keep file snapshots for every turn.\n- Review the diff before committing.\n"
+      }
+    }
+  ],
+  "report": {
+    "zh": "# 工作区更新报告\n\n## 验收结果\n\n- 文件快照已启用。\n- 工作区说明已补齐。\n\n## 变更文件\n\n- src/config.json\n- docs/workspace-notes.md\n",
+    "en": "# Workspace update report\n\n## Acceptance\n\n- File snapshots enabled.\n- Workspace guide added.\n\n## Changed files\n\n- src/config.json\n- docs/workspace-notes.md\n"
+  }
+}

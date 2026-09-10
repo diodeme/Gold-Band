@@ -1,3 +1,4 @@
+import { END_NODE, ENTRY_NODE, NEW_ROUND_NODE, isBackwardEdge, workflowSuccessTopologyOrder } from '@/lib/workflow-validation';
 /**
  * Shared workflow graph layout primitives used by both WorkflowEditor and GraphView.
  * Both authoring (editable) and runtime (read-only) graphs use the same
@@ -30,24 +31,6 @@ export const LAYOUT_MARGIN_Y = 120;
 export const WORKFLOW_EDGE_LABEL_WIDTH = 68;
 export const WORKFLOW_EDGE_LABEL_HEIGHT = 24;
 export const WORKFLOW_EDGE_LABEL_GAP = 8;
-
-// ── Terminal sentinel IDs ─────────────────────────────────────────────────
-export const END_NODE = '$end';
-export const ENTRY_NODE = '$entry';
-export const NEW_ROUND_NODE = '$new-round';
-
-// ── Branch routing helpers ────────────────────────────────────────────────
-
-/** Determine whether a non-success edge goes backward in node order. */
-export function isBackwardEdge(
-  from: string,
-  to: string,
-  nodeOrder: Map<string, number>,
-): boolean {
-  const s = nodeOrder.get(from);
-  const t = nodeOrder.get(to);
-  return s !== undefined && t !== undefined && t < s;
-}
 
 // ── Success-edge-only dagre layout ────────────────────────────────────────
 
@@ -414,55 +397,6 @@ export function collectAuthoringNodes(workflow: WorkflowDsl): AuthoringNodeInfo[
 /** Node order map from workflow.nodes array index. */
 export function workflowNodeOrder(workflow: WorkflowDsl): Map<string, number> {
   return new Map(workflow.nodes.map((n, i) => [n.id, i]));
-}
-
-/** Node order derived from the authoring graph's success path instead of array append order. */
-export function workflowSuccessTopologyOrder(workflow: Pick<WorkflowDsl, 'entry' | 'nodes' | 'edges'>): Map<string, number> {
-  const nodeIds = workflow.nodes.map((node) => node.id).filter(Boolean);
-  const nodeIdSet = new Set(nodeIds);
-  const adjacency = new Map<string, string[]>();
-  const indegree = new Map<string, number>();
-
-  nodeIds.forEach((id) => {
-    adjacency.set(id, []);
-    indegree.set(id, 0);
-  });
-
-  workflow.edges.forEach((edge) => {
-    if (edge.on !== 'success') return;
-    if (!nodeIdSet.has(edge.from) || !nodeIdSet.has(edge.to)) return;
-    adjacency.get(edge.from)?.push(edge.to);
-    indegree.set(edge.to, (indegree.get(edge.to) ?? 0) + 1);
-  });
-
-  const queued = new Set<string>();
-  const queue: string[] = [];
-  const pushRoot = (id: string) => {
-    if (!nodeIdSet.has(id) || queued.has(id)) return;
-    queued.add(id);
-    queue.push(id);
-  };
-
-  pushRoot(workflow.entry);
-  nodeIds.forEach((id) => {
-    if ((indegree.get(id) ?? 0) === 0) pushRoot(id);
-  });
-
-  const ordered: string[] = [];
-  while (queue.length > 0) {
-    const id = queue.shift()!;
-    ordered.push(id);
-    adjacency.get(id)?.forEach((nextId) => {
-      indegree.set(nextId, (indegree.get(nextId) ?? 0) - 1);
-      if ((indegree.get(nextId) ?? 0) === 0) pushRoot(nextId);
-    });
-  }
-
-  nodeIds.forEach((id) => {
-    if (!queued.has(id)) ordered.push(id);
-  });
-
-  return new Map(ordered.map((id, index) => [id, index]));
 }
 
 /** Edge color CSS variable for authoring edges. */

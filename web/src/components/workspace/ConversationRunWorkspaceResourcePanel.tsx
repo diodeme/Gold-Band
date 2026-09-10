@@ -1,17 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { getAcpRawFrames, getAcpSession, getAgentRegistry, getWorkflow } from '@/api';
 import { RawFrameViewer, SystemPromptPanel } from '@/components/acp/ACPChatDialog';
 import { resolveGoldBandHiddenSection } from '@/components/acp/hiddenPromptSections';
-import { GraphView } from '@/components/GraphView';
 import { StatusBadge } from '@/components/StatusBadge';
-import { WorkflowEditor, parseWorkflowJson, type WorkflowEditorSessionDraft } from '@/components/WorkflowEditor';
+import type { WorkflowEditorSessionDraft } from '@/components/WorkflowEditor';
+import type { GraphReadingPosition } from '@/components/GraphView';
+import { parseWorkflowJson } from "@/lib/workflow-validation";
 import { BoundedLruCache } from '@/lib/bounded-lru-cache';
 import { displayAppError } from '@/i18n';
 import { goldThemedScrollbarClassName } from '@/lib/themed-scrollbar';
 import { workflowEditorSessionDraftIsDirty } from '@/lib/workflow-editor-session-draft';
 import { useWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
+import { runtimeGraphNodeForSession } from '@/lib/conversation-runtime-workflow';
 import type {
   AcpRawFramePageVm,
   AcpRawFrameQueryInput,
@@ -23,6 +25,7 @@ import type {
   WorkflowVm,
 } from '@/types';
 import {
+  useRightWorkspaceCommands,
   type RawFramesWorkspaceResource,
   type RightWorkspaceResource,
   type HiddenPromptSectionWorkspaceResource,
@@ -30,6 +33,9 @@ import {
   type WorkflowEditWorkspaceResource,
   type WorkflowViewWorkspaceResource,
 } from './right-workspace-context';
+
+const GraphView = lazy(() => import('@/components/GraphView').then(module => ({ default: module.GraphView })));
+const WorkflowEditor = lazy(() => import('@/components/WorkflowEditor').then(module => ({ default: module.WorkflowEditor })));
 
 type ConversationRunWorkspaceResource =
   | WorkflowViewWorkspaceResource
@@ -54,16 +60,16 @@ export function ConversationRunWorkspaceResourcePanel({
   onNodeOpenSession,
 }: ConversationRunWorkspaceResourcePanelProps) {
   if (resource.kind === 'workflow-view') {
-    return <WorkflowViewPanel run={run} onNodeOpenSession={onNodeOpenSession} />;
+    return <Suspense fallback={<WorkspaceLoadingState />}><WorkflowViewPanel resource={resource} run={run} onNodeOpenSession={onNodeOpenSession} /></Suspense>;
   }
   if (resource.kind === 'workflow-edit') {
     return (
-      <WorkflowEditPanel
+      <Suspense fallback={<WorkspaceLoadingState />}><WorkflowEditPanel
         resource={resource}
         run={run}
         initialAgentRegistry={agentRegistry}
         onSaveWorkflow={onSaveWorkflow}
-      />
+      /></Suspense>
     );
   }
   if (resource.kind === 'system-prompt') {
@@ -85,8 +91,13 @@ function WorkspaceLoadingState() {
   );
 }
 
-function WorkflowViewPanel({ run, onNodeOpenSession }: { run: ConversationRunVm; onNodeOpenSession?: (node: GraphNodeVm) => void }) {
+function WorkflowViewPanel({ resource, run, onNodeOpenSession }: { resource: WorkflowViewWorkspaceResource; run: ConversationRunVm; onNodeOpenSession?: (node: GraphNodeVm) => void }) {
   const { t } = useTranslation();
+  const { getResource, synchronizeResource } = useRightWorkspaceCommands();
+  const rememberReadingPosition = useCallback((readingPosition: GraphReadingPosition) => {
+    const current = getResource(resource.key);
+    if (current?.kind === 'workflow-view') synchronizeResource({ ...current, readingPosition });
+  }, [getResource, synchronizeResource, resource.key]);
   if (run.workflowGraph.nodes.length === 0) {
     return <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground">{t('common.empty')}</div>;
   }
@@ -94,6 +105,9 @@ function WorkflowViewPanel({ run, onNodeOpenSession }: { run: ConversationRunVm;
     <div className="min-h-0 flex-1 p-2" data-right-workspace-resource="workflow-view">
       <GraphView
         graph={run.workflowGraph}
+        selectedNodeId={runtimeGraphNodeForSession(run.workflowGraph, run.selectedSession)?.id}
+        initialReadingPosition={resource.readingPosition}
+        onReadingPositionChange={rememberReadingPosition}
         variant="actual"
         onNodeOpenDetail={onNodeOpenSession}
         onNodeOpenSession={onNodeOpenSession}
@@ -352,12 +366,23 @@ function HiddenPromptSectionWorkspacePanel({
 
 function RawFramesWorkspacePanel({ resource }: { resource: RawFramesWorkspaceResource }) {
   const { t } = useTranslation();
+  const { getResource, synchronizeResource } = useRightWorkspaceCommands();
   const [page, setPage] = useState<AcpRawFramePageVm | null>(null);
-  const [query, setQuery] = useState<AcpRawFrameQueryInput>({ page: 0, pageSize: 100, order: 'desc' });
+  const [query, setQuery] = useState<AcpRawFrameQueryInput>(resource.query ?? { page: 0, pageSize: 100, order: 'desc' });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const generationRef = useRef(0);
+  const resourceRef = useRef(resource);
+  resourceRef.current = resource;
   const load = useCallback(async (nextQuery: AcpRawFrameQueryInput) => {
-    const locator = resource.locator;
+    const generation = ++generationRef.current;
+    const locator = resourceRef.current.locator;
+    const publishQuery = (value: AcpRawFrameQueryInput) => {
+      setQuery(value);
+      const current = getResource(resourceRef.current.key);
+      if (current?.kind === 'raw-frames') synchronizeResource({ ...current, query: value });
+    };
+    publishQuery(nextQuery);
     setLoading(true);
     setError(null);
     try {
@@ -372,8 +397,9 @@ function RawFramesWorkspacePanel({ resource }: { resource: RawFramesWorkspaceRes
         locator.outerNodeId,
         locator.outerAttemptId,
       );
+      if (generation !== generationRef.current) return;
       setPage(nextPage);
-      setQuery({
+      publishQuery({
         page: nextPage.page,
         pageSize: nextPage.pageSize,
         search: nextPage.search ?? undefined,
@@ -382,12 +408,16 @@ function RawFramesWorkspacePanel({ resource }: { resource: RawFramesWorkspaceRes
         order: nextPage.order,
       });
     } catch (reason) {
-      setError(displayAppError(t, reason));
+      if (generation === generationRef.current) setError(displayAppError(t, reason));
     } finally {
-      setLoading(false);
+      if (generation === generationRef.current) setLoading(false);
     }
-  }, [resource.key, t]);
-  useEffect(() => { void load({ page: 0, pageSize: 100, order: 'desc' }); }, [load]);
+  }, [getResource, synchronizeResource, resource.key, t]);
+  useEffect(() => {
+    setPage(null);
+    void load(resourceRef.current.query ?? { page: 0, pageSize: 100, order: 'desc' });
+    return () => { generationRef.current++; };
+  }, [load]);
   return (
     <div className={goldThemedScrollbarClassName('min-h-0 flex-1 overflow-y-auto p-3')} data-right-workspace-resource="raw-frames">
       {error ? <WorkspaceErrorState message={error} compact /> : null}

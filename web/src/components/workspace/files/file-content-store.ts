@@ -126,6 +126,19 @@ export class FileContentStore {
     this.config = config;
   }
 
+  get configuration() { return this.config; }
+
+  adoptReadonlySnapshot(resource: FileWorkspaceResource, snapshot: Extract<WorkspaceFileSnapshotVm, { kind: 'text' }>) {
+    const previous = this.entries.get(resource.key);
+    const readonlySnapshot = { ...snapshot, editable: false };
+    this.installRuntime(resource.key, readonlySnapshot);
+    this.setEntry(resource.key, {
+      key: resource.key, resource, status: 'ready', snapshot: readonlySnapshot, errorCode: null,
+      requestRevision: (previous?.requestRevision ?? 0) + 1, contentRevision: (previous?.contentRevision ?? 0) + 1,
+      localRevision: 0, savedLocalRevision: 0, saveState: { kind: 'clean' },
+    });
+  }
+
   shouldHighlight(characters: number) {
     return characters <= this.config.textHighlightMaxChars;
   }
@@ -619,6 +632,7 @@ export class FileContentStore {
     const results = new Map<string, MarkdownImageState>();
     const concurrency = Math.max(1, this.config.markdownEmbeddedImageMaxConcurrent);
     for (let index = 0; index < sources.length; index += concurrency) {
+      if (this.runtimes.get(resourceKey) !== runtime || runtime.markdownImageRequestRevision !== requestRevision) break;
       await Promise.all(sources.slice(index, index + concurrency).map(async (rawSrc) => {
         let next: MarkdownImageState;
         try {
@@ -639,7 +653,7 @@ export class FileContentStore {
 
     const currentRuntime = this.runtimes.get(resourceKey);
     const currentEntry = this.entries.get(resourceKey);
-    if (!currentRuntime || !currentEntry || currentRuntime.markdownImageRequestRevision !== requestRevision) {
+    if (currentRuntime !== runtime || !currentEntry || currentRuntime.markdownImageRequestRevision !== requestRevision) {
       await Promise.all([...results.values()].flatMap((image) => image.kind === 'ready'
         ? [releaseWorkspaceFilePreview(image.previewGrant.token).catch(() => undefined)]
         : []));

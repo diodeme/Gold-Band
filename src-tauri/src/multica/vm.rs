@@ -158,6 +158,37 @@ fn normalize_remote_status(raw: &str) -> String {
     .to_string()
 }
 
+// ── 「从 Multica 同步」SKILL 拉取 VM（设计 §6；camelCase 对齐 web/src/types.ts）──────
+
+/// 同步列表行。`local_state`："new"（本地无，默认勾选）/ "exists"（全局自有库已有清洗后同名
+/// 目录，同步将覆盖，默认不勾选）。列表阶段不预取详情/文件（无 N+1），文件数判空在拉取时逐项做。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MulticaSkillListItemVm {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub local_state: &'static str,
+}
+
+/// 单项同步结果。`outcome`："created" | "overwritten" | "skipped" | "failed"；`reason` 为
+/// 结构化错误码（`multica.skill.has-files` 等，前端 i18n 映射）或本地落库错误原文透传。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MulticaPullItemResultVm {
+    pub id: String,
+    pub name: String,
+    pub outcome: &'static str,
+    pub reason: Option<String>,
+}
+
+/// 同步报告（逐项结果，前端汇总统计 + 逐行展示）。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MulticaPullReportVm {
+    pub results: Vec<MulticaPullItemResultVm>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

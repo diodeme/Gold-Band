@@ -24,9 +24,10 @@ use crate::channel::current_channel_config;
 use crate::conversation_workspace::workspace_entry_for_project;
 use crate::metrics::get_system_username;
 use crate::multica::bridge::{emit_multica_task_updated, teardown_active_run};
-use crate::multica::client::{MulticaClient, RegisterRequest, RuntimeSpec};
+use crate::multica::client::{HeartbeatAck, MulticaClient, RegisterRequest, RuntimeSpec};
 use crate::multica::config::{get_daemon_id, get_pat, multica_base_url, multica_settings};
 use crate::multica::error::MulticaError;
+use crate::multica::local_skills;
 use crate::multica::state::SharedMulticaState;
 use crate::state::DesktopState;
 
@@ -213,29 +214,35 @@ async fn run_heartbeat_loop<R: Runtime>(app: AppHandle<R>) {
             trace_stage("self_heal", stage);
 
             // ② 心跳：遍历 (workspace_id, runtime_id)。runtime 行失效 404 -> 清缓存，下 tick 自愈重注册。
+            //    ack 携带 skill 待办时 spawn 独立任务处理（dispatch_pending_skill_work，不阻塞 tick）。
             let stage = Instant::now();
             let pairs = collect_runtime_id_pairs(&app);
             let shared = app.try_state::<SharedMulticaState>();
             for (workspace_id, runtime_id) in &pairs {
-                if let Err(error) = client.heartbeat(runtime_id).await {
-                    if matches!(error, MulticaError::TaskNotFound) {
-                        // runtime 行已被 server 删除/失效：旧 runtime_id 永久 404，清缓存触发自愈重注册。
-                        tracing::warn!(
-                            workspace_id = %workspace_id,
-                            runtime_id = %runtime_id,
-                            "multica runtime gone (404), clearing for re-register"
-                        );
-                        if let Some(shared) = shared.as_ref() {
-                            if let Ok(mut guard) = shared.lock() {
-                                guard.clear_runtime_id(workspace_id);
+                match client.heartbeat(runtime_id).await {
+                    Ok(ack) => {
+                        dispatch_pending_skill_work(&app, &client, workspace_id, runtime_id, ack)
+                    }
+                    Err(error) => {
+                        if matches!(error, MulticaError::TaskNotFound) {
+                            // runtime 行已被 server 删除/失效：旧 runtime_id 永久 404，清缓存触发自愈重注册。
+                            tracing::warn!(
+                                workspace_id = %workspace_id,
+                                runtime_id = %runtime_id,
+                                "multica runtime gone (404), clearing for re-register"
+                            );
+                            if let Some(shared) = shared.as_ref() {
+                                if let Ok(mut guard) = shared.lock() {
+                                    guard.clear_runtime_id(workspace_id);
+                                }
                             }
+                        } else {
+                            tracing::warn!(
+                                runtime_id = %runtime_id,
+                                %error,
+                                "multica heartbeat failed (will retry next tick)"
+                            );
                         }
-                    } else {
-                        tracing::warn!(
-                            runtime_id = %runtime_id,
-                            %error,
-                            "multica heartbeat failed (will retry next tick)"
-                        );
                     }
                 }
             }
@@ -383,6 +390,68 @@ fn collect_runtime_id_pairs<R: Runtime>(app: &AppHandle<R>) -> Vec<(String, Stri
     app.try_state::<SharedMulticaState>()
         .and_then(|shared| shared.lock().ok().map(|g| g.runtime_id_pairs()))
         .unwrap_or_default()
+}
+
+/// 心跳 ack 待办分发（skill 发现/导入）：无待办零开销返回，有待办 spawn 独立任务处理。
+///
+/// **绝不阻塞心跳 tick**——发现（扫描全局库）与导入（读目录打包 + 上报，client 内 3 次网络重试）
+/// 的耗时与失败都不得影响 runtime 在线维持与取消检测；上报彻底失败由服务端 60s running 超时
+/// 终态化兜底（multica 对迟到/重复上报幂等）。provider 从绑定配置取（发现/导入上报 body 需要），
+/// 绑定被并发移除的竞态窗口下记日志跳过（下 tick 若 server 重发待办自然重试）。
+fn dispatch_pending_skill_work<R: Runtime>(
+    app: &AppHandle<R>,
+    client: &MulticaClient,
+    workspace_id: &str,
+    runtime_id: &str,
+    ack: HeartbeatAck,
+) {
+    let has_work = ack.pending_local_skills.is_some()
+        || ack
+            .pending_local_skill_imports
+            .as_ref()
+            .is_some_and(|imports| !imports.is_empty());
+    if !has_work {
+        return;
+    }
+    let Some(provider) = provider_for_workspace(app, workspace_id) else {
+        tracing::warn!(
+            workspace_id = %workspace_id,
+            "multica skill pending work but workspace binding missing (skipped)"
+        );
+        return;
+    };
+    if let Some(pending) = ack.pending_local_skills {
+        tauri::async_runtime::spawn(local_skills::handle_local_skill_discovery(
+            app.clone(),
+            client.clone(),
+            runtime_id.to_string(),
+            provider.clone(),
+            pending.id,
+        ));
+    }
+    if let Some(imports) = ack.pending_local_skill_imports {
+        for import in imports {
+            tauri::async_runtime::spawn(local_skills::handle_local_skill_import(
+                client.clone(),
+                runtime_id.to_string(),
+                provider.clone(),
+                import.id,
+                import.skill_key,
+            ));
+        }
+    }
+}
+
+/// 绑定配置中 workspace 的 provider（发现/导入上报 body 字段；绑定已删则 None）。
+fn provider_for_workspace<R: Runtime>(app: &AppHandle<R>, workspace_id: &str) -> Option<String> {
+    let desktop = app.try_state::<DesktopState>()?;
+    let context = desktop.context().ok()?;
+    context
+        .config
+        .desktop_multica_workspaces
+        .iter()
+        .find(|ws| ws.id == workspace_id)
+        .map(|ws| ws.provider.clone())
 }
 
 // ── 取消检测 / 启动 reconcile（开发设计 4.4 / 接入方案 C5）──────────────────────

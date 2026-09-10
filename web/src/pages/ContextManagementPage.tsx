@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
-import { ArrowLeft, Check, ChevronsUpDown, CircleHelp, Edit, Eye, FolderOpen, Library, Loader2, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
+import { ArrowLeft, Check, ChevronsUpDown, CircleHelp, CloudDownload, Edit, Eye, FolderOpen, Library, Loader2, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import {
@@ -18,6 +18,7 @@ import type {
 } from '../types';
 import { EntitySection } from '@/components/EntitySection';
 import { McpServerCard } from '@/components/McpServerCard';
+import { MulticaSkillSyncDialog } from '@/components/MulticaSkillSyncDialog';
 import { EmptyState, Page, PageContent, PageHeader } from '@/components/PageScaffold';
 import { SkillAgentOverflow } from '@/components/SkillAgentOverflow';
 import { SkillSyncTargetSelector } from '@/components/SkillSyncTargetSelector';
@@ -167,6 +168,8 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
   const [skillTab, setSkillTab] = useState<'global' | 'project'>('global');
   const [skillQuery, setSkillQuery] = useState('');
   const [skillAgentFilter, setSkillAgentFilter] = useState<string>('all');
+  // Multica SKILL 同步弹窗（仅全局 Tab 展示入口；拉取目标恒为全局库）。
+  const [multicaSyncOpen, setMulticaSyncOpen] = useState(false);
   const [selectedWorkspace, setSelectedWorkspace] = useState<string>('');
   const [workspaces, setWorkspaces] = useState<Array<{ projectId: string; workspacePath: string; name: string }>>([]);
   const needsSkillContext = activeTab === 'skills' || skillSheetMode === 'create';
@@ -861,6 +864,12 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
             actions={(
               <>
                 <EntityRefreshButton label={t('common.refresh')} loading={skillLoading} onRefresh={() => void refreshSkills()} />
+                {skillTab === 'global' && !readOnly && (
+                  <Button variant="outline" size="sm" onClick={() => setMulticaSyncOpen(true)}>
+                    <CloudDownload className="size-4" />
+                    {t('contextManagement.skills.multicaSync.action')}
+                  </Button>
+                )}
                 {!readOnly && <Button size="sm" onClick={() => { setSkillEditTarget(null); setSkillSheetContent(null); setSkillEditWsPath(null); setSkillSheetMode('create'); }}><Plus className="size-4" />{t('contextManagement.skills.createSkill', '创建')}</Button>}
               </>
             )}
@@ -962,6 +971,12 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
           </EntitySection>
         </PageContent>
       )}
+
+      <MulticaSkillSyncDialog
+        open={multicaSyncOpen}
+        onOpenChange={setMulticaSyncOpen}
+        onFinished={() => void refreshSkills()}
+      />
 
       <AlertDialog open={Boolean(skillDeleteTarget)} onOpenChange={(open) => { if (!open && !skillDeleting) setSkillDeleteTarget(null); }}>
         <AlertDialogContent>

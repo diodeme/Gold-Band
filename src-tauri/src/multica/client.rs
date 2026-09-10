@@ -286,6 +286,128 @@ struct UpdateIssueStatusRequest {
     status: String,
 }
 
+// ===== skill 同步 wire 类型（设计 `.claude/design/multica_skill/` §3-§5）=====
+//
+// 心跳 ack（C-link 推送侧）与发现/导入上报 body（此文件定义），拉取 REST 响应（同上）。
+// 上报结构 `status` 用 `&'static str`：值域固定 completed/failed，编译期约束 + 零 String 分配；
+// Option 字段**不加** skip_serializing_if——multica 端按显式 null/缺失区分上报形态（测试锁定该契约）。
+
+/// 心跳 ack（`POST /api/daemon/heartbeat` 响应，multica `pkg/protocol/messages.go:315-329`）。
+///
+/// server 只回非空 pending 字段（缺失 = 无待办）；`pending_update`/`pending_model_list` 为 v1 占位，
+/// 仅反序列化不消费（模型/更新推送后续版本接入）。单数旧字段 `pending_local_skill_import` 不在结构体上，
+/// serde 未知字段容忍即忽略——码灵已声明 `supports_batch_import: true`，服务端按批量形式下发。
+#[derive(Debug, Deserialize)]
+pub struct HeartbeatAck {
+    pub status: String,
+    pub pending_local_skills: Option<PendingLocalSkillsRef>,
+    pub pending_local_skill_imports: Option<Vec<PendingLocalSkillImportRef>>,
+    /// v1 占位不消费。
+    pub pending_update: Option<serde_json::Value>,
+    /// v1 占位不消费。
+    pub pending_model_list: Option<serde_json::Value>,
+}
+
+/// 心跳 ack：本地 skill 发现待办引用（仅 requestId，详情由发现处理自行扫描）。
+#[derive(Debug, Deserialize)]
+pub struct PendingLocalSkillsRef {
+    pub id: String,
+}
+
+/// 心跳 ack：本地 skill 导入待办引用（requestId + 目标 skill_key）。
+#[derive(Debug, Deserialize)]
+pub struct PendingLocalSkillImportRef {
+    pub id: String,
+    pub skill_key: String,
+}
+
+/// 发现上报 body（`POST .../local-skills/{requestId}/result`，multica `runtime_local_skills.go`）。
+#[derive(Debug, Serialize)]
+pub struct LocalSkillListReport {
+    pub status: &'static str,
+    pub skills: Vec<LocalSkillSummary>,
+    pub supported: bool,
+    /// 码灵不支持 MCP skill 上报，恒 false（如实上报能力，server 据此不下发 MCP 待办）。
+    pub mcp_supported: bool,
+    pub error: Option<String>,
+}
+
+/// 发现上报的单个 skill summary。`key` = 本地目录名（canonical 身份，导入待办回传它定位目录）；
+/// `root` 恒 `"provider"`（v1 只上报码灵自有全局库一层）。
+#[derive(Debug, Serialize)]
+pub struct LocalSkillSummary {
+    pub key: String,
+    pub name: String,
+    pub description: String,
+    pub source_path: String,
+    pub provider: String,
+    pub root: &'static str,
+    pub file_count: i64,
+}
+
+/// 导入上报 body（`POST .../local-skills/import/{requestId}/result`）。
+#[derive(Debug, Serialize)]
+pub struct LocalSkillImportReport {
+    pub status: &'static str,
+    pub skill: Option<LocalSkillBundle>,
+    pub error: Option<String>,
+}
+
+/// 导入上报的 skill 打包。`content` = SKILL.md **原文**（含 frontmatter 与附加字段，Q5 修正：原样透传）。
+#[derive(Debug, Serialize)]
+pub struct LocalSkillBundle {
+    pub name: String,
+    pub description: String,
+    pub content: String,
+    pub source_path: String,
+    pub provider: String,
+    pub files: Vec<LocalSkillFile>,
+}
+
+/// 导入上报的支撑文件（`path` 为相对 skill 目录的 `/` 分隔路径）。
+#[derive(Debug, Serialize)]
+pub struct LocalSkillFile {
+    pub path: String,
+    pub content: String,
+}
+
+/// 拉取：`GET /api/skills` 列表项（summary 不含 content——列表性能刻意省略，正文按需 GET 详情）。
+#[derive(Debug, Deserialize)]
+pub struct RemoteSkillSummary {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub updated_at: Option<String>,
+}
+
+/// 拉取：`GET /api/skills/{id}` 详情（content 可能带 frontmatter——multica DB 不强制 body-only，
+/// 组装端判别剥离，见 `local_skills::assemble_pulled_skill_md`）。
+#[derive(Debug, Deserialize)]
+pub struct RemoteSkillDetail {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub content: String,
+}
+
+/// 拉取：`GET /api/skills/{id}/files?include=metadata` 的文件元数据项（仅判空消费：多文件即跳过拉取）。
+#[derive(Debug, Deserialize)]
+pub struct RemoteSkillFileMeta {
+    pub path: String,
+    #[serde(default)]
+    pub size: i64,
+}
+
+/// 拉取：files 响应容错包装（`{files:[...]}` 或裸数组，照搬 [`WorkspacesResponse`] untagged 惯例）。
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum SkillFilesResponse {
+    Wrapped { files: Vec<RemoteSkillFileMeta> },
+    Bare(Vec<RemoteSkillFileMeta>),
+}
+
 /// 进程级共享的 `reqwest::Client`（连接池/TLS 上下文复用）。
 ///
 /// `reqwest::Client` 内部为 `Arc`：构造昂贵（建连接池 + TLS 上下文）、clone 廉价。官方明确「应创建一次并复用」，
@@ -340,16 +462,21 @@ impl MulticaClient {
     ///
     /// `per_request_timeout` 覆盖 client 级 30s 默认——liveness/轻量调用（取消检测）传短超时，
     /// 使单次调用在 server 慢响应时快速失败，避免拖垮整个心跳 tick（15s 周期，单 tick 阻塞会延误
-    /// runtime 在线维持与取消检测）。
+    /// runtime 在线维持与取消检测）。`workspace_id` 注入 `X-Workspace-ID` 头（skill 拉取 REST 是
+    /// workspace 维度接口，与 [`json_send`] 对称）。
     async fn send(
         &self,
         method: Method,
         path: &str,
+        workspace_id: Option<&str>,
         per_request_timeout: Option<Duration>,
     ) -> Result<Response, MulticaError> {
         let mut req = self.http.request(method.clone(), self.url(path));
         if let Some(t) = self.token.as_deref().filter(|t| !t.is_empty()) {
             req = req.bearer_auth(t);
+        }
+        if let Some(ws) = workspace_id {
+            req = req.header("X-Workspace-ID", ws);
         }
         if let Some(d) = per_request_timeout {
             req = req.timeout(d);
@@ -480,7 +607,7 @@ impl MulticaClient {
 
     /// `GET /api/me` —— 验证 PAT 有效，返回用户信息。
     pub async fn verify_pat(&self) -> Result<UserInfo, MulticaError> {
-        let resp = self.send(Method::GET, "/api/me", None).await?;
+        let resp = self.send(Method::GET, "/api/me", None, None).await?;
         resp.json::<UserInfo>()
             .await
             .map_err(|e| MulticaError::NetworkFailed(format!("decode /api/me failed: {e}")))
@@ -521,7 +648,9 @@ impl MulticaClient {
 
     /// `GET /api/workspaces` —— workspace 成员列表（容错包装/裸数组）。
     pub async fn list_workspaces(&self) -> Result<Vec<WorkspaceInfo>, MulticaError> {
-        let resp = self.send(Method::GET, "/api/workspaces", None).await?;
+        let resp = self
+            .send(Method::GET, "/api/workspaces", None, None)
+            .await?;
         let parsed = resp.json::<WorkspacesResponse>().await.map_err(|e| {
             MulticaError::NetworkFailed(format!("decode /api/workspaces failed: {e}"))
         })?;
@@ -568,17 +697,19 @@ impl MulticaClient {
         })
     }
 
-    /// `POST /api/daemon/heartbeat` —— 维持 runtime 在线（执行期 15s）。
+    /// `POST /api/daemon/heartbeat` —— 维持 runtime 在线（执行期 15s）并取回待办 ack。
     ///
-    /// body `{runtime_id, supports_batch_import: true}`。失败仅记日志（下一 tick 自然重试），
-    /// 不在 client 内重试（循环即重试）。走单次请求 + **liveness 短超时**（覆盖 client 级 30s），
-    /// 防 server 慢响应拖垮整个心跳 tick（单 tick 阻塞会延误 runtime 在线维持与取消检测）。
-    pub async fn heartbeat(&self, runtime_id: &str) -> Result<(), MulticaError> {
+    /// body `{runtime_id, supports_batch_import: true}`。响应携带 skill 发现/导入待办
+    /// （[`HeartbeatAck`]，仅非空时下发）——调用方（心跳 tick）据 ack 分发处理，**绝不**在本方法内
+    /// 处理待办（保持 liveness 单次请求短超时有界，待办处理 spawn 独立任务）。失败仅记日志
+    /// （下一 tick 自然重试），不在 client 内重试（循环即重试）。走单次请求 + **liveness 短超时**
+    /// （覆盖 client 级 30s），防 server 慢响应拖垮整个心跳 tick。
+    pub async fn heartbeat(&self, runtime_id: &str) -> Result<HeartbeatAck, MulticaError> {
         let body = serde_json::json!({
             "runtime_id": runtime_id,
             "supports_batch_import": true,
         });
-        let _resp = self
+        let resp = self
             .json_send(
                 Method::POST,
                 "/api/daemon/heartbeat",
@@ -587,7 +718,9 @@ impl MulticaClient {
                 Some(Duration::from_secs(LIVENESS_TIMEOUT_SECS)),
             )
             .await?;
-        Ok(())
+        resp.json::<HeartbeatAck>().await.map_err(|e| {
+            MulticaError::NetworkFailed(format!("decode /api/daemon/heartbeat ack failed: {e}"))
+        })
     }
 
     /// `POST /api/daemon/runtimes/{rid}/recover-orphans` —— 启动时清理残留的在飞任务（无条件置失败态）。
@@ -597,6 +730,100 @@ impl MulticaClient {
         let path = format!("/api/daemon/runtimes/{runtime_id}/recover-orphans");
         let _: serde_json::Value = self.post_json(&path, &serde_json::json!({})).await?;
         Ok(())
+    }
+
+    // ===== skill 同步：发现/导入上报 + 拉取 REST（设计 §3-§5）=====
+
+    /// `POST /api/daemon/runtimes/{rid}/local-skills/{requestId}/result` —— 上报发现结果。
+    ///
+    /// 一般请求（`with_network_retry` 3 次）：上报由 spawn 出的独立任务驱动，无循环兜底，重试在 client 内
+    /// 完成；3 次仍失败由调用方记日志放弃，服务端 60s running 超时终态化兜底（multica 对迟到/重复上报幂等）。
+    pub async fn report_local_skill_list_result(
+        &self,
+        runtime_id: &str,
+        request_id: &str,
+        report: &LocalSkillListReport,
+    ) -> Result<(), MulticaError> {
+        self.with_network_retry("report_local_skill_list", || async {
+            let path =
+                format!("/api/daemon/runtimes/{runtime_id}/local-skills/{request_id}/result");
+            self.json_send(Method::POST, &path, None, report, None).await?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// `POST /api/daemon/runtimes/{rid}/local-skills/import/{requestId}/result` —— 上报导入结果。
+    pub async fn report_local_skill_import_result(
+        &self,
+        runtime_id: &str,
+        request_id: &str,
+        report: &LocalSkillImportReport,
+    ) -> Result<(), MulticaError> {
+        self.with_network_retry("report_local_skill_import", || async {
+            let path =
+                format!("/api/daemon/runtimes/{runtime_id}/local-skills/import/{request_id}/result");
+            self.json_send(Method::POST, &path, None, report, None).await?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// `GET /api/skills` —— workspace 维度远端 skill 列表（`X-Workspace-ID` 头路由，PAT 认证）。
+    ///
+    /// 列表只含 summary（无 content），正文/文件在拉取落库时按需 GET 详情，避免列表 N+1 预取。
+    pub async fn list_remote_skills(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<RemoteSkillSummary>, MulticaError> {
+        self.with_network_retry("list_remote_skills", || async {
+            let resp = self
+                .send(Method::GET, "/api/skills", Some(workspace_id), None)
+                .await?;
+            resp.json::<Vec<RemoteSkillSummary>>().await.map_err(|e| {
+                MulticaError::NetworkFailed(format!("decode /api/skills failed: {e}"))
+            })
+        })
+        .await
+    }
+
+    /// `GET /api/skills/{id}` —— 单个远端 skill 详情（含 content）。
+    pub async fn get_remote_skill(
+        &self,
+        workspace_id: &str,
+        skill_id: &str,
+    ) -> Result<RemoteSkillDetail, MulticaError> {
+        self.with_network_retry("get_remote_skill", || async {
+            let path = format!("/api/skills/{skill_id}");
+            let resp = self.send(Method::GET, &path, Some(workspace_id), None).await?;
+            resp.json::<RemoteSkillDetail>().await.map_err(|e| {
+                MulticaError::NetworkFailed(format!("decode {path} failed: {e}"))
+            })
+        })
+        .await
+    }
+
+    /// `GET /api/skills/{id}/files?include=metadata` —— 远端 skill 文件元数据（仅判空消费）。
+    ///
+    /// **必须带 `?include=metadata`**：该端点默认 `includeContent=true` 会返回全部文件正文
+    /// （multica 答复调整 2）。码灵本地模型单 SKILL.md——文件数 >1 即跳过该 skill 的拉取。
+    pub async fn list_remote_skill_files(
+        &self,
+        workspace_id: &str,
+        skill_id: &str,
+    ) -> Result<Vec<RemoteSkillFileMeta>, MulticaError> {
+        self.with_network_retry("list_remote_skill_files", || async {
+            let path = format!("/api/skills/{skill_id}/files?include=metadata");
+            let resp = self.send(Method::GET, &path, Some(workspace_id), None).await?;
+            let parsed = resp.json::<SkillFilesResponse>().await.map_err(|e| {
+                MulticaError::NetworkFailed(format!("decode {path} failed: {e}"))
+            })?;
+            Ok(match parsed {
+                SkillFilesResponse::Wrapped { files } => files,
+                SkillFilesResponse::Bare(v) => v,
+            })
+        })
+        .await
     }
 
     // ===== M3 任务列表/领取/启动/状态（开发设计 2.3 / 接入方案 B/C）=====
@@ -610,7 +837,7 @@ impl MulticaClient {
     ) -> Result<Vec<RemoteTask>, MulticaError> {
         self.with_network_retry("list_pending", || async {
             let path = format!("/api/daemon/runtimes/{runtime_id}/tasks/pending");
-            let resp = self.send(Method::GET, &path, None).await?;
+            let resp = self.send(Method::GET, &path, None, None).await?;
             let parsed = resp
                 .json::<TasksListResponse>()
                 .await
@@ -640,7 +867,7 @@ impl MulticaClient {
     ) -> Result<RemoteTask, MulticaError> {
         self.with_network_retry("get_task_requirement", || async {
             let path = format!("/api/daemon/runtimes/{runtime_id}/tasks/{task_id}");
-            let resp = self.send(Method::GET, &path, None).await?;
+            let resp = self.send(Method::GET, &path, None, None).await?;
             resp.json::<RemoteTask>()
                 .await
                 .map_err(|e| MulticaError::NetworkFailed(format!("decode {path} failed: {e}")))
@@ -714,6 +941,7 @@ impl MulticaClient {
             .send(
                 Method::GET,
                 &path,
+                None,
                 Some(Duration::from_secs(LIVENESS_TIMEOUT_SECS)),
             )
             .await?;
@@ -1442,5 +1670,178 @@ mod tests {
         // 覆盖 client 级 30s，使单 tick 在退化网络下快速失败。锁定上界 < 30s 且 > 0。
         assert!(LIVENESS_TIMEOUT_SECS > 0 && LIVENESS_TIMEOUT_SECS < 30);
         assert_eq!(LIVENESS_TIMEOUT_SECS, 10);
+    }
+
+    // ===== skill 同步：心跳 ack 契约（multica server/pkg/protocol/messages.go:315-329）=====
+
+    #[test]
+    fn heartbeat_ack_parses_full_pending_payloads() {
+        // HTTP 响应只含 status + 非空 pending 字段；完整形态四类 pending 齐备。
+        let ack: HeartbeatAck = serde_json::from_str(
+            r#"{"status":"ok","pending_local_skills":{"id":"req-1"},"pending_local_skill_imports":[{"id":"req-2","skill_key":"pr-review"}],"pending_update":{},"pending_model_list":{"x":1}}"#,
+        )
+        .unwrap();
+        assert_eq!(ack.status, "ok");
+        assert_eq!(
+            ack.pending_local_skills.as_ref().map(|p| p.id.as_str()),
+            Some("req-1")
+        );
+        let imports = ack.pending_local_skill_imports.expect("批量导入应解析");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].id, "req-2");
+        assert_eq!(imports[0].skill_key, "pr-review");
+        // v1 不消费，仅反序列化占位（解析不失败即契约成立）。
+        assert!(ack.pending_update.is_some());
+        assert!(ack.pending_model_list.is_some());
+    }
+
+    #[test]
+    fn heartbeat_ack_tolerates_missing_pending_and_unknown_fields() {
+        // 无 pending 时字段整体缺失（server 只回非空 pending）+ 未知字段忽略（serde 默认）。
+        let ack: HeartbeatAck =
+            serde_json::from_str(r#"{"status":"ok","future_field":true}"#).unwrap();
+        assert_eq!(ack.status, "ok");
+        assert!(ack.pending_local_skills.is_none());
+        assert!(ack.pending_local_skill_imports.is_none());
+        assert!(ack.pending_update.is_none());
+        assert!(ack.pending_model_list.is_none());
+    }
+
+    #[test]
+    fn heartbeat_ack_ignores_singular_legacy_import_field() {
+        // 兼容字段 pending_local_skill_import（单条旧形式）不在结构体上——serde 未知字段忽略；
+        // 码灵已声明 supports_batch_import: true，服务端按批量形式下发（批量数组必含同内容首条）。
+        let ack: HeartbeatAck = serde_json::from_str(
+            r#"{"status":"ok","pending_local_skill_import":{"id":"req-9","skill_key":"x"}}"#,
+        )
+        .unwrap();
+        assert!(ack.pending_local_skill_imports.is_none());
+    }
+
+    // ===== skill 同步：发现/导入上报 body 契约 =====
+
+    #[test]
+    fn local_skill_list_report_serializes_wire_contract() {
+        // 发现上报 body：status/skills[]/supported/mcp_supported；key=目录名、root 恒 "provider"。
+        let report = LocalSkillListReport {
+            status: "completed",
+            skills: vec![LocalSkillSummary {
+                key: "pr-review".into(),
+                name: "PR review".into(),
+                description: "Review pull requests".into(),
+                source_path: "C:/home/.gold-band/skills/pr-review".into(),
+                provider: "claude-acp".into(),
+                root: "provider",
+                file_count: 2,
+            }],
+            supported: true,
+            mcp_supported: false,
+            error: None,
+        };
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["status"], "completed");
+        assert_eq!(json["supported"], true);
+        assert_eq!(json["mcp_supported"], false);
+        assert_eq!(json["skills"][0]["key"], "pr-review");
+        assert_eq!(json["skills"][0]["name"], "PR review");
+        assert_eq!(json["skills"][0]["source_path"], "C:/home/.gold-band/skills/pr-review");
+        assert_eq!(json["skills"][0]["provider"], "claude-acp");
+        assert_eq!(json["skills"][0]["root"], "provider");
+        assert_eq!(json["skills"][0]["file_count"], 2);
+
+        // 失败形态：status=failed + error 文本（skills 为空数组、能力标志仍如实上报）。
+        let failed = LocalSkillListReport {
+            status: "failed",
+            skills: Vec::new(),
+            supported: true,
+            mcp_supported: false,
+            error: Some("scan failed".into()),
+        };
+        let json = serde_json::to_value(&failed).unwrap();
+        assert_eq!(json["status"], "failed");
+        assert_eq!(json["error"], "scan failed");
+    }
+
+    #[test]
+    fn local_skill_import_report_serializes_wire_contract() {
+        // 导入上报 body：status/skill{content=SKILL.md 全文含 frontmatter}/files[]；
+        // content 原样透传（multica DB 不强制 body-only，2026-09-09 Q5 修正）。
+        let report = LocalSkillImportReport {
+            status: "completed",
+            skill: Some(LocalSkillBundle {
+                name: "PR review".into(),
+                description: "Review pull requests".into(),
+                content: "---\nname: PR review\nallowed-tools: Read\n---\n\nBody".into(),
+                source_path: "C:/home/.gold-band/skills/pr-review".into(),
+                provider: "claude-acp".into(),
+                files: vec![LocalSkillFile {
+                    path: "assets/template.md".into(),
+                    content: "# template".into(),
+                }],
+            }),
+            error: None,
+        };
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["status"], "completed");
+        assert_eq!(json["skill"]["name"], "PR review");
+        assert_eq!(
+            json["skill"]["content"],
+            "---\nname: PR review\nallowed-tools: Read\n---\n\nBody"
+        );
+        assert_eq!(json["skill"]["files"][0]["path"], "assets/template.md");
+        assert_eq!(json["skill"]["files"][0]["content"], "# template");
+
+        // 失败形态：skill 缺失 + error 文本（如 skill not found: <key>）。
+        let failed = LocalSkillImportReport {
+            status: "failed",
+            skill: None,
+            error: Some("skill not found: deleted-skill".into()),
+        };
+        let json = serde_json::to_value(&failed).unwrap();
+        assert_eq!(json["status"], "failed");
+        assert_eq!(json["error"], "skill not found: deleted-skill");
+        assert!(json["skill"].is_null());
+    }
+
+    // ===== skill 同步：拉取 REST 契约（multica handler/skill.go:60-72 / 43-53）=====
+
+    #[test]
+    fn remote_skill_summary_parses_server_shape() {
+        // GET /api/skills（X-Workspace-ID 路由）返回裸数组；summary 不含 content（列表性能刻意省略）。
+        let list: Vec<RemoteSkillSummary> = serde_json::from_str(
+            r#"[{"id":"sk-1","name":"PR review","description":"Review PRs","updated_at":"2026-09-01T00:00:00Z"},{"id":"sk-2","name":"Empty","description":""}]"#,
+        )
+        .unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].id, "sk-1");
+        assert_eq!(list[0].name, "PR review");
+        assert_eq!(list[1].updated_at, None);
+    }
+
+    #[test]
+    fn remote_skill_detail_parses_server_shape() {
+        // GET /api/skills/{id} 返回含 content 的详情（content 可能带 frontmatter——DB 不强制 body-only）。
+        let detail: RemoteSkillDetail = serde_json::from_str(
+            r#"{"id":"sk-1","name":"PR review","description":"Review PRs","content":"---\nname: PR review\n---\n\nBody"}"#,
+        )
+        .unwrap();
+        assert_eq!(detail.id, "sk-1");
+        assert_eq!(detail.name, "PR review");
+        assert!(detail.content.starts_with("---\n"));
+    }
+
+    #[test]
+    fn skill_files_response_accepts_wrapped_and_bare() {
+        // GET /api/skills/{id}/files?include=metadata 的判空消费容错：包装 {files:[...]} 或裸数组
+        // （照搬 WorkspacesResponse/TasksListResponse 的 untagged 容错惯例）；metadata 项无 content。
+        let wrapped: SkillFilesResponse = serde_json::from_str(
+            r#"{"files":[{"path":"assets/a.md","size":128}]}"#,
+        )
+        .unwrap();
+        assert!(matches!(&wrapped, SkillFilesResponse::Wrapped { files } if files.len() == 1));
+
+        let bare: SkillFilesResponse =
+            serde_json::from_str(r#"[]"#).unwrap();
+        assert!(matches!(bare, SkillFilesResponse::Bare(ref v) if v.is_empty()));
     }
 }

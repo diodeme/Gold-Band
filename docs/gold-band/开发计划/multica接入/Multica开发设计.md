@@ -2037,6 +2037,24 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.39 改动三十七：SKILL 双向同步——心跳 ack 推送上报 + PAT REST 拉取落库（M5-az，2026-09-09）
+
+**背景 / 根因分类**：新能力开发（非缺陷修复）。multica server 侧已具备 skill 列表/详情/文件接口与 pending 引用下发能力，码灵本地有既有 SkillManager global skill 体系。设计先行：`.claude/design/multica_skill/码灵Multica-Skill同步设计与接口文档.md` 为实现权威（Q1–Q7 已关闭），推送复用 C-link 心跳 ack + result 端点既有模式（server 零改动），拉取用 PAT REST 三接口按需落库。实现期一处设计偏差并回写设计文档：非 UTF-8 文件从「跳过」改为「整包 failed」——静默跳过二进制文件会产生不完整 skill 且用户无感知，整包失败给出明确信号（错误信息含文件相对路径）。
+
+**数据 / 接口**（先定数据再定接口）：
+- **wire 类型**（client.rs，序列化测试锁定）：`HeartbeatAck { status, pending_local_skills: Option<PendingLocalSkillsRef{id}>, pending_local_skill_imports: Option<Vec<PendingLocalSkillImportRef{id, skill_key}>>, pending_update/pending_model_list: Option<serde_json::Value>（v1 占位） }`；`LocalSkillListReport { status, skills, supported, mcp_supported: false, error }`（None→null 序列化，**无 skip_serializing_if**——server 契约要求字段恒在）；`LocalSkillSummary { key, name, description, source_path, provider, root: "provider", file_count }`；`LocalSkillImportReport { status, skill, error }`；`LocalSkillBundle { name, description, content, source_path, provider, files }`；`LocalSkillFile { path, content }`；`RemoteSkillSummary { id, name, description(#[serde(default)]), updated_at }`；`RemoteSkillDetail { id, name, description(default), content }`；`RemoteSkillFileMeta { path, size(default) }`；`SkillFilesResponse` untagged Wrapped/Bare 两形态兼容。
+- **client 方法**：`report_local_skill_list_result` / `report_local_skill_import_result`（推送上报，走既有 with_network_retry）；`list_remote_skills` / `get_remote_skill` / `list_remote_skill_files`（拉取，files 必须 `?include=metadata`）；`send()` 已是 4 参（workspace_id → `X-Workspace-ID` header）。
+- **local_skills.rs（新模块）**：本地 global skill 扫描与 bundle 组装（限额常量集中模块顶部：1MiB/文件、8MiB/整包、256 文件、深度≤4）；拉取侧 `multica_skill_dir_name`（名称清洗 + 短 id 后缀防跨 skill 冲突）、`own_global_skill_exists`、`assemble_pulled_skill_md`（远端 name/description/content 合成 SKILL.md）。
+- **loop_.rs**：ack 分发 `dispatch_pending_skill_work` + `provider_for_workspace`（按任务 workspace 解析 agent provider 后上报，复用心跳线程既有节奏）。
+- **命令层**：`list_multica_skills`（1 远端请求 + 1 次 spawn_blocking 本地扫描投影 `localState`，无 N+1）；`pull_multica_skills`（批前一次扫描 + `seen: HashSet` 批内去重；每项 detail→files 判空→目录名→exists 判定→`spawn_blocking(write_instance)`）；`write_instance` 7 参语义：新建 name=清洗目录名 directory_path=None，已存在 name=远端展示名 directory_path=Some(已存在目录名)（重写 frontmatter name、保留未知字段）；写入后 `schedule_agent_command_catalog_refresh`（pub(crate) 化，刷新 agent 命令目录）。新错误码 `multica.skill.not-found` / `multica.skill.has-files` / `multica.skill.name-collision`（reason 透传给前端映射文案，复用 `multica.remote-error`）；VM：`MulticaSkillListItemVm{id,name,description,localState}` / `MulticaPullItemResultVm{id,name,outcome,reason}` / `MulticaPullReportVm{results}`。
+- **前端**：`MulticaSkillSyncDialog`（列表 + new/exists 徽标 + 勾选 + 覆盖数量插值确认 + outcome 汇总报告 + reason 错误码 zh/en 文案映射）；API 层四层（client/desktop/api/browser mock）同步；i18n zh/en 对等。
+
+**方案自评审**：过度设计——零新增持久字段/表/队列/缓存：推送复用心跳 ack 通道与 result 端点既有模式（server 零改动、码灵侧不新增循环）；拉取是命令层按需 REST + 批前一次本地扫描（O(本地 skills) 一次），seen HashSet 批内 O(1) 去重；限额/深度常量集中模块顶部管理，无硬编码散落。未新增 aggregate——localState 是消费端投影（远端 id+本地目录名比对），不复制 canonical 数据。性能——心跳 ack 分支仅 Option 判空，无 pending 时零成本；list = 1 远端 + 1 本地扫描；pull 每项 = 2 远端请求（detail + files metadata）+ 1 次写盘，N=用户勾选数且有确认门与进度态；报告汇总 O(N)。无全量扫描/无界队列/长持锁/流式热路径改动。风险：pull 写盘与本地并发编辑——write_instance 原子重写既有语义 + 覆盖前确认弹窗。无需 benchmark（数据规模=用户 skill 数，几十量级）。
+
+**验证**：Rust 单测已编写（`local_skills.rs` 16 项：目录名清洗幂等/非法字符/空回退、frontmatter 组装覆盖与 body-only/horizontal-rule/description 回退、库发现与存在判定按目录名作用域、bundle 读取/缺目录缺 SKILL.md/文件数·深度·大小限额/非 UTF-8 整包失败、skill key 越权校验、递归文件计数；另有 loop ack 分发与 client wire 单测），`cargo check --bin gold-band-desktop -j 1` 通过；`cargo test` 运行被本机内存阻塞（`windows` crate rlib 编码单进程峰值 ~4GB commit > 实测可用 1.9GB，rustc OOM 退出——环境问题与本次改动无关，待内存释放后以 `cargo test -p gold-band-desktop --bin gold-band-desktop multica::` 固化回归）；tsc 零错；vitest multica 8 套件 **54 过**（新增 `multica-skill-sync-i18n` 3 测：全 key 双语解析、含点错误码 reason 子 key——固化 i18next ignoreJSONStructure 默认开启前提、覆盖数量与汇总插值；回归 add-workspace-dialog / connect-dialog / connection-settings-dialog / requirements-i18n / remote-task-board / task-management-page / conversation-composer-multica-chip 7 套件 51 过）；内置浏览器双主题验收「从 Multica 同步」弹窗（深链 Context 管理 SKILL 全局 Tab；dark 以 tech-neutral 深色 token 实测——主题引擎按 inline CSS 变量下发，`bg-background` 正确解析 #111111，无浅色残留；报告页 reason 文案正确映射 `multica.skill.has-files`）。
+
+---
+
 ## 附录 A：CLAUDE.md 合规自检
 
 - ✅ 先定数据（2.2）→ 再定接口（2.8/第 7 章）→ 再补实现（2.3–2.7/第 4 章）

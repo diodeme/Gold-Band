@@ -165,6 +165,29 @@ export interface RemoteConversationSidebarVm {
   connected: boolean;
 }
 
+/// 「从 Multica 同步」勾选列表项（list_multica_skills 返回）。
+export interface MulticaSkillListItemVm {
+  id: string;
+  name: string;
+  description: string;
+  /// "new" | "exists"：exists = 本地全局库已有清洗后同名目录，同步将覆盖。
+  localState: string;
+}
+
+/// 单个选中项的同步结果（pull_multica_skills 返回）。
+export interface MulticaPullItemResultVm {
+  id: string;
+  name: string;
+  /// "created" | "overwritten" | "skipped" | "failed"。
+  outcome: string;
+  /// skipped/failed 时的结构化错误码（如 multica.skill.has-files）。
+  reason: string | null;
+}
+
+export interface MulticaPullReportVm {
+  results: MulticaPullItemResultVm[];
+}
+
 export interface UpdateInfoVm {
   version: string;
   currentVersion: string;

@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import {
   getMulticaSettings,
@@ -322,9 +323,14 @@ function ReportRow({ item, t }: { item: MulticaPullItemResultVm; t: TFunction })
         })}
       </Badge>
       {reasonText && (
-        <span className="max-w-[45%] shrink-0 truncate text-[11px] text-muted-foreground" title={reasonText}>
-          {reasonText}
-        </span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="max-w-[45%] shrink-0 truncate text-[11px] text-muted-foreground">
+              {reasonText}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>{reasonText}</TooltipContent>
+        </Tooltip>
       )}
     </div>
   );

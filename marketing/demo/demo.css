@@ -2,6 +2,7 @@
 .demo-client { height: 100%; overflow: hidden; container-type: inline-size; border: 1px solid #363839; border-radius: 8px; box-shadow: 0 12px 40px #0008; }
 .demo-client > .app-window-shell { height: 100%; }
 .demo-client [data-titlebar-brand] { white-space: nowrap; }
+.demo-client [data-conversation-status-dot][data-project-id="e-projects-code-ai-ji--a40d4379"][data-task-id="task-015"] { background-color: var(--color-gold-success); }
 .demo-window-edge { width: 6px; background: transparent; }
 .demo-window-edge:hover, .demo-window-edge:focus-visible { background: #5ca88b; }
 @media (max-width: 640px) {

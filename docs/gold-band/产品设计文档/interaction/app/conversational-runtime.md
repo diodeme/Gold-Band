@@ -762,6 +762,20 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 自动跟随只在当前 Run 仍处于 auto-follow 时响应 `NodeStarted`；用户手动选择历史 attempt、滚离底部或进入 NonRuntimeControlled follow-up 后不得抢焦点。合并刷新中已排队或正在读取的 canonical Run 边界优先于旧节点迟到的 ACP 更新，但允许更新的 canonical Run 边界继续覆盖。该优先级只约束 transient 刷新目标，不复制 lifecycle 状态。
 - 发送准入与状态文案保持分层：NonRuntimeControlled 节点完成后追问和停止后追问继续走 `acp-prompt`；Direct 活跃 turn 的后续输入继续走 durable `queue-prompt`；Workflow/AUTO RuntimeControlled 执行期继续锁定普通输入。terminal/Timeline 展示修正不得改变这些控制契约。
 
+## Composer 输入历史翻阅
+
+- 已建立会话的根 composer 支持翻阅本会话已派发的用户原文；新会话首页、只读 Agent 分支与禁止输入状态不启用。作用域使用 project/task/run/round/node/attempt 及可选 outer node/attempt，切换作用域立即结束翻阅。
+- 正文严格为空且没有附件、引用时，ArrowUp 进入最新一条；继续向上按时间倒序翻阅，最早一条再次向上循环到最新一条。ArrowDown 前往较新一条，在最新一条再次向下恢复空输入并退出。只有一条时向上保持该条；没有历史时保持空输入。
+- 单行原文允许直接上下翻阅；多行原文只在整个文本起点响应向上、终点响应向下，其余交给原生光标。选区、修饰键和输入法组合期间保留编辑语义。已展开的斜杠菜单优先消费按键；历史回填的斜杠文本不自动展开菜单或转换成命令标签。
+- 编辑回填内容或加入附件、引用后退出翻阅，保留当前草稿；Escape 仅在翻阅或查询期间恢复空输入。回填不发送、不恢复历史附件或引用；发送继续复用原提交入口和新 turn identity。提交、输入禁用、切换会话和卸载取消迟到响应的写入资格，查询期间重复按键不排队。
+- Timeline 仍为持久化事实源，不能从已加载的聊天窗口拼接历史。用户事件写入 `raw.originalUserText`，表明 content 来自独立 `display_text`；仅消费明确为 true、根分支、可见、非空的 goldBandPrompt。RawAgent 新会话首轮 RequirementTask 必须将原样 requirement 填入 display_text；运行时组装文本不作为原文。runtimeControl 是控制权转换元数据，可能附着在手动追问或“继续并发送”的真实输入上，不能仅凭该字段排除消息。无可靠来源的旧记录不猜测回填；未派发队列、提交前失败、provider 回显、隐藏修复与纯运行时提示词不纳入。相同文本的不同 promptId 保留，重试的相同身份去重。
+- 输入历史没有按时间清理规则。缓存淘汰、组件卸载和重新打开会话只释放投影，原文仍从 Timeline 分页读取。一小时后以及超过 40 条摘要缓存后，最早合格输入仍必须可达。索引 V12 重建旧的输入资格投影；存储 schema V3 在既有 attempt 准备阶段进行一次性来源修正：只对 canonical locator 匹配、不可变 workflow snapshot 为 RawAgent、sessionMode 为 new、首条根用户记录非隐藏且明确被错误标记为 false、非运行时控制输入的情况置回原文标记，保持正文和消息身份不变；无来源标记、RuntimeManaged、continue 和隐藏记录不予推测修复。写入成功后推进已有 schema 水位，重试幂等，不在按键查询路径迁移。
+- 输入历史查询不展示旋转加载图标，也不保留图标占位；查询开始、完成与缓存命中不得增删工具栏布局轨道或挤动 Agent、模型、模式等按钮。窄窗口与重新拉宽均需验证加载前中后的按钮位置一致。
+- 交付验收包含仓库 CI 的 `cargo fmt --all -- --check`；编译与功能测试通过不能替代格式检查。PR #120 的格式修正仅调整 Rust 排版，不改变输入历史的数据、接口和交互契约。
+- `list_composer_history` 返回有界原文摘要和 generation/position/messageId 游标；`get_composer_history_text` 定位读取单条原文。Timeline 索引投影保存合格原文的 composerTextBytes，页默认返回 20 条、上限 50 条，摘要查询不读取正文；一次翻阅冻结 head，过期 generation 拒绝继续。前端最多保留 40 个摘要、3 条且约 1 MiB 的 UTF-16 正文缓存，超预算单条只进入当前草稿。错误只在 composer 局部反馈。
+- Composer 历史与通用 item reader 共用可删除重建的进程内读取投影。投影在既有 4 项、32 MiB LRU 内保存 item locator、按 `startedSeq + messageId` 排序的合格输入集合及按 prompt identity 分组的去重位置；timeline append 只回放新增尾记录并同步维护二级索引。热分页从游标执行有序范围查询，只访问达到页上限所需的候选；正文通过同一投影定位单条 JSONL 记录。冷启动、缓存淘汰、索引失效或超出缓存预算时允许一次 O(N) 的物化索引加载或重建，之后的按键路径不得重复反序列化全索引、扫描全部 locator 或执行 O(N log N) 排序。
+- 复用 prompt-kit、现有草稿、Timeline 物化索引、item reader LRU 与后台 IPC，没有新增消息存储、持久字段、全局历史 Context 或加载时预取。10,000 条合格输入的回归测试必须在预热后验证分页与正文读取不再加载完整索引，分页候选检查量保持在页大小同阶；不得让历史翻阅触发 transcript 翻页或主动滚动。
+
 ## Composer 附件与资源工作区
 
 - 快速对话与会话详情追问的所有未发送附件使用同一 `draft-attachment` 右侧工作区资源；点击附件 chip 不打开遮罩式图片或文本 Dialog。图片继续复用现有工作区画布；文本复用共享只读查看器，其中 Markdown 提供渲染/源码双模式。附件被移除、清空或随 prompt 提交后，必须在同一事件链关闭对应预览 Tab，不能保留引用已释放 Object URL 或已失效内容 locator 的僵尸资源。

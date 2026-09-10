@@ -11682,8 +11682,7 @@ fn materialize_dynamic_next_in_scope(
             merge,
             acceptance,
         } => {
-            let fork_commit =
-                fork_commit.context("fanout requires a fixed source commit")?;
+            let fork_commit = fork_commit.context("fanout requires a fixed source commit")?;
             let merge = dynamic_agent_task_spec_with_resolved_provider(ctx, merge)?;
             let acceptance = dynamic_agent_task_spec_with_resolved_provider(ctx, acceptance)?;
             let group_depth = source

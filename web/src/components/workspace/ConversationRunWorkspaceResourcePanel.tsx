@@ -389,7 +389,7 @@ function RawFramesWorkspacePanel({ resource }: { resource: RawFramesWorkspaceRes
   }, [resource.key, t]);
   useEffect(() => { void load({ page: 0, pageSize: 100, order: 'desc' }); }, [load]);
   return (
-    <div className={goldThemedScrollbarClassName('min-h-0 flex-1 overflow-y-auto p-3')} data-right-workspace-resource="raw-frames">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-3" data-right-workspace-resource="raw-frames">
       {error ? <WorkspaceErrorState message={error} compact /> : null}
       <RawFrameViewer loading={loading} page={page} query={query} onQueryChange={(next) => void load(next)} />
     </div>

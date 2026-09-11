@@ -1,10 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod acp_images;
 mod avatar;
 mod builtin_mcp;
 mod channel;
 mod commands;
-mod acp_images;
 mod commands_conversation;
 mod conversation_attention;
 mod conversation_workspace;
@@ -38,8 +38,8 @@ use commands::{
     delete_agent, delete_auto_template, delete_conversation_queued_prompt, delete_mcp_server,
     delete_profile, delete_skill, delete_workflow_template, disconnect_multica,
     dismiss_update_announcement, doctor_agent, download_and_install_update, execute_git_mutation,
-    get_acp_activity_detail, get_acp_raw_frames, get_acp_session, get_acp_tool_detail,
-    get_acp_image, get_agent_binding_usage, get_agent_command_catalog, get_agent_registry,
+    get_acp_activity_detail, get_acp_image, get_acp_raw_frames, get_acp_session,
+    get_acp_tool_detail, get_agent_binding_usage, get_agent_command_catalog, get_agent_registry,
     get_app_bootstrap, get_auto_templates, get_file_comparison, get_git_branch_picker_snapshot,
     get_git_capability, get_git_commit_detail, get_git_commit_reachability, get_git_commit_review,
     get_git_comparison, get_git_history, get_git_operation, get_github_capability,
@@ -325,17 +325,26 @@ fn run() -> anyhow::Result<()> {
                 let _ = init_search_index(&paths.sqlite_db_path(), &paths.projects_dir());
             }
             let handle = app.handle().clone();
+            let command_handle = handle.clone();
+            handle
+                .state::<DesktopState>()
+                .set_agent_command_update(move |catalog| {
+                    commands::emit_agent_commands_updated(&command_handle, catalog);
+                });
             std::thread::spawn(move || {
                 loop {
                     let state = handle.state::<DesktopState>();
                     debug!("periodic agent maintenance cycle started");
-                    let diagnostics_refreshed = match state.refresh_all_agent_diagnostics() {
-                        Ok(()) => true,
-                        Err(error) => {
-                            warn!(%error, "periodic agent diagnostic refresh failed");
-                            false
-                        }
-                    };
+                    let diagnostics_refreshed =
+                        match state.refresh_all_agent_diagnostics(|agent_id| {
+                            commands::emit_agent_registry_updated(&handle, agent_id);
+                        }) {
+                            Ok(()) => true,
+                            Err(error) => {
+                                warn!(%error, "periodic agent diagnostic refresh failed");
+                                false
+                            }
+                        };
                     let commands_refreshed =
                         match state.refresh_agent_command_catalogs_for_active_workspaces() {
                             Ok(()) => true,
@@ -344,12 +353,6 @@ fn run() -> anyhow::Result<()> {
                                 false
                             }
                         };
-                    if diagnostics_refreshed {
-                        commands::emit_agent_registry_updated(&handle);
-                    }
-                    if diagnostics_refreshed || commands_refreshed {
-                        commands::emit_agent_commands_updated(&handle, None);
-                    }
                     debug!(
                         diagnostics_refreshed,
                         commands_refreshed, "periodic agent maintenance cycle completed"
@@ -426,6 +429,7 @@ fn run() -> anyhow::Result<()> {
             get_acp_activity_detail,
             get_acp_tool_detail,
             get_acp_image,
+            commands::get_acp_activity_images,
             renew_acp_session_lease,
             submit_conversation_prompt,
             reorder_conversation_queued_prompts,
@@ -438,6 +442,8 @@ fn run() -> anyhow::Result<()> {
             respond_acp_permission,
             respond_elicitation,
             get_acp_raw_frames,
+            commands::list_composer_history,
+            commands::get_composer_history_text,
             start_run,
             get_git_capability,
             initialize_git_repository,

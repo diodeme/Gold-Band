@@ -88,6 +88,15 @@ function session(partial: Partial<AcpSessionVm>): AcpSessionVm {
 }
 
 describe('ACP chat event handling', () => {
+  it('shows an unmapped canonical error verbatim without a generic prefix', () => {
+    const error = {
+      code: { domain: 'internal', code: 'internal.unknown' },
+      domain: 'internal', recovery: 'manual' as const,
+      diagnostic: '磁盘空间不足。 (os error 112)',
+    };
+    expect(visibleAcpBannerError(null, session({ status: 'failed' }), [], null, 'failed', error))
+      .toBe(error.diagnostic);
+  });
   it('shows a failed background turn even without timeline or diagnostic errors', () => {
     expect(visibleAcpBannerError(null, session({ status: 'failed' }), [], undefined, 'failed'))
       .toBeTruthy();
@@ -111,6 +120,25 @@ describe('ACP chat event handling', () => {
     } };
     expect(visibleAcpBannerError(null, oldSession, [], null, 'failed', null))
       .not.toContain('OLD_TURN_FAILURE');
+  });
+
+  it('does not restore an older run fallback while a new turn is active', () => {
+    expect(visibleAcpBannerError(
+      null,
+      session({ status: 'running' }),
+      [],
+      'old run failure: Reconnecting... 5/5',
+      'none',
+      null,
+    )).toBeNull();
+    expect(visibleAcpBannerError(
+      null,
+      session({ status: 'running' }),
+      [],
+      'old run failure: Reconnecting... 5/5',
+      'cancelled',
+      null,
+    )).toBeNull();
   });
 
   it('bounds the per-session optimistic projection by the configured event window', () => {

@@ -1696,6 +1696,7 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
     }
     let mut run: RunState = read_json(&run_path)?;
     let mut run_became_inactive = run.status != RunStatus::Running;
+    let mut run_transitioned_to_paused = false;
     if run.status == RunStatus::Running
         && run.current_round.as_deref() == Some(round_id)
         && run.current_node.as_deref() == Some(outer_node_id)
@@ -1709,6 +1710,7 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
         validate_run_state(&run)?;
         write_json(&run_path, &run)?;
         run_became_inactive = true;
+        run_transitioned_to_paused = true;
     }
 
     let round_path = app.paths.round_file(task_id, run_id, round_id);
@@ -1765,6 +1767,9 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
         )?;
     }
     drop(_guard);
+    if run_transitioned_to_paused {
+        app.publish_committed_attempt_pause(&run);
+    }
     if run_became_inactive {
         app.finish_runtime_candidate_best_effort(
             task_id,
@@ -11677,8 +11682,7 @@ fn materialize_dynamic_next_in_scope(
             merge,
             acceptance,
         } => {
-            let fork_commit =
-                fork_commit.context("fanout requires a fixed source commit")?;
+            let fork_commit = fork_commit.context("fanout requires a fixed source commit")?;
             let merge = dynamic_agent_task_spec_with_resolved_provider(ctx, merge)?;
             let acceptance = dynamic_agent_task_spec_with_resolved_provider(ctx, acceptance)?;
             let group_depth = source
@@ -15272,9 +15276,9 @@ fn drive_from_node_with_initial_session(
     initial_user_prompt_render_mode: UserPromptRenderMode,
     initial_resume_input_attachment_paths: Vec<String>,
     initial_runtime_control_intent: RuntimeControlIntent,
-    parent_continue_input: Option<ConversationPromptInput>,
-    parent_continue_prompt_id: Option<String>,
-    dynamic_resume_override: Option<DynamicResumeOverride>,
+    mut parent_continue_input: Option<ConversationPromptInput>,
+    mut parent_continue_prompt_id: Option<String>,
+    mut dynamic_resume_override: Option<DynamicResumeOverride>,
     initial_model_override: Option<String>,
     initial_permission_mode_override: Option<String>,
     mut launch: Option<mpsc::Sender<RuntimeContinueLaunch>>,
@@ -16082,6 +16086,11 @@ fn drive_from_node_with_initial_session(
             runtime_control_intent = prompt_state.runtime_control_intent;
             model_override = prompt_state.model_override;
             permission_mode_override = prompt_state.permission_mode_override;
+            // Explicit recovery belongs to the initial outer attempt, including
+            // its retries, but never to a workflow successor or a new round.
+            parent_continue_input = None;
+            parent_continue_prompt_id = None;
+            dynamic_resume_override = None;
             invalid_output_repair_prompts = 0;
             continue;
         }
@@ -16502,7 +16511,7 @@ mod tests {
                 .resume_prompt
                 .as_deref()
                 .unwrap_or_default()
-                .contains("用户已选择将当前节点重新交由 Runtime 控制")
+                .contains("请继续执行当前节点尚未完成的任务")
         );
     }
 
@@ -16522,7 +16531,7 @@ mod tests {
         assert_eq!(state.resume_prompt_visibility, PromptVisibility::Hidden);
         assert_eq!(
             state.resume_prompt.as_deref(),
-            Some("用户已选择将当前节点重新交由 Runtime 控制。当前输出契约（如有）重新生效。")
+            Some("请继续执行当前节点尚未完成的任务，并遵循用户针对该任务的最新指引（如果有）")
         );
     }
 

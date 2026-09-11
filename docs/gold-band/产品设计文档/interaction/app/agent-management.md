@@ -99,6 +99,7 @@ Agent Cards
 
 交互：
 - 通过右侧 Sheet 编辑
+- Catalog Agent 的 `command` 与 `args` 由当前 Catalog 管理，在编辑 Sheet 中保持原生只读语义，统一使用 `muted` 表面与弱化文字；可编辑的 `displayName`、`env` 和目录字段统一使用 `background` 表面（覆盖 Textarea 的主题深色变体），去除只读字段的编辑态 focus ring。字段不得改为 `disabled`，用户仍可聚焦、选择和复制实际启动配置。自定义 Agent 的对应字段保持普通可编辑样式
 - `command` 在脏状态比较和持久化前统一移除前后空白；只增加或删除命令首尾空格不视为配置修改，前后端配置边界都必须执行同一规范化规则
 - `args` 按空格或换行分隔参数，编辑态保留原始多行文本，保存时按空白拆分为真实进程参数，避免一行内多个参数被合成一个参数
 - `env` 按 `KEY=VALUE` 输入，编辑态保留原始多行文本，保存时再解析
@@ -153,7 +154,9 @@ Agent Cards
 - doctor 与正式 ACP 连接共用 adapter stderr 字节流诊断：Windows 本地代码页或任意非法 UTF-8 输出不得中止 stderr 消费，详细日志必须保留 lossy 可读文本与有界原始字节前缀，并携带具体 Agent id、adapter command 和可获得的进程退出状态。常规日志不得直接展开 stderr 正文；用户开启“记录详细日志”后无需重启即可在下一次诊断中取得真实 npm/npx 错误，而不是只看到 `stream did not contain valid UTF-8` 或无法归因的 `adapter=npx`。
 - 周期 Agent doctor、命令目录刷新、adapter stderr 行与非 UTF-8 摘要属于高频且可自动复现的诊断过程，只写 `DEBUG`，默认 `INFO` 的 `runtime.log` 不重复记录每分钟诊断结果。doctor 返回 unavailable 是可展示的业务诊断结果，不升级为 `WARN`；只有调度锁、持久化、线程启动、命令目录刷新或传输读取等基础设施实际失败才写 `WARN`，并携带稳定 Agent id。手动诊断的 UI 结果继续来自 canonical diagnostic snapshot，不能依赖日志级别。
 - 当前固定参考官方 Registry 中的 Claude、Codex、Cursor、Gemini、CodeBuddy、Goose、Qwen Code、OpenCode、Kimi Code、Amp、Pi 十一类精选 Agent，同时允许任意合法自定义 ACP Agent
-- 诊断 initialize 设置 5 分钟超时，超时视为异常诊断并返回页面，不允许阻塞客户端
+- 单个 Agent 每轮诊断从取得执行资格起共享 3 分钟截止时间，覆盖 adapter 启动后的初始化、会话创建、命令发现和诊断会话清理；周期失败重试沿用同一截止时间，预算耗尽后不再启动重试。超时以 `acp.doctor-timeout` 和当前阶段记录原因，回收进程树并保留有界失败日志；进程回收复用既有平台机制，Unix 的 2 秒终止宽限不计入协议等待预算。正常业务会话的请求期限不随 Doctor 改变
+- 所有诊断入口和命令目录刷新按稳定 Agent ID 互斥，不再持有跨 Agent 的全局运行锁；同一 Agent 在全局与 workspace 命令目录刷新之间仍不能重叠，因为它们共享该 Agent 的 doctor 目录。全应用最多同时运行 4 个诊断 adapter，批量诊断最多使用 4 个 worker；等待同一 Agent 的请求不提前占用 adapter 名额，运行集合随 guard 释放删除，不持久化
+- 周期诊断每完成一项并可靠写入后，立即发布该 Agent 的 registry 投影，不等待其他 Agent 完成；前端按配置及诊断时间局部合并，不重读全局 registry。只有命令目录内容变化并成功落盘后才发布含 Agent ID、project ID 的 commands 更新事件；同一挂载范围合并请求，批次结束不再全局广播。落盘失败不得提前推进内存目录，否则相同内容的重试会被错误跳过。手动诊断与目录扫描使用 blocking 执行器；保存提交、配置版本校验和按版本合并沿用既有机制。批次末尾清理失效诊断进入短时提交锁。性能预算和验收见 [0.15.1 性能修复](performance-0.15.1.md)。
 - 诊断结果除健康状态外，还要缓存 agent 返回的 `modes` / `configOptions` 能力摘要，供工作流编辑器直接复用
 - 诊断缓存需要持久化到当前 workspace 的本地运行时目录，客户端重启后仍可直接为节点展示可选权限模式，不要求用户每次重新手动诊断
 

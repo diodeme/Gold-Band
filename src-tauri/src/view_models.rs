@@ -1412,7 +1412,7 @@ pub fn agent_registry_vm(
     AgentRegistryVm { agents, catalog }
 }
 
-fn managed_agent_vm(
+pub(crate) fn managed_agent_vm(
     agent_id: &ManagedAgentId,
     config: &ManagedAgentConfig,
     diagnostic: Option<&AgentDiagnosticState>,
@@ -11461,26 +11461,47 @@ mod tests {
             "id":"unavailable-image", "storageKind":"capturedBlob", "contentHash":"missing",
             "byteLength":8, "encoding":"utf-8", "lineEnding":null
         }});
-        let mut tool = acp_event_at("image-tool", "toolCall", Some("completed"), 1,
+        let mut tool = acp_event_at(
+            "image-tool",
+            "toolCall",
+            Some("completed"),
+            1,
             Some(json!({"rawInput":{"path":"screenshot"},
                 "content":[{"type":"content", "content":{"type":"image", "mimeType":"image/png", "data":blob}}],
                 "rawOutput":{"result":{"content":[{"type":"image", "mimeType":"image/png", "data":blob}]}},
-                "goldBandImages":[{"eventId":"image-tool"}]})));
+                "goldBandImages":[{"eventId":"image-tool"}]})),
+        );
         tool.seq = 1;
         tool.session_id = Some("image-session".into());
         write_timeline_file(&attempt, "acp.timeline.jsonl", &[tool]);
-        let list = acp_activity_detail_vm_for_attempt(&attempt, AcpActivityDetailQueryInput {
-            branch_id:gold_band::acp::branches::ROOT_BRANCH_ID.into(), session_id:"image-session".into(),
-            activity_start_seq:1, activity_end_seq:1, earlier_cursor:None, limit:Some(40),
-        }).expect("a list must not depend on image blob availability");
+        let list = acp_activity_detail_vm_for_attempt(
+            &attempt,
+            AcpActivityDetailQueryInput {
+                branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.into(),
+                session_id: "image-session".into(),
+                activity_start_seq: 1,
+                activity_end_seq: 1,
+                earlier_cursor: None,
+                limit: Some(40),
+            },
+        )
+        .expect("a list must not depend on image blob availability");
         assert_eq!(list.items.len(), 1);
         let raw = list.items[0].raw.as_ref().unwrap();
         assert_eq!(raw["rawInput"]["path"], "screenshot");
-        for field in ["goldBandImages", "content", "rawOutput"] { assert!(raw.get(field).is_none()); }
-        let detail = acp_tool_detail_vm_for_attempt(&attempt, AcpToolDetailQueryInput {
-            branch_id:gold_band::acp::branches::ROOT_BRANCH_ID.into(), session_id:"image-session".into(),
-            event_id:"image-tool".into(), tool_call_id:None,
-        }).expect("tool detail returns image references without reading image blobs");
+        for field in ["goldBandImages", "content", "rawOutput"] {
+            assert!(raw.get(field).is_none());
+        }
+        let detail = acp_tool_detail_vm_for_attempt(
+            &attempt,
+            AcpToolDetailQueryInput {
+                branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.into(),
+                session_id: "image-session".into(),
+                event_id: "image-tool".into(),
+                tool_call_id: None,
+            },
+        )
+        .expect("tool detail returns image references without reading image blobs");
         let raw = detail.event.unwrap().raw.unwrap();
         assert_eq!(raw["goldBandImages"][0]["pointer"], "/content/0/content");
         assert!(raw.pointer("/content/0/content/data").is_none());

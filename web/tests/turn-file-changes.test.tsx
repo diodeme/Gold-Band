@@ -239,6 +239,47 @@ describe('turn file changes card', () => {
     }
   });
 
+  it('updates one compaction row in place and stops its clock on completion', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-09T06:16:20Z'));
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const first: AcpUiEventVm = {
+      id: 'context-compaction-10', seq: 10, kind: 'contextCompaction',
+      timestamp: '2026-09-09T06:16:20Z', startedAt: '2026-09-09T06:16:20Z',
+      status: 'running',
+    };
+    const render = async (event: AcpUiEventVm) => {
+      await act(async () => root.render(
+        <TooltipProvider><ACPMessageList timeline={[event]} sessionStatus="running" sending={false} /></TooltipProvider>,
+      ));
+    };
+    try {
+      await render(first);
+      const row = container.querySelector('[role="status"]');
+      expect(row).not.toBeNull();
+      for (const seq of [11, 12, 13]) {
+        await act(async () => vi.advanceTimersByTime(30_000));
+        await render({ ...first, seq });
+        expect(container.querySelectorAll('[role="status"]')).toHaveLength(1);
+        expect(container.querySelector('[role="status"]')).toBe(row);
+      }
+      await act(async () => vi.advanceTimersByTime(17_000));
+      await render({ ...first, seq: 14, status: 'completed', endedAt: '2026-09-09T06:18:07Z' });
+      const completedText = row?.textContent;
+      expect(completedText).toContain('1m 47s');
+      expect(row?.querySelector('.animate-spin')).toBeNull();
+      await act(async () => vi.advanceTimersByTime(120_000));
+      expect(row?.textContent).toBe(completedText);
+      expect(container.querySelector('[role="status"]')).toBe(row);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      vi.useRealTimers();
+    }
+  });
+
   it('uses the shared assistant content rail for compaction and file-change timeline items', async () => {
     const container = document.createElement('div');
     document.body.append(container);

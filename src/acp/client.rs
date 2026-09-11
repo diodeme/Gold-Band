@@ -11821,6 +11821,29 @@ mod tests {
     }
 
     #[test]
+    fn memory_data_reaches_new_and_restored_sessions_without_repeating_rules() {
+        let mut prompt = non_runtime_control_test_prompt("memory-refresh");
+        prompt.system_prompt = "stable-memory-rules".into();
+        prompt.user_prompt = format!(
+            "{}\n\nfollow up",
+            super::gold_band_hidden_block("Gold Band current memory", "parameter=B2")
+        );
+        for restored in [false, true] {
+            for supports_system_prompt in [true, false] {
+                let text =
+                    session_prompt_text("any-provider", &prompt, restored, supports_system_prompt);
+                assert_eq!(text.matches("parameter=B2").count(), 1);
+                assert!(text.contains("data-gold-band-hidden"));
+                assert_eq!(
+                    text.contains("stable-memory-rules"),
+                    !restored && !supports_system_prompt
+                );
+                assert!(text.ends_with("follow up"));
+            }
+        }
+    }
+
+    #[test]
     fn claude_session_prompt_keeps_user_prompt_only() {
         let prompt = PromptBundle {
             system_prompt: "node constraints".to_string(),

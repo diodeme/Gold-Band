@@ -27,6 +27,11 @@ export function acpRuntimeErrorBannerCopy(
   if (!runtimeError) {
     return null;
   }
+  if (runtimeError.code?.code?.startsWith('memory.')) {
+    const message = t(`memory.errors.${runtimeError.code.code.slice('memory.'.length)}`);
+    const path = stringParam(runtimeError.params?.path);
+    return path ? `${message} ${path}` : message;
+  }
   if (runtimeError.code?.code === WORKSPACE_WORKTREE_CREATE_FAILED_CODE) {
     return t('conversation.runtime.worktreeCreateFailed');
   }

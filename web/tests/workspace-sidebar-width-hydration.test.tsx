@@ -12,6 +12,7 @@ const resizableGroupEvents = vi.hoisted(() => ({
   onLayoutChanged: null as null | ((layout: Record<string, number>, meta: { isUserInteraction: boolean }) => void),
 }));
 const resizableGroupConstraintLag = vi.hoisted(() => ({ centerMinPixels: null as number | null }));
+const memorySidebarTest = vi.hoisted(() => ({ enabled: false }));
 
 vi.mock('@/api', async () => {
   const actual = await vi.importActual<typeof import('@/api')>('@/api');
@@ -22,9 +23,11 @@ vi.mock('@/components/AppTitleBar', () => ({
   AppTitleBar: () => <header />,
 }));
 
-vi.mock('@/components/conversation/ConversationSidebar', () => ({
-  ConversationSidebar: () => <aside data-testid="conversation-sidebar" />,
-}));
+vi.mock('@/components/conversation/ConversationSidebar', async () => {
+  const actual = await vi.importActual<typeof import('@/components/conversation/ConversationSidebar')>('@/components/conversation/ConversationSidebar');
+  return { ...actual, ConversationSidebar: (props: React.ComponentProps<typeof actual.ConversationSidebar>) => memorySidebarTest.enabled ? <actual.ConversationSidebar {...props} /> : <aside data-testid="conversation-sidebar" /> };
+});
+vi.mock('@/components/conversation/ProjectMemorySheet', () => ({ ProjectMemorySheet: () => <input aria-label="memory-draft" defaultValue="preserved draft" /> }));
 
 vi.mock('@/components/workspace/RightWorkspaceDock', () => ({
   RightWorkspaceDock: () => <aside data-testid="right-workspace-dock" />,
@@ -133,6 +136,27 @@ afterEach(() => {
 });
 
 describe('WorkspaceShell sidebar width hydration', () => {
+  it('preserves the memory editor DOM when the sidebar is collapsed', async () => {
+    memorySidebarTest.enabled = true;
+    const container = document.createElement('div'); document.body.append(container);
+    const root = createRoot(container);
+    const commonProps = {
+      appName: 'Gold Band', windowFrameStyle: 'native-compositor' as const,
+      appConfig: { acpSessionTitleRefreshEnabled: false, acpChatEventPageSize: 360, acpChatEventWindowPageCount: 3, acpChatResourceCacheSessionCount: 8, turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 1 }, workspaceLayout: FALLBACK_WORKSPACE_LAYOUT },
+      vm: { loadStatus: 'ready' as const, workspaces: [{ projectId: 'p1', name: 'Workspace', workspacePath: '/workspace' }], pinRefs: [], pinnedTasks: [], pinnedTaskPage: { status: 'ready-empty' as const, nextCursor: null }, tasksByWorkspace: {}, workspaceTaskPages: {}, lastActiveWorkspaceId: null },
+      conversationWorkspaceStore: new ConversationWorkspaceStore(), onSelect: () => {}, onToggleSidebar: () => {}, onNewConversation: () => {}, onSearch: () => {}, onPinTask: () => {}, onUnpinTask: () => {}, onRenameTask: () => {}, onDeleteTask: () => {},
+    };
+    try {
+      await act(async () => root.render(<WorkspaceShell {...commonProps} sidebarCollapsed={false} active={{ kind: 'conversation-home' }}><div /></WorkspaceShell>));
+      const open = [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => ['memory.title', '项目记忆设置', 'Project Memory Settings'].includes(button.getAttribute('aria-label') ?? ''))!;
+      expect(open).toBeDefined();
+      await act(async () => open.click());
+      const editor = container.querySelector('[aria-label="memory-draft"]');
+      expect(editor).not.toBeNull();
+      await act(async () => root.render(<WorkspaceShell {...commonProps} sidebarCollapsed active={{ kind: 'conversation-home' }}><div /></WorkspaceShell>));
+      expect(container.querySelector('[aria-label="memory-draft"]')).toBe(editor);
+    } finally { await act(async () => root.unmount()); memorySidebarTest.enabled = false; }
+  });
   it('applies a persisted minimum width that arrives after the panel registers', async () => {
     const container = document.createElement('div');
     document.body.append(container);

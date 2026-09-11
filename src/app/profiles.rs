@@ -763,6 +763,7 @@ pub(crate) fn find_profile_by_id(
 fn built_in_profiles(language: DesktopLanguage) -> Vec<ProfileEntry> {
     DEFAULT_PROFILE_SEEDS
         .iter()
+        .filter(|seed| seed.key != "cicd" || crate::memory::is_wb())
         .map(|seed| ProfileEntry {
             id: seed.id.to_string(),
             name: seed.name.value(language).to_string(),
@@ -782,6 +783,7 @@ fn built_in_profiles(language: DesktopLanguage) -> Vec<ProfileEntry> {
 fn built_in_profile_by_id(id: &str, language: DesktopLanguage) -> Option<ProfileEntry> {
     DEFAULT_PROFILE_SEEDS
         .iter()
+        .filter(|seed| seed.key != "cicd" || crate::memory::is_wb())
         .find(|seed| seed.id == id)
         .map(|seed| ProfileEntry {
             id: seed.id.to_string(),
@@ -1277,7 +1279,10 @@ profile body
         assert_eq!(by_id["pf-builtin-dev-test"], true);
         assert_eq!(by_id["pf-builtin-review"], false);
         assert_eq!(by_id["pf-builtin-test"], false);
-        assert_eq!(by_id["pf-builtin-cicd"], false);
+        assert_eq!(
+            by_id.get("pf-builtin-cicd"),
+            crate::memory::is_wb().then_some(&false)
+        );
         assert_eq!(by_id["pf-builtin-accept"], false);
         assert_eq!(by_id["pf-builtin-cleanup"], false);
         assert_eq!(by_id["pf-builtin-interview"], false);
@@ -1301,6 +1306,15 @@ profile body
         ];
 
         for (id, zh_name, en_name) in expected {
+            if id == "pf-builtin-cicd" && !crate::memory::is_wb() {
+                assert!(
+                    !zh_profiles
+                        .iter()
+                        .chain(&en_profiles)
+                        .any(|profile| profile.id == id)
+                );
+                continue;
+            }
             let zh = zh_profiles
                 .iter()
                 .find(|profile| profile.id == id)
@@ -1339,6 +1353,17 @@ profile body
         let paths =
             GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().join("repo")).unwrap());
         let id = "pf-builtin-cicd";
+        if !crate::memory::is_wb() {
+            assert!(show_profile(&paths, id, DesktopLanguage::ZhCn).is_err());
+            assert!(
+                !list_profiles(&paths, DesktopLanguage::ZhCn)
+                    .unwrap()
+                    .profiles
+                    .iter()
+                    .any(|profile| profile.id == id)
+            );
+            return;
+        }
         for (language, content) in [
             (DesktopLanguage::ZhCn, PROFILE_CICD_ZH_CN),
             (DesktopLanguage::En, PROFILE_CICD_EN),
@@ -1393,9 +1418,6 @@ profile body
 
     #[test]
     fn cicd_profile_requires_interactive_build_and_deploy_without_automatic_extras() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths =
-            GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap());
         for (language, clauses) in [
             (
                 DesktopLanguage::ZhCn,
@@ -1404,7 +1426,7 @@ profile body
                     "默认推荐按构建部署",
                     "两种部署方式都必须与用户交互确认",
                     "未选择的附加操作不执行，也不影响构建部署任务完成",
-                    "项目根目录的 `memory.json` 只提供项目所属子系统 `sub_sys`",
+                    "工作空间与任务记忆统一使用字符串 `key/value/desc` 条目",
                     "`wetest <cmd> --help` 动态发现",
                     "查询自由、触发类确认",
                     "不通过试运行触发类命令来探测参数",
@@ -1417,61 +1439,32 @@ profile body
                     "Recommend deployment from a build by default",
                     "Both deployment modes require interactive confirmation with the user",
                     "Unselected optional operations are not executed and do not block completion of build and deployment",
-                    "Project-root `memory.json` supplies only the project's subsystem membership in `sub_sys`",
+                    "Workspace and task memory share string `key/value/desc` entries",
                     "dynamically discover it with `wetest <cmd> --help`",
                     "queries are free; triggers require confirmation",
                     "never probe parameters by trial-running a trigger command",
                 ],
             ),
         ] {
-            let profile = show_profile(&paths, "pf-builtin-cicd", language).unwrap();
+            let content = built_in_profile_content("cicd", language);
             for clause in clauses {
-                assert!(
-                    profile.content.contains(clause),
-                    "missing CI/CD contract: {clause}"
-                );
+                assert!(content.contains(clause), "missing CI/CD contract: {clause}");
             }
         }
     }
 
     #[test]
-    fn cicd_profile_provides_matching_task_configuration_templates_in_both_languages() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths =
-            GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap());
-        let mut templates = Vec::new();
-        for language in [DesktopLanguage::ZhCn, DesktopLanguage::En] {
-            let profile = show_profile(&paths, "pf-builtin-cicd", language).unwrap();
-            let template = profile
-                .content
-                .split_once("```json")
-                .and_then(|(_, rest)| rest.split_once("```"))
-                .map(|(body, _)| body)
-                .expect("CI/CD role must provide a task memory.json template");
-            let template: serde_json::Value = serde_json::from_str(template).unwrap();
-            let targets = template["targets"]
-                .as_array()
-                .expect("separate subsystem configurations");
-            assert_eq!(
-                targets.len(),
-                1,
-                "template provides one unfilled target to repeat as needed"
-            );
-            let target = &targets[0];
-            assert_eq!(target.get("sub_sys"), Some(&serde_json::Value::Null));
-            assert_eq!(
-                target["build"].get("job_id"),
-                Some(&serde_json::Value::Null)
-            );
-            assert_eq!(target["deploy"]["mode"], "build");
-            assert_eq!(
-                target["deploy"].get("template_id"),
-                Some(&serde_json::Value::Null)
-            );
-            assert_eq!(target["deploy"]["pkg_names"], json!([]));
-            templates.push(template);
-        }
-        assert_eq!(templates[0], templates[1]);
+    fn cicd_profiles_share_parameter_keys() {
+        let keys = |content: &str| {
+            content
+                .lines()
+                .filter(|line| line.starts_with("| `cicd.<S>."))
+                .map(|line| line.split('|').nth(1).unwrap().trim().to_owned())
+                .collect::<Vec<_>>()
+        };
+        let zh = keys(PROFILE_CICD_ZH_CN);
+        assert_eq!(zh.len(), 13);
+        assert_eq!(zh, keys(PROFILE_CICD_EN));
     }
 
     fn run_import(

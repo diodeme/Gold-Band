@@ -15,15 +15,26 @@ test('the bundled demo dataset passes the production build gate', () => {
 test('the bundled demo dataset stays inside its publication budget', () => {
   const files = published();
   const bytes = files.reduce((sum, file) => sum + file.byteLength, 0);
-  assert.ok(bytes <= 32 * 1024 * 1024, `published bytes ${bytes} exceed the 32 MiB demo budget`);
+  assert.ok(bytes <= 50 * 1024 * 1024, `published bytes ${bytes} exceed the 50 MiB demo budget`);
   assert.ok(files.length <= 4000, `published file count ${files.length} exceeds the demo budget`);
 });
 
-test('runtime artifacts and per-event tool payloads stay out of the publication inventory', () => {
+test('runtime artifacts and per-event payloads stay out of the publication inventory', () => {
   const files = published();
   assert.equal(files.filter((file) => file.path.startsWith('archive/')).length, 0, 'raw run archive must not ship');
-  const dropped = files.filter((file) => /\/(?:files|directories|raw|activity|events)\//.test(file.path));
-  assert.deepEqual(dropped.slice(0, 5).map((file) => file.path), [], 'runtime projections must not ship');
+  const dropped = files.filter((file) => /\/(?:files|directories|raw|events)\//.test(file.path));
+  assert.deepEqual(dropped.slice(0, 5).map((file) => file.path), [], 'per-event payloads must not ship');
+});
+
+test('activity rows keep labels and elapsed time but no tool payload', () => {
+  const rows = published()
+    .filter((file) => /\/activity\/\d+\.json$/.test(file.path))
+    .flatMap((file) => read(file.path));
+  assert.ok(rows.length > 0, 'expected projected activity rows');
+  assert.ok(rows.every((row) => typeof row.id === 'string' && typeof row.kind === 'string'));
+  assert.ok(rows.some((row) => typeof row.title === 'string' && row.title.length > 0));
+  assert.ok(rows.every((row) => row.raw?.rawOutput === undefined && row.raw?.content === undefined));
+  assert.ok(rows.filter((row) => row.kind === 'toolCall').every((row) => row.content === undefined));
 });
 
 test('every published session index, page, image and change resource exists', () => {
@@ -33,7 +44,11 @@ test('every published session index, page, image and change resource exists', ()
     assert.ok(existsSync(join(root, session.path)), `missing session index ${session.path}`);
     const index = read(session.path);
     for (const page of index.pages) assert.ok(existsSync(join(root, page.path)), `missing page ${page.path}`);
-    for (const ref of Object.values(index.eventRefs ?? {})) assert.ok(existsSync(join(root, ref.path)), `missing event ${ref.path}`);
+    for (const page of index.activityPages) assert.ok(existsSync(join(root, page.path)), `missing activity page ${page.path}`);
+    for (const ref of Object.values(index.eventRefs ?? {})) {
+      assert.ok(Number.isSafeInteger(ref.activityPage), `event ${ref.id} has no activity page`);
+      assert.ok(index.activityPages[ref.activityPage], `event ${ref.id} points outside its activity pages`);
+    }
   }
 });
 

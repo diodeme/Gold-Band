@@ -50,15 +50,19 @@ Upload the resulting directory and point the server at it. No rewrite rules are 
 ```nginx
 location = /site-by-codex { return 301 /site-by-codex/; }
 
-location /site-by-codex/ {
+# `^~` is required: a sibling regex location such as `~* \.(svg|woff2|png)$`, common in
+# existing vhosts for static caching, otherwise wins over this prefix and resolves those
+# requests against the other site's root. That breaks logo, agent icons and theme fonts
+# while HTML, JS and CSS keep working.
+location ^~ /site-by-codex/assets/ {
+    alias /data/app/gold-band-site/assets/;
+    expires 1y;
+    add_header Cache-Control "public, max-age=31536000, immutable";
+}
+
+location ^~ /site-by-codex/ {
     alias /data/app/gold-band-site/;
     index index.html;
-
-    location ~ ^/site-by-codex/(?<asset>assets/.+)$ {
-        alias /data/app/gold-band-site/$asset;
-        expires 1y;
-        add_header Cache-Control "public, max-age=31536000, immutable";
-    }
 }
 ```
 

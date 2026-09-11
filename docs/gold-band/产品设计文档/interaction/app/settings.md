@@ -174,7 +174,7 @@
 
 - 外观权威字段改为 `appearance`：`schemaVersion = 2`、稳定 `themeId`、`colorScheme = system | light | dark`、按主题隔离的 `visualQualityByTheme`。旧 `desktopTheme` 在 settings schema v5 一次性迁移后删除，不双写。
 - 个性化权威字段为 `personalization`：`schemaVersion = 4`，显式保存两套有序字体栈、字号、按明暗模式隔离的壁纸来源/可见度以及 Agent / 个人头像图片与形状的 `source`。settings schema v8 破坏式删除 v1 单字体字段；settings schema v9 增加单壁纸；settings schema v10 将它一次性升级为 light/dark 两份配置，不保留双读。主题来源持续跟随当前主题，用户资产历史全局共享。
-- 内置 `builtin.gold-band`、`builtin.tech-neutral` 分别位于独立 `themes/*` 声明式包目录，共用 DTCG token、manifest/recipe/preset、Style Dictionary alias 解析、JSON Schema/Ajv 与 Zod/Rust 双端契约；构建产出的 Catalog、CSS recipe 和 asset manifest 是 Web 与 Tauri 的共同输入，业务组件不得读取具体主题 ID。
+- 内置 `builtin.gold-band`、`builtin.tech-neutral` 分别位于独立 `themes/*` 声明式包目录，共用 DTCG token、manifest/recipe/preset、Style Dictionary alias 解析、JSON Schema/Ajv 与 Zod/Rust 双端契约；构建产出的 Catalog、CSS recipe 和 asset manifest 是 Web 与 Tauri 的共同输入，业务组件不得读取具体主题 ID。主题 Catalog、Schema、主题包 `dist` 文本产物、Web generated catalog/CSS 与 Agent SVG 图标在仓库层固定为 LF 文本；`.gitattributes` 的精确路径规则优先于本机 `core.autocrlf`，避免生成脚本重写相同内容后在 Windows Changes 中反复出现假变更。
 - 设置页先选择设计风格主题包，再选择明暗模式；`system` 只解析当前主题包内的 light/dark。当前两个内置主题均不声明视觉质量能力，因此不显示质量档控件。
 - 主题运行时只更新根 `data-theme / data-color-scheme / data-visual-quality / data-material-model`、封闭 CSS variables 与原生窗口安全底色，不请求会话、不重建 timeline 或编辑器。
 - 共享 shadcn/ui、prompt-kit 与应用壳以稳定 `data-theme-role` 消费材质 recipe；主题卡在宽内容区三列，窄窗口自动单列。

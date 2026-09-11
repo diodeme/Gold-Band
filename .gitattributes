@@ -1,0 +1,8 @@
+# Keep generated text assets stable on Windows machines with core.autocrlf=true.
+resources/themes/*.json text eol=lf
+theme-sdk/schema/*.json text eol=lf
+themes/*/dist/*.json text eol=lf
+themes/*/dist/*.css text eol=lf
+web/src/themes/generated/*.json text eol=lf
+web/src/themes/generated/*.css text eol=lf
+web/public/agent-icons/*.svg text eol=lf

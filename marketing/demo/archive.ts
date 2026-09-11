@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { sha256 as portableSha256 } from '@noble/hashes/sha2.js';
 import { isExcludedDemoSession, selectVisibleDemoSessions } from './session-selection';
 import type { AcpActivityDetailQueryInput, AcpRawFrameQueryInput, AcpRawFrameVm, AcpSessionQueryInput, AcpUiEventVm, FileComparisonVm, FileVersionRefVm, TurnFileLocatorVm } from '@/types';
 import { boundedBytes } from './archive-http';
@@ -55,7 +56,11 @@ export function archiveSession(catalog: ArchiveCatalog, locator: ArchiveLocator)
 export function createArchiveReader(baseUrl: string, fetcher: typeof fetch = fetch) {
   const base = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
   async function sha256(bytes: Uint8Array<ArrayBuffer>) {
-    return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), byte => byte.toString(16).padStart(2, '0')).join('');
+    // `crypto.subtle` only exists in secure contexts, so plain-HTTP hosts fall back to the bundled digest.
+    const digest = typeof crypto !== 'undefined' && typeof crypto.subtle?.digest === 'function'
+      ? new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
+      : portableSha256(bytes);
+    return Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('');
   }
   async function request(url: string, init?: RequestInit) {
     try { return await fetcher(url, init); }

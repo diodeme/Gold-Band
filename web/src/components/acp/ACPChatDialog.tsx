@@ -2,6 +2,7 @@ import { AcpImageStrip, useAcpToolImageReadiness } from './AcpImageStrip';
 import { MessageAttachmentPreviewButton } from './MessageAttachmentPreviewButton';
 export { MessageAttachmentPreviewButton } from './MessageAttachmentPreviewButton';
 import { acpImagesFromRaw, acpActivityImages } from '@/lib/acp-image-cache';
+import { randomId } from '@/lib/secure-random';
 import {
   createContext,
   memo,
@@ -5526,7 +5527,7 @@ export function ACPChatDialog(
   const addSelectedQuote = useCallback((selection: AgentMessageSelection) => {
     setQuotes((current) => {
       const result = addComposerQuote(current, {
-        id: crypto.randomUUID(),
+        id: randomId(),
         sourceKey: selection.sourceKey,
         text: selection.text,
       });

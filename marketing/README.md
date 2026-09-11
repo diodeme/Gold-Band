@@ -64,6 +64,8 @@ location /site-by-codex/ {
 
 `add_header` inside a location replaces inherited `add_header` directives from the enclosing server block, so repeat any security headers you rely on there. `gzip`/`gzip_vary` settings are inherited normally.
 
+Plain HTTP origins are supported: the bundles avoid secure-context-only APIs on their happy path (`crypto.subtle` and `crypto.randomUUID` degrade to `@noble/hashes` and `crypto.getRandomValues`), so an internal host name without TLS still runs the Demo and the archive reader.
+
 With the combined production preview running, `npm run site:verify` checks five widths, both languages, four playback lifecycles, downloads, documentation and full Demo links. Set `SITE_URL` when using another port. It writes screenshots and a technical report to `.codex-temp/site-verification/`; the report explicitly keeps scene/reference visual acceptance pending.
 
 `node scripts/verify-site-scroll.mjs` checks desktop sticky positioning and natural mobile document scrolling at five widths in both languages/themes. Each case loads independently, waits for deep-link scrolling to settle, pauses the active replay, then verifies that scrolling preserves its renderer, camera and content. Measurements and screenshots are written to `.codex-temp/site-scroll-verification/`. Set `SITE_URL` and `AGENT_BROWSER_BIN` as above. `node --test scripts/verify-site-scroll.test.mjs` verifies rejection of clock advancement, remounts, overlap and incorrect positioning. This is layout verification, not complete scene readability or motion acceptance.

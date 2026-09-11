@@ -349,9 +349,16 @@ pub struct PendingLocalSkillsRef {
 ///
 /// 与 ack 现有 `pending_local_skill_imports` 等复数 pending 字段同构。仅作刷新信号消费，
 /// `is_ready` 的权威事实源是 pending/claim/detail 载荷（见 [`HeartbeatAck`] 注释）。
-#[derive(Debug, Deserialize)]
+///
+/// 两字段带 `#[serde(default)]`：wire 形态尚未定稿（本字段是码灵提案），字段命名/取值一旦与提案
+/// 不一致，解析必须退化为「有变化但内容不可用」而不是 `Err`——ack 是**整条**反序列化的，失败会连带
+/// 跳过同一 tick 的 skill 待办派发，并只留一句通用心跳失败日志（故障不可归因）。
+/// 码灵只消费「diff 是否非空」，条目内容不参与任何判定，故缺省值不影响语义。
+#[derive(Debug, Default, Deserialize)]
 pub struct ReadinessChange {
+    #[serde(default)]
     pub task_id: String,
+    #[serde(default)]
     pub is_ready: bool,
 }
 
@@ -1863,6 +1870,28 @@ mod tests {
         // 旧 server / 无变化 → 字段缺失（None），不触发刷新信号。
         let ack: HeartbeatAck = serde_json::from_str(r#"{"status":"ok"}"#).unwrap();
         assert!(ack.pending_readiness_changes.is_none());
+    }
+
+    #[test]
+    fn heartbeat_ack_tolerates_diverged_readiness_change_shape() {
+        // wire 形态尚未定稿（S4 目前是码灵提案）：条目字段与提案不一致时必须退化为「无信号」，
+        // 绝不能因这个可选字段让**整条 ack** 解码失败——ack 同时承载 skill 待办派发
+        // （loop_.rs `dispatch_pending_skill_work`），解码失败会连带跳过本 tick 的 skill 工作，
+        // 且日志只留一句通用的 `multica heartbeat failed (will retry next tick)`，故障无法归因。
+        let missing_flag: HeartbeatAck =
+            serde_json::from_str(r#"{"status":"ok","pending_readiness_changes":[{"task_id":"t-1"}]}"#)
+                .expect("条目缺 is_ready 不应让整条 ack 解码失败");
+        let changes = missing_flag
+            .pending_readiness_changes
+            .expect("diverged 形态仍应解出 diff");
+        assert_eq!(changes.len(), 1, "非空即刷新信号，条目内容不参与判定");
+
+        // 键名风格不一致（camelCase）同样退化为「有变化但内容不可用」——只取「非空」这一事实。
+        let camel: HeartbeatAck = serde_json::from_str(
+            r#"{"status":"ok","pending_readiness_changes":[{"taskId":"t-1","isReady":true}]}"#,
+        )
+        .expect("键名不一致不应让整条 ack 解码失败");
+        assert_eq!(camel.pending_readiness_changes.map(|c| c.len()), Some(1));
     }
 
     #[test]

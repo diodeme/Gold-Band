@@ -920,6 +920,7 @@ start_multica_runtime()
 | `multica.claim-conflict` | 409 | task 已被领 / 非 queued | 刷新列表 |
 | `multica.task-not-found` | 404 | task 不存在/不属该 runtime/串行化冲突 | 刷新列表 |
 | `multica.runtime-offline` | — | runtime 被判离线 | 提示检查心跳/重启 |
+| `multica.task-not-ready` | — | claim 成功后收到未就绪 test 任务（父 dev issue 未 done）→ 立即 release 回滚（dispatched→queued）+ 发 `multica-task-updated` | 提示未就绪 + 刷新看板（§12.41） |
 
 > 所有错误码以 `MulticaError` → `CommandErrorVm { code, params }` 返回；`params` 携带上下文（task_id/workspace_id 等），**不含对客文案**。
 
@@ -2105,7 +2106,44 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 - **未做的验证（如实披露）**：**未跑浏览器视觉验收**。本会话无内置浏览器工具，`agent-browser` CLI 亦未安装（`command not found`，其 Windows CDP helper 脚本属另一用户路径）；且该页面的看板数据必须来自已连接的 multica server，而内网地址在本机不可达（`http://maling.weoa.com:5005` 连接超时），故类型徽标 / 未就绪置灰 / 类型过滤三种新状态无法在此环境呈现。上述状态的验收证据为 **jsdom 渲染测试 + 双语精确值断言 + tsc + 生产构建**；**双主题视觉（sky/violet/destructive 三色调、`opacity-60` 置灰）仍待用户在桌面端连上 multica 后目视确认**。
 - **未覆盖项（如实披露）**：`commands.rs` 的 claim 拦截**接线**无自动化覆盖——该模块无 HTTP stub 基建（既有测试全为纯逻辑，唯一 stub 先例在 `metrics/heartbeat.rs` 且未设 `no_proxy`，有环境代理抖动风险）。故契约改由**包装层**固化（`ClaimResponse` / `TasksListResponse` 解析 + `executable_ready`），拦截动作本身（含回滚调用）依赖人工验收与代码评审。若后续需要端到端，应先补 `commands.rs` 的 stub-server 基建而非为单点加特例。
 
-**待 multica 侧最终确认（不阻塞码灵上线）**：心跳 ack 的就绪 diff 线格式 `pending_readiness_changes: [{task_id, is_ready}]` 仍是码灵侧提议方案，multica 侧尚未给出最终定义。若最终字段名/形状不同，**仅需改 `client.rs` 的反序列化**（后续消费路径与 `ack_signals_readiness_change` 判定不变）——这是把它做成独立 `ReadinessChange` 类型而非就地解析的原因。
+**待 multica 侧最终确认（不阻塞码灵上线）**：心跳 ack 的就绪 diff 线格式 `pending_readiness_changes: [{task_id, is_ready}]` 仍是码灵侧提议方案，multica 侧尚未给出最终定义。若最终字段名/形状不同，**仅需改 `client.rs` 的反序列化**（后续消费路径与 `ack_signals_readiness_change` 判定不变）——这是把它做成独立 `ReadinessChange` 类型而非就地解析的原因。两条附加约束见 §12.41（diff 必须是**增量**；claim 路径**必须**回填 `is_ready`）。
+
+---
+
+### 12.41 改动三十九：story dev/test 拆分评审整改——ack fail-soft / 拦截路径刷新事件 / C1 终态快照固化（M5-ba 收尾，2026-09-11）
+
+**背景**：§12.40 上线后用户实测通过（类型徽标 / 类型过滤 / 未就绪在连接 multica 的桌面端均已生效；首帧缺字段、经一次心跳收敛的现象见文末），随后做**独立代码评审**（独立评审 agent + 改动人逐条复核），产出 6 条问题。**根因分类：全部为「设计正确、实现不完整」**——无设计缺陷、无业务逻辑错误、无补丁式修复需求：三层门控、diff 作信号、`is_ready` 不落盘等设计均在评审中被逐条验证成立（含"旧 server 逐字节一致"与"diff 值在测试外零读取"两项独立确认）。整改如下。
+
+**① 心跳 ack 无法 fail-soft（实现不完整）→ 修复**
+- **根因与路径**：`ReadinessChange { task_id: String, is_ready: bool }` 内层字段无 serde 缺省，而 ack 是**整条**反序列化（`client.rs` `heartbeat()` 的 `resp.json::<HeartbeatAck>()`）。该字段的 wire 形态**尚未定稿**（S4 仍是码灵提案），一旦服务端键名/取值与提案不一致，失败的不是这个可选字段而是**整条 ack**：`loop_.rs` 落进通用 `multica heartbeat failed (will retry next tick)` 分支，**并连带跳过同一 tick 的 `dispatch_pending_skill_work`**——新字段把既有 skill 双向同步能力连坐，且日志无法归因。
+- **修复**：两字段加 `#[serde(default)]`（`ReadinessChange` 加 `Default`）。码灵只消费「diff 是否非空」，条目内容不参与任何判定，故缺省值不改变语义；未知键本就被 serde 忽略，外层键名不同只会退化成 `None`（无信号），同样是 fail-soft。
+- **最小失败测试**：`heartbeat_ack_tolerates_diverged_readiness_change_shape`——先红（`Error("missing field is_ready", line: 1, column: 61)`，精确复现"整条 ack 解码失败"），修复后转绿；并覆盖 camelCase 键名（`taskId`/`isReady`）退化为"有变化但内容不可用"。
+
+**② claim 拦截路径缺刷新事件（实现不完整）→ 修复**
+- **根因与路径**：`MulticaError::TaskNotReady` 的注释承诺"前端按此码提示…**并刷新看板**"，但拦截路径只 `release` 后 `return Err`，**没有** emit（同函数其他失败分支在回滚后均发 `multica-task-updated`）。后果：能让该错误码出现的唯一前提就是调用方缓存的 `is_ready` 已过期（看板把它当可执行），不发事件则该过期投影会一直留在任何已挂载的消费端，用户看到"按钮可点 → 领取必失败"，与错误码文案自相矛盾。
+- **修复**：`release_after_run_start_failure(...).await` 之后补 `emit_multica_task_updated(&app_handle)`，与同函数失败分支惯例一致（remote 状态已回滚，必须通知刷新）。
+- **未覆盖项（沿用 §12.40 披露）**：该 emit 与拦截动作本身仍无自动化覆盖（`commands.rs` 无 HTTP stub 基建），依赖代码评审 + 人工验收。
+
+**③ C1 终态快照无单测固化（验收未固化）→ 补测**
+- **根因与路径**：`MulticaCompletedTask.issue_kind` 的唯一正确来源是 `run.issue_kind`（claim 落盘的类型快照），但原实现是 `finalize_terminal` 内的内联结构体字面量——编译器只强制该字段**被赋值**、不强制取值**来源**，改成 `None` 时全部测试仍绿而终态行类型徽标静默丢失（而 `finalize_terminal` 因依赖 `AppHandle` 无法直测）。
+- **修复**：抽出纯函数 `completed_task_from_run(remote_task_id, run, status, completed_at)`（不碰 AppHandle/StateConfig，`finalize_terminal` 改为调用它），新增 `completed_task_from_run_keeps_claim_kind_snapshot`：固化四类 kind 透传、无 kind（旧数据/无 issue 任务）→ `None` 不臆造、标题空/纯空白 → 回退 `remote_task_id`。
+
+**④ 文档与注释订正**
+- 两张错误码表补齐 `multica.task-not-ready`：开发设计第 5 章（含前端处理列）、接入方案码清单。
+- 修正 `MulticaTaskManagementPage` 的过滤注释：原文"旧 server 无类型字段时**不过滤掉任何任务**"与实现相反——旧 server 下所有任务 `issueKind === null`，选开发/测试会把任务**全部过滤掉**（默认「全部」，故用户无感，属可接受的既定行为，但注释不能写成不存在的性质）。
+- 接入方案 §5.1 S3 补**服务端上线的实测证据**（2026-09-11 客户端实测 pending 已带 `issue_kind`，徽标/过滤生效）。
+
+**新增契约约束（待 multica 确认，已记入接入方案 §5.1 S3）**
+- **claim 路径必须回填 `is_ready`**：门控判定的是 claim 响应里的字段。若 claim 只回 `issue_kind` 不回 `is_ready`，保守缺省判未就绪 → **全部 test 任务不可领**。方向本身正确（服务端零特判下客户端拦截是唯一防线，不放宽为"缺字段即放行"），但必须作为硬约束确认，否则症状是"按钮可点、领取必失败且提示误导"。
+- **心跳 diff 必须是增量**：客户端无法区分"增量 diff"与"全量集合"，若服务端每 tick 下发全量，则流量变成每 15s 一次全量 pending 重取。约束应固化在契约侧，而非在客户端加变更检测状态。
+
+**首帧缺字段现象（实测观察，非缺陷）**：用户首次实测时看板无徽标、类型过滤选开发/测试为空、看不到就绪态，一段时间（经一次心跳）后自行恢复正常。逐条核验后的结论——码灵读路径**无缓存、无"稍后补"**，看板只是单次 HTTP 响应的投影，故"先无后有"只可能来自"响应变了"；而该页面的刷新触发源穷举后，空闲态下**唯一**的自动触发源就是心跳 ack 非空 diff（`loop_.rs`）→ 这既解释了收敛，也反证了码灵链路正确（缺投影代码则永远不会出现徽标）与 multica 侧已下发该 diff。剩余解释收敛为服务端发布窗口或多实例滚动，判别方式为"重启后首帧即带徽标（一次性）vs 首个心跳后才有（系统性）"，两者都不需要码灵改动。
+
+**性能影响**：仅两处实现改动且不改变复杂度——拦截路径多一次事件 emit，且只发生在**被拒绝**的领取上（该路径同时省掉了后续工作区解析/建 run，仍比原失败路径更便宜）；`completed_task_from_run` 是纯字段搬运，无分配变化。无新增 I/O 频率、无新增状态、无新增订阅。新增测试为零运行时开销。
+
+**未做（评审后保留项，已知并记录）**：前端 `isTaskExecutable` 与后端 `executable_ready` 仍是两份同构谓词（评审建议收敛为 VM 派生字段 `executableReady` 单源）——本轮不改，避免为一致性在 VM 上新增派生字段；两侧各自有测试锁定同一真值表，漂移风险已知。`src/config/mod.rs` 的 `MulticaCompletedTask.issue_kind` 上 `#[serde(default)]` 对 `Option` 冗余（serde 本就把缺失映射为 `None`），无害保留。
+
+**验证**：`cargo test --manifest-path src-tauri/Cargo.toml --bin gold-band-desktop multica::` → **129 过 / 0 失败**（§12.40 基线 127 + 心跳 fail-soft + 终态快照 2 例）；两个新测试单独复跑确认通过。web 侧本轮无行为改动（仅注释订正），既有 multica 8 套件 / 69 过不受影响（复跑确认 41 + 28 全绿）。
 
 ---
 

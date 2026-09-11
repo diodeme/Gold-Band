@@ -391,27 +391,46 @@ fn finalize_terminal(
         // task_conversations 此处已清（续跑语义不变），但 completed 历史独立常驻，供用户回看本地会话。
         record_completed_task(
             state,
-            MulticaCompletedTask {
-                remote_task_id: remote_task_id.to_string(),
-                local_task_id: run.local_task_id.clone(),
-                local_run_id: run.local_run_id.clone(),
-                workspace_id: run.workspace_id.clone(),
-                local_project_id: run.local_project_id.clone(),
-                issue_id: run.issue_id.clone(),
-                // 类型快照自 ActiveRemoteRun（claim 响应落盘的值）→ 终态行类型徽标不丢（multica C1）。
-                issue_kind: run.issue_kind.clone(),
-                status: status.to_string(),
-                title: run
-                    .title
-                    .clone()
-                    .filter(|s| !s.trim().is_empty())
-                    .unwrap_or_else(|| remote_task_id.to_string()),
-                completed_at: chrono::Utc::now().to_rfc3339(),
-            },
+            completed_task_from_run(
+                remote_task_id,
+                run,
+                status,
+                chrono::Utc::now().to_rfc3339(),
+            ),
         );
         (true, ())
     }) {
         warn!(%e, "multica finalize: state rmw failed");
+    }
+}
+
+/// 由在飞 run 快照构造终态历史条目（纯函数：不碰 AppHandle/StateConfig，便于单测固化字段来源）。
+///
+/// `issue_kind` 必须**取自 `run`**（claim 响应落盘的类型快照）——multica C1 验收：终态行的类型徽标
+/// 不丢。编译器只强制该字段被赋值、不强制取值来源，故用单测锁住「来源是 run 而非空值」。
+/// `title` 为空/纯空白时回退为 remote_task_id（行标签缺失的兜底，与 claim 时的 thread_name 语义一致）。
+fn completed_task_from_run(
+    remote_task_id: &str,
+    run: &ActiveRemoteRun,
+    status: &str,
+    completed_at: String,
+) -> MulticaCompletedTask {
+    MulticaCompletedTask {
+        remote_task_id: remote_task_id.to_string(),
+        local_task_id: run.local_task_id.clone(),
+        local_run_id: run.local_run_id.clone(),
+        workspace_id: run.workspace_id.clone(),
+        local_project_id: run.local_project_id.clone(),
+        issue_id: run.issue_id.clone(),
+        // 类型快照自 ActiveRemoteRun（claim 响应落盘的值）→ 终态行类型徽标不丢（multica C1）。
+        issue_kind: run.issue_kind.clone(),
+        status: status.to_string(),
+        title: run
+            .title
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| remote_task_id.to_string()),
+        completed_at,
     }
 }
 
@@ -595,6 +614,64 @@ mod tests {
             state.multica_completed_tasks[0].completed_at,
             "2026-08-06T03:00:00Z"
         );
+    }
+
+    fn active_run(title: Option<&str>, issue_kind: Option<&str>) -> ActiveRemoteRun {
+        ActiveRemoteRun {
+            workspace_id: "ws-1".into(),
+            local_project_id: "proj-1".into(),
+            local_task_id: "local-task-1".into(),
+            local_run_id: "local-run-1".into(),
+            issue_id: Some("issue-1".into()),
+            title: title.map(str::to_string),
+            started_at: "2026-09-10T00:00:00Z".into(),
+            issue_kind: issue_kind.map(str::to_string),
+        }
+    }
+
+    // ===== story dev/test 拆分：C1「终态历史保留类型快照」的接口层固化 =====
+
+    #[test]
+    fn completed_task_from_run_keeps_claim_kind_snapshot() {
+        // 终态行的类型徽标唯一来源是 claim 落盘的 run.issue_kind（multica C1）。
+        // 该字段若被改成 None / 常量，看板终态行会静默失去类型徽标——此处锁住「来源 = run」。
+        for kind in ["dev", "test", "bug", "general"] {
+            let entry = completed_task_from_run(
+                "rt-1",
+                &active_run(Some("标题"), Some(kind)),
+                "completed",
+                "2026-09-10T01:00:00Z".into(),
+            );
+            assert_eq!(entry.issue_kind.as_deref(), Some(kind), "类型快照必须透传");
+            assert_eq!(entry.status, "completed");
+            assert_eq!(entry.title, "标题");
+        }
+
+        // 旧历史 / 无 issue 任务（claim 响应无 issue_kind）→ None：徽标不渲染，不臆造类型。
+        let legacy = completed_task_from_run(
+            "rt-2",
+            &active_run(Some("标题"), None),
+            "failed",
+            "2026-09-10T01:00:00Z".into(),
+        );
+        assert!(legacy.issue_kind.is_none());
+        assert_eq!(legacy.status, "failed");
+
+        // 行标签缺失/纯空白 → 回退 remote_task_id（终态行仍有可读标签）。
+        let untitled = completed_task_from_run(
+            "rt-3",
+            &active_run(Some("   "), Some("dev")),
+            "completed",
+            "2026-09-10T01:00:00Z".into(),
+        );
+        assert_eq!(untitled.title, "rt-3");
+        let no_title = completed_task_from_run(
+            "rt-4",
+            &active_run(None, None),
+            "completed",
+            "2026-09-10T01:00:00Z".into(),
+        );
+        assert_eq!(no_title.title, "rt-4");
     }
 
     #[test]

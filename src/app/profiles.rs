@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::warn;
 use walkdir::WalkDir;
 
+use crate::channel::{RELEASE_CHANNEL, WB_CHANNEL};
 use crate::config::DesktopLanguage;
 use crate::frontmatter::{
     FrontmatterUpdate, parse_frontmatter_document, parse_optional_frontmatter_document,
@@ -319,7 +320,7 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     },
     DefaultProfileSeed {
         key: "cicd",
-        release_channel: Some("wb"),
+        release_channel: Some(WB_CHANNEL),
         id: "pf-builtin-cicd",
         name: LocalizedProfileText {
             zh_cn: "CI/CD",
@@ -385,7 +386,7 @@ fn default_profile_seeds_for_channel(
 }
 
 fn available_default_profile_seeds() -> impl Iterator<Item = &'static DefaultProfileSeed> {
-    default_profile_seeds_for_channel(option_env!("GOLD_BAND_RELEASE_CHANNEL").unwrap_or("default"))
+    default_profile_seeds_for_channel(RELEASE_CHANNEL)
 }
 
 pub(crate) fn ensure_default_user_profiles(_paths: &GoldBandPaths) -> Result<DefaultProfileIds> {
@@ -1300,7 +1301,7 @@ profile body
         assert_eq!(by_id["pf-builtin-test"], false);
         assert_eq!(
             by_id.get("pf-builtin-cicd"),
-            (option_env!("GOLD_BAND_RELEASE_CHANNEL") == Some("wb")).then_some(&false)
+            (RELEASE_CHANNEL == WB_CHANNEL).then_some(&false)
         );
         assert_eq!(by_id["pf-builtin-accept"], false);
         assert_eq!(by_id["pf-builtin-cleanup"], false);
@@ -1337,6 +1338,37 @@ profile body
             assert_eq!(zh.name, zh_name);
             assert_eq!(en.name, en_name);
             assert_ne!(zh.summary, en.summary);
+        }
+    }
+
+    #[test]
+    fn built_in_profiles_reject_update_and_delete_in_every_channel() {
+        // 渠道目录只决定哪些内置角色可见；在当前渠道可见的内置角色都必须只读。
+        let tmp = tempfile::tempdir().unwrap();
+        let paths =
+            GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap());
+        let built_ins = built_in_profiles(DesktopLanguage::ZhCn);
+        assert!(!built_ins.is_empty());
+        for profile in built_ins {
+            let input = ProfileInput {
+                name: "Edited role".to_string(),
+                summary: "Edited role".to_string(),
+                content: "Edited content".to_string(),
+                dynamic_template: false,
+            };
+            for error in [
+                update_profile(&paths, &profile.id, input).unwrap_err(),
+                delete_profile(&paths, &profile.id).unwrap_err(),
+            ] {
+                assert!(
+                    matches!(
+                        error.downcast_ref::<ProfileCommandError>(),
+                        Some(ProfileCommandError::ReadonlyBuiltIn)
+                    ),
+                    "built-in profile `{}` must reject writes",
+                    profile.id
+                );
+            }
         }
     }
 
@@ -1378,7 +1410,7 @@ profile body
         let tmp = tempfile::tempdir().unwrap();
         let paths =
             GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap());
-        let available = option_env!("GOLD_BAND_RELEASE_CHANNEL") == Some("wb");
+        let available = RELEASE_CHANNEL == WB_CHANNEL;
         for language in [DesktopLanguage::ZhCn, DesktopLanguage::En] {
             let list = list_profiles(&paths, language).unwrap();
             assert_eq!(
@@ -1419,7 +1451,7 @@ profile body
         let paths =
             GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().join("repo")).unwrap());
         let id = "pf-builtin-cicd";
-        if option_env!("GOLD_BAND_RELEASE_CHANNEL") != Some("wb") {
+        if RELEASE_CHANNEL != WB_CHANNEL {
             assert!(show_profile(&paths, id, DesktopLanguage::ZhCn).is_err());
             assert!(show_profile(&paths, id, DesktopLanguage::En).is_err());
             return;

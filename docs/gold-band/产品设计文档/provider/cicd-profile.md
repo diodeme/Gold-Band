@@ -12,8 +12,9 @@
 
 ## 渠道可用范围
 
-- 内置角色 seed 通过 `release_channel` 声明可用渠道；公共角色为 `None`，CI/CD 为 `Some("wb")`。
-- 复用现有 dev/build 渠道脚本传入的 `GOLD_BAND_RELEASE_CHANNEL`，在 core crate 编译时通过 `option_env!` 固定选择，缺省为 `default`。不依赖可变运行时环境、用户设置、前端过滤或名称判断。
+- 内置角色 seed 通过 `release_channel` 声明可用渠道；公共角色为 `None`，CI/CD 为 `Some(WB_CHANNEL)`。内部渠道名统一由 `src/channel.rs` 的 `WB_CHANNEL` 常量提供，不在 seed、判定与测试中散落字面量。
+- 渠道值在 core crate 只有一个读取点：`src/channel.rs` 的 `RELEASE_CHANNEL`（编译期 `option_env!("GOLD_BAND_RELEASE_CHANNEL")`，缺省 `default`）。桌面渠道身份 `DesktopChannelConfig.channel` 复用同一常量，`src-tauri/build.rs` 继续校验 `configs/channels/<channel>.json` 存在且 `channel` 字段一致；同一事实不再由两个 crate 各自解析。不依赖可变运行时环境、用户设置、前端过滤或名称判断。
+- 桌面 crate 保留一条跨 crate 一致性断言：构建脚本注入的渠道必须等于 core crate 编译期常量，两侧派生逻辑分叉时测试失败。
 - 角色列表、内置 ID 查找和默认 Profile ID 映射共用同一过滤后的目录。`wb` 提供 10 个内置角色，`default` 及其他渠道提供 9 个公共角色；未知渠道不提供 CI/CD。
 - 工作流角色解析及节点执行前读取复用该目录。非 `wb` 渠道引用此内置 ID 时沿用现有角色不存在的处理，不增加替代角色、兼容层或隐式回退。
 
@@ -45,8 +46,10 @@
 
 ## 自评审与验收
 
-现有 Profile 设计足以表达需求，仅在 seed 增加渠道可用范围，无需新增依赖、缓存、队列、runtime 持久字段或跨层 identity。task 模板使用一个 task 级 `build` 与按子系统展开的 `deployments`，分别对应真实生命周期与配置差异，不建立新运行状态；子系统身份仍来自项目 `sub_sys`。静态目录上限 10 项，过滤为 O(10)，非 `wb` 渠道不构造或传输 CI/CD 正文；不引入新的客户端 I/O、N+1、轮询或 React 订阅。角色实际配置准备只读取两个明确文件，并按已选子系统查询各自模板，处理和命令数量均为 O(所选子系统数)，不遍历全部项目或历史，不为此新增 benchmark。
+现有 Profile 设计足以表达需求，仅在 seed 增加渠道可用范围，无需新增依赖、缓存、队列、runtime 持久字段或跨层 identity。渠道值收敛为 `src/channel.rs` 单一读取点，桌面渠道身份复用同一常量，不新增抽象、状态机或运行时分支。task 模板使用一个 task 级 `build` 与按子系统展开的 `deployments`，分别对应真实生命周期与配置差异，不建立新运行状态；子系统身份仍来自项目 `sub_sys`。静态目录上限 10 项，过滤为 O(10)，非 `wb` 渠道不构造或传输 CI/CD 正文；不引入新的客户端 I/O、N+1、轮询或 React 订阅。角色实际配置准备只读取两个明确文件，并按已选子系统查询各自模板，处理和命令数量均为 O(所选子系统数)，不遍历全部项目或历史，不为此新增 benchmark。
 
-接口测试在实际 `default` / `wb` 编译环境验证双语 list/show 内容映射、稳定身份、只读保护、工作流解析及默认工作流不自动执行 CI/CD；目录测试覆盖未知渠道仍保留公共角色。独立提示词契约测试固定默认构建部署、每次 run 的重新确认、历史确认不可复用、两种方式的交互确认、附加操作选配和项目 `sub_sys` 职责，并用 serde_json 验证双语模板一致具有唯一顶层 `build` 与逐子系统 `deployments`，且部署项各自拥有模板 ID 和名称。测试固定交付给 Agent 的契约，不等于已经验证 Agent 实际交互、文件写入或真实平台执行。
+接口测试在实际 `default` / `wb` 编译环境验证双语 list/show 内容映射、稳定身份、工作流解析及默认工作流不自动执行 CI/CD；目录测试覆盖未知渠道仍保留公共角色。内置角色只读保护由独立的渠道无关测试固定：遍历当前渠道可见的全部内置角色，断言修改与删除都返回 `ReadonlyBuiltIn`，因此不再依赖 wb 专属分支。独立提示词契约测试固定默认构建部署、每次 run 的重新确认、历史确认不可复用、两种方式的交互确认、附加操作选配和项目 `sub_sys` 职责，并用 serde_json 验证双语模板一致具有唯一顶层 `build` 与逐子系统 `deployments`，且部署项各自拥有模板 ID 和名称。测试固定交付给 Agent 的契约，不等于已经验证 Agent 实际交互、文件写入或真实平台执行。
 
 2026-09-09 渠道限制验收：修复前 `default` 仍列出 CI/CD 的接口测试失败；修复后 `default` 和 `wb` 各 30 项 Profile 测试通过。默认渠道浏览器 mock 页面显示 9 个公共角色，搜索 CI/CD 无结果；页面仅作为预览冒烟检查，不能代替真实 `wb` EXE 验证。详细记录见开发计划中的《CI/CD 内置角色实施方案》。内置资源需重新构建客户端生效；本次未执行真实 WeTest 操作。
+
+2026-09-11 渠道真源与只读覆盖验收：`default` 和 `wb` 各 31 项 Profile 测试通过；跨 crate 一致性断言在两种渠道通过，并在临时制造两侧分叉时按预期失败。本次未执行真实 WeTest 操作。

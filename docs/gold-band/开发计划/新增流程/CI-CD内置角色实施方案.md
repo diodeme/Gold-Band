@@ -95,3 +95,20 @@
 过度设计审查：复用现有 task 文件和交互能力，只收紧提示词授权契约，不新增确认状态机、持久字段或执行队列。性能审查：每次 run 增加一次有限的参数展示与确认，不增加文件扫描、网络查询、轮询或后台任务；配置仍按所选子系统数量线性处理。
 
 验收：`wb` 编译条件下新增确认契约测试通过；`default` / `wb` 两组完整 Profile 测试各 30 项通过，Rust 格式与 diff 空白检查通过。仅出现本次未涉及的 orchestrator 既有 dead-code 警告。未执行真实 WeTest 写操作。
+
+## 渠道单一真源与内置只读覆盖（2026-09-11）
+
+根因分析：渠道事实原先由 core crate 与桌面 crate 各自解析同一个编译期变量，权威校验只存在于 `src-tauri/build.rs`，两侧派生逻辑一旦分叉，客户端渠道身份与内置能力目录就会不一致；同时内置角色只读保护的唯一断言位于 CI/CD 的 wb 专属分支内并在非 wb 渠道提前返回，`default` 渠道（含 CI）因此不再校验内置角色不可改、不可删。两类问题都属于“好设计但实现不完整”，所以在同一机制上补齐真源与覆盖，不新增第二套渠道模型。
+
+- [x] 新增 core crate `src/channel.rs`，提供 `RELEASE_CHANNEL` 与 `WB_CHANNEL` 常量；`src/app/profiles.rs` 的可用目录过滤与 seed 渠道标注、`src-tauri/src/channel.rs` 的桌面渠道身份统一引用该常量，同一事实只保留一个读取点。
+- [x] 保留 `src-tauri/build.rs` 对 `configs/channels/<channel>.json` 的校验与 `cargo:rustc-env` 注入，不新增渠道来源。
+- [x] 新增跨 crate 一致性断言 `desktop_channel_matches_core_release_channel`，固定“构建脚本注入值等于 core crate 编译期常量”。
+- [x] 新增渠道无关测试 `built_in_profiles_reject_update_and_delete_in_every_channel`，遍历当前渠道可见的全部内置角色，断言修改与删除均返回 `ReadonlyBuiltIn`。
+- [x] 只读保护反证：临时把 update / delete 的内置守卫置为 false，新测试立即失败（`unwrap_err` 命中 `Ok`），证明该测试能拦截只读保护缺失；随后还原。
+- [x] 跨 crate 断言反证：临时让构建脚本注入固定串，断言失败并给出 `left: "probe-mismatch"` / `right: "default"`；随后还原。
+- [x] 验收：`default` 与 `wb` 各 31 项 Profile 测试通过（原 30 项加新增 1 项）；跨 crate 断言在两种渠道各 1 项通过；`cargo fmt --all` 与 `git diff --check` 通过。
+- [x] 同步产品设计文档与本开发计划。未改动提示词正文、构建脚本产出、CI 工作流或对外设置。
+
+过度设计审查：只新增一个常量模块与两条断言，复用现有渠道变量与既有接口，不新增依赖、配置项、缓存、状态机或运行时分支，也未触达审批与执行路径。性能审查：`RELEASE_CHANNEL` 是编译期常量，运行时零开销；目录过滤仍为 O(10)，新增测试只覆盖既有静态数据，不引入扫描、I/O、并发或重渲染。
+
+验收环境说明：Profile 测试使用完整 Windows 临时路径，未修改持久环境变量；`wb` 验证通过设置 `GOLD_BAND_RELEASE_CHANNEL=wb` 完成，并确认 core crate 重新编译；未执行真实 WeTest 构建、推送或部署。

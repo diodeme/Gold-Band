@@ -58,12 +58,13 @@ export function visibleIssueKind(issueKind: string | null): MulticaIssueKind | n
   return MULTICA_ISSUE_KINDS.find((kind) => kind === issueKind) ?? null;
 }
 
-/// 执行准入谓词（与后端 `RemoteTask::executable_ready` 同构）：
-/// 非 test 恒可执行；test 需 `isReady === true`（缺失按未就绪，保守——覆盖服务端灰度窗口）。
-/// 旧 server（两字段皆 null）→ `null !== 'test'` → true，行为与拆分前一致。
-/// 导出供单测固化看板置灰 + 执行按钮准入的判定契约（与后端 claim 拦截同源）。
-export function isTaskExecutable(task: Pick<RemoteTaskVm, 'issueKind' | 'isReady'>): boolean {
-  return task.issueKind !== 'test' || task.isReady === true;
+/// 未就绪展示谓词（仅提醒，不阻断执行——§12.42 产品决策：经实测评审，
+/// 未就绪 test 任务保留「未就绪」徽标与原因提示，但执行入口照常可用）：
+/// test 且 `isReady !== true`（缺失按未就绪展示——覆盖服务端灰度窗口）。
+/// 旧 server（两字段皆 null）→ `null !== 'test'` → 无提醒，行为与拆分前一致。
+/// 导出供单测固化「哪些任务渲染未就绪提醒」这一接口层契约。
+export function isTaskNotReady(task: Pick<RemoteTaskVm, 'issueKind' | 'isReady'>): boolean {
+  return task.issueKind === 'test' && task.isReady !== true;
 }
 
 /// 纯函数：把「选定工作空间的扁平任务列表」按 canonical status 分桶到 4 列。
@@ -175,10 +176,10 @@ function MulticaRemoteTaskCard({
 }) {
   const readOnly = useReadOnlyExperience();
   const queued = task.status === 'queued';
-  const executable = isTaskExecutable(task);
-  /// 未就绪的 test 任务（等父 dev issue 完成）：置灰 + 执行入口禁用 + 原因 Tooltip。
-  const notReady = queued && !executable;
-  const canClaim = queued && executable;
+  /// 未就绪的 test 任务（父 dev issue 未 done）：仅徽标 + 原因 Tooltip 提醒，**不阻断执行**
+  /// （§12.42 产品决策：提醒而非门控，执行入口照常可用）。
+  const notReady = queued && isTaskNotReady(task);
+  const canClaim = queued;
   const canCancel = task.status === 'running';
   const statusTone = MULTICA_STATUS_TONE[task.status as BoardColumnStatus] ?? MULTICA_STATUS_TONE.queued;
   const issueKind = visibleIssueKind(task.issueKind);
@@ -205,7 +206,8 @@ function MulticaRemoteTaskCard({
           {t(`conversation.sidebar.multica.status.${task.status}`, task.status)}
         </Badge>
         {notReady && (
-          /* 未就绪标记：原因（等父开发任务完成）经项目 Tooltip 说明；tabIndex 让键盘也能触发提示。 */
+          /* 未就绪标记（仅提醒不阻断）：原因（对应开发任务尚未完成）经项目 Tooltip 说明；
+             tabIndex 让键盘也能触发提示；执行入口照常可用。 */
           <Tooltip>
             <TooltipTrigger asChild>
               <span
@@ -232,14 +234,7 @@ function MulticaRemoteTaskCard({
   );
 
   return (
-    <Card
-      className={cn(
-        'gap-2 py-2.5 shadow-none',
-        busy && 'pointer-events-none opacity-60',
-        // 未就绪 test：整体弱化，与卡片上「未就绪」标记 + 禁用执行入口构成同一状态表达。
-        notReady && 'opacity-60',
-      )}
-    >
+    <Card className={cn('gap-2 py-2.5 shadow-none', busy && 'pointer-events-none opacity-60')}>
       <CardContent className="px-3">
         <div className="flex items-center gap-1.5">
           <div className="min-w-0 flex-1">
@@ -257,8 +252,8 @@ function MulticaRemoteTaskCard({
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
             {queued && (
-              /* 未就绪 test 保留执行入口但禁用（可见的「暂时不能执行」而非入口消失——入口消失会被读成
-                 任务不可用；禁用 + 卡片「未就绪」标记表达「等开发任务完成」）。原因说明在卡片标记的 Tooltip。 */
+              /* 执行入口对所有 queued 任务可用（含未就绪 test——仅提醒不阻断，§12.42），
+                 原因说明在卡片「未就绪」标记的 Tooltip。 */
               <Button
                 size="icon"
                 variant="ghost"

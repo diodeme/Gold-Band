@@ -45,7 +45,7 @@ import {
   MulticaRemoteTaskBoard,
   bucketTasksByStatus,
   visibleIssueKind,
-  isTaskExecutable,
+  isTaskNotReady,
   BOARD_COLUMNS,
   MULTICA_STATUS_TONE,
   MULTICA_ISSUE_KIND_TONE,
@@ -127,8 +127,8 @@ describe('multica status tone config', () => {
   });
 });
 
-// issue 类型徽标 + 执行准入谓词（story dev/test 拆分；与后端 RemoteTask::executable_ready 同构）。
-describe('multica issue kind badge and admission predicate', () => {
+// issue 类型徽标 + 未就绪提醒谓词（story dev/test 拆分；仅提醒不阻断，§12.42）。
+describe('multica issue kind badge and not-ready predicate', () => {
   it('renders badges only for dev/test/bug and hides general/missing kinds', () => {
     expect(visibleIssueKind('dev')).toBe('dev');
     expect(visibleIssueKind('test')).toBe('test');
@@ -146,15 +146,15 @@ describe('multica issue kind badge and admission predicate', () => {
     expect(MULTICA_ISSUE_KIND_TONE.bug).toMatch(/destructive/);
   });
 
-  it('gates only test kind on readiness (保守缺省：test 无 isReady 不可执行)', () => {
-    // 非 test（含旧 server 的 null）恒可执行，不受 isReady 影响。
-    expect(isTaskExecutable({ issueKind: 'dev', isReady: false })).toBe(true);
-    expect(isTaskExecutable({ issueKind: 'bug', isReady: null })).toBe(true);
-    expect(isTaskExecutable({ issueKind: null, isReady: null })).toBe(true);
-    // test：仅 isReady === true 放行；false / null 均拦截。
-    expect(isTaskExecutable({ issueKind: 'test', isReady: true })).toBe(true);
-    expect(isTaskExecutable({ issueKind: 'test', isReady: false })).toBe(false);
-    expect(isTaskExecutable({ issueKind: 'test', isReady: null })).toBe(false);
+  it('flags only test kind as not-ready (提醒谓词：缺失按未就绪展示，不阻断执行)', () => {
+    // 非 test（含旧 server 的 null）恒无未就绪提醒，不受 isReady 影响。
+    expect(isTaskNotReady({ issueKind: 'dev', isReady: false })).toBe(false);
+    expect(isTaskNotReady({ issueKind: 'bug', isReady: null })).toBe(false);
+    expect(isTaskNotReady({ issueKind: null, isReady: null })).toBe(false);
+    // test：isReady !== true（false / null）都展示未就绪提醒（仅提醒，§12.42）。
+    expect(isTaskNotReady({ issueKind: 'test', isReady: true })).toBe(false);
+    expect(isTaskNotReady({ issueKind: 'test', isReady: false })).toBe(true);
+    expect(isTaskNotReady({ issueKind: 'test', isReady: null })).toBe(true);
   });
 });
 
@@ -286,21 +286,21 @@ describe('MulticaRemoteTaskBoard render', () => {
     expect(container.textContent).not.toContain('multica.taskManagement.issueKind.general');
   });
 
-  it('marks a queued test task whose dev parent is not done as not-ready and blocks execution', async () => {
+  it('marks a queued test task whose dev parent is not done as not-ready but still allows execution', async () => {
     const onPrepare = vi.fn();
     const { container } = await renderBoard({
       tasks: [task({ id: 't', status: 'queued', title: 'TestTask', issueKind: 'test', isReady: false })],
       onPrepare,
     });
-    // 未就绪标记 + 原因提示（Tooltip 文案）都在卡片上。
+    // 未就绪标记 + 原因提示（Tooltip 文案）都在卡片上（仅提醒，§12.42 产品决策）。
     expect(container.textContent).toContain('multica.taskManagement.readiness.notReady');
     expect(container.textContent).toContain('multica.taskManagement.readiness.notReadyHint');
-    // 执行入口保留但禁用 → 点击不触发（看板展示层门控）。
+    // 执行入口照常可用：未就绪不阻断（后端 claim 拦截已随门控一并移除）。
     const claimBtn = container.querySelector('button[aria-label="conversation.sidebar.multica.executeTask"]') as HTMLButtonElement;
     expect(claimBtn).toBeTruthy();
-    expect(claimBtn.disabled).toBe(true);
+    expect(claimBtn.disabled).toBe(false);
     await act(async () => { claimBtn.click(); });
-    expect(onPrepare).not.toHaveBeenCalled();
+    expect(onPrepare).toHaveBeenCalledTimes(1);
   });
 
   it('allows executing a ready test task and shows no not-ready marker', async () => {
@@ -316,7 +316,7 @@ describe('MulticaRemoteTaskBoard render', () => {
     expect(onPrepare).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps a queued dev task executable even when the server reports isReady=false', async () => {
+  it('shows no not-ready marker for a queued dev task even when the server reports isReady=false', async () => {
     // 非 test 不受就绪字段影响（服务端对非 test 亦可能回传 is_ready=false）。
     const onPrepare = vi.fn();
     const { container } = await renderBoard({

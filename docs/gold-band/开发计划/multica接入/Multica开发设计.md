@@ -920,7 +920,6 @@ start_multica_runtime()
 | `multica.claim-conflict` | 409 | task 已被领 / 非 queued | 刷新列表 |
 | `multica.task-not-found` | 404 | task 不存在/不属该 runtime/串行化冲突 | 刷新列表 |
 | `multica.runtime-offline` | — | runtime 被判离线 | 提示检查心跳/重启 |
-| `multica.task-not-ready` | — | claim 成功后收到未就绪 test 任务（父 dev issue 未 done）→ 立即 release 回滚（dispatched→queued）+ 发 `multica-task-updated` | 提示未就绪 + 刷新看板（§12.41） |
 
 > 所有错误码以 `MulticaError` → `CommandErrorVm { code, params }` 返回；`params` 携带上下文（task_id/workspace_id 等），**不含对客文案**。
 
@@ -2144,6 +2143,27 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 **未做（评审后保留项，已知并记录）**：前端 `isTaskExecutable` 与后端 `executable_ready` 仍是两份同构谓词（评审建议收敛为 VM 派生字段 `executableReady` 单源）——本轮不改，避免为一致性在 VM 上新增派生字段；两侧各自有测试锁定同一真值表，漂移风险已知。`src/config/mod.rs` 的 `MulticaCompletedTask.issue_kind` 上 `#[serde(default)]` 对 `Option` 冗余（serde 本就把缺失映射为 `None`），无害保留。
 
 **验证**：`cargo test --manifest-path src-tauri/Cargo.toml --bin gold-band-desktop multica::` → **129 过 / 0 失败**（§12.40 基线 127 + 心跳 fail-soft + 终态快照 2 例）；两个新测试单独复跑确认通过。web 侧本轮无行为改动（仅注释订正），既有 multica 8 套件 / 69 过不受影响（复跑确认 41 + 28 全绿）。
+
+---
+
+### 12.42 改动四十：未就绪 test 任务改为「仅提醒、不阻断」——删除三层门控（M5-bb，2026-09-11）
+
+**背景与定性**：M5-ba 的 fail-closed 门控（看板置灰 + 禁用执行入口 + claim 后拦截回 `multica.task-not-ready`）上线并经用户实测后，产品决策主动放宽：**就绪是建议性信息而非硬前置**——父 dev issue 未 done 时执行 test 任务在业务上可接受，阻断带来的操作成本高于收益。这不是缺陷修复（三层门控经 §12.41 评审验证成立），而是产品行为语义变更；按开发阶段破坏式更新规则，直接删除旧阻断路径，不加兼容层或开关。
+
+**删除（前后端两侧同源删除，杜绝「按钮可点、领取必失败」的单侧残留）**
+- **前端**（`MulticaRemoteTaskBoard.tsx`）：去卡片置灰（`opacity-60`）、执行入口 disabled 收敛为仅 `busy`；准入谓词 `isTaskExecutable` 改为展示谓词 `isTaskNotReady`（`issueKind === 'test' && isReady !== true`，只驱动未就绪徽标渲染，与后端无谓词耦合）。
+- **后端命令层**（`commands.rs`）：删除 claim 后 `executable_ready()` 拦截块（release 回滚 + `emit_multica_task_updated` + 错误码返回）——不删则前端放行后领取必失败，正是 §12.41 ②所防的症状。claim 后本地建 run 失败的其他回滚路径不变。
+- **后端契约层**（`client.rs`）：删除 `RemoteTask::executable_ready()` 及其门控单测（`executable_ready_gates_only_test_kind` / `claim_response_surfaces_readiness_for_gate`）；`issue_kind` / `is_ready` 解析保留（pending → VM → 看板徽标的事实源不变），解析测试改回纯字段断言。
+- **错误码**（`error.rs` / i18n）：删除 `MulticaError::TaskNotReady`（variant、码表、`errors.multica.task-not-ready` zh/en 文案及测试断言）。
+- **保留**：未就绪徽标 + 原因 Tooltip；文案改为建议语义（zh「对应开发任务尚未完成，建议等待其完成后再执行」/ en "The matching dev task is not done yet; consider waiting for it"）；心跳 ack 就绪 diff 刷新链路不变（S4 落地后徽标仍自动纠正）。
+
+**连带失效的契约约束**：§12.41 记录的「claim 路径必须回填 `is_ready`」随门控移除而失效（`is_ready` 事实源只剩 pending 列表，claim 载荷不再被消费判定）——接入方案 §5.1 S3 已订正。「心跳 diff 必须是增量」约束仍然有效（diff 仍驱动页面重拉 pending）。
+
+**§12.41 保留项的解决**：「前端 `isTaskExecutable` 与后端 `executable_ready` 两份同构谓词」的漂移风险随两侧谓词一并删除而消失，无需再收敛为 VM 派生字段。
+
+**性能影响**：纯删除——claim 拦截路径（一次 release HTTP + 一次事件 emit）整体消失，未就绪任务的领取与普通任务等价；无新增状态、订阅或 I/O。新增/更新测试为零运行时开销。
+
+**验证（2026-09-12）**：Rust `cargo test --manifest-path src-tauri/Cargo.toml --bin gold-band-desktop multica::` **127 过 / 0 失败**（删 3 例门控测试、2 例改回解析断言）；web vitest board / i18n 两套件按新语义更新后 **22 过 / 0 失败**（未就绪任务徽标渲染且执行按钮可点、点击触发 onPrepare；提醒文案双语精确值）；`tsc -p web/tsconfig.build.json` 零错。
 
 ---
 

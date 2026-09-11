@@ -27,12 +27,6 @@ pub enum MulticaError {
     TaskNotFound,
     #[error("multica runtime offline")]
     RuntimeOffline,
-    /// test 任务未就绪（父 dev issue 未 done）即被领取（story dev/test 拆分）。
-    ///
-    /// claim 已把任务置 dispatched，命令层拦截后立即走 release CAS 回滚（任务回 queued）；
-    /// 前端按此码提示「该测试任务尚未就绪」并刷新看板（文案由前端 i18n 提供）。
-    #[error("multica task not ready")]
-    TaskNotReady,
     /// 连接地址非法或两参数（base/app）不配套（一 Some 一 None）。
     #[error("multica invalid connection address")]
     InvalidAddress,
@@ -57,7 +51,6 @@ impl MulticaError {
             Self::ClaimConflict => "multica.claim-conflict",
             Self::TaskNotFound => "multica.task-not-found",
             Self::RuntimeOffline => "multica.runtime-offline",
-            Self::TaskNotReady => "multica.task-not-ready",
             Self::InvalidAddress => "multica.invalid-address",
             Self::ConnectCancelled => "multica.connect-cancelled",
             Self::SessionResumeFailed => "multica.session-resume-failed",
@@ -100,7 +93,6 @@ mod tests {
             MulticaError::RuntimeOffline.code(),
             "multica.runtime-offline"
         );
-        assert_eq!(MulticaError::TaskNotReady.code(), "multica.task-not-ready");
         assert_eq!(
             MulticaError::InvalidAddress.code(),
             "multica.invalid-address"
@@ -124,6 +116,5 @@ mod tests {
         // 无上下文的变体返回空对象，绝不内嵌对客文案。
         assert_eq!(MulticaError::ClaimConflict.params(), serde_json::json!({}));
         assert_eq!(MulticaError::TaskNotFound.params(), serde_json::json!({}));
-        assert_eq!(MulticaError::TaskNotReady.params(), serde_json::json!({}));
     }
 }

@@ -8010,6 +8010,13 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
                   </Button>
                 </div>
               ) : null}
+              {activeDetailWindow.initialPageLoaded
+                && !activeDetailError
+                && activeDetailWindow.events.length === 0 ? (
+                <div className="px-2 py-1 text-xs text-muted-foreground">
+                  {t("acp.activityDetailUnavailable")}
+                </div>
+              ) : null}
               <div ref={detailListRef} className="min-w-0 space-y-1">
                 {activeDetailWindow.events.map((activity) => (
                   <div

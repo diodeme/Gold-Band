@@ -53,4 +53,8 @@ test('message pages carry the tool card titles the demo shows without event payl
   assert.ok(toolCalls.length > 0, 'expected tool call cards in the published pages');
   assert.ok(toolCalls.every((event) => typeof event.title === 'string' && event.title.length > 0));
   assert.ok(toolCalls.every((event) => event.content === null));
+  assert.ok(
+    toolCalls.every((event) => event.raw?._meta?.goldBandConversation?.toolDetailAvailable === false),
+    'tool cards must not advertise a detail payload that is not published',
+  );
 });

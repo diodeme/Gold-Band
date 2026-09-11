@@ -1,17 +1,39 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { CHAPTER_IDS, chapterFromHash, copy, DESKTOP_QUERY, mediaPath, pageHref, parseRoute } from '../../marketing/site/content';
+import { CHAPTER_IDS, chapterFromHash, copy, demoHref, DESKTOP_QUERY, mediaPath, pageHref, parseRoute } from '../../marketing/site/content';
 import { checkpointAt, readRecording, restoreCheckpoint } from '../../marketing/site/timeline';
 import { createPreviewRun, previewTask } from '../../marketing/site/fixture';
 import { mockErrorBlockedConversationRun } from '../src/mockData';
 import { conversationPageForRun, conversationSourceControlWorkspacePath } from '../src/lib/conversation-navigation';
 
 describe('website routing and bilingual content', () => {
-  it('gives the embedded Demo a full viewport with a scrolling outer header', () => {
+  it('gives the embedded Demo a full viewport without changing the header or page frame', () => {
     const css = readFileSync('marketing/site/style.css', 'utf8');
     expect(css).toMatch(/\.site-demo-frame\s*\{[^}]*height:\s*100dvh/);
     expect(css).toMatch(/\.site-with-demo \.site-header\s*\{[^}]*position:\s*relative/);
-    expect(css.match(/\.site\.site-with-demo\s*\{([^}]*)\}/)?.[1]).not.toMatch(/height:|overflow:/);
+    // The Demo route must not widen the page frame, which moved the header away from the other routes.
+    expect(css).not.toMatch(/\.site\.site-with-demo\s*\{[^}]*max-width/);
+  });
+  it('hands the site language and appearance to the embedded Demo', () => {
+    expect(demoHref('zh', 'dark')).toContain('language=zh');
+    expect(demoHref('zh', 'dark')).toContain('theme=dark');
+    expect(demoHref('en', 'light')).toContain('language=en');
+    expect(demoHref('en', 'light')).toContain('theme=light');
+  });
+  it('keeps the Demo stage one surface step from the app window instead of inverting it', () => {
+    const css = readFileSync('marketing/demo/demo.css', 'utf8');
+    expect(css).toMatch(/\.demo-stage\s*\{[^}]*background:\s*var\(--gold-surface-low/);
+  });
+  it('opens the simulated client at the desktop client default window size', () => {
+    const [mainWindow] = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8')).app.windows;
+    const css = readFileSync('marketing/demo/demo.css', 'utf8');
+    const value = (name: string) => Number(css.match(new RegExp(`${name}:\\s*([\\d.]+)`))?.[1]);
+    expect(value('--demo-client-width')).toBe(mainWindow.width);
+    expect(value('--demo-client-height')).toBe(mainWindow.height);
+    const ratio = value('--demo-client-frame-ratio');
+    const [marginPanel] = readFileSync('marketing/demo/DemoFrame.tsx', 'utf8').matchAll(/id="demo-(?:left|right)-margin" defaultSize="([\d.]+)%"/g);
+    expect(ratio).toBeCloseTo(1 - 2 * Number(marginPanel[1]) / 100, 6);
+    expect(css).toMatch(/\.demo-window\s*\{[^}]*calc\(\(var\(--demo-client-width\) \+ 2 \* var\(--demo-window-edge\)\) \/ var\(--demo-client-frame-ratio\)\)/);
   });
   it('keeps complete workflow interactions readable after real viewport changes and restores the overview', () => {
     const index = JSON.parse(readFileSync('marketing/site/media/checkpoints/index.json', 'utf8'));

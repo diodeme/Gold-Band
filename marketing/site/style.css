@@ -27,7 +27,6 @@ a { text-decoration: none; }
 a:focus-visible { outline: 2px solid var(--primary); outline-offset: 5px; }
 button:disabled { cursor: default; }
 .site { max-width: 1680px; margin: auto; padding: 0 56px; }
-.site.site-with-demo { max-width: none; }
 .site-with-demo .site-header { position: relative; }
 .site-with-demo main { position: relative; }
 .site-demo-frame { display: block; width: 100%; height: 100dvh; border: 0; }

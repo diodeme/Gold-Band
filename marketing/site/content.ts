@@ -13,9 +13,10 @@ export const SITE_LINKS = {
   download: import.meta.env.VITE_DOWNLOAD_URL || `${GITHUB}/releases/latest`,
   demo: import.meta.env.VITE_DEMO_URL || (import.meta.env.DEV ? 'http://127.0.0.1:1450/' : '/demo/'),
 };
-export function demoHref(language: Language) {
+export function demoHref(language: Language, theme: SiteTheme) {
   const url = new URL(SITE_LINKS.demo, 'https://site.invalid');
   url.searchParams.set('language', language);
+  url.searchParams.set('theme', theme);
   return SITE_LINKS.demo.startsWith('/') ? `${url.pathname}${url.search}${url.hash}` : url.href;
 }
 export const CAPTURE = { width: 1440, height: 880, minimum: 560 };

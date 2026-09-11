@@ -15,6 +15,7 @@ function parseArguments(argv) {
     out: process.env.DEMO_SLIM_OUT ?? 'marketing/demo/data/ji-history',
     toolOutputChars: Number(process.env.DEMO_SLIM_TOOL_OUTPUT_CHARS ?? 600),
     toolDetail: process.env.DEMO_SLIM_TOOL_DETAIL ?? 'none',
+    activityRows: (process.env.DEMO_SLIM_ACTIVITY ?? 'rows') === 'rows',
   };
   for (let index = 0; index < argv.length; index += 2) {
     const [flag, value] = [argv[index], argv[index + 1]];
@@ -23,6 +24,7 @@ function parseArguments(argv) {
     else if (flag === '--out') options.out = value;
     else if (flag === '--tool-output-chars') options.toolOutputChars = Number(value);
     else if (flag === '--tool-detail') options.toolDetail = value;
+    else if (flag === '--activity') options.activityRows = value === 'rows';
     else throw new Error(`Unknown argument: ${flag}`);
   }
   if (!options.source) throw new Error('A source dataset is required: pass --source <dir> or set DEMO_SLIM_SOURCE.');
@@ -67,11 +69,13 @@ function clipTree(value, limit, stats) {
   return projected;
 }
 
+const goldBandMeta = (event) => event?.raw?._meta?.goldBandConversation ?? {};
+
 // Tool detail payloads are not published, so the published cards must not advertise one.
 // Otherwise the reader fetches a missing resource when the card is expanded.
 function withoutToolDetail(event) {
-  const meta = event?.raw?._meta?.goldBandConversation;
-  if (!meta) return event;
+  const meta = goldBandMeta(event);
+  if (!event?.raw?._meta) return event;
   const { toolOutput: _toolOutput, toolDetailAvailable: _toolDetailAvailable, ...rest } = meta;
   return {
     ...event,
@@ -79,8 +83,32 @@ function withoutToolDetail(event) {
   };
 }
 
+// The audit list renders a title row per activity, so it needs the label, status, elapsed time
+// and (for thoughts) the text, but not the raw payload or the unused timing envelope.
+function activityRow(event) {
+  const meta = goldBandMeta(event);
+  const row = {
+    id: event.id,
+    kind: event.kind,
+    title: event.title,
+    status: event.status,
+    toolCallId: event.toolCallId,
+    sessionId: event.sessionId,
+    seq: event.seq,
+    startedSeq: event.startedSeq,
+    endedSeq: event.endedSeq,
+    timestamp: event.timestamp,
+    durationMs: event.durationMs,
+    raw: {
+      _meta: { goldBandConversation: { branchId: meta.branchId, toolName: meta.toolName, toolDetailAvailable: false } },
+    },
+  };
+  if (event.kind !== 'toolCall' && typeof event.content === 'string') row.content = event.content;
+  return row;
+}
+
 async function main() {
-  const { source, out, toolOutputChars, toolDetail } = parseArguments(process.argv.slice(2));
+  const { source, out, toolOutputChars, toolDetail, activityRows } = parseArguments(process.argv.slice(2));
   const stats = { truncated: 0, removedChars: 0, sessions: 0, events: 0, droppedFiles: 0 };
 
   const publish = async (path, bytes) => {
@@ -134,18 +162,36 @@ async function main() {
     }
 
     const eventRefs = {};
-    for (const [id, eventRef] of Object.entries(index.eventRefs ?? {})) {
-      if (eventRef.kind !== 'toolCall') { stats.droppedFiles += 1; continue; }
-      if (toolDetail === 'none') { stats.events += 1; continue; }
-      const event = JSON.parse(await readFile(join(source, eventRef.path), 'utf8'));
-      const entry = await publishJson(eventRef.path, slimEvent(event, toolOutputChars, stats));
-      eventRefs[id] = {
-        ...entry,
-        kind: eventRef.kind,
-        toolCallId: eventRef.toolCallId,
-        branchId: eventRef.branchId,
-      };
-      stats.events += 1;
+    const activityPages = [];
+    const activityDirectory = join(sourceIndexDirectory, 'activity');
+    if (activityRows && await exists(activityDirectory)) {
+      const names = (await readdir(activityDirectory)).sort((left, right) => Number.parseInt(left, 10) - Number.parseInt(right, 10));
+      for (const name of names) {
+        const page = Number.parseInt(name, 10);
+        const events = JSON.parse(await readFile(join(activityDirectory, name), 'utf8'));
+        const rows = events.map(activityRow);
+        activityPages.push(await publishJson(`${sessionDirectory}/activity/${name}`, rows));
+        for (const row of rows) {
+          eventRefs[row.id] = {
+            id: row.id,
+            kind: row.kind,
+            seq: row.seq,
+            startedSeq: row.startedSeq,
+            endedSeq: row.endedSeq,
+            branchId: goldBandMeta(row).branchId,
+            activityPage: page,
+          };
+          stats.events += 1;
+        }
+      }
+    }
+    if (toolDetail === 'preview') {
+      for (const [id, eventRef] of Object.entries(index.eventRefs ?? {})) {
+        if (eventRef.kind !== 'toolCall') continue;
+        const event = JSON.parse(await readFile(join(source, eventRef.path), 'utf8'));
+        const entry = await publishJson(eventRef.path, slimEvent(event, toolOutputChars, stats));
+        eventRefs[id] = { ...entry, kind: eventRef.kind, toolCallId: eventRef.toolCallId, branchId: eventRef.branchId };
+      }
     }
 
     const directoryPath = join(sourceIndexDirectory, 'directories');
@@ -163,7 +209,7 @@ async function main() {
       blocks: index.blocks,
       eventRefs,
       pages: pageRefs.length === index.pages.length ? pageRefs : index.pages,
-      activityPages: [],
+      activityPages,
     };
     const indexEntry = await publishJson(reference.path, slimIndex);
     keptSessions.push({ ...reference, ...indexEntry, path: reference.path });

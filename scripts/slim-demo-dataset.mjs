@@ -67,6 +67,18 @@ function clipTree(value, limit, stats) {
   return projected;
 }
 
+// Tool detail payloads are not published, so the published cards must not advertise one.
+// Otherwise the reader fetches a missing resource when the card is expanded.
+function withoutToolDetail(event) {
+  const meta = event?.raw?._meta?.goldBandConversation;
+  if (!meta) return event;
+  const { toolOutput: _toolOutput, toolDetailAvailable: _toolDetailAvailable, ...rest } = meta;
+  return {
+    ...event,
+    raw: { ...event.raw, _meta: { ...event.raw._meta, goldBandConversation: { ...rest, toolDetailAvailable: false } } },
+  };
+}
+
 async function main() {
   const { source, out, toolOutputChars, toolDetail } = parseArguments(process.argv.slice(2));
   const stats = { truncated: 0, removedChars: 0, sessions: 0, events: 0, droppedFiles: 0 };
@@ -101,12 +113,23 @@ async function main() {
     const index = JSON.parse(await readFile(join(source, reference.path), 'utf8'));
     const sourceIndexDirectory = dirname(join(source, reference.path));
 
-    for (const kind of ['pages', 'images', 'changes', 'comparisons']) {
+    for (const kind of ['images', 'changes', 'comparisons']) {
       const path = join(sourceIndexDirectory, kind);
       if (!(await exists(path))) continue;
       for (const file of await readdir(path, { withFileTypes: true })) {
         if (!file.isFile()) continue;
         await copyThrough(`${sessionDirectory}/${kind}/${file.name}`);
+      }
+    }
+
+    const pageRefs = [];
+    const pagesDirectory = join(sourceIndexDirectory, 'pages');
+    if (await exists(pagesDirectory)) {
+      const names = (await readdir(pagesDirectory)).sort((left, right) => Number.parseInt(left, 10) - Number.parseInt(right, 10));
+      for (const name of names) {
+        const path = `${sessionDirectory}/pages/${name}`;
+        const events = JSON.parse(await readFile(join(source, path), 'utf8'));
+        pageRefs.push(await publishJson(path, events.map((event) => event?.kind === 'toolCall' ? withoutToolDetail(event) : event)));
       }
     }
 
@@ -139,7 +162,7 @@ async function main() {
       session: index.session,
       blocks: index.blocks,
       eventRefs,
-      pages: index.pages,
+      pages: pageRefs.length === index.pages.length ? pageRefs : index.pages,
       activityPages: [],
     };
     const indexEntry = await publishJson(reference.path, slimIndex);

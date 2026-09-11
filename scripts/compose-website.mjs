@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 
 export async function composeWebsite(site, demo) {
-  await readFile(join(site, 'index.html'));
+  const siteIndex = await readFile(join(site, 'index.html'));
   const demoIndex = await readFile(join(demo, 'index.html'));
   const files = await readdir(join(demo, 'assets'), { withFileTypes: true });
   // Both Vite builds use fingerprinted root assets. Validate collisions before copying anything.
@@ -27,6 +27,16 @@ export async function composeWebsite(site, demo) {
     `${prefix}/documentation`, `${prefix}/documentation/`,
     ...(prefix ? [`${prefix}/demo`, `${prefix}/demo/`] : []),
   ]);
+  // `_redirects` only works on hosts that implement it. Mirror every shell route into a real
+  // directory index so plain static servers resolve the same deep links.
+  const shellRoutes = [...new Set(websiteRoutes
+    .filter(route => route !== '/')
+    .map(route => route.replace(/\/$/, '')))];
+  for (const route of shellRoutes) {
+    const directory = join(site, ...route.split('/').filter(Boolean));
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, 'index.html'), siteIndex);
+  }
   await writeFile(join(site, '_redirects'), [
     '/demo/* /demo/index.html 200',
     '/demo /demo/index.html 200',
@@ -35,7 +45,7 @@ export async function composeWebsite(site, demo) {
     '',
   ].join('\n'));
   await writeFile(join(site, '_headers'), '/assets/*\n  Cache-Control: public, max-age=31536000, immutable\n/*.html\n  Cache-Control: no-cache\n');
-  return { demo: '/demo/', assets: files.length };
+  return { demo: '/demo/', assets: files.length, shellRoutes: shellRoutes.length };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

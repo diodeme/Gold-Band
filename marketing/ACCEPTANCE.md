@@ -1,5 +1,9 @@
 # Website Acceptance Evidence
 
+## Portable Static Deep Links, 2026-09-11
+
+The composed build now writes a real directory index for every site shell route (`/zh`, `/en`, `/documentation`, `/zh|en/documentation`, `/zh|en/demo`) in addition to `_redirects`, because a plain static server ignored `_redirects` and answered `http://localhost:3000/zh/#before` with its own 404 page. `/zh/#before`, `/en/documentation`, `/zh/demo` now return the site entry, and a real browser session shows the sticky header pinned at `top: 0` with the `before` chapter active; `/demo/` still serves the standalone Demo. One compose regression fixes the directory entries and keeps the standalone Demo entry intact. This copies an existing 743-byte entry file only, with no new runtime state, dependency, cache or load path.
+
 ## JI Demo Editorial Selection, 2026-09-10
 
 At the user's request, the exact round-001/ai-dynamic/attempt-001/phase-2-parallel-capabilities-merge-2/attempt-001 session in project e-projects-code-ai-ji--a40d4379/task-015/run-001 is excluded from Demo catalog, session tree and reads. The same-title earlier merge remains. The default selection moves to an existing visible session; source archives and workflow facts remain intact. JI's sidebar dot uses the theme green through Demo-only CSS without changing paused status.27 tests, Demo type checking/build and real-archive browser checks passed; computed dot color matches theme green. Evidence: `.codex-temp/ji-selection-verification.json` and `ji-selection.png`. Preview1461 uses a local archive junction for verification; this is not a portable archive deployment. Browser session closed.

@@ -10,7 +10,7 @@ function runtimeError(overrides: Partial<RuntimeErrorInfoVm> = {}): RuntimeError
     recovery: 'manual',
     retryPolicy: null,
     params: {},
-    diagnostic: 'ACP session config value `high` is unavailable for `reasoning_effort`',
+    diagnostic: '',
     raw: null,
     ...overrides,
   };
@@ -18,6 +18,7 @@ function runtimeError(overrides: Partial<RuntimeErrorInfoVm> = {}): RuntimeError
 
 function fakeT(prefix: string) {
   return (key: string, values?: Record<string, unknown>) => {
+    if (key.startsWith('errors.')) return String(values?.defaultValue ?? key);
     if (!values) return `${prefix}:${key}`;
     const interpolated = Object.entries(values)
       .map(([name, value]) => `${name}=${String(value)}`)
@@ -93,13 +94,14 @@ describe('acpRuntimeErrorBannerCopy', () => {
       diagnostic: 'git worktree add failed: branch already exists',
     }));
 
-    expect(copy).toBe('zh:conversation.runtime.worktreeCreateFailed');
+    expect(copy).toBe('zh:conversation.runtime.worktreeCreateFailed\ngit worktree add failed: branch already exists');
   });
 
-  it('returns null for unknown codes so callers keep their existing fallback', () => {
+  it('preserves the original diagnostic for unknown codes', () => {
     expect(acpRuntimeErrorBannerCopy(fakeT('zh'), runtimeError({
       code: { domain: 'provider', code: 'acp.initialize-failed' },
-    }))).toBeNull();
+      diagnostic: '磁盘空间不足。 (os error 112)',
+    }))).toBe('磁盘空间不足。 (os error 112)');
     expect(acpRuntimeErrorBannerCopy(fakeT('zh'), null)).toBeNull();
   });
 });

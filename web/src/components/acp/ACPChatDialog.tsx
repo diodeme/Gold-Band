@@ -1,4 +1,4 @@
-import { AcpImageStrip, useAcpToolImageReadiness } from './AcpImageStrip';
+import { AcpActivityImageStrip, AcpImageStrip, useAcpToolImageReadiness } from './AcpImageStrip';
 import { MessageAttachmentPreviewButton } from './MessageAttachmentPreviewButton';
 export { MessageAttachmentPreviewButton } from './MessageAttachmentPreviewButton';
 import { acpImagesFromRaw, acpActivityImages } from '@/lib/acp-image-cache';
@@ -259,7 +259,6 @@ import {
   showArtifact,
   showAttachment,
   stopActiveSession,
-  submitManualCheck,
 } from "@/api";
 import { AcpModelThoughtSelects } from '@/components/acp/AcpModelThoughtSelects';
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
@@ -292,6 +291,7 @@ import {
   type AcpReturnToLatestVisualProbe,
 } from "@/lib/acp-return-to-latest-visual-probe";
 import i18n, { displayAppError, displayStatus } from "@/i18n";
+import { acpRuntimeErrorBannerCopy } from '@/lib/acp-runtime-error';
 import type {
   AcpElicitationRequestVm,
   AcpPermissionRequestVm,
@@ -388,7 +388,7 @@ interface ACPChatDialogProps {
   inlineContentMaxBytes?: number;
   liveUpdatesPaused?: boolean;
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
-  onManualCheckSubmitted?: () => void;
+  onSubmitManualCheck?: (outcome: "success" | "failure") => Promise<void>;
   onSessionStopped?: () => void;
   onLifecycleSnapshot?: (snapshot: AcpLifecycleSnapshot) => void;
   onAtBottomChange?: (atBottom: boolean) => void;
@@ -480,6 +480,7 @@ type AcpTimelineWindowOwner = {
 const AcpTimelineWindowOwnerContext = createContext<AcpTimelineWindowOwner | null>(null);
 
 type AcpActivityBatch = {
+  imagesPending?: boolean;
   images?: import('@/types').AcpImageRef[];
   kind: "activityBatch";
   id: string;
@@ -627,7 +628,7 @@ export const ACP_SESSION_SCROLL_AREA_CLASS_NAME = goldThemedScrollbarClassName(
   "h-full min-w-0 overflow-y-auto",
 );
 export const ACP_RAW_SCROLL_AREA_CLASS_NAME = goldThemedScrollbarClassName(
-  "h-full overflow-y-auto p-5",
+  "min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto overscroll-contain",
 );
 
 export const ACP_SYSTEM_PROMPT_DIALOG_LAYOUT = {
@@ -1274,7 +1275,7 @@ export function ACPChatDialog(
     inlineContentMaxBytes,
     liveUpdatesPaused: externalLiveUpdatesPaused = false,
     onOptimisticEventsChange,
-    onManualCheckSubmitted,
+    onSubmitManualCheck,
     onSessionStopped,
     onLifecycleSnapshot,
     onAtBottomChange,
@@ -5602,25 +5603,19 @@ export function ACPChatDialog(
   };
 
   const submitManualDecision = async (outcome: "success" | "failure") => {
-    if (!showManualCheckActions || manualCheckSubmitting) return;
+    if (!showManualCheckActions || manualCheckSubmitting || !onSubmitManualCheck) return;
+    const ownerKey = sessionIdentityRef.current;
     setManualCheckError(null);
     setManualCheckSubmitting(true);
     try {
-      await submitManualCheck(
-        projectId,
-        taskId,
-        runId,
-        roundId,
-        nodeId,
-        attemptId,
-        outcome,
-      );
+      await onSubmitManualCheck(outcome);
+      if (sessionIdentityRef.current !== ownerKey) return;
       setManualCheckResolved(true);
-      onManualCheckSubmitted?.();
     } catch (error) {
+      if (sessionIdentityRef.current !== ownerKey) return;
       setManualCheckError(displayAppError(t, error));
     } finally {
-      setManualCheckSubmitting(false);
+      if (sessionIdentityRef.current === ownerKey) setManualCheckSubmitting(false);
     }
   };
 
@@ -6045,7 +6040,7 @@ export function ACPChatDialog(
       {visibleError ? <AcpErrorBanner reason={visibleError} /> : null}
       <div className="relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
         {canvasMode === "raw" ? (
-          <div className={ACP_RAW_SCROLL_AREA_CLASS_NAME}>
+          <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden p-5">
             <RawFrameViewer
               loading={rawLoading}
               page={rawPage}
@@ -6168,7 +6163,7 @@ export function ACPChatDialog(
                 )}
                 data-acp-conversation-footer="viewport"
               >
-                {showReturnToLatest ? (
+                {showReturnToLatest && timelineSurfaceState !== 'pending' ? (
                   <Button
                     ref={handleReturnToLatestButtonRef}
                     type="button"
@@ -6248,6 +6243,7 @@ export function ACPChatDialog(
               />
             ) : (
               <AcpConversationComposer
+                historyLocator={projectId ? { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId } : null}
                 prompt={prompt}
                 onPromptChange={setPrompt}
                 onSubmit={send}
@@ -8037,7 +8033,10 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
           </CollapsibleContent>
         ) : null}
       </Collapsible>
-      {!event.live ? <AcpImageStrip images={event.images ?? []} locator={branchLocator} /> : null}
+      {!event.live ? event.imagesPending && branchLocator
+        ? <AcpActivityImageStrip locator={branchLocator} start={event.activityStartSeq} end={event.activityEndSeq}
+            generation={timelineWindowOwner?.timelineGeneration ?? undefined} />
+        : <AcpImageStrip images={event.images ?? []} locator={branchLocator} /> : null}
     </AssistantTimelineRow>
   );
 });
@@ -9351,8 +9350,8 @@ export function RawFrameViewer({
   }
 
   return (
-    <div className="@container/raw-frame w-full min-w-0 max-w-full space-y-3 overflow-hidden">
-      <div className="rounded-2xl border border-border/60 bg-card/50 p-3 shadow-sm shadow-background/20">
+    <div className="@container/raw-frame flex min-h-0 w-full min-w-0 max-w-full flex-1 flex-col gap-3 overflow-hidden">
+      <div className="shrink-0 rounded-2xl border border-border/60 bg-card/50 p-3 shadow-sm shadow-background/20" data-raw-frame-toolbar="true">
         <div className="flex min-w-0 flex-col gap-3">
           <div className="relative min-w-0">
               <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -9508,19 +9507,21 @@ export function RawFrameViewer({
         </div>
       </div>
 
-      {page && page.items.length > 0 ? (
-        page.items.map((frame) => (
-          <RawFrameRow
-            key={frame.id}
-            frame={frame}
-            onLayoutChange={onLayoutChange}
-          />
-        ))
-      ) : (
-        <div className="rounded-2xl border border-dashed bg-muted/10 p-8 text-center text-sm text-muted-foreground">
-          {t("acp.rawNoFrames")}
-        </div>
-      )}
+      <div className={ACP_RAW_SCROLL_AREA_CLASS_NAME} data-raw-frame-scroll-area="true">
+        {page && page.items.length > 0 ? (
+          page.items.map((frame) => (
+            <RawFrameRow
+              key={frame.id}
+              frame={frame}
+              onLayoutChange={onLayoutChange}
+            />
+          ))
+        ) : (
+          <div className="rounded-2xl border border-dashed bg-muted/10 p-8 text-center text-sm text-muted-foreground">
+            {t("acp.rawNoFrames")}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -10065,16 +10066,16 @@ export function visibleAcpBannerError(
 ) {
   if (runtimeError) return runtimeError;
   if (latestTurnStatus === 'completed') return null;
+  // A run-level runtime-abnormal error is only a fallback for sessions that
+  // have no current turn result. Once the lifecycle projection identifies the
+  // current turn as running, cancelled, or otherwise non-failed, an older run
+  // error must not reappear in the banner.
+  if (latestTurnStatus !== undefined && latestTurnStatus !== 'failed') return null;
   const failed = latestTurnStatus === 'failed'
     || (latestTurnStatus == null && session.status === 'failed');
   const error = canonicalTurnError === undefined ? session.turnError : canonicalTurnError;
   if (failed && error) {
-    const summary = displayAppError(i18n.t, { code: error.code.code, params: error.params ?? {} });
-    const raw = rawObject(error.raw);
-    const data = rawObject(raw?.data);
-    const detail = stringValue(data?.details) ?? stringValue(data?.message)
-      ?? stringValue(raw?.message) ?? error.diagnostic;
-    return detail ? `${summary}\n${detail}` : summary;
+    return acpRuntimeErrorBannerCopy(i18n.t, error) ?? i18n.t('errors.acp.turn-execution-failed');
   }
   if (failed && canonicalTurnError !== undefined) {
     return runtimeErrorFallback ?? i18n.t('errors.acp.turn-execution-failed');
@@ -10528,6 +10529,7 @@ function batchAcpActivities(
     result.push({
       kind: "activityBatch",
       images: acpActivityImages(activityEvents),
+      imagesPending: activityMeta?.imagesPending === true,
       id: `activity-${activityStartSeq}`,
       seq: first.startedSeq ?? first.seq,
       timestamp: first.startedAt ?? first.timestamp,

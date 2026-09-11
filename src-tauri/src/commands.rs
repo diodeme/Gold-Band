@@ -178,7 +178,8 @@ where
         })?
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct AttemptLocator {
     task_id: String,
     run_id: String,
@@ -2722,18 +2723,20 @@ pub async fn get_agent_binding_usage(
 #[tauri::command]
 pub async fn doctor_agent(
     app_handle: AppHandle,
-    state: State<'_, DesktopState>,
     agent_type: String,
 ) -> CommandResult<AgentRegistryVm> {
     let agent_id = ManagedAgentId::from_str(&agent_type).map_err(command_error)?;
-    state
-        .refresh_agent_diagnostic(&agent_id)
-        .map_err(command_error)?;
-    emit_agent_registry_updated(&app_handle);
-    emit_agent_commands_updated(&app_handle, None);
-    let app = state.app().map_err(command_error)?;
-    let diagnostics = state.agent_diagnostics().map_err(command_error)?;
-    Ok(agent_registry_vm(&app, &diagnostics))
+    spawn_blocking_command(move || {
+        let state = app_handle.state::<DesktopState>();
+        state
+            .refresh_agent_diagnostic(&agent_id)
+            .map_err(command_error)?;
+        emit_agent_registry_updated(&app_handle, &agent_id);
+        let app = state.app().map_err(command_error)?;
+        let diagnostics = state.agent_diagnostics().map_err(command_error)?;
+        Ok(agent_registry_vm(&app, &diagnostics))
+    })
+    .await
 }
 
 fn schedule_agent_diagnostic(app_handle: &AppHandle, agent_id: ManagedAgentId) {
@@ -2757,8 +2760,7 @@ fn schedule_agent_diagnostic(app_handle: &AppHandle, agent_id: ManagedAgentId) {
             if let Err(error) = state.run_queued_agent_diagnostic(&diagnostic_agent_id) {
                 warn!(agent_type = diagnostic_agent_id.as_str(), %error, "automatic agent diagnostic failed");
             }
-            emit_agent_registry_updated(&diagnostic_handle);
-            emit_agent_commands_updated(&diagnostic_handle, None);
+            emit_agent_registry_updated(&diagnostic_handle, &diagnostic_agent_id);
         })
     {
         let _ = state.cancel_queued_agent_diagnostic(&agent_id);
@@ -2767,29 +2769,43 @@ fn schedule_agent_diagnostic(app_handle: &AppHandle, agent_id: ManagedAgentId) {
 }
 
 #[tauri::command]
-pub fn get_agent_command_catalog(
-    state: State<'_, DesktopState>,
+pub async fn get_agent_command_catalog(
+    app_handle: AppHandle,
     agent_type: String,
     workspace_path: String,
 ) -> CommandResult<Option<AcpCommandCatalog>> {
     let agent_id = ManagedAgentId::from_str(&agent_type).map_err(command_error)?;
-    state
-        .agent_command_catalog(&agent_id, &Utf8PathBuf::from(workspace_path))
-        .map_err(command_error)
+    spawn_blocking_command(move || {
+        app_handle
+            .state::<DesktopState>()
+            .agent_command_catalog(&agent_id, &Utf8PathBuf::from(workspace_path))
+            .map_err(command_error)
+    })
+    .await
 }
 
-pub(crate) fn emit_agent_commands_updated(
-    app_handle: &AppHandle,
-    catalog: Option<&AcpCommandCatalog>,
-) {
-    let payload = catalog
-        .map(|catalog| serde_json::to_value(catalog).unwrap_or_else(|_| serde_json::json!({})))
-        .unwrap_or_else(|| serde_json::json!({ "refresh": true }));
+pub(crate) fn emit_agent_commands_updated(app_handle: &AppHandle, catalog: &AcpCommandCatalog) {
+    let payload =
+        serde_json::json!({ "agentType": catalog.agent_type, "projectId": catalog.project_id });
     let _ = app_handle.emit(AGENT_COMMANDS_UPDATED_EVENT, payload);
 }
 
-pub(crate) fn emit_agent_registry_updated(app_handle: &AppHandle) {
-    let _ = app_handle.emit(AGENT_REGISTRY_UPDATED_EVENT, ());
+pub(crate) fn emit_agent_registry_updated(app_handle: &AppHandle, agent_id: &ManagedAgentId) {
+    let state = app_handle.state::<DesktopState>();
+    let Ok(_guard) = state.agent_config_diagnostic_commit_guard() else {
+        return;
+    };
+    let Ok(app) = state.app() else {
+        return;
+    };
+    let Ok(diagnostics) = state.agent_diagnostics() else {
+        return;
+    };
+    if let Some(config) = app.managed_agents().get(agent_id) {
+        let agent =
+            crate::view_models::managed_agent_vm(agent_id, config, diagnostics.get(agent_id));
+        let _ = app_handle.emit(AGENT_REGISTRY_UPDATED_EVENT, agent);
+    }
 }
 
 #[tauri::command]
@@ -5017,9 +5033,7 @@ fn maybe_record_agent_commands(
         return;
     };
     let state = app_handle.state::<DesktopState>();
-    if let Ok(catalog) = state.record_agent_commands(&agent_id, &app.paths.repo_root, commands) {
-        emit_agent_commands_updated(app_handle, Some(&catalog));
-    }
+    let _ = state.record_agent_commands(&agent_id, &app.paths.repo_root, commands);
 }
 
 /// 路径 B：旁路监听 `permissionRequest` 事件流，强制 `PermissionRequested` 发干预通知。
@@ -5953,6 +5967,83 @@ pub fn get_acp_activity_detail(
     );
     acp_activity_detail_vm_for_attempt(&attempt_dir, query)
         .map_err(|error| acp_storage_query_error(error, "acp.activity-detail-query-failed"))
+}
+
+#[tauri::command]
+pub async fn get_acp_activity_images(
+    state: State<'_, DesktopState>,
+    input: AcpActivityImagesInput,
+) -> CommandResult<gold_band::acp::timeline::ActivityImagePage> {
+    static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    static ADMISSION: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(16);
+    let admission = ADMISSION
+        .try_acquire()
+        .map_err(|_| CommandErrorVm::new("acp.image-busy", serde_json::json!({})))?;
+    let permit = SLOTS
+        .acquire()
+        .await
+        .map_err(|_| CommandErrorVm::new("acp.image-busy", serde_json::json!({})))?;
+    let app = resolve_command_app(state.inner(), input.project_id.as_deref())?;
+    spawn_blocking_command(move || {
+        let _permit = permit;
+        let _admission = admission;
+        let denied = || CommandErrorVm::new("acp.image-not-found", serde_json::json!({}));
+        let locator = &input.locator;
+        for part in [
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+        ]
+        .into_iter()
+        .chain(locator.outer_node_id.iter())
+        .chain(locator.outer_attempt_id.iter())
+        {
+            let mut components = Path::new(part).components();
+            if !matches!(components.next(), Some(Component::Normal(_)))
+                || components.next().is_some()
+                || part.contains(['/', '\\', ':'])
+            {
+                return Err(denied());
+            }
+        }
+        gold_band::acp::branches::validate_conversation_branch_id(&input.branch_id)
+            .map_err(|_| denied())?;
+        let timeline = gold_band::acp::branches::branch_timeline_path(
+            &locator.attempt_dir(&app),
+            &input.branch_id,
+        );
+        let root = fs::canonicalize(&app.paths.runtime_root).map_err(|_| denied())?;
+        if !fs::canonicalize(&timeline)
+            .map_err(|_| denied())?
+            .starts_with(root)
+        {
+            return Err(denied());
+        }
+        gold_band::acp::timeline::read_activity_image_page(
+            &timeline,
+            input.start,
+            input.end,
+            input.after.as_deref(),
+            input.generation,
+        )
+        .map_err(|error| acp_storage_query_error(error, "acp.image-invalid"))
+    })
+    .await
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpActivityImagesInput {
+    project_id: Option<String>,
+    #[serde(flatten)]
+    locator: AttemptLocator,
+    branch_id: String,
+    start: u64,
+    end: u64,
+    after: Option<String>,
+    generation: Option<u64>,
 }
 
 #[tauri::command]
@@ -7798,6 +7889,98 @@ pub async fn get_acp_raw_frames(
     })
     .await
     .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerHistoryLocator {
+    project_id: String,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+}
+
+fn composer_history_path(
+    state: &DesktopState,
+    locator: &ComposerHistoryLocator,
+) -> CommandResult<camino::Utf8PathBuf> {
+    let invalid = || CommandErrorVm::new("acp.composer-history-not-found", serde_json::json!({}));
+    if locator.outer_node_id.is_some() != locator.outer_attempt_id.is_some() {
+        return Err(invalid());
+    }
+    for part in [
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        &locator.node_id,
+        &locator.attempt_id,
+    ]
+    .into_iter()
+    .chain(locator.outer_node_id.iter())
+    .chain(locator.outer_attempt_id.iter())
+    {
+        let mut parts = Path::new(part).components();
+        if !matches!(parts.next(), Some(Component::Normal(_)))
+            || parts.next().is_some()
+            || part.contains(['/', '\\', ':'])
+        {
+            return Err(invalid());
+        }
+    }
+    let app = resolve_command_app(state, Some(&locator.project_id))?;
+    Ok(resolve_acp_attempt_dir(
+        &app,
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        &locator.node_id,
+        &locator.attempt_id,
+        locator.outer_node_id.as_deref(),
+        locator.outer_attempt_id.as_deref(),
+    )
+    .join("acp.timeline.jsonl"))
+}
+
+fn composer_history_error(error: anyhow::Error) -> CommandErrorVm {
+    use gold_band::acp::timeline::composer_history::HistoryError;
+    let code = match error.downcast_ref::<HistoryError>() {
+        Some(HistoryError::Stale) => "acp.composer-history-stale",
+        Some(HistoryError::NotFound) => "acp.composer-history-not-found",
+        None => "acp.composer-history-query-failed",
+    };
+    CommandErrorVm::new(code, serde_json::json!({}))
+}
+
+#[tauri::command]
+pub async fn list_composer_history(
+    state: State<'_, DesktopState>,
+    locator: ComposerHistoryLocator,
+    query: gold_band::acp::timeline::composer_history::HistoryQuery,
+) -> CommandResult<gold_band::acp::timeline::composer_history::HistoryPage> {
+    let path = composer_history_path(state.inner(), &locator)?;
+    spawn_blocking_command(move || {
+        gold_band::acp::timeline::composer_history::read_page(&path, query)
+            .map_err(composer_history_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_composer_history_text(
+    state: State<'_, DesktopState>,
+    locator: ComposerHistoryLocator,
+    cursor: gold_band::acp::timeline::composer_history::HistoryCursor,
+) -> CommandResult<gold_band::acp::timeline::composer_history::HistoryText> {
+    let path = composer_history_path(state.inner(), &locator)?;
+    spawn_blocking_command(move || {
+        gold_band::acp::timeline::composer_history::read_text(&path, cursor)
+            .map_err(composer_history_error)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -10375,7 +10558,6 @@ fn schedule_agent_command_catalog_refresh(app_handle: AppHandle, workspace: Utf8
     std::thread::spawn(move || {
         let state = app_handle.state::<DesktopState>();
         let _ = state.refresh_all_agent_command_catalogs_for_workspace(workspace);
-        emit_agent_commands_updated(&app_handle, None);
     });
 }
 

@@ -3431,13 +3431,22 @@ impl App {
     }
 
     pub fn provider_doctor_probe(&self, provider: &str) -> Result<ProviderDoctorProbe> {
+        self.provider_doctor_probe_with_deadline(provider, acp_client::DoctorDeadline::default())
+    }
+
+    pub fn provider_doctor_probe_with_deadline(
+        &self,
+        provider: &str,
+        deadline: acp_client::DoctorDeadline,
+    ) -> Result<ProviderDoctorProbe> {
         let (agent_id, config) = self.managed_agent(provider)?;
-        match acp_client::doctor(
+        match acp_client::doctor_with_deadline(
             &agent_id,
             &config.adapter,
             self.paths.repo_root.clone(),
             self.config.use_local_claude,
             self.config.require_local_claude_executable,
+            deadline,
         ) {
             Ok(probe) => Ok(ProviderDoctorProbe {
                 doctor: DoctorResult {
@@ -4368,6 +4377,7 @@ impl App {
             drop(guard);
 
             self.interrupt_run_descendants_best_effort(task_id, run_id, &run, reason);
+            self.publish_committed_attempt_pause(&run);
             self.finish_runtime_candidate_best_effort(
                 task_id,
                 run_id,
@@ -4569,6 +4579,11 @@ impl App {
             .as_ref()
             .and_then(|run| run.execution.recovery_candidate_token.clone());
         drop(guard);
+        if active_attempt {
+            if let Some(run) = run.as_ref() {
+                self.publish_committed_attempt_pause(run);
+            }
+        }
         if run_became_inactive {
             self.finish_runtime_candidate_best_effort(
                 task_id,
@@ -4577,6 +4592,42 @@ impl App {
             );
         }
         Ok(AttemptRuntimePauseResult::Converged)
+    }
+
+    fn publish_committed_attempt_pause(&self, run: &RunState) {
+        let Ok(current) = self.run_status(&run.task_id, &run.id) else {
+            return;
+        };
+        if current.status != RunStatus::Paused || current.execution != run.execution {
+            return;
+        }
+        let (Some(round_id), Some(node_id), Some(attempt_id), Some(pause_reason)) = (
+            run.current_round.as_ref(),
+            run.current_node.as_ref(),
+            run.current_attempt.as_ref(),
+            run.pause_reason,
+        ) else {
+            return;
+        };
+        // This is a state notification, not an intervention or a metrics fact.
+        self.emit_lifecycle_event(RuntimeLifecycleEvent::RunPaused {
+            event_id: format!(
+                "{}:{}:{}:pause:{}",
+                self.paths.project_id, run.task_id, run.id, run.execution.revision
+            ),
+            occurred_at: run.updated_at.clone(),
+            scheduled_occurrence_id: None,
+            project_id: self.paths.project_id.clone(),
+            task_id: run.task_id.clone(),
+            task_uuid: run.task_uuid.clone(),
+            run_id: run.id.clone(),
+            round_id: round_id.clone(),
+            node_id: node_id.clone(),
+            attempt_id: attempt_id.clone(),
+            node_label: node_id.clone(),
+            pause_reason,
+            task_title: None,
+        });
     }
 
     pub fn pause_dynamic_attempt_runtime_state(
@@ -5638,6 +5689,42 @@ mod tests {
     }
 
     #[test]
+    fn attempt_pause_publishes_only_committed_run_transition() {
+        let temp = tempdir().unwrap();
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap())
+            .with_inline_lifecycle_subscriber(Arc::new(move |event| {
+                captured.lock().unwrap().push(event);
+            }));
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+        for _ in 0..2 {
+            app.pause_attempt_runtime_state(
+                "task-001",
+                "run-001",
+                "round-001",
+                "worker",
+                "attempt-001",
+                PauseReason::ProcessInterrupted,
+            )
+            .unwrap();
+        }
+        let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        assert_eq!(run.status, RunStatus::Paused);
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-b"));
+        app.publish_committed_attempt_pause(&run);
+        let events = events.lock().unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "one committed pause must publish exactly one event, without metrics or intervention"
+        );
+        assert!(
+            matches!(&events[0], RuntimeLifecycleEvent::RunPaused { task_id, run_id, node_id, pause_reason: PauseReason::ProcessInterrupted, .. } if task_id == "task-001" && run_id == "run-001" && node_id == "worker")
+        );
+    }
+
+    #[test]
     fn background_continue_prelaunch_failure_converges_to_runtime_abnormal_pause() {
         let temp = tempdir().unwrap();
         let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
@@ -5724,6 +5811,27 @@ mod tests {
         assert_eq!(run.pause_reason, None);
         assert_eq!(node.status, RunStatus::Running);
         assert_eq!(node.runtime_execution_id.as_deref(), Some("execution-b"));
+    }
+
+    #[test]
+    fn run_pause_publishes_only_one_state_event() {
+        let temp = tempdir().unwrap();
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap())
+            .with_inline_lifecycle_subscriber(Arc::new(move |event| {
+                captured.lock().unwrap().push(event);
+            }));
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, None);
+        for _ in 0..2 {
+            app.run_pause("task-001", "run-001", PauseReason::ProcessInterrupted)
+                .unwrap();
+        }
+        assert_eq!(events.lock().unwrap().len(), 1);
+        assert!(matches!(
+            &events.lock().unwrap()[0],
+            RuntimeLifecycleEvent::RunPaused { .. }
+        ));
     }
 
     #[test]
@@ -7484,7 +7592,13 @@ mod tests {
     fn pause_dynamic_attempt_keeps_parent_running_when_sibling_is_active() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
-        let app = dynamic_pause_test_app(&temp);
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let app = dynamic_pause_test_app(&temp).with_inline_lifecycle_subscriber(Arc::new(
+            move |event| {
+                captured.lock().unwrap().push(event);
+            },
+        ));
         write_dynamic_pause_fixture(
             &app,
             vec![
@@ -7536,13 +7650,20 @@ mod tests {
             Some(RuntimeExecutionPhase::Paused)
         );
         assert_eq!(run.execution.phase, RuntimeExecutionPhase::RunningNode);
+        assert!(events.lock().unwrap().is_empty());
     }
 
     #[test]
     fn pause_dynamic_attempt_pauses_parent_when_no_active_leaf_remains() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
-        let app = dynamic_pause_test_app(&temp);
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let app = dynamic_pause_test_app(&temp).with_inline_lifecycle_subscriber(Arc::new(
+            move |event| {
+                captured.lock().unwrap().push(event);
+            },
+        ));
         write_dynamic_pause_fixture(
             &app,
             vec![dynamic_pause_node("good-night", DynamicNodeStatus::Running)],
@@ -7561,6 +7682,14 @@ mod tests {
         .unwrap();
 
         let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        assert_eq!(
+            events.lock().unwrap().len(),
+            1,
+            "the last active leaf must publish the parent pause"
+        );
+        assert!(
+            matches!(&events.lock().unwrap()[0], RuntimeLifecycleEvent::RunPaused { node_id, .. } if node_id == "ai-dynamic")
+        );
         let round: RoundState =
             read_json(&app.paths.round_file("task-001", "run-001", "round-001")).unwrap();
         let outer_node: NodeState = read_json(&app.paths.node_file(

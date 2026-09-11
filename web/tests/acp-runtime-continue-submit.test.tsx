@@ -491,17 +491,188 @@ describe('ACP runtime continue submission', () => {
     } finally { await unmount(root); }
   });
 
-  it('keeps an accepted submission detached even when its response contains no timeline admission', async () => {
-    const { container, root, session } = await renderPausedDialog({ initialDraft: contextDraft() });
+  it('releases an accepted submission only once canonical admission arrives', async () => {
+    const optimistic: AcpUiEventVm[] = [];
     const revoke = vi.fn();
     vi.stubGlobal('URL', class extends URL { static revokeObjectURL = revoke; });
-    apiMocks.submitConversationPrompt.mockResolvedValue({ kind: 'acp-session', session, lifecycle: pausedLifecycle() });
+    const { container, root, render, session } = await renderPausedDialog({
+      initialDraft: contextDraft(),
+      onOptimisticEventsChange: (events) => {
+        optimistic.length = 0;
+        optimistic.push(...events);
+      },
+    });
+    apiMocks.submitConversationPrompt.mockResolvedValue({
+      kind: 'acp-session',
+      session,
+      lifecycle: pausedLifecycle(),
+    });
     try {
       await flushInteraction(() => container.querySelector<HTMLButtonElement>('[data-acp-send]')!.click());
       expect(container.querySelector('textarea')!.value).toBe('');
       expectContext(container, false);
+      expect(revoke).not.toHaveBeenCalled();
+
+      const promptId = optimistic
+        .map((event) => (event.raw as { promptId?: string } | undefined)?.promptId)
+        .find((value): value is string => Boolean(value));
+      expect(promptId).toBeTruthy();
+      const admitted: AcpUiEventVm = {
+        id: 'admitted-prompt',
+        seq: 9,
+        timestamp: '1786980009Z',
+        kind: 'userTextDelta',
+        content: 'cancelled draft',
+        status: 'processing',
+        raw: { source: 'goldBandPrompt', promptId },
+      };
+      await render(pausedLifecycle(), { ...session, events: [admitted] });
+
       expect(revoke).toHaveBeenCalledExactlyOnceWith('blob:draft-image');
+      expect(container.querySelector('textarea')!.value).toBe('');
     } finally { await unmount(root); }
+  });
+
+  it('reclaims the draft when the user stops while the prompt is still sending', async () => {
+    const revoke = vi.fn();
+    vi.stubGlobal('URL', class extends URL { static revokeObjectURL = revoke; });
+    apiMocks.stopActiveSession.mockResolvedValue({
+      status: 'accepted',
+      session: null,
+      lifecycle: runningLifecycle(),
+    });
+    let resolveSubmit!: (value: unknown) => void;
+    apiMocks.submitConversationPrompt.mockImplementation(
+      () => new Promise((resolve) => { resolveSubmit = resolve; }),
+    );
+    const { container, root } = await renderPausedDialog({ initialDraft: contextDraft() });
+    try {
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea')!;
+      expect(textarea.value).toBe('cancelled draft');
+      expectContext(container, true);
+      await flushInteraction(() => {
+        container.querySelector<HTMLButtonElement>('[data-acp-send="true"]')!.click();
+      });
+      expect(textarea.value).toBe('');
+      expectContext(container, false);
+
+      const stop = container.querySelector('svg.lucide-circle-stop')!.closest('button');
+      await flushInteraction(() => stop!.click());
+      expect(apiMocks.stopActiveSession).toHaveBeenCalledTimes(1);
+      expect(textarea.value).toBe('cancelled draft');
+      expectContext(container, true);
+
+      await act(async () => resolveSubmit({
+        kind: 'acp-session-started',
+        session: null,
+        run: null,
+        lifecycle: runningLifecycle(),
+        admissionWasTerminal: false,
+      }));
+      expect(textarea.value).toBe('cancelled draft');
+      expectContext(container, true);
+      expect(revoke).not.toHaveBeenCalled();
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('restores the draft when an accepted prompt fails before canonical admission', async () => {
+    const optimistic: AcpUiEventVm[] = [];
+    const accepted = runningLifecycle();
+    accepted.runtime = { ...accepted.runtime, revision: 1 };
+    accepted.acp = { ...accepted.acp, revision: 1 };
+    apiMocks.submitConversationPrompt.mockResolvedValue({
+      kind: 'acp-session-started',
+      session: null,
+      run: null,
+      lifecycle: accepted,
+      admissionWasTerminal: false,
+    });
+    const { container, root, render } = await renderPausedDialog({
+      onOptimisticEventsChange: (events) => {
+        optimistic.length = 0;
+        optimistic.push(...events);
+      },
+    });
+    try {
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea')!;
+      await setTextareaValue(textarea, 'config blocked draft');
+      await flushInteraction(() => {
+        container.querySelector<HTMLButtonElement>('[data-acp-send="true"]')!.click();
+      });
+      expect(textarea.value).toBe('');
+
+      const promptId = optimistic
+        .map((event) => (event.raw as { promptId?: string } | undefined)?.promptId)
+        .find((value): value is string => Boolean(value));
+      expect(promptId).toBeTruthy();
+
+      const failed = runtimeAbnormalLifecycle();
+      failed.runtime = { ...failed.runtime, revision: 2 };
+      failed.acp = {
+        ...failed.acp,
+        revision: 2,
+        turnId: promptId!,
+        latestTurnStatus: 'failed',
+        liveTurnActivity: 'idle',
+        stopping: false,
+      };
+      await render(failed);
+      expect(textarea.value).toBe('config blocked draft');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('keeps an accepted draft consumed when its turn completes', async () => {
+    const optimistic: AcpUiEventVm[] = [];
+    const revoke = vi.fn();
+    vi.stubGlobal('URL', class extends URL { static revokeObjectURL = revoke; });
+    const accepted = runningLifecycle();
+    accepted.runtime = { ...accepted.runtime, revision: 1 };
+    accepted.acp = { ...accepted.acp, revision: 1 };
+    apiMocks.submitConversationPrompt.mockResolvedValue({
+      kind: 'acp-session-started',
+      session: null,
+      run: null,
+      lifecycle: accepted,
+      admissionWasTerminal: false,
+    });
+    const { container, root, render } = await renderPausedDialog({
+      initialDraft: contextDraft(),
+      onOptimisticEventsChange: (events) => {
+        optimistic.length = 0;
+        optimistic.push(...events);
+      },
+    });
+    try {
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea')!;
+      await flushInteraction(() => {
+        container.querySelector<HTMLButtonElement>('[data-acp-send="true"]')!.click();
+      });
+      expect(textarea.value).toBe('');
+
+      const promptId = optimistic
+        .map((event) => (event.raw as { promptId?: string } | undefined)?.promptId)
+        .find((value): value is string => Boolean(value));
+      const completed = pausedLifecycle();
+      completed.runtime = { ...completed.runtime, revision: 2 };
+      completed.acp = {
+        ...completed.acp,
+        revision: 2,
+        turnId: promptId!,
+        latestTurnStatus: 'completed',
+        liveTurnActivity: 'idle',
+        stopping: false,
+      };
+      await render(completed);
+
+      expect(textarea.value).toBe('');
+      expect(revoke).toHaveBeenCalledExactlyOnceWith('blob:draft-image');
+    } finally {
+      await unmount(root);
+    }
   });
 
   it('does not hide a new attempt decision after an old manual-check response arrives', async () => {

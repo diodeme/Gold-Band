@@ -1,9 +1,14 @@
-.demo-stage { height: 100dvh; padding-block: 24px; background: #080909; }
+/* The stage stays one surface step away from the app window, so the client edge reads without a hard contrast jump. */
+.demo-stage { height: 100dvh; padding-block: 24px; display: grid; place-items: center; background: var(--gold-surface-low, #171717); }
+/* DemoFrame spends two draggable edges and 2% side margins on either side of the client, so the frame is widened
+   to open the client at the desktop client's default window size (src-tauri/tauri.conf.json); smaller viewports shrink it. */
+:root { --demo-client-width: 1280px; --demo-client-height: 720px; --demo-client-frame-ratio: 0.96; --demo-window-edge: 6px; }
+.demo-window { width: min(100%, calc((var(--demo-client-width) + 2 * var(--demo-window-edge)) / var(--demo-client-frame-ratio))); height: min(100%, var(--demo-client-height)); }
 .demo-client { height: 100%; overflow: hidden; container-type: inline-size; border: 1px solid #363839; border-radius: 8px; box-shadow: 0 12px 40px #0008; }
 .demo-client > .app-window-shell { height: 100%; }
 .demo-client [data-titlebar-brand] { white-space: nowrap; }
 .demo-client [data-conversation-status-dot][data-project-id="e-projects-code-ai-ji--a40d4379"][data-task-id="task-015"] { background-color: var(--color-gold-success); }
-.demo-window-edge { width: 6px; background: transparent; }
+.demo-window-edge { width: var(--demo-window-edge); background: transparent; }
 .demo-window-edge:hover, .demo-window-edge:focus-visible { background: #5ca88b; }
 @media (max-width: 640px) {
   .demo-stage { padding-block: 0; }

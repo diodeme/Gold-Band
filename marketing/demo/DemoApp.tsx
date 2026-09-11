@@ -74,6 +74,20 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
     window.addEventListener('hashchange', changed);
     return () => window.removeEventListener('hashchange', changed);
   }, []);
+  const preferencesRef = useRef(preferences);
+  useEffect(() => { preferencesRef.current = preferences; }, [preferences]);
+  useEffect(() => {
+    const applyHostAppearance = (event: Event) => {
+      const colorScheme = (event as CustomEvent).detail;
+      if (colorScheme !== 'dark' && colorScheme !== 'light') return;
+      const current = preferencesRef.current;
+      if (current.appearance.colorScheme === colorScheme) return;
+      void browserApi.saveDesktopPreferences({ ...current.appearance, colorScheme }, current.personalization, current.language,
+        current.useLocalClaude, current.verboseLogging).then(updatePreferences);
+    };
+    window.addEventListener('gold-band.demo.host-appearance', applyHostAppearance);
+    return () => window.removeEventListener('gold-band.demo.host-appearance', applyHostAppearance);
+  }, []);
   function navigate(next: ConversationPage) {
     const hash = next.kind === 'conversation-run' ? next.taskId : next.kind;
     if (next.kind !== 'conversation-run' && ![...DEMO_TASKS, 'contexts', 'settings', 'run-mode-management', 'agents', 'conversation-home', 'multica-tasks', 'scheduled-tasks', 'scheduled-task-create', 'scheduled-task-detail'].includes(hash)) return;

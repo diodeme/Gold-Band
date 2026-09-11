@@ -79,7 +79,9 @@ const ISSUE_KIND_FILTERS = ['all', 'dev', 'test'] as const;
 type IssueKindFilter = (typeof ISSUE_KIND_FILTERS)[number];
 
 /// 纯函数：按类型过滤任务（接口层可单测）。`all` 原样返回；dev/test 仅保留该类型。
-/// 未知/缺失 issueKind 只在「全部」出现（版本解耦：旧 server 无类型字段时不过滤掉任何任务）。
+/// 未知/缺失 issueKind 只在「全部」出现——旧 server 不发类型字段时所有任务都是 `null`，
+/// 此时选开发/测试会把任务**全部过滤掉**（四列皆空）。这是版本解耦下的既定行为（默认「全部」
+/// 故不影响用户），不是遗漏：类型过滤的前提就是拿到了类型字段。
 export function filterTasksByIssueKind(tasks: RemoteTaskVm[], filter: IssueKindFilter): RemoteTaskVm[] {
   if (filter === 'all') return tasks;
   return tasks.filter((task) => task.issueKind === filter);

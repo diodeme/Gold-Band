@@ -372,6 +372,7 @@ multica.register-failed
 multica.claim-conflict          // task 已被领 / 非 queued → 409
 multica.task-not-found          // 404
 multica.runtime-offline
+multica.task-not-ready          // claim 后判定 test 未就绪 → 立即 release 回滚（dispatched→queued）+ 发刷新事件；见开发设计 §12.41 / M5-ba
 multica.session-resume-failed   // 保留在码表但 M4-d 起不 emit（resume Err 一律 silent fresh-fallback）；见开发设计 §12.29 / M5-aq
 ```
 
@@ -710,6 +711,8 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
 - [ ] **S2 · 运维准备**（非代码）：开发者在 multica web 自行注册账号（邮箱登录，**无需管理员预建 user / 预绑 `os_username`**）；为各 workspace 的 agent 绑定对应 runtime_id（首次 register 的新 workspace 需在 web 绑 agent）
 
 - [x] **S3 · story dev/test 拆分对接**（详 3.2 / §12.40）：`AgentTaskResponse`（pending/claim/detail 共用）暴露 `issue_kind`(string omitempty) + `is_ready`(bool)；**server 侧不做就绪过滤**（未就绪 test 任务照常下发，门控归客户端）
+  - **上线证据（2026-09-11 客户端实测）**：桌面端连 multica 后 pending 载荷已携带 `issue_kind`，看板类型徽标与类型过滤生效（首帧曾缺字段、经一次心跳后收敛——§12.41 有分析）。
+  - **契约硬约束（须 multica 保证）**：**claim 路径必须与 pending 路径同样回填 `is_ready`**。码灵门控判定的是 claim 响应里的字段（`§12.40` 三层门控的契约层）：若 claim 只回 `issue_kind` 不回 `is_ready`，保守缺省会判**未就绪** → **全部 test 任务不可领**（fail-closed；服务端零特判下客户端拦截是唯一防线，故不放宽为"缺字段即放行"），且症状是"看板按钮可点、领取必失败并提示未就绪"。
 - [ ] **S4 · 心跳 ack 就绪 diff**（待 multica 侧最终确认线格式）：`POST /api/daemon/heartbeat` 的 ack 增加就绪变更 diff（码灵侧提议 `pending_readiness_changes: [{task_id, is_ready}]`，仅在父 dev issue done 使 test 任务就绪翻转时下发）。**不阻塞码灵上线**——缺失时页面不自动刷新（用户仍可手动刷新，期间 claim 拦截仍兜底）；形状不同仅需改 `client.rs` 反序列化
 
 > 其余需求（任务列表 `GET /tasks/pending`、失败恢复 `POST /api/issues/{id}/rerun`、注册 `POST /api/daemon/register`、心跳、recover-orphans、complete/fail）均用 multica 现有接口，**无需改源码**。
@@ -1071,6 +1074,7 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **就绪刷新（信号而非 patch）**：心跳 ack `pending_readiness_changes:[{task_id,is_ready}]` 非空 → 发既有 `multica-task-updated` → 页面重拉 pending；**不用 diff 直接改本地列表**（避免第二份事实源）。纯函数 `ack_signals_readiness_change` 承载判定。该 diff 线格式**仍是码灵侧提议，待 multica 最终确认**（形状不同仅改反序列化）。
   - **前端**：类型徽标（仅 dev/test/bug 渲染，general/未知不渲染）+ 未就绪置灰与禁用执行入口（原因 Tooltip，用既有 span+tabIndex 惯例）+ 页脚类型过滤 Select（全部/开发/测试，纯客户端、瞬时状态不持久化）+ i18n zh/en（类型、过滤、就绪、新错误码）。
   - **验证**：Rust `cargo test --manifest-path src-tauri/Cargo.toml --bin gold-band-desktop multica::` **127 过 / 0 失败**；web vitest multica **8 套件 69 过**（含新增 i18n 双语精确值）；tsc 零错；`npm run web:build` 生产构建通过。**未做的验证**：浏览器视觉验收未跑——本会话无内置浏览器工具且 `agent-browser` 未安装，同时看板数据需已连接的 multica server（内网地址本机不可达），故双主题视觉（类型徽标色调 / 未就绪置灰）待用户在桌面端连上 multica 后目视确认；**未覆盖项**：`commands.rs` 的 claim 拦截接线无自动化覆盖（该模块无 HTTP stub 基建），契约改由包装层固化（`ClaimResponse`/`TasksListResponse` + `executable_ready`），拦截动作本身依赖人工验收。
+  - **评审整改（2026-09-11，用户实测通过后做独立代码评审，详开发设计 §12.41）**：三条「设计正确、实现不完整」全部修复——① 心跳 ack 内层字段加 `#[serde(default)]`，避免 wire 形态不一致时**整条 ack 解码失败**（会连带跳过同 tick 的 skill 待办派发）；② claim 拦截路径补 `emit_multica_task_updated`（原先注释承诺"刷新看板"但无 emit，stale `isReady` 不会被纠正）；③ 抽出纯函数 `completed_task_from_run()` 并补单测，把 C1「终态行类型徽标取自 run 快照」从"编译器只保证赋值"提升为"测试保证来源"。另订正两张错误码表与页面注释（旧 server 缺类型字段时选开发/测试会**过滤掉全部任务**，此前注释写反）。Rust 回归 **129 过 / 0 失败**。
 
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

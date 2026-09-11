@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.15.2](https://github.com/diodeme/Gold-Band/compare/v0.15.1...v0.15.2) (2026-09-11)
+
+
+### Features
+
+* **acp:** preserve complete drafts across history navigation ([5e083a7](https://github.com/diodeme/Gold-Band/commit/5e083a714da572762fceb5af651e19350d2d2b6f))
+* **chat:** add session input history navigation ([53491fc](https://github.com/diodeme/Gold-Band/commit/53491fc1d0f46c302fbc46464aad3d871fc17e6d))
+* **profiles:** add built-in WeTest CI/CD role ([ce28897](https://github.com/diodeme/Gold-Band/commit/ce28897626adb71991d8bf86d471c52eaf603876))
+* **profiles:** add built-in WeTest CI/CD role ([7f92291](https://github.com/diodeme/Gold-Band/commit/7f922919bff4e797ad7c2611f0f907c1492dac8a))
+
+
+### Bug Fixes
+
+* **acp:** clear stale run errors during follow-up ([a4ebbd4](https://github.com/diodeme/Gold-Band/commit/a4ebbd479be22beb54da65fbfda6998b9bc95d33))
+* **acp:** decouple error ownership from prompt submission mode ([fd481e9](https://github.com/diodeme/Gold-Band/commit/fd481e95fb9b7fa42fdd45ada525d20bd2c6b6d9))
+* **acp:** keep raw frame controls fixed while scrolling ([bd9875d](https://github.com/diodeme/Gold-Band/commit/bd9875d50f3410eda1bcb413f9fe03333aae77e6))
+* **acp:** make context compaction starts idempotent ([d81a26a](https://github.com/diodeme/Gold-Band/commit/d81a26abc92e5663c097da76287fc477ce4f0f2a))
+* **acp:** preserve failure reasons and allow manual recovery ([d848896](https://github.com/diodeme/Gold-Band/commit/d848896fa040994e1481c9a9b77483596e8ab862))
+* **acp:** return undelivered prompt drafts to composer ([18b11d6](https://github.com/diodeme/Gold-Band/commit/18b11d69c42c8f2cfec91d6790eb88da5933bf08))
+* **acp:** unblock input history merge checks ([c820bea](https://github.com/diodeme/Gold-Band/commit/c820beade6050df284e2385cc02198a3a228d50c))
+* **agent-doctor:** bound diagnostics and isolate agents ([563438e](https://github.com/diodeme/Gold-Band/commit/563438ecd3edf997d26129c546e703fc967dbbc0))
+* **agent-management:** distinguish catalog launch fields ([d29bfff](https://github.com/diodeme/Gold-Band/commit/d29bfffd1a8a24392dbbaff36b49680d241f269d))
+* **ai-dynamic:** scope resume context to the initial attempt ([94fb3f6](https://github.com/diodeme/Gold-Band/commit/94fb3f637b76562856bbc47c02e8155c1ed11bef))
+* **conversation:** follow successor after manual check ([0c711b5](https://github.com/diodeme/Gold-Band/commit/0c711b58a31e7b1f284ebf28a2f65c67649670e3))
+* **conversation:** isolate successor loading after manual check ([def0fa5](https://github.com/diodeme/Gold-Band/commit/def0fa590f429168c5c5451d63af8bd9a55f25fa))
+* **conversation:** preserve aggregate sidebar run status ([4052fae](https://github.com/diodeme/Gold-Band/commit/4052fae543c2530f256a7121062aa7d6dae216b9))
+* **profiles:** require per-run CI/CD confirmation ([97c3490](https://github.com/diodeme/Gold-Band/commit/97c3490301618064fee89f6f21b3483bfd7faddd))
+* **profiles:** require per-run CI/CD confirmation ([f31031f](https://github.com/diodeme/Gold-Band/commit/f31031f99ae13fe95b94466c9433859f87c0f90b))
+* **runtime:** clarify task continuation in resume prompt ([0cc0554](https://github.com/diodeme/Gold-Band/commit/0cc0554e4fee3043dac4d6494898602be9734982))
+* **runtime:** publish committed run pause notifications ([9a4c81e](https://github.com/diodeme/Gold-Band/commit/9a4c81e723419f9cbd7bab34a83b0d247d472f28))
+* **theme:** restore preference saves and seamless sidebar actions ([019711c](https://github.com/diodeme/Gold-Band/commit/019711c3446ae59a727d6a1431a23eaa484b07da))
+* **ui:** align editable agent field surfaces ([ecba730](https://github.com/diodeme/Gold-Band/commit/ecba73052635c3eb2698a63c3a7a49b67b112c0c))
+* **ui:** group editable and read-only agent fields ([a88cc32](https://github.com/diodeme/Gold-Band/commit/a88cc326fc0fb57f5b7772d5f5aa8c9a0e9cba35))
+
+
+### Performance Improvements
+
+* scope diagnostic refreshes and optimize ACP image reads ([a127ec9](https://github.com/diodeme/Gold-Band/commit/a127ec9a5df9338bc5e23216d70074654c3a08c7))
+
+
+### Miscellaneous Chores
+
+* release 0.15.2 ([65786b2](https://github.com/diodeme/Gold-Band/commit/65786b2597831052548f1081de906d734b822b8d))
+
 ## [0.15.1](https://github.com/diodeme/Gold-Band/compare/v0.15.0...v0.15.1) (2026-09-09)
 
 

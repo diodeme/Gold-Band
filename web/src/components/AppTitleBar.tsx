@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import type { DesktopPlatform } from '../types';
 import { isTauriRuntime } from '../api/shared';
 import { resolveWindowControlsPolicy } from '../lib/window-controls';
+import { publicAssetUrl } from '../lib/public-url';
 import { Button } from '@/components/ui/button';
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
@@ -112,7 +113,7 @@ export function AppTitleBar({
         {hasLeadingInset ? <div aria-hidden="true" className={cn('shrink-0', policy.leadingInsetClassName)} /> : null}
         <div data-tauri-drag-region data-titlebar-brand="true" className="flex h-full items-center gap-2 pr-3">
           <span data-tauri-drag-region className={APP_TITLE_BAR_LAYOUT.brandMarkClassName}>
-            <img src="/logo.svg" alt="" className="block size-full min-h-0 min-w-0 object-contain pointer-events-none" />
+            <img src={publicAssetUrl('/logo.svg')} alt="" className="block size-full min-h-0 min-w-0 object-contain pointer-events-none" />
           </span>
           <span data-tauri-drag-region className={APP_TITLE_BAR_LAYOUT.brandTitleClassName}>
             {appName}

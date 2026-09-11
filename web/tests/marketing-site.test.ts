@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { CHAPTER_IDS, chapterFromHash, copy, demoHref, DESKTOP_QUERY, mediaPath, pageHref, parseRoute } from '../../marketing/site/content';
 import { checkpointAt, readRecording, restoreCheckpoint } from '../../marketing/site/timeline';
 import { createPreviewRun, previewTask } from '../../marketing/site/fixture';
+import { publicAssetUrl } from '../src/lib/public-url';
 import { mockErrorBlockedConversationRun } from '../src/mockData';
 import { conversationPageForRun, conversationSourceControlWorkspacePath } from '../src/lib/conversation-navigation';
 
@@ -99,6 +100,18 @@ describe('website routing and bilingual content', () => {
     }
     expect(parseRoute('/en/not-a-page').page).toBe('not-found');
     expect(parseRoute('/')).toEqual({ language: 'zh', page: 'home' });
+  });
+  it('resolves routes and public assets when the build is mounted under a subpath', () => {
+    const base = '/site-by-codex/';
+    expect(parseRoute('/site-by-codex', base)).toEqual({ language: 'zh', page: 'home' });
+    expect(parseRoute(base, base)).toEqual({ language: 'zh', page: 'home' });
+    expect(parseRoute(`${base}zh/demo`, base)).toEqual({ language: 'zh', page: 'demo' });
+    expect(parseRoute(`${base}en/documentation`, base)).toEqual({ language: 'en', page: 'documentation' });
+    expect(parseRoute(`${base}en/not-a-page`, base).page).toBe('not-found');
+    expect(pageHref('en', 'demo', base)).toBe(`${base}en/demo`);
+    expect(publicAssetUrl('/agent-icons/codex.svg', base)).toBe(`${base}agent-icons/codex.svg`);
+    expect(publicAssetUrl('/agent-icons/codex.svg', '/')).toBe('/agent-icons/codex.svg');
+    expect(publicAssetUrl('https://example.test/icon.svg', base)).toBe('https://example.test/icon.svg');
   });
   it('keeps the same four chapters in both languages', () => {
     for (const language of ['zh', 'en'] as const) expect(copy[language].chapters.map(chapter => chapter.id)).toEqual(CHAPTER_IDS);

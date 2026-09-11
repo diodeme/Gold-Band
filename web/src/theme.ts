@@ -15,6 +15,7 @@ import {
   type ThemeWallpaperSlot,
 } from './theme-contract';
 import { builtinThemes } from './themes/builtin-themes';
+import { publicAssetUrl } from './lib/public-url';
 import { DEFAULT_WALLPAPER_OPACITY_PERCENT, normalizeWallpaperOpacityPercent, selectedWallpaper } from './lib/wallpaper';
 
 export interface ThemePreviewPalette {
@@ -115,7 +116,7 @@ export function resolveAppearance(preference: AppearancePreference): EffectiveAp
   const assets = new Map(theme.assets.records.map((asset) => [asset.id, asset]));
   const resolveIcon = (descriptor: ThemeIconDescriptor): ResolvedThemeIconDescriptor | undefined => {
     const asset = assets.get(descriptor.assetId);
-    return asset?.kind === 'icon' ? { ...descriptor, url: asset.outputUrl } : undefined;
+    return asset?.kind === 'icon' ? { ...descriptor, url: publicAssetUrl(asset.outputUrl) } : undefined;
   };
   const iconDescriptors = { ...theme.icons?.defaults, ...theme.icons?.schemes?.[colorScheme] };
   const icons = Object.fromEntries(Object.entries(iconDescriptors).flatMap(([slot, descriptor]) => {
@@ -125,7 +126,7 @@ export function resolveAppearance(preference: AppearancePreference): EffectiveAp
   const wallpapersDisabled = selectedQuality === 'performance' && theme.visualQualityProfiles?.performance.wallpapers?.enabled === false;
   const wallpapers = wallpapersDisabled ? {} : Object.fromEntries(Object.entries(theme.wallpapers?.[colorScheme] ?? {}).flatMap(([slot, descriptor]) => {
     const asset = assets.get(descriptor.assetId);
-    return asset?.kind === 'wallpaper' ? [[slot, { ...descriptor, url: asset.outputUrl }]] : [];
+    return asset?.kind === 'wallpaper' ? [[slot, { ...descriptor, url: publicAssetUrl(asset.outputUrl) }]] : [];
   })) as EffectiveAppearance['wallpapers'];
   return {
     themeId: theme.id, themeVersion: theme.version, colorScheme, visualQuality: selectedQuality,

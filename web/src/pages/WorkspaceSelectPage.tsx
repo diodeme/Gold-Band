@@ -8,6 +8,7 @@ import { CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { canRemoveRecentWorkspace } from '@/lib/workspace-picker-scope';
+import { publicAssetUrl } from '@/lib/public-url';
 
 interface WorkspaceSelectPageProps {
   bootstrap: AppBootstrapVm | null;
@@ -29,7 +30,7 @@ export function WorkspaceSelectPage({ bootstrap, appInfo, busy, onChooseWorkspac
       <AppCard className="justify-center overflow-hidden border-primary/20 bg-[radial-gradient(circle_at_top_left,rgba(245,158,11,0.18),transparent_36%),var(--card)]">
         <CardContent className="max-w-2xl space-y-7 px-8 py-10">
           <span className="grid h-16 w-24 place-items-center rounded-2xl bg-sidebar-accent/60 p-2 ring-1 ring-primary/20">
-            <img src="/logo.svg" alt="" className="h-full w-full object-contain" />
+            <img src={publicAssetUrl('/logo.svg')} alt="" className="h-full w-full object-contain" />
           </span>
           <div className="space-y-3">
             <p className="text-xs font-semibold uppercase tracking-[0.24em] text-primary">{t('workspaceSelect.product', { appName: appInfo.appName })}</p>

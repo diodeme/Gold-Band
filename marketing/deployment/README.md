@@ -37,6 +37,12 @@ npm run demo:build
 
 单目录交付使用 npm run website:build。默认输出到 release/website，将官网放在根目录、Demo 放在 demo/ 子目录；设置 WEBSITE_DIST 可指定目标目录。Demo 完整数据门禁仍然生效。
 
+### 子路径部署与 HTTP
+
+挂在非根路径时必须在构建期设置 base，不能靠服务器改路径：`VITE_SITE_BASE='/product/'` 会让 `website:build` 自动把 Demo 推导为 `/product/demo/`。产物内的资源引用是绝对路径。用 `root` 托管时目录名要与 URL 前缀一致，否则改用 `alias`（注意 location 与 alias 的尾部斜杠必须一致）。
+
+录制回放和 Demo 数据都带 SHA-256 字节校验。`crypto.subtle` 只在安全上下文（HTTPS 或 localhost）存在，所以纯 HTTP 部署曾让回放退化成“演示暂时无法加载”；现在 `web/src/lib/sha256.ts` 会在缺少 `crypto.subtle` 时回退到导出脚本同款的 `@noble/hashes` 实现，校验在任何来源都保持生效。仍建议生产启用 HTTPS，回放和 Demo 之外的其他浏览器能力也依赖安全上下文。
+
 Those `C:/delivery` paths are examples to replace, not existing deliverables. Demo builds enforce missing-source and hash gates. The current 1610 missing references prevent a complete release. `DEMO_ALLOW_INCOMPLETE_DATASET` is exclusively a local diagnostic exception, never a production setting. Do not repeatedly copy the current 240990-file dataset merely to preview it.
 
 ## Recording And Verification

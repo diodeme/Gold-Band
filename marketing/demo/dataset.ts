@@ -2,6 +2,7 @@ import type { RuntimeApi } from '@/api/client';
 import type { AcpRawFrameVm, AcpSessionVm, AcpUiEventVm, ConversationRunVm, ConversationSessionTargetVm, TurnFileChangeSetVm, FileComparisonVm, WorkspaceFileSnapshotVm } from '@/types';
 import { cursorSequence, missing, pageLimit, pageSession, sessionIdentity } from './history-query';
 import { includesDemoSession, selectDemoSessions } from './session-selection';
+import { sha256Hex } from '@/lib/sha256';
 
 export const REAL_PROJECT_ID = 'e-projects-code-ai-ji--a40d4379';
 type Resource = { path: string; byteLength: number; sha256: string };
@@ -49,7 +50,7 @@ export function createDatasetReader(base: string, fetcher: typeof fetch = fetch)
     if (!response.ok) missing({ path, status: response.status });
     const bytes = await response.arrayBuffer();
     if (typeof resource !== 'string') {
-      const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), (byte) => byte.toString(16).padStart(2, '0')).join('');
+      const hash = await sha256Hex(bytes);
       if (bytes.byteLength !== resource.byteLength || hash !== resource.sha256) throw { code: 'demo.resource-integrity', params: { path } };
     }
     return JSON.parse(new TextDecoder().decode(bytes)) as T;

@@ -7,7 +7,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenu
 import { useSiteTheme } from './theme';
 import type { ReplayPositions } from './Replay';
 import type { SiteTheme } from './content';
-import { CHAPTER_IDS, chapterFromHash, copy, DESKTOP_QUERY, GITHUB, SITE_LINKS, mediaPath, pageHref, parseRoute, type ChapterId, type Language, type Page } from './content';
+import { CHAPTER_IDS, chapterFromHash, copy, DESKTOP_QUERY, GITHUB, LOGO_SRC, SITE_LINKS, mediaPath, pageHref, parseRoute, type ChapterId, type Language, type Page } from './content';
 import './style.css';
 
 const Replay = lazy(() => import('./Replay'));
@@ -93,7 +93,7 @@ function App() {
     window.scrollTo({ top: 0, behavior: 'instant' });
   }}>
     <a className="skip-link" href="#main">{language === 'zh' ? '跳到正文' : 'Skip to content'}</a>
-    <header className="site-header"><a className="brand" href={pageHref(language, 'home')}><img src="/logo.svg" alt="" /><span>Gold Band</span></a>
+    <header className="site-header"><a className="brand" href={pageHref(language, 'home')}><img src={LOGO_SRC} alt="" /><span>Gold Band</span></a>
       <nav aria-label={language === 'zh' ? '主导航' : 'Main navigation'}>{(['home', 'documentation', 'demo'] as Page[]).map((item, index) => <a key={item} href={pageHref(language, item)} aria-current={page === item ? 'page' : undefined}>{t.nav[index]}</a>)}</nav>
 <div className="header-actions"><DropdownMenu><Tooltip><TooltipTrigger asChild><DropdownMenuTrigger asChild><Button ref={themeTrigger} size="icon" variant="ghost" aria-label={language === 'zh' ? '主题' : 'Theme'}>{selected === 'system' ? <Monitor /> : theme === 'dark' ? <Moon /> : <Sun />}</Button></DropdownMenuTrigger></TooltipTrigger><TooltipContent>{language === 'zh' ? '主题' : 'Theme'}</TooltipContent></Tooltip><DropdownMenuContent align="end" onCloseAutoFocus={event => { event.preventDefault(); themeTrigger.current?.focus({ preventScroll: true }); }}><DropdownMenuRadioGroup value={selected} onValueChange={select}>{(['system', 'light', 'dark'] as const).map((value, index) => <DropdownMenuRadioItem key={value} value={value}>{language === 'zh' ? ['跟随系统', '浅色', '深色'][index] : ['System', 'Light', 'Dark'][index]}</DropdownMenuRadioItem>)}</DropdownMenuRadioGroup></DropdownMenuContent></DropdownMenu><Tooltip><TooltipTrigger asChild><Button asChild variant="ghost" size="sm"><a href={`${pageHref(language === 'zh' ? 'en' : 'zh', page)}${location.hash}`} onClick={event => { const active = document.querySelector('section[data-active="true"]')?.id; if (active && page === 'home') event.currentTarget.hash = active; }} hrefLang={language === 'zh' ? 'en' : 'zh-CN'} aria-label={language === 'zh' ? 'Switch to English' : '切换为中文'}><Languages /><span>{language === 'zh' ? 'EN' : '中文'}</span></a></Button></TooltipTrigger><TooltipContent>{language === 'zh' ? 'English' : '中文'}</TooltipContent></Tooltip>
       <Tooltip><TooltipTrigger asChild><Button asChild size="icon" variant="ghost"><a href={GITHUB} aria-label="GitHub"><Code2 /></a></Button></TooltipTrigger><TooltipContent>GitHub</TooltipContent></Tooltip></div>
@@ -101,9 +101,9 @@ function App() {
     <main id="main">{page === 'home' ? <>
       <section className="intro"><div className="eyebrow">{t.kicker}</div><h1>Gold Band</h1><p className="tagline">{t.tagline}</p><p className="intro-copy">{t.intro}</p><div className="intro-actions"><Button asChild size="lg"><a href={SITE_LINKS.download}><Download />{t.download}<ArrowUpRight /></a></Button><a className="text-link" href={pageHref(language, 'demo')}>{t.interactive}<ArrowUpRight size={16} /></a><a className="text-link" href="#before">{t.play}<ArrowDown size={16} /></a></div></section>
       <div className="story-heading"><span>{t.story}</span><span>01 / 04</span></div><Story language={language} theme={theme} />
-      <section className="closing"><img src="/logo.svg" alt="" /><h2>{t.foot}</h2><p>{t.footText}</p><Button asChild size="lg"><a href={SITE_LINKS.download}><Download />{t.download}<ArrowUpRight /></a></Button></section>
+      <section className="closing"><img src={LOGO_SRC} alt="" /><h2>{t.foot}</h2><p>{t.footText}</p><Button asChild size="lg"><a href={SITE_LINKS.download}><Download />{t.download}<ArrowUpRight /></a></Button></section>
     </> : page === 'demo' ? <Suspense fallback={<MediaLoading language={language} />}><DemoPage key={language} language={language} theme={theme} /></Suspense> : <section className="placeholder-page">{page === 'documentation' ? <BookOpen /> : <PanelsTopLeft />}<p className="eyebrow">Gold Band</p><h1>{page === 'documentation' ? t.nav[1] : t.missing}</h1>{page !== 'not-found' && <><h2>{t.placeholder}</h2><p>{page === 'documentation' ? t.docsText : t.demoText}</p></>}<div className="intro-actions"><Button asChild><a href={pageHref(language, 'home')}>{t.back}<ArrowRight /></a></Button>{page === 'documentation' && <a className="text-link" href={`${GITHUB}#readme`}>GitHub<ArrowUpRight size={16} /></a>}</div></section>}</main>
-    {page !== 'demo' && <footer><a className="brand" href={pageHref(language, 'home')}><img src="/logo.svg" alt="" /><span>Gold Band</span></a><span>AGPL-3.0 · Open source</span><a href={GITHUB}>{t.source}<ArrowUpRight size={14} /></a></footer>}
+    {page !== 'demo' && <footer><a className="brand" href={pageHref(language, 'home')}><img src={LOGO_SRC} alt="" /><span>Gold Band</span></a><span>AGPL-3.0 · Open source</span><a href={GITHUB}>{t.source}<ArrowUpRight size={14} /></a></footer>}
   </div></TooltipProvider>;
 }
 createRoot(document.getElementById('root')!).render(<App />);

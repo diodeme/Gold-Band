@@ -9,9 +9,12 @@ export function chapterFromHash(hash: string): ChapterId | null {
 }
 export const GITHUB = 'https://github.com/diodeme/Gold-Band';
 export const DESKTOP_QUERY = '(min-width: 1024px)';
+/** Deployment prefix; '/' for root hosting, '/site-by-codex/' when the build is mounted under a subpath. */
+export const SITE_BASE = import.meta.env.BASE_URL;
+export const LOGO_SRC = `${SITE_BASE}logo.svg`;
 export const SITE_LINKS = {
   download: import.meta.env.VITE_DOWNLOAD_URL || `${GITHUB}/releases/latest`,
-  demo: import.meta.env.VITE_DEMO_URL || (import.meta.env.DEV ? 'http://127.0.0.1:1450/' : '/demo/'),
+  demo: import.meta.env.VITE_DEMO_URL || (import.meta.env.DEV ? 'http://127.0.0.1:1450/' : `${SITE_BASE}demo/`),
 };
 export function demoHref(language: Language, theme: SiteTheme) {
   const url = new URL(SITE_LINKS.demo, 'https://site.invalid');
@@ -21,15 +24,17 @@ export function demoHref(language: Language, theme: SiteTheme) {
 }
 export const CAPTURE = { width: 1440, height: 880, minimum: 560 };
 
-export function parseRoute(path: string): { language: Language; page: Page } {
-  const parts = path.split('/').filter(Boolean);
+export function parseRoute(path: string, base = SITE_BASE): { language: Language; page: Page } {
+  const root = base.replace(/\/+$/, '');
+  const relative = path === root ? '/' : path.startsWith(base) ? `/${path.slice(base.length)}` : path;
+  const parts = relative.split('/').filter(Boolean);
   const language = parts[0] === 'en' ? 'en' : 'zh';
   if (parts[0] === 'en' || parts[0] === 'zh') parts.shift();
   const page = parts.length === 0 ? 'home' : parts.length === 1 && (parts[0] === 'documentation' || parts[0] === 'demo') ? parts[0] : 'not-found';
   return { language, page };
 }
-export function pageHref(language: Language, page: Page) {
-  return `/${language}/${page === 'home' ? '' : page === 'not-found' ? '404' : page}`;
+export function pageHref(language: Language, page: Page, base = SITE_BASE) {
+  return `${base}${language}/${page === 'home' ? '' : page === 'not-found' ? '404' : page}`;
 }
 export function mediaPath(language: Language, chapter: ChapterId, kind: 'json' | 'png', theme: SiteTheme = 'dark') {
   return new URL(`./media/${language}-${chapter}${theme === 'light' ? '-light' : ''}.${kind}`, import.meta.url).href;

@@ -49,5 +49,7 @@ export async function composeWebsite(site, demo) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  console.log(JSON.stringify(await composeWebsite(resolve('.codex-temp/site-dist'), resolve('.codex-temp/demo-dist'))));
+  const site = process.env.WEBSITE_SITE_DIR ?? '.codex-temp/site-dist';
+  const demo = process.env.WEBSITE_DEMO_DIR ?? '.codex-temp/demo-dist';
+  console.log(JSON.stringify({ site, demo, ...await composeWebsite(resolve(site), resolve(demo)) }));
 }

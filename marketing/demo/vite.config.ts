@@ -4,8 +4,12 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { identitySensitiveDependencies } from '../../web/config/identity-sensitive-dependencies';
 
+const base = process.env.WEBSITE_BASE ?? '/';
+const outDir = process.env.WEBSITE_DEMO_DIR ? resolve(process.env.WEBSITE_DEMO_DIR) : '../../.codex-temp/demo-dist';
+
 export default defineConfig({
   root: 'marketing/demo',
+  base,
   publicDir: '../../web/public',
   plugins: [
     {
@@ -21,5 +25,5 @@ export default defineConfig({
     react(), tailwindcss(),
   ],
   resolve: { alias: { '@': resolve('web/src') }, dedupe: [...identitySensitiveDependencies] },
-  build: { target: 'safari15.4', outDir: '../../.codex-temp/demo-dist', emptyOutDir: true },
+  build: { target: 'safari15.4', outDir, emptyOutDir: true },
 });

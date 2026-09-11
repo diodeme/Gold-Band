@@ -1,4 +1,5 @@
 import { cn } from '@/lib/utils';
+import { publicAssetUrl } from '@/lib/public-url';
 
 const AGENT_ICON_SCALE_CLASS: Record<string, string> = {
   codex: 'scale-125',
@@ -46,10 +47,10 @@ export async function readAgentIconFile(file: File): Promise<string> {
 export function agentIconSrc(iconKey: string) {
   const icon = iconKey.trim();
   if (!icon || icon === DEFAULT_AGENT_ICON_KEY) {
-    return '/logo.svg';
+    return publicAssetUrl('/logo.svg');
   }
   if (/^(?:https?:|data:|asset:|blob:|\/)/i.test(icon)) return icon;
-  return `/agent-icons/${icon}.svg`;
+  return publicAssetUrl(`/agent-icons/${icon}.svg`);
 }
 
 export function agentIconClass(iconKey: string, className?: string) {

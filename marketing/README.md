@@ -36,6 +36,34 @@ npm run site:preview
 
 The combined static output is `.codex-temp/site-dist/`: website at `/`, full Demo at `/demo/`. The composition step preserves independent HTML entries and merges fingerprinted assets, rejecting collisions. Both builds use the same `web/public` resources. Never include the recording server or `preview.html` in deployment.
 
+### Hosting under a subpath
+
+Asset URLs, page links and the embedded Demo are root-absolute, so a subpath deployment needs a build that carries the prefix:
+
+```sh
+npm run website:build:subpath                                  # /site-by-codex/ -> .codex-temp/site-by-codex-dist
+WEBSITE_BASE=/docs/ WEBSITE_SITE_DIR=.codex-temp/site-docs npm run website:build:subpath
+```
+
+Upload the resulting directory and point the server at it. No rewrite rules are needed: the build writes a real directory index for every shell route (`zh/`, `en/`, `documentation/`, `zh|en/demo/`) in addition to `_redirects`, which only Netlify-style hosts read.
+
+```nginx
+location = /site-by-codex { return 301 /site-by-codex/; }
+
+location /site-by-codex/ {
+    alias /data/app/gold-band-site/;
+    index index.html;
+
+    location ~ ^/site-by-codex/(?<asset>assets/.+)$ {
+        alias /data/app/gold-band-site/$asset;
+        expires 1y;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+    }
+}
+```
+
+`add_header` inside a location replaces inherited `add_header` directives from the enclosing server block, so repeat any security headers you rely on there. `gzip`/`gzip_vary` settings are inherited normally.
+
 With the combined production preview running, `npm run site:verify` checks five widths, both languages, four playback lifecycles, downloads, documentation and full Demo links. Set `SITE_URL` when using another port. It writes screenshots and a technical report to `.codex-temp/site-verification/`; the report explicitly keeps scene/reference visual acceptance pending.
 
 `node scripts/verify-site-scroll.mjs` checks desktop sticky positioning and natural mobile document scrolling at five widths in both languages/themes. Each case loads independently, waits for deep-link scrolling to settle, pauses the active replay, then verifies that scrolling preserves its renderer, camera and content. Measurements and screenshots are written to `.codex-temp/site-scroll-verification/`. Set `SITE_URL` and `AGENT_BROWSER_BIN` as above. `node --test scripts/verify-site-scroll.test.mjs` verifies rejection of clock advancement, remounts, overlap and incorrect positioning. This is layout verification, not complete scene readability or motion acceptance.

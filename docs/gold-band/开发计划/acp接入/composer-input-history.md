@@ -83,3 +83,15 @@ GitHub verify 在 `Check formatting` 失败，后续 Rust 测试、前端测试�
 浏览器在独立测试夹具中挂载真实 ACPChatDialog，使用受控 RuntimeApi 响应；验证完整草稿上下键往返、发送中停止后的恢复、历史发送仅包含 `displayText` 与空 quotes、图片解码成功。1440px、390px 及重新拉宽验证通过，窄窗 scrollWidth 等于 viewport，输入框与操作按钮无重叠。此验证不等同于真实 EXE/provider 端到端验证。前端类型检查和生产构建通过，保留既有大 chunk 与静态/动态导入提示。
 
 性能与过度设计审视：新增状态仅为 composer 局部历史文字投影，原草稿仍由既有最多 64 项、附件预算 100 MiB 的 store 管理；不复制 File 或图片字节，不新增依赖、持久字段、全局 Context、历史扫描或 IPC。翻阅继续使用既有有界历史 reader；提交附件解析最多处理既有 10 个附件，仅在发送时执行。复用原接收和恢复接口，无额外消息模型或队列，渲染隔离回归通过。
+
+## 2026-09-11 提交交付事实与停止回填
+
+根因：发送路径在草稿分离后只看命令返回的 `accepted` kind 就释放草稿快照，把“后端已接纳”当成“消息已进入 transcript”。ACP 提示在命令返回前已写入 turn，但对应 canonical `goldBandPrompt` 事件可能还在路上；若用户在这段“发送中”窗口点击停止，或 turn 在 admission 前因会话配置等错误进入 failed 终态，前端已经清掉 optimistic 气泡并释放快照，消息既不在 transcript 也不在 composer，用户输入彻底消失。这是正确的“canonical admission 才算交付”设计下，消费端交付判定过早。
+
+修复复用既有 `AcpComposerDraft` store、optimistic promptId、`findMatchingGoldBandUserPrompt` 与提交链路，新增一个按 promptId 索引的待交付快照投影：分离草稿时登记完整 draft（正文、引用、文件、图片），匹配 promptId 的 canonical admission 到达后释放附件预览资源；停止请求成功、或 turn 在 failed / cancelled 终态且无 admission 时，通过同一草稿恢复接口回填并移除对应 optimistic 气泡；turn 完成为已消费，只释放快照。提交失败仍在同一 finally 分支恢复，覆盖提交前配置校验阻止 prompt 的情况。快照不覆盖用户其间的新输入，组件卸载释放未结算预览资源。
+
+先补最小失败测试：发送中点击停止后 `textarea` 仍为空；accepted 响应后 turn 在无 admission 时 failed，`textarea` 仍为空。两条都与根因分析一致，分别在实现前稳定失败。修复后 25 项会话提交测试中 24 项通过，唯一失败 `uses a stale run error only as fallback for ACP diagnostics` 经 `git stash` 对照确认在修复前的主工作区基线同样失败，与本次改动无关。新增覆盖：停止后恢复完整图片、文件与引用且不撤销预览 URL；accepted 但无 admission 时 failure 回填、completed 不回填；admission 到达后才释放附件。
+
+验证：`web/tests/acp-runtime-continue-submit.test.tsx` 24/25（1 项基线失败）、相关 composer 回归与 `tsc -p web/tsconfig.build.json`、前端生产构建通过。浏览器在真实 `ACPChatDialog` 夹具中验证发送中停止后草稿与两张附件、引用回到 composer，输入框恢复可编辑。
+
+性能与过度设计审视：新增结构是一个只覆盖在途提交的小 Map，条目在 admission、终态或停止任一结算点立即删除，不随历史增长；每个条目复用既有草稿对象，不复制附件字节，也不新增 IPC、持久字段、定时器或全局 Context。admission 检测复用既有 `mergeAcpEvents + findMatchingGoldBandUserPrompt`，仅在存在在途快照的短窗口内按 promptId 精确匹配，不扫描历史、不轮询。

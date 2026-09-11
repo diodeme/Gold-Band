@@ -359,6 +359,13 @@ function isAcpSessionConfigValueUnavailableError(error: unknown) {
   );
 }
 
+interface PendingPromptDraft {
+  promptId: string;
+  content: string;
+  timestamp: string;
+  draft: AcpComposerDraft;
+}
+
 interface ACPChatDialogProps {
   session?: AcpSessionVm | null;
   agentRegistry?: AgentRegistryVm | null;
@@ -1510,6 +1517,7 @@ export function ACPChatDialog(
   const returnToLatestVisualProbeRef = useRef<AcpReturnToLatestVisualProbe | null>(null);
   const pendingBranchViewRestoreRef = useRef<AcpBranchViewState | null>(restoredBranchViewState);
   const cancelRequestedRef = useRef(false);
+  const pendingPromptDraftsRef = useRef(new Map<string, PendingPromptDraft>());
   const awaitTerminalStopRef = useRef(false);
   const terminalSessionNotifiedRef = useRef(false);
   const [stopCommandPending, setStopCommandPending] = useState(false);
@@ -1531,6 +1539,76 @@ export function ACPChatDialog(
   const sessionRefreshSeqRef = useRef(0);
   const sessionIdentityRef = useRef(sessionIdentity);
   sessionIdentityRef.current = sessionIdentity;
+  const restoreComposerDraftIfEmpty = composerDraft.restoreIfEmpty;
+  const pendingPromptDraftEvents = useCallback(
+    () => mergeAcpEvents(
+      latestSessionRef.current?.events ?? [],
+      loadedEventWindowRef.current.events,
+    ),
+    [],
+  );
+  const promptDraftHasAdmission = useCallback(
+    (record: PendingPromptDraft) => Boolean(findMatchingGoldBandUserPrompt(
+      pendingPromptDraftEvents(),
+      record.content,
+      record.promptId,
+      record.timestamp,
+    )),
+    [pendingPromptDraftEvents],
+  );
+  const releaseAdmittedPromptDrafts = useCallback((events?: AcpUiEventVm[]) => {
+    if (pendingPromptDraftsRef.current.size === 0) return;
+    const source = events ?? pendingPromptDraftEvents();
+    for (const [promptId, record] of [...pendingPromptDraftsRef.current]) {
+      if (!findMatchingGoldBandUserPrompt(
+        source,
+        record.content,
+        record.promptId,
+        record.timestamp,
+      )) continue;
+      pendingPromptDraftsRef.current.delete(promptId);
+      releaseSubmittedAttachments(record.draft.attachments);
+    }
+  }, [pendingPromptDraftEvents]);
+  const restoreUndeliveredPromptDrafts = useCallback((promptId?: string) => {
+    for (const [id, record] of [...pendingPromptDraftsRef.current]) {
+      if (promptId && id !== promptId) continue;
+      if (promptDraftHasAdmission(record)) {
+        releaseAdmittedPromptDrafts();
+        continue;
+      }
+      pendingPromptDraftsRef.current.delete(id);
+      restoreComposerDraftIfEmpty(record.draft);
+    }
+  }, [
+    promptDraftHasAdmission,
+    releaseAdmittedPromptDrafts,
+    restoreComposerDraftIfEmpty,
+  ]);
+  const settlePromptDraftAfterSettledTurn = useCallback((
+    promptId: string,
+    delivered: boolean,
+  ) => {
+    const record = pendingPromptDraftsRef.current.get(promptId);
+    if (!record) return;
+    pendingPromptDraftsRef.current.delete(promptId);
+    if (delivered || promptDraftHasAdmission(record)) {
+      releaseSubmittedAttachments(record.draft.attachments);
+    } else {
+      restoreComposerDraftIfEmpty(record.draft);
+    }
+  }, [promptDraftHasAdmission, restoreComposerDraftIfEmpty]);
+  // Canonical admission is the delivery fact: only then may the detached draft
+  // release its attachment previews. Until then the snapshot stays reclaimable.
+  useEffect(() => {
+    releaseAdmittedPromptDrafts();
+  });
+  useEffect(() => () => {
+    for (const record of pendingPromptDraftsRef.current.values()) {
+      revokeAttachmentPreviewUrls(record.draft.attachments);
+    }
+    pendingPromptDraftsRef.current.clear();
+  }, []);
   const paginationRequestSeqRef = useRef(0);
   const paginationRequestOwnerRef = useRef<AcpPaginationRequestToken | null>(null);
   const paginationCursorGenerationStaleRef = useRef(false);
@@ -4342,6 +4420,12 @@ export function ACPChatDialog(
   useEffect(() => {
     if (!activeTurnTerminal || !activeTurnPromptId) return;
     const terminalTurnId = activeTurnPromptId;
+    // A terminal turn without canonical admission never reached the transcript;
+    // a completed turn already did, so only failure/cancel reclaims the draft.
+    settlePromptDraftAfterSettledTurn(
+      terminalTurnId,
+      localLifecycle?.acp.latestTurnStatus === "completed",
+    );
     setSending(false);
     setPromptCommandPending(false);
     setAwaitingResponse(false);
@@ -4359,7 +4443,13 @@ export function ACPChatDialog(
     const shouldNotifyStopped = cancelRequestedRef.current;
     cancelRequestedRef.current = false;
     if (shouldNotifyStopped) onSessionStopped?.();
-  }, [activeTurnPromptId, activeTurnTerminal, onSessionStopped]);
+  }, [
+    activeTurnPromptId,
+    activeTurnTerminal,
+    localLifecycle?.acp.latestTurnStatus,
+    onSessionStopped,
+    settlePromptDraftAfterSettledTurn,
+  ]);
 
   useEffect(() => {
     const terminalSession = shouldSettleAcpComposerTransientState(
@@ -5275,7 +5365,15 @@ export function ACPChatDialog(
       setPromptCommandPending(false);
       return false;
     }
-    if (detachedDraft) setComposerContextError(null);
+    if (detachedDraft && promptId) {
+      pendingPromptDraftsRef.current.set(promptId, {
+        promptId,
+        content: draftContent,
+        timestamp: optimisticEvent.timestamp,
+        draft: detachedDraft,
+      });
+      setComposerContextError(null);
+    }
     if (localLifecycle?.promptQueue) {
       requestAnimationFrame(() => composerTextareaRef.current?.focus());
     }
@@ -5412,11 +5510,18 @@ export function ACPChatDialog(
       );
     } finally {
       if (detachedDraft) {
-        if (submissionAccepted) {
+        const pendingDraft = promptId
+          ? pendingPromptDraftsRef.current.get(promptId)
+          : undefined;
+        if (promptId && pendingDraft && promptDraftHasAdmission(pendingDraft)) {
+          pendingPromptDraftsRef.current.delete(promptId);
           releaseSubmittedAttachments(detachedDraft.attachments);
-        } else {
+        } else if (promptId && pendingDraft && !submissionAccepted) {
+          pendingPromptDraftsRef.current.delete(promptId);
           composerDraft.restoreIfEmpty(detachedDraft);
         }
+        // Accepted but not yet admitted: keep the snapshot so a stop or a
+        // failure before admission can still return the complete draft.
       }
       setSending(false);
       setPromptCommandPending(false);
@@ -5597,6 +5702,9 @@ export function ACPChatDialog(
         cancelRequestedRef.current = false;
         onSessionStopped?.();
       }
+      // Stopping an undelivered prompt returns it to the composer; an admitted
+      // prompt stays in the transcript with its attachments released.
+      restoreUndeliveredPromptDrafts();
       updateOptimisticEvents(clearPendingOptimisticPromptsAfterStop);
     } catch (error) {
       setCancelError(displayAppError(t, error));

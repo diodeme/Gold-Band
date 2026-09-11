@@ -8,7 +8,7 @@ export function checkDataset(source, allowIncomplete = false) {
   }
   const manifest = JSON.parse(readFileSync(join(source, 'manifest.json'), 'utf8'));
   if (manifest.missing.length && !allowIncomplete) {
-    throw new Error(`Demo source has ${manifest.missing.length} missing references. DEMO_ALLOW_INCOMPLETE_DATASET=1 is for local verification only.`);
+    throw new Error(`Demo source has ${manifest.missing.length} missing references. Set DEMO_ALLOW_MISSING_REFERENCES=1 for local verification only.`);
   }
   if (!existsSync(join(source, 'publish-index.json'))) throw new Error('Run verify-demo-history.mjs to create the verified publication inventory.');
 }

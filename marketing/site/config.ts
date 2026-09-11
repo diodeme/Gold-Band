@@ -17,7 +17,10 @@ export function siteConfig(env: Environment, production: boolean) {
   const downloadUrl = address(String(env.VITE_DOWNLOAD_URL || 'https://github.com/diodeme/Gold-Band/releases'), 'VITE_DOWNLOAD_URL', production);
   return { base, demoUrl, downloadUrl };
 }
-export function demoHref(value: string, language: string, origin: string) {
-  const url = new URL(value, origin); url.searchParams.set('language', language === 'zh' ? 'zh-cn' : 'en');
+export function demoHref(value: string, language: string, origin: string, theme?: 'light' | 'dark') {
+  const url = new URL(value, origin);
+  url.searchParams.set('language', language === 'zh' ? 'zh-cn' : 'en');
+  // Keep the embedded client on the same scheme the visitor sees on the site.
+  if (theme === 'light' || theme === 'dark') url.searchParams.set('theme', theme);
   return url.href;
 }

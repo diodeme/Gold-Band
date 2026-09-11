@@ -1,4 +1,7 @@
-.demo-stage { height: 100dvh; padding-block: 24px; background: #080909; }
+/* The surround uses the opposite scheme so the client edge is always readable. */
+:root[data-color-scheme="dark"] { --demo-stage-background: #eef0ec; }
+:root[data-color-scheme="light"] { --demo-stage-background: #101112; }
+.demo-stage { height: 100dvh; padding-block: 24px; background: var(--demo-stage-background, #101112); }
 .demo-client { height: 100%; overflow: hidden; container-type: inline-size; border: 1px solid #363839; border-radius: 8px; box-shadow: 0 12px 40px #0008; }
 .demo-client > .app-window-shell { height: 100%; }
 .demo-client [data-task-status-project="e-projects-code-ai-ji--a40d4379"] { background-color: var(--color-emerald-500); opacity: 0.5; }

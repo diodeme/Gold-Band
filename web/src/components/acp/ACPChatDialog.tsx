@@ -8930,10 +8930,13 @@ const ToolBlock = memo(function ToolBlock({
     label: t(block.labelKey),
     value: block.value,
   }));
+  // Without a published detail payload the expanded body has nothing to show, so the parameter
+  // panel stays closed while the collapsed chip keeps its one-line summary.
+  const toolHasDetail = toolDetailAvailable(event);
   const toolPart: ToolPart = {
     type: details.name ?? t("acp.toolCall"),
     state: toolState(event.status),
-    orderedInput: orderedInput.length > 0 ? orderedInput : undefined,
+    orderedInput: toolHasDetail && orderedInput.length > 0 ? orderedInput : undefined,
     rawInput: details.rawInput ?? undefined,
     output: details.output ?? undefined,
     summary: toolSummary(details.queryBlocks),
@@ -9097,6 +9100,10 @@ const ToolBlock = memo(function ToolBlock({
           variant={compact ? "audit" : "card"}
           className={compact ? "acp-activity-audit-tool" : undefined}
         />
+        {open && showDetail && !activeDetailError && !toolHasDetail ? <div role="status" data-acp-tool-detail-unavailable="true"
+          className="px-2 py-1 text-xs text-muted-foreground">
+          {t("acp.activityDetailUnavailable")}
+        </div> : null}
         {open && !showDetail && !activeDetailError ? <div role="status" data-acp-tool-detail-loading="true"
           className="flex h-8 items-center gap-2 px-2 text-xs text-muted-foreground">
           <Loader2 className="size-3 animate-spin" />{t("common.loading")}

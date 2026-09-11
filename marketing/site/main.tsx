@@ -90,7 +90,7 @@ export function App() {
     query.addEventListener('change', changed);
     return () => query.removeEventListener('change', changed);
   }, []);
-  const demo = demoHref(config.demoUrl, language, location.origin);
+  const demo = demoHref(config.demoUrl, language, location.origin, theme);
   useEffect(() => { document.documentElement.dataset.theme = theme; document.documentElement.classList.toggle('dark', theme === 'dark'); }, [theme]);
 
   useEffect(() => { const changed = () => setRoute(parseRoute(location.pathname.slice(config.base.length - 1), preferences.language)); window.addEventListener('popstate', changed); return () => window.removeEventListener('popstate', changed); }, [preferences.language]);

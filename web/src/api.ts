@@ -3,6 +3,8 @@ import type { RuntimeApi } from './api/client';
 import type { ResolvedColorScheme } from './types';
 
 export { isTauriRuntime } from './api/shared';
+export function readProjectMemory(projectId: string) { return getRuntimeApi().readProjectMemory(projectId); }
+export function writeProjectMemory(projectId: string, command: import('@/lib/memory').MemoryCommand) { return getRuntimeApi().writeProjectMemory(projectId, command); }
 
 export function checkLocalClaude() {
   return getRuntimeApi().checkLocalClaude();

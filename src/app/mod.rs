@@ -208,6 +208,7 @@ pub(crate) fn task_input_attachment_paths(app: &App, task_id: &str) -> Vec<Strin
 
 pub const DEFAULT_WORKFLOW_TEMPLATE_ID: &str = "default";
 pub const DEFAULT_LIGHTWEIGHT_WORKFLOW_TEMPLATE_ID: &str = "default-lightweight";
+pub const WB_CICD_WORKFLOW_TEMPLATE_ID: &str = "wb-development-cicd";
 const DEFAULT_WORKFLOW_MAX_ATTEMPTS: u32 = 10;
 const DEFAULT_WORKFLOW_MAX_ROUNDS: u32 = 3;
 
@@ -319,6 +320,26 @@ fn default_workflow_goal(language: DesktopLanguage, key: &str) -> &'static str {
         }
         _ => "Execute this workflow node.",
     }
+}
+
+fn wb_cicd_workflow_template(profiles: &DefaultProfileIds, language: DesktopLanguage) -> WorkflowTemplate {
+    let mut template = default_lightweight_workflow_template(profiles, language);
+    template.id = WB_CICD_WORKFLOW_TEMPLATE_ID.into();
+    template.name = match language { DesktopLanguage::ZhCn => "开发构建部署工作流", DesktopLanguage::En => "Development, Build and Deployment" }.into();
+    template.workflow.id = "task-workflow-cicd".into();
+    let mut cicd = template.workflow.nodes.iter().find(|node| matches!(node, NodeDsl::Worker(w) if w.id == "accept")).unwrap().clone();
+    if let NodeDsl::Worker(worker) = &mut cicd {
+        worker.id = "cicd".into();
+        worker.profile = Some("pf-builtin-cicd".into());
+        worker.goal = Some(match language { DesktopLanguage::ZhCn => include_str!("../prompts/zh-CN/runtime/cicd-goal.md"), DesktopLanguage::En => include_str!("../prompts/en/runtime/cicd-goal.md") }.trim().into());
+        worker.output.as_mut().unwrap().artifact = "cicd-result".into();
+    }
+    for edge in &mut template.workflow.edges {
+        if edge.from == "accept" && edge.to == END_NODE { edge.to = "cicd".into(); }
+    }
+    template.workflow.nodes.push(cicd);
+    template.workflow.edges.push(EdgeDsl { from: "cicd".into(), to: END_NODE.into(), on: EdgeOutcome::Success, session: None, new_round_entry: None });
+    template
 }
 
 fn default_workflow_dsl(
@@ -3287,6 +3308,11 @@ impl App {
             }
             upsert_built_in_workflow_template(&mut store.templates, lightweight_template, 0)?;
             upsert_built_in_workflow_template(&mut store.templates, default_template, 0)?;
+            if crate::memory::is_wb() {
+                upsert_built_in_workflow_template(&mut store.templates, wb_cicd_workflow_template(&default_profiles, self.config.desktop_language), 2)?;
+            } else {
+                store.templates.retain(|template| template.id != WB_CICD_WORKFLOW_TEMPLATE_ID);
+            }
             if let Some(workflow) = store.last_created_workflow.as_mut() {
                 let mut ignored = WorkflowModelBindings::default();
                 migrate_authoring_workflow(workflow, &mut ignored, None)?;
@@ -3300,6 +3326,7 @@ impl App {
             last_created_workflow: None,
             templates: vec![default_template, lightweight_template],
         };
+        if crate::memory::is_wb() { store.templates.push(wb_cicd_workflow_template(&default_profiles, self.config.desktop_language)); }
         for template in &mut store.templates {
             migrate_authoring_workflow(
                 &mut template.workflow,
@@ -5522,6 +5549,22 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn memory_cicd_template_preserves_acceptance_routes_and_stops_on_failure() {
+        use super::*;
+        let temp = tempfile::tempdir().unwrap();
+        let root = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let profiles = ensure_default_user_profiles(&crate::storage::GoldBandPaths::new(root)).unwrap();
+        let template = wb_cicd_workflow_template(&profiles, DesktopLanguage::En);
+        assert_eq!(template.optional_entry_stage.as_ref().unwrap().node_id, "grill");
+        let edges = &template.workflow.edges;
+        assert!(edges.iter().any(|e| e.from == "accept" && e.to == "cicd" && e.on == EdgeOutcome::Success));
+        assert!(edges.iter().any(|e| e.from == "accept" && e.to == NEW_ROUND_NODE && e.new_round_entry.as_deref() == Some("dev-test")));
+        assert!(!edges.iter().any(|e| e.from == "cicd" && e.on == EdgeOutcome::Failure));
+        let NodeDsl::Worker(cicd) = template.workflow.nodes.last().unwrap() else { panic!() };
+        assert_ne!(cicd.manual_check, Some(true));
+        assert_eq!(cicd.profile.as_deref(), Some("pf-builtin-cicd"));
+    }
     use super::{
         AcpLiveEventContext, AcpPromptLifecycleEvent, App, AttemptRuntimePauseResult,
         AutoTemplateStore, CreateTaskInput, OwnedTaskDirectory, RuntimeLifecycleEvent,

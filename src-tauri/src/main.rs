@@ -14,6 +14,7 @@ mod git_state_monitor;
 mod i18n;
 mod image_actions;
 mod metrics;
+mod memory;
 mod multica;
 mod notifications;
 mod personal_analytics;
@@ -114,6 +115,9 @@ fn main() {
 
 fn run() -> anyhow::Result<()> {
     configure_storage_paths(channel::storage_path_config());
+    if gold_band::memory::mcp::requested() {
+        return tokio::runtime::Runtime::new()?.block_on(gold_band::memory::mcp::run());
+    }
     let context = DesktopContext::from_current_dir()?;
     let wallpaper_runtime = wallpaper::WallpaperProtocolRuntime::new(
         GoldBandPaths::new(context.repo_root.clone()).user_gold_band_dir(),
@@ -374,6 +378,8 @@ fn run() -> anyhow::Result<()> {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            memory::read_project_memory,
+            memory::write_project_memory,
             get_app_bootstrap,
             desktop_lifecycle::complete_main_window_close,
             desktop_lifecycle::resolve_app_exit,

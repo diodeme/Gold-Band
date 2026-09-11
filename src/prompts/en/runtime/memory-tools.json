@@ -1,0 +1,4 @@
+{
+  "read": "Read current workspace and task memory, effective values and revisions.",
+  "write": "Persist one user-confirmed parameter. Default to task scope; workspace requires explicit intent for long-term reuse. Use the read revision, null for an absent key. entry=null deletes. Conflicts require re-reading and reconsidering, never blind retry. Changing entry.key atomically renames a key if the new key is absent."
+}

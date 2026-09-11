@@ -44,6 +44,8 @@ function withWallpaperBootstrapAssetUrls(bootstrap: AppBootstrapVm): AppBootstra
 }
 
 export const desktopApi: RuntimeApi = {
+  readProjectMemory: (projectId) => invokeCommand('read_project_memory', { projectId }),
+  writeProjectMemory: (projectId, command) => invokeCommand('write_project_memory', { projectId, command }),
   getGitCapability(projectId) {
     return invokeCommand('get_git_capability', { projectId });
   },

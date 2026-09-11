@@ -5704,7 +5704,9 @@ fn dynamic_end_summary_is_outer_handoff(
 }
 
 fn dynamic_output_emission_mode(node: &DynamicNodeState) -> OutputEmissionMode {
-    if dynamic_node_is_bootstrap_dispatch(node) {
+    if dynamic_node_is_bootstrap_dispatch(node)
+        || crate::provider::cicd::is_single_submission(node.profile.as_deref())
+    {
         OutputEmissionMode::InlineControl
     } else {
         OutputEmissionMode::PostTurnProjection
@@ -21010,6 +21012,14 @@ mod tests {
                 .unwrap()
                 .emission_mode,
             OutputEmissionMode::PostTurnProjection
+        );
+        let mut cicd = worker;
+        cicd.profile = Some("pf-builtin-cicd".into());
+        assert_eq!(
+            dynamic_output_contract_for_node(&ctx, &graph, &cicd)
+                .unwrap()
+                .emission_mode,
+            OutputEmissionMode::InlineControl
         );
     }
 

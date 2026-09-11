@@ -4,10 +4,6 @@ Use the WeTest `wetest` CLI to complete Jenkins builds, package or Docker image 
 
 ## Scope and Runtime Contract
 
-### Code commit precondition
-
-The acceptance node does not push code. Before any build, push, or deployment, verify that requirement-related code is committed. Stop when related changes remain uncommitted. Each relevant commit message must be exactly three lines: `--story=[%id] %name`, a Chinese Conventional Commit, and `#AI COMMIT#`. Missing `%id` defaults to `0`; missing `%name` defaults to `系统需求`. Do not continue on format or metadata mismatch, and never edit or push code for another node. Record commit OIDs, workspace status, and failure reasons.
-
 - Follow human instructions, the original requirement, and approved scope. Read the current task / goal and predecessor artifacts explicitly supplied by the runtime. By default, build, verify build success, push materials, and deploy to a terminal outcome. Follow explicit user instructions that narrow scope; do not omit build or deployment on your own.
 - Deployment supports build and package-name modes. Recommend deployment from a build by default. Both deployment modes require interactive confirmation with the user; configuration defaults alone cannot select or start deployment. Reuse an explicit current choice and corresponding parameter confirmation without asking again.
 - Release-plan regression deployment / approval, starting tests, querying tests, and CI+ batch operations are optional. You may ask about them together, with none selected by default. Execute only operations explicitly selected by the user. Unselected optional operations are not executed and do not block completion of build and deployment. Once the user selects test execution, necessary status queries are included in that selection without asking again on each poll.
@@ -17,6 +13,18 @@ The acceptance node does not push code. Before any build, push, or deployment, v
 - Follow runtime paths, budgets, and output protocols. Write process reports in the designated attachments directory; read only declared predecessor artifacts, without scanning historical runs or editing runtime state. When no output schema is declared, deliver a natural report instead of inventing a control protocol.
 
 ## Prerequisites and Parameter Sources
+
+### Code commit precondition
+
+The acceptance node does not push code; CICD commits and pushes requirement-related code to the remote before any build, material / image push, or deployment.
+
+1. Define related code from the original requirement, the current task / goal, predecessor artifacts explicitly supplied by the runtime, and explicit user designation. Ask when classification is unclear; never guess.
+2. When related changes remain uncommitted, first help the user commit them: inspect only the status and diff of those paths, explain the changes, confirm the requirement ID / name and Chinese commit description, and after the user confirms the complete three-line message, run git add and git commit with the specific paths. Never use git add -A, include unrelated changes, or modify business code content; recheck after committing.
+3. When related commits exist locally but have not been pushed, also help the user push them. First verify the current branch, remote configuration, and commits to be pushed, then explain the remote branch that will be updated and the commits it will receive. After user confirmation, run a normal git push. Never force push, switch to an unrelated branch, or push unconfirmed content; after pushing, verify that the remote branch contains the related commits.
+4. Every relevant commit message must be exactly three lines: `--story=[%id] %name`, `<type>: <Chinese description>`, and `#AI COMMIT#`. The second line uses a standard Conventional Commits type token (for example `feat` or `fix`) with a Chinese description, such as `feat: 添加登录功能`. Resolve `%id` and `%name` from the original requirement first; ask when they are missing or conflicting, and use `0` and `系统需求` only when they still cannot be confirmed.
+5. Stop before build, material / image push, or deployment when the user has not confirmed, commit or push fails, related changes remain uncommitted, the remote branch lacks related commits, or format or requirement metadata mismatches. CICD never modifies business code content; code push in this section and later material / image push are distinct operations. Record commit OIDs, the remote branch, workspace status, and failure reasons during the check.
+
+### CLI and Parameter Checks
 
 1. On first use, run `wetest --version` and record it. Commands below are based on CLI 0.2.9. Whenever a version, command, subcommand, or parameter is unclear, dynamically discover it with `wetest <cmd> --help`, then use `wetest <cmd> <subcommand> --help` as needed to verify required arguments, meanings, and actual capabilities instead of guessing options.
 2. If the CLI is missing, explain prerequisites: Node.js >= 18, access to the internal npm registry `http://wnpm.weoa.com:8001`, and package `@webank/wetest-cli`. Run `npm install -g @webank/wetest-cli@latest` only with existing installation authorization; otherwise request environment setup. Do not change the global registry without authorization or retry installation indefinitely.

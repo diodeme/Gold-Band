@@ -668,16 +668,6 @@ pub async fn start_multica_conversation_run(
         .claim_specific_task(&runtime_id, &remote_task_id)
         .await
         .map_err(|e| command_error(e.into()))?;
-    // 服务端不筛除未就绪 test，客户端在 claim 后、创建本地 run 前做契约级拦截。
-    // claim 已将任务置为 dispatched，必须复用 CAS 回滚，否则未就绪任务会悬挂在不可领取态。
-    if !task.executable_ready() {
-        release_after_run_start_failure(&client, &runtime_id, &remote_task_id).await;
-        // remote 状态已回滚（dispatched→queued）→ 与同函数其他失败分支一致发刷新事件：
-        // 调用方持有的缓存 is_ready 正是在此处被判过期的值，不发事件则看板会继续按过期值
-        // 提供「可执行」入口（错误码文案承诺「未就绪」与实际看板状态自相矛盾）。
-        crate::multica::bridge::emit_multica_task_updated(&app_handle);
-        return Err(command_error(MulticaError::TaskNotReady.into()));
-    }
     // claim 响应携带的任务身份（替代旧 lease 缓存）：供后续 register_active_run / 续跑判定 / issue 流转消费。
     // prior_session_id 当前未消费（保留 claim 响应既有字段，不扩范围）。
     let issue_id = task.issue_id.clone();

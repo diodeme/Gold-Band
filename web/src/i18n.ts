@@ -721,7 +721,6 @@ const resources = {
           "claim-conflict": "该任务已被其他 Daemon 领取。",
           "task-not-found": "找不到该 Multica 任务。",
           "runtime-offline": "运行时未就绪，请稍后重试。",
-          "task-not-ready": "该测试任务尚未就绪：需对应的开发任务完成后才能执行。",
           "session-resume-failed": "会话恢复失败，将以全新任务重跑。",
           "workspace-already-bound": "该工作空间已绑定。",
           "workspace-not-found": "找不到该工作空间绑定。",
@@ -2201,7 +2200,7 @@ const resources = {
           },
           readiness: {
             notReady: "未就绪",
-            notReadyHint: "等待对应开发任务完成后可执行",
+            notReadyHint: "对应开发任务尚未完成，建议等待其完成后再执行",
           },
           column: {
             empty: "暂无任务",
@@ -3259,8 +3258,6 @@ const resources = {
           "claim-conflict": "This task has already been claimed by another daemon.",
           "task-not-found": "This multica task could not be found.",
           "runtime-offline": "Runtime is not ready. Please try again shortly.",
-          "task-not-ready":
-            "This test task is not ready yet: it can run only after the matching dev task is done.",
           "session-resume-failed":
             "Session resume failed. A fresh run will be started.",
           "workspace-already-bound": "This workspace is already bound.",
@@ -4780,7 +4777,7 @@ const resources = {
           },
           readiness: {
             notReady: "Not ready",
-            notReadyHint: "Runs after the matching dev task is done",
+            notReadyHint: "The matching dev task is not done yet; consider waiting for it",
           },
           column: {
             empty: "No tasks",

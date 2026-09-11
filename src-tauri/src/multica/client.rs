@@ -196,8 +196,8 @@ pub struct RemoteTask {
     pub issue_kind: Option<String>,
     /// test 任务就绪标记（服务端派生：父 dev issue `Effective(status)==done` 才 true）。
     ///
-    /// 服务端零特判（spec Assumptions）：未就绪 test 仍下发，门控责任在码灵
-    /// （[`RemoteTask::executable_ready`]）。旧 server 不发 → None，按 kind 推导。
+    /// 仅作看板提醒展示（未就绪徽标 + 原因 Tooltip），**不做执行门控**——经实测评审，
+    /// 未就绪 test 任务提醒但放行（§12.42）。旧 server 不发 → None，不渲染提醒。
     #[serde(default)]
     pub is_ready: Option<bool>,
 }
@@ -223,17 +223,6 @@ impl RemoteTask {
         .flatten()
         .find(|s| !s.trim().is_empty())
         .map(str::to_string)
-    }
-
-    /// 执行准入谓词（story dev/test 拆分：test 任务按服务端派生的就绪信号门控）。
-    ///
-    /// - 非 test（含无 kind 的旧 server 任务、无 issue 的 chat/quick-create 任务）→ 恒可执行；
-    /// - test：`is_ready == true` 才可执行；`is_ready` 缺失按未就绪（保守——覆盖服务端灰度窗口，
-    ///   避免「字段未填默认放行」击穿门控）。
-    ///
-    /// 旧 server（两字段皆无）→ `None != Some("test")` → true，行为与拆分前逐字节一致。
-    pub fn executable_ready(&self) -> bool {
-        self.issue_kind.as_deref() != Some("test") || self.is_ready.unwrap_or(false)
     }
 }
 
@@ -1479,7 +1468,7 @@ mod tests {
         assert!(first.parent_task_id.is_none());
     }
 
-    // ===== story dev/test 拆分：issue_kind / is_ready / executable_ready 契约 =====
+    // ===== story dev/test 拆分：issue_kind / is_ready 契约（仅提醒展示，不门控——§12.42）=====
 
     #[test]
     fn remote_task_parses_issue_kind_and_is_ready() {
@@ -1501,70 +1490,18 @@ mod tests {
     }
 
     #[test]
-    fn remote_task_missing_issue_fields_stays_executable() {
-        // 旧 server 契约（版本解耦）：两字段皆无 → None/None。
-        // None != Some("test") → 可执行，行为与拆分前逐字节一致（回归固化）。
+    fn remote_task_missing_issue_fields_parse_as_none() {
+        // 旧 server 契约（版本解耦）：两字段皆无 → None/None，不渲染类型徽标与未就绪提醒。
         let legacy: RemoteTask =
             serde_json::from_str(r#"{"id":"t-1","status":"queued"}"#).unwrap();
         assert!(legacy.issue_kind.is_none());
         assert!(legacy.is_ready.is_none());
-        assert!(legacy.executable_ready());
-    }
-
-    #[test]
-    fn executable_ready_gates_only_test_kind() {
-        // 非 test（dev/bug/general/缺失）恒可执行，is_ready 值不影响判定。
-        for kind in ["dev", "bug", "general"] {
-            let task: RemoteTask = serde_json::from_str(&format!(
-                r#"{{"id":"t","issue_kind":"{kind}","is_ready":false}}"#
-            ))
-            .unwrap();
-            assert!(task.executable_ready(), "{kind} 不受就绪门控");
-        }
-
-        // test：仅 is_ready==true 可执行。
-        let not_ready: RemoteTask =
-            serde_json::from_str(r#"{"id":"t","issue_kind":"test","is_ready":false}"#).unwrap();
-        assert!(!not_ready.executable_ready());
-        let ready: RemoteTask =
-            serde_json::from_str(r#"{"id":"t","issue_kind":"test","is_ready":true}"#).unwrap();
-        assert!(ready.executable_ready());
-
-        // 保守缺省：test 且 is_ready 缺失 → 按未就绪（覆盖服务端灰度窗口，不放行）。
-        let unknown: RemoteTask =
-            serde_json::from_str(r#"{"id":"t","issue_kind":"test"}"#).unwrap();
-        assert!(!unknown.executable_ready());
-    }
-
-    #[test]
-    fn claim_response_surfaces_readiness_for_gate() {
-        // claim 响应是 `{task: <AgentTaskResponse>}` 包装（client.rs ClaimResponse）；
-        // 锁定「服务端 claim 载荷 → 解包后的 RemoteTask → 命令层门控判定」整条链路：
-        // 命令层 start_multica_conversation_run 在 claim 后立即按 executable_ready() 拦截。
-        let denied: ClaimResponse = serde_json::from_str(
-            r#"{"task":{"id":"t-1","status":"dispatched","issue_kind":"test","is_ready":false}}"#,
-        )
-        .unwrap();
-        assert!(!denied.task.executable_ready(), "未就绪 test → 拦截 + release 回滚");
-
-        let allowed: ClaimResponse = serde_json::from_str(
-            r#"{"task":{"id":"t-2","status":"dispatched","issue_kind":"test","is_ready":true}}"#,
-        )
-        .unwrap();
-        assert!(allowed.task.executable_ready(), "已就绪 test → 放行");
-
-        // dev 任务即使 is_ready=false（服务端对非 test 亦可能回传）也不受门控。
-        let dev: ClaimResponse = serde_json::from_str(
-            r#"{"task":{"id":"t-3","status":"dispatched","issue_kind":"dev","is_ready":false}}"#,
-        )
-        .unwrap();
-        assert!(dev.task.executable_ready());
     }
 
     #[test]
     fn pending_list_response_carries_readiness_fields() {
         // pending 列表是看板的数据源：包装形态与裸数组形态都必须带出两字段
-        // （看板置灰 / canClaim 谓词依赖它们）。
+        // （类型徽标 / 未就绪提醒依赖它们）。
         let wrapped: TasksListResponse = serde_json::from_str(
             r#"{"tasks":[{"id":"t-1","status":"queued","issue_kind":"test","is_ready":false},{"id":"t-2","status":"queued","issue_kind":"dev"}]}"#,
         )
@@ -1573,9 +1510,9 @@ mod tests {
             panic!("包装形态应解为 Wrapped");
         };
         assert_eq!(tasks[0].issue_kind.as_deref(), Some("test"));
-        assert!(!tasks[0].executable_ready());
+        assert_eq!(tasks[0].is_ready, Some(false));
         assert_eq!(tasks[1].issue_kind.as_deref(), Some("dev"));
-        assert!(tasks[1].executable_ready());
+        assert_eq!(tasks[1].is_ready, None);
 
         // 裸数组形态（旧 server 兼容路径）同样解析且缺字段不阻断。
         let bare: TasksListResponse =

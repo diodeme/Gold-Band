@@ -41,22 +41,15 @@ describe('Multica requirements localization', () => {
     expect(i18n.t('multica.taskManagement.issueKindFilter.all', { lng: 'en' })).toBe('All');
   });
 
-  it('localizes the not-ready marker, its reason and the task-not-ready error code', () => {
+  it('localizes the not-ready marker and its advisory reason in both languages', () => {
     expect(i18n.t('multica.taskManagement.readiness.notReady', { lng: 'zh-CN' })).toBe('未就绪');
     expect(i18n.t('multica.taskManagement.readiness.notReady', { lng: 'en' })).toBe('Not ready');
+    // 提醒文案不得暗示「不能执行」——未就绪仅提醒不阻断（§12.42）。
     expect(i18n.t('multica.taskManagement.readiness.notReadyHint', { lng: 'zh-CN' })).toBe(
-      '等待对应开发任务完成后可执行',
+      '对应开发任务尚未完成，建议等待其完成后再执行',
     );
     expect(i18n.t('multica.taskManagement.readiness.notReadyHint', { lng: 'en' })).toBe(
-      'Runs after the matching dev task is done',
-    );
-
-    // 新错误码后端只回 code，对客文案在前端映射（`errors.multica.<kebab-code>`）。
-    expect(i18n.t('errors.multica.task-not-ready', { lng: 'zh-CN' })).toBe(
-      '该测试任务尚未就绪：需对应的开发任务完成后才能执行。',
-    );
-    expect(i18n.t('errors.multica.task-not-ready', { lng: 'en' })).toBe(
-      'This test task is not ready yet: it can run only after the matching dev task is done.',
+      'The matching dev task is not done yet; consider waiting for it',
     );
   });
 });

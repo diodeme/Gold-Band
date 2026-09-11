@@ -28,7 +28,8 @@ export default defineConfig({
       name: 'demo-history-dataset',
       apply: 'build',
       buildStart() {
-        checkDataset(datasetSource, env.DEMO_ALLOW_INCOMPLETE_DATASET === '1');
+        const allowMissing = env.DEMO_ALLOW_MISSING_REFERENCES === '1' || env.DEMO_ALLOW_INCOMPLETE_DATASET === '1';
+        checkDataset(datasetSource, allowMissing);
       },
       writeBundle(options) {
         const source = datasetSource;

@@ -1,7 +1,11 @@
-/* The surround uses the opposite scheme so the client edge is always readable. */
-:root[data-color-scheme="dark"] { --demo-stage-background: #eef0ec; }
-:root[data-color-scheme="light"] { --demo-stage-background: #101112; }
-.demo-stage { height: 100dvh; padding-block: 24px; background: var(--demo-stage-background, #101112); }
+/* The surround only has to separate the client from the page, so it stays a low-contrast step
+   away from the client surface rather than inverting it. */
+:root[data-color-scheme="dark"] { --demo-stage-background: #2b2e2f; }
+:root[data-color-scheme="light"] { --demo-stage-background: #e4e7e3; }
+/* The frame sizes itself inline, so the default window size is expressed as the grid track.
+   The client opens at the desktop app's default window size (1280x720); the 2% side margins and
+   two 6px handles sit outside it, hence 1280 / 0.96 + 12 + 12 for the column track. */
+.demo-stage { height: 100dvh; padding: 24px; background: var(--demo-stage-background, #2b2e2f); display: grid; grid-template-columns: min(1346px, 100%); grid-template-rows: min(720px, 100%); place-content: center; }
 .demo-client { height: 100%; overflow: hidden; container-type: inline-size; border: 1px solid #363839; border-radius: 8px; box-shadow: 0 12px 40px #0008; }
 .demo-client > .app-window-shell { height: 100%; }
 .demo-client [data-task-status-project="e-projects-code-ai-ji--a40d4379"] { background-color: var(--color-emerald-500); opacity: 0.5; }
@@ -9,7 +13,7 @@
 .demo-window-edge { width: 6px; background: transparent; }
 .demo-window-edge:hover, .demo-window-edge:focus-visible { background: #5ca88b; }
 @media (max-width: 640px) {
-  .demo-stage { padding-block: 0; }
+  .demo-stage { padding: 0; grid-template-columns: 100%; grid-template-rows: 100%; }
   .demo-client { border-radius: 0; }
   /* Panel layout uses inline display styles; narrow screens remove both gutters. */
   .demo-stage #demo-left-margin, .demo-stage #demo-right-margin, .demo-window-edge { display: none !important; }

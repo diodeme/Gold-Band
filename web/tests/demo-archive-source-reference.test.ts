@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createArchiveReader, type ArchiveSession } from '../../marketing/demo/archive';
 import { ARCHIVE_FILE_LIMITS } from '../../marketing/demo/archive-files';
 
@@ -45,6 +45,20 @@ describe('scoped historical source reference reading', () => {
     expect(f.calls.map(call => call.path)).toEqual([f.session.detail, f.detail.sourceReferences]);
     expect(await f.reader.resourceText(result.resource)).toBe(f.content);
     expect(f.calls.at(-1)?.path).toBe(f.resource.path);
+  });
+  it('verifies archive digests on plain-HTTP origins without crypto.subtle', async () => {
+    const f = fixture();
+    const source = globalThis.crypto;
+    vi.stubGlobal('crypto', { getRandomValues: source.getRandomValues.bind(source) });
+    try {
+      expect(globalThis.crypto.subtle).toBeUndefined();
+      // Content addressing and the resource digest both have to agree with the native hash above.
+      const result = await f.reader.sourceReference(f.session, 'root', 'message', f.reference.href);
+      expect(result).toEqual(f.reference);
+      expect(await f.reader.resourceText(result.resource)).toBe(f.content);
+      await expect(f.reader.resourceText({ ...f.resource, sha256: 'f'.repeat(64) }))
+        .rejects.toEqual({ code: 'demo.archive-resource-corrupt', params: {} });
+    } finally { vi.unstubAllGlobals(); }
   });
   it('rejects other projects, nested attempts, branches, events and hrefs', async () => {
     const f = fixture();

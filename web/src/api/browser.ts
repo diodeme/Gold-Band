@@ -3,6 +3,7 @@ import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversa
 import type { ImageActionInput, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { GitCommitVm, GitHubOperationVm, GitOperationVm } from '../types';
 import { browserPreviewState } from './browserState';
+import { randomId } from '../lib/secure-random';
 import { localTimestamp, toRoundSelectionInput } from './shared';
 import { scheduledScheduleSpecFromInput } from '@/lib/scheduled-task-authoring';
 import { normalizeFontCatalogFamilies } from '@/lib/font-families';
@@ -1377,7 +1378,7 @@ export const browserApi: RuntimeApi = {
     const current = browserPreviewState.getWorkflowTemplates();
     let nextWorkflow = workflow;
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const workflowId = `workflow-${crypto.randomUUID().replaceAll('-', '')}`;
+      const workflowId = `workflow-${randomId().replaceAll('-', '')}`;
       if (!current.templates.some((template) => template.workflow.id === workflowId)) {
         nextWorkflow = { ...workflow, id: workflowId };
         break;
@@ -1429,9 +1430,9 @@ export const browserApi: RuntimeApi = {
   },
   saveAutoTemplate(name: string, config: ConversationAutoConfigVm) {
     const current = browserPreviewState.getAutoTemplates();
-    let id = `auto-template-${crypto.randomUUID().replaceAll('-', '')}`;
+    let id = `auto-template-${randomId().replaceAll('-', '')}`;
     while (current.templates.some((template) => template.id === id)) {
-      id = `auto-template-${crypto.randomUUID().replaceAll('-', '')}`;
+      id = `auto-template-${randomId().replaceAll('-', '')}`;
     }
     const now = new Date().toISOString();
     return Promise.resolve(browserPreviewState.setAutoTemplates({

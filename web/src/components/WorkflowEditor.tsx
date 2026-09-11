@@ -30,6 +30,7 @@ import {
 } from '@xyflow/react';
 import { useTranslation } from 'react-i18next';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
+import { randomId } from '@/lib/secure-random';
 import type { AgentRegistryVm, DynamicAgentRefDsl, DynamicControlDsl, ManagedAgentVm, ProfileVm, WorkerModelBinding, WorkflowAiDynamicDynamicAgentStrategyDsl, WorkflowAiDynamicFixedAgentStrategyDsl, WorkflowAiDynamicNodeDsl, WorkflowControlDsl, WorkflowDsl, WorkflowEdgeDsl, WorkflowJsonConditionDsl, WorkflowModelBindings, WorkflowNodeDsl, WorkflowOutputContractDsl, WorkflowTemplate, WorkflowTemplateStore, WorkflowWorkerNodeDsl } from '../types';
 import { NODE_WIDTH, NODE_HEIGHT, TERMINAL_NODE_WIDTH, TERMINAL_NODE_HEIGHT, collectAuthoringNodes, authoringEdgeColor, layoutSuccessPath, routeWorkflowBranchEdges, topLeft, SOURCE_POS, TARGET_POS, type WorkflowGraphBranchRoute } from "./workflowGraph";
 import { AppCard } from '@/components/AppCard';
@@ -231,7 +232,7 @@ export function workerAgentSelectionPatch(provider: string): Partial<WorkflowWor
 export function createAuthoringWorkerNode(
   workflow: WorkflowDsl,
   baseId: string,
-  createSlotId: () => string = () => crypto.randomUUID(),
+  createSlotId: () => string = () => randomId(),
 ): WorkflowWorkerNodeDsl {
   return {
     type: 'worker',
@@ -2821,7 +2822,7 @@ function edgeId(edge: WorkflowEdgeDsl, index: number) {
 export function normalizeWorkflowExecutionSlots(
   nextWorkflow: WorkflowDsl,
   previousWorkflow: WorkflowDsl,
-  createSlotId: () => string = () => crypto.randomUUID(),
+  createSlotId: () => string = () => randomId(),
 ): WorkflowDsl {
   const previousSlotsByNodeId = new Map(
     previousWorkflow.nodes.flatMap((node) => {
@@ -2844,7 +2845,7 @@ export function normalizeWorkflowExecutionSlots(
 export function normalizeWorkflowJsonForAuthoring(
   nextWorkflow: WorkflowDsl,
   previousWorkflow: WorkflowDsl,
-  createSlotId: () => string = () => crypto.randomUUID(),
+  createSlotId: () => string = () => randomId(),
 ): WorkflowDsl {
   return normalizeWorkflowEntryFromTopology(
     normalizeWorkflowExecutionSlots(

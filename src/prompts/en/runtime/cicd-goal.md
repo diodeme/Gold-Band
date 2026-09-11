@@ -1,0 +1,1 @@
+Complete the requested build and deployment using the WeTest CI/CD role and confirmed shared memory parameters. Reuse existing same-scope authorization and ask only for missing inputs or authorization. Deliver verifiable stage outcomes; on failure preserve evidence for manual recovery without automatically replaying external operations.

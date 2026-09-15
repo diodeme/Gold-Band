@@ -47,7 +47,7 @@ const resources = {
         detail: {
           history: "执行历史", back: "返回定时任务", notFound: "未找到此定时任务", loadFailed: "无法加载执行详情", actionFailed: "操作失败，请重试", historyLoadFailed: "无法加载此页历史记录", runFailed: "无法启动此定时任务", loading: "正在加载...",
           starting: "启动中...", runNow: "立即执行", previousStatus: "上轮状态", runs: "执行次数", retries: "重试次数", next: "下次执行",
-          workspace: "工作区", schedule: "计划", timezone: "时区", status: "状态", noHistory: "暂无执行记录", attempt: "第 {{count}} 次", openRun: "打开关联运行", filter: "历史状态", allStatuses: "全部状态", previousPage: "上一页", nextPage: "下一页",
+          workspace: "工作区", schedule: "计划", timezone: "时区", status: "状态", noHistory: "暂无执行记录", attempt: "第 {{count}} 次", openRun: "打开关联运行", filter: "历史状态", allStatuses: "全部状态", previousPage: "上一页", nextPage: "下一页", locatedHistory: "定位记录", deleted: "原定时任务已删除", removeSelected: "移除所选历史", deleting: "正在移除", selectAllRuns: "选择本页全部可移除历史", selectRun: "选择历史：{{summary}}", historyAvailability: { available: "可打开", unavailable: "不可用" },
         },
         dialog: {
           title: "定时任务设置", content: "任务内容", tabs: { at: "单次", repeat: "重复", cron: "Cron" }, date: "日期", time: "时间", openTimePicker: "打开时间选择器", hours: "小时", minutes: "分钟", frequency: "频率",
@@ -569,6 +569,9 @@ const resources = {
           "command-required": "请填写 Agent 启动命令。",
         },
         acp: {
+          "composer-history-stale": "输入历史已更新，请清空输入后重试。",
+          "composer-history-not-found": "该条输入历史已不可用。",
+          "composer-history-query-failed": "输入历史加载失败，请重试。",
           "turn-execution-failed": "本次消息处理失败，请重试。",
           "session-request-failed": "会话准备失败，请重试。",
           "missing-provider": "当前节点缺少 provider 配置。",
@@ -1757,6 +1760,7 @@ const resources = {
         noChangedFiles: "没有可查看的变更文件",
       },
       acp: {
+        composerHistoryError: "输入历史加载失败，清空输入后可重试。",
         restored: "已恢复",
         sessionSuperseded:
           "此会话已由 <attempt>{{target}}</attempt> 接续，请前往该 attempt 继续。",
@@ -1898,7 +1902,7 @@ const resources = {
         retryStopped: "重试 {{count}} 次后已停止",
         sessionInterrupted: "会话发起中断，请重跑该任务",
         missingSessionReason:
-          "本次任务没有成功建立 ACP 会话。请检查所选 Agent 的 ACP adapter 能否启动，以及相关依赖与认证是否有效。",
+          "当前无法获取会话，未获取到具体错误原因。",
         thought: "思考过程",
         thinkingDuration: "{{seconds}} 秒",
         toolCall: "工具调用",
@@ -2539,7 +2543,7 @@ const resources = {
         detail: {
           history: "Run history", back: "Back to scheduled tasks", notFound: "Scheduled task not found", loadFailed: "Unable to load run details", actionFailed: "Action failed. Try again.", historyLoadFailed: "Unable to load this history page", runFailed: "Unable to start this scheduled task", loading: "Loading...",
           starting: "Starting...", runNow: "Run now", previousStatus: "Previous status", runs: "Runs", retries: "Retries", next: "Next run",
-          workspace: "Workspace", schedule: "Schedule", timezone: "Timezone", status: "Status", noHistory: "No run history", attempt: "Attempt {{count}}", openRun: "Open linked run", filter: "History status", allStatuses: "All statuses", previousPage: "Previous", nextPage: "Next",
+          workspace: "Workspace", schedule: "Schedule", timezone: "Timezone", status: "Status", noHistory: "No run history", attempt: "Attempt {{count}}", openRun: "Open linked run", filter: "History status", allStatuses: "All statuses", previousPage: "Previous", nextPage: "Next", locatedHistory: "Located run", deleted: "The original scheduled task was deleted", removeSelected: "Remove selected history", deleting: "Removing", selectAllRuns: "Select all removable history on this page", selectRun: "Select history: {{summary}}", historyAvailability: { available: "Available", unavailable: "Unavailable" },
         },
         dialog: {
           title: "Scheduled task settings", content: "Task content", tabs: { at: "Once", repeat: "Repeat", cron: "Cron" }, date: "Date", time: "Time", openTimePicker: "Open time picker", hours: "Hours", minutes: "Minutes", frequency: "Frequency",
@@ -3061,6 +3065,9 @@ const resources = {
           "command-required": "Enter an Agent launch command.",
         },
         acp: {
+          "composer-history-stale": "Input history has changed. Clear the input and try again.",
+          "composer-history-not-found": "This history entry is no longer available.",
+          "composer-history-query-failed": "Could not load input history. Please try again.",
           "turn-execution-failed": "This message could not be processed. Try again.",
           "session-request-failed": "The session could not be prepared. Try again.",
           "missing-provider":
@@ -4294,6 +4301,7 @@ const resources = {
         noChangedFiles: "No changed files are available",
       },
       acp: {
+        composerHistoryError: "Could not load input history. Clear the input to retry.",
         restored: "Restored",
         sessionSuperseded:
           "This session was continued by <attempt>{{target}}</attempt>. Continue in that attempt.",
@@ -4436,7 +4444,7 @@ const resources = {
         retryStopped: "Stopped after {{count}} retries",
         sessionInterrupted: "Session launch was interrupted. Rerun the task.",
         missingSessionReason:
-          "This task did not establish an ACP session. Check that the selected Agent's ACP adapter can start and that its dependencies and authentication are valid.",
+          "The session is unavailable. No specific error reason was received.",
         thought: "Thought process",
         thinkingDuration: "{{seconds}}s",
         toolCall: "Tool call",

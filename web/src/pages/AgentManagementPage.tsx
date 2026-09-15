@@ -67,7 +67,7 @@ export const agentEditorSheetPresentation = {
   modal: false,
   showOverlay: false,
 } as const;
-const catalogLaunchFieldReadOnlyClassName = 'cursor-text select-text border-border/50 bg-muted/50 text-muted-foreground shadow-none focus:border-border/50 focus:ring-0 focus-visible:border-border/50 focus-visible:ring-0';
+const catalogLaunchFieldReadOnlyClassName = 'cursor-text select-text !bg-muted text-muted-foreground shadow-none focus:border-border/60 focus:ring-0 focus-visible:border-border/70 focus-visible:ring-0';
 
 const defaultForm = (): ManagedAgentInput => ({
   displayName: '',
@@ -791,7 +791,7 @@ export function AgentIdInput({
 }
 
 function ConfigTextarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <Textarea {...props} className={cn('resize-y border-border/70 bg-card/70 font-mono text-sm leading-6 shadow-inner outline-none placeholder:text-muted-foreground/55 focus-visible:ring-primary/35', props.className)} />;
+  return <Textarea {...props} className={cn('resize-y border-border/70 !bg-background font-mono text-sm leading-6 shadow-inner outline-none placeholder:text-muted-foreground/55 focus-visible:ring-primary/35', props.className)} />;
 }
 
 function Info({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {

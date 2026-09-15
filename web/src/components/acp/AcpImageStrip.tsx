@@ -1,11 +1,12 @@
 import { memo, useEffect, useRef, useState, type RefObject } from 'react';
-import { Image as ImageIcon, RotateCw } from 'lucide-react';
+import { Image as ImageIcon, Loader2, RotateCw } from 'lucide-react';
+import { getAcpActivityImages } from '@/api';
 import { useTranslation } from 'react-i18next';
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { MessageAttachmentPreviewButton } from './MessageAttachmentPreviewButton';
-import { acquireAcpImage, acpImageKey, loadAcpOriginalImage, type AcpImageAsset } from '@/lib/acp-image-cache';
+import { ACP_PROJECTED_IMAGE_LIMIT, acquireAcpImage, acpImageKey, loadAcpOriginalImage, type AcpImageAsset } from '@/lib/acp-image-cache';
 import { useOptionalRightWorkspaceCommands, type AcpImageWorkspaceResource } from '@/components/workspace/right-workspace-context';
 import { WorkspaceImageCanvas } from '@/components/workspace/files/WorkspaceImageCanvas';
 import type { AcpImageRef, TurnFileLocatorVm } from '@/types';
@@ -98,6 +99,58 @@ export const AcpImageStrip = memo(function AcpImageStrip({ images, locator, prep
     </ScrollArea>
   );
 });
+
+export function AcpActivityImageStrip({ locator, start, end, generation }: {
+  locator: TurnFileLocatorVm; start: number; end: number; generation?: number;
+}) {
+  const host = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+  const [retry, setRetry] = useState(0);
+  const [result, setResult] = useState<{ key: string; images: AcpImageRef[]; pending: boolean; failed: boolean } | null>(null);
+  const progress = useRef<{ key: string; images: AcpImageRef[]; after: string | null;
+    generation?: number; complete: boolean } | null>(null);
+  const key = JSON.stringify([locator, start, end, generation]);
+  const { t } = useTranslation();
+  useEffect(() => {
+    if (!host.current) return;
+    const observer = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting));
+    observer.observe(host.current);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    if (progress.current?.key !== key) progress.current = { key, images: [], after: null, generation, complete: false };
+    const query = progress.current;
+    if (query.complete) return;
+    const images = query.images;
+    setResult({ key, images, pending: true, failed: false });
+    void (async () => {
+      try {
+        do {
+          const page = await getAcpActivityImages({ ...locator, start, end, after: query.after, generation: query.generation });
+          if (cancelled) return;
+          if ((query.generation !== undefined && page.generation !== query.generation)
+            || (page.nextCursor !== null && page.nextCursor === query.after)) throw new Error('acp.image-invalid-page');
+          query.generation = page.generation;
+          images.push(...page.images.slice(0, ACP_PROJECTED_IMAGE_LIMIT - images.length));
+          query.after = page.nextCursor;
+          query.complete = !query.after || images.length >= ACP_PROJECTED_IMAGE_LIMIT;
+          setResult({ key, images: [...images], pending: !query.complete, failed: false });
+        } while (!query.complete && !cancelled);
+      } catch { if (!cancelled) setResult({ key, images, pending: false, failed: true }); }
+    })();
+    return () => { cancelled = true; };
+  // Scope and query boundaries, rather than object identity, own this read.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, visible, retry]);
+  const current = result?.key === key ? result : null;
+  return <div ref={host} className="min-h-6">
+    <AcpImageStrip locator={locator} images={current?.images ?? []} />
+    {current?.pending ? <span role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" />{t('common.loading')}</span> : null}
+    {current?.failed ? <Button variant="ghost" size="sm" onClick={() => setRetry(value => value + 1)}><RotateCw className="size-3" />{t('common.retry')}</Button> : null}
+  </div>;
+}
 
 function AcpImageThumbnail({ image, locator, label, prepared }: {
   image: AcpImageRef; locator: TurnFileLocatorVm | null; label: string; prepared?: PreparedImage;

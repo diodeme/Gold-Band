@@ -11,8 +11,8 @@ use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use gold_band::acp::client::DoctorDeadline;
 use gold_band::acp::commands::{
-    AcpCommandCatalog, AcpCommandItem, catalog_key, merge_command_sources,
-    merge_native_skill_commands, project_id, scan_native_skill_commands,
+    AcpCommandCatalog, AcpCommandItem, catalog_key, merge_command_sources, project_id,
+    scan_native_skill_commands,
 };
 use gold_band::acp::events::current_timestamp;
 use gold_band::app::ActiveMetricTurn;
@@ -332,6 +332,7 @@ pub struct DesktopState {
     agent_config_diagnostic_commit_lock: Mutex<()>,
     scheduled_agent_diagnostics: Mutex<BTreeMap<ManagedAgentId, u64>>,
     agent_command_catalogs: Mutex<BTreeMap<String, AcpCommandCatalog>>,
+    agent_command_update: Mutex<Option<Arc<dyn Fn(&AcpCommandCatalog) + Send + Sync>>>,
     update_status: Mutex<UpdateStatusVm>,
     pending_critical_update: Mutex<Option<Utf8PathBuf>>,
     notification_attention: Mutex<NotificationAttentionState>,
@@ -371,6 +372,7 @@ impl DesktopState {
             agent_config_diagnostic_commit_lock: Mutex::new(()),
             scheduled_agent_diagnostics: Mutex::new(BTreeMap::new()),
             agent_command_catalogs: Mutex::new(persisted_command_catalogs),
+            agent_command_update: Mutex::new(None),
             update_status: Mutex::new(initial_update_status(updater_last_checked_at)),
             pending_critical_update: Mutex::new(None),
             notification_attention: Mutex::new(NotificationAttentionState::default()),
@@ -1045,7 +1047,10 @@ impl DesktopState {
         Ok(diagnostic)
     }
 
-    pub fn refresh_all_agent_diagnostics(&self, on_completed: impl Fn() + Sync) -> Result<()> {
+    pub fn refresh_all_agent_diagnostics(
+        &self,
+        on_completed: impl Fn(&ManagedAgentId) + Sync,
+    ) -> Result<()> {
         let app = self.app()?;
         let agent_ids = app.managed_agents().keys().cloned().collect::<Vec<_>>();
         let scheduled = self
@@ -1071,7 +1076,7 @@ impl DesktopState {
         for_each_diagnostic_agent(&to_probe, |agent_id| {
             match self.refresh_background_agent_diagnostic(agent_id) {
                 Ok(diagnostic) => {
-                    on_completed();
+                    on_completed(agent_id);
                     debug!(
                         agent_type = agent_id.as_str(),
                         available = diagnostic.available,
@@ -1156,6 +1161,13 @@ impl DesktopState {
         Ok(Some(catalog))
     }
 
+    pub fn set_agent_command_update(
+        &self,
+        callback: impl Fn(&AcpCommandCatalog) + Send + Sync + 'static,
+    ) {
+        *self.agent_command_update.lock().unwrap() = Some(Arc::new(callback));
+    }
+
     pub fn record_agent_commands(
         &self,
         agent_id: &ManagedAgentId,
@@ -1163,25 +1175,20 @@ impl DesktopState {
         commands: Vec<AcpCommandItem>,
     ) -> Result<AcpCommandCatalog> {
         let acp_commands = commands;
-        let commands = self
+        let skill_commands = self
             .context()?
             .config
             .agents
             .get(agent_id)
-            .map(|config| {
-                merge_native_skill_commands(
-                    &config.skill_directory_policy(),
-                    workspace,
-                    acp_commands.clone(),
-                )
-            })
-            .unwrap_or_else(|| acp_commands.clone());
+            .map(|config| scan_native_skill_commands(&config.skill_directory_policy(), workspace))
+            .unwrap_or_default();
+        let commands = merge_command_sources(acp_commands.clone(), skill_commands.clone());
         let project_id = project_id(workspace);
         let catalog = AcpCommandCatalog {
             agent_type: agent_id.as_str().to_string(),
             project_id: project_id.clone(),
             acp_commands: Some(acp_commands),
-            skill_commands: None,
+            skill_commands: Some(skill_commands),
             commands,
             updated_at: current_timestamp(),
         };
@@ -1189,18 +1196,33 @@ impl DesktopState {
             .agent_command_catalogs
             .lock()
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
-        catalogs.insert(catalog_key(agent_id.as_str(), &project_id), catalog.clone());
-        while catalogs.len() > 256 {
-            let oldest = catalogs
+        let key = catalog_key(agent_id.as_str(), &project_id);
+        if let Some(previous) = catalogs.get(&key)
+            && previous.acp_commands == catalog.acp_commands
+            && previous.skill_commands == catalog.skill_commands
+            && previous.commands == catalog.commands
+        {
+            return Ok(previous.clone());
+        }
+        let mut next = catalogs.clone();
+        next.insert(key, catalog.clone());
+        while next.len() > 256 {
+            let oldest = next
                 .iter()
                 .min_by_key(|(_, catalog)| catalog.updated_at.as_str())
                 .map(|(key, _)| key.clone());
             let Some(oldest) = oldest else {
                 break;
             };
-            catalogs.remove(&oldest);
+            next.remove(&oldest);
         }
-        self.persist_agent_command_catalogs(&catalogs)?;
+        self.persist_agent_command_catalogs(&next)?;
+        *catalogs = next;
+        drop(catalogs);
+        let callback = self.agent_command_update.lock().unwrap().clone();
+        if let Some(callback) = callback {
+            callback(&catalog);
+        }
         Ok(catalog)
     }
 
@@ -1334,7 +1356,15 @@ impl DesktopState {
     ) -> Result<()> {
         let repo_root = self.context()?.repo_root;
         let path = GoldBandPaths::new(repo_root).agent_command_catalogs_file();
-        write_json(&path, &catalogs.values().cloned().collect::<Vec<_>>())
+        let persisted = catalogs
+            .values()
+            .map(|catalog| {
+                let mut catalog = catalog.clone();
+                catalog.skill_commands = None;
+                catalog
+            })
+            .collect::<Vec<_>>();
+        write_json(&path, &persisted)
     }
 }
 
@@ -1631,6 +1661,100 @@ mod tests {
             .find(|command| command.name == "review")
             .unwrap();
         assert_eq!(skill_review.description, "Skill metadata");
+    }
+
+    #[test]
+    fn command_catalog_emits_only_for_changed_content_in_its_project() {
+        let (root, state) = desktop_state();
+        let workspace = Utf8PathBuf::from_path_buf(root.path().join("command-events")).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        let notifications = Arc::new(Mutex::new(Vec::new()));
+        let received = notifications.clone();
+        state.set_agent_command_update(move |catalog| {
+            received
+                .lock()
+                .unwrap()
+                .push((catalog.agent_type.clone(), catalog.project_id.clone()));
+        });
+        let agent_id = ManagedAgentId::from_str("claude-acp").unwrap();
+        let first = state
+            .record_agent_commands(&agent_id, &workspace, vec![])
+            .unwrap();
+        let second = state
+            .record_agent_commands(&agent_id, &workspace, vec![])
+            .unwrap();
+        assert_eq!(first.updated_at, second.updated_at);
+        assert_eq!(
+            *notifications.lock().unwrap(),
+            vec![(agent_id.as_str().to_string(), project_id(&workspace))]
+        );
+        state
+            .record_agent_commands(
+                &agent_id,
+                &workspace,
+                vec![AcpCommandItem {
+                    name: "changed".into(),
+                    description: "changed".into(),
+                    input_hint: None,
+                }],
+            )
+            .unwrap();
+        assert_eq!(notifications.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn command_catalog_failed_persist_remains_retryable() {
+        let (_root, state) = desktop_state();
+        let workspace = state.context().unwrap().repo_root;
+        let path = GoldBandPaths::new(workspace.clone()).agent_command_catalogs_file();
+        std::fs::create_dir_all(&path).unwrap();
+        let agent_id = ManagedAgentId::from_str("claude-acp").unwrap();
+        assert!(
+            state
+                .record_agent_commands(&agent_id, &workspace, vec![])
+                .is_err()
+        );
+        assert!(
+            !state
+                .agent_command_catalogs
+                .lock()
+                .unwrap()
+                .contains_key(&catalog_key(agent_id.as_str(), &project_id(&workspace)))
+        );
+        std::fs::remove_dir(&path).unwrap();
+        state
+            .record_agent_commands(&agent_id, &workspace, vec![])
+            .unwrap();
+        assert!(path.is_file());
+    }
+
+    #[test]
+    fn command_catalog_notifies_when_shadowed_skill_metadata_changes() {
+        let (root, state) = desktop_state();
+        let workspace = Utf8PathBuf::from_path_buf(root.path().join("skill-change")).unwrap();
+        let skill = workspace.join(".claude/skills/review/SKILL.md");
+        std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        std::fs::write(&skill, "---\nname: review\ndescription: first\n---\n").unwrap();
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let received = notifications.clone();
+        state.set_agent_command_update(move |_| {
+            received.fetch_add(1, Ordering::SeqCst);
+        });
+        let agent_id = ManagedAgentId::from_str("claude-acp").unwrap();
+        let commands = vec![AcpCommandItem {
+            name: "review".into(),
+            description: "ACP wins".into(),
+            input_hint: None,
+        }];
+        let first = state
+            .record_agent_commands(&agent_id, &workspace, commands.clone())
+            .unwrap();
+        std::fs::write(&skill, "---\nname: review\ndescription: updated\n---\n").unwrap();
+        let second = state
+            .record_agent_commands(&agent_id, &workspace, commands)
+            .unwrap();
+        assert_eq!(first.commands, second.commands);
+        assert_eq!(notifications.load(Ordering::SeqCst), 2);
     }
 
     fn write_completed_attempt_with_running_run(app: &App, candidate_token: Option<String>) {

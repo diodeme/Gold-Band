@@ -15,7 +15,7 @@ import {
   sameConversationTaskEntity,
 } from '@/lib/conversation-run-identity';
 
-type ConversationSessionLocator = Pick<
+export type ConversationSessionLocator = Pick<
   ConversationSessionTargetVm,
   'roundId' | 'nodeId' | 'attemptId' | 'outerNodeId' | 'outerAttemptId'
 >;

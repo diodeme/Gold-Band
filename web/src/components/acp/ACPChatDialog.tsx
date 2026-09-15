@@ -1,4 +1,4 @@
-import { AcpImageStrip, useAcpToolImageReadiness } from './AcpImageStrip';
+import { AcpActivityImageStrip, AcpImageStrip, useAcpToolImageReadiness } from './AcpImageStrip';
 import { MessageAttachmentPreviewButton } from './MessageAttachmentPreviewButton';
 export { MessageAttachmentPreviewButton } from './MessageAttachmentPreviewButton';
 import { acpImagesFromRaw, acpActivityImages } from '@/lib/acp-image-cache';
@@ -71,6 +71,7 @@ import {
   useOptionalChatContainerContentExpansion,
   useChatContainerDisclosure,
 } from "@/components/prompt-kit/chat-container";
+import { ScheduledTriggerRow } from "@/components/conversation/ScheduledTriggerRow";
 import {
   ConversationViewport,
   ConversationViewportFooter,
@@ -260,7 +261,6 @@ import {
   showArtifact,
   showAttachment,
   stopActiveSession,
-  submitManualCheck,
 } from "@/api";
 import { AcpModelThoughtSelects } from '@/components/acp/AcpModelThoughtSelects';
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
@@ -293,6 +293,7 @@ import {
   type AcpReturnToLatestVisualProbe,
 } from "@/lib/acp-return-to-latest-visual-probe";
 import i18n, { displayAppError, displayStatus } from "@/i18n";
+import { acpRuntimeErrorBannerCopy } from '@/lib/acp-runtime-error';
 import type {
   AcpElicitationRequestVm,
   AcpPermissionRequestVm,
@@ -360,6 +361,13 @@ function isAcpSessionConfigValueUnavailableError(error: unknown) {
   );
 }
 
+interface PendingPromptDraft {
+  promptId: string;
+  content: string;
+  timestamp: string;
+  draft: AcpComposerDraft;
+}
+
 interface ACPChatDialogProps {
   session?: AcpSessionVm | null;
   agentRegistry?: AgentRegistryVm | null;
@@ -389,7 +397,7 @@ interface ACPChatDialogProps {
   inlineContentMaxBytes?: number;
   liveUpdatesPaused?: boolean;
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
-  onManualCheckSubmitted?: () => void;
+  onSubmitManualCheck?: (outcome: "success" | "failure") => Promise<void>;
   onSessionStopped?: () => void;
   onLifecycleSnapshot?: (snapshot: AcpLifecycleSnapshot) => void;
   onAtBottomChange?: (atBottom: boolean) => void;
@@ -481,6 +489,7 @@ type AcpTimelineWindowOwner = {
 const AcpTimelineWindowOwnerContext = createContext<AcpTimelineWindowOwner | null>(null);
 
 type AcpActivityBatch = {
+  imagesPending?: boolean;
   images?: import('@/types').AcpImageRef[];
   kind: "activityBatch";
   id: string;
@@ -628,7 +637,7 @@ export const ACP_SESSION_SCROLL_AREA_CLASS_NAME = goldThemedScrollbarClassName(
   "h-full min-w-0 overflow-y-auto",
 );
 export const ACP_RAW_SCROLL_AREA_CLASS_NAME = goldThemedScrollbarClassName(
-  "h-full overflow-y-auto p-5",
+  "min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto overscroll-contain",
 );
 
 export const ACP_SYSTEM_PROMPT_DIALOG_LAYOUT = {
@@ -1275,7 +1284,7 @@ export function ACPChatDialog(
     inlineContentMaxBytes,
     liveUpdatesPaused: externalLiveUpdatesPaused = false,
     onOptimisticEventsChange,
-    onManualCheckSubmitted,
+    onSubmitManualCheck,
     onSessionStopped,
     onLifecycleSnapshot,
     onAtBottomChange,
@@ -1510,6 +1519,7 @@ export function ACPChatDialog(
   const returnToLatestVisualProbeRef = useRef<AcpReturnToLatestVisualProbe | null>(null);
   const pendingBranchViewRestoreRef = useRef<AcpBranchViewState | null>(restoredBranchViewState);
   const cancelRequestedRef = useRef(false);
+  const pendingPromptDraftsRef = useRef(new Map<string, PendingPromptDraft>());
   const awaitTerminalStopRef = useRef(false);
   const terminalSessionNotifiedRef = useRef(false);
   const [stopCommandPending, setStopCommandPending] = useState(false);
@@ -1531,6 +1541,76 @@ export function ACPChatDialog(
   const sessionRefreshSeqRef = useRef(0);
   const sessionIdentityRef = useRef(sessionIdentity);
   sessionIdentityRef.current = sessionIdentity;
+  const restoreComposerDraftIfEmpty = composerDraft.restoreIfEmpty;
+  const pendingPromptDraftEvents = useCallback(
+    () => mergeAcpEvents(
+      latestSessionRef.current?.events ?? [],
+      loadedEventWindowRef.current.events,
+    ),
+    [],
+  );
+  const promptDraftHasAdmission = useCallback(
+    (record: PendingPromptDraft) => Boolean(findMatchingGoldBandUserPrompt(
+      pendingPromptDraftEvents(),
+      record.content,
+      record.promptId,
+      record.timestamp,
+    )),
+    [pendingPromptDraftEvents],
+  );
+  const releaseAdmittedPromptDrafts = useCallback((events?: AcpUiEventVm[]) => {
+    if (pendingPromptDraftsRef.current.size === 0) return;
+    const source = events ?? pendingPromptDraftEvents();
+    for (const [promptId, record] of [...pendingPromptDraftsRef.current]) {
+      if (!findMatchingGoldBandUserPrompt(
+        source,
+        record.content,
+        record.promptId,
+        record.timestamp,
+      )) continue;
+      pendingPromptDraftsRef.current.delete(promptId);
+      releaseSubmittedAttachments(record.draft.attachments);
+    }
+  }, [pendingPromptDraftEvents]);
+  const restoreUndeliveredPromptDrafts = useCallback((promptId?: string) => {
+    for (const [id, record] of [...pendingPromptDraftsRef.current]) {
+      if (promptId && id !== promptId) continue;
+      if (promptDraftHasAdmission(record)) {
+        releaseAdmittedPromptDrafts();
+        continue;
+      }
+      pendingPromptDraftsRef.current.delete(id);
+      restoreComposerDraftIfEmpty(record.draft);
+    }
+  }, [
+    promptDraftHasAdmission,
+    releaseAdmittedPromptDrafts,
+    restoreComposerDraftIfEmpty,
+  ]);
+  const settlePromptDraftAfterSettledTurn = useCallback((
+    promptId: string,
+    delivered: boolean,
+  ) => {
+    const record = pendingPromptDraftsRef.current.get(promptId);
+    if (!record) return;
+    pendingPromptDraftsRef.current.delete(promptId);
+    if (delivered || promptDraftHasAdmission(record)) {
+      releaseSubmittedAttachments(record.draft.attachments);
+    } else {
+      restoreComposerDraftIfEmpty(record.draft);
+    }
+  }, [promptDraftHasAdmission, restoreComposerDraftIfEmpty]);
+  // Canonical admission is the delivery fact: only then may the detached draft
+  // release its attachment previews. Until then the snapshot stays reclaimable.
+  useEffect(() => {
+    releaseAdmittedPromptDrafts();
+  });
+  useEffect(() => () => {
+    for (const record of pendingPromptDraftsRef.current.values()) {
+      revokeAttachmentPreviewUrls(record.draft.attachments);
+    }
+    pendingPromptDraftsRef.current.clear();
+  }, []);
   const paginationRequestSeqRef = useRef(0);
   const paginationRequestOwnerRef = useRef<AcpPaginationRequestToken | null>(null);
   const paginationCursorGenerationStaleRef = useRef(false);
@@ -2547,6 +2627,9 @@ export function ACPChatDialog(
       }
     : null;
   const canSubmitPrompt = composerState.canSubmit
+    && !queueSubmitPending
+    && !queueRestorePending;
+  const canSubmitHistory = composerState.canSubmitContent
     && !queueSubmitPending
     && !queueRestorePending;
   const promptQueue = localRuntimeLifecycle?.promptQueue
@@ -4339,6 +4422,12 @@ export function ACPChatDialog(
   useEffect(() => {
     if (!activeTurnTerminal || !activeTurnPromptId) return;
     const terminalTurnId = activeTurnPromptId;
+    // A terminal turn without canonical admission never reached the transcript;
+    // a completed turn already did, so only failure/cancel reclaims the draft.
+    settlePromptDraftAfterSettledTurn(
+      terminalTurnId,
+      localLifecycle?.acp.latestTurnStatus === "completed",
+    );
     setSending(false);
     setPromptCommandPending(false);
     setAwaitingResponse(false);
@@ -4356,7 +4445,13 @@ export function ACPChatDialog(
     const shouldNotifyStopped = cancelRequestedRef.current;
     cancelRequestedRef.current = false;
     if (shouldNotifyStopped) onSessionStopped?.();
-  }, [activeTurnPromptId, activeTurnTerminal, onSessionStopped]);
+  }, [
+    activeTurnPromptId,
+    activeTurnTerminal,
+    localLifecycle?.acp.latestTurnStatus,
+    onSessionStopped,
+    settlePromptDraftAfterSettledTurn,
+  ]);
 
   useEffect(() => {
     const terminalSession = shouldSettleAcpComposerTransientState(
@@ -5170,13 +5265,23 @@ export function ACPChatDialog(
     revokeAttachmentPreviewUrls(attachments);
   };
 
+  const adoptHistoryText = (content: string): AcpComposerDraft | null => {
+    const previous = composerDraft.draft;
+    const next = { content, attachments: [], quotes: [] };
+    if (!composerDraft.clearIfUnchanged(previous)) return null;
+    composerDraft.restoreIfEmpty(next);
+    releaseSubmittedAttachments(previous.attachments);
+    setComposerContextError(null);
+    return next;
+  };
+
   const submitPrompt = async (
     submission: ConversationPromptInput,
     draftSnapshot?: AcpComposerDraft,
     target: "conversation" | "runtime-continue" = "conversation",
   ) => {
     const { displayText: draftContent, quotes: submittedQuotes } = submission;
-    if (!composerState.canSubmit || composerState.stopInProgress) return false;
+    if (!composerState.canSubmitContent || composerState.stopInProgress) return false;
     const enqueueing = target === "conversation"
       && composerState.submitTarget === "queue-prompt";
     if (enqueueing) {
@@ -5186,7 +5291,7 @@ export function ACPChatDialog(
       let detachedDraft: AcpComposerDraft | null = null;
       let submissionAccepted = false;
       try {
-        const attachmentPaths = await resolveAttachmentPaths();
+        const attachmentPaths = await resolveAttachmentPaths(draftSnapshot?.attachments);
         detachedDraft = draftSnapshot && composerDraft.clearIfUnchanged(draftSnapshot)
           ? draftSnapshot
           : null;
@@ -5235,9 +5340,10 @@ export function ACPChatDialog(
     setSendError(null);
     let attPaths: string[];
     try {
-      attPaths = await resolveAttachmentPaths();
+      attPaths = await resolveAttachmentPaths(draftSnapshot?.attachments);
     } catch {
       setSending(false);
+      setPromptCommandPending(false);
       return false;
     }
     const effectivePrompt = serializeUserPromptSubmission(submission);
@@ -5261,7 +5367,15 @@ export function ACPChatDialog(
       setPromptCommandPending(false);
       return false;
     }
-    if (detachedDraft) setComposerContextError(null);
+    if (detachedDraft && promptId) {
+      pendingPromptDraftsRef.current.set(promptId, {
+        promptId,
+        content: draftContent,
+        timestamp: optimisticEvent.timestamp,
+        draft: detachedDraft,
+      });
+      setComposerContextError(null);
+    }
     if (localLifecycle?.promptQueue) {
       requestAnimationFrame(() => composerTextareaRef.current?.focus());
     }
@@ -5330,7 +5444,7 @@ export function ACPChatDialog(
       if (target === "runtime-continue" && result.kind === "runtime-continue-started") {
         submissionAccepted = true;
         setActiveTurnStartedAt(optimisticEvent.timestamp);
-      } else if (!updated && isAcceptedAcpPromptSubmitKind(result.kind)) {
+      } else if (isAcceptedAcpPromptSubmitKind(result.kind)) {
         submissionAccepted = true;
         setActiveTurnStartedAt(optimisticEvent.timestamp);
       } else if (authoritativeAdmission) {
@@ -5366,17 +5480,6 @@ export function ACPChatDialog(
         );
       }
     } catch (error) {
-      if (cancelRequestedRef.current) {
-        submissionAccepted = true;
-        setAwaitingResponse(true);
-        setActiveTurnPrompt(null);
-        setActiveTurnPromptId(null);
-        setActiveTurnStartedAt(null);
-        updateOptimisticEvents((current) =>
-          current.filter((event) => event.id !== optimisticEvent.id),
-        );
-        return true;
-      }
       const admittedBeforeRecovery = acceptedPromptAdmission();
       if (admittedBeforeRecovery) {
         submissionAccepted = true;
@@ -5409,11 +5512,18 @@ export function ACPChatDialog(
       );
     } finally {
       if (detachedDraft) {
-        if (submissionAccepted) {
+        const pendingDraft = promptId
+          ? pendingPromptDraftsRef.current.get(promptId)
+          : undefined;
+        if (promptId && pendingDraft && promptDraftHasAdmission(pendingDraft)) {
+          pendingPromptDraftsRef.current.delete(promptId);
           releaseSubmittedAttachments(detachedDraft.attachments);
-        } else {
+        } else if (promptId && pendingDraft && !submissionAccepted) {
+          pendingPromptDraftsRef.current.delete(promptId);
           composerDraft.restoreIfEmpty(detachedDraft);
         }
+        // Accepted but not yet admitted: keep the snapshot so a stop or a
+        // failure before admission can still return the complete draft.
       }
       setSending(false);
       setPromptCommandPending(false);
@@ -5515,10 +5625,11 @@ export function ACPChatDialog(
     }
   };
 
-  const send = async () => {
-    if (!canSubmitPrompt) return;
-    const draftSnapshot = composerDraft.draft;
-    const submission = createUserPromptSubmission(prompt, quotes);
+  const send = async (historyText?: string) => {
+    if (historyText !== undefined ? !canSubmitHistory || !historyText.trim() : !canSubmitPrompt) return;
+    const draftSnapshot = historyText !== undefined ? adoptHistoryText(historyText) : composerDraft.draft;
+    if (!draftSnapshot) return;
+    const submission = createUserPromptSubmission(draftSnapshot.content, draftSnapshot.quotes);
     if (composerState.submitTarget !== "none") {
       await submitPrompt(submission, draftSnapshot);
     }
@@ -5593,6 +5704,9 @@ export function ACPChatDialog(
         cancelRequestedRef.current = false;
         onSessionStopped?.();
       }
+      // Stopping an undelivered prompt returns it to the composer; an admitted
+      // prompt stays in the transcript with its attachments released.
+      restoreUndeliveredPromptDrafts();
       updateOptimisticEvents(clearPendingOptimisticPromptsAfterStop);
     } catch (error) {
       setCancelError(displayAppError(t, error));
@@ -5603,40 +5717,36 @@ export function ACPChatDialog(
   };
 
   const submitManualDecision = async (outcome: "success" | "failure") => {
-    if (!showManualCheckActions || manualCheckSubmitting) return;
+    if (!showManualCheckActions || manualCheckSubmitting || !onSubmitManualCheck) return;
+    const ownerKey = sessionIdentityRef.current;
     setManualCheckError(null);
     setManualCheckSubmitting(true);
     try {
-      await submitManualCheck(
-        projectId,
-        taskId,
-        runId,
-        roundId,
-        nodeId,
-        attemptId,
-        outcome,
-      );
+      await onSubmitManualCheck(outcome);
+      if (sessionIdentityRef.current !== ownerKey) return;
       setManualCheckResolved(true);
-      onManualCheckSubmitted?.();
     } catch (error) {
+      if (sessionIdentityRef.current !== ownerKey) return;
       setManualCheckError(displayAppError(t, error));
     } finally {
-      setManualCheckSubmitting(false);
+      if (sessionIdentityRef.current === ownerKey) setManualCheckSubmitting(false);
     }
   };
 
-  const continueRuntime = async () => {
+  const continueRuntime = async (historyText?: string) => {
     if (!showRuntimeContinueAction || runtimeContinueSubmitting) return;
     setRuntimeContinueError(null);
     setRuntimeContinueSubmitting(true);
     try {
       if (
         localLifecycle?.continueKind === 'continue-current-attempt'
-        && canSubmitPrompt
+        && (historyText !== undefined ? canSubmitHistory && Boolean(historyText.trim()) : canSubmitPrompt)
       ) {
+        const draftSnapshot = historyText !== undefined ? adoptHistoryText(historyText) : composerDraft.draft;
+        if (!draftSnapshot) { setRuntimeContinueSubmitting(false); return; }
         const accepted = await submitPrompt(
-          createUserPromptSubmission(prompt, quotes),
-          composerDraft.draft,
+          createUserPromptSubmission(draftSnapshot.content, draftSnapshot.quotes),
+          draftSnapshot,
           "runtime-continue",
         );
         if (!accepted) {
@@ -6046,7 +6156,7 @@ export function ACPChatDialog(
       {visibleError ? <AcpErrorBanner reason={visibleError} /> : null}
       <div className="relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
         {canvasMode === "raw" ? (
-          <div className={ACP_RAW_SCROLL_AREA_CLASS_NAME}>
+          <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden p-5">
             <RawFrameViewer
               loading={rawLoading}
               page={rawPage}
@@ -6169,7 +6279,7 @@ export function ACPChatDialog(
                 )}
                 data-acp-conversation-footer="viewport"
               >
-                {showReturnToLatest ? (
+                {showReturnToLatest && timelineSurfaceState !== 'pending' ? (
                   <Button
                     ref={handleReturnToLatestButtonRef}
                     type="button"
@@ -6249,9 +6359,11 @@ export function ACPChatDialog(
               />
             ) : (
               <AcpConversationComposer
+                historyLocator={projectId ? { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId } : null}
                 prompt={prompt}
                 onPromptChange={setPrompt}
                 onSubmit={send}
+                onHistoryTextCommit={adoptHistoryText}
                 sending={sending}
                 attachments={pendingAttachments}
                 quotes={quotes}
@@ -6286,6 +6398,7 @@ export function ACPChatDialog(
                 stopInProgress={stopInProgress}
                 onStop={stopSession}
                 canSubmit={canSubmitPrompt}
+                canSubmitHistory={canSubmitHistory}
                 sendButtonBusy={composerState.submitTarget === "queue-prompt" ? queueSubmitPending : sendButtonBusy}
                 showRuntimeContinue={showRuntimeContinueAction}
                 runtimeContinueKind={localLifecycle?.continueKind ?? null}
@@ -7375,6 +7488,10 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
     );
   if (event.kind === "attemptSeparator")
     return <AttemptSeparator event={event} />;
+  if (event.kind === "scheduledTrigger") {
+    const payload = scheduledTriggerPayload(event);
+    return payload ? <ScheduledTriggerRow payload={payload} onOpen={() => { window.dispatchEvent(new CustomEvent('gold-band:scheduled-trigger-open', { detail: payload })); }} /> : null;
+  }
   if (event.kind === "contextCompaction")
     return nested ? (
       <ContextCompactionRow event={event} />
@@ -8038,7 +8155,10 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
           </CollapsibleContent>
         ) : null}
       </Collapsible>
-      {!event.live ? <AcpImageStrip images={event.images ?? []} locator={branchLocator} /> : null}
+      {!event.live ? event.imagesPending && branchLocator
+        ? <AcpActivityImageStrip locator={branchLocator} start={event.activityStartSeq} end={event.activityEndSeq}
+            generation={timelineWindowOwner?.timelineGeneration ?? undefined} />
+        : <AcpImageStrip images={event.images ?? []} locator={branchLocator} /> : null}
     </AssistantTimelineRow>
   );
 });
@@ -9352,8 +9472,8 @@ export function RawFrameViewer({
   }
 
   return (
-    <div className="@container/raw-frame w-full min-w-0 max-w-full space-y-3 overflow-hidden">
-      <div className="rounded-2xl border border-border/60 bg-card/50 p-3 shadow-sm shadow-background/20">
+    <div className="@container/raw-frame flex min-h-0 w-full min-w-0 max-w-full flex-1 flex-col gap-3 overflow-hidden">
+      <div className="shrink-0 rounded-2xl border border-border/60 bg-card/50 p-3 shadow-sm shadow-background/20" data-raw-frame-toolbar="true">
         <div className="flex min-w-0 flex-col gap-3">
           <div className="relative min-w-0">
               <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -9509,19 +9629,21 @@ export function RawFrameViewer({
         </div>
       </div>
 
-      {page && page.items.length > 0 ? (
-        page.items.map((frame) => (
-          <RawFrameRow
-            key={frame.id}
-            frame={frame}
-            onLayoutChange={onLayoutChange}
-          />
-        ))
-      ) : (
-        <div className="rounded-2xl border border-dashed bg-muted/10 p-8 text-center text-sm text-muted-foreground">
-          {t("acp.rawNoFrames")}
-        </div>
-      )}
+      <div className={ACP_RAW_SCROLL_AREA_CLASS_NAME} data-raw-frame-scroll-area="true">
+        {page && page.items.length > 0 ? (
+          page.items.map((frame) => (
+            <RawFrameRow
+              key={frame.id}
+              frame={frame}
+              onLayoutChange={onLayoutChange}
+            />
+          ))
+        ) : (
+          <div className="rounded-2xl border border-dashed bg-muted/10 p-8 text-center text-sm text-muted-foreground">
+            {t("acp.rawNoFrames")}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -10066,16 +10188,16 @@ export function visibleAcpBannerError(
 ) {
   if (runtimeError) return runtimeError;
   if (latestTurnStatus === 'completed') return null;
+  // A run-level runtime-abnormal error is only a fallback for sessions that
+  // have no current turn result. Once the lifecycle projection identifies the
+  // current turn as running, cancelled, or otherwise non-failed, an older run
+  // error must not reappear in the banner.
+  if (latestTurnStatus !== undefined && latestTurnStatus !== 'failed') return null;
   const failed = latestTurnStatus === 'failed'
     || (latestTurnStatus == null && session.status === 'failed');
   const error = canonicalTurnError === undefined ? session.turnError : canonicalTurnError;
   if (failed && error) {
-    const summary = displayAppError(i18n.t, { code: error.code.code, params: error.params ?? {} });
-    const raw = rawObject(error.raw);
-    const data = rawObject(raw?.data);
-    const detail = stringValue(data?.details) ?? stringValue(data?.message)
-      ?? stringValue(raw?.message) ?? error.diagnostic;
-    return detail ? `${summary}\n${detail}` : summary;
+    return acpRuntimeErrorBannerCopy(i18n.t, error) ?? i18n.t('errors.acp.turn-execution-failed');
   }
   if (failed && canonicalTurnError !== undefined) {
     return runtimeErrorFallback ?? i18n.t('errors.acp.turn-execution-failed');
@@ -10529,6 +10651,7 @@ function batchAcpActivities(
     result.push({
       kind: "activityBatch",
       images: acpActivityImages(activityEvents),
+      imagesPending: activityMeta?.imagesPending === true,
       id: `activity-${activityStartSeq}`,
       seq: first.startedSeq ?? first.seq,
       timestamp: first.startedAt ?? first.timestamp,
@@ -10583,6 +10706,25 @@ function isRenderableEvent(event: AcpUiEventVm) {
     typeof sessionUpdate !== "string" ||
     !hiddenSessionUpdates.has(sessionUpdate)
   );
+}
+
+function scheduledTriggerPayload(event: AcpTimelineEvent) {
+  const value = rawObject(rawObject(event.raw)?.scheduledTrigger);
+  if (!value) return null;
+  const projectId = stringValue(value.projectId);
+  const scheduledTaskId = stringValue(value.scheduledTaskId);
+  const occurrenceId = stringValue(value.occurrenceId);
+  const acceptedAt = stringValue(value.acceptedAt);
+  const instructionSummary = stringValue(value.instructionSummary);
+  const contentFingerprint = stringValue(value.contentFingerprint);
+  const triggerKind: 'manual' | 'scheduled' | null = value.triggerKind === 'manual'
+    ? 'manual'
+    : value.triggerKind === 'scheduled'
+      ? 'scheduled'
+      : null;
+  if (!projectId || !scheduledTaskId || !occurrenceId || !acceptedAt || !instructionSummary || !contentFingerprint || !triggerKind) return null;
+  const links = rawObject(value.links) ?? {};
+  return { projectId, scheduledTaskId, occurrenceId, acceptedAt, instructionSummary, contentFingerprint, triggerKind, scheduledAt: stringValue(value.scheduledAt), links: { taskId: stringValue(links.taskId), runId: stringValue(links.runId), roundId: stringValue(links.roundId), attemptId: stringValue(links.attemptId), nodeId: stringValue(links.nodeId) } };
 }
 
 function userPromptDedupKey(event: AcpUiEventVm) {

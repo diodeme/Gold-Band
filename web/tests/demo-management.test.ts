@@ -7,17 +7,15 @@ describe('demo management read contracts', () => {
     for (const kind of ['multica-tasks', 'scheduled-tasks', 'scheduled-task-create']) expect(demoPageFromHash(`#${kind}`)).toEqual({ kind });
     expect(demoPageFromHash('#scheduled-task-detail?id=demo-weekly')).toEqual({ kind: 'scheduled-task-detail', projectId: 'default', scheduledTaskId: 'demo-weekly' });
   });
-  it('provides isolated schedule definitions, filtered history and valid conversation links', async () => {
+  it('provides isolated schedule definitions, accepted Run history and valid conversation links', async () => {
     const api = createDemoApi();
     const tasks = await api.listScheduledTasks(null);
     expect(tasks.map((item) => item.mode)).toEqual(['direct', 'workflow']);
     for (const task of tasks) {
       expect(await api.getScheduledTask('default', task.id)).toMatchObject({ schedule: task.schedule, runMode: task.mode });
-      const page = await api.listScheduledTaskOccurrences('default', task.id, null, 'succeeded');
-      expect(page.items).toHaveLength(2);
-      for (const occurrence of page.items) expect(await api.getConversationRun('default', occurrence.taskId!, occurrence.runId!)).toBeTruthy();
-      expect((await api.listScheduledTaskOccurrences('default', task.id, null, 'failed')).items).toEqual([]);
-      expect((await api.listScheduledTaskOccurrences('default', task.id, page.items.at(-1)!.id, null)).items).toEqual([]);
+      const page = await api.listScheduledExecutionHistory('default', task.id);
+      expect(page.items.length).toBeGreaterThan(0);
+      for (const history of page.items) expect(await api.getConversationRun('default', history.taskId, history.runId)).toBeTruthy();
       expect(await api.getScheduledTaskDiagnostics('default', task.id)).toMatchObject({ runCount: 2 });
     }
     tasks[0].title = 'changed';

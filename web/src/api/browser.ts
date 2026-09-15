@@ -1651,6 +1651,9 @@ export const browserApi: RuntimeApi = {
   setAcpSessionPermissionMode(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _permissionModeId, _outerNodeId, _outerAttemptId) {
     return Promise.resolve(null);
   },
+  setAcpSessionAutoAccept(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _autoAccept, _outerNodeId, _outerAttemptId) {
+    return Promise.resolve(null);
+  },
   setAcpSessionConfigOption(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _optionId, _optionValue, _outerNodeId, _outerAttemptId) {
     return Promise.resolve(null);
   },

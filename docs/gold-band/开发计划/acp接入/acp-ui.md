@@ -2,6 +2,7 @@
 
 ## 0. 当前实现状态
 
+- 2026-09-15 权限下拉 Auto Accept overlay 分组文案为 `{{appName}}来帮你…` / `{{appName}} will help you…`；分组标题与 Auto Accept 选项和上方原生 mode 名称共用 `pl-8` 文字左边缘，复选框指示器与单选指示器同列。
 - 2026-09-15 ACP `initialize` 全局声明 `_meta.parameterizedModelPicker`，使依赖该客户端能力才展开思考强度 / 模型参数的 Agent（当前主要是 Cursor）能返回标准 `configOptions`。Composer 仍只在 `category=thought_level` 时切换复合下拉，不按 Agent ID 分叉，也不解析模型变体串。
 - 2026-09-07 工具图片分层加载修正：过程列表移除图片引用，并在 hydrate 前剥离工具输出；移除过程列表和工具详情查询中重复的旧历史迁移，复用已有会话存储初始化入口。工具展开后从详情取得图片引用，仅预备当前宽度可见的首批缩略图，等待读取和浏览器解码完成后再展示正文及图片，保留局部加载与坏图重试。关闭时释放预备租约，迟到结果不重新展开内容；汇总图片栏保持独立。属于已有分层设计实现不完整，不新增持久字段、缓存或依赖。失败证据为缺失图片 blob 导致列表查询失败，以及图片未完成时正文已显示。
 - 分层加载验收：上述复现由红转绿，后端列表/详情及分页 2 项、前端详情加载/缓存/缩略栏/已发送附件 36 项通过；覆盖解码等待、坏图不阻塞正文、关闭后迟到结果不显示及原有实时输出保护。类型检查和生产构建通过。浏览器以 40 条工具、单工具 18 张真实截图验证：展开列表图片请求为 0，点开工具先显示加载状态，首屏 9 张就绪后显示正文及图片，480px 窄窗口无横向页面溢出。补齐重试按钮中英文文案。性能验收固定读取边界和请求数量，不将测试运行时间当作生产耗时；已有分页查询的历史扫描未在本次替换。测试资源在结束时清理，未验证 EXE 原生窗口。
@@ -18,7 +19,7 @@
 - 系统提示弹窗正文、原始帧摘要展开详情、子 Agent 结果等长文本区统一跟随应用设置字体；仅在明确需要展示代码或固定宽度标识时才允许局部使用等宽字体。系统提示正文直接复用 AtomEditor/CodeMirror 的 Markdown 查看器并固定 `editable=false`，复制源码与 Markdown/原文切换沿用该组件右上角的工具栏，不使用额外文字、Switch 或独立工具行。
 - 系统提示弹窗已收口为 shadcn/Radix Dialog + 原生 flex 滚动容器的单滚动面：标题栏固定，正文使用 Gold Band 统一滚动条且常驻，profile/runtime prompt 不做长度截断；长路径和连续字符在正文容器内强制断行，禁止由 `<pre>` 再创建嵌套滚动或把 Dialog 撑出视口。由于 Dialog 使用自然高度加 `max-height`，正文不得改用依赖百分比 viewport 高度的 Radix ScrollArea。前端回归测试固化 `max-height + flex column + min-height zero + direct overflow-y-scroll child` 布局契约。
 - ACP 会话流支持将 `Agent` 工具调用生命周期内的子 Agent transcript 聚合为可展开/收起分组，不再把主 Agent 与子 Agent 输出完全混排。
-- ACP session 初始化与后续追问必须分别维护 Gold Band 显式覆盖和 Agent 当前配置：模型只继承 `modelOverride`，权限模式只继承 `permissionModeOverride`，其余 ACP select 配置继承 `configOptionOverrides[实际 optionId]`；不得从 Agent 返回的 `currentModelId / currentModeId / currentValue` 反推 override。发起会话前模型、权限和思考强度都可切回“不指定”；会话详情仅在对应 override 尚为空时提供“不指定”，模型、权限或思考强度一旦选择具体值后都只能在具体值之间切换。same-session prompt、runtime continue 与 AI-DYNAMIC inner continue 只继续使用显式覆盖。
+- ACP session 初始化与后续追问必须分别维护 Gold Band 显式覆盖和 Agent 当前配置：模型只继承 `modelOverride`，权限模式只继承 `permissionModeOverride`，Auto Accept 只继承 session `autoAccept`，其余 ACP select 配置继承 `configOptionOverrides[实际 optionId]`；不得从 Agent 返回的 `currentModelId / currentModeId / currentValue` 反推 override。Auto Accept 不通过 mode API 下发。发起会话前模型、权限和思考强度都可切回“不指定”；会话详情仅在对应 override 尚为空时提供“不指定”，模型、权限或思考强度一旦选择具体值后都只能在具体值之间切换。same-session prompt、runtime continue 与 AI-DYNAMIC inner continue 只继续使用显式覆盖。
 - 发起会话前与已建立会话后的模型配置按 Agent 能力选择载体：同时存在模型与思考强度时使用复合二级菜单，选择任一子项后保留菜单以便继续配置，点击外部才关闭；只有模型时使用普通单项菜单，权限始终使用单项菜单，两者选择后立即关闭。追问 composer 内的 PromptInput 点击聚焦逻辑必须忽略按钮、选择器以及 `menuitem`、`menuitemcheckbox`、`menuitemradio` 等菜单项，配置选择只生效而不主动聚焦文本框。
 - ACP session 配置归一化统一采用 `configOptions` 优先、旧 `models` / `modes` 回退：目录、当前值和显示名必须使用同一优先级，避免 Codex 等 adapter 同时返回纯模型 config option 与“模型 × 思考强度”旧目录时展示展开组合。缺少 `category=thought_level` 时继续退化为模型单下拉，不从模型 ID 或名称反向猜测思考强度；回归测试覆盖新旧字段冲突和 legacy-only adapter。
 - Composer 配置栏中的模型单选、模型复合菜单与权限单选统一基于非模态 shadcn/Radix DropdownMenu；相邻菜单必须支持双向一次点击切换，不能混用会拦截外部点击的 Select 弹层。单项菜单沿用 Radix 的选择即关闭语义，只有复合菜单拦截子项默认关闭事件。
@@ -248,7 +249,7 @@ Tool call update 应按 attempt-scoped `toolCallId` 更新同一条审计项，�
 - 阻塞式 dialog：用于必须先决策才能继续的请求。
 - inline approval bar：用于嵌入会话流并保留上下文的请求，视觉上参考 prompt-kit `system-message` 的轻量提示，而不是大块表单卡片。
 
-权限请求必须保留用户选择、时间和相关 tool call id，便于后续排障。用户点击允许或拒绝后，UI 立即乐观关闭 pending 卡片；若响应失败，再恢复卡片并提示重试。ACP JSON-RPC 原始 request id 作为通用 `interactionId`，与 `acp.permission-request.<id>.json`、响应文件及提交接口保持一致；`turnId / promptEventId` 负责区分 owner occurrence。permission / elicitation 共同进入 `AcpSessionVm.pendingInteractions`，但权限选项、表单 schema、响应转换与卡片分别实现。pending / waiting 状态使用低强调 primary 语义色；所有 `session/request_permission` 只通过权限卡片响应，不允许 composer 隐式代替用户选择。Direct 会话的 Agent turn 尚未完成时，composer 新消息继续进入现有 prompt queue，并与 pending 交互卡独立存在。
+权限请求必须保留用户选择、时间和相关 tool call id，便于后续排障。用户点击允许或拒绝后，UI 立即乐观关闭 pending 卡片；若响应失败，再恢复卡片并提示重试。ACP JSON-RPC 原始 request id 作为通用 `interactionId`，与 `acp.permission-request.<id>.json`、响应文件及提交接口保持一致；`turnId / promptEventId` 负责区分 owner occurrence。permission / elicitation 共同进入 `AcpSessionVm.pendingInteractions`，但权限选项、表单 schema、响应转换与卡片分别实现。pending / waiting 状态使用低强调 primary 语义色。未勾选 Auto Accept 时，所有 `session/request_permission` 只通过权限卡片响应，不允许 composer 隐式代替用户选择。用户在权限下拉中显式勾选 Auto Accept 后，客户端对后续含 allow 选项的工具权限自动选择第一个 allow，不进入权限阻塞、不弹 OS 通知；已弹出的 pending 卡仍要人点。`elicitation/create` 无论 Auto Accept 是否打开都只走 elicitation 卡片。Direct 会话的 Agent turn 尚未完成时，composer 新消息继续进入现有 prompt queue，并与 pending 交互卡独立存在。
 
 2026-07-28 权限卡片视觉与长文本验收已固化：复用现有 shadcn `Button` / `Tooltip` copy-in 组件，卡片收敛为低边界、低阴影的轻量审批条；前端静态渲染单测覆盖浅色 allow / 中性 reject 层级、截断标签、Tooltip trigger 与完整无障碍名称。UI 验收需在本地会话页同时检查浅色和深色主题，以及长命令选项的鼠标悬浮与键盘聚焦全文展示。
 

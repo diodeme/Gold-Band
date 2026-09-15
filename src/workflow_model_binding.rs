@@ -62,6 +62,8 @@ pub struct WorkerModelBinding {
     pub model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
 }
@@ -221,6 +223,9 @@ pub fn definition_revision(workflow: &WorkflowDsl) -> String {
                 object.remove("provider");
                 object.remove("model");
                 object.remove("permission_mode");
+                object.remove("permissionMode");
+                object.remove("auto_accept");
+                object.remove("autoAccept");
                 object.remove("config_options");
             }
         }
@@ -289,6 +294,7 @@ pub fn migrate_authoring_workflow(
                         .permission_mode
                         .clone()
                         .filter(|value| !value.trim().is_empty()),
+                    auto_accept: worker.auto_accept,
                     config_options: worker.config_options.clone(),
                 });
             changed = true;
@@ -296,11 +302,12 @@ pub fn migrate_authoring_workflow(
         let removed_provider = worker.provider.take().is_some();
         let removed_model = worker.model.take().is_some();
         let removed_permission = worker.permission_mode.take().is_some();
+        let removed_auto_accept = std::mem::take(&mut worker.auto_accept);
         let removed_options = !worker.config_options.is_empty();
         if removed_options {
             worker.config_options.clear();
         }
-        if removed_provider || removed_model || removed_permission || removed_options {
+        if removed_provider || removed_model || removed_permission || removed_auto_accept || removed_options {
             changed = true;
         }
     }
@@ -492,6 +499,7 @@ pub fn validate_and_inject(
         worker.provider = Some(binding.agent_id.clone());
         worker.model = binding.model_id.clone();
         worker.permission_mode = binding.permission_mode_id.clone();
+        worker.auto_accept = binding.auto_accept;
         worker.config_options = binding.config_options.clone();
     }
     Ok(executable)
@@ -524,6 +532,7 @@ mod tests {
             output: None,
             success_condition: None,
             permission_mode: Some("mode-a".into()),
+            auto_accept: false,
             config_options: BTreeMap::from([("thought".into(), "high".into())]),
             manual_check: None,
             prompt_envelope: Default::default(),
@@ -559,6 +568,7 @@ mod tests {
             agent_id: "agent-a".into(),
             model_id: None,
             permission_mode_id: None,
+            auto_accept: false,
             config_options: BTreeMap::new(),
         };
         let mut bindings = WorkflowModelBindings {
@@ -598,6 +608,7 @@ mod tests {
             agent_id: "agent-a".into(),
             model_id: None,
             permission_mode_id: None,
+            auto_accept: false,
             config_options: BTreeMap::new(),
         };
         let bindings = WorkflowModelBindings {

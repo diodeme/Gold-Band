@@ -1405,6 +1405,7 @@ pub fn get_conversation_run_mode(
                         agent_type: config.agent_type.clone(),
                         model_id: config.model_id.clone(),
                         permission_mode: config.permission_mode.clone(),
+                        auto_accept: config.auto_accept,
                         config_options: config.config_options.clone(),
                     }
                 }),
@@ -1418,6 +1419,7 @@ pub fn get_conversation_run_mode(
                                 agent_type: config.agent_type.clone(),
                                 model_id: config.model_id.clone(),
                                 permission_mode: config.permission_mode.clone(),
+                                auto_accept: config.auto_accept,
                                 config_options: config.config_options.clone(),
                             },
                         )
@@ -1434,6 +1436,7 @@ pub fn get_conversation_run_mode(
                         acceptance_config_options: cfg.acceptance_config_options.clone(),
                         model_id: cfg.model_id.clone(),
                         permission_mode: cfg.permission_mode.clone(),
+                        auto_accept: cfg.auto_accept,
                         config_options: cfg.config_options.clone(),
                         available_agents: cfg.available_agents.as_ref().map(|agents| {
                             agents
@@ -1443,6 +1446,7 @@ pub fn get_conversation_run_mode(
                                         provider: agent.provider.clone(),
                                         model: agent.model.clone(),
                                         permission_mode: agent.permission_mode.clone(),
+                                        auto_accept: agent.auto_accept,
                                         config_options: agent.config_options.clone(),
                                     }
                                 })
@@ -1510,6 +1514,7 @@ pub fn save_conversation_run_mode(
                         agent_type: config.agent_type,
                         model_id: config.model_id,
                         permission_mode: config.permission_mode,
+                        auto_accept: config.auto_accept,
                         config_options: config.config_options,
                     }),
                 direct_preferences: settings
@@ -1522,6 +1527,7 @@ pub fn save_conversation_run_mode(
                                 agent_type: config.agent_type,
                                 model_id: config.model_id,
                                 permission_mode: config.permission_mode,
+                                auto_accept: config.auto_accept,
                                 config_options: config.config_options,
                             },
                         )
@@ -1537,6 +1543,7 @@ pub fn save_conversation_run_mode(
                     acceptance_config_options: cfg.acceptance_config_options,
                     model_id: cfg.model_id,
                     permission_mode: cfg.permission_mode,
+                    auto_accept: cfg.auto_accept,
                     config_options: cfg.config_options,
                     available_agents: cfg.available_agents.map(|agents| {
                         agents
@@ -1545,6 +1552,7 @@ pub fn save_conversation_run_mode(
                                 provider: agent.provider,
                                 model: agent.model,
                                 permission_mode: agent.permission_mode,
+                                auto_accept: agent.auto_accept,
                                 config_options: agent.config_options,
                             })
                             .collect()

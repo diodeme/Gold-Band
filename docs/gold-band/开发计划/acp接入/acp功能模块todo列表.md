@@ -404,7 +404,7 @@
 
 ### 不做什么
 
-- 不自动批准高风险操作。
+- 不自动批准工具权限，除非用户在权限下拉中显式勾选 Auto Accept。勾选后只自动回复后续含 allow 的 `session/request_permission`；无 allow 选项、elicitation 和高风险人工判断仍弹卡。
 - 不绕过 Gold Band runtime 权限边界。
 
 ### 验收标准

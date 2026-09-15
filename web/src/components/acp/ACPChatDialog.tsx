@@ -257,6 +257,7 @@ import {
   setAcpSessionModel,
   setAcpSessionConfigOption,
   setAcpSessionPermissionMode,
+  setAcpSessionAutoAccept,
   showArtifact,
   showAttachment,
   stopActiveSession,
@@ -3049,6 +3050,46 @@ export function ACPChatDialog(
     t,
   ]);
 
+  const handleAcpSessionAutoAcceptChange = useCallback((autoAccept: boolean) => {
+    const mutation = patchSessionConfig({ autoAccept });
+    setAcpSessionAutoAccept(
+      projectId,
+      taskId,
+      runId,
+      roundId,
+      nodeId,
+      attemptId,
+      autoAccept,
+      outerNodeId,
+      outerAttemptId,
+    )
+      .then((updated) => {
+        if (updated) {
+          configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+          applySessionUpdate(updated);
+        }
+      })
+      .catch((error) => {
+        configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+        if (mutation) rollbackSessionConfig(mutation);
+        setSendError(displayAppError(t, error));
+        console.error("Failed to set ACP session auto accept:", error);
+      });
+  }, [
+    applySessionUpdate,
+    attemptId,
+    nodeId,
+    outerAttemptId,
+    outerNodeId,
+    patchSessionConfig,
+    projectId,
+    rollbackSessionConfig,
+    roundId,
+    runId,
+    taskId,
+    t,
+  ]);
+
   const handleAcpSessionConfigOptionChange = useCallback((optionId: string, optionValue: string | null) => {
     const current = latestSessionRef.current?.config?.configOptionOverrides ?? {};
     const next = { ...current };
@@ -3913,6 +3954,7 @@ export function ACPChatDialog(
                 ...incoming.config,
                 modelOverrideId: cfg.modelOverrideId,
                 permissionModeOverrideId: cfg.permissionModeOverrideId,
+                autoAccept: cfg.autoAccept,
                 configOptionOverrides: cfg.configOptionOverrides,
                 currentModelId: cfg.currentModelId,
                 currentModelName: cfg.currentModelName,
@@ -6410,6 +6452,7 @@ export function ACPChatDialog(
                     onModelChange={handleAcpSessionModelChange}
                     onConfigOptionChange={handleAcpSessionConfigOptionChange}
                     onPermissionModeChange={handleAcpSessionPermissionModeChange}
+                    onAutoAcceptChange={handleAcpSessionAutoAcceptChange}
                   />
                 )}
                 attachedPanelVisible={promptQueueVisible || todoEntries.length > 0}
@@ -6802,6 +6845,7 @@ type AcpSessionConfigBarProps = {
   viewModel: AcpSessionConfigViewModel;
   onModelChange?: (modelId: string | null) => void;
   onPermissionModeChange?: (permissionModeId: string | null) => void;
+  onAutoAcceptChange?: (enabled: boolean) => void;
   onConfigOptionChange?: (optionId: string, optionValue: string | null) => void;
 };
 
@@ -6810,6 +6854,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
   onModelChange,
   onConfigOptionChange,
   onPermissionModeChange,
+  onAutoAcceptChange,
 }: AcpSessionConfigBarProps) {
   const { t } = useTranslation();
   const {
@@ -6819,6 +6864,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
     permissionModeOverrideId,
     permissionModeOverrideName,
     canSelectUnspecifiedPermissionMode,
+    autoAccept,
     currentModelId,
     currentModeId,
     availableModels,
@@ -6836,9 +6882,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
   const permissionModeLabel = permissionModeOverrideName
     ?? t('conversation.home.unspecifiedPermissionMode');
   const showModels = availableModels.length > 0 || Boolean(currentModelId);
-  const showPermissionModes = availablePermissionModes.length > 0 || Boolean(currentModeId);
-  const permissionModeCanBeSelected = availablePermissionModes.length > 1
-    || (canSelectUnspecifiedPermissionMode && availablePermissionModes.length > 0);
+  const showPermissionModes = availablePermissionModes.length > 0 || Boolean(currentModeId) || Boolean(onAutoAcceptChange);
 
   if (!showModels && !showPermissionModes && !thoughtLevel) return null;
 
@@ -6873,26 +6917,22 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
         onThoughtChange={(optionId, value) => onConfigOptionChange?.(optionId, value)}
       />
       {showPermissionModes ? (
-        permissionModeCanBeSelected ? (
-          <AcpSingleConfigMenu
-            compact
-            contentSide="top"
-            align="start"
-            triggerClassName={ACP_SESSION_COMPOSER_LAYOUT.configTriggerClassName}
-            label={t('acp.permissionMode')}
-            value={permissionModeOverrideId}
-            valueLabel={permissionModeLabel}
-            options={availablePermissionModes}
-            unspecifiedLabel={t('conversation.home.unspecifiedPermissionMode')}
-            showUnspecified={canSelectUnspecifiedPermissionMode}
-            onValueChange={handlePermissionModeSelect}
-          />
-        ) : (
-          <Badge variant="outline" className={cn("max-w-full gap-1.5 rounded-full bg-background/50 font-normal", ACP_SESSION_COMPOSER_LAYOUT.staticConfigClassName)}>
-            <span className="shrink-0 text-muted-foreground">{t('acp.permissionMode')}</span>
-            <span className="min-w-0 truncate text-foreground">{permissionModeLabel}</span>
-          </Badge>
-        )
+        <AcpSingleConfigMenu
+          compact
+          contentSide="top"
+          align="start"
+          triggerClassName={ACP_SESSION_COMPOSER_LAYOUT.configTriggerClassName}
+          label={t('acp.permissionMode')}
+          value={permissionModeOverrideId}
+          valueLabel={permissionModeLabel}
+          options={availablePermissionModes}
+          unspecifiedLabel={t('conversation.home.unspecifiedPermissionMode')}
+          showUnspecified={canSelectUnspecifiedPermissionMode}
+          onValueChange={handlePermissionModeSelect}
+          autoAccept={autoAccept}
+          autoAcceptLabel={t('acp.autoAccept')}
+          onAutoAcceptChange={onAutoAcceptChange}
+        />
       ) : null}
     </div>
   );
@@ -6908,6 +6948,7 @@ function areAcpSessionConfigBarPropsEqual(
     previous.onModelChange === next.onModelChange &&
     previous.onConfigOptionChange === next.onConfigOptionChange &&
     previous.onPermissionModeChange === next.onPermissionModeChange
+    && previous.onAutoAcceptChange === next.onAutoAcceptChange
   );
 }
 

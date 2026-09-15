@@ -51,7 +51,8 @@ Agent 实例新增两个独立能力配置：
 - 当前 agent type 直接作为 registry key 使用，因此同一类型只能维护一份配置
 - 节点详情页需要展示当前节点声明的 agent type，便于确认执行来源
 - 工作流创建、修改和模板保存时，Agent 下拉只允许选择已配置且最近一次 doctor 成功的 agent；未诊断或诊断失败的 agent 不能进入 workflow
-- workflow 节点的权限模式只能从当前 agent doctor 返回的 `supportedModes` 中选择；切换 agent 时清空旧权限模式，不做跨 agent 权限模式映射
+- workflow 节点的权限模式只能从当前 agent doctor 返回的 `supportedModes` 中选择；切换 agent 时清空旧权限模式和 Auto Accept，不做跨 agent 权限模式映射
+- Auto Accept 是 client overlay，不是 doctor `supportedModes` 的一项；所有 ACP Agent 的权限下拉都展示同一套开关
 - workflow 画布不得维护内置 provider → icon 硬编码表，必须按 provider 从当前 managed Agent registry 读取实例 icon；这同时覆盖后续 Catalog Agent、自定义 Agent、用户上传 data URI 和空值默认 icon
 - ACP 权限模式与节点 Profile 分层生效：权限模式使用 Agent 实际暴露的 mode API 控制工具授权，Profile 继续约束角色职责。实时切换权限成功后不得改写 Profile；例如 `pf-builtin-plan` 在 `yolo` 下仍然只负责规划。验收时必须同时检查 outbound mode 请求、Agent 响应中的 current mode 与节点 Profile，不能仅根据模型是否愿意改代码判断权限是否生效
 

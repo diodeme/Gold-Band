@@ -173,6 +173,7 @@ Agent 管理页不是 workflow 编辑器，但它决定 workflow 里声明的 ag
 - 若节点引用的 agent type 未在 Agent 管理页中配置或未通过 doctor，则 workflow 校验失败
 - workflow 节点权限模式必须来自该 agent 最近一次 doctor 缓存的 `supportedModes`；切换 agent 时不继承旧 agent 的权限模式
 - 权限模式与 Profile 是正交配置：权限模式通过 ACP `session/set_mode` 或 mode 类 `session/set_config_option` 控制工具授权，Profile 提示词继续约束节点职责和允许产物。把规划节点实时切换为完全授权只表示 Agent 可以执行该权限模式允许的工具，不会解除 `pf-builtin-plan` 的“只规划、不修改代码”职责；需要实施时应切换/新增开发 Profile 节点
+- Auto Accept 是 Gold Band client 层布尔，与原生权限模式正交：出现在所有权限下拉底部，不进入 Agent `supportedModes`，不按 Agent ID 隐藏，也不改写 adapter `cli-config` 或 `--force`
 - 节点详情页应展示当前节点绑定的 agent type，便于确认执行来源
 
 ---

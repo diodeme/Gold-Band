@@ -97,6 +97,8 @@ pub struct AcpSessionMetadata {
     pub model_override: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode_override: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_option_overrides: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2464,6 +2466,7 @@ fn merge_session_lifecycle(current: Option<&Value>, incoming: &mut Value) {
     for key in [
         "modelOverride",
         "permissionModeOverride",
+        "autoAccept",
         "configOptionOverrides",
         "configCatalogRefreshRequiredAt",
     ] {
@@ -4729,6 +4732,56 @@ mod tests {
         assert!(persisted.get("modelOverride").is_none());
         assert!(persisted.get("permissionModeOverride").is_none());
         assert!(persisted.get("configOptionOverrides").is_none());
+    }
+
+    #[test]
+    fn established_session_keeps_command_owned_auto_accept() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-auto-accept".to_string(),
+            operation_id: "operation-auto-accept".to_string(),
+            adapter_id: "claude-acp".to_string(),
+            adapter_display_name: "Claude".to_string(),
+            cwd: "C:/tmp/attempt".to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "follow up".to_string(),
+                quotes: Vec::new(),
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-08-21T10:00:00Z".to_string(),
+        };
+        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission).unwrap()
+        else {
+            panic!("auto accept command-owned test admission must start");
+        };
+        let owner = match super::claim_session_turn_for_execution(
+            &path,
+            &submission.turn_id,
+            started.revision,
+            &submission.operation_id,
+        )
+        .unwrap()
+        {
+            super::AcpTurnExecutionClaim::Claimed(owner) => owner,
+            claim => panic!("expected ownership claim, got {claim:?}"),
+        };
+        let mut stale_provider = load_session_metadata(&path, None).unwrap();
+        stale_provider.session_id = Some("session-existing".to_string());
+        stale_provider.availability = AcpSessionAvailability::Established;
+        stale_provider.live_turn_activity = AcpLiveTurnActivity::Running;
+        stale_provider.auto_accept = true;
+        let mut command_owned = read_json::<Value>(&path).unwrap();
+        command_owned["sessionId"] = json!("session-existing");
+        command_owned["autoAccept"] = json!(false);
+        write_json(&path, &command_owned).unwrap();
+
+        super::write_session_metadata_owned(&path, &stale_provider, &owner)
+            .unwrap()
+            .expect("same owner provider write must merge command Auto Accept");
+        let persisted = read_json::<Value>(&path).unwrap();
+
+        assert_eq!(persisted["autoAccept"], false);
     }
 
     #[test]

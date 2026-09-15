@@ -262,6 +262,7 @@ export function RunModeManagementPage({
   const [bootstrapAgent, setBootstrapAgent] = useState(runMode.autoConfig?.bootstrapAgentType ?? runMode.autoConfig?.agentType ?? '');
   const [bootstrapModel, setBootstrapModel] = useState(runMode.autoConfig?.bootstrapModelId ?? '');
   const [permissionMode, setPermissionMode] = useState(runMode.autoConfig?.permissionMode ?? '');
+  const [autoAccept, setAutoAccept] = useState(Boolean(runMode.autoConfig?.autoAccept));
   const [bootstrapConfigOptions, setBootstrapConfigOptions] = useState<Record<string, string>>(runMode.autoConfig?.bootstrapConfigOptions ?? {});
   const [acceptanceModel, setAcceptanceModel] = useState(runMode.autoConfig?.acceptanceModelId ?? '');
   const [acceptanceConfigOptions, setAcceptanceConfigOptions] = useState<Record<string, string>>(runMode.autoConfig?.acceptanceConfigOptions ?? {});
@@ -349,6 +350,7 @@ export function RunModeManagementPage({
     setBootstrapAgent(config?.bootstrapAgentType ?? config?.agentType ?? '');
     setBootstrapModel(config?.bootstrapModelId ?? '');
     setPermissionMode(config?.permissionMode ?? '');
+    setAutoAccept(Boolean(config?.autoAccept));
     setBootstrapConfigOptions(config?.bootstrapConfigOptions ?? {});
     setAcceptanceModel(config?.acceptanceModelId ?? '');
     setAcceptanceConfigOptions(config?.acceptanceConfigOptions ?? {});
@@ -529,6 +531,7 @@ export function RunModeManagementPage({
         bootstrapAgentType: bootstrapAgent || agent,
         bootstrapModelId: bootstrapModel || undefined,
         permissionMode: permissionMode || undefined,
+        autoAccept: autoAccept || undefined,
         bootstrapConfigOptions,
         acceptanceModelId: acceptanceModel || undefined,
         acceptanceConfigOptions,
@@ -548,6 +551,7 @@ export function RunModeManagementPage({
       agentType: agent,
       modelId: model || undefined,
       permissionMode: permissionMode || undefined,
+      autoAccept: autoAccept || undefined,
       configOptions,
       allowedWorkflows: allowedWorkflowIds.map((workflowId) => ({ workflowId })),
       allowedProfiles,
@@ -590,6 +594,7 @@ export function RunModeManagementPage({
     setBootstrapAgent(config.bootstrapAgentType ?? config.agentType ?? '');
     setBootstrapModel(config.bootstrapModelId ?? '');
     setPermissionMode(config.permissionMode ?? '');
+    setAutoAccept(Boolean(config.autoAccept));
     setBootstrapConfigOptions(config.bootstrapConfigOptions ?? {});
     setAcceptanceModel(config.acceptanceModelId ?? '');
     setAcceptanceConfigOptions(config.acceptanceConfigOptions ?? {});
@@ -1076,7 +1081,7 @@ export function RunModeManagementPage({
 
               {agentStrategy === 'fixed' ? (
                 <Field label={t('runMode.agent')} required help={t('workflowEditor.dynamicFixedAgentHelp')}>
-                  <Select value={agent} onValueChange={(value) => { setAgent(value); setModel(''); setPermissionMode(''); setConfigOptions({}); }}>
+                  <Select value={agent} onValueChange={(value) => { setAgent(value); setModel(''); setPermissionMode(''); setAutoAccept(false); setConfigOptions({}); }}>
                     <SelectTrigger className="h-9 w-[180px]"><SelectValue placeholder={t('conversation.home.selectAgent')} /></SelectTrigger>
                     <SelectContent>
                       {agentOptions.map(({ agent: item, selectable, reason }) => (
@@ -1092,7 +1097,7 @@ export function RunModeManagementPage({
                 </Field>
               ) : (
                 <Field label={t('workflowEditor.dynamicBootstrapAgent')} required help={t('workflowEditor.dynamicBootstrapAgentHelp')}>
-                  <Select value={bootstrapAgent} onValueChange={(value) => { setBootstrapAgent(value); setBootstrapModel(''); setPermissionMode(''); setBootstrapConfigOptions({}); setAcceptanceModel(''); setAcceptanceConfigOptions({}); }}>
+                  <Select value={bootstrapAgent} onValueChange={(value) => { setBootstrapAgent(value); setBootstrapModel(''); setPermissionMode(''); setAutoAccept(false); setBootstrapConfigOptions({}); setAcceptanceModel(''); setAcceptanceConfigOptions({}); }}>
                     <SelectTrigger className="h-9 w-[180px]"><SelectValue placeholder={t('conversation.home.selectAgent')} /></SelectTrigger>
                     <SelectContent>
                       {agentOptions.map(({ agent: item, selectable, reason }) => (
@@ -1108,7 +1113,7 @@ export function RunModeManagementPage({
                 </Field>
               )}
 
-              {agentStrategy === 'fixed' && selectedAgent && (fixedModels.length > 0 || fixedThoughtLevel || (selectedAgent.supportedModes?.length ?? 0) > 0) ? (
+              {agentStrategy === 'fixed' && selectedAgent ? (
                 <Field label={t('runMode.model')} help={t('workflowEditor.dynamicFixedModelHelp')}>
                   <div className="flex flex-wrap gap-2">
                     <AcpModelThoughtSelects
@@ -1123,7 +1128,7 @@ export function RunModeManagementPage({
                         updateAcpConfigOptionOverride(current, optionId, value)
                       ))}
                     />
-                    {(selectedAgent.supportedModes?.length ?? 0) > 0 ? (
+                    {selectedAgent ? (
                       <AcpSingleConfigMenu
                         label={t('acp.permissionMode')}
                         value={permissionMode}
@@ -1131,6 +1136,9 @@ export function RunModeManagementPage({
                         unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
                         compact
                         triggerClassName="w-[220px] rounded-md"
+                        autoAccept={autoAccept}
+                        autoAcceptLabel={t('acp.autoAccept')}
+                        onAutoAcceptChange={setAutoAccept}
                         onValueChange={(value) => setPermissionMode(value ?? '')}
                       />
                     ) : null}
@@ -1172,15 +1180,18 @@ export function RunModeManagementPage({
                 </Field>
               ) : null}
 
-              {agentStrategy === 'dynamic' && (selectedBootstrapAgent?.supportedModes?.length ?? 0) > 0 ? (
+              {agentStrategy === 'dynamic' && selectedBootstrapAgent ? (
                 <Field label={t('workflowEditor.dynamicControlPermission')} help={t('workflowEditor.dynamicControlPermissionHelp')}>
                   <AcpSingleConfigMenu
                     label={t('acp.permissionMode')}
                     value={permissionMode}
-                    options={selectedBootstrapAgent?.supportedModes ?? []}
+                    options={selectedBootstrapAgent.supportedModes ?? []}
                     unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
                     compact
                     triggerClassName="w-[220px] rounded-md"
+                    autoAccept={autoAccept}
+                    autoAcceptLabel={t('acp.autoAccept')}
+                    onAutoAcceptChange={setAutoAccept}
                     onValueChange={(value) => setPermissionMode(value ?? '')}
                   />
                 </Field>
@@ -1196,6 +1207,7 @@ export function RunModeManagementPage({
                       const selected = availableAgentMap.has(item.agentType);
                       const selectedModel = availableAgentMap.get(item.agentType)?.model ?? '';
                       const selectedPermissionMode = availableAgentMap.get(item.agentType)?.permissionMode ?? '';
+                      const selectedAutoAccept = Boolean(availableAgentMap.get(item.agentType)?.autoAccept);
                       const thoughtLevel = findAcpThoughtLevel(item.configOptions);
                       return (
                         <div key={item.agentType} className={cn('flex items-center gap-2 rounded-md border border-border/60 bg-background/35 px-3 py-2', !selectable && 'opacity-60')}>
@@ -1204,8 +1216,9 @@ export function RunModeManagementPage({
                             <span className="block truncate">{item.displayName}</span>
                             {!selectable && reason ? <span className="mt-0.5 block text-xs text-destructive">{reason}</span> : null}
                           </span>
-                          {selected && ((item.supportedModels?.length ?? 0) > 0 || thoughtLevel || (item.supportedModes?.length ?? 0) > 0) ? (
+                          {selected ? (
                             <div className="flex flex-wrap items-center justify-end gap-2">
+                              {(item.supportedModels?.length ?? 0) > 0 || thoughtLevel ? (
                               <AcpModelThoughtSelects
                                 models={item.supportedModels ?? []}
                                 modelValue={selectedModel}
@@ -1218,7 +1231,7 @@ export function RunModeManagementPage({
                                   configOptions: updateAcpConfigOptionOverride(availableAgentMap.get(item.agentType)?.configOptions, optionId, value),
                                 })}
                               />
-                              {(item.supportedModes?.length ?? 0) > 0 ? (
+                              ) : null}
                                 <AcpSingleConfigMenu
                                   label={t('acp.permissionMode')}
                                   value={selectedPermissionMode}
@@ -1226,9 +1239,11 @@ export function RunModeManagementPage({
                                   unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
                                   compact
                                   triggerClassName="h-8 w-[220px] rounded-md text-xs"
+                                  autoAccept={selectedAutoAccept}
+                                  autoAcceptLabel={t('acp.autoAccept')}
+                                  onAutoAcceptChange={(enabled) => updateAvailableAgentConfig(item.agentType, { autoAccept: enabled || undefined })}
                                   onValueChange={(value) => updateAvailableAgentConfig(item.agentType, { permissionMode: value || undefined })}
                                 />
-                              ) : null}
                             </div>
                           ) : null}
                         </div>

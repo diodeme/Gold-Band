@@ -3270,6 +3270,7 @@ mod tests {
                 agent_type: "claude-acp".to_string(),
                 model_id: Some(model.to_string()),
                 permission_mode: Some(permission.to_string()),
+                auto_accept: false,
                 config_options: Default::default(),
             };
             state.conversation_run_modes.insert(
@@ -3641,6 +3642,8 @@ pub struct ConversationDirectConfig {
     pub agent_type: String,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
 }
@@ -3659,6 +3662,8 @@ pub struct ConversationAutoConfig {
     pub acceptance_config_options: BTreeMap<String, String>,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
     pub available_agents: Option<Vec<ConversationDynamicAgentRef>>,
@@ -3677,6 +3682,8 @@ pub struct ConversationDynamicAgentRef {
     pub provider: String,
     pub model: Option<String>,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
 }

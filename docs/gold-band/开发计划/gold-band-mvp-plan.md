@@ -3,7 +3,7 @@
 ## 2026-09-15 ACP client Auto Accept
 
 - 根因：Cursor `agent` 等原生 mode 只描述执行风格，不会让 Gold Band 作为 ACP client 自动回复 `session/request_permission`。文档此前禁止 composer 隐式代答。这是正确设计下缺少一层与 mode 正交的 client 开关，不是要把 Auto Accept 写成 Cursor mode 或改 `cli-config.json`。
-- 实现：所有权限下拉叠加 `{{appName}}来帮你…` / `{{appName}} will help you…` 分割线与 Auto Accept 复选框，默认关闭。勾选后 runtime 对后续含 allow 的 `session/request_permission` 选择第一个 allow 并直接回包；elicitation 永不跳过；已 pending 的卡不因中途勾选被结算。字段与 `permissionMode` 同维度持久化（Direct `workspace+agentType`、节点绑定、session override、Run 快照）；session 建立后由用户命令拥有。不发送 `set_mode` / `--force`。
+- 实现：所有权限下拉叠加 `{{appName}}来帮你…` / `{{appName}} will help you…` 分割线与 Auto Accept 复选框，默认关闭。勾选后触发器复用模型与思考强度的复合展示（`Agent · 自动批准`）。runtime 对后续含 allow 的 `session/request_permission` 选择第一个 allow 并直接回包；elicitation 永不跳过；已 pending 的卡不因中途勾选被结算。字段与 `permissionMode` 同维度持久化（Direct `workspace+agentType`、节点绑定、session override、Run 快照）；session 建立后由用户命令拥有。不发送 `set_mode` / `--force`。
 - 验收：`first_allow_option_is_the_first_kind_starting_with_allow`、`auto_accept_skips_requests_without_allow_options`、`session_auto_accept_reads_snapshot_boolean`、`established_session_keeps_command_owned_auto_accept` 与前端 overlay / persist true-only 测试固定选择规则、缺省关闭、命令所有权与 UI 叠加形态。
 - 过度设计与性能评审：复用现有权限握手、session metadata 和权限下拉，只增加一个 skip-if-false 布尔。无新状态机、队列、扫描或按请求分类策略。热路径在到达 permission 时多一次有界 snapshot 布尔读取；无 allow 时回退原 waiter。无需专项 benchmark。
 

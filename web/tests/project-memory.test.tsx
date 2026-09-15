@@ -66,6 +66,21 @@ describe('project memory interfaces', () => {
     await act(async () => button('memory.useLatest').click());
     expect(container.querySelector<HTMLTextAreaElement>('[id$="-value"]')!.value).toBe('latest');
   });
+  it('rekeys a row when the authoritative conflict renamed the memory key', async () => {
+    await mount(); await change('value', 'my draft');
+    api.writeProjectMemory.mockRejectedValue({
+      code: 'memory.conflict',
+      params: { latest: { key: 'renamed', value: 'latest', desc: 'plan', revision: 'r2' } },
+    });
+    await act(async () => button('memory.save').click());
+
+    await act(async () => button('memory.useLatest').click());
+
+    expect(container.querySelector('[data-memory-row="plan"]')).toBeNull();
+    expect(container.querySelectorAll('[data-memory-row="renamed"]')).toHaveLength(1);
+    expect(container.querySelector<HTMLInputElement>('[id="memory-renamed-key"]')!.value).toBe('renamed');
+    expect(container.querySelector<HTMLTextAreaElement>('[id="memory-renamed-value"]')!.value).toBe('latest');
+  });
   it('guards closing unsaved drafts and cancels without writing', async () => {
     const close = await mount(); await change('value', 'draft');
     await act(async () => button('close-sheet').click());

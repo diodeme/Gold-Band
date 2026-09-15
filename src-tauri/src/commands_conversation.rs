@@ -1704,12 +1704,28 @@ pub async fn delete_conversation_task(
                 serde_json::json!({ "taskId": task_id }),
             ));
         }
-        trash::delete(task_dir.as_std_path()).map_err(|error| {
-            CommandErrorVm::new(
-                "conversation.task-delete-failed",
-                serde_json::json!({ "taskId": task_id, "message": error.to_string() }),
+        {
+            let _memory_guard = gold_band::memory::lock_project(
+                &workspace_app.paths,
+                &workspace_app.paths.project_id,
             )
-        })?;
+            .map_err(|error| CommandErrorVm {
+                code: error.code.into(),
+                params: error.params,
+            })?;
+            if !task_dir.exists() {
+                return Err(CommandErrorVm::new(
+                    "conversation.task-not-found",
+                    serde_json::json!({ "taskId": task_id }),
+                ));
+            }
+            trash::delete(task_dir.as_std_path()).map_err(|error| {
+                CommandErrorVm::new(
+                    "conversation.task-delete-failed",
+                    serde_json::json!({ "taskId": task_id, "message": error.to_string() }),
+                )
+            })?;
+        }
         gold_band::storage::sqlite::delete_task(&task_dir);
         {
             let _attention_guard = conversation_attention_write_lock.lock().map_err(|_| {

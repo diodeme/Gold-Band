@@ -1,10 +1,13 @@
-use std::{fs::OpenOptions, io::Read};
+use std::{
+    fs::OpenOptions,
+    io::{Read, Write},
+};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::storage::{GoldBandPaths, write_json};
+use crate::storage::{GoldBandPaths, atomic_write_file};
 
 pub mod mcp;
 
@@ -104,6 +107,38 @@ pub struct MemoryService {
     wb: bool,
 }
 
+pub struct ProjectMemoryLock {
+    _file: std::fs::File,
+}
+
+pub fn lock_project(
+    paths: &GoldBandPaths,
+    project_id: &str,
+) -> std::result::Result<ProjectMemoryLock, MemoryError> {
+    if paths.project_id != project_id {
+        return Err(error(
+            "memory.locator",
+            json!({"projectId": project_id, "expectedProjectId": paths.project_id}),
+        ));
+    }
+    paths
+        .validate_project_manifest()
+        .map_err(|cause| io_error(&paths.project_manifest_file(), cause))?;
+    let path = paths.runtime_root.join("memory.lock");
+    if path.is_symlink() {
+        return Err(error("memory.locator", json!({"path": path})));
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|cause| io_error(&path, cause))?;
+    fs2::FileExt::lock_exclusive(&file).map_err(|cause| io_error(&path, cause))?;
+    Ok(ProjectMemoryLock { _file: file })
+}
+
 impl MemoryService {
     pub fn new(
         paths: GoldBandPaths,
@@ -126,18 +161,29 @@ impl MemoryService {
                 json!({"projectId": project_id, "taskId": task_id}),
             ));
         }
-        paths
+        let service = Self { paths, task_id, wb };
+        service.validate_project_locator()?;
+        service.validate_task_locator()?;
+        Ok(service)
+    }
+
+    fn validate_project_locator(&self) -> Result<()> {
+        self.paths
             .validate_project_manifest()
-            .map_err(|e| io_error(&paths.project_manifest_file(), e))?;
-        if let Some(id) = &task_id {
-            if !paths.task_file(id).is_file() {
-                return Err(error(
-                    "memory.locator",
-                    json!({"projectId": project_id, "taskId": id}),
-                ));
-            }
+            .map_err(|cause| io_error(&self.paths.project_manifest_file(), cause))
+    }
+
+    fn validate_task_locator(&self) -> Result<()> {
+        let Some(task_id) = self.task_id.as_deref() else {
+            return Ok(());
+        };
+        if !self.paths.task_file(task_id).is_file() {
+            return Err(error(
+                "memory.locator",
+                json!({"projectId": self.paths.project_id, "taskId": task_id}),
+            ));
         }
-        Ok(Self { paths, task_id, wb })
+        Ok(())
     }
 
     fn path(&self, scope: Scope) -> Result<Utf8PathBuf> {
@@ -175,18 +221,8 @@ impl MemoryService {
 
     fn locked<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
         self.path(Scope::Workspace)?;
-        let path = self.paths.runtime_root.join("memory.lock");
-        if path.is_symlink() {
-            return Err(error("memory.locator", json!({"path": path})));
-        }
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .map_err(|e| io_error(&path, e))?;
-        fs2::FileExt::lock_exclusive(&file).map_err(|e| io_error(&path, e))?;
+        let _guard = lock_project(&self.paths, &self.paths.project_id)?;
+        self.validate_task_locator()?;
         operation()
     }
 
@@ -211,7 +247,7 @@ impl MemoryService {
                     version: SCHEMA_VERSION,
                     entries,
                 };
-                write_json(&path, &data).map_err(|e| io_error(&path, e))?;
+                write_memory_file(&path, &data)?;
                 return Ok(data);
             }
             Err(e) => return Err(io_error(&path, e)),
@@ -301,9 +337,7 @@ impl MemoryService {
     }
 
     pub fn write(&self, command: WriteCommand) -> Result<Snapshot> {
-        self.write_with(command, |path, data| {
-            write_json(path, data).map_err(|e| io_error(path, e))
-        })
+        self.write_with(command, write_memory_file)
     }
 
     fn write_with(
@@ -368,6 +402,15 @@ impl MemoryService {
             Ok(snapshot)
         })
     }
+}
+
+fn write_memory_file<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
+    let content = serde_json::to_vec_pretty(value).map_err(|cause| io_error(path, cause))?;
+    atomic_write_file(path.as_std_path(), |file| -> std::io::Result<()> {
+        file.write_all(&content)?;
+        Ok(())
+    })
+    .map_err(|cause| io_error(path, cause))
 }
 
 fn validate_entry(entry: &Entry) -> Result<()> {

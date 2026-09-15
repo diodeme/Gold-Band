@@ -1,4 +1,5 @@
 use super::*;
+use crate::storage::write_json;
 
 fn fixture(wb: bool) -> (tempfile::TempDir, MemoryService) {
     let temp = tempfile::tempdir().unwrap();
@@ -245,6 +246,26 @@ fn memory_corruption_and_io_are_preserved() {
             .code,
         "memory.io"
     );
+}
+
+#[test]
+fn memory_deleted_task_is_never_recreated() {
+    let (_temp, service) = fixture(false);
+    service
+        .write(command(Scope::Task, "plan", "B2", None))
+        .unwrap();
+    let task_dir = service.paths.task_dir("task-1");
+    std::fs::remove_dir_all(&task_dir).unwrap();
+
+    let read_error = service.read().unwrap_err();
+    assert_eq!(read_error.code, "memory.locator");
+    assert!(!task_dir.exists());
+
+    let write_error = service
+        .write(command(Scope::Task, "plan", "B3", None))
+        .unwrap_err();
+    assert_eq!(write_error.code, "memory.locator");
+    assert!(!task_dir.exists());
 }
 
 #[test]

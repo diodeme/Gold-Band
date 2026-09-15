@@ -2861,7 +2861,10 @@ mod tests {
         let codex = &agents[&ManagedAgentId::from_str("codex-acp").unwrap()];
         assert_eq!(
             codex.adapter.args,
-            catalog_agent_default_config("codex-acp").unwrap().adapter.args
+            catalog_agent_default_config("codex-acp")
+                .unwrap()
+                .adapter
+                .args
         );
     }
 
@@ -3130,7 +3133,10 @@ mod tests {
         let claude = &agents[&ManagedAgentId::from_str("claude-acp").unwrap()];
         assert_eq!(
             claude.adapter.command,
-            catalog_agent_default_config("claude-acp").unwrap().adapter.command
+            catalog_agent_default_config("claude-acp")
+                .unwrap()
+                .adapter
+                .command
         );
         assert_eq!(claude.icon, "claude");
         assert!(claude.supports_system_prompt());

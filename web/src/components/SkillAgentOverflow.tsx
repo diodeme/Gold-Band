@@ -3,6 +3,7 @@ import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -146,6 +147,7 @@ function SyncAgentIcon({
   isPending: boolean;
   onToggleAgent: (agentType: string) => void;
 }) {
+  const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   const actionLabel = isSynced
     ? t('contextManagement.skills.unsyncAgent', { agent: agent.label, defaultValue: `取消同步 ${agent.label}` })
@@ -159,7 +161,7 @@ function SyncAgentIcon({
             size="icon"
             variant="ghost"
             className="relative size-6 rounded-full hover:bg-muted"
-            disabled={isPending}
+            disabled={readOnly || isPending}
             aria-label={actionLabel}
             onClick={() => onToggleAgent(agent.agentType)}
           >
@@ -183,6 +185,7 @@ function SyncAgentRow({
   isPending: boolean;
   onToggleAgent: (agentType: string) => void;
 }) {
+  const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   const actionLabel = isSynced
     ? t('contextManagement.skills.unsyncAgent', { agent: agent.label, defaultValue: `取消同步 ${agent.label}` })
@@ -192,7 +195,7 @@ function SyncAgentRow({
       type="button"
       variant="ghost"
       className="h-8 w-full justify-start gap-2 px-2 text-xs font-normal"
-      disabled={isPending}
+      disabled={readOnly || isPending}
       aria-label={actionLabel}
       onClick={() => onToggleAgent(agent.agentType)}
     >

@@ -276,6 +276,8 @@ pub struct WorkerNode {
     pub success_condition: Option<JsonConditionDsl>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
     #[serde(default)]
@@ -347,6 +349,7 @@ impl<'de> Deserialize<'de> for AiDynamicNode {
                     provider,
                     model: None,
                     permission_mode: None,
+                    auto_accept: false,
                 }
             }
         };
@@ -404,6 +407,8 @@ pub enum AiDynamicAgentStrategy {
         model: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         permission_mode: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        auto_accept: bool,
     },
     #[serde(rename_all = "camelCase")]
     Dynamic {
@@ -412,6 +417,8 @@ pub enum AiDynamicAgentStrategy {
         bootstrap_model: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         permission_mode: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        auto_accept: bool,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         bootstrap_config_options: BTreeMap<String, String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -432,6 +439,8 @@ pub struct DynamicAgentRef {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
 }
@@ -652,6 +661,7 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
             provider,
             model,
             permission_mode,
+            ..
         } => {
             ensure!(
                 !provider.trim().is_empty(),
@@ -680,6 +690,7 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
             acceptance_config_options: _,
             routing_prompt: _,
             available_agents,
+            ..
         } => {
             ensure!(
                 !bootstrap_provider.trim().is_empty(),

@@ -21,6 +21,7 @@ vi.mock('lucide-react', () => ({
   Loader2: () => null,
   Plus: () => null,
   RotateCw: () => null,
+  Settings: () => null,
   Trash2: () => null,
   User: () => null,
   Wifi: () => null,
@@ -139,10 +140,20 @@ vi.mock('@/components/conversation/MulticaAddWorkspaceDialog', () => ({
   MulticaAddWorkspaceDialog: () => null,
 }));
 
+// 连接/设置两弹窗桩：暴露 open 供容器断言「连接按钮开确认弹窗 / 设置 icon 开地址设置」
+// （弹窗内部行为在各自专属套件覆盖）；两弹窗互斥单飞行。
+vi.mock('@/components/conversation/MulticaConnectDialog', () => ({
+  MulticaConnectDialog: ({ open }: { open: boolean }) =>
+    open ? <div data-testid="connect-dialog" /> : null,
+}));
+vi.mock('@/components/conversation/MulticaConnectionSettingsDialog', () => ({
+  MulticaConnectionSettingsDialog: ({ open }: { open: boolean }) =>
+    open ? <div data-testid="address-settings-dialog" /> : null,
+}));
+
 const mocks = vi.hoisted(() => ({
   getMulticaTasks: vi.fn(),
   getMulticaSettings: vi.fn(),
-  connectMultica: vi.fn(),
   disconnectMultica: vi.fn(),
   getMulticaTaskRequirement: vi.fn(),
   cancelMulticaTask: vi.fn(),
@@ -156,7 +167,6 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/api', () => ({
   getMulticaTasks: mocks.getMulticaTasks,
   getMulticaSettings: mocks.getMulticaSettings,
-  connectMultica: mocks.connectMultica,
   disconnectMultica: mocks.disconnectMultica,
   getMulticaTaskRequirement: mocks.getMulticaTaskRequirement,
   cancelMulticaTask: mocks.cancelMulticaTask,
@@ -204,6 +214,7 @@ function baseSettings(overrides: Record<string, unknown> = {}) {
     defaultProvider: 'claude-acp',
     connected: true,
     connectedAccount: { name: 'Demo', email: 'demo@example.com' },
+    addressOverrideSet: false,
     ...overrides,
   };
 }
@@ -260,6 +271,35 @@ describe('MulticaTaskManagementPage (container)', () => {
 
     expect(container.textContent).toContain('conversation.sidebar.multica.emptyTitle');
     expect(container.textContent).toContain('conversation.sidebar.multica.connectButton');
+    // 设置 icon（连接地址入口）与连接按钮并列，仅未连接空态渲染。
+    expect(container.querySelector('button[aria-label="conversation.sidebar.multica.connectionSettings"]')).not.toBeNull();
+  });
+
+  it('opens the connect confirm dialog from the connect button (M5-ay: 先弹窗确认地址)', async () => {
+    getMulticaTasks.mockResolvedValue(baseVm({ connected: false }));
+    const { container } = await renderPage();
+
+    const connectBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === 'conversation.sidebar.multica.connectButton',
+    ) as HTMLButtonElement;
+    expect(connectBtn).toBeTruthy();
+    await act(async () => { connectBtn.click(); });
+
+    // 连接按钮只开确认弹窗；连接动作与地址设置弹窗互斥不出现。
+    expect(container.querySelector('[data-testid="connect-dialog"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="address-settings-dialog"]')).toBeNull();
+  });
+
+  it('opens the address settings dialog from the settings icon', async () => {
+    getMulticaTasks.mockResolvedValue(baseVm({ connected: false }));
+    const { container } = await renderPage();
+
+    const gearBtn = container.querySelector('button[aria-label="conversation.sidebar.multica.connectionSettings"]') as HTMLButtonElement;
+    expect(gearBtn).toBeTruthy();
+    await act(async () => { gearBtn.click(); });
+
+    expect(container.querySelector('[data-testid="address-settings-dialog"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="connect-dialog"]')).toBeNull();
   });
 
   it('shows the no-workspaces empty state when connected but no workspaces are bound', async () => {

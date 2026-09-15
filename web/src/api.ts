@@ -470,6 +470,10 @@ export function setAcpSessionPermissionMode(projectId: string | null | undefined
   return getRuntimeApi().setAcpSessionPermissionMode(projectId, taskId, runId, roundId, nodeId, attemptId, permissionModeId, outerNodeId, outerAttemptId);
 }
 
+export function setAcpSessionAutoAccept(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, autoAccept: boolean, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().setAcpSessionAutoAccept(projectId, taskId, runId, roundId, nodeId, attemptId, autoAccept, outerNodeId, outerAttemptId);
+}
+
 export function respondAcpPermission(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['respondAcpPermission']>[8], outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().respondAcpPermission(projectId, taskId, runId, roundId, nodeId, attemptId, requestId, optionId, fallback, outerNodeId, outerAttemptId);
 }
@@ -590,6 +594,14 @@ export function disconnectMultica() {
   return getRuntimeApi().disconnectMultica();
 }
 
+export function saveMulticaConnectionAddress(baseUrl: string | null, appUrl: string | null) {
+  return getRuntimeApi().saveMulticaConnectionAddress(baseUrl, appUrl);
+}
+
+export function cancelMulticaConnect() {
+  return getRuntimeApi().cancelMulticaConnect();
+}
+
 export function getMulticaTasks() {
   return getRuntimeApi().getMulticaTasks();
 }
@@ -694,8 +706,12 @@ export function deleteScheduledTask(projectId: string, scheduledTaskId: string) 
   return getRuntimeApi().deleteScheduledTask(projectId, scheduledTaskId);
 }
 
-export function listScheduledTaskOccurrences(projectId: string, scheduledTaskId: string, cursor?: string | null, status?: string | null) {
-  return getRuntimeApi().listScheduledTaskOccurrences(projectId, scheduledTaskId, cursor, status);
+export function listScheduledExecutionHistory(projectId: string, scheduledTaskId: string, cursor?: string | null, anchor?: { taskId: string; runId: string } | null) {
+  return getRuntimeApi().listScheduledExecutionHistory(projectId, scheduledTaskId, cursor, anchor);
+}
+
+export function deleteScheduledExecutionHistory(items: import('./types').ScheduledExecutionHistoryDeleteInputVm[]) {
+  return getRuntimeApi().deleteScheduledExecutionHistory(items);
 }
 
 export function getScheduledTaskDiagnostics(projectId: string, scheduledTaskId: string) {
@@ -986,4 +1002,10 @@ export function checkSkillNameConflict(
     directoryPath,
     syncTargets,
   );
+}
+export function getAcpImage(locator: import('./types').TurnFileLocatorVm, image: import('./types').AcpImageRef, thumbnail: boolean) {
+  return getRuntimeApi().getAcpImage(locator, image, thumbnail);
+}
+export function getAcpActivityImages(input: import('./types').AcpActivityImagesInput) {
+  return getRuntimeApi().getAcpActivityImages(input);
 }

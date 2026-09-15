@@ -619,12 +619,7 @@ impl<'a> InterventionCommandService<'a> {
             .map_err(|_| {
                 InterventionError::new(InterventionErrorCode::InterventionStorageUnavailable)
             })?
-            .filter(|output| !output.trim().is_empty())
-            .ok_or_else(|| {
-                InterventionError::new(InterventionErrorCode::InterventionRuntimeStateMismatch)
-                    .with_detail("requestKind", "manualCheck")
-                    .with_detail("latestOutput", "missing")
-            })?;
+            .filter(|output| !output.trim().is_empty());
         let allowed_actions = vec![
             InterventionAllowedAction::ManualSuccess,
             InterventionAllowedAction::ManualFailure,
@@ -645,7 +640,7 @@ impl<'a> InterventionCommandService<'a> {
             request,
             expected_state,
             allowed_actions,
-            prompt: Some(InterventionPrompt {
+            prompt: latest_output.map(|latest_output| InterventionPrompt {
                 title: None,
                 message: truncate_chars(&latest_output, MAX_MANUAL_CHECK_OUTPUT_CHARS),
                 context: None,
@@ -2389,7 +2384,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_dispatches_manual_check_through_background_resume() {
+    fn manual_check_without_timeline_output_remains_actionable() {
         let temp = tempfile::tempdir().expect("temp fixture");
         let repo = Utf8PathBuf::from_path_buf(temp.path().join("repo")).expect("utf8 path");
         let app = App::new(repo);
@@ -2494,38 +2489,14 @@ mod tests {
             &node,
         )
         .unwrap();
-        crate::acp::events::write_timeline_items(
-            &app.paths.acp_timeline_file(
-                &locator.task_id,
-                &locator.run_id,
-                &locator.round_id,
-                &locator.node_id,
-                &locator.attempt_id,
-            ),
-            &[crate::acp::events::AcpUiEvent {
-                id: "assistant-message-1".into(),
-                seq: 1,
-                timestamp: "1Z".into(),
-                kind: "textDelta".into(),
-                session_id: Some("session-1".into()),
-                content: Some("latest output".into()),
-                title: None,
-                tool_call_id: None,
-                status: Some("completed".into()),
-                started_seq: Some(1),
-                ended_seq: Some(1),
-                started_at: Some("1Z".into()),
-                ended_at: Some("1Z".into()),
-                timing: None,
-                raw: None,
-            }],
-        )
-        .unwrap();
-
         let service = InterventionCommandService::new(&app);
         let snapshot = service
             .inspect(locator.clone(), InterventionRequestIdentity::ManualCheck)
             .unwrap();
+        assert!(
+            snapshot.prompt.is_none(),
+            "Timeline output is optional presentation data"
+        );
         let result = service
             .execute(InterventionCommand {
                 locator,

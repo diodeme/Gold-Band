@@ -13,6 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { openExternalUrl, resolveWorkspaceFileLink } from '@/api';
 import { Button } from '@/components/ui/button';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
@@ -47,6 +48,7 @@ import { diffReviewStore, gitComparisonReviewItemId, type GitDiffReviewItem } fr
 import { sourceControlStore, useSourceControlSession, type SourceControlSessionSnapshot, type SourceControlTab } from './source-control-store';
 
 export function SourceControlWorkspacePanel({ resource }: { resource: SourceControlWorkspaceResource }) {
+  const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   const workspace = useRightWorkspace();
   const session = useSourceControlSession(resource.projectId, resource.workspacePath);
@@ -175,7 +177,7 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
 
   const locked = snapshot.repository.lock.locked;
   const conflictWorkflowActive = snapshot.status.operationInProgress?.kind === 'merge' || snapshot.status.operationInProgress?.kind === 'rebase';
-  const writeLocked = locked || conflictWorkflowActive;
+  const writeLocked = readOnly || locked || conflictWorkflowActive;
   const hasConflicts = snapshot.status.conflicts.length > 0;
   const activeOperationPending = Boolean(activeOperation && ['queued', 'running'].includes(activeOperation.status));
   const busyActionKind = pendingAction?.kind ?? (activeOperationPending ? activeOperation?.kind ?? null : null);

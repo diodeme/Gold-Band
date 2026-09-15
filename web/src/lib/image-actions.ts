@@ -10,6 +10,7 @@ export interface ImageActionAsset {
   path?: string;
   file?: Blob;
   previewUrl?: string;
+  loadOriginal?: () => Promise<Blob>;
 }
 
 export async function copyImageAsset(asset: ImageActionAsset): Promise<void> {
@@ -21,6 +22,10 @@ export async function saveImageAssetAs(asset: ImageActionAsset): Promise<boolean
 }
 
 export async function imageActionInput(asset: ImageActionAsset): Promise<ImageActionInput> {
+  if (asset.loadOriginal) {
+    const original = await asset.loadOriginal();
+    return { source: await blobImageSource(original), fileName: asset.name, mime: original.type || asset.mime };
+  }
   return {
     source: await imageActionSource(asset),
     fileName: asset.name,

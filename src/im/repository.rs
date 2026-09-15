@@ -2,7 +2,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
 use super::{
     ClaimedImDelivery, ImChannelKind, ImDelivery, ImDeliveryBinding, ImDeliveryPayload,
@@ -134,6 +134,35 @@ impl ImRepository {
 
     pub fn path(&self) -> &Utf8Path {
         &self.path
+    }
+
+    pub fn has_pending_channel_cleanups_at(path: &Utf8Path) -> Result<bool, ImRepositoryError> {
+        if !path.exists() {
+            return Ok(false);
+        }
+        let connection = Connection::open_with_flags(
+            path.as_std_path(),
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        connection.busy_timeout(Duration::from_millis(250))?;
+        let table_exists = connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'im_channel_cleanup_operations'
+            )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !table_exists {
+            return Ok(false);
+        }
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM im_channel_cleanup_operations LIMIT 1)",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(Into::into)
     }
 
     pub fn enqueue(
@@ -365,6 +394,23 @@ impl ImRepository {
             .unwrap_or(i64::MAX)
             .max(1);
         let lease_expires_at = now_ms.saturating_add(lease_ms);
+        let has_due_or_expired = self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM im_outbox INDEXED BY idx_im_outbox_due
+                        WHERE channel_kind = ?1 AND state = 'pending'
+                          AND (next_attempt_at_ms <= ?2 OR expires_at_ms <= ?2)
+                        LIMIT 1
+                    )",
+                    params![channel.as_str(), now_ms],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(Into::into)
+        })?;
+        if !has_due_or_expired {
+            return Ok(Vec::new());
+        }
         let rows = self.with_connection(|connection| {
             let mut statement = connection.prepare(
                 "SELECT rowid, delivery_id, destination_json, notification_kind,
@@ -1119,6 +1165,41 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap();
         (temp, ImRepository::with_active_limit(path, limit))
+    }
+
+    #[test]
+    fn empty_due_probe_does_not_request_a_sqlite_writer_lock() {
+        let (_temp, repository) = repository(DEFAULT_IM_OUTBOX_ACTIVE_LIMIT);
+        assert!(
+            repository
+                .claim_due(ImChannelKind::WeCom, 100, Duration::from_secs(30), 1)
+                .unwrap()
+                .is_empty()
+        );
+
+        let writer = Connection::open(repository.path().as_std_path()).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let result = repository.claim_due(ImChannelKind::WeCom, 101, Duration::from_secs(30), 1);
+        writer.execute_batch("ROLLBACK").unwrap();
+
+        assert!(
+            matches!(result, Ok(ref deliveries) if deliveries.is_empty()),
+            "an empty due probe must remain read-only: {result:?}"
+        );
+    }
+
+    #[test]
+    fn pending_cleanup_probe_does_not_create_an_empty_database() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap();
+        assert!(!ImRepository::has_pending_channel_cleanups_at(&path).unwrap());
+        assert!(!path.exists());
+
+        let repository = ImRepository::new(path.clone());
+        repository
+            .create_channel_cleanup("cleanup-1", ImChannelKind::WeCom, None, 100)
+            .unwrap();
+        assert!(ImRepository::has_pending_channel_cleanups_at(&path).unwrap());
     }
 
     fn information_delivery(

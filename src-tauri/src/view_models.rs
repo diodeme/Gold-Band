@@ -16,7 +16,10 @@ use gold_band::config::{
 };
 use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
-use gold_band::dynamic::{DynamicGraphState, WorkspaceKind};
+use gold_band::dynamic::{
+    DynamicGraphState, DynamicNext, DynamicNodeCompletion, DynamicProposalValidationStatus,
+    WorkspaceKind,
+};
 use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::provider::{
     attachment_meta_for_path, mcp_capabilities_from_capabilities,
@@ -772,6 +775,7 @@ pub struct AcpSessionVm {
     pub timing: Option<AcpSessionTimingVm>,
     pub restored: bool,
     pub stop_reason: Option<String>,
+    pub turn_error: Option<gold_band::runtime_error::RuntimeErrorInfo>,
     pub system_prompt_append: Option<String>,
     pub config: Option<AcpSessionConfigVm>,
     pub events: Vec<AcpUiEventVm>,
@@ -901,6 +905,8 @@ pub struct AcpSessionConfigVm {
     pub catalog_observed_at: Option<String>,
     pub model_override_id: Option<String>,
     pub permission_mode_override_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     pub config_option_overrides: std::collections::BTreeMap<String, String>,
     pub current_model_id: Option<String>,
     pub current_model_name: Option<String>,
@@ -1408,7 +1414,7 @@ pub fn agent_registry_vm(
     AgentRegistryVm { agents, catalog }
 }
 
-fn managed_agent_vm(
+pub(crate) fn managed_agent_vm(
     agent_id: &ManagedAgentId,
     config: &ManagedAgentConfig,
     diagnostic: Option<&AgentDiagnosticState>,
@@ -2728,53 +2734,76 @@ fn dynamic_internal_graph_vm(
         })
         .collect::<Vec<_>>();
 
+    let edges = dynamic_graph_relations(graph)
+        .into_iter()
+        .map(|mut edge| {
+            edge.from = dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, &edge.from);
+            edge.to = dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, &edge.to);
+            edge
+        })
+        .collect();
+
+    GraphVm { nodes, edges }
+}
+
+fn dynamic_graph_relations(graph: &DynamicGraphState) -> Vec<GraphEdgeVm> {
+    let node_ids: HashSet<&str> = graph.nodes.iter().map(|node| node.id.as_str()).collect();
+    let mut seen = HashSet::new();
     let mut edges = Vec::new();
-    for node in &graph.nodes {
-        let to = dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, &node.id);
-        let mut has_dependency = false;
-        for dependency in &node.depends_on {
-            has_dependency = true;
+    let mut add = |from: &str, to: &str, label: &str| {
+        if from == to || !node_ids.contains(from) || !node_ids.contains(to) {
+            return;
+        }
+        // Dependencies and creation describe one structural edge; session reuse is distinct.
+        let relation = if label == "continue" {
+            "continue"
+        } else {
+            "structural"
+        };
+        if seen.insert((from.to_string(), to.to_string(), relation)) {
             edges.push(GraphEdgeVm {
-                from: dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, dependency),
-                to: to.clone(),
-                label: "depends-on".to_string(),
+                from: from.to_string(),
+                to: to.to_string(),
+                label: label.to_string(),
                 traversal_count: 1,
-                last_outcome: None,
+                last_outcome: (label == "success").then(|| "success".to_string()),
                 blocked_reason: None,
             });
         }
-        if !has_dependency {
-            let upstream = dynamic_implicit_upstream_node(graph, node);
-            if let Some(upstream) = upstream {
-                edges.push(GraphEdgeVm {
-                    from: dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, &upstream.id),
-                    to: to.clone(),
-                    label: "success".to_string(),
-                    traversal_count: 1,
-                    last_outcome: Some("success".to_string()),
-                    blocked_reason: None,
-                });
-            }
+    };
+    for node in &graph.nodes {
+        for dependency in &node.depends_on {
+            add(dependency, &node.id, "depends-on");
         }
         if node.session_mode == SessionMode::Continue {
             if let Some(continue_from_node_id) = &node.continue_from_node_id {
-                edges.push(GraphEdgeVm {
-                    from: dynamic_graph_node_vm_id(
-                        outer_node_id,
-                        outer_attempt_id,
-                        continue_from_node_id,
-                    ),
-                    to: to.clone(),
-                    label: "continue".to_string(),
-                    traversal_count: 1,
-                    last_outcome: None,
-                    blocked_reason: None,
-                });
+                add(continue_from_node_id, &node.id, "continue");
             }
         }
     }
-
-    GraphVm { nodes, edges }
+    for proposal in &graph.proposals {
+        if proposal.validation_status != DynamicProposalValidationStatus::Accepted {
+            continue;
+        }
+        let Ok(completion) = DynamicNodeCompletion::deserialize(&proposal.parsed) else {
+            continue;
+        };
+        match completion.next {
+            DynamicNext::End => {}
+            DynamicNext::Single { node } => add(&proposal.source_node_id, &node.id, "success"),
+            DynamicNext::Fanout { nodes, .. } => {
+                for node in nodes {
+                    add(&proposal.source_node_id, &node.id, "success");
+                }
+            }
+        }
+    }
+    for group in &graph.groups {
+        for root in &group.root_node_ids {
+            add(&group.created_by_node_id, root, "success");
+        }
+    }
+    edges
 }
 
 fn dynamic_graph_node_vm_id(outer_node_id: &str, outer_attempt_id: &str, node_id: &str) -> String {
@@ -2786,20 +2815,10 @@ fn dynamic_external_exit_graph_node_ids(
     outer_attempt_id: &str,
     graph: &DynamicGraphState,
 ) -> Vec<String> {
-    let mut non_exit_node_ids = HashSet::<String>::new();
-    for node in &graph.nodes {
-        for dependency in &node.depends_on {
-            non_exit_node_ids.insert(dependency.clone());
-        }
-        if let Some(upstream) = dynamic_implicit_upstream_node(graph, node) {
-            non_exit_node_ids.insert(upstream.id.clone());
-        }
-        if node.session_mode == SessionMode::Continue {
-            if let Some(continue_from_node_id) = &node.continue_from_node_id {
-                non_exit_node_ids.insert(continue_from_node_id.clone());
-            }
-        }
-    }
+    let non_exit_node_ids: HashSet<String> = dynamic_graph_relations(graph)
+        .into_iter()
+        .map(|edge| edge.from)
+        .collect();
 
     graph
         .nodes
@@ -2807,36 +2826,6 @@ fn dynamic_external_exit_graph_node_ids(
         .filter(|node| !non_exit_node_ids.contains(&node.id))
         .map(|node| dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, &node.id))
         .collect()
-}
-
-fn dynamic_implicit_upstream_node<'a>(
-    graph: &'a DynamicGraphState,
-    node: &gold_band::dynamic::DynamicNodeState,
-) -> Option<&'a gold_band::dynamic::DynamicNodeState> {
-    if !node.depends_on.is_empty() || node.depth == 0 {
-        return None;
-    }
-    graph
-        .nodes
-        .iter()
-        .find(|candidate| candidate.chain_id == node.chain_id && candidate.depth + 1 == node.depth)
-        .or_else(|| {
-            node.group_id.as_deref().and_then(|group_id| {
-                graph
-                    .groups
-                    .iter()
-                    .find(|group| {
-                        group.id == group_id && group.root_node_ids.iter().any(|id| id == &node.id)
-                    })
-                    .map(|group| &group.created_by_node_id)
-                    .and_then(|source_id| {
-                        graph
-                            .nodes
-                            .iter()
-                            .find(|candidate| candidate.id == *source_id)
-                    })
-            })
-        })
 }
 
 pub fn dynamic_runtime_graph_vm(
@@ -3826,6 +3815,10 @@ pub fn dynamic_acp_session_vm(
             .get("stopReason")
             .and_then(|value| value.as_str())
             .map(str::to_string),
+        turn_error: session
+            .get("turnError")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok()),
         system_prompt_append,
         config,
         events: event_scan.events,
@@ -4224,6 +4217,10 @@ pub fn acp_session_vm(
             .get("stopReason")
             .and_then(|value| value.as_str())
             .map(str::to_string),
+        turn_error: session
+            .get("turnError")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok()),
         system_prompt_append,
         config,
         available_commands: event_scan.available_commands,
@@ -4806,6 +4803,9 @@ fn merge_timeline_item_revision_vm(
     existing: &AcpUiEventVm,
     mut incoming: AcpUiEventVm,
 ) -> AcpUiEventVm {
+    if existing.kind == "scheduledTrigger" {
+        return existing.clone();
+    }
     if is_provider_history_event_vm(&incoming) && !is_provider_history_event_vm(existing) {
         return existing.clone();
     }
@@ -5464,7 +5464,6 @@ pub fn acp_activity_detail_vm_for_attempt(
     query: AcpActivityDetailQueryInput,
 ) -> Result<AcpActivityDetailVm> {
     gold_band::acp::branches::validate_conversation_branch_id(&query.branch_id)?;
-    gold_band::acp::branches::migrate_legacy_agent_timeline(attempt_dir)?;
     let timeline_path =
         gold_band::acp::branches::branch_timeline_path(attempt_dir, &query.branch_id);
     if query.activity_end_seq < query.activity_start_seq || !timeline_path.exists() {
@@ -5499,6 +5498,10 @@ pub fn acp_activity_detail_vm_for_attempt(
     let audit =
         load_selected_activity_detail_events(&timeline_path, &query.session_id, &selected_ids)?;
     let mut audit = audit;
+    // List rows must not hydrate tool output blobs, including image bodies.
+    for event in &mut audit {
+        strip_activity_tool_output(event);
+    }
     hydrate_timeline_events(&timeline_path, &mut audit)?;
     let items = audit
         .into_iter()
@@ -5668,7 +5671,6 @@ pub fn acp_tool_detail_vm_for_attempt(
     query: AcpToolDetailQueryInput,
 ) -> Result<AcpToolDetailVm> {
     gold_band::acp::branches::validate_conversation_branch_id(&query.branch_id)?;
-    gold_band::acp::branches::migrate_legacy_agent_timeline(attempt_dir)?;
     let timeline_path =
         gold_band::acp::branches::branch_timeline_path(attempt_dir, &query.branch_id);
     if !timeline_path.exists() {
@@ -5715,6 +5717,18 @@ pub fn acp_tool_detail_vm_for_attempt(
         );
     }
     if let Some(event) = detail.as_mut() {
+        if let Some(raw) = event.raw.as_mut() {
+            let images = gold_band::acp::images::image_refs_from_raw(&event.id, &event.kind, raw);
+            gold_band::acp::images::strip_image_bodies(raw);
+            if !images.is_empty()
+                && let Some(raw) = raw.as_object_mut()
+            {
+                raw.insert(
+                    "goldBandImages".into(),
+                    serde_json::to_value(images).expect("image references serialize"),
+                );
+            }
+        }
         hydrate_timeline_events(&timeline_path, std::slice::from_mut(event))?;
     }
     Ok(AcpToolDetailVm { event: detail })
@@ -5759,6 +5773,7 @@ fn is_conversation_semantic_event(
     matches!(
         event.kind.as_str(),
         "userTextDelta"
+            | "scheduledTrigger"
             | "textDelta"
             | "thoughtDelta"
             | "toolCall"
@@ -6540,10 +6555,27 @@ fn extract_system_prompt_append(path: &camino::Utf8Path) -> Option<String> {
 }
 
 fn compact_event_for_session(mut event: AcpUiEventVm) -> AcpUiEventVm {
+    let images = event
+        .raw
+        .as_ref()
+        .map(|raw| gold_band::acp::images::image_refs_from_raw(&event.id, &event.kind, raw))
+        .unwrap_or_default();
     if let Some(raw) = event.raw.as_mut() {
+        gold_band::acp::images::strip_image_bodies(raw);
         remove_provider_agent_metadata(raw);
     }
     event.raw = event.raw.map(compact_raw_value);
+    if !images.is_empty()
+        && let Some(raw) = event
+            .raw
+            .as_mut()
+            .and_then(serde_json::Value::as_object_mut)
+    {
+        raw.insert(
+            "goldBandImages".into(),
+            serde_json::to_value(images).expect("image references serialize"),
+        );
+    }
     event.content = event
         .content
         .map(|content| truncate_string(content, 64_000));
@@ -6552,14 +6584,22 @@ fn compact_event_for_session(mut event: AcpUiEventVm) -> AcpUiEventVm {
 }
 
 fn compact_event_for_activity_audit(event: AcpUiEventVm) -> AcpUiEventVm {
-    let mut event = compact_event_for_session(event);
+    let mut event = event;
+    strip_activity_tool_output(&mut event);
+    compact_event_for_session(event)
+}
+
+fn strip_activity_tool_output(event: &mut AcpUiEventVm) {
     if !matches!(event.kind.as_str(), "toolCall" | "toolCallUpdate") {
-        return event;
+        return;
     }
     let Some(raw) = event.raw.as_mut() else {
-        return event;
+        return;
     };
+    remove_provider_agent_metadata(raw);
     for path in [
+        &["goldBandImages"][..],
+        &["rawOutput"][..],
         &["output"][..],
         &["fields", "output"][..],
         &["content", "output"][..],
@@ -6603,7 +6643,6 @@ fn compact_event_for_activity_audit(event: AcpUiEventVm) -> AcpUiEventVm {
             "toolDetailAvailable".to_string(),
             serde_json::Value::Bool(true),
         );
-    event
 }
 
 fn remove_provider_agent_metadata(raw: &mut serde_json::Value) {
@@ -6918,6 +6957,10 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let auto_accept = session
+        .get("autoAccept")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
     let config_option_overrides: std::collections::BTreeMap<String, String> = session
         .get("configOptionOverrides")
         .cloned()
@@ -6948,6 +6991,7 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
 
     if model_override_id.is_none()
         && permission_mode_override_id.is_none()
+        && !auto_accept
         && config_option_overrides.is_empty()
         && current_model_id.is_none()
         && current_model_name.is_none()
@@ -6964,6 +7008,7 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
         catalog_observed_at,
         model_override_id,
         permission_mode_override_id,
+        auto_accept,
         config_option_overrides,
         current_model_id,
         current_model_name,
@@ -7993,6 +8038,96 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_trigger_is_visible_while_provider_prompt_is_hidden() {
+        let dir = tempfile::tempdir().unwrap();
+        let path =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut trigger = test_event("scheduledTrigger", "");
+        trigger.id = "scheduled-trigger:occurrence-001".to_string();
+        trigger.content = None;
+        trigger.raw = Some(json!({
+            "source": "goldBandScheduledTrigger",
+            "scheduledTrigger": {
+                "occurrenceId": "occurrence-001",
+                "instructionSummary": "检查主分支状态"
+            }
+        }));
+        let mut hidden_prompt = test_event("userTextDelta", "hidden protocol");
+        hidden_prompt.raw = Some(json!({
+            "source": "goldBandPrompt",
+            "hiddenFromChat": true,
+            "reason": "scheduledTaskExecution"
+        }));
+        std::fs::write(
+            path.as_std_path(),
+            format!(
+                "{}\n{}\n",
+                json!({ "item": trigger }),
+                json!({ "item": hidden_prompt })
+            ),
+        )
+        .unwrap();
+
+        let (events, ..) = parse_timeline_file(&path, false).unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "scheduledTrigger");
+        assert_eq!(
+            events[0].raw.as_ref().unwrap()["scheduledTrigger"]["instructionSummary"],
+            "检查主分支状态"
+        );
+    }
+
+    #[test]
+    fn scheduled_trigger_projection_keeps_the_first_persisted_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut accepted = test_event("scheduledTrigger", "");
+        accepted.id = "scheduled-trigger:occurrence-001".to_string();
+        accepted.content = None;
+        accepted.raw = Some(json!({
+            "source": "goldBandScheduledTrigger",
+            "scheduledTrigger": {
+                "occurrenceId": "occurrence-001",
+                "instructionSummary": "accepted summary"
+            }
+        }));
+        let mut later = accepted.clone();
+        later.raw.as_mut().unwrap()["scheduledTrigger"]["instructionSummary"] =
+            Value::String("later definition summary".to_string());
+        std::fs::write(
+            path.as_std_path(),
+            format!(
+                "{}\n{}\n",
+                json!({
+                    "patchType": "timelinePatch",
+                    "itemId": accepted.id,
+                    "revision": 1,
+                    "op": "upsert",
+                    "item": accepted
+                }),
+                json!({
+                    "patchType": "timelinePatch",
+                    "itemId": later.id,
+                    "revision": 2,
+                    "op": "upsert",
+                    "item": later
+                })
+            ),
+        )
+        .unwrap();
+
+        let (events, ..) = parse_timeline_file(&path, false).unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].raw.as_ref().unwrap()["scheduledTrigger"]["instructionSummary"],
+            "accepted summary"
+        );
+    }
+
+    #[test]
     fn session_projection_restores_missing_initial_task_attachments() {
         let mut initial_prompt = test_event("userTextDelta", "hi");
         initial_prompt.raw = Some(json!({
@@ -8652,10 +8787,148 @@ mod tests {
                     "createdAt": "2026-06-17T10:00:00Z",
                     "updatedAt": "2026-06-17T10:00:00Z"
                 }],
-                "proposals": []
+                "proposals": [graph_test_proposal("bootstrap", "create-hello-world-py")]
             }),
         )
         .unwrap();
+    }
+
+    fn graph_test_proposal(source: &str, target: &str) -> Value {
+        json!({
+            "version": "0.1", "id": format!("proposal-{target}"),
+            "dynamicRunId": "dynamic-run-001", "sourceNodeId": source,
+            "artifactPath": "completion.json", "rawOutputPath": "raw.jsonl",
+            "validationStatus": "accepted", "validationErrors": [],
+            "materializedEventIds": [], "createdAt": "2026-06-17T10:00:00Z",
+            "parsed": {
+                "version": "0.1", "kind": "dynamic-node-completion",
+                "status": "success", "summary": "Done",
+                "next": { "type": "single", "node": {
+                    "id": target, "kind": "worker", "title": target, "task": "Continue"
+                }}
+            }
+        })
+    }
+
+    #[test]
+    fn dynamic_graph_connects_acceptance_scope_handoffs() {
+        let directory = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap());
+        seed_dynamic_round_graph_fixture(&app);
+        let path = app.paths.dynamic_graph_file(
+            "task-dynamic-round-graph",
+            "run-001",
+            "round-001",
+            "ai-dynamic1",
+            "attempt-001",
+        );
+        let mut graph: DynamicGraphState = read_json(&path).unwrap();
+        let mut previous = "create-hello-world-py".to_string();
+        for (id, chain, depth) in [
+            ("group-a-accept", "group-a", 8),
+            ("a-followup-1", "b1", 3),
+            ("group-c-accept", "group-c", 6),
+            ("final-check", "bootstrap", 2),
+        ] {
+            let mut node = graph.nodes[1].clone();
+            node.id = id.to_string();
+            node.chain_id = chain.to_string();
+            node.depth = depth;
+            if id == "a-followup-1" {
+                node.depends_on = vec!["bootstrap".to_string()];
+            }
+            graph.nodes.push(node);
+            graph
+                .proposals
+                .push(serde_json::from_value(graph_test_proposal(&previous, id)).unwrap());
+            previous = id.to_string();
+        }
+        let mut rejected = graph_test_proposal("final-check", "bootstrap");
+        rejected["validationStatus"] = json!("rejected");
+        graph
+            .proposals
+            .push(serde_json::from_value(rejected).unwrap());
+        let vm = dynamic_internal_graph_vm(
+            &app,
+            "task-dynamic-round-graph",
+            "run-001",
+            "round-001",
+            "ai-dynamic1",
+            "attempt-001",
+            &graph,
+        );
+        let vm_id = |id: &str| dynamic_graph_node_vm_id("ai-dynamic1", "attempt-001", id);
+        for (from, to) in [
+            ("group-a-accept", "a-followup-1"),
+            ("group-c-accept", "final-check"),
+            ("bootstrap", "a-followup-1"),
+        ] {
+            assert!(
+                vm.edges
+                    .iter()
+                    .any(|edge| edge.from == vm_id(from) && edge.to == vm_id(to)),
+                "missing {from} -> {to}"
+            );
+        }
+        assert_eq!(
+            dynamic_external_exit_graph_node_ids("ai-dynamic1", "attempt-001", &graph),
+            vec![vm_id("final-check")]
+        );
+        assert!(
+            !vm.edges
+                .iter()
+                .any(|edge| edge.from == vm_id("final-check"))
+        );
+        assert!(
+            !vm.edges
+                .iter()
+                .any(|edge| edge.from == vm_id("create-hello-world-py")
+                    && edge.to == vm_id("final-check"))
+        );
+    }
+
+    #[test]
+    fn dynamic_graph_unions_fanout_dependencies_and_session_reuse() {
+        let directory = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap());
+        seed_dynamic_round_graph_fixture(&app);
+        let mut graph: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
+            "task-dynamic-round-graph",
+            "run-001",
+            "round-001",
+            "ai-dynamic1",
+            "attempt-001",
+        ))
+        .unwrap();
+        let first = graph.nodes[1].id.clone();
+        let mut second = graph.nodes[1].clone();
+        second.id = "branch-2".to_string();
+        graph.nodes.push(second);
+        graph.nodes[1].depends_on = vec!["bootstrap".to_string()];
+        graph.nodes[1].session_mode = SessionMode::Continue;
+        graph.nodes[1].continue_from_node_id = Some("bootstrap".to_string());
+        let mut proposal = graph_test_proposal("bootstrap", &first);
+        proposal["parsed"]["next"] = json!({
+            "type": "fanout", "groupId": "group-1",
+            "nodes": [graph_test_proposal("bootstrap", &first)["parsed"]["next"]["node"],
+                graph_test_proposal("bootstrap", "branch-2")["parsed"]["next"]["node"]],
+            "merge": {"title":"Merge", "task":"Merge"},
+            "acceptance": {"title":"Accept", "task":"Accept"}
+        });
+        graph.proposals = vec![serde_json::from_value(proposal).unwrap()];
+        let edges = dynamic_graph_relations(&graph);
+        assert_eq!(edges.len(), 3);
+        for (to, label) in [
+            (first.as_str(), "depends-on"),
+            (first.as_str(), "continue"),
+            ("branch-2", "success"),
+        ] {
+            assert!(
+                edges
+                    .iter()
+                    .any(|edge| edge.from == "bootstrap" && edge.to == to && edge.label == label)
+            );
+        }
     }
 
     #[test]
@@ -10379,6 +10652,79 @@ mod tests {
     }
 
     #[test]
+    fn acp_session_vm_reads_background_failure_without_diagnostic_history() {
+        let dir = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap());
+        write_json(
+            &app.paths.node_file(
+                "task-error",
+                "run-001",
+                "round-001",
+                "direct-agent",
+                "attempt-001",
+            ),
+            &NodeState {
+                version: gold_band::domain::VERSION.to_string(),
+                acp_storage_schema_version: gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                node_id: "direct-agent".to_string(),
+                node_type: NodeType::Worker,
+                run_id: "run-001".to_string(),
+                round_id: "round-001".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                status: RunStatus::Completed,
+                outcome: Some(gold_band::domain::NodeOutcome::Success),
+                started_at: "1788772927Z".to_string(),
+                finished_at: Some("1788772928Z".to_string()),
+                manual_check_pending: false,
+                runtime_execution_id: None,
+                resolved_config: gold_band::domain::ResolvedConfig::new(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        let snapshot = app.paths.acp_snapshot_file(
+            "task-error",
+            "run-001",
+            "round-001",
+            "direct-agent",
+            "attempt-001",
+        );
+        let error = gold_band::runtime_error::manual_runtime_error_info(
+            gold_band::runtime_error::RuntimeErrorDomain::Provider,
+            "acp.session-request-failed",
+            "thread session-a already has an active writer",
+            json!({"method": "session/resume"}),
+        );
+        write_json(
+            &snapshot,
+            &json!({
+                "adapterId": "codex-acp", "adapterDisplayName": "Codex", "cwd": dir.path().to_str(),
+                "sessionId": "session-a", "availability": "established",
+                "latestTurnStatus": "failed", "liveTurnActivity": "idle", "turnError": error,
+                "restored": true, "createdAt": "1788772927Z", "updatedAt": "1788772928Z",
+                "capabilities": {}, "runtimeControlTimelineScanComplete": true
+            }),
+        )
+        .unwrap();
+        let session = acp_session_vm(
+            &app,
+            "task-error",
+            "run-001",
+            "round-001",
+            "direct-agent",
+            "attempt-001",
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(session.status, "failed");
+        assert_eq!(session.turn_error.as_ref(), Some(&error));
+        assert_eq!(session.diagnostics.error_count, 0);
+        assert!(session.events.is_empty());
+    }
+
+    #[test]
     fn acp_session_vm_preserves_newer_prompt_interactions_when_session_status_is_terminal() {
         let dir = tempdir().unwrap();
         let app = App::new(Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap());
@@ -11207,6 +11553,61 @@ mod tests {
         assert_eq!(earlier.items.len(), 40);
         assert!(earlier.items.last().unwrap().seq < detail.items.first().unwrap().seq);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn activity_list_does_not_read_tool_image_blobs_or_return_image_refs() {
+        let dir = tempdir().unwrap();
+        let attempt = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let blob = json!({"$goldBandBlob": {
+            "id":"unavailable-image", "storageKind":"capturedBlob", "contentHash":"missing",
+            "byteLength":8, "encoding":"utf-8", "lineEnding":null
+        }});
+        let mut tool = acp_event_at(
+            "image-tool",
+            "toolCall",
+            Some("completed"),
+            1,
+            Some(json!({"rawInput":{"path":"screenshot"},
+                "content":[{"type":"content", "content":{"type":"image", "mimeType":"image/png", "data":blob}}],
+                "rawOutput":{"result":{"content":[{"type":"image", "mimeType":"image/png", "data":blob}]}},
+                "goldBandImages":[{"eventId":"image-tool"}]})),
+        );
+        tool.seq = 1;
+        tool.session_id = Some("image-session".into());
+        write_timeline_file(&attempt, "acp.timeline.jsonl", &[tool]);
+        let list = acp_activity_detail_vm_for_attempt(
+            &attempt,
+            AcpActivityDetailQueryInput {
+                branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.into(),
+                session_id: "image-session".into(),
+                activity_start_seq: 1,
+                activity_end_seq: 1,
+                earlier_cursor: None,
+                limit: Some(40),
+            },
+        )
+        .expect("a list must not depend on image blob availability");
+        assert_eq!(list.items.len(), 1);
+        let raw = list.items[0].raw.as_ref().unwrap();
+        assert_eq!(raw["rawInput"]["path"], "screenshot");
+        for field in ["goldBandImages", "content", "rawOutput"] {
+            assert!(raw.get(field).is_none());
+        }
+        let detail = acp_tool_detail_vm_for_attempt(
+            &attempt,
+            AcpToolDetailQueryInput {
+                branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.into(),
+                session_id: "image-session".into(),
+                event_id: "image-tool".into(),
+                tool_call_id: None,
+            },
+        )
+        .expect("tool detail returns image references without reading image blobs");
+        let raw = detail.event.unwrap().raw.unwrap();
+        assert_eq!(raw["goldBandImages"][0]["pointer"], "/content/0/content");
+        assert!(raw.pointer("/content/0/content/data").is_none());
+        assert!(raw.pointer("/rawOutput/result/content/0/data").is_none());
     }
 
     #[test]

@@ -204,14 +204,17 @@ export function applyConversationSidebarRunLifecycle(
   runId: string,
   lifecycle: ConversationAttemptLifecycleVm,
 ): ConversationSidebarVm {
-  const status = lifecycle.runtime.active ? 'running' : lifecycle.runtime.status;
+  // An active runtime proves work is ongoing; an inactive attempt says nothing
+  // about its siblings. Only run-state events may settle the aggregate.
+  if (!lifecycle.runtime.active) return sidebar;
+  const status = 'running';
   const updateRun = (run: ConversationTaskRowVm['runs'][number]) => {
-    if (run.runId !== runId) return run;
-    const outcome = lifecycle.runtime.outcome ?? null;
+    if (run.runId !== runId || isTerminalConversationRunStatus(run.status)) return run;
+    const outcome = null;
     if (
       run.status === status
       && (run.outcome ?? null) === outcome
-      && run.resumable === lifecycle.runtime.resumable
+      && run.resumable === false
     ) {
       return run;
     }
@@ -219,7 +222,7 @@ export function applyConversationSidebarRunLifecycle(
       ...run,
       status,
       outcome,
-      resumable: lifecycle.runtime.resumable,
+      resumable: false,
     };
   };
   const updateTask = (task: ConversationTaskRowVm) => {

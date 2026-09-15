@@ -518,6 +518,7 @@ pub(crate) fn build_worker_invocation(
     let (
         profile,
         permission_mode,
+        auto_accept,
         configured_model,
         output_contract,
         task_instruction,
@@ -530,6 +531,7 @@ pub(crate) fn build_worker_invocation(
         NodeDsl::Worker(worker) => (
             worker.profile.clone(),
             worker.permission_mode.clone(),
+            worker.auto_accept,
             worker.model.clone(),
             worker_output_contract(worker),
             worker_task_instruction(worker),
@@ -639,6 +641,7 @@ pub(crate) fn build_worker_invocation(
         session_mode,
         user_prompt_render_mode,
         permission_mode,
+        auto_accept,
         model,
         config_options,
         continue_ref,
@@ -1238,7 +1241,7 @@ mod tests {
 
     #[test]
     fn workflow_output_contract_uses_post_turn_projection() {
-        let worker = WorkerNode {
+        let mut worker = WorkerNode {
             id: "review".to_string(),
             execution_slot_id: None,
             provider: Some("claude-acp".to_string()),
@@ -1252,6 +1255,7 @@ mod tests {
             }),
             success_condition: None,
             permission_mode: None,
+            auto_accept: false,
             config_options: Default::default(),
             manual_check: None,
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
@@ -1263,6 +1267,10 @@ mod tests {
             contract.emission_mode,
             OutputEmissionMode::PostTurnProjection
         );
+        worker.output = None;
+        assert!(worker_output_contract(&worker).is_none());
+        worker.manual_check = Some(true);
+        assert!(worker_output_contract(&worker).is_none());
     }
 
     #[test]
@@ -1487,6 +1495,7 @@ mod tests {
                 output: None,
                 success_condition: None,
                 permission_mode: None,
+                auto_accept: false,
                 config_options: Default::default(),
                 manual_check: None,
                 prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,

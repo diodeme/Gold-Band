@@ -677,6 +677,12 @@ function retainConversationEvent(
     buffer.lossWatermarkRouterGeneration = 0;
   }
   buffer.timelineGeneration = timelineGeneration;
+  // Clock ticks are display state supplied by live delivery and session queries.
+  // They never become transcript items and cannot be recovered by message sequence.
+  if (event.kind === 'timingUpdate') {
+    branchReplayBuffers.set(key, buffer);
+    return true;
+  }
   buffer.headSeq = Math.max(buffer.headSeq, conversationEventPosition(event));
   buffer.headRevision = Math.max(buffer.headRevision, timelineRevision ?? 0);
 

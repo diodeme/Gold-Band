@@ -1,3 +1,4 @@
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { Ban, Loader2, Play } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Card, CardContent } from '@/components/ui/card';
@@ -143,6 +144,7 @@ function MulticaRemoteTaskCard({
   onSelectRun: (projectId: string, taskId: string, runId: string) => void;
   t: TranslationFn;
 }) {
+  const readOnly = useReadOnlyExperience();
   const canClaim = task.status === 'queued';
   const canCancel = task.status === 'running';
   const statusTone = MULTICA_STATUS_TONE[task.status as BoardColumnStatus] ?? MULTICA_STATUS_TONE.queued;
@@ -205,7 +207,7 @@ function MulticaRemoteTaskCard({
                     size="icon"
                     variant="ghost"
                     className="size-7 hover:text-destructive"
-                    disabled={busy}
+                    disabled={readOnly || busy}
                     onClick={() => onCancel(task)}
                     aria-label={t('conversation.sidebar.multica.cancelTask')}
                   >

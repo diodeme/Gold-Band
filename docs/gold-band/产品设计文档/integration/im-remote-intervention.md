@@ -246,6 +246,7 @@ enum ImNotificationKind {
 8. connector 内部可发送句柄也由 generation 所有；只有同 generation 可安装或清除 sender，旧会话退出不得清除新会话 sender。
 9. `sending` 是有期限的 claim，不是终态；worker settlement 必须携带 claim 时的 `attempt_count` revision，租约恢复后的迟到成功/失败不得覆盖新 claim。
 10. 删除配置以 settings 中“不再存在该 channel”为 canonical 事实；跨 settings、投影队列、SQLite 与 keyring 的后续清理由 durable operation journal 推进，失败返回 pending 并由后台重试，不把旧配置复活。
+11. ManualCheck 的 canonical 可执行条件只来自当前 Run/Node/Attempt 状态；Timeline 最新输出只是远程通知的可选展示投影，缺失或为空不得阻止桌面端或 IM 提交人工结果。
 
 ## 8. 设置与连接管理
 
@@ -303,16 +304,17 @@ UI 不展示协议地址、心跳、轮询、数据库或 token 等实现细节�
 ## 10. 离线、重试与容量
 
 - 生命周期订阅者只执行 O(1) 转换与有界入队，不执行网络 I/O。
-- 桌面启动必须先从现有 settings 同步构建 IM 投递目标快照，再启动后台 bootstrap 并注册 lifecycle subscriber；后台凭据读取、maintenance、连接和后续重配置仍保持异步。初始 settings 读取或目标构建失败时不得注册携带空目标的订阅者，也不得阻断桌面主体启动，错误通过启动日志暴露。
+- IM 是可选 runtime。桌面 setup 只在首屏之外发起轻量激活判断：已有 enabled/credential/binding 配置或 `core.db` 中存在待恢复 channel cleanup 时，才创建 runtime、访问 keyring、构建目标并启动 delivery/maintenance/cleanup 周期任务；三者均不存在时不创建数据库、不注册 lifecycle subscriber、不启动周期任务。首次扫码或其它显式 IM 配置命令通过同一进程级初始化锁惰性创建并安装唯一 runtime，不复制状态或重复注册订阅者。
+- lifecycle subscriber 必须先读取内存中的轻量 target snapshot；没有任何 enabled + credential + binding + notification 的可行动目标时立即返回，不读取 workspace state、不创建异步任务、不访问 SQLite。存在目标时仍按原 canonical event 顺序进入有界投影队列，实际 Timeline/Runtime/SQLite 投影继续在 blocking pool 执行。
 - active outbox 默认上限 1,000 条；达到上限时先小批量清理已过期/终态记录，仍满则拒绝新的远程投递并记录结构化错误与桌面提醒，不得淘汰尚未处理的 active 干预，也不能无界增长。
 - 未发送干预在领域请求过期后直接标记 `expired`，不得迟到投递为可操作消息。
 - 网络错误使用带 jitter 的指数退避，1 秒起步、60 秒封顶并持续重试，直到连接成功、generation 被取消或出现鉴权失败、连接冲突、配置错误等永久错误；成功建立连接后重置退避。`ReconnectScheduled` 表示重试循环仍存活，`ConnectionFailed` 只表示终态，UI 不得根据错误码猜测二者。
 - 平台限流遵守 `Retry-After` 或 SDK 返回的重试时间；单 channel 串行化同一消息更新，其他消息可受控并发。
-- `claim_due` 每次只读取最多 32 条候选并在 SQLite 写事务前完成 typed 解析；有效行以 rowid、state、attempt count 做 CAS claim，单条损坏行原子转为 `dead_letter + IM_PAYLOAD_INVALID`，不得把同批健康行改为 sending 后再让整批解析失败。SQLite/锁/事务错误仍是批次级错误。
+- `claim_due` 先用 due 索引只读确认当前 channel 是否存在到期或已过期 pending 行；确认完全为空时直接返回，不申请 SQLite writer lock。存在候选后才读取最多 32 条并在写事务前完成 typed 解析；有效行以 rowid、state、attempt count 做 CAS claim，单条损坏行原子转为 `dead_letter + IM_PAYLOAD_INVALID`，不得把同批健康行改为 sending 后再让整批解析失败。SQLite/锁/事务错误仍是批次级错误。
 - 企业微信单 session 最多保留 64 条 pending request。调用端创建的 15 秒总 deadline 随 command 进入 session，由同一 session 使用 `DelayQueue` 在 ACK、发送失败、断连、取消或超时时删除；linked-detail 两帧共享同一 deadline，迟到 ACK 不得重新匹配，达到上限返回 retryable `IM_QUEUE_CAPACITY_EXCEEDED`。
 - outbox 已发送/过期记录默认保留 7 天，入站动作幂等记录默认保留 30 天；周期清理采用有上限的小批次。
 - 应用启动时先恢复过期发送租约并执行一次 retention；运行期每 30 秒恢复租约、每 6 小时清理 retention。单轮最多 4 批、每批最多 200 条，所有 SQLite 工作在 blocking pool 中执行。
-- 应用正常退出时先停止接收新 IM 动作，再取消连接与长轮询，等待有界任务结束；不能因此延迟退出超过设定超时。
+- 应用正常退出时先关闭 Runtime admission gate，再停止 scheduler，随后通过独立 cancellation token 取消 IM worker、连接与长轮询；控制信号不得与有界 delivery data queue 共用可能阻塞的 `send`。delivery worker 必须能中断挂起的 connector send，并在 2 秒总预算内 join，超时任务直接 abort，不能无界延迟退出。
 
 客户端退出、休眠或无网络时没有云端在线实体，这是无网关方案的明确产品限制。恢复在线后只补发仍然有效且尚未处理的干预。
 
@@ -372,6 +374,8 @@ enum ImErrorCode {
 ### 12.4 性能
 
 - lifecycle publish 路径不等待网络，入队为 O(1) 且有界。
+- 零 IM 配置且无 cleanup 的桌面进程不访问 keyring、不打开或建表 `core.db` 的 IM schema，也不创建 5 秒 delivery、30 秒 lease recovery 或 60 秒 cleanup recovery 周期任务。
+- 空 delivery poll 只执行一次命中索引的 `EXISTS` 只读查询，不进入 `BEGIN IMMEDIATE`，因此不与 scheduler、runtime recovery 或 workspace identity 争用 SQLite writer lock。
 - lifecycle projection 的 blocking task、repository/validation 结果必须形成可观测 completion；只有持久化完成后才可唤醒 worker，单条失败不得终止后续投影。
 - 正常运行最多维护一个企业微信 WebSocket。
 - 不扫描完整 timeline、全部会话或历史 run 来构造通知。
@@ -417,6 +421,8 @@ Connector task 结束时必须先排空其有界事件队列，再把返回错�
 
 2026-09-07 启动期通知丢失属于正确异步 bootstrap 设计下的 readiness 边界缺失：runtime 初始目标为空，lifecycle subscriber 却在异步 `reconfigure` 完成前开始接收事件，导致事件把空目标固化进投影 job。修复以现有 settings 为权威源，在订阅前同步建立目标快照；异步 bootstrap 继续负责连接、维护和再次读取最新配置，不新增 readiness 状态机、事件回放或第二套目标事实源。
 
+2026-09-16 对现有桌面功能的性能与退出复核确认：问题不在 outbox、generation 或 Runtime canonical 设计，而在可选 IM 生命周期被无条件装配、空 claim 仍进入写事务、subscriber 在确认目标前读取 workspace state，以及 shutdown 把控制信号塞入有界 data queue。修复保留同一 `DesktopState` runtime slot、settings、cleanup journal 和 cancellation token，只补齐惰性激活、只读空队列闸门、target-first 快速返回与 gate → scheduler → IM 的退出顺序。ManualCheck 同时恢复原设计边界：Timeline 文本只用于远程展示，不是 canonical command 的 admission 条件。
+
 ### 13.2 过度设计评审
 
 首期不引入云端网关、Kafka、通用事件平台、独立 helper 进程、新审批 aggregate 或自然语言 Agent。新增的连接管理器、outbox 和幂等表分别对应长连接生命周期、进程离线重试和外部事件至少一次投递三个真实不变量，复杂度与风险相匹配。
@@ -424,6 +430,8 @@ Connector task 结束时必须先排空其有界事件队列，再把返回错�
 2026-09-04 可靠性闭环不新增通用 scheduler、第二 outbox、配置 revision、租约表或前端 canonical 副本。现有 `state + next_attempt_at_ms + attempt_count` 已能表达 claim lease，现有 connection generation 已能表达 sender ownership，现有 `AcpUiEvent.id` 已是 occurrence identity；只新增 cleanup journal，因为 settings、SQLite 与系统凭据库无法共享事务，而删除必须具备可恢复进度。
 
 2026-09-07 修复不新增 binding epoch、撤销表、outbox 状态、数据库迁移、重连 supervisor 或外部依赖。现有 durable binding 足以表达当前授权，现有 `dead_letter + last_error_code` 足以隔离坏行，已有 `tokio-util::DelayQueue` 足以统一 pending deadline；`Reconnecting` 只是连接管理器的 transient lifecycle 状态，不形成第二份持久事实。
+
+2026-09-16 修复只增加一个进程内初始化互斥，防止启动恢复与首次配置并发创建两个 runtime；它不形成新状态机或持久事实。worker join 复用现有 cancellation token 与 task handle，空 claim 复用既有 due 索引，未新增 manager、缓存、队列、数据库字段或依赖。显式 `dev:low-memory` 只为资源受限开发机提供 opt-in，默认开发不再全局牺牲 Cargo 并行度。
 
 2026-08-31 权限/企微回调补齐不新增展示事实源：`InterventionPrompt.fields` 是 pending params 的一次性 transport projection，按钮容量降级发生在 IM projection/connector 边界，callback 失败态仍复用 outbox 与原 delivery identity。现有 canonical pending state、delivery ID、msgid 幂等和 `InterventionCommandService` 已能表达不变量，因此不为平台容量或解析失败增加第二套状态机。2026-09-01 的短 action 引用与 vote option id 同样只复用 delivery ID 与 outbox action index，不新增映射表、缓存或第二套 token；`ImWeComVoteSelection` 是回调到终态更新之间的一次性 transport context，成功更新后即释放。Permission 双发只新增 connector 内存中的“详情 ACK 后发送卡片”pending 分支，不新增第二条 outbox、平台消息 identity 或持久状态。
 

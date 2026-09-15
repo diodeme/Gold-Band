@@ -80,8 +80,6 @@ export function workflowAgentIconKeys(agents: readonly ManagedAgentVm[]): Readon
   return new Map(agents.map((agent) => [agent.agentType, agent.iconKey?.trim() || DEFAULT_AGENT_ICON_KEY]));
 }
 
-const UNSPECIFIED_PERMISSION_MODE = '__unspecified_permission_mode__';
-
 type EditorTab = 'canvas' | 'json';
 
 export interface WorkflowEditorSessionDraft {
@@ -1475,7 +1473,7 @@ function WorkerNodeInspector({ node, binding, modelBindings, agents, profiles, w
         </Button>
       </div>
       <Field label={t('workflowEditor.agent')} required errors={errorsFor('provider')}>
-        <Select value={binding?.agentId ?? ''} onValueChange={(agentId) => updateBinding({ agentId, modelId: undefined, permissionModeId: undefined, configOptions: undefined })}>
+        <Select value={binding?.agentId ?? ''} onValueChange={(agentId) => updateBinding({ agentId, modelId: undefined, permissionModeId: undefined, autoAccept: undefined, configOptions: undefined })}>
           <SelectTrigger className={errorClass(errorsFor('provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
           <SelectContent>{agents.map((agent) => (
             <SelectItem value={agent.agentType} key={agent.agentType} disabled={!isWorkflowAgentDoctorReady(agent)}>
@@ -1504,15 +1502,18 @@ function WorkerNodeInspector({ node, binding, modelBindings, agents, profiles, w
         </Field>
       ) : null}
       <Field label={t('workflowEditor.permissionMode')} errors={errorsFor('permission_mode')}>
-        <Select value={binding?.permissionModeId ?? UNSPECIFIED_PERMISSION_MODE} onValueChange={(value) => updateBinding({ permissionModeId: value === UNSPECIFIED_PERMISSION_MODE ? undefined : value })}>
-          <SelectTrigger className={errorClass(errorsFor('permission_mode'))}>
-            <SelectValue placeholder={t('workflowEditor.permissionModeUnspecified')} />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={UNSPECIFIED_PERMISSION_MODE}>{t('workflowEditor.permissionModeUnspecified')}</SelectItem>
-            {permissionModes.map((mode) => <SelectItem value={mode.id} key={mode.id}>{mode.name}</SelectItem>)}
-          </SelectContent>
-        </Select>
+        <AcpSingleConfigMenu
+          label={t('acp.permissionMode')}
+          value={binding?.permissionModeId}
+          options={permissionModes}
+          unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
+          compact
+          triggerClassName={cn('w-full max-w-none rounded-md', errorClass(errorsFor('permission_mode')))}
+          autoAccept={Boolean(binding?.autoAccept)}
+          autoAcceptLabel={t('acp.autoAccept')}
+          onAutoAcceptChange={(autoAccept) => updateBinding({ autoAccept: autoAccept || undefined })}
+          onValueChange={(value) => updateBinding({ permissionModeId: value ?? undefined })}
+        />
       </Field>
       <Dialog open={syncDialogOpen} onOpenChange={setSyncDialogOpen}>
         <DialogContent className="max-w-lg">
@@ -1744,6 +1745,9 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                 bootstrapProvider: nextBootstrapProvider,
                 bootstrapModel: nextBootstrapModel,
                 permissionMode: nextPermissionMode,
+                autoAccept: cur.mode === 'dynamic'
+                  ? cur.autoAccept
+                  : (cur as WorkflowAiDynamicFixedAgentStrategyDsl).autoAccept,
                 acceptanceModel: nextAcceptanceModel,
                 routingPrompt: nextRoutingPrompt,
                 availableAgents: nextAvailableAgents,
@@ -1795,17 +1799,18 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                         configOptions: updateAcpConfigOptionOverride(node.configOptions, optionId, value),
                       })}
                     />
-                    {fixedModes.length > 0 ? (
-                      <AcpSingleConfigMenu
+                    <AcpSingleConfigMenu
                         label={t('acp.permissionMode')}
                         value={fixedStrategy.permissionMode}
                         options={fixedModes}
                         unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
                         compact
                         triggerClassName="min-w-[12rem] flex-1 rounded-md"
+                        autoAccept={Boolean(fixedStrategy.autoAccept)}
+                        autoAcceptLabel={t('acp.autoAccept')}
+                        onAutoAcceptChange={(autoAccept) => updateAgentStrategy({ ...fixedStrategy, autoAccept: autoAccept || undefined })}
                         onValueChange={(permissionMode) => updateAgentStrategy({ ...fixedStrategy, permissionMode })}
                       />
-                    ) : null}
                   </div>
                 </Field>
               );
@@ -1823,6 +1828,7 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                 bootstrapProvider,
                 bootstrapModel: undefined,
                 permissionMode: undefined,
+                autoAccept: undefined,
                 bootstrapConfigOptions: {},
                 acceptanceModel: undefined,
                 acceptanceConfigOptions: {},
@@ -1888,7 +1894,6 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
             const dynamicStrategy = node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl;
             const bootstrapAgent = agents.find((agent) => agent.agentType === dynamicStrategy.bootstrapProvider);
             const bootstrapModes = bootstrapAgent?.supportedModes ?? [];
-            if (bootstrapModes.length === 0) return null;
             return (
               <Field label={<HelpLabel label={t('workflowEditor.dynamicControlPermission')} help={t('workflowEditor.dynamicControlPermissionHelp')} />} errors={errorsFor('agentStrategy.permissionMode')}>
                 <AcpSingleConfigMenu
@@ -1898,6 +1903,9 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                   unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
                   compact
                   triggerClassName={cn('w-full rounded-md', errorClass(errorsFor('agentStrategy.permissionMode')))}
+                  autoAccept={Boolean(dynamicStrategy.autoAccept)}
+                  autoAcceptLabel={t('acp.autoAccept')}
+                  onAutoAcceptChange={(autoAccept) => updateAgentStrategy({ ...dynamicStrategy, autoAccept: autoAccept || undefined })}
                   onValueChange={(permissionMode) => updateAgentStrategy({ ...dynamicStrategy, permissionMode })}
                 />
               </Field>
@@ -1917,10 +1925,11 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
             const agentModels = agentObj?.supportedModels ?? [];
             const agentModes = agentObj?.supportedModes ?? [];
             const thoughtLevel = findAcpThoughtLevel(agentObj?.configOptions);
-            if (agentModels.length === 0 && !thoughtLevel && agentModes.length === 0) return null;
+            if (!agentObj) return null;
             return (
-              <Field key={agentRef.provider} label={`${t('workflowEditor.model')} — ${agentObj!.displayName}`} errors={errorsFor(`agentStrategy.availableAgents.${idx}.model`)}>
+              <Field key={agentRef.provider} label={`${t('workflowEditor.model')} — ${agentObj.displayName}`} errors={errorsFor(`agentStrategy.availableAgents.${idx}.model`)}>
                 <div className="flex flex-wrap gap-2">
+                  {agentModels.length > 0 || thoughtLevel ? (
                   <AcpModelThoughtSelects
                     models={agentModels}
                     modelValue={agentRef.model}
@@ -1942,7 +1951,7 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                       updateAgentStrategy({ ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl), availableAgents: next });
                     }}
                   />
-                  {agentModes.length > 0 ? (
+                  ) : null}
                     <AcpSingleConfigMenu
                       label={t('acp.permissionMode')}
                       value={agentRef.permissionMode}
@@ -1950,13 +1959,19 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                       unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
                       compact
                       triggerClassName="min-w-[12rem] flex-1 rounded-md"
+                      autoAccept={Boolean(agentRef.autoAccept)}
+                      autoAcceptLabel={t('acp.autoAccept')}
+                      onAutoAcceptChange={(autoAccept) => {
+                        const next = [...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl).availableAgents];
+                        next[idx] = { ...next[idx], autoAccept: autoAccept || undefined };
+                        updateAgentStrategy({ ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl), availableAgents: next });
+                      }}
                       onValueChange={(permissionMode) => {
                         const next = [...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl).availableAgents];
                         next[idx] = { ...next[idx], permissionMode };
                         updateAgentStrategy({ ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl), availableAgents: next });
                       }}
                     />
-                  ) : null}
                 </div>
               </Field>
             );
@@ -2851,7 +2866,7 @@ export function createAuthoringFlowProjection(
       animated: false,
       markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color },
       style: { stroke: color, strokeWidth: edge.on === 'success' ? 2.2 : 2, strokeDasharray: '3 17' },
-      className: cn('workflow-edge-flow', (edge.on !== 'success' || branchRoute !== undefined) && 'workflow-edge-branch', id === selectedEdgeId && 'workflow-edge-selected'),
+      className: cn('workflow-edge-flow', (edge.on !== 'success' || branchRoute?.detour === true) && 'workflow-edge-branch', id === selectedEdgeId && 'workflow-edge-selected'),
       selected: id === selectedEdgeId,
       data: { outcome: edge.on, route: branchRoute },
       zIndex: 0,

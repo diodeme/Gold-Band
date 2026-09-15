@@ -1,4 +1,4 @@
-The system received a signal that your previous execution turn ended. Decide whether you intend to finish this node.
+This response turn ended, but runtime has not received this node's artifact. The protocol below is being provided or repeated; this does not mean the task is complete or require an early handoff. Decide whether you intend to finish this node.
 
 - If you did not intend to finish this node, continue executing directly within the current task scope, workspace, and tool permissions. No status tag is required, and do not hand off early just to answer this prompt. After continuing, output the artifact below when you consider this node finished.
 - If you consider this node finished, output the artifact below based on the work completed. Do not re-audit the task goals or acceptance requirements, or add business work because of this prompt.

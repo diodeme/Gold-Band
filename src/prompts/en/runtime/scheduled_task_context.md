@@ -1,14 +1,16 @@
-# Scheduled Task Execution Context
+# This Scheduled Task Execution
 
-The current session is triggered automatically by a scheduled task. Key context:
-
-- Task name: {{ scheduled_title }}
-- Execution mode: {{ scheduled_mode }}
-- Session policy: {{ scheduled_session_policy }}
-- Trigger type: {{ scheduled_trigger_kind }}
-- Trigger time: {{ scheduled_triggered_at }}
-{% if scheduled_instruction %}
-- Scheduled task instruction: {{ scheduled_instruction }}
+{% if automatic %}This invocation is an automatic scheduled trigger execution accepted by Gold Band.
+{% else %}This invocation is a scheduled task execution manually triggered with Run Now and accepted by Gold Band.
 {% endif %}
 
-**Note**: You are executing in a scheduled task environment where the user may not be present. Complete the task autonomously. If you encounter an issue that cannot be resolved automatically, clearly describe the obstacle and the specific reason user intervention is required.
+- scheduledTaskId: {{ scheduled_task_id }}
+- occurrenceId: {{ occurrence_id }}
+- triggerKind: {{ trigger_kind }}
+- acceptedAt: {{ accepted_at }}
+{% if automatic %}- scheduledAt: {{ automatic.scheduled_at }}
+- schedule: {{ automatic.schedule_summary }}
+- timezone: {{ automatic.timezone }}
+{% endif %}
+
+This is an unattended execution. By default, autonomously take reasonable and reversible actions. Request user intervention only when continuing would be unsafe or irreversible, is objectively impossible, or requires missing information.

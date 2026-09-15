@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type InputHTMLA
 import { Trans, useTranslation } from 'react-i18next';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { createAgent, deleteAgent, doctorAgent, getAgentBindingUsage, updateAgent } from '../api';
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { displayAppError } from '../i18n';
 import type { AgentBindingUsageVm, AgentCatalogEntryVm, AgentRegistryVm, ManagedAgentInput, ManagedAgentVm } from '../types';
 import { AppCard } from '@/components/AppCard';
@@ -66,6 +67,7 @@ export const agentEditorSheetPresentation = {
   modal: false,
   showOverlay: false,
 } as const;
+const catalogLaunchFieldReadOnlyClassName = 'cursor-text select-text !bg-muted text-muted-foreground shadow-none focus:border-border/60 focus:ring-0 focus-visible:border-border/70 focus-visible:ring-0';
 
 const defaultForm = (): ManagedAgentInput => ({
   displayName: '',
@@ -118,6 +120,7 @@ const formFromCatalogAgent = (agentType?: AgentCatalogEntryVm): ManagedAgentInpu
 }) : defaultForm();
 
 export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }: AgentManagementPageProps) {
+  const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   const [editor, setEditor] = useState<AgentEditorState>(defaultEditorState);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
@@ -240,6 +243,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
   };
 
   const submit = async () => {
+    if (readOnly) return;
     const agentType = editor.selectedType;
     if (!agentType.trim()) {
       setError(t('agentManagement.agentTypeRequired'));
@@ -267,6 +271,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
   };
 
   const runDoctor = async (agentType: string) => {
+    if (readOnly) return;
     setDiagnosingType(agentType);
     setError(null);
     setNotice(null);
@@ -340,7 +345,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
             </Button>
             <Popover open={addMenuOpen} onOpenChange={setAddMenuOpen}>
               <PopoverTrigger asChild>
-                <Button size="sm">
+                <Button size="sm" disabled={readOnly}>
                   <Plus />
                   {t('agentManagement.addAgent')}
                 </Button>
@@ -397,7 +402,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
       {error && !editor.open ? <div className="rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">{error}</div> : null}
 
       {vm && vm.agents.length > 0 ? (
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        <div className={readOnly ? 'grid grid-cols-[repeat(auto-fit,minmax(min(100%,20rem),1fr))] gap-3' : 'grid gap-3 md:grid-cols-2 xl:grid-cols-3'}>
           {vm.agents.map((agent) => (
             <AgentCard
               key={agent.agentType}
@@ -436,12 +441,18 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
               <TextInput value={editor.form.displayName} onChange={(event: ChangeEvent<HTMLInputElement>) => setEditor((current) => ({ ...current, form: { ...current.form, displayName: event.target.value } }))} />
             </Field>
             <Field label={t('agentManagement.command')}>
-              <TextInput value={editor.form.command} onChange={(event: ChangeEvent<HTMLInputElement>) => setEditor((current) => ({ ...current, form: { ...current.form, command: event.target.value } }))} />
+              <TextInput
+                className={editor.context.source === 'catalog' ? catalogLaunchFieldReadOnlyClassName : undefined}
+                readOnly={editor.context.source === 'catalog'}
+                value={editor.form.command}
+                onChange={(event: ChangeEvent<HTMLInputElement>) => setEditor((current) => ({ ...current, form: { ...current.form, command: event.target.value } }))}
+              />
             </Field>
-            <Field label={t('agentManagement.args')} description={t('agentManagement.argsDescription')}>
+            <Field label={t('agentManagement.args')} description={editor.context.source === 'custom' ? t('agentManagement.argsDescription') : undefined}>
               <ConfigTextarea
-                className="min-h-24"
+                className={cn('min-h-24', editor.context.source === 'catalog' && catalogLaunchFieldReadOnlyClassName)}
                 value={editor.argsText}
+                readOnly={editor.context.source === 'catalog'}
                 placeholder={'-y\n@agentclientprotocol/claude-agent-acp@latest'}
                 onChange={(event) => setEditor((current) => ({ ...current, argsText: event.target.value }))}
               />
@@ -569,7 +580,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
             {error ? <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">{error}</div> : null}
             <div className="flex justify-end gap-2 pt-1">
               <Button variant="outline" onClick={() => setEditor(closeAgentEditorState)}>{t('common.close')}</Button>
-              <Button disabled={saving || !editor.selectedType.trim() || !editor.form.displayName.trim() || !editor.form.command.trim() || !hasFormChanges} onClick={() => void submit()}>{t('common.save')}</Button>
+              <Button title={readOnly ? t('demo.saveDisabled') : undefined} disabled={readOnly || saving || !editor.selectedType.trim() || !editor.form.displayName.trim() || !editor.form.command.trim() || !hasFormChanges} onClick={() => void submit()}>{t('common.save')}</Button>
             </div>
           </div>
         </SheetContent>
@@ -629,6 +640,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
 }
 
 function AgentCard({ agent, diagnosing, onEdit, onDelete, onDoctor }: { agent: ManagedAgentVm; diagnosing: boolean; onEdit: () => void; onDelete: () => void; onDoctor: () => void }) {
+  const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   const diagnostic = agent.diagnostic;
   return (
@@ -657,12 +669,12 @@ function AgentCard({ agent, diagnosing, onEdit, onDelete, onDoctor }: { agent: M
         ))}
       </div>
       <div className="mt-auto flex flex-wrap justify-end gap-2 pt-1">
-        <Button size="sm" variant="outline" disabled={diagnosing} aria-busy={diagnosing} onClick={onDoctor}>
+        <Button size="sm" variant="outline" disabled={readOnly || diagnosing} aria-busy={diagnosing} onClick={onDoctor}>
           {diagnosing ? <LoaderCircle className="animate-spin" /> : <Stethoscope />}
           {diagnosing ? t('agentManagement.diagnosing') : t('agentManagement.diagnose')}
         </Button>
         <Button size="sm" variant="outline" disabled={diagnosing} onClick={onEdit}><Pencil />{t('agentManagement.edit')}</Button>
-        <Button size="sm" variant="outline" disabled={diagnosing} onClick={onDelete}><Trash2 />{t('agentManagement.delete')}</Button>
+        <Button size="sm" variant="outline" disabled={readOnly || diagnosing} onClick={onDelete}><Trash2 />{t('agentManagement.delete')}</Button>
       </div>
     </AppCard>
   );
@@ -779,7 +791,7 @@ export function AgentIdInput({
 }
 
 function ConfigTextarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <Textarea {...props} className={cn('resize-y border-border/70 bg-card/70 font-mono text-sm leading-6 shadow-inner outline-none placeholder:text-muted-foreground/55 focus-visible:ring-primary/35', props.className)} />;
+  return <Textarea {...props} className={cn('resize-y border-border/70 !bg-background font-mono text-sm leading-6 shadow-inner outline-none placeholder:text-muted-foreground/55 focus-visible:ring-primary/35', props.className)} />;
 }
 
 function Info({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {

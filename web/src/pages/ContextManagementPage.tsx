@@ -25,6 +25,7 @@ import { Markdown } from '@/components/prompt-kit/markdown';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
@@ -61,6 +62,7 @@ type ProfileListTab = 'built-in' | 'custom';
 const pageSizes = [6, 12, 24];
 
 interface ContextManagementPageProps {
+  initialTab?: 'profiles' | 'mcp' | 'skills';
   agentRegistry: AgentRegistryVm | null;
   onAgentRegistryChange: (registry: AgentRegistryVm) => void;
 }
@@ -78,14 +80,15 @@ function EntityRefreshButton({ label, loading, onRefresh }: { label: string; loa
   );
 }
 
-export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: ContextManagementPageProps) {
+export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, initialTab = 'profiles' }: ContextManagementPageProps) {
+  const readOnly = useReadOnlyExperience();
   const measuredProfileListRef = useWebviewMeasuredContainer<HTMLDivElement>('profile-list');
   const { t } = useTranslation();
   const [vm, setVm] = useState<ProfileListVm | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<ContextTab>('profiles');
-  const [profileListTab, setProfileListTab] = useState<ProfileListTab>('custom');
+  const [activeTab, setActiveTab] = useState<ContextTab>(initialTab);
+  const [profileListTab, setProfileListTab] = useState<ProfileListTab>(readOnly ? 'built-in' : 'custom');
   const [builtInQuery, setBuiltInQuery] = useState('');
   const [customQuery, setCustomQuery] = useState('');
   const [pageIndex, setPageIndex] = useState(0);
@@ -310,7 +313,10 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
     finally { setSkillLoading(false); }
   };
 
-  useEffect(() => { void refresh(); }, []);
+  useEffect(() => { void refresh(); }, [readOnly ? t : null]);
+  useEffect(() => {
+    if (readOnly && skillList) void refreshSkills();
+  }, [readOnly ? t : null]);
   useEffect(() => { if (activeTab === 'mcp' && mcpServers.length === 0) void refreshMcp(); }, [activeTab]);
   useEffect(() => {
     if (activeTab !== 'skills') return;
@@ -391,6 +397,15 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
     setSheetMode(mode);
     setSelectedProfile(profile ?? null);
   };
+
+  useEffect(() => {
+    if (!readOnly || !sheetMode || !selectedProfile?.isBuiltIn) return;
+    let active = true;
+    void getProfile(selectedProfile.id).then((detail) => {
+      if (active) setSelectedProfile(detail);
+    }).catch((error) => { if (active) setError(displayAppError(t, error)); });
+    return () => { active = false; };
+  }, [readOnly, sheetMode, selectedProfile?.id, t]);
 
   const openDeleteDialog = (profile: ProfileVm) => {
     setDeleteTarget(profile);
@@ -518,10 +533,12 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
           actions={
             <>
               <EntityRefreshButton label={t('common.refresh')} loading={loading} onRefresh={() => void refresh()} />
-              <Button variant="outline" disabled={loading || profileImport.importing} onClick={() => dispatchProfileImport({ type: 'open-settings' })}>
-                <FolderOpen />{t('contextManagement.importProfile')}
-              </Button>
-              <Button onClick={() => openSheet('create')}><Plus />{t('contextManagement.addProfile')}</Button>
+              {!readOnly && <>
+                <Button variant="outline" disabled={loading || profileImport.importing} onClick={() => dispatchProfileImport({ type: 'open-settings' })}>
+                  <FolderOpen />{t('contextManagement.importProfile')}
+                </Button>
+                <Button onClick={() => openSheet('create')}><Plus />{t('contextManagement.addProfile')}</Button>
+              </>}
             </>
           }
           toolbar={
@@ -718,7 +735,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
                   <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-red-500" />{mcpServers.filter((s) => mcpHealth[s.id]?.status === 'unhealthy').length}</span>
                 </span>
                 <EntityRefreshButton label={t('common.refresh')} loading={mcpLoading} onRefresh={() => void refreshMcp()} />
-                <Button size="sm" onClick={() => { setMcpEditTarget(null); setMcpJsonContent(MCP_STDIO_TEMPLATE); setMcpTransportTab('stdio'); setMcpSheetOpen(true); }}><Plus className="size-4" />{t('contextManagement.mcp.addServer', '添加')}</Button>
+                <Button size="sm" disabled={readOnly} onClick={() => { setMcpEditTarget(null); setMcpJsonContent(MCP_STDIO_TEMPLATE); setMcpTransportTab('stdio'); setMcpSheetOpen(true); }}><Plus className="size-4" />{t('contextManagement.mcp.addServer', '添加')}</Button>
               </>
             }
             toolbar={
@@ -735,7 +752,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
             ) : null}
           >
             {mcpLoading && mcpServers.length === 0 ? <div className="p-5"><EmptyState>{t('common.loading')}</EmptyState></div> : null}
-            <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">
+            <div className={readOnly ? 'grid grid-cols-[repeat(auto-fit,minmax(min(100%,20rem),1fr))] gap-3 p-4' : 'grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3'}>
               {filteredMcpServers.map((s) => (
                 <McpServerCard
                   key={s.id}
@@ -788,7 +805,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
                   onEdit={s.managed ? undefined : () => { setMcpEditTarget(s); setMcpJsonContent(mcpServerToJson(s)); setMcpTransportTab(s.transport as 'stdio' | 'http' | 'sse'); setMcpSheetOpen(true); }}
                   onDelete={s.managed ? undefined : () => setMcpDeleteTarget(s)}
                   agentCompatLoading={!agentRegistry}
-                  agentCompatibility={(agentRegistry?.agents ?? []).map((a) => ({
+                  agentCompatibility={(agentRegistry?.agents ?? []).filter((a) => !readOnly || a.mcpHttpSupported != null || a.mcpSseSupported != null).map((a) => ({
                     agentType: a.agentType,
                     label: a.displayName,
                     iconKey: a.iconKey,
@@ -844,7 +861,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
             actions={(
               <>
                 <EntityRefreshButton label={t('common.refresh')} loading={skillLoading} onRefresh={() => void refreshSkills()} />
-                <Button size="sm" onClick={() => { setSkillEditTarget(null); setSkillSheetContent(null); setSkillEditWsPath(null); setSkillSheetMode('create'); }}><Plus className="size-4" />{t('contextManagement.skills.createSkill', '创建')}</Button>
+                {!readOnly && <Button size="sm" onClick={() => { setSkillEditTarget(null); setSkillSheetContent(null); setSkillEditWsPath(null); setSkillSheetMode('create'); }}><Plus className="size-4" />{t('contextManagement.skills.createSkill', '创建')}</Button>}
               </>
             )}
             toolbar={(skillTab === 'global' || selectedWorkspace) ? (
@@ -875,7 +892,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
             {skillTab === 'global' && skillList && skillList.global.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.skills.emptySkills', '暂无 SKILL')}</EmptyState></div> : null}
             {skillTab === 'project' && selectedWorkspace && !skillLoading && projectSkills.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.skills.emptySkills', '暂无 SKILL')}</EmptyState></div> : null}
             {skillList && filteredSkills && filteredSkills.length === 0 && (skillQuery || skillAgentFilter !== 'all') ? <div className="p-5"><EmptyState>{t('common.noResults', '无匹配结果')}</EmptyState></div> : null}
-            <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">
+            <div className={readOnly ? 'grid grid-cols-[repeat(auto-fit,minmax(min(100%,20rem),1fr))] gap-3 p-4' : 'grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3'}>
               {filteredSkills && filteredSkills.map((skill) => {
                 const sourceAgents = skillSourceAgents(skill, configuredAgents);
                 const syncAgents = selectableSyncAgents(skill, configuredAgents);
@@ -902,7 +919,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
                           syncAgents={syncAgents}
                           syncedAgentTypes={syncedAgentTypes}
                           isPending={(agentType) => skillSyncPendingKey === `${skill.source}:${skill.directoryPath}:${agentType}`}
-                          onToggleAgent={(agentType) => void handleSkillSyncToggle(skill, agentType)}
+                          onToggleAgent={(agentType) => { if (!readOnly) void handleSkillSyncToggle(skill, agentType); }}
                         />
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
@@ -919,7 +936,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
                         <TooltipProvider delayDuration={300}>
                           <Tooltip>
                             <TooltipTrigger asChild>
-                              <Button size="icon" variant="ghost" className="size-8" onClick={async () => { try { const wsPath = skillTab === 'project' && selectedWorkspace ? selectedWorkspace : null; const c = await readSkill(skill.name, skill.source, wsPath, skill.directoryPath); setSkillEditTarget(skill); setSkillSheetContent(c); setSkillEditWsPath(wsPath); setSkillSheetMode('edit'); } catch { /* ignore */ } }}>
+                              <Button hidden={readOnly} size="icon" variant="ghost" className="size-8" onClick={async () => { try { const wsPath = skillTab === 'project' && selectedWorkspace ? selectedWorkspace : null; const c = await readSkill(skill.name, skill.source, wsPath, skill.directoryPath); setSkillEditTarget(skill); setSkillSheetContent(c); setSkillEditWsPath(wsPath); setSkillSheetMode('edit'); } catch { /* ignore */ } }}>
                                 <Pencil className="size-3.5" />
                               </Button>
                             </TooltipTrigger>
@@ -929,7 +946,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
                         <TooltipProvider delayDuration={300}>
                           <Tooltip>
                             <TooltipTrigger asChild>
-                              <Button size="icon" variant="ghost" className="size-8 text-muted-foreground hover:text-destructive" onClick={() => setSkillDeleteTarget(skill)}>
+                              <Button hidden={readOnly} size="icon" variant="ghost" className="size-8 text-muted-foreground hover:text-destructive" onClick={() => setSkillDeleteTarget(skill)}>
                                 <Trash2 className="size-3.5" />
                               </Button>
                             </TooltipTrigger>
@@ -1302,6 +1319,7 @@ function SkillSheet({
 }
 
 function BuiltInProfileCard({ profile, onView, onEdit }: { profile: ProfileVm; onView: () => void; onEdit: () => void }) {
+  const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   return (
     <Card className="h-full min-h-52 gap-0 bg-card/45 py-0">
@@ -1319,13 +1337,14 @@ function BuiltInProfileCard({ profile, onView, onEdit }: { profile: ProfileVm; o
       </CardContent>
       <CardFooter className="mt-auto flex-wrap justify-end gap-2 px-4 py-4 pt-3">
         <Button variant="outline" size="sm" onClick={onView}><Eye />{t('common.detail')}</Button>
-        <Button variant="outline" size="sm" onClick={onEdit}><Edit />{t('contextManagement.editProfile')}</Button>
+        {!readOnly && <Button variant="outline" size="sm" onClick={onEdit}><Edit />{t('contextManagement.editProfile')}</Button>}
       </CardFooter>
     </Card>
   );
 }
 
 function CustomProfileCard({ profile, onView, onEdit, onDelete }: { profile: ProfileVm; onView: () => void; onEdit: () => void; onDelete: () => void }) {
+  const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   return (
     <Card className="h-full min-h-52 gap-0 bg-card/50 py-0">
@@ -1347,11 +1366,12 @@ function CustomProfileCard({ profile, onView, onEdit, onDelete }: { profile: Pro
       </CardContent>
       <CardFooter className="flex-wrap justify-end gap-2 px-4 py-4 pt-3">
         <Button variant="outline" size="sm" onClick={onView}><Eye />{t('common.detail')}</Button>
-        <Button variant="outline" size="sm" onClick={onEdit}><Edit />{t('contextManagement.editProfile')}</Button>
+        {!readOnly && <Button variant="outline" size="sm" onClick={onEdit}><Edit />{t('contextManagement.editProfile')}</Button>}
         <Button
           variant="outline"
           size="sm"
           aria-label={t('contextManagement.deleteProfile', { name: profile.name })}
+          hidden={readOnly}
           onClick={onDelete}
         >
           <Trash2 />

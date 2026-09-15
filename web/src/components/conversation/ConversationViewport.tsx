@@ -10,6 +10,7 @@ import {
 import {
   ChatContainerContent,
   ChatContainerRoot,
+  syncChatContainerFooterHeight,
   type ChatContainerRootProps,
 } from '@/components/prompt-kit/chat-container';
 import { GOLD_CONVERSATION_SCROLLBAR_CLASS } from '@/lib/themed-scrollbar';
@@ -20,6 +21,7 @@ interface ConversationViewportProps {
   scrollClassName: string;
   contextRef?: ChatContainerRootProps['contextRef'];
   onAtBottomChange?: ChatContainerRootProps['onAtBottomChange'];
+  canResumeFollowingAfterDisclosure?: ChatContainerRootProps['canResumeFollowingAfterDisclosure'];
   onFollowIntentChange?: ChatContainerRootProps['onFollowIntentChange'];
   onViewportScroll?: ChatContainerRootProps['onViewportScroll'];
   onViewportUserScroll?: ChatContainerRootProps['onViewportUserScroll'];
@@ -40,6 +42,7 @@ export function ConversationViewport({
   scrollClassName,
   contextRef,
   onAtBottomChange,
+  canResumeFollowingAfterDisclosure,
   onFollowIntentChange,
   onViewportScroll,
   onViewportUserScroll,
@@ -66,20 +69,28 @@ export function ConversationViewport({
       return;
     }
 
-    const commitHeight = (height: number) => {
-      const next = `${Math.max(0, height)}px`;
-      if (frame.style.getPropertyValue('--conversation-viewport-footer-height') !== next) {
-        frame.style.setProperty('--conversation-viewport-footer-height', next);
-      }
+    // Stable overhang wrappers remain mounted even when their content is empty.
+    const overhangs = Array.from(footerElement.querySelectorAll<HTMLElement>(
+      '[data-conversation-viewport-overhang]',
+    ));
+    let measureFrame: number | null = null;
+    const measure = () => {
+      syncChatContainerFooterHeight(footerElement, overhangs);
     };
-    commitHeight(footerElement.getBoundingClientRect().height);
+    measure();
 
-    const observer = new ResizeObserver(([entry]) => {
-      if (entry) commitHeight(entry.contentRect.height);
+    const observer = new ResizeObserver(() => {
+      if (measureFrame !== null) return;
+      measureFrame = requestAnimationFrame(() => {
+        measureFrame = null;
+        measure();
+      });
     });
     observer.observe(footerElement);
+    overhangs.forEach((overhang) => observer.observe(overhang));
     return () => {
       observer.disconnect();
+      if (measureFrame !== null) cancelAnimationFrame(measureFrame);
       frame.style.removeProperty('--conversation-viewport-footer-height');
     };
   }, [hasFooter]);
@@ -97,6 +108,7 @@ export function ConversationViewport({
         initial={initialFollowing ? 'instant' : false}
         contextRef={contextRef}
         onAtBottomChange={onAtBottomChange}
+        canResumeFollowingAfterDisclosure={canResumeFollowingAfterDisclosure}
         onFollowIntentChange={onFollowIntentChange}
         onViewportScroll={onViewportScroll}
         onViewportUserScroll={onViewportUserScroll}

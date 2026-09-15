@@ -23,14 +23,14 @@ AUTO 模式本质上是一个只有 AI-DYNAMIC 节点的工作流。
 ### 配置项
 - **节点 ID**：固定为 `ai-dynamic`
 - **Agent 策略**：固定 Agent 或动态 Agent
-- **固定 Agent**：固定策略下从 Agent 管理枚举已配置 agent，并共同配置模型、思考强度与该 Agent doctor 返回的原生权限模式。内部 proposal 不输出 provider，runtime 注入固定 Agent 的初始化配置。
-- **动态 Agent**：动态策略下依次配置初始分发 Agent、分发模型、验收模型、控制面共享权限，以及每个可选动态 worker Agent 的模型/原生权限/思考强度。分发模型与验收模型都只读取初始分发 Agent 的模型目录；Agent 决策指南只描述 worker 任务到 Agent 的选择规则。
+- **固定 Agent**：固定策略下从 Agent 管理枚举已配置 agent，并共同配置模型、思考强度、该 Agent doctor 返回的原生权限模式，以及与权限并列的 Auto Accept。内部 proposal 不输出 provider，runtime 注入固定 Agent 的初始化配置。
+- **动态 Agent**：动态策略下依次配置初始分发 Agent、分发模型、验收模型、控制面共享权限与 Auto Accept，以及每个可选动态 worker Agent 的模型/原生权限/Auto Accept/思考强度。分发模型与验收模型都只读取初始分发 Agent 的模型目录；Agent 决策指南只描述 worker 任务到 Agent 的选择规则。
 - **允许调用的工作流**：引用工作流 DSL 内的 `workflow.id`
 - **可用角色列表**：引用上下文管理中的 profile id
 - **动态控制**：`maxDynamicNodes`、`maxFanout`、`maxDepth`、`maxParallel`、`maxGroupDepth`、`maxWorkflowInvocations`
 
 ### 会话级配置
-- 固定 Agent 策略下，composer 展示 agent、模型和该 Agent 原生权限模式，可作为本次会话的初始化 override。
+- 固定 Agent 策略下，composer 展示 agent、模型和该 Agent 原生权限模式，可作为本次会话的初始化 override；权限下拉叠加 Auto Accept。
 - 动态 Agent 策略下，composer 只展示 Dynamic Agent 标识；各 Agent 的初始化模型/权限在 AUTO 配置中预设，不再提供共享权限入口。
 - ACP session 建立后，用户仍可通过会话 composer 的权威 session config options 实时切换当前会话模型与权限；该 override 不回写 AUTO 候选配置。
 - **全局 Goal** 在 composer 中输入，非必填；运行时追加到每个 AI-DYNAMIC 内部节点目标
@@ -109,7 +109,7 @@ AUTO 模式本质上是一个只有 AI-DYNAMIC 节点的工作流。
 
 ## ACP 模型配置
 
-- Direct/AUTO 发起会话、工作流节点 Inspector、AUTO 固定 Agent 模板配置与 ACP 已建立后的追问 composer 共用同一个模型复合选择器：单一“模型”触发器的第一层提供“模型”和“思考强度”，第二层展示对应选项；权限模式保持独立。追问区虽然嵌套在 PromptInput 内，但点击配置按钮、菜单项等交互元素时不得触发输入框聚焦，弹层位置必须跟随触发器，不允许落到抽屉或页面左上角。
+- Direct/AUTO 发起会话、工作流节点 Inspector、AUTO 固定 Agent 模板配置与 ACP 已建立后的追问 composer 共用同一个模型复合选择器：单一“模型”触发器的第一层提供“模型”和“思考强度”，第二层展示对应选项；权限模式保持独立，并在同一列表底部叠加 Auto Accept。追问区虽然嵌套在 PromptInput 内，但点击配置按钮、菜单项等交互元素时不得触发输入框聚焦，弹层位置必须跟随触发器，不允许落到抽屉或页面左上角。
 - 思考强度属于通用 ACP config option override：能力发现只识别 `category=thought_level`，持久化使用 Agent 返回的 option id。工作流模板的普通 Worker 把该 option 保存到本机模型绑定；AI-DYNAMIC 与会话 AUTO 继续使用各自现有的运行时 `configOptions`。运行解析后仍通过既有 `BTreeMap<String, String>` 管道传给 provider。
 - 复合选择器的子菜单开合由 Radix DropdownMenu 原生的指针、点击与键盘状态统一管理，业务组件不得重复绑定点击切换，避免一次点击发生两次状态翻转。
 - Composer 内相邻的模型与权限配置菜单统一使用非模态 DropdownMenu 交互；无论当前展开哪一个，单击另一个都必须在同一次点击中完成关闭旧菜单并打开新菜单，不允许使用会消费第一次外部点击的模态 Select 弹层。

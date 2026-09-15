@@ -55,11 +55,12 @@ export function normalizeConversationAutoConfigForSubmit(
   const acceptanceConfigOptions = normalizeConfigOptions(config.acceptanceConfigOptions);
   const availableAgents = config.availableAgents?.map((agent) => {
     const agentConfigOptions = normalizeConfigOptions(agent.configOptions);
-    const { configOptions: _agentConfigOptions, ...agentRest } = agent;
+    const { configOptions: _agentConfigOptions, autoAccept: _agentAutoAccept, ...agentRest } = agent;
     return {
       ...agentRest,
       model: normalizeOptionalRunModeId(agent.model),
       permissionMode: normalizeOptionalRunModeId(agent.permissionMode),
+      ...(agent.autoAccept ? { autoAccept: true } : {}),
       ...(agentConfigOptions ? { configOptions: agentConfigOptions } : {}),
     };
   });
@@ -72,6 +73,7 @@ export function normalizeConversationAutoConfigForSubmit(
     acceptanceModelId: _acceptanceModelId,
     modelId: _modelId,
     permissionMode: _permissionMode,
+    autoAccept: _autoAccept,
     ...rest
   } = config;
   const bootstrapModelId = normalizeOptionalRunModeId(config.bootstrapModelId);
@@ -85,6 +87,7 @@ export function normalizeConversationAutoConfigForSubmit(
     ...(acceptanceModelId ? { acceptanceModelId } : {}),
     ...(modelId ? { modelId } : {}),
     ...(permissionMode ? { permissionMode } : {}),
+    ...(config.autoAccept ? { autoAccept: true } : {}),
     ...(config.agentStrategy !== 'dynamic' && configOptions ? { configOptions } : {}),
     ...(bootstrapConfigOptions ? { bootstrapConfigOptions } : {}),
     ...(acceptanceConfigOptions ? { acceptanceConfigOptions } : {}),
@@ -101,6 +104,7 @@ export function normalizeConversationDirectConfigForSubmit(
     agentType: config.agentType.trim(),
     modelId: normalizeOptionalRunModeId(config.modelId),
     permissionMode: normalizeOptionalRunModeId(config.permissionMode),
+    ...(config.autoAccept ? { autoAccept: true } : {}),
     ...(configOptions ? { configOptions } : {}),
   };
 }

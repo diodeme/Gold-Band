@@ -6,11 +6,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/api', async () => {
   const actual = await vi.importActual<typeof import('@/api')>('@/api');
-  return { ...actual, getAcpActivityDetail: vi.fn(), getAcpToolDetail: vi.fn() };
+  return { ...actual, getAcpActivityDetail: vi.fn(), getAcpToolDetail: vi.fn(), getAcpImage: vi.fn() };
 });
 
-import { getAcpActivityDetail, getAcpToolDetail } from '@/api';
+import { getAcpActivityDetail, getAcpToolDetail, getAcpImage } from '@/api';
 import { ACPMessageList, buildAcpTimelineProjection } from '@/components/acp/ACPChatDialog';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import { ConversationViewport, ConversationViewportFooter } from '@/components/conversation/ConversationViewport';
+import type { ChatContainerContext } from '@/components/prompt-kit/chat-container';
 import type { AgentTranscriptLocator } from '@/components/workspace/right-workspace-context';
 import type { AcpActivityDetailVm, AcpUiEventVm } from '@/types';
 
@@ -94,11 +97,235 @@ function findButtonByText(container: HTMLElement, text: string) {
 }
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.clearAllMocks();
   document.body.replaceChildren();
 });
 
 describe('ACP activity detail loading', () => {
+  it.each(['generation', 'session', 'range'])('rejects an activity page outside its %s ownership', async (change) => {
+    let resolveOld!: (value: AcpActivityDetailVm) => void;
+    vi.mocked(getAcpActivityDetail)
+      .mockReturnValueOnce(new Promise(resolve => { resolveOld = resolve; }))
+      .mockReturnValue(new Promise(() => {}));
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const render = (session: string, generation: number) => root.render(<ACPMessageList
+      timeline={buildAcpTimelineProjection([activitySummary(session)], 'running').timeline}
+      sessionStatus="running" sending={false} branchLocator={locator} timelineGeneration={generation} />);
+    try {
+      await act(async () => render('session-1', 1));
+      await clickButton(container.querySelector('[data-theme-role="activity"] > button'));
+      if (change !== 'range') await act(async () => render(change === 'session' ? 'session-2' : 'session-1', 2));
+      await act(async () => resolveOld({
+        items: [{ ...activityToolEvent(change === 'range' ? 110 : 109), title: 'RejectedPage' }],
+        hasMoreEarlier: false, earlierCursor: null,
+      }));
+      expect(container.textContent).not.toContain('RejectedPage');
+      if (change === 'generation') expect(getAcpActivityDetail).toHaveBeenCalledTimes(2);
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it('keeps newer live tool state when the older activity page arrives', async () => {
+    let resolveDetail!: (value: AcpActivityDetailVm) => void;
+    vi.mocked(getAcpActivityDetail).mockReturnValue(new Promise(resolve => { resolveDetail = resolve; }));
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const live = { ...activityToolEvent(109), endedSeq: 115, title: 'CurrentTool', raw: { output: 'current-output' } };
+    try {
+      await act(async () => root.render(<ACPMessageList
+        timeline={buildAcpTimelineProjection([activitySummary()], 'running').timeline}
+        sessionStatus="running" sending={false} branchLocator={locator} />));
+      await clickButton(container.querySelector('[data-theme-role="activity"] > button'));
+      await act(async () => root.render(<ACPMessageList
+        timeline={buildAcpTimelineProjection([activitySummary('session-1', 106), live], 'running').timeline}
+        sessionStatus="running" sending={false} branchLocator={locator} />));
+      vi.mocked(getAcpActivityDetail).mockReturnValue(new Promise(() => {}));
+      await act(async () => resolveDetail({
+        items: [{ ...activityToolEvent(109), title: 'ObsoleteTool', status: 'in_progress', raw: { output: 'obsolete-output' } }],
+        hasMoreEarlier: true, earlierCursor: 'before-109',
+      }));
+      expect(container.querySelectorAll('[data-acp-activity-detail-item-key]')).toHaveLength(1);
+      expect(container.textContent).toContain('CurrentTool');
+      expect(container.textContent).not.toContain('ObsoleteTool');
+      await clickButton(container.querySelector('[data-acp-activity-detail-item-key] [data-slot="collapsible-trigger"]'));
+      expect(container.textContent).toContain('current-output');
+      expect(container.textContent).not.toContain('obsolete-output');
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it('accepts the latest version of an item selected by its click-time start position', async () => {
+    vi.mocked(getAcpActivityDetail).mockResolvedValue({
+      items: [{ ...activityToolEvent(109), endedSeq: 115, title: 'Updated selected tool' }],
+      hasMoreEarlier: true, earlierCursor: 'before-109',
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<ACPMessageList
+        timeline={buildAcpTimelineProjection([activitySummary()], 'running').timeline}
+        sessionStatus="running" sending={false} branchLocator={locator} />));
+      await clickButton(container.querySelector('[data-theme-role="activity"] > button'));
+      expect(container.querySelector('[data-acp-activity-detail-item-key]')?.textContent).toContain('selected tool');
+      expect(getAcpActivityDetail).toHaveBeenCalledTimes(1);
+    } finally { await act(async () => root.unmount()); }
+  });
+  it.each(['ready', 'failed', 'closed'])('waits for tool-detail thumbnails before revealing the tool body (%s)', async (outcome) => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    let finishImage!: (value: import('@/types').AcpImageContentVm) => void;
+    vi.mocked(getAcpImage).mockReturnValue(new Promise(resolve => { finishImage = resolve; }));
+    let finishDecode!: () => void;
+    let failDecode!: () => void;
+    const decoding = new Promise<void>((resolve, reject) => { finishDecode = resolve; failDecode = () => reject(new Error('invalid image')); });
+    vi.stubGlobal('Image', class { src = ''; decode() { return decoding; } });
+    vi.stubGlobal('fetch', vi.fn(async () => ({ blob: async () => new Blob(['image'], { type: 'image/png' }) })));
+    vi.stubGlobal('URL', class extends URL { static createObjectURL() { return 'blob:tool-ready'; } static revokeObjectURL() {} });
+    const tool = activityToolEvent(10);
+    tool.raw = { _meta: { goldBandConversation: { toolDetailAvailable: true } } };
+    vi.mocked(getAcpActivityDetail).mockResolvedValue({ items:[tool], hasMoreEarlier:false, earlierCursor:null });
+    vi.mocked(getAcpToolDetail).mockResolvedValue({ event: { ...tool, raw: { output:'loaded tool body',
+      goldBandImages:[{eventId:tool.id, pointer:'/content/0/content', contentHash:`readiness-test-${outcome}`, mimeType:'image/png'}],
+      _meta:{goldBandConversation:{toolDetailAvailable:true}} } } });
+    const container = document.createElement('div'); document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<TooltipProvider><ACPMessageList timeline={buildAcpTimelineProjection([activitySummary()], 'completed').timeline}
+        sessionStatus="completed" sending={false} branchLocator={locator} /></TooltipProvider>));
+      await clickButton(container.querySelector('[data-theme-role="activity"] > button'));
+      expect(getAcpToolDetail).not.toHaveBeenCalled();
+      expect(getAcpImage).not.toHaveBeenCalled();
+      await clickButton(container.querySelector('[data-acp-activity-detail-item-key] [data-slot="collapsible-trigger"]'));
+      expect(getAcpToolDetail).toHaveBeenCalledTimes(1);
+      expect(container.querySelector('[data-tool-detail]')).toBeNull();
+      expect(container.querySelector('[data-acp-tool-detail-loading]')).not.toBeNull();
+      expect(getAcpImage).toHaveBeenCalledTimes(1);
+      await act(async () => { finishImage({dataUrl:'data:image/png;base64,AQID', mimeType:'image/png', width:1, height:1}); });
+      expect(container.querySelector('[data-tool-detail]')).toBeNull();
+      if (outcome === 'closed') await clickButton(container.querySelector('[data-acp-activity-detail-item-key] [data-slot="collapsible-trigger"]'));
+      await act(async () => { if (outcome === 'failed') failDecode(); else finishDecode(); });
+      if (outcome === 'closed') {
+        expect(container.querySelector('[data-tool-detail]')).toBeNull();
+        return;
+      }
+      expect(container.querySelector('[data-tool-detail]')?.textContent).toContain('loaded tool body');
+      expect(container.querySelector('[data-acp-tool-detail-loading]')).toBeNull();
+      if (outcome === 'ready') expect(container.querySelector('[data-acp-image-thumbnail] img')?.getAttribute('src')).toBe('blob:tool-ready');
+      if (outcome === 'failed') expect(container.querySelector('[data-acp-image-thumbnail] button[aria-label="重试"]')).not.toBeNull();
+    } finally { await act(async () => root.unmount()); }
+  });
+  it.each(['toolCall', 'thoughtDelta'])('expands an individual %s in place after following was resumed', async (kind) => {
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    const contextRef = React.createRef<ChatContainerContext>();
+    const item = { ...activityToolEvent(10), kind, content: kind === 'thoughtDelta' ? 'Detailed reasoning' : null };
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(
+        <ConversationViewport contextRef={contextRef} scrollClassName="overflow-y-auto">
+          <ACPMessageList timeline={buildAcpTimelineProjection([item], 'completed').timeline} sessionStatus="completed" sending={false} />
+        </ConversationViewport>,
+      ));
+      await clickButton(container.querySelector('[data-theme-role="activity"] > button'));
+      await act(async () => { void contextRef.current!.scrollToBottom({ animation: 'instant' }); });
+      expect(contextRef.current!.isAtBottom).toBe(true);
+      const viewport = contextRef.current!.scrollRef.current!;
+      Object.defineProperties(viewport, {
+        clientHeight: { configurable: true, value: 400 },
+        scrollHeight: { configurable: true, value: 1000 },
+        scrollTop: { configurable: true, value: 600, writable: true },
+      });
+      const trigger = container.querySelector<HTMLButtonElement>('[data-acp-activity-detail-item-key] [data-slot="collapsible-trigger"]');
+      await clickButton(trigger);
+      expect(trigger!.getAttribute('aria-expanded')).toBe('true');
+      expect(container.textContent).toContain(kind === 'thoughtDelta' ? 'Detailed reasoning' : 'output-10');
+      expect(contextRef.current!.isAtBottom).toBe(false);
+      expect(viewport.scrollTop).toBe(600);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it.each([
+    { cancel: false, bottom: 900, expected: 600 },
+    { cancel: true, bottom: 900, expected: 100 },
+    { cancel: false, bottom: 300, expected: 100 },
+    { cancel: false, bottom: 900, expected: 800, footerHeight: 200 },
+  ])('positions a loaded expansion only for overflow: %j', async ({ cancel, bottom, expected, footerHeight = 0 }) => {
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    let resolveDetail!: (detail: AcpActivityDetailVm) => void;
+    vi.mocked(getAcpActivityDetail).mockReturnValueOnce(new Promise((resolve) => { resolveDetail = resolve; }));
+    const contextRef = React.createRef<ChatContainerContext>();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    let toolBottom = bottom;
+    let measuredFooterHeight = 0;
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.hasAttribute('data-conversation-viewport-footer')) {
+        return { top: 400 - measuredFooterHeight, bottom: 400, height: measuredFooterHeight } as DOMRect;
+      }
+      return { top: 0, bottom: this.classList.contains('acp-activity-collapse-button') ? toolBottom : 400, height: 400 } as DOMRect;
+    });
+    try {
+      await act(async () => root.render(
+        <ConversationViewport contextRef={contextRef} initialFollowing={false} scrollClassName="overflow-y-auto">
+          <ACPMessageList timeline={buildAcpTimelineProjection([activitySummary()], 'completed').timeline} sessionStatus="completed" sending={false} branchLocator={locator} />
+          <ConversationViewportFooter><div /></ConversationViewportFooter>
+        </ConversationViewport>,
+      ));
+      const viewport = contextRef.current!.scrollRef.current!;
+      Object.defineProperties(viewport, {
+        clientHeight: { configurable: true, value: 400 },
+        scrollHeight: { configurable: true, value: 2000 },
+        scrollTop: { configurable: true, value: 100, writable: true },
+      });
+      await clickButton(container.querySelector('[data-slot="collapsible-trigger"]'));
+      expect(viewport.scrollTop).toBe(100);
+      measuredFooterHeight = footerHeight;
+      if (cancel) await act(async () => viewport.dispatchEvent(new WheelEvent('wheel', { deltaY: -10 })));
+      // The live range advances while the click-time detail page is in flight.
+      await act(async () => root.render(
+        <ConversationViewport contextRef={contextRef} initialFollowing={false} scrollClassName="overflow-y-auto">
+          <ACPMessageList timeline={buildAcpTimelineProjection([activitySummary('session-1', 102)], 'running').timeline} sessionStatus="running" sending={false} branchLocator={locator} />
+          <ConversationViewportFooter><div /></ConversationViewportFooter>
+        </ConversationViewport>,
+      ));
+      vi.mocked(getAcpActivityDetail).mockReturnValue(new Promise(() => {}));
+      await act(async () => resolveDetail(activityDetailPage(70, 109, 'before-70')));
+      expect(container.querySelectorAll('[data-acp-activity-detail-item-key]')).toHaveLength(40);
+      expect(findButtonByText(container, '显示更早')).not.toBeNull();
+      expect(viewport.scrollTop).toBe(expected);
+      expect(contextRef.current!.isAtBottom).toBe(false);
+      measuredFooterHeight += 100;
+      toolBottom = 1200;
+      await act(async () => root.render(
+        <ConversationViewport contextRef={contextRef} initialFollowing={false} scrollClassName="overflow-y-auto">
+          <ACPMessageList timeline={buildAcpTimelineProjection([activitySummary('session-1', 103)], 'running').timeline} sessionStatus="running" sending={false} branchLocator={locator} />
+          <ConversationViewportFooter><div /></ConversationViewportFooter>
+        </ConversationViewport>,
+      ));
+      expect(viewport.scrollTop).toBe(expected);
+      await clickButton(container.querySelector('[data-acp-activity-detail-item-key] [data-slot="collapsible-trigger"]'));
+      expect(viewport.scrollTop).toBe(expected);
+      expect(getAcpActivityDetail).toHaveBeenCalledTimes(2);
+    } finally {
+      await act(async () => root.unmount());
+      rect.mockRestore();
+    }
+  });
+
   it('loads the authoritative detail when a compact summary is mixed with only a partial live tail', async () => {
     const partialThought: AcpUiEventVm = {
       id: 'thought-partial',
@@ -440,6 +667,32 @@ describe('ACP activity detail loading', () => {
     } finally {
       await act(async () => root.unmount());
     }
+  });
+
+  it('uses the retained first item as the earlier cursor after a live refresh trims the window', async () => {
+    vi.mocked(getAcpActivityDetail)
+      .mockResolvedValueOnce(activityDetailPage(161, 200, 'before-161'))
+      .mockResolvedValueOnce(activityDetailPage(121, 160, 'before-121'))
+      .mockResolvedValueOnce(activityDetailPage(81, 120, 'before-81'))
+      .mockResolvedValueOnce(activityDetailPage(201, 240, 'before-201'))
+      .mockReturnValue(new Promise(() => {}));
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const render = (count: number) => root.render(<ACPMessageList
+      timeline={buildAcpTimelineProjection([activitySummary('session-1', count)], 'running').timeline}
+      sessionStatus="running" sending={false} branchLocator={locator} />);
+    try {
+      await act(async () => render(200));
+      await clickButton(container.querySelector('[data-theme-role="activity"] > button'));
+      await clickButton(findButtonByText(container, '显示更早'));
+      await clickButton(findButtonByText(container, '显示更早'));
+      await act(async () => render(240));
+      expect(container.querySelectorAll('[data-acp-activity-detail-item-key]')).toHaveLength(120);
+      expect(container.querySelector('[data-acp-activity-detail-item-key]')?.textContent).toContain('Tool121');
+      await clickButton(findButtonByText(container, '显示更早'));
+      expect(vi.mocked(getAcpActivityDetail).mock.calls[4]?.[6].earlierCursor).toBe('rev:121');
+    } finally { await act(async () => root.unmount()); }
   });
 
   it('keeps four activity detail pages within a three-page window and can return to latest', async () => {

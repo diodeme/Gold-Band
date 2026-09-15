@@ -17,7 +17,6 @@ pub const DEFAULT_IM_RETRY_DELAY: Duration = Duration::from_secs(5);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImWorkerSignal {
     DeliveryAvailable,
-    Shutdown,
 }
 
 pub fn im_worker_channel() -> (mpsc::Sender<ImWorkerSignal>, mpsc::Receiver<ImWorkerSignal>) {
@@ -65,15 +64,27 @@ impl ImDeliveryWorker {
             tokio::select! {
                 _ = cancellation.cancelled() => break,
                 signal = signals.recv() => match signal {
-                    Some(ImWorkerSignal::Shutdown) | None => break,
+                    None => break,
                     Some(ImWorkerSignal::DeliveryAvailable) => {
-                        let _ = self.dispatch_once(now_millis()).await;
+                        if !self.dispatch_or_cancel(now_millis(), &cancellation).await {
+                            break;
+                        }
                     }
                 },
                 _ = interval.tick() => {
-                    let _ = self.dispatch_once(now_millis()).await;
+                    if !self.dispatch_or_cancel(now_millis(), &cancellation).await {
+                        break;
+                    }
                 }
             }
+        }
+    }
+
+    async fn dispatch_or_cancel(&self, now_ms: i64, cancellation: &CancellationToken) -> bool {
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => false,
+            _ = self.dispatch_once(now_ms) => true,
         }
     }
 
@@ -189,6 +200,7 @@ fn now_millis() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use std::future::pending;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
@@ -205,6 +217,49 @@ mod tests {
 
     struct FakeConnector {
         sends: AtomicUsize,
+    }
+
+    struct BlockingConnector {
+        started: tokio::sync::Notify,
+    }
+
+    #[async_trait]
+    impl ImConnector for BlockingConnector {
+        fn kind(&self) -> ImChannelKind {
+            ImChannelKind::WeCom
+        }
+
+        fn capabilities(&self) -> ImChannelCapabilities {
+            ImChannelCapabilities::default()
+        }
+
+        fn advance_generation(&self, _generation: u64) {}
+
+        async fn connect(
+            &self,
+            _config: ResolvedImChannelConfig,
+            _generation: u64,
+            _events: mpsc::Sender<super::super::ImConnectorEvent>,
+            _cancellation: CancellationToken,
+        ) -> Result<(), ImIntegrationError> {
+            Ok(())
+        }
+
+        async fn send(
+            &self,
+            _delivery: ImDelivery,
+        ) -> Result<ImDeliveryReceipt, ImIntegrationError> {
+            self.started.notify_one();
+            pending().await
+        }
+
+        async fn respond_to_action(
+            &self,
+            _context: ImActionResponseContext,
+            _state: ImMessageState,
+        ) -> Result<(), ImIntegrationError> {
+            Ok(())
+        }
     }
 
     #[async_trait]
@@ -290,7 +345,7 @@ mod tests {
                     missed_count: None,
                 },
             },
-            expires_at_ms: 10_000,
+            expires_at_ms: i64::MAX,
             display_ref: None,
         };
         repository.enqueue(&delivery, 100).unwrap();
@@ -318,5 +373,37 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(delivery.canonical_event_id, "event-1");
+    }
+
+    #[tokio::test]
+    async fn worker_cancellation_interrupts_a_blocked_connector_send() {
+        let (_temp, repository, _delivery) = fixture();
+        let connector = Arc::new(BlockingConnector {
+            started: tokio::sync::Notify::new(),
+        });
+        let worker = ImDeliveryWorker::new(
+            ImChannelKind::WeCom,
+            Arc::clone(&repository),
+            connector.clone(),
+        );
+        let (sender, receiver) = im_worker_channel();
+        let cancellation = CancellationToken::new();
+        let task_cancellation = cancellation.clone();
+        let started = connector.started.notified();
+        let task = tokio::spawn(worker.run(receiver, task_cancellation));
+
+        sender
+            .send(ImWorkerSignal::DeliveryAvailable)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), started)
+            .await
+            .expect("connector send started");
+        cancellation.cancel();
+
+        tokio::time::timeout(Duration::from_millis(200), task)
+            .await
+            .expect("worker must converge after cancellation")
+            .unwrap();
     }
 }

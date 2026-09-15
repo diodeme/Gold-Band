@@ -9,11 +9,12 @@
 
 {% if execution.has_output_contract %}
 你必须在最后一步输出 `dynamic-node-completion`：
-- 没有 `BLOCKER`、验收通过时，使用 `next.type="end"`。
+- 没有 `BLOCKER`、验收通过且当前分支没有剩余任务时，使用 `next.type="end"`；既定范围内仍有后续任务时，用 `single` 或 `fanout` 继续安排。
 - 只有一个 `BLOCKER` 或一个不可分割的修复结果时，使用 `next.type="single"` 创建修复 worker。
 - 多个 `BLOCKER` 确实可以独立修复时，使用 `next.type="fanout"` 创建修复分支，并提供后续 merge 与 acceptance spec。
 - 修复任务只描述 `BLOCKER` 的范围依据、证据和必要结果，不把建议方案写成强制实现。
 - 不要把验收失败写成普通说明后结束；必须通过 `next` 明确后续控制流。
+- 合法输出被接受后，当前 group 关闭，后继回到父作用域及原业务分支；关闭仅表示本轮交接完成，不代表业务验收通过。Runtime 不会重新运行旧 group 的 merge/acceptance，修复后的必要复验必须由后续任务显式安排。
 {% else %}
 当前业务 turn 只完成验收并给出自然、明确的验收报告；runtime 会在后续隐藏 turn 中归一化控制流。不要在本 turn 输出或猜测控制 artifact。
 {% endif %}

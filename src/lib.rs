@@ -2,6 +2,7 @@ pub mod acp;
 pub mod agent_catalog;
 pub mod app;
 pub mod artifacts;
+pub mod channel;
 pub mod cli;
 pub mod command;
 pub mod config;

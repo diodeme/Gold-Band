@@ -36,8 +36,20 @@ function emptyWorkflowModelBindings(): WorkflowModelBindings {
   return { definitionRevision: '', bindingRevision: 0, bindings: [] };
 }
 const browserScheduledOccurrences = new Map<string, ScheduledOccurrenceVm[]>();
+const browserScheduledHistoryProjects = new Map<string, string>();
+const browserScheduledAcceptedRuns = new Set<string>();
+const browserScheduledExecutionSnapshots = new Map<string, { acceptedAt: string; instructionSummary: string; contentFingerprint: string }>();
 const browserScheduledOccurrenceListeners = new Set<(event: ScheduledOccurrenceUpdatedEventVm) => void>();
 let browserScheduledTaskSequence = 0;
+
+function browserScheduledRunKey(projectId: string, scheduledTaskId: string, taskId: string, runId: string) {
+  return `${projectId}\0${scheduledTaskId}\0${taskId}\0${runId}`;
+}
+
+async function browserContentFingerprint(content: string) {
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(content));
+  return `sha256:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+}
 let browserScheduledRuntimeSettings = {
   keepAwakeEnabled: false,
   keepAwakeEffective: false,
@@ -769,6 +781,9 @@ const browserFileRevisions = new Map<string, number>();
 const browserWorkspaceFileListeners = new Set<(event: WorkspaceFileChangedEventVm) => void>();
 const browserExternalFileGrants = new Map<string, { canonicalPath: string; expiresAtMs: number }>();
 let browserExternalGrantRevision = 0;
+// multica 连接地址覆盖（浏览器桩）：与 desktop 的 desktop_multica_base_url/_app_url 死字段对应，
+// null = 使用渠道编译期默认。保存后 getMulticaSettings 回显，模拟弹窗重开时的字段预填。
+let browserMulticaAddressOverride: { baseUrl: string; appUrl: string } | null = null;
 
 function normalizeBrowserWindowsFilePathname(path: string) {
   return path.replace(/^\/(?=[A-Za-z]:[\\/])/u, '');
@@ -1699,6 +1714,10 @@ export const browserApi: RuntimeApi = {
   getAcpToolDetail() {
     return Promise.resolve({ event: null });
   },
+  getAcpImage() {
+    return Promise.reject({ code: 'acp.image-not-found', params: {} });
+  },
+  getAcpActivityImages() { return Promise.resolve({ images: [], nextCursor: null, generation: 1 }); },
   getTurnFileChangeSet(locator, changeSetId) {
     if (changeSetId === browserTurnFileChangeSet.id) {
       return Promise.resolve({ ...browserTurnFileChangeSet, branchId: locator.branchId });
@@ -1821,6 +1840,9 @@ export const browserApi: RuntimeApi = {
   setAcpSessionPermissionMode(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _permissionModeId, _outerNodeId, _outerAttemptId) {
     return Promise.resolve(null);
   },
+  setAcpSessionAutoAccept(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _autoAccept, _outerNodeId, _outerAttemptId) {
+    return Promise.resolve(null);
+  },
   setAcpSessionConfigOption(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _optionId, _optionValue, _outerNodeId, _outerAttemptId) {
     return Promise.resolve(null);
   },
@@ -1829,6 +1851,12 @@ export const browserApi: RuntimeApi = {
   },
   respondElicitation(_projectId: string | null | undefined, _taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _elicitationId: string, _action: string, _content?: Record<string, unknown> | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve();
+  },
+  listComposerHistory() {
+    return Promise.resolve({ items: [], head: null, nextCursor: null });
+  },
+  getComposerHistoryText() {
+    return Promise.reject({ code: 'acp.composer-history-not-found', params: {} });
   },
   getAcpRawFrames(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, query, _outerNodeId, _outerAttemptId) {
     const empty: AcpRawFramePageVm = {
@@ -2088,8 +2116,8 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve({
       enabled: false,
       toggleLocked: false,
-      multicaBaseUrl: null,
-      multicaAppUrl: null,
+      multicaBaseUrl: browserMulticaAddressOverride?.baseUrl ?? null,
+      multicaAppUrl: browserMulticaAddressOverride?.appUrl ?? null,
       patSet: false,
       daemonIdSet: false,
       workspaces: [],
@@ -2097,6 +2125,7 @@ export const browserApi: RuntimeApi = {
       defaultProvider: 'claude-acp',
       connected: false,
       connectedAccount: null,
+      addressOverrideSet: browserMulticaAddressOverride !== null,
     });
   },
   connectMultica() {
@@ -2118,6 +2147,15 @@ export const browserApi: RuntimeApi = {
       workspaces: [],
       activeWorkspaceId: null,
     }));
+  },
+  saveMulticaConnectionAddress(baseUrl: string | null, appUrl: string | null) {
+    // 双 null = 清除覆盖回落渠道默认（与 desktop apply_multica_connection_address 双 None 分支对齐）。
+    browserMulticaAddressOverride = baseUrl && appUrl ? { baseUrl, appUrl } : null;
+    return this.getMulticaSettings();
+  },
+  cancelMulticaConnect() {
+    // 浏览器态无连接流程，取消为幂等 no-op（与 desktop cancel_multica_connect 语义对齐）。
+    return Promise.resolve();
   },
   getMulticaTasks() {
     return Promise.resolve({
@@ -2307,6 +2345,7 @@ export const browserApi: RuntimeApi = {
     };
     browserScheduledTaskDefinitions.set(id, definition);
     browserScheduledOccurrences.set(id, []);
+    browserScheduledHistoryProjects.set(id, input.projectId);
     browserScheduledTasks.push(task);
     emitBrowserScheduledTaskUpdated(task);
     return Promise.resolve({ ...task });
@@ -2347,25 +2386,95 @@ export const browserApi: RuntimeApi = {
     }
     return Promise.resolve(structuredClone(next));
   },
-  deleteScheduledTask(_projectId, scheduledTaskId) {
-    const index = browserScheduledTasks.findIndex((task) => task.id === scheduledTaskId);
+  deleteScheduledTask(projectId, scheduledTaskId) {
+    const index = browserScheduledTasks.findIndex((task) => task.id === scheduledTaskId && task.projectId === projectId);
     if (index < 0) return browserCommandError('scheduled-task.not-found');
     const [task] = browserScheduledTasks.splice(index, 1);
     browserScheduledTaskDefinitions.delete(scheduledTaskId);
-    browserScheduledOccurrences.delete(scheduledTaskId);
+    // Accepted occurrences are scheduler history, not editable definition data.
+    // Keep both that history and its independent Run addressable.
     emitBrowserScheduledTaskUpdated({ ...task, status: 'deleted' });
     return Promise.resolve();
   },
-  listScheduledTaskOccurrences(projectId, scheduledTaskId, cursor, status) {
-    const task = browserScheduledTasks.find((item) => item.id === scheduledTaskId && item.projectId === projectId);
-    if (!task) return browserCommandError('scheduled-task.not-found');
-    const all = (browserScheduledOccurrences.get(scheduledTaskId) ?? [])
-      .filter((occurrence) => !status || occurrence.status === status);
-    const start = cursor ? all.findIndex((occurrence) => occurrence.id === cursor) + 1 : 0;
+  listScheduledExecutionHistory(projectId, scheduledTaskId, cursor, anchor) {
+    const definition = browserScheduledTaskDefinitions.get(scheduledTaskId);
+    const task = browserScheduledTasks.find((item) => item.id === scheduledTaskId);
+    const effectiveProjectId = task?.projectId ?? definition?.projectId ?? browserScheduledHistoryProjects.get(scheduledTaskId);
+    if (!effectiveProjectId || effectiveProjectId !== projectId) return browserCommandError('scheduled-task.not-found');
+    const grouped = new Map<string, ScheduledOccurrenceVm[]>();
+    for (const occurrence of browserScheduledOccurrences.get(scheduledTaskId) ?? []) {
+      if (!occurrence.taskId || !occurrence.runId) continue;
+      const key = `${occurrence.taskId}:${occurrence.runId}`;
+      const group = grouped.get(key);
+      if (group) group.push(occurrence);
+      else grouped.set(key, [occurrence]);
+    }
+    const all = [...grouped.values()].map((items) => {
+      const latest = items[0];
+      const latestSnapshot = browserScheduledExecutionSnapshots.get(latest.id);
+      const firstSnapshot = browserScheduledExecutionSnapshots.get(items.at(-1)?.id ?? latest.id);
+      return {
+        projectId,
+        scheduledTaskId,
+        taskId: latest.taskId!,
+        runId: latest.runId!,
+        firstAcceptedAt: firstSnapshot?.acceptedAt ?? items.at(-1)?.startedAt ?? latest.scheduledAt,
+        lastAcceptedAt: latestSnapshot?.acceptedAt ?? latest.startedAt ?? latest.scheduledAt,
+        occurrenceCount: items.length,
+        latestOccurrenceId: latest.id,
+        latestSummary: latestSnapshot?.instructionSummary ?? definition?.content.split(/\r?\n/)[0] ?? task?.title ?? '',
+        latestContentFingerprint: latestSnapshot?.contentFingerprint ?? `browser:${scheduledTaskId}`,
+        availability: 'available' as const,
+        run: {
+          runId: latest.runId!,
+          status: latest.status === 'attention_required' ? 'paused' : latest.status === 'running' || latest.status === 'retrying' || latest.status === 'pending' ? 'running' : 'completed',
+          outcome: latest.status === 'succeeded' ? 'succeeded' : latest.status === 'failed' || latest.status === 'attention_required' ? 'failed' : null,
+          startedAt: latest.startedAt ?? latest.scheduledAt,
+          updatedAt: latest.finishedAt ?? latest.startedAt ?? latest.scheduledAt,
+          resumable: latest.status === 'attention_required',
+        },
+      };
+    });
+    const anchoredStart = !cursor && anchor
+      ? all.findIndex((item) => item.taskId === anchor.taskId && item.runId === anchor.runId)
+      : -1;
+    if (anchor && !cursor && anchoredStart < 0) return browserCommandError('scheduled-task.not-found');
+    const start = cursor ? all.findIndex((item) => item.runId === cursor) + 1 : Math.max(0, anchoredStart);
     if (cursor && start === 0) return browserCommandError('scheduled-task.validation-failed');
-    const items = all.slice(start, start + 20).map((occurrence) => structuredClone(occurrence));
-    const hasMore = start + items.length < all.length;
-    return Promise.resolve({ items, nextCursor: hasMore ? items.at(-1)?.id ?? null : null });
+    const items = all.slice(start, start + 20);
+    return Promise.resolve({ items: structuredClone(items), nextCursor: start + items.length < all.length ? items.at(-1)?.runId ?? null : null });
+  },
+  deleteScheduledExecutionHistory(items) {
+    const results = items.map((item) => {
+      if (browserScheduledHistoryProjects.get(item.scheduledTaskId) !== item.projectId) {
+        return { ...item, status: 'failed' as const, code: 'SCHEDULED_NOT_FOUND', params: {} };
+      }
+      const history = browserScheduledOccurrences.get(item.scheduledTaskId) ?? [];
+      const runHistory = history.filter((occurrence) => occurrence.taskId === item.taskId && occurrence.runId === item.runId);
+      if (!runHistory.length) {
+        return browserScheduledAcceptedRuns.has(browserScheduledRunKey(item.projectId, item.scheduledTaskId, item.taskId, item.runId))
+          ? { ...item, status: 'completed' as const, code: null, params: {} }
+          : { ...item, status: 'failed' as const, code: 'SCHEDULED_NOT_FOUND', params: {} };
+      }
+      const latest = runHistory[0];
+      if (latest.status === 'running' || latest.status === 'retrying' || latest.status === 'pending' || latest.status === 'attention_required') {
+        return { ...item, status: 'failed' as const, code: 'SCHEDULED_HISTORY_NOT_REMOVABLE', params: { reason: 'run-not-completed', runStatus: latest.status === 'attention_required' ? 'paused' : 'running' } };
+      }
+      const watermark = history.find((occurrence) => occurrence.id === item.throughOccurrenceId);
+      if (!watermark) return { ...item, status: 'completed' as const, code: null, params: {} };
+      if (watermark.taskId !== item.taskId || watermark.runId !== item.runId) {
+        return { ...item, status: 'failed' as const, code: 'SCHEDULED_CONFLICT', params: { reason: 'watermark-mismatch' } };
+      }
+      const watermarkAcceptedAt = browserScheduledExecutionSnapshots.get(watermark.id)?.acceptedAt ?? watermark.startedAt ?? watermark.scheduledAt;
+      const removedIds = new Set(runHistory.filter((occurrence) => {
+        const acceptedAt = browserScheduledExecutionSnapshots.get(occurrence.id)?.acceptedAt ?? occurrence.startedAt ?? occurrence.scheduledAt;
+        return acceptedAt < watermarkAcceptedAt || (acceptedAt === watermarkAcceptedAt && occurrence.id <= watermark.id);
+      }).map((occurrence) => occurrence.id));
+      for (const occurrenceId of removedIds) browserScheduledExecutionSnapshots.delete(occurrenceId);
+      browserScheduledOccurrences.set(item.scheduledTaskId, history.filter((occurrence) => !removedIds.has(occurrence.id)));
+      return { ...item, status: 'completed' as const, code: null, params: {} };
+    });
+    return Promise.resolve(results);
   },
   getScheduledTaskDiagnostics(projectId, scheduledTaskId) {
     const task = browserScheduledTasks.find((item) => item.id === scheduledTaskId && item.projectId === projectId);
@@ -2383,13 +2492,14 @@ export const browserApi: RuntimeApi = {
       occurrences: occurrences.slice(0, 200).map((occurrence) => structuredClone(occurrence)),
     });
   },
-  runScheduledTaskNow(projectId, scheduledTaskId) {
+  async runScheduledTaskNow(projectId, scheduledTaskId) {
     const task = browserScheduledTasks.find((item) => item.id === scheduledTaskId && item.projectId === projectId);
     if (!task) return browserCommandError('scheduled-task.not-found');
     const now = new Date().toISOString();
     const occurrenceId = `occurrence-${Date.now()}-${++browserScheduledTaskSequence}`;
     const taskId = `browser-task-${scheduledTaskId}`;
     const runId = `browser-run-${Date.now()}-${browserScheduledTaskSequence}`;
+    browserScheduledAcceptedRuns.add(browserScheduledRunKey(projectId, scheduledTaskId, taskId, runId));
     const running: ScheduledOccurrenceVm = {
       id: occurrenceId,
       scheduledTaskId,
@@ -2407,6 +2517,13 @@ export const browserApi: RuntimeApi = {
       finishedAt: null,
     };
     const history = browserScheduledOccurrences.get(scheduledTaskId) ?? [];
+    const definition = browserScheduledTaskDefinitions.get(scheduledTaskId);
+    const acceptedContent = definition?.content ?? task.title;
+    browserScheduledExecutionSnapshots.set(occurrenceId, {
+      acceptedAt: now,
+      instructionSummary: acceptedContent.split(/\r?\n/).find((line) => line.trim())?.trim() ?? task.title,
+      contentFingerprint: await browserContentFingerprint(acceptedContent),
+    });
     browserScheduledOccurrences.set(scheduledTaskId, [running, ...history]);
     emitBrowserScheduledOccurrenceUpdated(running, task.projectId);
     const finished: ScheduledOccurrenceVm = { ...running, status: 'succeeded', finishedAt: new Date().toISOString() };
@@ -2416,15 +2533,36 @@ export const browserApi: RuntimeApi = {
       lastTriggerStatus: finished.status,
       updatedAt: finished.finishedAt ?? now,
     });
+    browserConversationRuns.set(runId, {
+      projectId,
+      taskId,
+      runId,
+      runMode: task.mode === 'workflow' || task.mode === 'auto' ? task.mode : 'direct',
+      directConfig: definition?.directConfig ?? null,
+      agentIdentity: definition?.directConfig ? browserAgentIdentity(definition.directConfig.agentType) : null,
+      lastActivityAt: finished.finishedAt ?? now,
+      runStatus: 'completed',
+      runOutcome: 'success',
+      sessionTree: { rounds: [], selectedSessionKey: null },
+      selectedSession: null,
+      activeSessions: [],
+      inputAttachments: [],
+      workflowStatus: 'valid',
+      workflowValid: true,
+      workflowGraph: { nodes: [], edges: [] },
+      resumable: false,
+      runtimeErrorMessage: null,
+      worktree: null,
+    });
     emitBrowserScheduledOccurrenceUpdated(finished, task.projectId);
     emitBrowserScheduledTaskUpdated(task);
-    return Promise.resolve({
+    return {
       occurrence: structuredClone(finished),
       taskId,
       runId,
       roundId: null,
       attemptId: null,
-    } satisfies RunScheduledTaskResultVm);
+    } satisfies RunScheduledTaskResultVm;
   },
   getConversationWorkspaces() {
     return Promise.resolve([{ projectId: 'default', workspacePath: '/default', name: 'Default Workspace' }]);

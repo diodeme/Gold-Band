@@ -2,6 +2,7 @@ import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -116,6 +117,7 @@ function McpAgentCompatibilityControl({
 }) {
   const { t } = useTranslation();
   const status = mcpAgentSupportStatus(transport, agent);
+  const readOnly = useReadOnlyExperience();
   const isDiagnosing = diagnosingAgentType === agent.agentType;
   const clickable = status === 'unknown' && !!onDiagnoseAgent && !isDiagnosing;
   const showLoading = shouldShowCompatibilityLoading(status, isDiagnosing);
@@ -156,7 +158,7 @@ function McpAgentCompatibilityControl({
               ) : (
                 <span className="relative grid size-5 shrink-0 place-items-center">
                   {status === 'supported' ? <span className="pointer-events-none absolute left-0 top-0 z-10 size-1.5 rounded-full bg-emerald-500 ring-1 ring-background" /> : null}
-                  {status === 'unavailable' ? <span className="pointer-events-none absolute left-0 top-0 z-10 size-1.5 rounded-full bg-red-500 ring-1 ring-background" /> : null}
+                  {status === 'unavailable' || (readOnly && status === 'unsupported') ? <span className="pointer-events-none absolute left-0 top-0 z-10 size-1.5 rounded-full bg-red-500 ring-1 ring-background" /> : null}
                   <img
                     src={agentIconSrc(agent.iconKey)}
                     alt={agent.label}

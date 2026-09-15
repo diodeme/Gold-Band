@@ -155,6 +155,7 @@ export type ScheduledTaskConfigWorkspaceResource = RightWorkspaceResourceBase & 
 };
 
 export type RightWorkspaceResource =
+  | AcpImageWorkspaceResource
   | AgentTranscriptResource
   | FileBrowserWorkspaceResource
   | ConversationDirectoryWorkspaceResource
@@ -176,6 +177,12 @@ export interface RightWorkspaceSessionState {
   tabs: RightWorkspaceResource[];
   activeTabKey: string | null;
 }
+
+export type AcpImageWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'acp-image';
+  locator: import('@/types').TurnFileLocatorVm;
+  image: import('@/types').AcpImageRef;
+};
 
 export interface RightWorkspaceShellState {
   requestedOpen: boolean;

@@ -361,6 +361,7 @@ fn default_workflow_dsl(
                 expression: "$.result == true".to_string(),
             }),
             permission_mode: None,
+            auto_accept: false,
             config_options: Default::default(),
             manual_check: manual_check.then_some(true),
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
@@ -554,6 +555,7 @@ fn default_lightweight_workflow_dsl(
                 expression: "$.result == true".to_string(),
             }),
             permission_mode: None,
+            auto_accept: false,
             config_options: Default::default(),
             manual_check: manual_check.then_some(true),
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
@@ -1672,9 +1674,8 @@ impl App {
         self.scheduled_task_context.as_ref()
     }
 
-    /// Convert a scheduler-scoped app clone back to ordinary conversation
-    /// semantics before dispatching a later user-authored prompt turn.
-    pub fn without_scheduled_turn_context(mut self) -> Self {
+    /// Convert an execution-scoped clone to an ordinary user-authored turn.
+    pub fn as_turn(mut self) -> Self {
         self.scheduled_occurrence_id = None;
         self.scheduled_task_context = None;
         self
@@ -2736,8 +2737,11 @@ impl App {
 
     pub fn set_user_agents(
         &self,
-        agents: std::collections::BTreeMap<ManagedAgentId, ManagedAgentConfig>,
+        mut agents: std::collections::BTreeMap<ManagedAgentId, ManagedAgentConfig>,
     ) -> Result<SettingsConfig> {
+        for (id, config) in &mut agents {
+            config.adapter.apply_catalog_launch(id);
+        }
         let mut settings = self.load_settings()?;
         settings.agents = Some(agents);
         self.save_settings(&settings)?;
@@ -3430,13 +3434,22 @@ impl App {
     }
 
     pub fn provider_doctor_probe(&self, provider: &str) -> Result<ProviderDoctorProbe> {
+        self.provider_doctor_probe_with_deadline(provider, acp_client::DoctorDeadline::default())
+    }
+
+    pub fn provider_doctor_probe_with_deadline(
+        &self,
+        provider: &str,
+        deadline: acp_client::DoctorDeadline,
+    ) -> Result<ProviderDoctorProbe> {
         let (agent_id, config) = self.managed_agent(provider)?;
-        match acp_client::doctor(
+        match acp_client::doctor_with_deadline(
             &agent_id,
             &config.adapter,
             self.paths.repo_root.clone(),
             self.config.use_local_claude,
             self.config.require_local_claude_executable,
+            deadline,
         ) {
             Ok(probe) => Ok(ProviderDoctorProbe {
                 doctor: DoctorResult {
@@ -4367,6 +4380,7 @@ impl App {
             drop(guard);
 
             self.interrupt_run_descendants_best_effort(task_id, run_id, &run, reason);
+            self.publish_committed_attempt_pause(&run);
             self.finish_runtime_candidate_best_effort(
                 task_id,
                 run_id,
@@ -4568,6 +4582,11 @@ impl App {
             .as_ref()
             .and_then(|run| run.execution.recovery_candidate_token.clone());
         drop(guard);
+        if active_attempt {
+            if let Some(run) = run.as_ref() {
+                self.publish_committed_attempt_pause(run);
+            }
+        }
         if run_became_inactive {
             self.finish_runtime_candidate_best_effort(
                 task_id,
@@ -4576,6 +4595,42 @@ impl App {
             );
         }
         Ok(AttemptRuntimePauseResult::Converged)
+    }
+
+    fn publish_committed_attempt_pause(&self, run: &RunState) {
+        let Ok(current) = self.run_status(&run.task_id, &run.id) else {
+            return;
+        };
+        if current.status != RunStatus::Paused || current.execution != run.execution {
+            return;
+        }
+        let (Some(round_id), Some(node_id), Some(attempt_id), Some(pause_reason)) = (
+            run.current_round.as_ref(),
+            run.current_node.as_ref(),
+            run.current_attempt.as_ref(),
+            run.pause_reason,
+        ) else {
+            return;
+        };
+        // This is a state notification, not an intervention or a metrics fact.
+        self.emit_lifecycle_event(RuntimeLifecycleEvent::RunPaused {
+            event_id: format!(
+                "{}:{}:{}:pause:{}",
+                self.paths.project_id, run.task_id, run.id, run.execution.revision
+            ),
+            occurred_at: run.updated_at.clone(),
+            scheduled_occurrence_id: None,
+            project_id: self.paths.project_id.clone(),
+            task_id: run.task_id.clone(),
+            task_uuid: run.task_uuid.clone(),
+            run_id: run.id.clone(),
+            round_id: round_id.clone(),
+            node_id: node_id.clone(),
+            attempt_id: attempt_id.clone(),
+            node_label: node_id.clone(),
+            pause_reason,
+            task_title: None,
+        });
     }
 
     pub fn pause_dynamic_attempt_runtime_state(
@@ -5637,6 +5692,42 @@ mod tests {
     }
 
     #[test]
+    fn attempt_pause_publishes_only_committed_run_transition() {
+        let temp = tempdir().unwrap();
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap())
+            .with_inline_lifecycle_subscriber(Arc::new(move |event| {
+                captured.lock().unwrap().push(event);
+            }));
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+        for _ in 0..2 {
+            app.pause_attempt_runtime_state(
+                "task-001",
+                "run-001",
+                "round-001",
+                "worker",
+                "attempt-001",
+                PauseReason::ProcessInterrupted,
+            )
+            .unwrap();
+        }
+        let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        assert_eq!(run.status, RunStatus::Paused);
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-b"));
+        app.publish_committed_attempt_pause(&run);
+        let events = events.lock().unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "one committed pause must publish exactly one event, without metrics or intervention"
+        );
+        assert!(
+            matches!(&events[0], RuntimeLifecycleEvent::RunPaused { task_id, run_id, node_id, pause_reason: PauseReason::ProcessInterrupted, .. } if task_id == "task-001" && run_id == "run-001" && node_id == "worker")
+        );
+    }
+
+    #[test]
     fn background_continue_prelaunch_failure_converges_to_runtime_abnormal_pause() {
         let temp = tempdir().unwrap();
         let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
@@ -5723,6 +5814,27 @@ mod tests {
         assert_eq!(run.pause_reason, None);
         assert_eq!(node.status, RunStatus::Running);
         assert_eq!(node.runtime_execution_id.as_deref(), Some("execution-b"));
+    }
+
+    #[test]
+    fn run_pause_publishes_only_one_state_event() {
+        let temp = tempdir().unwrap();
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap())
+            .with_inline_lifecycle_subscriber(Arc::new(move |event| {
+                captured.lock().unwrap().push(event);
+            }));
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, None);
+        for _ in 0..2 {
+            app.run_pause("task-001", "run-001", PauseReason::ProcessInterrupted)
+                .unwrap();
+        }
+        assert_eq!(events.lock().unwrap().len(), 1);
+        assert!(matches!(
+            &events.lock().unwrap()[0],
+            RuntimeLifecycleEvent::RunPaused { .. }
+        ));
     }
 
     #[test]
@@ -5957,6 +6069,7 @@ mod tests {
                 provider: Some("claude-acp".to_string()),
                 profile: None,
                 permission_mode: permission_mode.map(str::to_string),
+                auto_accept: false,
                 config_options: Default::default(),
                 model: model.map(str::to_string),
                 goal: Some("do work".to_string()),
@@ -6297,6 +6410,7 @@ mod tests {
                 bootstrap_provider: "codex-acp".to_string(),
                 bootstrap_model: None,
                 permission_mode: Some("agent-full-access".to_string()),
+                auto_accept: false,
                 bootstrap_config_options: Default::default(),
                 acceptance_model: None,
                 acceptance_config_options: Default::default(),
@@ -6305,6 +6419,7 @@ mod tests {
                     provider: "codex-acp".to_string(),
                     model: None,
                     permission_mode: Some("agent-full-access".to_string()),
+                    auto_accept: false,
                     config_options: Default::default(),
                 }],
             },
@@ -6345,6 +6460,7 @@ mod tests {
                     bootstrap_provider: "claude-acp".to_string(),
                     bootstrap_model: Some("sonnet".to_string()),
                     permission_mode: None,
+                    auto_accept: false,
                     bootstrap_config_options: Default::default(),
                     acceptance_model: Some("sonnet".to_string()),
                     acceptance_config_options: Default::default(),
@@ -6353,6 +6469,7 @@ mod tests {
                         provider: "claude-acp".to_string(),
                         model: Some("future-model".to_string()),
                         permission_mode: None,
+                        auto_accept: false,
                         config_options: Default::default(),
                     }],
                 },
@@ -6411,6 +6528,7 @@ mod tests {
                         bootstrap_provider: "codex-acp".to_string(),
                         bootstrap_model: Some("gpt-5.6-sol".to_string()),
                         permission_mode: None,
+                        auto_accept: false,
                         bootstrap_config_options: Default::default(),
                         acceptance_model: Some("gpt-5.6-sol".to_string()),
                         acceptance_config_options: Default::default(),
@@ -6419,6 +6537,7 @@ mod tests {
                             provider: "codex-acp".to_string(),
                             model: Some("gpt-5.4".to_string()),
                             permission_mode: None,
+                            auto_accept: false,
                             config_options: Default::default(),
                         }],
                     },
@@ -6434,6 +6553,7 @@ mod tests {
                         provider: "codex-acp".to_string(),
                         model: Some("gpt-5.4".to_string()),
                         permission_mode: None,
+                        auto_accept: false,
                     },
                     config_options: Default::default(),
                     allowed_profiles: Vec::new(),
@@ -6561,6 +6681,7 @@ mod tests {
                 output: None,
                 success_condition: None,
                 permission_mode: None,
+                auto_accept: false,
                 config_options: BTreeMap::new(),
                 manual_check: None,
                 prompt_envelope: Default::default(),
@@ -6572,6 +6693,7 @@ mod tests {
             agent_id: "agent-a".to_string(),
             model_id: None,
             permission_mode_id: None,
+            auto_accept: false,
             config_options: BTreeMap::new(),
         };
         let bindings = WorkflowModelBindings {
@@ -6661,22 +6783,39 @@ mod tests {
     }
 
     #[test]
-    fn queued_user_turn_drops_scheduler_occurrence_and_prompt_context() {
+    fn ordinary_user_turn_clears_scheduled_execution_context() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root)
             .with_scheduled_occurrence_id(Some("occurrence-001".to_string()))
             .with_scheduled_task_context(Some(crate::provider::ScheduledTaskContextInfo {
-                title: "Daily review".to_string(),
-                mode: "direct".to_string(),
-                session_policy: "continuous".to_string(),
-                trigger_kind: "cron".to_string(),
-                triggered_at: "2026-08-03T00:00:00Z".to_string(),
-                instruction: Some("Review changes".to_string()),
+                project_id: "project-001".to_string(),
+                scheduled_task_id: "scheduled-task-001".to_string(),
+                occurrence_id: "occurrence-001".to_string(),
+                trigger_kind: crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled,
+                accepted_at: "2026-08-03T00:00:00Z".to_string(),
+                automatic: Some(
+                    crate::scheduler::execution::ScheduledAutomaticTriggerContext {
+                        scheduled_at: chrono::DateTime::parse_from_rfc3339("2026-08-03T00:00:00Z")
+                            .unwrap()
+                            .with_timezone(&chrono::Utc),
+                        schedule_summary: "0 0 0 * * *".to_string(),
+                        timezone: "UTC".to_string(),
+                    },
+                ),
+                content_fingerprint: "sha256:scheduled".to_string(),
+                instruction_summary: "Daily review".to_string(),
+                timeline_owner: crate::scheduler::occurrence::OccurrenceLinks {
+                    task_id: Some("task-001".to_string()),
+                    run_id: Some("run-001".to_string()),
+                    round_id: Some("round-001".to_string()),
+                    node_id: Some("node-001".to_string()),
+                    attempt_id: Some("attempt-001".to_string()),
+                },
             }));
 
-        let ordinary_turn = app.clone_for_background().without_scheduled_turn_context();
+        let ordinary_turn = app.clone_for_background().as_turn();
 
         assert_eq!(app.scheduled_occurrence_id(), Some("occurrence-001"));
         assert!(app.scheduled_task_context().is_some());
@@ -7187,6 +7326,7 @@ mod tests {
             provider: Some("claude-acp".to_string()),
             profile: None,
             permission_mode: None,
+            auto_accept: false,
             model: None,
             session_mode: SessionMode::New,
             continue_from_node_id: None,
@@ -7484,7 +7624,13 @@ mod tests {
     fn pause_dynamic_attempt_keeps_parent_running_when_sibling_is_active() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
-        let app = dynamic_pause_test_app(&temp);
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let app = dynamic_pause_test_app(&temp).with_inline_lifecycle_subscriber(Arc::new(
+            move |event| {
+                captured.lock().unwrap().push(event);
+            },
+        ));
         write_dynamic_pause_fixture(
             &app,
             vec![
@@ -7536,13 +7682,20 @@ mod tests {
             Some(RuntimeExecutionPhase::Paused)
         );
         assert_eq!(run.execution.phase, RuntimeExecutionPhase::RunningNode);
+        assert!(events.lock().unwrap().is_empty());
     }
 
     #[test]
     fn pause_dynamic_attempt_pauses_parent_when_no_active_leaf_remains() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
-        let app = dynamic_pause_test_app(&temp);
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let app = dynamic_pause_test_app(&temp).with_inline_lifecycle_subscriber(Arc::new(
+            move |event| {
+                captured.lock().unwrap().push(event);
+            },
+        ));
         write_dynamic_pause_fixture(
             &app,
             vec![dynamic_pause_node("good-night", DynamicNodeStatus::Running)],
@@ -7561,6 +7714,14 @@ mod tests {
         .unwrap();
 
         let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        assert_eq!(
+            events.lock().unwrap().len(),
+            1,
+            "the last active leaf must publish the parent pause"
+        );
+        assert!(
+            matches!(&events.lock().unwrap()[0], RuntimeLifecycleEvent::RunPaused { node_id, .. } if node_id == "ai-dynamic")
+        );
         let round: RoundState =
             read_json(&app.paths.round_file("task-001", "run-001", "round-001")).unwrap();
         let outer_node: NodeState = read_json(&app.paths.node_file(

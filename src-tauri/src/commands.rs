@@ -6935,6 +6935,8 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             let (_, agent_config) = app.managed_agent(provider).map_err(command_error)?;
             let permission_mode = current_acp_session_permission_mode_override(&attempt_dir)
                 .or_else(|| node.permission_mode.clone());
+            let auto_accept = gold_band::acp::permission::session_auto_accept_override(&attempt_dir)
+                .unwrap_or(node.auto_accept);
             let model =
                 current_acp_session_model_override(&attempt_dir).or_else(|| node.model.clone());
             let worker_ref = if worker_ref_path.exists() {
@@ -7020,6 +7022,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 &prompt_bundle,
                 session_mode,
                 permission_mode,
+                auto_accept,
                 model,
                 config_options,
                 continue_ref,
@@ -7112,6 +7115,8 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             .ok_or_else(|| CommandErrorVm::new("acp.missing-provider", serde_json::json!({})))?;
         let (_, agent_config) = app.managed_agent(provider).map_err(command_error)?;
         let permission_mode = current_acp_session_permission_mode_override(&attempt_dir);
+        let auto_accept =
+            gold_band::acp::permission::session_auto_accept_override(&attempt_dir).unwrap_or(false);
         let worker_ref = if worker_ref_path.exists() {
             Some(read_json::<WorkerRefState>(&worker_ref_path).map_err(command_error)?)
         } else {
@@ -7192,6 +7197,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             &prompt_bundle,
             session_mode,
             permission_mode,
+            auto_accept,
             model,
             config_options,
             continue_ref,
@@ -9556,6 +9562,115 @@ pub async fn set_acp_session_permission_mode(
 }
 
 #[tauri::command]
+pub async fn set_acp_session_auto_accept(
+    _app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+    auto_accept: bool,
+) -> CommandResult<Option<AcpSessionVm>> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id.clone(),
+        run_id.clone(),
+        round_id.clone(),
+        node_id.clone(),
+        attempt_id.clone(),
+        outer_node_id.clone(),
+        outer_attempt_id.clone(),
+    );
+    let attempt_dir = resolve_acp_attempt_dir(
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outer_node_id.as_deref(),
+        outer_attempt_id.as_deref(),
+    );
+    let snapshot_path = attempt_dir.join("acp.snapshot.json");
+    let session_path = attempt_dir.join("acp.session.json");
+    let path = if snapshot_path.exists() {
+        snapshot_path
+    } else if session_path.exists() {
+        session_path
+    } else {
+        return Ok(None);
+    };
+
+    let metadata = load_session_metadata(&path, None).map_err(|error| {
+        CommandErrorVm::new(
+            "acp.session-read-error",
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+    let mut value = serde_json::to_value(metadata).map_err(|error| {
+        CommandErrorVm::new(
+            "acp.session-parse-error",
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+    let catalogs = acp_session_config_catalog_context(&app, &locator, &value);
+    if let Some(session) = value.as_object_mut() {
+        session.insert(
+            "autoAccept".to_string(),
+            serde_json::Value::Bool(auto_accept),
+        );
+    }
+    apply_acp_catalog_refresh_marker(&mut value, &catalogs);
+    value = gold_band::acp::events::patch_session_metadata(&path, |current| {
+        if let Some(session) = current.as_object_mut() {
+            session.insert(
+                "autoAccept".to_string(),
+                serde_json::Value::Bool(auto_accept),
+            );
+        }
+        apply_acp_catalog_refresh_marker(current, &catalogs);
+        Ok(())
+    })
+    .map_err(|error| {
+        CommandErrorVm::new(
+            "acp.session-write-error",
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+
+    let vm = if let (Some(on), Some(oa)) = (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
+        crate::view_models::dynamic_acp_session_vm(
+            &app,
+            &task_id,
+            &run_id,
+            &round_id,
+            on,
+            oa,
+            &node_id,
+            &attempt_id,
+            None,
+            Some(value),
+        )
+    } else {
+        crate::view_models::acp_session_vm(
+            &app,
+            &task_id,
+            &run_id,
+            &round_id,
+            &node_id,
+            &attempt_id,
+            None,
+            Some(value),
+        )
+    };
+    Ok(vm.map_err(command_error)?)
+}
+
+#[tauri::command]
 pub async fn set_acp_session_config_option(
     _app_handle: AppHandle,
     state: State<'_, DesktopState>,
@@ -11045,6 +11160,7 @@ mod tests {
                     output: None,
                     success_condition: None,
                     permission_mode: None,
+                    auto_accept: false,
                     config_options: BTreeMap::new(),
                     manual_check: None,
                     prompt_envelope: Default::default(),
@@ -11057,6 +11173,7 @@ mod tests {
                     agent_id: agent_id.to_string(),
                     model_id: None,
                     permission_mode_id: None,
+                    auto_accept: false,
                     config_options: BTreeMap::new(),
                 }],
                 ..WorkflowModelBindings::default()
@@ -11077,6 +11194,7 @@ mod tests {
                         bootstrap_provider: agent_id.to_string(),
                         bootstrap_model: None,
                         permission_mode: None,
+                        auto_accept: false,
                         bootstrap_config_options: Default::default(),
                         acceptance_model: None,
                         acceptance_config_options: Default::default(),
@@ -11085,6 +11203,7 @@ mod tests {
                             provider: "agent-b".to_string(),
                             model: None,
                             permission_mode: None,
+                            auto_accept: false,
                             config_options: Default::default(),
                         }],
                     },
@@ -11631,6 +11750,7 @@ mod tests {
                         provider: "agent-a".to_string(),
                         model: None,
                         permission_mode: None,
+                        auto_accept: false,
                     },
                     config_options: Default::default(),
                     allowed_profiles: Vec::new(),
@@ -13964,6 +14084,7 @@ mod tests {
                 bootstrap_provider: "claude-acp".to_string(),
                 bootstrap_model: None,
                 permission_mode: None,
+                auto_accept: false,
                 bootstrap_config_options: Default::default(),
                 acceptance_model: None,
                 acceptance_config_options: Default::default(),
@@ -13973,12 +14094,14 @@ mod tests {
                         provider: "codex-acp".to_string(),
                         model: None,
                         permission_mode: None,
+                        auto_accept: false,
                         config_options: Default::default(),
                     },
                     gold_band::dsl::DynamicAgentRef {
                         provider: "claude-acp".to_string(),
                         model: None,
                         permission_mode: None,
+                        auto_accept: false,
                         config_options: Default::default(),
                     },
                 ],

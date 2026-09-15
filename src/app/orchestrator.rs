@@ -5227,6 +5227,18 @@ fn dynamic_permission_mode_for_provider(dynamic: &AiDynamicNode, provider: &str)
     }
 }
 
+fn dynamic_auto_accept_for_provider(dynamic: &AiDynamicNode, provider: &str) -> bool {
+    match &dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { auto_accept, .. } => *auto_accept,
+        AiDynamicAgentStrategy::Dynamic {
+            available_agents, ..
+        } => available_agents
+            .iter()
+            .find(|agent_ref| agent_ref.provider == provider)
+            .is_some_and(|agent_ref| agent_ref.auto_accept),
+    }
+}
+
 fn dynamic_control_provider(dynamic: &AiDynamicNode) -> &str {
     match &dynamic.agent_strategy {
         AiDynamicAgentStrategy::Fixed { provider, .. } => provider,
@@ -5244,6 +5256,13 @@ fn dynamic_control_permission_mode(dynamic: &AiDynamicNode) -> Option<String> {
         AiDynamicAgentStrategy::Dynamic {
             permission_mode, ..
         } => permission_mode.clone(),
+    }
+}
+
+fn dynamic_control_auto_accept(dynamic: &AiDynamicNode) -> bool {
+    match &dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { auto_accept, .. } => *auto_accept,
+        AiDynamicAgentStrategy::Dynamic { auto_accept, .. } => *auto_accept,
     }
 }
 
@@ -7281,6 +7300,7 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         provider: ctx.dynamic.bootstrap_provider().map(ToOwned::to_owned),
         profile: None,
         permission_mode: dynamic_control_permission_mode(ctx.dynamic),
+        auto_accept: dynamic_control_auto_accept(ctx.dynamic),
         model: ctx.dynamic.bootstrap_model().map(ToOwned::to_owned),
         session_mode: SessionMode::New,
         continue_from_node_id: None,
@@ -11805,6 +11825,10 @@ fn dynamic_node_state_from_spec(
     let permission_mode = provider
         .as_deref()
         .and_then(|provider| dynamic_permission_mode_for_provider(ctx.dynamic, provider));
+    let auto_accept = provider
+        .as_deref()
+        .map(|provider| dynamic_auto_accept_for_provider(ctx.dynamic, provider))
+        .unwrap_or_else(|| dynamic_control_auto_accept(ctx.dynamic));
     let node = DynamicNodeState {
         version: VERSION.to_string(),
         acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
@@ -11830,6 +11854,7 @@ fn dynamic_node_state_from_spec(
         profile: spec.profile,
         model,
         permission_mode,
+        auto_accept,
         session_mode: spec.session_mode,
         continue_from_node_id: spec.continue_from_node_id,
         workflow_id: spec.workflow_id,
@@ -12161,6 +12186,7 @@ fn create_dynamic_merge_node(
         profile: None,
         model: group.merge.model.clone(),
         permission_mode: dynamic_control_permission_mode(ctx.dynamic),
+        auto_accept: dynamic_control_auto_accept(ctx.dynamic),
         session_mode: SessionMode::New,
         continue_from_node_id: None,
         workflow_id: None,
@@ -12214,6 +12240,7 @@ fn create_dynamic_acceptance_node(
         profile: None,
         model: group.acceptance.model.clone(),
         permission_mode: dynamic_control_permission_mode(ctx.dynamic),
+        auto_accept: dynamic_control_auto_accept(ctx.dynamic),
         session_mode: SessionMode::New,
         continue_from_node_id: None,
         workflow_id: None,
@@ -12603,6 +12630,7 @@ fn build_dynamic_worker_invocation(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .or_else(|| node.permission_mode.clone());
+    let auto_accept = node.auto_accept;
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -12685,6 +12713,7 @@ fn build_dynamic_worker_invocation(
         session_mode,
         user_prompt_render_mode,
         permission_mode,
+        auto_accept,
         model,
         config_options,
         continue_ref,
@@ -16403,6 +16432,7 @@ mod tests {
                 provider: None,
                 profile: None,
                 permission_mode: None,
+                auto_accept: false,
                 model: None,
                 session_mode: SessionMode::New,
                 continue_from_node_id: None,
@@ -17248,6 +17278,7 @@ mod tests {
                 provider: "claude-acp".to_string(),
                 model: None,
                 permission_mode: None,
+                auto_accept: false,
             },
             config_options: Default::default(),
             allowed_profiles: Vec::new(),
@@ -17265,6 +17296,7 @@ mod tests {
                 bootstrap_provider: "codex-acp".to_string(),
                 bootstrap_model: Some("gpt-5.6-sol".to_string()),
                 permission_mode: Some("agent-full-access".to_string()),
+                auto_accept: false,
                 bootstrap_config_options: BTreeMap::from([(
                     "reasoning_effort".to_string(),
                     "high".to_string(),
@@ -17279,6 +17311,7 @@ mod tests {
                     provider: "codex-acp".to_string(),
                     model: Some("gpt-5.4".to_string()),
                     permission_mode: Some("auto".to_string()),
+                    auto_accept: false,
                     config_options: BTreeMap::from([(
                         "reasoning_effort".to_string(),
                         "low".to_string(),
@@ -18417,6 +18450,7 @@ mod tests {
             provider: Some("claude-acp".to_string()),
             profile: None,
             permission_mode: None,
+            auto_accept: false,
             model: None,
             session_mode: SessionMode::New,
             continue_from_node_id: None,
@@ -18822,6 +18856,7 @@ mod tests {
                 bootstrap_provider: "claude-acp".to_string(),
                 bootstrap_model: None,
                 permission_mode: None,
+                auto_accept: false,
                 bootstrap_config_options: Default::default(),
                 acceptance_model: None,
                 acceptance_config_options: Default::default(),
@@ -18830,6 +18865,7 @@ mod tests {
                     provider: "claude-acp".to_string(),
                     model: None,
                     permission_mode: None,
+                    auto_accept: false,
                     config_options: Default::default(),
                 }],
             },
@@ -18937,6 +18973,7 @@ mod tests {
                 bootstrap_provider: "claude-acp".to_string(),
                 bootstrap_model: None,
                 permission_mode: None,
+                auto_accept: false,
                 bootstrap_config_options: Default::default(),
                 acceptance_model: None,
                 acceptance_config_options: Default::default(),
@@ -18945,6 +18982,7 @@ mod tests {
                     provider: "claude-acp".to_string(),
                     model: None,
                     permission_mode: None,
+                    auto_accept: false,
                     config_options: Default::default(),
                 }],
             },

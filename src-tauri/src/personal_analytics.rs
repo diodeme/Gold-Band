@@ -1318,6 +1318,7 @@ fn invoke_agent(
         &prompt,
         SessionMode::New,
         None,
+        false,
         model_id.map(str::to_string),
         insight_config_options(thought_level_option_id, thought_level_value),
         None,

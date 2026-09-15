@@ -864,6 +864,8 @@ pub struct ConversationDirectConfigVm {
     pub agent_type: String,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
 }
@@ -890,6 +892,8 @@ pub struct ConversationAutoConfigVm {
     pub acceptance_config_options: BTreeMap<String, String>,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
     pub available_agents: Option<Vec<ConversationDynamicAgentRefVm>>,
@@ -908,6 +912,8 @@ pub struct ConversationDynamicAgentRefVm {
     pub provider: String,
     pub model: Option<String>,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
 }
@@ -4551,6 +4557,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
     let permission_mode = config
         .and_then(|c| c.permission_mode.as_deref())
         .filter(|v| !v.trim().is_empty());
+    let auto_accept = config.is_some_and(|c| c.auto_accept);
     let global_goal = config
         .and_then(|c| c.global_goal.as_deref())
         .filter(|v| !v.trim().is_empty());
@@ -4588,6 +4595,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
                                 .map(str::trim)
                                 .filter(|value| !value.is_empty())
                                 .map(str::to_string),
+                            auto_accept: agent.auto_accept,
                             config_options: agent.config_options.clone(),
                         })
                     })
@@ -4599,6 +4607,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
                     provider: bootstrap_provider.clone(),
                     model: model_id.map(str::to_string),
                     permission_mode: None,
+                    auto_accept: false,
                     config_options: BTreeMap::new(),
                 }]
             });
@@ -4606,6 +4615,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
             bootstrap_provider,
             bootstrap_model: bootstrap_model_id.map(str::to_string),
             permission_mode: permission_mode.map(str::to_string),
+            auto_accept,
             bootstrap_config_options: config
                 .map(|config| config.bootstrap_config_options.clone())
                 .unwrap_or_default(),
@@ -4625,6 +4635,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
             provider: agent_type.to_string(),
             model: model_id.map(str::to_string),
             permission_mode: permission_mode.map(str::to_string),
+            auto_accept,
         }
     };
 
@@ -4687,6 +4698,7 @@ fn build_direct_workflow(config: &ConversationDirectConfigVm) -> WorkflowDsl {
             output: None,
             success_condition: None,
             permission_mode: config.permission_mode.clone(),
+            auto_accept: config.auto_accept,
             config_options: config.config_options.clone(),
             manual_check: Some(false),
             prompt_envelope: PromptEnvelopeMode::RawAgent,
@@ -6967,11 +6979,13 @@ mod tests {
             )]),
             model_id: None,
             permission_mode: Some("acceptEdits".to_string()),
+            auto_accept: false,
             config_options: Default::default(),
             available_agents: Some(vec![ConversationDynamicAgentRefVm {
                 provider: "claude-acp".to_string(),
                 model: Some("worker-model".to_string()),
                 permission_mode: Some("bypassPermissions".to_string()),
+                auto_accept: false,
                 config_options: std::collections::BTreeMap::from([(
                     "reasoning_effort".to_string(),
                     "low".to_string(),
@@ -7051,11 +7065,13 @@ mod tests {
                 acceptance_config_options: Default::default(),
                 model_id: None,
                 permission_mode: None,
+                auto_accept: false,
                 config_options: Default::default(),
                 available_agents: Some(vec![ConversationDynamicAgentRefVm {
                     provider: "agent-worker".to_string(),
                     model: None,
                     permission_mode: None,
+                    auto_accept: false,
                     config_options: Default::default(),
                 }]),
                 routing_prompt: None,
@@ -7092,6 +7108,7 @@ mod tests {
             agent_type: "codex-acp".to_string(),
             model_id: Some("gpt-direct".to_string()),
             permission_mode: Some("ask".to_string()),
+            auto_accept: false,
             config_options: Default::default(),
         });
 
@@ -7117,6 +7134,7 @@ mod tests {
             agent_type: "claude-acp".to_string(),
             model_id: None,
             permission_mode: None,
+            auto_accept: false,
             config_options: Default::default(),
         });
 
@@ -7171,6 +7189,7 @@ mod tests {
                 agent_type: "claude-acp".to_string(),
                 model_id: None,
                 permission_mode: None,
+                auto_accept: false,
                 config_options: Default::default(),
             }),
             auto_config: None,
@@ -7236,6 +7255,7 @@ mod tests {
                 agent_type: "claude-acp".to_string(),
                 model_id: None,
                 permission_mode: None,
+                auto_accept: false,
                 config_options: Default::default(),
             }),
             auto_config: None,
@@ -7265,6 +7285,7 @@ mod tests {
                 agent_type: "claude-acp".to_string(),
                 model_id: None,
                 permission_mode: None,
+                auto_accept: false,
                 config_options: Default::default(),
             }),
             auto_config: None,
@@ -7306,6 +7327,7 @@ mod tests {
                 agent_type: "claude-acp".to_string(),
                 model_id: None,
                 permission_mode: None,
+                auto_accept: false,
                 config_options: Default::default(),
             }),
             auto_config: None,
@@ -7346,6 +7368,7 @@ mod tests {
                 agent_type: "claude-acp".to_string(),
                 model_id: None,
                 permission_mode: None,
+                auto_accept: false,
                 config_options: Default::default(),
             }),
             auto_config: None,

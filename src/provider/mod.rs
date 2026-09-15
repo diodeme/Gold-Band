@@ -277,6 +277,8 @@ pub struct WorkerInvocation {
     #[serde(default)]
     pub user_prompt_render_mode: UserPromptRenderMode,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -1564,6 +1566,7 @@ impl AcpProvider {
             &prompt,
             req.session_mode,
             req.permission_mode.clone(),
+            req.auto_accept,
             req.model.clone(),
             req.config_options.clone(),
             req.continue_ref.clone(),
@@ -3096,6 +3099,7 @@ mod tests {
             session_mode: SessionMode::New,
             user_prompt_render_mode: UserPromptRenderMode::RequirementTask,
             permission_mode: None,
+            auto_accept: false,
             model: None,
             config_options: Default::default(),
             continue_ref: None,
@@ -4546,6 +4550,7 @@ mod tests {
             session_mode: SessionMode::New,
             user_prompt_render_mode: UserPromptRenderMode::RequirementTask,
             permission_mode: None,
+            auto_accept: false,
             model: None,
             config_options: Default::default(),
             continue_ref: None,

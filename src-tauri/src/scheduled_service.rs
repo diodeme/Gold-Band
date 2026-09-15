@@ -1514,6 +1514,7 @@ mod tests {
                             agent_id: "claude-acp".to_string(),
                             model_id: None,
                             permission_mode_id: None,
+                            auto_accept: false,
                             config_options: BTreeMap::new(),
                         }),
                         NodeDsl::AiDynamic(_) => None,
@@ -1984,6 +1985,7 @@ mod tests {
             agent_type: "claude-acp".to_string(),
             model_id: Some("sonnet".to_string()),
             permission_mode: Some("plan".to_string()),
+            auto_accept: false,
             config_options: BTreeMap::new(),
         });
 

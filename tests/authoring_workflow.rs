@@ -200,6 +200,7 @@ fn configured_bindings(workflow: &WorkflowDsl) -> WorkflowModelBindings {
                     agent_id: "claude-acp".to_string(),
                     model_id: None,
                     permission_mode_id: None,
+                    auto_accept: false,
                     config_options: BTreeMap::new(),
                 })
             })
@@ -272,6 +273,7 @@ fn create_task_accepts_lightweight_authoring_workflow_with_model_bindings() {
                     agent_id: "claude-acp".to_string(),
                     model_id: Some("claude-sonnet-4-6".to_string()),
                     permission_mode_id: None,
+                    auto_accept: false,
                     config_options: BTreeMap::new(),
                 })
             })

@@ -905,6 +905,8 @@ pub struct AcpSessionConfigVm {
     pub catalog_observed_at: Option<String>,
     pub model_override_id: Option<String>,
     pub permission_mode_override_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     pub config_option_overrides: std::collections::BTreeMap<String, String>,
     pub current_model_id: Option<String>,
     pub current_model_name: Option<String>,
@@ -6955,6 +6957,10 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let auto_accept = session
+        .get("autoAccept")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
     let config_option_overrides: std::collections::BTreeMap<String, String> = session
         .get("configOptionOverrides")
         .cloned()
@@ -6985,6 +6991,7 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
 
     if model_override_id.is_none()
         && permission_mode_override_id.is_none()
+        && !auto_accept
         && config_option_overrides.is_empty()
         && current_model_id.is_none()
         && current_model_name.is_none()
@@ -7001,6 +7008,7 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
         catalog_observed_at,
         model_override_id,
         permission_mode_override_id,
+        auto_accept,
         config_option_overrides,
         current_model_id,
         current_model_name,

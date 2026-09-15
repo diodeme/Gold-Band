@@ -372,9 +372,9 @@ use crate::acp::interaction::{
     AcpPromptInteractionIdentity, AcpPromptInteractionKind, annotate_prompt_interaction_identity,
 };
 use crate::acp::permission::{
-    PermissionResponseState, acp_permission_response_result,
+    PermissionResponseState, acp_permission_response_result, auto_accept_permission_option_id,
     bind_pending_permission_timeline_identity, cancel_pending_permission_requests,
-    permission_response_file, remove_permission_signal_files,
+    permission_response_file, remove_permission_signal_files, session_auto_accept_override,
     wait_for_permission_response_until_cancelled, write_pending_permission,
 };
 use crate::acp::pipeline_diagnostics::{AcpPipelineDiagnostics, PipelineUpdateKind};
@@ -2188,6 +2188,7 @@ struct AcpRuntime<'a> {
     config_catalog_refresh_required_at: Option<String>,
     model_override: Option<String>,
     permission_mode_override: Option<String>,
+    auto_accept: bool,
     config_option_overrides: BTreeMap<String, String>,
     available_commands: Option<Vec<AcpCommandItem>>,
     system_prompt_append: Option<String>,
@@ -2594,6 +2595,7 @@ pub fn run_prompt(
     prompt: &PromptBundle,
     session_mode: SessionMode,
     permission_mode: Option<String>,
+    auto_accept: bool,
     model: Option<String>,
     config_options: BTreeMap<String, String>,
     continue_ref: Option<Value>,
@@ -2624,6 +2626,7 @@ pub fn run_prompt(
             prompt,
             session_mode,
             permission_mode,
+            auto_accept,
             model,
             config_options,
             continue_ref,
@@ -2658,6 +2661,7 @@ fn run_prompt_inner(
     prompt: &PromptBundle,
     session_mode: SessionMode,
     permission_mode: Option<String>,
+    auto_accept: bool,
     model: Option<String>,
     config_options: BTreeMap<String, String>,
     continue_ref: Option<Value>,
@@ -2706,6 +2710,7 @@ fn run_prompt_inner(
     )?;
     runtime.model_override = model.clone();
     runtime.permission_mode_override = permission_mode.clone();
+    runtime.auto_accept = session_auto_accept_override(&runtime.paths.attempt_dir).unwrap_or(auto_accept);
     runtime.config_option_overrides = config_options.clone();
     if runtime.is_prompt_cancel_requested() {
         let capabilities = runtime
@@ -3805,6 +3810,9 @@ impl<'a> AcpRuntime<'a> {
                 .and_then(|metadata| metadata.config_catalog_refresh_required_at.clone()),
             model_override: None,
             permission_mode_override: None,
+            auto_accept: prior_metadata
+                .as_ref()
+                .is_some_and(|metadata| metadata.auto_accept),
             config_option_overrides: BTreeMap::new(),
             available_commands: None,
             system_prompt_append: None,
@@ -5990,6 +5998,17 @@ impl<'a> AcpRuntime<'a> {
             return self.send_cancelled_permission_response(rpc_id, &request_id);
         }
         self.seq += 1;
+        let auto_accept =
+            session_auto_accept_override(&self.paths.attempt_dir).unwrap_or(self.auto_accept);
+        if let Some(option_id) = auto_accept_permission_option_id(auto_accept, &params) {
+            return self.send_auto_accepted_permission_response(
+                rpc_id,
+                &request_id,
+                &interaction_identity,
+                params,
+                option_id,
+            );
+        }
         write_pending_permission(
             &self.paths.attempt_dir,
             &request_id,
@@ -6055,6 +6074,39 @@ impl<'a> AcpRuntime<'a> {
         }
         let _ = remove_permission_signal_files(&self.paths.attempt_dir, &request_id);
         let result = acp_permission_response_result(response)?;
+        let frame = json!({
+            "jsonrpc": "2.0",
+            "id": rpc_id.clone(),
+            "result": result.clone(),
+        });
+        self.append_outbound_frame(&frame);
+        self.connection.send_response(rpc_id, result)
+    }
+
+    fn send_auto_accepted_permission_response(
+        &mut self,
+        rpc_id: Value,
+        request_id: &str,
+        identity: &AcpPromptInteractionIdentity,
+        params: Value,
+        option_id: String,
+    ) -> Result<()> {
+        let decided_at = current_timestamp();
+        let mut event = permission_request_event(self.seq, request_id.to_string(), params);
+        event.status = Some("selected".to_string());
+        event.ended_at = Some(decided_at.clone());
+        if let Some(object) = event.raw.get_or_insert_with(|| json!({})).as_object_mut() {
+            object.insert("optionId".to_string(), json!(option_id.clone()));
+            object.insert("autoAccepted".to_string(), json!(true));
+            object.remove("cancelled");
+        }
+        self.persist_prompt_interaction_event(&event, identity)?;
+        let result = acp_permission_response_result(PermissionResponseState {
+            request_id: request_id.to_string(),
+            option_id: Some(option_id),
+            cancelled: false,
+            decided_at,
+        })?;
         let frame = json!({
             "jsonrpc": "2.0",
             "id": rpc_id.clone(),
@@ -6780,6 +6832,7 @@ impl<'a> AcpRuntime<'a> {
             config_catalog_refresh_required_at: self.config_catalog_refresh_required_at.clone(),
             model_override: self.model_override.clone(),
             permission_mode_override: self.permission_mode_override.clone(),
+            auto_accept: self.auto_accept,
             config_option_overrides: self.config_option_overrides.clone(),
             system_prompt_append: self.system_prompt_append.clone(),
             prompt_retry: self.prompt_retry.clone(),
@@ -8790,6 +8843,7 @@ mod tests {
             &non_runtime_control_test_prompt("turn-fixture"),
             SessionMode::New,
             None,
+            false,
             None,
             Default::default(),
             None,

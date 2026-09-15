@@ -98,3 +98,14 @@
 - [x] 双语正文为 `wetest --version` 起始的环境与参数检查增加独立小节，避免延续“代码提交前置条件”的编号。
 
 自评审：推送仍是 CICD 角色契约而非 runtime 硬门禁，不新增状态、依赖或代码执行器；检查限定为当前分支、远端配置和相关提交，push 前必须由用户确认实际远端分支与提交范围。首轮契约测试因英文断言大小写与正文不一致失败，修正断言后重跑通过。验证：`rustfmt --check tests/cicd_profile_contract.rs`、`git diff --check -- <本次相关文件>` 与 `cargo test -p gold-band --test cicd_profile_contract -- --nocapture` 通过，测试 1 项。未执行真实 Git 提交 / push、WeTest 操作或模型端到端验收。
+
+## 2026-09-15 默认判定调整
+
+- [x] WB 默认 `wb-development-cicd` 模板的 CICD 节点改为人工 check，结果模式与 Plan 节点一致。
+- [x] 移除默认 output、success_condition 与 cicd-result；会话自然结束后等待用户选择成功或失败。
+- [x] 保留单次提交、人工恢复、禁止自动重放，以及自定义 CICD 节点显式配置 AI 输出验证时的 InlineControl 能力。
+- [x] 更新双语提示词的最终控制结果边界，避免无 artifact 契约时自行推断成功。
+
+验证：WB catalog、模板单测、CICD 输出契约、Profile 契约与恢复测试合计 7 项通过；Web 生产构建、Rust 格式检查和 diff 空白检查通过。未执行真实模型、WeTest 构建部署或 EXE 端到端操作。
+
+自评审：只调整内置模板结果模式和静态提示词边界，复用现有人工 check、单次提交和人工恢复机制，不新增 runtime 状态、依赖、缓存、队列或迁移逻辑。默认模板保持常数级配置与有界执行成本；自定义 CICD 输出契约能力继续由独立接口测试覆盖。

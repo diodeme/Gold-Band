@@ -48,6 +48,18 @@ fn memory_wb_catalog_visibility_and_optional_entry() {
         assert_eq!(template.is_some(), wb);
         if let Some(template) = template {
             assert_eq!(template.workflow.nodes.len(), 4);
+            let cicd = template
+                .workflow
+                .nodes
+                .iter()
+                .find_map(|node| match node {
+                    gold_band::dsl::NodeDsl::Worker(worker) if worker.id == "cicd" => Some(worker),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(cicd.manual_check, Some(true));
+            assert!(cicd.output.is_none());
+            assert!(cicd.success_condition.is_none());
             let mut workflow = template.workflow.clone();
             gold_band::app::apply_optional_entry_preference(template, Some(false), &mut workflow)
                 .unwrap();

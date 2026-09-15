@@ -56,7 +56,7 @@
 
 ## 5. 项目记忆 UI
 
-- [x] 工作空间设置图标与 Tooltip，按需打开“项目记忆设置”Sheet。
+- [x] 工作空间书本图标与 Tooltip，并入新增/删除悬浮操作组，按需打开“项目记忆设置”Sheet。
 - [x] 使用已有 shadcn/ui copy-in 基础控件实现三字段编辑、逐条保存取消与删除确认。
 - [x] 未保存草稿关闭提醒、目标级加载和错误、冲突后的最新值展示。
 - [x] 保持当前工作空间作用域，切换后拒绝迟到读取或保存投影覆盖。
@@ -69,8 +69,8 @@
 
 - [x] 注册 WB 专属 CICD 内置角色，接入双语正式 WeTest 提示词。
 - [x] 从默认轻量工作流机制构建新内置模板，保留前序行为，验收成功后进入 CICD。
-- [x] 不新增验收后人工确认，不自动重试部署；失败通过既有当前节点人工恢复路径处理。
-- [x] 移除无条件未配置失败，保留单次提交、既有产物校验与人工恢复；缺能力、参数或授权按真实原因阻塞。
+- [x] CICD 节点默认启用人工 check，移除默认 output / success_condition / cicd-result；不自动重试部署，失败通过既有当前节点人工恢复路径处理。
+- [x] 移除无条件未配置失败，保留单次提交与人工恢复；自定义节点显式配置 AI 输出验证时保留既有产物与控制结果校验。
 - [x] 测试普通模式不可见 WB 角色和模板，WB 可见；通用记忆在两种产品模式下均可用。
 - [x] 测试可选拷问、验收失败修正、验收成功直接进入 CICD、CICD 成功保留与失败恢复。
 - [ ] 具备真实 Agent、WeTest 环境和部署授权后，验收多子系统、部分成功与人工恢复；本地契约测试不替代真实平台验收。
@@ -131,3 +131,14 @@
 自评审：复用现有 project-level file lock、atomic-write-file 和前端行状态，不新增 tombstone、缓存、队列或平行业务身份。锁仅覆盖短暂文件操作和 task 目录删除；记忆仍只读取两个有界文件，复杂度不变。
 
 验证：后端记忆、MCP、调用绑定与 CICD 目标测试合计 20 项通过；前端项目记忆与侧栏生命周期测试 14 项通过；TypeScript 检查、Vite 生产构建、`cargo fmt --all -- --check`、`git diff --check` 和 `cargo check -j 1 -p gold-band-desktop` 通过。桌面编译仅有既有 dead-code 警告。
+
+## 2026-09-15 入口交互与 CICD 判定调整
+
+- [x] 项目记忆入口改用书本图标，并与新增会话、删除工作空间入口共用悬浮/聚焦操作组。
+- [x] WB 内置模板的 CICD 节点改为人工 check，移除默认 output、success_condition 和 cicd-result。
+- [x] 保留 CICD 单次提交、人工恢复、禁止自动重放，以及自定义节点显式配置 AI 输出验证时的 InlineControl 能力。
+- [x] 更新 DOM 与模板接口测试，确认旧任务 authoring workflow / Run snapshot 不做隐式迁移。
+
+验证：`workspace-sidebar-width-hydration` 5/5、`memory_wb_catalog` 1/1、`cicd_output_contract` 1/1、WB 模板单测 1/1、`cicd_profile_contract` 1/1、`cicd_recovery` 3/3 通过；`npm run web:build`、`cargo fmt --all -- --check` 与 `git diff --check` 通过。iab 实际确认书本图标、三按钮同组、聚焦展示、Tooltip 入口及项目记忆 Sheet 打开/关闭，并检查深色模式下仍可见，结束后已恢复跟随系统主题、关闭页面与测试服务。
+
+自评审：复用现有 Button、Tooltip、悬浮操作组与 manual check 生命周期，不新增状态、依赖、接口、缓存或队列。改动为常数级 DOM 与模板字段调整，不进入数据加载或渲染热路径，无需 benchmark。存量任务不迁移，避免改写 canonical authoring 和 immutable snapshot。

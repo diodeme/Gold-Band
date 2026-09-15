@@ -38,11 +38,15 @@ use crate::state::DesktopState;
 const OWN_LIBRARY_AGENT_SOURCE: &str = ".gold-band";
 
 /// multica 导入尺寸约束（对齐服务端，超限即 failed 上报；问题清单附录）。
-pub const IMPORT_MAX_FILE_BYTES: u64 = 1024 * 1024;
-pub const IMPORT_MAX_BUNDLE_BYTES: u64 = 8 * 1024 * 1024;
-pub const IMPORT_MAX_FILES: usize = 256;
-/// 相对路径深度上限（`a/b/c/d.md` = 4）。
-pub const IMPORT_MAX_DEPTH: usize = 4;
+///
+/// 唯一事实源在 `gold_band::skill`（推送打包与拉取落库共用同一组常量），此处按推送侧
+/// 既有命名 re-export，测试与错误文案引用不变。
+pub use gold_band::skill::{
+    SKILL_BUNDLE_MAX_BUNDLE_BYTES as IMPORT_MAX_BUNDLE_BYTES,
+    SKILL_BUNDLE_MAX_DEPTH as IMPORT_MAX_DEPTH,
+    SKILL_BUNDLE_MAX_FILE_BYTES as IMPORT_MAX_FILE_BYTES,
+    SKILL_BUNDLE_MAX_FILES as IMPORT_MAX_FILES,
+};
 
 /// 清洗远端展示名为本地 skill 目录名（设计 §5.2，无映射表方案）。
 ///

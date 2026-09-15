@@ -3463,6 +3463,7 @@ mod tests {
                 workspace_id: "ws-1".to_string(),
                 local_project_id: "proj-1".to_string(),
                 issue_id: Some("iss-1".to_string()),
+                issue_kind: Some("dev".to_string()),
                 status: "completed".to_string(),
                 title: "Fix bug".to_string(),
                 completed_at: "2026-08-06T01:00:00Z".to_string(),

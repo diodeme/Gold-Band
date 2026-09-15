@@ -391,12 +391,7 @@ fn finalize_terminal(
         // task_conversations 此处已清（续跑语义不变），但 completed 历史独立常驻，供用户回看本地会话。
         record_completed_task(
             state,
-            completed_task_from_run(
-                remote_task_id,
-                run,
-                status,
-                chrono::Utc::now().to_rfc3339(),
-            ),
+            completed_task_from_run(remote_task_id, run, status, chrono::Utc::now().to_rfc3339()),
         );
         (true, ())
     }) {

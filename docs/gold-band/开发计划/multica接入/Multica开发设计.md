@@ -2167,6 +2167,64 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.43 改动四十一：拉取落库支持多文件 skill——`write_bundle_instance` 整目录镜像写入（M5-bc，2026-09-15）
+
+**背景与定性**：§12.39（M5-az）的拉取链路只落单文件 SKILL.md，多文件远端 skill 被 skipped（`multica.skill.has-files`）——这是 v1 的**有意设计裁剪**（非实现缺陷），但推送侧多文件感知，形成「出得去、进不来」的单向不对称。本轮经用户确认服务端契约后补齐设计（权威设计 `.claude/design/multica_skill/` 2026-09-15 修订版）：**files 列表不含根 SKILL.md**，它单独走 detail 的 `content` 字段（multica 侧每层显式排除——WalkDir 跳过 / daemon 发现排除 / execenv 落盘兜底去重），故码灵侧无需防御性处理 files 混入根 SKILL.md（落库校验拒绝即兜底）。
+
+**写入层（`gold_band::skill` 新增 `write_bundle_instance`，与 `write_instance` 分立）**
+- 分立原因：编辑器写入是 **merge 语义**（旧内容 + 增量编辑），拉取覆盖是**镜像语义**（远端是权威事实源，整目录替换），文件集与合并行为均不同，共用签名会迫使两语义互相妥协。
+- 镜像覆盖：远端已删的本地支撑文件随之清除（用户确认的「远端镜像」语义）。staged 临时目录（同父同卷，`.mstaging-{目录名}-{pid}`）写满后两步 rename swap（目标→`.mbackup-*`→staging→目标），任一步失败回滚；提交后 backup 先删 SKILL.md 再整体清除（残留对扫描器不可见）。
+- 扫描器不可见性：`scan_skills_dir` 只列含 SKILL.md 的目录 → staging **最后写 SKILL.md**、backup 清理**最先删 SKILL.md**。
+- agent 同步不变：目录级 symlink 按路径身份工作，目录换目标（swap）对链接透明；`reconcile_skill_instance_links` / `restore_skill_links` / `previous_sync_targets` 回滚契约与 `write_instance` 同款。
+- 无 `old_name` 参数：拉取不重命名（推送侧同步更新本地的场景不存在），`current_directory_path` 即覆盖目标（`save_target_dir` 原样返回）。
+- 入口校验前置为纯函数 `validate_skill_bundle_entries`：尺寸（单文件 1MiB / 整包 8MiB）、总数（SKILL.md + 支撑 ≤256）、路径安全（无穿越段 / 绝对路径 / 反斜杠 / Windows 非法字符 / 尾点尾空格 / 根 SKILL.md 混入 / 重复路径）、深度 ≤4——超限整体失败不部分写入。
+
+**限额单一事实源**：`SKILL_BUNDLE_MAX_FILE_BYTES/MAX_BUNDLE_BYTES/MAX_FILES/MAX_DEPTH` 上移 `gold_band::skill`，推送打包（`local_skills.rs`）与拉取落库共用；桌面端 `IMPORT_MAX_*` 改为 re-export（消除两份常量漂移）。
+
+**client / 命令层**
+- `list_remote_skill_files` → `get_remote_skill_files`：路径 `/api/skills/{id}/files`（服务端默认 `includeContent=true` 返回正文，去掉原 `?include=metadata`）；`RemoteSkillFileMeta` → `RemoteSkillFile` 含 `#[serde(default)] content`（size 保留仅作 wire 契约文档）；wrapped/bare 容错不变。
+- `pull_multica_skills`：detail → files（含正文）→ 目录名清洗 + 批内 seen 去重 → `spawn_blocking(write_bundle_instance)`；404 → skipped not-found、网络 → failed remote-error、写失败（含超限/路径违规）→ failed 原始错误透传。
+- **`multica.skill.has-files` 错误码退役**（破坏式更新）：拉取分支、VM 注释、i18n 双语 reason 映射、i18n 测试数组一并删除。
+
+**性能影响**：拉取为用户手动触发的低频操作；每 skill 多一次 files 请求，受 8MiB 整包上限硬约束；写入走同卷 rename（O(1) 元数据操作），staging 写入是 ≤255 文件的顺序 I/O，数据规模上界明确。前端零新增渲染路径（纯删除）。
+
+**验证（2026-09-15）**：lib `cargo test -p gold-band --lib` 全量 **1189 过 / 0 失败**（含 skill:: 20 项，bundle 新增 4 项：镜像落盘、覆盖删除 stale 文件且 symlink 不失效、当前目录缺失失败、校验拒绝越权路径/超限条目）；desktop multica:: **127 过 / 0 失败**；`tsc -p web/tsconfig.build.json` 零错；web vitest multica **8 套件 69 过**。**顺带修复**：HEAD 既有的两处 lib 测试夹具编译错（`MulticaCompletedTask` 缺 `issue_kind`，M5-ba 加字段时漏改 `src/app/mod.rs` / `src/config/mod.rs`）。
+
+**评审整改（2026-09-15，实现完成后独立 review，三条）**
+- **测试断言失效**：两处「staging/backup 无残留」断言用 `Utf8PathBuf::iter()`——迭代的是**路径组件**而非目录条目，恒真 → 改 `fs::read_dir` 逐条目检查（`assert_no_staging_leftovers`）。
+- **崩溃残留清扫改前缀匹配**（`remove_stale_bundle_staging`，任意 pid）：原 pid 隔离清扫在进程崩溃重启后永远够不到残留，而「SKILL.md 已写完、swap 未完成」的崩溃残留含 SKILL.md、对 `scan_skills_dir` **可见**（其不跳点前缀目录）→ 幽灵 skill 永久残留。前缀按 skill 目录名隔离；单实例 app（`tauri-plugin-single-instance`）+ 拉取弹窗 UI 串行化保证无并发写同一 skill 的在飞 staging 被误删。
+- **评审测试抓到真 bug**：`write_staged_bundle` 对零支撑文件的单文件 skill 从不创建 staging 目录（`create_dir_all` 只由支撑文件父目录触发，原 4 项 bundle 测试都有支撑文件未覆盖）→ 最常见的单文件远端 skill 拉取必失败（os error 3）。补 staging 首行 `create_dir_all` 修复。
+- 回归：skill:: **21 过 / 0 失败**（新增 `bundle_write_sweeps_crash_leftovers_across_pids`：跨 pid 残留被清除、其他 skill 残留不受影响，同时固化零支撑文件路径）；desktop multica:: **127 过 / 0 失败**。
+
+---
+
+### 12.44 改动四十二：同步弹窗选择阶段滚动修复与全选开关（M5-bd，2026-09-15）
+
+**背景与根因**：skill 过多时「从 Multica 同步」弹窗被拉长且无法滑动——选择阶段 body 容器（`min-h-0 flex-1 space-y-3`）不是 flex 容器，子级 ScrollArea 的 `min-h-0 flex-1` 在非 flex 父级下失效，列表自然高度溢出被 DialogContent 的 `overflow-hidden` 裁掉（无滚动条出现）。报告阶段本就正确（body 自身 `overflow-y-auto`）。定性为「好设计但实现不完善」：ui-interaction.md §5.1 固定头/中滚动/固定脚的布局原则在选择阶段漏配了 flex 链，非设计缺陷。同时用户要求补全选开关（只想同步个别 skill 时逐个取消太繁琐）。
+
+**修复（`MulticaSkillSyncDialog.tsx`，纯前端，零后端改动）**
+- flex 链：选择阶段 body 改 `flex min-h-0 flex-1 flex-col gap-3`；工作区选择行与全选行 `shrink-0`；ScrollArea 保持 `min-h-0 flex-1` 成为唯一滚动区（列表过长时内部滚动，弹窗 `max-h-[85vh]` 封顶）。
+- 全选三态开关（列表非空且非 loading 时显示，同步进行中禁用）：shadcn Checkbox `checked` 三态——全选 `true` / 部分 `indeterminate`（默认「新增勾选、已存在不勾」）/ 全不选 `false`；点一次全选、再点一次全不选（连点两下即清空，再单独勾选想要的），旁附已选计数。状态仍收敛在 `selected` 单一事实源，全选是 O(n) 批量投影（`handleToggleSelectAll`），无新增状态机/派生 state。
+- i18n：`contextManagement.skills.multicaSync.selectAll` / `selectedCount`（双语 + 测试键数组 + 插值断言同步）。
+
+**性能评审**：无新增渲染路径与数据加载；全选一次 O(n) setState（n = 远端 skill 数，几十量级）；无虚拟化需求（ui-interaction.md §6，短列表不虚拟化）。复用既有 shadcn Checkbox/ScrollArea，无新组件。
+
+**验证（2026-09-15）**：`tsc -p web/tsconfig.build.json` 零错；vitest 新增 `web/tests/multica-skill-sync-dialog.test.tsx` 2 例——① 滚动区 flex 契约（ScrollArea `min-h-0`+`flex-1`）；② 三态全选交互（默认 indeterminate → 全选 → 全不选且同步按钮禁用 → 单选后 `pullMulticaSkills('ws-1', ['s-exists'])` 仅拉取勾中项）；`multica-skill-sync-i18n.test.ts` 补 2 键与双插值断言。multica 相关套件全过（全量 vitest 另有 4 项分支既有失败，涉及文件均未触碰：ConversationSidebar/AgentManagementPage 原生 title 契约、Composer onPaste 源契约、App agent-registry listen 源契约、acp-activity scrollIntoView 行为）。浏览器视觉验证本会话不可用（M5-ba 先例：留待用户桌面端目验，重点：长列表滚动 + 全选三态样式）。
+
+**评审整改（2026-09-15，实现完成后独立 review，三条）**
+- **indeterminate 视觉缺陷**：copy-in `checkbox.tsx` 原版只渲染 CheckIcon、只有 `data-[state=checked]` 主题色样式；Radix Indicator 对 indeterminate 也渲染 → 全选部分勾选态显示「无填充方框里的对勾」，无减号、无 accent（违反 ui-interaction.md §8 选中态用主题色）。组件测试把 Checkbox mock 掉了故未抓到。修复：copy-in 补 `MinusIcon`（`props.checked === "indeterminate"` 条件渲染）+ `data-[state=indeterminate]` 主题色填充（含 dark 变体），Root 的 props spread 不变、boolean/未传 checked 的既有消费方零行为变化；新增 `web/tests/checkbox-indeterminate.test.tsx` 3 例固化真实渲染契约（indeterminate→minus+accent、checked→check、unchecked→无 Indicator）。
+- **死键删除**：`multicaSync.pulling` 双语定义 + i18n 测试 KEYS 断言俱在，但无任何组件使用（同步按钮 loading 只渲染 Loader2 图标）——按开发阶段破坏式更新原则删除（i18n 双语 + KEYS 数组）。
+- **测试死分支**：dialog 测试 `syncButton` 帮助函数里永不匹配的 `${BASE}.pulling` 文本分支一并移除。
+- 回归：`tsc` 零错；vitest 3 套件（checkbox-indeterminate / multica-skill-sync-i18n / multica-skill-sync-dialog）**8 例全过**；全量 vitest 仍仅 4 项分支既有失败，无新增。
+
+**用户实测反馈整改（2026-09-15，第二迭代：列表仍不滚动）**
+- **根因**：flex 链修复方向正确但不充分——列表滚动走 Radix ScrollArea，真正滚动的 viewport 是 `height:100%`（size-full），其高度依赖父级（ScrollArea Root，自身无 overflow）经 flex 收缩得到的尺寸。在「高度 auto + `max-h-[85vh]` 封顶」的弹窗容器内，孙子级百分比高度解析不可靠：视口塌到内容高度、Root 无裁剪 → 溢出内容被 DialogContent 的 overflow-hidden 裁掉且无任何滚动。判定依据：代码库所有弹窗（AddWorkspace / ConnectionSettings / 本弹窗报告阶段 / ConversationSearch）均把 `overflow-y-auto` 直接放 flex item，ScrollArea 从未用于弹窗内此位置（页面内 ScrollArea 均处于确定高度布局或自带 max-h/h-* 约束）。
+- **修复（`MulticaSkillSyncDialog.tsx`）**：列表容器 ScrollArea → plain div（`gold-themed-scrollbar min-h-0 flex-1 overflow-y-auto rounded-md border`），滚动直接挂在 flex item 上（与 AddWorkspace / 报告阶段同款已验证模式）；报告阶段滚动体补 `gold-themed-scrollbar`（同弹窗滚动条视觉一致）；删除 ScrollArea import。
+- **测试同步**：`multica-skill-sync-dialog.test.tsx` 移除 ScrollArea 桩，结构契约改写为「滚动容器必须是 flex item 本身（overflow-y-auto + min-h-0 + flex-1 + gold-themed-scrollbar），不得经 size-full 视口百分比链」。
+- **验证局限（诚实记录）**：jsdom 无布局引擎，滚动行为无法自动化复现（bug-fix-verification 规则的替代证据：结构契约测试 + 桌面端目验）。`tsc` 零错，vitest 3 套件 8 例过。
+
+---
+
 ## 附录 A：CLAUDE.md 合规自检
 
 - ✅ 先定数据（2.2）→ 再定接口（2.8/第 7 章）→ 再补实现（2.3–2.7/第 4 章）

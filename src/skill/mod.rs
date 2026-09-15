@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use tracing::debug;
 
 use crate::config::{
@@ -126,6 +126,13 @@ fn configured_agent_skill_read_dirs_at_root(
     }
     dirs
 }
+
+/// SKILL bundle 尺寸契约（与 multica 服务端约束对齐；推送/拉取双侧共用同一事实源）：
+/// 单文件 ≤1MiB、整包（SKILL.md + 支撑文件）≤8MiB、文件总数 ≤256、路径深度（含文件名段）≤4。
+pub const SKILL_BUNDLE_MAX_FILE_BYTES: u64 = 1024 * 1024;
+pub const SKILL_BUNDLE_MAX_BUNDLE_BYTES: u64 = 8 * 1024 * 1024;
+pub const SKILL_BUNDLE_MAX_FILES: usize = 256;
+pub const SKILL_BUNDLE_MAX_DEPTH: usize = 4;
 
 pub struct SkillManager {
     paths: GoldBandPaths,
@@ -459,6 +466,129 @@ impl SkillManager {
                 previous_sync_targets.as_deref(),
             );
             return Err(error);
+        }
+
+        Ok(SkillWriteResult {
+            directory_path: target_dir,
+        })
+    }
+
+    /// 多文件 skill 写入（multica 拉取镜像落库）：SKILL.md 原文 + 支撑文件整目录写入。
+    ///
+    /// 与 [`Self::write_instance`] 共享目标解析 / 同步冲突 / 链接调和契约，差异仅在文件集：
+    /// - `content` 为**完整** SKILL.md（调用方组装完成，不走编辑器 merge）；
+    /// - `support_files` 为 `(相对路径, 文本内容)` 支撑文件，落盘前由
+    ///   [`validate_skill_bundle_entries`] 复核（尺寸/数量/深度/路径安全——与推送侧同一契约）。
+    ///
+    /// 覆盖（`current_directory_path` 指向既有目录）为**镜像语义**：拉取源是权威事实源，
+    /// 目录整体替换（staged 目录 → rename swap），远端已删的本地支撑文件随之消失；远端删、
+    /// 本地新增的文件也一并清除。本签名无 `old_name`（拉取不重命名），覆盖时目录身份不变，
+    /// path 级 symlink 同步身份跨 swap 天然保持有效。
+    ///
+    /// 原子性：staged 目录与目标目录同父（同卷 rename），先写支撑文件、**最后写 SKILL.md**
+    /// ——SKILL.md 写入前崩溃的残留对扫描器不可见；swap 任一步失败回滚到写前状态。
+    /// 崩溃兜底：写入开始时按前缀清扫本 skill 的 staging/backup 残留（任意 pid，见
+    /// [`remove_stale_bundle_staging`]）；提交后的 backup 清理失败时先删其 SKILL.md
+    /// 使残留对扫描器不可见。
+    pub fn write_bundle_instance(
+        &self,
+        name: &str,
+        source: SkillSource,
+        content: &str,
+        support_files: &[(String, String)],
+        workspace_path: Option<&str>,
+        current_directory_path: Option<&str>,
+        sync_targets: Option<&[String]>,
+    ) -> Result<SkillWriteResult> {
+        validate_skill_bundle_entries(content, support_files)?;
+
+        let target_dir =
+            self.save_target_dir(name, source, workspace_path, None, current_directory_path)?;
+        self.ensure_save_target_available(name, &target_dir, current_directory_path)?;
+
+        let skill_dir_name = skill_dir_name_from_str(target_dir.as_str())
+            .ok_or_else(|| anyhow::anyhow!("invalid skill directory: {}", target_dir.as_str()))?;
+        let sync_conflicts = self.check_dir_name_conflict(
+            skill_dir_name,
+            source,
+            workspace_path,
+            sync_targets,
+            current_directory_path,
+        );
+        if !sync_conflicts.is_empty() {
+            return Err(SkillCommandError::SyncConflict {
+                skill_name: skill_dir_name.to_string(),
+                conflicts: sync_conflicts,
+            }
+            .into());
+        }
+
+        let current_dir = current_directory_path.map(Utf8PathBuf::from);
+        if let Some(ref current_dir) = current_dir {
+            if !current_dir.exists() {
+                bail!("SKILL dir not found: {:?}", current_dir);
+            }
+        }
+        let previous_sync_targets = current_dir
+            .as_ref()
+            .map(|dir| self.synced_agent_types_for_directory(dir.as_str(), source, workspace_path));
+
+        // staged / backup 固定名含 pid；写入前按前缀清扫本 skill 的崩溃残留（任意 pid）。
+        let parent = target_dir
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("invalid skill directory: {}", target_dir.as_str()))?;
+        remove_stale_bundle_staging(parent, skill_dir_name);
+        let staging = parent.join(format!(".mstaging-{skill_dir_name}-{}", std::process::id()));
+        let backup = parent.join(format!(".mbackup-{skill_dir_name}-{}", std::process::id()));
+
+        if let Err(error) = write_staged_bundle(&staging, content, support_files) {
+            let _ = fs::remove_dir_all(staging.as_std_path());
+            return Err(error);
+        }
+
+        let is_overwrite = current_dir.is_some();
+        if is_overwrite {
+            if let Err(error) = fs::rename(target_dir.as_std_path(), backup.as_std_path()) {
+                let _ = fs::remove_dir_all(staging.as_std_path());
+                return Err(error.into());
+            }
+        }
+        if let Err(error) = fs::rename(staging.as_std_path(), target_dir.as_std_path()) {
+            let _ = fs::remove_dir_all(staging.as_std_path());
+            if is_overwrite {
+                let _ = fs::rename(backup.as_std_path(), target_dir.as_std_path());
+            }
+            return Err(error.into());
+        }
+
+        if let Err(error) = self.reconcile_skill_instance_links(
+            name,
+            target_dir.as_str(),
+            source,
+            workspace_path,
+            sync_targets,
+        ) {
+            // swap 回滚：内容未提交成功，恢复旧目录并还原链接（与 write_instance 同语义）。
+            let _ = fs::rename(target_dir.as_std_path(), staging.as_std_path());
+            if is_overwrite {
+                let _ = fs::rename(backup.as_std_path(), target_dir.as_std_path());
+            }
+            let _ = fs::remove_dir_all(staging.as_std_path());
+            self.restore_skill_links(
+                target_dir.as_str(),
+                source,
+                workspace_path,
+                previous_sync_targets.as_deref(),
+            );
+            return Err(error);
+        }
+
+        // 提交点已过：先删 backup 内 SKILL.md（残留对扫描器不可见），再尽力整体清除。
+        if is_overwrite {
+            let _ = fs::remove_file(backup.join(SKILL_FILE_NAME).as_std_path());
+            if let Err(error) = fs::remove_dir_all(backup.as_std_path()) {
+                debug!("skill bundle backup cleanup failed: {error}");
+            }
         }
 
         Ok(SkillWriteResult {
@@ -984,6 +1114,118 @@ fn skill_description_source(raw: &str) -> Option<String> {
                 .cloned()
                 .or_else(|| document.fields.get("description").cloned())
         })
+}
+
+/// 多文件 skill 落库前的入口校验（与推送侧 `multica/local_skills.rs` 同一契约、同一组常量）：
+/// 尺寸（单文件 / 整包）、文件总数（SKILL.md + 支撑文件）、路径安全（穿越 / 绝对路径 /
+/// Windows 非法字符 / 深度）、根 `SKILL.md` 不得混入支撑文件（由 `content` 承载）、路径去重。
+/// 超限即整体失败，不部分写入。
+pub fn validate_skill_bundle_entries(
+    content: &str,
+    support_files: &[(String, String)],
+) -> Result<()> {
+    if content.len() as u64 > SKILL_BUNDLE_MAX_FILE_BYTES {
+        bail!("SKILL.md exceeds 1MiB limit");
+    }
+    if 1 + support_files.len() > SKILL_BUNDLE_MAX_FILES {
+        bail!(
+            "skill bundle exceeds {SKILL_BUNDLE_MAX_FILES} file limit ({} files)",
+            1 + support_files.len()
+        );
+    }
+    let mut total = content.len() as u64;
+    let mut seen = BTreeSet::new();
+    for (rel_path, file_content) in support_files {
+        validate_support_file_path(rel_path)?;
+        if !seen.insert(rel_path.as_str()) {
+            bail!("duplicate skill file path: {rel_path}");
+        }
+        if file_content.len() as u64 > SKILL_BUNDLE_MAX_FILE_BYTES {
+            bail!("file exceeds 1MiB limit: {rel_path}");
+        }
+        total += file_content.len() as u64;
+        if total > SKILL_BUNDLE_MAX_BUNDLE_BYTES {
+            bail!("skill bundle exceeds 8MiB limit");
+        }
+    }
+    Ok(())
+}
+
+/// 支撑文件相对路径校验：`/` 分隔、相对路径、无穿越段、无 Windows 非法字符，
+/// 深度（含文件名段）≤ [`SKILL_BUNDLE_MAX_DEPTH`]（与推送侧 `collect_files_recursive` 同口径）。
+fn validate_support_file_path(rel_path: &str) -> Result<()> {
+    if rel_path == SKILL_FILE_NAME {
+        bail!("root SKILL.md is carried by content, not a support file");
+    }
+    if rel_path.is_empty() {
+        bail!("empty skill file path");
+    }
+    if rel_path.contains('\\') {
+        bail!("skill file path must use '/' separators: {rel_path}");
+    }
+    if rel_path.starts_with('/') {
+        bail!("skill file path must be relative: {rel_path}");
+    }
+    let segments: Vec<&str> = rel_path.split('/').collect();
+    if segments.len() > SKILL_BUNDLE_MAX_DEPTH {
+        bail!("skill file depth exceeds {SKILL_BUNDLE_MAX_DEPTH}: {rel_path}");
+    }
+    for segment in segments {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            bail!("invalid skill file path segment in: {rel_path}");
+        }
+        if segment
+            .chars()
+            .any(|c| c.is_control() || "<>:\"|?*".contains(c))
+        {
+            bail!("illegal character in skill file path: {rel_path}");
+        }
+        if segment.ends_with('.') || segment.ends_with(' ') {
+            bail!("illegal trailing dot or space in skill file path: {rel_path}");
+        }
+    }
+    Ok(())
+}
+
+/// 本 skill 的 staging/backup 崩溃残留清扫（**按前缀、不限 pid**）：进程在 swap 完成前崩溃后
+/// 重启，pid 已变，pid 隔离的清扫永远够不到残留；其中含 SKILL.md 的残留（staging 已写完
+/// SKILL.md、backup 的 SKILL.md 删除失败）对 [`scan_skills_dir`] 可见。单实例 app + 拉取
+/// 弹窗 UI 串行化保证不存在并发写同一 skill 的在飞 staging 被误删。
+fn remove_stale_bundle_staging(parent: &Utf8Path, skill_dir_name: &str) {
+    let staging_prefix = format!(".mstaging-{skill_dir_name}-");
+    let backup_prefix = format!(".mbackup-{skill_dir_name}-");
+    let Ok(entries) = fs::read_dir(parent.as_std_path()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if name.starts_with(&staging_prefix) || name.starts_with(&backup_prefix) {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// staged 目录写入：先写支撑文件（按需建父目录），**最后写 SKILL.md**——SKILL.md 写入前
+/// 崩溃的残留对 [`scan_skills_dir`] 不可见；写入后、swap 完成前的崩溃残留（毫秒级窗口）
+/// 由下次写入的前缀清扫清除（[`remove_stale_bundle_staging`]）。
+fn write_staged_bundle(
+    staging: &Utf8PathBuf,
+    content: &str,
+    support_files: &[(String, String)],
+) -> Result<()> {
+    // staging 目录自身必须先建：支撑文件为空（单文件 skill）时无任何 create_dir_all 触发点。
+    fs::create_dir_all(staging.as_std_path())?;
+    for (rel_path, file_content) in support_files {
+        let dest = staging.join(rel_path);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent.as_std_path())?;
+        }
+        fs::write(dest.as_std_path(), file_content)?;
+    }
+    fs::write(staging.join(SKILL_FILE_NAME).as_std_path(), content)?;
+    Ok(())
 }
 
 fn merge_skill_edit_content(
@@ -1722,5 +1964,281 @@ compatibility: claude-code-only
         assert!(saved.contains("new content"));
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// staging / backup 无残留断言：按**目录条目**检查（`Utf8PathBuf::iter` 迭代的是路径
+    /// 组件而非目录内容，不能用于本断言）。
+    fn assert_no_staging_leftovers(skills_root: &Utf8PathBuf) {
+        let leftovers: Vec<String> = fs::read_dir(skills_root.as_std_path())
+            .unwrap()
+            .flatten()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name.starts_with(".mstaging-") || name.starts_with(".mbackup-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "staging/backup leftovers: {leftovers:?}"
+        );
+    }
+
+    /// bundle 写入测试夹具：临时 repo + 仅 claude-acp 的 manager，Project 作用域
+    /// （与既有 write 测试同款——Global 落真实 home 不可测；写入链路对两种 source 一致）。
+    fn bundle_test_manager(tag: &str) -> (PathBuf, SkillManager, Utf8PathBuf) {
+        let tmp = std::env::temp_dir().join(format!("gb-bundle-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let repo_root = Utf8PathBuf::from_path_buf(tmp.join("repo")).unwrap();
+        fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let mut agents = BTreeMap::new();
+        agents.insert(agent_id("claude-acp"), claude_acp_config());
+        let manager = SkillManager::new(GoldBandPaths::new(repo_root.clone()), agents);
+        (tmp, manager, repo_root)
+    }
+
+    #[test]
+    fn bundle_create_writes_skill_md_and_support_files() {
+        // 新建：SKILL.md 原文落盘 + 嵌套支撑文件建父目录；无 staging 残留；扫描器可见。
+        let (tmp, manager, repo_root) = bundle_test_manager("create");
+        let support = vec![
+            ("assets/template.md".to_string(), "# tpl".to_string()),
+            ("nested/deep/ref.md".to_string(), "ref".to_string()),
+        ];
+
+        let result = manager
+            .write_bundle_instance(
+                "demo-skill",
+                SkillSource::Project,
+                "---\nname: demo-skill\ndescription: d\n---\n\nBody",
+                &support,
+                Some(repo_root.as_str()),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let skills_root = repo_root.join(".gold-band").join("skills");
+        let skill_dir = skills_root.join("demo-skill");
+        assert_eq!(result.directory_path, skill_dir);
+        assert_eq!(
+            fs::read_to_string(skill_dir.join("SKILL.md").as_std_path()).unwrap(),
+            "---\nname: demo-skill\ndescription: d\n---\n\nBody"
+        );
+        assert_eq!(
+            fs::read_to_string(skill_dir.join("assets").join("template.md").as_std_path()).unwrap(),
+            "# tpl"
+        );
+        assert_eq!(
+            fs::read_to_string(
+                skill_dir
+                    .join("nested")
+                    .join("deep")
+                    .join("ref.md")
+                    .as_std_path()
+            )
+            .unwrap(),
+            "ref"
+        );
+        // staging / backup 无残留。
+        assert_no_staging_leftovers(&skills_root);
+        // 落盘后对扫描器可见（staging 不可见语义的反向验收）。
+        let scanned = scan_skills_dir(&skills_root, SkillSource::Project, ".gold-band");
+        assert_eq!(
+            scanned
+                .iter()
+                .map(|meta| meta.name.clone())
+                .collect::<Vec<_>>(),
+            ["demo-skill"]
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn bundle_overwrite_is_mirror_and_removes_stale_local_files() {
+        // 覆盖 = 远端镜像：远端已删的本地支撑文件（stale/old.md、assets/keep.md）随之清除，
+        // 新支撑文件写入、SKILL.md 替换；agent symlink 指向目录路径，跨 swap 身份保持。
+        let (tmp, manager, repo_root) = bundle_test_manager("overwrite");
+        let skills_root = repo_root.join(".gold-band").join("skills");
+        let skill_dir = skills_root.join("demo-skill");
+        fs::create_dir_all(skill_dir.join("stale").as_std_path()).unwrap();
+        fs::create_dir_all(skill_dir.join("assets").as_std_path()).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md").as_std_path(),
+            "---\nname: demo-skill\ndescription: old\n---\nold body",
+        )
+        .unwrap();
+        fs::write(
+            skill_dir.join("stale").join("old.md").as_std_path(),
+            "stale",
+        )
+        .unwrap();
+        fs::write(
+            skill_dir.join("assets").join("keep.md").as_std_path(),
+            "keep",
+        )
+        .unwrap();
+
+        // 覆盖前建立 agent 同步链接。
+        manager
+            .sync_skill_instance(
+                "demo-skill",
+                skill_dir.as_str(),
+                SkillSource::Project,
+                Some(repo_root.as_str()),
+                Some(&["claude-acp".to_string()]),
+            )
+            .unwrap();
+        let link = repo_root.join(".claude").join("skills").join("demo-skill");
+        assert!(is_link_pointing_to(
+            link.as_std_path(),
+            &canonicalize_lossy(skill_dir.as_std_path())
+        ));
+
+        let support = vec![("assets/new.md".to_string(), "new".to_string())];
+        manager
+            .write_bundle_instance(
+                "demo-skill",
+                SkillSource::Project,
+                "---\nname: demo-skill\ndescription: new\n---\n\nNew body",
+                &support,
+                Some(repo_root.as_str()),
+                Some(skill_dir.as_str()),
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(skill_dir.join("SKILL.md").as_std_path()).unwrap(),
+            "---\nname: demo-skill\ndescription: new\n---\n\nNew body"
+        );
+        assert!(skill_dir.join("assets").join("new.md").is_file());
+        assert!(!skill_dir.join("stale").join("old.md").exists());
+        assert!(!skill_dir.join("stale").exists());
+        assert!(!skill_dir.join("assets").join("keep.md").exists());
+        // 链接仍指向同一目录路径（swap 对 path 级链接透明）。
+        assert!(is_link_pointing_to(
+            link.as_std_path(),
+            &canonicalize_lossy(skill_dir.as_std_path())
+        ));
+        assert_no_staging_leftovers(&skills_root);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn bundle_write_sweeps_crash_leftovers_across_pids() {
+        // 崩溃残留兜底：其他 pid 的 staging/backup 残留（含 SKILL.md 的形态对扫描器可见）
+        // 由同 skill 下次写入的前缀清扫清除——pid 隔离的清扫在重启后永远够不到；
+        // 前缀按 skill 目录名隔离，其他 skill 的残留不受影响。
+        let (tmp, manager, repo_root) = bundle_test_manager("sweep");
+        let skills_root = repo_root.join(".gold-band").join("skills");
+        let foreign_staging = skills_root.join(".mstaging-demo-skill-4242");
+        let foreign_backup = skills_root.join(".mbackup-demo-skill-777");
+        let other_skill_staging = skills_root.join(".mstaging-other-skill-4242");
+        for dir in [&foreign_staging, &foreign_backup, &other_skill_staging] {
+            fs::create_dir_all(dir.as_std_path()).unwrap();
+            // 模拟「SKILL.md 已写完、swap 未完成」的崩溃形态。
+            fs::write(
+                dir.join("SKILL.md").as_std_path(),
+                "---\nname: stale\n---\nbody",
+            )
+            .unwrap();
+        }
+
+        manager
+            .write_bundle_instance(
+                "demo-skill",
+                SkillSource::Project,
+                "---\nname: demo-skill\ndescription: d\n---\n\nBody",
+                &[],
+                Some(repo_root.as_str()),
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert!(!foreign_staging.exists());
+        assert!(!foreign_backup.exists());
+        assert!(other_skill_staging.exists());
+        // 清扫发生在写入前，正常落盘不受残留影响。
+        assert!(skills_root.join("demo-skill").join("SKILL.md").is_file());
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn bundle_write_fails_when_current_dir_missing() {
+        // current_directory_path 指向不存在目录 → 明确错误（与 write_instance 同语义）。
+        let (tmp, manager, repo_root) = bundle_test_manager("missing");
+        let error = manager
+            .write_bundle_instance(
+                "demo-skill",
+                SkillSource::Project,
+                "---\nname: demo-skill\n---\nbody",
+                &[],
+                Some(repo_root.as_str()),
+                Some(repo_root.join(".gold-band/skills/absent").as_str()),
+                None,
+            )
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("SKILL dir not found"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn bundle_validation_rejects_unsafe_and_oversized_entries() {
+        // 路径安全：穿越段、绝对路径、反斜杠、根 SKILL.md 混入、重复路径、非法字符。
+        for bad_path in [
+            "../escape.md",
+            "a/../b.md",
+            "/abs.md",
+            "a\\b.md",
+            "SKILL.md",
+            "a<b.md",
+            "a/b/c/d/e.md",
+        ] {
+            let error = validate_skill_bundle_entries(
+                "---\nname: x\n---\nb",
+                &[(bad_path.to_string(), "c".to_string())],
+            )
+            .unwrap_err();
+            assert!(
+                !format!("{error:#}").is_empty(),
+                "expected rejection for path: {bad_path}"
+            );
+        }
+        // 重复路径。
+        assert!(
+            validate_skill_bundle_entries(
+                "---\nname: x\n---\nb",
+                &[
+                    ("a.md".to_string(), "c".to_string()),
+                    ("a.md".to_string(), "d".to_string())
+                ]
+            )
+            .is_err()
+        );
+        // 文件总数：SKILL.md + 256 支撑文件 = 257 超限。
+        let many: Vec<(String, String)> = (0..SKILL_BUNDLE_MAX_FILES)
+            .map(|i| (format!("f{i}.md"), "c".to_string()))
+            .collect();
+        let error = validate_skill_bundle_entries("---\nname: x\n---\nb", &many).unwrap_err();
+        assert!(format!("{error:#}").contains("256 file limit"));
+        // 边界恰好到顶（255 支撑 + SKILL.md = 256）必须通过。
+        let edge = &many[..SKILL_BUNDLE_MAX_FILES - 1];
+        assert!(validate_skill_bundle_entries("---\nname: x\n---\nb", edge).is_ok());
+        // 单文件超限：SKILL.md 与支撑文件各 1MiB+1。
+        let big = "x".repeat(SKILL_BUNDLE_MAX_FILE_BYTES as usize + 1);
+        assert!(validate_skill_bundle_entries(&big, &[]).is_err());
+        assert!(
+            validate_skill_bundle_entries("---\nname: x\n---\nb", &[("big.md".to_string(), big)])
+                .is_err()
+        );
+        // 整包超限：9 个恰好 1MiB 的支撑文件（单文件均不超限）合计 > 8MiB。
+        let one_mib = "x".repeat(SKILL_BUNDLE_MAX_FILE_BYTES as usize);
+        let nine: Vec<(String, String)> = (0..9)
+            .map(|i| (format!("f{i}.md"), one_mib.clone()))
+            .collect();
+        let error = validate_skill_bundle_entries("---\nname: x\n---\nb", &nine).unwrap_err();
+        assert!(format!("{error:#}").contains("8MiB limit"));
     }
 }

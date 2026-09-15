@@ -1332,15 +1332,15 @@ pub async fn list_multica_skills(
         .collect())
 }
 
-/// 「从 Multica 同步」拉取落库（设计 §5.3-§5.4）：逐项 详情 → 文件数判空 → 清洗目录名 →
-/// 批内重名判定 → [`SkillManager::write_instance`] 落全局自有库（与本地 SKILL 编辑同一写入链路）。
+/// 「从 Multica 同步」拉取落库（设计 §5.3-§5.4）：逐项 详情 → 支撑文件（含正文）→ 清洗目录名 →
+/// 批内重名判定 → [`SkillManager::write_bundle_instance`] 落全局自有库（SKILL.md + 支撑文件
+/// 整目录镜像写入，覆盖时远端为权威事实源）。
 ///
 /// 逐项独立成败（per-item report，单项失败不阻断批次）：
 /// - 404 → skipped `multica.skill.not-found`（远端已删）；
-/// - 文件数 >1（本地单 SKILL.md 模型）→ skipped `multica.skill.has-files`；
 /// - 批内清洗后同名（含前项 created 造成的同名）→ skipped `multica.skill.name-collision`；
 /// - 网络类失败 → failed `multica.remote-error`；
-/// - 本地落库失败 → failed 且 reason 透传原始错误文本（诊断用）。
+/// - 本地落库失败（含 bundle 尺寸/路径契约超限）→ failed 且 reason 透传原始错误文本（诊断用）。
 ///
 /// exists 判定基于**批前**扫描 + `seen` 集合：同批先 created 的目录名会被 seen 捕获为
 /// name-collision，不会误判 overwritten。落库后统一刷新 agent 命令目录（与 `write_skill` 同款）。
@@ -1376,7 +1376,11 @@ pub async fn pull_multica_skills(
         let detail = match client.get_remote_skill(&workspace_id, &skill_id).await {
             Ok(detail) => detail,
             Err(MulticaError::TaskNotFound) => {
-                results.push(skipped_result(&skill_id, &skill_id, "multica.skill.not-found"));
+                results.push(skipped_result(
+                    &skill_id,
+                    &skill_id,
+                    "multica.skill.not-found",
+                ));
                 continue;
             }
             Err(error) => {
@@ -1387,50 +1391,59 @@ pub async fn pull_multica_skills(
         };
         let name = detail.name.clone();
 
-        // ② 文件数判空：本地模型单 SKILL.md，多文件 skill 整项跳过（设计 §4.4）。
-        match client
-            .list_remote_skill_files(&workspace_id, &skill_id)
+        // ② 支撑文件（含正文；根 SKILL.md 由 detail.content 承载，不在 files 列表——multica 契约）。
+        let files = match client
+            .get_remote_skill_files(&workspace_id, &skill_id)
             .await
         {
-            Ok(files) if files.len() > 1 => {
-                results.push(skipped_result(&skill_id, &name, "multica.skill.has-files"));
-                continue;
-            }
+            Ok(files) => files,
             Err(MulticaError::TaskNotFound) => {
                 results.push(skipped_result(&skill_id, &name, "multica.skill.not-found"));
                 continue;
             }
             Err(error) => {
-                warn!(skill = %skill_id, %error, "multica pull: list skill files failed");
+                warn!(skill = %skill_id, %error, "multica pull: get skill files failed");
                 results.push(failed_result(&skill_id, &name, "multica.remote-error"));
                 continue;
             }
-            Ok(_) => {}
-        }
+        };
 
         // ③ 清洗目录名 + 批内重名（seen 含本批已 created 的目录名）。
         let dir_name = multica_skill_dir_name(&detail.name, &skill_id);
         if !seen.insert(dir_name.clone()) {
-            results.push(skipped_result(&skill_id, &name, "multica.skill.name-collision"));
+            results.push(skipped_result(
+                &skill_id,
+                &name,
+                "multica.skill.name-collision",
+            ));
             continue;
         }
-        // 既有目录绝对路径（None = 新建）；作为 write_instance 的 current_directory_path，
+        // 既有目录绝对路径（None = 新建）；作为 write_bundle_instance 的 current_directory_path，
         // 不能传裸目录名（会被当作相对路径按进程 CWD 解析 → `SKILL dir not found`）。
         let existing_dir = own_global_skill_dir(&global_metas, &dir_name);
         let exists = existing_dir.is_some();
 
-        // ④ 落库：SKILL.md = 远端正文 + 名称/描述覆写组装（设计 §5.3）；new 建目录，
-        //    exists 经 directory_path 定位既有目录（frontmatter 重写、未知字段保留）。
+        // ④ 落库：SKILL.md = 远端正文 + 名称/描述覆写组装（设计 §5.3）；支撑文件原样落盘。
+        //    new 建目录；exists 经 directory_path 定位既有目录做镜像覆盖（远端已删的本地
+        //    支撑文件随之清除）。bundle 尺寸/路径契约在写入入口统一校验，超限整项 failed。
         let content = assemble_pulled_skill_md(&detail.name, &detail.description, &detail.content);
+        let support_files: Vec<(String, String)> = files
+            .into_iter()
+            .map(|file| (file.path, file.content))
+            .collect();
         let write_app = context.app();
-        let write_name = if exists { detail.name.clone() } else { dir_name.clone() };
+        let write_name = if exists {
+            detail.name.clone()
+        } else {
+            dir_name.clone()
+        };
         let write_dir = existing_dir;
         let write = tauri::async_runtime::spawn_blocking(move || {
-            write_app.skill_manager().write_instance(
+            write_app.skill_manager().write_bundle_instance(
                 &write_name,
                 gold_band::config::SkillSource::Global,
                 &content,
-                None,
+                &support_files,
                 None,
                 write_dir.as_deref(),
                 None,

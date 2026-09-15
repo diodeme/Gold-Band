@@ -191,7 +191,7 @@ pub struct MulticaSkillListItemVm {
 }
 
 /// 单项同步结果。`outcome`："created" | "overwritten" | "skipped" | "failed"；`reason` 为
-/// 结构化错误码（`multica.skill.has-files` 等，前端 i18n 映射）或本地落库错误原文透传。
+/// 结构化错误码（`multica.skill.not-found` 等，前端 i18n 映射）或本地落库错误原文透传。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MulticaPullItemResultVm {

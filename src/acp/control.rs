@@ -456,7 +456,8 @@ mod tests {
             input: ConversationPromptInput {
                 display_text: "run business turn".to_string(),
                 quotes: Vec::new(),
-            },
+            role: None,
+        },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-20T00:00:00Z".to_string(),
         };
@@ -509,7 +510,8 @@ mod tests {
             input: ConversationPromptInput {
                 display_text: "hidden finalize".to_string(),
                 quotes: Vec::new(),
-            },
+            role: None,
+        },
             admitted_at: "2026-08-20T00:00:02Z".to_string(),
             ..business
         };

@@ -1,5 +1,11 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-16 Composer 角色斜杠菜单
+
+- 根因：`/` 菜单原先只有 Agent 命令/Skill 一个命名空间，无法从 composer 指定本次消息的 Gold Band 角色。这是正确斜杠交互下的产品目录缺失，不是命令去重或标签投影缺陷。
+- 实现：菜单产品组在前（channel 品牌名 + 全部角色），Agent 组保持原集合与去重。发送复用引用的 display/send 分离：气泡只保留用户原文，Agent 正文用双语 `user_role_message` 包装“用户指定的角色定义”。角色快照随 prompt 持久化，新建会话写入 `authoring/initial-prompt-role.json` 供首次 Direct/requirement turn 读取。重名两行都保留，点选记 `kind+id`，未点选时角色优先。标签用应用 logo / 当前 Agent icon 区分，长 content Tooltip 内滚动；角色与引用同一元信息行，角色在前。
+- 过度设计与性能评审：不新增 identity 或状态机，角色目录沿用现有 `getProfiles()` 有界 catalog，slash 过滤为内存线性扫描且可见项上限仍为 512。首次会话多一次小 JSON 读写，不扫描历史。无需专项 benchmark。
+
 ## 2026-09-15 ACP client Auto Accept
 
 - 根因：Cursor `agent` 等原生 mode 只描述执行风格，不会让 Gold Band 作为 ACP client 自动回复 `session/request_permission`。文档此前禁止 composer 隐式代答。这是正确设计下缺少一层与 mode 正交的 client 开关，不是要把 Auto Accept 写成 Cursor mode 或改 `cli-config.json`。

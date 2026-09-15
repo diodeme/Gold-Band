@@ -1288,6 +1288,7 @@ fn invoke_agent(
         user_prompt: user_prompt.map_err(prompt_error)?,
         display_text: None,
         quotes: Vec::new(),
+        role: None,
         prompt_id: Some(turn_id.clone()),
         visibility: PromptVisibility::Hidden,
         hidden_reason: Some("personalAnalytics".to_string()),
@@ -1376,6 +1377,7 @@ fn claim_agent_prompt_lifecycle(
         input: ConversationPromptInput {
             display_text: display_text.to_string(),
             quotes: Vec::new(),
+            role: None,
         },
         attachment_paths: attachment_paths.to_vec(),
         admitted_at: gold_band::acp::events::current_timestamp(),

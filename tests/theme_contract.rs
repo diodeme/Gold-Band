@@ -31,7 +31,10 @@ fn rust_catalog_deserializes_every_generated_declarative_theme() {
                 &scheme.semantic.status_danger_surface,
                 &scheme.semantic.status_danger_border,
             ] {
-                assert!(!token.is_empty(), "status surfaces and borders must survive Rust decoding");
+                assert!(
+                    !token.is_empty(),
+                    "status surfaces and borders must survive Rust decoding"
+                );
             }
         }
         let ui_stack = theme

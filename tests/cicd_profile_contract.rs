@@ -2,7 +2,7 @@ use camino::Utf8PathBuf;
 use gold_band::{
     app::App,
     config::{DesktopLanguage, RuntimeConfig},
-    storage::{configure_storage_paths, StoragePathConfig},
+    storage::{StoragePathConfig, configure_storage_paths},
 };
 
 #[test]

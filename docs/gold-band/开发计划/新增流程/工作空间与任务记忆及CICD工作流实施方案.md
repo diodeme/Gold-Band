@@ -42,6 +42,7 @@
 - [x] 不同 key 同时更新均保留；同 key 迟到修改被拒绝并返回最新值。
 - [x] 写入失败不返回保存成功，文件损坏不清空，读取失败不伪装为空。
 - [x] Unicode 字符与序列化字节边界、条目数与总容量边界、项目更新后任务组合超限。
+- [x] task 删除后迟到 read/write 返回 locator 错误，且不重建 task 目录或记忆文件。
 
 ## 4. Runtime 与提示词
 
@@ -59,6 +60,7 @@
 - [x] 使用已有 shadcn/ui copy-in 基础控件实现三字段编辑、逐条保存取消与删除确认。
 - [x] 未保存草稿关闭提醒、目标级加载和错误、冲突后的最新值展示。
 - [x] 保持当前工作空间作用域，切换后拒绝迟到读取或保存投影覆盖。
+- [x] 冲突采用最新值时按权威 key 重投影；远端重命名后旧行移除，不产生重复 key。
 - [x] 不新增任务记忆管理界面，不将记忆加载加入工作空间列表首屏。
 - [x] 执行相关接口与 DOM 测试、前端类型检查和生产构建。
 - [x] 启动前端，使用 iab 验证正常与窄宽度、长文本、明暗主题及关闭草稿流程；冲突/失败使用 DOM 测试，结束清理测试资源。
@@ -116,3 +118,16 @@
 输出契约补充：CICD 的单次提交与普通节点的执行后产物补问不兼容。最小测试从 WB 模板取得实际 Worker 后，原契约返回 PostTurnProjection 而非 InlineControl，稳定失败。现统一按内置角色身份选择单次行为：静态与动态节点在同次执行内声明并提取既有产物协议；schema、成功条件与运行状态归属不变，普通角色继续原输出流程。仅将原有输出契约构造函数拆入小模块供独立接口测试，无新增模型、状态或 I/O。
 
 2026-09-09 对接验收完成：Rust 共 19 项独立测试通过（memory_domain 11、memory_mcp 1、memory_invocation 1、memory_wb_catalog 1、cicd_profile_contract 1、cicd_recovery 3、cicd_output_contract 1）；三处失败证据均已由红转绿。`cargo check -p gold-band --tests -j 1` 通过，包含动态输出契约断言的类型检查，不宣称运行全部 lib 单元测试。前端 3 个测试文件共 19 项通过，TypeScript 检查、Vite 生产构建、Rust 修改文件格式检查与 diff 空白检查通过；构建仅有既有未使用函数、分包及大 chunk 警告。iab 在本次 1428 服务的 `/chat` 页面完成冒烟验证，主验证页面和 Vite 进程已关闭；先前 1420 连接失败的临时错误页因浏览器 data URL 策略无法重新获取关闭，未绕过策略。未调用真实 WeTest 构建、部署或审批，也未验证 EXE 与真实模型的端到端执行。现有规则已覆盖数据归属与生命周期原则，不新增规则。
+
+## 2026-09-15 生命周期与冲突投影修复
+
+根因：任务记忆初始化把“文件不存在”统一解释为首次创建，且落盘 helper 自动创建父目录；长期存活的 MCP 子进程可在 task 删除后复活任务目录。项目记忆设置采用冲突最新值时仅取消当前行，没有按权威 key 重建列表，因此远端重命名会留下旧 key。
+
+- [x] 先建立两项最小失败证据：删除 task 后 `memory_domain` 的 read 返回成功并重建快照；冲突 latest 将 `plan` 改为 `renamed` 后，前端仍保留 `plan` 行。
+- [x] 锁内重新校验 task locator，并使用不创建父目录的原子记忆落盘；任务删除持有同一项目级 memory 锁。
+- [x] 保存、重命名和采用冲突最新值统一按权威 record 重投影行，替换旧 key 并去重。
+- [x] 修复后同一 `memory_deleted_task_is_never_recreated` 与冲突重命名 DOM 测试转绿。
+
+自评审：复用现有 project-level file lock、atomic-write-file 和前端行状态，不新增 tombstone、缓存、队列或平行业务身份。锁仅覆盖短暂文件操作和 task 目录删除；记忆仍只读取两个有界文件，复杂度不变。
+
+验证：后端记忆、MCP、调用绑定与 CICD 目标测试合计 20 项通过；前端项目记忆与侧栏生命周期测试 14 项通过；TypeScript 检查、Vite 生产构建、`cargo fmt --all -- --check`、`git diff --check` 和 `cargo check -j 1 -p gold-band-desktop` 通过。桌面编译仅有既有 dead-code 警告。

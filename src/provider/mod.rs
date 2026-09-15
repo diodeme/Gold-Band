@@ -1893,7 +1893,12 @@ impl ProviderAdapter for AcpProvider {
     ) -> Result<ProviderRunResult> {
         if cicd::is_single_submission(req.profile.as_deref()) {
             return cicd::run_once(|| {
-                self.run_worker_once_with_callbacks(req, live_update, session_update, prompt_accepted)
+                self.run_worker_once_with_callbacks(
+                    req,
+                    live_update,
+                    session_update,
+                    prompt_accepted,
+                )
             });
         }
         if req.turn_control_mode == TurnControlMode::RuntimeControlled
@@ -2147,7 +2152,6 @@ fn output_artifact_payload_from_run(
 fn non_empty_artifact_text(value: &str) -> Option<String> {
     (!value.trim().is_empty()).then(|| value.to_string())
 }
-
 
 /// Refresh task memory once at the submission boundary, before rendering the prompt.
 pub fn prepare_prompt_bundle(req: &mut WorkerInvocation) -> Result<PromptBundle> {

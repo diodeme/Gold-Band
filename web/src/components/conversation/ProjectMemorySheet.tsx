@@ -29,6 +29,20 @@ export function ProjectMemorySheet({ projectId, name, onClose }: { projectId: st
       if (request === generation.current) setLoad({ status: 'ready', limits: snapshot.limits, rows: snapshot.workspace.map(record => ({ id: record.key, record })) });
     } catch (error) { if (request === generation.current) setLoad({ status: 'error', error: memoryError(error) }); }
   }
+  function applyAuthoritative(previousId: string, record: MemoryRecord | null) {
+    dirty.current.delete(previousId);
+    setLoad(current => {
+      if (current.status !== 'ready') return current;
+      const index = current.rows.findIndex(item => item.id === previousId);
+      const remaining = current.rows.filter(item => item.id !== previousId && item.id !== record?.key);
+      if (!record) return { ...current, rows: remaining };
+      const insertAt = index < 0 ? remaining.length : Math.min(index, remaining.length);
+      return {
+        ...current,
+        rows: [...remaining.slice(0, insertAt), { id: record.key, record }, ...remaining.slice(insertAt)],
+      };
+    });
+  }
   useEffect(() => { void refresh(); return () => { generation.current++; }; }, [projectId]);
   function close() {
     if (pending.current.size) return;
@@ -49,10 +63,7 @@ export function ProjectMemorySheet({ projectId, name, onClose }: { projectId: st
             {load.rows.map(row => <MemoryRow key={row.id} row={row} projectId={projectId} limits={load.limits}
               onDirty={value => { if (value) dirty.current.add(row.id); else dirty.current.delete(row.id); }}
               onPending={value => { if (value) pending.current.add(row.id); else pending.current.delete(row.id); }}
-              onSaved={record => {
-                dirty.current.delete(row.id);
-                setLoad(current => current.status !== 'ready' ? current : { ...current, rows: record ? current.rows.map(item => item.id === row.id ? { ...item, record } : item) : current.rows.filter(item => item.id !== row.id) });
-              }} />)}
+              onSaved={record => applyAuthoritative(row.id, record)} />)}
           </>}
         </div>
         <div className="shrink-0 border-t px-4 py-3">
@@ -117,9 +128,9 @@ function MemoryRow({ row, projectId, limits, onDirty, onPending, onSaved }: {
     {error?.code === 'memory.conflict' && <div className="space-y-2 text-sm">
       <p className="break-all whitespace-pre-wrap">{t('memory.latest')}: {error.params?.latest ? JSON.stringify({ key: error.params.latest.key, value: error.params.latest.value, desc: error.params.latest.desc }) : t('memory.deleted')}</p>
       <Button variant="outline" size="sm" onClick={() => {
-        if (base && error.params?.latest?.key !== base.key && error.params?.latest) { cancel(); return; }
         const latest = error.params?.latest ?? null;
         setBase(latest); setDraft(latest ?? { ...draft }); setError(null); onDirty(!latest);
+        if (latest) onSaved(latest);
       }}>{t('memory.useLatest')}</Button>
     </div>}
     <div className="flex flex-wrap items-center justify-end gap-2">

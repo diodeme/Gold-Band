@@ -1741,7 +1741,7 @@ fn direct_prompt_queue_drain_app(app: &App) -> App {
 }
 
 fn queued_user_turn_app(app: &App) -> App {
-    app.clone_for_background().without_scheduled_turn_context()
+    app.clone_for_background().as_turn()
 }
 
 fn schedule_direct_prompt_queue_drain(
@@ -7629,95 +7629,7 @@ fn spawn_active_session_stop_cleanup(
     stop_owner: Option<(String, String, u64)>,
 ) {
     tauri::async_runtime::spawn_blocking(move || {
-        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
-        let Some((turn_id, operation_id, revision)) = stop_owner.as_ref() else {
-            return;
-        };
-        let owner = gold_band::acp::events::AcpLifecycleOwner {
-            turn_id: turn_id.clone(),
-            operation_id: operation_id.clone(),
-            revision: *revision,
-        };
-        let owner_is_current =
-            gold_band::acp::events::lifecycle_owner_still_cancelling(&lifecycle_path, &owner)
-                .unwrap_or(false);
-        if !owner_is_current {
-            // The old turn may already be terminal and a newer turn may own
-            // this attempt. Never send an attempt-wide cancel in that case.
-            return;
-        }
-        match client::dispatch_attempt_prompt_cancel(&attempt_dir) {
-            Ok(_) => {}
-            Err(error) => {
-                warn!(%error, %attempt_dir, "failed to dispatch accepted ACP stop request");
-            }
-        }
-        // request_session_stop transferred lifecycle ownership away from the
-        // provider runtime. The stop controller therefore owns terminal
-        // settlement after dispatch; the old provider owner can only no-op.
-        let decided_at = gold_band::acp::events::current_timestamp();
-        let terminal_persisted = match gold_band::acp::events::persist_session_turn_terminal_owned(
-            &lifecycle_path,
-            turn_id,
-            Some(operation_id),
-            *revision,
-            gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
-            "cancelled",
-            &decided_at,
-        ) {
-            Ok(Some(_)) => {
-                info!(
-                    project_id = %app.paths.project_id,
-                    task_id = %locator.task_id,
-                    run_id = %locator.run_id,
-                    round_id = %locator.round_id,
-                    node_id = %locator.node_id,
-                    attempt_id = %locator.attempt_id,
-                    outer_node_id = ?locator.outer_node_id,
-                    outer_attempt_id = ?locator.outer_attempt_id,
-                    %turn_id,
-                    %operation_id,
-                    outcome = "cancelled",
-                    "conversation session stop reached terminal state"
-                );
-                true
-            }
-            Ok(None) => {
-                tracing::debug!(
-                    project_id = %app.paths.project_id,
-                    task_id = %locator.task_id,
-                    run_id = %locator.run_id,
-                    turn_id = %turn_id,
-                    "stale conversation session stop settlement skipped"
-                );
-                false
-            }
-            Err(error) => {
-                warn!(
-                    project_id = %app.paths.project_id,
-                    task_id = %locator.task_id,
-                    run_id = %locator.run_id,
-                    round_id = %locator.round_id,
-                    node_id = %locator.node_id,
-                    attempt_id = %locator.attempt_id,
-                    %error,
-                    %turn_id,
-                    "failed to settle accepted ACP stop ownership"
-                );
-                false
-            }
-        };
-        if terminal_persisted {
-            touch_terminal_task_activity_best_effort(
-                &app,
-                &locator,
-                Some(turn_id),
-                "user-stop-terminal",
-            );
-        }
-        if let Err(error) = client::settle_attempt_prompt_interactions(&attempt_dir) {
-            warn!(%error, %attempt_dir, "failed to settle ACP interactions after accepted stop dispatch");
-        }
+        settle_active_session_stop_cleanup(&app, &locator, &attempt_dir, stop_owner.as_ref());
         emit_acp_session_update(
             &app_handle,
             &app,
@@ -7732,6 +7644,87 @@ fn spawn_active_session_stop_cleanup(
             None,
         );
     });
+}
+
+fn settle_active_session_stop_cleanup(
+    app: &gold_band::app::App,
+    locator: &AttemptLocator,
+    attempt_dir: &Utf8PathBuf,
+    stop_owner: Option<&(String, String, u64)>,
+) -> bool {
+    settle_active_session_stop_cleanup_with_dispatch(
+        app,
+        locator,
+        attempt_dir,
+        stop_owner,
+        client::dispatch_attempt_prompt_cancel,
+    )
+}
+
+fn settle_active_session_stop_cleanup_with_dispatch<F>(
+    app: &gold_band::app::App,
+    locator: &AttemptLocator,
+    attempt_dir: &Utf8PathBuf,
+    stop_owner: Option<&(String, String, u64)>,
+    dispatch_cancel: F,
+) -> bool
+where
+    F: FnOnce(&camino::Utf8Path) -> anyhow::Result<bool>,
+{
+    let Some((turn_id, operation_id, revision)) = stop_owner else {
+        return false;
+    };
+    let lifecycle_path = acp_lifecycle_path(attempt_dir);
+    let owner = gold_band::acp::events::AcpLifecycleOwner {
+        turn_id: turn_id.clone(),
+        operation_id: operation_id.clone(),
+        revision: *revision,
+    };
+    if !gold_band::acp::events::lifecycle_owner_still_cancelling(&lifecycle_path, &owner)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    match dispatch_cancel(attempt_dir) {
+        Ok(true) => {}
+        Ok(false) => {
+            warn!(%attempt_dir, "accepted ACP stop request has no active cancel target");
+            return false;
+        }
+        Err(error) => {
+            warn!(%error, %attempt_dir, "failed to dispatch accepted ACP stop request");
+            return false;
+        }
+    }
+    let settled = match gold_band::acp::events::persist_session_turn_terminal_owned(
+        &lifecycle_path,
+        turn_id,
+        Some(operation_id),
+        *revision,
+        gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
+        "cancelled",
+        &gold_band::acp::events::current_timestamp(),
+    ) {
+        Ok(Some(_)) => {
+            info!(project_id = %app.paths.project_id, task_id = %locator.task_id, run_id = %locator.run_id, %turn_id, %operation_id, outcome = "cancelled", "conversation session stop reached terminal state");
+            true
+        }
+        Ok(None) => {
+            tracing::debug!(project_id = %app.paths.project_id, task_id = %locator.task_id, run_id = %locator.run_id, %turn_id, "stale conversation session stop settlement skipped");
+            false
+        }
+        Err(error) => {
+            warn!(project_id = %app.paths.project_id, task_id = %locator.task_id, run_id = %locator.run_id, %error, %turn_id, "failed to settle accepted ACP stop ownership");
+            false
+        }
+    };
+    if settled {
+        touch_terminal_task_activity_best_effort(app, locator, Some(turn_id), "user-stop-terminal");
+    }
+    if let Err(error) = client::settle_attempt_prompt_interactions(attempt_dir) {
+        warn!(%error, %attempt_dir, "failed to settle ACP interactions after accepted stop dispatch");
+    }
+    settled
 }
 
 fn spawn_index_attempt(
@@ -10684,6 +10677,83 @@ mod tests {
     };
     use std::collections::BTreeMap;
 
+    fn active_stop_test_fixture(
+        root: &std::path::Path,
+    ) -> (
+        App,
+        AttemptLocator,
+        Utf8PathBuf,
+        gold_band::acp::events::AcpLifecycleOwner,
+    ) {
+        let app = App::new(Utf8PathBuf::from_path_buf(root.join("repo")).unwrap());
+        let locator = AttemptLocator::new(
+            "task-1".to_string(),
+            "run-1".to_string(),
+            "round-1".to_string(),
+            "node-1".to_string(),
+            "attempt-1".to_string(),
+            None,
+            None,
+        );
+        let attempt_dir = locator.attempt_dir(&app);
+        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
+        write_json(
+            &app.paths
+                .task_dir("task-1")
+                .join("authoring")
+                .join("conversation.json"),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "source": "conversation",
+                "runMode": "direct",
+                "workflowTemplateId": null,
+                "includeOptionalEntry": false,
+                "directConfig": null,
+                "agentIdentity": null,
+                "titleAutoGenerated": false,
+                "initialAttachmentNames": null,
+                "createdAt": "2026-08-26T00:00:00Z",
+                "lastActivityAt": "2026-08-26T00:00:00Z"
+            }),
+        )
+        .unwrap();
+        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+        let submission = gold_band::acp::events::AcpPromptSubmission {
+            turn_id: "turn-1".to_string(),
+            operation_id: "prompt-operation-1".to_string(),
+            adapter_id: "test".to_string(),
+            adapter_display_name: "Test".to_string(),
+            cwd: attempt_dir.to_string(),
+            input: gold_band::provider::ConversationPromptInput {
+                display_text: "test".to_string(),
+                quotes: Vec::new(),
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-08-26T00:00:00Z".to_string(),
+        };
+        gold_band::acp::events::begin_session_turn(&lifecycle_path, &submission).unwrap();
+        let owner = gold_band::acp::events::request_session_stop_outcome(
+            &lifecycle_path,
+            "user-stop-operation-1",
+            "2026-08-26T00:00:01Z",
+        )
+        .unwrap()
+        .owner
+        .unwrap();
+        (app, locator, attempt_dir, owner)
+    }
+
+    fn conversation_last_activity(app: &App, task_id: &str) -> String {
+        let metadata: serde_json::Value = read_json(
+            &app.paths
+                .task_dir(task_id)
+                .join("authoring")
+                .join("conversation.json"),
+        )
+        .unwrap();
+        metadata["lastActivityAt"].as_str().unwrap().to_string()
+    }
+
     fn frontend_error_input(message: String) -> FrontendErrorReportInput {
         FrontendErrorReportInput {
             kind: FrontendErrorKindInput::ReactUncaught,
@@ -11426,6 +11496,7 @@ mod tests {
                     task_id: Some("task-1".to_string()),
                     run_id: Some("run-1".to_string()),
                     round_id: Some("round-1".to_string()),
+                    node_id: None,
                     attempt_id: Some("attempt-1".to_string()),
                 }),
                 Some(gold_band::scheduler::occurrence::ScheduledError::new(
@@ -12055,6 +12126,163 @@ mod tests {
         assert_eq!(snapshot["liveTurnActivity"], "idle");
         assert_eq!(snapshot["latestTurnStatus"], "none");
         assert!(timeline_path.is_dir());
+    }
+
+    #[test]
+    fn active_stop_cleanup_dispatches_and_persists_cancelled_terminal_lifecycle() {
+        let temp = tempfile::tempdir().unwrap();
+        let (app, locator, attempt_dir, owner) = active_stop_test_fixture(temp.path());
+        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+        let owner = (owner.turn_id, owner.operation_id, owner.revision);
+        assert!(settle_active_session_stop_cleanup_with_dispatch(
+            &app,
+            &locator,
+            &attempt_dir,
+            Some(&owner),
+            |_| Ok(true),
+        ));
+
+        let lifecycle = gold_band::acp::events::read_lifecycle_header(&lifecycle_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            lifecycle.latest_turn_status,
+            gold_band::acp::events::AcpLatestTurnStatus::Cancelled
+        );
+        assert_eq!(
+            conversation_last_activity(&app, "task-1"),
+            gold_band::acp::events::read_session_metadata_value(&lifecycle_path, None)
+                .unwrap()["updatedAt"]
+                .as_str()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn active_stop_cleanup_dispatch_failure_keeps_cancelling_and_activity_unchanged() {
+        let temp = tempfile::tempdir().unwrap();
+        let (app, locator, attempt_dir, owner) = active_stop_test_fixture(temp.path());
+        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+        let owner = (owner.turn_id, owner.operation_id, owner.revision);
+
+        assert!(!settle_active_session_stop_cleanup_with_dispatch(
+            &app,
+            &locator,
+            &attempt_dir,
+            Some(&owner),
+            |_| anyhow::bail!("provider cancel transport failed"),
+        ));
+
+        let lifecycle = gold_band::acp::events::read_lifecycle_header(&lifecycle_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            lifecycle.live_turn_activity,
+            gold_band::acp::events::AcpLiveTurnActivity::CancelRequested
+        );
+        assert_eq!(
+            lifecycle.latest_turn_status,
+            gold_band::acp::events::AcpLatestTurnStatus::None
+        );
+        assert_eq!(
+            conversation_last_activity(&app, "task-1"),
+            "2026-08-26T00:00:00Z"
+        );
+    }
+
+    #[test]
+    fn active_stop_cleanup_without_a_cancel_target_keeps_cancelling() {
+        let temp = tempfile::tempdir().unwrap();
+        let (app, locator, attempt_dir, owner) = active_stop_test_fixture(temp.path());
+        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+        let owner = (owner.turn_id, owner.operation_id, owner.revision);
+
+        assert!(!settle_active_session_stop_cleanup_with_dispatch(
+            &app,
+            &locator,
+            &attempt_dir,
+            Some(&owner),
+            |_| Ok(false),
+        ));
+
+        let lifecycle = gold_band::acp::events::read_lifecycle_header(&lifecycle_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            lifecycle.live_turn_activity,
+            gold_band::acp::events::AcpLiveTurnActivity::CancelRequested
+        );
+        assert_eq!(
+            lifecycle.latest_turn_status,
+            gold_band::acp::events::AcpLatestTurnStatus::None
+        );
+        assert_eq!(
+            conversation_last_activity(&app, "task-1"),
+            "2026-08-26T00:00:00Z"
+        );
+    }
+
+    #[test]
+    fn active_stop_cleanup_stale_owner_does_not_dispatch_or_overwrite_new_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let (app, locator, attempt_dir, owner) = active_stop_test_fixture(temp.path());
+        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+        let old_owner = (
+            owner.turn_id.clone(),
+            owner.operation_id.clone(),
+            owner.revision,
+        );
+        gold_band::acp::events::persist_session_turn_terminal_owned(
+            &lifecycle_path,
+            &owner.turn_id,
+            Some(&owner.operation_id),
+            owner.revision,
+            gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
+            "cancelled",
+            "2026-08-26T00:00:02Z",
+        )
+        .unwrap()
+        .unwrap();
+        let next_submission = gold_band::acp::events::AcpPromptSubmission {
+            turn_id: "turn-2".to_string(),
+            operation_id: "prompt-operation-2".to_string(),
+            adapter_id: "test".to_string(),
+            adapter_display_name: "Test".to_string(),
+            cwd: attempt_dir.to_string(),
+            input: gold_band::provider::ConversationPromptInput {
+                display_text: "next".to_string(),
+                quotes: Vec::new(),
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-08-26T00:00:03Z".to_string(),
+        };
+        gold_band::acp::events::begin_session_turn(&lifecycle_path, &next_submission).unwrap();
+        let dispatch_calls = std::cell::Cell::new(0usize);
+
+        assert!(!settle_active_session_stop_cleanup_with_dispatch(
+            &app,
+            &locator,
+            &attempt_dir,
+            Some(&old_owner),
+            |_| {
+                dispatch_calls.set(dispatch_calls.get() + 1);
+                Ok(true)
+            },
+        ));
+
+        assert_eq!(dispatch_calls.get(), 0);
+        let lifecycle = gold_band::acp::events::read_lifecycle_header(&lifecycle_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(lifecycle.turn_id.as_deref(), Some("turn-2"));
+        assert_eq!(
+            lifecycle.latest_turn_status,
+            gold_band::acp::events::AcpLatestTurnStatus::None
+        );
+        assert_eq!(
+            conversation_last_activity(&app, "task-1"),
+            "2026-08-26T00:00:00Z"
+        );
     }
 
     #[test]

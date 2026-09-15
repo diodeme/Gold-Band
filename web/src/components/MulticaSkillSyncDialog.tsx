@@ -12,7 +12,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
@@ -113,6 +112,12 @@ export function MulticaSkillSyncDialog({
   const selectedIds = skills.filter((item) => selected[item.id]);
   const selectedExistsCount = selectedIds.filter((item) => item.localState === 'exists').length;
 
+  // 全选开关：非全选 → 点选全部；全选 → 全不选（默认「新增勾选、已存在不勾」的部分态
+  // 下连点两次即可全部取消，再单独勾选想要的）。状态仍收敛在 selected 单一事实源。
+  function handleToggleSelectAll(selectAll: boolean) {
+    setSelected(Object.fromEntries(skills.map((item) => [item.id, selectAll])));
+  }
+
   async function handleSync() {
     if (selectedIds.length === 0 || !workspaceId) return;
     setPulling(true);
@@ -141,7 +146,7 @@ export function MulticaSkillSyncDialog({
     const notConnected = settings !== null && !settings.connected;
     return (
       <>
-        <div className="min-h-0 flex-1 space-y-3 p-6">
+        <div className="flex min-h-0 flex-1 flex-col gap-3 p-6">
           {notConnected && (
             <p className="text-xs leading-relaxed text-muted-foreground">
               {t('contextManagement.skills.multicaSync.notConnected')}
@@ -149,7 +154,7 @@ export function MulticaSkillSyncDialog({
           )}
           {!notConnected && (
             <>
-              <div className="flex items-end gap-2">
+              <div className="flex shrink-0 items-end gap-2">
                 <div className="min-w-0 flex-1 space-y-1">
                   <div className="text-xs font-medium text-muted-foreground">
                     {t('contextManagement.skills.multicaSync.workspace')}
@@ -182,7 +187,32 @@ export function MulticaSkillSyncDialog({
                 </Button>
               </div>
 
-              <ScrollArea className="min-h-0 flex-1 rounded-md border border-border/60">
+              {!loadingList && skills.length > 0 && (
+                <label className="flex shrink-0 cursor-pointer items-center gap-2 px-1">
+                  <Checkbox
+                    checked={
+                      selectedIds.length === skills.length
+                        ? true
+                        : selectedIds.length > 0
+                          ? 'indeterminate'
+                          : false
+                    }
+                    disabled={pulling}
+                    onCheckedChange={(checked) => handleToggleSelectAll(checked === true)}
+                  />
+                  <span className="text-xs font-medium">
+                    {t('contextManagement.skills.multicaSync.selectAll')}
+                  </span>
+                  <span className="ml-auto text-[11px] text-muted-foreground">
+                    {t('contextManagement.skills.multicaSync.selectedCount', {
+                      selected: selectedIds.length,
+                      total: skills.length,
+                    })}
+                  </span>
+                </label>
+              )}
+
+              <div className="gold-themed-scrollbar min-h-0 flex-1 overflow-y-auto rounded-md border border-border/60">
                 <div className="p-2">
                   {loadingList && (
                     <div className="flex items-center justify-center gap-2 p-6 text-xs text-muted-foreground">
@@ -229,7 +259,7 @@ export function MulticaSkillSyncDialog({
                     </label>
                   ))}
                 </div>
-              </ScrollArea>
+              </div>
             </>
           )}
           {error && <p className="text-xs text-destructive">{error}</p>}
@@ -262,7 +292,7 @@ export function MulticaSkillSyncDialog({
     );
     return (
       <>
-        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-6">
+        <div className="gold-themed-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto p-6">
           <p className="text-xs text-muted-foreground">
             {t('contextManagement.skills.multicaSync.reportSummary', {
               created: counts.created ?? 0,

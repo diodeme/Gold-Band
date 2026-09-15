@@ -429,20 +429,26 @@ pub struct RemoteSkillDetail {
     pub content: String,
 }
 
-/// 拉取：`GET /api/skills/{id}/files?include=metadata` 的文件元数据项（仅判空消费：多文件即跳过拉取）。
+/// 拉取：`GET /api/skills/{id}/files` 的支撑文件项（端点默认 `includeContent=true` 返回正文）。
+///
+/// files 列表**不含根 SKILL.md**——它单独由 detail 的 `content` 承载（multica 契约硬约定，
+/// 每层显式排除：`builtin_skills.go:85-93` WalkDir 跳过、daemon `local_skills.go:363` 发现排除、
+/// `execenv/context.go:976-994` 落盘兜底去重）。落库侧仍校验防御（拒绝根 `SKILL.md` 混入）。
 #[derive(Debug, Deserialize)]
-pub struct RemoteSkillFileMeta {
+pub struct RemoteSkillFile {
     pub path: String,
     #[serde(default)]
     pub size: i64,
+    #[serde(default)]
+    pub content: String,
 }
 
 /// 拉取：files 响应容错包装（`{files:[...]}` 或裸数组，照搬 [`WorkspacesResponse`] untagged 惯例）。
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum SkillFilesResponse {
-    Wrapped { files: Vec<RemoteSkillFileMeta> },
-    Bare(Vec<RemoteSkillFileMeta>),
+    Wrapped { files: Vec<RemoteSkillFile> },
+    Bare(Vec<RemoteSkillFile>),
 }
 
 /// 进程级共享的 `reqwest::Client`（连接池/TLS 上下文复用）。
@@ -784,7 +790,8 @@ impl MulticaClient {
         self.with_network_retry("report_local_skill_list", || async {
             let path =
                 format!("/api/daemon/runtimes/{runtime_id}/local-skills/{request_id}/result");
-            self.json_send(Method::POST, &path, None, report, None).await?;
+            self.json_send(Method::POST, &path, None, report, None)
+                .await?;
             Ok(())
         })
         .await
@@ -798,9 +805,11 @@ impl MulticaClient {
         report: &LocalSkillImportReport,
     ) -> Result<(), MulticaError> {
         self.with_network_retry("report_local_skill_import", || async {
-            let path =
-                format!("/api/daemon/runtimes/{runtime_id}/local-skills/import/{request_id}/result");
-            self.json_send(Method::POST, &path, None, report, None).await?;
+            let path = format!(
+                "/api/daemon/runtimes/{runtime_id}/local-skills/import/{request_id}/result"
+            );
+            self.json_send(Method::POST, &path, None, report, None)
+                .await?;
             Ok(())
         })
         .await
@@ -817,9 +826,9 @@ impl MulticaClient {
             let resp = self
                 .send(Method::GET, "/api/skills", Some(workspace_id), None)
                 .await?;
-            resp.json::<Vec<RemoteSkillSummary>>().await.map_err(|e| {
-                MulticaError::NetworkFailed(format!("decode /api/skills failed: {e}"))
-            })
+            resp.json::<Vec<RemoteSkillSummary>>()
+                .await
+                .map_err(|e| MulticaError::NetworkFailed(format!("decode /api/skills failed: {e}")))
         })
         .await
     }
@@ -832,29 +841,35 @@ impl MulticaClient {
     ) -> Result<RemoteSkillDetail, MulticaError> {
         self.with_network_retry("get_remote_skill", || async {
             let path = format!("/api/skills/{skill_id}");
-            let resp = self.send(Method::GET, &path, Some(workspace_id), None).await?;
-            resp.json::<RemoteSkillDetail>().await.map_err(|e| {
-                MulticaError::NetworkFailed(format!("decode {path} failed: {e}"))
-            })
+            let resp = self
+                .send(Method::GET, &path, Some(workspace_id), None)
+                .await?;
+            resp.json::<RemoteSkillDetail>()
+                .await
+                .map_err(|e| MulticaError::NetworkFailed(format!("decode {path} failed: {e}")))
         })
         .await
     }
 
-    /// `GET /api/skills/{id}/files?include=metadata` —— 远端 skill 文件元数据（仅判空消费）。
+    /// `GET /api/skills/{id}/files` —— 远端 skill 支撑文件（含正文；多文件拉取消费）。
     ///
-    /// **必须带 `?include=metadata`**：该端点默认 `includeContent=true` 会返回全部文件正文
-    /// （multica 答复调整 2）。码灵本地模型单 SKILL.md——文件数 >1 即跳过该 skill 的拉取。
-    pub async fn list_remote_skill_files(
+    /// 端点默认 `includeContent=true`（multica 答复调整 2，`skill.go:2430` + `resolveSkillInclude`），
+    /// 返回全部支撑文件正文；根 SKILL.md 不在列表中（见 [`RemoteSkillFile`] 注释）。落库前由
+    /// `gold_band::skill::validate_skill_bundle_entries` 复核尺寸/路径契约，超限整项 failed。
+    pub async fn get_remote_skill_files(
         &self,
         workspace_id: &str,
         skill_id: &str,
-    ) -> Result<Vec<RemoteSkillFileMeta>, MulticaError> {
-        self.with_network_retry("list_remote_skill_files", || async {
-            let path = format!("/api/skills/{skill_id}/files?include=metadata");
-            let resp = self.send(Method::GET, &path, Some(workspace_id), None).await?;
-            let parsed = resp.json::<SkillFilesResponse>().await.map_err(|e| {
-                MulticaError::NetworkFailed(format!("decode {path} failed: {e}"))
-            })?;
+    ) -> Result<Vec<RemoteSkillFile>, MulticaError> {
+        self.with_network_retry("get_remote_skill_files", || async {
+            let path = format!("/api/skills/{skill_id}/files");
+            let resp = self
+                .send(Method::GET, &path, Some(workspace_id), None)
+                .await?;
+            let parsed = resp
+                .json::<SkillFilesResponse>()
+                .await
+                .map_err(|e| MulticaError::NetworkFailed(format!("decode {path} failed: {e}")))?;
             Ok(match parsed {
                 SkillFilesResponse::Wrapped { files } => files,
                 SkillFilesResponse::Bare(v) => v,
@@ -1968,16 +1983,23 @@ mod tests {
 
     #[test]
     fn skill_files_response_accepts_wrapped_and_bare() {
-        // GET /api/skills/{id}/files?include=metadata 的判空消费容错：包装 {files:[...]} 或裸数组
-        // （照搬 WorkspacesResponse/TasksListResponse 的 untagged 容错惯例）；metadata 项无 content。
+        // GET /api/skills/{id}/files（默认 includeContent=true）的容错：包装 {files:[...]} 或裸数组
+        // （照搬 WorkspacesResponse/TasksListResponse 的 untagged 容错惯例）；项含正文，根 SKILL.md
+        // 不在列表（由 detail.content 承载）。
         let wrapped: SkillFilesResponse = serde_json::from_str(
-            r#"{"files":[{"path":"assets/a.md","size":128}]}"#,
+            r##"{"files":[{"path":"assets/a.md","size":6,"content":"# tpl"},{"path":"nested/b.md","content":"b"}]}"##,
         )
         .unwrap();
-        assert!(matches!(&wrapped, SkillFilesResponse::Wrapped { files } if files.len() == 1));
+        let SkillFilesResponse::Wrapped { files } = &wrapped else {
+            panic!("expected wrapped shape");
+        };
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "assets/a.md");
+        assert_eq!(files[0].content, "# tpl");
+        assert_eq!(files[1].size, 0); // size 缺失时 serde default，正文才是事实源
+        assert!(!files.iter().any(|file| file.path == "SKILL.md"));
 
-        let bare: SkillFilesResponse =
-            serde_json::from_str(r#"[]"#).unwrap();
+        let bare: SkillFilesResponse = serde_json::from_str(r#"[]"#).unwrap();
         assert!(matches!(bare, SkillFilesResponse::Bare(ref v) if v.is_empty()));
     }
 }

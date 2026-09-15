@@ -186,7 +186,7 @@ export interface MulticaPullItemResultVm {
   name: string;
   /// "created" | "overwritten" | "skipped" | "failed"。
   outcome: string;
-  /// skipped/failed 时的结构化错误码（如 multica.skill.has-files）。
+  /// skipped/failed 时的结构化错误码（如 multica.skill.not-found；failed 也可能是落库错误原文）。
   reason: string | null;
 }
 

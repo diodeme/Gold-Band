@@ -8360,6 +8360,7 @@ mod tests {
             workspace_id: "ws-1".into(),
             local_project_id: "proj-1".into(),
             issue_id: None,
+            issue_kind: None,
             status: "completed".into(),
             title: format!("title-{remote}"),
             completed_at: "2026-08-13T00:00:00Z".into(),

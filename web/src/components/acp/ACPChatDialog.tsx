@@ -10005,6 +10005,7 @@ export function pendingPermissionFromEvents(
     if (event.kind !== "permissionRequest" || event.status !== "pending")
       continue;
     const requestId = permissionRequestIdFromEvent(event);
+    if (!requestId) continue;
     if (dismissedIds.has(requestId)) continue;
     return permissionRequestFromEvent(event);
   }
@@ -10016,6 +10017,7 @@ export function permissionRequestFromEvent(
 ): AcpPermissionRequestVm | null {
   if (event.kind !== "permissionRequest") return null;
   const requestId = permissionRequestIdFromEvent(event);
+  if (!requestId) return null;
   const raw: Record<string, unknown> = {
     ...(rawObject(event.raw) ?? {}),
     requestId,
@@ -11427,7 +11429,9 @@ function shouldPreservePendingInteractions(
       && event.status?.toLowerCase() !== "pending"
     ) return true;
     if (event.kind !== "permissionRequest") return false;
-    return pendingIds.has(permissionRequestIdFromEvent(event))
+    const permissionId = permissionRequestIdFromEvent(event);
+    return permissionId != null
+      && pendingIds.has(permissionId)
       && event.status?.toLowerCase() !== "pending";
   });
 }

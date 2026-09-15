@@ -352,7 +352,9 @@ fn wb_cicd_workflow_template(
             .trim()
             .into(),
         );
-        worker.output.as_mut().unwrap().artifact = "cicd-result".into();
+        worker.output = None;
+        worker.success_condition = None;
+        worker.manual_check = Some(true);
     }
     for edge in &mut template.workflow.edges {
         if edge.from == "accept" && edge.to == END_NODE {
@@ -5617,7 +5619,9 @@ mod tests {
         let NodeDsl::Worker(cicd) = template.workflow.nodes.last().unwrap() else {
             panic!()
         };
-        assert_ne!(cicd.manual_check, Some(true));
+        assert_eq!(cicd.manual_check, Some(true));
+        assert!(cicd.output.is_none());
+        assert!(cicd.success_condition.is_none());
         assert_eq!(cicd.profile.as_deref(), Some("pf-builtin-cicd"));
     }
     use super::{

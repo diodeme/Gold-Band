@@ -145,11 +145,15 @@ describe('WorkspaceShell sidebar width hydration', () => {
       appConfig: { acpSessionTitleRefreshEnabled: false, acpChatEventPageSize: 360, acpChatEventWindowPageCount: 3, acpChatResourceCacheSessionCount: 8, turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 1 }, workspaceLayout: FALLBACK_WORKSPACE_LAYOUT },
       vm: { loadStatus: 'ready' as const, workspaces: [{ projectId: 'p1', name: 'Workspace', workspacePath: '/workspace' }], pinRefs: [], pinnedTasks: [], pinnedTaskPage: { status: 'ready-empty' as const, nextCursor: null }, tasksByWorkspace: {}, workspaceTaskPages: {}, lastActiveWorkspaceId: null },
       conversationWorkspaceStore: new ConversationWorkspaceStore(), onSelect: () => {}, onToggleSidebar: () => {}, onNewConversation: () => {}, onSearch: () => {}, onPinTask: () => {}, onUnpinTask: () => {}, onRenameTask: () => {}, onDeleteTask: () => {},
+      onNewConversationInWorkspace: () => {}, onRemoveWorkspace: async () => {},
     };
     try {
       await act(async () => root.render(<WorkspaceShell {...commonProps} sidebarCollapsed={false} active={{ kind: 'conversation-home' }}><div /></WorkspaceShell>));
       const open = [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => ['memory.title', '项目记忆设置', 'Project Memory Settings'].includes(button.getAttribute('aria-label') ?? ''))!;
       expect(open).toBeDefined();
+      expect(open.querySelector('.lucide-book-open')).not.toBeNull();
+      expect(open.parentElement?.className).toContain('group-hover:opacity-100');
+      expect(open.parentElement?.querySelectorAll('button')).toHaveLength(3);
       await act(async () => open.click());
       const editor = container.querySelector('[aria-label="memory-draft"]');
       expect(editor).not.toBeNull();

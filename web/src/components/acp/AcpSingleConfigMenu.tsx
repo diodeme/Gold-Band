@@ -9,6 +9,7 @@ import {
   ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS,
   DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
   acpComposerConfigTriggerVariants,
+  formatAcpCompositeSelection,
   useAcpComposerConfigOverflowTooltip,
 } from '@/components/acp/AcpComposerConfigTrigger';
 import i18n from '@/i18n';
@@ -80,7 +81,11 @@ export function AcpSingleConfigMenu({
   appName,
 }: Props) {
   const selectedOption = options.find((option) => option.id === value);
-  const selectedLabel = valueLabel ?? selectedOption?.name ?? unspecifiedLabel;
+  const selectedLabel = formatAcpCompositeSelection(
+    valueLabel ?? selectedOption?.name,
+    onAutoAcceptChange && autoAccept ? (autoAcceptLabel ?? i18n.t('acp.autoAccept')) : null,
+    unspecifiedLabel,
+  );
   const {
     valueRef,
     tooltipOpen,

@@ -1,5 +1,19 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-15 ACP 未知入站请求回 JSON-RPC Method not found
+
+- 根因：入站分发只实现 `session/update`、`session/request_permission`、`elicitation/create`，未知 method 只写诊断、不回包。这是正确白名单下的 JSON-RPC 请求契约不完整：带 `id` 的阻塞扩展（如 Cursor `cursor/ask_question`）会让 Agent 一直等待。不是缺失 Cursor 提问 UI。
+- 实现：未知 client method 若带 `id`，session runtime 与未路由 connection 都回标准 `-32601 Method not found`；无 `id` 的 notification 仍只记日志。不新增厂商提问卡片或 elicitation 映射。
+- 验收：`unsupported_inbound_requests_reply_jsonrpc_method_not_found` 与 `handled_or_notification_inbound_frames_do_not_reply_method_not_found` 固定 `cursor/ask_question` 等未知请求回包、已知方法与 notification 不回 `-32601`。
+- 过度设计与性能评审：复用现有 stdin 写路径，无新身份、状态机、缓存或队列。未知请求为偶发控制面帧，单次常数级 JSON 构造与一行写出。
+
+## 2026-09-15 ACP initialize 声明 parameterizedModelPicker
+
+- 根因：Composer 思考强度只在 Agent 返回 `configOptions[category=thought_level]` 时展示。Cursor ACP 把思考强度 / Fast 等参数化模型配置挡在未文档化的 `_meta.parameterizedModelPicker` 后面；Gold Band 的全局 `initialize` 此前只声明 `subagent-transcript` 与 `elicitation.form`，Cursor 因而只回每个模型的默认变体，UI 正确退化为纯模型下拉。属于正确设计下客户端能力声明不完整，不是 Cursor 专用选择器缺失。
+- 实现：共享 `initialize_params()` 增加 `_meta.parameterizedModelPicker=true`，与现有 nested transcript 并列，不按 Agent ID 分叉。展示仍只认 `category=thought_level`，不解析模型变体串，不为 Cursor 新增状态或控件。
+- 验收：`initialize_requests_nested_agent_transcripts_at_the_adapter_boundary` 固定 handshake 同时声明 nested transcript、parameterized model picker 与 elicitation.form。
+- 过度设计与性能评审：只改一份握手 JSON 的布尔字段，无新身份、状态机、缓存、请求或扫描；未知 `_meta` 按 ACP 扩展规则忽略。
+
 ## 2026-09-10 人工 Check 后继消息窗口与首屏状态
 
 - 根因判断：已有按会话隔离阅读窗口、分页和自动追平的设计成立，但消费端身份与显示状态投影不完整。显式导航先提交 B 的 selectedSessionKey，摘要未到时仍渲染 A；旧 JSX key 却提前切为 B，随后 B 摘要到达时复用带有 A 阅读状态的组件。用户现场 dev-test 的 raw/timeline 与 runtime 日志证明正文已生成，点击“回到最新”后可正常读取，问题位于前端窗口交接。

@@ -16,7 +16,7 @@ Rust 层职责边界（当前实现对应 `src/acp/*` 与 `src/provider/mod.rs`�
 
 - 发现并启动 ACP-compatible adapter。
 - 管理 stdio child process 生命周期。
-- 执行 ACP `initialize`、`session/new`、`session/load`、`session/prompt`、cancel、permission response。`session/request_permission` 的文件握手必须以 JSON-RPC 原始 request id 命名 `acp.permission-request.<id>.json` / `acp.permission-response.<id>.json`；timeline 展示层的 `permission-<id>` 不能回传给 runtime 等待逻辑。
+- 执行 ACP `initialize`、`session/new`、`session/load`、`session/prompt`、cancel、permission response。`initialize` 对所有 Agent 发送同一份 `clientCapabilities`：`elicitation.form`、`_meta.subagent-transcript` 与 `_meta.parameterizedModelPicker`；不按 Agent ID 分叉。`session/request_permission` 的文件握手必须以 JSON-RPC 原始 request id 命名 `acp.permission-request.<id>.json` / `acp.permission-response.<id>.json`；timeline 展示层的 `permission-<id>` 不能回传给 runtime 等待逻辑。客户端只实现 `session/update`、`session/request_permission`、`elicitation/create`；其它入站 method 若带 JSON-RPC `id`（例如 Cursor `cursor/ask_question`）必须回标准 `-32601 Method not found`，无 `id` 的 notification 只记诊断、不回包。不得为厂商扩展单独接线提问 UI。
 - 持久化 synthetic `goldBandPrompt` 用户消息时保留 `promptId` 元数据；session event scan 只允许合并 `textDelta` / `thoughtDelta`，不得把不同轮次的 `userTextDelta` 拼接成一条消息。Tool/text/thought/plan/usage/config/mode/sessionInfo 都属于展示型或状态型 `session/update`，不创建 response 文件；只有 permission request 需要外部确认握手。
 - 接收 `session/update` 并转发给会话详情 ViewModel。
 - 由 ViewModel 扫描 `acp.events.jsonl` 计算 ACP session 累计净处理耗时；该耗时按 Gold Band prompt turn 累加，并扣除 `session/request_permission` pending 到用户选择之间的阻塞式用户决策等待区间。

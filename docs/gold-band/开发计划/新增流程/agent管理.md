@@ -1,4 +1,5 @@
 现在应用程序的侧边栏是任务编排、知识库、模型管理
+- 2026-09-15：Doctor 与正式 ACP 连接共用全局 `initialize` 客户端能力，新增 `_meta.parameterizedModelPicker`。依赖该声明才展开思考强度 / 模型参数的 Agent，诊断目录与运行期 `configOptions` 必须一致；不按 Agent ID 分叉 handshake。
 你现在先新增个agent管理吧
 agent管理主要是负责管理支持接入的ACP agent
 当前改为维护构建期精选 ACP Agent Catalog，固定提供 `claude-acp`、`codex-acp`、`cursor`、`gemini`、`codebuddy-code`、`goose`、`qwen-code`、`opencode`、`kimi`、`amp-acp`、`pi-acp` 十一类模板，并支持用户自定义 ACP Agent；GLM 不进入本轮范围

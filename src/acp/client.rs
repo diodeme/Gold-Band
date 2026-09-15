@@ -349,6 +349,7 @@ use crate::acp::connection::{
     AcpConnectionUnavailable, AdapterConnection, AdapterConnectionKey, AdapterConnectionManager,
     AdapterConnectionUse, AdapterShutdownReason, AttemptSessionUnregisterOutcome, LiveAcpSession,
     SessionEventPump, SessionObservedFrame, SessionRouteTryRecvError, SessionRouteWatermark,
+    unsupported_client_inbound_reply,
 };
 use crate::acp::elicitation::{
     ELICITATION_DEFAULT_TIMEOUT, ElicitationAction, bind_pending_elicitation_timeline_identity,
@@ -466,6 +467,7 @@ const SESSION_LIST_MAX_PAGES: usize = 8;
 const SESSION_EVICTION_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 const SESSION_SYSTEM_CONTEXT_VERSION: u32 = 1;
 const NESTED_AGENT_TRANSCRIPT_CAPABILITY: &str = "subagent-transcript";
+const PARAMETERIZED_MODEL_PICKER_CAPABILITY: &str = "parameterizedModelPicker";
 pub const ACP_SESSION_RESTORE_UNSUPPORTED_CODE: &str = "acp.session-restore-unsupported";
 pub const ACP_SESSION_RESTORE_REFERENCE_MISSING_CODE: &str =
     "acp.session-restore-reference-missing";
@@ -518,7 +520,8 @@ fn initialize_params() -> Value {
         "protocolVersion": 1,
         "clientCapabilities": {
             "_meta": {
-                (NESTED_AGENT_TRANSCRIPT_CAPABILITY): true
+                (NESTED_AGENT_TRANSCRIPT_CAPABILITY): true,
+                (PARAMETERIZED_MODEL_PICKER_CAPABILITY): true
             },
             "elicitation": {
                 "form": {}
@@ -5552,8 +5555,12 @@ impl<'a> AcpRuntime<'a> {
                     &self.paths.diagnostics,
                     "warn",
                     format!("unsupported ACP adapter request/notification `{method}`"),
-                    Some(value),
+                    Some(value.clone()),
                 );
+                if let Some(frame) = unsupported_client_inbound_reply(&value) {
+                    self.append_outbound_frame(&frame);
+                    self.connection.send_raw_frame(&frame)?;
+                }
                 Ok(())
             }
             None => Ok(()),
@@ -8394,34 +8401,35 @@ mod tests {
         AcpPromptRouteDrainTimeout, AcpPromptRouteUnavailable, AcpPromptTerminalState,
         AcpPromptTokenUsage, AcpRuntime, AcpRuntimePolicy, AcpUsageState, AttachedSessionReusePlan,
         CancelNotificationPhase, DOCTOR_DIAGNOSTIC_TARGET_SIZE, NESTED_AGENT_TRANSCRIPT_CAPABILITY,
-        PROMPT_CANCEL_DRAIN_FRAME_BUDGET, PROMPT_CANCEL_TIMEOUT, PriorAttemptMetrics,
-        PromptActivity, PromptBundle, PromptVisibility, ProviderControlRegistration,
-        ProviderFreshnessBaseline, RuntimeStopProbe, SessionModelResolution,
-        SessionRestoreCapabilities, SessionRestoreIntent, SessionRestoreMethod, SessionRestorePlan,
-        SessionRestorePlanError, SessionUpdatePhase, acp_prompt_rpc_failure,
-        active_context_compaction, active_timeline_streams, active_timeline_streams_by_branch,
-        append_bounded, append_diagnostic_best_effort, append_raw_frame_best_effort,
-        append_structured_diagnostic_best_effort, attached_sync_required, cancel_attempt_prompt,
-        canonical_prompt_event_identity, catalog_observation_is_newer,
-        cleanup_doctor_acp_dir_after_success, confirmed_context_usage_update,
-        dispatch_attempt_prompt_cancel, drain_available_frames_bounded,
-        drain_available_frames_with_budget, drain_frames_until_quiet,
-        drain_frames_until_quiet_with_timeout_error, drain_frames_until_route_watermark,
-        evaluate_provider_revision, initialize_params, is_pending_retry_prompt_event,
-        is_streaming_timeline_update, is_transport_interruption, latest_visible_turn_id,
-        map_prompt_terminal_drain_error, merge_tool_revision, next_prompt_retry_attempt,
-        parse_agent_capabilities, permission_decision_timeline_event, plan_attached_session_reuse,
-        plan_session_restore, prepare_attempt_usage_after_reuse_decision,
-        preserve_interrupted_session_identity, prompt_activity, prompt_cancel_terminal_timeout,
-        prompt_cancellation_outcome, prompt_usage_transaction_id, provider_thread_is_active,
-        register_provider_control, request_prompt_cancel, resolve_permission_mode,
-        resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
-        runtime_hot_timeline_items, scheduled_trigger_for_prompt, session_config_fingerprint,
-        session_load_params, session_new_params, session_prompt_params, session_prompt_text,
-        session_resume_params, settle_attempt_prompt_interactions, settle_prompt_event,
-        should_suppress_session_update, stable_message_item_id, timeline_generation_for_live_event,
-        timeline_patch_flush_due, timeline_position_for_live_event, unregister_provider_control,
-        validate_session_restore_target,
+        PARAMETERIZED_MODEL_PICKER_CAPABILITY, PROMPT_CANCEL_DRAIN_FRAME_BUDGET,
+        PROMPT_CANCEL_TIMEOUT, PriorAttemptMetrics, PromptActivity, PromptBundle, PromptVisibility,
+        ProviderControlRegistration, ProviderFreshnessBaseline, RuntimeStopProbe,
+        SessionModelResolution, SessionRestoreCapabilities, SessionRestoreIntent,
+        SessionRestoreMethod, SessionRestorePlan, SessionRestorePlanError, SessionUpdatePhase,
+        acp_prompt_rpc_failure, active_context_compaction, active_timeline_streams,
+        active_timeline_streams_by_branch, append_bounded, append_diagnostic_best_effort,
+        append_raw_frame_best_effort, append_structured_diagnostic_best_effort,
+        attached_sync_required, cancel_attempt_prompt, canonical_prompt_event_identity,
+        catalog_observation_is_newer, cleanup_doctor_acp_dir_after_success,
+        confirmed_context_usage_update, dispatch_attempt_prompt_cancel,
+        drain_available_frames_bounded, drain_available_frames_with_budget,
+        drain_frames_until_quiet, drain_frames_until_quiet_with_timeout_error,
+        drain_frames_until_route_watermark, evaluate_provider_revision, initialize_params,
+        is_pending_retry_prompt_event, is_streaming_timeline_update, is_transport_interruption,
+        latest_visible_turn_id, map_prompt_terminal_drain_error, merge_tool_revision,
+        next_prompt_retry_attempt, parse_agent_capabilities, permission_decision_timeline_event,
+        plan_attached_session_reuse, plan_session_restore,
+        prepare_attempt_usage_after_reuse_decision, preserve_interrupted_session_identity,
+        prompt_activity, prompt_cancel_terminal_timeout, prompt_cancellation_outcome,
+        prompt_usage_transaction_id, provider_thread_is_active, register_provider_control,
+        request_prompt_cancel, resolve_permission_mode, resolve_session_model,
+        retain_bounded_doctor_acp_failure_bundle, runtime_hot_timeline_items,
+        scheduled_trigger_for_prompt, session_config_fingerprint, session_load_params,
+        session_new_params, session_prompt_params, session_prompt_text, session_resume_params,
+        settle_attempt_prompt_interactions, settle_prompt_event, should_suppress_session_update,
+        stable_message_item_id, timeline_generation_for_live_event, timeline_patch_flush_due,
+        timeline_position_for_live_event, unregister_provider_control,
+        unsupported_client_inbound_reply, validate_session_restore_target,
     };
 
     #[test]
@@ -8969,11 +8977,15 @@ mod tests {
     #[test]
     fn initialize_requests_nested_agent_transcripts_at_the_adapter_boundary() {
         let params = initialize_params();
+        let meta = params.pointer("/clientCapabilities/_meta");
 
         assert_eq!(
-            params
-                .pointer("/clientCapabilities/_meta")
-                .and_then(|meta| meta.get(NESTED_AGENT_TRANSCRIPT_CAPABILITY))
+            meta.and_then(|meta| meta.get(NESTED_AGENT_TRANSCRIPT_CAPABILITY))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            meta.and_then(|meta| meta.get(PARAMETERIZED_MODEL_PICKER_CAPABILITY))
                 .and_then(Value::as_bool),
             Some(true)
         );
@@ -8982,6 +8994,27 @@ mod tests {
                 .pointer("/clientCapabilities/elicitation/form")
                 .is_some()
         );
+    }
+
+    #[test]
+    fn unknown_inbound_acp_requests_reply_method_not_found_and_notifications_stay_silent() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "cursor/ask_question",
+            "params": { "sessionId": "session-1", "questions": [] }
+        });
+        let reply = unsupported_client_inbound_reply(&request).expect("request must be answered");
+        assert_eq!(reply["error"]["code"], json!(-32601));
+        assert_eq!(reply["error"]["message"], json!("Method not found"));
+        assert_eq!(reply["id"], json!(9));
+
+        let notification = json!({
+            "jsonrpc": "2.0",
+            "method": "cursor/update_todos",
+            "params": { "sessionId": "session-1" }
+        });
+        assert_eq!(unsupported_client_inbound_reply(&notification), None);
     }
 
     #[test]

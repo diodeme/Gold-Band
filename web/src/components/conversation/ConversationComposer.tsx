@@ -15,6 +15,7 @@ import { groupSelectableAgentOptions, normalizeConfigOptionOverrides, selectable
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
 import { ComposerContextArea } from '@/components/shared/ComposerContextArea';
 import { useConversationComposerDraft, type ConversationComposerMulticaBinding } from '@/lib/conversation-composer-draft';
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { shouldBackspaceClearMulticaBinding } from '@/lib/conversation-composer-multica-chip';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { useAgentCommands } from '@/hooks/useAgentCommands';
@@ -451,6 +452,7 @@ export function ConversationComposer({
   const measuredComposerRef = useWebviewMeasuredContainer<HTMLDivElement>('conversation-composer');
   const { t } = useTranslation();
   const composerDraft = useConversationComposerDraft();
+  const readOnly = useReadOnlyExperience();
   const content = composerDraft.draft.content;
   const setContent = composerDraft.setContent;
   const scheduledMode = composerDraft.draft.submission.kind === 'scheduled-task';
@@ -460,10 +462,12 @@ export function ConversationComposer({
   const [selectedDirectAgent, setSelectedDirectAgent] = useState(runMode.directConfig?.agentType ?? '');
   const [selectedDirectModel, setSelectedDirectModel] = useState(runMode.directConfig?.modelId ?? '');
   const [selectedDirectPermissionMode, setSelectedDirectPermissionMode] = useState(runMode.directConfig?.permissionMode ?? '');
+  const [selectedDirectAutoAccept, setSelectedDirectAutoAccept] = useState(Boolean(runMode.directConfig?.autoAccept));
   const [selectedDirectConfigOptions, setSelectedDirectConfigOptions] = useState<Record<string, string>>(runMode.directConfig?.configOptions ?? {});
   const [selectedAgent, setSelectedAgent] = useState(runMode.autoConfig?.agentType ?? '');
   const [selectedModel, setSelectedModel] = useState(runMode.autoConfig?.modelId ?? '');
   const [selectedPermissionMode, setSelectedPermissionMode] = useState(runMode.autoConfig?.permissionMode ?? '');
+  const [selectedAutoAccept, setSelectedAutoAccept] = useState(Boolean(runMode.autoConfig?.autoAccept));
   const [selectedConfigOptions, setSelectedConfigOptions] = useState<Record<string, string>>(runMode.autoConfig?.configOptions ?? {});
   const [globalGoal, setGlobalGoal] = useState(runMode.autoConfig?.globalGoal ?? '');
   const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? '');
@@ -541,7 +545,7 @@ export function ConversationComposer({
   const scheduledSummary = scheduledConfig
     ? formatScheduledScheduleInput(t, scheduledConfig.schedule)
     : t('scheduled.composer.unconfigured');
-  const canSubmit = hasUserPromptPayload(content, attachments.length)
+  const canSubmit = !readOnly && hasUserPromptPayload(content, attachments.length)
     && !busy
     && !submittingAttachments
     && !branchMutationPending
@@ -690,10 +694,12 @@ export function ConversationComposer({
     setSelectedDirectAgent(fallbackAgent);
     setSelectedDirectModel(directConfig?.modelId ?? '');
     setSelectedDirectPermissionMode(directConfig?.permissionMode ?? '');
+    setSelectedDirectAutoAccept(Boolean(directConfig?.autoAccept));
     setSelectedDirectConfigOptions(directConfig?.configOptions ?? {});
     setSelectedAgent(runMode.autoConfig?.agentType ?? '');
     setSelectedModel(runMode.autoConfig?.modelId ?? '');
     setSelectedPermissionMode(runMode.autoConfig?.permissionMode ?? '');
+    setSelectedAutoAccept(Boolean(runMode.autoConfig?.autoAccept));
     setSelectedConfigOptions(runMode.autoConfig?.configOptions ?? {});
     setGlobalGoal(runMode.autoConfig?.globalGoal ?? '');
     setWorkflowTemplateId(runMode.workflowTemplateId ?? workflowTemplates?.lastUsedTemplateId ?? templates[0]?.id ?? '');
@@ -715,6 +721,7 @@ export function ConversationComposer({
     setSelectedDirectAgent(agentType);
     setSelectedDirectModel(remembered.modelId ?? '');
     setSelectedDirectPermissionMode(remembered.permissionMode ?? '');
+    setSelectedDirectAutoAccept(Boolean(remembered.autoAccept));
     setSelectedDirectConfigOptions(remembered.configOptions ?? {});
     updateDirectConfig(remembered);
   };
@@ -732,6 +739,7 @@ export function ConversationComposer({
     const nextAgent = patchedValue(patch, 'agentType', selectedAgent);
     const nextModel = patchedValue(patch, 'modelId', selectedModel);
     const nextPermissionMode = patchedValue(patch, 'permissionMode', selectedPermissionMode);
+    const nextAutoAccept = patchedValue(patch, 'autoAccept', selectedAutoAccept);
     const nextConfigOptions = patchedValue(patch, 'configOptions', selectedConfigOptions);
     const nextGlobalGoal = patchedValue(patch, 'globalGoal', globalGoal);
     if (isDynamicAuto) {
@@ -751,6 +759,7 @@ export function ConversationComposer({
       agentType: nextAgent || '',
       modelId: nextModel || undefined,
       permissionMode: nextPermissionMode || undefined,
+      autoAccept: nextAutoAccept || undefined,
       configOptions: nextConfigOptions,
       globalGoal: optionalRunModeText(nextGlobalGoal),
     };
@@ -769,6 +778,7 @@ export function ConversationComposer({
       agentType: selectedDirectAgent,
       modelId: selectedDirectModel || undefined,
       permissionMode: selectedDirectPermissionMode || undefined,
+      autoAccept: selectedDirectAutoAccept || undefined,
       configOptions: normalized.configOptions,
     });
   }, [isDirect, selectedDirectAgentObj, selectedDirectAgent, selectedDirectModel, selectedDirectPermissionMode, selectedDirectConfigOptions]);
@@ -795,6 +805,7 @@ export function ConversationComposer({
           agentType: selectedDirectAgent,
           modelId: selectedDirectModel || undefined,
           permissionMode: selectedDirectPermissionMode || undefined,
+          autoAccept: selectedDirectAutoAccept || undefined,
           configOptions: selectedDirectAgentObj
             ? normalizeConfigOptionOverrides(selectedDirectAgentObj, selectedDirectConfigOptions).configOptions
             : selectedDirectConfigOptions,
@@ -869,7 +880,7 @@ export function ConversationComposer({
     runMode: runMode.mode,
     workflowTemplateId: isAuto || isDirect ? undefined : selectedWorkflowTemplateId,
     includeOptionalEntry,
-    directConfig: isDirect ? normalizeConversationDirectConfigForSubmit({ agentType: selectedDirectAgent, modelId: selectedDirectModel || undefined, permissionMode: selectedDirectPermissionMode || undefined, configOptions: selectedDirectConfigOptions }) : undefined,
+    directConfig: isDirect ? normalizeConversationDirectConfigForSubmit({ agentType: selectedDirectAgent, modelId: selectedDirectModel || undefined, permissionMode: selectedDirectPermissionMode || undefined, autoAccept: selectedDirectAutoAccept || undefined, configOptions: selectedDirectConfigOptions }) : undefined,
     autoConfig: isAuto ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession()) : undefined,
   });
 
@@ -947,7 +958,7 @@ export function ConversationComposer({
         data-conversation-composer="quick"
         data-attachment-dropzone="true"
         className={CONVERSATION_HOME_COMPOSER_LAYOUT.containerClassName}
-        {...dropZoneHandlers}
+        {...(readOnly ? { onDragOver: (event: React.DragEvent) => event.preventDefault(), onDrop: (event: React.DragEvent) => event.preventDefault() } : dropZoneHandlers)}
       >
         {scheduledMode ? (
           <div className="flex min-h-8 items-center gap-2 px-2 text-xs text-muted-foreground">
@@ -974,7 +985,7 @@ export function ConversationComposer({
             showWorkLocation={!scheduledMode}
             forceSelector={multicaActive}
             emptyWorkspaceHint={multicaActive ? t('conversation.composer.multicaNeedLocalWorkspace') : undefined}
-            showBranch={!scheduledMode}
+            showBranch={!scheduledMode && !readOnly}
             onBranchChange={handleBranchChange}
             onBranchMutationPendingChange={setBranchMutationPending}
           />
@@ -983,7 +994,7 @@ export function ConversationComposer({
           onValueChange={(value) => setContent(`${committedSlashCommand?.prefix ?? ''}${value}`)}
           maxHeight={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaMaxHeightPx}
           onSubmit={() => { void handleSubmit(); }}
-          disabled={busy || submittingAttachments || branchMutationPending}
+          disabled={readOnly || busy || submittingAttachments || branchMutationPending}
           className={cn(
             CONVERSATION_HOME_COMPOSER_LAYOUT.promptInputClassName,
             slashCommands.isOpen && 'z-50',
@@ -1041,13 +1052,13 @@ export function ConversationComposer({
                 ref={composerTextareaRef}
                 style={committedInputLayout.textareaStyle}
                 className={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaClassName}
-                placeholder={t('conversation.home.inputPlaceholder')}
+                placeholder={t(readOnly ? 'demo.inputDisabled' : 'conversation.home.inputPlaceholder')}
                 onKeyDown={handleKeyDown}
-                onPaste={(e) => { void handlePaste(e); }}
+                onPaste={(e) => { if (readOnly) e.preventDefault(); else void handlePaste(e); }}
                 onDragEnter={dropZoneHandlers.onDragEnter}
                 onDragOver={dropZoneHandlers.onDragOver}
-                onDrop={dropZoneHandlers.onDrop}
-                disabled={busy || submittingAttachments}
+                onDrop={(e) => { if (readOnly) e.preventDefault(); else dropZoneHandlers.onDrop(e); }}
+                disabled={readOnly || busy || submittingAttachments}
               />
             </div>
           </SlashCommandMenu>
@@ -1065,14 +1076,15 @@ export function ConversationComposer({
                 type="file"
                 multiple
                 className="hidden"
-                onChange={handleFilesFromInput}
+                disabled={readOnly}
+                onChange={readOnly ? undefined : handleFilesFromInput}
               />
               <Button
                 variant="ghost"
                 size="icon"
                 className="size-7 rounded-full"
                 onClick={() => { void pickFiles(); }}
-                disabled={busy || submittingAttachments}
+                disabled={readOnly || busy || submittingAttachments}
                 aria-label={t('acp.attachHint')}
               >
                 <Paperclip className="size-3.5" />
@@ -1097,6 +1109,7 @@ export function ConversationComposer({
                         agentType: selectedDirectAgent,
                         modelId: modelId || undefined,
                         permissionMode: selectedDirectPermissionMode || undefined,
+                        autoAccept: selectedDirectAutoAccept || undefined,
                         configOptions: selectedDirectConfigOptions,
                       });
                     }}
@@ -1107,6 +1120,7 @@ export function ConversationComposer({
                         agentType: selectedDirectAgent,
                         modelId: selectedDirectModel || undefined,
                         permissionMode: selectedDirectPermissionMode || undefined,
+                        autoAccept: selectedDirectAutoAccept || undefined,
                         configOptions: next,
                       });
                     }}
@@ -1118,6 +1132,18 @@ export function ConversationComposer({
                     unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
                     align="end"
                     triggerClassName={CONVERSATION_HOME_COMPOSER_LAYOUT.configTriggerClassName}
+                    autoAccept={selectedDirectAutoAccept}
+                    autoAcceptLabel={t('acp.autoAccept')}
+                    onAutoAcceptChange={(enabled) => {
+                      setSelectedDirectAutoAccept(enabled);
+                      updateDirectConfig({
+                        agentType: selectedDirectAgent,
+                        modelId: selectedDirectModel || undefined,
+                        permissionMode: selectedDirectPermissionMode || undefined,
+                        autoAccept: enabled || undefined,
+                        configOptions: selectedDirectConfigOptions,
+                      });
+                    }}
                     onValueChange={(value) => {
                       const permissionMode = value ?? '';
                       setSelectedDirectPermissionMode(permissionMode);
@@ -1125,6 +1151,7 @@ export function ConversationComposer({
                         agentType: selectedDirectAgent,
                         modelId: selectedDirectModel || undefined,
                         permissionMode: permissionMode || undefined,
+                        autoAccept: selectedDirectAutoAccept || undefined,
                         configOptions: selectedDirectConfigOptions,
                       });
                     }}
@@ -1293,6 +1320,12 @@ export function ConversationComposer({
                     options={autoPermissionModes}
                     unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
                     triggerClassName={CONVERSATION_HOME_COMPOSER_LAYOUT.modeControlHeightClassName}
+                    autoAccept={selectedAutoAccept}
+                    autoAcceptLabel={t('acp.autoAccept')}
+                    onAutoAcceptChange={(enabled) => {
+                      setSelectedAutoAccept(enabled);
+                      updateAutoSession({ autoAccept: enabled || undefined });
+                    }}
                     onValueChange={(value) => {
                       const next = value ?? '';
                       setSelectedPermissionMode(next);

@@ -6,11 +6,11 @@
 
 ## 当前持久化契约（2026-08-19）
 
-`scheduled_jobs` 与 `scheduled_occurrences` 统一存放在用户级 `~/.gold-band/core.db`。`GoldBandPaths::scheduler_db_path()` 直接复用 `core_db_path()`；Scheduler 通过 `core_schema(component = 'scheduler', version = 1)` 管理自己的表版本，与 `core`、`workspace_identity` 等 component 共用物理数据库但保持独立 schema ownership。
+`scheduled_jobs` 与 `scheduled_occurrences` 统一存放在用户级 `~/.gold-band/core.db`。`GoldBandPaths::scheduler_db_path()` 直接复用 `core_db_path()`；Scheduler 通过 `core_schema(component = 'scheduler', version = 4)` 管理自己的表版本，与 `core`、`workspace_identity` 等 component 共用物理数据库但保持独立 schema ownership。
 
-`project_id` 是应用内 workspace 的唯一业务身份。job 主键、occurrence 主键、外键、唯一约束、索引、repository API、coordinator key、heartbeat/active guard registry key 与 lifecycle event 都显式包含 `project_id`；`workspaceKey` 已废弃，workspace path 仅用于定位和归属校验。`scheduled_jobs` 使用 `(project_id, id)` 主键，`scheduled_occurrences` 使用 `(project_id, id)` 主键并以 `(project_id, job_id)` 外键级联到 job，计划点以 `(project_id, job_id, scheduled_at, trigger_kind)` 去重。
+`project_id` 是应用内 workspace 的唯一业务身份。job 主键、occurrence 主键、唯一约束、索引、repository API、coordinator key、heartbeat/active guard registry key 与 lifecycle event 都显式包含 `project_id`；`workspaceKey` 已废弃，workspace path 仅用于定位和归属校验。`scheduled_jobs` 与 `scheduled_occurrences` 分别使用 `(project_id, id)` 主键，计划点以 `(project_id, job_id, scheduled_at, trigger_kind)` 去重。accepted occurrence 已经是独立执行历史事实，不再通过外键随 definition 级联删除；删除 definition 只删除尚未接受的 occurrence。
 
-这是开发阶段的破坏式切换。旧项目级/用户级 `scheduled-tasks.db`、旧 JSON store、`scheduler_schema`、`scheduler_migrations` 以及所有 import/fallback 路径均已删除；runtime 不打开旧文件，也不迁移已有任务。下文 Phase 1 至 Phase 10.9 保留实施历史；与本节冲突的旧迁移或 per-workspace database 描述均由本节和 Phase 10.10 取代。
+这是开发阶段的存储切换。旧项目级/用户级 `scheduled-tasks.db`、旧 JSON store、`scheduler_schema`、`scheduler_migrations` 以及所有 import/fallback 路径均已删除；runtime 不再打开这些旧文件。已经位于当前 `core.db` 的 scheduler v1 数据必须在事务内原样迁移到 v4：旧 occurrence 保留状态、链接、错误和时间字段，但因为没有可靠 acceptance snapshot，只作为 `accepted_at IS NULL` 的调度诊断，不能伪造成执行历史。下文 Phase 1 至 Phase 10.9 保留实施历史；与本节冲突的旧迁移或 per-workspace database 描述均由本节和 Phase 10.10 之后的完成态取代。
 
 ## 目标运行时结构
 
@@ -31,7 +31,7 @@
 
 ### Scheduler contract baseline (2026-08-06)
 
-`ScheduledErrorCode` 的迁移冲突、coordinator 不可用、sleep inhibitor 失败、通知失败和 Skill 校验失败使用稳定的 `SCHEDULED_*` wire code，并通过结构化 error/params 传递，不包含面向用户的错误文案。`src/scheduler/queue.rs` 是队列和 occurrence 保留策略的唯一来源：busy retry 为 30 秒、最多 3 次；late-fire grace 为 60 秒；终态 occurrence 默认保留 30 天，允许范围为 1 至 3650 天，每批删除 500 条。
+`ScheduledErrorCode` 的迁移冲突、coordinator 不可用、sleep inhibitor 失败、通知失败和 Skill 校验失败使用稳定的 `SCHEDULED_*` wire code，并通过结构化 error/params 传递，不包含面向用户的错误文案。`src/scheduler/queue.rs` 是队列和 occurrence 保留策略的唯一来源：busy retry 为 30 秒、最多 3 次；late-fire grace 为 60 秒；未接受的终态诊断 occurrence 默认保留 30 天，允许范围为 1 至 3650 天，每批删除 500 条。`accepted_at IS NOT NULL` 的执行历史不参加定时清理。
 
 ## occurrence 生命周期
 
@@ -332,3 +332,45 @@ Scheduler 存储由“每 workspace 一个数据库”破坏式收敛为用户�
 性能上，enabled deadline、active occurrence、history 和 status history 索引都以 `project_id` 开头；正常协调、恢复、分页和 retention 查询只访问单项目范围，不因共享物理库引入跨项目全表扫描、N+1、额外缓存或扩大锁范围。方案复用既有 `core.db`、`core_schema`、事务和 coordinator，没有新增聚合、状态机、队列或迁移抽象，复杂度与当前开发阶段的数据规模和风险匹配。
 
 定向验收覆盖 repository、core-state 共库、storage path、runtime/lease/lifecycle、service CRUD 和 attention lookup：45 + 6 + 1 + 87 + 26 + 2 项测试全部通过，core library 与 desktop 均编译通过，diff integrity 通过。按开发约定未执行全量回归、前端构建或 UI/EXE 启动验证。
+
+### Phase 10.11 Accepted execution 与用户管理历史（2026-08-25）
+
+本节取代上文关于 scheduler schema v1、definition 外键级联和“所有终态都是执行历史”的旧描述；旧段落仅保留实施沿革。Scheduler component 当前 schema 为 v4：v2 引入 accepted execution，v3 曾加入现已废弃的 Run 删除 operation，v4 删除该 operation 表并建立未接受诊断记录的 retention 索引。v1 升级必须保留 `scheduled_jobs` 和全部 legacy occurrence；legacy occurrence 没有不可变内容快照，因此保持 `accepted_at IS NULL`，不得用当前可编辑 definition 伪造历史快照。
+
+`ScheduledTaskDefinition` 新增从 1 开始的 `scheduleRevision`，只在 schedule 语义变化时递增。自动 occurrence 在物化时记录该 revision；schedule 修改或停用在同一写事务中删除未接受自动 occurrence，内容修改不删除 occurrence，手动 run-now 不受 schedule revision 约束。删除 definition 先删除所有未接受 occurrence，再删除 job；已接受 occurrence 没有 definition 外键级联，因此保留完整执行历史。
+
+可靠接受由 `accept_occurrence_execution` 单一 immediate transaction 完成。事务校验 project、owner、live lease、当前 definition revision、自动 occurrence 对应的 definition 仍 enabled、schedule revision、手动/自动触发不变量与当前完整内容，再一次性写入 `taskId + runId + roundId + nodeId + attemptId`、毫秒规范化的 `acceptedAt` 和 `ScheduledExecutionSnapshot`。完全相同的重试返回 `AlreadyAccepted`；definition revision 不同或自动任务已停用返回 `DefinitionChanged`；locator 或同 revision 快照冲突返回 `LostClaim`，任何路径都不得覆写已接受事实。手动 run-now 不读取 enabled 或 schedule revision 作为接受条件。
+
+执行历史查询只读取 `accepted_at IS NOT NULL`，并按 `(project_id, scheduled_task_id, task_id, run_id)` 聚合；Direct continuous 的多个 occurrence 因而属于同一个真实 Run。`pending/retrying/missed/skipped` 和接受前失败仍只属于 scheduler 运维状态，不是用户执行历史。Settings schema v11 保留 `scheduledOccurrenceRetentionDays`；coordinator 只按该天数分批清理过期且 `accepted_at IS NULL` 的 `succeeded/failed/skipped/missed` 诊断记录，并保护仍与 active Run 相连的记录。已接受 occurrence 永不按年龄自动清理，只能由本节后述的用户显式历史移除命令删除。
+
+性能复核：acceptance 是单行主键查找、单 job revision 读取与单行更新，事务不包含文件 I/O、Run 启动或 provider 调用；schedule 失效删除由 project/job/trigger 条件限定。执行历史索引先限定单 project/job 的 accepted rows，精确 Run 计数与首末时间仍为该定时任务 accepted 数据量的 `O(n)` 聚合，返回量由调用方固定为 20 个 Run；当前数据规模不值得为计数新增双写汇总表、缓存或新队列。启动清理使用 partial index 和每批 500 个 ID，批间主动 yield，不持有跨批锁。
+
+过度设计复核：新增字段只表达已有 definition/occurrence 的 revision 与 acceptance 不变量，没有引入 task-version aggregate、artifact 子系统、历史缓存或并行执行机制。v1 无证据 occurrence 采用破坏式丢弃，避免兼容快照和双事实源；用户显式移除历史只改变 scheduler occurrence，不扩大到 Run 会话生命周期。
+
+Task 3 补齐 authoring 与 acceptance 之间的运行时边界。自动触发和手动“立即执行”都先 claim provisional occurrence、应用 overlap policy，再从 SQLite 重新读取当前 `ScheduledJobRecord`，基于该权威 definition 准备 Task/Run/Attempt，最后通过 `accept_occurrence_execution` 的 definition revision CAS 接受；provider 或后台 Run 只能在接受成功后启动。自动 occurrence 额外要求 definition 仍 enabled 且 `scheduleRevision` 未变化，手动 occurrence 不受这两个条件约束，但同样使用接受前最新内容。
+
+内容编辑在接受前完成时，新 definition 赢得 CAS，第一次准备产生的未接受 Task/Run 由既有 prepared guard 回滚，运行时只重新读取并准备一次；第二次 authoring 冲突不再继续循环，而是把 occurrence 释放为 `retrying + SCHEDULED_CONFLICT`。内容编辑在接受后只影响未来 occurrence，当前执行、恢复和历史始终复用已持久化 snapshot 与完整 locator。schedule 修改、停用或删除只失效未接受的自动 occurrence，不改写已接受事实；一次性 `At` 任务也在成功接受并启动后才投影为 disabled，避免 definition 先变化导致自身接受失败。
+
+`ScheduledTaskContextInfo` 不再携带 title、mode、session policy 或可变 instruction，而是由已接受 occurrence 唯一构造，包含 `projectId + scheduledTaskId + occurrenceId`、类型化 trigger kind、`acceptedAt`、可选完整自动触发上下文、fingerprint、冻结摘要和 Task/Run/Round/Node/Attempt locator。该 context 随自动 Workflow/AUTO worker execution chain 继承；`App::as_turn` 在普通用户续聊和 queued user turn 边界同时清除 occurrence ID 与 scheduled context，避免无人值守协议泄漏到交互式 turn。
+
+Task 3 性能与过度设计复核：每次真实触发增加一次按 project/job 主键读取和一次 occurrence CAS，只有可证明的 authoring 冲突才发生至多一次重建；数据库事务不包含文件准备、provider 调用或后台执行。没有全量扫描、N+1、无界重试、缓存、队列、并发状态机或新依赖。`ScheduledExecutionAuthority` 只是当前 record 与待接受 snapshot 的短生命周期组合，不是新的 canonical model；已接受 occurrence 继续是唯一 durable execution fact。
+
+最终 provider user prompt 投影在所有 envelope mode 合并后执行。Timeline-owner attempt 接收一次隐藏的 `scheduledTaskExecution` 协议和一次原始 instruction；Workflow/AUTO 子 invocation 继承隐藏执行上下文，但因完整 Task/Run/Round/Node/Attempt locator 不匹配 owner，不生成第二条可见 trigger。自动触发协议读取冻结的 `scheduledAt + schedule + timezone`；手动执行明确标识 `manual` 且不伪造自动调度字段。普通用户 follow-up 不携带该协议。
+
+ACP 在接受逻辑 prompt 时先按 `scheduled-trigger:{occurrenceId}` upsert 一条 `kind = scheduledTrigger` 的 Timeline event，再持久化 `hiddenFromChat = true` 的 provider prompt。trigger payload 只包含 project、scheduled task、occurrence、trigger kind、可选 scheduledAt、acceptedAt、`instructionSummary`、content fingerprint 和完整 locator；可见 content 不包含原始 instruction。首次已持久化的 trigger revision 即冻结，后续 retry、recovery 或 definition 编辑不能覆盖 payload；确定性 ID 使重复写入收敛为同一行。只有 locator 完全匹配的 Timeline owner 生成该 event，因此一个 accepted occurrence 恰有一个可见触发事实。
+
+`scheduledTrigger` 是独立 Timeline semantic block。索引分页、重启恢复和桌面 view model 都保留该事件，同时过滤隐藏 provider prompt；自动与手动通过 payload 的 `triggerKind` 区分。trigger 写入为每个接受 prompt 增加一次按确定性 ID 的 O(1) 索引 upsert，不增加全量加载、扫描、缓存、队列或额外持久身份。设计复用 accepted snapshot、PromptBundle 和既有 Timeline store，不建立第二份 execution snapshot 或任务 title，复杂度与不可变历史和用户可见触发事实的实际不变量匹配。
+
+用户执行历史以 accepted Run 为唯一列表实体。Repository 以 `project_id + scheduled_task_id + task_id + run_id` 定位 accepted occurrence，先用 partial execution-history 索引和 anti-join 选出按 `lastAcceptedAt DESC + latestOccurrenceId DESC` 排序的最多 21 个 Run 候选，再只对当前页候选 join canonical occurrence 计算首末时间与数量；一个 Direct continuous Run 的多个 occurrence 始终位于同一历史项。游标是不透明 URL-safe 值，固定页大小 20。查询不要求 definition 仍存在，因此删除定时定义只停止未来调度，既有真实历史仍可访问。
+
+### Phase 10.12 执行历史与会话生命周期解耦（2026-08-27）
+
+本节取代 Phase 10.11 中“删除执行历史等于停止并物理删除 Run”的设计。Run 是可继续交互的会话事实，accepted occurrence 是该 Run 曾由某个定时任务触发的 scheduler 历史事实；详情页按 Run 聚合展示不改变两者的领域归属。人工“移除执行历史”只删除 scheduler 拥有的 occurrence，不再隐式停止或删除 Run，也不清理 Task/Round/ACP/Timeline/SearchIndex，不修改 definition 的持续会话 `task_id` 绑定。Run 内已经冻结的 `scheduledTrigger` Timeline 事件继续作为不可变来源说明保留；其中的 occurrence ID 是历史 provenance，不要求被删除的 scheduler 行仍可反向解析。
+
+只有 `RunStatus::Completed` 的历史项允许删除。运行中、暂停中、等待权限或等待用户输入的 Run 仍依赖 occurrence 承接 lease、完成事件、恢复、definition 投影和通知，前后端都必须拒绝删除并返回稳定结构化错误 `SCHEDULED_HISTORY_NOT_REMOVABLE`；用户先显式完成或取消运行后才能移除历史。“移除历史”本身不调用 stop controller，也不改变 Run 状态。该边界避免为了即时隐藏活动项新增 tombstone、soft-delete 字段或第二套生命周期。
+
+删除命令使用 `projectId + scheduledTaskId + taskId + runId + throughOccurrenceId`。`throughOccurrenceId` 必须是当前分组中真实 accepted occurrence，并作为用户所见历史窗口的稳定水位；repository 在一个 immediate transaction 中校验水位归属后，只删除同一 Run 分组中排序不晚于该水位的 accepted occurrence。这样重复请求收敛到相同目标状态，且删除与新的持续会话触发并发时，不会误删用户提交后才接受的新 occurrence。新 occurrence 存在时，该 Run 会按新的 scheduler 事实重新出现在历史中。
+
+旧 `scheduled_history_deletions` durable operation、`accepted/stopping/deleting` phase、startup reconcile、terminal lifecycle finalizer、Run trash 和 SearchIndex delete 均不再服务该命令。scheduler schema v4 在 immediate migration 中删除旧 operation 表与 pending index，保留 accepted-history 与 Run-group 索引，并把旧即时清理索引替换为按 `project_id + finished_at + id` 排序的未接受诊断 retention 索引；v1/v2/v3 和新建数据库统一收敛到 v4，不保留旧消费路径。批量接口仍固定最多 20 项，完整 locator 与 `throughOccurrenceId` 都执行必填校验，并返回逐项 `completed | failed` 与结构化 `code + params`；某项失败不得阻断其他项。完成响应表示 occurrence 删除事务已提交，不再包含 operation ID 或停止进度。
+
+性能与过度设计复核：每项删除只读取一次 Run 状态，并在单 project/scheduled task/Run/watermark 索引范围内执行有界 SQLite 删除；批量上限保持 20，不触碰 Run 文件、Timeline 或全局 SearchIndex。方案删除 durable operation 状态机和启动扫描，不新增聚合、缓存、队列、并发 worker、软删除字段或依赖。水位字段复用现有 occurrence identity，只用于保护实际存在的并发接受竞态，复杂度与不变量匹配。

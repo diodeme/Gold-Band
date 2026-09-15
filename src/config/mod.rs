@@ -4,6 +4,8 @@ use anyhow::{Result, anyhow};
 use serde::{Deserialize, Deserializer, Serialize};
 use tracing::Level;
 
+mod managed_agents;
+
 fn embedded_project_app_config() -> &'static ProjectAppConfig {
     static CONFIG: OnceLock<ProjectAppConfig> = OnceLock::new();
     CONFIG.get_or_init(|| {
@@ -497,6 +499,15 @@ pub struct AcpAdapterConfig {
     pub env: BTreeMap<String, String>,
 }
 
+impl AcpAdapterConfig {
+    pub fn apply_catalog_launch(&mut self, agent_id: &ManagedAgentId) {
+        if let Some(entry) = crate::agent_catalog::builtin_agent(agent_id.as_str()) {
+            self.command.clone_from(&entry.command);
+            self.args.clone_from(&entry.args);
+        }
+    }
+}
+
 impl Default for AcpAdapterConfig {
     fn default() -> Self {
         catalog_agent_default_config("claude-acp")
@@ -822,6 +833,7 @@ pub struct SettingsConfig {
     pub personalization: Option<PersonalizationPreference>,
     pub desktop_language: Option<DesktopLanguage>,
     pub desktop_updater_url_override: Option<String>,
+    #[serde(default, with = "managed_agents")]
     pub agents: Option<BTreeMap<ManagedAgentId, ManagedAgentConfig>>,
     pub use_local_claude: Option<bool>,
     pub desktop_metrics_enabled: Option<bool>,
@@ -925,12 +937,13 @@ impl SettingsConfig {
             migrated = true;
         }
         if version < 11 {
-            settings
-                .entry("imIntegrations".to_string())
-                .or_insert_with(|| serde_json::json!({ "channels": [] }));
+            // The agents serde boundary now omits built-in launch fields on writeback.
             migrated = true;
         }
         if version < 12 {
+            settings
+                .entry("imIntegrations".to_string())
+                .or_insert_with(|| serde_json::json!({ "channels": [] }));
             migrate_removed_im_notification_preferences(settings);
             migrated = true;
         }
@@ -1877,6 +1890,9 @@ impl RuntimeConfig {
         self.desktop_updater_url_override = settings.desktop_updater_url_override.clone();
         if let Some(agents) = &settings.agents {
             self.agents = agents.clone();
+            for (id, config) in &mut self.agents {
+                config.adapter.apply_catalog_launch(id);
+            }
         }
         self.use_local_claude = USE_LOCAL_CLAUDE;
         if let Some(desktop_metrics_enabled) = settings.desktop_metrics_enabled {
@@ -2926,7 +2942,10 @@ mod tests {
         let codex = &agents[&ManagedAgentId::from_str("codex-acp").unwrap()];
         assert_eq!(
             codex.adapter.args,
-            vec!["-y", "@agentclientprotocol/codex-acp@latest"]
+            catalog_agent_default_config("codex-acp")
+                .unwrap()
+                .adapter
+                .args
         );
     }
 
@@ -2953,7 +2972,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_v1_preserves_custom_codex_adapter_args() {
+    fn settings_v1_restores_catalog_codex_launch() {
         let (settings, migrated) =
             SettingsConfig::from_json_value_with_migration(serde_json::json!({
                 "settingsSchemaVersion": 1,
@@ -2976,8 +2995,10 @@ mod tests {
         assert!(migrated);
         let agents = settings.agents.unwrap();
         let codex = &agents[&ManagedAgentId::from_str("codex-acp").unwrap()];
-        assert_eq!(codex.adapter.command, "custom-codex-acp.exe");
-        assert_eq!(codex.adapter.args, vec!["--stdio"]);
+        let expected = catalog_agent_default_config("codex-acp").unwrap();
+        assert_eq!(codex.adapter.command, expected.adapter.command);
+        assert_eq!(codex.adapter.args, expected.adapter.args);
+        assert_eq!(codex.adapter.display_name, "Custom Codex");
     }
 
     #[test]
@@ -3025,6 +3046,48 @@ mod tests {
         for forbidden in ["secret", "accessToken", "refreshToken", "updateToken"] {
             assert!(!serialized.contains(forbidden), "found {forbidden}");
         }
+    }
+
+    #[test]
+    fn settings_v11_adds_empty_im_integrations() {
+        let (settings, migrated) =
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "settingsSchemaVersion": 11,
+                "imIntegrations": {
+                    "channels": [{
+                        "kind": "weCom",
+                        "enabled": false,
+                        "publicIdentity": "bot-id",
+                        "notifications": {
+                            "permission": true,
+                            "elicitation": true,
+                            "manualCheck": true,
+                            "runSuccess": false,
+                            "runFailure": true,
+                            "acpTurnFinished": false,
+                            "scheduledCompletion": true,
+                            "scheduledFailure": true,
+                            "scheduledAttention": true,
+                            "scheduledMissed": true
+                        }
+                    }]
+                }
+            }))
+            .unwrap();
+
+        assert!(migrated);
+        assert_eq!(
+            settings.settings_schema_version.0,
+            super::CURRENT_SETTINGS_SCHEMA_VERSION
+        );
+        assert_eq!(settings.im_integrations.channels.len(), 1);
+        let notifications = &settings.im_integrations.channels[0].notifications;
+        assert!(notifications.permission);
+        assert!(notifications.elicitation);
+        assert!(notifications.manual_check);
+        assert!(!notifications.run_success);
+        assert!(notifications.run_failure);
+        assert!(!notifications.acp_turn_finished);
     }
 
     #[test]
@@ -3242,7 +3305,13 @@ mod tests {
         assert!(migrated);
         let agents = settings.agents.unwrap();
         let claude = &agents[&ManagedAgentId::from_str("claude-acp").unwrap()];
-        assert_eq!(claude.adapter.command, "custom-claude-acp");
+        assert_eq!(
+            claude.adapter.command,
+            catalog_agent_default_config("claude-acp")
+                .unwrap()
+                .adapter
+                .command
+        );
         assert_eq!(claude.icon, "claude");
         assert!(claude.supports_system_prompt());
 
@@ -3375,6 +3444,7 @@ mod tests {
                 agent_type: "claude-acp".to_string(),
                 model_id: Some(model.to_string()),
                 permission_mode: Some(permission.to_string()),
+                auto_accept: false,
                 config_options: Default::default(),
             };
             state.conversation_run_modes.insert(
@@ -3746,6 +3816,8 @@ pub struct ConversationDirectConfig {
     pub agent_type: String,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
 }
@@ -3764,6 +3836,8 @@ pub struct ConversationAutoConfig {
     pub acceptance_config_options: BTreeMap<String, String>,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
     pub available_agents: Option<Vec<ConversationDynamicAgentRef>>,
@@ -3782,6 +3856,8 @@ pub struct ConversationDynamicAgentRef {
     pub provider: String,
     pub model: Option<String>,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
 }

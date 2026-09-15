@@ -1134,6 +1134,7 @@ mod tests {
             agent_type: "claude-acp".to_string(),
             model_id: Some("model-a".to_string()),
             permission_mode: None,
+            auto_accept: false,
             config_options: Default::default(),
         });
         state

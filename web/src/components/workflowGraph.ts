@@ -68,6 +68,7 @@ export interface WorkflowGraphBranchRouteSpec {
 }
 
 export interface WorkflowGraphBranchRoute {
+  detour: boolean;
   path: string;
   labelX: number;
   labelY: number;
@@ -172,8 +173,8 @@ function placeEdgeLabel(
 }
 
 /**
- * Route branch edges around node rectangles. Primary success edges intentionally
- * stay on React Flow's compact smooth-step path and are not passed here.
+ * Align forward fanout bends, then route obstructed/branch edges around nodes.
+ * Standalone primary edges keep React Flow's compact smooth-step path.
  */
 export function routeWorkflowBranchEdges(
   nodes: DagreNodeSpec[],
@@ -205,25 +206,79 @@ export function routeWorkflowBranchEdges(
   });
   const routes = new Map<number, WorkflowGraphBranchRoute>();
   const reservedLabelAreas: Rect[] = [];
+  const forwardTargets = new Map<string, Set<string>>();
+  const nearestTargetX = new Map<string, number>();
+  for (const edge of edges) {
+    const source = layoutPositions.get(edge.sourceId);
+    const target = layoutPositions.get(edge.targetId);
+    const sourceNode = nodeById.get(edge.sourceId);
+    const targetNode = nodeById.get(edge.targetId);
+    if (!source || !target || !sourceNode || !targetNode) continue;
+    const targetX = target.x - targetNode.width / 2;
+    if (targetX <= source.x + sourceNode.width / 2) continue;
+    const targets = forwardTargets.get(edge.sourceId) ?? new Set<string>();
+    targets.add(edge.targetId);
+    forwardTargets.set(edge.sourceId, targets);
+    nearestTargetX.set(edge.sourceId, Math.min(nearestTargetX.get(edge.sourceId) ?? Infinity, targetX));
+  }
+  const fanoutColumns = new Map<string, number>();
+  const endpointClearance = WORKFLOW_EDGE_ROUTING_OPTIONS.nodePadding + WORKFLOW_EDGE_ROUTING_OPTIONS.gridRatio;
+  for (const [sourceId, targets] of forwardTargets) {
+    if (targets.size < 2) continue;
+    const sourceX = layoutPositions.get(sourceId)!.x + nodeById.get(sourceId)!.width / 2;
+    const gap = nearestTargetX.get(sourceId)! - sourceX;
+    if (gap >= endpointClearance * 2) {
+      fanoutColumns.set(sourceId, sourceX + Math.min(LAYOUT_RANK_SEP / 2, gap / 2));
+    }
+  }
+  const needsDetour = new Set<number>();
 
-  edges.filter((edge) => edge.branch === false).forEach((edge) => {
+  edges.filter((edge) => edge.branch === false || fanoutColumns.has(edge.sourceId)).forEach((edge) => {
     const sourceNode = nodeById.get(edge.sourceId);
     const targetNode = nodeById.get(edge.targetId);
     const sourcePosition = layoutPositions.get(edge.sourceId);
     const targetPosition = layoutPositions.get(edge.targetId);
     if (!sourceNode || !targetNode || !sourcePosition || !targetPosition) return;
-    const [, labelX, labelY] = getSmoothStepPath({
-      sourceX: sourcePosition.x + sourceNode.width / 2,
-      sourceY: sourcePosition.y + (edge.sourceYOffset ?? 0),
+    const sourceX = sourcePosition.x + sourceNode.width / 2;
+    const sourceY = sourcePosition.y + (edge.sourceYOffset ?? 0);
+    const targetX = targetPosition.x - targetNode.width / 2;
+    const targetY = targetPosition.y + (edge.targetYOffset ?? 0);
+    const centerX = targetX > sourceX ? fanoutColumns.get(edge.sourceId) : undefined;
+    if (edge.branch !== false && centerX === undefined) return;
+    const points = centerX === undefined ? [] : [
+      { x: sourceX, y: sourceY }, { x: centerX, y: sourceY },
+      { x: centerX, y: targetY }, { x: targetX, y: targetY },
+    ];
+    if (centerX !== undefined && obstacles.some((node) => {
+      if (node.id === edge.sourceId || node.id === edge.targetId) return false;
+      const area = expandRect({ ...node.position, width: node.width!, height: node.height! }, WORKFLOW_EDGE_ROUTING_OPTIONS.nodePadding);
+      return points.slice(1).some((end, index) => {
+        const start = points[index];
+        return Math.min(start.x, end.x) < area.x + area.width && Math.max(start.x, end.x) > area.x
+          && Math.min(start.y, end.y) < area.y + area.height && Math.max(start.y, end.y) > area.y;
+      });
+    })) {
+      needsDetour.add(edge.index);
+      return;
+    }
+    const [path, labelX, labelY] = getSmoothStepPath({
+      sourceX,
+      sourceY,
       sourcePosition: Position.Right,
-      targetX: targetPosition.x - targetNode.width / 2,
-      targetY: targetPosition.y + (edge.targetYOffset ?? 0),
+      targetX,
+      targetY,
       targetPosition: Position.Left,
+      centerX,
     });
-    reservedLabelAreas.push(edgeLabelRect({ x: labelX, y: labelY }));
+    const label = centerX === undefined ? { x: labelX, y: labelY }
+      : placeEdgeLabel(points, nodeAreas, reservedLabelAreas, { x: labelX, y: labelY });
+    reservedLabelAreas.push(edgeLabelRect(label));
+    if (centerX !== undefined) {
+      routes.set(edge.index, { path, labelX: label.x, labelY: label.y, points, detour: false });
+    }
   });
 
-  edges.filter((edge) => edge.branch !== false).forEach((edge) => {
+  edges.filter((edge) => !routes.has(edge.index) && (edge.branch !== false || needsDetour.has(edge.index))).forEach((edge) => {
     const sourceNode = nodeById.get(edge.sourceId);
     const targetNode = nodeById.get(edge.targetId);
     const sourcePosition = layoutPositions.get(edge.sourceId);
@@ -279,6 +334,7 @@ export function routeWorkflowBranchEdges(
     );
     reservedLabelAreas.push(edgeLabelRect(labelPosition));
     routes.set(edge.index, {
+      detour: true,
       path: routed.svgPathString,
       labelX: labelPosition.x,
       labelY: labelPosition.y,
@@ -321,6 +377,20 @@ export function layoutSuccessPath(
     if (pos) result.set(n.id, { x: pos.x, y: pos.y });
   }
   return result;
+}
+
+export function calculateCenteredViewport(bounds: { x: number; y: number; width: number; height: number }, viewport: { width: number; height: number }, padding: number, maxZoom: number, horizontalAnchor: number, verticalAnchor: number) {
+  const availableWidth = viewport.width * Math.max(0.1, 1 - padding * 2);
+  const availableHeight = viewport.height * Math.max(0.1, 1 - padding * 2);
+  const fitZoom = Math.min(availableWidth / bounds.width, availableHeight / bounds.height);
+  const zoom = Math.min(fitZoom, maxZoom);
+  const centerX = bounds.x + bounds.width / 2;
+  const centerY = bounds.y + bounds.height / 2;
+  return {
+    x: viewport.width * horizontalAnchor - centerX * zoom,
+    y: viewport.height * verticalAnchor - centerY * zoom,
+    zoom,
+  };
 }
 
 // ── Authoring (WorkflowDsl) graph conversion helpers ──────────────────────

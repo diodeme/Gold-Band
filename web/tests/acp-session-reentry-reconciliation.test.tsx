@@ -63,6 +63,7 @@ vi.mock('@/api', async () => {
     getAcpActivityDetail: vi.fn(),
     getAcpSession: vi.fn(),
     submitConversationPrompt: vi.fn(),
+    submitManualCheck: vi.fn(),
   };
 });
 
@@ -72,10 +73,16 @@ vi.mock('@/components/prompt-kit/markdown', () => ({
   ),
 }));
 
-import { getAcpActivityDetail, getAcpSession, submitConversationPrompt } from '@/api';
+import { getAcpActivityDetail, getAcpSession, submitConversationPrompt, submitManualCheck } from '@/api';
+import { ConversationRunPage } from '@/pages/ConversationRunPage';
+import { RightWorkspaceProvider } from '@/components/workspace/right-workspace-context';
+import { GitBranchPickerSnapshotProvider } from '@/components/git/GitBranchPickerSnapshotContext';
+import { mockBootstrap } from '@/mockData';
+import type { ConversationRunVm } from '@/types';
 import { detachConversationViewport } from './acp/detach-conversation-viewport';
 import {
   ACPChatDialog,
+  ACP_REPLAY_CATCH_UP_MAX_MS,
   createAcpEventWindowCacheKey,
   createAcpSessionCacheKey,
   loadedEventBufferLimit,
@@ -422,6 +429,314 @@ afterEach(() => {
 });
 
 describe('ACP session re-entry reconciliation', () => {
+  it.each([
+    { outcome: 'success', arrival: 'body' },
+    { outcome: 'failure', arrival: 'body' },
+    { outcome: 'success', arrival: 'empty-then-live' },
+    { outcome: 'failure', arrival: 'empty-then-live' },
+  ] as const)('loads a manual-check successor independently of the previous reading window ($outcome, $arrival)', async ({ outcome, arrival }) => {
+    const previous = session([event('checked-answer', 1, 'textDelta', 'Review this completed node')], 'completed');
+    const successorLocator = { ...locator, nodeId: 'successor' };
+    const successor = { ...session([event('successor-answer', 1, 'textDelta', 'Successor content is visible', {
+      sessionId: 'successor-session',
+    })]), nodeId: successorLocator.nodeId, sessionId: 'successor-session' };
+    let resolveSuccessor!: (value: AcpSessionVm) => void;
+    const pendingSuccessor = new Promise<AcpSessionVm>((resolve) => { resolveSuccessor = resolve; });
+    vi.mocked(getAcpSession).mockImplementation(async (...args) => args[4] === locator.nodeId ? previous : pendingSuccessor);
+    vi.mocked(submitManualCheck).mockResolvedValue({
+      id: locator.runId, taskId: locator.taskId, status: 'running', startedAt: '', updatedAt: '', resumable: false,
+      currentRound: locator.roundId, currentNode: successorLocator.nodeId, currentAttempt: locator.attemptId,
+    });
+    const oldLifecycle = terminalLifecycle('check-turn');
+    oldLifecycle.runtime.pauseReason = 'waiting-for-user-input';
+    const nextLifecycle = activePermissionLifecycle('next-turn');
+    nextLifecycle.acp.liveTurnActivity = 'running';
+    nextLifecycle.control.mode = 'runtime-controlled';
+    const leaf = {
+      ...locator, pathLabel: 'Check', status: 'paused', current: true, manualCheckPending: true,
+      sessionEstablished: true, sessionId: previous.sessionId, lifecycle: oldLifecycle,
+      runtimeDisplay: oldLifecycle.runtimeDisplay, artifactCount: 0, attachmentCount: 0,
+    };
+    const nextLeaf = { ...leaf, ...successorLocator, pathLabel: 'Successor', status: 'running',
+      manualCheckPending: false, sessionEstablished: true, sessionId: successor.sessionId, lifecycle: nextLifecycle,
+      runtimeDisplay: nextLifecycle.runtimeDisplay };
+    const initial = {
+      ...locator, runMode: 'workflow', runStatus: 'paused', activeSessions: [], inputAttachments: [],
+      selectedSession: previous, workflowValid: true, workflowStatus: 'valid',
+      workflowGraph: { nodes: [], edges: [] },
+      sessionTree: {
+        selectedSessionKey: `${locator.roundId}/${locator.nodeId}/${locator.attemptId}`,
+        rounds: [{ roundId: locator.roundId, index: 1, label: 'Round', status: 'paused', nodes: [
+          { nodeId: locator.nodeId, label: 'Check', nodeType: 'worker', status: 'paused', attempts: [leaf] },
+        ] }],
+      },
+    } as unknown as ConversationRunVm;
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    let publishNextSummary!: () => void;
+    function RunHarness() {
+      const [run, setRun] = React.useState(initial);
+      const [mode, setMode] = React.useState<'auto' | 'manual'>('auto');
+      publishNextSummary = () => setRun({
+        ...initial, runStatus: 'running', selectedSession: null,
+        sessionTree: { selectedSessionKey: `${locator.roundId}/successor/${locator.attemptId}`, rounds: [{
+          ...initial.sessionTree.rounds[0], nodes: [{ nodeId: 'successor', label: 'Successor', nodeType: 'worker',
+            status: 'running', attempts: [nextLeaf] }],
+        }] },
+      });
+      return <RightWorkspaceProvider><GitBranchPickerSnapshotProvider><TooltipProvider>
+        <ConversationRunPage run={run} taskTitle="Manual check" appConfig={mockBootstrap.appConfig}
+          agentRegistry={null} followMode={mode} onAutoFollowChange={(follow) => setMode(follow ? 'auto' : 'manual')}
+          onRerun={() => {}} onEditWorkflow={() => {}} initialSessionTreeExpansion={{}} onSessionTreeExpansionChange={() => {}}
+          onSelectSession={() => {
+            setMode('auto');
+            setRun({ ...initial, selectedSession: null,
+              sessionTree: { ...initial.sessionTree, selectedSessionKey: `${locator.roundId}/successor/${locator.attemptId}` } });
+          }} />
+      </TooltipProvider></GitBranchPickerSnapshotProvider></RightWorkspaceProvider>;
+    }
+    await act(async () => root.render(<RunHarness />));
+    try {
+      await detachConversationViewport(container);
+      const label = outcome === 'success' ? '成功' : '失败';
+      const translationKey = outcome === 'success' ? 'acp.manualCheckSuccess' : 'acp.manualCheckFailure';
+      const decision = [...container.querySelectorAll('button')].find(button =>
+        button.textContent === label || button.textContent === translationKey);
+      expect(decision).toBeDefined();
+      await act(async () => decision!.click());
+      expect(vi.mocked(submitManualCheck)).toHaveBeenCalledWith(
+        locator.projectId, locator.taskId, locator.runId, locator.roundId, locator.nodeId, locator.attemptId, outcome,
+      );
+      await act(async () => publishNextSummary());
+      expect(vi.mocked(getAcpSession).mock.calls.some(args => args[4] === 'successor')).toBe(true);
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      await act(async () => resolveSuccessor(arrival === 'body' ? successor : {
+        ...successor, sessionId: null, status: 'pending', events: [],
+        eventPage: { ...session([]).eventPage, generation: 0 },
+      }));
+      if (arrival === 'empty-then-live') {
+        let finishCanonicalRead!: (value: AcpSessionVm) => void;
+        vi.mocked(getAcpSession).mockReturnValue(new Promise(resolve => { finishCanonicalRead = resolve; }));
+        await act(async () => {
+          runtime.listener?.({ ...successorLocator, branchId: 'root', timelineGeneration: 1, timelineRevision: 1,
+            event: successor.events[0] });
+          runtime.listener?.({ ...successorLocator, branchId: 'root', timelineGeneration: 1, timelineRevision: 1,
+            session: successor });
+          await new Promise(resolve => setTimeout(resolve, 200));
+        });
+        const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+          .find(element => element.classList.contains('h-full') && element.classList.contains('overflow-y-auto'));
+        expect(scroller).toBeDefined();
+        await act(async () => {
+          scroller!.dispatchEvent(new Event('scroll'));
+          await new Promise(resolve => requestAnimationFrame(resolve));
+        });
+        expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+        await act(async () => finishCanonicalRead(successor));
+      }
+      expect(container.textContent).toContain('Successor content is visible');
+      expect(container.textContent).not.toContain('Review this completed node');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      const visibleMessage = [...container.querySelectorAll('[data-testid="markdown"]')]
+        .find(element => element.textContent === 'Successor content is visible');
+      expect(visibleMessage).toBeDefined();
+      await act(async () => publishNextSummary());
+      expect(visibleMessage!.isConnected).toBe(true);
+      expect(container.textContent).toContain('Successor content is visible');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('rejoins deferred single-page content when sending without a pagination gesture', async () => {
+    const initial = session([event('single-old', 1, 'textDelta', 'Single page original reply')], 'completed');
+    const deferred = event('single-deferred', 2, 'textDelta', 'Single page deferred reply');
+    const latest = session([...initial.events, deferred], 'completed');
+    vi.mocked(getAcpSession).mockResolvedValue(initial);
+    vi.mocked(submitConversationPrompt).mockResolvedValue({ kind: 'acp-session', session: null, run: null, lifecycle: null });
+    const { container, root } = await renderDialog(initial, 'root', undefined, undefined, locator, 30, terminalLifecycle('single-turn'));
+    try {
+      await detachConversationViewport(container);
+      await act(async () => { runtime.listener?.(update(deferred)); });
+      expect(container.textContent).not.toContain(deferred.content);
+      const readsBeforeSend = vi.mocked(getAcpSession).mock.calls.length;
+      vi.mocked(getAcpSession).mockResolvedValue(latest);
+      await setTextareaValue(container.querySelector('textarea')!, 'Single page follow-up');
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-acp-send="true"]')!.click(); });
+      expect(container.textContent).toContain(deferred.content);
+      expect(container.textContent).toContain('Single page follow-up');
+      expect(container.querySelector('[data-acp-return-to-latest]')).toBeNull();
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(readsBeforeSend + 1);
+      expect(vi.mocked(getAcpSession).mock.calls.every((call) => !call[6]?.beforeSeq && !call[6]?.afterSeq)).toBe(true);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it.each([false, true])('aligns a single-page send before animation frames (reading history: %s)', async (readingHistory) => {
+    const initial = session([event('single-layout', 1, 'textDelta', 'Single page layout reply')], 'completed');
+    vi.mocked(getAcpSession).mockResolvedValue(initial);
+    vi.mocked(submitConversationPrompt).mockResolvedValue({ kind: 'acp-session', session: null, run: null, lifecycle: null });
+    const { container, root } = await renderDialog(initial, 'root', undefined, undefined, locator, 30, terminalLifecycle('single-layout-turn'));
+    try {
+      const scroller = container.querySelector<HTMLDivElement>('[data-conversation-viewport] .overflow-y-auto')!;
+      Object.defineProperties(scroller, {
+        clientHeight: { configurable: true, value: 100 },
+        scrollHeight: { configurable: true, get: () => container.textContent?.includes('Single page layout follow-up') ? 1400 : 1000 },
+        scrollTop: { configurable: true, value: readingHistory ? 500 : 900, writable: true },
+      });
+      if (readingHistory) await detachConversationViewport(container);
+      await setTextareaValue(container.querySelector('textarea')!, 'Single page layout follow-up');
+      const readsBeforeSend = vi.mocked(getAcpSession).mock.calls.length;
+      vi.stubGlobal('requestAnimationFrame', () => 987654);
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-acp-send="true"]')!.click(); });
+      expect(container.textContent).toContain('Single page layout follow-up');
+      expect(scroller.scrollTop).toBe(1300);
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(readsBeforeSend);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('offers local return to latest when content grows during disclosure without a scroll event', async () => {
+    const observers = new Set<() => void>();
+    vi.stubGlobal('ResizeObserver', class {
+      notify: () => void;
+      constructor(callback: ResizeObserverCallback) {
+        this.notify = () => callback([{ contentRect: { height: 1000 } } as ResizeObserverEntry], this as unknown as ResizeObserver);
+      }
+      observe() { observers.add(this.notify); }
+      unobserve() { observers.delete(this.notify); }
+      disconnect() { observers.delete(this.notify); }
+    });
+    const initial = session([event('resize-tool', 1, 'toolCall', null, {
+      title: 'Read file', toolCallId: 'resize-tool', status: 'completed',
+    })]);
+    vi.mocked(getAcpSession).mockResolvedValue(initial);
+    const { container, root } = await renderDialog(initial);
+    try {
+      const viewport = container.querySelector<HTMLDivElement>('[data-conversation-viewport] .overflow-y-auto')!;
+      let height = 600;
+      Object.defineProperties(viewport, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, get: () => height },
+        scrollTop: { configurable: true, value: 0, writable: true },
+      });
+      await act(async () => container.querySelector<HTMLButtonElement>('[data-theme-role="activity"] > button')!.click());
+      const queryCount = vi.mocked(getAcpSession).mock.calls.length;
+      height = 1000;
+      await act(async () => {
+        observers.forEach((notify) => notify());
+        await new Promise((resolve) => window.setTimeout(resolve, 20));
+      });
+      const returnButton = container.querySelector<HTMLButtonElement>('[data-acp-return-to-latest]');
+      expect(returnButton).not.toBeNull();
+      await act(async () => {
+        returnButton!.click();
+        await new Promise((resolve) => window.setTimeout(resolve, 30));
+      });
+      expect(container.querySelector('[data-acp-return-to-latest]')).toBeNull();
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(queryCount);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it.each(['collapse', 'reentry', 'failure'])('recovers an expansion that fills the bounded window via %s', async (finish) => {
+    const capacity = loadedEventBufferLimit(30);
+    const items = Array.from({ length: capacity - 1 }, (_, index) => event(`old-${index}`, index + 1, 'textDelta', `Old reply ${index}`));
+    const tool = event('capacity-tool', capacity, 'toolCall', null, {
+      title: 'Read file', toolCallId: 'capacity-tool', status: 'completed',
+    });
+    const initial = session([...items, tool]);
+    const reply = event('capacity-reply', capacity + 1, 'textDelta', 'Reply beyond window capacity');
+    const latest = session([...items.slice(1), tool, reply]);
+    vi.mocked(getAcpSession).mockResolvedValue(initial);
+    const view = await renderDialog(initial, 'root', undefined, undefined, locator, 30);
+    try {
+      const trigger = view.container.querySelector<HTMLButtonElement>('[data-theme-role="activity"] > button');
+      await act(async () => trigger!.click());
+      await act(async () => {
+        runtime.listener?.(update(reply));
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+      });
+      expect(view.container.textContent).not.toContain(reply.content);
+      expect(view.container.textContent).toContain('Old reply 0');
+      expect(view.container.querySelector('[data-acp-return-to-latest]')).not.toBeNull();
+      vi.mocked(getAcpSession).mockResolvedValue(latest);
+      if (finish === 'failure') vi.mocked(getAcpSession).mockRejectedValueOnce(new Error('Read failed'));
+      if (finish !== 'reentry') {
+        const readsBeforeCollapse = vi.mocked(getAcpSession).mock.calls.length;
+        await act(async () => {
+          trigger!.click();
+          await new Promise((resolve) => window.setTimeout(resolve, 300));
+        });
+        expect(view.container.textContent).not.toContain(reply.content);
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(readsBeforeCollapse);
+        await act(async () => {
+          view.container.querySelector<HTMLButtonElement>('[data-acp-return-to-latest]')!.click();
+          await new Promise((resolve) => window.setTimeout(resolve, 300));
+        });
+        if (finish === 'failure') {
+          expect(view.container.textContent).not.toContain(reply.content);
+          const retry = view.container.querySelector<HTMLButtonElement>('[data-acp-return-to-latest]');
+          expect(retry).not.toBeNull();
+          expect(retry!.disabled).toBe(false);
+          await act(async () => {
+            retry!.click();
+            await new Promise((resolve) => window.setTimeout(resolve, 300));
+          });
+        }
+        expect(view.container.textContent).toContain(reply.content);
+      }
+    } finally {
+      await unmount(view.root);
+    }
+    if (finish === 'reentry') {
+      const restored = await renderDialog(latest, 'root', undefined, undefined, locator, 30);
+      try {
+        await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 300)); });
+        expect(restored.container.textContent).toContain(reply.content);
+        expect(restored.container.querySelector('[data-acp-return-to-latest]')).toBeNull();
+      } finally {
+        await unmount(restored.root);
+      }
+    }
+  });
+
+  it.each([false, true])('keeps new replies visible across disclosure and reentry (leave open: %s)', async (leaveOpen) => {
+    const tool = event('disclosure-tool', 58, 'toolCall', null, {
+      title: 'Read file', toolCallId: 'disclosure-tool', status: 'completed',
+    });
+    const initial = session([event('before', 57, 'textDelta', 'Before disclosure'), tool]);
+    const reply = event('after', 59, 'textDelta', 'Reply received during disclosure');
+    vi.mocked(getAcpSession).mockResolvedValue(initial);
+    const view = await renderDialog(initial);
+    try {
+      const trigger = view.container.querySelector<HTMLButtonElement>('[data-theme-role="activity"] > button');
+      expect(trigger).not.toBeNull();
+      await act(async () => trigger!.click());
+      await act(async () => {
+        runtime.listener?.(update(reply));
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+      });
+      expect(view.container.textContent).toContain(reply.content);
+      if (!leaveOpen) await act(async () => trigger!.click());
+    } finally {
+      await unmount(view.root);
+    }
+    const latest = session([...initial.events, reply]);
+    vi.mocked(getAcpSession).mockResolvedValue(latest);
+    const reentry = await renderDialog(latest);
+    try {
+      expect(reentry.container.textContent).toContain(reply.content);
+      expect(reentry.container.querySelector('[data-acp-return-to-latest]')).toBeNull();
+    } finally {
+      await unmount(reentry.root);
+    }
+  });
+
   it('refreshes dynamic terminal control output once and coalesces duplicate lifecycle-only notifications', async () => {
     const dynamicLocator: TestLocator = {
       ...locator,
@@ -1304,6 +1619,43 @@ describe('ACP session re-entry reconciliation', () => {
     }
   });
 
+  it('clears return-to-latest on reentry when only child-advanced root clocks were evicted', async () => {
+    const canonical = session([event('root-answer', 118, 'textDelta', 'Latest durable root answer')]);
+    vi.mocked(getAcpSession).mockResolvedValue(canonical);
+    applyConversationEventToBranchSnapshots({
+      ...update(event('child-thought', 388, 'thoughtDelta', 'Child-only content')),
+      branchId: 'agent-child',
+    });
+    for (let index = 0; index <= CONVERSATION_EVENT_REPLAY_LIMITS.eventsPerBranch; index += 1) {
+      applyConversationEventToBranchSnapshots({
+        ...update(event(`acp-timing-388-${index}`, 388, 'timingUpdate', null, {
+          startedSeq: undefined, endedSeq: undefined,
+          timing: { sessionElapsedSeconds: index, revision: 389 },
+        })),
+        timelineRevision: null,
+      });
+    }
+    const { container, root } = await renderDialog(canonical);
+    try {
+      // Let the production bounded recovery attempt finish before observing its result.
+      const recoverySettleMs = ACP_REPLAY_CATCH_UP_MAX_MS + 250;
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, recoverySettleMs)); });
+      expect(container.textContent).toContain('Latest durable root answer');
+      expect(container.textContent).not.toContain('Child-only content');
+      const button = container.querySelector<HTMLButtonElement>('[data-acp-return-to-latest="true"]');
+      // A correct reentry may already have removed the return action.
+      if (button) {
+        const requestsBeforeClick = vi.mocked(getAcpSession).mock.calls.length;
+        await act(async () => { button.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, recoverySettleMs)); });
+        expect(vi.mocked(getAcpSession).mock.calls.length).toBeGreaterThan(requestsBeforeClick);
+      }
+      expect(container.querySelector<HTMLButtonElement>('[data-acp-return-to-latest="true"]')?.disabled ?? false).toBe(false);
+      expect(getAcpSession).toHaveBeenCalled();
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+    } finally { await unmount(root); }
+  });
+
   it('automatically rereads the canonical head until a sequence-only replay loss is covered', async () => {
     const stale = session([
       event('sequence-loss-answer', 2, 'textDelta', 'sequence loss 前的旧内容'),
@@ -1340,9 +1692,12 @@ describe('ACP session re-entry reconciliation', () => {
 
     const { container, root } = await renderDialog(stale);
     try {
-      await vi.waitFor(() => {
-        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(readConversationBranchReplaySnapshot(locator, 'root').requiresCatchUp).toBe(false);
+        });
       });
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
 
       expect(vi.mocked(getAcpSession).mock.calls.map((call) => call[6]?.afterRevision))
         .toEqual([undefined, undefined]);
@@ -3077,7 +3432,7 @@ describe('ACP session re-entry reconciliation', () => {
     }
   });
 
-  it('keeps a submitted prompt static when its canonical submit response arrives over a historical window', async () => {
+  it('rejoins the canonical prompt when sending from a historical window', async () => {
     const historical = session([
       event('submit-history', 1, 'textDelta', '提交响应到达前的历史窗口'),
     ], 'completed');
@@ -3130,11 +3485,11 @@ describe('ACP session re-entry reconciliation', () => {
       const promptItems = [...container.querySelectorAll<HTMLElement>('[data-acp-item-key]')]
         .filter((item) => item.textContent?.includes('历史窗口内发送的问题'));
       expect(promptItems).toHaveLength(1);
-      expect(promptItems[0]?.dataset.acpItemKey).not.toBe(
+      expect(promptItems[0]?.dataset.acpItemKey).toBe(
         'userTextDelta-submit-canonical-prompt',
       );
       expect(container.textContent).not.toContain('发送中');
-      expect(container.textContent).toContain('提交响应到达前的历史窗口');
+      expect(container.textContent).not.toContain('提交响应到达前的历史窗口');
       expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
     } finally {
       await unmount(root);

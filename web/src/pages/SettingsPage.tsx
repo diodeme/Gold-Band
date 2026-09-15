@@ -24,6 +24,7 @@ import {
 import { AppCard } from '@/components/AppCard';
 import { Page, PageHeader } from '@/components/PageScaffold';
 import { Button } from '@/components/ui/button';
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -110,6 +111,7 @@ interface SettingsPageProps {
 
 export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSettings = null, onSaveMetricsSettings, updateStatus, availableUpdate = null, showAdvancedUpdateDot, showUpdatesSectionDot, downloadProgress, clientVersion, busy, initialTab, onSave, onSaveAvatar, onSelectRecentAvatar, onSaveAvatarShape, onClearAvatar, onImportWallpaper, onSelectRecentWallpaper, onSaveWallpaperOpacity, onRestoreThemeWallpaper, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
   const measuredThemeDrawerRef = useWebviewMeasuredContainer<HTMLDivElement>('theme-drawer');
+  const readOnly = useReadOnlyExperience();
   useThemeWallpaperSurface();
   const { t } = useTranslation();
   const [appearance, setAppearance] = useState(preferences.appearance);
@@ -296,15 +298,15 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
 
       <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5 xl:p-6">
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'general' | 'appearance' | 'advanced')} className="space-y-4">
-        <TabsList className="grid w-full max-w-md grid-cols-3">
+        <TabsList className={cn('grid w-full max-w-md', readOnly ? 'grid-cols-2' : 'grid-cols-3')}>
           <TabsTrigger value="general" className="min-w-0 px-1">{t('settings.tabs.general')}</TabsTrigger>
           <TabsTrigger value="appearance" className="min-w-0 px-1">{t('settings.tabs.appearance')}</TabsTrigger>
-          <TabsTrigger value="advanced" className="min-w-0 px-1">
+          {!readOnly && <TabsTrigger value="advanced" className="min-w-0 px-1">
             <span className="inline-flex min-w-0 items-center gap-1">
               <span>{t('settings.tabs.advanced')}</span>
               {showAdvancedUpdateDot ? <UpdateDot /> : null}
             </span>
-          </TabsTrigger>
+          </TabsTrigger>}
         </TabsList>
 
         <TabsContent value="general" className="m-0">
@@ -320,12 +322,12 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                 </SelectContent>
               </Select>
             </SettingsSection>
-            <SettingsSection title={t('scheduled.settings.title')} divided>
+            {!readOnly && <SettingsSection title={t('scheduled.settings.title')} divided>
               <ScheduledRuntimeSettings />
-            </SettingsSection>
-            <SettingsSection title={t('settings.im.title')} divided>
+            </SettingsSection>}
+            {!readOnly && <SettingsSection title={t('settings.im.title')} divided>
               <ImIntegrationSettings />
-            </SettingsSection>
+            </SettingsSection>}
           </AppCard>
         </TabsContent>
 
@@ -452,7 +454,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
               </div>
             </SettingsSection>
 
-            <SettingsSection title={t('settings.wallpaper.title')} divided>
+            {!readOnly && <SettingsSection title={t('settings.wallpaper.title')} divided>
               <WallpaperSettings
                 preferences={preferences.wallpapers}
                 personalization={personalization.wallpaper}
@@ -464,9 +466,9 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                 onSaveWallpaperOpacity={onSaveWallpaperOpacity}
                 onRestoreThemeWallpaper={onRestoreThemeWallpaper}
               />
-            </SettingsSection>
+            </SettingsSection>}
 
-            <SettingsSection title={t('settings.avatar.title')} divided>
+            {!readOnly && <SettingsSection title={t('settings.avatar.title')} divided>
               <AvatarSettings
                 preferences={preferences.avatars}
                 personalization={personalization.avatars}
@@ -476,7 +478,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                 onSaveAvatarShape={onSaveAvatarShape}
                 onClearAvatar={onClearAvatar}
               />
-            </SettingsSection>
+            </SettingsSection>}
           </AppCard>
         </TabsContent>
 

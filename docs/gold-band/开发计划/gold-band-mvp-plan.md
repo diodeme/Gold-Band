@@ -1,5 +1,62 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-15 ACP client Auto Accept
+
+- 根因：Cursor `agent` 等原生 mode 只描述执行风格，不会让 Gold Band 作为 ACP client 自动回复 `session/request_permission`。文档此前禁止 composer 隐式代答。这是正确设计下缺少一层与 mode 正交的 client 开关，不是要把 Auto Accept 写成 Cursor mode 或改 `cli-config.json`。
+- 实现：所有权限下拉叠加 `{{appName}}来帮你…` / `{{appName}} will help you…` 分割线与 Auto Accept 复选框，默认关闭。勾选后触发器复用模型与思考强度的复合展示（`Agent · 自动批准`）。runtime 对后续含 allow 的 `session/request_permission` 选择第一个 allow 并直接回包；elicitation 永不跳过；已 pending 的卡不因中途勾选被结算。字段与 `permissionMode` 同维度持久化（Direct `workspace+agentType`、节点绑定、session override、Run 快照）；session 建立后由用户命令拥有。不发送 `set_mode` / `--force`。
+- 验收：`first_allow_option_is_the_first_kind_starting_with_allow`、`auto_accept_skips_requests_without_allow_options`、`session_auto_accept_reads_snapshot_boolean`、`established_session_keeps_command_owned_auto_accept` 与前端 overlay / persist true-only 测试固定选择规则、缺省关闭、命令所有权与 UI 叠加形态。
+- 过度设计与性能评审：复用现有权限握手、session metadata 和权限下拉，只增加一个 skip-if-false 布尔。无新状态机、队列、扫描或按请求分类策略。热路径在到达 permission 时多一次有界 snapshot 布尔读取；无 allow 时回退原 waiter。无需专项 benchmark。
+
+## 2026-09-15 ACP 未知入站请求回 JSON-RPC Method not found
+
+- 根因：入站分发只实现 `session/update`、`session/request_permission`、`elicitation/create`，未知 method 只写诊断、不回包。这是正确白名单下的 JSON-RPC 请求契约不完整：带 `id` 的阻塞扩展（如 Cursor `cursor/ask_question`）会让 Agent 一直等待。不是缺失 Cursor 提问 UI。
+- 实现：未知 client method 若带 `id`，session runtime 与未路由 connection 都回标准 `-32601 Method not found`；无 `id` 的 notification 仍只记日志。不新增厂商提问卡片或 elicitation 映射。
+- 验收：`unsupported_inbound_requests_reply_jsonrpc_method_not_found` 与 `handled_or_notification_inbound_frames_do_not_reply_method_not_found` 固定 `cursor/ask_question` 等未知请求回包、已知方法与 notification 不回 `-32601`。
+- 过度设计与性能评审：复用现有 stdin 写路径，无新身份、状态机、缓存或队列。未知请求为偶发控制面帧，单次常数级 JSON 构造与一行写出。
+
+## 2026-09-15 ACP initialize 声明 parameterizedModelPicker
+
+- 根因：Composer 思考强度只在 Agent 返回 `configOptions[category=thought_level]` 时展示。Cursor ACP 把思考强度 / Fast 等参数化模型配置挡在未文档化的 `_meta.parameterizedModelPicker` 后面；Gold Band 的全局 `initialize` 此前只声明 `subagent-transcript` 与 `elicitation.form`，Cursor 因而只回每个模型的默认变体，UI 正确退化为纯模型下拉。属于正确设计下客户端能力声明不完整，不是 Cursor 专用选择器缺失。
+- 实现：共享 `initialize_params()` 增加 `_meta.parameterizedModelPicker=true`，与现有 nested transcript 并列，不按 Agent ID 分叉。展示仍只认 `category=thought_level`，不解析模型变体串，不为 Cursor 新增状态或控件。
+- 验收：`initialize_requests_nested_agent_transcripts_at_the_adapter_boundary` 固定 handshake 同时声明 nested transcript、parameterized model picker 与 elicitation.form。
+- 过度设计与性能评审：只改一份握手 JSON 的布尔字段，无新身份、状态机、缓存、请求或扫描；未知 `_meta` 按 ACP 扩展规则忽略。
+
+## 2026-09-10 人工 Check 后继消息窗口与首屏状态
+
+- 根因判断：已有按会话隔离阅读窗口、分页和自动追平的设计成立，但消费端身份与显示状态投影不完整。显式导航先提交 B 的 selectedSessionKey，摘要未到时仍渲染 A；旧 JSX key 却提前切为 B，随后 B 摘要到达时复用带有 A 阅读状态的组件。用户现场 dev-test 的 raw/timeline 与 runtime 日志证明正文已生成，点击“回到最新”后可正常读取，问题位于前端窗口交接。
+- 修复：ACP 组件 key 改用实际 leaf 的既有 selectedContentIdentity。完整 locator 和缓存作用域一致，实际 leaf 切换才更换 owner，同会话后台刷新保留消息 DOM。
+- 第二个独立缺陷：浏览器固定“后继初查为空 → 实时事件到达 → canonical 正文查询尚未返回”，复现加载 Logo 与“回到最新”同时出现。内部 recovery 的 newer 标记被直接投影为历史导航按钮。复用既有 timelineSurfaceState，在无正文 pending 首屏排除该按钮，继续使用原自动追平；已有历史窗口的按钮和手动恢复不变。
+- 红绿证据：真实 ConversationRunPage + ACP 的分阶段导航用例在旧 key 下缺失后继正文，修复后转绿；延迟 canonical 查询的成功/失败两项在第二次修复前明确返回不应出现的按钮 DOM，修复后转绿。四组组合覆盖成功/失败、直接正文/空后实时更新，并检查加载期间无按钮、正文自动可见、旧消息移除及同会话摘要刷新保留 DOM。
+- 验收：会话重入、人工判定与继续提交、运行页 follow 重入、follow 状态、导航和 session shell 共 6 个文件 218 项通过；TypeScript、主题生成与 Vite 生产构建通过，保留既有混合导入及大 chunk 提示。内置 iab 不可用后使用已连接 Chrome，临时夹具挂载真实会话页、ACP、Markdown 和滚动组件，明确复现并消除 pending 首屏按钮，确认查询完成后正文自动显示；后端响应为可控模拟，未执行真实 EXE 工作流。
+- 浏览器补充验收：成功/失败均覆盖初查为空、实时事件先到、手动释放待完成正文查询的顺序；1100px/420px 容器及重新拉宽时正文保持可见。验证后删除临时夹具、关闭本次标签页和 Vite 服务。
+- 过度设计与性能评审：两处实现均复用现有 identity/显示状态，仅改变组件 owner 与常数级渲染条件；无新增领域模型、依赖、状态、缓存、队列、扫描、订阅或请求。历史规模与既有有界窗口一致，不增加消息解析或渲染范围，无需专项 benchmark。
+
+## 2026-09-09 人工 Check 判定后导航
+
+- 设计判断：原自动跟随用于保护用户阅读位置，人工判定只提交结果而未表达继续查看后继的导航意图，属于正确设计下交互契约缺失。成功、失败均按后端实际流转结果一次性切换后继；无后继或提交失败留在原会话。
+- 实现：会话页拥有人工判定提交与导航编排，ACP 保留按钮中间态及错误展示。复用 `submit_manual_check` 返回的 RunSummary 精确 locator、既有 session 导航及详情加载；临时请求版本在切换会话、Run 和卸载时失效，同会话实时刷新保留有效请求。无新增后端字段、依赖、轮询、缓存或队列。
+- 红测：成功、失败两种提交在旧页面均缺少导航提交回调而失败；接入后同一测试转绿。接口/组件回归覆盖离底与 manual 模式跳转、无后继、拒绝、迟到响应、同会话刷新及真实判定按钮提交中禁用和完成收敛。
+- 相邻竞态：旧判定请求完成后可能隐藏新 attempt 的判定按钮；最小 DOM 测试先复现“新按钮消失”，复用 ACP 既有 session identity 校验隔离迟到成功、错误与 submitting 回写。
+- 验收：相关 4 个测试文件 88 项通过，前端类型检查和 Vite 生产构建通过（保留既有 chunk 大小及混合导入提示）。`iab` 不可用后使用已连接 Chrome，在临时夹具挂载真实会话页和 ACP 控件，验证成功/失败后继、无后继留原位、提交中禁用及 1100px/420px 容器；后端响应为确定性模拟，未启动真实工作流或 EXE。验证后删除夹具并关闭标签页与本次 Vite 服务。
+- 过度设计与性能评审：直接复用现有 canonical locator，不另建后继状态模型；每次判定只做常数级字段比较和一次既有导航，最多加载选中目标详情。会话树和历史可增长，但本次不增加树扫描、历史正文加载、N+1、后台订阅或 I/O；无需专项 benchmark。
+
+## 2026-09-09 ACP 压缩开始通知幂等
+
+- 根因与现场：task-029 的 round-001/dev/attempt-002 在 14:16:20、14:16:50、14:17:20、14:17:50 连续收到无 ID 的 `Compacting...`；14:18:07 完成只结束最后一张，前三张持久化为 running。原位更新设计正确，但实现把每次开始序号当作新生命周期并覆盖活动引用。
+- 实现：复用既有 `AcpUsageState.compaction`，重复开始保留首次身份、时间和用量观察；不同结构化 ID 先中断旧活动条目再开始新条目，终态与迟到事件按 ID 隔离，完成后的用量确认保持原结束时间。复用 TimelineStore 常驻索引读取单个终态条目，不增加历史状态缓存、持久字段、依赖或前端去重逻辑。
+- 红测证据：最小协议事件测试在第二次开始时失败，实际 startedAt=`130Z`，期望 `100Z`。同一测试转绿，四次开始和一次完成只保留一条 completed，耗时 107 秒；补充 reset/候选用量保留、新周期、不同 ID 替换、中断、迟到通知与重开文件后的终态保护。
+- 验证：ACP Rust 单测 458 通过、1 项原有忽略；Web 定向测试 95 通过，DOM 固定同一行原位完成、107 秒耗时和继续推进两分钟不再计时；TypeScript 检查与 Vite 生产构建通过。内置 iab 不可用，使用已连接 Chrome 在临时组件验证页验证重复开始与完成显示；验证页面及服务完成后清理。未启动外部 Agent，也未改写用户归档历史。
+- 性能与过度设计评审：无 ID 重复通知只访问当前状态；结构化 ID 通过既有索引定位单条记录，正常路径不扫描或重新解析全量历史，外部写入时沿用索引校准。每次通知最多产生旧中断、新开始两项更新，无新增无界缓存、队列、定时器或模型；前端复用原有组件并减少多余 running 行刷新。历史损坏数据不在本次自动迁移范围。
+
+## 2026-09-08 AI-DYNAMIC Group 验收交接生命周期修复
+
+- 根因：旧协议把 acceptance 的 single/fanout 固定解释为重开旧 group 的修复循环，但 Agent 可以沿同一链继续下一阶段，最终 end 会再次触发旧 merge。属于原生命周期设计缺陷。
+- 实现：复用 end/single/fanout；当前 acceptance 合法完成后关闭 group，后继恢复父作用域、原业务 chain 和 target workspace。end 才登记父 terminal；有后继时父 group 等待真实链路结束。连续 acceptance 创建新 group 通过统一出站 owner 解析；同步调整深度、会话候选、协调快照、实际顶层 end 摘要与已关闭 group 因果附件。
+- 文档和提示词：同步中英文 acceptance/output protocol，明确 closed 不等于业务 PASS，修复后复验由显式后继安排，旧 group 不重开。
+- 红测证据：新增 4 个接口测试在旧实现均失败；single 后继错误保留旧 groupId，fanout 错误占用嵌套深度。改动后同 4 项通过，覆盖顶层/嵌套 single/fanout、父 merge 等待、workspace、最终摘要与无旧 merge-2。
+- 最终验收：orchestrator 单元测试 123/123、AI-DYNAMIC 接口测试 34/34 全部通过；后续补充连续 group 的 acceptance end 两种场景。接口在后继真实启动时检查旧 group closed、旧 child workspace released、新 fanout target frozen、父 group 未提前 merge，以及实际业务 prompt 可见最近 merge/acceptance 报告路径。单测固定超过五节点接力仍保留已退出 group 证据；定向 rustfmt 检查和 git diff --check 通过。未启动或改写现场 run；未执行 EXE/UI 验证。
+- 方案审视：内部图生命周期无需外部组件；不新增持久字段、身份、控制类型、缓存或队列。图关系解析受既有 maxDynamicNodes 限制，附件扫描仍每来源最多 10 个文件或空目录，正文不读取；未新增历史目录全量扫描。
+
 ## 2026-09-07：IM lifecycle subscriber 启动 readiness
 
 - 根因与实现：IM 异步 bootstrap 的方向正确，但 runtime 以空投递目标构造后立即注册 lifecycle subscriber，订阅早于异步 `reconfigure` 完成时，新事件会把空目标永久固化进 projection job。桌面 setup 现以 settings 为唯一权威源，先同步建立 projection targets，成功后才安装 runtime、启动后台任务并注册订阅；读取失败只禁用本次 IM 初始化并记录错误，不阻断桌面主体。连接、凭据、maintenance 与后续重配置仍保持异步。
@@ -1269,7 +1326,7 @@ attempt-001/
 
 - 根因修复：将“Agent turn 是否由 Runtime 消费”从 prompt 内容与节点暂停状态中抽离为 invocation 级 `RuntimeControlled / NonRuntimeControlled`。普通消息不会再因为回复结束而读取 artifact、计算 outcome 或推进 workflow。
 - 交互收敛：`Paused + ProcessInterrupted` 不新增状态；composer 保持普通聊天，并提供独立继续动作。发送按钮与 Enter 固定走 NonRuntime ACP prompt；没有可发送输入时继续动作显示“继续工作流”，调用 `continue_conversation_runtime` 并发送隐藏 `RuntimeResume`，不创建可见用户消息；存在可发送输入时显示“继续并发送”，以一次 continue command 原子提交用户输入与恢复意图，用户气泡只显示用户输入。
-- 边界提示：Workflow/AUTO 的中英文基础 runtime system prompt 预先声明用户主动打断并转向其他内容时，在 Runtime 明确恢复前无需遵守 artifact 输出语义；中断期间针对当前任务的最新用户指引在恢复后继续有效，可调整任务内容、交付结果与角色流程，但不能覆盖 artifact contract、文件规则及安全边界。AI-DYNAMIC 通过既有 system 组合自然继承且不重复提示。停止后的普通消息保持用户原文，不再追加一次性 suspended hidden context；显式继续的隐藏 `runtimeControlResume` 只用一句短提示声明 Runtime 控制与当前输出契约恢复，不重复 system 规则，也不自动恢复中断前的角色流程。
+- 边界提示：Workflow/AUTO 的中英文基础 runtime system prompt 预先声明用户主动打断并转向其他内容时，在 Runtime 明确恢复前无需遵守 artifact 输出语义；中断期间针对当前任务的最新用户指引在恢复后继续有效，可调整任务内容、交付结果与角色流程，但不能覆盖 artifact contract、文件规则及安全边界。AI-DYNAMIC 通过既有 system 组合自然继承且不重复提示。停止后的普通消息保持用户原文，不再追加一次性 suspended hidden context；纯继续的隐藏 `runtimeControlResume` 固定为“请继续执行当前节点尚未完成的任务，并遵循用户针对该任务的最新指引（如果有）”，同步英文模板与既有断言，避免控制权移交措辞触发提前收尾。2026-09-09 按用户要求直接修改，未运行编译和测试；本次复用既有模板，不新增状态、依赖或 I/O，无额外性能风险。
 - artifact 完整性：PostTurn finalize 中断输出一律不可信；`artifact-emission.json(finalizing)` 的纯恢复只跳过上一业务 turn并重新请求完整 finalize；继续并发送原子切换为 `business-turn`，先执行用户新消息再重新 finalize。InlineControl、PostTurnProjection 与 AI-DYNAMIC 精确 leaf resume 继续复用现有 contract 和 scheduler。
 - 并发与接受边界：`WorkflowContinued` 只在 accepted prompt event 落盘后以 source transition CAS 提交，迟到 resume 不覆盖新 stop。固定工作流 continue 使用 per-run starting lease 拦截双击，且不持有全局锁等待 Agent turn。
 - 性能收口：legacy cursor 缺失时只回扫 timeline 一次并持久化 negative cache；cursor 并发写入使用固定 64 路路径哈希短锁，不维护随 attempt 数增长并在热路径全表清理的锁注册表。Direct / `RawAgent` 首轮直接派生为 NonRuntimeControlled。
@@ -1810,4 +1867,5 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] permission/elicitation 的 IM expected state 指纹显式排除 `timelineIdentity` 展示回写，params/request schema 与允许动作变化仍保持 CAS 冲突。
 - [x] 2026-09-04 IM 设置清晰度优化：设置页按未接入、等待绑定、连接中、正在重连、可用、暂停、重新授权和连接冲突渐进呈现；凭据存在后六项通知在所有连接状态下可编辑。
 - [x] 2026-09-07 IM 授权、outbox、请求超时与重连可靠性闭环：入站动作按当前 durable binding 完整校验；`claim_due` 在写事务前对最多 32 条候选逐条 typed decode；pending/command channel 上限 64；网络错误按 1 秒起步、60 秒封顶持续重连，永久错误才发布 `ConnectionFailed`。
+- [x] 2026-09-16 IM 对既有桌面功能的隔离：零配置且无 cleanup 时不创建 runtime、访问 keyring/IM schema 或启动周期任务，首次配置惰性激活；空 delivery poll 只读返回，不争用 `core.db` writer lock；lifecycle 空 target 快速返回；退出按 admission gate → scheduler → 可取消 IM worker 收敛；ManualCheck 不再把可选 Timeline 文本作为 canonical 提交前置条件。默认开发恢复 Cargo 并行度，低内存模式改为显式 `dev:low-memory`。核心 IM 90 项、ManualCheck 17 项、配置 57 项、桌面 IM 20 项、Web 定向 32 项和 Node 脚本 2 项均通过，两个 Rust crate check、Web 生产构建、格式与差异检查通过；只读 Demo 在 1252px/640px 均无隐藏功能泄漏、横向溢出或 console error。
 - 性能与过度设计复评审：最多一个企业微信 WebSocket，lifecycle subscriber 只做 O(1) 有界投影且不等待网络；permission 摘要只读取当前 pending request；due/retention query plan 命中索引，队列、claim batch、租约和保留均有上限。未新增云网关、消息代理、第二套审批状态机、无界缓存或队列。

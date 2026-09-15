@@ -136,6 +136,8 @@ export interface MulticaSettingsVm {
   defaultProvider: string;
   connected: boolean;
   connectedAccount: MulticaAccountRefVm | null;
+  /// 是否存在运行期地址覆盖（desktop_multica_base_url 已设置）；false = 使用渠道编译期默认。
+  addressOverrideSet: boolean;
 }
 
 export interface RemoteTaskVm {
@@ -421,6 +423,15 @@ export interface AppInfoVm {
 export interface AgentRegistryVm {
   agents: ManagedAgentVm[];
   catalog: AgentCatalogEntryVm[];
+}
+
+export type AcpActivityImagesInput = TurnFileLocatorVm & {
+  start: number; end: number; after?: string | null; generation?: number | null;
+};
+export interface AcpActivityImagesPage {
+  images: AcpImageRef[];
+  nextCursor: string | null;
+  generation: number;
 }
 
 export interface ManagedAgentVm {
@@ -1269,6 +1280,7 @@ export interface WorkflowWorkerNodeDsl {
   output?: WorkflowOutputContractDsl | null;
   success_condition?: WorkflowJsonConditionDsl | null;
   permission_mode?: string | null;
+  auto_accept?: boolean;
   config_options?: Record<string, string>;
   manual_check?: boolean | null;
 }
@@ -1279,6 +1291,7 @@ export interface DynamicAgentRefDsl {
   provider: string;
   model?: string | null;
   permissionMode?: string | null;
+  autoAccept?: boolean;
   configOptions?: Record<string, string>;
 }
 
@@ -1287,6 +1300,7 @@ export interface WorkflowAiDynamicFixedAgentStrategyDsl {
   provider: string;
   model?: string;
   permissionMode?: string | null;
+  autoAccept?: boolean;
 }
 
 export interface WorkflowAiDynamicDynamicAgentStrategyDsl {
@@ -1294,6 +1308,7 @@ export interface WorkflowAiDynamicDynamicAgentStrategyDsl {
   bootstrapProvider: string;
   bootstrapModel?: string | null;
   permissionMode?: string | null;
+  autoAccept?: boolean;
   bootstrapConfigOptions?: Record<string, string>;
   acceptanceModel?: string | null;
   acceptanceConfigOptions?: Record<string, string>;
@@ -1395,6 +1410,7 @@ export interface WorkerModelBinding {
   agentId: string;
   modelId?: string | null;
   permissionModeId?: string | null;
+  autoAccept?: boolean;
   configOptions?: Record<string, string>;
 }
 
@@ -1738,6 +1754,7 @@ export interface AcpSessionVm {
   timing?: AcpSessionTimingVm | null;
   restored: boolean;
   stopReason?: string | null;
+  turnError?: RuntimeErrorInfoVm | null;
   systemPromptAppend?: string | null;
   config?: AcpSessionConfigVm | null;
   events: AcpUiEventVm[];
@@ -1788,6 +1805,7 @@ export interface AcpSessionConfigVm {
   catalogObservedAt?: string | null;
   modelOverrideId?: string | null;
   permissionModeOverrideId?: string | null;
+  autoAccept?: boolean;
   configOptionOverrides?: Record<string, string>;
   currentModelId?: string | null;
   currentModelName?: string | null;
@@ -2293,7 +2311,7 @@ export type ConversationPage =
   | { kind: 'agents' }
   | { kind: 'contexts' }
   | { kind: 'scheduled-tasks' }
-  | { kind: 'scheduled-task-detail'; projectId: string; scheduledTaskId: string }
+  | { kind: 'scheduled-task-detail'; projectId: string; scheduledTaskId: string; taskId?: string; runId?: string; occurrenceId?: string }
   | { kind: 'settings' };
 
 export interface ScheduledTaskVm {
@@ -2330,9 +2348,59 @@ export interface ScheduledOccurrenceVm {
   finishedAt?: string | null;
 }
 
-export interface ScheduledOccurrencePageVm {
-  items: ScheduledOccurrenceVm[];
+export interface ScheduledOccurrenceLinksVm {
+  taskId?: string | null;
+  runId?: string | null;
+  roundId?: string | null;
+  attemptId?: string | null;
+  nodeId?: string | null;
+}
+
+export interface ScheduledTriggerPayloadVm {
+  projectId: string;
+  scheduledTaskId: string;
+  occurrenceId: string;
+  triggerKind: 'scheduled' | 'manual';
+  scheduledAt?: string | null;
+  acceptedAt: string;
+  instructionSummary: string;
+  contentFingerprint: string;
+  links: ScheduledOccurrenceLinksVm;
+}
+
+export interface ScheduledExecutionHistoryVm {
+  projectId: string;
+  scheduledTaskId: string;
+  taskId: string;
+  runId: string;
+  firstAcceptedAt: string;
+  lastAcceptedAt: string;
+  occurrenceCount: number;
+  latestOccurrenceId: string;
+  latestSummary: string;
+  latestContentFingerprint: string;
+  availability: 'available' | 'unavailable';
+  run?: ConversationRunSummaryVm | null;
+  error?: { code: string; params: Record<string, unknown> } | null;
+}
+
+export interface ScheduledExecutionHistoryPageVm {
+  items: ScheduledExecutionHistoryVm[];
   nextCursor?: string | null;
+}
+
+export interface ScheduledExecutionHistoryDeleteInputVm {
+  projectId: string;
+  scheduledTaskId: string;
+  taskId: string;
+  runId: string;
+  throughOccurrenceId: string;
+}
+
+export interface ScheduledExecutionHistoryDeleteResultVm extends ScheduledExecutionHistoryDeleteInputVm {
+  status: 'completed' | 'failed';
+  code?: string | null;
+  params: Record<string, unknown>;
 }
 
 export interface ScheduledTaskDiagnosticsVm {
@@ -2605,6 +2673,7 @@ export interface ConversationAcpFacetVm {
   latestTurnStatus: 'none' | 'completed' | 'cancelled' | 'failed';
   stopping: boolean;
   stopReason?: string | null;
+  turnError?: RuntimeErrorInfoVm | null;
   operationId?: string | null;
 }
 
@@ -2815,6 +2884,7 @@ export interface ConversationDirectConfigVm {
   agentType: string;
   modelId?: string | null;
   permissionMode?: string | null;
+  autoAccept?: boolean;
   configOptions?: Record<string, string>;
 }
 
@@ -2834,6 +2904,7 @@ export interface ConversationAutoConfigVm {
   acceptanceConfigOptions?: Record<string, string>;
   modelId?: string | null;
   permissionMode?: string | null;
+  autoAccept?: boolean;
   configOptions?: Record<string, string>;
   availableAgents?: DynamicAgentRefDsl[];
   routingPrompt?: string | null;
@@ -2973,4 +3044,17 @@ export interface AppExitPreparationWarningVm {
 
 export interface AppExitPreparationVm {
   warnings: AppExitPreparationWarningVm[];
+}
+export interface AcpImageRef {
+  eventId: string;
+  pointer: string;
+  contentHash: string;
+  mimeType: string;
+}
+
+export interface AcpImageContentVm {
+  dataUrl: string;
+  mimeType: string;
+  width: number;
+  height: number;
 }

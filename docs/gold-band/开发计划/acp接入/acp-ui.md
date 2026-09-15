@@ -2,6 +2,14 @@
 
 ## 0. 当前实现状态
 
+- 2026-09-15 权限触发器勾选 Auto Accept 后复用模型与思考强度的复合展示，显示 `Agent · 自动批准`；仅勾选时显示 `不指定 · 自动批准`。overlay 分组文案为 `{{appName}}来帮你…` / `{{appName}} will help you…`；分组标题与 Auto Accept 选项和上方原生 mode 名称共用 `pl-8` 文字左边缘，复选框指示器与单选指示器同列。
+- 2026-09-15 ACP `initialize` 全局声明 `_meta.parameterizedModelPicker`，使依赖该客户端能力才展开思考强度 / 模型参数的 Agent（当前主要是 Cursor）能返回标准 `configOptions`。Composer 仍只在 `category=thought_level` 时切换复合下拉，不按 Agent ID 分叉，也不解析模型变体串。
+- 2026-09-07 工具图片分层加载修正：过程列表移除图片引用，并在 hydrate 前剥离工具输出；移除过程列表和工具详情查询中重复的旧历史迁移，复用已有会话存储初始化入口。工具展开后从详情取得图片引用，仅预备当前宽度可见的首批缩略图，等待读取和浏览器解码完成后再展示正文及图片，保留局部加载与坏图重试。关闭时释放预备租约，迟到结果不重新展开内容；汇总图片栏保持独立。属于已有分层设计实现不完整，不新增持久字段、缓存或依赖。失败证据为缺失图片 blob 导致列表查询失败，以及图片未完成时正文已显示。
+- 分层加载验收：上述复现由红转绿，后端列表/详情及分页 2 项、前端详情加载/缓存/缩略栏/已发送附件 36 项通过；覆盖解码等待、坏图不阻塞正文、关闭后迟到结果不显示及原有实时输出保护。类型检查和生产构建通过。浏览器以 40 条工具、单工具 18 张真实截图验证：展开列表图片请求为 0，点开工具先显示加载状态，首屏 9 张就绪后显示正文及图片，480px 窄窗口无横向页面溢出。补齐重试按钮中英文文案。性能验收固定读取边界和请求数量，不将测试运行时间当作生产耗时；已有分页查询的历史扫描未在本次替换。测试资源在结束时清理，未验证 EXE 原生窗口。
+
+- 2026-09-07 工具返回图片：按标准工具 content 优先、`rawOutput.result.content[]` 兜底识别，基于原工具身份建立轻量图片投影。新图片复用 Timeline 内容哈希 blob，过程摘要携带引用；结束后的过程栏下方、附件/diff 卡片之前显示横向缩略栏，工具详情与该栏复用一个有界资源缓存。已发送图片控件提取为共享组件，复用右键复制/另存为和工作区大图看板，操作按需读取原图并使用实际 MIME。原因是既有多模态工具结果没有进入展示投影，修复范围不依赖特定 Agent 或截图工具。详细契约见产品设计 `interaction/app/acp-tool-images.md`。
+- 图片验收：先观察 Rust 小图片没有 blob 引用及 DOM 过程后不存在图片栏的失败，再修改实现；回归覆盖标准/扩展选择、两个来源图片正文剥离、blob 与摘要无 Base64、引用版本和作用域、真实格式/尺寸限制、共享请求/URL、缓存淘汰及原图操作。ACP 核心首轮 452 项通过（1 项忽略），最后补充的图片解析/正文剥离 2 项及 Timeline 图片回归通过；桌面解码测试、指定真实会话的存储读取/解码回放通过。前端相关 28 项测试、TypeScript 检查和生产构建通过。生产构建浏览器验证明暗主题、720px 窄窗口、横向多图、过程展开、右键菜单与图片 Tab：18 张仅请求首屏可见 9 张，展开工具详情复用相同 URL 且不增加请求，原图另按需读取。验证未启动 EXE，临时浏览器入口和进程在结束时清理。
+
 - 2026-08-31 删除已废弃的 `RoundDetailPage` 及 workbench `round-detail` 路由/状态消费路径；工作流 Round 行与系统干预通知统一进入 canonical `conversation-run`。旧 workbench Round deep link 不再恢复已删除页面，前端不保留兼容分支。
 - 2026-08-31 修复 ACP terminal error 后重进会话关闭输入框：根因是全局 branch snapshot 把一次过渡态完整 lifecycle（含 `runtimeDisplay/composer` 派生结果）按 ACP revision 长期缓存，并在 canonical lifecycle 之后回放。缓存现只保留独立 revision 的 ACP/queue 事实与 branch/timeline 投影；后端 Runtime display 保持 composer 阻塞语义权威，`runtime-abnormal` 仍可输入。Direct Runtime facet 补 run execution revision 水位但不消费 Workflow phase。最小重进 DOM 测试、facet 合并测试与 router 结构测试固定该契约，不新增请求、订阅、缓存或兼容层。
 - 2026-09-01 修复 Direct follow-up 已正常响应但旧错误横幅仍常驻：首次修复只在父页面按 leaf lifecycle 降级 run error，且第二次实现仍假设 effective session 一定携带 `diagnostics.lastError`；生产续轮的 ACP live/submit lifecycle 会先在对话组件内收敛，父页面 leaf 可能保留旧投影，同时 session diagnostics 可能为空，导致 fallback 被无条件重新展示。现将非阻塞 Direct fallback 判定收敛为共享纯函数，页面初始投影与 `ACPChatDialog` 内最新合并 lifecycle 共同消费；横幅优先保留当前 runtime error，随后以 canonical `latestTurnStatus=completed` 直接判定最新 turn 已成功并清除历史 diagnostic/fallback，不依赖当前分页事件窗口。生产等价 DOM 测试固定“无 diagnostics、父 fallback 仍旧、组件 latest turn 已 completed”时横幅消失；不新增 I/O、订阅、缓存或持久字段。
@@ -11,7 +19,7 @@
 - 系统提示弹窗正文、原始帧摘要展开详情、子 Agent 结果等长文本区统一跟随应用设置字体；仅在明确需要展示代码或固定宽度标识时才允许局部使用等宽字体。系统提示正文直接复用 AtomEditor/CodeMirror 的 Markdown 查看器并固定 `editable=false`，复制源码与 Markdown/原文切换沿用该组件右上角的工具栏，不使用额外文字、Switch 或独立工具行。
 - 系统提示弹窗已收口为 shadcn/Radix Dialog + 原生 flex 滚动容器的单滚动面：标题栏固定，正文使用 Gold Band 统一滚动条且常驻，profile/runtime prompt 不做长度截断；长路径和连续字符在正文容器内强制断行，禁止由 `<pre>` 再创建嵌套滚动或把 Dialog 撑出视口。由于 Dialog 使用自然高度加 `max-height`，正文不得改用依赖百分比 viewport 高度的 Radix ScrollArea。前端回归测试固化 `max-height + flex column + min-height zero + direct overflow-y-scroll child` 布局契约。
 - ACP 会话流支持将 `Agent` 工具调用生命周期内的子 Agent transcript 聚合为可展开/收起分组，不再把主 Agent 与子 Agent 输出完全混排。
-- ACP session 初始化与后续追问必须分别维护 Gold Band 显式覆盖和 Agent 当前配置：模型只继承 `modelOverride`，权限模式只继承 `permissionModeOverride`，其余 ACP select 配置继承 `configOptionOverrides[实际 optionId]`；不得从 Agent 返回的 `currentModelId / currentModeId / currentValue` 反推 override。发起会话前模型、权限和思考强度都可切回“不指定”；会话详情仅在对应 override 尚为空时提供“不指定”，模型、权限或思考强度一旦选择具体值后都只能在具体值之间切换。same-session prompt、runtime continue 与 AI-DYNAMIC inner continue 只继续使用显式覆盖。
+- ACP session 初始化与后续追问必须分别维护 Gold Band 显式覆盖和 Agent 当前配置：模型只继承 `modelOverride`，权限模式只继承 `permissionModeOverride`，Auto Accept 只继承 session `autoAccept`，其余 ACP select 配置继承 `configOptionOverrides[实际 optionId]`；不得从 Agent 返回的 `currentModelId / currentModeId / currentValue` 反推 override。Auto Accept 不通过 mode API 下发。发起会话前模型、权限和思考强度都可切回“不指定”；会话详情仅在对应 override 尚为空时提供“不指定”，模型、权限或思考强度一旦选择具体值后都只能在具体值之间切换。same-session prompt、runtime continue 与 AI-DYNAMIC inner continue 只继续使用显式覆盖。
 - 发起会话前与已建立会话后的模型配置按 Agent 能力选择载体：同时存在模型与思考强度时使用复合二级菜单，选择任一子项后保留菜单以便继续配置，点击外部才关闭；只有模型时使用普通单项菜单，权限始终使用单项菜单，两者选择后立即关闭。追问 composer 内的 PromptInput 点击聚焦逻辑必须忽略按钮、选择器以及 `menuitem`、`menuitemcheckbox`、`menuitemradio` 等菜单项，配置选择只生效而不主动聚焦文本框。
 - ACP session 配置归一化统一采用 `configOptions` 优先、旧 `models` / `modes` 回退：目录、当前值和显示名必须使用同一优先级，避免 Codex 等 adapter 同时返回纯模型 config option 与“模型 × 思考强度”旧目录时展示展开组合。缺少 `category=thought_level` 时继续退化为模型单下拉，不从模型 ID 或名称反向猜测思考强度；回归测试覆盖新旧字段冲突和 legacy-only adapter。
 - Composer 配置栏中的模型单选、模型复合菜单与权限单选统一基于非模态 shadcn/Radix DropdownMenu；相邻菜单必须支持双向一次点击切换，不能混用会拦截外部点击的 Select 弹层。单项菜单沿用 Radix 的选择即关闭语义，只有复合菜单拦截子项默认关闭事件。
@@ -241,7 +249,7 @@ Tool call update 应按 attempt-scoped `toolCallId` 更新同一条审计项，�
 - 阻塞式 dialog：用于必须先决策才能继续的请求。
 - inline approval bar：用于嵌入会话流并保留上下文的请求，视觉上参考 prompt-kit `system-message` 的轻量提示，而不是大块表单卡片。
 
-权限请求必须保留用户选择、时间和相关 tool call id，便于后续排障。用户点击允许或拒绝后，UI 立即乐观关闭 pending 卡片；若响应失败，再恢复卡片并提示重试。ACP JSON-RPC 原始 request id 作为通用 `interactionId`，与 `acp.permission-request.<id>.json`、响应文件及提交接口保持一致；`turnId / promptEventId` 负责区分 owner occurrence。permission / elicitation 共同进入 `AcpSessionVm.pendingInteractions`，但权限选项、表单 schema、响应转换与卡片分别实现。pending / waiting 状态使用低强调 primary 语义色；所有 `session/request_permission` 只通过权限卡片响应，不允许 composer 隐式代替用户选择。Direct 会话的 Agent turn 尚未完成时，composer 新消息继续进入现有 prompt queue，并与 pending 交互卡独立存在。
+权限请求必须保留用户选择、时间和相关 tool call id，便于后续排障。用户点击允许或拒绝后，UI 立即乐观关闭 pending 卡片；若响应失败，再恢复卡片并提示重试。ACP JSON-RPC 原始 request id 作为通用 `interactionId`，与 `acp.permission-request.<id>.json`、响应文件及提交接口保持一致；`turnId / promptEventId` 负责区分 owner occurrence。permission / elicitation 共同进入 `AcpSessionVm.pendingInteractions`，但权限选项、表单 schema、响应转换与卡片分别实现。pending / waiting 状态使用低强调 primary 语义色。未勾选 Auto Accept 时，所有 `session/request_permission` 只通过权限卡片响应，不允许 composer 隐式代替用户选择。用户在权限下拉中显式勾选 Auto Accept 后，客户端对后续含 allow 选项的工具权限自动选择第一个 allow，不进入权限阻塞、不弹 OS 通知；已弹出的 pending 卡仍要人点。`elicitation/create` 无论 Auto Accept 是否打开都只走 elicitation 卡片。Direct 会话的 Agent turn 尚未完成时，composer 新消息继续进入现有 prompt queue，并与 pending 交互卡独立存在。
 
 2026-07-28 权限卡片视觉与长文本验收已固化：复用现有 shadcn `Button` / `Tooltip` copy-in 组件，卡片收敛为低边界、低阴影的轻量审批条；前端静态渲染单测覆盖浅色 allow / 中性 reject 层级、截断标签、Tooltip trigger 与完整无障碍名称。UI 验收需在本地会话页同时检查浅色和深色主题，以及长命令选项的鼠标悬浮与键盘聚焦全文展示。
 
@@ -339,6 +347,15 @@ docs/gold-band/开发计划/acp接入/acp功能模块todo列表.md
 ```
 
 ## 9. 一句话总结
+
+### 2026-09-07 后台恢复失败展示
+
+- 根因：异步 admission 已成功，但 session setup 在 timeline 用户消息建立前失败；终态 guard 只写 failed/runtime-error，轻量 Session VM 不加载诊断历史，错误横幅缺少可消费原因。属于正确设计下的失败链路实现不完整。
+- 实现：复用 RuntimeErrorInfo，将 turnError 纳入现有 ACP lifecycle 的原子终态；保留 session RPC 的结构化原因，Session VM 直接投影快照，复用现有横幅和中英文错误文案。新 admission 清除旧错误，原有 owner/CAS 阻止迟到失败污染新 turn。
+- UI 使用现有 ACP lifecycle facet 的 revision 和 turnId 合并同一份 turnError，优先当前生命周期携带的原因；详情快照尚未追上时不得回退展示上一轮原因。初次会话建立失败和无具体原因的失败均保留可见提示。
+- 最小失败证据：Rust guard 测试原先获得 Null 错误字段；前端 failed 无 diagnostics 的横幅测试原先返回 null。回归覆盖失败原因持久化、无诊断历史查询、跨 turn 隔离、真实聊天组件错误展示和重试清除。
+- 范围与性能评审：不修复 Provider writer 占用，不引入重试、缓存、依赖或平行状态机；每 attempt 只保存当前 turn 的错误，复用已有 snapshot 写锁、更新事件与查询，无新增日志扫描或历史请求，无需额外 benchmark。
+- 验收通过：ACP events 104 项、ACP client 131 项、桌面 Session VM 4 项和 lifecycle projection 2 项 Rust 测试；前端聊天事件、实际聊天组件、生命周期合并和错误本地化共 163 项；TypeScript 检查与生产构建通过（保留现有 chunk size / 混合导入警告）。Chrome 验证实际聊天组件的错误摘要、原始原因、普通宽度及 390px 换行无横向溢出，成功状态清除横幅。内置浏览器不可用时使用 Chrome；本次验证 tab、1439 端口服务和临时页面均已清理，未替换已安装 EXE。
 
 > Gold Band ACP UI 应是一个 Dialog / Chat UI：用户通过 composer 输入，agent 输出以消息、thought block、tool card、plan block、permission dialog 和诊断视图呈现；UI 的唯一数据源是 ACP 统一事件，而不是 terminal/log 或 Claude Code legacy CLI 输出。
 

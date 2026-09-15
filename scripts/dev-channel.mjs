@@ -4,16 +4,21 @@ import { fileURLToPath } from 'node:url';
 
 import { readChannelConfig, repoRoot, writeTauriConfigOverlay } from './channel-config.mjs';
 
-export function devChannelEnvironment(baseEnv, channel) {
-  return {
+export function devChannelEnvironment(baseEnv, channel, lowMemory = false) {
+  const environment = {
     ...baseEnv,
     GOLD_BAND_RELEASE_CHANNEL: channel,
-    CARGO_BUILD_JOBS: baseEnv.CARGO_BUILD_JOBS ?? '1',
   };
+  if (lowMemory && environment.CARGO_BUILD_JOBS == null) {
+    environment.CARGO_BUILD_JOBS = '1';
+  }
+  return environment;
 }
 
 function run() {
-  const channel = process.argv[2] ?? 'default';
+  const args = process.argv.slice(2);
+  const lowMemory = args.includes('--low-memory');
+  const channel = args.find((arg) => !arg.startsWith('--')) ?? 'default';
 
   console.log(`Starting Tauri dev server (channel: ${channel})...`);
 
@@ -29,7 +34,7 @@ function run() {
   const overlayPath = join(repoRoot, 'src-tauri', 'target', 'channel', `tauri.${channel}.conf.json`);
   writeTauriConfigOverlay(config, overlayPath);
 
-  const env = devChannelEnvironment(process.env, channel);
+  const env = devChannelEnvironment(process.env, channel, lowMemory);
 
   const result = spawnSync('npx', ['tauri', 'dev', '--config', overlayPath], {
     env,

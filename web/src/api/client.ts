@@ -85,6 +85,9 @@ import type {
   WorkflowVm,
   ScheduledTaskEditVm,
   ScheduledOccurrenceVm,
+  ScheduledExecutionHistoryPageVm,
+  ScheduledExecutionHistoryDeleteInputVm,
+  ScheduledExecutionHistoryDeleteResultVm,
   ScheduledTaskDiagnosticsVm,
   ScheduledNotificationEventVm,
   ScheduledNativeNotificationInputVm,
@@ -357,6 +360,8 @@ export interface RuntimeApi {
   getAcpSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   getAcpActivityDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: import('../types').AcpActivityDetailQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<import('../types').AcpActivityDetailVm>;
   getAcpToolDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: import('../types').AcpToolDetailQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<import('../types').AcpToolDetailVm>;
+  getAcpImage(locator: import('../types').TurnFileLocatorVm, image: import('../types').AcpImageRef, thumbnail: boolean): Promise<import('../types').AcpImageContentVm>;
+  getAcpActivityImages(input: import('../types').AcpActivityImagesInput): Promise<import('../types').AcpActivityImagesPage>;
   getTurnFileChangeSet(locator: TurnFileLocatorVm, changeSetId: string): Promise<TurnFileChangeSetVm>;
   getFileComparison(locator: TurnFileLocatorVm, changeSetId: string, changeId: string): Promise<FileComparisonVm>;
   resolveTurnAttachmentFile(locator: TurnFileLocatorVm, changeSetId: string, attachmentId: string): Promise<ResolvedWorkspaceFileLinkVm>;
@@ -391,9 +396,12 @@ export interface RuntimeApi {
   useConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptSubmitVm>;
   setAcpSessionModel(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, modelId: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   setAcpSessionPermissionMode(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, permissionModeId: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
+  setAcpSessionAutoAccept(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, autoAccept: boolean, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   setAcpSessionConfigOption(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, optionId: string, optionValue: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   respondAcpPermission(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   respondElicitation(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, elicitationId: string, action: "accept" | "decline", content?: Record<string, unknown> | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<void>;
+  listComposerHistory(locator: import('@/lib/composer-history').ComposerHistoryLocator, query: import('@/lib/composer-history').HistoryQuery): Promise<import('@/lib/composer-history').HistoryPage>;
+  getComposerHistoryText(locator: import('@/lib/composer-history').ComposerHistoryLocator, cursor: import('@/lib/composer-history').HistoryCursor): Promise<import('@/lib/composer-history').HistoryText>;
   getAcpRawFrames(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpRawFrameQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpRawFramePageVm>;
   showArtifact(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   showAttachment(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
@@ -416,6 +424,10 @@ export interface RuntimeApi {
   getMulticaSettings(): Promise<MulticaSettingsVm>;
   connectMultica(): Promise<MulticaSettingsVm>;
   disconnectMultica(): Promise<MulticaSettingsVm>;
+  /// 保存连接地址覆盖（双 null = 清除覆盖回落渠道默认）；返回新 VM。
+  saveMulticaConnectionAddress(baseUrl: string | null, appUrl: string | null): Promise<MulticaSettingsVm>;
+  /// 取消进行中的 multica 连接（连接确认弹窗「取消连接」）；无进行中连接时幂等 no-op。
+  cancelMulticaConnect(): Promise<void>;
   getMulticaTasks(): Promise<RemoteConversationSidebarVm>;
   /// claim-at-send 的只读取：点击 queued 任务时拉取需求正文（pending 列表只有 thread_name，正文仅任务详情里有）。
   /// **不改动服务端任务状态**（任务仍 queued）；本地仅据此预填 composer + 绑定 chip。
@@ -450,7 +462,8 @@ export interface RuntimeApi {
   getScheduledTask(projectId: string, scheduledTaskId: string): Promise<ScheduledTaskEditVm>;
   updateScheduledTask(input: UpdateScheduledTaskInput): Promise<ScheduledTaskEditVm>;
   deleteScheduledTask(projectId: string, scheduledTaskId: string): Promise<void>;
-  listScheduledTaskOccurrences(projectId: string, scheduledTaskId: string, cursor?: string | null, status?: string | null): Promise<import('../types').ScheduledOccurrencePageVm>;
+  listScheduledExecutionHistory(projectId: string, scheduledTaskId: string, cursor?: string | null, anchor?: { taskId: string; runId: string } | null): Promise<ScheduledExecutionHistoryPageVm>;
+  deleteScheduledExecutionHistory(items: ScheduledExecutionHistoryDeleteInputVm[]): Promise<ScheduledExecutionHistoryDeleteResultVm[]>;
   getScheduledTaskDiagnostics(projectId: string, scheduledTaskId: string): Promise<ScheduledTaskDiagnosticsVm>;
   runScheduledTaskNow(projectId: string, scheduledTaskId: string): Promise<RunScheduledTaskResultVm>;
   getConversationWorkspaces(): Promise<ConversationWorkspaceVm[]>;

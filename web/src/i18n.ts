@@ -5,6 +5,8 @@ import type { AppErrorVm, DesktopLanguage, WorkflowErrorVm } from "./types";
 const resources = {
   "zh-CN": {
     translation: {
+      demo: { inputDisabled: "Demo 演示，暂不支持输入或发起会话", saveDisabled: "Demo 演示，配置不可保存", resizeWindow: "调整客户端宽度" },
+      acpImages: { title: "工具图片", image: "图片 {{index}}", failed: "图片无法加载，请重试" },
       scheduled: {
         unnamed: "未命名定时任务",
         neverRun: "尚未运行",
@@ -38,7 +40,7 @@ const resources = {
         detail: {
           history: "执行历史", back: "返回定时任务", notFound: "未找到此定时任务", loadFailed: "无法加载执行详情", actionFailed: "操作失败，请重试", historyLoadFailed: "无法加载此页历史记录", runFailed: "无法启动此定时任务", loading: "正在加载...",
           starting: "启动中...", runNow: "立即执行", previousStatus: "上轮状态", runs: "执行次数", retries: "重试次数", next: "下次执行",
-          workspace: "工作区", schedule: "计划", timezone: "时区", status: "状态", noHistory: "暂无执行记录", attempt: "第 {{count}} 次", openRun: "打开关联运行", filter: "历史状态", allStatuses: "全部状态", previousPage: "上一页", nextPage: "下一页",
+          workspace: "工作区", schedule: "计划", timezone: "时区", status: "状态", noHistory: "暂无执行记录", attempt: "第 {{count}} 次", openRun: "打开关联运行", filter: "历史状态", allStatuses: "全部状态", previousPage: "上一页", nextPage: "下一页", locatedHistory: "定位记录", deleted: "原定时任务已删除", removeSelected: "移除所选历史", deleting: "正在移除", selectAllRuns: "选择本页全部可移除历史", selectRun: "选择历史：{{summary}}", historyAvailability: { available: "可打开", unavailable: "不可用" },
         },
         dialog: {
           title: "定时任务设置", content: "任务内容", tabs: { at: "单次", repeat: "重复", cron: "Cron" }, date: "日期", time: "时间", openTimePicker: "打开时间选择器", hours: "小时", minutes: "分钟", frequency: "频率",
@@ -84,6 +86,7 @@ const resources = {
         selectWorkspace: "选择工作空间",
         recentWorkspaces: "最近工作空间",
         refresh: "刷新",
+        retry: "重试",
         clear: "清除",
         close: "关闭",
         cancel: "取消",
@@ -560,6 +563,11 @@ const resources = {
           "command-required": "请填写 Agent 启动命令。",
         },
         acp: {
+          "composer-history-stale": "输入历史已更新，请清空输入后重试。",
+          "composer-history-not-found": "该条输入历史已不可用。",
+          "composer-history-query-failed": "输入历史加载失败，请重试。",
+          "turn-execution-failed": "本次消息处理失败，请重试。",
+          "session-request-failed": "会话准备失败，请重试。",
           "missing-provider": "当前节点缺少 provider 配置。",
           "session-config-value-unavailable": "所选会话配置已不可用，请从最新列表中重新选择。",
           "active-prompt-blocks-config-save": "当前有会话正在运行，请先停止会话后再保存配置。",
@@ -709,6 +717,8 @@ const resources = {
         },
         multica: {
           "not-configured": "尚未配置 Multica，请先在设置中完成接入。",
+          "invalid-address": "连接地址无效：必须是合法的 http(s) 地址。",
+          "connect-cancelled": "已取消连接。",
           "auth-failed": "Multica 鉴权失败：{{message}}",
           "network-failed": "Multica 网络请求失败：{{message}}",
           "register-failed": "Daemon 注册失败：{{message}}",
@@ -1744,6 +1754,7 @@ const resources = {
         noChangedFiles: "没有可查看的变更文件",
       },
       acp: {
+        composerHistoryError: "输入历史加载失败，清空输入后可重试。",
         restored: "已恢复",
         sessionSuperseded:
           "此会话已由 <attempt>{{target}}</attempt> 接续，请前往该 attempt 继续。",
@@ -1820,6 +1831,8 @@ const resources = {
         thoughtLevel: "思考强度",
         unspecifiedThoughtLevel: "不指定",
         permissionMode: "权限",
+        autoAccept: "自动批准",
+        autoAcceptGroup: "{{appName}}来帮你…",
         attachHint: "添加附件",
         send: "发送",
         sendMessage: "发送消息",
@@ -1885,7 +1898,7 @@ const resources = {
         retryStopped: "重试 {{count}} 次后已停止",
         sessionInterrupted: "会话发起中断，请重跑该任务",
         missingSessionReason:
-          "本次任务没有成功建立 ACP 会话。请检查所选 Agent 的 ACP adapter 能否启动，以及相关依赖与认证是否有效。",
+          "当前无法获取会话，未获取到具体错误原因。",
         thought: "思考过程",
         thinkingDuration: "{{seconds}} 秒",
         toolCall: "工具调用",
@@ -2241,6 +2254,21 @@ const resources = {
             disconnect: "断开连接",
           },
         },
+        connection: {
+          title: "连接地址设置",
+          addressLabel: "连接地址",
+          save: "保存",
+          invalidUrl: "请输入合法的 http(s) 地址",
+          restoreDefault: "恢复默认地址",
+          restoring: "恢复中…",
+        },
+        connect: {
+          title: "连接 Multica",
+          body: "即将连接以下地址：",
+          confirm: "连接",
+          connecting: "连接中…",
+          cancelConnect: "取消连接",
+        },
       },
       conversation: {
         title: "会话",
@@ -2289,6 +2317,7 @@ const resources = {
           dragToReorder: "拖拽排序",
           unpin: "取消置顶",
           pinToTop: "置顶",
+          rename: "重命名",
           delete: "删除",
           deleteConfirmTitle: "删除会话？",
           deleteConfirmDescription:
@@ -2325,6 +2354,7 @@ const resources = {
             emptyTitle: "尚未连接 Multica",
             emptyDescription: "连接后可在此查看并领取 Multica 需求。",
             connectButton: "连接 Multica",
+            connectionSettings: "连接地址设置",
             cancelTask: "取消任务",
             executeTask: "执行",
             addWorkspace: "添加工作空间",
@@ -2545,6 +2575,8 @@ const resources = {
   },
   en: {
     translation: {
+      demo: { inputDisabled: "Demo only. Input and starting sessions are disabled.", saveDisabled: "Demo only. Configuration cannot be saved.", resizeWindow: "Resize client window" },
+      acpImages: { title: "Tool images", image: "Image {{index}}", failed: "Unable to load image. Please retry." },
       scheduled: {
         unnamed: "Unnamed scheduled task",
         neverRun: "Never run",
@@ -2578,7 +2610,7 @@ const resources = {
         detail: {
           history: "Run history", back: "Back to scheduled tasks", notFound: "Scheduled task not found", loadFailed: "Unable to load run details", actionFailed: "Action failed. Try again.", historyLoadFailed: "Unable to load this history page", runFailed: "Unable to start this scheduled task", loading: "Loading...",
           starting: "Starting...", runNow: "Run now", previousStatus: "Previous status", runs: "Runs", retries: "Retries", next: "Next run",
-          workspace: "Workspace", schedule: "Schedule", timezone: "Timezone", status: "Status", noHistory: "No run history", attempt: "Attempt {{count}}", openRun: "Open linked run", filter: "History status", allStatuses: "All statuses", previousPage: "Previous", nextPage: "Next",
+          workspace: "Workspace", schedule: "Schedule", timezone: "Timezone", status: "Status", noHistory: "No run history", attempt: "Attempt {{count}}", openRun: "Open linked run", filter: "History status", allStatuses: "All statuses", previousPage: "Previous", nextPage: "Next", locatedHistory: "Located run", deleted: "The original scheduled task was deleted", removeSelected: "Remove selected history", deleting: "Removing", selectAllRuns: "Select all removable history on this page", selectRun: "Select history: {{summary}}", historyAvailability: { available: "Available", unavailable: "Unavailable" },
         },
         dialog: {
           title: "Scheduled task settings", content: "Task content", tabs: { at: "Once", repeat: "Repeat", cron: "Cron" }, date: "Date", time: "Time", openTimePicker: "Open time picker", hours: "Hours", minutes: "Minutes", frequency: "Frequency",
@@ -2624,6 +2656,7 @@ const resources = {
         selectWorkspace: "Select Workspace",
         recentWorkspaces: "Recent Workspaces",
         refresh: "Refresh",
+        retry: "Retry",
         clear: "Clear",
         close: "Close",
         cancel: "Cancel",
@@ -3100,6 +3133,11 @@ const resources = {
           "command-required": "Enter an Agent launch command.",
         },
         acp: {
+          "composer-history-stale": "Input history has changed. Clear the input and try again.",
+          "composer-history-not-found": "This history entry is no longer available.",
+          "composer-history-query-failed": "Could not load input history. Please try again.",
+          "turn-execution-failed": "This message could not be processed. Try again.",
+          "session-request-failed": "The session could not be prepared. Try again.",
           "missing-provider":
             "The current node is missing provider configuration.",
           "session-config-value-unavailable":
@@ -3258,6 +3296,9 @@ const resources = {
         multica: {
           "not-configured":
             "Multica is not configured. Complete setup in Settings first.",
+          "invalid-address":
+            "Invalid connection address: must be a valid http(s) URL.",
+          "connect-cancelled": "Connection cancelled.",
           "auth-failed": "Multica authentication failed: {{message}}",
           "network-failed": "Multica network request failed: {{message}}",
           "register-failed": "Daemon registration failed: {{message}}",
@@ -4328,6 +4369,7 @@ const resources = {
         noChangedFiles: "No changed files are available",
       },
       acp: {
+        composerHistoryError: "Could not load input history. Clear the input to retry.",
         restored: "Restored",
         sessionSuperseded:
           "This session was continued by <attempt>{{target}}</attempt>. Continue in that attempt.",
@@ -4405,6 +4447,8 @@ const resources = {
         thoughtLevel: "Reasoning",
         unspecifiedThoughtLevel: "Unspecified",
         permissionMode: "Permission",
+        autoAccept: "Auto Accept",
+        autoAcceptGroup: "{{appName}} will help you…",
         attachHint: "Attach files",
         send: "Send",
         sendMessage: "Send message",
@@ -4470,7 +4514,7 @@ const resources = {
         retryStopped: "Stopped after {{count}} retries",
         sessionInterrupted: "Session launch was interrupted. Rerun the task.",
         missingSessionReason:
-          "This task did not establish an ACP session. Check that the selected Agent's ACP adapter can start and that its dependencies and authentication are valid.",
+          "The session is unavailable. No specific error reason was received.",
         thought: "Thought process",
         thinkingDuration: "{{seconds}}s",
         toolCall: "Tool call",
@@ -4830,6 +4874,21 @@ const resources = {
             disconnect: "Disconnect",
           },
         },
+        connection: {
+          title: "Connection Address",
+          addressLabel: "Connection address",
+          save: "Save",
+          invalidUrl: "Enter a valid http(s) address",
+          restoreDefault: "Restore default address",
+          restoring: "Restoring…",
+        },
+        connect: {
+          title: "Connect Multica",
+          body: "About to connect to:",
+          confirm: "Connect",
+          connecting: "Connecting…",
+          cancelConnect: "Cancel connection",
+        },
       },
       conversation: {
         title: "Conversation",
@@ -4881,6 +4940,7 @@ const resources = {
           dragToReorder: "Drag to reorder",
           unpin: "Unpin",
           pinToTop: "Pin to top",
+          rename: "Rename",
           delete: "Delete",
           deleteConfirmTitle: "Delete conversation?",
           deleteConfirmDescription:
@@ -4917,6 +4977,7 @@ const resources = {
             emptyTitle: "Not connected to Multica",
             emptyDescription: "Connect to view and claim Multica requirements.",
             connectButton: "Connect Multica",
+            connectionSettings: "Connection address settings",
             cancelTask: "Cancel task",
             executeTask: "Run",
             addWorkspace: "Add Workspace",

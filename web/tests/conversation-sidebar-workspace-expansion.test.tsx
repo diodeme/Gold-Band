@@ -64,6 +64,67 @@ afterEach(() => {
 });
 
 describe('ConversationSidebar workspace expansion intent', () => {
+  it('renders lifecycle priority for workflow task and expanded run dots', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const vm = sidebarVm();
+    const run = { runId: 'run-001', status: 'running', outcome: null, startedAt: '', updatedAt: '' };
+    vm.pinnedTaskPage = { status: 'ready', nextCursor: null };
+    vm.pinnedTasks = [{ projectId: 'workspace-a', taskId: 'task-colors', taskUuid: 'uuid-colors', title: 'Parallel workflow', autoTitle: false, runMode: 'workflow', latestRun: run, runs: [run], runHistoryStatus: 'ready', runsNextCursor: null, pinned: true }];
+    try {
+      for (const [status, outcome, color] of [
+        ['running', 'success', 'bg-gold-running'],
+        ['running', 'failure', 'bg-gold-running'],
+        ['paused', 'success', 'bg-yellow-500/50'],
+        ['completed', 'success', 'bg-emerald-500/50'],
+        ['completed', 'failure', 'bg-red-500/50'],
+      ]) {
+        const nextRun = { ...run, status, outcome };
+        const nextVm = { ...vm, pinnedTasks: [{ ...vm.pinnedTasks[0], latestRun: nextRun, runs: [nextRun] }] };
+        await act(async () => root.render(<ConversationSidebar {...callbacks} vm={nextVm} active={{ kind: 'conversation-home' }} />));
+        if (!container.textContent?.includes('run-001')) {
+          const title = Array.from(container.querySelectorAll('span')).find((element) => element.textContent === 'Parallel workflow')!;
+          await act(async () => title.click());
+        }
+        expect(container.querySelectorAll(`span[class~="${color}"]`).length).toBe(2);
+        expect(container.textContent).toContain('Parallel workflow');
+      }
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('keeps task actions transparent and in the row flow for hover and keyboard focus', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const vm = sidebarVm();
+    vm.pinnedTasks = [{
+      projectId: 'workspace-a', taskId: 'task-actions', taskUuid: 'uuid-actions',
+      title: 'C:\\very-long-workspace-path\\conversation-title', autoTitle: false,
+      runMode: 'direct', latestRun: null, runs: [], runHistoryStatus: 'ready-empty',
+      runsNextCursor: null, pinned: true, pinnedOrder: 0,
+    }];
+    vm.pinnedTaskPage = { status: 'ready', nextCursor: null };
+    try {
+      await act(async () => root.render(
+        <ConversationSidebar {...callbacks} vm={vm} active={{ kind: 'conversation-home' }} />,
+      ));
+      const rename = container.querySelector<HTMLButtonElement>('[aria-label="conversation.sidebar.rename"]')!;
+      const actions = rename.parentElement!;
+      expect(actions.classList.contains('bg-sidebar')).toBe(false);
+      expect(actions.classList.contains('absolute')).toBe(false);
+      expect(actions.classList.contains('shrink-0')).toBe(true);
+      expect(actions.classList.contains('group-hover:flex')).toBe(true);
+      expect(actions.classList.contains('group-focus-within:flex')).toBe(true);
+      await act(async () => rename.click());
+      expect(container.querySelector('input')?.value).toBe(vm.pinnedTasks[0].title);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('navigates a pinned-only Direct task without loading its workspace task page first', async () => {
     const container = document.createElement('div');
     document.body.append(container);

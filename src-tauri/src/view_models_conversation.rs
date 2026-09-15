@@ -82,11 +82,73 @@ pub struct ScheduledOccurrenceVm {
     pub finished_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScheduledExecutionHistoryAvailabilityVm {
+    Available,
+    Unavailable,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ScheduledOccurrencePageVm {
-    pub items: Vec<ScheduledOccurrenceVm>,
+pub struct ScheduledExecutionHistoryItemErrorVm {
+    pub code: String,
+    pub params: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledExecutionHistoryVm {
+    pub project_id: String,
+    pub scheduled_task_id: String,
+    pub task_id: String,
+    pub run_id: String,
+    pub first_accepted_at: String,
+    pub last_accepted_at: String,
+    pub occurrence_count: u32,
+    pub latest_occurrence_id: String,
+    pub latest_summary: String,
+    pub latest_content_fingerprint: String,
+    pub availability: ScheduledExecutionHistoryAvailabilityVm,
+    pub run: Option<ConversationRunSummaryVm>,
+    pub error: Option<ScheduledExecutionHistoryItemErrorVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledExecutionHistoryPageVm {
+    pub items: Vec<ScheduledExecutionHistoryVm>,
     pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledExecutionHistoryDeleteInputVm {
+    pub project_id: String,
+    pub scheduled_task_id: String,
+    pub task_id: String,
+    pub run_id: String,
+    pub through_occurrence_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScheduledExecutionHistoryDeleteStatusVm {
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledExecutionHistoryDeleteResultVm {
+    pub project_id: String,
+    pub scheduled_task_id: String,
+    pub task_id: String,
+    pub run_id: String,
+    pub through_occurrence_id: String,
+    pub status: ScheduledExecutionHistoryDeleteStatusVm,
+    pub code: Option<String>,
+    pub params: serde_json::Value,
 }
 
 impl ScheduledOccurrenceVm {
@@ -739,6 +801,7 @@ pub struct ConversationAcpFacetVm {
     pub latest_turn_status: String,
     pub stopping: bool,
     pub stop_reason: Option<String>,
+    pub turn_error: Option<gold_band::runtime_error::RuntimeErrorInfo>,
     pub operation_id: Option<String>,
 }
 
@@ -801,6 +864,8 @@ pub struct ConversationDirectConfigVm {
     pub agent_type: String,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
 }
@@ -827,6 +892,8 @@ pub struct ConversationAutoConfigVm {
     pub acceptance_config_options: BTreeMap<String, String>,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
     pub available_agents: Option<Vec<ConversationDynamicAgentRefVm>>,
@@ -845,6 +912,8 @@ pub struct ConversationDynamicAgentRefVm {
     pub provider: String,
     pub model: Option<String>,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
 }
@@ -2802,6 +2871,7 @@ fn derive_conversation_attempt_lifecycle_with_facets(
             latest_turn_status: acp_latest_turn_status(session_status.as_deref()),
             stopping: acp_stopping,
             stop_reason: None,
+            turn_error: None,
             operation_id: None,
         },
         display_status,
@@ -3084,6 +3154,7 @@ fn attach_acp_lifecycle_header(
     lifecycle.acp.stopping =
         header.live_turn_activity == gold_band::acp::events::AcpLiveTurnActivity::CancelRequested;
     lifecycle.acp.stop_reason = header.stop_reason;
+    lifecycle.acp.turn_error = header.turn_error;
     lifecycle.acp.operation_id = header.operation_id;
     // The snapshot header may arrive after the broader runtime facet. Rebuild
     // the derived projection from the merged canonical facets so a terminal
@@ -4486,6 +4557,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
     let permission_mode = config
         .and_then(|c| c.permission_mode.as_deref())
         .filter(|v| !v.trim().is_empty());
+    let auto_accept = config.is_some_and(|c| c.auto_accept);
     let global_goal = config
         .and_then(|c| c.global_goal.as_deref())
         .filter(|v| !v.trim().is_empty());
@@ -4523,6 +4595,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
                                 .map(str::trim)
                                 .filter(|value| !value.is_empty())
                                 .map(str::to_string),
+                            auto_accept: agent.auto_accept,
                             config_options: agent.config_options.clone(),
                         })
                     })
@@ -4534,6 +4607,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
                     provider: bootstrap_provider.clone(),
                     model: model_id.map(str::to_string),
                     permission_mode: None,
+                    auto_accept: false,
                     config_options: BTreeMap::new(),
                 }]
             });
@@ -4541,6 +4615,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
             bootstrap_provider,
             bootstrap_model: bootstrap_model_id.map(str::to_string),
             permission_mode: permission_mode.map(str::to_string),
+            auto_accept,
             bootstrap_config_options: config
                 .map(|config| config.bootstrap_config_options.clone())
                 .unwrap_or_default(),
@@ -4560,6 +4635,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
             provider: agent_type.to_string(),
             model: model_id.map(str::to_string),
             permission_mode: permission_mode.map(str::to_string),
+            auto_accept,
         }
     };
 
@@ -4622,6 +4698,7 @@ fn build_direct_workflow(config: &ConversationDirectConfigVm) -> WorkflowDsl {
             output: None,
             success_condition: None,
             permission_mode: config.permission_mode.clone(),
+            auto_accept: config.auto_accept,
             config_options: config.config_options.clone(),
             manual_check: Some(false),
             prompt_envelope: PromptEnvelopeMode::RawAgent,
@@ -6902,11 +6979,13 @@ mod tests {
             )]),
             model_id: None,
             permission_mode: Some("acceptEdits".to_string()),
+            auto_accept: false,
             config_options: Default::default(),
             available_agents: Some(vec![ConversationDynamicAgentRefVm {
                 provider: "claude-acp".to_string(),
                 model: Some("worker-model".to_string()),
                 permission_mode: Some("bypassPermissions".to_string()),
+                auto_accept: false,
                 config_options: std::collections::BTreeMap::from([(
                     "reasoning_effort".to_string(),
                     "low".to_string(),
@@ -6986,11 +7065,13 @@ mod tests {
                 acceptance_config_options: Default::default(),
                 model_id: None,
                 permission_mode: None,
+                auto_accept: false,
                 config_options: Default::default(),
                 available_agents: Some(vec![ConversationDynamicAgentRefVm {
                     provider: "agent-worker".to_string(),
                     model: None,
                     permission_mode: None,
+                    auto_accept: false,
                     config_options: Default::default(),
                 }]),
                 routing_prompt: None,
@@ -7027,6 +7108,7 @@ mod tests {
             agent_type: "codex-acp".to_string(),
             model_id: Some("gpt-direct".to_string()),
             permission_mode: Some("ask".to_string()),
+            auto_accept: false,
             config_options: Default::default(),
         });
 
@@ -7052,6 +7134,7 @@ mod tests {
             agent_type: "claude-acp".to_string(),
             model_id: None,
             permission_mode: None,
+            auto_accept: false,
             config_options: Default::default(),
         });
 
@@ -7106,6 +7189,7 @@ mod tests {
                 agent_type: "claude-acp".to_string(),
                 model_id: None,
                 permission_mode: None,
+                auto_accept: false,
                 config_options: Default::default(),
             }),
             auto_config: None,
@@ -7171,6 +7255,7 @@ mod tests {
                 agent_type: "claude-acp".to_string(),
                 model_id: None,
                 permission_mode: None,
+                auto_accept: false,
                 config_options: Default::default(),
             }),
             auto_config: None,
@@ -7200,6 +7285,7 @@ mod tests {
                 agent_type: "claude-acp".to_string(),
                 model_id: None,
                 permission_mode: None,
+                auto_accept: false,
                 config_options: Default::default(),
             }),
             auto_config: None,
@@ -7241,6 +7327,7 @@ mod tests {
                 agent_type: "claude-acp".to_string(),
                 model_id: None,
                 permission_mode: None,
+                auto_accept: false,
                 config_options: Default::default(),
             }),
             auto_config: None,
@@ -7281,6 +7368,7 @@ mod tests {
                 agent_type: "claude-acp".to_string(),
                 model_id: None,
                 permission_mode: None,
+                auto_accept: false,
                 config_options: Default::default(),
             }),
             auto_config: None,
@@ -7932,6 +8020,47 @@ mod tests {
 
         assert_eq!(lifecycle.runtime.status, "completed");
         assert_eq!(lifecycle.runtime.phase, "terminal");
+    }
+
+    #[test]
+    fn lifecycle_projection_carries_current_turn_error_without_timeline_detail() {
+        let app = App::new(temp_repo_root());
+        write_conversation_assets_fixture(&app);
+        let snapshot =
+            app.paths
+                .acp_snapshot_file("task-046", "run-060", "round-001", "测试", "attempt-002");
+        let mut metadata: serde_json::Value =
+            gold_band::storage::read_json(&snapshot).unwrap_or_else(|_| json!({}));
+        let error = gold_band::runtime_error::manual_runtime_error_info(
+            gold_band::runtime_error::RuntimeErrorDomain::Provider,
+            "acp.session-request-failed",
+            "active writer",
+            json!({"method": "session/resume"}),
+        );
+        metadata["acpRevision"] = json!(7);
+        metadata["turnId"] = json!("failed-turn");
+        metadata["latestTurnStatus"] = json!("failed");
+        metadata["liveTurnActivity"] = json!("idle");
+        metadata["turnError"] = serde_json::to_value(&error).unwrap();
+        gold_band::storage::write_json(&snapshot, &metadata).unwrap();
+        let timeline =
+            app.paths
+                .acp_timeline_file("task-046", "run-060", "round-001", "测试", "attempt-002");
+        std::fs::create_dir_all(timeline).unwrap();
+        let lifecycle = conversation_attempt_lifecycle_vm(
+            &app,
+            "task-046",
+            "run-060",
+            "round-001",
+            "测试",
+            "attempt-002",
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(lifecycle.acp.revision, 7);
+        assert_eq!(lifecycle.acp.turn_id.as_deref(), Some("failed-turn"));
+        assert_eq!(lifecycle.acp.turn_error.as_ref(), Some(&error));
     }
 
     #[test]

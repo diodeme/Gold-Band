@@ -40,6 +40,7 @@ const BINDING_PERSISTENCE_RETRY_LIMIT: usize = 3;
 const IM_PROJECTION_ALERT_COOLDOWN_MS: i64 = 30_000;
 const IM_PROJECTION_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const IM_CHANNEL_CLEANUP_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+const IM_WORKER_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -148,6 +149,7 @@ pub struct DesktopImRuntime {
     connector_event_receiver: Mutex<Option<mpsc::Receiver<(ImChannelKind, ImConnectorEvent)>>>,
     worker_senders: HashMap<ImChannelKind, mpsc::Sender<ImWorkerSignal>>,
     worker_receivers: Mutex<HashMap<ImChannelKind, mpsc::Receiver<ImWorkerSignal>>>,
+    worker_tasks: Mutex<Vec<tauri::async_runtime::JoinHandle<()>>>,
     wecom_scan_client: WeComScanAuthClient,
     wecom_scan_session: Mutex<Option<ActiveWeComScanSession>>,
     settings_write_lock: Mutex<()>,
@@ -203,6 +205,7 @@ impl DesktopImRuntime {
             connector_event_receiver: Mutex::new(Some(connector_event_receiver)),
             worker_senders,
             worker_receivers: Mutex::new(worker_receivers),
+            worker_tasks: Mutex::new(Vec::new()),
             wecom_scan_client,
             wecom_scan_session: Mutex::new(None),
             settings_write_lock: Mutex::new(()),
@@ -292,7 +295,11 @@ impl DesktopImRuntime {
             };
             let worker = ImDeliveryWorker::new(channel, Arc::clone(&self.repository), connector);
             let cancellation = self.cancellation.child_token();
-            tauri::async_runtime::spawn(worker.run(receiver, cancellation));
+            let task = tauri::async_runtime::spawn(worker.run(receiver, cancellation));
+            self.worker_tasks
+                .lock()
+                .expect("IM worker task lock poisoned")
+                .push(task);
         }
 
         if let Some(receiver) = connector_event_receiver {
@@ -504,6 +511,18 @@ impl DesktopImRuntime {
                     return;
                 };
                 let project_id = project_id.to_owned();
+                let targets = match actionable_projection_target_snapshot(&runtime.targets) {
+                    Ok(Some(targets)) => targets,
+                    Ok(None) => return,
+                    Err(()) => {
+                        warn!(
+                            canonical_event_id,
+                            error_code = "IM_RUNTIME_UNAVAILABLE",
+                            "IM lifecycle projection could not read targets"
+                        );
+                        return;
+                    }
+                };
                 let Some(state) = handle.try_state::<DesktopState>() else {
                     warn!(
                         canonical_event_id,
@@ -523,21 +542,10 @@ impl DesktopImRuntime {
                         return;
                     }
                 };
-                let targets = match runtime.targets.read() {
-                    Ok(targets) => targets,
-                    Err(_) => {
-                        warn!(
-                            canonical_event_id,
-                            error_code = "IM_RUNTIME_UNAVAILABLE",
-                            "IM lifecycle projection could not read targets"
-                        );
-                        return;
-                    }
-                };
                 let job = ImLifecycleProjectionJob {
                     app: runtime_app,
                     event,
-                    targets: targets.clone(),
+                    targets,
                     now_ms: chrono::Utc::now().timestamp_millis(),
                 };
                 match try_enqueue_projection(&runtime.projection_sender, job) {
@@ -601,6 +609,7 @@ impl DesktopImRuntime {
     }
 
     pub async fn shutdown(&self) {
+        self.cancellation.cancel();
         self.cancel_wecom_scan(None);
         for retry in self
             .binding_persistence_retries
@@ -623,11 +632,21 @@ impl DesktopImRuntime {
             if let Some(connector) = self.connectors.get(&channel) {
                 connector.advance_generation(start.generation);
             }
-            if let Some(sender) = self.worker_senders.get(&channel) {
-                let _ = sender.send(ImWorkerSignal::Shutdown).await;
+        }
+        let tasks = std::mem::take(
+            &mut *self
+                .worker_tasks
+                .lock()
+                .expect("IM worker task lock poisoned"),
+        );
+        let deadline = tokio::time::Instant::now() + IM_WORKER_SHUTDOWN_TIMEOUT;
+        for mut task in tasks {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() || tokio::time::timeout(remaining, &mut task).await.is_err() {
+                task.abort();
+                warn!("IM delivery worker exceeded the shutdown deadline");
             }
         }
-        self.cancellation.cancel();
     }
 
     async fn start_wecom_scan(
@@ -1559,6 +1578,59 @@ fn inbound_failure_state(error_code: &str) -> ImMessageState {
     }
 }
 
+pub async fn initialize_im_runtime_if_required(app_handle: &AppHandle) -> Result<()> {
+    let _ = ensure_im_runtime(app_handle, false).await?;
+    Ok(())
+}
+
+async fn require_im_runtime(app_handle: &AppHandle) -> CommandResult<Arc<DesktopImRuntime>> {
+    ensure_im_runtime(app_handle, true)
+        .await
+        .map_err(im_command_error)?
+        .ok_or_else(|| im_error("IM_RUNTIME_UNAVAILABLE"))
+}
+
+async fn ensure_im_runtime(
+    app_handle: &AppHandle,
+    explicit_activation: bool,
+) -> Result<Option<Arc<DesktopImRuntime>>> {
+    if let Some(runtime) = app_handle.state::<DesktopState>().im_runtime() {
+        return Ok(Some(runtime));
+    }
+    let handle = app_handle.clone();
+    let (runtime, _) = tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<DesktopState>();
+        state.initialize_im_runtime(|| {
+            let app = state.app()?;
+            let settings = app.load_settings()?;
+            let core_db_path = app.paths.core_db_path();
+            if !explicit_activation
+                && !im_settings_require_runtime(&settings.im_integrations)
+                && !ImRepository::has_pending_channel_cleanups_at(&core_db_path)?
+            {
+                tracing::info!("IM runtime remains inactive because no durable work is configured");
+                return Ok(None);
+            }
+            let runtime = DesktopImRuntime::new(core_db_path)?;
+            let target_count = runtime.configure_projection_targets(&settings.im_integrations)?;
+            tracing::info!(target_count, "initial IM projection targets configured");
+            runtime.start(handle.clone());
+            runtime.register_lifecycle_subscriber(&app, &handle);
+            Ok(Some(runtime))
+        })
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("IM runtime initialization task failed"))??;
+    Ok(runtime)
+}
+
+fn im_settings_require_runtime(settings: &ImIntegrationSettings) -> bool {
+    settings
+        .channels
+        .iter()
+        .any(|channel| channel.credential_ref.is_some() || channel.binding.is_some())
+}
+
 #[tauri::command]
 pub fn get_im_settings(state: tauri::State<'_, DesktopState>) -> CommandResult<ImSettingsVm> {
     let app = state.app().map_err(im_command_error)?;
@@ -1571,12 +1643,12 @@ pub fn get_im_settings(state: tauri::State<'_, DesktopState>) -> CommandResult<I
 
 #[tauri::command]
 pub async fn start_wecom_scan_authorization(
+    app_handle: AppHandle,
     state: tauri::State<'_, DesktopState>,
     input: WeComScanSessionInput,
 ) -> CommandResult<WeComScanAuthorizationVm> {
-    let runtime = state
-        .im_runtime()
-        .ok_or_else(|| im_error("IM_RUNTIME_UNAVAILABLE"))?;
+    let _ = state;
+    let runtime = require_im_runtime(&app_handle).await?;
     runtime
         .start_wecom_scan(input.session_id)
         .await
@@ -1589,9 +1661,7 @@ pub async fn complete_wecom_scan_authorization(
     state: tauri::State<'_, DesktopState>,
     input: WeComScanSessionInput,
 ) -> CommandResult<ImSettingsVm> {
-    let runtime = state
-        .im_runtime()
-        .ok_or_else(|| im_error("IM_RUNTIME_UNAVAILABLE"))?;
+    let runtime = require_im_runtime(&app_handle).await?;
     let credentials = runtime
         .complete_wecom_scan(&input.session_id)
         .await
@@ -1618,9 +1688,7 @@ pub async fn set_im_channel_enabled(
     input: SetImChannelEnabledInput,
 ) -> CommandResult<ImSettingsVm> {
     let app = state.app().map_err(im_command_error)?;
-    let runtime = state
-        .im_runtime()
-        .ok_or_else(|| im_error("IM_RUNTIME_UNAVAILABLE"))?;
+    let runtime = require_im_runtime(&app_handle).await?;
     let (settings, changed) = {
         let _write_guard = runtime
             .settings_write_lock
@@ -1646,14 +1714,13 @@ pub async fn set_im_channel_enabled(
 }
 
 #[tauri::command]
-pub fn save_im_notification_preferences(
+pub async fn save_im_notification_preferences(
+    app_handle: AppHandle,
     state: tauri::State<'_, DesktopState>,
     input: SaveImNotificationPreferencesInput,
 ) -> CommandResult<ImSettingsVm> {
     let app = state.app().map_err(im_command_error)?;
-    let runtime = state
-        .im_runtime()
-        .ok_or_else(|| im_error("IM_RUNTIME_UNAVAILABLE"))?;
+    let runtime = require_im_runtime(&app_handle).await?;
     let _write_guard = runtime
         .settings_write_lock
         .lock()
@@ -1679,9 +1746,7 @@ pub async fn reset_im_channel_binding(
     state: tauri::State<'_, DesktopState>,
     input: ImGenerationInput,
 ) -> CommandResult<ImSettingsVm> {
-    let runtime = state
-        .im_runtime()
-        .ok_or_else(|| im_error("IM_RUNTIME_UNAVAILABLE"))?;
+    let runtime = require_im_runtime(&app_handle).await?;
     let app = state.app().map_err(im_command_error)?;
     let (settings, changed) = {
         let _write_guard = runtime
@@ -1735,9 +1800,7 @@ pub async fn reconnect_im_channel(
     state: tauri::State<'_, DesktopState>,
     input: ImGenerationInput,
 ) -> CommandResult<gold_band::im::ImChannelSnapshot> {
-    let runtime = state
-        .im_runtime()
-        .ok_or_else(|| im_error("IM_RUNTIME_UNAVAILABLE"))?;
+    let runtime = require_im_runtime(&app_handle).await?;
     let current = runtime
         .connection_manager
         .snapshot(input.kind)
@@ -1769,12 +1832,10 @@ pub async fn reconnect_im_channel(
 #[tauri::command]
 pub async fn delete_im_channel(
     app_handle: AppHandle,
-    state: tauri::State<'_, DesktopState>,
+    _state: tauri::State<'_, DesktopState>,
     input: ImChannelInput,
 ) -> CommandResult<DeleteImChannelResultVm> {
-    let runtime = state
-        .im_runtime()
-        .ok_or_else(|| im_error("IM_RUNTIME_UNAVAILABLE"))?;
+    let runtime = require_im_runtime(&app_handle).await?;
     let transition_runtime = Arc::clone(&runtime);
     let transition_handle = app_handle.clone();
     let channel = input.kind;
@@ -2128,6 +2189,24 @@ fn projection_targets(
         .collect()
 }
 
+fn actionable_projection_target_snapshot(
+    targets: &RwLock<Vec<ImProjectionTarget>>,
+) -> std::result::Result<Option<Vec<ImProjectionTarget>>, ()> {
+    let targets = targets.read().map_err(|_| ())?;
+    let actionable = targets.iter().any(|target| {
+        target.enabled
+            && target.credential_available
+            && target.capabilities.proactive_delivery
+            && target.capabilities.private_chat
+            && target.destination.is_some()
+            && ImNotificationKind::ALL.into_iter().any(|kind| {
+                target.notifications.enabled(kind)
+                    && (!kind.is_intervention() || target.capabilities.card_actions)
+            })
+    });
+    Ok(actionable.then(|| targets.clone()))
+}
+
 fn disabled_channel(kind: ImChannelKind) -> ImChannelSettings {
     ImChannelSettings {
         kind,
@@ -2226,6 +2305,42 @@ fn handle_projection_completion(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_activation_requires_durable_im_work() {
+        assert!(!im_settings_require_runtime(
+            &ImIntegrationSettings::default()
+        ));
+        assert!(!im_settings_require_runtime(&ImIntegrationSettings {
+            channels: vec![disabled_channel(ImChannelKind::WeCom)],
+        }));
+        let mut enabled_without_credential = disabled_channel(ImChannelKind::WeCom);
+        enabled_without_credential.enabled = true;
+        assert!(!im_settings_require_runtime(&ImIntegrationSettings {
+            channels: vec![enabled_without_credential],
+        }));
+        let mut configured = disabled_channel(ImChannelKind::WeCom);
+        configured.credential_ref = Some("credential-ref".into());
+        assert!(im_settings_require_runtime(&ImIntegrationSettings {
+            channels: vec![configured],
+        }));
+    }
+
+    #[tokio::test]
+    async fn shutdown_does_not_wait_for_a_full_delivery_signal_queue() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = DesktopImRuntime::with_signing_key(
+            camino::Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap(),
+            vec![7; 32],
+        )
+        .unwrap();
+        let sender = runtime.worker_senders.get(&ImChannelKind::WeCom).unwrap();
+        while sender.try_send(ImWorkerSignal::DeliveryAvailable).is_ok() {}
+
+        tokio::time::timeout(std::time::Duration::from_millis(200), runtime.shutdown())
+            .await
+            .expect("shutdown control must not share a full delivery queue");
+    }
 
     #[test]
     fn delete_channel_result_uses_stable_cleanup_status_contract() {
@@ -2550,6 +2665,12 @@ mod tests {
         assert_eq!(
             targets[0].destination.as_ref().unwrap().authorized_actor_id,
             "user-1"
+        );
+        let targets = RwLock::new(targets);
+        assert!(
+            actionable_projection_target_snapshot(&targets)
+                .unwrap()
+                .is_some()
         );
     }
 

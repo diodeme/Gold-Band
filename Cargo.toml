@@ -1,6 +1,6 @@
 [package]
 name = "gold-band"
-version = "0.15.0"
+version = "0.15.2"
 edition = "2024"
 license = "AGPL-3.0-only"
 
@@ -39,6 +39,7 @@ jsonschema = { version = "0.17", default-features = false }
 keyring = "4.2.0"
 minijinja = "2"
 parking_lot = "0.12"
+pulldown-cmark = "0.13"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "fs", "io-util", "sync", "time", "test-util"] }
 tokio-util = { version = "0.7", features = ["time"] }

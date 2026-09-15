@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 
-import React, { act } from 'react';
+import React, { act, useLayoutEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,6 +8,7 @@ const apiMocks = vi.hoisted(() => ({
   continueConversationRuntime: vi.fn(),
   getAcpSession: vi.fn(),
   submitConversationPrompt: vi.fn(),
+  stopActiveSession: vi.fn(),
 }));
 
 vi.mock('@/api', async () => {
@@ -19,7 +20,9 @@ vi.mock('@/components/prompt-kit/markdown', () => ({
   Markdown: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 
-import { ACPChatDialog } from '@/components/acp/ACPChatDialog';
+import { ACPChatDialog, createAcpEventWindowCacheKey } from '@/components/acp/ACPChatDialog';
+import { useAcpComposerDraft, type AcpComposerDraft } from '@/lib/acp-composer-draft';
+import { getRuntimeApi } from '@/api/client';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import type {
   AcpSessionVm,
@@ -185,6 +188,8 @@ function cancelledSession(id: string): AcpSessionVm {
 }
 
 async function renderPausedDialog(options: {
+  initialDraft?: AcpComposerDraft;
+  onSubmitManualCheck?: (outcome: 'success' | 'failure') => Promise<void>;
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
   initialLifecycle?: ConversationAttemptLifecycleVm;
   isOrchestrated?: boolean;
@@ -203,9 +208,22 @@ async function renderPausedDialog(options: {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
+  if (options.initialDraft) {
+    const draftKey = createAcpEventWindowCacheKey({
+      projectId: `project-${id}`, taskId: `task-${id}`, runId: `run-${id}`,
+      roundId: session.roundId, nodeId: session.nodeId, attemptId: session.attemptId, branchId: 'root',
+    });
+    function SeedDraft() {
+      const controller = useAcpComposerDraft(draftKey);
+      useLayoutEffect(() => { controller.restoreIfEmpty(options.initialDraft!); }, []);
+      return null;
+    }
+    await act(async () => root.render(<SeedDraft />));
+  }
   const render = async (
     lifecycle: ConversationAttemptLifecycleVm,
     nextSession: AcpSessionVm = session,
+    locator = session,
   ) => act(async () => {
     root.render(
       <TooltipProvider>
@@ -214,9 +232,9 @@ async function renderPausedDialog(options: {
           projectId={`project-${id}`}
           taskId={`task-${id}`}
           runId={`run-${id}`}
-          roundId={session.roundId}
-          nodeId={session.nodeId}
-          attemptId={session.attemptId}
+          roundId={locator.roundId}
+          nodeId={locator.nodeId}
+          attemptId={locator.attemptId}
           runtimeComposerContext={{
             isOrchestrated: options.isOrchestrated ?? true,
             lifecycle,
@@ -227,6 +245,8 @@ async function renderPausedDialog(options: {
           showSystemPromptAction={false}
           showRawFramesAction={false}
           usageCompact
+          manualCheckPending={Boolean(options.onSubmitManualCheck)}
+          onSubmitManualCheck={options.onSubmitManualCheck}
           onOptimisticEventsChange={options.onOptimisticEventsChange}
         />
       </TooltipProvider>,
@@ -357,6 +377,8 @@ async function unmount(root: Root) {
 }
 
 beforeEach(() => {
+  Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
+  apiMocks.stopActiveSession.mockReset();
   apiMocks.continueConversationRuntime.mockReset();
   apiMocks.getAcpSession.mockReset().mockResolvedValue(null);
   apiMocks.submitConversationPrompt.mockReset().mockResolvedValue({
@@ -377,11 +399,372 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   document.body.replaceChildren();
 });
 
 describe('ACP runtime continue submission', () => {
+  const contextDraft = (): AcpComposerDraft => ({
+    content: 'cancelled draft',
+    attachments: [
+      { id: 'image', name: 'draft.png', size: 3, mime: 'image/png', source: 'browser-file', path: 'C:/draft.png',
+        file: new File(['png'], 'draft.png', { type: 'image/png' }), previewUrl: 'blob:draft-image' },
+      { id: 'file', name: 'notes.txt', size: 4, mime: 'text/plain', source: 'dialog', path: 'C:/notes.txt' },
+    ],
+    quotes: [{ id: 'quote', sourceKey: 'original-message', text: 'quoted message' }],
+  });
+  function mockHistory() {
+    const cursor = { generation: 1, position: 1, messageId: 'history' };
+    vi.spyOn(getRuntimeApi(), 'listComposerHistory').mockImplementation(async (_, query) => ({
+      items: query.direction === 'newer' ? [] : [{ cursor, textBytes: 12 }], head: cursor, nextCursor: null,
+    }));
+    vi.spyOn(getRuntimeApi(), 'getComposerHistoryText').mockResolvedValue({ cursor, text: 'history text' });
+  }
+  async function press(textarea: HTMLTextAreaElement, key: string) {
+    await flushInteraction(() => textarea.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })));
+  }
+  function expectContext(container: HTMLElement, visible: boolean) {
+    const composer = container.querySelector('[data-conversation-composer]')!;
+    expect(composer.querySelectorAll('[data-composer-attachment-chip]')).toHaveLength(visible ? 2 : 0);
+    expect(composer.querySelectorAll('[data-composer-quote-chip]')).toHaveLength(visible ? 1 : 0);
+    if (visible) expect(composer.querySelector('img')?.getAttribute('src')).toBe('blob:draft-image');
+  }
+
+  it.each([false, true])('restores the full unaccepted draft when stop settles first: %s', async (stopFirst) => {
+    mockHistory();
+    const revoke = vi.fn();
+    vi.stubGlobal('URL', class extends URL { static revokeObjectURL = revoke; });
+    let rejectSubmit!: (error: Error) => void;
+    let resolveStop!: (value: unknown) => void;
+    apiMocks.submitConversationPrompt.mockImplementation(() => new Promise((_, reject) => { rejectSubmit = reject; }));
+    apiMocks.stopActiveSession.mockImplementation(() => new Promise((resolve) => { resolveStop = resolve; }));
+    const { container, root } = await renderPausedDialog({ initialDraft: contextDraft() });
+    try {
+      const textarea = container.querySelector('textarea')!;
+      await setTextareaValue(textarea, 'cancelled draft');
+      await flushInteraction(() => container.querySelector<HTMLButtonElement>('[data-acp-send]')!.click());
+      expect(textarea.value).toBe('');
+      const stop = container.querySelector('svg.lucide-circle-stop')?.closest('button');
+      expect(stop).toBeTruthy();
+      await flushInteraction(() => stop!.click());
+      expect(apiMocks.stopActiveSession).toHaveBeenCalledTimes(1);
+      if (stopFirst) await act(async () => resolveStop({ status: 'stopped', session: null, lifecycle: pausedLifecycle() }));
+      await act(async () => rejectSubmit(new Error('submission cancelled')));
+      expect(textarea.value).toBe('cancelled draft');
+      expectContext(container, true);
+      await act(async () => resolveStop({ status: 'stopped', session: null, lifecycle: pausedLifecycle() }));
+      await press(textarea, 'ArrowUp');
+      expect(textarea.value).toBe('history text');
+      expectContext(container, false);
+      await press(textarea, 'ArrowDown');
+      expect(textarea.value).toBe('cancelled draft');
+      expectContext(container, true);
+      expect(revoke).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => resolveStop({ kind: 'stopped', session: null, lifecycle: pausedLifecycle() }));
+      await unmount(root);
+    }
+  });
+
+  it.each(['Enter', 'continue'] as const)('submits recalled text without hidden draft context via %s and restores that text on rejection', async (command) => {
+    mockHistory();
+    const revoke = vi.fn();
+    vi.stubGlobal('URL', class extends URL { static revokeObjectURL = revoke; });
+    apiMocks.continueConversationRuntime.mockResolvedValue({ kind: 'rejected', session: null, lifecycle: null });
+    const { container, root } = await renderPausedDialog({ initialDraft: contextDraft() });
+    try {
+      const textarea = container.querySelector('textarea')!;
+      expectContext(container, true);
+      await press(textarea, 'ArrowUp');
+      expectContext(container, false);
+      if (command === 'Enter') await press(textarea, 'Enter');
+      else await flushInteraction(() => container.querySelector<HTMLButtonElement>('[data-acp-continue-workflow]')!.click());
+      const calls = command === 'Enter' ? apiMocks.submitConversationPrompt : apiMocks.continueConversationRuntime;
+      expect(calls).toHaveBeenCalledTimes(1);
+      const args = calls.mock.calls[0];
+      expect(args[command === 'Enter' ? 6 : 8]).toEqual({ displayText: 'history text', quotes: [] });
+      expect(args.at(-1)).toBeUndefined();
+      expect(textarea.value).toBe('history text');
+      expectContext(container, false);
+      expect(revoke).toHaveBeenCalledExactlyOnceWith('blob:draft-image');
+    } finally { await unmount(root); }
+  });
+
+  it('releases an accepted submission only once canonical admission arrives', async () => {
+    const optimistic: AcpUiEventVm[] = [];
+    const revoke = vi.fn();
+    vi.stubGlobal('URL', class extends URL { static revokeObjectURL = revoke; });
+    const { container, root, render, session } = await renderPausedDialog({
+      initialDraft: contextDraft(),
+      onOptimisticEventsChange: (events) => {
+        optimistic.length = 0;
+        optimistic.push(...events);
+      },
+    });
+    apiMocks.submitConversationPrompt.mockResolvedValue({
+      kind: 'acp-session',
+      session,
+      lifecycle: pausedLifecycle(),
+    });
+    try {
+      await flushInteraction(() => container.querySelector<HTMLButtonElement>('[data-acp-send]')!.click());
+      expect(container.querySelector('textarea')!.value).toBe('');
+      expectContext(container, false);
+      expect(revoke).not.toHaveBeenCalled();
+
+      const promptId = optimistic
+        .map((event) => (event.raw as { promptId?: string } | undefined)?.promptId)
+        .find((value): value is string => Boolean(value));
+      expect(promptId).toBeTruthy();
+      const admitted: AcpUiEventVm = {
+        id: 'admitted-prompt',
+        seq: 9,
+        timestamp: '1786980009Z',
+        kind: 'userTextDelta',
+        content: 'cancelled draft',
+        status: 'processing',
+        raw: { source: 'goldBandPrompt', promptId },
+      };
+      await render(pausedLifecycle(), { ...session, events: [admitted] });
+
+      expect(revoke).toHaveBeenCalledExactlyOnceWith('blob:draft-image');
+      expect(container.querySelector('textarea')!.value).toBe('');
+    } finally { await unmount(root); }
+  });
+
+  it('reclaims the draft when the user stops while the prompt is still sending', async () => {
+    const revoke = vi.fn();
+    vi.stubGlobal('URL', class extends URL { static revokeObjectURL = revoke; });
+    apiMocks.stopActiveSession.mockResolvedValue({
+      status: 'accepted',
+      session: null,
+      lifecycle: runningLifecycle(),
+    });
+    let resolveSubmit!: (value: unknown) => void;
+    apiMocks.submitConversationPrompt.mockImplementation(
+      () => new Promise((resolve) => { resolveSubmit = resolve; }),
+    );
+    const { container, root } = await renderPausedDialog({ initialDraft: contextDraft() });
+    try {
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea')!;
+      expect(textarea.value).toBe('cancelled draft');
+      expectContext(container, true);
+      await flushInteraction(() => {
+        container.querySelector<HTMLButtonElement>('[data-acp-send="true"]')!.click();
+      });
+      expect(textarea.value).toBe('');
+      expectContext(container, false);
+
+      const stop = container.querySelector('svg.lucide-circle-stop')!.closest('button');
+      await flushInteraction(() => stop!.click());
+      expect(apiMocks.stopActiveSession).toHaveBeenCalledTimes(1);
+      expect(textarea.value).toBe('cancelled draft');
+      expectContext(container, true);
+
+      await act(async () => resolveSubmit({
+        kind: 'acp-session-started',
+        session: null,
+        run: null,
+        lifecycle: runningLifecycle(),
+        admissionWasTerminal: false,
+      }));
+      expect(textarea.value).toBe('cancelled draft');
+      expectContext(container, true);
+      expect(revoke).not.toHaveBeenCalled();
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('restores the draft when an accepted prompt fails before canonical admission', async () => {
+    const optimistic: AcpUiEventVm[] = [];
+    const accepted = runningLifecycle();
+    accepted.runtime = { ...accepted.runtime, revision: 1 };
+    accepted.acp = { ...accepted.acp, revision: 1 };
+    apiMocks.submitConversationPrompt.mockResolvedValue({
+      kind: 'acp-session-started',
+      session: null,
+      run: null,
+      lifecycle: accepted,
+      admissionWasTerminal: false,
+    });
+    const { container, root, render } = await renderPausedDialog({
+      onOptimisticEventsChange: (events) => {
+        optimistic.length = 0;
+        optimistic.push(...events);
+      },
+    });
+    try {
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea')!;
+      await setTextareaValue(textarea, 'config blocked draft');
+      await flushInteraction(() => {
+        container.querySelector<HTMLButtonElement>('[data-acp-send="true"]')!.click();
+      });
+      expect(textarea.value).toBe('');
+
+      const promptId = optimistic
+        .map((event) => (event.raw as { promptId?: string } | undefined)?.promptId)
+        .find((value): value is string => Boolean(value));
+      expect(promptId).toBeTruthy();
+
+      const failed = runtimeAbnormalLifecycle();
+      failed.runtime = { ...failed.runtime, revision: 2 };
+      failed.acp = {
+        ...failed.acp,
+        revision: 2,
+        turnId: promptId!,
+        latestTurnStatus: 'failed',
+        liveTurnActivity: 'idle',
+        stopping: false,
+      };
+      await render(failed);
+      expect(textarea.value).toBe('config blocked draft');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('keeps an accepted draft consumed when its turn completes', async () => {
+    const optimistic: AcpUiEventVm[] = [];
+    const revoke = vi.fn();
+    vi.stubGlobal('URL', class extends URL { static revokeObjectURL = revoke; });
+    const accepted = runningLifecycle();
+    accepted.runtime = { ...accepted.runtime, revision: 1 };
+    accepted.acp = { ...accepted.acp, revision: 1 };
+    apiMocks.submitConversationPrompt.mockResolvedValue({
+      kind: 'acp-session-started',
+      session: null,
+      run: null,
+      lifecycle: accepted,
+      admissionWasTerminal: false,
+    });
+    const { container, root, render } = await renderPausedDialog({
+      initialDraft: contextDraft(),
+      onOptimisticEventsChange: (events) => {
+        optimistic.length = 0;
+        optimistic.push(...events);
+      },
+    });
+    try {
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea')!;
+      await flushInteraction(() => {
+        container.querySelector<HTMLButtonElement>('[data-acp-send="true"]')!.click();
+      });
+      expect(textarea.value).toBe('');
+
+      const promptId = optimistic
+        .map((event) => (event.raw as { promptId?: string } | undefined)?.promptId)
+        .find((value): value is string => Boolean(value));
+      const completed = pausedLifecycle();
+      completed.runtime = { ...completed.runtime, revision: 2 };
+      completed.acp = {
+        ...completed.acp,
+        revision: 2,
+        turnId: promptId!,
+        latestTurnStatus: 'completed',
+        liveTurnActivity: 'idle',
+        stopping: false,
+      };
+      await render(completed);
+
+      expect(textarea.value).toBe('');
+      expect(revoke).toHaveBeenCalledExactlyOnceWith('blob:draft-image');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('does not hide a new attempt decision after an old manual-check response arrives', async () => {
+    let resolve!: () => void;
+    const submit = vi.fn(() => new Promise<void>((done) => { resolve = done; }));
+    const { container, root, render, session } = await renderPausedDialog({ onSubmitManualCheck: submit });
+    const decision = () => [...container.querySelectorAll('button')].find((item) =>
+      item.textContent === '成功' || item.textContent === 'acp.manualCheckSuccess',
+    );
+    try {
+      await flushInteraction(() => decision()!.click());
+      const next = { ...session, attemptId: 'replacement-attempt' };
+      await render(pausedLifecycle(), next, next);
+      expect(decision()?.disabled).toBe(false);
+      await act(async () => resolve());
+      expect(decision()?.disabled).toBe(false);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it.each(['success', 'failure'] as const)('submits manual-check %s once and settles the decision buttons', async (outcome) => {
+    let resolve!: () => void;
+    const submit = vi.fn(() => new Promise<void>((done) => { resolve = done; }));
+    const { container, root } = await renderPausedDialog({ onSubmitManualCheck: submit });
+    try {
+      const button = [...container.querySelectorAll('button')].find((item) =>
+        item.textContent === (outcome === 'success' ? '成功' : '失败')
+        || item.textContent === `acp.manualCheck${outcome === 'success' ? 'Success' : 'Failure'}`,
+      );
+      expect(button).toBeDefined();
+      await flushInteraction(() => button!.click());
+      expect(submit).toHaveBeenCalledExactlyOnceWith(outcome);
+      expect(button!.disabled).toBe(true);
+      await flushInteraction(() => button!.click());
+      expect(submit).toHaveBeenCalledTimes(1);
+      await act(async () => resolve());
+      expect(container.contains(button!)).toBe(false);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('shows an unknown runtime failure verbatim and clears it when a new turn starts', async () => {
+    const lifecycle = runtimeAbnormalLifecycle();
+    lifecycle.acp = { ...lifecycle.acp, revision: 3, turnId: 'unknown-turn', turnError: {
+      code: { domain: 'internal', code: 'internal.unknown' },
+      domain: 'internal', recovery: 'manual', diagnostic: '磁盘空间不足。 (os error 112)',
+    } };
+    const { container, root, render, session } = await renderPausedDialog({
+      initialLifecycle: lifecycle, sessionStatus: 'failed', session: { turnError: lifecycle.acp.turnError },
+    });
+    try {
+      expect(container.textContent).toContain('磁盘空间不足。 (os error 112)');
+      expect(container.textContent).not.toContain('检查所选 Agent');
+      const next = pausedLifecycle();
+      next.acp = { ...next.acp, revision: 4, turnId: 'next-turn', latestTurnStatus: 'none', liveTurnActivity: 'starting', turnError: null };
+      await render(next, { ...session, status: 'pending', turnError: null });
+      expect(container.textContent).not.toContain('os error 112');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('shows the background restore failure without diagnostic history and clears it on retry', async () => {
+    const lifecycle = pausedLifecycle();
+    lifecycle.acp.latestTurnStatus = 'failed';
+    lifecycle.acp.revision = 3;
+    lifecycle.acp.turnId = 'turn-a';
+    lifecycle.acp.turnError = {
+      code: { domain: 'provider', code: 'acp.session-request-failed' },
+      domain: 'provider', recovery: 'manual', params: { method: 'session/resume' },
+      diagnostic: 'restore failed',
+      raw: { code: -32603, message: 'Internal error', data: { details: 'thread session-a already has an active writer' } },
+    };
+    const { container, root, render, session } = await renderPausedDialog({
+      isOrchestrated: false,
+      initialLifecycle: lifecycle,
+      sessionStatus: 'failed',
+      session: { turnError: lifecycle.acp.turnError },
+    });
+    try {
+      expect(container.textContent).toContain('thread session-a already has an active writer');
+      const retry = pausedLifecycle();
+      retry.acp = { ...retry.acp, revision: 4, turnId: 'turn-b', latestTurnStatus: 'none', liveTurnActivity: 'starting', turnError: null };
+      await render(retry, { ...session, status: 'pending', turnError: null });
+      expect(container.textContent).not.toContain('already has an active writer');
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('keeps a newer-turn permission visible while lifecycle is terminal for the prior turn', async () => {
     const terminal = pausedLifecycle();
     terminal.acp = {

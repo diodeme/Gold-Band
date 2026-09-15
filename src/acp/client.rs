@@ -364,8 +364,8 @@ use crate::acp::events::{
     append_raw_frame, append_raw_frames_observed, append_structured_diagnostic,
     cancel_latest_processing_prompt_retry, current_timestamp, is_semantically_empty_agent_content,
     load_session_metadata, normalize_session_update, permission_request_event,
-    read_lifecycle_header, scheduled_trigger_event, user_prompt_event_with_quotes,
-    write_session_metadata, write_session_metadata_owned,
+    permission_timeline_item_id, read_lifecycle_header, scheduled_trigger_event,
+    user_prompt_event_with_quotes, write_session_metadata, write_session_metadata_owned,
 };
 use crate::acp::history::{ProviderHistoryImport, ProviderHistoryReplay, ReplayUpdateDecision};
 use crate::acp::interaction::{
@@ -2710,7 +2710,8 @@ fn run_prompt_inner(
     )?;
     runtime.model_override = model.clone();
     runtime.permission_mode_override = permission_mode.clone();
-    runtime.auto_accept = session_auto_accept_override(&runtime.paths.attempt_dir).unwrap_or(auto_accept);
+    runtime.auto_accept =
+        session_auto_accept_override(&runtime.paths.attempt_dir).unwrap_or(auto_accept);
     runtime.config_option_overrides = config_options.clone();
     if runtime.is_prompt_cancel_requested() {
         let capabilities = runtime
@@ -6029,6 +6030,7 @@ impl<'a> AcpRuntime<'a> {
             event.raw.get_or_insert_with(|| json!({}))["cancelled"] = json!(true);
         }
         let branch_id = event_branch_id(&event);
+        let permission_item_id = permission_timeline_item_id(&event);
         self.persist_prompt_interaction_event(&event, &interaction_identity)?;
         let timeline_path = branch_timeline_path(&self.paths.attempt_dir, &branch_id);
         if let Some(indexed) =
@@ -6049,11 +6051,9 @@ impl<'a> AcpRuntime<'a> {
             &request_id,
             || self.is_prompt_cancel_requested(),
         )?;
-        let settled = crate::acp::timeline::read_indexed_timeline_item(
-            &timeline_path,
-            &format!("permission-{request_id}"),
-        )?
-        .filter(|indexed| indexed.event.status.as_deref() != Some("pending"));
+        let settled =
+            crate::acp::timeline::read_indexed_timeline_item(&timeline_path, &permission_item_id)?
+                .filter(|indexed| indexed.event.status.as_deref() != Some("pending"));
         if let Some(settled) = settled {
             self.timing_state.observe_event(&settled.event);
             update_runtime_hot_timeline_items(&mut self.timeline_items, &settled.event);
@@ -6067,8 +6067,9 @@ impl<'a> AcpRuntime<'a> {
             let decision_event = permission_decision_timeline_event(
                 self.seq,
                 &request_id,
+                &permission_item_id,
                 &response,
-                self.timeline_items.get(&format!("permission-{request_id}")),
+                self.timeline_items.get(&permission_item_id),
             );
             self.persist_event(&decision_event)?;
         }
@@ -7570,7 +7571,7 @@ impl<'a> AcpRuntime<'a> {
                 );
             }
             "permissionRequest" => {
-                item.id = format!("permission-{}", item.id);
+                item.id = permission_timeline_item_id(&item);
                 Self::finalize_non_streaming_event(
                     (&mut streams.text, &mut streams.thought, &mut streams.plan),
                     &mut item,
@@ -8391,6 +8392,7 @@ fn set_config_option_current_value(
 fn permission_decision_timeline_event(
     seq: u64,
     request_id: &str,
+    item_id: &str,
     response: &PermissionResponseState,
     existing: Option<&AcpUiEvent>,
 ) -> AcpUiEvent {
@@ -8402,6 +8404,7 @@ fn permission_decision_timeline_event(
     }
     if let Some(object) = raw.as_object_mut() {
         object.insert("requestId".to_string(), json!(request_id));
+        object.insert("_goldBandPermissionItemId".to_string(), json!(item_id));
         if response.cancelled {
             object.insert("cancelled".to_string(), json!(true));
             object.remove("optionId");
@@ -8412,7 +8415,7 @@ fn permission_decision_timeline_event(
     }
 
     AcpUiEvent {
-        id: request_id.to_string(),
+        id: item_id.to_string(),
         seq,
         timestamp: current_timestamp(),
         kind: "permissionRequest".to_string(),
@@ -11545,9 +11548,15 @@ mod tests {
             decided_at: "2Z".to_string(),
         };
 
-        let event = permission_decision_timeline_event(11, "0", &response, Some(&existing));
+        let event = permission_decision_timeline_event(
+            11,
+            "0",
+            "permission-stable",
+            &response,
+            Some(&existing),
+        );
 
-        assert_eq!(event.id, "0");
+        assert_eq!(event.id, "permission-stable");
         assert_eq!(event.kind, "permissionRequest");
         assert_eq!(event.status.as_deref(), Some("selected"));
         assert_eq!(event.session_id.as_deref(), Some("session-1"));
@@ -11562,6 +11571,14 @@ mod tests {
                 .and_then(|raw| raw.get("requestId"))
                 .and_then(Value::as_str),
             Some("0")
+        );
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("_goldBandPermissionItemId"))
+                .and_then(Value::as_str),
+            Some("permission-stable")
         );
         assert_eq!(
             event

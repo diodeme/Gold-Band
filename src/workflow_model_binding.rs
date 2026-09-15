@@ -307,7 +307,12 @@ pub fn migrate_authoring_workflow(
         if removed_options {
             worker.config_options.clear();
         }
-        if removed_provider || removed_model || removed_permission || removed_auto_accept || removed_options {
+        if removed_provider
+            || removed_model
+            || removed_permission
+            || removed_auto_accept
+            || removed_options
+        {
             changed = true;
         }
     }

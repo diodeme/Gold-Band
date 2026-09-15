@@ -222,6 +222,7 @@ import {
   isRuntimeActiveStatus,
   isSessionActiveStatus,
   isSessionCompletedStatus,
+  isSessionIdleStatus,
   isSessionTerminalStatus,
   shouldKeepLocalRuntimeLifecycleOverride,
   shouldTreatAcpRuntimeErrorAsFallback,
@@ -11369,6 +11370,10 @@ function isAcpSessionDisplayableDuringInitialLoad(session: AcpSessionVm | null |
   );
 }
 
+function isAcpSessionCanonicalHistoryReady(session: AcpSessionVm) {
+  return isSessionIdleStatus(session.status) && session.events.length > 0;
+}
+
 function isAcpSessionReadyForInitialDisplay(session: AcpSessionVm | null | undefined) {
   return Boolean(
     session &&
@@ -11376,6 +11381,7 @@ function isAcpSessionReadyForInitialDisplay(session: AcpSessionVm | null | undef
       (session.branchId !== 'root' && Boolean(session.branchExecution)) ||
       isAcpInitialSessionReady(session) ||
       isAcpSessionDisplayableDuringInitialLoad(session) ||
+      isAcpSessionCanonicalHistoryReady(session) ||
       (isSessionTerminalStatus(session.status) && session.events.length > 0)
     ),
   );

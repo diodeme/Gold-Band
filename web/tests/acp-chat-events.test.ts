@@ -1187,6 +1187,31 @@ describe('ACP chat event handling', () => {
     }))).toBe(false);
   });
 
+  it('treats idle canonical history as ready without system prompt metadata', () => {
+    expect(isAcpSessionReadyForInitialDisplay(session({
+      status: 'idle',
+      systemPromptAppend: null,
+      config: null,
+      events: [
+        event({
+          id: 'assistant-message-1',
+          seq: 100,
+          kind: 'textDelta',
+          content: 'Historical response.',
+        }),
+      ],
+    }))).toBe(true);
+  });
+
+  it('keeps idle sessions without canonical events behind the readiness loading gate', () => {
+    expect(isAcpSessionReadyForInitialDisplay(session({
+      status: 'idle',
+      systemPromptAppend: null,
+      config: null,
+      events: [],
+    }))).toBe(false);
+  });
+
   it('keeps a terminal summary with unloaded events behind the readiness loading gate', () => {
     expect(isAcpSessionReadyForInitialDisplay(session({
       status: 'completed',

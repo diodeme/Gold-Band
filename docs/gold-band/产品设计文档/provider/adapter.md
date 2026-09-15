@@ -19,7 +19,7 @@ provider adapter 是 provider-specific 差异的隔离层。
 - 在 A() 内部选择热数据与冷数据
 - 在 A() 内部把调用请求整理成 prompt bundle
 - 把 prompt bundle 映射为 ACP 调用：根据 `supports_system_prompt` 决定是否通过 `_meta.systemPrompt.append` 注入稳定 system prompt；不支持时把稳定 system prompt 作为 Gold Band hidden 段内联到 user prompt 前
-- 接收 ACP `session/update`、permission request 与 prompt response
+- 接收 ACP `session/update`、permission request、elicitation request 与 prompt response。未实现的入站 client method 若带 JSON-RPC `id`，回 `-32601 Method not found`；不把 Cursor `cursor/ask_question` 等厂商扩展接成提问 UI。
 - 对 `session/update` 做 provider-aware 归一化：消息正文、思考、计划和 provider 诊断必须落入不同领域；诊断不得混入 assistant 正文或最终输出
 - 保存 ACP 会话观测材料、adapter 返回的 session config 快照（`models` / `modes` / `configOptions`）、通过项目级 feature flag 控制的可选 `session/list` 轮询 best-effort 拉取的 session title 缓存与 raw frame
 - 提供 worker reference 与外部 CLI handoff
@@ -43,7 +43,7 @@ provider adapter 是 provider-specific 差异的隔离层。
 - prompt attachment 先由统一 projection policy 生成 `Image / Resource / ResourceLink` 意图，再由当前连接的 `promptCapabilities.image / embeddedContext` 投影协议块。`ResourceLink` 是终态意图，即使 Agent 支持可选内联能力也不得重新读取或展开；不支持可选能力的 Agent 始终收到原文件 link。文本大小使用 UTF-8 字节边界，图片使用独立的编码字节与最长边边界，禁止按 Agent ID、扩展名个案或 UI 来源维护第二套阈值。
 - 浏览器 `File`、剪贴板和拖放附件在进入 runtime 前先物化为不可变快照。物化接口不接收选择时缓存的文件大小；Base64 解码后的实际字节是快照大小的唯一事实源，空文件、单文件上限和总量上限均据此校验，返回的 `AttachmentFileVm.size` 也必须使用该值。源文件在选择与读取之间增长或缩小时，保存本次实际读取到的完整快照，不得因陈旧元数据拒绝。
 
-- Agent 的 `configOptions` 是会随 adapter 升级变化的能力目录。前端使用纯函数对已保存 override 做交集规范化，保留仍存在且 value 有效的项，返回被删除的 option id；校验函数不得修改 React/persisted 输入对象，也不得把 stale override 当成阻塞会话的错误。Direct/AUTO 在提交前使用规范化结果，并在能力目录刷新后同步清理当前配置。
+- Agent 的 `configOptions` 是会随 adapter 升级变化的能力目录。前端使用纯函数对已保存 override 做交集规范化，保留仍存在且 value 有效的项，返回被删除的 option id；校验函数不得修改 React/persisted 输入对象，也不得把 stale override 当成阻塞会话的错误。Direct/AUTO 在提交前使用规范化结果，并在能力目录刷新后同步清理当前配置。ACP `initialize` 对所有 Agent 声明同一份客户端能力，包括 `_meta.parameterizedModelPicker`；该声明只表示客户端能消费独立模型参数 select，不按 Agent ID 开关，也不改变“思考强度只认 `category=thought_level`”的展示契约。
 - `isDefault`
 
 ### `doctor()`

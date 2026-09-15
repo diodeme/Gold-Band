@@ -965,6 +965,8 @@ pub struct ConversationCreateInputVm {
     pub scheduled_content_fingerprint: Option<String>,
     #[serde(default)]
     pub workflow_authoring: Option<TaskAuthoringWorkflow>,
+    #[serde(default)]
+    pub role: Option<gold_band::provider::UserPromptRole>,
 }
 
 pub fn scheduled_content_snapshot(
@@ -4888,6 +4890,14 @@ pub fn prepare_conversation_task_vm(
         scheduled_content_fingerprint: input.scheduled_content_fingerprint.clone(),
     };
     write_json(&authoring_dir.join("conversation.json"), &meta)?;
+    if let Some(role) = input.role.as_ref() {
+        if !role.profile_id.trim().is_empty()
+            && !role.name.trim().is_empty()
+            && !role.content.trim().is_empty()
+        {
+            write_json(&app.paths.initial_prompt_role_file(&task_id), role)?;
+        }
+    }
 
     // Copy attachments to authoring dir
     if let Some(ref paths) = input.attachment_paths {
@@ -7088,6 +7098,7 @@ mod tests {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            role: None,
         };
 
         let snapshot = scheduled_content_snapshot(&app, &input).unwrap();
@@ -7199,6 +7210,7 @@ mod tests {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            role: None,
         };
 
         let created = create_conversation_run_vm(&app, &input).unwrap();
@@ -7235,6 +7247,7 @@ mod tests {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            role: None,
         };
 
         let error = validate_conversation_create_vm(&app, &input).unwrap_err();
@@ -7265,6 +7278,7 @@ mod tests {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            role: None,
         };
 
         let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
@@ -7295,6 +7309,7 @@ mod tests {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            role: None,
         };
         let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
 
@@ -7337,6 +7352,7 @@ mod tests {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            role: None,
         };
 
         let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
@@ -7378,6 +7394,7 @@ mod tests {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            role: None,
         };
 
         assert!(create_conversation_task_vm(&app, &input).is_err());

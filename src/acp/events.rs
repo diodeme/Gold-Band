@@ -3933,7 +3933,8 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "retry".into(),
                 quotes: vec![],
-            },
+            role: None,
+        },
             attachment_paths: vec![],
             admitted_at: "4Z".into(),
         };
@@ -3988,7 +3989,8 @@ mod tests {
                 input: crate::provider::ConversationPromptInput {
                     display_text: format!("message for {turn_id}"),
                     quotes: Vec::new(),
-                },
+            role: None,
+        },
                 attachment_paths: vec![format!("{turn_id}.txt")],
                 admitted_at: admitted_at.to_string(),
             };
@@ -4111,7 +4113,8 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "survive restart".to_string(),
                 quotes: Vec::new(),
-            },
+            role: None,
+        },
             attachment_paths: vec!["evidence.txt".to_string()],
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
         };
@@ -4150,7 +4153,8 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "stop before provider startup".to_string(),
                 quotes: Vec::new(),
-            },
+            role: None,
+        },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
         };
@@ -4225,7 +4229,8 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "first".to_string(),
                 quotes: Vec::new(),
-            },
+            role: None,
+        },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
         };
@@ -4247,7 +4252,8 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "second".to_string(),
                 quotes: Vec::new(),
-            },
+            role: None,
+        },
             admitted_at: "2026-08-19T10:00:03Z".to_string(),
             ..first
         };
@@ -4317,7 +4323,8 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "continue legacy session".to_string(),
                 quotes: Vec::new(),
-            },
+            role: None,
+        },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
         };
@@ -4363,7 +4370,8 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "shared lifecycle".to_string(),
                 quotes: Vec::new(),
-            },
+            role: None,
+        },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
         };
@@ -4402,7 +4410,8 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "claim me".to_string(),
                 quotes: Vec::new(),
-            },
+            role: None,
+        },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
         };
@@ -4490,7 +4499,8 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "run owned".to_string(),
                 quotes: Vec::new(),
-            },
+            role: None,
+        },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
         };
@@ -4551,7 +4561,8 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "stop me".to_string(),
                 quotes: Vec::new(),
-            },
+            role: None,
+        },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
         };
@@ -4676,7 +4687,8 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "hi".to_string(),
                 quotes: Vec::new(),
-            },
+            role: None,
+        },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-21T10:00:00Z".to_string(),
         };
@@ -4727,7 +4739,8 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "follow up".to_string(),
                 quotes: Vec::new(),
-            },
+            role: None,
+        },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-21T10:00:00Z".to_string(),
         };
@@ -4786,7 +4799,8 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "follow up".to_string(),
                 quotes: Vec::new(),
-            },
+            role: None,
+        },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-21T10:00:00Z".to_string(),
         };

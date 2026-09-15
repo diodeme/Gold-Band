@@ -4974,6 +4974,9 @@ impl<'a> AcpRuntime<'a> {
             prompt.attachment_metas.clone(),
             prompt.quotes.clone(),
         );
+        if let (Some(role), Some(raw)) = (prompt.role.as_ref(), user_event.raw.as_mut()) {
+            raw["role"] = serde_json::to_value(role)?;
+        }
         if hidden_from_chat
             && let Some(reason) = prompt.hidden_reason.as_deref()
             && let Some(raw) = user_event.raw.as_mut()
@@ -8724,6 +8727,7 @@ mod tests {
             user_prompt: "clarify".to_string(),
             display_text: None,
             quotes: Vec::new(),
+            role: None,
             prompt_id: Some(prompt_id.to_string()),
             visibility: PromptVisibility::Visible,
             hidden_reason: None,
@@ -8821,7 +8825,8 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "test".into(),
                 quotes: vec![],
-            },
+            role: None,
+        },
             attachment_paths: vec![],
             admitted_at: super::current_timestamp(),
         };
@@ -12053,6 +12058,7 @@ mod tests {
             user_prompt: "do the task".to_string(),
             display_text: None,
             quotes: Vec::new(),
+            role: None,
             prompt_id: Some("prompt-001".to_string()),
             visibility: PromptVisibility::Visible,
             hidden_reason: None,
@@ -12092,6 +12098,7 @@ mod tests {
             user_prompt: "follow up".to_string(),
             display_text: None,
             quotes: Vec::new(),
+            role: None,
             prompt_id: Some("prompt-002".to_string()),
             visibility: PromptVisibility::Visible,
             hidden_reason: None,
@@ -12129,6 +12136,7 @@ mod tests {
             user_prompt: "do the task".to_string(),
             display_text: None,
             quotes: Vec::new(),
+            role: None,
             prompt_id: None,
             visibility: PromptVisibility::Visible,
             hidden_reason: None,

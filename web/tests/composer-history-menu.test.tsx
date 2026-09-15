@@ -19,7 +19,7 @@ const defaults: Omit<AcpConversationComposerProps, 'prompt' | 'onPromptChange'> 
   onHistoryTextCommit: noop, canSubmitHistory: true,
   onSubmit: submit, sending: false, attachments: [], quotes: [], contextError: null, fileError: null,
   onRemoveQuote: noop, onRemoveAttachment: noop, onPreviewAttachment: noop, onClearAttachments: noop,
-  slashCommands: [], slashMenuOpen: false, slashMenuActiveIndex: 0, onSlashMenuActiveIndexChange: noop,
+  slashGroups: [], slashMenuOpen: false, slashMenuActiveIndex: 0, onSlashMenuActiveIndexChange: noop,
   onSlashMenuDismiss: noop, onSlashMenuSelect: noop, textareaRef: null, placeholder: 'Message', inputDisabled: false,
   onTextareaKeyDown: noop, onDragEnter: noop, onDragOver: noop, onDrop: noop, onPaste: noop,
   fileInputRef: null, onFilesChange: noop, onPickFiles: noop, canStop: false, stopInProgress: false, onStop: noop,
@@ -33,7 +33,7 @@ function Harness({ initial = '' }: { initial?: string }) {
   const slash = useSlashCommandController({ input: prompt, commands, onInputChange: setPrompt });
   return <TooltipProvider><AcpConversationComposer {...defaults} prompt={prompt} onPromptChange={setPrompt}
     onHistoryTextCommit={setPrompt}
-    onSubmit={(historyText) => { submit(historyText ?? prompt); setPrompt(''); }} slashCommands={slash.filteredCommands}
+    onSubmit={(historyText) => { submit(historyText ?? prompt); setPrompt(''); }} slashGroups={slash.filteredGroups}
     slashMenuOpen={slash.isOpen} slashMenuActiveIndex={slash.activeIndex} onSlashMenuActiveIndexChange={slash.setActiveIndex}
     onSlashMenuDismiss={slash.dismiss} onSlashMenuSelect={slash.selectByIndex} onTextareaKeyDown={slash.onKeyDown} /></TooltipProvider>;
 }

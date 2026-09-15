@@ -32,7 +32,7 @@ import { ComposerContextArea } from '@/components/shared/ComposerContextArea';
 import { Button } from '@/components/ui/button';
 import type { AttachmentItem } from '@/lib/attachment-service';
 import type { ComposerQuote } from '@/lib/composer-context';
-import type { AcpCommandItemVm } from '@/types';
+import type { SlashCatalogGroup, SlashCatalogItemKind } from '@/lib/slash-command';
 import { cn } from '@/lib/utils';
 import { ACP_SESSION_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 
@@ -51,7 +51,7 @@ export interface AcpConversationComposerProps {
   onPreviewAttachment: (item: AttachmentItem) => void;
   onClearAttachments: () => void;
   fileError: string | null;
-  slashCommands: readonly AcpCommandItemVm[];
+  slashGroups: readonly SlashCatalogGroup[];
   slashMenuOpen: boolean;
   slashMenuActiveIndex: number;
   onSlashMenuActiveIndexChange: (index: number) => void;
@@ -61,7 +61,11 @@ export interface AcpConversationComposerProps {
   committedSlashCommand?: {
     prefix: string;
     description: string;
+    content?: string;
+    kind: SlashCatalogItemKind;
   } | null;
+  agentIconSrc?: string | null;
+  agentIconClassName?: string;
   placeholder: string;
   inputDisabled: boolean;
   onTextareaKeyDown: KeyboardEventHandler<HTMLTextAreaElement>;
@@ -109,7 +113,7 @@ export function AcpConversationComposer(props: AcpConversationComposerProps) {
     prompt="" onPromptChange={noop} onSubmit={noop} sending={false}
     onHistoryTextCommit={noop}
     attachments={[]} quotes={[]} contextError={null} fileError={null}
-    slashCommands={[]} slashMenuOpen={false} committedSlashCommand={null}
+    slashGroups={[]} slashMenuOpen={false} committedSlashCommand={null}
     placeholder={t('demo.inputDisabled')} inputDisabled={true}
     onTextareaKeyDown={noop} onDragEnter={(event) => event.preventDefault()}
     onDragOver={(event) => event.preventDefault()} onDrop={(event) => event.preventDefault()}
@@ -133,7 +137,7 @@ function AcpConversationComposerContent({
   onPreviewAttachment,
   onClearAttachments,
   fileError,
-  slashCommands,
+  slashGroups,
   slashMenuOpen,
   slashMenuActiveIndex,
   onSlashMenuActiveIndexChange,
@@ -141,6 +145,8 @@ function AcpConversationComposerContent({
   onSlashMenuSelect,
   textareaRef,
   committedSlashCommand,
+  agentIconSrc,
+  agentIconClassName,
   placeholder,
   inputDisabled,
   onTextareaKeyDown,
@@ -212,11 +218,13 @@ function AcpConversationComposerContent({
       ) : null}
       <SlashCommandMenu
         open={slashMenuOpen && !history.browsing}
-        commands={slashCommands}
+        groups={slashGroups}
         activeIndex={slashMenuActiveIndex}
         onActiveIndexChange={onSlashMenuActiveIndexChange}
         onDismiss={onSlashMenuDismiss}
         onSelect={onSlashMenuSelect}
+        agentIconSrc={agentIconSrc}
+        agentIconClassName={agentIconClassName}
       >
         <PromptInput
           value={history.value}
@@ -279,6 +287,12 @@ function AcpConversationComposerContent({
                 <SlashCommandInputTag
                   prefix={committedSlashCommand.prefix}
                   description={committedSlashCommand.description}
+                  content={committedSlashCommand.content}
+                  kind={committedSlashCommand.kind}
+                  iconSrc={committedSlashCommand.kind === 'role'
+                    ? '/logo.svg'
+                    : (agentIconSrc ?? '/logo.svg')}
+                  iconClassName={committedSlashCommand.kind === 'command' ? agentIconClassName : undefined}
                 />
               ) : null}
               placeholder={placeholder}

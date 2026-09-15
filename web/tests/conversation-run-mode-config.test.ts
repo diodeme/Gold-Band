@@ -143,6 +143,46 @@ describe('conversation run mode config text fields', () => {
     expect(normalizeConversationDirectConfigForSubmit({ agentType: '  ' })).toBeUndefined();
   });
 
+  it('persists Auto Accept only when enabled', () => {
+    expect(normalizeConversationDirectConfigForSubmit({
+      agentType: 'cursor',
+      permissionMode: 'agent',
+      autoAccept: true,
+    })).toEqual({
+      agentType: 'cursor',
+      permissionMode: 'agent',
+      autoAccept: true,
+    });
+    expect(normalizeConversationDirectConfigForSubmit({
+      agentType: 'cursor',
+      autoAccept: false,
+    })).toEqual({
+      agentType: 'cursor',
+    });
+    expect(normalizeConversationAutoConfigForSubmit({
+      agentStrategy: 'fixed',
+      agentType: 'claude-acp',
+      autoAccept: true,
+      availableAgents: [{
+        provider: 'cursor',
+        autoAccept: true,
+      }],
+    })).toMatchObject({
+      autoAccept: true,
+      availableAgents: [{ provider: 'cursor', autoAccept: true }],
+    });
+    expect(normalizeConversationAutoConfigForSubmit({
+      agentStrategy: 'fixed',
+      agentType: 'claude-acp',
+      autoAccept: false,
+      availableAgents: [{ provider: 'cursor', autoAccept: false }],
+    })).toEqual({
+      agentStrategy: 'fixed',
+      agentType: 'claude-acp',
+      availableAgents: [{ provider: 'cursor' }],
+    });
+  });
+
   it('restores Direct model and permission per Agent inside a workspace', () => {
     const mode = {
       mode: 'direct' as const,

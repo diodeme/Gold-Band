@@ -395,6 +395,46 @@ export function saveScheduledRuntimeSettings(input: Parameters<RuntimeApi['saveS
   return getRuntimeApi().saveScheduledRuntimeSettings(input);
 }
 
+export function getImSettings() {
+  return getRuntimeApi().getImSettings();
+}
+
+export function startWeComScanAuthorization(sessionId: string) {
+  return getRuntimeApi().startWeComScanAuthorization(sessionId);
+}
+
+export function completeWeComScanAuthorization(sessionId: string) {
+  return getRuntimeApi().completeWeComScanAuthorization(sessionId);
+}
+
+export function cancelWeComScanAuthorization(sessionId: string) {
+  return getRuntimeApi().cancelWeComScanAuthorization(sessionId);
+}
+
+export function setImChannelEnabled(input: Parameters<RuntimeApi['setImChannelEnabled']>[0]) {
+  return getRuntimeApi().setImChannelEnabled(input);
+}
+
+export function saveImNotificationPreferences(input: Parameters<RuntimeApi['saveImNotificationPreferences']>[0]) {
+  return getRuntimeApi().saveImNotificationPreferences(input);
+}
+
+export function resetImChannelBinding(input: Parameters<RuntimeApi['resetImChannelBinding']>[0]) {
+  return getRuntimeApi().resetImChannelBinding(input);
+}
+
+export function reconnectImChannel(input: Parameters<RuntimeApi['reconnectImChannel']>[0]) {
+  return getRuntimeApi().reconnectImChannel(input);
+}
+
+export function deleteImChannel(kind: Parameters<RuntimeApi['deleteImChannel']>[0]) {
+  return getRuntimeApi().deleteImChannel(kind);
+}
+
+export function subscribeImChannelStateUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeImChannelStateUpdates']>>[0]) {
+  return getRuntimeApi().subscribeImChannelStateUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
 // 干预通知：OS Toast「查看详情」点击后由后端转发导航事件，前端订阅做 deep-link。
 export function subscribeInterventionNavigate(listener: Parameters<NonNullable<RuntimeApi['subscribeInterventionNavigate']>>[0]) {
   return getRuntimeApi().subscribeInterventionNavigate?.(listener) ?? Promise.resolve(() => {});
@@ -430,6 +470,10 @@ export function setAcpSessionModel(projectId: string | null | undefined, taskId:
 
 export function setAcpSessionPermissionMode(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, permissionModeId: string | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().setAcpSessionPermissionMode(projectId, taskId, runId, roundId, nodeId, attemptId, permissionModeId, outerNodeId, outerAttemptId);
+}
+
+export function setAcpSessionAutoAccept(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, autoAccept: boolean, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().setAcpSessionAutoAccept(projectId, taskId, runId, roundId, nodeId, attemptId, autoAccept, outerNodeId, outerAttemptId);
 }
 
 export function respondAcpPermission(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['respondAcpPermission']>[8], outerNodeId?: string | null, outerAttemptId?: string | null) {
@@ -664,8 +708,12 @@ export function deleteScheduledTask(projectId: string, scheduledTaskId: string) 
   return getRuntimeApi().deleteScheduledTask(projectId, scheduledTaskId);
 }
 
-export function listScheduledTaskOccurrences(projectId: string, scheduledTaskId: string, cursor?: string | null, status?: string | null) {
-  return getRuntimeApi().listScheduledTaskOccurrences(projectId, scheduledTaskId, cursor, status);
+export function listScheduledExecutionHistory(projectId: string, scheduledTaskId: string, cursor?: string | null, anchor?: { taskId: string; runId: string } | null) {
+  return getRuntimeApi().listScheduledExecutionHistory(projectId, scheduledTaskId, cursor, anchor);
+}
+
+export function deleteScheduledExecutionHistory(items: import('./types').ScheduledExecutionHistoryDeleteInputVm[]) {
+  return getRuntimeApi().deleteScheduledExecutionHistory(items);
 }
 
 export function getScheduledTaskDiagnostics(projectId: string, scheduledTaskId: string) {
@@ -959,4 +1007,7 @@ export function checkSkillNameConflict(
 }
 export function getAcpImage(locator: import('./types').TurnFileLocatorVm, image: import('./types').AcpImageRef, thumbnail: boolean) {
   return getRuntimeApi().getAcpImage(locator, image, thumbnail);
+}
+export function getAcpActivityImages(input: import('./types').AcpActivityImagesInput) {
+  return getRuntimeApi().getAcpActivityImages(input);
 }

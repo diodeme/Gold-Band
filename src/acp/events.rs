@@ -97,6 +97,8 @@ pub struct AcpSessionMetadata {
     pub model_override: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode_override: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_option_overrides: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -255,12 +257,21 @@ impl AcpLifecycleTerminalGuard {
     pub(crate) fn execute<T>(&mut self, execute: impl FnOnce() -> Result<T>) -> Result<T> {
         let result = execute();
         if let Err(error) = &result {
-            persist_session_turn_failure_owned(
+            let mut info = normalize_runtime_error(error);
+            if let Err(persistence_error) = persist_session_turn_failure_owned(
                 &self.path,
                 &self.owner,
-                &normalize_runtime_error(error),
+                &info,
                 &current_timestamp(),
-            )?;
+            ) {
+                tracing::error!(path = %self.path, error = %persistence_error, "ACP terminal persistence failed");
+                info.diagnostic.push_str(&format!(
+                    "\nACP terminal persistence failed: {persistence_error:#}"
+                ));
+                // Do not let Drop retry with an empty, generic replacement error.
+                self.disarm();
+                return Err(crate::runtime_error::runtime_error(info));
+            }
         }
         self.disarm();
         result
@@ -444,6 +455,20 @@ pub struct AcpUiEvent {
     pub timing: Option<AcpTimingPatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledTriggerPayload {
+    pub project_id: String,
+    pub scheduled_task_id: String,
+    pub occurrence_id: String,
+    pub trigger_kind: crate::scheduler::occurrence::OccurrenceTriggerKind,
+    pub scheduled_at: Option<String>,
+    pub accepted_at: String,
+    pub instruction_summary: String,
+    pub content_fingerprint: String,
+    pub links: crate::scheduler::occurrence::OccurrenceLinks,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -985,6 +1010,37 @@ fn canonical_permission_request_id(event: &AcpUiEvent) -> String {
         current = next;
     }
     current.to_string()
+}
+
+pub fn permission_timeline_item_id(event: &AcpUiEvent) -> String {
+    if let Some(item_id) = event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("_goldBandPermissionItemId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| value.starts_with("permission-") && value.len() > "permission-".len())
+    {
+        return item_id.to_string();
+    }
+
+    // The JSON-RPC request id is transport-scoped and can reset after a
+    // provider restart. The durable provider tool-call id (or the persisted
+    // Gold Band sequence when a provider omits it) identifies the occurrence.
+    let request_id = canonical_permission_request_id(event);
+    let sequence_fallback = event.seq.to_string();
+    let occurrence_id = event
+        .tool_call_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(sequence_fallback.as_str());
+    let mut hasher = blake3::Hasher::new();
+    for part in [request_id.as_bytes(), occurrence_id.as_bytes()] {
+        hasher.update(&(part.len() as u64).to_be_bytes());
+        hasher.update(part);
+    }
+    format!("permission-{}", hasher.finalize())
 }
 
 /// Read token totals from the ACP session metadata file and timeline.
@@ -1604,6 +1660,9 @@ pub(crate) fn merge_timeline_item_revision(
     existing: &AcpUiEvent,
     mut incoming: AcpUiEvent,
 ) -> AcpUiEvent {
+    if existing.kind == "scheduledTrigger" {
+        return existing.clone();
+    }
     if is_provider_history_event(&incoming) && !is_provider_history_event(existing) {
         return existing.clone();
     }
@@ -2438,6 +2497,7 @@ fn merge_session_lifecycle(current: Option<&Value>, incoming: &mut Value) {
     for key in [
         "modelOverride",
         "permissionModeOverride",
+        "autoAccept",
         "configOptionOverrides",
         "configCatalogRefreshRequiredAt",
     ] {
@@ -3048,11 +3108,10 @@ pub fn permission_request_event(seq: u64, request_id: String, params: Value) -> 
     let mut raw = params;
     normalize_agent_transcript_metadata(&mut raw);
     if let Some(object) = raw.as_object_mut() {
-        object
-            .entry("requestId".to_string())
-            .or_insert_with(|| Value::String(request_id.clone()));
+        object.remove("_goldBandPermissionItemId");
+        object.insert("requestId".to_string(), Value::String(request_id.clone()));
     }
-    AcpUiEvent {
+    let mut event = AcpUiEvent {
         id: request_id,
         seq,
         timestamp: current_timestamp(),
@@ -3071,7 +3130,15 @@ pub fn permission_request_event(seq: u64, request_id: String, params: Value) -> 
         ended_at: None,
         timing: None,
         raw: Some(raw),
+    };
+    let item_id = permission_timeline_item_id(&event);
+    if let Some(object) = event.raw.as_mut().and_then(Value::as_object_mut) {
+        object.insert(
+            "_goldBandPermissionItemId".to_string(),
+            Value::String(item_id),
+        );
     }
+    event
 }
 
 pub fn normalize_agent_transcript_metadata(value: &mut Value) -> Option<AgentTranscriptRelation> {
@@ -3359,6 +3426,29 @@ pub fn user_prompt_event(
     )
 }
 
+pub fn scheduled_trigger_event(seq: u64, payload: &ScheduledTriggerPayload) -> AcpUiEvent {
+    AcpUiEvent {
+        id: format!("scheduled-trigger:{}", payload.occurrence_id),
+        seq,
+        timestamp: payload.accepted_at.clone(),
+        kind: "scheduledTrigger".to_string(),
+        session_id: None,
+        content: None,
+        title: None,
+        tool_call_id: None,
+        status: Some("completed".to_string()),
+        started_seq: Some(seq),
+        ended_seq: Some(seq),
+        started_at: Some(payload.accepted_at.clone()),
+        ended_at: Some(payload.accepted_at.clone()),
+        timing: None,
+        raw: Some(serde_json::json!({
+            "source": "goldBandScheduledTrigger",
+            "scheduledTrigger": payload,
+        })),
+    }
+}
+
 pub fn user_prompt_event_with_quotes(
     seq: u64,
     session_id: String,
@@ -3491,20 +3581,90 @@ fn extract_status(value: &Value) -> Option<String> {
 mod tests {
     use super::{
         AcpLatestTurnStatus, AcpLiveTurnActivity, AcpPromptSubmission, AcpSessionAvailability,
-        AcpSessionMetadata, AcpTimingState, AcpTurnAdmission, AcpUiEvent,
+        AcpSessionMetadata, AcpTimingState, AcpTurnAdmission, AcpUiEvent, ScheduledTriggerPayload,
         agent_transcript_tool_output, annotate_runtime_control_output, append_raw_frame,
         append_structured_diagnostic, append_timeline_patch, begin_session_turn,
         cancel_latest_processing_prompt_retry, compact_live_conversation_event,
         context_compaction_phase, elicitation_request_event, elicitation_response_event,
         extract_usage_fields, inspect_session_turn, is_semantically_empty_agent_content,
         kind_to_ui_kind, latest_timeline_source_seq, load_session_metadata, load_timeline_items,
-        normalize_session_update, permission_request_event, user_prompt_event,
-        user_prompt_event_with_quotes, write_timeline_items,
+        normalize_session_update, permission_request_event, permission_timeline_item_id,
+        scheduled_trigger_event, user_prompt_event, user_prompt_event_with_quotes,
+        write_timeline_items,
     };
     use crate::provider::UserPromptQuote;
     use crate::storage::{read_json, write_json};
     use camino::Utf8PathBuf;
     use serde_json::{Value, json};
+
+    fn scheduled_trigger_payload(
+        trigger_kind: crate::scheduler::occurrence::OccurrenceTriggerKind,
+    ) -> ScheduledTriggerPayload {
+        ScheduledTriggerPayload {
+            project_id: "project-001".to_string(),
+            scheduled_task_id: "scheduled-task-001".to_string(),
+            occurrence_id: "occurrence-001".to_string(),
+            trigger_kind: trigger_kind.clone(),
+            scheduled_at: (trigger_kind
+                == crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled)
+                .then(|| "2026-08-25T01:30:00Z".to_string()),
+            accepted_at: "2026-08-25T01:29:59Z".to_string(),
+            instruction_summary: "检查主分支状态".to_string(),
+            content_fingerprint: "sha256:accepted".to_string(),
+            links: crate::scheduler::occurrence::OccurrenceLinks {
+                task_id: Some("task-001".to_string()),
+                run_id: Some("run-001".to_string()),
+                round_id: Some("round-001".to_string()),
+                node_id: Some("dev".to_string()),
+                attempt_id: Some("attempt-001".to_string()),
+            },
+        }
+    }
+
+    #[test]
+    fn scheduled_trigger_event_has_deterministic_occurrence_identity() {
+        let payload = scheduled_trigger_payload(
+            crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled,
+        );
+
+        let first = scheduled_trigger_event(10, &payload);
+        let retry = scheduled_trigger_event(20, &payload);
+
+        assert_eq!(first.id, "scheduled-trigger:occurrence-001");
+        assert_eq!(retry.id, first.id);
+        assert_eq!(first.kind, "scheduledTrigger");
+        assert!(first.content.is_none());
+        assert_eq!(
+            first.raw.as_ref().unwrap()["scheduledTrigger"],
+            json!(payload)
+        );
+        assert_ne!(first.seq, retry.seq);
+    }
+
+    #[test]
+    fn automatic_and_manual_trigger_events_have_distinct_kinds() {
+        let automatic = scheduled_trigger_event(
+            1,
+            &scheduled_trigger_payload(
+                crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled,
+            ),
+        );
+        let manual = scheduled_trigger_event(
+            2,
+            &scheduled_trigger_payload(crate::scheduler::occurrence::OccurrenceTriggerKind::Manual),
+        );
+
+        assert_eq!(
+            automatic.raw.as_ref().unwrap()["scheduledTrigger"]["triggerKind"],
+            "scheduled"
+        );
+        assert_eq!(
+            manual.raw.as_ref().unwrap()["scheduledTrigger"]["triggerKind"],
+            "manual"
+        );
+        assert!(automatic.raw.as_ref().unwrap()["scheduledTrigger"]["scheduledAt"].is_string());
+        assert!(manual.raw.as_ref().unwrap()["scheduledTrigger"]["scheduledAt"].is_null());
+    }
 
     #[test]
     fn metadata_patch_preserves_the_latest_canonical_lifecycle() {
@@ -3788,6 +3948,30 @@ mod tests {
             .unwrap();
         assert_eq!(latest.turn_id.as_deref(), Some("turn-b"));
         assert!(latest.turn_error.is_none());
+    }
+
+    #[test]
+    fn terminal_persistence_failure_does_not_replace_original_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let owner = super::AcpLifecycleOwner {
+            turn_id: "turn-a".into(),
+            operation_id: "operation-a".into(),
+            revision: 2,
+        };
+        let mut guard = super::AcpLifecycleTerminalGuard::new(path, owner);
+        let result: anyhow::Result<()> =
+            guard.execute(|| Err(anyhow::anyhow!("ORIGINAL_IO_FAILURE")));
+        let error = result.unwrap_err();
+        let info = crate::runtime_error::normalize_runtime_error(&error);
+        assert!(info.diagnostic.starts_with("ORIGINAL_IO_FAILURE\n"));
+        assert!(info.diagnostic.contains("ACP terminal persistence failed:"));
+        assert_eq!(info.recovery, crate::runtime_error::RecoveryMode::Manual);
+        assert!(
+            !guard.armed,
+            "a generic Drop failure must not replace the original error"
+        );
     }
 
     #[test]
@@ -4590,6 +4774,56 @@ mod tests {
     }
 
     #[test]
+    fn established_session_keeps_command_owned_auto_accept() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-auto-accept".to_string(),
+            operation_id: "operation-auto-accept".to_string(),
+            adapter_id: "claude-acp".to_string(),
+            adapter_display_name: "Claude".to_string(),
+            cwd: "C:/tmp/attempt".to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "follow up".to_string(),
+                quotes: Vec::new(),
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-08-21T10:00:00Z".to_string(),
+        };
+        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission).unwrap()
+        else {
+            panic!("auto accept command-owned test admission must start");
+        };
+        let owner = match super::claim_session_turn_for_execution(
+            &path,
+            &submission.turn_id,
+            started.revision,
+            &submission.operation_id,
+        )
+        .unwrap()
+        {
+            super::AcpTurnExecutionClaim::Claimed(owner) => owner,
+            claim => panic!("expected ownership claim, got {claim:?}"),
+        };
+        let mut stale_provider = load_session_metadata(&path, None).unwrap();
+        stale_provider.session_id = Some("session-existing".to_string());
+        stale_provider.availability = AcpSessionAvailability::Established;
+        stale_provider.live_turn_activity = AcpLiveTurnActivity::Running;
+        stale_provider.auto_accept = true;
+        let mut command_owned = read_json::<Value>(&path).unwrap();
+        command_owned["sessionId"] = json!("session-existing");
+        command_owned["autoAccept"] = json!(false);
+        write_json(&path, &command_owned).unwrap();
+
+        super::write_session_metadata_owned(&path, &stale_provider, &owner)
+            .unwrap()
+            .expect("same owner provider write must merge command Auto Accept");
+        let persisted = read_json::<Value>(&path).unwrap();
+
+        assert_eq!(persisted["autoAccept"], false);
+    }
+
+    #[test]
     fn live_tool_event_keeps_input_but_defers_output_and_provider_metadata() {
         let mut event = test_timeline_event("tool-1", 1, "");
         event.kind = "toolCall".to_string();
@@ -5285,6 +5519,75 @@ mod tests {
                 .and_then(|raw| raw.get("requestId"))
                 .and_then(|value| value.as_str()),
             Some("0")
+        );
+    }
+
+    #[test]
+    fn permission_request_event_overrides_conflicting_params_identity() {
+        let event = permission_request_event(
+            9,
+            "0".to_string(),
+            json!({
+                "requestId": "provider-display-id",
+                "_goldBandPermissionItemId": "permission-provider-supplied",
+                "sessionId": "session-123"
+            }),
+        );
+
+        assert_eq!(event.id, "0");
+        assert_eq!(event.raw.as_ref().unwrap()["requestId"], "0");
+        assert_ne!(
+            event.raw.as_ref().unwrap()["_goldBandPermissionItemId"],
+            "permission-provider-supplied"
+        );
+    }
+
+    #[test]
+    fn permission_timeline_identity_survives_transport_request_id_reuse() {
+        let params = |tool_call_id: &str| {
+            json!({
+                "sessionId": "session-123",
+                "toolCall": { "toolCallId": tool_call_id },
+                "options": [{ "optionId": "allow", "name": "Allow", "kind": "allow_once" }]
+            })
+        };
+        let first = permission_request_event(10, "0".to_string(), params("call-first"));
+        let second = permission_request_event(11, "0".to_string(), params("call-second"));
+        let first_identity = permission_timeline_item_id(&first);
+
+        assert_eq!(first_identity, permission_timeline_item_id(&first));
+        assert_ne!(first_identity, permission_timeline_item_id(&second));
+        assert!(first_identity.starts_with("permission-"));
+        assert_eq!(
+            first
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("requestId"))
+                .and_then(Value::as_str),
+            Some("0")
+        );
+        assert_eq!(
+            second
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("requestId"))
+                .and_then(Value::as_str),
+            Some("0")
+        );
+    }
+
+    #[test]
+    fn permission_timeline_identity_uses_durable_sequence_without_tool_call() {
+        let first = permission_request_event(10, "0".to_string(), json!({}));
+        let second = permission_request_event(11, "0".to_string(), json!({}));
+
+        assert_ne!(
+            permission_timeline_item_id(&first),
+            permission_timeline_item_id(&second)
+        );
+        assert_eq!(
+            permission_timeline_item_id(&first),
+            permission_timeline_item_id(&first)
         );
     }
 

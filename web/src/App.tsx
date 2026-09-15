@@ -1,4 +1,6 @@
 import { listen } from '@tauri-apps/api/event';
+import { applyAgentDiagnosticUpdate } from '@/lib/agent-diagnostic-update';
+import { setChannelAppName } from '@/lib/channel-app-name';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import {
@@ -133,6 +135,7 @@ import { RunModeManagementPage } from './pages/RunModeManagementPage';
 import { MulticaTaskManagementPage } from './pages/MulticaTaskManagementPage';
 import { ScheduledTaskManagementPage } from './pages/ScheduledTaskManagementPage';
 import { ScheduledTaskDetailPage } from './pages/ScheduledTaskDetailPage';
+import { scheduledTriggerTarget } from './lib/scheduled-task-navigation';
 import { PersonalAnalyticsPage } from './pages/PersonalAnalyticsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { createInitialCreateTaskDraft, TaskListPage, type CreateTaskDraftState } from './pages/TaskListPage';
@@ -232,6 +235,7 @@ import {
 } from '@/components/workspace/workspace-layout';
 import type {
   AgentRegistryVm,
+  ManagedAgentVm,
   AppBootstrapVm,
   AppConfigVm,
   AppInfoVm,
@@ -242,6 +246,7 @@ import type {
   ConversationRunModeVm,
   ConversationWorkLocation,
   ConversationRunVm,
+  ScheduledTriggerPayloadVm,
   ConversationSessionLeafVm,
   ConversationSessionTreeVm,
   ConversationTreeNodeVm,
@@ -481,6 +486,7 @@ export function App() {
   const [conversationRunCache] = useState(() => new ConversationRunCache());
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
+  const scheduledTriggerOpenRef = useRef<(payload: ScheduledTriggerPayloadVm) => void>(() => {});
 
   const conversationNavigationRequestRef = useRef(0);
   const presentedConversationPage = conversationPage;
@@ -939,6 +945,9 @@ export function App() {
   const showUpdatesSectionDot = availableUpdateVersion !== null;
   const appInfo = bootstrap?.appInfo ?? defaultAppInfo;
   const appConfig = bootstrap?.appConfig ?? defaultAppConfig;
+  useEffect(() => {
+    setChannelAppName(appInfo.appName);
+  }, [appInfo.appName]);
   const activeWorkspaceLayoutProfile = useMemo(
     () => workspaceLayoutProfileForSurface({
       uiMode,
@@ -1630,32 +1639,9 @@ export function App() {
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
     let active = true;
-    let refreshInFlight = false;
-    let refreshPending = false;
     let unlisten: (() => void) | undefined;
-
-    const refreshAgentRegistry = async () => {
-      if (refreshInFlight) {
-        refreshPending = true;
-        return;
-      }
-      refreshInFlight = true;
-      try {
-        const next = await getAgentRegistry();
-        if (active) setAgentRegistry(next);
-      } catch {
-        // The periodic/background diagnostic remains best-effort; manual refresh still surfaces errors.
-      } finally {
-        refreshInFlight = false;
-        if (active && refreshPending) {
-          refreshPending = false;
-          void refreshAgentRegistry();
-        }
-      }
-    };
-
-    void listen('gold-band://agent-registry-updated', () => {
-      if (active) void refreshAgentRegistry();
+    void listen<ManagedAgentVm>('gold-band://agent-registry-updated', ({ payload }) => {
+      if (active) setAgentRegistry(current => applyAgentDiagnosticUpdate(current, payload));
     }).then((dispose) => {
       if (active) {
         unlisten = dispose;
@@ -2220,6 +2206,14 @@ export function App() {
     }
   };
 
+  useEffect(() => {
+    const openTrigger = (event: Event) => {
+      scheduledTriggerOpenRef.current((event as CustomEvent<ScheduledTriggerPayloadVm>).detail);
+    };
+    window.addEventListener('gold-band:scheduled-trigger-open', openTrigger);
+    return () => window.removeEventListener('gold-band:scheduled-trigger-open', openTrigger);
+  }, []);
+
   function onSelectConversation(page: ConversationPage) {
     setWorkspacePickerOpen(false);
     setUiMode('conversation');
@@ -2292,6 +2286,11 @@ export function App() {
     }
     pushRoute(primaryModule, taskPage, page);
   }
+
+  scheduledTriggerOpenRef.current = (payload) => {
+    const target = scheduledTriggerTarget(payload);
+    if (target) onSelectConversation(target);
+  };
 
   const content = uiMode === 'conversation'
     ? renderConversationContent()
@@ -2809,7 +2808,7 @@ export function App() {
       return <ScheduledTaskManagementPage projectId={defaultProjectId} onCreate={() => onSelectConversation({ kind: 'scheduled-task-create' })} onOpenDetail={(task) => onSelectConversation({ kind: 'scheduled-task-detail', projectId: task.projectId, scheduledTaskId: task.id })} />;
     }
     if (conversationPage.kind === 'scheduled-task-detail') {
-      return <ScheduledTaskDetailPage projectId={conversationPage.projectId} scheduledTaskId={conversationPage.scheduledTaskId} onBack={() => onSelectConversation({ kind: 'scheduled-tasks' })} onOpenOccurrence={onSelectConversation} />;
+      return <ScheduledTaskDetailPage projectId={conversationPage.projectId} scheduledTaskId={conversationPage.scheduledTaskId} taskId={conversationPage.taskId} runId={conversationPage.runId} occurrenceId={conversationPage.occurrenceId} onBack={() => onSelectConversation({ kind: 'scheduled-tasks' })} onOpenOccurrence={onSelectConversation} />;
     }
     if (conversationPage.kind === 'run-mode-management') {
       return (

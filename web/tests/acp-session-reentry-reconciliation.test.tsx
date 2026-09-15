@@ -63,6 +63,7 @@ vi.mock('@/api', async () => {
     getAcpActivityDetail: vi.fn(),
     getAcpSession: vi.fn(),
     submitConversationPrompt: vi.fn(),
+    submitManualCheck: vi.fn(),
   };
 });
 
@@ -72,7 +73,12 @@ vi.mock('@/components/prompt-kit/markdown', () => ({
   ),
 }));
 
-import { getAcpActivityDetail, getAcpSession, submitConversationPrompt } from '@/api';
+import { getAcpActivityDetail, getAcpSession, submitConversationPrompt, submitManualCheck } from '@/api';
+import { ConversationRunPage } from '@/pages/ConversationRunPage';
+import { RightWorkspaceProvider } from '@/components/workspace/right-workspace-context';
+import { GitBranchPickerSnapshotProvider } from '@/components/git/GitBranchPickerSnapshotContext';
+import { mockBootstrap } from '@/mockData';
+import type { ConversationRunVm } from '@/types';
 import { detachConversationViewport } from './acp/detach-conversation-viewport';
 import {
   ACPChatDialog,
@@ -423,6 +429,126 @@ afterEach(() => {
 });
 
 describe('ACP session re-entry reconciliation', () => {
+  it.each([
+    { outcome: 'success', arrival: 'body' },
+    { outcome: 'failure', arrival: 'body' },
+    { outcome: 'success', arrival: 'empty-then-live' },
+    { outcome: 'failure', arrival: 'empty-then-live' },
+  ] as const)('loads a manual-check successor independently of the previous reading window ($outcome, $arrival)', async ({ outcome, arrival }) => {
+    const previous = session([event('checked-answer', 1, 'textDelta', 'Review this completed node')], 'completed');
+    const successorLocator = { ...locator, nodeId: 'successor' };
+    const successor = { ...session([event('successor-answer', 1, 'textDelta', 'Successor content is visible', {
+      sessionId: 'successor-session',
+    })]), nodeId: successorLocator.nodeId, sessionId: 'successor-session' };
+    let resolveSuccessor!: (value: AcpSessionVm) => void;
+    const pendingSuccessor = new Promise<AcpSessionVm>((resolve) => { resolveSuccessor = resolve; });
+    vi.mocked(getAcpSession).mockImplementation(async (...args) => args[4] === locator.nodeId ? previous : pendingSuccessor);
+    vi.mocked(submitManualCheck).mockResolvedValue({
+      id: locator.runId, taskId: locator.taskId, status: 'running', startedAt: '', updatedAt: '', resumable: false,
+      currentRound: locator.roundId, currentNode: successorLocator.nodeId, currentAttempt: locator.attemptId,
+    });
+    const oldLifecycle = terminalLifecycle('check-turn');
+    oldLifecycle.runtime.pauseReason = 'waiting-for-user-input';
+    const nextLifecycle = activePermissionLifecycle('next-turn');
+    nextLifecycle.acp.liveTurnActivity = 'running';
+    nextLifecycle.control.mode = 'runtime-controlled';
+    const leaf = {
+      ...locator, pathLabel: 'Check', status: 'paused', current: true, manualCheckPending: true,
+      sessionEstablished: true, sessionId: previous.sessionId, lifecycle: oldLifecycle,
+      runtimeDisplay: oldLifecycle.runtimeDisplay, artifactCount: 0, attachmentCount: 0,
+    };
+    const nextLeaf = { ...leaf, ...successorLocator, pathLabel: 'Successor', status: 'running',
+      manualCheckPending: false, sessionEstablished: true, sessionId: successor.sessionId, lifecycle: nextLifecycle,
+      runtimeDisplay: nextLifecycle.runtimeDisplay };
+    const initial = {
+      ...locator, runMode: 'workflow', runStatus: 'paused', activeSessions: [], inputAttachments: [],
+      selectedSession: previous, workflowValid: true, workflowStatus: 'valid',
+      workflowGraph: { nodes: [], edges: [] },
+      sessionTree: {
+        selectedSessionKey: `${locator.roundId}/${locator.nodeId}/${locator.attemptId}`,
+        rounds: [{ roundId: locator.roundId, index: 1, label: 'Round', status: 'paused', nodes: [
+          { nodeId: locator.nodeId, label: 'Check', nodeType: 'worker', status: 'paused', attempts: [leaf] },
+        ] }],
+      },
+    } as unknown as ConversationRunVm;
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    let publishNextSummary!: () => void;
+    function RunHarness() {
+      const [run, setRun] = React.useState(initial);
+      const [mode, setMode] = React.useState<'auto' | 'manual'>('auto');
+      publishNextSummary = () => setRun({
+        ...initial, runStatus: 'running', selectedSession: null,
+        sessionTree: { selectedSessionKey: `${locator.roundId}/successor/${locator.attemptId}`, rounds: [{
+          ...initial.sessionTree.rounds[0], nodes: [{ nodeId: 'successor', label: 'Successor', nodeType: 'worker',
+            status: 'running', attempts: [nextLeaf] }],
+        }] },
+      });
+      return <RightWorkspaceProvider><GitBranchPickerSnapshotProvider><TooltipProvider>
+        <ConversationRunPage run={run} taskTitle="Manual check" appConfig={mockBootstrap.appConfig}
+          agentRegistry={null} followMode={mode} onAutoFollowChange={(follow) => setMode(follow ? 'auto' : 'manual')}
+          onRerun={() => {}} onEditWorkflow={() => {}} initialSessionTreeExpansion={{}} onSessionTreeExpansionChange={() => {}}
+          onSelectSession={() => {
+            setMode('auto');
+            setRun({ ...initial, selectedSession: null,
+              sessionTree: { ...initial.sessionTree, selectedSessionKey: `${locator.roundId}/successor/${locator.attemptId}` } });
+          }} />
+      </TooltipProvider></GitBranchPickerSnapshotProvider></RightWorkspaceProvider>;
+    }
+    await act(async () => root.render(<RunHarness />));
+    try {
+      await detachConversationViewport(container);
+      const label = outcome === 'success' ? '成功' : '失败';
+      const translationKey = outcome === 'success' ? 'acp.manualCheckSuccess' : 'acp.manualCheckFailure';
+      const decision = [...container.querySelectorAll('button')].find(button =>
+        button.textContent === label || button.textContent === translationKey);
+      expect(decision).toBeDefined();
+      await act(async () => decision!.click());
+      expect(vi.mocked(submitManualCheck)).toHaveBeenCalledWith(
+        locator.projectId, locator.taskId, locator.runId, locator.roundId, locator.nodeId, locator.attemptId, outcome,
+      );
+      await act(async () => publishNextSummary());
+      expect(vi.mocked(getAcpSession).mock.calls.some(args => args[4] === 'successor')).toBe(true);
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      await act(async () => resolveSuccessor(arrival === 'body' ? successor : {
+        ...successor, sessionId: null, status: 'pending', events: [],
+        eventPage: { ...session([]).eventPage, generation: 0 },
+      }));
+      if (arrival === 'empty-then-live') {
+        let finishCanonicalRead!: (value: AcpSessionVm) => void;
+        vi.mocked(getAcpSession).mockReturnValue(new Promise(resolve => { finishCanonicalRead = resolve; }));
+        await act(async () => {
+          runtime.listener?.({ ...successorLocator, branchId: 'root', timelineGeneration: 1, timelineRevision: 1,
+            event: successor.events[0] });
+          runtime.listener?.({ ...successorLocator, branchId: 'root', timelineGeneration: 1, timelineRevision: 1,
+            session: successor });
+          await new Promise(resolve => setTimeout(resolve, 200));
+        });
+        const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+          .find(element => element.classList.contains('h-full') && element.classList.contains('overflow-y-auto'));
+        expect(scroller).toBeDefined();
+        await act(async () => {
+          scroller!.dispatchEvent(new Event('scroll'));
+          await new Promise(resolve => requestAnimationFrame(resolve));
+        });
+        expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+        await act(async () => finishCanonicalRead(successor));
+      }
+      expect(container.textContent).toContain('Successor content is visible');
+      expect(container.textContent).not.toContain('Review this completed node');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+      const visibleMessage = [...container.querySelectorAll('[data-testid="markdown"]')]
+        .find(element => element.textContent === 'Successor content is visible');
+      expect(visibleMessage).toBeDefined();
+      await act(async () => publishNextSummary());
+      expect(visibleMessage!.isConnected).toBe(true);
+      expect(container.textContent).toContain('Successor content is visible');
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('rejoins deferred single-page content when sending without a pagination gesture', async () => {
     const initial = session([event('single-old', 1, 'textDelta', 'Single page original reply')], 'completed');
     const deferred = event('single-deferred', 2, 'textDelta', 'Single page deferred reply');

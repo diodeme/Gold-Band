@@ -18,6 +18,8 @@ function baseProps(overrides: Partial<ComposerProps> = {}): ComposerProps {
   return {
     prompt: '',
     onPromptChange: vi.fn(),
+    onHistoryTextCommit: vi.fn(),
+    canSubmitHistory: true,
     onSubmit: vi.fn(),
     sending: false,
     attachments: [],

@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::warn;
 use walkdir::WalkDir;
 
+use crate::channel::{RELEASE_CHANNEL, WB_CHANNEL};
 use crate::config::DesktopLanguage;
 use crate::frontmatter::{
     FrontmatterUpdate, parse_frontmatter_document, parse_optional_frontmatter_document,
@@ -166,6 +167,7 @@ impl LocalizedProfileText {
 struct DefaultProfileSeed {
     key: &'static str,
     id: &'static str,
+    release_channel: Option<&'static str>,
     name: LocalizedProfileText,
     summary: LocalizedProfileText,
     dynamic_template: bool,
@@ -234,6 +236,7 @@ impl ProfileCommandError {
 const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     DefaultProfileSeed {
         key: "plan",
+        release_channel: None,
         id: "pf-builtin-plan",
         name: LocalizedProfileText {
             zh_cn: "方案",
@@ -247,6 +250,7 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     },
     DefaultProfileSeed {
         key: "dev",
+        release_channel: None,
         id: "pf-builtin-dev",
         name: LocalizedProfileText {
             zh_cn: "开发",
@@ -260,6 +264,7 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     },
     DefaultProfileSeed {
         key: "dev-test",
+        release_channel: None,
         id: "pf-builtin-dev-test",
         name: LocalizedProfileText {
             zh_cn: "开发测试",
@@ -273,6 +278,7 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     },
     DefaultProfileSeed {
         key: "review",
+        release_channel: None,
         id: "pf-builtin-review",
         name: LocalizedProfileText {
             zh_cn: "审查",
@@ -286,6 +292,7 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     },
     DefaultProfileSeed {
         key: "test",
+        release_channel: None,
         id: "pf-builtin-test",
         name: LocalizedProfileText {
             zh_cn: "测试",
@@ -299,6 +306,7 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     },
     DefaultProfileSeed {
         key: "accept",
+        release_channel: None,
         id: "pf-builtin-accept",
         name: LocalizedProfileText {
             zh_cn: "验收",
@@ -312,6 +320,7 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     },
     DefaultProfileSeed {
         key: "cicd",
+        release_channel: Some(WB_CHANNEL),
         id: "pf-builtin-cicd",
         name: LocalizedProfileText {
             zh_cn: "CI/CD",
@@ -325,6 +334,7 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     },
     DefaultProfileSeed {
         key: "cleanup",
+        release_channel: None,
         id: "pf-builtin-cleanup",
         name: LocalizedProfileText {
             zh_cn: "清理",
@@ -338,6 +348,7 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     },
     DefaultProfileSeed {
         key: "interview",
+        release_channel: None,
         id: "pf-builtin-interview",
         name: LocalizedProfileText {
             zh_cn: "访谈",
@@ -351,6 +362,7 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     },
     DefaultProfileSeed {
         key: "grill",
+        release_channel: None,
         id: "pf-builtin-grill",
         name: LocalizedProfileText {
             zh_cn: "拷问",
@@ -364,9 +376,21 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     },
 ];
 
+fn default_profile_seeds_for_channel(
+    channel: &str,
+) -> impl Iterator<Item = &'static DefaultProfileSeed> + '_ {
+    DEFAULT_PROFILE_SEEDS.iter().filter(move |seed| {
+        seed.release_channel
+            .is_none_or(|required| required == channel)
+    })
+}
+
+fn available_default_profile_seeds() -> impl Iterator<Item = &'static DefaultProfileSeed> {
+    default_profile_seeds_for_channel(RELEASE_CHANNEL)
+}
+
 pub(crate) fn ensure_default_user_profiles(_paths: &GoldBandPaths) -> Result<DefaultProfileIds> {
-    let by_key = DEFAULT_PROFILE_SEEDS
-        .iter()
+    let by_key = available_default_profile_seeds()
         .map(|seed| (seed.key.to_string(), seed.id.to_string()))
         .collect();
     Ok(DefaultProfileIds { by_key })
@@ -761,9 +785,7 @@ pub(crate) fn find_profile_by_id(
 }
 
 fn built_in_profiles(language: DesktopLanguage) -> Vec<ProfileEntry> {
-    DEFAULT_PROFILE_SEEDS
-        .iter()
-        .filter(|seed| seed.key != "cicd" || crate::memory::is_wb())
+    available_default_profile_seeds()
         .map(|seed| ProfileEntry {
             id: seed.id.to_string(),
             name: seed.name.value(language).to_string(),
@@ -781,9 +803,7 @@ fn built_in_profiles(language: DesktopLanguage) -> Vec<ProfileEntry> {
 }
 
 fn built_in_profile_by_id(id: &str, language: DesktopLanguage) -> Option<ProfileEntry> {
-    DEFAULT_PROFILE_SEEDS
-        .iter()
-        .filter(|seed| seed.key != "cicd" || crate::memory::is_wb())
+    available_default_profile_seeds()
         .find(|seed| seed.id == id)
         .map(|seed| ProfileEntry {
             id: seed.id.to_string(),
@@ -1281,7 +1301,7 @@ profile body
         assert_eq!(by_id["pf-builtin-test"], false);
         assert_eq!(
             by_id.get("pf-builtin-cicd"),
-            crate::memory::is_wb().then_some(&false)
+            (RELEASE_CHANNEL == WB_CHANNEL).then_some(&false)
         );
         assert_eq!(by_id["pf-builtin-accept"], false);
         assert_eq!(by_id["pf-builtin-cleanup"], false);
@@ -1298,7 +1318,6 @@ profile body
             ("pf-builtin-dev-test", "开发测试", "Development and Testing"),
             ("pf-builtin-review", "审查", "Review"),
             ("pf-builtin-test", "测试", "Testing"),
-            ("pf-builtin-cicd", "CI/CD", "CI/CD"),
             ("pf-builtin-accept", "验收", "Acceptance"),
             ("pf-builtin-cleanup", "清理", "Cleanup"),
             ("pf-builtin-interview", "访谈", "Interview"),
@@ -1306,15 +1325,6 @@ profile body
         ];
 
         for (id, zh_name, en_name) in expected {
-            if id == "pf-builtin-cicd" && !crate::memory::is_wb() {
-                assert!(
-                    !zh_profiles
-                        .iter()
-                        .chain(&en_profiles)
-                        .any(|profile| profile.id == id)
-                );
-                continue;
-            }
             let zh = zh_profiles
                 .iter()
                 .find(|profile| profile.id == id)
@@ -1328,6 +1338,37 @@ profile body
             assert_eq!(zh.name, zh_name);
             assert_eq!(en.name, en_name);
             assert_ne!(zh.summary, en.summary);
+        }
+    }
+
+    #[test]
+    fn built_in_profiles_reject_update_and_delete_in_every_channel() {
+        // 渠道目录只决定哪些内置角色可见；在当前渠道可见的内置角色都必须只读。
+        let tmp = tempfile::tempdir().unwrap();
+        let paths =
+            GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap());
+        let built_ins = built_in_profiles(DesktopLanguage::ZhCn);
+        assert!(!built_ins.is_empty());
+        for profile in built_ins {
+            let input = ProfileInput {
+                name: "Edited role".to_string(),
+                summary: "Edited role".to_string(),
+                content: "Edited content".to_string(),
+                dynamic_template: false,
+            };
+            for error in [
+                update_profile(&paths, &profile.id, input).unwrap_err(),
+                delete_profile(&paths, &profile.id).unwrap_err(),
+            ] {
+                assert!(
+                    matches!(
+                        error.downcast_ref::<ProfileCommandError>(),
+                        Some(ProfileCommandError::ReadonlyBuiltIn)
+                    ),
+                    "built-in profile `{}` must reject writes",
+                    profile.id
+                );
+            }
         }
     }
 
@@ -1347,21 +1388,72 @@ profile body
     }
 
     #[test]
+    fn channel_profile_catalog_preserves_shared_roles_and_restricts_cicd() {
+        for channel in ["default", "wb", "enterprise", ""] {
+            let profiles = default_profile_seeds_for_channel(channel).collect::<Vec<_>>();
+            assert_eq!(profiles.len(), if channel == "wb" { 10 } else { 9 });
+            assert_eq!(
+                profiles.iter().any(|seed| seed.id == "pf-builtin-cicd"),
+                channel == "wb"
+            );
+            for seed in DEFAULT_PROFILE_SEEDS
+                .iter()
+                .filter(|seed| seed.release_channel.is_none())
+            {
+                assert!(profiles.iter().any(|available| available.id == seed.id));
+            }
+        }
+    }
+
+    #[test]
+    fn cicd_profile_availability_matches_build_channel() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths =
+            GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap());
+        let available = RELEASE_CHANNEL == WB_CHANNEL;
+        for language in [DesktopLanguage::ZhCn, DesktopLanguage::En] {
+            let list = list_profiles(&paths, language).unwrap();
+            assert_eq!(
+                list.profiles
+                    .iter()
+                    .any(|profile| profile.id == "pf-builtin-cicd"),
+                available,
+                "CI/CD must only be listed in the wb build channel"
+            );
+            assert_eq!(
+                find_profile_by_id(&paths, "pf-builtin-cicd", language)
+                    .unwrap()
+                    .is_some(),
+                available
+            );
+            assert_eq!(
+                show_profile(&paths, "pf-builtin-cicd", language).is_ok(),
+                available
+            );
+            assert!(show_profile(&paths, "pf-builtin-dev", language).is_ok());
+            let resolved = crate::app::profile_resolver::resolve_profile(
+                &paths,
+                "cicd-node",
+                "pf-builtin-cicd",
+                language,
+            );
+            assert_eq!(resolved.is_ok(), available);
+        }
+        let ids = ensure_default_user_profiles(&paths).unwrap();
+        assert_eq!(ids.get("cicd"), available.then_some("pf-builtin-cicd"));
+        assert_eq!(ids.get("dev"), Some("pf-builtin-dev"));
+    }
+
+    #[test]
     fn cicd_profile_interfaces_return_localized_builtin_content_without_enabling_default_execution()
     {
         let tmp = tempfile::tempdir().unwrap();
         let paths =
             GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().join("repo")).unwrap());
         let id = "pf-builtin-cicd";
-        if !crate::memory::is_wb() {
+        if RELEASE_CHANNEL != WB_CHANNEL {
             assert!(show_profile(&paths, id, DesktopLanguage::ZhCn).is_err());
-            assert!(
-                !list_profiles(&paths, DesktopLanguage::ZhCn)
-                    .unwrap()
-                    .profiles
-                    .iter()
-                    .any(|profile| profile.id == id)
-            );
+            assert!(show_profile(&paths, id, DesktopLanguage::En).is_err());
             return;
         }
         for (language, content) in [
@@ -1384,6 +1476,14 @@ profile body
             assert!(!shown.dynamic_template);
             assert_eq!(shown.path, "builtin://profiles/cicd");
         }
+        assert_ne!(
+            show_profile(&paths, id, DesktopLanguage::ZhCn)
+                .unwrap()
+                .summary,
+            show_profile(&paths, id, DesktopLanguage::En)
+                .unwrap()
+                .summary
+        );
 
         let input = ProfileInput {
             name: "CI/CD".to_string(),
@@ -1418,13 +1518,15 @@ profile body
 
     #[test]
     fn cicd_profile_requires_interactive_build_and_deploy_without_automatic_extras() {
-        for (language, clauses) in [
+        for (content, clauses) in [
             (
-                DesktopLanguage::ZhCn,
+                PROFILE_CICD_ZH_CN,
                 [
                     "默认任务是构建 + 部署",
                     "默认推荐按构建部署",
                     "两种部署方式都必须与用户交互确认",
+                    "每次 run 都必须重新确认构建和部署参数",
+                    "不能复用上一次 run 的确认",
                     "未选择的附加操作不执行，也不影响构建部署任务完成",
                     "工作空间与任务记忆统一使用字符串 `key/value/desc` 条目",
                     "`wetest <cmd> --help` 动态发现",
@@ -1433,11 +1535,13 @@ profile body
                 ],
             ),
             (
-                DesktopLanguage::En,
+                PROFILE_CICD_EN,
                 [
                     "The default task is build + deploy",
                     "Recommend deployment from a build by default",
                     "Both deployment modes require interactive confirmation with the user",
+                    "Every run must freshly confirm its build and deployment parameters",
+                    "A confirmation from a previous run cannot be reused",
                     "Unselected optional operations are not executed and do not block completion of build and deployment",
                     "Workspace and task memory share string `key/value/desc` entries",
                     "dynamically discover it with `wetest <cmd> --help`",
@@ -1446,7 +1550,6 @@ profile body
                 ],
             ),
         ] {
-            let content = built_in_profile_content("cicd", language);
             for clause in clauses {
                 assert!(content.contains(clause), "missing CI/CD contract: {clause}");
             }
@@ -1454,17 +1557,41 @@ profile body
     }
 
     #[test]
-    fn cicd_profiles_share_parameter_keys() {
+    fn cicd_profiles_share_task_build_and_subsystem_deployment_keys() {
         let keys = |content: &str| {
             content
                 .lines()
-                .filter(|line| line.starts_with("| `cicd.<S>."))
+                .filter(|line| line.starts_with("| `cicd."))
                 .map(|line| line.split('|').nth(1).unwrap().trim().to_owned())
                 .collect::<Vec<_>>()
         };
         let zh = keys(PROFILE_CICD_ZH_CN);
-        assert_eq!(zh.len(), 13);
+        assert_eq!(zh.len(), 14);
         assert_eq!(zh, keys(PROFILE_CICD_EN));
+        assert_eq!(
+            zh,
+            [
+                "`cicd.build.jobId`",
+                "`cicd.build.branch`",
+                "`cicd.build.appList`",
+                "`cicd.build.appCoverage`",
+                "`cicd.deploy.<S>.selected`",
+                "`cicd.deploy.<S>.mode`",
+                "`cicd.deploy.<S>.templateId`",
+                "`cicd.deploy.<S>.templateName`",
+                "`cicd.deploy.<S>.deployType`",
+                "`cicd.deploy.<S>.env`",
+                "`cicd.deploy.<S>.ips`",
+                "`cicd.deploy.<S>.containers`",
+                "`cicd.deploy.<S>.pkgNames`",
+                "`cicd.deploy.<S>.inputParams`",
+            ]
+        );
+        for content in [PROFILE_CICD_ZH_CN, PROFILE_CICD_EN] {
+            assert!(!content.contains("Current-task `memory.json`"));
+            assert!(!content.contains("当前 task 的 `memory.json`"));
+            assert!(!content.contains("\"targets\""));
+        }
     }
 
     fn run_import(

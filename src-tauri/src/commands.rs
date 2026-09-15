@@ -1,11 +1,10 @@
 use gold_band::acp::client;
 use gold_band::acp::commands::{AcpCommandCatalog, parse_available_commands};
-use gold_band::acp::elicitation::{ElicitationAction, write_elicitation_response};
+use gold_band::acp::elicitation::ElicitationAction;
 use gold_band::acp::events::{
     AcpTurnExecutionClaim, AcpUiEvent, compact_live_conversation_event, current_timestamp,
     load_session_metadata,
 };
-use gold_band::acp::permission::{PendingPermissionState, write_permission_response_if_pending};
 use gold_band::acp::prompt_queue::{
     AUTO_DISPATCH_USER_PRIORITY_GRACE_MS, AutoClaimResult, PromptQueueError,
     TerminalDispatchRecovery, auto_dispatch_is_suspended, claim_next_for_auto_dispatch,
@@ -18,6 +17,10 @@ use gold_band::acp::prompt_queue::{
 use gold_band::acp::turn_files::{
     ATTACHMENT_ACCESS_DENIED, ATTACHMENT_NOT_FOUND, CHANGE_SET_NOT_FOUND, TurnFileChangeSet,
     TurnFileStore, VERSION_NOT_FOUND,
+};
+use gold_band::app::intervention::{
+    InterventionAction, InterventionCommand, InterventionCommandResult, InterventionCommandService,
+    InterventionError, InterventionLocator, InterventionRequestIdentity,
 };
 use gold_band::app::{
     AcpPromptLifecycleEvent, AcpTurnBatchProgress, AcpTurnOutcome, App, AutoTemplate,
@@ -178,7 +181,8 @@ where
         })?
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct AttemptLocator {
     task_id: String,
     run_id: String,
@@ -872,6 +876,7 @@ fn emit_acp_turn_finished(
     app.emit_lifecycle_event(RuntimeLifecycleEvent::AcpTurnFinished {
         event_id: gold_band::app::make_turn_dedup_key(
             &app.paths.project_id,
+            &locator.task_id,
             &locator.run_id,
             &locator.round_id,
             &locator.node_id,
@@ -1514,7 +1519,7 @@ pub(crate) fn acp_live_update_emitter_for_app(
     )
 }
 
-fn resolve_command_app_with_emitters(
+pub(crate) fn resolve_command_app_with_emitters(
     app_handle: &AppHandle,
     state: &DesktopState,
     project_id: Option<&str>,
@@ -1553,8 +1558,307 @@ impl std::ops::Deref for ConfiguredConversationApp {
 }
 
 impl ConfiguredConversationApp {
-    fn into_inner(self) -> App {
+    pub(crate) fn into_inner(self) -> App {
         self.0
+    }
+}
+
+pub(crate) async fn execute_manual_check_intervention(
+    state: &DesktopState,
+    app: ConfiguredConversationApp,
+    command: InterventionCommand,
+) -> CommandResult<(InterventionCommandResult, RunState)> {
+    let task_id = command.locator.task_id.clone();
+    let run_id = command.locator.run_id.clone();
+    let round_id = command.locator.round_id.clone();
+    let attempt_id = command.locator.attempt_id.clone();
+    let service = InterventionCommandService::new(&app);
+    let prepared = service
+        .prepare_manual_check(command)
+        .map_err(intervention_command_error)?;
+    let resumed_occurrence_id =
+        resume_scheduled_interaction(state, &app, &task_id, &run_id, &round_id, &attempt_id)
+            .await?;
+    let app = app
+        .into_inner()
+        .with_scheduled_occurrence_id(resumed_occurrence_id);
+    InterventionCommandService::new(&app)
+        .commit_manual_check_background(prepared)
+        .map_err(intervention_command_error)
+}
+
+pub(crate) async fn execute_permission_intervention(
+    app_handle: AppHandle,
+    state: &DesktopState,
+    app: &App,
+    project_id: Option<String>,
+    command: InterventionCommand,
+) -> CommandResult<(InterventionCommandResult, Option<AcpSessionVm>)> {
+    let task_id = command.locator.task_id.clone();
+    let run_id = command.locator.run_id.clone();
+    let round_id = command.locator.round_id.clone();
+    let node_id = command.locator.node_id.clone();
+    let attempt_id = command.locator.attempt_id.clone();
+    let outer_node_id = command.locator.outer_node_id.clone();
+    let outer_attempt_id = command.locator.outer_attempt_id.clone();
+    let service = InterventionCommandService::new(app);
+    let mut late_result = None;
+    let command = match service.inspect_for_command(&command) {
+        Ok(snapshot) => Some(InterventionCommand {
+            expected_state: if command.expected_state.is_empty() {
+                snapshot.expected_state
+            } else {
+                command.expected_state
+            },
+            expires_at_ms: snapshot.expires_at_ms,
+            ..command
+        }),
+        Err(error) => {
+            late_result = recovered_permission_result(app, &command);
+            if late_result.is_some() {
+                None
+            } else {
+                return Err(intervention_command_error(error));
+            }
+        }
+    };
+    if command.is_some() {
+        resume_scheduled_interaction(state, app, &task_id, &run_id, &round_id, &attempt_id).await?;
+    }
+    let result = match (command, late_result) {
+        (Some(command), _) => {
+            let resume_cause = gold_band::app::observability::ResumeCause::PermissionResolved;
+            app.record_metrics_resume_cause(&task_id, &run_id, resume_cause);
+            let result = InterventionCommandService::new(app).execute(command);
+            if result.is_err() {
+                app.clear_metrics_resume_cause(&task_id, &run_id, resume_cause);
+            }
+            result
+        }
+        (None, Some(result)) => Ok(result),
+        (None, None) => unreachable!("permission late result absence was handled above"),
+    };
+    if let Err(error) = result {
+        return Err(intervention_command_error(error));
+    }
+    let session = if let (Some(outer_node_id), Some(outer_attempt_id)) =
+        (outer_node_id.as_deref(), outer_attempt_id.as_deref())
+    {
+        dynamic_acp_session_vm(
+            app,
+            &task_id,
+            &run_id,
+            &round_id,
+            outer_node_id,
+            outer_attempt_id,
+            &node_id,
+            &attempt_id,
+            None,
+            None,
+        )
+        .map_err(command_error)?
+    } else {
+        acp_session_vm(
+            app,
+            &task_id,
+            &run_id,
+            &round_id,
+            &node_id,
+            &attempt_id,
+            None,
+            None,
+        )
+        .map_err(command_error)?
+    };
+    emit_acp_session_update(
+        &app_handle,
+        app,
+        project_id,
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outer_node_id.clone(),
+        outer_attempt_id.clone(),
+        session.clone(),
+    );
+    spawn_index_attempt(
+        state,
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outer_node_id.as_deref(),
+        outer_attempt_id.as_deref(),
+    );
+    Ok((
+        result.expect("permission execution error was handled"),
+        session,
+    ))
+}
+
+pub(crate) async fn execute_elicitation_intervention(
+    app_handle: AppHandle,
+    state: &DesktopState,
+    app: &App,
+    project_id: Option<String>,
+    command: InterventionCommand,
+) -> Result<InterventionCommandResult, InterventionError> {
+    let task_id = command.locator.task_id.clone();
+    let run_id = command.locator.run_id.clone();
+    let round_id = command.locator.round_id.clone();
+    let node_id = command.locator.node_id.clone();
+    let attempt_id = command.locator.attempt_id.clone();
+    let outer_node_id = command.locator.outer_node_id.clone();
+    let outer_attempt_id = command.locator.outer_attempt_id.clone();
+    let finish = |app: &App| {
+        let session =
+            if let (Some(on), Some(oa)) = (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
+                crate::view_models::dynamic_acp_session_vm(
+                    app,
+                    &task_id,
+                    &run_id,
+                    &round_id,
+                    on,
+                    oa,
+                    &node_id,
+                    &attempt_id,
+                    None,
+                    None,
+                )
+                .ok()
+                .flatten()
+            } else {
+                crate::view_models::acp_session_vm(
+                    app,
+                    &task_id,
+                    &run_id,
+                    &round_id,
+                    &node_id,
+                    &attempt_id,
+                    None,
+                    None,
+                )
+                .ok()
+                .flatten()
+            };
+        emit_acp_session_update(
+            &app_handle,
+            app,
+            project_id.clone(),
+            &task_id,
+            &run_id,
+            &round_id,
+            &node_id,
+            &attempt_id,
+            outer_node_id.clone(),
+            outer_attempt_id.clone(),
+            session,
+        );
+        spawn_index_attempt(
+            state,
+            &task_id,
+            &run_id,
+            &round_id,
+            &node_id,
+            &attempt_id,
+            outer_node_id.as_deref(),
+            outer_attempt_id.as_deref(),
+        );
+    };
+    execute_elicitation_intervention_boundary(state, app, command, finish).await
+}
+
+async fn execute_elicitation_intervention_boundary(
+    state: &DesktopState,
+    app: &App,
+    command: InterventionCommand,
+    finish: impl Fn(&App),
+) -> Result<InterventionCommandResult, InterventionError> {
+    let task_id = command.locator.task_id.clone();
+    let run_id = command.locator.run_id.clone();
+    let round_id = command.locator.round_id.clone();
+    let attempt_id = command.locator.attempt_id.clone();
+
+    let service = InterventionCommandService::new(app);
+    let command = match service.inspect_for_command(&command) {
+        Ok(snapshot) => InterventionCommand {
+            expected_state: if command.expected_state.is_empty() {
+                snapshot.expected_state
+            } else {
+                command.expected_state
+            },
+            expires_at_ms: snapshot.expires_at_ms,
+            ..command
+        },
+        Err(error)
+            if error.code
+                == gold_band::app::intervention::InterventionErrorCode::InterventionAlreadyHandled
+                || error.code
+                    == gold_band::app::intervention::InterventionErrorCode::InterventionRequestNotFound
+                || error.code
+                    == gold_band::app::intervention::InterventionErrorCode::InterventionRevisionConflict =>
+        {
+            let already_applied = recovered_elicitation_result(app, &command);
+            finish(app);
+            if let Some(result) = already_applied {
+                return Ok(result);
+            }
+            return Err(error);
+        }
+        Err(error) => {
+            finish(app);
+            return Err(error);
+        }
+    };
+
+    // Reclaim before the response file becomes visible; the ACP waiter can
+    // consume the signal immediately after shared execute.
+    if let Err(error) =
+        resume_scheduled_interaction(state, app, &task_id, &run_id, &round_id, &attempt_id).await
+    {
+        return Err(InterventionError::from_command_error(
+            error.code,
+            error.params,
+        ));
+    }
+    let resume_cause = gold_band::app::observability::ResumeCause::ElicitationResolved;
+    app.record_metrics_resume_cause(&task_id, &run_id, resume_cause);
+    let result = InterventionCommandService::new(app).execute(command);
+    if let Err(error) = result {
+        app.clear_metrics_resume_cause(&task_id, &run_id, resume_cause);
+        finish(app);
+        return Err(error);
+    }
+    finish(app);
+    result
+}
+
+pub(crate) async fn execute_intervention_command(
+    app_handle: AppHandle,
+    state: &DesktopState,
+    app: ConfiguredConversationApp,
+    project_id: Option<String>,
+    command: InterventionCommand,
+) -> Result<InterventionCommandResult, InterventionError> {
+    match command.action {
+        InterventionAction::PermissionOption { .. } => {
+            execute_permission_intervention(app_handle, state, &app, project_id, command)
+                .await
+                .map(|(result, _)| result)
+                .map_err(|error| InterventionError::from_command_error(error.code, error.params))
+        }
+        InterventionAction::ManualCheck { .. } => {
+            execute_manual_check_intervention(state, app, command)
+                .await
+                .map(|(result, _)| result)
+                .map_err(|error| InterventionError::from_command_error(error.code, error.params))
+        }
+        InterventionAction::Elicitation { .. } => {
+            execute_elicitation_intervention(app_handle, state, &app, project_id, command).await
+        }
     }
 }
 
@@ -1740,7 +2044,7 @@ fn direct_prompt_queue_drain_app(app: &App) -> App {
 }
 
 fn queued_user_turn_app(app: &App) -> App {
-    app.clone_for_background().without_scheduled_turn_context()
+    app.clone_for_background().as_turn()
 }
 
 fn schedule_direct_prompt_queue_drain(
@@ -2057,6 +2361,229 @@ pub(crate) async fn validate_runtime_workspace_for_command(
     .await
 }
 
+fn intervention_command_error(error: InterventionError) -> CommandErrorVm {
+    CommandErrorVm::new(
+        error.code.as_str(),
+        serde_json::json!({
+            "retryable": error.retryable,
+            "details": error.details,
+        }),
+    )
+}
+
+fn intervention_locator(
+    app: &App,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> InterventionLocator {
+    InterventionLocator {
+        project_id: app.paths.project_id.clone(),
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    }
+}
+
+fn intervention_timeline_path(app: &App, locator: &InterventionLocator) -> Utf8PathBuf {
+    match (
+        locator.outer_node_id.as_deref(),
+        locator.outer_attempt_id.as_deref(),
+    ) {
+        (Some(outer_node_id), Some(outer_attempt_id)) => app
+            .paths
+            .dynamic_node_attempt_dir(
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &locator.node_id,
+                &locator.attempt_id,
+            )
+            .join("acp.timeline.jsonl"),
+        _ => app.paths.acp_timeline_file(
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+        ),
+    }
+}
+
+fn desktop_intervention_source_event_id(
+    app: &App,
+    command: &InterventionCommand,
+) -> Option<String> {
+    let locator = &command.locator;
+    let request_suffix = match &command.request {
+        InterventionRequestIdentity::ManualCheck => {
+            return Some(gold_band::app::make_dedup_key(
+                &locator.project_id,
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                &locator.node_id,
+                &locator.attempt_id,
+                PauseReason::WaitingForUserInput,
+            ));
+        }
+        InterventionRequestIdentity::Permission { request_id } => {
+            let attempt_dir = intervention_timeline_path(app, locator)
+                .parent()?
+                .to_owned();
+            let pending: gold_band::acp::permission::PendingPermissionState = read_json(
+                &gold_band::acp::permission::pending_permission_file(&attempt_dir, request_id),
+            )
+            .ok()?;
+            let item_id = pending.timeline_identity?.item_id;
+            format!("{PERMISSION_REQUESTED_DEDUP_SUFFIX}:{item_id}")
+        }
+        InterventionRequestIdentity::Elicitation { elicitation_id } => {
+            let attempt_dir = intervention_timeline_path(app, locator)
+                .parent()?
+                .to_owned();
+            let pending: gold_band::acp::elicitation::PendingElicitationState =
+                read_json(&gold_band::acp::elicitation::pending_elicitation_file(
+                    &attempt_dir,
+                    elicitation_id,
+                ))
+                .ok()?;
+            let item_id = pending.timeline_identity?.item_id;
+            format!("{ELICITATION_REQUESTED_DEDUP_SUFFIX}:{item_id}")
+        }
+    };
+    Some(gold_band::app::make_dedup_key_with_suffix(
+        &locator.project_id,
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        &locator.node_id,
+        &locator.attempt_id,
+        &request_suffix,
+    ))
+}
+
+fn project_desktop_intervention_resolution(
+    state: &DesktopState,
+    projection: Option<(
+        String,
+        gold_band::im::ImNotificationKind,
+        InterventionLocator,
+    )>,
+) {
+    let Some((source_event_id, notification_kind, locator)) = projection else {
+        return;
+    };
+    let Some(runtime) = state.im_runtime() else {
+        return;
+    };
+    match runtime.project_desktop_intervention_resolution(
+        &source_event_id,
+        notification_kind,
+        &locator,
+    ) {
+        Ok(result) => info!(
+            canonical_event_id = source_event_id,
+            inserted = result.inserted,
+            duplicates = result.duplicates,
+            skipped = result.skipped,
+            "desktop intervention resolution projected to IM"
+        ),
+        Err(error) => warn!(
+            canonical_event_id = source_event_id,
+            error_code = error.code(),
+            "desktop intervention resolution projection failed"
+        ),
+    }
+}
+
+fn desktop_intervention_projection(
+    app: &App,
+    command: &InterventionCommand,
+) -> Option<(
+    String,
+    gold_band::im::ImNotificationKind,
+    InterventionLocator,
+)> {
+    let notification_kind = match &command.request {
+        InterventionRequestIdentity::Permission { .. } => {
+            gold_band::im::ImNotificationKind::Permission
+        }
+        InterventionRequestIdentity::Elicitation { .. } => {
+            gold_band::im::ImNotificationKind::Elicitation
+        }
+        InterventionRequestIdentity::ManualCheck => gold_band::im::ImNotificationKind::ManualCheck,
+    };
+    Some((
+        desktop_intervention_source_event_id(app, command)?,
+        notification_kind,
+        command.locator.clone(),
+    ))
+}
+
+fn recovered_permission_result(
+    app: &App,
+    command: &InterventionCommand,
+) -> Option<InterventionCommandResult> {
+    let InterventionRequestIdentity::Permission { request_id } = &command.request else {
+        return None;
+    };
+    let item = gold_band::acp::timeline::read_indexed_permission_request_by_request_id(
+        &intervention_timeline_path(app, &command.locator),
+        request_id,
+    )
+    .ok()??;
+    let resolved_option = item
+        .event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("optionId"))
+        .and_then(serde_json::Value::as_str)?;
+    Some(InterventionCommandResult {
+        status: gold_band::app::intervention::InterventionCommandStatus::AlreadyApplied,
+        canonical_state: format!("permission:{resolved_option}"),
+    })
+}
+
+fn recovered_elicitation_result(
+    app: &App,
+    command: &InterventionCommand,
+) -> Option<InterventionCommandResult> {
+    let InterventionRequestIdentity::Elicitation { elicitation_id } = &command.request else {
+        return None;
+    };
+    let item = gold_band::acp::timeline::read_indexed_timeline_item(
+        &intervention_timeline_path(app, &command.locator),
+        &format!("{elicitation_id}-response"),
+    )
+    .ok()??;
+    if item.event.kind != "elicitationResponse"
+        || item
+            .event
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.get("elicitationId"))
+            .and_then(serde_json::Value::as_str)
+            != Some(elicitation_id.as_str())
+    {
+        return None;
+    }
+    Some(InterventionCommandResult {
+        status: gold_band::app::intervention::InterventionCommandStatus::AlreadyApplied,
+        canonical_state: format!("elicitation:{elicitation_id}"),
+    })
+}
+
 pub(crate) async fn prepare_app_exit_inner(
     app_handle: &AppHandle,
     state: &DesktopState,
@@ -2081,6 +2608,12 @@ pub(crate) async fn prepare_app_exit_inner(
         && let Err(error) = coordinator.shutdown().await
     {
         result.record_warning("app-exit.scheduler-shutdown-failed", &error);
+    }
+
+    // IM cancellation is an independent control path, so a saturated delivery
+    // signal queue cannot delay the remainder of desktop shutdown.
+    if let Some(im_runtime) = state.im_runtime() {
+        im_runtime.shutdown().await;
     }
 
     match state.app() {
@@ -2730,8 +3263,7 @@ pub async fn doctor_agent(
         state
             .refresh_agent_diagnostic(&agent_id)
             .map_err(command_error)?;
-        emit_agent_registry_updated(&app_handle);
-        emit_agent_commands_updated(&app_handle, None);
+        emit_agent_registry_updated(&app_handle, &agent_id);
         let app = state.app().map_err(command_error)?;
         let diagnostics = state.agent_diagnostics().map_err(command_error)?;
         Ok(agent_registry_vm(&app, &diagnostics))
@@ -2760,8 +3292,7 @@ fn schedule_agent_diagnostic(app_handle: &AppHandle, agent_id: ManagedAgentId) {
             if let Err(error) = state.run_queued_agent_diagnostic(&diagnostic_agent_id) {
                 warn!(agent_type = diagnostic_agent_id.as_str(), %error, "automatic agent diagnostic failed");
             }
-            emit_agent_registry_updated(&diagnostic_handle);
-            emit_agent_commands_updated(&diagnostic_handle, None);
+            emit_agent_registry_updated(&diagnostic_handle, &diagnostic_agent_id);
         })
     {
         let _ = state.cancel_queued_agent_diagnostic(&agent_id);
@@ -2770,29 +3301,43 @@ fn schedule_agent_diagnostic(app_handle: &AppHandle, agent_id: ManagedAgentId) {
 }
 
 #[tauri::command]
-pub fn get_agent_command_catalog(
-    state: State<'_, DesktopState>,
+pub async fn get_agent_command_catalog(
+    app_handle: AppHandle,
     agent_type: String,
     workspace_path: String,
 ) -> CommandResult<Option<AcpCommandCatalog>> {
     let agent_id = ManagedAgentId::from_str(&agent_type).map_err(command_error)?;
-    state
-        .agent_command_catalog(&agent_id, &Utf8PathBuf::from(workspace_path))
-        .map_err(command_error)
+    spawn_blocking_command(move || {
+        app_handle
+            .state::<DesktopState>()
+            .agent_command_catalog(&agent_id, &Utf8PathBuf::from(workspace_path))
+            .map_err(command_error)
+    })
+    .await
 }
 
-pub(crate) fn emit_agent_commands_updated(
-    app_handle: &AppHandle,
-    catalog: Option<&AcpCommandCatalog>,
-) {
-    let payload = catalog
-        .map(|catalog| serde_json::to_value(catalog).unwrap_or_else(|_| serde_json::json!({})))
-        .unwrap_or_else(|| serde_json::json!({ "refresh": true }));
+pub(crate) fn emit_agent_commands_updated(app_handle: &AppHandle, catalog: &AcpCommandCatalog) {
+    let payload =
+        serde_json::json!({ "agentType": catalog.agent_type, "projectId": catalog.project_id });
     let _ = app_handle.emit(AGENT_COMMANDS_UPDATED_EVENT, payload);
 }
 
-pub(crate) fn emit_agent_registry_updated(app_handle: &AppHandle) {
-    let _ = app_handle.emit(AGENT_REGISTRY_UPDATED_EVENT, ());
+pub(crate) fn emit_agent_registry_updated(app_handle: &AppHandle, agent_id: &ManagedAgentId) {
+    let state = app_handle.state::<DesktopState>();
+    let Ok(_guard) = state.agent_config_diagnostic_commit_guard() else {
+        return;
+    };
+    let Ok(app) = state.app() else {
+        return;
+    };
+    let Ok(diagnostics) = state.agent_diagnostics() else {
+        return;
+    };
+    if let Some(config) = app.managed_agents().get(agent_id) {
+        let agent =
+            crate::view_models::managed_agent_vm(agent_id, config, diagnostics.get(agent_id));
+        let _ = app_handle.emit(AGENT_REGISTRY_UPDATED_EVENT, agent);
+    }
 }
 
 #[tauri::command]
@@ -4219,32 +4764,32 @@ pub async fn submit_manual_check(
             ));
         }
     };
-    let submission_lease = app
-        .reserve_manual_check_submission(&task_id, &run_id, &round_id, &node_id, &attempt_id)
-        .map_err(command_error)?;
-    let resumed_occurrence_id = resume_scheduled_interaction(
-        state.inner(),
+    let locator = intervention_locator(
         &app,
-        &task_id,
-        &run_id,
-        &round_id,
-        &attempt_id,
-    )
-    .await?;
-    let app = app
-        .into_inner()
-        .with_scheduled_occurrence_id(resumed_occurrence_id);
-    app.submit_manual_check_background(
-        &task_id,
-        &run_id,
-        &round_id,
-        &node_id,
-        &attempt_id,
-        outcome,
-        submission_lease,
-    )
-    .map(run_summary_vm)
-    .map_err(command_error)
+        task_id.clone(),
+        run_id.clone(),
+        round_id.clone(),
+        node_id.clone(),
+        attempt_id.clone(),
+        None,
+        None,
+    );
+    let request = InterventionRequestIdentity::ManualCheck;
+    let service = InterventionCommandService::new(&app);
+    let snapshot = service
+        .inspect(locator.clone(), request.clone())
+        .map_err(intervention_command_error)?;
+    let command = InterventionCommand {
+        locator,
+        request,
+        expected_state: snapshot.expected_state,
+        action: InterventionAction::ManualCheck { outcome },
+        expires_at_ms: snapshot.expires_at_ms,
+    };
+    let im_projection = desktop_intervention_projection(&app, &command);
+    let (_, run) = execute_manual_check_intervention(state.inner(), app, command).await?;
+    project_desktop_intervention_resolution(state.inner(), im_projection);
+    Ok(run_summary_vm(run))
 }
 
 #[tauri::command]
@@ -5020,16 +5565,15 @@ fn maybe_record_agent_commands(
         return;
     };
     let state = app_handle.state::<DesktopState>();
-    if let Ok(catalog) = state.record_agent_commands(&agent_id, &app.paths.repo_root, commands) {
-        emit_agent_commands_updated(app_handle, Some(&catalog));
-    }
+    let _ = state.record_agent_commands(&agent_id, &app.paths.repo_root, commands);
 }
 
 /// 路径 B：旁路监听 `permissionRequest` 事件流，强制 `PermissionRequested` 发干预通知。
 ///
 /// 仅当 `event.kind == "permissionRequest" && status == "pending"` 时触发。node_label
 /// 优先使用 Direct 会话 Agent identity，其次使用节点实际 provider 展示名，最后才回退 node_id。
-/// event_id 包含 request id：同一请求的重复 update 去重，同一 attempt 的后续请求独立通知。
+/// event_id 使用 permission occurrence identity：同一请求 replay 去重；provider 重启后
+/// 复用 JSON-RPC request id 的不同工具调用仍独立通知。Runtime 查找继续使用 raw requestId。
 fn maybe_emit_permission_intervention(
     lifecycle_bus: &gold_band::app::observability::RuntimeLifecycleBus,
     project_id: &str,
@@ -5048,6 +5592,17 @@ fn maybe_emit_permission_intervention(
     if !is_pending {
         return;
     }
+    let Some(request_id) = event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("requestId"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|request_id| !request_id.is_empty())
+        .map(str::to_string)
+    else {
+        return;
+    };
     let event_id = request_scoped_intervention_event_id(
         project_id,
         context,
@@ -5068,6 +5623,7 @@ fn maybe_emit_permission_intervention(
         attempt_id: context.attempt_id.clone(),
         outer_node_id: context.outer_node_id.clone(),
         outer_attempt_id: context.outer_attempt_id.clone(),
+        request: InterventionRequestIdentity::Permission { request_id },
         node_label: acp_intervention_node_label(app, context),
         kind: RuntimeInterventionKind::PermissionRequested,
         task_title: None,
@@ -5100,6 +5656,11 @@ fn maybe_emit_elicitation_intervention(
     if !is_pending {
         return;
     }
+    let elicitation_id = event.id.trim();
+    if elicitation_id.is_empty() {
+        return;
+    }
+    let elicitation_id = elicitation_id.to_string();
     let event_id = request_scoped_intervention_event_id(
         project_id,
         context,
@@ -5120,6 +5681,7 @@ fn maybe_emit_elicitation_intervention(
         attempt_id: context.attempt_id.clone(),
         outer_node_id: context.outer_node_id.clone(),
         outer_attempt_id: context.outer_attempt_id.clone(),
+        request: InterventionRequestIdentity::Elicitation { elicitation_id },
         node_label: acp_intervention_node_label(app, context),
         kind: RuntimeInterventionKind::ElicitationRequested,
         task_title: None,
@@ -5414,6 +5976,7 @@ fn request_scoped_intervention_event_id(
     };
     gold_band::app::make_dedup_key_with_suffix(
         project_id,
+        &context.task_id,
         &context.run_id,
         &context.round_id,
         &context.node_id,
@@ -5956,6 +6519,83 @@ pub fn get_acp_activity_detail(
     );
     acp_activity_detail_vm_for_attempt(&attempt_dir, query)
         .map_err(|error| acp_storage_query_error(error, "acp.activity-detail-query-failed"))
+}
+
+#[tauri::command]
+pub async fn get_acp_activity_images(
+    state: State<'_, DesktopState>,
+    input: AcpActivityImagesInput,
+) -> CommandResult<gold_band::acp::timeline::ActivityImagePage> {
+    static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    static ADMISSION: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(16);
+    let admission = ADMISSION
+        .try_acquire()
+        .map_err(|_| CommandErrorVm::new("acp.image-busy", serde_json::json!({})))?;
+    let permit = SLOTS
+        .acquire()
+        .await
+        .map_err(|_| CommandErrorVm::new("acp.image-busy", serde_json::json!({})))?;
+    let app = resolve_command_app(state.inner(), input.project_id.as_deref())?;
+    spawn_blocking_command(move || {
+        let _permit = permit;
+        let _admission = admission;
+        let denied = || CommandErrorVm::new("acp.image-not-found", serde_json::json!({}));
+        let locator = &input.locator;
+        for part in [
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+        ]
+        .into_iter()
+        .chain(locator.outer_node_id.iter())
+        .chain(locator.outer_attempt_id.iter())
+        {
+            let mut components = Path::new(part).components();
+            if !matches!(components.next(), Some(Component::Normal(_)))
+                || components.next().is_some()
+                || part.contains(['/', '\\', ':'])
+            {
+                return Err(denied());
+            }
+        }
+        gold_band::acp::branches::validate_conversation_branch_id(&input.branch_id)
+            .map_err(|_| denied())?;
+        let timeline = gold_band::acp::branches::branch_timeline_path(
+            &locator.attempt_dir(&app),
+            &input.branch_id,
+        );
+        let root = fs::canonicalize(&app.paths.runtime_root).map_err(|_| denied())?;
+        if !fs::canonicalize(&timeline)
+            .map_err(|_| denied())?
+            .starts_with(root)
+        {
+            return Err(denied());
+        }
+        gold_band::acp::timeline::read_activity_image_page(
+            &timeline,
+            input.start,
+            input.end,
+            input.after.as_deref(),
+            input.generation,
+        )
+        .map_err(|error| acp_storage_query_error(error, "acp.image-invalid"))
+    })
+    .await
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpActivityImagesInput {
+    project_id: Option<String>,
+    #[serde(flatten)]
+    locator: AttemptLocator,
+    branch_id: String,
+    start: u64,
+    end: u64,
+    after: Option<String>,
+    generation: Option<u64>,
 }
 
 #[tauri::command]
@@ -6847,6 +7487,9 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             let (_, agent_config) = app.managed_agent(provider).map_err(command_error)?;
             let permission_mode = current_acp_session_permission_mode_override(&attempt_dir)
                 .or_else(|| node.permission_mode.clone());
+            let auto_accept =
+                gold_band::acp::permission::session_auto_accept_override(&attempt_dir)
+                    .unwrap_or(node.auto_accept);
             let model =
                 current_acp_session_model_override(&attempt_dir).or_else(|| node.model.clone());
             let worker_ref = if worker_ref_path.exists() {
@@ -6932,6 +7575,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 &prompt_bundle,
                 session_mode,
                 permission_mode,
+                auto_accept,
                 model,
                 config_options,
                 continue_ref,
@@ -7024,6 +7668,8 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             .ok_or_else(|| CommandErrorVm::new("acp.missing-provider", serde_json::json!({})))?;
         let (_, agent_config) = app.managed_agent(provider).map_err(command_error)?;
         let permission_mode = current_acp_session_permission_mode_override(&attempt_dir);
+        let auto_accept =
+            gold_band::acp::permission::session_auto_accept_override(&attempt_dir).unwrap_or(false);
         let worker_ref = if worker_ref_path.exists() {
             Some(read_json::<WorkerRefState>(&worker_ref_path).map_err(command_error)?)
         } else {
@@ -7104,6 +7750,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             &prompt_bundle,
             session_mode,
             permission_mode,
+            auto_accept,
             model,
             config_options,
             continue_ref,
@@ -7302,7 +7949,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
 }
 
 #[tauri::command]
-pub fn respond_acp_permission(
+pub async fn respond_acp_permission(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: Option<String>,
@@ -7317,84 +7964,40 @@ pub fn respond_acp_permission(
     outer_attempt_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
-    let resume_cause = gold_band::app::observability::ResumeCause::PermissionResolved;
-    app.record_metrics_resume_cause(&task_id, &run_id, resume_cause);
-    let session = if let (Some(outer_node_id), Some(outer_attempt_id)) =
-        (outer_node_id.as_deref(), outer_attempt_id.as_deref())
-    {
-        let attempt_dir = app.paths.dynamic_node_attempt_dir(
-            &task_id,
-            &run_id,
-            &round_id,
-            outer_node_id,
-            outer_attempt_id,
-            &node_id,
-            &attempt_id,
-        );
-        if let Err(error) =
-            write_acp_permission_response_signal(&attempt_dir, &request_id, option_id.clone())
-        {
-            app.clear_metrics_resume_cause(&task_id, &run_id, resume_cause);
-            return Err(command_error(error));
-        }
-        dynamic_acp_session_vm(
-            &app,
-            &task_id,
-            &run_id,
-            &round_id,
-            outer_node_id,
-            outer_attempt_id,
-            &node_id,
-            &attempt_id,
-            None,
-            None,
+    let option_id = option_id.ok_or_else(|| {
+        CommandErrorVm::new(
+            "INTERVENTION_ACTION_INVALID",
+            serde_json::json!({ "details": { "actionKind": "permissionOption" } }),
         )
-        .map_err(command_error)?
-    } else {
-        let attempt_dir =
-            app.paths
-                .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
-        if let Err(error) =
-            write_acp_permission_response_signal(&attempt_dir, &request_id, option_id.clone())
-        {
-            app.clear_metrics_resume_cause(&task_id, &run_id, resume_cause);
-            return Err(command_error(error));
-        }
-        acp_session_vm(
-            &app,
-            &task_id,
-            &run_id,
-            &round_id,
-            &node_id,
-            &attempt_id,
-            None,
-            None,
-        )
-        .map_err(command_error)?
-    };
-    emit_acp_session_update(
-        &app_handle,
+    })?;
+    let locator = intervention_locator(
         &app,
-        project_id.clone(),
-        &task_id,
-        &run_id,
-        &round_id,
-        &node_id,
-        &attempt_id,
+        task_id.clone(),
+        run_id.clone(),
+        round_id.clone(),
+        node_id.clone(),
+        attempt_id.clone(),
         outer_node_id.clone(),
         outer_attempt_id.clone(),
-        session.clone(),
     );
-    spawn_index_attempt(
-        state.inner(),
-        &task_id,
-        &run_id,
-        &round_id,
-        &node_id,
-        &attempt_id,
-        outer_node_id.as_deref(),
-        outer_attempt_id.as_deref(),
-    );
+    let request = InterventionRequestIdentity::Permission {
+        request_id: request_id.clone(),
+    };
+    let snapshot = InterventionCommandService::new(&app)
+        .inspect(locator.clone(), request.clone())
+        .map_err(intervention_command_error)?;
+    let command = InterventionCommand {
+        locator,
+        request,
+        expected_state: snapshot.expected_state,
+        action: InterventionAction::PermissionOption { option_id },
+        expires_at_ms: snapshot.expires_at_ms,
+    };
+    let im_projection = desktop_intervention_projection(&app, &command);
+    let (_, session) =
+        execute_permission_intervention(app_handle, state.inner(), &app, project_id, command)
+            .await?;
+    project_desktop_intervention_resolution(state.inner(), im_projection);
     Ok(session)
 }
 
@@ -7541,95 +8144,7 @@ fn spawn_active_session_stop_cleanup(
     stop_owner: Option<(String, String, u64)>,
 ) {
     tauri::async_runtime::spawn_blocking(move || {
-        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
-        let Some((turn_id, operation_id, revision)) = stop_owner.as_ref() else {
-            return;
-        };
-        let owner = gold_band::acp::events::AcpLifecycleOwner {
-            turn_id: turn_id.clone(),
-            operation_id: operation_id.clone(),
-            revision: *revision,
-        };
-        let owner_is_current =
-            gold_band::acp::events::lifecycle_owner_still_cancelling(&lifecycle_path, &owner)
-                .unwrap_or(false);
-        if !owner_is_current {
-            // The old turn may already be terminal and a newer turn may own
-            // this attempt. Never send an attempt-wide cancel in that case.
-            return;
-        }
-        match client::dispatch_attempt_prompt_cancel(&attempt_dir) {
-            Ok(_) => {}
-            Err(error) => {
-                warn!(%error, %attempt_dir, "failed to dispatch accepted ACP stop request");
-            }
-        }
-        // request_session_stop transferred lifecycle ownership away from the
-        // provider runtime. The stop controller therefore owns terminal
-        // settlement after dispatch; the old provider owner can only no-op.
-        let decided_at = gold_band::acp::events::current_timestamp();
-        let terminal_persisted = match gold_band::acp::events::persist_session_turn_terminal_owned(
-            &lifecycle_path,
-            turn_id,
-            Some(operation_id),
-            *revision,
-            gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
-            "cancelled",
-            &decided_at,
-        ) {
-            Ok(Some(_)) => {
-                info!(
-                    project_id = %app.paths.project_id,
-                    task_id = %locator.task_id,
-                    run_id = %locator.run_id,
-                    round_id = %locator.round_id,
-                    node_id = %locator.node_id,
-                    attempt_id = %locator.attempt_id,
-                    outer_node_id = ?locator.outer_node_id,
-                    outer_attempt_id = ?locator.outer_attempt_id,
-                    %turn_id,
-                    %operation_id,
-                    outcome = "cancelled",
-                    "conversation session stop reached terminal state"
-                );
-                true
-            }
-            Ok(None) => {
-                tracing::debug!(
-                    project_id = %app.paths.project_id,
-                    task_id = %locator.task_id,
-                    run_id = %locator.run_id,
-                    turn_id = %turn_id,
-                    "stale conversation session stop settlement skipped"
-                );
-                false
-            }
-            Err(error) => {
-                warn!(
-                    project_id = %app.paths.project_id,
-                    task_id = %locator.task_id,
-                    run_id = %locator.run_id,
-                    round_id = %locator.round_id,
-                    node_id = %locator.node_id,
-                    attempt_id = %locator.attempt_id,
-                    %error,
-                    %turn_id,
-                    "failed to settle accepted ACP stop ownership"
-                );
-                false
-            }
-        };
-        if terminal_persisted {
-            touch_terminal_task_activity_best_effort(
-                &app,
-                &locator,
-                Some(turn_id),
-                "user-stop-terminal",
-            );
-        }
-        if let Err(error) = client::settle_attempt_prompt_interactions(&attempt_dir) {
-            warn!(%error, %attempt_dir, "failed to settle ACP interactions after accepted stop dispatch");
-        }
+        settle_active_session_stop_cleanup(&app, &locator, &attempt_dir, stop_owner.as_ref());
         emit_acp_session_update(
             &app_handle,
             &app,
@@ -7644,6 +8159,87 @@ fn spawn_active_session_stop_cleanup(
             None,
         );
     });
+}
+
+fn settle_active_session_stop_cleanup(
+    app: &gold_band::app::App,
+    locator: &AttemptLocator,
+    attempt_dir: &Utf8PathBuf,
+    stop_owner: Option<&(String, String, u64)>,
+) -> bool {
+    settle_active_session_stop_cleanup_with_dispatch(
+        app,
+        locator,
+        attempt_dir,
+        stop_owner,
+        client::dispatch_attempt_prompt_cancel,
+    )
+}
+
+fn settle_active_session_stop_cleanup_with_dispatch<F>(
+    app: &gold_band::app::App,
+    locator: &AttemptLocator,
+    attempt_dir: &Utf8PathBuf,
+    stop_owner: Option<&(String, String, u64)>,
+    dispatch_cancel: F,
+) -> bool
+where
+    F: FnOnce(&camino::Utf8Path) -> anyhow::Result<bool>,
+{
+    let Some((turn_id, operation_id, revision)) = stop_owner else {
+        return false;
+    };
+    let lifecycle_path = acp_lifecycle_path(attempt_dir);
+    let owner = gold_band::acp::events::AcpLifecycleOwner {
+        turn_id: turn_id.clone(),
+        operation_id: operation_id.clone(),
+        revision: *revision,
+    };
+    if !gold_band::acp::events::lifecycle_owner_still_cancelling(&lifecycle_path, &owner)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    match dispatch_cancel(attempt_dir) {
+        Ok(true) => {}
+        Ok(false) => {
+            warn!(%attempt_dir, "accepted ACP stop request has no active cancel target");
+            return false;
+        }
+        Err(error) => {
+            warn!(%error, %attempt_dir, "failed to dispatch accepted ACP stop request");
+            return false;
+        }
+    }
+    let settled = match gold_band::acp::events::persist_session_turn_terminal_owned(
+        &lifecycle_path,
+        turn_id,
+        Some(operation_id),
+        *revision,
+        gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
+        "cancelled",
+        &gold_band::acp::events::current_timestamp(),
+    ) {
+        Ok(Some(_)) => {
+            info!(project_id = %app.paths.project_id, task_id = %locator.task_id, run_id = %locator.run_id, %turn_id, %operation_id, outcome = "cancelled", "conversation session stop reached terminal state");
+            true
+        }
+        Ok(None) => {
+            tracing::debug!(project_id = %app.paths.project_id, task_id = %locator.task_id, run_id = %locator.run_id, %turn_id, "stale conversation session stop settlement skipped");
+            false
+        }
+        Err(error) => {
+            warn!(project_id = %app.paths.project_id, task_id = %locator.task_id, run_id = %locator.run_id, %error, %turn_id, "failed to settle accepted ACP stop ownership");
+            false
+        }
+    };
+    if settled {
+        touch_terminal_task_activity_best_effort(app, locator, Some(turn_id), "user-stop-terminal");
+    }
+    if let Err(error) = client::settle_attempt_prompt_interactions(attempt_dir) {
+        warn!(%error, %attempt_dir, "failed to settle ACP interactions after accepted stop dispatch");
+    }
+    settled
 }
 
 fn spawn_index_attempt(
@@ -7701,41 +8297,6 @@ fn spawn_index_attempt_for_app(
     tauri::async_runtime::spawn_blocking(move || {
         sqlite::index_attempt_with_retry(&attempt_dir, &ctx);
     });
-}
-
-fn canonical_permission_request_id(attempt_dir: &camino::Utf8Path, request_id: &str) -> String {
-    let stripped_request_id = strip_permission_display_prefix(request_id);
-    let candidates = [request_id.to_string(), stripped_request_id.clone()];
-    for candidate in candidates {
-        let path = gold_band::acp::permission::pending_permission_file(attempt_dir, &candidate);
-        if let Ok(pending) = read_json::<PendingPermissionState>(&path) {
-            return pending.identity.interaction_id;
-        }
-    }
-    stripped_request_id
-}
-
-fn strip_permission_display_prefix(request_id: &str) -> String {
-    let mut current = request_id;
-    while let Some(next) = current.strip_prefix("permission-") {
-        current = next;
-    }
-    current.to_string()
-}
-
-fn write_acp_permission_response_signal(
-    attempt_dir: &camino::Utf8Path,
-    request_id: &str,
-    option_id: Option<String>,
-) -> anyhow::Result<bool> {
-    let canonical_request_id = canonical_permission_request_id(attempt_dir, request_id);
-    write_permission_response_if_pending(
-        attempt_dir,
-        &canonical_request_id,
-        option_id,
-        false,
-        current_timestamp(),
-    )
 }
 
 #[tauri::command]
@@ -7801,6 +8362,98 @@ pub async fn get_acp_raw_frames(
     })
     .await
     .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerHistoryLocator {
+    project_id: String,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+}
+
+fn composer_history_path(
+    state: &DesktopState,
+    locator: &ComposerHistoryLocator,
+) -> CommandResult<camino::Utf8PathBuf> {
+    let invalid = || CommandErrorVm::new("acp.composer-history-not-found", serde_json::json!({}));
+    if locator.outer_node_id.is_some() != locator.outer_attempt_id.is_some() {
+        return Err(invalid());
+    }
+    for part in [
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        &locator.node_id,
+        &locator.attempt_id,
+    ]
+    .into_iter()
+    .chain(locator.outer_node_id.iter())
+    .chain(locator.outer_attempt_id.iter())
+    {
+        let mut parts = Path::new(part).components();
+        if !matches!(parts.next(), Some(Component::Normal(_)))
+            || parts.next().is_some()
+            || part.contains(['/', '\\', ':'])
+        {
+            return Err(invalid());
+        }
+    }
+    let app = resolve_command_app(state, Some(&locator.project_id))?;
+    Ok(resolve_acp_attempt_dir(
+        &app,
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        &locator.node_id,
+        &locator.attempt_id,
+        locator.outer_node_id.as_deref(),
+        locator.outer_attempt_id.as_deref(),
+    )
+    .join("acp.timeline.jsonl"))
+}
+
+fn composer_history_error(error: anyhow::Error) -> CommandErrorVm {
+    use gold_band::acp::timeline::composer_history::HistoryError;
+    let code = match error.downcast_ref::<HistoryError>() {
+        Some(HistoryError::Stale) => "acp.composer-history-stale",
+        Some(HistoryError::NotFound) => "acp.composer-history-not-found",
+        None => "acp.composer-history-query-failed",
+    };
+    CommandErrorVm::new(code, serde_json::json!({}))
+}
+
+#[tauri::command]
+pub async fn list_composer_history(
+    state: State<'_, DesktopState>,
+    locator: ComposerHistoryLocator,
+    query: gold_band::acp::timeline::composer_history::HistoryQuery,
+) -> CommandResult<gold_band::acp::timeline::composer_history::HistoryPage> {
+    let path = composer_history_path(state.inner(), &locator)?;
+    spawn_blocking_command(move || {
+        gold_band::acp::timeline::composer_history::read_page(&path, query)
+            .map_err(composer_history_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_composer_history_text(
+    state: State<'_, DesktopState>,
+    locator: ComposerHistoryLocator,
+    cursor: gold_band::acp::timeline::composer_history::HistoryCursor,
+) -> CommandResult<gold_band::acp::timeline::composer_history::HistoryText> {
+    let path = composer_history_path(state.inner(), &locator)?;
+    spawn_blocking_command(move || {
+        gold_band::acp::timeline::composer_history::read_text(&path, cursor)
+            .map_err(composer_history_error)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -9383,6 +10036,115 @@ pub async fn set_acp_session_permission_mode(
 }
 
 #[tauri::command]
+pub async fn set_acp_session_auto_accept(
+    _app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+    auto_accept: bool,
+) -> CommandResult<Option<AcpSessionVm>> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id.clone(),
+        run_id.clone(),
+        round_id.clone(),
+        node_id.clone(),
+        attempt_id.clone(),
+        outer_node_id.clone(),
+        outer_attempt_id.clone(),
+    );
+    let attempt_dir = resolve_acp_attempt_dir(
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outer_node_id.as_deref(),
+        outer_attempt_id.as_deref(),
+    );
+    let snapshot_path = attempt_dir.join("acp.snapshot.json");
+    let session_path = attempt_dir.join("acp.session.json");
+    let path = if snapshot_path.exists() {
+        snapshot_path
+    } else if session_path.exists() {
+        session_path
+    } else {
+        return Ok(None);
+    };
+
+    let metadata = load_session_metadata(&path, None).map_err(|error| {
+        CommandErrorVm::new(
+            "acp.session-read-error",
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+    let mut value = serde_json::to_value(metadata).map_err(|error| {
+        CommandErrorVm::new(
+            "acp.session-parse-error",
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+    let catalogs = acp_session_config_catalog_context(&app, &locator, &value);
+    if let Some(session) = value.as_object_mut() {
+        session.insert(
+            "autoAccept".to_string(),
+            serde_json::Value::Bool(auto_accept),
+        );
+    }
+    apply_acp_catalog_refresh_marker(&mut value, &catalogs);
+    value = gold_band::acp::events::patch_session_metadata(&path, |current| {
+        if let Some(session) = current.as_object_mut() {
+            session.insert(
+                "autoAccept".to_string(),
+                serde_json::Value::Bool(auto_accept),
+            );
+        }
+        apply_acp_catalog_refresh_marker(current, &catalogs);
+        Ok(())
+    })
+    .map_err(|error| {
+        CommandErrorVm::new(
+            "acp.session-write-error",
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+
+    let vm = if let (Some(on), Some(oa)) = (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
+        crate::view_models::dynamic_acp_session_vm(
+            &app,
+            &task_id,
+            &run_id,
+            &round_id,
+            on,
+            oa,
+            &node_id,
+            &attempt_id,
+            None,
+            Some(value),
+        )
+    } else {
+        crate::view_models::acp_session_vm(
+            &app,
+            &task_id,
+            &run_id,
+            &round_id,
+            &node_id,
+            &attempt_id,
+            None,
+            Some(value),
+        )
+    };
+    Ok(vm.map_err(command_error)?)
+}
+
+#[tauri::command]
 pub async fn set_acp_session_config_option(
     _app_handle: AppHandle,
     state: State<'_, DesktopState>,
@@ -9828,99 +10590,47 @@ pub async fn respond_elicitation(
     let _ = state.record_heartbeat_activity();
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
 
-    // Reclaim the durable scheduled occurrence before writing the response file.
-    // The ACP waiter may resume immediately after the file is visible.
-    resume_scheduled_interaction(
-        state.inner(),
-        &app,
-        &task_id,
-        &run_id,
-        &round_id,
-        &attempt_id,
-    )
-    .await?;
-
     let action = match action.as_str() {
         "accept" => ElicitationAction::Accept,
-        _ => ElicitationAction::Decline,
+        "decline" => ElicitationAction::Decline,
+        _ => {
+            return Err(CommandErrorVm::new(
+                "INTERVENTION_ACTION_INVALID",
+                serde_json::json!({ "details": { "actionKind": "elicitation" } }),
+            ));
+        }
     };
-
-    let attempt_dir = if let (Some(outer_node_id), Some(outer_attempt_id)) =
-        (outer_node_id.as_deref(), outer_attempt_id.as_deref())
-    {
-        app.paths.dynamic_node_attempt_dir(
-            &task_id,
-            &run_id,
-            &round_id,
-            outer_node_id,
-            outer_attempt_id,
-            &node_id,
-            &attempt_id,
-        )
-    } else {
-        app.paths
-            .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id)
-    };
-    let resume_cause = gold_band::app::observability::ResumeCause::ElicitationResolved;
-    app.record_metrics_resume_cause(&task_id, &run_id, resume_cause);
-    if let Err(error) = write_elicitation_response(
-        &attempt_dir,
-        &elicitation_id,
-        action.clone(),
-        content.clone(),
-        current_timestamp(),
-    ) {
-        app.clear_metrics_resume_cause(&task_id, &run_id, resume_cause);
-        return Err(command_error(error));
-    }
-
-    // Emit session update so the frontend can refresh the timeline
-    // immediately. The runtime owns consumption and cleanup of the durable
-    // response signal; snapshot/session status is not proof that no waiter exists.
-    let session =
-        if let (Some(on), Some(oa)) = (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
-            crate::view_models::dynamic_acp_session_vm(
-                &app,
-                &task_id,
-                &run_id,
-                &round_id,
-                on,
-                oa,
-                &node_id,
-                &attempt_id,
-                None,
-                None,
-            )
-            .ok()
-            .flatten()
-        } else {
-            crate::view_models::acp_session_vm(
-                &app,
-                &task_id,
-                &run_id,
-                &round_id,
-                &node_id,
-                &attempt_id,
-                None,
-                None,
-            )
-            .ok()
-            .flatten()
-        };
-
-    emit_acp_session_update(
-        &app_handle,
+    let locator = intervention_locator(
         &app,
-        project_id,
-        &task_id,
-        &run_id,
-        &round_id,
-        &node_id,
-        &attempt_id,
-        outer_node_id,
-        outer_attempt_id,
-        session,
+        task_id.clone(),
+        run_id.clone(),
+        round_id.clone(),
+        node_id.clone(),
+        attempt_id.clone(),
+        outer_node_id.clone(),
+        outer_attempt_id.clone(),
     );
+    let request = InterventionRequestIdentity::Elicitation {
+        elicitation_id: elicitation_id.clone(),
+    };
+    let command = InterventionCommand {
+        locator,
+        request,
+        expected_state: String::new(),
+        action: InterventionAction::Elicitation { action, content },
+        expires_at_ms: None,
+    };
+    let im_projection = desktop_intervention_projection(&app, &command);
+    execute_elicitation_intervention(
+        app_handle.clone(),
+        state.inner(),
+        &app,
+        project_id.clone(),
+        command,
+    )
+    .await
+    .map_err(intervention_command_error)?;
+    project_desktop_intervention_resolution(state.inner(), im_projection);
 
     Ok(())
 }
@@ -10378,7 +11088,6 @@ fn schedule_agent_command_catalog_refresh(app_handle: AppHandle, workspace: Utf8
     std::thread::spawn(move || {
         let state = app_handle.state::<DesktopState>();
         let _ = state.refresh_all_agent_command_catalogs_for_workspace(workspace);
-        emit_agent_commands_updated(&app_handle, None);
     });
 }
 
@@ -10504,6 +11213,83 @@ mod tests {
         TaskAuthoringWorkflow, WorkerModelBinding, WorkflowModelBindings,
     };
     use std::collections::BTreeMap;
+
+    fn active_stop_test_fixture(
+        root: &std::path::Path,
+    ) -> (
+        App,
+        AttemptLocator,
+        Utf8PathBuf,
+        gold_band::acp::events::AcpLifecycleOwner,
+    ) {
+        let app = App::new(Utf8PathBuf::from_path_buf(root.join("repo")).unwrap());
+        let locator = AttemptLocator::new(
+            "task-1".to_string(),
+            "run-1".to_string(),
+            "round-1".to_string(),
+            "node-1".to_string(),
+            "attempt-1".to_string(),
+            None,
+            None,
+        );
+        let attempt_dir = locator.attempt_dir(&app);
+        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
+        write_json(
+            &app.paths
+                .task_dir("task-1")
+                .join("authoring")
+                .join("conversation.json"),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "source": "conversation",
+                "runMode": "direct",
+                "workflowTemplateId": null,
+                "includeOptionalEntry": false,
+                "directConfig": null,
+                "agentIdentity": null,
+                "titleAutoGenerated": false,
+                "initialAttachmentNames": null,
+                "createdAt": "2026-08-26T00:00:00Z",
+                "lastActivityAt": "2026-08-26T00:00:00Z"
+            }),
+        )
+        .unwrap();
+        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+        let submission = gold_band::acp::events::AcpPromptSubmission {
+            turn_id: "turn-1".to_string(),
+            operation_id: "prompt-operation-1".to_string(),
+            adapter_id: "test".to_string(),
+            adapter_display_name: "Test".to_string(),
+            cwd: attempt_dir.to_string(),
+            input: gold_band::provider::ConversationPromptInput {
+                display_text: "test".to_string(),
+                quotes: Vec::new(),
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-08-26T00:00:00Z".to_string(),
+        };
+        gold_band::acp::events::begin_session_turn(&lifecycle_path, &submission).unwrap();
+        let owner = gold_band::acp::events::request_session_stop_outcome(
+            &lifecycle_path,
+            "user-stop-operation-1",
+            "2026-08-26T00:00:01Z",
+        )
+        .unwrap()
+        .owner
+        .unwrap();
+        (app, locator, attempt_dir, owner)
+    }
+
+    fn conversation_last_activity(app: &App, task_id: &str) -> String {
+        let metadata: serde_json::Value = read_json(
+            &app.paths
+                .task_dir(task_id)
+                .join("authoring")
+                .join("conversation.json"),
+        )
+        .unwrap();
+        metadata["lastActivityAt"].as_str().unwrap().to_string()
+    }
 
     fn frontend_error_input(message: String) -> FrontendErrorReportInput {
         FrontendErrorReportInput {
@@ -10796,6 +11582,7 @@ mod tests {
                     output: None,
                     success_condition: None,
                     permission_mode: None,
+                    auto_accept: false,
                     config_options: BTreeMap::new(),
                     manual_check: None,
                     prompt_envelope: Default::default(),
@@ -10808,6 +11595,7 @@ mod tests {
                     agent_id: agent_id.to_string(),
                     model_id: None,
                     permission_mode_id: None,
+                    auto_accept: false,
                     config_options: BTreeMap::new(),
                 }],
                 ..WorkflowModelBindings::default()
@@ -10828,6 +11616,7 @@ mod tests {
                         bootstrap_provider: agent_id.to_string(),
                         bootstrap_model: None,
                         permission_mode: None,
+                        auto_accept: false,
                         bootstrap_config_options: Default::default(),
                         acceptance_model: None,
                         acceptance_config_options: Default::default(),
@@ -10836,6 +11625,7 @@ mod tests {
                             provider: "agent-b".to_string(),
                             model: None,
                             permission_mode: None,
+                            auto_accept: false,
                             config_options: Default::default(),
                         }],
                     },
@@ -11247,6 +12037,7 @@ mod tests {
                     task_id: Some("task-1".to_string()),
                     run_id: Some("run-1".to_string()),
                     round_id: Some("round-1".to_string()),
+                    node_id: None,
                     attempt_id: Some("attempt-1".to_string()),
                 }),
                 Some(gold_band::scheduler::occurrence::ScheduledError::new(
@@ -11381,6 +12172,7 @@ mod tests {
                         provider: "agent-a".to_string(),
                         model: None,
                         permission_mode: None,
+                        auto_accept: false,
                     },
                     config_options: Default::default(),
                     allowed_profiles: Vec::new(),
@@ -11876,6 +12668,163 @@ mod tests {
         assert_eq!(snapshot["liveTurnActivity"], "idle");
         assert_eq!(snapshot["latestTurnStatus"], "none");
         assert!(timeline_path.is_dir());
+    }
+
+    #[test]
+    fn active_stop_cleanup_dispatches_and_persists_cancelled_terminal_lifecycle() {
+        let temp = tempfile::tempdir().unwrap();
+        let (app, locator, attempt_dir, owner) = active_stop_test_fixture(temp.path());
+        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+        let owner = (owner.turn_id, owner.operation_id, owner.revision);
+        assert!(settle_active_session_stop_cleanup_with_dispatch(
+            &app,
+            &locator,
+            &attempt_dir,
+            Some(&owner),
+            |_| Ok(true),
+        ));
+
+        let lifecycle = gold_band::acp::events::read_lifecycle_header(&lifecycle_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            lifecycle.latest_turn_status,
+            gold_band::acp::events::AcpLatestTurnStatus::Cancelled
+        );
+        assert_eq!(
+            conversation_last_activity(&app, "task-1"),
+            gold_band::acp::events::read_session_metadata_value(&lifecycle_path, None)
+                .unwrap()["updatedAt"]
+                .as_str()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn active_stop_cleanup_dispatch_failure_keeps_cancelling_and_activity_unchanged() {
+        let temp = tempfile::tempdir().unwrap();
+        let (app, locator, attempt_dir, owner) = active_stop_test_fixture(temp.path());
+        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+        let owner = (owner.turn_id, owner.operation_id, owner.revision);
+
+        assert!(!settle_active_session_stop_cleanup_with_dispatch(
+            &app,
+            &locator,
+            &attempt_dir,
+            Some(&owner),
+            |_| anyhow::bail!("provider cancel transport failed"),
+        ));
+
+        let lifecycle = gold_band::acp::events::read_lifecycle_header(&lifecycle_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            lifecycle.live_turn_activity,
+            gold_band::acp::events::AcpLiveTurnActivity::CancelRequested
+        );
+        assert_eq!(
+            lifecycle.latest_turn_status,
+            gold_band::acp::events::AcpLatestTurnStatus::None
+        );
+        assert_eq!(
+            conversation_last_activity(&app, "task-1"),
+            "2026-08-26T00:00:00Z"
+        );
+    }
+
+    #[test]
+    fn active_stop_cleanup_without_a_cancel_target_keeps_cancelling() {
+        let temp = tempfile::tempdir().unwrap();
+        let (app, locator, attempt_dir, owner) = active_stop_test_fixture(temp.path());
+        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+        let owner = (owner.turn_id, owner.operation_id, owner.revision);
+
+        assert!(!settle_active_session_stop_cleanup_with_dispatch(
+            &app,
+            &locator,
+            &attempt_dir,
+            Some(&owner),
+            |_| Ok(false),
+        ));
+
+        let lifecycle = gold_band::acp::events::read_lifecycle_header(&lifecycle_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            lifecycle.live_turn_activity,
+            gold_band::acp::events::AcpLiveTurnActivity::CancelRequested
+        );
+        assert_eq!(
+            lifecycle.latest_turn_status,
+            gold_band::acp::events::AcpLatestTurnStatus::None
+        );
+        assert_eq!(
+            conversation_last_activity(&app, "task-1"),
+            "2026-08-26T00:00:00Z"
+        );
+    }
+
+    #[test]
+    fn active_stop_cleanup_stale_owner_does_not_dispatch_or_overwrite_new_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let (app, locator, attempt_dir, owner) = active_stop_test_fixture(temp.path());
+        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+        let old_owner = (
+            owner.turn_id.clone(),
+            owner.operation_id.clone(),
+            owner.revision,
+        );
+        gold_band::acp::events::persist_session_turn_terminal_owned(
+            &lifecycle_path,
+            &owner.turn_id,
+            Some(&owner.operation_id),
+            owner.revision,
+            gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
+            "cancelled",
+            "2026-08-26T00:00:02Z",
+        )
+        .unwrap()
+        .unwrap();
+        let next_submission = gold_band::acp::events::AcpPromptSubmission {
+            turn_id: "turn-2".to_string(),
+            operation_id: "prompt-operation-2".to_string(),
+            adapter_id: "test".to_string(),
+            adapter_display_name: "Test".to_string(),
+            cwd: attempt_dir.to_string(),
+            input: gold_band::provider::ConversationPromptInput {
+                display_text: "next".to_string(),
+                quotes: Vec::new(),
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-08-26T00:00:03Z".to_string(),
+        };
+        gold_band::acp::events::begin_session_turn(&lifecycle_path, &next_submission).unwrap();
+        let dispatch_calls = std::cell::Cell::new(0usize);
+
+        assert!(!settle_active_session_stop_cleanup_with_dispatch(
+            &app,
+            &locator,
+            &attempt_dir,
+            Some(&old_owner),
+            |_| {
+                dispatch_calls.set(dispatch_calls.get() + 1);
+                Ok(true)
+            },
+        ));
+
+        assert_eq!(dispatch_calls.get(), 0);
+        let lifecycle = gold_band::acp::events::read_lifecycle_header(&lifecycle_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(lifecycle.turn_id.as_deref(), Some("turn-2"));
+        assert_eq!(
+            lifecycle.latest_turn_status,
+            gold_band::acp::events::AcpLatestTurnStatus::None
+        );
+        assert_eq!(
+            conversation_last_activity(&app, "task-1"),
+            "2026-08-26T00:00:00Z"
+        );
     }
 
     #[test]
@@ -12400,7 +13349,7 @@ mod tests {
                 assert_eq!(
                     event_id,
                     &format!(
-                        "{}:run-001:round-001:node-001:attempt-001:turn-002:acp-turn-finished",
+                        "{}:task-001:run-001:round-001:node-001:attempt-001:turn-002:acp-turn-finished",
                         app.paths.project_id
                     )
                 );
@@ -13557,6 +14506,7 @@ mod tests {
                 bootstrap_provider: "claude-acp".to_string(),
                 bootstrap_model: None,
                 permission_mode: None,
+                auto_accept: false,
                 bootstrap_config_options: Default::default(),
                 acceptance_model: None,
                 acceptance_config_options: Default::default(),
@@ -13566,12 +14516,14 @@ mod tests {
                         provider: "codex-acp".to_string(),
                         model: None,
                         permission_mode: None,
+                        auto_accept: false,
                         config_options: Default::default(),
                     },
                     gold_band::dsl::DynamicAgentRef {
                         provider: "claude-acp".to_string(),
                         model: None,
                         permission_mode: None,
+                        auto_accept: false,
                         config_options: Default::default(),
                     },
                 ],
@@ -13587,32 +14539,6 @@ mod tests {
             providers_for_node(&node),
             vec!["claude-acp".to_string(), "codex-acp".to_string()]
         );
-    }
-
-    #[test]
-    fn canonical_permission_request_id_maps_display_id_to_pending_file_id() {
-        let dir = std::env::temp_dir().join(format!(
-            "gold-band-permission-id-test-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
-        gold_band::acp::permission::write_pending_permission(
-            &attempt_dir,
-            "0",
-            "turn-1",
-            "prompt-event-1",
-            serde_json::json!({}),
-            "1778771541Z".to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(
-            canonical_permission_request_id(&attempt_dir, "permission-permission-0"),
-            "0"
-        );
-
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -13647,7 +14573,7 @@ mod tests {
         let params = serde_json::json!({ "sessionId": "session-1" });
         gold_band::acp::permission::write_pending_permission(
             &attempt_dir,
-            "0",
+            "permission-0",
             "turn-1",
             "prompt-event-1",
             params.clone(),
@@ -13655,7 +14581,7 @@ mod tests {
         )
         .unwrap();
         let mut pending =
-            gold_band::acp::events::permission_request_event(1, "0".to_string(), params);
+            gold_band::acp::events::permission_request_event(1, "permission-0".to_string(), params);
         pending.id = "permission-0".to_string();
         pending.started_seq = Some(1);
         pending.ended_seq = Some(1);
@@ -13674,20 +14600,385 @@ mod tests {
         )
         .unwrap();
 
-        let written = write_acp_permission_response_signal(
+        let written = gold_band::acp::permission::write_permission_response_if_pending(
             &attempt_dir,
             "permission-0",
             Some("allow".into()),
+            false,
+            current_timestamp(),
         )
         .unwrap();
 
         assert!(written);
         assert!(
-            gold_band::acp::permission::permission_response_file(&attempt_dir, "0").exists(),
+            gold_band::acp::permission::permission_response_file(&attempt_dir, "permission-0")
+                .exists(),
             "permission response must remain for the live ACP waiter"
         );
 
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn permission_late_click_recovers_decision_from_durable_timeline() {
+        let root = tempfile::tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(root.path().join("repo")).unwrap());
+        let locator = intervention_locator(
+            &app,
+            "task-001".into(),
+            "run-001".into(),
+            "round-001".into(),
+            "worker".into(),
+            "attempt-001".into(),
+            None,
+            None,
+        );
+        let request = gold_band::acp::events::AcpUiEvent {
+            id: "permission-1".into(),
+            seq: 1,
+            timestamp: "1Z".into(),
+            kind: "permissionRequest".into(),
+            session_id: None,
+            content: None,
+            title: None,
+            tool_call_id: None,
+            status: Some("selected".into()),
+            started_seq: Some(1),
+            ended_seq: Some(1),
+            started_at: Some("1Z".into()),
+            ended_at: Some("1Z".into()),
+            timing: None,
+            raw: Some(serde_json::json!({
+                "requestId": "request-001",
+                "optionId": "allow-once"
+            })),
+        };
+        let timeline_path = intervention_timeline_path(&app, &locator);
+        gold_band::acp::events::write_timeline_items(&timeline_path, &[request]).unwrap();
+        let command = InterventionCommand {
+            locator,
+            request: InterventionRequestIdentity::Permission {
+                request_id: "request-001".into(),
+            },
+            expected_state: String::new(),
+            action: InterventionAction::PermissionOption {
+                option_id: "allow-once".into(),
+            },
+            expires_at_ms: None,
+        };
+
+        let result = recovered_permission_result(&app, &command)
+            .expect("durable permission decision should recover");
+        assert_eq!(
+            result.status,
+            gold_band::app::intervention::InterventionCommandStatus::AlreadyApplied
+        );
+    }
+
+    #[test]
+    fn desktop_intervention_source_ids_follow_the_original_request_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(root.path().join("repo")).unwrap());
+        let locator = intervention_locator(
+            &app,
+            "task-001".into(),
+            "run-001".into(),
+            "round-001".into(),
+            "worker".into(),
+            "attempt-001".into(),
+            None,
+            None,
+        );
+        let attempt_dir = intervention_timeline_path(&app, &locator)
+            .parent()
+            .unwrap()
+            .to_owned();
+        let timeline_identity = gold_band::acp::timeline::TimelineItemIdentity {
+            branch_id: "root".into(),
+            item_id: "request-item-7".into(),
+            revision: 7,
+        };
+        write_json(
+            &gold_band::acp::permission::pending_permission_file(&attempt_dir, "permission-1"),
+            &gold_band::acp::permission::PendingPermissionState {
+                identity: gold_band::acp::interaction::AcpPromptInteractionIdentity::new(
+                    "permission-1",
+                    gold_band::acp::interaction::AcpPromptInteractionKind::Permission,
+                    "turn-1",
+                    "prompt-event-1",
+                ),
+                payload: serde_json::json!({}),
+                created_at: "2026-09-03T00:00:00Z".into(),
+                timeline_identity: Some(timeline_identity.clone()),
+            },
+        )
+        .unwrap();
+        let permission = InterventionCommand {
+            locator: locator.clone(),
+            request: InterventionRequestIdentity::Permission {
+                request_id: "permission-1".into(),
+            },
+            expected_state: String::new(),
+            action: InterventionAction::PermissionOption {
+                option_id: "allow-once".into(),
+            },
+            expires_at_ms: None,
+        };
+        let expected_permission = gold_band::app::make_dedup_key_with_suffix(
+            &locator.project_id,
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+            "permission-requested:request-item-7",
+        );
+        assert_eq!(
+            desktop_intervention_source_event_id(&app, &permission).as_deref(),
+            Some(expected_permission.as_str())
+        );
+
+        let pending_elicitation = serde_json::from_value::<
+            gold_band::acp::elicitation::PendingElicitationState,
+        >(serde_json::json!({
+            "elicitationId": "elicit-1",
+            "jsonrpcId": 1,
+            "createdAt": "2026-09-03T00:00:00Z",
+            "timelineIdentity": timeline_identity,
+            "request": {
+                "mode": "form",
+                "sessionId": "session-1",
+                "message": "choose",
+                "requestedSchema": {
+                    "type": "object",
+                    "properties": {
+                        "choice": { "type": "string", "enum": ["a"] }
+                    },
+                    "required": ["choice"]
+                }
+            }
+        }))
+        .unwrap();
+        gold_band::acp::elicitation::write_pending_elicitation(&attempt_dir, &pending_elicitation)
+            .unwrap();
+        let elicitation = InterventionCommand {
+            locator: locator.clone(),
+            request: InterventionRequestIdentity::Elicitation {
+                elicitation_id: "elicit-1".into(),
+            },
+            expected_state: String::new(),
+            action: InterventionAction::Elicitation {
+                action: ElicitationAction::Accept,
+                content: Some(serde_json::json!({"choice": "a"})),
+            },
+            expires_at_ms: None,
+        };
+        let expected_elicitation = gold_band::app::make_dedup_key_with_suffix(
+            &locator.project_id,
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+            "elicitation-requested:request-item-7",
+        );
+        assert_eq!(
+            desktop_intervention_source_event_id(&app, &elicitation).as_deref(),
+            Some(expected_elicitation.as_str())
+        );
+
+        let manual = InterventionCommand {
+            locator: locator.clone(),
+            request: InterventionRequestIdentity::ManualCheck,
+            expected_state: String::new(),
+            action: InterventionAction::ManualCheck {
+                outcome: NodeOutcome::Success,
+            },
+            expires_at_ms: None,
+        };
+        let expected_manual = gold_band::app::make_dedup_key(
+            &locator.project_id,
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+            PauseReason::WaitingForUserInput,
+        );
+        assert_eq!(
+            desktop_intervention_source_event_id(&app, &manual).as_deref(),
+            Some(expected_manual.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn elicitation_desktop_boundary_replays_as_already_applied() {
+        let root = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(root.path().join("repo")).unwrap();
+        let app = App::new(repo_root.clone());
+        let locator = InterventionLocator {
+            project_id: app.paths.project_id.clone(),
+            task_id: "task-001".into(),
+            run_id: "run-001".into(),
+            round_id: "round-001".into(),
+            node_id: "worker".into(),
+            attempt_id: "attempt-001".into(),
+            outer_node_id: None,
+            outer_attempt_id: None,
+        };
+        write_json(
+            &app.paths.run_file(&locator.task_id, &locator.run_id),
+            &RunState {
+                version: gold_band::domain::VERSION.to_string(),
+                id: locator.run_id.clone(),
+                task_id: locator.task_id.clone(),
+                task_uuid: None,
+                status: RunStatus::Paused,
+                outcome: None,
+                started_at: "2026-09-03T00:00:00Z".into(),
+                updated_at: "2026-09-03T00:00:01Z".into(),
+                workflow_snapshot: "workflow.snapshot.json".into(),
+                current_round: Some(locator.round_id.clone()),
+                current_node: Some(locator.node_id.clone()),
+                current_attempt: Some(locator.attempt_id.clone()),
+                new_rounds_opened: 0,
+                pause_reason: Some(PauseReason::WaitingForUserInput),
+                uuid: None,
+                last_executed_node: None,
+                worktree: None,
+                execution: Default::default(),
+            },
+        )
+        .unwrap();
+        write_json(
+            &app.paths.node_file(
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                &locator.node_id,
+                &locator.attempt_id,
+            ),
+            &NodeState {
+                version: gold_band::domain::VERSION.to_string(),
+                acp_storage_schema_version: gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                node_id: locator.node_id.clone(),
+                node_type: gold_band::domain::NodeType::Worker,
+                run_id: locator.run_id.clone(),
+                round_id: locator.round_id.clone(),
+                attempt_id: locator.attempt_id.clone(),
+                status: RunStatus::Paused,
+                outcome: None,
+                started_at: "2026-09-03T00:00:00Z".into(),
+                finished_at: None,
+                manual_check_pending: false,
+                runtime_execution_id: None,
+                resolved_config: gold_band::domain::ResolvedConfig::new(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        let pending =
+            serde_json::from_value::<gold_band::acp::elicitation::PendingElicitationState>(
+                serde_json::json!({
+                    "identity": {
+                        "interactionId": "elicit-001",
+                        "kind": "elicitation",
+                        "turnId": "turn-1",
+                        "promptEventId": "prompt-event-1"
+                    },
+                    "payload": {
+                        "jsonrpcId": 1,
+                        "request": {
+                            "mode": "form",
+                            "sessionId": "session-001",
+                            "message": "choose a database",
+                            "requestedSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "database": {
+                                        "type": "string",
+                                        "oneOf": [
+                                            {"const": "mysql", "title": "MySQL"},
+                                            {"const": "postgres", "title": "PostgreSQL"}
+                                        ]
+                                    }
+                                },
+                                "required": ["database"]
+                            }
+                        }
+                    },
+                    "createdAt": "2026-09-03T00:00:02Z",
+                    "timelineIdentity": null
+                }),
+            )
+            .unwrap();
+        let attempt_dir = app.paths.attempt_dir(
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+        );
+        gold_band::acp::elicitation::write_pending_elicitation(&attempt_dir, &pending).unwrap();
+        let request_event = gold_band::acp::events::elicitation_request_event(
+            1,
+            pending.identity.interaction_id.clone(),
+            &pending.payload.request,
+        );
+        gold_band::acp::events::write_timeline_items(
+            &attempt_dir.join("acp.timeline.jsonl"),
+            &[request_event],
+        )
+        .unwrap();
+        let snapshot = InterventionCommandService::new(&app)
+            .inspect(
+                locator.clone(),
+                InterventionRequestIdentity::Elicitation {
+                    elicitation_id: "elicit-001".into(),
+                },
+            )
+            .unwrap();
+        let command = InterventionCommand {
+            locator,
+            request: snapshot.request.clone(),
+            expected_state: snapshot.expected_state.clone(),
+            action: InterventionAction::Elicitation {
+                action: ElicitationAction::Accept,
+                content: Some(serde_json::json!({"database": "mysql"})),
+            },
+            expires_at_ms: snapshot.expires_at_ms,
+        };
+        let state = DesktopState::new(crate::state::DesktopContext {
+            repo_root,
+            config: RuntimeConfig::default(),
+            recent_workspaces: Vec::new(),
+            needs_workspace: false,
+        });
+        let first =
+            execute_elicitation_intervention_boundary(&state, &app, command.clone(), |_| {})
+                .await
+                .unwrap();
+        assert_eq!(
+            first.status,
+            gold_band::app::intervention::InterventionCommandStatus::Accepted
+        );
+        gold_band::acp::elicitation::remove_elicitation_signal_files(&attempt_dir, "elicit-001")
+            .unwrap();
+        let second = execute_elicitation_intervention_boundary(&state, &app, command, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(
+            second.status,
+            gold_band::app::intervention::InterventionCommandStatus::AlreadyApplied
+        );
+        assert!(
+            !gold_band::acp::elicitation::pending_elicitation_file(&attempt_dir, "elicit-001")
+                .exists()
+        );
+        assert!(
+            !gold_band::acp::elicitation::elicitation_response_file(&attempt_dir, "elicit-001")
+                .exists()
+        );
     }
 
     #[test]
@@ -13728,69 +15019,56 @@ mod tests {
             }
         }));
 
+        let context = gold_band::app::AcpLiveEventContext {
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "plan".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            outer_node_id: None,
+            outer_attempt_id: None,
+        };
+        let request_event = |elicitation_id: &str, seq: u64| {
+            let request = serde_json::from_value(serde_json::json!({
+                "mode": "form",
+                "sessionId": "session-1",
+                "message": "Choose an option",
+                "requestedSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }))
+            .unwrap();
+            let event = gold_band::acp::events::elicitation_request_event(
+                seq,
+                elicitation_id.to_string(),
+                &request,
+            );
+            assert!(
+                event
+                    .raw
+                    .as_ref()
+                    .and_then(|raw| raw.get("elicitationId"))
+                    .is_none(),
+                "request identity belongs to AcpUiEvent.id, not provider raw payload"
+            );
+            event
+        };
+
         maybe_emit_elicitation_intervention(
             &bus,
             &app.paths.project_id,
             Some(&app),
-            &gold_band::app::AcpLiveEventContext {
-                task_id: "task-001".to_string(),
-                task_uuid: None,
-                run_id: "run-001".to_string(),
-                round_id: "round-001".to_string(),
-                node_id: "plan".to_string(),
-                attempt_id: "attempt-001".to_string(),
-                outer_node_id: None,
-                outer_attempt_id: None,
-            },
-            &AcpUiEvent {
-                kind: "elicitationRequest".to_string(),
-                id: "elicit-001".to_string(),
-                seq: 1,
-                timestamp: "1Z".to_string(),
-                session_id: None,
-                status: Some("pending".to_string()),
-                title: None,
-                content: None,
-                tool_call_id: None,
-                started_seq: None,
-                ended_seq: None,
-                started_at: Some("1Z".to_string()),
-                ended_at: None,
-                timing: None,
-                raw: None,
-            },
+            &context,
+            &request_event("elicit-001", 1),
         );
         maybe_emit_elicitation_intervention(
             &bus,
             &app.paths.project_id,
             Some(&app),
-            &gold_band::app::AcpLiveEventContext {
-                task_id: "task-001".to_string(),
-                task_uuid: None,
-                run_id: "run-001".to_string(),
-                round_id: "round-001".to_string(),
-                node_id: "plan".to_string(),
-                attempt_id: "attempt-001".to_string(),
-                outer_node_id: None,
-                outer_attempt_id: None,
-            },
-            &AcpUiEvent {
-                kind: "elicitationRequest".to_string(),
-                id: "elicit-002".to_string(),
-                seq: 2,
-                timestamp: "2Z".to_string(),
-                session_id: None,
-                status: Some("pending".to_string()),
-                title: None,
-                content: None,
-                tool_call_id: None,
-                started_seq: None,
-                ended_seq: None,
-                started_at: Some("2Z".to_string()),
-                ended_at: None,
-                timing: None,
-                raw: None,
-            },
+            &context,
+            &request_event("elicit-002", 2),
         );
 
         let events = seen.lock().unwrap();
@@ -13799,14 +15077,14 @@ mod tests {
         assert_eq!(
             events[0].1,
             format!(
-                "{}:run-001:round-001:plan:attempt-001:elicitation-requested:elicit-001",
+                "{}:task-001:run-001:round-001:plan:attempt-001:elicitation-requested:elicit-001",
                 app.paths.project_id
             )
         );
         assert_eq!(
             events[1].1,
             format!(
-                "{}:run-001:round-001:plan:attempt-001:elicitation-requested:elicit-002",
+                "{}:task-001:run-001:round-001:plan:attempt-001:elicitation-requested:elicit-002",
                 app.paths.project_id
             )
         );
@@ -13822,8 +15100,17 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_for_handler = seen.clone();
         bus.subscribe_inline(Arc::new(move |event| {
-            if let RuntimeLifecycleEvent::InterventionRequested { kind, event_id, .. } = event {
-                seen_for_handler.lock().unwrap().push((kind, event_id));
+            if let RuntimeLifecycleEvent::InterventionRequested {
+                kind,
+                event_id,
+                request,
+                ..
+            } = event
+            {
+                seen_for_handler
+                    .lock()
+                    .unwrap()
+                    .push((kind, event_id, request));
             }
         }));
         let context = gold_band::app::AcpLiveEventContext {
@@ -13836,9 +15123,9 @@ mod tests {
             outer_node_id: None,
             outer_attempt_id: None,
         };
-        let permission_event = |id: &str, seq: u64| AcpUiEvent {
+        let permission_event = |timeline_id: &str, request_id: &str, seq: u64| AcpUiEvent {
             kind: "permissionRequest".to_string(),
-            id: id.to_string(),
+            id: timeline_id.to_string(),
             seq,
             timestamp: format!("{seq}Z"),
             session_id: None,
@@ -13851,7 +15138,7 @@ mod tests {
             started_at: Some(format!("{seq}Z")),
             ended_at: None,
             timing: None,
-            raw: None,
+            raw: Some(serde_json::json!({ "requestId": request_id })),
         };
 
         maybe_emit_permission_intervention(
@@ -13859,14 +15146,14 @@ mod tests {
             "project-1",
             None,
             &context,
-            &permission_event("permission-1", 1),
+            &permission_event("permission-0", "0", 1),
         );
         maybe_emit_permission_intervention(
             &bus,
             "project-1",
             None,
             &context,
-            &permission_event("permission-2", 2),
+            &permission_event("permission-1", "1", 2),
         );
 
         let events = seen.lock().unwrap();
@@ -13874,12 +15161,92 @@ mod tests {
         assert_eq!(events[0].0, RuntimeInterventionKind::PermissionRequested);
         assert_eq!(
             events[0].1,
-            "project-1:run-001:round-001:plan:attempt-001:permission-requested:permission-1"
+            "project-1:task-001:run-001:round-001:plan:attempt-001:permission-requested:permission-0"
+        );
+        assert_eq!(
+            events[0].2,
+            InterventionRequestIdentity::Permission {
+                request_id: "0".into()
+            }
         );
         assert_eq!(
             events[1].1,
-            "project-1:run-001:round-001:plan:attempt-001:permission-requested:permission-2"
+            "project-1:task-001:run-001:round-001:plan:attempt-001:permission-requested:permission-1"
         );
+        assert_eq!(
+            events[1].2,
+            InterventionRequestIdentity::Permission {
+                request_id: "1".into()
+            }
+        );
+    }
+
+    #[test]
+    fn maybe_emit_permission_intervention_keeps_reused_request_ids_distinct() {
+        let bus = gold_band::app::observability::RuntimeLifecycleBus::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_handler = seen.clone();
+        bus.subscribe_inline(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::InterventionRequested {
+                event_id, request, ..
+            } = event
+            {
+                seen_for_handler.lock().unwrap().push((event_id, request));
+            }
+        }));
+        let context = gold_band::app::AcpLiveEventContext {
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "direct-agent".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            outer_node_id: None,
+            outer_attempt_id: None,
+        };
+        let permission_event = |timeline_id: &str, tool_call_id: &str| AcpUiEvent {
+            kind: "permissionRequest".to_string(),
+            id: timeline_id.to_string(),
+            seq: 1,
+            timestamp: "1Z".to_string(),
+            session_id: None,
+            status: Some("pending".to_string()),
+            title: None,
+            content: None,
+            tool_call_id: Some(tool_call_id.to_string()),
+            started_seq: None,
+            ended_seq: None,
+            started_at: Some("1Z".to_string()),
+            ended_at: None,
+            timing: None,
+            raw: Some(serde_json::json!({ "requestId": "0" })),
+        };
+
+        maybe_emit_permission_intervention(
+            &bus,
+            "project-1",
+            None,
+            &context,
+            &permission_event("permission-first", "call-first"),
+        );
+        maybe_emit_permission_intervention(
+            &bus,
+            "project-1",
+            None,
+            &context,
+            &permission_event("permission-second", "call-second"),
+        );
+
+        let events = seen.lock().unwrap();
+        assert_ne!(events[0].0, events[1].0);
+        for request in events.iter().map(|event| event.1.clone()) {
+            assert_eq!(
+                request,
+                InterventionRequestIdentity::Permission {
+                    request_id: "0".into()
+                }
+            );
+        }
     }
 
     #[test]

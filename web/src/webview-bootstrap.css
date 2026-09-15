@@ -1,0 +1,113 @@
+:root {
+  color-scheme: light dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f6f4ef;
+  color: #27241f;
+}
+
+body {
+  margin: 0;
+}
+
+.webview-startup-shell {
+  box-sizing: border-box;
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 32px;
+  background: radial-gradient(circle at top, #fffaf0 0, #f6f4ef 48%, #eeebe4 100%);
+}
+
+.webview-startup-panel {
+  box-sizing: border-box;
+  width: min(680px, 100%);
+  padding: 32px;
+  border: 1px solid rgba(75, 66, 50, 0.16);
+  border-radius: 18px;
+  background: #fffdf8;
+  box-shadow: 0 18px 60px rgba(62, 51, 33, 0.1);
+}
+
+.webview-startup-mark {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 12px;
+  background: #9d7a2f;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.webview-startup-panel h1 {
+  margin: 22px 0 10px;
+  font-size: 22px;
+  line-height: 1.35;
+}
+
+.webview-startup-panel p {
+  margin: 8px 0;
+  line-height: 1.7;
+}
+
+.webview-startup-guidance {
+  color: #6c6253;
+}
+
+.webview-startup-panel pre {
+  max-height: 240px;
+  margin: 22px 0;
+  padding: 14px;
+  overflow: auto;
+  border-radius: 10px;
+  background: #f2eee6;
+  color: #4b4438;
+  font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.webview-startup-panel button {
+  min-height: 36px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 9px;
+  background: #9d7a2f;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+}
+
+.webview-startup-panel button:focus-visible {
+  outline: 2px solid #9d7a2f;
+  outline-offset: 3px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    background: #171612;
+    color: #f2eee6;
+  }
+
+  .webview-startup-shell {
+    background: radial-gradient(circle at top, #262219 0, #171612 52%, #11100d 100%);
+  }
+
+  .webview-startup-panel {
+    border-color: rgba(233, 211, 163, 0.14);
+    background: #211f1a;
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.32);
+  }
+
+  .webview-startup-guidance {
+    color: #bdb4a4;
+  }
+
+  .webview-startup-panel pre {
+    background: #171612;
+    color: #d7d0c3;
+  }
+}

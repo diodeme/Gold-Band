@@ -54,6 +54,16 @@ interface DynamicNodeSpec {
 
 只读意图通过 task 文本表达。当前产品不宣称文件系统级只读保护；未来如需强制能力，应新增独立 AccessCapability，而不能改变 workspace 位置。
 
+### 3.1 范围控制与交接
+
+- 根因判断：本次范围漂移属于角色与通信契约缺少范围权威的设计缺陷，不是 `sessionMode=continue` 丢失原会话。真实缺陷由验收 Agent 正确发现；失调发生在“验收建议 -> 修复任务 -> 自选实现 -> 下一轮验收标准”的连续升级中。
+- 低成本修复采用同一范围权威：相关的人类最新指令 > 原始需求与明确非目标 > 用户批准的标准及运行前已纳入范围的项目契约 > 当前节点任务 > 本轮 Agent 产物。Runtime task 可以拆解已授权工作，低层内容只能细化执行，不能扩大高层范围。
+- 吸收 Stop That Shit 的前置停止检查，以及 Ponytail 的“理解调用链、优先复用、交付最小完整方案”；不集成缺少 ACP/Desktop adapter 的 Guard，也不引入完整常驻 persona、最少文件或单测试规则。语义范围不能靠关键词匹配判断。
+- 双语 prompt 同步修改 `ai-dynamic/system`、`acceptance`、`output_protocol`、`proposal_repair`、`profile/accept`、`profile/dev-test` 与 `runtime/workflow_resume`；fanout 不重复 system 与 finalize 已有规则。核心只保留范围权威、结果导向 gate、`BLOCKER/FOLLOW_UP` 和恢复最小范围内方案；通用 accept 角色删除重复的教学、示例与检查清单段落。
+- `dev-test` 首次执行既定范围，处理反馈时只修复有范围依据、当前证据和失败因果的 `BLOCKER`。交付既定结果所必需的内部手段无需被需求逐字列出；不能指出范围依据及省略后失败结果的新增工作不实施。proposal repair 重跑 scope gate，通用 resume 只提醒“反馈是证据，不是新增授权”。
+- Acceptance 保持只读；`BLOCKER` 必须属于范围内结果失败或无法验证、当前改动造成的可达回归，或可归因到本轮变更的范围漂移，并给出当前证据与失败因果。其他发现是 `FOLLOW_UP`，不影响通过、不派生任务。
+- 第一阶段不改变 `DynamicNodeSpec`、graph、持久化或 Runtime 调度。若固定回放评测仍复现漂移，再设计 criterion reference / blocker ID 和 requirement snapshot；在缺少稳定 criterion identity 前，不增加只能校验非空字段的伪硬约束。
+
 ## 4. Runtime workspace 模型
 
 ### 4.1 WorkspaceState
@@ -151,3 +161,8 @@ typed commands / runtime
 - Agent schema 与中英文 prompt 不再出现 workspace mode。
 - Git 门禁失败不创建 run；普通 worker 工作流仍可运行。
 - AI-DYNAMIC provider/runtime 自动重试次数从共享 `RetryPolicy` 推导，并与 proposal repair 预算分别验收。
+- 中英文 AI-DYNAMIC system 都包含范围权威和结果导向 gate，hidden context 不得改变业务范围。
+- 内建 Acceptance 与普通 `Worker + pf-builtin-accept` 都把发现分成 `BLOCKER / FOLLOW_UP`；只有范围内结果失败或无法验证、current-change regression 或可归因到本轮变更的范围漂移，并有当前证据和失败因果的 `BLOCKER` 能使验收失败。
+- `dev-test`、output protocol、proposal repair 和 workflow resume 不会把前序建议、本轮 Agent 产物或 `FOLLOW_UP` 升级成新验收标准或后继修复任务。
+- prompt 契约测试先在旧文案上稳定失败，再使用同一测试确认转绿；完整 PromptBundle 回归覆盖 `continue` 和普通 accept profile 的实际组合路径。
+- 性能与过度设计验收：本阶段不增加 Agent、额外 provider 调用/往返、文件操作、扫描、锁、缓存、队列、状态机或依赖，也不引入关键词硬拦截。AI-DYNAMIC 调用只增加短小的静态契约；通用 accept 角色中文由 107 行降至 55 行、英文由 109 行降至 57 行，全部改动 prompt 的总字符数净下降。

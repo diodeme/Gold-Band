@@ -15,5 +15,9 @@
   "feedbackEnabled": false,
   "metricsToggleLocked": false,
   "metricsBaseUrl": "",
-  "metricsApiKey": ""
+  "metricsApiKey": "",
+  "multicaEnabled": true,
+  "multicaToggleLocked": false,
+  "multicaBaseUrl": "http://localhost:8080",
+  "multicaAppUrl": "http://localhost:3000"
 }

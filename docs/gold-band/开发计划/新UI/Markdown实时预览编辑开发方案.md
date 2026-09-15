@@ -392,3 +392,10 @@ markdownEmbeddedImageMaxConcurrent = 4
 - [x] 运行目录按 canonical path 识别 Markdown，不再把 `.md` 作为缺少 mode 的普通文本查看器打开。
 - [x] 会话附件复用同一适配器，删除重复的 mode 重置 effect。
 - [x] 增加组件与运行目录 DOM 契约测试，覆盖默认实时预览、源码切换、文档身份重置、只读属性和超阈值降级。
+
+## 17. 2026-08-26 构建依赖单实例收敛
+
+- [x] 根因判断：Markdown 单 View、持续 parser 与 Atomic decoration 的原始设计正确，缺陷属于构建依赖边界实现不完整。严格包管理器布局同时解析出 `@codemirror/language` 6.11.3 与 6.12.4 后，parser 与 Atomic 分属不同模块实例，Facet/StateField 身份不一致，导致实时预览静默得到空语法树并退化为源码。
+- [x] 构建契约：使用 Vite 官方 `resolve.dedupe`，让 React、CodeMirror 和 Lezer 的身份敏感包统一从应用根解析；生产 Vite 与 Vitest 复用同一份清单，测试中的 CodeMirror/Lezer 依赖统一内联解析。不升级依赖、不修改 lockfile，也不为 Markdown 增加 fallback parser 或补丁式渲染路径。
+- [x] 回归：修复前现有 Markdown 真实 DOM 契约 8 项全部失败；修复后 8 项全部通过，新增生产 Vite 单例配置契约通过，生产 Web 构建通过，并由真实页面确认标题和表格恢复实时预览。
+- 性能与过度设计评审：dedupe 只约束构建期模块解析，不增加运行时状态、I/O、扫描、缓存、队列、并发、锁或渲染工作；同时避免重复运行时进入 bundle。复用 Vite/Vitest 官方能力和既有 DOM 契约，不新增依赖或第二套 Markdown 实现，复杂度与模块身份风险匹配。

@@ -5,6 +5,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AcpConversationComposer } from '@/components/conversation/AcpConversationComposer';
+import { ReadOnlyExperience } from '@/components/ReadOnlyExperience';
+import { SlashCommandMenu } from '@/components/conversation/SlashCommandMenu';
 import { ACP_SESSION_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 import '@/i18n';
 
@@ -16,6 +18,8 @@ function baseProps(overrides: Partial<ComposerProps> = {}): ComposerProps {
   return {
     prompt: '',
     onPromptChange: vi.fn(),
+    onHistoryTextCommit: vi.fn(),
+    canSubmitHistory: true,
     onSubmit: vi.fn(),
     sending: false,
     attachments: [],
@@ -71,6 +75,10 @@ describe('AcpConversationComposer', () => {
       unobserve() {}
       disconnect() {}
     });
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
     host = document.createElement('div');
     document.body.appendChild(host);
     root = createRoot(host);
@@ -80,11 +88,29 @@ describe('AcpConversationComposer', () => {
     await act(async () => root.unmount());
     host.remove();
     vi.unstubAllGlobals();
+    Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
   });
 
   async function renderComposer(props: Partial<ComposerProps> = {}) {
     await act(async () => root.render(<AcpConversationComposer {...baseProps(props)} />));
   }
+
+  it('keeps the demo composer visible while blocking input, attachments and submission', async () => {
+    const props = baseProps({ prompt: 'existing draft', canSubmit: true, canStop: true, showRuntimeContinue: true });
+    await act(async () => root.render(<ReadOnlyExperience.Provider value={true}><AcpConversationComposer {...props} /></ReadOnlyExperience.Provider>));
+    const textarea = host.querySelector('textarea')!;
+    expect(textarea).not.toBeNull();
+    expect(textarea.disabled).toBe(true);
+    expect(textarea.value).toBe('');
+    expect(textarea.placeholder).toContain('Demo');
+    const buttons = [...host.querySelectorAll('button')];
+    expect(buttons.length).toBeGreaterThan(0);
+    await act(async () => buttons.forEach((button) => button.click()));
+    expect(props.onSubmit).not.toHaveBeenCalled();
+    expect(props.onPickFiles).not.toHaveBeenCalled();
+    expect(props.onStop).not.toHaveBeenCalled();
+    expect(props.onRuntimeContinue).not.toHaveBeenCalled();
+  });
 
   it('does not render an empty attachment spacer between an attached queue and the prompt input', async () => {
     await renderComposer({ attachments: [], attachedPanelVisible: true });
@@ -180,6 +206,46 @@ describe('AcpConversationComposer', () => {
 
     expect(host.textContent).not.toContain('Enter 发送');
     expect(host.textContent).not.toContain('Shift+Enter');
+  });
+
+  it('renders the slash command popover on an opaque semantic surface', async () => {
+    await renderComposer({
+      slashCommands: [{ name: 'review', description: 'Review the current change' }],
+      slashMenuOpen: true,
+    });
+
+    const menu = document.querySelector('[data-slot="slash-command-menu"]');
+    expect(menu).toBeTruthy();
+    expect(menu?.classList.contains('bg-popover')).toBe(true);
+    expect(menu?.className).not.toMatch(/bg-popover\/[0-9]/);
+    expect(menu?.className).not.toContain('backdrop-blur');
+  });
+
+  it('raises the open inline slash menu above later composer controls only while open', async () => {
+    const props = {
+      commands: [{ name: 'review', description: 'Review the current change' }],
+      activeIndex: 0,
+      onActiveIndexChange: vi.fn(),
+      onDismiss: vi.fn(),
+      onSelect: vi.fn(),
+      variant: 'inline' as const,
+    };
+    await act(async () => root.render(
+      <SlashCommandMenu {...props} open>
+        <textarea aria-label="test composer" />
+      </SlashCommandMenu>,
+    ));
+
+    const menu = host.querySelector('[data-slot="slash-command-menu"]');
+    expect(menu?.parentElement?.classList.contains('z-50')).toBe(true);
+    expect(menu?.classList.contains('bg-popover')).toBe(true);
+
+    await act(async () => root.render(
+      <SlashCommandMenu {...props} open={false}>
+        <textarea aria-label="test composer" />
+      </SlashCommandMenu>,
+    ));
+    expect(host.firstElementChild?.classList.contains('z-50')).toBe(false);
   });
 
   it('renders quotes and attachments inside the prompt input context area', async () => {

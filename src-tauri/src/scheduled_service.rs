@@ -307,52 +307,6 @@ impl ScheduledTaskService {
         Ok((self.resolve_workspace)(project_id)?.workspace_name)
     }
 
-    pub fn list_occurrence_page(
-        &self,
-        project_id: &str,
-        job_id: &str,
-        status: Option<gold_band::scheduler::occurrence::OccurrenceStatus>,
-        cursor: Option<&gold_band::scheduler::db::OccurrencePageCursor>,
-    ) -> ScheduledServiceResult<gold_band::scheduler::db::OccurrencePage> {
-        let workspace = (self.resolve_workspace)(project_id)?;
-        let resolved_project_id = workspace.app.paths.project_id.clone();
-        let database = ScheduledTaskDatabase::open(workspace.app.paths.scheduler_db_path())
-            .map_err(ScheduledServiceError::from_database)?;
-        database
-            .get_job_definition(&resolved_project_id, job_id)
-            .map_err(ScheduledServiceError::from_database)?
-            .ok_or_else(|| ScheduledServiceError::not_found(project_id, job_id))?;
-        database
-            .list_occurrence_page(
-                &resolved_project_id,
-                job_id,
-                status,
-                cursor,
-                gold_band::scheduler::db::OCCURRENCE_HISTORY_PAGE_SIZE,
-            )
-            .map_err(ScheduledServiceError::from_database)
-    }
-
-    pub fn list_execution_history_page(
-        &self,
-        project_id: &str,
-        scheduled_task_id: &str,
-        cursor: Option<&ScheduledExecutionHistoryCursor>,
-    ) -> ScheduledServiceResult<ScheduledExecutionHistoryPage> {
-        let workspace = (self.resolve_workspace)(project_id)?;
-        let resolved_project_id = workspace.app.paths.project_id.clone();
-        let database = ScheduledTaskDatabase::open(workspace.app.paths.scheduler_db_path())
-            .map_err(ScheduledServiceError::from_database)?;
-        database
-            .list_execution_history_page(
-                &resolved_project_id,
-                scheduled_task_id,
-                cursor,
-                gold_band::scheduler::db::OCCURRENCE_HISTORY_PAGE_SIZE,
-            )
-            .map_err(ScheduledServiceError::from_database)
-    }
-
     pub fn list_execution_history_page_anchored(
         &self,
         project_id: &str,
@@ -517,7 +471,7 @@ impl ScheduledTaskService {
             auto_config: input.auto_config.clone(),
             attachment_paths: input.attachment_paths.clone(),
             work_location: Default::default(),
-            branch_checkpoint: None,
+            selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -685,7 +639,7 @@ impl ScheduledTaskService {
             auto_config: input.auto_config.clone(),
             attachment_paths: Some(attachment_paths),
             work_location: Default::default(),
-            branch_checkpoint: None,
+            selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -1775,8 +1729,14 @@ mod tests {
         assert!(
             fixture
                 .database
-                .list_execution_history(&fixture.app.paths.project_id, definition.id(), 20,)
+                .list_execution_history_page(
+                    &fixture.app.paths.project_id,
+                    definition.id(),
+                    None,
+                    20,
+                )
                 .unwrap()
+                .items
                 .is_empty()
         );
         assert_eq!(
@@ -1826,8 +1786,14 @@ mod tests {
             assert_eq!(
                 fixture
                     .database
-                    .list_execution_history(&fixture.app.paths.project_id, definition.id(), 20,)
+                    .list_execution_history_page(
+                        &fixture.app.paths.project_id,
+                        definition.id(),
+                        None,
+                        20,
+                    )
                     .unwrap()
+                    .items
                     .len(),
                 1
             );
@@ -1911,7 +1877,12 @@ mod tests {
 
         let page = fixture
             .service
-            .list_execution_history_page(&fixture.app.paths.project_id, definition.id(), None)
+            .list_execution_history_page_anchored(
+                &fixture.app.paths.project_id,
+                definition.id(),
+                None,
+                None,
+            )
             .unwrap();
 
         assert_eq!(page.items.len(), 1);

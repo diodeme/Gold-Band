@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, GitBranch, Loader2, Plus } from 'lucide-react';
+import { Check, GitBranch, Loader2, Plus, TriangleAlert } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { changeGitBranch, getGitBranchPickerSnapshot } from '@/api';
+import { changeGitBranch, getGitBranchPickerSnapshot, openExternalUrl } from '@/api';
 import { displayAppError } from '@/i18n';
-import type { GitBranchCheckpointVm, GitBranchPickerSnapshotVm } from '@/types';
+import type { GitBranchPickerSnapshotVm } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
   Command,
@@ -27,6 +27,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { useOverflowTooltip } from '@/hooks/useOverflowTooltip';
+import { GIT_DOWNLOAD_URL, isGitVersionCapabilityError } from '@/lib/git-capability';
 import { useGitBranchPickerSnapshotStore } from './GitBranchPickerSnapshotContext';
 
 export interface GitBranchSelectorProps {
@@ -35,7 +36,8 @@ export interface GitBranchSelectorProps {
   disabled?: boolean;
   readOnlyBranch?: string | null;
   variant?: 'home' | 'session';
-  onCheckpointChange?: (checkpoint: GitBranchCheckpointVm | null) => void;
+  responsiveContext?: boolean;
+  onBranchChange?: (branch: string | null) => void;
   onMutationPendingChange?: (pending: boolean) => void;
 }
 
@@ -45,7 +47,8 @@ export function GitBranchSelector({
   disabled = false,
   readOnlyBranch,
   variant = 'home',
-  onCheckpointChange,
+  responsiveContext = false,
+  onBranchChange,
   onMutationPendingChange,
 }: GitBranchSelectorProps) {
   const { t } = useTranslation();
@@ -61,51 +64,73 @@ export function GitBranchSelector({
     loading: boolean;
   }>(() => ({ scopeKey, snapshot: cachedSnapshot, loading: readOnlyBranch === undefined && !cachedSnapshot }));
   const [changing, setChanging] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{
+    code: string | null;
+    params: Record<string, unknown>;
+    message: string;
+  } | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [newBranchName, setNewBranchName] = useState('');
   const requestSequenceRef = useRef(0);
+  const onBranchChangeRef = useRef(onBranchChange);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverUsedPointerRef = useRef(false);
+  const compactPointerClickPendingRef = useRef(false);
   const {
     valueRef: branchValueRef,
     tooltipOpen: branchTooltipOpen,
     showTooltipIfOverflowing: showBranchTooltipIfOverflowing,
     hideTooltip: hideBranchTooltip,
     handleTooltipOpenChange: handleBranchTooltipOpenChange,
-  } = useOverflowTooltip<HTMLSpanElement>();
+  } = useOverflowTooltip<HTMLSpanElement>({ always: responsiveContext });
   const visiblePickerState = pickerState.scopeKey === scopeKey
     ? pickerState
     : { scopeKey, snapshot: cachedSnapshot, loading: readOnlyBranch === undefined && !cachedSnapshot };
   const snapshot = visiblePickerState.snapshot;
   const loading = visiblePickerState.loading;
+  const handleBranchTooltipRootOpenChange = useCallback((next: boolean) => {
+    if (!next && responsiveContext && compactPointerClickPendingRef.current) return;
+    handleBranchTooltipOpenChange(next);
+  }, [handleBranchTooltipOpenChange, responsiveContext]);
 
-  const publishCheckpoint = useCallback((next: GitBranchPickerSnapshotVm | null) => {
-    onCheckpointChange?.(
-      next?.currentBranch && next.headOid
-        ? { branch: next.currentBranch, headOid: next.headOid, revision: next.revision }
-        : null,
-    );
-  }, [onCheckpointChange]);
+  useEffect(() => {
+    onBranchChangeRef.current = onBranchChange;
+  }, [onBranchChange]);
+
+  const publishBranch = useCallback((next: GitBranchPickerSnapshotVm | null) => {
+    onBranchChangeRef.current?.(next?.currentBranch ?? null);
+  }, []);
 
   const loadSnapshot = useCallback(async () => {
     if (readOnlyBranch !== undefined) return;
     const sequence = ++requestSequenceRef.current;
     const cached = snapshotStore.get(projectId, workspacePath);
     setPickerState({ scopeKey, snapshot: cached, loading: !cached });
-    publishCheckpoint(cached);
+    publishBranch(cached);
     setError(null);
     try {
       const next = await getGitBranchPickerSnapshot(projectId, workspacePath);
       if (sequence !== requestSequenceRef.current) return;
       snapshotStore.set(projectId, workspacePath, next);
       setPickerState({ scopeKey, snapshot: next, loading: false });
-      publishCheckpoint(next);
+      publishBranch(next);
     } catch (cause) {
       if (sequence !== requestSequenceRef.current) return;
-      setPickerState({ scopeKey, snapshot: cached, loading: false });
-      publishCheckpoint(cached);
-      setError(displayAppError(t, cause));
+      const candidate = cause && typeof cause === 'object'
+        ? cause as { code?: unknown; params?: unknown }
+        : null;
+      const code = typeof candidate?.code === 'string' ? candidate.code : null;
+      const params = candidate?.params && typeof candidate.params === 'object'
+        ? candidate.params as Record<string, unknown>
+        : {};
+      const versionCapabilityError = isGitVersionCapabilityError(code);
+      if (versionCapabilityError) snapshotStore.delete(projectId, workspacePath);
+      const fallback = versionCapabilityError ? null : cached;
+      setPickerState({ scopeKey, snapshot: fallback, loading: false });
+      publishBranch(fallback);
+      setError({ code, params, message: displayAppError(t, cause) });
     }
-  }, [projectId, publishCheckpoint, readOnlyBranch, scopeKey, snapshotStore, t, workspacePath]);
+  }, [projectId, publishBranch, readOnlyBranch, scopeKey, snapshotStore, t, workspacePath]);
 
   useEffect(() => {
     void loadSnapshot();
@@ -132,14 +157,14 @@ export function GitBranchSelector({
       });
       snapshotStore.set(projectId, workspacePath, next);
       setPickerState({ scopeKey, snapshot: next, loading: false });
-      publishCheckpoint(next);
+      publishBranch(next);
       setOpen(false);
       setCreateOpen(false);
       setNewBranchName('');
     } catch (cause) {
       const message = displayAppError(t, cause);
       await loadSnapshot();
-      setError(message);
+      setError({ code: null, params: {}, message });
     } finally {
       setChanging(false);
     }
@@ -169,7 +194,10 @@ export function GitBranchSelector({
     );
   }
 
-  const currentBranch = snapshot?.currentBranch ?? t('conversation.branchPicker.unavailable');
+  const versionCapabilityError = isGitVersionCapabilityError(error?.code);
+  const currentBranch = versionCapabilityError
+    ? t('conversation.branchPicker.versionUnsupportedLabel')
+    : snapshot?.currentBranch ?? t('conversation.branchPicker.unavailable');
   const blocked = disabled
     || changing
     || Boolean(snapshot?.lock.locked)
@@ -182,33 +210,63 @@ export function GitBranchSelector({
 
   return (
     <>
-      <Tooltip open={branchTooltipOpen} onOpenChange={handleBranchTooltipOpenChange}>
+      <Tooltip open={branchTooltipOpen && !open} onOpenChange={handleBranchTooltipRootOpenChange}>
         <Popover open={open} onOpenChange={(next) => {
+          compactPointerClickPendingRef.current = false;
           setOpen(next);
           hideBranchTooltip();
-          if (next && !snapshot && !loading) void loadSnapshot();
+          if (next && !snapshot && !loading && !error) void loadSnapshot();
         }}>
           <TooltipTrigger asChild>
             <PopoverTrigger asChild>
               <Button
+                ref={triggerRef}
                 type="button"
                 variant={null}
                 size="sm"
                 disabled={disabled}
-                aria-label={t('conversation.branchPicker.label')}
+                aria-label={`${t('conversation.branchPicker.label')}: ${currentBranch}`}
                 data-git-branch-selector="editable"
+                data-git-branch-popover-open={open ? 'true' : 'false'}
                 onPointerEnter={showBranchTooltipIfOverflowing}
-                onPointerLeave={hideBranchTooltip}
-                onPointerDown={hideBranchTooltip}
+                onPointerLeave={() => {
+                  compactPointerClickPendingRef.current = false;
+                  hideBranchTooltip();
+                }}
+                onPointerDownCapture={(event) => {
+                  compactPointerClickPendingRef.current = responsiveContext && event.button === 0;
+                  popoverUsedPointerRef.current = event.button === 0;
+                }}
+                onKeyDownCapture={() => {
+                  compactPointerClickPendingRef.current = false;
+                  popoverUsedPointerRef.current = false;
+                }}
+                onPointerCancel={() => {
+                  compactPointerClickPendingRef.current = false;
+                  hideBranchTooltip();
+                }}
+                onClickCapture={() => {
+                  compactPointerClickPendingRef.current = false;
+                }}
                 onFocus={showBranchTooltipIfOverflowing}
-                onBlur={hideBranchTooltip}
+                onBlur={() => {
+                  compactPointerClickPendingRef.current = false;
+                  hideBranchTooltip();
+                }}
                 className={cn(
-                  'h-7 min-w-0 max-w-44 gap-1.5 rounded-md px-1.5 text-sm font-normal shadow-none hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-primary/10 has-[>svg]:px-1.5 dark:hover:bg-accent/50',
+                  'h-7 min-w-0 max-w-44 gap-1.5 rounded-md px-1.5 text-sm font-normal shadow-none hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-primary/10 data-[git-branch-popover-open=true]:bg-accent data-[git-branch-popover-open=true]:text-accent-foreground has-[>svg]:px-1.5 dark:hover:bg-accent/50 dark:data-[git-branch-popover-open=true]:bg-accent/50',
                   variant === 'session' && 'max-w-36 text-xs text-foreground/80',
+                  responsiveContext && 'w-7 shrink-0 justify-center gap-0 px-0 has-[>svg]:px-0 @md/conversation-context:w-auto @md/conversation-context:shrink @md/conversation-context:justify-start @md/conversation-context:gap-1.5 @md/conversation-context:px-1.5 @md/conversation-context:has-[>svg]:px-1.5',
                 )}
               >
                 {loading || changing ? <Loader2 className="size-3.5 shrink-0 animate-spin" /> : <GitBranch className="size-3.5 shrink-0" />}
-                <span ref={branchValueRef} data-git-branch-value="true" className="truncate">{currentBranch}</span>
+                <span
+                  ref={branchValueRef}
+                  data-git-branch-value="true"
+                  className={cn('truncate', responsiveContext && 'hidden @md/conversation-context:inline')}
+                >
+                  {currentBranch}
+                </span>
               </Button>
             </PopoverTrigger>
           </TooltipTrigger>
@@ -217,9 +275,22 @@ export function GitBranchSelector({
             sideOffset={6}
             data-git-branch-popover-align="start"
             className="w-[min(22rem,calc(100vw-2rem))] p-0"
+            onPointerDownCapture={() => {
+              popoverUsedPointerRef.current = true;
+            }}
+            onKeyDownCapture={() => {
+              popoverUsedPointerRef.current = false;
+            }}
+            onCloseAutoFocus={(event) => {
+              hideBranchTooltip();
+              if (!popoverUsedPointerRef.current) return;
+              event.preventDefault();
+              triggerRef.current?.blur();
+              popoverUsedPointerRef.current = false;
+            }}
           >
             <Command>
-              <CommandInput placeholder={t('conversation.branchPicker.search', { workspace: projectId })} />
+              {!versionCapabilityError ? <CommandInput placeholder={t('conversation.branchPicker.search', { workspace: projectId })} /> : null}
               <CommandList className="max-h-72">
               {loading ? (
                 <div className="flex items-center justify-center gap-2 px-3 py-6 text-xs text-muted-foreground">
@@ -227,12 +298,35 @@ export function GitBranchSelector({
                   {t('conversation.branchPicker.loading')}
                 </div>
               ) : null}
-              {!loading && error && !snapshot ? (
+              {!loading && error && !snapshot && !versionCapabilityError ? (
                 <div className="space-y-2 px-3 py-3 text-xs text-destructive">
-                  <p>{error}</p>
+                  <p>{error.message}</p>
                   <Button type="button" variant="outline" size="xs" onClick={() => void loadSnapshot()}>
                     {t('common.retry')}
                   </Button>
+                </div>
+              ) : null}
+              {!loading && error && versionCapabilityError ? (
+                <div className="space-y-3 px-3 py-4" role="alert" data-git-version-capability-error={error.code}>
+                  <div className="flex items-start gap-2">
+                    <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                    <div className="min-w-0 space-y-1">
+                      <p className="text-sm font-medium text-foreground">
+                        {t(`conversation.branchPicker.${error.code === 'git.version-unsupported' ? 'versionUnsupportedTitle' : 'versionUnavailableTitle'}`)}
+                      </p>
+                      <p className="text-xs leading-relaxed text-muted-foreground">
+                        {t(`conversation.branchPicker.${error.code === 'git.version-unsupported' ? 'versionUnsupportedDescription' : 'versionUnavailableDescription'}`, error.params)}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2 pl-6">
+                    <Button type="button" size="xs" onClick={() => void openExternalUrl(GIT_DOWNLOAD_URL)}>
+                      {t('sourceControl.openGitDownload')}
+                    </Button>
+                    <Button type="button" variant="outline" size="xs" onClick={() => void loadSnapshot()}>
+                      {t('sourceControl.checkAgain')}
+                    </Button>
+                  </div>
                 </div>
               ) : null}
                 {!loading && snapshot ? (
@@ -278,7 +372,7 @@ export function GitBranchSelector({
               ) : null}
               {error && snapshot ? (
                 <div className="border-t border-destructive/20 px-3 py-2 text-xs text-destructive" role="alert">
-                  {error}
+                  {error.message}
                 </div>
               ) : null}
               {!loading && snapshot ? (

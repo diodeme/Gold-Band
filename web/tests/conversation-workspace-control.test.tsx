@@ -5,6 +5,10 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ConversationWorkspaceControl, ConversationWorkspaceInfoBar } from '@/components/conversation/ConversationComposer';
+import {
+  GitBranchPickerSnapshotProvider,
+  GitBranchPickerSnapshotStore,
+} from '@/components/git/GitBranchPickerSnapshotContext';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -26,6 +30,7 @@ describe('quick conversation workspace control', () => {
   let host: HTMLDivElement;
   let root: Root;
   let addedHTMLElementMethods: string[];
+  let branchSnapshotStore: GitBranchPickerSnapshotStore;
 
   beforeEach(() => {
     addedHTMLElementMethods = [];
@@ -42,6 +47,7 @@ describe('quick conversation workspace control', () => {
       unobserve() {}
       disconnect() {}
     });
+    branchSnapshotStore = new GitBranchPickerSnapshotStore();
     host = document.createElement('div');
     document.body.appendChild(host);
     root = createRoot(host);
@@ -198,24 +204,31 @@ describe('quick conversation workspace control', () => {
   it('combines workspace and persisted work-location controls in the quick composer info bar', async () => {
     await act(async () => {
       root.render(
-        <ConversationWorkspaceInfoBar
-          projectId="gold-band"
-          workspaceName="Fallback workspace"
-          workspaces={workspaces}
-          workLocation="main"
-          busy={false}
-          onWorkspaceChange={() => {}}
-          onWorkLocationChange={() => {}}
-        />,
+        <GitBranchPickerSnapshotProvider store={branchSnapshotStore}>
+          <ConversationWorkspaceInfoBar
+            projectId="gold-band"
+            workspaceName="Fallback workspace"
+            workspaces={workspaces}
+            workLocation="main"
+            busy={false}
+            onWorkspaceChange={() => {}}
+            onWorkLocationChange={() => {}}
+          />
+        </GitBranchPickerSnapshotProvider>,
       );
     });
 
     const infoBar = host.querySelector<HTMLElement>('[data-conversation-workspace-info="true"]');
     const workspaceTrigger = infoBar?.querySelector<HTMLElement>('[data-slot="select-trigger"]');
     const workLocationTrigger = infoBar?.querySelector<HTMLElement>('[data-conversation-work-location-trigger="true"]');
+    const branchTrigger = infoBar?.querySelector<HTMLElement>('[data-git-branch-selector="editable"]');
+    const workspaceValue = infoBar?.querySelector<HTMLElement>('[data-conversation-workspace-value="true"]');
+    const workLocationValue = infoBar?.querySelector<HTMLElement>('[data-conversation-work-location-value="true"]');
+    const branchValue = infoBar?.querySelector<HTMLElement>('[data-git-branch-value="true"]');
     expect(infoBar).not.toBeNull();
     expect(workspaceTrigger).not.toBeNull();
     expect(workLocationTrigger).not.toBeNull();
+    expect(branchTrigger).not.toBeNull();
     expect(workspaceTrigger!.dataset.contextControl).toBe('workspace');
     expect(workLocationTrigger!.dataset.contextControl).toBe('work-location');
     expect(workLocationTrigger!.getAttribute('data-theme-role')).toBeNull();
@@ -232,16 +245,29 @@ describe('quick conversation workspace control', () => {
     }
     expect(workspaceTrigger!.className.split(' ')).toContain('data-[size=default]:h-7');
     expect(workLocationTrigger!.className.split(' ')).toContain('h-7');
-    expect(workspaceTrigger!.className.split(' ')).toContain('px-1.5');
-    expect(workLocationTrigger!.className.split(' ')).toContain('has-[>svg]:px-1.5');
+    expect(workspaceTrigger!.className.split(' ')).toContain('w-7');
+    expect(workspaceTrigger!.className.split(' ')).toContain('@xs/conversation-context:w-fit');
+    expect(workLocationTrigger!.className.split(' ')).toContain('w-7');
+    expect(workLocationTrigger!.className.split(' ')).toContain('@md/conversation-context:w-auto');
+    expect(branchTrigger!.className.split(' ')).toContain('w-7');
+    expect(branchTrigger!.className.split(' ')).toContain('@md/conversation-context:w-auto');
+    expect(workspaceValue!.className.split(' ')).toContain('hidden');
+    expect(workspaceValue!.className.split(' ')).toContain('@xs/conversation-context:inline');
+    expect(workLocationValue!.className.split(' ')).toContain('hidden');
+    expect(workLocationValue!.className.split(' ')).toContain('@md/conversation-context:inline');
+    expect(branchValue!.className.split(' ')).toContain('hidden');
+    expect(branchValue!.className.split(' ')).toContain('@md/conversation-context:inline');
+    expect(workspaceTrigger!.getAttribute('aria-label')).toBe('工作空间: Gold Band');
+    expect(workLocationTrigger!.getAttribute('aria-label')).toBe('工作位置: 主工作区');
     expect(infoBar!.className).toContain('mx-auto');
     expect(infoBar!.className).toContain('w-[80%]');
+    expect(infoBar!.className).toContain('@container/conversation-context');
     expect(infoBar!.className).not.toContain('mx-9');
     expect(infoBar!.className).toContain('h-7');
     expect(infoBar!.className).toContain('items-center');
     expect(infoBar!.className).toContain('justify-start');
     expect(infoBar!.className).toContain('gap-0');
-    expect(infoBar!.className).toContain('pl-8');
+    expect(infoBar!.className).toContain('px-8');
     expect(infoBar!.className).not.toContain('justify-center');
     expect(infoBar!.className).toContain('[--conversation-workspace-info-surface:var(--gold-surface-high)]');
     expect(infoBar!.className).not.toContain('var(--gb-conversation-background)');
@@ -270,19 +296,53 @@ describe('quick conversation workspace control', () => {
     expect(host.querySelector('[data-conversation-workspace-value="true"]')?.textContent).toBe('Gold Band');
   });
 
+  it('keeps the compact context controls mounted while their values change', async () => {
+    const renderInfoBar = async (workLocation: 'main' | 'worktree') => {
+      await act(async () => {
+        root.render(
+          <GitBranchPickerSnapshotProvider store={branchSnapshotStore}>
+            <ConversationWorkspaceInfoBar
+              projectId="gold-band"
+              workspaceName="Fallback workspace"
+              workspaces={workspaces}
+              workLocation={workLocation}
+              busy={false}
+              onWorkspaceChange={() => {}}
+              onWorkLocationChange={() => {}}
+            />
+          </GitBranchPickerSnapshotProvider>,
+        );
+      });
+    };
+
+    await renderInfoBar('main');
+    const workspaceTrigger = host.querySelector('[data-slot="select-trigger"]');
+    const workLocationTrigger = host.querySelector('[data-conversation-work-location-trigger="true"]');
+    const branchTrigger = host.querySelector('[data-git-branch-selector="editable"]');
+
+    await renderInfoBar('worktree');
+
+    expect(host.querySelector('[data-slot="select-trigger"]')).toBe(workspaceTrigger);
+    expect(host.querySelector('[data-conversation-work-location-trigger="true"]')).toBe(workLocationTrigger);
+    expect(host.querySelector('[data-git-branch-selector="editable"]')).toBe(branchTrigger);
+    expect(host.querySelector('[data-conversation-work-location-value="true"]')?.textContent).toBe('工作树');
+  });
+
   it('reuses the same info surface without exposing worktree selection for scheduled authoring', async () => {
     await act(async () => {
       root.render(
-        <ConversationWorkspaceInfoBar
-          projectId="gold-band"
-          workspaceName="Fallback workspace"
-          workspaces={workspaces}
-          workLocation="worktree"
-          busy={false}
-          onWorkspaceChange={() => {}}
-          onWorkLocationChange={() => {}}
-          showWorkLocation={false}
-        />,
+        <GitBranchPickerSnapshotProvider store={branchSnapshotStore}>
+          <ConversationWorkspaceInfoBar
+            projectId="gold-band"
+            workspaceName="Fallback workspace"
+            workspaces={workspaces}
+            workLocation="worktree"
+            busy={false}
+            onWorkspaceChange={() => {}}
+            onWorkLocationChange={() => {}}
+            showWorkLocation={false}
+          />
+        </GitBranchPickerSnapshotProvider>,
       );
     });
 
@@ -297,15 +357,17 @@ describe('quick conversation workspace control', () => {
   it('does not restore pointer focus to the work-location trigger after the menu closes', async () => {
     await act(async () => {
       root.render(
-        <ConversationWorkspaceInfoBar
-          projectId="gold-band"
-          workspaceName="Fallback workspace"
-          workspaces={workspaces}
-          workLocation="worktree"
-          busy={false}
-          onWorkspaceChange={() => {}}
-          onWorkLocationChange={() => {}}
-        />,
+        <GitBranchPickerSnapshotProvider store={branchSnapshotStore}>
+          <ConversationWorkspaceInfoBar
+            projectId="gold-band"
+            workspaceName="Fallback workspace"
+            workspaces={workspaces}
+            workLocation="worktree"
+            busy={false}
+            onWorkspaceChange={() => {}}
+            onWorkLocationChange={() => {}}
+          />
+        </GitBranchPickerSnapshotProvider>,
       );
     });
 

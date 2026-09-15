@@ -3,7 +3,7 @@
 agent管理主要是负责管理支持接入的ACP agent
 当前改为维护构建期精选 ACP Agent Catalog，固定提供 `claude-acp`、`codex-acp`、`cursor`、`gemini`、`codebuddy-code`、`goose`、`qwen-code`、`opencode`、`kimi`、`amp-acp`、`pi-acp` 十一类模板，并支持用户自定义 ACP Agent；GLM 不进入本轮范围
 agent管理页面主要就是agent卡片和新增agent按钮
-agent卡片支持删除、修改、环境诊断操作（检查agent环境是否正常，提供手动检测能力，后台每1分钟自动检测一次agent环境），并显示agent的诊断状态（最好用对应图标）；doctor 失败时在状态旁显示问号帮助入口，该帮助入口统一使用随主题变化的浅色 shadcn/ui `Tooltip` 展示错误原因与配置帮助，悬浮或聚焦即可出现；提示参考 ACP Registry 配置命令、参数、环境、网络和认证状态，ACP Registry 链接到 `https://agentclientprotocol.com/get-started/registry`，点击后通过系统默认浏览器打开。卡片内容需要有稳定左右内边距；最近检测时间展示为本地系统时区 `YYYY-MM-DD HH:MM:SS`；手动诊断运行中显示圆形加载动效，完成后根据结果显示数秒成功或异常横幅；成功态横幅与成功状态图标需复用主题 success token，避免页面硬编码颜色；诊断命令 `npx -y @agentclientprotocol/claude-agent-acp@latest` 用于启动 Claude ACP adapter，首次运行可能通过 npm 下载依赖而耗时 1 分钟以上；诊断 initialize 最多等待 5 分钟，结束、失败、超时或客户端关闭都必须退出诊断进程树，不能阻塞客户端
+agent卡片支持删除、修改、环境诊断操作（检查agent环境是否正常，提供手动检测能力，后台每1分钟自动检测一次agent环境），并显示agent的诊断状态（最好用对应图标）；doctor 失败时在状态旁显示问号帮助入口，该帮助入口统一使用随主题变化的浅色 shadcn/ui `Tooltip` 展示错误原因与配置帮助，悬浮或聚焦即可出现；提示参考 ACP Registry 配置命令、参数、环境、网络和认证状态，ACP Registry 链接到 `https://agentclientprotocol.com/get-started/registry`，点击后通过系统默认浏览器打开。卡片内容需要有稳定左右内边距；最近检测时间展示为本地系统时区 `YYYY-MM-DD HH:MM:SS`；手动诊断运行中显示圆形加载动效，完成后根据结果显示数秒成功或异常横幅；成功态横幅与成功状态图标需复用主题 success token，避免页面硬编码颜色；诊断命令 `npx -y @agentclientprotocol/claude-agent-acp@latest` 用于启动 Claude ACP adapter，首次运行可能通过 npm 下载依赖而耗时 1 分钟以上；每个 Agent 每轮诊断的初始化、会话创建、命令发现、清理和周期重试共享 3 分钟预算，结束、失败、超时或客户端关闭都必须退出诊断进程树，不能阻塞客户端
 补充诊断环境要求：
 - ACP adapter 与 doctor 必须复用 `process` 模块的跨平台 PATH 解析接口，并以首次出现项为准去重。Windows 优先级固定为“Agent 显式配置 PATH → 当前桌面进程 PATH → 用户注册表 PATH → 系统注册表 PATH → 平台通用目录”；每次创建 ACP 进程前直接通过注册表 API 读取 `HKCU\Environment\Path` 和 `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment\Path`，展开 `%VAR%` 并按大小写不敏感去重，不调用 `reg.exe`。macOS / Linux 优先级固定为“Agent 显式配置 PATH → 用户登录 Shell PATH → 当前桌面进程 PATH → 平台通用目录”；首次使用时从 Unix 账户信息选择默认 Shell，以 `-ilc` 登录交互模式读取环境，设置 2 秒总超时并回收超时进程，成功或失败结果按应用生命周期缓存。Shell profile 噪声通过输出边界隔离，只读取 `PATH`；失败时回退当前进程 PATH。Unix 按大小写敏感语义合并，并补全 `~/.nvm/versions/node/*/bin`、`~/.local/bin`、`~/.cargo/bin`、`~/.volta/bin`、`/opt/homebrew/bin`、`/usr/local/bin` 等通用位置；所有平台都禁止维护 Kimi、Cursor、OpenCode、Scoop、npm 等 Agent 或安装器目录特判。该解析仅位于 doctor / ACP 进程创建边界，不进入会话消息热路径
 - Windows 裸命令 PATH 查找统一限定为 `.exe`、`.com`、`.cmd`、`.bat` 候选，优先原生可执行文件并允许 npm `.cmd` wrapper；忽略 `.ps1` 和无扩展名 Unix shim，避免把 `#!/bin/sh` 文件交给 Win32 `CreateProcess` 后产生 OS error 193。显式带扩展名命令保持原名；PowerShell 脚本必须由用户显式配置 `pwsh` / `powershell -NoProfile -File`
@@ -14,10 +14,14 @@ agent卡片支持删除、修改、环境诊断操作（检查agent环境是否�
 新增 Agent 使用带搜索框的 shadcn/ui `Command + Popover` 选择器，支持从十一个内置模板或“自定义 Agent”进入同一编辑 Sheet。内置模板按构建期 Registry 快照预填命令和参数；npx 类 Agent 使用 Registry package，其他 Agent 默认调用 PATH 中用户已安装的可执行文件。Gold Band 不下载、解压或托管 Agent 二进制。已新增过的内置类型不可重复新增。Pi ACP 使用 Registry 生成的 `npx -y pi-acp@<version>`，用户仍需自行安装 Pi coding agent 并保证 `pi` 位于 PATH。
 
 Catalog 与实例必须分域管理：
+- 2026-09-08 启动配置归属修正：schema 11 不再保存内置实例的命令和参数，旧设置加载时原子回写移除，读取时投影当前 Catalog；覆盖历史内置启动定制，保留名称、图标、环境、目录和能力配置。保存接口忽略内置命令/参数输入，编辑器对应字段只读，自定义 Agent 继续全部可编辑。复用稳定 ID、现有设置序列化与 Catalog，不增加依赖、持久身份、缓存或队列；开销限于小型配置内存处理，无新增网络、全量历史加载或热路径 I/O。
+- 2026-09-09 只读启动字段视觉修复：Catalog Agent 的命令与参数保留原生 `readOnly` 以支持聚焦、选择和复制，统一使用 `muted` 表面与弱化文字；可编辑的显示名称、环境变量和目录字段统一使用 `background` 表面，并覆盖 Textarea 的主题深色变体，移除只读字段的编辑态 focus ring；自定义 Agent 仍使用可编辑样式。DOM 回归测试固定只读、非 disabled、共享底色、弱化文字与可编辑字段边界。本改动仅调整静态 class 投影，不引入状态、依赖、I/O 或额外渲染。第一次修复前测试在 Catalog 灰态断言稳定失败，后续用户反馈暴露深色主题控件底色竞争；后续最小测试在只读分组和可编辑分组断言稳定失败，修复后 Agent 管理相关测试及 `npm run web:build` 通过。Chrome deep link 已在浅色、深色下验证两组字段颜色清晰，命令聚焦无编辑态高亮，页面无溢出或重叠；临时主题、页面和测试服务已恢复或清理。
+- 验证记录：旧配置迁移最小测试已确认修改前失败。清理磁盘后重新编译验证通过：启动配置集成测试 2 项、配置模块单测 53 项、设置加载与持久化测试 2 项、桌面 Agent 保存接口测试 5 项；前端三组共 20 项测试、TypeScript 检查及 `npm run web:build` 生产前端构建通过，内置浏览器验证内置只读与自定义可编辑。构建仅有现有未使用代码、混合导入和包体积警告；本轮未制作安装包或运行 macOS 真机验证。
 - `AgentCatalogEntry` 是构建期模板；`ManagedAgentConfig` 是用户实例
-- 新建时将模板完整深拷贝到实例，之后 Catalog 更新不得修改任何既有实例
+- 新建时复制模板用户字段；内置 Agent 的命令和参数始终由当前 Catalog 提供，既有实例随客户端升级更新启动配置，其余用户字段不受影响。自定义 Agent 全部配置由用户维护。
 - 构建/发版前拉取 `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`，校验精选十一项齐全后生成 Registry 快照、Catalog JSON 和官方 SVG 图标并打包
 - 提供显式离线脚本，允许基于已提交 Registry 快照重建 Catalog；常规发版刷新失败时必须失败退出，不发布残缺 Catalog
+- 构建期版本覆盖由 `configs/agent-catalog-policy.json` 的 `versionPins` 统一管理，例如 `"claude-acp": "0.72.0"`；无对应项时使用 Registry 版本。在线刷新与离线生成共用覆盖逻辑，同步覆盖 Catalog 版本和 npx 包参数，不修改原始 snapshot；已有内置实例在新客户端中使用覆盖后的启动配置。仅支持 npx Registry 包的精确版本，未知 ID、非法策略和不支持的分发类型必须失败。在线生成检查固定 npm 版本存在性；离线生成不联网检查。
 - Kimi 的主/兼容 Skills 目录为 `.kimi-code` / `.agents`；Amp 为 `.agents` / `.claude`；Pi 的全局主目录为 `.pi/agent`、项目主目录为 `.pi`、两端兼容目录均为 `.agents`
 
 主 Skills 目录默认由全局与项目作用域共用。编辑 Sheet 在标题右侧提供带 Tooltip 的分裂图标按钮；开启后按钮呈选中态，单输入框拆为“全局主目录 / 项目主目录”，关闭后恢复共用主目录。数据层以可选项目主目录字段表达拆分状态，不维护独立布尔值。目录策略按作用域生成：全局写入全局主目录，项目写入项目主目录；两端读取时都在各自主目录后追加共用兼容目录，兼容目录始终只读。Catalog、设置实例、Tauri 输入/VM、SkillManager、原生命令扫描和同步状态必须消费同一目录策略接口，禁止在 Pi 调用点判断 Agent ID。
@@ -52,8 +56,26 @@ Agent 实例新增两个独立能力配置：
 
 ## 本轮实现与验收记录（2026-08-07）
 
+### 2026-09-09 Doctor 超时与跨 Agent 隔离
+
+- 根因：早期 Doctor 只做有超时的 initialize，增加 session/new 以发现模型与权限能力后未扩展超时；周期诊断改为并行、目录改为 Agent 隔离后，仍持有整个批次的全局运行锁。一个存活但不响应的 adapter 因而可以阻塞后续其他 Agent 的诊断。
+- 修复前证据：模拟 adapter 正常 initialize 后不回答 session/new，500ms 测试预算未生效，旧实现直到 2 秒后 fixture rescue 才返回，断言失败；另一个测试以 channel 保持首个诊断运行，第二个诊断无法取得执行资格，独立执行断言失败。两项均已实际观察到失败。
+- 实现：单 Agent 每轮共享 180 秒截止时间，周期重试沿用剩余预算；所有诊断与命令目录入口按 Agent ID 互斥，总 adapter/批次 worker 上限均为 4。周期结果逐项发布，手动 IPC 进入 blocking 执行器，保留配置版本校验、保存解耦、请求合并和失败日志回收。
+- 过度设计评审：复用标准库 Mutex/Condvar、既有 ACP 请求轮询、RuntimeErrorInfo 和进程组管理；运行集合仅表达正在占用的 Agent ID，最多 4 项，无新增依赖、持久字段、并行业务身份或通用调度框架。
+- 性能评审：内置 Catalog 为 11 项，并允许自定义 Agent，批次输入规模为已配置 Agent 数 N。遍历 O(N)，批次线程与活动 adapter 均至多 4，互斥集合至多 4 项；无新增历史读取或持续轮询，结果事件仅在单项完成时发送。配置/结果短锁不覆盖 provider 等待。验收检查一个阻塞 Agent 下其他项可完成、相同 Agent 不重叠、并发上限以及完成后的资源释放。
+- 验收完成：原 session/new 与跨 Agent 阻塞复现测试转绿；ACP client 138 项通过（另有 1 个仅由父测试启动的 ignored adapter fixture），桌面 state 相关 38 项通过，前端 Agent 诊断/启动字段/workflow 健康相关 6 项通过。覆盖 initialize、session/new、session/delete、session/close 超时及阶段错误码，超时后 adapter 的 TCP listener 已关闭、PID 文件移除，成功后能力保留且临时目录删除。
+- 接口与规模验收：Codex probe 由 channel 保持运行时，CodeBuddy probe 可完成，最终两者结果均正确落盘；同 Agent 等待不占额外 adapter 名额，释放后可继续运行；1,000 个模拟 Agent 全部处理且 worker 数不超过 4。重试使用完全相同的截止时间，已耗尽预算不重试；保存提交不等待运行中 doctor、连续保存请求合并等既有测试继续通过。
+- 前端验收：DOM 测试确认等待时按钮 loading/disabled、重复点击不重发，失败结果到达后停止旋转并恢复重试，其他 Agent 的按钮不受影响。`tsc -p web/tsconfig.build.json --noEmit` 和 Vite 生产构建通过；保留既有大 chunk、混合静态/动态 import 和 Rust dead-code 警告。内置 iab 不可用，按项目规则使用已连接 Chrome deep link `/chat/agents`，确认页面渲染及诊断完成后的按钮恢复；浏览器使用前端 mock，实际 ACP 超时与进程回收由 Rust 子进程测试验证，未重新连接用户真实 Codex/CodeBuddy 账号。测试页面与本次 Vite 进程在验收后关闭。
+
+### 2026-09-08 构建期本地版本覆盖
+
+- 原设计以在线 Registry 提供模板，发布方缺少固定版本能力；补齐生成期策略覆盖，保留每次 build 在线刷新的行为。当前 Claude 固定 `0.72.0`，删除配置项即可解除固定，不使用 `-1`。
+- 最小失败测试确认旧生成器忽略本地 pin，输出 `0.73.0` 而非 `0.72.0`；实现后 Catalog Node 测试 7 项通过，覆盖版本和启动参数一致性、原始快照不变、未配置项、scoped/unscoped 包、附加参数与环境保留、非法配置及上游版本变化。
+- 使用现有 snapshot 离线重建本地 Catalog，Claude 元数据与包参数均为 `0.72.0`；npm 元数据确认该版本存在并依赖 SDK `0.3.252`。未执行应用编译或 macOS 真机验证。
+- 过度设计与性能评审：复用现有 catalog 生成管道与成熟 npm 包规格解析库，仅增加小型 JSON 配置和构建期校验。每次生成对十一项线性处理，在线校验仅对固定项请求 npm 元数据，单次请求超时 30 秒；运行时只投影当前内嵌 Catalog，无额外联网。
+
 - 已新增 Registry 快照准备脚本、离线重建脚本和 Node 单元测试，精选列表固定为十一项，包含 Amp、Pi 且排除 GLM
-- 已将 Catalog 通过 Rust `include_str!` 和 Vite public assets 打包；创建时复制模板，已有实例不读取 Catalog 默认值
+- 已将 Catalog 通过 Rust `include_str!` 和 Vite public assets 打包；内置实例的启动配置读取当前 Catalog，其余设置保留用户值。
 - 已开放自定义 Agent 创建、保存、doctor、Provider 和 workflow 运行链路，移除 preset 白名单门禁
 - 已新增 Agent 搜索选择器、自定义入口、本地图标选择和可选 Skills 目录编辑项，并复用现有 shadcn/ui 组件；system prompt 与跨端会话能力当前均不向用户开放
 - 图标编辑已收敛为预览、选择本地图片和恢复默认 Logo，不向用户暴露 icon key、URL 或 data URI 文本输入；既有图标引用保持兼容

@@ -108,6 +108,7 @@ function changeSet(id = 'change-set-1'): TurnFileChangeSetVm {
         deletedLines: 1,
       },
     ],
+    attachments: [],
     limitationCodes: [],
   };
 }
@@ -183,6 +184,102 @@ afterEach(() => {
 });
 
 describe('turn file changes card', () => {
+  it('renders new attachments once, defaults to one row, and opens the attachment tab immediately', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const set = changeSet('attachments');
+    set.summary = {
+      fileCount: 1,
+      addedFiles: 0,
+      modifiedFiles: 1,
+      deletedFiles: 0,
+      addedLines: 1,
+      deletedLines: 1,
+    };
+    set.changes = [{
+      id: 'existing-attachment-modified',
+      changeKind: 'modified',
+      logicalPath: 'C:/attempt/attachments/existing.md',
+      text: true,
+      addedLines: 1,
+      deletedLines: 1,
+    }];
+    set.attachments = [
+      { id: 'attachment-report', relativePath: 'report.md', name: 'report.md', byteLength: 2048 },
+      { id: 'attachment-summary', relativePath: 'summary.txt', name: 'summary.txt', byteLength: 24 },
+    ];
+    getTurnFileChangeSetMock.mockResolvedValue(set);
+    const event = pointerEvent(set.id);
+    event.raw = { changeSetId: set.id, summary: set.summary, attachmentCount: 2 };
+    const root = await renderCard(container, event);
+    try {
+      const attachmentCard = container.querySelector<HTMLElement>('[data-turn-attachments-card]');
+      const changeCard = container.querySelector<HTMLElement>('[data-turn-file-changes-card]');
+      expect(attachmentCard).not.toBeNull();
+      expect(changeCard).not.toBeNull();
+      expect(attachmentCard?.textContent).toContain('report.md');
+      expect(attachmentCard?.textContent).not.toContain('summary.txt');
+      expect(changeCard?.textContent).toContain('existing.md');
+      expect(changeCard?.textContent).not.toContain('report.md');
+      expect(getTurnFileChangeSetMock).toHaveBeenCalledTimes(1);
+
+      const firstAttachment = attachmentCard?.querySelector<HTMLButtonElement>('[role="listitem"]');
+      await act(async () => firstAttachment?.click());
+      const probe = container.querySelector('output');
+      expect(probe?.dataset.activeKind).toBe('turn-attachment');
+      expect(probe?.dataset.activeKey).toContain('attachments:attachment-report');
+      expect(probe?.dataset.tabCount).toBe('1');
+
+      const expand = attachmentCard?.querySelector<HTMLButtonElement>('button[aria-expanded="false"]');
+      await act(async () => expand?.click());
+      expect(attachmentCard?.textContent).toContain('summary.txt');
+      expect(attachmentCard?.querySelectorAll('[role="listitem"]')).toHaveLength(2);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('updates one compaction row in place and stops its clock on completion', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-09T06:16:20Z'));
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const first: AcpUiEventVm = {
+      id: 'context-compaction-10', seq: 10, kind: 'contextCompaction',
+      timestamp: '2026-09-09T06:16:20Z', startedAt: '2026-09-09T06:16:20Z',
+      status: 'running',
+    };
+    const render = async (event: AcpUiEventVm) => {
+      await act(async () => root.render(
+        <TooltipProvider><ACPMessageList timeline={[event]} sessionStatus="running" sending={false} /></TooltipProvider>,
+      ));
+    };
+    try {
+      await render(first);
+      const row = container.querySelector('[role="status"]');
+      expect(row).not.toBeNull();
+      for (const seq of [11, 12, 13]) {
+        await act(async () => vi.advanceTimersByTime(30_000));
+        await render({ ...first, seq });
+        expect(container.querySelectorAll('[role="status"]')).toHaveLength(1);
+        expect(container.querySelector('[role="status"]')).toBe(row);
+      }
+      await act(async () => vi.advanceTimersByTime(17_000));
+      await render({ ...first, seq: 14, status: 'completed', endedAt: '2026-09-09T06:18:07Z' });
+      const completedText = row?.textContent;
+      expect(completedText).toContain('1m 47s');
+      expect(row?.querySelector('.animate-spin')).toBeNull();
+      await act(async () => vi.advanceTimersByTime(120_000));
+      expect(row?.textContent).toBe(completedText);
+      expect(container.querySelector('[role="status"]')).toBe(row);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      vi.useRealTimers();
+    }
+  });
+
   it('uses the shared assistant content rail for compaction and file-change timeline items', async () => {
     const container = document.createElement('div');
     document.body.append(container);

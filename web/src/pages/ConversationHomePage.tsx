@@ -1,6 +1,7 @@
 import { ConversationComposer } from '@/components/conversation/ConversationComposer';
 import { ConversationGreeting } from '@/components/conversation/ConversationGreeting';
 import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
+import type { ConversationComposerMulticaBinding } from '@/lib/conversation-composer-draft';
 import { cn } from '@/lib/utils';
 import { useThemeWallpaperSurface } from '@/components/theme/ThemeAssetsContext';
 import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkLocation, ConversationWorkspaceVm, ProfileVm, WorkflowRepairTarget, WorkflowTemplateStore, ScheduledScheduleInput } from '../types';
@@ -20,7 +21,7 @@ interface ConversationHomePageProps {
   workLocation: ConversationWorkLocation;
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
-  onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
+  onSubmit: (input: ConversationCreateInput, multica?: ConversationComposerMulticaBinding | null) => Promise<string | null | undefined> | string | null | undefined;
   onCreateScheduledTask?: (input: ConversationCreateInput & { schedule: ScheduledScheduleInput; overlapPolicy: 'skip_when_running' | 'retry_when_busy'; sessionPolicy?: 'new' | 'continuous' }) => Promise<void>;
   onScheduledTaskCreated?: () => void;
   onOpenAgentManagement: () => void;

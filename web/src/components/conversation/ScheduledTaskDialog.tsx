@@ -48,6 +48,7 @@ type ScheduledTaskDialogProps = {
   draftConfig?: ScheduledTaskConfig | null;
   initialContent?: string;
   showContent?: boolean;
+  saveDisabled?: boolean;
   presentation?: 'dialog' | 'workspace';
 };
 
@@ -100,6 +101,7 @@ export function ScheduledTaskDialog({
   draftConfig,
   initialContent,
   showContent = false,
+  saveDisabled = false,
   presentation = 'dialog',
 }: ScheduledTaskDialogProps) {
   const { t } = useTranslation();
@@ -279,7 +281,7 @@ export function ScheduledTaskDialog({
     return t('scheduled.schedule.every', { count: everyValue, unit: t(`scheduled.units.${everyUnit}`) });
   }, [everyUnit, everyValue, frequency, repeatTime, selectedWeekdays, t]);
 
-  const canSave = validationIssue === null;
+  const canSave = !saveDisabled && validationIssue === null;
   const validationMessage = (field: ValidationField) => (
     validationIssue?.field === field
       ? t(`scheduled.dialog.validation.${validationIssue.reason}`)

@@ -2,10 +2,17 @@ import { execSync, spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { basename, join, relative } from 'node:path';
 
+import { channelBuildPlan, parseChannelBuildArgs } from './build-channel-options.mjs';
 import { channelEnvPrefix, readChannelConfig, repoRoot, writeTauriConfigOverlay } from './channel-config.mjs';
 
-const channel = process.argv[2] ?? 'default';
-const isCritical = process.argv[3] === 'critical';
+let buildOptions;
+try {
+  buildOptions = parseChannelBuildArgs(process.argv.slice(2));
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
+const { channel, isCritical, devtools } = buildOptions;
 
 let config;
 try {
@@ -67,7 +74,13 @@ if (catalogResult.status !== 0) {
 }
 
 const overlayPath = join(repoRoot, 'src-tauri', 'target', 'channel', `tauri.${channel}.conf.json`);
-writeTauriConfigOverlay(config, overlayPath, isDefaultChannel ? undefined : channelVersion);
+const buildPlan = channelBuildPlan(overlayPath, buildOptions);
+writeTauriConfigOverlay(
+  config,
+  overlayPath,
+  isDefaultChannel ? undefined : channelVersion,
+  buildPlan.tauriConfigBuildOptions,
+);
 
 // Clean stale bundle artifacts from both possible target locations
 // (workspace root target/ takes precedence after Cargo workspace migration)
@@ -77,7 +90,11 @@ for (const dir of possibleBundleDirs()) {
   }
 }
 
-const result = spawnSync('npx', ['tauri', 'build', '--config', overlayPath], {
+if (devtools) {
+  console.log('Support diagnostic build: release profile with WebView DevTools enabled; updater artifacts disabled.');
+}
+
+const result = spawnSync('npx', buildPlan.tauriArgs, {
   env,
   stdio: 'inherit',
   shell: process.platform === 'win32',
@@ -88,7 +105,7 @@ if (result.status !== 0) {
 }
 
 // ── post-build: collect artifacts & generate latest.json ──
-if (result.status === 0 && config.releaseBaseUrl) {
+if (result.status === 0 && config.releaseBaseUrl && buildPlan.shouldCollectReleaseArtifacts) {
   const releaseDir = join(repoRoot, 'release', channel);
   mkdirSync(releaseDir, { recursive: true });
 

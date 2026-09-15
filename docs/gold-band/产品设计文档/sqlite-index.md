@@ -28,7 +28,7 @@ SQLite 在本项目中**仅用于辅助检索**，不承担：
 - task 创建运行在已有 blocking 工作单元中，索引刷新完成后创建接口才返回；索引仍是 best-effort，最终失败只记录日志，不回滚已经成功落盘的权威文件。
 - ACP session/prompt 索引继续通过 `spawn_blocking` 或 `std::thread::spawn` 后台刷新。
 - `Mutex<Connection>` 仅持有事务期间，不在文件 I/O 期间持有。
-- 重试间隔：200ms → 500ms → 1500ms，每次重新读取最新文件内容。
+- 重试间隔：200ms → 500ms → 1500ms。Task/session 完整索引每次重试重新读取最新文件；Task activity 专用路径只在 SQLite 短事务中读取并单调推进 `updated_at`，索引行缺失时才回退一次完整 Task 索引以恢复可检索字段。
 
 ## 表设计
 
@@ -43,8 +43,14 @@ SQLite 在本项目中**仅用于辅助检索**，不承担：
 | `title` | TEXT | `task.json` → `title` | |
 | `description` | TEXT | `task.json` → `description` | |
 | `requirement_text` | TEXT | `authoring/requirement.md` | 需求完整文本 |
-| `created_at` | TEXT | — | 预留 |
-| `updated_at` | TEXT | — | 预留 |
+| `created_at` | TEXT | `authoring/conversation.json.createdAt` 或 Task 创建事件 | Task 初始活动时间；缺少历史元数据时使用最小回填值 |
+| `updated_at` | TEXT | `authoring/conversation.json.lastActivityAt` / Prompt Turn 生命周期 | Task 最近对话活动排序投影；Task 创建、用户 Prompt durable accepted、Turn terminal 后单调推进，标题和 Run 状态变化不更新 |
+
+`tasks.updated_at` 不是文件 mtime，也不是任意元数据的“最后修改时间”。文件系统与 Prompt/Turn canonical 状态仍是事实源；SQLite 只在 canonical 写成功后更新，普通 task 内容重建不得清空或回退已有活动时间。用户入队使用 queue item 的 `createdAt`，Prompt admission 使用已写入 snapshot 的 `admittedAt`，Turn terminal 使用 canonical lifecycle snapshot 的 `updatedAt`；同一 terminal 被停止控制器和迟到 Finished 回调重复观察时只能形成同值 no-op，不得用新的墙上时钟再次推进。Task 页按 `updated_at DESC, task_id DESC` 消费该投影，并以 canonical 目录枚举保证索引缺行时 Task 仍可见；Run 历史继续按递减 `runId`，不复用该字段。
+
+activity 专用更新不得读取或重写 `task.json`、`authoring/requirement.md` 及其他搜索正文，也不得触发 FTS 重新分词；常规已有索引行只执行一次 `updated_at` 查询，并仅在时间严格前进时执行一次单列更新。缺行属于可重建投影异常，允许在锁外回退完整 Task 索引；该回退不是普通 Turn 热路径。
+
+升级后若已有 `tasks.updated_at` 为空，桌面启动只在关键路径外执行 Task 级回填：每项读取 `task.json` 与 `authoring/conversation.json`，不扫描 Run、Attempt、timeline 或正文历史；缺少历史会话元数据的 Task 使用最小活动时间并按 Task 序号稳定兜底。回填失败保留空行并在下次启动重试，不阻塞 workspace identity 与首批页面请求。
 
 ### `sessions`
 
@@ -89,7 +95,7 @@ SQLite 在本项目中**仅用于辅助检索**，不承担：
 USING fts5(title, description, requirement_text, content=tasks, content_rowid=rowid)
 ```
 
-通过 INSERT/UPDATE/DELETE 触发器自动同步 `tasks` 表。
+通过 INSERT/DELETE 以及仅监听 `title / description / requirement_text` 的 UPDATE 触发器同步 `tasks` 表。单独更新 `updated_at` 不得删除、重插或重新分词 FTS 文档；schema v6 从 v5 升级时只替换该 UPDATE trigger，不重建已有 Task/Session 表或 FTS 数据。
 
 ### `session_prompts_fts`
 

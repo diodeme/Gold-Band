@@ -55,7 +55,12 @@ function ScrollBar({
     >
       <ScrollAreaPrimitive.ScrollAreaThumb
         data-slot="scroll-area-thumb"
-        className="relative min-h-[var(--gb-scrollbar-min-length)] flex-1 rounded-[var(--gb-scrollbar-thumb-radius)] bg-[var(--gold-scrollbar-thumb)] transition-colors hover:bg-[var(--gold-scrollbar-thumb-hover)]"
+        className={cn(
+          "relative flex-1 rounded-[var(--gb-scrollbar-thumb-radius)] bg-[var(--gold-scrollbar-thumb)] transition-colors hover:bg-[var(--gold-scrollbar-thumb-hover)]",
+          orientation === "vertical"
+            ? "min-h-[var(--gb-scrollbar-min-length)]"
+            : "min-w-[var(--gb-scrollbar-min-length)]"
+        )}
       />
     </ScrollAreaPrimitive.ScrollAreaScrollbar>
   )

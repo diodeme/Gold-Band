@@ -55,6 +55,13 @@ describe('desktop entry routing', () => {
     expect(pathFromRoute('task-orchestration', taskListPage, page)).toBe(path);
   });
 
+  it('does not revive the retired workbench round detail route', () => {
+    expect(routeFromPath('/tasks/task-a/runs/run-a/rounds/round-a')).toMatchObject({
+      uiMode: 'workbench',
+      taskPage: { kind: 'task-list' },
+    });
+  });
+
   it('round-trips a fully qualified workflow attempt link', () => {
     const path = '/chat/projects/project-a/tasks/task-a/runs/run-a/rounds/round-a/nodes/review/attempts/attempt-003';
     const page = routeFromPath(path).conversationPage;

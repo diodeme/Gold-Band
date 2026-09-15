@@ -27,7 +27,7 @@ export function channelEnvPrefix(channel) {
   return channel.toUpperCase().replace(/[^A-Z0-9]/g, '_');
 }
 
-export function tauriConfigOverlay(config, version) {
+export function tauriConfigOverlay(config, version, buildOptions = {}) {
   const overlay = {
     productName: config.productName,
     identifier: config.identifier,
@@ -53,16 +53,26 @@ export function tauriConfigOverlay(config, version) {
     overlay.version = version;
   }
 
+  const bundle = {};
   if (config.bundleTargets) {
-    overlay.bundle = { targets: config.bundleTargets };
+    bundle.targets = config.bundleTargets;
+  }
+  if (buildOptions.createUpdaterArtifacts !== undefined) {
+    bundle.createUpdaterArtifacts = buildOptions.createUpdaterArtifacts;
+  }
+  if (Object.keys(bundle).length > 0) {
+    overlay.bundle = bundle;
   }
 
   return overlay;
 }
 
-export function writeTauriConfigOverlay(config, outputPath, version) {
+export function writeTauriConfigOverlay(config, outputPath, version, buildOptions) {
   mkdirSync(dirname(outputPath), { recursive: true });
-  writeFileSync(outputPath, `${JSON.stringify(tauriConfigOverlay(config, version), null, 2)}\n`);
+  writeFileSync(
+    outputPath,
+    `${JSON.stringify(tauriConfigOverlay(config, version, buildOptions), null, 2)}\n`,
+  );
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

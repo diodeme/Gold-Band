@@ -8,6 +8,7 @@ import type { GitBranchPickerSnapshotVm } from '@/types';
 
 const getSnapshot = vi.fn<() => Promise<GitBranchPickerSnapshotVm>>();
 const changeBranch = vi.fn();
+const openExternalUrl = vi.fn();
 const translate = (key: string, params?: Record<string, unknown>) => {
   if (key === 'conversation.branchPicker.dirtyFiles') return `未提交：${params?.count} 个文件`;
   return key;
@@ -16,6 +17,7 @@ const translate = (key: string, params?: Record<string, unknown>) => {
 vi.mock('@/api', () => ({
   getGitBranchPickerSnapshot: (...args: unknown[]) => getSnapshot(...args as []),
   changeGitBranch: (...args: unknown[]) => changeBranch(...args),
+  openExternalUrl: (...args: unknown[]) => openExternalUrl(...args),
 }));
 
 vi.mock('react-i18next', () => ({
@@ -95,6 +97,16 @@ async function renderSelector(
   return { container, root, store };
 }
 
+function InlineBranchChangeHarness() {
+  const [branch, setBranch] = React.useState<string | null>(null);
+  return (
+    <>
+      <span data-selected-branch="true">{branch}</span>
+      <GitBranchSelector projectId="project-a" onBranchChange={(next) => setBranch(next)} />
+    </>
+  );
+}
+
 describe('GitBranchSelector', () => {
   it('restores a cached workspace snapshot in the first render without a spinner', async () => {
     const store = new GitBranchPickerSnapshotStore();
@@ -114,12 +126,12 @@ describe('GitBranchSelector', () => {
   });
 
   it('loads the lightweight snapshot and performs a revision-checked real switch', async () => {
-    const onCheckpointChange = vi.fn();
+    const onBranchChange = vi.fn();
     const onMutationPendingChange = vi.fn();
     const { container, root } = await renderSelector(
       <GitBranchSelector
         projectId="project-a"
-        onCheckpointChange={onCheckpointChange}
+        onBranchChange={onBranchChange}
         onMutationPendingChange={onMutationPendingChange}
       />,
     );
@@ -127,7 +139,7 @@ describe('GitBranchSelector', () => {
       expect(getSnapshot).toHaveBeenCalledWith('project-a', undefined);
       const trigger = container.querySelector<HTMLButtonElement>('[data-git-branch-selector="editable"]')!;
       expect(trigger.textContent).toContain('main');
-      expect(onCheckpointChange).toHaveBeenLastCalledWith({ branch: 'main', headOid: 'head-main', revision: 'revision-main' });
+      expect(onBranchChange).toHaveBeenLastCalledWith('main');
 
       await act(async () => trigger.click());
       expect(document.body.textContent).toContain('未提交：12 个文件');
@@ -146,9 +158,45 @@ describe('GitBranchSelector', () => {
         name: 'feature/topic',
         expectedRevision: 'revision-main',
       });
-      expect(onCheckpointChange).toHaveBeenLastCalledWith({ branch: 'feature/topic', headOid: 'head-topic', revision: 'revision-topic' });
+      expect(onBranchChange).toHaveBeenLastCalledWith('feature/topic');
       expect(onMutationPendingChange).toHaveBeenCalledWith(true);
       expect(onMutationPendingChange).toHaveBeenLastCalledWith(false);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('does not reload the snapshot when a parent rerender replaces the notification callback', async () => {
+    const { container, root } = await renderSelector(<InlineBranchChangeHarness />);
+    try {
+      expect(container.querySelector('[data-selected-branch="true"]')?.textContent).toBe('main');
+      expect(getSnapshot).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('shows an explicit unsupported Git version state instead of an empty branch list', async () => {
+    getSnapshot.mockRejectedValueOnce({
+      code: 'git.version-unsupported',
+      params: { installedVersion: '2.35.9', minimumVersion: '2.36.0' },
+    });
+    const store = new GitBranchPickerSnapshotStore();
+    store.set('project-a', undefined, snapshot({ currentBranch: 'stale-branch' }));
+    const { container, root } = await renderSelector(
+      <GitBranchSelector projectId="project-a" />,
+      store,
+    );
+    try {
+      await act(async () => Promise.resolve());
+      const trigger = container.querySelector<HTMLButtonElement>('[data-git-branch-selector="editable"]')!;
+      expect(trigger.textContent).toContain('conversation.branchPicker.versionUnsupportedLabel');
+      await act(async () => trigger.click());
+      expect(document.body.querySelector('[data-git-version-capability-error="git.version-unsupported"]')).not.toBeNull();
+      expect(document.body.textContent).toContain('conversation.branchPicker.versionUnsupportedTitle');
+      expect(document.body.textContent).not.toContain('conversation.branchPicker.empty');
+      expect(document.body.querySelector('[data-slot="command-input"]')).toBeNull();
+      expect(store.get('project-a', undefined)).toBeNull();
     } finally {
       await act(async () => root.unmount());
     }
@@ -199,6 +247,97 @@ describe('GitBranchSelector', () => {
       });
 
       expect(document.body.querySelector('[data-slot="tooltip-content"]')?.textContent).toBe(branch);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('uses an icon-only compact trigger and keeps its menu one click away', async () => {
+    const { container, root } = await renderSelector(
+      <GitBranchSelector projectId="project-a" responsiveContext />,
+    );
+    try {
+      const trigger = container.querySelector<HTMLButtonElement>('[data-git-branch-selector="editable"]')!;
+      const value = container.querySelector<HTMLElement>('[data-git-branch-value="true"]')!;
+      expect(trigger.className.split(' ')).toContain('w-7');
+      expect(trigger.className.split(' ')).toContain('@md/conversation-context:w-auto');
+      expect(trigger.getAttribute('aria-label')).toBe('conversation.branchPicker.label: main');
+      expect(value.className.split(' ')).toContain('hidden');
+      expect(value.className.split(' ')).toContain('@md/conversation-context:inline');
+
+      Object.defineProperties(value, {
+        clientWidth: { configurable: true, value: 80 },
+        scrollWidth: { configurable: true, value: 80 },
+      });
+      await act(async () => {
+        trigger.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
+      });
+      expect(document.body.querySelector('[data-slot="tooltip-content"]')?.textContent).toBe('main');
+
+      await act(async () => {
+        trigger.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+      });
+      expect(document.body.querySelector('[data-slot="tooltip-content"]')?.textContent).toBe('main');
+
+      await act(async () => trigger.click());
+      expect(document.body.querySelector('[data-git-branch-popover-align="start"]')).not.toBeNull();
+      expect(document.body.querySelector('[data-slot="tooltip-content"]')).toBeNull();
+      expect(trigger.dataset.gitBranchPopoverOpen).toBe('true');
+      expect(trigger.className.split(' ')).toContain('data-[git-branch-popover-open=true]:bg-accent');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('does not restore pointer focus or reopen the compact tooltip after switching branches', async () => {
+    const { container, root } = await renderSelector(
+      <GitBranchSelector projectId="project-a" responsiveContext />,
+    );
+    try {
+      const trigger = container.querySelector<HTMLButtonElement>('[data-git-branch-selector="editable"]')!;
+      await act(async () => {
+        trigger.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
+        trigger.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+        trigger.click();
+      });
+
+      const topic = [...document.body.querySelectorAll<HTMLElement>('[data-slot="command-item"]')]
+        .find((item) => item.textContent?.includes('feature/topic'))!;
+      await act(async () => {
+        topic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+        topic.click();
+        await Promise.resolve();
+      });
+
+      expect(changeBranch).toHaveBeenCalledTimes(1);
+      expect(document.body.querySelector('[data-git-branch-popover-align="start"]')).toBeNull();
+      expect(document.body.querySelector('[data-slot="tooltip-content"]')).toBeNull();
+      expect(document.activeElement).not.toBe(trigger);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('restores focus to the compact branch trigger after a keyboard close', async () => {
+    const { container, root } = await renderSelector(
+      <GitBranchSelector projectId="project-a" responsiveContext />,
+    );
+    try {
+      const trigger = container.querySelector<HTMLButtonElement>('[data-git-branch-selector="editable"]')!;
+      await act(async () => {
+        trigger.focus();
+        trigger.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
+        trigger.click();
+      });
+
+      const input = document.body.querySelector<HTMLInputElement>('[data-slot="command-input"]')!;
+      await act(async () => {
+        input.focus();
+        input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }));
+      });
+
+      expect(document.body.querySelector('[data-git-branch-popover-align="start"]')).toBeNull();
+      expect(document.activeElement).toBe(trigger);
     } finally {
       await act(async () => root.unmount());
     }

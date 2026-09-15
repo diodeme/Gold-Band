@@ -118,6 +118,7 @@ export class FileContentStore {
   private readonly changeListeners = new Set<(event: WorkspaceFileChangedEventVm) => void>();
   private readonly projectWatchRefs = new Map<string, number>();
   private readonly projectWatchOperations = new Map<string, Promise<void>>();
+  private readonly activeProjectWatches = new Set<string>();
   private eventUnsubscribe: (() => void) | null = null;
   private eventSubscriptionPromise: Promise<void> | null = null;
 
@@ -269,14 +270,15 @@ export class FileContentStore {
     this.primedGrants.set(resourceKey, { projectId, canonicalPath, grant });
   }
 
-  async load(resource: FileWorkspaceResource, preferSource = false, force = false) {
+  async load(resource: FileWorkspaceResource, preferSource = false, force = false, preserveReady = false) {
     const existing = this.entries.get(resource.key);
     if (!force && existing?.status === 'ready') return existing;
     const requestRevision = (existing?.requestRevision ?? 0) + 1;
+    const keepReady = preserveReady && existing?.status === 'ready' && existing.snapshot !== null;
     this.setEntry(resource.key, {
       ...(existing ?? { ...EMPTY_ENTRY, key: resource.key, resource }),
       resource,
-      status: 'loading',
+      status: keepReady ? 'ready' : 'loading',
       errorCode: null,
       requestRevision,
     });
@@ -333,6 +335,14 @@ export class FileContentStore {
       }
       return this.entries.get(resource.key) ?? null;
     }
+  }
+
+  reconcile(resourceKey: string) {
+    const entry = this.entries.get(resourceKey);
+    if (!entry || entry.status !== 'ready' || entry.saveState.kind !== 'clean') return Promise.resolve(entry ?? null);
+    const preferSource = entry.snapshot?.kind === 'text'
+      && entry.resource.locator.canonicalPath.toLowerCase().endsWith('.svg');
+    return this.load(entry.resource, preferSource, true, true);
   }
 
   updateText(resourceKey: string, content: string) {
@@ -414,9 +424,20 @@ export class FileContentStore {
   async startProjectWatch(projectId: string) {
     const refs = this.projectWatchRefs.get(projectId) ?? 0;
     this.projectWatchRefs.set(projectId, refs + 1);
-    if (refs > 0) return;
-    await this.ensureEventSubscription();
-    await this.queueWatchOperation(projectId, () => startWorkspaceFileWatch(projectId));
+    try {
+      await this.ensureEventSubscription();
+      await this.queueWatchOperation(projectId, async () => {
+        if (this.activeProjectWatches.has(projectId)) return;
+        await startWorkspaceFileWatch(projectId);
+        this.activeProjectWatches.add(projectId);
+      });
+    } catch (reason) {
+      const currentRefs = this.projectWatchRefs.get(projectId) ?? 0;
+      if (currentRefs <= 1) this.projectWatchRefs.delete(projectId);
+      else this.projectWatchRefs.set(projectId, currentRefs - 1);
+      this.releaseEventSubscriptionIfIdle();
+      throw reason;
+    }
   }
 
   async stopProjectWatch(projectId: string) {
@@ -426,11 +447,11 @@ export class FileContentStore {
       return;
     }
     this.projectWatchRefs.delete(projectId);
-    await this.queueWatchOperation(projectId, () => stopWorkspaceFileWatch(projectId));
-    if (this.projectWatchRefs.size === 0 && this.eventUnsubscribe) {
-      this.eventUnsubscribe();
-      this.eventUnsubscribe = null;
-    }
+    await this.queueWatchOperation(projectId, async () => {
+      if (!this.activeProjectWatches.has(projectId)) return;
+      await stopWorkspaceFileWatch(projectId);
+      this.activeProjectWatches.delete(projectId);
+    }).finally(() => this.releaseEventSubscriptionIfIdle());
   }
 
   async close(resourceKey: string) {
@@ -754,16 +775,34 @@ export class FileContentStore {
 
   private async queueWatchOperation(projectId: string, operation: () => Promise<void>) {
     const previous = this.projectWatchOperations.get(projectId) ?? Promise.resolve();
-    const next = previous.catch(() => undefined).then(operation).catch(() => undefined);
+    const next = previous.catch(() => undefined).then(operation);
     this.projectWatchOperations.set(projectId, next);
-    await next;
-    if (this.projectWatchOperations.get(projectId) === next) {
-      this.projectWatchOperations.delete(projectId);
+    try {
+      await next;
+    } finally {
+      if (this.projectWatchOperations.get(projectId) === next) {
+        this.projectWatchOperations.delete(projectId);
+      }
+    }
+  }
+
+  private releaseEventSubscriptionIfIdle() {
+    if (this.projectWatchRefs.size === 0 && this.eventUnsubscribe) {
+      this.eventUnsubscribe();
+      this.eventUnsubscribe = null;
     }
   }
 
   private async handleFileChange(event: WorkspaceFileChangedEventVm) {
     for (const listener of this.changeListeners) listener(event);
+    if (event.kind === 'invalidated') {
+      await Promise.all(
+        [...this.entries.entries()]
+          .filter(([, entry]) => entry.resource.projectId === event.projectId && entry.saveState.kind === 'clean')
+          .map(([key]) => this.reconcile(key)),
+      );
+      return;
+    }
     for (const [key, entry] of this.entries) {
       if (
         entry.resource.projectId !== event.projectId

@@ -22,6 +22,7 @@ import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import {
   NODE_WIDTH,
   NODE_HEIGHT,
+  calculateCenteredViewport,
   runtimeNodeOrder,
   isBackwardEdge,
   isRuntimePrimaryEdge,
@@ -192,7 +193,7 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
         edgeTypes={edgeTypes}
         viewport={viewport}
         onViewportChange={setViewport}
-        minZoom={MIN_ZOOM}
+        minZoom={Math.min(MIN_ZOOM, centeredViewport?.zoom ?? MIN_ZOOM)}
         maxZoom={MAX_ZOOM}
         nodesDraggable={false}
         nodesConnectable={false}
@@ -245,20 +246,6 @@ function boundsForPositions(layoutPositions: Map<string, { x: number; y: number 
   const right = Math.max(...positions.map((position) => topLeft(position.x, position.y, NODE_WIDTH, RUNTIME_NODE_HEIGHT).x + NODE_WIDTH));
   const bottom = Math.max(...positions.map((position) => topLeft(position.x, position.y, NODE_WIDTH, RUNTIME_NODE_HEIGHT).y + RUNTIME_NODE_HEIGHT));
   return { x: left, y: top, width: right - left, height: bottom - top };
-}
-
-function calculateCenteredViewport(bounds: { x: number; y: number; width: number; height: number }, viewport: { width: number; height: number }, padding: number, maxZoom: number, horizontalAnchor: number, verticalAnchor: number): Viewport {
-  const availableWidth = viewport.width * Math.max(0.1, 1 - padding * 2);
-  const availableHeight = viewport.height * Math.max(0.1, 1 - padding * 2);
-  const fitZoom = Math.min(availableWidth / bounds.width, availableHeight / bounds.height);
-  const zoom = Math.min(Math.max(fitZoom, MIN_ZOOM), maxZoom, MAX_ZOOM);
-  const centerX = bounds.x + bounds.width / 2;
-  const centerY = bounds.y + bounds.height / 2;
-  return {
-    x: viewport.width * horizontalAnchor - centerX * zoom,
-    y: viewport.height * verticalAnchor - centerY * zoom,
-    zoom,
-  };
 }
 
 function createRuntimeGraphLayout(graph: GraphVm): RuntimeGraphLayout {
@@ -331,7 +318,7 @@ function createLayoutedGraph(graph: GraphVm, layout: RuntimeGraphLayout, selecte
     const activeEdge = Boolean(runningActiveNode && activeNodeKey && edge.to === activeNodeKey);
     const color = runtimeEdgeColor(edge, activeEdge);
     const branchRoute = layout.branchRouteByEdgeIndex.get(index);
-    const branch = (edge.label?.toLowerCase() ?? '') !== 'success' || branchRoute !== undefined;
+    const branch = (edge.label?.toLowerCase() ?? '') !== 'success' || branchRoute?.detour === true;
     const label = runtimeGraphEdgeDisplayLabel(edge, (value) => displayStatus(t, value));
     const edgeClassName = runtimeGraphEdgeClassName(activeEdge, branch);
     return {

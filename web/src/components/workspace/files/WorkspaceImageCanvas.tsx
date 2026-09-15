@@ -1,5 +1,5 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { Copy, Download, LoaderCircle, Maximize2, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
+import { memo, useCallback, useEffect, useRef } from 'react';
+import { LoaderCircle, Maximize2, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   TransformComponent,
@@ -8,39 +8,28 @@ import {
 } from 'react-zoom-pan-pinch';
 
 import { Button } from '@/components/ui/button';
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuTrigger,
-} from '@/components/ui/context-menu';
-import type { AttachmentItem } from '@/lib/attachment-service';
+import { ImageActionsContextMenu } from '@/components/shared/ImageActionsContextMenu';
+import { useImageActions } from '@/hooks/useImageActions';
+import type { ImageActionAsset } from '@/lib/image-actions';
 import {
   MAX_IMAGE_SCALE,
   MIN_IMAGE_SCALE,
   normalizedCtrlWheelScale,
 } from '@/lib/image-zoom-gesture';
-import {
-  copyAttachmentImage,
-  IMAGE_ACTION_FEEDBACK_DURATION_MS,
-  saveAttachmentImageAs,
-} from '@/lib/image-actions';
 
 const IMAGE_ZOOM_STEP = 0.2;
 
 export interface WorkspaceImageCanvasProps {
   src: string;
   alt: string;
-  attachment?: AttachmentItem;
+  imageActionAsset?: ImageActionAsset;
   onError?: () => void;
 }
-
-type ImageActionState = 'idle' | 'copying' | 'saving' | 'copied' | 'saved' | 'failed';
 
 export const WorkspaceImageCanvas = memo(function WorkspaceImageCanvas({
   src,
   alt,
-  attachment,
+  imageActionAsset,
   onError,
 }: WorkspaceImageCanvasProps) {
   const { t } = useTranslation();
@@ -50,16 +39,7 @@ export const WorkspaceImageCanvas = memo(function WorkspaceImageCanvas({
   const transformStateRef = useRef({ scale: 1, positionX: 0, positionY: 0 });
   const pendingTransformRef = useRef<typeof transformStateRef.current | null>(null);
   const transformFrameRef = useRef<number | null>(null);
-  const [imageActionState, setImageActionState] = useState<ImageActionState>('idle');
-
-  useEffect(() => {
-    if (imageActionState !== 'copied' && imageActionState !== 'saved') return;
-    const completedState = imageActionState;
-    const timeout = window.setTimeout(() => {
-      setImageActionState((current) => current === completedState ? 'idle' : current);
-    }, IMAGE_ACTION_FEEDBACK_DURATION_MS);
-    return () => window.clearTimeout(timeout);
-  }, [imageActionState]);
+  const imageActions = useImageActions(imageActionAsset);
 
   useEffect(() => {
     transformStateRef.current = { scale: 1, positionX: 0, positionY: 0 };
@@ -115,41 +95,6 @@ export const WorkspaceImageCanvas = memo(function WorkspaceImageCanvas({
     return () => viewportElement.removeEventListener('wheel', handleCtrlWheelZoom);
   }, [handleCtrlWheelZoom, src]);
 
-  const copyImage = useCallback(async () => {
-    if (!attachment || imageActionState === 'copying' || imageActionState === 'saving') return;
-    setImageActionState('copying');
-    try {
-      await copyAttachmentImage(attachment);
-      setImageActionState('copied');
-    } catch {
-      setImageActionState('failed');
-    }
-  }, [attachment, imageActionState]);
-
-  const saveImage = useCallback(async () => {
-    if (!attachment || imageActionState === 'copying' || imageActionState === 'saving') return;
-    setImageActionState('saving');
-    try {
-      const saved = await saveAttachmentImageAs(attachment);
-      setImageActionState(saved ? 'saved' : 'idle');
-    } catch {
-      setImageActionState('failed');
-    }
-  }, [attachment, imageActionState]);
-
-  const pendingImageAction = imageActionState === 'copying' || imageActionState === 'saving';
-  const imageActionLabel = imageActionState === 'copying'
-    ? t('workspace.filesPanel.copyingImage')
-    : imageActionState === 'saving'
-      ? t('workspace.filesPanel.savingImage')
-      : imageActionState === 'copied'
-        ? t('workspace.filesPanel.imageCopied')
-        : imageActionState === 'saved'
-          ? t('workspace.filesPanel.imageSaved')
-          : imageActionState === 'failed'
-            ? t('workspace.filesPanel.imageActionFailed')
-            : '';
-
   const image = (
     <img
       src={src}
@@ -204,30 +149,21 @@ export const WorkspaceImageCanvas = memo(function WorkspaceImageCanvas({
             wrapperClass="!h-full !w-full cursor-grab bg-background active:cursor-grabbing"
             contentClass="!h-full !w-full items-center justify-center p-5"
           >
-            {attachment ? (
-              <ContextMenu>
-                <ContextMenuTrigger className="inline-flex max-h-full max-w-full">
-                  {image}
-                </ContextMenuTrigger>
-                <ContextMenuContent className="w-40 min-w-40 p-1">
-                  <ContextMenuItem disabled={pendingImageAction} onSelect={() => void copyImage()}>
-                    <Copy />
-                    {t('workspace.filesPanel.copyImage')}
-                  </ContextMenuItem>
-                  <ContextMenuItem disabled={pendingImageAction} onSelect={() => void saveImage()}>
-                    <Download />
-                    {t('workspace.filesPanel.saveImageAs')}
-                  </ContextMenuItem>
-                </ContextMenuContent>
-              </ContextMenu>
+            {imageActionAsset ? (
+              <ImageActionsContextMenu
+                actions={imageActions}
+                triggerClassName="inline-flex max-h-full max-w-full"
+              >
+                {image}
+              </ImageActionsContextMenu>
             ) : image}
           </TransformComponent>
         </div>
       </TransformWrapper>
       <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border/40 px-3 py-1 text-ui-micro text-muted-foreground">
         <span aria-live="polite" className="inline-flex min-w-0 items-center gap-1 truncate">
-          {pendingImageAction ? <LoaderCircle className="size-3 shrink-0 animate-spin" /> : null}
-          {imageActionLabel}
+          {imageActions.pending ? <LoaderCircle className="size-3 shrink-0 animate-spin" /> : null}
+          {imageActions.message}
         </span>
         <span ref={scaleLabelRef}>100%</span>
       </div>

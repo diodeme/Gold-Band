@@ -27,3 +27,16 @@ test('tauri channel overlay preserves desktop shell window behavior', () => {
   });
   assert.deepEqual(overlay.app.security, baseTauriConfig.app.security);
 });
+
+test('support diagnostic overlay disables updater artifacts without changing channel bundle targets', () => {
+  const overlay = tauriConfigOverlay(
+    { ...baseChannelConfig, bundleTargets: ['nsis'] },
+    undefined,
+    { createUpdaterArtifacts: false },
+  );
+
+  assert.deepEqual(overlay.bundle, {
+    targets: ['nsis'],
+    createUpdaterArtifacts: false,
+  });
+});

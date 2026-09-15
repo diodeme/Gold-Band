@@ -1,0 +1,47 @@
+name: Performance issue
+description: Report slow, resource-heavy, or unresponsive behavior.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the performance problem you observed. Measurements are helpful but optional; maintainers will verify the bottleneck and define a safe target. Do not include credentials or private data.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Observed performance problem
+      description: What feels slow, uses too many resources, or becomes unresponsive?
+    validations:
+      required: true
+
+  - type: textarea
+    id: workload
+    attributes:
+      label: Steps and workload
+      description: Explain how to reproduce it and, when known, the approximate message count, file size, dataset size, or concurrency.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include the Gold Band version, operating system, hardware details when relevant, and any relevant provider or Agent.
+    validations:
+      required: true
+
+  - type: textarea
+    id: measurements
+    attributes:
+      label: Measurements or evidence
+      description: Optionally add timings, memory usage, profiler output, recordings, screenshots, or comparisons with previous behavior.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Submission checklist
+      options:
+        - label: I searched open and closed issues for duplicates.
+          required: true
+        - label: I removed secrets, personal data, and unnecessary private paths.
+          required: true

@@ -41,6 +41,7 @@ type Props = {
   contentSide?: 'top' | 'bottom';
   align?: 'start' | 'end';
   triggerClassName?: string;
+  disabled?: boolean;
 };
 
 export function resolveAcpSingleConfigMenuValue(value: string) {
@@ -59,6 +60,7 @@ export function AcpSingleConfigMenu({
   contentSide = 'bottom',
   align = DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
   triggerClassName,
+  disabled = false,
 }: Props) {
   const selectedOption = options.find((option) => option.id === value);
   const selectedLabel = valueLabel ?? selectedOption?.name ?? unspecifiedLabel;
@@ -74,6 +76,7 @@ export function AcpSingleConfigMenu({
     <DropdownMenu modal={ACP_COMPOSER_CONFIG_DROPDOWN_MODAL}>
       <Tooltip open={tooltipOpen} onOpenChange={handleTooltipOpenChange}>
         <DropdownMenuTrigger
+          disabled={disabled}
           className={cn(acpComposerConfigTriggerVariants({ compact }), triggerClassName)}
           onPointerEnter={showTooltipIfOverflowing}
           onPointerLeave={hideTooltip}

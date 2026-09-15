@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod acp_images;
 mod avatar;
 mod builtin_mcp;
 mod channel;
@@ -13,7 +14,9 @@ mod git_state_monitor;
 mod i18n;
 mod image_actions;
 mod metrics;
+mod multica;
 mod notifications;
+mod personal_analytics;
 mod scheduled_runtime;
 mod scheduled_service;
 mod state;
@@ -28,22 +31,23 @@ mod workspace_files;
 
 use anyhow::Context;
 use commands::{
-    add_mcp_server, cancel_git_operation, cancel_github_operation, change_git_branch,
-    check_local_claude, check_mcp_server_health, check_skill_name_conflict, check_update_manual,
-    choose_workspace, clear_desktop_avatar, continue_conversation_runtime, continue_run,
-    create_agent, create_profile, create_task, delete_agent, delete_auto_template,
-    delete_conversation_queued_prompt, delete_mcp_server, delete_profile, delete_skill,
-    delete_workflow_template, dismiss_update_announcement, doctor_agent,
-    download_and_install_update, execute_git_mutation, get_acp_activity_detail, get_acp_raw_frames,
-    get_acp_session, get_acp_tool_detail, get_agent_binding_usage, get_agent_command_catalog,
-    get_agent_registry, get_app_bootstrap, get_auto_templates, get_file_comparison,
-    get_git_branch_picker_snapshot, get_git_capability, get_git_commit_detail,
-    get_git_commit_reachability, get_git_commit_review, get_git_comparison, get_git_history,
-    get_git_operation, get_github_capability, get_github_issue, get_github_operation,
-    get_github_pull_request, get_log_page, get_metrics_settings, get_profile, get_profiles,
-    get_round_detail, get_run_detail, get_skill_sync_status, get_source_control_snapshot,
-    get_system_fonts, get_task_detail, get_task_list, get_turn_file_change_set, get_update_status,
-    get_workflow, get_workflow_templates, import_desktop_wallpaper, import_profiles_from_folder,
+    add_mcp_server, cancel_git_operation, cancel_github_operation, cancel_multica_connect,
+    change_git_branch, check_local_claude, check_mcp_server_health, check_skill_name_conflict,
+    check_update_manual, choose_workspace, clear_desktop_avatar, connect_multica,
+    continue_conversation_runtime, continue_run, create_agent, create_profile, create_task,
+    delete_agent, delete_auto_template, delete_conversation_queued_prompt, delete_mcp_server,
+    delete_profile, delete_skill, delete_workflow_template, disconnect_multica,
+    dismiss_update_announcement, doctor_agent, download_and_install_update, execute_git_mutation,
+    get_acp_activity_detail, get_acp_image, get_acp_raw_frames, get_acp_session,
+    get_acp_tool_detail, get_agent_binding_usage, get_agent_command_catalog, get_agent_registry,
+    get_app_bootstrap, get_auto_templates, get_file_comparison, get_git_branch_picker_snapshot,
+    get_git_capability, get_git_commit_detail, get_git_commit_reachability, get_git_commit_review,
+    get_git_comparison, get_git_history, get_git_operation, get_github_capability,
+    get_github_issue, get_github_operation, get_github_pull_request, get_log_page,
+    get_metrics_settings, get_multica_settings, get_profile, get_profiles, get_round_detail,
+    get_run_detail, get_skill_sync_status, get_source_control_snapshot, get_system_fonts,
+    get_task_detail, get_task_list, get_turn_file_change_set, get_update_status, get_workflow,
+    get_workflow_templates, import_desktop_wallpaper, import_profiles_from_folder,
     initialize_git_repository, list_conversation_directory, list_github_issues,
     list_github_pull_requests, list_mcp_servers, list_mcp_tools, list_project_skills, list_skills,
     mark_settings_advanced_update_seen, mark_settings_update_seen,
@@ -51,39 +55,46 @@ use commands::{
     preflight_github_pull_request, read_conversation_directory_file, read_skill, record_activity,
     recover_conversation_runtime, remove_recent_workspace, renew_acp_session_lease,
     reorder_conversation_queued_prompts, replace_auto_templates, report_frontend_error,
-    respond_acp_permission, respond_elicitation, restore_conversation_queued_prompt,
-    restore_theme_desktop_wallpaper, retry_run, save_auto_template, save_desktop_avatar,
-    save_desktop_avatar_shape, save_desktop_preferences, save_desktop_wallpaper_opacity,
-    save_metrics_settings, save_task_workflow, save_updater_settings, save_workflow_template,
-    search_acp_prompts, search_acp_sessions, search_tasks, select_recent_desktop_avatar,
-    select_recent_desktop_wallpaper, select_recent_workspace, set_acp_session_config_option,
-    set_acp_session_model, set_acp_session_permission_mode, show_artifact, show_attachment,
-    show_worker_ref, start_git_operation, start_git_state_monitor, start_github_login,
-    start_github_pull_request_create, start_run, stop_active_session, stop_git_state_monitor,
-    submit_conversation_prompt, submit_manual_check, toggle_mcp_server, update_agent,
-    update_auto_template, update_mcp_server, update_notification_attention, update_profile,
-    update_skill_sync_targets, update_workflow_template, use_conversation_queued_prompt,
-    write_skill,
+    report_webview_environment, resolve_turn_attachment_file, respond_acp_permission,
+    respond_elicitation, restore_conversation_queued_prompt, restore_theme_desktop_wallpaper,
+    retry_run, save_auto_template, save_desktop_avatar, save_desktop_avatar_shape,
+    save_desktop_preferences, save_desktop_wallpaper_opacity, save_metrics_settings,
+    save_multica_connection_address, save_task_workflow, save_updater_settings,
+    save_workflow_template, search_acp_prompts, search_acp_sessions, search_tasks,
+    select_recent_desktop_avatar, select_recent_desktop_wallpaper, select_recent_workspace,
+    set_acp_session_config_option, set_acp_session_model, set_acp_session_permission_mode,
+    show_artifact, show_attachment, show_worker_ref, start_git_operation, start_git_state_monitor,
+    start_github_login, start_github_pull_request_create, start_run, stop_active_session,
+    stop_git_state_monitor, submit_conversation_prompt, submit_manual_check, toggle_mcp_server,
+    update_agent, update_auto_template, update_mcp_server, update_notification_attention,
+    update_profile, update_skill_sync_targets, update_workflow_template,
+    use_conversation_queued_prompt, write_skill,
 };
 use commands_conversation::{
     acknowledge_conversation_terminal_result, add_conversation_workspace,
     choose_conversation_workspace, create_conversation_run, create_scheduled_task,
     delete_conversation_task, delete_scheduled_execution_history, delete_scheduled_task,
-    get_conversation_run, get_conversation_run_mode, get_conversation_sidebar,
-    get_conversation_workspaces, get_scheduled_runtime_settings, get_scheduled_task,
-    get_scheduled_task_diagnostics, get_supported_attachment_extensions,
-    list_scheduled_execution_history, list_scheduled_task_occurrences, list_scheduled_tasks,
-    materialize_conversation_attachments, pin_conversation, remove_conversation_workspace,
-    reorder_pinned_conversations, rerun_conversation_task, run_scheduled_task_now,
-    save_conversation_preference, save_conversation_run_mode, save_desktop_ui_mode,
-    save_last_conversation_workspace, save_scheduled_runtime_settings, search_conversation_tasks,
-    set_scheduled_task_enabled, show_conversation_attachment, show_conversation_message_attachment,
-    stat_attachment_files, sync_conversation_workspace, unpin_conversation, update_scheduled_task,
-    update_task_metadata, validate_conversation_create,
+    get_conversation_pinned_task_page, get_conversation_run, get_conversation_run_mode,
+    get_conversation_run_summary_page, get_conversation_sidebar_bootstrap,
+    get_conversation_task_page, get_conversation_workspaces, get_scheduled_runtime_settings,
+    get_scheduled_task, get_scheduled_task_diagnostics, get_supported_attachment_extensions,
+    list_scheduled_execution_history, list_scheduled_tasks, materialize_conversation_attachments,
+    pin_conversation, remove_conversation_workspace, reorder_pinned_conversations,
+    rerun_conversation_task, run_scheduled_task_now, save_conversation_preference,
+    save_conversation_run_mode, save_desktop_ui_mode, save_last_conversation_workspace,
+    save_scheduled_runtime_settings, search_conversation_tasks, set_scheduled_task_enabled,
+    show_conversation_attachment, show_conversation_message_attachment, stat_attachment_files,
+    sync_conversation_workspace, unpin_conversation, update_scheduled_task, update_task_metadata,
+    validate_conversation_create,
 };
 use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::sqlite::init_search_index;
 use gold_band::storage::{GoldBandPaths, configure_storage_paths};
+use multica::commands::{
+    add_multica_workspace, cancel_multica_task, get_multica_task_requirement, get_multica_tasks,
+    list_server_multica_workspaces, recover_multica_work_dir_sessions, remove_multica_workspace,
+    set_active_multica_workspace, start_multica_conversation_run,
+};
 // Heartbeat signals are projected by the RuntimeLifecycleBus metrics subscriber.
 use image_actions::{copy_image_to_clipboard, save_image_as};
 use notifications::send_scheduled_native_notification;
@@ -160,8 +171,12 @@ fn run() -> anyhow::Result<()> {
         .manage(desktop_lifecycle::DesktopLifecycleCoordinator::default())
         .manage(notifications::PendingInterventionNavigations::default())
         .manage(git_state_monitor::GitStateMonitorRuntime::default())
+        .manage(personal_analytics::PersonalAnalyticsRuntime::default())
+        .manage(personal_analytics::PersonalAnalyticsInsightRuntime::default())
         .manage(WorkspaceFileRuntime::default())
         .manage(WorkspaceFileWatchRuntime::default())
+        .manage(multica::shared_state())
+        .manage(multica::MulticaConnectCancel::default())
         .manage(wallpaper_runtime);
     #[cfg(all(debug_assertions, target_os = "windows"))]
     let builder = builder.manage(webview_heap_diagnostics);
@@ -205,71 +220,92 @@ fn run() -> anyhow::Result<()> {
             ))?;
             if let Ok(runtime_app) = state.app() {
                 commands::register_lifecycle_subscribers(&runtime_app, app.handle());
+                // home repo 自愈（单一 repo、有界）：multica work_dir 定点自愈移入下方 spawn_blocking
+                // 恢复管线（P2），不再阻塞窗口启动关键路径。
+                let _ = runtime_app.recover_interrupted_running_sessions();
             }
             let recovery_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let blocking_handle = recovery_handle.clone();
                 let recovery = tauri::async_runtime::spawn_blocking(move || {
-                    blocking_handle
-                        .state::<DesktopState>()
-                        .recover_interrupted_conversation_workspaces()
+                    let state = blocking_handle.state::<DesktopState>();
+                    // multica work_dir 定点自愈先于 complete_startup_recovery：resume 判定等待的
+                    // 启动门（wait_for_startup_accepting）打开即意味着本步已收敛（断点续跑根因修复：
+                    // home 自愈够不到 task 自身 work_dir，残留 Running 会使 classify_resume 误落 Fresh）。
+                    if let Ok(runtime_app) = state.app() {
+                        recover_multica_work_dir_sessions(&runtime_app);
+                    }
+                    state.recover_interrupted_conversation_workspaces()
                 })
                 .await;
-                match recovery {
-                    Ok(Ok(report)) => {
-                        let blocked_project_ids = report
-                            .blocked_project_ids
-                            .iter()
-                            .cloned()
-                            .collect::<std::collections::HashSet<_>>();
-                        let state = recovery_handle.state::<DesktopState>();
-                        if let Err(error) = state
-                            .runtime_recovery()
-                            .complete_startup_recovery(blocked_project_ids.clone())
-                        {
-                            warn!(
-                                error = %error,
-                                "runtime recovery startup gate could not be completed"
-                            );
-                            return;
-                        }
-                        for recovered in &report.recovered_runs {
-                            commands::emit_recovered_conversation_run_state(
-                                &recovery_handle,
-                                recovered,
-                            );
-                        }
-                        if let Err(error) =
-                            scheduled_runtime::start(recovery_handle.clone(), &blocked_project_ids)
-                        {
-                            warn!(error = %error, "scheduled task scheduler failed to start");
-                        }
-                        info!(
-                            workspace_count = report.workspace_count,
-                            candidate_count = report.candidate_count,
-                            recovered_run_count = report.recovered_run_count,
-                            consumed_candidate_count = report.consumed_candidate_count,
-                            blocked_workspace_count = report.blocked_project_ids.len(),
-                            failure_count = report.failures.len(),
-                            "conversation workspace startup recovery completed"
+                let report = match recovery {
+                    Ok(Ok(report)) => Some(report),
+                    Ok(Err(error)) => {
+                        warn!(
+                            error = %error,
+                            "failed to read runtime recovery candidates"
                         );
-                        for failure in report.failures {
-                            warn!(
-                                workspace_path = %failure.workspace_path,
-                                error_code = failure.code,
-                                error = %failure.message,
-                                "conversation workspace startup recovery failed"
-                            );
-                        }
+                        None
                     }
-                    Ok(Err(error)) => warn!(
+                    Err(error) => {
+                        warn!(
+                            error = %error,
+                            "runtime recovery blocking task failed"
+                        );
+                        None
+                    }
+                };
+                let Some(report) = report else {
+                    let state = recovery_handle.state::<DesktopState>();
+                    if let Err(error) = state.runtime_recovery().fail_startup_recovery() {
+                        warn!(
+                            error = %error,
+                            "runtime recovery startup gate could not transition to failed"
+                        );
+                    }
+                    return;
+                };
+
+                let blocked_project_ids = report
+                    .blocked_project_ids
+                    .iter()
+                    .cloned()
+                    .collect::<std::collections::HashSet<_>>();
+                let state = recovery_handle.state::<DesktopState>();
+                if let Err(error) = state
+                    .runtime_recovery()
+                    .complete_startup_recovery(blocked_project_ids.clone())
+                {
+                    warn!(
                         error = %error,
-                        "failed to read runtime recovery candidates"
-                    ),
-                    Err(error) => warn!(
-                        error = %error,
-                        "runtime recovery blocking task failed"
-                    ),
+                        "runtime recovery startup gate could not be completed"
+                    );
+                    return;
+                }
+                for recovered in &report.recovered_runs {
+                    commands::emit_recovered_conversation_run_state(&recovery_handle, recovered);
+                }
+                if let Err(error) =
+                    scheduled_runtime::start(recovery_handle.clone(), &blocked_project_ids)
+                {
+                    warn!(error = %error, "scheduled task scheduler failed to start");
+                }
+                info!(
+                    workspace_count = report.workspace_count,
+                    candidate_count = report.candidate_count,
+                    recovered_run_count = report.recovered_run_count,
+                    consumed_candidate_count = report.consumed_candidate_count,
+                    blocked_workspace_count = report.blocked_project_ids.len(),
+                    failure_count = report.failures.len(),
+                    "conversation workspace startup recovery completed"
+                );
+                for failure in report.failures {
+                    warn!(
+                        workspace_path = %failure.workspace_path,
+                        error_code = failure.code,
+                        error = %failure.message,
+                        "conversation workspace startup recovery failed"
+                    );
                 }
             });
             // Initialize SQLite search index (best-effort; failures are non-fatal).
@@ -290,17 +326,26 @@ fn run() -> anyhow::Result<()> {
                 let _ = init_search_index(&paths.sqlite_db_path(), &paths.projects_dir());
             }
             let handle = app.handle().clone();
+            let command_handle = handle.clone();
+            handle
+                .state::<DesktopState>()
+                .set_agent_command_update(move |catalog| {
+                    commands::emit_agent_commands_updated(&command_handle, catalog);
+                });
             std::thread::spawn(move || {
                 loop {
                     let state = handle.state::<DesktopState>();
                     debug!("periodic agent maintenance cycle started");
-                    let diagnostics_refreshed = match state.refresh_all_agent_diagnostics() {
-                        Ok(()) => true,
-                        Err(error) => {
-                            warn!(%error, "periodic agent diagnostic refresh failed");
-                            false
-                        }
-                    };
+                    let diagnostics_refreshed =
+                        match state.refresh_all_agent_diagnostics(|agent_id| {
+                            commands::emit_agent_registry_updated(&handle, agent_id);
+                        }) {
+                            Ok(()) => true,
+                            Err(error) => {
+                                warn!(%error, "periodic agent diagnostic refresh failed");
+                                false
+                            }
+                        };
                     let commands_refreshed =
                         match state.refresh_agent_command_catalogs_for_active_workspaces() {
                             Ok(()) => true,
@@ -309,12 +354,6 @@ fn run() -> anyhow::Result<()> {
                                 false
                             }
                         };
-                    if diagnostics_refreshed {
-                        commands::emit_agent_registry_updated(&handle);
-                    }
-                    if diagnostics_refreshed || commands_refreshed {
-                        commands::emit_agent_commands_updated(&handle, None);
-                    }
                     debug!(
                         diagnostics_refreshed,
                         commands_refreshed, "periodic agent maintenance cycle completed"
@@ -331,6 +370,7 @@ fn run() -> anyhow::Result<()> {
             });
             retry_pending_startup_install(&app.handle().clone());
             start_update_polling(app.handle().clone());
+            multica::start_multica_loop(app.handle().clone());
             let _ = app.state::<DesktopState>().reevaluate_heartbeat_config();
             Ok(())
         })
@@ -345,6 +385,12 @@ fn run() -> anyhow::Result<()> {
             get_system_fonts,
             check_local_claude,
             get_agent_registry,
+            personal_analytics::get_personal_analytics,
+            personal_analytics::sync_personal_analytics,
+            personal_analytics::query_personal_analytics_report,
+            personal_analytics::start_personal_analytics_insights,
+            personal_analytics::cancel_personal_analytics_insights,
+            personal_analytics::cancel_personal_analytics,
             get_agent_binding_usage,
             get_agent_command_catalog,
             create_agent,
@@ -380,8 +426,11 @@ fn run() -> anyhow::Result<()> {
             get_acp_session,
             get_turn_file_change_set,
             get_file_comparison,
+            resolve_turn_attachment_file,
             get_acp_activity_detail,
             get_acp_tool_detail,
+            get_acp_image,
+            commands::get_acp_activity_images,
             renew_acp_session_lease,
             submit_conversation_prompt,
             reorder_conversation_queued_prompts,
@@ -394,6 +443,8 @@ fn run() -> anyhow::Result<()> {
             respond_acp_permission,
             respond_elicitation,
             get_acp_raw_frames,
+            commands::list_composer_history,
+            commands::get_composer_history_text,
             start_run,
             get_git_capability,
             initialize_git_repository,
@@ -445,8 +496,22 @@ fn run() -> anyhow::Result<()> {
             update_notification_attention,
             send_scheduled_native_notification,
             save_metrics_settings,
+            get_multica_settings,
+            connect_multica,
+            disconnect_multica,
+            cancel_multica_connect,
+            save_multica_connection_address,
+            get_multica_tasks,
+            get_multica_task_requirement,
+            start_multica_conversation_run,
+            cancel_multica_task,
+            list_server_multica_workspaces,
+            add_multica_workspace,
+            remove_multica_workspace,
+            set_active_multica_workspace,
             record_activity,
             report_frontend_error,
+            report_webview_environment,
             get_update_status,
             mark_settings_update_seen,
             mark_settings_advanced_update_seen,
@@ -458,11 +523,13 @@ fn run() -> anyhow::Result<()> {
             search_tasks,
             // Conversation UI
             save_desktop_ui_mode,
-            get_conversation_sidebar,
+            get_conversation_sidebar_bootstrap,
+            get_conversation_task_page,
+            get_conversation_pinned_task_page,
+            get_conversation_run_summary_page,
             list_scheduled_tasks,
             list_scheduled_execution_history,
             delete_scheduled_execution_history,
-            list_scheduled_task_occurrences,
             get_scheduled_task_diagnostics,
             get_scheduled_runtime_settings,
             save_scheduled_runtime_settings,

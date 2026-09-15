@@ -45,6 +45,92 @@ pub(crate) fn app_for_workspace(
     ))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RuntimeWorkspaceAccessError {
+    PathNotFound {
+        project_id: String,
+        workspace_path: String,
+    },
+    PathNotDirectory {
+        project_id: String,
+        workspace_path: String,
+    },
+    PathInaccessible {
+        project_id: String,
+        workspace_path: String,
+    },
+}
+
+impl RuntimeWorkspaceAccessError {
+    pub(crate) fn code(&self) -> &'static str {
+        match self {
+            Self::PathNotFound { .. } => "workspace.path-not-found",
+            Self::PathNotDirectory { .. } => "workspace.path-not-directory",
+            Self::PathInaccessible { .. } => "workspace.path-inaccessible",
+        }
+    }
+
+    pub(crate) fn params(&self) -> serde_json::Value {
+        let (project_id, workspace_path) = match self {
+            Self::PathNotFound {
+                project_id,
+                workspace_path,
+            }
+            | Self::PathNotDirectory {
+                project_id,
+                workspace_path,
+            }
+            | Self::PathInaccessible {
+                project_id,
+                workspace_path,
+            } => (project_id, workspace_path),
+        };
+        serde_json::json!({
+            "projectId": project_id,
+            "workspacePath": workspace_path,
+        })
+    }
+}
+
+pub(crate) fn validate_runtime_workspace_access(
+    project_id: &str,
+    workspace_path: &str,
+) -> Result<(), RuntimeWorkspaceAccessError> {
+    let metadata = std::fs::metadata(workspace_path)
+        .map_err(|error| runtime_workspace_io_error(project_id, workspace_path, error))?;
+    if !metadata.is_dir() {
+        return Err(RuntimeWorkspaceAccessError::PathNotDirectory {
+            project_id: project_id.to_string(),
+            workspace_path: workspace_path.to_string(),
+        });
+    }
+    std::fs::read_dir(workspace_path).map_err(|_| {
+        RuntimeWorkspaceAccessError::PathInaccessible {
+            project_id: project_id.to_string(),
+            workspace_path: workspace_path.to_string(),
+        }
+    })?;
+    Ok(())
+}
+
+fn runtime_workspace_io_error(
+    project_id: &str,
+    workspace_path: &str,
+    error: std::io::Error,
+) -> RuntimeWorkspaceAccessError {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        RuntimeWorkspaceAccessError::PathNotFound {
+            project_id: project_id.to_string(),
+            workspace_path: workspace_path.to_string(),
+        }
+    } else {
+        RuntimeWorkspaceAccessError::PathInaccessible {
+            project_id: project_id.to_string(),
+            workspace_path: workspace_path.to_string(),
+        }
+    }
+}
+
 pub(crate) fn remove_workspace_from_state(
     state: &mut StateConfig,
     requested_project_id: &str,
@@ -954,6 +1040,57 @@ mod tests {
             direct_preferences: Default::default(),
             auto_config: None,
         }
+    }
+
+    #[test]
+    fn runtime_workspace_access_accepts_a_readable_directory() {
+        let directory = tempdir().unwrap();
+        let workspace_path = directory.path().to_string_lossy();
+
+        assert!(validate_runtime_workspace_access("project-1", &workspace_path).is_ok());
+    }
+
+    #[test]
+    fn runtime_workspace_access_reports_a_missing_path_with_context() {
+        let directory = tempdir().unwrap();
+        let missing = directory.path().join("missing");
+        let workspace_path = missing.to_string_lossy().into_owned();
+
+        let error = validate_runtime_workspace_access("project-1", &workspace_path).unwrap_err();
+
+        assert_eq!(error.code(), "workspace.path-not-found");
+        assert_eq!(
+            error.params(),
+            serde_json::json!({
+                "projectId": "project-1",
+                "workspacePath": workspace_path,
+            })
+        );
+    }
+
+    #[test]
+    fn runtime_workspace_access_rejects_a_file_path() {
+        let directory = tempdir().unwrap();
+        let file = directory.path().join("workspace.txt");
+        std::fs::write(&file, "not a directory").unwrap();
+        let workspace_path = file.to_string_lossy().into_owned();
+
+        let error = validate_runtime_workspace_access("project-1", &workspace_path).unwrap_err();
+
+        assert_eq!(error.code(), "workspace.path-not-directory");
+    }
+
+    #[test]
+    fn runtime_workspace_permission_errors_are_inaccessible() {
+        let error = runtime_workspace_io_error(
+            "project-1",
+            "D:/restricted",
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+
+        assert_eq!(error.code(), "workspace.path-inaccessible");
+        assert_eq!(error.params()["projectId"], "project-1");
+        assert_eq!(error.params()["workspacePath"], "D:/restricted");
     }
 
     #[test]

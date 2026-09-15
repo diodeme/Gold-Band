@@ -156,4 +156,26 @@ describe('ACP composite model selector', () => {
     expect(triggerClass(modelOnly, 'dropdown-menu-trigger')).toContain('w-full max-w-none');
     expect(triggerClass(composite, 'dropdown-menu-trigger')).toContain('w-full max-w-none');
   });
+
+  it('forwards disabled state to model-only and composite triggers', () => {
+    const commonProps = {
+      models: [{ id: 'gpt-5.6-sol', name: 'GPT-5.6-Sol' }],
+      modelValue: 'gpt-5.6-sol',
+      onModelChange: () => {},
+      disabled: true,
+    };
+    const modelOnly = renderSelect(commonProps);
+    const composite = renderSelect({
+      ...commonProps,
+      thoughtLevel: {
+        id: 'reasoning_effort',
+        category: 'thought_level',
+        options: [{ value: 'high', name: 'High' }],
+      },
+      thoughtValue: 'high',
+    });
+
+    expect(modelOnly.match(/<button[^>]*data-slot="dropdown-menu-trigger"[^>]*>/)?.[0]).toContain('disabled=""');
+    expect(composite.match(/<button[^>]*data-slot="dropdown-menu-trigger"[^>]*>/)?.[0]).toContain('disabled=""');
+  });
 });

@@ -8,6 +8,11 @@ use serde_json::Value;
 use crate::{
     acp::{
         events::current_timestamp,
+        interaction::{
+            AcpPromptInteractionIdentity, AcpPromptInteractionKind,
+            PendingAcpPromptInteractionState, bind_pending_prompt_interaction_timeline_identity,
+            write_pending_prompt_interaction,
+        },
         timeline::{
             TimelineIndexedItem, TimelineItemIdentity, TimelineSettleOutcome,
             read_indexed_pending_permission, read_indexed_timeline_item, settle_permission_item,
@@ -16,15 +21,7 @@ use crate::{
     storage::{ensure_parent_dir, read_json, write_json},
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PendingPermissionState {
-    pub request_id: String,
-    pub params: Value,
-    pub created_at: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timeline_identity: Option<TimelineItemIdentity>,
-}
+pub type PendingPermissionState = PendingAcpPromptInteractionState<Value>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,11 +69,17 @@ pub fn cancel_pending_permission_requests(
         let Ok(pending) = read_json::<PendingPermissionState>(&path) else {
             continue;
         };
-        let response_path = permission_response_file(attempt_dir, &pending.request_id);
+        let request_id = &pending.identity.interaction_id;
+        let response_path = permission_response_file(attempt_dir, request_id);
         if response_path.exists() {
             continue;
         }
-        let Some((identity, indexed)) = resolve_permission_identity(attempt_dir, &pending)? else {
+        let Some((identity, indexed)) = resolve_permission_identity(
+            attempt_dir,
+            request_id,
+            pending.timeline_identity.as_ref(),
+        )?
+        else {
             continue;
         };
         if indexed.event.status.as_deref() != Some("pending") {
@@ -88,20 +91,14 @@ pub fn cancel_pending_permission_requests(
             &timeline_path,
             &identity.item_id,
             Some(indexed.revision),
-            &pending.request_id,
+            request_id,
             None,
             true,
             decided_at.clone(),
         )? == TimelineSettleOutcome::Applied
         {
-            write_permission_response(
-                attempt_dir,
-                &pending.request_id,
-                None,
-                true,
-                decided_at.clone(),
-            )?;
-            remove_file_if_exists(&pending_permission_file(attempt_dir, &pending.request_id))?;
+            write_permission_response(attempt_dir, request_id, None, true, decided_at.clone())?;
+            remove_file_if_exists(&pending_permission_file(attempt_dir, request_id))?;
         }
     }
     Ok(())
@@ -110,15 +107,22 @@ pub fn cancel_pending_permission_requests(
 pub fn write_pending_permission(
     attempt_dir: &Utf8Path,
     request_id: &str,
+    turn_id: &str,
+    prompt_event_id: &str,
     params: Value,
     created_at: String,
 ) -> Result<()> {
     let path = pending_permission_file(attempt_dir, request_id);
-    write_json(
+    write_pending_prompt_interaction(
         &path,
-        &PendingPermissionState {
-            request_id: request_id.to_string(),
-            params,
+        &PendingAcpPromptInteractionState {
+            identity: AcpPromptInteractionIdentity::new(
+                request_id,
+                AcpPromptInteractionKind::Permission,
+                turn_id,
+                prompt_event_id,
+            ),
+            payload: params,
             created_at,
             timeline_identity: None,
         },
@@ -131,9 +135,7 @@ pub fn bind_pending_permission_timeline_identity(
     identity: TimelineItemIdentity,
 ) -> Result<()> {
     let path = pending_permission_file(attempt_dir, request_id);
-    let mut pending: PendingPermissionState = read_json(&path)?;
-    pending.timeline_identity = Some(identity);
-    write_json(&path, &pending)
+    bind_pending_prompt_interaction_timeline_identity::<Value>(&path, identity)
 }
 
 pub fn write_permission_response(
@@ -182,7 +184,11 @@ pub fn write_permission_response_if_pending(
         cancelled,
         decided_at.clone(),
     )?;
-    if let Some((identity, indexed)) = resolve_permission_identity(attempt_dir, &pending)? {
+    if let Some((identity, indexed)) = resolve_permission_identity(
+        attempt_dir,
+        &pending.identity.interaction_id,
+        pending.timeline_identity.as_ref(),
+    )? {
         if indexed.event.status.as_deref() == Some("pending") {
             let timeline_path =
                 crate::acp::branches::branch_timeline_path(attempt_dir, &identity.branch_id);
@@ -257,15 +263,13 @@ pub fn upsert_permission_decision_event(
     option_id: Option<String>,
     cancelled: bool,
 ) -> Result<()> {
-    let pending =
+    let timeline_identity =
         read_json::<PendingPermissionState>(&pending_permission_file(attempt_dir, request_id))
-            .unwrap_or(PendingPermissionState {
-                request_id: request_id.to_string(),
-                params: Value::Null,
-                created_at: current_timestamp(),
-                timeline_identity: None,
-            });
-    let Some((identity, indexed)) = resolve_permission_identity(attempt_dir, &pending)? else {
+            .ok()
+            .and_then(|pending| pending.timeline_identity);
+    let Some((identity, indexed)) =
+        resolve_permission_identity(attempt_dir, request_id, timeline_identity.as_ref())?
+    else {
         return Ok(());
     };
     let timeline_path =
@@ -296,17 +300,18 @@ fn sanitize_id(id: &str) -> String {
 
 fn resolve_permission_identity(
     attempt_dir: &Utf8Path,
-    pending: &PendingPermissionState,
+    request_id: &str,
+    timeline_identity: Option<&TimelineItemIdentity>,
 ) -> Result<Option<(TimelineItemIdentity, TimelineIndexedItem)>> {
     crate::acp::branches::prepare_agent_timeline_storage(attempt_dir)?;
-    if let Some(identity) = pending.timeline_identity.as_ref() {
+    if let Some(identity) = timeline_identity {
         let path = crate::acp::branches::branch_timeline_path(attempt_dir, &identity.branch_id);
         if let Some(indexed) = read_indexed_timeline_item(&path, &identity.item_id)? {
             return Ok(Some((identity.clone(), indexed)));
         }
     }
     for (branch_id, path) in crate::acp::branches::existing_branch_timeline_paths(attempt_dir)? {
-        if let Some(indexed) = read_indexed_pending_permission(&path, &pending.request_id)? {
+        if let Some(indexed) = read_indexed_pending_permission(&path, request_id)? {
             return Ok(Some((
                 TimelineItemIdentity {
                     branch_id,
@@ -316,7 +321,7 @@ fn resolve_permission_identity(
                 indexed,
             )));
         }
-        let item_id = format!("permission-{}", pending.request_id);
+        let item_id = format!("permission-{request_id}");
         if let Some(indexed) = read_indexed_timeline_item(&path, &item_id)? {
             return Ok(Some((
                 TimelineItemIdentity {
@@ -374,6 +379,28 @@ mod tests {
     }
 
     #[test]
+    fn pending_permission_persists_owning_prompt_turn_identity() {
+        let (_dir, attempt_dir) =
+            test_attempt_dir(crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION);
+        write_pending_permission(
+            &attempt_dir,
+            "request-1",
+            "turn-2",
+            "prompt-event-2",
+            serde_json::json!({ "sessionId": "session-1" }),
+            "2Z".to_string(),
+        )
+        .unwrap();
+
+        let pending: PendingPermissionState =
+            read_json(&pending_permission_file(&attempt_dir, "request-1")).unwrap();
+        assert_eq!(pending.identity.interaction_id, "request-1");
+        assert_eq!(pending.identity.kind, AcpPromptInteractionKind::Permission);
+        assert_eq!(pending.identity.turn_id, "turn-2");
+        assert_eq!(pending.identity.prompt_event_id, "prompt-event-2");
+    }
+
+    #[test]
     fn permission_wait_returns_cancelled_when_turn_cancel_is_requested() {
         let (_dir, attempt_dir) =
             test_attempt_dir(crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION);
@@ -422,6 +449,8 @@ mod tests {
         write_pending_permission(
             &attempt_dir,
             request_id,
+            "turn-1",
+            "prompt-event-1",
             serde_json::json!({
                 "toolCall": {
                     "title": "Write file"
@@ -469,6 +498,8 @@ mod tests {
         write_pending_permission(
             &attempt_dir,
             request_id,
+            "turn-1",
+            "prompt-event-1",
             serde_json::json!({
                 "sessionId": "session-1",
                 "toolCall": {
@@ -530,6 +561,8 @@ mod tests {
         write_pending_permission(
             &attempt_dir,
             request_id,
+            "turn-1",
+            "prompt-event-1",
             serde_json::json!({}),
             "1Z".to_string(),
         )
@@ -560,6 +593,8 @@ mod tests {
         write_pending_permission(
             &attempt_dir,
             request_id,
+            "turn-1",
+            "prompt-event-1",
             serde_json::json!({}),
             "1Z".to_string(),
         )
@@ -588,6 +623,8 @@ mod tests {
         write_pending_permission(
             &attempt_dir,
             request_id,
+            "turn-1",
+            "prompt-event-1",
             serde_json::json!({
                 "sessionId": "session-1",
                 "toolCall": {
@@ -662,6 +699,8 @@ mod tests {
         write_pending_permission(
             &attempt_dir,
             request_id,
+            "turn-1",
+            "prompt-event-1",
             serde_json::json!({}),
             "1Z".to_string(),
         )
@@ -701,6 +740,8 @@ mod tests {
         write_pending_permission(
             &attempt_dir,
             request_id,
+            "turn-1",
+            "prompt-event-1",
             serde_json::json!({}),
             "1Z".to_string(),
         )

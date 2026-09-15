@@ -2,10 +2,12 @@
 
 ## 1. 入口
 
-左侧导航在 Agent 管理、上下文管理、运行模式管理同一组中增加：
+左侧导航将定时任务作为低频管理入口收纳在“更多”折叠组中，与“需求管理”并列：
 
 - `AlarmClock` 图标
 - `定时任务`
+
+“更多”使用独立的 `Ellipsis + 更多 + ChevronDown` 导航行，位于运行模式下方，不作为运行模式的行内操作。展开项与一级导航左对齐，不使用子级缩进；默认折叠，进入定时任务列表或详情时自动展开并保持“定时任务”子项选中。进入定时任务创建页时仍选中“快速对话”。
 
 不增加命令栏或终端式入口。
 
@@ -103,7 +105,7 @@ Workflow/AUTO 隐藏 Direct session policy，并强制新会话。
 - 顶部提供“全部工作区”和具体工作区筛选；工作区筛选复用 shadcn/ui Select，并使用固定宽度 token，异步加入工作区选项时不得改变工具栏宽度；任务行标题下的副信息按“模式 · Direct 会话策略（仅 Direct）· 窄屏计划摘要（仅窄屏）· 工作空间”排列，工作空间始终位于末尾，整行与标题一样单行截断，不展示 `scheduled-UUID`。
 - 定时任务的 `AlarmClock / CalendarClock / ListChecks` 等静态功能标识统一使用主题 `foreground`，任务行图标底色使用 `foreground/10`；该规则覆盖管理列表、会话侧栏与标题、创建摘要、配置面板及执行历史，保证明暗主题下均有稳定对比度。运行中、失败、启停和选中态仍使用各自语义色，不得通过全局替换抹平状态层级。
 - 管理页不因调度事件自动重新加载列表；手动刷新和 CRUD 成功后只更新必要行。启停操作按任务行携带的 `projectId` 执行。
-- 后台创建 Task 或新 Run 后，App 根层刷新左侧会话列表，无需手动切换页面。
+- `gold-band://scheduled-task-updated` 只表达定时任务定义与调度投影变化，由定时任务列表和详情局部合并；App 根层不得据此刷新会话侧栏。后台实际创建 Task 或新 Run 后，由 `gold-band://conversation-run-state-updated` 携带 `projectId/taskId/taskUuid/runId` 驱动会话域更新：已加载 Run 直接增量合并，已知 Task 的新 Run 只刷新该 Task 的首批 Run 摘要，当前工作区的新 Task 只刷新该工作区首批 Task 摘要。置顶关系未变化时不得刷新置顶分页。
 - 创建定时任务成功后的确认反馈由 App 根层持有，不得归属会随“定时任务创建”路由退出而卸载的 composer；返回普通会话首页后仍显示可进入定时任务管理页的链接，并在 5 秒后自动清理。
 
 ## 8. CRUD
@@ -126,7 +128,7 @@ Workflow/AUTO 隐藏 Direct session policy，并强制新会话。
 
 ## 9. 统一完善交互（2026-08-05）
 
-- “保持系统唤醒”和完成通知只在设置页提供；执行历史不按年龄自动清理，因此不提供历史保留天数设置。
+- “保持系统唤醒”、完成通知和 occurrence 保留天数只在设置页提供。保留天数仅控制 `accepted_at IS NULL` 的过期调度诊断记录；accepted Run 执行历史不按年龄自动清理。
 - 时区选择展示运行环境支持的完整 IANA 时区，首次默认系统时区，之后默认最近一次选择，不再限制为少数硬编码选项。
 - 详情页的可管理执行历史只展示已绑定完整 Task/Run locator 的 accepted Run；`skipped`、`missed` 等未触发诊断不进入执行历史。
 - accepted occurrence 通过完整 workspace/Task/Run locator 定位历史，并可继续进入对应 Run；需要用户回答时直接进入原问题位置。
@@ -142,7 +144,7 @@ Workflow/AUTO 隐藏 Direct session policy，并强制新会话。
 - `ScheduledTaskVm` 只返回 typed `ScheduleSpec`、原始 IANA 时区和 RFC 3339 时间；计划、时区、最近状态与空标题均由前端按当前语言生成，不再消费后端中文展示字段。
 - 本条历史方案已由 Phase 22 取代：详情页的可管理执行历史只展示 accepted Run，不再展示或筛选 `skipped`、`missed` 调度诊断。
 - occurrence 同时具备 Task 与 Run 链接时显示图标跳转；存在 Round/Attempt 时写入 conversation deep link，目标 Run 加载后直接选择对应 session attempt。
-- 本条保留期方案已由 Phase 22 取代：`ScheduledRuntimeSettings` 只管理保持唤醒和完成通知，不再提供执行历史自动清理设置。
+- `ScheduledRuntimeSettings` 继续管理 occurrence 保留天数；该设置只清理过期且未接受的诊断 occurrence，不清理按 Run 展示的 accepted execution history。
 - 时区控件使用 `Intl.supportedValuesOf('timeZone')`，并以 `@vvo/tzdb` 作为不支持该 API 时的维护型数据回退；列表去重、排序并始终包含 UTC 与系统时区。
 - 窄屏由工作区临时自动收起 Shell 侧栏；不得把响应式折叠写入 `gold-band-sidebar-collapsed` 手动偏好。窗口拉宽时按既有状态机先恢复右侧工作区、再恢复用户原本展开的左侧栏。管理页 header 改为纵向信息区与可换行操作区，避免固定桌面侧栏或筛选工具把任务标题、开关标签压成逐字换行。
 - 详情 deep link 必须在会话导航回调完成初始化后才求值页面内容；直接点击任务行和通知跳转都不得因回调暂时性死区导致 React 根节点崩溃。
@@ -162,7 +164,7 @@ Workflow/AUTO 隐藏 Direct session policy，并强制新会话。
 - 状态筛选不得把 `enabled` 命名为“运行中”。列表没有权威 active occurrence 时使用“已启用”；只有获得真实 running 状态后才允许展示“运行中”。
 - 详情历史固定每页 20 条，使用后端 `nextCursor` 前进；Phase 22 移除旧 occurrence 状态筛选。翻页失败保留当前页；第一页在 occurrence 更新事件后刷新，非第一页不被实时事件强制跳回。
 - 历史桌面宽度使用表格行；窄容器切换为纵向信息布局，时间、状态、次数、错误和会话入口均无需横向滚动。页头操作区允许换行，任务标题保持安全截断。
-- 本条保留天数交互已由 Phase 22 删除；保持唤醒与完成通知仍按原有串行保存契约处理。
+- occurrence 保留天数与保持唤醒、完成通知继续使用同一串行保存契约；页面文案必须明确它管理的是未接受的调度诊断记录，不得暗示会自动删除真实 Run 历史。
 
 验收结果：接口级回归覆盖加载、刷新和 CRUD 失败保留现有实体，以及同一任务重复提交防护；全量 Web 168 个测试文件、1089 项测试通过。内置浏览器以 21 条真实预览记录确认第一页 20 条、第二页 1 条；390×844 下页面 `clientWidth` 与 `scrollWidth` 均为 390，历史信息、状态筛选和翻页控件无溢出，页面 warning/error 日志为空。
 

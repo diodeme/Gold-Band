@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { ContextMenuItem } from '@/components/ui/context-menu';
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 
 interface WorkspaceDirectoryContextMenuProps {
   canonicalPath: string;
@@ -23,6 +24,7 @@ export function copyableRelativePath(path: string) {
 }
 
 export function WorkspaceDirectoryContextMenu({ canonicalPath, relativePath, onCopyFailed, onOpenInFileManager }: WorkspaceDirectoryContextMenuProps) {
+  const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   const copyEntryPath = (event: Event, value: string) => {
     event.stopPropagation();
@@ -31,6 +33,6 @@ export function WorkspaceDirectoryContextMenu({ canonicalPath, relativePath, onC
   return <>
     <ContextMenuItem className="h-8 px-2 py-1 text-xs" onSelect={(event) => copyEntryPath(event, copyableAbsolutePath(canonicalPath))}>{t('workspace.filesPanel.copyAbsolutePath')}</ContextMenuItem>
     <ContextMenuItem className="h-8 px-2 py-1 text-xs" onSelect={(event) => copyEntryPath(event, copyableRelativePath(relativePath))}>{t('workspace.filesPanel.copyRelativePath')}</ContextMenuItem>
-    <ContextMenuItem className="h-8 px-2 py-1 text-xs" onSelect={(event) => { event.stopPropagation(); onOpenInFileManager(relativePath); }}>{t('workspace.filesPanel.openInFileManager')}</ContextMenuItem>
+    {!readOnly && <ContextMenuItem className="h-8 px-2 py-1 text-xs" onSelect={(event) => { event.stopPropagation(); onOpenInFileManager(relativePath); }}>{t('workspace.filesPanel.openInFileManager')}</ContextMenuItem>}
   </>;
 }

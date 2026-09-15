@@ -12,6 +12,7 @@ mod desktop_lifecycle;
 mod feedback;
 mod git_state_monitor;
 mod i18n;
+mod im_runtime;
 mod image_actions;
 mod memory;
 mod metrics;
@@ -63,29 +64,31 @@ use commands::{
     save_multica_connection_address, save_task_workflow, save_updater_settings,
     save_workflow_template, search_acp_prompts, search_acp_sessions, search_tasks,
     select_recent_desktop_avatar, select_recent_desktop_wallpaper, select_recent_workspace,
-    set_acp_session_config_option, set_acp_session_model, set_acp_session_permission_mode,
-    show_artifact, show_attachment, show_worker_ref, start_git_operation, start_git_state_monitor,
-    start_github_login, start_github_pull_request_create, start_run, stop_active_session,
-    stop_git_state_monitor, submit_conversation_prompt, submit_manual_check, toggle_mcp_server,
-    update_agent, update_auto_template, update_mcp_server, update_notification_attention,
-    update_profile, update_skill_sync_targets, update_workflow_template,
-    use_conversation_queued_prompt, write_skill,
+    set_acp_session_auto_accept, set_acp_session_config_option, set_acp_session_model,
+    set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref,
+    start_git_operation, start_git_state_monitor, start_github_login,
+    start_github_pull_request_create, start_run, stop_active_session, stop_git_state_monitor,
+    submit_conversation_prompt, submit_manual_check, toggle_mcp_server, update_agent,
+    update_auto_template, update_mcp_server, update_notification_attention, update_profile,
+    update_skill_sync_targets, update_workflow_template, use_conversation_queued_prompt,
+    write_skill,
 };
 use commands_conversation::{
     acknowledge_conversation_terminal_result, add_conversation_workspace,
     choose_conversation_workspace, create_conversation_run, create_scheduled_task,
-    delete_conversation_task, delete_scheduled_task, get_conversation_pinned_task_page,
-    get_conversation_run, get_conversation_run_mode, get_conversation_run_summary_page,
-    get_conversation_sidebar_bootstrap, get_conversation_task_page, get_conversation_workspaces,
-    get_scheduled_runtime_settings, get_scheduled_task, get_scheduled_task_diagnostics,
-    get_supported_attachment_extensions, list_scheduled_task_occurrences, list_scheduled_tasks,
-    materialize_conversation_attachments, pin_conversation, remove_conversation_workspace,
-    reorder_pinned_conversations, rerun_conversation_task, run_scheduled_task_now,
-    save_conversation_preference, save_conversation_run_mode, save_desktop_ui_mode,
-    save_last_conversation_workspace, save_scheduled_runtime_settings, search_conversation_tasks,
-    set_scheduled_task_enabled, show_conversation_attachment, show_conversation_message_attachment,
-    stat_attachment_files, sync_conversation_workspace, unpin_conversation, update_scheduled_task,
-    update_task_metadata, validate_conversation_create,
+    delete_conversation_task, delete_scheduled_execution_history, delete_scheduled_task,
+    get_conversation_pinned_task_page, get_conversation_run, get_conversation_run_mode,
+    get_conversation_run_summary_page, get_conversation_sidebar_bootstrap,
+    get_conversation_task_page, get_conversation_workspaces, get_scheduled_runtime_settings,
+    get_scheduled_task, get_scheduled_task_diagnostics, get_supported_attachment_extensions,
+    list_scheduled_execution_history, list_scheduled_tasks, materialize_conversation_attachments,
+    pin_conversation, remove_conversation_workspace, reorder_pinned_conversations,
+    rerun_conversation_task, run_scheduled_task_now, save_conversation_preference,
+    save_conversation_run_mode, save_desktop_ui_mode, save_last_conversation_workspace,
+    save_scheduled_runtime_settings, search_conversation_tasks, set_scheduled_task_enabled,
+    show_conversation_attachment, show_conversation_message_attachment, stat_attachment_files,
+    sync_conversation_workspace, unpin_conversation, update_scheduled_task, update_task_metadata,
+    validate_conversation_create,
 };
 use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::sqlite::init_search_index;
@@ -218,10 +221,25 @@ fn run() -> anyhow::Result<()> {
         .setup(|app| {
             let state = app.state::<DesktopState>();
             let _ = state.cleanup_agent_diagnostic_processes();
+            if let Ok(ctx) = state.context() {
+                let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root);
+                touch_log_file_best_effort(&paths);
+                if let Some(runtime_log_guard) = init_tracing(&paths, &ctx.config, true) {
+                    let _ = app.manage(runtime_log_guard);
+                }
+            }
             state.install_scheduled_service(std::sync::Arc::new(
                 scheduled_service::ScheduledTaskService::desktop(app.handle().clone()),
             ))?;
             if let Ok(runtime_app) = state.app() {
+                let im_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) =
+                        im_runtime::initialize_im_runtime_if_required(&im_handle).await
+                    {
+                        warn!(error = %error, "IM runtime failed to initialize");
+                    }
+                });
                 commands::register_lifecycle_subscribers(&runtime_app, app.handle());
                 // home repo 自愈（单一 repo、有界）：multica work_dir 定点自愈移入下方 spawn_blocking
                 // 恢复管线（P2），不再阻塞窗口启动关键路径。
@@ -315,10 +333,6 @@ fn run() -> anyhow::Result<()> {
             // On first run (empty DB), a background thread backfills existing tasks/sessions.
             if let Ok(ctx) = state.context() {
                 let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root);
-                touch_log_file_best_effort(&paths);
-                if let Some(runtime_log_guard) = init_tracing(&paths, &ctx.config, true) {
-                    let _ = app.manage(runtime_log_guard);
-                }
                 info!(
                     repo_root = %paths.repo_root,
                     project_id = %paths.project_id,
@@ -329,20 +343,26 @@ fn run() -> anyhow::Result<()> {
                 let _ = init_search_index(&paths.sqlite_db_path(), &paths.projects_dir());
             }
             let handle = app.handle().clone();
+            let command_handle = handle.clone();
+            handle
+                .state::<DesktopState>()
+                .set_agent_command_update(move |catalog| {
+                    commands::emit_agent_commands_updated(&command_handle, catalog);
+                });
             std::thread::spawn(move || {
                 loop {
                     let state = handle.state::<DesktopState>();
                     debug!("periodic agent maintenance cycle started");
-                    let diagnostics_refreshed = match state.refresh_all_agent_diagnostics(|| {
-                        commands::emit_agent_registry_updated(&handle);
-                        commands::emit_agent_commands_updated(&handle, None);
-                    }) {
-                        Ok(()) => true,
-                        Err(error) => {
-                            warn!(%error, "periodic agent diagnostic refresh failed");
-                            false
-                        }
-                    };
+                    let diagnostics_refreshed =
+                        match state.refresh_all_agent_diagnostics(|agent_id| {
+                            commands::emit_agent_registry_updated(&handle, agent_id);
+                        }) {
+                            Ok(()) => true,
+                            Err(error) => {
+                                warn!(%error, "periodic agent diagnostic refresh failed");
+                                false
+                            }
+                        };
                     let commands_refreshed =
                         match state.refresh_agent_command_catalogs_for_active_workspaces() {
                             Ok(()) => true,
@@ -351,12 +371,6 @@ fn run() -> anyhow::Result<()> {
                                 false
                             }
                         };
-                    if diagnostics_refreshed {
-                        commands::emit_agent_registry_updated(&handle);
-                    }
-                    if diagnostics_refreshed || commands_refreshed {
-                        commands::emit_agent_commands_updated(&handle, None);
-                    }
                     debug!(
                         diagnostics_refreshed,
                         commands_refreshed, "periodic agent maintenance cycle completed"
@@ -381,6 +395,15 @@ fn run() -> anyhow::Result<()> {
             memory::read_project_memory,
             memory::write_project_memory,
             get_app_bootstrap,
+            im_runtime::get_im_settings,
+            im_runtime::start_wecom_scan_authorization,
+            im_runtime::complete_wecom_scan_authorization,
+            im_runtime::cancel_wecom_scan_authorization,
+            im_runtime::set_im_channel_enabled,
+            im_runtime::save_im_notification_preferences,
+            im_runtime::reset_im_channel_binding,
+            im_runtime::reconnect_im_channel,
+            im_runtime::delete_im_channel,
             desktop_lifecycle::complete_main_window_close,
             desktop_lifecycle::resolve_app_exit,
             notifications::take_pending_intervention_navigations,
@@ -435,6 +458,7 @@ fn run() -> anyhow::Result<()> {
             get_acp_activity_detail,
             get_acp_tool_detail,
             get_acp_image,
+            commands::get_acp_activity_images,
             renew_acp_session_lease,
             submit_conversation_prompt,
             reorder_conversation_queued_prompts,
@@ -444,9 +468,12 @@ fn run() -> anyhow::Result<()> {
             set_acp_session_model,
             set_acp_session_config_option,
             set_acp_session_permission_mode,
+            set_acp_session_auto_accept,
             respond_acp_permission,
             respond_elicitation,
             get_acp_raw_frames,
+            commands::list_composer_history,
+            commands::get_composer_history_text,
             start_run,
             get_git_capability,
             initialize_git_repository,
@@ -530,7 +557,8 @@ fn run() -> anyhow::Result<()> {
             get_conversation_pinned_task_page,
             get_conversation_run_summary_page,
             list_scheduled_tasks,
-            list_scheduled_task_occurrences,
+            list_scheduled_execution_history,
+            delete_scheduled_execution_history,
             get_scheduled_task_diagnostics,
             get_scheduled_runtime_settings,
             save_scheduled_runtime_settings,

@@ -1,4 +1,5 @@
 现在应用程序的侧边栏是任务编排、知识库、模型管理
+- 2026-09-15：Doctor 与正式 ACP 连接共用全局 `initialize` 客户端能力，新增 `_meta.parameterizedModelPicker`。依赖该声明才展开思考强度 / 模型参数的 Agent，诊断目录与运行期 `configOptions` 必须一致；不按 Agent ID 分叉 handshake。
 你现在先新增个agent管理吧
 agent管理主要是负责管理支持接入的ACP agent
 当前改为维护构建期精选 ACP Agent Catalog，固定提供 `claude-acp`、`codex-acp`、`cursor`、`gemini`、`codebuddy-code`、`goose`、`qwen-code`、`opencode`、`kimi`、`amp-acp`、`pi-acp` 十一类模板，并支持用户自定义 ACP Agent；GLM 不进入本轮范围
@@ -15,7 +16,7 @@ agent卡片支持删除、修改、环境诊断操作（检查agent环境是否�
 
 Catalog 与实例必须分域管理：
 - 2026-09-08 启动配置归属修正：schema 11 不再保存内置实例的命令和参数，旧设置加载时原子回写移除，读取时投影当前 Catalog；覆盖历史内置启动定制，保留名称、图标、环境、目录和能力配置。保存接口忽略内置命令/参数输入，编辑器对应字段只读，自定义 Agent 继续全部可编辑。复用稳定 ID、现有设置序列化与 Catalog，不增加依赖、持久身份、缓存或队列；开销限于小型配置内存处理，无新增网络、全量历史加载或热路径 I/O。
-- 2026-09-09 只读启动字段视觉修复：Catalog Agent 的命令与参数使用主题 `muted` 灰态并移除编辑态 focus ring，同时保留原生 `readOnly` 以支持聚焦、选择和复制；自定义 Agent 仍使用可编辑样式。DOM 回归测试固定只读、非 disabled、灰态与自定义可编辑边界。本改动仅增加静态 class 投影，不引入状态、依赖、I/O 或额外渲染。修复前最小测试在 Catalog 灰态断言稳定失败；修复后 Agent 管理相关 19 项测试及 `npm run web:build` 通过。Chrome deep link 在浅色、深色与 820px 窄视口验证无溢出或重叠，命令聚焦后无编辑态高亮，页面控制台无 warning/error；临时视口、页面和测试服务已清理。
+- 2026-09-09 只读启动字段视觉修复：Catalog Agent 的命令与参数保留原生 `readOnly` 以支持聚焦、选择和复制，统一使用 `muted` 表面与弱化文字；可编辑的显示名称、环境变量和目录字段统一使用 `background` 表面，并覆盖 Textarea 的主题深色变体，移除只读字段的编辑态 focus ring；自定义 Agent 仍使用可编辑样式。DOM 回归测试固定只读、非 disabled、共享底色、弱化文字与可编辑字段边界。本改动仅调整静态 class 投影，不引入状态、依赖、I/O 或额外渲染。第一次修复前测试在 Catalog 灰态断言稳定失败，后续用户反馈暴露深色主题控件底色竞争；后续最小测试在只读分组和可编辑分组断言稳定失败，修复后 Agent 管理相关测试及 `npm run web:build` 通过。Chrome deep link 已在浅色、深色下验证两组字段颜色清晰，命令聚焦无编辑态高亮，页面无溢出或重叠；临时主题、页面和测试服务已恢复或清理。
 - 验证记录：旧配置迁移最小测试已确认修改前失败。清理磁盘后重新编译验证通过：启动配置集成测试 2 项、配置模块单测 53 项、设置加载与持久化测试 2 项、桌面 Agent 保存接口测试 5 项；前端三组共 20 项测试、TypeScript 检查及 `npm run web:build` 生产前端构建通过，内置浏览器验证内置只读与自定义可编辑。构建仅有现有未使用代码、混合导入和包体积警告；本轮未制作安装包或运行 macOS 真机验证。
 - `AgentCatalogEntry` 是构建期模板；`ManagedAgentConfig` 是用户实例
 - 新建时复制模板用户字段；内置 Agent 的命令和参数始终由当前 Catalog 提供，既有实例随客户端升级更新启动配置，其余用户字段不受影响。自定义 Agent 全部配置由用户维护。
@@ -50,7 +51,8 @@ Agent 实例新增两个独立能力配置：
 - 当前 agent type 直接作为 registry key 使用，因此同一类型只能维护一份配置
 - 节点详情页需要展示当前节点声明的 agent type，便于确认执行来源
 - 工作流创建、修改和模板保存时，Agent 下拉只允许选择已配置且最近一次 doctor 成功的 agent；未诊断或诊断失败的 agent 不能进入 workflow
-- workflow 节点的权限模式只能从当前 agent doctor 返回的 `supportedModes` 中选择；切换 agent 时清空旧权限模式，不做跨 agent 权限模式映射
+- workflow 节点的权限模式只能从当前 agent doctor 返回的 `supportedModes` 中选择；切换 agent 时清空旧权限模式和 Auto Accept，不做跨 agent 权限模式映射
+- Auto Accept 是 client overlay，不是 doctor `supportedModes` 的一项；所有 ACP Agent 的权限下拉都展示同一套开关
 - workflow 画布不得维护内置 provider → icon 硬编码表，必须按 provider 从当前 managed Agent registry 读取实例 icon；这同时覆盖后续 Catalog Agent、自定义 Agent、用户上传 data URI 和空值默认 icon
 - ACP 权限模式与节点 Profile 分层生效：权限模式使用 Agent 实际暴露的 mode API 控制工具授权，Profile 继续约束角色职责。实时切换权限成功后不得改写 Profile；例如 `pf-builtin-plan` 在 `yolo` 下仍然只负责规划。验收时必须同时检查 outbound mode 请求、Agent 响应中的 current mode 与节点 Profile，不能仅根据模型是否愿意改代码判断权限是否生效
 

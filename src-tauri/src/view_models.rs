@@ -905,6 +905,8 @@ pub struct AcpSessionConfigVm {
     pub catalog_observed_at: Option<String>,
     pub model_override_id: Option<String>,
     pub permission_mode_override_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     pub config_option_overrides: std::collections::BTreeMap<String, String>,
     pub current_model_id: Option<String>,
     pub current_model_name: Option<String>,
@@ -1412,7 +1414,7 @@ pub fn agent_registry_vm(
     AgentRegistryVm { agents, catalog }
 }
 
-fn managed_agent_vm(
+pub(crate) fn managed_agent_vm(
     agent_id: &ManagedAgentId,
     config: &ManagedAgentConfig,
     diagnostic: Option<&AgentDiagnosticState>,
@@ -4801,6 +4803,9 @@ fn merge_timeline_item_revision_vm(
     existing: &AcpUiEventVm,
     mut incoming: AcpUiEventVm,
 ) -> AcpUiEventVm {
+    if existing.kind == "scheduledTrigger" {
+        return existing.clone();
+    }
     if is_provider_history_event_vm(&incoming) && !is_provider_history_event_vm(existing) {
         return existing.clone();
     }
@@ -5768,6 +5773,7 @@ fn is_conversation_semantic_event(
     matches!(
         event.kind.as_str(),
         "userTextDelta"
+            | "scheduledTrigger"
             | "textDelta"
             | "thoughtDelta"
             | "toolCall"
@@ -6951,6 +6957,10 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let auto_accept = session
+        .get("autoAccept")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
     let config_option_overrides: std::collections::BTreeMap<String, String> = session
         .get("configOptionOverrides")
         .cloned()
@@ -6981,6 +6991,7 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
 
     if model_override_id.is_none()
         && permission_mode_override_id.is_none()
+        && !auto_accept
         && config_option_overrides.is_empty()
         && current_model_id.is_none()
         && current_model_name.is_none()
@@ -6997,6 +7008,7 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
         catalog_observed_at,
         model_override_id,
         permission_mode_override_id,
+        auto_accept,
         config_option_overrides,
         current_model_id,
         current_model_name,
@@ -8023,6 +8035,96 @@ mod tests {
             timing: None,
             raw: Some(json!({ "source": "goldBandPrompt" })),
         }
+    }
+
+    #[test]
+    fn scheduled_trigger_is_visible_while_provider_prompt_is_hidden() {
+        let dir = tempfile::tempdir().unwrap();
+        let path =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut trigger = test_event("scheduledTrigger", "");
+        trigger.id = "scheduled-trigger:occurrence-001".to_string();
+        trigger.content = None;
+        trigger.raw = Some(json!({
+            "source": "goldBandScheduledTrigger",
+            "scheduledTrigger": {
+                "occurrenceId": "occurrence-001",
+                "instructionSummary": "检查主分支状态"
+            }
+        }));
+        let mut hidden_prompt = test_event("userTextDelta", "hidden protocol");
+        hidden_prompt.raw = Some(json!({
+            "source": "goldBandPrompt",
+            "hiddenFromChat": true,
+            "reason": "scheduledTaskExecution"
+        }));
+        std::fs::write(
+            path.as_std_path(),
+            format!(
+                "{}\n{}\n",
+                json!({ "item": trigger }),
+                json!({ "item": hidden_prompt })
+            ),
+        )
+        .unwrap();
+
+        let (events, ..) = parse_timeline_file(&path, false).unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "scheduledTrigger");
+        assert_eq!(
+            events[0].raw.as_ref().unwrap()["scheduledTrigger"]["instructionSummary"],
+            "检查主分支状态"
+        );
+    }
+
+    #[test]
+    fn scheduled_trigger_projection_keeps_the_first_persisted_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut accepted = test_event("scheduledTrigger", "");
+        accepted.id = "scheduled-trigger:occurrence-001".to_string();
+        accepted.content = None;
+        accepted.raw = Some(json!({
+            "source": "goldBandScheduledTrigger",
+            "scheduledTrigger": {
+                "occurrenceId": "occurrence-001",
+                "instructionSummary": "accepted summary"
+            }
+        }));
+        let mut later = accepted.clone();
+        later.raw.as_mut().unwrap()["scheduledTrigger"]["instructionSummary"] =
+            Value::String("later definition summary".to_string());
+        std::fs::write(
+            path.as_std_path(),
+            format!(
+                "{}\n{}\n",
+                json!({
+                    "patchType": "timelinePatch",
+                    "itemId": accepted.id,
+                    "revision": 1,
+                    "op": "upsert",
+                    "item": accepted
+                }),
+                json!({
+                    "patchType": "timelinePatch",
+                    "itemId": later.id,
+                    "revision": 2,
+                    "op": "upsert",
+                    "item": later
+                })
+            ),
+        )
+        .unwrap();
+
+        let (events, ..) = parse_timeline_file(&path, false).unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].raw.as_ref().unwrap()["scheduledTrigger"]["instructionSummary"],
+            "accepted summary"
+        );
     }
 
     #[test]

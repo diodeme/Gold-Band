@@ -94,6 +94,7 @@ fn invocation() -> WorkerInvocation {
         session_mode: SessionMode::New,
         user_prompt_render_mode: UserPromptRenderMode::RequirementTask,
         permission_mode: None,
+        auto_accept: false,
         model: None,
         config_options: Default::default(),
         continue_ref: None,

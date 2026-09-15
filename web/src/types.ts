@@ -425,6 +425,15 @@ export interface AgentRegistryVm {
   catalog: AgentCatalogEntryVm[];
 }
 
+export type AcpActivityImagesInput = TurnFileLocatorVm & {
+  start: number; end: number; after?: string | null; generation?: number | null;
+};
+export interface AcpActivityImagesPage {
+  images: AcpImageRef[];
+  nextCursor: string | null;
+  generation: number;
+}
+
 export interface ManagedAgentVm {
   agentType: string;
   displayName: string;
@@ -1271,6 +1280,7 @@ export interface WorkflowWorkerNodeDsl {
   output?: WorkflowOutputContractDsl | null;
   success_condition?: WorkflowJsonConditionDsl | null;
   permission_mode?: string | null;
+  auto_accept?: boolean;
   config_options?: Record<string, string>;
   manual_check?: boolean | null;
 }
@@ -1281,6 +1291,7 @@ export interface DynamicAgentRefDsl {
   provider: string;
   model?: string | null;
   permissionMode?: string | null;
+  autoAccept?: boolean;
   configOptions?: Record<string, string>;
 }
 
@@ -1289,6 +1300,7 @@ export interface WorkflowAiDynamicFixedAgentStrategyDsl {
   provider: string;
   model?: string;
   permissionMode?: string | null;
+  autoAccept?: boolean;
 }
 
 export interface WorkflowAiDynamicDynamicAgentStrategyDsl {
@@ -1296,6 +1308,7 @@ export interface WorkflowAiDynamicDynamicAgentStrategyDsl {
   bootstrapProvider: string;
   bootstrapModel?: string | null;
   permissionMode?: string | null;
+  autoAccept?: boolean;
   bootstrapConfigOptions?: Record<string, string>;
   acceptanceModel?: string | null;
   acceptanceConfigOptions?: Record<string, string>;
@@ -1397,6 +1410,7 @@ export interface WorkerModelBinding {
   agentId: string;
   modelId?: string | null;
   permissionModeId?: string | null;
+  autoAccept?: boolean;
   configOptions?: Record<string, string>;
 }
 
@@ -1791,6 +1805,7 @@ export interface AcpSessionConfigVm {
   catalogObservedAt?: string | null;
   modelOverrideId?: string | null;
   permissionModeOverrideId?: string | null;
+  autoAccept?: boolean;
   configOptionOverrides?: Record<string, string>;
   currentModelId?: string | null;
   currentModelName?: string | null;
@@ -2027,6 +2042,97 @@ export interface ScheduledRuntimeSettingsInputVm {
   occurrenceRetentionDays: number;
 }
 
+export type ImChannelKind = 'weCom';
+export type ImConnectionState = 'disabled' | 'connecting' | 'reconnecting' | 'connected' | 'authenticationRequired' | 'error';
+
+export interface ImNotificationPreferencesVm {
+  permission: boolean;
+  elicitation: boolean;
+  manualCheck: boolean;
+  runSuccess: boolean;
+  runFailure: boolean;
+  acpTurnFinished: boolean;
+}
+
+export interface ImBindingSummaryVm {
+  destinationId: string;
+  conversationId: string;
+  authorizedActorId: string;
+  displayName: string;
+}
+
+export interface ImObservedBindingVm {
+  destinationId: string;
+  conversationId: string;
+  actorId: string;
+  isPrivate: boolean;
+}
+
+export interface ImChannelCapabilitiesVm {
+  proactiveDelivery: boolean;
+  cardActions: boolean;
+  messageUpdate: boolean;
+  privateChat: boolean;
+}
+
+export interface ImConnectionIdentityVm {
+  botId: string;
+  displayName: string;
+}
+
+export interface ImChannelSnapshotVm {
+  kind: ImChannelKind;
+  enabled: boolean;
+  generation: number;
+  state: ImConnectionState;
+  capabilities: ImChannelCapabilitiesVm;
+  identity: ImConnectionIdentityVm | null;
+  binding: ImObservedBindingVm | null;
+  lastConnectedAtMs: number | null;
+  lastErrorCode: string | null;
+}
+
+export interface ImChannelSettingsVm {
+  kind: ImChannelKind;
+  enabled: boolean;
+  publicIdentity: string;
+  credentialConfigured: boolean;
+  binding: ImBindingSummaryVm | null;
+  notifications: ImNotificationPreferencesVm;
+  connection: ImChannelSnapshotVm | null;
+}
+
+export interface ImSettingsVm {
+  channels: ImChannelSettingsVm[];
+}
+
+export interface DeleteImChannelResultVm {
+  settings: ImSettingsVm;
+  operationId: string;
+  cleanupStatus: 'complete' | 'pending';
+}
+
+export interface SetImChannelEnabledInputVm {
+    kind: ImChannelKind;
+    enabled: boolean;
+}
+
+export interface SaveImNotificationPreferencesInputVm {
+    kind: ImChannelKind;
+    notifications: ImNotificationPreferencesVm;
+}
+
+export interface ImGenerationInputVm {
+    kind: ImChannelKind;
+    expectedGeneration: number;
+}
+
+export interface WeComScanAuthorizationVm {
+  sessionId: string;
+  authUrl: string;
+  expiresAtMs: number;
+}
+
 export interface NotificationAttentionInput {
   windowFocused: boolean;
   windowMinimized: boolean;
@@ -2205,7 +2311,7 @@ export type ConversationPage =
   | { kind: 'agents' }
   | { kind: 'contexts' }
   | { kind: 'scheduled-tasks' }
-  | { kind: 'scheduled-task-detail'; projectId: string; scheduledTaskId: string }
+  | { kind: 'scheduled-task-detail'; projectId: string; scheduledTaskId: string; taskId?: string; runId?: string; occurrenceId?: string }
   | { kind: 'settings' };
 
 export interface ScheduledTaskVm {
@@ -2242,9 +2348,59 @@ export interface ScheduledOccurrenceVm {
   finishedAt?: string | null;
 }
 
-export interface ScheduledOccurrencePageVm {
-  items: ScheduledOccurrenceVm[];
+export interface ScheduledOccurrenceLinksVm {
+  taskId?: string | null;
+  runId?: string | null;
+  roundId?: string | null;
+  attemptId?: string | null;
+  nodeId?: string | null;
+}
+
+export interface ScheduledTriggerPayloadVm {
+  projectId: string;
+  scheduledTaskId: string;
+  occurrenceId: string;
+  triggerKind: 'scheduled' | 'manual';
+  scheduledAt?: string | null;
+  acceptedAt: string;
+  instructionSummary: string;
+  contentFingerprint: string;
+  links: ScheduledOccurrenceLinksVm;
+}
+
+export interface ScheduledExecutionHistoryVm {
+  projectId: string;
+  scheduledTaskId: string;
+  taskId: string;
+  runId: string;
+  firstAcceptedAt: string;
+  lastAcceptedAt: string;
+  occurrenceCount: number;
+  latestOccurrenceId: string;
+  latestSummary: string;
+  latestContentFingerprint: string;
+  availability: 'available' | 'unavailable';
+  run?: ConversationRunSummaryVm | null;
+  error?: { code: string; params: Record<string, unknown> } | null;
+}
+
+export interface ScheduledExecutionHistoryPageVm {
+  items: ScheduledExecutionHistoryVm[];
   nextCursor?: string | null;
+}
+
+export interface ScheduledExecutionHistoryDeleteInputVm {
+  projectId: string;
+  scheduledTaskId: string;
+  taskId: string;
+  runId: string;
+  throughOccurrenceId: string;
+}
+
+export interface ScheduledExecutionHistoryDeleteResultVm extends ScheduledExecutionHistoryDeleteInputVm {
+  status: 'completed' | 'failed';
+  code?: string | null;
+  params: Record<string, unknown>;
 }
 
 export interface ScheduledTaskDiagnosticsVm {
@@ -2728,6 +2884,7 @@ export interface ConversationDirectConfigVm {
   agentType: string;
   modelId?: string | null;
   permissionMode?: string | null;
+  autoAccept?: boolean;
   configOptions?: Record<string, string>;
 }
 
@@ -2747,6 +2904,7 @@ export interface ConversationAutoConfigVm {
   acceptanceConfigOptions?: Record<string, string>;
   modelId?: string | null;
   permissionMode?: string | null;
+  autoAccept?: boolean;
   configOptions?: Record<string, string>;
   availableAgents?: DynamicAgentRefDsl[];
   routingPrompt?: string | null;

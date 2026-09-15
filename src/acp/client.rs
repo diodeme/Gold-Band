@@ -99,6 +99,13 @@ fn prompt_usage_transaction_id(
     format!("{prompt_event_id}:attempt-{retry_attempt}:{operation_seq}")
 }
 
+fn scheduled_trigger_for_prompt(seq: u64, prompt: &PromptBundle) -> Option<AcpUiEvent> {
+    prompt
+        .scheduled_trigger
+        .as_ref()
+        .map(|payload| scheduled_trigger_event(seq, payload))
+}
+
 fn settle_prompt_event(
     mut event: AcpUiEvent,
     terminal_status: &str,
@@ -342,6 +349,7 @@ use crate::acp::connection::{
     AcpConnectionUnavailable, AdapterConnection, AdapterConnectionKey, AdapterConnectionManager,
     AdapterConnectionUse, AdapterShutdownReason, AttemptSessionUnregisterOutcome, LiveAcpSession,
     SessionEventPump, SessionObservedFrame, SessionRouteTryRecvError, SessionRouteWatermark,
+    unsupported_client_inbound_reply,
 };
 use crate::acp::elicitation::{
     ELICITATION_DEFAULT_TIMEOUT, ElicitationAction, bind_pending_elicitation_timeline_identity,
@@ -356,17 +364,17 @@ use crate::acp::events::{
     append_raw_frame, append_raw_frames_observed, append_structured_diagnostic,
     cancel_latest_processing_prompt_retry, current_timestamp, is_semantically_empty_agent_content,
     load_session_metadata, normalize_session_update, permission_request_event,
-    read_lifecycle_header, user_prompt_event_with_quotes, write_session_metadata,
-    write_session_metadata_owned,
+    permission_timeline_item_id, read_lifecycle_header, scheduled_trigger_event,
+    user_prompt_event_with_quotes, write_session_metadata, write_session_metadata_owned,
 };
 use crate::acp::history::{ProviderHistoryImport, ProviderHistoryReplay, ReplayUpdateDecision};
 use crate::acp::interaction::{
     AcpPromptInteractionIdentity, AcpPromptInteractionKind, annotate_prompt_interaction_identity,
 };
 use crate::acp::permission::{
-    PermissionResponseState, acp_permission_response_result,
+    PermissionResponseState, acp_permission_response_result, auto_accept_permission_option_id,
     bind_pending_permission_timeline_identity, cancel_pending_permission_requests,
-    permission_response_file, remove_permission_signal_files,
+    permission_response_file, remove_permission_signal_files, session_auto_accept_override,
     wait_for_permission_response_until_cancelled, write_pending_permission,
 };
 use crate::acp::pipeline_diagnostics::{AcpPipelineDiagnostics, PipelineUpdateKind};
@@ -459,6 +467,7 @@ const SESSION_LIST_MAX_PAGES: usize = 8;
 const SESSION_EVICTION_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 const SESSION_SYSTEM_CONTEXT_VERSION: u32 = 1;
 const NESTED_AGENT_TRANSCRIPT_CAPABILITY: &str = "subagent-transcript";
+const PARAMETERIZED_MODEL_PICKER_CAPABILITY: &str = "parameterizedModelPicker";
 pub const ACP_SESSION_RESTORE_UNSUPPORTED_CODE: &str = "acp.session-restore-unsupported";
 pub const ACP_SESSION_RESTORE_REFERENCE_MISSING_CODE: &str =
     "acp.session-restore-reference-missing";
@@ -511,7 +520,8 @@ fn initialize_params() -> Value {
         "protocolVersion": 1,
         "clientCapabilities": {
             "_meta": {
-                (NESTED_AGENT_TRANSCRIPT_CAPABILITY): true
+                (NESTED_AGENT_TRANSCRIPT_CAPABILITY): true,
+                (PARAMETERIZED_MODEL_PICKER_CAPABILITY): true
             },
             "elicitation": {
                 "form": {}
@@ -2178,6 +2188,7 @@ struct AcpRuntime<'a> {
     config_catalog_refresh_required_at: Option<String>,
     model_override: Option<String>,
     permission_mode_override: Option<String>,
+    auto_accept: bool,
     config_option_overrides: BTreeMap<String, String>,
     available_commands: Option<Vec<AcpCommandItem>>,
     system_prompt_append: Option<String>,
@@ -2584,6 +2595,7 @@ pub fn run_prompt(
     prompt: &PromptBundle,
     session_mode: SessionMode,
     permission_mode: Option<String>,
+    auto_accept: bool,
     model: Option<String>,
     config_options: BTreeMap<String, String>,
     continue_ref: Option<Value>,
@@ -2604,7 +2616,7 @@ pub fn run_prompt(
         attempt_dir.join("acp.snapshot.json"),
         lifecycle_owner.clone(),
     );
-    lifecycle_terminal_guard.execute(|| {
+    let result = lifecycle_terminal_guard.execute(|| {
         run_prompt_inner(
             provider_id,
             config,
@@ -2614,6 +2626,7 @@ pub fn run_prompt(
             prompt,
             session_mode,
             permission_mode,
+            auto_accept,
             model,
             config_options,
             continue_ref,
@@ -2630,7 +2643,13 @@ pub fn run_prompt(
             prompt_accepted,
             stop_probe,
         )
-    })
+    });
+    if result.is_err() {
+        if let Some(session_update) = session_update {
+            let _ = session_update();
+        }
+    }
+    result
 }
 
 fn run_prompt_inner(
@@ -2642,6 +2661,7 @@ fn run_prompt_inner(
     prompt: &PromptBundle,
     session_mode: SessionMode,
     permission_mode: Option<String>,
+    auto_accept: bool,
     model: Option<String>,
     config_options: BTreeMap<String, String>,
     continue_ref: Option<Value>,
@@ -2690,6 +2710,8 @@ fn run_prompt_inner(
     )?;
     runtime.model_override = model.clone();
     runtime.permission_mode_override = permission_mode.clone();
+    runtime.auto_accept =
+        session_auto_accept_override(&runtime.paths.attempt_dir).unwrap_or(auto_accept);
     runtime.config_option_overrides = config_options.clone();
     if runtime.is_prompt_cancel_requested() {
         let capabilities = runtime
@@ -2881,13 +2903,22 @@ fn run_prompt_inner(
                 format!("ACP prompt failed: {error}"),
                 None,
             );
-            runtime.write_worker_ref(
+            if let Err(worker_ref_error) = runtime.write_worker_ref(
                 provider_id,
                 &workspace_dir,
                 session_mode,
                 restored,
                 Some("error".to_string()),
-            )?;
+            ) {
+                append_structured_diagnostic_best_effort(
+                    &runtime.paths.diagnostics,
+                    "error",
+                    "acp.worker-ref-finalize-failed",
+                    Some(
+                        json!({ "error": worker_ref_error.to_string(), "turnId": prompt_turn.id }),
+                    ),
+                );
+            }
             if let Err(capture_error) =
                 runtime.finalize_turn_file_changes(&prompt_turn, &workspace_dir)
             {
@@ -2902,10 +2933,8 @@ fn run_prompt_inner(
                 );
             }
             runtime.control.mark_stopped();
-            runtime.write_session("failed", restored, Some("error".to_string()), capabilities)?;
-            if let Some(session_update) = session_update {
-                let _ = session_update();
-            }
+            // The outer lifecycle guard commits failure and its reason together.
+            // A metadata-only failed write here would close its owner revision.
             runtime.shutdown();
             return Err(error);
         }
@@ -3782,6 +3811,9 @@ impl<'a> AcpRuntime<'a> {
                 .and_then(|metadata| metadata.config_catalog_refresh_required_at.clone()),
             model_override: None,
             permission_mode_override: None,
+            auto_accept: prior_metadata
+                .as_ref()
+                .is_some_and(|metadata| metadata.auto_accept),
             config_option_overrides: BTreeMap::new(),
             available_commands: None,
             system_prompt_append: None,
@@ -4888,6 +4920,11 @@ impl<'a> AcpRuntime<'a> {
             .session_id
             .clone()
             .ok_or_else(|| anyhow!("ACP prompt requires a session id"))?;
+        let trigger_seq = self.seq.saturating_add(1);
+        if let Some(trigger) = scheduled_trigger_for_prompt(trigger_seq, prompt) {
+            self.seq = trigger_seq;
+            self.persist_event(&trigger)?;
+        }
         let prior_retry = self.prompt_retry.clone();
         let prompt_id = prompt
             .prompt_id
@@ -4944,6 +4981,7 @@ impl<'a> AcpRuntime<'a> {
             raw["reason"] = Value::String(reason.to_string());
         }
         if let Some(raw) = user_event.raw.as_mut() {
+            raw["originalUserText"] = Value::Bool(prompt.display_text.is_some());
             raw["turnControlMode"] = serde_json::to_value(prompt.turn_control_mode)?;
             if let (Some(transition_id), Some(transition_cause)) = (
                 prompt.runtime_control_transition_id.as_deref(),
@@ -5526,8 +5564,12 @@ impl<'a> AcpRuntime<'a> {
                     &self.paths.diagnostics,
                     "warn",
                     format!("unsupported ACP adapter request/notification `{method}`"),
-                    Some(value),
+                    Some(value.clone()),
                 );
+                if let Some(frame) = unsupported_client_inbound_reply(&value) {
+                    self.append_outbound_frame(&frame);
+                    self.connection.send_raw_frame(&frame)?;
+                }
                 Ok(())
             }
             None => Ok(()),
@@ -5957,6 +5999,17 @@ impl<'a> AcpRuntime<'a> {
             return self.send_cancelled_permission_response(rpc_id, &request_id);
         }
         self.seq += 1;
+        let auto_accept =
+            session_auto_accept_override(&self.paths.attempt_dir).unwrap_or(self.auto_accept);
+        if let Some(option_id) = auto_accept_permission_option_id(auto_accept, &params) {
+            return self.send_auto_accepted_permission_response(
+                rpc_id,
+                &request_id,
+                &interaction_identity,
+                params,
+                option_id,
+            );
+        }
         write_pending_permission(
             &self.paths.attempt_dir,
             &request_id,
@@ -5977,6 +6030,7 @@ impl<'a> AcpRuntime<'a> {
             event.raw.get_or_insert_with(|| json!({}))["cancelled"] = json!(true);
         }
         let branch_id = event_branch_id(&event);
+        let permission_item_id = permission_timeline_item_id(&event);
         self.persist_prompt_interaction_event(&event, &interaction_identity)?;
         let timeline_path = branch_timeline_path(&self.paths.attempt_dir, &branch_id);
         if let Some(indexed) =
@@ -5997,11 +6051,9 @@ impl<'a> AcpRuntime<'a> {
             &request_id,
             || self.is_prompt_cancel_requested(),
         )?;
-        let settled = crate::acp::timeline::read_indexed_timeline_item(
-            &timeline_path,
-            &format!("permission-{request_id}"),
-        )?
-        .filter(|indexed| indexed.event.status.as_deref() != Some("pending"));
+        let settled =
+            crate::acp::timeline::read_indexed_timeline_item(&timeline_path, &permission_item_id)?
+                .filter(|indexed| indexed.event.status.as_deref() != Some("pending"));
         if let Some(settled) = settled {
             self.timing_state.observe_event(&settled.event);
             update_runtime_hot_timeline_items(&mut self.timeline_items, &settled.event);
@@ -6015,13 +6067,47 @@ impl<'a> AcpRuntime<'a> {
             let decision_event = permission_decision_timeline_event(
                 self.seq,
                 &request_id,
+                &permission_item_id,
                 &response,
-                self.timeline_items.get(&format!("permission-{request_id}")),
+                self.timeline_items.get(&permission_item_id),
             );
             self.persist_event(&decision_event)?;
         }
         let _ = remove_permission_signal_files(&self.paths.attempt_dir, &request_id);
         let result = acp_permission_response_result(response)?;
+        let frame = json!({
+            "jsonrpc": "2.0",
+            "id": rpc_id.clone(),
+            "result": result.clone(),
+        });
+        self.append_outbound_frame(&frame);
+        self.connection.send_response(rpc_id, result)
+    }
+
+    fn send_auto_accepted_permission_response(
+        &mut self,
+        rpc_id: Value,
+        request_id: &str,
+        identity: &AcpPromptInteractionIdentity,
+        params: Value,
+        option_id: String,
+    ) -> Result<()> {
+        let decided_at = current_timestamp();
+        let mut event = permission_request_event(self.seq, request_id.to_string(), params);
+        event.status = Some("selected".to_string());
+        event.ended_at = Some(decided_at.clone());
+        if let Some(object) = event.raw.get_or_insert_with(|| json!({})).as_object_mut() {
+            object.insert("optionId".to_string(), json!(option_id.clone()));
+            object.insert("autoAccepted".to_string(), json!(true));
+            object.remove("cancelled");
+        }
+        self.persist_prompt_interaction_event(&event, identity)?;
+        let result = acp_permission_response_result(PermissionResponseState {
+            request_id: request_id.to_string(),
+            option_id: Some(option_id),
+            cancelled: false,
+            decided_at,
+        })?;
         let frame = json!({
             "jsonrpc": "2.0",
             "id": rpc_id.clone(),
@@ -6747,6 +6833,7 @@ impl<'a> AcpRuntime<'a> {
             config_catalog_refresh_required_at: self.config_catalog_refresh_required_at.clone(),
             model_override: self.model_override.clone(),
             permission_mode_override: self.permission_mode_override.clone(),
+            auto_accept: self.auto_accept,
             config_option_overrides: self.config_option_overrides.clone(),
             system_prompt_append: self.system_prompt_append.clone(),
             prompt_retry: self.prompt_retry.clone(),
@@ -7484,7 +7571,7 @@ impl<'a> AcpRuntime<'a> {
                 );
             }
             "permissionRequest" => {
-                item.id = format!("permission-{}", item.id);
+                item.id = permission_timeline_item_id(&item);
                 Self::finalize_non_streaming_event(
                     (&mut streams.text, &mut streams.thought, &mut streams.plan),
                     &mut item,
@@ -8305,6 +8392,7 @@ fn set_config_option_current_value(
 fn permission_decision_timeline_event(
     seq: u64,
     request_id: &str,
+    item_id: &str,
     response: &PermissionResponseState,
     existing: Option<&AcpUiEvent>,
 ) -> AcpUiEvent {
@@ -8316,6 +8404,7 @@ fn permission_decision_timeline_event(
     }
     if let Some(object) = raw.as_object_mut() {
         object.insert("requestId".to_string(), json!(request_id));
+        object.insert("_goldBandPermissionItemId".to_string(), json!(item_id));
         if response.cancelled {
             object.insert("cancelled".to_string(), json!(true));
             object.remove("optionId");
@@ -8326,7 +8415,7 @@ fn permission_decision_timeline_event(
     }
 
     AcpUiEvent {
-        id: request_id.to_string(),
+        id: item_id.to_string(),
         seq,
         timestamp: current_timestamp(),
         kind: "permissionRequest".to_string(),
@@ -8368,34 +8457,35 @@ mod tests {
         AcpPromptRouteDrainTimeout, AcpPromptRouteUnavailable, AcpPromptTerminalState,
         AcpPromptTokenUsage, AcpRuntime, AcpRuntimePolicy, AcpUsageState, AttachedSessionReusePlan,
         CancelNotificationPhase, DOCTOR_DIAGNOSTIC_TARGET_SIZE, NESTED_AGENT_TRANSCRIPT_CAPABILITY,
-        PROMPT_CANCEL_DRAIN_FRAME_BUDGET, PROMPT_CANCEL_TIMEOUT, PriorAttemptMetrics,
-        PromptActivity, PromptBundle, PromptVisibility, ProviderControlRegistration,
-        ProviderFreshnessBaseline, RuntimeStopProbe, SessionModelResolution,
-        SessionRestoreCapabilities, SessionRestoreIntent, SessionRestoreMethod, SessionRestorePlan,
-        SessionRestorePlanError, SessionUpdatePhase, acp_prompt_rpc_failure,
-        active_context_compaction, active_timeline_streams, active_timeline_streams_by_branch,
-        append_bounded, append_diagnostic_best_effort, append_raw_frame_best_effort,
-        append_structured_diagnostic_best_effort, attached_sync_required, cancel_attempt_prompt,
-        canonical_prompt_event_identity, catalog_observation_is_newer,
-        cleanup_doctor_acp_dir_after_success, confirmed_context_usage_update,
-        dispatch_attempt_prompt_cancel, drain_available_frames_bounded,
-        drain_available_frames_with_budget, drain_frames_until_quiet,
-        drain_frames_until_quiet_with_timeout_error, drain_frames_until_route_watermark,
-        evaluate_provider_revision, initialize_params, is_pending_retry_prompt_event,
-        is_streaming_timeline_update, is_transport_interruption, latest_visible_turn_id,
-        map_prompt_terminal_drain_error, merge_tool_revision, next_prompt_retry_attempt,
-        parse_agent_capabilities, permission_decision_timeline_event, plan_attached_session_reuse,
-        plan_session_restore, prepare_attempt_usage_after_reuse_decision,
-        preserve_interrupted_session_identity, prompt_activity, prompt_cancel_terminal_timeout,
-        prompt_cancellation_outcome, prompt_usage_transaction_id, provider_thread_is_active,
-        register_provider_control, request_prompt_cancel, resolve_permission_mode,
-        resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
-        runtime_hot_timeline_items, session_config_fingerprint, session_load_params,
+        PARAMETERIZED_MODEL_PICKER_CAPABILITY, PROMPT_CANCEL_DRAIN_FRAME_BUDGET,
+        PROMPT_CANCEL_TIMEOUT, PriorAttemptMetrics, PromptActivity, PromptBundle, PromptVisibility,
+        ProviderControlRegistration, ProviderFreshnessBaseline, RuntimeStopProbe,
+        SessionModelResolution, SessionRestoreCapabilities, SessionRestoreIntent,
+        SessionRestoreMethod, SessionRestorePlan, SessionRestorePlanError, SessionUpdatePhase,
+        acp_prompt_rpc_failure, active_context_compaction, active_timeline_streams,
+        active_timeline_streams_by_branch, append_bounded, append_diagnostic_best_effort,
+        append_raw_frame_best_effort, append_structured_diagnostic_best_effort,
+        attached_sync_required, cancel_attempt_prompt, canonical_prompt_event_identity,
+        catalog_observation_is_newer, cleanup_doctor_acp_dir_after_success,
+        confirmed_context_usage_update, dispatch_attempt_prompt_cancel,
+        drain_available_frames_bounded, drain_available_frames_with_budget,
+        drain_frames_until_quiet, drain_frames_until_quiet_with_timeout_error,
+        drain_frames_until_route_watermark, evaluate_provider_revision, initialize_params,
+        is_pending_retry_prompt_event, is_streaming_timeline_update, is_transport_interruption,
+        latest_visible_turn_id, map_prompt_terminal_drain_error, merge_tool_revision,
+        next_prompt_retry_attempt, parse_agent_capabilities, permission_decision_timeline_event,
+        plan_attached_session_reuse, plan_session_restore,
+        prepare_attempt_usage_after_reuse_decision, preserve_interrupted_session_identity,
+        prompt_activity, prompt_cancel_terminal_timeout, prompt_cancellation_outcome,
+        prompt_usage_transaction_id, provider_thread_is_active, register_provider_control,
+        request_prompt_cancel, resolve_permission_mode, resolve_session_model,
+        retain_bounded_doctor_acp_failure_bundle, runtime_hot_timeline_items,
+        scheduled_trigger_for_prompt, session_config_fingerprint, session_load_params,
         session_new_params, session_prompt_params, session_prompt_text, session_resume_params,
         settle_attempt_prompt_interactions, settle_prompt_event, should_suppress_session_update,
         stable_message_item_id, timeline_generation_for_live_event, timeline_patch_flush_due,
         timeline_position_for_live_event, unregister_provider_control,
-        validate_session_restore_target,
+        unsupported_client_inbound_reply, validate_session_restore_target,
     };
 
     #[test]
@@ -8529,7 +8619,18 @@ mod tests {
             if frame.get("id").is_none() {
                 continue;
             }
-            let response = if frame["method"] == stall_method {
+            let response = if frame["method"] == "session/prompt"
+                && stall_method.starts_with("prompt-failure")
+            {
+                if stall_method == "prompt-failure-worker-ref" {
+                    let worker_ref = std::path::Path::new("attempt/worker-ref.json");
+                    if worker_ref.is_file() {
+                        std::fs::remove_file(worker_ref).unwrap();
+                    }
+                    std::fs::create_dir(worker_ref).unwrap();
+                }
+                json!({"error": {"code": -32000, "message": "ORIGINAL_PROMPT_FAILURE"}})
+            } else if frame["method"] == stall_method {
                 // Rescue the unfixed implementation without mistaking rescue for a timeout.
                 std::thread::sleep(Duration::from_secs(2));
                 json!({"error": {"code": -32000, "message": "fixture rescue"}})
@@ -8633,7 +8734,167 @@ mod tests {
             runtime_control_transition_cause: None,
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
+            scheduled_trigger: None,
         }
+    }
+
+    #[test]
+    fn scheduled_trigger_is_visible_while_provider_prompt_is_hidden() {
+        let mut prompt = non_runtime_control_test_prompt("scheduled-prompt-001");
+        prompt.visibility = PromptVisibility::Hidden;
+        prompt.hidden_reason = Some("scheduledTaskExecution".to_string());
+        prompt.scheduled_trigger = Some(crate::acp::events::ScheduledTriggerPayload {
+            project_id: "project-001".to_string(),
+            scheduled_task_id: "scheduled-task-001".to_string(),
+            occurrence_id: "occurrence-001".to_string(),
+            trigger_kind: crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled,
+            scheduled_at: Some("2026-08-25T01:30:00Z".to_string()),
+            accepted_at: "2026-08-25T01:29:59Z".to_string(),
+            instruction_summary: "检查主分支状态".to_string(),
+            content_fingerprint: "sha256:accepted".to_string(),
+            links: crate::scheduler::occurrence::OccurrenceLinks {
+                task_id: Some("task-001".to_string()),
+                run_id: Some("run-001".to_string()),
+                round_id: Some("round-001".to_string()),
+                node_id: Some("dev".to_string()),
+                attempt_id: Some("attempt-001".to_string()),
+            },
+        });
+
+        let trigger = scheduled_trigger_for_prompt(7, &prompt).unwrap();
+        let hidden_prompt = crate::acp::events::user_prompt_event(
+            8,
+            "session-001".to_string(),
+            prompt.user_prompt.clone(),
+            prompt.prompt_id.clone(),
+            true,
+            Vec::new(),
+        );
+
+        assert_eq!(trigger.kind, "scheduledTrigger");
+        assert_ne!(
+            trigger
+                .raw
+                .as_ref()
+                .and_then(|raw| raw["hiddenFromChat"].as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            hidden_prompt
+                .raw
+                .as_ref()
+                .and_then(|raw| raw["hiddenFromChat"].as_bool()),
+            Some(true)
+        );
+        assert!(trigger.content.is_none());
+        assert_eq!(
+            trigger.raw.as_ref().unwrap()["scheduledTrigger"]["instructionSummary"],
+            "检查主分支状态"
+        );
+    }
+
+    #[test]
+    fn prompt_execution_failure_persists_reason_before_publishing_terminal() {
+        assert_prompt_execution_failure("prompt-failure");
+    }
+
+    #[test]
+    fn prompt_execution_failure_survives_worker_ref_cleanup_failure() {
+        assert_prompt_execution_failure("prompt-failure-worker-ref");
+    }
+
+    fn assert_prompt_execution_failure(fixture: &str) {
+        use crate::acp::events::{
+            AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        let snapshot = attempt.join("acp.snapshot.json");
+        crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-fixture".into(),
+            operation_id: "operation-fixture".into(),
+            adapter_id: "prompt-failure-fixture".into(),
+            adapter_display_name: "Fixture".into(),
+            cwd: cwd.to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "test".into(),
+                quotes: vec![],
+            },
+            attachment_paths: vec![],
+            admitted_at: super::current_timestamp(),
+        };
+        let AcpTurnExecutionClaim::Claimed(owner) =
+            admit_session_turn_for_execution(&snapshot, &submission).unwrap()
+        else {
+            panic!("fixture must own its turn")
+        };
+        let published = std::cell::RefCell::new(Vec::new());
+        let on_update = || {
+            published
+                .borrow_mut()
+                .push(crate::storage::read_json::<Value>(&snapshot)?);
+            Ok(())
+        };
+        let result = super::run_prompt(
+            "prompt-failure-fixture",
+            &doctor_fixture_config(fixture),
+            cwd.clone(),
+            cwd.clone(),
+            attempt.clone(),
+            &non_runtime_control_test_prompt("turn-fixture"),
+            SessionMode::New,
+            None,
+            false,
+            None,
+            Default::default(),
+            None,
+            false,
+            false,
+            false,
+            1_000_000,
+            500_000,
+            AcpRuntimePolicy::default(),
+            owner,
+            None,
+            &[],
+            Some(&on_update),
+            None,
+            None,
+        );
+        super::AdapterConnectionManager::shared()
+            .close_workspace_connections_bounded(&cwd, Duration::from_secs(2))
+            .unwrap();
+        let error = result
+            .err()
+            .expect("fixture must fail inside session/prompt");
+        assert!(
+            format!("{error:#}").contains("ORIGINAL_PROMPT_FAILURE"),
+            "{error:#}"
+        );
+        let terminal = crate::storage::read_json::<Value>(&snapshot).unwrap();
+        assert_eq!(terminal["latestTurnStatus"], "failed");
+        assert!(
+            terminal["turnError"]["diagnostic"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("ORIGINAL_PROMPT_FAILURE")
+        );
+        let published = published.borrow();
+        let failed: Vec<_> = published
+            .iter()
+            .filter(|value| value["latestTurnStatus"] == "failed")
+            .collect();
+        assert!(
+            !failed.is_empty(),
+            "terminal must be published after persistence"
+        );
+        assert!(
+            failed
+                .iter()
+                .all(|value| value["turnError"] == terminal["turnError"])
+        );
     }
 
     #[test]
@@ -8773,11 +9034,15 @@ mod tests {
     #[test]
     fn initialize_requests_nested_agent_transcripts_at_the_adapter_boundary() {
         let params = initialize_params();
+        let meta = params.pointer("/clientCapabilities/_meta");
 
         assert_eq!(
-            params
-                .pointer("/clientCapabilities/_meta")
-                .and_then(|meta| meta.get(NESTED_AGENT_TRANSCRIPT_CAPABILITY))
+            meta.and_then(|meta| meta.get(NESTED_AGENT_TRANSCRIPT_CAPABILITY))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            meta.and_then(|meta| meta.get(PARAMETERIZED_MODEL_PICKER_CAPABILITY))
                 .and_then(Value::as_bool),
             Some(true)
         );
@@ -8786,6 +9051,27 @@ mod tests {
                 .pointer("/clientCapabilities/elicitation/form")
                 .is_some()
         );
+    }
+
+    #[test]
+    fn unknown_inbound_acp_requests_reply_method_not_found_and_notifications_stay_silent() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "cursor/ask_question",
+            "params": { "sessionId": "session-1", "questions": [] }
+        });
+        let reply = unsupported_client_inbound_reply(&request).expect("request must be answered");
+        assert_eq!(reply["error"]["code"], json!(-32601));
+        assert_eq!(reply["error"]["message"], json!("Method not found"));
+        assert_eq!(reply["id"], json!(9));
+
+        let notification = json!({
+            "jsonrpc": "2.0",
+            "method": "cursor/update_todos",
+            "params": { "sessionId": "session-1" }
+        });
+        assert_eq!(unsupported_client_inbound_reply(&notification), None);
     }
 
     #[test]
@@ -11262,9 +11548,15 @@ mod tests {
             decided_at: "2Z".to_string(),
         };
 
-        let event = permission_decision_timeline_event(11, "0", &response, Some(&existing));
+        let event = permission_decision_timeline_event(
+            11,
+            "0",
+            "permission-stable",
+            &response,
+            Some(&existing),
+        );
 
-        assert_eq!(event.id, "0");
+        assert_eq!(event.id, "permission-stable");
         assert_eq!(event.kind, "permissionRequest");
         assert_eq!(event.status.as_deref(), Some("selected"));
         assert_eq!(event.session_id.as_deref(), Some("session-1"));
@@ -11279,6 +11571,14 @@ mod tests {
                 .and_then(|raw| raw.get("requestId"))
                 .and_then(Value::as_str),
             Some("0")
+        );
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("_goldBandPermissionItemId"))
+                .and_then(Value::as_str),
+            Some("permission-stable")
         );
         assert_eq!(
             event
@@ -11763,6 +12063,7 @@ mod tests {
             runtime_control_transition_cause: None,
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
+            scheduled_trigger: None,
         };
 
         let text = session_prompt_text("codex-acp", &prompt, false, false);
@@ -11801,6 +12102,7 @@ mod tests {
             runtime_control_transition_cause: None,
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
+            scheduled_trigger: None,
         };
 
         let text = session_prompt_text("codex-acp", &prompt, true, false);
@@ -11860,6 +12162,7 @@ mod tests {
             runtime_control_transition_cause: None,
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
+            scheduled_trigger: None,
         };
 
         assert_eq!(

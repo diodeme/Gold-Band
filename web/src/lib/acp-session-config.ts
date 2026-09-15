@@ -40,6 +40,7 @@ export type AcpSessionConfigViewModel = {
   permissionModeOverrideId: string | null;
   permissionModeOverrideName: string | null;
   canSelectUnspecifiedPermissionMode: boolean;
+  autoAccept: boolean;
   currentModelId: string | null;
   currentModelName: string | null;
   currentModeId: string | null;
@@ -113,6 +114,7 @@ export function createAcpSessionConfigViewModel(
     permissionModeOverrideId,
     permissionModeOverrideName,
     canSelectUnspecifiedPermissionMode: permissionModeOverrideId === null,
+    autoAccept: Boolean(config?.autoAccept),
     currentModelId,
     currentModelName: resolvedCurrentModelName,
     currentModeId,
@@ -306,6 +308,7 @@ function createAcpSessionConfigSignature(
     permissionModeOverrideId: viewModel.permissionModeOverrideId,
     permissionModeOverrideName: viewModel.permissionModeOverrideName,
     canSelectUnspecifiedPermissionMode: viewModel.canSelectUnspecifiedPermissionMode,
+    autoAccept: viewModel.autoAccept,
     currentModelId: viewModel.currentModelId,
     currentModelName: viewModel.currentModelName,
     currentModeId: viewModel.currentModeId,

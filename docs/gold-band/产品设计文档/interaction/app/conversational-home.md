@@ -73,8 +73,8 @@
    - 左侧栏的手动展开/折叠意图与窗口宽度导致的临时自动折叠分开管理。窄屏不得改写或持久化手动折叠值；再次拉宽时自动恢复，右侧工作区与左侧栏同时折叠时固定先恢复右侧、再恢复左侧。
 3. 处理模式选择：WORKFLOW / AUTO 切换；Workflow 模式操作栏的前导图标统一使用运行模式入口的 `Route` 图标，不再使用另一套 `Workflow` 图标。
 4. AUTO 模式：
-   - 固定 Agent 策略下显示 agent、模型、权限模式下拉；agent 可以覆盖 AUTO tab 当前配置，模型可为空
-   - 动态 Agent 策略下显示 Dynamic Agent 标识和权限模式下拉
+   - 固定 Agent 策略下显示 agent、模型、权限模式下拉；agent 可以覆盖 AUTO tab 当前配置，模型可为空；权限下拉叠加 Auto Accept
+   - 动态 Agent 策略下显示 Dynamic Agent 标识；控制面与候选 worker 的权限下拉同样叠加 Auto Accept
    - 显示非必填全局 Goal 输入框
    - 全局 Goal 输入框必须保留用户原始输入，包括词间空格、连续空格、开头空格和输入末尾的临时空格；创建会话 payload 边界只把纯空白输入规范化为未设置，不裁剪非空文本
    - 提供跳转 AUTO tab 的快速入口
@@ -140,7 +140,7 @@
 - 运行模式状态以 workspace 为一级作用域，不使用跨 workspace 共享的单一前端快照；切换草稿目标时先展示该 workspace 的内存快照，并重新读取其持久化配置。
 - Direct 在 workspace 内再以 `agentType` 为二级作用域保存模型和权限。选择 Agent、模型或权限时，保存请求必须显式携带当前 composer 的 `projectId`，不能依赖切换中的默认 workspace 闭包。
 - 同一 workspace 的运行模式写入必须按用户操作顺序串行提交；切回 workspace 重新加载前必须等待该 workspace 已排队的写入完成，避免较早的 Agent 默认配置晚到并覆盖后续模型/权限选择。不同 workspace 的写入可以并行，互不阻塞。
-- 如果上一次选择 AUTO，则复用 composer 中的会话级 AUTO 配置，包括固定策略下的 agent / 模型、权限模式和全局 Goal
+- 如果上一次选择 AUTO，则复用 composer 中的会话级 AUTO 配置，包括固定策略下的 agent / 模型、权限模式、Auto Accept 和全局 Goal
 - 会话级 AUTO 全局 Goal 的持久化编辑态不在每次按键时 trim，避免受控输入框反灌时吞掉空格；创建会话时也不裁剪非空文本，只把纯空白值折叠为未设置
 - AUTO tab 模板另行持久化，只保存模板级 AI-DYNAMIC 配置
 
@@ -249,13 +249,13 @@
 - 快速会话模式固定按 `Direct / 工作流 / AUTO` 排列；三种模式各自保留配置，切换模式不清空正文和附件。
 - Direct 配置区使用 Agent icon 列表。当前 Agent 展示 icon + 名称，其他 Agent 只展示 icon；可用 Agent 与不可用 Agent 分别保持其注册表内的既有顺序并连续排列，两组同时存在时使用一条低对比竖线分隔。不可用 Agent 保留诊断提示但不能选中。
 - Direct 没有任何可选 Agent 时，空状态在提示文案旁展示紧凑的“+”按钮；按钮使用现有会话导航进入 Agent 管理页，用户添加完成后可返回继续当前快速会话草稿。
-- Direct 的模型和权限模式位于 composer 右下角、发送按钮之前，不复用 AUTO 的大配置面板；两者的空选项统一显示为“不指定”，发起会话前允许在具体值与“不指定”之间切换。
+- Direct 的模型和权限模式位于 composer 右下角、发送按钮之前，不复用 AUTO 的大配置面板；两者的空选项统一显示为“不指定”，发起会话前允许在具体值与“不指定”之间切换。权限下拉同时叠加 Auto Accept 复选框，默认关闭，可与原生 mode 同时选中。
 - composer 主体宽度随右侧内容区增长，但保留桌面端可读上限和响应式左右 gutter；底部附件/工作空间组与 Direct 模型/权限/发送组按组参与换行，选择器允许在合理最小宽度内弹性收缩。窗口变窄、侧边栏展开、系统字体或显示缩放增大时，后组应完整下移到下一行，禁止与工作空间控件重叠或溢出输入框。
-- Direct 不在运行模式管理页出现，也不展示指向该页的“去配置 / 修复”按钮；Agent、模型、权限和对应校验均在快速会话 composer 内闭环。
-- Direct 的模型和权限记忆范围是 `workspace + agentType`；切换 Agent 时恢复该 Agent 在当前 workspace 上一次使用的模型和权限。
-- 切换 workspace 后再返回时，必须恢复该 workspace 当前 Direct Agent 及其模型/权限；其他 workspace 的选择不得覆盖当前 workspace。切换期间 composer 的 workspace 与运行模式配置由同一个 App 层 workspace key 驱动，不保留组件内第二份 workspace 选择状态。
+- Direct 不在运行模式管理页出现，也不展示指向该页的“去配置 / 修复”按钮；Agent、模型、权限、Auto Accept 和对应校验均在快速会话 composer 内闭环。
+- Direct 的模型、权限和 Auto Accept 记忆范围是 `workspace + agentType`；切换 Agent 时恢复该 Agent 在当前 workspace 上一次使用的模型、权限和 Auto Accept。
+- 切换 workspace 后再返回时，必须恢复该 workspace 当前 Direct Agent 及其模型/权限/Auto Accept；其他 workspace 的选择不得覆盖当前 workspace。切换期间 composer 的 workspace 与运行模式配置由同一个 App 层 workspace key 驱动，不保留组件内第二份 workspace 选择状态。
 - 快速对话 composer 切换 workspace 属于导航上下文切换，不结束未提交草稿生命周期；无论从 composer 工作空间选择器还是左侧工作空间“新会话”入口切换，正文、图片及其他附件都必须原样保留。只有提交成功或用户明确执行清空/放弃操作时才清理草稿。
-- Direct 会话创建后 Agent 身份不可修改；更换 Agent 等价于创建新的 Direct 会话。会话内模型与权限模式分别使用独立显式 override：未指定时不干预 Agent 当前配置，选择具体值后不再允许回到“不指定”，但可以继续切换其他具体值。
+- Direct 会话创建后 Agent 身份不可修改；更换 Agent 等价于创建新的 Direct 会话。会话内模型与权限模式分别使用独立显式 override：未指定时不干预 Agent 当前配置，选择具体值后不再允许回到“不指定”，但可以继续切换其他具体值。会话内 Auto Accept 只写该 ACP session，不回写主页记忆。
 - Direct 侧边栏 task 行使用 Agent icon 代替 run 成功/暂停/失败状态点；当前 turn 活跃时由 task 级 activity 驱动 icon 低强度呼吸，相对时间来自 `lastActivityAt`。工作流和 AUTO 继续使用 run 状态点。
 - Direct task 行点击后直接进入最近会话，不渲染 `run-00x` 子列表；底层 run 仅作为内部执行与存储结构。
 - Direct 的置顶区、workspace 区和搜索结果使用同一 Agent identity VM，不允许前端组件自行从 metadata 重复推断。

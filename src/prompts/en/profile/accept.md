@@ -21,7 +21,7 @@
 4. Write the report to `accept-report.md`. Do not modify code, tests, configuration, or plans.
 
 - PASS: no `BLOCKER`; FAIL: a `BLOCKER` exists; INCOMPLETE: a pending user decision prevents verification of an in-scope criterion. A `FOLLOW_UP` does not change PASS.
-- Record environment or manual-validation gaps truthfully, but do not declare BLOCKED solely because of them.
+- Environment issues or required manual acceptance may prevent acceptance from continuing, but do not constitute blocking conditions; record unexecuted checks and evidence gaps truthfully, and do not declare BLOCKED solely because of them.
 
 ## Output format
 

@@ -1,3 +1,4 @@
+use super::execution::ScheduledExecutionSnapshot;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -93,6 +94,8 @@ pub enum ScheduledErrorCode {
     NotFound,
     #[serde(rename = "SCHEDULED_CONFLICT")]
     Conflict,
+    #[serde(rename = "SCHEDULED_HISTORY_NOT_REMOVABLE")]
+    HistoryNotRemovable,
     #[serde(rename = "SCHEDULED_VALIDATION_FAILED")]
     ValidationFailed,
     #[serde(rename = "SCHEDULED_STORAGE_FAILED")]
@@ -130,6 +133,7 @@ impl fmt::Display for ScheduledErrorCode {
         let value = match self {
             Self::NotFound => "SCHEDULED_NOT_FOUND",
             Self::Conflict => "SCHEDULED_CONFLICT",
+            Self::HistoryNotRemovable => "SCHEDULED_HISTORY_NOT_REMOVABLE",
             Self::ValidationFailed => "SCHEDULED_VALIDATION_FAILED",
             Self::StorageFailed => "SCHEDULED_STORAGE_FAILED",
             Self::AttachmentFailed => "SCHEDULED_ATTACHMENT_FAILED",
@@ -157,6 +161,7 @@ impl std::str::FromStr for ScheduledErrorCode {
         match value {
             "SCHEDULED_NOT_FOUND" => Ok(Self::NotFound),
             "SCHEDULED_CONFLICT" => Ok(Self::Conflict),
+            "SCHEDULED_HISTORY_NOT_REMOVABLE" => Ok(Self::HistoryNotRemovable),
             "SCHEDULED_VALIDATION_FAILED" => Ok(Self::ValidationFailed),
             "SCHEDULED_STORAGE_FAILED" => Ok(Self::StorageFailed),
             "SCHEDULED_ATTACHMENT_FAILED" => Ok(Self::AttachmentFailed),
@@ -189,7 +194,19 @@ pub struct OccurrenceLinks {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub round_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt_id: Option<String>,
+}
+
+impl OccurrenceLinks {
+    pub fn is_complete(&self) -> bool {
+        self.task_id.is_some()
+            && self.run_id.is_some()
+            && self.round_id.is_some()
+            && self.node_id.is_some()
+            && self.attempt_id.is_some()
+    }
 }
 
 pub type ScheduledOccurrenceLinks = OccurrenceLinks;
@@ -224,6 +241,8 @@ pub struct ScheduledOccurrence {
     pub job_id: String,
     pub scheduled_at: DateTime<Utc>,
     pub trigger_kind: OccurrenceTriggerKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_revision: Option<u64>,
     pub status: OccurrenceStatus,
     pub attempt: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -239,6 +258,8 @@ pub struct ScheduledOccurrence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub round_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_code: Option<ScheduledErrorCode>,
@@ -248,6 +269,8 @@ pub struct ScheduledOccurrence {
     pub started_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_execution: Option<ScheduledExecutionSnapshot>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -258,6 +281,7 @@ impl ScheduledOccurrence {
             task_id: self.task_id.clone(),
             run_id: self.run_id.clone(),
             round_id: self.round_id.clone(),
+            node_id: self.node_id.clone(),
             attempt_id: self.attempt_id.clone(),
         }
     }
@@ -327,7 +351,8 @@ impl LeaseConfig {
 #[cfg(test)]
 mod tests {
     use super::{
-        ClaimResult, LeaseConfig, OccurrenceStatus, OccurrenceTriggerKind, ScheduledErrorCode,
+        ClaimResult, LeaseConfig, OccurrenceLinks, OccurrenceStatus, OccurrenceTriggerKind,
+        ScheduledErrorCode,
     };
     use chrono::{Duration, TimeZone, Utc};
 
@@ -408,6 +433,19 @@ mod tests {
 
         let encoded = serde_json::to_string(&ClaimResult::Busy).unwrap();
         assert_eq!(encoded, "\"busy\"");
+    }
+
+    #[test]
+    fn occurrence_links_cover_the_complete_run_locator() {
+        let links = OccurrenceLinks {
+            task_id: Some("task-1".into()),
+            run_id: Some("run-1".into()),
+            round_id: Some("round-1".into()),
+            node_id: Some("node-1".into()),
+            attempt_id: Some("attempt-1".into()),
+        };
+
+        assert!(links.is_complete());
     }
 
     #[test]

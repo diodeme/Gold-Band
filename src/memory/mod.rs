@@ -22,7 +22,7 @@ const WB_DEFAULT_KEY: &str = "subSysId1";
 const WB_DEFAULT_DESC: &str = "xxxx子系统";
 
 pub fn is_wb() -> bool {
-    crate::storage::active_storage_path_config().app_key == "maling"
+    crate::channel::RELEASE_CHANNEL == crate::channel::WB_CHANNEL
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

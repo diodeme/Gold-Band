@@ -40,7 +40,7 @@ const resources = {
         detail: {
           history: "执行历史", back: "返回定时任务", notFound: "未找到此定时任务", loadFailed: "无法加载执行详情", actionFailed: "操作失败，请重试", historyLoadFailed: "无法加载此页历史记录", runFailed: "无法启动此定时任务", loading: "正在加载...",
           starting: "启动中...", runNow: "立即执行", previousStatus: "上轮状态", runs: "执行次数", retries: "重试次数", next: "下次执行",
-          workspace: "工作区", schedule: "计划", timezone: "时区", status: "状态", noHistory: "暂无执行记录", attempt: "第 {{count}} 次", openRun: "打开关联运行", filter: "历史状态", allStatuses: "全部状态", previousPage: "上一页", nextPage: "下一页",
+          workspace: "工作区", schedule: "计划", timezone: "时区", status: "状态", noHistory: "暂无执行记录", attempt: "第 {{count}} 次", openRun: "打开关联运行", filter: "历史状态", allStatuses: "全部状态", previousPage: "上一页", nextPage: "下一页", locatedHistory: "定位记录", deleted: "原定时任务已删除", removeSelected: "移除所选历史", deleting: "正在移除", selectAllRuns: "选择本页全部可移除历史", selectRun: "选择历史：{{summary}}", historyAvailability: { available: "可打开", unavailable: "不可用" },
         },
         dialog: {
           title: "定时任务设置", content: "任务内容", tabs: { at: "单次", repeat: "重复", cron: "Cron" }, date: "日期", time: "时间", openTimePicker: "打开时间选择器", hours: "小时", minutes: "分钟", frequency: "频率",
@@ -2529,7 +2529,7 @@ const resources = {
         detail: {
           history: "Run history", back: "Back to scheduled tasks", notFound: "Scheduled task not found", loadFailed: "Unable to load run details", actionFailed: "Action failed. Try again.", historyLoadFailed: "Unable to load this history page", runFailed: "Unable to start this scheduled task", loading: "Loading...",
           starting: "Starting...", runNow: "Run now", previousStatus: "Previous status", runs: "Runs", retries: "Retries", next: "Next run",
-          workspace: "Workspace", schedule: "Schedule", timezone: "Timezone", status: "Status", noHistory: "No run history", attempt: "Attempt {{count}}", openRun: "Open linked run", filter: "History status", allStatuses: "All statuses", previousPage: "Previous", nextPage: "Next",
+          workspace: "Workspace", schedule: "Schedule", timezone: "Timezone", status: "Status", noHistory: "No run history", attempt: "Attempt {{count}}", openRun: "Open linked run", filter: "History status", allStatuses: "All statuses", previousPage: "Previous", nextPage: "Next", locatedHistory: "Located run", deleted: "The original scheduled task was deleted", removeSelected: "Remove selected history", deleting: "Removing", selectAllRuns: "Select all removable history on this page", selectRun: "Select history: {{summary}}", historyAvailability: { available: "Available", unavailable: "Unavailable" },
         },
         dialog: {
           title: "Scheduled task settings", content: "Task content", tabs: { at: "Once", repeat: "Repeat", cron: "Cron" }, date: "Date", time: "Time", openTimePicker: "Open time picker", hours: "Hours", minutes: "Minutes", frequency: "Frequency",

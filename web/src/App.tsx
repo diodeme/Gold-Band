@@ -134,6 +134,7 @@ import { RunModeManagementPage } from './pages/RunModeManagementPage';
 import { MulticaTaskManagementPage } from './pages/MulticaTaskManagementPage';
 import { ScheduledTaskManagementPage } from './pages/ScheduledTaskManagementPage';
 import { ScheduledTaskDetailPage } from './pages/ScheduledTaskDetailPage';
+import { scheduledTriggerTarget } from './lib/scheduled-task-navigation';
 import { PersonalAnalyticsPage } from './pages/PersonalAnalyticsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { createInitialCreateTaskDraft, TaskListPage, type CreateTaskDraftState } from './pages/TaskListPage';
@@ -244,6 +245,7 @@ import type {
   ConversationRunModeVm,
   ConversationWorkLocation,
   ConversationRunVm,
+  ScheduledTriggerPayloadVm,
   ConversationSessionLeafVm,
   ConversationSessionTreeVm,
   ConversationTreeNodeVm,
@@ -483,6 +485,7 @@ export function App() {
   const [conversationRunCache] = useState(() => new ConversationRunCache());
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
+  const scheduledTriggerOpenRef = useRef<(payload: ScheduledTriggerPayloadVm) => void>(() => {});
 
   const conversationNavigationRequestRef = useRef(0);
   const presentedConversationPage = conversationPage;
@@ -2199,6 +2202,14 @@ export function App() {
     }
   };
 
+  useEffect(() => {
+    const openTrigger = (event: Event) => {
+      scheduledTriggerOpenRef.current((event as CustomEvent<ScheduledTriggerPayloadVm>).detail);
+    };
+    window.addEventListener('gold-band:scheduled-trigger-open', openTrigger);
+    return () => window.removeEventListener('gold-band:scheduled-trigger-open', openTrigger);
+  }, []);
+
   function onSelectConversation(page: ConversationPage) {
     setWorkspacePickerOpen(false);
     setUiMode('conversation');
@@ -2271,6 +2282,11 @@ export function App() {
     }
     pushRoute(primaryModule, taskPage, page);
   }
+
+  scheduledTriggerOpenRef.current = (payload) => {
+    const target = scheduledTriggerTarget(payload);
+    if (target) onSelectConversation(target);
+  };
 
   const content = uiMode === 'conversation'
     ? renderConversationContent()
@@ -2788,7 +2804,7 @@ export function App() {
       return <ScheduledTaskManagementPage projectId={defaultProjectId} onCreate={() => onSelectConversation({ kind: 'scheduled-task-create' })} onOpenDetail={(task) => onSelectConversation({ kind: 'scheduled-task-detail', projectId: task.projectId, scheduledTaskId: task.id })} />;
     }
     if (conversationPage.kind === 'scheduled-task-detail') {
-      return <ScheduledTaskDetailPage projectId={conversationPage.projectId} scheduledTaskId={conversationPage.scheduledTaskId} onBack={() => onSelectConversation({ kind: 'scheduled-tasks' })} onOpenOccurrence={onSelectConversation} />;
+      return <ScheduledTaskDetailPage projectId={conversationPage.projectId} scheduledTaskId={conversationPage.scheduledTaskId} taskId={conversationPage.taskId} runId={conversationPage.runId} occurrenceId={conversationPage.occurrenceId} onBack={() => onSelectConversation({ kind: 'scheduled-tasks' })} onOpenOccurrence={onSelectConversation} />;
     }
     if (conversationPage.kind === 'run-mode-management') {
       return (

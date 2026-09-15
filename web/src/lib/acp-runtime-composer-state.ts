@@ -582,6 +582,10 @@ export function isSessionCompletedStatus(status?: string | null) {
   return ['completed', 'complete'].includes(normalizeStatus(status));
 }
 
+export function isSessionIdleStatus(status?: string | null) {
+  return normalizeStatus(status) === 'idle';
+}
+
 export function isSessionTerminalStatus(status?: string | null) {
   return ['completed', 'complete', 'failed', 'failure', 'error', 'killed', 'cancelled', 'canceled'].includes(normalizeStatus(status));
 }

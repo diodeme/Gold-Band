@@ -36,6 +36,7 @@ describe('composer context horizontal alignment', () => {
     expect(quickComposerSource).toContain('data-conversation-composer="quick"');
     expect(quickComposerSource).toContain('className={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaClassName}');
     expect(quickComposerSource).toContain('className="absolute left-0 top-2 z-10 inline-flex"');
+    expect(quickComposerSource).toContain("slashCommands.isOpen && 'z-50'");
     expect(composerLayoutSource).toContain("textareaClassName: `${COMPOSER_TEXTAREA_BASE_CLASS_NAME} w-full overflow-y-hidden px-0`");
     expect(composerLayoutSource).toContain("promptInputClassName: 'relative rounded-2xl border-border bg-card/60 px-2.5 py-2 shadow-sm'");
     expect(stylesSource).toContain('[data-conversation-composer="quick"] [data-composer-context-area="true"]');
@@ -62,7 +63,7 @@ describe('composer context horizontal alignment', () => {
 
   it('keeps both composer surfaces and image previews on the full-contrast theme boundary', () => {
     expect(composerLayoutSource).toContain('rounded-2xl border-border bg-card/60');
-    expect(composerLayoutSource).toContain("stackSurfaceClassName: 'border border-border [border-width:var(--acp-session-composer-border-width)]'");
+    expect(composerLayoutSource).toContain("stackSurfaceClassName: 'border border-border shadow-none [border-width:var(--acp-session-composer-border-width)]'");
     expect(composerContextSource).toContain('rounded-md border border-border object-cover');
   });
 

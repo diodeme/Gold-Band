@@ -70,6 +70,7 @@ impl ProviderAdapter for UnicodeTimelineProvider {
             }),
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 

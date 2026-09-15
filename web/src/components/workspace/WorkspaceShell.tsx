@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { GroupImperativeHandle, Layout, LayoutChangedMeta, PanelImperativeHandle } from 'react-resizable-panels';
-import type { AppConfigVm, ConversationPage, ConversationSidebarVm, DesktopPlatform, DesktopWindowFrameStyle } from '../../types';
+import type { AppConfigVm, ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, DesktopPlatform, DesktopWindowFrameStyle } from '../../types';
 import { ConversationSidebar, type ConversationSidebarWorkspaceRevealRequest } from '../conversation/ConversationSidebar';
 import { saveConversationPreference } from '../../api';
 import { AppTitleBar } from '../AppTitleBar';
@@ -50,6 +50,7 @@ import {
 } from './workspace-layout';
 
 interface WorkspaceShellProps {
+  titleBarTrailingContent?: React.ReactNode;
   appName: string;
   feedbackEnabled?: boolean;
   platform?: DesktopPlatform | null;
@@ -60,22 +61,28 @@ interface WorkspaceShellProps {
   sidebarCollapsed: boolean;
   onSelect: (page: ConversationPage) => void;
   onToggleSidebar: () => void;
+  onOpenPersonalAnalytics: () => void;
   onNewConversation: () => void;
   onSearch: () => void;
-  onSelectTask: (projectId: string, taskId: string) => void;
-  onSelectRun: (projectId: string, taskId: string, runId: string) => void;
   onPauseRun?: (projectId: string, taskId: string, runId: string) => void | Promise<void>;
   onPinTask: (projectId: string, taskId: string) => void;
   onUnpinTask: (projectId: string, taskId: string) => void;
   onRenameTask: (projectId: string, taskId: string, title: string) => void;
-  onDeleteTask: (projectId: string, taskId: string) => void;
-  onNewConversationInWorkspace?: (projectId: string) => void;
+  onDeleteTask: (projectId: string, taskId: string, taskUuid?: string | null) => void;
+  // 必填：App 恒提供（Shell.onConversationNewInWorkspace），ConversationSidebar/MulticaRemoteTaskList
+  // 均要求非空；此前误标可选导致与下游必填声明类型不一致。
+  onNewConversationInWorkspace: (projectId: string) => void;
   onAddWorkspace?: () => void;
   onRemoveWorkspace?: (projectId: string) => Promise<void>;
+  onRetryBootstrap: () => void;
+  onRequestWorkspaceTasks: (projectId: string, cursor?: string | null) => void;
+  onRequestPinnedTasks: (cursor?: string | null) => void;
+  onRequestTaskRuns: (task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>, cursor?: string | null) => void;
   activeWorkspaceId?: string | null;
   defaultExpandedWorkspaceId?: string | null;
   workspaceRevealRequest?: ConversationSidebarWorkspaceRevealRequest | null;
   conversationTaskUuid?: string | null;
+  sourceControlWorkspacePath?: string | null;
   conversationWorkspaceStore: ConversationWorkspaceStore;
   children: React.ReactNode;
 }
@@ -131,7 +138,9 @@ function workspacePanelGroupWidth(element: HTMLDivElement | null) {
 
 const LazyFileWorkspacePanel = lazy(() => import('./files/FileWorkspacePanel').then((module) => ({ default: module.FileWorkspacePanel })));
 const LazyTurnFileWorkspacePanel = lazy(() => import('./files/TurnFileWorkspacePanel').then((module) => ({ default: module.TurnFileWorkspacePanel })));
+const LazyTurnAttachmentWorkspacePanel = lazy(() => import('./files/TurnAttachmentWorkspacePanel').then((module) => ({ default: module.TurnAttachmentWorkspacePanel })));
 const LazyConversationAssetWorkspacePanel = lazy(() => import('./files/ConversationAssetWorkspacePanel').then((module) => ({ default: module.ConversationAssetWorkspacePanel })));
+const LazyAcpImageWorkspacePanel = lazy(() => import('@/components/acp/AcpImageStrip').then((module) => ({ default: module.AcpImageWorkspacePanel })));
 const LazyDraftAttachmentWorkspacePanel = lazy(() => import('./files/DraftAttachmentWorkspacePanel').then((module) => ({ default: module.DraftAttachmentWorkspacePanel })));
 const LazyConversationDirectoryWorkspacePanel = lazy(() => import('./ConversationDirectoryWorkspacePanel').then((module) => ({ default: module.ConversationDirectoryWorkspacePanel })));
 const LazySourceControlWorkspacePanel = lazy(() => import('./source-control/SourceControlWorkspacePanel').then((module) => ({ default: module.SourceControlWorkspacePanel })));
@@ -174,9 +183,17 @@ function FileWorkspaceIntegration({
       ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyTurnFileWorkspacePanel resource={resource} /></Suspense>
       : null
   )), [workspace.registerResourceRenderer]);
+  useEffect(() => workspace.registerResourceRenderer('acp-image', (resource: RightWorkspaceResource) => (
+    resource.kind === 'acp-image' ? <Suspense fallback={null}><LazyAcpImageWorkspacePanel resource={resource} /></Suspense> : null
+  )), [workspace.registerResourceRenderer]);
   useEffect(() => workspace.registerResourceRenderer('conversation-asset', (resource: RightWorkspaceResource) => (
     resource.kind === 'conversation-asset'
       ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyConversationAssetWorkspacePanel resource={resource} /></Suspense>
+      : null
+  )), [workspace.registerResourceRenderer]);
+  useEffect(() => workspace.registerResourceRenderer('turn-attachment', (resource: RightWorkspaceResource) => (
+    resource.kind === 'turn-attachment'
+      ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyTurnAttachmentWorkspacePanel resource={resource} /></Suspense>
       : null
   )), [workspace.registerResourceRenderer]);
   useEffect(() => workspace.registerResourceRenderer('draft-attachment', (resource: RightWorkspaceResource) => (
@@ -194,6 +211,11 @@ function FileWorkspaceIntegration({
       ? (reason === 'close' ? fileContentStore.close(resource.key) : fileContentStore.flush(resource.key))
       : true
   )), [workspace.registerResourceCloseResolver]);
+  useEffect(() => workspace.registerResourceCloseResolver('turn-attachment', (resource, reason) => (
+    resource.kind === 'turn-attachment'
+      ? (reason === 'close' ? fileContentStore.close(resource.key) : fileContentStore.flush(resource.key))
+      : true
+  )), [workspace.registerResourceCloseResolver]);
   return null;
 }
 
@@ -207,23 +229,36 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     rightWorkspaceLayout.minWidth,
     rightWorkspaceLayout.maxWidth,
   );
+  const activeConversation = props.active.kind === 'conversation-run' ? props.active : null;
   const rightWorkspaceScope = useMemo(() => {
     if (props.active.kind === 'conversation-home' || props.active.kind === 'scheduled-task-create') {
       return createDraftConversationWorkspaceScope(props.activeWorkspaceId ?? 'default');
     }
-    if (props.active.kind === 'conversation-run') {
+    if (activeConversation) {
       return createConversationWorkspaceScope({
-        projectId: props.active.projectId,
-        taskId: props.active.taskId,
+        projectId: activeConversation.projectId,
+        taskId: activeConversation.taskId,
         taskUuid: props.conversationTaskUuid,
-        runId: props.active.runId,
+        runId: activeConversation.runId,
       });
     }
     return null;
-  }, [props.active, props.activeWorkspaceId, props.conversationTaskUuid]);
+  }, [
+    activeConversation?.projectId,
+    activeConversation?.runId,
+    activeConversation?.taskId,
+    props.active.kind,
+    props.activeWorkspaceId,
+    props.conversationTaskUuid,
+  ]);
   return (
     <TooltipProvider>
-      <RightWorkspaceProvider initialWidth={initialRightWidth} scope={rightWorkspaceScope} store={props.conversationWorkspaceStore}>
+      <RightWorkspaceProvider
+        initialWidth={initialRightWidth}
+        scope={rightWorkspaceScope}
+        sourceControlWorkspacePath={props.sourceControlWorkspacePath}
+        store={props.conversationWorkspaceStore}
+      >
         <WorkspaceFileLinkProvider>
           <WorkspaceShellLayout {...props} />
         </WorkspaceFileLinkProvider>
@@ -234,6 +269,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
 
 function WorkspaceShellLayout({
   appName,
+  titleBarTrailingContent,
   feedbackEnabled,
   platform,
   windowFrameStyle,
@@ -243,10 +279,9 @@ function WorkspaceShellLayout({
   sidebarCollapsed,
   onSelect,
   onToggleSidebar,
+  onOpenPersonalAnalytics,
   onNewConversation,
   onSearch,
-  onSelectTask,
-  onSelectRun,
   onPauseRun,
   onPinTask,
   onUnpinTask,
@@ -255,9 +290,14 @@ function WorkspaceShellLayout({
   onNewConversationInWorkspace,
   onAddWorkspace,
   onRemoveWorkspace,
+  onRetryBootstrap,
+  onRequestWorkspaceTasks,
+  onRequestPinnedTasks,
+  onRequestTaskRuns,
   activeWorkspaceId: _activeWorkspaceId,
   defaultExpandedWorkspaceId,
   workspaceRevealRequest,
+  sourceControlWorkspacePath,
   children,
 }: WorkspaceShellProps) {
   const { t } = useTranslation();
@@ -609,9 +649,9 @@ function WorkspaceShellLayout({
     await fileContentStore.releaseProject(projectId);
     fileExplorerStore.clear(projectId);
   }, [onRemoveWorkspace]);
-  const deleteTask = useCallback((projectId: string, taskId: string) => {
+  const deleteTask = useCallback((projectId: string, taskId: string, taskUuid?: string | null) => {
     void fileContentStore.flushAll(projectId).then((saved) => {
-      if (saved) onDeleteTask(projectId, taskId);
+      if (saved) onDeleteTask(projectId, taskId, taskUuid);
     });
   }, [onDeleteTask]);
   const toggleRightWorkspace = useCallback(() => {
@@ -637,11 +677,13 @@ function WorkspaceShellLayout({
         layout={appConfig.workspaceLayout.rightWorkspace.file}
       />
       <AppTitleBar
+        trailingContent={titleBarTrailingContent}
         appName={appName}
         feedbackEnabled={feedbackEnabled}
         platform={platform}
         sidebarCollapsed={sidebarCollapsed || autoCollapse.left}
         onToggleSidebar={onToggleSidebar}
+        onOpenPersonalAnalytics={onOpenPersonalAnalytics}
         rightWorkspaceOpen={rightWorkspacePresented}
         onToggleRightWorkspace={rightWorkspaceAvailable ? toggleRightWorkspace : undefined}
       />
@@ -673,8 +715,6 @@ function WorkspaceShellLayout({
               onSelect={onSelect}
               onNewConversation={onNewConversation}
               onSearch={onSearch}
-              onSelectTask={onSelectTask}
-              onSelectRun={onSelectRun}
               onPauseRun={onPauseRun}
               onPinTask={onPinTask}
               onUnpinTask={onUnpinTask}
@@ -683,6 +723,10 @@ function WorkspaceShellLayout({
               onNewConversationInWorkspace={onNewConversationInWorkspace}
               onAddWorkspace={onAddWorkspace}
               onRemoveWorkspace={onRemoveWorkspace ? removeWorkspace : undefined}
+              onRetryBootstrap={onRetryBootstrap}
+              onRequestWorkspaceTasks={onRequestWorkspaceTasks}
+              onRequestPinnedTasks={onRequestPinnedTasks}
+              onRequestTaskRuns={onRequestTaskRuns}
             />
           ) : null}
         </ResizablePanel>
@@ -731,7 +775,13 @@ function WorkspaceShellLayout({
             !showRightDock && 'pointer-events-none overflow-hidden',
           )}
         >
-          {showRightDock ? <RightWorkspaceDock /> : null}
+          {showRightDock ? (
+            <RightWorkspaceDock
+              sourceControlWorkspacePath={sourceControlWorkspacePath}
+              acpChatEventPageSize={appConfig.acpChatEventPageSize}
+              acpChatEventWindowPageCount={appConfig.acpChatEventWindowPageCount}
+            />
+          ) : null}
         </ResizablePanel>
       </ResizablePanelGroup>
       <Sheet
@@ -754,7 +804,11 @@ function WorkspaceShellLayout({
           <SheetTitle className="sr-only">{t('workspace.rightWorkspace')}</SheetTitle>
           {rightWorkspaceCompact ? (
             <div className="flex min-h-0 flex-1 flex-col" data-right-workspace-presentation="sheet">
-              <RightWorkspaceDock />
+              <RightWorkspaceDock
+                sourceControlWorkspacePath={sourceControlWorkspacePath}
+                acpChatEventPageSize={appConfig.acpChatEventPageSize}
+                acpChatEventWindowPageCount={appConfig.acpChatEventWindowPageCount}
+              />
             </div>
           ) : null}
         </SheetContent>

@@ -1,5 +1,9 @@
 # Gold Band 桌面客户端交互概览
 
+## 0. 当前执行详情入口
+
+2026-08-31 起，旧 workbench Round 详情页已废弃并删除。任务工作流中的 Round 操作统一进入会话模式 `conversation-run`；Round、node、attempt、ACP timeline 与右侧工作区由同一会话运行页承载。本文后续早期 Round 工作台记录仅作为历史设计演进，不再定义当前路由或页面实现。
+
 ## 1. 一句话定义
 Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工具。
 
@@ -55,16 +59,16 @@ Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工
 ```text
 任务列表
   -> 任务工作流
-    -> Round 详情
+    -> 会话运行页（定位到 Round / Attempt）
 ```
 
-任务详情不再作为独立页面出现，它的 requirement 摘要、当前状态与运行入口合并到任务工作流页顶部。run 也不再作为独立详情页出现，而是任务工作流页中的分组行；round 是唯一的执行详情下钻页。
+任务详情不再作为独立页面出现，它的 requirement 摘要、当前状态与运行入口合并到任务工作流页顶部。run 也不再作为独立详情页出现，而是任务工作流页中的分组行；Round 下钻进入 canonical 会话运行页，不再创建第二套 workbench 执行详情状态。
 
 页面顶部显示面包屑导航：
 
 ```text
 任务列表 > 任务01 > 工作流
-任务列表 > 任务01 > 工作流列表 > run01 > round01
+会话 > task01 > run01 > round01 / attempt01
 ```
 
 用户点击面包屑中的任意层级，可返回对应上级页面。
@@ -76,10 +80,11 @@ Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工
 - [任务列表页](task-list.md)
 - [任务详情页（已并入任务工作流页）](task-detail.md)
 - [任务工作流页](task-workflow.md)
-- [Round 详情页](round-detail.md)
+- [Round 详情页退役与迁移说明](round-detail.md)
 - [Agent 管理页](agent-management.md)
 - [上下文管理与角色批量导入](context-management.md)
 - [设置页](settings.md)
+- [WebView 兼容能力与分级降级](webview-compatibility.md)
 
 ---
 
@@ -87,7 +92,7 @@ Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工
 
 ### 5.1 一级功能与业务页面分离
 - 左侧一级菜单只切换功能模块。
-- 任务列表、任务工作流、round 详情都属于右侧任务编排功能区内部页面。
+- 任务列表、任务工作流属于 workbench 任务编排页面；Round 执行详情进入会话运行页。
 - 不应把 workflow DAG 直接放在应用首页。
 
 ### 5.2 桌面端使用直接操作
@@ -142,7 +147,8 @@ UI 不应根据日志直接推断 workflow 终局，终局状态以 canonical st
 - 前端位于 `web/`，只负责桌面应用壳、页面栈、图形展示与直接操作。
 - 前后端通过 Tauri commands 交换 view model，终局状态仍以 canonical state 为准。
 - 桌面端 workspace 不依赖 Tauri 进程启动目录：启动时恢复用户记忆，或向上查找 `.gold-band/` 作为项目根；用户可通过原生目录选择器切换 workspace。
-- 开发热加载启动命令为 `npm run dev`；需要固定当前源码快照、且不随前端或 Rust 文件修改热加载/重启时，使用默认渠道静态开发启动命令 `npm run dev:static`。该命令先将一次性 `web:build` 直接输出到本次进程独占的 `src-tauri/target/static-dev/<channel>/<snapshot>/frontend`，再让 Tauri `frontendDist` 只服务该不可变目录；退出后清理本次前端快照。后续其他进程改写 `web/dist` 不会触发当前客户端刷新，深层会话路由也不会在并行构建的清空窗口内落入临时 404。该模式同时关闭 Tauri source watcher，使用独立 Cargo target，并关闭 static dev 专用 Cargo dev profile 的 Rust debug symbols，避免与普通构建争用 Windows PDB 或触发容量限制；普通 `npm run dev` 的源码级调试能力不受影响。默认渠道构建命令为 `npm run build` / `npm run build:default`，wb 内网渠道本地临时构建命令为 `npm run build:wb`。
+- 开发热加载启动命令为 `npm run dev`；需要固定当前源码快照、且不随前端或 Rust 文件修改热加载/重启时，使用默认渠道静态开发启动命令 `npm run dev:static`。该命令先将一次性 `web:build` 直接输出到本次进程独占的 `src-tauri/target/static-dev/<channel>/<snapshot>/frontend`，再让 Tauri `frontendDist` 只服务该不可变目录；退出后清理本次前端快照。后续其他进程改写 `web/dist` 不会触发当前客户端刷新，深层会话路由也不会在并行构建的清空窗口内落入临时 404。该模式同时关闭 Tauri source watcher，使用独立 Cargo target，并关闭 static dev 专用 Cargo dev profile 的 Rust debug symbols，避免与普通构建争用 Windows PDB 或触发容量限制；普通 `npm run dev` 的源码级调试能力不受影响。默认渠道构建命令为 `npm run build` / `npm run build:default`，wb 内网渠道本地临时构建命令为 `npm run build:wb`。需要复现生产 WebView 问题时，在任一渠道构建命令后追加 `-- --devtools`；该参数保持 Cargo release profile，只启用项目 `support-devtools` feature，并在本次 Tauri overlay 中关闭 updater artifacts。诊断包可通过 macOS `Cmd+Option+I` 或 Windows/Linux `Ctrl+Shift+I` 打开 WebView DevTools；不得生成或覆盖渠道 `latest.json`、不得进入正式更新发布链路。普通本地构建和 GitHub 正式发布默认不携带该能力。
+- 只有 Windows 开发环境时，可从 GitHub Actions 手动运行 `Build Intel macOS DevTools DMG`，由固定 `macos-15-intel` runner 执行 `npm run build -- --devtools`。工作流只上传保留 7 天的 Intel DMG Artifact，并校验 `.app` 的严格 codesign 完整性、主二进制包含 `x86_64` 且只生成一个 DMG；它不创建 tag、GitHub Release、`latest.json` 或 updater 资产。Apple Secrets 完整时复用正式 macOS 签名与公证配置，全部缺失时沿用 ad-hoc identity，部分缺失时直接失败，避免产出签名状态不明确的诊断包。
 - Windows 应用图标使用单一多分辨率 `icon.ico` 同时服务开发窗口和生产 EXE；图层顺序固定为 `32 / 16 / 24 / 48 / 64 / 256`，且全部使用 32 位 RGBA。Tauri 在 Windows 下只解码 ICO 首层作为实时窗口图标，因此 32px 必须位于首层，避免 Windows 在常见任务栏 DPI 下把 16px 位图放大；其余图层继续供 EXE、资源管理器、开始菜单和安装包按目标尺寸选择。
 - Tauri updater 按构建渠道内置更新配置：default 指向 GitHub Release `latest.json`，wb 指向内网占位地址；两个渠道内置不同 public key，避免跨渠道更新包互相验证通过。default 渠道由 `release-please` 创建 draft release 后在同一 GitHub Actions workflow 确保 git tag 存在，并附加桌面安装包、签名和 `latest.json`；该 workflow 支持 `main` push 自动触发和 GitHub Actions 页面手动触发，便于 release-please 主链路补跑；项目处于 `0.x` 阶段时，breaking change 按 minor 版本发布，例如 `0.12.x` 的 breaking change 发布为 `0.13.0`，避免在产品尚未进入稳定版时自动提升到 `1.0.0`；manifest 始终使用 release tag 生成版本号和下载 URL，Windows 平台优先指向签名的 setup exe 安装包；手动 fallback 重建时应用源码来自 release tag，发布脚本来自所选 workflow 分支；macOS arm64 使用 `macos-15`，macOS x64 使用 `macos-15-intel`，release publish 后客户端才会从 latest 地址看到更新。PR checks 对完整合并树执行 `cargo fmt --all -- --check`，上游格式漂移必须先通过同一 formatter 收敛，不能因本次业务改动未触及对应 Rust 文件而绕过；跨平台文本契约按逻辑行断言，不绑定工作区的 LF/CRLF，依赖 Agent 可用性的运行夹具必须显式提供诊断事实。Runtime continue 的传输 prompt 保留隐藏控制段且对客投影只取 `display_text`；AI-DYNAMIC Merge 不拥有 completion contract，其 continue 隐藏段不得伪造 artifact 输出或 post-turn 归一化约束。
 - Windows release 包按 GUI 桌面应用启动，不附带 cmd 控制台窗口；仅 debug/dev 构建保留控制台输出以便开发调试；后台子进程通过统一 process helper 启动，ACP provider、诊断清理、Toast AUMID 注册等 npx/codex/taskkill/reg/PowerShell 调用不弹控制台窗口。

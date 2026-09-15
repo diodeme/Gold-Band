@@ -2062,7 +2062,7 @@ dependencies = [
 
 [[package]]
 name = "gold-band"
-version = "0.13.2"
+version = "0.15.2"
 dependencies = [
  "agent-client-protocol-schema",
  "anyhow",
@@ -2077,6 +2077,7 @@ dependencies = [
  "cron",
  "crossterm",
  "dirs",
+ "dunce",
  "figlet-rs",
  "file-rotate",
  "iana-time-zone",
@@ -2091,6 +2092,7 @@ dependencies = [
  "reqwest 0.12.28",
  "rusqlite",
  "schemars 0.8.22",
+ "semver",
  "serde",
  "serde_json",
  "serde_json_lenient",
@@ -2105,7 +2107,6 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "trash",
  "unicode-properties",
  "url",
  "uuid",
@@ -2116,7 +2117,7 @@ dependencies = [
 
 [[package]]
 name = "gold-band-desktop"
-version = "0.13.2"
+version = "0.15.2"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2140,6 +2141,7 @@ dependencies = [
  "nucleo-matcher",
  "open",
  "percent-encoding",
+ "plist",
  "reqwest 0.12.28",
  "resvg",
  "rusqlite",
@@ -2153,6 +2155,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tauri-winrt-notification",
  "tempfile",
+ "thiserror 1.0.69",
  "tokio",
  "tokio-util",
  "tracing",

@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
-import type { AgentRegistryVm, GraphVm, RoundSummaryVm, RunGroupVm, RunSummaryVm, TaskPage, TaskRowVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm } from '../types';
+import type { AgentRegistryVm, GraphVm, RoundSummaryVm, RunGroupVm, RunSummaryVm, TaskRowVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm } from '../types';
 import { displayAppError, displayStatus, displayWorkflowError } from '../i18n';
 import { getAgentRegistry, getWorkflowTemplates } from '../api';
 import { GraphView } from '../components/GraphView';
@@ -28,7 +28,7 @@ interface WorkflowPageProps {
   busy: boolean;
   refreshing: boolean;
   breadcrumbs?: ReactNode;
-  onNavigate: (page: TaskPage) => void;
+  onOpenRound: (taskId: string, runId: string, roundId: string) => void;
   onRefresh: () => void;
   onStartRun: (taskId: string) => Promise<RunSummaryVm | undefined>;
   onContinueRun: (taskId: string, runId: string) => void;
@@ -55,7 +55,7 @@ function historyBodyMinHeightFor(pageSize: number) {
   return Math.max(320, pageSize * collapsedRunRowMinHeight);
 }
 
-export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, onRefresh, onStartRun, onStopRun, onSaveWorkflow, onOpenProfileManagement }: WorkflowPageProps) {
+export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onOpenRound, onRefresh, onStartRun, onStopRun, onSaveWorkflow, onOpenProfileManagement }: WorkflowPageProps) {
   const { t } = useTranslation();
   const [requirementOpen, setRequirementOpen] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
@@ -232,7 +232,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
                             graph={vm.graph}
                             expanded={expanded}
                             onToggle={() => toggleRun(group.run.id, expanded)}
-                            onOpenRound={(roundId) => onNavigate({ kind: 'round-detail', taskId: vm.task.id, runId: group.run.id, roundId })}
+                            onOpenRound={(roundId) => onOpenRound(vm.task.id, group.run.id, roundId)}
                             onStopRun={() => onStopRun(vm.task.id, group.run.id)}
                             t={t}
                           />

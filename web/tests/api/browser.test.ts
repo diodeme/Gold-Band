@@ -30,6 +30,7 @@ describe('browserApi', () => {
   });
 
   it('serves the authoritative hidden-prompt fixture for right-workspace deep-link verification', async () => {
+    const run = await browserApi.getConversationRun('default', 'mock-task', 'run-052');
     const session = await browserApi.getAcpSession(
       'default',
       'mock-task',
@@ -39,6 +40,7 @@ describe('browserApi', () => {
       'attempt-001',
     );
 
+    expect(run.taskUuid).toBe('browser-mock-task-uuid');
     expect(session?.events[0]?.content).toContain('Gold Band stable system prompt');
     expect(session?.events[0]?.content).toContain('Gold Band runtime context');
     expect(session?.systemPromptAppend).toContain('**system prompt**');
@@ -76,6 +78,28 @@ describe('browserApi', () => {
     await expect(browserApi.removeRecentWorkspace(bootstrap.repoRoot)).rejects.toEqual({
       code: 'workspace.recent-current-locked',
       params: { workspace: bootstrap.repoRoot },
+    });
+  });
+
+  it('preserves the requested identity in preview analytics range reports', async () => {
+    const range = { start: '2026-08-01', end: '2026-08-18' };
+
+    await expect(browserApi.queryPersonalAnalyticsReport(range)).resolves.toMatchObject({ range });
+    await expect(browserApi.startPersonalAnalyticsInsights(
+      'agent-a',
+      range,
+      'model-a',
+      'reasoning_effort',
+      'high',
+    )).resolves.toMatchObject({
+      agentType: 'agent-a',
+      modelId: 'model-a',
+      thoughtLevelOptionId: 'reasoning_effort',
+      thoughtLevelValue: 'high',
+      range,
+      generation: 1,
+      schemaVersion: '2.2.0',
+      indexRevision: 6,
     });
   });
 
@@ -153,6 +177,16 @@ describe('browserApi', () => {
 
     expect(resolved.locator.relativePath).toBe('README.md');
     expect(resolved.target).toEqual({ line: 47, column: null, endLine: null });
+  });
+
+  it('mirrors Windows slash-prefixed drive pathname normalization', async () => {
+    const resolved = await browserApi.resolveWorkspaceFileLink(
+      'default',
+      '/D:/outside/roadmap.md:12',
+    );
+
+    expect(resolved.locator.canonicalPath).toBe('D:/outside/roadmap.md');
+    expect(resolved.target).toEqual({ line: 12, column: null, endLine: null });
   });
 
   it('derives materialized attachment size from the decoded snapshot bytes', async () => {

@@ -16,6 +16,11 @@ const headerMocks = vi.hoisted(() => ({
 const chatMocks = vi.hoisted(() => ({
   render: vi.fn(() => null),
 }));
+const manualCheckMocks = vi.hoisted(() => ({ submit: vi.fn() }));
+vi.mock('@/api', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/api')>(),
+  submitManualCheck: manualCheckMocks.submit,
+}));
 
 vi.mock('@/components/acp/ACPChatDialog', () => ({
   ACPChatDialog: chatMocks.render,
@@ -57,6 +62,85 @@ afterEach(() => {
 });
 
 describe('ConversationRunPage follow mode reentry', () => {
+  it.each(['no-successor', 'rejected', 'changed-session', 'changed-run', 'unmounted', 'live-refresh'])(
+    'settles manual-check navigation safely for %s', async (scenario) => {
+      const container = document.createElement('div');
+      document.body.append(container);
+      const root = createRoot(container);
+      const onSelectSession = vi.fn();
+      let resolve!: (value: unknown) => void;
+      let reject!: (error: unknown) => void;
+      manualCheckMocks.submit.mockReturnValue(new Promise((yes, no) => { resolve = yes; reject = no; }));
+      const run = manualCheckRun();
+      const render = (value: ConversationRunVm) => root.render(
+        <ConversationRunPage
+          run={value} taskTitle="Manual check"
+          appConfig={{ turnFiles: { cardPreviewLimit: 10, attachmentCardPreviewLimit: 1 } } as AppConfigVm}
+          agentRegistry={null} followMode="manual" onRerun={vi.fn()} onEditWorkflow={vi.fn()}
+          onSelectSession={onSelectSession} onAutoFollowChange={vi.fn()}
+          initialSessionTreeExpansion={{}} onSessionTreeExpansionChange={vi.fn()}
+        />,
+      );
+      await act(async () => render(run));
+      const submit = chatMocks.render.mock.lastCall?.[0].onSubmitManualCheck;
+      const result = submit('success').catch((error: unknown) => error);
+      if (scenario === 'unmounted') await act(async () => root.unmount());
+      if (scenario === 'changed-session') {
+        await act(async () => render({ ...run, sessionTree: { ...run.sessionTree, selectedSessionKey: 'history' } }));
+      }
+      if (scenario === 'changed-run') await act(async () => render({ ...run, runId: 'other-run' }));
+      if (scenario === 'live-refresh') await act(async () => render(structuredClone(run)));
+      const error = { code: 'manual-check.rejected' };
+      await act(async () => {
+        if (scenario === 'rejected') reject(error);
+        else resolve({
+          taskId: run.taskId, id: run.runId, status: scenario === 'no-successor' ? 'completed' : 'running',
+          currentRound: 'round-001', currentNode: scenario === 'no-successor' ? 'check-worker' : 'next-worker',
+          currentAttempt: 'attempt-001',
+        });
+        await result;
+      });
+      if (scenario === 'live-refresh') expect(onSelectSession).toHaveBeenCalledTimes(1);
+      else expect(onSelectSession).not.toHaveBeenCalled();
+      if (scenario === 'rejected') expect(await result).toEqual(error);
+      if (scenario !== 'unmounted') await act(async () => root.unmount());
+    },
+  );
+
+  it.each(['success', 'failure'] as const)('navigates to the manual-check successor after %s even away from bottom', async (outcome) => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const onSelectSession = vi.fn();
+    const run = manualCheckRun();
+    manualCheckMocks.submit.mockResolvedValue({
+      taskId: run.taskId, id: run.runId, status: 'running',
+      currentRound: 'round-001', currentNode: 'next-worker', currentAttempt: 'attempt-001',
+    });
+    await act(async () => root.render(
+      <ConversationRunPage
+        run={run} taskTitle="Manual check" appConfig={{ turnFiles: { cardPreviewLimit: 10, attachmentCardPreviewLimit: 1 } } as AppConfigVm}
+        agentRegistry={null} followMode="manual" onRerun={vi.fn()} onEditWorkflow={vi.fn()}
+        onSelectSession={onSelectSession} onAutoFollowChange={vi.fn()}
+        initialSessionTreeExpansion={{}} onSessionTreeExpansionChange={vi.fn()}
+      />,
+    ));
+    try {
+      const props = chatMocks.render.mock.lastCall?.[0];
+      await act(async () => props.onAtBottomChange(false));
+      expect(props.onSubmitManualCheck).toBeTypeOf('function');
+      await act(async () => props.onSubmitManualCheck(outcome));
+      expect(manualCheckMocks.submit).toHaveBeenCalledWith(
+        run.projectId, run.taskId, run.runId, 'round-001', 'check-worker', 'attempt-001', outcome,
+      );
+      expect(onSelectSession).toHaveBeenCalledExactlyOnceWith({
+        roundId: 'round-001', nodeId: 'next-worker', attemptId: 'attempt-001',
+      }, true);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('does not re-enable auto-follow when a manually browsed run remounts', async () => {
     const container = document.createElement('div');
     document.body.append(container);
@@ -101,11 +185,12 @@ describe('ConversationRunPage follow mode reentry', () => {
     await act(async () => root.unmount());
   });
 
-  it('passes the selected dynamic session worktree to the composer instead of the run worktree', async () => {
+  it('passes the selected dynamic worktree and registry without requiring a parent session payload', async () => {
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
     const selectedKey = 'round-001/ai-dynamic/attempt-001/goodbye-worker/attempt-001';
+    const registry: AgentRegistryVm = { agents: [], catalog: [] };
     const leaf = {
       roundId: 'round-001',
       nodeId: 'goodbye-worker',
@@ -166,8 +251,8 @@ describe('ConversationRunPage follow mode reentry', () => {
         <ConversationRunPage
           run={run}
           taskTitle="AUTO run"
-          appConfig={{ turnFiles: { cardPreviewLimit: 10 } } as AppConfigVm}
-          agentRegistry={null}
+          appConfig={{ turnFiles: { cardPreviewLimit: 10, attachmentCardPreviewLimit: 1 } } as AppConfigVm}
+          agentRegistry={registry}
           followMode="manual"
           onRerun={vi.fn()}
           onEditWorkflow={vi.fn()}
@@ -183,6 +268,132 @@ describe('ConversationRunPage follow mode reentry', () => {
       expect.objectContaining({
         worktreePath: 'D:/repo/.gold-band/worktrees/child',
         managedWorktreeBranch: 'gb-dynamic-child',
+        session: null,
+        agentRegistry: registry,
+      }),
+      undefined,
+    );
+
+    await act(async () => root.unmount());
+  });
+
+  it('does not forward a superseded Direct runtime error after a follow-up turn completes', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const selectedKey = 'round-001/direct-agent/attempt-001';
+    const lifecycle = {
+      runtime: {
+        status: 'paused',
+        outcome: null,
+        pauseReason: 'runtime-abnormal',
+        resumable: true,
+        current: true,
+        active: false,
+        continuable: false,
+        phase: 'idle',
+        revision: 4,
+      },
+      control: { mode: 'non-runtime-controlled' },
+      acp: {
+        revision: 33,
+        turnId: 'follow-up-turn',
+        sessionAvailability: 'established',
+        liveTurnActivity: 'idle',
+        latestTurnStatus: 'completed',
+        stopping: false,
+        stopReason: 'end_turn',
+      },
+      displayStatus: 'paused',
+      runtimeDisplay: {
+        code: 'runtime-abnormal',
+        tone: 'danger',
+        terminal: false,
+        resumable: true,
+        reasonCode: 'runtime-abnormal',
+        blockingError: false,
+      },
+      composer: {
+        mode: 'normal',
+        submitTarget: 'acp-prompt',
+        processingKind: 'processing',
+        canStop: false,
+        lockInput: false,
+      },
+    };
+    const leaf = {
+      roundId: 'round-001',
+      nodeId: 'direct-agent',
+      attemptId: 'attempt-001',
+      pathLabel: selectedKey,
+      status: 'paused',
+      current: true,
+      manualCheckPending: false,
+      sessionEstablished: true,
+      artifactCount: 0,
+      attachmentCount: 0,
+      runtimeDisplay: lifecycle.runtimeDisplay,
+      lifecycle,
+    };
+    const run = {
+      projectId: 'project-1',
+      taskId: 'task-333',
+      runId: 'run-001',
+      runStatus: 'paused',
+      runMode: 'direct',
+      pauseReason: 'runtime-abnormal',
+      runtimeErrorMessage: 'old provider failure',
+      activeSessions: [],
+      inputAttachments: [],
+      selectedSession: null,
+      sessionTree: {
+        selectedSessionKey: selectedKey,
+        rounds: [{
+          roundId: 'round-001',
+          index: 1,
+          label: 'Round 1',
+          status: 'paused',
+          nodes: [{
+            nodeId: 'direct-agent',
+            label: 'Direct Agent',
+            nodeType: 'worker',
+            status: 'paused',
+            attempts: [leaf],
+            outerNodes: [],
+          }],
+        }],
+      },
+      workflowStatus: 'valid',
+      workflowValid: true,
+      workflowGraph: { nodes: [], edges: [] },
+      resumable: true,
+    } as unknown as ConversationRunVm;
+
+    await act(async () => {
+      root.render(
+        <ConversationRunPage
+          run={run}
+          taskTitle="Direct run"
+          appConfig={{ turnFiles: { cardPreviewLimit: 10, attachmentCardPreviewLimit: 1 } } as AppConfigVm}
+          agentRegistry={null}
+          followMode="auto"
+          onRerun={vi.fn()}
+          onEditWorkflow={vi.fn()}
+          onSelectSession={vi.fn()}
+          onAutoFollowChange={vi.fn()}
+          initialSessionTreeExpansion={{}}
+          onSessionTreeExpansionChange={vi.fn()}
+        />,
+      );
+    });
+
+    expect(chatMocks.render).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtimeComposerContext: expect.objectContaining({
+          lifecycle,
+          runtimeError: null,
+          runtimeErrorFallback: 'old provider failure',
+        }),
       }),
       undefined,
     );
@@ -203,7 +414,7 @@ describe('ConversationRunPage follow mode reentry', () => {
         <ConversationRunPage
           run={run}
           taskTitle="AUTO run"
-          appConfig={{ turnFiles: { cardPreviewLimit: 10 } } as AppConfigVm}
+          appConfig={{ turnFiles: { cardPreviewLimit: 10, attachmentCardPreviewLimit: 1 } } as AppConfigVm}
           agentRegistry={null}
           followMode={followMode}
           onRerun={vi.fn()}
@@ -240,7 +451,7 @@ describe('ConversationRunPage follow mode reentry', () => {
         <ConversationRunPage
           run={terminalDynamicRun()}
           taskTitle="AUTO run"
-          appConfig={{ turnFiles: { cardPreviewLimit: 10 } } as AppConfigVm}
+          appConfig={{ turnFiles: { cardPreviewLimit: 10, attachmentCardPreviewLimit: 1 } } as AppConfigVm}
           agentRegistry={null}
           followMode="manual"
           onRerun={vi.fn()}
@@ -259,6 +470,24 @@ describe('ConversationRunPage follow mode reentry', () => {
     await act(async () => root.unmount());
   });
 });
+
+function manualCheckRun(): ConversationRunVm {
+  const run = terminalDynamicRun();
+  const leaf = {
+    ...run.sessionTree.rounds[0].nodes[0].outerNodes[0].attempts[0],
+    nodeId: 'check-worker', outerNodeId: null, outerAttemptId: null,
+    status: 'paused', current: true, manualCheckPending: true,
+  };
+  return {
+    ...run, runMode: 'workflow', runStatus: 'paused',
+    sessionTree: {
+      selectedSessionKey: 'round-001/check-worker/attempt-001',
+      rounds: [{ ...run.sessionTree.rounds[0], nodes: [{
+        ...run.sessionTree.rounds[0].nodes[0], nodeId: leaf.nodeId, attempts: [leaf], outerNodes: [],
+      }] }],
+    },
+  };
+}
 
 function terminalDynamicRun() {
   const selectedKey = 'round-001/ai-dynamic/attempt-001/bootstrap/attempt-001';
@@ -279,7 +508,7 @@ function terminalDynamicRun() {
     runtimeDisplay: { code: 'success', tone: 'success' },
     lifecycle: {
       runtime: { status: 'completed', active: false },
-      control: { mode: 'non-runtime-controlled' },
+      control: { mode: 'non-runtime-controlled', transitionCause: 'runtime-terminal' },
       acp: { liveTurnActivity: 'idle', stopping: false },
       composer: { mode: 'normal', supersededBy: null },
     },

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  areDynamicConversationSiblingSessionKeys,
   conversationAcpRunRefreshStatus,
   planConversationAcpRunUpdate,
   resolveConversationEventSelectedSessionKey,
@@ -108,6 +107,7 @@ describe('conversation session follow helpers', () => {
       currentSelectedActive: false,
       incomingActive: true,
       currentSelectedRuntimeControlled: false,
+      currentSelectedControlTransitionCause: 'manual-follow-up',
       incomingRuntimeControlled: true,
     })).toBe('round-001/dev/attempt-001');
   });
@@ -145,8 +145,25 @@ describe('conversation session follow helpers', () => {
       currentSelectedTerminal: true,
       incomingActive: true,
       currentSelectedRuntimeControlled: false,
+      currentSelectedControlTransitionCause: 'runtime-terminal',
       incomingRuntimeControlled: true,
     })).toBe('round-001/ai-dynamic/attempt-001/branch-a/attempt-001');
+  });
+
+  it('follows the next workflow session after an AI-DYNAMIC leaf reaches runtime terminal', () => {
+    expect(resolveConversationEventSelectedSessionKey({
+      currentSelectedKey: 'round-001/router/attempt-001/first-round-roots-accept/attempt-001',
+      incomingSessionKey: 'round-001/accept/attempt-001',
+      followMode: 'auto',
+      currentSelectedActive: false,
+      currentSelectedTerminal: true,
+      incomingActive: true,
+      currentSelectedRuntimeControlled: false,
+      currentSelectedControlTransitionCause: 'runtime-terminal',
+      incomingRuntimeControlled: true,
+    })).toBe(
+      'round-001/accept/attempt-001',
+    );
   });
 
   it('keeps the current active AI-DYNAMIC leaf when a parallel sibling starts', () => {
@@ -160,30 +177,6 @@ describe('conversation session follow helpers', () => {
       currentSelectedRuntimeControlled: true,
       incomingRuntimeControlled: true,
     })).toBe('round-001/ai-dynamic/attempt-001/branch-a/attempt-001');
-  });
-
-  it('does not follow an AI-DYNAMIC leaf from another outer attempt', () => {
-    expect(resolveConversationEventSelectedSessionKey({
-      currentSelectedKey: 'round-001/ai-dynamic/attempt-001/bootstrap/attempt-001',
-      incomingSessionKey: 'round-001/ai-dynamic/attempt-002/branch-a/attempt-001',
-      followMode: 'auto',
-      currentSelectedActive: false,
-      currentSelectedTerminal: true,
-      incomingActive: true,
-      currentSelectedRuntimeControlled: false,
-      incomingRuntimeControlled: true,
-    })).toBe('round-001/ai-dynamic/attempt-001/bootstrap/attempt-001');
-  });
-
-  it('recognizes dynamic siblings only from complete inner locators', () => {
-    expect(areDynamicConversationSiblingSessionKeys(
-      'round-001/ai-dynamic/attempt-001/bootstrap/attempt-001',
-      'round-001/ai-dynamic/attempt-001/branch-a/attempt-001',
-    )).toBe(true);
-    expect(areDynamicConversationSiblingSessionKeys(
-      'round-001/node-a/attempt-001',
-      'round-001/node-b/attempt-001',
-    )).toBe(false);
   });
 
   it('does not let an outer AI-DYNAMIC event steal an internal selection', () => {
@@ -243,6 +236,7 @@ describe('conversation session follow helpers', () => {
       pendingEventSessionKey: 'round-001/clean/attempt-001',
       currentSelectedKey: 'round-001/dev/attempt-001',
       currentSelectedRuntimeControlled: false,
+      currentSelectedControlTransitionCause: 'manual-follow-up',
       pendingEventRuntimeControlled: true,
     })).toBe('round-001/dev/attempt-001');
   });
@@ -272,6 +266,7 @@ describe('conversation session follow helpers', () => {
       pendingEventSessionKey: requestedKey,
       currentSelectedKey: 'round-001/dev/attempt-001',
       currentSelectedRuntimeControlled: false,
+      currentSelectedControlTransitionCause: 'manual-follow-up',
       pendingEventRuntimeControlled: true,
     })).toBe('round-001/dev/attempt-001');
   });
@@ -284,6 +279,7 @@ describe('conversation session follow helpers', () => {
       currentSelectedKey,
       currentSelectedTerminal: true,
       currentSelectedRuntimeControlled: false,
+      currentSelectedControlTransitionCause: 'runtime-terminal',
       pendingEventRuntimeControlled: true,
     });
     expect(requestedKey).toBe('round-001/ai-dynamic/attempt-001/branch-a/attempt-001');
@@ -294,7 +290,34 @@ describe('conversation session follow helpers', () => {
       currentSelectedKey,
       currentSelectedTerminal: true,
       currentSelectedRuntimeControlled: false,
+      currentSelectedControlTransitionCause: 'runtime-terminal',
+      pendingEventRuntimeControlled: false,
+      pendingEventControlTransitionCause: 'runtime-terminal',
+    })).toBe(requestedKey);
+  });
+
+  it('keeps a naturally terminal AI-DYNAMIC successor during cross-scope refresh revalidation', () => {
+    const currentSelectedKey = 'round-001/router/attempt-001/first-round-roots-accept/attempt-001';
+    const requestedKey = resolveConversationRefreshSelectedSessionKey({
+      followMode: 'auto',
+      pendingEventSessionKey: 'round-001/accept/attempt-001',
+      currentSelectedKey,
+      currentSelectedTerminal: true,
+      currentSelectedRuntimeControlled: false,
+      currentSelectedControlTransitionCause: 'runtime-terminal',
       pendingEventRuntimeControlled: true,
+    });
+    expect(requestedKey).toBe('round-001/accept/attempt-001');
+
+    expect(resolveConversationRefreshSelectedSessionKey({
+      followMode: 'auto',
+      pendingEventSessionKey: requestedKey,
+      currentSelectedKey,
+      currentSelectedTerminal: true,
+      currentSelectedRuntimeControlled: false,
+      currentSelectedControlTransitionCause: 'runtime-terminal',
+      pendingEventRuntimeControlled: false,
+      pendingEventControlTransitionCause: 'runtime-terminal',
     })).toBe(requestedKey);
   });
 

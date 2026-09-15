@@ -13,7 +13,8 @@ function renderPermissionCard() {
       null,
       React.createElement(PermissionRequestCard, {
         request: {
-          requestId: 'permission-1',
+          kind: 'permission',
+          interactionId: 'permission-1',
           title: 'Permission required',
           raw: {},
           options: [
@@ -64,7 +65,8 @@ describe('PermissionRequestCard', () => {
 
   it('shows what command the permission decision applies to', () => {
     const request = {
-      requestId: 'permission-2',
+      kind: 'permission' as const,
+      interactionId: 'permission-2',
       title: 'PowerShell',
       toolCallId: 'call-powershell',
       raw: {
@@ -104,7 +106,8 @@ describe('PermissionRequestCard', () => {
         null,
         React.createElement(PermissionRequestCard, {
           request: {
-            requestId: 'permission-long-args',
+            kind: 'permission',
+            interactionId: 'permission-long-args',
             title: 'Skill',
             raw: { toolCall: { title: 'Skill', rawInput: { args: longArgs } } },
             options: [{ optionId: 'allow', kind: 'allow_once', name: 'Allow once' }],
@@ -130,7 +133,8 @@ describe('PermissionRequestCard', () => {
         null,
         React.createElement(PermissionRequestCard, {
           request: {
-            requestId: 'permission-3',
+            kind: 'permission',
+            interactionId: 'permission-3',
             title: 'PowerShell',
             raw: {
               optionId: 'allow',
@@ -148,7 +152,8 @@ describe('PermissionRequestCard', () => {
 
   it('shows the ACP-provided Skill name and arguments without inferring intent', () => {
     expect(permissionRequestSummary({
-      requestId: 'permission-skill',
+      kind: 'permission',
+      interactionId: 'permission-skill',
       title: 'Skill',
       raw: {
         toolCall: {
@@ -190,7 +195,7 @@ describe('PermissionRequestCard', () => {
     );
     expect(html).not.toContain('prompt-kit');
     expect(html).not.toContain('acp-permission-request-card');
-    expect(pendingPermissionFromEvents([permission], new Set())).toMatchObject({ requestId: 'json-rpc-skill' });
+    expect(pendingPermissionFromEvents([permission], new Set())).toMatchObject({ interactionId: 'json-rpc-skill' });
   });
 
   it('selects only the latest pending permission for the intervention layer', () => {
@@ -222,7 +227,7 @@ describe('PermissionRequestCard', () => {
     ];
 
     const pending = pendingPermissionFromEvents(events, new Set());
-    expect(pending).toMatchObject({ requestId: 'json-rpc-skill', title: 'Skill' });
+    expect(pending).toMatchObject({ interactionId: 'json-rpc-skill', title: 'Skill' });
     expect(pending?.raw).not.toMatchObject({ requestId: 'json-rpc-selected' });
   });
 });

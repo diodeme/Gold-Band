@@ -11,9 +11,10 @@ use camino::{Utf8Path, Utf8PathBuf};
 use jsonschema::JSONSchema;
 use jsonschema::error::{ValidationError, ValidationErrorKind};
 use parking_lot::ReentrantMutex;
+use walkdir::WalkDir;
 
 use crate::acp::elicitation::cancel_pending_elicitation_requests;
-use crate::acp::events::annotate_latest_runtime_control_output;
+use crate::acp::events::annotate_runtime_control_output;
 use crate::acp::permission::cancel_pending_permission_requests;
 use crate::artifacts::parse_json_artifact;
 use crate::config::DesktopLanguage;
@@ -28,24 +29,33 @@ use crate::dsl::{
     workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{
-    AllowedWorkflowSnapshot, DYNAMIC_COMPLETION_ARTIFACT, DynamicAgentTaskSpec,
-    DynamicCompletionSchemaPolicy, DynamicCompletionStatus, DynamicGraphState, DynamicGroupState,
-    DynamicGroupStatus, DynamicNext, DynamicNodeCompletion, DynamicNodeCompletionKind,
-    DynamicNodeKind, DynamicNodeSpec, DynamicNodeSpecKind, DynamicNodeState, DynamicNodeStatus,
-    DynamicProposalState, DynamicProposalValidationError, DynamicProposalValidationStatus,
-    DynamicRunPhase, DynamicRunState, DynamicRunStatus, WorkspaceKind, WorkspaceOwnership,
-    WorkspaceState, WorkspaceStatus, dynamic_completion_effective_schema,
-    dynamic_graph_has_active_leaf, dynamic_leaf_is_active, dynamic_runtime_owns_leaf_projection,
-    refresh_dynamic_current_leaf_ids, validate_dynamic_group_state, validate_dynamic_node_state,
-    validate_dynamic_run_state, validate_workspace_state, validate_workspace_topology,
-    write_dynamic_node_state,
+    AI_DYNAMIC_REPORT_MANIFEST_ARTIFACT, AI_DYNAMIC_RESULT_ARTIFACT, AiDynamicChildWorkflowRef,
+    AiDynamicCoordinationGroup, AiDynamicCoordinationGroupStage, AiDynamicCoordinationSnapshot,
+    AiDynamicCoordinationSnapshotKind, AiDynamicCoordinationStep, AiDynamicCoordinationWorkstream,
+    AiDynamicReportAttachment, AiDynamicReportGroup, AiDynamicReportManifest,
+    AiDynamicReportManifestKind, AiDynamicReportManifestRef, AiDynamicReportNext,
+    AiDynamicReportNode, AiDynamicResult, AiDynamicResultKind, AiDynamicTaskRef,
+    AiDynamicWorkspaceRef, AiDynamicWorkstreamStatus, AllowedWorkflowSnapshot,
+    DYNAMIC_COMPLETION_ARTIFACT, DynamicAgentTaskSpec, DynamicCompletionSchemaPolicy,
+    DynamicCompletionStatus, DynamicGraphState, DynamicGroupState, DynamicGroupStatus, DynamicNext,
+    DynamicNodeCompletion, DynamicNodeCompletionKind, DynamicNodeKind, DynamicNodeSpec,
+    DynamicNodeSpecKind, DynamicNodeState, DynamicNodeStatus, DynamicProposalState,
+    DynamicProposalValidationError, DynamicProposalValidationStatus, DynamicRunPhase,
+    DynamicRunState, DynamicRunStatus, WorkspaceKind, WorkspaceOwnership, WorkspaceState,
+    WorkspaceStatus, dynamic_completion_effective_schema, dynamic_graph_has_active_leaf,
+    dynamic_leaf_is_active, dynamic_runtime_owns_leaf_projection, refresh_dynamic_current_leaf_ids,
+    validate_dynamic_group_state, validate_dynamic_node_state, validate_dynamic_run_state,
+    validate_workspace_state, validate_workspace_topology, write_dynamic_node_state,
 };
 use crate::dynamic_store::{
     CURRENT_DYNAMIC_GRAPH_VERSION, load_dynamic_graph, validate_dynamic_graph,
 };
 #[cfg(test)]
 use crate::git::{GitCommandOutput, GitCommandRunner};
-use crate::git::{GitRepositoryService, GitWorkspaceManager};
+use crate::git::{
+    GitCoordinationService, GitRepositoryService, GitSourceControlService, GitWorkspaceManager,
+    git_canonical_path_key, git_filesystem_paths_equal,
+};
 use crate::observability::{
     ExecutionContext, ProgressStage, append_run_event_best_effort, progress, run_event_data,
     write_progress_hint, write_run_progress_best_effort,
@@ -65,9 +75,10 @@ use crate::prompts::{
 };
 use crate::provider::{
     ConversationPromptInput, OutputEmissionMode, PromptHiddenSection, PromptOutputContract,
-    PromptRuntimeContext, PromptVisibility, ProviderRunResult, ProviderRunStatus,
-    RuntimeControlIntent, StreamMode, UserPromptRenderMode, WorkerInvocation,
-    conversation_prompt_text, render_prompt_bundle, supported_models_from_capabilities,
+    PromptPredecessorContext, PromptRuntimeContext, PromptVisibility, ProviderRunResult,
+    ProviderRunStatus, RuntimeControlIntent, RuntimeControlOutput, StreamMode,
+    UserPromptRenderMode, WorkerInvocation, conversation_prompt_text,
+    render_new_round_trigger_reason_line, render_prompt_bundle, supported_models_from_capabilities,
     supported_modes_from_capabilities,
 };
 use crate::runtime::{
@@ -79,14 +90,14 @@ use crate::runtime_error::{
     RecoveryMode, RuntimeErrorDomain, RuntimeErrorInfo, blocked_runtime_error_info,
     manual_runtime_error_info, normalize_runtime_error, runtime_error,
 };
-use crate::storage::{append_jsonl, read_json, with_file_lock, write_json};
+use crate::storage::{append_jsonl, read_json, write_json};
 use crate::workflow_model_binding::{TaskAuthoringWorkflow, validate_and_inject};
 
 use super::ids::{
     generate_uuid, next_attempt_id, next_dynamic_resume_request_id, next_runtime_execution_id,
     now_rfc3339_like, reserve_next_run_dir,
 };
-use super::node_executor::{execute_ai_node, re_evaluate_attempt};
+use super::node_executor::{build_new_round_trigger_context, execute_ai_node, re_evaluate_attempt};
 use super::profile_resolver::{resolve_profile_for_node, resolve_workflow_profiles};
 use super::state_access::{
     current_attempt_state, load_run_workflow, persist_runtime_state,
@@ -173,7 +184,12 @@ struct AcpInvocationPromptState {
 
 const MAX_INVALID_OUTPUT_REPAIR_PROMPTS: u32 = 3;
 const MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS: u32 = 3;
+const DYNAMIC_FANOUT_WORKSPACE_DIRTY: &str = "dynamic.fanout.workspace-dirty";
+const DYNAMIC_FANOUT_WORKSPACE_CHECK_FAILED: &str = "dynamic.fanout.workspace-check-failed";
+const DYNAMIC_PROMPT_SOURCE_PREDECESSOR_LIMIT: usize = 5;
+const DYNAMIC_PROMPT_ATTACHMENTS_PER_SOURCE_LIMIT: usize = 10;
 const AUTO_RETRY_STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const DYNAMIC_RUNTIME_CONTINUE_LAUNCH_TIMEOUT: Duration = Duration::from_secs(60);
 const DYNAMIC_BOOTSTRAP_NODE_ID: &str = "bootstrap";
 static DYNAMIC_COMPLETION_SCHEMA_CACHE: OnceLock<Mutex<HashMap<String, Arc<JSONSchema>>>> =
     OnceLock::new();
@@ -184,7 +200,7 @@ static DYNAMIC_STATE_LOCKS: OnceLock<Mutex<HashMap<String, Arc<ReentrantMutex<()
 struct DynamicResumeCoordinator {
     drivers: HashMap<String, DynamicResumeDriver>,
     pending: HashMap<String, Vec<DynamicResumeOverride>>,
-    inflight: HashMap<String, HashMap<String, DynamicResumeOverride>>,
+    inflight: HashMap<String, HashMap<String, DynamicResumeLease>>,
     starting: HashSet<String>,
 }
 
@@ -242,7 +258,7 @@ fn notify_runtime_continue_started(
 fn notify_dynamic_resume_started(
     ctx: &DynamicExecutionContext<'_>,
     resume: &mut DynamicResumeOverride,
-) {
+) -> bool {
     let key = dynamic_state_lock_key(
         &ctx.app.paths.repo_root,
         ctx.task_id,
@@ -251,20 +267,14 @@ fn notify_dynamic_resume_started(
         ctx.outer_node_id,
         ctx.outer_attempt_id,
     );
-    complete_dynamic_resume_request(&key, &resume.request_id);
-    let Some(sender) = resume.launch_signal.take() else {
-        return;
+    let launch = match ctx.app.run_status(ctx.task_id, ctx.run_id) {
+        Ok(run) => RuntimeContinueLaunch::Started(run),
+        Err(error) => RuntimeContinueLaunch::Failed(runtime_continue_launch_error(&error)),
     };
-    match ctx.app.run_status(ctx.task_id, ctx.run_id) {
-        Ok(run) => {
-            let _ = sender.send(RuntimeContinueLaunch::Started(run));
-        }
-        Err(error) => {
-            let _ = sender.send(RuntimeContinueLaunch::Failed(
-                runtime_continue_launch_error(&error),
-            ));
-        }
-    }
+    let started = matches!(launch, RuntimeContinueLaunch::Started(_));
+    resume.launch_signal.take();
+    let completed = complete_dynamic_resume_request(&key, &resume.request_id, Some(launch));
+    started && completed
 }
 
 fn notify_dynamic_resume_failed(
@@ -280,10 +290,12 @@ fn notify_dynamic_resume_failed(
         ctx.outer_node_id,
         ctx.outer_attempt_id,
     );
-    complete_dynamic_resume_request(&key, &resume.request_id);
-    if let Some(sender) = resume.launch_signal.take() {
-        let _ = sender.send(RuntimeContinueLaunch::Failed(info));
-    }
+    resume.launch_signal.take();
+    let _ = complete_dynamic_resume_request(
+        &key,
+        &resume.request_id,
+        Some(RuntimeContinueLaunch::Failed(info)),
+    );
 }
 
 fn wait_for_runtime_continue_launch(
@@ -299,6 +311,51 @@ fn wait_for_runtime_continue_launch(
             serde_json::json!({}),
         ))),
     }
+}
+
+fn dynamic_runtime_continue_stopped_info(node_id: &str, attempt_id: &str) -> RuntimeErrorInfo {
+    manual_runtime_error_info(
+        RuntimeErrorDomain::Workflow,
+        "runtime.continue-stopped-before-start",
+        "dynamic runtime continue was stopped before launch acknowledgement",
+        serde_json::json!({
+            "nodeId": node_id,
+            "attemptId": attempt_id,
+        }),
+    )
+}
+
+fn dynamic_runtime_continue_timeout_info(request_id: &str, timeout: Duration) -> RuntimeErrorInfo {
+    manual_runtime_error_info(
+        RuntimeErrorDomain::Workflow,
+        "runtime.continue-launch-timeout",
+        "dynamic runtime continue did not acknowledge launch before the deadline",
+        serde_json::json!({
+            "requestId": request_id,
+            "timeoutMs": timeout.as_millis(),
+        }),
+    )
+}
+
+fn dynamic_runtime_continue_superseded_info(request_id: &str, node_id: &str) -> RuntimeErrorInfo {
+    manual_runtime_error_info(
+        RuntimeErrorDomain::Workflow,
+        "runtime.continue-superseded",
+        "dynamic runtime continue was superseded by a newer lifecycle transition",
+        serde_json::json!({
+            "requestId": request_id,
+            "nodeId": node_id,
+        }),
+    )
+}
+
+fn dynamic_runtime_continue_was_cancelled(error: &anyhow::Error) -> bool {
+    matches!(
+        normalize_runtime_error(error).code_str(),
+        "runtime.continue-superseded"
+            | "runtime.continue-stopped-before-start"
+            | "runtime.continue-launch-timeout"
+    )
 }
 
 impl FixedRunContinueLease {
@@ -1090,12 +1147,8 @@ fn prepare_run_from_workflow(
     )?;
     write_json(&app.paths.task_provenance_file(task_id), &resolved_profiles)?;
 
-    let task_dir = app.paths.task_dir(task_id);
-    let (run_id, run_dir, task_uuid) = with_file_lock(&task_dir, || {
-        let task_uuid = read_json::<TaskState>(&app.paths.task_file(task_id))?.uuid;
-        let (run_id, run_dir) = reserve_next_run_dir(&app.paths.runs_dir(task_id))?;
-        Ok((run_id, run_dir, task_uuid))
-    })?;
+    let (run_id, run_dir) = reserve_next_run_dir(&app.paths.runs_dir(task_id))?;
+    let task_uuid = read_json::<TaskState>(&app.paths.task_file(task_id))?.uuid;
     let run_uuid = generate_uuid();
     let mut prepared = PreparedRun {
         data: None,
@@ -1415,6 +1468,27 @@ struct DynamicResumeOverride {
     launch_signal: Option<mpsc::Sender<RuntimeContinueLaunch>>,
 }
 
+#[derive(Clone)]
+struct DynamicResumeLease {
+    request_id: String,
+    execution_id: String,
+    node_id: String,
+    attempt_id: String,
+    launch_signal: Option<mpsc::Sender<RuntimeContinueLaunch>>,
+}
+
+impl From<&DynamicResumeOverride> for DynamicResumeLease {
+    fn from(resume: &DynamicResumeOverride) -> Self {
+        Self {
+            request_id: resume.request_id.clone(),
+            execution_id: resume.execution_id.clone(),
+            node_id: resume.node_id.clone(),
+            attempt_id: resume.attempt_id.clone(),
+            launch_signal: resume.launch_signal.clone(),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn pause_dynamic_leaf_runtime_state(
     app: &App,
@@ -1424,6 +1498,7 @@ pub(crate) fn pause_dynamic_leaf_runtime_state(
     outer_node_id: &str,
     outer_attempt_id: &str,
     dynamic_node_id: &str,
+    dynamic_attempt_id: &str,
     reason: PauseReason,
 ) -> Result<()> {
     pause_dynamic_leaf_runtime_state_with_policy(
@@ -1434,6 +1509,7 @@ pub(crate) fn pause_dynamic_leaf_runtime_state(
         outer_node_id,
         outer_attempt_id,
         dynamic_node_id,
+        Some(dynamic_attempt_id),
         reason,
         false,
         None,
@@ -1461,6 +1537,7 @@ pub(crate) fn pause_dynamic_leaf_runtime_state_if_active_execution(
         outer_node_id,
         outer_attempt_id,
         dynamic_node_id,
+        None,
         reason,
         true,
         Some(execution_id),
@@ -1476,6 +1553,7 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
     outer_node_id: &str,
     outer_attempt_id: &str,
     dynamic_node_id: &str,
+    expected_dynamic_attempt_id: Option<&str>,
     reason: PauseReason,
     require_active_leaf: bool,
     expected_execution_id: Option<&str>,
@@ -1483,19 +1561,22 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
     let graph_path =
         app.paths
             .dynamic_graph_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
-    if !require_active_leaf
+    let workspace_transition_stop = !require_active_leaf
         && load_dynamic_graph(&graph_path, &app.paths.repo_root).is_ok_and(|graph| {
             graph.run.status == DynamicRunStatus::Running
                 && graph.run.phase == DynamicRunPhase::PreparingWorkspace
                 && graph.nodes.iter().any(|node| {
-                    node.id == dynamic_node_id && node.status == DynamicNodeStatus::Completed
+                    node.id == dynamic_node_id
+                        && node.status == DynamicNodeStatus::Completed
+                        && expected_dynamic_attempt_id
+                            .is_none_or(|attempt_id| self::dynamic_attempt_id(node) == attempt_id)
                 })
-        })
-    {
+        });
+    if workspace_transition_stop {
+        // Stop acceptance belongs to the outer run and must not wait on a Git/workspace
+        // transition. Dynamic descendants still converge under the canonical graph lock.
         app.run_pause(task_id, run_id, reason)?;
-        return Ok(false);
     }
-
     let state_lock = dynamic_state_lock_for(
         &app.paths.repo_root,
         task_id,
@@ -1513,6 +1594,11 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
             .iter()
             .position(|node| node.id == dynamic_node_id)
             .ok_or_else(|| anyhow!("dynamic node `{dynamic_node_id}` not found"))?;
+        if let Some(expected_dynamic_attempt_id) = expected_dynamic_attempt_id
+            && self::dynamic_attempt_id(&graph.nodes[target_index]) != expected_dynamic_attempt_id
+        {
+            return Ok(false);
+        }
         if let Some(expected_execution_id) = expected_execution_id
             && graph.nodes[target_index].runtime_execution_id.as_deref()
                 != Some(expected_execution_id)
@@ -1520,46 +1606,87 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
             return Ok(false);
         }
         if graph.nodes[target_index].status == DynamicNodeStatus::Completed {
-            return Ok(false);
-        }
-        if require_active_leaf
-            && !matches!(
-                graph.nodes[target_index].status,
-                DynamicNodeStatus::Ready | DynamicNodeStatus::Running
-            )
-        {
-            return Ok(false);
-        }
-        mark_dynamic_node_paused(&mut graph.nodes[target_index], reason, None);
-        refresh_dynamic_current_leaf_ids(&mut graph);
-        let has_active_leaf = dynamic_graph_has_active_leaf(&graph);
-        if has_active_leaf {
-            graph.run.status = DynamicRunStatus::Running;
-            graph.run.phase = DynamicRunPhase::Executing;
-            graph.run.outcome = None;
-            graph.run.pause_reason = None;
-        } else if graph.run.status == DynamicRunStatus::Running {
-            graph.run.status = DynamicRunStatus::Paused;
-            graph.run.phase = DynamicRunPhase::Executing;
-            graph.run.outcome = None;
-            graph.run.pause_reason = Some(reason);
-        }
-        graph.run.updated_at = now.clone();
-        validate_dynamic_run_state(&graph.run)?;
-        for node in &graph.nodes {
-            validate_dynamic_node_state(node)?;
-        }
-        persist_dynamic_graph_for_resume_unlocked(
-            app,
-            task_id,
-            run_id,
-            round_id,
-            outer_node_id,
-            outer_attempt_id,
-            &mut graph,
-        )?;
-        if has_active_leaf {
-            return Ok(true);
+            if let Some(dynamic_attempt_id) = expected_dynamic_attempt_id {
+                stop_dynamic_resume_target(
+                    &app.paths.repo_root,
+                    task_id,
+                    run_id,
+                    round_id,
+                    outer_node_id,
+                    outer_attempt_id,
+                    dynamic_node_id,
+                    dynamic_attempt_id,
+                )?;
+            }
+            if !workspace_transition_stop {
+                return Ok(false);
+            }
+            mark_dynamic_graph_paused_in_memory(&mut graph, reason);
+            validate_dynamic_run_state(&graph.run)?;
+            for node in &graph.nodes {
+                validate_dynamic_node_state(node)?;
+            }
+            persist_dynamic_graph_for_resume_unlocked(
+                app,
+                task_id,
+                run_id,
+                round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &mut graph,
+            )?;
+        } else {
+            if require_active_leaf
+                && !matches!(
+                    graph.nodes[target_index].status,
+                    DynamicNodeStatus::Ready | DynamicNodeStatus::Running
+                )
+            {
+                return Ok(false);
+            }
+            mark_dynamic_node_paused(&mut graph.nodes[target_index], reason, None);
+            refresh_dynamic_current_leaf_ids(&mut graph);
+            let has_active_leaf = dynamic_graph_has_active_leaf(&graph);
+            if has_active_leaf {
+                graph.run.status = DynamicRunStatus::Running;
+                graph.run.phase = DynamicRunPhase::Executing;
+                graph.run.outcome = None;
+                graph.run.pause_reason = None;
+            } else if graph.run.status == DynamicRunStatus::Running {
+                graph.run.status = DynamicRunStatus::Paused;
+                graph.run.phase = DynamicRunPhase::Executing;
+                graph.run.outcome = None;
+                graph.run.pause_reason = Some(reason);
+            }
+            graph.run.updated_at = now.clone();
+            validate_dynamic_run_state(&graph.run)?;
+            for node in &graph.nodes {
+                validate_dynamic_node_state(node)?;
+            }
+            persist_dynamic_graph_for_resume_unlocked(
+                app,
+                task_id,
+                run_id,
+                round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &mut graph,
+            )?;
+            if has_active_leaf {
+                if let Some(dynamic_attempt_id) = expected_dynamic_attempt_id {
+                    stop_dynamic_resume_target(
+                        &app.paths.repo_root,
+                        task_id,
+                        run_id,
+                        round_id,
+                        outer_node_id,
+                        outer_attempt_id,
+                        dynamic_node_id,
+                        dynamic_attempt_id,
+                    )?;
+                }
+                return Ok(true);
+            }
         }
     }
 
@@ -1569,6 +1696,7 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
     }
     let mut run: RunState = read_json(&run_path)?;
     let mut run_became_inactive = run.status != RunStatus::Running;
+    let mut run_transitioned_to_paused = false;
     if run.status == RunStatus::Running
         && run.current_round.as_deref() == Some(round_id)
         && run.current_node.as_deref() == Some(outer_node_id)
@@ -1582,6 +1710,7 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
         validate_run_state(&run)?;
         write_json(&run_path, &run)?;
         run_became_inactive = true;
+        run_transitioned_to_paused = true;
     }
 
     let round_path = app.paths.round_file(task_id, run_id, round_id);
@@ -1625,7 +1754,22 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
     }
 
     let recovery_candidate_token = run.execution.recovery_candidate_token.clone();
+    if let Some(dynamic_attempt_id) = expected_dynamic_attempt_id {
+        stop_dynamic_resume_target(
+            &app.paths.repo_root,
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+            dynamic_node_id,
+            dynamic_attempt_id,
+        )?;
+    }
     drop(_guard);
+    if run_transitioned_to_paused {
+        app.publish_committed_attempt_pause(&run);
+    }
     if run_became_inactive {
         app.finish_runtime_candidate_best_effort(
             task_id,
@@ -1900,6 +2044,7 @@ fn run_continue_dynamic_inner(
     mut launch: Option<mpsc::Sender<RuntimeContinueLaunch>>,
     request_id: String,
     execution_id: String,
+    outer_execution_id: String,
 ) -> Result<RunState> {
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow_snapshot(workflow)?;
@@ -2004,7 +2149,7 @@ fn run_continue_dynamic_inner(
             );
         }
         let resume_override = DynamicResumeOverride {
-            request_id,
+            request_id: request_id.clone(),
             execution_id,
             node_id: dynamic_node_id.to_string(),
             attempt_id: dynamic_attempt_id.to_string(),
@@ -2022,7 +2167,7 @@ fn run_continue_dynamic_inner(
             runtime_control_intent: prompt_state.runtime_control_intent,
             launch_signal: launch.take(),
         };
-        let dispatch = dispatch_dynamic_resume_override(
+        let dispatch = dispatch_registered_dynamic_resume_override(
             &app.paths.repo_root,
             task_id,
             run_id,
@@ -2039,15 +2184,26 @@ fn run_continue_dynamic_inner(
     ) {
         return Ok(run);
     }
-    let runtime_candidate = if run.status == RunStatus::Paused {
+    let mut runtime_candidate = if run.status == RunStatus::Paused {
         let runtime_candidate = app.begin_runtime_candidate(task_id, run_id)?;
-        if let Some(runtime_candidate) = runtime_candidate.as_ref() {
-            run.execution.recovery_candidate_token = Some(runtime_candidate.token().to_string());
-        }
         runtime_candidate
     } else {
         None
     };
+    rearm_dynamic_outer_runtime_for_resume(
+        app,
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+        &request_id,
+        &outer_execution_id,
+        &mut run,
+        &mut round,
+        &mut outer_node,
+        &mut runtime_candidate,
+    )?;
     outer_node.status = RunStatus::Paused;
     outer_node.outcome = None;
     outer_node.finished_at = None;
@@ -2076,7 +2232,125 @@ fn run_continue_dynamic_inner(
         runtime_candidate,
     );
     drive_result?;
+    let resume_key = dynamic_state_lock_key(
+        &app.paths.repo_root,
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    ensure!(
+        !dynamic_resume_request_is_active(&resume_key, &request_id)?,
+        runtime_error(manual_runtime_error_info(
+            RuntimeErrorDomain::Workflow,
+            "runtime.continue-driver-ended",
+            "dynamic runtime driver ended before the requested leaf started",
+            serde_json::json!({
+                "requestId": request_id,
+                "nodeId": dynamic_node_id,
+            }),
+        ))
+    );
     Ok(run)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rearm_dynamic_outer_runtime_for_resume(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+    request_id: &str,
+    outer_execution_id: &str,
+    run: &mut RunState,
+    round: &mut RoundState,
+    outer_node: &mut NodeState,
+    runtime_candidate: &mut Option<super::RuntimeCandidateRegistration>,
+) -> Result<()> {
+    if run.status == RunStatus::Running {
+        return Ok(());
+    }
+
+    let state_lock = super::attempt_runtime_state_lock(
+        app,
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    let _guard = state_lock
+        .lock()
+        .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
+    let resume_key = dynamic_state_lock_key(
+        &app.paths.repo_root,
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    ensure!(
+        dynamic_resume_request_is_active(&resume_key, request_id)?,
+        runtime_error(dynamic_runtime_continue_superseded_info(
+            request_id,
+            outer_node_id,
+        ))
+    );
+
+    let mut durable_run = app.run_status(task_id, run_id)?;
+    ensure!(
+        is_run_continuable(&durable_run)
+            && durable_run.current_round.as_deref() == Some(round_id)
+            && durable_run.current_node.as_deref() == Some(outer_node_id)
+            && durable_run.current_attempt.as_deref() == Some(outer_attempt_id),
+        "current run is not resumable by dynamic continue"
+    );
+    let mut durable_round: RoundState =
+        read_json(&app.paths.round_file(task_id, run_id, round_id))?;
+    let outer_node_path =
+        app.paths
+            .node_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
+    let mut durable_outer_node: NodeState = read_json(&outer_node_path)?;
+    ensure!(
+        durable_outer_node.status == RunStatus::Paused
+            && durable_outer_node.outcome.is_none()
+            && !durable_outer_node.manual_check_pending,
+        "current AI-DYNAMIC outer attempt is not resumable"
+    );
+
+    let previous_execution_id = durable_outer_node.runtime_execution_id.clone();
+    durable_outer_node.runtime_execution_id = Some(outer_execution_id.to_string());
+    let resumed_at = now_rfc3339_like();
+    durable_run.status = RunStatus::Running;
+    durable_run.outcome = None;
+    durable_run.pause_reason = None;
+    durable_run.updated_at = resumed_at.clone();
+    if let Some(runtime_candidate) = runtime_candidate.as_ref() {
+        durable_run.execution.recovery_candidate_token =
+            Some(runtime_candidate.token().to_string());
+    }
+    durable_run.transition_current_execution(RuntimeExecutionPhase::StartingNode, resumed_at)?;
+    validate_run_state(&durable_run)?;
+    crate::runtime::validate_node_state(&durable_outer_node)?;
+    write_node_state(&outer_node_path, &durable_outer_node)?;
+    if let Err(error) = write_json(&app.paths.run_file(task_id, run_id), &durable_run) {
+        durable_outer_node.runtime_execution_id = previous_execution_id;
+        let _ = write_node_state(&outer_node_path, &durable_outer_node);
+        return Err(error);
+    }
+
+    if let Some(runtime_candidate) = runtime_candidate.take() {
+        runtime_candidate.commit();
+    }
+    durable_round.status = RunStatus::Running;
+    *run = durable_run;
+    *round = durable_round;
+    *outer_node = durable_outer_node;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2097,6 +2371,7 @@ pub(crate) fn run_continue_dynamic_inner_background(
 ) -> Result<RunState> {
     let request_id = next_dynamic_resume_request_id();
     let execution_id = next_runtime_execution_id();
+    let outer_execution_id = next_runtime_execution_id();
     let initial_run = app.run_status(task_id, run_id)?;
     if !(is_run_continuable(&initial_run) || initial_run.status == RunStatus::Running) {
         bail!("current run is not resumable by continue");
@@ -2109,6 +2384,7 @@ pub(crate) fn run_continue_dynamic_inner_background(
     );
     let background_app = app.clone_for_background();
     let background_task_id = task_id.to_string();
+    let background_task_uuid = initial_run.task_uuid.clone();
     let background_run_id = run_id.to_string();
     let background_round_id = round_id.to_string();
     let background_outer_node_id = outer_node_id.to_string();
@@ -2117,8 +2393,24 @@ pub(crate) fn run_continue_dynamic_inner_background(
     let background_dynamic_attempt_id = dynamic_attempt_id.to_string();
     let background_request_id = request_id.clone();
     let background_execution_id = execution_id.clone();
+    let background_outer_execution_id = outer_execution_id.clone();
     let (launch_sender, launch_receiver) = mpsc::channel();
     let launch_failure_sender = launch_sender.clone();
+    let resume_key = reserve_dynamic_resume_request(
+        &app.paths.repo_root,
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+        DynamicResumeLease {
+            request_id: request_id.clone(),
+            execution_id: execution_id.clone(),
+            node_id: dynamic_node_id.to_string(),
+            attempt_id: dynamic_attempt_id.to_string(),
+            launch_signal: Some(launch_sender.clone()),
+        },
+    )?;
     let spawn_result = thread::Builder::new()
         .name("gold-band-dynamic-runtime-continue".to_string())
         .spawn(move || {
@@ -2140,7 +2432,24 @@ pub(crate) fn run_continue_dynamic_inner_background(
                 Some(launch_sender),
                 background_request_id.clone(),
                 background_execution_id.clone(),
+                background_outer_execution_id.clone(),
             ) {
+                if dynamic_runtime_continue_was_cancelled(&err) {
+                    tracing::info!(
+                        project_id = %app.paths.project_id,
+                        task_id = %background_task_id,
+                        run_id = %background_run_id,
+                        round_id = %background_round_id,
+                        node_id = %background_dynamic_node_id,
+                        attempt_id = %background_dynamic_attempt_id,
+                        outer_node_id = %background_outer_node_id,
+                        outer_attempt_id = %background_outer_attempt_id,
+                        request_id = %background_request_id,
+                        execution_id = %background_execution_id,
+                        "revoked dynamic conversation runtime continue exited before leaf launch"
+                    );
+                    return;
+                }
                 let info = runtime_continue_launch_error(&err);
                 tracing::warn!(
                     project_id = %app.paths.project_id,
@@ -2166,8 +2475,9 @@ pub(crate) fn run_continue_dynamic_inner_background(
                     &background_outer_node_id,
                     &background_outer_attempt_id,
                 );
-                let _ = clear_dynamic_resume_starting_window(&resume_key);
-                let failed_resumes = take_dynamic_resume_inflight(&resume_key).unwrap_or_default();
+                let failed_resumes =
+                    fail_dynamic_resume_requests(&resume_key, |_| true, info.clone())
+                        .unwrap_or_default();
                 for mut resume in failed_resumes {
                     let _ = app.pause_dynamic_attempt_runtime_state_if_active_execution(
                         &background_task_id,
@@ -2195,9 +2505,26 @@ pub(crate) fn run_continue_dynamic_inner_background(
                         PauseReason::RuntimeAbnormal,
                     )
                     .unwrap_or(false);
-                if converged {
+                let outer_converged = if converged {
+                    false
+                } else {
+                    matches!(
+                        app.pause_attempt_runtime_state_if_active_execution(
+                            &background_task_id,
+                            &background_run_id,
+                            &background_round_id,
+                            &background_outer_node_id,
+                            &background_outer_attempt_id,
+                            &background_outer_execution_id,
+                            PauseReason::RuntimeAbnormal,
+                        ),
+                        Ok(AttemptRuntimePauseResult::Converged)
+                    )
+                };
+                if converged || outer_converged {
                     let _ = app.emit_acp_session_update(AcpLiveEventContext {
                         task_id: background_task_id.clone(),
+                        task_uuid: background_task_uuid.clone(),
                         run_id: background_run_id.clone(),
                         round_id: background_round_id.clone(),
                         node_id: background_dynamic_node_id.clone(),
@@ -2237,15 +2564,11 @@ pub(crate) fn run_continue_dynamic_inner_background(
             %error,
             "failed to start dynamic conversation runtime continue worker"
         );
-        let resume_key = dynamic_state_lock_key(
-            &app.paths.repo_root,
-            task_id,
-            run_id,
-            round_id,
-            outer_node_id,
-            outer_attempt_id,
+        let _ = fail_dynamic_resume_requests(
+            &resume_key,
+            |request| request.request_id == request_id,
+            info.clone(),
         );
-        let _ = clear_dynamic_resume_starting_window(&resume_key);
         let _ = app.pause_dynamic_attempt_runtime_state_if_active_execution(
             task_id,
             run_id,
@@ -2258,7 +2581,38 @@ pub(crate) fn run_continue_dynamic_inner_background(
         );
         return Err(runtime_error(info));
     }
-    wait_for_runtime_continue_launch(launch_receiver)
+    let launch_result = wait_for_dynamic_runtime_continue_launch(
+        launch_receiver,
+        &resume_key,
+        &request_id,
+        DYNAMIC_RUNTIME_CONTINUE_LAUNCH_TIMEOUT,
+    );
+    if launch_result.as_ref().is_err_and(|error| {
+        normalize_runtime_error(error).code_str() == "runtime.continue-launch-timeout"
+    }) {
+        let convergence = app.pause_attempt_runtime_state_if_active_execution(
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+            &outer_execution_id,
+            PauseReason::ProcessInterrupted,
+        );
+        if matches!(convergence, Ok(AttemptRuntimePauseResult::Converged)) {
+            let _ = app.emit_acp_session_update(AcpLiveEventContext {
+                task_id: task_id.to_string(),
+                task_uuid: initial_run.task_uuid.clone(),
+                run_id: run_id.to_string(),
+                round_id: round_id.to_string(),
+                node_id: dynamic_node_id.to_string(),
+                attempt_id: dynamic_attempt_id.to_string(),
+                outer_node_id: Some(outer_node_id.to_string()),
+                outer_attempt_id: Some(outer_attempt_id.to_string()),
+            });
+        }
+    }
+    launch_result
 }
 
 pub(crate) fn run_continue_background(
@@ -2350,6 +2704,7 @@ pub(crate) fn run_continue_background(
         runtime_candidate.commit();
     }
     let background_app = app.clone_for_background();
+    let task_uuid = initial_run.task_uuid.clone();
     let task_id = task_id.to_string();
     let run_id = run_id.to_string();
     let prompt_id = prompt_id.clone();
@@ -2413,6 +2768,7 @@ pub(crate) fn run_continue_background(
                 if !matches!(&convergence, Ok(AttemptRuntimePauseResult::Superseded)) {
                     let _ = app.emit_acp_session_update(AcpLiveEventContext {
                         task_id: task_id.clone(),
+                        task_uuid: task_uuid.clone(),
                         run_id: run_id.clone(),
                         round_id: round_id.clone(),
                         node_id: node_id.clone(),
@@ -2531,11 +2887,6 @@ pub(crate) fn run_recover_completed_background(
         runtime_candidate.commit();
     }
 
-    let attempt_dir = app
-        .paths
-        .attempt_dir(task_id, run_id, round_id, node_id, attempt_id)
-        .to_string();
-    let completed_snapshot = completed_node_snapshot(&round, &node, Some(attempt_dir));
     let decision = decide_next_step(&validated, &run, &round, &node);
     let expected_execution_id = node.runtime_execution_id.clone();
     let Some(next) = apply_control_decision(
@@ -2560,8 +2911,6 @@ pub(crate) fn run_recover_completed_background(
         return Ok(run);
     };
 
-    run.last_executed_node = Some(completed_snapshot);
-    persist_runtime_state(app, task_id, &run, &round, &next.node)?;
     let initial_run = run.clone();
     let fallback_node = next.node.clone();
     let prompt_state = AcpInvocationPromptState::workflow_transition(
@@ -3526,6 +3875,7 @@ fn emit_run_paused_lifecycle_event(
         scheduled_occurrence_id: None,
         project_id: app.paths.project_id.clone(),
         task_id: task_id.to_string(),
+        task_uuid: run.task_uuid.clone(),
         run_id: run.id.clone(),
         round_id: round.id.clone(),
         node_id: node.node_id.clone(),
@@ -3570,10 +3920,13 @@ fn emit_intervention_requested(
         scheduled_occurrence_id: None,
         project_id: app.paths.project_id.clone(),
         task_id: task_id.to_string(),
+        task_uuid: run.task_uuid.clone(),
         run_id: run.id.clone(),
         round_id: round.id.clone(),
         node_id: node.node_id.clone(),
         attempt_id: node.attempt_id.clone(),
+        outer_node_id: None,
+        outer_attempt_id: None,
         node_label: node_label(node),
         kind,
         task_title: task_title(app, task_id),
@@ -3612,6 +3965,7 @@ fn emit_run_completed_lifecycle_event(
         scheduled_occurrence_id: None,
         project_id: app.paths.project_id.clone(),
         task_id: task_id.to_string(),
+        task_uuid: run.task_uuid.clone(),
         run_id: run.id.clone(),
         round_id: round.id.clone(),
         node_id: node.node_id.clone(),
@@ -3634,6 +3988,7 @@ fn emit_run_completed_lifecycle_event(
     let _ = app.notify_prompt_turn_finished(
         crate::app::AcpLiveEventContext {
             task_id: task_id.to_string(),
+            task_uuid: run.task_uuid.clone(),
             run_id: run.id.clone(),
             round_id: round.id.clone(),
             node_id: node.node_id.clone(),
@@ -3946,6 +4301,17 @@ fn apply_control_decision(
         {
             return Ok(None);
         }
+    }
+    if node.status == RunStatus::Completed {
+        run.last_executed_node = Some(completed_node_snapshot(
+            round,
+            node,
+            Some(
+                app.paths
+                    .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id)
+                    .to_string(),
+            ),
+        ));
     }
     match decision {
         ControlDecision::TransitionToNode { node_id, session } => {
@@ -4296,6 +4662,7 @@ fn apply_control_decision(
             emit_completed_acp_session_update_best_effort(
                 app,
                 task_id,
+                run.task_uuid.clone(),
                 &run.id,
                 &round.id,
                 &completed_node_id,
@@ -4373,6 +4740,9 @@ struct DynamicExecutionContext<'a> {
     /// Runtime generation that owns scheduler-side graph transitions. A stop
     /// clears it, and an explicit continue always allocates a different one.
     outer_runtime_execution_id: Option<String>,
+    /// Derived feedback from the outer workflow edge that opened this Round.
+    /// It is transient and is projected only to the internal bootstrap turn.
+    outer_new_round_trigger: Option<PromptPredecessorContext>,
     dynamic: &'a AiDynamicNode,
     // UUIDs from the outer run/round/node — used for metrics reporting
     task_uuid: Option<&'a str>,
@@ -4552,7 +4922,7 @@ struct DynamicResumeRegistration {
 impl Drop for DynamicResumeRegistration {
     fn drop(&mut self) {
         let failed_resumes = unregister_dynamic_resume_driver(&self.key, &self.driver_id);
-        for mut resume in failed_resumes {
+        for resume in failed_resumes {
             let _ = self
                 .app
                 .pause_dynamic_attempt_runtime_state_if_active_execution(
@@ -4565,17 +4935,6 @@ impl Drop for DynamicResumeRegistration {
                     &resume.execution_id,
                     PauseReason::RuntimeAbnormal,
                 );
-            if let Some(sender) = resume.launch_signal.take() {
-                let _ = sender.send(RuntimeContinueLaunch::Failed(manual_runtime_error_info(
-                    RuntimeErrorDomain::Workflow,
-                    "runtime.continue-driver-ended",
-                    "dynamic runtime driver ended before the requested leaf started",
-                    serde_json::json!({
-                        "requestId": resume.request_id,
-                        "nodeId": resume.node_id,
-                    }),
-                )));
-            }
         }
     }
 }
@@ -4630,6 +4989,7 @@ fn freeze_allowed_workflow_snapshots(
 fn emit_completed_acp_session_update_best_effort(
     app: &App,
     task_id: &str,
+    task_uuid: Option<String>,
     run_id: &str,
     round_id: &str,
     node_id: &str,
@@ -4637,6 +4997,7 @@ fn emit_completed_acp_session_update_best_effort(
 ) {
     let _ = app.emit_acp_session_update(AcpLiveEventContext {
         task_id: task_id.to_string(),
+        task_uuid,
         run_id: run_id.to_string(),
         round_id: round_id.to_string(),
         node_id: node_id.to_string(),
@@ -4653,6 +5014,7 @@ fn dynamic_acp_live_event_context(
 ) -> AcpLiveEventContext {
     AcpLiveEventContext {
         task_id: ctx.task_id.to_string(),
+        task_uuid: ctx.task_uuid.map(str::to_string),
         run_id: ctx.run_id.to_string(),
         round_id: ctx.round_id.to_string(),
         node_id: node_id.to_string(),
@@ -5282,6 +5644,7 @@ fn dynamic_effective_completion_schema(
 fn dynamic_output_contract(
     ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
+    node: &DynamicNodeState,
     emission_mode: OutputEmissionMode,
 ) -> PromptOutputContract {
     let language = ctx.app.config.desktop_language;
@@ -5301,6 +5664,7 @@ fn dynamic_output_contract(
                 DesktopLanguage::ZhCn => dynamic_model_policy_summary_zh_cn(ctx),
                 DesktopLanguage::En => dynamic_model_policy_summary(ctx),
             },
+            "end_summary_is_outer_handoff": dynamic_end_summary_is_outer_handoff(graph, node),
             "json_schema": json_schema,
         }),
     )
@@ -5325,6 +5689,25 @@ fn dynamic_node_is_bootstrap_dispatch(node: &DynamicNodeState) -> bool {
         && node.chain_id == DYNAMIC_BOOTSTRAP_NODE_ID
 }
 
+fn dynamic_end_summary_is_outer_handoff(
+    graph: &DynamicGraphState,
+    node: &DynamicNodeState,
+) -> bool {
+    if node.group_id.is_none() {
+        return true;
+    }
+    if node.kind != DynamicNodeKind::Acceptance {
+        return false;
+    }
+    node.group_id.as_deref().is_some_and(|group_id| {
+        graph
+            .groups
+            .iter()
+            .find(|group| group.id == group_id)
+            .is_some_and(|group| group.parent_group_id.is_none())
+    })
+}
+
 fn dynamic_output_emission_mode(node: &DynamicNodeState) -> OutputEmissionMode {
     if dynamic_node_is_bootstrap_dispatch(node) {
         OutputEmissionMode::InlineControl
@@ -5343,7 +5726,7 @@ fn dynamic_output_contract_for_node(
     node: &DynamicNodeState,
 ) -> Option<PromptOutputContract> {
     dynamic_output_emission_mode_for_node(node)
-        .map(|emission_mode| dynamic_output_contract(ctx, graph, emission_mode))
+        .map(|emission_mode| dynamic_output_contract(ctx, graph, node, emission_mode))
 }
 
 fn dynamic_attempt_id(_node: &DynamicNodeState) -> String {
@@ -5431,6 +5814,17 @@ fn persist_dynamic_graph_for_resume_unlocked(
             .dynamic_graph_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id),
         graph,
     )?;
+    let coordination_snapshot = build_ai_dynamic_coordination_snapshot(graph)?;
+    write_json(
+        &app.paths.dynamic_coordination_snapshot_file(
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+        ),
+        &coordination_snapshot,
+    )?;
     for node in &graph.nodes {
         write_dynamic_node_state(
             &app.paths.dynamic_node_file(
@@ -5445,6 +5839,466 @@ fn persist_dynamic_graph_for_resume_unlocked(
         )?;
     }
     Ok(())
+}
+
+struct AiDynamicCoordinationWorkstreamBuilder {
+    id: String,
+    owner_group_id: Option<String>,
+    title: String,
+    goal: String,
+    workspace_id: String,
+    steps: Vec<AiDynamicCoordinationStep>,
+}
+
+fn dynamic_node_is_coordination_step(node: &DynamicNodeState) -> bool {
+    !dynamic_node_is_bootstrap_dispatch(node)
+        && matches!(
+            node.kind,
+            DynamicNodeKind::Worker | DynamicNodeKind::WorkflowInvocation
+        )
+}
+
+fn ai_dynamic_coordination_workspace_ref(
+    workspace_refs: &HashMap<String, AiDynamicWorkspaceRef>,
+    workspace_id: &str,
+) -> Result<AiDynamicWorkspaceRef> {
+    workspace_refs.get(workspace_id).cloned().ok_or_else(|| {
+        anyhow!("dynamic.coordination.workspace-missing: workspace `{workspace_id}`")
+    })
+}
+
+fn ensure_ai_dynamic_coordination_parent_topology<'a>(
+    relation: &str,
+    parents: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
+) -> Result<()> {
+    let mut parent_by_id = HashMap::<&str, Option<&str>>::new();
+    for (id, parent_id) in parents {
+        ensure!(
+            parent_by_id.insert(id, parent_id).is_none(),
+            "dynamic.coordination.{relation}-duplicate: `{id}`"
+        );
+    }
+
+    let mut resolved = HashSet::<&str>::new();
+    for id in parent_by_id.keys().copied() {
+        let mut path = HashSet::<&str>::new();
+        let mut current_id = Some(id);
+        while let Some(candidate_id) = current_id {
+            if resolved.contains(candidate_id) {
+                break;
+            }
+            ensure!(
+                path.insert(candidate_id),
+                "dynamic.coordination.{relation}-cycle: `{candidate_id}`"
+            );
+            current_id = *parent_by_id.get(candidate_id).ok_or_else(|| {
+                anyhow!("dynamic.coordination.{relation}-parent-missing: `{candidate_id}`")
+            })?;
+        }
+        resolved.extend(path);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_coordination_group_owner_workstream_id(
+    group_id: &str,
+    graph: &DynamicGraphState,
+    node_indices: &HashMap<String, usize>,
+    group_indices: &HashMap<String, usize>,
+    workstream_ids_by_node_id: &HashMap<String, String>,
+    memo: &mut HashMap<String, Option<String>>,
+    visiting: &mut HashSet<String>,
+) -> Result<Option<String>> {
+    if let Some(workstream_id) = memo.get(group_id) {
+        return Ok(workstream_id.clone());
+    }
+    ensure!(
+        visiting.insert(group_id.to_string()),
+        "dynamic.coordination.group-owner-cycle: group `{group_id}`"
+    );
+    let resolved = (|| {
+        let group_index = group_indices
+            .get(group_id)
+            .copied()
+            .ok_or_else(|| anyhow!("dynamic.coordination.group-missing: group `{group_id}`"))?;
+        let group = &graph.groups[group_index];
+        let creator_index = node_indices
+            .get(&group.created_by_node_id)
+            .copied()
+            .ok_or_else(|| {
+                anyhow!(
+                    "dynamic.coordination.group-creator-missing: group `{}` creator `{}`",
+                    group.id,
+                    group.created_by_node_id
+                )
+            })?;
+        let creator = &graph.nodes[creator_index];
+        ensure!(
+            dynamic_outgoing_scope_owner(graph, creator)?.group_id == group.parent_group_id,
+            "dynamic.coordination.group-creator-scope-mismatch: group `{}` creator `{}`",
+            group.id,
+            creator.id
+        );
+        match creator.kind {
+            DynamicNodeKind::Worker | DynamicNodeKind::WorkflowInvocation => {
+                if dynamic_node_is_bootstrap_dispatch(creator) {
+                    Ok(None)
+                } else {
+                    workstream_ids_by_node_id
+                        .get(&creator.id)
+                        .cloned()
+                        .map(Some)
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "dynamic.coordination.creator-workstream-missing: node `{}`",
+                                creator.id
+                            )
+                        })
+                }
+            }
+            DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => {
+                let owner_group_id = creator.group_id.as_deref().ok_or_else(|| {
+                    anyhow!(
+                        "dynamic.coordination.control-group-missing: node `{}`",
+                        creator.id
+                    )
+                })?;
+                resolve_coordination_group_owner_workstream_id(
+                    owner_group_id,
+                    graph,
+                    node_indices,
+                    group_indices,
+                    workstream_ids_by_node_id,
+                    memo,
+                    visiting,
+                )
+            }
+        }
+    })();
+    visiting.remove(group_id);
+    let workstream_id = resolved?;
+    memo.insert(group_id.to_string(), workstream_id.clone());
+    Ok(workstream_id)
+}
+
+fn ai_dynamic_coordination_workstream_status(
+    steps: &[AiDynamicCoordinationStep],
+    child_groups: &[&DynamicGroupState],
+) -> AiDynamicWorkstreamStatus {
+    if steps.iter().any(|step| {
+        step.status == DynamicNodeStatus::Completed && step.outcome != Some(NodeOutcome::Success)
+    }) || child_groups
+        .iter()
+        .any(|group| group.status == DynamicGroupStatus::Failed)
+    {
+        return AiDynamicWorkstreamStatus::Failed;
+    }
+    if steps
+        .iter()
+        .any(|step| step.status == DynamicNodeStatus::Paused)
+    {
+        return AiDynamicWorkstreamStatus::Paused;
+    }
+    if steps.iter().any(|step| {
+        matches!(
+            step.status,
+            DynamicNodeStatus::Ready | DynamicNodeStatus::Running
+        )
+    }) {
+        return AiDynamicWorkstreamStatus::Active;
+    }
+    if steps
+        .iter()
+        .any(|step| step.status == DynamicNodeStatus::Pending)
+    {
+        return AiDynamicWorkstreamStatus::Pending;
+    }
+    if child_groups
+        .iter()
+        .any(|group| group.status != DynamicGroupStatus::Closed)
+    {
+        return AiDynamicWorkstreamStatus::Waiting;
+    }
+    AiDynamicWorkstreamStatus::Completed
+}
+
+fn ai_dynamic_coordination_group_stage(
+    graph: &DynamicGraphState,
+    node_indices: &HashMap<String, usize>,
+    group_id: &str,
+    expected_kind: DynamicNodeKind,
+    spec: &DynamicAgentTaskSpec,
+    node_id: Option<&str>,
+) -> Result<AiDynamicCoordinationGroupStage> {
+    let node = node_id
+        .map(|node_id| {
+            node_indices
+                .get(node_id)
+                .copied()
+                .map(|index| &graph.nodes[index])
+                .ok_or_else(|| {
+                    anyhow!("dynamic.coordination.group-stage-missing: node `{node_id}`")
+                })
+        })
+        .transpose()?;
+    if let Some(node) = node {
+        ensure!(
+            node.group_id.as_deref() == Some(group_id) && node.kind == expected_kind,
+            "dynamic.coordination.group-stage-mismatch: group `{group_id}` node `{}`",
+            node.id
+        );
+    }
+    Ok(AiDynamicCoordinationGroupStage {
+        title: spec.title.clone(),
+        task: spec.task.clone(),
+        node_id: node.map(|node| node.id.clone()),
+        status: node.map(|node| node.status),
+        outcome: node.and_then(|node| node.outcome),
+    })
+}
+
+fn build_ai_dynamic_coordination_snapshot(
+    graph: &DynamicGraphState,
+) -> Result<AiDynamicCoordinationSnapshot> {
+    let completions = accepted_dynamic_completions(graph)?;
+    let node_indices = graph
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| (node.id.clone(), index))
+        .collect::<HashMap<_, _>>();
+    let group_indices = graph
+        .groups
+        .iter()
+        .enumerate()
+        .map(|(index, group)| (group.id.clone(), index))
+        .collect::<HashMap<_, _>>();
+    let workspace_refs = graph
+        .workspaces
+        .iter()
+        .map(|workspace| {
+            (
+                workspace.id.clone(),
+                AiDynamicWorkspaceRef {
+                    id: workspace.id.clone(),
+                    kind: workspace.kind,
+                    path: workspace.path.clone(),
+                    branch: workspace.branch.clone(),
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    ensure!(
+        node_indices.len() == graph.nodes.len(),
+        "dynamic.coordination.duplicate-node-id"
+    );
+    ensure!(
+        group_indices.len() == graph.groups.len(),
+        "dynamic.coordination.duplicate-group-id"
+    );
+    ensure!(
+        workspace_refs.len() == graph.workspaces.len(),
+        "dynamic.coordination.duplicate-workspace-id"
+    );
+
+    let mut workstream_builders = Vec::<AiDynamicCoordinationWorkstreamBuilder>::new();
+    let mut workstream_indices_by_chain = HashMap::<(Option<String>, String), usize>::new();
+    let mut workstream_ids_by_node_id = HashMap::<String, String>::new();
+    for node in &graph.nodes {
+        if !dynamic_node_is_coordination_step(node) {
+            continue;
+        }
+        let chain_key = (node.group_id.clone(), node.chain_id.clone());
+        let workstream_index = if let Some(index) = workstream_indices_by_chain.get(&chain_key) {
+            *index
+        } else {
+            let index = workstream_builders.len();
+            workstream_builders.push(AiDynamicCoordinationWorkstreamBuilder {
+                id: node.id.clone(),
+                owner_group_id: node.group_id.clone(),
+                title: node.title.clone(),
+                goal: node.task.clone(),
+                workspace_id: node.workspace_id.clone(),
+                steps: Vec::new(),
+            });
+            workstream_indices_by_chain.insert(chain_key, index);
+            index
+        };
+        let workstream = &mut workstream_builders[workstream_index];
+        ensure!(
+            workstream.workspace_id == node.workspace_id,
+            "dynamic.coordination.workstream-workspace-mismatch: workstream `{}`",
+            workstream.id
+        );
+        let workstream_id = workstream.id.clone();
+        workstream.steps.push(AiDynamicCoordinationStep {
+            node_id: node.id.clone(),
+            kind: node.kind,
+            title: node.title.clone(),
+            task: node.task.clone(),
+            status: node.status,
+            outcome: node.outcome,
+            depends_on: node.depends_on.clone(),
+            summary: completions
+                .get(&node.id)
+                .map(|completion| completion.summary.clone()),
+            started_at: node.started_at.clone(),
+            finished_at: node.finished_at.clone(),
+        });
+        workstream_ids_by_node_id.insert(node.id.clone(), workstream_id);
+    }
+
+    let mut group_owner_workstream_ids = HashMap::<String, Option<String>>::new();
+    let mut visiting_groups = HashSet::<String>::new();
+    for group in &graph.groups {
+        resolve_coordination_group_owner_workstream_id(
+            &group.id,
+            graph,
+            &node_indices,
+            &group_indices,
+            &workstream_ids_by_node_id,
+            &mut group_owner_workstream_ids,
+            &mut visiting_groups,
+        )?;
+    }
+
+    let mut child_group_ids_by_workstream = HashMap::<String, Vec<String>>::new();
+    for group in &graph.groups {
+        let owner_workstream_id = group_owner_workstream_ids.get(&group.id).ok_or_else(|| {
+            anyhow!(
+                "dynamic.coordination.group-owner-missing: group `{}`",
+                group.id
+            )
+        })?;
+        if let Some(owner_workstream_id) = owner_workstream_id {
+            child_group_ids_by_workstream
+                .entry(owner_workstream_id.clone())
+                .or_default()
+                .push(group.id.clone());
+        }
+    }
+
+    let mut branch_workstream_ids_by_group = HashMap::<String, Vec<String>>::new();
+    for workstream in &workstream_builders {
+        if let Some(group_id) = workstream.owner_group_id.as_ref() {
+            branch_workstream_ids_by_group
+                .entry(group_id.clone())
+                .or_default()
+                .push(workstream.id.clone());
+        }
+    }
+
+    let mut workstreams = Vec::with_capacity(workstream_builders.len());
+    for workstream in workstream_builders {
+        let parent_workstream_id = match workstream.owner_group_id.as_ref() {
+            Some(group_id) => group_owner_workstream_ids
+                .get(group_id)
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow!("dynamic.coordination.parent-workstream-missing: group `{group_id}`")
+                })?,
+            None => None,
+        };
+        let child_group_ids = child_group_ids_by_workstream
+            .remove(&workstream.id)
+            .unwrap_or_default();
+        let child_groups = child_group_ids
+            .iter()
+            .map(|group_id| {
+                group_indices
+                    .get(group_id)
+                    .copied()
+                    .map(|index| &graph.groups[index])
+                    .ok_or_else(|| {
+                        anyhow!("dynamic.coordination.child-group-missing: group `{group_id}`")
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let status = ai_dynamic_coordination_workstream_status(&workstream.steps, &child_groups);
+        workstreams.push(AiDynamicCoordinationWorkstream {
+            id: workstream.id,
+            parent_workstream_id,
+            owner_group_id: workstream.owner_group_id,
+            title: workstream.title,
+            goal: workstream.goal,
+            status,
+            workspace: ai_dynamic_coordination_workspace_ref(
+                &workspace_refs,
+                &workstream.workspace_id,
+            )?,
+            child_group_ids,
+            steps: workstream.steps,
+        });
+    }
+
+    ensure_ai_dynamic_coordination_parent_topology(
+        "workstream",
+        workstreams.iter().map(|workstream| {
+            (
+                workstream.id.as_str(),
+                workstream.parent_workstream_id.as_deref(),
+            )
+        }),
+    )?;
+
+    let groups = graph
+        .groups
+        .iter()
+        .map(|group| {
+            Ok(AiDynamicCoordinationGroup {
+                id: group.id.clone(),
+                parent_group_id: group.parent_group_id.clone(),
+                created_by_workstream_id: group_owner_workstream_ids
+                    .get(&group.id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "dynamic.coordination.group-owner-missing: group `{}`",
+                            group.id
+                        )
+                    })?,
+                branch_workstream_ids: branch_workstream_ids_by_group
+                    .remove(&group.id)
+                    .unwrap_or_default(),
+                phase: group.status,
+                target_workspace: ai_dynamic_coordination_workspace_ref(
+                    &workspace_refs,
+                    &group.target_workspace_id,
+                )?,
+                merge: ai_dynamic_coordination_group_stage(
+                    graph,
+                    &node_indices,
+                    &group.id,
+                    DynamicNodeKind::Merge,
+                    &group.merge,
+                    group.merge_node_id.as_deref(),
+                )?,
+                acceptance: ai_dynamic_coordination_group_stage(
+                    graph,
+                    &node_indices,
+                    &group.id,
+                    DynamicNodeKind::Acceptance,
+                    &group.acceptance,
+                    group.acceptance_node_id.as_deref(),
+                )?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ensure_ai_dynamic_coordination_parent_topology(
+        "group",
+        groups
+            .iter()
+            .map(|group| (group.id.as_str(), group.parent_group_id.as_deref())),
+    )?;
+    Ok(AiDynamicCoordinationSnapshot {
+        version: VERSION.to_string(),
+        kind: AiDynamicCoordinationSnapshotKind::AiDynamicCoordinationSnapshot,
+        dynamic_run_id: graph.run.id.clone(),
+        generated_at: now_rfc3339_like(),
+        workstreams,
+        groups,
+    })
 }
 
 fn persist_dynamic_graph_for_resume(
@@ -5522,6 +6376,7 @@ fn register_dynamic_resume_channel(
     ))
 }
 
+#[cfg(test)]
 fn dispatch_dynamic_resume_override(
     repo_root: &Utf8Path,
     task_id: &str,
@@ -5531,6 +6386,50 @@ fn dispatch_dynamic_resume_override(
     outer_attempt_id: &str,
     resume: DynamicResumeOverride,
 ) -> Result<DynamicResumeDispatch> {
+    dispatch_dynamic_resume_override_with_lease(
+        repo_root,
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+        resume,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispatch_registered_dynamic_resume_override(
+    repo_root: &Utf8Path,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+    resume: DynamicResumeOverride,
+) -> Result<DynamicResumeDispatch> {
+    dispatch_dynamic_resume_override_with_lease(
+        repo_root,
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+        resume,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reserve_dynamic_resume_request(
+    repo_root: &Utf8Path,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+    lease: DynamicResumeLease,
+) -> Result<String> {
     let key = dynamic_state_lock_key(
         repo_root,
         task_id,
@@ -5545,7 +6444,9 @@ fn dispatch_dynamic_resume_override(
         .map_err(|_| anyhow!("dynamic resume coordinator poisoned"))?;
     let duplicate_target = coordinator.inflight.get(&key).is_some_and(|requests| {
         requests.values().any(|request| {
-            request.node_id == resume.node_id && request.attempt_id == resume.attempt_id
+            request.request_id != lease.request_id
+                && request.node_id == lease.node_id
+                && request.attempt_id == lease.attempt_id
         })
     });
     if duplicate_target {
@@ -5554,8 +6455,8 @@ fn dispatch_dynamic_resume_override(
             "runtime.continue-already-active",
             "dynamic runtime continue is already active for this attempt",
             serde_json::json!({
-                "nodeId": resume.node_id,
-                "attemptId": resume.attempt_id,
+                "nodeId": lease.node_id,
+                "attemptId": lease.attempt_id,
             }),
         )));
     }
@@ -5563,7 +6464,54 @@ fn dispatch_dynamic_resume_override(
         .inflight
         .entry(key.clone())
         .or_default()
-        .insert(resume.request_id.clone(), resume.clone());
+        .insert(lease.request_id.clone(), lease);
+    Ok(key)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispatch_dynamic_resume_override_with_lease(
+    repo_root: &Utf8Path,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+    resume: DynamicResumeOverride,
+    require_reserved_lease: bool,
+) -> Result<DynamicResumeDispatch> {
+    let key = dynamic_state_lock_key(
+        repo_root,
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    if !require_reserved_lease {
+        reserve_dynamic_resume_request(
+            repo_root,
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+            DynamicResumeLease::from(&resume),
+        )?;
+    }
+    let mut coordinator = DYNAMIC_RESUME_COORDINATOR
+        .get_or_init(|| Mutex::new(DynamicResumeCoordinator::default()))
+        .lock()
+        .map_err(|_| anyhow!("dynamic resume coordinator poisoned"))?;
+    if !coordinator
+        .inflight
+        .get(&key)
+        .is_some_and(|requests| requests.contains_key(&resume.request_id))
+    {
+        return Err(runtime_error(dynamic_runtime_continue_superseded_info(
+            &resume.request_id,
+            &resume.node_id,
+        )));
+    }
     if let Some(driver) = coordinator.drivers.get(&key) {
         if driver.sender.send(resume.clone()).is_ok() {
             return Ok(DynamicResumeDispatch::Sent);
@@ -5578,39 +6526,202 @@ fn dispatch_dynamic_resume_override(
     }
 }
 
-fn complete_dynamic_resume_request(key: &str, request_id: &str) {
+fn complete_dynamic_resume_request(
+    key: &str,
+    request_id: &str,
+    launch: Option<RuntimeContinueLaunch>,
+) -> bool {
     let Some(coordinator) = DYNAMIC_RESUME_COORDINATOR.get() else {
-        return;
+        return false;
     };
     let Ok(mut coordinator) = coordinator.lock() else {
-        return;
+        return false;
     };
+    let mut completed = None;
     let remove_graph = coordinator.inflight.get_mut(key).is_some_and(|requests| {
-        requests.remove(request_id);
+        completed = requests.remove(request_id);
         requests.is_empty()
     });
     if remove_graph {
         coordinator.inflight.remove(key);
     }
+    let Some(mut completed) = completed else {
+        return false;
+    };
+    if let (Some(sender), Some(launch)) = (completed.launch_signal.take(), launch) {
+        return sender.send(launch).is_ok();
+    }
+    true
 }
 
-fn take_dynamic_resume_inflight(key: &str) -> Result<Vec<DynamicResumeOverride>> {
-    let Some(coordinator) = DYNAMIC_RESUME_COORDINATOR.get() else {
-        return Ok(Vec::new());
-    };
-    let mut coordinator = coordinator
+fn dynamic_resume_request_is_active(key: &str, request_id: &str) -> Result<bool> {
+    let coordinator = DYNAMIC_RESUME_COORDINATOR
+        .get_or_init(|| Mutex::new(DynamicResumeCoordinator::default()))
         .lock()
         .map_err(|_| anyhow!("dynamic resume coordinator poisoned"))?;
-    coordinator.pending.remove(key);
-    coordinator.starting.remove(key);
     Ok(coordinator
         .inflight
-        .remove(key)
-        .map(|requests| requests.into_values().collect())
-        .unwrap_or_default())
+        .get(key)
+        .is_some_and(|requests| requests.contains_key(request_id)))
 }
 
-fn unregister_dynamic_resume_driver(key: &str, driver_id: &str) -> Vec<DynamicResumeOverride> {
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn dynamic_resume_target_is_active(
+    repo_root: &Utf8Path,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+) -> Result<bool> {
+    let key = dynamic_state_lock_key(
+        repo_root,
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    let coordinator = DYNAMIC_RESUME_COORDINATOR
+        .get_or_init(|| Mutex::new(DynamicResumeCoordinator::default()))
+        .lock()
+        .map_err(|_| anyhow!("dynamic resume coordinator poisoned"))?;
+    Ok(coordinator.inflight.get(&key).is_some_and(|requests| {
+        requests
+            .values()
+            .any(|request| request.node_id == node_id && request.attempt_id == attempt_id)
+    }))
+}
+
+fn fail_dynamic_resume_requests(
+    key: &str,
+    mut matches: impl FnMut(&DynamicResumeLease) -> bool,
+    info: RuntimeErrorInfo,
+) -> Result<Vec<DynamicResumeLease>> {
+    let mut coordinator = DYNAMIC_RESUME_COORDINATOR
+        .get_or_init(|| Mutex::new(DynamicResumeCoordinator::default()))
+        .lock()
+        .map_err(|_| anyhow!("dynamic resume coordinator poisoned"))?;
+    let mut failed = Vec::new();
+    let remove_graph = coordinator.inflight.get_mut(key).is_some_and(|requests| {
+        let request_ids = requests
+            .iter()
+            .filter(|(_, request)| matches(request))
+            .map(|(request_id, _)| request_id.clone())
+            .collect::<Vec<_>>();
+        for request_id in request_ids {
+            if let Some(request) = requests.remove(&request_id) {
+                failed.push(request);
+            }
+        }
+        requests.is_empty()
+    });
+    if let Some(pending) = coordinator.pending.get_mut(key) {
+        pending.retain(|request| {
+            !failed
+                .iter()
+                .any(|item| item.request_id == request.request_id)
+        });
+        if pending.is_empty() {
+            coordinator.pending.remove(key);
+        }
+    }
+    if remove_graph {
+        coordinator.inflight.remove(key);
+        coordinator.starting.remove(key);
+    }
+    for request in &mut failed {
+        if let Some(sender) = request.launch_signal.take() {
+            let _ = sender.send(RuntimeContinueLaunch::Failed(info.clone()));
+        }
+    }
+    drop(coordinator);
+    Ok(failed)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stop_dynamic_resume_target(
+    repo_root: &Utf8Path,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+) -> Result<usize> {
+    let key = dynamic_state_lock_key(
+        repo_root,
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    fail_dynamic_resume_requests(
+        &key,
+        |request| request.node_id == node_id && request.attempt_id == attempt_id,
+        dynamic_runtime_continue_stopped_info(node_id, attempt_id),
+    )
+    .map(|failed| failed.len())
+}
+
+fn wait_for_dynamic_runtime_continue_launch(
+    receiver: mpsc::Receiver<RuntimeContinueLaunch>,
+    key: &str,
+    request_id: &str,
+    timeout: Duration,
+) -> Result<RunState> {
+    match receiver.recv_timeout(timeout) {
+        Ok(RuntimeContinueLaunch::Started(run)) => Ok(run),
+        Ok(RuntimeContinueLaunch::Failed(info)) => Err(runtime_error(info)),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(runtime_error(manual_runtime_error_info(
+            RuntimeErrorDomain::Internal,
+            "runtime.continue-launch-channel-closed",
+            "dynamic runtime continue launch channel closed before acknowledgement",
+            serde_json::json!({ "requestId": request_id }),
+        ))),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            // Launch acknowledgement and timeout revocation compete on the
+            // in-memory request lease. The winner removes the lease and owns
+            // the terminal signal; the leaf spawn path must claim that same
+            // lease after persisting Running and immediately before spawn.
+            let info = dynamic_runtime_continue_timeout_info(request_id, timeout);
+            let failed = fail_dynamic_resume_requests(
+                key,
+                |request| request.request_id == request_id,
+                info.clone(),
+            )?;
+            if failed.is_empty() {
+                return match receiver.try_recv() {
+                    Ok(RuntimeContinueLaunch::Started(run)) => Ok(run),
+                    Ok(RuntimeContinueLaunch::Failed(info)) => Err(runtime_error(info)),
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        Err(runtime_error(manual_runtime_error_info(
+                            RuntimeErrorDomain::Internal,
+                            "runtime.continue-launch-channel-closed",
+                            "dynamic runtime continue launch channel closed during deadline resolution",
+                            serde_json::json!({ "requestId": request_id }),
+                        )))
+                    }
+                    Err(mpsc::TryRecvError::Empty) => {
+                        Err(runtime_error(manual_runtime_error_info(
+                            RuntimeErrorDomain::Internal,
+                            "runtime.continue-launch-resolution-missing",
+                            "dynamic runtime continue launch winner did not publish its acknowledgement atomically",
+                            serde_json::json!({ "requestId": request_id }),
+                        )))
+                    }
+                };
+            }
+            Err(runtime_error(info))
+        }
+    }
+}
+
+fn unregister_dynamic_resume_driver(key: &str, driver_id: &str) -> Vec<DynamicResumeLease> {
     let Some(coordinator) = DYNAMIC_RESUME_COORDINATOR.get() else {
         return Vec::new();
     };
@@ -5628,11 +6739,25 @@ fn unregister_dynamic_resume_driver(key: &str, driver_id: &str) -> Vec<DynamicRe
     coordinator.drivers.remove(key);
     coordinator.starting.remove(key);
     coordinator.pending.remove(key);
-    coordinator
+    let mut failed: Vec<DynamicResumeLease> = coordinator
         .inflight
         .remove(key)
         .map(|requests| requests.into_values().collect())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    for resume in &mut failed {
+        if let Some(sender) = resume.launch_signal.take() {
+            let _ = sender.send(RuntimeContinueLaunch::Failed(manual_runtime_error_info(
+                RuntimeErrorDomain::Workflow,
+                "runtime.continue-driver-ended",
+                "dynamic runtime driver ended before the requested leaf started",
+                serde_json::json!({
+                    "requestId": resume.request_id,
+                    "nodeId": resume.node_id,
+                }),
+            )));
+        }
+    }
+    failed
 }
 
 fn clear_dynamic_resume_starting_window(key: &str) -> Result<Vec<DynamicResumeOverride>> {
@@ -5651,6 +6776,7 @@ fn execute_ai_dynamic_node(
     round: &RoundState,
     attempt_id: &str,
     dynamic: &AiDynamicNode,
+    outer_new_round_trigger: Option<PromptPredecessorContext>,
     mut outer_node: NodeState,
     parent_continue_input: Option<ConversationPromptInput>,
     parent_continue_prompt_id: Option<String>,
@@ -5664,6 +6790,7 @@ fn execute_ai_dynamic_node(
         outer_node_id: &outer_node.node_id,
         outer_attempt_id: attempt_id,
         outer_runtime_execution_id: outer_node.runtime_execution_id.clone(),
+        outer_new_round_trigger,
         dynamic,
         task_uuid: run.task_uuid.as_deref(),
         run_uuid: run.uuid.as_deref(),
@@ -5673,16 +6800,36 @@ fn execute_ai_dynamic_node(
         parent_continue_prompt_id,
         resume_override,
     };
-    let mut graph = load_or_create_dynamic_graph(&ctx)?;
-    let mut reconciled_resume = None;
-    if let Some(resume) = ctx.resume_override.clone()
-        && try_reconcile_dynamic_resume_completion(&ctx, &mut graph, &resume)?
-    {
-        reconciled_resume = Some(resume);
-        ctx.resume_override = None;
-    }
-    resume_paused_dynamic_graph(&mut graph, ctx.resume_override.as_ref())?;
-    persist_dynamic_graph(&ctx, &mut graph)?;
+    let mut graph = {
+        let state_lock = dynamic_state_lock(&ctx)?;
+        let _guard = state_lock.lock();
+        let mut graph = load_or_create_dynamic_graph(&ctx)?;
+        if let Some(resume) = ctx.resume_override.as_ref() {
+            let key = dynamic_state_lock_key(
+                &ctx.app.paths.repo_root,
+                ctx.task_id,
+                ctx.run_id,
+                ctx.round_id,
+                ctx.outer_node_id,
+                ctx.outer_attempt_id,
+            );
+            ensure!(
+                dynamic_resume_request_is_active(&key, &resume.request_id)?,
+                runtime_error(dynamic_runtime_continue_superseded_info(
+                    &resume.request_id,
+                    &resume.node_id,
+                ))
+            );
+        }
+        if let Some(resume) = ctx.resume_override.clone()
+            && try_reconcile_dynamic_resume_completion(&ctx, &mut graph, &resume)?
+        {
+            ctx.resume_override = None;
+        }
+        resume_paused_dynamic_graph(&mut graph, ctx.resume_override.as_ref())?;
+        persist_dynamic_graph(&ctx, &mut graph)?;
+        graph
+    };
     ctx.app.transition_runtime_execution_phase(
         ctx.task_id,
         ctx.run_id,
@@ -5691,9 +6838,6 @@ fn execute_ai_dynamic_node(
         ctx.outer_attempt_id,
         RuntimeExecutionPhase::RunningNode,
     )?;
-    if let Some(mut resume) = reconciled_resume {
-        notify_dynamic_resume_started(&ctx, &mut resume);
-    }
     ensure_dynamic_required_model_catalogs(&ctx, &mut graph)?;
     drive_dynamic_graph(&ctx, &mut graph)?;
 
@@ -5892,10 +7036,25 @@ fn apply_dynamic_resume_overrides(
     graph: &mut DynamicGraphState,
     resumes: &mut Vec<DynamicResumeOverride>,
 ) -> Result<Vec<DynamicResumeOverride>> {
+    let key = dynamic_state_lock_key(
+        &ctx.app.paths.repo_root,
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+    );
     let mut applied_indexes = Vec::new();
     let mut launch_resumes = Vec::new();
-    let mut reconciled_resumes = Vec::new();
+    let mut reconciled_completion = false;
     for (index, resume) in resumes.iter().enumerate() {
+        if !dynamic_resume_request_is_active(&key, &resume.request_id)? {
+            // Stop/timeout already resolved the launch signal and revoked the
+            // lease. Drop the driver's delayed local copy without re-arming
+            // durable state or publishing a second terminal result.
+            applied_indexes.push(index);
+            continue;
+        }
         let request_is_current = graph.nodes.iter().any(|node| {
             node.id == resume.node_id
                 && dynamic_attempt_id(node) == resume.attempt_id
@@ -5913,22 +7072,14 @@ fn apply_dynamic_resume_overrides(
             notify_dynamic_resume_failed(
                 ctx,
                 &mut stale,
-                manual_runtime_error_info(
-                    RuntimeErrorDomain::Workflow,
-                    "runtime.continue-superseded",
-                    "dynamic runtime continue was superseded by a newer lifecycle transition",
-                    serde_json::json!({
-                        "requestId": resume.request_id,
-                        "nodeId": resume.node_id,
-                    }),
-                ),
+                dynamic_runtime_continue_superseded_info(&resume.request_id, &resume.node_id),
             );
             applied_indexes.push(index);
             continue;
         }
         if try_reconcile_dynamic_resume_completion(ctx, graph, resume)? {
             applied_indexes.push(index);
-            reconciled_resumes.push(resume.clone());
+            reconciled_completion = true;
             continue;
         }
         rearm_dynamic_resume_target(graph, resume)?;
@@ -5946,11 +7097,8 @@ fn apply_dynamic_resume_overrides(
     }
     graph.run.updated_at = now_rfc3339_like();
     refresh_dynamic_current_leaf_ids(graph);
-    if !reconciled_resumes.is_empty() {
+    if reconciled_completion {
         persist_dynamic_graph(ctx, graph)?;
-        for mut resume in reconciled_resumes {
-            notify_dynamic_resume_started(ctx, &mut resume);
-        }
     }
     Ok(launch_resumes)
 }
@@ -5978,10 +7126,25 @@ fn try_reconcile_dynamic_resume_completion(
     }
     let mut node = graph.nodes[index].clone();
     let Some(proposal) =
-        try_accept_interrupted_dynamic_completion(ctx, &mut node, &resume.attempt_id, None)?
+        try_build_accepted_interrupted_dynamic_completion(ctx, &node, &resume.attempt_id, None)?
     else {
         return Ok(false);
     };
+    // A reconciled completion does not spawn a new Agent. Claim the same
+    // launch lease before applying any durable completion/workspace side
+    // effects, so timeout/Stop and reconciliation have one terminal winner.
+    // The outer Runtime is already durably Running at this point; subsequent
+    // reconciliation failures are ordinary post-start Runtime failures.
+    let mut started_resume = resume.clone();
+    ensure!(
+        notify_dynamic_resume_started(ctx, &mut started_resume),
+        runtime_error(dynamic_runtime_continue_superseded_info(
+            &resume.request_id,
+            &resume.node_id,
+        ))
+    );
+    let proposal =
+        accept_interrupted_dynamic_completion(ctx, &mut node, &resume.attempt_id, None, proposal)?;
     graph.nodes[index] = node;
     graph.run.status = DynamicRunStatus::Running;
     graph.run.phase = DynamicRunPhase::Executing;
@@ -6062,7 +7225,10 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
     if graph_path.exists() {
         let lock = dynamic_state_lock(ctx)?;
         let _guard = lock.lock();
-        let graph = load_dynamic_graph(&graph_path, &ctx.app.paths.repo_root)?;
+        let mut graph = load_dynamic_graph(&graph_path, &ctx.app.paths.repo_root)?;
+        if reconcile_closed_dynamic_group_workspaces(ctx, &mut graph) {
+            persist_dynamic_graph(ctx, &mut graph)?;
+        }
         validate_dynamic_workspace_catalog(&graph)?;
         return Ok(graph);
     }
@@ -6380,6 +7546,7 @@ fn complete_dynamic_graph_success(
     ctx: &DynamicExecutionContext<'_>,
     graph: &mut DynamicGraphState,
 ) -> Result<()> {
+    publish_ai_dynamic_success_outputs(ctx, graph)?;
     let terminal_leaf_ids = graph
         .nodes
         .last()
@@ -6405,6 +7572,337 @@ fn complete_dynamic_graph_success(
     event_result
 }
 
+fn accepted_dynamic_completions(
+    graph: &DynamicGraphState,
+) -> Result<HashMap<String, DynamicNodeCompletion>> {
+    graph
+        .proposals
+        .iter()
+        .filter(|proposal| proposal.validation_status == DynamicProposalValidationStatus::Accepted)
+        .map(|proposal| {
+            let completion =
+                serde_json::from_value::<DynamicNodeCompletion>(proposal.parsed.clone())
+                    .with_context(|| {
+                        format!(
+                            "accepted dynamic proposal `{}` has an invalid completion payload",
+                            proposal.id
+                        )
+                    })?;
+            Ok((proposal.source_node_id.clone(), completion))
+        })
+        .collect()
+}
+
+fn dynamic_spawned_by_node_ids(
+    graph: &DynamicGraphState,
+    completions: &HashMap<String, DynamicNodeCompletion>,
+) -> HashMap<String, String> {
+    let mut spawned_by = dynamic_materialized_by_node_ids(completions);
+    for group in &graph.groups {
+        if let Some(merge_node_id) = &group.merge_node_id {
+            spawned_by.insert(merge_node_id.clone(), group.created_by_node_id.clone());
+            if let Some(acceptance_node_id) = &group.acceptance_node_id {
+                spawned_by.insert(acceptance_node_id.clone(), merge_node_id.clone());
+            }
+        }
+    }
+    spawned_by
+}
+
+fn dynamic_materialized_by_node_ids(
+    completions: &HashMap<String, DynamicNodeCompletion>,
+) -> HashMap<String, String> {
+    let mut materialized_by = HashMap::new();
+    for (source_node_id, completion) in completions {
+        match &completion.next {
+            DynamicNext::End => {}
+            DynamicNext::Single { node } => {
+                materialized_by.insert(node.id.clone(), source_node_id.clone());
+            }
+            DynamicNext::Fanout { nodes, .. } => {
+                for node in nodes {
+                    materialized_by.insert(node.id.clone(), source_node_id.clone());
+                }
+            }
+        }
+    }
+    materialized_by
+}
+
+fn ai_dynamic_workspace_ref(
+    graph: &DynamicGraphState,
+    workspace_id: &str,
+) -> Result<AiDynamicWorkspaceRef> {
+    let workspace = dynamic_workspace(graph, workspace_id)?;
+    Ok(AiDynamicWorkspaceRef {
+        id: workspace.id.clone(),
+        kind: workspace.kind,
+        path: workspace.path.clone(),
+        branch: workspace.branch.clone(),
+    })
+}
+
+fn ai_dynamic_task_ref(spec: &DynamicAgentTaskSpec) -> AiDynamicTaskRef {
+    AiDynamicTaskRef {
+        title: spec.title.clone(),
+        task: spec.task.clone(),
+    }
+}
+
+fn ai_dynamic_report_next(next: &DynamicNext) -> AiDynamicReportNext {
+    match next {
+        DynamicNext::End => AiDynamicReportNext::End,
+        DynamicNext::Single { node } => AiDynamicReportNext::Single {
+            node_id: node.id.clone(),
+        },
+        DynamicNext::Fanout {
+            group_id, nodes, ..
+        } => AiDynamicReportNext::Fanout {
+            group_id: group_id.clone(),
+            root_node_ids: nodes.iter().map(|node| node.id.clone()).collect(),
+        },
+    }
+}
+
+fn authoritative_dynamic_completion<'a>(
+    graph: &'a DynamicGraphState,
+    completions: &'a HashMap<String, DynamicNodeCompletion>,
+) -> Result<(&'a DynamicNodeState, &'a DynamicNodeCompletion)> {
+    let candidates = graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            dynamic_end_summary_is_outer_handoff(graph, node)
+                && node.status == DynamicNodeStatus::Completed
+                && node.outcome == Some(NodeOutcome::Success)
+        })
+        .filter_map(|node| {
+            completions
+                .get(&node.id)
+                .filter(|completion| matches!(completion.next, DynamicNext::End))
+                .map(|completion| (node, completion))
+        })
+        .collect::<Vec<_>>();
+    ensure!(
+        candidates.len() == 1,
+        "AI-DYNAMIC success requires exactly one authoritative top-level end completion; found {}",
+        candidates.len()
+    );
+    Ok(candidates[0])
+}
+
+fn build_ai_dynamic_report_manifest(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+    generated_at: &str,
+    completions: &HashMap<String, DynamicNodeCompletion>,
+) -> Result<AiDynamicReportManifest> {
+    let roots = graph
+        .nodes
+        .iter()
+        .filter(|node| node.depth == 0 && node.group_id.is_none() && node.depends_on.is_empty())
+        .collect::<Vec<_>>();
+    ensure!(
+        roots.len() == 1,
+        "AI-DYNAMIC report requires exactly one root node; found {}",
+        roots.len()
+    );
+    let spawned_by = dynamic_spawned_by_node_ids(graph, completions);
+    let nodes = graph
+        .nodes
+        .iter()
+        .map(|node| {
+            let attachments = dynamic_attachment_entries_for_node(ctx, node)
+                .into_iter()
+                .map(|attachment| {
+                    let size_bytes = std::fs::metadata(attachment.path.as_std_path())
+                        .map(|metadata| metadata.len())
+                        .unwrap_or_default();
+                    AiDynamicReportAttachment {
+                        name: attachment.name,
+                        path: attachment.path,
+                        size_bytes,
+                    }
+                })
+                .collect();
+            Ok(AiDynamicReportNode {
+                id: node.id.clone(),
+                kind: node.kind,
+                title: node.title.clone(),
+                task: node.task.clone(),
+                status: node.status,
+                outcome: node.outcome,
+                spawned_by_node_id: spawned_by.get(&node.id).cloned(),
+                depends_on: node.depends_on.clone(),
+                group_id: node.group_id.clone(),
+                chain_id: node.chain_id.clone(),
+                workspace: ai_dynamic_workspace_ref(graph, &node.workspace_id)?,
+                started_at: node.started_at.clone(),
+                finished_at: node.finished_at.clone(),
+                summary: completions
+                    .get(&node.id)
+                    .map(|completion| completion.summary.clone()),
+                next: completions
+                    .get(&node.id)
+                    .map(|completion| ai_dynamic_report_next(&completion.next)),
+                child_workflow: node.workflow_id.as_ref().map(|workflow_id| {
+                    AiDynamicChildWorkflowRef {
+                        workflow_id: workflow_id.clone(),
+                        workflow_snapshot_id: node.workflow_snapshot_id.clone(),
+                        child_run_id: node.child_run_id.clone(),
+                    }
+                }),
+                attachments,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let groups = graph
+        .groups
+        .iter()
+        .map(|group| AiDynamicReportGroup {
+            id: group.id.clone(),
+            status: group.status,
+            depth: group.depth,
+            parent_group_id: group.parent_group_id.clone(),
+            created_by_node_id: group.created_by_node_id.clone(),
+            root_node_ids: group.root_node_ids.clone(),
+            terminal_node_ids: group.terminal_node_ids.clone(),
+            target_workspace_id: group.target_workspace_id.clone(),
+            child_workspace_ids: group.child_workspace_ids.clone(),
+            merge_node_id: group.merge_node_id.clone(),
+            acceptance_node_id: group.acceptance_node_id.clone(),
+            merge: ai_dynamic_task_ref(&group.merge),
+            acceptance: ai_dynamic_task_ref(&group.acceptance),
+            created_at: group.created_at.clone(),
+            updated_at: group.updated_at.clone(),
+        })
+        .collect();
+    Ok(AiDynamicReportManifest {
+        version: VERSION.to_string(),
+        kind: AiDynamicReportManifestKind::AiDynamicReportManifest,
+        dynamic_run_id: graph.run.id.clone(),
+        root_node_id: roots[0].id.clone(),
+        outcome: RunOutcome::Success,
+        generated_at: generated_at.to_string(),
+        nodes,
+        groups,
+    })
+}
+
+fn publish_ai_dynamic_success_outputs(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+) -> Result<()> {
+    let completions = accepted_dynamic_completions(graph)?;
+    let (source, completion) = authoritative_dynamic_completion(graph, &completions)?;
+    let generated_at = now_rfc3339_like();
+    let manifest = build_ai_dynamic_report_manifest(ctx, graph, &generated_at, &completions)?;
+    let manifest_path = ctx.app.paths.artifact_file(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+        AI_DYNAMIC_REPORT_MANIFEST_ARTIFACT,
+    );
+    let attachment_count = manifest
+        .nodes
+        .iter()
+        .map(|node| node.attachments.len())
+        .sum();
+    let result = AiDynamicResult {
+        version: VERSION.to_string(),
+        kind: AiDynamicResultKind::AiDynamicResult,
+        outcome: RunOutcome::Success,
+        summary: completion.summary.clone(),
+        source_node_id: source.id.clone(),
+        source_group_id: source.group_id.clone(),
+        report_manifest: AiDynamicReportManifestRef {
+            path: manifest_path.clone(),
+            format_version: VERSION.to_string(),
+            unit_count: manifest.nodes.len() + manifest.groups.len(),
+            attachment_count,
+            generated_at,
+        },
+    };
+    write_json(&manifest_path, &manifest)?;
+    write_json(
+        &ctx.app.paths.artifact_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+            AI_DYNAMIC_RESULT_ARTIFACT,
+        ),
+        &result,
+    )
+}
+
+fn discard_revoked_dynamic_resume_before_launch(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &mut DynamicGraphState,
+    node_id: &str,
+    launch_resume_overrides: &mut Vec<DynamicResumeOverride>,
+) -> Result<bool> {
+    let Some(resume_index) = launch_resume_overrides
+        .iter()
+        .rposition(|resume| resume.node_id == node_id)
+    else {
+        return Ok(false);
+    };
+    let resume = &launch_resume_overrides[resume_index];
+    let key = dynamic_state_lock_key(
+        &ctx.app.paths.repo_root,
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+    );
+    if dynamic_resume_request_is_active(&key, &resume.request_id)? {
+        return Ok(false);
+    }
+
+    let resume = launch_resume_overrides.remove(resume_index);
+    let Some(node_index) = graph.nodes.iter().position(|node| {
+        node.id == node_id
+            && dynamic_attempt_id(node) == resume.attempt_id
+            && node.runtime_execution_id.as_deref() == Some(resume.execution_id.as_str())
+    }) else {
+        return Ok(true);
+    };
+    if graph.nodes[node_index].status == DynamicNodeStatus::Ready {
+        mark_dynamic_node_paused(
+            &mut graph.nodes[node_index],
+            PauseReason::ProcessInterrupted,
+            None,
+        );
+        refresh_dynamic_current_leaf_ids(graph);
+        if dynamic_graph_has_active_leaf(graph) {
+            graph.run.status = DynamicRunStatus::Running;
+            graph.run.phase = DynamicRunPhase::Executing;
+            graph.run.outcome = None;
+            graph.run.pause_reason = None;
+            graph.run.updated_at = now_rfc3339_like();
+            persist_dynamic_graph(ctx, graph)?;
+        } else {
+            pause_dynamic_graph(
+                ctx,
+                graph,
+                PauseReason::ProcessInterrupted,
+                "dynamic resume request was revoked before leaf launch",
+            )?;
+        }
+        emit_dynamic_session_update_best_effort(
+            ctx,
+            node_id,
+            &dynamic_attempt_id(&graph.nodes[node_index]),
+        );
+    }
+    Ok(true)
+}
+
 fn launch_ready_dynamic_nodes(
     ctx: &DynamicExecutionContext<'_>,
     graph: &mut DynamicGraphState,
@@ -6422,6 +7920,14 @@ fn launch_ready_dynamic_nodes(
         let Some(index) = graph.nodes.iter().position(|node| node.id == node_id) else {
             continue;
         };
+        if discard_revoked_dynamic_resume_before_launch(
+            ctx,
+            graph,
+            &node_id,
+            launch_resume_overrides,
+        )? {
+            continue;
+        }
         dynamic_event_best_effort(
             ctx,
             "dynamic_launch_candidate",
@@ -6430,8 +7936,11 @@ fn launch_ready_dynamic_nodes(
                 "state": dynamic_timing_data(graph),
             }),
         );
-        let (node_clone, resume_override) =
-            persist_dynamic_node_running_and_ack(ctx, graph, index, launch_resume_overrides)?;
+        let Some((node_clone, resume_override)) =
+            persist_dynamic_node_running_and_ack(ctx, graph, index, launch_resume_overrides)?
+        else {
+            continue;
+        };
         let node_id_for_job = node_clone.id.clone();
 
         let background_app = ctx.app.clone_for_background();
@@ -6447,6 +7956,11 @@ fn launch_ready_dynamic_nodes(
         let round_uuid = ctx.round_uuid.map(|s| s.to_string());
         let outer_node_uuid = ctx.outer_node_uuid.map(|s| s.to_string());
         let outer_runtime_execution_id = ctx.outer_runtime_execution_id.clone();
+        let outer_new_round_trigger = if dynamic_node_is_bootstrap_dispatch(&node_clone) {
+            ctx.outer_new_round_trigger.clone()
+        } else {
+            None
+        };
         let parent_continue_input = ctx.parent_continue_input.clone();
         let parent_continue_prompt_id = ctx.parent_continue_prompt_id.clone();
         let spawned_node_id = node_id_for_job.clone();
@@ -6463,6 +7977,7 @@ fn launch_ready_dynamic_nodes(
                     &outer_node_id,
                     &outer_attempt_id,
                     outer_runtime_execution_id,
+                    outer_new_round_trigger,
                     &dynamic,
                     node_clone,
                     task_uuid.as_deref(),
@@ -6509,7 +8024,7 @@ fn persist_dynamic_node_running_and_ack(
     graph: &mut DynamicGraphState,
     index: usize,
     launch_resume_overrides: &mut Vec<DynamicResumeOverride>,
-) -> Result<(DynamicNodeState, Option<DynamicResumeOverride>)> {
+) -> Result<Option<(DynamicNodeState, Option<DynamicResumeOverride>)>> {
     let node = graph
         .nodes
         .get_mut(index)
@@ -6540,15 +8055,43 @@ fn persist_dynamic_node_running_and_ack(
         .rposition(|resume| resume.node_id == node_id_for_job)
         .map(|index| launch_resume_overrides.remove(index));
     persist_dynamic_graph(ctx, graph)?;
-    if let Some(resume) = resume_override.as_mut() {
-        notify_dynamic_resume_started(ctx, resume);
+    if let Some(resume) = resume_override.as_mut()
+        && !notify_dynamic_resume_started(ctx, resume)
+    {
+        mark_dynamic_node_paused(
+            &mut graph.nodes[index],
+            PauseReason::ProcessInterrupted,
+            None,
+        );
+        refresh_dynamic_current_leaf_ids(graph);
+        if dynamic_graph_has_active_leaf(graph) {
+            graph.run.status = DynamicRunStatus::Running;
+            graph.run.phase = DynamicRunPhase::Executing;
+            graph.run.outcome = None;
+            graph.run.pause_reason = None;
+            graph.run.updated_at = now_rfc3339_like();
+            persist_dynamic_graph(ctx, graph)?;
+        } else {
+            pause_dynamic_graph(
+                ctx,
+                graph,
+                PauseReason::ProcessInterrupted,
+                "dynamic resume lease was revoked while committing leaf launch",
+            )?;
+        }
+        emit_dynamic_session_update_best_effort(
+            ctx,
+            &node_id_for_job,
+            &dynamic_attempt_id(&graph.nodes[index]),
+        );
+        return Ok(None);
     }
     emit_dynamic_session_update_best_effort(
         ctx,
         &node_id_for_job,
         &dynamic_attempt_id(&node_clone),
     );
-    Ok((node_clone, resume_override))
+    Ok(Some((node_clone, resume_override)))
 }
 
 fn persist_paused_dynamic_leaf_or_graph(
@@ -6676,7 +8219,14 @@ fn apply_dynamic_execution_message(
     for proposal in result.proposals {
         if proposal.validation_status == DynamicProposalValidationStatus::Rejected {
             rejected_source_node_id = Some(proposal.source_node_id.clone());
-            graph.proposals.push(proposal);
+            if !proposal_has_fanout_commit_reminder(&proposal)
+                || !graph.proposals.iter().any(|previous| {
+                    previous.source_node_id == proposal.source_node_id
+                        && proposal_has_fanout_commit_reminder(previous)
+                })
+            {
+                graph.proposals.push(proposal);
+            }
             continue;
         }
         accepted_any = true;
@@ -6740,7 +8290,24 @@ fn accept_dynamic_completion_proposal(
     let proposal_id = proposal.id.clone();
     let source_node_id = proposal.source_node_id.clone();
     graph.proposals.push(proposal);
-    let visible_node_ids = materialize_dynamic_next(ctx, graph, source_index, completion.next)?;
+    let visible_node_ids = match materialize_dynamic_next(ctx, graph, source_index, completion.next)
+    {
+        Ok(visible) => visible,
+        Err(error) => {
+            let info = normalize_runtime_error(&error);
+            if info.code_str() == DYNAMIC_FANOUT_WORKSPACE_CHECK_FAILED {
+                // Reading the fork baseline happens before any workspace transition.
+                graph.proposals.pop();
+                mark_dynamic_node_paused(
+                    &mut graph.nodes[source_index],
+                    PauseReason::RuntimeAbnormal,
+                    Some(info),
+                );
+                persist_dynamic_graph(ctx, graph)?;
+            }
+            return Err(error);
+        }
+    };
     append_dynamic_event(
         ctx,
         "dynamic_proposal_accepted",
@@ -6988,6 +8555,7 @@ fn execute_dynamic_node_job(
     outer_node_id: &str,
     outer_attempt_id: &str,
     outer_runtime_execution_id: Option<String>,
+    outer_new_round_trigger: Option<PromptPredecessorContext>,
     dynamic: &AiDynamicNode,
     node: DynamicNodeState,
     task_uuid: Option<&str>,
@@ -7067,6 +8635,7 @@ fn execute_dynamic_node_job(
         outer_node_id,
         outer_attempt_id,
         outer_runtime_execution_id,
+        outer_new_round_trigger,
         dynamic,
         task_uuid,
         run_uuid,
@@ -7294,6 +8863,7 @@ fn execute_dynamic_worker(
     let resume_prompt_id = prompt_state.resume_prompt_id;
     let mut prompt_display = prompt_state.prompt_display;
     let logical_prompt_id = logical_prompt_id(resume_prompt_id.clone());
+    let mut current_prompt_id = logical_prompt_id.clone();
     let mut resume_prompt_visibility = prompt_state.resume_prompt_visibility;
     let mut user_prompt_render_mode = prompt_state.user_prompt_render_mode;
     let mut runtime_control_intent = prompt_state.runtime_control_intent;
@@ -7394,7 +8964,7 @@ fn execute_dynamic_worker(
             session_mode,
             continue_ref.clone(),
             resume_prompt.clone(),
-            logical_prompt_id.clone(),
+            current_prompt_id.clone(),
             prompt_display.clone(),
             resume_prompt_visibility,
             user_prompt_render_mode,
@@ -7492,7 +9062,7 @@ fn execute_dynamic_worker(
                         serde_json::json!({
                             "nodeId": node.id,
                             "attemptId": attempt_id,
-                            "promptId": logical_prompt_id,
+                            "promptId": current_prompt_id,
                             "retryAttempt": auto_retry_attempts,
                             "maxAttempts": info.retry_policy.as_ref().map(|policy| policy.max_attempts),
                             "delayMs": delay_ms,
@@ -7557,7 +9127,7 @@ fn execute_dynamic_worker(
                     serde_json::json!({
                         "nodeId": node.id,
                         "attemptId": attempt_id,
-                        "promptId": logical_prompt_id,
+                        "promptId": current_prompt_id,
                         "retryAttempt": auto_retry_attempts,
                         "maxAttempts": info.retry_policy.as_ref().map(|policy| policy.max_attempts),
                         "delayMs": delay_ms,
@@ -7579,6 +9149,7 @@ fn execute_dynamic_worker(
             }
         }
         let provider_status = result.status;
+        let has_control_output = result.runtime_control_output.is_some();
         let interrupted_output_artifact = accept_interrupted_completion
             .then(|| interrupted_dynamic_output_artifact_candidate(&result))
             .flatten();
@@ -7669,7 +9240,13 @@ fn execute_dynamic_worker(
                 )?;
                 return Ok(DynamicExecutionResult { node, proposals });
             }
-            Ok(proposal) if proposal_repair_prompts < MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS => {
+            Ok(proposal)
+                if proposal_repair_prompts < MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS
+                    || proposal
+                        .validation_errors
+                        .iter()
+                        .all(|error| error.code == DYNAMIC_FANOUT_WORKSPACE_DIRTY) =>
+            {
                 let repair_continue_ref = read_json::<WorkerRefState>(&worker_ref_path)
                     .ok()
                     .and_then(|worker_ref| worker_ref.continue_ref);
@@ -7691,7 +9268,23 @@ fn execute_dynamic_worker(
                     )?;
                     return Ok(DynamicExecutionResult { node, proposals });
                 };
-                proposal_repair_prompts += 1;
+                let commit_reminder = validation_errors
+                    .iter()
+                    .any(|error| error.code == DYNAMIC_FANOUT_WORKSPACE_DIRTY);
+                if validation_errors
+                    .iter()
+                    .any(|error| error.code != DYNAMIC_FANOUT_WORKSPACE_DIRTY)
+                {
+                    proposal_repair_prompts += 1;
+                }
+                if commit_reminder {
+                    persist_dynamic_fanout_commit_reminder(ctx, proposals.last().unwrap())?;
+                }
+                current_prompt_id = if commit_reminder {
+                    format!("{logical_prompt_id}-fanout-commit")
+                } else {
+                    dynamic_proposal_repair_prompt_id(&logical_prompt_id, proposal_repair_prompts)
+                };
                 append_dynamic_event(
                     ctx,
                     "dynamic_proposal_repair_requested",
@@ -7700,6 +9293,8 @@ fn execute_dynamic_worker(
                         "attemptId": attempt_id,
                         "repairAttempt": proposal_repair_prompts,
                         "maxRepairAttempts": MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS,
+                        "promptId": current_prompt_id,
+                        "commitReminder": commit_reminder,
                         "error": validation_error,
                         "validationErrors": validation_errors,
                     }),
@@ -7747,7 +9342,23 @@ fn execute_dynamic_worker(
                 )?;
                 return Ok(DynamicExecutionResult { node, proposals });
             }
+            Err(err)
+                if normalize_runtime_error(&err).code_str()
+                    == DYNAMIC_FANOUT_WORKSPACE_CHECK_FAILED =>
+            {
+                return Err(err);
+            }
             Err(err) if proposal_repair_prompts < MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS => {
+                let confirm_completion = dynamic_output_emission_mode(&node)
+                    == OutputEmissionMode::PostTurnProjection
+                    && !has_control_output
+                    && !dynamic_output_artifact_path(
+                        ctx,
+                        &node.id,
+                        &attempt_id,
+                        DYNAMIC_COMPLETION_ARTIFACT,
+                    )
+                    .try_exists()?;
                 let schema_validation_errors = err
                     .downcast_ref::<DynamicCompletionSchemaValidationError>()
                     .map(|error| error.errors.clone());
@@ -7758,27 +9369,56 @@ fn execute_dynamic_worker(
                     return Err(err);
                 };
                 proposal_repair_prompts += 1;
+                current_prompt_id = if confirm_completion {
+                    format!("{logical_prompt_id}-finalize-{proposal_repair_prompts}")
+                } else {
+                    dynamic_proposal_repair_prompt_id(&logical_prompt_id, proposal_repair_prompts)
+                };
                 append_dynamic_event(
                     ctx,
-                    "dynamic_proposal_repair_requested",
+                    if confirm_completion {
+                        "dynamic_artifact_finalize_requested"
+                    } else {
+                        "dynamic_proposal_repair_requested"
+                    },
                     serde_json::json!({
                         "nodeId": node.id,
                         "attemptId": attempt_id,
                         "repairAttempt": proposal_repair_prompts,
                         "maxRepairAttempts": MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS,
+                        "promptId": current_prompt_id,
                         "error": err.to_string(),
                         "validationErrors": schema_validation_errors.clone(),
                     }),
                 )?;
                 session_mode = SessionMode::Continue;
                 continue_ref = Some(repair_continue_ref);
-                resume_prompt = Some(match schema_validation_errors {
-                    Some(errors) => dynamic_structured_repair_prompt(ctx, graph, &node, &errors),
-                    None => dynamic_text_repair_prompt(ctx, graph, &node, err.to_string()),
+                resume_prompt = Some(if confirm_completion {
+                    crate::provider::render_artifact_finalize_prompt(
+                        ctx.app.config.desktop_language,
+                        &dynamic_output_contract(
+                            ctx,
+                            graph,
+                            &node,
+                            OutputEmissionMode::PostTurnProjection,
+                        ),
+                        PromptExecutionSurface::AiDynamic,
+                    )?
+                } else {
+                    match schema_validation_errors {
+                        Some(errors) => {
+                            dynamic_structured_repair_prompt(ctx, graph, &node, &errors)
+                        }
+                        None => dynamic_text_repair_prompt(ctx, graph, &node, err.to_string()),
+                    }
                 });
                 prompt_display = None;
                 resume_prompt_visibility = PromptVisibility::Hidden;
-                user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
+                user_prompt_render_mode = if confirm_completion {
+                    UserPromptRenderMode::RuntimeFinalize
+                } else {
+                    UserPromptRenderMode::RuntimeRepair
+                };
                 runtime_control_intent = RuntimeControlIntent::Unchanged;
                 node.status = DynamicNodeStatus::Running;
                 node.outcome = None;
@@ -7788,7 +9428,11 @@ fn execute_dynamic_worker(
                     &node.id,
                     &attempt_id,
                     &expected_execution_id,
-                    RuntimeExecutionPhase::RepairingArtifact,
+                    if confirm_completion {
+                        RuntimeExecutionPhase::FinalizingArtifact
+                    } else {
+                        RuntimeExecutionPhase::RepairingArtifact
+                    },
                 )?;
                 refresh_dynamic_leaf_runtime_execution(ctx, &mut node)?;
                 continue;
@@ -8321,11 +9965,45 @@ fn finalize_dynamic_worker_result(
     if let Some(info) = result.runtime_error {
         return Err(runtime_error(info));
     }
+    if let Some(control_output) = result.runtime_control_output.as_ref() {
+        annotate_dynamic_runtime_control_output_best_effort(
+            ctx,
+            &node_id,
+            attempt_id,
+            control_output,
+            "dynamic-node-completion",
+        );
+    }
     match status {
         ProviderRunStatus::Success => {
-            if let Some(payload) = result.result_payload
-                && let Some(output_artifact) = payload.output_artifact
-            {
+            // A canonical artifact represents this result, never a prior repair turn.
+            let artifact_path = dynamic_output_artifact_path(
+                ctx,
+                &node_id,
+                attempt_id,
+                DYNAMIC_COMPLETION_ARTIFACT,
+            );
+            match std::fs::remove_file(&artifact_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("failed to replace current dynamic artifact: {artifact_path}")
+                    });
+                }
+            }
+            let output_artifact = result
+                .result_payload
+                .and_then(|payload| payload.output_artifact)
+                .or_else(|| {
+                    result.runtime_control_output.map(|output| {
+                        crate::provider::OutputArtifactPayload {
+                            name: output.artifact_name,
+                            content: output.span.json_text,
+                        }
+                    })
+                });
+            if let Some(output_artifact) = output_artifact {
                 write_dynamic_output_artifact(ctx, &node_id, attempt_id, &output_artifact)?;
             }
             node.status = DynamicNodeStatus::Completed;
@@ -8395,13 +10073,6 @@ fn write_dynamic_output_artifact(
     if output_artifact.content.trim().is_empty() {
         return Ok(None);
     }
-    annotate_dynamic_runtime_control_output_best_effort(
-        ctx,
-        node_id,
-        attempt_id,
-        &output_artifact.name,
-        "dynamic-node-completion",
-    );
     let artifact_path =
         dynamic_output_artifact_path(ctx, node_id, attempt_id, &output_artifact.name);
     std::fs::create_dir_all(
@@ -8426,23 +10097,27 @@ fn annotate_dynamic_runtime_control_output_best_effort(
     ctx: &DynamicExecutionContext<'_>,
     node_id: &str,
     attempt_id: &str,
-    artifact_name: &str,
+    control_output: &RuntimeControlOutput,
     kind: &str,
 ) {
-    let path = ctx
-        .app
-        .paths
-        .dynamic_node_attempt_dir(
-            ctx.task_id,
-            ctx.run_id,
-            ctx.round_id,
-            ctx.outer_node_id,
-            ctx.outer_attempt_id,
-            node_id,
-            attempt_id,
-        )
-        .join("acp.timeline.jsonl");
-    if let Err(error) = annotate_latest_runtime_control_output(&path, artifact_name, kind) {
+    let attempt_dir = ctx.app.paths.dynamic_node_attempt_dir(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+        node_id,
+        attempt_id,
+    );
+    let path =
+        crate::acp::branches::branch_timeline_path(&attempt_dir, &control_output.source.branch_id);
+    if let Err(error) = annotate_runtime_control_output(
+        &path,
+        &control_output.source.item_id,
+        &control_output.artifact_name,
+        kind,
+        &control_output.span,
+    ) {
         tracing::warn!(
             task_id = ctx.task_id,
             run_id = ctx.run_id,
@@ -8451,7 +10126,9 @@ fn annotate_dynamic_runtime_control_output_best_effort(
             outer_attempt_id = ctx.outer_attempt_id,
             node_id,
             attempt_id,
-            artifact_name,
+            artifact_name = control_output.artifact_name,
+            branch_id = control_output.source.branch_id,
+            item_id = control_output.source.item_id,
             error = %error,
             "failed to annotate dynamic runtime control output display"
         );
@@ -8464,39 +10141,64 @@ fn try_accept_interrupted_dynamic_completion(
     attempt_id: &str,
     candidate_artifact: Option<&crate::provider::OutputArtifactPayload>,
 ) -> Result<Option<DynamicProposalState>> {
-    let proposal =
-        match build_interrupted_dynamic_completion(ctx, attempt_id, node, candidate_artifact) {
-            Ok(proposal)
-                if proposal.validation_status == DynamicProposalValidationStatus::Accepted =>
-            {
-                proposal
-            }
-            Ok(proposal) => {
-                append_dynamic_event(
-                    ctx,
-                    "dynamic_interrupted_completion_ignored",
-                    serde_json::json!({
-                        "nodeId": node.id,
-                        "attemptId": attempt_id,
-                        "validationStatus": proposal.validation_status,
-                        "validationErrors": proposal.validation_errors,
-                    }),
-                )?;
-                return Ok(None);
-            }
-            Err(error) => {
-                append_dynamic_event(
-                    ctx,
-                    "dynamic_interrupted_completion_ignored",
-                    serde_json::json!({
-                        "nodeId": node.id,
-                        "attemptId": attempt_id,
-                        "error": error.to_string(),
-                    }),
-                )?;
-                return Ok(None);
-            }
-        };
+    let Some(proposal) = try_build_accepted_interrupted_dynamic_completion(
+        ctx,
+        node,
+        attempt_id,
+        candidate_artifact,
+    )?
+    else {
+        return Ok(None);
+    };
+    accept_interrupted_dynamic_completion(ctx, node, attempt_id, candidate_artifact, proposal)
+        .map(Some)
+}
+
+fn try_build_accepted_interrupted_dynamic_completion(
+    ctx: &DynamicExecutionContext<'_>,
+    node: &DynamicNodeState,
+    attempt_id: &str,
+    candidate_artifact: Option<&crate::provider::OutputArtifactPayload>,
+) -> Result<Option<DynamicProposalState>> {
+    match build_interrupted_dynamic_completion(ctx, attempt_id, node, candidate_artifact) {
+        Ok(proposal) if proposal.validation_status == DynamicProposalValidationStatus::Accepted => {
+            Ok(Some(proposal))
+        }
+        Ok(proposal) => {
+            append_dynamic_event(
+                ctx,
+                "dynamic_interrupted_completion_ignored",
+                serde_json::json!({
+                    "nodeId": node.id,
+                    "attemptId": attempt_id,
+                    "validationStatus": proposal.validation_status,
+                    "validationErrors": proposal.validation_errors,
+                }),
+            )?;
+            Ok(None)
+        }
+        Err(error) => {
+            append_dynamic_event(
+                ctx,
+                "dynamic_interrupted_completion_ignored",
+                serde_json::json!({
+                    "nodeId": node.id,
+                    "attemptId": attempt_id,
+                    "error": error.to_string(),
+                }),
+            )?;
+            Ok(None)
+        }
+    }
+}
+
+fn accept_interrupted_dynamic_completion(
+    ctx: &DynamicExecutionContext<'_>,
+    node: &mut DynamicNodeState,
+    attempt_id: &str,
+    candidate_artifact: Option<&crate::provider::OutputArtifactPayload>,
+    proposal: DynamicProposalState,
+) -> Result<DynamicProposalState> {
     if let Some(candidate_artifact) = candidate_artifact {
         write_dynamic_output_artifact(ctx, &node.id, attempt_id, candidate_artifact)?;
     }
@@ -8517,7 +10219,7 @@ fn try_accept_interrupted_dynamic_completion(
             "proposalId": proposal.id,
         }),
     )?;
-    Ok(Some(proposal))
+    Ok(proposal)
 }
 
 fn build_interrupted_dynamic_completion(
@@ -8997,6 +10699,19 @@ fn build_dynamic_completion_proposal(
     };
     let mut validation_errors = pre_validation_errors;
     validation_errors.extend(validate_dynamic_completion(ctx, &graph, index, &completion));
+    if matches!(completion.next, DynamicNext::Fanout { .. })
+        && !graph.proposals.iter().any(|proposal| {
+            proposal.source_node_id == node.id && proposal_has_fanout_commit_reminder(proposal)
+        })
+    {
+        let workspace = dynamic_fanout_source_workspace(&graph, &graph.nodes[index])?;
+        if !GitRepositoryService::default()
+            .is_clean(&workspace.path)
+            .map_err(|error| dynamic_fanout_workspace_check_error(workspace, error))?
+        {
+            validation_errors.push(dynamic_fanout_workspace_dirty_error(workspace));
+        }
+    }
     if validation_errors.is_empty() {
         Ok(DynamicProposalState {
             version: VERSION.to_string(),
@@ -9116,6 +10831,17 @@ fn validate_dynamic_completion(
         ));
         return errors;
     };
+    let outgoing_owner = match dynamic_outgoing_scope_owner(graph, source) {
+        Ok(owner) => owner,
+        Err(_) => {
+            errors.push(dynamic_validation_error(
+                "dynamic.source.scope-invalid",
+                "dynamic source has an invalid outgoing scope",
+                serde_json::json!({"nodeId": source.id}),
+            ));
+            return errors;
+        }
+    };
     match &completion.next {
         DynamicNext::End => {}
         DynamicNext::Single { node } => {
@@ -9191,7 +10917,7 @@ fn validate_dynamic_completion(
                 acceptance,
                 "acceptance",
             ));
-            let group_depth = source
+            let group_depth = outgoing_owner
                 .group_id
                 .as_deref()
                 .and_then(|group_id| graph.groups.iter().find(|group| group.id == group_id))
@@ -9814,59 +11540,124 @@ fn materialize_dynamic_next(
     source_index: usize,
     next: DynamicNext,
 ) -> Result<Vec<String>> {
-    let mut visible_node_ids = Vec::new();
-    let source_node_id = graph
+    let source = graph
         .nodes
         .get(source_index)
-        .map(|source| source.id.clone())
+        .cloned()
         .ok_or_else(|| anyhow!("dynamic proposal source node is missing"))?;
-    let source_is_acceptance = graph
-        .nodes
-        .get(source_index)
-        .map(|source| source.kind == DynamicNodeKind::Acceptance)
-        .unwrap_or(false);
-    let source_group_id = graph
-        .nodes
-        .get(source_index)
-        .and_then(|source| source.group_id.clone());
-    match next {
-        DynamicNext::End => {
-            with_dynamic_workspace_transition(
+    if source.kind != DynamicNodeKind::Acceptance && matches!(next, DynamicNext::Single { .. }) {
+        return materialize_dynamic_next_in_scope(ctx, graph, &source, next, None);
+    }
+    let owner = dynamic_outgoing_scope_owner(graph, &source)?;
+    let mut outgoing = source.clone();
+    outgoing.group_id = owner.group_id.clone();
+    outgoing.chain_id = owner.chain_id.clone();
+    let closing_group = if source.kind == DynamicNodeKind::Acceptance {
+        let group = graph
+            .groups
+            .iter()
+            .find(|group| Some(&group.id) == source.group_id.as_ref())
+            .ok_or_else(|| anyhow!("dynamic.acceptance.group-missing: {}", source.id))?;
+        ensure!(
+            group.status == DynamicGroupStatus::Accepting
+                && group.acceptance_node_id.as_deref() == Some(source.id.as_str()),
+            "dynamic.acceptance.not-current: {}",
+            source.id
+        );
+        outgoing.workspace_id = group.target_workspace_id.clone();
+        Some(group.clone())
+    } else {
+        None
+    };
+    let fork_commit = if matches!(next, DynamicNext::Fanout { .. }) {
+        Some(dynamic_fanout_head(dynamic_workspace(
+            graph,
+            &outgoing.workspace_id,
+        )?)?)
+    } else {
+        None
+    };
+    with_dynamic_workspace_transition(ctx, graph, std::slice::from_ref(&source.id), |graph| {
+        if closing_group.is_some() {
+            let target = dynamic_workspace_mut(graph, &outgoing.workspace_id)?;
+            target.status = WorkspaceStatus::Active;
+            target.updated_at = now_rfc3339_like();
+        }
+        let visible =
+            materialize_dynamic_next_in_scope(ctx, graph, &outgoing, next, fork_commit.as_deref())?;
+        if let Some(group) = closing_group {
+            let current = graph
+                .groups
+                .iter_mut()
+                .find(|candidate| candidate.id == group.id)
+                .unwrap();
+            current.status = DynamicGroupStatus::Closed;
+            current.updated_at = now_rfc3339_like();
+            for workspace_id in &group.child_workspace_ids {
+                release_dynamic_workspace_best_effort(ctx, graph, workspace_id);
+            }
+            append_dynamic_event(
                 ctx,
-                graph,
-                std::slice::from_ref(&source_node_id),
-                |graph| {
-                    let source = graph.nodes[source_index].clone();
-                    checkpoint_dynamic_workspace(
-                        graph,
-                        &source.workspace_id,
-                        source.group_id.as_deref(),
-                    )?;
-                    if let Some(group_id) = source.group_id.as_deref() {
-                        if let Some(group) =
-                            graph.groups.iter_mut().find(|group| group.id == group_id)
-                        {
-                            if !group.terminal_node_ids.iter().any(|id| id == &source.id) {
-                                group.terminal_node_ids.push(source.id.clone());
-                            }
-                            group.updated_at = now_rfc3339_like();
-                        }
-                    }
-                    Ok(())
-                },
+                "dynamic_group_closed",
+                serde_json::json!({"groupId": group.id}),
             )?;
         }
+        Ok(visible)
+    })
+}
+
+// Acceptance retains its historical identity, but its outgoing edge resumes the creator's scope.
+fn dynamic_outgoing_scope_owner<'a>(
+    graph: &'a DynamicGraphState,
+    node: &'a DynamicNodeState,
+) -> Result<&'a DynamicNodeState> {
+    let mut owner = node;
+    let mut seen = HashSet::new();
+    while owner.kind == DynamicNodeKind::Acceptance {
+        ensure!(
+            seen.insert(owner.id.as_str()),
+            "dynamic.scope.creator-cycle: {}",
+            owner.id
+        );
+        let group = graph
+            .groups
+            .iter()
+            .find(|group| Some(&group.id) == owner.group_id.as_ref())
+            .ok_or_else(|| anyhow!("dynamic.scope.group-missing: {}", owner.id))?;
+        owner = graph
+            .nodes
+            .iter()
+            .find(|candidate| candidate.id == group.created_by_node_id)
+            .ok_or_else(|| anyhow!("dynamic.scope.creator-missing: {}", group.id))?;
+    }
+    Ok(owner)
+}
+
+fn materialize_dynamic_next_in_scope(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &mut DynamicGraphState,
+    source: &DynamicNodeState,
+    next: DynamicNext,
+    fork_commit: Option<&str>,
+) -> Result<Vec<String>> {
+    let mut visible_node_ids = Vec::new();
+    match next {
+        DynamicNext::End => {
+            checkpoint_dynamic_workspace(graph, &source.workspace_id, source.group_id.as_deref())?;
+            if let Some(group_id) = source.group_id.as_deref() {
+                if let Some(group) = graph.groups.iter_mut().find(|group| group.id == group_id) {
+                    if !group.terminal_node_ids.iter().any(|id| id == &source.id) {
+                        group.terminal_node_ids.push(source.id.clone());
+                    }
+                    group.updated_at = now_rfc3339_like();
+                }
+            }
+        }
         DynamicNext::Single { node } => {
-            reopen_acceptance_group_for_repair(
-                graph,
-                source_is_acceptance,
-                source_group_id.as_deref(),
-            );
-            let source = graph.nodes[source_index].clone();
             let new_node = dynamic_node_state_from_spec(
                 ctx,
                 graph,
-                &source,
+                source,
                 node,
                 source.group_id.clone(),
                 source.chain_id.clone(),
@@ -9891,99 +11682,85 @@ fn materialize_dynamic_next(
             merge,
             acceptance,
         } => {
-            with_dynamic_workspace_transition(
+            let fork_commit = fork_commit.context("fanout requires a fixed source commit")?;
+            let merge = dynamic_agent_task_spec_with_resolved_provider(ctx, merge)?;
+            let acceptance = dynamic_agent_task_spec_with_resolved_provider(ctx, acceptance)?;
+            let group_depth = source
+                .group_id
+                .as_deref()
+                .and_then(|group_id| graph.groups.iter().find(|group| group.id == group_id))
+                .map(|group| group.depth + 1)
+                .unwrap_or(1);
+            let root_node_ids = nodes.iter().map(|node| node.id.clone()).collect::<Vec<_>>();
+            let mut child_workspace_ids = Vec::with_capacity(nodes.len());
+            for node in &nodes {
+                child_workspace_ids.push(fork_dynamic_workspace_from_commit(
+                    ctx,
+                    graph,
+                    &source.workspace_id,
+                    &group_id,
+                    &node.id,
+                    fork_commit,
+                )?);
+            }
+            {
+                let parent = dynamic_workspace_mut(graph, &source.workspace_id)?;
+                parent.status = WorkspaceStatus::Frozen;
+                parent.updated_at = now_rfc3339_like();
+            }
+            let group = DynamicGroupState {
+                version: VERSION.to_string(),
+                id: group_id.clone(),
+                dynamic_run_id: graph.run.id.clone(),
+                status: DynamicGroupStatus::Open,
+                depth: group_depth,
+                parent_group_id: source.group_id.clone(),
+                root_node_ids: root_node_ids.clone(),
+                terminal_node_ids: Vec::new(),
+                target_workspace_id: source.workspace_id.clone(),
+                child_workspace_ids: child_workspace_ids.clone(),
+                merge_node_id: None,
+                acceptance_node_id: None,
+                created_by_node_id: source.id.clone(),
+                merge,
+                acceptance,
+                created_at: now_rfc3339_like(),
+                updated_at: now_rfc3339_like(),
+            };
+            validate_dynamic_group_state(&group)?;
+            graph.groups.push(group);
+            for (node, workspace_id) in nodes.into_iter().zip(child_workspace_ids) {
+                let chain_id = node.id.clone();
+                let new_node = dynamic_node_state_from_spec(
+                    ctx,
+                    graph,
+                    source,
+                    node,
+                    Some(group_id.clone()),
+                    chain_id,
+                    workspace_id,
+                )?;
+                append_dynamic_event(
+                    ctx,
+                    "dynamic_node_materialized",
+                    serde_json::json!({
+                        "nodeId": new_node.id,
+                        "sourceNodeId": source.id,
+                        "kind": new_node.kind,
+                        "groupId": group_id,
+                    }),
+                )?;
+                let new_node_id = new_node.id.clone();
+                graph.nodes.push(new_node);
+                visible_node_ids.push(new_node_id);
+            }
+            append_dynamic_event(
                 ctx,
-                graph,
-                std::slice::from_ref(&source_node_id),
-                |graph| {
-                    reopen_acceptance_group_for_repair(
-                        graph,
-                        source_is_acceptance,
-                        source_group_id.as_deref(),
-                    );
-                    let source = graph.nodes[source_index].clone();
-                    let merge = dynamic_agent_task_spec_with_resolved_provider(ctx, merge)?;
-                    let acceptance =
-                        dynamic_agent_task_spec_with_resolved_provider(ctx, acceptance)?;
-                    let group_depth = source
-                        .group_id
-                        .as_deref()
-                        .and_then(|group_id| graph.groups.iter().find(|group| group.id == group_id))
-                        .map(|group| group.depth + 1)
-                        .unwrap_or(1);
-                    let root_node_ids =
-                        nodes.iter().map(|node| node.id.clone()).collect::<Vec<_>>();
-                    let mut child_workspace_ids = Vec::with_capacity(nodes.len());
-                    for node in &nodes {
-                        child_workspace_ids.push(fork_dynamic_workspace(
-                            ctx,
-                            graph,
-                            &source.workspace_id,
-                            &group_id,
-                            &node.id,
-                        )?);
-                    }
-                    {
-                        let parent = dynamic_workspace_mut(graph, &source.workspace_id)?;
-                        parent.status = WorkspaceStatus::Frozen;
-                        parent.updated_at = now_rfc3339_like();
-                    }
-                    let group = DynamicGroupState {
-                        version: VERSION.to_string(),
-                        id: group_id.clone(),
-                        dynamic_run_id: graph.run.id.clone(),
-                        status: DynamicGroupStatus::Open,
-                        depth: group_depth,
-                        parent_group_id: source.group_id.clone(),
-                        root_node_ids: root_node_ids.clone(),
-                        terminal_node_ids: Vec::new(),
-                        target_workspace_id: source.workspace_id.clone(),
-                        child_workspace_ids: child_workspace_ids.clone(),
-                        merge_node_id: None,
-                        acceptance_node_id: None,
-                        created_by_node_id: source.id.clone(),
-                        merge,
-                        acceptance,
-                        created_at: now_rfc3339_like(),
-                        updated_at: now_rfc3339_like(),
-                    };
-                    validate_dynamic_group_state(&group)?;
-                    graph.groups.push(group);
-                    for (node, workspace_id) in nodes.into_iter().zip(child_workspace_ids) {
-                        let chain_id = node.id.clone();
-                        let new_node = dynamic_node_state_from_spec(
-                            ctx,
-                            graph,
-                            &source,
-                            node,
-                            Some(group_id.clone()),
-                            chain_id,
-                            workspace_id,
-                        )?;
-                        append_dynamic_event(
-                            ctx,
-                            "dynamic_node_materialized",
-                            serde_json::json!({
-                                "nodeId": new_node.id,
-                                "sourceNodeId": source.id,
-                                "kind": new_node.kind,
-                                "groupId": group_id,
-                            }),
-                        )?;
-                        let new_node_id = new_node.id.clone();
-                        graph.nodes.push(new_node);
-                        visible_node_ids.push(new_node_id);
-                    }
-                    append_dynamic_event(
-                        ctx,
-                        "dynamic_group_created",
-                        serde_json::json!({
-                            "groupId": group_id,
-                            "rootNodeIds": root_node_ids,
-                        }),
-                    )?;
-                    Ok(())
-                },
+                "dynamic_group_created",
+                serde_json::json!({
+                    "groupId": group_id,
+                    "rootNodeIds": root_node_ids,
+                }),
             )?;
         }
     }
@@ -9991,25 +11768,6 @@ fn materialize_dynamic_next(
     visible_node_ids.retain(|node_id| promoted_node_ids.iter().any(|promoted| promoted == node_id));
     graph.run.updated_at = now_rfc3339_like();
     Ok(visible_node_ids)
-}
-
-fn reopen_acceptance_group_for_repair(
-    graph: &mut DynamicGraphState,
-    source_is_acceptance: bool,
-    group_id: Option<&str>,
-) {
-    if !source_is_acceptance {
-        return;
-    }
-    let Some(group_id) = group_id else {
-        return;
-    };
-    if let Some(group) = graph.groups.iter_mut().find(|group| group.id == group_id) {
-        group.status = DynamicGroupStatus::Open;
-        group.merge_node_id = None;
-        group.acceptance_node_id = None;
-        group.updated_at = now_rfc3339_like();
-    }
 }
 
 fn dynamic_node_state_from_spec(
@@ -10198,49 +11956,6 @@ fn advance_dynamic_groups(
                 )?;
                 changed = true;
             }
-            DynamicGroupStatus::Accepting
-                if acceptance_completed_with_end(
-                    graph,
-                    graph.groups[group_index].acceptance_node_id.as_deref(),
-                ) =>
-            {
-                let transition_owner_node_ids = graph.groups[group_index]
-                    .acceptance_node_id
-                    .clone()
-                    .into_iter()
-                    .collect::<Vec<_>>();
-                with_dynamic_workspace_transition(
-                    ctx,
-                    graph,
-                    &transition_owner_node_ids,
-                    |graph| {
-                        let group_id = graph.groups[group_index].id.clone();
-                        let child_workspace_ids =
-                            graph.groups[group_index].child_workspace_ids.clone();
-                        let target_workspace_id =
-                            graph.groups[group_index].target_workspace_id.clone();
-                        graph.groups[group_index].status = DynamicGroupStatus::Closed;
-                        graph.groups[group_index].updated_at = now_rfc3339_like();
-                        for workspace_id in child_workspace_ids {
-                            release_dynamic_workspace_best_effort(ctx, graph, &workspace_id);
-                        }
-                        if let Ok(target) = dynamic_workspace_mut(graph, &target_workspace_id) {
-                            target.status = WorkspaceStatus::Active;
-                            target.updated_at = now_rfc3339_like();
-                        }
-                        attach_closed_child_group_to_parent(graph, group_index);
-                        append_dynamic_event(
-                            ctx,
-                            "dynamic_group_closed",
-                            serde_json::json!({
-                                "groupId": group_id,
-                            }),
-                        )?;
-                        Ok(())
-                    },
-                )?;
-                changed = true;
-            }
             _ => {}
         }
     }
@@ -10302,33 +12017,6 @@ fn accepted_completion_exists(graph: &DynamicGraphState, source_node_id: &str) -
     })
 }
 
-fn attach_closed_child_group_to_parent(graph: &mut DynamicGraphState, group_index: usize) {
-    let Some(child) = graph.groups.get(group_index) else {
-        return;
-    };
-    let Some(parent_group_id) = child.parent_group_id.clone() else {
-        return;
-    };
-    let Some(acceptance_node_id) = child.acceptance_node_id.clone() else {
-        return;
-    };
-    let Some(parent) = graph
-        .groups
-        .iter_mut()
-        .find(|group| group.id == parent_group_id)
-    else {
-        return;
-    };
-    if !parent
-        .terminal_node_ids
-        .iter()
-        .any(|node_id| node_id == &acceptance_node_id)
-    {
-        parent.terminal_node_ids.push(acceptance_node_id);
-        parent.updated_at = now_rfc3339_like();
-    }
-}
-
 fn terminal_belongs_to_group_boundary(
     graph: &DynamicGraphState,
     group: &DynamicGroupState,
@@ -10348,6 +12036,7 @@ fn terminal_belongs_to_group_boundary(
         child.parent_group_id.as_deref() == Some(group.id.as_str())
             && child.status == DynamicGroupStatus::Closed
             && child.acceptance_node_id.as_deref() == Some(node_id)
+            && acceptance_completed_with_end(graph, Some(node_id))
     })
 }
 
@@ -10389,6 +12078,7 @@ fn terminal_chain_id(
         .nodes
         .iter()
         .find(|node| node.id == child.created_by_node_id)
+        .and_then(|node| dynamic_outgoing_scope_owner(graph, node).ok())
         .map(|node| node.chain_id.clone())
 }
 
@@ -10538,28 +12228,53 @@ fn create_dynamic_acceptance_node(
 }
 
 fn dynamic_group_workspace_summary(
-    _ctx: &DynamicExecutionContext<'_>,
+    ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     group: &DynamicGroupState,
 ) -> String {
     let repository = GitRepositoryService::default();
-    let lines = group.child_workspace_ids.iter().filter_map(|workspace_id| {
-        let workspace = dynamic_workspace(graph, workspace_id).ok()?;
-        let head = repository.head(&workspace.path).unwrap_or_else(|_| "unknown".to_string());
-        let status = repository.status_porcelain(&workspace.path)
-            .map(|value| if value.is_empty() { "clean".to_string() } else { value.replace('\n', "; ") })
-            .unwrap_or_else(|_| "unavailable".to_string());
-        Some(format!(
-            "- workspaceId={} path={} branch={} parentWorkspaceId={} forkCommit={} checkpointCommit={} head={} status={}",
-            workspace.id, workspace.path, workspace.branch.as_deref().unwrap_or("none"),
-            workspace.parent_workspace_id.as_deref().unwrap_or("none"), workspace.fork_commit,
-            workspace.checkpoint_commit.as_deref().unwrap_or("none"), head, status,
-        ))
-    }).collect::<Vec<_>>();
-    if lines.is_empty() {
+    let entries = group
+        .child_workspace_ids
+        .iter()
+        .filter_map(|workspace_id| {
+            let workspace = dynamic_workspace(graph, workspace_id).ok()?;
+            let head = repository
+                .head(&workspace.path)
+                .unwrap_or_else(|_| "unknown".to_string());
+            let status = repository
+                .status_porcelain(&workspace.path)
+                .map(|value| {
+                    if value.is_empty() {
+                        "clean".to_string()
+                    } else {
+                        value.replace('\n', "; ")
+                    }
+                })
+                .unwrap_or_else(|_| "unavailable".to_string());
+            Some(PromptPathTreeEntry {
+                path: workspace.path.clone(),
+                detail: Some(format!(
+                    "workspaceId={} branch={} parentWorkspaceId={} forkCommit={} checkpointCommit={} head={} status={}",
+                    workspace.id,
+                    workspace.branch.as_deref().unwrap_or("none"),
+                    workspace.parent_workspace_id.as_deref().unwrap_or("none"),
+                    workspace.fork_commit,
+                    workspace.checkpoint_commit.as_deref().unwrap_or("none"),
+                    head,
+                    status,
+                )),
+            })
+        })
+        .collect::<Vec<_>>();
+    if entries.is_empty() {
         "none".to_string()
     } else {
-        lines.join("\n")
+        let root = dynamic_worktree_base_dir(ctx);
+        format!(
+            "- pathRoot={}\n{}",
+            root,
+            render_prompt_path_tree(&root, entries)
+        )
     }
 }
 
@@ -10640,6 +12355,7 @@ pub(crate) fn prepare_dynamic_acp_prompt(
         outer_node_id,
         outer_attempt_id,
         outer_runtime_execution_id: None,
+        outer_new_round_trigger: None,
         dynamic,
         task_uuid: None,
         run_uuid: None,
@@ -10788,10 +12504,11 @@ fn build_dynamic_worker_invocation(
 
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "system_sections");
-    let has_output_contract = output_contract
+    let control_emission_mode = output_contract
         .as_ref()
-        .is_some_and(|contract| contract.emission_mode == OutputEmissionMode::InlineControl);
-    let extra_system_sections = dynamic_system_sections(ctx, graph, node, has_output_contract)?;
+        .map(|contract| contract.emission_mode);
+    let has_output_contract = control_emission_mode == Some(OutputEmissionMode::InlineControl);
+    let extra_system_sections = dynamic_system_sections(ctx, control_emission_mode)?;
     let extra_hidden_sections = dynamic_hidden_sections(
         ctx,
         graph,
@@ -10958,7 +12675,8 @@ fn build_dynamic_worker_invocation(
         output_contract,
         runtime_context,
         predecessors,
-        new_round_trigger: None,
+        new_round_trigger: dynamic_new_round_trigger_for_invocation(ctx, node, session_mode)
+            .cloned(),
         extra_system_sections,
         extra_hidden_sections,
         task_instruction: Some(task_instruction.clone()),
@@ -11059,19 +12777,7 @@ fn dynamic_proposal_repair_prompt(
     node: &DynamicNodeState,
     errors: &[DynamicProposalValidationError],
 ) -> String {
-    render_template(
-        prompt_by_language(
-            ctx.app.config.desktop_language,
-            AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN,
-            AI_DYNAMIC_PROPOSAL_REPAIR_EN,
-        ),
-        serde_json::json!({
-            "validation_errors": dynamic_validation_repair_lines(ctx, graph, errors),
-            "repair_reference": dynamic_repair_reference_summary(ctx, graph),
-            "remaining_budget": dynamic_remaining_budget_summary(graph, node),
-        }),
-    )
-    .expect("prompt template renders")
+    dynamic_structured_repair_prompt(ctx, graph, node, errors)
 }
 
 fn dynamic_text_repair_prompt(
@@ -11090,6 +12796,7 @@ fn dynamic_structured_repair_prompt(
     node: &DynamicNodeState,
     errors: &[DynamicProposalValidationError],
 ) -> String {
+    let has_coordination_snapshot = dynamic_node_reads_coordination_snapshot(node, true);
     render_template(
         prompt_by_language(
             ctx.app.config.desktop_language,
@@ -11098,8 +12805,20 @@ fn dynamic_structured_repair_prompt(
         ),
         serde_json::json!({
             "validation_errors": dynamic_validation_repair_lines(ctx, graph, errors),
+            "fanout_workspace_dirty": errors.iter().any(|error| error.code == DYNAMIC_FANOUT_WORKSPACE_DIRTY),
+            "fanout_workspace_path": errors.iter()
+                .find(|error| error.code == DYNAMIC_FANOUT_WORKSPACE_DIRTY)
+                .and_then(|error| error.params.get("workspacePath")),
             "repair_reference": dynamic_repair_reference_summary(ctx, graph),
             "remaining_budget": dynamic_remaining_budget_summary(graph, node),
+            "has_coordination_snapshot": has_coordination_snapshot,
+            "coordination_snapshot_path": ctx.app.paths.dynamic_coordination_snapshot_file(
+                ctx.task_id,
+                ctx.run_id,
+                ctx.round_id,
+                ctx.outer_node_id,
+                ctx.outer_attempt_id,
+            ),
         }),
     )
     .expect("prompt template renders")
@@ -11329,16 +13048,173 @@ struct DynamicContextProjection {
     has_inherited_groups: bool,
     siblings: String,
     has_siblings: bool,
-    available_attachments: String,
+    attachments: DynamicAttachmentManifestProjection,
     has_available_attachments: bool,
+}
+
+#[derive(Default)]
+struct DynamicAttachmentSectionProjection {
+    paths: String,
+    overflow_directories: String,
+}
+
+impl DynamicAttachmentSectionProjection {
+    fn has_attachments(&self) -> bool {
+        !self.paths.is_empty() || self.has_overflow()
+    }
+
+    fn has_overflow(&self) -> bool {
+        !self.overflow_directories.is_empty()
+    }
+}
+
+#[derive(Default)]
+struct DynamicAttachmentManifestProjection {
+    predecessor_chain: DynamicAttachmentSectionProjection,
+    explicit_dependencies: DynamicAttachmentSectionProjection,
+    group_evidence: DynamicAttachmentSectionProjection,
+}
+
+impl DynamicAttachmentManifestProjection {
+    fn has_attachments(&self) -> bool {
+        self.predecessor_chain.has_attachments()
+            || self.explicit_dependencies.has_attachments()
+            || self.group_evidence.has_attachments()
+    }
+}
+
+struct PromptPathTreeEntry {
+    path: Utf8PathBuf,
+    detail: Option<String>,
+}
+
+#[derive(Default)]
+struct PromptPathTreeNode {
+    terminal: bool,
+    details: Vec<String>,
+    children: BTreeMap<String, PromptPathTreeNode>,
+}
+
+fn prompt_path_components(root: &Utf8Path, path: &Utf8Path) -> Option<Vec<String>> {
+    let relative = path.strip_prefix(root).ok()?;
+    let mut components = Vec::new();
+    for component in relative.components() {
+        match component {
+            camino::Utf8Component::CurDir => {}
+            camino::Utf8Component::Normal(segment) => components.push(segment.to_string()),
+            camino::Utf8Component::Prefix(_)
+            | camino::Utf8Component::RootDir
+            | camino::Utf8Component::ParentDir => return None,
+        }
+    }
+    Some(components)
+}
+
+fn insert_prompt_path_tree_entry(
+    tree: &mut PromptPathTreeNode,
+    components: Vec<String>,
+    detail: Option<String>,
+) {
+    let mut current = tree;
+    for component in components {
+        current = current.children.entry(component).or_default();
+    }
+    current.terminal = true;
+    if let Some(detail) = detail
+        && !current.details.contains(&detail)
+    {
+        current.details.push(detail);
+    }
+}
+
+fn render_prompt_path_tree_node(
+    segment: &str,
+    node: &PromptPathTreeNode,
+    depth: usize,
+    lines: &mut Vec<String>,
+) {
+    let mut path = segment.to_string();
+    let mut current = node;
+    while !current.terminal && current.children.len() == 1 {
+        let (next_segment, next_node) = current
+            .children
+            .first_key_value()
+            .expect("single-child path tree node has a child");
+        path.push('/');
+        path.push_str(next_segment);
+        current = next_node;
+    }
+
+    let mut line = format!("{}- {}", "  ".repeat(depth), path);
+    if !current.terminal {
+        line.push('/');
+    }
+    if !current.details.is_empty() {
+        line.push_str(" [");
+        line.push_str(&current.details.join("; "));
+        line.push(']');
+    }
+    lines.push(line);
+
+    for (child_segment, child) in &current.children {
+        render_prompt_path_tree_node(child_segment, child, depth + 1, lines);
+    }
+}
+
+fn render_prompt_path_tree(root: &Utf8Path, entries: Vec<PromptPathTreeEntry>) -> String {
+    let mut tree = PromptPathTreeNode::default();
+    let mut unrooted = Vec::new();
+    for entry in entries {
+        if let Some(components) = prompt_path_components(root, &entry.path) {
+            insert_prompt_path_tree_entry(&mut tree, components, entry.detail);
+        } else {
+            unrooted.push(entry);
+        }
+    }
+
+    let mut lines = Vec::new();
+    if tree.terminal {
+        let mut line = "- .".to_string();
+        if !tree.details.is_empty() {
+            line.push_str(" [");
+            line.push_str(&tree.details.join("; "));
+            line.push(']');
+        }
+        lines.push(line);
+    }
+    for (segment, child) in &tree.children {
+        render_prompt_path_tree_node(segment, child, 0, &mut lines);
+    }
+    unrooted.sort_by(|left, right| left.path.cmp(&right.path));
+    for entry in unrooted {
+        let mut line = format!("- absolutePath={}", entry.path);
+        if let Some(detail) = entry.detail {
+            line.push_str(" [");
+            line.push_str(&detail);
+            line.push(']');
+        }
+        lines.push(line);
+    }
+    lines.join("\n")
+}
+
+fn prompt_path_relative_to(root: &Utf8Path, path: &Utf8Path) -> String {
+    prompt_path_components(root, path)
+        .filter(|components| !components.is_empty())
+        .map(|components| components.join("/"))
+        .unwrap_or_else(|| path.to_string())
 }
 
 #[derive(Clone)]
 struct DynamicAttachmentEntry {
-    node_id: String,
-    attempt_id: String,
     name: String,
     path: Utf8PathBuf,
+}
+
+struct DynamicPromptAttachmentScan {
+    entries: Vec<DynamicAttachmentEntry>,
+    directory: Utf8PathBuf,
+    truncated: bool,
 }
 
 fn dynamic_context_projection(
@@ -11346,13 +13222,21 @@ fn dynamic_context_projection(
     graph: &DynamicGraphState,
     node: &DynamicNodeState,
 ) -> DynamicContextProjection {
-    let direct_nodes = dynamic_direct_predecessor_nodes(graph, node);
+    let predecessor_chain = dynamic_source_predecessor_nodes(graph, node);
+    let explicit_dependencies = dynamic_explicit_dependency_nodes(graph, node);
+    let direct_nodes = dynamic_direct_predecessor_nodes(&predecessor_chain, &explicit_dependencies);
     let direct_predecessors = dynamic_node_list_summary(&direct_nodes);
     let active_group = dynamic_active_group_summary(ctx, graph, node);
     let inherited_groups = dynamic_inherited_group_summary(graph, node);
     let siblings = dynamic_sibling_summary(graph, node);
-    let available_attachments =
-        dynamic_attachment_manifest_summary(ctx, graph, node, &direct_nodes);
+    let attachments = dynamic_attachment_manifest_projection(
+        ctx,
+        graph,
+        node,
+        &predecessor_chain,
+        &explicit_dependencies,
+    );
+    let has_available_attachments = attachments.has_attachments();
     DynamicContextProjection {
         has_direct_predecessors: !direct_predecessors.is_empty(),
         direct_predecessors,
@@ -11362,17 +13246,59 @@ fn dynamic_context_projection(
         inherited_groups,
         has_siblings: !siblings.is_empty(),
         siblings,
-        has_available_attachments: !available_attachments.is_empty(),
-        available_attachments,
+        attachments,
+        has_available_attachments,
     }
 }
 
-fn dynamic_direct_predecessor_nodes<'a>(
+fn dynamic_materialization_sources(graph: &DynamicGraphState) -> HashMap<String, String> {
+    let completions = graph
+        .proposals
+        .iter()
+        .filter(|proposal| proposal.validation_status == DynamicProposalValidationStatus::Accepted)
+        .filter_map(|proposal| {
+            serde_json::from_value::<DynamicNodeCompletion>(proposal.parsed.clone())
+                .ok()
+                .map(|completion| (proposal.source_node_id.clone(), completion))
+        })
+        .collect::<HashMap<_, _>>();
+    dynamic_materialized_by_node_ids(&completions)
+}
+
+fn dynamic_source_predecessor_nodes<'a>(
+    graph: &'a DynamicGraphState,
+    node: &DynamicNodeState,
+) -> Vec<&'a DynamicNodeState> {
+    let sources = dynamic_materialization_sources(graph);
+    let mut nodes = Vec::new();
+    let mut seen = HashSet::from([node.id.clone()]);
+    let mut current_node_id = node.id.clone();
+    for _ in 0..DYNAMIC_PROMPT_SOURCE_PREDECESSOR_LIMIT {
+        let Some(source_node_id) = sources.get(&current_node_id) else {
+            break;
+        };
+        if !seen.insert(source_node_id.clone()) {
+            break;
+        }
+        let Some(source) = graph
+            .nodes
+            .iter()
+            .find(|candidate| candidate.id == *source_node_id)
+        else {
+            break;
+        };
+        nodes.push(source);
+        current_node_id = source.id.clone();
+    }
+    nodes
+}
+
+fn dynamic_explicit_dependency_nodes<'a>(
     graph: &'a DynamicGraphState,
     node: &DynamicNodeState,
 ) -> Vec<&'a DynamicNodeState> {
     let mut nodes = Vec::new();
-    let mut seen = HashSet::<String>::new();
+    let mut seen = HashSet::new();
     for dependency_id in &node.depends_on {
         if let Some(dependency) = graph.nodes.iter().find(|item| item.id == *dependency_id) {
             if seen.insert(dependency.id.clone()) {
@@ -11380,35 +13306,22 @@ fn dynamic_direct_predecessor_nodes<'a>(
             }
         }
     }
-    if nodes.is_empty() {
-        if let Some(previous) = graph
-            .nodes
-            .iter()
-            .filter(|candidate| candidate.id != node.id)
-            .filter(|candidate| candidate.chain_id == node.chain_id)
-            .filter(|candidate| candidate.group_id == node.group_id)
-            .filter(|candidate| candidate.depth < node.depth)
-            .max_by_key(|candidate| candidate.depth)
-        {
-            if seen.insert(previous.id.clone()) {
-                nodes.push(previous);
-            }
-        }
-    }
-    if nodes.is_empty() {
-        if let Some(group_id) = node.group_id.as_deref()
-            && let Some(group) = graph.groups.iter().find(|group| group.id == group_id)
-            && group
-                .root_node_ids
-                .iter()
-                .any(|node_id| node_id == &node.id)
-            && let Some(created_by) = graph
-                .nodes
-                .iter()
-                .find(|candidate| candidate.id == group.created_by_node_id)
-            && seen.insert(created_by.id.clone())
-        {
-            nodes.push(created_by);
+    nodes
+}
+
+fn dynamic_direct_predecessor_nodes<'a>(
+    predecessor_chain: &[&'a DynamicNodeState],
+    explicit_dependencies: &[&'a DynamicNodeState],
+) -> Vec<&'a DynamicNodeState> {
+    let mut nodes = Vec::new();
+    let mut seen = HashSet::new();
+    for predecessor in predecessor_chain
+        .first()
+        .into_iter()
+        .chain(explicit_dependencies.iter())
+    {
+        if seen.insert(predecessor.id.as_str()) {
+            nodes.push(*predecessor);
         }
     }
     nodes
@@ -11474,7 +13387,10 @@ fn dynamic_active_group_summary(
         node.kind,
         DynamicNodeKind::Merge | DynamicNodeKind::Acceptance
     ) {
-        lines.push("- branch workspaces:".to_string());
+        lines.push(
+            "- branch workspaces (relative tree under pathRoot; absolutePath entries are complete):"
+                .to_string(),
+        );
         lines.push(dynamic_group_workspace_summary(ctx, graph, group));
     }
     lines.join("\n")
@@ -11518,10 +13434,20 @@ fn dynamic_sibling_summary(graph: &DynamicGraphState, node: &DynamicNodeState) -
     let Some(group) = graph.groups.iter().find(|group| group.id == group_id) else {
         return String::new();
     };
+    let Some(current_root_node_id) = group.root_node_ids.iter().find_map(|root_node_id| {
+        graph
+            .nodes
+            .iter()
+            .find(|candidate| candidate.id == *root_node_id)
+            .filter(|root| root.chain_id == node.chain_id)
+            .map(|_| root_node_id.as_str())
+    }) else {
+        return String::new();
+    };
     group
         .root_node_ids
         .iter()
-        .filter(|node_id| *node_id != &node.id)
+        .filter(|node_id| node_id.as_str() != current_root_node_id)
         .filter_map(|node_id| graph.nodes.iter().find(|candidate| candidate.id == *node_id))
         .map(|sibling| {
             format!(
@@ -11539,103 +13465,290 @@ fn dynamic_sibling_summary(graph: &DynamicGraphState, node: &DynamicNodeState) -
         .join("\n")
 }
 
-fn dynamic_attachment_manifest_summary(
+fn dynamic_attachment_manifest_projection(
     ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     node: &DynamicNodeState,
-    direct_nodes: &[&DynamicNodeState],
-) -> String {
-    let mut attachment_node_ids = Vec::<String>::new();
-    let mut seen = HashSet::<String>::new();
-    for direct in direct_nodes {
-        if seen.insert(direct.id.clone()) {
-            attachment_node_ids.push(direct.id.clone());
+    predecessor_chain: &[&DynamicNodeState],
+    explicit_dependencies: &[&DynamicNodeState],
+) -> DynamicAttachmentManifestProjection {
+    let dynamic_root = ctx.app.paths.dynamic_dir(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+    );
+    let mut seen = HashSet::new();
+    let mut predecessor_nodes = Vec::new();
+    for predecessor in predecessor_chain {
+        if seen.insert(predecessor.id.clone()) {
+            predecessor_nodes.push(*predecessor);
         }
     }
-    if let Some(group_id) = node.group_id.as_deref()
+    let mut dependency_nodes = Vec::new();
+    for dependency in explicit_dependencies {
+        if seen.insert(dependency.id.clone()) {
+            dependency_nodes.push(*dependency);
+        }
+    }
+    let mut group_evidence_nodes = Vec::new();
+    if matches!(
+        node.kind,
+        DynamicNodeKind::Merge | DynamicNodeKind::Acceptance
+    ) && let Some(group_id) = node.group_id.as_deref()
         && let Some(group) = graph.groups.iter().find(|group| group.id == group_id)
     {
-        match node.kind {
-            DynamicNodeKind::Merge => {
-                for node_id in group
-                    .terminal_node_ids
-                    .iter()
-                    .chain(group.root_node_ids.iter())
-                {
-                    if seen.insert(node_id.clone()) {
-                        attachment_node_ids.push(node_id.clone());
-                    }
-                }
-            }
-            DynamicNodeKind::Acceptance => {
-                if let Some(merge_node_id) = group.merge_node_id.as_ref()
-                    && seen.insert(merge_node_id.clone())
-                {
-                    attachment_node_ids.push(merge_node_id.clone());
-                }
-                for node_id in group
-                    .terminal_node_ids
-                    .iter()
-                    .chain(group.root_node_ids.iter())
-                {
-                    if seen.insert(node_id.clone()) {
-                        attachment_node_ids.push(node_id.clone());
-                    }
-                }
-            }
-            DynamicNodeKind::Worker | DynamicNodeKind::WorkflowInvocation => {
-                if let Some(parent_group_id) = group.parent_group_id.as_deref() {
-                    collect_group_exit_attachment_node_ids(
-                        graph,
-                        parent_group_id,
-                        &mut seen,
-                        &mut attachment_node_ids,
-                    );
-                }
+        for node_id in group
+            .terminal_node_ids
+            .iter()
+            .chain(group.root_node_ids.iter())
+        {
+            if let Some(branch) = graph
+                .nodes
+                .iter()
+                .find(|candidate| candidate.id == *node_id)
+                && seen.insert(branch.id.clone())
+            {
+                group_evidence_nodes.push(branch);
             }
         }
     }
-    let mut entries = Vec::new();
-    for node_id in attachment_node_ids {
-        if let Some(source_node) = graph.nodes.iter().find(|candidate| candidate.id == node_id) {
-            entries.extend(dynamic_attachment_entries_for_node(ctx, source_node));
+    for group_exit in dynamic_related_group_exit_nodes(graph, node) {
+        if seen.insert(group_exit.id.clone()) {
+            group_evidence_nodes.push(group_exit);
         }
     }
-    if entries.is_empty() {
-        return String::new();
+
+    DynamicAttachmentManifestProjection {
+        predecessor_chain: dynamic_attachment_section_projection(
+            ctx,
+            &dynamic_root,
+            &predecessor_nodes,
+        ),
+        explicit_dependencies: dynamic_attachment_section_projection(
+            ctx,
+            &dynamic_root,
+            &dependency_nodes,
+        ),
+        group_evidence: dynamic_attachment_section_projection(
+            ctx,
+            &dynamic_root,
+            &group_evidence_nodes,
+        ),
     }
-    entries
-        .into_iter()
-        .map(|entry| {
-            format!(
-                "- {}/{}/attachments/{}: {}",
-                entry.node_id, entry.attempt_id, entry.name, entry.path
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
-fn collect_group_exit_attachment_node_ids(
-    graph: &DynamicGraphState,
-    group_id: &str,
-    seen: &mut HashSet<String>,
-    ids: &mut Vec<String>,
-) {
-    let Some(group) = graph.groups.iter().find(|group| group.id == group_id) else {
-        return;
-    };
-    for node_id in [
-        group.acceptance_node_id.as_ref(),
-        group.merge_node_id.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if seen.insert(node_id.clone()) {
-            ids.push(node_id.clone());
+fn dynamic_related_group_exit_nodes<'a>(
+    graph: &'a DynamicGraphState,
+    node: &DynamicNodeState,
+) -> Vec<&'a DynamicNodeState> {
+    let mut nodes = Vec::new();
+    let mut seen_group_ids = HashSet::new();
+    let mut related_group_ids = Vec::new();
+    let mut next_group_id = node.group_id.as_deref();
+    while let Some(group_id) = next_group_id {
+        if !seen_group_ids.insert(group_id.to_string()) {
+            break;
+        }
+        let Some(group) = graph.groups.iter().find(|group| group.id == group_id) else {
+            break;
+        };
+        related_group_ids.push(group_id);
+        next_group_id = group.parent_group_id.as_deref();
+    }
+    // Keep the nearest exited group per parent scope, even after the five-node handoff window.
+    let sources = dynamic_materialization_sources(graph);
+    let by_id = graph
+        .nodes
+        .iter()
+        .map(|candidate| (candidate.id.as_str(), candidate))
+        .collect::<HashMap<_, _>>();
+    let groups = graph
+        .groups
+        .iter()
+        .map(|group| (group.id.as_str(), group))
+        .collect::<HashMap<_, _>>();
+    let mut seen_nodes = HashSet::new();
+    let mut exited_scopes = HashSet::new();
+    let mut current = Some(node);
+    while let Some(candidate) = current {
+        if !seen_nodes.insert(candidate.id.as_str()) {
+            break;
+        }
+        let group = candidate
+            .group_id
+            .as_deref()
+            .and_then(|id| groups.get(id).copied());
+        if candidate.id != node.id && candidate.kind == DynamicNodeKind::Acceptance {
+            if let Some(group) = group {
+                if group.status == DynamicGroupStatus::Closed
+                    && exited_scopes.insert(group.parent_group_id.as_deref())
+                    && seen_group_ids.insert(group.id.clone())
+                {
+                    related_group_ids.push(group.id.as_str());
+                }
+            }
+        }
+        let source_id = sources.get(&candidate.id).map(String::as_str).or_else(|| {
+            (candidate.kind == DynamicNodeKind::Acceptance)
+                .then(|| group.map(|group| group.created_by_node_id.as_str()))
+                .flatten()
+        });
+        current = source_id.and_then(|id| by_id.get(id).copied());
+    }
+    for group_id in related_group_ids {
+        let latest_acceptance = graph.nodes.iter().rev().find(|candidate| {
+            candidate.id != node.id
+                && candidate.group_id.as_deref() == Some(group_id)
+                && candidate.kind == DynamicNodeKind::Acceptance
+        });
+        let latest_merge = match latest_acceptance {
+            Some(acceptance) => acceptance.depends_on.iter().find_map(|dependency_id| {
+                graph.nodes.iter().find(|candidate| {
+                    candidate.id == *dependency_id
+                        && candidate.group_id.as_deref() == Some(group_id)
+                        && candidate.kind == DynamicNodeKind::Merge
+                })
+            }),
+            None => graph.nodes.iter().rev().find(|candidate| {
+                candidate.id != node.id
+                    && candidate.group_id.as_deref() == Some(group_id)
+                    && candidate.kind == DynamicNodeKind::Merge
+            }),
+        };
+        if let Some(merge) = latest_merge {
+            nodes.push(merge);
+        }
+        if let Some(acceptance) = latest_acceptance {
+            nodes.push(acceptance);
         }
     }
+    nodes
+}
+
+fn dynamic_attachment_section_projection(
+    ctx: &DynamicExecutionContext<'_>,
+    dynamic_root: &Utf8Path,
+    nodes: &[&DynamicNodeState],
+) -> DynamicAttachmentSectionProjection {
+    let mut paths = Vec::new();
+    let mut overflow_directories = Vec::new();
+    for node in nodes {
+        let scan = dynamic_prompt_attachment_entries_for_node(ctx, node);
+        paths.extend(scan.entries.into_iter().map(|entry| PromptPathTreeEntry {
+            path: entry.path,
+            detail: None,
+        }));
+        if scan.truncated {
+            overflow_directories.push(PromptPathTreeEntry {
+                path: scan.directory,
+                detail: None,
+            });
+        }
+    }
+    DynamicAttachmentSectionProjection {
+        paths: render_prompt_path_tree(dynamic_root, paths),
+        overflow_directories: render_prompt_path_tree(dynamic_root, overflow_directories),
+    }
+}
+
+fn dynamic_prompt_attachment_entries_for_node(
+    ctx: &DynamicExecutionContext<'_>,
+    node: &DynamicNodeState,
+) -> DynamicPromptAttachmentScan {
+    let attempt_id = dynamic_attempt_id(node);
+    let root = ctx.app.paths.dynamic_node_attachments_dir(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+        &node.id,
+        &attempt_id,
+    );
+    let mut scan = DynamicPromptAttachmentScan {
+        entries: Vec::new(),
+        directory: root.clone(),
+        truncated: false,
+    };
+    let root_metadata = match std::fs::symlink_metadata(root.as_std_path()) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return scan,
+        Err(_) => {
+            scan.truncated = true;
+            return scan;
+        }
+    };
+    if root_metadata.file_type().is_symlink() {
+        scan.truncated = true;
+        return scan;
+    }
+    if !root_metadata.is_dir() {
+        scan.truncated = true;
+        return scan;
+    }
+    let mut counted_entries = 0usize;
+    // WalkDir is pre-order, so a directory is empty when the next entry is not deeper.
+    let mut pending_directory_depth = None;
+    for entry in WalkDir::new(root.as_std_path())
+        .follow_links(false)
+        .follow_root_links(false)
+        .into_iter()
+    {
+        let Ok(entry) = entry else {
+            scan.truncated = true;
+            break;
+        };
+        if entry.depth() == 0 {
+            continue;
+        }
+        if let Some(directory_depth) = pending_directory_depth.take()
+            && entry.depth() <= directory_depth
+        {
+            if counted_entries == DYNAMIC_PROMPT_ATTACHMENTS_PER_SOURCE_LIMIT {
+                scan.truncated = true;
+                break;
+            }
+            counted_entries = counted_entries.saturating_add(1);
+        }
+        if entry.file_type().is_symlink() {
+            scan.truncated = true;
+            break;
+        }
+        if entry.file_type().is_dir() {
+            pending_directory_depth = Some(entry.depth());
+            continue;
+        }
+        if !entry.file_type().is_file() {
+            scan.truncated = true;
+            break;
+        }
+        if counted_entries == DYNAMIC_PROMPT_ATTACHMENTS_PER_SOURCE_LIMIT {
+            scan.truncated = true;
+            break;
+        }
+        counted_entries = counted_entries.saturating_add(1);
+        let Ok(path) = Utf8PathBuf::from_path_buf(entry.into_path()) else {
+            scan.truncated = true;
+            break;
+        };
+        let name = path
+            .strip_prefix(&root)
+            .map(|relative| relative.to_string())
+            .unwrap_or_else(|_| {
+                path.file_name()
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| path.to_string())
+            });
+        scan.entries.push(DynamicAttachmentEntry { name, path });
+    }
+    if !scan.truncated && pending_directory_depth.is_some() {
+        scan.truncated = counted_entries == DYNAMIC_PROMPT_ATTACHMENTS_PER_SOURCE_LIMIT;
+    }
+    scan.entries
+        .sort_by(|left, right| left.name.cmp(&right.name));
+    scan
 }
 
 fn dynamic_attachment_entries_for_node(
@@ -11660,12 +13773,7 @@ fn dynamic_attachment_entries_for_node(
     files.sort_by(|left, right| left.0.cmp(&right.0));
     files
         .into_iter()
-        .map(|(name, path)| DynamicAttachmentEntry {
-            node_id: node.id.clone(),
-            attempt_id: attempt_id.clone(),
-            name,
-            path,
-        })
+        .map(|(name, path)| DynamicAttachmentEntry { name, path })
         .collect()
 }
 
@@ -11805,7 +13913,8 @@ fn dynamic_remaining_budget_summary(graph: &DynamicGraphState, node: &DynamicNod
         .iter()
         .filter(|candidate| candidate.kind == DynamicNodeKind::WorkflowInvocation)
         .count() as u32;
-    let parent_group_depth = node
+    let parent_group_depth = dynamic_outgoing_scope_owner(graph, node)
+        .unwrap_or(node)
         .group_id
         .as_deref()
         .and_then(|group_id| graph.groups.iter().find(|group| group.id == group_id))
@@ -11845,6 +13954,9 @@ fn dynamic_resumable_session_nodes<'a>(
     graph: &'a DynamicGraphState,
     source: &DynamicNodeState,
 ) -> Vec<&'a DynamicNodeState> {
+    let Ok(source) = dynamic_outgoing_scope_owner(graph, source) else {
+        return Vec::new();
+    };
     let boundary_group_id = source.group_id.clone();
     graph
         .nodes
@@ -11888,12 +14000,8 @@ fn dynamic_resumable_session_summary(
 
 fn dynamic_system_sections(
     ctx: &DynamicExecutionContext<'_>,
-    graph: &DynamicGraphState,
-    node: &DynamicNodeState,
-    has_output_contract: bool,
+    control_emission_mode: Option<OutputEmissionMode>,
 ) -> Result<Vec<String>> {
-    let _ = graph;
-    let _ = node;
     Ok(vec![render_template(
         prompt_by_language(
             ctx.app.config.desktop_language,
@@ -11901,9 +14009,32 @@ fn dynamic_system_sections(
             AI_DYNAMIC_SYSTEM_EN,
         ),
         serde_json::json!({
-            "has_output_contract": has_output_contract,
+            "control_emission_mode": control_emission_mode,
         }),
     )?])
+}
+
+fn dynamic_new_round_trigger_for_invocation<'a>(
+    ctx: &'a DynamicExecutionContext<'_>,
+    node: &DynamicNodeState,
+    session_mode: SessionMode,
+) -> Option<&'a PromptPredecessorContext> {
+    if session_mode == SessionMode::New && dynamic_node_is_bootstrap_dispatch(node) {
+        ctx.outer_new_round_trigger.as_ref()
+    } else {
+        None
+    }
+}
+
+fn dynamic_node_reads_coordination_snapshot(
+    node: &DynamicNodeState,
+    has_output_contract: bool,
+) -> bool {
+    match node.kind {
+        DynamicNodeKind::Worker => !dynamic_node_is_bootstrap_dispatch(node),
+        DynamicNodeKind::Acceptance => has_output_contract,
+        DynamicNodeKind::WorkflowInvocation | DynamicNodeKind::Merge => false,
+    }
 }
 
 fn dynamic_hidden_sections(
@@ -11926,74 +14057,130 @@ fn dynamic_hidden_sections(
     );
     let runtime_context = dynamic_runtime_context(ctx, &node.id, attempt_id);
     let projection = dynamic_context_projection(ctx, graph, node);
-    let content = render_template(
-        prompt_by_language(
-            ctx.app.config.desktop_language,
-            AI_DYNAMIC_HIDDEN_CONTEXT_ZH_CN,
-            AI_DYNAMIC_HIDDEN_CONTEXT_EN,
+    let new_round_trigger = dynamic_new_round_trigger_for_invocation(ctx, node, session_mode);
+    let has_coordination_snapshot =
+        dynamic_node_reads_coordination_snapshot(node, has_output_contract);
+    let coordination_snapshot_path = ctx.app.paths.dynamic_coordination_snapshot_file(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+    );
+    let node_dir = prompt_path_relative_to(&dynamic_root, &runtime_context.node_dir);
+    let attempt_dir =
+        prompt_path_relative_to(&runtime_context.node_dir, &runtime_context.attempt_dir);
+    let attachments_dir = prompt_path_relative_to(
+        &runtime_context.attempt_dir,
+        &runtime_context.attachments_dir,
+    );
+    let coordination_snapshot_path =
+        prompt_path_relative_to(&dynamic_root, &coordination_snapshot_path);
+    let template = prompt_by_language(
+        ctx.app.config.desktop_language,
+        AI_DYNAMIC_HIDDEN_CONTEXT_ZH_CN,
+        AI_DYNAMIC_HIDDEN_CONTEXT_EN,
+    );
+    let attachment_template_context = serde_json::json!({
+        "source_predecessor_limit": DYNAMIC_PROMPT_SOURCE_PREDECESSOR_LIMIT,
+        "attachments_per_source_limit": DYNAMIC_PROMPT_ATTACHMENTS_PER_SOURCE_LIMIT,
+        "predecessor_attachments": projection.attachments.predecessor_chain.paths.as_str(),
+        "has_predecessor_attachments": projection.attachments.predecessor_chain.has_attachments(),
+        "predecessor_attachment_overflow_directories": projection.attachments.predecessor_chain.overflow_directories.as_str(),
+        "has_predecessor_attachment_overflow": projection.attachments.predecessor_chain.has_overflow(),
+        "dependency_attachments": projection.attachments.explicit_dependencies.paths.as_str(),
+        "has_dependency_attachments": projection.attachments.explicit_dependencies.has_attachments(),
+        "dependency_attachment_overflow_directories": projection.attachments.explicit_dependencies.overflow_directories.as_str(),
+        "has_dependency_attachment_overflow": projection.attachments.explicit_dependencies.has_overflow(),
+        "group_evidence_attachments": projection.attachments.group_evidence.paths.as_str(),
+        "has_group_evidence_attachments": projection.attachments.group_evidence.has_attachments(),
+        "group_evidence_attachment_overflow_directories": projection.attachments.group_evidence.overflow_directories.as_str(),
+        "has_group_evidence_attachment_overflow": projection.attachments.group_evidence.has_overflow(),
+        "has_available_attachments": projection.has_available_attachments,
+    });
+    let mut template_context = serde_json::json!({
+        "outer_node_id": ctx.outer_node_id,
+        "outer_attempt_id": ctx.outer_attempt_id,
+        "dynamic_run_id": graph.run.id,
+        "node_id": node.id,
+        "title": node.title,
+        "kind": format!("{:?}", node.kind),
+        "group_id": node.group_id.as_deref().unwrap_or("none"),
+        "chain_id": node.chain_id,
+        "depth": node.depth,
+        "session_mode": match session_mode {
+            SessionMode::New => "new",
+            SessionMode::Continue => "continue",
+        },
+        "continue_from_node_id": node.continue_from_node_id.as_deref().unwrap_or("none"),
+        "dynamic_root": dynamic_root,
+        "node_dir": node_dir,
+        "attempt_dir": attempt_dir,
+        "attachments_dir": attachments_dir,
+        "workspace_id": node.workspace_id,
+        "workspace_path": workspace_path,
+        "workspace_capability": dynamic_workspace_capability_summary(ctx),
+        "has_coordination_snapshot": has_coordination_snapshot,
+        "coordination_snapshot_path": coordination_snapshot_path,
+        "direct_predecessors": projection.direct_predecessors,
+        "has_direct_predecessors": projection.has_direct_predecessors,
+        "active_group": projection.active_group,
+        "has_active_group": projection.has_active_group,
+        "inherited_groups": projection.inherited_groups,
+        "has_inherited_groups": projection.has_inherited_groups,
+        "siblings": projection.siblings,
+        "has_siblings": projection.has_siblings,
+        "has_output_contract": has_output_contract,
+        "allowed_workflow_snapshots": allowed_workflow_snapshot_summary(&graph.run.allowed_workflow_snapshots),
+        "agent_strategy_mode": dynamic_agent_strategy_mode(ctx.dynamic),
+        "bootstrap_provider": ctx.dynamic.bootstrap_provider().unwrap_or("none"),
+        "agent_routing_prompt": dynamic_agent_routing_prompt(ctx.dynamic).unwrap_or("none"),
+        "acceptance_model_policy": match ctx.app.config.desktop_language {
+            DesktopLanguage::ZhCn => match dynamic_acceptance_model(ctx.dynamic) {
+                Some(model) => format!(
+                    "`merge` / `acceptance` 固定使用验收模型 `{model}`；这两个 spec 不要输出 `model`。"
+                ),
+                None => "未单独配置验收模型；`merge` / `acceptance` 与普通动态节点沿用同一套模型规则。".to_string(),
+            },
+            DesktopLanguage::En => match dynamic_acceptance_model(ctx.dynamic) {
+                Some(model) => format!(
+                    "`merge` / `acceptance` use the configured acceptance model `{model}`; those specs must not output `model`."
+                ),
+                None => "No dedicated acceptance model is configured; `merge` / `acceptance` follow the same model rules as other dynamic nodes.".to_string(),
+            },
+        },
+        "available_providers": available_provider_summary(ctx),
+        "available_profiles": available_profile_summary(ctx),
+        "remaining_budget": dynamic_remaining_budget_summary(graph, node),
+        "resumable_sessions": dynamic_resumable_session_summary(ctx, graph, node),
+        "depends_on": if node.depends_on.is_empty() {
+            "none".to_string()
+        } else {
+            node.depends_on.join(", ")
+        },
+    });
+    let template_fields = template_context
+        .as_object_mut()
+        .expect("AI-DYNAMIC hidden context must be an object");
+    let serde_json::Value::Object(attachment_template_fields) = attachment_template_context else {
+        unreachable!("AI-DYNAMIC attachment template context must be an object");
+    };
+    template_fields.extend(attachment_template_fields);
+    template_fields.insert(
+        "has_new_round_trigger".to_string(),
+        serde_json::Value::Bool(new_round_trigger.is_some()),
+    );
+    template_fields.insert(
+        "new_round_trigger".to_string(),
+        serde_json::Value::String(
+            new_round_trigger
+                .map(|trigger| {
+                    render_new_round_trigger_reason_line(trigger, ctx.app.config.desktop_language)
+                })
+                .unwrap_or_default(),
         ),
-        serde_json::json!({
-            "outer_node_id": ctx.outer_node_id,
-            "outer_attempt_id": ctx.outer_attempt_id,
-            "dynamic_run_id": graph.run.id,
-            "node_id": node.id,
-            "title": node.title,
-            "kind": format!("{:?}", node.kind),
-            "group_id": node.group_id.as_deref().unwrap_or("none"),
-            "chain_id": node.chain_id,
-            "depth": node.depth,
-            "session_mode": match session_mode {
-                SessionMode::New => "new",
-                SessionMode::Continue => "continue",
-            },
-            "continue_from_node_id": node.continue_from_node_id.as_deref().unwrap_or("none"),
-            "dynamic_root": dynamic_root,
-            "node_dir": runtime_context.node_dir,
-            "attempt_dir": runtime_context.attempt_dir,
-            "attachments_dir": runtime_context.attachments_dir,
-            "workspace_id": node.workspace_id,
-            "workspace_path": workspace_path,
-            "workspace_capability": dynamic_workspace_capability_summary(ctx),
-            "direct_predecessors": projection.direct_predecessors,
-            "has_direct_predecessors": projection.has_direct_predecessors,
-            "active_group": projection.active_group,
-            "has_active_group": projection.has_active_group,
-            "inherited_groups": projection.inherited_groups,
-            "has_inherited_groups": projection.has_inherited_groups,
-            "siblings": projection.siblings,
-            "has_siblings": projection.has_siblings,
-            "available_attachments": projection.available_attachments,
-            "has_available_attachments": projection.has_available_attachments,
-            "has_output_contract": has_output_contract,
-            "allowed_workflow_snapshots": allowed_workflow_snapshot_summary(&graph.run.allowed_workflow_snapshots),
-            "agent_strategy_mode": dynamic_agent_strategy_mode(ctx.dynamic),
-            "bootstrap_provider": ctx.dynamic.bootstrap_provider().unwrap_or("none"),
-            "agent_routing_prompt": dynamic_agent_routing_prompt(ctx.dynamic).unwrap_or("none"),
-            "acceptance_model_policy": match ctx.app.config.desktop_language {
-                DesktopLanguage::ZhCn => match dynamic_acceptance_model(ctx.dynamic) {
-                    Some(model) => format!(
-                        "`merge` / `acceptance` 固定使用验收模型 `{model}`；这两个 spec 不要输出 `model`。"
-                    ),
-                    None => "未单独配置验收模型；`merge` / `acceptance` 与普通动态节点沿用同一套模型规则。".to_string(),
-                },
-                DesktopLanguage::En => match dynamic_acceptance_model(ctx.dynamic) {
-                    Some(model) => format!(
-                        "`merge` / `acceptance` use the configured acceptance model `{model}`; those specs must not output `model`."
-                    ),
-                    None => "No dedicated acceptance model is configured; `merge` / `acceptance` follow the same model rules as other dynamic nodes.".to_string(),
-                },
-            },
-            "available_providers": available_provider_summary(ctx),
-            "available_profiles": available_profile_summary(ctx),
-            "remaining_budget": dynamic_remaining_budget_summary(graph, node),
-            "resumable_sessions": dynamic_resumable_session_summary(ctx, graph, node),
-            "depends_on": if node.depends_on.is_empty() {
-                "none".to_string()
-            } else {
-                node.depends_on.join(", ")
-            },
-        }),
-    )?;
+    );
+    let content = render_template(template, template_context)?;
     Ok(vec![PromptHiddenSection {
         title: "Gold Band AI-DYNAMIC runtime context".to_string(),
         content,
@@ -12092,6 +14279,159 @@ fn dynamic_worktree_dir(ctx: &DynamicExecutionContext<'_>, workspace_id: &str) -
     dynamic_worktree_base_dir(ctx).join(dynamic_worktree_short_id(ctx, workspace_id))
 }
 
+#[derive(Debug, Clone)]
+struct DynamicWorktreeNamespace {
+    task: Utf8PathBuf,
+    run: Utf8PathBuf,
+    leaf: Utf8PathBuf,
+}
+
+fn remove_empty_dynamic_worktree_directory_best_effort(path: &Utf8Path, scope: &str) -> bool {
+    match std::fs::remove_dir(path.as_std_path()) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => false,
+        Err(error) => {
+            tracing::warn!(
+                workspace_path = path.as_str(),
+                cleanup_scope = scope,
+                %error,
+                "failed to remove an empty released dynamic worktree directory"
+            );
+            false
+        }
+    }
+}
+
+fn canonical_existing_dynamic_namespace_path(path: &Utf8Path) -> Result<Option<Utf8PathBuf>> {
+    match std::fs::symlink_metadata(path.as_std_path()) {
+        Ok(_) => {
+            let canonical = std::fs::canonicalize(path.as_std_path())
+                .with_context(|| format!("failed to canonicalize dynamic namespace `{path}`"))?;
+            Utf8PathBuf::from_path_buf(canonical)
+                .map(Some)
+                .map_err(|_| anyhow!("dynamic namespace path is not UTF-8: `{path}`"))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => {
+            Err(error).with_context(|| format!("failed to inspect dynamic namespace `{path}`"))
+        }
+    }
+}
+
+fn ensure_dynamic_namespace_path_matches_canonical_location(
+    path: &Utf8Path,
+    expected: &Utf8Path,
+) -> Result<()> {
+    if let Some(actual) = canonical_existing_dynamic_namespace_path(path)? {
+        ensure!(
+            git_canonical_path_key(&actual) == git_canonical_path_key(expected),
+            "dynamic namespace `{path}` resolves to `{actual}` instead of `{expected}`"
+        );
+    }
+    Ok(())
+}
+
+fn preflight_dynamic_worktree_namespace(
+    ctx: &DynamicExecutionContext<'_>,
+    workspace_id: &str,
+    workspace_path: &Utf8Path,
+) -> Result<DynamicWorktreeNamespace> {
+    let worktrees_root = ctx.app.paths.repo_gold_band_root.join("worktrees");
+    let task_ref = safe_dynamic_ref(ctx.task_id);
+    let run_ref = safe_dynamic_ref(ctx.run_id);
+    ensure!(
+        !task_ref.is_empty() && !run_ref.is_empty(),
+        "dynamic worktree namespace contains an empty task or run component"
+    );
+    let task_namespace = worktrees_root.join(task_ref);
+    let run_namespace = task_namespace.join(run_ref);
+    let leaf = dynamic_worktree_dir(ctx, workspace_id);
+    ensure!(
+        task_namespace.parent() == Some(worktrees_root.as_path())
+            && run_namespace.parent() == Some(task_namespace.as_path())
+            && leaf.parent() == Some(run_namespace.as_path()),
+        "dynamic worktree namespace does not have the required task/run/leaf shape"
+    );
+    ensure!(
+        git_filesystem_paths_equal(workspace_path, &leaf)?,
+        "persisted dynamic workspace path `{workspace_path}` is not the runtime leaf `{leaf}`"
+    );
+
+    let config_dir_name = ctx
+        .app
+        .paths
+        .repo_gold_band_root
+        .file_name()
+        .ok_or_else(|| anyhow!("repository Gold Band root has no directory name"))?;
+    let canonical_repo_root = canonical_existing_dynamic_namespace_path(&ctx.app.paths.repo_root)?
+        .ok_or_else(|| anyhow!("repository root does not exist"))?;
+    let canonical_gold_band_root = canonical_repo_root.join(config_dir_name);
+    let canonical_worktrees_root = canonical_gold_band_root.join("worktrees");
+    let canonical_task_namespace = canonical_worktrees_root.join(
+        task_namespace
+            .file_name()
+            .expect("validated task namespace has one component"),
+    );
+    let canonical_run_namespace = canonical_task_namespace.join(
+        run_namespace
+            .file_name()
+            .expect("validated run namespace has one component"),
+    );
+    let canonical_leaf = canonical_run_namespace.join(
+        leaf.file_name()
+            .expect("dynamic worktree leaf always has one component"),
+    );
+
+    for (path, expected) in [
+        (
+            ctx.app.paths.repo_gold_band_root.as_path(),
+            canonical_gold_band_root.as_path(),
+        ),
+        (worktrees_root.as_path(), canonical_worktrees_root.as_path()),
+        (task_namespace.as_path(), canonical_task_namespace.as_path()),
+        (run_namespace.as_path(), canonical_run_namespace.as_path()),
+        (leaf.as_path(), canonical_leaf.as_path()),
+    ] {
+        ensure_dynamic_namespace_path_matches_canonical_location(path, expected)?;
+    }
+
+    Ok(DynamicWorktreeNamespace {
+        task: task_namespace,
+        run: run_namespace,
+        leaf,
+    })
+}
+
+fn prune_released_dynamic_worktree_namespace_best_effort(
+    ctx: &DynamicExecutionContext<'_>,
+    workspace_id: &str,
+    workspace_path: &Utf8Path,
+) {
+    let namespace = match preflight_dynamic_worktree_namespace(ctx, workspace_id, workspace_path) {
+        Ok(namespace) => namespace,
+        Err(error) => {
+            tracing::warn!(
+                workspace_id,
+                workspace_path = workspace_path.as_str(),
+                %error,
+                "refused to prune a released dynamic worktree outside its canonical namespace"
+            );
+            return;
+        }
+    };
+
+    for (scope, path) in [
+        ("leaf", namespace.leaf.as_path()),
+        ("run", namespace.run.as_path()),
+        ("task", namespace.task.as_path()),
+    ] {
+        if !remove_empty_dynamic_worktree_directory_best_effort(path, scope) {
+            break;
+        }
+    }
+}
+
 #[cfg(test)]
 fn git_output(cwd: &Utf8Path, args: &[&str]) -> Result<GitCommandOutput> {
     GitCommandRunner::default().run(cwd, args)
@@ -12179,14 +14519,96 @@ fn checkpoint_dynamic_workspace(
     Ok(head)
 }
 
-fn fork_dynamic_workspace(
+fn dynamic_fanout_source_workspace<'a>(
+    graph: &'a DynamicGraphState,
+    node: &DynamicNodeState,
+) -> Result<&'a WorkspaceState> {
+    let workspace_id = if node.kind == DynamicNodeKind::Acceptance {
+        &graph
+            .groups
+            .iter()
+            .find(|group| Some(&group.id) == node.group_id.as_ref())
+            .ok_or_else(|| anyhow!("dynamic.acceptance.group-missing: {}", node.id))?
+            .target_workspace_id
+    } else {
+        &node.workspace_id
+    };
+    dynamic_workspace(graph, workspace_id)
+}
+
+fn proposal_has_fanout_commit_reminder(proposal: &DynamicProposalState) -> bool {
+    proposal
+        .validation_errors
+        .iter()
+        .any(|error| error.code == DYNAMIC_FANOUT_WORKSPACE_DIRTY)
+}
+
+fn persist_dynamic_fanout_commit_reminder(
+    ctx: &DynamicExecutionContext<'_>,
+    proposal: &DynamicProposalState,
+) -> Result<()> {
+    let lock = dynamic_state_lock(ctx)?;
+    let _guard = lock.lock();
+    let mut graph = load_dynamic_graph(
+        &ctx.app.paths.dynamic_graph_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        ),
+        &ctx.app.paths.repo_root,
+    )?;
+    if !graph.proposals.iter().any(|previous| {
+        previous.source_node_id == proposal.source_node_id
+            && proposal_has_fanout_commit_reminder(previous)
+    }) {
+        graph.proposals.push(proposal.clone());
+        persist_dynamic_graph(ctx, &mut graph)?;
+    }
+    Ok(())
+}
+
+fn dynamic_fanout_workspace_dirty_error(
+    workspace: &WorkspaceState,
+) -> DynamicProposalValidationError {
+    dynamic_validation_error(
+        DYNAMIC_FANOUT_WORKSPACE_DIRTY,
+        "review uncommitted task changes before fanout; one-time commit reminder",
+        serde_json::json!({
+            "path": "next", "workspaceId": workspace.id, "workspacePath": workspace.path,
+            "actual": "dirty", "expected": "review task changes and resubmit; clean workspace not required",
+        }),
+    )
+}
+
+fn dynamic_fanout_workspace_check_error(
+    workspace: &WorkspaceState,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    runtime_error(manual_runtime_error_info(
+        RuntimeErrorDomain::Workspace,
+        DYNAMIC_FANOUT_WORKSPACE_CHECK_FAILED,
+        format!("fanout source Git check failed: {error:#}"),
+        serde_json::json!({ "workspaceId": workspace.id, "workspacePath": workspace.path }),
+    ))
+}
+
+fn dynamic_fanout_head(workspace: &WorkspaceState) -> Result<String> {
+    let repository = GitRepositoryService::default();
+    repository
+        .head(&workspace.path)
+        .map_err(|error| dynamic_fanout_workspace_check_error(workspace, error))
+}
+
+fn fork_dynamic_workspace_from_commit(
     ctx: &DynamicExecutionContext<'_>,
     graph: &mut DynamicGraphState,
     parent_workspace_id: &str,
     group_id: &str,
     node_id: &str,
+    fork_commit: &str,
 ) -> Result<String> {
-    let fork_commit = checkpoint_dynamic_workspace(graph, parent_workspace_id, Some(group_id))?;
     let workspace_id = format!(
         "workspace-{}",
         dynamic_worktree_short_id(ctx, &format!("{group_id}:{node_id}"))
@@ -12202,7 +14624,7 @@ fn fork_dynamic_workspace(
         &parent.repo_root,
         &path,
         &branch,
-        &fork_commit,
+        fork_commit,
     ) {
         return Err(error)
             .with_context(|| format!("failed to fork dynamic workspace `{workspace_id}`"));
@@ -12219,7 +14641,7 @@ fn fork_dynamic_workspace(
         branch: Some(branch),
         parent_workspace_id: Some(parent_workspace_id.to_string()),
         created_by_group_id: Some(group_id.to_string()),
-        fork_commit,
+        fork_commit: fork_commit.to_string(),
         checkpoint_commit: None,
         status: WorkspaceStatus::Active,
         created_at: now.clone(),
@@ -12234,29 +14656,106 @@ fn release_dynamic_workspace_best_effort(
     ctx: &DynamicExecutionContext<'_>,
     graph: &mut DynamicGraphState,
     workspace_id: &str,
-) {
+) -> bool {
     let Ok(workspace) = dynamic_workspace(graph, workspace_id).cloned() else {
-        return;
+        return false;
     };
     if workspace.ownership != WorkspaceOwnership::Runtime
-        || workspace.status == WorkspaceStatus::Released
+        || workspace.kind != WorkspaceKind::Worktree
     {
-        return;
+        return false;
     }
-    let Some(branch) = workspace.branch.as_deref() else {
-        return;
-    };
+    let expected_path = dynamic_worktree_dir(ctx, workspace_id);
     let Ok(_guard) = DYNAMIC_WORKTREE_GIT_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
     else {
-        return;
+        return false;
     };
+    let expected_repo_root = &ctx.app.paths.repo_root;
+    let expected_branch = dynamic_worktree_branch_name(ctx, workspace_id);
+    if workspace.branch.as_deref() != Some(expected_branch.as_str()) {
+        tracing::warn!(
+            workspace_id,
+            persisted_branch = workspace.branch.as_deref(),
+            expected_branch,
+            "refused to release a dynamic worktree with a non-canonical runtime branch"
+        );
+        return false;
+    }
+    match git_filesystem_paths_equal(&workspace.repo_root, expected_repo_root) {
+        Ok(true) => {}
+        Ok(false) => {
+            tracing::warn!(
+                workspace_id,
+                persisted_repo_root = workspace.repo_root.as_str(),
+                expected_repo_root = expected_repo_root.as_str(),
+                "refused to release a dynamic worktree from a different repository"
+            );
+            return false;
+        }
+        Err(error) => {
+            tracing::warn!(
+                workspace_id,
+                persisted_repo_root = workspace.repo_root.as_str(),
+                expected_repo_root = expected_repo_root.as_str(),
+                %error,
+                "failed to validate the dynamic worktree repository identity"
+            );
+            return false;
+        }
+    }
+    if workspace.status == WorkspaceStatus::Released {
+        let Ok(repository) =
+            GitSourceControlService::default().repository_identity(expected_repo_root)
+        else {
+            return false;
+        };
+        if let Err(error) = GitCoordinationService.with_runtime_write(
+            &repository.common_dir,
+            Some(&expected_path),
+            "dynamic-worktree-prune",
+            || {
+                preflight_dynamic_worktree_namespace(ctx, workspace_id, &workspace.path)?;
+                prune_released_dynamic_worktree_namespace_best_effort(
+                    ctx,
+                    workspace_id,
+                    &expected_path,
+                );
+                Ok(())
+            },
+        ) {
+            tracing::warn!(
+                workspace_id,
+                workspace_path = workspace.path.as_str(),
+                %error,
+                "failed to coordinate released dynamic worktree pruning"
+            );
+        }
+        return false;
+    }
     if GitWorkspaceManager::default()
-        .remove_worktree(&workspace.repo_root, &workspace.path, branch)
-        .is_ok()
-        && let Ok(state) = dynamic_workspace_mut(graph, workspace_id)
+        .remove_worktree_with_cleanup(
+            expected_repo_root,
+            &expected_path,
+            &expected_branch,
+            || {
+                preflight_dynamic_worktree_namespace(ctx, workspace_id, &workspace.path)?;
+                Ok(())
+            },
+            || {
+                prune_released_dynamic_worktree_namespace_best_effort(
+                    ctx,
+                    workspace_id,
+                    &expected_path,
+                );
+            },
+        )
+        .is_err()
     {
+        return false;
+    }
+    if let Ok(state) = dynamic_workspace_mut(graph, workspace_id) {
         state.status = WorkspaceStatus::Released;
         state.updated_at = now_rfc3339_like();
         dynamic_event_best_effort(
@@ -12264,7 +14763,29 @@ fn release_dynamic_workspace_best_effort(
             "dynamic_workspace_released",
             serde_json::json!({ "workspaceId": workspace_id }),
         );
+        return true;
     }
+    false
+}
+
+fn reconcile_closed_dynamic_group_workspaces(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &mut DynamicGraphState,
+) -> bool {
+    let mut workspace_ids = graph
+        .groups
+        .iter()
+        .filter(|group| group.status == DynamicGroupStatus::Closed)
+        .flat_map(|group| group.child_workspace_ids.iter().cloned())
+        .collect::<Vec<_>>();
+    workspace_ids.sort_unstable();
+    workspace_ids.dedup();
+
+    workspace_ids
+        .into_iter()
+        .fold(false, |changed, workspace_id| {
+            release_dynamic_workspace_best_effort(ctx, graph, &workspace_id) || changed
+        })
 }
 
 fn validate_dynamic_workspace_catalog(graph: &DynamicGraphState) -> Result<()> {
@@ -12616,6 +15137,10 @@ fn logical_prompt_id(existing: Option<String>) -> String {
         .unwrap_or_else(|| format!("runtime-turn-{}", uuid::Uuid::new_v4().simple()))
 }
 
+fn dynamic_proposal_repair_prompt_id(logical_prompt_id: &str, repair_attempt: u32) -> String {
+    format!("{logical_prompt_id}-dynamic-repair-{repair_attempt}")
+}
+
 fn pause_active_dynamic_leaves(
     graph: &mut DynamicGraphState,
     pause_reason: PauseReason,
@@ -12751,9 +15276,9 @@ fn drive_from_node_with_initial_session(
     initial_user_prompt_render_mode: UserPromptRenderMode,
     initial_resume_input_attachment_paths: Vec<String>,
     initial_runtime_control_intent: RuntimeControlIntent,
-    parent_continue_input: Option<ConversationPromptInput>,
-    parent_continue_prompt_id: Option<String>,
-    dynamic_resume_override: Option<DynamicResumeOverride>,
+    mut parent_continue_input: Option<ConversationPromptInput>,
+    mut parent_continue_prompt_id: Option<String>,
+    mut dynamic_resume_override: Option<DynamicResumeOverride>,
     initial_model_override: Option<String>,
     initial_permission_mode_override: Option<String>,
     mut launch: Option<mpsc::Sender<RuntimeContinueLaunch>>,
@@ -12911,6 +15436,19 @@ fn drive_from_node_with_initial_session(
         let current_node_dsl = workflow
             .get_node(&current_node_id)
             .expect("validated node exists");
+        let outer_new_round_trigger = if matches!(current_node_dsl, NodeDsl::AiDynamic(_)) {
+            build_new_round_trigger_context(
+                app,
+                task_id,
+                &run.id,
+                round,
+                &current_node_id,
+                &current_attempt_id,
+                workflow,
+            )
+        } else {
+            None
+        };
         if matches!(current_node_dsl, NodeDsl::Worker(_)) {
             setup_node_environment(app, task_id, &run.id, &round.id, &node, &ctx)?;
         }
@@ -12965,6 +15503,7 @@ fn drive_from_node_with_initial_session(
                     round,
                     &current_attempt_id,
                     dynamic,
+                    outer_new_round_trigger.clone(),
                     node.clone(),
                     parent_continue_input.clone(),
                     parent_continue_prompt_id.clone(),
@@ -13517,15 +16056,6 @@ fn drive_from_node_with_initial_session(
         }
 
         // NodeCompleted already emitted above inside the if-completed block.
-        let completed_snapshot = completed_node_snapshot(
-            round,
-            &node,
-            Some(
-                app.paths
-                    .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id)
-                    .to_string(),
-            ),
-        );
         let decision = decide_next_step(workflow, run, round, &node);
 
         if let Some(next) = apply_control_decision(
@@ -13539,7 +16069,6 @@ fn drive_from_node_with_initial_session(
             decision,
             node.runtime_execution_id.as_deref(),
         )? {
-            run.last_executed_node = Some(completed_snapshot);
             node = next.node;
             let prompt_state = AcpInvocationPromptState::workflow_transition(
                 app.config.desktop_language,
@@ -13557,6 +16086,11 @@ fn drive_from_node_with_initial_session(
             runtime_control_intent = prompt_state.runtime_control_intent;
             model_override = prompt_state.model_override;
             permission_mode_override = prompt_state.permission_mode_override;
+            // Explicit recovery belongs to the initial outer attempt, including
+            // its retries, but never to a workflow successor or a new round.
+            parent_continue_input = None;
+            parent_continue_prompt_id = None;
+            dynamic_resume_override = None;
             invalid_output_repair_prompts = 0;
             continue;
         }
@@ -13568,7 +16102,6 @@ fn drive_from_node_with_initial_session(
                 run.execution.recovery_candidate_token.as_deref(),
             );
         }
-        run.last_executed_node = Some(completed_snapshot);
         return Ok(());
     }
 }
@@ -13576,13 +16109,108 @@ fn drive_from_node_with_initial_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acp::elicitation::{PendingElicitationState, write_pending_elicitation};
+    use crate::acp::elicitation::{pending_elicitation_state, write_pending_elicitation};
     use crate::config::{ProviderDiagnosticSnapshot, RuntimeConfig};
     use crate::dsl::{AiDynamicAgentStrategy, DynamicControlDsl};
-    use crate::provider::{OutputArtifactPayload, ProviderResultPayload, SessionRef};
+    use crate::provider::{
+        DoctorResult, OutputArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
+        ProviderResultPayload, SessionRef,
+    };
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
+
+    struct DynamicRepairIdentityProvider {
+        invocations: Arc<Mutex<Vec<(String, SessionMode, UserPromptRenderMode)>>>,
+        missing_turns: usize,
+        initial_output: Option<String>,
+    }
+
+    impl ProviderAdapter for DynamicRepairIdentityProvider {
+        fn describe_provider(&self) -> ProviderInfo {
+            ProviderInfo {
+                provider_id: "claude-acp".to_string(),
+                display_name: "Dynamic repair identity test".to_string(),
+                capabilities: ProviderCapabilities {
+                    supports_open_session: true,
+                    supports_continue_session: true,
+                    supports_system_prompt: false,
+                    supports_raw_stream: false,
+                },
+                is_default: true,
+            }
+        }
+
+        fn doctor(&self) -> DoctorResult {
+            DoctorResult {
+                available: true,
+                reason: None,
+                capabilities: None,
+            }
+        }
+
+        fn run_worker(&self, req: WorkerInvocation) -> Result<ProviderRunResult> {
+            if req.user_prompt_render_mode == UserPromptRenderMode::RuntimeFinalize {
+                let prompt = req.resume_prompt.as_deref().expect("confirmation prompt");
+                assert!(prompt.contains("请直接继续执行"));
+                assert!(prompt.contains("无需重新核对任务目标或验收要求"));
+                assert!(prompt.contains("\"DynamicNext\""));
+                assert_eq!(req.resume_prompt_visibility, PromptVisibility::Hidden);
+            }
+            let prompt_id = req
+                .resume_prompt_id
+                .clone()
+                .expect("dynamic invocation must carry a prompt identity");
+            let mut invocations = self.invocations.lock().unwrap();
+            let invocation_index = invocations.len();
+            invocations.push((prompt_id, req.session_mode, req.user_prompt_render_mode));
+            drop(invocations);
+
+            let output_artifact = match invocation_index {
+                index if index < self.missing_turns => {
+                    self.initial_output
+                        .clone()
+                        .map(|content| OutputArtifactPayload {
+                            name: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
+                            content,
+                        })
+                }
+                index if index == self.missing_turns => Some(OutputArtifactPayload {
+                    name: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
+                    content: test_end_completion("repaired completion"),
+                }),
+                _ => panic!("dynamic repair should finish after the second provider turn"),
+            };
+            Ok(ProviderRunResult {
+                status: ProviderRunStatus::Success,
+                exit_code: None,
+                result_payload: output_artifact.map(|output_artifact| ProviderResultPayload {
+                    output_artifact: Some(output_artifact),
+                }),
+                worker_ref_seed: Some(SessionRef {
+                    provider: "claude-acp".to_string(),
+                    mode: req.session_mode,
+                    supports_open_session: true,
+                    supports_continue_session: true,
+                    continue_ref: Some(serde_json::json!({
+                        "acpSessionId": "dynamic-repair-session"
+                    })),
+                    open_command: None,
+                }),
+                stream_path: None,
+                runtime_error: None,
+                runtime_control_output: None,
+            })
+        }
+
+        fn open_session(&self, _worker_ref: &SessionRef) -> Result<()> {
+            Ok(())
+        }
+
+        fn build_continue_command(&self, _worker_ref: &SessionRef) -> Result<Option<String>> {
+            Ok(None)
+        }
+    }
 
     #[test]
     fn runtime_candidate_commits_only_after_canonical_running_persist() {
@@ -13843,6 +16471,24 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_repair_prompt_identity_is_distinct_and_stable_per_attempt() {
+        let business = "runtime-turn-business";
+
+        assert_eq!(
+            dynamic_proposal_repair_prompt_id(business, 1),
+            "runtime-turn-business-dynamic-repair-1"
+        );
+        assert_eq!(
+            dynamic_proposal_repair_prompt_id(business, 1),
+            dynamic_proposal_repair_prompt_id(business, 1)
+        );
+        assert_ne!(
+            dynamic_proposal_repair_prompt_id(business, 1),
+            dynamic_proposal_repair_prompt_id(business, 2)
+        );
+    }
+
+    #[test]
     fn workflow_session_continue_does_not_claim_runtime_control_resume() {
         let state = AcpInvocationPromptState::workflow_transition(
             DesktopLanguage::ZhCn,
@@ -13865,7 +16511,7 @@ mod tests {
                 .resume_prompt
                 .as_deref()
                 .unwrap_or_default()
-                .contains("用户已选择将当前节点重新交由 Runtime 控制")
+                .contains("请继续执行当前节点尚未完成的任务")
         );
     }
 
@@ -13885,7 +16531,7 @@ mod tests {
         assert_eq!(state.resume_prompt_visibility, PromptVisibility::Hidden);
         assert_eq!(
             state.resume_prompt.as_deref(),
-            Some("用户已选择将当前节点重新交由 Runtime 控制。当前输出契约（如有）重新生效。")
+            Some("请继续执行当前节点尚未完成的任务，并遵循用户针对该任务的最新指引（如果有）")
         );
     }
 
@@ -13923,9 +16569,9 @@ mod tests {
         let prompt = state.resume_prompt.as_deref().unwrap_or_default();
         assert_eq!(prompt.lines().next(), Some("请先补充回归测试"));
         assert!(prompt.contains("show=\"false\""));
-        assert!(prompt.contains("请先完整执行本消息中的用户指令"));
+        assert!(prompt.contains("请先完整执行本消息中的用户指令，然后继续完成你之前的任务"));
         assert!(prompt.contains("本 turn 不适用此前的 artifact 输出约束"));
-        assert!(prompt.contains("Runtime 会在后续独立 turn 中完成结果归一化"));
+        assert!(prompt.contains("完成后再由 Runtime 在后续独立 turn 中完成结果归一化"));
         assert!(!prompt.contains("按当前输出契约输出 artifact"));
         assert!(!prompt.contains("当前输出契约（如有）重新生效"));
 
@@ -13944,7 +16590,12 @@ mod tests {
         );
         let english_prompt = english_state.resume_prompt.as_deref().unwrap_or_default();
         assert!(english_prompt.contains("fully carry out the user instruction in this message"));
+        assert!(
+            english_prompt
+                .contains("then continue and complete the task you were previously working on")
+        );
         assert!(english_prompt.contains("artifact-output constraints do not apply"));
+        assert!(english_prompt.contains("once the task is complete"));
         assert!(english_prompt.contains("in a separate subsequent turn"));
 
         let inline_state = runtime_control_resume_prompt_state(
@@ -13958,7 +16609,9 @@ mod tests {
             None,
         );
         let inline_prompt = inline_state.resume_prompt.as_deref().unwrap_or_default();
-        assert!(inline_prompt.contains("完成后按当前输出契约输出 artifact"));
+        assert!(
+            inline_prompt.contains("然后继续完成你之前的任务，完成后再按当前输出契约输出 artifact")
+        );
         assert!(!inline_prompt.contains("后续独立 turn"));
 
         let inline_english_state = runtime_control_resume_prompt_state(
@@ -13977,6 +16630,11 @@ mod tests {
             .resume_prompt
             .as_deref()
             .unwrap_or_default();
+        assert!(
+            inline_english_prompt
+                .contains("then continue and complete the task you were previously working on")
+        );
+        assert!(inline_english_prompt.contains("only after that"));
         assert!(inline_english_prompt.contains("according to the current output contract"));
         assert!(!inline_english_prompt.contains("separate subsequent turn"));
 
@@ -13994,7 +16652,9 @@ mod tests {
             .resume_prompt
             .as_deref()
             .unwrap_or_default();
-        assert!(no_contract_prompt.contains("请先完整执行本消息中的用户指令"));
+        assert!(
+            no_contract_prompt.contains("请先完整执行本消息中的用户指令，然后继续完成你之前的任务")
+        );
         assert!(!no_contract_prompt.contains("artifact 输出约束"));
         assert!(!no_contract_prompt.contains("输出 artifact"));
     }
@@ -14165,6 +16825,22 @@ mod tests {
         .unwrap();
         assert_eq!(recovered.status, RunStatus::Completed);
         assert_eq!(recovered.outcome, Some(RunOutcome::Success));
+        assert_eq!(
+            recovered
+                .last_executed_node
+                .as_ref()
+                .map(|snapshot| snapshot.node_id.as_str()),
+            Some(node_id)
+        );
+        let durable = app.run_status(task_id, run_id).unwrap();
+        assert_eq!(
+            durable
+                .last_executed_node
+                .as_ref()
+                .map(|snapshot| snapshot.node_id.as_str()),
+            Some(node_id),
+            "terminal run.json must persist the actual final node"
+        );
         assert!(
             run_recover_completed_background(
                 &app, task_id, run_id, round_id, node_id, attempt_id, 1,
@@ -14264,11 +16940,40 @@ mod tests {
         );
     }
 
+    fn create_test_directory_link(target: &Utf8Path, link: &Utf8Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target.as_std_path(), link.as_std_path()).unwrap();
+
+        #[cfg(windows)]
+        {
+            if std::os::windows::fs::symlink_dir(target.as_std_path(), link.as_std_path()).is_ok() {
+                return;
+            }
+            let output = crate::process::background_command("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(link.as_std_path())
+                .arg(target.as_std_path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "failed to create test junction: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
     fn init_repo() -> (tempfile::TempDir, Utf8PathBuf) {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
         std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
         git(&repo_root, &["init"]);
+        // Test runtime storage is colocated with the fixture repository.
+        std::fs::write(
+            repo_root.join(".git/info/exclude"),
+            "gold-band-home/\n.gold-band/\n",
+        )
+        .unwrap();
         git(&repo_root, &["config", "user.email", "test@example.com"]);
         git(&repo_root, &["config", "user.name", "Test User"]);
         std::fs::write(repo_root.join("README.md").as_std_path(), "hello\n").unwrap();
@@ -14335,39 +17040,6 @@ mod tests {
         .unwrap()
         .task
         .id
-    }
-
-    #[test]
-    fn prepare_run_reserves_a_run_directory_before_releasing_the_task_lock() {
-        let (_temp, app) = test_app_with_provider_capabilities(serde_json::json!({}));
-        let task_id = create_direct_test_task(&app);
-        let task_dir = app.paths.task_dir(&task_id);
-        let runs_dir = app.paths.runs_dir(&task_id);
-        let (started_tx, started_rx) = std::sync::mpsc::channel();
-        let app_for_prepare = app.with_repo_root(app.paths.repo_root.clone(), app.config.clone());
-        let task_id_for_prepare = task_id.clone();
-
-        let handle = crate::storage::with_file_lock(&task_dir, || {
-            let handle = std::thread::spawn(move || {
-                started_tx.send(()).unwrap();
-                prepare_run(&app_for_prepare, &task_id_for_prepare, None)
-            });
-            started_rx.recv().unwrap();
-            assert!(!handle.is_finished());
-            assert!(
-                !runs_dir.exists()
-                    || std::fs::read_dir(runs_dir.as_std_path())
-                        .unwrap()
-                        .next()
-                        .is_none()
-            );
-            Ok(handle)
-        })
-        .unwrap();
-
-        let prepared = handle.join().unwrap().unwrap();
-        assert!(prepared.run_dir.exists());
-        assert!(app.paths.run_file(&task_id, &prepared.run().id).is_file());
     }
 
     #[test]
@@ -15047,6 +17719,7 @@ mod tests {
             outer_node_id: "ai-dynamic",
             outer_attempt_id: "attempt-001",
             outer_runtime_execution_id: None,
+            outer_new_round_trigger: None,
             dynamic,
             task_uuid: None,
             run_uuid: None,
@@ -15079,6 +17752,16 @@ mod tests {
             model_override: None,
             permission_mode_override: None,
             launch_signal,
+        }
+    }
+
+    fn clear_test_dynamic_resume_coordinator(key: &str) {
+        if let Some(coordinator) = DYNAMIC_RESUME_COORDINATOR.get() {
+            let mut coordinator = coordinator.lock().unwrap();
+            coordinator.drivers.remove(key);
+            coordinator.pending.remove(key);
+            coordinator.inflight.remove(key);
+            coordinator.starting.remove(key);
         }
     }
 
@@ -15143,19 +17826,20 @@ mod tests {
         std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
         write_pending_elicitation(
             &attempt_dir,
-            &PendingElicitationState {
-                elicitation_id: "elicit-001".to_string(),
-                jsonrpc_id: serde_json::json!(1),
-                request: serde_json::from_value(serde_json::json!({
+            &pending_elicitation_state(
+                "elicit-001",
+                "turn-1",
+                "prompt-turn-1",
+                serde_json::json!(1),
+                serde_json::from_value(serde_json::json!({
                     "mode": "form",
                     "sessionId": "session-test",
                     "message": "请选择",
                     "requestedSchema": { "type": "object", "properties": {} }
                 }))
                 .unwrap(),
-                created_at: "1Z".to_string(),
-                timeline_identity: None,
-            },
+                "1Z".to_string(),
+            ),
         )
         .unwrap();
 
@@ -15913,6 +18597,135 @@ mod tests {
         )
     }
 
+    #[test]
+    fn dynamic_inline_control_repair_uses_a_distinct_prompt_identity() {
+        let (_temp, repo_root) = init_repo();
+        let invocations = Arc::new(Mutex::new(Vec::new()));
+        let app = App::with_provider(
+            repo_root.clone(),
+            Box::new(DynamicRepairIdentityProvider {
+                invocations: invocations.clone(),
+                missing_turns: 1,
+                initial_output: None,
+            }),
+        );
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("bootstrap");
+        node.depth = 0;
+        assert_eq!(
+            dynamic_output_emission_mode(&node),
+            OutputEmissionMode::InlineControl
+        );
+        node.status = DynamicNodeStatus::Running;
+        node.begin_runtime_execution("execution-bootstrap", "2026-06-16T00:00:01Z");
+        let mut graph = test_dynamic_graph_at(repo_root, vec![node.clone()]);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+
+        let result = execute_dynamic_worker(&ctx, &graph, node).unwrap();
+
+        assert_eq!(result.node.status, DynamicNodeStatus::Completed);
+        assert_eq!(result.node.outcome, Some(NodeOutcome::Success));
+        assert_eq!(result.proposals.len(), 1);
+        assert_eq!(
+            result.proposals[0].validation_status,
+            DynamicProposalValidationStatus::Accepted
+        );
+        let invocations = invocations.lock().unwrap();
+        assert_eq!(invocations.len(), 2);
+        assert_eq!(invocations[0].1, SessionMode::New);
+        assert_eq!(invocations[0].2, UserPromptRenderMode::RequirementTask);
+        assert_eq!(invocations[1].1, SessionMode::Continue);
+        assert_eq!(invocations[1].2, UserPromptRenderMode::RuntimeRepair);
+        assert_eq!(
+            invocations[1].0,
+            dynamic_proposal_repair_prompt_id(&invocations[0].0, 1)
+        );
+        assert_ne!(invocations[0].0, invocations[1].0);
+    }
+
+    #[test]
+    fn dynamic_post_turn_missing_artifact_reconfirms_after_each_normal_end() {
+        assert_dynamic_post_turn_follow_up(None, UserPromptRenderMode::RuntimeFinalize);
+    }
+
+    #[test]
+    fn dynamic_post_turn_invalid_artifact_still_requests_repair() {
+        assert_dynamic_post_turn_follow_up(
+            Some("{}".to_string()),
+            UserPromptRenderMode::RuntimeRepair,
+        );
+    }
+
+    fn assert_dynamic_post_turn_follow_up(
+        initial_output: Option<String>,
+        expected_mode: UserPromptRenderMode,
+    ) {
+        let (_temp, repo_root) = init_repo();
+        let invocations = Arc::new(Mutex::new(Vec::new()));
+        let app = App::with_provider(
+            repo_root.clone(),
+            Box::new(DynamicRepairIdentityProvider {
+                invocations: invocations.clone(),
+                missing_turns: 2,
+                initial_output,
+            }),
+        );
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("implementation");
+        node.status = DynamicNodeStatus::Running;
+        node.begin_runtime_execution("execution-implementation", "2026-06-16T00:00:01Z");
+        let mut graph = test_dynamic_graph_at(repo_root, vec![node.clone()]);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+
+        let result = execute_dynamic_worker(&ctx, &graph, node).unwrap();
+
+        assert_eq!(result.node.status, DynamicNodeStatus::Completed);
+        assert_eq!(result.node.outcome, Some(NodeOutcome::Success));
+        let invocations = invocations.lock().unwrap();
+        assert_eq!(invocations.len(), 3);
+        for invocation in &invocations[1..] {
+            assert_eq!(invocation.1, SessionMode::Continue);
+            assert_eq!(invocation.2, expected_mode);
+        }
+        assert_ne!(invocations[1].0, invocations[2].0);
+    }
+
+    #[test]
+    fn dynamic_post_turn_repair_refreshes_coordination_snapshot_but_bootstrap_does_not() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let worker = test_worktree_node("implementation");
+        let graph = test_dynamic_graph_at(repo_root, vec![worker.clone()]);
+        let snapshot_path = app.paths.dynamic_coordination_snapshot_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        );
+
+        let worker_prompt = dynamic_proposal_repair_prompt(&ctx, &graph, &worker, &[]);
+
+        assert!(worker_prompt.contains(snapshot_path.as_str()));
+        assert!(worker_prompt.contains("读取最新协调快照"));
+
+        let mut bootstrap = test_worktree_node(DYNAMIC_BOOTSTRAP_NODE_ID);
+        bootstrap.depth = 0;
+        let bootstrap_graph = test_dynamic_graph_at(
+            graph.workspaces[0].repo_root.clone(),
+            vec![bootstrap.clone()],
+        );
+        let bootstrap_prompt =
+            dynamic_proposal_repair_prompt(&ctx, &bootstrap_graph, &bootstrap, &[]);
+        assert!(!bootstrap_prompt.contains(snapshot_path.as_str()));
+    }
+
     fn write_dynamic_completion_artifact(app: &App, node_id: &str, content: String) {
         let artifacts_dir = app.paths.dynamic_node_artifacts_dir(
             "task-006",
@@ -16270,6 +19083,7 @@ mod tests {
                     "ai-dynamic",
                     "attempt-001",
                     "bootstrap",
+                    "attempt-001",
                     PauseReason::ProcessInterrupted,
                 );
                 pause_done_tx.send(result).unwrap();
@@ -16488,9 +19302,15 @@ mod tests {
         let mut source = test_worktree_node("bootstrap");
         source.status = DynamicNodeStatus::Completed;
         source.outcome = Some(NodeOutcome::Success);
-        source.group_id = Some("python-classes".to_string());
         source.chain_id = "bootstrap".to_string();
-        let mut graph = test_dynamic_graph_at(repo_root, vec![source]);
+        // 创建者居于父作用域（顶层组 parent 为 None，creator.group_id 须同为 None，
+        // 见 resolve_coordination_group_owner_workstream_id 的 scope 校验）；
+        // 组内成员单独建节点携带 group_id，推进完成判定按成员归属计算。
+        let mut member = test_worktree_node("python-classes-worker");
+        member.status = DynamicNodeStatus::Completed;
+        member.outcome = Some(NodeOutcome::Success);
+        member.group_id = Some("python-classes".to_string());
+        let mut graph = test_dynamic_graph_at(repo_root, vec![source, member]);
         let child_workspace_id = fork_dynamic_workspace(
             &ctx,
             &mut graph,
@@ -16499,7 +19319,7 @@ mod tests {
             "bootstrap",
         )
         .unwrap();
-        graph.nodes[0].workspace_id = child_workspace_id.clone();
+        graph.nodes[1].workspace_id = child_workspace_id.clone();
         graph.groups.push(DynamicGroupState {
             version: VERSION.to_string(),
             id: "python-classes".to_string(),
@@ -16507,8 +19327,8 @@ mod tests {
             status: DynamicGroupStatus::Open,
             depth: 1,
             parent_group_id: None,
-            root_node_ids: vec!["bootstrap".to_string()],
-            terminal_node_ids: vec!["bootstrap".to_string()],
+            root_node_ids: vec!["python-classes-worker".to_string()],
+            terminal_node_ids: vec!["python-classes-worker".to_string()],
             target_workspace_id: "workspace-main".to_string(),
             child_workspace_ids: vec![child_workspace_id],
             merge_node_id: None,
@@ -16519,19 +19339,14 @@ mod tests {
             created_at: "2026-06-16T00:00:00Z".to_string(),
             updated_at: "2026-06-16T00:00:00Z".to_string(),
         });
-        graph.proposals.push(DynamicProposalState {
-            version: VERSION.to_string(),
-            id: "proposal-bootstrap-001".to_string(),
-            dynamic_run_id: graph.run.id.clone(),
-            source_node_id: "bootstrap".to_string(),
-            artifact_path: Utf8PathBuf::from("artifact.json"),
-            raw_output_path: Utf8PathBuf::from("raw.txt"),
-            parsed: serde_json::json!({}),
-            validation_status: DynamicProposalValidationStatus::Accepted,
-            validation_errors: Vec::new(),
-            materialized_event_ids: Vec::new(),
-            created_at: "2026-06-16T00:00:00Z".to_string(),
-        });
+        graph.proposals.push(accepted_proposal(
+            "bootstrap",
+            serde_json::from_str(&test_end_completion("bootstrap completed")).unwrap(),
+        ));
+        graph.proposals.push(accepted_proposal(
+            "python-classes-worker",
+            serde_json::from_str(&test_end_completion("worker completed")).unwrap(),
+        ));
 
         let advanced = advance_dynamic_groups(&ctx, &mut graph).unwrap();
 
@@ -16635,6 +19450,11 @@ mod tests {
         assert!(prompt.system_prompt.contains("AI-DYNAMIC 稳定规则"));
         assert!(prompt.system_prompt.contains("用户主动打断当前工作"));
         assert!(prompt.system_prompt.contains("dynamic-node-completion"));
+        assert!(
+            !prompt
+                .system_prompt
+                .contains("本次业务 turn 使用后置控制流程")
+        );
         assert!(!prompt.system_prompt.contains("内部 attempt 目录"));
         assert!(!prompt.system_prompt.contains("remaining dynamic nodes"));
         assert!(!prompt.system_prompt.contains("当前链路可复用会话节点"));
@@ -16729,11 +19549,10 @@ mod tests {
             &dynamic_attempt_id(&source),
         );
         std::fs::create_dir_all(attachments_dir.as_std_path()).unwrap();
-        std::fs::write(
-            attachments_dir.join("dev-report.md").as_std_path(),
-            "GoodMorning verified.",
-        )
-        .unwrap();
+        let report_path = attachments_dir.join("dev-report.md");
+        let details_path = attachments_dir.join("verification-details.json");
+        std::fs::write(report_path.as_std_path(), "GoodMorning verified.").unwrap();
+        std::fs::write(details_path.as_std_path(), r#"{ "status": "passed" }"#).unwrap();
 
         let invocation = build_dynamic_worker_invocation(
             &ctx,
@@ -16759,6 +19578,56 @@ mod tests {
         assert!(prompt.user_prompt.contains("dev-good-morning"));
         assert!(prompt.user_prompt.contains("## 可用附件"));
         assert!(prompt.user_prompt.contains("dev-report.md"));
+        assert!(prompt.user_prompt.contains("verification-details.json"));
+        let dynamic_root = app.paths.dynamic_dir(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        );
+        let coordination_snapshot_path = app.paths.dynamic_coordination_snapshot_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        );
+        assert_eq!(
+            prompt.user_prompt.matches(dynamic_root.as_str()).count(),
+            1,
+            "the hidden context must declare the shared Dynamic root only once"
+        );
+        assert!(
+            prompt
+                .user_prompt
+                .contains("- 内部节点（相对 Dynamic 根目录）：nodes/verify-good-morning")
+        );
+        assert!(
+            prompt
+                .user_prompt
+                .contains("- 当前 attempt（相对内部节点）：attempt-001")
+        );
+        assert!(
+            prompt
+                .user_prompt
+                .contains("- attachments（相对当前 attempt）：attachments")
+        );
+        assert!(
+            prompt
+                .user_prompt
+                .contains("- 只读快照（相对 Dynamic 根目录）：coordination-snapshot.json")
+        );
+        assert!(prompt.user_prompt.contains(
+            "- nodes/dev-good-morning/attempt-001/attachments/\n  - dev-report.md\n  - verification-details.json"
+        ));
+        assert!(!prompt.user_prompt.contains(report_path.as_str()));
+        assert!(!prompt.user_prompt.contains(details_path.as_str()));
+        assert!(
+            !prompt
+                .user_prompt
+                .contains(coordination_snapshot_path.as_str())
+        );
         assert!(
             !prompt
                 .user_prompt
@@ -16766,7 +19635,773 @@ mod tests {
         );
         assert!(!prompt.user_prompt.contains("completion="));
         assert!(!prompt.system_prompt.contains("dynamic-node-completion"));
+        assert!(
+            prompt
+                .system_prompt
+                .contains("本次业务 turn 使用后置控制流程")
+        );
+        assert!(
+            prompt
+                .system_prompt
+                .contains("不要在当前 turn 拆分任务、选择 Agent、规划或执行后继节点")
+        );
+        assert!(
+            !prompt
+                .system_prompt
+                .contains("本次 invocation 是执行型节点")
+        );
         assert!(prompt.system_prompt.contains("隐藏 finalize turn"));
+    }
+
+    #[test]
+    fn dynamic_prompt_path_projection_has_matching_english_contract() {
+        let (_temp, repo_root) = init_repo();
+        let mut config = RuntimeConfig::default();
+        config.desktop_language = DesktopLanguage::En;
+        let app = App::with_config(repo_root, config);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut source = test_worktree_node("source-node");
+        source.status = DynamicNodeStatus::Completed;
+        source.outcome = Some(NodeOutcome::Success);
+        let mut overflow = test_worktree_node("overflow-node");
+        overflow.status = DynamicNodeStatus::Completed;
+        overflow.outcome = Some(NodeOutcome::Success);
+        let mut node = test_worktree_node("consumer-node");
+        node.depends_on = vec![source.id.clone(), overflow.id.clone()];
+        let graph = test_dynamic_graph(vec![source.clone(), overflow.clone(), node.clone()]);
+        let report_path =
+            write_dynamic_attachment_for_test(&app, &ctx, &source, "summary.md", "done");
+        for index in 0..=10 {
+            write_dynamic_attachment_for_test(
+                &app,
+                &ctx,
+                &overflow,
+                &format!("overflow-{index:02}.md"),
+                "extra",
+            );
+        }
+
+        let invocation = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &node,
+            &dynamic_attempt_id(&node),
+            dynamic_output_contract_for_node(&ctx, &graph, &node),
+            SessionMode::New,
+            None,
+            None,
+            "test-turn".to_string(),
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        let prompt = render_prompt_bundle(&invocation).unwrap();
+        let dynamic_root = app.paths.dynamic_dir(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        );
+        let coordination_snapshot_path = app.paths.dynamic_coordination_snapshot_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        );
+
+        assert!(prompt.user_prompt.contains("## Runtime location"));
+        assert!(
+            prompt
+                .user_prompt
+                .contains("Internal node (relative to Dynamic root): nodes/consumer-node")
+        );
+        assert!(
+            prompt
+                .user_prompt
+                .contains("Current attempt (relative to the internal node): attempt-001")
+        );
+        assert!(
+            prompt
+                .user_prompt
+                .contains("Attachments (relative to the current attempt): attachments")
+        );
+        assert!(
+            prompt.user_prompt.contains(
+                "Read-only snapshot (relative to Dynamic root): coordination-snapshot.json"
+            )
+        );
+        assert!(prompt.user_prompt.contains("## Available attachments"));
+        assert!(prompt.user_prompt.contains(
+            "### Explicit dependencies (input nodes explicitly named through dependsOn by the current node)"
+        ));
+        assert!(prompt.user_prompt.contains(
+            "At most 10 files or empty directories are inspected per node; non-empty directories are traversed and do not consume a slot themselves"
+        ));
+        assert!(
+            prompt
+                .user_prompt
+                .contains("a top-level `absolutePath=` entry")
+        );
+        assert!(
+            prompt
+                .user_prompt
+                .contains("source-node/attempt-001/attachments/summary.md")
+        );
+        assert_eq!(prompt.user_prompt.matches(dynamic_root.as_str()).count(), 1);
+        assert!(!prompt.user_prompt.contains(report_path.as_str()));
+        assert!(
+            !prompt
+                .user_prompt
+                .contains(coordination_snapshot_path.as_str())
+        );
+    }
+
+    #[test]
+    fn dynamic_attachment_manifest_limits_causal_handoff_to_five_nodes_and_ten_files_each() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut nodes = (0..=5)
+            .map(|index| {
+                let mut node = test_worktree_node(&format!("predecessor-{index}"));
+                node.status = DynamicNodeStatus::Completed;
+                node.outcome = Some(NodeOutcome::Success);
+                node.depth = index + 1;
+                node
+            })
+            .collect::<Vec<_>>();
+        let mut current = test_worktree_node("current-node");
+        current.depth = 7;
+        current.depends_on = vec!["predecessor-5".to_string()];
+        nodes.push(current.clone());
+        let mut graph = test_dynamic_graph(nodes.clone());
+        for index in 0..5 {
+            graph.proposals.push(accepted_single_proposal(
+                &format!("predecessor-{index}"),
+                &format!("predecessor-{}", index + 1),
+            ));
+        }
+        graph
+            .proposals
+            .push(accepted_single_proposal("predecessor-5", "current-node"));
+        write_dynamic_attachment_for_test(
+            &app,
+            &ctx,
+            &nodes[0],
+            "too-old.md",
+            "outside the five-node handoff window",
+        );
+        for (index, node) in nodes.iter().enumerate().take(5).skip(1) {
+            write_dynamic_attachment_for_test(
+                &app,
+                &ctx,
+                node,
+                &format!("marker-{index}.md"),
+                "handoff evidence",
+            );
+        }
+        for index in 0..=10 {
+            write_dynamic_attachment_for_test(
+                &app,
+                &ctx,
+                &nodes[5],
+                &format!("handoff-{index:02}.md"),
+                "latest predecessor evidence",
+            );
+        }
+
+        let invocation = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &current,
+            &dynamic_attempt_id(&current),
+            dynamic_output_contract_for_node(&ctx, &graph, &current),
+            SessionMode::New,
+            None,
+            None,
+            "test-turn".to_string(),
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        let prompt = render_prompt_bundle(&invocation).unwrap();
+
+        assert!(
+            prompt
+                .user_prompt
+                .contains("### 前序链路（创建当前节点的任务接力链，最多回溯 5 个节点）")
+        );
+        for index in 1..=4 {
+            assert!(prompt.user_prompt.contains(&format!("marker-{index}.md")));
+        }
+        assert!(!prompt.user_prompt.contains("too-old.md"));
+        assert_eq!(prompt.user_prompt.matches("handoff-").count(), 10);
+        assert!(!prompt.user_prompt.contains("### 显式依赖（"));
+        assert_eq!(
+            prompt
+                .user_prompt
+                .matches("以下来源节点的附件清单已截断或未完整读取")
+                .count(),
+            1
+        );
+        assert!(prompt.user_prompt.contains(
+            "以下来源节点的附件清单已截断或未完整读取；每个节点最多检查 10 个文件或空目录"
+        ));
+        assert!(
+            prompt
+                .user_prompt
+                .contains("nodes/predecessor-5/attempt-001/attachments")
+        );
+    }
+
+    #[test]
+    fn dynamic_attachment_manifest_unions_causal_source_with_explicit_dependencies() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut source = test_worktree_node("source-node");
+        source.status = DynamicNodeStatus::Completed;
+        source.outcome = Some(NodeOutcome::Success);
+        let mut dependency = test_worktree_node("dependency-node");
+        dependency.status = DynamicNodeStatus::Completed;
+        dependency.outcome = Some(NodeOutcome::Success);
+        let mut current = test_worktree_node("current-node");
+        current.depth = 2;
+        current.depends_on = vec![dependency.id.clone()];
+        let mut graph =
+            test_dynamic_graph(vec![source.clone(), dependency.clone(), current.clone()]);
+        graph
+            .proposals
+            .push(accepted_single_proposal(&source.id, &current.id));
+        for index in 0..=10 {
+            write_dynamic_attachment_for_test(
+                &app,
+                &ctx,
+                &source,
+                &format!("source-{index:02}.md"),
+                "source evidence",
+            );
+            write_dynamic_attachment_for_test(
+                &app,
+                &ctx,
+                &dependency,
+                &format!("dependency-{index:02}.md"),
+                "dependency evidence",
+            );
+        }
+
+        let invocation = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &current,
+            &dynamic_attempt_id(&current),
+            dynamic_output_contract_for_node(&ctx, &graph, &current),
+            SessionMode::New,
+            None,
+            None,
+            "test-turn".to_string(),
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        let prompt = render_prompt_bundle(&invocation).unwrap();
+
+        assert!(
+            prompt
+                .user_prompt
+                .contains("### 前序链路（创建当前节点的任务接力链，最多回溯 5 个节点）")
+        );
+        assert!(
+            prompt
+                .user_prompt
+                .contains("### 显式依赖（当前节点通过 dependsOn 明确指定的输入节点）")
+        );
+        let source_occurrences = (0..=10)
+            .map(|index| {
+                prompt
+                    .user_prompt
+                    .matches(&format!("source-{index:02}.md"))
+                    .count()
+            })
+            .sum::<usize>();
+        let dependency_occurrences = (0..=10)
+            .map(|index| {
+                prompt
+                    .user_prompt
+                    .matches(&format!("dependency-{index:02}.md"))
+                    .count()
+            })
+            .sum::<usize>();
+        assert_eq!(source_occurrences, 10);
+        assert_eq!(dependency_occurrences, 10);
+        assert!(
+            prompt
+                .user_prompt
+                .contains("nodes/dependency-node/attempt-001/attachments")
+        );
+    }
+
+    #[test]
+    fn dynamic_attachment_manifest_counts_files_and_empty_directories_but_not_container_directories()
+     {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut source = test_worktree_node("directory-heavy-source");
+        source.status = DynamicNodeStatus::Completed;
+        source.outcome = Some(NodeOutcome::Success);
+        let mut current = test_worktree_node("current-node");
+        current.depends_on = vec![source.id.clone()];
+        let graph = test_dynamic_graph(vec![source.clone(), current.clone()]);
+        let attachments_dir = app.paths.dynamic_node_attachments_dir(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+            &source.id,
+            &dynamic_attempt_id(&source),
+        );
+        for index in 0..9 {
+            std::fs::create_dir_all(
+                attachments_dir
+                    .join(format!("empty-{index:02}"))
+                    .as_std_path(),
+            )
+            .unwrap();
+        }
+        let nested_dir = attachments_dir.join("nested/container");
+        std::fs::create_dir_all(nested_dir.as_std_path()).unwrap();
+        std::fs::write(
+            nested_dir.join("report.md").as_std_path(),
+            "nested evidence",
+        )
+        .unwrap();
+
+        let exact_limit_scan = dynamic_prompt_attachment_entries_for_node(&ctx, &source);
+        assert!(!exact_limit_scan.truncated);
+        assert_eq!(exact_limit_scan.entries.len(), 1);
+        assert!(
+            exact_limit_scan.entries[0]
+                .path
+                .ends_with("nested/container/report.md")
+        );
+
+        std::fs::create_dir_all(attachments_dir.join("empty-09").as_std_path()).unwrap();
+        let overflow_scan = dynamic_prompt_attachment_entries_for_node(&ctx, &source);
+        assert!(overflow_scan.truncated);
+
+        let invocation = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &current,
+            &dynamic_attempt_id(&current),
+            dynamic_output_contract_for_node(&ctx, &graph, &current),
+            SessionMode::New,
+            None,
+            None,
+            "test-turn".to_string(),
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        let prompt = render_prompt_bundle(&invocation).unwrap();
+
+        assert!(prompt.user_prompt.contains("## 可用附件"));
+        assert!(
+            prompt
+                .user_prompt
+                .contains("### 显式依赖（当前节点通过 dependsOn 明确指定的输入节点）")
+        );
+        assert!(prompt.user_prompt.contains(
+            "以下来源节点的附件清单已截断或未完整读取；每个节点最多检查 10 个文件或空目录"
+        ));
+        assert!(
+            prompt
+                .user_prompt
+                .contains("nodes/directory-heavy-source/attempt-001/attachments")
+        );
+    }
+
+    #[test]
+    fn dynamic_prompt_closed_group_evidence_survives_five_node_handoff_window() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut root_a = test_worktree_node("root-a");
+        root_a.group_id = Some("group-core".to_string());
+        root_a.chain_id = root_a.id.clone();
+        root_a.status = DynamicNodeStatus::Completed;
+        root_a.outcome = Some(NodeOutcome::Success);
+        let mut root_b = test_worktree_node("root-b");
+        root_b.group_id = Some("group-core".to_string());
+        root_b.chain_id = root_b.id.clone();
+        root_b.status = DynamicNodeStatus::Completed;
+        root_b.outcome = Some(NodeOutcome::Success);
+        let mut old_merge = test_worktree_node("group-core-merge");
+        old_merge.kind = DynamicNodeKind::Merge;
+        old_merge.group_id = Some("group-core".to_string());
+        old_merge.status = DynamicNodeStatus::Completed;
+        old_merge.outcome = Some(NodeOutcome::Success);
+        let mut old_acceptance = test_worktree_node("group-core-accept");
+        old_acceptance.kind = DynamicNodeKind::Acceptance;
+        old_acceptance.group_id = Some("group-core".to_string());
+        old_acceptance.depends_on = vec![old_merge.id.clone()];
+        old_acceptance.status = DynamicNodeStatus::Completed;
+        old_acceptance.outcome = Some(NodeOutcome::Success);
+        let mut latest_merge = test_worktree_node("group-core-merge-2");
+        latest_merge.kind = DynamicNodeKind::Merge;
+        latest_merge.group_id = Some("group-core".to_string());
+        latest_merge.status = DynamicNodeStatus::Completed;
+        latest_merge.outcome = Some(NodeOutcome::Failure);
+        let mut latest_acceptance = test_worktree_node("group-core-accept-2");
+        latest_acceptance.kind = DynamicNodeKind::Acceptance;
+        latest_acceptance.group_id = Some("group-core".to_string());
+        latest_acceptance.chain_id = latest_acceptance.id.clone();
+        latest_acceptance.depends_on = vec![latest_merge.id.clone()];
+        latest_acceptance.status = DynamicNodeStatus::Completed;
+        latest_acceptance.outcome = Some(NodeOutcome::Failure);
+        let mut unaccepted_merge = test_worktree_node("group-core-merge-3");
+        unaccepted_merge.kind = DynamicNodeKind::Merge;
+        unaccepted_merge.group_id = Some("group-core".to_string());
+        unaccepted_merge.status = DynamicNodeStatus::Completed;
+        unaccepted_merge.outcome = Some(NodeOutcome::Success);
+        let repairs = (1..=5)
+            .map(|index| {
+                let mut node = test_worktree_node(&format!("repair-{index}"));
+                node.group_id = None;
+                node.chain_id = "bootstrap".to_string();
+                node.depth = index + 1;
+                node.status = DynamicNodeStatus::Completed;
+                node.outcome = Some(NodeOutcome::Success);
+                node
+            })
+            .collect::<Vec<_>>();
+        let mut current = test_worktree_node("reaccept-current");
+        current.group_id = None;
+        current.chain_id = "bootstrap".to_string();
+        current.depth = 7;
+        let mut all_nodes = vec![
+            root_a.clone(),
+            root_b.clone(),
+            old_merge.clone(),
+            old_acceptance.clone(),
+            latest_merge.clone(),
+            latest_acceptance.clone(),
+            unaccepted_merge.clone(),
+        ];
+        all_nodes.extend(repairs.iter().cloned());
+        all_nodes.push(current.clone());
+        let mut graph = test_dynamic_graph(all_nodes);
+        graph.groups.push(test_group_state(
+            "group-core",
+            "bootstrap",
+            vec!["root-a", "root-b"],
+            vec!["root-a", "root-b"],
+        ));
+        graph.groups[0].status = DynamicGroupStatus::Closed;
+        graph.groups[0].merge_node_id = Some(latest_merge.id.clone());
+        graph.groups[0].acceptance_node_id = Some(latest_acceptance.id.clone());
+        graph.proposals.push(accepted_single_proposal(
+            &latest_acceptance.id,
+            &repairs[0].id,
+        ));
+        for index in 0..4 {
+            graph.proposals.push(accepted_single_proposal(
+                &repairs[index].id,
+                &repairs[index + 1].id,
+            ));
+        }
+        graph
+            .proposals
+            .push(accepted_single_proposal(&repairs[4].id, &current.id));
+        write_dynamic_attachment_for_test(
+            &app,
+            &ctx,
+            &root_a,
+            "root-a-report.md",
+            "old branch evidence",
+        );
+        write_dynamic_attachment_for_test(
+            &app,
+            &ctx,
+            &root_b,
+            "root-b-report.md",
+            "old branch evidence",
+        );
+        write_dynamic_attachment_for_test(
+            &app,
+            &ctx,
+            &repairs[3],
+            "accept-report.md",
+            "acceptance evidence on the source handoff chain",
+        );
+        for (node, name) in [
+            (&old_merge, "old-merge.md"),
+            (&old_acceptance, "old-acceptance.md"),
+            (&unaccepted_merge, "unaccepted-merge.md"),
+        ] {
+            write_dynamic_attachment_for_test(&app, &ctx, node, name, "stale evidence");
+        }
+        for index in 0..=10 {
+            write_dynamic_attachment_for_test(
+                &app,
+                &ctx,
+                &latest_merge,
+                &format!("latest-merge-{index:02}.md"),
+                "latest merge evidence",
+            );
+            write_dynamic_attachment_for_test(
+                &app,
+                &ctx,
+                &latest_acceptance,
+                &format!("latest-acceptance-{index:02}.md"),
+                "latest acceptance evidence",
+            );
+        }
+
+        let invocation = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &current,
+            &dynamic_attempt_id(&current),
+            dynamic_output_contract_for_node(&ctx, &graph, &current),
+            SessionMode::New,
+            None,
+            None,
+            "test-turn".to_string(),
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        let prompt = render_prompt_bundle(&invocation).unwrap();
+
+        assert!(prompt.user_prompt.contains(
+            "### Group 证据（当前 merge / acceptance 输入或相关 group 最近一轮合并与验收）"
+        ));
+        assert_eq!(prompt.user_prompt.matches("latest-merge-").count(), 10);
+        assert_eq!(prompt.user_prompt.matches("latest-acceptance-").count(), 10);
+        assert!(prompt.user_prompt.contains("accept-report.md"));
+        assert!(!prompt.user_prompt.contains("root-a-report.md"));
+        assert!(!prompt.user_prompt.contains("root-b-report.md"));
+        assert!(!prompt.user_prompt.contains("old-merge.md"));
+        assert!(!prompt.user_prompt.contains("old-acceptance.md"));
+        assert!(!prompt.user_prompt.contains("unaccepted-merge.md"));
+        assert!(prompt.user_prompt.contains(
+            "以下来源节点的附件清单已截断或未完整读取；每个节点最多检查 10 个文件或空目录"
+        ));
+        assert!(
+            prompt
+                .user_prompt
+                .contains("group-core-merge-2/attempt-001/attachments")
+        );
+        assert!(
+            prompt
+                .user_prompt
+                .contains("group-core-accept-2/attempt-001/attachments")
+        );
+        assert!(!prompt.user_prompt.contains("## 并行兄弟节点"));
+        assert!(
+            !prompt
+                .user_prompt
+                .contains("parallel sibling; not an input dependency")
+        );
+    }
+
+    #[test]
+    fn dynamic_prompt_path_tree_groups_variable_depth_prefixes() {
+        let root = Utf8PathBuf::from("A");
+        let rendered = render_prompt_path_tree(
+            &root,
+            ["A/B/C/D", "A/C/D", "A/B/C/E", "A/B/D/E"]
+                .into_iter()
+                .map(|path| PromptPathTreeEntry {
+                    path: Utf8PathBuf::from(path),
+                    detail: None,
+                })
+                .collect(),
+        );
+
+        assert_eq!(rendered, "- B/\n  - C/\n    - D\n    - E\n  - D/E\n- C/D");
+    }
+
+    #[test]
+    fn dynamic_prompt_path_tree_preserves_same_name_and_ancestor_entries() {
+        let root = Utf8PathBuf::from("A");
+        let rendered = render_prompt_path_tree(
+            &root,
+            ["A/B", "A/B/summary.md", "A/C/summary.md"]
+                .into_iter()
+                .map(|path| PromptPathTreeEntry {
+                    path: Utf8PathBuf::from(path),
+                    detail: None,
+                })
+                .collect(),
+        );
+
+        assert_eq!(rendered, "- B\n  - summary.md\n- C/summary.md");
+        assert_eq!(rendered.matches("summary.md").count(), 2);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn dynamic_prompt_path_tree_keeps_out_of_root_paths_absolute_and_sorted() {
+        let root = Utf8PathBuf::from("/runtime/dynamic");
+        let rendered = render_prompt_path_tree(
+            &root,
+            [
+                "/outside/z.md",
+                "/runtime/dynamic/nodes/a/report.md",
+                "/runtime/dynamic/../escape.md",
+                "/runtime/dynamic-other/prefix.md",
+                "/other/x.md",
+            ]
+            .into_iter()
+            .map(|path| PromptPathTreeEntry {
+                path: Utf8PathBuf::from(path),
+                detail: None,
+            })
+            .collect(),
+        );
+
+        assert_eq!(
+            rendered,
+            "- nodes/a/report.md\n- absolutePath=/other/x.md\n- absolutePath=/outside/z.md\n- absolutePath=/runtime/dynamic/../escape.md\n- absolutePath=/runtime/dynamic-other/prefix.md"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dynamic_prompt_path_tree_handles_windows_drive_and_unc_roots() {
+        let drive_rendered = render_prompt_path_tree(
+            Utf8Path::new(r"C:\runtime\dynamic"),
+            [
+                PromptPathTreeEntry {
+                    path: Utf8PathBuf::from(r"C:\runtime\dynamic\nodes\a\report.md"),
+                    detail: None,
+                },
+                PromptPathTreeEntry {
+                    path: Utf8PathBuf::from(r"D:\outside\z.md"),
+                    detail: None,
+                },
+                PromptPathTreeEntry {
+                    path: Utf8PathBuf::from(r"C:\runtime\dynamic-other\prefix.md"),
+                    detail: None,
+                },
+                PromptPathTreeEntry {
+                    path: Utf8PathBuf::from(r"C:\runtime\dynamic\..\escape.md"),
+                    detail: None,
+                },
+                PromptPathTreeEntry {
+                    path: Utf8PathBuf::from(r"C:\other\x.md"),
+                    detail: None,
+                },
+            ]
+            .into_iter()
+            .collect(),
+        );
+        assert_eq!(
+            drive_rendered,
+            "- nodes/a/report.md\n- absolutePath=C:\\other\\x.md\n- absolutePath=C:\\runtime\\dynamic\\..\\escape.md\n- absolutePath=C:\\runtime\\dynamic-other\\prefix.md\n- absolutePath=D:\\outside\\z.md"
+        );
+
+        let unc_rendered = render_prompt_path_tree(
+            Utf8Path::new(r"\\server\share\dynamic"),
+            vec![PromptPathTreeEntry {
+                path: Utf8PathBuf::from(r"\\server\share\dynamic\nodes\report.md"),
+                detail: None,
+            }],
+        );
+        assert_eq!(unc_rendered, "- nodes/report.md");
+    }
+
+    #[test]
+    fn dynamic_group_workspace_summary_uses_one_root_and_absolute_fallback() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let root = dynamic_worktree_base_dir(&ctx);
+        let mut graph = test_dynamic_graph_at(repo_root.clone(), Vec::new());
+
+        let mut workspace_z = test_workspace(repo_root.clone());
+        workspace_z.id = "workspace-z".to_string();
+        workspace_z.kind = WorkspaceKind::Worktree;
+        workspace_z.ownership = WorkspaceOwnership::Runtime;
+        workspace_z.path = root.join("branch-z");
+        workspace_z.branch = Some("branch-z".to_string());
+        let workspace_z_path = workspace_z.path.clone();
+
+        let mut workspace_a = test_workspace(repo_root.clone());
+        workspace_a.id = "workspace-a".to_string();
+        workspace_a.kind = WorkspaceKind::Worktree;
+        workspace_a.ownership = WorkspaceOwnership::Runtime;
+        workspace_a.path = root.join("branch-a");
+        workspace_a.branch = Some("branch-a".to_string());
+        let workspace_a_path = workspace_a.path.clone();
+
+        let mut workspace_external = test_workspace(repo_root.clone());
+        workspace_external.id = "workspace-external".to_string();
+        workspace_external.kind = WorkspaceKind::Worktree;
+        workspace_external.ownership = WorkspaceOwnership::Runtime;
+        workspace_external.path = repo_root.join("external-worktree");
+        workspace_external.branch = Some("branch-external".to_string());
+        let workspace_external_path = workspace_external.path.clone();
+
+        graph
+            .workspaces
+            .extend([workspace_z, workspace_external, workspace_a]);
+        let mut group = test_group_state("group-test", "bootstrap", Vec::new(), Vec::new());
+        group.child_workspace_ids = vec![
+            "workspace-z".to_string(),
+            "workspace-external".to_string(),
+            "workspace-a".to_string(),
+        ];
+
+        let rendered = dynamic_group_workspace_summary(&ctx, &graph, &group);
+
+        assert!(rendered.starts_with(&format!("- pathRoot={root}\n")));
+        assert_eq!(rendered.matches(root.as_str()).count(), 1);
+        assert!(!rendered.contains(workspace_a_path.as_str()));
+        assert!(!rendered.contains(workspace_z_path.as_str()));
+        assert!(rendered.contains(&format!(
+            "absolutePath={workspace_external_path} [workspaceId=workspace-external"
+        )));
+        let branch_a = rendered
+            .find("- branch-a [workspaceId=workspace-a")
+            .unwrap();
+        assert!(rendered.contains("workspaceId=workspace-a branch=branch-a"));
+        let branch_z = rendered
+            .find("- branch-z [workspaceId=workspace-z")
+            .unwrap();
+        assert!(branch_a < branch_z);
     }
 
     #[test]
@@ -16833,10 +20468,15 @@ mod tests {
         let app = App::with_config(repo_root, RuntimeConfig::default());
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
-        let mut branch_a = test_worktree_node("branch-a");
-        branch_a.group_id = Some("group-core".to_string());
-        branch_a.status = DynamicNodeStatus::Completed;
-        branch_a.outcome = Some(NodeOutcome::Success);
+        let mut branch_a_root = test_worktree_node("branch-a-root");
+        branch_a_root.group_id = Some("group-core".to_string());
+        branch_a_root.status = DynamicNodeStatus::Completed;
+        branch_a_root.outcome = Some(NodeOutcome::Success);
+        let mut branch_a_terminal = test_worktree_node("branch-a-terminal");
+        branch_a_terminal.group_id = Some("group-core".to_string());
+        branch_a_terminal.chain_id = branch_a_root.chain_id.clone();
+        branch_a_terminal.status = DynamicNodeStatus::Completed;
+        branch_a_terminal.outcome = Some(NodeOutcome::Success);
         let mut branch_b = test_worktree_node("branch-b");
         branch_b.group_id = Some("group-core".to_string());
         branch_b.status = DynamicNodeStatus::Completed;
@@ -16844,19 +20484,55 @@ mod tests {
         let mut merge = test_worktree_node("group-core-merge");
         merge.kind = DynamicNodeKind::Merge;
         merge.group_id = Some("group-core".to_string());
-        merge.depends_on = vec!["branch-a".to_string(), "branch-b".to_string()];
-        let mut graph = test_dynamic_graph(vec![branch_a.clone(), branch_b.clone(), merge.clone()]);
+        merge.depends_on = vec![branch_a_terminal.id.clone(), branch_b.id.clone()];
+        let mut graph = test_dynamic_graph(vec![
+            branch_a_root.clone(),
+            branch_a_terminal.clone(),
+            branch_b.clone(),
+            merge.clone(),
+        ]);
         let mut group = test_group_state(
             "group-core",
             "bootstrap",
-            vec!["branch-a", "branch-b"],
-            vec!["branch-a", "branch-b"],
+            vec!["branch-a-root", "branch-b"],
+            vec!["branch-a-terminal", "branch-b"],
         );
         group.status = DynamicGroupStatus::Merging;
         group.merge_node_id = Some("group-core-merge".to_string());
+        let worktree_root = dynamic_worktree_base_dir(&ctx);
+        let worktree_path = worktree_root.join("branch-a-worktree");
+        let mut workspace = test_workspace(app.paths.repo_root.clone());
+        workspace.id = "workspace-branch-a".to_string();
+        workspace.kind = WorkspaceKind::Worktree;
+        workspace.ownership = WorkspaceOwnership::Runtime;
+        workspace.path = worktree_path.clone();
+        workspace.branch = Some("branch-a".to_string());
+        workspace.parent_workspace_id = Some("workspace-main".to_string());
+        workspace.created_by_group_id = Some(group.id.clone());
+        group.child_workspace_ids = vec![workspace.id.clone()];
+        graph.workspaces.push(workspace);
         graph.groups.push(group);
-        write_dynamic_attachment_for_test(&app, &ctx, &branch_a, "a-report.md", "a evidence");
-        write_dynamic_attachment_for_test(&app, &ctx, &branch_b, "b-report.md", "b evidence");
+        write_dynamic_attachment_for_test(
+            &app,
+            &ctx,
+            &branch_a_root,
+            "branch-a-root-report.md",
+            "root evidence",
+        );
+        write_dynamic_attachment_for_test(
+            &app,
+            &ctx,
+            &branch_a_terminal,
+            "branch-a-terminal-report.md",
+            "terminal evidence",
+        );
+        write_dynamic_attachment_for_test(
+            &app,
+            &ctx,
+            &branch_b,
+            "branch-b-report.md",
+            "branch evidence",
+        );
 
         let invocation = build_dynamic_worker_invocation(
             &ctx,
@@ -16880,8 +20556,26 @@ mod tests {
 
         assert!(prompt.user_prompt.contains("## 当前 group"));
         assert!(prompt.user_prompt.contains("## 可用附件"));
-        assert!(prompt.user_prompt.contains("a-report.md"));
-        assert!(prompt.user_prompt.contains("b-report.md"));
+        assert!(prompt.user_prompt.contains(
+            "### Group 证据（当前 merge / acceptance 输入或相关 group 最近一轮合并与验收）"
+        ));
+        assert!(prompt.user_prompt.contains("branch-a-root-report.md"));
+        assert!(prompt.user_prompt.contains("branch-a-terminal-report.md"));
+        assert!(prompt.user_prompt.contains("branch-b-report.md"));
+        assert!(prompt.user_prompt.contains(
+            "branch workspaces (relative tree under pathRoot; absolutePath entries are complete)"
+        ));
+        assert!(
+            prompt
+                .user_prompt
+                .contains(&format!("pathRoot={worktree_root}"))
+        );
+        assert!(
+            prompt
+                .user_prompt
+                .contains("- branch-a-worktree [workspaceId=workspace-branch-a branch=branch-a")
+        );
+        assert!(!prompt.user_prompt.contains(worktree_path.as_str()));
         assert!(!prompt.user_prompt.contains("## 并行兄弟节点"));
         assert!(!prompt.user_prompt.contains("## 会话复用"));
         assert!(!prompt.user_prompt.contains("## 运行预算"));
@@ -16901,10 +20595,15 @@ mod tests {
         let app = App::with_config(repo_root, RuntimeConfig::default());
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
-        let mut branch_a = test_worktree_node("branch-a");
-        branch_a.group_id = Some("group-core".to_string());
-        branch_a.status = DynamicNodeStatus::Completed;
-        branch_a.outcome = Some(NodeOutcome::Success);
+        let mut branch_a_root = test_worktree_node("branch-a-root");
+        branch_a_root.group_id = Some("group-core".to_string());
+        branch_a_root.status = DynamicNodeStatus::Completed;
+        branch_a_root.outcome = Some(NodeOutcome::Success);
+        let mut branch_a_terminal = test_worktree_node("branch-a-terminal");
+        branch_a_terminal.group_id = Some("group-core".to_string());
+        branch_a_terminal.chain_id = branch_a_root.chain_id.clone();
+        branch_a_terminal.status = DynamicNodeStatus::Completed;
+        branch_a_terminal.outcome = Some(NodeOutcome::Success);
         let mut branch_b = test_worktree_node("branch-b");
         branch_b.group_id = Some("group-core".to_string());
         branch_b.status = DynamicNodeStatus::Completed;
@@ -16912,6 +20611,7 @@ mod tests {
         let mut merge = test_worktree_node("group-core-merge");
         merge.kind = DynamicNodeKind::Merge;
         merge.group_id = Some("group-core".to_string());
+        merge.depends_on = vec![branch_a_terminal.id.clone(), branch_b.id.clone()];
         merge.status = DynamicNodeStatus::Completed;
         merge.outcome = Some(NodeOutcome::Success);
         let mut acceptance = test_worktree_node("group-core-acceptance");
@@ -16919,7 +20619,8 @@ mod tests {
         acceptance.group_id = Some("group-core".to_string());
         acceptance.depends_on = vec![merge.id.clone()];
         let mut graph = test_dynamic_graph(vec![
-            branch_a.clone(),
+            branch_a_root.clone(),
+            branch_a_terminal.clone(),
             branch_b.clone(),
             merge.clone(),
             acceptance.clone(),
@@ -16927,13 +20628,35 @@ mod tests {
         let mut group = test_group_state(
             "group-core",
             "bootstrap",
-            vec!["branch-a", "branch-b"],
-            vec!["branch-a", "branch-b"],
+            vec!["branch-a-root", "branch-b"],
+            vec!["branch-a-terminal", "branch-b"],
         );
         group.status = DynamicGroupStatus::Accepting;
         group.merge_node_id = Some("group-core-merge".to_string());
         group.acceptance_node_id = Some("group-core-acceptance".to_string());
         graph.groups.push(group);
+        write_dynamic_attachment_for_test(
+            &app,
+            &ctx,
+            &branch_a_root,
+            "branch-a-root-report.md",
+            "root evidence",
+        );
+        write_dynamic_attachment_for_test(
+            &app,
+            &ctx,
+            &branch_a_terminal,
+            "branch-a-terminal-report.md",
+            "terminal evidence",
+        );
+        write_dynamic_attachment_for_test(
+            &app,
+            &ctx,
+            &branch_b,
+            "branch-b-report.md",
+            "branch evidence",
+        );
+        write_dynamic_attachment_for_test(&app, &ctx, &merge, "merge-report.md", "merge evidence");
 
         let invocation = build_dynamic_worker_invocation(
             &ctx,
@@ -16958,37 +20681,68 @@ mod tests {
             .as_ref()
             .and_then(|contract| contract.finalize_context.as_deref())
             .expect("acceptance finalizer needs dynamic routing context");
+        let coordination_snapshot_path = app.paths.dynamic_coordination_snapshot_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        );
+        let dynamic_root = app.paths.dynamic_dir(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        );
+        assert!(finalize_context.contains("## Runtime 协调快照"));
+        assert!(finalize_context.contains(&format!("- Dynamic 根目录：{dynamic_root}")));
+        assert!(
+            finalize_context
+                .contains("- 只读快照（相对 Dynamic 根目录）：coordination-snapshot.json")
+        );
+        assert_eq!(finalize_context.matches(dynamic_root.as_str()).count(), 1);
+        assert!(!finalize_context.contains(coordination_snapshot_path.as_str()));
         assert!(finalize_context.contains("## 会话复用"));
         assert!(finalize_context.contains("## 运行预算"));
         assert!(finalize_context.contains("## Agent 与 profile 选项"));
         let prompt = render_prompt_bundle(&invocation).unwrap();
 
         assert!(prompt.user_prompt.contains("## 当前 group"));
+        assert!(prompt.user_prompt.contains(
+            "### Group 证据（当前 merge / acceptance 输入或相关 group 最近一轮合并与验收）"
+        ));
+        assert!(prompt.user_prompt.contains("branch-a-root-report.md"));
+        assert!(prompt.user_prompt.contains("branch-a-terminal-report.md"));
+        assert!(prompt.user_prompt.contains("branch-b-report.md"));
+        assert!(prompt.user_prompt.contains("merge-report.md"));
+        assert!(!prompt.user_prompt.contains("## Runtime 协调快照"));
         assert!(!prompt.user_prompt.contains("## 并行兄弟节点"));
         assert!(!prompt.user_prompt.contains("## 会话复用"));
         assert!(!prompt.user_prompt.contains("## 运行预算"));
         assert!(!prompt.user_prompt.contains("## Agent 与 profile 选项"));
         assert!(!prompt.system_prompt.contains("dynamic-node-completion"));
         assert!(!prompt.system_prompt.contains("next.type"));
+        assert!(
+            prompt
+                .system_prompt
+                .contains("本次业务 turn 使用后置控制流程")
+        );
         assert!(prompt.system_prompt.contains("隐藏 finalize turn"));
 
         let mut finalize_invocation = invocation;
-        finalize_invocation
-            .output_contract
-            .as_mut()
-            .unwrap()
-            .emission_mode = OutputEmissionMode::InlineControl;
         finalize_invocation.session_mode = SessionMode::Continue;
         finalize_invocation.user_prompt_render_mode = UserPromptRenderMode::RuntimeFinalize;
         finalize_invocation.resume_prompt_visibility = PromptVisibility::Hidden;
         finalize_invocation.resume_prompt = Some("finalize".to_string());
         let finalize_prompt = render_prompt_bundle(&finalize_invocation).unwrap();
         assert!(
-            finalize_prompt
+            !finalize_prompt
                 .system_prompt
                 .contains("dynamic-node-completion")
         );
-        assert!(finalize_prompt.system_prompt.contains("next.type"));
+        assert!(!finalize_prompt.system_prompt.contains("next.type"));
+        assert!(finalize_prompt.system_prompt.contains("隐藏 finalize turn"));
     }
 
     #[test]
@@ -17126,6 +20880,14 @@ mod tests {
         assert!(prompt.user_prompt.contains("# 目标"));
         assert!(prompt.user_prompt.contains("# 任务"));
         assert!(prompt.user_prompt.contains("goodbye-step"));
+        assert!(prompt.user_prompt.contains("继续当前节点任务"));
+        assert!(prompt.user_prompt.contains("反馈是证据，不是新增授权"));
+        assert!(prompt.user_prompt.contains("只实施符合既定范围的修改"));
+        assert!(
+            prompt
+                .system_prompt
+                .contains("人类最新指令 > 原始需求与明确非目标")
+        );
         assert!(!prompt.user_prompt.contains("continueFromNodeId"));
         assert!(prompt.user_prompt.contains("hello-step"));
         assert!(
@@ -17146,6 +20908,55 @@ mod tests {
         assert!(!task_section.contains("This continue only reuses"));
         assert!(!task_section.contains("完成当前节点任务"));
         assert!(!task_section.contains("output contract 要求的控制 JSON"));
+    }
+
+    #[test]
+    fn dynamic_worker_accept_profile_receives_scope_classification_contract() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("independent-acceptance");
+        node.profile = Some("pf-builtin-accept".to_string());
+        let graph = test_dynamic_graph(vec![node.clone()]);
+
+        let invocation = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &node,
+            &dynamic_attempt_id(&node),
+            dynamic_output_contract_for_node(&ctx, &graph, &node),
+            SessionMode::New,
+            None,
+            None,
+            "test-turn".to_string(),
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(invocation.profile.as_deref(), Some("pf-builtin-accept"));
+
+        let prompt = render_prompt_bundle(&invocation).unwrap();
+        assert!(prompt.system_prompt.contains("AI-DYNAMIC 稳定规则"));
+        assert!(prompt.system_prompt.contains("`BLOCKER` 仅限"));
+        assert!(prompt.system_prompt.contains("`FOLLOW_UP`"));
+        assert!(prompt.system_prompt.contains("不创建修复任务"));
+        assert!(prompt.system_prompt.contains("当前改动造成的可达回归"));
+        assert!(prompt.system_prompt.contains("恢复最小范围内方案"));
+        assert!(
+            prompt
+                .system_prompt
+                .contains("不得修改代码、测试、配置或计划")
+        );
+        assert!(
+            !prompt
+                .system_prompt
+                .contains("你是 Gold Band 的 AI-DYNAMIC 验收智能体")
+        );
     }
 
     #[test]
@@ -17212,6 +21023,52 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_system_prompt_distinguishes_all_control_emission_modes() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+
+        let inline = dynamic_system_sections(&ctx, Some(OutputEmissionMode::InlineControl))
+            .unwrap()
+            .join("\n");
+        assert!(inline.contains("最后一步必须产出 `dynamic-node-completion` artifact"));
+        assert!(!inline.contains("本次业务 turn 使用后置控制流程"));
+        assert!(!inline.contains("本次 invocation 是执行型节点"));
+
+        let deferred = dynamic_system_sections(&ctx, Some(OutputEmissionMode::PostTurnProjection))
+            .unwrap()
+            .join("\n");
+        assert!(deferred.contains("本次业务 turn 使用后置控制流程"));
+        assert!(deferred.contains("立即停止执行并自然结束本 turn"));
+        assert!(deferred.contains("只有收到 runtime 的 hidden finalize 提示后"));
+        assert!(!deferred.contains("dynamic-node-completion"));
+        assert!(!deferred.contains("next.type"));
+        assert!(!deferred.contains("本次 invocation 是执行型节点"));
+
+        let execution_only = dynamic_system_sections(&ctx, None).unwrap().join("\n");
+        assert!(execution_only.contains("本次 invocation 是执行型节点"));
+        assert!(!execution_only.contains("本次业务 turn 使用后置控制流程"));
+        assert!(!execution_only.contains("dynamic-node-completion"));
+
+        let mut english_config = RuntimeConfig::default();
+        english_config.desktop_language = DesktopLanguage::En;
+        let english_app = App::with_config(repo_root, english_config);
+        let english_ctx = test_context(&english_app, &dynamic);
+        let english_deferred =
+            dynamic_system_sections(&english_ctx, Some(OutputEmissionMode::PostTurnProjection))
+                .unwrap()
+                .join("\n");
+        assert!(english_deferred.contains("This business turn uses deferred control"));
+        assert!(
+            english_deferred.contains("stop execution immediately and end this turn naturally")
+        );
+        assert!(english_deferred.contains("Only after receiving runtime's hidden finalize prompt"));
+        assert!(!english_deferred.contains("dynamic-node-completion"));
+        assert!(!english_deferred.contains("next.type"));
+    }
+
+    #[test]
     fn interrupted_post_turn_projection_is_not_trusted_as_complete() {
         assert!(interrupted_dynamic_completion_is_trusted(
             OutputEmissionMode::InlineControl
@@ -17237,8 +21094,35 @@ mod tests {
         }
     }
 
+    fn accepted_single_proposal(
+        source_node_id: &str,
+        target_node_id: &str,
+    ) -> DynamicProposalState {
+        accepted_proposal(
+            source_node_id,
+            serde_json::json!({
+                "version": "0.1",
+                "kind": "dynamic-node-completion",
+                "status": "success",
+                "summary": format!("materialize {target_node_id}"),
+                "next": {
+                    "type": "single",
+                    "node": {
+                        "id": target_node_id,
+                        "kind": "worker",
+                        "title": target_node_id,
+                        "task": target_node_id,
+                        "provider": null,
+                        "profile": null,
+                        "workflowId": null
+                    }
+                }
+            }),
+        )
+    }
+
     #[test]
-    fn acceptance_group_closes_only_after_end_completion() {
+    fn acceptance_is_parent_terminal_only_after_end_completion() {
         let mut acceptance = test_worktree_node("python-classes-accept");
         acceptance.kind = DynamicNodeKind::Acceptance;
         acceptance.status = DynamicNodeStatus::Completed;
@@ -17284,9 +21168,10 @@ mod tests {
     }
 
     #[test]
-    fn acceptance_repair_materialization_reopens_group() {
+    fn acceptance_repair_materialization_closes_group_and_restores_parent_scope() {
         let (_temp, repo_root) = init_repo();
-        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
         let mut acceptance = test_worktree_node("python-classes-accept");
@@ -17295,7 +21180,31 @@ mod tests {
         acceptance.outcome = Some(NodeOutcome::Success);
         acceptance.group_id = Some("python-classes".to_string());
         acceptance.chain_id = "python-classes-accept".to_string();
-        let mut graph = test_dynamic_graph(vec![acceptance]);
+        let mut creator = test_worktree_node("root");
+        creator.chain_id = "bootstrap".to_string();
+        creator.status = DynamicNodeStatus::Completed;
+        creator.outcome = Some(NodeOutcome::Success);
+        let mut graph = test_dynamic_graph_at(repo_root, vec![acceptance, creator]);
+        let child_workspace_id = fork_dynamic_workspace(
+            &ctx,
+            &mut graph,
+            "workspace-main",
+            "python-classes",
+            "branch",
+        )
+        .unwrap();
+        let mut branch = test_worktree_node("branch");
+        branch.group_id = Some("python-classes".to_string());
+        branch.workspace_id = child_workspace_id.clone();
+        branch.status = DynamicNodeStatus::Completed;
+        branch.outcome = Some(NodeOutcome::Success);
+        graph.nodes.push(branch);
+        let mut merge = test_worktree_node("python-classes-merge");
+        merge.kind = DynamicNodeKind::Merge;
+        merge.group_id = Some("python-classes".to_string());
+        merge.status = DynamicNodeStatus::Completed;
+        merge.outcome = Some(NodeOutcome::Success);
+        graph.nodes.push(merge);
         graph.groups.push(DynamicGroupState {
             version: VERSION.to_string(),
             id: "python-classes".to_string(),
@@ -17303,10 +21212,10 @@ mod tests {
             status: DynamicGroupStatus::Accepting,
             depth: 1,
             parent_group_id: None,
-            root_node_ids: vec!["root".to_string()],
-            terminal_node_ids: vec!["root".to_string()],
+            root_node_ids: vec!["branch".to_string()],
+            terminal_node_ids: vec!["branch".to_string()],
             target_workspace_id: "workspace-main".to_string(),
-            child_workspace_ids: Vec::new(),
+            child_workspace_ids: vec![child_workspace_id],
             merge_node_id: Some("python-classes-merge".to_string()),
             acceptance_node_id: Some("python-classes-accept".to_string()),
             created_by_node_id: "root".to_string(),
@@ -17339,11 +21248,262 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(graph.groups[0].status, DynamicGroupStatus::Open);
-        assert_eq!(graph.groups[0].merge_node_id, None);
-        assert_eq!(graph.groups[0].acceptance_node_id, None);
-        assert!(graph.nodes.iter().any(|node| node.id == "repair"));
+        assert_eq!(graph.groups[0].status, DynamicGroupStatus::Closed);
+        assert_eq!(
+            graph.groups[0].merge_node_id.as_deref(),
+            Some("python-classes-merge")
+        );
+        assert_eq!(
+            graph.groups[0].acceptance_node_id.as_deref(),
+            Some("python-classes-accept")
+        );
+        let repair = graph.nodes.iter().find(|node| node.id == "repair").unwrap();
+        assert_eq!(repair.group_id, None);
+        assert_eq!(repair.chain_id, "bootstrap");
         assert_eq!(visible, vec!["repair".to_string()]);
+    }
+
+    #[test]
+    fn coordination_snapshot_excludes_bootstrap_from_business_workstream() {
+        let mut bootstrap = test_worktree_node(DYNAMIC_BOOTSTRAP_NODE_ID);
+        bootstrap.depth = 0;
+        bootstrap.title = "AI-DYNAMIC bootstrap".to_string();
+        bootstrap.task =
+            "Design the first internal dynamic step for this AI-DYNAMIC node.".to_string();
+        bootstrap.status = DynamicNodeStatus::Completed;
+        bootstrap.outcome = Some(NodeOutcome::Success);
+
+        let mut business = test_worktree_node("implement-feature");
+        business.chain_id = DYNAMIC_BOOTSTRAP_NODE_ID.to_string();
+        business.title = "Implement feature".to_string();
+        business.task = "Implement the requested business feature.".to_string();
+        business.status = DynamicNodeStatus::Ready;
+
+        let graph = test_dynamic_graph(vec![bootstrap, business]);
+        let snapshot = build_ai_dynamic_coordination_snapshot(&graph).unwrap();
+
+        assert_eq!(snapshot.workstreams.len(), 1);
+        let workstream = &snapshot.workstreams[0];
+        assert_eq!(workstream.id, "implement-feature");
+        assert_eq!(workstream.title, "Implement feature");
+        assert_eq!(workstream.goal, "Implement the requested business feature.");
+        assert_eq!(workstream.status, AiDynamicWorkstreamStatus::Active);
+        assert_eq!(workstream.steps.len(), 1);
+        assert_eq!(workstream.steps[0].node_id, "implement-feature");
+    }
+
+    #[test]
+    fn coordination_parent_topology_rejects_indirect_cycle() {
+        let error = ensure_ai_dynamic_coordination_parent_topology(
+            "workstream",
+            [
+                ("workstream-a", Some("workstream-b")),
+                ("workstream-b", Some("workstream-a")),
+            ],
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("dynamic.coordination.workstream-cycle")
+        );
+    }
+
+    #[test]
+    fn coordination_snapshot_projects_acceptance_successor_in_original_workstream() {
+        let mut root = test_worktree_node("root");
+        root.depth = 0;
+        root.chain_id = "root".to_string();
+        root.status = DynamicNodeStatus::Completed;
+        root.outcome = Some(NodeOutcome::Success);
+
+        let mut branch = test_worktree_node("branch");
+        branch.group_id = Some("group-core".to_string());
+        branch.chain_id = "branch".to_string();
+        branch.status = DynamicNodeStatus::Completed;
+        branch.outcome = Some(NodeOutcome::Success);
+
+        let mut merge = test_worktree_node("group-core-merge");
+        merge.kind = DynamicNodeKind::Merge;
+        merge.group_id = Some("group-core".to_string());
+        merge.chain_id = "group-core-merge".to_string();
+        merge.status = DynamicNodeStatus::Completed;
+        merge.outcome = Some(NodeOutcome::Success);
+
+        let mut acceptance = test_worktree_node("group-core-accept");
+        acceptance.kind = DynamicNodeKind::Acceptance;
+        acceptance.group_id = Some("group-core".to_string());
+        acceptance.chain_id = "group-core-accept".to_string();
+        acceptance.status = DynamicNodeStatus::Completed;
+        acceptance.outcome = Some(NodeOutcome::Success);
+
+        let mut repair = test_worktree_node("repair");
+        repair.group_id = None;
+        repair.chain_id = "root".to_string();
+        repair.status = DynamicNodeStatus::Ready;
+
+        let mut graph = test_dynamic_graph(vec![root, branch, merge, acceptance, repair]);
+        graph.groups.push(DynamicGroupState {
+            version: VERSION.to_string(),
+            id: "group-core".to_string(),
+            dynamic_run_id: graph.run.id.clone(),
+            status: DynamicGroupStatus::Closed,
+            depth: 1,
+            parent_group_id: None,
+            root_node_ids: vec!["branch".to_string()],
+            terminal_node_ids: vec!["branch".to_string()],
+            target_workspace_id: "workspace-main".to_string(),
+            child_workspace_ids: Vec::new(),
+            merge_node_id: Some("group-core-merge".to_string()),
+            acceptance_node_id: Some("group-core-accept".to_string()),
+            created_by_node_id: "root".to_string(),
+            merge: test_agent_task("merge"),
+            acceptance: test_agent_task("accept"),
+            created_at: "2026-06-16T00:00:00Z".to_string(),
+            updated_at: "2026-06-16T00:00:00Z".to_string(),
+        });
+
+        let snapshot = build_ai_dynamic_coordination_snapshot(&graph).unwrap();
+
+        assert_eq!(snapshot.workstreams.len(), 2);
+        let root = snapshot
+            .workstreams
+            .iter()
+            .find(|workstream| workstream.id == "root")
+            .unwrap();
+        assert_eq!(root.status, AiDynamicWorkstreamStatus::Active);
+        assert_eq!(root.child_group_ids, vec!["group-core"]);
+        let repair = snapshot
+            .workstreams
+            .iter()
+            .find(|workstream| workstream.id == "root")
+            .unwrap();
+        assert_eq!(repair.parent_workstream_id, None);
+        assert_eq!(repair.owner_group_id, None);
+        assert_eq!(repair.status, AiDynamicWorkstreamStatus::Active);
+        assert_eq!(repair.steps.len(), 2);
+        assert_eq!(repair.steps[1].node_id, "repair");
+        assert!(snapshot.workstreams.iter().all(|workstream| {
+            workstream.id != "group-core-merge" && workstream.id != "group-core-accept"
+        }));
+        assert_eq!(
+            snapshot.groups[0].created_by_workstream_id.as_deref(),
+            Some("root")
+        );
+        assert_eq!(snapshot.groups[0].branch_workstream_ids, vec!["branch"]);
+        assert_eq!(
+            snapshot.groups[0].merge.node_id.as_deref(),
+            Some("group-core-merge")
+        );
+        assert_eq!(
+            snapshot.groups[0].acceptance.node_id.as_deref(),
+            Some("group-core-accept")
+        );
+
+        graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == "repair")
+            .unwrap()
+            .status = DynamicNodeStatus::Paused;
+        let paused_snapshot = build_ai_dynamic_coordination_snapshot(&graph).unwrap();
+        assert_eq!(
+            paused_snapshot
+                .workstreams
+                .iter()
+                .find(|workstream| workstream.id == "root")
+                .unwrap()
+                .status,
+            AiDynamicWorkstreamStatus::Paused
+        );
+    }
+
+    #[test]
+    fn coordination_snapshot_resolves_acceptance_fanout_to_business_owner() {
+        let mut root = test_worktree_node("root");
+        root.depth = 0;
+        root.status = DynamicNodeStatus::Completed;
+        root.outcome = Some(NodeOutcome::Success);
+
+        let mut branch = test_worktree_node("branch");
+        branch.group_id = Some("group-core".to_string());
+        branch.chain_id = "branch".to_string();
+        branch.status = DynamicNodeStatus::Completed;
+        branch.outcome = Some(NodeOutcome::Success);
+
+        let mut acceptance = test_worktree_node("group-core-accept");
+        acceptance.kind = DynamicNodeKind::Acceptance;
+        acceptance.group_id = Some("group-core".to_string());
+        acceptance.chain_id = "group-core-accept".to_string();
+        acceptance.status = DynamicNodeStatus::Completed;
+        acceptance.outcome = Some(NodeOutcome::Success);
+
+        let mut repair = test_worktree_node("repair-branch");
+        repair.group_id = Some("group-repair".to_string());
+        repair.chain_id = "repair-branch".to_string();
+        repair.status = DynamicNodeStatus::Ready;
+
+        let mut graph = test_dynamic_graph(vec![root, branch, acceptance, repair]);
+        graph.groups.push(DynamicGroupState {
+            version: VERSION.to_string(),
+            id: "group-core".to_string(),
+            dynamic_run_id: graph.run.id.clone(),
+            status: DynamicGroupStatus::Closed,
+            depth: 1,
+            parent_group_id: None,
+            root_node_ids: vec!["branch".to_string()],
+            terminal_node_ids: vec!["branch".to_string()],
+            target_workspace_id: "workspace-main".to_string(),
+            child_workspace_ids: Vec::new(),
+            merge_node_id: None,
+            acceptance_node_id: Some("group-core-accept".to_string()),
+            created_by_node_id: "root".to_string(),
+            merge: test_agent_task("merge core"),
+            acceptance: test_agent_task("accept core"),
+            created_at: "2026-06-16T00:00:00Z".to_string(),
+            updated_at: "2026-06-16T00:00:00Z".to_string(),
+        });
+        graph.groups.push(DynamicGroupState {
+            version: VERSION.to_string(),
+            id: "group-repair".to_string(),
+            dynamic_run_id: graph.run.id.clone(),
+            status: DynamicGroupStatus::Open,
+            depth: 1,
+            parent_group_id: None,
+            root_node_ids: vec!["repair-branch".to_string()],
+            terminal_node_ids: Vec::new(),
+            target_workspace_id: "workspace-main".to_string(),
+            child_workspace_ids: Vec::new(),
+            merge_node_id: None,
+            acceptance_node_id: None,
+            created_by_node_id: "group-core-accept".to_string(),
+            merge: test_agent_task("merge repair"),
+            acceptance: test_agent_task("accept repair"),
+            created_at: "2026-06-16T00:01:00Z".to_string(),
+            updated_at: "2026-06-16T00:01:00Z".to_string(),
+        });
+
+        let snapshot = build_ai_dynamic_coordination_snapshot(&graph).unwrap();
+
+        let repair = snapshot
+            .workstreams
+            .iter()
+            .find(|workstream| workstream.id == "repair-branch")
+            .unwrap();
+        assert_eq!(repair.parent_workstream_id.as_deref(), Some("root"));
+        assert_eq!(repair.owner_group_id.as_deref(), Some("group-repair"));
+        let repair_group = snapshot
+            .groups
+            .iter()
+            .find(|group| group.id == "group-repair")
+            .unwrap();
+        assert_eq!(repair_group.parent_group_id, None);
+        assert_eq!(
+            repair_group.created_by_workstream_id.as_deref(),
+            Some("root")
+        );
+        assert_eq!(repair_group.branch_workstream_ids, vec!["repair-branch"]);
     }
 
     #[test]
@@ -17522,6 +21682,1042 @@ mod tests {
         release_dynamic_workspace_best_effort(&ctx, &mut graph, &parent_workspace_id);
     }
 
+    fn fanout_workspace_test_completion() -> DynamicNodeCompletion {
+        let branch = |id: &str| DynamicNodeSpec {
+            id: id.to_string(),
+            kind: DynamicNodeSpecKind::Worker,
+            title: id.to_string(),
+            task: format!("Implement {id}."),
+            provider: None,
+            profile: None,
+            model: None,
+            permission_mode: None,
+            session_mode: SessionMode::New,
+            continue_from_node_id: None,
+            depends_on: Vec::new(),
+            workflow_id: None,
+        };
+        let mut merge = test_agent_task("merge");
+        merge.provider.clear();
+        let mut acceptance = test_agent_task("accept");
+        acceptance.provider.clear();
+        DynamicNodeCompletion {
+            version: VERSION.to_string(),
+            kind: DynamicNodeCompletionKind::DynamicNodeCompletion,
+            status: DynamicCompletionStatus::Success,
+            summary: "Ready for fanout".to_string(),
+            next: DynamicNext::Fanout {
+                group_id: "clean-source-group".to_string(),
+                nodes: vec![branch("clean-child-a"), branch("clean-child-b")],
+                merge,
+                acceptance,
+            },
+            source: None,
+        }
+    }
+
+    fn fork_dynamic_workspace(
+        ctx: &DynamicExecutionContext<'_>,
+        graph: &mut DynamicGraphState,
+        parent_workspace_id: &str,
+        group_id: &str,
+        node_id: &str,
+    ) -> Result<String> {
+        let commit = dynamic_fanout_head(dynamic_workspace(graph, parent_workspace_id)?)?;
+        fork_dynamic_workspace_from_commit(
+            ctx,
+            graph,
+            parent_workspace_id,
+            group_id,
+            node_id,
+            &commit,
+        )
+    }
+
+    #[test]
+    fn fanout_workspace_dirty_proposal_batches_errors_without_changing_git() {
+        for change in ["unstaged", "staged", "untracked"] {
+            let (_temp, repo_root) = init_repo();
+            let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+            write_test_outer_run(&app);
+            let dynamic = test_dynamic();
+            let ctx = test_context(&app, &dynamic);
+            let source = test_worktree_node("source");
+            let mut graph = test_dynamic_graph_at(repo_root.clone(), vec![source.clone()]);
+            persist_dynamic_graph(&ctx, &mut graph).unwrap();
+            let path = if change == "untracked" {
+                "local-note.txt"
+            } else {
+                "README.md"
+            };
+            std::fs::write(repo_root.join(path), "uncommitted foundation\n").unwrap();
+            if change == "staged" {
+                git(&repo_root, &["add", "README.md"]);
+            }
+            let repository = GitRepositoryService::default();
+            let head = repository.head(&repo_root).unwrap();
+            let status = repository.status_porcelain(&repo_root).unwrap();
+            let mut completion = fanout_workspace_test_completion();
+            completion.summary.clear();
+            let proposal = build_dynamic_completion_proposal(
+                &ctx,
+                &source,
+                completion,
+                None,
+                None,
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+            assert!(
+                proposal
+                    .validation_errors
+                    .iter()
+                    .any(|error| error.code == "dynamic.summary.blank")
+            );
+            assert!(
+                proposal
+                    .validation_errors
+                    .iter()
+                    .any(|error| error.code == "dynamic.fanout.workspace-dirty"),
+                "{change}: {:?}",
+                proposal.validation_errors
+            );
+            assert_eq!(repository.head(&repo_root).unwrap(), head);
+            assert_eq!(repository.status_porcelain(&repo_root).unwrap(), status);
+        }
+    }
+
+    #[test]
+    fn fanout_reminder_does_not_repeat_after_recorded_proposal() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let source = test_worktree_node("source");
+        let mut graph = test_dynamic_graph_at(repo_root.clone(), vec![source.clone()]);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        std::fs::write(repo_root.join("README.md"), "unrelated work\n").unwrap();
+        let proposal = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            fanout_workspace_test_completion(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            proposal.validation_status,
+            DynamicProposalValidationStatus::Rejected
+        );
+        graph.proposals.push(proposal);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        let proposal = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            fanout_workspace_test_completion(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            proposal.validation_status,
+            DynamicProposalValidationStatus::Accepted
+        );
+        accept_dynamic_completion_proposal(&ctx, &mut graph, proposal).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repo_root.join("README.md")).unwrap(),
+            "unrelated work\n"
+        );
+    }
+
+    #[test]
+    fn dynamic_current_result_without_artifact_cannot_reuse_old_file() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("source");
+        let mut graph = test_dynamic_graph_at(repo_root, vec![node.clone()]);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        write_dynamic_output_artifact(
+            &ctx,
+            &node.id,
+            "attempt-001",
+            &OutputArtifactPayload {
+                name: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
+                content: test_end_completion("stale"),
+            },
+        )
+        .unwrap();
+        finalize_dynamic_worker_result(
+            &ctx,
+            &mut node,
+            "attempt-001",
+            ProviderRunResult {
+                status: ProviderRunStatus::Success,
+                exit_code: Some(0),
+                result_payload: None,
+                worker_ref_seed: None,
+                stream_path: None,
+                runtime_error: None,
+                runtime_control_output: None,
+            },
+        )
+        .unwrap();
+        assert!(build_dynamic_completion_from_artifact(&ctx, "attempt-001", &node).is_err());
+    }
+
+    #[test]
+    fn dynamic_current_invalid_candidate_replaces_old_artifact() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("source");
+        let mut graph = test_dynamic_graph_at(repo_root, vec![node.clone()]);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        write_dynamic_output_artifact(
+            &ctx,
+            &node.id,
+            "attempt-001",
+            &OutputArtifactPayload {
+                name: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
+                content: test_end_completion("stale"),
+            },
+        )
+        .unwrap();
+        let malformed = "{\"version\":\"0.1\",\"kind\":\"dynamic-node-completion\"";
+        finalize_dynamic_worker_result(
+            &ctx,
+            &mut node,
+            "attempt-001",
+            ProviderRunResult {
+                status: ProviderRunStatus::Success,
+                exit_code: Some(0),
+                result_payload: None,
+                worker_ref_seed: None,
+                stream_path: None,
+                runtime_error: None,
+                runtime_control_output: Some(crate::provider::RuntimeControlOutput {
+                    artifact_name: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
+                    source: crate::acp::client::AcpPromptMessageSource {
+                        branch_id: "root".to_string(),
+                        item_id: "current".to_string(),
+                    },
+                    span: crate::artifacts::json_artifact_display_span(malformed).unwrap(),
+                }),
+            },
+        )
+        .unwrap();
+        assert!(build_dynamic_completion_from_artifact(&ctx, "attempt-001", &node).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dynamic_output_artifact_path(
+                &ctx,
+                &node.id,
+                "attempt-001",
+                DYNAMIC_COMPLETION_ARTIFACT
+            ))
+            .unwrap(),
+            malformed
+        );
+    }
+
+    #[test]
+    fn fanout_workspace_dirty_materialization_uses_committed_head() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph =
+            test_dynamic_graph_at(repo_root.clone(), vec![test_worktree_node("source")]);
+        std::fs::write(repo_root.join("README.md"), "late edit\n").unwrap();
+        let result =
+            materialize_dynamic_next(&ctx, &mut graph, 0, fanout_workspace_test_completion().next);
+        result.unwrap();
+        assert_eq!(graph.groups.len(), 1);
+        assert_eq!(graph.workspaces.len(), 3);
+        for workspace in graph.workspaces.iter().skip(1) {
+            assert_eq!(
+                std::fs::read_to_string(workspace.path.join("README.md"))
+                    .unwrap()
+                    .trim(),
+                "hello"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(repo_root.join("README.md")).unwrap(),
+            "late edit\n"
+        );
+    }
+
+    #[test]
+    fn fanout_workspace_late_edit_does_not_block_accepted_proposal() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let source = test_worktree_node("source");
+        let mut graph = test_dynamic_graph_at(repo_root.clone(), vec![source.clone()]);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        let proposal = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            fanout_workspace_test_completion(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            proposal.validation_status,
+            DynamicProposalValidationStatus::Accepted
+        );
+        std::fs::write(repo_root.join("README.md"), "late edit\n").unwrap();
+        accept_dynamic_completion_proposal(&ctx, &mut graph, proposal).unwrap();
+        assert_eq!(graph.proposals.len(), 1);
+        assert_eq!(graph.groups.len(), 1);
+        let persisted = load_dynamic_graph(
+            &ctx.app.paths.dynamic_graph_file(
+                ctx.task_id,
+                ctx.run_id,
+                ctx.round_id,
+                ctx.outer_node_id,
+                ctx.outer_attempt_id,
+            ),
+            &repo_root,
+        )
+        .unwrap();
+        assert_eq!(persisted.proposals.len(), 1);
+        assert_eq!(persisted.groups.len(), 1);
+    }
+
+    #[test]
+    fn fanout_workspace_git_failure_is_runtime_error_without_accepted_proposal() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let source = test_worktree_node("source");
+        let mut graph = test_dynamic_graph_at(repo_root.clone(), vec![source.clone()]);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        let proposal = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            fanout_workspace_test_completion(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        std::fs::rename(repo_root.join(".git"), repo_root.join("saved-git")).unwrap();
+        let error = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            fanout_workspace_test_completion(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            normalize_runtime_error(&error).code_str(),
+            "dynamic.fanout.workspace-check-failed"
+        );
+        let error = accept_dynamic_completion_proposal(&ctx, &mut graph, proposal).unwrap_err();
+        assert_eq!(
+            normalize_runtime_error(&error).code_str(),
+            "dynamic.fanout.workspace-check-failed"
+        );
+        assert!(graph.proposals.is_empty());
+        assert!(graph.groups.is_empty());
+        assert_eq!(graph.nodes[0].status, DynamicNodeStatus::Paused);
+    }
+
+    #[test]
+    fn fanout_workspace_runtime_source_is_checked_and_ignored_files_are_allowed() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph = test_dynamic_graph_at(repo_root, vec![test_worktree_node("source")]);
+        let workspace_id =
+            fork_dynamic_workspace(&ctx, &mut graph, "workspace-main", "parent", "source").unwrap();
+        graph.nodes[0].workspace_id = workspace_id.clone();
+        let source = graph.nodes[0].clone();
+        let workspace = dynamic_workspace(&graph, &workspace_id).unwrap().clone();
+        std::fs::write(workspace.path.join("README.md"), "nested foundation\n").unwrap();
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        let proposal = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            fanout_workspace_test_completion(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(
+            proposal
+                .validation_errors
+                .iter()
+                .any(|error| error.code == DYNAMIC_FANOUT_WORKSPACE_DIRTY)
+        );
+        assert!(dynamic_fanout_head(&workspace).is_ok());
+        git(&workspace.path, &["add", "README.md"]);
+        git(
+            &workspace.path,
+            &["commit", "-m", "feat: nested foundation"],
+        );
+        std::fs::create_dir_all(workspace.path.join(".gold-band")).unwrap();
+        std::fs::write(workspace.path.join(".gold-band/local-cache"), "ignored\n").unwrap();
+        let proposal = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            fanout_workspace_test_completion(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            proposal.validation_status,
+            DynamicProposalValidationStatus::Accepted
+        );
+        let commit = dynamic_fanout_head(&workspace).unwrap();
+        materialize_dynamic_next(&ctx, &mut graph, 0, fanout_workspace_test_completion().next)
+            .unwrap();
+        let group = graph
+            .groups
+            .iter()
+            .find(|group| group.id == "clean-source-group")
+            .unwrap();
+        for child_id in &group.child_workspace_ids {
+            let child = dynamic_workspace(&graph, child_id).unwrap();
+            assert_eq!(child.fork_commit, commit);
+            assert_eq!(
+                std::fs::read_to_string(child.path.join("README.md"))
+                    .unwrap()
+                    .trim(),
+                "nested foundation"
+            );
+        }
+    }
+
+    #[test]
+    fn fanout_workspace_acceptance_uses_target_and_end_does_not_require_clean() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut source = test_worktree_node("accept");
+        source.kind = DynamicNodeKind::Acceptance;
+        source.group_id = Some("group".to_string());
+        source.workspace_id = "not-the-fork-target".to_string();
+        let mut graph = test_dynamic_graph_at(
+            repo_root.clone(),
+            vec![test_worktree_node("creator"), source.clone()],
+        );
+        let mut group = test_group_state("group", "creator", vec![], vec![]);
+        group.target_workspace_id = "workspace-main".to_string();
+        graph.groups.push(group);
+        std::fs::write(repo_root.join("README.md"), "pending\n").unwrap();
+        assert_eq!(
+            dynamic_fanout_source_workspace(&graph, &source).unwrap().id,
+            "workspace-main"
+        );
+        // End and single do not need to move uncommitted work into a new worktree.
+        graph.groups.clear();
+        graph.nodes.truncate(1);
+        source = graph.nodes[0].clone();
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        let mut completion = fanout_workspace_test_completion();
+        completion.next = DynamicNext::End;
+        let proposal = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            completion,
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            proposal.validation_status,
+            DynamicProposalValidationStatus::Accepted
+        );
+    }
+
+    #[test]
+    fn fanout_workspace_prompts_are_optional_commit_reminders_in_both_languages() {
+        let (_temp, repo_root) = init_repo();
+        for language in [DesktopLanguage::ZhCn, DesktopLanguage::En] {
+            let mut config = RuntimeConfig::default();
+            config.desktop_language = language;
+            let app = App::with_config(repo_root.clone(), config);
+            let dynamic = test_dynamic();
+            let ctx = test_context(&app, &dynamic);
+            let node = test_worktree_node("source");
+            let graph = test_dynamic_graph_at(repo_root.clone(), vec![node.clone()]);
+            let error = dynamic_fanout_workspace_dirty_error(&graph.workspaces[0]);
+            let repair = dynamic_proposal_repair_prompt(&ctx, &graph, &node, &[error]);
+            let contract = dynamic_output_contract(
+                &ctx,
+                &graph,
+                &node,
+                OutputEmissionMode::PostTurnProjection,
+            );
+            for prompt in [repair.as_str(), contract.schema_text.as_deref().unwrap()] {
+                for term in ["Conventional Commits", "artifact"] {
+                    assert!(prompt.contains(term), "missing {term} in {language:?}");
+                }
+                assert!(prompt.contains(if language == DesktopLanguage::ZhCn {
+                    "不要求"
+                } else {
+                    "resubmit"
+                }));
+            }
+            assert!(repair.contains(repo_root.as_str()));
+            assert!(repair.contains(if language == DesktopLanguage::ZhCn {
+                "本次fanout即将从HEAD开始创建worktree，检测到源工作区仍有未提交代码，故提醒："
+            } else {
+                "This fanout is about to create worktrees from HEAD."
+            }));
+            let unrelated_repair = dynamic_proposal_repair_prompt(&ctx, &graph, &node, &[]);
+            assert!(!unrelated_repair.contains("Conventional Commits"));
+        }
+    }
+
+    #[test]
+    fn loading_dynamic_graph_releases_stale_workspace_from_closed_group() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let child_node_id = "closed-child";
+        let group_id = "closed-group";
+        let mut graph =
+            test_dynamic_graph_at(repo_root.clone(), vec![test_worktree_node(child_node_id)]);
+        let child_workspace_id =
+            fork_dynamic_workspace(&ctx, &mut graph, "workspace-main", group_id, child_node_id)
+                .unwrap();
+        graph.nodes[0].workspace_id = child_workspace_id.clone();
+        let mut group = test_group_state(
+            group_id,
+            child_node_id,
+            vec![child_node_id],
+            vec![child_node_id],
+        );
+        group.status = DynamicGroupStatus::Closed;
+        group.child_workspace_ids = vec![child_workspace_id.clone()];
+        graph.groups.push(group);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+
+        let workspace = dynamic_workspace(&graph, &child_workspace_id)
+            .unwrap()
+            .clone();
+        let run_namespace = dynamic_worktree_base_dir(&ctx);
+        let task_namespace = run_namespace.parent().unwrap().to_path_buf();
+        let worktrees_root = task_namespace.parent().unwrap().to_path_buf();
+        git(
+            &repo_root,
+            &["worktree", "remove", "--force", workspace.path.as_str()],
+        );
+        std::fs::create_dir_all(workspace.path.as_std_path()).unwrap();
+
+        let loaded = load_or_create_dynamic_graph(&ctx).unwrap();
+
+        assert_eq!(
+            dynamic_workspace(&loaded, &child_workspace_id)
+                .unwrap()
+                .status,
+            WorkspaceStatus::Released
+        );
+        let durable: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        ))
+        .unwrap();
+        assert_eq!(
+            dynamic_workspace(&durable, &child_workspace_id)
+                .unwrap()
+                .status,
+            WorkspaceStatus::Released
+        );
+        assert!(!workspace.path.exists());
+        assert!(!run_namespace.exists());
+        assert!(!task_namespace.exists());
+        assert!(worktrees_root.exists());
+    }
+
+    #[test]
+    fn active_dynamic_worktree_release_rejects_redirected_namespace_before_git_remove() {
+        let (temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let worktrees_root = app.paths.repo_gold_band_root.join("worktrees");
+        let task_namespace = worktrees_root.join(safe_dynamic_ref(ctx.task_id));
+        let outside_task = Utf8PathBuf::from_path_buf(temp.path().join("outside-task")).unwrap();
+        std::fs::create_dir_all(worktrees_root.as_std_path()).unwrap();
+        std::fs::create_dir_all(outside_task.as_std_path()).unwrap();
+        create_test_directory_link(&outside_task, &task_namespace);
+
+        let mut graph = test_dynamic_graph_at(repo_root, Vec::new());
+        let workspace_id = fork_dynamic_workspace(
+            &ctx,
+            &mut graph,
+            "workspace-main",
+            "redirected-group",
+            "redirected-child",
+        )
+        .unwrap();
+        let workspace = dynamic_workspace(&graph, &workspace_id).unwrap().clone();
+        let branch = workspace.branch.clone().unwrap();
+
+        assert!(!release_dynamic_workspace_best_effort(
+            &ctx,
+            &mut graph,
+            &workspace_id,
+        ));
+        assert_eq!(
+            dynamic_workspace(&graph, &workspace_id).unwrap().status,
+            WorkspaceStatus::Active
+        );
+        GitWorkspaceManager::default()
+            .validate_worktree(&workspace.path, &branch)
+            .unwrap();
+        assert!(outside_task.exists());
+    }
+
+    #[test]
+    fn active_dynamic_worktree_release_rejects_tampered_repository_before_branch_delete() {
+        let (_temp, repo_root) = init_repo();
+        let (_other_temp, other_repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph = test_dynamic_graph_at(repo_root, Vec::new());
+        let workspace_id = fork_dynamic_workspace(
+            &ctx,
+            &mut graph,
+            "workspace-main",
+            "tampered-repo-group",
+            "tampered-repo-child",
+        )
+        .unwrap();
+        let workspace = dynamic_workspace(&graph, &workspace_id).unwrap().clone();
+        let branch = workspace.branch.clone().unwrap();
+        git(&other_repo_root, &["branch", &branch]);
+        dynamic_workspace_mut(&mut graph, &workspace_id)
+            .unwrap()
+            .repo_root = other_repo_root.clone();
+
+        assert!(!release_dynamic_workspace_best_effort(
+            &ctx,
+            &mut graph,
+            &workspace_id,
+        ));
+        assert_eq!(
+            dynamic_workspace(&graph, &workspace_id).unwrap().status,
+            WorkspaceStatus::Active
+        );
+        GitWorkspaceManager::default()
+            .validate_worktree(&workspace.path, &branch)
+            .unwrap();
+        assert!(
+            git_output(
+                &other_repo_root,
+                &[
+                    "show-ref",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/heads/{branch}")
+                ],
+            )
+            .unwrap()
+            .success
+        );
+    }
+
+    #[test]
+    fn active_dynamic_worktree_release_rejects_tampered_runtime_branch() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph = test_dynamic_graph_at(repo_root.clone(), Vec::new());
+        let workspace_id = fork_dynamic_workspace(
+            &ctx,
+            &mut graph,
+            "workspace-main",
+            "tampered-branch-group",
+            "tampered-branch-child",
+        )
+        .unwrap();
+        let workspace = dynamic_workspace(&graph, &workspace_id).unwrap().clone();
+        let runtime_branch = workspace.branch.clone().unwrap();
+        let unrelated_branch = "preserve-unrelated-branch";
+        git(&repo_root, &["branch", unrelated_branch]);
+        dynamic_workspace_mut(&mut graph, &workspace_id)
+            .unwrap()
+            .branch = Some(unrelated_branch.to_string());
+
+        assert!(!release_dynamic_workspace_best_effort(
+            &ctx,
+            &mut graph,
+            &workspace_id,
+        ));
+        assert_eq!(
+            dynamic_workspace(&graph, &workspace_id).unwrap().status,
+            WorkspaceStatus::Active
+        );
+        GitWorkspaceManager::default()
+            .validate_worktree(&workspace.path, &runtime_branch)
+            .unwrap();
+        assert!(
+            git_output(
+                &repo_root,
+                &[
+                    "show-ref",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/heads/{unrelated_branch}")
+                ],
+            )
+            .unwrap()
+            .success
+        );
+    }
+
+    #[test]
+    fn released_dynamic_worktree_pruning_preserves_nonempty_and_outside_directories() {
+        let (temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let workspace_id = "workspace-dyn-safety";
+        let canonical_leaf = dynamic_worktree_dir(&ctx, workspace_id);
+        std::fs::create_dir_all(canonical_leaf.as_std_path()).unwrap();
+        let sentinel = canonical_leaf.join("preserve.txt");
+        std::fs::write(sentinel.as_std_path(), "preserve").unwrap();
+
+        prune_released_dynamic_worktree_namespace_best_effort(&ctx, workspace_id, &canonical_leaf);
+
+        assert!(sentinel.exists());
+
+        let outside = Utf8PathBuf::from_path_buf(temp.path().join("outside-empty")).unwrap();
+        std::fs::create_dir_all(outside.as_std_path()).unwrap();
+        prune_released_dynamic_worktree_namespace_best_effort(&ctx, workspace_id, &outside);
+        assert!(outside.exists());
+    }
+
+    #[test]
+    fn released_dynamic_worktree_pruning_keeps_shared_parents_until_last_leaf() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let first_workspace_id = "workspace-first";
+        let second_workspace_id = "workspace-second";
+        let first_leaf = dynamic_worktree_dir(&ctx, first_workspace_id);
+        let second_leaf = dynamic_worktree_dir(&ctx, second_workspace_id);
+        let run_namespace = dynamic_worktree_base_dir(&ctx);
+        let task_namespace = run_namespace.parent().unwrap().to_path_buf();
+        let worktrees_root = task_namespace.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(first_leaf.as_std_path()).unwrap();
+        std::fs::create_dir_all(second_leaf.as_std_path()).unwrap();
+
+        prune_released_dynamic_worktree_namespace_best_effort(
+            &ctx,
+            first_workspace_id,
+            &first_leaf,
+        );
+
+        assert!(!first_leaf.exists());
+        assert!(second_leaf.exists());
+        assert!(run_namespace.exists());
+        assert!(task_namespace.exists());
+        assert!(worktrees_root.exists());
+
+        prune_released_dynamic_worktree_namespace_best_effort(
+            &ctx,
+            second_workspace_id,
+            &second_leaf,
+        );
+
+        assert!(!second_leaf.exists());
+        assert!(!run_namespace.exists());
+        assert!(!task_namespace.exists());
+        assert!(worktrees_root.exists());
+    }
+
+    #[test]
+    fn already_released_dynamic_worktree_retries_empty_namespace_pruning() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph = test_dynamic_graph_at(repo_root.clone(), Vec::new());
+        let workspace_id = fork_dynamic_workspace(
+            &ctx,
+            &mut graph,
+            "workspace-main",
+            "closed-group",
+            "closed-child",
+        )
+        .unwrap();
+        let workspace = dynamic_workspace(&graph, &workspace_id).unwrap().clone();
+        git(
+            &repo_root,
+            &["worktree", "remove", "--force", workspace.path.as_str()],
+        );
+        std::fs::create_dir_all(workspace.path.as_std_path()).unwrap();
+        dynamic_workspace_mut(&mut graph, &workspace_id)
+            .unwrap()
+            .status = WorkspaceStatus::Released;
+
+        assert!(!release_dynamic_workspace_best_effort(
+            &ctx,
+            &mut graph,
+            &workspace_id,
+        ));
+        assert!(!workspace.path.exists());
+        assert!(!dynamic_worktree_base_dir(&ctx).exists());
+        assert!(!dynamic_worktree_base_dir(&ctx).parent().unwrap().exists());
+    }
+
+    #[test]
+    fn released_dynamic_worktree_pruning_waits_for_the_shared_repository_lock() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph = test_dynamic_graph_at(repo_root.clone(), Vec::new());
+        let workspace_id = fork_dynamic_workspace(
+            &ctx,
+            &mut graph,
+            "workspace-main",
+            "locked-group",
+            "locked-child",
+        )
+        .unwrap();
+        let workspace = dynamic_workspace(&graph, &workspace_id).unwrap().clone();
+        git(
+            &repo_root,
+            &["worktree", "remove", "--force", workspace.path.as_str()],
+        );
+        std::fs::create_dir_all(workspace.path.as_std_path()).unwrap();
+        dynamic_workspace_mut(&mut graph, &workspace_id)
+            .unwrap()
+            .status = WorkspaceStatus::Released;
+        let repository = crate::git::GitSourceControlService::default()
+            .repository_identity(&repo_root)
+            .unwrap();
+
+        std::thread::scope(|scope| {
+            let (locked_tx, locked_rx) = mpsc::channel();
+            let (unlock_tx, unlock_rx) = mpsc::channel();
+            let common_dir = repository.common_dir.clone();
+            let user_lock = scope.spawn(move || {
+                crate::git::GitCoordinationService
+                    .try_with_user_repository_write(
+                        &common_dir,
+                        "test-user-worktree-create",
+                        || {
+                            locked_tx.send(()).unwrap();
+                            unlock_rx.recv().unwrap();
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+            });
+            locked_rx.recv().unwrap();
+
+            let (started_tx, started_rx) = mpsc::channel();
+            let (done_tx, done_rx) = mpsc::channel();
+            let release = scope.spawn(move || {
+                started_tx.send(()).unwrap();
+                let released =
+                    release_dynamic_workspace_best_effort(&ctx, &mut graph, &workspace_id);
+                done_tx.send(()).unwrap();
+                released
+            });
+            started_rx.recv().unwrap();
+            let completed_while_user_lock_held =
+                done_rx.recv_timeout(Duration::from_millis(500)).is_ok();
+            let path_exists_while_user_lock_held = workspace.path.exists();
+            unlock_tx.send(()).unwrap();
+            let released = release.join().unwrap();
+            user_lock.join().unwrap();
+
+            assert!(!completed_while_user_lock_held);
+            assert!(path_exists_while_user_lock_held);
+            assert!(!released);
+        });
+    }
+
+    #[test]
+    fn already_released_dynamic_worktree_does_not_remove_reused_registered_workspace() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph = test_dynamic_graph_at(repo_root.clone(), Vec::new());
+        let workspace_id = fork_dynamic_workspace(
+            &ctx,
+            &mut graph,
+            "workspace-main",
+            "closed-group",
+            "closed-child",
+        )
+        .unwrap();
+        let workspace = dynamic_workspace(&graph, &workspace_id).unwrap().clone();
+        git(
+            &repo_root,
+            &["worktree", "remove", "--force", workspace.path.as_str()],
+        );
+        git(
+            &repo_root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "reused-runtime-worktree",
+                workspace.path.as_str(),
+                "HEAD",
+            ],
+        );
+        dynamic_workspace_mut(&mut graph, &workspace_id)
+            .unwrap()
+            .status = WorkspaceStatus::Released;
+
+        assert!(!release_dynamic_workspace_best_effort(
+            &ctx,
+            &mut graph,
+            &workspace_id,
+        ));
+        GitWorkspaceManager::default()
+            .validate_worktree(&workspace.path, "reused-runtime-worktree")
+            .unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dynamic_worktree_release_accepts_windows_case_equivalent_persisted_path() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph = test_dynamic_graph_at(repo_root, Vec::new());
+        let workspace_id = fork_dynamic_workspace(
+            &ctx,
+            &mut graph,
+            "workspace-main",
+            "closed-group",
+            "closed-child",
+        )
+        .unwrap();
+        let canonical_path = dynamic_worktree_dir(&ctx, &workspace_id);
+        let run_namespace = dynamic_worktree_base_dir(&ctx);
+        let task_namespace = run_namespace.parent().unwrap().to_path_buf();
+        let equivalent_path = Utf8PathBuf::from(canonical_path.as_str().to_ascii_uppercase());
+        assert_ne!(equivalent_path, canonical_path);
+        dynamic_workspace_mut(&mut graph, &workspace_id)
+            .unwrap()
+            .path = equivalent_path;
+
+        assert!(release_dynamic_workspace_best_effort(
+            &ctx,
+            &mut graph,
+            &workspace_id,
+        ));
+        assert_eq!(
+            dynamic_workspace(&graph, &workspace_id).unwrap().status,
+            WorkspaceStatus::Released
+        );
+        assert!(!canonical_path.exists());
+        assert!(!run_namespace.exists());
+        assert!(!task_namespace.exists());
+    }
+
+    #[test]
+    fn loading_dynamic_graph_rejects_missing_workspace_from_open_group() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let child_node_id = "open-child";
+        let group_id = "open-group";
+        let mut graph =
+            test_dynamic_graph_at(repo_root.clone(), vec![test_worktree_node(child_node_id)]);
+        let child_workspace_id =
+            fork_dynamic_workspace(&ctx, &mut graph, "workspace-main", group_id, child_node_id)
+                .unwrap();
+        graph.nodes[0].workspace_id = child_workspace_id.clone();
+        let mut group = test_group_state(
+            group_id,
+            child_node_id,
+            vec![child_node_id],
+            vec![child_node_id],
+        );
+        group.child_workspace_ids = vec![child_workspace_id.clone()];
+        graph.groups.push(group);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+
+        let workspace = dynamic_workspace(&graph, &child_workspace_id)
+            .unwrap()
+            .clone();
+        git(
+            &repo_root,
+            &["worktree", "remove", "--force", workspace.path.as_str()],
+        );
+        std::fs::create_dir_all(workspace.path.as_std_path()).unwrap();
+
+        let error = load_or_create_dynamic_graph(&ctx).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("workspace path is not the expected Git worktree")
+        );
+        let durable: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        ))
+        .unwrap();
+        assert_eq!(
+            dynamic_workspace(&durable, &child_workspace_id)
+                .unwrap()
+                .status,
+            WorkspaceStatus::Active
+        );
+    }
+
     #[test]
     fn concurrent_dynamic_resume_queues_during_scheduler_startup() {
         let (_temp, repo_root) = init_repo();
@@ -17605,6 +22801,348 @@ mod tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].node_id, "good-night");
         clear_dynamic_resume_starting_window(&key).unwrap();
+    }
+
+    #[test]
+    fn stopping_starting_dynamic_resume_releases_lease_and_allows_retry() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let key = dynamic_state_lock_key(
+            &ctx.app.paths.repo_root,
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        );
+        clear_test_dynamic_resume_coordinator(&key);
+        let (launch_signal, launch_result) = mpsc::channel();
+        let resume = test_dynamic_resume_override(
+            "resume-stop-before-start",
+            "execution-stop-before-start",
+            "good-morning",
+            Some(launch_signal),
+        );
+        assert_eq!(
+            dispatch_dynamic_resume_override(
+                &ctx.app.paths.repo_root,
+                ctx.task_id,
+                ctx.run_id,
+                ctx.round_id,
+                ctx.outer_node_id,
+                ctx.outer_attempt_id,
+                resume,
+            )
+            .unwrap(),
+            DynamicResumeDispatch::StartDriver
+        );
+        assert!(
+            dynamic_resume_target_is_active(
+                &ctx.app.paths.repo_root,
+                ctx.task_id,
+                ctx.run_id,
+                ctx.round_id,
+                ctx.outer_node_id,
+                ctx.outer_attempt_id,
+                "good-morning",
+                "attempt-001",
+            )
+            .unwrap()
+        );
+
+        assert_eq!(
+            stop_dynamic_resume_target(
+                &ctx.app.paths.repo_root,
+                ctx.task_id,
+                ctx.run_id,
+                ctx.round_id,
+                ctx.outer_node_id,
+                ctx.outer_attempt_id,
+                "good-morning",
+                "attempt-001",
+            )
+            .unwrap(),
+            1
+        );
+        match launch_result.recv_timeout(Duration::from_secs(1)).unwrap() {
+            RuntimeContinueLaunch::Failed(info) => {
+                assert_eq!(info.code_str(), "runtime.continue-stopped-before-start")
+            }
+            RuntimeContinueLaunch::Started(_) => panic!("stopped request must not start"),
+        }
+        {
+            let coordinator = DYNAMIC_RESUME_COORDINATOR.get().unwrap().lock().unwrap();
+            assert!(!coordinator.pending.contains_key(&key));
+            assert!(!coordinator.inflight.contains_key(&key));
+            assert!(!coordinator.starting.contains(&key));
+        }
+
+        let retry = test_dynamic_resume_override(
+            "resume-after-stop",
+            "execution-after-stop",
+            "good-morning",
+            None,
+        );
+        assert_eq!(
+            dispatch_dynamic_resume_override(
+                &ctx.app.paths.repo_root,
+                ctx.task_id,
+                ctx.run_id,
+                ctx.round_id,
+                ctx.outer_node_id,
+                ctx.outer_attempt_id,
+                retry,
+            )
+            .unwrap(),
+            DynamicResumeDispatch::StartDriver
+        );
+        clear_test_dynamic_resume_coordinator(&key);
+    }
+
+    #[test]
+    fn dynamic_resume_launch_timeout_releases_lease_and_allows_retry() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let key = dynamic_state_lock_key(
+            &ctx.app.paths.repo_root,
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        );
+        clear_test_dynamic_resume_coordinator(&key);
+        let (launch_signal, launch_result) = mpsc::channel();
+        let resume = test_dynamic_resume_override(
+            "resume-timeout",
+            "execution-timeout",
+            "good-morning",
+            Some(launch_signal),
+        );
+        assert_eq!(
+            dispatch_dynamic_resume_override(
+                &ctx.app.paths.repo_root,
+                ctx.task_id,
+                ctx.run_id,
+                ctx.round_id,
+                ctx.outer_node_id,
+                ctx.outer_attempt_id,
+                resume,
+            )
+            .unwrap(),
+            DynamicResumeDispatch::StartDriver
+        );
+
+        let error = wait_for_dynamic_runtime_continue_launch(
+            launch_result,
+            &key,
+            "resume-timeout",
+            Duration::from_millis(10),
+        )
+        .unwrap_err();
+        let info = normalize_runtime_error(&error);
+        assert_eq!(info.code_str(), "runtime.continue-launch-timeout");
+        assert_eq!(info.params["timeoutMs"], 10);
+        {
+            let coordinator = DYNAMIC_RESUME_COORDINATOR.get().unwrap().lock().unwrap();
+            assert!(!coordinator.pending.contains_key(&key));
+            assert!(!coordinator.inflight.contains_key(&key));
+            assert!(!coordinator.starting.contains(&key));
+        }
+
+        let retry = test_dynamic_resume_override(
+            "resume-after-timeout",
+            "execution-after-timeout",
+            "good-morning",
+            None,
+        );
+        assert_eq!(
+            dispatch_dynamic_resume_override(
+                &ctx.app.paths.repo_root,
+                ctx.task_id,
+                ctx.run_id,
+                ctx.round_id,
+                ctx.outer_node_id,
+                ctx.outer_attempt_id,
+                retry,
+            )
+            .unwrap(),
+            DynamicResumeDispatch::StartDriver
+        );
+        clear_test_dynamic_resume_coordinator(&key);
+    }
+
+    #[test]
+    fn paused_dynamic_resume_rearms_outer_runtime_before_driver_commit() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        write_test_outer_attempt(
+            &app,
+            RunStatus::Paused,
+            Some(PauseReason::ProcessInterrupted),
+        );
+        let outer_node_path = app.paths.node_file(
+            "task-006",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        );
+        let mut durable_outer_node: NodeState = read_json(&outer_node_path).unwrap();
+        durable_outer_node.runtime_execution_id = Some("outer-execution-stopped".to_string());
+        write_node_state(&outer_node_path, &durable_outer_node).unwrap();
+
+        let resume = test_dynamic_resume_override(
+            "resume-rearm-outer",
+            "leaf-execution-new",
+            "good-morning",
+            None,
+        );
+        let key = reserve_dynamic_resume_request(
+            &app.paths.repo_root,
+            "task-006",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            DynamicResumeLease::from(&resume),
+        )
+        .unwrap();
+        let mut run = app.run_status("task-006", "run-001").unwrap();
+        let mut round: RoundState =
+            read_json(&app.paths.round_file("task-006", "run-001", "round-001")).unwrap();
+        let mut outer_node: NodeState = read_json(&outer_node_path).unwrap();
+        let mut runtime_candidate = None;
+
+        rearm_dynamic_outer_runtime_for_resume(
+            &app,
+            "task-006",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            "resume-rearm-outer",
+            "outer-execution-new",
+            &mut run,
+            &mut round,
+            &mut outer_node,
+            &mut runtime_candidate,
+        )
+        .unwrap();
+
+        let durable_run = app.run_status("task-006", "run-001").unwrap();
+        let durable_outer_node: NodeState = read_json(&outer_node_path).unwrap();
+        assert_eq!(durable_run.status, RunStatus::Running);
+        assert_eq!(
+            durable_run.execution.phase,
+            RuntimeExecutionPhase::StartingNode
+        );
+        assert_eq!(
+            durable_outer_node.runtime_execution_id.as_deref(),
+            Some("outer-execution-new")
+        );
+
+        outer_node.status = RunStatus::Running;
+        outer_node.finished_at = None;
+        assert!(
+            persist_runtime_state_if_execution_current(
+                &app,
+                "task-006",
+                &mut run,
+                &round,
+                &outer_node,
+            )
+            .unwrap(),
+            "the driver must cross the execution fence after outer re-arm"
+        );
+        clear_test_dynamic_resume_coordinator(&key);
+    }
+
+    #[test]
+    fn revoked_dynamic_resume_cannot_rearm_paused_outer_runtime() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        write_test_outer_attempt(
+            &app,
+            RunStatus::Paused,
+            Some(PauseReason::ProcessInterrupted),
+        );
+        let outer_node_path = app.paths.node_file(
+            "task-006",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        );
+        let mut durable_outer_node: NodeState = read_json(&outer_node_path).unwrap();
+        durable_outer_node.runtime_execution_id = Some("outer-execution-stopped".to_string());
+        write_node_state(&outer_node_path, &durable_outer_node).unwrap();
+        let resume = test_dynamic_resume_override(
+            "resume-revoked-before-outer-rearm",
+            "leaf-execution-new",
+            "good-morning",
+            None,
+        );
+        let key = reserve_dynamic_resume_request(
+            &app.paths.repo_root,
+            "task-006",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            DynamicResumeLease::from(&resume),
+        )
+        .unwrap();
+        fail_dynamic_resume_requests(
+            &key,
+            |request| request.request_id == "resume-revoked-before-outer-rearm",
+            dynamic_runtime_continue_timeout_info(
+                "resume-revoked-before-outer-rearm",
+                Duration::from_secs(60),
+            ),
+        )
+        .unwrap();
+        let mut run = app.run_status("task-006", "run-001").unwrap();
+        let mut round: RoundState =
+            read_json(&app.paths.round_file("task-006", "run-001", "round-001")).unwrap();
+        let mut outer_node: NodeState = read_json(&outer_node_path).unwrap();
+        let mut runtime_candidate = None;
+
+        let error = rearm_dynamic_outer_runtime_for_resume(
+            &app,
+            "task-006",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            "resume-revoked-before-outer-rearm",
+            "outer-execution-new",
+            &mut run,
+            &mut round,
+            &mut outer_node,
+            &mut runtime_candidate,
+        )
+        .unwrap_err();
+        assert_eq!(
+            normalize_runtime_error(&error).code_str(),
+            "runtime.continue-superseded"
+        );
+        assert_eq!(
+            app.run_status("task-006", "run-001").unwrap().status,
+            RunStatus::Paused
+        );
+        assert_eq!(
+            read_json::<NodeState>(&outer_node_path)
+                .unwrap()
+                .runtime_execution_id
+                .as_deref(),
+            Some("outer-execution-stopped")
+        );
+        clear_test_dynamic_resume_coordinator(&key);
     }
 
     #[test]
@@ -17768,7 +23306,7 @@ mod tests {
             first_ctx.outer_node_id,
             first_ctx.outer_attempt_id,
         );
-        complete_dynamic_resume_request(&first_key, "resume-first-project");
+        let _ = complete_dynamic_resume_request(&first_key, "resume-first-project", None);
         drop(first_registration);
         drop(second_registration);
     }
@@ -18289,7 +23827,9 @@ mod tests {
         .unwrap();
         let mut launch_resumes = Vec::new();
         let (started, _) =
-            persist_dynamic_node_running_and_ack(&ctx, &mut graph, 1, &mut launch_resumes).unwrap();
+            persist_dynamic_node_running_and_ack(&ctx, &mut graph, 1, &mut launch_resumes)
+                .unwrap()
+                .unwrap();
 
         let outer = app.run_status(ctx.task_id, ctx.run_id).unwrap();
         let durable: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
@@ -18402,6 +23942,16 @@ mod tests {
             "good-morning",
             Some(launch_signal),
         );
+        reserve_dynamic_resume_request(
+            &ctx.app.paths.repo_root,
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+            DynamicResumeLease::from(&resume),
+        )
+        .unwrap();
         let mut pending = vec![resume];
         let mut launch_resumes =
             apply_dynamic_resume_overrides(&ctx, &mut graph, &mut pending).unwrap();
@@ -18412,7 +23962,9 @@ mod tests {
         ));
 
         let (running_node, _) =
-            persist_dynamic_node_running_and_ack(&ctx, &mut graph, 0, &mut launch_resumes).unwrap();
+            persist_dynamic_node_running_and_ack(&ctx, &mut graph, 0, &mut launch_resumes)
+                .unwrap()
+                .unwrap();
         assert_eq!(running_node.status, DynamicNodeStatus::Running);
         match launch_result.recv_timeout(Duration::from_secs(1)).unwrap() {
             RuntimeContinueLaunch::Started(_) => {}
@@ -18433,6 +23985,82 @@ mod tests {
             durable.nodes[0].runtime_execution_id.as_deref(),
             Some("execution-morning")
         );
+    }
+
+    #[test]
+    fn revoked_dynamic_resume_cannot_cross_final_leaf_spawn_gate() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut target = test_worktree_node("good-morning");
+        target.status = DynamicNodeStatus::Ready;
+        target.begin_runtime_execution("execution-morning", "2026-06-16T00:00:01Z".to_string());
+        let mut sibling = test_worktree_node("good-night");
+        sibling.status = DynamicNodeStatus::Running;
+        sibling.begin_runtime_execution("execution-night", "2026-06-16T00:00:01Z".to_string());
+        let mut graph = test_dynamic_graph(vec![target, sibling]);
+        refresh_dynamic_current_leaf_ids(&mut graph);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+
+        let (launch_signal, launch_result) = mpsc::channel();
+        let resume = test_dynamic_resume_override(
+            "resume-revoked-at-commit",
+            "execution-morning",
+            "good-morning",
+            Some(launch_signal),
+        );
+        let key = reserve_dynamic_resume_request(
+            &ctx.app.paths.repo_root,
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+            DynamicResumeLease::from(&resume),
+        )
+        .unwrap();
+        let timeout_info = dynamic_runtime_continue_timeout_info(
+            "resume-revoked-at-commit",
+            Duration::from_secs(60),
+        );
+        assert_eq!(
+            fail_dynamic_resume_requests(
+                &key,
+                |request| request.request_id == "resume-revoked-at-commit",
+                timeout_info,
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+        assert!(matches!(
+            launch_result.recv_timeout(Duration::from_secs(1)).unwrap(),
+            RuntimeContinueLaunch::Failed(_)
+        ));
+
+        let mut launch_resumes = vec![resume];
+        assert!(
+            persist_dynamic_node_running_and_ack(&ctx, &mut graph, 0, &mut launch_resumes,)
+                .unwrap()
+                .is_none(),
+            "revoked launch must not return a node for thread::spawn"
+        );
+        let durable: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        ))
+        .unwrap();
+        assert_eq!(durable.nodes[0].status, DynamicNodeStatus::Paused);
+        assert_eq!(
+            durable.nodes[0].pause_reason,
+            Some(PauseReason::ProcessInterrupted)
+        );
+        assert_eq!(durable.nodes[1].status, DynamicNodeStatus::Running);
     }
 
     #[test]
@@ -18662,6 +24290,7 @@ mod tests {
             }),
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         };
 
         let candidate = interrupted_dynamic_output_artifact_candidate(&result);
@@ -18745,6 +24374,7 @@ mod tests {
             worker_ref_seed: None,
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         };
 
         let candidate = interrupted_dynamic_output_artifact_candidate(&result);
@@ -18925,6 +24555,7 @@ mod tests {
         )
         .unwrap();
         write_dynamic_completion_artifact(&app, "bootstrap", test_end_completion("already done"));
+        let (launch_signal, launch_result) = mpsc::channel();
         let resume = DynamicResumeOverride {
             request_id: "resume-bootstrap".to_string(),
             execution_id: "execution-bootstrap".to_string(),
@@ -18939,16 +24570,105 @@ mod tests {
             attachment_paths: Vec::new(),
             model_override: None,
             permission_mode_override: None,
-            launch_signal: None,
+            launch_signal: Some(launch_signal),
         };
+        reserve_dynamic_resume_request(
+            &ctx.app.paths.repo_root,
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+            DynamicResumeLease::from(&resume),
+        )
+        .unwrap();
 
         assert!(try_reconcile_dynamic_resume_completion(&ctx, &mut graph, &resume).unwrap());
+        assert!(matches!(
+            launch_result.recv_timeout(Duration::from_secs(1)).unwrap(),
+            RuntimeContinueLaunch::Started(_)
+        ));
 
         assert_eq!(graph.run.status, DynamicRunStatus::Running);
         assert_eq!(graph.run.pause_reason, None);
         assert_eq!(graph.nodes[0].status, DynamicNodeStatus::Completed);
         assert_eq!(graph.nodes[0].outcome, Some(NodeOutcome::Success));
         assert_eq!(graph.proposals.len(), 1);
+    }
+
+    #[test]
+    fn revoked_dynamic_resume_cannot_reconcile_existing_completion() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut paused = test_worktree_node("bootstrap");
+        paused.status = DynamicNodeStatus::Paused;
+        paused.finished_at = Some("2026-06-16T00:00:00Z".to_string());
+        let mut graph = test_dynamic_graph_at(app.paths.repo_root.clone(), vec![paused]);
+        graph.run.status = DynamicRunStatus::Paused;
+        graph.run.pause_reason = Some(PauseReason::RuntimeAbnormal);
+        graph.run.current_node_ids = vec!["bootstrap".to_string()];
+        write_json(
+            &app.paths.dynamic_graph_file(
+                "task-006",
+                "run-001",
+                "round-001",
+                "ai-dynamic",
+                "attempt-001",
+            ),
+            &graph,
+        )
+        .unwrap();
+        write_dynamic_completion_artifact(&app, "bootstrap", test_end_completion("already done"));
+        let (launch_signal, launch_result) = mpsc::channel();
+        let resume = test_dynamic_resume_override(
+            "resume-bootstrap-revoked",
+            "execution-bootstrap",
+            "bootstrap",
+            Some(launch_signal),
+        );
+        let key = reserve_dynamic_resume_request(
+            &ctx.app.paths.repo_root,
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+            DynamicResumeLease::from(&resume),
+        )
+        .unwrap();
+        let timeout = dynamic_runtime_continue_timeout_info(
+            &resume.request_id,
+            DYNAMIC_RUNTIME_CONTINUE_LAUNCH_TIMEOUT,
+        );
+        assert_eq!(
+            fail_dynamic_resume_requests(
+                &key,
+                |request| request.request_id == resume.request_id,
+                timeout,
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+        assert!(matches!(
+            launch_result.recv_timeout(Duration::from_secs(1)).unwrap(),
+            RuntimeContinueLaunch::Failed(info)
+                if info.code_str() == "runtime.continue-launch-timeout"
+        ));
+
+        let error = try_reconcile_dynamic_resume_completion(&ctx, &mut graph, &resume).unwrap_err();
+        assert_eq!(
+            normalize_runtime_error(&error).code_str(),
+            "runtime.continue-superseded"
+        );
+        assert_eq!(graph.run.status, DynamicRunStatus::Paused);
+        assert_eq!(graph.run.pause_reason, Some(PauseReason::RuntimeAbnormal));
+        assert_eq!(graph.nodes[0].status, DynamicNodeStatus::Paused);
+        assert_eq!(graph.nodes[0].outcome, None);
+        assert!(graph.proposals.is_empty());
     }
 
     #[test]
@@ -19037,11 +24757,16 @@ mod tests {
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
         let mut completed = test_worktree_node("goodbye-worker");
+        completed.depth = 0;
         completed.status = DynamicNodeStatus::Completed;
         completed.outcome = Some(NodeOutcome::Success);
         completed.finished_at = Some("2026-06-16T00:00:00Z".to_string());
         let mut graph = test_dynamic_graph_at(repo_root, vec![completed]);
         graph.run.current_node_ids.clear();
+        graph.proposals.push(accepted_proposal(
+            "goodbye-worker",
+            serde_json::from_str(&test_end_completion("goodbye completed")).unwrap(),
+        ));
 
         complete_dynamic_graph_success(&ctx, &mut graph).unwrap();
 

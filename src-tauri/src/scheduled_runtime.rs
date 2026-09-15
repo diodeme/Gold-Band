@@ -19,8 +19,8 @@ use gold_band::scheduler::occurrence::{
     ScheduledError, ScheduledErrorCode, ScheduledOccurrence,
 };
 use gold_band::scheduler::queue::{
-    ActiveExecution, LATE_FIRE_GRACE, MISSED_RECONCILE_BATCH_SIZE, QueueDecision,
-    UNACCEPTED_TERMINAL_CLEANUP_BATCH_SIZE, decide_queue,
+    ActiveExecution, DEFAULT_OCCURRENCE_RETENTION_DAYS, LATE_FIRE_GRACE,
+    MISSED_RECONCILE_BATCH_SIZE, QueueDecision, RETENTION_DELETE_BATCH_SIZE, decide_queue,
 };
 use gold_band::scheduler::{ScheduleKind, ScheduledMode, ScheduledTaskDefinition, SessionPolicy};
 use gold_band::storage::GoldBandPaths;
@@ -100,7 +100,7 @@ pub enum SchedulerCommand {
         reply: oneshot::Sender<ScheduledServiceResult<Option<String>>>,
     },
     SettingsChanged,
-    CleanupUnacceptedTerminalWorkspace {
+    CleanupWorkspace {
         workspace_path: Utf8PathBuf,
     },
     Reconcile {
@@ -1405,7 +1405,7 @@ fn apply_terminal_occurrence_side_effects(
         occurrence,
     );
     if let Ok(coordinator) = app_handle.state::<DesktopState>().scheduler_coordinator() {
-        let _ = coordinator.send(SchedulerCommand::CleanupUnacceptedTerminalWorkspace {
+        let _ = coordinator.send(SchedulerCommand::CleanupWorkspace {
             workspace_path: active.workspace_path,
         });
     }
@@ -1451,6 +1451,10 @@ trait CoordinatorRuntimeDriver: Send + Sync + 'static {
 
     fn now(&self) -> DateTime<Utc> {
         Utc::now()
+    }
+
+    fn scheduled_occurrence_retention_days(&self) -> u16 {
+        DEFAULT_OCCURRENCE_RETENTION_DAYS
     }
 
     fn reconcile_power_state(&self, _enabled_job_count: usize, _app_is_running: bool) {}
@@ -1508,6 +1512,14 @@ impl CoordinatorRuntimeDriver for ScheduledRuntime {
         let state = self.app_handle.state::<DesktopState>();
         let context = state.context()?;
         runtime_app_for_workspace(&state, &context, workspace_path.as_str())
+    }
+
+    fn scheduled_occurrence_retention_days(&self) -> u16 {
+        self.app_handle
+            .state::<DesktopState>()
+            .context()
+            .map(|context| context.config.scheduled_occurrence_retention_days)
+            .unwrap_or(DEFAULT_OCCURRENCE_RETENTION_DAYS)
     }
 
     async fn reconcile_running_occurrences(
@@ -1746,9 +1758,8 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
                 self.refresh_registered_workspaces(ReconcileReason::Explicit)
                     .await
             }
-            SchedulerCommand::CleanupUnacceptedTerminalWorkspace { workspace_path } => {
-                self.cleanup_unaccepted_terminal_for_workspace(&workspace_path)
-                    .await
+            SchedulerCommand::CleanupWorkspace { workspace_path } => {
+                self.run_retention_for_workspace(&workspace_path).await
             }
             SchedulerCommand::Reconcile { reason } => self.reconcile_all(reason).await,
             SchedulerCommand::Shutdown { .. } => Ok(()),
@@ -1840,10 +1851,7 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
             self.restore_workspace_deadlines(&workspace_path, previous_deadlines);
             return Err(error);
         }
-        if let Err(error) = self
-            .cleanup_unaccepted_terminal_for_registration(&candidate)
-            .await
-        {
+        if let Err(error) = self.run_retention_for_registration(&candidate).await {
             warn!(
                 code = %ScheduledErrorCode::StorageFailed,
                 params = ?serde_json::json!({ "reason": error.to_string() }),
@@ -1906,55 +1914,45 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
         }
     }
 
-    async fn cleanup_unaccepted_terminal_for_workspace(
-        &self,
-        workspace_path: &Utf8Path,
-    ) -> anyhow::Result<()> {
+    async fn run_retention_for_workspace(&self, workspace_path: &Utf8Path) -> anyhow::Result<()> {
         let registration = self
             .workspaces
             .get(workspace_path)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("scheduled workspace is not registered"))?;
-        self.cleanup_unaccepted_terminal_for_registration(&registration)
-            .await
+        self.run_retention_for_registration(&registration).await
     }
 
-    async fn cleanup_unaccepted_terminal_for_registration(
+    async fn run_retention_for_registration(
         &self,
         registration: &WorkspaceRegistration,
     ) -> anyhow::Result<()> {
+        let protected_run_ids = active_run_ids(&registration.app)?;
+        let cutoff = self.runtime.now()
+            - Duration::days(i64::from(
+                self.runtime.scheduled_occurrence_retention_days(),
+            ));
         loop {
-            let occurrence_ids = registration
-                .database
-                .list_unaccepted_terminal_occurrence_ids(
-                    &registration.app.paths.project_id,
-                    UNACCEPTED_TERMINAL_CLEANUP_BATCH_SIZE,
-                )?;
-            if occurrence_ids.is_empty() {
+            let result = registration.database.cleanup_terminal_occurrences(
+                &registration.app.paths.project_id,
+                cutoff,
+                RETENTION_DELETE_BATCH_SIZE,
+                &protected_run_ids,
+            )?;
+            if !result.has_more {
                 return Ok(());
-            }
-            for occurrence_id in occurrence_ids {
-                registration
-                    .database
-                    .delete_unaccepted_terminal_occurrence(
-                        &registration.app.paths.project_id,
-                        &occurrence_id,
-                    )?;
             }
             tokio::task::yield_now().await;
         }
     }
 
-    async fn cleanup_unaccepted_terminal_best_effort(&self, registration: &WorkspaceRegistration) {
-        if let Err(error) = self
-            .cleanup_unaccepted_terminal_for_registration(registration)
-            .await
-        {
+    async fn run_retention_best_effort(&self, registration: &WorkspaceRegistration) {
+        if let Err(error) = self.run_retention_for_registration(registration).await {
             warn!(
                 code = %ScheduledErrorCode::StorageFailed,
                 params = ?serde_json::json!({ "reason": error.to_string() }),
                 workspace_path = %registration.app.paths.repo_root,
-                "scheduled unaccepted terminal occurrence cleanup failed"
+                "scheduled occurrence retention cleanup failed"
             );
         }
     }
@@ -2063,8 +2061,7 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
                         )
                         .await?;
                     self.notify_occurrence_best_effort(registration, &occurrence_id);
-                    self.cleanup_unaccepted_terminal_best_effort(registration)
-                        .await;
+                    self.run_retention_best_effort(registration).await;
                     self.refresh_job_from_registration(&key, registration, self.runtime.now())?;
                 } else {
                     self.register_record(key, recovery, now)?;
@@ -2158,8 +2155,7 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
                 )
                 .await?;
             self.notify_occurrence_best_effort(&registration, &occurrence_id);
-            self.cleanup_unaccepted_terminal_best_effort(&registration)
-                .await;
+            self.run_retention_best_effort(&registration).await;
             return self.refresh_job(&key, self.runtime.now());
         }
         if registered
@@ -2189,8 +2185,7 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
                 )
                 .await?;
             self.notify_occurrence_best_effort(&registration, &occurrence_id);
-            self.cleanup_unaccepted_terminal_best_effort(&registration)
-                .await;
+            self.run_retention_best_effort(&registration).await;
         }
         self.refresh_job(&key, self.runtime.now())
     }
@@ -2247,8 +2242,7 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
             self.runtime
                 .notify_occurrence(&key.project_id, &manual.occurrence);
         }
-        self.cleanup_unaccepted_terminal_best_effort(&registration)
-            .await;
+        self.run_retention_best_effort(&registration).await;
         let _ = self.refresh_job(&key, self.runtime.now());
         result
     }
@@ -2822,6 +2816,18 @@ fn occurrence_status_for_run_outcome(outcome: RunOutcome) -> OccurrenceStatus {
     }
 }
 
+fn active_run_ids(app: &App) -> anyhow::Result<HashSet<String>> {
+    let mut active = HashSet::new();
+    for task in app.task_list()? {
+        for run in app.run_list(&task.id)? {
+            if run.status != RunStatus::Completed {
+                active.insert(run.id);
+            }
+        }
+    }
+    Ok(active)
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct ExecutionResult {
     pub(super) immediate_links: Option<OccurrenceLinks>,
@@ -2984,18 +2990,6 @@ where
 {
     let accepted = accept_execution_authority(database, owner_id, occurrence, links, authority)?;
     launch(&accepted)
-}
-
-fn accept_current_occurrence_execution(
-    database: &ScheduledTaskDatabase,
-    owner_id: &str,
-    definition: &ScheduledTaskDefinition,
-    occurrence: &ScheduledOccurrence,
-    links: &OccurrenceLinks,
-) -> anyhow::Result<ScheduledOccurrence> {
-    let authority =
-        reload_execution_authority(database, &definition.project_id, occurrence, Utc::now())?;
-    accept_execution_authority(database, owner_id, occurrence, links, &authority)
 }
 
 #[cfg(test)]
@@ -3587,7 +3581,7 @@ fn scheduled_create_input(
         auto_config,
         attachment_paths: (!attachment_paths.is_empty()).then_some(attachment_paths),
         work_location: Default::default(),
-        branch_checkpoint: None,
+        selected_branch: None,
         scheduled_task_id: Some(definition.id.clone()),
         scheduled_content_fingerprint: Some(definition.content_fingerprint.clone()),
         workflow_authoring,
@@ -3641,8 +3635,7 @@ mod tests {
         ClaimToHandoffGuard, ClockDriftDetector, CoordinatorRuntimeDriver, LATE_FIRE_GRACE,
         OccurrenceExecutionGuard, PendingGuardJoins, RegisteredDeadline, ScheduledExecutionAction,
         SchedulerCommand, SchedulerCoordinator, SchedulerCoordinatorHandle,
-        WORKSPACE_REGISTRATION_RETRY_DELAY, WorkspaceRegistration,
-        accept_current_occurrence_execution, accept_execution_authority,
+        WORKSPACE_REGISTRATION_RETRY_DELAY, WorkspaceRegistration, accept_execution_authority,
         accept_occurrence_execution_then, active_execution_for_run, attempt_tree_has_active_prompt,
         create_manual_occurrence, ensure_definition_workspace, finish_occurrence_for_event,
         finish_reconciled_occurrence, mark_past_points_missed, materialize_registered_deadline,
@@ -3653,6 +3646,18 @@ mod tests {
         scheduled_task_context_info, shutdown_active_occurrences, take_active_occurrence,
         task_has_active_execution, task_has_active_execution_with_prompt_probe,
     };
+
+    fn accept_current_occurrence_execution(
+        database: &ScheduledTaskDatabase,
+        owner_id: &str,
+        definition: &ScheduledTaskDefinition,
+        occurrence: &ScheduledOccurrence,
+        links: &gold_band::scheduler::occurrence::OccurrenceLinks,
+    ) -> anyhow::Result<ScheduledOccurrence> {
+        let authority =
+            reload_execution_authority(database, &definition.project_id, occurrence, Utc::now())?;
+        accept_execution_authority(database, owner_id, occurrence, links, &authority)
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn lifecycle_settlement_stops_guard_before_committing_terminal_occurrence() {
@@ -3686,6 +3691,7 @@ mod tests {
             scheduled_occurrence_id: Some(occurrence_id.clone()),
             project_id: "project-1".to_string(),
             task_id: "task-1".to_string(),
+            task_uuid: Some("task-uuid-1".to_string()),
             run_id: "run-1".to_string(),
             round_id: "round-1".to_string(),
             node_id: "node-1".to_string(),
@@ -6325,6 +6331,7 @@ mod tests {
                 scheduled_occurrence_id: Some(occurrence_id.clone()),
                 project_id: "project-1".to_string(),
                 task_id: "task-1".to_string(),
+                task_uuid: Some("task-uuid-1".to_string()),
                 run_id: "run-1".to_string(),
                 round_id: "round-1".to_string(),
                 node_id: "node-1".to_string(),
@@ -6359,10 +6366,13 @@ mod tests {
                 scheduled_occurrence_id: Some(occurrence_id.clone()),
                 project_id: "project-1".to_string(),
                 task_id: "task-1".to_string(),
+                task_uuid: Some("task-uuid-1".to_string()),
                 run_id: "run-1".to_string(),
                 round_id: "round-1".to_string(),
                 node_id: "node-1".to_string(),
                 attempt_id: "attempt-1".to_string(),
+                outer_node_id: None,
+                outer_attempt_id: None,
                 turn_id: "turn-1".to_string(),
                 agent_label: "agent".to_string(),
                 outcome: gold_band::app::AcpTurnOutcome::Failed,
@@ -6390,6 +6400,7 @@ mod tests {
             scheduled_occurrence_id: Some(occurrence_id.clone()),
             project_id: "project-1".to_string(),
             task_id: "task-1".to_string(),
+            task_uuid: Some("task-uuid-1".to_string()),
             run_id: "run-1".to_string(),
             round_id: "round-1".to_string(),
             node_id: "node-1".to_string(),
@@ -6430,10 +6441,13 @@ mod tests {
                 scheduled_occurrence_id: Some(occurrence_id.clone()),
                 project_id: "project-1".to_string(),
                 task_id: "task-1".to_string(),
+                task_uuid: Some("task-uuid-1".to_string()),
                 run_id: "run-1".to_string(),
                 round_id: "round-1".to_string(),
                 node_id: "node-1".to_string(),
                 attempt_id: "attempt-1".to_string(),
+                outer_node_id: None,
+                outer_attempt_id: None,
                 node_label: "node".to_string(),
                 kind: RuntimeInterventionKind::ProcessInterrupted,
                 task_title: None,
@@ -6550,10 +6564,13 @@ mod tests {
                 scheduled_occurrence_id: Some(occurrence_id.clone()),
                 project_id: "project-1".to_string(),
                 task_id: "task-1".to_string(),
+                task_uuid: Some("task-uuid-1".to_string()),
                 run_id: "run-1".to_string(),
                 round_id: "round-1".to_string(),
                 node_id: "node-1".to_string(),
                 attempt_id: "attempt-1".to_string(),
+                outer_node_id: None,
+                outer_attempt_id: None,
                 node_label: "node".to_string(),
                 kind: RuntimeInterventionKind::ElicitationRequested,
                 task_title: None,

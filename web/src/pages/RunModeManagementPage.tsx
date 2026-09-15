@@ -26,6 +26,7 @@ import { displayAppError } from '@/i18n';
 import { pruneMissingAutoConfigReferences, pruneMissingAutoAllowedProfileIds, pruneMissingAutoAllowedWorkflowIds, selectableAgentOptions, selectableWorkflowOptions, validateAutoConfig } from '@/lib/run-mode-validation';
 import { createBlankWorkflowDraft, hasWorkflowBindingDraftChanges, hasWorkflowDraftChanges, restoreBuiltInWorkflowDefinition, shouldShowDefaultWorkflowSaveAsNotice, workflowTemplateDisplayName } from '@/lib/workflow-template';
 import { cn } from '@/lib/utils';
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { useWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
 
 interface RunModeManagementPageProps {
@@ -112,6 +113,7 @@ export function TemplateActionRow({
   saveAsLabel: string;
   onSaveAs: () => void;
 }) {
+  const readOnly = useReadOnlyExperience();
   return (
     <div data-testid="template-action-row" className="space-y-1.5">
       <div className="flex flex-wrap items-center gap-3">
@@ -119,13 +121,13 @@ export function TemplateActionRow({
         {picker}
         {auxiliaryAction}
         {showSaveCurrent ? (
-          <Button size="sm" disabled={saving || saveCurrentDisabled} onClick={onSaveCurrent}>
+          <Button size="sm" disabled={readOnly || saving || saveCurrentDisabled} onClick={onSaveCurrent}>
             {saving ? savingLabel : saveCurrentLabel}
           </Button>
         ) : null}
         {restoreAction}
         <Input className="h-8 w-40" disabled={saving} value={name} placeholder={namePlaceholder} onChange={(event) => onNameChange(event.target.value)} />
-        <Button size="sm" disabled={!name.trim() || saving || saveAsDisabled} onClick={onSaveAs}>
+        <Button size="sm" disabled={readOnly || !name.trim() || saving || saveAsDisabled} onClick={onSaveAs}>
           {saveAsLabel}
         </Button>
       </div>
@@ -252,6 +254,7 @@ export function RunModeManagementPage({
   onSave,
   onWorkflowTemplatesChange,
 }: RunModeManagementPageProps) {
+  const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   const [mode, setMode] = useState<RunModeManagementTab>(runMode.mode === 'auto' ? 'auto' : 'workflow');
   const [agentStrategy, setAgentStrategy] = useState<'fixed' | 'dynamic'>(runMode.autoConfig?.agentStrategy ?? 'fixed');
@@ -464,6 +467,7 @@ export function RunModeManagementPage({
     prunedAutoTemplateRef.current = pruneKey;
 
     let cancelled = false;
+    if (readOnly) return;
     void updateAutoTemplate(activeTemplate.id, activeTemplate.name, normalized.config)
       .then((store) => {
         if (cancelled) return;
@@ -488,7 +492,7 @@ export function RunModeManagementPage({
     let cancelled = false;
     getAutoTemplates()
       .then(async (store) => {
-        const legacyTemplates = loadLegacyAutoTemplates();
+        const legacyTemplates = readOnly ? [] : loadLegacyAutoTemplates();
         if (store.templates.length === 0 && legacyTemplates.length > 0) {
           const migrated = await replaceAutoTemplates(legacyTemplates);
           clearLegacyAutoTemplates();
@@ -630,6 +634,7 @@ export function RunModeManagementPage({
   };
 
   const deleteAutoTemplate = async (templateId: string) => {
+    if (readOnly) return;
     const nextStore = await deleteAutoTemplateApi(templateId);
     setTemplates(nextStore.templates);
     if (activeTemplateId === templateId) {
@@ -730,6 +735,7 @@ export function RunModeManagementPage({
   };
 
   const saveWfAsNew = async () => {
+    if (readOnly) return;
     if (!wfEditWorkflow) {
       setWfError(t('taskList.create.noWorkflowTemplate'));
       return;
@@ -768,6 +774,7 @@ export function RunModeManagementPage({
   };
 
   const saveWfCurrent = async () => {
+    if (readOnly) return;
     if (!wfEditWorkflow || !canUpdateWfTemplate) return;
     const validated = validateWfForTemplate(wfEditWorkflow, true, selectedWfTemplate?.isBuiltIn === true);
     if (!validated) return;
@@ -797,6 +804,7 @@ export function RunModeManagementPage({
   };
 
   const deleteWfTemplate = async () => {
+    if (readOnly) return;
     if (!wfDeleteTarget || wfDeleteTarget.isBuiltIn) return;
     setWfSaving(true);
     try {
@@ -820,6 +828,7 @@ export function RunModeManagementPage({
   };
 
   const saveAsTemplate = async () => {
+    if (readOnly) return;
     const name = templateName.trim();
     if (!name) {
       showAutoNotice({ tone: 'error', message: t('runMode.validationTemplateNameRequired') });
@@ -859,6 +868,7 @@ export function RunModeManagementPage({
   };
 
   const saveCurrentTemplate = async () => {
+    if (readOnly) return;
     const target = autoSaveTarget(activeTemplateId);
     if (target === 'run-mode') {
       const config = buildAutoConfig({ activeTemplateId: undefined, activeTemplateName: undefined });
@@ -1002,6 +1012,7 @@ export function RunModeManagementPage({
                                 size="icon-xs"
                                 className="size-6 shrink-0"
                                 aria-label={t('runMode.deleteAutoTemplate', { name: template.name })}
+                                disabled={readOnly}
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   void deleteAutoTemplate(template.id).catch((error) => {
@@ -1300,7 +1311,7 @@ export function RunModeManagementPage({
                               variant="ghost"
                               size="icon-xs"
                               className="size-6 shrink-0"
-                              disabled={isDefault}
+                              disabled={readOnly || isDefault}
                               aria-label={isDefault ? t('taskList.create.defaultWorkflowReadonly') : t('taskList.create.deleteWorkflowTemplate', { name: tpl.name })}
                               onClick={() => { setWfTemplatePickerOpen(false); setWfDeleteTarget(tpl); }}
                             >

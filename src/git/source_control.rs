@@ -14,6 +14,8 @@ use uuid::Uuid;
 
 use crate::process::{ManagedProcessGroup, PROCESS_GROUP_TERMINATION_GRACE, background_command};
 
+use super::git_filesystem_path_identity;
+
 const HISTORY_PAGE_DEFAULT: usize = 300;
 const HISTORY_PAGE_MAX: usize = 1_000;
 const COMMIT_REVIEW_SELECTION_MAX: usize = 32;
@@ -282,10 +284,20 @@ fn lock_cell_snapshot(cell: &GitLockCell) -> GitLockSnapshot {
 }
 
 fn normalized_lock_path(path: &Utf8Path) -> Result<String> {
-    let mut value = canonical_utf8_path(path)?.as_str().replace('\\', "/");
-    #[cfg(windows)]
-    value.make_ascii_lowercase();
-    Ok(value)
+    Ok(git_filesystem_path_identity(path)?.to_string())
+}
+
+fn worktree_by_normalized_path(
+    worktrees: Vec<GitWorktree>,
+    requested_key: &str,
+) -> Result<Option<GitWorktree>> {
+    let mut matched = None;
+    for worktree in worktrees {
+        if normalized_lock_path(&worktree.path)? == requested_key && matched.is_none() {
+            matched = Some(worktree);
+        }
+    }
+    Ok(matched)
 }
 
 impl GitServiceError {
@@ -861,10 +873,9 @@ pub struct GitSourceControlSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GitBranchCheckpoint {
+pub struct GitBranchForkPoint {
     pub branch: String,
     pub head_oid: String,
-    pub revision: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1209,6 +1220,7 @@ impl GitSourceControlService {
         project_root: &Utf8Path,
         requested_workspace: Option<&Utf8Path>,
     ) -> Result<GitRepositoryIdentity> {
+        super::require_supported_git_version_for_service()?;
         let project = self.repository_identity(project_root)?;
         let workspace = self.repository_identity(requested_workspace.unwrap_or(project_root))?;
         let project_common_dir = canonical_utf8_path(&project.common_dir)?;
@@ -1242,10 +1254,12 @@ impl GitSourceControlService {
                 "git.repository-not-found",
             )?
             .stdout_text();
-        let workspace_path = canonical_utf8_path(Utf8Path::new(&repo_root))?;
+        let repo_root = canonical_utf8_path(Utf8Path::new(&repo_root))?;
+        let common_dir = canonical_utf8_path(Utf8Path::new(&common_dir))?;
+        let workspace_path = repo_root.clone();
         Ok(GitRepositoryIdentity {
-            repo_root: Utf8PathBuf::from(repo_root),
-            common_dir: Utf8PathBuf::from(common_dir),
+            repo_root,
+            common_dir,
             workspace_path,
         })
     }
@@ -1384,49 +1398,48 @@ impl GitSourceControlService {
         )
     }
 
-    pub fn resolve_branch_checkpoint(
+    pub fn resolve_branch_fork_point(
         &self,
         cwd: &Utf8Path,
-        expected: Option<&GitBranchCheckpoint>,
-    ) -> Result<GitBranchCheckpoint> {
+        selected_branch: Option<&str>,
+    ) -> Result<GitBranchForkPoint> {
         let identity = self.repository_identity(cwd)?;
         GitCoordinationService.try_with_user_write(
             &identity.common_dir,
             Some(&identity.workspace_path),
             "conversation-fork-point",
             || {
-                let snapshot = self.branch_picker_snapshot_for_identity(cwd, &identity)?;
-                if let Some(expected) = expected {
-                    if snapshot.current_branch.as_deref() != Some(expected.branch.as_str())
-                        || snapshot.head_oid.as_deref() != Some(expected.head_oid.as_str())
-                        || snapshot.revision != expected.revision
-                    {
+                let operation = self.in_progress_operation(cwd)?;
+                ensure_no_branch_operation(operation.as_ref())?;
+                let branch_output = self
+                    .runner
+                    .run(cwd, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
+                if !branch_output.success {
+                    return Err(
+                        GitServiceError::new("git.branch-required", serde_json::json!({})).into(),
+                    );
+                }
+                let branch = branch_output.stdout_text();
+                if let Some(selected_branch) = selected_branch {
+                    if branch != selected_branch {
                         return Err(GitServiceError::new(
                             "git.ref-changed",
                             serde_json::json!({
-                                "expectedBranch": expected.branch,
-                                "actualBranch": snapshot.current_branch,
-                                "expectedHead": expected.head_oid,
-                                "actualHead": snapshot.head_oid,
-                                "expectedRevision": expected.revision,
-                                "actualRevision": snapshot.revision,
+                                "expectedBranch": selected_branch,
+                                "actualBranch": branch,
                             }),
                         )
                         .into());
                     }
                 }
-                ensure_branch_change_allowed(&snapshot)?;
-                let branch = snapshot.current_branch.ok_or_else(|| {
-                    GitServiceError::new("git.branch-required", serde_json::json!({}))
-                })?;
-                let head_oid = snapshot.head_oid.ok_or_else(|| {
-                    GitServiceError::new("git.head-required", serde_json::json!({}))
-                })?;
-                Ok(GitBranchCheckpoint {
-                    branch,
-                    head_oid,
-                    revision: snapshot.revision,
-                })
+                let head_output = self.runner.run(cwd, &["rev-parse", "HEAD"])?;
+                if !head_output.success {
+                    return Err(
+                        GitServiceError::new("git.head-required", serde_json::json!({})).into(),
+                    );
+                }
+                let head_oid = head_output.stdout_text();
+                Ok(GitBranchForkPoint { branch, head_oid })
             },
         )
     }
@@ -2963,13 +2976,7 @@ impl GitSourceControlService {
                 serde_json::json!({ "path": requested_path }),
             )
         })?;
-        let target = self
-            .worktrees(cwd)?
-            .into_iter()
-            .find(|worktree| {
-                normalized_lock_path(&worktree.path)
-                    .is_ok_and(|candidate| candidate == requested_key)
-            })
+        let target = worktree_by_normalized_path(self.worktrees(cwd)?, &requested_key)?
             .ok_or_else(|| {
                 GitServiceError::new(
                     "git.worktree-not-found",
@@ -4501,7 +4508,11 @@ fn ensure_expected_branch_revision(
 }
 
 fn ensure_branch_change_allowed(snapshot: &GitBranchPickerSnapshot) -> Result<()> {
-    if let Some(operation) = snapshot.operation_in_progress.as_ref() {
+    ensure_no_branch_operation(snapshot.operation_in_progress.as_ref())
+}
+
+fn ensure_no_branch_operation(operation: Option<&GitInProgressOperation>) -> Result<()> {
+    if let Some(operation) = operation {
         return Err(GitServiceError::new(
             "git.operation-in-progress",
             serde_json::json!({ "operation": operation.kind }),
@@ -4591,7 +4602,8 @@ mod tests {
     }
 
     fn wait_operation(service: &GitSourceControlService, operation_id: &str) -> GitOperation {
-        for _ in 0..250 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
             let operation = service.get_operation(operation_id).unwrap();
             if !matches!(
                 operation.status,
@@ -4599,9 +4611,14 @@ mod tests {
             ) {
                 return operation;
             }
+            if std::time::Instant::now() >= deadline {
+                panic!(
+                    "Git operation {operation_id} did not finish; last status: {:?}",
+                    operation.status
+                );
+            }
             std::thread::sleep(Duration::from_millis(20));
         }
-        panic!("Git operation {operation_id} did not finish");
     }
 
     #[test]
@@ -4733,28 +4750,30 @@ mod tests {
     }
 
     #[test]
-    fn branch_checkpoint_validates_branch_head_and_revision_together() {
+    fn branch_fork_point_uses_the_latest_head_of_the_selected_branch() {
         let (_temp, root) = initialized_repository();
-        let first = commit_file(&root, "tracked.txt", "one\n", "first");
+        commit_file(&root, "tracked.txt", "one\n", "first");
         let service = GitSourceControlService::default();
         let snapshot = service.branch_picker_snapshot(&root).unwrap();
-        let expected = GitBranchCheckpoint {
-            branch: snapshot.current_branch.clone().unwrap(),
-            head_oid: first.clone(),
-            revision: snapshot.revision,
-        };
+        let selected_branch = snapshot.current_branch.unwrap();
+        let latest = commit_file(&root, "tracked.txt", "two\n", "second");
 
         assert_eq!(
             service
-                .resolve_branch_checkpoint(&root, Some(&expected))
+                .resolve_branch_fork_point(&root, Some(&selected_branch))
                 .unwrap()
                 .head_oid,
-            first
+            latest
         );
 
-        commit_file(&root, "tracked.txt", "two\n", "second");
+        assert!(
+            GitCommandRunner
+                .run(&root, &["checkout", "-b", "other"])
+                .unwrap()
+                .success
+        );
         let error = service
-            .resolve_branch_checkpoint(&root, Some(&expected))
+            .resolve_branch_fork_point(&root, Some(&selected_branch))
             .unwrap_err();
         assert_eq!(
             error.downcast_ref::<GitServiceError>().unwrap().code,
@@ -5929,6 +5948,34 @@ mod tests {
         assert!(service.refs(&root).unwrap().iter().any(|git_ref| {
             git_ref.kind == GitRefKind::LocalBranch && git_ref.short_name == "worktree/removable"
         }));
+    }
+
+    #[test]
+    fn worktree_catalog_lookup_fails_closed_on_unresolvable_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let requested = root.join("requested-worktree");
+        let requested_key = normalized_lock_path(&requested).unwrap();
+        let worktree = |path: Utf8PathBuf| GitWorktree {
+            path,
+            head_oid: "test-head".to_string(),
+            branch: None,
+            main: false,
+            detached: false,
+            locked: false,
+            lock_reason: None,
+            prunable: false,
+            ownership: GitWorktreeOwnership::User,
+            runtime_status: None,
+        };
+
+        let invalid = root.join("missing").join("..").join("invalid");
+        for catalog in [
+            vec![worktree(invalid.clone()), worktree(requested.clone())],
+            vec![worktree(requested.clone()), worktree(invalid.clone())],
+        ] {
+            assert!(worktree_by_normalized_path(catalog, &requested_key).is_err());
+        }
     }
 
     #[test]

@@ -176,7 +176,7 @@ describe('source control history cache presentation', () => {
     try {
       sessionRuntime.session = {
         ...sourceControlSession(), status: 'unavailable', snapshot: null, history: null,
-        capability: { status: 'repository-required', repoRoot: null, commonDir: null, head: null },
+        capability: { status: 'repository-required', installedVersion: '2.53.0', minimumVersion: '2.36.0', repoRoot: null, commonDir: null, head: null },
       };
       await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
         kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
@@ -188,11 +188,40 @@ describe('source control history cache presentation', () => {
 
       sessionRuntime.session = {
         ...sourceControlSession(), status: 'unavailable', snapshot: null, history: null,
-        capability: { status: 'not-installed', repoRoot: null, commonDir: null, head: null },
+        capability: { status: 'not-installed', installedVersion: null, minimumVersion: '2.36.0', repoRoot: null, commonDir: null, head: null },
       };
       await act(async () => { for (const listener of sessionRuntime.listeners) listener(); });
       expect(container.textContent).toContain('sourceControl.gitNotInstalled');
       expect(container.textContent).toContain('sourceControl.openGitDownload');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('shows the unsupported Git version capability with recovery actions', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      sessionRuntime.session = {
+        ...sourceControlSession(), status: 'unavailable', snapshot: null, history: null,
+        capability: {
+          status: 'version-unsupported',
+          installedVersion: '2.35.9',
+          minimumVersion: '2.36.0',
+          repoRoot: null,
+          commonDir: null,
+          head: null,
+        },
+      };
+      await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+      }} /></RightWorkspaceProvider>));
+
+      expect(container.textContent).toContain('sourceControl.capability.version-unsupported.title');
+      expect(container.textContent).toContain('sourceControl.openGitDownload');
+      expect(container.textContent).toContain('sourceControl.checkAgain');
+      expect(container.textContent).not.toContain('sourceControl.repositoryRequired');
     } finally {
       await act(async () => root.unmount());
     }
@@ -495,7 +524,7 @@ function sourceControlSession() {
     runtimeCheckpoint: false,
   };
   return {
-    capability: { status: 'ready', repoRoot: 'D:/repo', commonDir: 'D:/repo/.git', head: '1'.repeat(40) },
+    capability: { status: 'ready', installedVersion: '2.53.0', minimumVersion: '2.36.0', repoRoot: 'D:/repo', commonDir: 'D:/repo/.git', head: '1'.repeat(40) },
     status: 'ready',
     activeOperation: null,
     activeTab: 'changes',

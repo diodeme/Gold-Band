@@ -21,7 +21,7 @@
 - 只有声明 `output` 时，runtime 才要求生成并校验对应 canonical artifact
 - 若未声明 `output`，runtime 不要求 canonical artifact，而只依据 provider invocation 的完成状态归纳 `success / failure / paused`
 - 若未声明 `output.schema`，runtime 不触发结构化输出自修复
-- 若声明了 `output.schema` 但结果缺失、JSON 非法或 schema 不合法，应先在同 attempt 内隐藏追问修复，修复耗尽后归为 `invalid` 并使 workflow failure
+- 若声明了 `output.schema`，JSON 非法或 schema 不合法仍走同 attempt 的隐藏修复；完全没有 artifact 则走独立、有界的 finalize 提醒，不占用 repair 次数
 - provider 执行失败或异常结束应归为 `failure`
 - 新建工作流中，`worker` 不再默认产出 `节点输出产物`；review/test/accept 等验证型 worker 可产出 `*-result` JSON artifact
 - 当声明 `output.kind=json` 与 `successCondition` 时，runtime 按 JSON 字段值把节点归纳为 `success / failure`；schema 输出不合法属于内部 `invalid` 状态，不作为 edge outcome
@@ -58,11 +58,21 @@
 规则：
 - JSON 输出验证与人工 check 二选一；声明 `output` / `success_condition` 时不应同时声明 `manual_check=true`。
 - `output.artifact` 是当前节点 canonical artifact 的唯一逻辑名来源。
-- `output` DSL 会进入当前节点追加的 `systemPrompt`，提示 agent 最后一步按 schema 输出结果。
+- `output` DSL 使用 PostTurnProjection：业务首轮不注入输出协议，首次正常结束后通过 hidden finalize 提供协议。
 - 没有 `output` DSL 时，runtime 不因为 artifact 名称自动向 `systemPrompt` 注入结构化输出格式。
 - 没有 `output` 时，runtime 会在 `systemPrompt` 明确告知 agent 不需要产出 canonical artifact，也不需要查找、推断或读取 artifact/output 约束。
 - `success_condition.path` 当前是简单 dot path，例如 `passed` 或 `result.passed`。
-- 字段值等于 `equals` 时节点 outcome 为 `success`；不等于时为 `failure`；声明了 `output.schema` 且缺失、JSON 非法或 path 非法时触发隐藏追问修复，修复耗尽后 workflow failure。
+- 字段值等于 `equals` 时节点 outcome 为 `success`；不等于时为 `failure`；声明了 `output.schema` 且 JSON 非法或字段不合法时触发既有隐藏修复，修复耗尽后 workflow failure。没有 artifact 不等于业务失败。
+
+### Artifact 提交与停止恢复
+
+- 首次正常业务 `end_turn` 提供 artifact 协议；Agent 可以继续当前任务，不必因为收到协议而提前结束。
+- 此后正常结束时先提取本轮候选：有候选交给既有解析、校验和结果判定；错误候选进入原有 repair；没有候选则最多追加 5 次 hidden finalize 提醒。首次提供协议不计入这 5 次。
+- 第 5 次提醒后的回复仍没有 artifact 时，通过 `provider.artifact-finalize-reminders-exhausted` 进入可人工继续的运行异常暂停，不自动无限重试、不判定业务失败。显式继续开启新的 5 次提醒额度。
+- 用户停止与 artifact repair 是独立操作。停止、中断、等待输入、权限请求和 provider 错误不会触发无 artifact 催交；继续使用已有 resume / 用户消息 prompt，不因 checkpoint 为 `finalizing` 而替换成 finalize 或 repair。
+- `artifact-emission.json` 继续记录协议阶段及 prompt generation，不增加第二套节点生命周期。已进入 finalizing 的节点恢复后，正常结束仍可收集 artifact；自动提醒使用新 prompt identity，且不重复携带用户恢复控制意图。
+- 只提取当前 provider 回复的候选，不把 attempt 目录中的旧 artifact 当作本轮新提交；没有消息定位信息的错误 JSON 也保留候选交给校验，而不是误判为缺失。
+- 无 output 节点和人工 check 节点不进入该循环；人工 check 与输出验证互斥，原有人工判定流程保持不变。合法 artifact 的业务结果仍按 success condition 决定，不把业务失败当作格式修复。
 
 ## 4. `provider` 与 `profile` 的解析规则
 当前建议：

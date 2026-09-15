@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { displayAppError } from '@/i18n';
-import { Send, Paperclip, Workflow, Route, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X, Laptop, GitFork, Check, Loader2 } from 'lucide-react';
-import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkLocation, ConversationWorkspaceVm, GitBranchCheckpointVm, ProfileVm, WorkflowRepairTarget, WorkflowTemplateStore } from '../../types';
+import { Send, Paperclip, Workflow, Route, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X, Laptop, GitFork, Check, Loader2, Globe } from 'lucide-react';
+import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkLocation, ConversationWorkspaceVm, ProfileVm, WorkflowRepairTarget, WorkflowTemplateStore } from '../../types';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
@@ -13,7 +14,9 @@ import { canOpenRunModeManagement, CONVERSATION_RUN_MODE_ORDER, directConfigForA
 import { groupSelectableAgentOptions, normalizeConfigOptionOverrides, selectableAgentOptions, type SelectableAgentOption, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles, workflowRepairTargetForTemplate } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
 import { ComposerContextArea } from '@/components/shared/ComposerContextArea';
-import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
+import { useConversationComposerDraft, type ConversationComposerMulticaBinding } from '@/lib/conversation-composer-draft';
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
+import { shouldBackspaceClearMulticaBinding } from '@/lib/conversation-composer-multica-chip';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { useAgentCommands } from '@/hooks/useAgentCommands';
 import { useSlashCommandController } from '@/hooks/useSlashCommandController';
@@ -35,6 +38,7 @@ import { PromptInput, PromptInputTextarea } from '@/components/prompt-kit/prompt
 import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
 import { useOverflowTooltip } from '@/hooks/useOverflowTooltip';
+import { useWebviewMeasuredContainer } from '@/hooks/use-webview-measured-container';
 import { cn } from '@/lib/utils';
 import { hasUserPromptPayload } from '@/lib/composer-context';
 import { GitBranchSelector } from '@/components/git/GitBranchSelector';
@@ -61,7 +65,7 @@ interface ConversationComposerProps {
   workLocation: ConversationWorkLocation;
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
-  onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
+  onSubmit: (input: ConversationCreateInput, multica?: ConversationComposerMulticaBinding | null) => Promise<string | null | undefined> | string | null | undefined;
   onCreateScheduledTask?: (input: ConversationCreateInput & { schedule: ScheduledScheduleInput; overlapPolicy: 'skip_when_running' | 'retry_when_busy'; sessionPolicy?: 'new' | 'continuous' }) => Promise<void>;
   onScheduledTaskCreated?: () => void;
   onOpenAgentManagement: () => void;
@@ -79,6 +83,9 @@ interface ConversationWorkspaceControlProps {
   workspaces: ConversationWorkspaceVm[];
   onWorkspaceChange: (projectId: string) => void;
   variant?: 'toolbar' | 'info';
+  // multica decision d: while a remote task binding is active, render the selector even with a
+  // single local workspace so the local landing workspace stays an explicit choice.
+  forceSelector?: boolean;
 }
 
 const CONTEXT_CONTROL_INTERACTION_CLASS_NAME = 'bg-transparent text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground data-[state=open]:bg-accent data-[state=open]:text-accent-foreground dark:bg-transparent dark:hover:bg-accent/50 dark:focus-visible:bg-accent/50 dark:data-[state=open]:bg-accent/50';
@@ -110,19 +117,22 @@ export function ConversationWorkspaceControl({
   workspaces,
   onWorkspaceChange,
   variant = 'toolbar',
+  forceSelector = false,
 }: ConversationWorkspaceControlProps) {
+  const { t } = useTranslation();
   const selectedWorkspaceName = workspaces.find((workspace) => workspace.projectId === projectId)?.name ?? workspaceName;
   const selectTriggerRef = useRef<HTMLButtonElement>(null);
   const selectionUsedPointerRef = useRef(false);
+  const [selectOpen, setSelectOpen] = useState(false);
   const {
     valueRef,
     tooltipOpen,
     showTooltipIfOverflowing,
     hideTooltip,
     handleTooltipOpenChange,
-  } = useOverflowTooltip<HTMLSpanElement>();
+  } = useOverflowTooltip<HTMLSpanElement>({ always: variant === 'info' });
   const controlClassName = variant === 'info'
-    ? `${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-7 items-center gap-1.5 rounded-md border border-transparent px-1.5 text-sm shadow-none data-[size=default]:h-7`
+    ? `${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-7 w-7 flex-none items-center justify-center gap-1.5 rounded-md border border-transparent px-0 text-sm shadow-none data-[size=default]:h-7 [&>svg:last-child]:hidden @xs/conversation-context:w-fit @xs/conversation-context:max-w-full @xs/conversation-context:flex-initial @xs/conversation-context:justify-between @xs/conversation-context:px-1.5 @xs/conversation-context:[&>svg:last-child]:block`
     : `${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-9 items-center gap-2 rounded-full border border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground shadow-none`;
   const triggerSurfaceClassName = variant === 'info'
     ? CONTEXT_CONTROL_INTERACTION_CLASS_NAME
@@ -141,24 +151,36 @@ export function ConversationWorkspaceControl({
     onBlur: hideTooltip,
   };
   const value = (
-    <span className={cn('flex min-w-0 flex-1 items-center', variant === 'info' ? 'gap-1.5' : 'gap-2')}>
-      <Folders className={cn('size-3.5 shrink-0', variant === 'info' ? 'text-current' : 'text-muted-foreground/80')} />
-      <TooltipTrigger asChild>
-        <span ref={valueRef} data-conversation-workspace-value="true" className="min-w-0 truncate">
+    <TooltipTrigger asChild>
+      <span className={cn('flex min-w-0 flex-1 items-center', variant === 'info' ? 'gap-1.5' : 'gap-2')}>
+        <Folders className={cn('size-3.5 shrink-0', variant === 'info' ? 'text-current' : 'text-muted-foreground/80')} />
+        <span
+          ref={valueRef}
+          data-conversation-workspace-value="true"
+          className={cn('min-w-0 truncate', variant === 'info' && 'hidden @xs/conversation-context:inline')}
+        >
           {selectedWorkspaceName}
         </span>
-      </TooltipTrigger>
-    </span>
+      </span>
+    </TooltipTrigger>
   );
 
   return (
     <TooltipProvider>
-      <Tooltip open={tooltipOpen} onOpenChange={handleTooltipOpenChange}>
-        {workspaces.length > 1 ? (
-          <Select value={projectId} onValueChange={onWorkspaceChange}>
+      <Tooltip open={tooltipOpen && !selectOpen} onOpenChange={handleTooltipOpenChange}>
+        {workspaces.length > 1 || forceSelector ? (
+          <Select
+            value={projectId}
+            onValueChange={onWorkspaceChange}
+            onOpenChange={(open) => {
+              setSelectOpen(open);
+              hideTooltip();
+            }}
+          >
             <SelectTrigger
               ref={selectTriggerRef}
               {...triggerEvents}
+              aria-label={`${t('conversation.home.workspace')}: ${selectedWorkspaceName}`}
               data-context-control={variant === 'info' ? 'workspace' : undefined}
               className={`${controlClassName} ${triggerSurfaceClassName} focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10`}
             >
@@ -189,6 +211,7 @@ export function ConversationWorkspaceControl({
           <div
             {...triggerEvents}
             tabIndex={0}
+            aria-label={`${t('conversation.home.workspace')}: ${selectedWorkspaceName}`}
             data-context-control={variant === 'info' ? 'workspace' : undefined}
             className={cn(controlClassName, triggerSurfaceClassName, 'focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 focus-visible:outline-none')}
           >
@@ -212,8 +235,12 @@ interface ConversationWorkspaceInfoBarProps extends ConversationWorkspaceControl
   busy: boolean;
   onWorkLocationChange: (location: ConversationWorkLocation, projectId: string) => Promise<void> | void;
   showWorkLocation?: boolean;
+  // multica decision e: when a remote task binding is active but no local workspace exists,
+  // replace the workspace control with this hint guiding the user to add one first (send is
+  // already disabled by canSubmit).
+  emptyWorkspaceHint?: string;
   showBranch?: boolean;
-  onBranchCheckpointChange?: (checkpoint: GitBranchCheckpointVm | null) => void;
+  onBranchChange?: (branch: string | null) => void;
   onBranchMutationPendingChange?: (pending: boolean) => void;
 }
 
@@ -226,12 +253,17 @@ export function ConversationWorkspaceInfoBar({
   onWorkspaceChange,
   onWorkLocationChange,
   showWorkLocation = true,
+  forceSelector = false,
+  emptyWorkspaceHint,
   showBranch,
-  onBranchCheckpointChange,
+  onBranchChange,
   onBranchMutationPendingChange,
 }: ConversationWorkspaceInfoBarProps) {
+  const measuredContextRef = useWebviewMeasuredContainer<HTMLDivElement>('conversation-context');
   const { t } = useTranslation();
   const [checkingLocation, setCheckingLocation] = useState(false);
+  const [locationMenuOpen, setLocationMenuOpen] = useState(false);
+  const [locationTooltipOpen, setLocationTooltipOpen] = useState(false);
   const locationTriggerRef = useRef<HTMLButtonElement>(null);
   const locationMenuUsedPointerRef = useRef(false);
 
@@ -254,6 +286,7 @@ export function ConversationWorkspaceInfoBar({
   return (
     <TooltipProvider>
       <div
+        ref={measuredContextRef}
         data-conversation-workspace-info="true"
         className={CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName}
       >
@@ -283,82 +316,104 @@ export function ConversationWorkspaceInfoBar({
           <path d={CONVERSATION_WORKSPACE_INFO_CURVE_PATH} fill="currentColor" transform="translate(48 0) scale(-1 1)" />
         </svg>
         <div data-conversation-workspace-info-controls="true" className="relative z-10 flex min-w-0 items-center gap-0">
-          <ConversationWorkspaceControl
-            projectId={projectId}
-            workspaceName={workspaceName}
-            workspaces={workspaces}
-            onWorkspaceChange={onWorkspaceChange}
-            variant="info"
-          />
+          {workspaces.length === 0 && emptyWorkspaceHint ? (
+            <span className="flex h-7 items-center rounded-md border border-dashed border-border/60 px-1.5 text-sm text-muted-foreground">
+              {emptyWorkspaceHint}
+            </span>
+          ) : (
+            <ConversationWorkspaceControl
+              projectId={projectId}
+              workspaceName={workspaceName}
+              workspaces={workspaces}
+              onWorkspaceChange={onWorkspaceChange}
+              variant="info"
+              forceSelector={forceSelector}
+            />
+          )}
           {showWorkLocation ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  ref={locationTriggerRef}
-                  type="button"
-                  variant={null}
-                  size="sm"
-                  disabled={busy || checkingLocation}
-                  aria-label={t('conversation.home.workLocation')}
-                  data-conversation-work-location-trigger="true"
-                  data-context-control="work-location"
-                  onPointerDown={() => {
+            <Tooltip
+              open={locationTooltipOpen && !locationMenuOpen}
+              onOpenChange={(open) => setLocationTooltipOpen(open && !locationMenuOpen)}
+            >
+              <DropdownMenu onOpenChange={(open) => {
+                setLocationMenuOpen(open);
+                setLocationTooltipOpen(false);
+              }}>
+                <TooltipTrigger asChild>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      ref={locationTriggerRef}
+                      type="button"
+                      variant={null}
+                      size="sm"
+                      disabled={busy || checkingLocation}
+                      aria-label={`${t('conversation.home.workLocation')}: ${locationLabel}`}
+                      data-conversation-work-location-trigger="true"
+                      data-context-control="work-location"
+                      onPointerDown={() => {
+                        locationMenuUsedPointerRef.current = true;
+                        setLocationTooltipOpen(false);
+                      }}
+                      onKeyDown={() => {
+                        locationMenuUsedPointerRef.current = false;
+                      }}
+                      className={cn('h-7 w-7 min-w-0 shrink-0 gap-0 rounded-md px-0 text-sm font-normal has-[>svg]:px-0 @md/conversation-context:w-auto @md/conversation-context:shrink @md/conversation-context:gap-1.5 @md/conversation-context:px-1.5 @md/conversation-context:has-[>svg]:px-1.5', CONTEXT_CONTROL_INTERACTION_CLASS_NAME)}
+                    >
+                      {checkingLocation ? <Loader2 className="size-3.5 animate-spin text-current" /> : <LocationIcon className="size-3.5 text-current" />}
+                      <span data-conversation-work-location-value="true" className="hidden truncate @md/conversation-context:inline">{locationLabel}</span>
+                      <ChevronDown className="hidden size-4 text-muted-foreground opacity-50 @md/conversation-context:block" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                </TooltipTrigger>
+                <DropdownMenuContent
+                  align="start"
+                  className="min-w-56"
+                  onPointerDownCapture={() => {
                     locationMenuUsedPointerRef.current = true;
                   }}
-                  onKeyDown={() => {
+                  onKeyDownCapture={() => {
                     locationMenuUsedPointerRef.current = false;
                   }}
-                  className={cn('h-7 min-w-0 gap-1.5 rounded-md px-1.5 text-sm font-normal has-[>svg]:px-1.5', CONTEXT_CONTROL_INTERACTION_CLASS_NAME)}
+                  onCloseAutoFocus={(event) => {
+                    if (!locationMenuUsedPointerRef.current) return;
+                    event.preventDefault();
+                    locationTriggerRef.current?.blur();
+                    locationMenuUsedPointerRef.current = false;
+                  }}
                 >
-                  {checkingLocation ? <Loader2 className="size-3.5 animate-spin text-current" /> : <LocationIcon className="size-3.5 text-current" />}
-                  <span className="truncate">{locationLabel}</span>
-                  <ChevronDown className="size-4 text-muted-foreground opacity-50" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="start"
-                className="min-w-56"
-                onPointerDownCapture={() => {
-                  locationMenuUsedPointerRef.current = true;
-                }}
-                onKeyDownCapture={() => {
-                  locationMenuUsedPointerRef.current = false;
-                }}
-                onCloseAutoFocus={(event) => {
-                  if (!locationMenuUsedPointerRef.current) return;
-                  event.preventDefault();
-                  locationTriggerRef.current?.blur();
-                  locationMenuUsedPointerRef.current = false;
-                }}
-              >
-                <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
-                  {t('conversation.home.workLocation')}
-                </div>
-                <DropdownMenuItem onSelect={() => { void selectLocation('main'); }}>
-                  <Laptop className="size-4" />
-                  <span>{t('conversation.home.workLocationMain')}</span>
-                  {workLocation === 'main' ? <Check className="ml-auto size-4" /> : null}
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => { void selectLocation('worktree'); }}>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span className="flex min-w-0 flex-1 items-center gap-2">
-                        <GitFork className="size-4" />
-                        <span>{t('conversation.home.workLocationNewWorktree')}</span>
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipContent side="right">{t('conversation.home.worktreeTip')}</TooltipContent>
-                  </Tooltip>
-                  {workLocation === 'worktree' ? <Check className="ml-auto size-4" /> : null}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+                  <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
+                    {t('conversation.home.workLocation')}
+                  </div>
+                  <DropdownMenuItem onSelect={() => { void selectLocation('main'); }}>
+                    <Laptop className="size-4" />
+                    <span>{t('conversation.home.workLocationMain')}</span>
+                    {workLocation === 'main' ? <Check className="ml-auto size-4" /> : null}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => { void selectLocation('worktree'); }}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="flex min-w-0 flex-1 items-center gap-2">
+                          <GitFork className="size-4" />
+                          <span>{t('conversation.home.workLocationNewWorktree')}</span>
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="right">{t('conversation.home.worktreeTip')}</TooltipContent>
+                    </Tooltip>
+                    {workLocation === 'worktree' ? <Check className="ml-auto size-4" /> : null}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <TooltipContent side="top" sideOffset={6}>
+                {t('conversation.home.workLocation')}: {locationLabel}
+              </TooltipContent>
+            </Tooltip>
           ) : null}
           {branchVisible ? (
             <GitBranchSelector
               projectId={projectId}
               disabled={busy || checkingLocation}
-              onCheckpointChange={onBranchCheckpointChange}
+              responsiveContext
+              onBranchChange={onBranchChange}
               onMutationPendingChange={onBranchMutationPendingChange}
             />
           ) : null}
@@ -394,8 +449,10 @@ export function ConversationComposer({
   onWorkLocationChange,
   onScheduledModeExit,
 }: ConversationComposerProps) {
+  const measuredComposerRef = useWebviewMeasuredContainer<HTMLDivElement>('conversation-composer');
   const { t } = useTranslation();
   const composerDraft = useConversationComposerDraft();
+  const readOnly = useReadOnlyExperience();
   const content = composerDraft.draft.content;
   const setContent = composerDraft.setContent;
   const scheduledMode = composerDraft.draft.submission.kind === 'scheduled-task';
@@ -414,7 +471,7 @@ export function ConversationComposer({
   const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? '');
   const [runModeError, setRunModeError] = useState<string | null>(null);
   const [submittingAttachments, setSubmittingAttachments] = useState(false);
-  const [branchCheckpoint, setBranchCheckpoint] = useState<GitBranchCheckpointVm | null>(null);
+  const [branchSelection, setBranchSelection] = useState<{ projectId: string; branch: string } | null>(null);
   const [branchMutationPending, setBranchMutationPending] = useState(false);
   const previousInitialScheduledModeRef = useRef(initialScheduledMode);
   const initialScheduledModeOpenedRef = useRef(false);
@@ -461,6 +518,14 @@ export function ConversationComposer({
     clearAttachments();
   }, [attachments, clearAttachments, closeComposerAttachmentPreview]);
 
+  const handleBranchChange = useCallback((branch: string | null) => {
+    setBranchSelection((current) => {
+      if (!branch) return current === null ? current : null;
+      if (current?.projectId === projectId && current.branch === branch) return current;
+      return { projectId, branch };
+    });
+  }, [projectId]);
+
   useWindowDragGuard();
 
   const isAuto = runMode.mode === 'auto';
@@ -468,13 +533,21 @@ export function ConversationComposer({
   const showRunModeManagement = canOpenRunModeManagement(runMode.mode);
   const autoStrategy = runMode.autoConfig?.agentStrategy ?? 'fixed';
   const isDynamicAuto = autoStrategy === 'dynamic';
+  // After a multica remote task is prefilled via "click to run", the draft carries a multica
+  // binding. While bound, the workspace dropdown is force-shown (decision d) so the local landing
+  // workspace becomes an explicit choice; with zero local workspaces, send is disabled and the
+  // user is guided to add one first (decision e).
+  const multicaBinding = composerDraft.draft.multica;
+  const multicaActive = multicaBinding !== null;
+  const hasLocalWorkspaces = workspaces.length > 0;
   const scheduledSummary = scheduledConfig
     ? formatScheduledScheduleInput(t, scheduledConfig.schedule)
     : t('scheduled.composer.unconfigured');
-  const canSubmit = hasUserPromptPayload(content, attachments.length)
+  const canSubmit = !readOnly && hasUserPromptPayload(content, attachments.length)
     && !busy
     && !submittingAttachments
-    && !branchMutationPending;
+    && !branchMutationPending
+    && !(multicaActive && !hasLocalWorkspaces);
   const canCreateScheduledTask = canSubmit && Boolean(onCreateScheduledTask);
   const scheduledConfigResourceKey = rightWorkspace?.scopeKey
     ? scheduledTaskConfigWorkspaceResourceKey(rightWorkspace.scopeKey)
@@ -603,7 +676,13 @@ export function ConversationComposer({
     [agentCommands.commands, content],
   );
   const visibleContent = committedSlashCommand?.suffix ?? content;
-  const committedInputLayout = useLeadingAdornmentTextIndent(Boolean(committedSlashCommand));
+  // The multica binding chip and the slash-command label are both leading adornments at the very
+  // front of the body. They are mutually exclusive (slash wins — the binding prefills task
+  // requirement text, not a slash command) and share the same text-indent mechanism: the first
+  // line indents to clear the label width, wrapped lines return to the left edge (standard CSS
+  // text-indent behavior, which only affects the first line).
+  const multicaChipActive = Boolean(multicaBinding) && !committedSlashCommand;
+  const committedInputLayout = useLeadingAdornmentTextIndent(Boolean(committedSlashCommand) || multicaChipActive);
 
   useEffect(() => {
     const fallbackAgent = runMode.directConfig?.agentType
@@ -731,7 +810,9 @@ export function ConversationComposer({
         ))
         : undefined,
       workLocation,
-      branchCheckpoint: workLocation === 'worktree' ? branchCheckpoint : undefined,
+      selectedBranch: workLocation === 'worktree' && branchSelection?.projectId === projectId
+        ? branchSelection.branch
+        : undefined,
     };
     setSubmittingAttachments(true);
     try {
@@ -762,10 +843,15 @@ export function ConversationComposer({
       }
       const paths = await resolveAttachmentPaths();
       setRunModeError(null);
-      const submitError = await onSubmit({
-        ...inputBase,
-        attachmentPaths: paths.length > 0 ? paths : undefined,
-      });
+      // Forward the draft's multica binding to onSubmit: the caller routes remote task vs. local
+      // new conversation accordingly. The composer itself makes no decision here — it only forwards.
+      const submitError = await onSubmit(
+        {
+          ...inputBase,
+          attachmentPaths: paths.length > 0 ? paths : undefined,
+        },
+        composerDraft.draft.multica,
+      );
       if (submitError) {
         setRunModeError(submitError);
         return;
@@ -823,8 +909,33 @@ export function ConversationComposer({
     }
   };
 
+  // Drop the multica binding (claim-at-send): the click only read the requirement without claiming
+  // the task, so removing the chip is a purely local unbind — the server is untouched (the task
+  // stays queued). Body text and attachments are kept: the draft degrades to a normal local
+  // conversation (send goes through create_conversation_run).
+  const handleUnbindMultica = useCallback(() => {
+    if (!composerDraft.draft.multica) return;
+    composerDraft.clearMultica();
+  }, [composerDraft]);
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (slashCommands.onKeyDown(e as React.KeyboardEvent<HTMLTextAreaElement>)) return;
+    // The multica binding chip is a leading adornment at the very front of the body; the Backspace
+    // removal rule lives in shouldBackspaceClearMulticaBinding: the chip is deleted only when the
+    // cursor sits at the very start with no selection (mimicking deleting the first token); all
+    // other cases delete a character normally. When a slash command is committed, the slash
+    // controller takes over.
+    if (shouldBackspaceClearMulticaBinding({
+      key: e.key,
+      multicaActive,
+      hasCommittedSlashCommand: Boolean(committedSlashCommand),
+      selectionStart: composerTextareaRef.current?.selectionStart ?? -1,
+      selectionEnd: composerTextareaRef.current?.selectionEnd ?? -1,
+    })) {
+      e.preventDefault();
+      handleUnbindMultica();
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void (scheduledMode ? createScheduledTask() : handleSubmit());
@@ -834,10 +945,11 @@ export function ConversationComposer({
   return (
     <>
       <div
+        ref={measuredComposerRef}
         data-conversation-composer="quick"
         data-attachment-dropzone="true"
         className={CONVERSATION_HOME_COMPOSER_LAYOUT.containerClassName}
-        {...dropZoneHandlers}
+        {...(readOnly ? { onDragOver: (event: React.DragEvent) => event.preventDefault(), onDrop: (event: React.DragEvent) => event.preventDefault() } : dropZoneHandlers)}
       >
         {scheduledMode ? (
           <div className="flex min-h-8 items-center gap-2 px-2 text-xs text-muted-foreground">
@@ -862,8 +974,10 @@ export function ConversationComposer({
             onWorkspaceChange={onWorkspaceChange}
             onWorkLocationChange={onWorkLocationChange}
             showWorkLocation={!scheduledMode}
-            showBranch={!scheduledMode}
-            onBranchCheckpointChange={setBranchCheckpoint}
+            forceSelector={multicaActive}
+            emptyWorkspaceHint={multicaActive ? t('conversation.composer.multicaNeedLocalWorkspace') : undefined}
+            showBranch={!scheduledMode && !readOnly}
+            onBranchChange={handleBranchChange}
             onBranchMutationPendingChange={setBranchMutationPending}
           />
           <PromptInput
@@ -871,8 +985,11 @@ export function ConversationComposer({
           onValueChange={(value) => setContent(`${committedSlashCommand?.prefix ?? ''}${value}`)}
           maxHeight={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaMaxHeightPx}
           onSubmit={() => { void handleSubmit(); }}
-          disabled={busy || submittingAttachments || branchMutationPending}
-          className={CONVERSATION_HOME_COMPOSER_LAYOUT.promptInputClassName}
+          disabled={readOnly || busy || submittingAttachments || branchMutationPending}
+          className={cn(
+            CONVERSATION_HOME_COMPOSER_LAYOUT.promptInputClassName,
+            slashCommands.isOpen && 'z-50',
+          )}
         >
           <ComposerContextArea
             attachments={attachments}
@@ -896,18 +1013,43 @@ export function ConversationComposer({
                     description={committedSlashCommand.command.description}
                   />
                 </span>
+              ) : multicaBinding ? (
+                <span ref={committedInputLayout.adornmentRef} className="absolute left-0 top-2 z-10 inline-flex">
+                  {/* accent/accent-foreground is the theme contract's guaranteed-contrast pair for
+                      emphasized surfaces (same pairing as permission-card and recipe hover/selected
+                      states). Never tint this chip from `primary` alone: in themes like
+                      tech-neutral dark, primary (#2d2d2d) sits nearly on the composer background
+                      (#1b1b1b) and the chip becomes unreadable. */}
+                  <Badge
+                    variant="secondary"
+                    className="gap-1 h-6 rounded-md border-accent-foreground/15 bg-accent px-2 text-[0.75rem] font-medium text-accent-foreground"
+                  >
+                    <Globe className="size-3 shrink-0" />
+                    <span className="max-w-[260px] truncate">
+                      {t('conversation.composer.multicaBindingTag', { title: multicaBinding.title })}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label={t('conversation.composer.removeMulticaBinding')}
+                      onClick={handleUnbindMultica}
+                      className="ml-0.5 inline-flex size-3.5 shrink-0 items-center justify-center rounded-sm hover:bg-accent-foreground/15"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </Badge>
+                </span>
               ) : null}
               <PromptInputTextarea
                 ref={composerTextareaRef}
                 style={committedInputLayout.textareaStyle}
                 className={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaClassName}
-                placeholder={t('conversation.home.inputPlaceholder')}
+                placeholder={t(readOnly ? 'demo.inputDisabled' : 'conversation.home.inputPlaceholder')}
                 onKeyDown={handleKeyDown}
-                onPaste={(e) => { void handlePaste(e); }}
+                onPaste={(e) => { if (readOnly) e.preventDefault(); else void handlePaste(e); }}
                 onDragEnter={dropZoneHandlers.onDragEnter}
                 onDragOver={dropZoneHandlers.onDragOver}
-                onDrop={dropZoneHandlers.onDrop}
-                disabled={busy || submittingAttachments}
+                onDrop={(e) => { if (readOnly) e.preventDefault(); else dropZoneHandlers.onDrop(e); }}
+                disabled={readOnly || busy || submittingAttachments}
               />
             </div>
           </SlashCommandMenu>
@@ -925,14 +1067,15 @@ export function ConversationComposer({
                 type="file"
                 multiple
                 className="hidden"
-                onChange={handleFilesFromInput}
+                disabled={readOnly}
+                onChange={readOnly ? undefined : handleFilesFromInput}
               />
               <Button
                 variant="ghost"
                 size="icon"
                 className="size-7 rounded-full"
                 onClick={() => { void pickFiles(); }}
-                disabled={busy || submittingAttachments}
+                disabled={readOnly || busy || submittingAttachments}
                 aria-label={t('acp.attachHint')}
               >
                 <Paperclip className="size-3.5" />

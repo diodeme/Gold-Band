@@ -79,4 +79,3 @@ Run the command from Step 2 and expect one passing test.
 - [ ] Run `cargo fmt --all -- --check` and `cargo check -p gold-band-desktop --tests --offline`.
 - [ ] Run scheduled-task Web tests, TypeScript check, and production build.
 - [ ] Start the desktop/frontend development target, deep link to scheduled task management, verify the latest failed state and cleanup the launched process.
-

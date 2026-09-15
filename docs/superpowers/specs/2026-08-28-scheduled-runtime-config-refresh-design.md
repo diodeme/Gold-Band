@@ -47,4 +47,3 @@ pre-accept execution failure 的写入顺序固定为：停止 heartbeat，持�
 ## 过度设计与性能评审
 
 不新增表、字段、aggregate、状态机、缓存、队列、锁或依赖。设置刷新复杂度为 `O(registered workspaces + enabled jobs)`，只发生在低频设置保存；deadline 触发路径不增加配置 I/O。失败投影沿用单 job revision CAS 和局部事件，不增加列表扫描、N+1 请求或页面级刷新。
-

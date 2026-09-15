@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, ensure};
+use serde_json::{Value, json};
 
 use crate::config::AcpAdapterConfig;
 use crate::process::{
@@ -13,6 +14,79 @@ use crate::process::{
 };
 
 const REQUIRE_LOCAL_CLAUDE_ENV: &str = "GOLD_BAND_REQUIRE_LOCAL_CLAUDE";
+const CLAUDE_ACP_PROVIDER: &str = "claude-acp";
+const DISABLE_BACKGROUND_TASKS_ENV: &str = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS";
+const MONITOR_TOOL: &str = "Monitor";
+
+#[derive(Debug, thiserror::Error)]
+#[error("{code}: {msg}")]
+struct InvalidSessionOptions {
+    code: &'static str,
+    msg: String,
+}
+
+impl InvalidSessionOptions {
+    fn expected(path: &str, kind: &str) -> Self {
+        Self {
+            code: "acp.invalid-session-options",
+            msg: format!("expected {kind} at {path}"),
+        }
+    }
+}
+
+pub(crate) fn apply_session_execution_policy(
+    provider_id: &str,
+    method: &str,
+    params: &mut Value,
+) -> Result<()> {
+    if provider_id != CLAUDE_ACP_PROVIDER
+        || !matches!(
+            method,
+            "session/new" | "session/load" | "session/resume" | "session/fork"
+        )
+    {
+        return Ok(());
+    }
+    let mut options = params;
+    for key in ["_meta", "claudeCode", "options"] {
+        let object = options
+            .as_object_mut()
+            .ok_or_else(|| InvalidSessionOptions::expected(key, "object"))?;
+        options = object.entry(key).or_insert_with(|| json!({}));
+    }
+    let options = options
+        .as_object_mut()
+        .ok_or_else(|| InvalidSessionOptions::expected("options", "object"))?;
+    let tools = options
+        .entry("disallowedTools")
+        .or_insert_with(|| json!([]));
+    let tools = tools
+        .as_array_mut()
+        .ok_or_else(|| InvalidSessionOptions::expected("disallowedTools", "array"))?;
+    if !tools.iter().all(Value::is_string) {
+        return Err(InvalidSessionOptions::expected("disallowedTools", "tool names").into());
+    }
+    if !tools.iter().any(|tool| tool == MONITOR_TOOL) {
+        tools.push(json!(MONITOR_TOOL));
+    }
+    // Claude settings are applied after the child environment. Enforce the same
+    // policy at both tiers so project settings cannot re-enable background work.
+    let env = options.entry("env").or_insert_with(|| json!({}));
+    let env = env
+        .as_object_mut()
+        .ok_or_else(|| InvalidSessionOptions::expected("env", "object"))?;
+    env.insert(DISABLE_BACKGROUND_TASKS_ENV.to_string(), json!("1"));
+    let settings = options.entry("settings").or_insert_with(|| json!({}));
+    let settings = settings
+        .as_object_mut()
+        .ok_or_else(|| InvalidSessionOptions::expected("settings", "object"))?;
+    let env = settings.entry("env").or_insert_with(|| json!({}));
+    let env = env
+        .as_object_mut()
+        .ok_or_else(|| InvalidSessionOptions::expected("settings.env", "object"))?;
+    env.insert(DISABLE_BACKGROUND_TASKS_ENV.to_string(), json!("1"));
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 pub struct ResolvedAcpAdapter {
@@ -36,6 +110,7 @@ pub fn resolve_adapter(config: &AcpAdapterConfig) -> Result<ResolvedAcpAdapter> 
 }
 
 pub fn spawn_adapter(
+    provider_id: &str,
     config: &AcpAdapterConfig,
     cwd: &std::path::Path,
     use_local_claude: bool,
@@ -55,6 +130,9 @@ pub fn spawn_adapter(
         .stderr(Stdio::piped());
     for (key, value) in &resolved_env {
         command.env(key, value);
+    }
+    if provider_id == CLAUDE_ACP_PROVIDER {
+        command.env(DISABLE_BACKGROUND_TASKS_ENV, "1");
     }
     match local_claude_executable_for_env(use_local_claude, &resolved_env) {
         Some(claude_path) => {
@@ -456,7 +534,7 @@ CALL :find_dp0
             env: Default::default(),
         };
 
-        let error = spawn_adapter(&config, temp.path(), false, false).unwrap_err();
+        let error = spawn_adapter("fixture", &config, temp.path(), false, false).unwrap_err();
         let message = error.to_string();
 
         assert!(message.contains("missing-acp-command-for-test"));

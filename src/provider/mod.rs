@@ -1,5 +1,5 @@
 use crate::acp::{client, events::AcpUiEvent};
-use crate::artifacts::{artifact_uses_json_output, json_artifact_text};
+use crate::artifacts::{JsonArtifactSpan, artifact_uses_json_output, json_artifact_display_span};
 use crate::config::{
     AcpAdapterConfig, ManagedAgentConfig, ManagedAgentId, catalog_agent_default_config,
 };
@@ -8,6 +8,7 @@ use crate::domain::{
     DEFAULT_PROVIDER, InvocationKind, SessionMode, TurnControlMode, TurnControlTransitionCause,
     VERSION,
 };
+use crate::dynamic::AI_DYNAMIC_RESULT_ARTIFACT;
 use crate::prompts::{
     PromptExecutionSurface, RUNTIME_ARTIFACT_FINALIZE_EN, RUNTIME_ARTIFACT_FINALIZE_ZH_CN,
     RUNTIME_HIDDEN_CONTEXT_EN, RUNTIME_HIDDEN_CONTEXT_ZH_CN, RUNTIME_SYSTEM_EN,
@@ -401,6 +402,7 @@ pub enum OutputEmissionMode {
 }
 
 const ARTIFACT_EMISSION_STATE_FILE: &str = "artifact-emission.json";
+const MAX_ARTIFACT_FINALIZE_REMINDERS: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -454,6 +456,7 @@ fn artifact_emission_checkpoint(attempt_dir: &Utf8Path) -> Result<Option<Artifac
     Ok(Some(state))
 }
 
+#[cfg(test)]
 fn write_artifact_emission_phase(
     attempt_dir: &Utf8Path,
     phase: ArtifactEmissionPhase,
@@ -523,17 +526,9 @@ fn prepare_post_turn_projection(req: &WorkerInvocation) -> Result<PostTurnProjec
     }
 
     match artifact_emission_checkpoint(&req.attempt_dir)?.map(|state| state.phase) {
-        Some(ArtifactEmissionPhase::Finalizing)
-            if req.user_prompt_render_mode == UserPromptRenderMode::UserMessage =>
-        {
-            // A continue-with-message at the finalize boundary opens a new durable
-            // business turn. If that turn is interrupted, the next continue must
-            // resume business work instead of skipping directly back to artifact
-            // finalization.
-            write_artifact_emission_phase(&req.attempt_dir, ArtifactEmissionPhase::BusinessTurn)?;
-            Ok(PostTurnProjectionEntry::RunBusinessTurn)
-        }
-        Some(ArtifactEmissionPhase::Finalizing) => Ok(PostTurnProjectionEntry::ResumeFinalization),
+        // User resumes retain their own prompt. The checkpoint controls result
+        // collection, not which instruction is sent to the Agent.
+        Some(ArtifactEmissionPhase::Finalizing) => Ok(PostTurnProjectionEntry::RunBusinessTurn),
         Some(ArtifactEmissionPhase::BusinessTurn) | None => {
             Ok(PostTurnProjectionEntry::RunBusinessTurn)
         }
@@ -570,6 +565,8 @@ pub struct ProviderRunResult {
     pub stream_path: Option<Utf8PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_error: Option<RuntimeErrorInfo>,
+    #[serde(skip)]
+    pub runtime_control_output: Option<RuntimeControlOutput>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -597,6 +594,19 @@ pub struct ProviderResultPayload {
 pub struct OutputArtifactPayload {
     pub name: String,
     pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeControlOutput {
+    pub artifact_name: String,
+    pub source: client::AcpPromptMessageSource,
+    pub span: JsonArtifactSpan,
+}
+
+#[derive(Debug, Default)]
+struct OutputArtifactEvaluation {
+    payload: Option<ProviderResultPayload>,
+    runtime_control_output: Option<RuntimeControlOutput>,
 }
 
 #[derive(Debug, Clone)]
@@ -1078,7 +1088,29 @@ impl Default for PromptVisibility {
     }
 }
 
-pub type AcpLiveUpdate<'a> = &'a dyn Fn(&AcpUiEvent, Option<(u64, u64)>) -> Result<()>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcpLiveTimelinePosition {
+    pub generation: u64,
+    pub revision: Option<u64>,
+}
+
+impl AcpLiveTimelinePosition {
+    pub const fn transient(generation: u64) -> Self {
+        Self {
+            generation,
+            revision: None,
+        }
+    }
+
+    pub const fn durable(generation: u64, revision: u64) -> Self {
+        Self {
+            generation,
+            revision: Some(revision),
+        }
+    }
+}
+
+pub type AcpLiveUpdate<'a> = &'a dyn Fn(&AcpUiEvent, AcpLiveTimelinePosition) -> Result<()>;
 pub type AcpSessionUpdate<'a> = &'a dyn Fn() -> Result<()>;
 pub type AcpPromptAccepted<'a> = &'a dyn Fn(&str) -> Result<()>;
 
@@ -1518,10 +1550,7 @@ impl AcpProvider {
             &prompt,
             req.invocation_kind,
             req.profile.as_deref(),
-            req.output_contract
-                .as_ref()
-                .filter(|contract| contract.emission_mode == OutputEmissionMode::InlineControl)
-                .map(|contract| contract.artifact.as_str()),
+            active_output_contract_for_turn(&req).map(|contract| contract.artifact.as_str()),
             req.cold_artifacts.len(),
             req.cold_attachments.len(),
             req.log_prompts,
@@ -1569,25 +1598,14 @@ impl AcpProvider {
             }),
         )?;
         let mut terminal = classify_acp_prompt_run(&run);
-        let artifact_result = if req.turn_control_mode == TurnControlMode::RuntimeControlled
-            && matches!(
-                terminal.status,
-                ProviderRunStatus::Success | ProviderRunStatus::Interrupted
-            ) {
-            req.output_contract
-                .as_ref()
-                .filter(|contract| contract.emission_mode == OutputEmissionMode::InlineControl)
-                .map(|contract| output_artifact_payload_from_run(contract, &run.output))
-                .unwrap_or(Ok(None))
-        } else {
-            Ok(None)
-        };
-        let result_payload = match artifact_result {
-            Ok(payload) => payload,
+        let artifact_result =
+            evaluate_runtime_control_output_for_run(&req, terminal.status, &run.output);
+        let (result_payload, runtime_control_output) = match artifact_result {
+            Ok(evaluation) => (evaluation.payload, evaluation.runtime_control_output),
             Err(error) => {
                 terminal.status = ProviderRunStatus::Failure;
                 terminal.runtime_error = Some(error);
-                None
+                (None, None)
             }
         };
         Ok(ProviderRunResult {
@@ -1597,6 +1615,7 @@ impl AcpProvider {
             worker_ref_seed: None,
             stream_path: None,
             runtime_error: terminal.runtime_error,
+            runtime_control_output,
         })
     }
 
@@ -1608,88 +1627,163 @@ impl AcpProvider {
         prompt_accepted: Option<AcpPromptAccepted<'_>>,
         runtime_phase_update: Option<ProviderRuntimePhaseUpdate<'_>>,
     ) -> Result<ProviderRunResult> {
-        let mut contract = req
+        Self::drive_post_turn_projection(
+            req,
+            |req| {
+                self.run_worker_once_with_callbacks(
+                    req,
+                    live_update,
+                    session_update,
+                    prompt_accepted,
+                )
+            },
+            runtime_phase_update,
+        )
+    }
+
+    fn drive_post_turn_projection(
+        mut req: WorkerInvocation,
+        mut run_once: impl FnMut(WorkerInvocation) -> Result<ProviderRunResult>,
+        runtime_phase_update: Option<ProviderRuntimePhaseUpdate<'_>>,
+    ) -> Result<ProviderRunResult> {
+        let contract = req
             .output_contract
             .clone()
             .expect("post-turn projection requires output contract");
-        let resumed_control_turn = matches!(
+        let mut resumed_control_turn = matches!(
             req.user_prompt_render_mode,
             UserPromptRenderMode::RuntimeFinalize | UserPromptRenderMode::RuntimeRepair
         );
         let entry = prepare_post_turn_projection(&req)?;
+        let collecting = post_turn_projection_checkpoint_is_finalizing(&req.attempt_dir)?;
+        let mut reminders = 0;
+        let mut is_reminder = false;
 
         if entry == PostTurnProjectionEntry::RunBusinessTurn {
-            let work_result = self.run_worker_once_with_callbacks(
-                req.clone(),
-                live_update,
-                session_update,
-                prompt_accepted,
-            )?;
+            let work_result = run_once(req.clone())?;
             if work_result.runtime_error.is_some()
                 || work_result.status != ProviderRunStatus::Success
             {
                 return Ok(work_result);
             }
+            if collecting {
+                if provider_result_has_artifact_candidate(&work_result) {
+                    return Ok(work_result);
+                }
+                is_reminder = true;
+            }
         }
 
-        let finalize_generation = next_artifact_finalize_generation(&req.attempt_dir)?;
-        write_artifact_emission_phase_with_generation(
-            &req.attempt_dir,
-            ArtifactEmissionPhase::Finalizing,
-            Some(finalize_generation.clone()),
-        )?;
-        if let Some(runtime_phase_update) = runtime_phase_update {
-            runtime_phase_update(ProviderRuntimePhase::FinalizingArtifact)?;
-        }
-        let worker_ref: WorkerRefState = read_json(&req.attempt_dir.join("worker-ref.json"))
-            .context("post-turn artifact finalization requires durable worker-ref")?;
-        ensure!(
-            worker_ref.supports_continue_session,
-            "post-turn artifact finalization requires a continuable provider session"
-        );
-        let continue_ref = worker_ref
-            .continue_ref
-            .context("post-turn artifact finalization requires provider continue reference")?;
+        loop {
+            if is_reminder {
+                if reminders == MAX_ARTIFACT_FINALIZE_REMINDERS {
+                    let mut result = interrupted_acp_provider_run_result();
+                    result.runtime_error = Some(crate::runtime_error::manual_runtime_error_info(
+                        RuntimeErrorDomain::Provider,
+                        "provider.artifact-finalize-reminders-exhausted",
+                        "Artifact is still missing after automatic finalize reminders",
+                        serde_json::json!({ "maxReminders": MAX_ARTIFACT_FINALIZE_REMINDERS }),
+                    ));
+                    return Ok(result);
+                }
+                reminders += 1;
+            }
+            let finalize_generation = if is_reminder {
+                // The preceding call returned normally, so this is a new turn even
+                // if the lifecycle snapshot has not yet published its terminal state.
+                uuid::Uuid::new_v4().simple().to_string()
+            } else {
+                next_artifact_finalize_generation(&req.attempt_dir)?
+            };
+            write_artifact_emission_phase_with_generation(
+                &req.attempt_dir,
+                ArtifactEmissionPhase::Finalizing,
+                Some(finalize_generation.clone()),
+            )?;
+            if let Some(runtime_phase_update) = runtime_phase_update {
+                runtime_phase_update(ProviderRuntimePhase::FinalizingArtifact)?;
+            }
+            let worker_ref: WorkerRefState = read_json(&req.attempt_dir.join("worker-ref.json"))
+                .context("post-turn artifact finalization requires durable worker-ref")?;
+            ensure!(
+                worker_ref.supports_continue_session,
+                "post-turn artifact finalization requires a continuable provider session"
+            );
+            let continue_ref = worker_ref
+                .continue_ref
+                .context("post-turn artifact finalization requires provider continue reference")?;
 
-        let preserve_control_prompt = resumed_control_turn
-            && req
-                .resume_prompt
-                .as_deref()
-                .is_some_and(|prompt| !prompt.trim().is_empty());
-        let mut finalize_req = req;
-        contract.emission_mode = OutputEmissionMode::InlineControl;
-        finalize_req.output_contract = Some(contract.clone());
-        finalize_req.session_mode = SessionMode::Continue;
-        finalize_req.continue_ref = Some(continue_ref);
-        finalize_req.resume_prompt_visibility = PromptVisibility::Hidden;
-        finalize_req.task_input_attachment_paths.clear();
-        finalize_req.user_input_attachment_paths.clear();
-        let control_turn_kind = if preserve_control_prompt
-            && finalize_req.user_prompt_render_mode == UserPromptRenderMode::RuntimeRepair
-        {
-            "artifact-repair"
-        } else {
-            "artifact-finalize"
-        };
-        finalize_req.resume_prompt_id = Some(format!(
-            "{control_turn_kind}-{}-{finalize_generation}",
-            finalize_req.runtime_context.attempt_id
-        ));
-        if !preserve_control_prompt {
-            finalize_req.resume_prompt = Some(render_artifact_finalize_prompt(
-                finalize_req.runtime_context.language,
-                &contract,
-            )?);
-            finalize_req.user_prompt_render_mode = UserPromptRenderMode::RuntimeFinalize;
-        }
+            let preserve_control_prompt = resumed_control_turn
+                && req
+                    .resume_prompt
+                    .as_deref()
+                    .is_some_and(|prompt| !prompt.trim().is_empty());
+            let mut finalize_req = req.clone();
+            if entry == PostTurnProjectionEntry::RunBusinessTurn || is_reminder {
+                finalize_req.runtime_control_intent = RuntimeControlIntent::Unchanged;
+            }
+            finalize_req.output_contract = Some(contract.clone());
+            finalize_req.session_mode = SessionMode::Continue;
+            finalize_req.continue_ref = Some(continue_ref);
+            finalize_req.resume_prompt_visibility = PromptVisibility::Hidden;
+            finalize_req.task_input_attachment_paths.clear();
+            finalize_req.user_input_attachment_paths.clear();
+            let control_turn_kind = if preserve_control_prompt
+                && finalize_req.user_prompt_render_mode == UserPromptRenderMode::RuntimeRepair
+            {
+                "artifact-repair"
+            } else {
+                "artifact-finalize"
+            };
+            finalize_req.resume_prompt_id = Some(format!(
+                "{control_turn_kind}-{}-{finalize_generation}",
+                finalize_req.runtime_context.attempt_id
+            ));
+            if !preserve_control_prompt {
+                finalize_req.resume_prompt = Some(render_artifact_finalize_prompt(
+                    finalize_req.runtime_context.language,
+                    &contract,
+                    finalize_req.execution_surface,
+                )?);
+                finalize_req.user_prompt_render_mode = UserPromptRenderMode::RuntimeFinalize;
+            }
 
-        self.run_worker_once_with_callbacks(
-            finalize_req,
-            live_update,
-            session_update,
-            prompt_accepted,
-        )
+            let result = run_once(finalize_req.clone())?;
+            if result.runtime_error.is_some()
+                || result.status != ProviderRunStatus::Success
+                || provider_result_has_artifact_candidate(&result)
+            {
+                return Ok(result);
+            }
+            req = finalize_req;
+            resumed_control_turn = false;
+            is_reminder = true;
+        }
     }
+}
+
+fn provider_result_has_artifact_candidate(result: &ProviderRunResult) -> bool {
+    result.runtime_control_output.is_some()
+        || result
+            .result_payload
+            .as_ref()
+            .and_then(|payload| payload.output_artifact.as_ref())
+            .is_some_and(|artifact| !artifact.content.trim().is_empty())
+}
+
+fn active_output_contract_for_turn(req: &WorkerInvocation) -> Option<&PromptOutputContract> {
+    // PostTurn keeps its stable emission identity through finalize/repair so
+    // the hidden user prompt owns the contract without promoting it into the
+    // system prompt. The render mode activates control-result extraction.
+    req.output_contract
+        .as_ref()
+        .filter(|contract| match contract.emission_mode {
+            OutputEmissionMode::InlineControl => true,
+            OutputEmissionMode::PostTurnProjection => matches!(
+                req.user_prompt_render_mode,
+                UserPromptRenderMode::RuntimeFinalize | UserPromptRenderMode::RuntimeRepair
+            ),
+        })
 }
 
 fn acp_turn_was_cancelled_before_execution(
@@ -1710,6 +1804,7 @@ fn interrupted_acp_provider_run_result() -> ProviderRunResult {
         worker_ref_seed: None,
         stream_path: None,
         runtime_error: None,
+        runtime_control_output: None,
     }
 }
 
@@ -1912,12 +2007,12 @@ fn classify_acp_prompt_run(run: &client::AcpPromptRun) -> ProviderTerminalOutcom
     }
 }
 
-fn output_artifact_payload_from_run(
+fn evaluate_output_artifact_from_run(
     contract: &PromptOutputContract,
     output: &client::AcpPromptOutput,
-) -> std::result::Result<Option<ProviderResultPayload>, RuntimeErrorInfo> {
+) -> std::result::Result<OutputArtifactEvaluation, RuntimeErrorInfo> {
     let Some(terminal_message) = output.recent_messages.last() else {
-        return Ok(None);
+        return Ok(OutputArtifactEvaluation::default());
     };
     if !terminal_message.has_stable_id && output.observed_stable_message {
         return Err(crate::runtime_error::manual_runtime_error_info(
@@ -1932,27 +2027,119 @@ fn output_artifact_payload_from_run(
     }
 
     let uses_json_output = contract.kind == "json" || artifact_uses_json_output(&contract.artifact);
-    let content = if uses_json_output {
-        if terminal_message.has_stable_id {
-            output
-                .recent_messages
-                .iter()
-                .rev()
-                .take(3)
-                .find_map(|message| json_artifact_text(&message.text))
-        } else {
-            json_artifact_text(&terminal_message.text)
-        }
-    } else {
-        non_empty_artifact_text(&terminal_message.text)
-    };
+    if !uses_json_output {
+        return Ok(OutputArtifactEvaluation {
+            payload: non_empty_artifact_text(&terminal_message.text).map(|content| {
+                ProviderResultPayload {
+                    output_artifact: Some(OutputArtifactPayload {
+                        name: contract.artifact.clone(),
+                        content,
+                    }),
+                }
+            }),
+            runtime_control_output: None,
+        });
+    }
 
-    Ok(content.map(|content| ProviderResultPayload {
-        output_artifact: Some(OutputArtifactPayload {
-            name: contract.artifact.clone(),
-            content,
-        }),
-    }))
+    let candidates = if terminal_message.has_stable_id {
+        output
+            .recent_messages
+            .iter()
+            .rev()
+            .take(3)
+            .collect::<Vec<_>>()
+    } else {
+        vec![terminal_message]
+    };
+    let mut invalid: Option<OutputArtifactEvaluation> = None;
+    for message in candidates {
+        let Some(span) = json_artifact_display_span(&message.text) else {
+            continue;
+        };
+        let runtime_control_output = message.source.clone().map(|source| RuntimeControlOutput {
+            artifact_name: contract.artifact.clone(),
+            source,
+            span: span.clone(),
+        });
+        if span.parse_status == "valid" {
+            return Ok(OutputArtifactEvaluation {
+                payload: Some(ProviderResultPayload {
+                    output_artifact: Some(OutputArtifactPayload {
+                        name: contract.artifact.clone(),
+                        content: span.json_text,
+                    }),
+                }),
+                runtime_control_output,
+            });
+        }
+        if invalid.is_none() {
+            // Without a source locator, retain the candidate text so downstream
+            // validation can distinguish malformed output from missing output.
+            let payload = runtime_control_output
+                .is_none()
+                .then(|| ProviderResultPayload {
+                    output_artifact: Some(OutputArtifactPayload {
+                        name: contract.artifact.clone(),
+                        content: span.json_text,
+                    }),
+                });
+            invalid = Some(OutputArtifactEvaluation {
+                payload,
+                runtime_control_output,
+            });
+        }
+    }
+
+    Ok(invalid.unwrap_or_default())
+}
+
+fn evaluate_runtime_control_output_for_run(
+    req: &WorkerInvocation,
+    status: ProviderRunStatus,
+    output: &client::AcpPromptOutput,
+) -> std::result::Result<OutputArtifactEvaluation, RuntimeErrorInfo> {
+    if req.turn_control_mode != TurnControlMode::RuntimeControlled
+        || !matches!(
+            status,
+            ProviderRunStatus::Success | ProviderRunStatus::Interrupted
+        )
+    {
+        return Ok(OutputArtifactEvaluation::default());
+    }
+    let resumed_contract =
+        if matches!(
+            req.user_prompt_render_mode,
+            UserPromptRenderMode::RuntimeResume
+                | UserPromptRenderMode::WorkflowResume
+                | UserPromptRenderMode::UserMessage
+        ) && req.output_contract.as_ref().is_some_and(|contract| {
+            contract.emission_mode == OutputEmissionMode::PostTurnProjection
+        }) {
+            let collecting = post_turn_projection_checkpoint_is_finalizing(&req.attempt_dir)
+                .map_err(|error| {
+                    blocked_runtime_error_info(
+                        RuntimeErrorDomain::Internal,
+                        "runtime.artifact-emission-state-invalid",
+                        error.to_string(),
+                        serde_json::json!({}),
+                    )
+                })?;
+            collecting.then_some(req.output_contract.as_ref()).flatten()
+        } else {
+            None
+        };
+    active_output_contract_for_turn(req)
+        .or(resumed_contract)
+        .map(|contract| evaluate_output_artifact_from_run(contract, output))
+        .unwrap_or(Ok(OutputArtifactEvaluation::default()))
+}
+
+#[cfg(test)]
+fn output_artifact_payload_from_run(
+    contract: &PromptOutputContract,
+    output: &client::AcpPromptOutput,
+) -> std::result::Result<Option<ProviderResultPayload>, RuntimeErrorInfo> {
+    evaluate_output_artifact_from_run(contract, output).map(|evaluation| evaluation.payload)
 }
 
 fn non_empty_artifact_text(value: &str) -> Option<String> {
@@ -2018,13 +2205,21 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         content_blocks.push(resolved.block);
     }
 
+    let display_text = req
+        .prompt_display
+        .as_ref()
+        .map(|input| input.display_text.clone())
+        .or_else(|| {
+            // A new RawAgent turn receives the requirement verbatim, before any runtime assembly.
+            (req.prompt_envelope == crate::dsl::PromptEnvelopeMode::RawAgent
+                && req.session_mode == SessionMode::New
+                && req.user_prompt_render_mode == UserPromptRenderMode::RequirementTask)
+                .then(|| requirement_text.clone())
+        });
     Ok(PromptBundle {
         system_prompt,
         user_prompt,
-        display_text: req
-            .prompt_display
-            .as_ref()
-            .map(|input| input.display_text.clone()),
+        display_text,
         quotes: req
             .prompt_display
             .as_ref()
@@ -2336,6 +2531,7 @@ struct RuntimePredecessorTemplateContext {
     chain: String,
     reason_lines: String,
     reason_lines_empty: bool,
+    has_ai_dynamic_report_manifest: bool,
     attachment_lines: String,
     attachment_lines_empty: bool,
 }
@@ -2353,6 +2549,7 @@ struct RuntimeOutputContractTemplateContext {
     schema: String,
     success_condition: Option<String>,
     finalize_context: Option<String>,
+    can_read_runtime_snapshot: bool,
 }
 
 fn runtime_system_context(req: &WorkerInvocation) -> Result<RuntimePromptTemplateContext> {
@@ -2396,18 +2593,23 @@ fn runtime_system_context(req: &WorkerInvocation) -> Result<RuntimePromptTemplat
             id: req.profile.clone(),
             content: profile_content,
         },
-        output_contract: inline_output_contract.map(runtime_output_contract_context),
+        output_contract: inline_output_contract
+            .map(|contract| runtime_output_contract_context(contract, false)),
         output_deferred: req.output_contract.as_ref().is_some_and(|contract| {
             contract.emission_mode == OutputEmissionMode::PostTurnProjection
         }),
     })
 }
 
-fn render_artifact_finalize_prompt(
+pub(crate) fn render_artifact_finalize_prompt(
     language: crate::config::DesktopLanguage,
     contract: &PromptOutputContract,
+    execution_surface: PromptExecutionSurface,
 ) -> Result<String> {
-    let context = runtime_output_contract_context(contract);
+    let context = runtime_output_contract_context(
+        contract,
+        execution_surface == PromptExecutionSurface::AiDynamic,
+    );
     render_template(
         prompt_by_language(
             language,
@@ -2488,13 +2690,24 @@ fn runtime_predecessor_context(
     new_round_trigger: Option<&PromptPredecessorContext>,
     ctx: &PromptRuntimeContext,
 ) -> RuntimePredecessorTemplateContext {
-    let reason_lines = predecessor_reason_lines(predecessors, new_round_trigger);
+    let reason_lines = predecessor_reason_lines(predecessors, new_round_trigger, ctx.language);
     let attachment_lines = predecessor_attachment_lines(predecessors);
+    let has_ai_dynamic_report_manifest =
+        predecessors
+            .iter()
+            .chain(new_round_trigger)
+            .any(|predecessor| {
+                predecessor
+                    .output_artifact
+                    .as_ref()
+                    .is_some_and(|artifact| artifact.name == AI_DYNAMIC_RESULT_ARTIFACT)
+            });
     RuntimePredecessorTemplateContext {
         is_empty: predecessors.is_empty(),
         chain: predecessor_chain_text(predecessors, ctx),
         reason_lines_empty: reason_lines.is_empty(),
         reason_lines,
+        has_ai_dynamic_report_manifest,
         attachment_lines_empty: attachment_lines.is_empty(),
         attachment_lines,
     }
@@ -2533,6 +2746,7 @@ fn predecessor_chain_text(
 fn predecessor_reason_lines(
     predecessors: &[PromptPredecessorContext],
     new_round_trigger: Option<&PromptPredecessorContext>,
+    language: crate::config::DesktopLanguage,
 ) -> String {
     let mut lines = predecessors
         .iter()
@@ -2575,39 +2789,71 @@ fn predecessor_reason_lines(
         if !lines.is_empty() {
             lines.push('\n');
         }
-        lines.push_str(&new_round_trigger_reason_line(trigger));
+        lines.push_str(&render_new_round_trigger_reason_line(trigger, language));
     }
     lines
 }
 
-fn new_round_trigger_reason_line(trigger: &PromptPredecessorContext) -> String {
-    let mut parts = vec![format!(
-        "$new-round 由该节点触发；节点类型={}；结果={}",
-        trigger.node_type,
-        trigger.outcome.as_deref().unwrap_or("unknown")
-    )];
-    if let Some(reason) = trigger.branch_reason.as_deref() {
-        parts.push(reason.to_string());
-    }
-    if let Some(artifact) = &trigger.output_artifact {
-        parts.push(format!(
-            "输出 artifact={}: {}",
-            artifact.name, artifact.path
-        ));
-        if let Some(preview) = artifact.preview.as_deref() {
-            parts.push(format!("输出预览={}", preview.trim()));
-        }
-    }
-    if !trigger.attachments.is_empty() {
-        let files = trigger
+pub(crate) fn render_new_round_trigger_reason_line(
+    trigger: &PromptPredecessorContext,
+    language: crate::config::DesktopLanguage,
+) -> String {
+    let files = (!trigger.attachments.is_empty()).then(|| {
+        trigger
             .attachments
             .iter()
             .map(|attachment| format!("attachments/{}", attachment.name))
             .collect::<Vec<_>>()
-            .join(", ");
-        parts.push(format!("附件={}", files));
+            .join(", ")
+    });
+    match language {
+        crate::config::DesktopLanguage::ZhCn => {
+            let mut parts = vec![format!(
+                "$new-round 由该节点触发；节点类型={}；结果={}",
+                trigger.node_type,
+                trigger.outcome.as_deref().unwrap_or("unknown")
+            )];
+            if let Some(reason) = trigger.branch_reason.as_deref() {
+                parts.push(reason.to_string());
+            }
+            if let Some(artifact) = &trigger.output_artifact {
+                parts.push(format!(
+                    "输出 artifact={}: {}",
+                    artifact.name, artifact.path
+                ));
+                if let Some(preview) = artifact.preview.as_deref() {
+                    parts.push(format!("输出预览={}", preview.trim()));
+                }
+            }
+            if let Some(files) = files {
+                parts.push(format!("附件={}", files));
+            }
+            format!("- {}：{}。", predecessor_ref(trigger), parts.join("；"))
+        }
+        crate::config::DesktopLanguage::En => {
+            let mut parts = vec![format!(
+                "$new-round was triggered by this node; node type={}; outcome={}",
+                trigger.node_type,
+                trigger.outcome.as_deref().unwrap_or("unknown")
+            )];
+            if let Some(reason) = trigger.branch_reason.as_deref() {
+                parts.push(reason.to_string());
+            }
+            if let Some(artifact) = &trigger.output_artifact {
+                parts.push(format!(
+                    "output artifact={}: {}",
+                    artifact.name, artifact.path
+                ));
+                if let Some(preview) = artifact.preview.as_deref() {
+                    parts.push(format!("output preview={}", preview.trim()));
+                }
+            }
+            if let Some(files) = files {
+                parts.push(format!("attachments={}", files));
+            }
+            format!("- {}: {}.", predecessor_ref(trigger), parts.join("; "))
+        }
     }
-    format!("- {}：{}。", predecessor_ref(trigger), parts.join("；"))
 }
 
 fn predecessor_attachment_lines(predecessors: &[PromptPredecessorContext]) -> String {
@@ -2631,6 +2877,7 @@ fn predecessor_attachment_lines(predecessors: &[PromptPredecessorContext]) -> St
 
 fn runtime_output_contract_context(
     contract: &PromptOutputContract,
+    can_read_runtime_snapshot: bool,
 ) -> RuntimeOutputContractTemplateContext {
     RuntimeOutputContractTemplateContext {
         artifact: contract.artifact.clone(),
@@ -2646,6 +2893,7 @@ fn runtime_output_contract_context(
             .unwrap_or_else(|| "当前节点未声明结构化 schema。".to_string()),
         success_condition: contract.success_condition.clone(),
         finalize_context: contract.finalize_context.clone(),
+        can_read_runtime_snapshot,
     }
 }
 
@@ -2724,10 +2972,12 @@ pub fn provider_from_agent(
     acp_raw_target_size_bytes: u64,
     runtime_policy: client::AcpRuntimePolicy,
 ) -> Result<Box<dyn ProviderAdapter>> {
+    let mut adapter = config.adapter.clone();
+    adapter.apply_catalog_launch(agent_id);
     Ok(Box::new(
         AcpProvider::new(
             agent_id.as_str(),
-            config.adapter.clone(),
+            adapter,
             use_local_claude,
             require_local_claude_executable,
             acp_session_title_refresh_enabled,
@@ -3514,10 +3764,19 @@ mod tests {
         );
 
         let contract = req.output_contract.as_mut().unwrap();
-        contract.emission_mode = OutputEmissionMode::InlineControl;
-        contract.finalize_context = Some("remaining nodes: 3".to_string());
-        let finalize_prompt =
-            render_artifact_finalize_prompt(req.runtime_context.language, contract).unwrap();
+        contract.finalize_context = Some(
+            "read-only runtime snapshot: /run/dynamic/coordination-snapshot.json\n\
+             read the latest snapshot before planning successors\n\
+             remaining nodes: 3"
+                .to_string(),
+        );
+        req.execution_surface = PromptExecutionSurface::AiDynamic;
+        let finalize_prompt = render_artifact_finalize_prompt(
+            req.runtime_context.language,
+            contract,
+            req.execution_surface,
+        )
+        .unwrap();
         req.session_mode = SessionMode::Continue;
         req.user_prompt_render_mode = UserPromptRenderMode::RuntimeFinalize;
         req.resume_prompt_visibility = PromptVisibility::Hidden;
@@ -3526,16 +3785,137 @@ mod tests {
         let prompt = render_prompt_bundle(&req).unwrap();
         assert_eq!(prompt.visibility, PromptVisibility::Hidden);
         assert_eq!(prompt.hidden_reason.as_deref(), Some("artifactFinalize"));
+        assert_eq!(prompt.system_prompt, business_prompt.system_prompt);
+        assert!(!prompt.system_prompt.contains("required status field"));
+        assert!(!prompt.system_prompt.contains("dynamic-node-completion"));
         assert!(prompt.user_prompt.contains("dynamic-node-completion"));
         assert!(prompt.user_prompt.contains("required status field"));
         assert!(prompt.user_prompt.contains("remaining nodes: 3"));
-        assert!(prompt.user_prompt.contains("不要继续执行任务"));
+        assert!(prompt.user_prompt.contains("请直接继续执行"));
+        assert!(
+            prompt
+                .user_prompt
+                .contains("如下方 runtime 上下文明确要求刷新只读运行时快照")
+        );
+        assert!(prompt.user_prompt.contains("只能读取其中声明的快照路径"));
+        assert!(active_output_contract_for_turn(&req).is_some());
 
         req.user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
+        let repair_prompt = render_prompt_bundle(&req).unwrap();
         assert_eq!(
-            render_prompt_bundle(&req).unwrap().hidden_reason.as_deref(),
+            repair_prompt.hidden_reason.as_deref(),
             Some("invalidOutputRepair")
         );
+        assert_eq!(repair_prompt.system_prompt, business_prompt.system_prompt);
+        assert!(
+            !repair_prompt
+                .system_prompt
+                .contains("required status field")
+        );
+        assert!(active_output_contract_for_turn(&req).is_some());
+    }
+
+    #[test]
+    fn artifact_finalize_confirms_intent_and_allows_business_continuation() {
+        let contract = test_output_contract(OutputEmissionMode::PostTurnProjection);
+        for (language, continuation, intent_only, forbidden) in [
+            (
+                crate::config::DesktopLanguage::ZhCn,
+                "请直接继续执行",
+                "无需重新核对任务目标或验收要求",
+                "不要继续执行任务",
+            ),
+            (
+                crate::config::DesktopLanguage::En,
+                "continue executing directly",
+                "Do not re-audit the task goals or acceptance requirements",
+                "do not continue the task",
+            ),
+        ] {
+            for surface in [
+                PromptExecutionSurface::Workflow,
+                PromptExecutionSurface::AiDynamic,
+            ] {
+                let prompt = render_artifact_finalize_prompt(language, &contract, surface).unwrap();
+                assert!(prompt.contains(continuation), "{prompt}");
+                assert!(prompt.contains(intent_only), "{prompt}");
+                assert!(!prompt.contains(forbidden));
+                assert!(prompt.contains("dynamic-node-completion"));
+                assert!(!prompt.contains("wait_background_task"));
+            }
+        }
+    }
+
+    #[test]
+    fn english_artifact_finalize_preserves_explicit_snapshot_scope() {
+        let mut contract = test_output_contract(OutputEmissionMode::PostTurnProjection);
+        contract.finalize_context = Some(
+            "read-only runtime snapshot: C:/run/dynamic/coordination-snapshot.json".to_string(),
+        );
+
+        let prompt = render_artifact_finalize_prompt(
+            crate::config::DesktopLanguage::En,
+            &contract,
+            PromptExecutionSurface::AiDynamic,
+        )
+        .unwrap();
+
+        assert!(
+            prompt.contains("refresh a read-only runtime snapshot only when explicitly required")
+        );
+        assert!(prompt.contains("read only the declared snapshot path"));
+        assert!(prompt.contains("reply and use tools normally"));
+        assert!(!prompt.contains("do not call any other tool"));
+    }
+
+    #[test]
+    fn artifact_finalize_keeps_missing_attachments_before_emission() {
+        let contract = test_output_contract(OutputEmissionMode::PostTurnProjection);
+
+        let zh = render_artifact_finalize_prompt(
+            crate::config::DesktopLanguage::ZhCn,
+            &contract,
+            PromptExecutionSurface::Workflow,
+        )
+        .unwrap();
+        assert!(zh.contains("如果当前任务需要报告或其他附件且尚未写入"));
+        assert!(zh.contains("本次 attempt 的 attachments 目录"));
+        assert!(zh.contains("不需要或已经完成则跳过"));
+        assert!(zh.contains("输出 artifact 前"));
+        assert!(!zh.contains("工具只可用于上述附件收尾"));
+
+        let en = render_artifact_finalize_prompt(
+            crate::config::DesktopLanguage::En,
+            &contract,
+            PromptExecutionSurface::Workflow,
+        )
+        .unwrap();
+        assert!(en.contains(
+            "if the current task requires a report or another attachment and it has not yet been written"
+        ));
+        assert!(en.contains("current attempt's attachments directory"));
+        assert!(en.contains("skip this step if it is unnecessary or already complete"));
+        assert!(en.contains("Before emitting the artifact"));
+        assert!(!en.contains("Tools may be used only for the attachment wrap-up above"));
+    }
+
+    #[test]
+    fn workflow_artifact_finalize_does_not_authorize_runtime_snapshot_refresh() {
+        let mut contract = test_output_contract(OutputEmissionMode::PostTurnProjection);
+        contract.finalize_context = Some(
+            "read-only runtime snapshot: C:/run/dynamic/coordination-snapshot.json".to_string(),
+        );
+
+        let prompt = render_artifact_finalize_prompt(
+            crate::config::DesktopLanguage::ZhCn,
+            &contract,
+            PromptExecutionSurface::Workflow,
+        )
+        .unwrap();
+
+        assert!(prompt.contains("继续执行期间可以正常回复和使用工具"));
+        assert!(!prompt.contains("生成 artifact 时，如下方 runtime 上下文"));
+        assert!(!prompt.contains("明确要求时刷新只读运行时快照"));
     }
 
     #[test]
@@ -3611,7 +3991,7 @@ mod tests {
         req.user_prompt_render_mode = UserPromptRenderMode::RuntimeResume;
         assert_eq!(
             prepare_post_turn_projection(&req).unwrap(),
-            PostTurnProjectionEntry::ResumeFinalization
+            PostTurnProjectionEntry::RunBusinessTurn
         );
         assert!(post_turn_projection_checkpoint_is_finalizing(&attempt_dir).unwrap());
 
@@ -3721,7 +4101,7 @@ mod tests {
     }
 
     #[test]
-    fn continue_with_message_at_finalize_boundary_reopens_a_durable_business_turn() {
+    fn continue_with_message_preserves_artifact_collection_without_replacing_prompt() {
         let temp = tempfile::tempdir().unwrap();
         let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         write_artifact_emission_phase(&attempt_dir, ArtifactEmissionPhase::Finalizing).unwrap();
@@ -3735,11 +4115,11 @@ mod tests {
             prepare_post_turn_projection(&user_message_req).unwrap(),
             PostTurnProjectionEntry::RunBusinessTurn
         );
-        assert!(!post_turn_projection_checkpoint_is_finalizing(&attempt_dir).unwrap());
+        assert!(post_turn_projection_checkpoint_is_finalizing(&attempt_dir).unwrap());
         let state = artifact_emission_checkpoint(&attempt_dir)
             .unwrap()
             .expect("continue-with-message persists the business checkpoint");
-        assert_eq!(state.phase, ArtifactEmissionPhase::BusinessTurn);
+        assert_eq!(state.phase, ArtifactEmissionPhase::Finalizing);
 
         let mut pure_resume_req = test_worker_invocation(attempt_dir.clone());
         pure_resume_req.session_mode = SessionMode::Continue;
@@ -3752,6 +4132,286 @@ mod tests {
 
         write_artifact_emission_phase(&attempt_dir, ArtifactEmissionPhase::Finalizing).unwrap();
         assert!(post_turn_projection_checkpoint_is_finalizing(&attempt_dir).unwrap());
+    }
+
+    #[test]
+    fn resumed_work_collects_artifact_after_protocol_was_provided() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        write_artifact_emission_phase(&attempt_dir, ArtifactEmissionPhase::Finalizing).unwrap();
+        let mut req = test_worker_invocation(attempt_dir);
+        req.output_contract = Some(test_output_contract(OutputEmissionMode::PostTurnProjection));
+        req.user_prompt_render_mode = UserPromptRenderMode::RuntimeResume;
+        let output = client::AcpPromptOutput {
+            recent_messages: vec![client::AcpPromptMessageOutput {
+                text: r#"{"status":"success"}"#.to_string(),
+                has_stable_id: false,
+                source: None,
+            }],
+            ..Default::default()
+        };
+        assert!(
+            evaluate_runtime_control_output_for_run(&req, ProviderRunStatus::Success, &output)
+                .unwrap()
+                .payload
+                .is_some()
+        );
+    }
+
+    fn projection_test_request(attempt_dir: Utf8PathBuf) -> WorkerInvocation {
+        write_json(
+            &attempt_dir.join("worker-ref.json"),
+            &WorkerRefState {
+                version: VERSION.to_string(),
+                provider: "claude-acp".to_string(),
+                mode: SessionMode::New,
+                supports_open_session: true,
+                supports_continue_session: true,
+                continue_ref: Some(serde_json::json!({"sessionId": "test-session"})),
+                open_command: None,
+            },
+        )
+        .unwrap();
+        let mut req = test_worker_invocation(attempt_dir);
+        req.output_contract = Some(test_output_contract(OutputEmissionMode::PostTurnProjection));
+        req
+    }
+
+    fn empty_success_result() -> ProviderRunResult {
+        let mut result = interrupted_acp_provider_run_result();
+        result.status = ProviderRunStatus::Success;
+        result
+    }
+
+    #[test]
+    fn projection_missing_artifact_pauses_after_five_additional_reminders() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let req = projection_test_request(attempt_dir.clone());
+        let mut calls = Vec::new();
+        let result = AcpProvider::drive_post_turn_projection(
+            req.clone(),
+            |call| {
+                calls.push(call);
+                Ok(empty_success_result())
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(calls.len(), 7); // Business + protocol + five reminders.
+        assert_eq!(
+            calls[0].user_prompt_render_mode,
+            UserPromptRenderMode::RequirementTask
+        );
+        let ids = calls[1..]
+            .iter()
+            .map(|call| {
+                assert_eq!(
+                    call.user_prompt_render_mode,
+                    UserPromptRenderMode::RuntimeFinalize
+                );
+                assert_eq!(call.resume_prompt_visibility, PromptVisibility::Hidden);
+                call.resume_prompt_id.clone().unwrap()
+            })
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(ids.len(), 6);
+        assert_eq!(result.status, ProviderRunStatus::Interrupted);
+        let error = result.runtime_error.unwrap();
+        assert_eq!(
+            error.code.code,
+            "provider.artifact-finalize-reminders-exhausted"
+        );
+        assert_eq!(error.recovery, crate::runtime_error::RecoveryMode::Manual);
+        assert!(post_turn_projection_checkpoint_is_finalizing(&attempt_dir).unwrap());
+
+        let mut resumed = req;
+        resumed.user_prompt_render_mode = UserPromptRenderMode::RuntimeResume;
+        resumed.resume_prompt = Some("Resume the interrupted work".to_string());
+        resumed.runtime_control_intent = RuntimeControlIntent::Resume;
+        calls.clear();
+        AcpProvider::drive_post_turn_projection(
+            resumed,
+            |call| {
+                calls.push(call);
+                Ok(empty_success_result())
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(calls.len(), 6); // Explicit continue grants five new reminders.
+        assert_eq!(
+            calls[0].resume_prompt.as_deref(),
+            Some("Resume the interrupted work")
+        );
+        assert_eq!(
+            calls[0].user_prompt_render_mode,
+            UserPromptRenderMode::RuntimeResume
+        );
+        assert!(
+            calls[1..]
+                .iter()
+                .all(|call| call.runtime_control_intent == RuntimeControlIntent::Unchanged)
+        );
+    }
+
+    #[test]
+    fn projection_stop_and_non_success_never_trigger_reminders() {
+        for status in [
+            ProviderRunStatus::Interrupted,
+            ProviderRunStatus::Failure,
+            ProviderRunStatus::WaitingForUserInput,
+            ProviderRunStatus::PermissionRequested,
+        ] {
+            for stop_at in [1, 2, 4] {
+                let temp = tempfile::tempdir().unwrap();
+                let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+                let req = projection_test_request(attempt_dir.clone());
+                let mut calls = 0;
+                let result = AcpProvider::drive_post_turn_projection(
+                    req,
+                    |_| {
+                        calls += 1;
+                        let mut result = empty_success_result();
+                        if calls == stop_at {
+                            result.status = status;
+                        }
+                        Ok(result)
+                    },
+                    None,
+                )
+                .unwrap();
+                assert_eq!(calls, stop_at);
+                assert_eq!(result.status, status);
+                assert_eq!(
+                    post_turn_projection_checkpoint_is_finalizing(&attempt_dir).unwrap(),
+                    stop_at > 1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn projection_runtime_error_and_stale_artifact_do_not_trigger_success() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let req = projection_test_request(attempt_dir.clone());
+        write_json(
+            &attempt_dir.join("artifacts/dynamic-node-completion.json"),
+            &serde_json::json!({"status": "success"}),
+        )
+        .unwrap();
+        let mut calls = 0;
+        let result = AcpProvider::drive_post_turn_projection(
+            req,
+            |_| {
+                calls += 1;
+                let mut result = empty_success_result();
+                if calls == 3 {
+                    result.runtime_error = Some(crate::runtime_error::manual_runtime_error_info(
+                        RuntimeErrorDomain::Provider,
+                        "provider.test-error",
+                        "Test provider error",
+                        serde_json::json!({}),
+                    ));
+                }
+                Ok(result)
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(calls, 3);
+        assert_eq!(
+            result.runtime_error.unwrap().code.code,
+            "provider.test-error"
+        );
+        assert!(result.result_payload.is_none());
+    }
+
+    #[test]
+    fn projection_resumed_valid_or_invalid_candidate_returns_without_reminder() {
+        for content in [r#"{"status":"success"}"#, r#"{"status":"broken}"#] {
+            let temp = tempfile::tempdir().unwrap();
+            let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+            let mut req = projection_test_request(attempt_dir.clone());
+            write_artifact_emission_phase(&attempt_dir, ArtifactEmissionPhase::Finalizing).unwrap();
+            req.user_prompt_render_mode = UserPromptRenderMode::RuntimeResume;
+            let mut calls = 0;
+            let result = AcpProvider::drive_post_turn_projection(
+                req,
+                |call| {
+                    calls += 1;
+                    assert_eq!(
+                        call.user_prompt_render_mode,
+                        UserPromptRenderMode::RuntimeResume
+                    );
+                    let output = client::AcpPromptOutput {
+                        recent_messages: vec![client::AcpPromptMessageOutput {
+                            text: content.to_string(),
+                            has_stable_id: false,
+                            source: None,
+                        }],
+                        ..Default::default()
+                    };
+                    let evaluation = evaluate_runtime_control_output_for_run(
+                        &call,
+                        ProviderRunStatus::Success,
+                        &output,
+                    )
+                    .unwrap();
+                    let mut result = empty_success_result();
+                    result.result_payload = evaluation.payload;
+                    result.runtime_control_output = evaluation.runtime_control_output;
+                    Ok(result)
+                },
+                None,
+            )
+            .unwrap();
+            assert_eq!(calls, 1);
+            assert!(provider_result_has_artifact_candidate(&result));
+        }
+    }
+
+    #[test]
+    fn projection_cancelled_repair_resumes_work_not_repair_prompt() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let mut req = projection_test_request(attempt_dir);
+        req.user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
+        req.resume_prompt = Some("Repair the invalid next field".to_string());
+        AcpProvider::drive_post_turn_projection(
+            req.clone(),
+            |call| {
+                assert_eq!(
+                    call.user_prompt_render_mode,
+                    UserPromptRenderMode::RuntimeRepair
+                );
+                assert_eq!(
+                    call.resume_prompt.as_deref(),
+                    Some("Repair the invalid next field")
+                );
+                Ok(interrupted_acp_provider_run_result())
+            },
+            None,
+        )
+        .unwrap();
+        req.user_prompt_render_mode = UserPromptRenderMode::RuntimeResume;
+        req.resume_prompt = Some("Continue work".to_string());
+        let mut calls = 0;
+        AcpProvider::drive_post_turn_projection(
+            req,
+            |call| {
+                calls += 1;
+                assert_eq!(
+                    call.user_prompt_render_mode,
+                    UserPromptRenderMode::RuntimeResume
+                );
+                assert_eq!(call.resume_prompt.as_deref(), Some("Continue work"));
+                Ok(interrupted_acp_provider_run_result())
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(calls, 1);
     }
 
     #[test]
@@ -3780,6 +4440,7 @@ mod tests {
         run.output.recent_messages = vec![client::AcpPromptMessageOutput {
             text: run.output.visible_text.clone(),
             has_stable_id: false,
+            source: None,
         }];
 
         let outcome = classify_acp_prompt_run(&run);
@@ -3927,6 +4588,10 @@ mod tests {
         let prompt = render_prompt_bundle(&req).unwrap();
         assert_eq!(prompt.system_prompt, "");
         assert_eq!(prompt.user_prompt, "  original direct prompt\n");
+        assert_eq!(
+            prompt.display_text.as_deref(),
+            Some("  original direct prompt\n")
+        );
 
         req.session_mode = SessionMode::Continue;
         req.user_prompt_render_mode = UserPromptRenderMode::UserMessage;
@@ -3972,6 +4637,7 @@ mod tests {
             recent_messages: vec![client::AcpPromptMessageOutput {
                 text: json.to_string(),
                 has_stable_id: true,
+                source: None,
             }],
             observed_stable_message: true,
         };
@@ -4005,6 +4671,7 @@ mod tests {
             recent_messages: vec![client::AcpPromptMessageOutput {
                 text: json.to_string(),
                 has_stable_id: false,
+                source: None,
             }],
             ..Default::default()
         };
@@ -4025,10 +4692,12 @@ mod tests {
                 client::AcpPromptMessageOutput {
                     text: r#"{"status":"success"}"#.to_string(),
                     has_stable_id: false,
+                    source: None,
                 },
                 client::AcpPromptMessageOutput {
                     text: "unexpected status 502 Bad Gateway".to_string(),
                     has_stable_id: false,
+                    source: None,
                 },
             ],
             observed_stable_message: true,
@@ -4054,10 +4723,12 @@ mod tests {
                 client::AcpPromptMessageOutput {
                     text: r#"{"status":"success"}"#.to_string(),
                     has_stable_id: true,
+                    source: None,
                 },
                 client::AcpPromptMessageOutput {
                     text: "final explanation without JSON".to_string(),
                     has_stable_id: true,
+                    source: None,
                 },
             ],
             observed_stable_message: true,
@@ -4074,6 +4745,147 @@ mod tests {
     }
 
     #[test]
+    fn runtime_output_evaluation_keeps_the_source_selected_within_the_three_message_window() {
+        for emission_mode in [
+            OutputEmissionMode::PostTurnProjection,
+            OutputEmissionMode::InlineControl,
+        ] {
+            let contract = test_output_contract(emission_mode);
+            let output = client::AcpPromptOutput {
+                recent_messages: vec![
+                    client::AcpPromptMessageOutput {
+                        text: r#"{"status":"success"}"#.to_string(),
+                        has_stable_id: true,
+                        source: Some(client::AcpPromptMessageSource {
+                            branch_id: "root".to_string(),
+                            item_id: "selected-output".to_string(),
+                        }),
+                    },
+                    client::AcpPromptMessageOutput {
+                        text: "final explanation without JSON".to_string(),
+                        has_stable_id: true,
+                        source: Some(client::AcpPromptMessageSource {
+                            branch_id: "root".to_string(),
+                            item_id: "terminal-message".to_string(),
+                        }),
+                    },
+                ],
+                observed_stable_message: true,
+                ..Default::default()
+            };
+
+            let evaluation = evaluate_output_artifact_from_run(&contract, &output).unwrap();
+
+            assert_eq!(
+                evaluation.payload.unwrap().output_artifact.unwrap().content,
+                r#"{"status":"success"}"#
+            );
+            assert_eq!(
+                evaluation.runtime_control_output.unwrap().source.item_id,
+                "selected-output"
+            );
+        }
+    }
+
+    #[test]
+    fn valid_runtime_output_and_display_source_win_over_a_newer_invalid_candidate() {
+        let contract = test_output_contract(OutputEmissionMode::InlineControl);
+        let output = client::AcpPromptOutput {
+            recent_messages: vec![
+                client::AcpPromptMessageOutput {
+                    text: r#"{"status":"success"}"#.to_string(),
+                    has_stable_id: true,
+                    source: Some(client::AcpPromptMessageSource {
+                        branch_id: "root".to_string(),
+                        item_id: "valid-output".to_string(),
+                    }),
+                },
+                client::AcpPromptMessageOutput {
+                    text: r#"```json
+{"status":"unterminated}
+```"#
+                        .to_string(),
+                    has_stable_id: true,
+                    source: Some(client::AcpPromptMessageSource {
+                        branch_id: "root".to_string(),
+                        item_id: "newer-invalid-output".to_string(),
+                    }),
+                },
+            ],
+            observed_stable_message: true,
+            ..Default::default()
+        };
+
+        let evaluation = evaluate_output_artifact_from_run(&contract, &output).unwrap();
+
+        assert!(evaluation.payload.is_some());
+        assert_eq!(
+            evaluation.runtime_control_output.unwrap().source.item_id,
+            "valid-output"
+        );
+    }
+
+    #[test]
+    fn invalid_runtime_output_returns_the_newest_candidate_source_without_an_artifact() {
+        let contract = test_output_contract(OutputEmissionMode::PostTurnProjection);
+        let output = client::AcpPromptOutput {
+            recent_messages: vec![
+                client::AcpPromptMessageOutput {
+                    text: r#"{"status":"older}"#.to_string(),
+                    has_stable_id: true,
+                    source: Some(client::AcpPromptMessageSource {
+                        branch_id: "root".to_string(),
+                        item_id: "older-invalid-output".to_string(),
+                    }),
+                },
+                client::AcpPromptMessageOutput {
+                    text: r#"{"status":"newer}"#.to_string(),
+                    has_stable_id: true,
+                    source: Some(client::AcpPromptMessageSource {
+                        branch_id: "root".to_string(),
+                        item_id: "newer-invalid-output".to_string(),
+                    }),
+                },
+            ],
+            observed_stable_message: true,
+            ..Default::default()
+        };
+
+        let evaluation = evaluate_output_artifact_from_run(&contract, &output).unwrap();
+
+        assert!(evaluation.payload.is_none());
+        let control_output = evaluation.runtime_control_output.unwrap();
+        assert_eq!(control_output.source.item_id, "newer-invalid-output");
+        assert_eq!(control_output.span.parse_status, "invalid");
+    }
+
+    #[test]
+    fn direct_turn_does_not_enter_runtime_output_evaluation() {
+        let mut req = test_worker_invocation(Utf8PathBuf::from("/run/attempt-001"));
+        req.turn_control_mode = TurnControlMode::NonRuntimeControlled;
+        req.output_contract = Some(test_output_contract(OutputEmissionMode::InlineControl));
+        let output = client::AcpPromptOutput {
+            recent_messages: vec![client::AcpPromptMessageOutput {
+                text: r#"{"example":true}"#.to_string(),
+                has_stable_id: false,
+                source: Some(client::AcpPromptMessageSource {
+                    branch_id: "root".to_string(),
+                    item_id: "direct-message".to_string(),
+                }),
+            }],
+            observed_stable_message: true,
+            ..Default::default()
+        };
+
+        let evaluation =
+            evaluate_runtime_control_output_for_run(&req, ProviderRunStatus::Success, &output)
+                .expect("Direct turns bypass Runtime output evaluation");
+
+        assert!(evaluation.payload.is_none());
+        assert!(evaluation.runtime_control_output.is_none());
+    }
+
+    #[test]
     fn stable_terminal_message_scans_at_most_three_messages() {
         let contract = test_output_contract(OutputEmissionMode::InlineControl);
         let output = client::AcpPromptOutput {
@@ -4082,18 +4894,22 @@ mod tests {
                 client::AcpPromptMessageOutput {
                     text: r#"{"status":"success"}"#.to_string(),
                     has_stable_id: true,
+                    source: None,
                 },
                 client::AcpPromptMessageOutput {
                     text: "one".to_string(),
                     has_stable_id: true,
+                    source: None,
                 },
                 client::AcpPromptMessageOutput {
                     text: "two".to_string(),
                     has_stable_id: true,
+                    source: None,
                 },
                 client::AcpPromptMessageOutput {
                     text: "three".to_string(),
                     has_stable_id: true,
+                    source: None,
                 },
             ],
             observed_stable_message: true,
@@ -4122,6 +4938,7 @@ mod tests {
             recent_messages: vec![client::AcpPromptMessageOutput {
                 text: text.to_string(),
                 has_stable_id: false,
+                source: None,
             }],
             ..Default::default()
         };

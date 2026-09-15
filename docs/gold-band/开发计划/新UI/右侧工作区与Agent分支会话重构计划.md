@@ -604,6 +604,12 @@ ACP live event(branchId)
 
 ### 16.3 生命周期与交互
 
+- 2026-09-07 Agent 自引用进度修复：工具更新先沿用稳定调用归属再选择 transcript；索引统一合并最早启动归属与最新执行证据。覆盖顶层和嵌套 Agent 的自身进度、取消后继续、索引与完整重建结果一致性。
+- 红测证据：运行时合并错误返回 Agent 自身 branch；索引错误返回自身 parent；前端摘要缺失错误返回 queued，DOM 随父会话状态显示“等待执行／已中断／已完成”。修复后缺失摘要显示“状态未知”，已有终态仍优先，禁止恢复父会话状态兜底。
+- 自评审：复用现有调用 identity、timeline 和 branch index，无新增依赖、持久字段、状态机或缓存；每次工具更新只合并常数级归属字段，索引查询不增加历史读取范围。
+- 验收：`cargo test -p gold-band --lib acp::` 450 项通过、1 项原有忽略；前端 indexing、read-only-agent-panel、conversation-event-router 共 72 项通过；类型检查与生产构建通过。补充的 status-only 完成结果测试确认正文仍进入正确 Agent 分支。实际 task-015 / run-001 / phase-6-finish-after-capacity-blocker 落盘记录在临时副本上查询后得到 root parent、interrupted、原取消时间 `1788749938Z`，未修改用户日志。
+- 浏览器验收：内置浏览器无可用连接，改用独立 agent-browser 会话挂载实际 ACPChatDialog；验证父会话 cancelled → running 后仍显示“已中断”，无摘要行显示“状态未知”。1440×900、640×800、重新拉宽和明暗主题下均无行溢出，测试页面、进程和临时副本在验收后清理。未替换当前运行的正式 EXE。
+
 - Agent launch tool 已完成但分支仍在生成时，Agent 状态保持 running。
 - Agent 只有 launch、尚无内容时显示 queued；产生工具或文字后进入 running。
 - 根会话停止后所有活动 Agent 收敛为 interrupted。
@@ -620,7 +626,7 @@ ACP live event(branchId)
 - 更新 Agent B 时，Agent A 和根历史项保持对象引用。
 - 非激活 Tab 不挂载 ConversationViewport DOM。
 - 非激活 Agent streaming 不持续驱动完整 Tab React render。
-- 切换 Tab 能从最多 12 个 branch key 的有限 LRU 同步恢复完整 Session VM、滚动位置、分页窗口和贴底状态；后台刷新期间不得重新展示加载壳。
+- 切换 Tab 能从 `acpChatResourceCacheSessionCount` 控制的有限 LRU（默认最多 8 个 branch key）同步恢复完整 Session VM、滚动位置、分页窗口、正文 hydrate 标记和贴底状态；后台刷新期间不得重新展示加载壳。
 - canonical 非根分支一旦带有 `branchExecution` 即结束首次加载；不能因缺少根会话 metadata 或状态为 `interrupted` 进入 `missingAcpSessionRetryDelay` 退避链。
 - ACP session 查询支持可选 `traceId`，前端 effect/request 与 Rust command/view-model 各阶段使用同一 ID 记录耗时。调试开关为 `goldBand.debug.acpTiming=1`；关闭时不传 trace、不输出逐请求日志。
 - 工具大输出在活动和工具折叠时不解析。
@@ -634,6 +640,62 @@ ACP live event(branchId)
 - 快速对话 draft、定时创建与会话详情共用全局右栏宽度偏好；任一页面完成 separator 拖拽后，切换页面、折叠重开或重启应用都恢复同一有界像素宽度，不得回退到 Panel 首次注册尺寸或最小宽度。实现使用 `react-resizable-panels` 的 imperative `resize()` 在离散展示/hydrate 时恢复，pointermove 热路径不写 React state 或存储。
 - 文件名和目录只使用 Gold Band 稳定 ID，不使用未经处理的 provider ID。
 - storage query 使用结构化错误码，不返回后端对客文案。
+
+## 2026-09-07 过程列表两层展开与正文恢复
+
+- 根因归类：保护展开阅读和有界历史窗口的设计合理，但消费契约混淆。`f5a3f86f` 引入展开暂停跟随，`f8182504` 将不跟随当作历史正文合并闸门，`94ef9471` 扩散到快照与重入；`1f162731` 的 120px 按钮门槛又隐藏了物理底部的数据恢复入口。task-004 的纯文本 DOM 复现证明无需图片即可触发，不能归因于图片解码。task-343 的 active writer 恢复错误、task-015 的展开诊断仍是独立事项。
+- 实现：整个过程列表首批详情就绪后定位到自身底部一次并暂停跟随；单条工具/思考在点击处向下展开并暂停跟随。复用共享 token，手动滚动取消恢复资格，最后一个 token 结束后才恢复原跟随意图，移除 resize-at-bottom 的隐式恢复。
+- 正文：临时展开不再阻断容量内的 live 投影；容量不足时保留阅读窗口和 newer edge，收起、回最新及重入复用有界 canonical handoff。后台恢复不得抢走展开位置；数据恢复入口不受 120px 限制。临时 disclosure 不写成持久的手动阅读意图。
+- 失败证据：修改实现前，纯文本展开测试两例均缺失后续回复，多 token 测试在几何底部提前恢复；异步详情测试保持旧 scrollTop 而未定位；单条工具/思考测试在展开后仍为 following。均已使用同一测试验证转绿。
+- 验收完成：9 个相关测试文件共 212 项通过，覆盖收起/未收起重入、容量边界、恢复失败重试、异步详情取消、单条工具/思考原地展开、无 scroll 的内容增长恢复入口，以及 owner/generation/replay/分页回归。类型检查、主题生成和 Vite 生产构建通过；构建保留现有大 chunk 和混合导入告警。
+- 浏览器证据：使用真实 `ACPMessageList + ConversationViewport` 临时页面验证 30 项过程与长输出，外层展开底部按钮到 composer 顶部误差小于 1px；单条展开标题在桌面位置变化约 0.64px，在窄窗口保持 768.31px。追加回复后正文存在、scrollTop 不变、following=false；直接收起恢复 following，主动上滚再收起仍为 false。420px 内容区及恢复 1100px 均无横向溢出。桌面截图与窄内容区折叠截图已检查；部分尺寸下截图接口超时，展开位置与溢出由真实 DOM 几何补充验证。未重新打包或重放 EXE 原现场。临时页面与本次开发服务在验收后清理。
+- 过度设计与性能评审：无新依赖、持久字段或缓存；新增共享 hook 只统一两类单条披露的 token 释放。主窗口默认 96×3、详情 40×3 上限不变，复用 latest-wins 批量发布和 single-flight；单次定位只读取目标/视口几何，折叠时不解析详情，不增加全量历史读取或轮询。
+
+## 2026-09-07 展开溢出定位与收起跟随契约细化
+
+- 本节替代上一节“无条件定位自身底部、收起恢复原跟随意图”的交互；上一节的正文合并、身份与容量保护继续有效。
+- 根因：原 `3d16e770` 按当时约定实现强制对齐，未区分放得下与正向溢出；恢复旧 follow 意图也会跨过展开期间的新回复，属于需要替换的交互设计。footer 测量仅包含 block height、遗漏 absolute 角标，属于正确共享布局设计的实现缺口。第三方 `use-stick-to-bottom` 在内容收缩且接近底部时自行恢复锁定，必须由拥有权威意图的包装层约束，不能只修改业务页收起按钮。
+- 实现：历史/最新过程列表均先原地向下展开，首批详情就绪只补偿超出共享阅读底边的正向距离一次；单条工具/思考维持标题原位展开。收起移除额外 scrollIntoView，最后一个 token 结束后的下一帧仅在物理底部且无 newer/page/recovery 时恢复 follow；主动滚动取消待恢复帧。库的 resize 收缩不得绕过暂停意图。
+- footer：复用一个 ResizeObserver 观察 footer 与稳定角标定位层，按真实最上边缘更新底部留白；任务/队列变化仍实测，不保留最大高度、不触发展开再次定位。角标父层宽度仍与 composer rail 一致，保留现有响应式布局。
+- 同帧时序：observer 与展开定位共享测量/留白提交函数；定位前同步提交实际 footer 占位，确保滚动范围已经包含本帧增高的队列。浏览器红测只更新目标边界时差约 100px，DOM 回归中目标 scrollTop=320 被旧范围截到 200；修复后同一测试转绿，浏览器列表末尾与角标顶边误差约 1px，following=false。
+- 重入：展开前 follow 意图只用于未收起离开后的缓存恢复；已知真实 session 的缓存仍有 newer edge 时，在会话 reset 完成后显式唤醒现有 canonical coordinator，不再依赖已卸载 disclosure 的收起回调。无 sessionId 的 pending timeline 不触发该恢复。
+- 红测证据：放得下的展开从 scrollTop=100 被拉到 0；新回复到达后收起从 139 跳到 199；角标 24px 未计入 96px footer；有界历史窗口收起意外发起追新请求。补充测试证明收缩后库会重新锁定，以及收起待恢复帧不能被向下输入取消。均先观察失败后修改对应实现。
+- 过度设计/性能自评审：复用 prompt-kit 与 use-stick-to-bottom，无新依赖、持久字段、缓存或业务状态机。新增资格回调仅读取现有 refs；footer 每帧最多测量其自身与一个角标 wrapper，O(1) 局部 CSS 写入；只在 footer 挂载时查找标记节点，不扫描消息。96×3 主窗口、40×3 详情窗口及 single-flight 容量不变。
+- 验收完成：14 个相关测试文件共 278 项通过，覆盖多层 token、收起帧用户输入取消、最新/历史窗口、容量边界与重入恢复、异步详情、同帧 footer 更新和浏览器滚动范围限制，以及角标响应式、composer 渲染隔离、视觉与滚动条契约。TypeScript、主题生成与 Vite 生产构建通过；保留现有混合导入与大 chunk 告警。
+- 浏览器证据：真实 ACPMessageList、ConversationViewport、AcpUsagePanel 组合中，短历史展开 scrollTop=0 不变；桌面长列表仅补偿约 408px，末尾到角标误差小于 1px；单条工具标题桌面 162.58px、窄内容区 688.21px 均保持原位。追加较长回复再收起维持 scrollTop=407.62 与 following=false；内容收缩自然到达底部后 following=true。420px 内容区及重新拉宽无横向溢出，队列增高仅更新占位，不再次定位。最后使用同帧队列增高/展开的独立共享组件场景复验，列表底部 227.09px、角标顶部 226.01px，following=false。已检查桌面/窄布局截图，全部临时文件、标签页、viewport override 和开发进程已清理；未重新打包或重放正式 EXE。
+- 完成自评审：共享测量/留白提交函数消除尺寸投影与一次性定位之间的时序差异，未新增 observer、持续滚动任务、全量历史读取、额外缓存或持久状态；接口测试和真实浏览器证据共同覆盖根因。规则目录已有 canonical state、局部几何和阅读锚点约束，本次不新增经验规则。
+
+## 2026-09-08 流式 Activity 详情请求与首批展开定位
+
+- 根因回溯：`94ef9471` 为恢复和会话隔离引入详情 request scope 校验，将 activity end revision 也作为整页失效条件；随后展开定位等待详情就绪，使持续流式下的反复作废表现为一直不定位。属于正确隔离设计的实现边界不完整。另一个契约缺口是后端按 startedSeq 选项并返回最新版本，前端却用 endedSeq 限定请求范围，拒绝了合法更新。
+- 实现：同 owner/session/generation 的页面即使落后于 live 范围仍可接纳，按现有事件版本合并，保留较新工具状态；不同 generation 重新创建详情窗口。详情窗口区分首批可阅读与当前范围已加载，前者不随 live 更新回退；一次展开定位只等待前者。后续缺口仍由既有一个 in-flight 和一个合并 trailing 请求补齐，不新增轮询。首次局部 live 内容可见时仍显示 loading，刷新保留分页入口与阅读窗口。
+- 红测证据：流式范围由 109 前进至 111 后，初始 40 条详情全部被拒绝，DOM 行数为 0；起点 109、结束位置 115 的合法版本同样不显示。修复过程中补充测试发现摘要同步会覆盖首批页的 earlierCursor，导致“显示更早”活动入口消失，已改为保留已加载窗口游标。最终有界合并回归还复现了窗口起点已变为 121、游标仍为 before-201 的问题；现由同一同步入口统一裁剪并更新为 rev:121。
+- 验收：同一失败测试转绿；7 个相关测试文件 226 项通过，覆盖首批接纳、一次溢出定位、放得下不滚动、用户取消、footer 边界、跨会话/generation 拒绝、范围校验、较新工具状态保护、分页容量和会话恢复；补充最终裁剪游标用例后，详情测试文件全量 33 项通过。TypeScript、主题生成和 Vite 生产构建通过，保留现有混合导入及大 chunk 告警。
+- 浏览器：iab 不可用后使用已连接 Chrome，真实 ACPMessageList + ConversationViewport 配合可控延迟接口。40 条首批详情在流式范围前进后显示，桌面列表底部与角标顶边误差小于 1px；随后详情刷新增加行数，scrollTop 保持 668、following=false。420px 内容区首批同样定位到角标上沿，误差小于 1px；直接点击单条长输出标题维持 601.89px，重新拉宽无横向溢出。浏览器只模拟接口延迟与流式竞态，未重放正式 EXE 原会话。
+- 完成自评审：复用 prompt-kit、有界详情窗口 40×3、事件 reducer 和 single-flight，无新依赖、持久字段、缓存或并发队列；只增加详情窗口自身的首批就绪标记，表达新鲜度不能替代的阅读生命周期。合并限定于已有窗口与单页，不增加全量加载或扩大订阅；后端原查询耗时未改变，不宣称消除了首次 I/O 延迟。规则目录已有生命周期、单调合并与分页锚点约束，不新增经验规则。
+
+## 2026-09-08 计时回放水位溯源与修复（已验证）
+
+- 授权范围：完成溯源、最小失败复现后，经用户确认实施根因修复。复用 session-scroll-pagination 的消息身份与阅读恢复检查，以及现有 live/session timing 接口；不引入新库、缓存、队列或运行状态。
+- 引入链路：`3ec88f06`（2026-07-03，stabilize live session timing）增加约每秒的临时计时事件，ID 包含时间、seq 使用执行实例当前 seq，目的是在工具运行和等待阶段持续更新计时。`280ad51e`（2026-08-19，harden prompt turn admission）以 durable revision 建立有界回放的丢失确认，计时无 revision，不要求 durable catch-up。`94ef9471`（2026-08-31，stabilize timeline recovery and session isolation）为未落盘正文补独立 sequence fence，并以 canonical newestSeq 确认；同次提交明确把原测试“does not make transient timing updates part of durable catch-up”替换为“uses sequence coverage to recover an oversized transient timing update”，将纯展示计时也纳入恢复要求。
+- 根因分类：恢复契约的数据分类缺陷。暂未落盘但会进入消息历史的内容与永不作为正文落盘的计时都没有 revision，不能仅凭该字段缺失赋予相同的消息追齐要求。有界缓存和会话隔离初衷正确；子分支使用独立正文与 replay key，但主分支计时沿用全局 seq，可把子分支进度间接带入主分支 sequence fence。不是最近 Activity 展开提交 `8319e92f` 引入。
+- 接口复现：先确认主正文 seq=118，再向 child 分支发布 seq=388，随后向 root 发布正常大小、独立时间 ID、无 revision 的计时事件。容量来自 `CONVERSATION_EVENT_REPLAY_LIMITS.eventsPerBranch=64`，64 条对照组 ACK 成功；65 条触发淘汰，root 没有 child 正文、loss revision=0，但 ACK(coveredSeq=118) 返回 false。失败位置是明确布尔断言，不是等待超时。
+- DOM 复现：真实 ACPChatDialog 在相同回放条件下重新进入，getAcpSession 始终成功返回已完整覆盖的 root 正文，子正文不显示；等待生产有界恢复预算结束后点击“回到最新”，确认新查询发生且按钮结束 loading，最终按钮仍存在。失败位置是 DOM 按钮应移除断言。测试等待预算只用于观察恢复完成，不参与构造竞态；与接口无等待对照共同证明原因。
+- 修复前红测：`node node_modules/vitest/vitest.mjs run --config web/vitest.config.ts web/tests/conversation-event-router.test.ts web/tests/acp-session-reentry-reconciliation.test.tsx -t "child-advanced"`，结果 1 通过、2 预期验收失败。修复后保留 ACK 成功及最终按钮移除断言转绿；重入已能自动清除按钮时无需再点击。
+- 实现：Router 在 session/generation 校验及换代清理后，让 timingUpdate 继续 live 分发，但跳过正文回放存储、head 推进、payload 计量及淘汰。审视既有消费者后不增加“最新计时缓存”：活动页面已有 live 分发，重入已有 canonical session timing，避免复制权威状态。其他事件保留原 revision/sequence fence 行为。
+- 验证：Router、订阅、会话重入、贴底、Activity 详情加载 5 个测试文件共 178 项通过；TypeScript 构建类型检查及 Vite 生产构建通过（保留现有静态/动态混合导入及大 chunk 警告）。新增保护用例覆盖连续计时不挤掉正文、计划、用量和权限事件，以及这些持久事件真正超限时仍建立 revision loss。
+- 浏览器：iab 不可用后使用 Chrome，在模拟运行时数据的真实 ACPChatDialog 中验证 24 条长消息、主正文 seq=24/计时 seq=388、累计 195 次计时。实时累计由 1m5s 更新到 2m10s；上滑出现按钮、点击后消失；离开期间再推进计时，重入显示 3m15s 且按钮消失。宽窗口及 420px 容器截图可读，窄容器距物理底部 1px。临时入口、页面和开发服务在验收后清理。
+- 证据范围：证明这条水位链路可导致按钮无法消失；未在正式 EXE 重放 task-021 原现场，也未证明截图重入锚点的具体像素位置由同一原因唯一决定。原现场没有前端 replay 淘汰/点击 trace，不能把代码复现当成该次点击的完整审计。
+- 性能与过度设计评审：生产改动限于 Router 6 行，复用现有数据边界，无新增依赖、状态、I/O、全量扫描或缓存；减少每次计时的 replay payload 计量、缓存占用与无效恢复请求，实时展示频率不变。容量仍使用现有 64 条配置，回归覆盖临界 64/65 条；无需另建计时状态机或 benchmark。未提交。
+
+## 2026-09-09 原始帧顶部工具栏固定
+
+- 根因：`494eed351` 将原始帧迁入右侧资源时，宿主使用整页 `overflow-y-auto`，共享查看器未区分工具栏与列表视口，属于正确资源化设计下的布局实现缺陷。
+- 修复：共享 RawFrameViewer 负责固定工具栏和唯一帧列表滚动区；右侧资源与独立 Raw 画布宿主只约束高度。复用现有 shadcn/ui、Tailwind 和主题滚动条。
+- 修复前证据：`raw-frame-viewer-layout.test.tsx` 两项 DOM 测试分别因缺少列表独立视口、资源宿主仍整页滚动而失败；内置浏览器加载 100 条长帧后滚动 1440px，搜索栏顶部从 24.8px 移至 -1415.2px。
+- 回归验收：真实查看器的滚动边界、100 条帧渲染、搜索和翻页参数，以及资源宿主布局与首次查询次数均通过；`raw-frame-viewer-layout`、`gold-themed-scrollbar`、`responsive-layout-contract` 共 22 项通过。`npm run web:build` 的 TypeScript 检查和生产构建通过，保留现有混合导入及大 chunk 警告。
+- 浏览器验收：内置 iab 中使用真实资源面板、模拟分页接口和 240 条长帧数据（当前页 100 条），1280×720 下列表滚动 1440px 后搜索栏顶部仍为 24.8px，资源宿主滚动为 0；直接翻到第二页及搜索指定帧成功。420×740 下工具栏自然换行，展开长帧并滚动后控件仍固定、横向溢出为 0；清空搜索并重新拉宽后恢复 100 条列表和正常布局。未执行 EXE 后端联调；临时验证入口与服务在验收后清理。
+- 性能与过度设计评审：仅调整 CSS 布局与 DOM 分区，沿用每页 50/100/200 条与按需展开正文；无新增依赖、状态、缓存、监听、I/O 或扫描，查询与渲染范围不变，无须新增 benchmark。
 
 ## 17. 文档同步要求
 

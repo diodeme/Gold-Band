@@ -13,6 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { openExternalUrl, resolveWorkspaceFileLink } from '@/api';
 import { Button } from '@/components/ui/button';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
@@ -23,6 +24,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { GIT_DOWNLOAD_URL } from '@/lib/git-capability';
 import type {
   GitFileChangeVm,
   GitMutationRequestVm,
@@ -45,9 +47,8 @@ import { githubDataStore, githubRepositorySessionKey } from './github-data-store
 import { diffReviewStore, gitComparisonReviewItemId, type GitDiffReviewItem } from './diff-review-store';
 import { sourceControlStore, useSourceControlSession, type SourceControlSessionSnapshot, type SourceControlTab } from './source-control-store';
 
-const GIT_DOWNLOAD_URL = 'https://git-scm.com/downloads';
-
 export function SourceControlWorkspacePanel({ resource }: { resource: SourceControlWorkspaceResource }) {
+  const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   const workspace = useRightWorkspace();
   const session = useSourceControlSession(resource.projectId, resource.workspacePath);
@@ -176,7 +177,7 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
 
   const locked = snapshot.repository.lock.locked;
   const conflictWorkflowActive = snapshot.status.operationInProgress?.kind === 'merge' || snapshot.status.operationInProgress?.kind === 'rebase';
-  const writeLocked = locked || conflictWorkflowActive;
+  const writeLocked = readOnly || locked || conflictWorkflowActive;
   const hasConflicts = snapshot.status.conflicts.length > 0;
   const activeOperationPending = Boolean(activeOperation && ['queued', 'running'].includes(activeOperation.status));
   const busyActionKind = pendingAction?.kind ?? (activeOperationPending ? activeOperation?.kind ?? null : null);
@@ -188,7 +189,12 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
   const canCommit = snapshot.status.staged.length > 0 && !hasConflicts && !writeLocked && subject.trim().length > 0;
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col" data-source-control-workspace="true" data-theme-role="diff">
+    <section
+      className="flex min-h-0 flex-1 flex-col"
+      data-source-control-workspace="true"
+      data-source-control-workspace-path={resource.workspacePath ?? 'main'}
+      data-theme-role="diff"
+    >
       <header className="shrink-0 border-b border-border/60 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
           <GitBranch className="size-4 shrink-0 text-foreground" />
@@ -328,6 +334,24 @@ function SourceControlUnavailableState({ capability, initializing, onInitialize,
   }
   if (capability.status === 'repository-required') {
     return <PanelState icon={<GitBranch className="size-4" />} text={t('sourceControl.repositoryRequired')} description={t('sourceControl.repositoryRequiredDescription')} action={<Button size="sm" disabled={initializing} onClick={onInitialize}>{initializing ? <LoaderCircle className="size-3.5 animate-spin" /> : null}{initializing ? t('sourceControl.initializingRepository') : t('sourceControl.initializeRepository')}</Button>} />;
+  }
+  if (capability.status === 'version-unsupported' || capability.status === 'version-unavailable') {
+    return (
+      <PanelState
+        icon={<TriangleAlert className="size-4 text-amber-600 dark:text-amber-400" />}
+        text={t(`sourceControl.capability.${capability.status}.title`)}
+        description={t(`sourceControl.capability.${capability.status}.description`, {
+          installedVersion: capability.installedVersion ?? '',
+          minimumVersion: capability.minimumVersion,
+        })}
+        action={(
+          <div className="flex flex-wrap justify-center gap-2">
+            <Button size="sm" onClick={() => void openExternalUrl(GIT_DOWNLOAD_URL)}>{t('sourceControl.openGitDownload')}</Button>
+            <Button size="sm" variant="outline" onClick={() => void onRetry()}>{t('sourceControl.checkAgain')}</Button>
+          </div>
+        )}
+      />
+    );
   }
   return <PanelState icon={<TriangleAlert className="size-4 text-destructive" />} text={t(`sourceControl.capability.${capability.status}.title`)} description={t(`sourceControl.capability.${capability.status}.description`)} action={<Button size="sm" variant="outline" onClick={() => void onRetry()}>{t('sourceControl.checkAgain')}</Button>} />;
 }

@@ -5,7 +5,7 @@
 - 状态：已完成（本地 Git 读取/写入、可取消远端与 stash 操作、GitHub capability/login、PR/Issue 查询、PR diff、Commit 主从审阅、提交归属、跨文件 Diff 导航、会话缓存、Git 状态监控与 operation event subscription 均已完成）
 - 日期：2026-08-12
 - 范围：Gold Band 桌面端右侧源码管理、常见 Git 操作、Commit Patch 审阅、GitHub PR/Issue 集成
-- Git 执行基线：系统 Git CLI + Rust typed service
+- Git 执行基线：系统 Git CLI `2.36.0+` + Rust typed service；版本门槛覆盖所有 Git 功能，但不阻断应用其他功能
 - GitHub 执行基线：系统 `gh` CLI，不捆绑、不自动安装、不由 Gold Band 保存 token
 - UI 基线：现有 Right Workspace、文件工作区、CodeMirror/Atomic、shadcn/ui、Tailwind CSS
 - 关联基线：`AI-DYNAMIC工作空间树与Git基础设施V2技术方案.md` 中已实现的 Git capability、checkpoint、worktree 与 runtime workspace 语义
@@ -129,12 +129,16 @@ Git Graph 和关系分析不再作为首版能力。真实仓库的多 ref DAG �
 源码管理首次加载复用已有 `GitRepositoryService.probe()`、`get_git_capability` 与 `initialize_git_repository`，建立 capability gate，而不是直接把完整 snapshot 的任意失败投影成一个 error：
 
 - `not-installed`：不请求 snapshot/history，显示 Git 安装引导和重新检测。
+- `version-unsupported`：Git 可执行文件存在但版本低于 `2.36.0`；返回 `installedVersion + minimumVersion`，不请求 repository snapshot/history，并在源码管理、分支选择器和 Git 前置对话框展示下载与重新检测。
+- `version-unavailable`：Git 可执行文件存在但 `git --version` 失败、非 UTF-8 或格式无法识别；与未安装、低版本分开处理，不猜测可用能力。
 - `repository-required`：显示非 Git 仓库状态，typed command 执行 `git init`；不 stage、不 commit。
 - `head-required`：允许读取源码管理 snapshot；history 对 unborn HEAD 返回稳定空页，用户从“更改”完成首次提交。
 - `worktree-required / repository-unavailable`：按稳定 capability 状态展示针对性恢复建议。
 - `ready`：snapshot/history 并行加载，真实命令失败才进入结构化错误态。
 
 capability 仅在首次进入、不可用状态的显式重试或初始化终态读取；已 ready 的后台 watcher refresh 不重复 probe。Tauri capability/init command 进入 blocking pool，避免 Git 进程等待占用 IPC event loop。
+
+最低版本采用单一产品级 Git capability，不建立按命令分支的版本矩阵，也不实现 `worktree list --porcelain` 旧行协议或路径输出 fallback。版本解析复用 Rust `semver` 比较核心版本，同时接受 Git for Windows、Apple Git 等发行后缀；`2.36.0-rc*` 仍低于稳定版。通过门槛后继续使用 Git 原生 `--path-format=absolute` 与 `worktree list --porcelain -z`，避免跨平台自行模拟 Git 的路径/worktree 协议。Git source-control typed service 在解析 workspace scope 前统一执行版本 gate，结构化错误为 `git.version-unsupported / git.version-unavailable`；runtime preflight 对应 `run.git-version-unsupported / run.git-version-unavailable`。版本信息不持久化、不新增全局缓存。
 
 ```text
 Right Workspace / Source Control
@@ -591,9 +595,11 @@ runtime 内部分支 push 默认禁用，避免发布 `gb-dyn/*` 等内部 refs�
 
 - 复用现有 workspace 文件 watcher 的普通文件事件。
 - 额外监听通过 `git rev-parse --git-path` 解析出的 HEAD、index、refs、packed-refs 等 Git 元数据路径。
-- 事件合并后 debounce，再重新读取 canonical status。
+- 前端先订阅并启动 monitor，再读取首次 canonical snapshot/history；`workspacePath = null` 作为主工作区的合法作用域原样传给后端，不能跳过 monitor；加载或 mutation pending 期间的事件保留一个 dirty follow-up。
+- 事件合并采用 150ms quiet debounce 和 1 秒最大延迟；普通 workspace 事件只重新读取 snapshot/status，metadata/ref 事件才读取 snapshot/history。
+- Rust 事件通道固定为 1024 项；notify error 或溢出统一升级为 repository scope invalidation，monitor identity 为 `projectId + common directory + workspace path`。
 - Git/gh 操作成功后立即刷新，不等待 watcher。
-- 源码管理资源可见时允许低频 fallback poll；隐藏或无订阅时停止。
+- 不使用 fallback poll；事件恢复失败通过下一次资源激活重试 monitor 并执行一次权威 snapshot 对账。
 - 一个 repository/workspace 只存在一个 monitor，多 UI 消费者共享快照。
 
 不得让每个文件行、每个 tab 或每个 React hook 独立轮询 Git。
@@ -1117,7 +1123,7 @@ Git CLI 失败时，`params` 还必须包含 `exitCode` 和可选 `reason`。`re
 - 右键短/完整 SHA 与提交归属；同一审阅会话切换文件不增加 Tab。
 - 下一差异越过当前文件末尾后进入下一文件，上一差异反向进入前一文件末尾。
 - 源码管理 -> Diff -> 返回不得重新请求 snapshot/history，并恢复内部 Tab、分页、多选、详情和 commit 草稿。
-- workspace/Git metadata watcher、typed mutation 和长操作完成必须使对应本地领域失效并刷新；不同 worktree 缓存隔离，旧请求不得覆盖新状态。GitHub 查询仍保留自身的显式刷新。
+- workspace/Git metadata watcher、typed mutation 和长操作完成必须使对应本地领域失效并刷新；普通 workspace 事件不得读取 history，metadata/ref 事件才刷新 snapshot/history；首次 monitor 建立在权威快照之前，pending 操作期间的失效不能丢失，持续事件必须在 1 秒内触发一次刷新。不同 project/worktree 缓存和 monitor 身份隔离，旧请求不得覆盖新状态。GitHub 查询仍保留自身的显式刷新。
 - Stage/Unstage 不请求 snapshot/history，只合并 status-scoped 结果；refs 变化 mutation 的 snapshot/history 必须并行发起。
 - 单文件 Stage/Unstage pending 时目标按钮显示 spinner，其他 Git 写入口全部禁用，重复点击不得发起第二个接口请求。
 - GitHub capability 使用 `gh repo view <owner/repo> --json ...` positional 参数契约。
@@ -1164,6 +1170,8 @@ Browser preview 的源码管理 fixture 提供 `origin` 与 `fork` 两个 remote
 2026-08-12 已使用内置浏览器实际验证 440px 窄右栏：历史区正确退化为“提交/更改”单栏；Shift 从首项到末项选择 3 个 Commit，Ctrl 可独立移除中间项；右键已选 Commit 保留 selection，并展示短 SHA、完整 SHA 和提交归属；Diff 审阅在同一 Tab 支持跨差异与跨文件导航。最新布局契约为无选择时不挂载 splitter，首次选择同步显示高亮与右侧局部 loading，清空后恢复单栏。
 
 2026-08-11 已补齐 repository/workspace-scoped `GitStateMonitor` 与 operation event subscription：普通文件事件复用现有 workspace watcher，watcher 身份提升为 `projectId + canonical root` 以隔离 linked worktree；HEAD/index/refs/packed-refs 由 typed Git service 定位并独立监听。前端按会话过滤两类事件并二次 debounce，本地 Git 与 GitHub 登录/PR 创建的 operation running/terminal 均通过 Tauri event 推送，包含 command 返回前早到事件合并，删除 350/400ms 完成状态轮询。接口测试覆盖 Git/GitHub operation 事件终态、metadata/workspace 事件去抖、worktree 隔离、导航保留和 watcher 身份；浏览器 mock 再次验证变更 Diff 往返时 commit 草稿与“更改”分区原样恢复，无加载态且控制台无 warning/error，浏览器标签、1422 Vite 进程和临时日志均已清理。
+
+2026-09-02 修复 watcher snapshot/live handoff 与持续事件饥饿：源码管理首次加载改为先订阅并启动 monitor，再并行读取 snapshot/history；主工作区的 `workspacePath = null` 作为合法作用域启动 monitor，不能按缺失路径跳过。普通 workspace 事件只刷新 snapshot/status，删除无关 history I/O，metadata/ref 事件保留完整刷新。前端失效状态使用 `worktree < repository` 合并域、150ms quiet window、1 秒最大延迟和单个 dirty follow-up，pending mutation/在途加载不再永久丢失事件。Rust workspace/Git watcher 使用固定容量通道和有界批次，notify error/溢出升级为 scope invalidation；workspace 普通第三方变更不计算全文 hash，Git monitor identity 增加 projectId。定向回归覆盖 monitor-before-snapshot、主工作区 null scope、status-only refresh、持续事件最大延迟、pending 期间失效保留、watch 启动失败重试、重新激活目录/文件对账和 overflow/error 降级。
 
 本次历史终态聚合回归：Rust 覆盖重复路径聚合、创建后删除净空、重命名链、显式选择边界和删除文件 before→不存在的 comparison，共 5 项定向测试通过；`cargo check -p gold-band --lib --no-default-features` 通过。Web 源码管理相关 5 个测试文件 / 33 项测试通过，覆盖选择/迟到响应、Review 缓存复用与会话清理、GitHub capability 预热、Diff 导航、browser fixture 和中英文文件数量文案；`npm run web:build`、`cargo fmt --all` 与 `git diff --check` 通过。
 

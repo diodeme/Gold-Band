@@ -3,6 +3,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import {
   AcpUsagePanel,
+  ACP_USAGE_PANEL_LAYOUT_BREAKPOINTS,
+  acpUsagePanelLayoutForWidth,
   contextUsagePercentage,
   contextUsageTone,
   hasAcpUsagePanelContent,
@@ -25,7 +27,48 @@ vi.mock("react-i18next", () => ({
   }),
 }));
 
+vi.mock("@/components/git/GitBranchSelector", () => ({
+  GitBranchSelector: () => createElement("button", { type: "button" }, "branch"),
+}));
+
 describe("AcpUsagePanel", () => {
+  it("uses the same CSS-native rounded connector for branch-only and complete information tabs", () => {
+    const branchOnlyHtml = renderToStaticMarkup(
+      createElement(AcpUsagePanel, {
+        usage: null,
+        branchProjectId: "project-1",
+      }),
+    );
+    const completeHtml = renderToStaticMarkup(
+      createElement(AcpUsagePanel, {
+        usage: { used: 32_000, size: 100_000 },
+        sessionSeconds: 1,
+        branchProjectId: "project-1",
+      }),
+    );
+    const connectorTag = (html: string) => html.match(
+      /<(\w+)[^>]*data-acp-session-info-connector="true"[^>]*>/,
+    )?.[0] ?? null;
+    const branchOnlyConnector = connectorTag(branchOnlyHtml);
+    const completeConnector = connectorTag(completeHtml);
+
+    expect(branchOnlyConnector).not.toBeNull();
+    expect(branchOnlyConnector).toBe(completeConnector);
+    expect(branchOnlyConnector).toMatch(/^<span\b/);
+    expect(branchOnlyConnector).toContain('overflow-hidden');
+    expect(branchOnlyConnector).toContain('[right:calc(-1*(var(--radius-md)+var(--acp-session-composer-border-width)))]');
+    expect(branchOnlyConnector).not.toContain('[right:calc(-1*var(--radius-md))]');
+    expect(branchOnlyConnector).toContain('[bottom:calc(-1*var(--acp-session-composer-border-width))]');
+    expect(branchOnlyConnector).toContain('before:rounded-full');
+    expect(branchOnlyConnector).toContain('before:border-border');
+    expect(branchOnlyConnector).toContain('before:[border-width:var(--acp-session-composer-border-width)]');
+    expect(branchOnlyConnector).toContain('style="background:radial-gradient(circle at 100% 0, transparent 0 var(--radius-md), var(--card) var(--radius-md))"');
+    expect(branchOnlyConnector).not.toContain('box-shadow');
+    expect(branchOnlyHtml).not.toContain('<svg');
+    expect(branchOnlyHtml).not.toContain('<path');
+    expect(branchOnlyHtml).not.toContain('stroke=');
+  });
+
   it("reports whether the information tab has visible usage content", () => {
     expect(hasAcpUsagePanelContent(null)).toBe(false);
     expect(hasAcpUsagePanelContent({})).toBe(false);
@@ -86,12 +129,12 @@ describe("AcpUsagePanel", () => {
       }),
     );
 
-    const worktree = html.match(/<span class="([^"]+)" tabindex="0" data-acp-worktree="true">/);
+    const worktree = html.match(/<span class="([^"]+)" tabindex="0" data-acp-session-info-item="worktree" data-acp-worktree="true">/);
     expect(html).toContain('data-acp-worktree="true"');
     expect(html).toContain("conversation.runtime.worktree");
     expect(html).toContain("C:/Users/test/AppData/Local/gold-band/projects/p1/worktrees/abc123");
     expect(html.indexOf("acp.usagePanel.contextWindow")).toBeLessThan(html.indexOf('data-acp-worktree="true"'));
-    expect(worktree?.[1].split(' ')).toContain('ml-auto');
+    expect(html).toContain('<span class="ml-auto min-w-0">');
     expect(worktree?.[1].split(' ')).toContain('gap-1');
     expect(worktree?.[1].split(' ')).not.toContain('gap-1.5');
   });
@@ -154,6 +197,17 @@ describe("AcpUsagePanel", () => {
     expect(html).toContain("acp.usagePanel.occupied 120.0K / 100.0K 100%");
     expect(html).toContain(">100</span>");
     expect(html).not.toContain(">100%</span>");
+  });
+});
+
+describe("acpUsagePanelLayoutForWidth", () => {
+  it("moves complete rightmost items into overflow only when a rail crosses a discrete layout boundary", () => {
+    expect(acpUsagePanelLayoutForWidth(ACP_USAGE_PANEL_LAYOUT_BREAKPOINTS.full)).toBe("full");
+    expect(acpUsagePanelLayoutForWidth(ACP_USAGE_PANEL_LAYOUT_BREAKPOINTS.full - 1)).toBe("branch-overflow");
+    expect(acpUsagePanelLayoutForWidth(ACP_USAGE_PANEL_LAYOUT_BREAKPOINTS.workspace)).toBe("branch-overflow");
+    expect(acpUsagePanelLayoutForWidth(ACP_USAGE_PANEL_LAYOUT_BREAKPOINTS.workspace - 1)).toBe("workspace-overflow");
+    expect(acpUsagePanelLayoutForWidth(ACP_USAGE_PANEL_LAYOUT_BREAKPOINTS.context)).toBe("workspace-overflow");
+    expect(acpUsagePanelLayoutForWidth(ACP_USAGE_PANEL_LAYOUT_BREAKPOINTS.context - 1)).toBe("context-overflow");
   });
 });
 

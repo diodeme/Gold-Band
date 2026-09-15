@@ -1,41 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { scheduledHistoryTarget, scheduledOccurrenceTarget } from '@/lib/scheduled-task-navigation';
+import { scheduledHistoryTarget } from '@/lib/scheduled-task-navigation';
 import { pathFromRoute, routeFromPath } from '@/routes';
 import { formatScheduledSchedule, scheduledScheduleTimezone } from '@/lib/scheduled-task-formatting';
 import i18n from '@/i18n';
-import type { ScheduledOccurrenceVm, ScheduledScheduleSpec } from '@/types';
-
-const occurrence = (overrides: Partial<ScheduledOccurrenceVm> = {}): ScheduledOccurrenceVm => ({
-  id: 'occurrence-1',
-  scheduledTaskId: 'scheduled-1',
-  scheduledAt: '2026-08-07T09:00:00Z',
-  triggerKind: 'scheduled',
-  status: 'succeeded',
-  attempt: 1,
-  taskId: 'task-1',
-  runId: 'run-1',
-  roundId: 'round-1',
-  attemptId: 'attempt-1',
-  ...overrides,
-});
+import type { ScheduledScheduleSpec } from '@/types';
 
 describe('scheduled task navigation', () => {
-  it('keeps task, run, round, and attempt links in the conversation target', () => {
-    expect(scheduledOccurrenceTarget('project-1', occurrence())).toEqual({
-      kind: 'conversation-run',
-      projectId: 'project-1',
-      taskId: 'task-1',
-      runId: 'run-1',
-      roundId: 'round-1',
-      attemptId: 'attempt-1',
-    });
-  });
-
-  it('does not create a partial target without both task and run', () => {
-    expect(scheduledOccurrenceTarget('project-1', occurrence({ runId: null }))).toBeNull();
-  });
-
   it('round-trips the complete Run and occurrence locator through a deep link', () => {
     const target = scheduledHistoryTarget({ projectId: 'project-1', scheduledTaskId: 'scheduled-1', taskId: 'task-1', runId: 'run-1', latestOccurrenceId: 'occurrence-1' } as never);
     const path = pathFromRoute('task-orchestration', { kind: 'task-list' }, target);

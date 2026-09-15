@@ -28,6 +28,10 @@ import type {
   GitSourceControlSnapshotVm,
   WorkspaceFileChangedEventVm,
 } from '@/types';
+import {
+  normalizeSourceControlWorkspacePath,
+  sourceControlWorkspaceSessionKey,
+} from './source-control-identity';
 
 export type SourceControlTab = 'changes' | 'history' | 'repository' | 'github';
 export type SourceControlRepositoryTab = 'branches' | 'tags' | 'worktrees' | 'stashes';
@@ -97,6 +101,8 @@ interface SessionRuntime {
   monitorStarted: boolean;
   monitorStartPromise: Promise<void> | null;
   invalidationTimer: ReturnType<typeof setTimeout> | null;
+  invalidationStartedAt: number | null;
+  pendingInvalidation: SourceControlInvalidationScope | null;
   finishingOperationId: string | null;
   historyCommitScrollTop: number;
   historyReviewScrollTop: number;
@@ -127,6 +133,8 @@ const DEFAULT_API: SourceControlApi = {
 
 const HISTORY_PAGE_SIZE = 300;
 const STATE_INVALIDATION_DEBOUNCE_MS = 150;
+const STATE_INVALIDATION_MAX_LATENCY_MS = 1_000;
+type SourceControlInvalidationScope = 'worktree' | 'repository';
 
 export class SourceControlStore {
   static readonly MAX_SESSIONS = 24;
@@ -555,7 +563,7 @@ export class SourceControlStore {
   }
 
   clear(projectId: string, workspacePath?: string | null) {
-    const routeKey = sessionRouteKey(projectId, workspacePath);
+    const routeKey = sourceControlWorkspaceSessionKey(projectId, workspacePath);
     const storageKey = this.aliases.get(routeKey) ?? routeKey;
     const runtime = this.sessions.get(storageKey);
     if (runtime) this.disposeRuntime(runtime);
@@ -574,7 +582,12 @@ export class SourceControlStore {
     refreshKind: SourceControlRefreshKind | null = force ? 'manual' : null,
   ) {
     const runtime = this.runtime(projectId, workspacePath);
-    if (!force && (runtime.snapshot.status === 'ready' || runtime.snapshot.status === 'unavailable')) return;
+    if (!force && runtime.snapshot.status === 'ready') {
+      await this.ensureSubscriptions();
+      if (await this.startMonitor(runtime, workspacePath)) this.scheduleInvalidation(runtime, 'worktree');
+      return;
+    }
+    if (!force && runtime.snapshot.status === 'unavailable') return;
     if (runtime.loadPromise && refreshKind !== 'manual') return runtime.loadPromise;
     if (runtime.snapshot.pendingAction) return;
     const requestRevision = ++runtime.repositoryRequestRevision;
@@ -610,6 +623,11 @@ export class SourceControlStore {
         });
         return;
       }
+      if (!runtime.monitorStarted) {
+        await this.ensureSubscriptions();
+        await this.startMonitor(runtime, workspacePath);
+        if (runtime.repositoryRequestRevision !== requestRevision) return;
+      }
       const [snapshot, history] = await Promise.all([
         this.api.getSnapshot(projectId, workspacePath),
         this.api.getHistory(projectId, workspacePath, { limit: HISTORY_PAGE_SIZE }),
@@ -626,7 +644,6 @@ export class SourceControlStore {
         refreshing: null,
         error: operationError,
       });
-      void this.startMonitor(runtime);
     })().catch((reason: unknown) => {
       if (runtime.repositoryRequestRevision !== requestRevision) return;
       this.update(runtime, {
@@ -636,7 +653,10 @@ export class SourceControlStore {
         error: structuredErrorFrom(reason, 'git.status-failed'),
       });
     }).finally(() => {
-      if (runtime.loadPromise === request) runtime.loadPromise = null;
+      if (runtime.loadPromise === request) {
+        runtime.loadPromise = null;
+        this.armInvalidation(runtime);
+      }
     });
     runtime.loadPromise = request;
     return request;
@@ -669,12 +689,16 @@ export class SourceControlStore {
     for (const runtime of this.sessions.values()) {
       const repository = runtime.snapshot.snapshot?.repository;
       if (
-        repository
-        && repository.projectId === event.projectId
-        && sameWorkspacePath(repository.commonDir, event.repositoryCommonDir)
-        && sameWorkspacePath(repository.workspacePath, event.workspacePath)
+        runtime.snapshot.projectId === event.projectId
+        && (repository
+          ? sameWorkspacePath(repository.commonDir, event.repositoryCommonDir)
+            && sameWorkspacePath(repository.workspacePath, event.workspacePath)
+          : sameWorkspacePath(
+              runtime.snapshot.canonicalWorkspacePath ?? runtime.snapshot.requestedWorkspacePath ?? '',
+              event.workspacePath,
+            ))
       ) {
-        this.scheduleInvalidation(runtime);
+        this.scheduleInvalidation(runtime, 'repository');
       }
     }
   }
@@ -682,41 +706,112 @@ export class SourceControlStore {
   private handleWorkspaceChange(event: WorkspaceFileChangedEventVm) {
     for (const runtime of this.sessions.values()) {
       const repository = runtime.snapshot.snapshot?.repository;
+      const workspacePath = repository?.workspacePath
+        ?? runtime.snapshot.canonicalWorkspacePath
+        ?? runtime.snapshot.requestedWorkspacePath;
       if (
-        repository
-        && repository.projectId === event.projectId
-        && pathIsWithinWorkspace(event.canonicalPath, repository.workspacePath)
+        runtime.snapshot.projectId === event.projectId
+        && workspacePath
+        && pathIsWithinWorkspace(event.canonicalPath, workspacePath)
       ) {
-        this.scheduleInvalidation(runtime);
+        this.scheduleInvalidation(runtime, 'worktree');
       }
     }
   }
 
-  private scheduleInvalidation(runtime: SessionRuntime) {
-    if (runtime.invalidationTimer) clearTimeout(runtime.invalidationTimer);
-    runtime.invalidationTimer = setTimeout(() => {
-      runtime.invalidationTimer = null;
-      if (runtime.snapshot.status !== 'ready' || runtime.snapshot.pendingAction) return;
-      void this.load(
-        runtime.snapshot.projectId,
-        runtime.snapshot.canonicalWorkspacePath ?? runtime.snapshot.requestedWorkspacePath,
-        true,
-        false,
-        'background',
-      );
-    }, STATE_INVALIDATION_DEBOUNCE_MS);
+  private scheduleInvalidation(runtime: SessionRuntime, scope: SourceControlInvalidationScope) {
+    if (scope === 'repository' || runtime.pendingInvalidation === null) {
+      runtime.pendingInvalidation = scope;
+    }
+    runtime.invalidationStartedAt ??= Date.now();
+    this.armInvalidation(runtime);
   }
 
-  private async startMonitor(runtime: SessionRuntime) {
-    const workspacePath = runtime.snapshot.canonicalWorkspacePath;
-    if (runtime.monitorStarted || !workspacePath || !this.api.startMonitor) return;
+  private armInvalidation(runtime: SessionRuntime) {
+    if (!runtime.pendingInvalidation
+      || runtime.loadPromise
+      || runtime.snapshot.status !== 'ready'
+      || runtime.snapshot.pendingAction) return;
+    if (runtime.invalidationTimer) clearTimeout(runtime.invalidationTimer);
+    const elapsed = Date.now() - (runtime.invalidationStartedAt ?? Date.now());
+    const delay = Math.min(
+      STATE_INVALIDATION_DEBOUNCE_MS,
+      Math.max(0, STATE_INVALIDATION_MAX_LATENCY_MS - elapsed),
+    );
+    runtime.invalidationTimer = setTimeout(() => {
+      runtime.invalidationTimer = null;
+      if (runtime.snapshot.status !== 'ready' || runtime.snapshot.pendingAction || runtime.loadPromise) {
+        this.armInvalidation(runtime);
+        return;
+      }
+      const scope = runtime.pendingInvalidation;
+      runtime.pendingInvalidation = null;
+      runtime.invalidationStartedAt = null;
+      if (scope === 'repository') {
+        void this.load(
+          runtime.snapshot.projectId,
+          runtime.snapshot.canonicalWorkspacePath ?? runtime.snapshot.requestedWorkspacePath,
+          true,
+          false,
+          'background',
+        );
+      } else if (scope === 'worktree') {
+        void this.refreshWorktree(runtime);
+      }
+    }, delay);
+  }
+
+  private async refreshWorktree(runtime: SessionRuntime) {
+    if (runtime.loadPromise || runtime.snapshot.status !== 'ready' || runtime.snapshot.pendingAction) {
+      this.scheduleInvalidation(runtime, 'worktree');
+      return;
+    }
+    const projectId = runtime.snapshot.projectId;
+    const workspacePath = runtime.snapshot.canonicalWorkspacePath ?? runtime.snapshot.requestedWorkspacePath;
+    const requestRevision = ++runtime.repositoryRequestRevision;
+    this.update(runtime, { ...runtime.snapshot, refreshing: 'background' });
+    const request = this.api.getSnapshot(projectId, workspacePath).then((snapshot) => {
+      if (runtime.repositoryRequestRevision !== requestRevision) return;
+      this.registerCanonicalAlias(runtime, snapshot.repository.workspacePath);
+      this.update(runtime, {
+        ...runtime.snapshot,
+        canonicalWorkspacePath: snapshot.repository.workspacePath,
+        snapshot,
+        refreshing: null,
+        error: null,
+      });
+    }).catch((reason: unknown) => {
+      if (runtime.repositoryRequestRevision !== requestRevision) return;
+      this.update(runtime, {
+        ...runtime.snapshot,
+        refreshing: null,
+        error: structuredErrorFrom(reason, 'git.status-failed'),
+      });
+    }).finally(() => {
+      if (runtime.loadPromise === request) {
+        runtime.loadPromise = null;
+        this.armInvalidation(runtime);
+      }
+    });
+    runtime.loadPromise = request;
+    return request;
+  }
+
+  private async startMonitor(runtime: SessionRuntime, requestedWorkspacePath?: string | null) {
+    const workspacePath = runtime.snapshot.canonicalWorkspacePath
+      ?? requestedWorkspacePath
+      ?? runtime.snapshot.requestedWorkspacePath
+      ?? null;
+    if (runtime.monitorStarted || !this.api.startMonitor) return false;
     runtime.monitorStarted = true;
     const request = this.api.startMonitor(runtime.snapshot.projectId, workspacePath);
     runtime.monitorStartPromise = request;
     try {
       await request;
+      return true;
     } catch {
       runtime.monitorStarted = false;
+      return false;
     } finally {
       if (runtime.monitorStartPromise === request) runtime.monitorStartPromise = null;
     }
@@ -725,6 +820,8 @@ export class SourceControlStore {
   private disposeRuntime(runtime: SessionRuntime) {
     if (runtime.invalidationTimer) clearTimeout(runtime.invalidationTimer);
     runtime.invalidationTimer = null;
+    runtime.invalidationStartedAt = null;
+    runtime.pendingInvalidation = null;
     if (runtime.monitorStarted && this.api.stopMonitor) {
       runtime.monitorStarted = false;
       const stop = () => this.api.stopMonitor?.(
@@ -759,7 +856,7 @@ export class SourceControlStore {
   }
 
   private runtime(projectId: string, workspacePath: string | null | undefined, touch = true) {
-    const routeKey = sessionRouteKey(projectId, workspacePath);
+    const routeKey = sourceControlWorkspaceSessionKey(projectId, workspacePath);
     const storageKey = this.aliases.get(routeKey) ?? routeKey;
     let runtime = this.sessions.get(storageKey);
     if (!runtime) {
@@ -775,6 +872,8 @@ export class SourceControlStore {
         monitorStarted: false,
         monitorStartPromise: null,
         invalidationTimer: null,
+        invalidationStartedAt: null,
+        pendingInvalidation: null,
         finishingOperationId: null,
         historyCommitScrollTop: 0,
         historyReviewScrollTop: 0,
@@ -791,7 +890,7 @@ export class SourceControlStore {
   }
 
   private registerCanonicalAlias(runtime: SessionRuntime, canonicalWorkspacePath: string) {
-    this.aliases.set(sessionRouteKey(runtime.snapshot.projectId, canonicalWorkspacePath), runtime.storageKey);
+    this.aliases.set(sourceControlWorkspaceSessionKey(runtime.snapshot.projectId, canonicalWorkspacePath), runtime.storageKey);
   }
 
   private prune(protectedStorageKey: string) {
@@ -829,8 +928,10 @@ export class SourceControlStore {
   }
 
   private update(runtime: SessionRuntime, snapshot: SourceControlSessionSnapshot) {
+    const actionFinished = runtime.snapshot.pendingAction !== null && snapshot.pendingAction === null;
     runtime.snapshot = snapshot;
     for (const listener of runtime.listeners) listener();
+    if (actionFinished) this.armInvalidation(runtime);
   }
 }
 
@@ -876,18 +977,12 @@ function resetHistoryState(snapshot: SourceControlSessionSnapshot): SourceContro
   };
 }
 
-function sessionRouteKey(projectId: string, workspacePath: string | null | undefined) {
-  return `${projectId}\u0000${normalizeWorkspacePath(workspacePath)}`;
-}
-
 function commitReviewCacheKey(storageKey: string, revision: string, selectedOids: readonly string[]) {
   return `${storageKey}\u0000${revision}\u0000${selectedOids.join(',')}`;
 }
 
 function normalizeWorkspacePath(workspacePath: string | null | undefined) {
-  if (!workspacePath) return '__main__';
-  const normalized = workspacePath.replaceAll('\\', '/').replace(/\/$/u, '');
-  return /^[a-z]:\//iu.test(normalized) ? normalized.toLowerCase() : normalized;
+  return normalizeSourceControlWorkspacePath(workspacePath) ?? '__main__';
 }
 
 function sameWorkspacePath(left: string, right: string) {

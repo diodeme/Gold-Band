@@ -111,6 +111,12 @@ pub enum UpdateJobResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetentionResult {
+    pub deleted: usize,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AcceptExecutionResult {
     Accepted(ScheduledOccurrence),
     AlreadyAccepted(ScheduledOccurrence),
@@ -1346,17 +1352,6 @@ impl ScheduledTaskDatabase {
         })
     }
 
-    pub fn list_execution_history(
-        &self,
-        project_id: &str,
-        job_id: &str,
-        limit: usize,
-    ) -> Result<Vec<ScheduledExecutionHistoryRecord>> {
-        Ok(self
-            .list_execution_history_page(project_id, job_id, None, limit)?
-            .items)
-    }
-
     pub fn list_execution_history_page(
         &self,
         project_id: &str,
@@ -1664,49 +1659,76 @@ impl ScheduledTaskDatabase {
             .map_err(SchedulerDatabaseError::from)
     }
 
-    pub fn list_unaccepted_terminal_occurrence_ids(
+    pub fn cleanup_terminal_occurrences(
         &self,
         project_id: &str,
-        limit: usize,
-    ) -> Result<Vec<String>> {
-        if limit == 0 {
+        cutoff: DateTime<Utc>,
+        batch_size: usize,
+        protected_run_ids: &HashSet<String>,
+    ) -> Result<RetentionResult> {
+        if batch_size == 0 {
             return Err(SchedulerDatabaseError::InvalidValue(
-                "unaccepted terminal occurrence limit must be greater than zero".to_string(),
+                "retention batch size must be greater than zero".to_string(),
             ));
         }
-        let limit = i64::try_from(limit).map_err(|_| {
-            SchedulerDatabaseError::InvalidValue(
-                "unaccepted terminal occurrence limit is out of range".to_string(),
-            )
+        let batch_size = i64::try_from(batch_size).map_err(|_| {
+            SchedulerDatabaseError::InvalidValue(format!(
+                "retention batch size is out of range: {batch_size}"
+            ))
         })?;
-        let connection = self.lock_connection()?;
-        let mut statement = connection.prepare(
-            "SELECT id FROM scheduled_occurrences
-             WHERE project_id = ?1 AND accepted_at IS NULL
-               AND status IN ('missed', 'skipped', 'failed')
-             ORDER BY id ASC
-             LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![project_id, limit], |row| row.get(0))?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(SchedulerDatabaseError::from)
-    }
-
-    pub fn delete_unaccepted_terminal_occurrence(
-        &self,
-        project_id: &str,
-        occurrence_id: &str,
-    ) -> Result<bool> {
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            "CREATE TEMP TABLE IF NOT EXISTS scheduler_protected_runs (
+                 run_id TEXT PRIMARY KEY
+             ) WITHOUT ROWID;
+             DELETE FROM scheduler_protected_runs;",
+        )?;
+        for run_id in protected_run_ids {
+            transaction.execute(
+                "INSERT INTO scheduler_protected_runs(run_id) VALUES (?1)",
+                params![run_id],
+            )?;
+        }
         let deleted = transaction.execute(
             "DELETE FROM scheduled_occurrences
-             WHERE project_id = ?1 AND id = ?2 AND accepted_at IS NULL
-               AND status IN ('missed', 'skipped', 'failed')",
-            params![project_id, occurrence_id],
+             WHERE (project_id, id) IN (
+                 SELECT occurrence.project_id, occurrence.id
+                 FROM scheduled_occurrences AS occurrence
+                 WHERE occurrence.project_id = ?1
+                   AND occurrence.accepted_at IS NULL
+                   AND occurrence.status IN ('succeeded', 'failed', 'skipped', 'missed')
+                   AND occurrence.finished_at IS NOT NULL
+                   AND occurrence.finished_at < ?2
+                   AND NOT EXISTS (
+                       SELECT 1 FROM scheduler_protected_runs AS protected
+                       WHERE protected.run_id = occurrence.run_id
+                   )
+                 ORDER BY occurrence.finished_at ASC, occurrence.id ASC
+                 LIMIT ?3
+             )",
+            params![project_id, timestamp_millis(cutoff), batch_size],
         )?;
+        let has_more = transaction.query_row(
+            "SELECT EXISTS(
+                 SELECT 1
+                 FROM scheduled_occurrences AS occurrence
+                 WHERE occurrence.project_id = ?1
+                   AND occurrence.accepted_at IS NULL
+                   AND occurrence.status IN ('succeeded', 'failed', 'skipped', 'missed')
+                   AND occurrence.finished_at IS NOT NULL
+                   AND occurrence.finished_at < ?2
+                   AND NOT EXISTS (
+                       SELECT 1 FROM scheduler_protected_runs AS protected
+                       WHERE protected.run_id = occurrence.run_id
+                   )
+             )",
+            params![project_id, timestamp_millis(cutoff)],
+            |row| row.get(0),
+        )?;
+        transaction.execute("DELETE FROM scheduler_protected_runs", [])?;
         transaction.commit()?;
-        Ok(deleted == 1)
+        Ok(RetentionResult { deleted, has_more })
     }
 
     pub fn schema_version(&self) -> Result<i64> {
@@ -1977,9 +1999,29 @@ fn create_occurrence_schema_v2(transaction: &Transaction<'_>) -> Result<()> {
 }
 
 fn migrate_schema_v1_to_v2(transaction: &Transaction<'_>) -> Result<()> {
-    // Legacy rows cannot prove that execution was accepted with immutable content.
-    transaction.execute_batch("DROP TABLE scheduled_occurrences;")?;
-    create_occurrence_schema_v2(transaction)
+    transaction.execute_batch(
+        "ALTER TABLE scheduled_occurrences RENAME TO scheduled_occurrences_v1;
+         DROP INDEX IF EXISTS idx_scheduled_occurrences_active;
+         DROP INDEX IF EXISTS idx_scheduled_occurrences_history;
+         DROP INDEX IF EXISTS idx_scheduled_occurrences_status_history;",
+    )?;
+    create_occurrence_schema_v2(transaction)?;
+    transaction.execute_batch(
+        "INSERT INTO scheduled_occurrences (
+             project_id, id, job_id, scheduled_at, trigger_kind, schedule_revision,
+             status, attempt, owner_id, lease_until, heartbeat_at, task_id, run_id,
+             round_id, node_id, attempt_id, accepted_at, execution_snapshot_json,
+             error_code, error_params, started_at, finished_at, created_at, updated_at
+         )
+         SELECT
+             project_id, id, job_id, scheduled_at, trigger_kind, NULL,
+             status, attempt, owner_id, lease_until, heartbeat_at, task_id, run_id,
+             round_id, NULL, attempt_id, NULL, NULL,
+             error_code, error_params, started_at, finished_at, created_at, updated_at
+         FROM scheduled_occurrences_v1;
+         DROP TABLE scheduled_occurrences_v1;",
+    )?;
+    Ok(())
 }
 
 fn migrate_schema_v2_to_v3(transaction: &Transaction<'_>) -> Result<()> {
@@ -2022,7 +2064,12 @@ fn migrate_schema_v2_to_v3(transaction: &Transaction<'_>) -> Result<()> {
 fn migrate_schema_v3_to_v4(transaction: &Transaction<'_>) -> Result<()> {
     transaction.execute_batch(
         "DROP INDEX IF EXISTS idx_scheduled_history_deletions_pending;
-         DROP TABLE IF EXISTS scheduled_history_deletions;",
+         DROP TABLE IF EXISTS scheduled_history_deletions;
+         DROP INDEX IF EXISTS idx_scheduled_unaccepted_terminal;
+         CREATE INDEX IF NOT EXISTS idx_scheduled_occurrence_retention
+             ON scheduled_occurrences(project_id, finished_at, id)
+             WHERE accepted_at IS NULL
+               AND status IN ('succeeded', 'failed', 'skipped', 'missed');",
     )?;
     Ok(())
 }
@@ -2754,7 +2801,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_v1_upgrades_to_v3_and_removes_definition_cascade() {
+    fn schema_v1_upgrades_to_v4_without_dropping_legacy_occurrences() {
         let temp = tempdir().unwrap();
         let db_path = Utf8PathBuf::from_path_buf(temp.path().join("scheduled-tasks.db")).unwrap();
         {
@@ -2794,17 +2841,59 @@ mod tests {
                     ],
                 )
                 .unwrap();
+            let timestamp = fixed_time().timestamp_millis();
             transaction
                 .execute(
                     "INSERT INTO scheduled_occurrences (
                          project_id, id, job_id, scheduled_at, trigger_kind, status, attempt,
                          created_at, updated_at
-                     ) VALUES (?1, 'legacy-occurrence', ?2, ?3, 'manual', 'succeeded', 1, ?3, ?3)",
+                     ) VALUES (?1, 'legacy-pending', ?2, ?3, 'scheduled', 'pending', 0, ?3, ?3)",
+                    params![TEST_PROJECT_ID, definition.id(), timestamp],
+                )
+                .unwrap();
+            transaction
+                .execute(
+                    "INSERT INTO scheduled_occurrences (
+                         project_id, id, job_id, scheduled_at, trigger_kind, status, attempt,
+                         owner_id, lease_until, heartbeat_at, task_id, run_id, round_id, attempt_id,
+                         started_at, created_at, updated_at
+                     ) VALUES (
+                         ?1, 'legacy-running', ?2, ?3, 'manual', 'running', 2,
+                         'owner-legacy', ?3, ?3, 'task-legacy', 'run-legacy', 'round-legacy',
+                         'attempt-legacy', ?3, ?3, ?3
+                     )",
+                    params![TEST_PROJECT_ID, definition.id(), timestamp + 1],
+                )
+                .unwrap();
+            transaction
+                .execute(
+                    "INSERT INTO scheduled_occurrences (
+                         project_id, id, job_id, scheduled_at, trigger_kind, status, attempt,
+                         error_code, error_params, started_at, finished_at, created_at, updated_at
+                     ) VALUES (
+                         ?1, 'legacy-failed', ?2, ?3, 'manual', 'failed', 3,
+                         'SCHEDULED_EXECUTION_FAILED', ?4, ?3, ?3, ?3, ?3
+                     )",
                     params![
                         TEST_PROJECT_ID,
                         definition.id(),
-                        fixed_time().timestamp_millis()
+                        timestamp + 2,
+                        serde_json::json!({"attempt": 3}).to_string(),
                     ],
+                )
+                .unwrap();
+            transaction
+                .execute(
+                    "INSERT INTO scheduled_occurrences (
+                         project_id, id, job_id, scheduled_at, trigger_kind, status, attempt,
+                         task_id, run_id, round_id, attempt_id, started_at, finished_at,
+                         created_at, updated_at
+                     ) VALUES (
+                         ?1, 'legacy-succeeded', ?2, ?3, 'manual', 'succeeded', 1,
+                         'task-finished', 'run-finished', 'round-finished', 'attempt-finished',
+                         ?3, ?3, ?3, ?3
+                     )",
+                    params![TEST_PROJECT_ID, definition.id(), timestamp + 3],
                 )
                 .unwrap();
             transaction.commit().unwrap();
@@ -2819,25 +2908,64 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+        let occurrences = database
+            .list_occurrences(TEST_PROJECT_ID, "job-v1", 10)
+            .unwrap();
+        assert_eq!(occurrences.len(), 4);
+        let occurrences = occurrences
+            .into_iter()
+            .map(|occurrence| (occurrence.id.clone(), occurrence))
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            occurrences["legacy-pending"].status,
+            OccurrenceStatus::Pending
+        );
+        let running = &occurrences["legacy-running"];
+        assert_eq!(running.status, OccurrenceStatus::Running);
+        assert_eq!(running.owner_id.as_deref(), Some("owner-legacy"));
+        assert_eq!(running.run_id.as_deref(), Some("run-legacy"));
+        assert_eq!(running.attempt_id.as_deref(), Some("attempt-legacy"));
+        let failed = &occurrences["legacy-failed"];
+        assert_eq!(failed.status, OccurrenceStatus::Failed);
+        assert_eq!(
+            failed.error_code,
+            Some(crate::scheduler::occurrence::ScheduledErrorCode::ExecutionFailed)
+        );
+        assert_eq!(failed.error_params, Some(serde_json::json!({"attempt": 3})));
+        let succeeded = &occurrences["legacy-succeeded"];
+        assert_eq!(succeeded.status, OccurrenceStatus::Succeeded);
+        assert_eq!(succeeded.task_id.as_deref(), Some("task-finished"));
+        assert_eq!(succeeded.run_id.as_deref(), Some("run-finished"));
         assert!(
-            database
+            occurrences
+                .values()
+                .all(|occurrence| occurrence.accepted_execution.is_none())
+        );
+        {
+            let connection = database.connection.lock().unwrap();
+            let cascades = connection
+                .prepare("PRAGMA foreign_key_list(scheduled_occurrences)")
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(6))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap();
+            assert!(cascades.is_empty());
+        }
+        drop(database);
+        let reopened = ScheduledTaskDatabase::open(&db_path).unwrap();
+        assert_eq!(reopened.schema_version().unwrap(), 4);
+        assert_eq!(
+            reopened
                 .list_occurrences(TEST_PROJECT_ID, "job-v1", 10)
                 .unwrap()
-                .is_empty()
+                .len(),
+            4
         );
-        let connection = database.connection.lock().unwrap();
-        let cascades = connection
-            .prepare("PRAGMA foreign_key_list(scheduled_occurrences)")
-            .unwrap()
-            .query_map([], |row| row.get::<_, String>(6))
-            .unwrap()
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .unwrap();
-        assert!(cascades.is_empty());
     }
 
     #[test]
-    fn schema_v2_marker_with_v1_occurrences_recovers_without_losing_definitions() {
+    fn schema_v2_marker_with_v1_occurrences_recovers_without_losing_data() {
         let temp = tempdir().unwrap();
         let path = temp.path().join("core.db");
         let definition = definition(
@@ -2904,12 +3032,13 @@ mod tests {
                 .map(|record| record.definition),
             Some(definition)
         );
-        assert!(
-            migrated
-                .list_occurrences(TEST_PROJECT_ID, "job-schema-drift", 20)
-                .unwrap()
-                .is_empty()
-        );
+        let occurrences = migrated
+            .list_occurrences(TEST_PROJECT_ID, "job-schema-drift", 20)
+            .unwrap();
+        assert_eq!(occurrences.len(), 1);
+        assert_eq!(occurrences[0].id, "dirty-occurrence");
+        assert_eq!(occurrences[0].status, OccurrenceStatus::Succeeded);
+        assert!(occurrences[0].accepted_execution.is_none());
         let connection = migrated.lock_connection().unwrap();
         let columns = connection
             .prepare("PRAGMA table_info(scheduled_occurrences)")
@@ -2929,6 +3058,7 @@ mod tests {
         for index_name in [
             "idx_scheduled_execution_history",
             "idx_scheduled_execution_run_group",
+            "idx_scheduled_occurrence_retention",
         ] {
             let exists: bool = connection
                 .query_row(
@@ -3234,8 +3364,9 @@ mod tests {
 
         let history = database
             .database
-            .list_execution_history(TEST_PROJECT_ID, definition.id(), 20)
-            .unwrap();
+            .list_execution_history_page(TEST_PROJECT_ID, definition.id(), None, 20)
+            .unwrap()
+            .items;
 
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].run_id, "run-real");
@@ -3268,8 +3399,9 @@ mod tests {
 
         let history = database
             .database
-            .list_execution_history(TEST_PROJECT_ID, definition.id(), 20)
-            .unwrap();
+            .list_execution_history_page(TEST_PROJECT_ID, definition.id(), None, 20)
+            .unwrap()
+            .items;
 
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].run_id, "run-continuous");
@@ -3562,8 +3694,9 @@ mod tests {
 
         let migrated = ScheduledTaskDatabase::open(&path).unwrap();
         let after = migrated
-            .list_execution_history(TEST_PROJECT_ID, definition.id(), 20)
-            .unwrap();
+            .list_execution_history_page(TEST_PROJECT_ID, definition.id(), None, 20)
+            .unwrap()
+            .items;
 
         assert_eq!(migrated.schema_version().unwrap(), 4);
         assert_eq!(after.len(), 1);
@@ -3574,6 +3707,7 @@ mod tests {
         for index_name in [
             "idx_scheduled_execution_history",
             "idx_scheduled_execution_run_group",
+            "idx_scheduled_occurrence_retention",
         ] {
             let exists: bool = connection
                 .query_row(
@@ -3601,7 +3735,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_v3_upgrades_to_v4_by_removing_only_run_deletion_state() {
+    fn schema_v3_upgrades_to_v4_by_removing_run_deletion_state_and_restoring_retention() {
         let temp = tempdir().unwrap();
         let path = temp.path().join("core.db");
         {
@@ -3656,6 +3790,7 @@ mod tests {
         for index_name in [
             "idx_scheduled_execution_history",
             "idx_scheduled_execution_run_group",
+            "idx_scheduled_occurrence_retention",
         ] {
             let exists: bool = connection
                 .query_row(
@@ -3716,8 +3851,9 @@ mod tests {
             super::RemoveExecutionHistoryResult::Removed(1)
         );
         let remaining = database
-            .list_execution_history(TEST_PROJECT_ID, definition.id(), 20)
-            .unwrap();
+            .list_execution_history_page(TEST_PROJECT_ID, definition.id(), None, 20)
+            .unwrap()
+            .items;
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].occurrence_count, 1);
         assert_eq!(remaining[0].latest_occurrence_id, occurrence_ids[1]);
@@ -3769,8 +3905,9 @@ mod tests {
         );
         assert_eq!(
             database
-                .list_execution_history(TEST_PROJECT_ID, definition.id(), 20)
+                .list_execution_history_page(TEST_PROJECT_ID, definition.id(), None, 20)
                 .unwrap()
+                .items
                 .len(),
             2
         );
@@ -3834,73 +3971,11 @@ mod tests {
             super::RemoveExecutionHistoryResult::AlreadyRemoved
         );
         let remaining = database
-            .list_execution_history(TEST_PROJECT_ID, definition.id(), 20)
-            .unwrap();
+            .list_execution_history_page(TEST_PROJECT_ID, definition.id(), None, 20)
+            .unwrap()
+            .items;
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].latest_occurrence_id, occurrence_ids[1]);
-    }
-
-    #[test]
-    fn terminal_cleanup_deletes_only_unaccepted_execution_outcomes() {
-        let (_temp, database) = database();
-        let now = Utc::now();
-        let definition = definition(
-            TEST_PROJECT_ID,
-            "job-terminal-cleanup",
-            ScheduleSpec::every(1, "hours", now).unwrap(),
-        );
-        let record = database.create_job(&definition, None).unwrap();
-        let accepted = database
-            .create_or_get_occurrence(definition.id(), now, OccurrenceTriggerKind::Manual)
-            .unwrap();
-        claim(&database, &accepted.id, now);
-        let snapshot = execution_snapshot(&definition, record.revision, now, false);
-        assert!(matches!(
-            accept(
-                &database,
-                &accepted.id,
-                &record,
-                &complete_links("run-kept"),
-                &snapshot,
-            ),
-            super::AcceptExecutionResult::Accepted(_)
-        ));
-        assert!(
-            database
-                .finish_occurrence(
-                    &accepted.id,
-                    "owner-1",
-                    OccurrenceStatus::Failed,
-                    None,
-                    Some(super::ScheduledError::new(
-                        super::ScheduledErrorCode::ExecutionFailed,
-                    )),
-                )
-                .unwrap()
-        );
-        let unaccepted = database
-            .create_or_get_occurrence(
-                definition.id(),
-                now + Duration::minutes(1),
-                OccurrenceTriggerKind::Manual,
-            )
-            .unwrap();
-        set_occurrence_state(&database, &unaccepted.id, "failed", now, None);
-
-        assert!(
-            !database
-                .database
-                .delete_unaccepted_terminal_occurrence(TEST_PROJECT_ID, &accepted.id)
-                .unwrap()
-        );
-        assert!(
-            database
-                .database
-                .delete_unaccepted_terminal_occurrence(TEST_PROJECT_ID, &unaccepted.id)
-                .unwrap()
-        );
-        assert!(database.get_occurrence(&accepted.id).unwrap().is_some());
-        assert!(database.get_occurrence(&unaccepted.id).unwrap().is_none());
     }
 
     #[test]
@@ -4090,6 +4165,192 @@ mod tests {
                 ],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn retention_deletes_only_expired_unaccepted_terminal_occurrences_in_bounded_batches() {
+        let (_temp, database) = database();
+        let now = fixed_time();
+        let definition = definition(
+            TEST_PROJECT_ID,
+            "job-retention",
+            ScheduleSpec::at(now + Duration::days(60)),
+        );
+        let record = database.create_job(&definition, None).unwrap();
+        let accepted = database
+            .create_or_get_occurrence(
+                definition.id(),
+                now - Duration::days(45),
+                OccurrenceTriggerKind::Manual,
+            )
+            .unwrap();
+        claim(&database, &accepted.id, now - Duration::days(45));
+        assert!(matches!(
+            accept(
+                &database,
+                &accepted.id,
+                &record,
+                &complete_links("run-accepted"),
+                &execution_snapshot(
+                    &definition,
+                    record.revision,
+                    now - Duration::days(45),
+                    false
+                ),
+            ),
+            super::AcceptExecutionResult::Accepted(_)
+        ));
+        set_occurrence_state(
+            &database,
+            &accepted.id,
+            "succeeded",
+            now - Duration::days(45),
+            Some("run-accepted"),
+        );
+
+        let old_failed = database
+            .create_or_get_occurrence(
+                definition.id(),
+                now - Duration::days(44),
+                OccurrenceTriggerKind::Manual,
+            )
+            .unwrap();
+        let old_missed = database
+            .create_or_get_occurrence(
+                definition.id(),
+                now - Duration::days(43),
+                OccurrenceTriggerKind::Scheduled,
+            )
+            .unwrap();
+        let recent_failed = database
+            .create_or_get_occurrence(
+                definition.id(),
+                now - Duration::days(1),
+                OccurrenceTriggerKind::Manual,
+            )
+            .unwrap();
+        let pending = database
+            .create_or_get_occurrence(
+                definition.id(),
+                now - Duration::days(42),
+                OccurrenceTriggerKind::Manual,
+            )
+            .unwrap();
+        let attention = database
+            .create_or_get_occurrence(
+                definition.id(),
+                now - Duration::days(41),
+                OccurrenceTriggerKind::Manual,
+            )
+            .unwrap();
+        set_occurrence_state(
+            &database,
+            &old_failed.id,
+            "failed",
+            now - Duration::days(44),
+            None,
+        );
+        set_occurrence_state(
+            &database,
+            &old_missed.id,
+            "missed",
+            now - Duration::days(43),
+            None,
+        );
+        set_occurrence_state(
+            &database,
+            &recent_failed.id,
+            "failed",
+            now - Duration::days(1),
+            None,
+        );
+        set_occurrence_state(
+            &database,
+            &attention.id,
+            "attention_required",
+            now - Duration::days(41),
+            None,
+        );
+
+        let first = database
+            .cleanup_terminal_occurrences(
+                TEST_PROJECT_ID,
+                now - Duration::days(30),
+                1,
+                &HashSet::new(),
+            )
+            .unwrap();
+        assert_eq!(first.deleted, 1);
+        assert!(first.has_more);
+        let second = database
+            .cleanup_terminal_occurrences(
+                TEST_PROJECT_ID,
+                now - Duration::days(30),
+                1,
+                &HashSet::new(),
+            )
+            .unwrap();
+        assert_eq!(second.deleted, 1);
+        assert!(!second.has_more);
+
+        assert!(database.get_occurrence(&old_failed.id).unwrap().is_none());
+        assert!(database.get_occurrence(&old_missed.id).unwrap().is_none());
+        assert!(database.get_occurrence(&accepted.id).unwrap().is_some());
+        assert!(
+            database
+                .get_occurrence(&recent_failed.id)
+                .unwrap()
+                .is_some()
+        );
+        assert!(database.get_occurrence(&pending.id).unwrap().is_some());
+        assert!(database.get_occurrence(&attention.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn retention_preserves_unaccepted_occurrence_linked_to_an_active_run() {
+        let (_temp, database) = database();
+        let now = fixed_time();
+        let occurrence = database
+            .create_or_get_occurrence(
+                "job-retention-protected",
+                now - Duration::days(40),
+                OccurrenceTriggerKind::Manual,
+            )
+            .unwrap();
+        set_occurrence_state(
+            &database,
+            &occurrence.id,
+            "failed",
+            now - Duration::days(40),
+            Some("run-active"),
+        );
+
+        let result = database
+            .cleanup_terminal_occurrences(
+                TEST_PROJECT_ID,
+                now - Duration::days(30),
+                500,
+                &HashSet::from(["run-active".to_string()]),
+            )
+            .unwrap();
+
+        assert_eq!(result.deleted, 0);
+        assert!(database.get_occurrence(&occurrence.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn retention_rejects_zero_batch_size() {
+        let (_temp, database) = database();
+
+        assert!(matches!(
+            database.cleanup_terminal_occurrences(
+                TEST_PROJECT_ID,
+                fixed_time(),
+                0,
+                &HashSet::new(),
+            ),
+            Err(super::SchedulerDatabaseError::InvalidValue(_))
+        ));
     }
 
     #[test]

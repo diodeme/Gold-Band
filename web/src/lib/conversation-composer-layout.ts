@@ -18,7 +18,7 @@ export const CONVERSATION_HOME_COMPOSER_LAYOUT = {
   textareaMaxHeightPx: 320,
   containerClassName: '@container/conversation-composer flex flex-col gap-1.5',
   attachedInfoRailClassName: 'min-w-0',
-  attachedInfoClassName: 'relative mx-auto flex h-7 w-[80%] min-w-0 items-center justify-start gap-0 pl-8 [--conversation-workspace-info-surface:var(--gold-surface-high)] shadow-none',
+  attachedInfoClassName: '@container/conversation-context relative mx-auto flex h-7 w-[80%] min-w-0 items-center justify-start gap-0 px-8 [--conversation-workspace-info-surface:var(--gold-surface-high)] shadow-none',
   toolbarClassName: 'mt-2 grid gap-1.5',
   simpleToolbarClassName: 'grid-cols-1 @xs/conversation-composer:grid-cols-[minmax(0,1fr)_auto] @xs/conversation-composer:items-center @xs/conversation-composer:gap-3',
   configuredToolbarClassName: 'grid-cols-1 @2xl/conversation-composer:grid-cols-[minmax(12rem,0.75fr)_minmax(28rem,1.25fr)] @2xl/conversation-composer:items-center @2xl/conversation-composer:gap-3',
@@ -42,7 +42,7 @@ export const CONVERSATION_HOME_COMPOSER_LAYOUT = {
 } as const;
 
 export const ACP_SESSION_COMPOSER_LAYOUT = {
-  stackSurfaceClassName: 'border border-border [border-width:var(--acp-session-composer-border-width)]',
+  stackSurfaceClassName: 'border border-border shadow-none [border-width:var(--acp-session-composer-border-width)]',
   promptInputClassName: 'px-0',
   textareaClassName: `${COMPOSER_TEXTAREA_BASE_CLASS_NAME} px-2.5`,
   commandBarClassName: 'mt-1 flex min-w-0 flex-wrap items-center gap-1.5 px-1 py-1',

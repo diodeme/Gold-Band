@@ -1,5 +1,13 @@
 # 工作流停止后 Runtime 控制与自由会话统一技术方案
 
+## 2026-09-10：恢复参数跨节点泄漏修复验收
+
+- 根因：`drive_from_node_with_initial_session` 在流程切换时重置了普通 invocation 参数，却持续克隆三个 AI-DYNAMIC 恢复参数。旧子节点恢复完成后，验收失败进入新 round，旧 lease 在新作用域触发 `runtime.continue-superseded`。属于已有作用域设计的实现遗漏；artifact 和工作流 `Session: new` 配置无误。
+- 在现有 transition 边界统一清空 `dynamic_resume_override`、`parent_continue_input`、`parent_continue_prompt_id`；同 attempt 重试不清空。审计确认 session mode/reference、prompt/identity/display/visibility、附件、control intent、model/permission override 和 repair 计数已有切换重置。后两项 parent 参数用于动态节点中已有子工作流的继续输入，本次一并收紧生命周期；不宣称普通动态 Worker 测试复现了该输入消费路径。
+- 最小接口测试先复现“round1 bootstrap 暂停、显式继续、验收 false、round2 paused/runtime-abnormal”，事件原因精确为 `runtime.continue-superseded`；同一测试修复后完成 success，验证新 round 使用 New 且验收/round2 不继承旧恢复 prompt ID、正文或 display。AI-DYNAMIC 集成测试 38/38、dynamic resume 单元测试 11/11 通过，包含原有子工作流恢复、lease 撤销和 completion reconciliation。
+- 现场 task-035/run-001 已备份到用户 diagnostics 的 `task-035-before-restore-1789005026`。保留原 ACP session、历史和附件，将 round2 与已接受的验收 artifacts 移入备份；run/round/验收 node 恢复 Paused、outcome 清空、pause reason 为 ProcessInterrupted，execution revision 从 56 前进至 57，artifact checkpoint 为 business-turn 且无旧 generation。通过正式状态校验和 control cursor 接口确认可继续当前验收、普通对话为 NonRuntimeControlled。本次未启动 Agent 或重发消息，未替换已安装 EXE。
+- 过度设计与性能验收：仅三个可选参数在既有切换点释放；无新抽象、依赖、查询、缓存、队列或并发机制。使用已有接口测试，无需额外 benchmark。横幅保持本次约定范围外。
+
 ## 1. 背景
 
 Gold Band 当前已经具备 Direct、固定工作流、AI-DYNAMIC、人工 check、节点结束后追问、ACP stop / continue 等多种会话入口，但“Agent 可以继续对话”和“Runtime 应继续推进工作流”仍然存在语义耦合。
@@ -582,6 +590,10 @@ Conversation VM 在外层仍 Running 且 phase 为 `PreparingWorkspace` 时，�
 9. session tree/header 的 Running 圆点复用侧边栏 `gold-running + motion-safe:animate-pulse`，不保留额外 ping halo；暂停和终态保持静态。
 
 ### 14.3 页面验证
+
+本轮停止通知验收：除固定 attempt、最后活跃 leaf 外，补齐工作区准备阶段所走的整体 `run_pause()` 通知；第三项失败测试同样先证明事件数为 0，再确认重复整体停止只发一次 RunPaused。最终 Rust 暂停领域 16/16、桌面 Run 事件映射 1/1、定时 occurrence 暂停不结算 1/1、Web 边栏/导航 58/58 通过，定向 diff check 通过。Rust 构建保留既有 dead-code 警告。Chrome 启动验证确认 `/chat` 与边栏挂载，测试服务和标签已清理；没有操作用户正在运行的 EXE 或重新执行真实 Agent 任务。新测试断言事件集合仅含 RunPaused，不产生 MetricsFact/InterventionRequested；恢复后的旧暂停快照在发布前被 execution 校验拒绝。复核不增加持久字段、依赖、缓存、队列或前端订阅，通知在状态锁外发布，读取量固定，不改变既有停止/并行判定和消费者业务分支。
+
+2026-09-09 聊天停止通知补齐：现场 task-007/run-001 的 Run 与 dev/attempt-002 均已 paused（execution revision 36），raw frame 确认 cancel/cancelled，边栏仍蓝。根因为 attempt 停止写入没有发布 RunPaused；前次修复移除节点终态覆盖后暴露通知缺口。固定 attempt 和 AI-DYNAMIC 最后活跃 leaf 两项最小测试均先观察到已 paused 但事件数为 0；并行 sibling 仍 active 时不发整体事件的基线通过。修复限定实际 Running -> Paused 转换，在锁外复核现有 execution 后只发布 RunPaused，不调用指标/介入 helper，不修改停止判定或执行逻辑。复用现有事件总线、桌面订阅及状态模型；每次整体转换仅增加一次小型 Run 读取，无历史扫描、轮询、新缓存或队列。验证结果见本轮后续验收记录。
 
 2026-09-09 边栏投影修复验收：回溯 `0c641edc9` 确认原路径用于继续后立即变蓝；最小失败测试证明单个 completed/success attempt 会把普通区与置顶区的 running Run 摘要同时覆盖为 completed/success。修复后同一测试转绿，覆盖单节点成功、失败、暂停不结算整体、普通 ACP 活跃不推进 Run、继续立即变蓝、Run 暂停及成功/失败收敛、迟到 active 不回退终态。边栏/导航定向 3 文件 58 项通过，DOM 验证会话行及展开 Run 行颜色优先级；TypeScript 和 Vite 生产构建通过（保留既有混合静态/动态导入提示）。iab 不可用，改用已连接 Chrome，在临时实际组件验证页检查浅色/深色四种状态和 Run 展开；未执行真实 Agent 并行任务，事件顺序由接口测试固定。临时页面、标签和测试服务验收后清理。范围仅限边栏消费，复用既有组件和事件，无后端执行改动；inactive snapshot 在 O(1) 返回，active 更新维持已加载目标页的 O(tasks + runs)，不增加 I/O、全量历史、缓存、队列或订阅，未引入过度设计或新增性能风险。
 

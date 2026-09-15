@@ -4,6 +4,9 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::time::{Duration, Instant};
 
+mod item_reader;
+pub use item_reader::{ActivityImagePage, read_activity_image_page};
+
 use anyhow::{Result, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
@@ -26,6 +29,8 @@ pub const DEFAULT_TIMELINE_COMPACT_MAX_SIZE_BYTES: u64 = 8 * 1024 * 1024;
 pub const DEFAULT_TIMELINE_COMPACT_PATCH_RATIO: usize = 4;
 pub const DEFAULT_TIMELINE_COMPACT_MIN_PATCH_COUNT: usize = 4 * 1024;
 pub const TIMELINE_BLOB_MIN_BYTES: usize = 64 * 1024;
+#[cfg(test)]
+thread_local! { static INDEX_DISK_LOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 // V10 removes runtime-control artifact inference from the generic timeline
 // index. Artifact selection belongs to Runtime output evaluation and the
 // selected source is annotated by its canonical branch and item identity.
@@ -47,7 +52,8 @@ pub const TIMELINE_BLOB_MIN_BYTES: usize = 64 * 1024;
 // index as compatible would leave stop unable to settle a processing retry in
 // the crash window between the timeline append and session metadata rewrite.
 // V11 indexes lightweight image references, including images in paginated activity.
-pub const TIMELINE_INDEX_FORMAT_VERSION: u32 = 11;
+// V12 derives composer eligibility from user-text provenance, including manual transitions.
+pub const TIMELINE_INDEX_FORMAT_VERSION: u32 = 12;
 pub const DEFAULT_TIMELINE_CHECKPOINT_PATCH_INTERVAL: usize = 256;
 pub const DEFAULT_TIMELINE_TAIL_REPLAY_LIMIT: usize = 256;
 // Internal result marker: tail replay exceeded its bound and the index was
@@ -147,6 +153,8 @@ struct TimelineItemLocator {
     branch_id: String,
     #[serde(default)]
     gold_band_prompt: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    composer_text_bytes: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider_history_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -285,6 +293,8 @@ impl TimelineRuntimeProjection {
 #[serde(rename_all = "camelCase")]
 struct TimelineMaterializedIndex {
     format_version: u32,
+    #[serde(default)]
+    image_projection_pending: bool,
     generation: u64,
     covered_offset: u64,
     covered_revision: u64,
@@ -327,6 +337,7 @@ impl Default for TimelineMaterializedIndex {
     fn default() -> Self {
         Self {
             format_version: TIMELINE_INDEX_FORMAT_VERSION,
+            image_projection_pending: false,
             generation: 1,
             covered_offset: 0,
             covered_revision: 0,
@@ -1008,14 +1019,29 @@ fn load_or_rebuild_index_unlocked(
     index_path: &Utf8Path,
     policy: TimelineCheckpointPolicy,
 ) -> Result<(TimelineMaterializedIndex, usize)> {
+    #[cfg(test)]
+    INDEX_DISK_LOADS.set(INDEX_DISK_LOADS.get() + 1);
     let timeline_len = timeline_file_len(timeline_path);
-    let existing_index = index_path
+    let mut existing_index = index_path
         .exists()
         .then(|| crate::storage::read_json::<TimelineMaterializedIndex>(index_path))
         .transpose()
         .ok()
         .flatten();
-    if let Some(mut index) = existing_index.clone()
+    // V10 has the same canonical locators; image enrichment is a separate read.
+    if let Some(index) = existing_index.as_mut()
+        && index.format_version == 10
+        && index.covered_offset <= timeline_len
+        && timeline_prefix_fingerprint(timeline_path, index.covered_offset)?
+            == index.covered_prefix_fingerprint
+    {
+        index.format_version = TIMELINE_INDEX_FORMAT_VERSION;
+        index.image_projection_pending = true;
+        rebuild_semantic_blocks(index);
+        persist_index_unlocked(timeline_path, index)?;
+    }
+    let previous_generation = existing_index.as_ref().map(|index| index.generation);
+    if let Some(mut index) = existing_index
         && index.format_version == TIMELINE_INDEX_FORMAT_VERSION
         && index.covered_offset <= timeline_len
         && timeline_prefix_fingerprint(timeline_path, index.covered_offset)?
@@ -1055,8 +1081,8 @@ fn load_or_rebuild_index_unlocked(
         )?;
     }
     let (mut index, _) = rebuild_index_unlocked(timeline_path)?;
-    index.generation = existing_index
-        .map(|index| index.generation.saturating_add(1).max(1))
+    index.generation = previous_generation
+        .map(|generation| generation.saturating_add(1).max(1))
         .unwrap_or(1);
     persist_index_unlocked(timeline_path, &index)?;
     // The caller must distinguish an index hit from an index reconstruction;
@@ -1483,6 +1509,7 @@ fn timeline_item_locator(
         || matches!(
             item.kind.as_str(),
             "userTextDelta"
+                | "scheduledTrigger"
                 | "textDelta"
                 | "fileChangeSet"
                 | "attemptSeparator"
@@ -1554,6 +1581,7 @@ fn timeline_item_locator(
             .and_then(|raw| raw.get("source"))
             .and_then(Value::as_str)
             == Some("goldBandPrompt"),
+        composer_text_bytes: composer_history::original_user_text(item).map(str::len),
         provider_history_item_id: timeline_provider_history_item_id(item),
         prompt_id: timeline_prompt_id(item),
     })
@@ -1987,6 +2015,7 @@ fn build_activity_summary(
         timing: None,
         raw: Some(serde_json::json!({
             "goldBandActivity": {
+                "imagesPending": index.image_projection_pending,
                 "images": images,
                 "activityStartSeq": block.oldest_seq,
                 "activityEndSeq": block.newest_seq,
@@ -2041,6 +2070,8 @@ fn read_event_from_file_at_locator(
         .map(|(_, item, _)| item)
         .ok_or_else(|| anyhow::anyhow!("acp.timeline-index-locator-corrupt"))
 }
+
+pub mod composer_history;
 
 pub fn read_indexed_timeline_page(
     path: &Utf8Path,
@@ -2430,19 +2461,7 @@ pub fn read_indexed_timeline_item(
     path: &Utf8Path,
     item_id: &str,
 ) -> Result<Option<TimelineIndexedItem>> {
-    let policy = TimelineCheckpointPolicy::default();
-    let index_path = timeline_index_path(path);
-    with_jsonl_file_lock(path, || {
-        let (index, _) = load_or_rebuild_index_unlocked(path, &index_path, policy)?;
-        let Some(locator) = index.item_locators.get(item_id) else {
-            return Ok(None);
-        };
-        Ok(Some(TimelineIndexedItem {
-            event: read_event_at_locator(path, locator)?,
-            generation: index.generation,
-            revision: locator.revision,
-        }))
-    })
+    item_reader::read(path, item_id)
 }
 
 pub fn read_indexed_pending_permission(
@@ -3077,11 +3096,14 @@ mod tests {
         TIMELINE_BLOB_MIN_BYTES, TIMELINE_INDEX_FORMAT_VERSION, TimelineCompactionPolicy,
         TimelineRestoreMode, TimelineSettleOutcome, TimelineStore, TimelineUpsertOutcome,
         read_indexed_prompt_anchor_events, read_indexed_runtime_restore,
-        read_indexed_runtime_restore_for_branch, read_indexed_timeline_page,
-        read_indexed_timeline_projection, settle_latest_processing_retry_prompt,
-        settle_timeline_item_status, timeline_index_path,
+        read_indexed_runtime_restore_for_branch, read_indexed_timeline_item,
+        read_indexed_timeline_page, read_indexed_timeline_projection,
+        settle_latest_processing_retry_prompt, settle_timeline_item_status, timeline_index_path,
     };
-    use crate::acp::events::{AcpTimelinePatch, AcpTimingPatch, AcpUiEvent, load_timeline_items};
+    use crate::acp::events::{
+        AcpTimelinePatch, AcpTimingPatch, AcpUiEvent, ScheduledTriggerPayload, load_timeline_items,
+        scheduled_trigger_event,
+    };
 
     fn event(id: &str, seq: u64, content: &str) -> AcpUiEvent {
         AcpUiEvent {
@@ -3100,6 +3122,284 @@ mod tests {
             ended_at: Some(format!("{seq}Z")),
             timing: None,
             raw: Some(json!({ "source": "providerHistory" })),
+        }
+    }
+
+    fn trigger_payload() -> ScheduledTriggerPayload {
+        ScheduledTriggerPayload {
+            project_id: "project-001".to_string(),
+            scheduled_task_id: "scheduled-task-001".to_string(),
+            occurrence_id: "occurrence-001".to_string(),
+            trigger_kind: crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled,
+            scheduled_at: Some("2026-08-25T01:30:00Z".to_string()),
+            accepted_at: "2026-08-25T01:29:59Z".to_string(),
+            instruction_summary: "accepted summary".to_string(),
+            content_fingerprint: "sha256:accepted".to_string(),
+            links: crate::scheduler::occurrence::OccurrenceLinks {
+                task_id: Some("task-001".to_string()),
+                run_id: Some("run-001".to_string()),
+                round_id: Some("round-001".to_string()),
+                node_id: Some("dev".to_string()),
+                attempt_id: Some("attempt-001".to_string()),
+            },
+        }
+    }
+
+    #[test]
+    fn prompt_retry_does_not_duplicate_the_scheduled_trigger() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let payload = trigger_payload();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+
+        assert_eq!(
+            store
+                .upsert(1, &scheduled_trigger_event(1, &payload))
+                .unwrap(),
+            TimelineUpsertOutcome::Appended
+        );
+        assert_eq!(
+            store
+                .upsert(2, &scheduled_trigger_event(20, &payload))
+                .unwrap(),
+            TimelineUpsertOutcome::Unchanged
+        );
+        store.force_checkpoint().unwrap();
+
+        let items = load_timeline_items(&path).unwrap();
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| item.kind == "scheduledTrigger")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn timeline_index_restores_scheduled_trigger_after_restart() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let payload = trigger_payload();
+        {
+            let mut store =
+                TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+            store
+                .upsert(1, &scheduled_trigger_event(1, &payload))
+                .unwrap();
+            store.force_checkpoint().unwrap();
+        }
+
+        let restored = read_indexed_timeline_item(&path, "scheduled-trigger:occurrence-001")
+            .unwrap()
+            .expect("scheduled trigger must remain indexed after restart");
+
+        assert_eq!(restored.event.kind, "scheduledTrigger");
+        assert_eq!(
+            restored.event.raw.unwrap()["scheduledTrigger"],
+            serde_json::json!(payload)
+        );
+    }
+
+    #[test]
+    fn trigger_event_snapshot_is_immutable_under_later_definition_edits() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let accepted = trigger_payload();
+        let mut edited = accepted.clone();
+        edited.instruction_summary = "later definition summary".to_string();
+        edited.content_fingerprint = "sha256:later-definition".to_string();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        store
+            .upsert(1, &scheduled_trigger_event(1, &accepted))
+            .unwrap();
+
+        assert_eq!(
+            store
+                .upsert(2, &scheduled_trigger_event(2, &edited))
+                .unwrap(),
+            TimelineUpsertOutcome::Unchanged
+        );
+        store.force_checkpoint().unwrap();
+        let restored = read_indexed_timeline_item(&path, "scheduled-trigger:occurrence-001")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            restored.event.raw.unwrap()["scheduledTrigger"],
+            serde_json::json!(accepted)
+        );
+    }
+
+    #[test]
+    fn repeated_item_reads_share_one_index_load() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        store.upsert(1, &event("message", 1, "first")).unwrap();
+        store.force_checkpoint().unwrap();
+        super::INDEX_DISK_LOADS.set(0);
+        for _ in 0..8 {
+            super::read_indexed_timeline_item(&path, "message").unwrap();
+        }
+        assert_eq!(super::INDEX_DISK_LOADS.get(), 1);
+        store.upsert(2, &event("message", 2, "updated")).unwrap();
+        let item = super::read_indexed_timeline_item(&path, "message")
+            .unwrap()
+            .unwrap();
+        assert!(item.event.content.unwrap().contains("updated"));
+        assert_eq!(
+            super::INDEX_DISK_LOADS.get(),
+            1,
+            "ordinary append uses tail replay"
+        );
+    }
+
+    #[test]
+    fn version_upgrade_preserves_canonical_history_bytes() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        store.upsert(1, &event("message", 1, "first")).unwrap();
+        store.upsert(2, &event("message", 2, "final")).unwrap();
+        store.force_checkpoint().unwrap();
+        let index_path = super::timeline_index_path(&path);
+        let mut index: Value = crate::storage::read_json(&index_path).unwrap();
+        index["formatVersion"] = json!(10);
+        crate::storage::write_json(&index_path, &index).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let page = read_indexed_timeline_page(&path, None, None, None, 30).unwrap();
+        assert!(!page.events.is_empty());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "derived index upgrades must not rewrite canonical history"
+        );
+    }
+
+    #[test]
+    fn item_reader_invalidates_after_compaction_and_shares_concurrent_reads() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        store
+            .upsert(1, &event("message", 1, &"long ".repeat(100)))
+            .unwrap();
+        store.force_checkpoint().unwrap();
+        let first = super::read_indexed_timeline_item(&path, "message")
+            .unwrap()
+            .unwrap();
+        store.upsert(2, &event("message", 2, "final")).unwrap();
+        store.policy.max_size_bytes = 0;
+        assert!(store.compact_if_needed().unwrap());
+        std::thread::scope(|scope| {
+            let handles = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        super::INDEX_DISK_LOADS.set(0);
+                        let item = super::read_indexed_timeline_item(&path, "message")
+                            .unwrap()
+                            .unwrap();
+                        assert!(item.generation > first.generation);
+                        assert_eq!(item.event.content.as_deref(), Some("final"));
+                        super::INDEX_DISK_LOADS.get()
+                    })
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                handles
+                    .into_iter()
+                    .map(|handle| handle.join().unwrap())
+                    .sum::<usize>(),
+                1
+            );
+        });
+    }
+
+    #[test]
+    fn upgraded_activity_images_are_paged_without_hydrating_blobs() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        for seq in 1..=40 {
+            let mut item = event(&format!("tool-{seq}"), seq, "");
+            item.kind = "toolCall".into();
+            item.raw = Some(
+                json!({"content":[{"type":"content","content":{"type":"image","mimeType":"image/png","data":"AQID"}}]}),
+            );
+            store.upsert(seq, &item).unwrap();
+        }
+        store.force_checkpoint().unwrap();
+        let index_path = timeline_index_path(&path);
+        let mut index: Value = crate::storage::read_json(&index_path).unwrap();
+        index["formatVersion"] = json!(10);
+        for locator in index["itemLocators"].as_object_mut().unwrap().values_mut() {
+            locator.as_object_mut().unwrap().remove("images");
+        }
+        crate::storage::write_json(&index_path, &index).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let page = read_indexed_timeline_page(&path, None, None, None, 30).unwrap();
+        assert_eq!(
+            page.events[0].raw.as_ref().unwrap()["goldBandActivity"]["imagesPending"],
+            true
+        );
+        let first =
+            super::read_activity_image_page(&path, 1, 40, None, Some(page.generation)).unwrap();
+        assert_eq!(first.images.len(), 32);
+        let next = super::read_activity_image_page(
+            &path,
+            1,
+            40,
+            first.next_cursor.as_deref(),
+            Some(first.generation),
+        )
+        .unwrap();
+        assert_eq!(next.images.len(), 8);
+        assert!(next.next_cursor.is_none());
+        assert!(
+            super::read_activity_image_page(&path, 1, 40, None, Some(first.generation + 1))
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    #[ignore = "release-mode performance baseline; run explicitly"]
+    fn image_index_read_benchmark() {
+        for count in [1_000, 10_000, 100_000] {
+            let dir = tempdir().unwrap();
+            let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+            let items = (0..count)
+                .map(|id| event(&format!("item-{id}"), id, "small"))
+                .collect::<Vec<_>>();
+            super::write_canonical_timeline_unlocked(
+                &path,
+                &super::timeline_blob_store(&path),
+                &items,
+            )
+            .unwrap();
+            let index = super::rebuild_index_unlocked(&path).unwrap().0;
+            super::persist_index_unlocked(&path, &index).unwrap();
+            let started = Instant::now();
+            for id in 0..16 {
+                assert!(
+                    super::read_indexed_timeline_item(&path, &format!("item-{id}"))
+                        .unwrap()
+                        .is_some()
+                );
+            }
+            eprintln!(
+                "index benchmark records={count} reads=16 elapsed_ms={} index_bytes={}",
+                started.elapsed().as_millis(),
+                std::fs::metadata(super::timeline_index_path(&path))
+                    .unwrap()
+                    .len()
+            );
         }
     }
 
@@ -3258,6 +3558,25 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn scheduled_trigger_is_a_standalone_semantic_block() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        store
+            .upsert(1, &scheduled_trigger_event(1, &trigger_payload()))
+            .unwrap();
+        store.force_checkpoint().unwrap();
+
+        let page = read_indexed_timeline_page(&path, None, None, None, 30).unwrap();
+
+        assert_eq!(page.total_semantic_blocks, 1);
+        assert_eq!(page.loaded_semantic_blocks, 1);
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(page.events[0].kind, "scheduledTrigger");
     }
 
     #[test]
@@ -3980,7 +4299,8 @@ mod tests {
 
         let index_path = timeline_index_path(&path);
         let mut legacy: serde_json::Value = crate::storage::read_json(&index_path).unwrap();
-        legacy["formatVersion"] = json!(TIMELINE_INDEX_FORMAT_VERSION - 1);
+        // This fixture removes pre-image runtime fields, not just the V11 image projection.
+        legacy["formatVersion"] = json!(9);
         legacy["generation"] = json!(7);
         legacy["itemLocators"]["agent-prompt"]
             .as_object_mut()

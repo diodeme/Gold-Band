@@ -1,6 +1,7 @@
 use camino::Utf8PathBuf;
 use gold_band::{
     app::App,
+    channel::{RELEASE_CHANNEL, WB_CHANNEL},
     config::{DesktopLanguage, RuntimeConfig},
     storage::{StoragePathConfig, configure_storage_paths},
 };
@@ -14,6 +15,11 @@ fn formal_cicd_uses_the_shared_memory_tools_in_both_languages() {
     });
     let temp = tempfile::tempdir().unwrap();
     let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    if RELEASE_CHANNEL != WB_CHANNEL {
+        let app = App::with_config(root, RuntimeConfig::default());
+        assert!(app.profile_show("pf-builtin-cicd").is_err());
+        return;
+    }
     for language in [DesktopLanguage::ZhCn, DesktopLanguage::En] {
         let app = App::with_config(
             root.clone(),

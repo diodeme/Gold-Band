@@ -329,14 +329,6 @@ describe('desktopApi', () => {
   });
 
   it('forwards scheduled occurrence diagnostics commands', async () => {
-    await desktopApi.listScheduledTaskOccurrences('project-1', 'scheduled-1', 'cursor-1', 'failed');
-    expect(invokeCommand).toHaveBeenCalledWith('list_scheduled_task_occurrences', {
-      projectId: 'project-1',
-      scheduledTaskId: 'scheduled-1',
-      cursor: 'cursor-1',
-      status: 'failed',
-    });
-
     await desktopApi.getScheduledTaskDiagnostics('project-1', 'scheduled-1');
     expect(invokeCommand).toHaveBeenCalledWith('get_scheduled_task_diagnostics', {
       projectId: 'project-1',

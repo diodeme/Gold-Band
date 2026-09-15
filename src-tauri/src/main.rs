@@ -74,18 +74,19 @@ use commands::{
 use commands_conversation::{
     acknowledge_conversation_terminal_result, add_conversation_workspace,
     choose_conversation_workspace, create_conversation_run, create_scheduled_task,
-    delete_conversation_task, delete_scheduled_task, get_conversation_pinned_task_page,
-    get_conversation_run, get_conversation_run_mode, get_conversation_run_summary_page,
-    get_conversation_sidebar_bootstrap, get_conversation_task_page, get_conversation_workspaces,
-    get_scheduled_runtime_settings, get_scheduled_task, get_scheduled_task_diagnostics,
-    get_supported_attachment_extensions, list_scheduled_task_occurrences, list_scheduled_tasks,
-    materialize_conversation_attachments, pin_conversation, remove_conversation_workspace,
-    reorder_pinned_conversations, rerun_conversation_task, run_scheduled_task_now,
-    save_conversation_preference, save_conversation_run_mode, save_desktop_ui_mode,
-    save_last_conversation_workspace, save_scheduled_runtime_settings, search_conversation_tasks,
-    set_scheduled_task_enabled, show_conversation_attachment, show_conversation_message_attachment,
-    stat_attachment_files, sync_conversation_workspace, unpin_conversation, update_scheduled_task,
-    update_task_metadata, validate_conversation_create,
+    delete_conversation_task, delete_scheduled_execution_history, delete_scheduled_task,
+    get_conversation_pinned_task_page, get_conversation_run, get_conversation_run_mode,
+    get_conversation_run_summary_page, get_conversation_sidebar_bootstrap,
+    get_conversation_task_page, get_conversation_workspaces, get_scheduled_runtime_settings,
+    get_scheduled_task, get_scheduled_task_diagnostics, get_supported_attachment_extensions,
+    list_scheduled_execution_history, list_scheduled_tasks, materialize_conversation_attachments,
+    pin_conversation, remove_conversation_workspace, reorder_pinned_conversations,
+    rerun_conversation_task, run_scheduled_task_now, save_conversation_preference,
+    save_conversation_run_mode, save_desktop_ui_mode, save_last_conversation_workspace,
+    save_scheduled_runtime_settings, search_conversation_tasks, set_scheduled_task_enabled,
+    show_conversation_attachment, show_conversation_message_attachment, stat_attachment_files,
+    sync_conversation_workspace, unpin_conversation, update_scheduled_task, update_task_metadata,
+    validate_conversation_create,
 };
 use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::sqlite::init_search_index;
@@ -329,20 +330,26 @@ fn run() -> anyhow::Result<()> {
                 let _ = init_search_index(&paths.sqlite_db_path(), &paths.projects_dir());
             }
             let handle = app.handle().clone();
+            let command_handle = handle.clone();
+            handle
+                .state::<DesktopState>()
+                .set_agent_command_update(move |catalog| {
+                    commands::emit_agent_commands_updated(&command_handle, catalog);
+                });
             std::thread::spawn(move || {
                 loop {
                     let state = handle.state::<DesktopState>();
                     debug!("periodic agent maintenance cycle started");
-                    let diagnostics_refreshed = match state.refresh_all_agent_diagnostics(|| {
-                        commands::emit_agent_registry_updated(&handle);
-                        commands::emit_agent_commands_updated(&handle, None);
-                    }) {
-                        Ok(()) => true,
-                        Err(error) => {
-                            warn!(%error, "periodic agent diagnostic refresh failed");
-                            false
-                        }
-                    };
+                    let diagnostics_refreshed =
+                        match state.refresh_all_agent_diagnostics(|agent_id| {
+                            commands::emit_agent_registry_updated(&handle, agent_id);
+                        }) {
+                            Ok(()) => true,
+                            Err(error) => {
+                                warn!(%error, "periodic agent diagnostic refresh failed");
+                                false
+                            }
+                        };
                     let commands_refreshed =
                         match state.refresh_agent_command_catalogs_for_active_workspaces() {
                             Ok(()) => true,
@@ -351,12 +358,6 @@ fn run() -> anyhow::Result<()> {
                                 false
                             }
                         };
-                    if diagnostics_refreshed {
-                        commands::emit_agent_registry_updated(&handle);
-                    }
-                    if diagnostics_refreshed || commands_refreshed {
-                        commands::emit_agent_commands_updated(&handle, None);
-                    }
                     debug!(
                         diagnostics_refreshed,
                         commands_refreshed, "periodic agent maintenance cycle completed"
@@ -435,6 +436,7 @@ fn run() -> anyhow::Result<()> {
             get_acp_activity_detail,
             get_acp_tool_detail,
             get_acp_image,
+            commands::get_acp_activity_images,
             renew_acp_session_lease,
             submit_conversation_prompt,
             reorder_conversation_queued_prompts,
@@ -447,6 +449,8 @@ fn run() -> anyhow::Result<()> {
             respond_acp_permission,
             respond_elicitation,
             get_acp_raw_frames,
+            commands::list_composer_history,
+            commands::get_composer_history_text,
             start_run,
             get_git_capability,
             initialize_git_repository,
@@ -530,7 +534,8 @@ fn run() -> anyhow::Result<()> {
             get_conversation_pinned_task_page,
             get_conversation_run_summary_page,
             list_scheduled_tasks,
-            list_scheduled_task_occurrences,
+            list_scheduled_execution_history,
+            delete_scheduled_execution_history,
             get_scheduled_task_diagnostics,
             get_scheduled_runtime_settings,
             save_scheduled_runtime_settings,

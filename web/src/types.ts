@@ -425,6 +425,15 @@ export interface AgentRegistryVm {
   catalog: AgentCatalogEntryVm[];
 }
 
+export type AcpActivityImagesInput = TurnFileLocatorVm & {
+  start: number; end: number; after?: string | null; generation?: number | null;
+};
+export interface AcpActivityImagesPage {
+  images: AcpImageRef[];
+  nextCursor: string | null;
+  generation: number;
+}
+
 export interface ManagedAgentVm {
   agentType: string;
   displayName: string;
@@ -2205,7 +2214,7 @@ export type ConversationPage =
   | { kind: 'agents' }
   | { kind: 'contexts' }
   | { kind: 'scheduled-tasks' }
-  | { kind: 'scheduled-task-detail'; projectId: string; scheduledTaskId: string }
+  | { kind: 'scheduled-task-detail'; projectId: string; scheduledTaskId: string; taskId?: string; runId?: string; occurrenceId?: string }
   | { kind: 'settings' };
 
 export interface ScheduledTaskVm {
@@ -2242,9 +2251,59 @@ export interface ScheduledOccurrenceVm {
   finishedAt?: string | null;
 }
 
-export interface ScheduledOccurrencePageVm {
-  items: ScheduledOccurrenceVm[];
+export interface ScheduledOccurrenceLinksVm {
+  taskId?: string | null;
+  runId?: string | null;
+  roundId?: string | null;
+  attemptId?: string | null;
+  nodeId?: string | null;
+}
+
+export interface ScheduledTriggerPayloadVm {
+  projectId: string;
+  scheduledTaskId: string;
+  occurrenceId: string;
+  triggerKind: 'scheduled' | 'manual';
+  scheduledAt?: string | null;
+  acceptedAt: string;
+  instructionSummary: string;
+  contentFingerprint: string;
+  links: ScheduledOccurrenceLinksVm;
+}
+
+export interface ScheduledExecutionHistoryVm {
+  projectId: string;
+  scheduledTaskId: string;
+  taskId: string;
+  runId: string;
+  firstAcceptedAt: string;
+  lastAcceptedAt: string;
+  occurrenceCount: number;
+  latestOccurrenceId: string;
+  latestSummary: string;
+  latestContentFingerprint: string;
+  availability: 'available' | 'unavailable';
+  run?: ConversationRunSummaryVm | null;
+  error?: { code: string; params: Record<string, unknown> } | null;
+}
+
+export interface ScheduledExecutionHistoryPageVm {
+  items: ScheduledExecutionHistoryVm[];
   nextCursor?: string | null;
+}
+
+export interface ScheduledExecutionHistoryDeleteInputVm {
+  projectId: string;
+  scheduledTaskId: string;
+  taskId: string;
+  runId: string;
+  throughOccurrenceId: string;
+}
+
+export interface ScheduledExecutionHistoryDeleteResultVm extends ScheduledExecutionHistoryDeleteInputVm {
+  status: 'completed' | 'failed';
+  code?: string | null;
+  params: Record<string, unknown>;
 }
 
 export interface ScheduledTaskDiagnosticsVm {

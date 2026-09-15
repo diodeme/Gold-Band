@@ -388,6 +388,9 @@ export const desktopApi: RuntimeApi = {
   getAcpImage(locator, image, thumbnail) {
     return invokeCommand<import('../types').AcpImageContentVm>('get_acp_image', { ...locator, image, thumbnail });
   },
+  getAcpActivityImages(input) {
+    return invokeCommand<import('../types').AcpActivityImagesPage>('get_acp_activity_images', { input });
+  },
   getTurnFileChangeSet(locator, changeSetId) {
     return invokeCommand<import('../types').TurnFileChangeSetVm>('get_turn_file_change_set', { ...locator, changeSetId });
   },
@@ -426,6 +429,12 @@ export const desktopApi: RuntimeApi = {
   },
   respondElicitation(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, elicitationId: string, action: string, content?: Record<string, unknown> | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
     return invokeCommand<void>('respond_elicitation', { projectId, taskId, runId, roundId, nodeId, attemptId, elicitationId, action, content, outerNodeId, outerAttemptId });
+  },
+  listComposerHistory(locator, query) {
+    return invokeCommand('list_composer_history', { locator, query });
+  },
+  getComposerHistoryText(locator, cursor) {
+    return invokeCommand('get_composer_history_text', { locator, cursor });
   },
   getAcpRawFrames(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId) {
     return invokeCommand('get_acp_raw_frames', { projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
@@ -634,8 +643,11 @@ export const desktopApi: RuntimeApi = {
   deleteScheduledTask(projectId, scheduledTaskId) {
     return invokeCommand<void>('delete_scheduled_task', { projectId, scheduledTaskId });
   },
-  listScheduledTaskOccurrences(projectId, scheduledTaskId, cursor, status) {
-    return invokeCommand<import('../types').ScheduledOccurrencePageVm>('list_scheduled_task_occurrences', { projectId, scheduledTaskId, cursor, status });
+  listScheduledExecutionHistory(projectId, scheduledTaskId, cursor, anchor) {
+    return invokeCommand<import('../types').ScheduledExecutionHistoryPageVm>('list_scheduled_execution_history', { projectId, scheduledTaskId, cursor, taskId: anchor?.taskId, runId: anchor?.runId });
+  },
+  deleteScheduledExecutionHistory(items) {
+    return invokeCommand<import('../types').ScheduledExecutionHistoryDeleteResultVm[]>('delete_scheduled_execution_history', { items });
   },
   getScheduledTaskDiagnostics(projectId, scheduledTaskId) {
     return invokeCommand<ScheduledTaskDiagnosticsVm>('get_scheduled_task_diagnostics', { projectId, scheduledTaskId });

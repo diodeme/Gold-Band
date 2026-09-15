@@ -1,6 +1,7 @@
 use camino::Utf8PathBuf;
 use gold_band::{
     app::App,
+    channel::{RELEASE_CHANNEL, WB_CHANNEL},
     config::RuntimeConfig,
     storage::{StoragePathConfig, configure_storage_paths},
 };
@@ -10,7 +11,8 @@ fn memory_wb_catalog_visibility_and_optional_entry() {
     // A dedicated integration-test process isolates the process-wide channel configuration.
     let temp = tempfile::tempdir().unwrap();
     let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    for (wb, config) in [
+    let expect_cicd = RELEASE_CHANNEL == WB_CHANNEL;
+    for (_wb, config) in [
         (
             false,
             StoragePathConfig {
@@ -37,15 +39,15 @@ fn memory_wb_catalog_visibility_and_optional_entry() {
                 .iter()
                 .filter(|profile| profile.id == "pf-builtin-cicd")
                 .count(),
-            usize::from(wb)
+            usize::from(expect_cicd)
         );
-        assert_eq!(app.profile_show("pf-builtin-cicd").is_ok(), wb);
+        assert_eq!(app.profile_show("pf-builtin-cicd").is_ok(), expect_cicd);
         let templates = app.workflow_templates().unwrap();
         let template = templates
             .templates
             .iter()
             .find(|template| template.id == "wb-development-cicd");
-        assert_eq!(template.is_some(), wb);
+        assert_eq!(template.is_some(), expect_cicd);
         if let Some(template) = template {
             assert_eq!(template.workflow.nodes.len(), 4);
             let cicd = template

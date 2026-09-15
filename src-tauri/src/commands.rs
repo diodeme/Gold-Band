@@ -178,7 +178,8 @@ where
         })?
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct AttemptLocator {
     task_id: String,
     run_id: String,
@@ -1740,7 +1741,7 @@ fn direct_prompt_queue_drain_app(app: &App) -> App {
 }
 
 fn queued_user_turn_app(app: &App) -> App {
-    app.clone_for_background().without_scheduled_turn_context()
+    app.clone_for_background().as_turn()
 }
 
 fn schedule_direct_prompt_queue_drain(
@@ -2730,8 +2731,7 @@ pub async fn doctor_agent(
         state
             .refresh_agent_diagnostic(&agent_id)
             .map_err(command_error)?;
-        emit_agent_registry_updated(&app_handle);
-        emit_agent_commands_updated(&app_handle, None);
+        emit_agent_registry_updated(&app_handle, &agent_id);
         let app = state.app().map_err(command_error)?;
         let diagnostics = state.agent_diagnostics().map_err(command_error)?;
         Ok(agent_registry_vm(&app, &diagnostics))
@@ -2760,8 +2760,7 @@ fn schedule_agent_diagnostic(app_handle: &AppHandle, agent_id: ManagedAgentId) {
             if let Err(error) = state.run_queued_agent_diagnostic(&diagnostic_agent_id) {
                 warn!(agent_type = diagnostic_agent_id.as_str(), %error, "automatic agent diagnostic failed");
             }
-            emit_agent_registry_updated(&diagnostic_handle);
-            emit_agent_commands_updated(&diagnostic_handle, None);
+            emit_agent_registry_updated(&diagnostic_handle, &diagnostic_agent_id);
         })
     {
         let _ = state.cancel_queued_agent_diagnostic(&agent_id);
@@ -2770,29 +2769,43 @@ fn schedule_agent_diagnostic(app_handle: &AppHandle, agent_id: ManagedAgentId) {
 }
 
 #[tauri::command]
-pub fn get_agent_command_catalog(
-    state: State<'_, DesktopState>,
+pub async fn get_agent_command_catalog(
+    app_handle: AppHandle,
     agent_type: String,
     workspace_path: String,
 ) -> CommandResult<Option<AcpCommandCatalog>> {
     let agent_id = ManagedAgentId::from_str(&agent_type).map_err(command_error)?;
-    state
-        .agent_command_catalog(&agent_id, &Utf8PathBuf::from(workspace_path))
-        .map_err(command_error)
+    spawn_blocking_command(move || {
+        app_handle
+            .state::<DesktopState>()
+            .agent_command_catalog(&agent_id, &Utf8PathBuf::from(workspace_path))
+            .map_err(command_error)
+    })
+    .await
 }
 
-pub(crate) fn emit_agent_commands_updated(
-    app_handle: &AppHandle,
-    catalog: Option<&AcpCommandCatalog>,
-) {
-    let payload = catalog
-        .map(|catalog| serde_json::to_value(catalog).unwrap_or_else(|_| serde_json::json!({})))
-        .unwrap_or_else(|| serde_json::json!({ "refresh": true }));
+pub(crate) fn emit_agent_commands_updated(app_handle: &AppHandle, catalog: &AcpCommandCatalog) {
+    let payload =
+        serde_json::json!({ "agentType": catalog.agent_type, "projectId": catalog.project_id });
     let _ = app_handle.emit(AGENT_COMMANDS_UPDATED_EVENT, payload);
 }
 
-pub(crate) fn emit_agent_registry_updated(app_handle: &AppHandle) {
-    let _ = app_handle.emit(AGENT_REGISTRY_UPDATED_EVENT, ());
+pub(crate) fn emit_agent_registry_updated(app_handle: &AppHandle, agent_id: &ManagedAgentId) {
+    let state = app_handle.state::<DesktopState>();
+    let Ok(_guard) = state.agent_config_diagnostic_commit_guard() else {
+        return;
+    };
+    let Ok(app) = state.app() else {
+        return;
+    };
+    let Ok(diagnostics) = state.agent_diagnostics() else {
+        return;
+    };
+    if let Some(config) = app.managed_agents().get(agent_id) {
+        let agent =
+            crate::view_models::managed_agent_vm(agent_id, config, diagnostics.get(agent_id));
+        let _ = app_handle.emit(AGENT_REGISTRY_UPDATED_EVENT, agent);
+    }
 }
 
 #[tauri::command]
@@ -5020,9 +5033,7 @@ fn maybe_record_agent_commands(
         return;
     };
     let state = app_handle.state::<DesktopState>();
-    if let Ok(catalog) = state.record_agent_commands(&agent_id, &app.paths.repo_root, commands) {
-        emit_agent_commands_updated(app_handle, Some(&catalog));
-    }
+    let _ = state.record_agent_commands(&agent_id, &app.paths.repo_root, commands);
 }
 
 /// 路径 B：旁路监听 `permissionRequest` 事件流，强制 `PermissionRequested` 发干预通知。
@@ -5956,6 +5967,83 @@ pub fn get_acp_activity_detail(
     );
     acp_activity_detail_vm_for_attempt(&attempt_dir, query)
         .map_err(|error| acp_storage_query_error(error, "acp.activity-detail-query-failed"))
+}
+
+#[tauri::command]
+pub async fn get_acp_activity_images(
+    state: State<'_, DesktopState>,
+    input: AcpActivityImagesInput,
+) -> CommandResult<gold_band::acp::timeline::ActivityImagePage> {
+    static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    static ADMISSION: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(16);
+    let admission = ADMISSION
+        .try_acquire()
+        .map_err(|_| CommandErrorVm::new("acp.image-busy", serde_json::json!({})))?;
+    let permit = SLOTS
+        .acquire()
+        .await
+        .map_err(|_| CommandErrorVm::new("acp.image-busy", serde_json::json!({})))?;
+    let app = resolve_command_app(state.inner(), input.project_id.as_deref())?;
+    spawn_blocking_command(move || {
+        let _permit = permit;
+        let _admission = admission;
+        let denied = || CommandErrorVm::new("acp.image-not-found", serde_json::json!({}));
+        let locator = &input.locator;
+        for part in [
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+        ]
+        .into_iter()
+        .chain(locator.outer_node_id.iter())
+        .chain(locator.outer_attempt_id.iter())
+        {
+            let mut components = Path::new(part).components();
+            if !matches!(components.next(), Some(Component::Normal(_)))
+                || components.next().is_some()
+                || part.contains(['/', '\\', ':'])
+            {
+                return Err(denied());
+            }
+        }
+        gold_band::acp::branches::validate_conversation_branch_id(&input.branch_id)
+            .map_err(|_| denied())?;
+        let timeline = gold_band::acp::branches::branch_timeline_path(
+            &locator.attempt_dir(&app),
+            &input.branch_id,
+        );
+        let root = fs::canonicalize(&app.paths.runtime_root).map_err(|_| denied())?;
+        if !fs::canonicalize(&timeline)
+            .map_err(|_| denied())?
+            .starts_with(root)
+        {
+            return Err(denied());
+        }
+        gold_band::acp::timeline::read_activity_image_page(
+            &timeline,
+            input.start,
+            input.end,
+            input.after.as_deref(),
+            input.generation,
+        )
+        .map_err(|error| acp_storage_query_error(error, "acp.image-invalid"))
+    })
+    .await
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpActivityImagesInput {
+    project_id: Option<String>,
+    #[serde(flatten)]
+    locator: AttemptLocator,
+    branch_id: String,
+    start: u64,
+    end: u64,
+    after: Option<String>,
+    generation: Option<u64>,
 }
 
 #[tauri::command]
@@ -7541,95 +7629,7 @@ fn spawn_active_session_stop_cleanup(
     stop_owner: Option<(String, String, u64)>,
 ) {
     tauri::async_runtime::spawn_blocking(move || {
-        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
-        let Some((turn_id, operation_id, revision)) = stop_owner.as_ref() else {
-            return;
-        };
-        let owner = gold_band::acp::events::AcpLifecycleOwner {
-            turn_id: turn_id.clone(),
-            operation_id: operation_id.clone(),
-            revision: *revision,
-        };
-        let owner_is_current =
-            gold_band::acp::events::lifecycle_owner_still_cancelling(&lifecycle_path, &owner)
-                .unwrap_or(false);
-        if !owner_is_current {
-            // The old turn may already be terminal and a newer turn may own
-            // this attempt. Never send an attempt-wide cancel in that case.
-            return;
-        }
-        match client::dispatch_attempt_prompt_cancel(&attempt_dir) {
-            Ok(_) => {}
-            Err(error) => {
-                warn!(%error, %attempt_dir, "failed to dispatch accepted ACP stop request");
-            }
-        }
-        // request_session_stop transferred lifecycle ownership away from the
-        // provider runtime. The stop controller therefore owns terminal
-        // settlement after dispatch; the old provider owner can only no-op.
-        let decided_at = gold_band::acp::events::current_timestamp();
-        let terminal_persisted = match gold_band::acp::events::persist_session_turn_terminal_owned(
-            &lifecycle_path,
-            turn_id,
-            Some(operation_id),
-            *revision,
-            gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
-            "cancelled",
-            &decided_at,
-        ) {
-            Ok(Some(_)) => {
-                info!(
-                    project_id = %app.paths.project_id,
-                    task_id = %locator.task_id,
-                    run_id = %locator.run_id,
-                    round_id = %locator.round_id,
-                    node_id = %locator.node_id,
-                    attempt_id = %locator.attempt_id,
-                    outer_node_id = ?locator.outer_node_id,
-                    outer_attempt_id = ?locator.outer_attempt_id,
-                    %turn_id,
-                    %operation_id,
-                    outcome = "cancelled",
-                    "conversation session stop reached terminal state"
-                );
-                true
-            }
-            Ok(None) => {
-                tracing::debug!(
-                    project_id = %app.paths.project_id,
-                    task_id = %locator.task_id,
-                    run_id = %locator.run_id,
-                    turn_id = %turn_id,
-                    "stale conversation session stop settlement skipped"
-                );
-                false
-            }
-            Err(error) => {
-                warn!(
-                    project_id = %app.paths.project_id,
-                    task_id = %locator.task_id,
-                    run_id = %locator.run_id,
-                    round_id = %locator.round_id,
-                    node_id = %locator.node_id,
-                    attempt_id = %locator.attempt_id,
-                    %error,
-                    %turn_id,
-                    "failed to settle accepted ACP stop ownership"
-                );
-                false
-            }
-        };
-        if terminal_persisted {
-            touch_terminal_task_activity_best_effort(
-                &app,
-                &locator,
-                Some(turn_id),
-                "user-stop-terminal",
-            );
-        }
-        if let Err(error) = client::settle_attempt_prompt_interactions(&attempt_dir) {
-            warn!(%error, %attempt_dir, "failed to settle ACP interactions after accepted stop dispatch");
-        }
+        settle_active_session_stop_cleanup(&app, &locator, &attempt_dir, stop_owner.as_ref());
         emit_acp_session_update(
             &app_handle,
             &app,
@@ -7644,6 +7644,87 @@ fn spawn_active_session_stop_cleanup(
             None,
         );
     });
+}
+
+fn settle_active_session_stop_cleanup(
+    app: &gold_band::app::App,
+    locator: &AttemptLocator,
+    attempt_dir: &Utf8PathBuf,
+    stop_owner: Option<&(String, String, u64)>,
+) -> bool {
+    settle_active_session_stop_cleanup_with_dispatch(
+        app,
+        locator,
+        attempt_dir,
+        stop_owner,
+        client::dispatch_attempt_prompt_cancel,
+    )
+}
+
+fn settle_active_session_stop_cleanup_with_dispatch<F>(
+    app: &gold_band::app::App,
+    locator: &AttemptLocator,
+    attempt_dir: &Utf8PathBuf,
+    stop_owner: Option<&(String, String, u64)>,
+    dispatch_cancel: F,
+) -> bool
+where
+    F: FnOnce(&camino::Utf8Path) -> anyhow::Result<bool>,
+{
+    let Some((turn_id, operation_id, revision)) = stop_owner else {
+        return false;
+    };
+    let lifecycle_path = acp_lifecycle_path(attempt_dir);
+    let owner = gold_band::acp::events::AcpLifecycleOwner {
+        turn_id: turn_id.clone(),
+        operation_id: operation_id.clone(),
+        revision: *revision,
+    };
+    if !gold_band::acp::events::lifecycle_owner_still_cancelling(&lifecycle_path, &owner)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    match dispatch_cancel(attempt_dir) {
+        Ok(true) => {}
+        Ok(false) => {
+            warn!(%attempt_dir, "accepted ACP stop request has no active cancel target");
+            return false;
+        }
+        Err(error) => {
+            warn!(%error, %attempt_dir, "failed to dispatch accepted ACP stop request");
+            return false;
+        }
+    }
+    let settled = match gold_band::acp::events::persist_session_turn_terminal_owned(
+        &lifecycle_path,
+        turn_id,
+        Some(operation_id),
+        *revision,
+        gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
+        "cancelled",
+        &gold_band::acp::events::current_timestamp(),
+    ) {
+        Ok(Some(_)) => {
+            info!(project_id = %app.paths.project_id, task_id = %locator.task_id, run_id = %locator.run_id, %turn_id, %operation_id, outcome = "cancelled", "conversation session stop reached terminal state");
+            true
+        }
+        Ok(None) => {
+            tracing::debug!(project_id = %app.paths.project_id, task_id = %locator.task_id, run_id = %locator.run_id, %turn_id, "stale conversation session stop settlement skipped");
+            false
+        }
+        Err(error) => {
+            warn!(project_id = %app.paths.project_id, task_id = %locator.task_id, run_id = %locator.run_id, %error, %turn_id, "failed to settle accepted ACP stop ownership");
+            false
+        }
+    };
+    if settled {
+        touch_terminal_task_activity_best_effort(app, locator, Some(turn_id), "user-stop-terminal");
+    }
+    if let Err(error) = client::settle_attempt_prompt_interactions(attempt_dir) {
+        warn!(%error, %attempt_dir, "failed to settle ACP interactions after accepted stop dispatch");
+    }
+    settled
 }
 
 fn spawn_index_attempt(
@@ -7801,6 +7882,98 @@ pub async fn get_acp_raw_frames(
     })
     .await
     .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerHistoryLocator {
+    project_id: String,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+}
+
+fn composer_history_path(
+    state: &DesktopState,
+    locator: &ComposerHistoryLocator,
+) -> CommandResult<camino::Utf8PathBuf> {
+    let invalid = || CommandErrorVm::new("acp.composer-history-not-found", serde_json::json!({}));
+    if locator.outer_node_id.is_some() != locator.outer_attempt_id.is_some() {
+        return Err(invalid());
+    }
+    for part in [
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        &locator.node_id,
+        &locator.attempt_id,
+    ]
+    .into_iter()
+    .chain(locator.outer_node_id.iter())
+    .chain(locator.outer_attempt_id.iter())
+    {
+        let mut parts = Path::new(part).components();
+        if !matches!(parts.next(), Some(Component::Normal(_)))
+            || parts.next().is_some()
+            || part.contains(['/', '\\', ':'])
+        {
+            return Err(invalid());
+        }
+    }
+    let app = resolve_command_app(state, Some(&locator.project_id))?;
+    Ok(resolve_acp_attempt_dir(
+        &app,
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        &locator.node_id,
+        &locator.attempt_id,
+        locator.outer_node_id.as_deref(),
+        locator.outer_attempt_id.as_deref(),
+    )
+    .join("acp.timeline.jsonl"))
+}
+
+fn composer_history_error(error: anyhow::Error) -> CommandErrorVm {
+    use gold_band::acp::timeline::composer_history::HistoryError;
+    let code = match error.downcast_ref::<HistoryError>() {
+        Some(HistoryError::Stale) => "acp.composer-history-stale",
+        Some(HistoryError::NotFound) => "acp.composer-history-not-found",
+        None => "acp.composer-history-query-failed",
+    };
+    CommandErrorVm::new(code, serde_json::json!({}))
+}
+
+#[tauri::command]
+pub async fn list_composer_history(
+    state: State<'_, DesktopState>,
+    locator: ComposerHistoryLocator,
+    query: gold_band::acp::timeline::composer_history::HistoryQuery,
+) -> CommandResult<gold_band::acp::timeline::composer_history::HistoryPage> {
+    let path = composer_history_path(state.inner(), &locator)?;
+    spawn_blocking_command(move || {
+        gold_band::acp::timeline::composer_history::read_page(&path, query)
+            .map_err(composer_history_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_composer_history_text(
+    state: State<'_, DesktopState>,
+    locator: ComposerHistoryLocator,
+    cursor: gold_band::acp::timeline::composer_history::HistoryCursor,
+) -> CommandResult<gold_band::acp::timeline::composer_history::HistoryText> {
+    let path = composer_history_path(state.inner(), &locator)?;
+    spawn_blocking_command(move || {
+        gold_band::acp::timeline::composer_history::read_text(&path, cursor)
+            .map_err(composer_history_error)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -10378,7 +10551,6 @@ fn schedule_agent_command_catalog_refresh(app_handle: AppHandle, workspace: Utf8
     std::thread::spawn(move || {
         let state = app_handle.state::<DesktopState>();
         let _ = state.refresh_all_agent_command_catalogs_for_workspace(workspace);
-        emit_agent_commands_updated(&app_handle, None);
     });
 }
 
@@ -10504,6 +10676,83 @@ mod tests {
         TaskAuthoringWorkflow, WorkerModelBinding, WorkflowModelBindings,
     };
     use std::collections::BTreeMap;
+
+    fn active_stop_test_fixture(
+        root: &std::path::Path,
+    ) -> (
+        App,
+        AttemptLocator,
+        Utf8PathBuf,
+        gold_band::acp::events::AcpLifecycleOwner,
+    ) {
+        let app = App::new(Utf8PathBuf::from_path_buf(root.join("repo")).unwrap());
+        let locator = AttemptLocator::new(
+            "task-1".to_string(),
+            "run-1".to_string(),
+            "round-1".to_string(),
+            "node-1".to_string(),
+            "attempt-1".to_string(),
+            None,
+            None,
+        );
+        let attempt_dir = locator.attempt_dir(&app);
+        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
+        write_json(
+            &app.paths
+                .task_dir("task-1")
+                .join("authoring")
+                .join("conversation.json"),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "source": "conversation",
+                "runMode": "direct",
+                "workflowTemplateId": null,
+                "includeOptionalEntry": false,
+                "directConfig": null,
+                "agentIdentity": null,
+                "titleAutoGenerated": false,
+                "initialAttachmentNames": null,
+                "createdAt": "2026-08-26T00:00:00Z",
+                "lastActivityAt": "2026-08-26T00:00:00Z"
+            }),
+        )
+        .unwrap();
+        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+        let submission = gold_band::acp::events::AcpPromptSubmission {
+            turn_id: "turn-1".to_string(),
+            operation_id: "prompt-operation-1".to_string(),
+            adapter_id: "test".to_string(),
+            adapter_display_name: "Test".to_string(),
+            cwd: attempt_dir.to_string(),
+            input: gold_band::provider::ConversationPromptInput {
+                display_text: "test".to_string(),
+                quotes: Vec::new(),
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-08-26T00:00:00Z".to_string(),
+        };
+        gold_band::acp::events::begin_session_turn(&lifecycle_path, &submission).unwrap();
+        let owner = gold_band::acp::events::request_session_stop_outcome(
+            &lifecycle_path,
+            "user-stop-operation-1",
+            "2026-08-26T00:00:01Z",
+        )
+        .unwrap()
+        .owner
+        .unwrap();
+        (app, locator, attempt_dir, owner)
+    }
+
+    fn conversation_last_activity(app: &App, task_id: &str) -> String {
+        let metadata: serde_json::Value = read_json(
+            &app.paths
+                .task_dir(task_id)
+                .join("authoring")
+                .join("conversation.json"),
+        )
+        .unwrap();
+        metadata["lastActivityAt"].as_str().unwrap().to_string()
+    }
 
     fn frontend_error_input(message: String) -> FrontendErrorReportInput {
         FrontendErrorReportInput {
@@ -11247,6 +11496,7 @@ mod tests {
                     task_id: Some("task-1".to_string()),
                     run_id: Some("run-1".to_string()),
                     round_id: Some("round-1".to_string()),
+                    node_id: None,
                     attempt_id: Some("attempt-1".to_string()),
                 }),
                 Some(gold_band::scheduler::occurrence::ScheduledError::new(
@@ -11876,6 +12126,163 @@ mod tests {
         assert_eq!(snapshot["liveTurnActivity"], "idle");
         assert_eq!(snapshot["latestTurnStatus"], "none");
         assert!(timeline_path.is_dir());
+    }
+
+    #[test]
+    fn active_stop_cleanup_dispatches_and_persists_cancelled_terminal_lifecycle() {
+        let temp = tempfile::tempdir().unwrap();
+        let (app, locator, attempt_dir, owner) = active_stop_test_fixture(temp.path());
+        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+        let owner = (owner.turn_id, owner.operation_id, owner.revision);
+        assert!(settle_active_session_stop_cleanup_with_dispatch(
+            &app,
+            &locator,
+            &attempt_dir,
+            Some(&owner),
+            |_| Ok(true),
+        ));
+
+        let lifecycle = gold_band::acp::events::read_lifecycle_header(&lifecycle_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            lifecycle.latest_turn_status,
+            gold_band::acp::events::AcpLatestTurnStatus::Cancelled
+        );
+        assert_eq!(
+            conversation_last_activity(&app, "task-1"),
+            gold_band::acp::events::read_session_metadata_value(&lifecycle_path, None)
+                .unwrap()["updatedAt"]
+                .as_str()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn active_stop_cleanup_dispatch_failure_keeps_cancelling_and_activity_unchanged() {
+        let temp = tempfile::tempdir().unwrap();
+        let (app, locator, attempt_dir, owner) = active_stop_test_fixture(temp.path());
+        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+        let owner = (owner.turn_id, owner.operation_id, owner.revision);
+
+        assert!(!settle_active_session_stop_cleanup_with_dispatch(
+            &app,
+            &locator,
+            &attempt_dir,
+            Some(&owner),
+            |_| anyhow::bail!("provider cancel transport failed"),
+        ));
+
+        let lifecycle = gold_band::acp::events::read_lifecycle_header(&lifecycle_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            lifecycle.live_turn_activity,
+            gold_band::acp::events::AcpLiveTurnActivity::CancelRequested
+        );
+        assert_eq!(
+            lifecycle.latest_turn_status,
+            gold_band::acp::events::AcpLatestTurnStatus::None
+        );
+        assert_eq!(
+            conversation_last_activity(&app, "task-1"),
+            "2026-08-26T00:00:00Z"
+        );
+    }
+
+    #[test]
+    fn active_stop_cleanup_without_a_cancel_target_keeps_cancelling() {
+        let temp = tempfile::tempdir().unwrap();
+        let (app, locator, attempt_dir, owner) = active_stop_test_fixture(temp.path());
+        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+        let owner = (owner.turn_id, owner.operation_id, owner.revision);
+
+        assert!(!settle_active_session_stop_cleanup_with_dispatch(
+            &app,
+            &locator,
+            &attempt_dir,
+            Some(&owner),
+            |_| Ok(false),
+        ));
+
+        let lifecycle = gold_band::acp::events::read_lifecycle_header(&lifecycle_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            lifecycle.live_turn_activity,
+            gold_band::acp::events::AcpLiveTurnActivity::CancelRequested
+        );
+        assert_eq!(
+            lifecycle.latest_turn_status,
+            gold_band::acp::events::AcpLatestTurnStatus::None
+        );
+        assert_eq!(
+            conversation_last_activity(&app, "task-1"),
+            "2026-08-26T00:00:00Z"
+        );
+    }
+
+    #[test]
+    fn active_stop_cleanup_stale_owner_does_not_dispatch_or_overwrite_new_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let (app, locator, attempt_dir, owner) = active_stop_test_fixture(temp.path());
+        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+        let old_owner = (
+            owner.turn_id.clone(),
+            owner.operation_id.clone(),
+            owner.revision,
+        );
+        gold_band::acp::events::persist_session_turn_terminal_owned(
+            &lifecycle_path,
+            &owner.turn_id,
+            Some(&owner.operation_id),
+            owner.revision,
+            gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
+            "cancelled",
+            "2026-08-26T00:00:02Z",
+        )
+        .unwrap()
+        .unwrap();
+        let next_submission = gold_band::acp::events::AcpPromptSubmission {
+            turn_id: "turn-2".to_string(),
+            operation_id: "prompt-operation-2".to_string(),
+            adapter_id: "test".to_string(),
+            adapter_display_name: "Test".to_string(),
+            cwd: attempt_dir.to_string(),
+            input: gold_band::provider::ConversationPromptInput {
+                display_text: "next".to_string(),
+                quotes: Vec::new(),
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-08-26T00:00:03Z".to_string(),
+        };
+        gold_band::acp::events::begin_session_turn(&lifecycle_path, &next_submission).unwrap();
+        let dispatch_calls = std::cell::Cell::new(0usize);
+
+        assert!(!settle_active_session_stop_cleanup_with_dispatch(
+            &app,
+            &locator,
+            &attempt_dir,
+            Some(&old_owner),
+            |_| {
+                dispatch_calls.set(dispatch_calls.get() + 1);
+                Ok(true)
+            },
+        ));
+
+        assert_eq!(dispatch_calls.get(), 0);
+        let lifecycle = gold_band::acp::events::read_lifecycle_header(&lifecycle_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(lifecycle.turn_id.as_deref(), Some("turn-2"));
+        assert_eq!(
+            lifecycle.latest_turn_status,
+            gold_band::acp::events::AcpLatestTurnStatus::None
+        );
+        assert_eq!(
+            conversation_last_activity(&app, "task-1"),
+            "2026-08-26T00:00:00Z"
+        );
     }
 
     #[test]

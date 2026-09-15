@@ -775,9 +775,8 @@ impl<'a> InterventionCommandService<'a> {
             read_json(&pending_elicitation_file(&attempt_dir, elicitation_id)).map_err(|_| {
                 InterventionError::new(InterventionErrorCode::InterventionStorageUnavailable)
             })?;
-        if !elicitation_response_is_valid(
+        if !canonical_elicitation_response_is_valid(
             &pending.payload.request,
-            &snapshot.allowed_actions,
             &action,
             content.as_ref(),
         )? {
@@ -1548,30 +1547,18 @@ fn option_label(title: Option<&str>, value: &Value) -> String {
     truncate_chars(&label, MAX_ELICITATION_OPTION_LABEL_CHARS)
 }
 
-fn elicitation_response_is_valid(
+// Transport capabilities are enforced before this canonical boundary. In
+// particular, ImInboundActionService validates the action against the exact
+// allowed_actions persisted in its delivery before invoking Runtime.
+fn canonical_elicitation_response_is_valid(
     request: &agent_client_protocol_schema::v1::CreateElicitationRequest,
-    allowed_actions: &[InterventionAllowedAction],
     action: &ElicitationAction,
     content: Option<&Value>,
 ) -> Result<bool, InterventionError> {
     match action {
-        ElicitationAction::Decline => Ok(content.is_none()
-            && allowed_actions.contains(&InterventionAllowedAction::ElicitationDecline)),
+        ElicitationAction::Decline => Ok(content.is_none()),
         ElicitationAction::Accept => {
-            let published_action = match content {
-                Some(content) => {
-                    content.is_object()
-                        && (allowed_actions.iter().any(|allowed| {
-                            matches!(
-                                allowed,
-                                InterventionAllowedAction::ElicitationFixedForm { .. }
-                            )
-                        }) || allowed_actions
-                            .contains(&InterventionAllowedAction::ElicitationAccept))
-                }
-                None => allowed_actions.contains(&InterventionAllowedAction::ElicitationAccept),
-            };
-            if !published_action {
+            if content.is_some_and(|content| !content.is_object()) {
                 return Ok(false);
             }
             let request = serde_json::to_value(request).map_err(|_| {
@@ -2841,6 +2828,119 @@ mod tests {
             snapshot.allowed_actions,
             vec![InterventionAllowedAction::ElicitationDecline]
         );
+    }
+
+    #[test]
+    fn desktop_elicitation_accepts_schema_valid_answers_outside_the_remote_form_subset() {
+        let cases = [
+            (
+                "free text",
+                json!({
+                    "mode": "form",
+                    "sessionId": "session-001",
+                    "message": "Add release notes",
+                    "requestedSchema": {
+                        "type": "object",
+                        "properties": {
+                            "notes": { "type": "string", "title": "Release notes" }
+                        },
+                        "required": ["notes"]
+                    }
+                }),
+                json!({ "notes": "Ship after the desktop checks pass." }),
+                json!({ "notes": 42 }),
+            ),
+            (
+                "custom answer",
+                json!({
+                    "mode": "form",
+                    "sessionId": "session-001",
+                    "message": "Choose a database",
+                    "requestedSchema": {
+                        "type": "object",
+                        "properties": {
+                            "database": {
+                                "type": "string",
+                                "enum": ["PostgreSQL"],
+                                "title": "Database"
+                            },
+                            "database_custom": custom_answer_schema("database")
+                        }
+                    }
+                }),
+                json!({ "database_custom": "SQLite" }),
+                json!({ "database_custom": false }),
+            ),
+            (
+                "more than three questions",
+                json!({
+                    "mode": "form",
+                    "sessionId": "session-001",
+                    "message": "Choose four values",
+                    "requestedSchema": {
+                        "type": "object",
+                        "properties": {
+                            "q0": { "type": "string", "enum": ["a"] },
+                            "q1": { "type": "string", "enum": ["b"] },
+                            "q2": { "type": "string", "enum": ["c"] },
+                            "q3": { "type": "string", "enum": ["d"] }
+                        },
+                        "required": ["q0", "q1", "q2", "q3"]
+                    }
+                }),
+                json!({ "q0": "a", "q1": "b", "q2": "c", "q3": "d" }),
+                json!({ "q0": "a", "q1": "b", "q2": "c" }),
+            ),
+        ];
+
+        for (case, request, content, invalid_content) in cases {
+            let fixture = permission_fixture(false);
+            write_elicitation(&fixture, serde_json::from_value(request).unwrap());
+            let service = InterventionCommandService::new(&fixture.app);
+            let request = InterventionRequestIdentity::Elicitation {
+                elicitation_id: "elicit-001".into(),
+            };
+            let snapshot = service
+                .inspect(fixture.locator.clone(), request.clone())
+                .unwrap();
+            let action = InterventionAction::Elicitation {
+                action: ElicitationAction::Accept,
+                content: Some(content),
+            };
+            assert!(
+                !intervention_action_is_allowed(&snapshot.allowed_actions, &action),
+                "{case} must remain unavailable to the IM transport"
+            );
+            let invalid = service.execute(InterventionCommand {
+                locator: fixture.locator.clone(),
+                request: request.clone(),
+                expected_state: snapshot.expected_state.clone(),
+                action: InterventionAction::Elicitation {
+                    action: ElicitationAction::Accept,
+                    content: Some(invalid_content),
+                },
+                expires_at_ms: snapshot.expires_at_ms,
+            });
+            assert_eq!(
+                invalid.unwrap_err().code,
+                InterventionErrorCode::InterventionActionInvalid,
+                "{case} must still satisfy the complete ACP schema"
+            );
+
+            let result = service.execute(InterventionCommand {
+                locator: fixture.locator.clone(),
+                request,
+                expected_state: snapshot.expected_state,
+                action,
+                expires_at_ms: snapshot.expires_at_ms,
+            });
+
+            assert_eq!(
+                result.unwrap().status,
+                InterventionCommandStatus::Accepted,
+                "{case} must remain actionable on desktop"
+            );
+        }
     }
 
     #[test]

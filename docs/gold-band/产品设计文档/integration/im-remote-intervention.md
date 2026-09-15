@@ -423,6 +423,8 @@ Connector task 结束时必须先排空其有界事件队列，再把返回错�
 
 2026-09-16 对现有桌面功能的性能与退出复核确认：问题不在 outbox、generation 或 Runtime canonical 设计，而在可选 IM 生命周期被无条件装配、空 claim 仍进入写事务、subscriber 在确认目标前读取 workspace state，以及 shutdown 把控制信号塞入有界 data queue。修复保留同一 `DesktopState` runtime slot、settings、cleanup journal 和 cancellation token，只补齐惰性激活、只读空队列闸门、target-first 快速返回与 gate → scheduler → IM 的退出顺序。ManualCheck 同时恢复原设计边界：Timeline 文本只用于远程展示，不是 canonical command 的 admission 条件。
 
+2026-09-16 Elicitation 桌面提交复核确认：共享 `InterventionCommandService` 负责 pending identity、expected state、幂等与 first-writer-wins 是正确设计，但实现错误地把 `RemoteElicitationForm` 生成的 transport `allowed_actions` 同时用于 canonical Accept 准入，导致自由文本、自定义答案和超过三个问题等桌面可处理表单返回 `INTERVENTION_ACTION_INVALID`。修复后 canonical Elicitation 只按完整 ACP `requestedSchema` 校验对象答案或 Decline；`ImInboundActionService` 继续在调用 Runtime 前按 delivery 中实际发布的 `allowed_actions` 校验 token、固定表单选择与动作，`requires_desktop` 只描述投影能力，不反向限制桌面命令。
+
 ### 13.2 过度设计评审
 
 首期不引入云端网关、Kafka、通用事件平台、独立 helper 进程、新审批 aggregate 或自然语言 Agent。新增的连接管理器、outbox 和幂等表分别对应长连接生命周期、进程离线重试和外部事件至少一次投递三个真实不变量，复杂度与风险相匹配。
@@ -432,6 +434,8 @@ Connector task 结束时必须先排空其有界事件队列，再把返回错�
 2026-09-07 修复不新增 binding epoch、撤销表、outbox 状态、数据库迁移、重连 supervisor 或外部依赖。现有 durable binding 足以表达当前授权，现有 `dead_letter + last_error_code` 足以隔离坏行，已有 `tokio-util::DelayQueue` 足以统一 pending deadline；`Reconnecting` 只是连接管理器的 transient lifecycle 状态，不形成第二份持久事实。
 
 2026-09-16 修复只增加一个进程内初始化互斥，防止启动恢复与首次配置并发创建两个 runtime；它不形成新状态机或持久事实。worker join 复用现有 cancellation token 与 task handle，空 claim 复用既有 due 索引，未新增 manager、缓存、队列、数据库字段或依赖。显式 `dev:low-memory` 只为资源受限开发机提供 opt-in，默认开发不再全局牺牲 Cargo 并行度。
+
+2026-09-16 Elicitation 边界修复不新增入口枚举、第二套 command service、响应状态或兼容分支；它复用已有 canonical schema validator 与 IM inbound delivery-action validator，只移除 transport 投影对桌面准入的反向依赖。
 
 2026-08-31 权限/企微回调补齐不新增展示事实源：`InterventionPrompt.fields` 是 pending params 的一次性 transport projection，按钮容量降级发生在 IM projection/connector 边界，callback 失败态仍复用 outbox 与原 delivery identity。现有 canonical pending state、delivery ID、msgid 幂等和 `InterventionCommandService` 已能表达不变量，因此不为平台容量或解析失败增加第二套状态机。2026-09-01 的短 action 引用与 vote option id 同样只复用 delivery ID 与 outbox action index，不新增映射表、缓存或第二套 token；`ImWeComVoteSelection` 是回调到终态更新之间的一次性 transport context，成功更新后即释放。Permission 双发只新增 connector 内存中的“详情 ACK 后发送卡片”pending 分支，不新增第二条 outbox、平台消息 identity 或持久状态。
 
@@ -458,6 +462,8 @@ Permission occurrence identity 的生成只对当前事件的两个短字符串�
 2026-09-02 ManualCheck 补充的模型输出读取使用 timeline index：索引扫描只过滤当前 root、可见、非 Agent launch 的 `textDelta` locator，并按最新顺序读取事件到第一个非空输出；输出快照 4096 字符有界，不加载完整 timeline，也不引入缓存。企微双发仍是当前 delivery 的两个出站帧，ManualCheck vote 排序固定为 2 项。
 
 2026-09-03 Elicitation 分类与渲染复杂度为 `O(Q + O)`，Q 不超过 3，vote 选项不超过 20，multiple selector 不超过 3 且每题不超过 10；不枚举多选组合，不扫描 timeline 或历史 Run。回调只解析短 selector/option id，做一次 indexed delivery 读取和一次 schema 校验；每个支持 delivery 仍是两个出站帧，unsupported 场景入队前跳过且不产生重试、死信或平台消息。
+
+2026-09-16 桌面 Elicitation 修复不增加 schema 编译次数、文件读取、网络请求或锁范围：每次 Accept 仍只对当前 pending request 执行一次有界内容大小检查和一次 JSON Schema 校验；IM 回调仍先做 delivery 动作校验再执行同一 canonical schema 校验。没有全量扫描、N+1、缓存、队列或额外持久化。
 
 2026-09-03 重复新 msgid 点击增加一次 `channel + canonical_event_id + completed_at` 索引查询；命中后只写一条 AlreadyApplied 审计结果，不进入 Runtime、scheduled resume 或 session 重建。Elicitation 前序输出读取复用 timeline index 的最新 root 文本定位并最多读取一个事件、快照 4096 字符；详情去重只比较当前请求内的 message/description/context。
 

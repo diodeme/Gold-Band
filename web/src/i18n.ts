@@ -5,6 +5,13 @@ import type { AppErrorVm, DesktopLanguage, WorkflowErrorVm } from "./types";
 const resources = {
   "zh-CN": {
     translation: {
+      memory: {
+        title: "项目记忆设置", loading: "正在加载项目记忆", empty: "暂无项目记忆", add: "新增记忆", key: "参数名", value: "参数值", desc: "用途描述",
+        save: "保存记忆", cancel: "取消修改", delete: "删除记忆", deleteTitle: "删除这条记忆？", saving: "正在保存", retry: "重试", latest: "最新值", deleted: "已删除", useLatest: "采用最新值",
+        unsavedTitle: "放弃未保存的修改？", unsavedDescription: "关闭后将丢弃尚未保存的记忆修改。", keepEditing: "继续编辑", discard: "放弃修改",
+        workflow: "开发构建部署工作流",
+        errors: { io: "无法读写记忆，请检查文件权限后重试。", corrupt: "记忆文件损坏，请修复文件后重试。", conflict: "这条记忆已发生变化，请核对最新值。", capacity: "记忆超过容量限制，请减少条目或内容。", field: "参数格式或长度不符合要求。", locator: "工作空间或任务已不可用。", worker: "记忆操作未完成，请重试。" },
+      },
       demo: { inputDisabled: "Demo 演示，暂不支持输入或发起会话", saveDisabled: "Demo 演示，配置不可保存", resizeWindow: "调整客户端宽度" },
       acpImages: { title: "工具图片", image: "图片 {{index}}", failed: "图片无法加载，请重试" },
       scheduled: {
@@ -949,6 +956,13 @@ const resources = {
           saveConfigure: "配置服务器",
           connecting: "正在连接服务器…",
           diagnoseServer: "MCP 服务诊断",
+          diagnosticNotChecked: "尚未检测配置",
+          diagnosticChecking: "正在检测配置…",
+          diagnosticPassed: "最近一次 MCP 配置检测通过",
+          diagnosticFailed: "最近一次 MCP 配置检测失败",
+          diagnosticAuthRequired: "最近一次检测需要授权",
+          goldBandMemoryName: "Gold Band 共享记忆",
+          toggleServer: "启用或关闭 {{name}}",
           emptyServers: "暂无 MCP 服务器",
           helpInfo: "帮助信息",
           toolsList: "工具列表",
@@ -2579,6 +2593,13 @@ const resources = {
   },
   en: {
     translation: {
+      memory: {
+        title: "Project Memory Settings", loading: "Loading project memory", empty: "No project memory", add: "Add memory", key: "Parameter key", value: "Value", desc: "Description",
+        save: "Save memory", cancel: "Cancel changes", delete: "Delete memory", deleteTitle: "Delete this memory?", saving: "Saving", retry: "Retry", latest: "Latest value", deleted: "Deleted", useLatest: "Use latest value",
+        unsavedTitle: "Discard unsaved changes?", unsavedDescription: "Closing will discard memory changes that have not been saved.", keepEditing: "Keep editing", discard: "Discard changes",
+        workflow: "Development, Build and Deployment",
+        errors: { io: "Unable to read or write memory. Check file permissions and retry.", corrupt: "Memory file is damaged. Repair the file and retry.", conflict: "This memory has changed. Review the latest value.", capacity: "Memory exceeds capacity. Reduce entries or content.", field: "Invalid parameter format or length.", locator: "Workspace or task is unavailable.", worker: "Memory operation did not complete. Retry." },
+      },
       demo: { inputDisabled: "Demo only. Input and starting sessions are disabled.", saveDisabled: "Demo only. Configuration cannot be saved.", resizeWindow: "Resize client window" },
       acpImages: { title: "Tool images", image: "Image {{index}}", failed: "Unable to load image. Please retry." },
       scheduled: {
@@ -3542,6 +3563,13 @@ const resources = {
           saveConfigure: "Configure Server",
           connecting: "Connecting Server…",
           diagnoseServer: "MCP Service Diagnostics",
+          diagnosticNotChecked: "Configuration not checked yet",
+          diagnosticChecking: "Checking configuration…",
+          diagnosticPassed: "The latest MCP configuration check passed",
+          diagnosticFailed: "The latest MCP configuration check failed",
+          diagnosticAuthRequired: "The latest check requires authorization",
+          goldBandMemoryName: "Gold Band Shared Memory",
+          toggleServer: "Enable or disable {{name}}",
           emptyServers: "No MCP servers configured",
           helpInfo: "Help information",
           toolsList: "Tools",

@@ -275,6 +275,8 @@ export interface FrontendErrorReportInput {
 }
 
 export interface RuntimeApi {
+  readProjectMemory(projectId: string): Promise<import('@/lib/memory').MemorySnapshot>;
+  writeProjectMemory(projectId: string, command: import('@/lib/memory').MemoryCommand): Promise<import('@/lib/memory').MemorySnapshot>;
   getGitCapability(projectId?: string | null): Promise<GitCapabilityVm>;
   initializeGitRepository(projectId?: string | null): Promise<GitCapabilityVm>;
   getSourceControlSnapshot(projectId: string, workspacePath?: string | null): Promise<GitSourceControlSnapshotVm>;

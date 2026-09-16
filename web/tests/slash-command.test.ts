@@ -210,7 +210,6 @@ describe('slash command input contract', () => {
     expect(restoreSlashCommandDismissal(codexContext, '/', true)).toBe(false);
   });
 });
-
 describe('slash role catalog', () => {
   const profiles = [
     { id: 'pf-dev', name: 'Development and Testing', summary: 'short', content: '完整角色定义\n第二段' },
@@ -265,4 +264,3 @@ describe('slash role catalog', () => {
     expect(committedRoleSnapshot(command)).toBeNull();
   });
 });
-

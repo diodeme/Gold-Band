@@ -14,13 +14,22 @@
 - 生命周期：由用户添加、编辑、启用或停用时变更。
 - 会话接口：只读取已启用项并转换为 ACP `mcpServers`。
 - 约束：读取配置不得发起网络请求、不得启动子进程、不得根据瞬时健康状态过滤配置。
+- 内置服务：编译期 definition 在应用启动时幂等 reconcile 到 `settings.json`；保留用户 `enabled` 选择，定义未变化时不写盘。内置项复用标准 managed stdio 卡片，不建立第二种“会话托管”类型。
 
 ### 诊断领域
 
-- 数据：`McpServerState`、`McpServerHealthResult`、工具发现结果。
-- 生命周期：用户手动检查或后台诊断时刷新，可随网络、认证和服务进程变化。
+- 数据：`McpServerDiagnosticState`、`McpServerHealthResult`、工具发现结果。
+- 生命周期：用户保存/启用配置后的显式检查或手动诊断时刷新；应用启动和普通列表刷新不批量探活。
 - 接口：`check_health`、`list_tools` 等显式诊断入口。
-- 约束：诊断失败不能阻塞会话壳展示；具体 MCP 是否可用由 ACP/Agent 在建立会话时按协议处理并产生结构化诊断。
+- 语义：卡片展示“尚未检测 / 正在检测 / 最近检测通过 / 最近检测失败 / 需要授权”，不展示“正在运行”；诊断进程结束后结果仍可显示。
+- 约束：诊断失败不能阻塞会话壳展示；具体 MCP 是否可用由 ACP/Agent 在建立会话时按协议处理并产生结构化诊断。stdio 诊断必须执行 `initialize → notifications/initialized → tools/list → 关闭进程树`。
+
+### 可执行会话快照领域
+
+- 数据源：本次 invocation 的已启用配置，以及当前 canonical project/task/runtime context。
+- 生命周期：每次新建、加载、恢复或人工续聊前重新生成，只存在于本次会话准备链路，不回写 settings。
+- 内置共享记忆：持久 definition 只有 `current_exe + --gold-band-memory-mcp`；会话快照追加 repo root、data root、project id、task id 与语言绑定。无绑定实例仍可协议探活，业务工具调用返回 `memory.context-required`。
+- 所有权：Gold Band Client 把 `mcpServers` 交给 ACP Agent，由 Agent 在 `session/new/load/resume` 时连接 stdio；Gold Band 不再常驻同一 MCP 的第二份连接。
 
 ## 接口设计
 
@@ -30,6 +39,8 @@
 2. 排除 `enabled = false` 的配置。
 3. 将启用配置序列化为 ACP schema。
 4. 不读取健康缓存，不执行探活。
+
+随后统一 prompt 准备边界把内置记忆基础定义解析为会话快照，并仅在该定义启用时注入记忆 system rules 与本轮数据投影。Direct、Workflow、AI-DYNAMIC 和人工续聊必须走同一准备边界，不能在 Tauri command 层重新读取未绑定配置覆盖快照。
 
 原先同时负责“配置解析 + 健康检查 + 健康过滤”的启动接口被删除，不保留兼容入口。
 
@@ -86,12 +97,17 @@ ACP 停止完成后，控制面只发送带单调 `revision` 与 `turnId` 的轻
 - 新建后会话壳可见：目标小于 300ms，不等待 MCP 探活或 ACP 元数据。
 - 已复用 adapter 的 session ready：通常约 1～2 秒，实际由 Agent 和网络决定。
 - 会话启动阶段重复 MCP preflight：0 次。
+- 应用启动阶段 MCP 握手：0 次；内置 definition 未变化时 settings 写入：0 次。
 - 冷 adapter initialize 可单独观测，不再与 MCP 配置解析混为一段不可解释等待。
 
 ## 验收与回归
 
 - 配置一个启用但命令不存在的 stdio MCP，配置序列化仍应成功并包含该服务。
 - 停用的 MCP 不得传给 ACP。
+- 停用共享记忆 MCP 时，不得注入记忆 rules 或 data block。
+- 无绑定共享记忆 stdio 必须完成 initialize/initialized/tools-list；调用业务工具返回 `memory.context-required` 且不访问文件。
+- 会话快照必须包含当前 task 绑定，settings 中的基础定义不得被该绑定污染。
+- 页面刷新只读取配置与最近诊断结果，不触发 N 个 MCP 的批量握手。
 - 当前运行的新会话在初始 fetch 进行中仍返回 `initializing`。
 - 当前新会话即使 runtime 先于 timeline 查询收敛而终止，也保持完整聊天壳、品牌等待态和锁定 composer，直到首条 timeline item 到达。
 - sessionId 未建立时标题栏不展示缺失占位；首条 timeline item 到达后优先展示消息而非等待态。

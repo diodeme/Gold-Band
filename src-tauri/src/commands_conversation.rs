@@ -1863,12 +1863,28 @@ pub async fn delete_conversation_task(
             .task_show(&task_id)
             .ok()
             .and_then(|task| task.uuid);
-        trash::delete(task_dir.as_std_path()).map_err(|error| {
-            CommandErrorVm::new(
-                "conversation.task-delete-failed",
-                serde_json::json!({ "taskId": task_id, "message": error.to_string() }),
+        {
+            let _memory_guard = gold_band::memory::lock_project(
+                &workspace_app.paths,
+                &workspace_app.paths.project_id,
             )
-        })?;
+            .map_err(|error| CommandErrorVm {
+                code: error.code.into(),
+                params: error.params,
+            })?;
+            if !task_dir.exists() {
+                return Err(CommandErrorVm::new(
+                    "conversation.task-not-found",
+                    serde_json::json!({ "taskId": task_id }),
+                ));
+            }
+            trash::delete(task_dir.as_std_path()).map_err(|error| {
+                CommandErrorVm::new(
+                    "conversation.task-delete-failed",
+                    serde_json::json!({ "taskId": task_id, "message": error.to_string() }),
+                )
+            })?;
+        }
         gold_band::storage::sqlite::delete_task(&task_dir);
         if let Some(task_uuid) = task_uuid {
             crate::metrics::mark_task_metrics_deleted_best_effort(

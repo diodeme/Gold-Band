@@ -30,18 +30,18 @@ Rust 层职责边界（当前实现对应 `src/acp/*` 与 `src/provider/mod.rs`�
 
 **ACP session-forward 元数据水合策略**（2026-06-15，2026-06-17 更新）：
 
-每条 worker / AI-DYNAMIC 内部 node attempt 启动时，首个对外可见 `AcpSessionVm` 必须是 session-ready 快照：ACP `session/new` 或 `session/load` 已完成，model/mode/configOptions 已捕获，system prompt 已写入 snapshot metadata，Gold Band synthetic user prompt 已写入 timeline。随后才发送真实 `session/prompt` 并开始流式输出，确保前端实时会话窗口不会先看到 agent thinking 而缺失用户消息、系统提示词按钮和模型/权限选择器。
+每条 worker / AI-DYNAMIC 内部 node attempt 启动时，首个对外可见 `AcpSessionVm` 必须是 session-ready 快照：ACP `session/new` 或 `session/load` 已完成，model/mode/configOptions 已捕获，Gold Band synthetic user prompt 已写入 timeline；provider 支持原生 system prompt append 时，system prompt 同时写入 snapshot metadata。随后才发送真实 `session/prompt` 并开始流式输出，确保前端实时会话窗口不会先看到 agent thinking 而缺失用户消息和当前 provider 实际支持的控制 metadata。
 
 工作原理：
 
 - provider trait 使用 `run_worker_with_callbacks`，同时接收 `live_update`（单条 timeline event）和 `session_update`（完整 session snapshot）。
 - `run_prompt` 调用方通过 `app.acp_session_update_for(context)` 创建 session-ready callback，其背后复用已存在的 `acp_session_update_emitter`。
 - `run_prompt` 的启动顺序固定为：`setup_session` → `write_worker_ref` → 持久化 synthetic `goldBandPrompt` 用户消息（有 `session_update` 时不单独发 live event）→ `write_session("running")` → `session_update` → 真实 `session/prompt`。
-- `AcpSessionMetadata` 直接保存 `systemPromptAppend`；`view_models` 优先读 snapshot 字段，旧历史 session 才 fallback 到 raw frame 的 `_meta.systemPrompt.append`。
+- `AcpSessionMetadata` 使用可选 `systemPromptAppend`。provider 不支持原生 append 或有效 system prompt 为空时字段合法缺失；`view_models` 只投影 snapshot metadata，不从 raw frame 补造该运行期字段。
 - 动态节点调用同样传入 `outerNodeId / outerAttemptId`，由 `acp_session_update_emitter` 自动选择 `dynamic_acp_session_vm`。
 - 用户手动发送 same-session ACP prompt 路径也必须传入 `session_update` callback：`session/prompt` 前先发送包含 synthetic user prompt、system prompt 和 model/mode/configOptions 的 running session-ready snapshot，prompt 完成或停止后再发送 terminal snapshot。不能只在完成后发送 session snapshot，否则实时阶段会退回 event-only shell。
 - ACP session 终态（completed / cancelled / failed）写入 `acp.snapshot.json` 后立即发送一次 `session_update`，确保前端即使错过 running 阶段的 update 也能拿到最终的 session 状态、用量和事件列表。
-- 前端初始化：订阅建立后通过 `getAcpSession` 等待 session-ready snapshot，等待窗口需覆盖 `initialize + session/new` 慢启动，不得在 2 秒级短重试后停留在 event-only shell；live event 到达时不再触发 metadata hydration。若实时渲染缺系统提示词、模型/权限配置或首个 Gold Band 用户消息，视为后端未按 session-ready 契约发送完整 `AcpSessionVm` 或前端 readiness 等待不足，需要修复 `run_prompt` 调用链、`session_update` payload 或初始化等待策略。session 等价判断需比较 config + adapter 元数据签名。模型/权限配置是否可展示以 options 是否存在为准，不强依赖 current id。同一 `sessionId` 内 metadata 不可被 live timing、分页响应、空外部 prop 或 event-only shell 降级；切换到不同 `sessionId` 时必须重新以新 session-ready snapshot 为准。
+- 前端初始化：订阅建立后通过 `getAcpSession` 等待 session-ready snapshot，等待窗口需覆盖 `initialize + session/new` 慢启动，不得在 2 秒级短重试后停留在 event-only shell；live event 到达时不再触发 metadata hydration。active 新会话缺系统提示词、模型/权限配置、首个 Gold Band 用户消息且无可见 timeline 时，视为后端未按 session-ready 契约发送完整 `AcpSessionVm` 或前端 readiness 等待不足。terminal 或 `idle` canonical history 已有可见 timeline 时直接展示，不能要求 `systemPromptAppend`。session 等价判断需比较 config + adapter 元数据签名。模型/权限配置是否可展示以 options 是否存在为准，不强依赖 current id。同一 `sessionId` 内 metadata 不可被 live timing、分页响应、空外部 prop 或 event-only shell 降级；切换到不同 `sessionId` 时必须重新以新 session-ready snapshot 为准。
 - 前端可见消息窗口必须由完整 `AcpSessionVm.events` 与实时 `loadedEvents` 合并而来；`loadedEvents` 不能直接替换 snapshot events。因为启动阶段 synthetic `goldBandPrompt` 在有 session-ready callback 时只写 timeline、不单独发 live event，实时窗口必须保留 snapshot prompt 并继续合并后续 live event。
 
 ---

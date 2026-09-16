@@ -11,8 +11,8 @@ use gold_band::acp::client::PromptActivity;
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
     AppearancePreference, DesktopAvailableUpdate, DesktopLanguage, DesktopUpdateBadgeState,
-    ManagedAgentConfig, ManagedAgentId, McpServerState, PersonalizationPreference, RuntimeConfig,
-    RuntimeLogLevel,
+    ManagedAgentConfig, ManagedAgentId, McpServerDiagnosticState, PersonalizationPreference,
+    RuntimeConfig, RuntimeLogLevel,
 };
 use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -259,7 +259,8 @@ pub struct McpServerVm {
     pub headers: Option<Vec<AgentEnvEntryVm>>,
     pub managed: bool,
     pub help_message: Option<String>,
-    pub health_status: Option<String>, // "healthy" | "unhealthy" | "unknown"
+    /// 最近一次显式配置诊断结果；不代表服务器进程正在运行。
+    pub health_status: Option<String>,
     pub health_message: Option<String>,
 }
 
@@ -7790,7 +7791,7 @@ fn newest_first<T>(mut items: Vec<T>) -> Vec<T> {
 
 pub fn mcp_server_list_vm(
     servers: &[gold_band::config::McpServerConfig],
-    health: &std::collections::BTreeMap<String, McpServerState>,
+    health: &std::collections::BTreeMap<String, McpServerDiagnosticState>,
 ) -> Vec<McpServerVm> {
     servers
         .iter()
@@ -7828,15 +7829,16 @@ pub fn mcp_server_list_vm(
                 ),
             };
             let (health_status, health_message) = match health.get(&s.id) {
-                Some(McpServerState::Running { .. }) => (Some("healthy".to_string()), None),
-                Some(McpServerState::Error { message }) => {
+                Some(McpServerDiagnosticState::Passed { .. }) => {
+                    (Some("healthy".to_string()), None)
+                }
+                Some(McpServerDiagnosticState::Failed { message }) => {
                     (Some("unhealthy".to_string()), Some(message.clone()))
                 }
-                Some(McpServerState::AuthRequired { auth_url }) => {
+                Some(McpServerDiagnosticState::AuthRequired { auth_url }) => {
                     (Some("auth_required".to_string()), auth_url.clone())
                 }
-                Some(McpServerState::Stopped) => (Some("stopped".to_string()), None),
-                Some(McpServerState::Starting) => (Some("checking".to_string()), None),
+                Some(McpServerDiagnosticState::Checking) => (Some("checking".to_string()), None),
                 None => (None, None),
             };
             McpServerVm {
@@ -7923,6 +7925,23 @@ mod tests {
     use gold_band::storage::write_json;
     use serde_json::json;
     use tempfile::tempdir;
+
+    #[test]
+    fn mcp_server_list_projects_managed_memory_as_a_standard_stdio_server() {
+        let server = gold_band::memory::mcp::managed_server_config("gold-band.exe".into());
+        let value = serde_json::to_value(mcp_server_list_vm(
+            &[server],
+            &std::collections::BTreeMap::new(),
+        ))
+        .unwrap();
+        let memory = &value.as_array().unwrap()[0];
+
+        assert_eq!(memory["id"], gold_band::memory::mcp::SERVER_NAME);
+        assert_eq!(memory["managed"], true);
+        assert_eq!(memory["enabled"], true);
+        assert_eq!(memory["transport"], "stdio");
+        assert!(memory.get("sessionScoped").is_none());
+    }
 
     #[test]
     fn app_config_vm_exposes_workspace_layout_contract() {

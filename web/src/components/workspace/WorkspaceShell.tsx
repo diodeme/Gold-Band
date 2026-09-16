@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { GroupImperativeHandle, Layout, LayoutChangedMeta, PanelImperativeHandle } from 'react-resizable-panels';
 import type { AppConfigVm, ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, DesktopPlatform, DesktopWindowFrameStyle } from '../../types';
 import { ConversationSidebar, type ConversationSidebarWorkspaceRevealRequest } from '../conversation/ConversationSidebar';
+import { ProjectMemorySheet } from '../conversation/ProjectMemorySheet';
 import { saveConversationPreference } from '../../api';
 import { AppTitleBar } from '../AppTitleBar';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
@@ -324,6 +325,11 @@ function WorkspaceShellLayout({
   const handledOpenRevisionRef = useRef(workspace.openRevision);
   const handledWorkspaceScopeRef = useRef(workspace.scopeKey);
   const [compactSheetOpen, setCompactSheetOpen] = useState(false);
+  const [memoryWorkspace, setMemoryWorkspace] = useState<{ projectId: string; name: string } | null>(null);
+  const openProjectMemory = useCallback((workspace: { projectId: string; name: string }) => {
+    setCompactSheetOpen(false);
+    setMemoryWorkspace(workspace);
+  }, []);
   const autoCollapseStateRef = useRef<WorkspaceAutoCollapseState>({
     previousWidth: 0,
     left: false,
@@ -676,6 +682,7 @@ function WorkspaceShellLayout({
         config={appConfig.workspaceFiles}
         layout={appConfig.workspaceLayout.rightWorkspace.file}
       />
+      {memoryWorkspace && <ProjectMemorySheet key={memoryWorkspace.projectId} {...memoryWorkspace} onClose={() => setMemoryWorkspace(null)} />}
       <AppTitleBar
         trailingContent={titleBarTrailingContent}
         appName={appName}
@@ -722,6 +729,7 @@ function WorkspaceShellLayout({
               onDeleteTask={deleteTask}
               onNewConversationInWorkspace={onNewConversationInWorkspace}
               onAddWorkspace={onAddWorkspace}
+              onOpenProjectMemory={openProjectMemory}
               onRemoveWorkspace={onRemoveWorkspace ? removeWorkspace : undefined}
               onRetryBootstrap={onRetryBootstrap}
               onRequestWorkspaceTasks={onRequestWorkspaceTasks}

@@ -14,6 +14,7 @@ mod git_state_monitor;
 mod i18n;
 mod im_runtime;
 mod image_actions;
+mod memory;
 mod metrics;
 mod multica;
 mod notifications;
@@ -117,6 +118,9 @@ fn main() {
 
 fn run() -> anyhow::Result<()> {
     configure_storage_paths(channel::storage_path_config());
+    if gold_band::memory::mcp::requested() {
+        return tokio::runtime::Runtime::new()?.block_on(gold_band::memory::mcp::run());
+    }
     let context = DesktopContext::from_current_dir()?;
     let wallpaper_runtime = wallpaper::WallpaperProtocolRuntime::new(
         GoldBandPaths::new(context.repo_root.clone()).user_gold_band_dir(),
@@ -374,13 +378,6 @@ fn run() -> anyhow::Result<()> {
                     std::thread::sleep(std::time::Duration::from_secs(60));
                 }
             });
-            // 启动后台线程预探测 MCP 服务健康状态（独立线程，避免阻塞 webview 主线程）。
-            // 客户端启动后即开始检测，进入 MCP 管理页时状态已就绪，无需手动诊断。
-            let health_handle = app.handle().clone();
-            std::thread::spawn(move || {
-                let state = health_handle.state::<DesktopState>();
-                builtin_mcp::refresh_all_mcp_health(&state);
-            });
             retry_pending_startup_install(&app.handle().clone());
             start_update_polling(app.handle().clone());
             multica::start_multica_loop(app.handle().clone());
@@ -388,6 +385,8 @@ fn run() -> anyhow::Result<()> {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            memory::read_project_memory,
+            memory::write_project_memory,
             get_app_bootstrap,
             im_runtime::get_im_settings,
             im_runtime::start_wecom_scan_authorization,

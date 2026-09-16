@@ -10,17 +10,14 @@ use crate::artifacts::parse_json_artifact;
 use crate::domain::{
     InvocationKind, NodeOutcome, RunStatus, SessionMode, TurnControlMode, VERSION,
 };
-use crate::dsl::{
-    JsonConditionDsl, JsonPathSegment, NodeDsl, ValidatedWorkflow, WorkerNode, parse_json_path,
-};
+use crate::dsl::{JsonPathSegment, NodeDsl, ValidatedWorkflow, WorkerNode, parse_json_path};
 use crate::dynamic::AI_DYNAMIC_RESULT_ARTIFACT;
 use crate::observability::{ProgressStage, progress};
 use crate::prompts::PromptExecutionSurface;
 use crate::provider::{
-    ConversationPromptInput, OutputEmissionMode, PromptArtifactRef, PromptAttachmentRef,
-    PromptOutputContract, PromptPredecessorContext, PromptRuntimeContext, PromptVisibility,
-    ProviderRunResult, ProviderRunStatus, RuntimeControlIntent, RuntimeControlOutput, StreamMode,
-    UserPromptRenderMode, WorkerInvocation,
+    ConversationPromptInput, PromptArtifactRef, PromptAttachmentRef, PromptPredecessorContext,
+    PromptRuntimeContext, PromptVisibility, ProviderRunResult, ProviderRunStatus,
+    RuntimeControlIntent, RuntimeControlOutput, StreamMode, UserPromptRenderMode, WorkerInvocation,
 };
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, WorkerRefState, validate_node_state,
@@ -57,29 +54,8 @@ fn attempt_is_still_current_running(
         && run.current_attempt.as_deref() == Some(attempt_id))
 }
 
-fn success_condition_text(condition: &JsonConditionDsl) -> String {
-    match condition {
-        JsonConditionDsl::Expression { expression } => expression.clone(),
-        JsonConditionDsl::PathEquals { path, equals } => {
-            format!("JSON field `{}` equals `{}`", path, equals)
-        }
-    }
-}
-
-fn worker_output_contract(worker: &WorkerNode) -> Option<PromptOutputContract> {
-    worker.output.as_ref().map(|output| PromptOutputContract {
-        artifact: output.artifact.clone(),
-        kind: format!("{:?}", output.kind).to_ascii_lowercase(),
-        schema: output.schema.clone(),
-        schema_text: None,
-        success_condition: worker
-            .success_condition
-            .as_ref()
-            .map(success_condition_text),
-        finalize_context: None,
-        emission_mode: OutputEmissionMode::PostTurnProjection,
-    })
-}
+mod output_contract;
+use output_contract::worker_output_contract;
 
 fn runtime_prompt_context(
     app: &App,
@@ -1237,6 +1213,7 @@ pub(crate) fn re_evaluate_attempt(
 mod tests {
     use super::*;
     use crate::dsl::{OutputContractDsl, OutputKind};
+    use crate::provider::OutputEmissionMode;
     use crate::runtime_error::{RuntimeErrorDomain, manual_runtime_error_info};
 
     #[test]

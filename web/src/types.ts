@@ -2997,7 +2997,8 @@ export interface McpServerVm {
   headers?: AgentEnvEntryVm[] | null;
   managed: boolean;
   helpMessage?: string | null;
-  healthStatus?: 'healthy' | 'unhealthy' | 'auth_required' | 'stopped' | 'checking' | 'unknown' | null;
+  /** 最近一次显式配置诊断结果；不代表正式会话进程正在运行。 */
+  healthStatus?: 'healthy' | 'unhealthy' | 'auth_required' | 'checking' | 'unknown' | null;
   healthMessage?: string | null;
 }
 

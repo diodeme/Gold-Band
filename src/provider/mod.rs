@@ -1,3 +1,4 @@
+pub(crate) mod cicd;
 use crate::acp::{client, events::AcpUiEvent};
 use crate::artifacts::{JsonArtifactSpan, artifact_uses_json_output, json_artifact_display_span};
 use crate::config::{
@@ -1534,12 +1535,12 @@ impl AcpProvider {
 
     fn run_worker_once_with_callbacks(
         &self,
-        req: WorkerInvocation,
+        mut req: WorkerInvocation,
         live_update: Option<AcpLiveUpdate<'_>>,
         session_update: Option<AcpSessionUpdate<'_>>,
         prompt_accepted: Option<AcpPromptAccepted<'_>>,
     ) -> Result<ProviderRunResult> {
-        let prompt = render_prompt_bundle(&req)?;
+        let prompt = prepare_prompt_bundle(&mut req)?;
         let turn_id = prompt
             .prompt_id
             .as_deref()
@@ -1943,6 +1944,16 @@ impl ProviderAdapter for AcpProvider {
         prompt_accepted: Option<AcpPromptAccepted<'_>>,
         runtime_phase_update: Option<ProviderRuntimePhaseUpdate<'_>>,
     ) -> Result<ProviderRunResult> {
+        if cicd::is_single_submission(req.profile.as_deref()) {
+            return cicd::run_once(|| {
+                self.run_worker_once_with_callbacks(
+                    req,
+                    live_update,
+                    session_update,
+                    prompt_accepted,
+                )
+            });
+        }
         if req.turn_control_mode == TurnControlMode::RuntimeControlled
             && req.output_contract.as_ref().is_some_and(|contract| {
                 contract.emission_mode == OutputEmissionMode::PostTurnProjection
@@ -2193,6 +2204,24 @@ fn output_artifact_payload_from_run(
 
 fn non_empty_artifact_text(value: &str) -> Option<String> {
     (!value.trim().is_empty()).then(|| value.to_string())
+}
+
+/// Refresh task memory once at the submission boundary, before rendering the prompt.
+pub fn prepare_prompt_bundle(req: &mut WorkerInvocation) -> Result<PromptBundle> {
+    let memory = crate::memory::prepare_invocation(req)?;
+    let mut prompt = render_prompt_bundle(req)?;
+    if let Some(memory) = memory {
+        prompt.system_prompt.push_str("\n\n");
+        prompt
+            .system_prompt
+            .push_str(crate::memory::system_rules(req.runtime_context.language));
+        prompt.user_prompt = format!(
+            "{}\n\n{}",
+            gold_band_hidden_block("Gold Band current memory", &memory),
+            prompt.user_prompt
+        );
+    }
+    Ok(prompt)
 }
 
 pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {

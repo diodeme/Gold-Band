@@ -1,5 +1,6 @@
 import { listen } from '@tauri-apps/api/event';
 import { applyAgentDiagnosticUpdate } from '@/lib/agent-diagnostic-update';
+import { setChannelAppName } from '@/lib/channel-app-name';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import {
@@ -944,6 +945,9 @@ export function App() {
   const showUpdatesSectionDot = availableUpdateVersion !== null;
   const appInfo = bootstrap?.appInfo ?? defaultAppInfo;
   const appConfig = bootstrap?.appConfig ?? defaultAppConfig;
+  useEffect(() => {
+    setChannelAppName(appInfo.appName);
+  }, [appInfo.appName]);
   const activeWorkspaceLayoutProfile = useMemo(
     () => workspaceLayoutProfileForSurface({
       uiMode,

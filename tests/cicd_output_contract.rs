@@ -37,6 +37,7 @@ fn explicitly_validated_cicd_uses_inline_control_in_the_single_execution_turn() 
         }),
         permission_mode: None,
         config_options: Default::default(),
+        auto_accept: false,
         manual_check: None,
         prompt_envelope: gold_band::dsl::PromptEnvelopeMode::RuntimeManaged,
     };

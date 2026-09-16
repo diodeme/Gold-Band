@@ -25,6 +25,171 @@ export interface CommittedSlashCommand {
   suffix: string;
 }
 
+export type SlashCatalogItemKind = 'role' | 'command';
+
+export interface SlashCatalogItem {
+  kind: SlashCatalogItemKind;
+  id: string;
+  name: string;
+  description: string;
+  inputHint?: string;
+  content?: string;
+  profileName?: string;
+}
+
+export interface SlashCatalogGroup {
+  id: 'product' | 'agent';
+  heading: string;
+  items: SlashCatalogItem[];
+}
+
+export interface SlashItemIdentity {
+  kind: SlashCatalogItemKind;
+  id: string;
+}
+
+export interface CommittedSlashItem {
+  item: SlashCatalogItem;
+  prefix: string;
+  suffix: string;
+}
+
+export function slashCatalogItemValue(item: SlashCatalogItem): string {
+  return `${item.kind}:${item.id}`;
+}
+
+export function slashTokenFromName(name: string): string {
+  return name
+    .trim()
+    .replace(/^\/+/u, '')
+    .replace(/[/\s]+/gu, '-')
+    .replace(/[^\p{L}\p{N}._:-]+/gu, '-')
+    .replace(/-+/gu, '-')
+    .replace(/^-+|-+$/gu, '');
+}
+
+export function roleSlashItems(
+  profiles: readonly { id: string; name: string; summary: string; content: string }[],
+): SlashCatalogItem[] {
+  return profiles.flatMap((profile) => {
+    const name = slashTokenFromName(profile.name);
+    if (!name) return [];
+    return [{
+      kind: 'role' as const,
+      id: profile.id,
+      name,
+      description: profile.summary,
+      content: profile.content,
+      profileName: profile.name,
+    }];
+  });
+}
+
+export function commandSlashItems(commands: readonly AcpCommandItemVm[]): SlashCatalogItem[] {
+  return commands.map((command) => ({
+    kind: 'command' as const,
+    id: command.name,
+    name: command.name,
+    description: command.description,
+    ...(command.inputHint ? { inputHint: command.inputHint } : {}),
+  }));
+}
+
+export function buildSlashCatalog(
+  productHeading: string,
+  agentHeading: string,
+  profiles: readonly { id: string; name: string; summary: string; content: string }[],
+  commands: readonly AcpCommandItemVm[],
+): SlashCatalogGroup[] {
+  const groups: SlashCatalogGroup[] = [];
+  const roles = roleSlashItems(profiles);
+  if (roles.length > 0) {
+    groups.push({ id: 'product', heading: productHeading, items: roles });
+  }
+  const commandItems = commandSlashItems(commands);
+  if (commandItems.length > 0) {
+    groups.push({ id: 'agent', heading: agentHeading, items: commandItems });
+  }
+  return groups;
+}
+
+export function flattenSlashCatalog(groups: readonly SlashCatalogGroup[]): SlashCatalogItem[] {
+  return groups.flatMap((group) => group.items);
+}
+
+export function filterSlashCatalog(
+  groups: readonly SlashCatalogGroup[],
+  query: string,
+): SlashCatalogGroup[] {
+  const keyword = query.trim().toLocaleLowerCase();
+  return groups.flatMap((group) => {
+    const items = keyword
+      ? group.items.filter((item) => item.name.toLocaleLowerCase().includes(keyword))
+      : group.items;
+    return items.length > 0 ? [{ ...group, items: [...items] }] : [];
+  });
+}
+
+export function parseCommittedSlashItem(
+  input: string,
+  items: readonly SlashCatalogItem[],
+  selectedIdentity: SlashItemIdentity | null = null,
+): CommittedSlashItem | null {
+  const match = input.match(LEADING_SLASH_COMMAND_RE);
+  if (!match) return null;
+  const typedName = match[1];
+  const prefixLength = typedName.length + 1;
+  const suffix = input.slice(prefixLength);
+  if (!suffix || !SLASH_COMMAND_SEPARATOR_RE.test(suffix)) return null;
+  const matches = items.filter(
+    (candidate) => candidate.name.localeCompare(typedName, undefined, { sensitivity: 'accent' }) === 0,
+  );
+  if (matches.length === 0) return null;
+  const selected = selectedIdentity
+    ? matches.find((item) => item.kind === selectedIdentity.kind && item.id === selectedIdentity.id)
+    : undefined;
+  const item = selected
+    ?? matches.find((candidate) => candidate.kind === 'role')
+    ?? matches[0];
+  return {
+    item,
+    prefix: input.slice(0, prefixLength),
+    suffix,
+  };
+}
+
+export function unwrapSelectedSlashItem(
+  input: string,
+  items: readonly SlashCatalogItem[],
+  selectionStart: number | null,
+  selectionEnd: number | null,
+  selectedIdentity: SlashItemIdentity | null = null,
+): string | null {
+  if (selectionStart === null || selectionEnd === null || selectionStart !== selectionEnd) {
+    return null;
+  }
+  const committed = parseCommittedSlashItem(input, items, selectedIdentity);
+  if (!committed || committed.suffix !== ' ') return null;
+  return committed.prefix;
+}
+
+export function committedRoleSnapshot(committed: CommittedSlashItem | null): {
+  profileId: string;
+  name: string;
+  content: string;
+} | null {
+  if (committed?.item.kind !== 'role' || !committed.item.content?.trim()) return null;
+  return {
+    profileId: committed.item.id,
+    name: committed.item.profileName ?? committed.item.name,
+    content: committed.item.content,
+  };
+}
+
+export function slashSendableText(input: string, committed: CommittedSlashItem | null): string {
+  return committed?.item.kind === 'role' ? committed.suffix : input;
+}
+
 export function matchSlashCommandQuery(input: string): string | null {
   const match = input.match(SLASH_QUERY_RE);
   return match?.[1] ?? null;
@@ -96,32 +261,28 @@ export function unwrapSelectedSlashCommand(
   selectionStart: number | null,
   selectionEnd: number | null,
 ): string | null {
-  if (selectionStart === null || selectionEnd === null || selectionStart !== selectionEnd) {
-    return null;
-  }
-  const committed = parseCommittedSlashCommand(input, commands);
-  if (!committed || committed.suffix !== ' ') return null;
-  return committed.prefix;
+  return unwrapSelectedSlashItem(
+    input,
+    commandSlashItems(commands),
+    selectionStart,
+    selectionEnd,
+  );
 }
 
 export function parseCommittedSlashCommand(
   input: string,
   commands: readonly AcpCommandItemVm[],
 ): CommittedSlashCommand | null {
-  const match = input.match(LEADING_SLASH_COMMAND_RE);
-  if (!match) return null;
-  const typedName = match[1];
-  const prefixLength = typedName.length + 1;
-  const suffix = input.slice(prefixLength);
-  if (!suffix || !SLASH_COMMAND_SEPARATOR_RE.test(suffix)) return null;
-  const command = commands.find(
-    (candidate) => candidate.name.localeCompare(typedName, undefined, { sensitivity: 'accent' }) === 0,
-  );
-  if (!command) return null;
+  const committed = parseCommittedSlashItem(input, commandSlashItems(commands));
+  if (!committed) return null;
   return {
-    command,
-    prefix: input.slice(0, prefixLength),
-    suffix,
+    command: {
+      name: committed.item.name,
+      description: committed.item.description,
+      ...(committed.item.inputHint ? { inputHint: committed.item.inputHint } : {}),
+    },
+    prefix: committed.prefix,
+    suffix: committed.suffix,
   };
 }
 

@@ -9,7 +9,9 @@ export interface ComposerQuote {
   text: string;
 }
 
-import type { ConversationPromptInput, UserPromptQuote } from '@/types';
+import type { ConversationPromptInput, UserPromptQuote, UserPromptRole } from '@/types';
+import type { CommittedSlashItem } from '@/lib/slash-command';
+import { committedRoleSnapshot, slashSendableText } from '@/lib/slash-command';
 
 export type AddComposerQuoteResult =
   | { ok: true; quotes: ComposerQuote[] }
@@ -42,6 +44,7 @@ export function addComposerQuote(
 export function createUserPromptSubmission(
   content: string,
   quotes: readonly ComposerQuote[],
+  role?: UserPromptRole | null,
 ): ConversationPromptInput {
   const displayText = content.trim();
   const promptQuotes = quotes.map(({ id, sourceKey, text }) => ({
@@ -49,7 +52,23 @@ export function createUserPromptSubmission(
     sourceMessageKey: sourceKey,
     text,
   }));
-  return { displayText, quotes: promptQuotes };
+  return {
+    displayText,
+    quotes: promptQuotes,
+    ...(role ? { role } : {}),
+  };
+}
+
+export function createComposerPromptSubmission(
+  content: string,
+  quotes: readonly ComposerQuote[],
+  committed: CommittedSlashItem | null,
+): ConversationPromptInput {
+  return createUserPromptSubmission(
+    slashSendableText(content, committed),
+    quotes,
+    committedRoleSnapshot(committed),
+  );
 }
 
 export function hasUserPromptPayload(content: string, attachmentCount: number) {
@@ -84,4 +103,19 @@ export function userPromptQuotesFromRaw(raw: unknown): UserPromptQuote[] {
       ? [{ id, sourceMessageKey, text }]
       : [];
   });
+}
+
+export function userPromptRoleFromRaw(raw: unknown): UserPromptRole | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const role = (raw as { role?: unknown }).role;
+  if (!role || typeof role !== 'object') return null;
+  const { profileId, name, content } = role as Record<string, unknown>;
+  return typeof profileId === 'string'
+    && profileId.length > 0
+    && typeof name === 'string'
+    && name.length > 0
+    && typeof content === 'string'
+    && content.length > 0
+    ? { profileId, name, content }
+    : null;
 }

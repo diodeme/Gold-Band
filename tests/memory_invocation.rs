@@ -16,13 +16,8 @@ fn memory_invocation_binding_covers_direct_workflow_auto_and_retry_refresh() {
         &serde_json::json!({"id":"task-001"}),
     )
     .unwrap();
-    let service = MemoryService::new(
-        paths.clone(),
-        &paths.project_id,
-        Some("task-001".into()),
-        false,
-    )
-    .unwrap();
+    let service =
+        MemoryService::new(paths.clone(), &paths.project_id, Some("task-001".into())).unwrap();
     service
         .write(WriteCommand {
             scope: Scope::Task,
@@ -38,6 +33,12 @@ fn memory_invocation_binding_covers_direct_workflow_auto_and_retry_refresh() {
     let mut req = test_worker_invocation(root.join("attempt"));
     req.adapter_workspace_dir = root;
     req.runtime_context.project_id = paths.project_id.clone();
+    req.mcp_servers = vec![serde_json::json!({
+        "name": gold_band::memory::mcp::SERVER_NAME,
+        "command": "gold-band",
+        "args": [gold_band::memory::mcp::FLAG],
+        "env": []
+    })];
     for (surface, envelope) in [
         (
             PromptExecutionSurface::Workflow,
@@ -54,7 +55,9 @@ fn memory_invocation_binding_covers_direct_workflow_auto_and_retry_refresh() {
     ] {
         req.execution_surface = surface;
         req.prompt_envelope = envelope;
-        let rendered = gold_band::memory::prepare_invocation(&mut req).unwrap();
+        let rendered = gold_band::memory::prepare_invocation(&mut req)
+            .unwrap()
+            .expect("enabled memory MCP should render current memory");
         assert!(rendered.contains("B2"));
         assert!(
             !rendered.contains("memory_write"),
@@ -83,6 +86,7 @@ fn memory_invocation_binding_covers_direct_workflow_auto_and_retry_refresh() {
             }
         }
         assert_eq!(req.mcp_servers.len(), 1);
+        assert_eq!(req.mcp_servers[0]["args"].as_array().unwrap().len(), 2);
         assert_eq!(
             prepare_acp_mcp_servers(
                 &req.mcp_servers,
@@ -111,6 +115,7 @@ fn memory_invocation_binding_covers_direct_workflow_auto_and_retry_refresh() {
     assert!(
         gold_band::memory::prepare_invocation(&mut req)
             .unwrap()
+            .expect("enabled memory MCP should refresh current memory")
             .contains("B3")
     );
     let after = prepare_prompt_bundle(&mut req).unwrap();
@@ -123,6 +128,28 @@ fn memory_invocation_binding_covers_direct_workflow_auto_and_retry_refresh() {
     let info = gold_band::runtime_error::normalize_runtime_error(&error);
     assert_eq!(info.code_str(), "memory.corrupt");
     assert_eq!(info.recovery, RecoveryMode::Manual);
+}
+
+#[test]
+fn disabled_memory_mcp_omits_memory_prompt_and_session_binding() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let paths = gold_band::storage::GoldBandPaths::new(root.clone());
+    paths.provision_project_manifest().unwrap();
+    gold_band::storage::write_json(
+        &paths.task_file("task-001"),
+        &serde_json::json!({"id":"task-001"}),
+    )
+    .unwrap();
+    let mut req = test_worker_invocation(root.join("attempt"));
+    req.adapter_workspace_dir = root;
+    req.runtime_context.project_id = paths.project_id;
+
+    let prompt = prepare_prompt_bundle(&mut req).unwrap();
+
+    assert!(req.mcp_servers.is_empty());
+    assert!(!prompt.system_prompt.contains("memory_write"));
+    assert!(!prompt.user_prompt.contains("<memory-data>"));
 }
 
 fn test_worker_invocation(attempt_dir: Utf8PathBuf) -> WorkerInvocation {
@@ -170,6 +197,7 @@ fn test_worker_invocation(attempt_dir: Utf8PathBuf) -> WorkerInvocation {
         session_mode: SessionMode::New,
         user_prompt_render_mode: UserPromptRenderMode::RequirementTask,
         permission_mode: None,
+        auto_accept: false,
         model: None,
         config_options: Default::default(),
         continue_ref: None,

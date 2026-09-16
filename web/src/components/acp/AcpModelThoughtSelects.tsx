@@ -12,6 +12,7 @@ import {
   DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
   keepAcpConfigMenuOpenOnSelect,
   acpComposerConfigTriggerVariants,
+  formatAcpCompositeSelection,
   useAcpComposerConfigOverflowTooltip,
 } from '@/components/acp/AcpComposerConfigTrigger';
 import {
@@ -31,6 +32,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 export { UNSPECIFIED_ACP_CONFIG_VALUE } from '@/components/acp/AcpSingleConfigMenu';
+export { formatAcpCompositeSelection } from '@/components/acp/AcpComposerConfigTrigger';
 
 export const ACP_THOUGHT_LEVEL_CATEGORY = 'thought_level';
 
@@ -64,17 +66,6 @@ export function nextAcpCompositeSection(
 ) {
   if (open) return section;
   return currentSection === section ? null : currentSection;
-}
-
-export function formatAcpCompositeSelection(
-  modelName: string | null | undefined,
-  thoughtName: string | null | undefined,
-  unspecifiedLabel: string,
-) {
-  if (modelName && thoughtName) return `${modelName} · ${thoughtName}`;
-  if (modelName) return modelName;
-  if (thoughtName) return `${unspecifiedLabel} · ${thoughtName}`;
-  return unspecifiedLabel;
 }
 
 type Props = {

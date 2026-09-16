@@ -1518,9 +1518,9 @@ profile body
 
     #[test]
     fn cicd_profile_requires_interactive_build_and_deploy_without_automatic_extras() {
-        for (language, clauses) in [
+        for (content, clauses) in [
             (
-                DesktopLanguage::ZhCn,
+                PROFILE_CICD_ZH_CN,
                 [
                     "默认任务是构建 + 部署",
                     "默认推荐按构建部署",
@@ -1535,7 +1535,7 @@ profile body
                 ],
             ),
             (
-                DesktopLanguage::En,
+                PROFILE_CICD_EN,
                 [
                     "The default task is build + deploy",
                     "Recommend deployment from a build by default",
@@ -1550,7 +1550,6 @@ profile body
                 ],
             ),
         ] {
-            let content = built_in_profile_content("cicd", language);
             for clause in clauses {
                 assert!(content.contains(clause), "missing CI/CD contract: {clause}");
             }
@@ -1558,17 +1557,41 @@ profile body
     }
 
     #[test]
-    fn cicd_profiles_share_parameter_keys() {
+    fn cicd_profiles_share_task_build_and_subsystem_deployment_keys() {
         let keys = |content: &str| {
             content
                 .lines()
-                .filter(|line| line.starts_with("| `cicd.<S>."))
+                .filter(|line| line.starts_with("| `cicd."))
                 .map(|line| line.split('|').nth(1).unwrap().trim().to_owned())
                 .collect::<Vec<_>>()
         };
         let zh = keys(PROFILE_CICD_ZH_CN);
-        assert_eq!(zh.len(), 13);
+        assert_eq!(zh.len(), 14);
         assert_eq!(zh, keys(PROFILE_CICD_EN));
+        assert_eq!(
+            zh,
+            [
+                "`cicd.build.jobId`",
+                "`cicd.build.branch`",
+                "`cicd.build.appList`",
+                "`cicd.build.appCoverage`",
+                "`cicd.deploy.<S>.selected`",
+                "`cicd.deploy.<S>.mode`",
+                "`cicd.deploy.<S>.templateId`",
+                "`cicd.deploy.<S>.templateName`",
+                "`cicd.deploy.<S>.deployType`",
+                "`cicd.deploy.<S>.env`",
+                "`cicd.deploy.<S>.ips`",
+                "`cicd.deploy.<S>.containers`",
+                "`cicd.deploy.<S>.pkgNames`",
+                "`cicd.deploy.<S>.inputParams`",
+            ]
+        );
+        for content in [PROFILE_CICD_ZH_CN, PROFILE_CICD_EN] {
+            assert!(!content.contains("Current-task `memory.json`"));
+            assert!(!content.contains("当前 task 的 `memory.json`"));
+            assert!(!content.contains("\"targets\""));
+        }
     }
 
     fn run_import(

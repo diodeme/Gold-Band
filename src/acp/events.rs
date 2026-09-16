@@ -97,6 +97,8 @@ pub struct AcpSessionMetadata {
     pub model_override: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode_override: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_option_overrides: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1008,6 +1010,37 @@ fn canonical_permission_request_id(event: &AcpUiEvent) -> String {
         current = next;
     }
     current.to_string()
+}
+
+pub fn permission_timeline_item_id(event: &AcpUiEvent) -> String {
+    if let Some(item_id) = event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("_goldBandPermissionItemId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| value.starts_with("permission-") && value.len() > "permission-".len())
+    {
+        return item_id.to_string();
+    }
+
+    // The JSON-RPC request id is transport-scoped and can reset after a
+    // provider restart. The durable provider tool-call id (or the persisted
+    // Gold Band sequence when a provider omits it) identifies the occurrence.
+    let request_id = canonical_permission_request_id(event);
+    let sequence_fallback = event.seq.to_string();
+    let occurrence_id = event
+        .tool_call_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(sequence_fallback.as_str());
+    let mut hasher = blake3::Hasher::new();
+    for part in [request_id.as_bytes(), occurrence_id.as_bytes()] {
+        hasher.update(&(part.len() as u64).to_be_bytes());
+        hasher.update(part);
+    }
+    format!("permission-{}", hasher.finalize())
 }
 
 /// Read token totals from the ACP session metadata file and timeline.
@@ -2464,6 +2497,7 @@ fn merge_session_lifecycle(current: Option<&Value>, incoming: &mut Value) {
     for key in [
         "modelOverride",
         "permissionModeOverride",
+        "autoAccept",
         "configOptionOverrides",
         "configCatalogRefreshRequiredAt",
     ] {
@@ -3074,11 +3108,10 @@ pub fn permission_request_event(seq: u64, request_id: String, params: Value) -> 
     let mut raw = params;
     normalize_agent_transcript_metadata(&mut raw);
     if let Some(object) = raw.as_object_mut() {
-        object
-            .entry("requestId".to_string())
-            .or_insert_with(|| Value::String(request_id.clone()));
+        object.remove("_goldBandPermissionItemId");
+        object.insert("requestId".to_string(), Value::String(request_id.clone()));
     }
-    AcpUiEvent {
+    let mut event = AcpUiEvent {
         id: request_id,
         seq,
         timestamp: current_timestamp(),
@@ -3097,7 +3130,15 @@ pub fn permission_request_event(seq: u64, request_id: String, params: Value) -> 
         ended_at: None,
         timing: None,
         raw: Some(raw),
+    };
+    let item_id = permission_timeline_item_id(&event);
+    if let Some(object) = event.raw.as_mut().and_then(Value::as_object_mut) {
+        object.insert(
+            "_goldBandPermissionItemId".to_string(),
+            Value::String(item_id),
+        );
     }
+    event
 }
 
 pub fn normalize_agent_transcript_metadata(value: &mut Value) -> Option<AgentTranscriptRelation> {
@@ -3547,8 +3588,9 @@ mod tests {
         context_compaction_phase, elicitation_request_event, elicitation_response_event,
         extract_usage_fields, inspect_session_turn, is_semantically_empty_agent_content,
         kind_to_ui_kind, latest_timeline_source_seq, load_session_metadata, load_timeline_items,
-        normalize_session_update, permission_request_event, scheduled_trigger_event,
-        user_prompt_event, user_prompt_event_with_quotes, write_timeline_items,
+        normalize_session_update, permission_request_event, permission_timeline_item_id,
+        scheduled_trigger_event, user_prompt_event, user_prompt_event_with_quotes,
+        write_timeline_items,
     };
     use crate::provider::UserPromptQuote;
     use crate::storage::{read_json, write_json};
@@ -3891,6 +3933,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "retry".into(),
                 quotes: vec![],
+                role: None,
             },
             attachment_paths: vec![],
             admitted_at: "4Z".into(),
@@ -3946,6 +3989,7 @@ mod tests {
                 input: crate::provider::ConversationPromptInput {
                     display_text: format!("message for {turn_id}"),
                     quotes: Vec::new(),
+                    role: None,
                 },
                 attachment_paths: vec![format!("{turn_id}.txt")],
                 admitted_at: admitted_at.to_string(),
@@ -4069,6 +4113,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "survive restart".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: vec!["evidence.txt".to_string()],
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4108,6 +4153,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "stop before provider startup".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4183,6 +4229,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "first".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4205,6 +4252,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "second".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             admitted_at: "2026-08-19T10:00:03Z".to_string(),
             ..first
@@ -4275,6 +4323,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "continue legacy session".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4321,6 +4370,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "shared lifecycle".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4360,6 +4410,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "claim me".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4448,6 +4499,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "run owned".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4509,6 +4561,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "stop me".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4634,6 +4687,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "hi".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-21T10:00:00Z".to_string(),
@@ -4685,6 +4739,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "follow up".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-21T10:00:00Z".to_string(),
@@ -4729,6 +4784,57 @@ mod tests {
         assert!(persisted.get("modelOverride").is_none());
         assert!(persisted.get("permissionModeOverride").is_none());
         assert!(persisted.get("configOptionOverrides").is_none());
+    }
+
+    #[test]
+    fn established_session_keeps_command_owned_auto_accept() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-auto-accept".to_string(),
+            operation_id: "operation-auto-accept".to_string(),
+            adapter_id: "claude-acp".to_string(),
+            adapter_display_name: "Claude".to_string(),
+            cwd: "C:/tmp/attempt".to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "follow up".to_string(),
+                quotes: Vec::new(),
+                role: None,
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-08-21T10:00:00Z".to_string(),
+        };
+        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission).unwrap()
+        else {
+            panic!("auto accept command-owned test admission must start");
+        };
+        let owner = match super::claim_session_turn_for_execution(
+            &path,
+            &submission.turn_id,
+            started.revision,
+            &submission.operation_id,
+        )
+        .unwrap()
+        {
+            super::AcpTurnExecutionClaim::Claimed(owner) => owner,
+            claim => panic!("expected ownership claim, got {claim:?}"),
+        };
+        let mut stale_provider = load_session_metadata(&path, None).unwrap();
+        stale_provider.session_id = Some("session-existing".to_string());
+        stale_provider.availability = AcpSessionAvailability::Established;
+        stale_provider.live_turn_activity = AcpLiveTurnActivity::Running;
+        stale_provider.auto_accept = true;
+        let mut command_owned = read_json::<Value>(&path).unwrap();
+        command_owned["sessionId"] = json!("session-existing");
+        command_owned["autoAccept"] = json!(false);
+        write_json(&path, &command_owned).unwrap();
+
+        super::write_session_metadata_owned(&path, &stale_provider, &owner)
+            .unwrap()
+            .expect("same owner provider write must merge command Auto Accept");
+        let persisted = read_json::<Value>(&path).unwrap();
+
+        assert_eq!(persisted["autoAccept"], false);
     }
 
     #[test]
@@ -5427,6 +5533,75 @@ mod tests {
                 .and_then(|raw| raw.get("requestId"))
                 .and_then(|value| value.as_str()),
             Some("0")
+        );
+    }
+
+    #[test]
+    fn permission_request_event_overrides_conflicting_params_identity() {
+        let event = permission_request_event(
+            9,
+            "0".to_string(),
+            json!({
+                "requestId": "provider-display-id",
+                "_goldBandPermissionItemId": "permission-provider-supplied",
+                "sessionId": "session-123"
+            }),
+        );
+
+        assert_eq!(event.id, "0");
+        assert_eq!(event.raw.as_ref().unwrap()["requestId"], "0");
+        assert_ne!(
+            event.raw.as_ref().unwrap()["_goldBandPermissionItemId"],
+            "permission-provider-supplied"
+        );
+    }
+
+    #[test]
+    fn permission_timeline_identity_survives_transport_request_id_reuse() {
+        let params = |tool_call_id: &str| {
+            json!({
+                "sessionId": "session-123",
+                "toolCall": { "toolCallId": tool_call_id },
+                "options": [{ "optionId": "allow", "name": "Allow", "kind": "allow_once" }]
+            })
+        };
+        let first = permission_request_event(10, "0".to_string(), params("call-first"));
+        let second = permission_request_event(11, "0".to_string(), params("call-second"));
+        let first_identity = permission_timeline_item_id(&first);
+
+        assert_eq!(first_identity, permission_timeline_item_id(&first));
+        assert_ne!(first_identity, permission_timeline_item_id(&second));
+        assert!(first_identity.starts_with("permission-"));
+        assert_eq!(
+            first
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("requestId"))
+                .and_then(Value::as_str),
+            Some("0")
+        );
+        assert_eq!(
+            second
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("requestId"))
+                .and_then(Value::as_str),
+            Some("0")
+        );
+    }
+
+    #[test]
+    fn permission_timeline_identity_uses_durable_sequence_without_tool_call() {
+        let first = permission_request_event(10, "0".to_string(), json!({}));
+        let second = permission_request_event(11, "0".to_string(), json!({}));
+
+        assert_ne!(
+            permission_timeline_item_id(&first),
+            permission_timeline_item_id(&second)
+        );
+        assert_eq!(
+            permission_timeline_item_id(&first),
+            permission_timeline_item_id(&first)
         );
     }
 

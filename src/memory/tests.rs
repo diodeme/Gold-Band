@@ -12,8 +12,13 @@ fn fixture(wb: bool) -> (tempfile::TempDir, MemoryService) {
         .join(&paths.project_id);
     paths.provision_project_manifest().unwrap();
     write_json(&paths.task_file("task-1"), &json!({"id":"task-1"})).unwrap();
-    let service =
-        MemoryService::new(paths.clone(), &paths.project_id, Some("task-1".into()), wb).unwrap();
+    let service = MemoryService::new_with_channel(
+        paths.clone(),
+        &paths.project_id,
+        Some("task-1".into()),
+        wb,
+    )
+    .unwrap();
     (temp, service)
 }
 
@@ -31,28 +36,23 @@ fn command(scope: Scope, key: &str, value: &str, revision: Option<String>) -> Wr
 }
 
 #[test]
-fn cicd_subsystem_parameters_are_isolated_and_corrected_per_key() {
+fn cicd_task_build_and_subsystem_deployments_are_isolated_and_corrected_per_key() {
     let (_temp, service) = fixture(true);
     service
-        .write(command(
-            Scope::Workspace,
-            "cicd.pay%2Eapi.build.jobId",
-            "job-a",
-            None,
-        ))
+        .write(command(Scope::Workspace, "cicd.build.jobId", "job-a", None))
         .unwrap();
     service
         .write(command(
             Scope::Workspace,
-            "cicd.pay%252Eapi.build.jobId",
-            "job-b",
+            "cicd.deploy.pay%2Eapi.templateId",
+            "template-a",
             None,
         ))
         .unwrap();
     service
         .write(command(
             Scope::Task,
-            "cicd.pay%2Eapi.selected",
+            "cicd.deploy.pay%2Eapi.selected",
             "true",
             None,
         ))
@@ -60,18 +60,13 @@ fn cicd_subsystem_parameters_are_isolated_and_corrected_per_key() {
     service
         .write(command(
             Scope::Task,
-            "cicd.pay%252Eapi.selected",
+            "cicd.deploy.pay%252Eapi.selected",
             "false",
             None,
         ))
         .unwrap();
     service
-        .write(command(
-            Scope::Task,
-            "cicd.pay%2Eapi.build.jobId",
-            "job-c",
-            None,
-        ))
+        .write(command(Scope::Task, "cicd.build.jobId", "job-c", None))
         .unwrap();
     let snapshot = service.read().unwrap();
     let value = |key: &str| {
@@ -84,11 +79,11 @@ fn cicd_subsystem_parameters_are_isolated_and_corrected_per_key() {
             .value
             .as_str()
     };
-    assert_eq!(value("cicd.pay%2Eapi.build.jobId"), "job-c");
-    assert_eq!(value("cicd.pay%252Eapi.build.jobId"), "job-b");
-    assert_eq!(value("cicd.pay%2Eapi.selected"), "true");
-    assert_eq!(value("cicd.pay%252Eapi.selected"), "false");
-    let key = "cicd.pay%2Eapi.build.jobId";
+    assert_eq!(value("cicd.build.jobId"), "job-c");
+    assert_eq!(value("cicd.deploy.pay%2Eapi.templateId"), "template-a");
+    assert_eq!(value("cicd.deploy.pay%2Eapi.selected"), "true");
+    assert_eq!(value("cicd.deploy.pay%252Eapi.selected"), "false");
+    let key = "cicd.build.jobId";
     let revision = snapshot
         .task
         .iter()
@@ -141,7 +136,6 @@ fn memory_persistence_precedence_and_empty_override() {
         service.paths.clone(),
         &service.paths.project_id,
         Some("task-1".into()),
-        false,
     )
     .unwrap();
     let snapshot = fresh.read().unwrap();
@@ -160,7 +154,6 @@ fn memory_persistence_precedence_and_empty_override() {
         service.paths.clone(),
         &service.paths.project_id,
         Some("task-2".into()),
-        false,
     )
     .unwrap();
     assert_eq!(next.read().unwrap().effective[0].entry.value, "B1");
@@ -275,7 +268,7 @@ fn memory_locator_isolation_and_traversal_rejection() {
     a.write(command(Scope::Task, "x", "a", None)).unwrap();
     assert!(b.read().unwrap().task.is_empty());
     assert!(
-        MemoryService::new(
+        MemoryService::new_with_channel(
             a.paths.clone(),
             &b.paths.project_id,
             Some("task-1".into()),
@@ -290,10 +283,7 @@ fn memory_locator_isolation_and_traversal_rejection() {
         "..",
         "missing",
     ] {
-        assert!(
-            MemoryService::new(a.paths.clone(), &a.paths.project_id, Some(id.into()), false)
-                .is_err()
-        );
+        assert!(MemoryService::new(a.paths.clone(), &a.paths.project_id, Some(id.into())).is_err());
     }
 }
 

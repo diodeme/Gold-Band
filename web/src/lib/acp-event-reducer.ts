@@ -143,7 +143,7 @@ export function mergeAcpEventWindows(
   if (next.length === 0) return previous;
   const replacementByKey = new Map<string, AcpUiEventVm>();
   for (const event of next) {
-    const key = acpEventKey(event);
+    const key = acpEventWindowKey(event, previous);
     const existing = replacementByKey.get(key);
     replacementByKey.set(
       key,
@@ -175,8 +175,7 @@ export function mergeAcpEventWindows(
     previousByKey.set(key, event);
     byKey.set(key, event);
   }
-  for (const event of replacementByKey.values()) {
-    const key = acpEventKey(event);
+  for (const [key, event] of replacementByKey) {
     const existing = previousByKey.get(key);
     byKey.set(
       key,
@@ -344,10 +343,16 @@ function providerHistoryItemIndex(event: AcpUiEventVm) {
 }
 
 export function acpEventKey(event: AcpUiEventVm) {
-  if (event.kind === "permissionRequest")
-    return `permission:${permissionRequestIdFromEvent(event)}`;
   const attemptId = attemptIdFromAcpEvent(event) ?? event.sessionId ?? "";
   return `${attemptId}:${event.kind}:${event.id}`;
+}
+
+function acpEventWindowKey(event: AcpUiEventVm, previous: AcpUiEventVm[]) {
+  if (attemptIdFromAcpEvent(event) || event.sessionId) return acpEventKey(event);
+  const candidates = previous.filter(
+    (candidate) => candidate.kind === event.kind && candidate.id === event.id,
+  );
+  return candidates.length === 1 ? acpEventKey(candidates[0]) : acpEventKey(event);
 }
 
 export function acpSessionEventsSignature(
@@ -382,18 +387,7 @@ export function acpSessionEventsSignature(
 
 export function permissionRequestIdFromEvent(event: AcpUiEventVm) {
   const raw = rawObject(event.raw);
-  const requestId = stringValue(raw?.requestId);
-  if (requestId) return canonicalPermissionRequestId(requestId);
-  const id = event.id;
-  const prefixes = ["permission-permission-", "permission-", "request-"];
-  for (const prefix of prefixes) {
-    if (id.startsWith(prefix)) return canonicalPermissionRequestId(id.slice(prefix.length));
-  }
-  return canonicalPermissionRequestId(id);
-}
-
-function canonicalPermissionRequestId(value: string) {
-  return value.replace(/^(permission-)+/, "");
+  return stringValue(raw?.requestId);
 }
 
 function rawObject(value: unknown): RawObject | null {

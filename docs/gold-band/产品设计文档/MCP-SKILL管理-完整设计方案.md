@@ -1,7 +1,7 @@
 # Gold-Band MCP & SKILL 管理 — 完整设计方案（最终版）
 
 > 基于 5 轮深度访谈 + 完整开发实现（对标 Zed）
-> 更新：2026-06-11
+> 更新：2026-09-16
 > 涵盖：MCP 服务管理、MCP 健康检查、SKILL 管理、SKILL 传递、运行时集成
 ## 2026-07-01 实施补充
 - SKILL 管理改为按实例目录（`directoryPath`）识别，同名原生 skill 允许并列展示。
@@ -52,6 +52,14 @@
 - 设计意图、根因、瓶颈、正确性约束与验收标准由维护者在调查、Issue refinement 或 PR 阶段补充。`git-issue` 可以基于仓库证据主动调查，但不得因为报告者无法提供这些内部分析而阻止生成待审阅 Issue。
 - 契约测试除 SchemaStore 语法校验外，还固定各模板的最小必填字段、禁止普通反馈模板重新引入维护者字段，并把提交检查项收敛为查重与敏感信息清理两项。
 
+## 2026-09-16 MCP 生命周期边界补充
+
+- MCP 明确分为持久 definition、进程内最近诊断结果、每次 invocation 的 executable session snapshot 三层。配置列表与会话准备不执行探活，诊断结果不参与 enabled 配置过滤。
+- stdio MCP 本身就是由 ACP Agent 按会话启动的标准 transport，不增加 `sessionScoped` 卡片类型。Gold Band 只把启用配置交给 Agent；应用不常驻同一服务的第二份连接。
+- 内置 MCP 继续使用标准 managed 卡片：可开关、诊断、查看工具，不可编辑或删除。应用启动幂等 reconcile 编译期定义，保留 enabled，未变化时不写 settings，也不批量探活。
+- 显式诊断使用短生命周期连接完成 `initialize → notifications/initialized → tools/list` 后清理；状态文案表达“最近一次配置检查”，不表达进程正在运行。
+- `gold-band-memory` 的基础定义无 project/task 绑定，可直接探活；会话准备才追加类型化绑定。关闭该卡片时同时不传 MCP、不注入记忆 prompt。
+
 
 ---
 
@@ -63,7 +71,7 @@
 src/
 ├── mcp/mod.rs              ← MCP 管理器（对标 Zed ContextServerStore + ContextServer）
 ├── skill/mod.rs            ← SKILL 管理器（对标 Zed agent_skills + SkillIndex）
-├── config/mod.rs           ← 共享数据模型（McpServerState, ToolInfo, SkillMeta 等）
+├── config/mod.rs           ← 共享数据模型（McpServerDiagnosticState, ToolInfo, SkillMeta 等）
 ├── storage/mod.rs          ← 路径管理（GoldBandPaths: global/project skills dirs）
 ├── app/mod.rs              ← 委托层（App → McpManager / SkillManager）
 ├── app/node_executor.rs    ← 运行时集成（WorkerInvocation 构建）
@@ -80,7 +88,7 @@ src/
 | Gold-Band | Zed | 对齐程度 |
 |-----------|-----|----------|
 | `McpManager` | `ContextServerStore` + `ContextServer` | ✅ 完整对标 |
-| `McpServerState` | `ContextServerState` | ✅ 状态机对齐 |
+| `McpServerDiagnosticState` | 手动连接检查结果 | Gold Band 使用短生命周期诊断，不复制 Zed 常驻状态机 |
 | `SkillManager` | `agent_skills` + `SkillIndex` | ✅ 完整对标 |
 | `apply_skill_overrides()` | `apply_skill_overrides()` | ✅ 同名函数 |
 | `select_catalog_skills()` | `select_catalog_skills()` | ✅ 同名函数 |
@@ -105,9 +113,9 @@ src/
 | 4 | Server ID | JSON 顶层 key 即 id | ✅ |
 | 5 | 传输类型 | stdio + HTTP（含 OAuth 支持） | ✅ |
 | 6 | 健康检查 | MCP initialize 握手（Stdio + HTTP 统一协议） | ✅ `server.start()` |
-| 7 | 健康门控 | 仅传递 enabled + healthy 的服务器给 ACP | ✅ `maintain_servers` |
-| 8 | 状态机 | `McpServerState: Starting → Running{tools} → Stopped/Error/AuthRequired` | ✅ `ContextServerState` |
-| 9 | 状态缓存 | `RefCell<HashMap<String, McpServerState>>` 内存缓存 | ✅ |
+| 7 | 会话门控 | 只按 enabled 传递；最近诊断结果不参与过滤 | ACP Agent 对正式连接负责 |
+| 8 | 诊断状态 | `Checking / Passed / Failed / AuthRequired`，表示最近检查 | 短生命周期诊断 |
+| 9 | 状态存放 | 桌面进程内临时结果，不进入 `McpManager` 或 settings | 避免配置/运行态混合 |
 | 10 | 保存策略 | 先保存 → 再验证（"先存后验"） | ✅ |
 | 11 | enabled 开关 | 独立于健康状态，始终可手动切换 | ✅ |
 | 12 | 工具发现 | `initialize` 成功后立即调用 `tools/list`，将工具清单写入健康结果与状态缓存 | ✅ |
@@ -134,12 +142,11 @@ pub struct OAuthClientConfig {
     pub client_secret: Option<String>,
 }
 
-// ── 状态机（对标 Zed ContextServerState） ──
-pub enum McpServerState {
-    Starting,                                    // 正在启动
-    Running { tools: Vec<ToolInfo> },             // 运行中 + 已发现工具
-    Stopped,                                      // 已停止
-    Error { message: String },                    // 启动失败
+// ── 最近一次显式配置诊断结果 ──
+pub enum McpServerDiagnosticState {
+    Checking,
+    Passed { tools: Vec<ToolInfo> },
+    Failed { message: String },
     AuthRequired { auth_url: Option<String> },    // 需要 OAuth
 }
 
@@ -171,7 +178,7 @@ fn parse_initialize_response(&str) -> Result<McpServerHealthResult>  // 解析�
 
 **Stdio 流程：**
 ```
-spawn command → stdin.write(initialize) → 读取匹配 id=1 的 initialize 响应 → stdin.write(tools/list) → 读取匹配 id=2 的工具响应 → kill
+spawn command → initialize → 读取匹配 id=1 的响应 → notifications/initialized → tools/list → 读取匹配 id=2 的响应 → terminate process tree
 ```
 
 **HTTP 流程：**
@@ -191,35 +198,28 @@ SSE 响应按标准 event framing 处理：多个 `data:` 字段使用换行拼�
 
 HTTP endpoint 必须配置最终 URL。客户端不自动跟随 301/302，避免 `POST` 被 HTTP 客户端降级为 `GET`；重定向响应作为配置错误返回，并提示使用最终 MCP endpoint。
 
-### 2.4 健康门控与缓存
+### 2.4 配置、诊断与会话快照
 
 ```rust
-// to_acp_mcp_servers() — 缓存优先
-pub fn to_acp_mcp_servers(&self) -> Result<Vec<Value>> {
-    // 1. 检查 state_cache: Running → 直接通过
-    // 2. 缓存未命中 → verify_server() → 更新缓存
-    // 3. 仅返回 status=="healthy" 的服务器
-    // 4. 将内部 McpServerConfig 转换为 ACP mcpServers wire format
-}
+// 纯配置读取：不探活、不按诊断过滤
+pub fn configured_acp_mcp_servers(&self) -> Result<Vec<Value>>;
 
-// check_health() — 手动刷新并更新缓存
+// 显式短生命周期配置诊断
 pub fn check_health(&self, id: &str) -> Result<McpServerHealthResult>;
-
-// refresh_health() — 对标 Zed wait_for_context_server
-pub fn refresh_health(&self, id: &str) -> Result<McpServerHealthResult>;
-
-// invalidate_health() — 清除缓存
-pub fn invalidate_health(&self, id: &str);
 ```
+
+`McpManager` 只持有 settings 路径。桌面状态保存最近诊断结果，页面列表把它作为附加投影；它不决定正式会话是否传递配置。内置 definition 通过 `reconcile_managed_config` 原位更新并保留用户 enabled，`Unchanged` 不写盘。
+
+`gold-band-memory` 在 settings 中只有无绑定基础 args。每次 prompt 准备根据当前 project/task 生成 executable session snapshot；该 snapshot 与本轮记忆 prompt 同时启用或同时省略，不回写基础 definition。
 
 ### 2.5 运行时链路
 
 ```
 1. UI 配置 MCP → settings.json
-2. node_executor 创建 McpManager → render_mcp_tools_catalog() → {{mcp_tools}}
-3. node_executor 调用 to_acp_mcp_servers() → 健康门控 → ACP schema mcp_servers
-4. provider 传递 &req.mcp_servers → ACP session/new { mcpServers: [...] }
-5. ACP Agent 直连 MCP 服务器（路径 B — 不经过 Gold-Band 中转）
+2. invocation builder 调用 configured_acp_mcp_servers() → 仅过滤 enabled
+3. prompt 准备把需要绑定的内置定义解析为本次 executable session snapshot
+4. provider 传递 &req.mcp_servers → ACP session/new/load/resume { mcpServers: [...] }
+5. ACP Agent 启动 stdio 或连接远程 MCP（Gold Band 不常驻中转）
 ```
 
 `settings.json` / UI VM 允许使用 Gold Band 内部结构保存 `id`、`transport`、`env` map 和 `headers` map；ACP 出站层必须按协议转换：
@@ -239,8 +239,6 @@ pub fn invalidate_health(&self, id: &str);
 | `delete_mcp_server` | `id` | `Vec<McpServerVm>` |
 | `toggle_mcp_server` | `id, enabled` | `Vec<McpServerVm>` |
 | `check_mcp_server_health` | `id` | `McpServerHealthResult` |
-| `refresh_mcp_health` | `id` | `McpServerHealthResult` |
-| `invalidate_mcp_health` | `id` | — |
 
 ### 2.7 UI 特性
 
@@ -250,7 +248,7 @@ pub fn invalidate_health(&self, id: &str);
 - enabled 开关：❌→✅ 自动触发健康检查，✅→❌ 清除状态
 - 保存 Sheet：保持打开 → "正在连接…" → 成功关闭 / 失败显示具体错误（6 秒自动消失 + ✕ 手动关闭）
 - 诊断按钮：每个服务器卡片的"MCP 服务诊断"按钮
-- 进入 Tab 时自动刷新 + 检查所有 enabled 服务器
+- 进入 Tab 或点击刷新只读取列表与最近诊断，不批量检查；保存、重新启用和诊断按钮可显式触发单项检查
 - MCP 卡片的 per-Agent transport 兼容性统一读取 App 级 `AgentRegistryVm`；该 Registry 在应用启动时从持久化的 `agent-diagnostics.json` 恢复，MCP 页面不得维护第二份局部 Registry，也不得因页面重新挂载把已有兼容性退回 loading。
 - Agent doctor 采用 stale-while-refresh 展示语义：检查期间继续展示上一次已知的 `mcpCapabilities`，doctor 完成并发布 `agent-registry-updated` 后一次性替换为新状态；只有从未获得过能力快照的 Agent 才显示诊断 loading。
 - Agent 健康状态优先于 MCP transport capability。不健康 Agent 展示不可用状态与 doctor 失败原因，不触发 MCP 兼容性检查，也不能把“当前不可用”误判为“不支持某 transport”。健康但未声明 `mcpCapabilities` 的 Agent 才展示未知态并允许手动重新诊断。
@@ -260,15 +258,15 @@ pub fn invalidate_health(&self, id: &str);
 | 能力 | 状态 |
 |------|------|
 | 统一 MCP initialize 握手（Stdio + HTTP） | ✅ |
-| 状态机 `McpServerState` | ✅ |
-| 后端健康状态缓存（RefCell + HashMap） | ✅ |
-| `list()` 返回实际健康状态 | ✅ |
-| `to_acp_mcp_servers()` 缓存优先 + 健康门控 | ✅ |
-| 手动刷新/失效 | ✅ |
-| System prompt 渲染工具列表（缓存优先） | ✅ |
+| 最近诊断 `McpServerDiagnosticState` | ✅ |
+| 桌面进程内最近诊断投影 | ✅ |
+| `list()` 纯返回配置 | ✅ |
+| `configured_acp_mcp_servers()` 纯配置转换 | ✅ |
+| 单项显式诊断 | ✅ |
+| 应用启动批量探活 | ❌，明确禁止 |
 | SSE event 增量解析 + JSON-RPC id 关联 + 10s 超时保护 | ✅ |
 | Streamable HTTP session 失效重建与 DELETE 释放 | ✅ |
-| 长期进程管理 | 🔜 |
+| 正式连接生命周期 | ✅ 由 ACP Agent 按会话管理，Gold Band 不重复常驻 |
 | `tools/list` 自动发现 | ✅ |
 | `tools/list_changed` 订阅 | 🔜 |
 
@@ -508,7 +506,7 @@ Agent 来源识别必须服从 SKILL 作用域：全局 SKILL 使用 `primaryAge
 ```typescript
 interface McpServerVm {
   id, name, enabled, transport, command?, args?, env?, url?, headers?
-  healthStatus?: 'healthy' | 'unhealthy' | 'auth_required' | 'stopped' | 'checking' | 'unknown' | null
+  healthStatus?: 'healthy' | 'unhealthy' | 'auth_required' | 'checking' | 'unknown' | null
   healthMessage?: string | null
 }
 
@@ -548,8 +546,8 @@ interface ToolInfo {
 
 | 文件 | 变更类型 | 说明 |
 |------|----------|------|
-| `src/config/mod.rs` | 修改 | +`McpServerState` +`ToolInfo` +`McpServerHealthResult.tools` +`SkillMeta` +`SkillSource` +常量 |
-| `src/mcp/mod.rs` | **新增** | 514→~650 行: `McpManager` + 协议握手 + 状态机 + 缓存 + ACP 序列化 + catalog 渲染 + 超时保护 |
+| `src/config/mod.rs` | 修改 | +`McpServerDiagnosticState` +`ToolInfo` +`McpServerHealthResult.tools` +`SkillMeta` +`SkillSource` +常量 |
+| `src/mcp/mod.rs` | **新增** | `McpManager` + 协议握手 + managed reconcile + ACP 纯配置序列化 + 超时保护 |
 | `src/skill/mod.rs` | **新增** | ~290→~350 行: `SkillManager` + CRUD + 优先级去重 + body 嵌入 + workspace 隔离 + 预算保护 |
 | `src/storage/mod.rs` | 修改 | `GoldBandPaths` 新增 global/project SKILL 目录方法 |
 | `src/lib.rs` | 修改 | 注册 `pub mod mcp` + `pub mod skill` |
@@ -584,14 +582,12 @@ interface ToolInfo {
 ```
 settings.json
   → McpManager::enabled_servers()               [过滤 enabled]
-    → state_cache 检查                          [缓存优先]
-      → verify_server()                         [缓存未命中: MCP initialize 握手]
-        → McpServerState::Running{tools}        [更新缓存]
-          → to_acp_mcp_servers()                [仅 healthy]
-            → WorkerInvocation.mcp_servers      [结构化配置]
-              → AcpProvider                     [&req.mcp_servers]
-                → client::run_prompt()          [ACP session/new]
-                  → Agent 直连 MCP             [路径 B: 不中转]
+    → configured_acp_mcp_servers()              [无探活、无诊断过滤]
+      → invocation 绑定内置动态参数             [仅本次 snapshot]
+        → WorkerInvocation.mcp_servers          [结构化配置]
+          → AcpProvider                         [&req.mcp_servers]
+            → client::run_prompt()              [ACP session/new/load/resume]
+              → Agent 直连 MCP                 [Gold Band 不中转]
 ```
 
 ### 7.2 SKILL 运行时数据流
@@ -623,14 +619,14 @@ settings.json
 | | OAuth 支持 | ✅ | ✅ (simplified) | 小幅 |
 | **MCP — 健康** | initialize 握手 | ✅ | ✅ | — |
 | | 统一协议 (HTTP 也发 initialize) | ✅ | ✅ | — |
-| | 状态机 | ✅ (7 states) | ✅ (5 states) | 小幅 |
-| | 状态缓存 | ✅ (内存) | ✅ (RefCell) | — |
+| | 状态语义 | 常驻连接状态机 | 最近一次显式诊断 | 产品生命周期不同 |
+| | 状态存放 | 应用级常驻状态 | DesktopState 临时诊断投影 | 不进入配置 manager |
 | | 工具发现 (tools/list) | ✅ | ✅ | — |
 | | 工具订阅 (list_changed) | ✅ | 🔜 | 待实施 |
-| | 长期进程 | ✅ | 🔜 | 待实施 |
+| | 长期进程 | ✅ | 由 ACP Agent 按会话拥有 | 不在 Client 重复常驻 |
 | **MCP — 传递** | ACP mcpServers | ✅ | ✅ | — |
-| | System Prompt 工具列表 | ✅ (cached) | ✅ (cached) | — |
-| | 健康门控 | ✅ | ✅ | — |
+| | System Prompt 工具列表 | ✅ (cached) | 仅能力对应的稳定规则 | 不依赖诊断缓存 |
+| | 健康门控 | ✅ | 不采用；只按 enabled | 正式连接由 Agent 诊断 |
 | **SKILL — 管理** | 文件系统存储 | ✅ | ✅ | — |
 | | 全局 + 项目级 | ✅ | ✅ | — |
 | | 前置元数据解析 | ✅ | ✅ | — |
@@ -661,14 +657,13 @@ settings.json
 - 协议统一 (HTTP 发合法 MCP initialize + 多行响应)
 
 ### Phase 2 (后续 PR)
-- [ ] 长期进程管理 (Stdio 进程保持存活)
 - [ ] `tools/list_changed` 订阅
 - [ ] 信任门控 (C+1 方案: 本地自动信任 + 外部弹窗 + settings.json)
 
 ### Phase 3 (远期)
 - [ ] BuiltIn SKILL 支持
 - [ ] File watch 自动刷新
-- [ ] AI-DYNAMIC 节点 MCP/SKILL 覆盖
+- [x] AI-DYNAMIC 节点 MCP 覆盖
 
 ---
 

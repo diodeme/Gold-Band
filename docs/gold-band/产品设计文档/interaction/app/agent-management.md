@@ -157,7 +157,7 @@ Agent Cards
 - 单个 Agent 每轮诊断从取得执行资格起共享 3 分钟截止时间，覆盖 adapter 启动后的初始化、会话创建、命令发现和诊断会话清理；周期失败重试沿用同一截止时间，预算耗尽后不再启动重试。超时以 `acp.doctor-timeout` 和当前阶段记录原因，回收进程树并保留有界失败日志；进程回收复用既有平台机制，Unix 的 2 秒终止宽限不计入协议等待预算。正常业务会话的请求期限不随 Doctor 改变
 - 所有诊断入口和命令目录刷新按稳定 Agent ID 互斥，不再持有跨 Agent 的全局运行锁；同一 Agent 在全局与 workspace 命令目录刷新之间仍不能重叠，因为它们共享该 Agent 的 doctor 目录。全应用最多同时运行 4 个诊断 adapter，批量诊断最多使用 4 个 worker；等待同一 Agent 的请求不提前占用 adapter 名额，运行集合随 guard 释放删除，不持久化
 - 周期诊断每完成一项并可靠写入后，立即发布该 Agent 的 registry 投影，不等待其他 Agent 完成；前端按配置及诊断时间局部合并，不重读全局 registry。只有命令目录内容变化并成功落盘后才发布含 Agent ID、project ID 的 commands 更新事件；同一挂载范围合并请求，批次结束不再全局广播。落盘失败不得提前推进内存目录，否则相同内容的重试会被错误跳过。手动诊断与目录扫描使用 blocking 执行器；保存提交、配置版本校验和按版本合并沿用既有机制。批次末尾清理失效诊断进入短时提交锁。性能预算和验收见 [0.15.1 性能修复](performance-0.15.1.md)。
-- 诊断结果除健康状态外，还要缓存 agent 返回的 `modes` / `configOptions` 能力摘要，供工作流编辑器直接复用
+- 诊断结果除健康状态外，还要缓存 agent 返回的 `modes` / `configOptions` 能力摘要，供工作流编辑器直接复用。Doctor 与正式会话共用同一份 ACP `initialize` 客户端能力声明，因此依赖 `parameterizedModelPicker` 才能展开思考强度或模型参数的 Agent，诊断目录与运行期目录必须看到同一套 `configOptions`
 - 诊断缓存需要持久化到当前 workspace 的本地运行时目录，客户端重启后仍可直接为节点展示可选权限模式，不要求用户每次重新手动诊断
 
 ---
@@ -173,6 +173,7 @@ Agent 管理页不是 workflow 编辑器，但它决定 workflow 里声明的 ag
 - 若节点引用的 agent type 未在 Agent 管理页中配置或未通过 doctor，则 workflow 校验失败
 - workflow 节点权限模式必须来自该 agent 最近一次 doctor 缓存的 `supportedModes`；切换 agent 时不继承旧 agent 的权限模式
 - 权限模式与 Profile 是正交配置：权限模式通过 ACP `session/set_mode` 或 mode 类 `session/set_config_option` 控制工具授权，Profile 提示词继续约束节点职责和允许产物。把规划节点实时切换为完全授权只表示 Agent 可以执行该权限模式允许的工具，不会解除 `pf-builtin-plan` 的“只规划、不修改代码”职责；需要实施时应切换/新增开发 Profile 节点
+- Auto Accept 是 Gold Band client 层布尔，与原生权限模式正交：出现在所有权限下拉底部，不进入 Agent `supportedModes`，不按 Agent ID 隐藏，也不改写 adapter `cli-config` 或 `--force`
 - 节点详情页应展示当前节点绑定的 agent type，便于确认执行来源
 
 ---

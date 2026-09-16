@@ -157,18 +157,21 @@ import {
 } from "@/lib/acp-composer-draft";
 import {
   addComposerQuote,
-  createUserPromptSubmission,
+  createComposerPromptSubmission,
   serializeUserPromptSubmission,
   userPromptQuotesFromRaw,
+  userPromptRoleFromRaw,
+  hasUserPromptPayload,
 } from "@/lib/composer-context";
-import type { ConversationPromptInput } from "@/types";
+import type { ConversationPromptInput, ProfileVm } from "@/types";
 import type { AgentMessageSelection } from "@/lib/agent-message-selection";
 import { AcpConversationComposer } from "@/components/conversation/AcpConversationComposer";
 import { AgentSelectionQuoteButton } from "@/components/conversation/AgentSelectionQuoteButton";
 import { ConversationPromptQueue } from "@/components/conversation/ConversationPromptQueue";
-import { UserMessageQuotes } from "@/components/conversation/UserMessageQuotes";
+import { UserMessageMeta } from "@/components/conversation/UserMessageMeta";
 import { UserMessageDisclosure } from "@/components/conversation/UserMessageDisclosure";
-import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from "@/lib/slash-command";
+import { buildSlashCatalog, parseCommittedSlashItem, restoreSlashCommandInputFocus, slashSendableText } from "@/lib/slash-command";
+import { channelAppName } from "@/lib/channel-app-name";
 import { useAgentCommands } from "@/hooks/useAgentCommands";
 import { useSlashCommandController } from "@/hooks/useSlashCommandController";
 import { AcpAvatar, AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
@@ -245,6 +248,7 @@ import {
   getAcpToolDetail,
   getAcpRawFrames,
   getAcpSession,
+  getProfiles,
   deleteConversationQueuedPrompt,
   respondAcpPermission,
   respondElicitation,
@@ -258,6 +262,7 @@ import {
   setAcpSessionModel,
   setAcpSessionConfigOption,
   setAcpSessionPermissionMode,
+  setAcpSessionAutoAccept,
   showArtifact,
   showAttachment,
   stopActiveSession,
@@ -1301,6 +1306,19 @@ export function ACPChatDialog(
   }: ACPChatDialogProps,
 ) {
   const { t } = useTranslation();
+  const [roleProfiles, setRoleProfiles] = useState<ProfileVm[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.resolve()
+      .then(() => getProfiles())
+      .then((list) => {
+        if (!cancelled) setRoleProfiles(list.profiles);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const rightWorkspace = useOptionalRightWorkspaceCommands();
   const effectiveEventPageSize = normalizeEventPageSize(eventPageSize);
   const effectiveEventWindowPageCount = normalizeEventWindowPageCount(
@@ -2348,19 +2366,32 @@ export function ACPChatDialog(
     effective?.providerCwd ?? effective?.cwd,
     effective?.availableCommands,
   );
+  const slashCatalog = useMemo(
+    () => buildSlashCatalog(
+      channelAppName(),
+      t('acp.slashAgentGroup'),
+      roleProfiles,
+      agentCommands.commands,
+    ),
+    [agentCommands.commands, roleProfiles, t],
+  );
   const restoreComposerFocus = useCallback(() => {
     restoreSlashCommandInputFocus(composerTextareaRef);
   }, []);
   const slashCommands = useSlashCommandController({
     input: prompt,
-    commands: agentCommands.commands,
+    groups: slashCatalog,
     contextKey: agentCommands.catalogKey,
     onInputChange: setPrompt,
     onInputFocusRequested: restoreComposerFocus,
   });
   const committedSlashCommand = useMemo(
-    () => parseCommittedSlashCommand(prompt, agentCommands.commands),
-    [agentCommands.commands, prompt],
+    () => parseCommittedSlashItem(
+      prompt,
+      slashCommands.catalogItems,
+      slashCommands.selectedIdentity,
+    ),
+    [prompt, slashCommands.catalogItems, slashCommands.selectedIdentity],
   );
   const providerCatalog = useMemo(
     () => acpProviderConfigCatalog(agentRegistry, effective?.provider),
@@ -2628,7 +2659,11 @@ export function ACPChatDialog(
     : null;
   const canSubmitPrompt = composerState.canSubmit
     && !queueSubmitPending
-    && !queueRestorePending;
+    && !queueRestorePending
+    && hasUserPromptPayload(
+      slashSendableText(prompt, committedSlashCommand),
+      pendingAttachments.length,
+    );
   const canSubmitHistory = composerState.canSubmitContent
     && !queueSubmitPending
     && !queueRestorePending;
@@ -3043,6 +3078,46 @@ export function ACPChatDialog(
     outerAttemptId,
     outerNodeId,
     patchSessionConfig,
+    rollbackSessionConfig,
+    roundId,
+    runId,
+    taskId,
+    t,
+  ]);
+
+  const handleAcpSessionAutoAcceptChange = useCallback((autoAccept: boolean) => {
+    const mutation = patchSessionConfig({ autoAccept });
+    setAcpSessionAutoAccept(
+      projectId,
+      taskId,
+      runId,
+      roundId,
+      nodeId,
+      attemptId,
+      autoAccept,
+      outerNodeId,
+      outerAttemptId,
+    )
+      .then((updated) => {
+        if (updated) {
+          configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+          applySessionUpdate(updated);
+        }
+      })
+      .catch((error) => {
+        configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+        if (mutation) rollbackSessionConfig(mutation);
+        setSendError(displayAppError(t, error));
+        console.error("Failed to set ACP session auto accept:", error);
+      });
+  }, [
+    applySessionUpdate,
+    attemptId,
+    nodeId,
+    outerAttemptId,
+    outerNodeId,
+    patchSessionConfig,
+    projectId,
     rollbackSessionConfig,
     roundId,
     runId,
@@ -3914,6 +3989,7 @@ export function ACPChatDialog(
                 ...incoming.config,
                 modelOverrideId: cfg.modelOverrideId,
                 permissionModeOverrideId: cfg.permissionModeOverrideId,
+                autoAccept: cfg.autoAccept,
                 configOptionOverrides: cfg.configOptionOverrides,
                 currentModelId: cfg.currentModelId,
                 currentModelName: cfg.currentModelName,
@@ -5280,7 +5356,7 @@ export function ACPChatDialog(
     draftSnapshot?: AcpComposerDraft,
     target: "conversation" | "runtime-continue" = "conversation",
   ) => {
-    const { displayText: draftContent, quotes: submittedQuotes } = submission;
+    const { displayText: draftContent, quotes: submittedQuotes, role: submittedRole } = submission;
     if (!composerState.canSubmitContent || composerState.stopInProgress) return false;
     const enqueueing = target === "conversation"
       && composerState.submitTarget === "queue-prompt";
@@ -5357,6 +5433,7 @@ export function ACPChatDialog(
       submittedQuotes,
       latestCanonicalTimelinePosition(loadedEventWindowRef.current.events),
       optimisticAttachments,
+      submittedRole ?? null,
     );
     const promptId = promptIdFromEvent(optimisticEvent);
     const detachedDraft = draftSnapshot && composerDraft.clearIfUnchanged(draftSnapshot)
@@ -5629,7 +5706,11 @@ export function ACPChatDialog(
     if (historyText !== undefined ? !canSubmitHistory || !historyText.trim() : !canSubmitPrompt) return;
     const draftSnapshot = historyText !== undefined ? adoptHistoryText(historyText) : composerDraft.draft;
     if (!draftSnapshot) return;
-    const submission = createUserPromptSubmission(draftSnapshot.content, draftSnapshot.quotes);
+    const submission = createComposerPromptSubmission(
+      draftSnapshot.content,
+      draftSnapshot.quotes,
+      committedSlashCommand,
+    );
     if (composerState.submitTarget !== "none") {
       await submitPrompt(submission, draftSnapshot);
     }
@@ -5745,7 +5826,11 @@ export function ACPChatDialog(
         const draftSnapshot = historyText !== undefined ? adoptHistoryText(historyText) : composerDraft.draft;
         if (!draftSnapshot) { setRuntimeContinueSubmitting(false); return; }
         const accepted = await submitPrompt(
-          createUserPromptSubmission(draftSnapshot.content, draftSnapshot.quotes),
+          createComposerPromptSubmission(
+            draftSnapshot.content,
+            draftSnapshot.quotes,
+            committedSlashCommand,
+          ),
           draftSnapshot,
           "runtime-continue",
         );
@@ -6373,7 +6458,7 @@ export function ACPChatDialog(
                 onPreviewAttachment={handleOpenComposerAttachment}
                 onClearAttachments={clearComposerAttachments}
                 fileError={fileError}
-                slashCommands={slashCommands.filteredCommands}
+                slashGroups={slashCommands.filteredGroups}
                 slashMenuOpen={slashCommands.isOpen}
                 slashMenuActiveIndex={slashCommands.activeIndex}
                 onSlashMenuActiveIndexChange={slashCommands.setActiveIndex}
@@ -6382,8 +6467,12 @@ export function ACPChatDialog(
                 textareaRef={composerTextareaRef}
                 committedSlashCommand={committedSlashCommand ? {
                   prefix: committedSlashCommand.prefix,
-                  description: committedSlashCommand.command.description,
+                  description: committedSlashCommand.item.description,
+                  content: committedSlashCommand.item.content,
+                  kind: committedSlashCommand.item.kind,
                 } : null}
+                agentIconSrc={effective?.adapterIconKey ? agentIconSrc(effective.adapterIconKey) : null}
+                agentIconClassName={effective?.adapterIconKey ? agentIconClass(effective.adapterIconKey) : undefined}
                 placeholder={composerPlaceholder}
                 inputDisabled={composerInputDisabled || queueRestorePending}
                 onTextareaKeyDown={slashCommands.onKeyDown}
@@ -6411,6 +6500,7 @@ export function ACPChatDialog(
                     onModelChange={handleAcpSessionModelChange}
                     onConfigOptionChange={handleAcpSessionConfigOptionChange}
                     onPermissionModeChange={handleAcpSessionPermissionModeChange}
+                    onAutoAcceptChange={handleAcpSessionAutoAcceptChange}
                   />
                 )}
                 attachedPanelVisible={promptQueueVisible || todoEntries.length > 0}
@@ -6803,6 +6893,7 @@ type AcpSessionConfigBarProps = {
   viewModel: AcpSessionConfigViewModel;
   onModelChange?: (modelId: string | null) => void;
   onPermissionModeChange?: (permissionModeId: string | null) => void;
+  onAutoAcceptChange?: (enabled: boolean) => void;
   onConfigOptionChange?: (optionId: string, optionValue: string | null) => void;
 };
 
@@ -6811,6 +6902,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
   onModelChange,
   onConfigOptionChange,
   onPermissionModeChange,
+  onAutoAcceptChange,
 }: AcpSessionConfigBarProps) {
   const { t } = useTranslation();
   const {
@@ -6820,6 +6912,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
     permissionModeOverrideId,
     permissionModeOverrideName,
     canSelectUnspecifiedPermissionMode,
+    autoAccept,
     currentModelId,
     currentModeId,
     availableModels,
@@ -6837,9 +6930,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
   const permissionModeLabel = permissionModeOverrideName
     ?? t('conversation.home.unspecifiedPermissionMode');
   const showModels = availableModels.length > 0 || Boolean(currentModelId);
-  const showPermissionModes = availablePermissionModes.length > 0 || Boolean(currentModeId);
-  const permissionModeCanBeSelected = availablePermissionModes.length > 1
-    || (canSelectUnspecifiedPermissionMode && availablePermissionModes.length > 0);
+  const showPermissionModes = availablePermissionModes.length > 0 || Boolean(currentModeId) || Boolean(onAutoAcceptChange);
 
   if (!showModels && !showPermissionModes && !thoughtLevel) return null;
 
@@ -6874,26 +6965,22 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
         onThoughtChange={(optionId, value) => onConfigOptionChange?.(optionId, value)}
       />
       {showPermissionModes ? (
-        permissionModeCanBeSelected ? (
-          <AcpSingleConfigMenu
-            compact
-            contentSide="top"
-            align="start"
-            triggerClassName={ACP_SESSION_COMPOSER_LAYOUT.configTriggerClassName}
-            label={t('acp.permissionMode')}
-            value={permissionModeOverrideId}
-            valueLabel={permissionModeLabel}
-            options={availablePermissionModes}
-            unspecifiedLabel={t('conversation.home.unspecifiedPermissionMode')}
-            showUnspecified={canSelectUnspecifiedPermissionMode}
-            onValueChange={handlePermissionModeSelect}
-          />
-        ) : (
-          <Badge variant="outline" className={cn("max-w-full gap-1.5 rounded-full bg-background/50 font-normal", ACP_SESSION_COMPOSER_LAYOUT.staticConfigClassName)}>
-            <span className="shrink-0 text-muted-foreground">{t('acp.permissionMode')}</span>
-            <span className="min-w-0 truncate text-foreground">{permissionModeLabel}</span>
-          </Badge>
-        )
+        <AcpSingleConfigMenu
+          compact
+          contentSide="top"
+          align="start"
+          triggerClassName={ACP_SESSION_COMPOSER_LAYOUT.configTriggerClassName}
+          label={t('acp.permissionMode')}
+          value={permissionModeOverrideId}
+          valueLabel={permissionModeLabel}
+          options={availablePermissionModes}
+          unspecifiedLabel={t('conversation.home.unspecifiedPermissionMode')}
+          showUnspecified={canSelectUnspecifiedPermissionMode}
+          onValueChange={handlePermissionModeSelect}
+          autoAccept={autoAccept}
+          autoAcceptLabel={t('acp.autoAccept')}
+          onAutoAcceptChange={onAutoAcceptChange}
+        />
       ) : null}
     </div>
   );
@@ -6909,6 +6996,7 @@ function areAcpSessionConfigBarPropsEqual(
     previous.onModelChange === next.onModelChange &&
     previous.onConfigOptionChange === next.onConfigOptionChange &&
     previous.onPermissionModeChange === next.onPermissionModeChange
+    && previous.onAutoAcceptChange === next.onAutoAcceptChange
   );
 }
 
@@ -8509,6 +8597,7 @@ const MessageBubble = memo(function MessageBubble({
   }, [event.content?.length, event.endedSeq, event.id, event.kind, event.seq, isUser, streamingDraft, streamingMarkdownItemKey]);
   const rawAttachments = messageAttachmentPreviewsFromRaw(event.raw);
   const userQuotes = isUser ? userPromptQuotesFromRaw(event.raw) : [];
+  const userRole = isUser ? userPromptRoleFromRaw(event.raw) : null;
   const hasAttachments = isUser && rawAttachments.length > 0;
   const attachmentGroups = groupMessageAttachmentPreviews(rawAttachments);
   const runtimeControlParts = !isUser && !streamingDraft
@@ -8567,7 +8656,7 @@ const MessageBubble = memo(function MessageBubble({
           nested && "w-full max-w-full",
         )}
       >
-        <UserMessageQuotes quotes={userQuotes} />
+        <UserMessageMeta role={userRole} quotes={userQuotes} />
         {showMessageBubble ? (
           <MessageContent
             data-agent-quotable-text={quotableAgentMessage ? "true" : undefined}
@@ -9965,6 +10054,7 @@ export function pendingPermissionFromEvents(
     if (event.kind !== "permissionRequest" || event.status !== "pending")
       continue;
     const requestId = permissionRequestIdFromEvent(event);
+    if (!requestId) continue;
     if (dismissedIds.has(requestId)) continue;
     return permissionRequestFromEvent(event);
   }
@@ -9976,6 +10066,7 @@ export function permissionRequestFromEvent(
 ): AcpPermissionRequestVm | null {
   if (event.kind !== "permissionRequest") return null;
   const requestId = permissionRequestIdFromEvent(event);
+  if (!requestId) return null;
   const raw: Record<string, unknown> = {
     ...(rawObject(event.raw) ?? {}),
     requestId,
@@ -11387,7 +11478,9 @@ function shouldPreservePendingInteractions(
       && event.status?.toLowerCase() !== "pending"
     ) return true;
     if (event.kind !== "permissionRequest") return false;
-    return pendingIds.has(permissionRequestIdFromEvent(event))
+    const permissionId = permissionRequestIdFromEvent(event);
+    return permissionId != null
+      && pendingIds.has(permissionId)
       && event.status?.toLowerCase() !== "pending";
   });
 }
@@ -11745,6 +11838,7 @@ export function optimisticUserEvent(
   quotes: import('@/types').UserPromptQuote[] = [],
   afterSeq: number | null = null,
   attachments: MessageAttachmentPreview[] = [],
+  role: import('@/types').UserPromptRole | null = null,
 ): AcpUiEventVm {
   const createdAt = Math.floor(Date.now() / 1000);
   return {
@@ -11760,6 +11854,7 @@ export function optimisticUserEvent(
       promptId,
       optimisticAfterSeq: afterSeq,
       ...(quotes.length > 0 ? { quotes } : {}),
+      ...(role ? { role } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
     },
   };

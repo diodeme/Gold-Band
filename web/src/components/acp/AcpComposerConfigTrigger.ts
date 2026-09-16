@@ -28,6 +28,17 @@ export const ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS = 'shrink-0 text-muted-fore
 export const ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS = 'min-w-0 flex-1 truncate text-left text-foreground';
 export const ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS = 'size-3.5 shrink-0 text-muted-foreground';
 
+export function formatAcpCompositeSelection(
+  primaryName: string | null | undefined,
+  secondaryName: string | null | undefined,
+  unspecifiedLabel: string,
+) {
+  if (primaryName && secondaryName) return `${primaryName} · ${secondaryName}`;
+  if (primaryName) return primaryName;
+  if (secondaryName) return `${unspecifiedLabel} · ${secondaryName}`;
+  return unspecifiedLabel;
+}
+
 export function isAcpComposerConfigValueOverflowing(element: HTMLElement | null) {
   return isOverflowing(element);
 }

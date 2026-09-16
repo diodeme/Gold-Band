@@ -496,7 +496,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                     {!readOnly && onOpenProjectMemory ? (
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <Button variant="ghost" size="icon" className="size-5 shrink-0" aria-label={t('memory.title')} onClick={() => onOpenProjectMemory({ projectId: ws.projectId, name: ws.name })}>
+<Button variant="ghost" size="icon" className="size-5 shrink-0" aria-label={t('memory.title')} onClick={(event) => { event.stopPropagation(); onOpenProjectMemory({ projectId: ws.projectId, name: ws.name }); }}>
                             <BookOpen className="size-3" />
                           </Button>
                         </TooltipTrigger>

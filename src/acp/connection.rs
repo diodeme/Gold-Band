@@ -2009,6 +2009,9 @@ fn route_inbound_frame(
         }
     }
 
+    if let Some(reply) = unsupported_client_inbound_reply(&value) {
+        let _ = connection.send_raw_frame(&reply);
+    }
     connection.warn_unrouted_frame(&value, frame_bytes);
 }
 
@@ -2103,6 +2106,40 @@ fn route_or_buffer_session_frame(
         .unwrap_or(false);
     drop(routes);
     buffered
+}
+
+pub(crate) const JSONRPC_METHOD_NOT_FOUND_CODE: i64 = -32601;
+const JSONRPC_METHOD_NOT_FOUND_MESSAGE: &str = "Method not found";
+
+fn is_handled_client_inbound_method(method: &str) -> bool {
+    matches!(
+        method,
+        "session/update" | "session/request_permission" | "elicitation/create"
+    )
+}
+
+fn jsonrpc_error_frame(id: Value, code: i64, message: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": code,
+            "message": message,
+        },
+    })
+}
+
+pub(crate) fn unsupported_client_inbound_reply(value: &Value) -> Option<Value> {
+    let method = value.get("method").and_then(Value::as_str)?;
+    if is_handled_client_inbound_method(method) {
+        return None;
+    }
+    let id = value.as_object()?.get("id")?.clone();
+    Some(jsonrpc_error_frame(
+        id,
+        JSONRPC_METHOD_NOT_FOUND_CODE,
+        JSONRPC_METHOD_NOT_FOUND_MESSAGE,
+    ))
 }
 
 fn session_id_from_frame(value: &Value) -> Option<&str> {
@@ -2768,12 +2805,13 @@ mod tests {
         AcpConnectionUnavailable, ActivePromptTracker, AdapterConnectionKey,
         AdapterConnectionManager, AdapterConnectionState, AttemptSessionUnregisterOutcome,
         ConnectionCreationGate, ConnectionInitialization, EarlySessionFrames,
-        STDERR_LINE_MAX_BYTES, SessionConfigTransaction, SessionEventPump,
-        SessionRouteTryRecvError, is_same_connection_generation,
+        JSONRPC_METHOD_NOT_FOUND_CODE, STDERR_LINE_MAX_BYTES, SessionConfigTransaction,
+        SessionEventPump, SessionRouteTryRecvError, is_same_connection_generation,
         persist_cancelled_session_snapshot, read_stderr, record_unrouted_warning,
         register_session_route_state, request_unavailability, route_or_buffer_session_frame,
         select_provider_connection_keys, session_id_from_frame, session_route_pair,
         settle_attempt_for_session_close, unregister_session_route_state,
+        unsupported_client_inbound_reply,
     };
 
     fn write_current_attempt_node(attempt_dir: &Utf8PathBuf) {
@@ -3322,6 +3360,76 @@ mod tests {
 
         assert_eq!(session_id_from_frame(&direct), Some("session-a"));
         assert_eq!(session_id_from_frame(&nested), Some("session-b"));
+    }
+
+    #[test]
+    fn unsupported_inbound_requests_reply_jsonrpc_method_not_found() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 42,
+            "method": "cursor/ask_question",
+            "params": {
+                "toolCallId": "call_123",
+                "questions": []
+            }
+        });
+        assert_eq!(
+            unsupported_client_inbound_reply(&request),
+            Some(json!({
+                "jsonrpc": "2.0",
+                "id": 42,
+                "error": {
+                    "code": JSONRPC_METHOD_NOT_FOUND_CODE,
+                    "message": "Method not found",
+                }
+            }))
+        );
+
+        let string_id = json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "fs/read_text_file",
+            "params": { "path": "/tmp/x" }
+        });
+        assert_eq!(
+            unsupported_client_inbound_reply(&string_id).unwrap()["id"],
+            json!("req-1")
+        );
+
+        let null_id = json!({
+            "jsonrpc": "2.0",
+            "id": null,
+            "method": "cursor/create_plan",
+            "params": {}
+        });
+        assert_eq!(
+            unsupported_client_inbound_reply(&null_id).unwrap()["id"],
+            json!(null)
+        );
+    }
+
+    #[test]
+    fn handled_or_notification_inbound_frames_do_not_reply_method_not_found() {
+        for method in [
+            "session/update",
+            "session/request_permission",
+            "elicitation/create",
+        ] {
+            let request = json!({
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": method,
+                "params": { "sessionId": "session-1" }
+            });
+            assert_eq!(unsupported_client_inbound_reply(&request), None, "{method}");
+        }
+
+        let notification = json!({
+            "jsonrpc": "2.0",
+            "method": "cursor/update_todos",
+            "params": { "todos": [] }
+        });
+        assert_eq!(unsupported_client_inbound_reply(&notification), None);
     }
 
     #[test]

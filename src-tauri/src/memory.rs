@@ -13,12 +13,7 @@ async fn execute(
     tauri::async_runtime::spawn_blocking(move || {
         let state = handle.state::<DesktopState>();
         let app = resolve_command_app(&state, Some(&project_id))?;
-        let service = MemoryService::new(
-            app.paths.clone(),
-            &project_id,
-            None,
-            gold_band::memory::is_wb(),
-        );
+        let service = MemoryService::new(app.paths.clone(), &project_id, None);
         service
             .and_then(|service| match command {
                 Some(command) => service.write(command),

@@ -7,6 +7,7 @@ import {
   hasUserPromptPayload,
   serializeUserPromptSubmission,
   userPromptQuotesFromRaw,
+  userPromptRoleFromRaw,
   type ComposerQuote,
 } from '@/lib/composer-context';
 
@@ -29,6 +30,21 @@ describe('composer quote contract', () => {
       ],
     });
     expect(serializeUserPromptSubmission(submission)).toBe('> 第一行\n> 第二行\n\n> 另一段\n\n继续解释');
+  });
+
+  it('keeps a role snapshot on the submission without putting it in display text', () => {
+    const submission = createUserPromptSubmission('帮我改代码', [], {
+      profileId: 'pf-dev',
+      name: '开发',
+      content: '完整角色定义',
+    });
+    expect(submission.displayText).toBe('帮我改代码');
+    expect(submission.role).toEqual({
+      profileId: 'pf-dev',
+      name: '开发',
+      content: '完整角色定义',
+    });
+    expect(userPromptRoleFromRaw({ role: submission.role })).toEqual(submission.role);
   });
 
   it('does not infer quotes from user-authored Markdown blockquotes', () => {

@@ -29,10 +29,18 @@ export function ProjectMemorySheet({ projectId, name, onClose }: { projectId: st
       if (request === generation.current) setLoad({ status: 'ready', limits: snapshot.limits, rows: snapshot.workspace.map(record => ({ id: record.key, record })) });
     } catch (error) { if (request === generation.current) setLoad({ status: 'error', error: memoryError(error) }); }
   }
-  function applyAuthoritative(previousId: string, record: MemoryRecord | null) {
+  function applyAuthoritative(previousId: string, record: MemoryRecord | null, preserveSource = false) {
     dirty.current.delete(previousId);
     setLoad(current => {
       if (current.status !== 'ready') return current;
+      if (preserveSource && record) {
+        const targetIndex = current.rows.findIndex(item => item.id === record.key);
+        if (targetIndex < 0) return { ...current, rows: [...current.rows, { id: record.key, record }] };
+        return {
+          ...current,
+          rows: current.rows.map((item, index) => index === targetIndex ? { id: record.key, record } : item),
+        };
+      }
       const index = current.rows.findIndex(item => item.id === previousId);
       const remaining = current.rows.filter(item => item.id !== previousId && item.id !== record?.key);
       if (!record) return { ...current, rows: remaining };
@@ -63,7 +71,7 @@ export function ProjectMemorySheet({ projectId, name, onClose }: { projectId: st
             {load.rows.map(row => <MemoryRow key={row.id} row={row} projectId={projectId} limits={load.limits}
               onDirty={value => { if (value) dirty.current.add(row.id); else dirty.current.delete(row.id); }}
               onPending={value => { if (value) pending.current.add(row.id); else pending.current.delete(row.id); }}
-              onSaved={record => applyAuthoritative(row.id, record)} />)}
+              onSaved={(record, preserveSource) => applyAuthoritative(row.id, record, preserveSource)} />)}
           </>}
         </div>
         <div className="shrink-0 border-t px-4 py-3">
@@ -88,7 +96,7 @@ function MemoryErrorText({ error }: { error: MemoryError }) {
 }
 
 function MemoryRow({ row, projectId, limits, onDirty, onPending, onSaved }: {
-  row: Row; projectId: string; limits: MemorySnapshot['limits']; onDirty: (dirty: boolean) => void; onPending: (pending: boolean) => void; onSaved: (record: MemoryRecord | null) => void;
+  row: Row; projectId: string; limits: MemorySnapshot['limits']; onDirty: (dirty: boolean) => void; onPending: (pending: boolean) => void; onSaved: (record: MemoryRecord | null, preserveSource?: boolean) => void;
 }) {
   const { t } = useTranslation();
   const [base, setBase] = useState(row.record);
@@ -100,6 +108,11 @@ function MemoryRow({ row, projectId, limits, onDirty, onPending, onSaved }: {
   const [deleteOpen, setDeleteOpen] = useState(false);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const changed = !base || (['key', 'value', 'desc'] as const).some(field => draft[field] !== base[field]);
+  useEffect(() => {
+    if (row.record?.revision === base?.revision) return;
+    setBase(row.record);
+    if (!changed) setDraft(row.record ?? { key: '', value: '', desc: '' });
+  }, [row.record?.revision]);
   async function save(deleting = false) {
     if (inFlight.current) return;
     inFlight.current = true; setBusy(true); onPending(true); setError(null);
@@ -129,6 +142,12 @@ function MemoryRow({ row, projectId, limits, onDirty, onPending, onSaved }: {
       <p className="break-all whitespace-pre-wrap">{t('memory.latest')}: {error.params?.latest ? JSON.stringify({ key: error.params.latest.key, value: error.params.latest.value, desc: error.params.latest.desc }) : t('memory.deleted')}</p>
       <Button variant="outline" size="sm" onClick={() => {
         const latest = error.params?.latest ?? null;
+        const targetConflict = error.params?.reason === 'target_exists'
+          || Boolean(base && latest && latest.key !== base.key);
+        if (targetConflict && base && latest) {
+          setDraft(base); setError(null); onDirty(false); onSaved(latest, true);
+          return;
+        }
         setBase(latest); setDraft(latest ?? { ...draft }); setError(null); onDirty(!latest);
         if (latest) onSaved(latest);
       }}>{t('memory.useLatest')}</Button>

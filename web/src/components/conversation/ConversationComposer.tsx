@@ -28,7 +28,14 @@ import {
   updateAcpConfigOptionOverride,
 } from '@/components/acp/AcpModelThoughtSelects';
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
-import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from '@/lib/slash-command';
+import { channelAppName } from '@/lib/channel-app-name';
+import {
+  buildSlashCatalog,
+  committedRoleSnapshot,
+  parseCommittedSlashItem,
+  restoreSlashCommandInputFocus,
+  slashSendableText,
+} from '@/lib/slash-command';
 import { useLeadingAdornmentTextIndent } from '@/hooks/useLeadingAdornmentTextIndent';
 import { ScheduledTaskDialog } from '@/components/conversation/ScheduledTaskDialog';
 import type { ScheduledScheduleInput } from '@/types';
@@ -462,10 +469,12 @@ export function ConversationComposer({
   const [selectedDirectAgent, setSelectedDirectAgent] = useState(runMode.directConfig?.agentType ?? '');
   const [selectedDirectModel, setSelectedDirectModel] = useState(runMode.directConfig?.modelId ?? '');
   const [selectedDirectPermissionMode, setSelectedDirectPermissionMode] = useState(runMode.directConfig?.permissionMode ?? '');
+  const [selectedDirectAutoAccept, setSelectedDirectAutoAccept] = useState(Boolean(runMode.directConfig?.autoAccept));
   const [selectedDirectConfigOptions, setSelectedDirectConfigOptions] = useState<Record<string, string>>(runMode.directConfig?.configOptions ?? {});
   const [selectedAgent, setSelectedAgent] = useState(runMode.autoConfig?.agentType ?? '');
   const [selectedModel, setSelectedModel] = useState(runMode.autoConfig?.modelId ?? '');
   const [selectedPermissionMode, setSelectedPermissionMode] = useState(runMode.autoConfig?.permissionMode ?? '');
+  const [selectedAutoAccept, setSelectedAutoAccept] = useState(Boolean(runMode.autoConfig?.autoAccept));
   const [selectedConfigOptions, setSelectedConfigOptions] = useState<Record<string, string>>(runMode.autoConfig?.configOptions ?? {});
   const [globalGoal, setGlobalGoal] = useState(runMode.autoConfig?.globalGoal ?? '');
   const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? '');
@@ -543,12 +552,11 @@ export function ConversationComposer({
   const scheduledSummary = scheduledConfig
     ? formatScheduledScheduleInput(t, scheduledConfig.schedule)
     : t('scheduled.composer.unconfigured');
-  const canSubmit = !readOnly && hasUserPromptPayload(content, attachments.length)
+  const canSubmitBase = !readOnly
     && !busy
     && !submittingAttachments
     && !branchMutationPending
     && !(multicaActive && !hasLocalWorkspaces);
-  const canCreateScheduledTask = canSubmit && Boolean(onCreateScheduledTask);
   const scheduledConfigResourceKey = rightWorkspace?.scopeKey
     ? scheduledTaskConfigWorkspaceResourceKey(rightWorkspace.scopeKey)
     : null;
@@ -661,20 +669,41 @@ export function ConversationComposer({
       ? selectedAgent
       : null;
   const agentCommands = useAgentCommands(commandAgentType, workspacePath);
+  const slashCatalog = useMemo(
+    () => buildSlashCatalog(
+      channelAppName(),
+      t('acp.slashAgentGroup'),
+      profiles,
+      agentCommands.commands,
+    ),
+    [agentCommands.commands, profiles, t],
+  );
   const restoreComposerFocus = useCallback(() => {
     restoreSlashCommandInputFocus(composerTextareaRef);
   }, []);
   const slashCommands = useSlashCommandController({
     input: content,
-    commands: agentCommands.commands,
+    groups: slashCatalog,
     contextKey: agentCommands.catalogKey,
     onInputChange: setContent,
     onInputFocusRequested: restoreComposerFocus,
   });
   const committedSlashCommand = useMemo(
-    () => parseCommittedSlashCommand(content, agentCommands.commands),
-    [agentCommands.commands, content],
+    () => parseCommittedSlashItem(
+      content,
+      slashCommands.catalogItems,
+      slashCommands.selectedIdentity,
+    ),
+    [content, slashCommands.catalogItems, slashCommands.selectedIdentity],
   );
+  const canSubmit = canSubmitBase && hasUserPromptPayload(
+    slashSendableText(content, committedSlashCommand),
+    attachments.length,
+  );
+  const canCreateScheduledTask = canSubmit && Boolean(onCreateScheduledTask);
+  const slashAgentIconKey = isDirect
+    ? selectedDirectAgentObj?.iconKey
+    : selectedAgentObj?.iconKey;
   const visibleContent = committedSlashCommand?.suffix ?? content;
   // The multica binding chip and the slash-command label are both leading adornments at the very
   // front of the body. They are mutually exclusive (slash wins — the binding prefills task
@@ -692,10 +721,12 @@ export function ConversationComposer({
     setSelectedDirectAgent(fallbackAgent);
     setSelectedDirectModel(directConfig?.modelId ?? '');
     setSelectedDirectPermissionMode(directConfig?.permissionMode ?? '');
+    setSelectedDirectAutoAccept(Boolean(directConfig?.autoAccept));
     setSelectedDirectConfigOptions(directConfig?.configOptions ?? {});
     setSelectedAgent(runMode.autoConfig?.agentType ?? '');
     setSelectedModel(runMode.autoConfig?.modelId ?? '');
     setSelectedPermissionMode(runMode.autoConfig?.permissionMode ?? '');
+    setSelectedAutoAccept(Boolean(runMode.autoConfig?.autoAccept));
     setSelectedConfigOptions(runMode.autoConfig?.configOptions ?? {});
     setGlobalGoal(runMode.autoConfig?.globalGoal ?? '');
     setWorkflowTemplateId(runMode.workflowTemplateId ?? workflowTemplates?.lastUsedTemplateId ?? templates[0]?.id ?? '');
@@ -717,6 +748,7 @@ export function ConversationComposer({
     setSelectedDirectAgent(agentType);
     setSelectedDirectModel(remembered.modelId ?? '');
     setSelectedDirectPermissionMode(remembered.permissionMode ?? '');
+    setSelectedDirectAutoAccept(Boolean(remembered.autoAccept));
     setSelectedDirectConfigOptions(remembered.configOptions ?? {});
     updateDirectConfig(remembered);
   };
@@ -734,6 +766,7 @@ export function ConversationComposer({
     const nextAgent = patchedValue(patch, 'agentType', selectedAgent);
     const nextModel = patchedValue(patch, 'modelId', selectedModel);
     const nextPermissionMode = patchedValue(patch, 'permissionMode', selectedPermissionMode);
+    const nextAutoAccept = patchedValue(patch, 'autoAccept', selectedAutoAccept);
     const nextConfigOptions = patchedValue(patch, 'configOptions', selectedConfigOptions);
     const nextGlobalGoal = patchedValue(patch, 'globalGoal', globalGoal);
     if (isDynamicAuto) {
@@ -753,6 +786,7 @@ export function ConversationComposer({
       agentType: nextAgent || '',
       modelId: nextModel || undefined,
       permissionMode: nextPermissionMode || undefined,
+      autoAccept: nextAutoAccept || undefined,
       configOptions: nextConfigOptions,
       globalGoal: optionalRunModeText(nextGlobalGoal),
     };
@@ -771,6 +805,7 @@ export function ConversationComposer({
       agentType: selectedDirectAgent,
       modelId: selectedDirectModel || undefined,
       permissionMode: selectedDirectPermissionMode || undefined,
+      autoAccept: selectedDirectAutoAccept || undefined,
       configOptions: normalized.configOptions,
     });
   }, [isDirect, selectedDirectAgentObj, selectedDirectAgent, selectedDirectModel, selectedDirectPermissionMode, selectedDirectConfigOptions]);
@@ -785,7 +820,8 @@ export function ConversationComposer({
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
-    const trimmed = content.trim();
+    const role = committedRoleSnapshot(committedSlashCommand);
+    const trimmed = slashSendableText(content, committedSlashCommand).trim();
     const inputBase: ConversationCreateInput = {
       projectId,
       content: trimmed,
@@ -797,6 +833,7 @@ export function ConversationComposer({
           agentType: selectedDirectAgent,
           modelId: selectedDirectModel || undefined,
           permissionMode: selectedDirectPermissionMode || undefined,
+          autoAccept: selectedDirectAutoAccept || undefined,
           configOptions: selectedDirectAgentObj
             ? normalizeConfigOptionOverrides(selectedDirectAgentObj, selectedDirectConfigOptions).configOptions
             : selectedDirectConfigOptions,
@@ -813,6 +850,7 @@ export function ConversationComposer({
       selectedBranch: workLocation === 'worktree' && branchSelection?.projectId === projectId
         ? branchSelection.branch
         : undefined,
+      ...(role ? { role } : {}),
     };
     setSubmittingAttachments(true);
     try {
@@ -865,15 +903,19 @@ export function ConversationComposer({
     }
   };
 
-  const scheduledConversationInput = () => ({
-    projectId,
-    content: content.trim(),
-    runMode: runMode.mode,
-    workflowTemplateId: isAuto || isDirect ? undefined : selectedWorkflowTemplateId,
-    includeOptionalEntry,
-    directConfig: isDirect ? normalizeConversationDirectConfigForSubmit({ agentType: selectedDirectAgent, modelId: selectedDirectModel || undefined, permissionMode: selectedDirectPermissionMode || undefined, configOptions: selectedDirectConfigOptions }) : undefined,
-    autoConfig: isAuto ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession()) : undefined,
-  });
+  const scheduledConversationInput = () => {
+    const role = committedRoleSnapshot(committedSlashCommand);
+    return {
+      projectId,
+      content: slashSendableText(content, committedSlashCommand).trim(),
+      runMode: runMode.mode,
+      workflowTemplateId: isAuto || isDirect ? undefined : selectedWorkflowTemplateId,
+      includeOptionalEntry,
+      directConfig: isDirect ? normalizeConversationDirectConfigForSubmit({ agentType: selectedDirectAgent, modelId: selectedDirectModel || undefined, permissionMode: selectedDirectPermissionMode || undefined, autoAccept: selectedDirectAutoAccept || undefined, configOptions: selectedDirectConfigOptions }) : undefined,
+      autoConfig: isAuto ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession()) : undefined,
+      ...(role ? { role } : {}),
+    };
+  };
 
   const createScheduledTask = async () => {
     if (!canCreateScheduledTask || !onCreateScheduledTask) return;
@@ -998,19 +1040,31 @@ export function ConversationComposer({
           />
           <SlashCommandMenu
             open={slashCommands.isOpen}
-            commands={slashCommands.filteredCommands}
+            groups={slashCommands.filteredGroups}
             activeIndex={slashCommands.activeIndex}
             onActiveIndexChange={slashCommands.setActiveIndex}
             onDismiss={slashCommands.dismiss}
             onSelect={(index) => { slashCommands.selectByIndex(index); }}
             variant="inline"
+            agentIconSrc={slashAgentIconKey ? agentIconSrc(slashAgentIconKey) : null}
+            agentIconClassName={slashAgentIconKey ? agentIconClass(slashAgentIconKey) : undefined}
           >
             <div className="relative min-w-0">
               {committedSlashCommand ? (
                 <span ref={committedInputLayout.adornmentRef} className="absolute left-0 top-2 z-10 inline-flex">
                   <SlashCommandInputTag
                     prefix={committedSlashCommand.prefix}
-                    description={committedSlashCommand.command.description}
+                    description={committedSlashCommand.item.description}
+                    content={committedSlashCommand.item.content}
+                    kind={committedSlashCommand.item.kind}
+                    iconSrc={committedSlashCommand.item.kind === 'role'
+                      ? '/logo.svg'
+                      : slashAgentIconKey
+                        ? agentIconSrc(slashAgentIconKey)
+                        : '/logo.svg'}
+                    iconClassName={committedSlashCommand.item.kind === 'command' && slashAgentIconKey
+                      ? agentIconClass(slashAgentIconKey)
+                      : undefined}
                   />
                 </span>
               ) : multicaBinding ? (
@@ -1100,6 +1154,7 @@ export function ConversationComposer({
                         agentType: selectedDirectAgent,
                         modelId: modelId || undefined,
                         permissionMode: selectedDirectPermissionMode || undefined,
+                        autoAccept: selectedDirectAutoAccept || undefined,
                         configOptions: selectedDirectConfigOptions,
                       });
                     }}
@@ -1110,6 +1165,7 @@ export function ConversationComposer({
                         agentType: selectedDirectAgent,
                         modelId: selectedDirectModel || undefined,
                         permissionMode: selectedDirectPermissionMode || undefined,
+                        autoAccept: selectedDirectAutoAccept || undefined,
                         configOptions: next,
                       });
                     }}
@@ -1121,6 +1177,18 @@ export function ConversationComposer({
                     unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
                     align="end"
                     triggerClassName={CONVERSATION_HOME_COMPOSER_LAYOUT.configTriggerClassName}
+                    autoAccept={selectedDirectAutoAccept}
+                    autoAcceptLabel={t('acp.autoAccept')}
+                    onAutoAcceptChange={(enabled) => {
+                      setSelectedDirectAutoAccept(enabled);
+                      updateDirectConfig({
+                        agentType: selectedDirectAgent,
+                        modelId: selectedDirectModel || undefined,
+                        permissionMode: selectedDirectPermissionMode || undefined,
+                        autoAccept: enabled || undefined,
+                        configOptions: selectedDirectConfigOptions,
+                      });
+                    }}
                     onValueChange={(value) => {
                       const permissionMode = value ?? '';
                       setSelectedDirectPermissionMode(permissionMode);
@@ -1128,6 +1196,7 @@ export function ConversationComposer({
                         agentType: selectedDirectAgent,
                         modelId: selectedDirectModel || undefined,
                         permissionMode: permissionMode || undefined,
+                        autoAccept: selectedDirectAutoAccept || undefined,
                         configOptions: selectedDirectConfigOptions,
                       });
                     }}
@@ -1296,6 +1365,12 @@ export function ConversationComposer({
                     options={autoPermissionModes}
                     unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
                     triggerClassName={CONVERSATION_HOME_COMPOSER_LAYOUT.modeControlHeightClassName}
+                    autoAccept={selectedAutoAccept}
+                    autoAcceptLabel={t('acp.autoAccept')}
+                    onAutoAcceptChange={(enabled) => {
+                      setSelectedAutoAccept(enabled);
+                      updateAutoSession({ autoAccept: enabled || undefined });
+                    }}
                     onValueChange={(value) => {
                       const next = value ?? '';
                       setSelectedPermissionMode(next);

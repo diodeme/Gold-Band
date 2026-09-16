@@ -8,6 +8,9 @@ use gold_band::{
 
 #[test]
 fn formal_cicd_uses_the_shared_memory_tools_in_both_languages() {
+    if !gold_band::memory::is_wb() {
+        return;
+    }
     configure_storage_paths(StoragePathConfig {
         app_key: "maling",
         config_dir_name: ".maling",
@@ -47,10 +50,16 @@ fn formal_cicd_uses_the_shared_memory_tools_in_both_languages() {
         assert!(profile.content.contains("memory_write"));
         assert!(profile.content.contains("expectedRevision"));
         assert!(profile.content.contains("subSysId1"));
-        assert!(profile.content.contains("cicd.<S>.selected"));
+        assert!(profile.content.contains("cicd.build.jobId"));
+        assert!(profile.content.contains("cicd.deploy.<S>.selected"));
         assert!(!profile.content.contains("\"targets\""));
+        assert!(!profile.content.contains("Current-task `memory.json`"));
+        assert!(!profile.content.contains("当前 task 的 `memory.json`"));
         assert!(profile.content.contains("wetest --json build run"));
         assert!(profile.content.contains("resultCode == 0"));
+        assert!(profile.content.contains("deploy instance-list"));
+        assert!(profile.content.contains("buildNum"));
+        assert!(!profile.content.contains("`deployments`"));
         let commit_gate_markers = match language {
             DesktopLanguage::ZhCn => [
                 "### 代码提交前置条件",
@@ -103,20 +112,39 @@ fn formal_cicd_uses_the_shared_memory_tools_in_both_languages() {
         }
         for field in [
             "selected",
-            "build.jobId",
-            "build.branch",
-            "build.appList",
-            "deploy.mode",
-            "deploy.templateId",
-            "deploy.templateName",
-            "deploy.deployType",
-            "deploy.env",
-            "deploy.ips",
-            "deploy.containers",
-            "deploy.pkgNames",
-            "deploy.inputParams",
+            "mode",
+            "templateId",
+            "templateName",
+            "deployType",
+            "env",
+            "ips",
+            "containers",
+            "pkgNames",
+            "inputParams",
         ] {
-            assert!(profile.content.contains(&format!("cicd.<S>.{field}")));
+            assert!(
+                profile
+                    .content
+                    .contains(&format!("cicd.deploy.<S>.{field}"))
+            );
+        }
+        for field in ["jobId", "branch", "appList", "appCoverage"] {
+            assert!(profile.content.contains(&format!("cicd.build.{field}")));
+        }
+        for marker in match language {
+            DesktopLanguage::ZhCn => [
+                "每次 run 都必须重新确认构建和部署参数",
+                "不能复用上一次 run 的确认",
+            ],
+            DesktopLanguage::En => [
+                "Every run must freshly confirm its build and deployment parameters",
+                "A confirmation from a previous run cannot be reused",
+            ],
+        } {
+            assert!(
+                profile.content.contains(marker),
+                "CICD per-run confirmation marker missing: {marker}"
+            );
         }
         assert!(profile.content.contains("%HH"));
         assert!(profile.content.contains("32 KiB"));

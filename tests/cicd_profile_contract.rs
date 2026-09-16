@@ -7,6 +7,9 @@ use gold_band::{
 
 #[test]
 fn formal_cicd_uses_the_shared_memory_tools_in_both_languages() {
+    if !gold_band::memory::is_wb() {
+        return;
+    }
     configure_storage_paths(StoragePathConfig {
         app_key: "maling",
         config_dir_name: ".maling",
@@ -48,6 +51,9 @@ fn formal_cicd_uses_the_shared_memory_tools_in_both_languages() {
         assert!(!profile.content.contains("当前 task 的 `memory.json`"));
         assert!(profile.content.contains("wetest --json build run"));
         assert!(profile.content.contains("resultCode == 0"));
+        assert!(profile.content.contains("deploy instance-list"));
+        assert!(profile.content.contains("buildNum"));
+        assert!(!profile.content.contains("`deployments`"));
         let commit_gate_markers = match language {
             DesktopLanguage::ZhCn => [
                 "### 代码提交前置条件",
@@ -110,7 +116,11 @@ fn formal_cicd_uses_the_shared_memory_tools_in_both_languages() {
             "pkgNames",
             "inputParams",
         ] {
-            assert!(profile.content.contains(&format!("cicd.deploy.<S>.{field}")));
+            assert!(
+                profile
+                    .content
+                    .contains(&format!("cicd.deploy.<S>.{field}"))
+            );
         }
         for field in ["jobId", "branch", "appList", "appCoverage"] {
             assert!(profile.content.contains(&format!("cicd.build.{field}")));

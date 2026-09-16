@@ -3585,6 +3585,7 @@ fn scheduled_create_input(
         scheduled_task_id: Some(definition.id.clone()),
         scheduled_content_fingerprint: Some(definition.content_fingerprint.clone()),
         workflow_authoring,
+        role: None,
     })
 }
 

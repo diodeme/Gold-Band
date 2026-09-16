@@ -18,7 +18,6 @@ struct Binding {
     data_root: Utf8PathBuf,
     project_id: String,
     task_id: String,
-    wb: bool,
     language: crate::config::DesktopLanguage,
 }
 
@@ -32,7 +31,6 @@ pub fn server_config(
         data_root: paths.user_gold_band_root.clone(),
         project_id: paths.project_id.clone(),
         task_id: task_id.into(),
-        wb: super::is_wb(),
         language,
     };
     Ok(
@@ -58,12 +56,7 @@ pub async fn run() -> anyhow::Result<()> {
         .user_gold_band_root
         .join("projects")
         .join(&binding.project_id);
-    let service = MemoryService::new(
-        paths,
-        &binding.project_id,
-        Some(binding.task_id),
-        binding.wb,
-    )?;
+    let service = MemoryService::new(paths, &binding.project_id, Some(binding.task_id))?;
     MemoryMcp(service, binding.language)
         .serve(rmcp::transport::stdio())
         .await?

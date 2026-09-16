@@ -163,6 +163,10 @@
 - [x] 双语角色改为 task 级 `cicd.build.jobId/branch/appList/appCoverage` 与子系统级 `cicd.deploy.<S>.*`，全部通过 `memory_read` / `memory_write` 和逐 key revision/CAS 维护。
 - [x] 删除角色直接读写 task 配置文件及整份 JSON 模板的路径；参数只作预填，每次 run 重新展示并确认生效范围，上一次 run 的确认不可复用。
 - [x] 最小失败测试在旧提示词上因缺少 `cicd.build.jobId` 失败；修改双语正文后同一 `cicd_profile_contract` 测试转绿。
-- [ ] 完成合并后的 Rust、前端、格式、构建与 UI 验收并补充最终结果。
+- [x] 完成合并后的 Rust、前端、格式、构建与 UI 验收并补充最终结果。
 
 自评审：只修正现有 key 投影与渠道消费点，没有新增持久字段、状态机、兼容层、缓存、队列或依赖。每次读取仍为两个最多各 100 条、有效合计 32 KiB 的文件，合并 O(P + T)；task 级 build 为常数条目，部署参数和必要平台查询随已选子系统数线性增长。锁不覆盖模型、用户交互或外部网络调用，无需新增 benchmark。
+
+最终验收：WB 渠道 7 个 Rust 目标共 20 项通过；独立 target 的 default 渠道隔离 3 项通过；项目记忆与侧栏前端 2 个文件共 14 项通过，TypeScript、Vite 生产构建、Agent catalog 7 项和桌面端 `cargo check -j 1 -p gold-band-desktop` 通过。格式与 diff 空白检查通过；Cargo.lock、ACP registry snapshot 与 agent catalog 在业务语义合并后重新生成并校验。UI 按规则先尝试 iab 和已连接 Chrome，环境不可用后使用 agent-browser 回退，覆盖正常/窄宽度、长文本、明暗主题、未保存关闭确认和保存后重开；会话、浏览器与开发服务器已清理。未调用真实 WeTest 写操作。
+
+渠道单一真源收紧：`MemoryService::new` 不再接受调用方渠道布尔值，Tauri、provider 和 MCP 只能使用 `src/channel.rs`；MCP 启动 JSON 不再携带 `wb`，并由接口测试固定该约束。该调整删除重复输入，没有增加运行时分支。性能复核仍为两个有界文件的 O(P + T) 合并，无历史扫描、N+1、无界缓存/队列或长时间持锁；MCP helper 仅有不随数据规模增长的固定进程启动开销。

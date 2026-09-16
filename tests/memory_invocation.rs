@@ -16,13 +16,8 @@ fn memory_invocation_binding_covers_direct_workflow_auto_and_retry_refresh() {
         &serde_json::json!({"id":"task-001"}),
     )
     .unwrap();
-    let service = MemoryService::new(
-        paths.clone(),
-        &paths.project_id,
-        Some("task-001".into()),
-        false,
-    )
-    .unwrap();
+    let service =
+        MemoryService::new(paths.clone(), &paths.project_id, Some("task-001".into())).unwrap();
     service
         .write(WriteCommand {
             scope: Scope::Task,
@@ -170,6 +165,7 @@ fn test_worker_invocation(attempt_dir: Utf8PathBuf) -> WorkerInvocation {
         session_mode: SessionMode::New,
         user_prompt_render_mode: UserPromptRenderMode::RequirementTask,
         permission_mode: None,
+        auto_accept: false,
         model: None,
         config_options: Default::default(),
         continue_ref: None,

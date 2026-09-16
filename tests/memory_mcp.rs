@@ -31,19 +31,19 @@ fn memory_stdio_tools_share_durable_state_and_reject_stale_revisions() {
         .join(&paths.project_id);
     paths.provision_project_manifest().unwrap();
     write_json(&paths.task_file("task-1"), &json!({"id":"task-1"})).unwrap();
-    let service = MemoryService::new(
-        paths.clone(),
-        &paths.project_id,
-        Some("task-1".into()),
-        false,
-    )
-    .unwrap();
+    let service =
+        MemoryService::new(paths.clone(), &paths.project_id, Some("task-1".into())).unwrap();
     let config = gold_band::memory::mcp::server_config(
         &paths,
         "task-1",
         gold_band::config::DesktopLanguage::En,
     )
     .unwrap();
+    let binding: Value = serde_json::from_str(config["args"][1].as_str().unwrap()).unwrap();
+    assert!(
+        binding.get("wb").is_none(),
+        "release channel must come from the compiled channel source, not MCP launch data"
+    );
     let mut command = gold_band::process::background_command(env!("CARGO_BIN_EXE_gold-band"));
     command.args(
         config["args"]
@@ -106,7 +106,16 @@ fn memory_stdio_tools_share_durable_state_and_reject_stale_revisions() {
     );
     assert_eq!(write["isError"], false);
     let snapshot = service.read().unwrap();
-    assert_eq!(snapshot.effective[0].entry.value, "B2");
+    assert_eq!(
+        snapshot
+            .effective
+            .iter()
+            .find(|record| record.entry.key == "plan")
+            .unwrap()
+            .entry
+            .value,
+        "B2"
+    );
     let revision = snapshot.task[0].revision.clone();
     service
         .write(WriteCommand {
@@ -132,7 +141,15 @@ fn memory_stdio_tools_share_durable_state_and_reject_stale_revisions() {
         json!({"name":"memory_read","arguments":{}}),
     );
     let data: Value = serde_json::from_str(read["content"][0]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(data["effective"][0]["value"], "B3");
+    assert_eq!(
+        data["effective"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| record["key"] == "plan")
+            .unwrap()["value"],
+        "B3"
+    );
     drop(request);
     drop(input);
     drop(child);

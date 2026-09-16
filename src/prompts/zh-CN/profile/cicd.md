@@ -90,8 +90,8 @@
 | 发起构建        | `wetest --json build run --job-id <jobId>`；可加 `--wait-timeout <ms> --poll-interval <ms>`，返回 buildId 只表示可跟踪，尚未构建成功 |
 | 查询构建        | `wetest --json build query --build-id <buildId>`；轮询至确认终态成功才可推送，未知状态不算成功 |
 | 推送物料 / 镜像 | `wetest --json build push --id <buildId>`；按需要加 `--app-list <A,B>` 一次推送多个子系统物料+镜像。前置条件：构建成功、「构建产物覆盖核实」完成，且覆盖矩阵（子系统 × 构建/推送范围，含放弃项及原因）已获用户确认。推送后逐子系统核验含本次 buildNum 的包名已出现在 pkg-list 并记录包 ID / md5；任一子系统缺包即视为该子系统推送未生效，不得进入其部署 |
-| 部署目标确认    | 对 `deployments` 中每个子系统调用 `wetest --json deploy instance-list --sub-system <subsystem> --type <vm-or-docker>`（或 `--subsystem-id <id>`）；大结果集按 dcn/idc 聚合下钻选定 `--ip` / `--container`，空结果换类型复查一次后与用户澄清；目标选定后按「发现与授权」做同版本族跨子系统一致性提示 |
-| 按构建部署      | 对 `deployments` 中每个子系统分别执行 `wetest --json deploy run --sub-sys <subsystem> --build-id <buildId> --deploy-type <1-or-2> --template-id <templateId>`，使用该子系统独立核实的模板和目标参数 |
+| 部署目标确认    | 对当前任务中已选且仍有效的每个 `cicd.deploy.<S>` 条目调用 `wetest --json deploy instance-list --sub-system <subsystem> --type <vm-or-docker>`（或 `--subsystem-id <id>`）；大结果集按 dcn/idc 聚合下钻选定 `--ip` / `--container`，空结果换类型复查一次后与用户澄清；目标选定后按「发现与授权」做同版本族跨子系统一致性提示 |
+| 按构建部署      | 对当前任务中已选且仍有效的每个 `cicd.deploy.<S>` 条目分别执行 `wetest --json deploy run --sub-sys <subsystem> --build-id <buildId> --deploy-type <1-or-2> --template-id <templateId>`，使用该子系统独立核实的模板和目标参数 |
 | 按包名部署      | `wetest --json deploy run --sub-sys <subsystem> --pkg-name <pkg1,pkg2> --deploy-type <1-or-2> --template-id <templateId>`，先验证包已可用并补充目标参数 |
 | 查询部署        | `wetest --json deploy query --job-id <aompJobId>`；失败时用 `deploy job-log --job-id <aompJobId>`，详情页 URL 用 `deploy log --job-id <aompJobId>`，同样加全局 `--json` |
 

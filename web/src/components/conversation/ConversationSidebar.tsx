@@ -492,7 +492,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                       {ws.workspacePath}
                     </TooltipContent>
                   </Tooltip>
-                  {!readOnly && onOpenProjectMemory && <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" className="size-5 shrink-0" aria-label={t('memory.title')} onClick={() => onOpenProjectMemory({ projectId: ws.projectId, name: ws.name })}><Settings className="size-3.5" /></Button></TooltipTrigger><TooltipContent>{t('memory.title')}</TooltipContent></Tooltip>}
+                  {!readOnly && onOpenProjectMemory && <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" className="size-5 shrink-0" aria-label={t('memory.title')} onClick={(event) => { event.stopPropagation(); onOpenProjectMemory({ projectId: ws.projectId, name: ws.name }); }}><Settings className="size-3.5" /></Button></TooltipTrigger><TooltipContent>{t('memory.title')}</TooltipContent></Tooltip>}
                   <span className="pointer-events-none absolute right-8 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
                     {!readOnly && onNewConversationInWorkspace ? (
                       <Button variant="ghost" size="icon" className="size-5 active:scale-90 transition-transform" onClick={(e) => { e.stopPropagation(); onNewConversationInWorkspace(ws.projectId); }}>

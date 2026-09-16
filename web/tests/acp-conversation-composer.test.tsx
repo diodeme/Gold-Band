@@ -30,7 +30,7 @@ function baseProps(overrides: Partial<ComposerProps> = {}): ComposerProps {
     onPreviewAttachment: vi.fn(),
     onClearAttachments: vi.fn(),
     fileError: null,
-    slashCommands: [],
+    slashGroups: [],
     slashMenuOpen: false,
     slashMenuActiveIndex: 0,
     onSlashMenuActiveIndexChange: vi.fn(),
@@ -208,9 +208,62 @@ describe('AcpConversationComposer', () => {
     expect(host.textContent).not.toContain('Shift+Enter');
   });
 
+  it('renders product and agent group headings', async () => {
+    await renderComposer({
+      slashGroups: [
+        {
+          id: 'product',
+          heading: 'Gold Band',
+          items: [{ kind: 'role', id: 'pf-dev', name: 'dev', description: 'Dev role', content: '完整定义' }],
+        },
+        {
+          id: 'agent',
+          heading: 'Agent',
+          items: [{ kind: 'command', id: 'review', name: 'review', description: 'Review the current change' }],
+        },
+      ],
+      slashMenuOpen: true,
+    });
+
+    const menu = document.querySelector('[data-slot="slash-command-menu"]');
+    expect(menu).toBeTruthy();
+    expect(menu?.textContent).toContain('Gold Band');
+    expect(menu?.textContent).toContain('Agent');
+    expect(document.querySelectorAll('[data-slash-item-kind="role"]').length).toBe(1);
+    expect(document.querySelectorAll('[data-slash-item-kind="command"]').length).toBe(1);
+  });
+
+  it('uses the product logo for roles and the current agent icon for commands', async () => {
+    await renderComposer({
+      slashGroups: [
+        {
+          id: 'product',
+          heading: 'Gold Band',
+          items: [{ kind: 'role', id: 'pf-dev', name: 'dev', description: 'Dev role', content: '完整定义' }],
+        },
+        {
+          id: 'agent',
+          heading: 'Agent',
+          items: [{ kind: 'command', id: 'review', name: 'review', description: 'Review the current change' }],
+        },
+      ],
+      slashMenuOpen: true,
+      agentIconSrc: '/agents/codex.svg',
+    });
+
+    const roleIcon = document.querySelector('[data-slash-item-kind="role"] img');
+    const commandIcon = document.querySelector('[data-slash-item-kind="command"] img');
+    expect(roleIcon?.getAttribute('src')).toBe('/logo.svg');
+    expect(commandIcon?.getAttribute('src')).toBe('/agents/codex.svg');
+  });
+
   it('renders the slash command popover on an opaque semantic surface', async () => {
     await renderComposer({
-      slashCommands: [{ name: 'review', description: 'Review the current change' }],
+      slashGroups: [{
+        id: 'agent',
+        heading: 'Agent',
+        items: [{ kind: 'command', id: 'review', name: 'review', description: 'Review the current change' }],
+      }],
       slashMenuOpen: true,
     });
 

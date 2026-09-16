@@ -2,7 +2,8 @@ pub(crate) mod cicd;
 use crate::acp::{client, events::AcpUiEvent};
 use crate::artifacts::{JsonArtifactSpan, artifact_uses_json_output, json_artifact_display_span};
 use crate::config::{
-    AcpAdapterConfig, ManagedAgentConfig, ManagedAgentId, catalog_agent_default_config,
+    AcpAdapterConfig, DesktopLanguage, ManagedAgentConfig, ManagedAgentId,
+    catalog_agent_default_config,
 };
 pub use crate::domain::SessionRef;
 use crate::domain::{
@@ -13,7 +14,8 @@ use crate::dynamic::AI_DYNAMIC_RESULT_ARTIFACT;
 use crate::prompts::{
     PromptExecutionSurface, RUNTIME_ARTIFACT_FINALIZE_EN, RUNTIME_ARTIFACT_FINALIZE_ZH_CN,
     RUNTIME_HIDDEN_CONTEXT_EN, RUNTIME_HIDDEN_CONTEXT_ZH_CN, RUNTIME_SYSTEM_EN,
-    RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN, RUNTIME_USER_ZH_CN, profile_template_context,
+    RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN, RUNTIME_USER_ROLE_MESSAGE_EN,
+    RUNTIME_USER_ROLE_MESSAGE_ZH_CN, RUNTIME_USER_ZH_CN, profile_template_context,
     prompt_by_language, render as render_template,
 };
 use crate::runtime::WorkerRefState;
@@ -47,10 +49,20 @@ pub struct UserPromptQuote {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UserPromptRole {
+    pub profile_id: String,
+    pub name: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConversationPromptInput {
     pub display_text: String,
     #[serde(default)]
     pub quotes: Vec<UserPromptQuote>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<UserPromptRole>,
 }
 
 impl From<String> for ConversationPromptInput {
@@ -58,6 +70,7 @@ impl From<String> for ConversationPromptInput {
         Self {
             display_text: prompt.clone(),
             quotes: Vec::new(),
+            role: None,
         }
     }
 }
@@ -66,6 +79,9 @@ pub const MAX_USER_PROMPT_QUOTE_CHARS: usize = 12_000;
 pub const MAX_USER_PROMPT_QUOTES: usize = 64;
 pub const MAX_USER_PROMPT_QUOTE_ID_BYTES: usize = 128;
 pub const MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES: usize = 512;
+pub const MAX_USER_PROMPT_ROLE_ID_BYTES: usize = 128;
+pub const MAX_USER_PROMPT_ROLE_NAME_BYTES: usize = 128;
+pub const MAX_USER_PROMPT_ROLE_CONTENT_CHARS: usize = 64_000;
 
 pub fn conversation_prompt_text(display_text: &str, quotes: &[UserPromptQuote]) -> String {
     let display_text = display_text.trim();
@@ -85,6 +101,33 @@ pub fn conversation_prompt_text(display_text: &str, quotes: &[UserPromptQuote]) 
         .collect::<Vec<_>>()
         .join("\n\n");
     format!("{quote_blocks}\n\n{display_text}")
+}
+
+pub fn conversation_agent_prompt_text(
+    input: &ConversationPromptInput,
+    language: DesktopLanguage,
+) -> String {
+    let user_input = conversation_prompt_text(&input.display_text, &input.quotes);
+    let Some(role) = input.role.as_ref() else {
+        return user_input;
+    };
+    if role.content.trim().is_empty() {
+        return user_input;
+    }
+    render_template(
+        prompt_by_language(
+            language,
+            RUNTIME_USER_ROLE_MESSAGE_ZH_CN,
+            RUNTIME_USER_ROLE_MESSAGE_EN,
+        ),
+        serde_json::json!({
+            "role_definition": role.content.trim(),
+            "user_input": user_input,
+        }),
+    )
+    .expect("bundled user role message prompt renders")
+    .trim()
+    .to_string()
 }
 
 /// Attachment content awaiting projection into an ACP session/prompt content block.
@@ -618,6 +661,7 @@ pub struct PromptBundle {
     pub user_prompt: String,
     pub display_text: Option<String>,
     pub quotes: Vec<UserPromptQuote>,
+    pub role: Option<UserPromptRole>,
     pub prompt_id: Option<String>,
     pub visibility: PromptVisibility,
     pub hidden_reason: Option<String>,
@@ -1514,6 +1558,7 @@ impl AcpProvider {
                     .clone()
                     .unwrap_or_else(|| prompt.user_prompt.clone()),
                 quotes: prompt.quotes.clone(),
+                role: prompt.role.clone(),
             },
             attachment_paths: req
                 .task_input_attachment_paths
@@ -2195,18 +2240,19 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         | UserPromptRenderMode::RuntimeRepair
         | UserPromptRenderMode::UserMessage => String::new(),
     };
+    let requirement_for_agent = requirement_text_for_agent(req, &requirement_text);
 
     let (system_prompt, mut user_prompt) = match req.prompt_envelope {
         crate::dsl::PromptEnvelopeMode::RuntimeManaged => (
             render_system_prompt(req)?,
-            render_user_prompt(req, &requirement_text),
+            render_user_prompt(req, &requirement_for_agent),
         ),
         crate::dsl::PromptEnvelopeMode::RawAgent => (
             String::new(),
             if matches!(req.session_mode, SessionMode::Continue) {
                 req.resume_prompt.clone().unwrap_or_default()
             } else {
-                requirement_text.clone()
+                requirement_for_agent
             },
         ),
     };
@@ -2255,6 +2301,10 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
             .as_ref()
             .map(|input| input.quotes.clone())
             .unwrap_or_default(),
+        role: req
+            .prompt_display
+            .as_ref()
+            .and_then(|input| input.role.clone()),
         // Prompt identity is an orchestration concern, independent of ACP
         // session mode.  In particular, an automatic retry may start a new
         // ACP session while remaining the same visible user turn.
@@ -2270,6 +2320,16 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         content_blocks,
         scheduled_trigger: scheduled_trigger_payload(req)?,
     })
+}
+
+fn requirement_text_for_agent(req: &WorkerInvocation, requirement_text: &str) -> String {
+    let Some(display) = req.prompt_display.as_ref() else {
+        return requirement_text.to_string();
+    };
+    if display.role.is_none() {
+        return requirement_text.to_string();
+    }
+    conversation_agent_prompt_text(display, req.runtime_context.language)
 }
 
 fn render_system_prompt(req: &WorkerInvocation) -> Result<String> {
@@ -3066,6 +3126,40 @@ mod tests {
         AttachmentProjectionPolicy::from(&crate::config::RuntimeConfig::default())
     }
 
+    #[test]
+    fn conversation_agent_prompt_text_wraps_user_specified_role() {
+        let wrapped = conversation_agent_prompt_text(
+            &ConversationPromptInput {
+                display_text: "帮我改这段代码".to_string(),
+                quotes: Vec::new(),
+                role: Some(UserPromptRole {
+                    profile_id: "pf-builtin-dev".to_string(),
+                    name: "开发".to_string(),
+                    content: "你是开发角色".to_string(),
+                }),
+            },
+            crate::config::DesktopLanguage::ZhCn,
+        );
+        assert!(wrapped.starts_with("# 以下是用户指定的角色定义："));
+        assert!(wrapped.contains("你是开发角色"));
+        assert!(wrapped.contains("# 以下是用户的输入："));
+        assert!(wrapped.contains("帮我改这段代码"));
+        assert!(!wrapped.contains("你的角色定义"));
+    }
+
+    #[test]
+    fn conversation_agent_prompt_text_keeps_plain_user_input_without_role() {
+        let text = conversation_agent_prompt_text(
+            &ConversationPromptInput {
+                display_text: "继续".to_string(),
+                quotes: Vec::new(),
+                role: None,
+            },
+            crate::config::DesktopLanguage::En,
+        );
+        assert_eq!(text, "继续");
+    }
+
     fn test_png(width: u32, height: u32) -> Vec<u8> {
         let raster = image::ImageBuffer::from_fn(width, height, |x, y| {
             image::Rgb([
@@ -3191,6 +3285,7 @@ mod tests {
         req.prompt_display = Some(ConversationPromptInput {
             display_text: "检查主分支状态".to_string(),
             quotes: Vec::new(),
+            role: None,
         });
         req.resume_prompt_id = Some("occurrence-turn-001".to_string());
         req.scheduled_context = Some(scheduled_context(trigger_kind));
@@ -4102,6 +4197,7 @@ mod tests {
             input: ConversationPromptInput {
                 display_text: "hi".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: Vec::new(),
             admitted_at: "1Z".to_string(),

@@ -366,6 +366,7 @@ pub struct ScheduledTaskContextInfo {
     pub automatic: Option<crate::scheduler::execution::ScheduledAutomaticTriggerContext>,
     pub content_fingerprint: String,
     pub instruction_summary: String,
+    pub schedule: Option<crate::scheduler::ScheduleSpec>,
     pub timeline_owner: crate::scheduler::occurrence::OccurrenceLinks,
 }
 
@@ -3239,6 +3240,9 @@ mod tests {
             automatic,
             content_fingerprint: "sha256:scheduled-content".to_string(),
             instruction_summary: "检查主分支状态".to_string(),
+            schedule: Some(
+                crate::scheduler::ScheduleSpec::cron("0 30 9 * * *", "Asia/Shanghai").unwrap(),
+            ),
             timeline_owner: crate::scheduler::occurrence::OccurrenceLinks {
                 task_id: Some("task-001".to_string()),
                 run_id: Some("run-001".to_string()),

@@ -720,8 +720,8 @@ mod tests {
             ConversationPromptInput {
                 display_text: String::new(),
                 quotes: Vec::new(),
-            role: None,
-        },
+                role: None,
+            },
             vec!["C:/temp/context.txt".to_string()],
         )
         .unwrap();
@@ -747,8 +747,8 @@ mod tests {
                     source_message_key: "message-1".to_string(),
                     text: "Agent 原文".to_string(),
                 }],
-            role: None,
-        },
+                role: None,
+            },
             Vec::new(),
         )
         .unwrap();
@@ -774,8 +774,8 @@ mod tests {
                     source_message_key: "textDelta-message-1".to_string(),
                     text: "Agent 原文".to_string(),
                 }],
-            role: None,
-        },
+                role: None,
+            },
             Vec::new(),
         )
         .unwrap();
@@ -856,8 +856,8 @@ mod tests {
                     source_message_key: "message-1".to_string(),
                     text: "quoted".to_string(),
                 }],
-            role: None,
-        },
+                role: None,
+            },
             vec!["C:/evidence.png".to_string()],
         )
         .unwrap();

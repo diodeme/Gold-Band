@@ -8825,8 +8825,8 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "test".into(),
                 quotes: vec![],
-            role: None,
-        },
+                role: None,
+            },
             attachment_paths: vec![],
             admitted_at: super::current_timestamp(),
         };

@@ -167,6 +167,37 @@ describe("ACP session config view model", () => {
     expect(second.signature).toBe(first.signature);
   });
 
+  it("defaults Auto Accept off and keeps it out of native permission modes", () => {
+    const viewModel = createAcpSessionConfigViewModel(baseConfig());
+
+    expect(viewModel.autoAccept).toBe(false);
+    expect(viewModel.availablePermissionModes.map((option) => option.id)).toEqual([
+      "ask",
+      "full_access",
+    ]);
+  });
+
+  it("projects session Auto Accept without treating it as a permission override", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      ...baseConfig(),
+      autoAccept: true,
+    });
+
+    expect(viewModel.autoAccept).toBe(true);
+    expect(viewModel.permissionModeOverrideId).toBe("ask");
+    expect(viewModel.availablePermissionModes.map((option) => option.id)).not.toContain("autoAccept");
+  });
+
+  it("changes the signature when Auto Accept changes", () => {
+    const first = createAcpSessionConfigViewModel(baseConfig());
+    const second = createAcpSessionConfigViewModel({
+      ...baseConfig(),
+      autoAccept: true,
+    });
+
+    expect(second.signature).not.toBe(first.signature);
+  });
+
   it("keeps the same signature for stream-only session changes", () => {
     const first = createAcpSessionConfigViewModel(baseConfig());
     const second = createAcpSessionConfigViewModel({

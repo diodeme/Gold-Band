@@ -19,7 +19,7 @@ provider adapter 是 provider-specific 差异的隔离层。
 - 在 A() 内部选择热数据与冷数据
 - 在 A() 内部把调用请求整理成 prompt bundle
 - 把 prompt bundle 映射为 ACP 调用：根据 `supports_system_prompt` 决定是否通过 `_meta.systemPrompt.append` 注入稳定 system prompt；不支持时把稳定 system prompt 作为 Gold Band hidden 段内联到 user prompt 前
-- 接收 ACP `session/update`、permission request 与 prompt response
+- 接收 ACP `session/update`、permission request、elicitation request 与 prompt response。未实现的入站 client method 若带 JSON-RPC `id`，回 `-32601 Method not found`；不把 Cursor `cursor/ask_question` 等厂商扩展接成提问 UI。
 - 对 `session/update` 做 provider-aware 归一化：消息正文、思考、计划和 provider 诊断必须落入不同领域；诊断不得混入 assistant 正文或最终输出
 - 保存 ACP 会话观测材料、adapter 返回的 session config 快照（`models` / `modes` / `configOptions`）、通过项目级 feature flag 控制的可选 `session/list` 轮询 best-effort 拉取的 session title 缓存与 raw frame
 - 提供 worker reference 与外部 CLI handoff
@@ -43,7 +43,7 @@ provider adapter 是 provider-specific 差异的隔离层。
 - prompt attachment 先由统一 projection policy 生成 `Image / Resource / ResourceLink` 意图，再由当前连接的 `promptCapabilities.image / embeddedContext` 投影协议块。`ResourceLink` 是终态意图，即使 Agent 支持可选内联能力也不得重新读取或展开；不支持可选能力的 Agent 始终收到原文件 link。文本大小使用 UTF-8 字节边界，图片使用独立的编码字节与最长边边界，禁止按 Agent ID、扩展名个案或 UI 来源维护第二套阈值。
 - 浏览器 `File`、剪贴板和拖放附件在进入 runtime 前先物化为不可变快照。物化接口不接收选择时缓存的文件大小；Base64 解码后的实际字节是快照大小的唯一事实源，空文件、单文件上限和总量上限均据此校验，返回的 `AttachmentFileVm.size` 也必须使用该值。源文件在选择与读取之间增长或缩小时，保存本次实际读取到的完整快照，不得因陈旧元数据拒绝。
 
-- Agent 的 `configOptions` 是会随 adapter 升级变化的能力目录。前端使用纯函数对已保存 override 做交集规范化，保留仍存在且 value 有效的项，返回被删除的 option id；校验函数不得修改 React/persisted 输入对象，也不得把 stale override 当成阻塞会话的错误。Direct/AUTO 在提交前使用规范化结果，并在能力目录刷新后同步清理当前配置。
+- Agent 的 `configOptions` 是会随 adapter 升级变化的能力目录。前端使用纯函数对已保存 override 做交集规范化，保留仍存在且 value 有效的项，返回被删除的 option id；校验函数不得修改 React/persisted 输入对象，也不得把 stale override 当成阻塞会话的错误。Direct/AUTO 在提交前使用规范化结果，并在能力目录刷新后同步清理当前配置。ACP `initialize` 对所有 Agent 声明同一份客户端能力，包括 `_meta.parameterizedModelPicker`；该声明只表示客户端能消费独立模型参数 select，不按 Agent ID 开关，也不改变“思考强度只认 `category=thought_level`”的展示契约。
 - `isDefault`
 
 ### `doctor()`
@@ -158,6 +158,18 @@ Provider 只有在归约结果为 `Success` 或可接受中断结果时才提取
 - 返回原始结果给 A() 做统一收尾
 
 ## 3. 最小能力分级
+
+### Claude ACP 临时执行约束
+
+为缓解 [#114](https://github.com/diodeme/Gold-Band/issues/114) 的后台续做与客户端 prompt 归属冲突，Gold Band 对 canonical provider ID `claude-acp` 统一施加执行策略，不按用户显示名或命令路径推断类型：
+
+- 启动适配器时在用户环境之后注入 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`。
+- `session/new/load/resume/fork` 请求在 `_meta.claudeCode.options.disallowedTools` 追加 `Monitor`，幂等保留其他工具限制；同时在 options env 和内联 settings env 中强制同一禁用变量，防止 Claude 读取项目 settings 后覆盖进程环境。
+- 策略只合并本次启动和请求参数，不改写已保存实例、默认模板或用户文件；已有与新建 Claude 实例都适用。其他 provider 不注入 Claude 私有字段。
+- 不新增 UI 提示或可编辑设置。已运行的会话及后台任务不追溯中断；新进程及新建/恢复的 SDK 会话应用策略。
+- 该策略不是沙箱，不阻止 shell 命令手动脱离进程，也不修复 SDK 不完整流误报成功的根因。必须以隔离会话验证后台工具不可用及前台执行可用。
+
+2026-09-07 已使用实际 Gold Band 连接入口与已安装 ACP 0.75.1 / SDK 0.3.257 / CLI 2.1.257 验证：Bash/Agent schema 移除后台参数，Monitor 不在工具列表，强行后台调用被拒绝；12 秒同步命令和同步子 agent 正常返回。模拟模型只连接本地 fixture。测试入口为 `tests/acp_claude_execution_policy.rs` 与 `scripts/diagnostics/verify-claude-background-policy.mjs`；不完整流的上游原因仍未解决。
 
 ### Level 1：基础执行能力
 - `describeProvider`

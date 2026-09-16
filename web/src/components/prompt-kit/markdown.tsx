@@ -2,7 +2,6 @@ import type React from 'react';
 import { createContext, isValidElement, memo, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Download, FileCode2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { code } from '@streamdown/code';
 import {
   Block,
   CodeBlock,
@@ -22,6 +21,7 @@ import {
   createStreamingMarkdownPlayback,
   type StreamingMarkdownPlayback,
 } from '@/lib/streaming-markdown-playback';
+import { wasmCode } from '@/lib/streamdown-wasm-code';
 
 export type MarkdownProps = {
   children: string;
@@ -29,8 +29,20 @@ export type MarkdownProps = {
   streaming?: boolean;
 };
 
+export interface MarkdownResourceLinkError {
+  code: string;
+  params: Record<string, unknown>;
+}
+
+export type MarkdownResourceLinkOpenResult =
+  | { status: 'opened' }
+  | { status: 'error'; error: MarkdownResourceLinkError };
+
 export interface MarkdownResourceLinkHandler {
-  openLocalFile: (rawHref: string, baseCanonicalPath?: string | null) => void | Promise<void>;
+  openLocalFile: (
+    rawHref: string,
+    baseCanonicalPath?: string | null,
+  ) => void | MarkdownResourceLinkOpenResult | Promise<void | MarkdownResourceLinkOpenResult>;
 }
 
 const MarkdownResourceLinkContext = createContext<MarkdownResourceLinkHandler | null>(null);
@@ -47,7 +59,8 @@ export function useMarkdownResourceLinkHandler() {
 export { isLocalFileHref };
 
 export function proxyLocalFileLinks(markdown: string) {
-  return markdown.replace(/(?<!!)\[([^\]\n]+)\]\(([^)\n]+)\)/gu, (match, label: string, destination: string) => {
+  return markdown.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/gu, (match, label: string, destination: string, offset: number) => {
+    if (markdown[offset - 1] === '!') return match;
     const trimmed = destination.trim();
     const href = trimmed.startsWith('<') && trimmed.endsWith('>') ? trimmed.slice(1, -1) : trimmed;
     return isLocalFileHref(href)
@@ -81,7 +94,7 @@ const markdownUrlTransform: NonNullable<StreamdownProps['urlTransform']> = (url,
   isLocalFileHref(url) ? url : defaultUrlTransform(url, key, node)
 );
 const markdownLinkSafety: NonNullable<StreamdownProps['linkSafety']> = { enabled: false };
-const markdownPlugins: NonNullable<StreamdownProps['plugins']> = { code };
+const markdownPlugins: NonNullable<StreamdownProps['plugins']> = { code: wasmCode };
 const markdownControls: NonNullable<StreamdownProps['controls']> = {
   code: { copy: false, download: false },
   table: false,
@@ -89,10 +102,25 @@ const markdownControls: NonNullable<StreamdownProps['controls']> = {
 };
 
 function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) {
+  const { t } = useTranslation();
   const handler = useContext(MarkdownResourceLinkContext);
   const localHref = localHrefFromRenderedHref(href);
   const local = Boolean(localHref);
   const enabledLocal = Boolean(handler && localHref);
+  const requestRevisionRef = useRef(0);
+  const openingRef = useRef<{
+    handler: MarkdownResourceLinkHandler;
+    href: string;
+    revision: number;
+  } | null>(null);
+  const [openFailure, setOpenFailure] = useState<{
+    handler: MarkdownResourceLinkHandler;
+    href: string;
+    error: MarkdownResourceLinkError;
+  } | null>(null);
+  const openError = openFailure?.handler === handler && openFailure.href === localHref
+    ? openFailure.error
+    : null;
   const external = Boolean(href && isExternalUrlHref(href));
   const target = localHref ? parseLocalFileLinkTarget(localHref) : null;
   const visibleLabel = target ? renderedLinkText(children).trim() : '';
@@ -101,46 +129,90 @@ function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<H
     && !visibleLabel.endsWith(target.displayText)
     && !visibleLabel.endsWith(target.sourceSuffix),
   );
+  useLayoutEffect(() => {
+    requestRevisionRef.current += 1;
+    openingRef.current = null;
+    return () => {
+      requestRevisionRef.current += 1;
+      openingRef.current = null;
+    };
+  }, [handler, localHref]);
+  const openResolvedLocalFile = useCallback(async () => {
+    if (!localHref || !handler) return;
+    if (openingRef.current?.handler === handler && openingRef.current.href === localHref) return;
+    const revision = requestRevisionRef.current + 1;
+    requestRevisionRef.current = revision;
+    openingRef.current = { handler, href: localHref, revision };
+    setOpenFailure(null);
+    try {
+      const result = await handler.openLocalFile(localHref);
+      if (requestRevisionRef.current !== revision) return;
+      if (result?.status === 'error') {
+        setOpenFailure({ handler, href: localHref, error: result.error });
+      }
+    } catch {
+      if (requestRevisionRef.current !== revision) return;
+      setOpenFailure({
+        handler,
+        href: localHref,
+        error: { code: 'workspace-file.path-invalid', params: {} },
+      });
+    } finally {
+      if (openingRef.current?.revision === revision) openingRef.current = null;
+    }
+  }, [handler, localHref]);
   return (
-    <a
-      {...props}
-      className={cn(
-        'font-medium [overflow-wrap:anywhere] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-link/45',
-        enabledLocal
-          ? 'mx-0.5 inline-flex items-center gap-1 rounded-sm align-baseline text-link no-underline decoration-link/45 underline-offset-2 transition-colors hover:underline hover:decoration-link'
-          : local
-            ? 'mx-0.5 inline-flex cursor-not-allowed items-center gap-1 rounded-sm align-baseline text-muted-foreground no-underline opacity-60'
-            : 'text-link underline decoration-link/45 underline-offset-2 hover:decoration-link',
-      )}
-      href={enabledLocal ? localHref ?? undefined : local ? undefined : href}
-      target={local || external ? undefined : props.target}
-      rel={local || external ? undefined : props.rel}
-      aria-disabled={local && !handler ? true : undefined}
-      onClick={local
-        ? (event) => {
-          event.preventDefault();
-          if (localHref && handler) void handler.openLocalFile(localHref);
-        }
-        : external
+    <>
+      <a
+        {...props}
+        className={cn(
+          'font-medium [overflow-wrap:anywhere] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-link/45',
+          enabledLocal
+            ? 'mx-0.5 inline-flex items-center gap-1 rounded-sm align-baseline text-link no-underline decoration-link/45 underline-offset-2 transition-colors hover:underline hover:decoration-link'
+            : local
+              ? 'mx-0.5 inline-flex cursor-not-allowed items-center gap-1 rounded-sm align-baseline text-muted-foreground no-underline opacity-60'
+              : 'text-link underline decoration-link/45 underline-offset-2 hover:decoration-link',
+          openError && 'text-destructive decoration-destructive/45 hover:decoration-destructive',
+        )}
+        href={enabledLocal ? localHref ?? undefined : local ? undefined : href}
+        target={local || external ? undefined : props.target}
+        rel={local || external ? undefined : props.rel}
+        aria-disabled={local && !handler ? true : undefined}
+        onClick={local
           ? (event) => {
             event.preventDefault();
-            if (href) void openExternalUrl(href);
+            void openResolvedLocalFile();
           }
-          : props.onClick}
-    >
-      {local ? <FileCode2 className="size-[0.9em] shrink-0 self-center stroke-[1.85]" aria-hidden="true" /> : null}
-      <span className="min-w-0 [overflow-wrap:anywhere]">
-        {children}
-        {showTarget ? (
-          <span
-            className="whitespace-nowrap"
-            data-gb-file-link-target="true"
-          >
-            {target?.displayText}
-          </span>
-        ) : null}
-      </span>
-    </a>
+          : external
+            ? (event) => {
+              event.preventDefault();
+              if (href) void openExternalUrl(href);
+            }
+            : props.onClick}
+      >
+        {local ? <FileCode2 className="size-[0.9em] shrink-0 self-center stroke-[1.85]" aria-hidden="true" /> : null}
+        <span className="min-w-0 [overflow-wrap:anywhere]">
+          {children}
+          {showTarget ? (
+            <span
+              className="whitespace-nowrap"
+              data-gb-file-link-target="true"
+            >
+              {target?.displayText}
+            </span>
+          ) : null}
+        </span>
+      </a>
+      {openError ? (
+        <span
+          role="alert"
+          className="ml-1 text-xs font-normal text-destructive"
+          data-workspace-file-link-error={openError.code}
+        >
+          {t(`workspace.filesPanel.errors.${openError.code}`, openError.code)}
+        </span>
+      ) : null}
+    </>
   );
 }
 
@@ -372,32 +444,50 @@ export const Markdown = memo(function Markdown({ children, className, streaming 
   const { t } = useTranslation();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const playbackRef = useRef<StreamingMarkdownPlayback | null>(null);
+  const previousStreamingRef = useRef(streaming);
   const blockParserRef = useRef<ReturnType<typeof createIncrementalMarkdownBlockParser> | null>(null);
   if (!blockParserRef.current) {
     blockParserRef.current = createIncrementalMarkdownBlockParser();
   }
 
   useLayoutEffect(() => {
+    const wasStreaming = previousStreamingRef.current;
+    previousStreamingRef.current = streaming;
+    const currentPlayback = playbackRef.current;
+
+    if (!streaming) {
+      if (!currentPlayback) return;
+      currentPlayback.setCanonical(children);
+      currentPlayback.setStreaming(false);
+      currentPlayback.dispose();
+      if (playbackRef.current === currentPlayback) playbackRef.current = null;
+      return;
+    }
+
+    if (currentPlayback) {
+      currentPlayback.setCanonical(children);
+      currentPlayback.setStreaming(true);
+      return;
+    }
+
     const root = rootRef.current;
     if (!root) return;
     const playback = createStreamingMarkdownPlayback(root, {
       canonical: children,
-      streaming,
+      // History that was already rendered statically is the settled baseline.
+      // A newly mounted streaming message still plays from its first token.
+      streaming: wasStreaming,
     });
     playbackRef.current = playback;
-    return () => {
-      playback.dispose();
-      if (playbackRef.current === playback) playbackRef.current = null;
-    };
+    if (!wasStreaming) playback.setStreaming(true);
+  }, [children, streaming]);
+
+  useLayoutEffect(() => () => {
+    const playback = playbackRef.current;
+    if (!playback) return;
+    playback.dispose();
+    if (playbackRef.current === playback) playbackRef.current = null;
   }, []);
-
-  useLayoutEffect(() => {
-    playbackRef.current?.setCanonical(children);
-  }, [children]);
-
-  useLayoutEffect(() => {
-    playbackRef.current?.setStreaming(streaming);
-  }, [streaming]);
 
   return (
     <div

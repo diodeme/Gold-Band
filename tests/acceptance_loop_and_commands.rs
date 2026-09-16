@@ -76,6 +76,7 @@ impl ProviderAdapter for LoopingProvider {
             }),
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 

@@ -8,7 +8,7 @@
 ## 2. 页面入口
 进入方式：
 - 从任务列表双击某个任务或点击“进入任务”
-- 从 round 详情面包屑返回“工作流列表”
+- 从会话运行页返回任务工作流
 
 页面面包屑：
 
@@ -109,16 +109,16 @@
 - 作者态画布自动整形使用 success 主链拓扑顺序，不使用 `workflow.nodes` 数组追加顺序判断前后；当用户新增前置节点并连出 success 边时，该节点应自动排到原入口前方，failure 边仍按主链顺序作为分支/回退线处理。
 - Inspector 顶部提供工作流级控制项：`max_attempts` 与 `max_rounds`，均为可选正整数；留空表示不限制。
 - 新增节点后画布自动聚焦到该节点，用户只维护节点、边和属性逻辑，不需要手动整理画布位置。
-- 所有内置与自定义工作流模板都必须把“工作流定义”和“本机模型绑定”作为两个权威数据域管理，并继续复用同一个 `WorkflowDsl` 类型。工作流定义保存 node id、goal、profile（中文界面显示为“角色”，英文界面显示为“Profile”）、拓扑、输出协议、结果判定与控制参数；普通 Worker 的作者态执行字段保持为空，本机模型绑定独立保存 Agent、模型、权限模式以及 Agent capability 声明的全部 session config options。内置工作流升级只能替换工作流定义，不得覆盖用户已经保存的本机模型绑定。
+- 所有内置与自定义工作流模板都必须把“工作流定义”和“本机模型绑定”作为两个权威数据域管理，并继续复用同一个 `WorkflowDsl` 类型。工作流定义保存 node id、goal、profile（中文界面显示为“角色”，英文界面显示为“Profile”）、拓扑、输出协议、结果判定与控制参数；普通 Worker 的作者态执行字段保持为空，本机模型绑定独立保存 Agent、模型、权限模式、Auto Accept 以及 Agent capability 声明的全部 session config options。内置工作流升级只能替换工作流定义，不得覆盖用户已经保存的本机模型绑定。
 - `WorkflowModelBindings` 的跨端接口必须始终返回完整结构；没有任何绑定时 `bindings` 仍序列化为显式空数组 `[]`，不得因省略空集合破坏前端必填字段契约。编辑器入口同时把缺失集合的历史或异常 payload 规范化为空数组，局部坏数据不得导致工作流页白屏。
-- 普通 Worker 节点 Inspector 拆为“模型配置”和“节点配置”两个业务分区。“模型配置”包含 Agent、模型、思考强度等 Agent config options、权限模式和“同步至其他节点”；“节点配置”包含 node id、goal、profile、输出协议与节点结果判定。界面使用三个同级带边界分区，顺序固定为“模型配置 → 工作流控制 → 节点配置”，不显示 `worker` 等实现类型标识。两类字段仍在同一个编辑草稿生命周期内管理，但必须分别计算变更，不能用单个 `dirty` 布尔值混合判断保存权限。
+- 普通 Worker 节点 Inspector 拆为“模型配置”和“节点配置”两个业务分区。“模型配置”包含 Agent、模型、思考强度等 Agent config options、权限模式（含 Auto Accept overlay）和“同步至其他节点”；“节点配置”包含 node id、goal、profile、输出协议与节点结果判定。界面使用三个同级带边界分区，顺序固定为“模型配置 → 工作流控制 → 节点配置”，不显示 `worker` 等实现类型标识。两类字段仍在同一个编辑草稿生命周期内管理，但必须分别计算变更，不能用单个 `dirty` 布尔值混合判断保存权限。
 - 本机模型绑定只覆盖普通 Worker；AI-DYNAMIC 及其内部动态节点继续在运行时统一配置，不增加模型绑定槽位，不参与完成数量统计，也不进入“同步至其他节点”的范围。
-- 每个普通 Worker 持有内部、不可编辑的稳定 `executionSlotId`，模型绑定按该 ID 关联而不按可编辑 node id 或名称反查。修改 node id 保留槽位和绑定；内置 Worker 使用跨版本固定常量；自定义 Worker 新建时生成 UUID；画布顶部新增与节点快捷新增后继必须复用同一 Worker 创建契约，在节点进入 Inspector 前完成槽位生成，确保首次选择 Agent 可立即建立本机模型绑定；复制 Worker 时生成新槽位并复制完整模型配置；另存整个工作流时保留槽位和配置，由新的 template ID 隔离绑定作用域。JSON 编辑中缺少槽位的既有 Worker 按相同 node id 复用当前草稿槽位，真正新增的 Worker 生成一次 UUID；用户显式写入的重复槽位不得被静默修复。Worker 槽位重复和绑定数组中的槽位重复分别返回结构化错误，迁移、保存与运行注入都必须在建立 Map 前阻断。
+- 每个普通 Worker 持有内部、不可编辑的稳定 `executionSlotId`，模型绑定按该 ID 关联而不按可编辑 node id 或名称反查。修改 node id 保留槽位和绑定；内置 Worker 使用跨版本固定常量；自定义 Worker 新建时生成 UUID；画布顶部新增与节点快捷新增后继必须复用同一 Worker 创建契约，在节点进入 Inspector 前完成槽位生成，确保首次选择 Agent 可立即建立本机模型绑定；复制 Worker 时生成新槽位并复制完整模型配置；另存整个工作流时保留槽位和配置，由新的 template ID 隔离绑定作用域。JSON 编辑中缺少槽位的既有 Worker 按相同 node id 复用当前草稿槽位，真正新增的 Worker 生成一次 UUID；用户显式写入的重复槽位不得被静默修复。所有合法 JSON 草稿投影到作者态 canonical `WorkflowDsl` 前必须执行同一套 schema、执行槽位与拓扑入口规范化，统一覆盖实时草稿解析、JSON 切回画布和保存，并以前一次 canonical 草稿作为槽位复用基线；原始 JSON 文本可以保留用户输入，但不得用缺槽位的解析结果覆盖 canonical 状态。Worker 槽位重复和绑定数组中的槽位重复分别返回结构化错误，迁移、保存与运行注入都必须在建立 Map 前阻断。
 - Agent 来源于 Agent 管理页已配置且最近一次 doctor 成功的 Agent 卡片，前端不提供默认 Agent。新增普通 Worker 与尚未绑定本机模型配置的普通 Worker 必须由用户显式选择 Agent；模型、权限模式与 config option 允许“不指定”，表示使用 Agent 默认值，不能把“不指定”误判为节点未配置。
 - 工作流创建、修改、模型绑定保存和运行前解析复用现有权威 doctor 缓存，不为每次 Run 重复诊断。绑定必须引用具体 `ManagedAgentId`；显式模型、权限和 config option ID/值必须属于最新能力目录。doctor 成功但没有返回模型或权限目录时，“不指定”仍有效。未诊断、诊断失败或缓存失效的 Agent 不出现在可选列表中；既有绑定中的失效 ID 必须原样保留并展示具体错误，不得自动清空、替换或传给 Agent 试错。
 - 节点 id 输入框使用本地草稿编辑，中文输入法组合输入期间不更新 workflow DSL；失焦、Enter 或组合输入结束后再提交到节点与关联边。作者态画布普通节点直接展示原始节点 id，不把 `test` 等默认模板节点名翻译成本地化文案。
 - profile 配置使用可搜索选择器，默认加载客户端内建角色与用户级 `~/.gold-band/context/profiles/` 下的所有 profile；workflow DSL 保存 profile `id`，选项展示名称、ID、scope、摘要、创建时间和更新时间，并提供入口跳转到“上下文管理 / 角色管理”。内置角色的名称、摘要和正文均按当前桌面语言返回，英文界面展示英文元数据；workflow、任务和运行快照始终只保存稳定的 `pf-builtin-*` profile ID，不保存本地化名称或摘要，因此切换语言不会破坏已有角色引用。
-- ACP 权限模式下拉来自 Agent 管理页最近一次诊断缓存的 `supportedModes`；切换节点 Agent 时清空旧模型、权限模式与依赖 Agent 的 config options，本机模型绑定只允许保存当前 Agent 支持的显式权限模式，空选项统一显示为“不指定”，表示沿用 Agent / adapter 当前默认模式。
+- ACP 权限模式下拉来自 Agent 管理页最近一次诊断缓存的 `supportedModes`；切换节点 Agent 时清空旧模型、权限模式、Auto Accept 与依赖 Agent 的 config options，本机模型绑定只允许保存当前 Agent 支持的显式权限模式，空选项统一显示为“不指定”，表示沿用 Agent / adapter 当前默认模式。Auto Accept 与 `permissionModeId` 并列保存在每个 execution slot，默认关闭。
 - 所有 worker 节点保存前必须绑定可见角色；如果模板中的角色 ID 已删除或不存在，选择器打开时可显示为空，点击保存时一次性弹窗报告问题，关闭弹窗后清空该节点角色并在字段处红色高亮标注原因。
 - 内置角色可打开并编辑草稿，但不能直接保存覆盖，只能另存为新的普通角色；删除角色时若仍被 workflow 模板、任务 workflow 或可继续运行快照引用，首次点击删除时在确认弹窗内提示影响范围与后续修复成本，二次确认后仍允许删除；删除后被引用的 workflow 会进入需要重新选择角色的修复态，可继续运行快照也可能无法继续，需人工修复。
 - worker 节点结果判定方式支持 AI 输出验证与人工 check 二选一；开启其中一种会自动关闭另一种，避免同一节点同时存在机器判定和人工判定。
@@ -198,7 +198,7 @@ Run 分组行规则：
 
 Run 分组行操作：
 - 点击整行或左侧箭头展开 / 收起
-- running / paused Run 的操作列展示“停止”；存在当前 round 时同时展示“查看”，查看进入当前 round 详情。手动停止需要递归终止该 run 当前执行树下的所有活跃资源：当前 provider / ACP 会话、AI-DYNAMIC 内部并行节点、以及 workflow-invocation 拉起的 child run；随后将 run / round / 当前 node 与已发现的 dynamic 子状态一并收敛为 killed。
+- running / paused Run 的操作列展示“停止”；存在当前 round 时同时展示“查看”，查看进入会话运行页并定位当前 Round。手动停止需要递归终止该 run 当前执行树下的所有活跃资源：当前 provider / ACP 会话、AI-DYNAMIC 内部并行节点、以及 workflow-invocation 拉起的 child run；随后将 run / round / 当前 node 与已发现的 dynamic 子状态一并收敛为 killed。
 - `workflow-invocation` 在 AI-DYNAMIC 内部按复合节点处理：child workflow run 若暂停，外层 dynamic node 也暂停；继续该外层 run 时，runtime 直接委托对应 `childRunId` 从自身断点恢复，外层只观察复合节点状态，不直接暴露内部 ACP 细节。
 - 关闭桌面应用与手动“停止 run”语义不同：关闭应用时，当前所有 running run 会递归请求取消活跃 provider/ACP，并把 run、AI-DYNAMIC dynamic run、内部 paused node、以及 child workflow run 统一写成 `ProcessInterrupted` 可恢复暂停；再次打开应用后，用户可继续这些 run。
 - completed 等终态 Run 没有直接操作时，操作列保持空白
@@ -215,14 +215,14 @@ Round 明细行展示：
 Round 行规则：
 - 使用与 run 摘要行一致的紧凑固定行高节奏和列宽
 - 展开区域通过缩进、左侧时间线和独立浅表面表达 Round 从属于当前 Run
-- 当前节点只在行内展示单行截断摘要；需要完整上下文时进入 round 详情页
+- 当前节点只在行内展示单行截断摘要；需要完整上下文时进入会话运行页
 
-Round 行使用明确“查看 / Open”按钮进入 round 详情页；按钮必须稳定可见，不使用弱化箭头作为唯一入口。
+Round 行使用明确“查看 / Open”按钮进入 canonical `conversation-run` 并携带 Round locator；按钮必须稳定可见，不使用弱化箭头作为唯一入口。旧 workbench `round-detail` 路由与页面不再保留。
 
 页面层级变为：
 
 ```text
-任务列表 > 任务01 > 工作流列表 > run01 > round01
+会话 > task01 > run01 > round01
 ```
 
 ---

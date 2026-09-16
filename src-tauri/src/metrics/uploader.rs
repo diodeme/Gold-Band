@@ -110,7 +110,7 @@ async fn run_uploader(sender: mpsc::Sender<CollectorCommand>, endpoint: String, 
             {
                 return;
             }
-            next_cleanup_at = now.saturating_add(24 * 60 * 60);
+            next_cleanup_at = now.saturating_add(60 * 60);
         }
         let claimed = match claim(&sender, &owner, now).await {
             Ok(claimed) => claimed,

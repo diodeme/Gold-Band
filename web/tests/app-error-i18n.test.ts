@@ -38,6 +38,31 @@ describe('app error i18n', () => {
     expect(message).toBe('找不到该工作空间。');
   });
 
+  it('localizes runtime workspace admission failures', () => {
+    const workspacePath = 'D:\\Projects\\missing';
+    for (const [code, zh, en] of [
+      [
+        'workspace.path-not-found',
+        `工作空间不存在或已被移动：${workspacePath}。请确认目录位置后重试。`,
+        `The workspace does not exist or was moved: ${workspacePath}. Check the folder location and try again.`,
+      ],
+      [
+        'workspace.path-not-directory',
+        `工作空间路径不是文件夹：${workspacePath}。请重新选择工作空间。`,
+        `The workspace path is not a folder: ${workspacePath}. Select the workspace again.`,
+      ],
+      [
+        'workspace.path-inaccessible',
+        `无法访问工作空间：${workspacePath}。请检查磁盘连接、网络位置或目录权限后重试。`,
+        `The workspace cannot be accessed: ${workspacePath}. Check the drive, network location, or folder permissions and try again.`,
+      ],
+    ]) {
+      const error = { code, params: { projectId: 'project-1', workspacePath } };
+      expect(displayAppError(i18n.getFixedT('zh-CN'), error)).toBe(zh);
+      expect(displayAppError(i18n.getFixedT('en'), error)).toBe(en);
+    }
+  });
+
   it('renders prompt queue reorder conflicts as recoverable structured errors', () => {
     const conflict = displayAppError(i18n.t.bind(i18n), {
       code: 'conversation.prompt-queue-revision-conflict',

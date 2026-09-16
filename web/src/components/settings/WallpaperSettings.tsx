@@ -16,6 +16,7 @@ import {
 import { cn } from '@/lib/utils';
 import { previewWallpaperOpacity, type ResolvedThemeWallpaperDescriptor } from '@/theme';
 import type { PersonalizationPreference, ResolvedColorScheme, WallpaperPreferencesVm, WallpaperSchemePersonalization } from '@/types';
+import { useWebviewMeasuredContainer } from '@/hooks/use-webview-measured-container';
 
 const WALLPAPER_COLOR_SCHEMES = ['light', 'dark'] as const satisfies readonly ResolvedColorScheme[];
 
@@ -117,6 +118,7 @@ function WallpaperSchemeSettings({
   onSaveWallpaperOpacity,
   onRestoreThemeWallpaper,
 }: WallpaperSchemeSettingsProps) {
+  const measuredWallpaperRef = useWebviewMeasuredContainer<HTMLDivElement>('wallpaper-settings');
   const { t } = useTranslation();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -154,7 +156,7 @@ function WallpaperSchemeSettings({
   };
 
   return (
-    <div data-testid="wallpaper-settings" className="@container/wallpaper-settings flex min-w-0 flex-col gap-4 @3xl/wallpaper-settings:flex-row @3xl/wallpaper-settings:items-center">
+    <div ref={measuredWallpaperRef} data-testid="wallpaper-settings" className="@container/wallpaper-settings flex min-w-0 flex-col gap-4 @3xl/wallpaper-settings:flex-row @3xl/wallpaper-settings:items-center">
       {previewUrl ? (
         <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
           <DialogTrigger asChild>

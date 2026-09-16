@@ -81,6 +81,7 @@ function run(overrides: Partial<ConversationRunVm> = {}, attempts = [leaf('runni
   return {
     projectId: 'default',
     taskId: 'task-001',
+    taskUuid: 'task-uuid-001',
     runId: 'run-001',
     runMode: 'workflow',
     workflowTemplateId: null,
@@ -178,7 +179,9 @@ describe('runtime-abnormal snapshots', () => {
     const abnormalLeaf = leaf('paused', runtimeAbnormalDisplay, { current: true });
 
     const patched = applyConversationSelectedSessionSnapshot(current, {
+      projectId: 'default',
       taskId: 'task-001',
+      taskUuid: 'task-uuid-001',
       runId: 'run-001',
       roundId: 'round-001',
       nodeId: 'dev',
@@ -206,7 +209,9 @@ describe('applyConversationSelectedSessionSnapshot', () => {
     });
 
     const patched = applyConversationSelectedSessionSnapshot(current, {
+      projectId: 'default',
       taskId: 'task-001',
+      taskUuid: 'task-uuid-001',
       runId: 'run-001',
       roundId: 'round-001',
       nodeId: 'dev',
@@ -246,7 +251,9 @@ describe('applyConversationSelectedSessionSnapshot', () => {
     }, [currentLeaf]);
 
     const patched = applyConversationSelectedSessionSnapshot(current, {
+      projectId: 'default',
       taskId: 'task-001',
+      taskUuid: 'task-uuid-001',
       runId: 'run-001',
       roundId: 'round-001',
       nodeId: 'dev',
@@ -281,7 +288,9 @@ describe('applyConversationSelectedSessionSnapshot', () => {
     }, [devAttempt, testAttempt]);
 
     const patched = applyConversationSelectedSessionSnapshot(current, {
+      projectId: 'default',
       taskId: 'task-001',
+      taskUuid: 'task-uuid-001',
       runId: 'run-001',
       roundId: 'round-001',
       nodeId: 'test',
@@ -307,7 +316,9 @@ describe('applyConversationBackgroundSessionRuntimeSnapshot', () => {
     }, [completedAttempt, runningAttempt]);
 
     const patched = applyConversationBackgroundSessionRuntimeSnapshot(current, {
+      projectId: 'default',
       taskId: 'task-001',
+      taskUuid: 'task-uuid-001',
       runId: 'run-001',
       roundId: 'round-001',
       nodeId: 'test',
@@ -352,7 +363,9 @@ describe('applyConversationBackgroundSessionRuntimeSnapshot', () => {
     }, [completedAttempt, runningAttempt]);
 
     const patched = applyConversationBackgroundSessionRuntimeSnapshot(current, {
+      projectId: 'default',
       taskId: 'task-001',
+      taskUuid: 'task-uuid-001',
       runId: 'run-001',
       roundId: 'round-001',
       nodeId: 'test',
@@ -371,7 +384,9 @@ describe('applyConversationBackgroundSessionRuntimeSnapshot', () => {
   it('does not patch the selected session through the background path', () => {
     const current = run();
     const patched = applyConversationBackgroundSessionRuntimeSnapshot(current, {
+      projectId: 'default',
       taskId: 'task-001',
+      taskUuid: 'task-uuid-001',
       runId: 'run-001',
       roundId: 'round-001',
       nodeId: 'dev',
@@ -394,7 +409,9 @@ describe('applyConversationBackgroundSessionRuntimeSnapshot', () => {
     }, [selectedAttempt, terminalAttempt]);
 
     const patched = applyConversationBackgroundSessionRuntimeSnapshot(current, {
+      projectId: 'default',
       taskId: 'task-001',
+      taskUuid: 'task-uuid-001',
       runId: 'run-001',
       roundId: 'round-001',
       nodeId: 'test',
@@ -412,6 +429,42 @@ describe('applyConversationBackgroundSessionRuntimeSnapshot', () => {
 });
 
 describe('mergeConversationRunSnapshot', () => {
+  it('does not carry a deleted task session into a new task that reuses the same sequential locator', () => {
+    const oldAttempt = leaf('completed', runningDisplay, {
+      nodeId: 'direct-agent',
+      sessionId: 'old-session',
+      sessionEstablished: true,
+    });
+    const current = run({
+      projectId: 'project-1',
+      taskId: 'task-004',
+      taskUuid: 'old-task-uuid',
+      selectedSession: {
+        sessionId: 'old-session',
+        status: 'completed',
+        events: [{ id: 'old-user-message', content: '你好？' }],
+      } as any,
+    }, [oldAttempt]);
+    const newAttempt = leaf('running', runningDisplay, {
+      nodeId: 'direct-agent',
+      sessionId: null,
+      sessionEstablished: false,
+    });
+    const incoming = run({
+      projectId: 'project-1',
+      taskId: 'task-004',
+      taskUuid: 'new-task-uuid',
+      selectedSession: null,
+    }, [newAttempt]);
+
+    const merged = mergeConversationRunSnapshot(current, incoming, 'create');
+    const mergedLeaf = merged.sessionTree.rounds[0].nodes[0].attempts[0];
+
+    expect(merged.selectedSession).toBeNull();
+    expect(mergedLeaf.sessionId).toBeNull();
+    expect(mergedLeaf.sessionEstablished).toBe(false);
+  });
+
   it('does not let an initial unknown ACP snapshot downgrade a running runtime leaf', () => {
     const current = run();
     const incoming = {

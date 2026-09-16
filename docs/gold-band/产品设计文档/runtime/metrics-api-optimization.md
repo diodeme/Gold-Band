@@ -12,7 +12,7 @@
 
 核心变化如下：
 
-1. 请求新增 `projectId`、`runId`、`roundId`、`taskOrigin`、`executionTrigger` 和 `codeChanges`。
+1. 请求新增 `projectId`、`runId`、`roundId`、`taskOrigin` 和 `executionTrigger`。
 2. 请求删除 `collectionStateRecovered`。
 3. `taskTitle` 保持可选，并明确允许上传；它是展示字段，不参与身份和幂等判断。
 4. `executionId` 明确表示 Task UUID，`eventRevision` 明确表示同一 Task 事件流中的递增版本。
@@ -46,7 +46,6 @@
 | `roundId` | 新增 | 必填；当前 Round 标识，仅在 Project/Task/Run 范围内解释 |
 | `taskOrigin` | 新增 | 必填；只允许 `user` 或 `scheduled` |
 | `executionTrigger` | 新增 | `scheduled` 时必填，`user` 时禁止 |
-| `codeChanges` | 新增 | 可选；只允许出现在 delivery terminal 事件 |
 | `collectionStateRecovered` | 删除 | 新接口不得继续接收或依赖 |
 | `taskTitle` | 保留并明确协议 | 可选；允许上传标题，不参与 identity、唯一键或名称反查 |
 
@@ -62,7 +61,6 @@
 | `counters` | Task 与节点聚合边界不明确 | node/unit terminal 携带当前节点 attempt counters；turn/run/outer-run terminal 携带整个 Task counters |
 | `followUpCount` | 计数口径不稳定 | 表示去重后的后续用户输入次数；服务端按快照处理 |
 | terminal | 容易被解释为 Task 事件流结束 | 只表示当前 turn/run/attempt 结束；同一 Task 后续事件继续使用更高 revision |
-| Direct `codeChanges` | 无 | 每个 Direct turn terminal 都可能携带新快照；后续轮次不能复用首轮值，也不能跨轮累加 |
 
 ### 2.4 响应变化
 
@@ -92,7 +90,7 @@ acceptedEventIds ∪ duplicateEventIds ∪ rejected.eventId
 - 单个事件序列化后的 UTF-8 JSON 最大为 64 KiB。
 - 所有字段使用 camelCase。
 - 标记为“可选”或“条件必填”的字段在不适用时应省略，不发送显式 `null`；第 5 节明确为 nullable 的嵌套数值字段除外。
-- 顶层未知扩展字段不参与当前协议校验；`executionTrigger`、`usage`、`modelUsages`、`timing`、`counters` 和 `codeChanges` 必须按本文定义的 shape 严格校验。
+- 顶层未知扩展字段不参与当前协议校验；`executionTrigger`、`usage`、`modelUsages`、`timing` 和 `counters` 必须按本文定义的 shape 严格校验。
 
 ### 3.2 顶层字段完整字典
 
@@ -139,7 +137,6 @@ acceptedEventIds ∪ duplicateEventIds ∪ rejected.eventId
 | `modelUsages` | object[] | 可选 | 按 provider/model 拆分的用量，见 5.3 |
 | `timing` | object | 可选 | 当前 turn/attempt 的时间信息，见 5.4 |
 | `counters` | object | terminal 必填 | terminal 时的完整快照；作用域由 execution kind 决定，见 5.5 |
-| `codeChanges` | object | 可选 | delivery terminal 的代码变化快照，见 5.6 |
 
 ### 3.3 时间格式
 
@@ -277,24 +274,6 @@ Cron 任务：
 
 `execution.started`、`execution.paused`、`execution.resumed`、`intervention.requested` 和 `acceptance.completed` 禁止携带 counters。节点 terminal 与 Task delivery terminal 是两个独立统计域；Task counters 不是服务端对节点 counters 的求和结果。
 
-### 5.6 `codeChanges`
-
-```json
-{
-  "addedLines": 128,
-  "deletedLines": 37,
-  "changedFiles": 9
-}
-```
-
-三个字段均为非负 uint64，且必须同时出现。对象只允许出现在以下 delivery terminal：
-
-- Direct：`sessionMode=direct`、`executionKind=turn`、`eventType=execution.completed`。
-- Workflow：`sessionMode=workflow`、`executionKind=run`、`eventType=execution.completed`。
-- AUTO：`sessionMode=auto`、`executionKind=outer-run`、`eventType=execution.completed`。
-
-该对象表示对应 delivery 截止当前 terminal 的代码净变化快照，不包含路径、源码、diff 或 Git 标识。服务端按更高合法 revision 更新快照，不跨 turn/run 累加。Direct 后续轮次传入的是新快照，不能固定保留首轮值。
-
 ## 6. 条件字段校验
 
 ### 6.1 会话主体矩阵
@@ -318,8 +297,8 @@ Cron 任务：
 
 | `eventType` | 必填字段 | 禁止/限制 |
 |---|---|---|
-| `execution.started` | 公共字段 | 禁止 `outcome/terminalReason/counters/codeChanges` |
-| `execution.completed` | `outcome/terminalReason/counters` | `codeChanges` 仅 delivery subject 可用 |
+| `execution.started` | 公共字段 | 禁止 `outcome/terminalReason/counters` |
+| `execution.completed` | `outcome/terminalReason/counters` | terminal 字段只允许用于本事件 |
 | `execution.paused` | `pauseReason` | 仅 `workflow/node-attempt` 或 `auto/unit-attempt`；禁止 counters |
 | `execution.resumed` | `previousPauseReason` | 仅 `workflow/node-attempt` 或 `auto/unit-attempt`；禁止 counters |
 | `intervention.requested` | `interventionKind` | 仅 `workflow/node-attempt` 或 `auto/unit-attempt`；禁止 counters |
@@ -384,11 +363,6 @@ Cron 任务：
       "elicitationCount": 0,
       "manualContinueCount": 0,
       "followUpCount": 2
-    },
-    "codeChanges": {
-      "addedLines": 18,
-      "deletedLines": 4,
-      "changedFiles": 3
     }
   }]
 }
@@ -448,7 +422,7 @@ Cron 任务：
 |---|---|---|
 | `METRICS_EVENT_INVALID` | 字段缺失、格式非法、未知枚举、单事件超过 64 KiB | 否 |
 | `METRICS_SUBJECT_INVALID` | `sessionMode/executionKind` 或主体字段矩阵不匹配 | 否 |
-| `METRICS_TERMINAL_FIELDS_INVALID` | terminal、counters、codeChanges 的出现范围错误 | 否 |
+| `METRICS_TERMINAL_FIELDS_INVALID` | terminal、counters 的出现范围错误 | 否 |
 | `METRICS_SCHEDULED_PROVENANCE_INVALID` | `taskOrigin/executionTrigger` 缺失、shape 或 repeat 字段组合非法 | 否 |
 | `METRICS_EVENT_ID_CONFLICT` | 相同 `eventId` 对应不同 payload | 否 |
 | `METRICS_REVISION_CONFLICT` | 相同 Task revision 对应不同 `eventId` | 否 |
@@ -459,7 +433,7 @@ Cron 任务：
 
 ## 10. 服务端改造与验收清单
 
-- [ ] 请求 DTO 已新增 `projectId/runId/roundId/taskOrigin/executionTrigger/codeChanges`。
+- [ ] 请求 DTO 已新增 `projectId/runId/roundId/taskOrigin/executionTrigger`。
 - [ ] 请求 DTO 已删除 `collectionStateRecovered`。
 - [ ] `taskTitle` 可选且允许上传，不参与 identity、唯一约束或名称反查。
 - [ ] 所有顶层字段、嵌套对象、枚举和 nullable 规则均有接口测试。
@@ -467,12 +441,11 @@ Cron 任务：
 - [ ] paused/resumed/intervention 仅接受 Workflow `node-attempt` 和 AUTO `unit-attempt`；`turn/run/outer-run` 逐项拒绝。
 - [ ] `user/scheduled` 及 `once/repeat/cron` 组合均有接口测试。
 - [ ] node/unit terminal 返回当前节点 attempt counters；turn/run/outer-run terminal 返回整个 Task counters，且 Task counters 不从节点 counters 求和。
-- [ ] terminal、codeChanges、acceptance、usage 和 timing 的作用域均有接口测试。
+- [ ] terminal、acceptance、usage 和 timing 的作用域均有接口测试。
 - [ ] 相同 eventId 的 duplicate 与 payload conflict 可稳定区分。
 - [ ] `(projectId, executionId, eventRevision)` 冲突可稳定识别。
 - [ ] HTTP 200 中三个 disposition 集合互斥并精确覆盖全部请求 eventId。
 - [ ] 单事件错误不影响同 batch 中其他合法事件。
-- [ ] Direct 后续轮次的 terminal 可以用更高 revision 更新 `codeChanges`，且不会固定为首轮值或跨轮累加。
 - [ ] 新接口拒绝旧 DTO，不保留旧字段 fallback 或双协议解析。
 
 ## 11. 设计与性能评审

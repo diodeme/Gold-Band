@@ -10,6 +10,7 @@ import {
 export interface AgentTranscriptLocator {
   projectId: string;
   taskId: string;
+  taskUuid?: string | null;
   runId: string;
   roundId: string;
   nodeId: string;
@@ -22,6 +23,7 @@ export interface AgentTranscriptLocator {
 export interface ConversationRunLocator {
   projectId: string;
   taskId: string;
+  taskUuid?: string | null;
   runId: string;
 }
 
@@ -95,6 +97,13 @@ export type GitFileComparisonWorkspaceResource = RightWorkspaceResourceBase & {
   reviewLanding?: 'top' | 'first-change' | 'last-change' | null;
 };
 
+export type TurnAttachmentWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'turn-attachment';
+  locator: import('@/types').TurnFileLocatorVm;
+  changeSetId: string;
+  attachmentId: string;
+};
+
 export type SourceControlWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'source-control';
   projectId: string;
@@ -146,11 +155,13 @@ export type ScheduledTaskConfigWorkspaceResource = RightWorkspaceResourceBase & 
 };
 
 export type RightWorkspaceResource =
+  | AcpImageWorkspaceResource
   | AgentTranscriptResource
   | FileBrowserWorkspaceResource
   | ConversationDirectoryWorkspaceResource
   | FileWorkspaceResource
   | TurnFileWorkspaceResource
+  | TurnAttachmentWorkspaceResource
   | GitFileComparisonWorkspaceResource
   | SourceControlWorkspaceResource
   | ConversationAssetWorkspaceResource
@@ -166,6 +177,12 @@ export interface RightWorkspaceSessionState {
   tabs: RightWorkspaceResource[];
   activeTabKey: string | null;
 }
+
+export type AcpImageWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'acp-image';
+  locator: import('@/types').TurnFileLocatorVm;
+  image: import('@/types').AcpImageRef;
+};
 
 export interface RightWorkspaceShellState {
   requestedOpen: boolean;
@@ -233,7 +250,7 @@ export function createConversationWorkspaceScope(input: {
 }): ConversationWorkspaceScope {
   return {
     kind: 'conversation',
-    key: `conversation:${input.projectId}:${input.taskId}:${input.runId}`,
+    key: `conversation:${input.projectId}:${input.taskUuid ?? 'missing-task-uuid'}:${input.runId}`,
     ...input,
   };
 }
@@ -674,7 +691,7 @@ export function useOptionalRightWorkspaceCommands() {
 export function agentTranscriptResourceKey(locator: AgentTranscriptLocator) {
   return [
     locator.projectId,
-    locator.taskId,
+    locator.taskUuid ?? 'missing-task-uuid',
     locator.runId,
     locator.roundId,
     locator.nodeId,
@@ -686,7 +703,7 @@ export function agentTranscriptResourceKey(locator: AgentTranscriptLocator) {
 }
 
 export function conversationRunWorkspaceResourceKey(kind: 'workflow-view' | 'workflow-edit', locator: ConversationRunLocator) {
-  return `${kind}:${locator.projectId}:${locator.taskId}:${locator.runId}`;
+  return `${kind}:${locator.projectId}:${locator.taskUuid ?? 'missing-task-uuid'}:${locator.runId}`;
 }
 
 export function fileBrowserWorkspaceResourceKey(projectId: string) {
@@ -732,11 +749,11 @@ export function gitDiffReviewWorkspaceResourceKey(projectId: string, reviewSessi
 }
 
 export function conversationDirectoryWorkspaceResourceKey(locator: ConversationDirectoryWorkspaceResource['locator']) {
-  return ['conversation-directory', locator.projectId, locator.taskId, locator.runId].join(':');
+  return ['conversation-directory', locator.projectId, locator.taskUuid ?? 'missing-task-uuid', locator.runId].join(':');
 }
 
 export function conversationDirectoryWorkspaceDataKey(locator: ConversationDirectoryWorkspaceResource['locator']) {
-  return [locator.projectId, locator.taskId, locator.runId, locator.roundId, locator.outerNodeId ?? '', locator.outerAttemptId ?? '', locator.nodeId, locator.attemptId].join(':');
+  return [locator.projectId, locator.taskUuid ?? 'missing-task-uuid', locator.runId, locator.roundId, locator.outerNodeId ?? '', locator.outerAttemptId ?? '', locator.nodeId, locator.attemptId].join(':');
 }
 
 export function fileWorkspaceResourceKey(projectId: string, canonicalPath: string) {
@@ -749,7 +766,7 @@ export function acpAttemptWorkspaceResourceKey(kind: 'system-prompt' | 'raw-fram
   return [
     kind,
     locator.projectId,
-    locator.taskId,
+    locator.taskUuid ?? 'missing-task-uuid',
     locator.runId,
     locator.roundId,
     locator.nodeId,
@@ -770,7 +787,7 @@ export function conversationAssetWorkspaceResourceKey(
     'conversation-asset',
     assetKind,
     locator.projectId,
-    locator.taskId,
+    locator.taskUuid ?? 'missing-task-uuid',
     locator.runId,
     locator.roundId,
     locator.nodeId,
@@ -786,7 +803,7 @@ export function hiddenPromptSectionWorkspaceResourceKey(locator: HiddenPromptSec
   return [
     'hidden-prompt-section',
     locator.projectId,
-    locator.taskId,
+    locator.taskUuid ?? 'missing-task-uuid',
     locator.runId,
     locator.roundId,
     locator.nodeId,

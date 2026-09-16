@@ -307,22 +307,6 @@ impl Default for MetricsTransition {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TaskCodeChanges {
-    pub added_lines: u64,
-    pub deleted_lines: u64,
-    pub changed_files: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RunCodeChangeBaseline {
-    pub workspace_path: Utf8PathBuf,
-    pub baseline_tree: String,
-    pub baseline_ref: String,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct TokenUsage {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
@@ -381,7 +365,6 @@ pub struct MetricsPayload {
     pub model_usages: Option<Vec<ModelUsage>>,
     pub timing: Option<LifecycleTiming>,
     pub child_run_id: Option<String>,
-    pub code_changes: Option<TaskCodeChanges>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -493,9 +476,6 @@ impl PendingMetricsFact {
         match (self.task_origin, self.execution_trigger.as_ref()) {
             (MetricsTaskOrigin::User, None) | (MetricsTaskOrigin::Scheduled, Some(_)) => {}
             _ => return Err("task origin and execution trigger are inconsistent"),
-        }
-        if self.payload.code_changes.is_some() && (!terminal || !self.subject.is_delivery()) {
-            return Err("code changes require a delivery terminal");
         }
         Ok(())
     }
@@ -939,6 +919,7 @@ mod tests {
             scheduled_occurrence_id: None,
             project_id: "project-1".to_string(),
             task_id: "task-1".to_string(),
+            task_uuid: None,
             run_id: "run-1".to_string(),
             round_id: "round-1".to_string(),
             node_id: "node-1".to_string(),

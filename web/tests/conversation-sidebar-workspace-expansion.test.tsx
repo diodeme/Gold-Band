@@ -26,22 +26,31 @@ const callbacks = {
   onSelect: () => {},
   onNewConversation: () => {},
   onSearch: () => {},
-  onSelectTask: () => {},
-  onSelectRun: () => {},
   onPinTask: () => {},
   onUnpinTask: () => {},
   onRenameTask: () => {},
   onDeleteTask: () => {},
+  onRetryBootstrap: () => {},
+  onRequestWorkspaceTasks: () => {},
+  onRequestPinnedTasks: () => {},
+  onRequestTaskRuns: () => {},
 };
 
 function sidebarVm(): ConversationSidebarVm {
   return {
+    loadStatus: 'ready',
     workspaces: [
       { projectId: 'workspace-a', workspacePath: 'D:\\workspace-a', name: 'Workspace A' },
       { projectId: 'workspace-b', workspacePath: 'D:\\workspace-b', name: 'Workspace B' },
     ],
+    pinRefs: [],
     pinnedTasks: [],
+    pinnedTaskPage: { status: 'ready-empty', nextCursor: null },
     tasksByWorkspace: { 'workspace-a': [], 'workspace-b': [] },
+    workspaceTaskPages: {
+      'workspace-a': { status: 'ready-empty', nextCursor: null },
+      'workspace-b': { status: 'ready-empty', nextCursor: null },
+    },
     lastActiveWorkspaceId: 'workspace-a',
   };
 }
@@ -55,6 +64,241 @@ afterEach(() => {
 });
 
 describe('ConversationSidebar workspace expansion intent', () => {
+  it('renders lifecycle priority for workflow task and expanded run dots', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const vm = sidebarVm();
+    const run = { runId: 'run-001', status: 'running', outcome: null, startedAt: '', updatedAt: '' };
+    vm.pinnedTaskPage = { status: 'ready', nextCursor: null };
+    vm.pinnedTasks = [{ projectId: 'workspace-a', taskId: 'task-colors', taskUuid: 'uuid-colors', title: 'Parallel workflow', autoTitle: false, runMode: 'workflow', latestRun: run, runs: [run], runHistoryStatus: 'ready', runsNextCursor: null, pinned: true }];
+    try {
+      for (const [status, outcome, color] of [
+        ['running', 'success', 'bg-gold-running'],
+        ['running', 'failure', 'bg-gold-running'],
+        ['paused', 'success', 'bg-yellow-500/50'],
+        ['completed', 'success', 'bg-emerald-500/50'],
+        ['completed', 'failure', 'bg-red-500/50'],
+      ]) {
+        const nextRun = { ...run, status, outcome };
+        const nextVm = { ...vm, pinnedTasks: [{ ...vm.pinnedTasks[0], latestRun: nextRun, runs: [nextRun] }] };
+        await act(async () => root.render(<ConversationSidebar {...callbacks} vm={nextVm} active={{ kind: 'conversation-home' }} />));
+        if (!container.textContent?.includes('run-001')) {
+          const title = Array.from(container.querySelectorAll('span')).find((element) => element.textContent === 'Parallel workflow')!;
+          await act(async () => title.click());
+        }
+        expect(container.querySelectorAll(`span[class~="${color}"]`).length).toBe(2);
+        expect(container.textContent).toContain('Parallel workflow');
+      }
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('keeps task actions transparent and in the row flow for hover and keyboard focus', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const vm = sidebarVm();
+    vm.pinnedTasks = [{
+      projectId: 'workspace-a', taskId: 'task-actions', taskUuid: 'uuid-actions',
+      title: 'C:\\very-long-workspace-path\\conversation-title', autoTitle: false,
+      runMode: 'direct', latestRun: null, runs: [], runHistoryStatus: 'ready-empty',
+      runsNextCursor: null, pinned: true, pinnedOrder: 0,
+    }];
+    vm.pinnedTaskPage = { status: 'ready', nextCursor: null };
+    try {
+      await act(async () => root.render(
+        <ConversationSidebar {...callbacks} vm={vm} active={{ kind: 'conversation-home' }} />,
+      ));
+      const rename = container.querySelector<HTMLButtonElement>('[aria-label="conversation.sidebar.rename"]')!;
+      const actions = rename.parentElement!;
+      expect(actions.classList.contains('bg-sidebar')).toBe(false);
+      expect(actions.classList.contains('absolute')).toBe(false);
+      expect(actions.classList.contains('shrink-0')).toBe(true);
+      expect(actions.classList.contains('group-hover:flex')).toBe(true);
+      expect(actions.classList.contains('group-focus-within:flex')).toBe(true);
+      await act(async () => rename.click());
+      expect(container.querySelector('input')?.value).toBe(vm.pinnedTasks[0].title);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('navigates a pinned-only Direct task without loading its workspace task page first', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const onSelect = vi.fn();
+    const onRequestWorkspaceTasks = vi.fn();
+    const vm = sidebarVm();
+    vm.pinnedTasks = [{
+      projectId: 'workspace-a',
+      taskId: 'task-pinned',
+      taskUuid: 'task-uuid-pinned',
+      title: 'Pinned only conversation',
+      autoTitle: false,
+      runMode: 'direct',
+      latestRun: {
+        runId: 'run-007',
+        status: 'completed',
+        outcome: 'success',
+        startedAt: '2026-08-31T08:00:00Z',
+        updatedAt: '2026-08-31T08:01:00Z',
+        resumable: true,
+      },
+      runs: [],
+      runHistoryStatus: 'ready-empty',
+      runsNextCursor: null,
+      pinned: true,
+      pinnedOrder: 0,
+    }];
+    vm.pinnedTaskPage = { status: 'ready', nextCursor: null };
+    vm.tasksByWorkspace['workspace-a'] = [];
+    vm.workspaceTaskPages['workspace-a'] = { status: 'not-loaded', nextCursor: null };
+
+    try {
+      await act(async () => {
+        root.render(
+          <ConversationSidebar
+            {...callbacks}
+            vm={vm}
+            active={{ kind: 'conversation-home' }}
+            defaultExpandedWorkspaceId="workspace-a"
+            onSelect={onSelect}
+            onRequestWorkspaceTasks={onRequestWorkspaceTasks}
+          />,
+        );
+      });
+
+      const taskTitle = [...container.querySelectorAll('span')]
+        .find((element) => element.textContent === 'Pinned only conversation');
+      expect(taskTitle).toBeDefined();
+
+      await act(async () => {
+        taskTitle?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+
+      expect(onSelect).toHaveBeenCalledWith({
+        kind: 'conversation-run',
+        projectId: 'workspace-a',
+        taskId: 'task-pinned',
+        taskUuid: 'task-uuid-pinned',
+        runId: 'run-007',
+      });
+      expect(onRequestWorkspaceTasks).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('keeps workspace task and explicit run navigation semantics on the canonical page callback', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const onSelect = vi.fn();
+    const vm = sidebarVm();
+    const latestRun = {
+      runId: 'run-007',
+      status: 'completed' as const,
+      outcome: 'success' as const,
+      startedAt: '2026-08-31T08:00:00Z',
+      updatedAt: '2026-08-31T08:01:00Z',
+      resumable: true,
+    };
+    vm.tasksByWorkspace['workspace-a'] = [{
+      projectId: 'workspace-a',
+      taskId: 'task-workspace',
+      taskUuid: 'task-uuid-workspace',
+      title: 'Workspace conversation',
+      autoTitle: false,
+      runMode: 'workflow',
+      latestRun,
+      runs: [{
+        runId: 'run-006',
+        status: 'paused',
+        outcome: null,
+        startedAt: '2026-08-31T07:00:00Z',
+        updatedAt: '2026-08-31T07:01:00Z',
+        resumable: true,
+      }, latestRun],
+      runHistoryStatus: 'ready',
+      runsNextCursor: null,
+      pinned: false,
+      pinnedOrder: null,
+    }];
+    vm.workspaceTaskPages['workspace-a'] = { status: 'ready', nextCursor: null };
+
+    try {
+      await act(async () => {
+        root.render(
+          <ConversationSidebar
+            {...callbacks}
+            vm={vm}
+            active={{ kind: 'conversation-home' }}
+            defaultExpandedWorkspaceId="workspace-a"
+            onSelect={onSelect}
+          />,
+        );
+      });
+
+      const taskTitle = [...container.querySelectorAll('span')]
+        .find((element) => element.textContent === 'Workspace conversation');
+      await act(async () => {
+        taskTitle?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+      expect(onSelect).toHaveBeenLastCalledWith({
+        kind: 'conversation-run',
+        projectId: 'workspace-a',
+        taskId: 'task-workspace',
+        taskUuid: 'task-uuid-workspace',
+        runId: 'run-007',
+      });
+
+      const historicalRun = [...container.querySelectorAll('span')]
+        .find((element) => element.textContent === 'run-006');
+      expect(historicalRun).toBeDefined();
+      await act(async () => {
+        historicalRun?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+      expect(onSelect).toHaveBeenLastCalledWith({
+        kind: 'conversation-run',
+        projectId: 'workspace-a',
+        taskId: 'task-workspace',
+        taskUuid: 'task-uuid-workspace',
+        runId: 'run-006',
+      });
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('does not project a not-yet-loaded workspace as an empty conversation list', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const vm = sidebarVm();
+    vm.workspaceTaskPages['workspace-a'] = { status: 'loading', nextCursor: null };
+
+    try {
+      await act(async () => {
+        root.render(
+          <ConversationSidebar
+            {...callbacks}
+            vm={vm}
+            active={{ kind: 'conversation-home' }}
+            defaultExpandedWorkspaceId="workspace-a"
+          />,
+        );
+      });
+
+      expect(container.textContent).toContain('conversation.sidebar.loadingConversations');
+      expect(container.textContent).not.toContain('conversation.noConversations');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('exposes the absolute workspace path from the heading by hover or keyboard focus', async () => {
     const container = document.createElement('div');
     document.body.append(container);

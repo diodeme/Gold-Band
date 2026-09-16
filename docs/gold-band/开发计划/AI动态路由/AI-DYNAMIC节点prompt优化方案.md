@@ -1,6 +1,29 @@
 # AI-DYNAMIC 节点 Prompt 优化方案
 
+## 2026-09-08 Artifact Finalize 停止恢复修复
+
+- 根因属于正确的两阶段设计下恢复实现不完整：原 provider 用 durable `finalizing` 同时决定结果收集和恢复 prompt，导致用户停止后继续被替换为 finalize；普通 resume 又不收集 artifact，缺失输出落入 proposal repair 的 3 次额度。
+- 复用现有 checkpoint、prompt generation 和 Manual recovery，不引入新状态机、持久字段或外部组件。checkpoint 只控制是否收集结果，用户继续仍发送已有 resume / 用户消息 prompt；自动提醒不携带重复的 Resume 控制意图。
+- 首次业务正常结束提供协议；之后先检查当前回复候选，无候选最多追加 5 次 finalize 提醒，耗尽后运行异常暂停并允许显式继续。首次协议不计数，显式继续重新给予 5 次提醒；停止、交互等待和 provider 错误立即返回，不算 artifact repair。
+- 有候选仍走原有解析、schema / proposal 校验、repair 与业务判定；没有 source locator 的错误 JSON 保留候选文本，避免被误当无输出。人工 check、无 output、InlineControl 不进入新循环。停止恢复与 repair 保持独立，不新增恢复 repair 的专用 prompt。
+- 最小失败证据：`resumed_work_collects_artifact_after_protocol_was_provided` 在旧实现无法收集 resume 输出；后续驱动测试分别复现错误 JSON 被转换为 RuntimeFinalize、自动提醒重复携带 Resume。修复后同一批测试转绿，覆盖首次协议加 5 次提醒、暂停再继续、取消 repair 后普通恢复、停止及非成功状态、候选输出立即返回和 prompt identity 去重。
+- 性能及过度设计评审：仅当前 attempt 的 checkpoint / worker-ref 小文件常数次读写，结果提取保持既有最多 3 条消息窗口；每次自动循环至多 5 次追加请求，无历史扫描、旧 artifact 回读、新增缓存、并发任务或长时间持锁。通过私有可注入 runner 固定请求次数及边界，无需引入外部模拟服务或基准测试。
+- 验收：完整 Rust 单元测试 1152 通过、1 忽略；AI-DYNAMIC 集成测试 34 通过、control engine 10 通过、provider prompt bundle 31 通过。最后补充旧 artifact 隔离和无 output / manual check 边界后，provider 49 项及 node executor 11 项复测通过；`git diff --check` 通过。保留既有 orchestrator dead-code 警告；未连接真实 Agent、未修改用户运行记录。已有状态生命周期规则覆盖本次根因，不重复新增经验规则。
+
 ## 1. 背景与目标
+
+### 2026-09-09 Fanout 软提醒与旧 Artifact 隔离
+
+- 提醒文案调整：按用户指定改为“本次fanout即将从HEAD开始创建worktree，检测到源工作区仍有未提交代码，故提醒：”，同步英文及提示词断言；仅替换引导句，不改变提交策略、状态或 I/O，无新增抽象和性能影响。
+
+- 根因与实测证据：task-004 bootstrap 最后一次 repair 输出缺少闭合括号，provider 返回当前 invalid control span 但没有 payload，结果收集未清除旧 artifact，最终接受了上一轮文件，属于正确的逐轮校验设计下实现不完整。此前强制干净门禁又促使 Agent 迁移 task-003 的旧 worktree，说明对异构用户工作区强制清理属于设计边界问题。
+- 实现：首次 fanout 脏状态仅提醒检查并提交本次业务需要的改动，没有则不操作、重新输出 artifact。移除强制干净复检、stash 授权及新 commit 要求；保留固定一次 HEAD、整批 children 同基线，以及原 end / merge checkpoint。第三个附件写错目录问题按用户要求不处理。
+- 一次性记录：复用现有 rejected proposal，提醒调度前持久化，之后按 source node 跳过 status；恢复不重置提醒。纯提醒不计入协议 repair，混合协议错误仍批量列出并遵守最多 3 次上限。不新增持久字段或状态机。
+- 结果隔离：成功结果只发布本轮 payload 或 control span；坏 JSON 保留给解析器，无候选清除旧 canonical artifact。历史 raw 记录不删除，停止/交互等待不当作成功收集；人工 check、无 output 和已有 provider finalize 提醒规则不改。
+- 最小失败证据：`dynamic_current_result_without_artifact_cannot_reuse_old_file` 与 `dynamic_current_invalid_candidate_replaces_old_artifact` 在旧实现均错误接受旧 completion；`fanout_reminder_does_not_repeat_after_recorded_proposal` 第二次仍被 dirty 拒绝。修改后同一组测试转绿。
+- 覆盖：有业务改动只 commit 交付、无关文件保留；没有新 commit 仍可 fanout；提醒后协议错误仍 repair；坏 JSON 后不能物化旧 fanout；提醒持久化、双语软提示、late edit 放行、Git 失败、nested worktree、acceptance target、ignored 和 end 边界。
+- 过度设计/性能评审：复用 Git、当前 provider 候选与 graph proposal 事实，无新增依赖、持久字段、归属分类器或缓存。status 仅首次提醒前使用 normal 目录粒度，提醒后不再探测；按现有 graph 做线性 source 查询、至多追加一次小记录，不扫描历史会话。分叉只读一次 HEAD，不扩大 Git 锁范围。
+- 验收：`cargo test --lib --test ai_dynamic_node --test provider_prompt_bundle --test control_engine --quiet` 全部通过：单元测试 1163 通过、1 忽略，AI-DYNAMIC 37 通过，control engine 10 通过，provider prompt bundle 31 通过；`git diff --check` 通过。保留既有 dead-code 警告。已有状态生命周期规则覆盖当前结果权威性与持久化边界，不重复新增规则。未操作真实 task-004/task-003 仓库或运行记录。
 
 当前普通 workflow 节点的 prompt 已经拆分为稳定 system prompt、每次 invocation 刷新的 user hidden context、以及可见 user prompt。这个拆分解决了 ACP `session/load` / continue 场景下 system prompt 不能可靠刷新动态事实的问题。
 
@@ -67,7 +90,7 @@ runtime 需要解析 acceptance 的 `dynamic-node-completion` 并 materialize �
 - 文件系统与 workspace 的稳定规则。
 - fan-out / merge / acceptance 的稳定职责。
 - `dynamic-node-completion` 是内部控制协议。
-- 所有动态事实以本次 user hidden context 为准。
+- 节点身份、workspace、预算等动态运行事实以本次 user hidden context 为准；业务范围和验收标准仍服从用户需求与批准输入。
 
 从 system prompt 移除以下会随 invocation 变化的字段：
 
@@ -89,7 +112,7 @@ runtime 需要解析 acceptance 的 `dynamic-node-completion` 并 materialize �
 
 - Dynamic identity：outer node、outer attempt、dynamic run、internal node、kind、title、group、chain、depth。
 - Continue context：session mode、continueFromNodeId、continue source summary。
-- Filesystem：dynamic root、node dir、attempt dir、attachments dir。
+- Filesystem：Dynamic root 只展示一次；node dir 相对 Dynamic root、attempt dir 相对 node dir、attachments dir 相对 attempt dir，coordination snapshot 相对 Dynamic root；branch workspace 另声明一次 Runtime 权威 worktree root。
 - Workspace：mode、path、capability。
 - Graph context projection：direct predecessors、active group、inherited group、siblings、resumable sessions；siblings 只给 group 内普通 worker / workflow invocation 分支展示，merge / acceptance 不展示。
 - Agent context：agent strategy、available providers、available profiles、allowed workflow snapshots；只在启用 output contract 的 worker / acceptance 中展示。
@@ -152,6 +175,10 @@ merge 是执行型节点，不承担路由规划输出：hidden context 对 merg
 
 ## 4. Acceptance 控制协议方案
 
+2026-09-08 生命周期修订：group 只覆盖一次 fanout → merge → acceptance。合法验收交接关闭 group，无论是否安排修复或下一阶段；不增加新的控制类型。新节点接回父作用域，历史节点身份保持不变；父分支 terminal 只由真实 end 建立。最终摘要按实际顶层 end 选择，允许多个顺序顶层 group。相关历史报告在当前归属之外按因果链保留最近退出 group，不引入全量附件正文加载。
+
+验收记录：旧实现上的 4 个最小接口测试先失败，修复后转绿；最终 123 项 orchestrator 单测和 34 项 AI-DYNAMIC 接口测试通过，覆盖顶层/嵌套 single、fanout 接 single、fanout 接 end、父 terminal 延后、工作空间收敛、协调快照与报告路径。无新增持久字段、依赖、缓存或队列；图关系解析受节点预算约束，未增加历史目录扫描。现场历史 graph 未迁移。
+
 ### 4.1 invocation 构建
 
 当前 `DynamicNodeKind::Worker | DynamicNodeKind::WorkflowInvocation` 会启用 `dynamic_output_contract`，`Merge | Acceptance` 不启用。
@@ -174,20 +201,20 @@ acceptance 不再完全复用普通 `execute_dynamic_agent_stage` 的终止逻�
 5. 校验失败进入现有 repair 流程。
 6. 校验通过后：
    - `next.end`：标记 acceptance success，并关闭当前 group。
-   - `next.single` / `next.fanout`：materialize 修复节点，当前 group 不关闭，等待修复链路完成后重新进入 merge / acceptance 或后续 proposal 指定的路径。
+   - `next.single` / `next.fanout`：关闭当前 group，在父作用域物化显式后继；修复后的必要复验由后继任务安排，旧 group 不再自动 merge/acceptance。
 
 ### 4.3 group 状态
 
-当前 group closure 逻辑在 acceptance 节点成功后直接关闭 group。调整为：
+2026-09-08 起，group closure 统一以 acceptance 的合法 completion 被接受为边界：
 
-- acceptance 输出 `next.end` 才关闭 group。
-- acceptance 输出后续节点时，不关闭 group。
-- 后续修复节点完成后，按现有 dynamic graph 驱动继续推进。
+- acceptance 合法输出 `end/single/fanout` 均关闭 group；只有 end 建立父分支 terminal。
+- acceptance 输出后继时，后继恢复父作用域及原业务 chain，父分支继续等待。
+- 后续修复和再验收沿显式 proposal 继续推进，不能重新打开旧 group。
 
 需要避免重复创建同名 acceptance 节点。实现时可以：
 
-- 允许新的修复链路 proposal 创建新的 acceptance 节点。
-- 或在当前 acceptance 后续链路结束时，由 proposal 自己决定是否 `single` 到修复 worker，再由修复 worker 创建新的 acceptance。
+- 普通修复链可以创建使用验收 profile 的 worker 执行复验。
+- 若需再次并行修复，则创建新 fanout group 及其配套 merge/acceptance，旧 group 保持 closed。
 
 本轮优先采用 proposal 驱动，不额外引入自动 retry acceptance 机制。
 
@@ -202,7 +229,7 @@ acceptance 不再完全复用普通 `execute_dynamic_agent_stage` 的终止逻�
 - 用户需求和当前任务：visible user prompt。
 - output JSON schema：output contract。
 
-如果 system、hidden、task 中出现同类信息，模型应以本次 hidden context 为准。
+如果 system、hidden、task 中出现同类运行事实，模型应以本次 hidden context 为准；hidden context 不得覆盖业务范围、明确排除项或批准验收标准。
 
 ### 5.2 需要去重的信息
 
@@ -268,10 +295,10 @@ struct DynamicContextProjection {
 各视图职责如下：
 
 - `CurrentNodeView`：当前 nodeId / title / kind / workspace / sessionMode / continueFromNodeId；不重复渲染 task。
-- `DirectPredecessorView`：真实调度来源，例如 `dependsOn`、single 来源、acceptance requested repair；只展示节点状态和结果，不展示 artifact。
+- `DirectPredecessorView`：只展示 accepted proposal materialization 的直接 `source` 与显式 `dependsOn` 直接节点；两者取并集并按 nodeId 去重，只展示节点状态和结果，不展示 artifact。更早 source 仅进入下方有界附件链路。
 - `ActiveGroupView`：当前节点在 group 内时展示当前 group 的详细状态，例如 root nodes、siblings、merge、acceptance、branch workspace。
 - `InheritedGroupView`：当前节点位于 group 后续 single 链路时，展示 group 出口摘要，例如 acceptance 失败后创建修复节点。
-- `SiblingView`：并行 sibling 只说明存在、状态和边界；普通 worker 分支不能消费 sibling attachments。
+- `SiblingView`：仅当当前普通 worker / workflow invocation 的 chain 能映射到 active group 的某个 root branch 时，展示同一 fanout cohort 的其他 roots，并且只说明存在、状态和边界；repair / reaccept 链恢复父作用域，不显示已关闭 group 的旧 roots，也不自动消费其 attachments。
 - `AttachmentManifest`：列出当前节点允许消费的 attachments。
 - `RuntimeLimitsView`：预算、fanout、workflow invocation、group depth、parallel slot。
 - `SessionReuseView`：resumable sessions 和 continue 来源说明。
@@ -293,9 +320,10 @@ Current node
 
 典型规则：
 
-- fanout worker：知道 sibling 存在，但不能消费 sibling attachments。
-- merge：可以消费当前 group root / terminal branch attachments。
-- acceptance：可以消费 merge attachments、当前 group branch attachments，以及必要的 group 目标摘要。
+- fanout worker：仅在自己的 chain 映射到当前 group root branch 时知道同批 sibling 存在，但不能消费未显式依赖的 sibling attachments。
+- merge：通过显式 `dependsOn` 消费直接 terminal branch 附件，并在同一 group 证据分类中保留当前 group 的 terminal/root 原始输入。
+- acceptance：通过 materialization source 与显式 `dependsOn` 消费 merge 附件，并在同一 group 证据分类中取得当前 group 的 terminal/root branch 输入及相关 group 最近一轮 merge / acceptance 附件。
+- acceptance 创建 repair / reaccept 后关闭旧 group；后继回到父作用域的原业务分支，不属于旧 fanout cohort。
 
 #### group 后续 single 节点
 
@@ -320,10 +348,10 @@ fanout group G
 
 `B` 应看到：
 
-- `acceptance` 是直接来源。
+- `acceptance` 是 accepted proposal materialization source 链上的直接来源。
 - `G` 的 branches / merge / acceptance 已完成或进入 repair-chain-active。
 - `acceptance` 写出的验收失败证据附件。
-- 必要时展示 branch / merge attachments。
+- 显式 `dependsOn` 节点和该 group 最近一次 merge 的附件。
 
 不应展示：
 
@@ -341,11 +369,11 @@ fanout group G -> B(single) -> E(single)
 
 `E` 应优先看到：
 
-- 直接前序 `B` 的状态和 attachments。
+- materialization source 接力链中的 `B` 及更早来源节点，整条链最多回溯 5 个节点。
 - 继承的 `G` 出口摘要。
-- `G` acceptance 的关键证据附件。
+- `G` 历史中最近一轮 merge / acceptance 的关键证据附件。
 
-越往后走，直接前序优先，group 背景降级为摘要，避免把全部历史反复注入 prompt。
+越往后走只沿 accepted source 接力链有界回溯，group 背景降级为摘要，避免把全部历史反复注入 prompt。
 
 #### nested fanout
 
@@ -360,19 +388,23 @@ fanout group G1 -> B(single) -> E(single) -> fanout group G2
 - 当前 active group 是 `G2`，展示 `G2` 详细信息。
 - `E` 是直接来源。
 - `G1` 是 parent / inherited group，只展示摘要和关键出口证据。
-- `G2` sibling 只展示存在和边界，不能消费 sibling attachments。
+- 只有 chain 能映射到 `G2` root branch 的 worker 才展示同批 sibling 的存在和边界，且不能消费未显式依赖的 sibling attachments。
 
-`G2` merge / acceptance 可以消费 `G2` 分支 attachments，同时保留 `E` 和 `G1` acceptance 的关键附件作为背景证据。
+`G2` merge / acceptance 都通过同一 group 证据分类取得当前 group 的 terminal/root branch 原始输入；merge 的 terminal 节点通常也会命中直接 `dependsOn`，跨分类按 nodeId 去重。二者均按三类来源保留 `E` 和 `G1` 最近一轮 merge / acceptance 的关键附件作为背景证据。
 
 ### 6.5 AttachmentManifest 规则
 
-AI-DYNAMIC 的可消费材料以 attachments 为准：
+AI-DYNAMIC 的可消费材料以 attachments 为准，来源严格限定为三类：
 
-- 直接前序 attachments：默认可见。
-- 当前 group 的 merge / acceptance 节点：可见当前 group 内允许消费的 branch attachments。
-- group 后续 single：可见 group exit attachments，以及直接前序 attachments。
-- nested group：可见 active group 内 attachments，并按摘要方式继承 parent group 的关键 attachments。
-- parallel sibling worker：不可见 sibling attachments，除非当前节点是 merge / acceptance，或显式 `dependsOn` 该 sibling。
+1. accepted proposal materialization `source` 接力链：从当前节点的 source 逐跳向前，最多回溯 5 个节点。
+2. 显式 `dependsOn`：只包含当前节点直接声明的依赖节点，不递归展开依赖链。
+3. Group 证据：当前节点为 merge 或 acceptance 时，先加入当前 group 的 terminal 与 root branch 输入；随后对当前节点 active / inherited 的相关 group，以最新 acceptance 为轮次锚点，并选择它通过显式 `dependsOn` 对应的 merge，尚无 acceptance 时才选择最新 merge。历史附件不按节点 `status/outcome` 过滤，失败、中断或执行中的节点已有附件同样可见。若最近控制节点没有附件，不回退到更旧一轮的附件。
+
+三类来源按 nodeId 跨类去重。同一节点只出现一次；acceptance 交接后旧 group 保持 closed 并保留 merge/acceptance 槽。后继回到父作用域后，除当前/父 group 外，沿真实 accepted proposal 因果链按父作用域保留最近退出 group 的 merge/acceptance 路径，不枚举其他兄弟 group 的附件。
+
+递归扫描每个来源节点时最多检查 10 个末端项：文件和空目录计数，含内容的目录只继续递归且不单独计数。遇到第 11 个末端项、符号链接或读取异常时停止展开，显式展示该节点完整 `attachments` 目录并提示其余文件到目录查看；manifest 只列找到的文件路径，不读取或内联附件正文。parallel sibling 不构成第四类附件来源；只有显式命中 `dependsOn`、source 或上述 group 证据规则时才可见。普通 repair / reaccept worker 不会取得旧 group branches。
+
+hidden context 省略空分类，并用带解释的标题区分三类路径：“前序链路（创建当前节点的任务接力链，最多回溯 5 个节点）”“显式依赖（当前节点通过 dependsOn 明确指定的输入节点）”“Group 证据（当前 merge / acceptance 输入或相关 group 最近一轮合并与验收）”。
 
 Attachment manifest 只列业务附件：
 
@@ -459,6 +491,43 @@ acp.diagnostics.jsonl
 
 空 section 不渲染，避免出现大量“无”。当前 task 不在 hidden context 中重复，始终由 visible `# 任务` / `# Task` 表达。
 
+### 6.7 路径投影压缩
+
+#### 设计判断与边界
+
+长程运行中 hidden context 膨胀的原因不是 canonical locator 或文件布局错误，而是文本渲染对每个附件、节点目录与 branch workspace 重复输出相同绝对路径前缀。修复应停留在 `DynamicContextProjection` 的显示层：graph、attachment locator、workspace catalog、磁盘目录及后续工具读取仍使用原始完整路径，不新增缩写路径 schema、持久字段或第二事实源。
+
+#### 数据与算法
+
+- 当前 invocation 先声明一次 Dynamic root；node dir 相对 Dynamic root，attempt dir 相对 node dir，attachments dir 相对 attempt dir，`coordination-snapshot.json` 相对 Dynamic root。
+- 可用附件以 Dynamic root 为 `pathRoot`；branch workspace 以 Runtime 已有的 dynamic worktree base dir 为 `pathRoot`，叶子继续携带 workspaceId、branch、commit、head 和 status 等既有 metadata，并遵守与附件相同的相对路径与跨根回退契约。
+- 对每一组已经枚举、已经过可见性过滤的路径，按路径组件而不是字符串字符或固定目录层级写入 trie。任意层级都可以形成分叉；渲染时按组件稳定排序，并把“不是终点且只有一个 child”的连续节点压缩为一条 `a/b/c` 路径。
+- 条目既可以是另一个条目的祖先，也可以在不同父目录下具有相同文件名；terminal 标记和父子结构必须同时保留，不能按文件名去重或丢失后代。
+- 无法相对该组 `pathRoot` 的跨盘符、跨根或其他越界条目不参与相对 trie，按稳定顺序显式渲染为顶层 `absolutePath=<完整路径>`。`absolutePath` 本身是 Agent 可直接使用的 locator，不得与 `pathRoot` 再次拼接；该规则同样适用于 branch workspace，确保显示压缩不改变 locator 含义。
+
+算法不能假设差异固定发生在 node、attempt 或 attachments 层。例如根为 `A` 时：
+
+```text
+A/B/C/D
+A/C/D
+A/B/C/E
+A/B/D/E
+```
+
+应投影为：
+
+```text
+pathRoot=A
+- B/
+  - C/
+    - D
+    - E
+  - D/E
+- C/D
+```
+
+该投影只遍历本次 prompt 原本已经枚举的路径，时间和内存复杂度均为 `O(total path components)`；不新增文件系统扫描、I/O、依赖、缓存、队列、锁或并发机制。相比重复绝对路径，输出长度与 provider token 占用随公共前缀长度显著下降。
+
 ## 7. 实施步骤
 
 ### 任务 1：新增 AI-DYNAMIC hidden context prompt
@@ -535,6 +604,7 @@ acp.diagnostics.jsonl
 
 - `node_task.md` 不追加固定尾巴；当前任务与 continue 来源的区别由 hidden context 和 system prompt 表达。
 - `acceptance.md` 明确最终必须输出 `dynamic-node-completion`。
+- 通用 `artifact_finalize.md` 在输出控制 artifact 前允许补写当前任务要求且尚未落盘的 attachments；无需或已经完成时跳过。2026-09-08 更新：协议不强制收尾，尚未结束时可在既有任务范围、工作区和工具权限内继续，决定提交时不因协议提示新增业务工作。
 - acceptance pass/fail 映射：
   - pass：`next.type="end"`。
   - fail：`next.type="single"` 或 `fanout` 创建修复节点。
@@ -554,8 +624,8 @@ acp.diagnostics.jsonl
 
 - `DynamicNodeKind::Acceptance` 构建 invocation 时启用 `dynamic_output_contract`。
 - acceptance provider success 后读取并校验 `dynamic-node-completion`。
-- acceptance 输出 `next.end` 时关闭 group。
-- acceptance 输出 `single/fanout` 时 materialize 后续节点，并保持 group 未关闭。
+- acceptance 的合法 completion 被接受时关闭 group；next=end 才结束父分支。
+- acceptance 输出 `single/fanout` 时在父作用域 materialize 后继并关闭旧 group，父分支等待真实 end。
 - merge 保持无 output contract。
 
 完成标准：
@@ -592,10 +662,10 @@ acp.diagnostics.jsonl
 实现要点：
 
 - 读取 dynamic node `attachments/` 目录，生成可消费附件清单。
-- direct predecessor attachments 默认进入 manifest。
-- merge / acceptance 可以看到当前 group branch attachments。
-- group 后续 single 可以看到 group exit attachments 和直接前序 attachments。
-- parallel worker 不展示 sibling attachments。
+- 沿 accepted proposal materialization source 接力链最多回溯 5 个节点；显式 `dependsOn` 只取直接节点；group 证据仅为 merge / acceptance 加入当前 group terminal/root branch 输入，并为相关 active / inherited group 加入历史最新 acceptance 及其 `dependsOn` merge，尚无 acceptance 时取最新 merge，不按节点状态或结果过滤历史附件。
+- 三类来源按 nodeId 去重；每个来源节点最多检查 10 个文件或空目录末端项，含内容的目录不单独计数；超出时展示完整 `attachments` 目录提示，不读取附件正文。
+- group 历史证据从 canonical node / accepted proposal 因果链解析；关闭后保留 `mergeNodeId / acceptanceNodeId`，后继按父作用域保留最近退出 group。
+- repair / reaccept 不展示旧 fanout siblings；只有当前 chain 映射到 group root branch 时才展示同批其他 roots。
 
 完成标准：
 
@@ -654,6 +724,7 @@ acp.diagnostics.jsonl
   - worker / acceptance 的 `PostTurnProjection` 展示后置控制规则，不出现 `dynamic-node-completion` 或 `next.type`
   - merge 的无 emission mode 分支只展示纯执行规则
 - PostTurn 业务 turn 明确禁止提前拆分任务、选择 Agent 或规划/执行后继节点，中英文语义一致。
+- PostTurn hidden finalize 中英文模板允许且只允许补齐尚缺的当前 attempt attachments，并继续禁止业务 workspace 修改；AI-DYNAMIC 另可只读明确声明的协调快照。
 - AI-DYNAMIC hidden context 包含：
   - 当前 node id/title/kind/task
   - workspace mode/path/capability
@@ -665,20 +736,23 @@ acp.diagnostics.jsonl
 - merge invocation 不启用 `dynamic_output_contract`。
 - acceptance invocation 启用 `dynamic_output_contract`。
 - acceptance 输出 `next.end` 后 group closed。
-- acceptance 输出 `next.single` 后 materialize 修复节点，group 不 closed。
+- acceptance 输出 `next.single` 后关闭 group，修复节点恢复父作用域及原业务 chain。
 - acceptance 输出非法 JSON / 非法 proposal 后进入 repair 流程。
 - AI-DYNAMIC prompt 不包含内部控制 artifact 路径：
   - `dynamic-node-completion`
   - `proposals/*.json`
   - `acp.raw.jsonl`
 - AI-DYNAMIC hidden context 包含 attachment manifest。
-- direct predecessor attachments 会展示。
-- parallel worker 不展示 sibling attachments。
-- merge 展示当前 fanout group branch attachments。
-- acceptance 展示 merge / group 可消费 attachments。
-- group 后 single 展示 group exit attachments。
-- single 后 single 展示直接前序 attachments，并只保留 inherited group 摘要。
+- accepted source 接力链最多回溯 5 个节点，显式 `dependsOn` 只取直接节点；group 证据仅为 merge / acceptance 加入当前 group terminal/root branch 输入，并为相关 group 取历史最新 acceptance 及其 `dependsOn` merge，尚无 acceptance 时取最新 merge，不按节点状态或结果过滤历史附件。
+- 三类来源按 nodeId 去重；每来源节点最多检查 10 个文件或空目录末端项，含内容的目录不单独计数；超出时明确展示完整 `attachments` 目录提示，附件正文不进入 prompt。
+- parallel worker 不展示未命中三类来源的 sibling attachments；repair / reaccept chain 不显示旧 fanout roots。
+- merge / acceptance 都通过 group 证据看到当前 group terminal/root branch 原始附件；merge 的 terminal 输入与显式 `dependsOn` 跨分类去重，acceptance 另通过显式依赖看到 merge 附件。
+- group 后 single 与 single 后 single 都沿 source 链继承，并保留 inherited group 最近一轮 merge / acceptance 证据。
 - nested fanout 展示 active group 详细信息和 parent group 摘要。
+- Dynamic root 在同一 hidden context 中只声明一次；node 相对 Dynamic root、attempt 相对 node、attachments 相对 attempt，coordination snapshot 相对 Dynamic root。
+- fanout 集成回归同时验证普通 worker 的业务 hidden context 与 hidden finalize context 使用同一 `Dynamic root + coordination-snapshot.json` locator 契约，且 merge 业务 turn 不注入协调快照。
+- 附件与 branch workspace 路径树覆盖任意深度分叉、单子链压缩、祖先条目、不同父目录同名叶子和稳定排序。
+- 附件或 branch workspace 无法相对 `pathRoot` 时渲染 `absolutePath=<完整路径>`；该值可直接使用且不得再拼接 root，不因压缩被遗漏或错误归组。
 
 ### 7.2 回归场景
 
@@ -714,10 +788,12 @@ npm run web:build
 - [x] worker 继续保持“按 profile 执行任务 + 最终输出 `dynamic-node-completion`”模式。
 - [x] merge 不强制输出控制协议。
 - [x] acceptance 强制输出 `dynamic-node-completion`，并可决定 end 或继续修复。
+- [x] hidden finalize 可有界补齐尚缺的报告或其他 attachments，不把 finalize 扩展为第二个业务 turn。
 - [x] dynamic context 重复注入显著减少，branch/group/workspace 信息有唯一权威来源。
 - [x] AI-DYNAMIC runtime context 由 `DynamicContextProjection` 或等价投影层统一生成。
 - [x] AI-DYNAMIC prompt 不展示内部控制 artifact，只展示可消费 attachments。
-- [x] group 内、group 后 single、single 后 single、nested fanout 的上下文投影规则清晰且有测试覆盖。
+- [x] group 内、group 后 single、single 后 single、nested fanout 的上下文投影规则已按三类来源实现并写入回归测试：accepted source 接力链最多 5 节点、显式 `dependsOn` 直接节点、merge / acceptance 当前 group terminal/root 输入、相关 group 最新 acceptance 与其 merge 配对且历史附件不按状态过滤；同时覆盖跨类 nodeId 去重、每来源节点 10 个文件或空目录末端项上限、非空目录递归、完整目录提示，以及 repair / reaccept 不显示旧 fanout roots。
+- [x] hidden context 只重复声明一次 Dynamic root，并按 node→attempt→attachments 的逐级相对关系展示运行目录；附件与 branch workspace 按路径组件做任意深度树形分组和单子链压缩，跨根路径安全回退为可直接使用的 `absolutePath=` locator。
 - [x] 中英文 prompt 同步维护。
 - [x] 产品设计文档与开发计划同步更新。
 - [x] 后端单元测试覆盖 prompt 分层、continue、acceptance end/repair、repair 流程。
@@ -729,3 +805,27 @@ npm run web:build
 - 不改变普通 workflow prompt 分层。
 - 不改变 `dynamic-node-completion` 作为 AI-DYNAMIC 内部控制协议唯一入口的定位。
 - 不把 merge 改成控制决策节点。
+
+## 11. 2026-09-04 附件链路投影实现记录
+
+- 附件来源收敛为三类：accepted proposal materialization source 接力链最多回溯 5 节点；当前节点显式 `dependsOn` 的直接节点；group 证据仅为 merge / acceptance 加入当前 group terminal/root branch 输入，并为 active / inherited 相关 group 以最新 acceptance 及其 `dependsOn` merge 表达最近一轮，尚无 acceptance 时取最新 merge，历史附件不按节点状态或结果过滤，最近节点无附件时不回退到旧一轮证据。
+- 三类来源按 nodeId 跨类去重；每个来源节点最多检查 10 个文件或空目录末端项，含内容的目录继续递归且不单独计数；超出时显式给出完整 `attachments` 目录并提示到目录查看；只投影文件路径，不读取附件正文。
+- hidden context 的基础运行字段与附件投影字段分片构造后合并，保持同一模板变量接口，同时避免字段增长触发单个 `serde_json::json!` 宏的递归深度上限。
+- acceptance repair 后 group 永久保持 closed；保留 merge/acceptance 引用，后继显式安排复验。
+- sibling 投影只面向当前 active fanout cohort：只有当前 chain 映射到 group root branch 时才显示同批其他 roots；repair / reaccept chain 即使处于 `open` group 也不显示旧 fanout roots。
+- 修复前建立最小失败测试，覆盖 source 两跳中的 `accept-report.md` 及 5 节点边界、显式 `dependsOn` 与 source 并存、merge / acceptance 在 root 与 terminal 不同时仍可读两端原始证据、group 历史证据不受可变槽重置影响、nodeId 去重、每来源节点第 10/11 个附件目录提示，以及 repair / reaccept 不读取旧 branch 附件且不显示旧 siblings；不得用针对具体 node 名称的条件分支修补。
+
+## 12. 2026-09-08 执行图展示修复
+
+- 根因：运行时 acceptance 后继恢复父级业务作用域后，桌面投影仍以 chain/depth 猜测创建关系，遗漏跨 group 连线并误判外层出口；属于正确运行设计下的展示实现不完整。
+- 以 accepted proposal single/fanout、dependsOn、group roots 和 session continue 统一投影真实边；删除 chain/depth 猜测，创建边与依赖边按起终点去重，图连线和外层出口共享关系契约。
+- 两项独立失败证据：Rust 回归报 `missing group-a-accept -> a-followup-1`；前端视口测试在 1400/480px 下因固定 35% 最小缩放使左边界为负。修复后覆盖跨作用域交接、source 与 dependsOn 并存、fanout、continue、拒绝 proposal 不生效、唯一出口、长链完整适应画布及节点不重叠。
+- 性能与过度设计评审：复用既有 graph 和 Dagre/React Flow，无新增依赖、持久字段、缓存或日志 I/O；每次关系构建只遍历节点、依赖、proposal 和 group roots，proposal 只解析一次，临时索引随构建释放。视口计算保持常数复杂度，不扩大状态订阅与布局刷新范围。
+- 验收：桌面 `view_models::tests` 83 项、前端图布局/视口/拓扑签名/交互契约 28 项通过，前端类型检查及生产构建通过。Chrome 使用与 task-002 同形的 20 节点测试图验证宽画布、窄窗口与恢复宽度，DOM 边界检查无节点裁切，放大与适应视图可用；未修改真实运行记录。构建仍提示已有 dead-code、混合静态/动态 import 及大 chunk 警告。
+
+### 同源分叉拐点对齐
+
+- 根因：原普通成功边分别采用 React Flow 的起终点中点折线，缺少同源分叉约束，导致近、远目标的首次转弯位置不同；属于路由实现不完整。
+- 先建立近/远前向目标最小失败测试，确认没有共享路径；随后复用 `getSmoothStepPath` 的 `centerX` 参数，按 source ID 预先计算共享分叉列。节点碰撞使用既有 Smart Edge 路由，不对反向边或单一目标强行对齐；同一目标的重复边不计为 fanout。
+- 回归覆盖 SVG 路径与几何拐点一致、边顺序、端口偏移、重复目标、单目标、障碍节点和反向边；Chrome 分别核对近/远路径相同的分叉 X 坐标，并验证实际 GraphView 的窄窗口、恢复宽度与长标题。
+- 性能与过度设计评审：无新增依赖、持久状态、缓存或 I/O。分组 O(E)，候选折线最多 3 段，对节点的额外检查 O(E×N)，仅在既有拓扑布局更新时发生，不进入缩放/拖拽热路径；复杂绕行仍复用已有库。现有测试图规模为 7/20 节点，未增加高频计算或扩大状态订阅。

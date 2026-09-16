@@ -5,8 +5,8 @@ use anyhow::{Context, Result, anyhow, ensure};
 use gold_band::app::observability::{
     ExecutionKind, LifecycleEventType, MetricsCounters, MetricsExecutionTrigger,
     MetricsInterventionKind, MetricsPauseReason, MetricsSessionMode, MetricsSubject,
-    MetricsTaskOrigin, MetricsTransition, ModelUsage, PendingMetricsFact, TaskCodeChanges,
-    TerminalReason, TokenUsage, UserExecutionAction,
+    MetricsTaskOrigin, MetricsTransition, ModelUsage, PendingMetricsFact, TerminalReason,
+    TokenUsage, UserExecutionAction,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -19,6 +19,10 @@ const OUTBOX_REJECTED: &str = "rejected";
 const MAX_EVENT_BYTES: usize = 64 * 1024;
 const ACK_RETENTION_SECONDS: i64 = 7 * 24 * 60 * 60;
 const REJECTED_RETENTION_SECONDS: i64 = 30 * 24 * 60 * 60;
+const DEDUP_RETENTION_SECONDS: i64 = 30 * 24 * 60 * 60;
+const ATTEMPT_RECOVERY_RETENTION_SECONDS: i64 = 90 * 24 * 60 * 60;
+const DELETED_TASK_RETENTION_SECONDS: i64 = 7 * 24 * 60 * 60;
+const CLEANUP_BATCH_SIZE: i64 = 2_048;
 pub(super) const MAX_UPLOAD_ATTEMPTS: u32 = 3;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -120,8 +124,6 @@ pub struct CollectedMetricsEvent {
     pub timing: Option<gold_band::app::observability::LifecycleTiming>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub counters: Option<MetricsCounters>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub code_changes: Option<TaskCodeChanges>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -200,6 +202,11 @@ pub enum CollectorCommand {
     Cleanup {
         now_epoch_seconds: i64,
     },
+    MarkTaskDeleted {
+        project_id: String,
+        execution_id: String,
+        deleted_at: i64,
+    },
 }
 
 pub fn run_collector_actor(
@@ -255,6 +262,16 @@ pub fn run_collector_actor(
                     on_error("METRICS_OUTBOX_CLEANUP_FAILED", &error);
                 }
             }
+            CollectorCommand::MarkTaskDeleted {
+                project_id,
+                execution_id,
+                deleted_at,
+            } => {
+                if let Err(error) = store.mark_task_deleted(&project_id, &execution_id, deleted_at)
+                {
+                    on_error("METRICS_TASK_DELETE_CLEANUP_FAILED", &error);
+                }
+            }
         }
     }
     Ok(())
@@ -283,6 +300,7 @@ impl MetricsCollectorStore {
                last_revision INTEGER NOT NULL,
                state_json TEXT NOT NULL,
                updated_at INTEGER NOT NULL,
+               deleted_at INTEGER,
                PRIMARY KEY(project_id, execution_id)
              );
              CREATE TABLE IF NOT EXISTS metrics_attempt_state (
@@ -332,7 +350,21 @@ impl MetricsCollectorStore {
              CREATE INDEX IF NOT EXISTS metrics_outbox_ready
                ON metrics_outbox(status, next_attempt_at, created_at);
              CREATE INDEX IF NOT EXISTS metrics_outbox_lease
-               ON metrics_outbox(status, lease_until);",
+               ON metrics_outbox(status, lease_until);
+             CREATE INDEX IF NOT EXISTS metrics_outbox_task_status
+               ON metrics_outbox(project_id, execution_id, status);
+             CREATE INDEX IF NOT EXISTS metrics_attempt_state_updated
+               ON metrics_attempt_state(updated_at);
+             CREATE INDEX IF NOT EXISTS metrics_transition_dedup_created
+               ON metrics_transition_dedup(created_at);
+             CREATE INDEX IF NOT EXISTS metrics_fact_dedup_created
+               ON metrics_fact_dedup(created_at);",
+        )?;
+        ensure_task_state_deleted_at_column(&connection)?;
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS metrics_task_state_deleted
+             ON metrics_task_state(deleted_at)",
+            [],
         )?;
         Ok(Self { connection })
     }
@@ -420,6 +452,7 @@ impl MetricsCollectorStore {
         } else {
             (OUTBOX_PENDING, None)
         };
+        let acknowledged_at = (status == OUTBOX_REJECTED).then_some(now_epoch_seconds);
 
         save_task_state(
             &transaction,
@@ -457,8 +490,8 @@ impl MetricsCollectorStore {
         transaction.execute(
             "INSERT INTO metrics_outbox(
                event_id, project_id, execution_id, event_revision, reported_at, payload_json,
-               status, next_attempt_at, created_at, last_error_code
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9)",
+               status, next_attempt_at, created_at, acked_at, last_error_code
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9, ?10)",
             params![
                 event.event_id,
                 event.project_id,
@@ -468,6 +501,7 @@ impl MetricsCollectorStore {
                 payload_json,
                 status,
                 now_epoch_seconds,
+                acknowledged_at,
                 error_code,
             ],
         )?;
@@ -683,11 +717,115 @@ impl MetricsCollectorStore {
     pub fn cleanup(&mut self, now_epoch_seconds: i64) -> Result<usize> {
         let ack_before = now_epoch_seconds.saturating_sub(ACK_RETENTION_SECONDS);
         let rejected_before = now_epoch_seconds.saturating_sub(REJECTED_RETENTION_SECONDS);
-        Ok(self.connection.execute(
-            "DELETE FROM metrics_outbox
-             WHERE (status = ?1 AND acked_at < ?2) OR (status = ?3 AND acked_at < ?4)",
-            params![OUTBOX_ACKED, ack_before, OUTBOX_REJECTED, rejected_before],
-        )?)
+        let dedup_before = now_epoch_seconds.saturating_sub(DEDUP_RETENTION_SECONDS);
+        let attempt_before = now_epoch_seconds.saturating_sub(ATTEMPT_RECOVERY_RETENTION_SECONDS);
+        let deleted_before = now_epoch_seconds.saturating_sub(DELETED_TASK_RETENTION_SECONDS);
+        let transaction = self.connection.transaction()?;
+        let mut removed = transaction.execute(
+            "DELETE FROM metrics_outbox WHERE rowid IN (
+               SELECT rowid FROM metrics_outbox
+               WHERE (status = ?1 AND acked_at < ?2) OR (status = ?3 AND acked_at < ?4)
+               ORDER BY acked_at LIMIT ?5
+             )",
+            params![
+                OUTBOX_ACKED,
+                ack_before,
+                OUTBOX_REJECTED,
+                rejected_before,
+                CLEANUP_BATCH_SIZE
+            ],
+        )?;
+        for (table, timestamp_column, cutoff) in [
+            ("metrics_fact_dedup", "created_at", dedup_before),
+            ("metrics_transition_dedup", "created_at", dedup_before),
+            ("metrics_attempt_state", "updated_at", attempt_before),
+        ] {
+            let statement = format!(
+                "DELETE FROM {table} WHERE rowid IN (
+                   SELECT detail.rowid FROM {table} AS detail
+                   WHERE detail.{timestamp_column} < ?1
+                     AND NOT EXISTS (
+                       SELECT 1 FROM metrics_outbox AS pending
+                       WHERE pending.project_id = detail.project_id
+                         AND pending.execution_id = detail.execution_id
+                         AND pending.status IN (?2, ?3)
+                     )
+                   ORDER BY detail.{timestamp_column} LIMIT ?4
+                 )"
+            );
+            removed += transaction.execute(
+                &statement,
+                params![cutoff, OUTBOX_PENDING, OUTBOX_IN_FLIGHT, CLEANUP_BATCH_SIZE],
+            )?;
+        }
+        for table in [
+            "metrics_fact_dedup",
+            "metrics_transition_dedup",
+            "metrics_attempt_state",
+        ] {
+            let statement = format!(
+                "DELETE FROM {table} WHERE rowid IN (
+                   SELECT detail.rowid FROM {table} AS detail
+                   JOIN metrics_task_state AS task
+                     ON task.project_id = detail.project_id
+                    AND task.execution_id = detail.execution_id
+                   WHERE task.deleted_at IS NOT NULL AND task.deleted_at < ?1
+                     AND NOT EXISTS (
+                       SELECT 1 FROM metrics_outbox AS pending
+                       WHERE pending.project_id = detail.project_id
+                         AND pending.execution_id = detail.execution_id
+                         AND pending.status IN (?2, ?3)
+                     )
+                   LIMIT ?4
+                 )"
+            );
+            removed += transaction.execute(
+                &statement,
+                params![
+                    deleted_before,
+                    OUTBOX_PENDING,
+                    OUTBOX_IN_FLIGHT,
+                    CLEANUP_BATCH_SIZE
+                ],
+            )?;
+        }
+        removed += transaction.execute(
+            "DELETE FROM metrics_task_state WHERE rowid IN (
+               SELECT task.rowid FROM metrics_task_state AS task
+               WHERE task.deleted_at IS NOT NULL AND task.deleted_at < ?1
+                 AND NOT EXISTS (
+                   SELECT 1 FROM metrics_outbox AS pending
+                   WHERE pending.project_id = task.project_id
+                     AND pending.execution_id = task.execution_id
+                     AND pending.status IN (?2, ?3)
+                 )
+               LIMIT ?4
+             )",
+            params![
+                deleted_before,
+                OUTBOX_PENDING,
+                OUTBOX_IN_FLIGHT,
+                CLEANUP_BATCH_SIZE
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(removed)
+    }
+
+    pub fn mark_task_deleted(
+        &mut self,
+        project_id: &str,
+        execution_id: &str,
+        deleted_at: i64,
+    ) -> Result<()> {
+        ensure!(!project_id.trim().is_empty(), "project id is required");
+        ensure!(!execution_id.trim().is_empty(), "execution id is required");
+        self.connection.execute(
+            "UPDATE metrics_task_state SET deleted_at = ?1
+             WHERE project_id = ?2 AND execution_id = ?3",
+            params![deleted_at, project_id, execution_id],
+        )?;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -698,6 +836,33 @@ impl MetricsCollectorStore {
             |row| row.get(0),
         )?)
     }
+
+    #[cfg(test)]
+    fn table_count(&self, table: &str) -> u64 {
+        self.connection
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    }
+}
+
+fn ensure_task_state_deleted_at_column(connection: &Connection) -> Result<()> {
+    let has_column = {
+        let mut statement = connection.prepare("PRAGMA table_info(metrics_task_state)")?;
+        statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|name| name == "deleted_at")
+    };
+    if !has_column {
+        connection.execute(
+            "ALTER TABLE metrics_task_state ADD COLUMN deleted_at INTEGER",
+            [],
+        )?;
+    }
+    Ok(())
 }
 
 fn load_task_state(
@@ -1027,7 +1192,6 @@ fn build_collected_event(
         model_usages: payload.model_usages,
         timing: payload.timing,
         counters,
-        code_changes: payload.code_changes,
     }
 }
 
@@ -1670,42 +1834,125 @@ mod tests {
     }
 
     #[test]
-    fn delivery_uses_terminal_git_baseline_snapshot_without_accumulating_attempt_churn() {
+    fn locally_rejected_oversized_events_receive_a_retention_timestamp() {
         let temp = tempdir().unwrap();
         let mut store = MetricsCollectorStore::open(&temp.path().join("metrics.sqlite3")).unwrap();
-        let mut delivery = PendingMetricsFact::new(
-            TaskMetricsKey {
-                project_id: "project-1".to_string(),
-                execution_id: "task-uuid".to_string(),
-            },
-            LifecycleEventType::ExecutionCompleted,
-            "2026-08-20T00:00:03Z".to_string(),
-            "user".to_string(),
-            "D:/repo".to_string(),
-            MetricsSessionMode::Workflow,
-            MetricsSubject::WorkflowRun,
-            MetricsRuntimeLocator {
-                run_id: "run-001".to_string(),
-                round_id: "round-002".to_string(),
-            },
-            MetricsTaskOrigin::User,
-            None,
+        let mut fact = workflow_fact(
+            LifecycleEventType::ExecutionStarted,
+            "run-001",
+            "round-001",
+            "attempt-1",
         );
-        delivery.payload.outcome = Some(gold_band::app::observability::ExecutionOutcome::Success);
-        delivery.payload.terminal_reason = Some(TerminalReason::Completed);
-        delivery.payload.code_changes = Some(TaskCodeChanges {
-            added_lines: 17,
-            deleted_lines: 3,
-            changed_files: 2,
-        });
-        let changes = store
-            .collect(delivery, "2026-08-20T00:00:01Z".to_string(), "test", 1)
-            .unwrap()
-            .code_changes
+        fact.payload.task_title = Some("x".repeat(MAX_EVENT_BYTES));
+
+        let event = store
+            .collect(fact, "2026-08-20T00:00:01.000".to_string(), "test", 10)
             .unwrap();
-        assert_eq!(changes.added_lines, 17);
-        assert_eq!(changes.deleted_lines, 3);
-        assert_eq!(changes.changed_files, 2);
+        let (status, acked_at): (String, Option<i64>) = store
+            .connection
+            .query_row(
+                "SELECT status, acked_at FROM metrics_outbox WHERE event_id = ?1",
+                params![event.event_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(status, OUTBOX_REJECTED);
+        assert_eq!(acked_at, Some(10));
+    }
+
+    #[test]
+    fn cleanup_bounds_stale_detail_state_without_removing_task_revision() {
+        let temp = tempdir().unwrap();
+        let mut store = MetricsCollectorStore::open(&temp.path().join("metrics.sqlite3")).unwrap();
+        let event = store
+            .collect(
+                workflow_fact(
+                    LifecycleEventType::ExecutionStarted,
+                    "run-001",
+                    "round-001",
+                    "attempt-1",
+                ),
+                "2026-08-20T00:00:01.000".to_string(),
+                "test",
+                1,
+            )
+            .unwrap();
+        store
+            .connection
+            .execute_batch(
+                "UPDATE metrics_attempt_state SET updated_at = 1;
+                 UPDATE metrics_fact_dedup SET created_at = 1;",
+            )
+            .unwrap();
+
+        let now = ATTEMPT_RECOVERY_RETENTION_SECONDS + DEDUP_RETENTION_SECONDS + 10;
+        store.cleanup(now).unwrap();
+        assert_eq!(store.table_count("metrics_attempt_state"), 1);
+        assert_eq!(store.table_count("metrics_fact_dedup"), 1);
+
+        let claimed = store.claim_batch("owner", now, 30, 100).unwrap();
+        assert_eq!(claimed.items.len(), 1);
+        store
+            .apply_disposition(
+                "owner",
+                BatchDisposition {
+                    accepted_event_ids: vec![event.event_id],
+                    duplicate_event_ids: Vec::new(),
+                    rejected: Vec::new(),
+                },
+                2,
+            )
+            .unwrap();
+        store.cleanup(now).unwrap();
+
+        assert_eq!(store.table_count("metrics_attempt_state"), 0);
+        assert_eq!(store.table_count("metrics_fact_dedup"), 0);
+        assert_eq!(store.table_count("metrics_task_state"), 1);
+    }
+
+    #[test]
+    fn deleted_task_state_waits_for_pending_delivery_then_is_removed() {
+        let temp = tempdir().unwrap();
+        let mut store = MetricsCollectorStore::open(&temp.path().join("metrics.sqlite3")).unwrap();
+        let event = store
+            .collect(
+                workflow_fact(
+                    LifecycleEventType::ExecutionStarted,
+                    "run-001",
+                    "round-001",
+                    "attempt-1",
+                ),
+                "2026-08-20T00:00:01.000".to_string(),
+                "test",
+                1,
+            )
+            .unwrap();
+        store
+            .mark_task_deleted("project-1", "task-uuid", 2)
+            .unwrap();
+        let cleanup_at = DELETED_TASK_RETENTION_SECONDS + 3;
+        store.cleanup(cleanup_at).unwrap();
+        assert_eq!(store.table_count("metrics_task_state"), 1);
+
+        let claimed = store.claim_batch("owner", cleanup_at, 30, 100).unwrap();
+        assert_eq!(claimed.items.len(), 1);
+        store
+            .apply_disposition(
+                "owner",
+                BatchDisposition {
+                    accepted_event_ids: vec![event.event_id],
+                    duplicate_event_ids: Vec::new(),
+                    rejected: Vec::new(),
+                },
+                cleanup_at + 1,
+            )
+            .unwrap();
+        store.cleanup(cleanup_at + 2).unwrap();
+
+        assert_eq!(store.table_count("metrics_task_state"), 0);
+        assert_eq!(store.table_count("metrics_attempt_state"), 0);
+        assert_eq!(store.table_count("metrics_transition_dedup"), 0);
     }
 
     #[test]

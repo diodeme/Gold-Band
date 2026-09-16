@@ -11,16 +11,23 @@ import {
   acpComposerConfigTriggerVariants,
   useAcpComposerConfigOverflowTooltip,
 } from '@/components/acp/AcpComposerConfigTrigger';
+import i18n from '@/i18n';
+import { channelAppName } from '@/lib/channel-app-name';
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 export const UNSPECIFIED_ACP_CONFIG_VALUE = '__gold_band_unspecified__';
+export const ACP_AUTO_ACCEPT_GROUP_LABEL_CLASS =
+  'pl-8 pr-2 py-1 text-ui-caption font-normal text-muted-foreground';
 
 export type AcpSingleConfigMenuOption = {
   id: string;
@@ -41,6 +48,12 @@ type Props = {
   contentSide?: 'top' | 'bottom';
   align?: 'start' | 'end';
   triggerClassName?: string;
+  disabled?: boolean;
+  autoAccept?: boolean;
+  onAutoAcceptChange?: (enabled: boolean) => void;
+  autoAcceptLabel?: string;
+  autoAcceptGroupLabel?: string;
+  appName?: string;
 };
 
 export function resolveAcpSingleConfigMenuValue(value: string) {
@@ -59,6 +72,12 @@ export function AcpSingleConfigMenu({
   contentSide = 'bottom',
   align = DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
   triggerClassName,
+  disabled = false,
+  autoAccept = false,
+  onAutoAcceptChange,
+  autoAcceptLabel,
+  autoAcceptGroupLabel,
+  appName,
 }: Props) {
   const selectedOption = options.find((option) => option.id === value);
   const selectedLabel = valueLabel ?? selectedOption?.name ?? unspecifiedLabel;
@@ -74,7 +93,9 @@ export function AcpSingleConfigMenu({
     <DropdownMenu modal={ACP_COMPOSER_CONFIG_DROPDOWN_MODAL}>
       <Tooltip open={tooltipOpen} onOpenChange={handleTooltipOpenChange}>
         <DropdownMenuTrigger
+          disabled={disabled}
           className={cn(acpComposerConfigTriggerVariants({ compact }), triggerClassName)}
+          data-acp-auto-accept-overlay={onAutoAcceptChange ? 'true' : undefined}
           onPointerEnter={showTooltipIfOverflowing}
           onPointerLeave={hideTooltip}
           onPointerDown={hideTooltip}
@@ -134,6 +155,21 @@ export function AcpSingleConfigMenu({
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>
+        {onAutoAcceptChange ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className={ACP_AUTO_ACCEPT_GROUP_LABEL_CLASS}>
+              {autoAcceptGroupLabel ?? i18n.t('acp.autoAcceptGroup', { appName: appName ?? channelAppName() })}
+            </DropdownMenuLabel>
+            <DropdownMenuCheckboxItem
+              checked={autoAccept}
+              onCheckedChange={(checked) => onAutoAcceptChange(checked === true)}
+              onSelect={(event) => event.preventDefault()}
+            >
+              {autoAcceptLabel ?? 'Auto Accept'}
+            </DropdownMenuCheckboxItem>
+          </>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );

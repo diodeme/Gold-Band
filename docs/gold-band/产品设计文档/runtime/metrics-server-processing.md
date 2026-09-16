@@ -50,7 +50,7 @@
 - `sessionMode` 仅允许 `direct/workflow/auto`。
 - `taskOrigin` 是字符串，只允许 `user/scheduled`。`user` 事件必须省略 `executionTrigger`；`scheduled` 事件必须携带符合 2.5 的 `executionTrigger`。
 - `taskTitle` 是允许上传的可选字符串，来源是客户端创建该事件时冻结的 Task 标题；没有标题时省略。它不是 Task identity，也不参与幂等、revision 或 locator 校验。
-- 顶层未知扩展字段可保存到 raw，但不得参与当前投影；`executionTrigger`、`codeChanges` 等协议对象必须按当前 shape 严格校验并拒绝未知旧字段。未知枚举必须拒绝，不能静默降级。
+- 顶层未知扩展字段可保存到 raw，但不得参与当前投影；`executionTrigger` 等协议对象必须按当前 shape 严格校验并拒绝未知旧字段。未知枚举必须拒绝，不能静默降级。
 
 ### 2.3 主体矩阵
 
@@ -72,9 +72,6 @@
 - 非 terminal、`acceptance.completed` 均禁止 counters。
 - node/unit terminal 的 `followUpCount` 必须为 0。
 - Task counters 是独立的 canonical snapshot，服务端不得从 node/unit terminal counters 求和；两种 counters 均按各自更高合法 revision 更新，不跨 terminal 再次累加。
-- `codeChanges` 只允许出现在 task delivery terminal。
-- `codeChanges` 只包含 `addedLines/deletedLines/changedFiles`，出现时三个字段必须同时存在且为非负整数；不可用时客户端省略整个对象。拒绝旧 `completeness/limitationCodes` 字段，不接收部分统计。
-- Direct 的每个 turn terminal 都是 task delivery terminal；后续 turn 的 `codeChanges` 是同一 Run 启动 workspace tree 到当前 turn terminal tree 的新快照。服务端按更高合法 terminal revision 覆盖 Task 投影，不累加各轮数字。
 - `modelUsages` 只保存客户端给出的 attempt usage；服务端不得按 provider/model 再次猜测拆分。
 
 ### 2.5 来源联合类型
@@ -242,7 +239,6 @@ CREATE TABLE analytics_metric_task (
   latest_outcome         VARCHAR(24)  NULL,
   latest_terminal_reason VARCHAR(40)  NULL,
   counters_json          JSON         NULL,
-  code_changes_json      JSON         NULL,
   last_terminal_revision BIGINT UNSIGNED NOT NULL DEFAULT 0,
   last_event_revision    BIGINT UNSIGNED NOT NULL DEFAULT 0,
   updated_at             DATETIME(3)  NOT NULL,
@@ -252,7 +248,7 @@ CREATE TABLE analytics_metric_task (
 ) ENGINE=InnoDB;
 ```
 
-task counters/codeChanges 采用最高合法 task terminal revision 的 snapshot 覆盖，禁止把 attempt counters 或 Direct 各轮 codeChanges 求和后二次写入。`task_title` 保存最高 revision 事件实际携带的最新标题；事件省略 `taskTitle` 时保留已有值，不以 null 清空。raw payload 仍保存每个事件当时的可选标题快照。
+task counters 采用最高合法 task terminal revision 的 snapshot 覆盖，禁止把 attempt counters 求和后二次写入。`task_title` 保存最高 revision 事件实际携带的最新标题；事件省略 `taskTitle` 时保留已有值，不以 null 清空。raw payload 仍保存每个事件当时的可选标题快照。
 
 ## 5. 单事件事务算法
 
@@ -266,7 +262,7 @@ BEGIN
   1. SELECT raw WHERE event_id = ?
      - hash 相同：ROLLBACK，返回 duplicate
      - hash 不同：ROLLBACK，返回 METRICS_EVENT_ID_CONFLICT
-  2. 校验字段矩阵、来源、terminal、counters、codeChanges
+  2. 校验字段矩阵、来源、terminal、counters
      - 非法：ROLLBACK，返回对应 rejected
   3. INSERT/SELECT task_cursor FOR UPDATE
   4. INSERT raw
@@ -305,7 +301,7 @@ terminal-first 和乱序合法：不存在投影行时可直接插入 terminal �
 ### 6.4 task
 
 - 每个 accepted event 更新 `last_event_revision=max(...)`、latest locator 和稳定来源字段；更高 revision 的事件携带 `taskTitle` 时更新展示标题，缺省不清空。
-- 只有 task delivery `execution.completed` 且 revision 更大时覆盖 terminal outcome、task counters 和 codeChanges。
+- 只有 task delivery `execution.completed` 且 revision 更大时覆盖 terminal outcome 和 task counters。
 - follow-up 后的新 run/turn 可以继续推进同一 task；旧 terminal 不是 task stream 的吸收态。
 - `taskOrigin` 第一次写入后不可变；scheduled 的 `scheduledTaskId` 第一次写入后不可变，后续不一致事件 rejected 为 `METRICS_IMMUTABLE_FIELD_CONFLICT`。occurrence、scheduledAt 和具体 schedule shape 是逐次 execution trigger 快照，不得错误提升为 Task 不可变字段。
 
@@ -315,7 +311,7 @@ terminal-first 和乱序合法：不存在投影行时可直接插入 terminal �
 |---|---|---|
 | `METRICS_EVENT_INVALID` | 字段缺失、格式或枚举非法 | 否 |
 | `METRICS_SUBJECT_INVALID` | mode/kind/主体矩阵不匹配 | 否 |
-| `METRICS_TERMINAL_FIELDS_INVALID` | terminal、counters、codeChanges 作用域错误 | 否 |
+| `METRICS_TERMINAL_FIELDS_INVALID` | terminal、counters 作用域错误 | 否 |
 | `METRICS_SCHEDULED_PROVENANCE_INVALID` | origin/trigger 缺失、shape 或 repeat 字段组合不合法 | 否 |
 | `METRICS_EVENT_ID_CONFLICT` | 同 eventId 不同 payload | 否 |
 | `METRICS_REVISION_CONFLICT` | 同 task/revision 不同 eventId | 否 |
@@ -333,7 +329,7 @@ raw 是事实源，投影是可删除重建的数据。
 3. 每个 Task 在独立事务中重建到 shadow tables，完成后原子切换或按 Task 替换。
 4. replay checkpoint 使用 `(projectionVersion, projectId, executionId)`，失败可继续。
 5. 重放不得重新调用接收校验、修改 raw 或产生新的 eventId。
-6. shadow 与在线投影按 task 数、terminal 数、counter/codeChanges hash 对账后才允许切换。
+6. shadow 与在线投影按 task 数、terminal 数、counter hash 对账后才允许切换。
 
 ## 9. 迁移与发布
 
@@ -356,7 +352,7 @@ raw 是事实源，投影是可删除重建的数据。
 - 缺失/多余字段、未知枚举、user 携带 trigger、scheduled 缺 trigger、旧 `{kind: ...}` shape 与非法 repeat 字段组合逐项拒绝。
 - `taskTitle` 缺省/出现及更高 revision 更新投影；标题不参与 identity 与 immutable-field 冲突。
 - paused/resumed/intervention 仅接受 Workflow `node-attempt` 与 AUTO `unit-attempt`；Direct `turn`、Workflow `run`、AUTO `outer-run` 逐项拒绝。
-- 三整数 codeChanges 与 counters scope 校验；node/unit terminal 固定为节点 attempt counters，turn/run/outer-run terminal 固定为整个 Task counters；旧 completeness/limitationCodes 和部分数字逐项拒绝。
+- counters scope 校验；node/unit terminal 固定为节点 attempt counters，turn/run/outer-run terminal 固定为整个 Task counters。
 - 响应三集合精确覆盖，错误只含 code/params。
 
 ### 幂等与并发

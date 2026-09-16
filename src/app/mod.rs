@@ -1,4 +1,5 @@
 mod ids;
+pub mod intervention;
 mod node_executor;
 mod notification;
 pub mod observability;
@@ -12,8 +13,8 @@ mod transition_context;
 
 pub use self::notification::{
     INITIAL_DIRECT_TURN_ID, InterventionNotification, InterventionType, NotificationDedup,
-    direct_conversation_agent_label, make_dedup_key, make_dedup_key_with_suffix,
-    make_turn_dedup_key, reason_key,
+    direct_conversation_agent_label, make_completion_dedup_key, make_dedup_key,
+    make_dedup_key_with_suffix, make_turn_dedup_key, reason_key,
 };
 pub use self::orchestrator::{AcceptedRun, PreparedRun};
 pub use self::runtime_recovery::{
@@ -46,8 +47,8 @@ use crate::mcp::McpManager;
 use crate::process::recover_persisted_process_group;
 use crate::provider::{
     AcpLiveTimelinePosition, ConversationPromptInput, DoctorResult, PromptBundle, PromptVisibility,
-    ProviderAdapter, ProviderCapabilities, ProviderInfo, UserPromptRenderMode, provider_from_agent,
-    render_prompt_bundle, supported_modes_from_capabilities,
+    ProviderAdapter, ProviderCapabilities, ProviderInfo, UserPromptRenderMode,
+    prepare_prompt_bundle, provider_from_agent, supported_modes_from_capabilities,
 };
 use crate::runtime::{
     NodeState, RoundState, RunState, RuntimeAttemptLocator, RuntimeExecutionPhase, TaskState,
@@ -411,6 +412,7 @@ fn default_workflow_dsl(
                 expression: "$.result == true".to_string(),
             }),
             permission_mode: None,
+            auto_accept: false,
             config_options: Default::default(),
             manual_check: manual_check.then_some(true),
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
@@ -604,6 +606,7 @@ fn default_lightweight_workflow_dsl(
                 expression: "$.result == true".to_string(),
             }),
             permission_mode: None,
+            auto_accept: false,
             config_options: Default::default(),
             manual_check: manual_check.then_some(true),
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
@@ -1121,6 +1124,7 @@ pub enum RuntimeLifecycleEvent {
         attempt_id: String,
         outer_node_id: Option<String>,
         outer_attempt_id: Option<String>,
+        request: intervention::InterventionRequestIdentity,
         node_label: String,
         kind: RuntimeInterventionKind,
         task_title: Option<String>,
@@ -1472,6 +1476,7 @@ pub struct PreparedAcpPrompt {
     pub prompt: PromptBundle,
     pub adapter_workspace_dir: Utf8PathBuf,
     pub session_workspace_dir: Utf8PathBuf,
+    pub mcp_servers: Vec<serde_json::Value>,
 }
 
 impl App {
@@ -2824,40 +2829,23 @@ impl App {
     }
 
     pub fn list_mcp_servers(&self) -> Result<Vec<McpServerConfig>> {
-        Ok(self
-            .mcp_manager()
-            .list()?
-            .into_iter()
-            .map(|s| s.config)
-            .collect())
+        self.mcp_manager().list()
     }
 
     pub fn add_mcp_server(&self, json_content: &str) -> Result<Vec<McpServerConfig>> {
-        let (_, list) = self.mcp_manager().add(json_content)?;
-        Ok(list.into_iter().map(|s| s.config).collect())
+        self.mcp_manager().add(json_content)
     }
 
     pub fn update_mcp_server(&self, id: &str, json_content: &str) -> Result<Vec<McpServerConfig>> {
-        let (_, list) = self.mcp_manager().update(id, json_content)?;
-        Ok(list.into_iter().map(|s| s.config).collect())
+        self.mcp_manager().update(id, json_content)
     }
 
     pub fn delete_mcp_server(&self, id: &str) -> Result<Vec<McpServerConfig>> {
-        Ok(self
-            .mcp_manager()
-            .delete(id)?
-            .into_iter()
-            .map(|s| s.config)
-            .collect())
+        self.mcp_manager().delete(id)
     }
 
     pub fn toggle_mcp_server(&self, id: &str, enabled: bool) -> Result<Vec<McpServerConfig>> {
-        Ok(self
-            .mcp_manager()
-            .toggle(id, enabled)?
-            .into_iter()
-            .map(|s| s.config)
-            .collect())
+        self.mcp_manager().toggle(id, enabled)
     }
 
     pub fn check_mcp_server_health(&self, id: &str) -> Result<McpServerHealthResult> {
@@ -4985,10 +4973,12 @@ impl App {
         invocation.turn_control_mode = crate::domain::TurnControlMode::NonRuntimeControlled;
         invocation.runtime_control_intent = crate::provider::RuntimeControlIntent::ManualFollowUp;
         invocation.extra_hidden_sections.clear();
+        let prompt = prepare_prompt_bundle(&mut invocation)?;
         Ok(PreparedAcpPrompt {
-            prompt: render_prompt_bundle(&invocation)?,
+            prompt,
             adapter_workspace_dir: invocation.adapter_workspace_dir,
             session_workspace_dir: invocation.workspace_dir,
+            mcp_servers: invocation.mcp_servers,
         })
     }
 
@@ -6167,6 +6157,7 @@ mod tests {
                 provider: Some("claude-acp".to_string()),
                 profile: None,
                 permission_mode: permission_mode.map(str::to_string),
+                auto_accept: false,
                 config_options: Default::default(),
                 model: model.map(str::to_string),
                 goal: Some("do work".to_string()),
@@ -6347,7 +6338,8 @@ mod tests {
 
     fn sample_run_paused_event() -> RuntimeLifecycleEvent {
         RuntimeLifecycleEvent::RunPaused {
-            event_id: "project-1:run-1:round-1:node-1:attempt-1:waiting-for-user-input".to_string(),
+            event_id: "project-1:task-1:run-1:round-1:node-1:attempt-1:waiting-for-user-input"
+                .to_string(),
             occurred_at: "2026-01-01T00:00:00".to_string(),
             scheduled_occurrence_id: None,
             project_id: "project-1".to_string(),
@@ -6506,6 +6498,7 @@ mod tests {
                 bootstrap_provider: "codex-acp".to_string(),
                 bootstrap_model: None,
                 permission_mode: Some("agent-full-access".to_string()),
+                auto_accept: false,
                 bootstrap_config_options: Default::default(),
                 acceptance_model: None,
                 acceptance_config_options: Default::default(),
@@ -6514,6 +6507,7 @@ mod tests {
                     provider: "codex-acp".to_string(),
                     model: None,
                     permission_mode: Some("agent-full-access".to_string()),
+                    auto_accept: false,
                     config_options: Default::default(),
                 }],
             },
@@ -6554,6 +6548,7 @@ mod tests {
                     bootstrap_provider: "claude-acp".to_string(),
                     bootstrap_model: Some("sonnet".to_string()),
                     permission_mode: None,
+                    auto_accept: false,
                     bootstrap_config_options: Default::default(),
                     acceptance_model: Some("sonnet".to_string()),
                     acceptance_config_options: Default::default(),
@@ -6562,6 +6557,7 @@ mod tests {
                         provider: "claude-acp".to_string(),
                         model: Some("future-model".to_string()),
                         permission_mode: None,
+                        auto_accept: false,
                         config_options: Default::default(),
                     }],
                 },
@@ -6620,6 +6616,7 @@ mod tests {
                         bootstrap_provider: "codex-acp".to_string(),
                         bootstrap_model: Some("gpt-5.6-sol".to_string()),
                         permission_mode: None,
+                        auto_accept: false,
                         bootstrap_config_options: Default::default(),
                         acceptance_model: Some("gpt-5.6-sol".to_string()),
                         acceptance_config_options: Default::default(),
@@ -6628,6 +6625,7 @@ mod tests {
                             provider: "codex-acp".to_string(),
                             model: Some("gpt-5.4".to_string()),
                             permission_mode: None,
+                            auto_accept: false,
                             config_options: Default::default(),
                         }],
                     },
@@ -6643,6 +6641,7 @@ mod tests {
                         provider: "codex-acp".to_string(),
                         model: Some("gpt-5.4".to_string()),
                         permission_mode: None,
+                        auto_accept: false,
                     },
                     config_options: Default::default(),
                     allowed_profiles: Vec::new(),
@@ -6770,6 +6769,7 @@ mod tests {
                 output: None,
                 success_condition: None,
                 permission_mode: None,
+                auto_accept: false,
                 config_options: BTreeMap::new(),
                 manual_check: None,
                 prompt_envelope: Default::default(),
@@ -6781,6 +6781,7 @@ mod tests {
             agent_id: "agent-a".to_string(),
             model_id: None,
             permission_mode_id: None,
+            auto_accept: false,
             config_options: BTreeMap::new(),
         };
         let bindings = WorkflowModelBindings {
@@ -7413,6 +7414,7 @@ mod tests {
             provider: Some("claude-acp".to_string()),
             profile: None,
             permission_mode: None,
+            auto_accept: false,
             model: None,
             session_mode: SessionMode::New,
             continue_from_node_id: None,

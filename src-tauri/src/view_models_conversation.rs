@@ -864,6 +864,8 @@ pub struct ConversationDirectConfigVm {
     pub agent_type: String,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
 }
@@ -890,6 +892,8 @@ pub struct ConversationAutoConfigVm {
     pub acceptance_config_options: BTreeMap<String, String>,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
     pub available_agents: Option<Vec<ConversationDynamicAgentRefVm>>,
@@ -908,6 +912,8 @@ pub struct ConversationDynamicAgentRefVm {
     pub provider: String,
     pub model: Option<String>,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
 }
@@ -959,6 +965,8 @@ pub struct ConversationCreateInputVm {
     pub scheduled_content_fingerprint: Option<String>,
     #[serde(default)]
     pub workflow_authoring: Option<TaskAuthoringWorkflow>,
+    #[serde(default)]
+    pub role: Option<gold_band::provider::UserPromptRole>,
 }
 
 pub fn scheduled_content_snapshot(
@@ -4551,6 +4559,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
     let permission_mode = config
         .and_then(|c| c.permission_mode.as_deref())
         .filter(|v| !v.trim().is_empty());
+    let auto_accept = config.is_some_and(|c| c.auto_accept);
     let global_goal = config
         .and_then(|c| c.global_goal.as_deref())
         .filter(|v| !v.trim().is_empty());
@@ -4588,6 +4597,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
                                 .map(str::trim)
                                 .filter(|value| !value.is_empty())
                                 .map(str::to_string),
+                            auto_accept: agent.auto_accept,
                             config_options: agent.config_options.clone(),
                         })
                     })
@@ -4599,6 +4609,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
                     provider: bootstrap_provider.clone(),
                     model: model_id.map(str::to_string),
                     permission_mode: None,
+                    auto_accept: false,
                     config_options: BTreeMap::new(),
                 }]
             });
@@ -4606,6 +4617,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
             bootstrap_provider,
             bootstrap_model: bootstrap_model_id.map(str::to_string),
             permission_mode: permission_mode.map(str::to_string),
+            auto_accept,
             bootstrap_config_options: config
                 .map(|config| config.bootstrap_config_options.clone())
                 .unwrap_or_default(),
@@ -4625,6 +4637,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
             provider: agent_type.to_string(),
             model: model_id.map(str::to_string),
             permission_mode: permission_mode.map(str::to_string),
+            auto_accept,
         }
     };
 
@@ -4687,6 +4700,7 @@ fn build_direct_workflow(config: &ConversationDirectConfigVm) -> WorkflowDsl {
             output: None,
             success_condition: None,
             permission_mode: config.permission_mode.clone(),
+            auto_accept: config.auto_accept,
             config_options: config.config_options.clone(),
             manual_check: Some(false),
             prompt_envelope: PromptEnvelopeMode::RawAgent,
@@ -4876,6 +4890,14 @@ pub fn prepare_conversation_task_vm(
         scheduled_content_fingerprint: input.scheduled_content_fingerprint.clone(),
     };
     write_json(&authoring_dir.join("conversation.json"), &meta)?;
+    if let Some(role) = input.role.as_ref() {
+        if !role.profile_id.trim().is_empty()
+            && !role.name.trim().is_empty()
+            && !role.content.trim().is_empty()
+        {
+            write_json(&app.paths.initial_prompt_role_file(&task_id), role)?;
+        }
+    }
 
     // Copy attachments to authoring dir
     if let Some(ref paths) = input.attachment_paths {
@@ -6967,11 +6989,13 @@ mod tests {
             )]),
             model_id: None,
             permission_mode: Some("acceptEdits".to_string()),
+            auto_accept: false,
             config_options: Default::default(),
             available_agents: Some(vec![ConversationDynamicAgentRefVm {
                 provider: "claude-acp".to_string(),
                 model: Some("worker-model".to_string()),
                 permission_mode: Some("bypassPermissions".to_string()),
+                auto_accept: false,
                 config_options: std::collections::BTreeMap::from([(
                     "reasoning_effort".to_string(),
                     "low".to_string(),
@@ -7051,11 +7075,13 @@ mod tests {
                 acceptance_config_options: Default::default(),
                 model_id: None,
                 permission_mode: None,
+                auto_accept: false,
                 config_options: Default::default(),
                 available_agents: Some(vec![ConversationDynamicAgentRefVm {
                     provider: "agent-worker".to_string(),
                     model: None,
                     permission_mode: None,
+                    auto_accept: false,
                     config_options: Default::default(),
                 }]),
                 routing_prompt: None,
@@ -7072,6 +7098,7 @@ mod tests {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            role: None,
         };
 
         let snapshot = scheduled_content_snapshot(&app, &input).unwrap();
@@ -7092,6 +7119,7 @@ mod tests {
             agent_type: "codex-acp".to_string(),
             model_id: Some("gpt-direct".to_string()),
             permission_mode: Some("ask".to_string()),
+            auto_accept: false,
             config_options: Default::default(),
         });
 
@@ -7117,6 +7145,7 @@ mod tests {
             agent_type: "claude-acp".to_string(),
             model_id: None,
             permission_mode: None,
+            auto_accept: false,
             config_options: Default::default(),
         });
 
@@ -7171,6 +7200,7 @@ mod tests {
                 agent_type: "claude-acp".to_string(),
                 model_id: None,
                 permission_mode: None,
+                auto_accept: false,
                 config_options: Default::default(),
             }),
             auto_config: None,
@@ -7180,6 +7210,7 @@ mod tests {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            role: None,
         };
 
         let created = create_conversation_run_vm(&app, &input).unwrap();
@@ -7216,6 +7247,7 @@ mod tests {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            role: None,
         };
 
         let error = validate_conversation_create_vm(&app, &input).unwrap_err();
@@ -7236,6 +7268,7 @@ mod tests {
                 agent_type: "claude-acp".to_string(),
                 model_id: None,
                 permission_mode: None,
+                auto_accept: false,
                 config_options: Default::default(),
             }),
             auto_config: None,
@@ -7245,6 +7278,7 @@ mod tests {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            role: None,
         };
 
         let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
@@ -7265,6 +7299,7 @@ mod tests {
                 agent_type: "claude-acp".to_string(),
                 model_id: None,
                 permission_mode: None,
+                auto_accept: false,
                 config_options: Default::default(),
             }),
             auto_config: None,
@@ -7274,6 +7309,7 @@ mod tests {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            role: None,
         };
         let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
 
@@ -7306,6 +7342,7 @@ mod tests {
                 agent_type: "claude-acp".to_string(),
                 model_id: None,
                 permission_mode: None,
+                auto_accept: false,
                 config_options: Default::default(),
             }),
             auto_config: None,
@@ -7315,6 +7352,7 @@ mod tests {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            role: None,
         };
 
         let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
@@ -7346,6 +7384,7 @@ mod tests {
                 agent_type: "claude-acp".to_string(),
                 model_id: None,
                 permission_mode: None,
+                auto_accept: false,
                 config_options: Default::default(),
             }),
             auto_config: None,
@@ -7355,6 +7394,7 @@ mod tests {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            role: None,
         };
 
         assert!(create_conversation_task_vm(&app, &input).is_err());

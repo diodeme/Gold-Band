@@ -66,17 +66,26 @@ describe('project memory interfaces', () => {
     await act(async () => button('memory.useLatest').click());
     expect(container.querySelector<HTMLTextAreaElement>('[id$="-value"]')!.value).toBe('latest');
   });
-  it('rekeys a row when the authoritative conflict renamed the memory key', async () => {
-    await mount(); await change('value', 'my draft');
+  it('preserves the source row when a rename conflicts with an existing target key', async () => {
+    api.readProjectMemory.mockResolvedValue({
+      ...snapshot,
+      workspace: [
+        ...snapshot.workspace,
+        { key: 'renamed', value: 'old target', desc: 'target', revision: 'target-r1' },
+      ],
+    });
+    await mount(); await change('key', 'renamed');
     api.writeProjectMemory.mockRejectedValue({
       code: 'memory.conflict',
-      params: { latest: { key: 'renamed', value: 'latest', desc: 'plan', revision: 'r2' } },
+      params: { reason: 'target_exists', latest: { key: 'renamed', value: 'latest', desc: 'target', revision: 'target-r2' } },
     });
     await act(async () => button('memory.save').click());
 
     await act(async () => button('memory.useLatest').click());
 
-    expect(container.querySelector('[data-memory-row="plan"]')).toBeNull();
+    expect(container.querySelectorAll('[data-memory-row="plan"]')).toHaveLength(1);
+    expect(container.querySelector<HTMLInputElement>('[id="memory-plan-key"]')!.value).toBe('plan');
+    expect(container.querySelector<HTMLTextAreaElement>('[id="memory-plan-value"]')!.value).toBe('B1');
     expect(container.querySelectorAll('[data-memory-row="renamed"]')).toHaveLength(1);
     expect(container.querySelector<HTMLInputElement>('[id="memory-renamed-key"]')!.value).toBe('renamed');
     expect(container.querySelector<HTMLTextAreaElement>('[id="memory-renamed-value"]')!.value).toBe('latest');

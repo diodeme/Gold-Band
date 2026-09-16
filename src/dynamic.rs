@@ -183,6 +183,8 @@ pub struct DynamicNodeState {
     pub profile: Option<String>,
     #[serde(default)]
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default)]
     pub model: Option<String>,
     pub session_mode: SessionMode,

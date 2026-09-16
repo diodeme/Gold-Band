@@ -1,4 +1,5 @@
 现在应用程序的侧边栏是任务编排、知识库、模型管理
+- 2026-09-15：Doctor 与正式 ACP 连接共用全局 `initialize` 客户端能力，新增 `_meta.parameterizedModelPicker`。依赖该声明才展开思考强度 / 模型参数的 Agent，诊断目录与运行期 `configOptions` 必须一致；不按 Agent ID 分叉 handshake。
 你现在先新增个agent管理吧
 agent管理主要是负责管理支持接入的ACP agent
 当前改为维护构建期精选 ACP Agent Catalog，固定提供 `claude-acp`、`codex-acp`、`cursor`、`gemini`、`codebuddy-code`、`goose`、`qwen-code`、`opencode`、`kimi`、`amp-acp`、`pi-acp` 十一类模板，并支持用户自定义 ACP Agent；GLM 不进入本轮范围
@@ -50,7 +51,8 @@ Agent 实例新增两个独立能力配置：
 - 当前 agent type 直接作为 registry key 使用，因此同一类型只能维护一份配置
 - 节点详情页需要展示当前节点声明的 agent type，便于确认执行来源
 - 工作流创建、修改和模板保存时，Agent 下拉只允许选择已配置且最近一次 doctor 成功的 agent；未诊断或诊断失败的 agent 不能进入 workflow
-- workflow 节点的权限模式只能从当前 agent doctor 返回的 `supportedModes` 中选择；切换 agent 时清空旧权限模式，不做跨 agent 权限模式映射
+- workflow 节点的权限模式只能从当前 agent doctor 返回的 `supportedModes` 中选择；切换 agent 时清空旧权限模式和 Auto Accept，不做跨 agent 权限模式映射
+- Auto Accept 是 client overlay，不是 doctor `supportedModes` 的一项；所有 ACP Agent 的权限下拉都展示同一套开关
 - workflow 画布不得维护内置 provider → icon 硬编码表，必须按 provider 从当前 managed Agent registry 读取实例 icon；这同时覆盖后续 Catalog Agent、自定义 Agent、用户上传 data URI 和空值默认 icon
 - ACP 权限模式与节点 Profile 分层生效：权限模式使用 Agent 实际暴露的 mode API 控制工具授权，Profile 继续约束角色职责。实时切换权限成功后不得改写 Profile；例如 `pf-builtin-plan` 在 `yolo` 下仍然只负责规划。验收时必须同时检查 outbound mode 请求、Agent 响应中的 current mode 与节点 Profile，不能仅根据模型是否愿意改代码判断权限是否生效
 

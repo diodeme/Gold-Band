@@ -3,7 +3,7 @@
   "source": {
     "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
     "registryVersion": "1.0.0",
-    "fetchedAt": "2026-09-11T06:53:58.509Z"
+    "fetchedAt": "2026-09-16T08:30:17.439Z"
   },
   "agents": [
     {
@@ -30,7 +30,7 @@
     {
       "id": "codex-acp",
       "label": "Codex",
-      "version": "1.11.0",
+      "version": "1.12.0",
       "description": "ACP adapter for OpenAI's coding assistant",
       "repository": "https://github.com/agentclientprotocol/codex-acp",
       "website": null,
@@ -39,7 +39,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@agentclientprotocol/codex-acp@1.11.0"
+        "@agentclientprotocol/codex-acp@1.12.0"
       ],
       "env": {},
       "primaryAgentDir": ".codex",
@@ -53,7 +53,7 @@
     {
       "id": "cursor",
       "label": "Cursor",
-      "version": "2026.09.02",
+      "version": "2026.09.10",
       "description": "Cursor's coding agent",
       "repository": null,
       "website": "https://cursor.com/docs/cli/acp",
@@ -99,7 +99,7 @@
     {
       "id": "codebuddy-code",
       "label": "CodeBuddy",
-      "version": "2.149.0",
+      "version": "2.150.0",
       "description": "Tencent Cloud's official intelligent coding tool",
       "repository": null,
       "website": "https://www.codebuddy.cn/cli/",
@@ -108,7 +108,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@tencent-ai/codebuddy-code@2.149.0",
+        "@tencent-ai/codebuddy-code@2.150.0",
         "--acp"
       ],
       "env": {},

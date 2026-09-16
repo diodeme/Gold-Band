@@ -73,13 +73,15 @@ use crate::prompts::{
     RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN, RUNTIME_WORKFLOW_RESUME_EN, RUNTIME_WORKFLOW_RESUME_ZH_CN,
     prompt_by_language, render as render_template,
 };
+#[cfg(test)]
+use crate::provider::render_prompt_bundle;
 use crate::provider::{
     ConversationPromptInput, OutputEmissionMode, PromptHiddenSection, PromptOutputContract,
     PromptPredecessorContext, PromptRuntimeContext, PromptVisibility, ProviderRunResult,
     ProviderRunStatus, RuntimeControlIntent, RuntimeControlOutput, StreamMode,
-    UserPromptRenderMode, WorkerInvocation, conversation_prompt_text,
-    render_new_round_trigger_reason_line, render_prompt_bundle, supported_models_from_capabilities,
-    supported_modes_from_capabilities,
+    UserPromptRenderMode, UserPromptRole, WorkerInvocation, conversation_agent_prompt_text,
+    prepare_prompt_bundle, render_new_round_trigger_reason_line,
+    supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, RunState, RunWorktreeState, RuntimeAttemptLocator,
@@ -504,7 +506,7 @@ fn localized_runtime_control_resume_with_message_prompt(
             RUNTIME_CONTROL_RESUME_WITH_MESSAGE_EN,
         ),
         serde_json::json!({
-            "user_message": conversation_prompt_text(&input.display_text, &input.quotes),
+            "user_message": conversation_agent_prompt_text(input, language),
             "artifact_emission_mode": artifact_emission_mode,
         }),
     )
@@ -3862,6 +3864,7 @@ fn emit_run_paused_lifecycle_event(
     let reason = run.pause_reason.unwrap_or(PauseReason::ProcessInterrupted);
     let event_id = super::notification::make_dedup_key(
         &app.paths.project_id,
+        task_id,
         &run.id,
         &round.id,
         &node.node_id,
@@ -3907,6 +3910,7 @@ fn emit_intervention_requested(
     let pause_reason = super::notification::pause_reason_for_intervention(kind);
     let event_id = super::notification::make_dedup_key(
         &app.paths.project_id,
+        task_id,
         &run.id,
         &round.id,
         &node.node_id,
@@ -3927,6 +3931,7 @@ fn emit_intervention_requested(
         attempt_id: node.attempt_id.clone(),
         outer_node_id: None,
         outer_attempt_id: None,
+        request: super::intervention::InterventionRequestIdentity::ManualCheck,
         node_label: node_label(node),
         kind,
         task_title: task_title(app, task_id),
@@ -3953,6 +3958,7 @@ fn emit_run_completed_lifecycle_event(
 ) {
     let event_id = super::notification::make_completion_dedup_key(
         &app.paths.project_id,
+        task_id,
         &run.id,
         &round.id,
         &node.node_id,
@@ -4673,6 +4679,23 @@ fn apply_control_decision(
     }
 }
 
+fn load_initial_prompt_display(app: &App, task_id: &str) -> Option<ConversationPromptInput> {
+    let role = read_json::<UserPromptRole>(&app.paths.initial_prompt_role_file(task_id)).ok()?;
+    if role.profile_id.trim().is_empty()
+        || role.name.trim().is_empty()
+        || role.content.trim().is_empty()
+    {
+        return None;
+    }
+    let requirement =
+        std::fs::read_to_string(app.paths.requirement_file(task_id).as_std_path()).ok()?;
+    Some(ConversationPromptInput {
+        display_text: requirement,
+        quotes: Vec::new(),
+        role: Some(role),
+    })
+}
+
 pub(crate) fn drive_from_node(
     app: &App,
     task_id: &str,
@@ -4716,7 +4739,7 @@ fn drive_from_node_with_runtime_candidate(
         None,
         None,
         None,
-        None,
+        load_initial_prompt_display(app, task_id),
         UserPromptRenderMode::RequirementTask,
         Vec::new(),
         RuntimeControlIntent::Unchanged,
@@ -5227,6 +5250,18 @@ fn dynamic_permission_mode_for_provider(dynamic: &AiDynamicNode, provider: &str)
     }
 }
 
+fn dynamic_auto_accept_for_provider(dynamic: &AiDynamicNode, provider: &str) -> bool {
+    match &dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { auto_accept, .. } => *auto_accept,
+        AiDynamicAgentStrategy::Dynamic {
+            available_agents, ..
+        } => available_agents
+            .iter()
+            .find(|agent_ref| agent_ref.provider == provider)
+            .is_some_and(|agent_ref| agent_ref.auto_accept),
+    }
+}
+
 fn dynamic_control_provider(dynamic: &AiDynamicNode) -> &str {
     match &dynamic.agent_strategy {
         AiDynamicAgentStrategy::Fixed { provider, .. } => provider,
@@ -5244,6 +5279,13 @@ fn dynamic_control_permission_mode(dynamic: &AiDynamicNode) -> Option<String> {
         AiDynamicAgentStrategy::Dynamic {
             permission_mode, ..
         } => permission_mode.clone(),
+    }
+}
+
+fn dynamic_control_auto_accept(dynamic: &AiDynamicNode) -> bool {
+    match &dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { auto_accept, .. } => *auto_accept,
+        AiDynamicAgentStrategy::Dynamic { auto_accept, .. } => *auto_accept,
     }
 }
 
@@ -6762,15 +6804,6 @@ fn unregister_dynamic_resume_driver(key: &str, driver_id: &str) -> Vec<DynamicRe
     failed
 }
 
-fn clear_dynamic_resume_starting_window(key: &str) -> Result<Vec<DynamicResumeOverride>> {
-    let mut coordinator = DYNAMIC_RESUME_COORDINATOR
-        .get_or_init(|| Mutex::new(DynamicResumeCoordinator::default()))
-        .lock()
-        .map_err(|_| anyhow!("dynamic resume coordinator poisoned"))?;
-    coordinator.starting.remove(key);
-    Ok(coordinator.pending.remove(key).unwrap_or_default())
-}
-
 fn execute_ai_dynamic_node(
     app: &App,
     task_id: &str,
@@ -7283,6 +7316,7 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         provider: ctx.dynamic.bootstrap_provider().map(ToOwned::to_owned),
         profile: None,
         permission_mode: dynamic_control_permission_mode(ctx.dynamic),
+        auto_accept: dynamic_control_auto_accept(ctx.dynamic),
         model: ctx.dynamic.bootstrap_model().map(ToOwned::to_owned),
         session_mode: SessionMode::New,
         continue_from_node_id: None,
@@ -8388,98 +8422,6 @@ fn dynamic_node_uses_completion_contract(kind: DynamicNodeKind) -> bool {
     matches!(
         kind,
         DynamicNodeKind::Worker | DynamicNodeKind::WorkflowInvocation | DynamicNodeKind::Acceptance
-    )
-}
-
-fn outer_attempt_is_current_recoverable_pause(ctx: &DynamicExecutionContext<'_>) -> Result<bool> {
-    let run: RunState = read_json(&ctx.app.paths.run_file(ctx.task_id, ctx.run_id))?;
-    Ok(run.current_round.as_deref() == Some(ctx.round_id)
-        && run.current_node.as_deref() == Some(ctx.outer_node_id)
-        && run.current_attempt.as_deref() == Some(ctx.outer_attempt_id)
-        && run.status == RunStatus::Paused
-        && matches!(
-            run.pause_reason,
-            Some(PauseReason::ProcessInterrupted | PauseReason::RuntimeAbnormal)
-        ))
-}
-
-fn restore_outer_attempt_running_for_dynamic_resume(
-    app: &App,
-    task_id: &str,
-    run_id: &str,
-    round_id: &str,
-    outer_node_id: &str,
-    outer_attempt_id: &str,
-) -> Result<bool> {
-    let mut run: RunState = read_json(&app.paths.run_file(task_id, run_id))?;
-    if run.current_round.as_deref() != Some(round_id)
-        || run.current_node.as_deref() != Some(outer_node_id)
-        || run.current_attempt.as_deref() != Some(outer_attempt_id)
-        || run.status != RunStatus::Paused
-        || !matches!(
-            run.pause_reason,
-            Some(PauseReason::ProcessInterrupted | PauseReason::RuntimeAbnormal)
-        )
-    {
-        return Ok(false);
-    }
-    let mut round: RoundState = read_json(&app.paths.round_file(task_id, run_id, round_id))?;
-    let mut node: NodeState = read_json(&app.paths.node_file(
-        task_id,
-        run_id,
-        round_id,
-        outer_node_id,
-        outer_attempt_id,
-    ))?;
-    if round.status != RunStatus::Paused || node.status != RunStatus::Paused {
-        return Ok(false);
-    }
-    let runtime_candidate = app.begin_runtime_candidate(task_id, run_id)?;
-    let previous_pause_reason = run.pause_reason.unwrap_or(PauseReason::ProcessInterrupted);
-    let now = now_rfc3339_like();
-    run.status = RunStatus::Running;
-    run.pause_reason = None;
-    run.updated_at = now;
-    if let Some(runtime_candidate) = runtime_candidate.as_ref() {
-        run.execution.recovery_candidate_token = Some(runtime_candidate.token().to_string());
-    }
-    round.status = RunStatus::Running;
-    round.outcome = None;
-    node.status = RunStatus::Running;
-    node.outcome = None;
-    node.finished_at = None;
-    persist_runtime_state(app, task_id, &run, &round, &node)?;
-    if let Some(runtime_candidate) = runtime_candidate {
-        runtime_candidate.commit();
-    }
-    app.record_metrics_resume_cause(
-        task_id,
-        run_id,
-        super::observability::ResumeCause::AutomaticRecovery,
-    );
-    emit_run_metrics_fact(
-        app,
-        &run,
-        super::observability::LifecycleEventType::ExecutionResumed,
-        uuid::Uuid::new_v4().to_string(),
-        now_rfc3339_like(),
-        Some(previous_pause_reason),
-        None,
-        None,
-    );
-    Ok(true)
-}
-
-fn try_restore_outer_attempt_running_for_dynamic_completion(
-    ctx: &DynamicExecutionContext<'_>,
-) -> Result<bool> {
-    restore_outer_attempt_running_for_dynamic_resume(
-        ctx.app,
-        ctx.task_id,
-        ctx.run_id,
-        ctx.round_id,
-        ctx.outer_node_id,
-        ctx.outer_attempt_id,
     )
 }
 
@@ -11807,6 +11749,10 @@ fn dynamic_node_state_from_spec(
     let permission_mode = provider
         .as_deref()
         .and_then(|provider| dynamic_permission_mode_for_provider(ctx.dynamic, provider));
+    let auto_accept = provider
+        .as_deref()
+        .map(|provider| dynamic_auto_accept_for_provider(ctx.dynamic, provider))
+        .unwrap_or_else(|| dynamic_control_auto_accept(ctx.dynamic));
     let node = DynamicNodeState {
         version: VERSION.to_string(),
         acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
@@ -11832,6 +11778,7 @@ fn dynamic_node_state_from_spec(
         profile: spec.profile,
         model,
         permission_mode,
+        auto_accept,
         session_mode: spec.session_mode,
         continue_from_node_id: spec.continue_from_node_id,
         workflow_id: spec.workflow_id,
@@ -12163,6 +12110,7 @@ fn create_dynamic_merge_node(
         profile: None,
         model: group.merge.model.clone(),
         permission_mode: dynamic_control_permission_mode(ctx.dynamic),
+        auto_accept: dynamic_control_auto_accept(ctx.dynamic),
         session_mode: SessionMode::New,
         continue_from_node_id: None,
         workflow_id: None,
@@ -12216,6 +12164,7 @@ fn create_dynamic_acceptance_node(
         profile: None,
         model: group.acceptance.model.clone(),
         permission_mode: dynamic_control_permission_mode(ctx.dynamic),
+        auto_accept: dynamic_control_auto_accept(ctx.dynamic),
         session_mode: SessionMode::New,
         continue_from_node_id: None,
         workflow_id: None,
@@ -12393,10 +12342,12 @@ pub(crate) fn prepare_dynamic_acp_prompt(
     invocation.turn_control_mode = TurnControlMode::NonRuntimeControlled;
     invocation.runtime_control_intent = RuntimeControlIntent::ManualFollowUp;
     invocation.extra_hidden_sections.clear();
+    let prompt = prepare_prompt_bundle(&mut invocation)?;
     Ok(PreparedAcpPrompt {
-        prompt: render_prompt_bundle(&invocation)?,
+        prompt,
         adapter_workspace_dir: invocation.adapter_workspace_dir,
         session_workspace_dir: invocation.workspace_dir,
+        mcp_servers: invocation.mcp_servers,
     })
 }
 
@@ -12605,6 +12556,7 @@ fn build_dynamic_worker_invocation(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .or_else(|| node.permission_mode.clone());
+    let auto_accept = node.auto_accept;
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -12660,6 +12612,19 @@ fn build_dynamic_worker_invocation(
 
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "assemble_invocation");
+    let mcp_servers = ctx.app.acp_mcp_servers().unwrap_or_else(|error| {
+        tracing::warn!(
+            project_id = %ctx.app.paths.project_id,
+            task_id = ctx.task_id,
+            run_id = ctx.run_id,
+            round_id = ctx.round_id,
+            node_id = node.id,
+            attempt_id,
+            %error,
+            "failed to load MCP servers for dynamic ACP session; continuing without MCP servers"
+        );
+        Vec::new()
+    });
     let invocation = WorkerInvocation {
         invocation_kind: InvocationKind::WorkerGeneric,
         turn_control_mode: TurnControlMode::RuntimeControlled,
@@ -12687,6 +12652,7 @@ fn build_dynamic_worker_invocation(
         session_mode,
         user_prompt_render_mode,
         permission_mode,
+        auto_accept,
         model,
         config_options,
         continue_ref,
@@ -12705,7 +12671,7 @@ fn build_dynamic_worker_invocation(
         attachment_projection_policy: crate::provider::AttachmentProjectionPolicy::from(
             &ctx.app.config,
         ),
-        mcp_servers: Vec::new(),
+        mcp_servers,
         scheduled_context: None,
     };
     dynamic_invocation_build_step_end(
@@ -16405,6 +16371,7 @@ mod tests {
                 provider: None,
                 profile: None,
                 permission_mode: None,
+                auto_accept: false,
                 model: None,
                 session_mode: SessionMode::New,
                 continue_from_node_id: None,
@@ -16542,6 +16509,7 @@ mod tests {
         let input = ConversationPromptInput {
             display_text: "  请先补充回归测试  ".to_string(),
             quotes: Vec::new(),
+            role: None,
         };
         let state = runtime_control_resume_prompt_state(
             DesktopLanguage::ZhCn,
@@ -16584,6 +16552,7 @@ mod tests {
             Some(ConversationPromptInput {
                 display_text: "Write another essay".to_string(),
                 quotes: Vec::new(),
+                role: None,
             }),
             Some("prompt-2".to_string()),
             Vec::new(),
@@ -16670,6 +16639,7 @@ mod tests {
             Some(ConversationPromptInput {
                 display_text: String::new(),
                 quotes: Vec::new(),
+                role: None,
             }),
             Some("prompt-attachment-only".to_string()),
             vec!["C:/temp/context.txt".to_string()],
@@ -17250,6 +17220,7 @@ mod tests {
                 provider: "claude-acp".to_string(),
                 model: None,
                 permission_mode: None,
+                auto_accept: false,
             },
             config_options: Default::default(),
             allowed_profiles: Vec::new(),
@@ -17267,6 +17238,7 @@ mod tests {
                 bootstrap_provider: "codex-acp".to_string(),
                 bootstrap_model: Some("gpt-5.6-sol".to_string()),
                 permission_mode: Some("agent-full-access".to_string()),
+                auto_accept: false,
                 bootstrap_config_options: BTreeMap::from([(
                     "reasoning_effort".to_string(),
                     "high".to_string(),
@@ -17281,6 +17253,7 @@ mod tests {
                     provider: "codex-acp".to_string(),
                     model: Some("gpt-5.4".to_string()),
                     permission_mode: Some("auto".to_string()),
+                    auto_accept: false,
                     config_options: BTreeMap::from([(
                         "reasoning_effort".to_string(),
                         "low".to_string(),
@@ -18419,6 +18392,7 @@ mod tests {
             provider: Some("claude-acp".to_string()),
             profile: None,
             permission_mode: None,
+            auto_accept: false,
             model: None,
             session_mode: SessionMode::New,
             continue_from_node_id: None,
@@ -18824,6 +18798,7 @@ mod tests {
                 bootstrap_provider: "claude-acp".to_string(),
                 bootstrap_model: None,
                 permission_mode: None,
+                auto_accept: false,
                 bootstrap_config_options: Default::default(),
                 acceptance_model: None,
                 acceptance_config_options: Default::default(),
@@ -18832,6 +18807,7 @@ mod tests {
                     provider: "claude-acp".to_string(),
                     model: None,
                     permission_mode: None,
+                    auto_accept: false,
                     config_options: Default::default(),
                 }],
             },
@@ -18939,6 +18915,7 @@ mod tests {
                 bootstrap_provider: "claude-acp".to_string(),
                 bootstrap_model: None,
                 permission_mode: None,
+                auto_accept: false,
                 bootstrap_config_options: Default::default(),
                 acceptance_model: None,
                 acceptance_config_options: Default::default(),
@@ -18947,6 +18924,7 @@ mod tests {
                     provider: "claude-acp".to_string(),
                     model: None,
                     permission_mode: None,
+                    auto_accept: false,
                     config_options: Default::default(),
                 }],
             },
@@ -22742,7 +22720,7 @@ mod tests {
             ctx.outer_node_id,
             ctx.outer_attempt_id,
         );
-        clear_dynamic_resume_starting_window(&key).unwrap();
+        clear_test_dynamic_resume_coordinator(&key);
         if let Some(coordinator) = DYNAMIC_RESUME_COORDINATOR.get() {
             let mut coordinator = coordinator.lock().unwrap();
             coordinator.drivers.remove(&key);
@@ -22810,7 +22788,7 @@ mod tests {
         assert_eq!(second_dispatch, DynamicResumeDispatch::QueuedStarting);
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].node_id, "good-night");
-        clear_dynamic_resume_starting_window(&key).unwrap();
+        clear_test_dynamic_resume_coordinator(&key);
     }
 
     #[test]

@@ -3585,6 +3585,7 @@ fn scheduled_create_input(
         scheduled_task_id: Some(definition.id.clone()),
         scheduled_content_fingerprint: Some(definition.content_fingerprint.clone()),
         workflow_authoring,
+        role: None,
     })
 }
 
@@ -4052,6 +4053,7 @@ mod tests {
                     output: None,
                     success_condition: None,
                     permission_mode: None,
+                    auto_accept: false,
                     config_options: Default::default(),
                     manual_check: None,
                     prompt_envelope: Default::default(),
@@ -4069,6 +4071,7 @@ mod tests {
                     agent_id: "agent-frozen".to_string(),
                     model_id: Some("model-frozen".to_string()),
                     permission_mode_id: Some("ask".to_string()),
+                    auto_accept: false,
                     config_options: Default::default(),
                 }],
             },
@@ -6448,6 +6451,7 @@ mod tests {
                 attempt_id: "attempt-1".to_string(),
                 outer_node_id: None,
                 outer_attempt_id: None,
+                request: gold_band::app::intervention::InterventionRequestIdentity::ManualCheck,
                 node_label: "node".to_string(),
                 kind: RuntimeInterventionKind::ProcessInterrupted,
                 task_title: None,
@@ -6571,6 +6575,9 @@ mod tests {
                 attempt_id: "attempt-1".to_string(),
                 outer_node_id: None,
                 outer_attempt_id: None,
+                request: gold_band::app::intervention::InterventionRequestIdentity::Elicitation {
+                    elicitation_id: "question-1".to_string(),
+                },
                 node_label: "node".to_string(),
                 kind: RuntimeInterventionKind::ElicitationRequested,
                 task_title: None,

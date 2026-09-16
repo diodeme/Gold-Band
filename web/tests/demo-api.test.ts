@@ -98,10 +98,11 @@ describe('public demo runtime', () => {
     expect(workflows.templates.map((template) => template.id)).toEqual(['default', 'default-lightweight']);
   });
 
-  it('provides HTTP and SSE fixtures with explicit Codex SSE incompatibility', async () => {
+  it('provides the managed memory stdio card plus HTTP and SSE fixtures', async () => {
     const api = createDemoApi();
     const servers = await api.listMcpServers();
-    expect(servers.map((server) => server.transport)).toEqual(['http', 'sse']);
+    expect(servers.map((server) => server.transport)).toEqual(['stdio', 'http', 'sse']);
+    expect(servers[0]).toMatchObject({ id: 'gold-band-memory', managed: true, args: ['--gold-band-memory-mcp'] });
     const agents = (await api.getAgentRegistry()).agents.filter((agent) => agent.mcpHttpSupported != null);
     expect(agents.map((agent) => agent.agentType)).toEqual(['claude-acp', 'codex-acp']);
     for (const agent of agents) {

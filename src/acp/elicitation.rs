@@ -19,7 +19,7 @@ use crate::{
             read_indexed_pending_elicitation, read_indexed_timeline_item,
         },
     },
-    storage::{ensure_parent_dir, read_json, write_json},
+    storage::{ensure_parent_dir, read_json, with_file_lock, write_json},
 };
 
 /// 默认 elicitation 超时时间：无超时（与 Claude Code TUI 行为对齐）。
@@ -28,7 +28,7 @@ pub const ELICITATION_DEFAULT_TIMEOUT: Duration = Duration::MAX;
 const ELICITATION_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 /// 用户决策枚举 —— 杜绝字符串硬编码
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ElicitationAction {
     Accept,
@@ -134,6 +134,41 @@ pub fn write_elicitation_response(
             decided_at,
         },
     )
+}
+
+pub fn write_elicitation_response_if_pending(
+    attempt_dir: &Utf8Path,
+    elicitation_id: &str,
+    action: ElicitationAction,
+    content: Option<Value>,
+    decided_at: String,
+) -> Result<bool> {
+    let pending_path = pending_elicitation_file(attempt_dir, elicitation_id);
+    let response_path = elicitation_response_file(attempt_dir, elicitation_id);
+    let applied = with_file_lock(&response_path, || {
+        if !pending_path.exists() || response_path.exists() {
+            return Ok(false);
+        }
+        ensure_parent_dir(&response_path)?;
+        write_json(
+            &response_path,
+            &ElicitationResponseState {
+                elicitation_id: elicitation_id.to_string(),
+                action: action.clone(),
+                content: content.clone(),
+                decided_at,
+            },
+        )?;
+        Ok(true)
+    })?;
+    if !applied {
+        return Ok(false);
+    }
+    // Timeline is a projection of the durable Runtime hand-off. Updating it
+    // outside the response reservation keeps the first-writer critical section
+    // small and makes a crash recoverable from the response file.
+    upsert_elicitation_response_event(attempt_dir, elicitation_id, &action, content)?;
+    Ok(true)
 }
 
 pub fn remove_elicitation_signal_files(attempt_dir: &Utf8Path, elicitation_id: &str) -> Result<()> {

@@ -3412,8 +3412,19 @@ fn ai_dynamic_continue_prompt_bundle_preserves_prompt_id() {
     let task_id = "task-ai-dynamic-prompt-id";
     let provider = DynamicProvider::session_continue_prompt();
     let app = App::with_provider(repo_root, Box::new(provider));
+    app.paths.provision_project_manifest().unwrap();
     let profile = first_profile_id(&app);
     write_task_file(&app, task_id);
+    gold_band::storage::write_json(
+        &app.paths.user_settings_file(),
+        &gold_band::config::SettingsConfig {
+            context_servers: Some(vec![gold_band::memory::mcp::managed_server_config(
+                "gold-band.exe".into(),
+            )]),
+            ..gold_band::config::SettingsConfig::default()
+        },
+    )
+    .unwrap();
     write_dynamic_workflow(&app, task_id, &profile, "[]");
 
     let run = app.run_start(task_id, None).unwrap();
@@ -3450,11 +3461,21 @@ fn ai_dynamic_continue_prompt_bundle_preserves_prompt_id() {
         prepared_prompt.session_workspace_dir,
         branch_b_workspace.path
     );
+    assert_eq!(prepared_prompt.mcp_servers.len(), 1);
+    assert_eq!(
+        prepared_prompt.mcp_servers[0]["args"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
     let prompt = prepared_prompt.prompt;
 
-    assert_eq!(prompt.user_prompt, "继续");
+    assert!(prompt.user_prompt.ends_with("继续"));
     assert!(prompt.system_prompt.contains("用户主动打断当前工作"));
     assert!(prompt.system_prompt.contains("角色预设的执行流程"));
+    assert!(prompt.system_prompt.contains("memory_write"));
+    assert_eq!(prompt.user_prompt.matches("<memory-data>").count(), 1);
     assert!(!prompt.user_prompt.contains("Gold Band runtime context"));
     assert_eq!(prompt.prompt_id.as_deref(), Some("acp-prompt-test"));
 }

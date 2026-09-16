@@ -83,7 +83,7 @@ WB 工作空间首次初始化记忆时必须创建：
 - 读取返回完整 locator、真实路径、两层条目、有效条目及统一容量配置。写命令为 `{scope, key, expectedRevision, entry}`；`entry=null` 删除，已存在 key 必须提供读取时的 revision，不存在 key 使用 null。
 - 修改 key 时在同一原子边界校验原 key 版本及新 key 不存在，再执行重命名；目标已存在时返回冲突，不覆盖目标。
 - 复用 `atomic-write-file` 落盘，使用 `fs2` 项目级文件锁串行化两个作用域的短暂读改写。任务记忆落盘不自动创建父目录，task locator 在锁内重新校验；任务删除持有同一锁，因此删除后的迟到工具调用不能复活任务目录。MCP helper 与桌面设置使用相同锁；不同项目独立，不持锁等待外部调用。
-- 标准 MCP 工具为 `memory_read`、`memory_write`，通过官方 Rust SDK `rmcp` 实现 stdio。当前 EXE 的专用后台入口绑定项目和 task，工具参数不能更改 locator。设置使用 `read_project_memory`、`write_project_memory` IPC，作用域解析与 I/O 均进入 blocking pool。
+- 标准 MCP 工具为 `memory_read`、`memory_write`，通过官方 Rust SDK `rmcp` 实现 stdio。持久化的内置定义只保存当前 EXE 与 `--gold-band-memory-mcp`，不保存 project/task；ACP 会话准备时才追加由应用生成的 repo root、data root、project id、task id 与语言绑定，工具参数不能更改 locator。设置使用 `read_project_memory`、`write_project_memory` IPC，作用域解析与 I/O 均进入 blocking pool。
 - 字符按 Rust `chars()` / 前端 Unicode 码点迭代计数；32 KiB 按有效条目数组（包含 key/value/desc/scope）的紧凑 UTF-8 JSON 计数，不包含路径和 revision。不在保存项目参数时扫描历史 task。
 
 ## 5. 节点上下文与不重复提问
@@ -108,7 +108,9 @@ WB 工作空间首次初始化记忆时必须创建：
 
 已发送的上下文不会因其他写入自动变化。节点执行期间需要最新值时，通过读取工具刷新；写入仍遵守冲突校验。
 
-ACP 实施：统一 provider 提交入口为 Direct、Workflow、AUTO 和修复/继续执行刷新记忆。稳定规则使用 `runtime/memory-rules.md`，参数投影使用 `runtime/memory.md`，双语目录结构一致。新会话和恢复会话都通过既有隐藏块发送本轮参数投影；删除仅恢复会话补发记忆的专用字段及分支。支持 system prompt 的 adapter 使用既有系统通道，不支持者沿用新会话隐藏系统上下文适配；隐藏展示本身不赋予系统指令权限。数据中的 `<`、`>`、`&` 转义为 JSON Unicode 转义，防止闭合数据分隔符。taskless 分析等旁路不伪造任务记忆。
+ACP 实施：统一 provider 提交入口为 Direct、Workflow、AUTO 和修复/继续执行刷新记忆。稳定规则使用 `runtime/memory-rules.md`，参数投影使用 `runtime/memory.md`，双语目录结构一致。只有本次 invocation 的启用 MCP 列表包含 `gold-band-memory` 时，才读取并注入记忆规则、数据投影及带 task 绑定的会话 MCP；关闭内置卡片必须同时移除 MCP 与 prompt，不允许出现只能看见规则却没有工具的半启用状态。新会话和恢复会话都通过既有隐藏块发送本轮参数投影；删除仅恢复会话补发记忆的专用字段及分支。支持 system prompt 的 adapter 使用既有系统通道，不支持者沿用新会话隐藏系统上下文适配；隐藏展示本身不赋予系统指令权限。数据中的 `<`、`>`、`&` 转义为 JSON Unicode 转义，防止闭合数据分隔符。taskless 分析等旁路不伪造任务记忆。
+
+记忆 MCP 分为三层：`settings.json` 中的 managed stdio definition 是用户开关与基础启动定义；设置页的最近一次诊断结果是进程内临时状态；每次 invocation 的 executable session snapshot 才包含真实 task 绑定。基础定义允许无绑定启动并完成 `initialize → initialized → tools/list`，随后结束进程树；无绑定实例收到读写调用必须返回结构化 `memory.context-required`，不得访问任何文件。正式 stdio 连接由 ACP Agent 在 `session/new/load/resume` 阶段按会话快照建立，不由 Gold Band 应用常驻第二份连接。
 
 各角色必须使用一致的 key。首版不提供语义匹配、同义 key 推断或问题历史库。系统保证已保存数据进入节点上下文，模型是否遵守复用规则仍需通过角色契约和实际流程验证，不能宣称对任意模型绝对保证不重复提问。
 
@@ -132,11 +134,11 @@ ACP 实施：统一 provider 提交入口为 Direct、Workflow、AUTO 和修复/
 
 ## 7. 项目记忆设置
 
-- 每个工作空间右侧新增书本图标按钮，打开标题为“项目记忆设置”的右侧抽屉；该按钮与新增会话、删除工作空间按钮在同一悬浮操作组中展示。
+- 每个工作空间右侧新增书本图标按钮，打开标题为“项目记忆设置”的右侧抽屉；该按钮与新增会话、删除工作空间按钮在同一悬浮操作组中展示，点击不触发同一行的工作空间展开/收起行为。
 - 复用 shadcn/ui Sheet、表单、图标按钮、Tooltip 及现有主题能力，不自研基础控件。
 - 每条展示 key、value、desc，支持新增、修改和删除。
 - 逐条保存或取消，删除单独确认；单条失败或冲突不影响其他条目。
-- 冲突采用最新值时以后端权威记录收敛；若 key 已变化，原行按新 key 重投影并对同名行去重，不能保留已经失效的旧行。
+- 冲突采用最新值时以后端结构化原因与权威记录收敛。普通 revision 冲突若权威 key 已变化，原行按权威 key 重投影并去重；重命名目标已存在时，后端未执行写入，界面必须保留原 key，并只更新已存在目标 key 的权威记录，不能吞掉原行或假装重命名成功。
 - 关闭时若存在未保存内容，提示用户处理。
 - 只在打开时加载当前工作空间记忆，不将记忆加载加入工作空间列表首屏路径。
 - 抽屉的目标 locator 由稳定 WorkspaceShell 布局层持有，表单草稿留在抽屉/行内；侧边栏因窄窗口卸载时，抽屉和草稿不能被卸载。
@@ -169,7 +171,7 @@ CICD 人工判定失败或执行阻塞时展示原因，用户处理后可以仅
 
 正式对接：WeTest 双语角色已接入共享记忆工具。WB 默认模板的 CICD 节点改为人工 check，不配置 `output`、`success_condition` 或 `cicd-result`；自定义节点显式配置 AI 输出验证时仍保留既有产物与控制结果校验。CICD 单次提交，失败通过既有人工恢复生命周期处理；不触发自动产物补问或 provider 自动重试。
 
-CICD 参数使用 `cicd.<S>.<field>` 字符串条目，S 为真实子系统 ID 的 UTF-8 百分号编码（仅保留 ASCII 字母、数字、连字符、下划线、波浪号，其余含点号编码为大写 %HH）。工作空间 `subSysId1` 等提供成员清单，任务 `selected` 表示选择而非授权。各子系统独立保存 build/deploy 字段，列表及差异变量使用单字段 JSON 字符串，不存整份配置对象。字段表及 WeTest 方法见双语角色与 [CICD 角色设计](../provider/cicd-profile.md)。逐 key CAS 后刷新核实整组参数；不得直接读写文件，容量限制不变。外部 ID、部分完成及终态证据存附件，人工恢复先查询已有作业。真实模型和平台链路仍需在具备环境与授权时验收。
+CICD 使用两类字符串条目：整个 task 的唯一构建保存为 `cicd.build.jobId/branch/appList/appCoverage`，每个子系统部署保存为 `cicd.deploy.<S>.*`。S 为真实子系统 ID 的 UTF-8 百分号编码（仅保留 ASCII 字母、数字、连字符、下划线、波浪号，其余含点号编码为大写 %HH）。工作空间 `subSysId1` 等提供成员清单，任务 `cicd.deploy.<S>.selected` 表示部署选择而非授权。一次 Jenkins 构建可覆盖多个子系统，其生命周期归 task；模板、方式与目标归各子系统部署。列表及差异变量使用单字段 JSON 字符串，不存整份配置对象。字段表及 WeTest 方法见双语角色与 [CICD 角色设计](../provider/cicd-profile.md)。逐 key CAS 后刷新核实完整构建与所选部署参数；每次 run 必须重新确认生效范围，上一次 run 的确认不得复用。不得直接读写文件，容量限制不变。外部 ID、部分完成及终态证据存附件，人工恢复先查询已有作业。真实模型和平台链路仍需在具备环境与授权时验收。
 
 ## 9. 方案自评审
 
@@ -208,6 +210,16 @@ UI 验证覆盖逐行操作、关闭草稿、冲突、错误、窄窗口、长�
 最终本地验证：独立 Rust 集成测试合计 13 项通过，覆盖领域边界、跨进程 MCP、WB catalog、全模式绑定和继续执行刷新；前端相关测试 22 项、TypeScript、Vite 生产构建及桌面端 cargo check 通过。初轮 lib 13 项包含 CICD 保护与路由；最终单体 lib 重编译因机器内存不足未完成，使用独立源码测试入口补验记忆领域，未宣称全仓测试通过。
 
 最终检查结果和未完成的外部部署契约验收以实施方案记录为准。最终测试代码整理后，`cargo check -p gold-band --tests -j 1` 亦通过。浏览器预览使用测试数据；真实文件持久化和 MCP 连接由 Rust 接口/子进程测试验证。测试页、开发服务器与 viewport override 已清理。未使用真实外部构建部署系统，不宣称任意模型都绝不重复提问。复核没有新增缓存、队列或平行身份，读取量与线性合并均受既定容量限制。
+
+2026-09-16 PR #123 与最新 main 合并验收：记忆服务的生产构造入口不再接受调用方传入渠道标记，WB 初始化规则、Profile 可见性与 MCP helper 全部从 `src/channel.rs` 的编译期常量派生；MCP 启动绑定不序列化渠道字段，避免形成可篡改的第二事实源。task 级唯一构建、多子系统部署、逐 key CAS/revision 以及每次 run 重新确认已同步到中英文角色契约，旧的角色直读写记忆文件路径已删除。项目记忆按钮的点击事件停止工作空间行冒泡，只打开记忆抽屉。
+
+2026-09-16 MCP 生命周期与冲突投影收敛：内置共享记忆作为标准 managed stdio 卡片进入“上下文 → MCP 管理 → 内置 MCP”，只允许开关、手动诊断和查看工具，不允许编辑或删除。应用启动只幂等 reconcile 基础定义，未变化时不写 settings，也不批量启动外部进程；设置页诊断使用无业务绑定的短进程完成完整握手与工具发现。会话阶段为 Direct、Workflow、AI-DYNAMIC 及人工续聊生成带 task 绑定的 snapshot；卡片关闭时不传 MCP，也不注入记忆提示。无绑定工具调用返回 `memory.context-required`。项目记忆重命名到已存在 key 的冲突以 `reason=target_exists` 区分，采用最新值后保留源行并更新目标行。
+
+上述收敛的验收证据：受影响 Rust 目标（记忆领域、MCP、调用绑定、AI-DYNAMIC、worker bootstrap、lib MCP）共 117 项通过，前端相关 21 项与生产构建通过，生成快照已按上游 Registry 重新生成；浏览器 deep link 实测内置卡片可开关、可诊断、无编辑删除，诊断文案为“最近一次 MCP 配置检测通过”，页面刷新不触发批量探测。详细记录见开发计划。诊断结果只表达最近一次配置检查，不代表正式会话进程正在运行。
+
+最终验证包括：WB 编译渠道下 7 个 Rust 目标共 20 项通过；独立 target 的 default 渠道隔离 3 项通过；桌面端 `cargo check -j 1 -p gold-band-desktop` 通过，仅有既有 dead-code 警告；项目记忆与侧栏前端 14 项、TypeScript 检查、Vite 生产构建、Agent catalog 7 项均通过。浏览器验证按规则先尝试 iab 和已连接 Chrome，均因环境不可用而使用批准的 agent-browser 回退，覆盖 1280/420 宽度、明暗主题、长文本、未保存关闭确认及保存后重开，未发现目标范围问题；测试会话、浏览器和开发服务器均已清理。浏览器使用内存测试数据，真实持久化与跨进程 MCP 由 Rust 测试覆盖；未调用真实 WeTest 构建、推送、部署或审批。
+
+最终自评审：本次只删除重复渠道输入并收敛既有领域契约，没有新增 aggregate、状态机、持久字段、依赖、缓存或队列。每次 invocation 最多同步读取当前工作空间和任务两个各 4 MiB 封顶、各 100 条的本地文件，有效投影限制 32 KiB，合并为 O(P + T)；Tauri/MCP I/O 进入 blocking pool，锁只覆盖文件读写和 task 删除，不覆盖模型、网络或用户等待。MCP helper 有每个会话固定的进程启动成本，但不随历史规模增长；在当前有界规模下无需要单独 benchmark 的新增风险。
 
 ## 2026-09-09 正式契约对接
 

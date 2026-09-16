@@ -475,6 +475,7 @@ impl ScheduledTaskService {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            role: None,
         };
         let validation = validate_conversation_create_vm(&workspace.app, &validation_input)
             .map_err(|_| {
@@ -643,6 +644,7 @@ impl ScheduledTaskService {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            role: None,
         };
         let validation = validate_conversation_create_vm(&workspace.app, &validation_input)
             .map_err(|_| {
@@ -1514,6 +1516,7 @@ mod tests {
                             agent_id: "claude-acp".to_string(),
                             model_id: None,
                             permission_mode_id: None,
+                            auto_accept: false,
                             config_options: BTreeMap::new(),
                         }),
                         NodeDsl::AiDynamic(_) => None,
@@ -1984,6 +1987,7 @@ mod tests {
             agent_type: "claude-acp".to_string(),
             model_id: Some("sonnet".to_string()),
             permission_mode: Some("plan".to_string()),
+            auto_accept: false,
             config_options: BTreeMap::new(),
         });
 

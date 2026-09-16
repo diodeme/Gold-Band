@@ -1351,6 +1351,17 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
 
     let provider = InterruptThenSuccessProvider::default();
     let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
+    app.paths.provision_project_manifest().unwrap();
+    gold_band::storage::write_json(
+        &app.paths.user_settings_file(),
+        &gold_band::config::SettingsConfig {
+            context_servers: Some(vec![gold_band::memory::mcp::managed_server_config(
+                "gold-band.exe".into(),
+            )]),
+            ..gold_band::config::SettingsConfig::default()
+        },
+    )
+    .unwrap();
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let accept_profile = app
@@ -1424,15 +1435,28 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
         .unwrap();
     assert_eq!(prepared_prompt.adapter_workspace_dir, app.paths.repo_root);
     assert_eq!(prepared_prompt.session_workspace_dir, app.paths.repo_root);
+    assert_eq!(prepared_prompt.mcp_servers.len(), 1);
+    assert_eq!(
+        prepared_prompt.mcp_servers[0]["args"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
     let manual_prompt = prepared_prompt.prompt;
     assert!(manual_prompt.system_prompt.contains("Run: run-001"));
     assert!(manual_prompt.system_prompt.contains("用户主动打断当前工作"));
+    assert!(manual_prompt.system_prompt.contains("memory_write"));
+    assert_eq!(
+        manual_prompt.user_prompt.matches("<memory-data>").count(),
+        1
+    );
     assert!(
         !manual_prompt
             .system_prompt
             .contains("你必须在最后一步按照以下格式输出你的结果")
     );
-    assert_eq!(manual_prompt.user_prompt, "手动追问");
+    assert!(manual_prompt.user_prompt.ends_with("手动追问"));
     assert!(
         !manual_prompt
             .user_prompt
@@ -1462,7 +1486,7 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
     );
     assert_eq!(
         invocations[1].resume_prompt.as_deref(),
-        Some("用户已选择将当前节点重新交由 Runtime 控制。当前输出契约（如有）重新生效。")
+        Some(gold_band::prompts::RUNTIME_CONTROL_RESUME_ZH_CN.trim())
     );
     assert_eq!(
         invocations[1].resume_prompt_id.as_deref(),
@@ -1742,7 +1766,7 @@ fn transition_continue_uses_latest_target_attempt_ref() {
             .resume_prompt
             .as_deref()
             .unwrap_or_default()
-            .contains("用户已选择将当前节点重新交由 Runtime 控制")
+            .contains(gold_band::prompts::RUNTIME_CONTROL_RESUME_ZH_CN)
     );
     assert_eq!(
         dev_invocations[1]

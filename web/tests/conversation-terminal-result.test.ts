@@ -26,6 +26,7 @@ function task(unreadTerminalResult: ConversationTerminalResultVm | null): Conver
   return {
     projectId: 'project-001',
     taskId: 'task-001',
+    taskUuid: 'task-uuid-001',
     title: 'Direct conversation',
     autoTitle: false,
     runMode: 'direct',
@@ -94,11 +95,13 @@ describe('Direct unread terminal result', () => {
       kind: 'conversation-run',
       projectId: 'project-001',
       taskId: 'task-001',
+      taskUuid: 'task-uuid-001',
       runId: 'run-001',
     };
     expect(conversationTerminalResultAcknowledgementTarget(current, page, {
       projectId: 'project-001',
       taskId: 'task-001',
+      taskUuid: 'task-uuid-001',
       runId: 'run-001',
     })).toEqual({
       projectId: 'project-001',
@@ -109,7 +112,14 @@ describe('Direct unread terminal result', () => {
     expect(conversationTerminalResultAcknowledgementTarget(current, page, {
       projectId: 'project-001',
       taskId: 'task-001',
+      taskUuid: 'task-uuid-001',
       runId: 'run-older',
+    })).toBeNull();
+    expect(conversationTerminalResultAcknowledgementTarget(current, page, {
+      projectId: 'project-001',
+      taskId: 'task-001',
+      taskUuid: 'task-uuid-stale',
+      runId: 'run-001',
     })).toBeNull();
   });
 

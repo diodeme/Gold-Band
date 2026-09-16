@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ACPMessageList,
+  MessageAttachmentPreviewButton,
   optimisticUserEvent,
 } from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -13,12 +14,42 @@ import type { AcpUiEventVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
+const apiMocks = vi.hoisted(() => ({
+  showConversationAttachment: vi.fn(),
+  showConversationMessageAttachment: vi.fn(),
+}));
+
+const imageActionMocks = vi.hoisted(() => ({
+  copy: vi.fn(() => Promise.resolve()),
+  save: vi.fn(() => Promise.resolve(true)),
+}));
+
+vi.mock('@/api', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/api')>(),
+  showConversationAttachment: apiMocks.showConversationAttachment,
+  showConversationMessageAttachment: apiMocks.showConversationMessageAttachment,
+}));
+
+vi.mock('@/lib/image-actions', () => ({
+  copyImageAsset: imageActionMocks.copy,
+  IMAGE_ACTION_FEEDBACK_DURATION_MS: 1_800,
+  saveImageAssetAs: imageActionMocks.save,
+}));
+
 beforeEach(() => {
   vi.stubGlobal('ResizeObserver', class {
     observe() {}
     unobserve() {}
     disconnect() {}
   });
+  apiMocks.showConversationAttachment.mockResolvedValue({
+    title: 'image.png',
+    kind: 'input-attachment',
+    content: 'data:image/png;base64,AQIDBA==',
+    metadata: { mimeType: 'image/png' },
+  });
+  imageActionMocks.copy.mockClear();
+  imageActionMocks.save.mockClear();
 });
 
 afterEach(() => {
@@ -27,6 +58,87 @@ afterEach(() => {
 });
 
 describe('ACP message attachment layout', () => {
+  it('offers copy and save-as from a sent image thumbnail', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          <TooltipProvider>
+            <MessageAttachmentPreviewButton
+              attachment={{
+                name: 'image.png',
+                path: 'task-inputs/image.png',
+                type: 'image/png',
+                size: 4,
+              }}
+              locator={{
+                projectId: 'project-1',
+                taskId: 'task-1',
+                runId: 'run-1',
+                roundId: 'round-1',
+                nodeId: 'node-1',
+                attemptId: 'attempt-1',
+              }}
+            />
+          </TooltipProvider>,
+        );
+      });
+
+      const thumbnail = container.querySelector<HTMLImageElement>('img[alt="image.png"]');
+      expect(thumbnail?.src).toBe('data:image/png;base64,AQIDBA==');
+
+      await act(async () => {
+        thumbnail?.dispatchEvent(new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          button: 2,
+          buttons: 2,
+          clientX: 12,
+          clientY: 12,
+        }));
+      });
+
+      const menu = document.querySelector('[data-slot="context-menu-content"]');
+      expect(menu?.textContent).toContain('复制图片');
+      expect(menu?.textContent).toContain('图片另存为');
+
+      const copyItem = Array.from(document.querySelectorAll<HTMLElement>('[data-slot="context-menu-item"]'))
+        .find((item) => item.textContent?.includes('复制图片'));
+      await act(async () => copyItem?.click());
+
+      expect(imageActionMocks.copy).toHaveBeenCalledWith({
+        name: 'image.png',
+        mime: 'image/png',
+        previewUrl: 'data:image/png;base64,AQIDBA==',
+      });
+
+      await act(async () => {
+        thumbnail?.dispatchEvent(new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          button: 2,
+          buttons: 2,
+          clientX: 12,
+          clientY: 12,
+        }));
+      });
+      const saveItem = Array.from(document.querySelectorAll<HTMLElement>('[data-slot="context-menu-item"]'))
+        .find((item) => item.textContent?.includes('图片另存为'));
+      await act(async () => saveItem?.click());
+
+      expect(imageActionMocks.save).toHaveBeenCalledWith({
+        name: 'image.png',
+        mime: 'image/png',
+        previewUrl: 'data:image/png;base64,AQIDBA==',
+      });
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('renders images above regular files in separate rows', async () => {
     const message: AcpUiEventVm = {
       id: 'user-message-1',

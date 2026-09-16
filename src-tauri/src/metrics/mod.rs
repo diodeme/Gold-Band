@@ -3,10 +3,9 @@ pub mod heartbeat;
 pub mod identity;
 mod uploader;
 
-use std::io::Write;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use chrono::{DateTime, Local, NaiveDateTime, SecondsFormat, TimeZone, Utc};
+use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use gold_band::app::RuntimeLifecycleEvent;
 use gold_band::app::observability::LifecycleTiming;
 use gold_band::config::RuntimeConfig;
@@ -16,69 +15,38 @@ use url::Url;
 
 use crate::{channel::current_channel_config, state::DesktopState};
 
-static METRICS_LOG_PATH: OnceLock<Option<String>> = OnceLock::new();
 pub(crate) const HEARTBEAT_ENDPOINT_PATH: &str = "/api/client-report/heartbeat";
 const NODE_METRICS_ENDPOINT_PATH: &str = "/api/client-report/metrics/batch";
 pub(super) const METRICS_BATCH_LIMIT: usize = 100;
-const METRICS_LOG_LIMIT_BYTES: u64 = 20 * 1024 * 1024;
-
-fn metrics_log_path() -> Option<&'static str> {
-    METRICS_LOG_PATH
-        .get_or_init(|| {
-            let config = current_channel_config();
-            let app_key = config.app_key;
-            let log_dir = if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-                format!("{}\\{}", local_app_data, app_key)
-            } else if let Ok(home) = std::env::var("USERPROFILE") {
-                format!("{}\\.{}", home, app_key)
-            } else {
-                return None;
-            };
-            if let Err(error) = std::fs::create_dir_all(&log_dir) {
-                eprintln!("[metrics] failed to create log dir {log_dir}: {error}");
-                return None;
-            }
-            Some(format!("{log_dir}\\metrics.log"))
-        })
-        .as_deref()
-}
+static METRICS_COLLECTOR_SENDER: OnceLock<
+    Mutex<Option<tokio::sync::mpsc::Sender<collector::CollectorCommand>>>,
+> = OnceLock::new();
 
 pub(crate) fn metrics_log(message: &str) {
-    let mut line = format_metrics_log_line(Utc::now(), message);
-    if line.len() as u64 > METRICS_LOG_LIMIT_BYTES {
-        let actual_bytes = line.len();
-        line = format_metrics_log_line(
-            Utc::now(),
-            &format!("[metrics] payload-too-large actualBytes={actual_bytes}"),
-        );
-    }
-    eprint!("{line}");
-    let Some(log_path) = metrics_log_path() else {
-        return;
-    };
-    if let Ok(metadata) = std::fs::metadata(log_path)
-        && metadata.len().saturating_add(line.len() as u64) > METRICS_LOG_LIMIT_BYTES
-    {
-        let reset = format_metrics_log_line(Utc::now(), "[metrics] log-reset reason=size-limit");
-        if let Err(error) = std::fs::write(log_path, reset) {
-            eprintln!("[metrics] failed to reset log {log_path}: {error}");
-        }
-    }
-    if let Err(error) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)
-        .and_then(|mut file| file.write_all(line.as_bytes()))
-    {
-        eprintln!("[metrics] failed to write log {log_path}: {error}");
-    }
+    tracing::info!(target: "gold_band_desktop::metrics", "{message}");
 }
 
-fn format_metrics_log_line(timestamp: DateTime<Utc>, message: &str) -> String {
-    format!(
-        "{}  INFO {message}\n",
-        timestamp.to_rfc3339_opts(SecondsFormat::Micros, true)
-    )
+pub(crate) fn mark_task_metrics_deleted_best_effort(project_id: String, execution_id: String) {
+    let sender = METRICS_COLLECTOR_SENDER
+        .get()
+        .and_then(|slot| slot.lock().ok())
+        .and_then(|sender| sender.clone());
+    let Some(sender) = sender else {
+        return;
+    };
+    if let Err(error) = sender.try_send(collector::CollectorCommand::MarkTaskDeleted {
+        project_id: project_id.clone(),
+        execution_id: execution_id.clone(),
+        deleted_at: chrono::Utc::now().timestamp(),
+    }) {
+        let reason = match error {
+            tokio::sync::mpsc::error::TrySendError::Full(_) => "queue-full",
+            tokio::sync::mpsc::error::TrySendError::Closed(_) => "collector-closed",
+        };
+        metrics_log(&format!(
+            "[lifecycle-metrics] task delete marker dropped projectId={project_id} executionId={execution_id} reason={reason}"
+        ));
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -288,6 +256,13 @@ pub fn create_metrics_subscriber<R: Runtime>(
     let collector = gate.map(|((endpoint, api_key), database_path)| {
         uploader::start(database_path, endpoint, api_key)
     });
+    if let Some(sender) = collector.as_ref()
+        && let Ok(mut slot) = METRICS_COLLECTOR_SENDER
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+    {
+        *slot = Some(sender.clone());
+    }
     if collector.is_none() {
         metrics_log("[lifecycle-metrics] disabled: requires wb channel, endpoint and api key");
     }
@@ -383,15 +358,23 @@ mod tests {
     }
 
     #[test]
-    fn metrics_log_line_uses_utc_runtime_style_prefix() {
-        let timestamp = DateTime::parse_from_rfc3339("2026-07-24T09:01:35.307189Z")
-            .unwrap()
-            .with_timezone(&Utc);
+    fn metrics_log_routes_through_runtime_tracing_without_direct_io() {
+        let source = include_str!("mod.rs");
+        let function = source
+            .split_once("pub(crate) fn metrics_log")
+            .expect("metrics_log function")
+            .1
+            .split_once("\n}\n")
+            .expect("metrics_log function body")
+            .0;
 
-        assert_eq!(
-            format_metrics_log_line(timestamp, "[heartbeat] request body={}"),
-            "2026-07-24T09:01:35.307189Z  INFO [heartbeat] request body={}\n"
-        );
+        assert!(function.contains("tracing::info!"));
+        for forbidden in ["std::fs::", "OpenOptions", "eprint!", "write_all"] {
+            assert!(
+                !function.contains(forbidden),
+                "metrics_log must not perform direct I/O via {forbidden}"
+            );
+        }
     }
 
     #[test]

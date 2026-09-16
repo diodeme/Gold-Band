@@ -17,6 +17,14 @@ vi.mock('react-i18next', () => ({
 }));
 
 describe('AppTitleBar', () => {
+  it('keeps the Help tooltip controlled by menu and navigation state', () => {
+    const source = readFileSync(path.resolve(__dirname, '../src/components/AppTitleBar.tsx'), 'utf8');
+
+    expect(source).toContain('open={helpTooltipOpen && !helpMenuOpen && !helpTooltipSuppressed}');
+    expect(source).toContain('setHelpTooltipOpen(false)');
+    expect(source).toContain('setHelpTooltipSuppressed(true)');
+  });
+
   it('uses the compact shared desktop titlebar dimensions', () => {
     const html = renderToStaticMarkup(createElement(AppTitleBar, {
       appName: 'Gold Band',

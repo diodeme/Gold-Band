@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
 use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use agent_client_protocol_schema::v1::{CreateElicitationRequest, ElicitationScope};
 use anyhow::Result;
@@ -12,9 +13,12 @@ use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 
 use crate::acp::control::AcpRuntimeControlCursor;
 use crate::provider::{ConversationPromptInput, UserPromptQuote};
+use crate::runtime_error::{
+    RuntimeErrorDomain, RuntimeErrorInfo, manual_runtime_error_info, normalize_runtime_error,
+};
 use crate::storage::{
-    append_jsonl, append_jsonl_unlocked, atomic_write_file, ensure_parent_dir, read_json,
-    with_jsonl_file_lock, write_json,
+    append_jsonl, append_jsonl_lines_flushed_unlocked, atomic_write_file, ensure_parent_dir,
+    read_json, with_jsonl_file_lock, write_json,
 };
 
 const AGENT_TRANSCRIPT_META_KEY: &str = "agentTranscript";
@@ -71,6 +75,8 @@ pub struct AcpSessionMetadata {
     pub lifecycle_operation_id: Option<String>,
     pub restored: bool,
     pub stop_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_error: Option<RuntimeErrorInfo>,
     pub capabilities: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub models: Option<Value>,
@@ -91,6 +97,8 @@ pub struct AcpSessionMetadata {
     pub model_override: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode_override: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_option_overrides: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -188,6 +196,8 @@ pub struct AcpLifecycleHeader {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_error: Option<RuntimeErrorInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation_id: Option<String>,
 }
 
@@ -243,6 +253,29 @@ impl AcpLifecycleTerminalGuard {
     pub(crate) fn disarm(&mut self) {
         self.armed = false;
     }
+
+    pub(crate) fn execute<T>(&mut self, execute: impl FnOnce() -> Result<T>) -> Result<T> {
+        let result = execute();
+        if let Err(error) = &result {
+            let mut info = normalize_runtime_error(error);
+            if let Err(persistence_error) = persist_session_turn_failure_owned(
+                &self.path,
+                &self.owner,
+                &info,
+                &current_timestamp(),
+            ) {
+                tracing::error!(path = %self.path, error = %persistence_error, "ACP terminal persistence failed");
+                info.diagnostic.push_str(&format!(
+                    "\nACP terminal persistence failed: {persistence_error:#}"
+                ));
+                // Do not let Drop retry with an empty, generic replacement error.
+                self.disarm();
+                return Err(crate::runtime_error::runtime_error(info));
+            }
+        }
+        self.disarm();
+        result
+    }
 }
 
 impl Drop for AcpLifecycleTerminalGuard {
@@ -250,13 +283,15 @@ impl Drop for AcpLifecycleTerminalGuard {
         if !self.armed {
             return;
         }
-        let _ = persist_session_turn_terminal_owned(
+        let _ = persist_session_turn_failure_owned(
             &self.path,
-            &self.owner.turn_id,
-            Some(&self.owner.operation_id),
-            self.owner.revision,
-            AcpLatestTurnStatus::Failed,
-            "runtime-error",
+            &self.owner,
+            &manual_runtime_error_info(
+                RuntimeErrorDomain::Internal,
+                "acp.turn-execution-failed",
+                "",
+                serde_json::json!({}),
+            ),
             &current_timestamp(),
         );
     }
@@ -420,6 +455,20 @@ pub struct AcpUiEvent {
     pub timing: Option<AcpTimingPatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledTriggerPayload {
+    pub project_id: String,
+    pub scheduled_task_id: String,
+    pub occurrence_id: String,
+    pub trigger_kind: crate::scheduler::occurrence::OccurrenceTriggerKind,
+    pub scheduled_at: Option<String>,
+    pub accepted_at: String,
+    pub instruction_summary: String,
+    pub content_fingerprint: String,
+    pub links: crate::scheduler::occurrence::OccurrenceLinks,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1238,30 +1287,107 @@ pub fn append_raw_frame(
     max_size: u64,
     target_size: u64,
 ) -> Result<()> {
-    with_jsonl_file_lock(path, || {
-        append_jsonl_unlocked(
-            path,
-            &AcpRawFrame {
-                timestamp: current_timestamp(),
-                direction: direction.to_string(),
+    append_raw_frame_observed(path, direction, frame, max_size, target_size).map(|_| ())
+}
+
+/// Append an ordered group of Raw protocol frames with one file lock, open,
+/// buffered write, flush, and roll check.
+pub fn append_raw_frames(
+    path: &Utf8Path,
+    direction: &str,
+    frames: &[Value],
+    max_size: u64,
+    target_size: u64,
+) -> Result<()> {
+    append_raw_frames_observed(path, direction, frames.iter(), max_size, target_size).map(|_| ())
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RawLogRollStats {
+    pub(crate) before_bytes: u64,
+    pub(crate) after_bytes: u64,
+    pub(crate) elapsed: Duration,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RawFrameAppendOutcome {
+    pub(crate) elapsed: Duration,
+    pub(crate) roll: Option<RawLogRollStats>,
+}
+
+pub(crate) fn append_raw_frame_observed(
+    path: &Utf8Path,
+    direction: &str,
+    frame: Value,
+    max_size: u64,
+    target_size: u64,
+) -> Result<RawFrameAppendOutcome> {
+    append_raw_frames_observed(
+        path,
+        direction,
+        std::iter::once(&frame),
+        max_size,
+        target_size,
+    )
+}
+
+#[derive(Serialize)]
+struct BorrowedAcpRawFrame<'a> {
+    timestamp: &'a str,
+    direction: &'a str,
+    frame: &'a Value,
+}
+
+pub(crate) fn append_raw_frames_observed<'a>(
+    path: &Utf8Path,
+    direction: &str,
+    frames: impl IntoIterator<Item = &'a Value>,
+    max_size: u64,
+    target_size: u64,
+) -> Result<RawFrameAppendOutcome> {
+    let started_at = Instant::now();
+    let timestamp = current_timestamp();
+    let encoded = frames
+        .into_iter()
+        .map(|frame| {
+            serde_json::to_vec(&BorrowedAcpRawFrame {
+                timestamp: &timestamp,
+                direction,
                 frame,
-            },
-        )?;
-        let _ = roll_raw_log(path, max_size, target_size);
-        Ok(())
+            })
+        })
+        .collect::<serde_json::Result<Vec<_>>>()?;
+    if encoded.is_empty() {
+        return Ok(RawFrameAppendOutcome {
+            elapsed: started_at.elapsed(),
+            roll: None,
+        });
+    }
+    with_jsonl_file_lock(path, || {
+        append_jsonl_lines_flushed_unlocked(path, &encoded)?;
+        let roll = roll_raw_log(path, max_size, target_size).unwrap_or(None);
+        Ok(RawFrameAppendOutcome {
+            elapsed: started_at.elapsed(),
+            roll,
+        })
     })
 }
 
 /// Roll the raw log file, preserving init handshake frames (everything before the first
 /// `session/update`) and only trimming the streaming update section.
-fn roll_raw_log(path: &Utf8Path, max_size: u64, target_size: u64) -> Result<()> {
+fn roll_raw_log(
+    path: &Utf8Path,
+    max_size: u64,
+    target_size: u64,
+) -> Result<Option<RawLogRollStats>> {
     use std::io::Write;
     let meta = match std::fs::metadata(path.as_std_path()) {
         Ok(m) => m,
-        Err(_) => return Ok(()),
+        Err(_) => return Ok(None),
     };
+    let before_bytes = meta.len();
     if meta.len() <= max_size {
-        return Ok(());
+        return Ok(None);
     }
     let content = std::fs::read(path.as_std_path())?;
 
@@ -1277,7 +1403,7 @@ fn roll_raw_log(path: &Utf8Path, max_size: u64, target_size: u64) -> Result<()> 
         pinned_bytes += line.len();
     }
     if !found_updatable {
-        return Ok(());
+        return Ok(None);
     }
 
     let updatable_start = pinned_bytes;
@@ -1285,7 +1411,7 @@ fn roll_raw_log(path: &Utf8Path, max_size: u64, target_size: u64) -> Result<()> 
     let pinned_len = pinned_bytes as u64;
     let effective_target = target_size.saturating_sub(pinned_len);
     if updatable_len <= effective_target {
-        return Ok(());
+        return Ok(None);
     }
     let excess = updatable_len.saturating_sub(effective_target);
 
@@ -1301,10 +1427,19 @@ fn roll_raw_log(path: &Utf8Path, max_size: u64, target_size: u64) -> Result<()> 
     }
     let drop_bytes = drop_bytes.min(updatable.len());
 
+    let roll_started_at = Instant::now();
     let mut file = std::fs::File::create(path.as_std_path())?;
     file.write_all(&content[..updatable_start])?;
     file.write_all(&updatable[drop_bytes..])?;
-    Ok(())
+    file.flush()?;
+    let after_bytes = std::fs::metadata(path.as_std_path())
+        .map(|metadata| metadata.len())
+        .unwrap_or_else(|_| before_bytes.saturating_sub(drop_bytes as u64));
+    Ok(Some(RawLogRollStats {
+        before_bytes,
+        after_bytes,
+        elapsed: roll_started_at.elapsed(),
+    }))
 }
 
 pub fn append_diagnostic(
@@ -1414,12 +1549,14 @@ pub fn load_timeline_items(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
     with_jsonl_file_lock(path, || load_timeline_items_unlocked(path))
 }
 
-pub fn annotate_latest_runtime_control_output(
+pub fn annotate_runtime_control_output(
     path: &Utf8Path,
+    item_id: &str,
     artifact_name: &str,
     kind: &str,
+    span: &crate::artifacts::JsonArtifactSpan,
 ) -> Result<bool> {
-    crate::acp::timeline::annotate_latest_runtime_control_output(path, artifact_name, kind)
+    crate::acp::timeline::annotate_runtime_control_output(path, item_id, artifact_name, kind, span)
 }
 
 pub(crate) fn load_timeline_items_unlocked(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
@@ -1477,17 +1614,24 @@ pub(crate) fn load_timeline_items_for_storage_unlocked(path: &Utf8Path) -> Resul
     let mut items = latest_by_item
         .into_values()
         .map(|(_, item)| item)
-        .filter(|item| !is_provider_user_echo_event(item))
         .collect::<Vec<_>>();
-    items.sort_by_key(|item| (item.started_seq.unwrap_or(item.seq), item.seq));
-    remove_reclassified_local_provider_history(&mut items);
+    normalize_timeline_items_for_storage(&mut items);
     Ok(items)
+}
+
+pub(crate) fn normalize_timeline_items_for_storage(items: &mut Vec<AcpUiEvent>) {
+    items.retain(|item| !is_provider_user_echo_event(item));
+    items.sort_by_key(|item| (item.started_seq.unwrap_or(item.seq), item.seq));
+    remove_reclassified_local_provider_history(items);
 }
 
 pub(crate) fn merge_timeline_item_revision(
     existing: &AcpUiEvent,
     mut incoming: AcpUiEvent,
 ) -> AcpUiEvent {
+    if existing.kind == "scheduledTrigger" {
+        return existing.clone();
+    }
     if is_provider_history_event(&incoming) && !is_provider_history_event(existing) {
         return existing.clone();
     }
@@ -1821,6 +1965,10 @@ fn lifecycle_header_from_value(value: &Value) -> AcpLifecycleHeader {
             .get("stopReason")
             .and_then(Value::as_str)
             .map(str::to_string),
+        turn_error: value
+            .get("turnError")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok()),
         operation_id: value
             .get("lifecycleOperationId")
             .and_then(Value::as_str)
@@ -1853,6 +2001,11 @@ fn session_availability_from_value(
 /// activity and the previous turn outcome. `closing` is a legacy transport
 /// value and must never survive as the availability of a turn lifecycle.
 fn normalize_lifecycle_header(value: &Value, header: &mut AcpLifecycleHeader) {
+    if header.live_turn_activity != AcpLiveTurnActivity::Idle
+        || header.latest_turn_status != AcpLatestTurnStatus::Failed
+    {
+        header.turn_error = None;
+    }
     if header.availability == AcpSessionAvailability::Closing {
         header.availability = session_availability_from_value(value, header.availability);
     }
@@ -1984,6 +2137,11 @@ fn apply_lifecycle_header(value: &mut Value, header: &AcpLifecycleHeader) {
         serde_json::to_value(header.live_turn_activity).unwrap_or(Value::Null);
     value["latestTurnStatus"] =
         serde_json::to_value(header.latest_turn_status).unwrap_or(Value::Null);
+    if let Some(error) = &header.turn_error {
+        value["turnError"] = serde_json::to_value(error).unwrap_or(Value::Null);
+    } else if let Some(object) = value.as_object_mut() {
+        object.remove("turnError");
+    }
     for (key, field) in [
         ("turnId", header.turn_id.as_ref()),
         ("promptEventId", header.prompt_event_id.as_ref()),
@@ -2308,6 +2466,7 @@ fn merge_session_lifecycle(current: Option<&Value>, incoming: &mut Value) {
     for key in [
         "modelOverride",
         "permissionModeOverride",
+        "autoAccept",
         "configOptionOverrides",
         "configCatalogRefreshRequiredAt",
     ] {
@@ -2361,6 +2520,9 @@ fn merge_session_lifecycle(current: Option<&Value>, incoming: &mut Value) {
         return;
     }
     if same_owner {
+        if lifecycle_is_terminal(&current_header) {
+            incoming_header.turn_error = current_header.turn_error.clone();
+        }
         // Running metadata is produced by the executor that owns this
         // generation. Keeping its revision stable lets that executor settle a
         // provider failure with an exact CAS check. A terminal write closes
@@ -2487,6 +2649,46 @@ pub fn persist_session_turn_terminal_owned(
     stop_reason: &str,
     decided_at: &str,
 ) -> Result<Option<AcpLifecycleHeader>> {
+    persist_session_turn_terminal_with_error_owned(
+        path,
+        turn_id,
+        operation_id,
+        expected_revision,
+        latest_turn_status,
+        stop_reason,
+        decided_at,
+        None,
+    )
+}
+
+pub fn persist_session_turn_failure_owned(
+    path: &Utf8Path,
+    owner: &AcpLifecycleOwner,
+    error: &RuntimeErrorInfo,
+    decided_at: &str,
+) -> Result<Option<AcpLifecycleHeader>> {
+    persist_session_turn_terminal_with_error_owned(
+        path,
+        &owner.turn_id,
+        Some(&owner.operation_id),
+        owner.revision,
+        AcpLatestTurnStatus::Failed,
+        "runtime-error",
+        decided_at,
+        Some(error),
+    )
+}
+
+fn persist_session_turn_terminal_with_error_owned(
+    path: &Utf8Path,
+    turn_id: &str,
+    operation_id: Option<&str>,
+    expected_revision: u64,
+    latest_turn_status: AcpLatestTurnStatus,
+    stop_reason: &str,
+    decided_at: &str,
+    error: Option<&RuntimeErrorInfo>,
+) -> Result<Option<AcpLifecycleHeader>> {
     let _guard = session_metadata_lock(path).lock().unwrap();
     if !path.exists() {
         return Ok(None);
@@ -2502,7 +2704,7 @@ pub fn persist_session_turn_terminal_owned(
     if lifecycle_is_terminal(&current) {
         return Ok(Some(current));
     }
-    let terminal = reduce_lifecycle_header(
+    let mut terminal = reduce_lifecycle_header(
         &value,
         current,
         AcpLifecycleTransition::TurnSettled {
@@ -2510,6 +2712,9 @@ pub fn persist_session_turn_terminal_owned(
             reason: stop_reason,
         },
     )?;
+    if terminal.latest_turn_status == AcpLatestTurnStatus::Failed {
+        terminal.turn_error = error.cloned();
+    }
     apply_lifecycle_header(&mut value, &terminal);
     value["updatedAt"] = Value::String(decided_at.to_string());
     write_json(path, &value)?;
@@ -2951,6 +3156,7 @@ pub fn agent_transcript_tool_output(raw: &Value) -> Option<&Value> {
 /// queried through the single-tool detail API. Live consumers only need the
 /// stable Gold Band relation metadata, tool input, status, and summary fields.
 pub fn compact_live_conversation_event(event: &mut AcpUiEvent) {
+    crate::acp::images::project_image_refs(event);
     let Some(raw) = event.raw.as_mut() else {
         return;
     };
@@ -2959,6 +3165,7 @@ pub fn compact_live_conversation_event(event: &mut AcpUiEvent) {
         return;
     }
     for path in [
+        &["rawOutput"][..],
         &["output"][..],
         &["fields", "output"][..],
         &["content", "output"][..],
@@ -3062,7 +3269,12 @@ pub fn extract_agent_transcript_relation(value: &Value) -> Option<AgentTranscrip
     let relation = AgentTranscriptRelation {
         agent_launch: standard_launch.unwrap_or(claude_subagent || claude_agent_tool),
         tool_name: standard_tool_name.or(claude_tool_name),
-        parent_tool_call_id: standard_parent.or(claude_parent),
+        parent_tool_call_id: if standard.is_some_and(|meta| meta.get("parentToolCallId").is_some())
+        {
+            standard_parent
+        } else {
+            claude_parent
+        },
     };
     (!relation.is_empty()).then_some(relation)
 }
@@ -3174,6 +3386,29 @@ pub fn user_prompt_event(
         attachments,
         Vec::new(),
     )
+}
+
+pub fn scheduled_trigger_event(seq: u64, payload: &ScheduledTriggerPayload) -> AcpUiEvent {
+    AcpUiEvent {
+        id: format!("scheduled-trigger:{}", payload.occurrence_id),
+        seq,
+        timestamp: payload.accepted_at.clone(),
+        kind: "scheduledTrigger".to_string(),
+        session_id: None,
+        content: None,
+        title: None,
+        tool_call_id: None,
+        status: Some("completed".to_string()),
+        started_seq: Some(seq),
+        ended_seq: Some(seq),
+        started_at: Some(payload.accepted_at.clone()),
+        ended_at: Some(payload.accepted_at.clone()),
+        timing: None,
+        raw: Some(serde_json::json!({
+            "source": "goldBandScheduledTrigger",
+            "scheduledTrigger": payload,
+        })),
+    }
 }
 
 pub fn user_prompt_event_with_quotes(
@@ -3308,20 +3543,89 @@ fn extract_status(value: &Value) -> Option<String> {
 mod tests {
     use super::{
         AcpLatestTurnStatus, AcpLiveTurnActivity, AcpPromptSubmission, AcpSessionAvailability,
-        AcpSessionMetadata, AcpTimingState, AcpTurnAdmission, AcpUiEvent,
-        agent_transcript_tool_output, annotate_latest_runtime_control_output, append_raw_frame,
+        AcpSessionMetadata, AcpTimingState, AcpTurnAdmission, AcpUiEvent, ScheduledTriggerPayload,
+        agent_transcript_tool_output, annotate_runtime_control_output, append_raw_frame,
         append_structured_diagnostic, append_timeline_patch, begin_session_turn,
         cancel_latest_processing_prompt_retry, compact_live_conversation_event,
         context_compaction_phase, elicitation_request_event, elicitation_response_event,
         extract_usage_fields, inspect_session_turn, is_semantically_empty_agent_content,
         kind_to_ui_kind, latest_timeline_source_seq, load_session_metadata, load_timeline_items,
-        normalize_session_update, permission_request_event, user_prompt_event,
-        user_prompt_event_with_quotes, write_timeline_items,
+        normalize_session_update, permission_request_event, scheduled_trigger_event,
+        user_prompt_event, user_prompt_event_with_quotes, write_timeline_items,
     };
     use crate::provider::UserPromptQuote;
     use crate::storage::{read_json, write_json};
     use camino::Utf8PathBuf;
     use serde_json::{Value, json};
+
+    fn scheduled_trigger_payload(
+        trigger_kind: crate::scheduler::occurrence::OccurrenceTriggerKind,
+    ) -> ScheduledTriggerPayload {
+        ScheduledTriggerPayload {
+            project_id: "project-001".to_string(),
+            scheduled_task_id: "scheduled-task-001".to_string(),
+            occurrence_id: "occurrence-001".to_string(),
+            trigger_kind: trigger_kind.clone(),
+            scheduled_at: (trigger_kind
+                == crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled)
+                .then(|| "2026-08-25T01:30:00Z".to_string()),
+            accepted_at: "2026-08-25T01:29:59Z".to_string(),
+            instruction_summary: "检查主分支状态".to_string(),
+            content_fingerprint: "sha256:accepted".to_string(),
+            links: crate::scheduler::occurrence::OccurrenceLinks {
+                task_id: Some("task-001".to_string()),
+                run_id: Some("run-001".to_string()),
+                round_id: Some("round-001".to_string()),
+                node_id: Some("dev".to_string()),
+                attempt_id: Some("attempt-001".to_string()),
+            },
+        }
+    }
+
+    #[test]
+    fn scheduled_trigger_event_has_deterministic_occurrence_identity() {
+        let payload = scheduled_trigger_payload(
+            crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled,
+        );
+
+        let first = scheduled_trigger_event(10, &payload);
+        let retry = scheduled_trigger_event(20, &payload);
+
+        assert_eq!(first.id, "scheduled-trigger:occurrence-001");
+        assert_eq!(retry.id, first.id);
+        assert_eq!(first.kind, "scheduledTrigger");
+        assert!(first.content.is_none());
+        assert_eq!(
+            first.raw.as_ref().unwrap()["scheduledTrigger"],
+            json!(payload)
+        );
+        assert_ne!(first.seq, retry.seq);
+    }
+
+    #[test]
+    fn automatic_and_manual_trigger_events_have_distinct_kinds() {
+        let automatic = scheduled_trigger_event(
+            1,
+            &scheduled_trigger_payload(
+                crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled,
+            ),
+        );
+        let manual = scheduled_trigger_event(
+            2,
+            &scheduled_trigger_payload(crate::scheduler::occurrence::OccurrenceTriggerKind::Manual),
+        );
+
+        assert_eq!(
+            automatic.raw.as_ref().unwrap()["scheduledTrigger"]["triggerKind"],
+            "scheduled"
+        );
+        assert_eq!(
+            manual.raw.as_ref().unwrap()["scheduledTrigger"]["triggerKind"],
+            "manual"
+        );
+        assert!(automatic.raw.as_ref().unwrap()["scheduledTrigger"]["scheduledAt"].is_string());
+        assert!(manual.raw.as_ref().unwrap()["scheduledTrigger"]["scheduledAt"].is_null());
+    }
 
     #[test]
     fn metadata_patch_preserves_the_latest_canonical_lifecycle() {
@@ -3512,6 +3816,122 @@ mod tests {
         assert_eq!(
             header.live_turn_activity,
             AcpLiveTurnActivity::CancelRequested
+        );
+    }
+
+    #[test]
+    fn abandoned_execution_persists_displayable_turn_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        crate::storage::write_json(
+            &path,
+            &serde_json::json!({
+                "acpRevision": 2, "turnId": "turn-a", "lifecycleOperationId": "operation-a",
+                "availability": "established", "sessionId": "session-a",
+                "liveTurnActivity": "accepted", "latestTurnStatus": "none"
+            }),
+        )
+        .unwrap();
+        drop(super::AcpLifecycleTerminalGuard::new(
+            path.clone(),
+            super::AcpLifecycleOwner {
+                turn_id: "turn-a".into(),
+                operation_id: "operation-a".into(),
+                revision: 2,
+            },
+        ));
+        let snapshot: serde_json::Value = crate::storage::read_json(&path).unwrap();
+        assert_eq!(snapshot["latestTurnStatus"], "failed");
+        assert_eq!(
+            snapshot["turnError"]["code"]["code"],
+            "acp.turn-execution-failed"
+        );
+    }
+
+    #[test]
+    fn background_turn_error_preserves_reason_and_cannot_leak_into_next_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        crate::storage::write_json(
+            &path,
+            &serde_json::json!({
+                "acpRevision": 2, "turnId": "turn-a", "lifecycleOperationId": "operation-a",
+                "availability": "established", "sessionId": "session-a",
+                "liveTurnActivity": "accepted", "latestTurnStatus": "none"
+            }),
+        )
+        .unwrap();
+        let owner = super::AcpLifecycleOwner {
+            turn_id: "turn-a".into(),
+            operation_id: "operation-a".into(),
+            revision: 2,
+        };
+        let mut error = crate::runtime_error::manual_runtime_error_info(
+            crate::runtime_error::RuntimeErrorDomain::Provider,
+            "acp.session-request-failed",
+            "resume failed",
+            serde_json::json!({"method": "session/resume"}),
+        );
+        error.raw = Some(
+            serde_json::json!({"code": -32603, "message": "Internal error",
+            "data": {"details": "thread session-a already has an active writer"}}),
+        );
+        let mut guard = super::AcpLifecycleTerminalGuard::new(path.clone(), owner.clone());
+        let result: anyhow::Result<()> =
+            guard.execute(|| Err(crate::runtime_error::runtime_error(error.clone())));
+        assert!(result.is_err());
+        let failed = super::read_lifecycle_header_snapshot(&path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(failed.turn_error.as_ref(), Some(&error));
+        assert_eq!(failed.revision, 3);
+        let next = AcpPromptSubmission {
+            turn_id: "turn-b".into(),
+            operation_id: "operation-b".into(),
+            adapter_id: "codex-acp".into(),
+            adapter_display_name: "Codex".into(),
+            cwd: "C:/tmp".into(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "retry".into(),
+                quotes: vec![],
+            },
+            attachment_paths: vec![],
+            admitted_at: "4Z".into(),
+        };
+        begin_session_turn(&path, &next).unwrap();
+        assert!(
+            super::persist_session_turn_failure_owned(&path, &owner, &error, "5Z")
+                .unwrap()
+                .is_none()
+        );
+        let latest = super::read_lifecycle_header_snapshot(&path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.turn_id.as_deref(), Some("turn-b"));
+        assert!(latest.turn_error.is_none());
+    }
+
+    #[test]
+    fn terminal_persistence_failure_does_not_replace_original_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let owner = super::AcpLifecycleOwner {
+            turn_id: "turn-a".into(),
+            operation_id: "operation-a".into(),
+            revision: 2,
+        };
+        let mut guard = super::AcpLifecycleTerminalGuard::new(path, owner);
+        let result: anyhow::Result<()> =
+            guard.execute(|| Err(anyhow::anyhow!("ORIGINAL_IO_FAILURE")));
+        let error = result.unwrap_err();
+        let info = crate::runtime_error::normalize_runtime_error(&error);
+        assert!(info.diagnostic.starts_with("ORIGINAL_IO_FAILURE\n"));
+        assert!(info.diagnostic.contains("ACP terminal persistence failed:"));
+        assert_eq!(info.recovery, crate::runtime_error::RecoveryMode::Manual);
+        assert!(
+            !guard.armed,
+            "a generic Drop failure must not replace the original error"
         );
     }
 
@@ -4312,6 +4732,56 @@ mod tests {
         assert!(persisted.get("modelOverride").is_none());
         assert!(persisted.get("permissionModeOverride").is_none());
         assert!(persisted.get("configOptionOverrides").is_none());
+    }
+
+    #[test]
+    fn established_session_keeps_command_owned_auto_accept() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-auto-accept".to_string(),
+            operation_id: "operation-auto-accept".to_string(),
+            adapter_id: "claude-acp".to_string(),
+            adapter_display_name: "Claude".to_string(),
+            cwd: "C:/tmp/attempt".to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "follow up".to_string(),
+                quotes: Vec::new(),
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-08-21T10:00:00Z".to_string(),
+        };
+        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission).unwrap()
+        else {
+            panic!("auto accept command-owned test admission must start");
+        };
+        let owner = match super::claim_session_turn_for_execution(
+            &path,
+            &submission.turn_id,
+            started.revision,
+            &submission.operation_id,
+        )
+        .unwrap()
+        {
+            super::AcpTurnExecutionClaim::Claimed(owner) => owner,
+            claim => panic!("expected ownership claim, got {claim:?}"),
+        };
+        let mut stale_provider = load_session_metadata(&path, None).unwrap();
+        stale_provider.session_id = Some("session-existing".to_string());
+        stale_provider.availability = AcpSessionAvailability::Established;
+        stale_provider.live_turn_activity = AcpLiveTurnActivity::Running;
+        stale_provider.auto_accept = true;
+        let mut command_owned = read_json::<Value>(&path).unwrap();
+        command_owned["sessionId"] = json!("session-existing");
+        command_owned["autoAccept"] = json!(false);
+        write_json(&path, &command_owned).unwrap();
+
+        super::write_session_metadata_owned(&path, &stale_provider, &owner)
+            .unwrap()
+            .expect("same owner provider write must merge command Auto Accept");
+        let persisted = read_json::<Value>(&path).unwrap();
+
+        assert_eq!(persisted["autoAccept"], false);
     }
 
     #[test]
@@ -5736,10 +6206,13 @@ mod tests {
         .unwrap();
 
         assert!(
-            annotate_latest_runtime_control_output(
+            annotate_runtime_control_output(
                 &path,
+                "message-2",
                 "dynamic-node-completion",
                 "dynamic-node-completion",
+                &crate::artifacts::json_artifact_display_span("你好\n```json\n{\"a\":\"b\"}\n```",)
+                    .unwrap(),
             )
             .unwrap()
         );
@@ -5798,8 +6271,17 @@ mod tests {
         .unwrap();
 
         assert!(
-            annotate_latest_runtime_control_output(&path, "accept-result", "workflow-output")
-                .unwrap()
+            annotate_runtime_control_output(
+                &path,
+                "message-1",
+                "accept-result",
+                "workflow-output",
+                &crate::artifacts::json_artifact_display_span(
+                    "修复前\n```json\n{\"a\":\"unterminated}\n```",
+                )
+                .unwrap(),
+            )
+            .unwrap()
         );
 
         let items = load_timeline_items(&path).unwrap();
@@ -6208,5 +6690,37 @@ mod tests {
         assert!(rolled.contains(pinned));
         assert!(rolled.contains(update_two));
         assert!(!rolled.contains(update_one));
+    }
+
+    #[test]
+    fn raw_append_reports_roll_only_when_file_is_rewritten() {
+        let dir = TempDir::new().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.raw.jsonl");
+
+        let first = super::append_raw_frame_observed(
+            &path,
+            "inbound",
+            json!({ "method": "initialize" }),
+            1024,
+            512,
+        )
+        .unwrap();
+        assert!(first.roll.is_none());
+
+        let second = super::append_raw_frame_observed(
+            &path,
+            "inbound",
+            json!({
+                "method": "session/update",
+                "payload": "x".repeat(2048)
+            }),
+            256,
+            128,
+        )
+        .unwrap();
+        let roll = second.roll.expect("raw log rewrite stats");
+        assert!(roll.before_bytes > roll.after_bytes);
     }
 }

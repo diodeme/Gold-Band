@@ -6,11 +6,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/api', async () => {
   const actual = await vi.importActual<typeof import('@/api')>('@/api');
-  return { ...actual, getAcpActivityDetail: vi.fn(), getAcpToolDetail: vi.fn() };
+  return { ...actual, getAcpActivityDetail: vi.fn(), getAcpToolDetail: vi.fn(), getAcpImage: vi.fn() };
 });
 
-import { getAcpActivityDetail, getAcpToolDetail } from '@/api';
+import { getAcpActivityDetail, getAcpToolDetail, getAcpImage } from '@/api';
 import { ACPMessageList, buildAcpTimelineProjection } from '@/components/acp/ACPChatDialog';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import { ConversationViewport, ConversationViewportFooter } from '@/components/conversation/ConversationViewport';
+import type { ChatContainerContext } from '@/components/prompt-kit/chat-container';
 import type { AgentTranscriptLocator } from '@/components/workspace/right-workspace-context';
 import type { AcpActivityDetailVm, AcpUiEventVm } from '@/types';
 
@@ -26,37 +29,303 @@ const locator: AgentTranscriptLocator = {
   branchId: 'agent-1',
 };
 
-function activitySummary(): AcpUiEventVm {
+function activitySummary(sessionId = 'session-1', totalEventCount = 100): AcpUiEventVm {
+  const activityEndSeq = 9 + totalEventCount;
   return {
     id: 'activity-10',
     seq: 10,
     timestamp: '10Z',
     kind: 'activitySummary',
-    sessionId: 'session-1',
+    sessionId,
     content: null,
     title: null,
     toolCallId: null,
     status: 'completed',
     startedSeq: 10,
-    endedSeq: 109,
+    endedSeq: activityEndSeq,
     raw: {
       goldBandActivity: {
         activityStartSeq: 10,
-        activityEndSeq: 109,
-        totalEventCount: 100,
-        toolCallCount: 100,
+        activityEndSeq,
+        totalEventCount,
+        toolCallCount: totalEventCount,
         detailAvailable: true,
       },
     },
   };
 }
 
+function activityToolEvent(seq: number, sessionId = 'session-1'): AcpUiEventVm {
+  return {
+    id: `tool-${seq}`,
+    seq,
+    timestamp: `${seq}Z`,
+    kind: 'toolCall',
+    sessionId,
+    content: null,
+    title: `Tool ${seq}`,
+    toolCallId: `call-${seq}`,
+    status: 'completed',
+    startedSeq: seq,
+    endedSeq: seq,
+    raw: {
+      output: `output-${seq}`,
+      _meta: { goldBandConversation: { toolDetailAvailable: false } },
+    },
+  };
+}
+
+function activityDetailPage(from: number, to: number, earlierCursor: string | null): AcpActivityDetailVm {
+  return {
+    items: Array.from({ length: to - from + 1 }, (_, index) => activityToolEvent(from + index)),
+    hasMoreEarlier: earlierCursor !== null,
+    earlierCursor,
+  };
+}
+
+async function clickButton(button: HTMLButtonElement | null | undefined) {
+  expect(button).not.toBeNull();
+  await act(async () => {
+    button?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve();
+  });
+}
+
+function findButtonByText(container: HTMLElement, text: string) {
+  return Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+    .find((button) => button.textContent?.includes(text)) ?? null;
+}
+
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.clearAllMocks();
   document.body.replaceChildren();
 });
 
 describe('ACP activity detail loading', () => {
+  it.each(['generation', 'session', 'range'])('rejects an activity page outside its %s ownership', async (change) => {
+    let resolveOld!: (value: AcpActivityDetailVm) => void;
+    vi.mocked(getAcpActivityDetail)
+      .mockReturnValueOnce(new Promise(resolve => { resolveOld = resolve; }))
+      .mockReturnValue(new Promise(() => {}));
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const render = (session: string, generation: number) => root.render(<ACPMessageList
+      timeline={buildAcpTimelineProjection([activitySummary(session)], 'running').timeline}
+      sessionStatus="running" sending={false} branchLocator={locator} timelineGeneration={generation} />);
+    try {
+      await act(async () => render('session-1', 1));
+      await clickButton(container.querySelector('[data-theme-role="activity"] > button'));
+      if (change !== 'range') await act(async () => render(change === 'session' ? 'session-2' : 'session-1', 2));
+      await act(async () => resolveOld({
+        items: [{ ...activityToolEvent(change === 'range' ? 110 : 109), title: 'RejectedPage' }],
+        hasMoreEarlier: false, earlierCursor: null,
+      }));
+      expect(container.textContent).not.toContain('RejectedPage');
+      if (change === 'generation') expect(getAcpActivityDetail).toHaveBeenCalledTimes(2);
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it('keeps newer live tool state when the older activity page arrives', async () => {
+    let resolveDetail!: (value: AcpActivityDetailVm) => void;
+    vi.mocked(getAcpActivityDetail).mockReturnValue(new Promise(resolve => { resolveDetail = resolve; }));
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const live = { ...activityToolEvent(109), endedSeq: 115, title: 'CurrentTool', raw: { output: 'current-output' } };
+    try {
+      await act(async () => root.render(<ACPMessageList
+        timeline={buildAcpTimelineProjection([activitySummary()], 'running').timeline}
+        sessionStatus="running" sending={false} branchLocator={locator} />));
+      await clickButton(container.querySelector('[data-theme-role="activity"] > button'));
+      await act(async () => root.render(<ACPMessageList
+        timeline={buildAcpTimelineProjection([activitySummary('session-1', 106), live], 'running').timeline}
+        sessionStatus="running" sending={false} branchLocator={locator} />));
+      vi.mocked(getAcpActivityDetail).mockReturnValue(new Promise(() => {}));
+      await act(async () => resolveDetail({
+        items: [{ ...activityToolEvent(109), title: 'ObsoleteTool', status: 'in_progress', raw: { output: 'obsolete-output' } }],
+        hasMoreEarlier: true, earlierCursor: 'before-109',
+      }));
+      expect(container.querySelectorAll('[data-acp-activity-detail-item-key]')).toHaveLength(1);
+      expect(container.textContent).toContain('CurrentTool');
+      expect(container.textContent).not.toContain('ObsoleteTool');
+      await clickButton(container.querySelector('[data-acp-activity-detail-item-key] [data-slot="collapsible-trigger"]'));
+      expect(container.textContent).toContain('current-output');
+      expect(container.textContent).not.toContain('obsolete-output');
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it('accepts the latest version of an item selected by its click-time start position', async () => {
+    vi.mocked(getAcpActivityDetail).mockResolvedValue({
+      items: [{ ...activityToolEvent(109), endedSeq: 115, title: 'Updated selected tool' }],
+      hasMoreEarlier: true, earlierCursor: 'before-109',
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<ACPMessageList
+        timeline={buildAcpTimelineProjection([activitySummary()], 'running').timeline}
+        sessionStatus="running" sending={false} branchLocator={locator} />));
+      await clickButton(container.querySelector('[data-theme-role="activity"] > button'));
+      expect(container.querySelector('[data-acp-activity-detail-item-key]')?.textContent).toContain('selected tool');
+      expect(getAcpActivityDetail).toHaveBeenCalledTimes(1);
+    } finally { await act(async () => root.unmount()); }
+  });
+  it.each(['ready', 'failed', 'closed'])('waits for tool-detail thumbnails before revealing the tool body (%s)', async (outcome) => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    let finishImage!: (value: import('@/types').AcpImageContentVm) => void;
+    vi.mocked(getAcpImage).mockReturnValue(new Promise(resolve => { finishImage = resolve; }));
+    let finishDecode!: () => void;
+    let failDecode!: () => void;
+    const decoding = new Promise<void>((resolve, reject) => { finishDecode = resolve; failDecode = () => reject(new Error('invalid image')); });
+    vi.stubGlobal('Image', class { src = ''; decode() { return decoding; } });
+    vi.stubGlobal('fetch', vi.fn(async () => ({ blob: async () => new Blob(['image'], { type: 'image/png' }) })));
+    vi.stubGlobal('URL', class extends URL { static createObjectURL() { return 'blob:tool-ready'; } static revokeObjectURL() {} });
+    const tool = activityToolEvent(10);
+    tool.raw = { _meta: { goldBandConversation: { toolDetailAvailable: true } } };
+    vi.mocked(getAcpActivityDetail).mockResolvedValue({ items:[tool], hasMoreEarlier:false, earlierCursor:null });
+    vi.mocked(getAcpToolDetail).mockResolvedValue({ event: { ...tool, raw: { output:'loaded tool body',
+      goldBandImages:[{eventId:tool.id, pointer:'/content/0/content', contentHash:`readiness-test-${outcome}`, mimeType:'image/png'}],
+      _meta:{goldBandConversation:{toolDetailAvailable:true}} } } });
+    const container = document.createElement('div'); document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<TooltipProvider><ACPMessageList timeline={buildAcpTimelineProjection([activitySummary()], 'completed').timeline}
+        sessionStatus="completed" sending={false} branchLocator={locator} /></TooltipProvider>));
+      await clickButton(container.querySelector('[data-theme-role="activity"] > button'));
+      expect(getAcpToolDetail).not.toHaveBeenCalled();
+      expect(getAcpImage).not.toHaveBeenCalled();
+      await clickButton(container.querySelector('[data-acp-activity-detail-item-key] [data-slot="collapsible-trigger"]'));
+      expect(getAcpToolDetail).toHaveBeenCalledTimes(1);
+      expect(container.querySelector('[data-tool-detail]')).toBeNull();
+      expect(container.querySelector('[data-acp-tool-detail-loading]')).not.toBeNull();
+      expect(getAcpImage).toHaveBeenCalledTimes(1);
+      await act(async () => { finishImage({dataUrl:'data:image/png;base64,AQID', mimeType:'image/png', width:1, height:1}); });
+      expect(container.querySelector('[data-tool-detail]')).toBeNull();
+      if (outcome === 'closed') await clickButton(container.querySelector('[data-acp-activity-detail-item-key] [data-slot="collapsible-trigger"]'));
+      await act(async () => { if (outcome === 'failed') failDecode(); else finishDecode(); });
+      if (outcome === 'closed') {
+        expect(container.querySelector('[data-tool-detail]')).toBeNull();
+        return;
+      }
+      expect(container.querySelector('[data-tool-detail]')?.textContent).toContain('loaded tool body');
+      expect(container.querySelector('[data-acp-tool-detail-loading]')).toBeNull();
+      if (outcome === 'ready') expect(container.querySelector('[data-acp-image-thumbnail] img')?.getAttribute('src')).toBe('blob:tool-ready');
+      if (outcome === 'failed') expect(container.querySelector('[data-acp-image-thumbnail] button[aria-label="重试"]')).not.toBeNull();
+    } finally { await act(async () => root.unmount()); }
+  });
+  it.each(['toolCall', 'thoughtDelta'])('expands an individual %s in place after following was resumed', async (kind) => {
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    const contextRef = React.createRef<ChatContainerContext>();
+    const item = { ...activityToolEvent(10), kind, content: kind === 'thoughtDelta' ? 'Detailed reasoning' : null };
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(
+        <ConversationViewport contextRef={contextRef} scrollClassName="overflow-y-auto">
+          <ACPMessageList timeline={buildAcpTimelineProjection([item], 'completed').timeline} sessionStatus="completed" sending={false} />
+        </ConversationViewport>,
+      ));
+      await clickButton(container.querySelector('[data-theme-role="activity"] > button'));
+      await act(async () => { void contextRef.current!.scrollToBottom({ animation: 'instant' }); });
+      expect(contextRef.current!.isAtBottom).toBe(true);
+      const viewport = contextRef.current!.scrollRef.current!;
+      Object.defineProperties(viewport, {
+        clientHeight: { configurable: true, value: 400 },
+        scrollHeight: { configurable: true, value: 1000 },
+        scrollTop: { configurable: true, value: 600, writable: true },
+      });
+      const trigger = container.querySelector<HTMLButtonElement>('[data-acp-activity-detail-item-key] [data-slot="collapsible-trigger"]');
+      await clickButton(trigger);
+      expect(trigger!.getAttribute('aria-expanded')).toBe('true');
+      expect(container.textContent).toContain(kind === 'thoughtDelta' ? 'Detailed reasoning' : 'output-10');
+      expect(contextRef.current!.isAtBottom).toBe(false);
+      expect(viewport.scrollTop).toBe(600);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it.each([
+    { cancel: false, bottom: 900, expected: 600 },
+    { cancel: true, bottom: 900, expected: 100 },
+    { cancel: false, bottom: 300, expected: 100 },
+    { cancel: false, bottom: 900, expected: 800, footerHeight: 200 },
+  ])('positions a loaded expansion only for overflow: %j', async ({ cancel, bottom, expected, footerHeight = 0 }) => {
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    let resolveDetail!: (detail: AcpActivityDetailVm) => void;
+    vi.mocked(getAcpActivityDetail).mockReturnValueOnce(new Promise((resolve) => { resolveDetail = resolve; }));
+    const contextRef = React.createRef<ChatContainerContext>();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    let toolBottom = bottom;
+    let measuredFooterHeight = 0;
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.hasAttribute('data-conversation-viewport-footer')) {
+        return { top: 400 - measuredFooterHeight, bottom: 400, height: measuredFooterHeight } as DOMRect;
+      }
+      return { top: 0, bottom: this.classList.contains('acp-activity-collapse-button') ? toolBottom : 400, height: 400 } as DOMRect;
+    });
+    try {
+      await act(async () => root.render(
+        <ConversationViewport contextRef={contextRef} initialFollowing={false} scrollClassName="overflow-y-auto">
+          <ACPMessageList timeline={buildAcpTimelineProjection([activitySummary()], 'completed').timeline} sessionStatus="completed" sending={false} branchLocator={locator} />
+          <ConversationViewportFooter><div /></ConversationViewportFooter>
+        </ConversationViewport>,
+      ));
+      const viewport = contextRef.current!.scrollRef.current!;
+      Object.defineProperties(viewport, {
+        clientHeight: { configurable: true, value: 400 },
+        scrollHeight: { configurable: true, value: 2000 },
+        scrollTop: { configurable: true, value: 100, writable: true },
+      });
+      await clickButton(container.querySelector('[data-slot="collapsible-trigger"]'));
+      expect(viewport.scrollTop).toBe(100);
+      measuredFooterHeight = footerHeight;
+      if (cancel) await act(async () => viewport.dispatchEvent(new WheelEvent('wheel', { deltaY: -10 })));
+      // The live range advances while the click-time detail page is in flight.
+      await act(async () => root.render(
+        <ConversationViewport contextRef={contextRef} initialFollowing={false} scrollClassName="overflow-y-auto">
+          <ACPMessageList timeline={buildAcpTimelineProjection([activitySummary('session-1', 102)], 'running').timeline} sessionStatus="running" sending={false} branchLocator={locator} />
+          <ConversationViewportFooter><div /></ConversationViewportFooter>
+        </ConversationViewport>,
+      ));
+      vi.mocked(getAcpActivityDetail).mockReturnValue(new Promise(() => {}));
+      await act(async () => resolveDetail(activityDetailPage(70, 109, 'before-70')));
+      expect(container.querySelectorAll('[data-acp-activity-detail-item-key]')).toHaveLength(40);
+      expect(findButtonByText(container, '显示更早')).not.toBeNull();
+      expect(viewport.scrollTop).toBe(expected);
+      expect(contextRef.current!.isAtBottom).toBe(false);
+      measuredFooterHeight += 100;
+      toolBottom = 1200;
+      await act(async () => root.render(
+        <ConversationViewport contextRef={contextRef} initialFollowing={false} scrollClassName="overflow-y-auto">
+          <ACPMessageList timeline={buildAcpTimelineProjection([activitySummary('session-1', 103)], 'running').timeline} sessionStatus="running" sending={false} branchLocator={locator} />
+          <ConversationViewportFooter><div /></ConversationViewportFooter>
+        </ConversationViewport>,
+      ));
+      expect(viewport.scrollTop).toBe(expected);
+      await clickButton(container.querySelector('[data-acp-activity-detail-item-key] [data-slot="collapsible-trigger"]'));
+      expect(viewport.scrollTop).toBe(expected);
+      expect(getAcpActivityDetail).toHaveBeenCalledTimes(2);
+    } finally {
+      await act(async () => root.unmount());
+      rect.mockRestore();
+    }
+  });
+
   it('loads the authoritative detail when a compact summary is mixed with only a partial live tail', async () => {
     const partialThought: AcpUiEventVm = {
       id: 'thought-partial',
@@ -138,6 +407,7 @@ describe('ACP activity detail loading', () => {
         'attempt-1',
         {
           branchId: 'agent-1',
+          sessionId: 'session-1',
           activityStartSeq: 10,
           activityEndSeq: 109,
           earlierCursor: null,
@@ -196,7 +466,12 @@ describe('ACP activity detail loading', () => {
         'round-1',
         'node-1',
         'attempt-1',
-        { branchId: 'agent-1', eventId: 'tool-10', toolCallId: 'call-10' },
+        {
+          branchId: 'agent-1',
+          sessionId: 'session-1',
+          eventId: 'tool-10',
+          toolCallId: 'call-10',
+        },
         undefined,
         undefined,
       );
@@ -245,6 +520,7 @@ describe('ACP activity detail loading', () => {
         'attempt-1',
         {
           branchId: 'agent-1',
+          sessionId: 'session-1',
           activityStartSeq: 10,
           activityEndSeq: 109,
           earlierCursor: null,
@@ -259,6 +535,64 @@ describe('ACP activity detail loading', () => {
         await detailPromise;
       });
       expect(getAcpActivityDetail).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('coalesces activity revisions to one in-flight request and one latest trailing request', async () => {
+    let resolveInitial!: (value: AcpActivityDetailVm) => void;
+    let resolveLatest!: (value: AcpActivityDetailVm) => void;
+    const initialRequest = new Promise<AcpActivityDetailVm>((resolve) => {
+      resolveInitial = resolve;
+    });
+    const latestRequest = new Promise<AcpActivityDetailVm>((resolve) => {
+      resolveLatest = resolve;
+    });
+    vi.mocked(getAcpActivityDetail)
+      .mockReturnValueOnce(initialRequest)
+      .mockReturnValueOnce(latestRequest);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        const projection = buildAcpTimelineProjection([activitySummary('session-1', 100)], 'running');
+        root.render(<ACPMessageList timeline={projection.timeline} sessionStatus="running" sending={false} branchLocator={locator} timelineGeneration={1} />);
+      });
+      await clickButton(container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]'));
+      expect(getAcpActivityDetail).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        const projection = buildAcpTimelineProjection([activitySummary('session-1', 101)], 'running');
+        root.render(<ACPMessageList timeline={projection.timeline} sessionStatus="running" sending={false} branchLocator={locator} timelineGeneration={1} />);
+      });
+      await act(async () => {
+        const projection = buildAcpTimelineProjection([activitySummary('session-1', 102)], 'running');
+        root.render(<ACPMessageList timeline={projection.timeline} sessionStatus="running" sending={false} branchLocator={locator} timelineGeneration={1} />);
+        await Promise.resolve();
+      });
+      expect(getAcpActivityDetail).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        resolveInitial({ items: [], hasMoreEarlier: false, earlierCursor: null });
+        await initialRequest;
+      });
+      await vi.waitFor(() => {
+        expect(getAcpActivityDetail).toHaveBeenCalledTimes(2);
+      });
+      expect(vi.mocked(getAcpActivityDetail).mock.calls[1]?.[6]).toMatchObject({
+        activityStartSeq: 10,
+        activityEndSeq: 111,
+        earlierCursor: null,
+      });
+
+      await act(async () => {
+        resolveLatest({ items: [], hasMoreEarlier: false, earlierCursor: null });
+        await latestRequest;
+      });
+      expect(getAcpActivityDetail).toHaveBeenCalledTimes(2);
     } finally {
       await act(async () => root.unmount());
     }
@@ -330,6 +664,647 @@ describe('ACP activity detail loading', () => {
         await Promise.resolve();
       });
       expect(getAcpToolDetail).toHaveBeenCalledTimes(2);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('uses the retained first item as the earlier cursor after a live refresh trims the window', async () => {
+    vi.mocked(getAcpActivityDetail)
+      .mockResolvedValueOnce(activityDetailPage(161, 200, 'before-161'))
+      .mockResolvedValueOnce(activityDetailPage(121, 160, 'before-121'))
+      .mockResolvedValueOnce(activityDetailPage(81, 120, 'before-81'))
+      .mockResolvedValueOnce(activityDetailPage(201, 240, 'before-201'))
+      .mockReturnValue(new Promise(() => {}));
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const render = (count: number) => root.render(<ACPMessageList
+      timeline={buildAcpTimelineProjection([activitySummary('session-1', count)], 'running').timeline}
+      sessionStatus="running" sending={false} branchLocator={locator} />);
+    try {
+      await act(async () => render(200));
+      await clickButton(container.querySelector('[data-theme-role="activity"] > button'));
+      await clickButton(findButtonByText(container, '显示更早'));
+      await clickButton(findButtonByText(container, '显示更早'));
+      await act(async () => render(240));
+      expect(container.querySelectorAll('[data-acp-activity-detail-item-key]')).toHaveLength(120);
+      expect(container.querySelector('[data-acp-activity-detail-item-key]')?.textContent).toContain('Tool121');
+      await clickButton(findButtonByText(container, '显示更早'));
+      expect(vi.mocked(getAcpActivityDetail).mock.calls[4]?.[6].earlierCursor).toBe('rev:121');
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it('keeps four activity detail pages within a three-page window and can return to latest', async () => {
+    vi.mocked(getAcpActivityDetail)
+      .mockResolvedValueOnce(activityDetailPage(161, 200, 'before-161'))
+      .mockResolvedValueOnce(activityDetailPage(121, 160, 'before-121'))
+      .mockResolvedValueOnce(activityDetailPage(81, 120, 'before-81'))
+      .mockResolvedValueOnce(activityDetailPage(41, 80, 'before-41'))
+      .mockResolvedValueOnce(activityDetailPage(161, 200, 'before-161'));
+    const projection = buildAcpTimelineProjection([activitySummary('session-1', 200)], 'completed');
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<ACPMessageList timeline={projection.timeline} sessionStatus="completed" sending={false} branchLocator={locator} />);
+      });
+
+      await clickButton(container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]'));
+      await clickButton(findButtonByText(container, '显示更早'));
+      await clickButton(findButtonByText(container, '显示更早'));
+      await clickButton(findButtonByText(container, '显示更早'));
+
+      expect(container.querySelectorAll('[data-prompt-kit-tool="true"]')).toHaveLength(120);
+      const returnToLatest = findButtonByText(container, '回到最新活动');
+      expect(returnToLatest).not.toBeNull();
+
+      await clickButton(returnToLatest);
+      expect(container.querySelectorAll('[data-prompt-kit-tool="true"]')).toHaveLength(40);
+      expect(container.textContent).toContain('Tool200');
+      expect(container.textContent).not.toContain('Tool80');
+      expect(getAcpActivityDetail).toHaveBeenCalledTimes(5);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('ignores an activity detail response owned by the previous session', async () => {
+    let resolveDetail!: (value: AcpActivityDetailVm) => void;
+    const detailPromise = new Promise<AcpActivityDetailVm>((resolve) => {
+      resolveDetail = resolve;
+    });
+    vi.mocked(getAcpActivityDetail).mockReturnValue(detailPromise);
+    const sessionA = buildAcpTimelineProjection([activitySummary('session-a')], 'completed');
+    const sessionB = buildAcpTimelineProjection([activitySummary('session-b')], 'completed');
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<ACPMessageList timeline={sessionA.timeline} sessionStatus="completed" sending={false} branchLocator={locator} />);
+      });
+      await clickButton(container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]'));
+      await act(async () => {
+        root.render(<ACPMessageList timeline={sessionB.timeline} sessionStatus="completed" sending={false} branchLocator={locator} />);
+      });
+      await act(async () => {
+        resolveDetail({
+          items: [{ ...activityToolEvent(50, 'session-a'), title: 'stale-session-a-activity' }],
+          hasMoreEarlier: false,
+          earlierCursor: null,
+        });
+        await detailPromise;
+      });
+
+      expect(container.textContent).not.toContain('stale-session-a-activity');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('does not let a lower-position tool detail replace newer live output', async () => {
+    let resolveDetail!: (value: { event: AcpUiEventVm | null }) => void;
+    const detailPromise = new Promise<{ event: AcpUiEventVm | null }>((resolve) => {
+      resolveDetail = resolve;
+    });
+    vi.mocked(getAcpToolDetail).mockReturnValue(detailPromise);
+    const currentTool: AcpUiEventVm = {
+      ...activityToolEvent(30),
+      raw: {
+        output: 'fresh-live-output',
+        _meta: { goldBandConversation: { toolDetailAvailable: true } },
+      },
+    };
+    const staleDetail: AcpUiEventVm = {
+      ...currentTool,
+      seq: 10,
+      startedSeq: 10,
+      endedSeq: 10,
+      raw: {
+        output: 'stale-detail-output',
+        _meta: { goldBandConversation: { toolDetailAvailable: true } },
+      },
+    };
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<ACPMessageList timeline={[currentTool]} sessionStatus="completed" sending={false} branchLocator={locator} />);
+      });
+      await clickButton(container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]'));
+      await act(async () => {
+        resolveDetail({ event: staleDetail });
+        await detailPromise;
+      });
+
+      expect(container.textContent).toContain('fresh-live-output');
+      expect(container.textContent).not.toContain('stale-detail-output');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('ignores a tool detail response owned by the previous session', async () => {
+    let resolveDetail!: (value: { event: AcpUiEventVm | null }) => void;
+    const detailPromise = new Promise<{ event: AcpUiEventVm | null }>((resolve) => {
+      resolveDetail = resolve;
+    });
+    vi.mocked(getAcpToolDetail).mockReturnValue(detailPromise);
+    const sessionATool: AcpUiEventVm = {
+      ...activityToolEvent(40, 'session-a'),
+      raw: {
+        rawInput: { path: 'session-a.txt' },
+        _meta: { goldBandConversation: { toolDetailAvailable: true } },
+      },
+    };
+    const sessionBTool: AcpUiEventVm = {
+      ...sessionATool,
+      sessionId: 'session-b',
+      raw: {
+        rawInput: { path: 'session-b.txt' },
+        _meta: { goldBandConversation: { toolDetailAvailable: true } },
+      },
+    };
+    const staleSessionADetail: AcpUiEventVm = {
+      ...sessionATool,
+      raw: {
+        output: 'stale-session-a-output',
+        _meta: { goldBandConversation: { toolDetailAvailable: true } },
+      },
+    };
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<ACPMessageList timeline={[sessionATool]} sessionStatus="completed" sending={false} branchLocator={locator} />);
+      });
+      await clickButton(container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]'));
+      await act(async () => {
+        root.render(<ACPMessageList timeline={[sessionBTool]} sessionStatus="completed" sending={false} branchLocator={locator} />);
+      });
+      await act(async () => {
+        resolveDetail({ event: staleSessionADetail });
+        await detailPromise;
+      });
+
+      expect(container.textContent).toContain('session-b.txt');
+      expect(container.textContent).not.toContain('stale-session-a-output');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('starts the newer generation tool detail only after the previous request settles', async () => {
+    let resolveGenerationOne!: (value: { event: AcpUiEventVm | null }) => void;
+    let resolveGenerationTwo!: (value: { event: AcpUiEventVm | null }) => void;
+    const generationOne = new Promise<{ event: AcpUiEventVm | null }>((resolve) => {
+      resolveGenerationOne = resolve;
+    });
+    const generationTwo = new Promise<{ event: AcpUiEventVm | null }>((resolve) => {
+      resolveGenerationTwo = resolve;
+    });
+    vi.mocked(getAcpToolDetail)
+      .mockReturnValueOnce(generationOne)
+      .mockReturnValueOnce(generationTwo);
+    const tool: AcpUiEventVm = {
+      ...activityToolEvent(50),
+      raw: {
+        rawInput: { path: 'generation.txt' },
+        _meta: { goldBandConversation: { toolDetailAvailable: true } },
+      },
+    };
+    const generationOneDetail: AcpUiEventVm = {
+      ...tool,
+      raw: {
+        output: 'generation-1-stale-detail',
+        _meta: { goldBandConversation: { toolDetailAvailable: true } },
+      },
+    };
+    const generationTwoDetail: AcpUiEventVm = {
+      ...tool,
+      raw: {
+        output: 'generation-2-current-detail',
+        _meta: { goldBandConversation: { toolDetailAvailable: true } },
+      },
+    };
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<ACPMessageList timeline={[tool]} sessionStatus="completed" sending={false} branchLocator={locator} timelineGeneration={1} />);
+      });
+      await clickButton(container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]'));
+      expect(getAcpToolDetail).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        root.render(<ACPMessageList timeline={[tool]} sessionStatus="completed" sending={false} branchLocator={locator} timelineGeneration={2} />);
+        await Promise.resolve();
+      });
+      expect(getAcpToolDetail).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        resolveGenerationOne({ event: generationOneDetail });
+        await generationOne;
+      });
+      expect(container.textContent).not.toContain('generation-1-stale-detail');
+      await vi.waitFor(() => {
+        expect(getAcpToolDetail).toHaveBeenCalledTimes(2);
+      });
+
+      await act(async () => {
+        resolveGenerationTwo({ event: generationTwoDetail });
+        await generationTwo;
+      });
+      expect(container.textContent).toContain('generation-2-current-detail');
+      expect(container.textContent).not.toContain('generation-1-stale-detail');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('queues one trailing tool detail when source content changes at the same position', async () => {
+    let resolveInitial!: (value: { event: AcpUiEventVm | null }) => void;
+    let resolveLatest!: (value: { event: AcpUiEventVm | null }) => void;
+    const initialRequest = new Promise<{ event: AcpUiEventVm | null }>((resolve) => {
+      resolveInitial = resolve;
+    });
+    const latestRequest = new Promise<{ event: AcpUiEventVm | null }>((resolve) => {
+      resolveLatest = resolve;
+    });
+    vi.mocked(getAcpToolDetail)
+      .mockReturnValueOnce(initialRequest)
+      .mockReturnValueOnce(latestRequest);
+    const initialTool: AcpUiEventVm = {
+      ...activityToolEvent(60),
+      raw: {
+        rawInput: { path: 'initial-source.txt' },
+        _meta: { goldBandConversation: { toolDetailAvailable: true } },
+      },
+    };
+    const updatedTool: AcpUiEventVm = {
+      ...initialTool,
+      raw: {
+        rawInput: { path: 'updated-source.txt' },
+        _meta: { goldBandConversation: { toolDetailAvailable: true } },
+      },
+    };
+    const initialDetail: AcpUiEventVm = {
+      ...initialTool,
+      raw: {
+        output: 'stale-same-position-output',
+        _meta: { goldBandConversation: { toolDetailAvailable: true } },
+      },
+    };
+    const latestDetail: AcpUiEventVm = {
+      ...updatedTool,
+      raw: {
+        output: 'latest-same-position-output',
+        _meta: { goldBandConversation: { toolDetailAvailable: true } },
+      },
+    };
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(<ACPMessageList timeline={[initialTool]} sessionStatus="running" sending={false} branchLocator={locator} timelineGeneration={1} />);
+      });
+      await clickButton(container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]'));
+      expect(getAcpToolDetail).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        root.render(<ACPMessageList timeline={[updatedTool]} sessionStatus="running" sending={false} branchLocator={locator} timelineGeneration={1} />);
+        await Promise.resolve();
+      });
+      expect(getAcpToolDetail).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        resolveInitial({ event: initialDetail });
+        await initialRequest;
+      });
+      await vi.waitFor(() => {
+        expect(getAcpToolDetail).toHaveBeenCalledTimes(2);
+      });
+      expect(container.textContent).not.toContain('stale-same-position-output');
+
+      await act(async () => {
+        resolveLatest({ event: latestDetail });
+        await latestRequest;
+      });
+      expect(container.textContent).toContain('latest-same-position-output');
+      expect(container.textContent).not.toContain('stale-same-position-output');
+      expect(getAcpToolDetail).toHaveBeenCalledTimes(2);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('does not reload tool detail for a semantically identical raw snapshot clone', async () => {
+    let resolveDetail!: (value: { event: AcpUiEventVm | null }) => void;
+    const detailRequest = new Promise<{ event: AcpUiEventVm | null }>((resolve) => {
+      resolveDetail = resolve;
+    });
+    vi.mocked(getAcpToolDetail)
+      .mockReturnValueOnce(detailRequest)
+      .mockResolvedValue({ event: null });
+    const tool: AcpUiEventVm = {
+      ...activityToolEvent(70),
+      raw: {
+        rawInput: { path: 'same-source.txt', options: { encoding: 'utf8' } },
+        _meta: {
+          goldBandConversation: {
+            toolName: 'Read',
+            toolDetailAvailable: true,
+          },
+        },
+      },
+    };
+    const detail: AcpUiEventVm = {
+      ...tool,
+      raw: {
+        output: 'semantically-stable-detail',
+        _meta: {
+          goldBandConversation: {
+            toolName: 'Read',
+            toolDetailAvailable: true,
+          },
+        },
+      },
+    };
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(<ACPMessageList timeline={[tool]} sessionStatus="running" sending={false} branchLocator={locator} timelineGeneration={1} />);
+      });
+      await clickButton(container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]'));
+      expect(getAcpToolDetail).toHaveBeenCalledTimes(1);
+
+      const clonedTool = {
+        ...tool,
+        raw: JSON.parse(JSON.stringify(tool.raw)) as unknown,
+      };
+      await act(async () => {
+        root.render(<ACPMessageList timeline={[clonedTool]} sessionStatus="running" sending={false} branchLocator={locator} timelineGeneration={1} />);
+        await Promise.resolve();
+      });
+
+      await act(async () => {
+        resolveDetail({ event: detail });
+        await detailRequest;
+      });
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+      expect(getAcpToolDetail).toHaveBeenCalledTimes(1);
+      expect(container.textContent).toContain('semantically-stable-detail');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('uses the timeline window session when a compact tool omits sessionId', async () => {
+    const marker: AcpUiEventVm = {
+      id: 'session-marker',
+      seq: 1,
+      timestamp: '1Z',
+      kind: 'textDelta',
+      sessionId: 'session-1',
+      content: 'session marker',
+      status: 'completed',
+      startedSeq: 1,
+      endedSeq: 1,
+      raw: null,
+    };
+    const tool: AcpUiEventVm = {
+      ...activityToolEvent(80),
+      sessionId: null,
+      raw: {
+        rawInput: { path: 'owner-session.txt' },
+        _meta: { goldBandConversation: { toolDetailAvailable: true } },
+      },
+    };
+    const detail: AcpUiEventVm = {
+      ...tool,
+      sessionId: 'session-1',
+      raw: {
+        output: 'detail-owned-by-window-session',
+        _meta: { goldBandConversation: { toolDetailAvailable: true } },
+      },
+    };
+    vi.mocked(getAcpToolDetail).mockResolvedValue({ event: detail });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(<ACPMessageList timeline={[marker, tool]} sessionStatus="completed" sending={false} branchLocator={locator} timelineGeneration={1} />);
+      });
+      await clickButton(container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]'));
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain('detail-owned-by-window-session');
+      });
+      expect(getAcpToolDetail).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('keeps same-position canonical output authoritative without rescanning tool detail', async () => {
+    let resolveDetail!: (value: { event: AcpUiEventVm | null }) => void;
+    const detailRequest = new Promise<{ event: AcpUiEventVm | null }>((resolve) => {
+      resolveDetail = resolve;
+    });
+    vi.mocked(getAcpToolDetail).mockReturnValue(detailRequest);
+    const initialTool: AcpUiEventVm = {
+      ...activityToolEvent(85),
+      raw: {
+        rawInput: { path: 'canonical-output.txt' },
+        output: 'initial-canonical-output',
+        _meta: { goldBandConversation: { toolDetailAvailable: true } },
+      },
+    };
+    const liveOutputTool: AcpUiEventVm = {
+      ...initialTool,
+      raw: {
+        rawInput: { path: 'canonical-output.txt' },
+        output: 'fresh-live-output',
+        _meta: { goldBandConversation: { toolDetailAvailable: true } },
+      },
+    };
+    const staleDetail: AcpUiEventVm = {
+      ...initialTool,
+      raw: {
+        rawInput: { path: 'canonical-output.txt' },
+        output: 'stale-detail-output',
+        _meta: { goldBandConversation: { toolDetailAvailable: true } },
+      },
+    };
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(<ACPMessageList timeline={[initialTool]} sessionStatus="running" sending={false} branchLocator={locator} timelineGeneration={1} />);
+      });
+      await clickButton(container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]'));
+      expect(getAcpToolDetail).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        root.render(<ACPMessageList timeline={[liveOutputTool]} sessionStatus="running" sending={false} branchLocator={locator} timelineGeneration={1} />);
+        await Promise.resolve();
+      });
+      expect(getAcpToolDetail).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        resolveDetail({ event: staleDetail });
+        await detailRequest;
+      });
+
+      expect(getAcpToolDetail).toHaveBeenCalledTimes(1);
+      expect(container.textContent).toContain('fresh-live-output');
+      expect(container.textContent).not.toContain('stale-detail-output');
+
+      const loadedOutputTool: AcpUiEventVm = {
+        ...liveOutputTool,
+        raw: {
+          rawInput: { path: 'canonical-output.txt' },
+          output: 'newest-canonical-output',
+          _meta: { goldBandConversation: { toolDetailAvailable: true } },
+        },
+      };
+      await act(async () => {
+        root.render(<ACPMessageList timeline={[loadedOutputTool]} sessionStatus="running" sending={false} branchLocator={locator} timelineGeneration={1} />);
+        await Promise.resolve();
+      });
+
+      expect(getAcpToolDetail).toHaveBeenCalledTimes(1);
+      expect(container.textContent).toContain('newest-canonical-output');
+      expect(container.textContent).not.toContain('stale-detail-output');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('does not query tool detail until the timeline has a canonical session owner', async () => {
+    const unownedTool: AcpUiEventVm = {
+      ...activityToolEvent(86),
+      sessionId: null,
+      raw: {
+        rawInput: { path: 'owner-pending.txt' },
+        _meta: { goldBandConversation: { toolDetailAvailable: true } },
+      },
+    };
+    vi.mocked(getAcpToolDetail).mockResolvedValue({
+      event: {
+        ...unownedTool,
+        sessionId: 'different-session',
+        raw: {
+          output: 'cross-session-detail',
+          _meta: { goldBandConversation: { toolDetailAvailable: true } },
+        },
+      },
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(<ACPMessageList timeline={[unownedTool]} sessionStatus="completed" sending={false} branchLocator={locator} timelineGeneration={1} />);
+      });
+      await clickButton(container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]'));
+
+      expect(getAcpToolDetail).not.toHaveBeenCalled();
+      expect(container.textContent).not.toContain('cross-session-detail');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('does not query activity detail until the timeline has a canonical session owner', async () => {
+    const unownedSummary: AcpUiEventVm = {
+      ...activitySummary(),
+      sessionId: null,
+    };
+    vi.mocked(getAcpActivityDetail).mockResolvedValue({
+      items: [activityToolEvent(50, 'different-session')],
+      hasMoreEarlier: false,
+      earlierCursor: null,
+    });
+    const projection = buildAcpTimelineProjection([unownedSummary], 'completed');
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(<ACPMessageList timeline={projection.timeline} sessionStatus="completed" sending={false} branchLocator={locator} timelineGeneration={1} />);
+      });
+      await clickButton(container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]'));
+
+      expect(getAcpActivityDetail).not.toHaveBeenCalled();
+      expect(container.textContent).not.toContain('Tool 50');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('invalidates a tool detail error when the same-position source changes', async () => {
+    vi.mocked(getAcpToolDetail)
+      .mockRejectedValueOnce({ code: 'acp.tool-detail-query-failed', params: {} })
+      .mockResolvedValueOnce({
+        event: {
+          ...activityToolEvent(90),
+          raw: {
+            output: 'detail-after-source-revision',
+            _meta: { goldBandConversation: { toolDetailAvailable: true } },
+          },
+        },
+      });
+    const initialTool: AcpUiEventVm = {
+      ...activityToolEvent(90),
+      raw: {
+        rawInput: { path: 'before-error.txt' },
+        _meta: { goldBandConversation: { toolDetailAvailable: true } },
+      },
+    };
+    const updatedTool: AcpUiEventVm = {
+      ...initialTool,
+      raw: {
+        rawInput: { path: 'after-error.txt' },
+        _meta: { goldBandConversation: { toolDetailAvailable: true } },
+      },
+    };
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(<ACPMessageList timeline={[initialTool]} sessionStatus="running" sending={false} branchLocator={locator} timelineGeneration={1} />);
+      });
+      await clickButton(container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]'));
+      await vi.waitFor(() => {
+        expect(container.querySelector('[data-acp-tool-detail-retry="true"]')).not.toBeNull();
+      });
+
+      await act(async () => {
+        root.render(<ACPMessageList timeline={[updatedTool]} sessionStatus="running" sending={false} branchLocator={locator} timelineGeneration={1} />);
+      });
+      await vi.waitFor(() => {
+        expect(getAcpToolDetail).toHaveBeenCalledTimes(2);
+      });
+      expect(container.querySelector('[data-acp-tool-detail-retry="true"]')).toBeNull();
     } finally {
       await act(async () => root.unmount());
     }

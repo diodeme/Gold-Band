@@ -168,6 +168,7 @@ pub(crate) fn parse_file_link_from(
 
     let (without_fragment, fragment_target) = split_line_fragment(trimmed);
     let (path_part, suffix_target) = split_line_suffix(without_fragment);
+    let path_part = normalize_platform_file_link_path(path_part);
     let target = fragment_target.or(suffix_target);
 
     let decoded = if looks_like_windows_absolute(path_part) {
@@ -289,12 +290,25 @@ fn trailing_number(input: &str) -> Option<(&str, u32)> {
 }
 
 fn looks_like_windows_absolute(value: &str) -> bool {
+    looks_like_windows_drive_absolute(value) || value.starts_with("\\\\")
+}
+
+fn looks_like_windows_drive_absolute(value: &str) -> bool {
     let bytes = value.as_bytes();
-    (bytes.len() >= 3
+    bytes.len() >= 3
         && bytes[0].is_ascii_alphabetic()
         && bytes[1] == b':'
-        && matches!(bytes[2], b'/' | b'\\'))
-        || value.starts_with("\\\\")
+        && matches!(bytes[2], b'/' | b'\\')
+}
+
+fn normalize_platform_file_link_path(value: &str) -> &str {
+    #[cfg(windows)]
+    if let Some(without_url_root) = value.strip_prefix('/') {
+        if looks_like_windows_drive_absolute(without_url_root) {
+            return without_url_root;
+        }
+    }
+    value
 }
 
 fn percent_decode(value: &str) -> CommandResult<String> {
@@ -466,5 +480,55 @@ mod tests {
         let target = target.unwrap();
         assert_eq!(target.line, Some(10));
         assert_eq!(target.end_line, Some(20));
+    }
+
+    #[test]
+    fn preserves_regular_slash_prefixed_paths() {
+        assert_eq!(
+            normalize_platform_file_link_path("/Users/dev/readme.md"),
+            "/Users/dev/readme.md"
+        );
+        assert_eq!(
+            normalize_platform_file_link_path("/home/dev/readme.md"),
+            "/home/dev/readme.md"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn preserves_slash_prefixed_drive_names_on_unix() {
+        assert_eq!(
+            normalize_platform_file_link_path("/E:/repo/readme.md"),
+            "/E:/repo/readme.md"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn normalizes_slash_prefixed_windows_drive_pathnames() {
+        assert_eq!(
+            normalize_platform_file_link_path("/E:/repo/readme.md"),
+            "E:/repo/readme.md"
+        );
+        assert_eq!(
+            normalize_platform_file_link_path(r"/E:\repo\readme.md"),
+            r"E:\repo\readme.md"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parses_windows_drive_pathname_with_line_suffix() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("roadmap.md");
+        std::fs::write(&path, "# Roadmap").unwrap();
+        let workspace = root(dir.path());
+        let canonical = std::fs::canonicalize(path).unwrap();
+        let href = format!("/{}:12", slash_path(&canonical));
+
+        let (resolved, target) = parse_file_link_from(&workspace, &href, None).unwrap();
+
+        assert_eq!(resolved, canonical);
+        assert_eq!(target.unwrap().line, Some(12));
     }
 }

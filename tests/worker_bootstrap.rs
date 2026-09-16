@@ -178,6 +178,7 @@ fn success_result() -> ProviderRunResult {
         }),
         stream_path: None,
         runtime_error: None,
+        runtime_control_output: None,
 
     }
 }
@@ -231,6 +232,7 @@ impl ProviderAdapter for InterruptThenSuccessProvider {
             worker_ref_seed: None,
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 
@@ -280,6 +282,7 @@ impl ProviderAdapter for InterruptedThenContinueProvider {
                 }),
                 stream_path: None,
                 runtime_error: None,
+                runtime_control_output: None,
             });
         }
         assert_eq!(session_mode, SessionMode::Continue);
@@ -340,6 +343,7 @@ impl ProviderAdapter for AlwaysFailAcceptanceProvider {
             worker_ref_seed: None,
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 
@@ -449,6 +453,7 @@ impl ProviderAdapter for NewRoundScopedContextProvider {
             worker_ref_seed: None,
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 
@@ -531,6 +536,7 @@ impl ProviderAdapter for MultiAttemptContinueProvider {
             }),
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 
@@ -612,6 +618,7 @@ impl ProviderAdapter for OneRepairProvider {
             }),
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 
@@ -673,6 +680,7 @@ impl ProviderAdapter for RepairExhaustionProvider {
             }),
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 
@@ -724,6 +732,7 @@ impl ProviderAdapter for TerminalMessageAnomalyProvider {
                     "terminalMessageHasStableId": false,
                 }),
             )),
+            runtime_control_output: None,
         })
     }
 
@@ -1942,6 +1951,71 @@ fn max_rounds_fails_workflow_when_new_round_limit_is_exceeded() {
     assert_eq!(run.outcome, Some(RunOutcome::Failure));
     assert_eq!(run.new_rounds_opened, 1);
     assert_eq!(provider.invocations.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn failure_end_persists_the_actual_last_executed_node() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-failure-end";
+    let app = app_with_provider(repo_root, Box::new(AlwaysFailAcceptanceProvider::default()));
+    std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
+    let accept_profile = app
+        .profiles()
+        .unwrap()
+        .profiles
+        .into_iter()
+        .find(|profile| profile.name == "验收")
+        .unwrap()
+        .id;
+    std::fs::write(
+        app.paths.requirement_file(task_id).as_std_path(),
+        "Exercise failure end",
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.workflow_file(task_id).as_std_path(),
+        format!(
+            r#"{{
+          "version": "0.1",
+          "id": "failure-end-flow",
+          "entry": "accept",
+          "nodes": [
+            {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+          ],
+          "edges": [
+            {{"from":"accept","to":"$end","on":"failure"}}
+          ]
+        }}"#,
+            accept_profile
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.task_file(task_id).as_std_path(),
+        r#"{"version":"0.1","id":"task-failure-end"}"#,
+    )
+    .unwrap();
+
+    let run = app.run_start(task_id, None).unwrap();
+
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Failure));
+    assert_eq!(
+        run.last_executed_node
+            .as_ref()
+            .map(|snapshot| snapshot.node_id.as_str()),
+        Some("accept")
+    );
+    let durable: RunState =
+        gold_band::storage::read_json(&app.paths.run_file(task_id, &run.id)).unwrap();
+    assert_eq!(
+        durable
+            .last_executed_node
+            .as_ref()
+            .map(|snapshot| snapshot.node_id.as_str()),
+        Some("accept")
+    );
 }
 
 #[test]

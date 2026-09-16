@@ -28,6 +28,34 @@ export function getAgentRegistry() {
   return getRuntimeApi().getAgentRegistry();
 }
 
+export function getPersonalAnalytics() {
+  return getRuntimeApi().getPersonalAnalytics();
+}
+
+export function syncPersonalAnalytics() {
+  return getRuntimeApi().syncPersonalAnalytics();
+}
+
+export function queryPersonalAnalyticsReport(range: { start?: string | null; end?: string | null }, agentType?: string, modelId?: string | null, thoughtLevelOptionId?: string | null, thoughtLevelValue?: string | null) {
+  return getRuntimeApi().queryPersonalAnalyticsReport(range, agentType, modelId, thoughtLevelOptionId, thoughtLevelValue);
+}
+
+export function startPersonalAnalyticsInsights(agentType: string, range: { start?: string | null; end?: string | null }, modelId?: string | null, thoughtLevelOptionId?: string | null, thoughtLevelValue?: string | null) {
+  return getRuntimeApi().startPersonalAnalyticsInsights(agentType, range, modelId, thoughtLevelOptionId, thoughtLevelValue);
+}
+
+export function cancelPersonalAnalyticsInsights(operationId: string) {
+  return getRuntimeApi().cancelPersonalAnalyticsInsights(operationId);
+}
+
+export function cancelPersonalAnalytics(operationId: string) {
+  return getRuntimeApi().cancelPersonalAnalytics(operationId);
+}
+
+export function subscribePersonalAnalyticsUpdates(listener: Parameters<NonNullable<ReturnType<typeof getRuntimeApi>['subscribePersonalAnalyticsUpdates']>>[0]) {
+  return getRuntimeApi().subscribePersonalAnalyticsUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
 export function getAgentCommandCatalog(agentType: string, workspacePath: string) {
   return getRuntimeApi().getAgentCommandCatalog(agentType, workspacePath);
 }
@@ -325,6 +353,10 @@ export function getFileComparison(locator: Parameters<ReturnType<typeof getRunti
   return getRuntimeApi().getFileComparison(locator, changeSetId, changeId);
 }
 
+export function resolveTurnAttachmentFile(locator: Parameters<ReturnType<typeof getRuntimeApi>['resolveTurnAttachmentFile']>[0], changeSetId: string, attachmentId: string) {
+  return getRuntimeApi().resolveTurnAttachmentFile(locator, changeSetId, attachmentId);
+}
+
 export function subscribeAcpSessionUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeAcpSessionUpdates']>>[0]) {
   return getRuntimeApi().subscribeAcpSessionUpdates?.(listener) ?? Promise.resolve(() => {});
 }
@@ -396,6 +428,10 @@ export function setAcpSessionModel(projectId: string | null | undefined, taskId:
 
 export function setAcpSessionPermissionMode(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, permissionModeId: string | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().setAcpSessionPermissionMode(projectId, taskId, runId, roundId, nodeId, attemptId, permissionModeId, outerNodeId, outerAttemptId);
+}
+
+export function setAcpSessionAutoAccept(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, autoAccept: boolean, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().setAcpSessionAutoAccept(projectId, taskId, runId, roundId, nodeId, attemptId, autoAccept, outerNodeId, outerAttemptId);
 }
 
 export function respondAcpPermission(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['respondAcpPermission']>[8], outerNodeId?: string | null, outerAttemptId?: string | null) {
@@ -506,6 +542,66 @@ export function saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | n
   return getRuntimeApi().saveMetricsSettings(enabled, metricsBaseUrl, apiKey);
 }
 
+export function getMulticaSettings() {
+  return getRuntimeApi().getMulticaSettings();
+}
+
+export function connectMultica() {
+  return getRuntimeApi().connectMultica();
+}
+
+export function disconnectMultica() {
+  return getRuntimeApi().disconnectMultica();
+}
+
+export function saveMulticaConnectionAddress(baseUrl: string | null, appUrl: string | null) {
+  return getRuntimeApi().saveMulticaConnectionAddress(baseUrl, appUrl);
+}
+
+export function cancelMulticaConnect() {
+  return getRuntimeApi().cancelMulticaConnect();
+}
+
+export function getMulticaTasks() {
+  return getRuntimeApi().getMulticaTasks();
+}
+
+export function getMulticaTaskRequirement(taskId: string, workspaceId: string) {
+  return getRuntimeApi().getMulticaTaskRequirement(taskId, workspaceId);
+}
+
+export function startMulticaConversationRun(
+  input: Parameters<ReturnType<typeof getRuntimeApi>['startMulticaConversationRun']>[0],
+  remoteTaskId: string,
+  workspaceId: string,
+) {
+  return getRuntimeApi().startMulticaConversationRun(input, remoteTaskId, workspaceId);
+}
+
+export function cancelMulticaTask(taskId: string) {
+  return getRuntimeApi().cancelMulticaTask(taskId);
+}
+
+export function listServerMulticaWorkspaces() {
+  return getRuntimeApi().listServerMulticaWorkspaces();
+}
+
+export function pickLocalDirectory() {
+  return getRuntimeApi().pickLocalDirectory();
+}
+
+export function addMulticaWorkspace(workspaceId: string, workspaceName: string, provider: string) {
+  return getRuntimeApi().addMulticaWorkspace(workspaceId, workspaceName, provider);
+}
+
+export function removeMulticaWorkspace(workspaceId: string) {
+  return getRuntimeApi().removeMulticaWorkspace(workspaceId);
+}
+
+export function setActiveMulticaWorkspace(workspaceId: string) {
+  return getRuntimeApi().setActiveMulticaWorkspace(workspaceId);
+}
+
 export function recordActivity() {
   return getRuntimeApi().recordActivity();
 }
@@ -518,8 +614,20 @@ export function saveDesktopUiMode(mode: 'conversation' | 'workbench') {
   return getRuntimeApi().saveDesktopUiMode(mode);
 }
 
-export function getConversationSidebar() {
-  return getRuntimeApi().getConversationSidebar();
+export function getConversationSidebarBootstrap() {
+  return getRuntimeApi().getConversationSidebarBootstrap();
+}
+
+export function getConversationTaskPage(projectId: string, cursor?: string | null, limit?: number) {
+  return getRuntimeApi().getConversationTaskPage(projectId, cursor, limit);
+}
+
+export function getConversationPinnedTaskPage(cursor?: string | null, limit?: number) {
+  return getRuntimeApi().getConversationPinnedTaskPage(cursor, limit);
+}
+
+export function getConversationRunSummaryPage(projectId: string, taskId: string, cursor?: string | null, limit?: number) {
+  return getRuntimeApi().getConversationRunSummaryPage(projectId, taskId, cursor, limit);
 }
 
 export function acknowledgeConversationTerminalResult(projectId: string, taskId: string, eventId: string) {
@@ -558,8 +666,12 @@ export function deleteScheduledTask(projectId: string, scheduledTaskId: string) 
   return getRuntimeApi().deleteScheduledTask(projectId, scheduledTaskId);
 }
 
-export function listScheduledTaskOccurrences(projectId: string, scheduledTaskId: string, cursor?: string | null, status?: string | null) {
-  return getRuntimeApi().listScheduledTaskOccurrences(projectId, scheduledTaskId, cursor, status);
+export function listScheduledExecutionHistory(projectId: string, scheduledTaskId: string, cursor?: string | null, anchor?: { taskId: string; runId: string } | null) {
+  return getRuntimeApi().listScheduledExecutionHistory(projectId, scheduledTaskId, cursor, anchor);
+}
+
+export function deleteScheduledExecutionHistory(items: import('./types').ScheduledExecutionHistoryDeleteInputVm[]) {
+  return getRuntimeApi().deleteScheduledExecutionHistory(items);
 }
 
 export function getScheduledTaskDiagnostics(projectId: string, scheduledTaskId: string) {
@@ -706,6 +818,14 @@ export function subscribeWorkspaceFileChanges(listener: Parameters<NonNullable<R
   return getRuntimeApi().subscribeWorkspaceFileChanges?.(listener) ?? Promise.resolve(() => {});
 }
 
+export function subscribeMulticaTaskUpdates(listener: () => void) {
+  return getRuntimeApi().subscribeMulticaTaskUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function subscribeMulticaSettingsUpdates(listener: () => void) {
+  return getRuntimeApi().subscribeMulticaSettingsUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
 export function workspaceFilePreviewUrl(token: string, staticFrame = false) {
   return getRuntimeApi().workspaceFilePreviewUrl(token, staticFrame);
 }
@@ -842,4 +962,10 @@ export function checkSkillNameConflict(
     directoryPath,
     syncTargets,
   );
+}
+export function getAcpImage(locator: import('./types').TurnFileLocatorVm, image: import('./types').AcpImageRef, thumbnail: boolean) {
+  return getRuntimeApi().getAcpImage(locator, image, thumbnail);
+}
+export function getAcpActivityImages(input: import('./types').AcpActivityImagesInput) {
+  return getRuntimeApi().getAcpActivityImages(input);
 }

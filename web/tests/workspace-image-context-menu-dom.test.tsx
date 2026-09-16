@@ -11,8 +11,9 @@ const imageActionMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@/lib/image-actions', () => ({
-  copyAttachmentImage: imageActionMocks.copy,
-  saveAttachmentImageAs: imageActionMocks.save,
+  copyImageAsset: imageActionMocks.copy,
+  IMAGE_ACTION_FEEDBACK_DURATION_MS: 1_800,
+  saveImageAssetAs: imageActionMocks.save,
 }));
 
 import { WorkspaceImageCanvas } from '@/components/workspace/files/WorkspaceImageCanvas';
@@ -47,7 +48,7 @@ describe('workspace image context menu DOM interaction', () => {
     try {
       await act(async () => {
         root.render(
-          <WorkspaceImageCanvas src="asset://image" alt="image.png" attachment={attachment} />,
+          <WorkspaceImageCanvas src="asset://image" alt="image.png" imageActionAsset={attachment} />,
         );
       });
 

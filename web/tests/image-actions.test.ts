@@ -7,12 +7,12 @@ vi.mock('@/api', () => ({
 
 import { copyImageToClipboard, saveImageAs } from '@/api';
 import {
-  attachmentImageActionInput,
-  copyAttachmentImage,
-  saveAttachmentImageAs,
+  copyImageAsset,
+  imageActionInput,
+  saveImageAssetAs,
 } from '@/lib/image-actions';
 
-describe('attachment image actions', () => {
+describe('image asset actions', () => {
   beforeEach(() => {
     vi.mocked(copyImageToClipboard).mockClear();
     vi.mocked(saveImageAs).mockClear();
@@ -24,8 +24,8 @@ describe('attachment image actions', () => {
       path: 'D:/images/shot.png', previewUrl: 'asset://shot', source: 'dialog' as const,
     };
 
-    const input = await attachmentImageActionInput(attachment);
-    await copyAttachmentImage(attachment);
+    const input = await imageActionInput(attachment);
+    await copyImageAsset(attachment);
 
     expect(input).toEqual({
       source: { kind: 'path', path: 'D:/images/shot.png' },
@@ -43,7 +43,7 @@ describe('attachment image actions', () => {
     };
 
     expect(copyImageToClipboard).not.toHaveBeenCalled();
-    await saveAttachmentImageAs(attachment);
+    await saveImageAssetAs(attachment);
 
     expect(saveImageAs).toHaveBeenCalledWith({
       source: { kind: 'bytes', dataBase64: 'AQIDBA==' },
@@ -53,8 +53,16 @@ describe('attachment image actions', () => {
   });
 
   it('rejects an unavailable source with a stable structured error code', async () => {
-    await expect(attachmentImageActionInput({
-      id: 'missing', name: 'missing.png', size: 4, mime: 'image/png', source: 'paste',
+    await expect(imageActionInput({
+      name: 'missing.png', mime: 'image/png',
     })).rejects.toMatchObject({ code: 'image-action.source-unreadable', params: {} });
+  });
+
+  it('loads original bytes and actual MIME on demand instead of copying the thumbnail', async () => {
+    const loadOriginal = vi.fn(async () => new Blob([Uint8Array.from([1, 2, 3])], { type: 'image/jpeg' }));
+    const asset = { name: 'Image 1', mime: 'image/png', previewUrl: 'blob:thumbnail', loadOriginal };
+    expect(loadOriginal).not.toHaveBeenCalled();
+    expect(await imageActionInput(asset)).toEqual({ fileName: 'Image 1', mime: 'image/jpeg', source: { kind: 'bytes', dataBase64: 'AQID' } });
+    expect(loadOriginal).toHaveBeenCalledTimes(1);
   });
 });

@@ -302,6 +302,59 @@ describe('FileContentStore autosave contract', () => {
       errorCode: 'workspace-file.not-found',
     });
   });
+
+  it('reconciles clean cached content after the workspace watcher becomes active', async () => {
+    const store = createStore();
+    await store.load(resource);
+    api.readFileResource.mockResolvedValueOnce(snapshot('changed while inactive', revision('disk-2')));
+
+    const reconciliation = store.reconcile(resource.key);
+
+    expect(store.snapshot(resource.key).status).toBe('ready');
+    await reconciliation;
+    expect(store.snapshot(resource.key).snapshot?.kind === 'text'
+      && store.snapshot(resource.key).snapshot.content).toBe('changed while inactive');
+    expect(api.readFileResource).toHaveBeenCalledTimes(2);
+  });
+
+  it('rolls back a failed watcher activation so the next activation can retry', async () => {
+    const store = createStore();
+    api.startWorkspaceFileWatch
+      .mockRejectedValueOnce({ code: 'workspace-file.watch-failed' })
+      .mockResolvedValueOnce(undefined);
+
+    await expect(store.startProjectWatch(resource.projectId)).rejects.toMatchObject({
+      code: 'workspace-file.watch-failed',
+    });
+    await store.startProjectWatch(resource.projectId);
+    await store.stopProjectWatch(resource.projectId);
+
+    expect(api.startWorkspaceFileWatch).toHaveBeenCalledTimes(2);
+    expect(api.stopWorkspaceFileWatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('reconciles clean cached content after a watcher scope invalidation', async () => {
+    const store = createStore();
+    let onChange: ((event: WorkspaceFileChangedEventVm) => void) | null = null;
+    api.subscribeWorkspaceFileChanges.mockImplementationOnce(async (listener) => {
+      onChange = listener;
+      return () => {};
+    });
+    await store.load(resource);
+    await store.startProjectWatch(resource.projectId);
+    api.readFileResource.mockResolvedValueOnce(snapshot('recovered after overflow', revision('disk-2')));
+
+    onChange?.({
+      projectId: resource.projectId,
+      canonicalPath: 'D:/repo',
+      kind: 'invalidated',
+      revision: null,
+      operationId: null,
+    });
+
+    await vi.waitFor(() => expect(store.snapshot(resource.key).snapshot?.kind === 'text'
+      && store.snapshot(resource.key).snapshot.content).toBe('recovered after overflow'));
+  });
 });
 
 describe('FileContentStore Markdown runtime contract', () => {

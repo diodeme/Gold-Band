@@ -46,6 +46,9 @@ jobs:
       - name: Test README and guide i18n links
         run: npm run test:readme-i18n
 
+      - name: Test collaboration skills and templates
+        run: npm run test:collaboration-skills
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:

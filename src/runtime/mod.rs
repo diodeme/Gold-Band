@@ -7,7 +7,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const CURRENT_ACP_STORAGE_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_ACP_STORAGE_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[error("{msg}")]

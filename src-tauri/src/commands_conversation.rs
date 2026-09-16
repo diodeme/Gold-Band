@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use crate::commands::{
     CommandErrorVm, CommandResult, command_error, configure_conversation_runtime_callbacks,
-    resolve_command_app, spawn_blocking_command,
+    resolve_command_app, spawn_blocking_command, validate_runtime_workspace_for_command,
 };
 use crate::conversation_attention::{
     ConversationTerminalResultAcknowledgementVm, acknowledge_terminal_result, remove_task_attention,
@@ -42,6 +42,20 @@ fn scheduled_service_error(
         }
     }
     CommandErrorVm::new(error.code.to_string(), params)
+}
+async fn runtime_workspace_entry_for_project(
+    state: &gold_band::config::StateConfig,
+    project_id: &str,
+) -> CommandResult<(String, String)> {
+    let (workspace_path, resolved_project_id) = workspace_entry_for_project(state, project_id)
+        .ok_or_else(|| {
+            CommandErrorVm::new(
+                "workspace.not-found",
+                serde_json::json!({ "projectId": project_id }),
+            )
+        })?;
+    validate_runtime_workspace_for_command(&resolved_project_id, &workspace_path).await?;
+    Ok((workspace_path, resolved_project_id))
 }
 fn validate_scheduled_runtime_settings_input(
     input: &crate::view_models_conversation::ScheduledRuntimeSettingsInputVm,
@@ -200,33 +214,157 @@ fn validate_direct_capabilities(
 #[tauri::command]
 pub fn save_desktop_ui_mode(state: State<'_, DesktopState>, mode: String) -> CommandResult<()> {
     let app = state.app().map_err(command_error)?;
-    let mut state = app.load_state().map_err(command_error)?;
-    state.desktop_ui_mode = Some(match mode.as_str() {
-        "workbench" => DesktopUiMode::Workbench,
-        _ => DesktopUiMode::Conversation,
-    });
-    app.save_state(&state).map_err(command_error)?;
+    app.with_state(|state| {
+        state.desktop_ui_mode = Some(match mode.as_str() {
+            "workbench" => DesktopUiMode::Workbench,
+            _ => DesktopUiMode::Conversation,
+        });
+        (true, ())
+    })
+    .map_err(command_error)?;
     Ok(())
 }
 
 #[tauri::command]
-pub async fn get_conversation_sidebar(
+pub async fn get_conversation_sidebar_bootstrap(
     state: State<'_, DesktopState>,
-) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
+) -> CommandResult<crate::view_models_conversation::ConversationSidebarBootstrapVm> {
     let started = Instant::now();
     let context = state.context().map_err(command_error)?;
     let result = spawn_blocking_command(move || {
         let app = context.app();
         let state = app.load_state().map_err(command_error)?;
-        conversation_sidebar_for_state(&context, &app, &state)
+        Ok(crate::view_models_conversation::conversation_sidebar_bootstrap_vm(&state))
     })
     .await;
     info!(
         target: "gold_band::perf",
-        command = "get_conversation_sidebar",
+        command = "get_conversation_sidebar_bootstrap",
         elapsed_ms = started.elapsed().as_millis(),
         status = if result.is_ok() { "ok" } else { "error" },
-        "conversation sidebar loaded"
+        "conversation sidebar identity loaded"
+    );
+    result
+}
+
+#[tauri::command]
+pub async fn get_conversation_task_page(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    cursor: Option<String>,
+    limit: Option<usize>,
+) -> CommandResult<crate::view_models_conversation::ConversationTaskPageVm> {
+    let started = Instant::now();
+    let context = state.context().map_err(command_error)?;
+    let log_project_id = project_id.clone();
+    let result = spawn_blocking_command(move || {
+        let app = context.app();
+        let state = app.load_state().map_err(command_error)?;
+        let (workspace_path, resolved_project_id) =
+            workspace_entry_for_project(&state, &project_id).ok_or_else(|| {
+                CommandErrorVm::new(
+                    "workspace.not-found",
+                    serde_json::json!({ "projectId": project_id }),
+                )
+            })?;
+        let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
+        crate::view_models_conversation::conversation_task_page_vm(
+            &workspace_app,
+            &state,
+            &resolved_project_id,
+            cursor.as_deref(),
+            limit.unwrap_or(crate::view_models_conversation::CONVERSATION_TASK_PAGE_DEFAULT_LIMIT),
+        )
+        .map_err(command_error)
+    })
+    .await;
+    info!(
+        target: "gold_band::perf",
+        command = "get_conversation_task_page",
+        project_id = %log_project_id,
+        elapsed_ms = started.elapsed().as_millis(),
+        status = if result.is_ok() { "ok" } else { "error" },
+        "conversation task page loaded"
+    );
+    result
+}
+
+#[tauri::command]
+pub async fn get_conversation_pinned_task_page(
+    state: State<'_, DesktopState>,
+    cursor: Option<String>,
+    limit: Option<usize>,
+) -> CommandResult<crate::view_models_conversation::ConversationPinnedTaskPageVm> {
+    let started = Instant::now();
+    let context = state.context().map_err(command_error)?;
+    let result = spawn_blocking_command(move || {
+        let app = context.app();
+        let state = app.load_state().map_err(command_error)?;
+        let sources =
+            conversation_sidebar_sources(&context, &app, &state).map_err(command_error)?;
+        Ok(
+            crate::view_models_conversation::conversation_pinned_task_page_vm(
+                &state,
+                &sources,
+                cursor.as_deref(),
+                limit.unwrap_or(
+                    crate::view_models_conversation::CONVERSATION_TASK_PAGE_DEFAULT_LIMIT,
+                ),
+            ),
+        )
+    })
+    .await;
+    info!(
+        target: "gold_band::perf",
+        command = "get_conversation_pinned_task_page",
+        elapsed_ms = started.elapsed().as_millis(),
+        status = if result.is_ok() { "ok" } else { "error" },
+        "conversation pinned task page loaded"
+    );
+    result
+}
+
+#[tauri::command]
+pub async fn get_conversation_run_summary_page(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    task_id: String,
+    cursor: Option<String>,
+    limit: Option<usize>,
+) -> CommandResult<crate::view_models_conversation::ConversationRunSummaryPageVm> {
+    let started = Instant::now();
+    let context = state.context().map_err(command_error)?;
+    let log_project_id = project_id.clone();
+    let log_task_id = task_id.clone();
+    let result = spawn_blocking_command(move || {
+        let app = context.app();
+        let state = app.load_state().map_err(command_error)?;
+        let (workspace_path, resolved_project_id) =
+            workspace_entry_for_project(&state, &project_id).ok_or_else(|| {
+                CommandErrorVm::new(
+                    "workspace.not-found",
+                    serde_json::json!({ "projectId": project_id }),
+                )
+            })?;
+        let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
+        crate::view_models_conversation::conversation_run_summary_page_vm(
+            &workspace_app,
+            &resolved_project_id,
+            &task_id,
+            cursor.as_deref(),
+            limit.unwrap_or(crate::view_models_conversation::CONVERSATION_RUN_PAGE_DEFAULT_LIMIT),
+        )
+        .map_err(command_error)
+    })
+    .await;
+    info!(
+        target: "gold_band::perf",
+        command = "get_conversation_run_summary_page",
+        project_id = %log_project_id,
+        task_id = %log_task_id,
+        elapsed_ms = started.elapsed().as_millis(),
+        status = if result.is_ok() { "ok" } else { "error" },
+        "conversation run summary page loaded"
     );
     result
 }
@@ -285,58 +423,215 @@ pub fn list_scheduled_tasks(
         .collect()
 }
 
+fn encode_execution_history_cursor(
+    cursor: &gold_band::scheduler::db::ScheduledExecutionHistoryCursor,
+) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(cursor).expect("execution history cursor serialization is infallible"),
+    )
+}
+
+fn decode_execution_history_cursor(
+    cursor: &str,
+) -> CommandResult<gold_band::scheduler::db::ScheduledExecutionHistoryCursor> {
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(cursor)
+        .map_err(|_| invalid_occurrence_query("cursor", "invalid-cursor"))?;
+    serde_json::from_slice(&bytes).map_err(|_| invalid_occurrence_query("cursor", "invalid-cursor"))
+}
+
 #[tauri::command]
-pub fn list_scheduled_task_occurrences(
+pub fn list_scheduled_execution_history(
     state: State<'_, DesktopState>,
     project_id: String,
     scheduled_task_id: String,
     cursor: Option<String>,
-    status: Option<String>,
-) -> CommandResult<crate::view_models_conversation::ScheduledOccurrencePageVm> {
+    task_id: Option<String>,
+    run_id: Option<String>,
+) -> CommandResult<crate::view_models_conversation::ScheduledExecutionHistoryPageVm> {
     let cursor = cursor
         .as_deref()
-        .map(decode_occurrence_cursor)
+        .map(decode_execution_history_cursor)
         .transpose()?;
-    let status = status
-        .as_deref()
-        .map(str::parse)
-        .transpose()
-        .map_err(|_| invalid_occurrence_query("status", "invalid-status"))?;
-    state
+    let anchor = match (task_id.as_deref(), run_id.as_deref()) {
+        (Some(task_id), Some(run_id)) => Some((task_id, run_id)),
+        (None, None) => None,
+        _ => return Err(invalid_occurrence_query("anchor", "incomplete-anchor")),
+    };
+    let page = state
         .scheduled_service()
         .map_err(command_error)?
-        .list_occurrence_page(&project_id, &scheduled_task_id, status, cursor.as_ref())
-        .map(
-            |page| crate::view_models_conversation::ScheduledOccurrencePageVm {
-                items: scheduled_occurrence_vms_from_occurrences(&page.items),
-                next_cursor: page.next_cursor.as_ref().map(encode_occurrence_cursor),
+        .list_execution_history_page_anchored(
+            &project_id,
+            &scheduled_task_id,
+            cursor.as_ref(),
+            anchor,
+        )
+        .map_err(scheduled_service_error)?;
+    let app = resolve_command_app(&state, Some(&project_id))?;
+    let items = page
+        .items
+        .into_iter()
+        .map(|record| execution_history_vm(&app, record))
+        .collect();
+    Ok(
+        crate::view_models_conversation::ScheduledExecutionHistoryPageVm {
+            items,
+            next_cursor: page
+                .next_cursor
+                .as_ref()
+                .map(encode_execution_history_cursor),
+        },
+    )
+}
+
+fn execution_history_vm(
+    app: &App,
+    record: gold_band::scheduler::db::ScheduledExecutionHistoryRecord,
+) -> crate::view_models_conversation::ScheduledExecutionHistoryVm {
+    use crate::view_models_conversation::{
+        ScheduledExecutionHistoryAvailabilityVm as AvailabilityVm,
+        ScheduledExecutionHistoryItemErrorVm,
+    };
+
+    let (availability, run, error) = match app.run_status(&record.task_id, &record.run_id) {
+        Ok(run) => (
+            AvailabilityVm::Available,
+            Some(crate::view_models_conversation::conversation_run_summary_vm(&run)),
+            None,
+        ),
+        Err(_) => (
+            AvailabilityVm::Unavailable,
+            None,
+            Some(ScheduledExecutionHistoryItemErrorVm {
+                code: gold_band::scheduler::occurrence::ScheduledErrorCode::StorageFailed
+                    .to_string(),
+                params: serde_json::json!({
+                    "operation": "load-execution-history-run",
+                    "projectId": &record.project_id,
+                    "scheduledTaskId": &record.scheduled_task_id,
+                    "taskId": &record.task_id,
+                    "runId": &record.run_id,
+                }),
+            }),
+        ),
+    };
+    crate::view_models_conversation::ScheduledExecutionHistoryVm {
+        project_id: record.project_id,
+        scheduled_task_id: record.scheduled_task_id,
+        task_id: record.task_id,
+        run_id: record.run_id,
+        first_accepted_at: record.first_accepted_at.to_rfc3339(),
+        last_accepted_at: record.last_accepted_at.to_rfc3339(),
+        occurrence_count: record.occurrence_count,
+        latest_occurrence_id: record.latest_occurrence_id,
+        latest_summary: record.latest_summary,
+        latest_content_fingerprint: record.latest_content_fingerprint,
+        availability,
+        run,
+        error,
+    }
+}
+
+fn delete_scheduled_execution_history_items<F>(
+    items: Vec<crate::view_models_conversation::ScheduledExecutionHistoryDeleteInputVm>,
+    mut remove: F,
+) -> Vec<crate::view_models_conversation::ScheduledExecutionHistoryDeleteResultVm>
+where
+    F: FnMut(
+        &crate::view_models_conversation::ScheduledExecutionHistoryDeleteInputVm,
+    ) -> crate::scheduled_service::ScheduledServiceResult<
+        gold_band::scheduler::db::RemoveExecutionHistoryResult,
+    >,
+{
+    use crate::view_models_conversation::ScheduledExecutionHistoryDeleteStatusVm as StatusVm;
+
+    items
+        .into_iter()
+        .map(|item| match remove(&item) {
+            Ok(_) => crate::view_models_conversation::ScheduledExecutionHistoryDeleteResultVm {
+                project_id: item.project_id,
+                scheduled_task_id: item.scheduled_task_id,
+                task_id: item.task_id,
+                run_id: item.run_id,
+                through_occurrence_id: item.through_occurrence_id,
+                status: StatusVm::Completed,
+                code: None,
+                params: serde_json::json!({}),
             },
-        )
-        .map_err(scheduled_service_error)
+            Err(error) => {
+                crate::view_models_conversation::ScheduledExecutionHistoryDeleteResultVm {
+                    project_id: item.project_id,
+                    scheduled_task_id: item.scheduled_task_id,
+                    task_id: item.task_id,
+                    run_id: item.run_id,
+                    through_occurrence_id: item.through_occurrence_id,
+                    status: StatusVm::Failed,
+                    code: Some(error.code.to_string()),
+                    params: error.params,
+                }
+            }
+        })
+        .collect()
 }
 
-fn encode_occurrence_cursor(cursor: &gold_band::scheduler::db::OccurrencePageCursor) -> String {
-    base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(serde_json::to_vec(cursor).expect("occurrence cursor serialization is infallible"))
-}
-
-fn decode_occurrence_cursor(
-    cursor: &str,
-) -> CommandResult<gold_band::scheduler::db::OccurrencePageCursor> {
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(cursor)
-        .map_err(|_| {
-            CommandErrorVm::new(
-                gold_band::scheduler::occurrence::ScheduledErrorCode::ValidationFailed.to_string(),
-                serde_json::json!({ "field": "cursor", "reason": "invalid-cursor" }),
-            )
-        })?;
-    serde_json::from_slice(&bytes).map_err(|_| {
-        CommandErrorVm::new(
+fn validate_execution_history_delete_batch(
+    items: &[crate::view_models_conversation::ScheduledExecutionHistoryDeleteInputVm],
+) -> CommandResult<()> {
+    let max = gold_band::scheduler::db::EXECUTION_HISTORY_BATCH_MAX;
+    if items.len() > max {
+        return Err(CommandErrorVm::new(
             gold_band::scheduler::occurrence::ScheduledErrorCode::ValidationFailed.to_string(),
-            serde_json::json!({ "field": "cursor", "reason": "invalid-cursor" }),
-        )
+            serde_json::json!({
+                "field": "items",
+                "reason": "batch-too-large",
+                "max": max,
+                "actual": items.len(),
+            }),
+        ));
+    }
+    for (index, item) in items.iter().enumerate() {
+        for (field, value) in [
+            ("projectId", item.project_id.as_str()),
+            ("scheduledTaskId", item.scheduled_task_id.as_str()),
+            ("taskId", item.task_id.as_str()),
+            ("runId", item.run_id.as_str()),
+            ("throughOccurrenceId", item.through_occurrence_id.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(CommandErrorVm::new(
+                    gold_band::scheduler::occurrence::ScheduledErrorCode::ValidationFailed
+                        .to_string(),
+                    serde_json::json!({
+                        "field": format!("items[{index}].{field}"),
+                        "reason": "required",
+                    }),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_scheduled_execution_history(
+    state: State<'_, DesktopState>,
+    items: Vec<crate::view_models_conversation::ScheduledExecutionHistoryDeleteInputVm>,
+) -> CommandResult<Vec<crate::view_models_conversation::ScheduledExecutionHistoryDeleteResultVm>> {
+    validate_execution_history_delete_batch(&items)?;
+    let service = state.scheduled_service().map_err(command_error)?;
+    spawn_blocking_command(move || {
+        Ok(delete_scheduled_execution_history_items(items, |item| {
+            service.remove_execution_history(
+                &item.project_id,
+                &item.scheduled_task_id,
+                &item.task_id,
+                &item.run_id,
+                &item.through_occurrence_id,
+            )
+        }))
     })
+    .await
 }
 
 fn invalid_occurrence_query(field: &str, reason: &str) -> CommandErrorVm {
@@ -344,15 +639,6 @@ fn invalid_occurrence_query(field: &str, reason: &str) -> CommandErrorVm {
         gold_band::scheduler::occurrence::ScheduledErrorCode::ValidationFailed.to_string(),
         serde_json::json!({ "field": field, "reason": reason }),
     )
-}
-
-fn scheduled_occurrence_vms_from_occurrences(
-    occurrences: &[gold_band::scheduler::occurrence::ScheduledOccurrence],
-) -> Vec<crate::view_models_conversation::ScheduledOccurrenceVm> {
-    occurrences
-        .iter()
-        .map(crate::view_models_conversation::ScheduledOccurrenceVm::from_occurrence)
-        .collect()
 }
 
 #[tauri::command]
@@ -596,21 +882,15 @@ pub async fn get_conversation_run(
 }
 
 #[tauri::command]
-pub fn validate_conversation_create(
+pub async fn validate_conversation_create(
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::ConversationCreateInputVm,
 ) -> CommandResult<crate::view_models_conversation::ConversationValidationResultVm> {
     let context = state.context().map_err(command_error)?;
     let global_app = context.app();
     let app_state = global_app.load_state().map_err(command_error)?;
-    let Some((workspace_path, resolved_project_id)) =
-        workspace_entry_for_project(&app_state, &input.project_id)
-    else {
-        return Err(CommandErrorVm::new(
-            "workspace.not-found",
-            serde_json::json!({ "projectId": input.project_id }),
-        ));
-    };
+    let (workspace_path, resolved_project_id) =
+        runtime_workspace_entry_for_project(&app_state, &input.project_id).await?;
     let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
     let mut input = input;
     input.project_id = resolved_project_id;
@@ -658,14 +938,8 @@ async fn create_conversation_run_inner(
     let context = state.context().map_err(command_error)?;
     let global_app = context.app();
     let app_state = global_app.load_state().map_err(command_error)?;
-    let Some((workspace_path, resolved_project_id)) =
-        workspace_entry_for_project(&app_state, &input.project_id)
-    else {
-        return Err(CommandErrorVm::new(
-            "workspace.not-found",
-            serde_json::json!({ "projectId": input.project_id }),
-        ));
-    };
+    let (workspace_path, resolved_project_id) =
+        runtime_workspace_entry_for_project(&app_state, &input.project_id).await?;
     let workspace_app = state
         .app()
         .map_err(command_error)?
@@ -714,7 +988,7 @@ async fn create_conversation_run_inner(
 }
 
 #[tauri::command]
-pub fn rerun_conversation_task(
+pub async fn rerun_conversation_task(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: String,
@@ -724,14 +998,8 @@ pub fn rerun_conversation_task(
     let context = state.context().map_err(command_error)?;
     let global_app = context.app();
     let app_state = global_app.load_state().map_err(command_error)?;
-    let Some((workspace_path, resolved_project_id)) =
-        workspace_entry_for_project(&app_state, &project_id)
-    else {
-        return Err(CommandErrorVm::new(
-            "workspace.not-found",
-            serde_json::json!({ "projectId": project_id }),
-        ));
-    };
+    let (workspace_path, resolved_project_id) =
+        runtime_workspace_entry_for_project(&app_state, &project_id).await?;
     let workspace_app = state
         .app()
         .map_err(command_error)?
@@ -798,36 +1066,43 @@ pub async fn pin_conversation(
     state: State<'_, DesktopState>,
     project_id: String,
     task_id: String,
-) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
+) -> CommandResult<crate::view_models_conversation::ConversationSidebarBootstrapVm> {
     let context = state.context().map_err(command_error)?;
     spawn_blocking_command(move || {
         let app = context.app();
-        let mut state = app.load_state().map_err(command_error)?;
-        let (_, resolved_project_id) = workspace_entry_for_project(&state, &project_id)
-            .ok_or_else(|| {
-                CommandErrorVm::new(
-                    "workspace.not-found",
-                    serde_json::json!({ "projectId": project_id }),
-                )
-            })?;
-        if state.conversation_pins.iter().any(|pin| {
-            project_ids_match(&pin.project_id, &resolved_project_id) && pin.task_id == task_id
-        }) {
-            return conversation_sidebar_for_state(&context, &app, &state);
-        }
-        let max_order = state
-            .conversation_pins
-            .iter()
-            .map(|p| p.order)
-            .max()
-            .unwrap_or(0);
-        state.conversation_pins.push(ConversationPin {
-            project_id: resolved_project_id,
-            task_id,
-            order: max_order + 1,
-        });
-        app.save_state(&state).map_err(command_error)?;
-        conversation_sidebar_for_state(&context, &app, &state)
+        // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+        app.with_state(|state| {
+            let (_, resolved_project_id) = match workspace_entry_for_project(state, &project_id) {
+                Some(entry) => entry,
+                None => {
+                    return (
+                        false,
+                        Err(CommandErrorVm::new(
+                            "workspace.not-found",
+                            serde_json::json!({ "projectId": project_id }),
+                        )),
+                    );
+                }
+            };
+            if state.conversation_pins.iter().any(|pin| {
+                project_ids_match(&pin.project_id, &resolved_project_id) && pin.task_id == task_id
+            }) {
+                return (false, conversation_sidebar_bootstrap_for_state(state));
+            }
+            let max_order = state
+                .conversation_pins
+                .iter()
+                .map(|p| p.order)
+                .max()
+                .unwrap_or(0);
+            state.conversation_pins.push(ConversationPin {
+                project_id: resolved_project_id,
+                task_id,
+                order: max_order + 1,
+            });
+            (true, conversation_sidebar_bootstrap_for_state(state))
+        })
+        .map_err(command_error)?
     })
     .await
 }
@@ -837,23 +1112,32 @@ pub async fn unpin_conversation(
     state: State<'_, DesktopState>,
     project_id: String,
     task_id: String,
-) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
+) -> CommandResult<crate::view_models_conversation::ConversationSidebarBootstrapVm> {
     let context = state.context().map_err(command_error)?;
     spawn_blocking_command(move || {
         let app = context.app();
-        let mut state = app.load_state().map_err(command_error)?;
-        let (_, resolved_project_id) = workspace_entry_for_project(&state, &project_id)
-            .ok_or_else(|| {
-                CommandErrorVm::new(
-                    "workspace.not-found",
-                    serde_json::json!({ "projectId": project_id }),
-                )
-            })?;
-        state.conversation_pins.retain(|p| {
-            !project_ids_match(&p.project_id, &resolved_project_id) || p.task_id != task_id
-        });
-        app.save_state(&state).map_err(command_error)?;
-        conversation_sidebar_for_state(&context, &app, &state)
+        // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+        app.with_state(|state| {
+            let (_, resolved_project_id) = match workspace_entry_for_project(state, &project_id) {
+                Some(entry) => entry,
+                None => {
+                    return (
+                        false,
+                        Err(CommandErrorVm::new(
+                            "workspace.not-found",
+                            serde_json::json!({ "projectId": project_id }),
+                        )),
+                    );
+                }
+            };
+            let before = state.conversation_pins.len();
+            state.conversation_pins.retain(|p| {
+                !project_ids_match(&p.project_id, &resolved_project_id) || p.task_id != task_id
+            });
+            let dirty = state.conversation_pins.len() != before;
+            (dirty, conversation_sidebar_bootstrap_for_state(state))
+        })
+        .map_err(command_error)?
     })
     .await
 }
@@ -862,30 +1146,41 @@ pub async fn unpin_conversation(
 pub async fn reorder_pinned_conversations(
     state: State<'_, DesktopState>,
     ordered: Vec<gold_band::config::ConversationPin>,
-) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
+) -> CommandResult<crate::view_models_conversation::ConversationSidebarBootstrapVm> {
     let context = state.context().map_err(command_error)?;
     spawn_blocking_command(move || {
         let app = context.app();
-        let mut state = app.load_state().map_err(command_error)?;
-        let normalized_pins = ordered
-            .into_iter()
-            .enumerate()
-            .map(|(i, mut pin)| {
-                let (_, resolved_project_id) = workspace_entry_for_project(&state, &pin.project_id)
-                    .ok_or_else(|| {
-                        CommandErrorVm::new(
-                            "workspace.not-found",
-                            serde_json::json!({ "projectId": pin.project_id }),
-                        )
-                    })?;
-                pin.project_id = resolved_project_id;
-                pin.order = i;
-                Ok(pin)
-            })
-            .collect::<CommandResult<Vec<_>>>()?;
-        state.conversation_pins = normalized_pins;
-        app.save_state(&state).map_err(command_error)?;
-        conversation_sidebar_for_state(&context, &app, &state)
+        // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+        app.with_state(|state| {
+            let normalized_pins = ordered
+                .into_iter()
+                .enumerate()
+                .map(|(i, mut pin)| {
+                    let (_, resolved_project_id) =
+                        match workspace_entry_for_project(state, &pin.project_id) {
+                            Some(entry) => entry,
+                            None => {
+                                return Err(CommandErrorVm::new(
+                                    "workspace.not-found",
+                                    serde_json::json!({ "projectId": pin.project_id }),
+                                ));
+                            }
+                        };
+                    pin.project_id = resolved_project_id;
+                    pin.order = i;
+                    Ok(pin)
+                })
+                .collect::<CommandResult<Vec<_>>>();
+            match normalized_pins {
+                Ok(pins) => {
+                    state.conversation_pins = pins;
+                    (true, conversation_sidebar_bootstrap_for_state(state))
+                }
+                // 校验失败 → 不落盘，原样返回错误。
+                Err(error) => (false, Err(error)),
+            }
+        })
+        .map_err(command_error)?
     })
     .await
 }
@@ -1027,17 +1322,21 @@ fn extract_project_from_task_path(
 }
 
 fn persist_last_conversation_workspace(app: &App, project_id: &str) -> CommandResult<()> {
-    let mut state = app.load_state().map_err(command_error)?;
-    let (_, resolved_project_id) =
-        workspace_entry_for_project(&state, project_id).ok_or_else(|| {
-            CommandErrorVm::new(
-                "workspace.not-found",
-                serde_json::json!({ "projectId": project_id }),
-            )
-        })?;
-    state.last_conversation_workspace = Some(resolved_project_id);
-    app.save_state(&state).map_err(command_error)?;
-    Ok(())
+    // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+    app.with_state(|state| {
+        let Some((_, resolved_project_id)) = workspace_entry_for_project(state, project_id) else {
+            return (
+                false,
+                Err(CommandErrorVm::new(
+                    "workspace.not-found",
+                    serde_json::json!({ "projectId": project_id }),
+                )),
+            );
+        };
+        state.last_conversation_workspace = Some(resolved_project_id);
+        (true, Ok(()))
+    })
+    .map_err(command_error)?
 }
 
 fn conversation_sidebar_sources(
@@ -1073,13 +1372,10 @@ fn workspace_name_for_project(state: &gold_band::config::StateConfig, project_id
         .unwrap_or_else(|| project_id.to_string())
 }
 
-fn conversation_sidebar_for_state(
-    context: &DesktopContext,
-    app: &App,
+fn conversation_sidebar_bootstrap_for_state(
     state: &gold_band::config::StateConfig,
-) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
-    let sources = conversation_sidebar_sources(context, app, state).map_err(command_error)?;
-    Ok(crate::view_models_conversation::conversation_sidebar_vm_from_sources(state, &sources))
+) -> CommandResult<crate::view_models_conversation::ConversationSidebarBootstrapVm> {
+    Ok(crate::view_models_conversation::conversation_sidebar_bootstrap_vm(state))
 }
 
 #[tauri::command]
@@ -1109,6 +1405,7 @@ pub fn get_conversation_run_mode(
                         agent_type: config.agent_type.clone(),
                         model_id: config.model_id.clone(),
                         permission_mode: config.permission_mode.clone(),
+                        auto_accept: config.auto_accept,
                         config_options: config.config_options.clone(),
                     }
                 }),
@@ -1122,6 +1419,7 @@ pub fn get_conversation_run_mode(
                                 agent_type: config.agent_type.clone(),
                                 model_id: config.model_id.clone(),
                                 permission_mode: config.permission_mode.clone(),
+                                auto_accept: config.auto_accept,
                                 config_options: config.config_options.clone(),
                             },
                         )
@@ -1138,6 +1436,7 @@ pub fn get_conversation_run_mode(
                         acceptance_config_options: cfg.acceptance_config_options.clone(),
                         model_id: cfg.model_id.clone(),
                         permission_mode: cfg.permission_mode.clone(),
+                        auto_accept: cfg.auto_accept,
                         config_options: cfg.config_options.clone(),
                         available_agents: cfg.available_agents.as_ref().map(|agents| {
                             agents
@@ -1147,6 +1446,7 @@ pub fn get_conversation_run_mode(
                                         provider: agent.provider.clone(),
                                         model: agent.model.clone(),
                                         permission_mode: agent.permission_mode.clone(),
+                                        auto_accept: agent.auto_accept,
                                         config_options: agent.config_options.clone(),
                                     }
                                 })
@@ -1191,92 +1491,100 @@ pub fn save_conversation_run_mode(
     settings: ConversationRunModeSettingsVm,
 ) -> CommandResult<()> {
     let app = state.app().map_err(command_error)?;
-    let mut state = app.load_state().map_err(command_error)?;
-    let (_, resolved_project_id) =
-        workspace_entry_for_project(&state, &project_id).ok_or_else(|| {
-            CommandErrorVm::new(
-                "workspace.not-found",
-                serde_json::json!({ "projectId": project_id }),
-            )
-        })?;
-    state.conversation_run_modes.insert(
-        resolved_project_id,
-        ConversationRunModeEntry {
-            mode: settings.mode,
-            workflow_template_id: settings.workflow_template_id,
-            optional_entry_preferences: settings.optional_entry_preferences,
-            direct_config: settings
-                .direct_config
-                .map(|config| ConversationDirectConfig {
-                    agent_type: config.agent_type,
-                    model_id: config.model_id,
-                    permission_mode: config.permission_mode,
-                    config_options: config.config_options,
+    // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+    app.with_state(|state| {
+        let Some((_, resolved_project_id)) = workspace_entry_for_project(state, &project_id) else {
+            return (
+                false,
+                Err(CommandErrorVm::new(
+                    "workspace.not-found",
+                    serde_json::json!({ "projectId": project_id }),
+                )),
+            );
+        };
+        state.conversation_run_modes.insert(
+            resolved_project_id,
+            ConversationRunModeEntry {
+                mode: settings.mode,
+                workflow_template_id: settings.workflow_template_id,
+                optional_entry_preferences: settings.optional_entry_preferences,
+                direct_config: settings
+                    .direct_config
+                    .map(|config| ConversationDirectConfig {
+                        agent_type: config.agent_type,
+                        model_id: config.model_id,
+                        permission_mode: config.permission_mode,
+                        auto_accept: config.auto_accept,
+                        config_options: config.config_options,
+                    }),
+                direct_preferences: settings
+                    .direct_preferences
+                    .into_iter()
+                    .map(|(agent_type, config)| {
+                        (
+                            agent_type,
+                            ConversationDirectConfig {
+                                agent_type: config.agent_type,
+                                model_id: config.model_id,
+                                permission_mode: config.permission_mode,
+                                auto_accept: config.auto_accept,
+                                config_options: config.config_options,
+                            },
+                        )
+                    })
+                    .collect(),
+                auto_config: settings.auto_config.map(|cfg| ConversationAutoConfig {
+                    agent_strategy: cfg.agent_strategy,
+                    agent_type: cfg.agent_type,
+                    bootstrap_agent_type: cfg.bootstrap_agent_type,
+                    bootstrap_model_id: cfg.bootstrap_model_id,
+                    bootstrap_config_options: cfg.bootstrap_config_options,
+                    acceptance_model_id: cfg.acceptance_model_id,
+                    acceptance_config_options: cfg.acceptance_config_options,
+                    model_id: cfg.model_id,
+                    permission_mode: cfg.permission_mode,
+                    auto_accept: cfg.auto_accept,
+                    config_options: cfg.config_options,
+                    available_agents: cfg.available_agents.map(|agents| {
+                        agents
+                            .into_iter()
+                            .map(|agent| ConversationDynamicAgentRef {
+                                provider: agent.provider,
+                                model: agent.model,
+                                permission_mode: agent.permission_mode,
+                                auto_accept: agent.auto_accept,
+                                config_options: agent.config_options,
+                            })
+                            .collect()
+                    }),
+                    routing_prompt: cfg.routing_prompt,
+                    allowed_workflows: cfg.allowed_workflows.map(|workflows| {
+                        workflows
+                            .into_iter()
+                            .map(|workflow| ConversationAllowedWorkflowRef {
+                                workflow_id: workflow.workflow_id,
+                            })
+                            .collect()
+                    }),
+                    allowed_profiles: cfg.allowed_profiles,
+                    global_goal: cfg.global_goal,
+                    control: cfg.control.map(|control| ConversationDynamicControl {
+                        max_dynamic_nodes: control.max_dynamic_nodes,
+                        max_fanout: control.max_fanout,
+                        max_depth: control.max_depth,
+                        max_parallel: control.max_parallel,
+                        max_group_depth: control.max_group_depth,
+                        max_workflow_invocations: control.max_workflow_invocations,
+                        allow_nested_dynamic: control.allow_nested_dynamic,
+                    }),
+                    active_template_id: cfg.active_template_id,
+                    active_template_name: cfg.active_template_name,
                 }),
-            direct_preferences: settings
-                .direct_preferences
-                .into_iter()
-                .map(|(agent_type, config)| {
-                    (
-                        agent_type,
-                        ConversationDirectConfig {
-                            agent_type: config.agent_type,
-                            model_id: config.model_id,
-                            permission_mode: config.permission_mode,
-                            config_options: config.config_options,
-                        },
-                    )
-                })
-                .collect(),
-            auto_config: settings.auto_config.map(|cfg| ConversationAutoConfig {
-                agent_strategy: cfg.agent_strategy,
-                agent_type: cfg.agent_type,
-                bootstrap_agent_type: cfg.bootstrap_agent_type,
-                bootstrap_model_id: cfg.bootstrap_model_id,
-                bootstrap_config_options: cfg.bootstrap_config_options,
-                acceptance_model_id: cfg.acceptance_model_id,
-                acceptance_config_options: cfg.acceptance_config_options,
-                model_id: cfg.model_id,
-                permission_mode: cfg.permission_mode,
-                config_options: cfg.config_options,
-                available_agents: cfg.available_agents.map(|agents| {
-                    agents
-                        .into_iter()
-                        .map(|agent| ConversationDynamicAgentRef {
-                            provider: agent.provider,
-                            model: agent.model,
-                            permission_mode: agent.permission_mode,
-                            config_options: agent.config_options,
-                        })
-                        .collect()
-                }),
-                routing_prompt: cfg.routing_prompt,
-                allowed_workflows: cfg.allowed_workflows.map(|workflows| {
-                    workflows
-                        .into_iter()
-                        .map(|workflow| ConversationAllowedWorkflowRef {
-                            workflow_id: workflow.workflow_id,
-                        })
-                        .collect()
-                }),
-                allowed_profiles: cfg.allowed_profiles,
-                global_goal: cfg.global_goal,
-                control: cfg.control.map(|control| ConversationDynamicControl {
-                    max_dynamic_nodes: control.max_dynamic_nodes,
-                    max_fanout: control.max_fanout,
-                    max_depth: control.max_depth,
-                    max_parallel: control.max_parallel,
-                    max_group_depth: control.max_group_depth,
-                    max_workflow_invocations: control.max_workflow_invocations,
-                    allow_nested_dynamic: control.allow_nested_dynamic,
-                }),
-                active_template_id: cfg.active_template_id,
-                active_template_name: cfg.active_template_name,
-            }),
-        },
-    );
-    app.save_state(&state).map_err(command_error)?;
-    Ok(())
+            },
+        );
+        (true, Ok(()))
+    })
+    .map_err(command_error)?
 }
 
 #[tauri::command]
@@ -1297,11 +1605,41 @@ pub fn choose_conversation_workspace(
     })
 }
 
+/// add_conversation_workspace 的重复/冲突守卫（path 归一化比对 + project_id 比对）。
+/// 入库事务内、外各校验一次：事务外 fail-fast，事务内权威判定（防并发添加竞态入库）。
+fn conversation_workspace_add_error(
+    state: &gold_band::config::StateConfig,
+    selected: &GoldBandPaths,
+    name: &str,
+    project_id: &str,
+) -> Option<CommandErrorVm> {
+    if state.conversation_workspaces.iter().any(|workspace| {
+        GoldBandPaths::new(Utf8PathBuf::from(&workspace.workspace_path)).normalized_repo_root
+            == selected.normalized_repo_root
+    }) {
+        return Some(CommandErrorVm::new(
+            "workspace.already-exists",
+            serde_json::json!({ "name": name }),
+        ));
+    }
+    if state
+        .conversation_workspaces
+        .iter()
+        .any(|workspace| workspace.project_id == project_id)
+    {
+        return Some(CommandErrorVm::new(
+            "workspace.project-id-collision",
+            serde_json::json!({ "projectId": project_id }),
+        ));
+    }
+    None
+}
+
 #[tauri::command]
 pub async fn add_conversation_workspace(
     state: State<'_, DesktopState>,
     path: String,
-) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
+) -> CommandResult<crate::view_models_conversation::ConversationSidebarBootstrapVm> {
     let context = state.context().map_err(command_error)?;
     let coordinator = state.scheduler_coordinator().map_err(command_error)?;
     spawn_blocking_command(move || {
@@ -1316,57 +1654,46 @@ pub async fn add_conversation_workspace(
             .unwrap_or_else(|| workspace_path_str.clone());
         let selected_paths = GoldBandPaths::new(workspace_path.clone());
         let project_id = selected_paths.project_id.clone();
-        let mut state = gold_band_app.load_state().map_err(command_error)?;
 
-        if state
-            .conversation_workspaces
-            .iter()
-            .any(|workspace| {
-                GoldBandPaths::new(Utf8PathBuf::from(&workspace.workspace_path))
-                    .normalized_repo_root
-                    == selected_paths.normalized_repo_root
-            })
+        // 预检（只读 load）：fail-fast，重复/冲突时不做 manifest 预置。
+        let pre_state = gold_band_app.load_state().map_err(command_error)?;
+        if let Some(error) =
+            conversation_workspace_add_error(&pre_state, &selected_paths, &name, &project_id)
         {
-            return Err(CommandErrorVm::new(
-                "workspace.already-exists",
-                serde_json::json!({ "name": name }),
-            ));
-        }
-        if state
-            .conversation_workspaces
-            .iter()
-            .any(|workspace| workspace.project_id == project_id)
-        {
-            return Err(CommandErrorVm::new(
-                "workspace.project-id-collision",
-                serde_json::json!({ "projectId": project_id }),
-            ));
+            return Err(error);
         }
 
         provision_project_manifest_for_desktop(&selected_paths).map_err(command_error)?;
 
-        state
-            .conversation_workspaces
-            .push(ConversationWorkspaceEntry {
-                project_id: project_id.clone(),
-                workspace_path: workspace_path_str,
-                name: name.clone(),
-                added_at: chrono::Utc::now().to_rfc3339(),
-            });
-        state.last_conversation_workspace = Some(project_id.clone());
-        gold_band_app.save_state(&state).map_err(command_error)?;
+        // 入库经 with_state 原子 RMW（StateConfig 唯一读改写入口）：事务内权威重校验，
+        // 防并发添加竞态产生重复条目；与 Multica 后台写入并发互不覆盖。
+        let bootstrap = gold_band_app
+            .with_state(|state| {
+                if let Some(error) =
+                    conversation_workspace_add_error(state, &selected_paths, &name, &project_id)
+                {
+                    return (false, Err(error));
+                }
+                state
+                    .conversation_workspaces
+                    .push(ConversationWorkspaceEntry {
+                        project_id: project_id.clone(),
+                        workspace_path: workspace_path_str,
+                        name: name.clone(),
+                        added_at: chrono::Utc::now().to_rfc3339(),
+                    });
+                state.last_conversation_workspace = Some(project_id.clone());
+                (true, conversation_sidebar_bootstrap_for_state(state))
+            })
+            .map_err(command_error)??;
         coordinator
             .send(crate::scheduled_runtime::SchedulerCommand::RegisterWorkspace {
                 workspace_path: workspace_path.clone(),
             })
             .map_err(scheduled_service_error)?;
-        info!(
-            project_id = %project_id,
-            workspace_count = state.conversation_workspaces.len(),
-            "conversation workspace added"
-        );
+        info!(project_id = %project_id, "conversation workspace added");
 
-        conversation_sidebar_for_state(&context, &gold_band_app, &state)
+        Ok(bootstrap)
     })
     .await
 }
@@ -1378,9 +1705,12 @@ pub fn save_conversation_preference(
     value: serde_json::Value,
 ) -> CommandResult<()> {
     let app = state.app().map_err(command_error)?;
-    let mut app_state = app.load_state().map_err(command_error)?;
-    app_state.preferences.insert(key, value);
-    app.save_state(&app_state).map_err(command_error)?;
+    // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+    app.with_state(|app_state| {
+        app_state.preferences.insert(key, value);
+        (true, ())
+    })
+    .map_err(command_error)?;
     Ok(())
 }
 
@@ -1390,24 +1720,29 @@ pub fn save_last_conversation_workspace(
     project_id: String,
 ) -> CommandResult<()> {
     let app = state.app().map_err(command_error)?;
-    let mut app_state = app.load_state().map_err(command_error)?;
-    let (_, resolved_project_id) = workspace_entry_for_project(&app_state, &project_id)
-        .ok_or_else(|| {
-            CommandErrorVm::new(
-                "workspace.not-found",
-                serde_json::json!({ "projectId": project_id }),
-            )
-        })?;
-    app_state.last_conversation_workspace = Some(resolved_project_id);
-    app.save_state(&app_state).map_err(command_error)?;
-    Ok(())
+    // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+    app.with_state(|app_state| {
+        let Some((_, resolved_project_id)) = workspace_entry_for_project(app_state, &project_id)
+        else {
+            return (
+                false,
+                Err(CommandErrorVm::new(
+                    "workspace.not-found",
+                    serde_json::json!({ "projectId": project_id }),
+                )),
+            );
+        };
+        app_state.last_conversation_workspace = Some(resolved_project_id);
+        (true, Ok(()))
+    })
+    .map_err(command_error)?
 }
 
 #[tauri::command]
 pub async fn sync_conversation_workspace(
     state: State<'_, DesktopState>,
     workspace_path: String,
-) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
+) -> CommandResult<crate::view_models_conversation::ConversationSidebarBootstrapVm> {
     let context = state.context().map_err(command_error)?;
     let coordinator = state.scheduler_coordinator().map_err(command_error)?;
     spawn_blocking_command(move || {
@@ -1418,37 +1753,61 @@ pub async fn sync_conversation_workspace(
             .unwrap_or_else(|| workspace_path.clone());
         let selected_paths = GoldBandPaths::new(Utf8PathBuf::from(&workspace_path));
         let project_id = selected_paths.project_id.clone();
-        let mut state = app.load_state().map_err(command_error)?;
 
-        let existing_path = state.conversation_workspaces.iter().find(|workspace| {
-            GoldBandPaths::new(Utf8PathBuf::from(&workspace.workspace_path)).normalized_repo_root
-                == selected_paths.normalized_repo_root
-        });
-        let resolved_project_id = if let Some(workspace) = existing_path {
-            workspace.project_id.clone()
-        } else if state
-            .conversation_workspaces
-            .iter()
-            .any(|workspace| workspace.project_id == project_id)
-        {
-            return Err(CommandErrorVm::new(
-                "workspace.project-id-collision",
-                serde_json::json!({ "projectId": project_id }),
-            ));
-        } else {
-            provision_project_manifest_for_desktop(&selected_paths).map_err(command_error)?;
-            state
+        // 预读（只读）：仅新增工作区需要预置 manifest；既有条目同步不触碰目标目录。
+        let needs_provision = {
+            let pre_state = app.load_state().map_err(command_error)?;
+            pre_state.conversation_workspaces.iter().all(|workspace| {
+                GoldBandPaths::new(Utf8PathBuf::from(&workspace.workspace_path))
+                    .normalized_repo_root
+                    != selected_paths.normalized_repo_root
+            }) && pre_state
                 .conversation_workspaces
-                .push(ConversationWorkspaceEntry {
-                    project_id: project_id.clone(),
-                    workspace_path: workspace_path.clone(),
-                    name: name.clone(),
-                    added_at: chrono::Utc::now().to_rfc3339(),
-                });
-            project_id
+                .iter()
+                .all(|workspace| workspace.project_id != project_id)
         };
-        state.last_conversation_workspace = Some(resolved_project_id);
-        app.save_state(&state).map_err(command_error)?;
+        if needs_provision {
+            provision_project_manifest_for_desktop(&selected_paths).map_err(command_error)?;
+        }
+
+        // 入库经 with_state 原子 RMW（StateConfig 唯一读改写入口）：事务内权威重判定，
+        // 并发添加已存在时幂等采用既有条目；与 Multica 后台写入并发互不覆盖。
+        let bootstrap = app
+            .with_state(|state| {
+                let resolved_project_id = if let Some(workspace) =
+                    state.conversation_workspaces.iter().find(|workspace| {
+                        GoldBandPaths::new(Utf8PathBuf::from(&workspace.workspace_path))
+                            .normalized_repo_root
+                            == selected_paths.normalized_repo_root
+                    }) {
+                    workspace.project_id.clone()
+                } else if state
+                    .conversation_workspaces
+                    .iter()
+                    .any(|workspace| workspace.project_id == project_id)
+                {
+                    return (
+                        false,
+                        Err(CommandErrorVm::new(
+                            "workspace.project-id-collision",
+                            serde_json::json!({ "projectId": project_id }),
+                        )),
+                    );
+                } else {
+                    state
+                        .conversation_workspaces
+                        .push(ConversationWorkspaceEntry {
+                            project_id: project_id.clone(),
+                            workspace_path: workspace_path.clone(),
+                            name: name.clone(),
+                            added_at: chrono::Utc::now().to_rfc3339(),
+                        });
+                    project_id.clone()
+                };
+                state.last_conversation_workspace = Some(resolved_project_id);
+                (true, conversation_sidebar_bootstrap_for_state(state))
+            })
+            .map_err(command_error)??;
         coordinator
             .send(
                 crate::scheduled_runtime::SchedulerCommand::RegisterWorkspace {
@@ -1457,7 +1816,7 @@ pub async fn sync_conversation_workspace(
             )
             .map_err(scheduled_service_error)?;
 
-        conversation_sidebar_for_state(&context, &app, &state)
+        Ok(bootstrap)
     })
     .await
 }
@@ -1467,12 +1826,13 @@ pub async fn delete_conversation_task(
     state: State<'_, DesktopState>,
     project_id: String,
     task_id: String,
-) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
+) -> CommandResult<crate::view_models_conversation::ConversationSidebarBootstrapVm> {
     let context = state.context().map_err(command_error)?;
     let conversation_attention_write_lock = state.conversation_attention_write_lock();
     spawn_blocking_command(move || {
         let app = context.app();
-        let mut app_state = app.load_state().map_err(command_error)?;
+        // 只读 load 解析工作区归属；重操作（trash/sqlite/attention）不持 state 锁。
+        let app_state = app.load_state().map_err(command_error)?;
         let Some((workspace_path, normalized_project_id)) =
             workspace_entry_for_project(&app_state, &project_id)
         else {
@@ -1499,6 +1859,10 @@ pub async fn delete_conversation_task(
                 serde_json::json!({ "taskId": task_id }),
             ));
         }
+        let task_uuid = workspace_app
+            .task_show(&task_id)
+            .ok()
+            .and_then(|task| task.uuid);
         trash::delete(task_dir.as_std_path()).map_err(|error| {
             CommandErrorVm::new(
                 "conversation.task-delete-failed",
@@ -1506,6 +1870,12 @@ pub async fn delete_conversation_task(
             )
         })?;
         gold_band::storage::sqlite::delete_task(&task_dir);
+        if let Some(task_uuid) = task_uuid {
+            crate::metrics::mark_task_metrics_deleted_best_effort(
+                workspace_app.paths.project_id.clone(),
+                task_uuid,
+            );
+        }
         {
             let _attention_guard = conversation_attention_write_lock.lock().map_err(|_| {
                 CommandErrorVm::new(
@@ -1515,11 +1885,18 @@ pub async fn delete_conversation_task(
             })?;
             remove_task_attention(&workspace_app, &task_id).map_err(command_error)?;
         }
-        app_state
-            .conversation_pins
-            .retain(|p| p.project_id != normalized_project_id || p.task_id != task_id);
-        app.save_state(&app_state).map_err(command_error)?;
-        conversation_sidebar_for_state(&context, &app, &app_state)
+        // 清 pin 经 with_state 原子 RMW（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+        app.with_state(|state| {
+            let before = state.conversation_pins.len();
+            state
+                .conversation_pins
+                .retain(|p| p.project_id != normalized_project_id || p.task_id != task_id);
+            (
+                state.conversation_pins.len() != before,
+                conversation_sidebar_bootstrap_for_state(state),
+            )
+        })
+        .map_err(command_error)?
     })
     .await
 }
@@ -1528,12 +1905,13 @@ pub async fn delete_conversation_task(
 pub async fn remove_conversation_workspace(
     state: State<'_, DesktopState>,
     project_id: String,
-) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
+) -> CommandResult<crate::view_models_conversation::ConversationSidebarBootstrapVm> {
     let context = state.context().map_err(command_error)?;
     let coordinator = state.scheduler_coordinator().map_err(command_error)?;
     spawn_blocking_command(move || {
         let app = context.app();
-        let mut state = app.load_state().map_err(command_error)?;
+        // 只读 load 解析工作区路径；关闭 ACP 连接等重操作不持 state 锁。
+        let state = app.load_state().map_err(command_error)?;
         let workspace_path = workspace_entry_for_project(&state, &project_id)
             .map(|(workspace_path, _)| workspace_path)
             .ok_or_else(|| {
@@ -1547,13 +1925,22 @@ pub async fn remove_conversation_workspace(
         ))
         .map_err(command_error)?;
 
-        remove_workspace_from_state(&mut state, &project_id).ok_or_else(|| {
-            CommandErrorVm::new(
-                "conversation.workspace-not-found",
-                serde_json::json!({ "projectId": project_id }),
+        // 移除工作区状态经 with_state 原子 RMW（StateConfig 唯一读改写入口）：
+        // 事务内重新解析（并发下已移除则报 not-found），与 Multica 后台写入并发互不覆盖。
+        let bootstrap = app
+            .with_state(
+                |state| match remove_workspace_from_state(state, &project_id) {
+                    Some(_) => (true, conversation_sidebar_bootstrap_for_state(state)),
+                    None => (
+                        false,
+                        Err(CommandErrorVm::new(
+                            "conversation.workspace-not-found",
+                            serde_json::json!({ "projectId": project_id }),
+                        )),
+                    ),
+                },
             )
-        })?;
-        app.save_state(&state).map_err(command_error)?;
+            .map_err(command_error)??;
         coordinator
             .send(
                 crate::scheduled_runtime::SchedulerCommand::UnregisterWorkspace {
@@ -1562,7 +1949,7 @@ pub async fn remove_conversation_workspace(
             )
             .map_err(scheduled_service_error)?;
 
-        conversation_sidebar_for_state(&context, &app, &state)
+        Ok(bootstrap)
     })
     .await
 }
@@ -2122,10 +2509,12 @@ pub fn get_supported_attachment_extensions() -> CommandResult<Vec<String>> {
 mod tests {
     use super::{
         MaterializeAttachmentFileInput, base64_encode, conversation_search_result_for_workspace,
-        conversation_search_task_roots, decode_occurrence_cursor, encode_occurrence_cursor,
-        materialize_attachment_files_to_dir, message_attachment_content_from_attempt_dir,
-        scheduled_occurrence_vms_from_occurrences, scheduled_runtime_settings_vm,
-        scheduled_service_error, validate_scheduled_runtime_settings_input,
+        conversation_search_task_roots, decode_execution_history_cursor,
+        delete_scheduled_execution_history_items, encode_execution_history_cursor,
+        execution_history_vm, materialize_attachment_files_to_dir,
+        message_attachment_content_from_attempt_dir, runtime_workspace_entry_for_project,
+        scheduled_runtime_settings_vm, scheduled_service_error,
+        validate_execution_history_delete_batch, validate_scheduled_runtime_settings_input,
     };
     use camino::Utf8PathBuf;
     use gold_band::app::App;
@@ -2136,97 +2525,222 @@ mod tests {
     use gold_band::storage::{sqlite::TaskSearchResult, write_json};
     use uuid::Uuid;
 
-    use crate::view_models_conversation::ScheduledRuntimeSettingsInputVm;
+    #[test]
+    fn runtime_workspace_entry_rejects_an_unavailable_workspace_before_admission() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace_path = directory
+            .path()
+            .join("removed-workspace")
+            .to_string_lossy()
+            .into_owned();
+        let mut state = StateConfig::default();
+        state
+            .conversation_workspaces
+            .push(ConversationWorkspaceEntry {
+                project_id: "project-1".to_string(),
+                workspace_path: workspace_path.clone(),
+                name: "Removed workspace".to_string(),
+                added_at: "2026-08-27T00:00:00Z".to_string(),
+            });
+
+        let error = tauri::async_runtime::block_on(runtime_workspace_entry_for_project(
+            &state,
+            "project-1",
+        ))
+        .unwrap_err();
+
+        assert_eq!(error.code, "workspace.path-not-found");
+        assert_eq!(error.params["projectId"], "project-1");
+        assert_eq!(error.params["workspacePath"], workspace_path);
+    }
 
     #[test]
-    fn occurrence_cursor_round_trips_and_rejects_invalid_input() {
+    fn execution_history_cursor_round_trips_and_rejects_invalid_input() {
         use chrono::{TimeZone, Utc};
 
-        let cursor = gold_band::scheduler::db::OccurrencePageCursor {
-            scheduled_at: Utc.with_ymd_and_hms(2026, 8, 13, 9, 30, 0).unwrap(),
-            created_at: Utc.with_ymd_and_hms(2026, 8, 13, 9, 30, 1).unwrap(),
-            id: "occurrence-20".to_string(),
+        let cursor = gold_band::scheduler::db::ScheduledExecutionHistoryCursor {
+            last_accepted_at: Utc.with_ymd_and_hms(2026, 8, 25, 9, 30, 0).unwrap(),
+            latest_occurrence_id: "occurrence-20".to_string(),
         };
 
         assert_eq!(
-            decode_occurrence_cursor(&encode_occurrence_cursor(&cursor)).unwrap(),
+            decode_execution_history_cursor(&encode_execution_history_cursor(&cursor)).unwrap(),
             cursor
         );
-        let error = decode_occurrence_cursor("not-a-cursor").unwrap_err();
+        let error = decode_execution_history_cursor("not-a-cursor").unwrap_err();
         assert_eq!(error.code, ScheduledErrorCode::ValidationFailed.to_string());
         assert_eq!(error.params["field"], "cursor");
     }
 
     #[test]
-    fn scheduled_occurrence_list_keeps_skipped_and_missed_history() {
+    fn execution_history_projects_one_missing_run_as_unavailable() {
         use chrono::{TimeZone, Utc};
-        use gold_band::scheduler::occurrence::{
-            OccurrenceStatus, OccurrenceTriggerKind, ScheduledOccurrence,
-        };
+        use gold_band::scheduler::db::ScheduledExecutionHistoryRecord;
 
-        let now = Utc.with_ymd_and_hms(2026, 8, 7, 9, 0, 0).unwrap();
-        let make_occurrence = |id: &str, status| ScheduledOccurrence {
-            id: id.to_string(),
-            job_id: "scheduled-1".to_string(),
-            scheduled_at: now,
-            trigger_kind: OccurrenceTriggerKind::Scheduled,
-            status,
-            attempt: 1,
-            owner_id: None,
-            lease_until: None,
-            heartbeat_at: None,
-            task_id: None,
-            run_id: None,
-            round_id: None,
-            attempt_id: None,
-            error_code: None,
-            error_params: None,
-            started_at: None,
-            finished_at: Some(now),
-            created_at: now,
-            updated_at: now,
-        };
-        let occurrences = vec![
-            make_occurrence("skipped", OccurrenceStatus::Skipped),
-            make_occurrence("missed", OccurrenceStatus::Missed),
-        ];
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = App::new(repo_root);
+        let at = Utc.with_ymd_and_hms(2026, 8, 25, 9, 30, 0).unwrap();
+        let item = execution_history_vm(
+            &app,
+            ScheduledExecutionHistoryRecord {
+                project_id: app.paths.project_id.clone(),
+                scheduled_task_id: "scheduled-1".to_string(),
+                task_id: "missing-task".to_string(),
+                run_id: "missing-run".to_string(),
+                first_accepted_at: at,
+                last_accepted_at: at,
+                occurrence_count: 1,
+                latest_occurrence_id: "occurrence-1".to_string(),
+                latest_summary: "summary".to_string(),
+                latest_content_fingerprint: "fingerprint".to_string(),
+            },
+        );
 
-        let statuses = scheduled_occurrence_vms_from_occurrences(&occurrences)
-            .into_iter()
-            .map(|occurrence| occurrence.status)
-            .collect::<Vec<_>>();
-
-        assert_eq!(statuses, vec!["skipped", "missed"]);
+        assert_eq!(
+            item.availability,
+            crate::view_models_conversation::ScheduledExecutionHistoryAvailabilityVm::Unavailable
+        );
+        assert!(item.run.is_none());
+        let error = item
+            .error
+            .expect("unavailable item keeps a structured error");
+        assert_eq!(error.code, ScheduledErrorCode::StorageFailed.to_string());
+        assert_eq!(error.params["runId"], "missing-run");
     }
 
     #[test]
-    fn scheduled_runtime_settings_reject_retention_below_minimum() {
-        let error = validate_scheduled_runtime_settings_input(&ScheduledRuntimeSettingsInputVm {
-            keep_awake_enabled: true,
-            completion_notifications_enabled: true,
-            occurrence_retention_days: 0,
-        })
-        .unwrap_err();
+    fn batch_history_removal_isolates_failures_and_returns_terminal_results() {
+        let input = |run_id: &str| {
+            crate::view_models_conversation::ScheduledExecutionHistoryDeleteInputVm {
+                project_id: "project-1".to_string(),
+                scheduled_task_id: "scheduled-1".to_string(),
+                task_id: "task-1".to_string(),
+                run_id: run_id.to_string(),
+                through_occurrence_id: format!("occurrence-{run_id}"),
+            }
+        };
+        let results = delete_scheduled_execution_history_items(
+            vec![input("run-not-found"), input("run-completed")],
+            |item| {
+                if item.run_id == "run-not-found" {
+                    return Err(crate::scheduled_service::ScheduledServiceError::new(
+                        ScheduledErrorCode::NotFound,
+                        serde_json::json!({
+                            "operation": "remove-execution-history",
+                            "runId": item.run_id,
+                        }),
+                    ));
+                }
+                Ok(gold_band::scheduler::db::RemoveExecutionHistoryResult::Removed(1))
+            },
+        );
 
-        assert_eq!(error.code, ScheduledErrorCode::ValidationFailed);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].run_id, "run-not-found");
         assert_eq!(
-            error.params,
-            serde_json::json!({
-                "field": "occurrenceRetentionDays",
-                "minimum": 1,
-                "maximum": 3650,
-                "actual": 0,
-            })
+            results[0].status,
+            crate::view_models_conversation::ScheduledExecutionHistoryDeleteStatusVm::Failed
+        );
+        assert_eq!(
+            results[0].code.as_deref(),
+            Some(ScheduledErrorCode::NotFound.to_string().as_str())
+        );
+        assert_eq!(results[1].run_id, "run-completed");
+        assert_eq!(results[1].through_occurrence_id, "occurrence-run-completed");
+        assert_eq!(
+            results[1].status,
+            crate::view_models_conversation::ScheduledExecutionHistoryDeleteStatusVm::Completed
+        );
+        assert!(results[1].code.is_none());
+    }
+
+    #[test]
+    fn batch_history_delete_rejects_more_than_the_typed_batch_max() {
+        let items = (0..=gold_band::scheduler::db::EXECUTION_HISTORY_BATCH_MAX)
+            .map(
+                |index| crate::view_models_conversation::ScheduledExecutionHistoryDeleteInputVm {
+                    project_id: "project-1".to_string(),
+                    scheduled_task_id: "scheduled-1".to_string(),
+                    task_id: "task-1".to_string(),
+                    run_id: format!("run-{index}"),
+                    through_occurrence_id: format!("occurrence-{index}"),
+                },
+            )
+            .collect::<Vec<_>>();
+
+        let error = validate_execution_history_delete_batch(&items).unwrap_err();
+
+        assert_eq!(error.code, ScheduledErrorCode::ValidationFailed.to_string());
+        assert_eq!(error.params["field"], "items");
+        assert_eq!(error.params["reason"], "batch-too-large");
+        assert_eq!(
+            error.params["max"],
+            gold_band::scheduler::db::EXECUTION_HISTORY_BATCH_MAX
         );
     }
 
     #[test]
+    fn batch_history_delete_accepts_the_typed_batch_max_before_creating_operations() {
+        let items = (0..gold_band::scheduler::db::EXECUTION_HISTORY_BATCH_MAX)
+            .map(
+                |index| crate::view_models_conversation::ScheduledExecutionHistoryDeleteInputVm {
+                    project_id: "project-1".to_string(),
+                    scheduled_task_id: "scheduled-1".to_string(),
+                    task_id: "task-1".to_string(),
+                    run_id: format!("run-{index}"),
+                    through_occurrence_id: format!("occurrence-{index}"),
+                },
+            )
+            .collect::<Vec<_>>();
+
+        assert!(validate_execution_history_delete_batch(&items).is_ok());
+    }
+
+    #[test]
+    fn batch_history_delete_rejects_an_empty_watermark() {
+        let items = vec![
+            crate::view_models_conversation::ScheduledExecutionHistoryDeleteInputVm {
+                project_id: "project-1".to_string(),
+                scheduled_task_id: "scheduled-1".to_string(),
+                task_id: "task-1".to_string(),
+                run_id: "run-1".to_string(),
+                through_occurrence_id: "  ".to_string(),
+            },
+        ];
+
+        let error = validate_execution_history_delete_batch(&items).unwrap_err();
+
+        assert_eq!(error.code, ScheduledErrorCode::ValidationFailed.to_string());
+        assert_eq!(error.params["field"], "items[0].throughOccurrenceId");
+        assert_eq!(error.params["reason"], "required");
+    }
+
+    #[test]
+    fn scheduled_runtime_settings_reject_retention_below_minimum() {
+        let error = validate_scheduled_runtime_settings_input(
+            &crate::view_models_conversation::ScheduledRuntimeSettingsInputVm {
+                keep_awake_enabled: true,
+                completion_notifications_enabled: true,
+                occurrence_retention_days: 0,
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, ScheduledErrorCode::ValidationFailed);
+        assert_eq!(error.params["actual"], 0);
+    }
+
+    #[test]
     fn scheduled_runtime_settings_reject_retention_above_maximum() {
-        let error = validate_scheduled_runtime_settings_input(&ScheduledRuntimeSettingsInputVm {
-            keep_awake_enabled: false,
-            completion_notifications_enabled: false,
-            occurrence_retention_days: 3651,
-        })
+        let error = validate_scheduled_runtime_settings_input(
+            &crate::view_models_conversation::ScheduledRuntimeSettingsInputVm {
+                keep_awake_enabled: false,
+                completion_notifications_enabled: false,
+                occurrence_retention_days: 3651,
+            },
+        )
         .unwrap_err();
 
         assert_eq!(error.code, ScheduledErrorCode::ValidationFailed);

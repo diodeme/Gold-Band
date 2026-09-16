@@ -1,7 +1,9 @@
+use std::backtrace::Backtrace;
 use std::fs::{self, File};
 use std::io::Write as _;
-use std::sync::OnceLock;
+use std::panic;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Once, OnceLock};
 
 use camino::Utf8Path;
 use file_rotate::compression::Compression;
@@ -29,6 +31,7 @@ const RUNTIME_LOG_BUFFERED_LINES_LIMIT: usize = 1_024;
 static TRACE_ID: OnceLock<String> = OnceLock::new();
 static TRACING_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static RUNTIME_LOG_LEVEL: AtomicU8 = AtomicU8::new(RuntimeLogLevel::Info.as_u8());
+static PANIC_LOGGING_HOOK: Once = Once::new();
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -261,8 +264,55 @@ pub fn init_tracing(
     } else {
         registry.init();
     }
+    install_panic_logging_hook();
 
     Some(RuntimeLogGuard::new(runtime_log_guard, dropped_lines))
+}
+
+fn install_panic_logging_hook() {
+    PANIC_LOGGING_HOOK.call_once(|| {
+        let previous_hook = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            let payload = info
+                .payload()
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| {
+                    info.payload()
+                        .downcast_ref::<&str>()
+                        .map(|message| (*message).to_string())
+                })
+                .unwrap_or_else(|| "<non-string panic payload>".to_string());
+            let location = info
+                .location()
+                .map(|location| {
+                    format!(
+                        "{}:{}:{}",
+                        location.file(),
+                        location.line(),
+                        location.column()
+                    )
+                })
+                .unwrap_or_else(|| "<unknown>".to_string());
+            let thread = std::thread::current()
+                .name()
+                .unwrap_or("<unnamed>")
+                .to_string();
+            let backtrace = Backtrace::force_capture().to_string();
+            let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                tracing::error!(
+                    target: "gold_band::panic",
+                    event = "runtime_panic",
+                    panic_thread = %thread,
+                    panic_payload = %payload,
+                    panic_location = %location,
+                    panic_backtrace = %backtrace,
+                    "Rust panic captured by runtime hook"
+                );
+            }));
+            let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| previous_hook(info)));
+        }));
+    });
 }
 
 fn runtime_log_channel<T: std::io::Write + Send + 'static>(

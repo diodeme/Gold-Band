@@ -4,10 +4,10 @@
 Control DSL 定义 workflow 的控制面：节点之间如何流转、节点 outcome 如何映射到下一步、何时结束 run、何时打开新 round，以及 session 是否复用。
 
 ## 2. 控制原则
-- 节点统一为 `worker`，控制层不根据节点 id 或历史名称赋予特殊语义。
+- 真实节点统一由 workflow node 定义（worker 或 ai-dynamic），控制层不根据节点 id 或历史名称赋予特殊语义。
 - 所有跳转优先由显式 edge 表达。
 - edge 的 `on` 只接受 `success / failure`。
-- edge 的 `to` 可指向真实 worker 节点、`$end` 或 `$new-round`。
+- edge 的 `to` 可指向真实节点（worker 或 ai-dynamic）、`$end` 或 `$new-round`。
 - edge 的 `session` 可选；省略时为 `new`，声明 `continue` 时目标 provider 必须支持 continue session。
 - `$end` 与 `$new-round` 是控制目标，不是节点 id；`$entry` 是 `$new-round` 起点选择中的特殊值，表示当前 workflow 的 `entry`，也不是节点 id。
 
@@ -24,7 +24,7 @@ Control DSL 定义 workflow 的控制面：节点之间如何流转、节点 out
 
 两个字段均可省略，省略表示不限制。
 
-- `max_attempts`：当前 round 内的修复/重试预算，只统计由 `failure` 触发并指向真实 worker 的修复跳转。比如值为 1 时，允许 `test failure -> dev` 修复一次；修复后的 `dev success -> test` 属于正常前进，不消耗次数。`output.schema` 不合法触发的隐藏追问不新增 attempt，也不消耗该预算。
+- `max_attempts`：当前 round 内的修复/重试预算，只统计由 `failure` 触发并指向真实节点的修复跳转。比如值为 1 时，允许 `test failure -> dev` 修复一次；修复后的 `dev success -> test` 属于正常前进，不消耗次数。`output.schema` 不合法触发的隐藏追问不新增 attempt，也不消耗该预算。
 - `max_rounds`：`$new-round` 可打开的新 round 最大次数，初始 round 不计入。
 
 超过任一限制时，runtime 不再创建新的 attempt / round，当前 workflow 以 failure 结束。
@@ -40,11 +40,11 @@ Control DSL 定义 workflow 的控制面：节点之间如何流转、节点 out
 }
 ```
 
-- `from`：真实 worker 节点 id。
-- `to`：真实 worker 节点 id、`$end` 或 `$new-round`。
+- `from`：真实节点（worker 或 ai-dynamic）id。
+- `to`：真实节点（worker 或 ai-dynamic）id、`$end` 或 `$new-round`。
 - `on`：当前节点归纳出的 outcome。
 - `session`：可选，`new` 或 `continue`。
-- `new_round_entry`：仅当 `to="$new-round"` 时使用且必填。值为 `$entry` 或真实 worker 节点 id，用于选择下一轮 round 的起点。
+- `new_round_entry`：仅当 `to="$new-round"` 时使用且必填。值为 `$entry` 或真实节点（worker 或 ai-dynamic）id，用于选择下一轮 round 的起点。
 
 ## 5. outcome 到控制决策
 
@@ -74,19 +74,19 @@ Control DSL 定义 workflow 的控制面：节点之间如何流转、节点 out
 ```
 
 - `new_round_entry="$entry"`：下一轮从当前 workflow 的 `entry` 开始。
-- `new_round_entry="<node-id>"`：下一轮从指定真实 worker 节点开始。
+- `new_round_entry="<node-id>"`：下一轮从指定真实节点（worker 或 ai-dynamic）开始。
 
-下一轮保留原始 requirement，并把上一轮失败节点的输出摘要作为反馈上下文提供给新的 worker 调用。
+下一轮保留原始 requirement，并把上一轮触发节点的结构化输出反馈提供给新的入口节点调用。普通 worker 入口直接使用通用 `new_round_trigger` hidden context；AI-DYNAMIC 入口把同一 trigger 只投影给内部 bootstrap 的初始调用，由 bootstrap 据此重新规划本轮动态任务。
 
 历史 task / run 可能创建于 `new_round_entry` 字段引入之前。运行启动或重跑在冻结本次 `workflow.snapshot.json` 前，会对读取到的历史 workflow 做 snapshot legacy 规范化：仅对 `to="$new-round"` 且缺失 `new_round_entry` 的边补为 `$entry`，再执行严格校验，并只把规范化结果写入本次 run 的 snapshot；`authoring/workflow.json` 不回写。运行态读取历史 frozen snapshot 时也使用同一规范化入口。作者态新建、保存 workflow 和模板时仍必须显式声明 `new_round_entry`，不能依赖该兼容默认值。
 
 ## 8. 校验要求
 - `entry` 必须存在。
-- 所有 edge source 必须是真实 worker 节点。
-- edge target 必须是真实 worker 节点、`$end` 或 `$new-round`。
+- 所有 edge source 必须是真实节点（worker 或 ai-dynamic）。
+- edge target 必须是真实节点（worker 或 ai-dynamic）、`$end` 或 `$new-round`。
 - `on=invalid` 非法；invalid 是 runtime 内部输出不合法状态，不是 workflow edge。
 - `success -> $new-round` 非法；作者态目标下拉在 `on=success` 时不展示 `$new-round`。
-- `to="$new-round"` 必须声明 `new_round_entry`，且值只能是 `$entry` 或已存在的真实 worker 节点 id。
+- `to="$new-round"` 必须声明 `new_round_entry`，且值只能是 `$entry` 或已存在的真实节点（worker 或 ai-dynamic）id。
 - `session=continue` 不能指向 `$end` / `$new-round`。
 - `session=continue` 的目标 provider 必须支持 continue session。
 - `control.max_attempts` 与 `control.max_rounds` 可省略；声明时必须为正整数。

@@ -42,7 +42,7 @@ export const CONVERSATION_HOME_COMPOSER_LAYOUT = {
 } as const;
 
 export const ACP_SESSION_COMPOSER_LAYOUT = {
-  stackSurfaceClassName: 'border border-border [border-width:var(--acp-session-composer-border-width)]',
+  stackSurfaceClassName: 'border border-border shadow-none [border-width:var(--acp-session-composer-border-width)]',
   promptInputClassName: 'px-0',
   textareaClassName: `${COMPOSER_TEXTAREA_BASE_CLASS_NAME} px-2.5`,
   commandBarClassName: 'mt-1 flex min-w-0 flex-wrap items-center gap-1.5 px-1 py-1',

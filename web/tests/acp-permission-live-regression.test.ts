@@ -63,7 +63,7 @@ describe('live ACP permission delivery', () => {
     const liveTimeline = liveTimelineUpdatesFromEvents([permissionEvent]);
     const pending = pendingPermissionFromEvents(liveTimeline, new Set());
     expect(pending).toMatchObject({
-      requestId: 'json-rpc-7',
+      interactionId: 'json-rpc-7',
       title: 'mcp__code_graph__list_projects',
     });
 

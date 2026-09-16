@@ -12,10 +12,10 @@ import {
   optimisticUserEvent,
   planAcpStopResponse,
   queryBlocksFromTool,
-  restoreAcpLoadedEvents,
+  restoreAcpLoadedEventWindow,
   shouldAwaitTerminalAcpStop,
   stabilizeTimelineItems,
-  storeAcpLoadedEvents,
+  storeAcpLoadedEventWindow,
   timelineEventKey,
   timelineRenderKey,
 } from '../../src/components/acp/ACPChatDialog';
@@ -212,14 +212,14 @@ describe('ACPChatDialog branch timeline helpers', () => {
       'running',
       projection([]),
     ).timeline[0];
-    expect(pendingProjection?.kind === 'agentLink' ? pendingProjection.status : null).toBe('queued');
+    expect(pendingProjection?.kind === 'agentLink' ? pendingProjection.status : null).toBeNull();
 
     const completedSession = buildAcpTimelineProjection(
       [launch],
       'completed',
       projection([]),
     ).timeline[0];
-    expect(completedSession?.kind === 'agentLink' ? completedSession.status : null).toBe('completed');
+    expect(completedSession?.kind === 'agentLink' ? completedSession.status : null).toBeNull();
   });
 
   it('preserves an unrelated Agent link object when another Agent projection changes', () => {
@@ -374,18 +374,30 @@ describe('ACPChatDialog finite branch event cache', () => {
 
   it('stores and restores a bounded branch event window', () => {
     const key = 'test-session-window';
-    storeAcpLoadedEvents(key, Array.from({ length: 200 }, (_, index) => makeEvent(`e${index}`, `m${index}`)), 30);
-    const restored = restoreAcpLoadedEvents(key, [], 30);
-    expect(restored).toHaveLength(30);
-    expect(restored[0]?.id).toBe('e170');
+    storeAcpLoadedEventWindow(key, {
+      sessionId: 's-1',
+      timelineGeneration: 7,
+      events: Array.from({ length: 200 }, (_, index) => makeEvent(`e${index}`, `m${index}`)),
+    }, 30);
+    const restored = restoreAcpLoadedEventWindow(key, null, 30);
+    expect(restored).toMatchObject({
+      sessionId: 's-1',
+      timelineGeneration: 7,
+    });
+    expect(restored.events).toHaveLength(30);
+    expect(restored.events[0]?.id).toBe('e170');
   });
 
   it('separates reused task/run IDs by cache namespace', () => {
     const oldKey = createAcpSessionCacheKey('task-uuid-old', 'task-021', 'run-001', 'round-001', 'bootstrap', 'attempt-001');
     const newKey = createAcpSessionCacheKey('task-uuid-new', 'task-021', 'run-001', 'round-001', 'bootstrap', 'attempt-001');
-    storeAcpLoadedEvents(oldKey, [makeEvent('old-event', 'deleted task content')], 360);
-    expect(restoreAcpLoadedEvents(newKey, [], 360)).toEqual([]);
-    expect(restoreAcpLoadedEvents(oldKey, [], 360)).toHaveLength(1);
+    storeAcpLoadedEventWindow(oldKey, {
+      sessionId: 's-1',
+      timelineGeneration: 1,
+      events: [makeEvent('old-event', 'deleted task content')],
+    }, 360);
+    expect(restoreAcpLoadedEventWindow(newKey, null, 360).events).toEqual([]);
+    expect(restoreAcpLoadedEventWindow(oldKey, null, 360).events).toHaveLength(1);
   });
 
   it('separates cache entries by project, dynamic owner, and branch locator', () => {

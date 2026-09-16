@@ -1,0 +1,16 @@
+.demo-stage { height: 100dvh; padding-block: 24px; background: #080909; }
+.demo-client { height: 100%; overflow: hidden; container-type: inline-size; border: 1px solid #363839; border-radius: 8px; box-shadow: 0 12px 40px #0008; }
+.demo-client > .app-window-shell { height: 100%; }
+.demo-client [data-titlebar-brand] { white-space: nowrap; }
+.demo-window-edge { width: 6px; background: transparent; }
+.demo-window-edge:hover, .demo-window-edge:focus-visible { background: #5ca88b; }
+@media (max-width: 640px) {
+  .demo-stage { padding-block: 0; }
+  .demo-client { border-radius: 0; }
+  /* Panel layout uses inline display styles; narrow screens remove both gutters. */
+  .demo-stage #demo-left-margin, .demo-stage #demo-right-margin, .demo-window-edge { display: none !important; }
+  .demo-stage #demo-client { flex: 1 1 0% !important; }
+}
+@container (max-width: 380px) {
+  .demo-language [data-slot="select-value"] { display: none; }
+}

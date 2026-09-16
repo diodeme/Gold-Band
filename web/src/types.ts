@@ -106,6 +106,65 @@ export interface MetricsSettingsVm {
   apiKeySet: boolean;
 }
 
+export interface MulticaWorkspaceRefVm {
+  id: string;
+  name: string;
+  slug: string;
+  provider: string;
+}
+
+export interface MulticaServerWorkspaceVm {
+  id: string;
+  name: string;
+}
+
+/// 已连接 multica 账号身份（`/api/me`）；仅 UI 展示用，非凭证。
+export interface MulticaAccountRefVm {
+  name: string | null;
+  email: string | null;
+}
+
+export interface MulticaSettingsVm {
+  enabled: boolean;
+  toggleLocked: boolean;
+  multicaBaseUrl: string | null;
+  multicaAppUrl: string | null;
+  patSet: boolean;
+  daemonIdSet: boolean;
+  workspaces: MulticaWorkspaceRefVm[];
+  activeWorkspaceId: string | null;
+  defaultProvider: string;
+  connected: boolean;
+  connectedAccount: MulticaAccountRefVm | null;
+  /// 是否存在运行期地址覆盖（desktop_multica_base_url 已设置）；false = 使用渠道编译期默认。
+  addressOverrideSet: boolean;
+}
+
+export interface RemoteTaskVm {
+  id: string;
+  issueId: string | null;
+  status: string;
+  workspaceId: string;
+  title: string;
+  /// claim 响应里解析出的需求正文（quick-create/chat/comment/autopilot/handoff 来源优先级取首个非空，无则 null）。
+  /// 仅 claim 后回填；pending 列表（get_multica_tasks）该字段恒为 null——预填 composer 必须先 claim。
+  requirement: string | null;
+  lastActivityAt: string | null;
+  /// 终态行（completed/failed）才回填：本地 run 链接，供整行点击 onSelectRun(projectId, taskId, runId) 直达会话。
+  /// active 行（queued/running）恒 null。
+  localTaskId: string | null;
+  runId: string | null;
+  projectId: string | null;
+}
+
+export interface RemoteConversationSidebarVm {
+  workspaces: MulticaWorkspaceRefVm[];
+  /// 该工作空间的全部远程任务（active queued/running + 终态 completed/failed）；终态行带 localTaskId/runId/projectId 可直达会话。
+  tasksByWorkspace: Record<string, RemoteTaskVm[]>;
+  lastActiveWorkspaceId: string | null;
+  connected: boolean;
+}
+
 export interface UpdateInfoVm {
   version: string;
   currentVersion: string;
@@ -152,6 +211,8 @@ export interface AppBootstrapVm {
 export interface AppConfigVm {
   acpSessionTitleRefreshEnabled: boolean;
   acpChatEventPageSize: number;
+  acpChatEventWindowPageCount: number;
+  acpChatResourceCacheSessionCount: number;
   conversationInlineContentMaxBytes: number;
   conversationInlineImageMaxBytes: number;
   conversationInlineImageMaxDimension: number;
@@ -162,6 +223,7 @@ export interface AppConfigVm {
 
 export interface TurnFilesVm {
   cardPreviewLimit: number;
+  attachmentCardPreviewLimit: number;
 }
 
 export interface WorkspaceFilesVm {
@@ -315,7 +377,7 @@ export interface WriteFileResourceInput {
 export interface WorkspaceFileChangedEventVm {
   projectId: string;
   canonicalPath: string;
-  kind: 'created' | 'modified' | 'removed' | 'renamed';
+  kind: 'created' | 'modified' | 'removed' | 'renamed' | 'invalidated';
   revision: FileRevisionVm | null;
   operationId: string | null;
 }
@@ -361,6 +423,15 @@ export interface AppInfoVm {
 export interface AgentRegistryVm {
   agents: ManagedAgentVm[];
   catalog: AgentCatalogEntryVm[];
+}
+
+export type AcpActivityImagesInput = TurnFileLocatorVm & {
+  start: number; end: number; after?: string | null; generation?: number | null;
+};
+export interface AcpActivityImagesPage {
+  images: AcpImageRef[];
+  nextCursor: string | null;
+  generation: number;
 }
 
 export interface ManagedAgentVm {
@@ -476,6 +547,199 @@ export interface ManagedAgentInput {
   compatibleAgentDirs: string[];
   externalSessionSyncSupported: boolean;
   externalSessionSyncEnabled: boolean;
+}
+
+export type PersonalAnalyticsOperationStatus =
+  | 'queued'
+  | 'scanning'
+  | 'analyzing'
+  | 'validating-report'
+  | 'cancelling'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export interface PersonalAnalyticsErrorVm {
+  code: string;
+  params: Record<string, unknown>;
+}
+
+export interface PersonalAnalyticsOperationVm {
+  operationId: string;
+  agentType: string;
+  status: PersonalAnalyticsOperationStatus;
+  revision: number;
+  progress: {
+    stage: PersonalAnalyticsOperationStatus;
+    processedUnits: number;
+    totalUnits: number;
+  };
+  sourceWatermark: string;
+  reportId: string | null;
+  error: PersonalAnalyticsErrorVm | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
+export type AgentInsightOperationStatus =
+  | 'queued'
+  | 'analyzing'
+  | 'validating-report'
+  | 'cancelling'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export interface AgentInsightOperationVm {
+  operationId: string;
+  generation: number;
+  agentType: string;
+  modelId: string | null;
+  thoughtLevelOptionId: string | null;
+  thoughtLevelValue: string | null;
+  range: { start: string | null; end: string | null };
+  schemaVersion: string;
+  indexRevision: number;
+  status: AgentInsightOperationStatus;
+  revision: number;
+  progress: {
+    stage: AgentInsightOperationStatus;
+    processedUnits: number;
+    totalUnits: number;
+  };
+  sourceWatermark: string;
+  reportId: string;
+  error: PersonalAnalyticsErrorVm | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
+export interface PersonalAnalyticsRateMetricVm {
+  metricId: string;
+  numerator: number;
+  denominator: number;
+  unknownCount: number;
+  rate: number | null;
+  evidenceLocators: string[];
+}
+
+export interface PersonalAnalyticsTaskSummaryVm {
+  taskLocator: string;
+  projectId?: string | null;
+  taskId?: string | null;
+  latestRunId?: string | null;
+  title: string;
+  mode: string;
+  status: string;
+  outcome: string | null;
+  agentNames: string[];
+  totalTokens: number;
+  activeDurationSeconds: number;
+  activeDurationZeroFilled: boolean;
+  terminalNode: string | null;
+  lastActivityAt: string | null;
+}
+
+export interface PersonalAnalyticsNodeAggregateVm {
+  nodeId: string;
+  callCount: number;
+  retryCount: number;
+  totalActiveDurationSeconds: number;
+  averageActiveDurationSeconds: number;
+  activeDurationShare: number | null;
+  activeDurationZeroFilledCount: number;
+}
+
+export interface PersonalAnalyticsReportVm {
+  schemaVersion: string;
+  reportId: string;
+  generatedAt: string;
+  sourceWatermark: string;
+  indexRevision: number;
+  range: { start: string | null; end: string | null };
+  sourceCoverage: {
+    discoveredFiles: number;
+    eligibleFiles: number;
+    parsedFiles: number;
+    skippedFiles: number;
+    corruptFiles: number;
+    unknownVersionFiles: number;
+    discoveredBytes: number;
+    semanticEligibleItems: number;
+    semanticSampledItems: number;
+  };
+  overview: {
+    projectCount: number;
+    taskCount: number;
+    conversationCount: number;
+    runCount: number;
+    turnCount: number;
+    attemptCount: number;
+    earliestAt: string | null;
+    latestAt: string | null;
+  };
+  recentTasks: PersonalAnalyticsTaskSummaryVm[];
+  reliability: {
+    directReplyCompletionRate: PersonalAnalyticsRateMetricVm;
+    workflowRunTerminalSuccessRate: PersonalAnalyticsRateMetricVm;
+    autoOuterRunTerminalSuccessRate: PersonalAnalyticsRateMetricVm;
+    failedCount: number;
+    cancelledCount: number;
+    nonTerminalCount: number;
+  };
+  quality: {
+    retryReentryRate: PersonalAnalyticsRateMetricVm;
+    recoveredAfterRetryCount: number;
+    terminalSignals: Array<{ name: string; count: number }>;
+  };
+  efficiency: {
+    observedTerminalRunActiveSeconds: number;
+    averageTerminalRunActiveSeconds: number | null;
+    terminalRunSampleCount: number;
+    activeDurationZeroFilledCount: number;
+    pauseCount: number;
+    resumeCount: number;
+    manualContinueCount: number;
+    topDurationTasks: PersonalAnalyticsTaskSummaryVm[];
+    nodeAggregates: PersonalAnalyticsNodeAggregateVm[];
+  };
+  tokenUsage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+    totalTokens: number;
+    observedPromptCount: number;
+    topTokenTasks: PersonalAnalyticsTaskSummaryVm[];
+  };
+  contextAndTools: {
+    toolCallCount: number;
+    permissionRequestCount: number;
+    elicitationRequestCount: number;
+    topTools: Array<{ name: string; count: number }>;
+    topAgents: Array<{ name: string; count: number }>;
+    verifiedSkillCallCount: number;
+    topSkills: Array<{ name: string; count: number }>;
+    eventKinds: Array<{ name: string; count: number }>;
+  };
+  insights: Array<{
+    section: 'quality' | 'efficiency' | 'token-usage' | 'context-and-skills';
+    title: string;
+    summary: string;
+    recommendation: string;
+    confidence: 'low' | 'medium' | 'high';
+    sampleCount: number;
+    evidenceLocators: string[];
+  }>;
+  warnings: Array<{ code: string; params: Record<string, unknown> }>;
+}
+
+export interface PersonalAnalyticsSnapshotVm {
+  operation: PersonalAnalyticsOperationVm | null;
+  insightOperation: AgentInsightOperationVm | null;
+  latestReport: PersonalAnalyticsReportVm | null;
 }
 
 export interface SummaryCardVm {
@@ -1016,6 +1280,7 @@ export interface WorkflowWorkerNodeDsl {
   output?: WorkflowOutputContractDsl | null;
   success_condition?: WorkflowJsonConditionDsl | null;
   permission_mode?: string | null;
+  auto_accept?: boolean;
   config_options?: Record<string, string>;
   manual_check?: boolean | null;
 }
@@ -1026,6 +1291,7 @@ export interface DynamicAgentRefDsl {
   provider: string;
   model?: string | null;
   permissionMode?: string | null;
+  autoAccept?: boolean;
   configOptions?: Record<string, string>;
 }
 
@@ -1034,6 +1300,7 @@ export interface WorkflowAiDynamicFixedAgentStrategyDsl {
   provider: string;
   model?: string;
   permissionMode?: string | null;
+  autoAccept?: boolean;
 }
 
 export interface WorkflowAiDynamicDynamicAgentStrategyDsl {
@@ -1041,6 +1308,7 @@ export interface WorkflowAiDynamicDynamicAgentStrategyDsl {
   bootstrapProvider: string;
   bootstrapModel?: string | null;
   permissionMode?: string | null;
+  autoAccept?: boolean;
   bootstrapConfigOptions?: Record<string, string>;
   acceptanceModel?: string | null;
   acceptanceConfigOptions?: Record<string, string>;
@@ -1142,6 +1410,7 @@ export interface WorkerModelBinding {
   agentId: string;
   modelId?: string | null;
   permissionModeId?: string | null;
+  autoAccept?: boolean;
   configOptions?: Record<string, string>;
 }
 
@@ -1485,13 +1754,13 @@ export interface AcpSessionVm {
   timing?: AcpSessionTimingVm | null;
   restored: boolean;
   stopReason?: string | null;
+  turnError?: RuntimeErrorInfoVm | null;
   systemPromptAppend?: string | null;
   config?: AcpSessionConfigVm | null;
   events: AcpUiEventVm[];
   eventPage: AcpEventPageVm;
   timelineProjection: AcpTimelineProjectionVm | null;
-  pendingPermissions: AcpPermissionRequestVm[];
-  pendingElicitations: AcpElicitationRequestVm[];
+  pendingInteractions: AcpPromptInteractionVm[];
   availableCommands?: unknown[] | null;
   usage?: AcpUsageVm | null;
   diagnostics: AcpDiagnosticsVm;
@@ -1536,6 +1805,7 @@ export interface AcpSessionConfigVm {
   catalogObservedAt?: string | null;
   modelOverrideId?: string | null;
   permissionModeOverrideId?: string | null;
+  autoAccept?: boolean;
   configOptionOverrides?: Record<string, string>;
   currentModelId?: string | null;
   currentModelName?: string | null;
@@ -1589,8 +1859,14 @@ export interface AcpSessionTimingVm {
   paused: boolean;
 }
 
-export interface AcpPermissionRequestVm {
-  requestId: string;
+export interface AcpPromptInteractionIdentityVm {
+  interactionId: string;
+  turnId?: string | null;
+  promptEventId?: string | null;
+}
+
+export interface AcpPermissionRequestVm extends AcpPromptInteractionIdentityVm {
+  kind: 'permission';
   title: string;
   toolCallId?: string | null;
   options: AcpPermissionOptionVm[];
@@ -1640,6 +1916,13 @@ export interface TurnFileChangeVm {
   limitationCode?: string | null;
 }
 
+export interface TurnAttachmentVm {
+  id: string;
+  relativePath: string;
+  name: string;
+  byteLength: number;
+}
+
 export interface TurnFileChangeSummaryVm {
   fileCount: number;
   addedFiles: number;
@@ -1660,6 +1943,7 @@ export interface TurnFileChangeSetVm {
   finishedAt?: string | null;
   summary: TurnFileChangeSummaryVm;
   changes: TurnFileChangeVm[];
+  attachments: TurnAttachmentVm[];
   limitationCodes: string[];
 }
 
@@ -1678,23 +1962,30 @@ export interface FileComparisonVm {
   limitationCode?: string | null;
 }
 
-export interface AcpElicitationRequestVm {
-  elicitationId: string;
+export interface AcpElicitationRequestVm extends AcpPromptInteractionIdentityVm {
+  kind: 'elicitation';
   message: string;
   toolCallId?: string | null;
   requestedSchema: Record<string, unknown>;
   raw: unknown;
 }
 
+export type AcpPromptInteractionVm =
+  | AcpPermissionRequestVm
+  | AcpElicitationRequestVm;
+
 // Navigation payload emitted after clicking "View details" in a system toast.
 // It carries the complete attempt locator and a deduplication key.
 export interface InterventionAttemptNavigateEventVm {
   projectId: string;
   taskId: string;
+  taskUuid?: string | null;
   runId: string;
   roundId: string;
   nodeId: string;
   attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
   dedupKey: string;
 }
 
@@ -1889,8 +2180,7 @@ export type PrimaryModule = 'task-orchestration' | 'agent-management' | 'knowled
 
 export type TaskPage =
   | { kind: 'task-list' }
-  | { kind: 'workflow'; taskId: string }
-  | { kind: 'round-detail'; taskId: string; runId: string; roundId: string };
+  | { kind: 'workflow'; taskId: string };
 
 type RoundSelectionContext = { contextNodeId?: string };
 
@@ -1911,11 +2201,13 @@ export type DesktopUiMode = 'conversation' | 'workbench';
 
 export type ConversationPage =
   | { kind: 'conversation-home' }
+  | { kind: 'personal-analytics' }
   | { kind: 'scheduled-task-create' }
   | {
       kind: 'conversation-run';
       projectId: string;
       taskId: string;
+      taskUuid?: string | null;
       runId: string;
       roundId?: string;
       nodeId?: string;
@@ -1924,10 +2216,11 @@ export type ConversationPage =
       outerAttemptId?: string;
     }
   | { kind: 'run-mode-management' }
+  | { kind: 'multica-tasks' }
   | { kind: 'agents' }
   | { kind: 'contexts' }
   | { kind: 'scheduled-tasks' }
-  | { kind: 'scheduled-task-detail'; projectId: string; scheduledTaskId: string }
+  | { kind: 'scheduled-task-detail'; projectId: string; scheduledTaskId: string; taskId?: string; runId?: string; occurrenceId?: string }
   | { kind: 'settings' };
 
 export interface ScheduledTaskVm {
@@ -1964,9 +2257,59 @@ export interface ScheduledOccurrenceVm {
   finishedAt?: string | null;
 }
 
-export interface ScheduledOccurrencePageVm {
-  items: ScheduledOccurrenceVm[];
+export interface ScheduledOccurrenceLinksVm {
+  taskId?: string | null;
+  runId?: string | null;
+  roundId?: string | null;
+  attemptId?: string | null;
+  nodeId?: string | null;
+}
+
+export interface ScheduledTriggerPayloadVm {
+  projectId: string;
+  scheduledTaskId: string;
+  occurrenceId: string;
+  triggerKind: 'scheduled' | 'manual';
+  scheduledAt?: string | null;
+  acceptedAt: string;
+  instructionSummary: string;
+  contentFingerprint: string;
+  links: ScheduledOccurrenceLinksVm;
+}
+
+export interface ScheduledExecutionHistoryVm {
+  projectId: string;
+  scheduledTaskId: string;
+  taskId: string;
+  runId: string;
+  firstAcceptedAt: string;
+  lastAcceptedAt: string;
+  occurrenceCount: number;
+  latestOccurrenceId: string;
+  latestSummary: string;
+  latestContentFingerprint: string;
+  availability: 'available' | 'unavailable';
+  run?: ConversationRunSummaryVm | null;
+  error?: { code: string; params: Record<string, unknown> } | null;
+}
+
+export interface ScheduledExecutionHistoryPageVm {
+  items: ScheduledExecutionHistoryVm[];
   nextCursor?: string | null;
+}
+
+export interface ScheduledExecutionHistoryDeleteInputVm {
+  projectId: string;
+  scheduledTaskId: string;
+  taskId: string;
+  runId: string;
+  throughOccurrenceId: string;
+}
+
+export interface ScheduledExecutionHistoryDeleteResultVm extends ScheduledExecutionHistoryDeleteInputVm {
+  status: 'completed' | 'failed';
+  code?: string | null;
+  params: Record<string, unknown>;
 }
 
 export interface ScheduledTaskDiagnosticsVm {
@@ -2060,9 +2403,29 @@ export interface ConversationWorkspaceVm {
   name: string;
 }
 
+export type ConversationLoadStatus = 'not-loaded' | 'loading' | 'ready' | 'ready-empty' | 'error';
+
+export interface ConversationPageLoadVm {
+  status: ConversationLoadStatus;
+  nextCursor?: string | null;
+}
+
+export interface ConversationListItemErrorVm {
+  code: string;
+  params: Record<string, unknown>;
+}
+
+export interface ConversationSidebarBootstrapVm {
+  workspaces: ConversationWorkspaceVm[];
+  pinRefs: PinRef[];
+  lastActiveWorkspaceId?: string | null;
+  preferences: Record<string, unknown>;
+}
+
 export interface ConversationTaskRowVm {
   projectId: string;
   taskId: string;
+  taskUuid?: string | null;
   title: string;
   autoTitle: boolean;
   runMode: 'direct' | 'auto' | 'workflow';
@@ -2073,6 +2436,8 @@ export interface ConversationTaskRowVm {
   unreadTerminalResult?: ConversationTerminalResultVm | null;
   latestRun?: ConversationRunSummaryVm | null;
   runs: ConversationRunSummaryVm[];
+  runHistoryStatus: ConversationLoadStatus;
+  runsNextCursor?: string | null;
   pinned: boolean;
   pinnedOrder?: number | null;
   scheduledTaskId?: string | null;
@@ -2080,6 +2445,7 @@ export interface ConversationTaskRowVm {
 
 export interface AcpActivityDetailQueryInput {
   branchId: string;
+  sessionId: string;
   activityStartSeq: number;
   activityEndSeq: number;
   earlierCursor?: string | null;
@@ -2094,6 +2460,7 @@ export interface AcpActivityDetailVm {
 
 export interface AcpToolDetailQueryInput {
   branchId: string;
+  sessionId: string;
   eventId: string;
   toolCallId?: string | null;
 }
@@ -2151,11 +2518,37 @@ export interface ConversationRunSummaryVm {
 }
 
 export interface ConversationSidebarVm {
+  loadStatus: ConversationLoadStatus;
   workspaces: ConversationWorkspaceVm[];
+  pinRefs: PinRef[];
   pinnedTasks: ConversationTaskRowVm[];
+  pinnedTaskPage: ConversationPageLoadVm;
   tasksByWorkspace: Record<string, ConversationTaskRowVm[]>;
+  workspaceTaskPages: Record<string, ConversationPageLoadVm>;
   lastActiveWorkspaceId?: string | null;
   preferences?: Record<string, unknown> | null;
+}
+
+export interface ConversationTaskPageVm {
+  projectId: string;
+  tasks: ConversationTaskRowVm[];
+  nextCursor?: string | null;
+  errors: ConversationListItemErrorVm[];
+}
+
+export interface ConversationPinnedTaskPageVm {
+  tasks: ConversationTaskRowVm[];
+  nextCursor?: string | null;
+  errors: ConversationListItemErrorVm[];
+}
+
+export interface ConversationRunSummaryPageVm {
+  projectId: string;
+  taskId: string;
+  taskUuid?: string | null;
+  runs: ConversationRunSummaryVm[];
+  nextCursor?: string | null;
+  errors: ConversationListItemErrorVm[];
 }
 
 export interface PinRef {
@@ -2177,6 +2570,7 @@ export interface ConversationRuntimeFacetVm {
 
 export interface ConversationControlFacetVm {
   mode: 'runtime-controlled' | 'non-runtime-controlled';
+  transitionCause?: 'runtime-interrupted' | 'manual-follow-up' | 'workflow-continued' | 'runtime-terminal';
 }
 
 export interface ConversationAcpFacetVm {
@@ -2188,11 +2582,12 @@ export interface ConversationAcpFacetVm {
   latestTurnStatus: 'none' | 'completed' | 'cancelled' | 'failed';
   stopping: boolean;
   stopReason?: string | null;
+  turnError?: RuntimeErrorInfoVm | null;
   operationId?: string | null;
 }
 
 export interface ConversationComposerVm {
-  mode: 'normal' | 'runtime-active' | 'stopping' | 'invalid-workflow' | 'runtime-error' | 'permission-blocked' | 'submitting' | string;
+  mode: 'normal' | 'runtime-active' | 'stopping' | 'invalid-workflow' | 'runtime-error' | 'interaction-blocked' | 'submitting' | string;
   submitTarget: 'acp-prompt' | 'queue-prompt' | 'permission-response' | 'none' | string;
   processingKind: 'sending' | 'launching' | 'processing' | 'thinking' | 'tool' | 'compacting' | 'responding' | 'stopping' | 'launching-next-node' | string;
   statusKey?: string | null;
@@ -2398,6 +2793,7 @@ export interface ConversationDirectConfigVm {
   agentType: string;
   modelId?: string | null;
   permissionMode?: string | null;
+  autoAccept?: boolean;
   configOptions?: Record<string, string>;
 }
 
@@ -2417,6 +2813,7 @@ export interface ConversationAutoConfigVm {
   acceptanceConfigOptions?: Record<string, string>;
   modelId?: string | null;
   permissionMode?: string | null;
+  autoAccept?: boolean;
   configOptions?: Record<string, string>;
   availableAgents?: DynamicAgentRefDsl[];
   routingPrompt?: string | null;
@@ -2556,4 +2953,17 @@ export interface AppExitPreparationWarningVm {
 
 export interface AppExitPreparationVm {
   warnings: AppExitPreparationWarningVm[];
+}
+export interface AcpImageRef {
+  eventId: string;
+  pointer: string;
+  contentHash: string;
+  mimeType: string;
+}
+
+export interface AcpImageContentVm {
+  dataUrl: string;
+  mimeType: string;
+  width: number;
+  height: number;
 }

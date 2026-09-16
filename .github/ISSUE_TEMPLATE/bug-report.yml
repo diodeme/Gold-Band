@@ -1,0 +1,62 @@
+name: Bug report
+description: Report behavior that does not work as expected.
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Gold Band. Describe what you observed; maintainers will investigate the cause and define the fix. Do not include credentials, private data, or undisclosed security vulnerabilities in a public issue.
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened? Include any visible error or unexpected final state.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Provide the shortest sequence that reliably shows the problem.
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include the Gold Band version, operating system, and any relevant provider or Agent.
+      placeholder: Gold Band 0.x.x; Windows 11; Claude Code
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context or evidence
+      description: Optionally add sanitized logs, screenshots, recordings, frequency, or impact.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Submission checklist
+      options:
+        - label: I searched open and closed issues for duplicates.
+          required: true
+        - label: I removed secrets, personal data, and unnecessary private paths.
+          required: true

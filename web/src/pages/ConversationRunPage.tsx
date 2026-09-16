@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { useTranslation } from 'react-i18next';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -19,15 +20,18 @@ import { confirmCloseConversationRunWorkspaceResource, ConversationRunWorkspaceR
 import { conversationRunWorkspaceResourceKey, useRightWorkspace, type ConversationDirectoryWorkspaceEntry, type RightWorkspaceResource } from '@/components/workspace/right-workspace-context';
 import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode } from '@/lib/conversation-runtime-workflow';
 import { conversationPageForSession } from '@/lib/conversation-navigation';
+import type { ConversationSessionLocator } from '@/lib/conversation-navigation';
+import { submitManualCheck } from '@/api';
 import { findConversationLeafByKey } from '@/lib/conversation-run-snapshot';
-import { acpProviderConfigCatalog } from '@/lib/acp-session-config';
 import { acpRuntimeErrorBannerCopy } from '@/lib/acp-runtime-error';
+import { shouldTreatAcpRuntimeErrorAsFallback } from '@/lib/acp-runtime-composer-state';
 import {
   conversationRunCacheKey,
   type ConversationSessionTreeExpansion,
 } from '@/lib/conversation-run-cache';
 import {
   isRuntimeControlledConversationLifecycle,
+  isRuntimeTerminalConversationLifecycle,
   isTerminalConversationSessionStatus,
   type ConversationSessionFollowMode,
 } from '@/lib/conversation-session-follow';
@@ -93,7 +97,7 @@ interface ConversationRunPageProps {
   onRerun: () => void;
   onEditWorkflow: () => void;
   onSaveWorkflow?: (json: string, modelBindings: WorkflowModelBindings) => Promise<WorkflowVm>;
-  onSelectSession: (leaf: ConversationSessionLeafVm, followActive?: boolean) => void;
+  onSelectSession: (leaf: ConversationSessionLocator, followActive?: boolean) => void;
   onLifecycleSnapshot?: (snapshot: AcpLifecycleSnapshot) => void;
   onAutoFollowChange?: (enabled: boolean) => void;
   followMode: ConversationSessionFollowMode;
@@ -118,6 +122,7 @@ export function ConversationRunPage({
   onSessionTreeExpansionChange,
   onTitleChange,
 }: ConversationRunPageProps) {
+  const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   useThemeWallpaperSurface();
   const workspace = useRightWorkspace();
@@ -144,7 +149,8 @@ export function ConversationRunPage({
   };
   const localizedRuntimeErrorMessage = acpRuntimeErrorBannerCopy(t, run.runtimeError);
   const [sessionSwitcherOpen, setSessionSwitcherOpen] = useState(false);
-  const sessionTreeExpansionRunKey = conversationRunCacheKey(run);
+  const sessionTreeExpansionRunKey = conversationRunCacheKey(run)
+    ?? `uncached:${run.projectId}:${run.taskId}:${run.runId}`;
   const [sessionTreeExpansionState, setSessionTreeExpansionState] = useState<{
     runKey: string;
     expansion: ConversationSessionTreeExpansion;
@@ -160,6 +166,7 @@ export function ConversationRunPage({
   const manualAutoFollowDisabledRef = useRef(followMode === 'manual');
   const pendingAutoFollowRestoreSessionKeyRef = useRef<string | null>(null);
   const scrollPausedAutoFollowSessionKeyRef = useRef<string | null>(null);
+  const manualCheckNavigationVersionRef = useRef(0);
   const activeSessionKeys = useMemo(
     () => run.activeSessions.map((session) => activeSessionKey(session)),
     [run.activeSessions],
@@ -186,8 +193,9 @@ export function ConversationRunPage({
   const workflowLocator = useMemo(() => ({
     projectId: run.projectId,
     taskId: run.taskId,
+    taskUuid: run.taskUuid,
     runId: run.runId,
-  }), [run.projectId, run.runId, run.taskId]);
+  }), [run.projectId, run.runId, run.taskId, run.taskUuid]);
 
   const openWorkflowEditor = useCallback((mode: 'edit' | 'repair') => {
     onEditWorkflow();
@@ -275,6 +283,29 @@ export function ConversationRunPage({
   const isDirect = run.runMode === 'direct';
   const selectedLeaf = findSelectedLeaf(run);
   const selectedSessionKey = run.sessionTree.selectedSessionKey ?? (selectedLeaf ? leafKey(selectedLeaf) : null);
+  useEffect(() => () => {
+    manualCheckNavigationVersionRef.current += 1;
+  }, [run.projectId, run.taskUuid, run.taskId, run.runId, selectedSessionKey]);
+
+  const handleSubmitManualCheck = async (outcome: 'success' | 'failure') => {
+    if (!selectedLeaf?.manualCheckPending || !selectedLeaf.current) return;
+    const version = manualCheckNavigationVersionRef.current;
+    const result = await submitManualCheck(
+      run.projectId, run.taskId, run.runId,
+      selectedLeaf.roundId, selectedLeaf.nodeId, selectedLeaf.attemptId, outcome,
+    );
+    if (version !== manualCheckNavigationVersionRef.current) return;
+    if (result.taskId !== run.taskId || result.id !== run.runId) return;
+    if (!result.currentRound || !result.currentNode || !result.currentAttempt) return;
+    const target: ConversationSessionLocator = {
+      roundId: result.currentRound, nodeId: result.currentNode, attemptId: result.currentAttempt,
+    };
+    if (activeSessionKey(target) === selectedSessionKey) return;
+    pendingAutoFollowRestoreSessionKeyRef.current = null;
+    scrollPausedAutoFollowSessionKeyRef.current = null;
+    manualAutoFollowDisabledRef.current = false;
+    onSelectSession(target, true);
+  };
   const selectedRoundId = selectedLeaf?.roundId ?? null;
   const selectedNodeId = selectedLeaf?.nodeId ?? null;
   const selectedAttemptId = selectedLeaf?.attemptId ?? null;
@@ -360,21 +391,20 @@ export function ConversationRunPage({
     }
     const restoreKey = pendingAutoFollowRestoreSessionKeyRef.current;
     const scrollPausedKey = scrollPausedAutoFollowSessionKeyRef.current;
-    const selectedDynamicLeafTerminal = Boolean(
-      selectedLeaf?.outerNodeId
-      && selectedLeaf.outerAttemptId
+    const selectedRuntimeTerminal = Boolean(
+      isRuntimeTerminalConversationLifecycle(selectedLeaf?.lifecycle)
       && isTerminalConversationSessionStatus(
-        selectedLeaf.lifecycle?.runtime.status ?? selectedLeaf.status,
+        selectedLeaf?.lifecycle?.runtime.status ?? selectedLeaf?.status,
       )
     );
     if (!isRuntimeControlledConversationLifecycle(selectedLeaf?.lifecycle)) {
-      if (selectedDynamicLeafTerminal && selectedKey && scrollPausedKey === selectedKey) {
+      if (selectedRuntimeTerminal && selectedKey && scrollPausedKey === selectedKey) {
         scrollPausedAutoFollowSessionKeyRef.current = null;
         manualAutoFollowDisabledRef.current = false;
         onAutoFollowChange?.(true);
         return;
       }
-      if (selectedDynamicLeafTerminal && !manualAutoFollowDisabledRef.current) {
+      if (selectedRuntimeTerminal && !manualAutoFollowDisabledRef.current) {
         onAutoFollowChange?.(true);
         return;
       }
@@ -404,6 +434,7 @@ export function ConversationRunPage({
   }, [isAutoFollowRestorableLeaf, onAutoFollowChange, run.sessionTree.selectedSessionKey, selectedLeaf]);
 
   const handleSessionSelection = useCallback((leaf: ConversationSessionLeafVm, followActive = false) => {
+    manualCheckNavigationVersionRef.current += 1;
     const key = leafKey(leaf);
     const canRestoreAutoFollow = followActive && isAutoFollowRestorableLeaf(leaf);
     if (canRestoreAutoFollow && isAtBottomRef.current) {
@@ -439,15 +470,18 @@ export function ConversationRunPage({
 
   const selectedSessionMatchesLeaf = sessionBelongsToLeaf(run.selectedSession, run, selectedLeaf);
   const selectedSession = selectedSessionMatchesLeaf ? run.selectedSession : null;
-  const selectedProviderCatalog = useMemo(
-    () => acpProviderConfigCatalog(agentRegistry, selectedSession?.provider),
-    [agentRegistry, selectedSession?.provider],
-  );
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
   const runtimeControlErrorBase = localizedRuntimeErrorMessage ?? run.runtimeErrorMessage;
+  const selectedSessionUsesRuntimeErrorFallback = shouldTreatAcpRuntimeErrorAsFallback(
+    isDirect,
+    selectedLeaf?.lifecycle,
+  );
   const selectedSessionRuntimeControlError = runtimeControlErrorBase && !(
     selectedLeaf?.lifecycle?.composer.mode === 'runtime-error' || selectedSessionDisplay?.code === 'error-blocked'
-  )
+  ) && !selectedSessionUsesRuntimeErrorFallback
+    ? runtimeControlErrorBase
+    : null;
+  const selectedSessionRuntimeErrorFallback = selectedSessionUsesRuntimeErrorFallback
     ? runtimeControlErrorBase
     : null;
   const selectedSessionErrorDetails = run.runtimeErrorMessage ?? selectedSession?.diagnostics.lastError ?? null;
@@ -477,6 +511,7 @@ export function ConversationRunPage({
         workflowError: isDirect ? undefined : t('conversation.runtime.workflowInvalid'),
         pauseMessage: isDirect ? undefined : translatePauseReason(selectedSessionPauseReason),
         runtimeError: selectedRuntimeErrorMessage,
+        runtimeErrorFallback: selectedSessionRuntimeErrorFallback,
         onRepair: handleRepairWorkflow,
         supersededSessionNavigation: supersedingHref
           ? {
@@ -503,7 +538,7 @@ export function ConversationRunPage({
             taskTitle={taskTitle}
             selectedSessionLeaf={selectedLeaf}
             canViewWorkflow={canViewWorkflow}
-            canEditWorkflow={run.runMode === 'workflow'}
+            canEditWorkflow={!readOnly && run.runMode === 'workflow'}
             onRerun={handleRerun}
             onEditWorkflow={handleEditWorkflow}
             onViewWorkflow={handleViewWorkflow}
@@ -569,13 +604,16 @@ export function ConversationRunPage({
       <div className="min-h-0 flex-1">
         {selectedLeaf ? (
           <ACPChatDialog
-            key={`${run.taskUuid ?? run.taskId}:${selectedSessionKey ?? 'empty'}`}
+            key={selectedContentIdentity}
+            readOnly={readOnly}
+            showDisabledComposer={readOnly}
             session={selectedSession}
-            providerCatalog={selectedProviderCatalog}
+            agentRegistry={agentRegistry}
             sessionEstablished={selectedLeaf.sessionEstablished}
             sessionReferenceId={selectedLeaf.sessionId}
             projectId={run.projectId}
             taskId={run.taskId}
+            taskUuid={run.taskUuid}
             runId={run.runId}
             roundId={selectedLeaf.roundId}
             nodeId={selectedLeaf.nodeId}
@@ -583,18 +621,21 @@ export function ConversationRunPage({
             outerNodeId={selectedLeaf.outerNodeId}
             outerAttemptId={selectedLeaf.outerAttemptId}
             eventPageSize={appConfig.acpChatEventPageSize}
+            eventWindowPageCount={appConfig.acpChatEventWindowPageCount}
             inlineContentMaxBytes={appConfig.conversationInlineContentMaxBytes}
             turnFileCardPreviewLimit={appConfig.turnFiles.cardPreviewLimit}
+            turnAttachmentCardPreviewLimit={appConfig.turnFiles.attachmentCardPreviewLimit}
             onLifecycleSnapshot={onLifecycleSnapshot}
             onAtBottomChange={handleAtBottomChange}
             onInitialSessionQueryStateChange={handleInitialSessionQueryStateChange}
             allowEventOnlySessionShell={false}
             wallpaperSurface
             worktreePath={selectedLeaf.worktreePath}
-            showBranchControl
+            showBranchControl={!readOnly}
             managedWorktreeBranch={selectedLeaf.worktreeBranch}
             runtimeComposerContext={runtimeComposerContext}
             manualCheckPending={selectedLeaf.manualCheckPending && selectedLeaf.current}
+            onSubmitManualCheck={handleSubmitManualCheck}
             showSystemPromptAction={!isDirect}
             directSessionHeader={isDirect ? {
               title: taskTitle,

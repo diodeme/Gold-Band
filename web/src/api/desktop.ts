@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, PersonalizationPreference, PreferencesVm, ProfileInput, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationPinnedTaskPageVm, ConversationRunModeVm, ConversationRunSummaryPageVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionTreeVm, ConversationSidebarBootstrapVm, ConversationSidebarVm, ConversationTaskPageVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaWorkspaceRefVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, RemoteConversationSidebarVm, RemoteTaskVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -203,6 +203,16 @@ export const desktopApi: RuntimeApi = {
     });
     return () => unlisten();
   },
+  async subscribeMulticaTaskUpdates(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen('gold-band://multica-task-updated', () => listener());
+    return () => unlisten();
+  },
+  async subscribeMulticaSettingsUpdates(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen('gold-band://multica-settings-updated', () => listener());
+    return () => unlisten();
+  },
   checkLocalClaude() {
     return invokeCommand('check_local_claude');
   },
@@ -215,6 +225,31 @@ export const desktopApi: RuntimeApi = {
   },
   getAgentRegistry() {
     return invokeCommand('get_agent_registry');
+  },
+  getPersonalAnalytics() {
+    return invokeCommand('get_personal_analytics');
+  },
+  syncPersonalAnalytics() {
+    return invokeCommand('sync_personal_analytics');
+  },
+  queryPersonalAnalyticsReport(range: { start?: string | null; end?: string | null }, agentType?: string, modelId?: string | null, thoughtLevelOptionId?: string | null, thoughtLevelValue?: string | null) {
+    return invokeCommand('query_personal_analytics_report', { input: { range: normalizeRange(range), agentType, modelId, thoughtLevelOptionId, thoughtLevelValue } });
+  },
+  startPersonalAnalyticsInsights(agentType: string, range: { start?: string | null; end?: string | null }, modelId?: string | null, thoughtLevelOptionId?: string | null, thoughtLevelValue?: string | null) {
+    return invokeCommand('start_personal_analytics_insights', { input: { agentType, modelId, thoughtLevelOptionId, thoughtLevelValue, range: normalizeRange(range) } });
+  },
+  cancelPersonalAnalyticsInsights(operationId: string) {
+    return invokeCommand('cancel_personal_analytics_insights', { input: { operationId } });
+  },
+  cancelPersonalAnalytics(operationId: string) {
+    return invokeCommand('cancel_personal_analytics', { input: { operationId } });
+  },
+  async subscribePersonalAnalyticsUpdates(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<PersonalAnalyticsSnapshotVm>('gold-band://personal-analytics-updated', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
   },
   getAgentCommandCatalog(agentType: string, workspacePath: string) {
     return invokeCommand('get_agent_command_catalog', { agentType, workspacePath });
@@ -348,11 +383,20 @@ export const desktopApi: RuntimeApi = {
   getAcpToolDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId) {
     return invokeCommand<import('../types').AcpToolDetailVm>('get_acp_tool_detail', { projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
   },
+  getAcpImage(locator, image, thumbnail) {
+    return invokeCommand<import('../types').AcpImageContentVm>('get_acp_image', { ...locator, image, thumbnail });
+  },
+  getAcpActivityImages(input) {
+    return invokeCommand<import('../types').AcpActivityImagesPage>('get_acp_activity_images', { input });
+  },
   getTurnFileChangeSet(locator, changeSetId) {
     return invokeCommand<import('../types').TurnFileChangeSetVm>('get_turn_file_change_set', { ...locator, changeSetId });
   },
   getFileComparison(locator, changeSetId, changeId) {
     return invokeCommand<import('../types').FileComparisonVm>('get_file_comparison', { ...locator, changeSetId, changeId });
+  },
+  resolveTurnAttachmentFile(locator, changeSetId, attachmentId) {
+    return invokeCommand<import('../types').ResolvedWorkspaceFileLinkVm>('resolve_turn_attachment_file', { ...locator, changeSetId, attachmentId });
   },
   renewAcpSessionLease(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
     return invokeCommand<number>('renew_acp_session_lease', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
@@ -378,11 +422,20 @@ export const desktopApi: RuntimeApi = {
   setAcpSessionPermissionMode(projectId, taskId, runId, roundId, nodeId, attemptId, permissionModeId, outerNodeId, outerAttemptId) {
     return invokeCommand<AcpSessionVm | null>('set_acp_session_permission_mode', { projectId, taskId, runId, roundId, nodeId, attemptId, permissionModeId, outerNodeId, outerAttemptId });
   },
+  setAcpSessionAutoAccept(projectId, taskId, runId, roundId, nodeId, attemptId, autoAccept, outerNodeId, outerAttemptId) {
+    return invokeCommand<AcpSessionVm | null>('set_acp_session_auto_accept', { projectId, taskId, runId, roundId, nodeId, attemptId, autoAccept, outerNodeId, outerAttemptId });
+  },
   respondAcpPermission(projectId, taskId, runId, roundId, nodeId, attemptId, requestId, optionId, _fallback, outerNodeId, outerAttemptId) {
     return invokeCommand<AcpSessionVm | null>('respond_acp_permission', { projectId, taskId, runId, roundId, nodeId, attemptId, requestId, optionId, outerNodeId, outerAttemptId });
   },
   respondElicitation(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, elicitationId: string, action: string, content?: Record<string, unknown> | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
     return invokeCommand<void>('respond_elicitation', { projectId, taskId, runId, roundId, nodeId, attemptId, elicitationId, action, content, outerNodeId, outerAttemptId });
+  },
+  listComposerHistory(locator, query) {
+    return invokeCommand('list_composer_history', { locator, query });
+  },
+  getComposerHistoryText(locator, cursor) {
+    return invokeCommand('get_composer_history_text', { locator, cursor });
   },
   getAcpRawFrames(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId) {
     return invokeCommand('get_acp_raw_frames', { projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
@@ -451,6 +504,53 @@ export const desktopApi: RuntimeApi = {
   saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null) {
     return invokeCommand<MetricsSettingsVm>('save_metrics_settings', { enabled, metricsBaseUrl, apiKey });
   },
+  getMulticaSettings() {
+    return invokeCommand<MulticaSettingsVm>('get_multica_settings');
+  },
+  connectMultica() {
+    return invokeCommand<MulticaSettingsVm>('connect_multica');
+  },
+  disconnectMultica() {
+    return invokeCommand<MulticaSettingsVm>('disconnect_multica');
+  },
+  saveMulticaConnectionAddress(baseUrl: string | null, appUrl: string | null) {
+    return invokeCommand<MulticaSettingsVm>('save_multica_connection_address', { baseUrl, appUrl });
+  },
+  cancelMulticaConnect() {
+    return invokeCommand<void>('cancel_multica_connect');
+  },
+  getMulticaTasks() {
+    return invokeCommand<RemoteConversationSidebarVm>('get_multica_tasks');
+  },
+  getMulticaTaskRequirement(taskId: string, workspaceId: string) {
+    return invokeCommand<RemoteTaskVm>('get_multica_task_requirement', { taskId, workspaceId });
+  },
+  startMulticaConversationRun(input, remoteTaskId, workspaceId) {
+    return invokeCommand<ConversationCreateResultVm>('start_multica_conversation_run', { input, remoteTaskId, workspaceId });
+  },
+  cancelMulticaTask(taskId: string) {
+    return invokeCommand<void>('cancel_multica_task', { taskId });
+  },
+  listServerMulticaWorkspaces() {
+    return invokeCommand<MulticaServerWorkspaceVm[]>('list_server_multica_workspaces');
+  },
+  async pickLocalDirectory() {
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    return open({ directory: true });
+  },
+  addMulticaWorkspace(workspaceId: string, workspaceName: string, provider: string) {
+    return invokeCommand<MulticaSettingsVm>('add_multica_workspace', {
+      workspaceId,
+      workspaceName,
+      provider,
+    });
+  },
+  removeMulticaWorkspace(workspaceId: string) {
+    return invokeCommand<MulticaSettingsVm>('remove_multica_workspace', { workspaceId });
+  },
+  setActiveMulticaWorkspace(workspaceId: string) {
+    return invokeCommand<MulticaSettingsVm>('set_active_multica_workspace', { workspaceId });
+  },
   recordActivity() {
     return invokeCommand('record_activity');
   },
@@ -479,8 +579,17 @@ export const desktopApi: RuntimeApi = {
   saveDesktopUiMode(mode) {
     return invokeCommand('save_desktop_ui_mode', { mode });
   },
-  getConversationSidebar() {
-    return invokeCommand<ConversationSidebarVm>('get_conversation_sidebar');
+  getConversationSidebarBootstrap() {
+    return invokeCommand<ConversationSidebarBootstrapVm>('get_conversation_sidebar_bootstrap');
+  },
+  getConversationTaskPage(projectId, cursor, limit) {
+    return invokeCommand<ConversationTaskPageVm>('get_conversation_task_page', { projectId, cursor, limit });
+  },
+  getConversationPinnedTaskPage(cursor, limit) {
+    return invokeCommand<ConversationPinnedTaskPageVm>('get_conversation_pinned_task_page', { cursor, limit });
+  },
+  getConversationRunSummaryPage(projectId, taskId, cursor, limit) {
+    return invokeCommand<ConversationRunSummaryPageVm>('get_conversation_run_summary_page', { projectId, taskId, cursor, limit });
   },
   acknowledgeConversationTerminalResult(projectId, taskId, eventId) {
     return invokeCommand('acknowledge_conversation_terminal_result', {
@@ -535,8 +644,11 @@ export const desktopApi: RuntimeApi = {
   deleteScheduledTask(projectId, scheduledTaskId) {
     return invokeCommand<void>('delete_scheduled_task', { projectId, scheduledTaskId });
   },
-  listScheduledTaskOccurrences(projectId, scheduledTaskId, cursor, status) {
-    return invokeCommand<import('../types').ScheduledOccurrencePageVm>('list_scheduled_task_occurrences', { projectId, scheduledTaskId, cursor, status });
+  listScheduledExecutionHistory(projectId, scheduledTaskId, cursor, anchor) {
+    return invokeCommand<import('../types').ScheduledExecutionHistoryPageVm>('list_scheduled_execution_history', { projectId, scheduledTaskId, cursor, taskId: anchor?.taskId, runId: anchor?.runId });
+  },
+  deleteScheduledExecutionHistory(items) {
+    return invokeCommand<import('../types').ScheduledExecutionHistoryDeleteResultVm[]>('delete_scheduled_execution_history', { items });
   },
   getScheduledTaskDiagnostics(projectId, scheduledTaskId) {
     return invokeCommand<ScheduledTaskDiagnosticsVm>('get_scheduled_task_diagnostics', { projectId, scheduledTaskId });
@@ -566,16 +678,16 @@ export const desktopApi: RuntimeApi = {
     return invokeCommand<ConversationTaskRowVm>('update_task_metadata', { projectId, taskId, title, description });
   },
   deleteConversationTask(projectId, taskId) {
-    return invokeCommand<ConversationSidebarVm>('delete_conversation_task', { projectId, taskId });
+    return invokeCommand<ConversationSidebarBootstrapVm>('delete_conversation_task', { projectId, taskId });
   },
   pinConversation(projectId, taskId) {
-    return invokeCommand<ConversationSidebarVm>('pin_conversation', { projectId, taskId });
+    return invokeCommand<ConversationSidebarBootstrapVm>('pin_conversation', { projectId, taskId });
   },
   unpinConversation(projectId, taskId) {
-    return invokeCommand<ConversationSidebarVm>('unpin_conversation', { projectId, taskId });
+    return invokeCommand<ConversationSidebarBootstrapVm>('unpin_conversation', { projectId, taskId });
   },
   reorderPinnedConversations(pins) {
-    return invokeCommand<ConversationSidebarVm>('reorder_pinned_conversations', { ordered: pins.map((p) => ({ project_id: p.projectId, task_id: p.taskId, order: 0 })) });
+    return invokeCommand<ConversationSidebarBootstrapVm>('reorder_pinned_conversations', { ordered: pins.map((p) => ({ project_id: p.projectId, task_id: p.taskId, order: 0 })) });
   },
   searchConversationTasks(query, limit) {
     return invokeCommand<ConversationSearchResultVm[]>('search_conversation_tasks', { query, limit });
@@ -595,13 +707,13 @@ export const desktopApi: RuntimeApi = {
     if (!path) {
       throw new Error('workspace.cancelled');
     }
-    return invokeCommand<ConversationSidebarVm>('add_conversation_workspace', { path });
+    return invokeCommand<ConversationSidebarBootstrapVm>('add_conversation_workspace', { path });
   },
   removeConversationWorkspace(projectId) {
-    return invokeCommand<ConversationSidebarVm>('remove_conversation_workspace', { projectId });
+    return invokeCommand<ConversationSidebarBootstrapVm>('remove_conversation_workspace', { projectId });
   },
   syncConversationWorkspace(workspacePath) {
-    return invokeCommand<ConversationSidebarVm>('sync_conversation_workspace', { workspacePath });
+    return invokeCommand<ConversationSidebarBootstrapVm>('sync_conversation_workspace', { workspacePath });
   },
   saveConversationPreference(key, value) {
     return invokeCommand('save_conversation_preference', { key, value });
@@ -791,3 +903,7 @@ export const desktopApi: RuntimeApi = {
     return invokeCommand('preview_feedback_session_archive', { projectId, taskId });
   },
 };
+
+function normalizeRange(range: { start?: string | null; end?: string | null }) {
+  return { start: range.start ?? null, end: range.end ?? null };
+}

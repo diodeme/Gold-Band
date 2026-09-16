@@ -4,11 +4,11 @@
 > 此处代表的是针对claude code、codex cli等code agent的约束，用程序化的手段，严格控制其工作状态流转与循环
 
 ## 一句话定位
-Gold Band 是一个**以 provider 为核心抽象、优先通过 ACP 统一 agent 返回值**的轻量工作流 runtime。
+Gold Band 是一个**本地优先的开源 AI Agent 桌面客户端**，通过 ACP 连接 Agent，将对话、工程工作流与产物审阅放进同一个工作区。
 
 它的分工是：
 
-- 默认 authoring / deep-dive 工具负责需求澄清、需求文档生成与 workflow DSL 生成
+- 用户通过 Direct、Workflow 或 Auto 发起任务，按需要准备角色、技能与工作流
 - Gold Band runtime 负责执行、调度、校验、恢复与 canonical state
 - ACP 负责统一 agent/provider 的会话返回值，Gold Band 基于 ACP session events 做会话详情可视化
 - Gold Band 的核心 runtime / artifact / layout 模型保持 provider-agnostic
@@ -33,16 +33,16 @@ Gold Band 主要解决 3 个问题：
 - 执行面 probabilistic
 - 完成判断基于 artifact 与验证，而不是 self-report
 
-### 3. desktop-first，但本质是 runtime-first、command-first
+### 3. desktop-first，运行事实由 runtime 统一管理
 - 桌面客户端是当前主产品入口，面向本地项目的任务编排、执行观测与恢复操作
 - Rust runtime / storage / DSL / provider adapter 是 canonical backend contract
 - CLI 保留为脚本化、调试和自动化入口，但不再主导产品交互心智
 - 新前端 / 插件层必须复用 runtime 契约，而不是基于日志或 provider 输出重新推断终局状态
 
-### 4. step-first，而不是 chat-first
-- Gold Band 桌面端不提供自然语言命令入口
-- 核心操作通过菜单、按钮、表格、工作流画布、抽屉和设置页完成
-- 若后续接入需求 / workflow 的 AI 生成能力，应放在 authoring 层扩展，而不是把运行主路径改造成 chat
+### 4. 会话为入口，可视化管理工程流程
+- 用户在会话输入区描述目标，通过 Direct、Workflow 或 Auto 选择执行方式
+- 工作区管理、配置与审阅使用菜单、按钮、工作流画布、右侧工作区和设置页，不要求用户通过终端操作产品
+- 会话内容用于交流，运行、停止、继续与终态仍服从统一 runtime/lifecycle 契约
 
 Gold Band 的核心对象是：
 
@@ -54,10 +54,10 @@ Gold Band 的核心对象是：
 - continue / retry
 
 ## 当前主流程
-1. 在默认 authoring 工具中生成 requirement / workflow DSL
-2. 在 Gold Band 中执行 workflow
-3. 通过 ACP session events 在会话详情中查看原始 agent 过程
-4. 在需要时通过 `worker-ref` 回到对应 provider CLI 深查或接管原始会话
+1. 选择项目、Agent 与执行方式，准备本次任务
+2. 发起对话或运行工作流，查看会话、工具调用与运行状态
+3. 按需人工介入，并根据生命周期继续任务
+4. 在右侧工作区审阅文件、Markdown 与 Diff，确认结果后进行源代码管理
 
 ## 当前文档分层
 - 交互层：见 [交互层概览](../interaction/overview.md)

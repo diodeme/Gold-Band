@@ -56,6 +56,7 @@ impl ProviderAdapter for FakeProvider {
             }),
             stream_path: None,
             runtime_error: None,
+            runtime_control_output: None,
         })
     }
 

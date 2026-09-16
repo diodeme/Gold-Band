@@ -22,7 +22,16 @@ vi.mock('@/components/workspace/files/ReadonlyTextWorkspaceViewer', () => ({
 }));
 
 vi.mock('@/components/workspace/files/WorkspaceImageCanvas', () => ({
-  WorkspaceImageCanvas: () => <div data-testid="workspace-image" />,
+  WorkspaceImageCanvas: (props: {
+    imageActionAsset?: { name: string; mime: string; previewUrl?: string };
+  }) => (
+    <div
+      data-testid="workspace-image"
+      data-action-name={props.imageActionAsset?.name}
+      data-action-mime={props.imageActionAsset?.mime}
+      data-action-preview-url={props.imageActionAsset?.previewUrl}
+    />
+  ),
 }));
 
 import { ConversationAssetWorkspacePanel } from '@/components/workspace/files/ConversationAssetWorkspacePanel';
@@ -86,6 +95,41 @@ describe('conversation asset workspace panel', () => {
       const viewer = container.querySelector<HTMLElement>('[data-testid="readonly-text-workspace"]');
       expect(viewer?.dataset.name).toBe('notes.md');
       expect(viewer?.textContent).toBe('# Sent attachment');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('passes the loaded conversation image to the shared image action surface', async () => {
+    api.showConversationMessageAttachment.mockResolvedValue({
+      title: 'image.png',
+      kind: 'message-attachment',
+      content: 'data:image/png;base64,AQIDBA==',
+      metadata: { mimeType: 'image/png' },
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          <ConversationAssetWorkspacePanel
+            resource={{
+              ...resource,
+              key: 'conversation-asset:message:image',
+              title: 'image.png',
+              name: 'image.png',
+              path: 'user-inputs/image.png',
+            }}
+          />,
+        );
+      });
+
+      const image = container.querySelector<HTMLElement>('[data-testid="workspace-image"]');
+      expect(image?.dataset.actionName).toBe('image.png');
+      expect(image?.dataset.actionMime).toBe('image/png');
+      expect(image?.dataset.actionPreviewUrl).toBe('data:image/png;base64,AQIDBA==');
     } finally {
       await act(async () => root.unmount());
     }

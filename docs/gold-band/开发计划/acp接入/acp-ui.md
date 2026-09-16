@@ -348,6 +348,14 @@ docs/gold-band/开发计划/acp接入/acp功能模块todo列表.md
 
 ## 9. 一句话总结
 
+### 2026-09-17 重启后 ACP 会话失败原因丢失
+
+- 根因分两层，都是正确设计下的实现不完整。第一层：同一 turn 的结构化 `turnError` 会被 `revision` CAS、占位 `failed` 和 orphan 清掉。第二层：即使 snapshot 已经有 `acp.session-config-value-unavailable`，会话树组 leaf 时只从 `acp_session_status` 派生 `failed`，不挂 snapshot header；页面重开读的是这份空 `turnError` 的 leaf lifecycle，横幅因此落到“本次消息处理失败，请重试。” Live emit 走 `conversation_attempt_lifecycle_vm` 会挂 header，所以实时能显示具体原因。
+- 实现：同一 `turnId + operationId` 的已知结构化失败在 revision 漂移后仍可落盘；占位失败只能被结构化原因单向升级；orphan 保留已有 `turnError`。会话树 Direct / AI-DYNAMIC leaf 与 live lifecycle 共用 `attach_acp_lifecycle_header`。不把错误文案缓存到 UI，也不把 turn 失败复制到已完成的 `run.json`。
+- 最小失败证据：revision 漂移 persist 返回 `None`；占位失败不能升级；orphan 清掉 JSON 中的配置错误；无原因 orphan 没有 `turnError`；`conversation_run_vm` 会话树 leaf 在 snapshot 已有配置错误时 `turnError` 仍为 `None`。
+- 范围与性能评审：复用现有 lifecycle header、snapshot 读和错误横幅，不新增状态机、缓存或前端字段；会话树每个 leaf 多读一次已有的轻量 snapshot header，不扫 timeline。
+- 验收：ACP events persist/orphan 用例与 desktop `conversation_run_session_tree_carries_current_turn_error` 由红转绿；既有 conversation run VM 14 项回归通过。
+
 ### 2026-09-07 后台恢复失败展示
 
 - 根因：异步 admission 已成功，但 session setup 在 timeline 用户消息建立前失败；终态 guard 只写 failed/runtime-error，轻量 Session VM 不加载诊断历史，错误横幅缺少可消费原因。属于正确设计下的失败链路实现不完整。

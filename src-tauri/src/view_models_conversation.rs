@@ -3820,6 +3820,7 @@ pub fn conversation_run_vm(
                                         control.transition_cause,
                                         session_presence.established,
                                     );
+                                attach_acp_lifecycle_header(&dyn_attempt_dir, &mut lifecycle);
                                 attach_direct_prompt_queue(
                                     app,
                                     task_id,
@@ -3991,6 +3992,7 @@ pub fn conversation_run_vm(
                         control.transition_cause,
                         session_presence.established,
                     );
+                    attach_acp_lifecycle_header(&attempt_dir, &mut lifecycle);
                     attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
                     let status = lifecycle.display_status.clone();
                     let runtime_display = lifecycle.runtime_display.clone();
@@ -4379,11 +4381,8 @@ pub fn validate_conversation_create_vm(
     let mut missing: Vec<ConversationMissingItemVm> = Vec::new();
 
     let attachment_paths = input.attachment_paths.as_deref().unwrap_or_default();
-    if !conversation_prompt_has_payload(
-        &input.content,
-        attachment_paths.len(),
-        input.role.as_ref(),
-    ) {
+    if !conversation_prompt_has_payload(&input.content, attachment_paths.len(), input.role.as_ref())
+    {
         missing.push(missing_item(
             "content.required",
             "Content is required",
@@ -8090,6 +8089,43 @@ mod tests {
         assert_eq!(lifecycle.acp.revision, 7);
         assert_eq!(lifecycle.acp.turn_id.as_deref(), Some("failed-turn"));
         assert_eq!(lifecycle.acp.turn_error.as_ref(), Some(&error));
+    }
+
+    #[test]
+    fn conversation_run_session_tree_carries_current_turn_error() {
+        let app = App::new(temp_repo_root());
+        write_conversation_assets_fixture(&app);
+        let snapshot =
+            app.paths
+                .acp_snapshot_file("task-046", "run-060", "round-001", "测试", "attempt-002");
+        let mut metadata: serde_json::Value =
+            gold_band::storage::read_json(&snapshot).unwrap_or_else(|_| json!({}));
+        let error = gold_band::runtime_error::manual_runtime_error_info(
+            gold_band::runtime_error::RuntimeErrorDomain::Config,
+            "acp.session-config-value-unavailable",
+            "ACP session config value `gpt-5.6-luna` is unavailable for `model`",
+            json!({
+                "category": "model",
+                "configId": "model",
+                "value": "gpt-5.6-luna",
+                "availableValues": ["deepseek-v4-pro", "deepseek-flash"],
+            }),
+        );
+        metadata["acpRevision"] = json!(16);
+        metadata["turnId"] = json!("acp-prompt-failed-turn");
+        metadata["latestTurnStatus"] = json!("failed");
+        metadata["liveTurnActivity"] = json!("idle");
+        metadata["turnError"] = serde_json::to_value(&error).unwrap();
+        gold_band::storage::write_json(&snapshot, &metadata).unwrap();
+
+        let vm = conversation_run_vm(&app, "project-001", "task-046", "run-060", None).unwrap();
+        let leaf = vm.session_tree.rounds[0].nodes[0].attempts[0].clone();
+        assert_eq!(leaf.lifecycle.acp.latest_turn_status, "failed");
+        assert_eq!(
+            leaf.lifecycle.acp.turn_id.as_deref(),
+            Some("acp-prompt-failed-turn")
+        );
+        assert_eq!(leaf.lifecycle.acp.turn_error.as_ref(), Some(&error));
     }
 
     #[test]

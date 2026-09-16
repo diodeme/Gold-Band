@@ -87,6 +87,14 @@ pub struct RetryPolicy {
 
 `diagnostic` 与 `raw` 保留原始错误事实，后端不生成对客文案。前端根据 `code + params` 显示已有本地化摘要并保留原始详情；没有文案映射时直接展示原始诊断，不能替换成连接或认证故障猜测。交互状态只根据结构化 recovery 和 canonical lifecycle 决定，不从诊断文本反推状态。
 
+### 2026-09-17 重启后 ACP turnError 丢失
+
+- 正确设计是当前 turn 的结构化 `RuntimeErrorInfo` 作为 snapshot `turnError` 的权威原因，前端只投影该字段，不在 UI 缓存文案，也不把 Direct follow-up 失败复制到已完成 Run。
+- 实现缺口有两层：同一 turn 的失败 persist 被 `revision` CAS 拒绝、占位 `failed` 不能升级、orphan 丢掉已有 `turnError`；以及会话树 leaf 不挂 snapshot header，重开后横幅只看到 `failed`。task-030 的 snapshot 已有 `acp.session-config-value-unavailable`，UI 仍显示“本次消息处理失败，请重试。”证明第二层独立存在。
+- 修复：同一 `turnId + operationId` 的已知结构化错误在 revision 漂移后仍写入；占位失败只能被结构化原因升级；orphan 保留已有 `turnError`；会话树与 live lifecycle 共用 header 挂载。完成/取消继续按 claim generation CAS 隔离后续 turn。
+- 红绿证据：persist/orphan 最小失败测试先红后绿；`conversation_run_session_tree_carries_current_turn_error` 修复前 leaf 没有 `turnError`，修复后带上配置错误。ACP events 与 conversation run VM 回归通过。
+- 性能与过度设计评审：不新增持久字段、状态机、缓存或 Run 级错误复制；每次失败仍只处理当前 snapshot 的一份 header。
+
 ### 2026-09-09 未知异常与 ACP 错误收敛补全（已验收）
 
 - 未识别异常默认 `internal.unknown/manual/runtime-abnormal`；明确结构化阻塞保持 blocked，不自动重试未知错误。

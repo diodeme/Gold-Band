@@ -33,6 +33,7 @@ use gold_band::dsl::{
 };
 use gold_band::dynamic::{DynamicRunPhase, DynamicRunStatus};
 use gold_band::dynamic_store::load_dynamic_graph;
+use gold_band::provider::conversation_prompt_has_payload;
 use gold_band::runtime::{
     RoundState, RunState, RuntimeExecutionPhase, RuntimeExecutionState, TaskState, WorkerRefState,
 };
@@ -765,6 +766,8 @@ pub struct ConversationQueuedPromptVm {
     pub content: String,
     pub attachment_count: usize,
     pub quote_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role_name: Option<String>,
     pub created_at: String,
 }
 
@@ -1176,6 +1179,7 @@ fn direct_prompt_queue_vm(
                 content: item.content,
                 attachment_count: item.attachment_paths.len(),
                 quote_count: item.quotes.len(),
+                role_name: item.role.as_ref().map(|role| role.name.clone()),
                 created_at: item.created_at,
             })
             .collect(),
@@ -4375,7 +4379,11 @@ pub fn validate_conversation_create_vm(
     let mut missing: Vec<ConversationMissingItemVm> = Vec::new();
 
     let attachment_paths = input.attachment_paths.as_deref().unwrap_or_default();
-    if input.content.trim().is_empty() && attachment_paths.is_empty() {
+    if !conversation_prompt_has_payload(
+        &input.content,
+        attachment_paths.len(),
+        input.role.as_ref(),
+    ) {
         missing.push(missing_item(
             "content.required",
             "Content is required",
@@ -4755,11 +4763,15 @@ pub fn prepare_conversation_task_vm(
     input: &ConversationCreateInputVm,
 ) -> anyhow::Result<PreparedConversationTask> {
     anyhow::ensure!(
-        !input.content.trim().is_empty()
-            || input
+        conversation_prompt_has_payload(
+            &input.content,
+            input
                 .attachment_paths
                 .as_ref()
-                .is_some_and(|paths| !paths.is_empty()),
+                .map(|paths| paths.len())
+                .unwrap_or(0),
+            input.role.as_ref(),
+        ),
         "conversation payload cannot be empty"
     );
     let title =

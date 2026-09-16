@@ -337,7 +337,7 @@ ACP UI 不按“第一阶段 / 第二阶段”组织，而按可独立实现的�
 12. `ModeUpdate` / `ConfigUpdate` / `SessionInfo` 状态提示。
 13. `RawFrameViewer` 诊断视图。
 14. 错误、断线、恢复、seq gap 提示。
-15. 快速对话与会话详情共用 `SlashCommandMenu` / `useSlashCommandController`：独立 `/query` 打开，分隔符关闭。菜单分产品组（channel 品牌名 + 全部角色）和 Agent 组（原生命令/Skill，集合与去重不变）。选择角色后插入 `/${name} ` 并投影为带应用 logo 的输入标签，发送时剥离该前缀，把角色快照交给 `ConversationPromptInput.role`，Agent 正文用双语模板包装；选择 Agent 命令后仍插入普通 `/${name} ` 文本，底层发送值保持原始文本。角色与命令重名时两行都保留，点选记住 `kind + id`，未点选时角色优先。角色标签悬停展示完整 content 并可滚动；消息气泡上方角色标签与引用入口同一行，角色在前。
+15. 快速对话与会话详情共用 `SlashCommandMenu` / `useSlashCommandController`：独立 `/query` 打开 Agent 命令/Skill 并保留 Agent 组标题；独立 `@query` 打开角色列表且不显示品牌/组标题。菜单行角色只展示名称，Agent 命令展示 `/${name}`，均附描述，不放 icon。高亮只跟父级 `activeIndex`，不叠加 cmdk 选中态。选择角色后插入 `@${name} ` 并投影为带应用 logo、不含 `@`、与引用入口同款 outline pill 的输入标签，发送时剥离该前缀，把角色快照交给 `ConversationPromptInput.role`，Agent 正文用双语模板包装；完整角色快照即可发送，不要求额外正文。选择 Agent 命令后仍插入普通 `/${name} ` 文本，底层发送值保持原始文本。角色与命令重名时按触发器分流。角色标签悬停展示完整 content 并可滚动；消息气泡上方角色标签与引用入口同一行，角色在前。待发送队列列表投影 `roleName`；编辑 restore 把角色快照还原为 `@${token} ` 标签前缀。composer 标签与第一行行盒同为 `h-6`，和输入文字垂直居中；气泡元信息仍用 `h-7` 与引用入口对齐。
 16. ACP 命令目录由 Rust Core 按 Agent + workspace 持久化；每个 Agent 维护独立 Skill 写列表与读列表，Doctor 将 `available_commands_update` 的原生命令和用户级/workspace 级读目录中的 `SKILL.md` 元数据合并，ACP 条目优先并按名称去重。自动/手动 doctor、live update 与 SKILL 同步后刷新；连接层以有界 TTL early-session buffer 解决 `session/new` 返回前命令通知丢失。
 
 详细执行 todo 见：

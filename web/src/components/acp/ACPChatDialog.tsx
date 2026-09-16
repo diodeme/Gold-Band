@@ -170,8 +170,7 @@ import { AgentSelectionQuoteButton } from "@/components/conversation/AgentSelect
 import { ConversationPromptQueue } from "@/components/conversation/ConversationPromptQueue";
 import { UserMessageMeta } from "@/components/conversation/UserMessageMeta";
 import { UserMessageDisclosure } from "@/components/conversation/UserMessageDisclosure";
-import { buildSlashCatalog, parseCommittedSlashItem, restoreSlashCommandInputFocus, slashSendableText } from "@/lib/slash-command";
-import { channelAppName } from "@/lib/channel-app-name";
+import { buildSlashCatalog, committedRoleSnapshot, parseCommittedSlashItem, restoreSlashCommandInputFocus, slashSendableText } from "@/lib/slash-command";
 import { useAgentCommands } from "@/hooks/useAgentCommands";
 import { useSlashCommandController } from "@/hooks/useSlashCommandController";
 import { AcpAvatar, AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
@@ -2368,7 +2367,6 @@ export function ACPChatDialog(
   );
   const slashCatalog = useMemo(
     () => buildSlashCatalog(
-      channelAppName(),
       t('acp.slashAgentGroup'),
       roleProfiles,
       agentCommands.commands,
@@ -2663,6 +2661,7 @@ export function ACPChatDialog(
     && hasUserPromptPayload(
       slashSendableText(prompt, committedSlashCommand),
       pendingAttachments.length,
+      committedRoleSnapshot(committedSlashCommand),
     );
   const canSubmitHistory = composerState.canSubmitContent
     && !queueSubmitPending

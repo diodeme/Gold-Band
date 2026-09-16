@@ -154,6 +154,10 @@ export type ScheduledTaskConfigWorkspaceResource = RightWorkspaceResourceBase & 
   kind: 'scheduled-task-config';
 };
 
+export type BrowserWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'browser';
+};
+
 export type RightWorkspaceResource =
   | AcpImageWorkspaceResource
   | AgentTranscriptResource
@@ -171,7 +175,8 @@ export type RightWorkspaceResource =
   | SystemPromptWorkspaceResource
   | HiddenPromptSectionWorkspaceResource
   | RawFramesWorkspaceResource
-  | ScheduledTaskConfigWorkspaceResource;
+  | ScheduledTaskConfigWorkspaceResource
+  | BrowserWorkspaceResource;
 
 export interface RightWorkspaceSessionState {
   tabs: RightWorkspaceResource[];
@@ -708,6 +713,10 @@ export function conversationRunWorkspaceResourceKey(kind: 'workflow-view' | 'wor
 
 export function fileBrowserWorkspaceResourceKey(projectId: string) {
   return `file-browser:${projectId}`;
+}
+
+export function browserWorkspaceResourceKey() {
+  return 'browser';
 }
 
 export function sourceControlWorkspaceResourceKey(projectId: string) {

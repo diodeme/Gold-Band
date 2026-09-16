@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { USER_MESSAGE_META_CHIP_CLASS_NAME } from '@/lib/conversation-composer-layout';
 import type { UserPromptQuote } from '@/types';
 
 export function UserMessageQuotes({ quotes }: { quotes: readonly UserPromptQuote[] }) {
@@ -16,7 +17,7 @@ export function UserMessageQuotes({ quotes }: { quotes: readonly UserPromptQuote
           type="button"
           variant="outline"
           size="sm"
-          className="h-7 rounded-full border-border/70 bg-background/80 px-2.5 text-xs font-normal text-muted-foreground shadow-none hover:bg-muted/50 hover:text-foreground"
+          className={USER_MESSAGE_META_CHIP_CLASS_NAME}
           aria-label={t('acp.userQuoteCount', { count: quotes.length })}
           data-user-message-quotes-trigger="true"
         >

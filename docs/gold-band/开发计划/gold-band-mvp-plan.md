@@ -1,10 +1,50 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-16 内置浏览器门户页与书签
+
+- 根因：空白页和「没有标签」是同一种未浏览状态，却画成两种空壳；书签也不该再做一套图标下载。属于空白页设计没补完。
+- 实现：无内部页与 `about:blank` 都显示门户页，空白页不创建子 WebView。工具栏书签按 origin 加入/删除；已加入用 `accent-foreground` 实心，不用 `accent` 填图标。门户卡可拖拽排序。渠道 JSON 首次写入用户列表。图标复用 origin favicon 缓存，`ensure` 不写访问记录。
+- 过度设计与性能评审：不进 Settings，不复制 favicon 到书签 JSON，不新增浏览会话。32 条书签一次加载；拖拽只在松手写盘。
+- 验收：Rust 固定 origin 去重、上限、排序失败不丢列表、渠道目录含 default/wb，且 wb 含 7 个内网站点；前端固定门户在无页/空白页出现、点书签走当前空白页 navigate、空白 URL 不 create 原生页。
+
+## 2026-09-16 内置浏览器地址栏访问记录
+
+- 根因：前进后退是 WebView 会话历史，地址栏补全需要另一份应用级访问记录。第一版缺少该实体，不是要把打开的页签落盘。
+- 实现：`load-finish` 按规范化 `http(s)` URL 去重写入最多 200 条；聚焦未改字浮层展示最近 8 条，输入后过滤，普通词加搜索行。悬停删除按 URL 落盘移除；回车提交当前输入并关闭浮层。浮层不占工具栏；与网页重叠时只下移子 WebView。origin 图标后台拉取并转 32px PNG，页签复用同一图标，失败用 Globe。
+- 过度设计与性能评审：不新增页身份，不进 Settings，不做 SQLite/frecency/图标 CDN。击键只过滤内存中的 200 条；图标请求不在输入热路径。
+- 验收：建议函数固定空输入最近访问、词语带搜索行、网址不带搜索行、origin 图标复用、浮层重叠高度；地址栏建议是 `absolute` 且不撑开工具栏；提交后不再弹出最近访问；悬停 × 删除该条且不跳转；内部页签展示 origin 图标；原生占位 `coverTop` 下移而不 hideAll；Rust 固定 URL 去重上限、按 URL 删除与 PNG/SVG 转码。
+
+## 2026-09-16 内置浏览器电脑/移动版切换保留历史
+
+- 根因：前进后退用 WebView 原生会话历史，这个设计成立。电脑/移动版却用 close + 新建来换 User-Agent，等于把历史所在的实例丢掉。属于 view-mode 机制选错，不是要自建第二套历史栈。
+- 实现：活页切换只在同一实例上设置 UA 并 reload；首次切离电脑版时记下引擎默认 UA，切回时恢复。不再 close/create。
+- 过度设计与性能评审：不新增页身份或历史模型。一次 SetUserAgent 加一次 reload，替代销毁再建。无扫描、无缓存、无队列。
+- 验收：最小宿主测试先稳定失败于 `browserClosePage` 被调用；修复后同一用例要求不 close、不 create，只调用 `browserSetViewMode`。
+
+## 2026-09-16 内置浏览器页内左键导航
+
+- 根因：内置浏览的「无系统窗口」策略成立，但左键跟随时契约不完整。右键「新窗口」会触发 `NewWindowRequested`，`Deny` 后由前端开内部页，所以能用。普通左键常被站点改成 `preventDefault` / `target=_blank`；Windows External 子 WebView 上该回调经常不来，Deny 也不会回退成当前页，于是点击没反应。这不是遮罩，也不是 Google 特判。
+- 实现：文档创建脚本在捕获阶段把未修饰左键 `http(s)` 链接改成当前页 `location.assign`；Ctrl/Meta/Shift/Alt 与 download 不拦截。`on_new_window` 仍只服务显式新窗口手势。
+- 过度设计与性能评审：零 IPC、每 frame 一个捕获监听、点击时 O(1) 最近 `a[href]`，不新增状态机或页身份。无全量扫描、无缓存、无队列。
+- 验收：Vitest 固定左键 `location.assign`、站点 preventDefault 不能抢先 `window.open`、Ctrl+点击不拦截；宿主固定 `new-window` 仍开内部页；Rust 固定脚本已注入全部 frame。
+
+## 2026-09-16 内置浏览器生命周期、搜索与设置
+
+- 根因：子 WebView 作为原生图层、应用级 BrowserSession 与工作区投影的设计成立，但实现没有完成整条生命周期契约。裸词被误判为地址；空白逻辑页没有原生实例却直接 navigate；加载没有停止和超时收敛；工作区关闭未等待 hide/discard，遗留原生图层继续截获点击；外部打开只有无障碍标签而无产品 Tooltip。属于正确设计实现不完整，不改为 iframe，也不复制第二套 canonical 页状态。
+- 实现：地址解析显式区分 URL 与搜索词，支持百度 / Google / Bing；设置 → 通用 → 浏览器持久化搜索引擎、localhost 内部打开和普通网页内部打开。宿主补齐 single-flight 启动/创建、空白页 create、活页 navigate、停止、15 秒有界 loading 恢复、显隐 revision fencing、卸载 hide 以及关闭前 await discard。工具栏复用 shadcn Tooltip / Select / Switch；Rust 导航使用 WebView 原生 navigate，并新增 stop command。
+- 红绿证据：原聚焦套件 19 项中 10 项失败，稳定覆盖空白页 navigate、关闭后遗留图层、启动/创建竞态、无停止与 Tooltip、搜索分类和偏好路由；实现后浏览器 session/host/panel/viewport/target/settings 6 文件 21 项全部通过。补充“外部打开搜索词继承当前引擎”的最小测试先收到百度 URL，修复后同一测试转绿。Rust 浏览器偏好 v1 默认与 roundtrip 测试、TypeScript、桌面 crate check 与 Web 生产构建纳入最终验收。
+- 现场二次根因：viewport 把 loading 错当成原生页面可见性门槛，测试实际得到 `ensurePage(..., false)`；`WorkspaceShell` 最终 owner 卸载又没有 discard，测试实际得到 `discardAll = 0`。前者令长期 loading 的站点永远只显示 Logo，后者令透明 child WebView 在切到设置页后继续截获原矩形内的点击，均属于同一生命周期实现缺口，不是百度特判。
+- 现场二次修复：原生实例创建后立即 show 并渐进渲染，load 状态只控制停止/刷新；Shell 真正卸载时 discard 全部 child WebView，并用组件内 generation fence 排除 React StrictMode 模拟卸载。新增 lifecycle 测试与 viewport 测试组成 2 文件 3 项，同一最小命令由 2 项失败转为全部通过。
+- 现场复测纠偏：用户实测证明前端转绿仍未闭环。进一步回溯发现 Rust `on_page_load(Started)` 仍主动 hide，直接覆盖前端 show；close/discard/eviction 又先删除 registry 再 native close，并吞掉 close 错误，失败后形成仍拦截点击但无法重试的孤儿 WebView。新增两条原生最小测试分别稳定失败于 load-start 不可见、close 失败前已 mark closed，证明此前测试边界不足。
+- 原生层修复与诊断：load callback 只发布事件，不再控制显隐；关闭先 best-effort hide，再 native close，成功后才按 `pageId + label` 删除 registry，失败返回结构化错误并保留重试能力。`gold_band::browser` 向既有 `runtime.log` 记录 create/show/hide/navigate/load/close/discard 与 registry 结果，URL 仅保留 origin、本地路径全部脱敏，bounds 成功热路径不逐帧记录。Rust browser 8 项、前端浏览器聚焦回归 7 文件 24 项、TypeScript、桌面 crate check 与 Web 生产构建通过。
+- 性能与过度设计评审：复用既有 BrowserSession、工作区 close resolver 和 Settings 持久化，不新增并行状态机、依赖、缓存或队列。页摘要上限 32、活 WebView 上限 5；每个 loading 页最多一个 timer，无轮询。创建与启动 single-flight，bounds 仍按 rAF 合并；宿主保持按需动态加载，未打开路径不进入主包。
+- 验收结果：聚焦 Vitest 6 文件 21 项、浏览器 API 3 文件 22 项、右侧工作区 DOM 13 项、Rust 浏览器 5 项、浏览器偏好 roundtrip 1 项全部通过；TypeScript、`cargo check -p gold-band-desktop` 与 Web 生产构建通过。右侧工作区 Radix DOM 套件在当前机器超过默认 5 秒，放宽后 13 项均通过，未发现业务断言回归。已启动 `dev:wb` 并拉起本轮 EXE，Computer Use 却返回 `Codex auth token is unavailable`，且能力对象没有 native app API；因此未把子 WebView 点击实操虚报为通过。本轮 PID 已清理，原先运行的 Gold Band 与 1420 服务保留。
+
 ## 2026-09-16 Composer 角色斜杠菜单
 
-- 根因：`/` 菜单原先只有 Agent 命令/Skill 一个命名空间，无法从 composer 指定本次消息的 Gold Band 角色。这是正确斜杠交互下的产品目录缺失，不是命令去重或标签投影缺陷。
-- 实现：菜单产品组在前（channel 品牌名 + 全部角色），Agent 组保持原集合与去重。发送复用引用的 display/send 分离：气泡只保留用户原文，Agent 正文用双语 `user_role_message` 包装“用户指定的角色定义”。角色快照随 prompt 持久化，新建会话写入 `authoring/initial-prompt-role.json` 供首次 Direct/requirement turn 读取。重名两行都保留，点选记 `kind+id`，未点选时角色优先。标签用应用 logo / 当前 Agent icon 区分，长 content Tooltip 内滚动；角色与引用同一元信息行，角色在前。
-- 过度设计与性能评审：不新增 identity 或状态机，角色目录沿用现有 `getProfiles()` 有界 catalog，slash 过滤为内存线性扫描且可见项上限仍为 512。首次会话多一次小 JSON 读写，不扫描历史。无需专项 benchmark。
+- 根因：`/` 菜单原先只有 Agent 命令/Skill 一个命名空间，无法从 composer 指定本次消息的 Gold Band 角色。这是正确斜杠交互下的产品目录缺失，不是命令去重或标签投影缺陷。随后把角色塞进 `/` 并加上品牌组标题，会和 Agent 命令抢同一触发器；改为 `@` 唤醒角色、`/` 只保留 Agent，是同一双命名空间设计的补齐。
+- 实现：`/` 只列出 Agent 命令/Skill 并保留 Agent 组标题；`@` 列出角色且无品牌/组标题。菜单行不放 icon，角色行只显示名称、不带 `@`，Agent 命令行仍显示 `/${name}`。高亮只跟父级 `activeIndex`。发送复用引用的 display/send 分离：气泡只保留用户原文，Agent 正文用双语 `user_role_message` 包装“用户指定的角色定义”。角色快照随 prompt 持久化，新建会话写入 `authoring/initial-prompt-role.json` 供首次 Direct/requirement turn 读取。`@name` 只命中角色，`/name` 只命中命令。标签用应用 logo / 当前 Agent icon 区分，展示名称不带 `/` 或 `@`。气泡元信息与引用入口共用 `h-7` outline pill；composer 输入标签用同款 outline，高度改为第一行 `h-6`，与输入文字垂直居中。长 content Tooltip 内滚动；角色与引用同一元信息行，角色在前。完整角色快照视为有效 payload，允许无正文发送。队列列表投影 `roleName`；编辑 restore 把快照还原为 `@${token} ` 前缀。
+- 过度设计与性能评审：不新增 identity 或状态机，角色目录沿用现有 `getProfiles()` 有界 catalog，slash/mention 过滤为内存线性扫描且可见项上限仍为 512。首次会话多一次小 JSON 读写，不扫描历史。队列最多 10 条，列表只投影短 `roleName`，restore 不新增 draft.role 状态机。无需专项 benchmark。
 
 ## 2026-09-15 ACP client Auto Accept
 

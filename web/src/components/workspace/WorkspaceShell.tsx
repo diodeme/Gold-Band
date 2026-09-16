@@ -27,6 +27,7 @@ import {
   useRightWorkspace,
   type RightWorkspaceResource,
 } from './right-workspace-context';
+import { BrowserNativeLifecycle } from './browser/browser-workspace-hooks';
 import { fileContentStore } from './files/file-content-store';
 import { fileExplorerStore } from './files/file-explorer-store';
 import { WorkspaceFileLinkProvider } from './files/WorkspaceFileLinkProvider';
@@ -57,6 +58,7 @@ interface WorkspaceShellProps {
   platform?: DesktopPlatform | null;
   windowFrameStyle: DesktopWindowFrameStyle;
   appConfig: AppConfigVm;
+  browserPreferences: import('@/types').BrowserPreferences;
   vm: ConversationSidebarVm;
   active: ConversationPage;
   sidebarCollapsed: boolean;
@@ -145,14 +147,17 @@ const LazyAcpImageWorkspacePanel = lazy(() => import('@/components/acp/AcpImageS
 const LazyDraftAttachmentWorkspacePanel = lazy(() => import('./files/DraftAttachmentWorkspacePanel').then((module) => ({ default: module.DraftAttachmentWorkspacePanel })));
 const LazyConversationDirectoryWorkspacePanel = lazy(() => import('./ConversationDirectoryWorkspacePanel').then((module) => ({ default: module.ConversationDirectoryWorkspacePanel })));
 const LazySourceControlWorkspacePanel = lazy(() => import('./source-control/SourceControlWorkspacePanel').then((module) => ({ default: module.SourceControlWorkspacePanel })));
+const LazyBrowserWorkspacePanel = lazy(() => import('./browser/BrowserWorkspacePanel').then((module) => ({ default: module.BrowserWorkspacePanel })));
 const workspaceLayoutDiagnosticsEnabled = isWorkspaceLayoutDiagnosticsEnabled();
 
 function FileWorkspaceIntegration({
   config = FALLBACK_WORKSPACE_FILES,
   layout,
+  browserPreferences,
 }: {
   config?: AppConfigVm['workspaceFiles'];
   layout: AppConfigVm['workspaceLayout']['rightWorkspace']['file'];
+  browserPreferences: import('@/types').BrowserPreferences;
 }) {
   const workspace = useRightWorkspace();
   useEffect(() => {
@@ -207,6 +212,17 @@ function FileWorkspaceIntegration({
       ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazySourceControlWorkspacePanel resource={resource} /></Suspense>
       : null
   )), [workspace.registerResourceRenderer]);
+  useEffect(() => workspace.registerResourceRenderer('browser', (resource: RightWorkspaceResource) => (
+    resource.kind === 'browser'
+      ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyBrowserWorkspacePanel searchEngine={browserPreferences.searchEngine} /></Suspense>
+      : null
+  )), [browserPreferences.searchEngine, workspace.registerResourceRenderer]);
+  useEffect(() => workspace.registerResourceCloseResolver('browser', async (_resource, reason) => {
+    if (reason !== 'close' && reason !== 'workspace-close') return true;
+    const { browserWebviewHost } = await import('./browser/browser-webview-host');
+    await browserWebviewHost.discardAll();
+    return true;
+  }), [workspace.registerResourceCloseResolver]);
   useEffect(() => workspace.registerResourceCloseResolver('file', (resource, reason) => (
     resource.kind === 'file'
       ? (reason === 'close' ? fileContentStore.close(resource.key) : fileContentStore.flush(resource.key))
@@ -260,7 +276,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
         sourceControlWorkspacePath={props.sourceControlWorkspacePath}
         store={props.conversationWorkspaceStore}
       >
-        <WorkspaceFileLinkProvider>
+        <WorkspaceFileLinkProvider browserPreferences={props.browserPreferences}>
           <WorkspaceShellLayout {...props} />
         </WorkspaceFileLinkProvider>
       </RightWorkspaceProvider>
@@ -275,6 +291,7 @@ function WorkspaceShellLayout({
   platform,
   windowFrameStyle,
   appConfig,
+  browserPreferences,
   vm,
   active,
   sidebarCollapsed,
@@ -681,6 +698,14 @@ function WorkspaceShellLayout({
       <FileWorkspaceIntegration
         config={appConfig.workspaceFiles}
         layout={appConfig.workspaceLayout.rightWorkspace.file}
+        browserPreferences={browserPreferences}
+      />
+      <BrowserNativeLifecycle
+        presented={rightWorkspacePresented}
+        autoCollapsedHidden={rightWorkspaceCompact && !compactSheetOpen}
+        available={rightWorkspaceAvailable}
+        requestedOpen={workspace.requestedOpen}
+        activeIsBrowser={activeRightResource?.kind === 'browser'}
       />
       {memoryWorkspace && <ProjectMemorySheet key={memoryWorkspace.projectId} {...memoryWorkspace} onClose={() => setMemoryWorkspace(null)} />}
       <AppTitleBar

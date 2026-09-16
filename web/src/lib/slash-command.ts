@@ -1,7 +1,8 @@
 import type { AcpCommandItemVm } from '@/types';
 
 const SLASH_QUERY_RE = /^\/([\p{L}\p{N}._:-]*)$/u;
-const LEADING_SLASH_COMMAND_RE = /^\/([\p{L}\p{N}._:-]+)/u;
+const MENTION_QUERY_RE = /^@([\p{L}\p{N}._:-]*)$/u;
+const LEADING_COMPOSER_TOKEN_RE = /^([/@])([\p{L}\p{N}._:-]+)/u;
 const SLASH_COMMAND_SEPARATOR_RE = /^[\s\p{P}]/u;
 const MAX_VISIBLE_SLASH_COMMANDS = 512;
 const dismissedSlashQueries = new Map<string, string>();
@@ -38,7 +39,7 @@ export interface SlashCatalogItem {
 }
 
 export interface SlashCatalogGroup {
-  id: 'product' | 'agent';
+  id: 'roles' | 'agent';
   heading: string;
   items: SlashCatalogItem[];
 }
@@ -61,11 +62,15 @@ export function slashCatalogItemValue(item: SlashCatalogItem): string {
 export function slashTokenFromName(name: string): string {
   return name
     .trim()
-    .replace(/^\/+/u, '')
+    .replace(/^[@/]+/u, '')
     .replace(/[/\s]+/gu, '-')
     .replace(/[^\p{L}\p{N}._:-]+/gu, '-')
     .replace(/-+/gu, '-')
     .replace(/^-+|-+$/gu, '');
+}
+
+export function slashTagDisplayName(prefix: string): string {
+  return prefix.replace(/^[@/]+/u, '');
 }
 
 export function roleSlashItems(
@@ -96,7 +101,6 @@ export function commandSlashItems(commands: readonly AcpCommandItemVm[]): SlashC
 }
 
 export function buildSlashCatalog(
-  productHeading: string,
   agentHeading: string,
   profiles: readonly { id: string; name: string; summary: string; content: string }[],
   commands: readonly AcpCommandItemVm[],
@@ -104,7 +108,7 @@ export function buildSlashCatalog(
   const groups: SlashCatalogGroup[] = [];
   const roles = roleSlashItems(profiles);
   if (roles.length > 0) {
-    groups.push({ id: 'product', heading: productHeading, items: roles });
+    groups.push({ id: 'roles', heading: '', items: roles });
   }
   const commandItems = commandSlashItems(commands);
   if (commandItems.length > 0) {
@@ -135,24 +139,24 @@ export function parseCommittedSlashItem(
   items: readonly SlashCatalogItem[],
   selectedIdentity: SlashItemIdentity | null = null,
 ): CommittedSlashItem | null {
-  const match = input.match(LEADING_SLASH_COMMAND_RE);
+  const match = input.match(LEADING_COMPOSER_TOKEN_RE);
   if (!match) return null;
-  const typedName = match[1];
+  const trigger = match[1];
+  const typedName = match[2];
   const prefixLength = typedName.length + 1;
   const suffix = input.slice(prefixLength);
   if (!suffix || !SLASH_COMMAND_SEPARATOR_RE.test(suffix)) return null;
+  const expectedKind: SlashCatalogItemKind = trigger === '@' ? 'role' : 'command';
   const matches = items.filter(
-    (candidate) => candidate.name.localeCompare(typedName, undefined, { sensitivity: 'accent' }) === 0,
+    (candidate) => candidate.kind === expectedKind
+      && candidate.name.localeCompare(typedName, undefined, { sensitivity: 'accent' }) === 0,
   );
   if (matches.length === 0) return null;
   const selected = selectedIdentity
     ? matches.find((item) => item.kind === selectedIdentity.kind && item.id === selectedIdentity.id)
     : undefined;
-  const item = selected
-    ?? matches.find((candidate) => candidate.kind === 'role')
-    ?? matches[0];
   return {
-    item,
+    item: selected ?? matches[0],
     prefix: input.slice(0, prefixLength),
     suffix,
   };
@@ -190,9 +194,39 @@ export function slashSendableText(input: string, committed: CommittedSlashItem |
   return committed?.item.kind === 'role' ? committed.suffix : input;
 }
 
+export function composerTokenText(item: Pick<SlashCatalogItem, 'kind' | 'name'>): string {
+  return item.kind === 'role' ? `@${item.name} ` : slashCommandText(item.name);
+}
+
+export function composerTextFromPromptRole(
+  role: { name: string } | null | undefined,
+  displayText = '',
+): string {
+  const name = role?.name.trim();
+  if (!name) return displayText;
+  return `${composerTokenText({ kind: 'role', name: slashTokenFromName(name) })}${displayText}`;
+}
+
+export type ComposerMenuTrigger = '/' | '@';
+
+export function matchComposerMenuQuery(input: string): { trigger: ComposerMenuTrigger; query: string } | null {
+  const mention = input.match(MENTION_QUERY_RE);
+  if (mention) return { trigger: '@', query: mention[1] };
+  const slash = input.match(SLASH_QUERY_RE);
+  if (slash) return { trigger: '/', query: slash[1] };
+  return null;
+}
+
 export function matchSlashCommandQuery(input: string): string | null {
-  const match = input.match(SLASH_QUERY_RE);
-  return match?.[1] ?? null;
+  const match = matchComposerMenuQuery(input);
+  return match?.trigger === '/' ? match.query : null;
+}
+
+export function groupsForComposerMenuTrigger(
+  groups: readonly SlashCatalogGroup[],
+  trigger: ComposerMenuTrigger,
+): SlashCatalogGroup[] {
+  return groups.filter((group) => (trigger === '@' ? group.id === 'roles' : group.id === 'agent'));
 }
 
 export function filterSlashCommands(
@@ -237,7 +271,7 @@ function normalizeSlashCommand(candidate: unknown): AcpCommandItemVm | null {
 }
 
 export function slashCommandText(commandName: string): string {
-  return `/${commandName.trim().replace(/^\/+/, '')} `;
+  return `/${commandName.trim().replace(/^[@/]+/, '')} `;
 }
 
 export function restoreSlashCommandInputFocus(

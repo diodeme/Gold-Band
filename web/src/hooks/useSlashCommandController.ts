@@ -9,10 +9,11 @@ import {
   commandSlashItems,
   filterSlashCatalog,
   flattenSlashCatalog,
-  matchSlashCommandQuery,
+  groupsForComposerMenuTrigger,
+  matchComposerMenuQuery,
   rememberSlashCommandDismissal,
   restoreSlashCommandDismissal,
-  slashCommandText,
+  composerTokenText,
   unwrapSelectedSlashItem,
 } from '@/lib/slash-command';
 
@@ -44,11 +45,11 @@ export function useSlashCommandController({
 }: UseSlashCommandControllerOptions) {
   const catalog = useMemo(() => catalogGroups(groups, commands), [commands, groups]);
   const catalogItems = useMemo(() => flattenSlashCatalog(catalog), [catalog]);
-  const query = useMemo(() => matchSlashCommandQuery(input), [input]);
+  const menuQuery = useMemo(() => matchComposerMenuQuery(input), [input]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [selectedIdentity, setSelectedIdentity] = useState<SlashItemIdentity | null>(null);
   const [dismissed, setDismissed] = useState(() => (
-    restoreSlashCommandDismissal(contextKey, input, query !== null)
+    restoreSlashCommandDismissal(contextKey, input, menuQuery !== null)
   ));
   const previousContextKey = useRef(contextKey);
 
@@ -61,21 +62,21 @@ export function useSlashCommandController({
       setSelectedIdentity(null);
       return;
     }
-    setDismissed(restoreSlashCommandDismissal(contextKey, input, query !== null));
-  }, [contextKey, input, query]);
+    setDismissed(restoreSlashCommandDismissal(contextKey, input, menuQuery !== null));
+  }, [contextKey, input, menuQuery]);
 
-  const filteredGroups = useMemo(
-    () => (query === null ? [] : filterSlashCatalog(catalog, query)),
-    [catalog, query],
-  );
+  const filteredGroups = useMemo(() => {
+    if (!menuQuery) return [];
+    return filterSlashCatalog(groupsForComposerMenuTrigger(catalog, menuQuery.trigger), menuQuery.query);
+  }, [catalog, menuQuery]);
   const filteredItems = useMemo(() => flattenSlashCatalog(filteredGroups), [filteredGroups]);
-  const isOpen = query !== null && !dismissed && filteredItems.length > 0;
+  const isOpen = menuQuery !== null && !dismissed && filteredItems.length > 0;
 
   const selectByIndex = useCallback((index: number) => {
     const item = filteredItems[index];
     if (!item) return false;
     setSelectedIdentity({ kind: item.kind, id: item.id });
-    onInputChange(slashCommandText(item.name));
+    onInputChange(composerTokenText(item));
     setDismissed(true);
     onInputFocusRequested?.();
     return true;

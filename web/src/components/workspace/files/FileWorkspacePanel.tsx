@@ -9,6 +9,8 @@ import { useMarkdownResourceLinkHandler } from '@/components/prompt-kit/markdown
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import type { FileWorkspaceLayoutVm, WorkspaceDirectoryEntryVm } from '@/types';
 import { isExternalUrlHref, isLocalFileHref } from '@/lib/file-link';
+import { classifyWebTarget } from '../browser/web-target';
+import { openWebTarget } from '../browser/open-web-target';
 import { resolveWorkspacePanelWidthFromLayout } from '../workspace-layout';
 import { useWorkspaceResponsiveState } from '../use-workspace-responsive-state';
 import {
@@ -51,6 +53,7 @@ function fileResourceFromEntry(resource: FileWorkspacePanelProps['resource'], en
 }
 
 export function FileWorkspacePanel({ resource, layout }: FileWorkspacePanelProps) {
+  const { t } = useTranslation();
   const workspace = useRightWorkspace();
   const selected = resource.kind === 'file' ? resource : (resource.selectedFile ?? null);
   const activationFileKey = useRef(selected?.key ?? null);
@@ -78,8 +81,17 @@ export function FileWorkspacePanel({ resource, layout }: FileWorkspacePanelProps
   }, [resource.projectId]);
 
   const openFile = useCallback((entry: WorkspaceDirectoryEntryVm) => {
+    if (classifyWebTarget(entry.canonicalPath) === 'local-html' && workspace.scopeKey) {
+      void openWebTarget(entry.canonicalPath, {
+        projectId: resource.projectId,
+        scopeKey: workspace.scopeKey,
+        openResource: workspace.openResource,
+        browserTitle: t('workspace.browser.title'),
+      });
+      return;
+    }
     workspace.openResource(fileResourceFromEntry(resource, entry));
-  }, [resource, workspace.openResource]);
+  }, [resource, t, workspace.openResource, workspace.scopeKey]);
 
   const content = selected ? <FileContent key={selected.key} resource={selected} /> : <FileEmptyState />;
   const tree = (
@@ -210,7 +222,13 @@ function FileSnapshotContent({
       }
       return;
     }
-    if (isExternalUrlHref(href)) void openExternalUrl(href);
+    if (isExternalUrlHref(href)) {
+      if (markdownResourceLinkHandler?.openWebUrl && !href.startsWith('mailto:') && !href.startsWith('tel:')) {
+        void markdownResourceLinkHandler.openWebUrl(href);
+        return;
+      }
+      void openExternalUrl(href);
+    }
   }, [markdownResourceLinkHandler, resource.locator.canonicalPath]);
   const approvalCount = [...markdownImages.values()].filter((image) => image.kind === 'approvalRequired').length;
   useEffect(() => {

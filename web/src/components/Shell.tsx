@@ -1,6 +1,6 @@
 import { Bot, Boxes, ChevronsUpDown, Command, Settings } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { AppConfigVm, ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, DesktopPlatform, DesktopUiMode, DesktopWindowFrameStyle, PrimaryModule } from '../types';
+import type { AppConfigVm, BrowserPreferences, ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, DesktopPlatform, DesktopUiMode, DesktopWindowFrameStyle, PrimaryModule } from '../types';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -21,6 +21,7 @@ interface ShellProps {
   platform?: DesktopPlatform | null;
   windowFrameStyle?: DesktopWindowFrameStyle;
   appConfig: AppConfigVm;
+  browserPreferences: BrowserPreferences;
   repoRoot?: string;
   needsWorkspace?: boolean;
   showSettingsUpdateDot?: boolean;
@@ -53,7 +54,7 @@ interface ShellProps {
   children: React.ReactNode;
 }
 
-export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, feedbackEnabled, platform, windowFrameStyle = 'native-compositor', appConfig, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onOpenPersonalAnalytics, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, onConversationRetrySidebar, onConversationRequestWorkspaceTasks, onConversationRequestPinnedTasks, onConversationRequestTaskRuns, activeWorkspaceId, defaultExpandedWorkspaceId, workspaceRevealRequest, conversationTaskUuid, sourceControlWorkspacePath, conversationWorkspaceStore, children }: ShellProps) {
+export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, feedbackEnabled, platform, windowFrameStyle = 'native-compositor', appConfig, browserPreferences, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onOpenPersonalAnalytics, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, onConversationRetrySidebar, onConversationRequestWorkspaceTasks, onConversationRequestPinnedTasks, onConversationRequestTaskRuns, activeWorkspaceId, defaultExpandedWorkspaceId, workspaceRevealRequest, conversationTaskUuid, sourceControlWorkspacePath, conversationWorkspaceStore, children }: ShellProps) {
   useThemeWallpaperSurface();
   if (uiMode === 'conversation') {
     return (
@@ -63,6 +64,7 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
         platform={platform}
         windowFrameStyle={windowFrameStyle}
         appConfig={appConfig}
+        browserPreferences={browserPreferences}
         vm={conversationSidebar}
         active={conversationPage}
         sidebarCollapsed={sidebarCollapsed}

@@ -3194,12 +3194,14 @@ impl App {
         language: DesktopLanguage,
         use_local_claude: bool,
         verbose_logging: bool,
+        browser: crate::config::BrowserPreferences,
     ) -> Result<SettingsConfig> {
         let mut settings = self.load_settings()?;
         settings.appearance = Some(appearance);
         settings.personalization = Some(personalization.normalized());
         settings.desktop_language = Some(language);
         settings.use_local_claude = Some(use_local_claude);
+        settings.browser = browser;
         settings.log_level = Some(if verbose_logging {
             RuntimeLogLevel::Debug
         } else {
@@ -9060,6 +9062,7 @@ mod tests {
             DesktopLanguage::En,
             true,
             true,
+            crate::config::BrowserPreferences::default(),
         )
         .unwrap();
 

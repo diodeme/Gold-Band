@@ -19,10 +19,11 @@ export function UserMessageMeta({
     >
       {role ? (
         <SlashCommandInputTag
-          prefix={`/${slashTokenFromName(role.name) || role.name}`}
+          prefix={`@${slashTokenFromName(role.name) || role.name}`}
           content={role.content}
           kind="role"
           iconSrc="/logo.svg"
+          surface="meta"
         />
       ) : null}
       <UserMessageQuotes quotes={quotes} />

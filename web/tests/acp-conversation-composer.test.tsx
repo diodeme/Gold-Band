@@ -199,6 +199,12 @@ describe('AcpConversationComposer', () => {
     expect(textarea?.className).toContain('py-2');
     expect(adornment?.className).toContain('top-2');
     expect(adornment?.className).toContain('left-2.5');
+    expect(adornment?.className).toContain('h-6');
+    expect(adornment?.className).toContain('items-center');
+    const tag = host.querySelector('[data-slot="slash-command-input-tag"]');
+    expect(tag?.textContent).toBe('review');
+    expect(tag?.className).toContain('h-6');
+    expect(tag?.className).not.toMatch(/(^|\s)h-7(\s|$)/);
   });
 
   it('does not reserve a standalone keyboard-hint row', async () => {
@@ -208,66 +214,134 @@ describe('AcpConversationComposer', () => {
     expect(host.textContent).not.toContain('Shift+Enter');
   });
 
-  it('renders product and agent group headings', async () => {
-    await renderComposer({
-      slashGroups: [
-        {
-          id: 'product',
-          heading: 'Gold Band',
-          items: [{ kind: 'role', id: 'pf-dev', name: 'dev', description: 'Dev role', content: '完整定义' }],
-        },
-        {
-          id: 'agent',
-          heading: 'Agent',
-          items: [{ kind: 'command', id: 'review', name: 'review', description: 'Review the current change' }],
-        },
-      ],
-      slashMenuOpen: true,
-    });
+  it('renders the agent heading and omits a role group heading', async () => {
+    await act(async () => root.render(
+      <SlashCommandMenu
+        open
+        variant="inline"
+        groups={[
+          {
+            id: 'roles',
+            heading: '',
+            items: [{ kind: 'role', id: 'pf-dev', name: 'dev', description: 'Dev role', content: '完整定义' }],
+          },
+          {
+            id: 'agent',
+            heading: 'Agent',
+            items: [{ kind: 'command', id: 'review', name: 'review', description: 'Review the current change' }],
+          },
+        ]}
+        activeIndex={0}
+        onActiveIndexChange={vi.fn()}
+        onDismiss={vi.fn()}
+        onSelect={vi.fn()}
+      >
+        <textarea aria-label="test composer" />
+      </SlashCommandMenu>,
+    ));
 
-    const menu = document.querySelector('[data-slot="slash-command-menu"]');
+    const menu = host.querySelector('[data-slot="slash-command-menu"]');
     expect(menu).toBeTruthy();
-    expect(menu?.textContent).toContain('Gold Band');
+    expect(menu?.textContent).not.toContain('Gold Band');
     expect(menu?.textContent).toContain('Agent');
-    expect(document.querySelectorAll('[data-slash-item-kind="role"]').length).toBe(1);
-    expect(document.querySelectorAll('[data-slash-item-kind="command"]').length).toBe(1);
+    expect(host.querySelectorAll('[data-slash-item-kind="role"]').length).toBe(1);
+    expect(host.querySelectorAll('[data-slash-item-kind="command"]').length).toBe(1);
   });
 
-  it('uses the product logo for roles and the current agent icon for commands', async () => {
-    await renderComposer({
-      slashGroups: [
-        {
-          id: 'product',
-          heading: 'Gold Band',
-          items: [{ kind: 'role', id: 'pf-dev', name: 'dev', description: 'Dev role', content: '完整定义' }],
-        },
-        {
-          id: 'agent',
-          heading: 'Agent',
-          items: [{ kind: 'command', id: 'review', name: 'review', description: 'Review the current change' }],
-        },
-      ],
-      slashMenuOpen: true,
-      agentIconSrc: '/agents/codex.svg',
+  it('does not render row icons in the slash menu', async () => {
+    await act(async () => root.render(
+      <SlashCommandMenu
+        open
+        variant="inline"
+        groups={[
+          {
+            id: 'roles',
+            heading: '',
+            items: [{ kind: 'role', id: 'pf-dev', name: 'dev', description: 'Dev role', content: '完整定义' }],
+          },
+          {
+            id: 'agent',
+            heading: 'Agent',
+            items: [{ kind: 'command', id: 'review', name: 'review', description: 'Review the current change' }],
+          },
+        ]}
+        activeIndex={0}
+        onActiveIndexChange={vi.fn()}
+        onDismiss={vi.fn()}
+        onSelect={vi.fn()}
+      >
+        <textarea aria-label="test composer" />
+      </SlashCommandMenu>,
+    ));
+
+    const menu = host.querySelector('[data-slot="slash-command-menu"]');
+    expect(menu?.querySelectorAll('img').length).toBe(0);
+    expect(host.querySelector('[data-slash-item-kind="role"] span')?.textContent).toBe('dev');
+    expect(menu?.textContent).not.toContain('@dev');
+    expect(menu?.textContent).toContain('/review');
+  });
+
+  it('highlights only the hovered slash row', async () => {
+    function Harness() {
+      const [activeIndex, setActiveIndex] = React.useState(0);
+      return (
+        <SlashCommandMenu
+          open
+          variant="inline"
+          groups={[{
+            id: 'roles',
+            heading: '',
+            items: [
+              { kind: 'role', id: 'pf-ci', name: 'CI-CD', description: 'CI/CD 角色' },
+              { kind: 'role', id: 'pf-dev', name: '开发', description: '开发角色' },
+            ],
+          }]}
+          activeIndex={activeIndex}
+          onActiveIndexChange={setActiveIndex}
+          onDismiss={vi.fn()}
+          onSelect={vi.fn()}
+        >
+          <textarea aria-label="test composer" />
+        </SlashCommandMenu>
+      );
+    }
+
+    await act(async () => root.render(<Harness />));
+    const menu = host.querySelector('[data-slot="slash-command-menu"]');
+    const items = [...(menu?.querySelectorAll('[data-slot="command-item"]') ?? [])];
+    expect(items).toHaveLength(2);
+
+    await act(async () => {
+      items[1].dispatchEvent(new MouseEvent('pointermove', { bubbles: true }));
     });
 
-    const roleIcon = document.querySelector('[data-slash-item-kind="role"] img');
-    const commandIcon = document.querySelector('[data-slash-item-kind="command"] img');
-    expect(roleIcon?.getAttribute('src')).toBe('/logo.svg');
-    expect(commandIcon?.getAttribute('src')).toBe('/agents/codex.svg');
+    const active = menu?.querySelectorAll('[data-slash-active="true"]');
+    expect(active).toHaveLength(1);
+    expect(active?.[0]?.querySelector('span')?.textContent).toBe('开发');
+    expect(active?.[0]?.textContent).not.toContain('@');
+    expect(items[0].className).not.toMatch(/data-\[selected=true\]:before:opacity-100/);
   });
 
   it('renders the slash command popover on an opaque semantic surface', async () => {
-    await renderComposer({
-      slashGroups: [{
-        id: 'agent',
-        heading: 'Agent',
-        items: [{ kind: 'command', id: 'review', name: 'review', description: 'Review the current change' }],
-      }],
-      slashMenuOpen: true,
-    });
+    await act(async () => root.render(
+      <SlashCommandMenu
+        open
+        variant="inline"
+        groups={[{
+          id: 'agent',
+          heading: 'Agent',
+          items: [{ kind: 'command', id: 'review', name: 'review', description: 'Review the current change' }],
+        }]}
+        activeIndex={0}
+        onActiveIndexChange={vi.fn()}
+        onDismiss={vi.fn()}
+        onSelect={vi.fn()}
+      >
+        <textarea aria-label="test composer" />
+      </SlashCommandMenu>,
+    ));
 
-    const menu = document.querySelector('[data-slot="slash-command-menu"]');
+    const menu = host.querySelector('[data-slot="slash-command-menu"]');
     expect(menu).toBeTruthy();
     expect(menu?.classList.contains('bg-popover')).toBe(true);
     expect(menu?.className).not.toMatch(/bg-popover\/[0-9]/);

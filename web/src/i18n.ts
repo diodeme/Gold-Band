@@ -370,6 +370,34 @@ const resources = {
         browseWorkspaceFiles: "浏览和编辑当前工作空间文件",
         browseRunDirectory: "浏览当前会话的运行文件",
         runDirectory: "运行目录",
+        browser: {
+          title: "浏览器",
+          description: "在应用内打开网页和本地 HTML",
+          addressPlaceholder: "搜索或输入网址",
+          back: "后退",
+          forward: "前进",
+          reload: "刷新",
+          stop: "停止载入",
+          openInSystemBrowser: "用系统浏览器打开",
+          switchToMobile: "切换到移动版",
+          switchToDesktop: "切换到电脑版",
+          newPage: "新建标签页",
+          closePage: "关闭标签页",
+          closeOtherPages: "关闭其他标签页",
+          closePagesToTheLeft: "关闭左侧所有标签页",
+          closePagesToTheRight: "关闭右侧所有标签页",
+          closeAllPages: "关闭所有标签页",
+          allPages: "所有标签页",
+          emptyTitle: "打开网页",
+          loading: "正在载入网页",
+          untitled: "新标签页",
+          searchWeb: "搜索网页",
+          addBookmark: "加入门户页",
+          removeBookmark: "从门户页移除",
+          openBlankPage: "打开空白页",
+          deleteBookmark: "删除书签",
+          removeVisit: "从历史记录删除",
+        },
         filesPanel: {
           file: "文件",
           directory: "目录",
@@ -459,6 +487,30 @@ const resources = {
         discardWorkflowChanges: "工作流还有未保存的修改。确定要放弃这些修改并关闭吗？",
       },
       errors: {
+        browser: {
+          webview: {
+            create_failed: "无法创建内置浏览器页面，请重试。",
+            unavailable: "当前环境无法使用内置浏览器。",
+            operation_failed: "内置浏览器操作失败，请重试。",
+          },
+          navigation: {
+            invalid: "无法打开该地址。",
+          },
+          download: {
+            unsupported: "该下载无法另存为。",
+            cancelled: "已取消保存。",
+          },
+          local_html: {
+            grant_failed: "无法授权打开该本地 HTML。",
+          },
+          page: {
+            limit_reached: "打开的网页过多，请先关闭部分标签。",
+          },
+          bookmark: {
+            limit_reached: "书签过多，请先删除部分书签。",
+            invalid: "无法将这个网站加入门户页。",
+          },
+        },
         "workflow-model-binding": {
           "binding-duplicate": "执行槽位 {{executionSlotId}} 存在重复模型绑定，请删除重复项后重试。",
         },
@@ -2060,6 +2112,15 @@ const resources = {
           appearance: "个性化",
           advanced: "高级",
         },
+        browser: {
+          title: "浏览器",
+          searchEngine: "搜索引擎",
+          searchEngineDescription: "地址栏输入的内容不是网址时，用所选搜索引擎搜索。",
+          openLocalLinks: "在内置浏览器中打开本地链接",
+          openLocalLinksDescription: "自动在浏览器标签页中打开 localhost、127.0.0.1 和 ::1 链接。",
+          openWebLinks: "在内置浏览器中打开网页链接",
+          openWebLinksDescription: "自动在浏览器标签页中打开普通 HTTP 和 HTTPS 链接。关闭时使用系统浏览器。",
+        },
         im: {
           title: "IM 远程干预与通知",
           enabled: "启用",
@@ -2958,6 +3019,34 @@ const resources = {
         browseWorkspaceFiles: "Browse and edit files in this workspace",
         browseRunDirectory: "Browse files from this conversation run",
         runDirectory: "Run directory",
+        browser: {
+          title: "Browser",
+          description: "Open web pages and local HTML in the app",
+          addressPlaceholder: "Search or enter a URL",
+          back: "Back",
+          forward: "Forward",
+          reload: "Reload",
+          stop: "Stop loading",
+          openInSystemBrowser: "Open in system browser",
+          switchToMobile: "Switch to mobile site",
+          switchToDesktop: "Switch to desktop site",
+          newPage: "New tab",
+          closePage: "Close tab",
+          closeOtherPages: "Close other tabs",
+          closePagesToTheLeft: "Close tabs to the left",
+          closePagesToTheRight: "Close tabs to the right",
+          closeAllPages: "Close all tabs",
+          allPages: "All tabs",
+          emptyTitle: "Open a page",
+          loading: "Loading page",
+          untitled: "New tab",
+          searchWeb: "Search the web",
+          addBookmark: "Add to start page",
+          removeBookmark: "Remove from start page",
+          openBlankPage: "Open a blank page",
+          deleteBookmark: "Remove bookmark",
+          removeVisit: "Remove from history",
+        },
         filesPanel: {
           file: "File",
           directory: "Directory",
@@ -3047,6 +3136,30 @@ const resources = {
         discardWorkflowChanges: "This workflow has unsaved changes. Discard them and close the tab?",
       },
       errors: {
+        browser: {
+          webview: {
+            create_failed: "The in-app browser page could not be created. Try again.",
+            unavailable: "The in-app browser is unavailable in this environment.",
+            operation_failed: "The in-app browser operation failed. Try again.",
+          },
+          navigation: {
+            invalid: "This address cannot be opened.",
+          },
+          download: {
+            unsupported: "This download cannot be saved.",
+            cancelled: "Save cancelled.",
+          },
+          local_html: {
+            grant_failed: "This local HTML file could not be authorized.",
+          },
+          page: {
+            limit_reached: "Too many pages are open. Close some tabs first.",
+          },
+          bookmark: {
+            limit_reached: "Too many bookmarks. Remove some first.",
+            invalid: "This site cannot be added to the start page.",
+          },
+        },
         "workflow-model-binding": {
           "binding-duplicate": "Execution slot {{executionSlotId}} has duplicate model bindings. Remove the duplicate and try again.",
         },
@@ -4696,6 +4809,15 @@ const resources = {
           general: "General",
           appearance: "Appearance",
           advanced: "Advanced",
+        },
+        browser: {
+          title: "Browser",
+          searchEngine: "Search engine",
+          searchEngineDescription: "Use the selected search engine when the address bar input is not a URL.",
+          openLocalLinks: "Open local links in the built-in browser",
+          openLocalLinksDescription: "Automatically open localhost, 127.0.0.1, and ::1 links in a browser tab.",
+          openWebLinks: "Open web links in the built-in browser",
+          openWebLinksDescription: "Automatically open HTTP and HTTPS links in a browser tab. When off, use the system browser.",
         },
         im: {
           title: "IM remote intervention and notifications",

@@ -10,9 +10,9 @@ use anyhow::Result;
 use gold_band::acp::client::PromptActivity;
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
-    AppearancePreference, DesktopAvailableUpdate, DesktopLanguage, DesktopUpdateBadgeState,
-    ManagedAgentConfig, ManagedAgentId, McpServerDiagnosticState, PersonalizationPreference,
-    RuntimeConfig, RuntimeLogLevel,
+    AppearancePreference, BrowserPreferences, DesktopAvailableUpdate, DesktopLanguage,
+    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, McpServerDiagnosticState,
+    PersonalizationPreference, RuntimeConfig, RuntimeLogLevel,
 };
 use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -49,6 +49,7 @@ pub struct PreferencesVm {
     pub language: DesktopLanguage,
     pub use_local_claude: bool,
     pub verbose_logging: bool,
+    pub browser: BrowserPreferences,
     pub avatars: AvatarPreferencesVm,
     pub wallpapers: WallpaperPreferencesVm,
 }
@@ -1208,6 +1209,7 @@ pub fn preferences_vm(
     language: DesktopLanguage,
     use_local_claude: bool,
     log_level: RuntimeLogLevel,
+    browser: BrowserPreferences,
     avatars: AvatarPreferencesVm,
     wallpapers: WallpaperPreferencesVm,
 ) -> PreferencesVm {
@@ -1217,6 +1219,7 @@ pub fn preferences_vm(
         language,
         use_local_claude,
         verbose_logging: matches!(log_level, RuntimeLogLevel::Debug | RuntimeLogLevel::Trace),
+        browser,
         avatars,
         wallpapers,
     }
@@ -1328,6 +1331,10 @@ pub fn bootstrap_vm(
 ) -> AppBootstrapVm {
     let client_version_string: String = client_version.into();
     let channel_config = current_channel_config();
+    let browser_preferences = app
+        .load_settings()
+        .map(|settings| settings.browser)
+        .unwrap_or_default();
     AppBootstrapVm {
         repo_root: app.paths.repo_root.to_string(),
         recent_workspaces,
@@ -1337,6 +1344,7 @@ pub fn bootstrap_vm(
             app.config.desktop_language,
             app.config.use_local_claude,
             app.config.log_level,
+            browser_preferences,
             load_resolved_avatar_preferences(
                 &app.paths.user_gold_band_dir(),
                 &app.config.personalization,

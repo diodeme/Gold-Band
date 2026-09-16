@@ -43,6 +43,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=GOLD_BAND_MULTICA_BASE_URL");
     println!("cargo:rerun-if-env-changed=GOLD_BAND_MULTICA_APP_URL");
     println!("cargo:rerun-if-changed=../configs/channels");
+    println!("cargo:rerun-if-changed=../configs/browser-bookmarks.json");
 
     let channel = env::var("GOLD_BAND_RELEASE_CHANNEL").unwrap_or_else(|_| "default".to_string());
     let manifest_dir =
@@ -134,6 +135,36 @@ fn main() {
     );
     let builtin_mcp_json = serde_json::to_string(&config.builtin_mcp_servers).unwrap_or_default();
     println!("cargo:rustc-env=GOLD_BAND_BUILTIN_MCP_SERVERS={builtin_mcp_json}");
+    let bookmarks_path = manifest_dir
+        .parent()
+        .expect("src-tauri has a parent directory")
+        .join("configs")
+        .join("browser-bookmarks.json");
+    let bookmarks_text = fs::read_to_string(&bookmarks_path).unwrap_or_else(|error| {
+        panic!(
+            "failed to read browser bookmarks catalog {}: {error}",
+            bookmarks_path.display()
+        )
+    });
+    let bookmarks_catalog: serde_json::Value =
+        serde_json::from_str(&bookmarks_text).unwrap_or_else(|error| {
+            panic!(
+                "failed to parse browser bookmarks catalog {}: {error}",
+                bookmarks_path.display()
+            )
+        });
+    let channel_bookmarks = bookmarks_catalog
+        .get(&channel)
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    if !channel_bookmarks.is_array() {
+        panic!(
+            "browser bookmarks catalog {} must be an array",
+            channel
+        );
+    }
+    let bookmarks_json = serde_json::to_string(&channel_bookmarks).unwrap_or_else(|_| "[]".into());
+    println!("cargo:rustc-env=GOLD_BAND_BROWSER_BOOKMARKS={bookmarks_json}");
 
     println!(
         "cargo:rustc-env=GOLD_BAND_MULTICA_ENABLED={}",

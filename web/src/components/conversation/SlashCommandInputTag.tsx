@@ -1,7 +1,11 @@
-import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import {
+  COMPOSER_LEADING_ADORNMENT_CHIP_CLASS_NAME,
+  USER_MESSAGE_META_CHIP_CLASS_NAME,
+} from '@/lib/conversation-composer-layout';
 import { cn } from '@/lib/utils';
-import type { SlashCatalogItemKind } from '@/lib/slash-command';
+import { slashTagDisplayName, type SlashCatalogItemKind } from '@/lib/slash-command';
 
 interface SlashCommandInputTagProps {
   prefix: string;
@@ -10,6 +14,7 @@ interface SlashCommandInputTagProps {
   kind?: SlashCatalogItemKind;
   iconSrc?: string | null;
   iconClassName?: string;
+  surface?: 'composer' | 'meta';
 }
 
 export function SlashCommandInputTag({
@@ -19,26 +24,27 @@ export function SlashCommandInputTag({
   kind = 'command',
   iconSrc,
   iconClassName,
+  surface = 'composer',
 }: SlashCommandInputTagProps) {
   const tooltipText = kind === 'role' ? (content || description) : description;
   const tag = (
-    <Badge asChild variant="secondary">
-      <button
-        type="button"
-        data-slot="slash-command-input-tag"
-        data-slash-tag-kind={kind}
-        className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border/70 bg-secondary/85 px-2 py-1 text-xs font-medium leading-4 text-secondary-foreground shadow-xs"
-      >
-        {iconSrc ? (
-          <img
-            src={iconSrc}
-            alt=""
-            className={cn('size-3 shrink-0 object-contain', iconClassName)}
-          />
-        ) : null}
-        {prefix}
-      </button>
-    </Badge>
+    <Button
+      type="button"
+      variant="outline"
+      size="xs"
+      data-slot="slash-command-input-tag"
+      data-slash-tag-kind={kind}
+      className={surface === 'meta' ? USER_MESSAGE_META_CHIP_CLASS_NAME : COMPOSER_LEADING_ADORNMENT_CHIP_CLASS_NAME}
+    >
+      {iconSrc ? (
+        <img
+          src={iconSrc}
+          alt=""
+          className={cn('size-3.5 shrink-0 object-contain', iconClassName)}
+        />
+      ) : null}
+      {slashTagDisplayName(prefix)}
+    </Button>
   );
 
   if (!tooltipText) return tag;

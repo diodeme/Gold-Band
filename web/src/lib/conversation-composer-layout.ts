@@ -4,6 +4,15 @@ const COMPOSER_CONFIG_TRIGGER_SIZE_CLASS_NAME = 'h-8 px-2.5';
 const COMPOSER_MODE_CONTROL_HEIGHT_CLASS_NAME = 'h-7';
 const COMPOSER_TEXTAREA_BASE_CLASS_NAME = 'min-h-12 py-2 text-sm leading-6 text-foreground placeholder:text-muted-foreground';
 
+export const COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME =
+  'absolute z-10 inline-flex h-6 items-center';
+
+export const COMPOSER_LEADING_ADORNMENT_CHIP_CLASS_NAME =
+  'h-6 rounded-full border-border/70 bg-background/80 px-2 text-xs font-normal leading-none text-muted-foreground shadow-none hover:bg-muted/50 hover:text-foreground';
+
+export const USER_MESSAGE_META_CHIP_CLASS_NAME =
+  'h-7 rounded-full border-border/70 bg-background/80 px-2.5 text-xs font-normal leading-none text-muted-foreground shadow-none hover:bg-muted/50 hover:text-foreground';
+
 export const ACP_SESSION_COMPOSER_BORDER_WIDTH_PX = 1;
 
 export const ACP_SESSION_COMPOSER_BORDER_STYLE = {

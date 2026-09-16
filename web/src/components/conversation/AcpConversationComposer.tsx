@@ -223,8 +223,6 @@ function AcpConversationComposerContent({
         onActiveIndexChange={onSlashMenuActiveIndexChange}
         onDismiss={onSlashMenuDismiss}
         onSelect={onSlashMenuSelect}
-        agentIconSrc={agentIconSrc}
-        agentIconClassName={agentIconClassName}
       >
         <PromptInput
           value={history.value}

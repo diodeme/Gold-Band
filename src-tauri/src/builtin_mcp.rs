@@ -2,7 +2,8 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use tracing::{info, warn};
 
-use gold_band::config::McpServerState;
+use gold_band::config::{McpServerConfig, McpTransportConfig};
+use gold_band::mcp::ManagedMcpReconcile;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,121 +47,71 @@ enum BuiltinMcpTransportDef {
 }
 
 impl BuiltinMcpServerDef {
-    fn to_mcp_json(&self) -> String {
-        let id = self.id.as_str();
-        let name = self.name.as_str();
-        let mut inner = match &self.transport {
-            BuiltinMcpTransportDef::Stdio { command, args, env } => {
-                serde_json::json!({
-                    "command": command,
-                    "args": args,
-                    "env": env,
-                    "name": name,
-                })
-            }
-            BuiltinMcpTransportDef::Http { url, headers } => {
-                serde_json::json!({
-                    "type": "http",
-                    "url": url,
-                    "headers": headers,
-                    "name": name,
-                })
-            }
-            BuiltinMcpTransportDef::Sse { url, headers } => {
-                serde_json::json!({
-                    "type": "sse",
-                    "url": url,
-                    "headers": headers,
-                    "name": name,
-                })
-            }
+    fn to_config(&self) -> McpServerConfig {
+        let transport = match &self.transport {
+            BuiltinMcpTransportDef::Stdio { command, args, env } => McpTransportConfig::Stdio {
+                command: command.clone(),
+                args: args.clone(),
+                env: env.clone(),
+            },
+            BuiltinMcpTransportDef::Http { url, headers } => McpTransportConfig::Http {
+                url: url.clone(),
+                headers: headers.clone(),
+                oauth: None,
+            },
+            BuiltinMcpTransportDef::Sse { url, headers } => McpTransportConfig::Sse {
+                url: url.clone(),
+                headers: headers.clone(),
+            },
         };
-        if let Some(ref msg) = self.help_message {
-            inner["helpMessage"] = serde_json::json!(msg);
+        McpServerConfig {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            enabled: self.enabled,
+            transport,
+            managed: true,
+            help_message: self.help_message.clone(),
         }
-        let mut map = serde_json::Map::new();
-        map.insert(id.to_owned(), inner);
-        serde_json::to_string(&map).unwrap()
     }
 }
 
 pub fn inject_builtin_mcp_servers(state: &crate::state::DesktopState) {
     let channel_config = crate::channel::current_channel_config();
-    let builtin_servers: Vec<BuiltinMcpServerDef> =
+    let channel_servers: Vec<BuiltinMcpServerDef> =
         serde_json::from_str(channel_config.builtin_mcp_servers_json).unwrap_or_default();
 
-    if builtin_servers.is_empty() {
-        return;
-    }
-
     let Ok(ctx) = state.context() else { return };
     let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root);
     let mcp_mgr = gold_band::mcp::McpManager::new(paths.user_settings_file());
-
-    let Ok(existing) = mcp_mgr.list() else { return };
-    let existing_managed: std::collections::HashSet<&str> = existing
+    let mut builtin_servers = channel_servers
         .iter()
-        .filter(|s| s.config.managed)
-        .map(|s| s.config.id.as_str())
-        .collect();
+        .map(|server| (server.to_config(), server.enabled))
+        .collect::<Vec<_>>();
+    let executable = match std::env::current_exe() {
+        Ok(path) => path.to_string_lossy().into_owned(),
+        Err(error) => {
+            warn!(%error, "failed to resolve executable for builtin memory MCP");
+            return;
+        }
+    };
+    builtin_servers.push((
+        gold_band::memory::mcp::managed_server_config(executable),
+        true,
+    ));
 
-    for server in &builtin_servers {
-        let sid = server.id.as_str();
-        let json = server.to_mcp_json();
-        if existing_managed.contains(sid) {
-            // Managed server already exists — update its config (name/transport may have changed)
-            match mcp_mgr.add_managed(&json, server.enabled) {
-                Ok(_) => info!(server_id = %sid, "synced builtin MCP server config"),
-                Err(e) => warn!(server_id = %sid, error = %e, "failed to sync builtin MCP server"),
+    for (server, default_enabled) in builtin_servers {
+        let sid = server.id.clone();
+        match mcp_mgr.reconcile_managed_config(server, default_enabled) {
+            Ok(ManagedMcpReconcile::Inserted) => {
+                info!(server_id = %sid, "injected builtin MCP server")
             }
-        } else {
-            // Not yet injected — add as new managed server
-            match mcp_mgr.add_managed(&json, server.enabled) {
-                Ok(_) => info!(server_id = %sid, "injected builtin MCP server"),
-                Err(e) => {
-                    warn!(server_id = %sid, error = %e, "failed to inject builtin MCP server")
-                }
+            Ok(ManagedMcpReconcile::Updated) => {
+                info!(server_id = %sid, "updated builtin MCP server config")
+            }
+            Ok(ManagedMcpReconcile::Unchanged) => {}
+            Err(error) => {
+                warn!(server_id = %sid, %error, "failed to reconcile builtin MCP server")
             }
         }
     }
-}
-
-/// 启动后台线程对所有已启用的 MCP 服务器执行一次健康检查，结果写入共享缓存。
-/// 这样客户端启动后 MCP 服务的可用状态即被预探测，进入 MCP 管理页无需手动诊断。
-/// 健康检查为阻塞式网络/进程 I/O，放在独立线程避免卡住主线程。
-pub fn refresh_all_mcp_health(state: &crate::state::DesktopState) {
-    let Ok(ctx) = state.context() else { return };
-    let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root);
-    let mcp_mgr = gold_band::mcp::McpManager::new(paths.user_settings_file());
-    let Ok(servers) = mcp_mgr.list() else { return };
-
-    for s in servers {
-        if !s.config.enabled {
-            continue;
-        }
-        let id = s.config.id.clone();
-        let cache_state = match mcp_mgr.check_health(&id) {
-            Ok(result) => match result.status.as_str() {
-                "healthy" => McpServerState::Running {
-                    tools: result.tools.clone(),
-                },
-                "auth_required" => McpServerState::AuthRequired {
-                    auth_url: result.auth_url.clone(),
-                },
-                _ => McpServerState::Error {
-                    message: result
-                        .message
-                        .clone()
-                        .unwrap_or_else(|| "unknown error".into()),
-                },
-            },
-            Err(e) => McpServerState::Error {
-                message: e.to_string(),
-            },
-        };
-        if let Err(e) = state.record_mcp_health(id.clone(), cache_state) {
-            warn!(server_id = %id, error = %e, "failed to record mcp health");
-        }
-    }
-    info!("startup mcp health check completed");
 }

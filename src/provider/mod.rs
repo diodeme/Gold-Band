@@ -2209,15 +2209,17 @@ fn non_empty_artifact_text(value: &str) -> Option<String> {
 pub fn prepare_prompt_bundle(req: &mut WorkerInvocation) -> Result<PromptBundle> {
     let memory = crate::memory::prepare_invocation(req)?;
     let mut prompt = render_prompt_bundle(req)?;
-    prompt.system_prompt.push_str("\n\n");
-    prompt
-        .system_prompt
-        .push_str(crate::memory::system_rules(req.runtime_context.language));
-    prompt.user_prompt = format!(
-        "{}\n\n{}",
-        gold_band_hidden_block("Gold Band current memory", &memory),
-        prompt.user_prompt
-    );
+    if let Some(memory) = memory {
+        prompt.system_prompt.push_str("\n\n");
+        prompt
+            .system_prompt
+            .push_str(crate::memory::system_rules(req.runtime_context.language));
+        prompt.user_prompt = format!(
+            "{}\n\n{}",
+            gold_band_hidden_block("Gold Band current memory", &memory),
+            prompt.user_prompt
+        );
+    }
     Ok(prompt)
 }
 

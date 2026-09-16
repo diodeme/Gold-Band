@@ -686,7 +686,7 @@ pub struct DesktopAvailableUpdate {
 
 // ── MCP Server Configuration ──
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerConfig {
     pub id: String,
@@ -706,7 +706,7 @@ fn default_enabled() -> bool {
 }
 
 /// 对标 Zed OAuthClientSettings
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OAuthClientConfig {
     pub client_id: String,
@@ -714,7 +714,7 @@ pub struct OAuthClientConfig {
     pub client_secret: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "transport", rename_all = "camelCase")]
 pub enum McpTransportConfig {
     Stdio {
@@ -752,25 +752,29 @@ pub struct McpServerHealthResult {
     /// 对标 Zed ClientSecretRequired — 需要输入 client_secret
     #[serde(skip_serializing_if = "Option::is_none")]
     pub needs_client_secret: Option<bool>,
-    /// tools/list 发现的工具列表（仅 Running 状态时填充）
+    /// tools/list 发现的工具列表（仅配置诊断通过时填充）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolInfo>,
 }
 
-/// MCP 服务器状态机（对标 Zed ContextServerState）
+/// MCP 配置最近一次显式诊断的瞬时状态。
+///
+/// stdio 诊断进程会在握手完成后退出，因此这里不能表达正式会话实例的运行状态；
+/// 正式连接由 ACP Agent 在 session setup 中拥有。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum McpServerState {
-    /// 正在启动（握手进行中）
-    Starting,
-    /// 运行中，持有已发现的工具列表
-    Running { tools: Vec<ToolInfo> },
-    /// 已停止（用户禁用或手动停止）
-    Stopped,
-    /// 启动失败
-    Error { message: String },
+pub enum McpServerDiagnosticState {
+    Checking,
+    Passed {
+        tools: Vec<ToolInfo>,
+    },
+    Failed {
+        message: String,
+    },
     /// 需要 OAuth 认证
-    AuthRequired { auth_url: Option<String> },
+    AuthRequired {
+        auth_url: Option<String>,
+    },
 }
 
 /// MCP 工具信息（从 tools/list 响应解析）

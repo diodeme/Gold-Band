@@ -9,7 +9,15 @@ export interface MemorySnapshot {
   effective: (MemoryEntry & { scope: 'workspace' | 'task' })[];
   limits: { entries: number; key: number; value: number; desc: number; effectiveBytes: number };
 }
-export interface MemoryError { code: string; params?: { path?: string; latest?: MemoryRecord | null; key?: string } }
+export interface MemoryError {
+  code: string;
+  params?: {
+    path?: string;
+    latest?: MemoryRecord | null;
+    key?: string;
+    reason?: 'revision_mismatch' | 'target_exists';
+  };
+}
 export function memoryError(error: unknown): MemoryError {
   return error && typeof error === 'object' && 'code' in error ? error as MemoryError : { code: 'memory.io' };
 }

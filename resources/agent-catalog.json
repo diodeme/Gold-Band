@@ -3,7 +3,7 @@
   "source": {
     "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
     "registryVersion": "1.0.0",
-    "fetchedAt": "2026-09-15T18:27:45.651Z"
+    "fetchedAt": "2026-09-16T07:01:58.739Z"
   },
   "agents": [
     {
@@ -30,7 +30,7 @@
     {
       "id": "codex-acp",
       "label": "Codex",
-      "version": "1.11.0",
+      "version": "1.12.0",
       "description": "ACP adapter for OpenAI's coding assistant",
       "repository": "https://github.com/agentclientprotocol/codex-acp",
       "website": null,
@@ -39,7 +39,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@agentclientprotocol/codex-acp@1.11.0"
+        "@agentclientprotocol/codex-acp@1.12.0"
       ],
       "env": {},
       "primaryAgentDir": ".codex",

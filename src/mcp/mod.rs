@@ -3,15 +3,14 @@
 //
 // 职责：
 //   1. MCP 服务器配置持久化（settings.json ↔ McpServerConfig[]）
-//   2. 添加/保存时的 MCP 协议握手验证（对标 Zed server.start()）
+//   2. 按用户操作执行 MCP 协议诊断（对标常见客户端的手动检查）
 //   3. enabled 开关管理（对标 Zed maintain_servers 的 partition 逻辑）
 //
 // 不做：
 //   - 长期进程管理（Agent 通过 ACP mcpServers 自行管理）
 //   - SettingsStore 变更监听（Gold-Band 用 Tauri commands 手动触发）
 
-use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::Stdio;
 use std::sync::mpsc;
@@ -19,12 +18,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use camino::Utf8PathBuf;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::config::{
-    McpServerConfig, McpServerHealthResult, McpServerState, McpTransportConfig, OAuthClientConfig,
-    SettingsConfig,
+    McpServerConfig, McpServerHealthResult, McpTransportConfig, OAuthClientConfig, SettingsConfig,
 };
 use crate::process::{ManagedProcessGroup, PROCESS_GROUP_TERMINATION_GRACE, background_command};
 use crate::storage::write_json;
@@ -42,18 +40,13 @@ const ACCEPT_STREAMABLE: &str = "application/json, text/event-stream";
 /// 对标 Zed ContextServerStore — MCP 服务器的中枢管理器
 pub struct McpManager {
     settings_path: Utf8PathBuf,
-    /// 对标 Zed ContextServerState 状态机 — 缓存每个服务器的运行时状态
-    state_cache: RefCell<HashMap<String, McpServerState>>,
 }
 
-/// 对标 Zed ServerStatusChangedEvent
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct McpServerWithStatus {
-    #[serde(flatten)]
-    pub config: McpServerConfig,
-    pub health_status: Option<String>,
-    pub health_message: Option<String>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedMcpReconcile {
+    Inserted,
+    Updated,
+    Unchanged,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -78,41 +71,13 @@ struct McpJsonEntry {
 
 impl McpManager {
     pub fn new(settings_path: Utf8PathBuf) -> Self {
-        Self {
-            settings_path,
-            state_cache: RefCell::new(HashMap::new()),
-        }
+        Self { settings_path }
     }
 
     // ── 对标 Zed ContextServerStore::configured_server_ids ──
 
-    pub fn list(&self) -> Result<Vec<McpServerWithStatus>> {
-        let settings = self.load_settings()?;
-        let cache = self.state_cache.borrow();
-        Ok(settings
-            .context_servers
-            .unwrap_or_default()
-            .into_iter()
-            .map(|config| {
-                let (health_status, health_message) = match cache.get(&config.id) {
-                    Some(McpServerState::Running { .. }) => (Some("healthy".to_string()), None),
-                    Some(McpServerState::Error { message }) => {
-                        (Some("unhealthy".to_string()), Some(message.clone()))
-                    }
-                    Some(McpServerState::AuthRequired { auth_url }) => {
-                        (Some("auth_required".to_string()), auth_url.clone())
-                    }
-                    Some(McpServerState::Stopped) => (Some("stopped".to_string()), None),
-                    Some(McpServerState::Starting) => (Some("checking".to_string()), None),
-                    None => (None, None),
-                };
-                McpServerWithStatus {
-                    config,
-                    health_status,
-                    health_message,
-                }
-            })
-            .collect())
+    pub fn list(&self) -> Result<Vec<McpServerConfig>> {
+        Ok(self.load_settings()?.context_servers.unwrap_or_default())
     }
 
     pub fn enabled_servers(&self) -> Result<Vec<McpServerConfig>> {
@@ -127,14 +92,8 @@ impl McpManager {
 
     // ── 对标 Zed update_settings_file + maintain_servers ──
 
-    /// 对标 Zed confirm() 中的完整流程：
-    ///   1. parse JSON
-    ///   2. write settings.json
-    ///   3. MCP 协议握手验证（对标 run_server + wait_for_context_server）
-    pub fn add(
-        &self,
-        json_content: &str,
-    ) -> Result<(McpServerWithStatus, Vec<McpServerWithStatus>)> {
+    /// 解析并持久化用户定义。协议诊断由显式健康检查入口负责。
+    pub fn add(&self, json_content: &str) -> Result<Vec<McpServerConfig>> {
         let (id, transport, display_name, help_message) = parse_mcp_json(json_content)?;
         let config = McpServerConfig {
             name: display_name.unwrap_or_else(|| id.clone()),
@@ -151,62 +110,63 @@ impl McpManager {
         settings.context_servers = Some(servers);
         self.save_settings(&settings)?;
 
-        let status = self.verify_server(&config);
-        let list = self.list()?;
-        Ok((
-            McpServerWithStatus {
-                config,
-                health_status: status.as_ref().ok().map(|_| "healthy".into()),
-                health_message: status.as_ref().ok().and_then(|r| r.message.clone()),
-            },
-            list,
-        ))
+        self.list()
     }
 
-    /// 对标 add()，但标记为 managed（托管），用户不可删除
-    pub fn add_managed(
+    /// 将编译期内置定义收敛到 settings，同时保留用户的 enabled 选择。
+    /// 配置未变化时不写盘、不探活，避免每次应用启动重复 I/O 和外部进程握手。
+    pub fn reconcile_managed(
         &self,
         json_content: &str,
         default_enabled: bool,
-    ) -> Result<(McpServerWithStatus, Vec<McpServerWithStatus>)> {
+    ) -> Result<ManagedMcpReconcile> {
         let (id, transport, display_name, help_message) = parse_mcp_json(json_content)?;
-        let mut settings = self.load_settings()?;
-        let mut servers = settings.context_servers.unwrap_or_default();
-        let enabled = servers
-            .iter()
-            .find(|s| s.id == id && s.managed)
-            .map(|s| s.enabled)
-            .unwrap_or(default_enabled);
-        let config = McpServerConfig {
-            name: display_name.unwrap_or_else(|| id.clone()),
-            id,
-            enabled,
-            transport,
-            managed: true,
-            help_message,
-        };
-        servers.retain(|s| s.id != config.id);
-        servers.push(config.clone());
-        settings.context_servers = Some(servers);
-        self.save_settings(&settings)?;
-
-        let status = self.verify_server(&config);
-        let list = self.list()?;
-        Ok((
-            McpServerWithStatus {
-                config,
-                health_status: status.as_ref().ok().map(|_| "healthy".into()),
-                health_message: status.as_ref().ok().and_then(|r| r.message.clone()),
+        self.reconcile_managed_config(
+            McpServerConfig {
+                name: display_name.unwrap_or_else(|| id.clone()),
+                id,
+                enabled: default_enabled,
+                transport,
+                managed: true,
+                help_message,
             },
-            list,
-        ))
+            default_enabled,
+        )
     }
 
-    pub fn update(
+    pub fn reconcile_managed_config(
         &self,
-        id: &str,
-        json_content: &str,
-    ) -> Result<(McpServerWithStatus, Vec<McpServerWithStatus>)> {
+        mut config: McpServerConfig,
+        default_enabled: bool,
+    ) -> Result<ManagedMcpReconcile> {
+        let mut settings = self.load_settings()?;
+        let mut servers = settings.context_servers.unwrap_or_default();
+        config.enabled = servers
+            .iter()
+            .find(|s| s.id == config.id && s.managed)
+            .map(|s| s.enabled)
+            .unwrap_or(default_enabled);
+        config.managed = true;
+        let outcome = match servers.iter().position(|server| server.id == config.id) {
+            Some(index) if servers[index] == config => ManagedMcpReconcile::Unchanged,
+            Some(index) => {
+                servers[index] = config;
+                ManagedMcpReconcile::Updated
+            }
+            None => {
+                servers.push(config);
+                ManagedMcpReconcile::Inserted
+            }
+        };
+        if outcome == ManagedMcpReconcile::Unchanged {
+            return Ok(outcome);
+        }
+        settings.context_servers = Some(servers);
+        self.save_settings(&settings)?;
+        Ok(outcome)
+    }
+
+    pub fn update(&self, id: &str, json_content: &str) -> Result<Vec<McpServerConfig>> {
         let settings = self.load_settings()?;
         if let Some(s) = settings
             .context_servers
@@ -234,19 +194,10 @@ impl McpManager {
         settings.context_servers = Some(servers);
         self.save_settings(&settings)?;
 
-        let status = self.verify_server(&config);
-        let list = self.list()?;
-        Ok((
-            McpServerWithStatus {
-                config,
-                health_status: status.as_ref().ok().map(|_| "healthy".into()),
-                health_message: status.as_ref().ok().and_then(|r| r.message.clone()),
-            },
-            list,
-        ))
+        self.list()
     }
 
-    pub fn delete(&self, id: &str) -> Result<Vec<McpServerWithStatus>> {
+    pub fn delete(&self, id: &str) -> Result<Vec<McpServerConfig>> {
         let mut settings = self.load_settings()?;
         // Check managed before mutation — borrow then move
         if let Some(s) = settings
@@ -266,7 +217,7 @@ impl McpManager {
         self.list()
     }
 
-    pub fn toggle(&self, id: &str, enabled: bool) -> Result<Vec<McpServerWithStatus>> {
+    pub fn toggle(&self, id: &str, enabled: bool) -> Result<Vec<McpServerConfig>> {
         let mut settings = self.load_settings()?;
         let mut servers = settings.context_servers.unwrap_or_default();
         if let Some(s) = servers.iter_mut().find(|s| s.id == id) {
@@ -286,37 +237,12 @@ impl McpManager {
             .as_ref()
             .and_then(|servers| servers.iter().find(|s| s.id == id))
             .with_context(|| format!("MCP server `{id}` not found"))?;
-        let result = self.verify_server(config)?;
-        // 更新状态缓存
-        let mut cache = self.state_cache.borrow_mut();
-        let new_state = if result.status == "healthy" {
-            McpServerState::Running {
-                tools: result.tools.clone(),
-            }
-        } else if result.status == "auth_required" {
-            McpServerState::AuthRequired {
-                auth_url: result.auth_url.clone(),
-            }
-        } else {
-            McpServerState::Error {
-                message: result
-                    .message
-                    .clone()
-                    .unwrap_or_else(|| "unknown error".into()),
-            }
-        };
-        cache.insert(id.to_string(), new_state);
-        Ok(result)
+        self.verify_server(config)
     }
 
     /// 手动刷新指定服务器的健康状态（对标 Zed wait_for_context_server）
     pub fn refresh_health(&self, id: &str) -> Result<McpServerHealthResult> {
         self.check_health(id)
-    }
-
-    /// 清除指定服务器的缓存状态（对标 Zed 的 invalidate）
-    pub fn invalidate_health(&self, id: &str) {
-        self.state_cache.borrow_mut().remove(id);
     }
 
     /// 拉取 MCP 服务器的工具列表（tools/list）
@@ -534,61 +460,14 @@ fn verify_stdio_server(
     args: &[String],
     env: &BTreeMap<String, String>,
 ) -> Result<McpServerHealthResult> {
-    let mut cmd = background_command(command);
-    cmd.args(args);
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
-    cmd.stdin(Stdio::piped());
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-
-    let mut child = ManagedProcessGroup::spawn(&mut cmd)
-        .with_context(|| format!("failed to start command: {command}"))?;
-
-    let mut stdin = child.take_stdin().context("failed to capture stdin")?;
-    let stdout = child.take_stdout().context("failed to capture stdout")?;
-
-    // 对标 Zed: 发送 MCP initialize 请求
-    let request_line = serde_json::to_string(&build_initialize_request())? + "\n";
-    stdin
-        .write_all(request_line.as_bytes())
-        .context("failed to send initialize request")?;
-    stdin.flush().context("failed to flush stdin")?;
-    drop(stdin);
-
-    // 对标 Zed: 读取响应（带 10s 超时保护 + 多行处理）
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            match line {
-                Ok(text) => {
-                    let trimmed = text.trim().to_string();
-                    if !trimmed.is_empty() {
-                        let _ = tx.send(Ok(trimmed));
-                        return;
-                    }
-                }
-                Err(e) => {
-                    let _ = tx.send(Err(e));
-                    return;
-                }
-            }
-        }
-        let _ = tx.send(Err(std::io::Error::new(
-            std::io::ErrorKind::UnexpectedEof,
-            "server closed stdout without responding",
-        )));
-    });
-    let response_line = rx
-        .recv_timeout(Duration::from_secs(10))
-        .context("health check timed out")?
-        .context("failed to read server response")?;
-
-    let _ = child.terminate(PROCESS_GROUP_TERMINATION_GRACE);
-
-    parse_initialize_response(&response_line)
+    let tools = fetch_stdio_tools(command, args, env)?;
+    Ok(McpServerHealthResult {
+        status: "healthy".into(),
+        message: None,
+        auth_url: None,
+        needs_client_secret: None,
+        tools,
+    })
 }
 
 /// streamable HTTP 单次请求的返回。
@@ -1418,8 +1297,8 @@ mod tests {
         write_json(&settings_path, &initial).unwrap();
 
         let manager = McpManager::new(settings_path.clone());
-        manager
-            .add_managed(
+        let outcome = manager
+            .reconcile_managed(
                 r#"{
                   "managed-code-graph": {
                     "command": "missing-new-command",
@@ -1430,6 +1309,7 @@ mod tests {
                 true,
             )
             .unwrap();
+        assert_eq!(outcome, ManagedMcpReconcile::Updated);
 
         let settings: SettingsConfig = read_json(&settings_path).unwrap();
         let server = settings
@@ -1459,8 +1339,8 @@ mod tests {
         let settings_path = settings_path(&temp);
         let manager = McpManager::new(settings_path.clone());
 
-        manager
-            .add_managed(
+        let inserted = manager
+            .reconcile_managed(
                 r#"{
                   "disabled-by-channel": {
                     "command": "missing-command",
@@ -1470,6 +1350,20 @@ mod tests {
                 false,
             )
             .unwrap();
+        assert_eq!(inserted, ManagedMcpReconcile::Inserted);
+
+        let unchanged = manager
+            .reconcile_managed(
+                r#"{
+                  "disabled-by-channel": {
+                    "command": "missing-command",
+                    "name": "Disabled By Channel"
+                  }
+                }"#,
+                true,
+            )
+            .unwrap();
+        assert_eq!(unchanged, ManagedMcpReconcile::Unchanged);
 
         let settings: SettingsConfig = read_json(&settings_path).unwrap();
         let server = settings.context_servers.unwrap().pop().unwrap();

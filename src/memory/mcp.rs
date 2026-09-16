@@ -6,11 +6,12 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 use super::{MemoryService, WriteCommand};
 
 pub const SERVER_NAME: &str = "gold-band-memory";
-const FLAG: &str = "--gold-band-memory-mcp";
+pub const FLAG: &str = "--gold-band-memory-mcp";
 
 #[derive(Serialize, Deserialize)]
 struct Binding {
@@ -21,21 +22,59 @@ struct Binding {
     language: crate::config::DesktopLanguage,
 }
 
-pub fn server_config(
+pub fn managed_server_config(command: String) -> crate::config::McpServerConfig {
+    crate::config::McpServerConfig {
+        id: SERVER_NAME.into(),
+        name: SERVER_NAME.into(),
+        enabled: true,
+        transport: crate::config::McpTransportConfig::Stdio {
+            command,
+            args: vec![FLAG.into()],
+            env: BTreeMap::new(),
+        },
+        managed: true,
+        help_message: None,
+    }
+}
+
+fn binding(
     paths: &crate::storage::GoldBandPaths,
     task_id: &str,
     language: crate::config::DesktopLanguage,
-) -> anyhow::Result<Value> {
-    let binding = Binding {
+) -> Binding {
+    Binding {
         repo_root: paths.repo_root.clone(),
         data_root: paths.user_gold_band_root.clone(),
         project_id: paths.project_id.clone(),
         task_id: task_id.into(),
         language,
-    };
-    Ok(
-        json!({"name": SERVER_NAME, "command": std::env::current_exe()?, "args": [FLAG, serde_json::to_string(&binding)?], "env": []}),
-    )
+    }
+}
+
+pub fn bind_session_config(
+    base: &Value,
+    paths: &crate::storage::GoldBandPaths,
+    task_id: &str,
+    language: crate::config::DesktopLanguage,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        base.get("name").and_then(Value::as_str) == Some(SERVER_NAME),
+        "memory.mcp-definition"
+    );
+    let args = base
+        .get("args")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("memory.mcp-definition"))?;
+    anyhow::ensure!(
+        (args.len() == 1 || args.len() == 2) && args[0].as_str() == Some(FLAG),
+        "memory.mcp-definition"
+    );
+    let mut resolved = base.clone();
+    resolved["args"] = json!([
+        FLAG,
+        serde_json::to_string(&binding(paths, task_id, language))?
+    ]);
+    Ok(resolved)
 }
 
 pub fn requested() -> bool {
@@ -43,21 +82,26 @@ pub fn requested() -> bool {
 }
 
 pub async fn run() -> anyhow::Result<()> {
-    let binding: Binding = serde_json::from_str(
-        &std::env::args()
-            .nth(2)
-            .ok_or_else(|| anyhow::anyhow!("memory.locator"))?,
-    )?;
-    let mut paths = crate::storage::GoldBandPaths::new(binding.repo_root);
-    // This launch configuration is supplied by the application, never by tool arguments.
-    paths.user_gold_band_root = binding.data_root;
-    paths.project_id = binding.project_id.clone();
-    paths.runtime_root = paths
-        .user_gold_band_root
-        .join("projects")
-        .join(&binding.project_id);
-    let service = MemoryService::new(paths, &binding.project_id, Some(binding.task_id))?;
-    MemoryMcp(service, binding.language)
+    let binding = std::env::args()
+        .nth(2)
+        .map(|value| serde_json::from_str::<Binding>(&value))
+        .transpose()?;
+    let (service, language) = match binding {
+        Some(binding) => {
+            let mut paths = crate::storage::GoldBandPaths::new(binding.repo_root);
+            // This launch configuration is supplied by the application, never by tool arguments.
+            paths.user_gold_band_root = binding.data_root;
+            paths.project_id = binding.project_id.clone();
+            paths.runtime_root = paths
+                .user_gold_band_root
+                .join("projects")
+                .join(&binding.project_id);
+            let service = MemoryService::new(paths, &binding.project_id, Some(binding.task_id))?;
+            (Some(service), binding.language)
+        }
+        None => (None, crate::config::DesktopLanguage::En),
+    };
+    MemoryMcp { service, language }
         .serve(rmcp::transport::stdio())
         .await?
         .waiting()
@@ -66,7 +110,10 @@ pub async fn run() -> anyhow::Result<()> {
 }
 
 #[derive(Clone)]
-struct MemoryMcp(MemoryService, crate::config::DesktopLanguage);
+struct MemoryMcp {
+    service: Option<MemoryService>,
+    language: crate::config::DesktopLanguage,
+}
 
 fn tools(language: crate::config::DesktopLanguage) -> Vec<Tool> {
     let descriptions: Value = serde_json::from_str(match language {
@@ -91,7 +138,9 @@ fn tools(language: crate::config::DesktopLanguage) -> Vec<Tool> {
 
 impl ServerHandler for MemoryMcp {
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        tools(self.1).into_iter().find(|tool| tool.name == name)
+        tools(self.language)
+            .into_iter()
+            .find(|tool| tool.name == name)
     }
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::default();
@@ -105,7 +154,7 @@ impl ServerHandler for MemoryMcp {
         _: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         Ok(ListToolsResult {
-            tools: tools(self.1),
+            tools: tools(self.language),
             ..Default::default()
         })
     }
@@ -115,7 +164,13 @@ impl ServerHandler for MemoryMcp {
         request: CallToolRequestParams,
         _: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let service = self.0.clone();
+        let Some(service) = self.service.clone() else {
+            let error = super::error("memory.context-required", json!({}));
+            return Ok(CallToolResult::error(vec![ContentBlock::text(
+                serde_json::to_string(&error).unwrap(),
+            )])
+            .into());
+        };
         let result = tokio::task::spawn_blocking(move || match request.name.as_ref() {
             "memory_read" => service.read(),
             "memory_write" => {

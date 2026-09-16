@@ -344,8 +344,8 @@ pub struct DesktopState {
         Arc<Mutex<std::collections::HashMap<String, ExecutionObservabilityState>>>,
     active_metric_turns: Arc<Mutex<std::collections::HashMap<String, ActiveMetricTurn>>>,
     runtime_recovery: Arc<RuntimeRecoveryCoordinator>,
-    /// MCP 服务器健康状态缓存（启动后台线程 + 手动诊断共同写入，列表读取）。
-    mcp_health: Mutex<BTreeMap<String, gold_band::config::McpServerState>>,
+    /// MCP 最近一次显式配置诊断结果；不代表正式会话进程状态。
+    mcp_health: Mutex<BTreeMap<String, gold_band::config::McpServerDiagnosticState>>,
     /// 进程级心跳上报器（由生命周期总线驱动六类 reason）。
     heartbeat_reporter: Arc<crate::metrics::heartbeat::HeartbeatReporter>,
     im_runtime_initialization: Mutex<()>,
@@ -459,10 +459,10 @@ impl DesktopState {
         self.runtime_recovery.clone()
     }
 
-    /// 读取 MCP 健康状态缓存快照（供列表 VM 附加展示）。
+    /// 读取 MCP 最近一次显式配置诊断结果（供列表 VM 附加展示）。
     pub fn mcp_health_snapshot(
         &self,
-    ) -> Result<BTreeMap<String, gold_band::config::McpServerState>> {
+    ) -> Result<BTreeMap<String, gold_band::config::McpServerDiagnosticState>> {
         Ok(self
             .mcp_health
             .lock()
@@ -470,16 +470,24 @@ impl DesktopState {
             .clone())
     }
 
-    /// 写入/更新单个 MCP 服务器的健康状态（启动后台线程与诊断命令共用）。
+    /// 写入/更新单个 MCP 服务器最近一次显式配置诊断结果。
     pub fn record_mcp_health(
         &self,
         id: String,
-        state: gold_band::config::McpServerState,
+        state: gold_band::config::McpServerDiagnosticState,
     ) -> Result<()> {
         self.mcp_health
             .lock()
             .map_err(|_| anyhow::anyhow!("mcp health lock poisoned"))?
             .insert(id, state);
+        Ok(())
+    }
+
+    pub fn clear_mcp_health(&self, id: &str) -> Result<()> {
+        self.mcp_health
+            .lock()
+            .map_err(|_| anyhow::anyhow!("mcp health lock poisoned"))?
+            .remove(id);
         Ok(())
     }
 

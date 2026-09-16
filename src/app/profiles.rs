@@ -1528,7 +1528,7 @@ profile body
                     "每次 run 都必须重新确认构建和部署参数",
                     "不能复用上一次 run 的确认",
                     "未选择的附加操作不执行，也不影响构建部署任务完成",
-                    "项目根目录的 `memory.json` 只提供项目所属子系统 `sub_sys`",
+                    "工作空间与任务记忆统一使用字符串 `key/value/desc` 条目",
                     "`wetest <cmd> --help` 动态发现",
                     "查询自由、触发类确认",
                     "不通过试运行触发类命令来探测参数",
@@ -1543,7 +1543,7 @@ profile body
                     "Every run must freshly confirm its build and deployment parameters",
                     "A confirmation from a previous run cannot be reused",
                     "Unselected optional operations are not executed and do not block completion of build and deployment",
-                    "Project-root `memory.json` supplies only the project's subsystem membership in `sub_sys`",
+                    "Workspace and task memory share string `key/value/desc` entries",
                     "dynamically discover it with `wetest <cmd> --help`",
                     "queries are free; triggers require confirmation",
                     "never probe parameters by trial-running a trigger command",
@@ -1557,48 +1557,41 @@ profile body
     }
 
     #[test]
-    fn cicd_profile_provides_matching_task_configuration_templates_in_both_languages() {
-        let mut templates = Vec::new();
+    fn cicd_profiles_share_task_build_and_subsystem_deployment_keys() {
+        let keys = |content: &str| {
+            content
+                .lines()
+                .filter(|line| line.starts_with("| `cicd."))
+                .map(|line| line.split('|').nth(1).unwrap().trim().to_owned())
+                .collect::<Vec<_>>()
+        };
+        let zh = keys(PROFILE_CICD_ZH_CN);
+        assert_eq!(zh.len(), 14);
+        assert_eq!(zh, keys(PROFILE_CICD_EN));
+        assert_eq!(
+            zh,
+            [
+                "`cicd.build.jobId`",
+                "`cicd.build.branch`",
+                "`cicd.build.appList`",
+                "`cicd.build.appCoverage`",
+                "`cicd.deploy.<S>.selected`",
+                "`cicd.deploy.<S>.mode`",
+                "`cicd.deploy.<S>.templateId`",
+                "`cicd.deploy.<S>.templateName`",
+                "`cicd.deploy.<S>.deployType`",
+                "`cicd.deploy.<S>.env`",
+                "`cicd.deploy.<S>.ips`",
+                "`cicd.deploy.<S>.containers`",
+                "`cicd.deploy.<S>.pkgNames`",
+                "`cicd.deploy.<S>.inputParams`",
+            ]
+        );
         for content in [PROFILE_CICD_ZH_CN, PROFILE_CICD_EN] {
-            let template = content
-                .split_once("```json")
-                .and_then(|(_, rest)| rest.split_once("```"))
-                .map(|(body, _)| body)
-                .expect("CI/CD role must provide a task memory.json template");
-            let template: serde_json::Value = serde_json::from_str(template).unwrap();
-            assert!(
-                template.get("targets").is_none(),
-                "the obsolete per-subsystem build model must be removed"
-            );
-            let build = template["build"]
-                .as_object()
-                .expect("one task-level build configuration");
-            assert_eq!(build.get("job_id"), Some(&serde_json::Value::Null));
-            assert_eq!(build.get("branch"), Some(&serde_json::Value::Null));
-            assert_eq!(build.get("app_list"), Some(&json!([])));
-            let deployments = template["deployments"]
-                .as_array()
-                .expect("separate per-subsystem deployment configurations");
-            assert_eq!(
-                deployments.len(),
-                1,
-                "template provides one unfilled deployment to repeat as needed"
-            );
-            let deployment = &deployments[0];
-            assert_eq!(deployment.get("sub_sys"), Some(&serde_json::Value::Null));
-            assert_eq!(deployment["mode"], "build");
-            assert_eq!(
-                deployment.get("template_id"),
-                Some(&serde_json::Value::Null)
-            );
-            assert_eq!(
-                deployment.get("template_name"),
-                Some(&serde_json::Value::Null)
-            );
-            assert_eq!(deployment["pkg_names"], json!([]));
-            templates.push(template);
+            assert!(!content.contains("Current-task `memory.json`"));
+            assert!(!content.contains("当前 task 的 `memory.json`"));
+            assert!(!content.contains("\"targets\""));
         }
-        assert_eq!(templates[0], templates[1]);
     }
 
     fn run_import(

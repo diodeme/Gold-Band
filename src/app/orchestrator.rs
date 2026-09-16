@@ -73,13 +73,15 @@ use crate::prompts::{
     RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN, RUNTIME_WORKFLOW_RESUME_EN, RUNTIME_WORKFLOW_RESUME_ZH_CN,
     prompt_by_language, render as render_template,
 };
+#[cfg(test)]
+use crate::provider::render_prompt_bundle;
 use crate::provider::{
     ConversationPromptInput, OutputEmissionMode, PromptHiddenSection, PromptOutputContract,
     PromptPredecessorContext, PromptRuntimeContext, PromptVisibility, ProviderRunResult,
     ProviderRunStatus, RuntimeControlIntent, RuntimeControlOutput, StreamMode,
     UserPromptRenderMode, UserPromptRole, WorkerInvocation, conversation_agent_prompt_text,
-    render_new_round_trigger_reason_line, render_prompt_bundle, supported_models_from_capabilities,
-    supported_modes_from_capabilities,
+    prepare_prompt_bundle, render_new_round_trigger_reason_line,
+    supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, RunState, RunWorktreeState, RuntimeAttemptLocator,
@@ -5858,7 +5860,9 @@ fn dynamic_end_summary_is_outer_handoff(
 }
 
 fn dynamic_output_emission_mode(node: &DynamicNodeState) -> OutputEmissionMode {
-    if dynamic_node_is_bootstrap_dispatch(node) {
+    if dynamic_node_is_bootstrap_dispatch(node)
+        || crate::provider::cicd::is_single_submission(node.profile.as_deref())
+    {
         OutputEmissionMode::InlineControl
     } else {
         OutputEmissionMode::PostTurnProjection
@@ -12447,10 +12451,12 @@ pub(crate) fn prepare_dynamic_acp_prompt(
     invocation.turn_control_mode = TurnControlMode::NonRuntimeControlled;
     invocation.runtime_control_intent = RuntimeControlIntent::ManualFollowUp;
     invocation.extra_hidden_sections.clear();
+    let prompt = prepare_prompt_bundle(&mut invocation)?;
     Ok(PreparedAcpPrompt {
-        prompt: render_prompt_bundle(&invocation)?,
+        prompt,
         adapter_workspace_dir: invocation.adapter_workspace_dir,
         session_workspace_dir: invocation.workspace_dir,
+        mcp_servers: invocation.mcp_servers,
     })
 }
 
@@ -12716,6 +12722,19 @@ fn build_dynamic_worker_invocation(
 
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "assemble_invocation");
+    let mcp_servers = ctx.app.acp_mcp_servers().unwrap_or_else(|error| {
+        tracing::warn!(
+            project_id = %ctx.app.paths.project_id,
+            task_id = ctx.task_id,
+            run_id = ctx.run_id,
+            round_id = ctx.round_id,
+            node_id = node.id,
+            attempt_id,
+            %error,
+            "failed to load MCP servers for dynamic ACP session; continuing without MCP servers"
+        );
+        Vec::new()
+    });
     let invocation = WorkerInvocation {
         invocation_kind: InvocationKind::WorkerGeneric,
         turn_control_mode: TurnControlMode::RuntimeControlled,
@@ -12762,7 +12781,7 @@ fn build_dynamic_worker_invocation(
         attachment_projection_policy: crate::provider::AttachmentProjectionPolicy::from(
             &ctx.app.config,
         ),
-        mcp_servers: Vec::new(),
+        mcp_servers,
         scheduled_context: None,
     };
     dynamic_invocation_build_step_end(
@@ -21037,6 +21056,14 @@ mod tests {
                 .unwrap()
                 .emission_mode,
             OutputEmissionMode::PostTurnProjection
+        );
+        let mut cicd = worker;
+        cicd.profile = Some("pf-builtin-cicd".into());
+        assert_eq!(
+            dynamic_output_contract_for_node(&ctx, &graph, &cicd)
+                .unwrap()
+                .emission_mode,
+            OutputEmissionMode::InlineControl
         );
     }
 

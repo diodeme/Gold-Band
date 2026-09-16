@@ -47,8 +47,8 @@ use crate::mcp::McpManager;
 use crate::process::recover_persisted_process_group;
 use crate::provider::{
     AcpLiveTimelinePosition, ConversationPromptInput, DoctorResult, PromptBundle, PromptVisibility,
-    ProviderAdapter, ProviderCapabilities, ProviderInfo, UserPromptRenderMode, provider_from_agent,
-    render_prompt_bundle, supported_modes_from_capabilities,
+    ProviderAdapter, ProviderCapabilities, ProviderInfo, UserPromptRenderMode,
+    prepare_prompt_bundle, provider_from_agent, supported_modes_from_capabilities,
 };
 use crate::runtime::{
     NodeState, RoundState, RunState, RuntimeAttemptLocator, RuntimeExecutionPhase, TaskState,
@@ -209,6 +209,7 @@ pub(crate) fn task_input_attachment_paths(app: &App, task_id: &str) -> Vec<Strin
 
 pub const DEFAULT_WORKFLOW_TEMPLATE_ID: &str = "default";
 pub const DEFAULT_LIGHTWEIGHT_WORKFLOW_TEMPLATE_ID: &str = "default-lightweight";
+pub const WB_CICD_WORKFLOW_TEMPLATE_ID: &str = "wb-development-cicd";
 const DEFAULT_WORKFLOW_MAX_ATTEMPTS: u32 = 10;
 const DEFAULT_WORKFLOW_MAX_ROUNDS: u32 = 3;
 
@@ -320,6 +321,56 @@ fn default_workflow_goal(language: DesktopLanguage, key: &str) -> &'static str {
         }
         _ => "Execute this workflow node.",
     }
+}
+
+fn wb_cicd_workflow_template(
+    profiles: &DefaultProfileIds,
+    language: DesktopLanguage,
+) -> WorkflowTemplate {
+    let mut template = default_lightweight_workflow_template(profiles, language);
+    template.id = WB_CICD_WORKFLOW_TEMPLATE_ID.into();
+    template.name = match language {
+        DesktopLanguage::ZhCn => "开发构建部署工作流",
+        DesktopLanguage::En => "Development, Build and Deployment",
+    }
+    .into();
+    template.workflow.id = "task-workflow-cicd".into();
+    let mut cicd = template
+        .workflow
+        .nodes
+        .iter()
+        .find(|node| matches!(node, NodeDsl::Worker(w) if w.id == "accept"))
+        .unwrap()
+        .clone();
+    if let NodeDsl::Worker(worker) = &mut cicd {
+        worker.id = "cicd".into();
+        worker.profile = Some("pf-builtin-cicd".into());
+        worker.goal = Some(
+            match language {
+                DesktopLanguage::ZhCn => include_str!("../prompts/zh-CN/runtime/cicd-goal.md"),
+                DesktopLanguage::En => include_str!("../prompts/en/runtime/cicd-goal.md"),
+            }
+            .trim()
+            .into(),
+        );
+        worker.output = None;
+        worker.success_condition = None;
+        worker.manual_check = Some(true);
+    }
+    for edge in &mut template.workflow.edges {
+        if edge.from == "accept" && edge.to == END_NODE {
+            edge.to = "cicd".into();
+        }
+    }
+    template.workflow.nodes.push(cicd);
+    template.workflow.edges.push(EdgeDsl {
+        from: "cicd".into(),
+        to: END_NODE.into(),
+        on: EdgeOutcome::Success,
+        session: None,
+        new_round_entry: None,
+    });
+    template
 }
 
 fn default_workflow_dsl(
@@ -1459,6 +1510,7 @@ pub struct PreparedAcpPrompt {
     pub prompt: PromptBundle,
     pub adapter_workspace_dir: Utf8PathBuf,
     pub session_workspace_dir: Utf8PathBuf,
+    pub mcp_servers: Vec<serde_json::Value>,
 }
 
 impl App {
@@ -3261,40 +3313,23 @@ impl App {
     }
 
     pub fn list_mcp_servers(&self) -> Result<Vec<McpServerConfig>> {
-        Ok(self
-            .mcp_manager()
-            .list()?
-            .into_iter()
-            .map(|s| s.config)
-            .collect())
+        self.mcp_manager().list()
     }
 
     pub fn add_mcp_server(&self, json_content: &str) -> Result<Vec<McpServerConfig>> {
-        let (_, list) = self.mcp_manager().add(json_content)?;
-        Ok(list.into_iter().map(|s| s.config).collect())
+        self.mcp_manager().add(json_content)
     }
 
     pub fn update_mcp_server(&self, id: &str, json_content: &str) -> Result<Vec<McpServerConfig>> {
-        let (_, list) = self.mcp_manager().update(id, json_content)?;
-        Ok(list.into_iter().map(|s| s.config).collect())
+        self.mcp_manager().update(id, json_content)
     }
 
     pub fn delete_mcp_server(&self, id: &str) -> Result<Vec<McpServerConfig>> {
-        Ok(self
-            .mcp_manager()
-            .delete(id)?
-            .into_iter()
-            .map(|s| s.config)
-            .collect())
+        self.mcp_manager().delete(id)
     }
 
     pub fn toggle_mcp_server(&self, id: &str, enabled: bool) -> Result<Vec<McpServerConfig>> {
-        Ok(self
-            .mcp_manager()
-            .toggle(id, enabled)?
-            .into_iter()
-            .map(|s| s.config)
-            .collect())
+        self.mcp_manager().toggle(id, enabled)
     }
 
     pub fn check_mcp_server_health(&self, id: &str) -> Result<McpServerHealthResult> {
@@ -3774,6 +3809,17 @@ impl App {
             }
             upsert_built_in_workflow_template(&mut store.templates, lightweight_template, 0)?;
             upsert_built_in_workflow_template(&mut store.templates, default_template, 0)?;
+            if crate::memory::is_wb() {
+                upsert_built_in_workflow_template(
+                    &mut store.templates,
+                    wb_cicd_workflow_template(&default_profiles, self.config.desktop_language),
+                    2,
+                )?;
+            } else {
+                store
+                    .templates
+                    .retain(|template| template.id != WB_CICD_WORKFLOW_TEMPLATE_ID);
+            }
             if let Some(workflow) = store.last_created_workflow.as_mut() {
                 let mut ignored = WorkflowModelBindings::default();
                 migrate_authoring_workflow(workflow, &mut ignored, None)?;
@@ -3787,6 +3833,12 @@ impl App {
             last_created_workflow: None,
             templates: vec![default_template, lightweight_template],
         };
+        if crate::memory::is_wb() {
+            store.templates.push(wb_cicd_workflow_template(
+                &default_profiles,
+                self.config.desktop_language,
+            ));
+        }
         for template in &mut store.templates {
             migrate_authoring_workflow(
                 &mut template.workflow,
@@ -5405,10 +5457,12 @@ impl App {
         invocation.turn_control_mode = crate::domain::TurnControlMode::NonRuntimeControlled;
         invocation.runtime_control_intent = crate::provider::RuntimeControlIntent::ManualFollowUp;
         invocation.extra_hidden_sections.clear();
+        let prompt = prepare_prompt_bundle(&mut invocation)?;
         Ok(PreparedAcpPrompt {
-            prompt: render_prompt_bundle(&invocation)?,
+            prompt,
             adapter_workspace_dir: invocation.adapter_workspace_dir,
             session_workspace_dir: invocation.workspace_dir,
+            mcp_servers: invocation.mcp_servers,
         })
     }
 
@@ -6064,6 +6118,40 @@ fn metrics_follow_up_transition(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn memory_cicd_template_preserves_acceptance_routes_and_stops_on_failure() {
+        use super::*;
+        let temp = tempfile::tempdir().unwrap();
+        let root = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let profiles =
+            ensure_default_user_profiles(&crate::storage::GoldBandPaths::new(root)).unwrap();
+        let template = wb_cicd_workflow_template(&profiles, DesktopLanguage::En);
+        assert_eq!(
+            template.optional_entry_stage.as_ref().unwrap().node_id,
+            "grill"
+        );
+        let edges = &template.workflow.edges;
+        assert!(
+            edges
+                .iter()
+                .any(|e| e.from == "accept" && e.to == "cicd" && e.on == EdgeOutcome::Success)
+        );
+        assert!(edges.iter().any(|e| e.from == "accept"
+            && e.to == NEW_ROUND_NODE
+            && e.new_round_entry.as_deref() == Some("dev-test")));
+        assert!(
+            !edges
+                .iter()
+                .any(|e| e.from == "cicd" && e.on == EdgeOutcome::Failure)
+        );
+        let NodeDsl::Worker(cicd) = template.workflow.nodes.last().unwrap() else {
+            panic!()
+        };
+        assert_eq!(cicd.manual_check, Some(true));
+        assert!(cicd.output.is_none());
+        assert!(cicd.success_condition.is_none());
+        assert_eq!(cicd.profile.as_deref(), Some("pf-builtin-cicd"));
+    }
     use super::observability;
     use super::{
         AcpLiveEventContext, AcpPromptLifecycleEvent, AcpTurnOutcome, App,

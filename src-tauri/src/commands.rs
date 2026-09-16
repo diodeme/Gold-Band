@@ -7060,6 +7060,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 .map_err(command_error)?;
             let adapter_workspace_dir = prepared_prompt.adapter_workspace_dir;
             let session_workspace_dir = prepared_prompt.session_workspace_dir;
+            let mcp_servers = prepared_prompt.mcp_servers;
             let mut prompt_bundle = prepared_prompt.prompt;
             prompt_bundle.display_text = Some(display_text.clone());
             prompt_bundle.quotes = quotes.clone();
@@ -7151,22 +7152,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                         timeline_position,
                     )
                 }),
-                &app.acp_mcp_servers().unwrap_or_else(|error| {
-                    warn!(
-                        project_id = %app.paths.project_id,
-                        %task_id,
-                        %run_id,
-                        %round_id,
-                        %node_id,
-                        %attempt_id,
-                        %outer_node_id,
-                        %outer_attempt_id,
-                        provider,
-                        %error,
-                        "failed to load MCP servers for ACP session; continuing without MCP servers"
-                    );
-                    Vec::new()
-                }),
+                &mcp_servers,
                 session_update.as_ref().map(|callback| callback as _),
                 prompt_accepted.as_ref().map(|callback| callback as _),
                 Some(client::RuntimeStopProbe {
@@ -7237,6 +7223,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             .map_err(command_error)?;
         let adapter_workspace_dir = prepared_prompt.adapter_workspace_dir;
         let session_workspace_dir = prepared_prompt.session_workspace_dir;
+        let mcp_servers = prepared_prompt.mcp_servers;
         let mut prompt_bundle = prepared_prompt.prompt;
         prompt_bundle.display_text = Some(display_text);
         prompt_bundle.quotes = quotes;
@@ -7327,20 +7314,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                     timeline_position,
                 )
             }),
-            &app.acp_mcp_servers().unwrap_or_else(|error| {
-                warn!(
-                    project_id = %app.paths.project_id,
-                    %task_id,
-                    %run_id,
-                    %round_id,
-                    %node_id,
-                    %attempt_id,
-                    provider,
-                    %error,
-                    "failed to load MCP servers for ACP session; continuing without MCP servers"
-                );
-                Vec::new()
-            }),
+            &mcp_servers,
             session_update.as_ref().map(|callback| callback as _),
             prompt_accepted.as_ref().map(|callback| callback as _),
             Some(client::RuntimeStopProbe {
@@ -10373,11 +10347,12 @@ pub fn toggle_mcp_server(
     ensure_no_active_acp_prompts_in_workspace(&app.paths.repo_root)?;
     gold_band::acp::client::close_workspace_connections_bounded(&app.paths.repo_root)
         .map_err(command_error)?;
+    let servers = app.toggle_mcp_server(&id, enabled).map_err(command_error)?;
+    if !enabled {
+        state.clear_mcp_health(&id).map_err(command_error)?;
+    }
     let health = state.mcp_health_snapshot().unwrap_or_default();
-    Ok(mcp_server_list_vm(
-        &app.toggle_mcp_server(&id, enabled).map_err(command_error)?,
-        &health,
-    ))
+    Ok(mcp_server_list_vm(&servers, &health))
 }
 
 #[tauri::command]
@@ -10399,15 +10374,15 @@ pub async fn check_mcp_server_health(
     })
     .await
     .map_err(|e| command_error(anyhow::anyhow!("health check task failed: {e}")))??;
-    // 写入共享缓存，供列表 VM 展示（手动诊断与启动后台线程共用此入口）。
+    // 写入最近一次显式诊断结果，供列表 VM 展示；它不表示正式会话进程正在运行。
     let cache_state = match result.status.as_str() {
-        "healthy" => gold_band::config::McpServerState::Running {
+        "healthy" => gold_band::config::McpServerDiagnosticState::Passed {
             tools: result.tools.clone(),
         },
-        "auth_required" => gold_band::config::McpServerState::AuthRequired {
+        "auth_required" => gold_band::config::McpServerDiagnosticState::AuthRequired {
             auth_url: result.auth_url.clone(),
         },
-        _ => gold_band::config::McpServerState::Error {
+        _ => gold_band::config::McpServerDiagnosticState::Failed {
             message: result
                 .message
                 .clone()

@@ -2758,6 +2758,7 @@ mod tests {
                 &definition.content_snapshot.instruction,
                 SCHEDULED_INSTRUCTION_SUMMARY_MAX_CHARS,
             ),
+            schedule: Some(definition.schedule.clone()),
             automatic: automatic.then(|| ScheduledAutomaticTriggerContext {
                 scheduled_at: accepted_at,
                 schedule_summary: definition.display_schedule(),

@@ -1660,6 +1660,7 @@ mod tests {
             content_fingerprint: definition.content_fingerprint.clone(),
             content: definition.content_snapshot.clone(),
             instruction_summary: "history".to_string(),
+            schedule: Some(definition.schedule.clone()),
             automatic: None,
         };
         assert!(matches!(
@@ -1855,6 +1856,7 @@ mod tests {
             content_fingerprint: definition.content_fingerprint.clone(),
             content: definition.content_snapshot.clone(),
             instruction_summary: "history".to_string(),
+            schedule: Some(definition.schedule.clone()),
             automatic: None,
         };
         assert!(matches!(

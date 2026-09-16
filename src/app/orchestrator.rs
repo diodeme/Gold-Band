@@ -184,6 +184,35 @@ struct AcpInvocationPromptState {
     permission_mode_override: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct RuntimeResumeMetricsContext {
+    previous_pause_reason: PauseReason,
+    transition_revision: u64,
+}
+
+impl RuntimeResumeMetricsContext {
+    fn manual_continue(previous_pause_reason: PauseReason, transition_revision: u64) -> Self {
+        Self {
+            previous_pause_reason,
+            transition_revision,
+        }
+    }
+}
+
+fn effective_previous_pause_reason(
+    run_status: RunStatus,
+    run_pause_reason: Option<PauseReason>,
+    resume_context: Option<&RuntimeResumeMetricsContext>,
+) -> Option<PauseReason> {
+    resume_context
+        .map(|context| context.previous_pause_reason)
+        .or_else(|| {
+            (run_status == RunStatus::Paused)
+                .then_some(run_pause_reason)
+                .flatten()
+        })
+}
+
 const MAX_INVALID_OUTPUT_REPAIR_PROMPTS: u32 = 3;
 const MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS: u32 = 3;
 const DYNAMIC_FANOUT_WORKSPACE_DIRTY: &str = "dynamic.fanout.workspace-dirty";
@@ -962,10 +991,10 @@ fn emit_background_drive_error_from_fallback(
     node.outcome = None;
     node.runtime_execution_id = None;
     node.finished_at = Some(now);
-    emit_background_drive_error(app, task_id, &run, &round, &node, error);
+    append_background_drive_error_event(app, task_id, &run, &round, &node, error);
 }
 
-fn emit_background_drive_error(
+fn append_background_drive_error_event(
     app: &App,
     task_id: &str,
     run: &RunState,
@@ -995,7 +1024,6 @@ fn emit_background_drive_error(
         run.updated_at.clone(),
         event_data,
     );
-    emit_pause_side_effects(app, task_id, run, round, node);
 }
 
 pub(crate) fn launch_prepared_run_background(
@@ -1308,6 +1336,7 @@ fn prepare_run_from_workflow(
         super::observability::LifecycleEventType::ExecutionStarted,
         uuid::Uuid::new_v4().to_string(),
         run.started_at.clone(),
+        None,
         None,
         None,
         None,
@@ -1804,6 +1833,7 @@ pub(crate) fn run_continue(
         permission_mode_override,
         None,
         None,
+        None,
     )
 }
 
@@ -1819,6 +1849,7 @@ fn run_continue_with_launch_signal(
     permission_mode_override: Option<String>,
     launch: Option<mpsc::Sender<RuntimeContinueLaunch>>,
     expected_execution_id: Option<String>,
+    resume_metrics_context: Option<RuntimeResumeMetricsContext>,
 ) -> Result<RunState> {
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow_snapshot(workflow)?;
@@ -2020,6 +2051,7 @@ fn run_continue_with_launch_signal(
         initial_parent_continue_input,
         initial_parent_continue_prompt_id,
         None,
+        resume_metrics_context,
         initial_model_override,
         initial_permission_mode_override,
         launch,
@@ -2228,6 +2260,7 @@ fn run_continue_dynamic_inner(
         None,
         None,
         Some(resume_override),
+        None,
         prompt_state.model_override,
         prompt_state.permission_mode_override,
         None,
@@ -2638,6 +2671,7 @@ pub(crate) fn run_continue_background(
     }
     let execution_id = next_runtime_execution_id();
     let runtime_candidate = app.begin_runtime_candidate(task_id, run_id)?;
+    let resume_metrics_context;
     {
         let state_lock = super::attempt_runtime_state_lock(
             app,
@@ -2672,6 +2706,9 @@ pub(crate) fn run_continue_background(
             "current attempt is not resumable by continue"
         );
         node.runtime_execution_id = Some(execution_id.clone());
+        let previous_pause_reason = current_run
+            .pause_reason
+            .ok_or_else(|| anyhow!("continuable run is missing its pause reason"))?;
         let resumed_at = now_rfc3339_like();
         let attempt_dir =
             app.paths
@@ -2690,6 +2727,10 @@ pub(crate) fn run_continue_background(
                 Some(runtime_candidate.token().to_string());
         }
         current_run.transition_current_execution(resume_phase, resumed_at)?;
+        resume_metrics_context = RuntimeResumeMetricsContext::manual_continue(
+            previous_pause_reason,
+            current_run.execution.revision,
+        );
         crate::runtime::validate_node_state(&node)?;
         validate_run_state(&current_run)?;
         let node_path =
@@ -2743,6 +2784,7 @@ pub(crate) fn run_continue_background(
                 permission_mode_override,
                 Some(launch_sender),
                 Some(background_execution_id.clone()),
+                Some(resume_metrics_context),
             ) {
                 let info = runtime_continue_launch_error(&err);
                 tracing::warn!(
@@ -2945,6 +2987,7 @@ pub(crate) fn run_recover_completed_background(
                 None,
                 None,
                 None,
+                None,
                 prompt_state.model_override,
                 prompt_state.permission_mode_override,
                 None,
@@ -3075,6 +3118,7 @@ fn submit_manual_check_with_launch_signal(
     if let Some(runtime_candidate) = runtime_candidate {
         runtime_candidate.commit();
     }
+    emit_node_completed_lifecycle_event(app, task_id, &run, &round, &node);
     let decision = decide_next_step(&validated, &run, &round, &node);
     let next = apply_control_decision(
         app,
@@ -3129,6 +3173,7 @@ fn submit_manual_check_with_launch_signal(
             prompt_state.user_prompt_render_mode,
             prompt_state.input_attachment_paths,
             prompt_state.runtime_control_intent,
+            None,
             None,
             None,
             None,
@@ -3597,12 +3642,6 @@ fn task_title(app: &App, task_id: &str) -> Option<String> {
     app.task_show(task_id).ok().and_then(|t| t.title)
 }
 
-fn metrics_user_id() -> String {
-    std::env::var("USERNAME")
-        .or_else(|_| std::env::var("USER"))
-        .unwrap_or_else(|_| "unknown".into())
-}
-
 fn metrics_pause_reason(reason: PauseReason) -> super::observability::MetricsPauseReason {
     use super::observability::MetricsPauseReason as M;
     match reason {
@@ -3659,15 +3698,24 @@ fn metrics_intervention_kind(
     }
 }
 
+fn metrics_resume_fact_id(run: &RunState, transition_revision: Option<u64>) -> String {
+    format!(
+        "run:{}:resume:{}",
+        run.uuid.as_deref().unwrap_or(&run.id),
+        transition_revision.unwrap_or(run.execution.revision)
+    )
+}
+
 fn emit_run_metrics_fact(
     app: &App,
     run: &RunState,
     event_type: super::observability::LifecycleEventType,
-    _event_id: String,
+    event_id: String,
     occurred_at: String,
     pause_reason: Option<PauseReason>,
     intervention_kind: Option<RuntimeInterventionKind>,
     outcome: Option<RunOutcome>,
+    resume_context: Option<&RuntimeResumeMetricsContext>,
 ) {
     if !app.metrics_collection_enabled() {
         return;
@@ -3686,20 +3734,18 @@ fn emit_run_metrics_fact(
         .join("observability")
         .join(&task_uuid)
         .join(super::observability::OBSERVABILITY_SNAPSHOT_FILE);
-    let state = app.update_observability_state(&task_uuid, path.clone(), |state| {
-        state.next_revision();
-
-        if event_type == super::observability::LifecycleEventType::ExecutionPaused {
-            state.record_pause(true);
-        }
-        if event_type == super::observability::LifecycleEventType::ExecutionResumed {
-            let cause = state
-                .take_pending_resume_cause()
-                .unwrap_or(super::observability::ResumeCause::AutomaticRecovery);
-            state.record_resume(true, cause);
-        }
-    });
-    let revision = state.event_revision;
+    let mut resume_cause =
+        resume_context.map(|_| super::observability::ResumeCause::ManualContinue);
+    if event_type == super::observability::LifecycleEventType::ExecutionResumed {
+        app.update_observability_state(&task_uuid, path, |state| {
+            let pending_cause = state.take_pending_resume_cause();
+            if resume_cause.is_none() {
+                resume_cause = Some(
+                    pending_cause.unwrap_or(super::observability::ResumeCause::AutomaticRecovery),
+                );
+            }
+        });
+    }
     let current_node_state = run
         .current_round
         .as_deref()
@@ -3731,73 +3777,159 @@ fn emit_run_metrics_fact(
             | super::observability::LifecycleEventType::ExecutionResumed
             | super::observability::LifecycleEventType::InterventionRequested
     );
-    let mut fact = super::observability::MetricsLifecycleFact::new(
+    let Some(round_id) = run.current_round.clone() else {
+        tracing::warn!(
+            code = "METRICS_RUNTIME_LOCATOR_MISSING",
+            task_id = %run.task_id,
+            run_id = %run.id,
+            "metrics fact requires a durable round locator"
+        );
+        return;
+    };
+    let session_mode = if is_auto {
+        super::observability::MetricsSessionMode::Auto
+    } else {
+        super::observability::MetricsSessionMode::Workflow
+    };
+    let subject = if is_intermediate {
+        let Some(node) = current_node_state.as_ref() else {
+            tracing::warn!(
+                code = "METRICS_ACTIVE_ATTEMPT_MISSING",
+                task_id = %run.task_id,
+                run_id = %run.id,
+                "metrics intermediate fact has no active attempt"
+            );
+            return;
+        };
+        let Some(round_index) = current_round_index else {
+            tracing::warn!(
+                code = "METRICS_ACTIVE_ATTEMPT_MISSING",
+                task_id = %run.task_id,
+                run_id = %run.id,
+                "metrics intermediate fact has no round index"
+            );
+            return;
+        };
+        if is_auto {
+            let Some(subject) = active_auto_metrics_subject(app, run, node, &round_id, round_index)
+            else {
+                tracing::warn!(
+                    code = "METRICS_ACTIVE_ATTEMPT_MISSING",
+                    task_id = %run.task_id,
+                    run_id = %run.id,
+                    "AUTO metrics intermediate fact has no unique active unit"
+                );
+                return;
+            };
+            subject
+        } else {
+            let (Some(attempt_id), Some(attempt_index)) = (
+                node.uuid.clone(),
+                super::observability::attempt_index_from_local_id(&node.attempt_id),
+            ) else {
+                tracing::warn!(
+                    code = "METRICS_ACTIVE_ATTEMPT_MISSING",
+                    task_id = %run.task_id,
+                    run_id = %run.id,
+                    "Workflow metrics intermediate fact has no canonical attempt identity"
+                );
+                return;
+            };
+            let node_id = super::observability::derive_execution_id(
+                &run_uuid,
+                &format!("round:{round_index}:node:{}", node.node_id),
+            )
+            .unwrap_or_else(|| attempt_id.clone());
+            super::observability::MetricsSubject::WorkflowNodeAttempt {
+                node_id,
+                attempt_id,
+                attempt_index,
+                round_index,
+                role_name: node_label(node),
+            }
+        }
+    } else if is_auto {
+        super::observability::MetricsSubject::AutoOuterRun
+    } else {
+        super::observability::MetricsSubject::WorkflowRun
+    };
+    let mut fact = app.pending_metrics_fact(
+        &run.task_id,
+        task_uuid.clone(),
+        run.id.clone(),
+        round_id,
         event_type,
-        revision,
         occurred_at,
-        metrics_user_id(),
-        app.paths.repo_root.to_string(),
-        if is_auto {
-            super::observability::MetricsSessionMode::Auto
-        } else {
-            super::observability::MetricsSessionMode::Workflow
-        },
-        task_uuid.clone(),
-        if is_auto {
-            super::observability::ExecutionKind::OuterRun
-        } else {
-            super::observability::ExecutionKind::Run
-        },
-        task_uuid.clone(),
+        session_mode,
+        subject,
     );
-    fact.task_title = task_title(app, &run.task_id);
-    fact.pause_reason = pause_reason.map(metrics_pause_reason);
-    fact.previous_pause_reason =
+    fact.fact_id = event_id.clone();
+    fact.payload.pause_reason = pause_reason.map(metrics_pause_reason);
+    fact.payload.previous_pause_reason =
         if event_type == super::observability::LifecycleEventType::ExecutionResumed {
             pause_reason.map(metrics_pause_reason)
         } else {
             None
         };
-    fact.intervention_kind = intervention_kind.map(metrics_intervention_kind);
-    fact.collection_state_recovered = state.collection_state_recovered;
-    if is_intermediate {
-        if let Some(node) = &current_node_state {
-            fact.round_index = current_round_index;
-            fact.role_name = Some(node_label(node));
-            fact.attempt_index =
-                super::observability::attempt_index_from_local_id(&node.attempt_id);
-            if is_auto {
-                fact.node_id = node.uuid.clone();
-                fact.attempt_id = node.uuid.as_ref().and_then(|uuid| {
-                    super::observability::derive_attempt_id(uuid, &node.attempt_id)
-                });
-            } else {
-                let logical = current_round_index
-                    .and_then(|round_index| {
-                        super::observability::derive_execution_id(
-                            &run_uuid,
-                            &format!("round:{round_index}:node:{}", node.node_id),
-                        )
-                    })
-                    .or_else(|| node.uuid.clone());
-                fact.node_id = logical;
-                fact.attempt_id = node.uuid.clone();
+    fact.payload.intervention_kind = intervention_kind.map(metrics_intervention_kind);
+    fact.transition = match event_type {
+        super::observability::LifecycleEventType::ExecutionPaused => {
+            super::observability::MetricsTransition::Paused {
+                transition_id: event_id,
             }
         }
-    }
+        super::observability::LifecycleEventType::ExecutionResumed => {
+            let action = match resume_cause
+                .unwrap_or(super::observability::ResumeCause::AutomaticRecovery)
+            {
+                super::observability::ResumeCause::ManualContinue => {
+                    super::observability::UserExecutionAction::ManualContinue
+                }
+                super::observability::ResumeCause::PermissionResolved => {
+                    super::observability::UserExecutionAction::PermissionResponse
+                }
+                super::observability::ResumeCause::ElicitationResolved => {
+                    super::observability::UserExecutionAction::ElicitationResponse
+                }
+                super::observability::ResumeCause::AutomaticRecovery => {
+                    super::observability::UserExecutionAction::AutomaticRecovery
+                }
+            };
+            super::observability::MetricsTransition::Resumed {
+                transition_id: event_id,
+                action,
+            }
+        }
+        super::observability::LifecycleEventType::InterventionRequested => {
+            match intervention_kind {
+                Some(RuntimeInterventionKind::PermissionRequested) => {
+                    super::observability::MetricsTransition::PermissionRequested {
+                        request_id: event_id,
+                    }
+                }
+                Some(RuntimeInterventionKind::ElicitationRequested) => {
+                    super::observability::MetricsTransition::ElicitationRequested {
+                        request_id: event_id,
+                    }
+                }
+                _ => super::observability::MetricsTransition::None,
+            }
+        }
+        _ => super::observability::MetricsTransition::None,
+    };
     if let Some(outcome) = outcome {
-        fact.outcome = Some(match outcome {
+        fact.payload.outcome = Some(match outcome {
             RunOutcome::Success => super::observability::ExecutionOutcome::Success,
             RunOutcome::Failure => super::observability::ExecutionOutcome::Failure,
             RunOutcome::Killed => super::observability::ExecutionOutcome::Killed,
         });
-        fact.terminal_reason = Some(match outcome {
+        fact.payload.terminal_reason = Some(match outcome {
             RunOutcome::Success => super::observability::TerminalReason::Completed,
             RunOutcome::Failure => super::observability::TerminalReason::ExecutionFailed,
             RunOutcome::Killed => super::observability::TerminalReason::ProcessKilled,
         });
         if !is_auto {
-            fact.round_count = Some(run.new_rounds_opened.saturating_add(1));
+            fact.payload.round_count = Some(run.new_rounds_opened.saturating_add(1));
         }
         if outcome != RunOutcome::Success {
             let outer_attempt = run
@@ -3820,19 +3952,19 @@ fn emit_run_metrics_fact(
                 })
                 .and_then(|graph| failed_dynamic_metrics_unit(&graph).cloned());
             if let Some(node) = failed_unit {
-                fact.failed_attempt_id = node.uuid.as_deref().and_then(|execution_id| {
+                fact.payload.failed_attempt_id = node.uuid.as_deref().and_then(|execution_id| {
                     super::observability::derive_attempt_id(
                         execution_id,
                         &dynamic_attempt_id(&node),
                     )
                 });
-                fact.terminal_reason = Some(dynamic_metrics_terminal_reason(&node));
-                fact.terminal_reason_code = node
+                fact.payload.terminal_reason = Some(dynamic_metrics_terminal_reason(&node));
+                fact.payload.terminal_reason_code = node
                     .runtime_error
                     .as_ref()
                     .map(|error| error.code_str().to_string());
             } else {
-                fact.failed_attempt_id =
+                fact.payload.failed_attempt_id =
                     outer_attempt.and_then(|((round_id, node_id), attempt_id)| {
                         read_json::<NodeState>(&app.paths.node_file(
                             &run.task_id,
@@ -3846,12 +3978,64 @@ fn emit_run_metrics_fact(
                     });
             }
         }
-        fact.counters = Some(state.counters.clone());
     }
-    app.emit_lifecycle_event(RuntimeLifecycleEvent::MetricsFact(fact));
-    if outcome.is_some() {
-        app.release_observability_state(&task_uuid);
+    app.emit_lifecycle_event(RuntimeLifecycleEvent::PendingMetricsFact(fact));
+}
+
+fn active_auto_metrics_subject(
+    app: &App,
+    run: &RunState,
+    outer: &NodeState,
+    round_id: &str,
+    round_index: u32,
+) -> Option<super::observability::MetricsSubject> {
+    let graph = read_json::<DynamicGraphState>(&app.paths.dynamic_graph_file(
+        &run.task_id,
+        &run.id,
+        round_id,
+        &outer.node_id,
+        &outer.attempt_id,
+    ))
+    .ok()?;
+    let mut candidates = graph
+        .nodes
+        .iter()
+        .filter(|node| graph.run.current_node_ids.contains(&node.id))
+        .collect::<Vec<_>>();
+    if candidates.len() != 1 {
+        candidates = graph
+            .nodes
+            .iter()
+            .filter(|node| {
+                matches!(
+                    node.status,
+                    DynamicNodeStatus::Running | DynamicNodeStatus::Paused
+                ) && node.outcome.is_none()
+            })
+            .collect();
     }
+    let [node] = candidates.as_slice() else {
+        return None;
+    };
+    let node_id = node.uuid.clone()?;
+    let attempt_id = super::observability::derive_attempt_id(&node_id, &dynamic_attempt_id(node))?;
+    let attempt_index =
+        super::observability::attempt_index_from_local_id(&dynamic_attempt_id(node))?;
+    Some(super::observability::MetricsSubject::AutoUnitAttempt {
+        node_id,
+        attempt_id,
+        attempt_index,
+        round_index,
+        role_name: node.title.clone(),
+        unit_kind: match node.kind {
+            DynamicNodeKind::Worker => super::observability::UnitKind::Worker,
+            DynamicNodeKind::WorkflowInvocation => {
+                super::observability::UnitKind::WorkflowInvocation
+            }
+            DynamicNodeKind::Merge => super::observability::UnitKind::Merge,
+            DynamicNodeKind::Acceptance => super::observability::UnitKind::Acceptance,
+        },
+    })
 }
 
 fn emit_run_paused_lifecycle_event(
@@ -3891,59 +4075,11 @@ fn emit_run_paused_lifecycle_event(
         app,
         run,
         super::observability::LifecycleEventType::ExecutionPaused,
-        event_id,
+        format!("{event_id}:paused:{}", run.execution.revision),
         occurred_at,
         Some(reason),
         None,
         None,
-    );
-}
-
-fn emit_intervention_requested(
-    app: &App,
-    task_id: &str,
-    run: &RunState,
-    round: &RoundState,
-    node: &NodeState,
-    kind: RuntimeInterventionKind,
-) {
-    let pause_reason = super::notification::pause_reason_for_intervention(kind);
-    let event_id = super::notification::make_dedup_key(
-        &app.paths.project_id,
-        task_id,
-        &run.id,
-        &round.id,
-        &node.node_id,
-        &node.attempt_id,
-        pause_reason,
-    );
-    let occurred_at = now_rfc3339_like();
-    app.emit_lifecycle_event(RuntimeLifecycleEvent::InterventionRequested {
-        event_id: event_id.clone(),
-        occurred_at: occurred_at.clone(),
-        scheduled_occurrence_id: None,
-        project_id: app.paths.project_id.clone(),
-        task_id: task_id.to_string(),
-        task_uuid: run.task_uuid.clone(),
-        run_id: run.id.clone(),
-        round_id: round.id.clone(),
-        node_id: node.node_id.clone(),
-        attempt_id: node.attempt_id.clone(),
-        outer_node_id: None,
-        outer_attempt_id: None,
-        request: super::intervention::InterventionRequestIdentity::ManualCheck,
-        node_label: node_label(node),
-        kind,
-        task_title: task_title(app, task_id),
-    });
-    emit_run_metrics_fact(
-        app,
-        run,
-        super::observability::LifecycleEventType::InterventionRequested,
-        event_id,
-        occurred_at,
-        None,
-        Some(kind),
         None,
     );
 }
@@ -3990,6 +4126,7 @@ fn emit_run_completed_lifecycle_event(
         None,
         None,
         Some(outcome),
+        None,
     );
     let _ = app.notify_prompt_turn_finished(
         crate::app::AcpLiveEventContext {
@@ -4004,64 +4141,15 @@ fn emit_run_completed_lifecycle_event(
         },
         super::direct_conversation_agent_label(app, task_id)
             .map(|_| super::INITIAL_DIRECT_TURN_ID.to_string()),
-        outcome == RunOutcome::Success,
+        match outcome {
+            RunOutcome::Success => super::AcpTurnOutcome::Completed,
+            RunOutcome::Failure => super::AcpTurnOutcome::Failed,
+            RunOutcome::Killed => super::AcpTurnOutcome::Cancelled,
+        },
     );
 }
 
-fn intervention_kind_for_pause(
-    app: &App,
-    task_id: &str,
-    run: &RunState,
-    round: &RoundState,
-    node: &NodeState,
-) -> Option<RuntimeInterventionKind> {
-    match run.pause_reason.unwrap_or(PauseReason::ProcessInterrupted) {
-        PauseReason::WaitingForUserInput => Some(waiting_for_user_input_intervention_kind(
-            app, task_id, run, round, node,
-        )),
-        reason @ (PauseReason::PermissionRequested
-        | PauseReason::RuntimeAbnormal
-        | PauseReason::ErrorBlocked) => Some(RuntimeInterventionKind::from(reason)),
-        PauseReason::ProcessInterrupted => {
-            (!attempt_was_user_cancelled(app, task_id, &run.id, &round.id, node))
-                .then_some(RuntimeInterventionKind::ProcessInterrupted)
-        }
-    }
-}
-
-fn waiting_for_user_input_intervention_kind(
-    app: &App,
-    task_id: &str,
-    run: &RunState,
-    round: &RoundState,
-    node: &NodeState,
-) -> RuntimeInterventionKind {
-    if node.manual_check_pending {
-        return RuntimeInterventionKind::ManualDecisionRequired;
-    }
-    let attempt_dir =
-        app.paths
-            .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
-    if attempt_has_pending_elicitation(&attempt_dir) {
-        return RuntimeInterventionKind::ElicitationRequested;
-    }
-    RuntimeInterventionKind::ManualDecisionRequired
-}
-
-fn attempt_has_pending_elicitation(attempt_dir: &camino::Utf8Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(attempt_dir.as_std_path()) else {
-        return false;
-    };
-    entries.filter_map(|entry| entry.ok()).any(|entry| {
-        entry
-            .file_name()
-            .to_str()
-            .map(|name| name.starts_with("acp.elicitation-request.") && name.ends_with(".json"))
-            .unwrap_or(false)
-    })
-}
-
-fn emit_pause_side_effects(
+pub(crate) fn emit_pause_side_effects(
     app: &App,
     task_id: &str,
     run: &RunState,
@@ -4069,45 +4157,6 @@ fn emit_pause_side_effects(
     node: &NodeState,
 ) {
     emit_run_paused_lifecycle_event(app, task_id, run, round, node);
-    if let Some(kind) = intervention_kind_for_pause(app, task_id, run, round, node) {
-        emit_intervention_requested(app, task_id, run, round, node, kind);
-    }
-}
-
-fn attempt_was_user_cancelled(
-    app: &App,
-    task_id: &str,
-    run_id: &str,
-    round_id: &str,
-    node: &NodeState,
-) -> bool {
-    let attempt_dir =
-        app.paths
-            .attempt_dir(task_id, run_id, round_id, &node.node_id, &node.attempt_id);
-    if attempt_dir_was_cancelled(&attempt_dir) {
-        return true;
-    }
-    if node.node_type != crate::domain::NodeType::AiDynamic {
-        return false;
-    }
-    let graph_path =
-        app.paths
-            .dynamic_graph_file(task_id, run_id, round_id, &node.node_id, &node.attempt_id);
-    let Ok(graph) = load_dynamic_graph(&graph_path, &app.paths.repo_root) else {
-        return false;
-    };
-    graph.nodes.iter().any(|dynamic_node| {
-        let attempt_dir = app.paths.dynamic_node_attempt_dir(
-            task_id,
-            run_id,
-            round_id,
-            &node.node_id,
-            &node.attempt_id,
-            &dynamic_node.id,
-            &dynamic_attempt_id(dynamic_node),
-        );
-        attempt_dir_was_cancelled(&attempt_dir)
-    })
 }
 
 fn dynamic_node_attempt_was_cancelled(
@@ -4260,6 +4309,64 @@ fn completed_node_snapshot(
         finished_at: node.finished_at.clone(),
         attempt_dir,
     }
+}
+
+fn emit_node_completed_lifecycle_event(
+    app: &App,
+    task_id: &str,
+    run: &RunState,
+    round: &RoundState,
+    node: &NodeState,
+) {
+    if node.status != RunStatus::Completed
+        || node.outcome.is_none()
+        || node.manual_check_pending
+        || node.finished_at.is_none()
+    {
+        tracing::warn!(
+            code = "NODE_COMPLETED_LIFECYCLE_NOT_TERMINAL",
+            task_id,
+            run_id = %run.id,
+            round_id = %round.id,
+            node_id = %node.node_id,
+            attempt_id = %node.attempt_id,
+            "refused to publish node completion before canonical terminal state"
+        );
+        return;
+    }
+    let attempt_dir = app
+        .paths
+        .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id)
+        .to_string();
+    let snapshot = completed_node_snapshot(round, node, Some(attempt_dir.clone()));
+    app.emit_lifecycle_event(RuntimeLifecycleEvent::NodeCompleted {
+        task_id: task_id.to_string(),
+        task_uuid: run.task_uuid.clone(),
+        run_id: run.id.clone(),
+        run_uuid: run.uuid.clone(),
+        round_id: round.id.clone(),
+        round_uuid: round.uuid.clone(),
+        round_index: Some(round.index),
+        node_id: node.node_id.clone(),
+        node_uuid: node.uuid.clone(),
+        attempt_id: node.attempt_id.clone(),
+        repo_root: app.paths.repo_root.to_string(),
+        seq: snapshot.seq,
+        node_name: snapshot.node_name,
+        agent_type: snapshot.agent_type,
+        resolved_model: node
+            .resolved_config
+            .get("model")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        started_at: node.started_at.clone(),
+        finished_at: node.finished_at.clone(),
+        outcome: snapshot.status,
+        attempt_dir,
+        suppress_sentinel: false,
+        metrics_unit_kind: None,
+        child_run_id: None,
+    });
 }
 
 fn apply_control_decision(
@@ -4738,11 +4845,13 @@ fn drive_from_node_with_runtime_candidate(
         SessionMode::New,
         None,
         None,
-        None,
+        super::direct_conversation_agent_label(app, task_id)
+            .map(|_| super::INITIAL_DIRECT_TURN_ID.to_string()),
         load_initial_prompt_display(app, task_id),
         UserPromptRenderMode::RequirementTask,
         Vec::new(),
         RuntimeControlIntent::Unchanged,
+        None,
         None,
         None,
         None,
@@ -12369,6 +12478,7 @@ pub(crate) fn run_continue_with_prompt_input(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -15247,6 +15357,7 @@ fn drive_from_node_with_initial_session(
     mut parent_continue_input: Option<ConversationPromptInput>,
     mut parent_continue_prompt_id: Option<String>,
     mut dynamic_resume_override: Option<DynamicResumeOverride>,
+    mut resume_metrics_context: Option<RuntimeResumeMetricsContext>,
     initial_model_override: Option<String>,
     initial_permission_mode_override: Option<String>,
     mut launch: Option<mpsc::Sender<RuntimeContinueLaunch>>,
@@ -15275,6 +15386,7 @@ fn drive_from_node_with_initial_session(
     let mut invalid_output_repair_prompts = 0;
 
     loop {
+        let current_resume_metrics_context = resume_metrics_context.take();
         let current_attempt_id = node.attempt_id.clone();
         let current_node_id = node.node_id.clone();
         let current_execution_id = node.runtime_execution_id.clone();
@@ -15282,15 +15394,30 @@ fn drive_from_node_with_initial_session(
             .with_round(round.id.clone())
             .with_node(current_node_id.clone())
             .with_attempt(current_attempt_id.clone());
-        let previous_pause_reason = (run.status == RunStatus::Paused)
-            .then_some(run.pause_reason)
-            .flatten();
+        let previous_pause_reason = effective_previous_pause_reason(
+            run.status,
+            run.pause_reason,
+            current_resume_metrics_context.as_ref(),
+        );
         run.status = RunStatus::Running;
         run.pause_reason = None;
         run.updated_at = now_rfc3339_like();
         let starting_phase = match run.execution.phase {
             RuntimeExecutionPhase::FinalizingArtifact => RuntimeExecutionPhase::FinalizingArtifact,
             RuntimeExecutionPhase::RepairingArtifact => RuntimeExecutionPhase::RepairingArtifact,
+            _ if previous_pause_reason.is_some()
+                && crate::provider::post_turn_projection_checkpoint_is_finalizing(
+                    &app.paths.attempt_dir(
+                        task_id,
+                        &run.id,
+                        &round.id,
+                        &node.node_id,
+                        &node.attempt_id,
+                    ),
+                )? =>
+            {
+                RuntimeExecutionPhase::FinalizingArtifact
+            }
             _ => RuntimeExecutionPhase::StartingNode,
         };
         run.transition_current_execution(starting_phase, run.updated_at.clone())?;
@@ -15339,11 +15466,17 @@ fn drive_from_node_with_initial_session(
                 app,
                 run,
                 super::observability::LifecycleEventType::ExecutionResumed,
-                uuid::Uuid::new_v4().to_string(),
+                metrics_resume_fact_id(
+                    run,
+                    current_resume_metrics_context
+                        .as_ref()
+                        .map(|context| context.transition_revision),
+                ),
                 now_rfc3339_like(),
                 Some(previous_pause_reason),
                 None,
                 None,
+                current_resume_metrics_context.as_ref(),
             );
         }
 
@@ -15679,44 +15812,6 @@ fn drive_from_node_with_initial_session(
 
         if node.status == RunStatus::Completed {
             teardown_node_environment_best_effort(app, task_id, &run.id, &round.id, &node, &ctx);
-
-            // Emit NodeCompleted immediately when the node reaches terminal execution state.
-            // This must happen BEFORE any control flow decisions (manual check, invalid
-            // repair, transition, run completion) so metrics are reported for every node.
-            let node_attempt_dir = app
-                .paths
-                .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id)
-                .to_string();
-            let node_completed_snapshot =
-                completed_node_snapshot(round, &node, Some(node_attempt_dir.clone()));
-            app.emit_lifecycle_event(super::RuntimeLifecycleEvent::NodeCompleted {
-                task_id: task_id.to_string(),
-                task_uuid: run.task_uuid.clone(),
-                run_id: run.id.clone(),
-                run_uuid: run.uuid.clone(),
-                round_id: round.id.clone(),
-                round_uuid: round.uuid.clone(),
-                round_index: Some(round.index),
-                node_id: node.node_id.clone(),
-                node_uuid: node.uuid.clone(),
-                attempt_id: node.attempt_id.clone(),
-                repo_root: app.paths.repo_root.to_string(),
-                seq: node_completed_snapshot.seq,
-                node_name: node_completed_snapshot.node_name.clone(),
-                agent_type: node_completed_snapshot.agent_type.clone(),
-                resolved_model: node
-                    .resolved_config
-                    .get("model")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string),
-                started_at: node.started_at.clone(),
-                finished_at: node.finished_at.clone(),
-                outcome: node_completed_snapshot.status.clone(),
-                attempt_dir: node_attempt_dir,
-                suppress_sentinel: false,
-                metrics_unit_kind: None,
-                child_run_id: None,
-            });
         }
 
         if node.status == RunStatus::Paused {
@@ -15938,7 +16033,7 @@ fn drive_from_node_with_initial_session(
             node.status = RunStatus::Paused;
             node.outcome = None;
             node.manual_check_pending = true;
-            node.finished_at = Some(now_rfc3339_like());
+            node.finished_at = None;
             run.status = RunStatus::Paused;
             run.pause_reason = Some(PauseReason::WaitingForUserInput);
             run.updated_at = now_rfc3339_like();
@@ -16023,7 +16118,7 @@ fn drive_from_node_with_initial_session(
             return Ok(());
         }
 
-        // NodeCompleted already emitted above inside the if-completed block.
+        emit_node_completed_lifecycle_event(app, task_id, run, round, &node);
         let decision = decide_next_step(workflow, run, round, &node);
 
         if let Some(next) = apply_control_decision(
@@ -16062,7 +16157,6 @@ fn drive_from_node_with_initial_session(
             invalid_output_repair_prompts = 0;
             continue;
         }
-        // Workflow ended - NodeCompleted already emitted above before control decision.
         if run.status != RunStatus::Running {
             app.finish_runtime_candidate_best_effort(
                 task_id,
@@ -16077,7 +16171,6 @@ fn drive_from_node_with_initial_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acp::elicitation::{pending_elicitation_state, write_pending_elicitation};
     use crate::config::{ProviderDiagnosticSnapshot, RuntimeConfig};
     use crate::dsl::{AiDynamicAgentStrategy, DynamicControlDsl};
     use crate::provider::{
@@ -16202,21 +16295,6 @@ mod tests {
     }
 
     #[test]
-    fn metrics_resume_cause_is_consumed_without_pause_reason_inference() {
-        let mut state = crate::app::observability::ExecutionObservabilityState::default();
-        state.set_pending_resume_cause(crate::app::observability::ResumeCause::PermissionResolved);
-        let cause = state.take_pending_resume_cause().unwrap();
-        state.record_resume(true, cause);
-        assert_eq!(state.counters.resume_count, 1);
-        assert_eq!(state.counters.manual_continue_count, 0);
-        state.set_pending_resume_cause(crate::app::observability::ResumeCause::ManualContinue);
-        let cause = state.take_pending_resume_cause().unwrap();
-        state.record_resume(true, cause);
-        assert_eq!(state.counters.resume_count, 2);
-        assert_eq!(state.counters.manual_continue_count, 1);
-    }
-
-    #[test]
     fn run_intermediate_metrics_carry_current_workflow_node_context() {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
@@ -16228,7 +16306,7 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_for_handler = seen.clone();
         bus.subscribe_inline(Arc::new(move |event| {
-            if let RuntimeLifecycleEvent::MetricsFact(fact) = event {
+            if let RuntimeLifecycleEvent::PendingMetricsFact(fact) = event {
                 seen_for_handler.lock().unwrap().push(fact);
             }
         }));
@@ -16308,6 +16386,7 @@ mod tests {
             Some(PauseReason::WaitingForUserInput),
             None,
             None,
+            None,
         );
         emit_run_metrics_fact(
             &app,
@@ -16318,24 +16397,46 @@ mod tests {
             Some(PauseReason::WaitingForUserInput),
             None,
             None,
+            Some(&RuntimeResumeMetricsContext::manual_continue(
+                PauseReason::WaitingForUserInput,
+                7,
+            )),
         );
 
         let facts = seen.lock().unwrap();
         assert_eq!(facts.len(), 2);
         for fact in facts.iter() {
-            assert_eq!(fact.round_index, Some(1));
-            assert_eq!(fact.attempt_index, Some(1));
-            assert_eq!(fact.attempt_id.as_deref(), Some(node_uuid.as_str()));
-            assert_eq!(fact.role_name.as_deref(), Some("Planner"));
+            let crate::app::observability::MetricsSubject::WorkflowNodeAttempt {
+                node_id,
+                attempt_id,
+                attempt_index,
+                round_index,
+                role_name,
+            } = &fact.subject
+            else {
+                panic!("expected workflow node attempt subject")
+            };
+            assert_eq!(*round_index, 1);
+            assert_eq!(*attempt_index, 1);
+            assert_eq!(attempt_id, &node_uuid);
+            assert_eq!(role_name, "Planner");
             assert_eq!(
-                fact.node_id.as_deref(),
-                crate::app::observability::derive_execution_id(&run_uuid, "round:1:node:plan")
-                    .as_deref()
+                node_id,
+                &crate::app::observability::derive_execution_id(&run_uuid, "round:1:node:plan")
+                    .unwrap()
             );
         }
         assert_eq!(
-            facts[1].previous_pause_reason,
+            facts[1].payload.previous_pause_reason,
             Some(crate::app::observability::MetricsPauseReason::WaitingForUserInput)
+        );
+        assert_eq!(facts[1].fact_id, "resumed-1");
+        assert_eq!(
+            facts[1].transition,
+            crate::app::observability::MetricsTransition::Resumed {
+                transition_id: "resumed-1".to_string(),
+                action: crate::app::observability::UserExecutionAction::ManualContinue,
+            }
         );
     }
 
@@ -16686,6 +16787,33 @@ mod tests {
         );
         drop(first);
         assert!(FixedRunContinueLease::acquire(&app, "task-001", "run-001").is_ok());
+    }
+
+    #[test]
+    fn resume_metrics_context_only_carries_resume_lifecycle_fields() {
+        let context =
+            RuntimeResumeMetricsContext::manual_continue(PauseReason::ProcessInterrupted, 7);
+
+        assert_eq!(
+            context.previous_pause_reason,
+            PauseReason::ProcessInterrupted
+        );
+        assert_eq!(context.transition_revision, 7);
+    }
+
+    #[test]
+    fn committed_continue_context_keeps_running_drive_from_republishing_started() {
+        let context =
+            RuntimeResumeMetricsContext::manual_continue(PauseReason::ProcessInterrupted, 9);
+
+        assert_eq!(
+            effective_previous_pause_reason(RunStatus::Running, None, Some(&context)),
+            Some(PauseReason::ProcessInterrupted)
+        );
+        assert_eq!(
+            effective_previous_pause_reason(RunStatus::Running, None, None),
+            None
+        );
     }
 
     #[test]
@@ -17440,7 +17568,7 @@ mod tests {
     }
 
     #[test]
-    fn background_drive_error_terminalizes_runtime_and_emits_intervention() {
+    fn background_drive_error_terminalizes_runtime_and_publishes_committed_pause_once() {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
         let events = Arc::new(Mutex::new(Vec::new()));
@@ -17551,14 +17679,27 @@ mod tests {
                 .iter()
                 .filter(|event| matches!(
                     event,
-                    RuntimeLifecycleEvent::InterventionRequested {
-                        scheduled_occurrence_id: Some(occurrence_id),
-                        kind: RuntimeInterventionKind::RuntimeAbnormal,
+                    RuntimeLifecycleEvent::RunPaused {
+                        task_id: emitted_task_id,
+                        run_id,
+                        node_id,
+                        pause_reason: PauseReason::RuntimeAbnormal,
                         ..
-                    } if occurrence_id == "occurrence-001"
+                    } if emitted_task_id == task_id && run_id == "run-001" && node_id == "worker"
                 ))
                 .count(),
             1
+        );
+        assert_eq!(
+            captured
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    RuntimeLifecycleEvent::InterventionRequested { .. }
+                ))
+                .count(),
+            0,
+            "committed attempt pause must not create a parallel intervention lifecycle"
         );
         drop(captured);
 
@@ -17572,20 +17713,9 @@ mod tests {
             &anyhow!("round persistence failed after run pause"),
         );
         let captured = events.lock().unwrap();
-        assert_eq!(
-            captured
-                .iter()
-                .filter(|event| matches!(
-                    event,
-                    RuntimeLifecycleEvent::InterventionRequested {
-                        scheduled_occurrence_id: Some(occurrence_id),
-                        kind: RuntimeInterventionKind::RuntimeAbnormal,
-                        ..
-                    } if occurrence_id == "occurrence-001"
-                ))
-                .count(),
-            1,
-            "a partially persisted pause still needs a terminal lifecycle event"
+        assert!(
+            captured.is_empty(),
+            "re-terminalizing an already committed pause must not publish lifecycle events"
         );
     }
 
@@ -17741,105 +17871,28 @@ mod tests {
     }
 
     #[test]
-    fn waiting_for_user_input_maps_to_elicitation_when_pending_request_exists() {
+    fn manual_check_attempt_emits_completed_only_after_terminal_state_is_persistable() {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let app = App::new(repo_root);
-        let task_id = "task-001";
+        let completed_events = Arc::new(Mutex::new(Vec::new()));
+        let captured = completed_events.clone();
+        let app = App::new(repo_root).with_inline_lifecycle_subscriber(Arc::new(move |event| {
+            if matches!(&event, RuntimeLifecycleEvent::NodeCompleted { .. }) {
+                captured.lock().unwrap().push(event);
+            }
+        }));
         let run = RunState {
-            version: crate::domain::VERSION.to_string(),
-            id: "run-001".to_string(),
-            task_id: task_id.to_string(),
-            task_uuid: None,
-            status: RunStatus::Paused,
-            outcome: None,
-            started_at: "1Z".to_string(),
-            updated_at: "1Z".to_string(),
-            workflow_snapshot: "workflow.snapshot.json".to_string(),
-            current_round: Some("round-001".to_string()),
-            current_node: Some("plan".to_string()),
-            current_attempt: Some("attempt-001".to_string()),
-            new_rounds_opened: 0,
-            pause_reason: Some(PauseReason::WaitingForUserInput),
-            uuid: None,
-            last_executed_node: None,
-            worktree: None,
-            execution: Default::default(),
-        };
-        let round = RoundState {
-            version: crate::domain::VERSION.to_string(),
-            id: "round-001".to_string(),
-            run_id: run.id.clone(),
-            index: 1,
-            status: RunStatus::Paused,
-            outcome: None,
-            trigger: crate::domain::RoundTrigger::Initial,
-            started_at: "1Z".to_string(),
-            trace: Vec::new(),
-            uuid: None,
-        };
-        let node = NodeState {
-            version: crate::domain::VERSION.to_string(),
-            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
-            node_id: "plan".to_string(),
-            run_id: run.id.clone(),
-            round_id: round.id.clone(),
-            attempt_id: "attempt-001".to_string(),
-            node_type: crate::domain::NodeType::Worker,
-            status: RunStatus::Paused,
-            outcome: None,
-            started_at: "1Z".to_string(),
-            finished_at: None,
-            resolved_config: std::collections::BTreeMap::new(),
-            manual_check_pending: false,
-            runtime_execution_id: None,
-            uuid: None,
-        };
-        let attempt_dir =
-            app.paths
-                .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
-        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
-        write_pending_elicitation(
-            &attempt_dir,
-            &pending_elicitation_state(
-                "elicit-001",
-                "turn-1",
-                "prompt-turn-1",
-                serde_json::json!(1),
-                serde_json::from_value(serde_json::json!({
-                    "mode": "form",
-                    "sessionId": "session-test",
-                    "message": "请选择",
-                    "requestedSchema": { "type": "object", "properties": {} }
-                }))
-                .unwrap(),
-                "1Z".to_string(),
-            ),
-        )
-        .unwrap();
-
-        let kind = waiting_for_user_input_intervention_kind(&app, task_id, &run, &round, &node);
-
-        assert_eq!(kind, RuntimeInterventionKind::ElicitationRequested);
-    }
-
-    #[test]
-    fn waiting_for_user_input_keeps_manual_check_when_flagged() {
-        let temp = tempdir().unwrap();
-        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let app = App::new(repo_root);
-        let run = RunState {
-            version: crate::domain::VERSION.to_string(),
+            version: VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: "task-001".to_string(),
             task_uuid: None,
             status: RunStatus::Paused,
             outcome: None,
-            started_at: "1Z".to_string(),
-            updated_at: "1Z".to_string(),
+            started_at: "2026-08-25T10:00:00.000".to_string(),
+            updated_at: "2026-08-25T10:00:01.000".to_string(),
             workflow_snapshot: "workflow.snapshot.json".to_string(),
             current_round: Some("round-001".to_string()),
-            current_node: Some("plan".to_string()),
+            current_node: Some("review".to_string()),
             current_attempt: Some("attempt-001".to_string()),
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::WaitingForUserInput),
@@ -17849,38 +17902,44 @@ mod tests {
             execution: Default::default(),
         };
         let round = RoundState {
-            version: crate::domain::VERSION.to_string(),
+            version: VERSION.to_string(),
             id: "round-001".to_string(),
             run_id: run.id.clone(),
             index: 1,
             status: RunStatus::Paused,
             outcome: None,
-            trigger: crate::domain::RoundTrigger::Initial,
-            started_at: "1Z".to_string(),
+            trigger: RoundTrigger::Initial,
+            started_at: run.started_at.clone(),
             trace: Vec::new(),
             uuid: None,
         };
-        let node = NodeState {
-            version: crate::domain::VERSION.to_string(),
+        let mut node = NodeState {
+            version: VERSION.to_string(),
             acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
-            node_id: "plan".to_string(),
+            node_id: "review".to_string(),
+            node_type: crate::domain::NodeType::Worker,
             run_id: run.id.clone(),
             round_id: round.id.clone(),
             attempt_id: "attempt-001".to_string(),
-            node_type: crate::domain::NodeType::Worker,
             status: RunStatus::Paused,
             outcome: None,
-            started_at: "1Z".to_string(),
+            started_at: run.started_at.clone(),
             finished_at: None,
-            resolved_config: std::collections::BTreeMap::new(),
             manual_check_pending: true,
             runtime_execution_id: None,
+            resolved_config: BTreeMap::new(),
             uuid: None,
         };
 
-        let kind = waiting_for_user_input_intervention_kind(&app, "task-001", &run, &round, &node);
+        emit_node_completed_lifecycle_event(&app, "task-001", &run, &round, &node);
+        assert!(completed_events.lock().unwrap().is_empty());
 
-        assert_eq!(kind, RuntimeInterventionKind::ManualDecisionRequired);
+        node.status = RunStatus::Completed;
+        node.outcome = Some(NodeOutcome::Success);
+        node.manual_check_pending = false;
+        node.finished_at = Some("2026-08-25T10:00:02.000".to_string());
+        emit_node_completed_lifecycle_event(&app, "task-001", &run, &round, &node);
+        assert_eq!(completed_events.lock().unwrap().len(), 1);
     }
 
     #[test]
@@ -18107,16 +18166,28 @@ mod tests {
         let converged = app.run_status(task_id, &run.id).unwrap();
         assert_eq!(converged.status, RunStatus::Paused);
         assert_eq!(converged.pause_reason, Some(PauseReason::RuntimeAbnormal));
-        assert!(lifecycle_events.lock().unwrap().iter().any(|event| {
-            matches!(
-                event,
-                RuntimeLifecycleEvent::InterventionRequested {
-                    scheduled_occurrence_id: Some(occurrence_id),
-                    kind: RuntimeInterventionKind::RuntimeAbnormal,
-                    ..
-                } if occurrence_id == "occurrence-001"
-            )
-        }));
+        let lifecycle_events = lifecycle_events.lock().unwrap();
+        assert_eq!(
+            lifecycle_events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    RuntimeLifecycleEvent::RunPaused {
+                        task_id: emitted_task_id,
+                        run_id,
+                        node_id,
+                        pause_reason: PauseReason::RuntimeAbnormal,
+                        ..
+                    } if emitted_task_id == task_id && run_id == "run-001" && node_id == "review"
+                ))
+                .count(),
+            1
+        );
+        assert!(
+            !lifecycle_events
+                .iter()
+                .any(|event| matches!(event, RuntimeLifecycleEvent::InterventionRequested { .. }))
+        );
     }
 
     #[test]
@@ -18253,17 +18324,10 @@ mod tests {
             durable_node.runtime_execution_id.as_deref(),
             Some("execution-b")
         );
-        assert!(lifecycle_events.lock().unwrap().iter().any(|event| {
-            matches!(
-                event,
-                RuntimeLifecycleEvent::InterventionRequested {
-                    scheduled_occurrence_id: Some(occurrence_id),
-                    attempt_id,
-                    kind: RuntimeInterventionKind::RuntimeAbnormal,
-                    ..
-                } if occurrence_id == "occurrence-001" && attempt_id == "attempt-001"
-            )
-        }));
+        assert!(
+            lifecycle_events.lock().unwrap().is_empty(),
+            "a superseded attempt must not publish pause or intervention events"
+        );
     }
 
     #[test]
@@ -18354,17 +18418,10 @@ mod tests {
         let durable_run = app.run_status(task_id, &run.id).unwrap();
         assert_eq!(durable_run.status, RunStatus::Paused);
         assert_eq!(durable_run.pause_reason, Some(PauseReason::RuntimeAbnormal));
-        assert!(lifecycle_events.lock().unwrap().iter().any(|event| {
-            matches!(
-                event,
-                RuntimeLifecycleEvent::InterventionRequested {
-                    scheduled_occurrence_id: Some(occurrence_id),
-                    attempt_id,
-                    kind: RuntimeInterventionKind::RuntimeAbnormal,
-                    ..
-                } if occurrence_id == "occurrence-001" && attempt_id == "attempt-001"
-            )
-        }));
+        assert!(
+            lifecycle_events.lock().unwrap().is_empty(),
+            "a partially persisted pause must not be published as committed"
+        );
     }
 
     fn test_worktree_node(id: &str) -> DynamicNodeState {

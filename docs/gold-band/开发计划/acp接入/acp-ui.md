@@ -2,7 +2,7 @@
 
 ## 0. 当前实现状态
 
-- 2026-09-15 权限下拉 Auto Accept overlay 分组文案为 `{{appName}}来帮你…` / `{{appName}} will help you…`；分组标题与 Auto Accept 选项和上方原生 mode 名称共用 `pl-8` 文字左边缘，复选框指示器与单选指示器同列。
+- 2026-09-15 权限触发器勾选 Auto Accept 后复用模型与思考强度的复合展示，显示 `Agent · 自动批准`；仅勾选时显示 `不指定 · 自动批准`。overlay 分组文案为 `{{appName}}来帮你…` / `{{appName}} will help you…`；分组标题与 Auto Accept 选项和上方原生 mode 名称共用 `pl-8` 文字左边缘，复选框指示器与单选指示器同列。
 - 2026-09-15 ACP `initialize` 全局声明 `_meta.parameterizedModelPicker`，使依赖该客户端能力才展开思考强度 / 模型参数的 Agent（当前主要是 Cursor）能返回标准 `configOptions`。Composer 仍只在 `category=thought_level` 时切换复合下拉，不按 Agent ID 分叉，也不解析模型变体串。
 - 2026-09-07 工具图片分层加载修正：过程列表移除图片引用，并在 hydrate 前剥离工具输出；移除过程列表和工具详情查询中重复的旧历史迁移，复用已有会话存储初始化入口。工具展开后从详情取得图片引用，仅预备当前宽度可见的首批缩略图，等待读取和浏览器解码完成后再展示正文及图片，保留局部加载与坏图重试。关闭时释放预备租约，迟到结果不重新展开内容；汇总图片栏保持独立。属于已有分层设计实现不完整，不新增持久字段、缓存或依赖。失败证据为缺失图片 blob 导致列表查询失败，以及图片未完成时正文已显示。
 - 分层加载验收：上述复现由红转绿，后端列表/详情及分页 2 项、前端详情加载/缓存/缩略栏/已发送附件 36 项通过；覆盖解码等待、坏图不阻塞正文、关闭后迟到结果不显示及原有实时输出保护。类型检查和生产构建通过。浏览器以 40 条工具、单工具 18 张真实截图验证：展开列表图片请求为 0，点开工具先显示加载状态，首屏 9 张就绪后显示正文及图片，480px 窄窗口无横向页面溢出。补齐重试按钮中英文文案。性能验收固定读取边界和请求数量，不将测试运行时间当作生产耗时；已有分页查询的历史扫描未在本次替换。测试资源在结束时清理，未验证 EXE 原生窗口。
@@ -337,7 +337,7 @@ ACP UI 不按“第一阶段 / 第二阶段”组织，而按可独立实现的�
 12. `ModeUpdate` / `ConfigUpdate` / `SessionInfo` 状态提示。
 13. `RawFrameViewer` 诊断视图。
 14. 错误、断线、恢复、seq gap 提示。
-15. 快速对话与会话详情共用 `SlashCommandMenu` / `useSlashCommandController`：独立 `/query` 打开，分隔符关闭，选择后插入普通 `/${name} ` 文本；已存在于当前目录的完整命令在分隔符出现后以输入标签投影，底层发送值保持原始文本。
+15. 快速对话与会话详情共用 `SlashCommandMenu` / `useSlashCommandController`：独立 `/query` 打开，分隔符关闭。菜单分产品组（channel 品牌名 + 全部角色）和 Agent 组（原生命令/Skill，集合与去重不变）。选择角色后插入 `/${name} ` 并投影为带应用 logo 的输入标签，发送时剥离该前缀，把角色快照交给 `ConversationPromptInput.role`，Agent 正文用双语模板包装；选择 Agent 命令后仍插入普通 `/${name} ` 文本，底层发送值保持原始文本。角色与命令重名时两行都保留，点选记住 `kind + id`，未点选时角色优先。角色标签悬停展示完整 content 并可滚动；消息气泡上方角色标签与引用入口同一行，角色在前。
 16. ACP 命令目录由 Rust Core 按 Agent + workspace 持久化；每个 Agent 维护独立 Skill 写列表与读列表，Doctor 将 `available_commands_update` 的原生命令和用户级/workspace 级读目录中的 `SKILL.md` 元数据合并，ACP 条目优先并按名称去重。自动/手动 doctor、live update 与 SKILL 同步后刷新；连接层以有界 TTL early-session buffer 解决 `session/new` 返回前命令通知丢失。
 
 详细执行 todo 见：

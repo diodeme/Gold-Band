@@ -221,6 +221,7 @@ impl InterventionNotification {
                     || {
                         make_dedup_key(
                             project_id,
+                            task_id,
                             run_id,
                             round_id,
                             node_id,
@@ -230,7 +231,7 @@ impl InterventionNotification {
                     },
                     |suffix| {
                         make_dedup_key_with_suffix(
-                            project_id, run_id, round_id, node_id, attempt_id, suffix,
+                            project_id, task_id, run_id, round_id, node_id, attempt_id, suffix,
                         )
                     },
                 )
@@ -278,7 +279,9 @@ impl InterventionNotification {
         };
         let pause_reason = PauseReason::WaitingForUserInput;
         Self {
-            dedup_key: make_completion_dedup_key(project_id, run_id, round_id, node_id, attempt_id),
+            dedup_key: make_completion_dedup_key(
+                project_id, task_id, run_id, round_id, node_id, attempt_id,
+            ),
             project_id: project_id.to_string(),
             task_id: task_id.to_string(),
             task_uuid: None,
@@ -379,7 +382,7 @@ impl InterventionNotification {
         };
         Some(Self {
             dedup_key: make_turn_dedup_key(
-                project_id, run_id, round_id, node_id, attempt_id, turn_id,
+                project_id, task_id, run_id, round_id, node_id, attempt_id, turn_id,
             ),
             project_id: project_id.to_string(),
             task_id: task_id.to_string(),
@@ -454,18 +457,22 @@ pub const ACP_TURN_FINISHED_DEDUP_SUFFIX: &str = "acp-turn-finished";
 
 pub fn make_completion_dedup_key(
     project_id: &str,
+    task_id: &str,
     run_id: &str,
     round_id: &str,
     node_id: &str,
     attempt_id: &str,
 ) -> String {
-    format!("{project_id}:{run_id}:{round_id}:{node_id}:{attempt_id}:{RUN_COMPLETED_DEDUP_SUFFIX}")
+    format!(
+        "{project_id}:{task_id}:{run_id}:{round_id}:{node_id}:{attempt_id}:{RUN_COMPLETED_DEDUP_SUFFIX}"
+    )
 }
 
 /// 单次 ACP prompt turn 的稳定去重键。attempt 只标识会话容器，turn_id 才能区分
 /// 同一会话中的连续追问。
 pub fn make_turn_dedup_key(
     project_id: &str,
+    task_id: &str,
     run_id: &str,
     round_id: &str,
     node_id: &str,
@@ -473,13 +480,14 @@ pub fn make_turn_dedup_key(
     turn_id: &str,
 ) -> String {
     format!(
-        "{project_id}:{run_id}:{round_id}:{node_id}:{attempt_id}:{turn_id}:{ACP_TURN_FINISHED_DEDUP_SUFFIX}"
+        "{project_id}:{task_id}:{run_id}:{round_id}:{node_id}:{attempt_id}:{turn_id}:{ACP_TURN_FINISHED_DEDUP_SUFFIX}"
     )
 }
 
-/// 生成统一去重键 `project:run:round:node:attempt:reason`（不含 request_id，方案 §8.2）。
+/// 生成统一去重键 `project:task:run:round:node:attempt:reason`。
 pub fn make_dedup_key(
     project_id: &str,
+    task_id: &str,
     run_id: &str,
     round_id: &str,
     node_id: &str,
@@ -488,6 +496,7 @@ pub fn make_dedup_key(
 ) -> String {
     make_dedup_key_with_suffix(
         project_id,
+        task_id,
         run_id,
         round_id,
         node_id,
@@ -498,6 +507,7 @@ pub fn make_dedup_key(
 
 pub fn make_dedup_key_with_suffix(
     project_id: &str,
+    task_id: &str,
     run_id: &str,
     round_id: &str,
     node_id: &str,
@@ -505,8 +515,8 @@ pub fn make_dedup_key_with_suffix(
     suffix: &str,
 ) -> String {
     format!(
-        "{}:{}:{}:{}:{}:{}",
-        project_id, run_id, round_id, node_id, attempt_id, suffix
+        "{}:{}:{}:{}:{}:{}:{}",
+        project_id, task_id, run_id, round_id, node_id, attempt_id, suffix
     )
 }
 
@@ -558,12 +568,12 @@ impl NotificationDedup {
     }
 
     /// 批量清理某 project/run 的所有 key（run 终态治理）。幂等。
-    pub fn clear_run(&self, project_id: &str, run_id: &str) {
+    pub fn clear_run(&self, project_id: &str, task_id: &str, run_id: &str) {
         let mut guard = lock(&self.sent);
-        let prefix = format!("{project_id}:{run_id}:");
+        let prefix = format!("{project_id}:{task_id}:{run_id}:");
         let to_remove: Vec<String> = guard
             .iter()
-            .filter(|k| k.starts_with(&prefix))
+            .filter(|key| key.starts_with(&prefix))
             .cloned()
             .collect();
         for key in to_remove {
@@ -627,7 +637,7 @@ mod tests {
         let n = sample(PauseReason::WaitingForUserInput);
         assert_eq!(
             n.dedup_key,
-            "project-1:run-1:round-1:node-1:attempt-1:waiting-for-user-input"
+            "project-1:task-1:run-1:round-1:node-1:attempt-1:waiting-for-user-input"
         );
     }
 
@@ -707,7 +717,7 @@ mod tests {
         assert_eq!(n.intervention_type, InterventionType::RunCompleted);
         assert_eq!(
             n.dedup_key,
-            "project-1:run-1:round-1:node-1:attempt-1:run-completed"
+            "project-1:task-1:run-1:round-1:node-1:attempt-1:run-completed"
         );
     }
 
@@ -730,7 +740,7 @@ mod tests {
         assert_eq!(completed.title, "Claude 回复完成");
         assert_eq!(
             completed.dedup_key,
-            "project-1:run-1:round-1:node-1:attempt-1:initial-turn-event:acp-turn-finished"
+            "project-1:task-1:run-1:round-1:node-1:attempt-1:initial-turn-event:acp-turn-finished"
         );
 
         assert!(
@@ -786,7 +796,7 @@ mod tests {
         assert_eq!(first.intervention_type, InterventionType::AgentTurnFinished);
         assert_eq!(
             first.dedup_key,
-            "project-1:run-1:round-1:node-1:attempt-1:turn-1:acp-turn-finished"
+            "project-1:task-1:run-1:round-1:node-1:attempt-1:turn-1:acp-turn-finished"
         );
         assert_ne!(first.dedup_key, second.dedup_key);
     }
@@ -923,6 +933,26 @@ mod tests {
     }
 
     #[test]
+    fn different_tasks_with_reused_local_run_ids_have_distinct_canonical_keys() {
+        let first = sample(PauseReason::WaitingForUserInput);
+        let second = InterventionNotification::new(
+            "project-1",
+            "task-2",
+            None,
+            "run-1",
+            "round-1",
+            "node-1",
+            "attempt-1",
+            "登录节点",
+            PauseReason::WaitingForUserInput,
+        );
+
+        assert_ne!(first.dedup_key, second.dedup_key);
+        assert!(first.dedup_key.contains(":task-1:run-1:"));
+        assert!(second.dedup_key.contains(":task-2:run-1:"));
+    }
+
+    #[test]
     fn elicitation_notification_uses_distinct_dedup_suffix() {
         let manual = sample(PauseReason::WaitingForUserInput).dedup_key;
         let elicitation = InterventionNotification::from_intervention_kind(
@@ -939,7 +969,7 @@ mod tests {
         .dedup_key;
         assert_eq!(
             elicitation,
-            "project-1:run-1:round-1:node-1:attempt-1:elicitation-requested"
+            "project-1:task-1:run-1:round-1:node-1:attempt-1:elicitation-requested"
         );
         assert_ne!(manual, elicitation);
     }
@@ -947,7 +977,7 @@ mod tests {
     #[test]
     fn intervention_event_id_keeps_repeated_requests_in_one_attempt_distinct() {
         let first = InterventionNotification::from_intervention_event(
-            "project-1:run-1:round-1:node-1:attempt-1:elicitation-requested:elicit-1",
+            "project-1:task-1:run-1:round-1:node-1:attempt-1:elicitation-requested:elicit-1",
             "project-1",
             "task-1",
             Some("登录模块"),
@@ -959,7 +989,7 @@ mod tests {
             RuntimeInterventionKind::ElicitationRequested,
         );
         let second = InterventionNotification::from_intervention_event(
-            "project-1:run-1:round-1:node-1:attempt-1:elicitation-requested:elicit-2",
+            "project-1:task-1:run-1:round-1:node-1:attempt-1:elicitation-requested:elicit-2",
             "project-1",
             "task-1",
             Some("登录模块"),
@@ -1021,26 +1051,32 @@ mod tests {
     #[test]
     fn clear_run_evicts_all_keys_of_run() {
         let dedup = NotificationDedup::new();
-        dedup.try_send("project-1:run-1:round-1:node-1:attempt-1:error-blocked");
-        dedup.try_send("project-1:run-1:round-2:node-2:attempt-1:waiting-for-user-input");
-        dedup.try_send("project-1:run-2:round-1:node-1:attempt-1:error-blocked");
-        dedup.try_send("project-2:run-1:round-1:node-1:attempt-1:error-blocked");
-        dedup.clear_run("project-1", "run-1");
-        assert!(dedup.try_send("project-1:run-1:round-1:node-1:attempt-1:error-blocked"));
-        assert!(dedup.try_send("project-1:run-1:round-2:node-2:attempt-1:waiting-for-user-input"));
+        dedup.try_send("project-1:task-1:run-1:round-1:node-1:attempt-1:error-blocked");
+        dedup.try_send("project-1:task-1:run-1:round-2:node-2:attempt-1:waiting-for-user-input");
+        dedup.try_send("project-1:task-1:run-2:round-1:node-1:attempt-1:error-blocked");
+        dedup.try_send("project-1:task-2:run-1:round-1:node-1:attempt-1:error-blocked");
+        dedup.try_send("project-2:task-1:run-1:round-1:node-1:attempt-1:error-blocked");
+        dedup.clear_run("project-1", "task-1", "run-1");
+        assert!(dedup.try_send("project-1:task-1:run-1:round-1:node-1:attempt-1:error-blocked"));
+        assert!(
+            dedup
+                .try_send("project-1:task-1:run-1:round-2:node-2:attempt-1:waiting-for-user-input")
+        );
         // 其他 run 的 key 不受影响。
-        assert!(!dedup.try_send("project-1:run-2:round-1:node-1:attempt-1:error-blocked"));
+        assert!(!dedup.try_send("project-1:task-1:run-2:round-1:node-1:attempt-1:error-blocked"));
+        // 其他 task 的同名 run 不受影响。
+        assert!(!dedup.try_send("project-1:task-2:run-1:round-1:node-1:attempt-1:error-blocked"));
         // 其他 project 的同名 run 也不受影响。
-        assert!(!dedup.try_send("project-2:run-1:round-1:node-1:attempt-1:error-blocked"));
+        assert!(!dedup.try_send("project-2:task-1:run-1:round-1:node-1:attempt-1:error-blocked"));
     }
 
     #[test]
     fn clear_run_does_not_match_prefix_only_run_ids() {
         let dedup = NotificationDedup::new();
-        dedup.try_send("project-1:run-1x:round-1:node-1:attempt-1:error-blocked");
-        dedup.clear_run("project-1", "run-1");
-        // "project-1:run-1:" 不应误清 "project-1:run-1x:..."。
-        assert!(!dedup.try_send("project-1:run-1x:round-1:node-1:attempt-1:error-blocked"));
+        dedup.try_send("project-1:task-1:run-1x:round-1:node-1:attempt-1:error-blocked");
+        dedup.clear_run("project-1", "task-1", "run-1");
+        // "project-1:task-1:run-1:" 不应误清相同前缀的 run id。
+        assert!(!dedup.try_send("project-1:task-1:run-1x:round-1:node-1:attempt-1:error-blocked"));
     }
 
     #[test]

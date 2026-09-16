@@ -348,6 +348,8 @@ pub struct DesktopState {
     mcp_health: Mutex<BTreeMap<String, gold_band::config::McpServerState>>,
     /// 进程级心跳上报器（由生命周期总线驱动六类 reason）。
     heartbeat_reporter: Arc<crate::metrics::heartbeat::HeartbeatReporter>,
+    im_runtime_initialization: Mutex<()>,
+    im_runtime: Mutex<Option<Arc<crate::im_runtime::DesktopImRuntime>>>,
 }
 
 impl DesktopState {
@@ -386,7 +388,43 @@ impl DesktopState {
             heartbeat_reporter: crate::metrics::heartbeat::HeartbeatReporter::new(
                 env!("CARGO_PKG_VERSION").to_string(),
             ),
+            im_runtime_initialization: Mutex::new(()),
+            im_runtime: Mutex::new(None),
         }
+    }
+
+    pub fn initialize_im_runtime(
+        &self,
+        create: impl FnOnce() -> Result<Option<Arc<crate::im_runtime::DesktopImRuntime>>>,
+    ) -> Result<(Option<Arc<crate::im_runtime::DesktopImRuntime>>, bool)> {
+        let _initialization = self
+            .im_runtime_initialization
+            .lock()
+            .map_err(|_| anyhow::anyhow!("IM runtime initialization lock poisoned"))?;
+        let slot = self
+            .im_runtime
+            .lock()
+            .map_err(|_| anyhow::anyhow!("IM runtime lock poisoned"))?;
+        if let Some(runtime) = slot.as_ref() {
+            return Ok((Some(runtime.clone()), false));
+        }
+        drop(slot);
+        let Some(runtime) = create()? else {
+            return Ok((None, false));
+        };
+        let mut slot = self
+            .im_runtime
+            .lock()
+            .map_err(|_| anyhow::anyhow!("IM runtime lock poisoned"))?;
+        *slot = Some(runtime.clone());
+        Ok((Some(runtime), true))
+    }
+
+    pub fn im_runtime(&self) -> Option<Arc<crate::im_runtime::DesktopImRuntime>> {
+        self.im_runtime
+            .lock()
+            .ok()
+            .and_then(|runtime| runtime.clone())
     }
 
     /// 发布真实用户活动事实；heartbeat 由异步 metrics subscriber 投影。

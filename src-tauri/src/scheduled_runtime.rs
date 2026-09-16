@@ -3591,6 +3591,7 @@ fn scheduled_create_input(
         scheduled_task_id: Some(definition.id.clone()),
         scheduled_content_fingerprint: Some(definition.content_fingerprint.clone()),
         workflow_authoring,
+        role: None,
     })
 }
 
@@ -6459,6 +6460,7 @@ mod tests {
                 attempt_id: "attempt-1".to_string(),
                 outer_node_id: None,
                 outer_attempt_id: None,
+                request: gold_band::app::intervention::InterventionRequestIdentity::ManualCheck,
                 node_label: "node".to_string(),
                 kind: RuntimeInterventionKind::ProcessInterrupted,
                 task_title: None,
@@ -6582,6 +6584,9 @@ mod tests {
                 attempt_id: "attempt-1".to_string(),
                 outer_node_id: None,
                 outer_attempt_id: None,
+                request: gold_band::app::intervention::InterventionRequestIdentity::Elicitation {
+                    elicitation_id: "question-1".to_string(),
+                },
                 node_label: "node".to_string(),
                 kind: RuntimeInterventionKind::ElicitationRequested,
                 task_title: None,

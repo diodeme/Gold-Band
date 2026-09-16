@@ -157,18 +157,21 @@ import {
 } from "@/lib/acp-composer-draft";
 import {
   addComposerQuote,
-  createUserPromptSubmission,
+  createComposerPromptSubmission,
   serializeUserPromptSubmission,
   userPromptQuotesFromRaw,
+  userPromptRoleFromRaw,
+  hasUserPromptPayload,
 } from "@/lib/composer-context";
-import type { ConversationPromptInput } from "@/types";
+import type { ConversationPromptInput, ProfileVm } from "@/types";
 import type { AgentMessageSelection } from "@/lib/agent-message-selection";
 import { AcpConversationComposer } from "@/components/conversation/AcpConversationComposer";
 import { AgentSelectionQuoteButton } from "@/components/conversation/AgentSelectionQuoteButton";
 import { ConversationPromptQueue } from "@/components/conversation/ConversationPromptQueue";
-import { UserMessageQuotes } from "@/components/conversation/UserMessageQuotes";
+import { UserMessageMeta } from "@/components/conversation/UserMessageMeta";
 import { UserMessageDisclosure } from "@/components/conversation/UserMessageDisclosure";
-import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from "@/lib/slash-command";
+import { buildSlashCatalog, parseCommittedSlashItem, restoreSlashCommandInputFocus, slashSendableText } from "@/lib/slash-command";
+import { channelAppName } from "@/lib/channel-app-name";
 import { useAgentCommands } from "@/hooks/useAgentCommands";
 import { useSlashCommandController } from "@/hooks/useSlashCommandController";
 import { AcpAvatar, AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
@@ -244,6 +247,7 @@ import {
   getAcpToolDetail,
   getAcpRawFrames,
   getAcpSession,
+  getProfiles,
   deleteConversationQueuedPrompt,
   respondAcpPermission,
   respondElicitation,
@@ -1301,6 +1305,19 @@ export function ACPChatDialog(
   }: ACPChatDialogProps,
 ) {
   const { t } = useTranslation();
+  const [roleProfiles, setRoleProfiles] = useState<ProfileVm[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.resolve()
+      .then(() => getProfiles())
+      .then((list) => {
+        if (!cancelled) setRoleProfiles(list.profiles);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const rightWorkspace = useOptionalRightWorkspaceCommands();
   const effectiveEventPageSize = normalizeEventPageSize(eventPageSize);
   const effectiveEventWindowPageCount = normalizeEventWindowPageCount(
@@ -2348,19 +2365,32 @@ export function ACPChatDialog(
     effective?.providerCwd ?? effective?.cwd,
     effective?.availableCommands,
   );
+  const slashCatalog = useMemo(
+    () => buildSlashCatalog(
+      channelAppName(),
+      t('acp.slashAgentGroup'),
+      roleProfiles,
+      agentCommands.commands,
+    ),
+    [agentCommands.commands, roleProfiles, t],
+  );
   const restoreComposerFocus = useCallback(() => {
     restoreSlashCommandInputFocus(composerTextareaRef);
   }, []);
   const slashCommands = useSlashCommandController({
     input: prompt,
-    commands: agentCommands.commands,
+    groups: slashCatalog,
     contextKey: agentCommands.catalogKey,
     onInputChange: setPrompt,
     onInputFocusRequested: restoreComposerFocus,
   });
   const committedSlashCommand = useMemo(
-    () => parseCommittedSlashCommand(prompt, agentCommands.commands),
-    [agentCommands.commands, prompt],
+    () => parseCommittedSlashItem(
+      prompt,
+      slashCommands.catalogItems,
+      slashCommands.selectedIdentity,
+    ),
+    [prompt, slashCommands.catalogItems, slashCommands.selectedIdentity],
   );
   const providerCatalog = useMemo(
     () => acpProviderConfigCatalog(agentRegistry, effective?.provider),
@@ -2628,7 +2658,11 @@ export function ACPChatDialog(
     : null;
   const canSubmitPrompt = composerState.canSubmit
     && !queueSubmitPending
-    && !queueRestorePending;
+    && !queueRestorePending
+    && hasUserPromptPayload(
+      slashSendableText(prompt, committedSlashCommand),
+      pendingAttachments.length,
+    );
   const canSubmitHistory = composerState.canSubmitContent
     && !queueSubmitPending
     && !queueRestorePending;
@@ -5321,7 +5355,7 @@ export function ACPChatDialog(
     draftSnapshot?: AcpComposerDraft,
     target: "conversation" | "runtime-continue" = "conversation",
   ) => {
-    const { displayText: draftContent, quotes: submittedQuotes } = submission;
+    const { displayText: draftContent, quotes: submittedQuotes, role: submittedRole } = submission;
     if (!composerState.canSubmitContent || composerState.stopInProgress) return false;
     const enqueueing = target === "conversation"
       && composerState.submitTarget === "queue-prompt";
@@ -5398,6 +5432,7 @@ export function ACPChatDialog(
       submittedQuotes,
       latestCanonicalTimelinePosition(loadedEventWindowRef.current.events),
       optimisticAttachments,
+      submittedRole ?? null,
     );
     const promptId = promptIdFromEvent(optimisticEvent);
     const detachedDraft = draftSnapshot && composerDraft.clearIfUnchanged(draftSnapshot)
@@ -5670,7 +5705,11 @@ export function ACPChatDialog(
     if (historyText !== undefined ? !canSubmitHistory || !historyText.trim() : !canSubmitPrompt) return;
     const draftSnapshot = historyText !== undefined ? adoptHistoryText(historyText) : composerDraft.draft;
     if (!draftSnapshot) return;
-    const submission = createUserPromptSubmission(draftSnapshot.content, draftSnapshot.quotes);
+    const submission = createComposerPromptSubmission(
+      draftSnapshot.content,
+      draftSnapshot.quotes,
+      committedSlashCommand,
+    );
     if (composerState.submitTarget !== "none") {
       await submitPrompt(submission, draftSnapshot);
     }
@@ -5786,7 +5825,11 @@ export function ACPChatDialog(
         const draftSnapshot = historyText !== undefined ? adoptHistoryText(historyText) : composerDraft.draft;
         if (!draftSnapshot) { setRuntimeContinueSubmitting(false); return; }
         const accepted = await submitPrompt(
-          createUserPromptSubmission(draftSnapshot.content, draftSnapshot.quotes),
+          createComposerPromptSubmission(
+            draftSnapshot.content,
+            draftSnapshot.quotes,
+            committedSlashCommand,
+          ),
           draftSnapshot,
           "runtime-continue",
         );
@@ -6414,7 +6457,7 @@ export function ACPChatDialog(
                 onPreviewAttachment={handleOpenComposerAttachment}
                 onClearAttachments={clearComposerAttachments}
                 fileError={fileError}
-                slashCommands={slashCommands.filteredCommands}
+                slashGroups={slashCommands.filteredGroups}
                 slashMenuOpen={slashCommands.isOpen}
                 slashMenuActiveIndex={slashCommands.activeIndex}
                 onSlashMenuActiveIndexChange={slashCommands.setActiveIndex}
@@ -6423,8 +6466,12 @@ export function ACPChatDialog(
                 textareaRef={composerTextareaRef}
                 committedSlashCommand={committedSlashCommand ? {
                   prefix: committedSlashCommand.prefix,
-                  description: committedSlashCommand.command.description,
+                  description: committedSlashCommand.item.description,
+                  content: committedSlashCommand.item.content,
+                  kind: committedSlashCommand.item.kind,
                 } : null}
+                agentIconSrc={effective?.adapterIconKey ? agentIconSrc(effective.adapterIconKey) : null}
+                agentIconClassName={effective?.adapterIconKey ? agentIconClass(effective.adapterIconKey) : undefined}
                 placeholder={composerPlaceholder}
                 inputDisabled={composerInputDisabled || queueRestorePending}
                 onTextareaKeyDown={slashCommands.onKeyDown}
@@ -8549,6 +8596,7 @@ const MessageBubble = memo(function MessageBubble({
   }, [event.content?.length, event.endedSeq, event.id, event.kind, event.seq, isUser, streamingDraft, streamingMarkdownItemKey]);
   const rawAttachments = messageAttachmentPreviewsFromRaw(event.raw);
   const userQuotes = isUser ? userPromptQuotesFromRaw(event.raw) : [];
+  const userRole = isUser ? userPromptRoleFromRaw(event.raw) : null;
   const hasAttachments = isUser && rawAttachments.length > 0;
   const attachmentGroups = groupMessageAttachmentPreviews(rawAttachments);
   const runtimeControlParts = !isUser && !streamingDraft
@@ -8607,7 +8655,7 @@ const MessageBubble = memo(function MessageBubble({
           nested && "w-full max-w-full",
         )}
       >
-        <UserMessageQuotes quotes={userQuotes} />
+        <UserMessageMeta role={userRole} quotes={userQuotes} />
         {showMessageBubble ? (
           <MessageContent
             data-agent-quotable-text={quotableAgentMessage ? "true" : undefined}
@@ -10005,6 +10053,7 @@ export function pendingPermissionFromEvents(
     if (event.kind !== "permissionRequest" || event.status !== "pending")
       continue;
     const requestId = permissionRequestIdFromEvent(event);
+    if (!requestId) continue;
     if (dismissedIds.has(requestId)) continue;
     return permissionRequestFromEvent(event);
   }
@@ -10016,6 +10065,7 @@ export function permissionRequestFromEvent(
 ): AcpPermissionRequestVm | null {
   if (event.kind !== "permissionRequest") return null;
   const requestId = permissionRequestIdFromEvent(event);
+  if (!requestId) return null;
   const raw: Record<string, unknown> = {
     ...(rawObject(event.raw) ?? {}),
     requestId,
@@ -11427,7 +11477,9 @@ function shouldPreservePendingInteractions(
       && event.status?.toLowerCase() !== "pending"
     ) return true;
     if (event.kind !== "permissionRequest") return false;
-    return pendingIds.has(permissionRequestIdFromEvent(event))
+    const permissionId = permissionRequestIdFromEvent(event);
+    return permissionId != null
+      && pendingIds.has(permissionId)
       && event.status?.toLowerCase() !== "pending";
   });
 }
@@ -11780,6 +11832,7 @@ export function optimisticUserEvent(
   quotes: import('@/types').UserPromptQuote[] = [],
   afterSeq: number | null = null,
   attachments: MessageAttachmentPreview[] = [],
+  role: import('@/types').UserPromptRole | null = null,
 ): AcpUiEventVm {
   const createdAt = Math.floor(Date.now() / 1000);
   return {
@@ -11795,6 +11848,7 @@ export function optimisticUserEvent(
       promptId,
       optimisticAfterSeq: afterSeq,
       ...(quotes.length > 0 ? { quotes } : {}),
+      ...(role ? { role } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
     },
   };

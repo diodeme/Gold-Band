@@ -1859,6 +1859,10 @@ pub async fn delete_conversation_task(
                 serde_json::json!({ "taskId": task_id }),
             ));
         }
+        let task_uuid = workspace_app
+            .task_show(&task_id)
+            .ok()
+            .and_then(|task| task.uuid);
         trash::delete(task_dir.as_std_path()).map_err(|error| {
             CommandErrorVm::new(
                 "conversation.task-delete-failed",
@@ -1866,6 +1870,12 @@ pub async fn delete_conversation_task(
             )
         })?;
         gold_band::storage::sqlite::delete_task(&task_dir);
+        if let Some(task_uuid) = task_uuid {
+            crate::metrics::mark_task_metrics_deleted_best_effort(
+                workspace_app.paths.project_id.clone(),
+                task_uuid,
+            );
+        }
         {
             let _attention_guard = conversation_attention_write_lock.lock().map_err(|_| {
                 CommandErrorVm::new(

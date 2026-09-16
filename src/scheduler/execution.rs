@@ -22,6 +22,8 @@ pub struct ScheduledExecutionSnapshot {
     pub content: ScheduledTaskContentSnapshot,
     pub instruction_summary: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<super::ScheduleSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automatic: Option<ScheduledAutomaticTriggerContext>,
 }
 
@@ -94,6 +96,7 @@ mod tests {
                 "agent-1",
             ),
             instruction_summary: instruction_summary(instruction, 120),
+            schedule: None,
             automatic: None,
         };
 

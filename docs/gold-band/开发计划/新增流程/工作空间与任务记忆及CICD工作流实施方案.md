@@ -131,3 +131,27 @@
 自评审：复用现有 project-level file lock、atomic-write-file 和前端行状态，不新增 tombstone、缓存、队列或平行业务身份。锁仅覆盖短暂文件操作和 task 目录删除；记忆仍只读取两个有界文件，复杂度不变。
 
 验证：后端记忆、MCP、调用绑定与 CICD 目标测试合计 20 项通过；前端项目记忆与侧栏生命周期测试 14 项通过；TypeScript 检查、Vite 生产构建、`cargo fmt --all -- --check`、`git diff --check` 和 `cargo check -j 1 -p gold-band-desktop` 通过。桌面编译仅有既有 dead-code 警告。
+
+## 2026-09-16 内置记忆 MCP 与目标 key 冲突收敛
+
+根因分为两类：重命名到已存在 key 时，后端 CAS 正确拒绝写入，但前端把“目标权威记录”误投影成“重命名已成功”，属于正确设计下的消费端逻辑错误；MCP 则把持久配置、临时健康状态和正式会话进程混为同一生命周期，造成启动批量探活、重复写 settings 以及无法为内置记忆区分基础定义与 task 绑定，属于根本边界设计缺陷。
+
+- [x] 先用最小 DOM 失败测试复现 `plan → 已存在 renamed` 后“采用最新值”吞掉 `plan`；后端 `memory.conflict.params.reason` 区分 `revision_mismatch / target_exists`，前端按原因保留源行并更新目标行，同一测试转绿。
+- [x] MCP 拆成 definition / diagnostic / executable session snapshot 三层；删除 `McpManager` 内第二状态缓存和启动批量探活，列表与会话配置读取不产生外部 I/O。
+- [x] 内置 definition 使用标准 managed stdio 卡片，启动幂等 reconcile 并保留 enabled；配置未变化返回 `Unchanged` 且不写 settings。卡片可开关、诊断、查看工具，不可编辑或删除。
+- [x] 共享记忆基础 args 只有 `--gold-band-memory-mcp`；无绑定进程完成 initialize/initialized/tools-list，业务工具返回 `memory.context-required`。Direct、Workflow、AI-DYNAMIC 和人工续聊在 prompt 准备时注入当前 task 绑定，且只存在于本次 invocation。
+- [x] enabled 同时控制 MCP 与双语记忆 prompt；关闭时二者都不传。正式 stdio 由 ACP Agent 在 session/new/load/resume 阶段启动，Gold Band 不常驻第二份连接。
+- [x] 上下文管理卡片使用“尚未检测 / 最近检测通过 / 最近检测失败”等诊断文案，不把短进程检查显示为“正在运行”；页面刷新不自动批量探活。浏览器与产品 Demo 均加入标准内置记忆卡片 fixture。
+- [x] 完成受影响面回归、前端生产构建、生成物刷新与浏览器 deep link 交互验证。
+
+验证记录：
+
+- Rust：`memory_domain` 12、`memory_mcp` 2、`memory_invocation` 2、`memory_wb_catalog` 1、`provider_prompt_bundle` 31、`ai_dynamic_node` 38、`worker_bootstrap` 21、lib `mcp::` 10 项全部通过；`cargo fmt --all -- --check`、`cargo check --workspace`、`cargo metadata --locked` 通过（Cargo.lock 与清单一致，本次未新增依赖）。无绑定子进程完成 initialize/initialized/tools-list 后返回 `memory.context-required`；带绑定子进程仍验证跨进程读写与 stale revision 拒绝。
+- 前端：`project-memory.test.tsx`、`mcp-server-card.test.tsx`、`demo-api.test.ts` 共 21 项通过；`npm run web:build`（TypeScript + Vite）通过；Agent catalog 契约 7 项通过；`resources/acp-registry.snapshot.json` 与 `resources/agent-catalog.json` 按上游 Registry 1.0.0 重新生成（claude-acp 0.78.0、codex-acp 1.12.0）。
+- 浏览器：iab 与本机已连接 Chrome 在本环境均不可用，按规则回退到批准的 `agent-browser`，并从本工作树启动 1433 端口 dev server。deep link 进入“上下文 → MCP 管理 → 内置 MCP”验证：内置卡片显示“Gold Band 共享记忆 / Stdio / gold-band-desktop”；仅提供开关、诊断、工具三个入口，无编辑与删除；手动诊断后状态提示为“最近一次 MCP 配置检测通过”；进入页面仅刷新不会自动探测；关闭开关后诊断计数归零，重新开启只触发一次检查。会话、浏览器、dev server、截图与临时工作树均已清理。
+- 项目记忆“重命名目标已存在”冲突由 `project-memory.test.tsx` 的 DOM 回归覆盖（保留源 key、更新目标 key、不吞行）；浏览器预览的内存适配器不模拟 CAS 冲突，未用页面伪造该路径。
+- 已知既有红灯（非本次合并引入）：在 `origin/main` 干净工作树复现同样 5 条前端契约失败（native-title-tooltip-contract、context-management-loading、scheduled-task-composer、acp-activity-batch、acp-runtime-continue-submit）；`chat-container-scroll-input` 仅在满载并行下偶发、单独运行通过；本 PR 未修改这些文件。
+
+合并期机械修正：`tests/worker_bootstrap.rs` 仍断言旧版 runtime control resume 文案，而 main 已把该文案迁移到 `src/prompts/zh-CN/runtime/runtime_control_resume.md`；改为引用 `RUNTIME_CONTROL_RESUME_ZH_CN` 权威常量，避免同类陈旧字符串再次漂移。
+
+过度设计复核：复用现有 `McpServerConfig`、managed 卡片、ACP `mcpServers` 与 `WorkerInvocation`，不新增通用占位符模板、常驻代理、第二种卡片类型、持久诊断字段、缓存、队列或新状态机。性能复核：启动外部 MCP 握手从 O(N) 降为 0；definition reconcile 为有界列表线性比较，未变化零写盘；显式诊断只启动单个短进程并统一回收进程树；会话仍由 Agent 承担原本就需要的单次 stdio 启动成本，无额外 N+1 或历史扫描。

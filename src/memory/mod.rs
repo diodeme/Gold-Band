@@ -360,7 +360,7 @@ impl MemoryService {
             if current.map(|r| r.revision.as_str()) != command.expected_revision.as_deref() {
                 return Err(error(
                     "memory.conflict",
-                    json!({"key": command.key, "scope": command.scope, "latest": current}),
+                    json!({"reason": "revision_mismatch", "key": command.key, "scope": command.scope, "latest": current}),
                 ));
             }
             if let Some(entry) = &command.entry {
@@ -370,7 +370,7 @@ impl MemoryService {
                 {
                     return Err(error(
                         "memory.conflict",
-                        json!({"key": entry.key, "scope": command.scope, "latest": latest}),
+                        json!({"reason": "target_exists", "key": entry.key, "scope": command.scope, "latest": latest}),
                     ));
                 }
             }
@@ -439,7 +439,16 @@ pub fn system_rules(language: crate::config::DesktopLanguage) -> &'static str {
     }
 }
 
-pub fn prepare_invocation(req: &mut crate::provider::WorkerInvocation) -> anyhow::Result<String> {
+pub fn prepare_invocation(
+    req: &mut crate::provider::WorkerInvocation,
+) -> anyhow::Result<Option<String>> {
+    let Some(server_index) = req
+        .mcp_servers
+        .iter()
+        .position(|server| server.get("name").and_then(Value::as_str) == Some(mcp::SERVER_NAME))
+    else {
+        return Ok(None);
+    };
     let paths = GoldBandPaths::new(req.adapter_workspace_dir.clone());
     let service = MemoryService::new(
         paths.clone(),
@@ -447,14 +456,14 @@ pub fn prepare_invocation(req: &mut crate::provider::WorkerInvocation) -> anyhow
         Some(req.runtime_context.task_id.clone()),
     )?;
     let rendered = service.render_context(req.runtime_context.language)?;
-    req.mcp_servers
-        .retain(|server| server.get("name").and_then(Value::as_str) != Some(mcp::SERVER_NAME));
-    req.mcp_servers.push(mcp::server_config(
+    let base = req.mcp_servers[server_index].clone();
+    req.mcp_servers[server_index] = mcp::bind_session_config(
+        &base,
         &paths,
         &req.runtime_context.task_id,
         req.runtime_context.language,
-    )?);
-    Ok(rendered)
+    )?;
+    Ok(Some(rendered))
 }
 
 impl MemoryService {

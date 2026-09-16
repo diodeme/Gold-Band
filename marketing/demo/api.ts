@@ -84,13 +84,20 @@ export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): R
     async getAutoTemplates() { return { version: '0.1', templates: [] }; },
     async listMcpServers() {
       return [
+        { id: 'gold-band-memory', name: 'gold-band-memory', enabled: true, transport: 'stdio', command: 'gold-band-desktop', args: ['--gold-band-memory-mcp'], env: [], managed: true, healthStatus: null },
         { id: 'demo-http', name: 'Project Docs', enabled: true, transport: 'http', url: 'https://docs.example.com/mcp', managed: false, healthStatus: 'healthy' },
         { id: 'demo-sse', name: 'Project Search', enabled: true, transport: 'sse', url: 'https://search.example.com/sse', managed: false, healthStatus: 'healthy' },
       ];
     },
     async listMcpTools(id) {
-      if (id !== 'demo-http' && id !== 'demo-sse') throw { code: 'demo.resource-not-found', params: { id } };
+      if (id !== 'gold-band-memory' && id !== 'demo-http' && id !== 'demo-sse') throw { code: 'demo.resource-not-found', params: { id } };
       const en = state.getPreferences().language === 'en';
+      if (id === 'gold-band-memory') {
+        return [
+          { name: 'memory_read', description: en ? 'Read shared workspace and task memory.' : '读取工作空间与任务共享记忆。', inputSchema: { type: 'object', additionalProperties: false } },
+          { name: 'memory_write', description: en ? 'Write shared memory with revision checks.' : '通过 revision 校验写入共享记忆。', inputSchema: { type: 'object' } },
+        ];
+      }
       return [{ name: id === 'demo-http' ? 'read_document' : 'search_project', description: en ? 'Find project documentation.' : '查询项目文档。', inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } }];
     },
     async getAgentRegistry() { return structuredClone(demoAgentRegistry); },

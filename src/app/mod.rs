@@ -47,8 +47,8 @@ use crate::mcp::McpManager;
 use crate::process::recover_persisted_process_group;
 use crate::provider::{
     AcpLiveTimelinePosition, ConversationPromptInput, DoctorResult, PromptBundle, PromptVisibility,
-    ProviderAdapter, ProviderCapabilities, ProviderInfo, UserPromptRenderMode, provider_from_agent,
-    render_prompt_bundle, supported_modes_from_capabilities,
+    ProviderAdapter, ProviderCapabilities, ProviderInfo, UserPromptRenderMode,
+    prepare_prompt_bundle, provider_from_agent, supported_modes_from_capabilities,
 };
 use crate::runtime::{
     NodeState, RoundState, RunState, RuntimeAttemptLocator, RuntimeExecutionPhase, TaskState,
@@ -1474,6 +1474,7 @@ pub struct PreparedAcpPrompt {
     pub prompt: PromptBundle,
     pub adapter_workspace_dir: Utf8PathBuf,
     pub session_workspace_dir: Utf8PathBuf,
+    pub mcp_servers: Vec<serde_json::Value>,
 }
 
 impl App {
@@ -2826,40 +2827,23 @@ impl App {
     }
 
     pub fn list_mcp_servers(&self) -> Result<Vec<McpServerConfig>> {
-        Ok(self
-            .mcp_manager()
-            .list()?
-            .into_iter()
-            .map(|s| s.config)
-            .collect())
+        self.mcp_manager().list()
     }
 
     pub fn add_mcp_server(&self, json_content: &str) -> Result<Vec<McpServerConfig>> {
-        let (_, list) = self.mcp_manager().add(json_content)?;
-        Ok(list.into_iter().map(|s| s.config).collect())
+        self.mcp_manager().add(json_content)
     }
 
     pub fn update_mcp_server(&self, id: &str, json_content: &str) -> Result<Vec<McpServerConfig>> {
-        let (_, list) = self.mcp_manager().update(id, json_content)?;
-        Ok(list.into_iter().map(|s| s.config).collect())
+        self.mcp_manager().update(id, json_content)
     }
 
     pub fn delete_mcp_server(&self, id: &str) -> Result<Vec<McpServerConfig>> {
-        Ok(self
-            .mcp_manager()
-            .delete(id)?
-            .into_iter()
-            .map(|s| s.config)
-            .collect())
+        self.mcp_manager().delete(id)
     }
 
     pub fn toggle_mcp_server(&self, id: &str, enabled: bool) -> Result<Vec<McpServerConfig>> {
-        Ok(self
-            .mcp_manager()
-            .toggle(id, enabled)?
-            .into_iter()
-            .map(|s| s.config)
-            .collect())
+        self.mcp_manager().toggle(id, enabled)
     }
 
     pub fn check_mcp_server_health(&self, id: &str) -> Result<McpServerHealthResult> {
@@ -4987,10 +4971,12 @@ impl App {
         invocation.turn_control_mode = crate::domain::TurnControlMode::NonRuntimeControlled;
         invocation.runtime_control_intent = crate::provider::RuntimeControlIntent::ManualFollowUp;
         invocation.extra_hidden_sections.clear();
+        let prompt = prepare_prompt_bundle(&mut invocation)?;
         Ok(PreparedAcpPrompt {
-            prompt: render_prompt_bundle(&invocation)?,
+            prompt,
             adapter_workspace_dir: invocation.adapter_workspace_dir,
             session_workspace_dir: invocation.workspace_dir,
+            mcp_servers: invocation.mcp_servers,
         })
     }
 

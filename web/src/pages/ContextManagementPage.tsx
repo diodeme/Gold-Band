@@ -291,8 +291,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
     try {
       const servers = await listMcpServers();
       setMcpServers(servers);
-      // 健康状态由后端在启动时后台预探测并写入共享缓存，list 返回时已携带；
-      // 这里直接从 VM 回填，无需进入页面后再逐个触发网络检测。
+      // 列表只恢复最近一次显式配置诊断结果；刷新页面不会启动 MCP 进程或网络探活。
       const seed: Record<string, { status: string; message?: string | null }> = {};
       for (const s of servers) {
         if (s.healthStatus) seed[s.id] = { status: s.healthStatus, message: s.healthMessage };

@@ -1,4 +1,4 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentInsightOperationVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, ImChannelKind, ImChannelSnapshotVm, ImNotificationPreferencesVm, ImSettingsVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentInsightOperationVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, ImChannelKind, ImChannelSnapshotVm, ImNotificationPreferencesVm, ImSettingsVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, McpServerVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { ImageActionInput, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { GitCommitVm, GitHubOperationVm, GitOperationVm } from '../types';
@@ -32,6 +32,18 @@ const browserConversationRunModes = new Map<string, ConversationRunModeVm>();
 const browserScheduledTasks: ScheduledTaskVm[] = [];
 const browserScheduledTaskDefinitions = new Map<string, ScheduledTaskEditVm>();
 const browserScheduledTaskListeners = new Set<(event: ScheduledTaskUpdatedEventVm) => void>();
+const browserMcpServers: McpServerVm[] = [{
+  id: 'gold-band-memory',
+  name: 'gold-band-memory',
+  enabled: true,
+  transport: 'stdio',
+  command: 'gold-band-desktop',
+  args: ['--gold-band-memory-mcp'],
+  env: [],
+  managed: true,
+  healthStatus: null,
+  healthMessage: null,
+}];
 
 function emptyWorkflowModelBindings(): WorkflowModelBindings {
   return { definitionRevision: '', bindingRevision: 0, bindings: [] };
@@ -2969,13 +2981,32 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve();
   },
   // MCP & SKILL stubs
-  listMcpServers() { return Promise.resolve([]); },
+  listMcpServers() { return Promise.resolve(structuredClone(browserMcpServers)); },
   addMcpServer(_jsonContent: string) { return Promise.resolve([]); },
   updateMcpServer(_id: string, _jsonContent: string) { return Promise.resolve([]); },
   deleteMcpServer(_id: string) { return Promise.resolve([]); },
-  toggleMcpServer(_id: string, _enabled: boolean) { return Promise.resolve([]); },
-  checkMcpServerHealth(_id: string) { return Promise.resolve({ status: 'unknown' }); },
-  listMcpTools(_id: string) { return Promise.resolve([]); },
+  toggleMcpServer(id: string, enabled: boolean) {
+    const server = browserMcpServers.find((candidate) => candidate.id === id);
+    if (server) {
+      server.enabled = enabled;
+      server.healthStatus = null;
+      server.healthMessage = null;
+    }
+    return Promise.resolve(structuredClone(browserMcpServers));
+  },
+  checkMcpServerHealth(id: string) {
+    const server = browserMcpServers.find((candidate) => candidate.id === id);
+    if (!server) return Promise.reject({ code: 'mcp.not-found', params: { id } });
+    server.healthStatus = 'healthy';
+    return Promise.resolve({ status: 'healthy' as const, message: null });
+  },
+  listMcpTools(id: string) {
+    if (id !== 'gold-band-memory') return Promise.reject({ code: 'mcp.not-found', params: { id } });
+    return Promise.resolve([
+      { name: 'memory_read', description: 'Read shared workspace and task memory.' },
+      { name: 'memory_write', description: 'Write shared memory with revision checks.' },
+    ]);
+  },
   listSkills() { return Promise.resolve({ global: [], project: [] }); },
   listProjectSkills(_workspacePath: string) { return Promise.resolve([]); },
   readSkill(_name: string, _source: string, _workspacePath?: string | null, _directoryPath?: string | null) { return Promise.resolve({ meta: { name: '', description: '', source: 'global' as const, directoryPath: '', agentSource: '.gold-band', loadWarnings: [], syncedAgentTypes: [] }, body: '' }); },

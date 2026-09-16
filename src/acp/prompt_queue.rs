@@ -6,7 +6,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::provider::{ConversationPromptInput, UserPromptQuote};
+use crate::provider::{ConversationPromptInput, UserPromptQuote, UserPromptRole};
 use crate::storage::{read_json, write_json};
 
 pub const PROMPT_QUEUE_FILE_NAME: &str = "acp.prompt-queue.json";
@@ -44,6 +44,8 @@ pub struct QueuedPrompt {
     pub content: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub quotes: Vec<UserPromptQuote>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<UserPromptRole>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachment_paths: Vec<String>,
     pub created_at: String,
@@ -138,6 +140,7 @@ pub fn enqueue_prompt(
             id,
             content: input.display_text,
             quotes: input.quotes,
+            role: input.role,
             attachment_paths,
             created_at: chrono::Utc::now().to_rfc3339(),
             state: QueuedPromptState::Queued,
@@ -717,6 +720,7 @@ mod tests {
             ConversationPromptInput {
                 display_text: String::new(),
                 quotes: Vec::new(),
+                role: None,
             },
             vec!["C:/temp/context.txt".to_string()],
         )
@@ -743,6 +747,7 @@ mod tests {
                     source_message_key: "message-1".to_string(),
                     text: "Agent 原文".to_string(),
                 }],
+                role: None,
             },
             Vec::new(),
         )
@@ -769,6 +774,7 @@ mod tests {
                     source_message_key: "textDelta-message-1".to_string(),
                     text: "Agent 原文".to_string(),
                 }],
+                role: None,
             },
             Vec::new(),
         )
@@ -850,6 +856,7 @@ mod tests {
                     source_message_key: "message-1".to_string(),
                     text: "quoted".to_string(),
                 }],
+                role: None,
             },
             vec!["C:/evidence.png".to_string()],
         )

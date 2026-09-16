@@ -553,7 +553,7 @@
 - 2026-06-29：ACP elicitation 卡片视觉密度收敛：已确认回答、多步骤进度、题干、选项行、自定义输入与底部操作区统一压缩上下留白和控制高度，保持会话流内联提问的轻量表单形态，不改变 request/response 协议与答案提交语义。
 - 2026-06-29：前端构建类型检查拆分为生产源码配置 `web/tsconfig.build.json` 与 Vitest 测试运行配置；`npm run web:build` 不再把 Node 环境测试文件纳入浏览器源码编译，测试验收继续通过 `npm run web:test` 固化。
 - 2026-06-29：wb 构建链路补齐 MCP stdio 握手实现对 `std::process::Command` 的显式依赖，保持新增 stdio MCP health/tools 探测逻辑可被 Rust 编译器稳定解析。
-- 启动：`npm run dev`（未显式设置 `CARGO_BUILD_JOBS` 时默认单任务编译，避免 Windows 16 GB 内存下多个 rustc 同时生成大型 debug 元数据触发 LLVM OOM；需要并行时可自行设置该环境变量）；默认渠道固定快照调试：`npm run dev:static`（前端构建直接写入本次进程独占的不可变快照，Tauri 只服务该快照并在退出后清理；其他 `web:build` 不再触发全局刷新或深层路由临时 404。该模式同时关闭 Vite HMR、Tauri source watcher 与 Rust debug symbols，并使用独立 Cargo target，源码修改不影响当前客户端且规避 Windows PDB 冲突/容量限制；普通 dev 调试能力不受影响）；构建：`npm run build` / `npm run build:default`；wb 本地构建：`npm run build:wb`。
+- 启动：`npm run dev`（未显式设置 `CARGO_BUILD_JOBS` 时默认单任务编译，避免 Windows 16 GB 内存下多个 rustc 同时生成大型 debug 元数据触发 LLVM OOM；需要并行时可自行设置该环境变量）；默认渠道固定快照调试：`npm run dev:static`（前端构建直接写入本次进程独占的不可变快照，Tauri 只服务该快照并在退出后清理；其他 `web:build` 不再触发全局刷新或深层路由临时 404。该模式同时关闭 Vite HMR、Tauri source watcher 与 Rust debug symbols，并使用独立 Cargo target，源码修改不影响当前客户端且规避 Windows PDB 冲突/容量限制；普通 dev 调试能力不受影响）；构建：`npm run build` / `npm run build:default`；wb 本地构建：`npm run build:wb`。Windows 厂商字段 `CompanyName` 由渠道 overlay 的 `bundle.publisher` 写入，值与该渠道 `productName` 相同；`wb` 为 `MALING`。
 - 仓库级依赖安装与锁文件统一使用 `npm` / `package-lock.json`；除非单独立项迁移包管理器，否则不新增 `pnpm-lock.yaml`、`yarn.lock` 等并行 lockfile。
 
 ---
@@ -1876,3 +1876,10 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 2026-09-16 IM 对既有桌面功能的隔离：零配置且无 cleanup 时不创建 runtime、访问 keyring/IM schema 或启动周期任务，首次配置惰性激活；空 delivery poll 只读返回，不争用 `core.db` writer lock；lifecycle 空 target 快速返回；退出按 admission gate → scheduler → 可取消 IM worker 收敛；ManualCheck 不再把可选 Timeline 文本作为 canonical 提交前置条件。默认开发恢复 Cargo 并行度，低内存模式改为显式 `dev:low-memory`。核心 IM 90 项、ManualCheck 17 项、配置 57 项、桌面 IM 20 项、Web 定向 32 项和 Node 脚本 2 项均通过，两个 Rust crate check、Web 生产构建、格式与差异检查通过；只读 Demo 在 1252px/640px 均无隐藏功能泄漏、横向溢出或 console error。
 - [x] 2026-09-16 桌面 Elicitation 与 IM transport 能力解耦：桌面 Accept 按完整 ACP `requestedSchema` 校验，自由文本、自定义答案和超过三个问题不再受远程表单动作集合限制；IM 入站继续只接受 delivery 实际发布的动作，pending、expected state、幂等与 first-writer-wins 保持共用。接口回归覆盖三类合法桌面答案、三类非法 schema 答案和远程动作不可用断言。
 - 性能与过度设计复评审：最多一个企业微信 WebSocket，lifecycle subscriber 只做 O(1) 有界投影且不等待网络；permission 摘要只读取当前 pending request；due/retention query plan 命中索引，队列、claim batch、租约和保留均有上限。未新增云网关、消息代理、第二套审批状态机、无界缓存或队列。
+
+## 2026-09-16：wb Windows 厂商字段固定为 MALING
+
+- [x] 根因：渠道 overlay 已正确写入 `productName`，但未设置 Tauri `bundle.publisher`。Windows `CompanyName` 因此回退 identifier 第二段，`wb` 得到 `maling` 而不是产品名 `MALING`。这属于正确渠道设计下的打包元数据未闭环，不是第二套身份模型。
+- [x] 方案：overlay 把 `bundle.publisher` 固定为该渠道 `productName`；`wb` 为 `MALING`，`default` 为 `Gold Band`。不新增独立厂商配置项，避免与产品名漂移。
+- [x] 验收：渠道 overlay 测试固定 publisher 与 productName 同源，以及真实 `wb.json` overlay 的 `MALING`；`npm run test:channel-config` 通过。
+- 性能与过度设计评审：只在构建 overlay JSON 增加一个常量字符串，不改变运行时 I/O、状态、缓存、队列或渲染；复用现有渠道 `productName`，无新依赖或 identity。

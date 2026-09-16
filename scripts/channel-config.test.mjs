@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { repoRoot, tauriConfigOverlay } from './channel-config.mjs';
+import { readChannelConfig, repoRoot, tauriConfigOverlay } from './channel-config.mjs';
 
 const baseChannelConfig = {
   productName: 'Gold Band',
@@ -36,7 +36,22 @@ test('support diagnostic overlay disables updater artifacts without changing cha
   );
 
   assert.deepEqual(overlay.bundle, {
+    publisher: baseChannelConfig.productName,
     targets: ['nsis'],
     createUpdaterArtifacts: false,
   });
+});
+
+test('channel overlay sets Windows publisher from product name', () => {
+  const overlay = tauriConfigOverlay(baseChannelConfig);
+
+  assert.equal(overlay.productName, 'Gold Band');
+  assert.equal(overlay.bundle.publisher, 'Gold Band');
+});
+
+test('wb overlay embeds MALING as both product name and publisher', () => {
+  const overlay = tauriConfigOverlay(readChannelConfig('wb'));
+
+  assert.equal(overlay.productName, 'MALING');
+  assert.equal(overlay.bundle.publisher, 'MALING');
 });

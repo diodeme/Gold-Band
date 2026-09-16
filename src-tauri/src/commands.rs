@@ -51,7 +51,7 @@ use std::{
 
 use camino::Utf8PathBuf;
 use gold_band::config::{
-    AcpAdapterConfig, AppearancePreference, AvatarPreference, AvatarShapePreference,
+    AcpAdapterConfig, AppearancePreference, AvatarPreference, AvatarShapePreference, BrowserPreferences,
     ConversationAutoConfig, DEFAULT_CUSTOM_AGENT_ICON, DesktopLanguage, FontSizePreference,
     FontStackPreference, MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT, MAX_FONT_FAMILY_CHARS,
     MAX_FONT_STACK_FAMILIES, MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT, ManagedAgentConfig,
@@ -63,7 +63,8 @@ use gold_band::provider::{
     AcpLiveTimelinePosition, ConversationPromptInput, MAX_USER_PROMPT_QUOTE_CHARS,
     MAX_USER_PROMPT_QUOTE_ID_BYTES, MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES, MAX_USER_PROMPT_QUOTES,
     MAX_USER_PROMPT_ROLE_CONTENT_CHARS, MAX_USER_PROMPT_ROLE_ID_BYTES,
-    MAX_USER_PROMPT_ROLE_NAME_BYTES, UserPromptQuote, conversation_agent_prompt_text,
+    MAX_USER_PROMPT_ROLE_NAME_BYTES, UserPromptQuote, UserPromptRole,
+    conversation_agent_prompt_text, conversation_prompt_has_payload,
     select_config_options_from_capabilities, supported_models_from_capabilities,
     supported_modes_from_capabilities,
 };
@@ -2061,6 +2062,8 @@ pub struct ConversationQueuedPromptDraftVm {
     pub content: String,
     pub quotes: Vec<UserPromptQuote>,
     pub attachment_paths: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<UserPromptRole>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2343,6 +2346,7 @@ pub(crate) async fn prepare_app_exit_inner(
     state: &DesktopState,
 ) -> AppExitPreparationVm {
     let mut result = AppExitPreparationVm::default();
+    crate::browser::discard_all_browser_webviews(app_handle);
 
     // Close the process-wide admission gate before scheduler shutdown. A run
     // start either appears in this snapshot or observes ShuttingDown; no
@@ -6352,6 +6356,7 @@ pub fn restore_conversation_queued_prompt(
             content: item.content,
             quotes: item.quotes,
             attachment_paths: item.attachment_paths,
+            role: item.role,
         },
         lifecycle: emit_prompt_queue_lifecycle(&app_handle, &app, project_id, &locator),
     })
@@ -8089,6 +8094,7 @@ pub fn save_desktop_preferences(
     language: DesktopLanguage,
     use_local_claude: bool,
     verbose_logging: bool,
+    browser: BrowserPreferences,
 ) -> CommandResult<PreferencesVm> {
     if appearance.schema_version != 2 {
         return Err(CommandErrorVm::new(
@@ -8139,6 +8145,7 @@ pub fn save_desktop_preferences(
             language,
             use_local_claude,
             verbose_logging,
+            browser,
         )
         .map_err(command_error)?;
     state
@@ -8152,6 +8159,7 @@ pub fn save_desktop_preferences(
         language,
         use_local_claude,
         log_level,
+        settings.browser,
         load_resolved_avatar_preferences(&app.paths.user_gold_band_dir(), &personalization)
             .map_err(avatar_command_error)?,
         load_resolved_wallpaper_preferences(&app.paths.user_gold_band_dir()).unwrap_or_default(),
@@ -8476,6 +8484,7 @@ fn persist_desktop_personalization(
         context.config.desktop_language,
         context.config.use_local_claude,
         context.config.log_level,
+        settings.browser,
         avatars,
         wallpapers,
     ))
@@ -8663,7 +8672,11 @@ fn validate_conversation_prompt_input(
     attachment_paths: Option<&[String]>,
 ) -> CommandResult<()> {
     let attachment_paths = attachment_paths.unwrap_or_default();
-    if input.display_text.trim().is_empty() && attachment_paths.is_empty() {
+    if !conversation_prompt_has_payload(
+        &input.display_text,
+        attachment_paths.len(),
+        input.role.as_ref(),
+    ) {
         return Err(CommandErrorVm::new(
             "conversation.prompt-empty",
             serde_json::json!({}),
@@ -11294,7 +11307,7 @@ mod tests {
         let attachment = temp.path().join("context.txt");
         std::fs::write(&attachment, "attachment content").unwrap();
         let attachment = attachment.to_string_lossy().to_string();
-        let input = ConversationPromptInput {
+        let mut input = ConversationPromptInput {
             display_text: String::new(),
             quotes: Vec::new(),
             role: None,
@@ -11310,6 +11323,13 @@ mod tests {
             validate_conversation_prompt_input(&input, Some(std::slice::from_ref(&attachment)))
                 .is_ok()
         );
+
+        input.role = Some(gold_band::provider::UserPromptRole {
+            profile_id: "pf-dev".to_string(),
+            name: "开发".to_string(),
+            content: "完整角色定义".to_string(),
+        });
+        assert!(validate_conversation_prompt_input(&input, None).is_ok());
     }
 
     #[test]

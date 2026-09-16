@@ -49,6 +49,14 @@ export function isExternalUrlHref(href: string) {
   return /^(?:https?:\/\/|mailto:|tel:)/iu.test(href.trim());
 }
 
+export function isHttpUrlHref(href: string) {
+  return /^https?:\/\//iu.test(href.trim());
+}
+
+export function isSystemHandlerHref(href: string) {
+  return /^(?:mailto:|tel:)/iu.test(href.trim());
+}
+
 export function isDocumentAnchorHref(href: string) {
   return href.trim().startsWith('#');
 }

@@ -181,7 +181,8 @@
 - 会话侧栏启动分为四层接口：`get_conversation_sidebar_bootstrap` 只返回工作空间 identity、置顶 locator、最近工作空间和偏好；当前或用户展开的工作空间再通过 `get_conversation_task_page` 读取首批 Task 摘要；置顶区通过独立 `get_conversation_pinned_task_page` 读取有界摘要；只有 Workflow/AUTO Task 被展开时，才通过 `get_conversation_run_summary_page` 读取 Run 历史。基础身份、首批可见数据和逐项历史不得重新合并成一个原子接口。
 - 置顶 Task 摘要必须独立完成会话导航：点击 Task 使用当前摘要携带的 `projectId + taskUuid/taskId + latestRun.runId`，点击 Run 使用对应 `runId`，统一提交完整 `ConversationPage` locator；不得先从 workspace Task 页反查，也不得要求对应 workspace 已展开或加载。置顶区与 workspace 区的交互 scope 继续独立，导航 locator 只改变 canonical 页面，不合并两处列表的展开或高亮状态。
 - Task 页默认 24 项，使用 `updatedAt + taskId` 稳定 cursor；Run 页默认 20 项，继续使用递减 `runId` cursor。前端已合并 Task 最多保留 120 项、单 Task 已合并 Run 最多保留 100 项。继续加载只能追加去重后的下一页，不得形成无界 DOM、缓存或历史数组。
-- 每个层级必须独立表达 `not-loaded / loading / ready / ready-empty / error`。尚未请求不得显示“暂无会话/暂无运行”，已有可用数据的后台刷新不得清空内容；错误只影响对应 workspace、置顶区或 Run 历史，并在原位置提供重试。
+- 每个层级必须独立表达 `not-loaded / loading / ready / ready-empty / error`。尚未请求不得显示“暂无会话/暂无运行”，已有可用数据的后台刷新不得清空内容或把侧栏降回全局 loading；错误只影响对应 workspace、置顶区或 Run 历史，并在原位置提供重试。
+- App 级 `bootstrap` 是混合袋。语言、浏览器、外观等 preference 补丁和 updater 状态只更新对应偏好投影，不得重新触发会话侧栏 bootstrap，也不得重订会话事件订阅。侧栏身份加载只在会话壳首次就绪或用户显式重试时发生。
 - 同一资源同时只允许一个请求；所有异步提交都按资源 generation 校验。删除 Task、移除 workspace、置顶关系变化或 bootstrap 重置必须在发起 mutation 时作废相关 generation，迟到页不得把已删除实体或旧 pin 投影写回。Task 合并按 `projectId + taskUuid` 去重，只有历史缺少 UUID 时才退回 `taskId`；Run 合并在 Task identity 内按 `runId` 去重。
 - 单条损坏 Task/Run 通过结构化 `errors` 隔离，不能阻断同页其他条目。反馈会话选择器等非侧栏消费者也只能组合轻量 bootstrap 与每个 workspace 的有界首批 Task 摘要，不得借用全量历史接口。
 - Task 页从 SQLite `tasks.updated_at` 读取轻量活动投影，按活动时间递减、再按递减 `taskId` 稳定分页；canonical Task 目录身份仍由文件系统枚举，索引缺行或不可用不得隐藏 Task，缺少活动投影的历史 Task 暂按递减 `taskId` 排在已有活动时间之后。Task 摘要只读取当前页 `task.json` 和各项最新序号 Run，不扫描页外 `run.json`。Run 分页继续只按递减 `runId`，不建立 Run 活动索引。

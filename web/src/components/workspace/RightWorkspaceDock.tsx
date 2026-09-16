@@ -1,4 +1,4 @@
-import { AlarmClock, Bot, Braces, Check, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, PencilLine, Plus, X } from 'lucide-react';
+import { AlarmClock, Bot, Braces, Check, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, Globe, PencilLine, Plus, X } from 'lucide-react';
 import { memo, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -6,7 +6,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { cn } from '@/lib/utils';
 import { useConversationBranchLiveSnapshot } from '@/lib/conversation-event-router';
 import { AgentConversationPanel } from './AgentConversationPanel';
-import { conversationDirectoryWorkspaceResourceKey, fileBrowserWorkspaceResourceKey, sourceControlWorkspaceResourceKey, useRightWorkspace, type RightWorkspaceResource } from './right-workspace-context';
+import { conversationDirectoryWorkspaceResourceKey, fileBrowserWorkspaceResourceKey, browserWorkspaceResourceKey, sourceControlWorkspaceResourceKey, useRightWorkspace, type RightWorkspaceResource } from './right-workspace-context';
 import { useFileContentEntry } from './files/file-content-store';
 
 export const RightWorkspaceDock = memo(function RightWorkspaceDock({
@@ -133,7 +133,7 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock({
 });
 
 type WorkspaceEntryOption = {
-  id: 'file-browser' | 'source-control' | 'conversation-directory';
+  id: 'file-browser' | 'source-control' | 'conversation-directory' | 'browser';
   label: string;
   description: string;
   icon: typeof FolderOpen;
@@ -178,6 +178,21 @@ function WorkspaceEntryOptions({ presentation, sourceControlWorkspacePath }: {
           workspacePath: sourceControlWorkspacePath,
           title: t('sourceControl.title'),
           description: t('sourceControl.description'),
+          attention: false,
+        });
+      },
+    }, {
+      id: 'browser',
+      label: t('workspace.browser.title'),
+      description: t('workspace.browser.description'),
+      icon: Globe,
+      open: () => {
+        void openResource({
+          kind: 'browser',
+          key: browserWorkspaceResourceKey(),
+          scopeKey,
+          title: t('workspace.browser.title'),
+          description: t('workspace.browser.description'),
           attention: false,
         });
       },
@@ -313,6 +328,8 @@ function workspaceTabIcon(tab: RightWorkspaceResource) {
             ? <GitBranch className="size-3.5 shrink-0" />
           : tab.kind === 'file-browser'
             ? <FolderOpen className="size-3.5 shrink-0" />
+            : tab.kind === 'browser'
+              ? <Globe className="size-3.5 shrink-0" />
             : tab.kind === 'file-diff'
               ? <FileDiff className="size-3.5 shrink-0" />
               : <FileText className="size-3.5 shrink-0" />;

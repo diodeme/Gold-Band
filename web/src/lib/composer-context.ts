@@ -71,8 +71,14 @@ export function createComposerPromptSubmission(
   );
 }
 
-export function hasUserPromptPayload(content: string, attachmentCount: number) {
-  return content.trim().length > 0 || attachmentCount > 0;
+export function hasUserPromptPayload(
+  content: string,
+  attachmentCount = 0,
+  role?: UserPromptRole | null,
+) {
+  return content.trim().length > 0
+    || attachmentCount > 0
+    || userPromptRoleFromRaw({ role }) != null;
 }
 
 export function serializeUserPromptSubmission(input: ConversationPromptInput) {

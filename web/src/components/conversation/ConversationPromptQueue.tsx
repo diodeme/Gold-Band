@@ -21,6 +21,7 @@ import {
   GripVertical,
   ListPlus,
   MessageSquareQuote,
+  UserRound,
   Paperclip,
   Pencil,
   Trash2,
@@ -268,11 +269,22 @@ function QueueItem({
         {index + 1}
       </span>
       <div className="min-w-0 flex-1">
-        <p className="line-clamp-2 whitespace-pre-wrap break-words leading-5 text-foreground/90 [overflow-wrap:anywhere]">
-          {item.content}
-        </p>
-        {item.attachmentCount > 0 || item.quoteCount > 0 ? (
+        {item.content.trim() ? (
+          <p
+            data-queue-item-content="true"
+            className="line-clamp-2 whitespace-pre-wrap break-words leading-5 text-foreground/90 [overflow-wrap:anywhere]"
+          >
+            {item.content}
+          </p>
+        ) : null}
+        {item.attachmentCount > 0 || item.quoteCount > 0 || item.roleName ? (
           <div className="mt-0.5 flex items-center gap-2 text-ui-caption text-muted-foreground">
+            {item.roleName ? (
+              <span className="inline-flex items-center gap-1" data-queue-item-role="true">
+                <UserRound className="size-3" />
+                {item.roleName}
+              </span>
+            ) : null}
             {item.quoteCount > 0 ? (
               <span className="inline-flex items-center gap-1">
                 <MessageSquareQuote className="size-3" />

@@ -274,6 +274,59 @@ export interface FrontendErrorReportInput {
   userAgent?: string | null;
 }
 
+export interface BrowserBoundsCommandInput {
+  pageId: string;
+  bounds: { x: number; y: number; width: number; height: number };
+}
+
+export type BrowserViewMode = 'desktop' | 'mobile';
+
+export interface BrowserCreatePageInput extends BrowserBoundsCommandInput {
+  url: string;
+  viewMode?: BrowserViewMode;
+}
+
+export interface BrowserPageIdInput {
+  pageId: string;
+}
+
+export interface BrowserNavigateInput extends BrowserPageIdInput {
+  url: string;
+}
+
+export interface BrowserSetViewModeInput extends BrowserPageIdInput {
+  viewMode: BrowserViewMode;
+}
+
+export interface BrowserPageNativeVm {
+  pageId: string;
+  url: string;
+  label: string;
+}
+
+export interface BrowserPageNativeEventVm {
+  kind: string;
+  pageId: string;
+  url?: string | null;
+  title?: string | null;
+}
+
+export interface BrowserVisitVm {
+  url: string;
+  title: string;
+  origin: string;
+  lastVisitedAt: number;
+  faviconDataUrl?: string | null;
+}
+
+export interface BrowserBookmarkVm {
+  bookmarkId: string;
+  url: string;
+  title: string;
+  origin: string;
+  faviconDataUrl?: string | null;
+}
+
 export interface RuntimeApi {
   readProjectMemory(projectId: string): Promise<import('@/lib/memory').MemorySnapshot>;
   writeProjectMemory(projectId: string, command: import('@/lib/memory').MemoryCommand): Promise<import('@/lib/memory').MemorySnapshot>;
@@ -410,7 +463,7 @@ export interface RuntimeApi {
   showConversationAttachment(projectId: string, taskId: string, name: string): Promise<ContentVm>;
   showConversationMessageAttachment(projectId: string, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, path: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
-  saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean): Promise<PreferencesVm>;
+  saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean, browser: import('../types').BrowserPreferences): Promise<PreferencesVm>;
   saveDesktopAvatar(input: SaveDesktopAvatarInput): Promise<PreferencesVm>;
   selectRecentDesktopAvatar(kind: AvatarKind, avatarId: string): Promise<PreferencesVm>;
   saveDesktopAvatarShape(kind: AvatarKind, shape: AvatarShape | null): Promise<PreferencesVm>;
@@ -507,6 +560,27 @@ export interface RuntimeApi {
   subscribeMulticaSettingsUpdates?(listener: () => void): Promise<() => void>;
   workspaceFilePreviewUrl(token: string, staticFrame?: boolean): string;
   openExternalUrl(url: string): Promise<void>;
+  browserCreatePage(input: BrowserCreatePageInput): Promise<BrowserPageNativeVm>;
+  browserSetBounds(input: BrowserBoundsCommandInput): Promise<void>;
+  browserShowPage(input: BrowserPageIdInput): Promise<void>;
+  browserHidePage(input: BrowserPageIdInput): Promise<void>;
+  browserHideAll(): Promise<void>;
+  browserNavigate(input: BrowserNavigateInput): Promise<BrowserPageNativeVm>;
+  browserGoBack(input: BrowserPageIdInput): Promise<void>;
+  browserGoForward(input: BrowserPageIdInput): Promise<void>;
+  browserReload(input: BrowserPageIdInput): Promise<void>;
+  browserStop(input: BrowserPageIdInput): Promise<void>;
+  browserClosePage(input: BrowserPageIdInput): Promise<void>;
+  browserSetViewMode(input: BrowserSetViewModeInput): Promise<void>;
+  browserDiscardAll(): Promise<void>;
+  browserListHistory(): Promise<BrowserVisitVm[]>;
+  browserDeleteHistory(input: { url: string }): Promise<BrowserVisitVm[]>;
+  browserListBookmarks(): Promise<BrowserBookmarkVm[]>;
+  browserAddBookmark(input: { url: string; title?: string | null }): Promise<BrowserBookmarkVm[]>;
+  browserRemoveBookmark(input: { bookmarkId: string }): Promise<BrowserBookmarkVm[]>;
+  browserReorderBookmarks(input: { orderedIds: string[] }): Promise<BrowserBookmarkVm[]>;
+  subscribeBrowserHistoryEvents?(listener: () => void): Promise<() => void>;
+  subscribeBrowserPageEvents?(listener: (event: BrowserPageNativeEventVm) => void): Promise<() => void>;
   openFileWithSystemApp(path: string): Promise<void>;
   copyImageToClipboard(input: ImageActionInput): Promise<void>;
   saveImageAs(input: ImageActionInput): Promise<boolean>;

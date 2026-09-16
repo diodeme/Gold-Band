@@ -28,7 +28,7 @@ serde_json = "1"
 fontdb = "0.23"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "native-tls-vendored", "stream"] }
 rusqlite = { version = "0.34", features = ["bundled"] }
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["unstable"] }
 tauri-plugin-dialog = "2"
 open = "5"
 tauri-plugin-opener = "2"
@@ -56,20 +56,28 @@ resvg = "0.45"
 notify-rust = { version = "4", optional = true }
 
 [dev-dependencies]
-tauri = { version = "2", features = ["test"] }
+tauri = { version = "2", features = ["test", "unstable"] }
 tempfile = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "5.4.1"
-# Windows Toast 涓€绛夊叕姘戯細骞查閫氱煡 + 缁撴瀯鍖?action锛堟煡鐪嬭鎯?蹇界暐锛夈€?
+# Windows Toast 一等公民：预通知 + 结构化 action（查看详情 / 忽略）。
 tauri-winrt-notification = "0.7"
 # 使用 RtlGetVersion 提供未受应用 manifest 影响的真实 Windows build，
 # 用于区分 Win10 的应用轮廓降级与 Win11 的 DWM 原生圆角。
 windows-version = "0.1.7"
+webview2-com = "0.38"
+windows = { version = "0.61", features = ["Win32_System_Com"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 plist = "1.9.0"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString"] }
+objc2-web-kit = { version = "0.3", features = ["std", "WKWebView"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies]
+webkit2gtk = { version = "=2.0", features = ["v2_40"] }
 
 [features]
 default = ["native-notification"]

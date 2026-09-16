@@ -28,6 +28,7 @@ describe('UserMessageMeta', () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     host.remove();
+    document.body.replaceChildren();
     vi.unstubAllGlobals();
   });
 
@@ -43,37 +44,26 @@ describe('UserMessageMeta', () => {
     const role = meta?.querySelector('[data-slash-tag-kind="role"]');
     const quotes = meta?.querySelector('[data-user-message-quotes-trigger="true"]');
     expect(meta?.className).toContain('flex');
-    expect(role?.textContent).toContain('/Development-and-Testing');
+    expect(role?.textContent).toBe('Development-and-Testing');
+    expect(role?.textContent).not.toContain('/');
     expect(role?.querySelector('img')?.getAttribute('src')).toBe('/logo.svg');
     expect(quotes).toBeTruthy();
     expect(Boolean(role && quotes && (role.compareDocumentPosition(quotes) & Node.DOCUMENT_POSITION_FOLLOWING)))
       .toBe(true);
+    expect(role?.className).toContain('h-7');
+    expect(role?.className).toContain('rounded-full');
+    expect(quotes?.className).toContain('h-7');
+    expect(quotes?.className).toContain('rounded-full');
   });
 
-  it('scrolls the full role content in the hover tooltip instead of the summary', async () => {
-    const content = `第一段角色定义\n${'很长的角色正文。'.repeat(80)}`;
+  it('shows the committed tag name without a leading slash', async () => {
     await act(async () => root.render(
-      <SlashCommandInputTag
-        prefix="/dev"
-        description="short summary"
-        content={content}
-        kind="role"
-        iconSrc="/logo.svg"
-      />,
+      <SlashCommandInputTag prefix="/dataviz" kind="command" iconSrc="/logo.svg" />,
     ));
-
-    const trigger = host.querySelector<HTMLButtonElement>('[data-slash-tag-kind="role"]');
-    expect(trigger).toBeTruthy();
-    await act(async () => {
-      trigger!.dispatchEvent(new MouseEvent('pointermove', { bubbles: true }));
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-
-    const tooltip = document.body.querySelector('[data-slash-role-tooltip="true"]');
-    expect(tooltip).toBeTruthy();
-    expect(tooltip?.className).toContain('overflow-y-auto');
-    expect(tooltip?.className).toContain('max-h-64');
-    expect(tooltip?.textContent).toBe(content);
-    expect(tooltip?.textContent).not.toContain('short summary');
+    const tag = host.querySelector('[data-slot="slash-command-input-tag"]');
+    expect(tag?.textContent).toBe('dataviz');
+    expect(tag?.className).toContain('h-6');
+    expect(tag?.className).not.toMatch(/(^|\s)h-7(\s|$)/);
+    expect(tag?.querySelector('img')?.getAttribute('src')).toBe('/logo.svg');
   });
 });

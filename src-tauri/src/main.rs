@@ -2,6 +2,10 @@
 
 mod acp_images;
 mod avatar;
+mod browser;
+mod browser_bookmarks;
+mod browser_history;
+mod browser_ua;
 mod builtin_mcp;
 mod channel;
 mod commands;
@@ -181,6 +185,9 @@ fn run() -> anyhow::Result<()> {
         .manage(personal_analytics::PersonalAnalyticsInsightRuntime::default())
         .manage(WorkspaceFileRuntime::default())
         .manage(WorkspaceFileWatchRuntime::default())
+        .manage(browser::BrowserHost::default())
+        .manage(browser_history::BrowserHistoryHost::default())
+        .manage(browser_bookmarks::BrowserBookmarkHost::default())
         .manage(multica::shared_state())
         .manage(multica::MulticaConnectCancel::default())
         .manage(wallpaper_runtime);
@@ -601,6 +608,25 @@ fn run() -> anyhow::Result<()> {
             workspace_files::release_external_file_access,
             workspace_files::start_workspace_file_watch,
             workspace_files::stop_workspace_file_watch,
+            browser::browser_create_page,
+            browser::browser_set_bounds,
+            browser::browser_show_page,
+            browser::browser_hide_page,
+            browser::browser_hide_all,
+            browser::browser_navigate,
+            browser::browser_go_back,
+            browser::browser_go_forward,
+            browser::browser_reload,
+            browser::browser_stop,
+            browser::browser_set_view_mode,
+            browser::browser_close_page,
+            browser::browser_discard_all,
+            browser_history::browser_list_history,
+            browser_bookmarks::browser_list_bookmarks,
+            browser_bookmarks::browser_add_bookmark,
+            browser_bookmarks::browser_remove_bookmark,
+            browser_bookmarks::browser_reorder_bookmarks,
+            browser_history::browser_delete_history,
             // MCP & SKILL management
             list_mcp_servers,
             add_mcp_server,

@@ -15,6 +15,7 @@ Gold Band 当前文档按目录式结构整理为 6 个主板块：
 - [Console 状态与事件](interaction/console-state-and-events.md)
 - [Progress 规范](interaction/progress.md)
 - [右侧工作区文件浏览与编辑](interaction/app/workspace-files.md)
+- [右侧工作区内置浏览器](interaction/app/in-app-browser.md)
 
 ## 3. Provider 层
 - [Provider 概览](provider/overview.md)

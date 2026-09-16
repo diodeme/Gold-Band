@@ -88,6 +88,30 @@ function session(partial: Partial<AcpSessionVm>): AcpSessionVm {
 }
 
 describe('ACP chat event handling', () => {
+  it('shows the mapped config-unavailable reason instead of the generic retry banner', () => {
+    const error = {
+      code: { domain: 'config', code: 'acp.session-config-value-unavailable' },
+      domain: 'config',
+      recovery: 'manual' as const,
+      params: {
+        category: 'model',
+        configId: 'model',
+        value: 'gpt-5.6-luna',
+        availableValues: ['deepseek-v4-pro', 'deepseek-flash'],
+      },
+      diagnostic: 'ACP session config value `gpt-5.6-luna` is unavailable for `model`',
+    };
+    const message = visibleAcpBannerError(
+      null,
+      { ...session({ status: 'failed' }), turnError: error },
+      [],
+      null,
+      'failed',
+      error,
+    );
+    expect(message).toContain('gpt-5.6-luna');
+    expect(message).not.toBe('本次消息处理失败，请重试。');
+  });
   it('shows an unmapped canonical error verbatim without a generic prefix', () => {
     const error = {
       code: { domain: 'internal', code: 'internal.unknown' },

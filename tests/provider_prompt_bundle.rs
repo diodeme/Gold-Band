@@ -639,6 +639,7 @@ fn render_runtime_resume_with_message_keeps_internal_prompt_out_of_display_proje
             source_message_key: "answer-1".to_string(),
             text: "引用内容".to_string(),
         }],
+        role: None,
     });
 
     let prompt = render_prompt_bundle(&req).unwrap();

@@ -28,7 +28,14 @@ import {
   updateAcpConfigOptionOverride,
 } from '@/components/acp/AcpModelThoughtSelects';
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
-import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from '@/lib/slash-command';
+import { channelAppName } from '@/lib/channel-app-name';
+import {
+  buildSlashCatalog,
+  committedRoleSnapshot,
+  parseCommittedSlashItem,
+  restoreSlashCommandInputFocus,
+  slashSendableText,
+} from '@/lib/slash-command';
 import { useLeadingAdornmentTextIndent } from '@/hooks/useLeadingAdornmentTextIndent';
 import { ScheduledTaskDialog } from '@/components/conversation/ScheduledTaskDialog';
 import type { ScheduledScheduleInput } from '@/types';
@@ -545,12 +552,11 @@ export function ConversationComposer({
   const scheduledSummary = scheduledConfig
     ? formatScheduledScheduleInput(t, scheduledConfig.schedule)
     : t('scheduled.composer.unconfigured');
-  const canSubmit = !readOnly && hasUserPromptPayload(content, attachments.length)
+  const canSubmitBase = !readOnly
     && !busy
     && !submittingAttachments
     && !branchMutationPending
     && !(multicaActive && !hasLocalWorkspaces);
-  const canCreateScheduledTask = canSubmit && Boolean(onCreateScheduledTask);
   const scheduledConfigResourceKey = rightWorkspace?.scopeKey
     ? scheduledTaskConfigWorkspaceResourceKey(rightWorkspace.scopeKey)
     : null;
@@ -663,20 +669,41 @@ export function ConversationComposer({
       ? selectedAgent
       : null;
   const agentCommands = useAgentCommands(commandAgentType, workspacePath);
+  const slashCatalog = useMemo(
+    () => buildSlashCatalog(
+      channelAppName(),
+      t('acp.slashAgentGroup'),
+      profiles,
+      agentCommands.commands,
+    ),
+    [agentCommands.commands, profiles, t],
+  );
   const restoreComposerFocus = useCallback(() => {
     restoreSlashCommandInputFocus(composerTextareaRef);
   }, []);
   const slashCommands = useSlashCommandController({
     input: content,
-    commands: agentCommands.commands,
+    groups: slashCatalog,
     contextKey: agentCommands.catalogKey,
     onInputChange: setContent,
     onInputFocusRequested: restoreComposerFocus,
   });
   const committedSlashCommand = useMemo(
-    () => parseCommittedSlashCommand(content, agentCommands.commands),
-    [agentCommands.commands, content],
+    () => parseCommittedSlashItem(
+      content,
+      slashCommands.catalogItems,
+      slashCommands.selectedIdentity,
+    ),
+    [content, slashCommands.catalogItems, slashCommands.selectedIdentity],
   );
+  const canSubmit = canSubmitBase && hasUserPromptPayload(
+    slashSendableText(content, committedSlashCommand),
+    attachments.length,
+  );
+  const canCreateScheduledTask = canSubmit && Boolean(onCreateScheduledTask);
+  const slashAgentIconKey = isDirect
+    ? selectedDirectAgentObj?.iconKey
+    : selectedAgentObj?.iconKey;
   const visibleContent = committedSlashCommand?.suffix ?? content;
   // The multica binding chip and the slash-command label are both leading adornments at the very
   // front of the body. They are mutually exclusive (slash wins — the binding prefills task
@@ -793,7 +820,8 @@ export function ConversationComposer({
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
-    const trimmed = content.trim();
+    const role = committedRoleSnapshot(committedSlashCommand);
+    const trimmed = slashSendableText(content, committedSlashCommand).trim();
     const inputBase: ConversationCreateInput = {
       projectId,
       content: trimmed,
@@ -822,6 +850,7 @@ export function ConversationComposer({
       selectedBranch: workLocation === 'worktree' && branchSelection?.projectId === projectId
         ? branchSelection.branch
         : undefined,
+      ...(role ? { role } : {}),
     };
     setSubmittingAttachments(true);
     try {
@@ -874,15 +903,19 @@ export function ConversationComposer({
     }
   };
 
-  const scheduledConversationInput = () => ({
-    projectId,
-    content: content.trim(),
-    runMode: runMode.mode,
-    workflowTemplateId: isAuto || isDirect ? undefined : selectedWorkflowTemplateId,
-    includeOptionalEntry,
-    directConfig: isDirect ? normalizeConversationDirectConfigForSubmit({ agentType: selectedDirectAgent, modelId: selectedDirectModel || undefined, permissionMode: selectedDirectPermissionMode || undefined, autoAccept: selectedDirectAutoAccept || undefined, configOptions: selectedDirectConfigOptions }) : undefined,
-    autoConfig: isAuto ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession()) : undefined,
-  });
+  const scheduledConversationInput = () => {
+    const role = committedRoleSnapshot(committedSlashCommand);
+    return {
+      projectId,
+      content: slashSendableText(content, committedSlashCommand).trim(),
+      runMode: runMode.mode,
+      workflowTemplateId: isAuto || isDirect ? undefined : selectedWorkflowTemplateId,
+      includeOptionalEntry,
+      directConfig: isDirect ? normalizeConversationDirectConfigForSubmit({ agentType: selectedDirectAgent, modelId: selectedDirectModel || undefined, permissionMode: selectedDirectPermissionMode || undefined, autoAccept: selectedDirectAutoAccept || undefined, configOptions: selectedDirectConfigOptions }) : undefined,
+      autoConfig: isAuto ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession()) : undefined,
+      ...(role ? { role } : {}),
+    };
+  };
 
   const createScheduledTask = async () => {
     if (!canCreateScheduledTask || !onCreateScheduledTask) return;
@@ -1007,19 +1040,31 @@ export function ConversationComposer({
           />
           <SlashCommandMenu
             open={slashCommands.isOpen}
-            commands={slashCommands.filteredCommands}
+            groups={slashCommands.filteredGroups}
             activeIndex={slashCommands.activeIndex}
             onActiveIndexChange={slashCommands.setActiveIndex}
             onDismiss={slashCommands.dismiss}
             onSelect={(index) => { slashCommands.selectByIndex(index); }}
             variant="inline"
+            agentIconSrc={slashAgentIconKey ? agentIconSrc(slashAgentIconKey) : null}
+            agentIconClassName={slashAgentIconKey ? agentIconClass(slashAgentIconKey) : undefined}
           >
             <div className="relative min-w-0">
               {committedSlashCommand ? (
                 <span ref={committedInputLayout.adornmentRef} className="absolute left-0 top-2 z-10 inline-flex">
                   <SlashCommandInputTag
                     prefix={committedSlashCommand.prefix}
-                    description={committedSlashCommand.command.description}
+                    description={committedSlashCommand.item.description}
+                    content={committedSlashCommand.item.content}
+                    kind={committedSlashCommand.item.kind}
+                    iconSrc={committedSlashCommand.item.kind === 'role'
+                      ? '/logo.svg'
+                      : slashAgentIconKey
+                        ? agentIconSrc(slashAgentIconKey)
+                        : '/logo.svg'}
+                    iconClassName={committedSlashCommand.item.kind === 'command' && slashAgentIconKey
+                      ? agentIconClass(slashAgentIconKey)
+                      : undefined}
                   />
                 </span>
               ) : multicaBinding ? (

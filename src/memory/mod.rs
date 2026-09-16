@@ -140,7 +140,11 @@ pub fn lock_project(
 }
 
 impl MemoryService {
-    pub fn new(
+    pub fn new(paths: GoldBandPaths, project_id: &str, task_id: Option<String>) -> Result<Self> {
+        Self::new_with_channel(paths, project_id, task_id, is_wb())
+    }
+
+    fn new_with_channel(
         paths: GoldBandPaths,
         project_id: &str,
         task_id: Option<String>,
@@ -441,7 +445,6 @@ pub fn prepare_invocation(req: &mut crate::provider::WorkerInvocation) -> anyhow
         paths.clone(),
         &req.runtime_context.project_id,
         Some(req.runtime_context.task_id.clone()),
-        is_wb(),
     )?;
     let rendered = service.render_context(req.runtime_context.language)?;
     req.mcp_servers

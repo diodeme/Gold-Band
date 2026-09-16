@@ -77,7 +77,7 @@ use crate::provider::{
     ConversationPromptInput, OutputEmissionMode, PromptHiddenSection, PromptOutputContract,
     PromptPredecessorContext, PromptRuntimeContext, PromptVisibility, ProviderRunResult,
     ProviderRunStatus, RuntimeControlIntent, RuntimeControlOutput, StreamMode,
-    UserPromptRenderMode, WorkerInvocation, conversation_prompt_text,
+    UserPromptRenderMode, UserPromptRole, WorkerInvocation, conversation_agent_prompt_text,
     render_new_round_trigger_reason_line, render_prompt_bundle, supported_models_from_capabilities,
     supported_modes_from_capabilities,
 };
@@ -504,7 +504,7 @@ fn localized_runtime_control_resume_with_message_prompt(
             RUNTIME_CONTROL_RESUME_WITH_MESSAGE_EN,
         ),
         serde_json::json!({
-            "user_message": conversation_prompt_text(&input.display_text, &input.quotes),
+            "user_message": conversation_agent_prompt_text(input, language),
             "artifact_emission_mode": artifact_emission_mode,
         }),
     )
@@ -4677,6 +4677,23 @@ fn apply_control_decision(
     }
 }
 
+fn load_initial_prompt_display(app: &App, task_id: &str) -> Option<ConversationPromptInput> {
+    let role = read_json::<UserPromptRole>(&app.paths.initial_prompt_role_file(task_id)).ok()?;
+    if role.profile_id.trim().is_empty()
+        || role.name.trim().is_empty()
+        || role.content.trim().is_empty()
+    {
+        return None;
+    }
+    let requirement =
+        std::fs::read_to_string(app.paths.requirement_file(task_id).as_std_path()).ok()?;
+    Some(ConversationPromptInput {
+        display_text: requirement,
+        quotes: Vec::new(),
+        role: Some(role),
+    })
+}
+
 pub(crate) fn drive_from_node(
     app: &App,
     task_id: &str,
@@ -4720,7 +4737,7 @@ fn drive_from_node_with_runtime_candidate(
         None,
         None,
         None,
-        None,
+        load_initial_prompt_display(app, task_id),
         UserPromptRenderMode::RequirementTask,
         Vec::new(),
         RuntimeControlIntent::Unchanged,
@@ -16475,6 +16492,7 @@ mod tests {
         let input = ConversationPromptInput {
             display_text: "  请先补充回归测试  ".to_string(),
             quotes: Vec::new(),
+            role: None,
         };
         let state = runtime_control_resume_prompt_state(
             DesktopLanguage::ZhCn,
@@ -16517,6 +16535,7 @@ mod tests {
             Some(ConversationPromptInput {
                 display_text: "Write another essay".to_string(),
                 quotes: Vec::new(),
+                role: None,
             }),
             Some("prompt-2".to_string()),
             Vec::new(),
@@ -16603,6 +16622,7 @@ mod tests {
             Some(ConversationPromptInput {
                 display_text: String::new(),
                 quotes: Vec::new(),
+                role: None,
             }),
             Some("prompt-attachment-only".to_string()),
             vec!["C:/temp/context.txt".to_string()],

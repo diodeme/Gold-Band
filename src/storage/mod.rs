@@ -417,6 +417,11 @@ impl GoldBandPaths {
         self.task_dir(task_id).join("authoring/requirement.md")
     }
 
+    pub fn initial_prompt_role_file(&self, task_id: &str) -> Utf8PathBuf {
+        self.task_dir(task_id)
+            .join("authoring/initial-prompt-role.json")
+    }
+
     pub fn workflow_file(&self, task_id: &str) -> Utf8PathBuf {
         self.task_dir(task_id).join("authoring/workflow.json")
     }

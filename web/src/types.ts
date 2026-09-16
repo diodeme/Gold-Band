@@ -2721,9 +2721,16 @@ export interface UserPromptQuote {
   text: string;
 }
 
+export interface UserPromptRole {
+  profileId: string;
+  name: string;
+  content: string;
+}
+
 export interface ConversationPromptInput {
   displayText: string;
   quotes: UserPromptQuote[];
+  role?: UserPromptRole | null;
 }
 
 export interface ConversationPromptQueueVm {
@@ -2927,6 +2934,7 @@ export interface ConversationCreateInput {
   attachmentPaths?: string[];
   workLocation?: ConversationWorkLocation;
   selectedBranch?: string | null;
+  role?: UserPromptRole | null;
 }
 
 export type ConversationWorkLocation = 'main' | 'worktree';

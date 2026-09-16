@@ -1590,6 +1590,7 @@ mod tests {
                 input: crate::provider::ConversationPromptInput {
                     display_text: "stale prompt".to_string(),
                     quotes: Vec::new(),
+                    role: None,
                 },
                 attachment_paths: Vec::new(),
                 admitted_at: "2026-08-27T00:00:00Z".to_string(),

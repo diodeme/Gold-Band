@@ -61,8 +61,10 @@ use gold_band::observability::set_runtime_log_level;
 use gold_band::provider::{
     AcpLiveTimelinePosition, ConversationPromptInput, MAX_USER_PROMPT_QUOTE_CHARS,
     MAX_USER_PROMPT_QUOTE_ID_BYTES, MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES, MAX_USER_PROMPT_QUOTES,
-    UserPromptQuote, conversation_prompt_text, select_config_options_from_capabilities,
-    supported_models_from_capabilities, supported_modes_from_capabilities,
+    MAX_USER_PROMPT_ROLE_CONTENT_CHARS, MAX_USER_PROMPT_ROLE_ID_BYTES,
+    MAX_USER_PROMPT_ROLE_NAME_BYTES, UserPromptQuote, conversation_agent_prompt_text,
+    select_config_options_from_capabilities, supported_models_from_capabilities,
+    supported_modes_from_capabilities,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -2202,6 +2204,7 @@ fn schedule_direct_prompt_queue_drain(
             ConversationPromptInput {
                 display_text: claimed.content.clone(),
                 quotes: claimed.quotes.clone(),
+                role: claimed.role.clone(),
             },
             Some(claimed.prompt_id.clone()),
             locator.outer_node_id.clone(),
@@ -6902,6 +6905,7 @@ pub async fn use_conversation_queued_prompt(
         ConversationPromptInput {
             display_text: claimed.content.clone(),
             quotes: claimed.quotes.clone(),
+            role: claimed.role.clone(),
         },
         Some(claimed.prompt_id.clone()),
         locator.outer_node_id.clone(),
@@ -6930,6 +6934,7 @@ pub async fn use_conversation_queued_prompt(
                     ConversationPromptInput {
                         display_text: reclaimed.content,
                         quotes: reclaimed.quotes,
+                        role: reclaimed.role,
                     },
                     Some(reclaimed.prompt_id),
                     locator.outer_node_id.clone(),
@@ -7442,8 +7447,16 @@ async fn execute_admitted_acp_prompt_with_configured_app(
         let ConversationPromptInput {
             display_text,
             quotes,
+            role,
         } = input;
-        let prompt = conversation_prompt_text(&display_text, &quotes);
+        let prompt = conversation_agent_prompt_text(
+            &ConversationPromptInput {
+                display_text: display_text.clone(),
+                quotes: quotes.clone(),
+                role: role.clone(),
+            },
+            app.config.desktop_language,
+        );
         if let (Some(outer_node_id), Some(outer_attempt_id)) =
             (outer_node_id.as_deref(), outer_attempt_id.as_deref())
         {
@@ -7517,6 +7530,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             let mut prompt_bundle = prepared_prompt.prompt;
             prompt_bundle.display_text = Some(display_text.clone());
             prompt_bundle.quotes = quotes.clone();
+            prompt_bundle.role = role.clone();
             if let Some(ref paths) = attachment_paths {
                 if !paths.is_empty() {
                     let resolved = gold_band::provider::resolve_user_input_attachments(
@@ -7693,6 +7707,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
         let mut prompt_bundle = prepared_prompt.prompt;
         prompt_bundle.display_text = Some(display_text);
         prompt_bundle.quotes = quotes;
+        prompt_bundle.role = role;
         if let Some(ref paths) = attachment_paths {
             if !paths.is_empty() {
                 let resolved = gold_band::provider::resolve_user_input_attachments(
@@ -9176,6 +9191,34 @@ fn validate_conversation_prompt_input(
             return Err(CommandErrorVm::new(
                 "conversation.prompt-quote-limit-exceeded",
                 serde_json::json!({ "maxChars": MAX_USER_PROMPT_QUOTE_CHARS }),
+            ));
+        }
+    }
+    if let Some(role) = input.role.as_ref() {
+        if role.profile_id.trim().is_empty()
+            || role.name.trim().is_empty()
+            || role.content.trim().is_empty()
+        {
+            return Err(CommandErrorVm::new(
+                "conversation.prompt-role-invalid",
+                serde_json::json!({}),
+            ));
+        }
+        if role.profile_id.len() > MAX_USER_PROMPT_ROLE_ID_BYTES
+            || role.name.len() > MAX_USER_PROMPT_ROLE_NAME_BYTES
+        {
+            return Err(CommandErrorVm::new(
+                "conversation.prompt-role-metadata-too-long",
+                serde_json::json!({
+                    "maxIdBytes": MAX_USER_PROMPT_ROLE_ID_BYTES,
+                    "maxNameBytes": MAX_USER_PROMPT_ROLE_NAME_BYTES,
+                }),
+            ));
+        }
+        if role.content.chars().count() > MAX_USER_PROMPT_ROLE_CONTENT_CHARS {
+            return Err(CommandErrorVm::new(
+                "conversation.prompt-role-limit-exceeded",
+                serde_json::json!({ "maxChars": MAX_USER_PROMPT_ROLE_CONTENT_CHARS }),
             ));
         }
     }
@@ -11264,6 +11307,7 @@ mod tests {
             input: gold_band::provider::ConversationPromptInput {
                 display_text: "test".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-26T00:00:00Z".to_string(),
@@ -11658,6 +11702,7 @@ mod tests {
                 source_message_key: source_message_key.to_string(),
                 text: text.to_string(),
             }],
+            role: None,
         }
     }
 
@@ -11707,6 +11752,7 @@ mod tests {
                 source_message_key: "arbitrary-source".to_string(),
                 text: "用户提供的任意引用内容".to_string(),
             }],
+            role: None,
         };
         assert_eq!(
             validate_conversation_prompt_input(&too_long_id, None)
@@ -11733,6 +11779,7 @@ mod tests {
         let input = ConversationPromptInput {
             display_text: String::new(),
             quotes: Vec::new(),
+            role: None,
         };
 
         assert_eq!(
@@ -12794,6 +12841,7 @@ mod tests {
             input: gold_band::provider::ConversationPromptInput {
                 display_text: "next".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-26T00:00:03Z".to_string(),

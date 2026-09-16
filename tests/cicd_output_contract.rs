@@ -22,6 +22,9 @@ mod output_contract;
 
 #[test]
 fn wb_cicd_emits_its_existing_artifact_in_the_single_execution_turn() {
+    if !gold_band::memory::is_wb() {
+        return;
+    }
     configure_storage_paths(StoragePathConfig {
         app_key: "maling",
         config_dir_name: ".maling",

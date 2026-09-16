@@ -243,6 +243,7 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 2026-08-02：修复三段式响应式布局不可达。Tauri 原生最小宽度由旧的 1040px 收敛为布局 profile 最大值 640px；自动折叠阈值和右栏动态上限改用用户当前左栏宽度，窗口缩小时可以真实经历“右栏压缩 → 左栏隐藏 → 右栏隐藏”，紧凑模式继续复用同一 Tab state 和 `RightWorkspaceDock` Sheet。
 - 2026-08-02：Dock/Sheet 模式切换时，Sheet 可保留 Radix 退出动画外壳，但 compact 状态结束后必须立即卸载内部 `RightWorkspaceDock`；禁止退出动画期间同时挂载两套 Agent 内容、重复建立实时订阅。
 - 2026-08-02：修复渠道 Tauri overlay 覆盖基础窗口最小宽度的问题。`scripts/channel-config.mjs` 不再维护第二份 1040px 等窗口参数，而是完整继承 `src-tauri/tauri.conf.json` 的主窗口配置，仅替换渠道标题；渠道契约测试比较最终 overlay 与基础窗口配置，确保真实客户端和浏览器响应式验收使用同一约束。
+- 2026-09-16：渠道 overlay 将 `bundle.publisher` 固定为该渠道 `productName`，Windows `CompanyName` 与产品名一致；`wb` 构建为 `MALING`，不再使用 identifier `local.maling.desktop` 的第二段 `maling`。
 - 2026-08-02：补齐无右栏时的左栏紧凑策略。布局 profile 将中间内容硬下限与自动折叠舒适宽度分开建模；会话分别为 360px/420px。右栏关闭时按舒适宽度收起左栏，避免折叠阈值 616px 低于原生 640px 最小宽度而永远不可达；右栏打开时仍按硬下限计算，保持“右栏先压到最小值，再收左栏”的顺序。
 - 2026-08-02：窗口连续缩放热路径移除每像素 React 双提交。原生窗口与 Resizable flex 面板继续逐帧跟随指针；`previousWidth` 下沉到 ref，React 只接收跨越折叠临界点后的 `{left,right}`，右栏最大值改由 Panel 原生 min/max 与中间 min 联合约束。左栏逐帧 `onResize` 持久化定时器被删除，左右宽度只在用户释放分隔线后的 `onLayoutChanged` 中保存；会话导航和右侧 Dock 建立 memo 边界，避免无关壳层提交重建长列表或 Agent 视口。
 - 2026-08-03：修复最大化窗口切换页面时被还原。页面约束同步增加 applied/pending 状态：同约束切换不触发宿主 API；不同约束在最大化期间延迟，恢复普通窗口后由 resize 生命周期应用最新值。禁止使用“先退出再重新最大化”的闪动补偿。

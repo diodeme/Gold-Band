@@ -566,13 +566,24 @@ impl HeartbeatReporter {
         api_key: &str,
         request: &HeartbeatRequest,
     ) -> SendOutcome {
+        let body_json = match serde_json::to_string(request) {
+            Ok(body_json) => body_json,
+            Err(error) => {
+                metrics_log(&format!(
+                    "[heartbeat] result=serialization_failure reason={} error={error}",
+                    reason_str(request.reason)
+                ));
+                return SendOutcome::DeterministicFailure;
+            }
+        };
+        metrics_log(&format_heartbeat_request_log(endpoint, &body_json));
         let started = Instant::now();
         let result = self
             .client
             .post(endpoint)
             .header("X-Maling-Report-Key", api_key)
             .header("Content-Type", "application/json;charset=UTF-8")
-            .json(request)
+            .body(body_json)
             .send()
             .await;
 
@@ -725,6 +736,10 @@ fn reason_str(reason: HeartbeatReason) -> &'static str {
         HeartbeatReason::AutoStarted => "autoStarted",
         HeartbeatReason::ScheduledTaskCreated => "scheduledTaskCreated",
     }
+}
+
+fn format_heartbeat_request_log(endpoint: &str, body_json: &str) -> String {
+    format!("[heartbeat] request url={endpoint} body={body_json}")
 }
 
 #[cfg(test)]
@@ -890,6 +905,44 @@ mod tests {
         assert!(obj.contains_key("reason"));
         assert!(obj.contains_key("clientVersion"));
         assert!(obj.contains_key("os"));
+    }
+
+    #[test]
+    fn heartbeat_request_log_contains_the_exact_serialized_body() {
+        let request = HeartbeatRequest {
+            heartbeat_id: Uuid::parse_str("83be2445-c85d-4320-8e63-75af2231848f").unwrap(),
+            user_id: "testuser".to_string(),
+            reason: HeartbeatReason::AppStarted,
+            client_version: "0.14.1".to_string(),
+            os: ClientOs::Windows,
+        };
+        let body_json = serde_json::to_string(&request).unwrap();
+
+        assert_eq!(
+            format_heartbeat_request_log("https://metrics.example/heartbeat", &body_json),
+            concat!(
+                "[heartbeat] request url=https://metrics.example/heartbeat body=",
+                "{\"heartbeatId\":\"83be2445-c85d-4320-8e63-75af2231848f\",",
+                "\"userId\":\"testuser\",\"reason\":\"appStarted\",",
+                "\"clientVersion\":\"0.14.1\",\"os\":\"windows\"}"
+            )
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn heartbeat_http_body_matches_the_logged_serialization() {
+        let reporter = test_reporter();
+        let accepted = r#"{"code":200,"msg":"","data":{"accepted":true,"duplicate":false}}"#;
+        let (endpoint, server) = mock_http_responses(vec![("200 OK", accepted)]);
+        let request = request(HeartbeatReason::WorkflowStarted);
+        let expected_body = serde_json::to_string(&request).unwrap();
+
+        let outcome = reporter.send_once(&endpoint, "test-key", &request).await;
+        let requests = server.join().unwrap();
+        let actual_body = requests[0].split("\r\n\r\n").nth(1).unwrap();
+
+        assert_eq!(outcome, SendOutcome::Accepted);
+        assert_eq!(actual_body, expected_body);
     }
 
     #[test]

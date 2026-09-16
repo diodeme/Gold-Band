@@ -290,6 +290,7 @@ fn scheduled_task_context_info(
         automatic: snapshot.automatic.clone(),
         content_fingerprint: snapshot.content_fingerprint.clone(),
         instruction_summary: snapshot.instruction_summary.clone(),
+        schedule: snapshot.schedule.clone(),
         timeline_owner,
     })
 }
@@ -2674,9 +2675,11 @@ fn scheduled_occurrence_key(event: &RuntimeLifecycleEvent) -> Option<ActiveOccur
         | RuntimeLifecycleEvent::UserActivityObserved
         | RuntimeLifecycleEvent::ConversationRunStarted { .. }
         | RuntimeLifecycleEvent::ScheduledTaskCreated { .. }
+        | RuntimeLifecycleEvent::DirectTurnLifecycle(_)
+        | RuntimeLifecycleEvent::MetricsInterventionSource(_)
         | RuntimeLifecycleEvent::NodeStarted { .. }
         | RuntimeLifecycleEvent::NodeCompleted { .. }
-        | RuntimeLifecycleEvent::MetricsFact(_) => None,
+        | RuntimeLifecycleEvent::PendingMetricsFact(_) => None,
     }
 }
 
@@ -2798,10 +2801,12 @@ pub(crate) fn finish_occurrence_for_event(
         | RuntimeLifecycleEvent::UserActivityObserved
         | RuntimeLifecycleEvent::ConversationRunStarted { .. }
         | RuntimeLifecycleEvent::ScheduledTaskCreated { .. }
+        | RuntimeLifecycleEvent::DirectTurnLifecycle(_)
+        | RuntimeLifecycleEvent::MetricsInterventionSource(_)
         | RuntimeLifecycleEvent::RunPaused { .. }
         | RuntimeLifecycleEvent::NodeStarted { .. }
         | RuntimeLifecycleEvent::NodeCompleted { .. }
-        | RuntimeLifecycleEvent::MetricsFact(_) => return Ok(None),
+        | RuntimeLifecycleEvent::PendingMetricsFact(_) => return Ok(None),
     };
     if !database.finish_occurrence(project_id, occurrence_id, owner_id, status, links, error)? {
         return Ok(None);
@@ -2905,6 +2910,7 @@ fn reload_execution_authority(
             &record.definition.content_snapshot.instruction,
             SCHEDULED_INSTRUCTION_SUMMARY_MAX_CHARS,
         ),
+        schedule: Some(record.definition.schedule.clone()),
         automatic,
     };
     Ok(ScheduledExecutionAuthority { record, snapshot })
@@ -4545,6 +4551,7 @@ mod tests {
     #[tokio::test]
     async fn content_edit_after_acceptance_does_not_mutate_the_running_snapshot() {
         let (database, mut definition, occurrence, owner_id) = claimed_occurrence_context();
+        let accepted_schedule = definition.schedule.clone();
         definition.content_snapshot.instruction = "accepted instruction".to_string();
         definition.instruction = "accepted instruction".to_string();
         definition.recompute_content_fingerprint().unwrap();
@@ -4565,6 +4572,7 @@ mod tests {
         let mut edited = record.definition;
         edited.content_snapshot.instruction = "later instruction".to_string();
         edited.instruction = "later instruction".to_string();
+        edited.schedule = ScheduleSpec::at(Utc::now() + Duration::days(7));
         edited.recompute_content_fingerprint().unwrap();
         let expected_updated_at = edited.updated_at;
         edited.updated_at = expected_updated_at + Duration::milliseconds(1);
@@ -4580,10 +4588,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(persisted.links(), links);
-        assert_eq!(
-            persisted.accepted_execution.unwrap().content.instruction,
-            "accepted instruction"
-        );
+        let context = scheduled_task_context_info(&definition.project_id, &persisted).unwrap();
+        assert_eq!(context.schedule, Some(accepted_schedule.clone()));
+        let snapshot = persisted.accepted_execution.unwrap();
+        assert_eq!(snapshot.content.instruction, "accepted instruction");
+        assert_eq!(snapshot.schedule, Some(accepted_schedule));
     }
 
     #[tokio::test]

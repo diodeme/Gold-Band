@@ -59,9 +59,10 @@ it('a completed diagnostic clears its spinner and permits retry while another Ag
   expect(buttons[1].disabled).toBe(false);
   expect(buttons[1].textContent).toBe(i18n.t('agentManagement.diagnose'));
   const localized = i18n.t('errors.acp.adapter-exited-with-code', { method: 'initialize', exitCode: 1 });
-  expect(container.textContent).toContain(i18n.t('agentManagement.diagnosticFailed', { reason: localized }));
+  expect(container.textContent).toContain(i18n.t('agentManagement.diagnosticFailed', { reason: 'npm error code ENOENT' }));
+  expect(container.textContent).not.toContain(localized);
   expect(container.textContent).toContain('ENOENT');
-  expect(container.textContent).toContain('package.json');
+  expect(container.textContent).not.toContain('package.json');
   expect(container.textContent).not.toContain('ACP adapter transport interrupted');
   expect(buttons[0].disabled).toBe(false);
 });

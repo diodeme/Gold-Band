@@ -458,6 +458,7 @@ pub fn doctor_diagnostic_error(error: &anyhow::Error) -> DiagnosticError {
                 "osError": start.source.to_string(),
                 "command": start.command,
             }),
+            raw: None,
         };
     }
     if let Some(runtime_error) = error.downcast_ref::<RuntimeError>() {
@@ -467,6 +468,7 @@ pub fn doctor_diagnostic_error(error: &anyhow::Error) -> DiagnosticError {
         return DiagnosticError {
             code: "acp.adapter-exited".to_string(),
             params: json!({}),
+            raw: None,
         };
     }
     diagnostic_error_from_runtime(&normalize_runtime_error(error))
@@ -482,7 +484,11 @@ fn diagnostic_error_from_runtime(info: &crate::runtime_error::RuntimeErrorInfo) 
     } else {
         info.params.clone()
     };
-    DiagnosticError { code, params }
+    DiagnosticError {
+        code,
+        params,
+        raw: info.raw.clone(),
+    }
 }
 
 fn doctor_adapter_exited_error(
@@ -8718,6 +8724,26 @@ mod tests {
         let diagnostic = super::doctor_diagnostic_error(&error);
         assert_eq!(diagnostic.code, "acp.adapter-exited");
         assert_eq!(diagnostic.params, json!({}));
+    }
+
+    #[test]
+    fn doctor_diagnostic_error_preserves_session_request_raw() {
+        let raw = json!({
+            "code": -32000,
+            "message": "Authentication required",
+            "data": { "category": "auth" },
+        });
+        let mut info = crate::runtime_error::manual_runtime_error_info(
+            crate::runtime_error::RuntimeErrorDomain::Provider,
+            "acp.session-request-failed",
+            "ACP `session/new` failed: Authentication required",
+            json!({ "method": "session/new" }),
+        );
+        info.raw = Some(raw.clone());
+        let diagnostic = super::doctor_diagnostic_error(&crate::runtime_error::runtime_error(info));
+        assert_eq!(diagnostic.code, "acp.session-request-failed");
+        assert_eq!(diagnostic.params, json!({ "method": "session/new" }));
+        assert_eq!(diagnostic.raw.as_ref(), Some(&raw));
     }
 
     #[test]

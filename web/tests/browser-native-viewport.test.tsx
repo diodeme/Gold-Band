@@ -42,6 +42,29 @@ afterEach(() => {
 });
 
 describe('NativeBrowserViewport', () => {
+  it('shows the retained native page before the first frame so returning to it cannot paint an empty pane', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const frames: FrameRequestCallback[] = [];
+    const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    try {
+      await act(async () => {
+        root.render(<NativeBrowserViewport page={page} visible loadingLabel="Loading page" />);
+      });
+      expect(host.ensurePage).toHaveBeenCalled();
+      expect(frames).toHaveLength(0);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      vi.stubGlobal('requestAnimationFrame', originalRequestAnimationFrame);
+    }
+  });
+
   it('shows the native page while it is still loading so progressive content is not hidden behind the loader', async () => {
     const container = document.createElement('div');
     document.body.append(container);
@@ -174,16 +197,16 @@ describe('NativeBrowserViewport', () => {
     }
   });
 
-  it('insets the native host when the address overlay covers the page', async () => {
+  it('keeps the native host bounds unchanged while the address overlay is open', async () => {
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
     try {
       await act(async () => {
-        root.render(<NativeBrowserViewport page={page} visible loadingLabel="Loading page" coverTop={80} />);
+        root.render(<NativeBrowserViewport page={page} visible loadingLabel="Loading page" />);
       });
       const hostNode = container.querySelector<HTMLElement>('[data-browser-native-host="true"]');
-      expect(hostNode?.style.top).toBe('80px');
+      expect(hostNode?.style.top).toBe('');
     } finally {
       await act(async () => root.unmount());
       container.remove();

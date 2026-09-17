@@ -4,7 +4,6 @@ import {
   browserVisitOrigin,
   displayBrowserVisitUrl,
   faviconForUrl,
-  overlayCoverTop,
   type BrowserVisit,
 } from '@/components/workspace/browser/browser-history';
 
@@ -53,11 +52,6 @@ describe('browser address history', () => {
   it('reuses an origin favicon for any page on that site', () => {
     expect(faviconForUrl([github, local], 'https://github.com/gold-band')).toBe('data:image/png;base64,aaa');
     expect(faviconForUrl([github, local], 'http://localhost:3000/other')).toBeNull();
-  });
-
-  it('only insets the native page by the overlay that actually covers it', () => {
-    expect(overlayCoverTop(120, 200)).toBe(0);
-    expect(overlayCoverTop(260, 200)).toBe(60);
   });
 
   it('derives origin and compact url for the suggestion row', () => {

@@ -47,10 +47,6 @@ export function faviconForUrl(visits: readonly BrowserVisit[], url: string) {
   return visits.find((visit) => visit.origin === origin && visit.faviconDataUrl)?.faviconDataUrl ?? null;
 }
 
-export function overlayCoverTop(overlayBottom: number, viewportTop: number) {
-  return Math.max(0, Math.round(overlayBottom - viewportTop));
-}
-
 export function browserAddressSuggestions(
   visits: readonly BrowserVisit[],
   query: string,

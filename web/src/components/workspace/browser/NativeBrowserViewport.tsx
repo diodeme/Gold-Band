@@ -17,37 +17,37 @@ export function NativeBrowserViewport({
   page,
   visible,
   loadingLabel,
-  coverTop = 0,
 }: {
   page: BrowserPage | null;
   visible: boolean;
   loadingLabel: string;
-  coverTop?: number;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<number | null>(null);
   const pageRef = useRef(page);
   pageRef.current = page;
+  const liveRef = useRef(page?.live ?? false);
   const pageId = page?.pageId ?? null;
   const live = page?.live ?? false;
 
-  const sync = useCallback(() => {
+  const measureAndSync = useCallback(() => {
     const element = hostRef.current;
     const current = pageRef.current;
     if (!element || !current) return;
+    const next = readBounds(element);
+    void browserWebviewHost.ensurePage(current, next, visible);
+    if (visible && current.live) {
+      browserWebviewHost.scheduleBounds(current.pageId, next);
+    }
+  }, [visible]);
+
+  const sync = useCallback(() => {
     if (frameRef.current != null) cancelAnimationFrame(frameRef.current);
     frameRef.current = requestAnimationFrame(() => {
       frameRef.current = null;
-      const latest = pageRef.current;
-      const host = hostRef.current;
-      if (!latest || !host) return;
-      const next = readBounds(host);
-      void browserWebviewHost.ensurePage(latest, next, visible);
-      if (visible && latest.live) {
-        browserWebviewHost.scheduleBounds(latest.pageId, next);
-      }
+      measureAndSync();
     });
-  }, [pageId, visible]);
+  }, [measureAndSync]);
 
   useLayoutEffect(() => {
     const element = hostRef.current;
@@ -56,7 +56,7 @@ export function NativeBrowserViewport({
       if (!current) void browserWebviewHost.hideAll();
       return;
     }
-    sync();
+    measureAndSync();
     const observer = new ResizeObserver(sync);
     observer.observe(element);
     window.addEventListener('resize', sync);
@@ -71,12 +71,14 @@ export function NativeBrowserViewport({
       if (frameRef.current != null) cancelAnimationFrame(frameRef.current);
       void browserWebviewHost.hideAll();
     };
-  }, [pageId, sync, visible]);
+  }, [measureAndSync, pageId, sync, visible]);
 
   useLayoutEffect(() => {
+    if (liveRef.current === live) return;
+    liveRef.current = live;
     if (!pageId) return;
-    sync();
-  }, [coverTop, live, pageId, sync, visible]);
+    measureAndSync();
+  }, [live, measureAndSync, pageId]);
 
   return (
     <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden" data-browser-viewport="true">
@@ -87,8 +89,7 @@ export function NativeBrowserViewport({
       ) : null}
       <div
         ref={hostRef}
-        className="absolute inset-x-0 bottom-0"
-        style={{ top: coverTop }}
+        className="absolute inset-0"
         data-browser-native-host="true"
       />
     </div>

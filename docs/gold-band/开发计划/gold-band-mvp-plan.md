@@ -14,6 +14,90 @@
 - 证据：占位文案投影函数固定显示名并排除 `projectId`；信息栏 DOM 固定分支触发器携带与工作空间选择器相同的 `ConversationWorkspaceVm.name`。
 - 过度设计与性能评审：只增加一条展示 prop、一个纯函数投影和一次已有 workspace 列表的 O(n) 查找（工作空间数量个位数），无新状态、请求、缓存或 identity。
 
+## 2026-09-17 地址栏浮层首帧黑/空白帧（显示时机早于绘制）
+
+- 根因：上一轮把显示时机放在 `load-finish`，但“文档加载完成”不等于“内容已经画出来”。现场录屏的四帧（浅色 → 深色 → 紫调 → 正常）说明新建 WebView2 合成面在真正绘制前仍会被展示，黑帧与紫调都是未绘制/合成中的画面。主题注入只解决了“画出来时用哪套颜色”，没有解决“什么时候可以显示”。
+- 实现：建议面在完成一次绘制后上报新命令 `browser_address_suggestions_painted { revision }`（连续两帧后触发，确保已过一帧合成），Rust 仅在当前投影可见且 revision 匹配时显示浮层；`load-finish` 只负责注入状态，不再直接显示；1.2 秒有界兜底保留。
+- 证据：前端用例固定“表面渲染后必须上报 painted revision”；Rust `browser::tests` 22 项、Web 聚焦用例通过；现场验收标准为首次打开不再出现黑/空白帧，日志顺序为 `address-suggestions-page load-finish` → `show-address-suggestions-painted`。
+- 过度设计与性能评审：只增加一次命令上报与一次显示判定（每次打开一次，无轮询、无缓存、无状态机），显示时机由“内容已就绪”这一真实条件决定，而不是靠延时猜测。
+## 2026-09-17 地址栏浮层首帧闪黑（主题注入时机）
+
+- 根因：浮层与主应用共用同一份入口资源，`styles.css` 的 `:root` 默认是深色主题；此前主题由 React 挂载后的 `applyTheme` 写入，因此文档第一次绘制用的是默认深底，肉眼就是“第一次点开闪一下黑屏”。上一次把 WebView 自身背景改成透明并延后显示，所以闪的时间变短但没消失。
+- 实现：新增 `browser-address-suggestion-theme.js`（沿用 `browser-link-click.js` 的 `include_str!` 约定），由 Rust 在创建浮层时把 `theme` 一起拼进初始化脚本，在文档开始即写入根元素的 `dark` class、`data-theme/color-scheme/visual-quality/material-model`、`colorScheme` 与语义变量；React 之后的 `applyTheme` 继续负责运行期更新。透明背景与“加载完成后再显示”保持不变。
+- 证据：新增 Rust 用例固定生成的初始化脚本同时包含状态注入与主题注入（含 `dataset.theme`、`setProperty` 与主题 JSON）；`browser::tests` 22 项、`cargo check` 通过。
+- 过度设计与性能评审：只是把已有主题数据用在更早的时机，新增一个静态 JS 片段，无新增状态、监听、请求或缓存；`name(theme)` 形式避免了全局污染。
+- 验收：首次打开地址栏不再出现黑底闪帧；若仍有“空白面板若干帧”，可再引入一次“表面已绘制”上报（额外命令）来延后显示，属于可选加固。
+
+## 2026-09-17 地址栏建议被网页子 WebView 盖住（原生 z-order）
+
+- 根因：子 WebView 创建时会插到窗口 z-order 顶部，而浮层是懒创建、生命周期远长于网页；只要之后新建过任何网页子 WebView，浮层就排到它下面。于是列表只露出网页视口上沿之上的一条，其余被网页盖住，表现为“列表被遮盖”。属于原生层级契约缺失，不是建议数据或样式问题。
+- 现场证据（只读枚举）：`TOP → CHILD page(visible) → CHILD overlay(visible=False) → CHILD main`，网页子 WebView 明确排在浮层之前（即更靠上层）。
+- 实现：新增 `show_address_suggestions_overlay`，在 show 之前通过 WebView2 controller 取容器 HWND 并 `SetWindowPos(HWND_TOP, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)` 抬到最前；创建后首帧显示、有界兜底显示均走同一 helper，并记录 `raise-address-suggestions` 日志。
+- 复现与验收：z-order 无法用单元测试表达，采用可审计替代证据——窗口子级枚举顺序（修复前网页在浮层之上，修复后浮层排第一），配合“网页已打开时列表完整可见”的现场验收。
+- 过度设计与性能评审：只在显示浮层时做一次 `SetWindowPos`，不新增状态、监听或轮询；不重建浮层、不触发页面重载。
+
+## 2026-09-17 地址栏草稿被页面事件覆盖导致两处建议不一致
+
+- 根因：`BrowserWorkspacePanel` 的同步 effect 依赖 `active.pageId/url`，任何网页 url 变化（跳转、重定向、SPA 路由）都会把地址栏重置为权威 URL 并把 `typed` 置回 false。空白页没有这类事件，所以输入稳定走过滤结果；已打开的页面会中途把草稿打回页面 URL，建议列表回落为最近访问，表现为“同一个输入在两个标签页检索效果不一样”。属于“权威状态覆盖用户草稿”，不是建议算法问题（同一函数在两种状态下本来就产出不同列表：过滤 = 搜索行 + 命中访问；最近访问 = 最近 N 条且无搜索行）。
+- 实现：地址栏新增 `onEditingChange` 上报编辑态；面板用 `editingAddressRef` + `lastSyncedPageRef` 判定，同一 `pageId` 下正在编辑时跳过地址/typed 同步，只有切换内部页或提交后才用权威 URL 重写。
+- 红绿证据：新增面板用例固定“已打开页面上输入草稿后，页面再上报新 url 不得覆盖草稿”；修复前稳定失败（实际值变成 `https://example.com/next`），恢复修复后通过。另用真实浏览器验证建议面自身是不透明白底、行序为 `search → visit`，并在真实实例里用同一函数算出 `manage` 的过滤结果（搜索行 + CLI Proxy）与最近访问结果（5 条、无搜索行），确认差异来自状态而非渲染。
+- 过度设计与性能评审：不新增状态机、定时器或缓存，只增加一个编辑态 ref 与一次判定；建议计算与请求去重不变。
+- 验收：Web 聚焦 6 文件 34 项通过、`tsc` 无错误。
+
+## 2026-09-17 内置浏览器地址栏浮层点击被失焦竞态吞掉
+
+- 根因：点击浮层会把焦点交给原生浮层 WebView，地址栏立即 `onBlur` → `closeList()` → 前端先发一条新的 hide 并把“当前可见 revision”清零；约 30ms 后点击事件才带着浮层**当时显示的那个 revision** 到达，被 revision 过滤直接丢弃。日志能证明这一点：同一个时刻 `address-suggestion-action received … forwarded` 两条都在，后端已转发，但 UI 无任何动作。
+- 实现：把 revision 语义固定为“浮层当前显示/最近显示的投影 revision”，hide 不再清零；只有下一次 show 才会推进它。隐藏行为本身不变（失焦仍然关闭列表），但不再吞掉紧随其后的点击。
+- 红绿证据：新增前端用例固定“点击浮层导致的失焦先隐藏列表，随后到达的 choose 事件仍必须触发提交”；修复前同一用例稳定失败（`onSubmit` 未被调用），恢复修复后通过。
+- 过度设计与性能评审：不新增状态、定时器或缓存，只修正一个 ref 的生命周期语义；点击仍是每次一次 IPC。
+- 验收：Web 聚焦 5 文件 27 项通过、`tsc` 无错误；现场日志保持 `address-suggestion-action received/forwarded`，UI 端应出现跳转或删除。
+
+## 2026-09-17 内置浏览器地址栏浮层点击无效
+
+- 根因：浮层只通过 `getCurrentWebview().emitTo('main', …)` 回传点击，而浮层没有自己的诊断通道，跨 WebView 事件一旦被 ACL 拒绝或丢失就完全不可观测（页面里既没有报错也没有日志）。属于“正确设计但回传链路不可审计”，不是 DOM 交互或数据问题。
+- 实现：新增命令 `browser_address_suggestion_action { revision, kind, key }`，由 Rust 校验（revision 非零、kind 仅 choose/remove、key 非空且 ≤16KB）并记录 `address-suggestion-action received/forwarded` 日志，再用 `emit_to("main", …)` 转发给主 WebView；浮层改为调用该命令，不再直接 emit。主 WebView 侧的 revision + item key 校验保持不变。
+- 红绿证据：新增前端用例固定“点击建议行发送 `browser_address_suggestion_action` 且 kind=choose”“点击删除按钮只发送 kind=remove 且不触发 choose”（修复前浮层使用的是 emitTo，用例无法通过）；新增 Rust 用例固定 action 校验边界（revision=0、未知 kind、空 key、超长 key 全部拒绝）。
+- 过度设计与性能评审：不新增权限/能力文件（本地 origin 的浮层本就可调用应用命令），只增加一个薄转发命令与两条日志；点击仍是每次一次 IPC，无缓存、无队列、无轮询。
+- 验收：Rust `browser::tests` 21 项、Web 聚焦 5 文件 26 项通过；现场判定标准为 `runtime.log` 出现 `address-suggestion-action received/forwarded` 且随后主 WebView 执行跳转或删除。
+
+## 2026-09-17 内置浏览器地址栏浮层首帧黑底
+
+- 根因：浮层创建后立刻 `show()`，而新建子 WebView 在文档渲染前会先绘制自己的默认背景，于是第一次聚焦地址栏会先看到一块黑底面板，随后才出现历史列表；之后复用同一实例所以不再出现。属于“设计正确但首帧时序实现不完整”，不是样式或数据问题。
+- 实现：浮层创建时使用透明默认背景（`WebviewColor(0, 0, 0, 0)`）并立即 hide，仅在文档 `load-finish` 且状态注入完成后 show；新增 1.2 秒有界兜底，加载停滞时仍会显示。bounds 仍在创建后立即同步。新增 `show-address-suggestions-after-load` / `show-address-suggestions-fallback` 日志。
+- 证据：现场日志显示 create 时 `document_url=about:blank`，显式导航后约 30ms 内出现 `load-start`/`load-finish`，黑底窗口只存在于“已显示但未渲染”的窗口期；修复后首次显示与首帧完成对齐。
+- 过度设计与性能评审：只增加一个每实例最多一次的有界定时器，不新增状态机、缓存或轮询；浮层仍是复用实例，投影上限与请求去重不变。
+- 验收：Rust `browser::tests` 20 项通过；首帧行为由日志与窗口树共同判定（内容子窗口存在 + 建议面 URL + 页面加载事件 + 显示发生在加载之后）。
+
+## 2026-09-17 重启后 ACP 会话失败原因丢失
+
+- 根因：snapshot 已有结构化 `turnError` 仍显示通用横幅，是因为会话树 leaf 没挂 ACP header；同时 persist 的 revision CAS 也可能让原因根本写不进 snapshot。Live emit 会挂 header，重开走会话树就不会。
+- 实现：会话树 Direct / AI-DYNAMIC leaf 与 live lifecycle 共用 header 挂载；同一 turn 的结构化失败在 revision 漂移后仍落盘，占位失败只能被结构化原因升级。
+- 红绿证据：`conversation_run_session_tree_carries_current_turn_error` 修复前 leaf `turnId/turnError` 为 `None`；修复后带上配置错误。persist/orphan 4 项先前已由红转绿。
+- 过度设计与性能评审：不新增加载接口或缓存；每个 leaf 多读一次已有轻量 snapshot header，不扫 timeline 或 raw。
+
+## 2026-09-17 内置浏览器地址栏浮层“透明可点击空窗”
+
+- 根因：地址建议浮层的命令链路是通的（create/show/hide 全部 started+completed、bounds 正确），但浮层 WebView 只有**容器窗口**：窗口树里主 WebView 与浏览页 WebView 都有 `Chrome_WidgetWin_*` 内容子窗口，浮层容器下一个子窗口都没有，因此既画不出内容又照常拦截点击，表现为“地址栏位置有个透明窗口占着、页面点不动、缩窄右栏后也不跟随内容”。形成路径是浮层与主 WebView 共享 WebView2 环境并且使用应用相对 URL 创建，与已验证可用的浏览页子 WebView（独立数据目录 + 绝对 URL）不是同一条路径。
+- 实现：浮层改用独立数据目录 `{appData}/browser-profile/address-suggestions`，URL 由主 WebView origin 推导为绝对地址后以 `WebviewUrl::External` 创建；create 完成后校验文档 URL（缺少 `surface=browser-address-suggestions` 时显式 `navigate` 兜底），并新增 create 文档 URL 与 `load-start`/`load-finish` 结构化日志，任何“空窗”都能从日志与窗口树直接判定。
+- 证据与红绿：现场通过只读 CDP + Win32 窗口枚举取证（应用主 WebView 有内容子窗口、浮层无内容子窗口），并通过全屏截图确认可点击区域无渲染。修复后的判定标准写入产品设计文档：浮层必须同时满足“内容窗口存在 + 文档 URL 为建议面 + 出现页面加载事件”。
+- 过度设计与性能评审：只增加一个必要且独立的 WebView2 环境（与浏览页同构），不新增状态机、缓存或队列；浮层仍复用同一个实例，投影上限与请求去重沿用上一轮实现。
+
+## 2026-09-17 内置浏览器地址栏下拉不显示（浮层请求竞态）
+
+- 根因：地址建议浮层是正确设计，但「显示浮层」这条链路的实现不完整。一是一次聚焦/布局收敛中前端会连续发出多条 show/hide（投影未变也重发），二是 Rust 侧对同一 `gb-browser-address-suggestions` 标签没有创建串行化，并发 create 必有一个失败，三是被更新 revision 超越的在途 show 会无条件 hide，可能把较新 show 刚显示的浮层重新隐藏，于是表现为「点击地址栏没有任何下拉」。现场证据：MALING 调试实例日志里点击地址栏后同一毫秒出现多条 `show-address-suggestions`/`create-address-suggestions` 并伴随 `unhandled-rejection`（结构化命令错误），窗口树中浮层 HWND 已创建且坐标与请求一致，说明不是浮层缺失而是投影收敛错误。
+- 实现：前端只在投影签名（bounds/items/activeIndex/theme）变化时发送一次原生请求，失败时上报结构化错误码并清除签名以便下次重试；Rust 为浮层引入串行锁，持锁后按**最新投影**创建/复用、设置 bounds、注入状态并显示，只有更新的 hide 才允许收敛为隐藏。原生命令补齐 started/completed/skipped/superseded 结构化日志，结构化命令错误不再记录为 `[object Object]`。
+- 红绿证据：新增 Rust 单测固定「交错的 show 收敛到最新投影、更新的 hide 才隐藏」；新增前端用例固定「同一投影重复同步只发送一次原生请求」「原生失败上报 `browser.webview.create_failed` 并在下次投影变化重试」；新增诊断用例固定结构化错误码可见。现场在真实 MALING 调试实例上聚焦地址栏复现了同一 `unhandled-rejection`。
+- 过度设计与性能评审：不新增依赖、缓存或第二套状态；复用现有 revision 语义与页面 WebView 已有的 single-flight 思路；串行锁只覆盖浮层变更，不覆盖网页 WebView；去重把每次聚焦的多次 IPC 降为一次，并保持最多 9 行投影的上限。
+- 验收：Web 聚焦用例 6 文件 36 项、Rust browser 18 项、`cargo check` 通过。
+
+## 2026-09-17 内置浏览器本地 HTML 打开失败与重复点击卡死
+
+- 根因：本地 HTML 打不开不是样式或入口问题，而是原设计把「已授权目录 + `file://` 导航」当成可用方案。Windows WebView2 对子 WebView 不保证 `file://` 导航与相对资源加载，实际白屏且不产生任何 load 事件；`wry` 只在初始 URL 上做自定义协议改写，`navigate` 不会改写。重复点击导致应用无响应则来自实现缺陷：`commitNavigation` 先写权威 URL 再 fire-and-forget 下发原生命令，失败不回滚、不结构化上报，且同一 page 允许并发导航，点击次数线性放大原生调用。
+- 实现：新增 `gold-band-browser-file` 自定义异步协议承载本地 HTML。Rust 只按「当前页已授权目录」逐段解析请求，拒绝越界、编码分隔符与非 GET/HEAD，响应带 `no-store` / `nosniff` / 按扩展名推断的 `Content-Type`，单文件读取上限 64MB；Windows 生成 `http://<scheme>.localhost/<path>`，其他平台生成 `<scheme>://localhost/<path>`，处理器同时接受两种形态。授权目录仅来自打开本地 HTML 时解析出的文件父目录，页面跳到 `http(s)` 即清空（fail closed），重新输入已授权的协议地址保留原目录。前端导航收敛为每页单一在途事务：同目标重复提交复用在途 Promise，不同目标只保留最后一个排队目标；权威 URL 只在原生命令成功后写入，失败结束 loading、保留上一次确认 URL 并写结构化错误码。本地 HTML 解析改用浏览器专属轻量解析，不再借用文件编辑器链路签发外部访问令牌或启动文件监听。`file://` 从导航白名单移除，仅保留 canonical 展示语义。
+- 红绿证据：`web/tests/browser-webview-host.test.ts` 先新增 2 项稳定失败测试——「同目标连续提交只允许一次原生导航」实际调用 2 次、「原生导航失败后仍停留在失败 URL 且 loading 未收敛」；修复后与既有用例合计 18 项全部通过。Rust 新增 4 项接口级测试：协议路径越界拒绝（`..%5C`、`%2F`、空路径）、协议响应只服务授权目录内文件（含 MIME、HEAD 空 body、缺失文件 404、非 GET/HEAD 405）、导航使用平台可加载 scheme、重复导航不丢授权目录；`browser::tests` 16→17 项全绿。
+- 过度设计与性能评审：不引入本地 HTTP 服务、临时目录、独立缓存或第二套授权状态，复用 Tauri 异步自定义协议与页面已持有的授权目录；协议请求间无共享状态，单次只 stat + 读一个文件，不扫目录。导航收敛复用既有 `page.url` 与 `loading`，每页只多一个在途 Promise 与一个排队目标字符串，不新增状态字段或事实源。耗时与点击次数无关。
+- 验收：`cargo test --bin gold-band-desktop` 766 项通过，2 项失败（`commands.rs` 既有干预身份用例、metrics 源码自省用例因工作树 CRLF 行尾匹配失败）与本改动无关；浏览器聚焦 Vitest 3 文件 33 项、`tsc -p web/tsconfig.build.json` 通过。WebView2 真实渲染仍需 EXE 人工验收：用内置浏览器打开 `E:\Projects\Code\AI\Test\pelican-bike.html`，应出现 `create`/`navigate` started 与 completed 配对及随后 `page-load` started/finished，页面显示动画且连续点击不再堆积；本机 Computer Use 插件缺少 `@oai/sky`，无法自动驱动该 EXE 复核，不虚报为通过。
+
 ## 2026-09-16 内置浏览器门户页与书签
 
 - 根因：空白页和「没有标签」是同一种未浏览状态，却画成两种空壳；书签也不该再做一套图标下载。属于空白页设计没补完。
@@ -24,9 +108,9 @@
 ## 2026-09-16 内置浏览器地址栏访问记录
 
 - 根因：前进后退是 WebView 会话历史，地址栏补全需要另一份应用级访问记录。第一版缺少该实体，不是要把打开的页签落盘。
-- 实现：`load-finish` 按规范化 `http(s)` URL 去重写入最多 200 条；聚焦未改字浮层展示最近 8 条，输入后过滤，普通词加搜索行。悬停删除按 URL 落盘移除；回车提交当前输入并关闭浮层。浮层不占工具栏；与网页重叠时只下移子 WebView。origin 图标后台拉取并转 32px PNG，页签复用同一图标，失败用 Globe。
-- 过度设计与性能评审：不新增页身份，不进 Settings，不做 SQLite/frecency/图标 CDN。击键只过滤内存中的 200 条；图标请求不在输入热路径。
-- 验收：建议函数固定空输入最近访问、词语带搜索行、网址不带搜索行、origin 图标复用、浮层重叠高度；地址栏建议是 `absolute` 且不撑开工具栏；提交后不再弹出最近访问；悬停 × 删除该条且不跳转；内部页签展示 origin 图标；原生占位 `coverTop` 下移而不 hideAll；Rust 固定 URL 去重上限、按 URL 删除与 PNG/SVG 转码。
+- 实现：`load-finish` 按规范化 `http(s)` URL 去重写入最多 200 条；聚焦未改字浮层展示最近 8 条，输入后过滤，普通词加搜索行。悬停删除按 URL 落盘移除；回车提交当前输入并关闭浮层。桌面端建议列表使用独立受信任 child WebView 覆盖网页，网页 bounds 始终不变；普通 Web 预览保留 DOM `absolute` 回退。origin 图标后台拉取并转 32px PNG，页签复用同一图标，失败用 Globe。
+- 过度设计与性能评审：复用现有 Tauri child WebView 与 copy-in 列表组件，不新增依赖、页身份、持久字段、缓存或队列，不进 Settings，不做 SQLite/frecency/图标 CDN。浮层实例复用且不计入活网页 LRU；击键只过滤内存中的 200 条并投影最多 9 行，图标请求不在输入热路径。
+- 验收：最小失败测试先固定历史列表展开时 native host 的 `style.top` 实际为 `80px`，与“网页边界不变”契约冲突；修复后同一测试要求 `style.top` 为空。建议函数固定空输入最近访问、词语带搜索行、网址不带搜索行、origin 图标复用；浮层按地址栏锚定、空间不足时翻转并约束到视口；提交后不再弹出最近访问；键盘选择、鼠标选择和 × 删除保持原语义；模块级 revision 跨地址栏重挂载保持递增，Rust 固定有界投影校验和整体隐藏失效化，保证迟到 show 不能覆盖 hide；URL 去重上限、按 URL 删除与 PNG/SVG 转码继续回归。
 
 ## 2026-09-16 内置浏览器电脑/移动版切换保留历史
 

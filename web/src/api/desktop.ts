@@ -1,5 +1,6 @@
 import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationPinnedTaskPageVm, ConversationRunModeVm, ConversationRunSummaryPageVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionTreeVm, ConversationSidebarBootstrapVm, ConversationSidebarVm, ConversationTaskPageVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DeleteImChannelResultVm, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImChannelSnapshotVm, ImSettingsVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaWorkspaceRefVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, RemoteConversationSidebarVm, RemoteTaskVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
+import { BROWSER_ADDRESS_SUGGESTION_ACTION_EVENT } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { convertFileSrc } from '@tauri-apps/api/core';
@@ -810,6 +811,9 @@ export const desktopApi: RuntimeApi = {
   browserCreatePage(input) {
     return invokeCommand('browser_create_page', { input });
   },
+  browserResolveLocalHtml(input) {
+    return invokeCommand('browser_resolve_local_html', { input });
+  },
   browserSetBounds(input) {
     return invokeCommand('browser_set_bounds', { input });
   },
@@ -821,6 +825,12 @@ export const desktopApi: RuntimeApi = {
   },
   browserHideAll() {
     return invokeCommand('browser_hide_all');
+  },
+  browserShowAddressSuggestions(input) {
+    return invokeCommand('browser_show_address_suggestions', { input });
+  },
+  browserHideAddressSuggestions(input) {
+    return invokeCommand('browser_hide_address_suggestions', { input });
   },
   browserNavigate(input) {
     return invokeCommand('browser_navigate', { input });
@@ -874,6 +884,13 @@ export const desktopApi: RuntimeApi = {
   async subscribeBrowserPageEvents(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
     const unlisten: UnlistenFn = await listen<import('./client').BrowserPageNativeEventVm>('gold-band://browser-page', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
+  async subscribeBrowserAddressSuggestionActions(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<import('./client').BrowserAddressSuggestionActionVm>(BROWSER_ADDRESS_SUGGESTION_ACTION_EVENT, (event) => {
       if (event.payload) listener(event.payload);
     });
     return () => unlisten();

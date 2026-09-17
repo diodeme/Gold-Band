@@ -298,6 +298,11 @@ describe('ACP chat event handling', () => {
     expect(shouldShowReturnToLatest(true, true, false, true, 0)).toBe(false);
   });
 
+  it('does not project an auto-recovery newer gate as return-to-latest while still at live head', () => {
+    expect(shouldShowReturnToLatest(false, true, true, true, 0, false)).toBe(false);
+    expect(shouldShowReturnToLatest(true, true, true, true, 0, false)).toBe(false);
+  });
+
   it('shows runtime control failures in the session banner', () => {
     const acpSession = session({
       diagnostics: {

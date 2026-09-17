@@ -1,4 +1,8 @@
 现在应用程序的侧边栏是任务编排、知识库、模型管理
+- 2026-09-18：Select / 列表式 Agent 选择器的触发器和选项都展示 registry icon 与 display name；紧凑身份槽按 SVG viewBox 原样绘制，画布节点和 Agent 卡片井才做留白补偿缩放。选择器禁用原因与 Agent 管理横幅使用同一条 compact raw 首行，不再把 `session-request-failed` 显示成没有具体原因的「请重试」。
+- 2026-09-18：Select / 列表式 Agent 选择器的触发器和选项都展示 registry icon 与 display name，与 Direct 药丸、侧栏和画布共用 `AgentIdentityLabel`；不得只显示名称或改用通用 Bot 图标。
+- 2026-09-18：作者态切模型时保留当前思考强度 / Fast；发起会话后若新模型目录不支持，回滚为不指定并在该节点/会话 timeline 写入分割线 `systemNotice`。Doctor 默认模型的依赖项不得覆盖另一模型的会话目录。
+- 2026-09-18：Composer 按官方 `category=model_config` 把 Fast 纳入与思考强度同一复合下拉；Doctor 默认模型的依赖项不得覆盖另一模型的会话目录。
 - 2026-09-15：Doctor 与正式 ACP 连接共用全局 `initialize` 客户端能力，新增 `_meta.parameterizedModelPicker`。依赖该声明才展开思考强度 / 模型参数的 Agent，诊断目录与运行期 `configOptions` 必须一致；不按 Agent ID 分叉 handshake。
 你现在先新增个agent管理吧
 agent管理主要是负责管理支持接入的ACP agent
@@ -69,7 +73,7 @@ Agent 实例新增两个独立能力配置：
 ### 2026-09-18 Agent 诊断横幅与 raw 原因分层
 
 - 根因：ACP JSON-RPC 失败（如 CodeBuddy `Authentication required`）被收成 `acp.session-request-failed`，`RuntimeErrorInfo.raw` 没有进入诊断 snapshot；横幅又用本地化主句替换了原始原因，问号 Tooltip 同样看不到 ACP `message`。
-- 方案：诊断 snapshot 增加可选 `raw`，doctor 原样保留 ACP 错误对象。Agent 管理异常横幅只显示「环境诊断未通过：{{reason}}」，`reason` 为 ACP `message` / 故障 stderr / `osError` 的首行；异常旁问号 Popover 展示完整原文。工作流和运行模式选择器仍只显示本地化主句。
+- 方案：诊断 snapshot 增加可选 `raw`，doctor 原样保留 ACP 错误对象。Agent 管理异常横幅只显示「环境诊断未通过：{{reason}}」，`reason` 为 ACP `message` / 故障 stderr / `osError` 的首行；异常旁问号 Popover 展示完整原文。工作流、会话和运行模式选择器与横幅使用同一条 compact 首行，不展开完整 stderr。
 - 过度设计评审：复用既有 `DiagnosticError` 与页面 Popover，不新增错误码分类、登录流或第二套诊断状态。
 - 性能评审：`raw` 仅为单次 JSON-RPC 错误对象；Popover 内容在打开后才进入 DOM；不进入会话热路径，无额外轮询或缓存。
 - 验收：`doctor_diagnostic_error_preserves_session_request_raw` 修复前因缺少 `raw` 字段编译失败；前端 copy 测试固定 Authentication required 进入 raw 投影；横幅测试确认不内嵌本地化句和 stderr；问号点击后才出现 raw 与 ACP Registry 链接。

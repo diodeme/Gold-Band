@@ -498,7 +498,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
             >
               <div className="flex items-center gap-3">
                 <span className="grid size-10 shrink-0 place-items-center rounded-xl border border-border/60 bg-background">
-                  <img src={agentIconSrc(editor.form.icon)} alt="" className={agentIconClass(editor.form.icon, 'size-6')} />
+                  <img src={agentIconSrc(editor.form.icon)} alt="" className={agentIconClass(editor.form.icon, 'size-6', { compensateWhitespace: true })} />
                 </span>
                 <Button
                   type="button"
@@ -673,7 +673,7 @@ function AgentCard({ agent, diagnosing, onEdit, onDelete, onDoctor }: { agent: M
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-3">
           <span className="grid size-10 shrink-0 place-items-center rounded-xl border border-border/60 bg-background">
-            <img src={agentIconSrc(agent.iconKey)} alt="" className={agentIconClass(agent.iconKey, 'size-6')} />
+            <img src={agentIconSrc(agent.iconKey)} alt="" className={agentIconClass(agent.iconKey, 'size-6', { compensateWhitespace: true })} />
           </span>
           <div className="min-w-0 space-y-1">
             <div className="flex flex-wrap items-center gap-2">

@@ -5789,6 +5789,7 @@ fn is_conversation_semantic_event(
             | "toolCallUpdate"
             | "fileChangeSet"
             | "attemptSeparator"
+            | "systemNotice"
             | "contextCompaction"
             | "error"
     )

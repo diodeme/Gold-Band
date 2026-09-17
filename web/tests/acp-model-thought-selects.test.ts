@@ -6,9 +6,13 @@ import '@/i18n';
 import {
   AcpModelThoughtSelects,
   acpConfigMenuSelectionMode,
+  acpCompositeConfigSections,
+  acpCompositeSectionLabel,
   findAcpThoughtLevel,
   formatAcpCompositeSelection,
+  formatAcpCompositeSelectionParts,
   nextAcpCompositeSection,
+  retainAcpModelBoundOverrides,
   updateAcpConfigOptionOverride,
 } from '@/components/acp/AcpModelThoughtSelects';
 import {
@@ -93,6 +97,63 @@ describe('ACP composite model selector', () => {
       category: 'thought_level',
       options: [{ value: 'high', name: 'High' }],
     })).toBe('composite');
+    expect(acpConfigMenuSelectionMode(null, [{
+      options: [{ value: 'true', name: 'On' }],
+    }])).toBe('composite');
+  });
+
+  it('keeps thought and Fast overrides when the selected model is not the catalog current model', () => {
+    const options = [
+      {
+        id: 'model',
+        category: 'model',
+        currentValue: 'gpt-5.6-sol',
+        options: [{ value: 'gpt-5.6-sol', name: '5.6 Sol' }, { value: 'gpt-5.6-terra', name: '5.6 Terra' }],
+      },
+      {
+        id: 'fast',
+        category: 'model_config',
+        options: [{ value: 'true', name: 'On' }, { value: 'false', name: 'Off' }],
+      },
+      {
+        id: 'effort',
+        category: 'thought_level',
+        options: [{ value: 'high', name: 'High' }],
+      },
+    ];
+    expect(retainAcpModelBoundOverrides(
+      { fast: 'true', effort: 'high', theme: 'dark' },
+      options,
+      'gpt-5.6-terra',
+    )).toEqual({ fast: 'true', effort: 'high', theme: 'dark' });
+    expect(retainAcpModelBoundOverrides(
+      { fast: 'true', effort: 'max', theme: 'dark' },
+      options,
+      'gpt-5.6-terra',
+    )).toEqual({ fast: 'true', theme: 'dark' });
+    expect(acpCompositeConfigSections([
+      {
+        id: 'model',
+        category: 'model',
+        currentValue: 'gpt-5.6-sol',
+        options: [{ value: 'gpt-5.6-sol', name: '5.6 Sol' }, { value: 'gpt-5.6-terra', name: '5.6 Terra' }],
+      },
+      {
+        id: 'fast',
+        category: 'model_config',
+        name: 'Fast',
+        options: [{ value: 'true', name: 'On' }],
+      },
+      {
+        id: 'effort',
+        category: 'thought_level',
+        name: 'Effort',
+        options: [{ value: 'high', name: 'High' }],
+      },
+    ], 'gpt-5.6-terra', { fast: 'true', effort: 'high' }).map((section) => [section.id, section.valueLabel])).toEqual([
+      ['fast', 'On'],
+      ['effort', 'High'],
+    ]);
   });
 
   it('shows one unspecified state until a model or thought level is selected', () => {
@@ -100,6 +161,32 @@ describe('ACP composite model selector', () => {
     expect(formatAcpCompositeSelection('GPT-5.6-Sol', null, '不指定')).toBe('GPT-5.6-Sol');
     expect(formatAcpCompositeSelection(null, 'high', '不指定')).toBe('不指定 · high');
     expect(formatAcpCompositeSelection('GPT-5.6-Sol', 'high', '不指定')).toBe('GPT-5.6-Sol · high');
+    expect(formatAcpCompositeSelectionParts(['Composer 2.5', null, 'Extra High'], '不指定')).toBe('Composer 2.5 · Extra High');
+    expect(formatAcpCompositeSelectionParts([null, 'On', null], '不指定')).toBe('不指定 · On');
+    expect(formatAcpCompositeSelectionParts(['Composer 2.5', 'On', 'Extra High'], '不指定')).toBe('Composer 2.5 · On · Extra High');
+    expect(acpCompositeConfigSections([
+      {
+        id: 'model',
+        category: 'model',
+        currentValue: 'composer-2.5',
+        options: [{ value: 'composer-2.5', name: 'Composer 2.5' }],
+      },
+      {
+        id: 'fast',
+        category: 'model_config',
+        name: 'Fast',
+        options: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'On' }],
+      },
+      {
+        id: 'effort',
+        category: 'thought_level',
+        name: 'Thinking',
+        options: [{ value: 'low', name: 'Low' }, { value: 'extra-high', name: 'Extra High' }],
+      },
+    ], 'composer-2.5', { fast: 'true', effort: 'extra-high' }).map((section) => [section.name, section.valueLabel])).toEqual([
+      ['Fast', 'On'],
+      ['Thinking', 'Extra High'],
+    ]);
   });
 
   it('always renders the model config name before the selected value', () => {
@@ -155,6 +242,118 @@ describe('ACP composite model selector', () => {
 
     expect(triggerClass(modelOnly, 'dropdown-menu-trigger')).toContain('w-full max-w-none');
     expect(triggerClass(composite, 'dropdown-menu-trigger')).toContain('w-full max-w-none');
+  });
+
+  it('places official model_config options in the same composite menu as thought level', () => {
+    const markup = renderSelect({
+      models: [{ id: 'composer-2.5', name: 'Composer 2.5' }],
+      modelValue: 'composer-2.5',
+      configOptions: [
+        {
+          id: 'model',
+          category: 'model',
+          currentValue: 'composer-2.5',
+          options: [{ value: 'composer-2.5', name: 'Composer 2.5' }, { value: 'grok-4.6', name: 'Cursor Grok 4.6' }],
+        },
+        {
+          id: 'fast',
+          category: 'model_config',
+          name: 'Fast',
+          options: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'On' }],
+        },
+        {
+          id: 'effort',
+          category: 'thought_level',
+          name: 'Thinking',
+          options: [{ value: 'low', name: 'Low' }, { value: 'extra-high', name: 'Extra High' }],
+        },
+      ],
+      configOptionValues: { fast: 'true', effort: 'extra-high' },
+      onModelChange: () => {},
+      onConfigOptionChange: () => {},
+    });
+
+    expect(markup).toContain('Composer 2.5 · On · Extra High');
+  });
+
+  it('opens a composite menu when only official model_config options exist', () => {
+    const markup = renderSelect({
+      models: [{ id: 'composer-2.5', name: 'Composer 2.5' }],
+      modelValue: 'composer-2.5',
+      configOptions: [
+        {
+          id: 'model',
+          category: 'model',
+          currentValue: 'composer-2.5',
+          options: [{ value: 'composer-2.5', name: 'Composer 2.5' }],
+        },
+        {
+          id: 'fast',
+          category: 'model_config',
+          name: 'Fast',
+          options: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'On' }],
+        },
+      ],
+      configOptionValues: { fast: 'true' },
+      onModelChange: () => {},
+      onConfigOptionChange: () => {},
+    });
+
+    expect(markup).toContain('Composer 2.5 · On');
+  });
+
+  it('keeps the composite thought and Fast menu after selecting a model that is not the catalog current model', () => {
+    const markup = renderSelect({
+      models: [
+        { id: 'gpt-5.6-sol', name: '5.6 Sol' },
+        { id: 'gpt-5.6-terra', name: '5.6 Terra' },
+      ],
+      modelValue: 'gpt-5.6-terra',
+      configOptions: [
+        {
+          id: 'model',
+          category: 'model',
+          currentValue: 'gpt-5.6-sol',
+          options: [{ value: 'gpt-5.6-sol', name: '5.6 Sol' }, { value: 'gpt-5.6-terra', name: '5.6 Terra' }],
+        },
+        {
+          id: 'fast',
+          category: 'model_config',
+          name: 'Fast',
+          options: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'On' }],
+        },
+        {
+          id: 'effort',
+          category: 'thought_level',
+          name: 'Effort',
+          options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }],
+        },
+      ],
+      configOptionValues: { fast: 'true', effort: 'high' },
+      onModelChange: () => {},
+      onConfigOptionChange: () => {},
+    });
+
+    expect(markup).toContain('5.6 Terra · On · High');
+    expect(markup).not.toContain('Effort');
+  });
+
+  it('labels thought_level as the unified thought control and keeps Fast on the Agent name', () => {
+    expect(acpCompositeSectionLabel({
+      id: 'effort',
+      category: 'thought_level',
+      name: 'Effort',
+    }, '思考强度')).toBe('思考强度');
+    expect(acpCompositeSectionLabel({
+      id: 'deep_think',
+      category: 'thought_level',
+      name: 'Deep Think',
+    }, '思考强度')).toBe('思考强度');
+    expect(acpCompositeSectionLabel({
+      id: 'fast',
+      category: 'model_config',
+      name: 'Fast',
+    }, '思考强度')).toBe('Fast');
   });
 
   it('forwards disabled state to model-only and composite triggers', () => {

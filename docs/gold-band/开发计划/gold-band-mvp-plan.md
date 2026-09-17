@@ -1,5 +1,41 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-18 作者态模型切换保留思考档，运行时按新目录回滚
+
+- 根因：ACP `configOptions` 是当前会话快照，不是按模型预告的思考档表。首页/工作流作者态只有 Doctor 默认模型的一份目录，协议没有“查询模型 B 的 thought/fast 但不切模型”的接口。此前用“选中模型 ≠ `model.currentValue` 就隐藏子栏”把缺目录编码成空白，并不是跟着 B 的 configOptions 走。
+- 实现：复合下拉在作者态继续展示并保留思考强度 / Fast。发起时仍先 `set_config_option(model)`；同一次应用里新目录不支持的 `thought_level` / `model_config` 清成不指定并继续 prompt，timeline 写入 `systemNotice` 分割线。未切模型时的非法 override 仍报 `acp.session-config-value-unavailable`。不为每个模型 doctor 探测，不重发用户消息。
+- 证据：Rust 覆盖“新目录仍列出则保留 / 不列出或 option id 消失则回滚 / 非模型绑定项不静默丢掉”；前端覆盖复合下拉在模型不一致时仍展示、思考强度统一标签，以及 `systemNotice` 分割线文案。
+- 过度设计与性能评审：复用既有 override map、apply 顺序和 timeline item，不新增按模型能力表、重试队列或页顶横幅状态。回滚是目录线性查找，无额外 session/new 或 prompt。
+
+## 2026-09-18 紧凑身份槽不再套用画布座位缩放
+
+- 根因：Codex SVG 路径已经顶满 24×24 viewBox，没有可补偿留白。画布节点的 `scale-125` 是浅色底座上的视觉重量补偿，被写进通用 `agentIconClass` 后，Select 触发器和选项都会放大。不裁切则花瓣画出格子，裁切则切掉花瓣，里外同时坏。上一轮裁切框是补丁；正确设计是缩放只属于有底座的座位。
+- 实现：`agentIconClass` 默认按 viewBox 原样绘制。工作流节点、Agent 卡片井显式 `compensateWhitespace: true`。`AgentIcon` / Select 身份槽不缩放，保留 overflow 只挡住用户超大图。
+- 证据：身份标签含 `scale-125` 的用例先失败；修复后同一用例转绿，并固定画布/卡片座位仍 opt-in。
+- 过度设计与性能评审：不新增 icon 表或按 Agent ID 分支。只把已有 scale map 改成座位 opt-in。无额外状态、请求或重渲染范围变化。
+
+## 2026-09-18 Agent 选择器 icon 裁切与诊断原因对齐
+
+- 根因 1：Codex / Gemini / OpenCode 的视觉缩放写在 img 自己身上。画布和卡片有更大的底座所以看不出来，Select 行用 `size-4` 当槽位，`scale-125` 会画出槽外。属于正确的视觉平衡没配套裁切框。
+- 根因 2：Agent 管理横幅/问号已经展示 raw 首行（如 Gemini API key），选择器仍只用本地化主句，把 `acp.session-request-failed` 显示成「会话准备失败，请重试。」。这是诊断展示分层不完整，不是 Gemini 特判。
+- 实现：共享 `AgentIcon` 用固定槽位 `overflow-hidden` 裁切缩放。选择器、工作流 Inspector 和 MCP 兼容提示改走 `agentDiagnosticShortReason`，与管理横幅同一条 compact raw 首行，完整 stderr 仍只在问号里。
+- 证据：Codex 标签缺少 `overflow-hidden` 的用例先失败；Gemini raw 与 generic 主句被同一个短原因函数对齐。修复后同一用例转绿。
+- 过度设计与性能评审：不新增诊断字段或按 Agent ID 分支。多一个 span 裁切框，原因函数复用已有 raw 首行截断。
+
+## 2026-09-18 Agent 选择器补齐 registry icon
+
+- 根因：Agent 选择器应从当前 registry 实例读取 display name 与 icon。Direct 药丸、侧栏和画布已经渲染 icon，AUTO / 运行模式 / 工作流 Inspector / 个人分析 / SKILL 筛选等 Select 只显示名称，个人分析还用了通用 Bot 图标。属于正确身份投影实现不完整，不是要按 Agent ID 再做一套图标表。
+- 实现：新增共享 `AgentIdentityLabel`，Select 触发器和选项都展示 registry icon 与名称。不可用原因仍跟在名称下方。
+- 证据：修复前因缺少 `AgentIdentityLabel` 无法导入；修复后同一用例转绿，并固定 AUTO、运行模式、工作流 Inspector、个人分析和 SKILL 筛选消费同一标签。
+- 过度设计与性能评审：只增加展示投影，不新增状态、identity、缓存或请求。Agent 列表为有界小型集合，每项一张已有静态/data URI 图标。
+
+## 2026-09-18 ACP Fast 进入官方 model_config 复合下拉
+
+- 根因：思考强度 / Fast 都随当前模型的 `configOptions` 走。首页 Off/On 来自 Doctor 默认模型的 `thought_level`，不是把 Fast 误接到思考强度。Fast 的官方 category 是 `model_config`，应进入同一复合下拉，不能做 Cursor `id=fast` 特配。Doctor 默认模型的依赖项不得覆盖另一模型的会话目录。
+- 实现：复合菜单按 Agent 目录顺序展示 `model` + `model_config` + `thought_level`。作者态切模型时保留仍在当前 Doctor 目录里的思考强度 / Fast；真正发起后以模型 RPC 返回的新目录为准，不支持则回滚为不指定并写入 timeline `systemNotice`。较新 Doctor 目录与会话当前模型不同时，保留会话依赖项。个人数据分析仍只记忆思考强度。
+- 证据：复合 DOM、override 保留、session 目录合并与 run-mode 规范化用例覆盖 Fast 与跨模型隐藏。
+- 过度设计与性能评审：复用 `configOptionOverrides` 与既有复合菜单，不新增 Fast 字段、按模型探测或 Cursor 分支。目录为有界 select 列表，无额外扫描或缓存。
+
 ## 2026-09-18 PR 审阅面去掉无效源码切换
 
 - 根因：`WorkspaceFileEditor` 只要有 `markdownMode` 就画出源码/预览按钮，真正切换却要求父级 `onMarkdownModeChange`。PR/Issue 详情和创建对话框只传入固定 `live-preview`，点击直接 return。属于共享浮层把“当前模式”和“模式所有权”混在一起，不是某个 PR 按钮坏了。
@@ -2118,7 +2154,7 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 ## 2026-09-18：Agent 诊断横幅与 raw 原因分层
 
 - [x] 根因：ACP JSON-RPC 失败被收成 `acp.session-request-failed` 后丢掉 `raw`；横幅和问号都看不到 `Authentication required`。
-- [x] 方案：诊断 snapshot 增加可选 `raw`。异常横幅只显示「环境诊断未通过：{{reason}}」，`reason` 为 raw 原因首行；问号改为点击 Popover 展示完整 ACP `message` / 有界 stderr / `osError`。选择器仍只显示本地化主句。
+- [x] 方案：诊断 snapshot 增加可选 `raw`。异常横幅只显示「环境诊断未通过：{{reason}}」，`reason` 为 raw 原因首行；问号改为点击 Popover 展示完整 ACP `message` / 有界 stderr / `osError`。选择器与横幅使用同一条 compact 首行。
 - [x] 验收：`doctor_diagnostic_error_preserves_session_request_raw`；前端 copy、横幅和问号点击测试。
 - 性能与过度设计评审：不新增错误码分类或登录流。`raw` 为单次 JSON-RPC 错误对象；Popover 打开后才进入 DOM。
 

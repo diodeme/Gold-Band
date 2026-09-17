@@ -130,6 +130,39 @@ describe('run mode validation', () => {
     expect(overrides).toEqual(snapshot);
   });
 
+  it('keeps thought and Fast overrides when the selected model is not the doctor current model', () => {
+    const agent = {
+      ...agentRegistry.agents[0],
+      configOptions: [
+        {
+          id: 'model',
+          category: 'model',
+          currentValue: 'composer-2.5',
+          options: [{ value: 'composer-2.5', name: 'Composer 2.5' }],
+        },
+        {
+          id: 'fast',
+          category: 'model_config',
+          options: [{ value: 'true', name: 'On' }],
+        },
+        {
+          id: 'thought',
+          category: 'thought_level',
+          options: [{ value: 'high', name: 'High' }],
+        },
+      ],
+    };
+    const normalized = normalizeConfigOptionOverrides(agent, {
+      thought: 'high',
+      fast: 'true',
+    }, 'grok-4.6');
+
+    expect(normalized).toEqual({
+      configOptions: { thought: 'high', fast: 'true' },
+      removedOptionIds: [],
+    });
+  });
+
   it('direct and auto validation tolerate stale overrides without mutation', () => {
     const direct = { agentType: 'claude-acp', configOptions: { removed: 'legacy' } };
     const auto = { agentType: 'claude-acp', configOptions: { removed: 'legacy' } };

@@ -72,6 +72,7 @@ import {
   useChatContainerDisclosure,
 } from "@/components/prompt-kit/chat-container";
 import { ScheduledTriggerRow } from "@/components/conversation/ScheduledTriggerRow";
+import { AcpSystemNoticeDivider } from "@/components/acp/AcpSystemNotice";
 import {
   ConversationViewport,
   ConversationViewportFooter,
@@ -7046,7 +7047,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
     currentModeId,
     availableModels,
     availablePermissionModes,
-    thoughtLevel,
+    modelBoundOptions,
   } = viewModel;
 
   const handlePermissionModeSelect = useCallback(
@@ -7060,8 +7061,24 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
     ?? t('conversation.home.unspecifiedPermissionMode');
   const showModels = availableModels.length > 0 || Boolean(currentModelId);
   const showPermissionModes = availablePermissionModes.length > 0 || Boolean(currentModeId) || Boolean(onAutoAcceptChange);
+  const compositeSections = modelBoundOptions.map((group) => ({
+    id: group.id,
+    category: group.category,
+    name: group.name,
+    description: group.description,
+    currentValue: group.currentValue,
+    value: group.overrideValue,
+    valueLabel: group.overrideValueName,
+    showUnspecified: group.canSelectUnspecified,
+    options: group.options.map((option) => ({
+      value: option.id,
+      name: option.name,
+      description: option.description,
+      available: option.available,
+    })),
+  }));
 
-  if (!showModels && !showPermissionModes && !thoughtLevel) return null;
+  if (!showModels && !showPermissionModes && compositeSections.length === 0) return null;
 
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground" data-acp-session-config-bar="true">
@@ -7073,25 +7090,10 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
         models={availableModels}
         modelValue={modelOverrideId}
         modelValueLabel={modelOverrideName}
-        thoughtLevel={thoughtLevel ? {
-          id: thoughtLevel.id,
-          category: thoughtLevel.category,
-          name: thoughtLevel.name,
-          description: thoughtLevel.description,
-          currentValue: thoughtLevel.currentValue,
-          options: thoughtLevel.options.map((option) => ({
-            value: option.id,
-            name: option.name,
-            description: option.description,
-            available: option.available,
-          })),
-        } : null}
-        thoughtValue={thoughtLevel?.overrideValue}
-        thoughtValueLabel={thoughtLevel?.overrideValueName}
+        compositeSections={compositeSections}
         showUnspecifiedModel={canSelectUnspecifiedModel}
-        showUnspecifiedThought={thoughtLevel?.canSelectUnspecified ?? true}
         onModelChange={(value) => onModelChange?.(value)}
-        onThoughtChange={(optionId, value) => onConfigOptionChange?.(optionId, value)}
+        onConfigOptionChange={(optionId, value) => onConfigOptionChange?.(optionId, value)}
       />
       {showPermissionModes ? (
         <AcpSingleConfigMenu
@@ -7705,6 +7707,8 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
     );
   if (event.kind === "attemptSeparator")
     return <AttemptSeparator event={event} />;
+  if (event.kind === "systemNotice")
+    return <AcpSystemNoticeDivider event={event} />;
   if (event.kind === "scheduledTrigger") {
     const payload = scheduledTriggerPayload(event);
     return payload ? <ScheduledTriggerRow payload={payload} onOpen={() => { window.dispatchEvent(new CustomEvent('gold-band:scheduled-trigger-open', { detail: payload })); }} /> : null;

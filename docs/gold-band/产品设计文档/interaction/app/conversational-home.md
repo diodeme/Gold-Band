@@ -74,6 +74,8 @@
 3. 处理模式选择：WORKFLOW / AUTO 切换；Workflow 模式操作栏的前导图标统一使用运行模式入口的 `Route` 图标，不再使用另一套 `Workflow` 图标。
 4. AUTO 模式：
    - 固定 Agent 策略下显示 agent、模型、权限模式下拉；agent 可以覆盖 AUTO tab 当前配置，模型可为空；权限下拉叠加 Auto Accept
+   - agent 下拉的触发器和选项都展示 registry 中的 icon 与 display name，与 Direct 药丸、侧栏、工作流 Inspector 共用同一身份投影，不得只显示名称或改用通用 Bot 图标；紧凑身份槽按 SVG viewBox 原样绘制，不套用画布座位的视觉缩放
+   - 不可用 Agent 的原因与 Agent 管理横幅共用 compact raw 首行，不得把 `acp.session-request-failed` 显示成没有具体原因的「请重试」
    - 动态 Agent 策略下显示 Dynamic Agent 标识；控制面与候选 worker 的权限下拉同样叠加 Auto Accept
    - 显示非必填全局 Goal 输入框
    - 全局 Goal 输入框必须保留用户原始输入，包括词间空格、连续空格、开头空格和输入末尾的临时空格；创建会话 payload 边界只把纯空白输入规范化为未设置，不裁剪非空文本

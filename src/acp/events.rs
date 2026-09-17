@@ -3515,6 +3515,34 @@ pub fn scheduled_trigger_event(seq: u64, payload: &ScheduledTriggerPayload) -> A
     }
 }
 
+pub fn system_notice_event(seq: u64, code: &str, params: Value) -> AcpUiEvent {
+    let timestamp = current_timestamp();
+    AcpUiEvent {
+        id: format!("gold-band-system-notice-{seq}"),
+        seq,
+        timestamp: timestamp.clone(),
+        kind: "systemNotice".to_string(),
+        session_id: None,
+        content: None,
+        title: None,
+        tool_call_id: None,
+        status: Some("completed".to_string()),
+        started_seq: Some(seq),
+        ended_seq: Some(seq),
+        started_at: Some(timestamp.clone()),
+        ended_at: Some(timestamp),
+        timing: None,
+        raw: Some(serde_json::json!({
+            "source": "goldBandSystemNotice",
+            "synthetic": true,
+            "systemNotice": {
+                "code": code,
+                "params": params,
+            },
+        })),
+    }
+}
+
 pub fn user_prompt_event_with_quotes(
     seq: u64,
     session_id: String,
@@ -3655,8 +3683,8 @@ mod tests {
         extract_usage_fields, inspect_session_turn, is_semantically_empty_agent_content,
         kind_to_ui_kind, latest_timeline_source_seq, load_session_metadata, load_timeline_items,
         normalize_session_update, permission_request_event, permission_timeline_item_id,
-        scheduled_trigger_event, user_prompt_event, user_prompt_event_with_quotes,
-        write_timeline_items,
+        scheduled_trigger_event, system_notice_event, user_prompt_event,
+        user_prompt_event_with_quotes, write_timeline_items,
     };
     use crate::provider::UserPromptQuote;
     use crate::storage::{read_json, write_json};
@@ -3730,6 +3758,33 @@ mod tests {
         );
         assert!(automatic.raw.as_ref().unwrap()["scheduledTrigger"]["scheduledAt"].is_string());
         assert!(manual.raw.as_ref().unwrap()["scheduledTrigger"]["scheduledAt"].is_null());
+    }
+
+    #[test]
+    fn system_notice_event_stores_structured_code_without_user_copy() {
+        let event = system_notice_event(
+            12,
+            crate::acp::session_config::ACP_SESSION_CONFIG_ROLLED_BACK_CODE,
+            json!({
+                "items": [{
+                    "category": "thought_level",
+                    "configId": "effort",
+                    "value": "high",
+                }],
+            }),
+        );
+
+        assert_eq!(event.id, "gold-band-system-notice-12");
+        assert_eq!(event.kind, "systemNotice");
+        assert!(event.content.is_none());
+        assert_eq!(
+            event.raw.as_ref().unwrap()["systemNotice"]["code"],
+            "acp.session-config-rolled-back"
+        );
+        assert_eq!(
+            event.raw.as_ref().unwrap()["systemNotice"]["params"]["items"][0]["configId"],
+            "effort"
+        );
     }
 
     #[test]

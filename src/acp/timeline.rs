@@ -1540,6 +1540,7 @@ fn timeline_item_locator(
                 | "textDelta"
                 | "fileChangeSet"
                 | "attemptSeparator"
+                | "systemNotice"
                 | "contextCompaction"
         )
         || (item.kind == "permissionRequest" && item.status.as_deref() == Some("pending"))

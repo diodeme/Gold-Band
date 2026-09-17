@@ -62,6 +62,14 @@ export function agentDiagnosticHelpReason(
   return agentDiagnosticRawReason(diagnostic) ?? agentDiagnosticMessage(t, diagnostic);
 }
 
+export function agentDiagnosticShortReason(
+  t: AgentDiagnosticTranslate,
+  diagnostic?: ManagedAgentDiagnosticVm | null,
+  fallback?: string,
+): string {
+  return agentDiagnosticBannerReason(t, diagnostic) ?? fallback ?? t('agentManagement.diagnosticFailedFallback');
+}
+
 export function agentDiagnosticBannerReason(
   t: AgentDiagnosticTranslate,
   diagnostic?: ManagedAgentDiagnosticVm | null,

@@ -187,6 +187,7 @@ Agent 管理
 - Windows 无边框窗口使用 WebView2 composition 路径承载连续边缘 resize：Tauri Window 在 Windows 平台启用透明控制器，但 `html/body/#root` 与应用壳始终绘制不透明主题 surface，不向用户呈现实际透明效果。宿主 Window 背景随主题同步，WebView 层保持 composition 模式，禁止为了遮盖黑带重新设为不透明控制器。
 - 主窗口初始隐藏；bootstrap、主题和宿主背景准备完成后由前端显式显示，避免 transparent composition 窗口在首帧 CSS 尚未就绪时闪现。窗口 decorations、title bar style 与 native shadow 的生命周期只由 Rust/Tauri 宿主配置管理，Web 层只同步主题背景并显示窗口，不具备运行时修改 decorations 的权限。Windows 自定义无边框模式按系统能力控制 native shadow：Win11 及更高版本开启，由 DWM 提供系统圆角与边界；Win10 关闭，避免 TAO `top=0 / left-right-bottom=frame_thickness` 的非对称 non-client frame，仅由应用内嵌边界补足可感知轮廓。关闭 Win10 shadow 不移除 `RESIZABLE/WS_SIZEBOX`。内置浏览器启用 Tauri `unstable` 后，主 WebView 以 `WindowChild` 创建，runtime 不会自动挂上 `TAURI_DRAG_RESIZE_WINDOW`；宿主必须在窗口就绪后重新断言 `resizable` 以挂上四边缩放 overlay，并在任何 child WebView `HWND_TOP` 之后把该 overlay 再抬到最前。Win11 仍可由 DWM 非客户区缩放；macOS 恢复 native decorations、shadow 与 traffic lights。
 - 上下文管理的角色卡片网格按列表容器实际宽度决定列数，而不是只依赖整窗 viewport：窄容器单列、中等容器双列、足够宽时三列。卡片底部操作区允许整组换行，系统显示缩放、字体增大或翻译文案变长时不得越过卡片边界或覆盖相邻卡片。
+- Agent 管理卡片网格使用与角色卡片相同的容器阈值：列表容器不足 672px 时单列，达到 672px 后双列，达到 1152px 后三列。打开内置浏览器等右侧工作区后，必须按中间栏实际宽度降列，不得继续按整窗 `xl` 维持三列。管理页 integrated Header 按标题组最小可读宽度换行，不得把短标题截断给操作按钮让路。
 
 ### 6.4 运行态生命周期
 - Round 详情页的“继续运行”只在当前 run / round / node 处于可恢复暂停态时出现；成功、失败或 killed 的终局 round 不展示该入口。

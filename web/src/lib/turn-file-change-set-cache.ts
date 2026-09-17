@@ -11,6 +11,27 @@ type TurnFileChangeSetCacheEntry =
 
 const turnFileChangeSetCache = new BoundedLruCache<string, TurnFileChangeSetCacheEntry>(TURN_FILE_CHANGE_SET_CACHE_LIMIT);
 
+export function fileChangeSetOwnerBranch(raw: unknown): string | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const meta = record._meta && typeof record._meta === 'object' && !Array.isArray(record._meta)
+    ? record._meta as Record<string, unknown>
+    : null;
+  const conversation = meta?.conversation && typeof meta.conversation === 'object' && !Array.isArray(meta.conversation)
+    ? meta.conversation as Record<string, unknown>
+    : null;
+  if (typeof conversation?.branchId === 'string' && conversation.branchId.length > 0) {
+    return conversation.branchId;
+  }
+  const goldBand = meta?.goldBandConversation && typeof meta.goldBandConversation === 'object' && !Array.isArray(meta.goldBandConversation)
+    ? meta.goldBandConversation as Record<string, unknown>
+    : null;
+  if (typeof goldBand?.branchId === 'string' && goldBand.branchId.length > 0) {
+    return goldBand.branchId;
+  }
+  return typeof record.branchId === 'string' && record.branchId.length > 0 ? record.branchId : null;
+}
+
 export function turnFileChangeSetCacheKey(locator: TurnFileLocatorVm, changeSetId: string) {
   return [
     locator.projectId,
@@ -65,6 +86,10 @@ export async function preloadConversationTurnFileChangeSets(run: ConversationRun
   };
   const changeSetIds = session.events
     .filter((event) => event.kind === 'fileChangeSet')
+    .filter((event) => {
+      const ownerBranch = fileChangeSetOwnerBranch(event.raw);
+      return !ownerBranch || ownerBranch === locator.branchId;
+    })
     .map((event) => changeSetIdFromRaw(event.raw))
     .filter((id): id is string => id !== null)
     .slice(-TURN_FILE_NAVIGATION_PREFETCH_LIMIT);

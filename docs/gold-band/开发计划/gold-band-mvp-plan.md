@@ -1813,6 +1813,13 @@ attempt-001/
 - 回归与验收：核心接口测试覆盖 `in_progress(diff) → completed(无重复 diff)` 生成变更、缺失成功终态不生成、`in_progress(diff) → failed(重复 diff)` 不生成、终态映射与 permission 无关，以及 schema v3 失败工具集合迁移为空。定向 `cargo test --lib acp::turn_files` 17 项通过；宽泛 package test 被既有 `tests/entity_uuid_test.rs` 缺少 `NodeState.acp_storage_schema_version` 的夹具编译错误阻塞，未在本需求中修改该无关用户改动。
 - 性能与过度设计评审：新 turn 每个 diff 工具只增加一次 `HashMap` 常数级记录，状态随 turn 结算清空；聚合仍只遍历该 turn 已有的有界 mutation，不新增依赖、持久字段、队列、缓存、锁或普通路径 timeline 扫描。历史全 timeline 读取只发生在 schema v1-v3 的一次性迁移慢路径。现有 `toolCallId`、timeline status 与 change-set 模型足以表达不变量，无需 permission→diff 关联、新 aggregate 或第二套状态机。
 
+## 2026-09-17：Agent branch 文件变化不得泄漏到父会话
+
+- 根因：`fileChangeSet` persist 把 branch owner 写到 `_meta.conversation.branchId`，但 timeline 路由只消费 canonical `_meta.goldBandConversation.branchId`。嵌套 Agent 的 change set 因此落到 root timeline；父会话用 `branchId=root` 去读 Agent 的 change set，被 `turn-files.version-access-denied` 拒绝后误报为“无法加载本轮文件变化”。产物与 change set 文件本身是完整的。这是正确的 branch ownership 设计未写到 persist 路由字段，不是加载接口或文案问题。
+- 实现：finalize 用 change set 自己的 `branchId` 写入 `goldBandConversation`，使 persist 把指针落到所属 branch timeline。前端按事件 owner branch 与当前 locator 投影，不一致时不渲染该卡。
+- 回归：Rust 接口测试覆盖 Agent branch 指针经 `annotate_event_branch` 后仍属于该 branch。前端 DOM 测试覆盖历史泄漏事件不出现在 root 会话。
+- 性能与过度设计评审：不新增 identity、缓存、扫描或请求。只纠正既有 branch 元数据写入，并在卡片投影处跳过不属于当前视图的指针，避免一次注定失败的详情读取。
+
 ## 2026-08-21：Direct 首轮停止后的空会话投影
 
 - 根因：后端为避免把只有 `initialize`/outbound raw frame、尚未完成 `session/new` 的占位数据误报为真实 ACP session，正确过滤了 `unavailable + no sessionId + empty Timeline` 的 Provider session；前端只实现了 Workflow/AUTO 的“初始化被中断”投影，却没有按 Direct attempt lifecycle 建立可继续对话的空壳，最终把合法的 `paused + cancelled` 状态降级为通用“ACP 会话失败”。

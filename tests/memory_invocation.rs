@@ -2,11 +2,16 @@ use camino::Utf8PathBuf;
 use gold_band::domain::{InvocationKind, SessionMode, TurnControlMode};
 use gold_band::prompts::PromptExecutionSurface;
 use gold_band::provider::*;
-use gold_band::runtime_error::RecoveryMode;
 
-#[test]
-fn memory_invocation_binding_covers_direct_workflow_auto_and_retry_refresh() {
+fn invocation_with_memory(
+    value: &str,
+) -> (
+    tempfile::TempDir,
+    gold_band::storage::GoldBandPaths,
+    WorkerInvocation,
+) {
     use gold_band::memory::{Entry, MemoryService, Scope, WriteCommand};
+
     let temp = tempfile::tempdir().unwrap();
     let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let paths = gold_band::storage::GoldBandPaths::new(root.clone());
@@ -25,11 +30,12 @@ fn memory_invocation_binding_covers_direct_workflow_auto_and_retry_refresh() {
             expected_revision: None,
             entry: Some(Entry {
                 key: "plan".into(),
-                value: "B2".into(),
+                value: value.into(),
                 desc: "build".into(),
             }),
         })
         .unwrap();
+
     let mut req = test_worker_invocation(root.join("attempt"));
     req.adapter_workspace_dir = root;
     req.runtime_context.project_id = paths.project_id.clone();
@@ -39,117 +45,150 @@ fn memory_invocation_binding_covers_direct_workflow_auto_and_retry_refresh() {
         "args": [gold_band::memory::mcp::FLAG],
         "env": []
     })];
-    for (surface, envelope) in [
-        (
-            PromptExecutionSurface::Workflow,
-            gold_band::dsl::PromptEnvelopeMode::RawAgent,
-        ),
-        (
-            PromptExecutionSurface::Workflow,
-            gold_band::dsl::PromptEnvelopeMode::RuntimeManaged,
-        ),
-        (
-            PromptExecutionSurface::AiDynamic,
-            gold_band::dsl::PromptEnvelopeMode::RuntimeManaged,
-        ),
-    ] {
-        req.execution_surface = surface;
-        req.prompt_envelope = envelope;
-        let rendered = gold_band::memory::prepare_invocation(&mut req)
-            .unwrap()
-            .expect("enabled memory MCP should render current memory");
-        assert!(rendered.contains("B2"));
-        assert!(
-            !rendered.contains("memory_write"),
-            "per-submission memory data must not repeat stable write rules"
-        );
-        for language in [
-            gold_band::config::DesktopLanguage::ZhCn,
-            gold_band::config::DesktopLanguage::En,
-        ] {
-            req.runtime_context.language = language;
-            for mode in [SessionMode::New, SessionMode::Continue] {
-                req.session_mode = mode;
-                req.resume_prompt = Some("Continue the task".into());
-                let prompt = prepare_prompt_bundle(&mut req).unwrap();
-                assert!(prompt.system_prompt.contains("memory_write"));
-                assert!(!prompt.system_prompt.contains("B2"));
-                assert!(!prompt.system_prompt.contains(paths.runtime_root.as_str()));
-                assert_eq!(prompt.user_prompt.matches("<memory-data>").count(), 1);
-                assert_eq!(prompt.user_prompt.matches("B2").count(), 1);
-                assert!(
-                    prompt
-                        .user_prompt
-                        .contains("data-gold-band-hidden=\"true\"")
-                );
-                assert!(!prompt.user_prompt.contains("memory_write"));
-            }
-        }
-        assert_eq!(req.mcp_servers.len(), 1);
-        assert_eq!(req.mcp_servers[0]["args"].as_array().unwrap().len(), 2);
-        assert_eq!(
-            prepare_acp_mcp_servers(
-                &req.mcp_servers,
-                Some(&serde_json::json!({"mcpCapabilities":{"http":false,"sse":false}}))
-            )
-            .accepted
-            .len(),
-            1
-        );
-    }
-    let before = prepare_prompt_bundle(&mut req).unwrap();
-    let snapshot = service.read().unwrap();
-    service
-        .write(WriteCommand {
-            scope: Scope::Task,
-            key: "plan".into(),
-            expected_revision: Some(snapshot.task[0].revision.clone()),
-            entry: Some(Entry {
-                key: "plan".into(),
-                value: "B3".into(),
-                desc: "build".into(),
-            }),
-        })
-        .unwrap();
-    req.session_mode = SessionMode::Continue;
-    assert!(
-        gold_band::memory::prepare_invocation(&mut req)
-            .unwrap()
-            .expect("enabled memory MCP should refresh current memory")
-            .contains("B3")
+    (temp, paths, req)
+}
+
+fn assert_memory_mcp_bound(req: &WorkerInvocation, project_id: &str) {
+    assert_eq!(req.mcp_servers.len(), 1);
+    assert_eq!(
+        req.mcp_servers[0]["name"],
+        gold_band::memory::mcp::SERVER_NAME
     );
-    let after = prepare_prompt_bundle(&mut req).unwrap();
-    assert_eq!(before.system_prompt, after.system_prompt);
-    assert!(after.user_prompt.contains("B3"));
-    assert!(!after.user_prompt.contains("B2"));
-    assert_eq!(after.user_prompt.matches("<memory-data>").count(), 1);
-    std::fs::write(snapshot.task_path.unwrap(), "{broken").unwrap();
-    let error = prepare_prompt_bundle(&mut req).unwrap_err();
-    let info = gold_band::runtime_error::normalize_runtime_error(&error);
-    assert_eq!(info.code_str(), "memory.corrupt");
-    assert_eq!(info.recovery, RecoveryMode::Manual);
+    let args = req.mcp_servers[0]["args"].as_array().unwrap();
+    assert_eq!(args.len(), 2);
+    assert_eq!(args[0], gold_band::memory::mcp::FLAG);
+    let binding: serde_json::Value = serde_json::from_str(args[1].as_str().unwrap()).unwrap();
+    assert_eq!(binding["project_id"], project_id);
+    assert_eq!(binding["task_id"], "task-001");
+}
+
+fn assert_no_memory_projection(text: &str, saved_value: &str, runtime_root: &str) {
+    assert!(!text.contains("Gold Band current memory"));
+    assert!(!text.contains("<memory-data>"));
+    assert!(!text.contains(saved_value));
+    assert!(!text.contains(runtime_root));
+    assert!(!text.contains("memory.json"));
+    assert!(!text.contains("\"revision\""));
 }
 
 #[test]
-fn disabled_memory_mcp_omits_memory_prompt_and_session_binding() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    let paths = gold_band::storage::GoldBandPaths::new(root.clone());
-    paths.provision_project_manifest().unwrap();
-    gold_band::storage::write_json(
-        &paths.task_file("task-001"),
-        &serde_json::json!({"id":"task-001"}),
-    )
-    .unwrap();
-    let mut req = test_worker_invocation(root.join("attempt"));
-    req.adapter_workspace_dir = root;
-    req.runtime_context.project_id = paths.project_id;
+fn bind_invocation_mcp_reports_whether_enabled_memory_was_bound() {
+    let (_temp, paths, mut req) = invocation_with_memory("B2-confirmed-value");
+
+    assert!(gold_band::memory::bind_invocation_mcp(&mut req).unwrap());
+    assert_memory_mcp_bound(&req, &paths.project_id);
+
+    req.mcp_servers.clear();
+    assert!(!gold_band::memory::bind_invocation_mcp(&mut req).unwrap());
+    assert!(req.mcp_servers.is_empty());
+}
+
+#[test]
+fn runtime_managed_binds_memory_and_receives_only_generic_rules() {
+    let (_temp, paths, mut req) = invocation_with_memory("B2-confirmed-value");
 
     let prompt = prepare_prompt_bundle(&mut req).unwrap();
 
+    assert_memory_mcp_bound(&req, &paths.project_id);
+    assert!(prompt.system_prompt.contains("memory_read"));
+    assert!(prompt.system_prompt.contains("memory_write"));
+    assert!(prompt.system_prompt.contains("角色契约"));
+    assert_no_memory_projection(
+        &prompt.user_prompt,
+        "B2-confirmed-value",
+        paths.runtime_root.as_str(),
+    );
+    assert!(prompt.user_prompt.contains("Need a structured result"));
+    assert!(prompt.user_prompt.contains("Create a structured result"));
+}
+
+#[test]
+fn raw_agent_preserves_exact_prompts_and_memory_binding_without_memory_prompt() {
+    let (_temp, paths, mut req) = invocation_with_memory("B2-confirmed-value");
+    req.prompt_envelope = gold_band::dsl::PromptEnvelopeMode::RawAgent;
+    req.requirement_text = Some("  第一轮用户原文\nsecond line  ".to_string());
+
+    for language in [
+        gold_band::config::DesktopLanguage::ZhCn,
+        gold_band::config::DesktopLanguage::En,
+    ] {
+        req.runtime_context.language = language;
+        let original = req.requirement_text.clone().unwrap();
+        let prompt = prepare_prompt_bundle(&mut req).unwrap();
+
+        assert!(prompt.system_prompt.is_empty());
+        assert_eq!(prompt.user_prompt, original);
+        assert_no_memory_projection(
+            &prompt.system_prompt,
+            "B2-confirmed-value",
+            paths.runtime_root.as_str(),
+        );
+        assert_no_memory_projection(
+            &prompt.user_prompt,
+            "B2-confirmed-value",
+            paths.runtime_root.as_str(),
+        );
+        assert!(!prompt.system_prompt.contains("memory_read"));
+        assert!(!prompt.system_prompt.contains("memory_write"));
+        assert_memory_mcp_bound(&req, &paths.project_id);
+    }
+
+    req.session_mode = SessionMode::Continue;
+    req.user_prompt_render_mode = UserPromptRenderMode::UserMessage;
+    let follow_up = "\n  本轮追问原文  ".to_string();
+    req.resume_prompt = Some(follow_up.clone());
+    let prompt = prepare_prompt_bundle(&mut req).unwrap();
+
+    assert!(prompt.system_prompt.is_empty());
+    assert_eq!(prompt.user_prompt, follow_up);
+    assert_no_memory_projection(
+        &prompt.system_prompt,
+        "B2-confirmed-value",
+        paths.runtime_root.as_str(),
+    );
+    assert_no_memory_projection(
+        &prompt.user_prompt,
+        "B2-confirmed-value",
+        paths.runtime_root.as_str(),
+    );
+    assert_memory_mcp_bound(&req, &paths.project_id);
+}
+
+#[test]
+fn disabled_memory_mcp_omits_rules_data_and_session_binding() {
+    let (_temp, _paths, mut req) = invocation_with_memory("B2-confirmed-value");
+    req.mcp_servers.clear();
+
+    let runtime_prompt = prepare_prompt_bundle(&mut req).unwrap();
     assert!(req.mcp_servers.is_empty());
-    assert!(!prompt.system_prompt.contains("memory_write"));
-    assert!(!prompt.user_prompt.contains("<memory-data>"));
+    assert!(!runtime_prompt.system_prompt.contains("memory_read"));
+    assert!(!runtime_prompt.system_prompt.contains("memory_write"));
+    assert!(!runtime_prompt.user_prompt.contains("<memory-data>"));
+
+    req.prompt_envelope = gold_band::dsl::PromptEnvelopeMode::RawAgent;
+    req.requirement_text = Some("raw original".to_string());
+    let raw_prompt = prepare_prompt_bundle(&mut req).unwrap();
+    assert!(req.mcp_servers.is_empty());
+    assert!(raw_prompt.system_prompt.is_empty());
+    assert_eq!(raw_prompt.user_prompt, "raw original");
+}
+
+#[test]
+fn corrupt_memory_does_not_block_runtime_prompt_preparation() {
+    let (_temp, paths, mut req) = invocation_with_memory("B2-confirmed-value");
+    let task_memory = paths.task_dir("task-001").join("memory.json");
+    std::fs::write(&task_memory, "{broken").unwrap();
+
+    let prompt = prepare_prompt_bundle(&mut req).unwrap();
+
+    assert_memory_mcp_bound(&req, &paths.project_id);
+    assert!(prompt.system_prompt.contains("memory_read"));
+    assert_no_memory_projection(
+        &prompt.user_prompt,
+        "B2-confirmed-value",
+        paths.runtime_root.as_str(),
+    );
+    assert_eq!(std::fs::read_to_string(task_memory).unwrap(), "{broken");
 }
 
 fn test_worker_invocation(attempt_dir: Utf8PathBuf) -> WorkerInvocation {

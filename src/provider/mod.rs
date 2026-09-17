@@ -2206,20 +2206,16 @@ fn non_empty_artifact_text(value: &str) -> Option<String> {
     (!value.trim().is_empty()).then(|| value.to_string())
 }
 
-/// Refresh task memory once at the submission boundary, before rendering the prompt.
+/// Bind enabled MCP servers and project only the RuntimeManaged memory capability rules.
 pub fn prepare_prompt_bundle(req: &mut WorkerInvocation) -> Result<PromptBundle> {
-    let memory = crate::memory::prepare_invocation(req)?;
+    let prompt_envelope = req.prompt_envelope;
+    let memory_enabled = crate::memory::bind_invocation_mcp(req)?;
     let mut prompt = render_prompt_bundle(req)?;
-    if let Some(memory) = memory {
+    if memory_enabled && prompt_envelope == crate::dsl::PromptEnvelopeMode::RuntimeManaged {
         prompt.system_prompt.push_str("\n\n");
         prompt
             .system_prompt
             .push_str(crate::memory::system_rules(req.runtime_context.language));
-        prompt.user_prompt = format!(
-            "{}\n\n{}",
-            gold_band_hidden_block("Gold Band current memory", &memory),
-            prompt.user_prompt
-        );
     }
     Ok(prompt)
 }

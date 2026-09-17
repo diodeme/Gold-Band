@@ -1,6 +1,6 @@
 ## WB Requirement Identity Precheck
 
-This section applies only to the WB channel. Run it before topology enumeration, Interview Round 0, or Grill branch enumeration.
+This section applies only to the WB channel. Run it before topology enumeration, Interview Round 0, or Grill branch enumeration. At the start of this section, first call `memory_read`, then perform the identity check.
 
 1. Use `memory_read` to read the current task and workspace memory. Inspect only the `task` entries in the returned snapshot; a workspace `storyId` or `storyName` does not count as an existing current-task identity.
 2. Continue the original role workflow only when the task contains both `storyId` and `storyName` and both values are nonempty after trimming.
@@ -15,5 +15,5 @@ This section applies only to the WB channel. Run it before topology enumeration,
 6. When the user chooses `其他（用户自行输入）`, obtain both the requirement ID and requirement name. If free text cannot be clearly split into the two values, ask once more; if it remains unclear, wait for clarification instead of guessing. Trim both values and store each as one line.
 7. Use `memory_write` to write both entries to task scope. Before writing, use the target-key revisions from the latest `memory_read`: pass `expectedRevision = null` when the key is absent, and the matching revision when correcting an existing key. Never write these keys to workspace scope.
 8. After both writes, call `memory_read` again and confirm that task-scope `storyId` and `storyName` exactly match the user-confirmed values.
-9. Unavailable `gold-band-memory` tools, a failed write, or failed post-write verification are not blockers. Tell the user that the requirement identity was not persisted, then continue with the user-confirmed or newly supplied `storyId` and `storyName`. A later node may ask again.
+9. If `gold-band-memory` is unavailable or the read fails, state that the requirement identity was not read and ask normally according to step 3. If a write or post-write verification fails, state that the requirement identity was not persisted. Neither case is a blocker. Continue with the user-confirmed or newly supplied `storyId` and `storyName`; a later node may ask again.
 10. Never edit memory files directly. After obtaining the identity, continue with Interview initialization or Grill decision-tree enumeration; keep the task-scope copy when the tool write succeeds.

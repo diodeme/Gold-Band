@@ -1,5 +1,14 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-17 记忆按需读取与 Direct Prompt 隔离
+
+- 根因：MCP binding、RuntimeManaged 记忆规则和自动参数投影共用同一准备路径，导致普通节点固定读取/序列化记忆，RawAgent 在 envelope 分流后仍被注入规则和 `<memory-data>`。
+- 实现：`bind_invocation_mcp()` 只查找、校验并绑定 MCP；`prepare_prompt_bundle()` 只在 RuntimeManaged 且记忆启用时追加简化通用规则。所有模式永久删除 `Gold Band current memory` 与 `<memory-data>` 自动投影，删除 `MemoryService::render_context()` 和双语 `runtime/memory.md`。RawAgent / Direct 的 system prompt 为空、首轮与 continue user prompt 保持原文，但启用时仍保留记忆 MCP。
+- 角色契约：CICD 在参数准备阶段、WB 身份在身份检查阶段、WB 提交在需求身份处理步骤主动调用 `memory_read`；读取失败说明未读取，写入或核验失败说明未持久化，二者不阻塞业务，缺少业务参数时继续按原门禁询问、暂停或失败。
+- 验收：`memory_invocation` 5/5、`memory_mcp` 3/3、lib `memory` 16/16、`worker_bootstrap` 21/21；CICD/WB profile 契约在 default 与 WB 渠道通过；AI-DYNAMIC 修改用例 1/1、完整目标串行 38/38；`cargo check -p gold-band --tests -j 1`、`cargo fmt --all -- --check`、`git diff --check` 通过。
+- 过度设计与性能：不新增状态机、持久字段、缓存、队列、后台同步或新记忆实现；删除普通节点的两文件读取、合并、最多 32 KiB 序列化和 prompt token 固定成本，真实读取下沉到 CICD/WB 工具调用点。
+- 保证边界：接口保证工具读取最新快照，角色契约要求需要记忆的流程主动读取；模型是否执行工具，以及 Direct 是否忽略记忆内容中的指令性文本，不升级为 runtime 强保证。
+
 ## 2026-09-17 CICD 职责迁移与 WB 需求身份
 
 - 根因：代码提交被放在 CICD，而提交生产者是开发测试节点；`storyId/storyName` 没有任务级固定契约；CICD 参数只有通用“默认写任务”规则，缺少逐 key 作用域和写后核验。

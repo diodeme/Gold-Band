@@ -48,6 +48,12 @@ function livePage(url = 'about:blank') {
   return browserSessionStore.page(pageId)!;
 }
 
+function liveNativePage(url = 'https://example.com') {
+  const page = livePage(url);
+  browserSessionStore.markLive(page.pageId, true);
+  return browserSessionStore.page(page.pageId)!;
+}
+
 function stubRect(element: Element, rect: { x: number; y: number; width: number; height: number }) {
   Object.defineProperty(element, 'getBoundingClientRect', {
     configurable: true,
@@ -96,6 +102,8 @@ describe('browser webview host lifecycle', () => {
     api.browserHideAll.mockResolvedValue(undefined);
     api.browserShowPage.mockResolvedValue(undefined);
     api.browserDiscardAll.mockResolvedValue(undefined);
+    api.browserSetBounds.mockReset();
+    api.browserSetBounds.mockImplementation(async () => undefined);
   });
 
   afterEach(() => {
@@ -234,6 +242,70 @@ describe('browser webview host lifecycle', () => {
       url: 'https://baidu.com/',
     }));
     expect(api.browserNavigate).not.toHaveBeenCalled();
+  });
+
+  it('does not let an older live setBounds win after a newer placeholder size', async () => {
+    const page = liveNativePage();
+    const full = { x: 20, y: 40, width: 640, height: 720 };
+    const narrow = { x: 20, y: 40, width: 320, height: 720 };
+    await browserWebviewHost.ensurePage(page, full, true);
+
+    const applied: Array<typeof full> = [];
+    let releaseNarrow: (() => void) | null = null;
+    api.browserSetBounds.mockImplementation((input: { pageId: string; bounds: typeof full }) => {
+      if (input.bounds.width === 320 && releaseNarrow == null) {
+        return new Promise<void>((resolve) => {
+          releaseNarrow = () => {
+            applied.push(input.bounds);
+            resolve();
+          };
+        });
+      }
+      applied.push(input.bounds);
+      return Promise.resolve();
+    });
+
+    const shrinking = browserWebviewHost.ensurePage(page, narrow, true);
+    await vi.waitFor(() => expect(releaseNarrow).not.toBeNull());
+    const restoring = browserWebviewHost.ensurePage(page, full, true);
+    releaseNarrow!();
+    await Promise.all([shrinking, restoring]);
+
+    expect(applied.at(-1)).toEqual(full);
+  });
+
+  it('does not apply placeholder bounds while suppressed so restore cannot shrink a hidden page', async () => {
+    const page = liveNativePage();
+    const full = { x: 20, y: 40, width: 640, height: 720 };
+    const narrow = { x: 20, y: 40, width: 320, height: 720 };
+    await browserWebviewHost.ensurePage(page, full, true);
+    await browserWebviewHost.suppress();
+    api.browserSetBounds.mockClear();
+    api.browserHideAll.mockClear();
+
+    await browserWebviewHost.ensurePage(page, narrow, true);
+    expect(api.browserSetBounds).not.toHaveBeenCalled();
+
+    browserWebviewHost.resume();
+    await browserWebviewHost.ensurePage(page, full, true);
+    expect(api.browserSetBounds).toHaveBeenCalledWith({
+      pageId: page.pageId,
+      bounds: full,
+    });
+    expect(api.browserShowPage).toHaveBeenCalledWith({ pageId: page.pageId });
+  });
+
+  it('does not hide a suppressed page when the placeholder is still collapsed', async () => {
+    const page = liveNativePage();
+    await browserWebviewHost.ensurePage(page, bounds, true);
+    await browserWebviewHost.suppress();
+    api.browserHideAll.mockClear();
+    api.browserSetBounds.mockClear();
+
+    await browserWebviewHost.ensurePage(page, { x: 20, y: 40, width: 0, height: 0 }, true);
+
+    expect(api.browserSetBounds).not.toHaveBeenCalled();
+    expect(api.browserHideAll).not.toHaveBeenCalled();
   });
 
   it('applies the latest placeholder bounds after a slow native create', async () => {

@@ -207,6 +207,10 @@ describe('IM settings boundary', () => {
     expect(sources).not.toContain('save_im_channel_settings');
     expect(sources).not.toContain('disconnect_im_channel');
     expect(sources).not.toContain('source = "halo"');
+    expect(sources).not.toContain('settings.im.channels.wecom.description');
+    const i18n = readFileSync(new URL('../src/i18n.ts', import.meta.url), 'utf8');
+    expect(i18n).not.toContain('安装级目标');
+    expect(i18n).not.toContain('Installation-wide destination');
   });
 
   it('prefetches IM settings at app bootstrap', async () => {

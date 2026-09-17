@@ -450,6 +450,7 @@ const resources = {
           markdownSourceCopied: "Markdown 源码已复制",
           viewMarkdownSource: "切换到源码模式",
           viewMarkdownLivePreview: "切换到实时预览编辑",
+          openHtmlInBrowser: "在浏览器中打开",
           externalMarkdownImages: "此文档引用了 {{count}} 张目录外本地图片",
           loadExternalMarkdownImages: "加载这些图片",
           limitations: {
@@ -2116,10 +2117,10 @@ const resources = {
           title: "浏览器",
           searchEngine: "搜索引擎",
           searchEngineDescription: "地址栏输入的内容不是网址时，用所选搜索引擎搜索。",
-          openLocalLinks: "在内置浏览器中打开本地链接",
-          openLocalLinksDescription: "自动在浏览器标签页中打开 localhost、127.0.0.1 和 ::1 链接。",
-          openWebLinks: "在内置浏览器中打开网页链接",
-          openWebLinksDescription: "自动在浏览器标签页中打开普通 HTTP 和 HTTPS 链接。关闭时使用系统浏览器。",
+          openLocalLinks: "在内置浏览器中打开 localhost",
+          openLocalLinksDescription: "对话和文档里的本机服务地址会在内置浏览器打开。关闭后改用系统浏览器。",
+          openWebLinks: "在内置浏览器中打开网站",
+          openWebLinksDescription: "对话和文档里的普通网站会在内置浏览器打开。关闭后改用系统浏览器。",
         },
         im: {
           title: "IM 远程干预与通知",
@@ -2153,7 +2154,7 @@ const resources = {
             qrCodeLabel: "企业微信授权二维码",
           },
           channels: {
-            wecom: { title: "企业微信", description: "安装级目标，仅支持授权用户与机器人的一对一私聊。" },
+            wecom: { title: "企业微信" },
           },
           status: {
             notConfigured: "未接入", waitingBinding: "等待绑定", connecting: "连接中", reconnecting: "正在重连", connectionFailed: "连接失败",
@@ -3100,6 +3101,7 @@ const resources = {
           markdownSourceCopied: "Markdown source copied",
           viewMarkdownSource: "Switch to source mode",
           viewMarkdownLivePreview: "Switch to live preview editing",
+          openHtmlInBrowser: "Open in browser",
           externalMarkdownImages: "This document references {{count}} local images outside its directory",
           loadExternalMarkdownImages: "Load these images",
           limitations: {
@@ -4815,10 +4817,10 @@ const resources = {
           title: "Browser",
           searchEngine: "Search engine",
           searchEngineDescription: "Use the selected search engine when the address bar input is not a URL.",
-          openLocalLinks: "Open local links in the built-in browser",
-          openLocalLinksDescription: "Automatically open localhost, 127.0.0.1, and ::1 links in a browser tab.",
-          openWebLinks: "Open web links in the built-in browser",
-          openWebLinksDescription: "Automatically open HTTP and HTTPS links in a browser tab. When off, use the system browser.",
+          openLocalLinks: "Open localhost in the built-in browser",
+          openLocalLinksDescription: "Localhost addresses in chats and documents open in the built-in browser. When off, they open in the system browser.",
+          openWebLinks: "Open websites in the built-in browser",
+          openWebLinksDescription: "Websites in chats and documents open in the built-in browser. When off, they open in the system browser.",
         },
         im: {
           title: "IM remote intervention and notifications",
@@ -4852,7 +4854,7 @@ const resources = {
             qrCodeLabel: "WeCom authorization QR code",
           },
           channels: {
-            wecom: { title: "WeCom", description: "Installation-wide destination. Only a private chat with the authorized user is supported." },
+            wecom: { title: "WeCom" },
           },
           status: {
             notConfigured: "Not connected", waitingBinding: "Waiting for binding", connecting: "Connecting", reconnecting: "Reconnecting", connectionFailed: "Connection failed",

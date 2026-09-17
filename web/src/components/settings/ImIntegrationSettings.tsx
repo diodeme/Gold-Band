@@ -210,7 +210,6 @@ const ImChannelEditor = memo(function ImChannelEditor({
               {t(`settings.im.status.${display.status}`)}
             </Badge>
           </div>
-          <p className="text-xs text-muted-foreground">{t('settings.im.channels.wecom.description')}</p>
           {channel.publicIdentity ? (
             <p className="break-all text-xs text-muted-foreground">
               {t('settings.im.scan.botId', { id: channel.publicIdentity })}

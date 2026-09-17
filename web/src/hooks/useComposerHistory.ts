@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
+import { isComposerHistoryBoundary } from '@/lib/composer-history-caret';
 import { ComposerHistoryReader, type ComposerHistorySource, type HistoryCursor } from '@/lib/composer-history';
 
 interface Options {
@@ -20,18 +21,22 @@ export function useComposerHistory(options: Options) {
   const revision = useRef(0);
   const pending = useRef(false);
   const composing = useRef(false);
-  const caret = useRef<{ element: HTMLTextAreaElement; direction: 'older' | 'newer' } | null>(null);
+  const caret = useRef<{ element: HTMLTextAreaElement; restoreDraft: boolean } | null>(null);
+  const draftCaret = useRef<{ start: number; end: number } | null>(null);
   const [historyText, setHistoryText] = useState<string | null>(null);
   const [browsing, setBrowsing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
 
-  function reset() {
+  function reset(restoreDraftFrom?: HTMLTextAreaElement) {
     revision.current += 1;
     reader.current = null;
     cursor.current = null;
-    caret.current = null;
     pending.current = false;
+    caret.current = restoreDraftFrom
+      ? { element: restoreDraftFrom, restoreDraft: true }
+      : null;
+    if (!restoreDraftFrom) draftCaret.current = null;
     setHistoryText(null);
     setBusy(false);
     setBrowsing(false);
@@ -45,12 +50,20 @@ export function useComposerHistory(options: Options) {
 
   useLayoutEffect(() => {
     if (options.disabled) reset();
-    if (caret.current) {
-      const { element, direction } = caret.current;
-      const position = direction === 'older' && element.value.includes('\n') ? 0 : element.value.length;
-      element.setSelectionRange(position, position);
-      caret.current = null;
+    const next = caret.current;
+    if (!next) return;
+    caret.current = null;
+    const { element, restoreDraft } = next;
+    const max = element.value.length;
+    if (restoreDraft) {
+      const saved = draftCaret.current;
+      draftCaret.current = null;
+      if (saved) {
+        element.setSelectionRange(Math.min(saved.start, max), Math.min(saved.end, max));
+        return;
+      }
     }
+    element.setSelectionRange(max, max);
   }, [historyText, options.input, options.disabled, busy]);
 
   useLayoutEffect(() => {
@@ -84,7 +97,7 @@ export function useComposerHistory(options: Options) {
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
     if (event.key === 'Escape' && (cursor.current || pending.current)) {
       event.preventDefault();
-      reset();
+      reset(event.currentTarget);
       return;
     }
     if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
@@ -96,10 +109,15 @@ export function useComposerHistory(options: Options) {
       if (pending.current) { event.preventDefault(); reset(); }
       return;
     }
-    if (element.value.includes('\n')
-      && element.selectionStart !== (direction === 'older' ? 0 : element.value.length)) return;
+    if (!isComposerHistoryBoundary(element, direction)) return;
     event.preventDefault();
     if (pending.current) return;
+    if (!cursor.current) {
+      draftCaret.current = {
+        start: element.selectionStart ?? 0,
+        end: element.selectionEnd ?? 0,
+      };
+    }
     reader.current ??= new ComposerHistoryReader(options.source);
     const request = ++revision.current;
     const snapshot = options;
@@ -116,7 +134,7 @@ export function useComposerHistory(options: Options) {
       cursor.current = result?.cursor ?? null;
       setHistoryText(result?.text ?? null);
       if (!result) reader.current = null;
-      caret.current = { element, direction };
+      caret.current = { element, restoreDraft: result === null };
       setBrowsing(result !== null);
     }).catch(() => {
       if (!active()) return;

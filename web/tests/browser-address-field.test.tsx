@@ -218,15 +218,11 @@ describe('BrowserAddressField', () => {
       const displayed = nativeOverlayCalls.show.at(-1) ?? {};
       const revision = displayed.revision as number;
 
-      // Clicking the overlay blurs the address input, which hides the overlay first.
+      // Clicking the overlay blurs the address input, but the suggestion session stays
+      // open so choose can still use the displayed revision.
       await act(async () => {
         input?.blur();
       });
-      await vi.waitFor(() => {
-        expect(nativeOverlayCalls.hide.length).toBeGreaterThan(0);
-      });
-
-      // The click that follows still reports the revision the overlay was displaying.
       await act(async () => {
         (nativeOverlayCalls.actionListener as (event: unknown) => void)({
           revision,
@@ -236,6 +232,120 @@ describe('BrowserAddressField', () => {
       });
 
       expect(onSubmit).toHaveBeenCalledWith('https://github.com/diodeme/Gold-Band');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('does not hide the native suggestion overlay when a visit is removed after blur', async () => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const onSubmit = vi.fn();
+    const onEditingChange = vi.fn();
+    try {
+      await act(async () => {
+        root.render(<BrowserAddressField {...fieldProps({ onSubmit, onEditingChange })} />);
+      });
+      const input = container.querySelector<HTMLInputElement>('[data-browser-address="true"]');
+      await act(async () => {
+        input?.focus();
+      });
+      await vi.waitFor(() => {
+        expect(nativeOverlayCalls.show.length).toBeGreaterThan(0);
+      });
+      const displayed = nativeOverlayCalls.show.at(-1) ?? {};
+      const revision = displayed.revision as number;
+      const hideBeforeRemove = nativeOverlayCalls.hide.length;
+
+      // Overlay clicks blur the address field first. Hiding here is what makes the
+      // remaining records flash: the overlay would hide, then show again after delete.
+      await act(async () => {
+        input?.blur();
+      });
+      expect(nativeOverlayCalls.hide).toHaveLength(hideBeforeRemove);
+
+      await act(async () => {
+        (nativeOverlayCalls.actionListener as (event: unknown) => void)({
+          revision,
+          kind: 'remove',
+          key: 'visit:https://github.com/diodeme/Gold-Band',
+        });
+      });
+
+      await vi.waitFor(() => {
+        const latest = nativeOverlayCalls.show.at(-1) ?? {};
+        expect(nativeOverlayCalls.hide).toHaveLength(hideBeforeRemove);
+        expect(latest.items).toHaveLength(1);
+        expect((latest.items as Array<{ key: string }>)[0]?.key).toBe('visit:https://www.baidu.com/');
+        expect(document.activeElement).toBe(input);
+      });
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(onEditingChange).toHaveBeenLastCalledWith(true);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('hides the native suggestion overlay when the user clicks outside the address field', async () => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<BrowserAddressField {...fieldProps()} />);
+      });
+      await act(async () => {
+        container.querySelector<HTMLInputElement>('[data-browser-address="true"]')?.focus();
+      });
+      await vi.waitFor(() => {
+        expect(nativeOverlayCalls.show.length).toBeGreaterThan(0);
+      });
+      const hideBefore = nativeOverlayCalls.hide.length;
+
+      await act(async () => {
+        document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+      });
+
+      await vi.waitFor(() => {
+        expect(nativeOverlayCalls.hide.length).toBeGreaterThan(hideBefore);
+      });
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('hides the native suggestion overlay when the browsing page takes focus', async () => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<BrowserAddressField {...fieldProps()} />);
+      });
+      await act(async () => {
+        container.querySelector<HTMLInputElement>('[data-browser-address="true"]')?.focus();
+      });
+      await vi.waitFor(() => {
+        expect(nativeOverlayCalls.show.length).toBeGreaterThan(0);
+      });
+      const displayed = nativeOverlayCalls.show.at(-1) ?? {};
+      const hideBefore = nativeOverlayCalls.hide.length;
+
+      await act(async () => {
+        (nativeOverlayCalls.actionListener as (event: unknown) => void)({
+          revision: displayed.revision,
+          kind: 'dismiss',
+          key: 'page-focus',
+        });
+      });
+
+      await vi.waitFor(() => {
+        expect(nativeOverlayCalls.hide.length).toBeGreaterThan(hideBefore);
+      });
     } finally {
       await act(async () => root.unmount());
     }

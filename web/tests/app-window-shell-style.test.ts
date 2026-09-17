@@ -70,7 +70,8 @@ describe('App window shell style', () => {
     expect(conversationShell).toContain('className="min-h-0 flex-1 bg-sidebar !overflow-x-clip !overflow-y-visible"');
     expect(conversationShell).toContain("'relative z-10 min-w-0 [box-shadow:var(--workspace-main-surface-shadow)]'");
     expect(conversationShell).toContain("'relative z-10 border-t border-workspace-divider [box-shadow:var(--workspace-main-surface-shadow)]'");
-    expect(conversationShell).toContain("<main data-theme-wallpaper-slot=\"workspace\" className={cn('relative flex h-full");
+    expect(conversationShell).toContain('data-theme-wallpaper-slot="workspace"');
+    expect(conversationShell).toContain("className={cn('relative flex h-full min-w-0 flex-col overflow-hidden border-t border-sidebar-border bg-gold-workspace'");
     expect(conversationShell).not.toContain("<main className={cn('relative z-10");
     expect(conversationShell).not.toContain('bg-gold-workspace [box-shadow:var(--workspace-main-surface-shadow)]');
     expect(conversationShell).toContain("showLeft && 'rounded-tl-2xl border-l'");

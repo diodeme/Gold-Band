@@ -243,6 +243,10 @@ fn run() -> anyhow::Result<()> {
             },
         )
         .setup(|app| {
+            #[cfg(target_os = "windows")]
+            if let Some(window) = app.get_webview_window("main") {
+                window_chrome::ensure_undecorated_edge_resize(&window);
+            }
             let state = app.state::<DesktopState>();
             let _ = state.cleanup_agent_diagnostic_processes();
             if let Ok(ctx) = state.context() {

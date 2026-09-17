@@ -9,13 +9,14 @@ import { useMarkdownResourceLinkHandler } from '@/components/prompt-kit/markdown
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import type { FileWorkspaceLayoutVm, WorkspaceDirectoryEntryVm } from '@/types';
 import { isExternalUrlHref, isLocalFileHref } from '@/lib/file-link';
-import { classifyWebTarget } from '../browser/web-target';
+import { isHtmlDocumentPath } from '../browser/web-target';
 import { openWebTarget } from '../browser/open-web-target';
 import { resolveWorkspacePanelWidthFromLayout } from '../workspace-layout';
 import { useWorkspaceResponsiveState } from '../use-workspace-responsive-state';
 import {
   fileWorkspaceResourceKey,
   useRightWorkspace,
+  useRightWorkspaceCommands,
   type FileWorkspaceResource,
   type RightWorkspaceResource,
 } from '../right-workspace-context';
@@ -53,7 +54,6 @@ function fileResourceFromEntry(resource: FileWorkspacePanelProps['resource'], en
 }
 
 export function FileWorkspacePanel({ resource, layout }: FileWorkspacePanelProps) {
-  const { t } = useTranslation();
   const workspace = useRightWorkspace();
   const selected = resource.kind === 'file' ? resource : (resource.selectedFile ?? null);
   const activationFileKey = useRef(selected?.key ?? null);
@@ -81,17 +81,8 @@ export function FileWorkspacePanel({ resource, layout }: FileWorkspacePanelProps
   }, [resource.projectId]);
 
   const openFile = useCallback((entry: WorkspaceDirectoryEntryVm) => {
-    if (classifyWebTarget(entry.canonicalPath) === 'local-html' && workspace.scopeKey) {
-      void openWebTarget(entry.canonicalPath, {
-        projectId: resource.projectId,
-        scopeKey: workspace.scopeKey,
-        openResource: workspace.openResource,
-        browserTitle: t('workspace.browser.title'),
-      });
-      return;
-    }
     workspace.openResource(fileResourceFromEntry(resource, entry));
-  }, [resource, t, workspace.openResource, workspace.scopeKey]);
+  }, [resource, workspace.openResource]);
 
   const content = selected ? <FileContent key={selected.key} resource={selected} /> : <FileEmptyState />;
   const tree = (
@@ -127,8 +118,20 @@ function FileEmptyState() {
 
 export function FileContent({ resource }: { resource: FileWorkspaceResource }) {
   const { t } = useTranslation();
+  const workspace = useRightWorkspaceCommands();
   const entry = useFileContentEntry(resource.key);
   const [locationAdjusted, setLocationAdjusted] = useState(false);
+  const htmlDocument = isHtmlDocumentPath(resource.locator.canonicalPath);
+  const openHtmlInBrowser = useCallback(async () => {
+    if (!htmlDocument || !workspace.scopeKey) return;
+    if (!await fileContentStore.flush(resource.key)) return;
+    await openWebTarget(resource.locator.canonicalPath, {
+      projectId: resource.projectId,
+      scopeKey: workspace.scopeKey,
+      openResource: workspace.openResource,
+      browserTitle: t('workspace.browser.title'),
+    });
+  }, [htmlDocument, resource.key, resource.locator.canonicalPath, resource.projectId, t, workspace.openResource, workspace.scopeKey]);
 
   useEffect(() => {
     void fileContentStore.load(resource);
@@ -171,14 +174,14 @@ export function FileContent({ resource }: { resource: FileWorkspaceResource }) {
       ) : entry.saveState.kind === 'conflict' ? (
         <div className="flex min-h-0 flex-1 flex-col">
           <ConflictBanner resource={resource} />
-          <FileSnapshotContent resource={resource} onLocationAdjusted={setLocationAdjusted} />
+          <FileSnapshotContent resource={resource} onLocationAdjusted={setLocationAdjusted} onOpenInBrowser={htmlDocument ? openHtmlInBrowser : undefined} />
         </div>
       ) : entry.saveState.kind === 'error' ? (
         <div className="flex min-h-0 flex-1 flex-col">
           <SaveErrorBanner resource={resource} errorCode={entry.saveState.errorCode} />
-          <FileSnapshotContent resource={resource} onLocationAdjusted={setLocationAdjusted} />
+          <FileSnapshotContent resource={resource} onLocationAdjusted={setLocationAdjusted} onOpenInBrowser={htmlDocument ? openHtmlInBrowser : undefined} />
         </div>
-      ) : <FileSnapshotContent resource={resource} onLocationAdjusted={setLocationAdjusted} />}
+      ) : <FileSnapshotContent resource={resource} onLocationAdjusted={setLocationAdjusted} onOpenInBrowser={htmlDocument ? openHtmlInBrowser : undefined} />}
     </article>
   );
 }
@@ -186,9 +189,11 @@ export function FileContent({ resource }: { resource: FileWorkspaceResource }) {
 function FileSnapshotContent({
   resource,
   onLocationAdjusted,
+  onOpenInBrowser,
 }: {
   resource: FileWorkspaceResource;
   onLocationAdjusted?: (adjusted: boolean) => void;
+  onOpenInBrowser?: () => void | Promise<void>;
 }) {
   const { t } = useTranslation();
   const markdownResourceLinkHandler = useMarkdownResourceLinkHandler();
@@ -284,6 +289,7 @@ function FileSnapshotContent({
           markdownHasTableImages={markdownTableHasImages}
           onMarkdownImagePreviewError={handleMarkdownImagePreviewError}
           onMarkdownLinkClick={handleMarkdownLinkClick}
+          onOpenInBrowser={onOpenInBrowser}
         />
         </div>
       </div>

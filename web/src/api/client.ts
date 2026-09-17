@@ -348,7 +348,7 @@ export interface BrowserAddressSuggestionOverlayInput {
 
 export interface BrowserAddressSuggestionActionVm {
   revision: number;
-  kind: 'choose' | 'remove';
+  kind: 'choose' | 'remove' | 'dismiss';
   key: string;
 }
 

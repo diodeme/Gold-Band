@@ -16,6 +16,7 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/h
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
 import {
+  fileChangeSetOwnerBranch,
   loadTurnFileChangeSet,
   readCachedTurnFileChangeSet,
   turnFileChangeSetCacheKey,
@@ -56,13 +57,15 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
   const [hasUserToggled, setHasUserToggled] = useState(false);
   const raw = objectValue(event.raw);
   const changeSetId = stringValue(raw?.changeSetId);
+  const ownerBranch = fileChangeSetOwnerBranch(raw);
+  const belongsToLocator = !ownerBranch || !locator || ownerBranch === locator.branchId;
   const inlineSummary = summaryValue(raw?.summary);
   const inlineAttachmentCount = numberValue(raw?.attachmentCount);
   const locatorKey = locator
     ? [locator.projectId, locator.taskId, locator.runId, locator.roundId, locator.nodeId, locator.attemptId, locator.branchId, locator.outerNodeId, locator.outerAttemptId].join('\0')
     : '';
-  const requestKey = locator && changeSetId ? turnFileChangeSetCacheKey(locator, changeSetId) : '';
-  const initialChangeSet = locator && changeSetId ? readCachedTurnFileChangeSet(locator, changeSetId) : null;
+  const requestKey = locator && changeSetId && belongsToLocator ? turnFileChangeSetCacheKey(locator, changeSetId) : '';
+  const initialChangeSet = locator && changeSetId && belongsToLocator ? readCachedTurnFileChangeSet(locator, changeSetId) : null;
   const [loadState, setLoadState] = useState<{ key: string; changeSet: TurnFileChangeSetVm | null; error: boolean }>(() => ({
     key: requestKey,
     changeSet: initialChangeSet,
@@ -70,7 +73,7 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
   }));
 
   useEffect(() => {
-    if (!locator || !changeSetId) return;
+    if (!locator || !changeSetId || !belongsToLocator) return;
     let cancelled = false;
     const cached = readCachedTurnFileChangeSet(locator, changeSetId);
     setLoadState({ key: requestKey, changeSet: cached, error: false });
@@ -92,7 +95,7 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
   const hiddenCount = Math.max(0, changes.length - previewLimit);
   const attachmentCount = changeSet ? attachments.length : inlineAttachmentCount;
   const hasRegularChanges = (summary?.fileCount ?? 0) > 0;
-  if (!changeSetId || (!hasRegularChanges && attachmentCount === 0)) return null;
+  if (!changeSetId || (!hasRegularChanges && attachmentCount === 0) || !belongsToLocator) return null;
 
   const handleOpenChange = (open: boolean) => {
     setHasUserToggled(true);

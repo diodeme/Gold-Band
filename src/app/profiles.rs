@@ -20,8 +20,10 @@ use crate::prompts::{
     PROFILE_CLEAN_ZH_CN, PROFILE_DEV_EN, PROFILE_DEV_TEST_EN, PROFILE_DEV_TEST_ZH_CN,
     PROFILE_DEV_ZH_CN, PROFILE_GRILLME_EN, PROFILE_GRILLME_ZH_CN, PROFILE_INTERVIEW_EN,
     PROFILE_INTERVIEW_ZH_CN, PROFILE_PLAN_EN, PROFILE_PLAN_ZH_CN, PROFILE_REVIEW_EN,
-    PROFILE_REVIEW_ZH_CN, PROFILE_TEST_EN, PROFILE_TEST_ZH_CN,
-    profile_template_validation_contexts, prompt_by_language, render,
+    PROFILE_REVIEW_ZH_CN, PROFILE_TEST_EN, PROFILE_TEST_ZH_CN, PROFILE_WB_DEV_TEST_COMMIT_EN,
+    PROFILE_WB_DEV_TEST_COMMIT_ZH_CN, PROFILE_WB_REQUIREMENT_IDENTITY_EN,
+    PROFILE_WB_REQUIREMENT_IDENTITY_ZH_CN, profile_template_validation_contexts,
+    prompt_by_language, render,
 };
 use crate::storage::{GoldBandPaths, ensure_parent_dir};
 
@@ -791,7 +793,7 @@ fn built_in_profiles(language: DesktopLanguage) -> Vec<ProfileEntry> {
             name: seed.name.value(language).to_string(),
             summary: seed.summary.value(language).to_string(),
             summary_source: seed.summary.value(language).to_string(),
-            content: built_in_profile_content(seed.key, language).to_string(),
+            content: built_in_profile_content(seed.key, language),
             dynamic_template: seed.dynamic_template,
             scope: ProfileScope::BuiltIn,
             is_built_in: true,
@@ -810,7 +812,7 @@ fn built_in_profile_by_id(id: &str, language: DesktopLanguage) -> Option<Profile
             name: seed.name.value(language).to_string(),
             summary: seed.summary.value(language).to_string(),
             summary_source: seed.summary.value(language).to_string(),
-            content: built_in_profile_content(seed.key, language).to_string(),
+            content: built_in_profile_content(seed.key, language),
             dynamic_template: seed.dynamic_template,
             scope: ProfileScope::BuiltIn,
             is_built_in: true,
@@ -820,8 +822,8 @@ fn built_in_profile_by_id(id: &str, language: DesktopLanguage) -> Option<Profile
         })
 }
 
-fn built_in_profile_content(key: &str, language: DesktopLanguage) -> &'static str {
-    match key {
+fn built_in_profile_content(key: &str, language: DesktopLanguage) -> String {
+    let content = match key {
         "plan" => prompt_by_language(language, PROFILE_PLAN_ZH_CN, PROFILE_PLAN_EN),
         "dev" => prompt_by_language(language, PROFILE_DEV_ZH_CN, PROFILE_DEV_EN),
         "dev-test" => prompt_by_language(language, PROFILE_DEV_TEST_ZH_CN, PROFILE_DEV_TEST_EN),
@@ -833,6 +835,27 @@ fn built_in_profile_content(key: &str, language: DesktopLanguage) -> &'static st
         "interview" => prompt_by_language(language, PROFILE_INTERVIEW_ZH_CN, PROFILE_INTERVIEW_EN),
         "grill" => prompt_by_language(language, PROFILE_GRILLME_ZH_CN, PROFILE_GRILLME_EN),
         _ => "",
+    };
+    if RELEASE_CHANNEL != WB_CHANNEL {
+        return content.to_string();
+    }
+    let wb_supplement = match key {
+        "interview" | "grill" => prompt_by_language(
+            language,
+            PROFILE_WB_REQUIREMENT_IDENTITY_ZH_CN,
+            PROFILE_WB_REQUIREMENT_IDENTITY_EN,
+        ),
+        "dev-test" => prompt_by_language(
+            language,
+            PROFILE_WB_DEV_TEST_COMMIT_ZH_CN,
+            PROFILE_WB_DEV_TEST_COMMIT_EN,
+        ),
+        _ => "",
+    };
+    if wb_supplement.trim().is_empty() {
+        content.to_string()
+    } else {
+        format!("{content}\n\n{}", wb_supplement.trim())
     }
 }
 

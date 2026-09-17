@@ -123,6 +123,60 @@ fn cicd_task_build_and_subsystem_deployments_are_isolated_and_corrected_per_key(
 }
 
 #[test]
+fn story_identity_persists_in_task_scope_across_nodes() {
+    let (_temp, service) = fixture(false);
+    service
+        .write(command(Scope::Workspace, "storyId", "workspace-1", None))
+        .unwrap();
+    service
+        .write(command(
+            Scope::Workspace,
+            "storyName",
+            "workspace name",
+            None,
+        ))
+        .unwrap();
+    service
+        .write(command(Scope::Task, "storyId", "0", None))
+        .unwrap();
+    service
+        .write(command(Scope::Task, "storyName", "登录优化", None))
+        .unwrap();
+
+    let reopened = MemoryService::new(
+        service.paths.clone(),
+        &service.paths.project_id,
+        Some("task-1".into()),
+    )
+    .unwrap();
+    let snapshot = reopened.read().unwrap();
+    let task_value = |key: &str| {
+        snapshot
+            .task
+            .iter()
+            .find(|item| item.entry.key == key)
+            .unwrap()
+            .entry
+            .value
+            .as_str()
+    };
+    let effective_value = |key: &str| {
+        snapshot
+            .effective
+            .iter()
+            .find(|item| item.entry.key == key)
+            .unwrap()
+            .entry
+            .value
+            .as_str()
+    };
+    assert_eq!(task_value("storyId"), "0");
+    assert_eq!(task_value("storyName"), "登录优化");
+    assert_eq!(effective_value("storyId"), "0");
+    assert_eq!(effective_value("storyName"), "登录优化");
+}
+
+#[test]
 fn memory_persistence_precedence_and_empty_override() {
     let (_temp, service) = fixture(false);
     service
@@ -396,6 +450,10 @@ fn memory_context_refreshes_between_nodes_and_preserves_data_boundaries() {
         assert!(first.contains("\"scope\":\"task\""));
         assert!(!first.contains("memory_write"));
         assert!(system_rules(language).contains("memory_write"));
+        assert!(system_rules(language).contains(match language {
+            crate::config::DesktopLanguage::En => "not task blockers",
+            crate::config::DesktopLanguage::ZhCn => "不是任务阻塞",
+        }));
     }
     let snapshot = service.read().unwrap();
     service

@@ -550,6 +550,7 @@ im-projection-diagnostic
 - 生产界面复用现有 shadcn/ui Badge、Alert、Switch、Checkbox、Dialog、AlertDialog、DropdownMenu、Separator/Collapsible。
 - credential、enabled、connection generation、binding 与六字段 notifications 继续是唯一事实来源；生产接口按各自数据所有权收窄，删除通用保存与重复断开命令，不引入模拟状态或测试连接。
 - 对客文案已将 `IM 远程干预与通知` 收敛为 `远程干预`，`Run 成功/失败` 收敛为 `工作流成功/失败`，`ACP 回合结束` 收敛为 `Agent 回复完成`，并删除“安装级目标”等实现表达；中英文文案同步维护。
+- 2026-09-17：设置页企业微信标题下仍残留“安装级目标，仅支持授权用户与机器人的一对一私聊。”，已删除该对客注释及对应中英文 i18n 键；未接入时只保留状态徽章与扫码接入说明。
 - 已迁移 `ImIntegrationSettings.tsx`：显示模型为纯投影，总开关即时执行；通知草稿下沉到独立表单，不被 snapshot、扫码或启停响应重置；扫码 Dialog 在授权后进入可关闭的等待绑定态，只有持久 binding 与当前 snapshot 一致才完成。
 - `BindingObserved` 已改为先校验、再落盘并重建 target、最后提交 snapshot；IM settings 写入通过同一最小临界区与 generation 推进避免旧事件交错。`IM_STORAGE_UNAVAILABLE` 使用单 channel+generation、最多三次的 1/2/4 秒可取消重试。
 - 生产 React 界面与 `web/tests/im-settings-ui.test.tsx` 是设置流程的唯一实现和自动化验收入口，固定渐进披露、扫码到私聊绑定、即时启停、通知保存/放弃、分类恢复、更换账号、删除确认和无障碍语义。

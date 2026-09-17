@@ -1,5 +1,19 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-17 工作空间 HTML 默认打开源码
+
+- 根因：本地 HTML 原先对所有入口一律进内置浏览器、不进 CodeMirror。会话引用要看渲染结果，这个分流成立；工作空间目录树是在浏览可编辑源码，和普通文本/代码文件同一意图。属于正确浏览器能力下的入口策略过粗，不是要做第二套 HTML 实时预览。
+- 实现：目录树点击 `.html/.htm` 打开文件工作区 CodeMirror 源码；内容区右上角复用 Markdown 浮层按钮样式，点击后先 flush 再 `openWebTarget`。会话和 Markdown 中的本地 HTML 引用仍直接进内置浏览器。运行目录只读 HTML 同样提供该按钮。不增加 HTML 预览模式、持久字段或新 identity。
+- 证据：目录树源码契约先失败于仍拦截 `local-html`；编辑器浮层 DOM 先失败于缺少打开按钮。修复后同一用例转绿，并固定会话 HTML 引用继续走 `openWebTarget`。运行目录 HTML 打开源码浮层，命令订阅只在正文子组件。
+- 过度设计与性能评审：复用现有 FileContent、WorkspaceFileEditor 浮层、FileContentStore.flush 和 openWebTarget。按钮状态只在当前编辑器内，不进 Context。打开浏览器仍是既有单次导航，无额外扫描、缓存或队列。
+
+## 2026-09-17 设置页企业微信实现注释与浏览器开关说明
+
+- 根因：IM 对客文案设计已禁止暴露“安装级目标”，设置页企业微信标题下仍渲染该实现注释，属于正确设计下的展示残留。浏览器两个开关的真实分流是 localhost `http(s)` 与普通网站；标题写成“本地链接 / 网页链接”会被读成 `file://` 与 `http://`。属于正确路由设计下的对客文案不完整，不是要把开关改成文件与网页。
+- 实现：删除企业微信标题下的实现注释及中英文 i18n 键；未接入时只保留状态徽章和“尚未接入…”操作说明。浏览器开关标题改为“打开 localhost / 打开网站”，说明改为“对话和文档里的本机服务地址 / 普通网站，关闭后改用系统浏览器”。
+- 证据：IM 未接入 DOM 用例先稳定失败于仍包含“安装级目标”，源码契约先失败于仍消费 `settings.im.channels.wecom.description`；修复后同一用例转绿。浏览器设置 DOM 用例先失败于仍使用“本地链接”，修复后固定 localhost/网站标题并排除 `file://`、`127.0.0.1` / `::1`。
+- 过度设计与性能评审：只删除一行展示和改写既有 i18n，不新增状态、接口、缓存、identity 或第三个开关。设置页文案长度为常数，无加载或渲染范围变化。
+
 ## 2026-09-17 Win10 冷启动无法拖窗口边缘缩放
 
 - 根因：2026-07-28 关闭 Win10 native shadow 后，四边缩放本应由 Tauri `TAURI_DRAG_RESIZE_WINDOW` overlay 提供。2026-09-16 内置浏览器启用 `tauri/unstable` 后，主 WebView 以 `WindowChild` 创建，runtime 只给 `WindowContent` 挂 overlay，冷启动就没有边缘命中。Win11 仍有 DWM 外侧框所以不明显。属于正确的无边框缩放设计下宿主挂钩不完整，不是阴影策略或 HTML 手柄问题。
@@ -2036,3 +2050,10 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 方案：overlay 把 `bundle.publisher` 固定为该渠道 `productName`；`wb` 为 `MALING`，`default` 为 `Gold Band`。不新增独立厂商配置项，避免与产品名漂移。
 - [x] 验收：渠道 overlay 测试固定 publisher 与 productName 同源，以及真实 `wb.json` overlay 的 `MALING`；`npm run test:channel-config` 通过。
 - 性能与过度设计评审：只在构建 overlay JSON 增加一个常量字符串，不改变运行时 I/O、状态、缓存、队列或渲染；复用现有渠道 `productName`，无新依赖或 identity。
+
+## 2026-09-17：Git 版本探测按行解析并复用桌面 PATH
+
+- [x] 根因与方案：`2.36.0+` capability gate 设计正确。偶发「无法识别 Git 版本」来自探测实现不完整：Git 子进程未走桌面 PATH 适配层，且 `git --version` 要求整段 stdout 以前缀开头、非 0 即丢弃。补齐可执行文件解析与按行版本协议，不为特定发行版开特例。
+- [x] 实现：所有 Git 启动使用桌面 PATH 解析出的绝对路径并注入同一 PATH；Windows 追加 `Git\cmd` 常见安装位置并跳过 App Execution Alias 空文件。版本行从 stdout/stderr 中识别，能解析则按已安装版本比较门槛。成功路径进程内缓存，重新检测重新解析；版本号仍不持久化。分支选择器把识别失败与版本过低的触发器文案分开。
+- [x] 回归验收：Rust `git::tests` 19 项、`process` Windows PATH/suggested dirs、`git::source_control` 43 项、`git::github` 13 项通过；Web `git-requirement-dialog` 含 unavailable 文案区分，`git-branch-selector` 固定 unavailable 触发器不用 unsupported 标签。
+- 性能与过度设计评审：不新增状态机、版本矩阵、`git.path` 设置或磁盘缓存。PATH 遍历相对 `git --version` 可忽略；绝对路径进程内复用，避免每次 Git 命令读注册表。前端无新请求或 Store。

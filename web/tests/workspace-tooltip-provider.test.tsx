@@ -134,6 +134,8 @@ describe('WorkspaceShell tooltip boundary', () => {
               workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
             }}
             vm={{ workspaces: [], pinnedTasks: [], tasksByWorkspace: {}, preferences: null }}
+            browserPreferences={{ searchEngine: 'baidu' }}
+            onNewConversationInWorkspace={() => {}}
             active={{ kind: 'conversation-home' }}
             conversationWorkspaceStore={new ConversationWorkspaceStore()}
             sidebarCollapsed={false}
@@ -179,6 +181,8 @@ describe('WorkspaceShell tooltip boundary', () => {
               workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
             }}
             vm={{ workspaces: [], pinnedTasks: [], tasksByWorkspace: {}, preferences: null }}
+            browserPreferences={{ searchEngine: 'baidu' }}
+            onNewConversationInWorkspace={() => {}}
             active={{ kind: 'settings' }}
             conversationWorkspaceStore={new ConversationWorkspaceStore()}
             sidebarCollapsed={false}

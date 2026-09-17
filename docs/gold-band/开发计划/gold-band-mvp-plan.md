@@ -1,5 +1,19 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-17 Win10 冷启动无法拖窗口边缘缩放
+
+- 根因：2026-07-28 关闭 Win10 native shadow 后，四边缩放本应由 Tauri `TAURI_DRAG_RESIZE_WINDOW` overlay 提供。2026-09-16 内置浏览器启用 `tauri/unstable` 后，主 WebView 以 `WindowChild` 创建，runtime 只给 `WindowContent` 挂 overlay，冷启动就没有边缘命中。Win11 仍有 DWM 外侧框所以不明显。属于正确的无边框缩放设计下宿主挂钩不完整，不是阴影策略或 HTML 手柄问题。
+- 实现：窗口就绪后 `set_resizable(true)` 走 Tauri 同一 attach 路径；child WebView 或地址建议 `HWND_TOP` 之后把 overlay 再抬到最前。Win10 `native_shadow = false` 不变。
+- 证据：Vitest `window-surface` 6/6，其中契约测试先稳定失败于源码缺少 `TAURI_DRAG_RESIZE_*` / `set_resizable(true)` / 调用点，修复后转绿。`window_chrome` 4/4、`second_launch_reuses_the_existing_main_window` 通过；`cargo check -p gold-band-desktop --all-targets` 通过。HWND z-order 无法在 jsdom / cargo mock 中复现，Win10 冷启动拖边与打开浏览器页后右边缘仍可拖作为 EXE 验收。
+- 过度设计与性能评审：复用 Tauri overlay，不新增 HTML handle、状态机或持久字段。`FindWindowEx` + `SetWindowPos` 只在窗口就绪和有界次 child 创建/显示时执行一次，不进热路径。
+
+## 2026-09-17 对话栏菜单打开时内置浏览器变白
+
+- 根因：网页子 WebView 是独立 HWND，HTML `z-index` 盖不住它。原实现把「任意菜单打开」当成 hide 的充分条件，对话栏列表即使没进网页矩形也会把整页藏白。相交 hide 补上后仍会闪一下：Radix 打开当下的未收敛几何可能暂时相交，`hideAll` 是原生 IPC，一旦发出必须等 hide 完成再 show。属于正确 collision 设计下 hide 判定过早，不是 child WebView 分层错误。
+- 实现：对话栏容器作为 Radix collision boundary，共享 Select / Dropdown / Popover / Context Menu 自动约束在栏内，并在定位节点标记 `data-overlay-collision-boundary=conversation`；受约束菜单不进入 `hasBlockingOverlay`。hide 只留给 Dialog / 非自身 Sheet，以及未受约束且与网页占位盒相交的菜单。紧凑右栏 Sheet 仍按 owner 豁免。
+- 证据：中间栏打开菜单不 hide、相交且未约束的菜单仍 hide、Select 纳入检测、Dialog overlay 覆盖网页仍 hide、关闭菜单与右栏 Sheet 豁免；受约束 popover 即使首框相交也不 hide 且不发 hideAll；hook 运行时测试固定 context boundary、constraint 标记与显式 null 退出；overlay 契约测试固定对话栏 boundary 与共享组件消费 `useOverlayPositioning`。
+- 过度设计与性能评审：复用已有 collision 标记，不加延迟、队列或第二套几何状态。相交检测仍只读当前打开的未约束浮层与一块占位盒矩形。
+
 ## 2026-09-17 IM 设置每次进入都闪「加载中…」
 
 - 根因：`ImIntegrationSettings` 每次挂载都把 `settings` 置为 `null` 再请求 `get_im_settings`。定时任务运行设置已有 stale-while-revalidate 缓存，IM 没有复用。Radix 非激活标签卸载与设置页重挂载会让用户每次点开设置都先看到加载态。属于正确设计下的展示投影不完整，不修改 IM canonical state。

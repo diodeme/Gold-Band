@@ -29,6 +29,7 @@ vi.mock('@/api/client', () => ({
 
 import { browserSessionStore } from '@/components/workspace/browser/browser-session-store';
 import { browserWebviewHost } from '@/components/workspace/browser/browser-webview-host';
+import { overlayOwnerAttribute, rightWorkspaceOverlayOwner } from '@/lib/portal-container';
 
 const bounds = { x: 20, y: 40, width: 640, height: 480 };
 
@@ -78,6 +79,21 @@ describe('browser webview host lifecycle', () => {
     document.body.innerHTML = '<div data-slot="dropdown-menu-content" data-state="closed"></div>';
     expect(browserWebviewHost.hasBlockingOverlay()).toBe(false);
     document.body.innerHTML = '<div data-slot="dropdown-menu-content" data-state="open"></div>';
+    expect(browserWebviewHost.hasBlockingOverlay()).toBe(true);
+  });
+
+  it('does not treat the compact right-workspace sheet overlay as blocking', () => {
+    document.body.innerHTML = `
+      <div id="gold-band-overlay-portal-host">
+        <div data-slot="sheet-overlay" data-state="open" ${overlayOwnerAttribute}="${rightWorkspaceOverlayOwner}"></div>
+        <div data-slot="sheet-content" data-state="open">
+          <div data-right-workspace-presentation="sheet"></div>
+        </div>
+      </div>
+    `;
+    expect(browserWebviewHost.hasBlockingOverlay()).toBe(false);
+
+    document.querySelector('[data-slot="sheet-overlay"]')?.removeAttribute(overlayOwnerAttribute);
     expect(browserWebviewHost.hasBlockingOverlay()).toBe(true);
   });
 
@@ -182,6 +198,46 @@ describe('browser webview host lifecycle', () => {
     });
   });
 
+  it('coalesces repeated navigation to the same target while the native command is pending', async () => {
+    let releaseNavigate: ((value: { pageId: string; url: string; label: string }) => void) | null = null;
+    const page = livePage('https://example.com');
+    browserSessionStore.markLive(page.pageId, true);
+    api.browserNavigate.mockImplementationOnce((input) => new Promise((resolve) => {
+      releaseNavigate = () => resolve({
+        pageId: input.pageId,
+        url: input.url,
+        label: `gb-${input.pageId}`,
+      });
+    }));
+
+    const first = browserWebviewHost.commitNavigation(page.pageId, 'file:///E:/demo/index.html');
+    const repeated = browserWebviewHost.commitNavigation(page.pageId, 'file:///E:/demo/index.html');
+    await vi.waitFor(() => expect(releaseNavigate).not.toBeNull());
+
+    expect(api.browserNavigate).toHaveBeenCalledTimes(1);
+    releaseNavigate!();
+    await Promise.all([first, repeated]);
+  });
+
+  it('keeps the last confirmed url when native navigation fails', async () => {
+    const page = livePage('https://example.com');
+    browserSessionStore.markLive(page.pageId, true);
+    api.browserNavigate.mockRejectedValueOnce({
+      code: 'browser.local_html.grant_failed',
+      params: {},
+    });
+
+    await expect(
+      browserWebviewHost.commitNavigation(page.pageId, 'file:///E:/demo/index.html'),
+    ).rejects.toMatchObject({ code: 'browser.local_html.grant_failed' });
+
+    expect(browserSessionStore.page(page.pageId)).toMatchObject({
+      url: 'https://example.com/',
+      loading: false,
+    });
+    expect(browserSessionStore.snapshot().noticeCode).toBe('browser.local_html.grant_failed');
+  });
+
   it('suppresses show while hide is in flight so a leftover webview cannot cover the empty workspace', async () => {
     let releaseHide: (() => void) | null = null;
     api.browserHideAll.mockImplementationOnce(() => new Promise((resolve) => {
@@ -191,10 +247,10 @@ describe('browser webview host lifecycle', () => {
     browserSessionStore.markLive(page.pageId, true);
     await browserWebviewHost.ensurePage(page, bounds, true);
     const hiding = browserWebviewHost.hideAll();
-    browserWebviewHost.suppress();
-    await browserWebviewHost.ensurePage(page, bounds, true);
+    const suppressing = browserWebviewHost.suppress();
+    const ensuring = browserWebviewHost.ensurePage(page, bounds, true);
     releaseHide?.();
-    await hiding;
+    await Promise.all([hiding, suppressing, ensuring]);
     const showsAfterSuppress = api.browserShowPage.mock.calls.length;
     await browserWebviewHost.ensurePage(page, bounds, true);
     expect(api.browserShowPage.mock.calls.length).toBe(showsAfterSuppress);
@@ -250,6 +306,25 @@ describe('browser webview host lifecycle', () => {
     await expect(browserWebviewHost.ensurePage(page, bounds, true)).rejects.toThrow('native create failed');
     expect(browserSessionStore.page(page.pageId)?.live).toBe(false);
     expect(browserSessionStore.page(page.pageId)?.loading).toBe(false);
+  });
+
+  it('applies native eviction even when the replacement webview fails to create', async () => {
+    const retained = livePage('https://retained.example');
+    const evicted = livePage('https://evicted.example');
+    const created = livePage('https://created.example');
+    browserSessionStore.markLive(retained.pageId, true);
+    browserSessionStore.markLive(evicted.pageId, true);
+    api.browserCreatePage.mockImplementationOnce(async () => {
+      browserWebviewHost.handleNativeEvent({ kind: 'discarded', pageId: evicted.pageId });
+      throw new Error('replacement create failed');
+    });
+
+    await expect(browserWebviewHost.ensurePage(created, bounds, true)).rejects.toThrow('replacement create failed');
+
+    expect(browserSessionStore.page(retained.pageId)?.live).toBe(true);
+    expect(browserSessionStore.page(evicted.pageId)?.live).toBe(false);
+    expect(browserSessionStore.page(created.pageId)?.live).toBe(false);
+    expect(api.browserClosePage).not.toHaveBeenCalled();
   });
 
   it('keeps pages live when native discard fails so cleanup remains retryable', async () => {

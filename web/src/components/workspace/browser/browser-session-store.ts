@@ -1,5 +1,4 @@
 export const BROWSER_PAGE_LIMIT = 32;
-export const BROWSER_LIVE_WEBVIEW_LIMIT = 5;
 export const BROWSER_LOAD_STALL_MS = 15_000;
 export const BLANK_BROWSER_URL = 'about:blank';
 
@@ -207,14 +206,48 @@ export class BrowserSessionStore {
     else this.clearLoadStallTimer(pageId);
   }
 
+  beginNavigation(pageId: string) {
+    const index = this.state.pages.findIndex((page) => page.pageId === pageId);
+    if (index < 0) return;
+    const pages = this.state.pages.map((page, pageIndex) => (
+      pageIndex === index ? { ...page, loading: true } : page
+    ));
+    this.state = { ...this.state, pages, noticeCode: null };
+    this.scheduleLoadStallRecovery(pageId);
+    this.emit();
+  }
+
   commitPageUrl(pageId: string, url: string) {
     const canonical = canonicalizeBrowserUrl(url);
-    this.patch(pageId, { url: canonical, loading: canonical !== BLANK_BROWSER_URL });
+    const index = this.state.pages.findIndex((page) => page.pageId === pageId);
+    if (index < 0) return;
+    const pages = this.state.pages.map((page, pageIndex) => (
+      pageIndex === index
+        ? { ...page, url: canonical, loading: canonical !== BLANK_BROWSER_URL }
+        : page
+    ));
+    this.state = { ...this.state, pages, noticeCode: null };
+    this.emit();
     if (canonical === BLANK_BROWSER_URL) this.clearLoadStallTimer(pageId);
     else this.scheduleLoadStallRecovery(pageId);
   }
 
+  failNavigation(pageId: string, code: string) {
+    const index = this.state.pages.findIndex((page) => page.pageId === pageId);
+    if (index < 0) return;
+    this.clearLoadStallTimer(pageId);
+    const pages = this.state.pages.map((page, pageIndex) => (
+      pageIndex === index ? { ...page, loading: false } : page
+    ));
+    this.state = { ...this.state, pages, noticeCode: code };
+    this.emit();
+  }
+
   applyNativeEvent(event: { kind: string; pageId: string; url?: string | null; title?: string | null }) {
+    if (event.kind === 'discarded') {
+      this.markDiscarded([event.pageId]);
+      return;
+    }
     if (event.kind === 'title' && event.title) {
       this.patch(event.pageId, { title: event.title });
       return;
@@ -253,12 +286,6 @@ export class BrowserSessionStore {
 
   livePageIds() {
     return this.state.pages.filter((page) => page.live).map((page) => page.pageId);
-  }
-
-  evictionCandidate(keepPageId: string | null) {
-    const live = this.state.pages.filter((page) => page.live);
-    if (live.length < BROWSER_LIVE_WEBVIEW_LIMIT) return null;
-    return live.find((page) => page.pageId !== keepPageId)?.pageId ?? null;
   }
 
   markDiscarded(pageIds: string[]) {

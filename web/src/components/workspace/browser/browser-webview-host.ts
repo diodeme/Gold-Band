@@ -1,6 +1,13 @@
 import { getRuntimeApi } from '@/api/client';
-import { overlayPortalHostId } from '@/lib/portal-container';
-import { browserSessionStore, type BrowserPage, type BrowserViewMode, BLANK_BROWSER_URL, isBrowserPortalUrl } from './browser-session-store';
+import { overlayOwnerAttribute, overlayPortalHostId, rightWorkspaceOverlayOwner } from '@/lib/portal-container';
+import {
+  browserSessionStore,
+  type BrowserPage,
+  type BrowserViewMode,
+  BLANK_BROWSER_URL,
+  canonicalizeBrowserUrl,
+  isBrowserPortalUrl,
+} from './browser-session-store';
 
 export interface BrowserBounds {
   x: number;
@@ -53,6 +60,11 @@ class BrowserWebviewHost {
   private overlayObserver: MutationObserver | null = null;
   private visibilityListener: (() => void) | null = null;
   private readonly pendingCreates = new Map<string, Promise<void>>();
+  private readonly pendingNavigations = new Map<string, {
+    target: string;
+    queued: string | null;
+    promise: Promise<void>;
+  }>();
   private hidePromise: Promise<void> | null = null;
   private visibilityRevision = 0;
   private suppressed = false;
@@ -133,6 +145,7 @@ class BrowserWebviewHost {
   }
 
   async hideAll() {
+    if (this.hidePromise) return this.hidePromise;
     if (this.visiblePageId == null && !browserSessionStore.livePageIds().length) return;
     this.visiblePageId = null;
     this.visibilityRevision += 1;
@@ -145,14 +158,16 @@ class BrowserWebviewHost {
     }
   }
 
-  suppress() {
+  async suppress() {
+    const changed = !this.suppressed;
     this.suppressed = true;
-    this.visibilityRevision += 1;
+    if (changed) this.visibilityRevision += 1;
     this.visiblePageId = null;
-    void this.hideAll();
+    await this.hideAll();
   }
 
   resume() {
+    if (!this.suppressed) return;
     this.suppressed = false;
     this.visibilityRevision += 1;
     this.visibilityListener?.();
@@ -184,7 +199,7 @@ class BrowserWebviewHost {
   }
 
   async discardAll() {
-    this.suppress();
+    await this.suppress();
     const live = browserSessionStore.livePageIds();
     await Promise.all(this.pendingCreates.values());
     await api().browserDiscardAll?.();
@@ -193,22 +208,21 @@ class BrowserWebviewHost {
     browserSessionStore.markDiscarded(live);
   }
 
-  async commitNavigation(pageId: string, url: string) {
-    await this.ensureStarted();
-    browserSessionStore.commitPageUrl(pageId, url);
-    const page = browserSessionStore.page(pageId);
-    if (!page) return;
-    const pending = this.pendingCreates.get(pageId);
-    if (pending) await pending;
-    if (browserSessionStore.page(pageId)?.live) {
-      await api().browserNavigate?.({ pageId, url: page.url });
-      return;
+  commitNavigation(pageId: string, url: string) {
+    const target = canonicalizeBrowserUrl(url);
+    const pending = this.pendingNavigations.get(pageId);
+    if (pending) {
+      if (pending.target !== target) pending.queued = target;
+      return pending.promise;
     }
-    await this.createPage(
-      pageId,
-      page.url,
-      this.lastBounds.get(pageId) ?? { x: 0, y: 0, width: 1, height: 1 },
-    );
+    const operation = {
+      target,
+      queued: null as string | null,
+      promise: Promise.resolve(),
+    };
+    operation.promise = this.runNavigationQueue(pageId, operation);
+    this.pendingNavigations.set(pageId, operation);
+    return operation.promise;
   }
 
   async navigate(pageId: string, url: string) {
@@ -250,6 +264,7 @@ class BrowserWebviewHost {
     const host = document.getElementById(overlayPortalHostId);
     if (host) {
       for (const child of Array.from(host.children)) {
+        if (child.getAttribute(overlayOwnerAttribute) === rightWorkspaceOverlayOwner) continue;
         if (child.querySelector('[data-right-workspace-presentation="sheet"]')) continue;
         if (containsOpenOverlay(child)) return true;
         if (child.getAttribute('data-slot')?.includes('overlay') && isOpenOverlay(child)) return true;
@@ -292,6 +307,7 @@ class BrowserWebviewHost {
     this.startPromise = null;
     this.lastBounds.clear();
     this.pendingCreates.clear();
+    this.pendingNavigations.clear();
     this.hidePromise = null;
     this.visiblePageId = null;
     this.overlayOpen = false;
@@ -305,8 +321,6 @@ class BrowserWebviewHost {
     if (existing) return existing;
     const create = (async () => {
       try {
-        const evict = browserSessionStore.evictionCandidate(pageId);
-        if (evict) await this.discard([evict]);
         await api().browserCreatePage?.({
           pageId,
           url,
@@ -325,7 +339,7 @@ class BrowserWebviewHost {
         }
       } catch (error) {
         if (browserSessionStore.page(pageId)) {
-          browserSessionStore.markLoading(pageId, false);
+          browserSessionStore.failNavigation(pageId, browserErrorCode(error));
         }
         throw error;
       }
@@ -337,6 +351,61 @@ class BrowserWebviewHost {
       if (this.pendingCreates.get(pageId) === create) this.pendingCreates.delete(pageId);
     }
   }
+
+  private async runNavigationQueue(
+    pageId: string,
+    operation: { target: string; queued: string | null; promise: Promise<void> },
+  ) {
+    try {
+      let target: string | null = operation.target;
+      while (target) {
+        operation.target = target;
+        await this.performNavigation(pageId, target);
+        const queued = operation.queued;
+        operation.queued = null;
+        target = queued && queued !== target ? queued : null;
+      }
+    } finally {
+      if (this.pendingNavigations.get(pageId) === operation) {
+        this.pendingNavigations.delete(pageId);
+      }
+    }
+  }
+
+  private async performNavigation(pageId: string, target: string) {
+    await this.ensureStarted();
+    const current = browserSessionStore.page(pageId);
+    if (!current) return;
+    if (current.live && canonicalizeBrowserUrl(current.url) === target) return;
+    browserSessionStore.beginNavigation(pageId);
+    try {
+      const pendingCreate = this.pendingCreates.get(pageId);
+      if (pendingCreate) await pendingCreate;
+      const latest = browserSessionStore.page(pageId);
+      if (!latest) return;
+      if (latest.live) {
+        const result = await api().browserNavigate?.({ pageId, url: target });
+        browserSessionStore.commitPageUrl(pageId, result?.url ?? target);
+        return;
+      }
+      await this.createPage(
+        pageId,
+        target,
+        this.lastBounds.get(pageId) ?? { x: 0, y: 0, width: 1, height: 1 },
+      );
+      browserSessionStore.commitPageUrl(pageId, target);
+    } catch (error) {
+      browserSessionStore.failNavigation(pageId, browserErrorCode(error));
+      throw error;
+    }
+  }
+}
+
+function browserErrorCode(error: unknown) {
+  if (typeof error === 'object' && error && 'code' in error && typeof error.code === 'string') {
+    return error.code;
+  }
+  return 'browser.webview.unavailable';
 }
 
 export const browserWebviewHost = new BrowserWebviewHost();

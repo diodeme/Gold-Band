@@ -10,6 +10,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/componen
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { overlayOwnerAttribute, rightWorkspaceOverlayOwner } from '@/lib/portal-container';
 import {
   isWorkspaceLayoutDiagnosticsEnabled,
   installWorkspaceLayoutDiagnosticShortcut,
@@ -27,7 +28,7 @@ import {
   useRightWorkspace,
   type RightWorkspaceResource,
 } from './right-workspace-context';
-import { BrowserNativeLifecycle } from './browser/browser-workspace-hooks';
+import { BrowserNativeLifecycle, resolveBrowserResourceTransition } from './browser/browser-workspace-hooks';
 import { fileContentStore } from './files/file-content-store';
 import { fileExplorerStore } from './files/file-explorer-store';
 import { WorkspaceFileLinkProvider } from './files/WorkspaceFileLinkProvider';
@@ -217,12 +218,10 @@ function FileWorkspaceIntegration({
       ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyBrowserWorkspacePanel searchEngine={browserPreferences.searchEngine} /></Suspense>
       : null
   )), [browserPreferences.searchEngine, workspace.registerResourceRenderer]);
-  useEffect(() => workspace.registerResourceCloseResolver('browser', async (_resource, reason) => {
-    if (reason !== 'close' && reason !== 'workspace-close') return true;
-    const { browserWebviewHost } = await import('./browser/browser-webview-host');
-    await browserWebviewHost.discardAll();
-    return true;
-  }), [workspace.registerResourceCloseResolver]);
+  useEffect(() => workspace.registerResourceCloseResolver(
+    'browser',
+    (_resource, reason) => resolveBrowserResourceTransition(reason),
+  ), [workspace.registerResourceCloseResolver]);
   useEffect(() => workspace.registerResourceCloseResolver('file', (resource, reason) => (
     resource.kind === 'file'
       ? (reason === 'close' ? fileContentStore.close(resource.key) : fileContentStore.flush(resource.key))
@@ -701,6 +700,7 @@ function WorkspaceShellLayout({
         browserPreferences={browserPreferences}
       />
       <BrowserNativeLifecycle
+        scopeKey={workspace.scopeKey}
         presented={rightWorkspacePresented}
         autoCollapsedHidden={rightWorkspaceCompact && !compactSheetOpen}
         available={rightWorkspaceAvailable}
@@ -829,6 +829,7 @@ function WorkspaceShellLayout({
           side="right"
           tabIndex={-1}
           className="flex w-[min(92vw,44rem)] flex-col gap-0 p-0 focus:outline-none sm:max-w-none"
+          overlayProps={{ [overlayOwnerAttribute]: rightWorkspaceOverlayOwner }}
           onOpenAutoFocus={(event) => {
             event.preventDefault();
             compactSheetContentRef.current?.focus({ preventScroll: true });

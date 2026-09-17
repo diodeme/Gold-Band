@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  BROWSER_LIVE_WEBVIEW_LIMIT,
   BROWSER_LOAD_STALL_MS,
   BROWSER_PAGE_LIMIT,
   BLANK_BROWSER_URL,
@@ -98,14 +97,4 @@ describe('browser session store', () => {
     }
   });
 
-  it('evicts the oldest live webview that is not the current page', () => {
-    const ids: string[] = [];
-    for (let index = 0; index < BROWSER_LIVE_WEBVIEW_LIMIT; index += 1) {
-      ids.push(store.openUrl(`https://live.example/${index}`));
-      store.markLive(ids[index]!, true);
-    }
-    const next = store.openUrl('https://live.example/new');
-    expect(store.evictionCandidate(next)).toBe(ids[0]);
-    expect(store.evictionCandidate(ids[0]!)).toBe(ids[1]);
-  });
 });

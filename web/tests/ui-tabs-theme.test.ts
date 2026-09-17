@@ -16,6 +16,9 @@ describe('themed tabs surface', () => {
     expect(source).toContain('line: "gap-1 bg-transparent"');
     expect(source).toContain('bare: "gap-1 bg-transparent p-0 ring-0"');
     expect(source).toContain('data-[state=active]:bg-background');
+    expect(source).toContain('group-data-[variant=line]/tabs-list:flex-none');
+    expect(source).toContain('group-data-[variant=default]/tabs-list:flex-1');
+    expect(source).not.toContain('"relative inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center');
   });
 
   it('uses the bare variant when composer tab pills own the boundary', () => {

@@ -95,3 +95,15 @@ GitHub verify 在 `Check formatting` 失败，后续 Rust 测试、前端测试�
 验证：`web/tests/acp-runtime-continue-submit.test.tsx` 24/25（1 项基线失败）、相关 composer 回归与 `tsc -p web/tsconfig.build.json`、前端生产构建通过。浏览器在真实 `ACPChatDialog` 夹具中验证发送中停止后草稿与两张附件、引用回到 composer，输入框恢复可编辑。
 
 性能与过度设计审视：新增结构是一个只覆盖在途提交的小 Map，条目在 admission、终态或停止任一结算点立即删除，不随历史增长；每个条目复用既有草稿对象，不复制附件字节，也不新增 IPC、持久字段、定时器或全局 Context。admission 检测复用既有 `mergeAcpEvents + findMatchingGoldBandUserPrompt`，仅在存在在途快照的短窗口内按 promptId 精确匹配，不扫描历史、不轮询。
+
+## 2026-09-17 视觉行边界与草稿光标恢复
+
+根因：原契约用整段文本起点/终点近似“不能再往上/下移动”，没有换行符的软换行草稿会被上键直接切走历史，首行中间也不能翻阅。这是边界判定设计过窄，不是历史 reader 或草稿 store 的缺陷。
+
+修复复用现有 `useComposerHistory`：硬换行不在首段/末段时交给原生光标；只有首段/末段可能被软换行拆开时才用一次性 textarea 镜像比较光标 Y。进入历史条目时把光标放在该条末尾；ArrowDown 越过最新一条或 Escape 退出时恢复进入翻阅前的草稿选区。不新增依赖、React state、持久字段或 IPC。
+
+先补失败测试：多行历史回填后光标在开头而不是末尾；草稿首行中间上键不 intercept。确认与根因一致后再改实现。同一测试转绿。
+
+验证：`web/tests/composer-history-keyboard.test.tsx`、`web/tests/composer-history-caret.test.ts` 与既有 composer history 回归通过。jsdom 不能排版软换行，软换行契约由可注入 caret probe 单测覆盖。
+
+性能与过度设计审视：测量只发生在上/下键且已通过硬换行过滤之后，用完即丢离屏镜像，不进入输入热路径，不重渲染消息列表。没有为假设性需求增加缓存或节流。

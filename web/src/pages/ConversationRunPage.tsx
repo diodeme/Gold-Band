@@ -92,6 +92,7 @@ function normalizeSessionPath(path: string) {
 interface ConversationRunPageProps {
   run: ConversationRunVm;
   taskTitle: string;
+  workspaceName?: string | null;
   appConfig: AppConfigVm;
   agentRegistry: AgentRegistryVm | null;
   onRerun: () => void;
@@ -109,6 +110,7 @@ interface ConversationRunPageProps {
 export function ConversationRunPage({
   run,
   taskTitle,
+  workspaceName,
   appConfig,
   agentRegistry,
   onRerun,
@@ -612,6 +614,7 @@ export function ConversationRunPage({
             sessionEstablished={selectedLeaf.sessionEstablished}
             sessionReferenceId={selectedLeaf.sessionId}
             projectId={run.projectId}
+            workspaceName={workspaceName}
             taskId={run.taskId}
             taskUuid={run.taskUuid}
             runId={run.runId}

@@ -7,6 +7,13 @@
 - 证据：复现用例「页面重挂载仍显示加载中」修复前稳定失败；修复后同一用例、缓存命中首帧、空缓存仍显示加载、迟到 fetch 不覆盖更新保存结果/更高 generation snapshot 均通过。
 - 过度设计与性能评审：复用已有 SWR 模式，容量固定为单份 `ImSettingsVm`，有 5 秒新鲜期与 single-flight；启动只增加一次 `get_im_settings` 预取，当前单 channel，无新状态机、轮询或持久字段。
 
+## 2026-09-17 分支搜索框误用 projectId 作为工作空间名
+
+- 根因：分支搜索 i18n 设计为 `搜索 {{workspace}} 分支`，`workspace` 是与会话栏相同的展示名。实现却把 Git 作用域身份 `projectId` 直接插进占位文案，属于正确分层下的展示投影错误，不修改 workspace identity 或 Git snapshot。
+- 实现：`GitBranchSelector` 新增展示投影 `workspaceName`；快速对话信息栏与会话详情都传入 `ConversationWorkspaceVm.name`。`projectId` 只继续用于 snapshot / checkout 作用域。缺少显示名时回退“搜索分支”，不再展示 identity。
+- 证据：占位文案投影函数固定显示名并排除 `projectId`；信息栏 DOM 固定分支触发器携带与工作空间选择器相同的 `ConversationWorkspaceVm.name`。
+- 过度设计与性能评审：只增加一条展示 prop、一个纯函数投影和一次已有 workspace 列表的 O(n) 查找（工作空间数量个位数），无新状态、请求、缓存或 identity。
+
 ## 2026-09-16 内置浏览器门户页与书签
 
 - 根因：空白页和「没有标签」是同一种未浏览状态，却画成两种空壳；书签也不该再做一套图标下载。属于空白页设计没补完。

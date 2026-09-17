@@ -13,7 +13,8 @@ const api = vi.hoisted(() => ({
 }));
 
 vi.mock('../src/api', () => api);
-vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }));
+vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
 
 import i18n from '../src/i18n';
 import { AgentManagementPage } from '../src/pages/AgentManagementPage';

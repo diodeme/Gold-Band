@@ -925,8 +925,11 @@ const resources = {
         diagnosing: "诊断中",
         savedAndDiagnosing: "配置已保存，正在后台诊断。",
         diagnosticComplete: "环境诊断完成，诊断进程已退出。",
-        diagnosticFailed: "环境诊断异常：{{reason}}",
+        diagnosticFailed: "环境诊断未通过：{{reason}}",
+        diagnosticFailedNoReason: "环境诊断未通过。",
         diagnosticFailedFallback: "请检查 agent 命令、网络和认证状态。",
+        diagnosticHelpLabel: "查看诊断原因",
+        diagnosticReasonLabel: "原因",
         registryHelpLabel: "配置帮助",
         registryHelp:
           "请参考 <registry>ACP Registry</registry> 中该 Agent 的配置，确认命令、参数、环境变量、网络和认证状态。",
@@ -1809,6 +1812,7 @@ const resources = {
         noPullRequests: "没有匹配的 Pull Request",
         noIssues: "没有匹配的 Issue",
         openOnGitHub: "在 GitHub 中打开",
+        openInBuiltInBrowser: "在内置浏览器中打开",
         noDescription: "没有正文。",
         createPullRequest: "创建 Pull Request",
         createPullRequestDescription: "选择比较分支，确认标题和正文后创建。",
@@ -3598,9 +3602,12 @@ const resources = {
         savedAndDiagnosing: "Configuration saved. Diagnosing in the background.",
         diagnosticComplete:
           "Environment check completed and the diagnostic process has exited.",
-        diagnosticFailed: "Environment check failed: {{reason}}",
+        diagnosticFailed: "Environment check didn’t pass: {{reason}}",
+        diagnosticFailedNoReason: "Environment check didn’t pass.",
         diagnosticFailedFallback:
           "Check the agent command, network, and authentication state.",
+        diagnosticHelpLabel: "View diagnostic reason",
+        diagnosticReasonLabel: "Reason",
         registryHelpLabel: "Configuration help",
         registryHelp:
           "Reference the <registry>ACP Registry</registry> entry for this agent and verify the command, arguments, environment, network, and authentication state.",
@@ -4512,6 +4519,7 @@ const resources = {
         noPullRequests: "No matching pull requests",
         noIssues: "No matching issues",
         openOnGitHub: "Open on GitHub",
+        openInBuiltInBrowser: "Open in built-in browser",
         noDescription: "No description.",
         createPullRequest: "Create pull request",
         createPullRequestDescription: "Choose the comparison branches, then review the title and body.",

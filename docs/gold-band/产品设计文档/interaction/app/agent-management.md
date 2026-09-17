@@ -34,9 +34,9 @@ Agent Cards
 - 诊断 / 修改 / 删除
 
 布局要求：
-- 页面级 Header 使用共享 `PageHeader` 的 `integrated` 管理页变体，与上下文管理、运行模式管理保持同一页面表面：标题左侧使用与侧栏一致的 `Bot` 语义图标，图标与标题组按视觉中心垂直对齐，并使用 `text-foreground` 随明暗主题自动反色；Header 采用 24px 水平内边距、32px 顶部内边距，并与主体保留约 28px 的纵向节奏；标题使用紧凑层级，不设置独立背景、模糊、投影或底部分割线；操作区在宽窗口与标题同行，窄窗口允许自然换行
+- 页面级 Header 使用共享 `PageHeader` 的 `integrated` 管理页变体，与上下文管理、运行模式管理保持同一页面表面：标题左侧使用与侧栏一致的 `Bot` 语义图标，图标与标题组按视觉中心垂直对齐，并使用 `text-foreground` 随明暗主题自动反色；Header 采用 24px 水平内边距、32px 顶部内边距，并与主体保留约 28px 的纵向节奏；标题使用紧凑层级，不设置独立背景、模糊、投影或底部分割线；标题组保持至少 12rem 可读宽度，操作区在同一行放得下时与标题同行，放不下时整组换到下一行，不得把短标题截成 “Agent …”
 - agent card 内容与卡片边缘保持稳定左右内边距，不允许内容贴边
-- 列表默认优先采用高密度多列布局；桌面常见宽度下应尽量一行展示 3 张卡片，再逐级退化到 2 列或 1 列
+- 列表列数按卡片列表容器实际宽度决定，不使用整窗 `md/xl` breakpoint：容器不足 `@2xl`（672px）时单列，达到该阈值后双列，达到 `@6xl`（1152px）后三列。右侧工作区、侧边栏和系统缩放变化后必须按容器重算，避免把卡片压成命令/参数逐字换行的窄列。卡片内部命令、参数、环境变量、最近检测固定为两列摘要；底部诊断、修改、删除允许整组换行
 - 不减少命令、参数、环境变量、最近检测等关键信息项，但需通过更紧凑的标题区、信息区和操作区压缩卡片高度
 - 编辑 Sheet 头部、表单区和底部操作区需要保持统一左右内边距
 ```
@@ -135,9 +135,10 @@ Agent Cards
 - 诊断状态图标
 - 最近检测时间（展示为本地系统时区 `YYYY-MM-DD HH:MM:SS`）
 - 错误原因（如果有）
-- doctor 失败时在诊断状态旁显示问号帮助入口；该入口统一使用随主题变化的浅色 shadcn/ui `Tooltip`，悬浮或聚焦即可展示错误原因与 ACP Registry 配置帮助，不使用自定义 tooltip 大面板；提示内容仅包含参考 ACP Registry 配置命令、参数、环境变量、网络和认证状态，其中 ACP Registry 为外链 `https://agentclientprotocol.com/get-started/registry`，点击提示内链接时通过系统默认浏览器打开，不在卡片内展开具体下载步骤
+- doctor 失败时在诊断状态旁显示问号帮助入口；该入口使用 shadcn/ui `Popover`，点击或键盘激活后展示 raw 原因与 ACP Registry 配置帮助，不使用自定义大面板。raw 原因优先取 ACP JSON-RPC `error.message`、已分类故障 stderr（`params.reason`，限 2000 字符）和启动失败 `osError`；没有这些原始原因时才回退到本地化错误句。配置帮助仅包含参考 ACP Registry 配置命令、参数、环境变量、网络和认证状态，其中 ACP Registry 为外链 `https://agentclientprotocol.com/get-started/registry`，使用产品链接样式，点击后通过统一 `openWebTarget` 在内置浏览器打开，不走系统浏览器，也不在卡片内展开具体下载步骤
+- Agent 管理页复用当前工作空间的 draft 右侧工作区投影（与快速对话、创建定时任务相同），因此诊断帮助可以打开内置浏览器；未打开工作区时右栏保持收起
 - 诊断运行中按钮展示圆形加载动效
-- 诊断完成后根据结果显示数秒横幅：正常为成功横幅；异常横幅先展示本地化主句，主句下方展示有界故障 stderr（若有）。横幅不得直接展示内部 `Display` 英文串，例如 `ACP adapter transport interrupted`
+- 诊断完成后根据结果显示数秒横幅：正常为成功横幅；异常横幅只展示固定主句「环境诊断未通过：{{reason}}」。`reason` 取 ACP `message`、故障 stderr 或启动失败 `osError` 的首行短摘要；多行 npm 日志只取首行，完整原文仍在异常旁问号 Popover 中。没有原始原因时横幅为「环境诊断未通过。」。横幅不得直接展示内部 `Display` 英文串，例如 `ACP adapter transport interrupted`
 - 横幅在浅色模式下必须保证文案可读性，成功态文案与图标应复用主题语义成功色 token，不允许在页面里硬编码浅绿色并导致低对比度问题
 
 后台能力：
@@ -151,7 +152,7 @@ Agent Cards
 - ACP adapter、doctor 共用 Rust 进程环境解析层，不得在调用点按 Kimi、Cursor、包管理器或固定安装目录增加特判。Windows 的稳定优先级为“Agent 显式配置 PATH → 当前桌面进程 PATH → 用户注册表 PATH → 系统注册表 PATH → 平台通用目录”，每次创建 ACP 进程前通过注册表 API 动态读取 `HKCU\Environment\Path` 与 `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment\Path`，展开 `%VAR%` 后按大小写不敏感去重，因此用户在应用启动后安装并正式写入用户/系统 PATH 的 Agent 无需重启 Gold Band。macOS / Linux 的稳定优先级为“Agent 显式配置 PATH → 用户登录 Shell PATH → 当前桌面进程 PATH → 平台通用目录”，首次解析当前 Unix 账户的默认 Shell，以 `-ilc` 登录交互模式读取环境并在 2 秒总超时内回收异常 Shell；成功或失败结果均按应用进程生命周期缓存。Shell profile 输出通过边界标记解析，只采纳其中的 `PATH`，并禁用 Oh My Zsh 自动更新与 tmux 自动启动；解析失败时继续使用当前进程 PATH。Unix 按大小写敏感语义去重，平台通用目录仅补全 `~/.nvm/versions/node/*/bin`、`~/.local/bin`、`~/.cargo/bin`、`~/.volta/bin`、`/opt/homebrew/bin`、`/usr/local/bin` 等非 Agent 专属位置。登录 Shell/注册表读取和 PATH 合并只发生在 doctor / ACP 进程创建边界，不进入消息处理热路径
 - Windows 裸命令在每个 PATH 目录中只按 `.exe`、`.com`、`.cmd`、`.bat` 顺序选择可由后台进程稳定启动的候选，不自动选择 `.ps1`，也不把 npm 同目录生成的无扩展名 Unix shell shim 当作 Win32 应用；用户显式填写带扩展名命令时只按原名查找。必须使用 PowerShell 脚本的自定义 Agent 应显式配置 `pwsh` / `powershell` 与 `-NoProfile -File <script.ps1>` 参数
 - 若 adapter 启动失败，诊断原因必须保留底层 OS 错误文本，例如 `No such file or directory (os error 2)`，不能只显示泛化的“failed to start ACP adapter”
-- 诊断失败对客展示结构化错误码，不把内部 `Display` 直接作为原因。常见码为 `acp.adapter-exited`、`acp.adapter-start-failed`、`acp.doctor-timeout`。前端先本地化主句；已分类的故障 stderr（`npm error` / `ENOENT` 等，限 2000 字符）放入 `params.reason`，与 Git 失败相同，在 Agent 管理横幅和帮助 Tooltip 的主句下方展示原始输出。工作流、会话和运行模式中的 Agent 选择器只展示本地化主句。故障 stderr 不写入默认 INFO，也不为 npx 增加特判
+- 诊断失败对客展示结构化错误码，不把内部 `Display` 直接作为原因。常见码为 `acp.adapter-exited`、`acp.adapter-start-failed`、`acp.doctor-timeout`、`acp.session-request-failed`。诊断 snapshot 为 `error { code, params, raw }`；ACP JSON-RPC 失败时保留 `raw`（如 `{ message: "Authentication required" }`）。Agent 管理横幅只展示「环境诊断未通过：{{reason}}」，`reason` 为 raw 原因首行；问号 Popover 展示完整 raw 原因（ACP `message` / 有界 stderr / `osError`）。工作流、会话和运行模式中的 Agent 选择器只展示本地化主句。故障 stderr 不写入默认 INFO，也不为 npx 增加特判
 - doctor 与正式 ACP 连接共用 adapter stderr 字节流诊断：Windows 本地代码页或任意非法 UTF-8 输出不得中止 stderr 消费，详细日志必须保留 lossy 可读文本与有界原始字节前缀，并携带具体 Agent id、adapter command 和可获得的进程退出状态。常规日志不得直接展开 stderr 正文。对客诊断结果不依赖“记录详细日志”开关即可拿到已分类的有界故障 stderr；详细日志仍按原规则保留完整诊断字节。稳定噪声（`npm warn Unknown user config`、adapter `[session/query]`）即使详细日志也不逐行写入，只在连接关闭时保留有界摘要；`npm error` / `ENOSPC` 等故障行仍进入详细日志。doctor standalone 连接的关闭因果链与退出状态默认不写 `INFO`。
 - 周期 Agent doctor、命令目录刷新、adapter stderr 行与非 UTF-8 摘要属于高频且可自动复现的诊断过程，只写 `DEBUG`，默认 `INFO` 的 `runtime.log` 不重复记录每分钟诊断结果。doctor 返回 unavailable 是可展示的业务诊断结果，不升级为 `WARN`；只有调度锁、持久化、线程启动、命令目录刷新或传输读取等基础设施实际失败才写 `WARN`，并携带稳定 Agent id。手动诊断的 UI 结果继续来自 canonical diagnostic snapshot，不能依赖日志级别。
 - 当前固定参考官方 Registry 中的 Claude、Codex、Cursor、Gemini、CodeBuddy、Goose、Qwen Code、OpenCode、Kimi Code、Amp、Pi 十一类精选 Agent，同时允许任意合法自定义 ACP Agent

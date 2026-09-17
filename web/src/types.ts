@@ -781,6 +781,7 @@ export interface TaskRowVm {
 export interface AppErrorVm {
   code: string;
   params: Record<string, unknown>;
+  raw?: unknown;
 }
 
 export interface GitCapabilityVm {

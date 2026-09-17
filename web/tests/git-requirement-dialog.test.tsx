@@ -22,7 +22,7 @@ vi.mock('react-i18next', () => ({
       'conversation.gitRequirement.versionUnsupportedTitle': 'Git 版本过低',
       'conversation.gitRequirement.versionUnavailableTitle': '无法识别 Git 版本',
       'conversation.gitRequirement.versionUnsupportedDescription': `当前版本为 ${params?.installedVersion}，需要 Git ${params?.minimumVersion} 或更高版本。`,
-      'conversation.gitRequirement.versionUnavailableDescription': `请安装 Git ${params?.minimumVersion} 或更高版本。`,
+      'conversation.gitRequirement.versionUnavailableDescription': '当前 Git 无法可靠识别，请修复或重新安装 Git 后重试。',
       'conversation.gitRequirement.repositoryDescription': '初始化仓库后还需要在 Git 工作区完成首次提交，Gold Band 不会自动暂存或提交整个目录。',
       'conversation.gitRequirement.headDescription': '请在右侧 Git 工作区完成首次提交。Gold Band 不会替你选择或提交文件。',
       'conversation.gitRequirement.autoDescription': '安装 Git 并重新检测后即可使用 Auto 模式。',
@@ -182,6 +182,34 @@ describe('Git requirement dialog', () => {
       .find((button) => button.textContent === '重新检测');
     await act(async () => recheck?.click());
     expect(document.body.textContent).toContain('当前版本为 2.35.9.windows.1，需要 Git 2.36.0 或更高版本');
+    await act(async () => root.unmount());
+  });
+
+  it('keeps unidentified Git distinct from an out-of-date version', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <GitRequirementDialog
+          open
+          projectId="project-1"
+          runKind="worktree"
+          initialStatus="version-unavailable"
+          initialInstalledVersion={null}
+          initialMinimumVersion="2.36.0"
+          onReady={() => {}}
+          onUseOtherWorkflow={() => {}}
+          onOpenChange={() => {}}
+        />,
+      );
+    });
+
+    expect(document.body.textContent).toContain('无法识别 Git 版本');
+    expect(document.body.textContent).toContain('当前 Git 无法可靠识别，请修复或重新安装 Git 后重试。');
+    expect(document.body.textContent).not.toContain('Git 版本过低');
+    expect(document.body.textContent).toContain('打开 Git 下载页面');
     await act(async () => root.unmount());
   });
 

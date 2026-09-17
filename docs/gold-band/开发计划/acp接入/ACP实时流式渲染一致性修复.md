@@ -109,3 +109,32 @@
 - jsdom 接口测试连续打开 15 个文件并切换 activeTab/width，稳定 commands 消费者只渲染一次；8 条历史 Markdown 的 Streamdown 解析次数不增加，Markdown 文件链接 handler 引用不变。
 - 自动化测试后继续执行真实 task-159 deep link 回放，并以 baseline（进入会话前）、target（流式并打开 15 文件后）、final（关闭文件/离开会话并 GC 后）堆快照交给 memlab；验收 detached DOM、CodeMirror EditorView、Streamdown/Markdown 子树和累计字符串保留链能够释放。
 - 实施复测使用可重复的 `web/tests/performance/acp-workspace-memlab.cjs`：baseline/target/final 为 20.2MB / 26.0MB / 25.6MB。final 相对 baseline 的主要常驻差异是首次打开编辑资源后加载的模块、parser 与语言描述缓存；memlab 泄漏 trace 中没有 CodeMirror EditorView、Streamdown/Markdown 或累计消息字符串。首轮发现的 Tab strip ResizeObserver 闭包簇修复后消失；剩余 3 簇合计约 34.8KB，retainer 分别为 Chromium `SVGDocumentExtensions` 文档缓存与 DevTools console global handle，作为浏览器内部观测噪声记录，不误报为 0。
+
+## 2026-09-16 首条 live 正文被 `hasNewer` 冻结：实现完成
+
+### 根因判断与复现边界
+
+- 后端 Raw、canonical timeline 与 session terminal 数据完整，缺少的是前端可见窗口对后续 live item 的投影。现有设计已经区分“分页边界”和“用户明确阅读历史”，但 live merge、首屏 catch-up 与缓存窗口恢复仍把 `hasNewer` 纳入历史窗口判定，属于正确设计下的实现不完整。
+- 最小 DOM 测试固定为：空的 running timeline、用户仍跟随最新、`eventPage.hasNewer=true`、canonical 查询保持 pending，随后收到同 generation 的首条 `textDelta`。验收从用户可见结果断言正文出现、品牌加载态消失且不显示“回到最新”，不直接断言内部布尔值。
+- 未修复实现上该用例连续两次稳定失败：期望“第一条实时回复已经到达”，实际 DOM 仍为“加载中…”。相邻的 pending timeline 基线用例通过，排除了夹具无法挂载和初始 loading 契约错误；失败发生在 live item 投影之后的可见结果，而非固定等待超时。
+
+### 实现
+
+- 三态拆分：`hasNewer` 只描述分页边界；`paginationDirectionRef` 与 `viewportManualIntentRef` 合成“明确历史阅读意图”；`liveUpdatesPaused`、canonical recovery 与满窗口临时暂停属于瞬时窗口冻结。删除 `isHistoricalTimelineWindow()`，live 投影、session 快照保留、首屏 catch-up、缓存窗口恢复、replay loss 判定全部改用明确意图。
+- 满窗口临时暂停不再把事件扣成 `hasNewer`，改为 `markCanonicalHeadRecovery(true)`：保留 replay、置 pending，跟随意图恢复后由既有 canonical-head coordinator 收敛；`canResumeFollowingAfterDisclosure` 不再被 `hasNewer`/pending 阻断，切走再回来也不再从 `hasNewer` 反推阅读意图。
+- 自愈闭环：`completeHandoff(false)` 在自动 recovery 且用户仍跟随时按 250ms / 750ms 做两次有界重试；用户主动历史意图、scope 切换、点击“回到最新”、recovery 成功、字段作用域变化都会清理重试状态，避免无界重试和跨会话残留。
+- 首屏可展示性：live listener 接受同 generation 正文后立即 `markAcpSessionContentHydrated` 并关闭初始查询门控，初始 catch-up 失败回退也识别该 hydration 标记，避免内容已进可见窗口却被 loading 壳覆盖。
+- 首屏 replay 覆盖不变式：canonical 快照水位未覆盖的保留 replay（同代际且 `seq > coveredSeq`）不再被 ACK 丢弃；跟随时照常投影给用户，同时保留 replay 供显式“回到最新”再次投影。跨代际的保留 replay 仍交给既有 generation 刷新路径。
+
+### 验收
+
+- 红灯→绿灯：`projects the first same-generation live item when a following pending window only has a newer edge` 修复前稳定失败（DOM 停在“加载中…”），修复后同用例断言正文出现、品牌加载态消失且无“回到最新”。
+- 新增同源回归：`automatically rejoins the canonical head after a bounded expansion pause defers live content`、`retries a transient canonical-head recovery failure without requiring another user action`，修复前失败、修复后通过；`rejoins the canonical head on reentry when a following cached window only has a newer edge` 作为非红灯回归保留。
+- 用例契约同步：`recovers an expansion that fills the bounded window` 原先的“收起/失败后必须仍由用户手点按钮”分支与新的自动自愈契约冲突，收敛为 reentry 分支；历史锚点用例改为派发真实向上滚轮表达明确历史意图，不再依赖 `hasNewer` 冒充阅读意图。
+- 相邻回归：`web/tests/acp-session-reentry-reconciliation.test.tsx` 88 项全通过；follow/滚动、live flush、session shell、view state、pagination、indexing、诊断共 11 个文件 220 项通过；`tsc -p web/tsconfig.build.json` 与 `npm run web:build` 均通过。
+
+### 评审
+
+- 过度设计评审：未新增 aggregate、状态机、持久字段、第二缓存或兼容分支；复用既有 canonical watermark、replay buffer、generation/revision 与 viewport intent 表达不变量，仅补 `acpReplayCutExceedsSnapshotCoverage` 一个纯函数判定。
+- 性能评审：改动都在既有 live 合并与首屏 replay 路径上做常数级判定；有界窗口（默认 288）上限不变，recovery 仍为 single-flight 且最多两次重试，不引入全量扫描、额外轮询、无界队列或更大 DOM。
+- 未验证项：原始 2 小时现场已不存在，未再跑真实长会话的切窗口复现；本阶段以真实组件 DOM 回归测试、类型检查与生产构建作为可审计证据。

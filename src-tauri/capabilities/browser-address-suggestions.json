@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "browser-address-suggestions",
+  "description": "Allows the trusted browser address suggestion surface to emit selection events only.",
+  "webviews": ["gb-browser-address-suggestions"],
+  "permissions": [
+    "core:event:default"
+  ]
+}

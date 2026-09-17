@@ -24,6 +24,7 @@ use crate::storage::{
 const AGENT_TRANSCRIPT_META_KEY: &str = "agentTranscript";
 const CLAUDE_CODE_META_KEY: &str = "claudeCode";
 const CLAUDE_AGENT_TOOL_NAMES: [&str; 2] = ["agent", "task"];
+pub(crate) const ACP_TURN_EXECUTION_FAILED_CODE: &str = "acp.turn-execution-failed";
 
 fn is_false(value: &bool) -> bool {
     !*value
@@ -286,12 +287,7 @@ impl Drop for AcpLifecycleTerminalGuard {
         let _ = persist_session_turn_failure_owned(
             &self.path,
             &self.owner,
-            &manual_runtime_error_info(
-                RuntimeErrorDomain::Internal,
-                "acp.turn-execution-failed",
-                "",
-                serde_json::json!({}),
-            ),
+            &placeholder_turn_execution_error(""),
             &current_timestamp(),
         );
     }
@@ -2428,6 +2424,7 @@ pub fn reconcile_orphaned_session_turn(path: &Utf8Path) -> Result<Option<AcpLife
     if value.get("promptSubmission").is_none() {
         return Ok(None);
     }
+    let persisted_error = persisted_turn_error(&value);
     let current = lifecycle_header_from_value(&value);
     if current.live_turn_activity == AcpLiveTurnActivity::Idle
         || session_turn_is_active(path, current.turn_id.as_deref())
@@ -2435,15 +2432,18 @@ pub fn reconcile_orphaned_session_turn(path: &Utf8Path) -> Result<Option<AcpLife
         return Ok(None);
     }
     let was_stopping = lifecycle_is_stopping(&current);
+    let has_structured_error = !turn_error_is_placeholder(persisted_error.as_ref());
     let (latest_turn_status, stop_reason) = if was_stopping {
         // A durable stop is already user intent. Once its owning process is
         // gone, preserve that intent instead of leaving CancelRequested
         // without a possible finalizer.
         (AcpLatestTurnStatus::Cancelled, "cancelled")
+    } else if has_structured_error {
+        (AcpLatestTurnStatus::Failed, "runtime-error")
     } else {
         (AcpLatestTurnStatus::Failed, "process-interrupted")
     };
-    let terminal = reduce_lifecycle_header(
+    let mut terminal = reduce_lifecycle_header(
         &value,
         current,
         AcpLifecycleTransition::TurnSettled {
@@ -2451,6 +2451,15 @@ pub fn reconcile_orphaned_session_turn(path: &Utf8Path) -> Result<Option<AcpLife
             reason: stop_reason,
         },
     )?;
+    if terminal.latest_turn_status == AcpLatestTurnStatus::Failed {
+        terminal.turn_error = if has_structured_error {
+            persisted_error
+        } else {
+            Some(placeholder_turn_execution_error(
+                "ACP session turn was interrupted before a terminal result was recorded",
+            ))
+        };
+    }
     apply_lifecycle_header(&mut value, &terminal);
     value["updatedAt"] = Value::String(current_timestamp());
     write_json(path, &value)?;
@@ -2670,7 +2679,9 @@ pub fn begin_session_turn(
 
 /// Settles a background submission only while the same logical turn still
 /// owns the lifecycle header. A late failure can therefore never terminate a
-/// newer follow-up admitted after it.
+/// newer follow-up admitted after it. Completions keep the claim-generation
+/// CAS; a known structured failure for that same turn may still persist after
+/// revision drift or a reasonless placeholder terminal.
 pub fn persist_session_turn_terminal_owned(
     path: &Utf8Path,
     turn_id: &str,
@@ -2710,6 +2721,40 @@ pub fn persist_session_turn_failure_owned(
     )
 }
 
+fn persisted_turn_error(value: &Value) -> Option<RuntimeErrorInfo> {
+    value
+        .get("turnError")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+fn turn_error_is_placeholder(error: Option<&RuntimeErrorInfo>) -> bool {
+    match error {
+        None => true,
+        Some(error) => error.code_str() == ACP_TURN_EXECUTION_FAILED_CODE,
+    }
+}
+
+fn placeholder_turn_execution_error(diagnostic: &str) -> RuntimeErrorInfo {
+    manual_runtime_error_info(
+        RuntimeErrorDomain::Internal,
+        ACP_TURN_EXECUTION_FAILED_CODE,
+        diagnostic,
+        serde_json::json!({}),
+    )
+}
+
+fn should_upgrade_failed_turn_error(
+    current: &AcpLifecycleHeader,
+    incoming_status: AcpLatestTurnStatus,
+    incoming_error: Option<&RuntimeErrorInfo>,
+) -> bool {
+    incoming_status == AcpLatestTurnStatus::Failed
+        && current.latest_turn_status == AcpLatestTurnStatus::Failed
+        && incoming_error.is_some_and(|error| !turn_error_is_placeholder(Some(error)))
+        && turn_error_is_placeholder(current.turn_error.as_ref())
+}
+
 fn persist_session_turn_terminal_with_error_owned(
     path: &Utf8Path,
     turn_id: &str,
@@ -2728,12 +2773,33 @@ fn persist_session_turn_terminal_with_error_owned(
     let current = lifecycle_header_from_value(&value);
     if current.turn_id.as_deref() != Some(turn_id)
         || current.operation_id.as_deref() != operation_id
-        || current.revision != expected_revision
     {
         return Ok(None);
     }
     if lifecycle_is_terminal(&current) {
+        if should_upgrade_failed_turn_error(&current, latest_turn_status, error) {
+            let mut terminal = current;
+            terminal.revision = terminal.revision.saturating_add(1).max(1);
+            terminal.turn_error = error.cloned();
+            if terminal.stop_reason.as_deref() == Some("process-interrupted") {
+                terminal.stop_reason = Some(stop_reason.to_string());
+            }
+            apply_lifecycle_header(&mut value, &terminal);
+            value["updatedAt"] = Value::String(decided_at.to_string());
+            write_json(path, &value)?;
+            clear_session_turn_active(path, terminal.turn_id.as_deref());
+            return Ok(Some(terminal));
+        }
+        if current.revision != expected_revision {
+            return Ok(None);
+        }
         return Ok(Some(current));
+    }
+    // Completions and cancellations keep the claim-generation CAS. A known
+    // failure for the same turn+operation must still land after metadata
+    // revision drift or a reasonless placeholder terminal.
+    if error.is_none() && current.revision != expected_revision {
+        return Ok(None);
     }
     let mut terminal = reduce_lifecycle_header(
         &value,
@@ -3858,6 +3924,37 @@ mod tests {
         );
     }
 
+    fn session_config_unavailable_error() -> crate::runtime_error::RuntimeErrorInfo {
+        crate::runtime_error::manual_runtime_error_info(
+            crate::runtime_error::RuntimeErrorDomain::Config,
+            "acp.session-config-value-unavailable",
+            "model gpt-5.6-sol is not in the current catalog",
+            serde_json::json!({
+                "category": "model",
+                "configId": "model",
+                "requested": "gpt-5.6-sol",
+                "available": ["deepseek-flash"],
+            }),
+        )
+    }
+
+    fn prompt_submission(turn_id: &str, operation_id: &str) -> AcpPromptSubmission {
+        AcpPromptSubmission {
+            turn_id: turn_id.to_string(),
+            operation_id: operation_id.to_string(),
+            adapter_id: "codex-acp".to_string(),
+            adapter_display_name: "Codex".to_string(),
+            cwd: "C:/tmp/attempt".to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "follow up".to_string(),
+                quotes: Vec::new(),
+                role: None,
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-09-17T00:00:00Z".to_string(),
+        }
+    }
+
     #[test]
     fn abandoned_execution_persists_displayable_turn_error() {
         let temp = tempfile::tempdir().unwrap();
@@ -3885,6 +3982,128 @@ mod tests {
             snapshot["turnError"]["code"]["code"],
             "acp.turn-execution-failed"
         );
+    }
+
+    #[test]
+    fn known_turn_failure_persists_after_same_turn_revision_drift() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        crate::storage::write_json(
+            &path,
+            &serde_json::json!({
+                "acpRevision": 9, "turnId": "turn-a", "lifecycleOperationId": "operation-a",
+                "availability": "established", "sessionId": "session-a",
+                "liveTurnActivity": "accepted", "latestTurnStatus": "none",
+                "promptSubmission": prompt_submission("turn-a", "operation-a"),
+            }),
+        )
+        .unwrap();
+        let error = session_config_unavailable_error();
+        let owner = super::AcpLifecycleOwner {
+            turn_id: "turn-a".into(),
+            operation_id: "operation-a".into(),
+            revision: 2,
+        };
+        let persisted = super::persist_session_turn_failure_owned(&path, &owner, &error, "10Z")
+            .unwrap()
+            .expect("same turn+operation must still accept a known failure after revision drift");
+        assert_eq!(persisted.latest_turn_status, AcpLatestTurnStatus::Failed);
+        assert_eq!(persisted.turn_error.as_ref(), Some(&error));
+        let snapshot = super::read_lifecycle_header_snapshot(&path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.turn_error.as_ref(), Some(&error));
+    }
+
+    #[test]
+    fn placeholder_turn_error_is_upgraded_by_structured_reason_on_same_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        crate::storage::write_json(
+            &path,
+            &serde_json::json!({
+                "acpRevision": 2, "turnId": "turn-a", "lifecycleOperationId": "operation-a",
+                "availability": "established", "sessionId": "session-a",
+                "liveTurnActivity": "accepted", "latestTurnStatus": "none"
+            }),
+        )
+        .unwrap();
+        let owner = super::AcpLifecycleOwner {
+            turn_id: "turn-a".into(),
+            operation_id: "operation-a".into(),
+            revision: 2,
+        };
+        drop(super::AcpLifecycleTerminalGuard::new(
+            path.clone(),
+            owner.clone(),
+        ));
+        let error = session_config_unavailable_error();
+        let persisted = super::persist_session_turn_failure_owned(&path, &owner, &error, "11Z")
+            .unwrap()
+            .expect("a known failure must upgrade the same turn's reasonless placeholder");
+        assert_eq!(persisted.turn_error.as_ref(), Some(&error));
+        assert_eq!(
+            persisted.turn_error.as_ref().map(|error| error.code_str()),
+            Some("acp.session-config-value-unavailable")
+        );
+    }
+
+    #[test]
+    fn structured_turn_error_is_not_replaced_by_placeholder_on_same_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        crate::storage::write_json(
+            &path,
+            &serde_json::json!({
+                "acpRevision": 2, "turnId": "turn-a", "lifecycleOperationId": "operation-a",
+                "availability": "established", "sessionId": "session-a",
+                "liveTurnActivity": "accepted", "latestTurnStatus": "none"
+            }),
+        )
+        .unwrap();
+        let owner = super::AcpLifecycleOwner {
+            turn_id: "turn-a".into(),
+            operation_id: "operation-a".into(),
+            revision: 2,
+        };
+        let error = session_config_unavailable_error();
+        super::persist_session_turn_failure_owned(&path, &owner, &error, "12Z")
+            .unwrap()
+            .unwrap();
+        drop(super::AcpLifecycleTerminalGuard::new(path.clone(), owner));
+        let snapshot = super::read_lifecycle_header_snapshot(&path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.turn_error.as_ref(), Some(&error));
+    }
+
+    #[test]
+    fn orphaned_in_flight_turn_preserves_persisted_turn_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let error = session_config_unavailable_error();
+        crate::storage::write_json(
+            &path,
+            &serde_json::json!({
+                "acpRevision": 2, "turnId": "turn-orphan-error",
+                "lifecycleOperationId": "operation-orphan-error",
+                "availability": "established", "sessionId": "session-a",
+                "liveTurnActivity": "accepted", "latestTurnStatus": "none",
+                "turnError": error,
+                "promptSubmission": prompt_submission("turn-orphan-error", "operation-orphan-error"),
+            }),
+        )
+        .unwrap();
+        super::clear_session_turn_active(&path, Some("turn-orphan-error"));
+        let header = super::reconcile_orphaned_session_turn(&path)
+            .unwrap()
+            .expect("in-flight orphan must settle");
+        assert_eq!(header.latest_turn_status, AcpLatestTurnStatus::Failed);
+        assert_eq!(header.turn_error.as_ref(), Some(&error));
+        let snapshot = super::read_lifecycle_header_snapshot(&path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.turn_error.as_ref(), Some(&error));
     }
 
     #[test]
@@ -4134,6 +4353,17 @@ mod tests {
         assert_eq!(header.live_turn_activity, AcpLiveTurnActivity::Idle);
         assert_eq!(header.latest_turn_status, AcpLatestTurnStatus::Failed);
         assert_eq!(header.stop_reason.as_deref(), Some("process-interrupted"));
+        assert_eq!(
+            header.turn_error.as_ref().map(|error| error.code_str()),
+            Some("acp.turn-execution-failed")
+        );
+        assert!(
+            header
+                .turn_error
+                .as_ref()
+                .is_some_and(|error| !error.diagnostic.is_empty()),
+            "process-interrupted orphans must persist a displayable placeholder reason"
+        );
         assert_eq!(
             super::read_session_prompt_submission(&path, "turn-orphan").unwrap(),
             Some(submission),

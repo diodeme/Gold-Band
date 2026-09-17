@@ -254,6 +254,8 @@ enum ImNotificationKind {
 
 设置页“通用”页新增“IM 远程干预与通知”区域，按接入生命周期渐进展示企业微信状态。未配置凭据时只提供“扫码接入”；凭据存在后，总开关、状态引导和六项通知始终可见。连接在线但尚无 canonical 私聊 binding 时派生显示“等待绑定”；只有 durable binding 已落盘、delivery target 已重建且当前 generation snapshot 携带同一 binding 时才显示“可用”。该展示模型不落盘。企业微信只提供扫码接入/重新授权，不保留 Bot ID/Secret 手工输入，Secret 不进入前端状态。
 
+设置页 IM 区块使用与定时任务运行设置相同的前端 stale-while-revalidate 投影：App 启动预取、模块级缓存命中后立即渲染，已有数据时刷新不得退回「加载中…」。该缓存不是第二事实源；保存、启停、扫码、删除仍以后端返回的最新 VM 为准，connection snapshot 按 generation 单调合入。
+
 Settings schema v12 在严格反序列化前一次性删除 v11 channel notifications 中的 scheduled completion、failure、attention、missed 四个废弃键，并通过现有设置写入边界原子回写。迁移后仍以六字段 `ImNotificationPreferences` 为唯一持久模型；当前版本重新出现废弃键必须报错，禁止恢复兼容读取或旁路消费。
 
 设置区域在正常宽度和窄窗口下保持单列可滚动，平台字段与通知开关允许换行但不得横向溢出；中英文页签使用能在等分 segmented control 中完整呈现的短标签。键盘必须可切换设置页签和所有开关，保存失败通过 `role=alert` 展示 i18n 文案。
@@ -275,7 +277,7 @@ Settings schema v12 在严格反序列化前一次性删除 v11 channel notifica
 
 恢复策略：网络与限流沿用 connector 的有界退避并显示正在重连；鉴权或凭据错误进入重新授权；连接冲突停止自动抢占，用户关闭其他客户端后发起一次真实重连；binding 存储失败保持等待绑定。所有用户文案由前端中英文 i18n 映射稳定错误码。
 
-过度设计复核：不新增 aggregate、持久状态机、全局 store、缓存、轮询、队列或连接测试接口；接入步骤和顶部结论均由现有 canonical 字段派生。性能影响限于单 channel、6 个静态通知项和常数级 DOM 投影；binding retry 有 generation、单任务、次数和延迟上限，不进入高频路径。
+过度设计复核：不新增 aggregate、持久状态机、全局 store、轮询、队列或连接测试接口；接入步骤和顶部结论均由现有 canonical 字段派生。设置页展示缓存只复用定时任务已有的运行时 SWR 投影模式，容量固定为单份 `ImSettingsVm`，有新鲜期与 single-flight，不复制 canonical 数据。性能影响限于单 channel、6 个静态通知项、一次启动预取和常数级 DOM 投影；binding retry 有 generation、单任务、次数和延迟上限，不进入高频路径。
 
 企业微信配置包含：
 

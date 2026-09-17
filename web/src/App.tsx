@@ -74,6 +74,7 @@ import {
 import { configureAcpResourceCacheSessionCount } from '@/components/acp/ACPChatDialog';
 import { subscribeConversationEvents } from './lib/conversation-event-router';
 import { prefetchScheduledRuntimeSettings } from '@/components/scheduled-tasks/useScheduledRuntimeSettings';
+import { prefetchImSettings } from '@/components/settings/useImSettings';
 import {
   applyConversationSidebarRunLifecycle,
   applyConversationSidebarRunStateUpdate,
@@ -318,7 +319,7 @@ function findScheduledLinkedLeaf(
   return null;
 }
 
-const defaultPreferences: PreferencesVm = { appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {} }, personalization: defaultPersonalizationPreference, language: 'zh-cn', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences(), wallpapers: createDefaultWallpaperPreferences() };
+const defaultPreferences: PreferencesVm = { appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {} }, personalization: defaultPersonalizationPreference, language: 'zh-cn', useLocalClaude: false, verboseLogging: false, browser: { schemaVersion: 1, searchEngine: 'baidu', openLocalLinksInBrowser: true, openWebLinksInBrowser: true }, avatars: createDefaultAvatarPreferences(), wallpapers: createDefaultWallpaperPreferences() };
 const defaultUpdaterSettings: UpdaterSettingsVm = {
   channel: 'default',
   builtInUrl: 'https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json',
@@ -1135,8 +1136,9 @@ export function App() {
           bootstrap.appConfig.acpChatResourceCacheSessionCount,
         );
         setBootstrap(bootstrap);
-        // 静默预取定时任务运行时设置，让首次进入「设置 → 定时任务」也免加载闪烁。
+        // 静默预取设置页运行时区块，让首次进入「通用」也免加载闪烁。
         void prefetchScheduledRuntimeSettings();
+        void prefetchImSettings();
         if (shouldAutoOpenWorkspacePicker(bootstrap, uiMode)) {
           setWorkspacePickerOpen(true);
         }
@@ -1144,14 +1146,18 @@ export function App() {
       .catch((err) => setError(displayAppError(t, err)));
   }, [t, uiMode]);
 
+  const appSessionReady = bootstrap != null;
+  const conversationShellReady = appSessionReady && uiMode === 'conversation';
+
   // Publish workspace identity first, then load only the visible task page and pinned summaries.
+  // Preference / updater patches replace the bootstrap object; they must not retrigger this load.
   useEffect(() => {
-    if (!bootstrap || uiMode !== 'conversation') return;
+    if (!conversationShellReady) return;
     void loadConversationSidebarBootstrap().catch(() => {});
-  }, [bootstrap, loadConversationSidebarBootstrap, uiMode]);
+  }, [conversationShellReady, loadConversationSidebarBootstrap]);
 
   useEffect(() => {
-    if (!bootstrap || uiMode !== 'conversation') return undefined;
+    if (!conversationShellReady) return undefined;
     let active = true;
     let dispose: (() => void) | undefined;
     void subscribeConversationRunStateUpdates((event) => {
@@ -1187,10 +1193,10 @@ export function App() {
       active = false;
       dispose?.();
     };
-  }, [bootstrap, loadConversationRunHistory, loadConversationWorkspaceTasks, uiMode]);
+  }, [conversationShellReady, loadConversationRunHistory, loadConversationWorkspaceTasks]);
 
   useEffect(() => {
-    if (!bootstrap || uiMode !== 'conversation') return undefined;
+    if (!conversationShellReady) return undefined;
     let active = true;
     let dispose: (() => void) | undefined;
     void subscribeConversationTerminalResultUpdates((event) => {
@@ -1208,7 +1214,7 @@ export function App() {
       active = false;
       dispose?.();
     };
-  }, [bootstrap, uiMode]);
+  }, [conversationShellReady]);
 
   useEffect(() => {
     if (uiMode !== 'conversation') return;
@@ -1243,7 +1249,7 @@ export function App() {
   }, [conversationPage, conversationRun, conversationSidebar, uiMode]);
 
   useEffect(() => {
-    if (!bootstrap || uiMode !== 'conversation') return undefined;
+    if (!conversationShellReady) return undefined;
     let active = true;
     const dispose = subscribeConversationEvents((event) => {
       if (!active) return;
@@ -1280,27 +1286,27 @@ export function App() {
       active = false;
       dispose();
     };
-  }, [applyConversationLifecycleSnapshotToSidebar, applyConversationTaskActivity, bootstrap, uiMode]);
+  }, [applyConversationLifecycleSnapshotToSidebar, applyConversationTaskActivity, conversationShellReady]);
 
   useEffect(() => {
-    if (!bootstrap) return;
+    if (!appSessionReady) return;
     getAgentRegistry().then(setAgentRegistry).catch(() => {});
-  }, [bootstrap]);
+  }, [appSessionReady]);
 
   useEffect(() => {
-    if (!bootstrap || uiMode !== 'conversation') return;
+    if (!conversationShellReady) return;
     loadProfiles().catch(() => setProfiles([]));
     getWorkflowTemplates().then(setConversationWorkflowTemplates).catch(() => {});
-  }, [bootstrap, loadProfiles, uiMode]);
+  }, [conversationShellReady, loadProfiles]);
 
   useEffect(() => {
-    if (!bootstrap || uiMode !== 'conversation' || !defaultProjectId) return;
+    if (!conversationShellReady || !defaultProjectId) return;
     void loadConversationRunMode(defaultProjectId);
-  }, [bootstrap, uiMode, defaultProjectId, loadConversationRunMode]);
+  }, [conversationShellReady, defaultProjectId, loadConversationRunMode]);
 
   // Load conversation run when navigating to a run page
   useEffect(() => {
-    if (!bootstrap || uiMode !== 'conversation' || conversationPage.kind !== 'conversation-run') return;
+    if (!conversationShellReady || conversationPage.kind !== 'conversation-run') return;
     const { projectId, taskId, runId, roundId } = conversationPage;
     const targetRunKey = conversationRunCacheKey(conversationPage);
     if (conversationSessionFollowRef.current.runKey !== targetRunKey) {
@@ -1394,10 +1400,10 @@ export function App() {
         }
       });
     return () => { cancelled = true; };
-  }, [applyConversationRunSnapshot, bootstrap, t, uiMode, conversationPage]);
+  }, [applyConversationRunSnapshot, conversationPage, conversationShellReady, t]);
 
   useEffect(() => {
-    if (!bootstrap || uiMode !== 'conversation' || conversationPage.kind !== 'conversation-run') return undefined;
+    if (!conversationShellReady || conversationPage.kind !== 'conversation-run') return undefined;
     if (!conversationPageMatchesRun(conversationPage, conversationRun)) return undefined;
     const taskUuid = conversationRun?.taskUuid?.trim();
     if (!taskUuid) return undefined;
@@ -1634,7 +1640,7 @@ export function App() {
         conversationAcpSessionRefreshRef.current = null;
       }
     };
-  }, [applyConversationRunSnapshot, bootstrap, uiMode, conversationPage, conversationRun?.projectId, conversationRun?.taskId, conversationRun?.taskUuid, conversationRun?.runId]);
+  }, [applyConversationRunSnapshot, conversationPage, conversationRun?.projectId, conversationRun?.runId, conversationRun?.taskId, conversationRun?.taskUuid, conversationShellReady]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -1993,12 +1999,12 @@ export function App() {
     }
   };
 
-  const onSavePreferences = (appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean) => {
+  const onSavePreferences = (appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean, browser: PreferencesVm['browser']) => {
     const generation = ++preferenceSaveGenerationRef.current;
     setBusy(true);
     const save = preferenceSaveQueueRef.current
       .catch(() => undefined)
-      .then(() => saveDesktopPreferences(appearance, personalization, language, useLocalClaude, verboseLogging))
+      .then(() => saveDesktopPreferences(appearance, personalization, language, useLocalClaude, verboseLogging, browser))
       .then((saved) => {
         if (generation !== preferenceSaveGenerationRef.current) return;
         setBootstrap((current) => current ? { ...current, preferences: saved } : current);
@@ -2371,6 +2377,7 @@ export function App() {
       platform={bootstrap?.platform}
       windowFrameStyle={bootstrap?.windowChrome.frameStyle}
       appConfig={appConfig}
+      browserPreferences={preferences.browser}
       repoRoot={bootstrap?.repoRoot}
       needsWorkspace={bootstrap?.needsWorkspace}
       showSettingsUpdateDot={showSettingsUpdateDot}
@@ -2856,10 +2863,14 @@ export function App() {
         conversationPage.projectId,
         conversationPage.taskId,
       )?.title ?? conversationPage.taskId;
+      const runWorkspaceName = conversationSidebar.workspaces.find(
+        (workspace) => workspace.projectId === conversationRun.projectId,
+      )?.name ?? null;
       return (
         <ConversationRunPage
           run={conversationRun}
           taskTitle={taskTitle}
+          workspaceName={runWorkspaceName}
           appConfig={appConfig}
           agentRegistry={agentRegistry}
           followMode={conversationSessionFollowRef.current.mode}

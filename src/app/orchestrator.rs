@@ -76,7 +76,7 @@ use crate::prompts::{
 #[cfg(test)]
 use crate::provider::render_prompt_bundle;
 use crate::provider::{
-    ConversationPromptInput, OutputEmissionMode, PromptHiddenSection, PromptOutputContract,
+    conversation_prompt_has_payload, ConversationPromptInput, OutputEmissionMode, PromptHiddenSection, PromptOutputContract,
     PromptPredecessorContext, PromptRuntimeContext, PromptVisibility, ProviderRunResult,
     ProviderRunStatus, RuntimeControlIntent, RuntimeControlOutput, StreamMode,
     UserPromptRenderMode, UserPromptRole, WorkerInvocation, conversation_agent_prompt_text,
@@ -619,7 +619,11 @@ fn apply_continue_input_to_prompt_state(
     state.permission_mode_override = permission_mode_override;
 
     if let Some(mut input) = input.filter(|value| {
-        !value.display_text.trim().is_empty() || !state.input_attachment_paths.is_empty()
+        conversation_prompt_has_payload(
+            &value.display_text,
+            state.input_attachment_paths.len(),
+            value.role.as_ref(),
+        )
     }) {
         input.display_text = input.display_text.trim().to_string();
         state.resume_prompt = Some(localized_runtime_control_resume_with_message_prompt(

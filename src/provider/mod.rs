@@ -55,6 +55,24 @@ pub struct UserPromptRole {
     pub content: String,
 }
 
+impl UserPromptRole {
+    pub fn is_complete(&self) -> bool {
+        !self.profile_id.trim().is_empty()
+            && !self.name.trim().is_empty()
+            && !self.content.trim().is_empty()
+    }
+}
+
+pub fn conversation_prompt_has_payload(
+    display_text: &str,
+    attachment_count: usize,
+    role: Option<&UserPromptRole>,
+) -> bool {
+    !display_text.trim().is_empty()
+        || attachment_count > 0
+        || role.is_some_and(UserPromptRole::is_complete)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationPromptInput {
@@ -3005,9 +3023,13 @@ fn log_prompt_bundle(
         cold_attachments,
         "provider prompt bundle summary"
     );
-    if log_prompts {
+    if prompt_bundle_logs_content(log_prompts) {
         debug!(system_prompt = %prompt.system_prompt, user_prompt = %prompt.user_prompt, "provider prompt bundle content");
     }
+}
+
+fn prompt_bundle_logs_content(_log_prompts: bool) -> bool {
+    false
 }
 
 pub fn provider_capabilities(provider_id: &str) -> Result<ProviderCapabilities> {
@@ -3126,6 +3148,15 @@ mod tests {
     }
 
     #[test]
+    fn prompt_bundle_never_logs_prompt_bodies_to_runtime_log() {
+        assert!(!prompt_bundle_logs_content(false));
+        assert!(
+            !prompt_bundle_logs_content(true),
+            "runtime.log must not record prompt bodies even when log_prompts is enabled"
+        );
+    }
+
+    #[test]
     fn conversation_agent_prompt_text_wraps_user_specified_role() {
         let wrapped = conversation_agent_prompt_text(
             &ConversationPromptInput {
@@ -3157,6 +3188,36 @@ mod tests {
             crate::config::DesktopLanguage::En,
         );
         assert_eq!(text, "继续");
+    }
+
+    #[test]
+    fn conversation_prompt_has_payload_accepts_role_only_and_rejects_fully_empty_input() {
+        let role = UserPromptRole {
+            profile_id: "pf-dev".to_string(),
+            name: "开发".to_string(),
+            content: "完整角色定义".to_string(),
+        };
+        assert!(conversation_prompt_has_payload("", 0, Some(&role)));
+        assert!(!conversation_prompt_has_payload("   ", 0, None));
+        assert!(!conversation_prompt_has_payload(
+            "",
+            0,
+            Some(&UserPromptRole {
+                profile_id: "pf-dev".to_string(),
+                name: "开发".to_string(),
+                content: String::new(),
+            })
+        ));
+        let wrapped = conversation_agent_prompt_text(
+            &ConversationPromptInput {
+                display_text: String::new(),
+                quotes: Vec::new(),
+                role: Some(role),
+            },
+            crate::config::DesktopLanguage::ZhCn,
+        );
+        assert!(wrapped.contains("完整角色定义"));
+        assert!(wrapped.contains("# 以下是用户的输入："));
     }
 
     fn test_png(width: u32, height: u32) -> Vec<u8> {

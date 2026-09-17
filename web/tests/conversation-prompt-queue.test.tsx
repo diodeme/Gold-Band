@@ -135,6 +135,36 @@ describe('ConversationPromptQueue', () => {
     expect(secondRow.textContent).toContain('2 条引用');
   });
 
+  it('shows the queued role name and hides an empty content line', async () => {
+    await renderQueue({
+      queue: {
+        revision: 1,
+        maxItems: 10,
+        items: [{
+          id: 'role-only',
+          content: '',
+          attachmentCount: 0,
+          quoteCount: 0,
+          roleName: '开发',
+          createdAt: '2026-09-16T00:00:00Z',
+        }, {
+          id: 'role-with-text',
+          content: '爱仕达',
+          attachmentCount: 0,
+          quoteCount: 0,
+          roleName: '开发',
+          createdAt: '2026-09-16T00:00:01Z',
+        }],
+      },
+    });
+    const roleOnly = host.querySelector('[data-queue-item-id="role-only"]') as HTMLElement;
+    const roleWithText = host.querySelector('[data-queue-item-id="role-with-text"]') as HTMLElement;
+    expect(roleOnly.querySelector('[data-queue-item-content="true"]')).toBeNull();
+    expect(roleOnly.textContent).toContain('开发');
+    expect(roleWithText.querySelector('[data-queue-item-content="true"]')?.textContent).toBe('爱仕达');
+    expect(roleWithText.textContent).toContain('开发');
+  });
+
   it('calculates a complete stable-id order for pointer and keyboard sorting', () => {
     const itemIds = queue.items.map((item) => item.id);
     expect(moveQueueItemIds(itemIds, 'item-1', 'item-4')).toEqual([

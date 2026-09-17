@@ -639,6 +639,7 @@ const browserQueuedPromptDrafts = [
     ],
     attachmentPaths: [],
     createdAt: '2026-08-07T08:00:01Z',
+    role: { profileId: 'pf-dev', name: '开发', content: '完整角色定义' },
   },
   {
     id: 'browser-queued-3',
@@ -714,6 +715,7 @@ function browserQueuedConversationRun(): ConversationRunVm {
           content: item.content,
           attachmentCount: item.attachmentPaths.length,
           quoteCount: item.quotes.length,
+          ...('role' in item && item.role ? { roleName: item.role.name } : {}),
           createdAt: item.createdAt,
         })),
       },
@@ -1839,6 +1841,7 @@ export const browserApi: RuntimeApi = {
         content: item.content,
         quotes: item.quotes.map((quote) => ({ ...quote })),
         attachmentPaths: [...item.attachmentPaths],
+        ...('role' in item && item.role ? { role: { ...item.role } } : {}),
       },
       lifecycle: null,
     });
@@ -1912,9 +1915,9 @@ export const browserApi: RuntimeApi = {
   showWorkerRef(_taskId: string, _runId: string, _roundId: string, _nodeId: string, attemptId: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve({ ...mockContent, title: attemptId, kind: 'worker-ref' });
   },
-  saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean) {
+  saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean, browser) {
     const current = browserPreviewState.getPreferences();
-    const preferences = browserPreviewState.setPreferences({ ...current, appearance, personalization, language, useLocalClaude, verboseLogging });
+    const preferences = browserPreviewState.setPreferences({ ...current, appearance, personalization, language, useLocalClaude, verboseLogging, browser });
     return Promise.resolve(preferences);
   },
   saveDesktopAvatar(input) {
@@ -2925,6 +2928,78 @@ export const browserApi: RuntimeApi = {
   openExternalUrl(url) {
     window.open(url, '_blank', 'noopener,noreferrer');
     return Promise.resolve();
+  },
+  browserCreatePage() {
+    return Promise.reject(browserCommandError('browser.webview.unavailable'));
+  },
+  browserResolveLocalHtml() {
+    return Promise.reject(browserCommandError('browser.webview.unavailable'));
+  },
+  browserSetBounds() {
+    return Promise.resolve();
+  },
+  browserShowPage() {
+    return Promise.resolve();
+  },
+  browserHidePage() {
+    return Promise.resolve();
+  },
+  browserHideAll() {
+    return Promise.resolve();
+  },
+  browserShowAddressSuggestions() {
+    return Promise.resolve();
+  },
+  browserHideAddressSuggestions() {
+    return Promise.resolve();
+  },
+  browserNavigate() {
+    return Promise.reject(browserCommandError('browser.webview.unavailable'));
+  },
+  browserGoBack() {
+    return Promise.resolve();
+  },
+  browserGoForward() {
+    return Promise.resolve();
+  },
+  browserReload() {
+    return Promise.resolve();
+  },
+  browserStop() {
+    return Promise.resolve();
+  },
+  browserClosePage() {
+    return Promise.resolve();
+  },
+  browserSetViewMode() {
+    return Promise.resolve();
+  },
+  browserDiscardAll() {
+    return Promise.resolve();
+  },
+  browserListHistory() {
+    return Promise.resolve([]);
+  },
+  browserDeleteHistory() {
+    return Promise.resolve([]);
+  },
+  browserListBookmarks() {
+    return Promise.resolve([]);
+  },
+  browserAddBookmark() {
+    return Promise.resolve([]);
+  },
+  browserRemoveBookmark() {
+    return Promise.resolve([]);
+  },
+  browserReorderBookmarks() {
+    return Promise.resolve([]);
+  },
+  subscribeBrowserHistoryEvents() {
+    return Promise.resolve(() => {});
+  },
+  subscribeBrowserAddressSuggestionActions() {
+    return Promise.resolve(() => {});
   },
   openFileWithSystemApp(_path) {
     return Promise.resolve();

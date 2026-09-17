@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   buildSlashCatalog,
   committedRoleSnapshot,
+  composerTextFromPromptRole,
   filterSlashCommands,
   getScrollTopForActiveSlashCommand,
+  groupsForComposerMenuTrigger,
   clearSlashCommandDismissal,
+  matchComposerMenuQuery,
   matchSlashCommandQuery,
   mergeSlashCommandSources,
   parseCommittedSlashCommand,
@@ -14,6 +17,7 @@ import {
   restoreSlashCommandDismissal,
   slashCommandText,
   slashSendableText,
+  slashTagDisplayName,
   slashTokenFromName,
   unwrapSelectedSlashCommand,
 } from '../src/lib/slash-command';
@@ -220,41 +224,45 @@ describe('slash role catalog', () => {
     { name: 'review', description: 'Review' },
   ];
 
-  it('puts product roles before agent commands and sanitizes unsafe names', () => {
-    const groups = buildSlashCatalog('Gold Band', 'Agent', profiles, commands);
-    expect(groups.map((group) => group.id)).toEqual(['product', 'agent']);
-    expect(groups[0].heading).toBe('Gold Band');
+  it('keeps roles on @ without a brand heading and commands on / with the Agent heading', () => {
+    const groups = buildSlashCatalog('Agent', profiles, commands);
+    expect(groups.map((group) => group.id)).toEqual(['roles', 'agent']);
+    expect(groups[0].heading).toBe('');
+    expect(groups[1].heading).toBe('Agent');
     expect(groups[0].items.map((item) => item.name)).toEqual(['Development-and-Testing', 'CI-CD']);
+    expect(matchComposerMenuQuery('@')).toEqual({ trigger: '@', query: '' });
+    expect(matchComposerMenuQuery('@CI')).toEqual({ trigger: '@', query: 'CI' });
+    expect(matchSlashCommandQuery('@CI')).toBeNull();
+    expect(groupsForComposerMenuTrigger(groups, '/').map((group) => group.id)).toEqual(['agent']);
+    expect(groupsForComposerMenuTrigger(groups, '@').map((group) => group.id)).toEqual(['roles']);
     expect(slashTokenFromName('CI/CD')).toBe('CI-CD');
+    expect(slashTagDisplayName('/dataviz')).toBe('dataviz');
+    expect(slashTagDisplayName('@开发')).toBe('开发');
   });
 
-  it('keeps both rows when a role and agent command share a slash name', () => {
-    const groups = buildSlashCatalog('Gold Band', 'Agent', profiles, commands);
+  it('keeps both catalog rows when a role and agent command share a token name', () => {
+    const groups = buildSlashCatalog('Agent', profiles, commands);
     const names = groups.flatMap((group) => group.items.map((item) => `${item.kind}:${item.name}`));
     expect(names.filter((name) => name.endsWith(':CI-CD'))).toEqual(['role:CI-CD', 'command:CI-CD']);
   });
 
-  it('prefers the Gold Band role when the same name is typed without clicking', () => {
-    const items = buildSlashCatalog('Gold Band', 'Agent', profiles, commands).flatMap((group) => group.items);
-    expect(parseCommittedSlashItem('/CI-CD ', items)?.item).toMatchObject({
+  it('commits @ to a role and / to an agent command when names collide', () => {
+    const items = buildSlashCatalog('Agent', profiles, commands).flatMap((group) => group.items);
+    expect(parseCommittedSlashItem('@CI-CD ', items)?.item).toMatchObject({
       kind: 'role',
       id: 'pf-cicd',
     });
-  });
-
-  it('remembers the clicked agent command when names collide', () => {
-    const items = buildSlashCatalog('Gold Band', 'Agent', profiles, commands).flatMap((group) => group.items);
-    expect(parseCommittedSlashItem('/CI-CD ', items, { kind: 'command', id: 'CI-CD' })?.item).toMatchObject({
+    expect(parseCommittedSlashItem('/CI-CD ', items)?.item).toMatchObject({
       kind: 'command',
       id: 'CI-CD',
     });
   });
 
   it('sends the user suffix for a role tag and keeps agent command text intact', () => {
-    const items = buildSlashCatalog('Gold Band', 'Agent', profiles, commands).flatMap((group) => group.items);
-    const role = parseCommittedSlashItem('/CI-CD 帮我改代码', items);
+    const items = buildSlashCatalog('Agent', profiles, commands).flatMap((group) => group.items);
+    const role = parseCommittedSlashItem('@CI-CD 帮我改代码', items);
     const command = parseCommittedSlashItem('/review 帮我改代码', items);
-    expect(slashSendableText('/CI-CD 帮我改代码', role)).toBe(' 帮我改代码');
+    expect(slashSendableText('@CI-CD 帮我改代码', role)).toBe(' 帮我改代码');
     expect(committedRoleSnapshot(role)).toEqual({
       profileId: 'pf-cicd',
       name: 'CI/CD',
@@ -262,5 +270,11 @@ describe('slash role catalog', () => {
     });
     expect(slashSendableText('/review 帮我改代码', command)).toBe('/review 帮我改代码');
     expect(committedRoleSnapshot(command)).toBeNull();
+  });
+
+  it('restores a composer tag prefix from the queued role snapshot', () => {
+    expect(composerTextFromPromptRole({ name: '开发' }, '')).toBe('@开发 ');
+    expect(composerTextFromPromptRole({ name: '开发' }, '爱仕达')).toBe('@开发 爱仕达');
+    expect(composerTextFromPromptRole(null, '继续')).toBe('继续');
   });
 });

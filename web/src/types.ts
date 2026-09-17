@@ -31,6 +31,13 @@ export interface PersonalizationPreference {
   };
 }
 export type DesktopLanguage = 'zh-cn' | 'en';
+export type BrowserSearchEngine = 'baidu' | 'google' | 'bing';
+export interface BrowserPreferences {
+  schemaVersion: 1;
+  searchEngine: BrowserSearchEngine;
+  openLocalLinksInBrowser: boolean;
+  openWebLinksInBrowser: boolean;
+}
 export type AvatarKind = 'agent' | 'user';
 export type AvatarShape = 'circle' | 'square';
 export type DesktopPlatform = 'macos' | 'windows' | 'linux' | 'unknown';
@@ -43,6 +50,7 @@ export interface PreferencesVm {
   language: DesktopLanguage;
   useLocalClaude: boolean;
   verboseLogging: boolean;
+  browser: BrowserPreferences;
   avatars: AvatarPreferencesVm;
   wallpapers: WallpaperPreferencesVm;
 }
@@ -2712,6 +2720,7 @@ export interface ConversationQueuedPromptVm {
   content: string;
   attachmentCount: number;
   quoteCount: number;
+  roleName?: string | null;
   createdAt: string;
 }
 
@@ -2854,6 +2863,7 @@ export interface ConversationQueuedPromptDraftVm {
   content: string;
   quotes: UserPromptQuote[];
   attachmentPaths: string[];
+  role?: UserPromptRole | null;
 }
 
 export interface ConversationRunWorktreeVm {

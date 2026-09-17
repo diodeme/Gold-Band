@@ -337,7 +337,7 @@ ACP UI 不按“第一阶段 / 第二阶段”组织，而按可独立实现的�
 12. `ModeUpdate` / `ConfigUpdate` / `SessionInfo` 状态提示。
 13. `RawFrameViewer` 诊断视图。
 14. 错误、断线、恢复、seq gap 提示。
-15. 快速对话与会话详情共用 `SlashCommandMenu` / `useSlashCommandController`：独立 `/query` 打开，分隔符关闭。菜单分产品组（channel 品牌名 + 全部角色）和 Agent 组（原生命令/Skill，集合与去重不变）。选择角色后插入 `/${name} ` 并投影为带应用 logo 的输入标签，发送时剥离该前缀，把角色快照交给 `ConversationPromptInput.role`，Agent 正文用双语模板包装；选择 Agent 命令后仍插入普通 `/${name} ` 文本，底层发送值保持原始文本。角色与命令重名时两行都保留，点选记住 `kind + id`，未点选时角色优先。角色标签悬停展示完整 content 并可滚动；消息气泡上方角色标签与引用入口同一行，角色在前。
+15. 快速对话与会话详情共用 `SlashCommandMenu` / `useSlashCommandController`：独立 `/query` 打开 Agent 命令/Skill 并保留 Agent 组标题；独立 `@query` 打开角色列表且不显示品牌/组标题。菜单行角色只展示名称，Agent 命令展示 `/${name}`，均附描述，不放 icon。高亮只跟父级 `activeIndex`，不叠加 cmdk 选中态。选择角色后插入 `@${name} ` 并投影为带应用 logo、不含 `@`、与引用入口同款 outline pill 的输入标签，发送时剥离该前缀，把角色快照交给 `ConversationPromptInput.role`，Agent 正文用双语模板包装；完整角色快照即可发送，不要求额外正文。选择 Agent 命令后仍插入普通 `/${name} ` 文本，底层发送值保持原始文本。角色与命令重名时按触发器分流。角色标签悬停展示完整 content 并可滚动；消息气泡上方角色标签与引用入口同一行，角色在前。待发送队列列表投影 `roleName`；编辑 restore 把角色快照还原为 `@${token} ` 标签前缀。composer 标签与第一行行盒同为 `h-6`，和输入文字垂直居中；气泡元信息仍用 `h-7` 与引用入口对齐。
 16. ACP 命令目录由 Rust Core 按 Agent + workspace 持久化；每个 Agent 维护独立 Skill 写列表与读列表，Doctor 将 `available_commands_update` 的原生命令和用户级/workspace 级读目录中的 `SKILL.md` 元数据合并，ACP 条目优先并按名称去重。自动/手动 doctor、live update 与 SKILL 同步后刷新；连接层以有界 TTL early-session buffer 解决 `session/new` 返回前命令通知丢失。
 
 详细执行 todo 见：
@@ -347,6 +347,14 @@ docs/gold-band/开发计划/acp接入/acp功能模块todo列表.md
 ```
 
 ## 9. 一句话总结
+
+### 2026-09-17 重启后 ACP 会话失败原因丢失
+
+- 根因分两层，都是正确设计下的实现不完整。第一层：同一 turn 的结构化 `turnError` 会被 `revision` CAS、占位 `failed` 和 orphan 清掉。第二层：即使 snapshot 已经有 `acp.session-config-value-unavailable`，会话树组 leaf 时只从 `acp_session_status` 派生 `failed`，不挂 snapshot header；页面重开读的是这份空 `turnError` 的 leaf lifecycle，横幅因此落到“本次消息处理失败，请重试。” Live emit 走 `conversation_attempt_lifecycle_vm` 会挂 header，所以实时能显示具体原因。
+- 实现：同一 `turnId + operationId` 的已知结构化失败在 revision 漂移后仍可落盘；占位失败只能被结构化原因单向升级；orphan 保留已有 `turnError`。会话树 Direct / AI-DYNAMIC leaf 与 live lifecycle 共用 `attach_acp_lifecycle_header`。不把错误文案缓存到 UI，也不把 turn 失败复制到已完成的 `run.json`。
+- 最小失败证据：revision 漂移 persist 返回 `None`；占位失败不能升级；orphan 清掉 JSON 中的配置错误；无原因 orphan 没有 `turnError`；`conversation_run_vm` 会话树 leaf 在 snapshot 已有配置错误时 `turnError` 仍为 `None`。
+- 范围与性能评审：复用现有 lifecycle header、snapshot 读和错误横幅，不新增状态机、缓存或前端字段；会话树每个 leaf 多读一次已有的轻量 snapshot header，不扫 timeline。
+- 验收：ACP events persist/orphan 用例与 desktop `conversation_run_session_tree_carries_current_turn_error` 由红转绿；既有 conversation run VM 14 项回归通过。
 
 ### 2026-09-07 后台恢复失败展示
 

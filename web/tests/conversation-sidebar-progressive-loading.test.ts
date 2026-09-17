@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -27,6 +29,25 @@ describe('conversation sidebar progressive loading', () => {
     expect(bootstrapped.loadStatus).toBe('ready');
     expect(bootstrapped.workspaceTaskPages['project-a']?.status).toBe('not-loaded');
     expect(bootstrapped.tasksByWorkspace['project-a']).toEqual([]);
+  });
+
+  it('does not demote a ready sidebar to loading during a background bootstrap refresh', () => {
+    const ready = applyConversationSidebarBootstrap(createEmptyConversationSidebar(), {
+      workspaces: [{ projectId: 'project-a', workspacePath: 'D:/A', name: 'A' }],
+      pinRefs: [],
+      lastActiveWorkspaceId: 'project-a',
+      preferences: {},
+    });
+    expect(ready.loadStatus).toBe('ready');
+    const refreshing = beginConversationSidebarBootstrap(ready);
+    expect(refreshing.loadStatus).toBe('ready');
+    expect(refreshing).toBe(ready);
+  });
+
+  it('does not reload the conversation sidebar when only app bootstrap preferences change', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../src/App.tsx'), 'utf8');
+    expect(source).toContain('[conversationShellReady, loadConversationSidebarBootstrap]');
+    expect(source).not.toContain('[bootstrap, loadConversationSidebarBootstrap, uiMode]');
   });
 
   it('merges a bounded task page by stable identity without treating it as full history', () => {

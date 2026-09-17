@@ -10,16 +10,24 @@ const api = vi.hoisted(() => ({
   getGitHubPullRequest: vi.fn(),
   listGitHubIssues: vi.fn(),
   getGitHubIssue: vi.fn(),
+  openExternalUrl: vi.fn(),
+}));
+
+const browser = vi.hoisted(() => ({
+  openWebTarget: vi.fn().mockResolvedValue({ status: 'opened', kind: 'browser', pageId: 'page-1' }),
 }));
 
 vi.mock('@/api', () => ({
   ...api,
   cancelGitHubOperation: vi.fn(),
-  openExternalUrl: vi.fn(),
   preflightGitHubPullRequest: vi.fn(),
   subscribeGitHubOperationUpdates: vi.fn().mockResolvedValue(() => undefined),
   startGitHubLogin: vi.fn(),
   startGitHubPullRequestCreate: vi.fn(),
+}));
+
+vi.mock('@/components/workspace/browser/browser-workspace-hooks', () => ({
+  useOpenWebTarget: () => browser.openWebTarget,
 }));
 
 vi.mock('react-i18next', () => ({
@@ -27,7 +35,23 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@/components/workspace/files/WorkspaceFileEditor', () => ({
-  WorkspaceFileEditor: ({ value }: { value: string }) => <div data-workspace-file-editor>{value}</div>,
+  WorkspaceFileEditor: ({
+    value,
+    markdownContentWidth,
+    onMarkdownModeChange,
+  }: {
+    value: string;
+    markdownContentWidth?: string;
+    onMarkdownModeChange?: (mode: 'live-preview' | 'source') => void;
+  }) => (
+    <div
+      data-workspace-file-editor
+      data-workspace-file-editor-width={markdownContentWidth}
+      data-workspace-file-editor-mode-owned={onMarkdownModeChange ? 'true' : 'false'}
+    >
+      {value}
+    </div>
+  ),
 }));
 
 import { RightWorkspaceProvider } from '@/components/workspace/right-workspace-context';
@@ -47,6 +71,44 @@ afterEach(() => {
 });
 
 describe('source control GitHub navigation', () => {
+  it('fills the PR overview width and opens the remote PR in the built-in browser', async () => {
+    const detail = pullRequestDetail();
+    api.getGitHubCapability.mockResolvedValue({
+      status: 'ready', version: 'gh version 2.93.0', host: 'github.com', account: 'octocat', repository: 'acme/widgets', remote: 'origin', defaultBranch: 'main',
+    });
+    api.listGitHubPullRequests.mockResolvedValue([detail]);
+    api.getGitHubPullRequest.mockResolvedValue(detail);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => root.render(<RightWorkspaceProvider><SourceControlGitHubView projectId="project-1" workspacePath="D:/repo" snapshot={sourceControlSnapshot()} busy={false} onPush={() => undefined} /></RightWorkspaceProvider>));
+      const row = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes(detail.title));
+      await act(async () => row?.click());
+
+      expect(container.querySelector('[data-workspace-file-editor-width="full"]')).not.toBeNull();
+      expect(container.querySelector('[data-workspace-file-editor-mode-owned="false"]')).not.toBeNull();
+      expect(container.querySelector('[data-workspace-file-editor-mode-owned="true"]')).toBeNull();
+      const overview = container.querySelector('[data-source-control-github-detail="true"] [data-slot="tabs-content"][data-state="active"]');
+      expect(overview?.className).toContain('data-[state=active]:flex-col');
+      const detailTriggers = Array.from(container.querySelectorAll('[data-source-control-github-detail="true"] [data-slot="tabs-trigger"]'));
+      expect(detailTriggers).toHaveLength(2);
+      for (const trigger of detailTriggers) {
+        expect(trigger.className).toContain('group-data-[variant=line]/tabs-list:flex-none');
+        expect(trigger.className).not.toMatch(/(?:^|["\s])flex-1(?:["\s]|$)/u);
+      }
+      const openButton = container.querySelector<HTMLButtonElement>('[data-source-control-github-open-in-browser="true"]');
+      expect(openButton).not.toBeNull();
+      await act(async () => openButton?.click());
+
+      expect(browser.openWebTarget).toHaveBeenCalledWith(detail.url);
+      expect(api.openExternalUrl).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('enters a visible detail loading state immediately after selecting a PR', async () => {
     const detailRequest = deferred<GitHubPullRequestDetailVm>();
     const detail = pullRequestDetail();

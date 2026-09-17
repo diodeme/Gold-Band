@@ -17,6 +17,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Switch } from '@/components/ui/switch';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import type {
   GitHubCapabilityVm,
   GitHubIssueDetailVm,
@@ -29,6 +30,8 @@ import type {
   GitSourceControlSnapshotVm,
 } from '@/types';
 import { WorkspaceFileEditor } from '../files/WorkspaceFileEditor';
+import { type MarkdownEditorMode } from '../files/file-content-store';
+import { useOpenWebTarget } from '../browser/browser-workspace-hooks';
 import { gitDiffReviewWorkspaceResourceKey, useRightWorkspace } from '../right-workspace-context';
 import { SourceControlDiffFileRow } from './SourceControlDiffFileRow';
 import { diffReviewStore, gitComparisonReviewItemId } from './diff-review-store';
@@ -117,6 +120,7 @@ type GitHubSelection = { kind: 'pr'; detail: GitHubPullRequestDetailVm } | { kin
 function GitHubReadyView({ sessionKey, projectId, workspacePath, capability, snapshot, busy, onPush }: { sessionKey: string; projectId: string; workspacePath?: string | null; capability: GitHubCapabilityVm; snapshot: GitSourceControlSnapshotVm; busy: boolean; onPush: (remote: string, branch: string) => void }) {
   const { t } = useTranslation();
   const { scopeKey, openResource } = useRightWorkspace();
+  const openInBrowser = useOpenWebTarget();
   const host = capability.host!;
   const repository = capability.repository!;
   const navigation = useGitHubRepositoryNavigation(sessionKey);
@@ -205,7 +209,7 @@ function GitHubReadyView({ sessionKey, projectId, workspacePath, capability, sna
   }, [host, navigation.selection, projectId, repository, sessionKey, workspacePath]);
 
   if (navigation.selection) {
-    if (selection) return <GitHubDetail selection={selection} host={host} repository={repository} section={navigation.detailSection} onSectionChange={(section) => githubDataStore.setDetailSection(sessionKey, section)} onBack={() => githubDataStore.select(sessionKey, null)} onOpenPullRequestFile={openPullRequestFile} />;
+    if (selection) return <GitHubDetail selection={selection} host={host} repository={repository} section={navigation.detailSection} onSectionChange={(section) => githubDataStore.setDetailSection(sessionKey, section)} onBack={() => githubDataStore.select(sessionKey, null)} onOpenInBrowser={openInBrowser} onOpenPullRequestFile={openPullRequestFile} />;
     return <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden" data-source-control-github-detail-state={detailLoading ? 'loading' : 'error'}><GitHubState icon={detailLoading ? <LoaderCircle className="size-4 animate-spin" /> : <TriangleAlert className="size-4 text-destructive" />} text={detailLoading ? t('sourceControl.githubDetailLoading') : t(`errors.${errorCode}`, { defaultValue: t('sourceControl.operationFailed') })} action={!detailLoading ? <Button size="sm" variant="outline" onClick={() => githubDataStore.select(sessionKey, null)}>{t('common.back')}</Button> : undefined} /></div>;
   }
 
@@ -223,8 +227,8 @@ function GitHubReadyView({ sessionKey, projectId, workspacePath, capability, sna
           {navigation.section === 'prs' ? <Button size="icon-xs" variant="ghost" disabled={busy} aria-label={t('sourceControl.createPullRequest')} onClick={() => setCreateOpen(true)}><Plus className="size-3.5" /></Button> : null}
         </div>
         {errorCode ? <div className="px-3 py-2 text-xs text-destructive">{t(`errors.${errorCode}`, { defaultValue: t('sourceControl.operationFailed') })}</div> : null}
-        <TabsContent value="prs" className="min-h-0 min-w-0 overflow-hidden data-[state=active]:flex data-[state=active]:flex-1"><ScrollArea className="min-h-0 min-w-0 flex-1 overflow-hidden"><div className="min-w-0 divide-y divide-border/40">{prs.map((item) => <GitHubListRow key={item.number} number={item.number} title={item.title} state={item.state} subtitle={`${item.headRefName} → ${item.baseRefName}`} labels={item.labels.map((label) => label.name)} onClick={() => githubDataStore.select(sessionKey, { kind: 'pr', number: item.number })} />)}</div>{!loading && prs.length === 0 ? <GitHubState text={t('sourceControl.noPullRequests')} /> : null}</ScrollArea></TabsContent>
-        <TabsContent value="issues" className="min-h-0 min-w-0 overflow-hidden data-[state=active]:flex data-[state=active]:flex-1"><ScrollArea className="min-h-0 min-w-0 flex-1 overflow-hidden"><div className="min-w-0 divide-y divide-border/40">{issues.map((item) => <GitHubListRow key={item.number} number={item.number} title={item.title} state={item.state} subtitle={item.author?.login ?? ''} labels={item.labels.map((label) => label.name)} onClick={() => githubDataStore.select(sessionKey, { kind: 'issue', number: item.number })} />)}</div>{!loading && issues.length === 0 ? <GitHubState text={t('sourceControl.noIssues')} /> : null}</ScrollArea></TabsContent>
+        <TabsContent value="prs" className="min-h-0 min-w-0 overflow-hidden data-[state=active]:flex data-[state=active]:flex-1 data-[state=active]:flex-col"><ScrollArea className="min-h-0 min-w-0 flex-1 overflow-hidden"><div className="min-w-0 divide-y divide-border/40">{prs.map((item) => <GitHubListRow key={item.number} number={item.number} title={item.title} state={item.state} subtitle={`${item.headRefName} → ${item.baseRefName}`} labels={item.labels.map((label) => label.name)} onClick={() => githubDataStore.select(sessionKey, { kind: 'pr', number: item.number })} />)}</div>{!loading && prs.length === 0 ? <GitHubState text={t('sourceControl.noPullRequests')} /> : null}</ScrollArea></TabsContent>
+        <TabsContent value="issues" className="min-h-0 min-w-0 overflow-hidden data-[state=active]:flex data-[state=active]:flex-1 data-[state=active]:flex-col"><ScrollArea className="min-h-0 min-w-0 flex-1 overflow-hidden"><div className="min-w-0 divide-y divide-border/40">{issues.map((item) => <GitHubListRow key={item.number} number={item.number} title={item.title} state={item.state} subtitle={item.author?.login ?? ''} labels={item.labels.map((label) => label.name)} onClick={() => githubDataStore.select(sessionKey, { kind: 'issue', number: item.number })} />)}</div>{!loading && issues.length === 0 ? <GitHubState text={t('sourceControl.noIssues')} /> : null}</ScrollArea></TabsContent>
       </Tabs>
       </div>
       <CreatePullRequestDialog
@@ -273,6 +277,7 @@ function CreatePullRequestDialog({
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [draft, setDraft] = useState(false);
+  const [markdownMode, setMarkdownMode] = useState<MarkdownEditorMode>('live-preview');
   const [checking, setChecking] = useState(false);
   const [preflight, setPreflight] = useState<GitHubPullRequestPreflightVm | null>(null);
   const [operation, setOperation] = useState<GitHubOperationVm | null>(null);
@@ -287,6 +292,7 @@ function CreatePullRequestDialog({
     setTitle('');
     setBody('');
     setDraft(false);
+    setMarkdownMode('live-preview');
     setChecking(false);
     setPreflight(null);
     setOperation(null);
@@ -370,7 +376,7 @@ function CreatePullRequestDialog({
             <label className="flex items-center gap-2 text-xs text-muted-foreground"><Switch checked={draft} disabled={disabled} onCheckedChange={setDraft} />{t('sourceControl.createAsDraft')}</label>
           </div>
           <div className="min-h-0 flex-1">
-            <WorkspaceFileEditor documentKey={`github-pr-create:${capability.repository}:${head}:${base}`} value={body} editable={!disabled} language="markdown" highlight contentRevision={0} target={null} targetRevision={0} onChange={setBody} onSave={() => undefined} initialStateJson={null} onPersistState={() => undefined} markdownMode="live-preview" markdownLivePreviewAvailable />
+            <WorkspaceFileEditor documentKey={`github-pr-create:${capability.repository}:${head}:${base}`} value={body} editable={!disabled} language="markdown" highlight contentRevision={0} target={null} targetRevision={0} onChange={setBody} onSave={() => undefined} initialStateJson={null} onPersistState={() => undefined} markdownMode={markdownMode} markdownLivePreviewAvailable onMarkdownModeChange={setMarkdownMode} />
           </div>
         </div>
         <div className="shrink-0 border-t border-border/50 px-5 py-3">
@@ -396,6 +402,7 @@ function GitHubDetail({
   section,
   onSectionChange,
   onBack,
+  onOpenInBrowser,
   onOpenPullRequestFile,
 }: {
   selection: GitHubSelection;
@@ -404,6 +411,7 @@ function GitHubDetail({
   section: GitHubRepositoryDetailSection;
   onSectionChange: (section: GitHubRepositoryDetailSection) => void;
   onBack: () => void;
+  onOpenInBrowser: (href: string) => Promise<unknown>;
   onOpenPullRequestFile: (detail: GitHubPullRequestDetailVm, path: string) => void;
 }) {
   const { t } = useTranslation();
@@ -412,27 +420,34 @@ function GitHubDetail({
     const url = githubMarkdownUrl(href, host, repository, selection.kind === 'pr' ? selection.detail.headRefName : 'HEAD');
     if (url) void openExternalUrl(url);
   };
-  const body = <WorkspaceFileEditor documentKey={`github:${repository}:${selection.kind}:${detail.number}`} value={detail.body || t('sourceControl.noDescription')} editable={false} language="markdown" highlight contentRevision={0} target={null} targetRevision={0} onChange={() => undefined} onSave={() => undefined} initialStateJson={null} onPersistState={() => undefined} markdownMode="live-preview" markdownLivePreviewAvailable onMarkdownLinkClick={openMarkdownLink} />;
+  const body = <WorkspaceFileEditor documentKey={`github:${repository}:${selection.kind}:${detail.number}`} value={detail.body || t('sourceControl.noDescription')} editable={false} language="markdown" highlight contentRevision={0} target={null} targetRevision={0} onChange={() => undefined} onSave={() => undefined} initialStateJson={null} onPersistState={() => undefined} markdownMode="live-preview" markdownLivePreviewAvailable markdownContentWidth="full" onMarkdownLinkClick={openMarkdownLink} />;
   return (
     <div className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden" data-source-control-github-detail="true">
       <div className="flex min-h-10 min-w-0 shrink-0 items-center gap-2 overflow-hidden border-b border-border/50 px-2">
         <Button size="icon-xs" variant="ghost" onClick={onBack} aria-label={t('common.back')}><ArrowLeft className="size-3.5" /></Button>
         <span className="min-w-0 flex-1 truncate text-xs font-medium" data-source-control-github-detail-title="true">#{detail.number} {detail.title}</span>
-        <Button size="icon-xs" variant="ghost" onClick={() => void openExternalUrl(detail.url)} aria-label={t('sourceControl.openOnGitHub')}><ExternalLink className="size-3.5" /></Button>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button size="icon-xs" variant="ghost" data-source-control-github-open-in-browser="true" onClick={() => void onOpenInBrowser(detail.url)} aria-label={t('sourceControl.openInBuiltInBrowser')}><ExternalLink className="size-3.5" /></Button>
+            </TooltipTrigger>
+            <TooltipContent>{t('sourceControl.openInBuiltInBrowser')}</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
       </div>
       <div className="flex h-8 min-w-0 shrink-0 items-center gap-2 overflow-hidden border-b border-border/40 px-3 text-ui-micro text-muted-foreground" data-source-control-github-detail-meta="true">
         <Badge variant="outline" className="h-5 shrink-0">{detail.state}</Badge>
         <span className="max-w-24 min-w-0 truncate">{detail.author?.login}</span>
         {selection.kind === 'pr' ? <><span className="min-w-0 flex-1 truncate" data-source-control-github-detail-branches="true">{selection.detail.headRefName} → {selection.detail.baseRefName}</span><span className="shrink-0 text-emerald-600">+{selection.detail.additions}</span><span className="shrink-0 text-destructive">-{selection.detail.deletions}</span></> : null}
       </div>
-      {selection.kind === 'issue' ? <div className="min-h-0 min-w-0 flex-1 overflow-hidden">{body}</div> : (
+      {selection.kind === 'issue' ? <div className="min-h-0 min-w-0 w-full flex-1 overflow-hidden">{body}</div> : (
         <Tabs value={section} onValueChange={(value) => onSectionChange(value as GitHubRepositoryDetailSection)} className="min-h-0 min-w-0 flex-1 gap-0 overflow-hidden">
           <TabsList variant="line" className="h-9 w-full justify-start border-b border-border/50 px-2">
             <TabsTrigger value="overview">{t('sourceControl.overview')}</TabsTrigger>
             <TabsTrigger value="files">{t('sourceControl.githubChangedFiles', { count: selection.detail.files.length })}</TabsTrigger>
           </TabsList>
-          <TabsContent value="overview" className="min-h-0 min-w-0 overflow-hidden data-[state=active]:flex data-[state=active]:flex-1">{body}</TabsContent>
-          <TabsContent value="files" className="min-h-0 min-w-0 overflow-hidden data-[state=active]:flex data-[state=active]:flex-1">
+          <TabsContent value="overview" className="min-h-0 min-w-0 overflow-hidden data-[state=active]:flex data-[state=active]:flex-1 data-[state=active]:flex-col">{body}</TabsContent>
+          <TabsContent value="files" className="min-h-0 min-w-0 overflow-hidden data-[state=active]:flex data-[state=active]:flex-1 data-[state=active]:flex-col">
             <ScrollArea className="min-h-0 min-w-0 flex-1 overflow-hidden">
               <div className="min-w-0 divide-y divide-border/40">
                 {selection.detail.files.map((file) => (

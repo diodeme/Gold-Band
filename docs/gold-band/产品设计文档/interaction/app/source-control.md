@@ -92,7 +92,7 @@ Commit 列表与当前聚合文件列表是两个独立滚动域，按 repositor
 
 未安装时禁用 GitHub 操作并提供 GitHub CLI 官方安装入口，本地 Git 不受影响。未登录时由用户按钮启动 `gh auth login --web --clipboard`；后台进程隐藏窗口，浏览器完成授权，UI 提供取消与重新检测。应用不读取、保存或输出 GitHub token。
 
-PR/Issue 正文查看和 PR body 编辑复用现有 `WorkspaceFileEditor` Markdown/Atomic 能力；PR diff 继续复用统一 comparison viewer。PR 详情通过一次 `gh api repos/{owner}/{repo}/pulls/{number}/files --paginate --slurp` 批量取得权威 status、previous filename 和增删统计，禁止逐文件查询或前端猜测类型。
+PR/Issue 正文查看和 PR body 编辑复用现有 `WorkspaceFileEditor` Markdown/Atomic 能力；PR diff 继续复用统一 comparison viewer。普通文档继续使用适合阅读的正文行宽，PR/Issue 详情作为右侧工作区审阅面必须显式使用全部可用宽度，不能继承 Atomic 默认的 `78ch` 阅读栏而在宽窗口留下空白。详情子页 TabsContent 必须是 column flex，让正文编辑器沿交叉轴撑满面板；禁止默认 row flex 把阅读栏固有宽度收缩成半栏。line Tabs 的 `w-full` 只负责画满宽底边，Trigger 跟随标签内容宽度，不得 `flex-1` 把「概览 / 文件」均分成左右两半。Markdown 浮层的源码/预览切换只在父级拥有 `markdownMode` 时出现；PR/Issue 详情是只读审阅面，固定实时预览，浮层只保留复制源码。创建 PR 的可编辑正文由对话框持有模式状态，切换必须生效。PR 详情通过一次 `gh api repos/{owner}/{repo}/pulls/{number}/files --paginate --slurp` 批量取得权威 status、previous filename 和增删统计，禁止逐文件查询或前端猜测类型。
 
 PR 列表项点击后先进入由选中 locator 驱动的详情 loading 状态，再异步读取 PR 详情；不得让列表在请求期间保持无反馈，也不得通过延迟切页掩盖请求耗时。PR 详情提供“概览/文件”分区，并随详情返回 base/head OID。文件列表只承担 PR 变更导航，点击文件后打开现有右侧 `file-diff` resource，并由新 Tab 自己展示 comparison loading；typed `github-pr` comparison source 携带后端已经解析的不可变 base/head OID，后端校验 host、repository、OID 和路径后，并行按两个 OID 读取文件内容，不再为每个文件重复执行整 PR 的 `gh pr diff --name-only` 与 `gh pr view --json files`。前端不能传递任意 `gh` 参数。新增、删除、二进制、非 UTF-8 和超限文件继续使用统一 `GitFileComparison` 与 limitation code；加载期间 viewer 显示 spinner。
 
@@ -118,6 +118,6 @@ Git 失败链路已完整保留 `code + params.reason`：常见的身份验证�
 
 GitHub 已完成 CLI capability、网页登录、repository/default branch/remote mapping、PR/Issue 列表与详情、带 typed preflight 的可取消 PR 创建，以及 PR 文件 Diff。仓库探测使用 GitHub CLI 支持的 positional repository 参数，并以命令参数契约测试防止回退到无效 `--repo` flag；capability、列表、详情和 immutable-revision comparison 已进入有界缓存并合并 in-flight 请求。预检覆盖 head/base、ahead、发布状态和已有 open PR；未发布分支必须由用户显式 push。PR body 使用可编辑 `WorkspaceFileEditor`，只经 stdin 传给 `gh`。PR 文件列表进入与更改/历史相同的连续 CodeMirror 审阅会话，base/head 内容并行读取；权威文件状态映射和输出截断已有接口测试。
 
-GitHub 列表与详情必须以右侧面板宽度为硬边界，根容器、Tabs、滚动区和行建立完整的 `min-width: 0 / overflow: hidden` 约束链。PR/Issue 标题、账号、head/base 分支及文件路径占用可压缩空间并省略；返回、打开远端、状态 Badge 和增删统计保持固定，不允许任何远端长文本撑宽客户端或制造横向滚动。
+GitHub 列表与详情必须以右侧面板宽度为硬边界，根容器、Tabs、滚动区和行建立完整的 `min-width: 0 / overflow: hidden` 约束链。填充剩余高度的 TabsContent 使用 column flex，使正文编辑器与列表沿交叉轴撑满，不得保留默认 row flex。line Tabs 标签跟随内容宽度。PR/Issue 标题、账号、head/base 分支及文件路径占用可压缩空间并省略；返回、打开远端、状态 Badge 和增删统计保持固定，不允许任何远端长文本撑宽客户端或制造横向滚动。PR/Issue 详情标题栏的远端跳转按钮固定通过统一 `openWebTarget` 进入应用内置浏览器，并显示“在内置浏览器中打开”Tooltip；不得直接调用系统浏览器 opener。
 
 旧 Git Graph、Checkbox 多选和两两关系分析已完整删除，包括第三方依赖、前后端模型、命令与测试；不再把不可恢复的“历史分支来源”包装成分析结果。新的 `GitCommitReview` 与 `GitCommitReachability` typed service 分离管理聚合文件终态和当前归属。源码管理 snapshot/history、内部 Tab、分页、选择、审阅和 commit 草稿位于 repository/workspace-scoped 有界会话 Store，Review 结果和 Diff 审阅序列使用独立有界缓存，源码管理会话清理或 LRU 淘汰时同步清理所属 Review 缓存；Stage/Unstage 使用 status-scoped mutation result 局部收敛，refs 变更 mutation 并行刷新 snapshot/history，并通过各领域独立 request revision 阻止 stale response。

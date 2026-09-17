@@ -14,6 +14,10 @@ pub const PROFILE_ACCEPT_ZH_CN: &str = include_str!("prompts/zh-CN/profile/accep
 pub const PROFILE_CLEAN_ZH_CN: &str = include_str!("prompts/zh-CN/profile/clean.md");
 pub const PROFILE_INTERVIEW_ZH_CN: &str = include_str!("prompts/zh-CN/profile/interview.md");
 pub const PROFILE_GRILLME_ZH_CN: &str = include_str!("prompts/zh-CN/profile/GrillMe.md");
+pub const PROFILE_WB_REQUIREMENT_IDENTITY_ZH_CN: &str =
+    include_str!("prompts/zh-CN/profile/wb-requirement-identity.md");
+pub const PROFILE_WB_DEV_TEST_COMMIT_ZH_CN: &str =
+    include_str!("prompts/zh-CN/profile/wb-dev-test-commit.md");
 pub const PROFILE_PLAN_EN: &str = include_str!("prompts/en/profile/plan.md");
 pub const PROFILE_DEV_EN: &str = include_str!("prompts/en/profile/dev.md");
 pub const PROFILE_DEV_TEST_EN: &str = include_str!("prompts/en/profile/dev-test.md");
@@ -24,6 +28,10 @@ pub const PROFILE_ACCEPT_EN: &str = include_str!("prompts/en/profile/accept.md")
 pub const PROFILE_CLEAN_EN: &str = include_str!("prompts/en/profile/clean.md");
 pub const PROFILE_INTERVIEW_EN: &str = include_str!("prompts/en/profile/interview.md");
 pub const PROFILE_GRILLME_EN: &str = include_str!("prompts/en/profile/GrillMe.md");
+pub const PROFILE_WB_REQUIREMENT_IDENTITY_EN: &str =
+    include_str!("prompts/en/profile/wb-requirement-identity.md");
+pub const PROFILE_WB_DEV_TEST_COMMIT_EN: &str =
+    include_str!("prompts/en/profile/wb-dev-test-commit.md");
 pub const RUNTIME_SYSTEM_ZH_CN: &str = include_str!("prompts/zh-CN/runtime/system.md");
 pub const RUNTIME_SYSTEM_EN: &str = include_str!("prompts/en/runtime/system.md");
 pub const RUNTIME_HIDDEN_CONTEXT_ZH_CN: &str =

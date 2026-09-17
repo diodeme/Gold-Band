@@ -189,3 +189,18 @@
 最终验收：WB 渠道 7 个 Rust 目标共 20 项通过；独立 target 的 default 渠道隔离 3 项通过；项目记忆与侧栏前端 2 个文件共 14 项通过，TypeScript、Vite 生产构建、Agent catalog 7 项和桌面端 `cargo check -j 1 -p gold-band-desktop` 通过。格式与 diff 空白检查通过；Cargo.lock、ACP registry snapshot 与 agent catalog 在业务语义合并后重新生成并校验。UI 按规则先尝试 iab 和已连接 Chrome，环境不可用后使用 agent-browser 回退，覆盖正常/窄宽度、长文本、明暗主题、未保存关闭确认和保存后重开；会话、浏览器与开发服务器已清理。未调用真实 WeTest 写操作。
 
 渠道单一真源收紧：`MemoryService::new` 不再接受调用方渠道布尔值，Tauri、provider 和 MCP 只能使用 `src/channel.rs`；MCP 启动 JSON 不再携带 `wb`，并由接口测试固定该约束。该调整删除重复输入，没有增加运行时分支。性能复核仍为两个有界文件的 O(P + T) 合并，无历史扫描、N+1、无界缓存/队列或长时间持锁；MCP helper 仅有不随数据规模增长的固定进程启动开销。
+
+## 2026-09-17 提交职责迁移与推送继续确认
+
+根因：CICD 同时承担提交和推送，而代码生产者是开发测试节点，属于生命周期职责错位。未推送提交会直接影响远端构建输入，因此 push 不能随 commit 一起删除，但用户拒绝 push 或 push 失败后必须提供按远端现状继续构建的显式选择。
+
+- [x] 双语 CICD 删除 `git add`、`git commit` 和提交消息职责，只检查当前分支是否存在未 push 提交并提醒用户是否 push。
+- [x] 存在未推送提交时先询问是否 push；成功后直接继续。拒绝 push 或 push 失败时，说明远端缺失风险并询问“继续构建 / 停止”。
+- [x] 用户选择继续时按远端现状进入构建和已确认的后续流程；选择停止时不触发构建。
+- [x] CICD 参数固定写任务作用域：`cicd.build.*` 与 `cicd.deploy.<S>.*` 全部以 `scope=task` 写入；`subSysId*` 仍只在工作空间维护。
+- [x] 参数写入后重新 `memory_read` 逐 key 核验；工具不可用、部分写入或核验失败时不再阻塞，向用户询问或确认本次参数后继续，并说明未持久化。
+- [x] `cicd_profile_contract` 更新为禁止旧提交职责、固定推送继续分支和任务作用域核验。
+
+验证：WB 渠道 `cicd_profile_contract` 1/1、`memory_domain` 13/13、`wb_workflow_profile_contract` 1/1 通过；`cargo check -p gold-band --tests -j 1`、`cargo fmt --all` 和 diff 空白检查通过。
+
+自评审：复用现有 Profile、共享记忆和 Git CLI，不新增状态机、持久字段、依赖、缓存或队列。新增正文为固定长度，Git 只检查当前分支是否存在未 push 提交，记忆读取仍为两个有界文件的 O(P + T) 合并。

@@ -176,3 +176,18 @@
 验证：`cargo check --workspace --all-targets`、`cargo fmt --all -- --check`、`git diff --check` 通过；默认渠道 `memory_domain` 12、`memory_invocation` 2、`memory_mcp` 2、`memory_wb_catalog` 1、`cicd_profile_contract` 1、`cicd_output_contract` 1、`cicd_recovery` 3、`provider_prompt_bundle` 31，`GOLD_BAND_RELEASE_CHANNEL=wb` 下同批 18 项，lib `mcp::` 10、`ai_dynamic_node` 38、`worker_bootstrap` 21 全部通过；前端 `project-memory`/`mcp-server-card`/`demo-api`/侧栏 27 项与 `npm run web:build` 通过。`context-management-loading` 仍是 main 既有红灯（App.tsx `listen<...>` 字符串断言），非本次引入。
 
 过度设计复核：复用现有 `McpServerConfig`、managed 卡片、ACP `mcpServers` 与 `WorkerInvocation`，不新增通用占位符模板、常驻代理、第二种卡片类型、持久诊断字段、缓存、队列或新状态机。性能复核：启动外部 MCP 握手从 O(N) 降为 0；definition reconcile 为有界列表线性比较，未变化零写盘；显式诊断只启动单个短进程并统一回收进程树；会话仍由 Agent 承担原本就需要的单次 stdio 启动成本，无额外 N+1 或历史扫描。
+
+## 2026-09-17 WB 需求身份与固定记忆作用域
+
+根因：需求 ID / 名称是开发测试生成三行提交所需的规范输入，但任务记忆没有固定 key 和初始化链路；同时 CICD 参数只有“默认写任务”的通用规则，无法保证每个参数写到正确作用域。
+
+- [x] WB 采访和拷问在角色流程前使用 `memory_read` 只检查任务作用域 `storyId/storyName`；缺失、为空或不成对时，以“不存在 / 其他（用户自行输入）”语义提问。
+- [x] 选择不存在时写 `storyId=0` 和从需求内容提取的最多 40 字符简短名称；选择其他时要求同时提供 ID 和名称。两个 key 均写任务作用域并写后核验。
+- [x] 开发测试在采访或拷问关闭导致身份缺失时自动兜底补齐，不向用户询问提交消息。
+- [x] 固定作用域：`subSysId*` 写工作空间；`storyId/storyName` 与全部 `cicd.*` 生效参数写任务。
+- [x] 记忆领域接口测试新增跨节点任务身份读取，确认任务值优先并在重新构造服务后保持。
+- [x] 记忆工具不可用、写入失败或写后核验失败改为可降级流程：向用户询问或确认参数并继续，明确数据未持久化，不直接修改记忆文件。
+
+验证：WB 渠道 `memory_domain` 13/13、`wb_workflow_profile_contract` 1/1、`cicd_profile_contract` 1/1 通过；default 渠道确认不注入 WB 补充规则；`cargo check -p gold-band --tests -j 1` 通过。
+
+自评审：复用现有 `gold-band-memory` MCP、逐 key CAS、Profile 渠道常量和原子写入，不新增记忆文件、状态机、缓存或队列。每次身份检查仍只读取当前项目与任务两个有界文件，复杂度 O(P + T)。

@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-17 CICD 职责迁移与 WB 需求身份
+
+- 根因：代码提交被放在 CICD，而提交生产者是开发测试节点；`storyId/storyName` 没有任务级固定契约；CICD 参数只有通用“默认写任务”规则，缺少逐 key 作用域和写后核验。
+- 实现：CICD 删除 commit 职责，只检查开发测试提交是否已推送；拒绝 push 或 push 失败时询问“继续构建 / 停止”，继续后按远端现状推进。WB 采访/拷问补充需求身份检查，开发测试补充自动提交。`subSysId*` 固定工作空间，`storyId/storyName` 和全部 `cicd.*` 固定任务。
+- 验收：WB `memory_domain` 13、`cicd_profile_contract` 1、`wb_workflow_profile_contract` 1 通过；default `wb_workflow_profile_contract` 1 通过；`cargo check -p gold-band --tests -j 1`、格式和 diff 空白检查通过。
+- 过度设计与性能：复用现有 Profile 渠道目录、记忆 MCP、CAS、原子写入和 Git CLI，无新状态机、持久模型、依赖、缓存或队列；每次只增加固定长度提示词和两个有界记忆文件读取。
+
 ## 2026-09-16 Composer 角色斜杠菜单
 
 - 根因：`/` 菜单原先只有 Agent 命令/Skill 一个命名空间，无法从 composer 指定本次消息的 Gold Band 角色。这是正确斜杠交互下的产品目录缺失，不是命令去重或标签投影缺陷。

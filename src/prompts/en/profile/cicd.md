@@ -16,15 +16,14 @@ Use the WeTest `wetest` CLI to complete Jenkins builds, package or Docker image 
 
 ## Prerequisites and Parameter Sources
 
-### Code commit precondition
+### Code Push Precheck
 
-The acceptance node does not push code; CICD commits and pushes requirement-related code to the remote before any build, material / image push, or deployment.
+CICD does not commit code. Before building, only check whether the current branch has unpushed commits. When they exist, remind the user and ask whether to push.
 
-1. Define related code from the original requirement, the current task / goal, predecessor artifacts explicitly supplied by the runtime, and explicit user designation. Ask when classification is unclear; never guess.
-2. When related changes remain uncommitted, first help the user commit them: inspect only the status and diff of those paths, explain the changes, confirm the requirement ID / name and Chinese commit description, and after the user confirms the complete three-line message, run git add and git commit with the specific paths. Never use git add -A, include unrelated changes, or modify business code content; recheck after committing.
-3. When related commits exist locally but have not been pushed, also help the user push them. First verify the current branch, remote configuration, and commits to be pushed, then explain the remote branch that will be updated and the commits it will receive. After user confirmation, run a normal git push. Never force push, switch to an unrelated branch, or push unconfirmed content; after pushing, verify that the remote branch contains the related commits.
-4. Every relevant commit message must be exactly three lines: `--story=[%id] %name`, `<type>: <Chinese description>`, and `#AI COMMIT#`. The second line uses a standard Conventional Commits type token (for example `feat` or `fix`) with a Chinese description, such as `feat: 添加登录功能`. Resolve `%id` and `%name` from the original requirement first; ask when they are missing or conflicting, and use `0` and `系统需求` only when they still cannot be confirmed.
-5. Stop before build, material / image push, or deployment when the user has not confirmed, commit or push fails, related changes remain uncommitted, the remote branch lacks related commits, or format or requirement metadata mismatches. CICD never modifies business code content; code push in this section and later material / image push are distinct operations. Record commit OIDs, the remote branch, workspace status, and failure reasons during the check.
+1. When the user chooses to push, run a normal git push, then continue building after it succeeds.
+2. When the user declines to push, explain that the remote may not contain the local commits, then ask whether to continue building. Continue from the current remote state when confirmed; do not trigger a build when the user stops.
+3. When push fails, explain the failure and ask whether to continue building. Continue from the current remote state when confirmed; do not trigger a build when the user stops.
+4. Never force push. Code push and later material / image push are distinct operations.
 
 ### CLI and Parameter Checks
 
@@ -38,6 +37,17 @@ The acceptance node does not push code; CICD commits and pushes requirement-rela
 ## Shared Parameter Memory
 
 Use `memory_read` / `memory_write` bound to the current workspace and task; do not infer paths, access other tasks, or scan history. Reuse confirmed parameter values as prefill data. Trigger authorization may be reused only when it was explicitly confirmed earlier in the current run and still covers the same effective scope; never reuse authorization from a previous run. Ask only for missing values, conflicts, or authorization not covered in the current run.
+
+The fixed scopes are mandatory:
+
+| Parameter | Scope | Rule |
+| --- | --- | --- |
+| `subSysId1`, `subSysId2`, etc. | workspace | Project subsystem inventory maintained by project-memory settings; CICD reads it and never writes project memory implicitly |
+| `storyId`, `storyName` | task | Current-task requirement identity maintained by Interview, Grill, or Development and Testing; CICD writes them only when it uses them |
+| Build parameters (`cicd.build.*`) | task | Current-task build parameters; CICD writes only task scope |
+| Deployment parameters (`cicd.deploy.<S>.*`) | task | Current-task per-subsystem deployment parameters; CICD writes only task scope |
+
+Never write effective `cicd.*` task parameters into workspace defaults. If future business requirements need cross-task Job or template defaults, define separate default keys rather than presenting task parameters as project defaults.
 
 1. The task-level build uses `cicd.build.<field>` once for the whole task. Each subsystem deployment uses `cicd.deploy.<S>.<field>`, where S is its real subsystem ID encoded as a UTF-8 URI component: preserve only ASCII letters, digits, hyphen, underscore and tilde; encode every other byte as uppercase %HH, including dots and percent signs. Never use the mutable inventory position or display name as identity, truncate an ID, or substitute a hash. Decode S for CLI arguments; do not send the encoded key as the subsystem ID.
 2. The fields below are independent string entries, not a nested configuration object. Create only fields needed for the chosen stages; do not populate every field with examples.
@@ -63,8 +73,8 @@ Use `memory_read` / `memory_write` bound to the current workspace and task; do n
 4. One Jenkins build can produce and push materials for multiple subsystems, so its lifecycle belongs to the whole task and must not be duplicated per subsystem. `cicd.build.appList` is the confirmed push scope and must be a subset of the applications mapped by evidence to `cicd.build.appCoverage`. Establish coverage from package-list evidence and repository structure rather than Job registration fields or name similarity, and keep evidence in runtime attachments.
 5. Only task-scope `cicd.deploy.<S>.selected=true` entries whose decoded IDs are current nonempty workspace inventory members are candidate deployments. Reconcile them with explicit current instructions and mark deselected entries false. Ignore workspace selection flags. A missing, malformed, or stale selection requires clarification. One subsystem's deployment parameters must never fill another's missing values. Defaults and selection flags are not execution authorization.
 6. Recommend deployment from a build; also support package mode. Verify the task-level Job and its actual branch for a new build, and independently verify each selected subsystem's template, type, and effective targets. For packages from the current build, build and push first, then verify exact names for each subsystem. For existing packages, skip building only on explicit instruction. Required empty or pending fields block the relevant stage; unused fields need not be filled. A build-derived material reference stays associated with verified execution evidence.
-7. Write newly confirmed or corrected values to task scope by default. Write workspace defaults only when the user explicitly asks for project-wide reuse; task configuration never changes workspace membership implicitly. Before writing, read the target scope's per-key revision using `memory_read`, then call `memory_write` with `scope`, `key`, `expectedRevision` and an `entry` containing `key/value/desc`. Use null expectedRevision only for an absent target-scope key, never an inherited entry's revision. A conflict requires rereading and reconciling with the user; do not retry overwriting blindly. Tool success is the persistence acknowledgement.
-8. Writes are atomic per key, not across the task-level build and all deployments. After all changes succeed, refresh the snapshot and verify the complete build and selected deployment parameter set before any external write. Partial memory writes are not completed configuration; on errors stop and report the remaining changes. Unavailable memory tools are a blocker, never a reason to directly create or overwrite files.
+7. Write every `cicd.*` parameter to task scope. Before writing, use `memory_read` to obtain the target-key revision, then call `memory_write` with `scope="task"`, `key`, `expectedRevision`, and an `entry` containing `key/value/desc`. Use null expectedRevision for an absent key, never an inherited workspace entry's revision, and never persist a task correction into project scope implicitly. A conflict requires rereading and reconciling with the user; do not retry overwriting blindly. Tool success means that key was persisted.
+8. Writes are atomic per key, not across the task-level build and all deployments. After successful writes, call `memory_read` again and compare each task-scope value with the effective value confirmed for this run. Unavailable memory tools, partial writes, value mismatches, or failed verification are not blockers: tell the user that the current values were not fully persisted, then ask for or confirm the required parameters and continue the current flow. Never create or overwrite memory files directly.
 9. Never store apiKey, credentials, authorization flags, buildId, aompJobId, commandId, execution state or terminal evidence in memory. Store execution IDs, effective parameters and evidence in runtime-designated attachments. On manual resume, reconcile those operations first; changed remembered parameters do not authorize a new submission.
 
 ## Discovery and Authorization

@@ -2573,7 +2573,58 @@ impl App {
         })
     }
 
-    fn node_intervention_role_name(node: &NodeState) -> String {
+    pub fn intervention_node_label(&self, context: &AcpLiveEventContext) -> String {
+        if let Some(agent_label) = direct_conversation_agent_label(self, &context.task_id) {
+            return agent_label;
+        }
+        if let (Some(outer_node_id), Some(outer_attempt_id)) = (
+            context.outer_node_id.as_deref(),
+            context.outer_attempt_id.as_deref(),
+        ) {
+            if let Ok(node) =
+                read_json::<crate::dynamic::DynamicNodeState>(&self.paths.dynamic_node_file(
+                    &context.task_id,
+                    &context.run_id,
+                    &context.round_id,
+                    outer_node_id,
+                    outer_attempt_id,
+                    &context.node_id,
+                ))
+            {
+                let title = node.title.trim();
+                if !title.is_empty() {
+                    return title.to_string();
+                }
+            }
+            if let Ok(graph) =
+                read_json::<crate::dynamic::DynamicGraphState>(&self.paths.dynamic_graph_file(
+                    &context.task_id,
+                    &context.run_id,
+                    &context.round_id,
+                    outer_node_id,
+                    outer_attempt_id,
+                ))
+                && let Some(node) = graph.nodes.iter().find(|node| node.id == context.node_id)
+            {
+                let title = node.title.trim();
+                if !title.is_empty() {
+                    return title.to_string();
+                }
+            }
+            return context.node_id.clone();
+        }
+        read_json::<NodeState>(&self.paths.node_file(
+            &context.task_id,
+            &context.run_id,
+            &context.round_id,
+            &context.node_id,
+            &context.attempt_id,
+        ))
+        .map(|node| Self::node_intervention_role_name(&node))
+        .unwrap_or_else(|_| context.node_id.clone())
+    }
+
+    pub(crate) fn node_intervention_role_name(node: &NodeState) -> String {
         node.resolved_config
             .get("profileName")
             .and_then(|value| value.as_str())
@@ -2581,11 +2632,6 @@ impl App {
             .or_else(|| {
                 node.resolved_config
                     .get("profile")
-                    .and_then(|value| value.as_str())
-            })
-            .or_else(|| {
-                node.resolved_config
-                    .get("provider")
                     .and_then(|value| value.as_str())
             })
             .unwrap_or_else(|| node.node_id.as_str())
@@ -8181,6 +8227,121 @@ mod tests {
             .unwrap();
         }
         node
+    }
+
+    #[test]
+    fn workflow_intervention_role_name_never_falls_back_to_provider() {
+        let mut node = NodeState {
+            version: VERSION.to_string(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+            node_id: "plan".to_string(),
+            node_type: crate::domain::NodeType::Worker,
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: "2026-06-16T00:00:00Z".to_string(),
+            finished_at: None,
+            manual_check_pending: false,
+            runtime_execution_id: None,
+            resolved_config: BTreeMap::from([(
+                "provider".to_string(),
+                serde_json::json!("claude-acp"),
+            )]),
+            uuid: None,
+        };
+
+        assert_eq!(App::node_intervention_role_name(&node), "plan");
+
+        node.resolved_config
+            .insert("profileName".to_string(), serde_json::json!("Planner"));
+        assert_eq!(App::node_intervention_role_name(&node), "Planner");
+    }
+
+    #[test]
+    fn auto_intervention_node_label_uses_the_node_projection_without_reading_graph() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = dynamic_pause_test_app(&temp);
+        let mut node = dynamic_pause_node("bootstrap", DynamicNodeStatus::Running);
+        node.title = "Node projection role".to_string();
+        write_dynamic_pause_fixture(&app, vec![node]);
+        let graph_path = app.paths.dynamic_graph_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        );
+        std::fs::remove_file(graph_path.as_std_path()).unwrap();
+
+        assert_eq!(
+            app.intervention_node_label(&AcpLiveEventContext {
+                task_id: "task-001".to_string(),
+                task_uuid: None,
+                run_id: "run-001".to_string(),
+                round_id: "round-001".to_string(),
+                node_id: "bootstrap".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                outer_node_id: Some("ai-dynamic".to_string()),
+                outer_attempt_id: Some("attempt-001".to_string()),
+            }),
+            "Node projection role"
+        );
+    }
+
+    #[test]
+    fn auto_intervention_node_label_falls_back_to_graph_when_node_projection_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = dynamic_pause_test_app(&temp);
+        let mut node = dynamic_pause_node("bootstrap", DynamicNodeStatus::Running);
+        node.title = "Graph role".to_string();
+        write_dynamic_pause_fixture(&app, vec![node]);
+        let node_path = app.paths.dynamic_node_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            "bootstrap",
+        );
+        std::fs::remove_file(node_path.as_std_path()).unwrap();
+
+        assert_eq!(
+            app.intervention_node_label(&AcpLiveEventContext {
+                task_id: "task-001".to_string(),
+                task_uuid: None,
+                run_id: "run-001".to_string(),
+                round_id: "round-001".to_string(),
+                node_id: "bootstrap".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                outer_node_id: Some("ai-dynamic".to_string()),
+                outer_attempt_id: Some("attempt-001".to_string()),
+            }),
+            "Graph role"
+        );
+
+        let graph_path = app.paths.dynamic_graph_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        );
+        std::fs::remove_file(graph_path.as_std_path()).unwrap();
+        assert_eq!(
+            app.intervention_node_label(&AcpLiveEventContext {
+                task_id: "task-001".to_string(),
+                task_uuid: None,
+                run_id: "run-001".to_string(),
+                round_id: "round-001".to_string(),
+                node_id: "bootstrap".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                outer_node_id: Some("ai-dynamic".to_string()),
+                outer_attempt_id: Some("attempt-001".to_string()),
+            }),
+            "bootstrap"
+        );
     }
 
     fn write_dynamic_pause_fixture(app: &App, nodes: Vec<DynamicNodeState>) {

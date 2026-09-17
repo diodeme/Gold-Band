@@ -27,12 +27,15 @@ pub(crate) fn workspace_entry_for_project(
     state: &StateConfig,
     project_id: &str,
 ) -> Option<(String, String)> {
-    find_workspace_entry(state, project_id).map(|workspace| {
-        (
-            workspace.workspace_path.clone(),
-            workspace.project_id.clone(),
-        )
-    })
+    conversation_workspace_entry_for_project(state, project_id)
+        .map(|workspace| (workspace.workspace_path, workspace.project_id))
+}
+
+pub(crate) fn conversation_workspace_entry_for_project(
+    state: &StateConfig,
+    project_id: &str,
+) -> Option<ConversationWorkspaceEntry> {
+    find_workspace_entry(state, project_id).cloned()
 }
 
 pub(crate) fn app_for_workspace(
@@ -1259,6 +1262,12 @@ mod tests {
 
         assert!(workspace_entry_for_project(&state, "workspace--a1b2c3d4").is_some());
         assert!(workspace_entry_for_project(&state, "WORKSPACE--A1B2C3D4").is_none());
+        assert_eq!(
+            conversation_workspace_entry_for_project(&state, "workspace--a1b2c3d4")
+                .unwrap()
+                .name,
+            "workspace"
+        );
     }
 
     #[test]

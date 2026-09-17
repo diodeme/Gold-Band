@@ -3629,13 +3629,7 @@ fn should_pause_for_manual_check(workflow: &ValidatedWorkflow, node: &NodeState)
 }
 
 fn node_label(node: &NodeState) -> String {
-    node.resolved_config
-        .get("profileName")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| node.node_id.clone())
+    crate::app::App::node_intervention_role_name(node)
 }
 
 fn task_title(app: &App, task_id: &str) -> Option<String> {

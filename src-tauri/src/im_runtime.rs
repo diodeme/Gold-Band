@@ -28,8 +28,8 @@ use tracing::warn;
 use uuid::Uuid;
 
 use crate::commands::{
-    CommandErrorVm, CommandResult, execute_intervention_command, resolve_command_app,
-    resolve_command_app_with_emitters,
+    CommandErrorVm, CommandResult, execute_intervention_command, resolve_command_app_with_emitters,
+    resolve_command_app_with_workspace_label,
 };
 use crate::state::DesktopState;
 
@@ -531,22 +531,24 @@ impl DesktopImRuntime {
                     );
                     return;
                 };
-                let runtime_app = match resolve_command_app(&state, Some(&project_id)) {
-                    Ok(app) => app,
-                    Err(error) => {
-                        warn!(
-                            canonical_event_id,
-                            error_code = error.code,
-                            "IM lifecycle projection could not resolve workspace"
-                        );
-                        return;
-                    }
-                };
+                let (runtime_app, workspace_label) =
+                    match resolve_command_app_with_workspace_label(&state, Some(&project_id)) {
+                        Ok(resolved) => resolved,
+                        Err(error) => {
+                            warn!(
+                                canonical_event_id,
+                                error_code = error.code,
+                                "IM lifecycle projection could not resolve workspace"
+                            );
+                            return;
+                        }
+                    };
                 let job = ImLifecycleProjectionJob {
                     app: runtime_app,
                     event,
                     targets,
                     now_ms: chrono::Utc::now().timestamp_millis(),
+                    workspace_label,
                 };
                 match try_enqueue_projection(&runtime.projection_sender, job) {
                     ImProjectionEnqueueOutcome::Enqueued => {}

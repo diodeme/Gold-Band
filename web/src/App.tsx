@@ -74,6 +74,7 @@ import {
 import { configureAcpResourceCacheSessionCount } from '@/components/acp/ACPChatDialog';
 import { subscribeConversationEvents } from './lib/conversation-event-router';
 import { prefetchScheduledRuntimeSettings } from '@/components/scheduled-tasks/useScheduledRuntimeSettings';
+import { prefetchImSettings } from '@/components/settings/useImSettings';
 import {
   applyConversationSidebarRunLifecycle,
   applyConversationSidebarRunStateUpdate,
@@ -1137,6 +1138,7 @@ export function App() {
         setBootstrap(bootstrap);
         // 静默预取定时任务运行时设置，让首次进入「设置 → 定时任务」也免加载闪烁。
         void prefetchScheduledRuntimeSettings();
+        void prefetchImSettings();
         if (shouldAutoOpenWorkspacePicker(bootstrap, uiMode)) {
           setWorkspacePickerOpen(true);
         }

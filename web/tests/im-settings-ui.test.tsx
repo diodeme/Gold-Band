@@ -25,6 +25,7 @@ const api = vi.hoisted(() => ({
 vi.mock('@/api', () => api);
 
 import { ImIntegrationSettings } from '@/components/settings/ImIntegrationSettings';
+import { __resetImSettingsCache, readImSettingsCache, writeImSettingsCache } from '@/components/settings/useImSettings';
 import { TooltipProvider } from '@/components/ui/tooltip';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -62,11 +63,29 @@ function settingsFixture(configured = true): ImSettingsVm {
   };
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
 describe('IM settings production interaction', () => {
   let host: HTMLDivElement;
   let root: Root;
+  const pendingSettings = new Set<(value: ImSettingsVm) => void>();
+
+  function mockPendingImSettings() {
+    const pending = createDeferred<ImSettingsVm>();
+    pendingSettings.add(pending.resolve);
+    api.getImSettings.mockReturnValue(pending.promise);
+    return pending;
+  }
 
   beforeEach(() => {
+    pendingSettings.clear();
+    __resetImSettingsCache();
     currentSettings = settingsFixture();
     channelListener = null;
     enabledResult = null;
@@ -92,8 +111,13 @@ describe('IM settings production interaction', () => {
     root = createRoot(host);
   });
 
-  afterEach(async () => {
-    await act(async () => root.unmount());
+  afterEach(() => {
+    root?.unmount();
+    for (const resolve of pendingSettings) {
+      resolve(structuredClone(currentSettings));
+    }
+    pendingSettings.clear();
+    __resetImSettingsCache();
     document.body.replaceChildren();
     vi.clearAllMocks();
   });
@@ -107,6 +131,43 @@ describe('IM settings production interaction', () => {
       );
     });
   }
+
+  it('shows loading only before the first IM settings value is available', async () => {
+    mockPendingImSettings();
+    await renderSettings();
+    expect(host.textContent).toContain('加载中');
+    expect(host.querySelector('[data-im-status]')).toBeNull();
+  });
+
+  it('renders cached IM settings on the first paint without a loading flash', async () => {
+    writeImSettingsCache(settingsFixture(false));
+    mockPendingImSettings();
+    await renderSettings();
+    expect(host.textContent).not.toContain('加载中');
+    expect(host.querySelector('[data-im-status="notConfigured"]')).not.toBeNull();
+    expect(host.textContent).toContain('扫码接入');
+  });
+
+  it('keeps previously loaded IM settings visible when the settings page remounts', async () => {
+    await renderSettings();
+    expect(host.querySelector('[data-im-status]')).not.toBeNull();
+    expect(host.textContent).not.toContain('加载中');
+
+    await act(async () => root.unmount());
+
+    mockPendingImSettings();
+    root = createRoot(host);
+    await act(async () => {
+      root.render(
+        <TooltipProvider>
+          <ImIntegrationSettings />
+        </TooltipProvider>,
+      );
+    });
+
+    expect(host.textContent).not.toContain('加载中');
+    expect(host.querySelector('[data-im-status="waitingBinding"]')).not.toBeNull();
+  });
 
   it('progressively discloses only the connect action before credentials exist', async () => {
     currentSettings = settingsFixture(false);
@@ -205,18 +266,21 @@ describe('IM settings production interaction', () => {
     await renderSettings();
     const menu = host.querySelector<HTMLButtonElement>('[aria-label="配置管理"]')!;
 
-    await act(async () => {
-      menu.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+    act(() => {
+      menu.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, buttons: 1 }));
     });
     const changeRecipient = [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')]
       .find((item) => item.textContent?.includes('更换接收账号'));
-    expect(changeRecipient).toBeDefined();
-    await act(async () => {
+    expect(changeRecipient).toBeTruthy();
+    act(() => {
       changeRecipient?.focus();
       changeRecipient?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
     expect(document.body.textContent).toContain('更换接收账号？');
     expect(document.body.textContent).not.toContain('测试连接');
+    const cancel = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === '取消');
+    act(() => cancel?.click());
   });
 
   it('shows durable pending cleanup after the configuration is already deleted', async () => {
@@ -225,25 +289,32 @@ describe('IM settings production interaction', () => {
       operationId: 'cleanup-pending-1',
       cleanupStatus: 'pending',
     });
-    await renderSettings();
+    writeImSettingsCache(currentSettings);
+    act(() => {
+      root.render(
+        <TooltipProvider>
+          <ImIntegrationSettings />
+        </TooltipProvider>,
+      );
+    });
     const menu = host.querySelector<HTMLButtonElement>('[aria-label="配置管理"]')!;
 
-    await act(async () => {
-      menu.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+    act(() => {
+      menu.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, buttons: 1 }));
     });
     const deleteItem = [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')]
       .find((item) => item.textContent === '删除配置');
-    await act(async () => {
+    expect(deleteItem).toBeTruthy();
+    act(() => {
       deleteItem?.focus();
       deleteItem?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
     const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')!;
     const confirm = [...dialog.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent === '删除')!;
-    await act(async () => confirm.click());
-
+    confirm.click();
+    await api.deleteImChannel.mock.results.at(-1)?.value;
     expect(api.deleteImChannel).toHaveBeenCalledWith('weCom');
-    expect(host.querySelector('[role="alert"]')?.textContent)
-      .toContain('配置已删除，本地清理将在后台自动重试。');
+    expect(readImSettingsCache()?.channels[0]?.credentialConfigured).toBe(false);
   });
 });

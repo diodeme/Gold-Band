@@ -766,6 +766,7 @@ fn create_address_suggestion_webview(
             LogicalSize::new(bounds.width.max(1.0), bounds.height.max(1.0)),
         )
         .map_err(|error| webview_error("browser.webview.create_failed", error))?;
+    crate::window_chrome::raise_undecorated_edge_resize_for_app(app);
     let webview = app
         .get_webview(BROWSER_ADDRESS_SUGGESTION_WEBVIEW_LABEL)
         .ok_or_else(|| {
@@ -949,6 +950,7 @@ fn raise_address_suggestion_overlay(app: &AppHandle) {
     let Some(webview) = app.get_webview(BROWSER_ADDRESS_SUGGESTION_WEBVIEW_LABEL) else {
         return;
     };
+    let app_for_raise = app.clone();
     let _ = webview.with_webview(move |platform: PlatformWebview| {
         let mut parent = Default::default();
         if unsafe { platform.controller().ParentWindow(&mut parent) }.is_err() {
@@ -980,6 +982,7 @@ fn raise_address_suggestion_overlay(app: &AppHandle) {
                 &error,
             ),
         }
+        crate::window_chrome::raise_undecorated_edge_resize_for_app(&app_for_raise);
     });
 }
 
@@ -1162,6 +1165,7 @@ fn create_or_reuse_page(
         let _ = lock_host(host)?.remove_if_label(page_id, &label);
         return Err(webview_error("browser.webview.create_failed", error));
     }
+    crate::window_chrome::raise_undecorated_edge_resize_for_app(app);
 
     hide_label(app, Some(page_id), &label)?;
     info!(

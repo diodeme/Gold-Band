@@ -17,13 +17,11 @@ import {
   cancelWeComScanAuthorization,
   completeWeComScanAuthorization,
   deleteImChannel,
-  getImSettings,
   reconnectImChannel,
   resetImChannelBinding,
   saveImNotificationPreferences,
   setImChannelEnabled,
   startWeComScanAuthorization,
-  subscribeImChannelStateUpdates,
 } from '@/api';
 import {
   AlertDialog,
@@ -63,10 +61,10 @@ import {
   buildSetImChannelEnabledInput,
   imChannelDisplayModel,
   mergeImChannelSnapshot,
-  mergeImSettings,
   notificationDraftFrom,
   notificationPreferencesEqual,
 } from '@/lib/im-settings';
+import { useImSettings } from './useImSettings';
 import type {
   ImChannelKind,
   ImChannelSettingsVm,
@@ -98,34 +96,7 @@ function displayImError(t: TFunction, error: unknown) {
 
 export function ImIntegrationSettings() {
   const { t } = useTranslation();
-  const [settings, setSettings] = useState<ImSettingsVm | null>(null);
-  const [loadError, setLoadError] = useState<unknown>(null);
-
-  useEffect(() => {
-    let active = true;
-    let unlisten: (() => void) | undefined;
-    void getImSettings()
-      .then((value) => {
-        if (active) setSettings(value);
-      })
-      .catch((error) => {
-        if (active) setLoadError(error);
-      });
-    void subscribeImChannelStateUpdates((snapshot) => {
-      if (active) setSettings((current) => current ? mergeImChannelSnapshot(current, snapshot) : current);
-    }).then((cleanup) => {
-      if (active) unlisten = cleanup;
-      else cleanup();
-    });
-    return () => {
-      active = false;
-      unlisten?.();
-    };
-  }, []);
-
-  const mergeSettings = useCallback((incoming: ImSettingsVm) => {
-    setSettings((current) => current ? mergeImSettings(current, incoming) : incoming);
-  }, []);
+  const { settings, loadError, replace: mergeSettings } = useImSettings();
 
   if (!settings) {
     return (

@@ -22,6 +22,7 @@ export interface AcpUsagePanelProps {
   sessionSeconds?: number | null;
   worktreePath?: string | null;
   branchProjectId?: string | null;
+  branchWorkspaceName?: string | null;
   managedWorktreeBranch?: string | null;
   className?: string;
 }
@@ -76,6 +77,7 @@ export const AcpUsagePanel = memo(function AcpUsagePanel({
   sessionSeconds,
   worktreePath,
   branchProjectId,
+  branchWorkspaceName,
   managedWorktreeBranch,
   className,
 }: AcpUsagePanelProps) {
@@ -216,6 +218,7 @@ export const AcpUsagePanel = memo(function AcpUsagePanel({
     >
       <GitBranchSelector
         projectId={branchProjectId ?? ''}
+        workspaceName={branchWorkspaceName}
         readOnlyBranch={showWorktree ? managedWorktreeBranch ?? '' : undefined}
         variant="session"
       />

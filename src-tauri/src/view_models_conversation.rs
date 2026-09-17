@@ -33,6 +33,7 @@ use gold_band::dsl::{
 };
 use gold_band::dynamic::{DynamicRunPhase, DynamicRunStatus};
 use gold_band::dynamic_store::load_dynamic_graph;
+use gold_band::provider::conversation_prompt_has_payload;
 use gold_band::runtime::{
     RoundState, RunState, RuntimeExecutionPhase, RuntimeExecutionState, TaskState, WorkerRefState,
 };
@@ -765,6 +766,8 @@ pub struct ConversationQueuedPromptVm {
     pub content: String,
     pub attachment_count: usize,
     pub quote_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role_name: Option<String>,
     pub created_at: String,
 }
 
@@ -1176,6 +1179,7 @@ fn direct_prompt_queue_vm(
                 content: item.content,
                 attachment_count: item.attachment_paths.len(),
                 quote_count: item.quotes.len(),
+                role_name: item.role.as_ref().map(|role| role.name.clone()),
                 created_at: item.created_at,
             })
             .collect(),
@@ -3816,6 +3820,7 @@ pub fn conversation_run_vm(
                                         control.transition_cause,
                                         session_presence.established,
                                     );
+                                attach_acp_lifecycle_header(&dyn_attempt_dir, &mut lifecycle);
                                 attach_direct_prompt_queue(
                                     app,
                                     task_id,
@@ -3987,6 +3992,7 @@ pub fn conversation_run_vm(
                         control.transition_cause,
                         session_presence.established,
                     );
+                    attach_acp_lifecycle_header(&attempt_dir, &mut lifecycle);
                     attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
                     let status = lifecycle.display_status.clone();
                     let runtime_display = lifecycle.runtime_display.clone();
@@ -4375,7 +4381,8 @@ pub fn validate_conversation_create_vm(
     let mut missing: Vec<ConversationMissingItemVm> = Vec::new();
 
     let attachment_paths = input.attachment_paths.as_deref().unwrap_or_default();
-    if input.content.trim().is_empty() && attachment_paths.is_empty() {
+    if !conversation_prompt_has_payload(&input.content, attachment_paths.len(), input.role.as_ref())
+    {
         missing.push(missing_item(
             "content.required",
             "Content is required",
@@ -4755,11 +4762,15 @@ pub fn prepare_conversation_task_vm(
     input: &ConversationCreateInputVm,
 ) -> anyhow::Result<PreparedConversationTask> {
     anyhow::ensure!(
-        !input.content.trim().is_empty()
-            || input
+        conversation_prompt_has_payload(
+            &input.content,
+            input
                 .attachment_paths
                 .as_ref()
-                .is_some_and(|paths| !paths.is_empty()),
+                .map(|paths| paths.len())
+                .unwrap_or(0),
+            input.role.as_ref(),
+        ),
         "conversation payload cannot be empty"
     );
     let title =
@@ -8078,6 +8089,43 @@ mod tests {
         assert_eq!(lifecycle.acp.revision, 7);
         assert_eq!(lifecycle.acp.turn_id.as_deref(), Some("failed-turn"));
         assert_eq!(lifecycle.acp.turn_error.as_ref(), Some(&error));
+    }
+
+    #[test]
+    fn conversation_run_session_tree_carries_current_turn_error() {
+        let app = App::new(temp_repo_root());
+        write_conversation_assets_fixture(&app);
+        let snapshot =
+            app.paths
+                .acp_snapshot_file("task-046", "run-060", "round-001", "测试", "attempt-002");
+        let mut metadata: serde_json::Value =
+            gold_band::storage::read_json(&snapshot).unwrap_or_else(|_| json!({}));
+        let error = gold_band::runtime_error::manual_runtime_error_info(
+            gold_band::runtime_error::RuntimeErrorDomain::Config,
+            "acp.session-config-value-unavailable",
+            "ACP session config value `gpt-5.6-luna` is unavailable for `model`",
+            json!({
+                "category": "model",
+                "configId": "model",
+                "value": "gpt-5.6-luna",
+                "availableValues": ["deepseek-v4-pro", "deepseek-flash"],
+            }),
+        );
+        metadata["acpRevision"] = json!(16);
+        metadata["turnId"] = json!("acp-prompt-failed-turn");
+        metadata["latestTurnStatus"] = json!("failed");
+        metadata["liveTurnActivity"] = json!("idle");
+        metadata["turnError"] = serde_json::to_value(&error).unwrap();
+        gold_band::storage::write_json(&snapshot, &metadata).unwrap();
+
+        let vm = conversation_run_vm(&app, "project-001", "task-046", "run-060", None).unwrap();
+        let leaf = vm.session_tree.rounds[0].nodes[0].attempts[0].clone();
+        assert_eq!(leaf.lifecycle.acp.latest_turn_status, "failed");
+        assert_eq!(
+            leaf.lifecycle.acp.turn_id.as_deref(),
+            Some("acp-prompt-failed-turn")
+        );
+        assert_eq!(leaf.lifecycle.acp.turn_error.as_ref(), Some(&error));
     }
 
     #[test]

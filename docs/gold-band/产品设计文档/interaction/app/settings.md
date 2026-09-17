@@ -267,3 +267,8 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - occurrence 默认保留 30 天。清理仅删除 SQLite 中过期且 `accepted_at IS NULL` 的 `succeeded/failed/skipped/missed` 诊断行，保留全部 accepted execution history、`attention_required`、非终态和活动 Run 链接；Task、Run、Round、ACP 文件与产物不属于该清理事务。
 - 2026-08-09 起 `ScheduledRuntimeSettings` 只在通用设置页展示；定时任务管理页移除重复入口，但继续由同一命令和状态模型服务设置页，不增加页面级副本。
 - 2026-08-11 起定时任务运行设置接入前端 stale-while-revalidate 缓存：App 启动后台预取一次填充模块级缓存，进入设置页与在「通用」标签页间切换时命中缓存立即渲染，不再出现「加载中…」闪烁；缓存命中后在新鲜期内不重复请求，过期或保存成功后才静默刷新动态字段（生效情况、启用任务数、电源错误码）。该缓存以独立运行时缓存形态存在，不并入启动静态快照 `AppBootstrapVm`，因为这些值混合了运行时状态而非纯静态配置。
+
+## 12. IM 远程干预与通知
+
+- 设置页「通用」是 IM 接入、私聊绑定和六类通知偏好的唯一可见入口；权威事实仍是后端 IM settings 与 connection generation。
+- 2026-09-17 起 IM 设置接入与定时任务相同的前端 stale-while-revalidate 缓存：App 启动后台预取一次填充模块级缓存，进入设置页与在「通用」标签页间切换时命中缓存立即渲染，不再出现「加载中…」闪烁。缓存命中后在新鲜期内不重复请求；过期后后台静默刷新，保存/启停/扫码/删除成功后写回缓存，connection snapshot 按 generation 单调合入。该缓存只是展示投影，不并入 `AppBootstrapVm`，也不是第二事实源。迟到 fetch 不得覆盖更新的保存结果，也不得用更低 generation 覆盖 live snapshot。已有可展示数据时刷新不得退回「加载中…」。

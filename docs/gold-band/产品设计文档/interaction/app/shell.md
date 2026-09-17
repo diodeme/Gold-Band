@@ -91,7 +91,7 @@ Agent 管理
 
 - 中间主工作区承载会话、任务详情、工作流画布、上下文卡片和设置等一级任务内容。
 - 左侧导航与中间主工作区之间只由中间区域自身的圆角边界绘制可见分隔；可拖拽 resize handle 仅提供命中区域，不再额外绘制贯穿全高的直线，避免直线与左上圆角在顶部形成断裂接缝。
-- 右侧辅助工作区使用通用资源 Tab 描述符。当前正式资源包括 Agent 分支会话、工作空间文件、运行工作流查看、运行工作流编辑/修复、ACP 系统提示和 ACP 原始帧；后续 Diff、产物和日志复用同一容器。文件资源的格式、保存、授权和性能边界见 [右侧工作区文件浏览与编辑](workspace-files.md)。
+- 右侧辅助工作区使用通用资源 Tab 描述符。当前正式资源包括 Agent 分支会话、工作空间文件、运行工作流查看、运行工作流编辑/修复、ACP 系统提示、ACP 原始帧和内置浏览器；后续 Diff、产物和日志复用同一容器。文件资源的格式、保存、授权和性能边界见 [右侧工作区文件浏览与编辑](workspace-files.md)。内置浏览器的会话、页签、子 WebView 与链接打开边界见 [右侧工作区内置浏览器](in-app-browser.md)：工作区 Tab 只是当前 scope 的投影，浏览会话与 Cookie 为全应用一份。
 - 资源 Tab 只保存稳定 locator：工作流资源绑定 `projectId/taskId/runId`，系统提示与原始帧绑定完整 attempt locator（含 outer attempt 与 `branchId`）。工作流图、编辑草稿、system prompt 正文和 raw frame page 都不进入轻量会话 LRU；只有激活 Tab 才解析或查询对应大内容。
 - 会话详情页的“查看工作流 / 编辑工作流 / 修复工作流”统一打开右侧资源，不再打开独立 Sheet；ACP 标题栏的“系统提示 / 原始帧”也统一打开右侧资源，不再替换主会话画布。嵌套 Agent 使用自身 attempt/branch locator 打开对应资源，切换资源不得卸载或重置原 Agent Tab 的缓存内容。
 - 原始帧工具栏按右侧资源容器宽度布局：搜索框固定独占第一行；事件类型、方向、排序位于下一行横向排列并允许自然换行。禁止使用一个大断点在“整组竖排 / 整组横排”之间切换，避免宽面板仍出现三个 Select 纵向堆叠。
@@ -104,7 +104,7 @@ Agent 管理
 - 已打开 Agent 的完整但有限语义窗口进入由 `acpChatResourceCacheSessionCount` 控制的内存 LRU，默认最多 8 个 branch key；切换 Tab 时先同步恢复会话、事件窗口和滚动锚点，再在后台刷新 canonical 数据。缓存未命中才展示加载壳，刷新不得把已经可审计的内容退回“加载中”。
 - 右侧 Dock 与紧凑宽度 Sheet 共用同一 Tab state 和内容组件。窗口自动收窄只隐藏 Dock，不自动用 Sheet 覆盖中间内容；用户在紧凑模式显式点击资源链接时才打开 Sheet。
 - 用户手动关闭工作区只改变会话 Shell 级 `requestedOpen`，不删除 Tab；自动折叠、进入没有右栏能力的运行模式/管理页面以及资源 scope 切换都只改变有效呈现，不得覆盖手动开关意图。
-- `requestedOpen` 与 `tabs` 独立建模：共享顶栏右栏开关可以在 `tabs=[]` 时展开空白入口页。`requestedOpen`、打开动作 revision 与当前运行期宽度投影归属会话 Shell，由快速对话和具体会话详情共享；快速对话使用 `draft:<projectId>` scope，具体会话使用 `conversation:<projectId>:<taskId>:<runId>` scope，只有 Tab 与激活态在当前 scope 内读写。资源描述符必须携带相同 `scopeKey`，不允许旧会话资源写入新会话。
+- `requestedOpen` 与 `tabs` 独立建模：共享顶栏右栏开关可以在 `tabs=[]` 时展开空白入口页。`requestedOpen`、打开动作 revision 与当前运行期宽度投影归属会话 Shell，由快速对话和具体会话详情共享；快速对话使用 `draft:<projectId>` scope，具体会话使用 `conversation:<projectId>:<taskId>:<runId>` scope，只有 Tab 与激活态在当前 scope 内读写。资源描述符必须携带相同 `scopeKey`，不允许旧会话资源写入新会话。内置浏览器是唯一应用级例外：各 scope 只保存是否挂了 `browser` 投影 Tab，内部页与 Cookie 属于进程单例，不复制进会话资源 LRU。
 - 会话资源轻量状态进入 24 项运行期 LRU，只在用户进入 scope、打开或操作资源时更新访问顺序，后台流式事件不 touch。第 25 个有状态 scope 淘汰最久未访问项；被淘汰会话再次进入时 Tab 与激活态为空，但右栏是否展开仍服从 Shell 级用户意图。快速对话创建新会话时删除 draft 资源，不迁移可能带会话归属的 Tab；Shell 级展开意图无需迁移。
 - ACP Session VM、有限事件窗口、正文 hydrate 标记和滚动/分页锚点按同一 resource key 进入统一重资源 LRU；容量由 `acpChatResourceCacheSessionCount` 控制，默认 8。淘汰必须原子释放同一 resource 的全部可重建投影，禁止独立顺序造成部分大对象继续驻留。live branch snapshot 继续使用自身 64 项轻量上限，并保护仍有订阅者的条目。
 - Tab 与激活态只保存在当前应用进程内，重启后清空；右侧工作区像素宽度不属于会话内容，继续写入用户级 conversation preference 并跨重启全局恢复，切换会话不得造成宽度跳变。

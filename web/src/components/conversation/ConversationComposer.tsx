@@ -28,7 +28,6 @@ import {
   updateAcpConfigOptionOverride,
 } from '@/components/acp/AcpModelThoughtSelects';
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
-import { channelAppName } from '@/lib/channel-app-name';
 import {
   buildSlashCatalog,
   committedRoleSnapshot,
@@ -42,7 +41,7 @@ import type { ScheduledScheduleInput } from '@/types';
 import { validateScheduledConversationInput } from '@/lib/scheduled-task-validation';
 import { formatScheduledScheduleInput } from '@/lib/scheduled-task-formatting';
 import { PromptInput, PromptInputTextarea } from '@/components/prompt-kit/prompt-input';
-import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
+import { COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME, CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
 import { useOverflowTooltip } from '@/hooks/useOverflowTooltip';
 import { useWebviewMeasuredContainer } from '@/hooks/use-webview-measured-container';
@@ -289,6 +288,7 @@ export function ConversationWorkspaceInfoBar({
     ? t('conversation.home.workLocationWorktree')
     : t('conversation.home.workLocationMain');
   const branchVisible = showBranch ?? showWorkLocation;
+  const selectedWorkspaceName = workspaces.find((workspace) => workspace.projectId === projectId)?.name ?? workspaceName;
 
   return (
     <TooltipProvider>
@@ -418,6 +418,7 @@ export function ConversationWorkspaceInfoBar({
           {branchVisible ? (
             <GitBranchSelector
               projectId={projectId}
+              workspaceName={selectedWorkspaceName}
               disabled={busy || checkingLocation}
               responsiveContext
               onBranchChange={onBranchChange}
@@ -671,7 +672,6 @@ export function ConversationComposer({
   const agentCommands = useAgentCommands(commandAgentType, workspacePath);
   const slashCatalog = useMemo(
     () => buildSlashCatalog(
-      channelAppName(),
       t('acp.slashAgentGroup'),
       profiles,
       agentCommands.commands,
@@ -699,6 +699,7 @@ export function ConversationComposer({
   const canSubmit = canSubmitBase && hasUserPromptPayload(
     slashSendableText(content, committedSlashCommand),
     attachments.length,
+    committedRoleSnapshot(committedSlashCommand),
   );
   const canCreateScheduledTask = canSubmit && Boolean(onCreateScheduledTask);
   const slashAgentIconKey = isDirect
@@ -1046,12 +1047,10 @@ export function ConversationComposer({
             onDismiss={slashCommands.dismiss}
             onSelect={(index) => { slashCommands.selectByIndex(index); }}
             variant="inline"
-            agentIconSrc={slashAgentIconKey ? agentIconSrc(slashAgentIconKey) : null}
-            agentIconClassName={slashAgentIconKey ? agentIconClass(slashAgentIconKey) : undefined}
           >
             <div className="relative min-w-0">
               {committedSlashCommand ? (
-                <span ref={committedInputLayout.adornmentRef} className="absolute left-0 top-2 z-10 inline-flex">
+                <span ref={committedInputLayout.adornmentRef} className={`${COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME} left-0 top-2`}>
                   <SlashCommandInputTag
                     prefix={committedSlashCommand.prefix}
                     description={committedSlashCommand.item.description}
@@ -1068,7 +1067,7 @@ export function ConversationComposer({
                   />
                 </span>
               ) : multicaBinding ? (
-                <span ref={committedInputLayout.adornmentRef} className="absolute left-0 top-2 z-10 inline-flex">
+                <span ref={committedInputLayout.adornmentRef} className={`${COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME} left-0 top-2`}>
                   {/* accent/accent-foreground is the theme contract's guaranteed-contrast pair for
                       emphasized surfaces (same pairing as permission-card and recipe hover/selected
                       states). Never tint this chip from `primary` alone: in themes like

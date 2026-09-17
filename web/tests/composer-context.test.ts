@@ -100,4 +100,14 @@ describe('composer payload contract', () => {
     expect(hasUserPromptPayload('', 1)).toBe(true);
     expect(hasUserPromptPayload('   ', 0)).toBe(false);
   });
+
+  it('treats a complete role snapshot as a sendable payload even without user text', () => {
+    const role = { profileId: 'pf-dev', name: '开发', content: '完整角色定义' };
+    expect(hasUserPromptPayload('', 0, role)).toBe(true);
+    expect(hasUserPromptPayload('   ', 0, role)).toBe(true);
+    expect(hasUserPromptPayload('', 0, { profileId: 'pf-dev', name: '开发', content: '' })).toBe(false);
+    const submission = createUserPromptSubmission('', [], role);
+    expect(submission.displayText).toBe('');
+    expect(submission.role).toEqual(role);
+  });
 });

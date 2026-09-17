@@ -174,6 +174,26 @@ describe('Markdown local file link routing', () => {
     }
   });
 
+  it('routes http links through openWebUrl when the workspace handler provides it', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const openLocalFile = vi.fn();
+    const openWebUrl = vi.fn();
+    try {
+      await act(async () => root.render(
+        <MarkdownResourceLinkProvider handler={{ openLocalFile, openWebUrl }}>
+          <Markdown>{'[website](https://example.com/docs)'}</Markdown>
+        </MarkdownResourceLinkProvider>,
+      ));
+      await act(async () => container.querySelector<HTMLAnchorElement>('a')?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })));
+      expect(openWebUrl).toHaveBeenCalledWith('https://example.com/docs');
+      expect(openExternalUrl).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('keeps a local link inert when no workspace handler is available', async () => {
     const container = document.createElement('div');
     document.body.append(container);

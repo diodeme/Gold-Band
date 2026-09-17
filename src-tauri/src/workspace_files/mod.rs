@@ -20,6 +20,19 @@ pub use watcher::WorkspaceFileWatchRuntime;
 
 pub const WORKSPACE_FILE_PREVIEW_PROTOCOL: &str = "gold-band-preview";
 
+pub(crate) async fn resolve_file_link_locator(
+    state: &DesktopState,
+    project_id: &str,
+    raw_href: &str,
+) -> CommandResult<WorkspaceFileLocatorVm> {
+    let root = resolve_workspace_root(state, project_id)?;
+    let parse_root = root.clone();
+    let raw_href = raw_href.to_string();
+    let (path, _) =
+        spawn_blocking_command(move || parse_file_link_from(&parse_root, &raw_href, None)).await?;
+    Ok(locator_for_path(&root, &path))
+}
+
 pub(crate) fn revision_for_preview(path: &Path) -> CommandResult<FileRevisionVm> {
     service::revision_for_path(path)
 }

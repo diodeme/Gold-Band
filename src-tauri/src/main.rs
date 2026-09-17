@@ -2,6 +2,10 @@
 
 mod acp_images;
 mod avatar;
+mod browser;
+mod browser_bookmarks;
+mod browser_history;
+mod browser_ua;
 mod builtin_mcp;
 mod channel;
 mod commands;
@@ -181,6 +185,9 @@ fn run() -> anyhow::Result<()> {
         .manage(personal_analytics::PersonalAnalyticsInsightRuntime::default())
         .manage(WorkspaceFileRuntime::default())
         .manage(WorkspaceFileWatchRuntime::default())
+        .manage(browser::BrowserHost::default())
+        .manage(browser_history::BrowserHistoryHost::default())
+        .manage(browser_bookmarks::BrowserBookmarkHost::default())
         .manage(multica::shared_state())
         .manage(multica::MulticaConnectCancel::default())
         .manage(wallpaper_runtime);
@@ -200,6 +207,23 @@ fn run() -> anyhow::Result<()> {
                     responder.respond(workspace_files::preview_protocol_response(
                         &runtime,
                         &request_path,
+                    ));
+                });
+            },
+        )
+        // Browser local HTML is served through the same bounded custom-protocol
+        // mechanism so the child WebView keeps a single authorized directory
+        // instead of relying on file:// (unsupported on WebView2 navigation).
+        .register_asynchronous_uri_scheme_protocol(
+            browser::BROWSER_LOCAL_FILE_PROTOCOL,
+            |protocol_context, request, responder| {
+                let app = protocol_context.app_handle().clone();
+                let label = protocol_context.webview_label().to_string();
+                let method = request.method().clone();
+                let uri = request.uri().to_string();
+                std::thread::spawn(move || {
+                    responder.respond(browser::browser_local_file_protocol_response(
+                        &app, &label, &method, &uri,
                     ));
                 });
             },
@@ -601,6 +625,30 @@ fn run() -> anyhow::Result<()> {
             workspace_files::release_external_file_access,
             workspace_files::start_workspace_file_watch,
             workspace_files::stop_workspace_file_watch,
+            browser::browser_create_page,
+            browser::browser_resolve_local_html,
+            browser::browser_set_bounds,
+            browser::browser_show_page,
+            browser::browser_hide_page,
+            browser::browser_hide_all,
+            browser::browser_show_address_suggestions,
+            browser::browser_hide_address_suggestions,
+            browser::browser_address_suggestion_action,
+            browser::browser_address_suggestions_ready,
+            browser::browser_navigate,
+            browser::browser_go_back,
+            browser::browser_go_forward,
+            browser::browser_reload,
+            browser::browser_stop,
+            browser::browser_set_view_mode,
+            browser::browser_close_page,
+            browser::browser_discard_all,
+            browser_history::browser_list_history,
+            browser_bookmarks::browser_list_bookmarks,
+            browser_bookmarks::browser_add_bookmark,
+            browser_bookmarks::browser_remove_bookmark,
+            browser_bookmarks::browser_reorder_bookmarks,
+            browser_history::browser_delete_history,
             // MCP & SKILL management
             list_mcp_servers,
             add_mcp_server,

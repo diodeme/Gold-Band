@@ -823,6 +823,49 @@ pub enum SkillSource {
     Project,
 }
 
+pub const CURRENT_BROWSER_PREFERENCES_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BrowserSearchEngine {
+    #[default]
+    Baidu,
+    Google,
+    Bing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserPreferences {
+    #[serde(default = "browser_preferences_schema_version")]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub search_engine: BrowserSearchEngine,
+    #[serde(default = "browser_preference_enabled")]
+    pub open_local_links_in_browser: bool,
+    #[serde(default = "browser_preference_enabled")]
+    pub open_web_links_in_browser: bool,
+}
+
+impl Default for BrowserPreferences {
+    fn default() -> Self {
+        Self {
+            schema_version: CURRENT_BROWSER_PREFERENCES_SCHEMA_VERSION,
+            search_engine: BrowserSearchEngine::Baidu,
+            open_local_links_in_browser: true,
+            open_web_links_in_browser: true,
+        }
+    }
+}
+
+fn browser_preferences_schema_version() -> u32 {
+    CURRENT_BROWSER_PREFERENCES_SCHEMA_VERSION
+}
+
+fn browser_preference_enabled() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsConfig {
@@ -836,6 +879,8 @@ pub struct SettingsConfig {
     pub appearance: Option<AppearancePreference>,
     pub personalization: Option<PersonalizationPreference>,
     pub desktop_language: Option<DesktopLanguage>,
+    #[serde(default)]
+    pub browser: BrowserPreferences,
     pub desktop_updater_url_override: Option<String>,
     #[serde(default, with = "managed_agents")]
     pub agents: Option<BTreeMap<ManagedAgentId, ManagedAgentConfig>>,
@@ -1806,7 +1851,7 @@ impl Default for RuntimeConfig {
         );
         let base = Self {
             log_level: RuntimeLogLevel::Info,
-            log_prompts: true,
+            log_prompts: false,
             log_provider_command: true,
             log_retention_days: 30,
             console_theme: ConsoleThemeName::GoldBand,
@@ -2103,15 +2148,15 @@ impl RuntimeConfig {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpAdapterConfig, AppearancePreference, ColorSchemePreference, ConsoleThemeName,
-        ConversationDirectConfig, ConversationRunMode, ConversationRunModeEntry,
-        DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS, DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT,
-        DesktopAvailableUpdate, DesktopLanguage, DesktopUpdateBadgeState, FontSizePreference,
-        FontStackPreference, ManagedAgentConfig, ManagedAgentId, MulticaAccountRef,
-        MulticaCompletedTask, MulticaTaskConversation, MulticaWorkspaceRef,
-        PersonalizationPreference, ProjectAppConfig, ProjectIdentityConfig, RuntimeConfig,
-        RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery, TurnFilesConfig,
-        VisualQuality, WallpaperImagePreference, WorkspaceLayoutConfig,
+        AcpAdapterConfig, AppearancePreference, BrowserPreferences, BrowserSearchEngine,
+        ColorSchemePreference, ConsoleThemeName, ConversationDirectConfig, ConversationRunMode,
+        ConversationRunModeEntry, DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS,
+        DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT, DesktopAvailableUpdate, DesktopLanguage,
+        DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, ManagedAgentConfig,
+        ManagedAgentId, MulticaAccountRef, MulticaCompletedTask, MulticaTaskConversation,
+        MulticaWorkspaceRef, PersonalizationPreference, ProjectAppConfig, ProjectIdentityConfig,
+        RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery,
+        TurnFilesConfig, VisualQuality, WallpaperImagePreference, WorkspaceLayoutConfig,
         catalog_agent_default_config, project_identity_config,
     };
     use crate::agent_catalog::builtin_agent_catalog;
@@ -2136,6 +2181,32 @@ mod tests {
         personalization.typography.editor.font_size =
             FontSizePreference::Custom { px: editor_size };
         personalization
+    }
+
+    #[test]
+    fn browser_preferences_have_versioned_defaults_and_roundtrip() {
+        let settings: SettingsConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(settings.browser, BrowserPreferences::default());
+        assert!(settings.browser.open_local_links_in_browser);
+        assert!(settings.browser.open_web_links_in_browser);
+
+        let custom = SettingsConfig {
+            browser: BrowserPreferences {
+                schema_version: 1,
+                search_engine: BrowserSearchEngine::Google,
+                open_local_links_in_browser: false,
+                open_web_links_in_browser: false,
+            },
+            ..SettingsConfig::default()
+        };
+        let roundtripped: SettingsConfig =
+            serde_json::from_value(serde_json::to_value(custom).unwrap()).unwrap();
+        assert_eq!(
+            roundtripped.browser.search_engine,
+            BrowserSearchEngine::Google
+        );
+        assert!(!roundtripped.browser.open_local_links_in_browser);
+        assert!(!roundtripped.browser.open_web_links_in_browser);
     }
 
     #[test]
@@ -2623,6 +2694,10 @@ mod tests {
         assert_eq!(config.desktop_language, DesktopLanguage::ZhCn);
         assert_eq!(config.personalization, PersonalizationPreference::default());
         assert!(matches!(config.log_level, RuntimeLogLevel::Info));
+        assert!(
+            !config.log_prompts,
+            "runtime.log must not record prompt bodies by default"
+        );
     }
 
     #[test]

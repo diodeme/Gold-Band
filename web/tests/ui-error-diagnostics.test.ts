@@ -12,6 +12,15 @@ import {
 } from '@/lib/ui-error-diagnostics';
 
 describe('ui error diagnostics', () => {
+  it('surfaces the structured code of command errors instead of an opaque object', () => {
+    expect(extractErrorMessage({
+      code: 'browser.webview.create_failed',
+      params: { reason: 'label already exists' },
+    })).toBe('browser.webview.create_failed {"reason":"label already exists"}');
+    expect(extractErrorMessage({ code: 'browser.address_suggestions.invalid' }))
+      .toBe('browser.address_suggestions.invalid');
+  });
+
   it('routes window, unhandled rejection, and React uncaught errors through one structured sink', () => {
     const sink = vi.fn(() => Promise.resolve());
     const diagnostics = installUiErrorDiagnostics(sink);

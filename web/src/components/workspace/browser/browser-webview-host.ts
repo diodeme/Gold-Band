@@ -1,5 +1,5 @@
 import { getRuntimeApi } from '@/api/client';
-import { overlayOwnerAttribute, overlayPortalHostId, rightWorkspaceOverlayOwner } from '@/lib/portal-container';
+import { overlayOwnerAttribute, overlayPortalHostId, overlayCollisionBoundaryAttribute, conversationOverlayCollisionBoundary, rightWorkspaceOverlayOwner } from '@/lib/portal-container';
 import {
   browserSessionStore,
   type BrowserPage,
@@ -26,10 +26,72 @@ export interface BrowserNativePageEvent {
 const OVERLAY_SLOT_SELECTORS = [
   '[data-slot="dialog-overlay"]',
   '[data-slot="alert-dialog-overlay"]',
+  '[data-slot="sheet-overlay"]',
+  '[data-slot="dropdown-menu-content-positioner"]',
   '[data-slot="dropdown-menu-content"]',
+  '[data-slot="dropdown-menu-sub-content-positioner"]',
+  '[data-slot="dropdown-menu-sub-content"]',
+  '[data-slot="context-menu-content-positioner"]',
   '[data-slot="context-menu-content"]',
+  '[data-slot="context-menu-sub-content-positioner"]',
+  '[data-slot="context-menu-sub-content"]',
   '[data-slot="popover-content"]',
+  '[data-slot="select-content"]',
 ].join(',');
+
+function overlayMeasurementTarget(element: Element): Element {
+  const parent = element.parentElement;
+  if (parent?.getAttribute('data-slot')?.endsWith('-content-positioner')) return parent;
+  return element;
+}
+
+function readElementBounds(element: Element): BrowserBounds | null {
+  const target = overlayMeasurementTarget(element);
+  if (!(target instanceof HTMLElement)) return null;
+  const visual = target.getBoundingClientRect();
+  const width = Math.max(visual.width, target.offsetWidth);
+  const height = Math.max(visual.height, target.offsetHeight);
+  if (width < 1 || height < 1) return null;
+  return {
+    x: visual.x,
+    y: visual.y,
+    width,
+    height,
+  };
+}
+
+function overlayIsOpen(element: Element): boolean {
+  const state = element.getAttribute('data-state');
+  if (state === 'closed') return false;
+  if (state === 'open') return true;
+  const parentState = element.parentElement?.getAttribute('data-state');
+  if (parentState === 'closed') return false;
+  return parentState === 'open';
+}
+
+function rectsIntersect(left: BrowserBounds, right: BrowserBounds) {
+  return left.x < right.x + right.width
+    && left.x + left.width > right.x
+    && left.y < right.y + right.height
+    && left.y + left.height > right.y;
+}
+
+function isConversationConstrained(element: Element): boolean {
+  const target = overlayMeasurementTarget(element);
+  return target.getAttribute(overlayCollisionBoundaryAttribute) === conversationOverlayCollisionBoundary
+    || element.getAttribute(overlayCollisionBoundaryAttribute) === conversationOverlayCollisionBoundary;
+}
+
+function isRightWorkspaceExempt(element: Element): boolean {
+  const host = document.getElementById(overlayPortalHostId);
+  if (!host) return false;
+  for (const child of Array.from(host.children)) {
+    const owned = child.getAttribute(overlayOwnerAttribute) === rightWorkspaceOverlayOwner
+      || Boolean(child.querySelector('[data-right-workspace-presentation="sheet"]'));
+    if (owned && (child === element || child.contains(element))) return true;
+  }
+  return false;
+}
 
 function roundBounds(bounds: BrowserBounds): BrowserBounds {
   return {
@@ -58,6 +120,7 @@ class BrowserWebviewHost {
   private visiblePageId: string | null = null;
   private overlayOpen = false;
   private overlayObserver: MutationObserver | null = null;
+  private overlayResizeObserver: ResizeObserver | null = null;
   private visibilityListener: (() => void) | null = null;
   private readonly pendingCreates = new Map<string, Promise<void>>();
   private readonly pendingNavigations = new Map<string, {
@@ -100,6 +163,7 @@ class BrowserWebviewHost {
       return;
     }
     this.lastBounds.set(page.pageId, next);
+    this.setOverlayOpen(this.hasBlockingOverlay());
     if (isBrowserPortalUrl(page.url)) {
       await this.hideAll();
       return;
@@ -118,6 +182,7 @@ class BrowserWebviewHost {
 
   scheduleBounds(pageId: string, bounds: BrowserBounds) {
     this.lastBounds.set(pageId, roundBounds(bounds));
+    this.setOverlayOpen(this.hasBlockingOverlay());
     if (this.frame != null) return;
     this.frame = requestAnimationFrame(() => {
       this.frame = null;
@@ -256,33 +321,80 @@ class BrowserWebviewHost {
 
   hasBlockingOverlay() {
     if (typeof document === 'undefined') return false;
-    const isOpenOverlay = (element: Element) => element.getAttribute('data-state') !== 'closed';
-    const containsOpenOverlay = (element: Element) => {
-      if (element.matches(OVERLAY_SLOT_SELECTORS) && isOpenOverlay(element)) return true;
-      return Array.from(element.querySelectorAll(OVERLAY_SLOT_SELECTORS)).some(isOpenOverlay);
-    };
-    const host = document.getElementById(overlayPortalHostId);
-    if (host) {
-      for (const child of Array.from(host.children)) {
-        if (child.getAttribute(overlayOwnerAttribute) === rightWorkspaceOverlayOwner) continue;
-        if (child.querySelector('[data-right-workspace-presentation="sheet"]')) continue;
-        if (containsOpenOverlay(child)) return true;
-        if (child.getAttribute('data-slot')?.includes('overlay') && isOpenOverlay(child)) return true;
+    const viewport = this.viewportBounds();
+    if (!viewport) return false;
+    return this.listOpenBlockingOverlays().some((element) => {
+      const overlayBounds = readElementBounds(element);
+      return overlayBounds != null && rectsIntersect(overlayBounds, viewport);
+    });
+  }
+
+  private viewportBounds(): BrowserBounds | null {
+    if (typeof document !== 'undefined') {
+      const host = document.querySelector('[data-browser-native-host]');
+      if (host instanceof HTMLElement) {
+        const rect = host.getBoundingClientRect();
+        const width = Math.max(rect.width, host.offsetWidth);
+        const height = Math.max(rect.height, host.offsetHeight);
+        if (width >= 2 && height >= 2) {
+          return roundBounds({ x: rect.x, y: rect.y, width, height });
+        }
       }
     }
-    return Array.from(document.querySelectorAll(OVERLAY_SLOT_SELECTORS)).some(isOpenOverlay);
+    if (this.visiblePageId) {
+      const bounds = this.lastBounds.get(this.visiblePageId);
+      if (bounds) return bounds;
+    }
+    for (const bounds of this.lastBounds.values()) {
+      if (bounds.width >= 2 && bounds.height >= 2) return bounds;
+    }
+    return null;
+  }
+
+  private listOpenBlockingOverlays(): Element[] {
+    if (typeof document === 'undefined') return [];
+    return Array.from(document.querySelectorAll(OVERLAY_SLOT_SELECTORS)).filter((element) => (
+      overlayIsOpen(element) && !isRightWorkspaceExempt(element) && !isConversationConstrained(element)
+    ));
+  }
+
+  private refreshOverlayResizeTargets() {
+    if (!this.overlayResizeObserver) return;
+    this.overlayResizeObserver.disconnect();
+    const host = document.querySelector('[data-browser-native-host]');
+    if (host) this.overlayResizeObserver.observe(host);
+    for (const overlay of this.listOpenBlockingOverlays()) {
+      this.overlayResizeObserver.observe(overlay);
+    }
   }
 
   private watchOverlays() {
     if (typeof document === 'undefined' || this.overlayObserver) return;
-    const sync = () => {
-      this.setOverlayOpen(this.hasBlockingOverlay());
-    };
-    this.overlayObserver = new MutationObserver(sync);
-    this.overlayObserver.observe(document.body, { childList: true, subtree: true });
+    const sync = () => this.setOverlayOpen(this.hasBlockingOverlay());
+    this.overlayObserver = new MutationObserver(() => {
+      sync();
+      this.refreshOverlayResizeTargets();
+    });
+    this.overlayObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['data-state', 'data-slot', overlayOwnerAttribute, overlayCollisionBoundaryAttribute],
+    });
     const host = document.getElementById(overlayPortalHostId);
-    if (host) this.overlayObserver.observe(host, { childList: true, subtree: true });
+    if (host) {
+      this.overlayObserver.observe(host, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['data-state', 'data-slot', overlayOwnerAttribute, overlayCollisionBoundaryAttribute],
+      });
+    }
+    if (typeof ResizeObserver !== 'undefined') {
+      this.overlayResizeObserver = new ResizeObserver(sync);
+    }
     sync();
+    this.refreshOverlayResizeTargets();
   }
 
   onVisibilityChange(listener: () => void) {
@@ -301,6 +413,8 @@ class BrowserWebviewHost {
     this.frame = null;
     this.overlayObserver?.disconnect();
     this.overlayObserver = null;
+    this.overlayResizeObserver?.disconnect();
+    this.overlayResizeObserver = null;
     this.unlisten?.();
     this.unlisten = null;
     this.started = false;

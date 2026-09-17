@@ -40,9 +40,13 @@
 
 建议浮层首次聚焦约 1.5 秒才出现属于首帧就绪协议缺陷：浮层创建后保持隐藏，却要求页面连续执行两次 `requestAnimationFrame` 上报“已绘制”才显示；WebView2 会暂停隐藏表面的动画帧，因此正常路径无法完成，只能等待 1.2 秒兜底。修复方向是由 React 在建议行和主题同步提交后的 layout effect 上报当前 revision 已 ready，Rust 校验它仍是当前可见投影后立即显示；异常兜底继续保留，但不再进入正常关键路径。
 
+对话栏菜单打开时网页变白，属于把「任意菜单打开即 hide」当成充分条件，过粗。平台约束只要求 HTML 浮层不得画进网页子 WebView 矩形。修复方向是对话栏以自身容器为 collision boundary，菜单不进入网页矩形；受该约束的菜单不走 hide，因为 hide 是原生 IPC，打开当下的未收敛几何一旦被当成相交，就会先 hide 再 show 闪白。hide 只留给全屏 Dialog / 非自身 Sheet，以及未受对话栏约束且与网页占位盒相交的菜单。地址栏建议仍用独立 child WebView，因为那块浮层必须压在网页矩形上。
+
 本地 HTML 打不开属于原有设计缺陷：§9 原先把「已授权目录 + `file://` 导航」当作可用方案，但 Windows WebView2 对子 WebView 不保证 `file://` 导航与相对资源加载，实际表现为白屏且没有任何 load 事件；同时前端在提交地址时先写权威 URL、再异步下发原生命令，失败既不回滚也不给出结构化错误，重复点击还会在同一个 page 上并发下发多条原生导航。修复方向是改用与图片预览同源的 Tauri 自定义协议承载本地 HTML（按当前页已授权目录读取、逐段拒绝越界路径），并把「提交地址 → 原生命令 → 权威 URL 收敛」变成单一在途队列：同目标重复提交合并为一次，失败回滚到上一次确认 URL 并写结构化错误码，而不是新增第二套页状态或对某个文件类型打补丁。
 
 不能把网页画在主应用 WebView 的 iframe 里：多数站点会拒绝嵌入，且会和 Gold Band IPC 同进程。子 WebView 是原生图层，不是 CSS div，必须按占位盒同步坐标，并在右栏折叠、Sheet、Dialog、切 Tab 时显隐。
+
+启用 Tauri `unstable` 后，主 WebView 以 `WindowChild` 创建，runtime 只会给 `WindowContent` 挂 `TAURI_DRAG_RESIZE_WINDOW`。Win10 关闭 native shadow 后没有 DWM 外侧缩放框，冷启动就会失去四边拖拽，不需要先打开浏览器页。这是正确的无边框缩放设计下的宿主挂钩缺口，不是 Win10 阴影策略错误，也不该改成 HTML 缩放手柄。修复是窗口就绪后重新断言 `resizable` 以挂上 Tauri overlay，并在任何 child WebView `HWND_TOP` 之后把该 overlay 再抬到最前；其客户区有孔洞，建议浮层仍可在孔内接收点击。
 
 工作区每个 URL 一 Tab 会造成 Tab 爆炸（页内也会开新页）。浏览器是一个工作对象，页是它内部状态。浏览会话全应用一份，因为 Cookie profile 也是一份；按工作空间拆开会变成多套页签共用登录态。
 
@@ -165,7 +169,7 @@ BrowserPanel
 - 门户 URL 仍测量占位盒并记住 bounds，但不 create / show；从门户提交地址或打开书签时用该尺寸创建原生页。
 - 标签必须唯一且符合 Tauri webview label 规则。
 - 活 WebView registry 与访问顺序只由 Rust `BrowserHostInner` 管理。达到上限并成功关闭淘汰页后，Rust 立即发送 `discarded { pageId }` 事件，前端只据此把对应页投影为 `live=false`，不得另建一套淘汰顺序或提前猜测候选页；即使随后新 WebView 创建失败，淘汰事实也必须收敛。
-- 紧凑右侧工作区 Sheet 的 overlay 必须带稳定 owner 标记，使浏览器忽略承载自身的 overlay 并按 Sheet 占位盒展示；其他 Sheet、Dialog、权限弹窗和菜单仍属于阻塞 overlay，必须 hide 原生页。
+- 紧凑右侧工作区 Sheet 的 overlay 必须带稳定 owner 标记，使浏览器忽略承载自身的 overlay 并按 Sheet 占位盒展示。全屏 Dialog / AlertDialog / 非自身 Sheet overlay，以及未受对话栏 collision 约束且与网页占位盒相交的菜单，仍必须 hide 原生页。对话栏内 Select / Dropdown / Popover / Context Menu 以对话栏容器为 collision boundary，宽度不超过 Radix available-width，不得进入网页矩形；这类受约束菜单打开时保持网页可见，不得因打开瞬间的未收敛矩形触发 hide→show。
 - 地址栏建议在普通 Web 预览中保留工具栏内的绝对定位回退；桌面端使用标签固定为 `gb-browser-address-suggestions` 的独立受信任 child WebView。该浮层只同步地址栏锚点、最多 9 条有界展示数据、选中索引和必要主题 token；位置优先在地址栏下方，空间不足时翻转到上方，并约束在应用视口内。不得改写网页 native host 的 `top`、不得 resize/hide 网页，也不得为建议列表复制访问记录 canonical state。
 
 ## 8. 生命周期与显隐
@@ -182,7 +186,8 @@ BrowserPanel
 | 手动收起右栏（workspace-close） | 立刻 hide + suppress，停同步 | 保留（不丢弃） | 保留 | 在（只是看不见）
 | 窗口变窄自动收起，Sheet 未开 | 立刻 hide + suppress，停同步 | 保留 | 保留 | 在 |
 | 窄屏 Sheet 打开 | 对齐抽屉矩形 | 留着 | 保留 | 在 Sheet 中 |
-| 任意 Dialog / 权限弹窗 / 菜单打开 | hide | 留着 | 保留 | 不变 |
+| 全屏 Dialog / 权限弹窗 / 未受对话栏约束且与网页占位盒相交的菜单打开 | hide | 留着 | 保留 | 不变 |
+| 对话栏受 collision 约束的菜单打开 | 保持 show | 留着 | 保留 | 不变 |
 | overlay 关闭且浏览器仍是可见激活资源 | resume 后按占位盒 show | 当前页若已丢弃则重建 | 保留 | 不变 |
 | × 工作区「浏览器」（close） | hide | 全部丢弃 | **保留** | 去掉 |
 | 内部关闭所有标签 | hide | 全部关闭 | 清空 | 仍在，空态 + |
@@ -203,7 +208,7 @@ BrowserPanel
 
 `WorkspaceShell` 仍是同窗口 child WebView 的最终 owner。占位组件卸载时的 `hideAll` 只负责局部可见性收敛。owner cleanup 使用本地 generation fence：React StrictMode 的模拟卸载若紧接着重新挂载，旧 cleanup 必须失效；但无论是面板卸载、Shell 卸载还是 `available=false`，cleanup 都只 suppress，不销毁实例，避免切走再立即回来时迟到 discard 杀掉刚恢复的实例。关闭顺序固定为先 best-effort hide，再执行 native close，close 成功后才从 registry 删除；close 失败必须返回结构化错误并保留 registry 项，允许重试，同时优先让图层退出命中区域。
 
-地址建议浮层不进入活网页 LRU。聚焦/输入/键盘选中/主题或窗口尺寸变化时更新同一个实例；提交、Escape、失焦、浏览器整体隐藏或 owner 丢弃时 hide/close。show/hide revision 由模块级分配器跨组件挂载单调递增；整体隐藏还必须在 Rust 侧失效化在途 show，迟到请求不得覆盖较新的 hide。鼠标选择与删除通过带 revision 和稳定 item key 的事件回到主 WebView；主界面只接受当前可见 revision 且仍存在于当前建议投影中的项目。
+地址建议浮层不进入活网页 LRU。聚焦/输入/键盘选中/主题或窗口尺寸变化时更新同一个实例；提交、Escape、主界面点到地址栏以外、浏览页子 WebView 获得焦点、浏览器整体隐藏或 owner 丢弃时 hide/close。地址栏因点击浮层而失焦不得 hide。show/hide revision 由模块级分配器跨组件挂载单调递增；整体隐藏还必须在 Rust 侧失效化在途 show，迟到请求不得覆盖较新的 hide。鼠标选择与删除通过带 revision 和稳定 item key 的事件回到主 WebView；主界面只接受当前可见 revision 且仍存在于当前建议投影中的项目。dismiss 只关闭浮层，不匹配建议项。
 
 地址建议浮层按投影收敛，不按调用次数收敛：前端只有投影（bounds、条目、选中项、主题）真正变化时才发送一次请求，相同的重复同步事件不得再次发送；Rust 侧对浮层的创建/显隐串行化，并在持锁后读取**最新投影**决定最终状态。因此并发或交错的请求必须收敛到最新投影：较新的 show 让所有在途请求最终显示最新内容，较新的 hide 让所有在途请求最终隐藏；任何迟到请求都不得隐藏较新 show 已经显示的浮层。原生命令失败不得被静默吞掉，必须上报结构化错误码，并在下一次投影变化时允许重试。
 
@@ -211,13 +216,13 @@ BrowserPanel
 
 浮层首帧必须无黑底闪烁：子 WebView 创建时使用透明默认背景并保持隐藏，只有建议文档已经执行、React 已同步提交建议行和主题、并通过当前 revision 的 ready 命令确认后才 show；同时保留一个 1.2 秒有界兜底，避免页面脚本异常时列表永久不可见。窗口位置/尺寸同步与显隐是两件事：bounds 可以在创建后立即设置，但首帧可见性必须等待内容提交，不得依赖“先显示、后加载”。
 
-浮层的点击回传必须走**可校验、可审计的命令通路**：`browser_address_suggestion_action { revision, kind, key }`，由 Rust 校验（revision 非零、kind 仅 choose/remove、key 非空且有界）并记录日志后转发给主 WebView；不得只依赖子 WebView 之间的 `emitTo`，因为浮层没有自己的诊断通道，跨 WebView 事件一旦被拒绝或丢失就完全不可观测。主 WebView 仍按 revision + 稳定 item key 校验后才执行跳转或删除。
+浮层的点击回传必须走**可校验、可审计的命令通路**：`browser_address_suggestion_action { revision, kind, key }`，由 Rust 校验（revision 非零、kind 仅 choose/remove/dismiss、key 非空且有界）并记录日志后转发给主 WebView；不得只依赖子 WebView 之间的 `emitTo`，因为浮层没有自己的诊断通道，跨 WebView 事件一旦被拒绝或丢失就完全不可观测。主 WebView 仍按 revision 校验；choose/remove 还要用稳定 item key 匹配当前建议投影。
 
-点击浮层必然让地址栏先失焦（焦点转到原生浮层 WebView），因此“失焦即隐藏/取消”的实现顺序会让 hide 先于点击事件到达。判定一次建议点击是否有效，必须使用**浮层当时正在显示的 revision**，hide 不得把它失效化；否则用户点一条记录会先触发 hide，随后到达的点击因 revision 不匹配被丢弃，表现为“点了完全没反应”。隐藏时仍按原语义收敛界面，但已在显示中的投影 revision 在收到下一次 show 之前保持可接受。
+点击浮层必然让地址栏先失焦（焦点转到原生浮层 WebView），因此不得把地址栏 `blur` 当成建议会话结束：那会先 hide 再在 `remove` 后 show，记录面板会闪一下。判定一次建议点击是否有效，必须使用**浮层当时正在显示的 revision**。`remove` 只更新剩余建议投影，不关浮层、不跳转。关闭只发生在选中跳转、提交、Escape、主界面点到地址栏以外，以及浏览页子 WebView 获得焦点（`dismiss`）。网页获得焦点由页面 WebView 的 focus 信号发出 dismiss，不能再靠地址栏失焦猜测。
 
 地址栏草稿属于用户：地址栏聚焦编辑期间，网页带来的 `url`/标题事件（跳转、重定向、SPA 路由变化）不得覆盖已输入内容，也不得把“已输入”状态重置回“最近访问”。只有切换内部页（`pageId` 变化）或提交后才允许用权威 URL 重写地址栏。否则同一个输入在“空白页”与“已打开页面”上会落到不同的建议模式：空白页稳定走过滤结果，已打开页面会被页面事件打回最近访问，表现为两处检索效果不一致。
 
-地址建议浮层必须始终位于所有原生图层之上：子 WebView 创建时会插到窗口 z-order 顶部，因此**在浮层之后创建的网页子 WebView 会盖住浮层**，只留下网页视口上沿之上的一条建议可见。每次显示浮层都必须显式把它抬到最前（`SetWindowPos(HWND_TOP, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)`），不得依赖创建顺序；判定标准是窗口子级 z-order 中浮层排在网页子 WebView 之前，且列表在网页打开时仍完整可见。
+地址建议浮层必须位于所有浏览页子 WebView 之上：子 WebView 创建时会插到窗口 z-order 顶部，因此**在浮层之后创建的网页子 WebView 会盖住浮层**，只留下网页视口上沿之上的一条建议可见。每次显示浮层都必须显式把它抬到最前（`SetWindowPos(HWND_TOP, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)`），不得依赖创建顺序；判定标准是窗口子级 z-order 中浮层排在网页子 WebView 之前，且列表在网页打开时仍完整可见。Windows 无边框缩放 overlay（`TAURI_DRAG_RESIZE_WINDOW`）必须压在浏览页之上，否则贴边的网页 HWND 会吃掉窗口右/下边缘命中；显示浮层后必须把该 overlay 再抬到最前。overlay 客户区有孔洞，建议列表仍在孔内接收点击。
 
 浮层的首帧主题必须在**文档开始**就注入：浮层入口是同一套应用资源，未注入主题时会先按样式表的默认深色主题绘制，再由 React 应用真实主题，肉眼表现为“第一次打开闪一下黑屏”。因此主题（`dark`、`themeId`、`colorScheme`、`visualQuality`、`materialModel` 与语义变量）必须随初始化脚本一起在页面脚本之前写入根元素，保证第一次绘制就是正确主题。
 

@@ -427,4 +427,180 @@ describe("ACP session config view model", () => {
     expect(viewModel.thoughtLevel?.overrideValue).toBeNull();
     expect(viewModel.thoughtLevel?.canSelectUnspecified).toBe(true);
   });
+
+  it("exposes Fast as a model_config composite option without treating it as thought level", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      configOptionOverrides: { fast: "true" },
+      configOptions: [
+        {
+          id: "model",
+          category: "model",
+          type: "select",
+          currentValue: "composer-2.5",
+          options: [{ value: "composer-2.5", name: "Composer 2.5" }],
+        },
+        {
+          id: "fast",
+          category: "model_config",
+          type: "select",
+          name: "Fast",
+          currentValue: "false",
+          options: [
+            { value: "false", name: "Off" },
+            { value: "true", name: "On" },
+          ],
+        },
+        {
+          id: "effort",
+          category: "thought_level",
+          type: "select",
+          options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }],
+        },
+      ],
+    });
+
+    expect(viewModel.thoughtLevel?.id).toBe("effort");
+    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual(["fast", "effort"]);
+    expect(viewModel.modelBoundOptions[0]).toMatchObject({
+      id: "fast",
+      category: "model_config",
+      overrideValue: "true",
+    });
+  });
+
+  it("keeps thought and Fast after the user selects a model that is not the catalog current model", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      modelOverrideId: "gpt-5.6-terra",
+      configOptionOverrides: { effort: "high", fast: "true" },
+      configOptions: [
+        {
+          id: "model",
+          category: "model",
+          type: "select",
+          currentValue: "gpt-5.6-sol",
+          options: [
+            { value: "gpt-5.6-sol", name: "5.6 Sol" },
+            { value: "gpt-5.6-terra", name: "5.6 Terra" },
+          ],
+        },
+        {
+          id: "fast",
+          category: "model_config",
+          type: "select",
+          name: "Fast",
+          options: [{ value: "false", name: "Off" }, { value: "true", name: "On" }],
+        },
+        {
+          id: "effort",
+          category: "thought_level",
+          type: "select",
+          name: "Effort",
+          options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }],
+        },
+      ],
+    });
+
+    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual(["fast", "effort"]);
+    expect(viewModel.thoughtLevel?.id).toBe("effort");
+  });
+
+  it("keeps session thought options when a newer Doctor catalog belongs to a different model", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      catalogObservedAt: "199Z",
+      modelOverrideId: "grok-4.6",
+      currentModelId: "grok-4.6",
+      currentModelName: "Cursor Grok 4.6",
+      configOptionOverrides: { effort: "extra-high" },
+      configOptions: [
+        {
+          id: "model",
+          category: "model",
+          type: "select",
+          currentValue: "grok-4.6",
+          options: [
+            { value: "composer-2.5", name: "Composer 2.5" },
+            { value: "grok-4.6", name: "Cursor Grok 4.6" },
+          ],
+        },
+        {
+          id: "effort",
+          category: "thought_level",
+          type: "select",
+          currentValue: "high",
+          options: [
+            { value: "low", name: "Low" },
+            { value: "high", name: "High" },
+            { value: "extra-high", name: "Extra High" },
+          ],
+        },
+      ],
+    }, {
+      observedAt: "200Z",
+      models: [
+        { id: "composer-2.5", name: "Composer 2.5" },
+        { id: "grok-4.6", name: "Cursor Grok 4.6" },
+      ],
+      modes: [],
+      configOptions: [
+        {
+          id: "model",
+          category: "model",
+          currentValue: "composer-2.5",
+          options: [
+            { value: "composer-2.5", name: "Composer 2.5" },
+            { value: "grok-4.6", name: "Cursor Grok 4.6" },
+          ],
+        },
+        {
+          id: "fast",
+          category: "model_config",
+          name: "Fast",
+          currentValue: "true",
+          options: [{ value: "false", name: "Off" }, { value: "true", name: "On" }],
+        },
+      ],
+    });
+
+    expect(viewModel.thoughtLevel?.options.map((option) => option.id)).toEqual(["low", "high", "extra-high"]);
+    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual(["effort"]);
+    expect(viewModel.modelBoundOptions.some((group) => group.id === "fast")).toBe(false);
+  });
+
+  it("keeps session thought when a newer Doctor catalog has Fast but no catalog model currentValue", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      catalogObservedAt: "199Z",
+      modelOverrideId: "grok-4.6",
+      configOptionOverrides: { effort: "high" },
+      configOptions: [
+        {
+          id: "model",
+          category: "model",
+          type: "select",
+          currentValue: "grok-4.6",
+          options: [{ value: "grok-4.6", name: "Cursor Grok 4.6" }],
+        },
+        {
+          id: "effort",
+          category: "thought_level",
+          type: "select",
+          currentValue: "high",
+          options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }],
+        },
+      ],
+    }, {
+      observedAt: "200Z",
+      models: [{ id: "grok-4.6", name: "Cursor Grok 4.6" }],
+      modes: [],
+      configOptions: [{
+        id: "fast",
+        category: "model_config",
+        name: "Fast",
+        currentValue: "true",
+        options: [{ value: "false", name: "Off" }, { value: "true", name: "On" }],
+      }],
+    });
+
+    expect(viewModel.thoughtLevel?.id).toBe("effort");
+    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual(["effort"]);
+  });
 });

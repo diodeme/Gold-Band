@@ -365,7 +365,8 @@ use crate::acp::events::{
     cancel_latest_processing_prompt_retry, current_timestamp, is_semantically_empty_agent_content,
     load_session_metadata, normalize_session_update, permission_request_event,
     permission_timeline_item_id, read_lifecycle_header, scheduled_trigger_event,
-    user_prompt_event_with_quotes, write_session_metadata, write_session_metadata_owned,
+    system_notice_event, user_prompt_event_with_quotes, write_session_metadata,
+    write_session_metadata_owned,
 };
 use crate::acp::history::{ProviderHistoryImport, ProviderHistoryReplay, ReplayUpdateDecision};
 use crate::acp::interaction::{
@@ -378,6 +379,10 @@ use crate::acp::permission::{
     wait_for_permission_response_until_cancelled, write_pending_permission,
 };
 use crate::acp::pipeline_diagnostics::{AcpPipelineDiagnostics, PipelineUpdateKind};
+use crate::acp::session_config::{
+    ACP_SESSION_CONFIG_ROLLED_BACK_CODE, RolledBackSessionConfig,
+    rolled_back_session_config_params, strip_unsupported_model_bound_overrides,
+};
 use crate::acp::timeline::{
     TimelineCompactionPolicy, TimelineStore, read_indexed_prompt_anchor_events,
 };
@@ -2340,6 +2345,7 @@ struct AcpRuntime<'a> {
     permission_mode_override: Option<String>,
     auto_accept: bool,
     config_option_overrides: BTreeMap<String, String>,
+    pending_config_rollbacks: Vec<RolledBackSessionConfig>,
     available_commands: Option<Vec<AcpCommandItem>>,
     system_prompt_append: Option<String>,
     session_title: Option<String>,
@@ -3966,6 +3972,7 @@ impl<'a> AcpRuntime<'a> {
                 .as_ref()
                 .is_some_and(|metadata| metadata.auto_accept),
             config_option_overrides: BTreeMap::new(),
+            pending_config_rollbacks: Vec::new(),
             available_commands: None,
             system_prompt_append: None,
             session_title: None,
@@ -4623,16 +4630,48 @@ impl<'a> AcpRuntime<'a> {
         let connection = Arc::clone(&self.connection);
         let _transaction = connection.lock_session_config_transaction()?;
         let catalog_at_start = self.config_options.clone();
+        let mut model_applied = false;
         if let Some(m) = model.filter(|v| !v.trim().is_empty()) {
+            let unspecified = matches!(
+                resolve_session_model(m, self.config_options.as_ref()),
+                SessionModelResolution::Unspecified
+            );
             self.set_session_model(m)?;
+            model_applied = !unspecified;
         }
         if let Some(pm) = permission_mode.filter(|v| !v.trim().is_empty()) {
             self.apply_permission_mode(pm)?;
         }
-        for (config_id, value) in config_options {
+        let mut pending = config_options.clone();
+        if model_applied {
+            let rollbacks = strip_unsupported_model_bound_overrides(
+                catalog_at_start.as_ref(),
+                self.config_options.as_ref(),
+                &mut pending,
+            );
+            for item in &rollbacks {
+                self.config_option_overrides.remove(&item.config_id);
+            }
+            self.pending_config_rollbacks.extend(rollbacks);
+        }
+        for (config_id, value) in &pending {
             self.apply_generic_config_option(config_id, value, catalog_at_start.as_ref())?;
         }
         Ok(())
+    }
+
+    fn record_pending_config_rollbacks(&mut self, hidden_from_chat: bool) -> Result<()> {
+        let rollbacks = std::mem::take(&mut self.pending_config_rollbacks);
+        if rollbacks.is_empty() || hidden_from_chat {
+            return Ok(());
+        }
+        self.seq = self.seq.saturating_add(1);
+        let event = system_notice_event(
+            self.seq,
+            ACP_SESSION_CONFIG_ROLLED_BACK_CODE,
+            rolled_back_session_config_params(&rollbacks),
+        );
+        self.persist_event(&event)
     }
 
     fn apply_generic_config_option(
@@ -5169,6 +5208,7 @@ impl<'a> AcpRuntime<'a> {
             }
         }
         self.persist_event(&user_event)?;
+        self.record_pending_config_rollbacks(hidden_from_chat)?;
         let usage_transaction_id =
             prompt_usage_transaction_id(&prompt_event_id, retry_attempt, operation_seq);
         append_prompt_started(

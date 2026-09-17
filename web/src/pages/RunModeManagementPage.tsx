@@ -7,7 +7,8 @@ import { deleteAutoTemplate as deleteAutoTemplateApi, deleteWorkflowTemplate, ge
 import { Page, PageHeader } from '@/components/PageScaffold';
 import {
   AcpModelThoughtSelects,
-  findAcpThoughtLevel,
+  acpShowsModelConfigSelect,
+  retainAcpModelBoundOverrides,
   updateAcpConfigOptionOverride,
 } from '@/components/acp/AcpModelThoughtSelects';
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
@@ -26,6 +27,7 @@ import { displayAppError } from '@/i18n';
 import { pruneMissingAutoConfigReferences, pruneMissingAutoAllowedProfileIds, pruneMissingAutoAllowedWorkflowIds, selectableAgentOptions, selectableWorkflowOptions, validateAutoConfig } from '@/lib/run-mode-validation';
 import { createBlankWorkflowDraft, hasWorkflowBindingDraftChanges, hasWorkflowDraftChanges, restoreBuiltInWorkflowDefinition, shouldShowDefaultWorkflowSaveAsNotice, workflowTemplateDisplayName } from '@/lib/workflow-template';
 import { cn } from '@/lib/utils';
+import { AgentIdentityLabel } from '@/components/AgentIdentityLabel';
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { useWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
 
@@ -314,13 +316,10 @@ export function RunModeManagementPage({
   const workflowOptions = useMemo(() => selectableWorkflowOptions(effectiveWorkflowTemplates, t), [effectiveWorkflowTemplates, t]);
   const selectedAgent = agents.find((a) => a.agentType === agent) ?? null;
   const fixedModels = selectedAgent?.supportedModels ?? [];
-  const fixedThoughtLevel = findAcpThoughtLevel(selectedAgent?.configOptions);
   const selectedBootstrapAgent = agents.find((a) => a.agentType === bootstrapAgent) ?? null;
   const bootstrapModels = selectedBootstrapAgent?.supportedModels ?? [];
-  const bootstrapThoughtLevel = findAcpThoughtLevel(selectedBootstrapAgent?.configOptions);
   const availableAgentMap = useMemo(() => new Map(availableAgents.map((item) => [item.provider, item])), [availableAgents]);
   const acceptanceModels = bootstrapModels;
-  const acceptanceThoughtLevel = findAcpThoughtLevel(selectedBootstrapAgent?.configOptions);
 
   useEffect(() => {
     if (!repairTarget) return;
@@ -1085,9 +1084,9 @@ export function RunModeManagementPage({
                     <SelectTrigger className="h-9 w-[180px]"><SelectValue placeholder={t('conversation.home.selectAgent')} /></SelectTrigger>
                     <SelectContent>
                       {agentOptions.map(({ agent: item, selectable, reason }) => (
-                        <SelectItem key={item.agentType} value={item.agentType} disabled={!selectable}>
+                        <SelectItem key={item.agentType} value={item.agentType} disabled={!selectable} textValue={item.displayName}>
                           <span className="block min-w-0">
-                            <span className="block truncate">{item.displayName}</span>
+                            <AgentIdentityLabel iconKey={item.iconKey} name={item.displayName} />
                             {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-ui-caption text-destructive">{reason}</span> : null}
                           </span>
                         </SelectItem>
@@ -1101,9 +1100,9 @@ export function RunModeManagementPage({
                     <SelectTrigger className="h-9 w-[180px]"><SelectValue placeholder={t('conversation.home.selectAgent')} /></SelectTrigger>
                     <SelectContent>
                       {agentOptions.map(({ agent: item, selectable, reason }) => (
-                        <SelectItem key={item.agentType} value={item.agentType} disabled={!selectable}>
+                        <SelectItem key={item.agentType} value={item.agentType} disabled={!selectable} textValue={item.displayName}>
                           <span className="block min-w-0">
-                            <span className="block truncate">{item.displayName}</span>
+                            <AgentIdentityLabel iconKey={item.iconKey} name={item.displayName} />
                             {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-ui-caption text-destructive">{reason}</span> : null}
                           </span>
                         </SelectItem>
@@ -1119,12 +1118,20 @@ export function RunModeManagementPage({
                     <AcpModelThoughtSelects
                       models={fixedModels}
                       modelValue={model}
-                      thoughtLevel={fixedThoughtLevel}
-                      thoughtValue={fixedThoughtLevel ? configOptions[fixedThoughtLevel.id] : null}
+                      configOptions={selectedAgent?.configOptions}
+                      configOptionValues={configOptions}
                       compact
                       triggerClassName="w-[220px] max-w-none rounded-md"
-                      onModelChange={(value) => setModel(value ?? '')}
-                      onThoughtChange={(optionId, value) => setConfigOptions((current) => (
+                      onModelChange={(value) => {
+                        const modelId = value ?? '';
+                        setModel(modelId);
+                        setConfigOptions((current) => retainAcpModelBoundOverrides(
+                          current,
+                          selectedAgent?.configOptions,
+                          modelId,
+                        ));
+                      }}
+                      onConfigOptionChange={(optionId, value) => setConfigOptions((current) => (
                         updateAcpConfigOptionOverride(current, optionId, value)
                       ))}
                     />
@@ -1146,34 +1153,50 @@ export function RunModeManagementPage({
                 </Field>
               ) : null}
 
-              {agentStrategy === 'dynamic' && (bootstrapModels.length > 0 || bootstrapThoughtLevel) ? (
+              {agentStrategy === 'dynamic' && acpShowsModelConfigSelect(bootstrapModels, selectedBootstrapAgent?.configOptions, bootstrapModel) ? (
                 <Field label={t('workflowEditor.dynamicBootstrapModel')} help={t('workflowEditor.dynamicBootstrapModelHelp')}>
                   <AcpModelThoughtSelects
                     models={bootstrapModels}
                     modelValue={bootstrapModel}
-                    thoughtLevel={bootstrapThoughtLevel}
-                    thoughtValue={bootstrapThoughtLevel ? bootstrapConfigOptions[bootstrapThoughtLevel.id] : null}
+                    configOptions={selectedBootstrapAgent?.configOptions}
+                    configOptionValues={bootstrapConfigOptions}
                     compact
                     triggerClassName="w-[220px] max-w-none rounded-md"
-                    onModelChange={(value) => setBootstrapModel(value ?? '')}
-                    onThoughtChange={(optionId, value) => setBootstrapConfigOptions((current) => (
+                    onModelChange={(value) => {
+                      const modelId = value ?? '';
+                      setBootstrapModel(modelId);
+                      setBootstrapConfigOptions((current) => retainAcpModelBoundOverrides(
+                        current,
+                        selectedBootstrapAgent?.configOptions,
+                        modelId,
+                      ));
+                    }}
+                    onConfigOptionChange={(optionId, value) => setBootstrapConfigOptions((current) => (
                       updateAcpConfigOptionOverride(current, optionId, value)
                     ))}
                   />
                 </Field>
               ) : null}
 
-              {agentStrategy === 'dynamic' && (acceptanceModels.length > 0 || acceptanceThoughtLevel) ? (
+              {agentStrategy === 'dynamic' && acpShowsModelConfigSelect(acceptanceModels, selectedBootstrapAgent?.configOptions, acceptanceModel) ? (
                 <Field label={t('workflowEditor.dynamicAcceptanceModel')} help={t('workflowEditor.dynamicAcceptanceModelHelp')}>
                   <AcpModelThoughtSelects
                     models={acceptanceModels}
                     modelValue={acceptanceModel}
-                    thoughtLevel={acceptanceThoughtLevel}
-                    thoughtValue={acceptanceThoughtLevel ? acceptanceConfigOptions[acceptanceThoughtLevel.id] : null}
+                    configOptions={selectedBootstrapAgent?.configOptions}
+                    configOptionValues={acceptanceConfigOptions}
                     compact
                     triggerClassName="w-[260px] max-w-none rounded-md"
-                    onModelChange={(value) => { setAcceptanceModel(value ?? ''); setAcceptanceConfigOptions({}); }}
-                    onThoughtChange={(optionId, value) => setAcceptanceConfigOptions((current) => (
+                    onModelChange={(value) => {
+                      const modelId = value ?? '';
+                      setAcceptanceModel(modelId);
+                      setAcceptanceConfigOptions((current) => retainAcpModelBoundOverrides(
+                        current,
+                        selectedBootstrapAgent?.configOptions,
+                        modelId,
+                      ));
+                    }}
+                    onConfigOptionChange={(optionId, value) => setAcceptanceConfigOptions((current) => (
                       updateAcpConfigOptionOverride(current, optionId, value)
                     ))}
                   />
@@ -1208,26 +1231,32 @@ export function RunModeManagementPage({
                       const selectedModel = availableAgentMap.get(item.agentType)?.model ?? '';
                       const selectedPermissionMode = availableAgentMap.get(item.agentType)?.permissionMode ?? '';
                       const selectedAutoAccept = Boolean(availableAgentMap.get(item.agentType)?.autoAccept);
-                      const thoughtLevel = findAcpThoughtLevel(item.configOptions);
                       return (
                         <div key={item.agentType} className={cn('flex items-center gap-2 rounded-md border border-border/60 bg-background/35 px-3 py-2', !selectable && 'opacity-60')}>
                           <button type="button" disabled={!selectable} className={cn('size-4 rounded border disabled:cursor-not-allowed', selected ? 'border-primary bg-primary' : 'border-border')} onClick={() => toggleAvailableAgent(item.agentType)} aria-label={item.displayName} />
                           <span className="min-w-0 flex-1 text-sm">
-                            <span className="block truncate">{item.displayName}</span>
+                            <AgentIdentityLabel iconKey={item.iconKey} name={item.displayName} />
                             {!selectable && reason ? <span className="mt-0.5 block text-xs text-destructive">{reason}</span> : null}
                           </span>
                           {selected ? (
                             <div className="flex flex-wrap items-center justify-end gap-2">
-                              {(item.supportedModels?.length ?? 0) > 0 || thoughtLevel ? (
+                              {acpShowsModelConfigSelect(item.supportedModels, item.configOptions, selectedModel) ? (
                               <AcpModelThoughtSelects
                                 models={item.supportedModels ?? []}
                                 modelValue={selectedModel}
-                                thoughtLevel={thoughtLevel}
-                                thoughtValue={thoughtLevel ? availableAgentMap.get(item.agentType)?.configOptions?.[thoughtLevel.id] : null}
+                                configOptions={item.configOptions}
+                                configOptionValues={availableAgentMap.get(item.agentType)?.configOptions}
                                 compact
                                 triggerClassName="h-8 w-[260px] max-w-none rounded-md text-xs"
-                                onModelChange={(value) => updateAvailableAgentConfig(item.agentType, { model: value || undefined })}
-                                onThoughtChange={(optionId, value) => updateAvailableAgentConfig(item.agentType, {
+                                onModelChange={(value) => updateAvailableAgentConfig(item.agentType, {
+                                  model: value || undefined,
+                                  configOptions: retainAcpModelBoundOverrides(
+                                    availableAgentMap.get(item.agentType)?.configOptions,
+                                    item.configOptions,
+                                    value,
+                                  ),
+                                })}
+                                onConfigOptionChange={(optionId, value) => updateAvailableAgentConfig(item.agentType, {
                                   configOptions: updateAcpConfigOptionOverride(availableAgentMap.get(item.agentType)?.configOptions, optionId, value),
                                 })}
                               />

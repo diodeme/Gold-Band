@@ -30,7 +30,7 @@ AUTO 模式本质上是一个只有 AI-DYNAMIC 节点的工作流。
 - **动态控制**：`maxDynamicNodes`、`maxFanout`、`maxDepth`、`maxParallel`、`maxGroupDepth`、`maxWorkflowInvocations`
 
 ### 会话级配置
-- 固定 Agent 策略下，composer 展示 agent、模型和该 Agent 原生权限模式，可作为本次会话的初始化 override；权限下拉叠加 Auto Accept。
+- 固定 Agent 策略下，composer 展示 agent、模型和该 Agent 原生权限模式，可作为本次会话的初始化 override；权限下拉叠加 Auto Accept。agent 下拉的触发器和选项展示 registry icon 与 display name。
 - 动态 Agent 策略下，composer 只展示 Dynamic Agent 标识；各 Agent 的初始化模型/权限在 AUTO 配置中预设，不再提供共享权限入口。
 - ACP session 建立后，用户仍可通过会话 composer 的权威 session config options 实时切换当前会话模型与权限；该 override 不回写 AUTO 候选配置。
 - **全局 Goal** 在 composer 中输入，非必填；运行时追加到每个 AI-DYNAMIC 内部节点目标
@@ -55,7 +55,7 @@ AUTO 模式本质上是一个只有 AI-DYNAMIC 节点的工作流。
 - 动态策略的思考强度按运行角色独立持久化：`bootstrapConfigOptions` 用于初始分发，`acceptanceConfigOptions` 用于 merge / acceptance，每个 `availableAgents[]` 自带 `configOptions` 用于该 provider 的普通动态 worker。runtime 必须按实际节点 kind/provider 选择对应 map，不能继续读取 AI-DYNAMIC 节点级 `configOptions` 作为动态策略的全局覆盖。
 - 可选动态 Agent 的模型与权限均支持清空并使用 provider 默认值。无论 Agent 决策指南是否填写，内部 proposal DSL 都只输出 provider；runtime 查找候选行并注入预设模型、原生权限与 config options。
 - AUTO 的可用角色列表只作为内部 worker proposal 的可选 profile ID 白名单；worker 不填 profile 时不注入角色内容。merge / acceptance 不接受 proposal profile，始终使用 runtime 内置 merge / acceptance prompt。
-- Agent 列表展示所有已配置 Agent；未通过诊断或不支持的 Agent 置灰，不可选，并展示不可选原因
+- Agent 列表展示所有已配置 Agent；选项、已选项和动态候选行都展示 registry icon；未通过诊断或不支持的 Agent 置灰，不可选，并展示不可选原因
 - 允许调用的工作流按 DSL `workflow.id` 去重判断；重复或空 ID 的工作流直接展示在允许调用工作流列表下方，标签保留名称，感叹号 icon tooltip 展示原因
 - AUTO 配置加载后若“允许调用的工作流”包含已无法解析的 `workflow.id`，或“可用角色列表”包含已无法解析的 profile id，页面自动从当前 project 配置中剔除该引用并持久化；若当前已选 AUTO 模板也有同类失效引用，则在该模板被选中并加载时同步清理并回写其在用户级 `auto-templates.json` 中的记录。未选中的 AUTO 模板不扫描、不改写。模板仍在但 ID 重复、为空或包含不允许嵌套的 AI-DYNAMIC 时继续按常规校验处理，不自动删除。页面用黄色警告横幅分别告知已移除的工作流和角色数量；其消失规则由消息类型统一管理，warning 自动展示约 5 秒且不可被调用方改为常驻。切换 AUTO 模板时立即清除该横幅，后续保存和另存不再被该历史失效引用阻断。
 
@@ -78,7 +78,7 @@ AUTO 模式本质上是一个只有 AI-DYNAMIC 节点的工作流。
 - 工作流模板“新增模板”必须创建可编辑的空 `WorkflowDsl` 草稿并立即进入 `WorkflowEditor`；选择器显示“新增模板（未保存）”。空态只用于模板 store 不可用或没有可编辑草稿，不用于新增模板流程。
 - 工作流模板编辑器必须区分完整 `WorkflowDsl` 草稿和画布投影：右侧 Inspector 的目标、模型、角色、权限、校验 schema、表达式、动态路由 prompt、动态控制等配置字段输入只更新编辑草稿，不应触发画布节点/边投影重算；只有节点增删、节点 id/type、边 from/to/on、选中态、校验高亮和终点显隐等会改变画布呈现的字段才刷新 ReactFlow。
 - 工作流编辑器的实时校验必须显式区分 profile catalog 的加载状态与已加载空集合。目录加载期间继续执行 DSL 结构、必填项和拓扑校验，但不得把尚未解析的 profile 引用报告为“角色不存在或已删除”；目录成功到达后自动恢复完整引用校验。运行模式页在目录就绪前禁用工作流模板的“保存修改”和“另存为新的工作流”，避免使用未知目录生成错误验收结论。
-- 普通 Worker 节点必须复用 Direct 的 ACP 模型复合选择器，并把 Agent、模型、权限及 Agent capability 声明的全部 session config options 写入独立本机模型绑定；作者态 `WorkflowDsl` 中对应执行字段保持为空。思考强度使用 Agent 返回的真实 option id，不得硬编码 `reasoning_effort` 等 provider 专用字段；切换 Agent 时清空旧模型、权限和 option overrides，避免跨 Agent 污染。
+- 普通 Worker 节点必须复用 Direct 的 ACP 模型复合选择器，并把 Agent、模型、权限及 Agent capability 声明的全部 session config options 写入独立本机模型绑定；作者态 `WorkflowDsl` 中对应执行字段保持为空。思考强度使用 Agent 返回的真实 option id，子栏标签统一为“思考强度”，不得硬编码 `reasoning_effort` 等 provider 专用字段，也不得把 Agent 返回的 `Effort` / `Deep Think` 当作产品标签；切换 Agent 时清空旧模型、权限和 option overrides，避免跨 Agent 污染。节点运行与 Direct 一样：先切模型，新目录没有 Fast 或思考档不支持则不带入并写 timeline 分割线。
 - AI-DYNAMIC 及其内部动态节点不使用普通 Worker 模型绑定或执行槽位，继续由现有 AUTO / AI-DYNAMIC 运行时统一配置与解析。
 - 每个普通 Worker 使用内部、不可编辑的 `executionSlotId` 关联绑定。修改 node id 保留槽位与绑定；内置 Worker 使用跨版本固定 ID；新建自定义 Worker 使用 UUID；复制 Worker 生成新槽位并复制完整模型绑定。
 - 普通 Worker Inspector 的“模型配置”包含 Agent、模型、全部 Agent config options、权限模式和“同步至其他节点”，“节点配置”承载工作流定义字段。三个带边界分区的顺序固定为“模型配置 → 工作流控制 → 节点配置”，分区标题旁不显示 `worker` 等实现类型标识。模型字段变化不得触发 ReactFlow 拓扑重算。
@@ -109,11 +109,11 @@ AUTO 模式本质上是一个只有 AI-DYNAMIC 节点的工作流。
 
 ## ACP 模型配置
 
-- Direct/AUTO 发起会话、工作流节点 Inspector、AUTO 固定 Agent 模板配置与 ACP 已建立后的追问 composer 共用同一个模型复合选择器：单一“模型”触发器的第一层提供“模型”和“思考强度”，第二层展示对应选项；权限模式保持独立，并在同一列表底部叠加 Auto Accept。追问区虽然嵌套在 PromptInput 内，但点击配置按钮、菜单项等交互元素时不得触发输入框聚焦，弹层位置必须跟随触发器，不允许落到抽屉或页面左上角。
-- 思考强度属于通用 ACP config option override：能力发现只识别 `category=thought_level`，持久化使用 Agent 返回的 option id。工作流模板的普通 Worker 把该 option 保存到本机模型绑定；AI-DYNAMIC 与会话 AUTO 继续使用各自现有的运行时 `configOptions`。运行解析后仍通过既有 `BTreeMap<String, String>` 管道传给 provider。
+- Direct/AUTO 发起会话、工作流节点 Inspector、AUTO 固定 Agent 模板配置与 ACP 已建立后的追问 composer 共用同一个模型复合选择器：单一“模型”触发器的第一层提供“模型”以及当前模型的 `model_config`（如 Fast）和 `thought_level`，第二层展示对应选项；权限模式保持独立，并在同一列表底部叠加 Auto Accept。追问区虽然嵌套在 PromptInput 内，但点击配置按钮、菜单项等交互元素时不得触发输入框聚焦，弹层位置必须跟随触发器，不允许落到抽屉或页面左上角。
+- 思考强度与 Fast 都属于通用 ACP config option override：能力发现分别识别 `category=thought_level` 与 `category=model_config`，持久化使用 Agent 返回的 option id，并写入同一 `configOptionOverrides`。它们只对目录当前模型有效；切换到其他模型时丢弃这些 override。工作流模板的普通 Worker 把这些 option 保存到本机模型绑定；AI-DYNAMIC 与会话 AUTO 继续使用各自现有的运行时 `configOptions`。运行解析后仍通过既有 `BTreeMap<String, String>` 管道传给 provider。
 - 复合选择器的子菜单开合由 Radix DropdownMenu 原生的指针、点击与键盘状态统一管理，业务组件不得重复绑定点击切换，避免一次点击发生两次状态翻转。
 - Composer 内相邻的模型与权限配置菜单统一使用非模态 DropdownMenu 交互；无论当前展开哪一个，单击另一个都必须在同一次点击中完成关闭旧菜单并打开新菜单，不允许使用会消费第一次外部点击的模态 Select 弹层。
-- 发起会话前允许模型、权限和思考强度回到“不指定”；进入追问 session 后，“不指定”只在对应显式 override 尚未建立时提供，任一配置选择具体值后便不能再清空，只能切换到其他具体值。
+- 发起会话前允许模型、权限、Fast 和思考强度回到“不指定”；进入追问 session 后，“不指定”只在对应显式 override 尚未建立时提供，任一配置选择具体值后便不能再清空，只能切换到其他具体值。
 - 用户切换模型后，当前 session snapshot/configOptions 的 current model 要作为下一次 ACP prompt 的模型 override 传给 provider；回复完成后 UI 不应回退到切换前模型
 - 工作流模板本机模型绑定与 ACP 已建立后的 session override 是两个生命周期：前者在创建 Task 时复制为 Task 绑定，并在新建 Run 前注入同一个 `WorkflowDsl` 形成不可变可执行快照；后者只影响当前 session，不得反向回写 Task 或模板。模板、Task 后续编辑和应用升级不得改变既有 Run；Agent 删除不改写快照或绑定，但尚未启动的 Worker 仍须能解析对应 Managed Agent，否则结构化阻断。
 

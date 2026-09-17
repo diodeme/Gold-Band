@@ -6,8 +6,10 @@ import {
   agentDiagnosticHelpReason,
   agentDiagnosticMessage,
   agentDiagnosticRawReason,
+  agentDiagnosticShortReason,
 } from '../src/lib/agent-diagnostic';
-import type { ManagedAgentDiagnosticVm } from '../src/types';
+import { agentDoctorReason } from '../src/lib/run-mode-validation';
+import type { ManagedAgentDiagnosticVm, ManagedAgentVm } from '../src/types';
 
 const stderrDiagnostic: ManagedAgentDiagnosticVm = {
   status: 'unhealthy',
@@ -38,6 +40,8 @@ describe('agent diagnostic copy', () => {
     expect(agentDiagnosticRawReason(stderrDiagnostic)).toContain('ENOENT');
     expect(agentDiagnosticRawReason(stderrDiagnostic)).toContain('package.json');
     expect(agentDiagnosticBannerReason(t, stderrDiagnostic)).toBe('npm error code ENOENT');
+    expect(agentDiagnosticShortReason(t, stderrDiagnostic)).toBe('npm error code ENOENT');
+    expect(agentDiagnosticShortReason(t, stderrDiagnostic)).not.toContain('package.json');
     expect(agentDiagnosticHelpReason(t, stderrDiagnostic)).toContain('package.json');
     expect(agentDiagnosticHelpReason(t, stderrDiagnostic)).not.toBe(message);
   });
@@ -53,14 +57,36 @@ describe('agent diagnostic copy', () => {
         params: { method: 'session/new' },
         raw: {
           code: -32000,
-          message: 'Authentication required',
+          message: 'Gemini API key is missing or not configured.',
           data: { category: 'auth' },
         },
       },
     };
     expect(agentDiagnosticMessage(t, diagnostic)).toBe(i18n.t('errors.acp.session-request-failed'));
-    expect(agentDiagnosticRawReason(diagnostic)).toBe('Authentication required');
-    expect(agentDiagnosticBannerReason(t, diagnostic)).toBe('Authentication required');
-    expect(agentDiagnosticHelpReason(t, diagnostic)).toBe('Authentication required');
+    expect(agentDiagnosticRawReason(diagnostic)).toBe('Gemini API key is missing or not configured.');
+    expect(agentDiagnosticBannerReason(t, diagnostic)).toBe('Gemini API key is missing or not configured.');
+    expect(agentDiagnosticHelpReason(t, diagnostic)).toBe('Gemini API key is missing or not configured.');
+    expect(agentDiagnosticShortReason(t, diagnostic)).toBe('Gemini API key is missing or not configured.');
+    expect(agentDiagnosticShortReason(t, diagnostic)).not.toBe(i18n.t('errors.acp.session-request-failed'));
+    expect(agentDoctorReason(pickerAgent(diagnostic), t)).toBe('Gemini API key is missing or not configured.');
+    expect(agentDoctorReason(pickerAgent(diagnostic), t)).not.toBe(i18n.t('errors.acp.session-request-failed'));
   });
 });
+
+function pickerAgent(diagnostic: ManagedAgentDiagnosticVm): ManagedAgentVm {
+  return {
+    agentType: 'gemini',
+    displayName: 'Gemini',
+    command: 'npx',
+    args: [],
+    env: [],
+    iconKey: 'gemini',
+    primaryAgentDir: '.gemini',
+    projectPrimaryAgentDir: null,
+    compatibleAgentDirs: [],
+    supportsSystemPrompt: false,
+    externalSessionSyncSupported: false,
+    externalSessionSyncEnabled: false,
+    diagnostic,
+  };
+}

@@ -12,7 +12,7 @@ import {
   DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
   keepAcpConfigMenuOpenOnSelect,
   acpComposerConfigTriggerVariants,
-  formatAcpCompositeSelection,
+  formatAcpCompositeSelectionParts,
   useAcpComposerConfigOverflowTooltip,
 } from '@/components/acp/AcpComposerConfigTrigger';
 import {
@@ -30,23 +30,28 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import {
+  ACP_THOUGHT_LEVEL_CATEGORY,
+  type AcpCompositeConfigSection,
+  acpCompositeConfigSections,
+  acpCompositeSectionLabel,
+} from '@/lib/acp-composite-config';
 
+export type { AcpCompositeConfigSection } from '@/lib/acp-composite-config';
 export { UNSPECIFIED_ACP_CONFIG_VALUE } from '@/components/acp/AcpSingleConfigMenu';
-export { formatAcpCompositeSelection } from '@/components/acp/AcpComposerConfigTrigger';
-
-export const ACP_THOUGHT_LEVEL_CATEGORY = 'thought_level';
-
-export function findAcpThoughtLevel(
-  configOptions: AcpSelectConfigOptionVm[] | null | undefined,
-) {
-  return configOptions?.find((option) => option.category === ACP_THOUGHT_LEVEL_CATEGORY) ?? null;
-}
-
-export function acpConfigMenuSelectionMode(
-  thoughtLevel: AcpSelectConfigOptionVm | null | undefined,
-) {
-  return thoughtLevel && thoughtLevel.options.length > 0 ? 'composite' : 'single';
-}
+export { formatAcpCompositeSelection, formatAcpCompositeSelectionParts } from '@/components/acp/AcpComposerConfigTrigger';
+export {
+  ACP_MODEL_CATEGORY,
+  ACP_MODEL_CONFIG_CATEGORY,
+  ACP_THOUGHT_LEVEL_CATEGORY,
+  acpCompositeConfigSections,
+  acpCompositeSectionLabel,
+  acpShowsModelConfigSelect,
+  findAcpCatalogModelId,
+  findAcpModelConfigOptions,
+  findAcpThoughtLevel,
+  retainAcpModelBoundOverrides,
+} from '@/lib/acp-composite-config';
 
 export function updateAcpConfigOptionOverride(
   overrides: Record<string, string> | null | undefined,
@@ -59,6 +64,15 @@ export function updateAcpConfigOptionOverride(
   return next;
 }
 
+export function acpConfigMenuSelectionMode(
+  thoughtLevel: AcpSelectConfigOptionVm | null | undefined,
+  extraSections: Array<{ options: { length: number } }> | null | undefined = null,
+) {
+  const hasThought = Boolean(thoughtLevel && thoughtLevel.options.length > 0);
+  const hasExtra = Boolean(extraSections?.some((section) => section.options.length > 0));
+  return hasThought || hasExtra ? 'composite' : 'single';
+}
+
 export function nextAcpCompositeSection(
   currentSection: string | null,
   section: string,
@@ -68,16 +82,22 @@ export function nextAcpCompositeSection(
   return currentSection === section ? null : currentSection;
 }
 
+type ThoughtLevelProps = Omit<AcpSelectConfigOptionVm, "options"> & {
+  options: Array<AcpSelectConfigOptionVm["options"][number] & { available?: boolean }>;
+};
+
 type Props = {
   models: Array<AcpModeVm & { available?: boolean }>;
   modelValue?: string | null;
   modelValueLabel?: string | null;
-  thoughtLevel?: (Omit<AcpSelectConfigOptionVm, "options"> & {
-    options: Array<AcpSelectConfigOptionVm["options"][number] & { available?: boolean }>;
-  }) | null;
+  configOptions?: AcpSelectConfigOptionVm[] | null;
+  configOptionValues?: Record<string, string> | null;
+  compositeSections?: AcpCompositeConfigSection[] | null;
+  thoughtLevel?: ThoughtLevelProps | null;
   thoughtValue?: string | null;
   thoughtValueLabel?: string | null;
   onModelChange: (value: string | null) => void;
+  onConfigOptionChange?: (optionId: string, value: string | null) => void;
   onThoughtChange?: (optionId: string, value: string | null) => void;
   showUnspecifiedModel?: boolean;
   showUnspecifiedThought?: boolean;
@@ -92,10 +112,14 @@ export function AcpModelThoughtSelects({
   models,
   modelValue,
   modelValueLabel,
+  configOptions,
+  configOptionValues,
+  compositeSections,
   thoughtLevel,
   thoughtValue,
   thoughtValueLabel,
   onModelChange,
+  onConfigOptionChange,
   onThoughtChange,
   showUnspecifiedModel = true,
   showUnspecifiedThought = true,
@@ -111,8 +135,18 @@ export function AcpModelThoughtSelects({
   const keepMenuOpenRef = useRef(false);
   const triggerClass = acpComposerConfigTriggerVariants({ compact });
   const selectedModel = models.find((model) => model.id === modelValue);
-  const selectedThought = thoughtLevel?.options.find((option) => option.value === thoughtValue);
-  const selectionMode = acpConfigMenuSelectionMode(thoughtLevel);
+  const changeConfigOption = onConfigOptionChange ?? onThoughtChange;
+  const sections = resolveCompositeSections({
+    compositeSections,
+    configOptions,
+    configOptionValues,
+    modelValue,
+    thoughtLevel,
+    thoughtValue,
+    thoughtValueLabel,
+    showUnspecifiedThought,
+  });
+  const selectionMode = sections.some((section) => section.options.length > 0) ? 'composite' : 'single';
   const {
     valueRef,
     tooltipOpen,
@@ -156,10 +190,17 @@ export function AcpModelThoughtSelects({
     ) : null;
   }
 
-  const compositeLabel = formatAcpCompositeSelection(
-    selectedModel?.name ?? modelValueLabel,
-    selectedThought?.name ?? thoughtValueLabel,
-    t('conversation.home.unspecifiedModel'),
+  const unspecifiedLabel = t('conversation.home.unspecifiedModel');
+  const compositeLabel = formatAcpCompositeSelectionParts(
+    [
+      selectedModel?.name ?? modelValueLabel,
+      ...sections.map((section) => (
+        section.options.find((option) => option.value === section.value)?.name
+        ?? section.valueLabel
+        ?? null
+      )),
+    ],
+    unspecifiedLabel,
   );
 
   return (
@@ -209,7 +250,7 @@ export function AcpModelThoughtSelects({
           onOpenChange={(open) => setOpenSection((current) => nextAcpCompositeSection(current, 'model', open))}
         >
           <DropdownMenuSubTrigger className="py-2">
-            <span className="w-20 shrink-0 text-muted-foreground">{t('acp.currentModel')}</span>
+            <span className="w-20 shrink-0 truncate text-muted-foreground">{t('acp.currentModel')}</span>
             <span className="min-w-0 flex-1 truncate text-right text-foreground">{selectedModel?.name ?? modelValueLabel ?? ''}</span>
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent
@@ -222,7 +263,7 @@ export function AcpModelThoughtSelects({
             >
               {showUnspecifiedModel ? (
                 <DropdownMenuRadioItem value={UNSPECIFIED_ACP_CONFIG_VALUE} onSelect={handleConfigOptionSelect}>
-                  {t('conversation.home.unspecifiedModel')}
+                  {unspecifiedLabel}
                 </DropdownMenuRadioItem>
               ) : null}
               {models.map((model) => (
@@ -237,42 +278,91 @@ export function AcpModelThoughtSelects({
           </DropdownMenuSubContent>
         </DropdownMenuSub>
 
-        <DropdownMenuSub
-          open={openSection === thoughtLevel!.id}
-          onOpenChange={(open) => setOpenSection((current) => nextAcpCompositeSection(current, thoughtLevel!.id, open))}
-        >
-          <DropdownMenuSubTrigger className="py-2">
-            <span className="w-20 shrink-0 text-muted-foreground">{t('acp.thoughtLevel')}</span>
-            <span className="min-w-0 flex-1 truncate text-right text-foreground">{selectedThought?.name ?? thoughtValueLabel ?? ''}</span>
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent
-            sideOffset={6}
-            className="w-[min(22rem,calc(100vw-2rem))] max-h-[min(24rem,var(--radix-dropdown-menu-content-available-height))] overflow-y-auto"
-          >
-            <DropdownMenuRadioGroup
-              value={thoughtValue || UNSPECIFIED_ACP_CONFIG_VALUE}
-              onValueChange={(value) => onThoughtChange?.(
-                thoughtLevel!.id,
-                value === UNSPECIFIED_ACP_CONFIG_VALUE ? null : value,
-              )}
+        {sections.map((section) => {
+          const selected = section.options.find((option) => option.value === section.value);
+          const label = acpCompositeSectionLabel(section, t('acp.thoughtLevel'));
+          const showUnspecified = section.showUnspecified ?? true;
+          return (
+            <DropdownMenuSub
+              key={section.id}
+              open={openSection === section.id}
+              onOpenChange={(open) => setOpenSection((current) => nextAcpCompositeSection(current, section.id, open))}
             >
-              {showUnspecifiedThought ? (
-                <DropdownMenuRadioItem value={UNSPECIFIED_ACP_CONFIG_VALUE} onSelect={handleConfigOptionSelect}>
-                  {t('acp.unspecifiedThoughtLevel')}
-                </DropdownMenuRadioItem>
-              ) : null}
-              {thoughtLevel!.options.map((option) => (
-                <DropdownMenuRadioItem key={option.value} value={option.value} disabled={option.available === false} className="items-start py-2" onSelect={handleConfigOptionSelect}>
-                  <span className="block min-w-0">
-                    <span className="block truncate font-medium">{option.name}</span>
-                    {option.description ? <span className="mt-0.5 block whitespace-normal break-words text-ui-caption leading-4 text-muted-foreground">{option.description}</span> : null}
-                  </span>
-                </DropdownMenuRadioItem>
-              ))}
-            </DropdownMenuRadioGroup>
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
+              <DropdownMenuSubTrigger
+                className="py-2"
+                data-acp-composite-section={section.category}
+                data-acp-composite-section-label={label}
+              >
+                <span className="w-24 shrink-0 truncate text-muted-foreground">{label}</span>
+                <span className="min-w-0 flex-1 truncate text-right text-foreground">{selected?.name ?? section.valueLabel ?? ''}</span>
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent
+                sideOffset={6}
+                className="w-[min(22rem,calc(100vw-2rem))] max-h-[min(24rem,var(--radix-dropdown-menu-content-available-height))] overflow-y-auto"
+              >
+                <DropdownMenuRadioGroup
+                  value={section.value || UNSPECIFIED_ACP_CONFIG_VALUE}
+                  onValueChange={(value) => changeConfigOption?.(
+                    section.id,
+                    value === UNSPECIFIED_ACP_CONFIG_VALUE ? null : value,
+                  )}
+                >
+                  {showUnspecified ? (
+                    <DropdownMenuRadioItem value={UNSPECIFIED_ACP_CONFIG_VALUE} onSelect={handleConfigOptionSelect}>
+                      {t('acp.unspecifiedThoughtLevel')}
+                    </DropdownMenuRadioItem>
+                  ) : null}
+                  {section.options.map((option) => (
+                    <DropdownMenuRadioItem key={option.value} value={option.value} disabled={option.available === false} className="items-start py-2" onSelect={handleConfigOptionSelect}>
+                      <span className="block min-w-0">
+                        <span className="block truncate font-medium">{option.name}</span>
+                        {option.description ? <span className="mt-0.5 block whitespace-normal break-words text-ui-caption leading-4 text-muted-foreground">{option.description}</span> : null}
+                      </span>
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          );
+        })}
       </DropdownMenuContent>
     </DropdownMenu>
   );
+}
+
+function resolveCompositeSections({
+  compositeSections,
+  configOptions,
+  configOptionValues,
+  modelValue,
+  thoughtLevel,
+  thoughtValue,
+  thoughtValueLabel,
+  showUnspecifiedThought,
+}: {
+  compositeSections?: AcpCompositeConfigSection[] | null;
+  configOptions?: AcpSelectConfigOptionVm[] | null;
+  configOptionValues?: Record<string, string> | null;
+  modelValue?: string | null;
+  thoughtLevel?: ThoughtLevelProps | null;
+  thoughtValue?: string | null;
+  thoughtValueLabel?: string | null;
+  showUnspecifiedThought: boolean;
+}): AcpCompositeConfigSection[] {
+  if (compositeSections) return compositeSections.filter((section) => section.options.length > 0);
+  if (configOptions) {
+    return acpCompositeConfigSections(configOptions, modelValue, configOptionValues);
+  }
+  if (!thoughtLevel || thoughtLevel.options.length === 0) return [];
+  return [{
+    id: thoughtLevel.id,
+    category: thoughtLevel.category ?? ACP_THOUGHT_LEVEL_CATEGORY,
+    name: thoughtLevel.name ?? null,
+    description: thoughtLevel.description ?? null,
+    currentValue: thoughtLevel.currentValue,
+    value: thoughtValue ?? null,
+    valueLabel: thoughtValueLabel,
+    showUnspecified: showUnspecifiedThought,
+    options: thoughtLevel.options,
+  }];
 }

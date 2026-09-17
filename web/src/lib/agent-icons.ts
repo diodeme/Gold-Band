@@ -52,12 +52,16 @@ export function agentIconSrc(iconKey: string) {
   return `/agent-icons/${icon}.svg`;
 }
 
-export function agentIconClass(iconKey: string, className?: string) {
+export function agentIconClass(
+  iconKey: string,
+  className?: string,
+  options?: { compensateWhitespace?: boolean },
+) {
   const normalizedIconKey = iconKey.trim();
   return cn(
     'object-contain',
     MONOCHROME_AGENT_ICONS.has(normalizedIconKey) && 'dark:invert',
+    options?.compensateWhitespace && AGENT_ICON_SCALE_CLASS[normalizedIconKey],
     className,
-    AGENT_ICON_SCALE_CLASS[normalizedIconKey],
   );
 }

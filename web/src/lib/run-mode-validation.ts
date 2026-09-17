@@ -9,9 +9,10 @@ import type {
   WorkflowTemplate,
   WorkflowTemplateStore,
 } from '@/types';
+import { retainAcpModelBoundOverrides } from '@/lib/acp-composite-config';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
 import { readyWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
-import { agentDiagnosticMessage } from '@/lib/agent-diagnostic';
+import { agentDiagnosticShortReason } from '@/lib/agent-diagnostic';
 
 export type SelectableAgentOption = {
   agent: ManagedAgentVm;
@@ -33,7 +34,7 @@ export type SelectableWorkflowOption = {
 
 export function agentDoctorReason(agent: ManagedAgentVm, t: (key: string, options?: Record<string, unknown>) => string) {
   if (agent.diagnostic?.available === true) return null;
-  return agentDiagnosticMessage(t, agent.diagnostic, t('runMode.agentDoctorRequired'));
+  return agentDiagnosticShortReason(t, agent.diagnostic, t('runMode.agentDoctorRequired'));
 }
 
 export function selectableAgentOptions(
@@ -355,10 +356,18 @@ export function validateDirectConfig(
 export function normalizeConfigOptionOverrides(
   agent: ManagedAgentVm,
   overrides: Record<string, string> | null | undefined,
+  selectedModelId?: string | null,
 ): { configOptions: Record<string, string>; removedOptionIds: string[] } {
+  const retained = selectedModelId === undefined
+    ? { ...(overrides ?? {}) }
+    : retainAcpModelBoundOverrides(overrides, agent.configOptions, selectedModelId);
   const configOptions: Record<string, string> = {};
   const removedOptionIds: string[] = [];
   for (const [optionId, value] of Object.entries(overrides ?? {})) {
+    if (retained[optionId] !== value) {
+      removedOptionIds.push(optionId);
+      continue;
+    }
     const option = agent.configOptions?.find((candidate) => candidate.id === optionId);
     if (option?.options.some((candidate) => candidate.value === value)) {
       configOptions[optionId] = value;

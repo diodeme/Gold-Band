@@ -47,7 +47,7 @@ impl ProviderAdapter for SuccessProvider {
     fn doctor(&self) -> DoctorResult {
         DoctorResult {
             available: true,
-            reason: None,
+            error: None,
             capabilities: None,
         }
     }
@@ -111,7 +111,7 @@ impl ProviderAdapter for InterruptThenSuccessProvider {
     fn doctor(&self) -> DoctorResult {
         DoctorResult {
             available: true,
-            reason: None,
+            error: None,
             capabilities: None,
         }
     }
@@ -214,7 +214,7 @@ fn with_available_claude_diagnostics(app: App) -> App {
             "claude-acp".to_string(),
             ProviderDiagnosticSnapshot {
                 available: true,
-                reason: None,
+                error: None,
                 checked_at: "2026-08-14T00:00:00Z".to_string(),
                 capabilities: None,
             },

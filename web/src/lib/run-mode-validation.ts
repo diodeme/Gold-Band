@@ -11,6 +11,7 @@ import type {
 } from '@/types';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
 import { readyWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
+import { agentDiagnosticMessage } from '@/lib/agent-diagnostic';
 
 export type SelectableAgentOption = {
   agent: ManagedAgentVm;
@@ -32,8 +33,7 @@ export type SelectableWorkflowOption = {
 
 export function agentDoctorReason(agent: ManagedAgentVm, t: (key: string, options?: Record<string, unknown>) => string) {
   if (agent.diagnostic?.available === true) return null;
-  if (agent.diagnostic?.reason?.trim()) return agent.diagnostic.reason;
-  return t('runMode.agentDoctorRequired');
+  return agentDiagnosticMessage(t, agent.diagnostic, t('runMode.agentDoctorRequired'));
 }
 
 export function selectableAgentOptions(

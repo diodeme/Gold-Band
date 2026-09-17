@@ -44,7 +44,7 @@ const agentRegistry: AgentRegistryVm = {
       category: 'thought_level',
       options: [{ value: 'high', name: 'High' }],
     }],
-    diagnostic: { status: 'ok', available: true, reason: null, checkedAt: '' },
+    diagnostic: { status: 'ok', available: true, error: null, checkedAt: '' },
   }],
   catalog: [],
 };

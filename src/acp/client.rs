@@ -348,8 +348,8 @@ use crate::acp::commands::{AcpCommandItem, parse_available_commands};
 use crate::acp::connection::{
     AcpConnectionUnavailable, AdapterConnection, AdapterConnectionKey, AdapterConnectionManager,
     AdapterConnectionUse, AdapterShutdownReason, AttemptSessionUnregisterOutcome, LiveAcpSession,
-    SessionEventPump, SessionObservedFrame, SessionRouteTryRecvError, SessionRouteWatermark,
-    unsupported_client_inbound_reply,
+    STDERR_FAILURE_DRAIN_TIMEOUT, SessionEventPump, SessionObservedFrame, SessionRouteTryRecvError,
+    SessionRouteWatermark, unsupported_client_inbound_reply,
 };
 use crate::acp::elicitation::{
     ELICITATION_DEFAULT_TIMEOUT, ElicitationAction, bind_pending_elicitation_timeline_identity,
@@ -386,7 +386,8 @@ use crate::acp::usage::{
     append_prompt_started, repair_attempt_usage,
 };
 use crate::config::{
-    AcpAdapterConfig, DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS, ManagedAgentId, RuntimeConfig,
+    AcpAdapterConfig, DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS, DiagnosticError,
+    ManagedAgentId, RuntimeConfig,
 };
 use crate::domain::{SessionMode, TurnControlMode, TurnControlTransitionCause, VERSION};
 use crate::provider::{
@@ -396,8 +397,8 @@ use crate::provider::{
 };
 use crate::runtime::{WorkerRefState, validate_worker_ref_state};
 use crate::runtime_error::{
-    DEFAULT_AUTO_RETRY_MAX_ATTEMPTS, RuntimeErrorDomain, blocked_runtime_error_info,
-    manual_runtime_error_info, runtime_error,
+    DEFAULT_AUTO_RETRY_MAX_ATTEMPTS, RuntimeError, RuntimeErrorDomain, blocked_runtime_error_info,
+    manual_runtime_error_info, normalize_runtime_error, runtime_error,
 };
 use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, roll_jsonl, write_json};
 
@@ -448,6 +449,104 @@ impl DoctorDeadline {
             })
     }
 }
+
+pub fn doctor_diagnostic_error(error: &anyhow::Error) -> DiagnosticError {
+    if let Some(start) = error.downcast_ref::<crate::acp::adapter::AcpAdapterStartFailed>() {
+        return DiagnosticError {
+            code: "acp.adapter-start-failed".to_string(),
+            params: json!({
+                "osError": start.source.to_string(),
+                "command": start.command,
+            }),
+        };
+    }
+    if let Some(runtime_error) = error.downcast_ref::<RuntimeError>() {
+        return diagnostic_error_from_runtime(&runtime_error.info);
+    }
+    if is_transport_interruption(error) {
+        return DiagnosticError {
+            code: "acp.adapter-exited".to_string(),
+            params: json!({}),
+        };
+    }
+    diagnostic_error_from_runtime(&normalize_runtime_error(error))
+}
+
+fn diagnostic_error_from_runtime(info: &crate::runtime_error::RuntimeErrorInfo) -> DiagnosticError {
+    let mut code = info.code_str().to_string();
+    if code == "runtime.transport-interrupted" {
+        code = "acp.adapter-exited".to_string();
+    }
+    let params = if info.params.is_null() {
+        json!({})
+    } else {
+        info.params.clone()
+    };
+    DiagnosticError { code, params }
+}
+
+fn doctor_adapter_exited_error(
+    method: &str,
+    exit_code: Option<i32>,
+    stderr: String,
+) -> anyhow::Error {
+    runtime_error(manual_runtime_error_info(
+        RuntimeErrorDomain::Provider,
+        "acp.adapter-exited",
+        format!("ACP adapter exited during `{method}`"),
+        doctor_adapter_exited_params(method, exit_code, stderr),
+    ))
+}
+
+fn doctor_adapter_exited_params(method: &str, exit_code: Option<i32>, stderr: String) -> Value {
+    let mut params = json!({ "method": method });
+    if let Some(exit_code) = exit_code {
+        params["exitCode"] = json!(exit_code);
+    }
+    if !stderr.is_empty() {
+        params["reason"] = json!(stderr);
+    }
+    params
+}
+
+fn merge_doctor_failure_params(params: &mut Value, exit_code: Option<i32>, stderr: &str) {
+    if !params.is_object() {
+        *params = json!({});
+    }
+    if let Some(exit_code) = exit_code {
+        if params.get("exitCode").is_none() {
+            params["exitCode"] = json!(exit_code);
+        }
+    }
+    if !stderr.is_empty() {
+        let existing = params.get("reason").and_then(Value::as_str).unwrap_or("");
+        if existing.is_empty() {
+            params["reason"] = json!(stderr);
+        }
+    }
+}
+
+fn enrich_doctor_error(runtime: &AcpRuntime<'_>, error: anyhow::Error) -> anyhow::Error {
+    let stderr = runtime
+        .connection
+        .wait_for_failure_stderr(STDERR_FAILURE_DRAIN_TIMEOUT);
+    let exit_code = runtime
+        .connection
+        .try_wait()
+        .ok()
+        .flatten()
+        .and_then(|status| status.code());
+    if let Some(existing) = error.downcast_ref::<RuntimeError>() {
+        let mut info = existing.info.clone();
+        merge_doctor_failure_params(&mut info.params, exit_code, &stderr);
+        return runtime_error(info);
+    }
+    if is_transport_interruption(&error) {
+        return doctor_adapter_exited_error("initialize", exit_code, stderr);
+    }
+    error
+}
+
 const DOCTOR_DIAGNOSTIC_MAX_SIZE: u64 = 512 * 1024;
 const DOCTOR_DIAGNOSTIC_TARGET_SIZE: u64 = 384 * 1024;
 const DOCTOR_COMMAND_DISCOVERY_TIMEOUT: Duration = Duration::from_millis(500);
@@ -2597,6 +2696,7 @@ fn doctor_in_dir(
             commands,
         })
     })();
+    let result = result.map_err(|error| enrich_doctor_error(&runtime, error));
     runtime.shutdown();
     if result.is_ok() {
         cleanup_doctor_acp_dir_after_success(&doctor_acp_dir);
@@ -5202,6 +5302,20 @@ impl<'a> AcpRuntime<'a> {
         self.request_with_progress(method, params, timeout, None, true)
     }
 
+    fn doctor_or_transport_interrupt(&self, method: &str) -> anyhow::Error {
+        if self.doctor_deadline.is_some() {
+            let exit_code = self
+                .connection
+                .try_wait()
+                .ok()
+                .flatten()
+                .and_then(|status| status.code());
+            doctor_adapter_exited_error(method, exit_code, String::new())
+        } else {
+            anyhow!(AcpTransportInterrupted)
+        }
+    }
+
     fn request_connection_owned_with_timeout(
         &mut self,
         method: &str,
@@ -5353,17 +5467,17 @@ impl<'a> AcpRuntime<'a> {
                             "sessionId": self.session_id,
                         }),
                     );
-                    return Err(anyhow!(AcpTransportInterrupted));
+                    return Err(self.doctor_or_transport_interrupt(method));
                 }
             }
 
             if self.connection.is_transport_closed() {
                 self.connection.cancel_pending(request.id);
-                return Err(anyhow!(AcpTransportInterrupted));
+                return Err(self.doctor_or_transport_interrupt(method));
             }
             if self.connection.try_wait()?.is_some() {
                 self.connection.cancel_pending(request.id);
-                return Err(anyhow!(AcpTransportInterrupted));
+                return Err(self.doctor_or_transport_interrupt(method));
             }
         }
     }
@@ -8599,6 +8713,59 @@ mod tests {
     }
 
     #[test]
+    fn doctor_diagnostic_error_maps_transport_interrupt_to_adapter_exited() {
+        let error = anyhow::anyhow!(super::AcpTransportInterrupted);
+        let diagnostic = super::doctor_diagnostic_error(&error);
+        assert_eq!(diagnostic.code, "acp.adapter-exited");
+        assert_eq!(diagnostic.params, json!({}));
+    }
+
+    #[test]
+    fn doctor_diagnostic_error_maps_adapter_start_failure_to_os_error() {
+        let error = anyhow::anyhow!(crate::acp::adapter::AcpAdapterStartFailed {
+            command: "npx.cmd".into(),
+            source: std::io::Error::from_raw_os_error(2),
+        });
+        let diagnostic = super::doctor_diagnostic_error(&error);
+        assert_eq!(diagnostic.code, "acp.adapter-start-failed");
+        assert_eq!(diagnostic.params["command"], "npx.cmd");
+        assert!(
+            diagnostic.params["osError"]
+                .as_str()
+                .is_some_and(|os_error| !os_error.is_empty())
+        );
+    }
+
+    #[test]
+    fn doctor_initialize_exit_keeps_classified_failure_stderr() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("doctor");
+        let error = super::doctor_in_dir(
+            &"doctor-stderr-fixture".parse().unwrap(),
+            &doctor_fixture_config("initialize-exit-enoent"),
+            cwd,
+            false,
+            false,
+            attempt,
+            super::DoctorDeadline::new(Duration::from_secs(10)),
+        )
+        .unwrap_err();
+        let diagnostic = super::doctor_diagnostic_error(&error);
+        assert_eq!(diagnostic.code, "acp.adapter-exited");
+        assert_eq!(diagnostic.params["method"], "initialize");
+        assert_eq!(diagnostic.params["exitCode"], 1);
+        let reason = diagnostic.params["reason"].as_str().expect("stderr reason");
+        assert!(reason.contains("ENOENT"), "{reason}");
+        assert!(reason.contains("package.json"), "{reason}");
+        assert!(
+            !error
+                .to_string()
+                .contains("ACP adapter transport interrupted")
+        );
+    }
+
+    #[test]
     fn doctor_default_budget_is_three_minutes_and_expired_budget_cannot_restart() {
         assert_eq!(
             super::DoctorDeadline::default().timeout,
@@ -8623,6 +8790,14 @@ mod tests {
         let Ok(stall_method) = std::env::var("GOLD_BAND_DOCTOR_FIXTURE") else {
             return;
         };
+        if stall_method == "initialize-exit-enoent" {
+            eprintln!("npm error code ENOENT");
+            eprintln!(
+                "npm error path C:\\Users\\Administrator\\AppData\\Local\\npm-cache\\_npx\\dead\\package.json"
+            );
+            let _ = std::io::stderr().flush();
+            std::process::exit(1);
+        }
         let _listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         std::fs::write(
             "fixture-address",
@@ -10328,7 +10503,9 @@ mod tests {
 
     #[test]
     fn agent_branch_file_change_set_event_keeps_branch_ownership_after_annotate() {
-        use crate::acp::branches::{annotate_event_branch, event_branch_id, stable_agent_execution_id};
+        use crate::acp::branches::{
+            annotate_event_branch, event_branch_id, stable_agent_execution_id,
+        };
         use crate::acp::turn_files::{
             TURN_FILE_CHANGE_SET_SCHEMA_VERSION, TurnFileChangeSet, TurnFileChangeSetStatus,
             TurnFileChangeSummary,
@@ -10366,7 +10543,10 @@ mod tests {
         annotate_event_branch(&mut event);
 
         assert_eq!(event_branch_id(&event), branch_id);
-        assert_ne!(event_branch_id(&event), crate::acp::branches::ROOT_BRANCH_ID);
+        assert_ne!(
+            event_branch_id(&event),
+            crate::acp::branches::ROOT_BRANCH_ID
+        );
     }
 
     fn timeline_event(

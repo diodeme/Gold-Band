@@ -1771,10 +1771,23 @@ impl Default for WorkspaceFilesConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticError {
+    pub code: String,
+    #[serde(default = "default_diagnostic_error_params")]
+    pub params: serde_json::Value,
+}
+
+fn default_diagnostic_error_params() -> serde_json::Value {
+    serde_json::json!({})
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderDiagnosticSnapshot {
     pub available: bool,
-    pub reason: Option<String>,
+    #[serde(default)]
+    pub error: Option<DiagnosticError>,
     pub checked_at: String,
     pub capabilities: Option<serde_json::Value>,
 }

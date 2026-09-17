@@ -14,7 +14,7 @@ pub fn with_available_claude_diagnostics(app: App) -> App {
             "claude-acp".to_string(),
             ProviderDiagnosticSnapshot {
                 available: true,
-                reason: None,
+                error: None,
                 checked_at: "2026-08-17T00:00:00Z".to_string(),
                 capabilities: Some(serde_json::json!({
                     "configOptions": [

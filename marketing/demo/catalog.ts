@@ -16,7 +16,7 @@ export const demoAgentRegistry: AgentRegistryVm = {
     };
     return entry.agentType === 'claude-acp' || entry.agentType === 'codex-acp'
       ? { ...agent, mcpHttpSupported: true, mcpSseSupported: entry.agentType === 'claude-acp',
-        diagnostic: { status: 'healthy' as const, available: true, reason: null, checkedAt: mockAgentRegistry.agents[0].diagnostic!.checkedAt } }
+        diagnostic: { status: 'healthy' as const, available: true, error: null, checkedAt: mockAgentRegistry.agents[0].diagnostic!.checkedAt } }
       : agent;
   }),
 };

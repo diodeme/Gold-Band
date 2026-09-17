@@ -529,7 +529,7 @@ export const mockAgentRegistry: AgentRegistryVm = {
       diagnostic: {
         status: 'healthy',
         available: true,
-        reason: null,
+        error: null,
         checkedAt: '2026-05-16 10:42:00',
       },
       supportedModels: [

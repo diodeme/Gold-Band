@@ -76,11 +76,11 @@ use crate::prompts::{
 #[cfg(test)]
 use crate::provider::render_prompt_bundle;
 use crate::provider::{
-    conversation_prompt_has_payload, ConversationPromptInput, OutputEmissionMode, PromptHiddenSection, PromptOutputContract,
+    ConversationPromptInput, OutputEmissionMode, PromptHiddenSection, PromptOutputContract,
     PromptPredecessorContext, PromptRuntimeContext, PromptVisibility, ProviderRunResult,
     ProviderRunStatus, RuntimeControlIntent, RuntimeControlOutput, StreamMode,
     UserPromptRenderMode, UserPromptRole, WorkerInvocation, conversation_agent_prompt_text,
-    prepare_prompt_bundle, render_new_round_trigger_reason_line,
+    conversation_prompt_has_payload, prepare_prompt_bundle, render_new_round_trigger_reason_line,
     supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use crate::runtime::{
@@ -16224,7 +16224,7 @@ mod tests {
         fn doctor(&self) -> DoctorResult {
             DoctorResult {
                 available: true,
-                reason: None,
+                error: None,
                 capabilities: None,
             }
         }
@@ -17468,7 +17468,7 @@ mod tests {
             "claude-acp".to_string(),
             ProviderDiagnosticSnapshot {
                 available: true,
-                reason: None,
+                error: None,
                 checked_at: "2026-06-16T00:00:00Z".to_string(),
                 capabilities: Some(capabilities),
             },

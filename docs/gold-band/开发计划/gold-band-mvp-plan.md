@@ -2086,3 +2086,10 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 实现：所有 Git 启动使用桌面 PATH 解析出的绝对路径并注入同一 PATH；Windows 追加 `Git\cmd` 常见安装位置并跳过 App Execution Alias 空文件。版本行从 stdout/stderr 中识别，能解析则按已安装版本比较门槛。成功路径进程内缓存，重新检测重新解析；版本号仍不持久化。分支选择器把识别失败与版本过低的触发器文案分开。
 - [x] 回归验收：Rust `git::tests` 19 项、`process` Windows PATH/suggested dirs、`git::source_control` 43 项、`git::github` 13 项通过；Web `git-requirement-dialog` 含 unavailable 文案区分，`git-branch-selector` 固定 unavailable 触发器不用 unsupported 标签。
 - 性能与过度设计评审：不新增状态机、版本矩阵、`git.path` 设置或磁盘缓存。PATH 遍历相对 `git --version` 可忽略；绝对路径进程内复用，避免每次 Git 命令读注册表。前端无新请求或 Store。
+
+## 2026-09-18：Agent 健康诊断对客错误保留有界故障 stderr
+
+- [x] 根因：doctor 失败把内部 `ACP adapter transport interrupted` Display 当作对客原因；已分类的 `npm error` / `ENOENT` stderr 只写 DEBUG，不进入诊断 snapshot。
+- [x] 方案：诊断 snapshot 使用结构化错误码；`acp.adapter-exited` / `acp.adapter-start-failed` / `acp.doctor-timeout` 由前端本地化。连接层缓存有界故障 stderr（2000 字符）到 `params.reason`，Agent 管理横幅和帮助 Tooltip 在主句下展示原始输出，选择器只展示主句。不改聊天 transport 文案、默认 INFO 策略，也不为 npx 特判。
+- [x] 验收：`doctor_initialize_exit_keeps_classified_failure_stderr` 固定 ENOENT 进入 `params.reason` 且不含英文 transport Display；映射测试覆盖 `acp.adapter-exited` / `acp.adapter-start-failed`；stderr 有界拼接测试通过。桌面 `background_doctor` 4 项通过。前端诊断 copy/横幅/Agent 管理/workflow 健康相关 9 个文件 37 项通过，`tsc -p web/tsconfig.build.json --noEmit` 通过。Doctor `session/new` 超时回归通过。
+- 性能与过度设计评审：复用既有 stderr 分类和 Git `params.reason` 模式。故障缓冲有界，仅 doctor 失败路径最多等待 250ms 排空 reader；无新状态机、缓存、队列或热路径扫描。

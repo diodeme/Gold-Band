@@ -21,8 +21,8 @@ use gold_band::app::{
     App, NotificationDedup, ProviderDoctorProbe, RuntimeLifecycleEvent, RuntimeRecoveryCoordinator,
 };
 use gold_band::config::{
-    ManagedAgentConfig, ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig, SettingsConfig,
-    StateConfig,
+    DiagnosticError, ManagedAgentConfig, ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig,
+    SettingsConfig, StateConfig,
 };
 use gold_band::process::recover_persisted_process_group;
 use gold_band::provider::DoctorResult;
@@ -1417,7 +1417,7 @@ impl DesktopState {
 fn diagnostic_state_from_result(result: DoctorResult) -> AgentDiagnosticState {
     ProviderDiagnosticSnapshot {
         available: result.available,
-        reason: result.reason,
+        error: result.error,
         checked_at: current_timestamp(),
         capabilities: result.capabilities,
     }
@@ -1559,11 +1559,14 @@ mod tests {
     use std::sync::{Arc, mpsc};
     use std::time::Duration;
 
-    fn doctor_probe(available: bool, reason: Option<&str>) -> ProviderDoctorProbe {
+    fn doctor_probe(available: bool, code: Option<&str>) -> ProviderDoctorProbe {
         ProviderDoctorProbe {
             doctor: DoctorResult {
                 available,
-                reason: reason.map(str::to_string),
+                error: code.map(|code| DiagnosticError {
+                    code: code.to_string(),
+                    params: serde_json::json!({}),
+                }),
                 capabilities: None,
             },
             commands: Vec::new(),
@@ -2303,7 +2306,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(calls, 1);
-        assert_eq!(result.doctor.reason.as_deref(), Some("deadline expired"));
+        assert_eq!(
+            result
+                .doctor
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("deadline expired")
+        );
     }
 
     #[test]
@@ -2320,7 +2330,14 @@ mod tests {
 
         assert_eq!(attempts, 2);
         assert!(!result.doctor.available);
-        assert_eq!(result.doctor.reason.as_deref(), Some("second"));
+        assert_eq!(
+            result
+                .doctor
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("second")
+        );
     }
 
     #[test]
@@ -2347,7 +2364,14 @@ mod tests {
 
         assert_eq!(attempts, 1);
         assert!(!result.doctor.available);
-        assert_eq!(result.doctor.reason.as_deref(), Some("manual failure"));
+        assert_eq!(
+            result
+                .doctor
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("manual failure")
+        );
     }
 
     #[test]
@@ -2545,7 +2569,10 @@ mod tests {
             read_json(&state.app().unwrap().paths.agent_diagnostics_file()).unwrap();
         assert!(diagnostics[&"codebuddy-code".parse().unwrap()].available);
         assert_eq!(
-            diagnostics[&"codex-acp".parse().unwrap()].reason.as_deref(),
+            diagnostics[&"codex-acp".parse().unwrap()]
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
             Some("acp.doctor-timeout")
         );
     }

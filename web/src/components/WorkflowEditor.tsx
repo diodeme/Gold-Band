@@ -22,6 +22,7 @@ import {
 } from '@xyflow/react';
 import { useTranslation } from 'react-i18next';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
+import { agentDiagnosticMessage } from '@/lib/agent-diagnostic';
 import type { AgentRegistryVm, DynamicAgentRefDsl, DynamicControlDsl, ManagedAgentVm, ProfileVm, WorkerModelBinding, WorkflowAiDynamicDynamicAgentStrategyDsl, WorkflowAiDynamicFixedAgentStrategyDsl, WorkflowAiDynamicNodeDsl, WorkflowControlDsl, WorkflowDsl, WorkflowEdgeDsl, WorkflowJsonConditionDsl, WorkflowModelBindings, WorkflowNodeDsl, WorkflowOutputContractDsl, WorkflowTemplate, WorkflowTemplateStore, WorkflowWorkerNodeDsl } from '../types';
 import {
   END_NODE,
@@ -296,9 +297,10 @@ export function optionalWorkerConfigOptions(
 }
 
 function AgentSelectItemContent({ agent, unavailableLabel }: { agent: ManagedAgentVm; unavailableLabel: string }) {
+  const { t } = useTranslation();
   const unavailableReason = isWorkflowAgentDoctorReady(agent)
     ? null
-    : (agent.diagnostic?.reason ?? unavailableLabel);
+    : agentDiagnosticMessage(t, agent.diagnostic, unavailableLabel);
   return (
     <span className="flex min-w-0 flex-col items-start">
       <span>{agent.displayName}</span>
@@ -2161,7 +2163,7 @@ function AgentMultiSelect({ agents, selectedAgents, invalid, onChange, t }: { ag
     (agent: ManagedAgentVm, _selected: boolean) => {
       const reason = isWorkflowAgentDoctorReady(agent)
         ? null
-        : (agent.diagnostic?.reason ?? t('workflowEditor.agentDoctorUnavailable'));
+        : agentDiagnosticMessage(t, agent.diagnostic, t('workflowEditor.agentDoctorUnavailable'));
       return (
       <span className={cn('flex min-w-0 flex-col', reason && 'opacity-60')}>
         <span>{agent.displayName}</span>

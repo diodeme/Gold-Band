@@ -15,7 +15,10 @@ const failedAgent = {
   diagnostic: {
     available: false,
     status: 'unhealthy',
-    reason: 'adapter exited before initialize',
+    error: {
+      code: 'acp.adapter-exited',
+      params: { method: 'initialize' },
+    },
   },
 } as ManagedAgentVm;
 

@@ -114,8 +114,12 @@ pub fn add_bookmark(
     let Some(canonical) = bookmark_url(&url) else {
         return Err(bookmark_error("browser.bookmark.invalid"));
     };
-    let origin = visit_origin(&canonical).ok_or_else(|| bookmark_error("browser.bookmark.invalid"))?;
-    if let Some(existing) = items.iter().find(|item| visit_origin(&item.url).as_deref() == Some(origin.as_str())) {
+    let origin =
+        visit_origin(&canonical).ok_or_else(|| bookmark_error("browser.bookmark.invalid"))?;
+    if let Some(existing) = items
+        .iter()
+        .find(|item| visit_origin(&item.url).as_deref() == Some(origin.as_str()))
+    {
         return Ok(existing.bookmark_id.clone());
     }
     if items.len() >= BROWSER_BOOKMARK_LIMIT {
@@ -170,10 +174,7 @@ pub fn reorder_bookmarks(
     Ok(())
 }
 
-pub fn seed_bookmarks(
-    items: &mut Vec<BrowserBookmarkRecord>,
-    catalog: &[BuiltinBookmark],
-) {
+pub fn seed_bookmarks(items: &mut Vec<BrowserBookmarkRecord>, catalog: &[BuiltinBookmark]) {
     for builtin in catalog {
         let _ = add_bookmark(
             items,
@@ -189,7 +190,8 @@ fn bookmark_error(code: &str) -> CommandErrorVm {
 }
 
 fn builtin_catalog() -> Vec<BuiltinBookmark> {
-    serde_json::from_str(option_env!("GOLD_BAND_BROWSER_BOOKMARKS").unwrap_or("[]")).unwrap_or_default()
+    serde_json::from_str(option_env!("GOLD_BAND_BROWSER_BOOKMARKS").unwrap_or("[]"))
+        .unwrap_or_default()
 }
 
 fn bookmarks_file(profile_dir: &Path) -> PathBuf {
@@ -310,7 +312,8 @@ pub async fn browser_add_bookmark(
     let mut inner = lock_host(&host)?;
     load_inner(&mut inner, &profile_dir);
     ensure_seeded(&mut inner, &profile_dir);
-    let canonical = bookmark_url(&input.url).ok_or_else(|| bookmark_error("browser.bookmark.invalid"))?;
+    let canonical =
+        bookmark_url(&input.url).ok_or_else(|| bookmark_error("browser.bookmark.invalid"))?;
     let title = bookmark_title(input.title.as_deref(), &canonical);
     let bookmark_id = uuid_id();
     add_bookmark(&mut inner.items, canonical, title, bookmark_id)?;
@@ -382,13 +385,23 @@ mod tests {
     fn add_is_idempotent_per_origin_and_respects_limit() {
         let mut items = Vec::new();
         assert_eq!(
-            add_bookmark(&mut items, "https://github.com/foo".into(), "GitHub".into(), "github".into())
-                .unwrap(),
+            add_bookmark(
+                &mut items,
+                "https://github.com/foo".into(),
+                "GitHub".into(),
+                "github".into()
+            )
+            .unwrap(),
             "github"
         );
         assert_eq!(
-            add_bookmark(&mut items, "https://github.com/bar".into(), "Other".into(), "other".into())
-                .unwrap(),
+            add_bookmark(
+                &mut items,
+                "https://github.com/bar".into(),
+                "Other".into(),
+                "other".into()
+            )
+            .unwrap(),
             "github"
         );
         assert_eq!(items.len(), 1);
@@ -403,9 +416,14 @@ mod tests {
         }
         assert_eq!(items.len(), BROWSER_BOOKMARK_LIMIT);
         assert_eq!(
-            add_bookmark(&mut items, "https://overflow.example/".into(), "X".into(), "x".into())
-                .unwrap_err()
-                .code,
+            add_bookmark(
+                &mut items,
+                "https://overflow.example/".into(),
+                "X".into(),
+                "x".into()
+            )
+            .unwrap_err()
+            .code,
             "browser.bookmark.limit_reached"
         );
     }
@@ -419,18 +437,26 @@ mod tests {
         ];
         assert!(remove_bookmark(&mut items, "b"));
         assert_eq!(
-            items.iter().map(|item| item.bookmark_id.as_str()).collect::<Vec<_>>(),
+            items
+                .iter()
+                .map(|item| item.bookmark_id.as_str())
+                .collect::<Vec<_>>(),
             ["a", "c"]
         );
         reorder_bookmarks(&mut items, &["c".into(), "a".into()]).unwrap();
         assert_eq!(
-            items.iter().map(|item| item.bookmark_id.as_str()).collect::<Vec<_>>(),
+            items
+                .iter()
+                .map(|item| item.bookmark_id.as_str())
+                .collect::<Vec<_>>(),
             ["c", "a"]
         );
         assert!(remove_bookmark_by_origin(&mut items, "https://c.example"));
         assert_eq!(items[0].bookmark_id, "a");
         assert_eq!(
-            reorder_bookmarks(&mut items, &["c".into()]).unwrap_err().code,
+            reorder_bookmarks(&mut items, &["c".into()])
+                .unwrap_err()
+                .code,
             "browser.bookmark.invalid"
         );
     }
@@ -466,7 +492,10 @@ mod tests {
         assert!(default.iter().any(|item| item["id"] == "figma"));
         let wb = catalog["wb"].as_array().expect("wb");
         assert_eq!(wb.len(), 7);
-        assert!(wb.iter().any(|item| item["id"] == "maling" && item["url"] == "http://maling.weoa.com/"));
+        assert!(
+            wb.iter()
+                .any(|item| item["id"] == "maling" && item["url"] == "http://maling.weoa.com/")
+        );
         assert!(wb.iter().any(|item| item["id"] == "cmdb"));
     }
 }

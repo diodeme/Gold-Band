@@ -2295,6 +2295,7 @@ dependencies = [
  "imagesize 0.14.0",
  "infer",
  "keepawake",
+ "mime_guess",
  "natord",
  "notify",
  "notify-rust",

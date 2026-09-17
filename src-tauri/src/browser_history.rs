@@ -336,7 +336,11 @@ pub async fn browser_delete_history(
     host: State<'_, BrowserHistoryHost>,
     input: BrowserDeleteHistoryInput,
 ) -> CommandResult<Vec<BrowserVisitVm>> {
-    let Some(url) = Url::parse(&input.url).ok().as_ref().and_then(http_visit_url) else {
+    let Some(url) = Url::parse(&input.url)
+        .ok()
+        .as_ref()
+        .and_then(http_visit_url)
+    else {
         return Err(CommandErrorVm::new(
             "browser.history.url_invalid",
             serde_json::json!({}),
@@ -443,11 +447,7 @@ async fn fetch_origin_favicon(origin: &str) -> Option<Vec<u8>> {
 }
 
 async fn fetch_favicon_url(url: Url) -> Option<Vec<u8>> {
-    let response = favicon_client()
-        .get(url)
-        .send()
-        .await
-        .ok()?;
+    let response = favicon_client().get(url).send().await.ok()?;
     if !response.status().is_success() {
         return None;
     }
@@ -486,7 +486,10 @@ mod tests {
             http_visit_url(&github).as_deref(),
             Some("https://github.com/gold-band")
         );
-        assert_eq!(visit_origin("https://github.com/gold-band"), Some("https://github.com".into()));
+        assert_eq!(
+            visit_origin("https://github.com/gold-band"),
+            Some("https://github.com".into())
+        );
         assert!(http_visit_url(&Url::parse("about:blank").unwrap()).is_none());
         assert!(visit_origin("file:///tmp/index.html").is_none());
     }

@@ -22,6 +22,7 @@ keepawake = "0.6.0"
 encoding_rs = "0.8"
 ignore = "0.4"
 infer = "0.19"
+mime_guess = "2"
 imagesize = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

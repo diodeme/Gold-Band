@@ -51,12 +51,13 @@ use std::{
 
 use camino::Utf8PathBuf;
 use gold_band::config::{
-    AcpAdapterConfig, AppearancePreference, AvatarPreference, AvatarShapePreference, BrowserPreferences,
-    ConversationAutoConfig, DEFAULT_CUSTOM_AGENT_ICON, DesktopLanguage, FontSizePreference,
-    FontStackPreference, MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT, MAX_FONT_FAMILY_CHARS,
-    MAX_FONT_STACK_FAMILIES, MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT, ManagedAgentConfig,
-    ManagedAgentId, MulticaAccountRef, PersonalizationAvatarShape, PersonalizationPreference,
-    WallpaperImagePreference, normalize_desktop_editor_font_size, normalize_desktop_ui_font_size,
+    AcpAdapterConfig, AppearancePreference, AvatarPreference, AvatarShapePreference,
+    BrowserPreferences, ConversationAutoConfig, DEFAULT_CUSTOM_AGENT_ICON, DesktopLanguage,
+    FontSizePreference, FontStackPreference, MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+    MAX_FONT_FAMILY_CHARS, MAX_FONT_STACK_FAMILIES, MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+    ManagedAgentConfig, ManagedAgentId, MulticaAccountRef, PersonalizationAvatarShape,
+    PersonalizationPreference, WallpaperImagePreference, normalize_desktop_editor_font_size,
+    normalize_desktop_ui_font_size,
 };
 use gold_band::observability::set_runtime_log_level;
 use gold_band::provider::{

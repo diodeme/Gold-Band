@@ -830,3 +830,11 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - ACP timeline 的可见历史继续以有限语义块窗口为单位分页。`startedSeq/oldestSeq` 表示逻辑项在会话中的稳定阅读位置；`endedSeq/newestSeq/lastRevision` 表示累计内容或生命周期最后更新水位。累计用户消息、Assistant 消息、Thought 或 Tool 可以较早开始并在较晚 revision 结算，这不会改变其阅读位置。
 - `beforeSeq` 反向分页必须按语义块的 `oldestSeq` 与当前窗口最早项比较，不得用 `newestSeq` 排除跨越游标的累计项；增量刷新继续使用 revision/end 水位。分页结果按既有稳定 item identity 合并，prepend 后继续使用真实 DOM item 锚点恢复阅读位置。
 - 该契约复用现有 timeline materialized index、原生滚动和有界前端窗口，不新增缓存、全量正文扫描、虚拟列表或第二套 timeline 状态。接口回归必须覆盖较早逻辑项在游标之后才终结的重叠区间，并确认最早消息可达、`hasOlder/hasNewer` 与语义块顺序一致。
+
+# 2026-09-16：ACP 新内容边界与历史阅读意图
+
+- `eventPage.hasNewer` 只表示当前有限窗口之后仍存在 canonical 内容，是分页数据边界，不表示用户主动阅读历史。只有正在翻页或用户明确滚离底部，才允许冻结当前可见窗口；仍在跟随最新时，同 generation 的 live item 必须继续投影，并由既有 canonical-head coordinator 收敛分页边界。
+- 空的运行中窗口即使暂时带有 `hasNewer=true`，收到首条同 generation live 正文后也必须退出品牌加载态并展示正文，不能只维持“回到最新”标记。切回会话时同样以已保存的明确阅读意图决定是否恢复历史窗口，不能从 `hasNewer` 反推阅读意图。
+- 可见窗口的瞬时冻结（工具卡展开暂停、canonical recovery pending、布局调整）与用户明确阅读历史必须区分：瞬时冻结只延迟投影，不写入历史阅读意图；跟随意图恢复后必须由既有 canonical-head coordinator 自动接回最新，不得要求用户再点一次“回到最新”。
+- canonical 快照水位未覆盖的保留 replay（同代际且 sequence 超出快照已覆盖范围）不是历史阅读内容，不得仅凭该快照被 ACK 丢弃：跟随时照常投影，并继续保留供显式“回到最新”重新投影；跨代际的保留 replay 仍走既有 generation 刷新路径。自动 canonical recovery 失败时允许有限次数重试，用户明确阅读历史期间不得自动请求。
+- 该契约沿用现有 event-window identity、generation/revision、prompt-kit 跟随状态和有界窗口，不新增状态机、持久字段、缓存或全量扫描。修复属于消费端投影与状态转换契约完善；性能影响限定为现有 live merge 路径上的常数级判定。

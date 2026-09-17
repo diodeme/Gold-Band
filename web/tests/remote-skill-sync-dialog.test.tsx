@@ -73,6 +73,23 @@ vi.mock('@/components/ui/tooltip', () => ({
   TooltipContent: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
 
+// 就地连接弹窗桩：按 open 门控渲染，透传 sourceLabel（注册表名片）+ 暴露 onConnected
+// 触发器（模拟连接成功路径），供未连接分支的连接入口契约断言。
+vi.mock('@/components/conversation/MulticaConnectDialog', () => ({
+  MulticaConnectDialog: (props: {
+    open?: boolean;
+    sourceLabel?: string;
+    onConnected?: () => void;
+  }) =>
+    props.open ? (
+      <div data-testid="connect-dialog" data-source={props.sourceLabel ?? ''}>
+        <button type="button" data-testid="connect-done" onClick={() => props.onConnected?.()}>
+          done
+        </button>
+      </div>
+    ) : null,
+}));
+
 const mocks = vi.hoisted(() => ({
   getMulticaSettings: vi.fn(),
   listRemoteSkills: vi.fn(),
@@ -223,5 +240,53 @@ describe('remote skill sync dialog', () => {
 
     expect(mocks.pullRemoteSkills).toHaveBeenCalledTimes(1);
     expect(mocks.pullRemoteSkills).toHaveBeenCalledWith('ws-1', ['s-exists']);
+  });
+
+  it('not connected → source selector + inline connect entry; connected via dialog refetches settings', async () => {
+    // 首次设置拉取返回未连接态；连接成功后的重拉返回已连接（beforeEach 默认值）。
+    mocks.getMulticaSettings.mockResolvedValueOnce({
+      enabled: true,
+      toggleLocked: false,
+      multicaBaseUrl: 'https://example.test',
+      multicaAppUrl: null,
+      patSet: false,
+      daemonIdSet: false,
+      workspaces: [],
+      activeWorkspaceId: null,
+      defaultProvider: 'claude-acp',
+      connected: false,
+      connectedAccount: null,
+      addressOverrideSet: false,
+    });
+    const { container, root } = renderDialog();
+    await act(async () => {
+      root.render(
+        <RemoteSkillSyncDialog open onOpenChange={() => {}} onFinished={() => {}} />,
+      );
+    });
+    await flushEffects();
+
+    // 来源选择器（注册表驱动）+ 未连接文案 + 就地连接按钮。
+    expect(container.textContent).toContain('remote.taskManagement.source.label');
+    expect(container.textContent).toContain(`${BASE}.notConnected`);
+    const connectBtn = [...container.querySelectorAll('button')].find(
+      (b) => b.textContent === `${BASE}.connect`,
+    );
+    expect(connectBtn).toBeTruthy();
+
+    // 打开连接弹窗：sourceLabel 经注册表名片解析（t 桩返回 key），不散写品牌名。
+    await act(async () => { connectBtn!.click(); });
+    const connectDialog = container.querySelector<HTMLElement>('[data-testid="connect-dialog"]');
+    expect(connectDialog).toBeTruthy();
+    expect(connectDialog?.getAttribute('data-source')).toBe('remote.taskManagement.source.multica');
+
+    // 连接成功 → 重拉设置 → 未连接分支消失（工作空间/列表随之级联刷新）。
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="connect-done"]')!.click();
+    });
+    await flushEffects();
+    expect(mocks.getMulticaSettings).toHaveBeenCalledTimes(2);
+    expect(container.textContent).not.toContain(`${BASE}.notConnected`);
+    expect(container.querySelector('[data-testid="connect-dialog"]')).toBeTruthy(); // onOpenChange 由连接弹窗自身收尾
   });
 });

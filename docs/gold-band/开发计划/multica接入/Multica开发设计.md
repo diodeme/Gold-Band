@@ -2223,6 +2223,54 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 - **测试同步**：`multica-skill-sync-dialog.test.tsx` 移除 ScrollArea 桩，结构契约改写为「滚动容器必须是 flex item 本身（overflow-y-auto + min-h-0 + flex-1 + gold-themed-scrollbar），不得经 size-full 视口百分比链」。
 - **验证局限（诚实记录）**：jsdom 无布局引擎，滚动行为无法自动化复现（bug-fix-verification 规则的替代证据：结构契约测试 + 桌面端目验）。`tsc` 零错，vitest 3 套件 8 例过。
 
+### 12.45 改动四十三：远程来源解耦 P1——词表与组件改名（M5-be，2026-09-17）
+
+**背景与根因**：P1 三项断连/重连排查（①定时器空转断连 ②重连后列表不清空 ③multica 状态编辑不回传客户端）最终判定全部为服务端语义或既有设计（webank 源码逐条对证），客户端忠实。但排查过程暴露出真正的工程问题：**前端词表与组件命名以 multica 品牌散写**——i18n 文案直接写死「Multica」、组件名 `Multica*`、类型 `MulticaTask`、命令 `multica_*`，来源信息本应是「数据」却被编译进「代码」，换来源 = 全库改代码。
+
+**设计（三条不变量）**：① 方言不出模块（品牌词只允许出现在 adapter 模块内部）；② 按名片渲染不按来源特判（消费方只读来源注册表名片，不写 `if source === 'multica'`）；③ 任务与 skill 来源互不感知。
+
+**实现**
+- P1a（Rust）：`src-tauri/src/multica/` → `src-tauri/src/remote/`，模块内 `multica_*` 命令保留（adapter 域白名单：`disconnect_multica`、`connect_multica` 等），对外词汇统一 remote。命令更名（如 `list_multica_tasks`→`list_remote_tasks`）与前端同 commit 提交保证 bisect 绿。
+- P1b（前端）：新增 `web/src/lib/remote-sources.ts`——`REMOTE_TASK_SOURCES` 注册表、`isRemoteTaskSource` 类型守卫、`remoteTaskSourceLabel(t, source)` 名片解析；新增 `web/src/lib/app-events.ts` 收敛事件常量。组件改名 `MulticaRemoteTaskBoard`→`RemoteTaskBoard`、`MulticaTaskManagementPage`→`RemoteTaskManagementPage`、`MulticaSkillSyncDialog`→`RemoteSkillSyncDialog`（文件同步 rename）。
+- 一 commit 合并 P1a+P1b（7085a5a7，62 文件），已 push。
+
+**验证（2026-09-17）**：`tsc -p web/tsconfig.build.json` + demo 双零错；vitest multica/remote 相关套件全过；①②③ 由用户桌面端实测确认（服务端语义结论，非回归）。
+
+**遗留（记入 P2/P3）**：skill 页文案仍含品牌名（无前端 skill 来源字段，P2 随 SkillSource 提取一并处理）；`errors.remote.*` 错误文案品牌名（displayAppError 路径无来源上下文，需传 wire 改动）；`disconnect_multica` 后端命令暂留（adapter 域白名单，P3 清理）；TaskSource 整合与 capabilities 卡片为 P3。
+
+---
+
+### 12.46 改动四十四：需求管理页产品形态一期——{{source}} 参数化与账号菜单移除（M5-bf，2026-09-17）
+
+**背景**：P1 重命名完成后，用户提出产品形态问题：需求管理/skill 管理页如何展示得不与 multica 耦合过深。定调为「来源名对用户是数据不是代码」——所有用户可见的来源名一律走注册表名片（`remoteTaskSourceLabel`），i18n 文案用 `{{source}}` 插值，不在文案里散写品牌名。
+
+**实现（`RemoteTaskManagementPage.tsx` / `MulticaConnectDialog.tsx` / `web/src/i18n.ts`）**
+- {{source}} 参数化 8 处双语：空状态 `emptyTitle`「尚未连接{{source}}」/ `emptyDescription`「连接后可在此查看并领取{{source}}需求。」/ `connectButton`「连接{{source}}」；连接弹窗 `remote.connect.title`「连接{{source}}」。页面在 `accountLabel` 后新增 `sourceLabel = remoteTaskSourceLabel(t, source)` 作为插值唯一来源；`MulticaConnectDialog` 新增必填 prop `sourceLabel`（弹窗内不散写品牌名，测试同步补传）。
+- 账号菜单移除（产品决策）：右下角「切换账号/断开连接」下拉删除——用户只在首次连接远程，后续无切换/断开场景；换账号/换地址走连接与地址设置弹窗即可覆盖。footer 改为纯展示账号标识（User 图标 + truncate 账号名）。i18n 按开发阶段破坏式更新删除 `account.switchAccount`/`account.disconnect` 键（保留 `connected`）。
+- 后端 `disconnect_multica` 命令与 API wrapper **保留**（adapter 域白名单，避免刚 push 的 P1 commit 之后再翻动 Rust 层；P3 统一清理）。
+
+**明确不做（过度设计防护）**：设置页不加「远程来源」集中管理区（当前单来源在架，集中管理是假设性需求）；skill 页文案参数化推 P2（无前端 skill 来源 wire 字段）；错误文案参数化推后续（displayAppError 无来源上下文，需改 wire）。
+
+**性能评审**：无新增渲染路径/数据加载；`remoteTaskSourceLabel` 为同步查表 O(1)；footer 从 DropdownMenu（含 Radix portal）简化为纯 span，渲染成本反降。
+
+**验证（2026-09-17）**：`tsc -p web/tsconfig.build.json` + demo 双零错；vitest 4 套件 48 例全过（含 multica-connect-dialog 补 `sourceLabel` prop 后全绿）。视觉验证按 M5-ba 先例留待用户桌面端目验（重点：空状态/连接弹窗的来源名插值、footer 纯账号标识无下拉）。
+
+---
+
+### 12.47 改动四十五：skill 管理页来源解耦一期——通用同步入口与弹窗内来源选择（M5-bg，2026-09-17）
+
+**背景与根因**：M5-bf 遗留的 skill 页品牌耦合（按钮「从 Multica 同步」、弹窗标题、未连接提示、失败原因共 4 处散写品牌名）。用户设计决策指明方向：来源是 skill 同步的**选择维度**而非文案参数——「任务连着来源 A、skill 想从来源 B 同步」的场景下，{{source}} 参数化无法表达；正确形态是通用同步按钮 + 弹窗内来源选择器（与需求管理页 A6 来源选择器同款模式：注册表驱动、单来源也显示）。
+
+**实现（`RemoteSkillSyncDialog.tsx` / `web/src/i18n.ts`，纯前端零 wire 改动）**
+- 文案通用化（双语）：`remoteSync.action`「同步远程 SKILL」、`remoteSync.title`「从远程同步 SKILL」、`reason["multica.not-connected"]`「未连接远程来源」——文案零来源名，来源名只作为选择器数据出现。
+- 弹窗顶部来源选择器：`REMOTE_TASK_SOURCES.map` 渲染，复用 `remote.taskManagement.source.label`；`handleSourceChange` 换来源时重置工作空间与勾选（fallback effect 重选默认空间后列表 effect 重拉）。
+- 未连接分支升级：`notConnected`「未连接{{source}}」+ 新增 `connect`「连接{{source}}」按钮，就地打开 `MulticaConnectDialog`（复用 M5-bf 的 `sourceLabel` prop 与弹窗内已持有的 settingsVm）；`onConnected` 重拉设置（`fetchSettings` 单一 helper 收口），工作空间/列表级联刷新。顺带修复原文案指向已改名页面（「远程任务」→ 现名「需求管理」）的死引导。
+- **wire 分期决策**：`list_remote_skills`/`pull_remote_skills` 的 source 参数随 P2 落地——当前选择器值恒为 'multica'（单来源注册表），单独加参数是恒传单值的伪接缝；P2 随第二来源接入时命令参数 + 按来源路由 + per-source 连接状态同批落地。前端接缝：设置拉取收敛在 `fetchSettings`，P2 按 source 分发只扩该 helper。
+
+**性能评审**：零新增数据加载路径（连接成功后的重拉复用既有 getMulticaSettings 单次调用）；来源选择器为静态注册表渲染 O(1)；未连接分支复用弹窗内已持有 settingsVm，无额外请求。无性能风险。
+
+**验证（2026-09-17）**：`tsc -p web/tsconfig.build.json` 零错（tsconfig.json 全量检查的报错均在未触碰文件，属既有环境噪音）；vitest 3 套件（remote-skill-sync-dialog / remote-skill-sync-i18n / multica-connect-dialog）17 例全过——新增：①未连接 → 来源选择器 + 就地连接按钮 → 连接弹窗携带注册表名片 sourceLabel → 连接成功重拉设置、未连接分支消失（全链路契约）；②notConnected/connect 的 {{source}} 双语插值断言。i18n 测试 KEYS 数组补 `connect` 键。视觉验证按 M5-ba 先例留待用户桌面端目验（重点：来源选择器单来源显示、未连接分支就地连接、层叠弹窗交互）。
+
 ---
 
 ## 附录 A：CLAUDE.md 合规自检

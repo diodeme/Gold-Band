@@ -16,6 +16,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import {
+  isRemoteTaskSource,
+  REMOTE_TASK_SOURCES,
+  remoteTaskSourceLabel,
+  type RemoteTaskSource,
+} from '@/lib/remote-sources';
+import { MulticaConnectDialog } from '@/components/conversation/MulticaConnectDialog';
+import {
   getMulticaSettings,
   listRemoteSkills,
   pullRemoteSkills,
@@ -35,8 +42,11 @@ interface RemoteSkillSyncDialogProps {
   onFinished: () => void;
 }
 
-/// SKILL 管理页「从远程来源同步」弹窗：选择工作空间 → 勾选远端 SKILL（新增默认勾选，
-/// 已存在默认不勾选并提示将覆盖）→ 同步 → 展示逐项结果报告。
+/// SKILL 管理页「从远程同步」弹窗：选择远程来源 → 工作空间 → 勾选远端 SKILL（新增默认
+/// 勾选，已存在默认不勾选并提示将覆盖）→ 同步 → 展示逐项结果报告。
+/// 来源选择器由注册表驱动（与需求管理页同款，单来源也显示）；文案零品牌名——来源名只作为
+/// 选择器数据出现。当前 wire 无来源参数（单来源在架），来源相关的连接状态/列表拉取以
+/// 单一 helper 收口，P2 引入 SkillSource wire 参数时只扩 helper、弹窗结构不动。
 /// 拉取走 PAT REST（list_remote_skills / pull_remote_skills 命令），与心跳推送通道无关。
 export function RemoteSkillSyncDialog({
   open,
@@ -46,6 +56,7 @@ export function RemoteSkillSyncDialog({
   const { t } = useTranslation();
   // phase：select = 选择阶段；report = 同步结果报告阶段（不可回退，关闭后由调用方刷新列表）。
   const [phase, setPhase] = useState<'select' | 'report'>('select');
+  const [source, setSource] = useState<RemoteTaskSource>(REMOTE_TASK_SOURCES[0].value);
   const [settings, setSettings] = useState<MulticaSettingsVm | null>(null);
   const [workspaceId, setWorkspaceId] = useState('');
   const [skills, setSkills] = useState<RemoteSkillListItemVm[]>([]);
@@ -56,6 +67,19 @@ export function RemoteSkillSyncDialog({
   const [reloadNonce, setReloadNonce] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<RemoteSkillPullReportVm | null>(null);
+  // 未连接分支的就地连接弹窗（复用需求管理页同款连接弹窗，连接成功重拉设置与列表）。
+  const [connectOpen, setConnectOpen] = useState(false);
+
+  /// 来源展示名（注册表名片）：未连接文案与连接按钮的 {{source}} 插值来源，不散写品牌名。
+  const sourceLabel = remoteTaskSourceLabel(t, source);
+
+  // 按所选来源拉取连接状态 + 工作空间列表。当前注册表单来源：设置即该来源适配器的
+  // 连接状态（getMulticaSettings）；P2 来源入 wire 后在此按 source 分发，弹窗其余不动。
+  function fetchSettings(cancelled: () => boolean) {
+    getMulticaSettings()
+      .then((next) => { if (!cancelled()) setSettings(next); })
+      .catch((err) => { if (!cancelled()) setError(displayAppError(t, err)); });
+  }
 
   // 每次打开：重置到选择阶段并拉取连接状态 + 工作空间列表。
   useEffect(() => {
@@ -68,9 +92,7 @@ export function RemoteSkillSyncDialog({
     setError(null);
     setReport(null);
     let cancelled = false;
-    getMulticaSettings()
-      .then((next) => { if (!cancelled) setSettings(next); })
-      .catch((err) => { if (!cancelled) setError(displayAppError(t, err)); });
+    fetchSettings(() => cancelled);
     return () => { cancelled = true; };
   }, [open, t]);
 
@@ -118,6 +140,14 @@ export function RemoteSkillSyncDialog({
     setSelected(Object.fromEntries(skills.map((item) => [item.id, selectAll])));
   }
 
+  // 换来源 → 工作空间与勾选随来源重置（fallback effect 重选默认空间后列表 effect 重拉）。
+  function handleSourceChange(next: string) {
+    if (!isRemoteTaskSource(next) || next === source) return;
+    setSource(next);
+    setWorkspaceId('');
+    setSelected({});
+  }
+
   async function handleSync() {
     if (selectedIds.length === 0 || !workspaceId) return;
     setPulling(true);
@@ -147,10 +177,39 @@ export function RemoteSkillSyncDialog({
     return (
       <>
         <div className="flex min-h-0 flex-1 flex-col gap-3 p-6">
+          {/* 来源选择（注册表驱动，与需求管理页同款；单来源也显示，P2 来源入 wire 后真实分发）。 */}
+          <div className="shrink-0 space-y-1">
+            <div className="text-xs font-medium text-muted-foreground">
+              {t('remote.taskManagement.source.label')}
+            </div>
+            <Select value={source} onValueChange={handleSourceChange}>
+              <SelectTrigger className="h-9 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {REMOTE_TASK_SOURCES.map((s) => (
+                  <SelectItem key={s.value} value={s.value} className="text-xs">
+                    {remoteTaskSourceLabel(t, s.value)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           {notConnected && (
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              {t('contextManagement.skills.remoteSync.notConnected')}
-            </p>
+            <div className="flex shrink-0 items-center justify-between gap-2">
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {t('contextManagement.skills.remoteSync.notConnected', { source: sourceLabel })}
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="shrink-0"
+                onClick={() => setConnectOpen(true)}
+              >
+                {t('contextManagement.skills.remoteSync.connect', { source: sourceLabel })}
+              </Button>
+            </div>
           )}
           {!notConnected && (
             <>
@@ -328,6 +387,14 @@ export function RemoteSkillSyncDialog({
         </DialogHeader>
         {phase === 'select' ? renderSelectPhase() : renderReportPhase()}
       </DialogContent>
+      {/* 未连接分支的就地连接入口：连接成功 → 重拉设置，工作空间/列表随之级联刷新。 */}
+      <MulticaConnectDialog
+        open={connectOpen}
+        onOpenChange={setConnectOpen}
+        settingsVm={settings}
+        sourceLabel={sourceLabel}
+        onConnected={() => fetchSettings(() => false)}
+      />
     </Dialog>
   );
 }

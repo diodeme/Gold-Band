@@ -10,12 +10,6 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -37,14 +31,12 @@ import { MulticaConnectionSettingsDialog } from '@/components/conversation/Multi
 import { cn } from '@/lib/utils';
 import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
 import { useEventDrivenRefresh } from '@/lib/use-event-driven-refresh';
-import { isRemoteTaskSource, REMOTE_TASK_SOURCES, type RemoteTaskSource } from '@/lib/remote-sources';
+import { isRemoteTaskSource, REMOTE_TASK_SOURCES, remoteTaskSourceLabel, type RemoteTaskSource } from '@/lib/remote-sources';
 import {
   cancelRemoteTask,
-  disconnectMultica,
   getMulticaSettings,
   getRemoteTaskRequirement,
   getRemoteTasks,
-  openExternalUrl,
   removeMulticaWorkspace,
   setActiveMulticaWorkspace,
   subscribeRemoteSourceSettingsUpdates,
@@ -239,27 +231,6 @@ export function RemoteTaskManagementPage({
     }
   }
 
-  async function handleDisconnect() {
-    if (readOnly) return;
-    setError(null);
-    try {
-      await disconnectMultica();
-      refreshAll();
-    } catch (err) {
-      setError(displayAppError(t, err));
-    }
-  }
-
-  // 切换账号逃生口：码灵把认证委托给浏览器，浏览器 cookie 不受控--若连到了非预期账号，
-  // 此处打开 multica Web（在浏览器内登出当前账号 / 登录目标账号），再回此页重连。
-  // 根因（webank 见 cookie 即签 JWT）需在 multica-webank 侧加授权确认屏，见设计文档 M5-l。
-  async function handleSwitchAccount() {
-    if (readOnly) return;
-    const appUrl = settingsVm?.multicaAppUrl;
-    if (!appUrl) return;
-    await openExternalUrl(appUrl);
-  }
-
   async function handleWorkspaceChange(id: string) {
     setSelectedWorkspaceId(id);
     if (readOnly) return;
@@ -298,6 +269,8 @@ export function RemoteTaskManagementPage({
   const accountLabel = settingsVm?.connectedAccount?.email
     ?? settingsVm?.connectedAccount?.name
     ?? t('remote.taskManagement.account.connected');
+  /// 来源展示名（注册表名片）：空状态/连接弹窗文案的 {{source}} 插值来源，不散写品牌名。
+  const sourceLabel = remoteTaskSourceLabel(t, source);
 
   return (
     <Page flush className="flex flex-col">
@@ -331,13 +304,13 @@ export function RemoteTaskManagementPage({
         ) : !connected ? (
           <div className="flex flex-col items-center gap-3 px-3 py-8 text-center">
             <WifiOff className="size-5 text-muted-foreground" />
-            <p className="text-sm font-medium text-sidebar-foreground">{t('conversation.sidebar.remoteTasks.emptyTitle')}</p>
-            <p className="text-xs text-muted-foreground">{t('conversation.sidebar.remoteTasks.emptyDescription')}</p>
+            <p className="text-sm font-medium text-sidebar-foreground">{t('conversation.sidebar.remoteTasks.emptyTitle', { source: sourceLabel })}</p>
+            <p className="text-xs text-muted-foreground">{t('conversation.sidebar.remoteTasks.emptyDescription', { source: sourceLabel })}</p>
             <div className="flex items-center gap-1.5">
               {/* 连接按钮先弹纯确认弹窗（展示生效地址，可连接中取消）；改地址走旁边的设置 icon */}
               <Button size="sm" variant="outline" onClick={() => setConnectionDialog('connect')}>
                 <Wifi className="mr-1.5 size-3.5" />
-                {t('conversation.sidebar.remoteTasks.connectButton')}
+                {t('conversation.sidebar.remoteTasks.connectButton', { source: sourceLabel })}
               </Button>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -468,27 +441,12 @@ export function RemoteTaskManagementPage({
             </div>
 
             <div className="flex items-center gap-2">
-              {/* 账号菜单：multica 连接/PAT 专属（切换账号 / 断开连接）；设置页不再暴露 multica */}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="max-w-[200px] gap-1.5">
-                    <User className="size-3.5 shrink-0" />
-                    <span className="truncate">{accountLabel}</span>
-                    <ChevronDown className="size-3 shrink-0 opacity-50" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-56">
-                  <DropdownMenuItem
-                    disabled={readOnly || !settingsVm?.multicaAppUrl}
-                    onClick={() => void handleSwitchAccount()}
-                  >
-                    {t('remote.taskManagement.account.switchAccount')}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem disabled={readOnly} className="text-destructive" onClick={() => void handleDisconnect()}>
-                    {t('remote.taskManagement.account.disconnect')}
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              {/* 账号标识（纯展示）：连接身份信息。不设切换账号/断开连接入口——用户只在首次连接，
+                  后续无切换/断开场景（换账号/换地址走连接与地址设置弹窗即可覆盖）。 */}
+              <span className="flex min-w-0 max-w-[200px] items-center gap-1.5 text-xs text-muted-foreground">
+                <User className="size-3.5 shrink-0" />
+                <span className="truncate">{accountLabel}</span>
+              </span>
 
               {/* 手动刷新 */}
               <Tooltip>
@@ -523,6 +481,7 @@ export function RemoteTaskManagementPage({
         open={connectionDialog === 'connect'}
         onOpenChange={(open) => { if (!open) setConnectionDialog(null); }}
         settingsVm={settingsVm}
+        sourceLabel={sourceLabel}
         onConnected={refreshAll}
       />
       <MulticaConnectionSettingsDialog

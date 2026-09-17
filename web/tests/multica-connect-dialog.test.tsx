@@ -108,6 +108,7 @@ async function renderDialog(
         open
         onOpenChange={onOpenChange}
         settingsVm={overrides.settingsVm ?? baseSettings()}
+        sourceLabel="Multica"
         onConnected={onConnected}
       />,
     );

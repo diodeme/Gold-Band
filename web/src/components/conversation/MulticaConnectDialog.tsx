@@ -30,6 +30,8 @@ interface MulticaConnectDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   settingsVm: MulticaSettingsVm | null;
+  /// 来源展示名（调用方经注册表名片解析）：标题 {{source}} 插值，不在弹窗内散写品牌名。
+  sourceLabel: string;
   /// 连接成功后的回调（调用方刷新任务列表 + 连接态）。
   onConnected?: () => void;
 }
@@ -47,6 +49,7 @@ export function MulticaConnectDialog({
   open,
   onOpenChange,
   settingsVm,
+  sourceLabel,
   onConnected,
 }: MulticaConnectDialogProps) {
   const { t } = useTranslation();
@@ -106,7 +109,7 @@ export function MulticaConnectDialog({
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent className="max-w-md gap-0 p-0">
         <AlertDialogHeader className="p-6 pb-0">
-          <AlertDialogTitle>{t('remote.connect.title')}</AlertDialogTitle>
+          <AlertDialogTitle>{t('remote.connect.title', { source: sourceLabel })}</AlertDialogTitle>
           <AlertDialogDescription>{t('remote.connect.body')}</AlertDialogDescription>
         </AlertDialogHeader>
 

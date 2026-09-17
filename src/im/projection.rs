@@ -11,11 +11,13 @@ use crate::app::{AcpTurnOutcome, App, RuntimeInterventionKind, RuntimeLifecycleE
 use crate::domain::RunOutcome;
 
 use super::{
-    IM_LIFECYCLE_QUEUE_CAPACITY, IM_PAYLOAD_VERSION, ImChannelCapabilities, ImChannelKind,
+    IM_LIFECYCLE_QUEUE_CAPACITY, IM_PAYLOAD_VERSION, INTERVENTION_NODE_FIELD,
+    INTERVENTION_TASK_FIELD, INTERVENTION_WORKSPACE_FIELD, ImChannelCapabilities, ImChannelKind,
     ImDelivery, ImDeliveryInsertResult, ImDeliveryPayload, ImDestination, ImIntegrationSettings,
     ImNavigationLocator, ImNotificationKind, ImNotificationPreferences, ImRepository,
     ImRepositoryError, InformationalNotification, InterventionPresentation, InterventionQuestion,
     InterventionQuestionKind, InterventionQuestionOption, InterventionRef,
+    is_intervention_context_field,
 };
 
 const WECOM_MAX_PERMISSION_OPTIONS: usize = 20;
@@ -78,6 +80,7 @@ pub struct ImLifecycleProjectionJob {
     pub event: RuntimeLifecycleEvent,
     pub targets: Vec<ImProjectionTarget>,
     pub now_ms: i64,
+    pub workspace_label: Option<String>,
 }
 
 pub enum ImLifecycleProjectionQueueItem {
@@ -139,7 +142,23 @@ impl ImLifecycleProjector {
         targets: &[ImProjectionTarget],
         now_ms: i64,
     ) -> Result<ImProjectionResult, ImProjectionError> {
-        let Some(draft) = self.draft_for_event(app, event)? else {
+        let workspace_label = app
+            .paths
+            .repo_root
+            .file_name()
+            .unwrap_or(app.paths.project_id.as_str());
+        self.project_event_with_workspace_label(app, event, Some(workspace_label), targets, now_ms)
+    }
+
+    pub fn project_event_with_workspace_label(
+        &self,
+        app: &App,
+        event: &RuntimeLifecycleEvent,
+        workspace_label: Option<&str>,
+        targets: &[ImProjectionTarget],
+        now_ms: i64,
+    ) -> Result<ImProjectionResult, ImProjectionError> {
+        let Some(draft) = self.draft_for_event(app, event, workspace_label)? else {
             return Ok(ImProjectionResult {
                 skipped: targets.len(),
                 ..ImProjectionResult::default()
@@ -169,10 +188,17 @@ impl ImLifecycleProjector {
                 event,
                 targets,
                 now_ms,
+                workspace_label,
             } = job;
             let canonical_event_id = event_canonical_id(&event).to_string();
             let result = tokio::task::spawn_blocking(move || {
-                ImLifecycleProjector::new(repository).project_event(&app, &event, &targets, now_ms)
+                ImLifecycleProjector::new(repository).project_event_with_workspace_label(
+                    &app,
+                    &event,
+                    workspace_label.as_deref(),
+                    &targets,
+                    now_ms,
+                )
             })
             .await
             .map_err(|_| "IM_PROJECTION_TASK_FAILED")
@@ -188,6 +214,7 @@ impl ImLifecycleProjector {
         &self,
         app: &App,
         event: &RuntimeLifecycleEvent,
+        workspace_label: Option<&str>,
     ) -> Result<Option<DeliveryDraft>, ImProjectionError> {
         Ok(match event {
             RuntimeLifecycleEvent::InterventionRequested {
@@ -231,15 +258,61 @@ impl ImLifecycleProjector {
                 {
                     return Ok(None);
                 }
+                let workspace_label = workspace_label
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        app.paths
+                            .repo_root
+                            .file_name()
+                            .map(str::to_string)
+                            .filter(|value| !value.trim().is_empty())
+                    })
+                    .unwrap_or_else(|| app.paths.project_id.clone());
+                let task_label = task_title
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        app.task_show(task_id)
+                            .ok()
+                            .and_then(|task| task.title)
+                            .map(|title| title.trim().to_string())
+                            .filter(|title| !title.is_empty())
+                    })
+                    .unwrap_or_else(|| task_id.clone());
+                let node_label = {
+                    let label = node_label.trim();
+                    if label.is_empty() {
+                        node_id.as_str()
+                    } else {
+                        label
+                    }
+                };
                 let mut presentation_fields = BTreeMap::from([
-                    ("nodeLabel".into(), bounded_presentation_field(node_label)),
                     (
-                        "taskTitle".into(),
-                        bounded_presentation_field(&task_title.clone().unwrap_or_default()),
+                        INTERVENTION_WORKSPACE_FIELD.into(),
+                        bounded_presentation_field(&workspace_label),
+                    ),
+                    (
+                        INTERVENTION_TASK_FIELD.into(),
+                        bounded_presentation_field(&task_label),
+                    ),
+                    (
+                        INTERVENTION_NODE_FIELD.into(),
+                        bounded_presentation_field(node_label),
                     ),
                 ]);
                 if let Some(prompt) = snapshot.prompt.as_ref() {
-                    presentation_fields.extend(prompt.fields.clone());
+                    presentation_fields.extend(
+                        prompt
+                            .fields
+                            .iter()
+                            .filter(|(key, _)| !is_intervention_context_field(key))
+                            .map(|(key, value)| (key.clone(), value.clone())),
+                    );
                 }
                 let presentation_body = snapshot
                     .prompt
@@ -1219,7 +1292,13 @@ mod tests {
         let event = permission_event(&app.paths.project_id, "permission-event-1");
         assert_eq!(
             projector
-                .project_event(&app, &event, &[target(ImChannelKind::WeCom)], 100)
+                .project_event_with_workspace_label(
+                    &app,
+                    &event,
+                    Some("Workspace A"),
+                    &[target(ImChannelKind::WeCom)],
+                    100,
+                )
                 .unwrap()
                 .inserted,
             1
@@ -1268,6 +1347,17 @@ mod tests {
             presentation.fields.get("taskTitle").map(String::as_str),
             Some("Repair download")
         );
+        assert_eq!(
+            presentation
+                .fields
+                .get("workspaceLabel")
+                .map(String::as_str),
+            Some("Workspace A")
+        );
+        assert_eq!(
+            presentation.fields.get("nodeLabel").map(String::as_str),
+            Some("Direct agent")
+        );
         assert_eq!(reference.allowed_actions.len(), 9);
         assert_eq!(
             permission_option_id(&reference.allowed_actions[0]),
@@ -1276,6 +1366,41 @@ mod tests {
         assert_eq!(
             permission_option_id(&reference.allowed_actions[8]),
             "cancel"
+        );
+    }
+
+    #[test]
+    fn intervention_context_falls_back_to_canonical_task_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_permission_projection_fixture(&app);
+        let repository = Arc::new(ImRepository::new(
+            Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap(),
+        ));
+        let projector = ImLifecycleProjector::new(Arc::clone(&repository));
+        let mut event = permission_event(&app.paths.project_id, "permission-task-fallback");
+        if let RuntimeLifecycleEvent::InterventionRequested { task_title, .. } = &mut event {
+            *task_title = None;
+        }
+
+        projector
+            .project_event(&app, &event, &[target(ImChannelKind::WeCom)], 100)
+            .unwrap();
+        let claimed = repository
+            .claim_due(
+                ImChannelKind::WeCom,
+                100,
+                std::time::Duration::from_secs(60),
+                1,
+            )
+            .unwrap();
+        let ImDeliveryPayload::Intervention { presentation, .. } = &claimed[0].delivery.payload
+        else {
+            panic!("permission delivery must be intervention payload");
+        };
+        assert_eq!(
+            presentation.fields.get("taskTitle").map(String::as_str),
+            Some("task-1")
         );
     }
 
@@ -1322,6 +1447,13 @@ mod tests {
         assert_eq!(
             presentation.fields.get("taskTitle").map(String::as_str),
             Some("Prepare release")
+        );
+        assert_eq!(
+            presentation
+                .fields
+                .get("workspaceLabel")
+                .map(String::as_str),
+            Some("repo")
         );
         assert_eq!(
             reference.allowed_actions,
@@ -1373,10 +1505,29 @@ mod tests {
                 1,
             )
             .unwrap();
-        let ImDeliveryPayload::Intervention { reference, .. } = &deliveries[0].delivery.payload
+        let ImDeliveryPayload::Intervention {
+            reference,
+            presentation,
+            ..
+        } = &deliveries[0].delivery.payload
         else {
             panic!("expected intervention delivery");
         };
+        assert_eq!(
+            presentation
+                .fields
+                .get("workspaceLabel")
+                .map(String::as_str),
+            Some("repo")
+        );
+        assert_eq!(
+            presentation.fields.get("taskTitle").map(String::as_str),
+            Some("Feature survey")
+        );
+        assert_eq!(
+            presentation.fields.get("nodeLabel").map(String::as_str),
+            Some("Direct agent")
+        );
         assert_eq!(reference.allowed_actions.len(), 1);
         assert!(matches!(
             &reference.allowed_actions[0],
@@ -1631,6 +1782,7 @@ mod tests {
                         event,
                         targets: vec![target.clone()],
                         now_ms: 100,
+                        workspace_label: None,
                     },
                 ))
                 .await
@@ -1685,6 +1837,7 @@ mod tests {
                     event: run_completed(false, "event-before-barrier"),
                     targets: vec![target(ImChannelKind::WeCom)],
                     now_ms: 100,
+                    workspace_label: None,
                 },
             ))
             .await
@@ -1718,6 +1871,7 @@ mod tests {
             event: run_completed(false, "event-1"),
             targets: vec![target(ImChannelKind::WeCom)],
             now_ms: 100,
+            workspace_label: None,
         };
         assert_eq!(
             try_enqueue_projection(&sender, job()),

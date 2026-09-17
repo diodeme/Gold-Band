@@ -96,7 +96,7 @@ ImConnectionManager ------ platform connector ------ IM platform
 2. Rust 后端轮询授权结果，取得 Bot ID 和 Secret 后直接写入操作系统凭据库；前端只接收二维码 URL、到期时间和脱敏状态，不接收 Secret。
 3. 客户端连接 `wss://openws.work.weixin.qq.com`，连接成功后展示“在线”。
 4. 用户先在目标会话中与机器人交互，Gold Band 记录允许主动投递的会话绑定；完成前设置页持续显示“等待绑定”并提示用户发送一条私聊消息，不把 WebSocket 在线误报为可投递。企业微信单聊事件没有 `chatid` 时，以 `from.userid` 作为 conversation/destination identity；不得因此退回群聊绑定。
-5. Runtime 发布待干预事件，客户端发送模板卡片；卡片包含任务、节点、请求类型、到期时间和允许动作。企微 Permission、ManualCheck 与支持的 Elicitation 先发送一条 markdown 详情消息，再发送交互卡；两条标题携带同一 4 位 `display_ref`，详情 ACK 前不得发送卡片，卡片 subtitle 明确指向上一条详情。
+5. Runtime 发布待干预事件，企微 Permission、ManualCheck 与支持的 Elicitation 先发送一条 markdown 详情消息，再发送交互卡。详情固定展示工作空间、任务、节点和请求内容；卡片只承载请求摘要、类型专属字段、到期时间和允许动作，不重复展示这三个上下文字段。两条标题携带同一 4 位 `display_ref`，详情 ACK 前不得发送卡片，卡片 subtitle 明确指向上一条详情。
 6. 用户提交卡片动作后，连接器从官方回调结构中取得 `body.msgid`、`headers.req_id`、typed `event.template_card_event.event_key/task_id`；Permission vote 卡还必须取得唯一 `selected_items.selected_item[].option_ids.option_id[]`。Runtime 提交在 blocking pool 内完成，并须在平台 5 秒窗口内返回卡片更新。
 7. 领域提交成功后使用同一回调的 `req_id` 与原卡 delivery identity 更新卡片为最终结果；显式返回的 `event.template_card_event.task_id` 必须等于该 delivery identity。button 回调省略可选 task 时可从 `event_key` 恢复原卡 identity；vote 回调的 task 为必填契约。若请求已被桌面端或另一消息处理，则显示“已处理”。发送 ACK 是否返回平台消息 ID 不影响这条回调更新路径。
 8. IM outbox 固化的 `expected_state` 只包含决策语义：完整 locator、canonical request、原始 params/request schema、创建时间与完整允许动作。`timelineIdentity` 属于 Runtime 展示投影元数据，可在 outbox snapshot 之后绑定，不参与 CAS 指纹；ManualCheck 详情中的模型输出同样是投影快照，不参与 CAS 指纹。企微三类干预终态都必须保持原 `card_type`、原 `task_id`、原 `submit_button.key`，显式禁用协议支持禁用的 `checkbox` / `select_list` 并标记最终选择；官方 `submit_button` 类型没有 `disable` 字段，不得发送无效字段，也不得把可交互卡降级为只有标题的 `text_notice`。平台仍允许再次提交时，由入站 canonical event 幂等保证不重复执行 Runtime。
@@ -111,11 +111,11 @@ ImConnectionManager ------ platform connector ------ IM platform
 
 Elicitation 使用 channel-agnostic 的 `RemoteElicitationForm` 契约，而不是把平台 DTO 提升为领域状态：`SingleScalarChoice` 表达一个 scalar 字段和固定选项；`MultiScalarChoice` 表达一个 array-of-scalar 字段、固定选项和是否允许显式空选择；`ScalarChoiceQuestions` 表达 2-3 个单选字段、selector key、field name、required 状态和固定选项。该契约挂在 typed allowed action 并参与 expected state；`timelineIdentity` 不参与指纹。企微只负责把该契约渲染为 vote/multiple 控件，并把回调转换成泛型 Form selection；selector key 固定 `q0/q1/q2`，option id 只使用本地短 index。回调必须校验 msgid、私聊 actor/conversation、delivery/task、submit key、question key、option id、required selector、重复选项和非法 index，再由 outbox 中的完整 typed scalar value 还原 content 并用原始 `requestedSchema` 编译校验。多选空数组只有在原始 schema 允许且回调显式返回空选择时可提交。`vote mode=1` 与 `multiple_interaction` 的真实回调形状尚未完成手机端/PC 端采样，接口 fixture 不是真实平台验收。
 
-Elicitation markdown 详情除当前 message、任务/节点和题目选项外，还携带当前 root 分支最新可见 `textDelta` 的“前序模型输出”快照，用于解释“是否确认上述方案/分支”这类依赖前文的问题。读取必须复用 timeline index 并按 4096 字符有界，不读取完整历史、hidden thought、嵌套 Agent 分支或用户私密输入；缺失时不猜测。若前序输出、message 或 question description 规范化后相同，只渲染一次。
+Elicitation markdown 详情除工作空间、任务、节点、当前 message 和题目选项外，还携带当前 root 分支最新可见 `textDelta` 的“前序模型输出”快照，用于解释“是否确认上述方案/分支”这类依赖前文的问题。读取必须复用 timeline index 并按 4096 字符有界，不读取完整历史、hidden thought、嵌套 Agent 分支或用户私密输入；缺失时不猜测。若前序输出、message 或 question description 规范化后相同，只渲染一次。
 
-权限卡片的结构化事实只能从当前 `PendingPermissionState.params` 投影：`rawInput.command + args` 合成完整 `permissionCommand`，存在命令时不再把 command/args 降级为通用参数；其余请求保留 `permissionTool`、`permissionPath`、`permissionParameter` 与既有任务/节点字段，不再把 `permissionTitle` 降级为横向字段。`rawInput.cwd` 在没有 locations/path 时投影为执行路径。企微详情消息完整展示说明、工具、命令、路径、参数与任务/节点字段，正文和字段仍按 256 字符有界；vote 卡横向字段按“工具、命令、路径、参数、其他结构化字段”输出且遵守平台 26 字建议，超长事实由上一条详情承担。原始 `_meta.permission.title/description` 只留在 Runtime 提示语义中，不控制企微 Permission 卡壳。
+权限卡片的结构化事实只能从当前 `PendingPermissionState.params` 投影：`rawInput.command + args` 合成完整 `permissionCommand`，存在命令时不再把 command/args 降级为通用参数；其余请求保留 `permissionTool`、`permissionPath`、`permissionParameter`，不再把 `permissionTitle` 降级为横向字段。`rawInput.cwd` 在没有 locations/path 时投影为执行路径。企微详情消息完整展示工作空间、任务、节点、说明、工具、命令、路径与参数，正文和字段仍按 256 字符有界；vote 卡横向字段只按“工具、命令、路径、参数、其他结构化字段”输出且遵守平台 26 字建议，不重复工作空间、任务、节点，超长事实由上一条详情承担。原始 `_meta.permission.title/description` 只留在 Runtime 提示语义中，不控制企微 Permission 卡壳。
 
-ManualCheck 详情先读取当前 attempt ACP timeline 的最新可见 root `textDelta`，并按 4096 字符有界快照作为 `InterventionPrompt.message`；读取走既有 timeline index，只按排序候选读取命中的事件，不加载完整历史，也不把嵌套 Agent 分支、thought、空 chunk 或 hidden 输出当作当前节点结果。若暂停等待人工检查时缺失可见模型输出，投影返回稳定状态错误，不用上一 attempt、artifact 或相邻消息猜测。企微详情消息标题为“人工检查（id=xxxx）”，正文展示任务、节点和“最后一轮模型输出”；vote 卡使用同一标题并按“成功、失败”展示，成功默认选中。提交仍通过原 allowed action index 调用 `submit_manual_check`，不得用展示文案、展示位置或默认选项推断结果。
+ManualCheck 详情先读取当前 attempt ACP timeline 的最新可见 root `textDelta`，并按 4096 字符有界快照作为 `InterventionPrompt.message`；读取走既有 timeline index，只按排序候选读取命中的事件，不加载完整历史，也不把嵌套 Agent 分支、thought、空 chunk 或 hidden 输出当作当前节点结果。若暂停等待人工检查时缺失可见模型输出，投影返回稳定状态错误，不用上一 attempt、artifact 或相邻消息猜测。企微详情消息标题为“人工检查（id=xxxx）”，正文展示工作空间、任务、节点和“最后一轮模型输出”；vote 卡只使用同一标题并按“成功、失败”展示，成功默认选中，不重复上下文字段。提交仍通过原 allowed action index 调用 `submit_manual_check`，不得用展示文案、展示位置或默认选项推断结果。
 
 桌面按钮与 IM 提交 ManualCheck 时必须收敛到同一条桌面应用执行边界：先按 outbox/桌面 snapshot 校验 expected state 并获取 `ManualCheckSubmissionLease`，再执行 scheduled attention resume，把 resumed occurrence 写入本次 App context，配置与桌面续跑一致的 ACP live/session/prompt lifecycle callbacks，最后调用 `submit_manual_check_background` 并等待 Runtime launch ack。IM inbound 不得直接调用 Tauri command、绕过 scheduled resume 或启动缺少前端回调的 headless 续跑；两条入口只能有一个 first writer，重复提交仍由 lease 与 inbound 幂等收敛。
 
@@ -125,7 +125,9 @@ ManualCheck 详情先读取当前 attempt ACP timeline 的最新可见 root `tex
 
 权限选项以 ACP `PermissionOption.kind` 为 canonical 语义，提交仍返回原始 `optionId`：`allow_once/allow` 显示“仅允许一次”，`allow_always` 与 `allow_for_session` 显示“本次会话允许”，`reject_once/reject/cancel` 显示“拒绝”，`reject_always` 显示“始终拒绝”。Claude 退出计划模式的 `auto/acceptEdits/bypassPermissions/default/plan` 继续使用 qualifier 映射为“自动模式 / 自动编辑 / 跳过权限 / 手动确认 / 保持计划”。企微标准 Permission vote 按“本次会话允许、仅允许一次、拒绝”展示并默认选中第一项；展示顺序只作用于 presentation，option id 继续携带原 allowed action index。安全拒绝/保持计划仍作为超 20 项时的有界降级候选，不能因展示顺序调整而改变 canonical action 或授权结果。允许类重复且无法区分、未知 kind 或超过控件能力时，完整展示请求但只保留可确认的安全动作或引导桌面端处理。官方 option 无说明字段，不得把说明塞入 `text` 或用展示文案反查语义。
 
-`askUserQuestion`/elicitation 的 message、问题标题、描述、单选/多选类型和 typed 选项只能从当前 `PendingElicitationState.request.requestedSchema` 结构化投影。远程范围仅企业微信：单题 scalar 单选、单题 scalar 多选、2-3 个 scalar 单选字段可发送 IM；自由文本、复合值、混合多选、四题以上、超过控件容量、选项值超界或移除 custom companion 后无法通过原始 schema 校验的请求一律在入队前跳过，不产生 outbox 行、markdown、提示卡、死信或重试，桌面端原生处理不受影响。带 `_askUserQuestionCustomAnswer.isCustomAnswer` 的 companion field 不作为独立问题展示，也不进入 IM 表单；单题单选带 custom answer 时 IM 仍只提交固定 scalar，自定义答案在桌面端填写；2-3 个单选题无论是否存在 custom companion，分类与提交均只基于主问题。IM 卡不提供通用 Decline 按钮，Decline 仍只在桌面端处理。
+三类干预的详情上下文必须统一投影为保留字段 `workspaceLabel`、`taskTitle`、`nodeLabel`，并只渲染在 Markdown 详情中，不进入交互卡片。工作空间优先使用当前 workspace 的 canonical display name，缺失时回退规范化目录名；任务优先使用事件标题或当前 Task 标题，缺失时回退 `task_id`；节点在工作流中必须是当前角色名称，在 Direct 中是 Agent 展示名，在 AUTO 中必须是当前动态角色 title。工作流节点不得用 Provider 展示名替代角色名称。
+
+`askUserQuestion`/elicitation 的 message、问题标题、描述、单选/多选类型和 typed 选项只能从当前 `PendingElicitationState.request.requestedSchema` 结构化投影。详情消息先展示工作空间、任务、节点，再展示前序模型输出和问题内容；交互卡只展示问题控件，不重复上下文。远程范围仅企业微信：单题 scalar 单选、单题 scalar 多选、2-3 个 scalar 单选字段可发送 IM；自由文本、复合值、混合多选、四题以上、超过控件容量、选项值超界或移除 custom companion 后无法通过原始 schema 校验的请求一律在入队前跳过，不产生 outbox 行、markdown、提示卡、死信或重试，桌面端原生处理不受影响。带 `_askUserQuestionCustomAnswer.isCustomAnswer` 的 companion field 不作为独立问题展示，也不进入 IM 表单；单题单选带 custom answer 时 IM 仍只提交固定 scalar，自定义答案在桌面端填写；2-3 个单选题无论是否存在 custom companion，分类与提交均只基于主问题。IM 卡不提供通用 Decline 按钮，Decline 仍只在桌面端处理。
 
 模板卡片事件只接受官方 `cmd=aibot_event_callback` 且 `body.event.eventtype=template_card_event` 的一对一私聊结构。真实运行时把业务 payload 放在 `body.event.template_card_event` 中，`event_key`、`task_id` 与 vote/multiple 选择必须从该嵌套对象读取；官方 SDK 1.0.7 类型中的平铺字段形状不代表平台实际回调。官方回调中的 `chattype` 可选：显式 `single/private` 为私聊；缺失 `chattype` 且缺失群聊 `chatid` 时按私聊候选处理，以 `from.userid` 作为 conversation/destination identity；显式群聊或存在群聊 `chatid` 时拒绝。`body.msgid` 是平台单次回调幂等 identity；同一 canonical intervention event 后续点击可能携带新的 msgid，Gold Band 必须用入站审计表的 `channel + canonical_event_id` 索引将其收敛为 `ALREADY_APPLIED`。opaque `headers.req_id` 只在内存中随 `ImActionResponseContext` 传递。button 先解析短 `event_key` 取得 delivery identity 与 action index，显式 task 不一致即拒绝，缺失时用该 delivery identity 更新原卡；vote/multiple 先验证 submit key 与必填 task 一致，再解析 question key 与 option id。Permission 的 question key 为 `permission_choice` 且只能返回唯一 option；Elicitation 转换为泛型 Form selection 后由 outbox 的 `RemoteElicitationForm` 还原原始 scalar value。不得用 `req_id` 替代 callback identity，不得生成新 `req_id`，也不得因发送 ACK 没有 `msgid` 而跳过点击响应。解析失败只记录稳定 `parse_reason` 与字段存在性；若私聊回调仍可定位原卡，先尝试把原卡更新为失败态。嵌套 `eventtype=disconnected_event` 进入稳定 `IM_CONNECTION_CONFLICT`，不持续重连争抢。
 
@@ -423,6 +425,10 @@ Connector task 结束时必须先排空其有界事件队列，再把返回错�
 
 2026-09-07 启动期通知丢失属于正确异步 bootstrap 设计下的 readiness 边界缺失：runtime 初始目标为空，lifecycle subscriber 却在异步 `reconfigure` 完成前开始接收事件，导致事件把空目标固化进投影 job。修复以现有 settings 为权威源，在订阅前同步建立目标快照；异步 bootstrap 继续负责连接、维护和再次读取最新配置，不新增 readiness 状态机、事件回放或第二套目标事实源。
 
+2026-09-17 三类干预详情上下文确认属于 linked-detail 公共投影契约缺失，而不是 Runtime、outbox 或审批状态机设计缺陷：原有 `InterventionPresentation.fields` 足以承载展示快照，但权限/追问 ACP 事件的节点在工作流场景错误回退为 Provider 展示名，且卡片渲染会自然消费任务/节点字段。修复统一生成 `workspaceLabel`、`taskTitle`、`nodeLabel`；标准工作流只允许 `profileName/profile/node_id` 解析角色，彻底删除 Provider fallback；AUTO 主路径读取当前节点的 `dynamic_node_file` 并使用其 title，仅在节点投影缺失、不可读或 title 为空时回退 `DynamicGraphState`。三个字段仅进入 Markdown 详情，卡片显式过滤，不新增第二套业务身份或投递状态。
+
+2026-09-17 ManualCheck 生产暂停发布链路补齐确认属于正确领域设计下的 lifecycle 发布实现不完整：人工检查暂停只发布了通用 `RunPaused`，而 IM 投影只消费语义事件 `InterventionRequested`，导致审核详情与成功/失败 vote 卡无法进入 outbox，桌面处理后的通用终态确认也因找不到原 delivery 而无法发送。修复在 canonical 暂停状态持久化后，针对 `manual_check_pending` 复用同一 event ID 补发 `InterventionRequested { request: ManualCheck, kind: ManualDecisionRequired }`；不修改 connector、不增加结果字段或第二套审批状态。桌面来源仍只发送“已在桌面端处理”的通用确认，企微来源继续更新原卡。
+
 2026-09-16 对现有桌面功能的性能与退出复核确认：问题不在 outbox、generation 或 Runtime canonical 设计，而在可选 IM 生命周期被无条件装配、空 claim 仍进入写事务、subscriber 在确认目标前读取 workspace state，以及 shutdown 把控制信号塞入有界 data queue。修复保留同一 `DesktopState` runtime slot、settings、cleanup journal 和 cancellation token，只补齐惰性激活、只读空队列闸门、target-first 快速返回与 gate → scheduler → IM 的退出顺序。ManualCheck 同时恢复原设计边界：Timeline 文本只用于远程展示，不是 canonical command 的 admission 条件。
 
 2026-09-16 Elicitation 桌面提交复核确认：共享 `InterventionCommandService` 负责 pending identity、expected state、幂等与 first-writer-wins 是正确设计，但实现错误地把 `RemoteElicitationForm` 生成的 transport `allowed_actions` 同时用于 canonical Accept 准入，导致自由文本、自定义答案和超过三个问题等桌面可处理表单返回 `INTERVENTION_ACTION_INVALID`。修复后 canonical Elicitation 只按完整 ACP `requestedSchema` 校验对象答案或 Decline；`ImInboundActionService` 继续在调用 Runtime 前按 delivery 中实际发布的 `allowed_actions` 校验 token、固定表单选择与动作，`requires_desktop` 只描述投影能力，不反向限制桌面命令。
@@ -438,6 +444,8 @@ Connector task 结束时必须先排空其有界事件队列，再把返回错�
 2026-09-16 修复只增加一个进程内初始化互斥，防止启动恢复与首次配置并发创建两个 runtime；它不形成新状态机或持久事实。worker join 复用现有 cancellation token 与 task handle，空 claim 复用既有 due 索引，未新增 manager、缓存、队列、数据库字段或依赖。显式 `dev:low-memory` 只为资源受限开发机提供 opt-in，默认开发不再全局牺牲 Cargo 并行度。
 
 2026-09-16 Elicitation 边界修复不新增入口枚举、第二套 command service、响应状态或兼容分支；它复用已有 canonical schema validator 与 IM inbound delivery-action validator，只移除 transport 投影对桌面准入的反向依赖。
+
+2026-09-17 干预上下文补齐不新增 aggregate、持久字段、数据库表、缓存或平台映射。它复用现有 `InterventionPresentation.fields`、linked-detail 双帧和连接器渲染边界，只增加保留字段常量、统一节点解析和显式过滤。
 
 2026-08-31 权限/企微回调补齐不新增展示事实源：`InterventionPrompt.fields` 是 pending params 的一次性 transport projection，按钮容量降级发生在 IM projection/connector 边界，callback 失败态仍复用 outbox 与原 delivery identity。现有 canonical pending state、delivery ID、msgid 幂等和 `InterventionCommandService` 已能表达不变量，因此不为平台容量或解析失败增加第二套状态机。2026-09-01 的短 action 引用与 vote option id 同样只复用 delivery ID 与 outbox action index，不新增映射表、缓存或第二套 token；`ImWeComVoteSelection` 是回调到终态更新之间的一次性 transport context，成功更新后即释放。Permission 双发只新增 connector 内存中的“详情 ACK 后发送卡片”pending 分支，不新增第二条 outbox、平台消息 identity 或持久状态。
 
@@ -466,6 +474,8 @@ Permission occurrence identity 的生成只对当前事件的两个短字符串�
 2026-09-03 Elicitation 分类与渲染复杂度为 `O(Q + O)`，Q 不超过 3，vote 选项不超过 20，multiple selector 不超过 3 且每题不超过 10；不枚举多选组合，不扫描 timeline 或历史 Run。回调只解析短 selector/option id，做一次 indexed delivery 读取和一次 schema 校验；每个支持 delivery 仍是两个出站帧，unsupported 场景入队前跳过且不产生重试、死信或平台消息。
 
 2026-09-16 桌面 Elicitation 修复不增加 schema 编译次数、文件读取、网络请求或锁范围：每次 Accept 仍只对当前 pending request 执行一次有界内容大小检查和一次 JSON Schema 校验；IM 回调仍先做 delivery 动作校验再执行同一 canonical schema 校验。没有全量扫描、N+1、缓存、队列或额外持久化。
+
+2026-09-17 干预上下文字段使用当前事件已有的工作空间、任务和节点状态，不扫描 timeline 或历史 Run；AUTO 正常路径为单节点文件读取，完整动态图谱只在节点投影缺失时作为 fallback，卡片字段过滤为常数级遍历，三字段不占横向容量，无新增网络请求、锁、缓存或持久化。
 
 2026-09-03 重复新 msgid 点击增加一次 `channel + canonical_event_id + completed_at` 索引查询；命中后只写一条 AlreadyApplied 审计结果，不进入 Runtime、scheduled resume 或 session 重建。Elicitation 前序输出读取复用 timeline index 的最新 root 文本定位并最多读取一个事件、快照 4096 字符；详情去重只比较当前请求内的 message/description/context。
 

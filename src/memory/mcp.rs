@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-use super::{MemoryService, WriteCommand};
+use super::{Entry, MemoryService, Scope, WriteCommand};
 
 pub const SERVER_NAME: &str = "gold-band-memory";
 pub const FLAG: &str = "--gold-band-memory-mcp";
@@ -81,6 +81,149 @@ pub fn requested() -> bool {
     std::env::args().nth(1).as_deref() == Some(FLAG)
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum WriteOperation {
+    Create,
+    Update,
+    Delete,
+}
+
+impl WriteOperation {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Create => "create",
+            Self::Update => "update",
+            Self::Delete => "delete",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MemoryWriteToolInput {
+    scope: Scope,
+    operation: WriteOperation,
+    key: String,
+    #[serde(default)]
+    expected_revision: Option<Value>,
+    entry: Value,
+}
+
+fn tool_input_error(
+    code: &'static str,
+    field: &'static str,
+    reason: &'static str,
+    scope: Scope,
+    operation: WriteOperation,
+    key: &str,
+) -> super::MemoryError {
+    super::error(
+        code,
+        json!({
+            "field": field,
+            "reason": reason,
+            "scope": scope,
+            "operation": operation.as_str(),
+            "key": key
+        }),
+    )
+}
+
+impl MemoryWriteToolInput {
+    fn into_command(self) -> Result<WriteCommand, super::MemoryError> {
+        let Self {
+            scope,
+            operation,
+            key,
+            expected_revision,
+            entry,
+        } = self;
+        let expected_revision = match (operation, expected_revision) {
+            (WriteOperation::Create, None) => None,
+            (WriteOperation::Create, Some(_)) => {
+                return Err(tool_input_error(
+                    "memory.invalid-revision",
+                    "expectedRevision",
+                    "not_allowed_for_create",
+                    scope,
+                    operation,
+                    &key,
+                ));
+            }
+            (WriteOperation::Update | WriteOperation::Delete, Some(Value::String(value))) => {
+                if value.trim().is_empty() || value.trim() == "null" {
+                    return Err(tool_input_error(
+                        "memory.invalid-revision",
+                        "expectedRevision",
+                        "invalid",
+                        scope,
+                        operation,
+                        &key,
+                    ));
+                }
+                Some(value)
+            }
+            (WriteOperation::Update | WriteOperation::Delete, _) => {
+                return Err(tool_input_error(
+                    "memory.invalid-revision",
+                    "expectedRevision",
+                    "required",
+                    scope,
+                    operation,
+                    &key,
+                ));
+            }
+        };
+        let entry = match (operation, entry) {
+            (WriteOperation::Delete, Value::Null) => None,
+            (WriteOperation::Delete, _) => {
+                return Err(tool_input_error(
+                    "memory.field",
+                    "entry",
+                    "must_be_null_for_delete",
+                    scope,
+                    operation,
+                    &key,
+                ));
+            }
+            (WriteOperation::Create | WriteOperation::Update, value @ Value::Object(_)) => {
+                Some(serde_json::from_value::<Entry>(value).map_err(|_| {
+                    tool_input_error("memory.field", "entry", "invalid", scope, operation, &key)
+                })?)
+            }
+            (WriteOperation::Create | WriteOperation::Update, _) => {
+                return Err(tool_input_error(
+                    "memory.field",
+                    "entry",
+                    "required",
+                    scope,
+                    operation,
+                    &key,
+                ));
+            }
+        };
+        if operation == WriteOperation::Create
+            && entry.as_ref().is_some_and(|entry| entry.key != key)
+        {
+            return Err(tool_input_error(
+                "memory.field",
+                "entry.key",
+                "must_match_key_for_create",
+                scope,
+                operation,
+                &key,
+            ));
+        }
+        Ok(WriteCommand {
+            scope,
+            key,
+            expected_revision,
+            entry,
+        })
+    }
+}
+
 pub async fn run() -> anyhow::Result<()> {
     let binding = std::env::args()
         .nth(2)
@@ -130,8 +273,12 @@ fn tools(language: crate::config::DesktopLanguage) -> Vec<Tool> {
     }});
     vec![
         serde_json::from_value(json!({"name":"memory_read", "description":descriptions["read"], "inputSchema":{"type":"object","additionalProperties":false}})).unwrap(),
-        serde_json::from_value(json!({"name":"memory_write", "description":descriptions["write"], "inputSchema":{"type":"object","additionalProperties":false,"required":["scope","key","expectedRevision","entry"],"properties":{
-            "scope":{"type":"string","enum":["workspace","task"]}, "key":{"type":"string"}, "expectedRevision":{"type":["string","null"]}, "entry":{"anyOf":[entry,{"type":"null"}]}
+        serde_json::from_value(json!({"name":"memory_write", "description":descriptions["write"], "inputSchema":{"type":"object","additionalProperties":false,"required":["scope","operation","key","entry"],"properties":{
+            "scope":{"type":"string","enum":["workspace","task"]},
+            "operation":{"type":"string","enum":["create","update","delete"],"description":descriptions["operation"]},
+            "key":{"type":"string"},
+            "expectedRevision":{"type":"string","minLength":1,"description":descriptions["expectedRevision"]},
+            "entry":{"anyOf":[entry,{"type":"null"}],"description":descriptions["entry"]}
         }}})).unwrap(),
     ]
 }
@@ -174,9 +321,10 @@ impl ServerHandler for MemoryMcp {
         let result = tokio::task::spawn_blocking(move || match request.name.as_ref() {
             "memory_read" => service.read(),
             "memory_write" => {
-                let command: WriteCommand =
+                let input: MemoryWriteToolInput =
                     serde_json::from_value(Value::Object(request.arguments.unwrap_or_default()))
                         .map_err(|_| super::error("memory.field", json!({})))?;
+                let command = input.into_command()?;
                 service.write(command)
             }
             _ => Err(super::error("memory.tool", json!({}))),

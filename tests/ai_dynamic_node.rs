@@ -3474,8 +3474,10 @@ fn ai_dynamic_continue_prompt_bundle_preserves_prompt_id() {
     assert!(prompt.user_prompt.ends_with("继续"));
     assert!(prompt.system_prompt.contains("用户主动打断当前工作"));
     assert!(prompt.system_prompt.contains("角色预设的执行流程"));
-    assert!(prompt.system_prompt.contains("memory_write"));
-    assert_eq!(prompt.user_prompt.matches("<memory-data>").count(), 1);
+    assert!(prompt.system_prompt.contains("## 共享记忆"));
+    assert!(prompt.system_prompt.contains("memory_read"));
+    assert!(!prompt.user_prompt.contains("<memory-data>"));
+    assert!(!prompt.user_prompt.contains("Gold Band current memory"));
     assert!(!prompt.user_prompt.contains("Gold Band runtime context"));
     assert_eq!(prompt.prompt_id.as_deref(), Some("acp-prompt-test"));
 }

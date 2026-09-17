@@ -6,17 +6,18 @@
 
 部署支持按构建和按包名两种方式，默认向用户推荐按构建部署；两种方式都须交互确认，配置预填不能代替用户选择。按包名使用本次构建产物时，先构建与推送再核实真实包名；使用已有包时询问是否仍需新构建，只有明确指令才能省略构建。
 
-CICD 在任何构建、物料 / 镜像推送或部署前检查业务仓库的本次需求相关提交与远端状态。相关范围依据原始需求、当前 task / goal、runtime 明确提供的前序产物和用户明确指认界定；无法判断时先澄清。发现相关未提交改动时，CICD 协助用户提交：仅检查相关路径状态与差异，说明变更并确认三行提交消息后，按具体路径执行 git add / git commit，再复查工作区；不使用 git add -A，不纳入无关改动，不修改业务代码内容。相关提交已存在但未推送时，核对当前分支、远端、待推送提交与远端分支实际将包含的内容，用户确认后执行普通 git push 并核实远端分支包含相关提交；禁止 force push 和推送未确认内容。用户未确认、提交或 push 失败、复查仍有相关未提交改动、远端分支缺少相关提交时停止。提交第二行使用标准 Conventional Commits 类型 token 与中文描述；需求 ID / 名称先从原始需求确认，缺失或冲突时询问用户，仍无法确认才使用默认值。代码 push 与后续物料 / 镜像推送是不同操作。
+代码提交属于开发测试节点，CICD 不提交代码。构建前只检查当前分支是否存在未 push 的提交；发现后提醒用户并询问是否 push。用户确认时执行普通 git push，成功后继续构建。用户拒绝 push 或 push 失败时，说明远端可能不包含本地提交，并询问是否继续构建；继续则按远端现状推进，停止则不触发构建。禁止 force push。代码 push 与后续物料 / 镜像推送是不同操作。
 
 发布计划回归部署 / 审批、触发自测、查询自测和跑批均为选配，可询问用户是否追加，不主动执行。未选择时不发起、不查询、不等待，也不影响主任务完成；已选择执行自测时，必要的状态查询包含在该选择内。
 
 复用现有 Profile 注册、按语言选择正文、稳定 ID 引用及 runtime 输出契约。角色属于 system prompt 中稳定执行方法；本次业务参数和目标属于 user prompt。正文以 `src/prompts/zh-CN/profile/cicd.md` 和 `src/prompts/en/profile/cicd.md` 为真源，作为静态角色关闭动态模板。
 
-正文的“代码提交前置条件”与“CLI 与参数检查”分别成节；前者负责业务仓库提交与远端推送门禁，后者从 CLI 版本检查开始维护运行环境、配置和参数来源，避免两组编号被误读为同一流程。
+正文的“代码推送前置检查”与“CLI 与参数检查”分别成节；前者只负责远端推送检查和用户继续选择，后者从 CLI 版本检查开始维护运行环境、配置和参数来源，避免两组编号被误读为同一流程。
 
 ## 渠道可用范围
 
-- 内置角色 seed 通过 `release_channel` 声明可用渠道；公共角色为 `None`，CI/CD 为 `Some(WB_CHANNEL)`。内部渠道名统一由 `src/channel.rs` 的 `WB_CHANNEL` 常量提供，不在 seed、判定与测试中散落字面量。
+- 内置角色 seed 通过 `required_capability` 声明所需能力；公共角色为 `None`，CI/CD 为 `Some(ProfileChannelCapability::Cicd)`。`src/channel.rs` 的编译期能力矩阵是渠道适用范围的唯一真源，Profile 组合和 Prompt 正文不自行判断渠道名。
+- `src/prompts/<language>/profile/cicd.md` 保持渠道中立，只描述 CI/CD 能力、输入和边界；CI/CD 仅对启用 `Cicd` 能力的渠道可见。其它渠道能力 overlay 同样不把渠道名写入文件名、标题或正文，由能力矩阵决定是否追加。
 - 渠道值在 core crate 只有一个读取点：`src/channel.rs` 的 `RELEASE_CHANNEL`（编译期 `option_env!("GOLD_BAND_RELEASE_CHANNEL")`，缺省 `default`）。桌面渠道身份 `DesktopChannelConfig.channel` 复用同一常量，`src-tauri/build.rs` 继续校验 `configs/channels/<channel>.json` 存在且 `channel` 字段一致；同一事实不再由两个 crate 各自解析。不依赖可变运行时环境、用户设置、前端过滤或名称判断。
 - 桌面 crate 保留一条跨 crate 一致性断言：构建脚本注入的渠道必须等于 core crate 编译期常量，两侧派生逻辑分叉时测试失败。
 - 角色列表、内置 ID 查找和默认 Profile ID 映射共用同一过滤后的目录。`wb` 提供 10 个内置角色，`default` 及其他渠道提供 9 个公共角色；未知渠道不提供 CI/CD。
@@ -28,13 +29,14 @@ CICD 在任何构建、物料 / 镜像推送或部署前检查业务仓库的本
 
 参数统一接入共享记忆领域服务，格式与边界以 [工作空间与任务记忆](../runtime/workspace-task-memory.md) 为准：
 
-- 工作空间 `subSysId1`、`subSysId2` 等保存真实子系统 ID；任务部署选择使用 `cicd.deploy.<S>.selected`，不能默认执行全部成员。
+- 工作空间项目记忆中由用户维护的子系统号条目提供候选子系统清单；key 由用户定义，CICD 不得假定 `subSysId*` 或按固定 key 名称筛选。value 保存子系统号，desc 用于展示。任务部署选择使用 `cicd.deploy.<S>.selected`，不能默认执行全部成员。
+- 固定作用域：子系统号条目位于工作空间；`storyId`、`storyName` 和全部 `cicd.*` 生效参数写任务。CICD 只读工作空间子系统清单，不把任务生效参数写入项目默认值。跨任务 Job / 模板默认值如确有需求，另设明确默认 key。
 - S 使用真实 ID 的 UTF-8 百分号编码，只保留 ASCII 字母、数字、连字符、下划线、波浪号，其他字节为大写 %HH（包括点号与百分号）；不使用可变清单序号或名称作为身份。CLI 使用解码后的真实 ID。
 - 整个 task 的唯一构建使用 `cicd.build.jobId/branch/appList/appCoverage`；部署按子系统保存 `cicd.deploy.<S>.mode/templateId/templateName/deployType/env/ips/containers/pkgNames/inputParams`。列表为 JSON 数组序列化后的字符串，inputParams 为不含凭据的 JSON 对象字符串；不另建整份配置 JSON。
 - 一次 Jenkins 构建可以产出并推送多个子系统物料，构建生命周期属于 task；部署生命周期属于各子系统。`appList` 是本次确认推送的应用范围，必须由 pkg-list 与仓库结构等证据映射到 `appCoverage`，不能按 Job 登记字段或名称相似度推断。
-- 任务同 key 优先，任务空值不回退。selected 仅从任务作用域读取，且必须属于当前工作空间清单。参数只作为预填复用；每次 run 都必须重新展示并确认构建、推送和部署生效范围，上一次 run 的确认不得沿用。
-- 通过 `memory_read` 刷新，按目标作用域逐 key revision 调用 `memory_write`。新确认值默认写任务，项目范围复用需用户明确要求。冲突重新核对，不盲目覆盖；禁止直接创建或编辑记忆文件。
-- 写入只保证逐 key 原子；全部修改成功后刷新并核实完整 task 构建与所选部署参数再提交外部操作。容量超限或工具缺失明确阻塞，不能绕过服务。记忆只保存参数，不保存凭据、授权标记、执行 ID、运行状态或终态证据；证据继续保存在 runtime 附件。
+- 进入参数准备阶段后，CICD 先调用 `memory_read` 读取当前工作空间和任务快照，再复用可用参数并补问缺失或冲突值。任务同 key 优先，任务空值不回退。selected 仅从任务作用域读取，且必须属于当前工作空间清单。读取成功后，参数只作为预填复用；每次 run 都必须重新展示并确认构建、推送和部署生效范围，上一次 run 的确认不得沿用。
+- 通过 `memory_read` 获取逐 key revision，所有 `cicd.*` 参数固定以 `scope=task` 调用 `memory_write`；冲突重新核对，不盲目覆盖；禁止直接创建或编辑记忆文件。
+- 写入只保证逐 key 原子；全部写入成功后再次 `memory_read`，按 key 核对任务作用域值与本次确认的生效值。工具不可用或读取失败时说明记忆未读取；部分写入、value 不一致或核验失败时说明未完整持久化。上述情况本身不阻塞业务，继续询问或确认本次所需参数。容量超限时明确报告，不绕过服务；任何情况下都不得直接创建或覆盖记忆文件。记忆只保存参数，不保存凭据、授权标记、执行 ID、运行状态或终态证据；证据继续保存在 runtime 附件。
 
 授权必须来自当前 run 对实际生效参数的明确人类确认；task 文件、上一次 run 的确认、默认值与角色绑定都不代表本次构建或部署授权。触发前核对有效环境、模板、实际主机或容器、物料来源、部署类型及授权覆盖；特别注意 env 对 ip/container 的覆盖。发布计划操作还核对审批含义和关联部署范围。所需授权缺失且无法交互时报告阻塞。
 
@@ -78,3 +80,19 @@ CICD 在任何构建、物料 / 镜像推送或部署前检查业务仓库的本
 - 吸收每次 run 重新确认契约：记忆只用于预填，本次 run 必须重新展示并确认最终构建和部署范围；历史 run 确认不可复用。
 - 记忆 key 随后迁移为 task 级 `cicd.build.*` 与逐子系统 `cicd.deploy.<S>.*`，不再使用每子系统 `cicd.<S>.build.*`。
 - CLI 参考更新为 0.2.12，并保留构建产物覆盖面必须由只读查询和实际证据核实的要求。
+
+## 2026-09-17 按需读取
+
+- CICD 进入参数准备阶段后先调用 `memory_read`，不再依赖 runtime 隐藏记忆投影。
+- 读取成功后复用可用参数，只补问缺失、冲突或当前 run 未确认的值；每次 run 仍必须重新确认构建、推送和部署范围。
+- 读取失败、写入失败、部分写入或写后核验失败不阻塞业务，但必须说明未读取或未持久化，不能伪装成功；缺少必需业务参数时继续按原有门禁询问、暂停或失败。
+
+验证：`cicd_profile_contract` 在 default 与 `wb` 渠道均通过；未执行真实 WeTest 端到端操作。
+
+## 2026-09-17 渠道中立 Prompt 与能力矩阵
+
+- `wb` 渠道名只保留在 `src/channel.rs` 的能力矩阵、渠道配置和必要的渠道测试中，不再出现在通用角色或 overlay 的文件名、标题和正文。
+- `requirement-identity` 与 `dev-test-auto-commit` 作为渠道中立 profile overlay 存放在双语 `profile/overlays/` 下；Profile 组合根据 `ProfileChannelCapability` 决定是否追加。
+- CI/CD Prompt 删除“内部 `wb` 渠道”自述，仍仅由 `Cicd` 能力控制可见性。默认和未知渠道不获得任何 channel overlay 或 CI/CD Profile。
+
+验收：`profile_prompt_channel_boundary` 2/2、default 与 WB 的 `profile_supplements_are_channel_scoped_and_complete` 各 1/1、WB `cicd_profile_contract` 1/1、`app::profiles::tests` 31/31 通过。

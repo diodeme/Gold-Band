@@ -4,7 +4,7 @@
 
 新增仅 `wb` 内部渠道提供的静态双语 `pf-builtin-cicd`，复用现有角色机制供用户绑定自定义工作流节点。参考用户提供的 wetest-cli 资料整理命令，不在本次执行资料中的安装、构建或部署指令。无需额外开源依赖；现有 CLI 与 Profile 机制覆盖需求。
 
-正文默认执行构建 + 部署，通过交互确认按构建或包名部署，推荐按构建。回归部署 / 审批、触发和查询自测以及跑批仅供用户选配，不主动执行。工作空间 `subSysId1` 等提供成员清单；task 的唯一构建使用 `cicd.build.*`，部署按真实子系统 ID 的 UTF-8 百分号编码 S 使用 `cicd.deploy.<S>.*`。所有参数通过共享记忆工具逐 key 读写，已有参数只作预填，每次 run 都重新确认实际范围。保留参数来源、真实终态、有界轮询、响应丢失核实和恢复去重原则。元数据及正文中英文同步维护；CICD 加入 WB 专属工作流的验收成功后节点，普通模式不可见，不新增 runtime 状态。
+正文默认执行构建 + 部署，通过交互确认按构建或包名部署，推荐按构建。回归部署 / 审批、触发和查询自测以及跑批仅供用户选配，不主动执行。工作空间项目记忆中由用户维护的子系统号条目提供成员清单，key 不作为稳定契约；task 的唯一构建使用 `cicd.build.*`，部署按真实子系统 ID 的 UTF-8 百分号编码 S 使用 `cicd.deploy.<S>.*`。所有参数通过共享记忆工具逐 key 读写，已有参数只作预填，每次 run 都重新确认实际范围。保留参数来源、真实终态、有界轮询、响应丢失核实和恢复去重原则。元数据及正文中英文同步维护；CICD 加入 WB 专属工作流的验收成功后节点，普通模式不可见，不新增 runtime 状态。
 
 构建、物料 / 镜像推送或部署前的业务仓库提交门禁在双语角色正文中维护：相关范围来自原始需求、当前 task / goal、显式前序产物和用户指认；发现相关未提交改动时，向用户确认文件范围和三行提交消息后，仅按具体路径协助 git add / git commit 并复查，不纳入无关改动。相关提交已存在但未推送时，核对分支、远端与待推送提交，用户确认后执行普通 git push 并核实远端分支包含相关提交。三行提交中的 Conventional Commit 使用标准类型 token 与中文描述；需求 ID / 名称按原始需求、用户确认、默认值顺序解析。代码 push 与物料 / 镜像推送是不同操作。
 
@@ -103,7 +103,7 @@
 根因：原先角色无条件加入公共目录，没有表达 WeTest 仅内部渠道可用的业务边界；列表与按 ID 查找均无条件提供角色。修复位于共享目录，不以 UI 隐藏掩盖执行路径仍可解析的问题。
 
 - [x] 最小失败测试：`GOLD_BAND_RELEASE_CHANNEL=default` 下 `cicd_profile_availability_matches_build_channel` 失败，实际列出角色，预期不可见。
-- [x] seed 新增 `release_channel`，CI/CD 限定 `wb`，其他角色保持公共；列表、详情及默认角色映射复用一个过滤器。
+- [x] seed 通过能力声明限定 CI/CD，当前仅 `wb` 渠道能力矩阵启用；列表、详情及默认角色映射复用一个过滤器。
 - [x] 复用构建脚本传入的编译期渠道，默认及未知渠道不提供 CI/CD，不增加可变全局开关。
 - [x] 双语提示词标明内部渠道范围，产品设计文档同步。
 - [x] 实际设置 `GOLD_BAND_RELEASE_CHANNEL=default` 和 `wb` 分别编译并执行 Profile 测试，各 30 项通过；包括列表、find/show、默认 ID 映射及工作流角色解析。目录测试同时覆盖 `enterprise` 和空渠道。
@@ -178,7 +178,7 @@
 
 根因：PR 的共享记忆实现沿用了每子系统 build key，而 main 已根据真实 Jenkins 生命周期将构建收敛为 task 级、部署保留子系统级；同时 PR 通过存储目录推导 WB，和 main 的编译期渠道真源形成分叉。这属于正确共享记忆设计与后续正确领域设计未接通，不保留双格式兼容层。
 
-- [x] 渠道判断统一从 `src/channel.rs` 的 `RELEASE_CHANNEL` / `WB_CHANNEL` 派生，Profile 目录保留 main 的 `release_channel` 过滤器。
+- [x] 渠道判断统一从 `src/channel.rs` 的 `RELEASE_CHANNEL` 与编译期能力矩阵派生，Profile 目录使用 `required_capability` 过滤器。
 - [x] 双语角色改为 task 级 `cicd.build.jobId/branch/appList/appCoverage` 与子系统级 `cicd.deploy.<S>.*`，全部通过 `memory_read` / `memory_write` 和逐 key revision/CAS 维护。
 - [x] 删除角色直接读写 task 配置文件及整份 JSON 模板的路径；参数只作预填，每次 run 重新展示并确认生效范围，上一次 run 的确认不可复用。
 - [x] 最小失败测试在旧提示词上因缺少 `cicd.build.jobId` 失败；修改双语正文后同一 `cicd_profile_contract` 测试转绿。
@@ -189,3 +189,26 @@
 最终验收：WB 渠道 7 个 Rust 目标共 20 项通过；独立 target 的 default 渠道隔离 3 项通过；项目记忆与侧栏前端 2 个文件共 14 项通过，TypeScript、Vite 生产构建、Agent catalog 7 项和桌面端 `cargo check -j 1 -p gold-band-desktop` 通过。格式与 diff 空白检查通过；Cargo.lock、ACP registry snapshot 与 agent catalog 在业务语义合并后重新生成并校验。UI 按规则先尝试 iab 和已连接 Chrome，环境不可用后使用 agent-browser 回退，覆盖正常/窄宽度、长文本、明暗主题、未保存关闭确认和保存后重开；会话、浏览器与开发服务器已清理。未调用真实 WeTest 写操作。
 
 渠道单一真源收紧：`MemoryService::new` 不再接受调用方渠道布尔值，Tauri、provider 和 MCP 只能使用 `src/channel.rs`；MCP 启动 JSON 不再携带 `wb`，并由接口测试固定该约束。该调整删除重复输入，没有增加运行时分支。性能复核仍为两个有界文件的 O(P + T) 合并，无历史扫描、N+1、无界缓存/队列或长时间持锁；MCP helper 仅有不随数据规模增长的固定进程启动开销。
+
+## 2026-09-17 提交职责迁移与推送继续确认
+
+根因：CICD 同时承担提交和推送，而代码生产者是开发测试节点，属于生命周期职责错位。未推送提交会直接影响远端构建输入，因此 push 不能随 commit 一起删除，但用户拒绝 push 或 push 失败后必须提供按远端现状继续构建的显式选择。
+
+- [x] 双语 CICD 删除 `git add`、`git commit` 和提交消息职责，只检查当前分支是否存在未 push 提交并提醒用户是否 push。
+- [x] 存在未推送提交时先询问是否 push；成功后直接继续。拒绝 push 或 push 失败时，说明远端缺失风险并询问“继续构建 / 停止”。
+- [x] 用户选择继续时按远端现状进入构建和已确认的后续流程；选择停止时不触发构建。
+- [x] CICD 参数固定写任务作用域：`cicd.build.*` 与 `cicd.deploy.<S>.*` 全部以 `scope=task` 写入；用户维护的子系统号条目仍只在工作空间维护，不依赖固定 key。
+- [x] 参数写入后重新 `memory_read` 逐 key 核验；工具不可用、部分写入或核验失败时不再阻塞，向用户询问或确认本次参数后继续，并说明未持久化。
+- [x] `cicd_profile_contract` 更新为禁止旧提交职责、固定推送继续分支和任务作用域核验。
+
+验证：WB 渠道 `cicd_profile_contract` 1/1、`memory_domain` 13/13、`wb_workflow_profile_contract` 1/1 通过；`cargo check -p gold-band --tests -j 1`、`cargo fmt --all` 和 diff 空白检查通过。
+
+自评审：复用现有 Profile、共享记忆和 Git CLI，不新增状态机、持久字段、依赖、缓存或队列。新增正文为固定长度，Git 只检查当前分支是否存在未 push 提交，记忆读取仍为两个有界文件的 O(P + T) 合并。
+
+## 2026-09-17 渠道中立 Prompt 与能力矩阵
+
+- CI/CD seed 从直接绑定渠道名改为要求 `ProfileChannelCapability::Cicd`；`cicd.md` 删除渠道自述，仅保留业务能力与依赖。
+- 需求身份和开发测试自动提交迁移为双语 `profile/overlays/` 渠道中立资产，Profile 组合只按当前渠道启用的 capability 追加。
+- 渠道名只保留在 `src/channel.rs` 能力矩阵、渠道配置、必要的渠道测试和文档中，不再出现在通用 Prompt 文件名、标题或正文。
+
+验收：`profile_prompt_channel_boundary`、default/WB Profile 组合契约、WB `cicd_profile_contract` 与 Profile 单元测试通过；无新增持久字段、依赖、缓存、队列或运行时 I/O。

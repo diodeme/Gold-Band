@@ -22,6 +22,7 @@ const KEYS = [
   'confirmWithOverwrite',
   'empty',
   'notConnected',
+  'connect',
   'loadFailed',
   'reportTitle',
   'reportSummary',
@@ -71,5 +72,12 @@ describe('Multica skill sync localization', () => {
     expect(summary).toContain('Failed 4');
     expect(i18n.t(`${BASE}.selectedCount`, { lng: 'zh-CN', selected: 2, total: 5 })).toContain('2 / 5');
     expect(i18n.t(`${BASE}.selectedCount`, { lng: 'en', selected: 1, total: 4 })).toContain('1 / 4');
+  });
+
+  it('interpolates the source name in notConnected and connect strings (来源名是数据不是文案)', () => {
+    expect(i18n.t(`${BASE}.notConnected`, { lng: 'zh-CN', source: 'Multica' })).toBe('未连接Multica');
+    expect(i18n.t(`${BASE}.notConnected`, { lng: 'en', source: 'Multica' })).toBe('Not connected to Multica');
+    expect(i18n.t(`${BASE}.connect`, { lng: 'zh-CN', source: 'Multica' })).toBe('连接Multica');
+    expect(i18n.t(`${BASE}.connect`, { lng: 'en', source: 'Multica' })).toBe('Connect Multica');
   });
 });

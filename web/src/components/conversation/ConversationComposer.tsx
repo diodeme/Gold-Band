@@ -288,6 +288,7 @@ export function ConversationWorkspaceInfoBar({
     ? t('conversation.home.workLocationWorktree')
     : t('conversation.home.workLocationMain');
   const branchVisible = showBranch ?? showWorkLocation;
+  const selectedWorkspaceName = workspaces.find((workspace) => workspace.projectId === projectId)?.name ?? workspaceName;
 
   return (
     <TooltipProvider>
@@ -417,6 +418,7 @@ export function ConversationWorkspaceInfoBar({
           {branchVisible ? (
             <GitBranchSelector
               projectId={projectId}
+              workspaceName={selectedWorkspaceName}
               disabled={busy || checkingLocation}
               responsiveContext
               onBranchChange={onBranchChange}

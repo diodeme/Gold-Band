@@ -2463,6 +2463,7 @@ const resources = {
         branchPicker: {
           label: "分支",
           search: "搜索 {{workspace}} 分支",
+          searchGeneric: "搜索分支",
           loading: "正在读取分支…",
           unavailable: "无分支",
           versionUnsupportedLabel: "Git 版本不受支持",
@@ -5165,6 +5166,7 @@ const resources = {
         branchPicker: {
           label: "Branch",
           search: "Search {{workspace}} branches",
+          searchGeneric: "Search branches",
           loading: "Loading branches…",
           unavailable: "No branch",
           versionUnsupportedLabel: "Git version unsupported",

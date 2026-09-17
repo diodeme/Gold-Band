@@ -27,7 +27,7 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
-import { GitBranchSelector } from '@/components/git/GitBranchSelector';
+import { GitBranchSelector, gitBranchSearchPlaceholder } from '@/components/git/GitBranchSelector';
 import {
   GitBranchPickerSnapshotProvider,
   GitBranchPickerSnapshotStore,
@@ -214,6 +214,38 @@ describe('GitBranchSelector', () => {
       expect(getSnapshot).not.toHaveBeenCalled();
       await act(async () => value.focus());
       expect(document.body.querySelector('[data-slot="tooltip-content"]')?.textContent).toBe(branch);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('uses the workspace display name in the branch search placeholder instead of the project id', () => {
+    const projectId = 'e-ai_project-gold-band--d1f2fd9c';
+    const placeholder = gitBranchSearchPlaceholder((key, params) => {
+      if (key === 'conversation.branchPicker.search') return `搜索 ${params?.workspace ?? ''} 分支`;
+      return key;
+    }, 'Gold Band');
+    expect(placeholder).toBe('搜索 Gold Band 分支');
+    expect(placeholder).not.toContain(projectId);
+  });
+
+  it('falls back to a generic branch search placeholder when the workspace display name is missing', () => {
+    const placeholder = gitBranchSearchPlaceholder((key) => {
+      if (key === 'conversation.branchPicker.searchGeneric') return '搜索分支';
+      return key;
+    }, '   ');
+    expect(placeholder).toBe('搜索分支');
+    expect(placeholder).not.toContain('project-a');
+  });
+
+  it('projects the workspace display name onto the branch trigger', async () => {
+    const { container, root } = await renderSelector(
+      <GitBranchSelector projectId="project-a" workspaceName="Gold Band" />,
+    );
+    try {
+      const trigger = container.querySelector<HTMLButtonElement>('[data-git-branch-selector="editable"]')!;
+      expect(trigger.getAttribute('data-git-branch-workspace-name')).toBe('Gold Band');
+      expect(trigger.getAttribute('data-git-branch-workspace-name')).not.toBe('project-a');
     } finally {
       await act(async () => root.unmount());
     }

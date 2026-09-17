@@ -2863,10 +2863,14 @@ export function App() {
         conversationPage.projectId,
         conversationPage.taskId,
       )?.title ?? conversationPage.taskId;
+      const runWorkspaceName = conversationSidebar.workspaces.find(
+        (workspace) => workspace.projectId === conversationRun.projectId,
+      )?.name ?? null;
       return (
         <ConversationRunPage
           run={conversationRun}
           taskTitle={taskTitle}
+          workspaceName={runWorkspaceName}
           appConfig={appConfig}
           agentRegistry={agentRegistry}
           followMode={conversationSessionFollowRef.current.mode}

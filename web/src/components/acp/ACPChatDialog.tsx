@@ -378,6 +378,7 @@ interface ACPChatDialogProps {
   sessionEstablished?: boolean;
   sessionReferenceId?: string | null;
   projectId: string;
+  workspaceName?: string | null;
   taskId: string;
   taskUuid?: string | null;
   runId: string;
@@ -1282,6 +1283,7 @@ export function ACPChatDialog(
     sessionEstablished = false,
     sessionReferenceId,
     projectId,
+    workspaceName,
     taskId,
     taskUuid,
     runId,
@@ -6507,6 +6509,7 @@ export function ACPChatDialog(
                   sessionSeconds={composerSessionSeconds}
                   worktreePath={worktreePath}
                   branchProjectId={showBranchInfo ? projectId : null}
+                  branchWorkspaceName={showBranchInfo ? workspaceName : null}
                   managedWorktreeBranch={effective?.worktreeBranch ?? managedWorktreeBranch}
                   className={cn(
                     ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,

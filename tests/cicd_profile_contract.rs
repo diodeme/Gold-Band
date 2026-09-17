@@ -51,7 +51,11 @@ fn formal_cicd_uses_the_shared_memory_tools_in_both_languages() {
         assert!(profile.content.contains("expectedRevision"));
         assert!(profile.content.contains("operation=\"create\""));
         assert!(profile.content.contains("operation=\"update\""));
-        assert!(profile.content.contains("subSysId1"));
+        assert!(!profile.content.contains("subSysId"));
+        assert!(profile.content.contains(match language {
+            DesktopLanguage::ZhCn => "子系统号",
+            DesktopLanguage::En => "subsystem number",
+        }));
         assert!(profile.content.contains("cicd.build.jobId"));
         assert!(profile.content.contains("cicd.deploy.<S>.selected"));
         assert!(!profile.content.contains("\"targets\""));

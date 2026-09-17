@@ -92,7 +92,7 @@ CICD 不把任务生效的 `cicd.*` 参数写入工作空间默认值。跨任�
 ### 4.1 已实现接口契约
 
 - 文件 schema 为 `{version: 1, entries: [...]}`；条目除三个业务字段外携带不透明 `revision`，它只用于并发校验，不是另一套业务身份。
-- 读取返回完整 locator、真实路径、两层条目、有效条目及统一容量配置。写命令为 `{scope, key, expectedRevision, entry}`；`entry=null` 删除，已存在 key 必须提供读取时的 revision，不存在 key 使用 null。
+- 读取返回完整 locator、真实路径、两层条目、有效条目及统一容量配置。MCP 写命令为 `{scope, operation, key, expectedRevision?, entry}`：`operation=create` 且省略 `expectedRevision` 表示新增不存在的 key；`operation=update` 必须提供读取时的 revision 并更新已有 key；`operation=delete` 必须提供 revision 且 `entry=null`。不得把字符串 `"null"` 当作缺失 revision。
 - 修改 key 时在同一原子边界校验原 key 版本及新 key 不存在，再执行重命名；目标已存在时返回冲突，不覆盖目标。
 - 复用 `atomic-write-file` 落盘，使用 `fs2` 项目级文件锁串行化两个作用域的短暂读改写。任务记忆落盘不自动创建父目录，task locator 在锁内重新校验；任务删除持有同一锁，因此删除后的迟到工具调用不能复活任务目录。MCP helper 与桌面设置使用相同锁；不同项目独立，不持锁等待外部调用。
 - 标准 MCP 工具为 `memory_read`、`memory_write`，通过官方 Rust SDK `rmcp` 实现 stdio。持久化的内置定义只保存当前 EXE 与 `--gold-band-memory-mcp`，不保存 project/task；ACP 会话准备时才追加由应用生成的 repo root、data root、project id、task id 与语言绑定，工具参数不能更改 locator。设置使用 `read_project_memory`、`write_project_memory` IPC，作用域解析与 I/O 均进入 blocking pool。

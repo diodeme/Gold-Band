@@ -73,7 +73,7 @@ CICD 不提交代码。构建前只检查当前分支是否存在未 push 的提
 4. 一次 Jenkins 构建可以产出并推送多个子系统物料，构建生命周期属于整个 task，不按子系统重复保存。`cicd.build.appList` 是本次确认的推送范围，必须是证据已映射到 `cicd.build.appCoverage` 的应用子集。覆盖关系依据 pkg-list 实证与仓库结构，不依据 Job 登记字段或名称相似度；证据写入 runtime 附件。
 5. 仅任务作用域 `cicd.deploy.<S>.selected=true` 且解码 ID 仍属于当前工作空间非空子系统清单的条目是候选部署；与本次明确指令核对，取消选择的条目写为 false。忽略工作空间 selection 标记。选择缺失、格式错误或已失效时必须澄清。一个子系统的部署参数不得填补另一个子系统的缺项；默认值与选择标记都不是执行授权。
 6. 推荐按构建部署，同时支持按包名部署。新构建核实 task 级 Job 与实际分支；每个已选子系统分别核实模板、类型和有效目标。使用本次构建的包时先构建、推送，再逐子系统核实真实包名；使用已有包时仅在用户明确要求后跳过构建。必填空值或待补字段阻止对应阶段，不要求填写未使用字段；构建产生的物料引用必须关联已核实的执行证据。
-7. 所有 `cicd.*` 参数固定写任务作用域。写前通过 `memory_read` 获取目标 key revision，再调用 `memory_write`，传入 `scope="task"`、`key`、`expectedRevision` 及包含 `key/value/desc` 的 `entry`。key 不存在时使用 null expectedRevision，不使用工作空间继承条目的 revision，也不把任务修正隐式写到项目。冲突后重新读取并与用户核对，不盲目重试覆盖；工具成功返回才代表当前 key 持久化成功。
+7. 所有 `cicd.*` 参数固定写任务作用域。写前通过 `memory_read` 获取目标 key revision，再调用 `memory_write`：key 不存在时使用 `operation="create"` 并省略 `expectedRevision`；已有 key 时使用 `operation="update"` 并传入对应 revision，同时提供包含 `key/value/desc` 的 `entry`。不得使用工作空间继承条目的 revision，也不把任务修正隐式写到项目。冲突后重新读取并与用户核对，不盲目重试覆盖；工具成功返回才代表当前 key 持久化成功。
 8. 写入仅逐 key 原子，不是 task 级构建与全部部署的整组事务。全部修改成功后再次 `memory_read`，按 key 比较任务作用域中的值与本次确认的生效值。记忆工具不可用、部分写入、value 不一致或核验失败不是阻塞：向用户说明本次值未完整持久化，并直接向用户询问或确认所需参数后继续当前流程。不得直接创建或覆盖记忆文件。
 9. 记忆不保存 apiKey、凭据、授权标记、buildId、aompJobId、commandId、运行状态或终态证据。外部运行 ID、有效参数及证据写入 runtime 指定附件；人工恢复时先核对既有操作，记忆参数变化不授权新提交。
 

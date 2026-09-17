@@ -319,7 +319,7 @@ function findScheduledLinkedLeaf(
   return null;
 }
 
-const defaultPreferences: PreferencesVm = { appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {} }, personalization: defaultPersonalizationPreference, language: 'zh-cn', useLocalClaude: false, verboseLogging: false, browser: { schemaVersion: 1, searchEngine: 'baidu', openLocalLinksInBrowser: true, openWebLinksInBrowser: false }, avatars: createDefaultAvatarPreferences(), wallpapers: createDefaultWallpaperPreferences() };
+const defaultPreferences: PreferencesVm = { appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {} }, personalization: defaultPersonalizationPreference, language: 'zh-cn', useLocalClaude: false, verboseLogging: false, browser: { schemaVersion: 1, searchEngine: 'baidu', openLocalLinksInBrowser: true, openWebLinksInBrowser: true }, avatars: createDefaultAvatarPreferences(), wallpapers: createDefaultWallpaperPreferences() };
 const defaultUpdaterSettings: UpdaterSettingsVm = {
   channel: 'default',
   builtInUrl: 'https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json',
@@ -1136,7 +1136,7 @@ export function App() {
           bootstrap.appConfig.acpChatResourceCacheSessionCount,
         );
         setBootstrap(bootstrap);
-        // 静默预取定时任务运行时设置，让首次进入「设置 → 定时任务」也免加载闪烁。
+        // 静默预取设置页运行时区块，让首次进入「通用」也免加载闪烁。
         void prefetchScheduledRuntimeSettings();
         void prefetchImSettings();
         if (shouldAutoOpenWorkspacePicker(bootstrap, uiMode)) {

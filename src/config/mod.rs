@@ -843,7 +843,7 @@ pub struct BrowserPreferences {
     pub search_engine: BrowserSearchEngine,
     #[serde(default = "browser_preference_enabled")]
     pub open_local_links_in_browser: bool,
-    #[serde(default)]
+    #[serde(default = "browser_preference_enabled")]
     pub open_web_links_in_browser: bool,
 }
 
@@ -853,7 +853,7 @@ impl Default for BrowserPreferences {
             schema_version: CURRENT_BROWSER_PREFERENCES_SCHEMA_VERSION,
             search_engine: BrowserSearchEngine::Baidu,
             open_local_links_in_browser: true,
-            open_web_links_in_browser: false,
+            open_web_links_in_browser: true,
         }
     }
 }
@@ -2148,15 +2148,15 @@ impl RuntimeConfig {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpAdapterConfig, AppearancePreference, ColorSchemePreference, ConsoleThemeName,
-        ConversationDirectConfig, ConversationRunMode, ConversationRunModeEntry,
-        DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS, DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT,
-        BrowserPreferences, BrowserSearchEngine, DesktopAvailableUpdate, DesktopLanguage, DesktopUpdateBadgeState, FontSizePreference,
-        FontStackPreference, ManagedAgentConfig, ManagedAgentId, MulticaAccountRef,
-        MulticaCompletedTask, MulticaTaskConversation, MulticaWorkspaceRef,
-        PersonalizationPreference, ProjectAppConfig, ProjectIdentityConfig, RuntimeConfig,
-        RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery, TurnFilesConfig,
-        VisualQuality, WallpaperImagePreference, WorkspaceLayoutConfig,
+        AcpAdapterConfig, AppearancePreference, BrowserPreferences, BrowserSearchEngine,
+        ColorSchemePreference, ConsoleThemeName, ConversationDirectConfig, ConversationRunMode,
+        ConversationRunModeEntry, DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS,
+        DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT, DesktopAvailableUpdate, DesktopLanguage,
+        DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, ManagedAgentConfig,
+        ManagedAgentId, MulticaAccountRef, MulticaCompletedTask, MulticaTaskConversation,
+        MulticaWorkspaceRef, PersonalizationPreference, ProjectAppConfig, ProjectIdentityConfig,
+        RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery,
+        TurnFilesConfig, VisualQuality, WallpaperImagePreference, WorkspaceLayoutConfig,
         catalog_agent_default_config, project_identity_config,
     };
     use crate::agent_catalog::builtin_agent_catalog;
@@ -2188,21 +2188,25 @@ mod tests {
         let settings: SettingsConfig = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(settings.browser, BrowserPreferences::default());
         assert!(settings.browser.open_local_links_in_browser);
-        assert!(!settings.browser.open_web_links_in_browser);
+        assert!(settings.browser.open_web_links_in_browser);
 
         let custom = SettingsConfig {
             browser: BrowserPreferences {
                 schema_version: 1,
                 search_engine: BrowserSearchEngine::Google,
                 open_local_links_in_browser: false,
-                open_web_links_in_browser: true,
+                open_web_links_in_browser: false,
             },
             ..SettingsConfig::default()
         };
-        let roundtripped: SettingsConfig = serde_json::from_value(serde_json::to_value(custom).unwrap()).unwrap();
-        assert_eq!(roundtripped.browser.search_engine, BrowserSearchEngine::Google);
+        let roundtripped: SettingsConfig =
+            serde_json::from_value(serde_json::to_value(custom).unwrap()).unwrap();
+        assert_eq!(
+            roundtripped.browser.search_engine,
+            BrowserSearchEngine::Google
+        );
         assert!(!roundtripped.browser.open_local_links_in_browser);
-        assert!(roundtripped.browser.open_web_links_in_browser);
+        assert!(!roundtripped.browser.open_web_links_in_browser);
     }
 
     #[test]

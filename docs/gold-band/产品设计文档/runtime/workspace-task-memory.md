@@ -16,7 +16,7 @@
 - 一个任务可以构建部署多个子系统。
 - 子系统号、本次目标子系统、部署模板 ID、构建计划 ID 等业务参数的 key 和关联方式，由后续角色提示词契约定义。首版不预设环境分层或专用子系统数据结构。
 - 只有 WB 模式提供 `subSysId1` 默认条目、内置 CICD 角色和“开发构建部署工作流”。
-- WB 采访和拷问节点在角色流程开始前检查任务作用域 `storyId`、`storyName`；缺失或不成对时通过结构化提问取得需求身份，选择“不存在”时写入 `0` 和从需求内容提取的简短名称。开发测试节点在可选入口关闭、身份仍缺失时自动兜底补齐。
+- 启用 `RequirementIdentity` 能力的采访和拷问节点在角色流程开始前检查任务作用域 `storyId`、`storyName`；缺失或不成对时通过结构化提问取得需求身份，选择“不存在”时写入 `0` 和从需求内容提取的简短名称。启用 `DevTestAutoCommit` 能力时，开发测试节点在可选入口关闭、身份仍缺失时自动兜底补齐。WB 当前同时启用这两项能力；具体渠道范围只在 `src/channel.rs` 的编译期能力矩阵中维护。
 
 ## 2. 数据归属与持久化
 
@@ -183,6 +183,8 @@ CICD 人工判定失败或执行阻塞时展示原因，用户处理后可以仅
 
 WB 需求身份与提交职责：采访、拷问通过 `memory_read` 检查任务作用域 `storyId/storyName`，缺失时以“不存在 / 其他（用户自行输入）”语义提问并写任务记忆；开发测试在节点成功收尾时自动按具体路径提交本次任务改动，生成 `--story=[{storyId}] {storyName}`、`{type}: {中文描述}`、`#AI COMMIT#` 三行提交并报告 commit OID。CICD 只检查这些提交是否已推送；拒绝 push 或 push 失败时必须询问用户是否继续构建，选择继续后按远端现状推进。
 
+上述行为实现为渠道中立的 `requirement-identity` 和 `dev-test-auto-commit` overlay。文件名、标题和正文不包含渠道名；Profile 组合根据 `ProfileChannelCapability` 决定是否追加，非启用渠道仍使用原基础角色正文。
+
 CICD 使用两类字符串条目：整个 task 的唯一构建保存为 `cicd.build.jobId/branch/appList/appCoverage`，每个子系统部署保存为 `cicd.deploy.<S>.*`。S 为真实子系统 ID 的 UTF-8 百分号编码（仅保留 ASCII 字母、数字、连字符、下划线、波浪号，其余含点号编码为大写 %HH）。工作空间 `subSysId1` 等提供成员清单，任务 `cicd.deploy.<S>.selected` 表示部署选择而非授权。一次 Jenkins 构建可覆盖多个子系统，其生命周期归 task；模板、方式与目标归各子系统部署。列表及差异变量使用单字段 JSON 字符串，不存整份配置对象。字段表及 WeTest 方法见双语角色与 [CICD 角色设计](../provider/cicd-profile.md)。逐 key CAS 后刷新核实完整构建与所选部署参数；每次 run 必须重新确认生效范围，上一次 run 的确认不得复用。不得直接读写文件，容量限制不变。外部 ID、部分完成及终态证据存附件，人工恢复先查询已有作业。真实模型和平台链路仍需在具备环境与授权时验收。
 
 ## 9. 方案自评审
@@ -266,3 +268,5 @@ UI 验证覆盖逐行操作、关闭草稿、冲突、错误、窄窗口、长�
 验收：`memory_invocation` 5/5、`memory_mcp` 3/3、lib `memory` 16/16、`worker_bootstrap` 21/21；CICD/WB profile 契约在 default 与 WB 渠道通过；AI-DYNAMIC 修改用例 1/1、完整目标串行 38/38；`cargo check -p gold-band --tests -j 1`、格式与差异检查通过。
 
 性能与保证边界：普通节点不再承担两个有界文件读取、合并、最多 32 KiB 序列化和对应 prompt token 成本，文件读取下沉到实际工具调用点；未新增状态、缓存、队列、依赖或历史扫描。接口保证最新快照可读，角色契约要求主动读取；模型工具调用和 Direct 对工具结果的处理仍属于 Agent 行为，不宣称 system-level 强保证。
+
+2026-09-17 渠道中立补充：`ProfileChannelCapability` 统一描述 `RequirementIdentity`、`DevTestAutoCommit` 和 `Cicd` 的渠道启用范围；overlay 路径迁移为 `src/prompts/<language>/profile/overlays/requirement-identity.md` 与 `dev-test-auto-commit.md`，Prompt 契约不再内嵌 WB 渠道说明。验收覆盖 default/WB Profile 组合、Prompt 渠道中立、CI/CD 可见性和现有 Profile 单元测试，未改变记忆 key、作用域或工作流拓扑。

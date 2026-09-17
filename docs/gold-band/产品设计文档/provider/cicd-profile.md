@@ -16,7 +16,8 @@
 
 ## 渠道可用范围
 
-- 内置角色 seed 通过 `release_channel` 声明可用渠道；公共角色为 `None`，CI/CD 为 `Some(WB_CHANNEL)`。内部渠道名统一由 `src/channel.rs` 的 `WB_CHANNEL` 常量提供，不在 seed、判定与测试中散落字面量。
+- 内置角色 seed 通过 `required_capability` 声明所需能力；公共角色为 `None`，CI/CD 为 `Some(ProfileChannelCapability::Cicd)`。`src/channel.rs` 的编译期能力矩阵是渠道适用范围的唯一真源，Profile 组合和 Prompt 正文不自行判断渠道名。
+- `src/prompts/<language>/profile/cicd.md` 保持渠道中立，只描述 CI/CD 能力、输入和边界；CI/CD 仅对启用 `Cicd` 能力的渠道可见。其它渠道能力 overlay 同样不把渠道名写入文件名、标题或正文，由能力矩阵决定是否追加。
 - 渠道值在 core crate 只有一个读取点：`src/channel.rs` 的 `RELEASE_CHANNEL`（编译期 `option_env!("GOLD_BAND_RELEASE_CHANNEL")`，缺省 `default`）。桌面渠道身份 `DesktopChannelConfig.channel` 复用同一常量，`src-tauri/build.rs` 继续校验 `configs/channels/<channel>.json` 存在且 `channel` 字段一致；同一事实不再由两个 crate 各自解析。不依赖可变运行时环境、用户设置、前端过滤或名称判断。
 - 桌面 crate 保留一条跨 crate 一致性断言：构建脚本注入的渠道必须等于 core crate 编译期常量，两侧派生逻辑分叉时测试失败。
 - 角色列表、内置 ID 查找和默认 Profile ID 映射共用同一过滤后的目录。`wb` 提供 10 个内置角色，`default` 及其他渠道提供 9 个公共角色；未知渠道不提供 CI/CD。
@@ -87,3 +88,11 @@
 - 读取失败、写入失败、部分写入或写后核验失败不阻塞业务，但必须说明未读取或未持久化，不能伪装成功；缺少必需业务参数时继续按原有门禁询问、暂停或失败。
 
 验证：`cicd_profile_contract` 在 default 与 `wb` 渠道均通过；未执行真实 WeTest 端到端操作。
+
+## 2026-09-17 渠道中立 Prompt 与能力矩阵
+
+- `wb` 渠道名只保留在 `src/channel.rs` 的能力矩阵、渠道配置和必要的渠道测试中，不再出现在通用角色或 overlay 的文件名、标题和正文。
+- `requirement-identity` 与 `dev-test-auto-commit` 作为渠道中立 profile overlay 存放在双语 `profile/overlays/` 下；Profile 组合根据 `ProfileChannelCapability` 决定是否追加。
+- CI/CD Prompt 删除“内部 `wb` 渠道”自述，仍仅由 `Cicd` 能力控制可见性。默认和未知渠道不获得任何 channel overlay 或 CI/CD Profile。
+
+验收：`profile_prompt_channel_boundary` 2/2、default 与 WB 的 `profile_supplements_are_channel_scoped_and_complete` 各 1/1、WB `cicd_profile_contract` 1/1、`app::profiles::tests` 31/31 通过。

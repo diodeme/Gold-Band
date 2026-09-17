@@ -103,7 +103,7 @@
 根因：原先角色无条件加入公共目录，没有表达 WeTest 仅内部渠道可用的业务边界；列表与按 ID 查找均无条件提供角色。修复位于共享目录，不以 UI 隐藏掩盖执行路径仍可解析的问题。
 
 - [x] 最小失败测试：`GOLD_BAND_RELEASE_CHANNEL=default` 下 `cicd_profile_availability_matches_build_channel` 失败，实际列出角色，预期不可见。
-- [x] seed 新增 `release_channel`，CI/CD 限定 `wb`，其他角色保持公共；列表、详情及默认角色映射复用一个过滤器。
+- [x] seed 通过能力声明限定 CI/CD，当前仅 `wb` 渠道能力矩阵启用；列表、详情及默认角色映射复用一个过滤器。
 - [x] 复用构建脚本传入的编译期渠道，默认及未知渠道不提供 CI/CD，不增加可变全局开关。
 - [x] 双语提示词标明内部渠道范围，产品设计文档同步。
 - [x] 实际设置 `GOLD_BAND_RELEASE_CHANNEL=default` 和 `wb` 分别编译并执行 Profile 测试，各 30 项通过；包括列表、find/show、默认 ID 映射及工作流角色解析。目录测试同时覆盖 `enterprise` 和空渠道。
@@ -178,7 +178,7 @@
 
 根因：PR 的共享记忆实现沿用了每子系统 build key，而 main 已根据真实 Jenkins 生命周期将构建收敛为 task 级、部署保留子系统级；同时 PR 通过存储目录推导 WB，和 main 的编译期渠道真源形成分叉。这属于正确共享记忆设计与后续正确领域设计未接通，不保留双格式兼容层。
 
-- [x] 渠道判断统一从 `src/channel.rs` 的 `RELEASE_CHANNEL` / `WB_CHANNEL` 派生，Profile 目录保留 main 的 `release_channel` 过滤器。
+- [x] 渠道判断统一从 `src/channel.rs` 的 `RELEASE_CHANNEL` 与编译期能力矩阵派生，Profile 目录使用 `required_capability` 过滤器。
 - [x] 双语角色改为 task 级 `cicd.build.jobId/branch/appList/appCoverage` 与子系统级 `cicd.deploy.<S>.*`，全部通过 `memory_read` / `memory_write` 和逐 key revision/CAS 维护。
 - [x] 删除角色直接读写 task 配置文件及整份 JSON 模板的路径；参数只作预填，每次 run 重新展示并确认生效范围，上一次 run 的确认不可复用。
 - [x] 最小失败测试在旧提示词上因缺少 `cicd.build.jobId` 失败；修改双语正文后同一 `cicd_profile_contract` 测试转绿。
@@ -204,3 +204,11 @@
 验证：WB 渠道 `cicd_profile_contract` 1/1、`memory_domain` 13/13、`wb_workflow_profile_contract` 1/1 通过；`cargo check -p gold-band --tests -j 1`、`cargo fmt --all` 和 diff 空白检查通过。
 
 自评审：复用现有 Profile、共享记忆和 Git CLI，不新增状态机、持久字段、依赖、缓存或队列。新增正文为固定长度，Git 只检查当前分支是否存在未 push 提交，记忆读取仍为两个有界文件的 O(P + T) 合并。
+
+## 2026-09-17 渠道中立 Prompt 与能力矩阵
+
+- CI/CD seed 从直接绑定渠道名改为要求 `ProfileChannelCapability::Cicd`；`cicd.md` 删除渠道自述，仅保留业务能力与依赖。
+- 需求身份和开发测试自动提交迁移为双语 `profile/overlays/` 渠道中立资产，Profile 组合只按当前渠道启用的 capability 追加。
+- 渠道名只保留在 `src/channel.rs` 能力矩阵、渠道配置、必要的渠道测试和文档中，不再出现在通用 Prompt 文件名、标题或正文。
+
+验收：`profile_prompt_channel_boundary`、default/WB Profile 组合契约、WB `cicd_profile_contract` 与 Profile 单元测试通过；无新增持久字段、依赖、缓存、队列或运行时 I/O。

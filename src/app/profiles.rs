@@ -9,7 +9,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::warn;
 use walkdir::WalkDir;
 
-use crate::channel::{RELEASE_CHANNEL, WB_CHANNEL};
+use crate::channel::{
+    ProfileChannelCapability, RELEASE_CHANNEL, profile_channel_capability_enabled,
+};
 use crate::config::DesktopLanguage;
 use crate::frontmatter::{
     FrontmatterUpdate, parse_frontmatter_document, parse_optional_frontmatter_document,
@@ -19,11 +21,11 @@ use crate::prompts::{
     PROFILE_ACCEPT_EN, PROFILE_ACCEPT_ZH_CN, PROFILE_CICD_EN, PROFILE_CICD_ZH_CN, PROFILE_CLEAN_EN,
     PROFILE_CLEAN_ZH_CN, PROFILE_DEV_EN, PROFILE_DEV_TEST_EN, PROFILE_DEV_TEST_ZH_CN,
     PROFILE_DEV_ZH_CN, PROFILE_GRILLME_EN, PROFILE_GRILLME_ZH_CN, PROFILE_INTERVIEW_EN,
-    PROFILE_INTERVIEW_ZH_CN, PROFILE_PLAN_EN, PROFILE_PLAN_ZH_CN, PROFILE_REVIEW_EN,
-    PROFILE_REVIEW_ZH_CN, PROFILE_TEST_EN, PROFILE_TEST_ZH_CN, PROFILE_WB_DEV_TEST_COMMIT_EN,
-    PROFILE_WB_DEV_TEST_COMMIT_ZH_CN, PROFILE_WB_REQUIREMENT_IDENTITY_EN,
-    PROFILE_WB_REQUIREMENT_IDENTITY_ZH_CN, profile_template_validation_contexts,
-    prompt_by_language, render,
+    PROFILE_INTERVIEW_ZH_CN, PROFILE_OVERLAY_DEV_TEST_AUTO_COMMIT_EN,
+    PROFILE_OVERLAY_DEV_TEST_AUTO_COMMIT_ZH_CN, PROFILE_OVERLAY_REQUIREMENT_IDENTITY_EN,
+    PROFILE_OVERLAY_REQUIREMENT_IDENTITY_ZH_CN, PROFILE_PLAN_EN, PROFILE_PLAN_ZH_CN,
+    PROFILE_REVIEW_EN, PROFILE_REVIEW_ZH_CN, PROFILE_TEST_EN, PROFILE_TEST_ZH_CN,
+    profile_template_validation_contexts, prompt_by_language, render,
 };
 use crate::storage::{GoldBandPaths, ensure_parent_dir};
 
@@ -169,10 +171,17 @@ impl LocalizedProfileText {
 struct DefaultProfileSeed {
     key: &'static str,
     id: &'static str,
-    release_channel: Option<&'static str>,
+    required_capability: Option<ProfileChannelCapability>,
     name: LocalizedProfileText,
     summary: LocalizedProfileText,
     dynamic_template: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProfileOverlay {
+    target_profile_keys: &'static [&'static str],
+    required_capability: ProfileChannelCapability,
+    content: LocalizedProfileText,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -238,7 +247,7 @@ impl ProfileCommandError {
 const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     DefaultProfileSeed {
         key: "plan",
-        release_channel: None,
+        required_capability: None,
         id: "pf-builtin-plan",
         name: LocalizedProfileText {
             zh_cn: "方案",
@@ -252,7 +261,7 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     },
     DefaultProfileSeed {
         key: "dev",
-        release_channel: None,
+        required_capability: None,
         id: "pf-builtin-dev",
         name: LocalizedProfileText {
             zh_cn: "开发",
@@ -266,7 +275,7 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     },
     DefaultProfileSeed {
         key: "dev-test",
-        release_channel: None,
+        required_capability: None,
         id: "pf-builtin-dev-test",
         name: LocalizedProfileText {
             zh_cn: "开发测试",
@@ -280,7 +289,7 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     },
     DefaultProfileSeed {
         key: "review",
-        release_channel: None,
+        required_capability: None,
         id: "pf-builtin-review",
         name: LocalizedProfileText {
             zh_cn: "审查",
@@ -294,7 +303,7 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     },
     DefaultProfileSeed {
         key: "test",
-        release_channel: None,
+        required_capability: None,
         id: "pf-builtin-test",
         name: LocalizedProfileText {
             zh_cn: "测试",
@@ -308,7 +317,7 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     },
     DefaultProfileSeed {
         key: "accept",
-        release_channel: None,
+        required_capability: None,
         id: "pf-builtin-accept",
         name: LocalizedProfileText {
             zh_cn: "验收",
@@ -322,7 +331,7 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     },
     DefaultProfileSeed {
         key: "cicd",
-        release_channel: Some(WB_CHANNEL),
+        required_capability: Some(ProfileChannelCapability::Cicd),
         id: "pf-builtin-cicd",
         name: LocalizedProfileText {
             zh_cn: "CI/CD",
@@ -336,7 +345,7 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     },
     DefaultProfileSeed {
         key: "cleanup",
-        release_channel: None,
+        required_capability: None,
         id: "pf-builtin-cleanup",
         name: LocalizedProfileText {
             zh_cn: "清理",
@@ -350,7 +359,7 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     },
     DefaultProfileSeed {
         key: "interview",
-        release_channel: None,
+        required_capability: None,
         id: "pf-builtin-interview",
         name: LocalizedProfileText {
             zh_cn: "访谈",
@@ -364,7 +373,7 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     },
     DefaultProfileSeed {
         key: "grill",
-        release_channel: None,
+        required_capability: None,
         id: "pf-builtin-grill",
         name: LocalizedProfileText {
             zh_cn: "拷问",
@@ -378,12 +387,31 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     },
 ];
 
+const PROFILE_OVERLAYS: &[ProfileOverlay] = &[
+    ProfileOverlay {
+        target_profile_keys: &["interview", "grill"],
+        required_capability: ProfileChannelCapability::RequirementIdentity,
+        content: LocalizedProfileText {
+            zh_cn: PROFILE_OVERLAY_REQUIREMENT_IDENTITY_ZH_CN,
+            en: PROFILE_OVERLAY_REQUIREMENT_IDENTITY_EN,
+        },
+    },
+    ProfileOverlay {
+        target_profile_keys: &["dev-test"],
+        required_capability: ProfileChannelCapability::DevTestAutoCommit,
+        content: LocalizedProfileText {
+            zh_cn: PROFILE_OVERLAY_DEV_TEST_AUTO_COMMIT_ZH_CN,
+            en: PROFILE_OVERLAY_DEV_TEST_AUTO_COMMIT_EN,
+        },
+    },
+];
+
 fn default_profile_seeds_for_channel(
     channel: &str,
 ) -> impl Iterator<Item = &'static DefaultProfileSeed> + '_ {
     DEFAULT_PROFILE_SEEDS.iter().filter(move |seed| {
-        seed.release_channel
-            .is_none_or(|required| required == channel)
+        seed.required_capability
+            .is_none_or(|capability| profile_channel_capability_enabled(channel, capability))
     })
 }
 
@@ -836,27 +864,15 @@ fn built_in_profile_content(key: &str, language: DesktopLanguage) -> String {
         "grill" => prompt_by_language(language, PROFILE_GRILLME_ZH_CN, PROFILE_GRILLME_EN),
         _ => "",
     };
-    if RELEASE_CHANNEL != WB_CHANNEL {
-        return content.to_string();
+    let mut composed = content.to_string();
+    for overlay in PROFILE_OVERLAYS.iter().filter(|overlay| {
+        overlay.target_profile_keys.contains(&key)
+            && profile_channel_capability_enabled(RELEASE_CHANNEL, overlay.required_capability)
+    }) {
+        composed.push_str("\n\n");
+        composed.push_str(overlay.content.value(language).trim());
     }
-    let wb_supplement = match key {
-        "interview" | "grill" => prompt_by_language(
-            language,
-            PROFILE_WB_REQUIREMENT_IDENTITY_ZH_CN,
-            PROFILE_WB_REQUIREMENT_IDENTITY_EN,
-        ),
-        "dev-test" => prompt_by_language(
-            language,
-            PROFILE_WB_DEV_TEST_COMMIT_ZH_CN,
-            PROFILE_WB_DEV_TEST_COMMIT_EN,
-        ),
-        _ => "",
-    };
-    if wb_supplement.trim().is_empty() {
-        content.to_string()
-    } else {
-        format!("{content}\n\n{}", wb_supplement.trim())
-    }
+    composed
 }
 
 fn read_profile_dir(paths: &GoldBandPaths, scope: ProfileScope) -> Result<Vec<ProfileEntry>> {
@@ -1322,9 +1338,11 @@ profile body
         assert_eq!(by_id["pf-builtin-dev-test"], true);
         assert_eq!(by_id["pf-builtin-review"], false);
         assert_eq!(by_id["pf-builtin-test"], false);
+        let cicd_available =
+            profile_channel_capability_enabled(RELEASE_CHANNEL, ProfileChannelCapability::Cicd);
         assert_eq!(
             by_id.get("pf-builtin-cicd"),
-            (RELEASE_CHANNEL == WB_CHANNEL).then_some(&false)
+            cicd_available.then_some(&false)
         );
         assert_eq!(by_id["pf-builtin-accept"], false);
         assert_eq!(by_id["pf-builtin-cleanup"], false);
@@ -1421,7 +1439,7 @@ profile body
             );
             for seed in DEFAULT_PROFILE_SEEDS
                 .iter()
-                .filter(|seed| seed.release_channel.is_none())
+                .filter(|seed| seed.required_capability.is_none())
             {
                 assert!(profiles.iter().any(|available| available.id == seed.id));
             }
@@ -1433,7 +1451,8 @@ profile body
         let tmp = tempfile::tempdir().unwrap();
         let paths =
             GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap());
-        let available = RELEASE_CHANNEL == WB_CHANNEL;
+        let available =
+            profile_channel_capability_enabled(RELEASE_CHANNEL, ProfileChannelCapability::Cicd);
         for language in [DesktopLanguage::ZhCn, DesktopLanguage::En] {
             let list = list_profiles(&paths, language).unwrap();
             assert_eq!(
@@ -1441,7 +1460,7 @@ profile body
                     .iter()
                     .any(|profile| profile.id == "pf-builtin-cicd"),
                 available,
-                "CI/CD must only be listed in the wb build channel"
+                "CI/CD visibility must match the profile channel capability"
             );
             assert_eq!(
                 find_profile_by_id(&paths, "pf-builtin-cicd", language)
@@ -1474,7 +1493,7 @@ profile body
         let paths =
             GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().join("repo")).unwrap());
         let id = "pf-builtin-cicd";
-        if RELEASE_CHANNEL != WB_CHANNEL {
+        if !profile_channel_capability_enabled(RELEASE_CHANNEL, ProfileChannelCapability::Cicd) {
             assert!(show_profile(&paths, id, DesktopLanguage::ZhCn).is_err());
             assert!(show_profile(&paths, id, DesktopLanguage::En).is_err());
             return;

@@ -1,6 +1,6 @@
-## WB Development and Testing Auto-Commit
+## Development and Testing Auto-Commit
 
-This section applies only to the WB channel. After completing the requirement implementation and required automated tests, perform this closing step before ending the node.
+After completing the requirement implementation and required automated tests, perform this closing step before ending the node.
 
 1. Use `memory_read` to inspect task-scope `storyId` and `storyName`. Reuse both when they are nonempty. When either is missing, empty, or unpaired, first generate the identity with `storyId=0` and the requirement-name extraction rules and try `memory_write`. If the tool is unavailable or the read fails, state that the identity was not read; if the write or verification fails, state that it was not persisted. Neither case is a blocker: ask the user for the requirement identity or continue with the identity confirmed in this run.
 2. Identify task-related changes produced by this node, including code, tests, prompts, product-design documents, and the development plan. Exclude changes that existed before execution or are clearly unrelated user changes.

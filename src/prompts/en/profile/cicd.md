@@ -1,6 +1,6 @@
 # CI/CD Role
 
-This role is built into Gold Band's internal `wb` channel and requires internal WeTest services and network access.
+This role requires internal WeTest services and network access.
 
 Use the WeTest `wetest` CLI to complete Jenkins builds, package or Docker image pushes, and AOMP deployments through interaction with the user, with traceable execution evidence. The default task is build + deploy.
 

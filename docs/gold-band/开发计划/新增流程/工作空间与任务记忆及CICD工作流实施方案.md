@@ -181,16 +181,18 @@
 
 根因：需求 ID / 名称是开发测试生成三行提交所需的规范输入，但任务记忆没有固定 key 和初始化链路；同时 CICD 参数只有“默认写任务”的通用规则，无法保证每个参数写到正确作用域。
 
-- [x] WB 采访和拷问在角色流程前使用 `memory_read` 只检查任务作用域 `storyId/storyName`；缺失、为空或不成对时，以“不存在 / 其他（用户自行输入）”语义提问。
+- [x] 启用 `RequirementIdentity` capability 的采访和拷问在角色流程前使用 `memory_read` 只检查任务作用域 `storyId/storyName`；缺失、为空或不成对时，以“不存在 / 其他（用户自行输入）”语义提问。WB 当前启用该 capability。
 - [x] 选择不存在时写 `storyId=0` 和从需求内容提取的最多 40 字符简短名称；选择其他时要求同时提供 ID 和名称。两个 key 均写任务作用域并写后核验。
 - [x] 开发测试在采访或拷问关闭导致身份缺失时自动兜底补齐，不向用户询问提交消息。
 - [x] 固定作用域：`subSysId*` 写工作空间；`storyId/storyName` 与全部 `cicd.*` 生效参数写任务。
 - [x] 记忆领域接口测试新增跨节点任务身份读取，确认任务值优先并在重新构造服务后保持。
 - [x] 记忆工具不可用、写入失败或写后核验失败改为可降级流程：向用户询问或确认参数并继续，明确数据未持久化，不直接修改记忆文件。
 
-验证：WB 渠道 `memory_domain` 13/13、`wb_workflow_profile_contract` 1/1、`cicd_profile_contract` 1/1 通过；default 渠道确认不注入 WB 补充规则；`cargo check -p gold-band --tests -j 1` 通过。
+验证：WB 渠道 `memory_domain` 13/13、`wb_workflow_profile_contract` 1/1、`cicd_profile_contract` 1/1 通过；default 渠道确认不注入 capability overlay；`cargo check -p gold-band --tests -j 1` 通过。
 
 自评审：复用现有 `gold-band-memory` MCP、逐 key CAS、Profile 渠道常量和原子写入，不新增记忆文件、状态机、缓存或队列。每次身份检查仍只读取当前项目与任务两个有界文件，复杂度 O(P + T)。
+
+2026-09-17 渠道中立补充：需求身份与开发测试自动提交迁移为双语 `profile/overlays/` 资产，并由 `ProfileChannelCapability` 决定追加；CI/CD seed 同样使用 `Cicd` capability。默认渠道不获得 overlay，WB 行为与记忆 key/scope 不变。
 
 ## 2026-09-17 按需读取与 Direct Prompt 隔离
 

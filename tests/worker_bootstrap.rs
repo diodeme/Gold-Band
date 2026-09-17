@@ -43,7 +43,7 @@ impl ProviderAdapter for RecordingProvider {
     fn doctor(&self) -> DoctorResult {
         DoctorResult {
             available: true,
-            reason: None,
+            error: None,
             capabilities: None,
         }
     }
@@ -206,7 +206,7 @@ impl ProviderAdapter for InterruptThenSuccessProvider {
     fn doctor(&self) -> DoctorResult {
         DoctorResult {
             available: true,
-            reason: None,
+            error: None,
             capabilities: None,
         }
     }
@@ -324,7 +324,7 @@ impl ProviderAdapter for AlwaysFailAcceptanceProvider {
     fn doctor(&self) -> DoctorResult {
         DoctorResult {
             available: true,
-            reason: None,
+            error: None,
             capabilities: None,
         }
     }
@@ -492,7 +492,7 @@ impl ProviderAdapter for MultiAttemptContinueProvider {
     fn doctor(&self) -> DoctorResult {
         DoctorResult {
             available: true,
-            reason: None,
+            error: None,
             capabilities: None,
         }
     }

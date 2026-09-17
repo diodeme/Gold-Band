@@ -7179,7 +7179,7 @@ mod tests {
                 "claude-acp".to_string(),
                 ProviderDiagnosticSnapshot {
                     available: true,
-                    reason: None,
+                    error: None,
                     checked_at: "2026-08-18T00:00:00Z".to_string(),
                     capabilities: None,
                 },

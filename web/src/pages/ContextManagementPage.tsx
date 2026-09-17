@@ -12,6 +12,7 @@ import {
   getConversationWorkspaces, doctorAgent,
 } from '../api';
 import { displayAppError } from '../i18n';
+import { agentDiagnosticMessage } from '@/lib/agent-diagnostic';
 import type {
   AppErrorVm, ImportedProfileRecord, ImportProfilesResult, ProfileFieldFallback, ProfileInput, ProfileListVm, ProfileScope, ProfileVm,
   McpServerVm, SkillListVm, SkillMetaVm, SkillContentVm, AgentRegistryVm, ToolInfo,
@@ -811,7 +812,9 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
                     mcpHttpSupported: a.mcpHttpSupported,
                     mcpSseSupported: a.mcpSseSupported,
                     diagnosticAvailable: a.diagnostic?.available,
-                    diagnosticReason: a.diagnostic?.reason,
+                    diagnosticReason: a.diagnostic?.available === false
+                      ? agentDiagnosticMessage(t, a.diagnostic)
+                      : null,
                   }))}
                   diagnosingAgentType={mcpDiagnosingAgent}
                   onDiagnoseAgent={async (agentType) => {

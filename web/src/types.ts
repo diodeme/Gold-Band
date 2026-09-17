@@ -520,7 +520,7 @@ export interface AgentEnvEntryVm {
 export interface ManagedAgentDiagnosticVm {
   status: string;
   available: boolean;
-  reason?: string | null;
+  error?: AppErrorVm | null;
   checkedAt: string;
 }
 

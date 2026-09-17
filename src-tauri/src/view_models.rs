@@ -11,8 +11,8 @@ use gold_band::acp::client::PromptActivity;
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
     AppearancePreference, BrowserPreferences, DesktopAvailableUpdate, DesktopLanguage,
-    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, McpServerDiagnosticState,
-    PersonalizationPreference, RuntimeConfig, RuntimeLogLevel,
+    DesktopUpdateBadgeState, DiagnosticError, ManagedAgentConfig, ManagedAgentId,
+    McpServerDiagnosticState, PersonalizationPreference, RuntimeConfig, RuntimeLogLevel,
 };
 use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -299,7 +299,7 @@ pub struct SkillContentVm {
 pub struct ManagedAgentDiagnosticVm {
     pub status: String,
     pub available: bool,
-    pub reason: Option<String>,
+    pub error: Option<DiagnosticError>,
     pub checked_at: String,
 }
 
@@ -1457,7 +1457,7 @@ pub(crate) fn managed_agent_vm(
             }
             .to_string(),
             available: diagnostic.available,
-            reason: diagnostic.reason.clone(),
+            error: diagnostic.error.clone(),
             checked_at: diagnostic.checked_at.clone(),
         }),
         supported_modes: diagnostic.and_then(|diagnostic| {

@@ -4,7 +4,8 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { createAgent, deleteAgent, doctorAgent, getAgentBindingUsage, updateAgent } from '../api';
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { displayAppError } from '../i18n';
-import type { AgentBindingUsageVm, AgentCatalogEntryVm, AgentRegistryVm, ManagedAgentInput, ManagedAgentVm } from '../types';
+import { agentDiagnosticDetail, agentDiagnosticMessage } from '@/lib/agent-diagnostic';
+import type { AgentBindingUsageVm, AgentCatalogEntryVm, AgentRegistryVm, ManagedAgentDiagnosticVm, ManagedAgentInput, ManagedAgentVm } from '../types';
 import { AppCard } from '@/components/AppCard';
 import { EmptyState, Page, PageHeader } from '@/components/PageScaffold';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -59,7 +60,21 @@ export function agentDeleteActionDisabled(
 ) {
   return loading || usage === null || error !== null;
 }
-type Notice = { tone: 'success' | 'error'; message: string };
+type Notice = { tone: 'success' | 'error'; message: string; detail?: string | null };
+
+function diagnosticFailedNotice(
+  t: (key: string, options?: Record<string, unknown>) => string,
+  diagnostic?: ManagedAgentDiagnosticVm | null,
+  fallbackReason?: string,
+): Notice {
+  return {
+    tone: 'error',
+    message: t('agentManagement.diagnosticFailed', {
+      reason: fallbackReason ?? agentDiagnosticMessage(t, diagnostic),
+    }),
+    detail: agentDiagnosticDetail(diagnostic),
+  };
+}
 
 const ACP_REGISTRY_URL = 'https://agentclientprotocol.com/get-started/registry';
 export const agentAddMenuItemClassName = 'rounded-md transition-colors hover:bg-accent hover:text-accent-foreground data-[selected=true]:!bg-transparent data-[selected=true]:!text-foreground data-[selected=true]:hover:!bg-accent data-[selected=true]:hover:!text-accent-foreground';
@@ -159,7 +174,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
     setAutomaticDiagnosingType(null);
     setNotice(diagnostic.available
       ? { tone: 'success', message: t('agentManagement.diagnosticComplete') }
-      : { tone: 'error', message: t('agentManagement.diagnosticFailed', { reason: diagnostic.reason ?? t('agentManagement.diagnosticFailedFallback') }) });
+      : diagnosticFailedNotice(t, diagnostic));
   }, [automaticDiagnosingType, t, vm]);
 
   const openCreate = (agentType: AgentCatalogEntryVm) => {
@@ -281,9 +296,9 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
       const diagnostic = next.agents.find((agent) => agent.agentType === agentType)?.diagnostic;
       setNotice(diagnostic?.available
         ? { tone: 'success', message: t('agentManagement.diagnosticComplete') }
-        : { tone: 'error', message: t('agentManagement.diagnosticFailed', { reason: diagnostic?.reason ?? t('agentManagement.diagnosticFailedFallback') }) });
+        : diagnosticFailedNotice(t, diagnostic));
     } catch (nextError) {
-      setNotice({ tone: 'error', message: t('agentManagement.diagnosticFailed', { reason: displayAppError(t, nextError) }) });
+      setNotice(diagnosticFailedNotice(t, null, displayAppError(t, nextError)));
     } finally {
       setDiagnosingType(null);
     }
@@ -395,7 +410,12 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
         >
           {notice.tone === 'success' ? <CheckCircle2 /> : <AlertTriangle />}
           <AlertDescription className="text-sm font-medium text-current">
-            {notice.message}
+            <div>{notice.message}</div>
+            {notice.detail ? (
+              <div className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-words font-normal text-ui-caption text-current/80">
+                {notice.detail}
+              </div>
+            ) : null}
           </AlertDescription>
         </Alert>
       ) : null}
@@ -660,7 +680,7 @@ function AgentCard({ agent, diagnosing, onEdit, onDelete, onDoctor }: { agent: M
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <DiagnosticBadge diagnostic={diagnostic} />
-          {diagnostic?.status === 'unhealthy' ? <RegistryHelp reason={diagnostic.reason} /> : null}
+          {diagnostic?.status === 'unhealthy' ? <RegistryHelp diagnostic={diagnostic} /> : null}
         </div>
       </div>
       <div className="grid gap-2 text-sm text-muted-foreground sm:grid-cols-2">
@@ -680,8 +700,10 @@ function AgentCard({ agent, diagnosing, onEdit, onDelete, onDoctor }: { agent: M
   );
 }
 
-function RegistryHelp({ reason }: { reason?: string | null }) {
+function RegistryHelp({ diagnostic }: { diagnostic?: ManagedAgentDiagnosticVm | null }) {
   const { t } = useTranslation();
+  const message = agentDiagnosticMessage(t, diagnostic);
+  const detail = agentDiagnosticDetail(diagnostic);
   const openRegistry = async () => {
     try {
       await openUrl(ACP_REGISTRY_URL);
@@ -701,11 +723,12 @@ function RegistryHelp({ reason }: { reason?: string | null }) {
             <CircleHelp className="size-4" />
           </Button>
         </TooltipTrigger>
-        <TooltipContent side="left" sideOffset={8} className="w-56 space-y-1.5 whitespace-pre-wrap break-words px-2.5 py-2 text-xs leading-[1.45]">
-          {reason ? (
+        <TooltipContent side="left" sideOffset={8} className="w-72 max-w-[20rem] space-y-1.5 whitespace-pre-wrap break-words px-2.5 py-2 text-xs leading-[1.45]">
+          {message ? (
             <div className="w-full space-y-1">
               <div className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">{t('status.error')}</div>
-              <div className="whitespace-pre-wrap break-words [text-wrap:wrap]">{reason}</div>
+              <div className="whitespace-pre-wrap break-words [text-wrap:wrap]">{message}</div>
+              {detail ? <div className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-current/80">{detail}</div> : null}
             </div>
           ) : null}
           <div className="w-full space-y-1 border-t border-border/60 pt-3">

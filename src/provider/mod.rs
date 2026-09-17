@@ -2,7 +2,7 @@ pub(crate) mod cicd;
 use crate::acp::{client, events::AcpUiEvent};
 use crate::artifacts::{JsonArtifactSpan, artifact_uses_json_output, json_artifact_display_span};
 use crate::config::{
-    AcpAdapterConfig, DesktopLanguage, ManagedAgentConfig, ManagedAgentId,
+    AcpAdapterConfig, DesktopLanguage, DiagnosticError, ManagedAgentConfig, ManagedAgentId,
     catalog_agent_default_config,
 };
 pub use crate::domain::SessionRef;
@@ -258,11 +258,28 @@ pub struct AcpSelectConfigOption {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoctorResult {
     pub available: bool,
-    pub reason: Option<String>,
+    #[serde(default)]
+    pub error: Option<DiagnosticError>,
     pub capabilities: Option<Value>,
 }
 
 impl DoctorResult {
+    pub fn healthy() -> Self {
+        Self {
+            available: true,
+            error: None,
+            capabilities: None,
+        }
+    }
+
+    pub fn from_anyhow(error: &anyhow::Error) -> Self {
+        Self {
+            available: false,
+            error: Some(client::doctor_diagnostic_error(error)),
+            capabilities: None,
+        }
+    }
+
     pub fn supported_modes(&self) -> Vec<AcpModeOption> {
         supported_modes_from_capabilities(self.capabilities.as_ref())
     }
@@ -1898,13 +1915,7 @@ impl ProviderAdapter for AcpProvider {
             .unwrap_or_else(|| Utf8PathBuf::from("."));
         let agent_id = match ManagedAgentId::from_str(&self.provider_id) {
             Ok(agent_id) => agent_id,
-            Err(err) => {
-                return DoctorResult {
-                    available: false,
-                    reason: Some(err.to_string()),
-                    capabilities: None,
-                };
-            }
+            Err(err) => return DoctorResult::from_anyhow(&err),
         };
         match client::doctor(
             &agent_id,
@@ -1915,14 +1926,10 @@ impl ProviderAdapter for AcpProvider {
         ) {
             Ok(probe) => DoctorResult {
                 available: true,
-                reason: None,
+                error: None,
                 capabilities: Some(probe.capabilities),
             },
-            Err(err) => DoctorResult {
-                available: false,
-                reason: Some(err.to_string()),
-                capabilities: None,
-            },
+            Err(err) => DoctorResult::from_anyhow(&err),
         }
     }
 

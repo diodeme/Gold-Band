@@ -635,6 +635,10 @@ const resources = {
           "session-query-failed": "会话内容加载失败，请重试。",
           "activity-detail-query-failed": "活动详情加载失败，请重试。",
           "tool-detail-query-failed": "工具详情加载失败，请重试。",
+          "adapter-exited": "Agent 进程在 {{method}} 阶段退出。请检查命令、参数、环境变量、网络和认证状态。",
+          "adapter-exited-with-code": "Agent 进程在 {{method}} 阶段退出（退出码 {{exitCode}}）。请检查命令、参数、环境变量、网络和认证状态。",
+          "adapter-start-failed": "无法启动 Agent：{{osError}}",
+          "doctor-timeout": "Agent 环境诊断在 {{method}} 阶段超时。",
         },
         app: {
           "task-join-failed": "后台任务执行失败。",
@@ -3289,6 +3293,12 @@ const resources = {
           "session-query-failed": "The conversation could not be loaded. Try again.",
           "activity-detail-query-failed": "Activity details could not be loaded. Try again.",
           "tool-detail-query-failed": "Tool details could not be loaded. Try again.",
+          "adapter-exited":
+            "The Agent process exited during {{method}}. Check the command, arguments, environment variables, network, and authentication.",
+          "adapter-exited-with-code":
+            "The Agent process exited during {{method}} (exit code {{exitCode}}). Check the command, arguments, environment variables, network, and authentication.",
+          "adapter-start-failed": "The Agent could not be started: {{osError}}",
+          "doctor-timeout": "Agent environment check timed out during {{method}}.",
         },
         app: {
           "task-join-failed": "Background task failed.",

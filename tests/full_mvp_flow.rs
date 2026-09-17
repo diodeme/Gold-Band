@@ -37,7 +37,7 @@ impl ProviderAdapter for SequencedProvider {
     fn doctor(&self) -> DoctorResult {
         DoctorResult {
             available: true,
-            reason: None,
+            error: None,
             capabilities: None,
         }
     }

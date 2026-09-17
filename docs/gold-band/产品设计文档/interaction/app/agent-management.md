@@ -137,7 +137,7 @@ Agent Cards
 - 错误原因（如果有）
 - doctor 失败时在诊断状态旁显示问号帮助入口；该入口统一使用随主题变化的浅色 shadcn/ui `Tooltip`，悬浮或聚焦即可展示错误原因与 ACP Registry 配置帮助，不使用自定义 tooltip 大面板；提示内容仅包含参考 ACP Registry 配置命令、参数、环境变量、网络和认证状态，其中 ACP Registry 为外链 `https://agentclientprotocol.com/get-started/registry`，点击提示内链接时通过系统默认浏览器打开，不在卡片内展开具体下载步骤
 - 诊断运行中按钮展示圆形加载动效
-- 诊断完成后根据结果显示数秒横幅：正常为成功横幅，异常为异常横幅并展示原因
+- 诊断完成后根据结果显示数秒横幅：正常为成功横幅；异常横幅先展示本地化主句，主句下方展示有界故障 stderr（若有）。横幅不得直接展示内部 `Display` 英文串，例如 `ACP adapter transport interrupted`
 - 横幅在浅色模式下必须保证文案可读性，成功态文案与图标应复用主题语义成功色 token，不允许在页面里硬编码浅绿色并导致低对比度问题
 
 后台能力：
@@ -151,7 +151,8 @@ Agent Cards
 - ACP adapter、doctor 共用 Rust 进程环境解析层，不得在调用点按 Kimi、Cursor、包管理器或固定安装目录增加特判。Windows 的稳定优先级为“Agent 显式配置 PATH → 当前桌面进程 PATH → 用户注册表 PATH → 系统注册表 PATH → 平台通用目录”，每次创建 ACP 进程前通过注册表 API 动态读取 `HKCU\Environment\Path` 与 `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment\Path`，展开 `%VAR%` 后按大小写不敏感去重，因此用户在应用启动后安装并正式写入用户/系统 PATH 的 Agent 无需重启 Gold Band。macOS / Linux 的稳定优先级为“Agent 显式配置 PATH → 用户登录 Shell PATH → 当前桌面进程 PATH → 平台通用目录”，首次解析当前 Unix 账户的默认 Shell，以 `-ilc` 登录交互模式读取环境并在 2 秒总超时内回收异常 Shell；成功或失败结果均按应用进程生命周期缓存。Shell profile 输出通过边界标记解析，只采纳其中的 `PATH`，并禁用 Oh My Zsh 自动更新与 tmux 自动启动；解析失败时继续使用当前进程 PATH。Unix 按大小写敏感语义去重，平台通用目录仅补全 `~/.nvm/versions/node/*/bin`、`~/.local/bin`、`~/.cargo/bin`、`~/.volta/bin`、`/opt/homebrew/bin`、`/usr/local/bin` 等非 Agent 专属位置。登录 Shell/注册表读取和 PATH 合并只发生在 doctor / ACP 进程创建边界，不进入消息处理热路径
 - Windows 裸命令在每个 PATH 目录中只按 `.exe`、`.com`、`.cmd`、`.bat` 顺序选择可由后台进程稳定启动的候选，不自动选择 `.ps1`，也不把 npm 同目录生成的无扩展名 Unix shell shim 当作 Win32 应用；用户显式填写带扩展名命令时只按原名查找。必须使用 PowerShell 脚本的自定义 Agent 应显式配置 `pwsh` / `powershell` 与 `-NoProfile -File <script.ps1>` 参数
 - 若 adapter 启动失败，诊断原因必须保留底层 OS 错误文本，例如 `No such file or directory (os error 2)`，不能只显示泛化的“failed to start ACP adapter”
-- doctor 与正式 ACP 连接共用 adapter stderr 字节流诊断：Windows 本地代码页或任意非法 UTF-8 输出不得中止 stderr 消费，详细日志必须保留 lossy 可读文本与有界原始字节前缀，并携带具体 Agent id、adapter command 和可获得的进程退出状态。常规日志不得直接展开 stderr 正文；用户开启“记录详细日志”后无需重启即可在下一次诊断中取得真实 npm/npx 错误，而不是只看到 `stream did not contain valid UTF-8` 或无法归因的 `adapter=npx`。稳定噪声（`npm warn Unknown user config`、adapter `[session/query]`）即使详细日志也不逐行写入，只在连接关闭时保留有界摘要；`npm error` / `ENOSPC` 等故障行仍进入详细日志。doctor standalone 连接的关闭因果链与退出状态默认不写 `INFO`。
+- 诊断失败对客展示结构化错误码，不把内部 `Display` 直接作为原因。常见码为 `acp.adapter-exited`、`acp.adapter-start-failed`、`acp.doctor-timeout`。前端先本地化主句；已分类的故障 stderr（`npm error` / `ENOENT` 等，限 2000 字符）放入 `params.reason`，与 Git 失败相同，在 Agent 管理横幅和帮助 Tooltip 的主句下方展示原始输出。工作流、会话和运行模式中的 Agent 选择器只展示本地化主句。故障 stderr 不写入默认 INFO，也不为 npx 增加特判
+- doctor 与正式 ACP 连接共用 adapter stderr 字节流诊断：Windows 本地代码页或任意非法 UTF-8 输出不得中止 stderr 消费，详细日志必须保留 lossy 可读文本与有界原始字节前缀，并携带具体 Agent id、adapter command 和可获得的进程退出状态。常规日志不得直接展开 stderr 正文。对客诊断结果不依赖“记录详细日志”开关即可拿到已分类的有界故障 stderr；详细日志仍按原规则保留完整诊断字节。稳定噪声（`npm warn Unknown user config`、adapter `[session/query]`）即使详细日志也不逐行写入，只在连接关闭时保留有界摘要；`npm error` / `ENOSPC` 等故障行仍进入详细日志。doctor standalone 连接的关闭因果链与退出状态默认不写 `INFO`。
 - 周期 Agent doctor、命令目录刷新、adapter stderr 行与非 UTF-8 摘要属于高频且可自动复现的诊断过程，只写 `DEBUG`，默认 `INFO` 的 `runtime.log` 不重复记录每分钟诊断结果。doctor 返回 unavailable 是可展示的业务诊断结果，不升级为 `WARN`；只有调度锁、持久化、线程启动、命令目录刷新或传输读取等基础设施实际失败才写 `WARN`，并携带稳定 Agent id。手动诊断的 UI 结果继续来自 canonical diagnostic snapshot，不能依赖日志级别。
 - 当前固定参考官方 Registry 中的 Claude、Codex、Cursor、Gemini、CodeBuddy、Goose、Qwen Code、OpenCode、Kimi Code、Amp、Pi 十一类精选 Agent，同时允许任意合法自定义 ACP Agent
 - 单个 Agent 每轮诊断从取得执行资格起共享 3 分钟截止时间，覆盖 adapter 启动后的初始化、会话创建、命令发现和诊断会话清理；周期失败重试沿用同一截止时间，预算耗尽后不再启动重试。超时以 `acp.doctor-timeout` 和当前阶段记录原因，回收进程树并保留有界失败日志；进程回收复用既有平台机制，Unix 的 2 秒终止宽限不计入协议等待预算。正常业务会话的请求期限不随 Doctor 改变
@@ -168,7 +169,7 @@ Agent 管理页不是 workflow 编辑器，但它决定 workflow 里声明的 ag
 当前约束：
 - workflow 节点中的 `provider` 字段表示稳定的 managed Agent ID
 - workflow 画布、Agent 选择器、会话标题和侧栏统一从当前 `AgentRegistryVm.agents` 实例读取 display name 与 icon，不允许维护按 provider ID 推导图标的内置白名单；因此 Catalog Agent、自定义 Agent、用户上传图标和默认通用图标共享同一展示语义
-- 创建任务与工作流编辑器的节点 Agent 下拉展示全部已配置 Agent；最近一次 doctor 成功的 Agent 可选择，未运行 doctor、doctor 失败或诊断缓存缺失的 Agent 保留展示但禁用，并展示诊断失败原因。是否来自内置 Catalog 不参与可用性判断
+- 创建任务与工作流编辑器的节点 Agent 下拉展示全部已配置 Agent；最近一次 doctor 成功的 Agent 可选择，未运行 doctor、doctor 失败或诊断缓存缺失的 Agent 保留展示但禁用，并展示本地化后的诊断失败主句，不展开原始 stderr。是否来自内置 Catalog 不参与可用性判断
 - 已有节点引用的 Agent 诊断失败后必须保留原选择，不得把节点表现为“未关联 Agent”；该工作流不能保存或启动，后端命令入口继续拦截，用户可到 Agent 管理页手动重试诊断
 - 若节点引用的 agent type 未在 Agent 管理页中配置或未通过 doctor，则 workflow 校验失败
 - workflow 节点权限模式必须来自该 agent 最近一次 doctor 缓存的 `supportedModes`；切换 agent 时不继承旧 agent 的权限模式

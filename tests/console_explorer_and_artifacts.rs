@@ -19,7 +19,7 @@ fn seed_branching_repo(repo_root: &Utf8PathBuf) -> App {
                 "claude-acp".to_string(),
                 ProviderDiagnosticSnapshot {
                     available: true,
-                    reason: None,
+                    error: None,
                     checked_at: "2026-08-17T00:00:00Z".to_string(),
                     capabilities: None,
                 },

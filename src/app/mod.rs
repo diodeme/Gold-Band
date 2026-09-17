@@ -4038,17 +4038,13 @@ impl App {
             Ok(probe) => Ok(ProviderDoctorProbe {
                 doctor: DoctorResult {
                     available: true,
-                    reason: None,
+                    error: None,
                     capabilities: Some(probe.capabilities),
                 },
                 commands: probe.commands,
             }),
             Err(err) => Ok(ProviderDoctorProbe {
-                doctor: DoctorResult {
-                    available: false,
-                    reason: Some(err.to_string()),
-                    capabilities: None,
-                },
+                doctor: DoctorResult::from_anyhow(&err),
                 commands: Vec::new(),
             }),
         }
@@ -6777,7 +6773,7 @@ mod tests {
                 provider.to_string(),
                 ProviderDiagnosticSnapshot {
                     available: true,
-                    reason: None,
+                    error: None,
                     checked_at: "2026-06-24T00:00:00Z".to_string(),
                     capabilities: Some(capabilities),
                 },
@@ -7050,7 +7046,7 @@ mod tests {
                 "claude-acp".to_string(),
                 ProviderDiagnosticSnapshot {
                     available: true,
-                    reason: None,
+                    error: None,
                     checked_at: "2026-06-24T00:00:00Z".to_string(),
                     capabilities: Some(serde_json::json!({
                         "configOptions": [

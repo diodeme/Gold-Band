@@ -150,9 +150,35 @@ pub fn spawn_adapter(
         }
         None => {}
     }
-    let child = ManagedProcessGroup::spawn(&mut command)
-        .map_err(|error| anyhow!("failed to start ACP adapter `{}`: {error}", executable))?;
+    let child = ManagedProcessGroup::spawn(&mut command).map_err(|error| {
+        anyhow!(AcpAdapterStartFailed {
+            command: executable.clone(),
+            source: error,
+        })
+    })?;
     Ok((adapter, child))
+}
+
+#[derive(Debug)]
+pub(crate) struct AcpAdapterStartFailed {
+    pub command: String,
+    pub source: std::io::Error,
+}
+
+impl std::fmt::Display for AcpAdapterStartFailed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "failed to start ACP adapter `{}`: {}",
+            self.command, self.source
+        )
+    }
+}
+
+impl std::error::Error for AcpAdapterStartFailed {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
 }
 
 fn normalize_args(args: &[String]) -> Vec<String> {

@@ -3027,9 +3027,13 @@ fn log_prompt_bundle(
         cold_attachments,
         "provider prompt bundle summary"
     );
-    if log_prompts {
+    if prompt_bundle_logs_content(log_prompts) {
         debug!(system_prompt = %prompt.system_prompt, user_prompt = %prompt.user_prompt, "provider prompt bundle content");
     }
+}
+
+fn prompt_bundle_logs_content(_log_prompts: bool) -> bool {
+    false
 }
 
 pub fn provider_capabilities(provider_id: &str) -> Result<ProviderCapabilities> {
@@ -3145,6 +3149,15 @@ mod tests {
 
     fn test_attachment_projection_policy() -> AttachmentProjectionPolicy {
         AttachmentProjectionPolicy::from(&crate::config::RuntimeConfig::default())
+    }
+
+    #[test]
+    fn prompt_bundle_never_logs_prompt_bodies_to_runtime_log() {
+        assert!(!prompt_bundle_logs_content(false));
+        assert!(
+            !prompt_bundle_logs_content(true),
+            "runtime.log must not record prompt bodies even when log_prompts is enabled"
+        );
     }
 
     #[test]

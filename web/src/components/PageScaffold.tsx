@@ -42,7 +42,7 @@ export const pageHeaderStyles = {
   integrated: {
     root: 'space-y-2 px-6 pb-3 pt-8',
     navigationRoot: 'pb-1',
-    headingRow: 'flex-col gap-3 sm:flex-row sm:items-start sm:justify-between',
+    headingRow: 'flex-wrap items-start justify-between gap-3',
     identity: 'space-y-1.5',
     title: 'text-lg',
     actions: '',
@@ -72,7 +72,7 @@ export function PageHeader({ breadcrumbs, eyebrow, icon, title, badges, subtitle
     <header data-variant={variant} className={cn('shrink-0', styles.root, navigation && styles.navigationRoot, className)}>
       {breadcrumbs ? <div className="flex min-h-6 min-w-0 items-center">{breadcrumbs}</div> : null}
       <div className={cn('flex', styles.headingRow)}>
-        <div data-slot="page-header-identity" className="flex min-w-0 items-center gap-3">
+        <div data-slot="page-header-identity" className="flex min-w-[min(100%,12rem)] flex-1 items-center gap-3">
           {icon ? (
             <span data-slot="page-header-icon" aria-hidden="true" className="shrink-0 text-foreground [&_svg]:size-5">
               {icon}

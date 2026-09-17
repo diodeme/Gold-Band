@@ -202,6 +202,8 @@ BrowserPanel
 
 隐藏后重新显示必然是原生图层的一次 hide → show，中间会露出承载面板的 HTML 空白，因此首次测量与 `show` 必须在 layout 阶段（首帧前）发出，不得排进 `requestAnimationFrame`；只有 resize / observer 驱动的后续同步才走 rAF 合并。只有 `live` 翻转时才额外补一次同步，避免挂载时重复同步。
 
+占位盒尺寸是 HWND bounds 的权威投影，与导航一样按 `pageId` 只有一个在途事务：同一页同时最多一条未完成的 `setBounds`，较新测量只更新排队目标；在途 IPC 完成后必须继续应用到最新 `lastBounds`，过期尺寸不得成为最终 HWND。`suppress` 期间不得把收起、展开中间态或未达 2px 的测量写入 native：小于 2px 的占位盒不得 `hide` 已经隐藏的实例，也不得改写 `lastBounds`；有效但不该展示的测量只更新 `lastBounds`，`resume` 后再按当前占位盒提交。否则切回会话时会先按上次正确尺寸显示，再被 layout 前的窄测量改小，网页媒体查询闪到紧凑布局后又拉回。
+
 导航同样只有一个在途事务，与页面身份绑定：同一个 `pageId` 同时最多有一条未完成的原生 create/navigate，同目标重复提交直接复用在途 Promise，不同目标只保留最后一个排队目标。权威 URL（`page.url`）只在原生命令成功后写回；失败时结束 loading、让页面保持在上一次确认的 URL，并把结构化错误码投到该页 notice。地址栏作为用户输入保留待修正内容，不回写失败地址为权威值。禁用「先写 URL 再发命令」和「同一页并发导航」，是因为前者会留下白屏但地址栏显示成功的假象，后者会随点击次数线性堆积原生调用，最终拖垮 WebView 消息循环并让整个应用无响应。
 
 `suppress` 语义固定为幂等的「隐藏并阻止迟到 show」，`resume` 为幂等的「解除抑制并通知占位组件按当前 bounds 重新 show」；重复调用不得产生额外 IPC 或重复 show。`resume` 只清标志位而不同步，会留下工具栏还在、网页全白的状态。`scope-change` 的 close resolver 保持 no-op：scope 切换由 `BrowserNativeLifecycle` 统一驱动，该组件位于 `RightWorkspaceProvider` 内部，子级 effect 先于父级执行；若父级 resolver 再 suppress，会把刚恢复的新 scope 页面重新隐藏。`deactivate` 与 `workspace-close` 走 suppress，只有 `close` 走 `discardAll`。

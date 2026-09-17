@@ -130,7 +130,7 @@ Git Graph 和关系分析不再作为首版能力。真实仓库的多 ref DAG �
 
 - `not-installed`：不请求 snapshot/history，显示 Git 安装引导和重新检测。
 - `version-unsupported`：Git 可执行文件存在但版本低于 `2.36.0`；返回 `installedVersion + minimumVersion`，不请求 repository snapshot/history，并在源码管理、分支选择器和 Git 前置对话框展示下载与重新检测。
-- `version-unavailable`：Git 可执行文件存在但 `git --version` 失败、非 UTF-8 或格式无法识别；与未安装、低版本分开处理，不猜测可用能力。
+- `version-unavailable`：已解析到 Git 可执行文件，但 `git --version` 的 stdout/stderr 中没有任何可解析的 `git version …` 行；与未安装、低版本分开处理，不猜测可用能力。前置警告、stderr 版本行和非 0 退出码只要带有合法版本行，仍按已安装版本继续比较门槛。
 - `repository-required`：显示非 Git 仓库状态，typed command 执行 `git init`；不 stage、不 commit。
 - `head-required`：允许读取源码管理 snapshot；history 对 unborn HEAD 返回稳定空页，用户从“更改”完成首次提交。
 - `worktree-required / repository-unavailable`：按稳定 capability 状态展示针对性恢复建议。
@@ -138,7 +138,7 @@ Git Graph 和关系分析不再作为首版能力。真实仓库的多 ref DAG �
 
 capability 仅在首次进入、不可用状态的显式重试或初始化终态读取；已 ready 的后台 watcher refresh 不重复 probe。Tauri capability/init command 进入 blocking pool，避免 Git 进程等待占用 IPC event loop。
 
-最低版本采用单一产品级 Git capability，不建立按命令分支的版本矩阵，也不实现 `worktree list --porcelain` 旧行协议或路径输出 fallback。版本解析复用 Rust `semver` 比较核心版本，同时接受 Git for Windows、Apple Git 等发行后缀；`2.36.0-rc*` 仍低于稳定版。通过门槛后继续使用 Git 原生 `--path-format=absolute` 与 `worktree list --porcelain -z`，避免跨平台自行模拟 Git 的路径/worktree 协议。Git source-control typed service 在解析 workspace scope 前统一执行版本 gate，结构化错误为 `git.version-unsupported / git.version-unavailable`；runtime preflight 对应 `run.git-version-unsupported / run.git-version-unavailable`。版本信息不持久化、不新增全局缓存。
+最低版本采用单一产品级 Git capability，不建立按命令分支的版本矩阵，也不实现 `worktree list --porcelain` 旧行协议或路径输出 fallback。Git 子进程通过桌面 PATH 适配层解析绝对路径并注入同一 PATH；Windows 追加常见 Git cmd 安装位置并跳过 App Execution Alias 空文件。版本解析按行识别 `git version` 输出，复用 Rust `semver` 比较核心版本，同时接受 Git for Windows、Apple Git 等发行后缀；`2.36.0-rc*` 仍低于稳定版。通过门槛后继续使用 Git 原生 `--path-format=absolute` 与 `worktree list --porcelain -z`，避免跨平台自行模拟 Git 的路径/worktree 协议。Git source-control typed service 在解析 workspace scope 前统一执行版本 gate，结构化错误为 `git.version-unsupported / git.version-unavailable`；runtime preflight 对应 `run.git-version-unsupported / run.git-version-unavailable`。版本信息不持久化；Git 绝对路径仅进程内缓存，capability 重新检测会重新解析。
 
 ```text
 Right Workspace / Source Control

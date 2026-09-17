@@ -2157,6 +2157,51 @@ fn same_provider_session(
         && Arc::ptr_eq(&entry.connection, connection)
 }
 
+fn turn_file_change_set_event(
+    seq: u64,
+    session_id: Option<String>,
+    finished_at: String,
+    change_set: &crate::acp::turn_files::TurnFileChangeSet,
+) -> AcpUiEvent {
+    AcpUiEvent {
+        id: format!("turn-file-change-set:{}", change_set.id),
+        seq,
+        timestamp: finished_at.clone(),
+        kind: "fileChangeSet".to_string(),
+        session_id,
+        content: None,
+        title: None,
+        tool_call_id: None,
+        status: Some(
+            match change_set.status {
+                crate::acp::turn_files::TurnFileChangeSetStatus::Finalized => "finalized",
+                crate::acp::turn_files::TurnFileChangeSetStatus::Partial => "partial",
+                crate::acp::turn_files::TurnFileChangeSetStatus::Capturing => "capturing",
+            }
+            .to_string(),
+        ),
+        // A finalized change set belongs at the end of its prompt turn.
+        // Persisting the prompt start here makes reload sorting move the
+        // card above the tool calls even though live state appended it last.
+        started_seq: Some(seq),
+        ended_seq: Some(seq),
+        started_at: Some(finished_at.clone()),
+        ended_at: Some(finished_at),
+        timing: None,
+        raw: Some(json!({
+            "changeSetId": change_set.id,
+            "turnId": change_set.turn_id,
+            "promptEventId": change_set.prompt_event_id,
+            "summary": change_set.summary,
+            "attachmentCount": change_set.attachments.len(),
+            "limitationCodes": change_set.limitation_codes,
+                "_meta": {
+                    "goldBandConversation": { "branchId": change_set.branch_id }
+                }
+        })),
+    }
+}
+
 struct AcpRuntime<'a> {
     doctor_deadline: Option<DoctorDeadline>,
     paths: AcpAttemptPaths,
@@ -5778,43 +5823,12 @@ impl<'a> AcpRuntime<'a> {
                 continue;
             };
             self.seq = self.seq.saturating_add(1);
-            let event = AcpUiEvent {
-                id: format!("turn-file-change-set:{}", change_set.id),
-                seq: self.seq,
-                timestamp: finished_at.clone(),
-                kind: "fileChangeSet".to_string(),
-                session_id: self.session_id.clone(),
-                content: None,
-                title: None,
-                tool_call_id: None,
-                status: Some(
-                    match change_set.status {
-                        crate::acp::turn_files::TurnFileChangeSetStatus::Finalized => "finalized",
-                        crate::acp::turn_files::TurnFileChangeSetStatus::Partial => "partial",
-                        crate::acp::turn_files::TurnFileChangeSetStatus::Capturing => "capturing",
-                    }
-                    .to_string(),
-                ),
-                // A finalized change set belongs at the end of its prompt turn.
-                // Persisting the prompt start here makes reload sorting move the
-                // card above the tool calls even though live state appended it last.
-                started_seq: Some(self.seq),
-                ended_seq: Some(self.seq),
-                started_at: Some(finished_at.clone()),
-                ended_at: Some(finished_at.clone()),
-                timing: None,
-                raw: Some(json!({
-                    "changeSetId": change_set.id,
-                    "turnId": change_set.turn_id,
-                    "promptEventId": change_set.prompt_event_id,
-                    "summary": change_set.summary,
-                    "attachmentCount": change_set.attachments.len(),
-                    "limitationCodes": change_set.limitation_codes,
-                    "_meta": {
-                        "conversation": { "branchId": branch_id }
-                    }
-                })),
-            };
+            let event = turn_file_change_set_event(
+                self.seq,
+                self.session_id.clone(),
+                finished_at.clone(),
+                &change_set,
+            );
             self.persist_event(&event)?;
         }
         self.active_prompt_turn = None;
@@ -8487,7 +8501,7 @@ mod tests {
         session_new_params, session_prompt_params, session_prompt_text, session_resume_params,
         settle_attempt_prompt_interactions, settle_prompt_event, should_suppress_session_update,
         stable_message_item_id, timeline_generation_for_live_event, timeline_patch_flush_due,
-        timeline_position_for_live_event, unregister_provider_control,
+        timeline_position_for_live_event, turn_file_change_set_event, unregister_provider_control,
         unsupported_client_inbound_reply, validate_session_restore_target,
     };
 
@@ -10310,6 +10324,49 @@ mod tests {
         );
         assert_eq!(unsupported, ProviderFreshnessBaseline::Unsupported);
         assert_eq!(no_reason, None);
+    }
+
+    #[test]
+    fn agent_branch_file_change_set_event_keeps_branch_ownership_after_annotate() {
+        use crate::acp::branches::{annotate_event_branch, event_branch_id, stable_agent_execution_id};
+        use crate::acp::turn_files::{
+            TURN_FILE_CHANGE_SET_SCHEMA_VERSION, TurnFileChangeSet, TurnFileChangeSetStatus,
+            TurnFileChangeSummary,
+        };
+
+        let branch_id = stable_agent_execution_id("session-1", "child-tool");
+        let change_set = TurnFileChangeSet {
+            schema_version: TURN_FILE_CHANGE_SET_SCHEMA_VERSION,
+            id: "turn-files-agent".to_string(),
+            turn_id: "turn-1".to_string(),
+            prompt_event_id: "prompt-1".to_string(),
+            branch_id: branch_id.clone(),
+            status: TurnFileChangeSetStatus::Finalized,
+            started_at: "1Z".to_string(),
+            finished_at: Some("2Z".to_string()),
+            summary: TurnFileChangeSummary {
+                file_count: 1,
+                added_files: 1,
+                modified_files: 0,
+                deleted_files: 0,
+                added_lines: 22,
+                deleted_lines: 0,
+            },
+            changes: Vec::new(),
+            attachments: Vec::new(),
+            limitation_codes: Vec::new(),
+        };
+
+        let mut event = turn_file_change_set_event(
+            9,
+            Some("session-1".to_string()),
+            "2Z".to_string(),
+            &change_set,
+        );
+        annotate_event_branch(&mut event);
+
+        assert_eq!(event_branch_id(&event), branch_id);
+        assert_ne!(event_branch_id(&event), crate::acp::branches::ROOT_BRANCH_ID);
     }
 
     fn timeline_event(

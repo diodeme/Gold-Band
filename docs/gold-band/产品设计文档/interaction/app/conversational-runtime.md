@@ -746,7 +746,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 用户点击停止、provider cancel 或 prompt 失败都属于 turn 终态，必须结算已经收到的标准 diff。直接杀进程只能依赖已落盘 mutation journal，不能承诺生成尚未来得及写入的终态卡片。
 - shell/Bash 命令本身不是普通文件变化事实源。只有 provider 对该 tool call 返回标准 `content[type=diff]` 才能统计普通修改/删除；唯一例外是受控 `attachments/` 路径集合差分可确认“结束时新存在的节点附件”，但不据此推断已有附件修改或 workspace 文件变化。
 - 用户消息附件和 canonical artifact 保持各自消息归属，点击后打开右侧会话资源，不进入文件变化卡。Conversation 主 DTO 不再聚合当前 session 的 artifacts/attachments，composer 上方也不再显示独立资产展开栏。
-- 根会话和 Agent branch 按持久化 branch ownership 各自查询普通 changes。attempt 级新增附件只挂到 root change set；同一新增附件对应的 `Added` mutation 即使来自 Agent branch，也在该 branch finalize 中被同一 attachment delta 排除，避免跨卡重复。前端不根据路径或自然语言推断归属。
+- 根会话和 Agent branch 按持久化 branch ownership 各自查询普通 changes。`fileChangeSet` 指针事件必须写入 canonical `_meta.goldBandConversation.branchId`，使 persist 把它落到所属 branch timeline，而不是父会话。attempt 级新增附件只挂到 root change set；同一新增附件对应的 `Added` mutation 即使来自 Agent branch，也在该 branch finalize 中被同一 attachment delta 排除，避免跨卡重复。前端不根据路径或自然语言推断归属；当前视图 locator 与事件 owner branch 不一致时不渲染该卡。
 
 ## 2026-08-20 会话停止继续与 Timeline 运行态恢复
 

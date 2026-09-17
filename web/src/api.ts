@@ -558,24 +558,24 @@ export function cancelMulticaConnect() {
   return getRuntimeApi().cancelMulticaConnect();
 }
 
-export function getMulticaTasks() {
-  return getRuntimeApi().getMulticaTasks();
+export function getRemoteTasks() {
+  return getRuntimeApi().getRemoteTasks();
 }
 
-export function getMulticaTaskRequirement(taskId: string, workspaceId: string) {
-  return getRuntimeApi().getMulticaTaskRequirement(taskId, workspaceId);
+export function getRemoteTaskRequirement(taskId: string, workspaceId: string) {
+  return getRuntimeApi().getRemoteTaskRequirement(taskId, workspaceId);
 }
 
-export function startMulticaConversationRun(
-  input: Parameters<ReturnType<typeof getRuntimeApi>['startMulticaConversationRun']>[0],
+export function startRemoteConversationRun(
+  input: Parameters<ReturnType<typeof getRuntimeApi>['startRemoteConversationRun']>[0],
   remoteTaskId: string,
   workspaceId: string,
 ) {
-  return getRuntimeApi().startMulticaConversationRun(input, remoteTaskId, workspaceId);
+  return getRuntimeApi().startRemoteConversationRun(input, remoteTaskId, workspaceId);
 }
 
-export function cancelMulticaTask(taskId: string) {
-  return getRuntimeApi().cancelMulticaTask(taskId);
+export function cancelRemoteTask(taskId: string) {
+  return getRuntimeApi().cancelRemoteTask(taskId);
 }
 
 export function listServerMulticaWorkspaces() {
@@ -598,12 +598,12 @@ export function setActiveMulticaWorkspace(workspaceId: string) {
   return getRuntimeApi().setActiveMulticaWorkspace(workspaceId);
 }
 
-export function listMulticaSkills(workspaceId: string) {
-  return getRuntimeApi().listMulticaSkills(workspaceId);
+export function listRemoteSkills(workspaceId: string) {
+  return getRuntimeApi().listRemoteSkills(workspaceId);
 }
 
-export function pullMulticaSkills(workspaceId: string, skillIds: string[]) {
-  return getRuntimeApi().pullMulticaSkills(workspaceId, skillIds);
+export function pullRemoteSkills(workspaceId: string, skillIds: string[]) {
+  return getRuntimeApi().pullRemoteSkills(workspaceId, skillIds);
 }
 
 export function recordActivity() {
@@ -818,12 +818,12 @@ export function subscribeWorkspaceFileChanges(listener: Parameters<NonNullable<R
   return getRuntimeApi().subscribeWorkspaceFileChanges?.(listener) ?? Promise.resolve(() => {});
 }
 
-export function subscribeMulticaTaskUpdates(listener: () => void) {
-  return getRuntimeApi().subscribeMulticaTaskUpdates?.(listener) ?? Promise.resolve(() => {});
+export function subscribeRemoteTaskUpdates(listener: () => void) {
+  return getRuntimeApi().subscribeRemoteTaskUpdates?.(listener) ?? Promise.resolve(() => {});
 }
 
-export function subscribeMulticaSettingsUpdates(listener: () => void) {
-  return getRuntimeApi().subscribeMulticaSettingsUpdates?.(listener) ?? Promise.resolve(() => {});
+export function subscribeRemoteSourceSettingsUpdates(listener: () => void) {
+  return getRuntimeApi().subscribeRemoteSourceSettingsUpdates?.(listener) ?? Promise.resolve(() => {});
 }
 
 export function workspaceFilePreviewUrl(token: string, staticFrame = false) {

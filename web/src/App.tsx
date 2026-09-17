@@ -43,7 +43,7 @@ import {
   selectRecentDesktopAvatar,
   selectRecentDesktopWallpaper,
   restoreThemeDesktopWallpaper,
-  startMulticaConversationRun,
+  startRemoteConversationRun,
   startRun,
   unpinConversation,
   updateTaskMetadata,
@@ -57,11 +57,16 @@ import {
   getGitCapability,
   subscribeConversationRunStateUpdates,
   subscribeConversationTerminalResultUpdates,
-  subscribeMulticaTaskUpdates,
+  subscribeRemoteTaskUpdates,
   updateNotificationAttention,
   recordActivity,
 } from './api';
 import { isTauriRuntime } from './api/shared';
+import {
+  AGENT_REGISTRY_UPDATED_EVENT,
+  UPDATE_STATUS_EVENT,
+  UPDATE_DOWNLOAD_PROGRESS_EVENT,
+} from './lib/app-events';
 import { registerHeartbeatActivityListeners } from './lib/heartbeat-activity';
 import {
   DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
@@ -131,7 +136,7 @@ import {
   type ConversationSidebarWorkspaceRevealRequest,
 } from './components/conversation/ConversationSidebar';
 import { RunModeManagementPage } from './pages/RunModeManagementPage';
-import { MulticaTaskManagementPage } from './pages/MulticaTaskManagementPage';
+import { RemoteTaskManagementPage } from './pages/RemoteTaskManagementPage';
 import { ScheduledTaskManagementPage } from './pages/ScheduledTaskManagementPage';
 import { ScheduledTaskDetailPage } from './pages/ScheduledTaskDetailPage';
 import { PersonalAnalyticsPage } from './pages/PersonalAnalyticsPage';
@@ -1633,7 +1638,7 @@ export function App() {
     if (!isTauriRuntime()) return undefined;
     let active = true;
     let unlisten: (() => void) | undefined;
-    void listen<ManagedAgentVm>('gold-band://agent-registry-updated', ({ payload }) => {
+    void listen<ManagedAgentVm>(AGENT_REGISTRY_UPDATED_EVENT, ({ payload }) => {
       if (active) setAgentRegistry(current => applyAgentDiagnosticUpdate(current, payload));
     }).then((dispose) => {
       if (active) {
@@ -1648,9 +1653,9 @@ export function App() {
     };
   }, []);
 
-  // multica 任务生命周期（claim/start/terminal）→ 同步本地侧栏：multica 启动会在本地工作空间
-  // 创建会话任务、完成时更新状态。订阅 multica-task-updated 让本地侧栏即时反映这些变化
-  // （对齐正常 createConversationRun 路径的手动 sidebar refresh，避免 multica 路径漏刷新）。
+  // 远程任务生命周期（claim/start/terminal）→ 同步本地侧栏：远程任务执行会在本地工作空间
+  // 创建会话任务、完成时更新状态。订阅 remote-tasks-updated 让本地侧栏即时反映这些变化
+  // （对齐正常 createConversationRun 路径的手动 sidebar refresh，避免远程路径漏刷新）。
   // 复用 useEventDrivenRefresh：事件风暴去重 + 异步 unlisten 防泄漏。刷新直接走 main 的
   // loadConversationSidebarBootstrap 单飞管线（bootstrap 合并 + 工作区任务补拉），
   // best-effort 吞错。
@@ -1662,14 +1667,14 @@ export function App() {
         // best-effort：事件驱动刷新失败不阻断 UI，手动操作仍会触发正常刷新。
       }
     },
-    [subscribeMulticaTaskUpdates],
+    [subscribeRemoteTaskUpdates],
   );
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
     let active = true;
     let unlisten: (() => void) | undefined;
-    void listen<UpdateStatusVm>('gold-band://update-status', (event) => {
+    void listen<UpdateStatusVm>(UPDATE_STATUS_EVENT, (event) => {
       if (!active) return;
       setBootstrap((current) => current ? {
         ...current,
@@ -1693,7 +1698,7 @@ export function App() {
     if (!isTauriRuntime()) return undefined;
     let active = true;
     let unlisten: (() => void) | undefined;
-    void listen<{ downloaded: number; total: number | null }>('gold-band://update-download-progress', (event) => {
+    void listen<{ downloaded: number; total: number | null }>(UPDATE_DOWNLOAD_PROGRESS_EVENT, (event) => {
       if (!active) return;
       setDownloadProgress(event.payload);
     }).then((dispose) => {
@@ -2649,7 +2654,7 @@ export function App() {
           workLocation={conversationWorkLocation}
           onRunModeChange={updateConversationRunMode}
           onLoadProfiles={loadProfiles}
-          onSubmit={async (input, multica) => {
+          onSubmit={async (input, remote) => {
             const nextMode: ConversationRunModeVm = input.runMode === 'direct'
               ? {
                 mode: 'direct',
@@ -2676,11 +2681,11 @@ export function App() {
                 setWorkflowRepairTarget(workflowRepairTargetFromMissingItems(validation.missingItems));
                 return validation.missingItems.map((m) => t(`conversation.validation.${m.code}`, { defaultValue: m.label || m.code })).join('\n');
               }
-              // draft 带 multica 绑定 = 远程任务「点击执行」后的发送：复用本地建会话链 + 叠加 multica 簿记；
+              // draft 带远程绑定 = 远程任务「点击执行」后的发送：复用本地建会话链 + 叠加远程来源簿记；
               // 否则普通本地新建会话。二者返回同一 ConversationCreateResultVm（task+run），后续导航/侧栏刷新完全复用。
               setWorkflowRepairTarget(null);
-              const { task, run } = multica
-                ? await startMulticaConversationRun(input, multica.remoteTaskId, multica.workspaceId)
+              const { task, run } = remote
+                ? await startRemoteConversationRun(input, remote.remoteTaskId, remote.workspaceId)
                 : await createConversationRun(input);
               applyConversationTask(task);
               conversationWorkspaceStore.promoteDraft(
@@ -2809,13 +2814,13 @@ export function App() {
         />
       );
     }
-    if (conversationPage.kind === 'multica-tasks') {
+    if (conversationPage.kind === 'remote-tasks') {
       return (
-        <MulticaTaskManagementPage
+        <RemoteTaskManagementPage
           onSelectRun={(projectId, taskId, runId) => {
             setConversationPage({ kind: 'conversation-run', projectId, taskId, runId });
           }}
-          onPrepareMulticaTask={() => {
+          onPrepareRemoteTask={() => {
             // 决策 c：远程任务本地工作区延迟到执行时选，落 conversation-home 时预选最近活跃本地工作区
             //（activeWorkspaceId ?? 持久化 lastActiveWorkspaceId），让 composer 下拉带着合理默认值并可改。
             const preselect = activeWorkspaceIdRef.current ?? conversationSidebar.lastActiveWorkspaceId ?? null;

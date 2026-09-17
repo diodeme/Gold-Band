@@ -75,7 +75,7 @@ const { addMulticaWorkspace, listServerMulticaWorkspaces } = mocks;
 
 import { MulticaAddWorkspaceDialog } from '@/components/conversation/MulticaAddWorkspaceDialog';
 
-const DIALOG_KEY = 'conversation.sidebar.multica.dialog';
+const DIALOG_KEY = 'conversation.sidebar.remoteTasks.dialog';
 const ADD_KEY = `${DIALOG_KEY}.add`;
 
 function findButton(container: HTMLElement, textKey: string): HTMLButtonElement | undefined {

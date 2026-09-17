@@ -41,10 +41,11 @@ pub enum MulticaError {
 }
 
 impl MulticaError {
-    /// 错误码（kebab-case，`multica.` 前缀），对齐第 5 章码表。
+    /// 错误码（kebab-case）。命名空间 = 层级归属（远程来源解耦设计 §4.3）：通用层结构错误用
+    /// `remote.*`（NotConfigured = 来源未配置）；其余协议/连接域错误保留 `multica.` 前缀。
     pub fn code(&self) -> &'static str {
         match self {
-            Self::NotConfigured => "multica.not-configured",
+            Self::NotConfigured => "remote.source-not-configured",
             Self::AuthFailed(_) => "multica.auth-failed",
             Self::NetworkFailed(_) => "multica.network-failed",
             Self::RegisterFailed(_) => "multica.register-failed",
@@ -74,7 +75,10 @@ mod tests {
 
     #[test]
     fn codes_use_multica_kebab_prefix() {
-        assert_eq!(MulticaError::NotConfigured.code(), "multica.not-configured");
+        assert_eq!(
+            MulticaError::NotConfigured.code(),
+            "remote.source-not-configured"
+        );
         assert_eq!(
             MulticaError::AuthFailed("401".into()).code(),
             "multica.auth-failed"

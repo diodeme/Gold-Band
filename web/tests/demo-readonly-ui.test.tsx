@@ -35,7 +35,7 @@ describe('readonly experience presentation boundary', () => {
       expect(container.textContent).toContain('conversation.sidebar.more');
       const more = [...container.querySelectorAll('button')].find((button) => button.textContent === 'conversation.sidebar.more')!;
       await act(async () => more.click());
-      for (const [label, kind] of [['conversation.sidebar.multicaTaskManagement', 'multica-tasks'], ['scheduled.management.title', 'scheduled-tasks']]) {
+      for (const [label, kind] of [['conversation.sidebar.remoteTaskManagement', 'remote-tasks'], ['scheduled.management.title', 'scheduled-tasks']]) {
         const entry = [...container.querySelectorAll('button')].find((button) => button.textContent === label)!;
         expect(entry.disabled).toBe(false);
         await act(async () => entry.click());

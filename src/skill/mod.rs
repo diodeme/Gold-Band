@@ -473,7 +473,7 @@ impl SkillManager {
         })
     }
 
-    /// 多文件 skill 写入（multica 拉取镜像落库）：SKILL.md 原文 + 支撑文件整目录写入。
+    /// 多文件 skill 写入（远程 skill 来源拉取镜像落库）：SKILL.md 原文 + 支撑文件整目录写入。
     ///
     /// 与 [`Self::write_instance`] 共享目标解析 / 同步冲突 / 链接调和契约，差异仅在文件集：
     /// - `content` 为**完整** SKILL.md（调用方组装完成，不走编辑器 merge）；

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { getAgentCommandCatalog } from '@/api';
 import { isTauriRuntime } from '@/api/shared';
+import { AGENT_COMMANDS_UPDATED_EVENT } from '@/lib/app-events';
 import { mergeSlashCommandSources } from '@/lib/slash-command';
 import type { AcpCommandCatalogVm, AcpCommandItemVm } from '@/types';
 
@@ -73,7 +74,7 @@ export function useAgentCommands(
       catalog => setSnapshot({ key: requestKey, catalog }));
     let disposed = false;
     let unlisten: UnlistenFn | null = null;
-    if (isTauriRuntime()) void listen<CatalogUpdate>('gold-band://agent-commands-updated', ({ payload }) => {
+    if (isTauriRuntime()) void listen<CatalogUpdate>(AGENT_COMMANDS_UPDATED_EVENT, ({ payload }) => {
       if (disposed || (payload.agentType && payload.agentType !== agentType)
         || (payload.workspacePath && payload.workspacePath !== workspacePath)
         || (payload.projectId && lease.entry.catalog && payload.projectId !== lease.entry.catalog.projectId)) return;

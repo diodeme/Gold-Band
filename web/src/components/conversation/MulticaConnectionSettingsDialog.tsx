@@ -94,13 +94,13 @@ export function MulticaConnectionSettingsDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[85vh] max-w-md flex-col overflow-hidden gap-0 p-0">
         <DialogHeader className="shrink-0 p-6 pb-0">
-          <DialogTitle>{t('multica.connection.title')}</DialogTitle>
+          <DialogTitle>{t('remote.connection.title')}</DialogTitle>
         </DialogHeader>
 
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-6">
           <div className="space-y-1">
             <div className="text-xs font-medium text-muted-foreground">
-              {t('multica.connection.addressLabel')}
+              {t('remote.connection.addressLabel')}
             </div>
             <Input
               value={address}
@@ -109,10 +109,10 @@ export function MulticaConnectionSettingsDialog({
               placeholder="http://localhost:8080"
               className="h-9 font-mono text-xs"
               spellCheck={false}
-              aria-label={t('multica.connection.addressLabel')}
+              aria-label={t('remote.connection.addressLabel')}
             />
             {addressInvalid && (
-              <p className="text-[11px] text-destructive">{t('multica.connection.invalidUrl')}</p>
+              <p className="text-[11px] text-destructive">{t('remote.connection.invalidUrl')}</p>
             )}
           </div>
 
@@ -127,8 +127,8 @@ export function MulticaConnectionSettingsDialog({
             >
               {restoring ? <Loader2 className="mr-1.5 size-3 animate-spin" /> : null}
               {restoring
-                ? t('multica.connection.restoring')
-                : t('multica.connection.restoreDefault')}
+                ? t('remote.connection.restoring')
+                : t('remote.connection.restoreDefault')}
             </Button>
           )}
 
@@ -143,7 +143,7 @@ export function MulticaConnectionSettingsDialog({
             onClick={() => void handleSave()}
           >
             {saving ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : null}
-            {t('multica.connection.save')}
+            {t('remote.connection.save')}
           </Button>
         </DialogFooter>
       </DialogContent>

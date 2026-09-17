@@ -2556,7 +2556,7 @@ impl App {
     ///
     /// **写入协议**：所有读改写（RMW）必须经 [`Self::with_state`]（唯一事务边界）。
     /// `save_state` 为 `pub(crate)` 即为结构性约束：crate 外（desktop 层）无法绕过 `with_state`
-    /// 裸 `load → save`，杜绝并发 lost-update（后写覆盖前写的 pinned/preferences/multica checkpoint）。
+    /// 裸 `load → save`，杜绝并发 lost-update（后写覆盖前写的 pinned/preferences/远程来源 checkpoint）。
     pub fn load_state(&self) -> Result<StateConfig> {
         let path = self.paths.user_state_file();
         if !path.exists() {
@@ -2593,7 +2593,7 @@ impl App {
     ///
     /// 持锁期间 `load → update(&mut state) → 若 dirty 则 save`。锁只覆盖文件 RMW，
     /// **不含网络/长计算**（state-integrity §6 最小临界区）；`update` 为同步闭包，天然排除 async 网络。
-    /// 同一份 `state.json` 的所有写者（pin/preference/workspace 等用户操作与 multica 后台收尾）
+    /// 同一份 `state.json` 的所有写者（pin/preference/workspace 等用户操作与远程来源后台收尾）
     /// 经同一把锁串行，杜绝「两写者各 load v0、各自 save、后写覆盖前写」。
     ///
     /// `update` 返回 `(dirty, value)`：
@@ -5572,7 +5572,7 @@ mod tests {
     use crate::acp::elicitation::{pending_elicitation_file, pending_elicitation_state};
     use crate::config::{
         AppearancePreference, ColorSchemePreference, ConsoleThemeName, DesktopLanguage,
-        DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, MulticaCompletedTask,
+        DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, RemoteCompletedTask,
         PersonalizationPreference, ProviderDiagnosticSnapshot, RuntimeConfig, RuntimeLogLevel,
         StateConfig, catalog_agent_default_config,
     };
@@ -8352,15 +8352,15 @@ mod tests {
 
     // ── with_state：原子 StateConfig RMW（state-integrity §6 最小临界区 + §9 回归验收）──────────
 
-    fn completed_entry(remote: &str) -> MulticaCompletedTask {
-        MulticaCompletedTask {
+    fn completed_entry(remote: &str) -> RemoteCompletedTask {
+        RemoteCompletedTask {
             remote_task_id: remote.into(),
             local_task_id: format!("task-{remote}"),
             local_run_id: format!("run-{remote}"),
             workspace_id: "ws-1".into(),
             local_project_id: "proj-1".into(),
-            issue_id: None,
-            issue_kind: None,
+            issue_ref: None,
+            kind: None,
             status: "completed".into(),
             title: format!("title-{remote}"),
             completed_at: "2026-08-13T00:00:00Z".into(),
@@ -8376,15 +8376,15 @@ mod tests {
 
         let persisted = app
             .with_state(|state| {
-                state.multica_completed_tasks.push(completed_entry("rt-1"));
-                (true, state.multica_completed_tasks.len())
+                state.remote_completed_tasks.push(completed_entry("rt-1"));
+                (true, state.remote_completed_tasks.len())
             })
             .unwrap();
 
         assert_eq!(persisted, 1, "dirty=true → 修改落盘并带回当前条目数");
         let state = app.load_state().unwrap();
-        assert_eq!(state.multica_completed_tasks.len(), 1);
-        assert_eq!(state.multica_completed_tasks[0].remote_task_id, "rt-1");
+        assert_eq!(state.remote_completed_tasks.len(), 1);
+        assert_eq!(state.remote_completed_tasks[0].remote_task_id, "rt-1");
     }
 
     #[test]
@@ -8396,7 +8396,7 @@ mod tests {
         // 先落一条种子。
         app.with_state(|state| {
             state
-                .multica_completed_tasks
+                .remote_completed_tasks
                 .push(completed_entry("rt-seed"));
             (true, ())
         })
@@ -8407,11 +8407,11 @@ mod tests {
 
         let state = app.load_state().unwrap();
         assert_eq!(
-            state.multica_completed_tasks.len(),
+            state.remote_completed_tasks.len(),
             1,
             "未 dirty 的 with_state 不应清空或覆盖既有状态"
         );
-        assert_eq!(state.multica_completed_tasks[0].remote_task_id, "rt-seed");
+        assert_eq!(state.remote_completed_tasks[0].remote_task_id, "rt-seed");
     }
 
     #[test]
@@ -8421,14 +8421,14 @@ mod tests {
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root);
         let mut seed = StateConfig::default();
-        seed.multica_completed_tasks
+        seed.remote_completed_tasks
             .push(completed_entry("rt-seed"));
         app.save_state(&seed).unwrap();
 
         let mut seen = None;
         app.with_state(|state| {
             seen = state
-                .multica_completed_tasks
+                .remote_completed_tasks
                 .first()
                 .map(|c| c.remote_task_id.clone());
             (false, ())
@@ -8471,7 +8471,7 @@ mod tests {
                     );
                     app.with_state(|state| {
                         state
-                            .multica_completed_tasks
+                            .remote_completed_tasks
                             .push(completed_entry(&format!("rt-{i}")));
                         (true, ())
                     })
@@ -8485,7 +8485,7 @@ mod tests {
 
         let final_state = verifier.load_state().unwrap();
         assert_eq!(
-            final_state.multica_completed_tasks.len(),
+            final_state.remote_completed_tasks.len(),
             N,
             "并发 RMW 不应丢失任何写入（lost-update）"
         );
@@ -8523,7 +8523,7 @@ mod tests {
                     );
                     app.with_state(|state| {
                         state
-                            .multica_completed_tasks
+                            .remote_completed_tasks
                             .push(completed_entry(&format!("rt-{i}")));
                         (true, ())
                     })
@@ -8537,7 +8537,7 @@ mod tests {
 
         let final_state = verifier.load_state().unwrap();
         assert_eq!(
-            final_state.multica_completed_tasks.len(),
+            final_state.remote_completed_tasks.len(),
             N,
             "跨 repo_root 写同一份 state.json 不应丢失更新（锁身份 = state 文件路径）"
         );
@@ -8546,7 +8546,7 @@ mod tests {
     /// 真实新旧写者并发回归：Multica 后台 with_state 写入与已迁移的
     /// 偏好/recent-workspace 写入（原裸 load→save 路径）并发时互不覆盖。
     #[test]
-    fn with_state_mixes_multica_and_user_preference_writers_no_lost_update() {
+    fn with_state_mixes_remote_source_and_user_preference_writers_no_lost_update() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -8559,7 +8559,7 @@ mod tests {
         verifier.with_state(|_| (false, ())).unwrap(); // 确保 state 文件存在
 
         const N: usize = 8; // recent 列表上限为 8，N 取 8 使断言无截断干扰
-        let multica_writer = {
+        let remote_source_writer = {
             let repo_root = repo_root.clone();
             std::thread::spawn(move || {
                 let app = App::with_config_and_path_config(
@@ -8570,7 +8570,7 @@ mod tests {
                 for i in 0..N {
                     app.with_state(|state| {
                         state
-                            .multica_completed_tasks
+                            .remote_completed_tasks
                             .push(completed_entry(&format!("rt-{i}")));
                         (true, ())
                     })
@@ -8592,12 +8592,12 @@ mod tests {
                 }
             })
         };
-        multica_writer.join().unwrap();
+        remote_source_writer.join().unwrap();
         preference_writer.join().unwrap();
 
         let final_state = verifier.load_state().unwrap();
         assert_eq!(
-            final_state.multica_completed_tasks.len(),
+            final_state.remote_completed_tasks.len(),
             N,
             "Multica 后台写入不应被偏好写入覆盖"
         );

@@ -28,8 +28,8 @@ const quietMethods = new Set<keyof RuntimeApi>([
 const subscriptions = new Set<keyof RuntimeApi>([
   'subscribeAcpSessionUpdates', 'subscribeConversationRunStateUpdates',
   'subscribeConversationTerminalResultUpdates', 'subscribeWorkspaceFileChanges',
-  'subscribeInterventionNavigate', 'subscribeMulticaTaskUpdates',
-  'subscribeMulticaSettingsUpdates', 'subscribeScheduledTaskUpdates', 'subscribeScheduledOccurrenceUpdates',
+  'subscribeInterventionNavigate', 'subscribeRemoteTaskUpdates',
+  'subscribeRemoteSourceSettingsUpdates', 'subscribeScheduledTaskUpdates', 'subscribeScheduledOccurrenceUpdates',
   'subscribeGitStateChanges', 'subscribeGitOperationUpdates', 'subscribeGitHubOperationUpdates',
 ]);
 

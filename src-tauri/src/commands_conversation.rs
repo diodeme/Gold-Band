@@ -923,7 +923,7 @@ pub async fn pin_conversation(
     let context = state.context().map_err(command_error)?;
     spawn_blocking_command(move || {
         let app = context.app();
-        // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+        // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与远程来源后台写入并发互不覆盖。
         app.with_state(|state| {
             let (_, resolved_project_id) = match workspace_entry_for_project(state, &project_id) {
                 Some(entry) => entry,
@@ -969,7 +969,7 @@ pub async fn unpin_conversation(
     let context = state.context().map_err(command_error)?;
     spawn_blocking_command(move || {
         let app = context.app();
-        // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+        // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与远程来源后台写入并发互不覆盖。
         app.with_state(|state| {
             let (_, resolved_project_id) = match workspace_entry_for_project(state, &project_id) {
                 Some(entry) => entry,
@@ -1003,7 +1003,7 @@ pub async fn reorder_pinned_conversations(
     let context = state.context().map_err(command_error)?;
     spawn_blocking_command(move || {
         let app = context.app();
-        // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+        // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与远程来源后台写入并发互不覆盖。
         app.with_state(|state| {
             let normalized_pins = ordered
                 .into_iter()
@@ -1175,7 +1175,7 @@ fn extract_project_from_task_path(
 }
 
 fn persist_last_conversation_workspace(app: &App, project_id: &str) -> CommandResult<()> {
-    // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+    // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与远程来源后台写入并发互不覆盖。
     app.with_state(|state| {
         let Some((_, resolved_project_id)) = workspace_entry_for_project(state, project_id) else {
             return (
@@ -1340,7 +1340,7 @@ pub fn save_conversation_run_mode(
     settings: ConversationRunModeSettingsVm,
 ) -> CommandResult<()> {
     let app = state.app().map_err(command_error)?;
-    // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+    // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与远程来源后台写入并发互不覆盖。
     app.with_state(|state| {
         let Some((_, resolved_project_id)) = workspace_entry_for_project(state, &project_id) else {
             return (
@@ -1511,7 +1511,7 @@ pub async fn add_conversation_workspace(
         provision_project_manifest_for_desktop(&selected_paths).map_err(command_error)?;
 
         // 入库经 with_state 原子 RMW（StateConfig 唯一读改写入口）：事务内权威重校验，
-        // 防并发添加竞态产生重复条目；与 Multica 后台写入并发互不覆盖。
+        // 防并发添加竞态产生重复条目；与远程来源后台写入并发互不覆盖。
         let bootstrap = gold_band_app
             .with_state(|state| {
                 if let Some(error) =
@@ -1550,7 +1550,7 @@ pub fn save_conversation_preference(
     value: serde_json::Value,
 ) -> CommandResult<()> {
     let app = state.app().map_err(command_error)?;
-    // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+    // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与远程来源后台写入并发互不覆盖。
     app.with_state(|app_state| {
         app_state.preferences.insert(key, value);
         (true, ())
@@ -1565,7 +1565,7 @@ pub fn save_last_conversation_workspace(
     project_id: String,
 ) -> CommandResult<()> {
     let app = state.app().map_err(command_error)?;
-    // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+    // RMW 经 with_state 原子化（StateConfig 唯一读改写入口）：与远程来源后台写入并发互不覆盖。
     app.with_state(|app_state| {
         let Some((_, resolved_project_id)) = workspace_entry_for_project(app_state, &project_id)
         else {
@@ -1616,7 +1616,7 @@ pub async fn sync_conversation_workspace(
         }
 
         // 入库经 with_state 原子 RMW（StateConfig 唯一读改写入口）：事务内权威重判定，
-        // 并发添加已存在时幂等采用既有条目；与 Multica 后台写入并发互不覆盖。
+        // 并发添加已存在时幂等采用既有条目；与远程来源后台写入并发互不覆盖。
         let bootstrap = app
             .with_state(|state| {
                 let resolved_project_id = if let Some(workspace) =
@@ -1720,7 +1720,7 @@ pub async fn delete_conversation_task(
             })?;
             remove_task_attention(&workspace_app, &task_id).map_err(command_error)?;
         }
-        // 清 pin 经 with_state 原子 RMW（StateConfig 唯一读改写入口）：与 Multica 后台写入并发互不覆盖。
+        // 清 pin 经 with_state 原子 RMW（StateConfig 唯一读改写入口）：与远程来源后台写入并发互不覆盖。
         app.with_state(|state| {
             let before = state.conversation_pins.len();
             state
@@ -1761,7 +1761,7 @@ pub async fn remove_conversation_workspace(
         .map_err(command_error)?;
 
         // 移除工作区状态经 with_state 原子 RMW（StateConfig 唯一读改写入口）：
-        // 事务内重新解析（并发下已移除则报 not-found），与 Multica 后台写入并发互不覆盖。
+        // 事务内重新解析（并发下已移除则报 not-found），与远程来源后台写入并发互不覆盖。
         let bootstrap = app
             .with_state(
                 |state| match remove_workspace_from_state(state, &project_id) {

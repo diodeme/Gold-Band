@@ -22,6 +22,6 @@ describe('context management loading boundaries', () => {
     expect(source).toContain("export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, initialTab = 'profiles' }: ContextManagementPageProps)");
     expect(source).not.toContain('useState<AgentRegistryVm | null>(null)');
     expect(appSource).toContain('<ContextManagementPage agentRegistry={agentRegistry} onAgentRegistryChange={setAgentRegistry} />');
-    expect(appSource).toContain("listen('gold-band://agent-registry-updated'");
+    expect(appSource).toContain('listen<ManagedAgentVm>(AGENT_REGISTRY_UPDATED_EVENT');
   });
 });

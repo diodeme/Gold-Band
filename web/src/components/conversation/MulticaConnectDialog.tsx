@@ -106,8 +106,8 @@ export function MulticaConnectDialog({
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent className="max-w-md gap-0 p-0">
         <AlertDialogHeader className="p-6 pb-0">
-          <AlertDialogTitle>{t('multica.connect.title')}</AlertDialogTitle>
-          <AlertDialogDescription>{t('multica.connect.body')}</AlertDialogDescription>
+          <AlertDialogTitle>{t('remote.connect.title')}</AlertDialogTitle>
+          <AlertDialogDescription>{t('remote.connect.body')}</AlertDialogDescription>
         </AlertDialogHeader>
 
         <div className="space-y-2 p-6">
@@ -118,10 +118,10 @@ export function MulticaConnectDialog({
             placeholder="http://localhost:8080"
             className="h-9 font-mono text-xs"
             spellCheck={false}
-            aria-label={t('multica.connection.addressLabel')}
+            aria-label={t('remote.connection.addressLabel')}
           />
           {addressInvalid && (
-            <p className="text-[11px] text-destructive">{t('multica.connection.invalidUrl')}</p>
+            <p className="text-[11px] text-destructive">{t('remote.connection.invalidUrl')}</p>
           )}
           {error && <p className="text-xs text-destructive">{error}</p>}
         </div>
@@ -136,7 +136,7 @@ export function MulticaConnectDialog({
               void handleCancelConnect();
             }}
           >
-            {connecting ? t('multica.connect.cancelConnect') : t('common.cancel')}
+            {connecting ? t('remote.connect.cancelConnect') : t('common.cancel')}
           </AlertDialogCancel>
           <AlertDialogAction
             disabled={!canConnect || connecting}
@@ -149,10 +149,10 @@ export function MulticaConnectDialog({
             {connecting ? (
               <>
                 <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-                {t('multica.connect.connecting')}
+                {t('remote.connect.connecting')}
               </>
             ) : (
-              t('multica.connect.confirm')
+              t('remote.connect.confirm')
             )}
           </AlertDialogAction>
         </AlertDialogFooter>

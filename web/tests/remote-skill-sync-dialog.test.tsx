@@ -75,19 +75,19 @@ vi.mock('@/components/ui/tooltip', () => ({
 
 const mocks = vi.hoisted(() => ({
   getMulticaSettings: vi.fn(),
-  listMulticaSkills: vi.fn(),
-  pullMulticaSkills: vi.fn(),
+  listRemoteSkills: vi.fn(),
+  pullRemoteSkills: vi.fn(),
 }));
 
 vi.mock('@/api', () => ({
   getMulticaSettings: mocks.getMulticaSettings,
-  listMulticaSkills: mocks.listMulticaSkills,
-  pullMulticaSkills: mocks.pullMulticaSkills,
+  listRemoteSkills: mocks.listRemoteSkills,
+  pullRemoteSkills: mocks.pullRemoteSkills,
 }));
 
-import { MulticaSkillSyncDialog } from '@/components/MulticaSkillSyncDialog';
+import { RemoteSkillSyncDialog } from '@/components/RemoteSkillSyncDialog';
 
-const BASE = 'contextManagement.skills.multicaSync';
+const BASE = 'contextManagement.skills.remoteSync';
 
 function renderDialog() {
   const container = document.createElement('div');
@@ -149,23 +149,23 @@ beforeEach(() => {
     connectedAccount: null,
     addressOverrideSet: false,
   });
-  mocks.listMulticaSkills.mockResolvedValue([
+  mocks.listRemoteSkills.mockResolvedValue([
     { id: 's-new', name: 'New One', description: '', localState: 'new' },
     { id: 's-exists', name: 'Old One', description: '', localState: 'exists' },
   ]);
-  mocks.pullMulticaSkills.mockResolvedValue({ results: [] });
+  mocks.pullRemoteSkills.mockResolvedValue({ results: [] });
 });
 
 afterEach(() => {
   document.body.innerHTML = '';
 });
 
-describe('multica skill sync dialog', () => {
+describe('remote skill sync dialog', () => {
   it('renders the skill list as the sole scroll region (flex chain contract)', async () => {
     const { container, root } = renderDialog();
     await act(async () => {
       root.render(
-        <MulticaSkillSyncDialog open onOpenChange={() => {}} onFinished={() => {}} />,
+        <RemoteSkillSyncDialog open onOpenChange={() => {}} onFinished={() => {}} />,
       );
     });
     await flushEffects();
@@ -188,7 +188,7 @@ describe('multica skill sync dialog', () => {
     const { container, root } = renderDialog();
     await act(async () => {
       root.render(
-        <MulticaSkillSyncDialog open onOpenChange={() => {}} onFinished={() => {}} />,
+        <RemoteSkillSyncDialog open onOpenChange={() => {}} onFinished={() => {}} />,
       );
     });
     await flushEffects();
@@ -221,7 +221,7 @@ describe('multica skill sync dialog', () => {
     await act(async () => { button.click(); });
     await flushEffects();
 
-    expect(mocks.pullMulticaSkills).toHaveBeenCalledTimes(1);
-    expect(mocks.pullMulticaSkills).toHaveBeenCalledWith('ws-1', ['s-exists']);
+    expect(mocks.pullRemoteSkills).toHaveBeenCalledTimes(1);
+    expect(mocks.pullRemoteSkills).toHaveBeenCalledWith('ws-1', ['s-exists']);
   });
 });

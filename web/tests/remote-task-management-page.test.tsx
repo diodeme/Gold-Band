@@ -111,8 +111,8 @@ vi.mock('@/components/ui/tooltip', () => ({
 }));
 
 // Board 桩：渲染收到的任务标题 + prepare/cancel/open 触发按钮，把容器逻辑与看板内部解耦。
-vi.mock('@/components/conversation/MulticaRemoteTaskBoard', () => ({
-  MulticaRemoteTaskBoard: ({ tasks, onPrepare, onCancel, onSelectRun }: {
+vi.mock('@/components/conversation/RemoteTaskBoard', () => ({
+  RemoteTaskBoard: ({ tasks, onPrepare, onCancel, onSelectRun }: {
     tasks: { id: string; title: string; status: string; projectId?: string | null; localTaskId?: string | null; runId?: string | null }[];
     onPrepare: (t: unknown) => void;
     onCancel: (t: unknown) => void;
@@ -123,10 +123,10 @@ vi.mock('@/components/conversation/MulticaRemoteTaskBoard', () => ({
         <div key={task.id} data-testid={`task-${task.id}`}>
           <span>{task.title}</span>
           {task.status === 'queued' && (
-            <button aria-label="conversation.sidebar.multica.executeTask" onClick={() => onPrepare(task)} />
+            <button aria-label="conversation.sidebar.remoteTasks.executeTask" onClick={() => onPrepare(task)} />
           )}
           {task.status === 'running' && (
-            <button aria-label="conversation.sidebar.multica.cancelTask" onClick={() => onCancel(task)} />
+            <button aria-label="conversation.sidebar.remoteTasks.cancelTask" onClick={() => onCancel(task)} />
           )}
           {task.projectId && task.localTaskId && task.runId && (
             <button data-testid={`open-${task.id}`} onClick={() => onSelectRun(task.projectId!, task.localTaskId!, task.runId!)} />
@@ -153,47 +153,48 @@ vi.mock('@/components/conversation/MulticaConnectionSettingsDialog', () => ({
 }));
 
 const mocks = vi.hoisted(() => ({
-  getMulticaTasks: vi.fn(),
+  getRemoteTasks: vi.fn(),
   getMulticaSettings: vi.fn(),
   disconnectMultica: vi.fn(),
-  getMulticaTaskRequirement: vi.fn(),
-  cancelMulticaTask: vi.fn(),
+  getRemoteTaskRequirement: vi.fn(),
+  cancelRemoteTask: vi.fn(),
   removeMulticaWorkspace: vi.fn(),
   setActiveMulticaWorkspace: vi.fn(),
   openExternalUrl: vi.fn(),
-  subscribeMulticaTaskUpdates: vi.fn(),
-  subscribeMulticaSettingsUpdates: vi.fn(),
+  subscribeRemoteTaskUpdates: vi.fn(),
+  subscribeRemoteSourceSettingsUpdates: vi.fn(),
 }));
 
 vi.mock('@/api', () => ({
-  getMulticaTasks: mocks.getMulticaTasks,
+  getRemoteTasks: mocks.getRemoteTasks,
   getMulticaSettings: mocks.getMulticaSettings,
   disconnectMultica: mocks.disconnectMultica,
-  getMulticaTaskRequirement: mocks.getMulticaTaskRequirement,
-  cancelMulticaTask: mocks.cancelMulticaTask,
+  getRemoteTaskRequirement: mocks.getRemoteTaskRequirement,
+  cancelRemoteTask: mocks.cancelRemoteTask,
   removeMulticaWorkspace: mocks.removeMulticaWorkspace,
   setActiveMulticaWorkspace: mocks.setActiveMulticaWorkspace,
   openExternalUrl: mocks.openExternalUrl,
-  subscribeMulticaTaskUpdates: mocks.subscribeMulticaTaskUpdates,
-  subscribeMulticaSettingsUpdates: mocks.subscribeMulticaSettingsUpdates,
+  subscribeRemoteTaskUpdates: mocks.subscribeRemoteTaskUpdates,
+  subscribeRemoteSourceSettingsUpdates: mocks.subscribeRemoteSourceSettingsUpdates,
 }));
 
-import { MulticaTaskManagementPage, filterTasksByIssueKind } from '@/pages/MulticaTaskManagementPage';
+import { RemoteTaskManagementPage, filterTasksByIssueKind } from '@/pages/RemoteTaskManagementPage';
 import type { RemoteConversationSidebarVm, RemoteTaskVm } from '@/types';
 
 const noopUnlisten = () => {};
 const {
-  getMulticaTasks,
+  getRemoteTasks,
   getMulticaSettings,
-  getMulticaTaskRequirement,
-  cancelMulticaTask,
+  getRemoteTaskRequirement,
+  cancelRemoteTask,
   setActiveMulticaWorkspace,
-  subscribeMulticaTaskUpdates,
-  subscribeMulticaSettingsUpdates,
+  subscribeRemoteTaskUpdates,
+  subscribeRemoteSourceSettingsUpdates,
 } = mocks;
 
 function baseVm(overrides: Partial<RemoteConversationSidebarVm> = {}): RemoteConversationSidebarVm {
   return {
+    source: 'multica',
     connected: true,
     workspaces: [],
     tasksByWorkspace: {},
@@ -227,8 +228,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   getMulticaSettings.mockResolvedValue(baseSettings());
   setActiveMulticaWorkspace.mockResolvedValue(baseSettings());
-  subscribeMulticaTaskUpdates.mockResolvedValue(noopUnlisten);
-  subscribeMulticaSettingsUpdates.mockResolvedValue(noopUnlisten);
+  subscribeRemoteTaskUpdates.mockResolvedValue(noopUnlisten);
+  subscribeRemoteSourceSettingsUpdates.mockResolvedValue(noopUnlisten);
 });
 
 afterEach(() => {
@@ -237,51 +238,51 @@ afterEach(() => {
 
 async function renderPage(
   onSelectRun = vi.fn(),
-  onPrepareMulticaTask = vi.fn(),
+  onPrepareRemoteTask = vi.fn(),
 ) {
   const container = document.createElement('div');
   document.body.appendChild(container);
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <MulticaTaskManagementPage
+      <RemoteTaskManagementPage
         onSelectRun={onSelectRun}
-        onPrepareMulticaTask={onPrepareMulticaTask}
+        onPrepareRemoteTask={onPrepareRemoteTask}
       />,
     );
   });
   // flush mount fetch（tasks + settings）+ 订阅 promise。
   await act(async () => { await Promise.resolve(); await Promise.resolve(); });
-  return { container, onSelectRun, onPrepareMulticaTask };
+  return { container, onSelectRun, onPrepareRemoteTask };
 }
 
-describe('MulticaTaskManagementPage (container)', () => {
+describe('RemoteTaskManagementPage (container)', () => {
   it('fetches tasks + settings on mount and subscribes to both update channels', async () => {
-    getMulticaTasks.mockResolvedValue(baseVm());
+    getRemoteTasks.mockResolvedValue(baseVm());
     await renderPage();
 
-    expect(getMulticaTasks).toHaveBeenCalledTimes(1);
+    expect(getRemoteTasks).toHaveBeenCalledTimes(1);
     expect(getMulticaSettings).toHaveBeenCalledTimes(1);
-    expect(subscribeMulticaTaskUpdates).toHaveBeenCalledTimes(1);
-    expect(subscribeMulticaSettingsUpdates).toHaveBeenCalledTimes(1);
+    expect(subscribeRemoteTaskUpdates).toHaveBeenCalledTimes(1);
+    expect(subscribeRemoteSourceSettingsUpdates).toHaveBeenCalledTimes(1);
   });
 
   it('shows the connect prompt when not connected', async () => {
-    getMulticaTasks.mockResolvedValue(baseVm({ connected: false }));
+    getRemoteTasks.mockResolvedValue(baseVm({ connected: false }));
     const { container } = await renderPage();
 
-    expect(container.textContent).toContain('conversation.sidebar.multica.emptyTitle');
-    expect(container.textContent).toContain('conversation.sidebar.multica.connectButton');
+    expect(container.textContent).toContain('conversation.sidebar.remoteTasks.emptyTitle');
+    expect(container.textContent).toContain('conversation.sidebar.remoteTasks.connectButton');
     // 设置 icon（连接地址入口）与连接按钮并列，仅未连接空态渲染。
-    expect(container.querySelector('button[aria-label="conversation.sidebar.multica.connectionSettings"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="conversation.sidebar.remoteTasks.connectionSettings"]')).not.toBeNull();
   });
 
   it('opens the connect confirm dialog from the connect button (M5-ay: 先弹窗确认地址)', async () => {
-    getMulticaTasks.mockResolvedValue(baseVm({ connected: false }));
+    getRemoteTasks.mockResolvedValue(baseVm({ connected: false }));
     const { container } = await renderPage();
 
     const connectBtn = Array.from(container.querySelectorAll('button')).find(
-      (b) => b.textContent?.trim() === 'conversation.sidebar.multica.connectButton',
+      (b) => b.textContent?.trim() === 'conversation.sidebar.remoteTasks.connectButton',
     ) as HTMLButtonElement;
     expect(connectBtn).toBeTruthy();
     await act(async () => { connectBtn.click(); });
@@ -292,10 +293,10 @@ describe('MulticaTaskManagementPage (container)', () => {
   });
 
   it('opens the address settings dialog from the settings icon', async () => {
-    getMulticaTasks.mockResolvedValue(baseVm({ connected: false }));
+    getRemoteTasks.mockResolvedValue(baseVm({ connected: false }));
     const { container } = await renderPage();
 
-    const gearBtn = container.querySelector('button[aria-label="conversation.sidebar.multica.connectionSettings"]') as HTMLButtonElement;
+    const gearBtn = container.querySelector('button[aria-label="conversation.sidebar.remoteTasks.connectionSettings"]') as HTMLButtonElement;
     expect(gearBtn).toBeTruthy();
     await act(async () => { gearBtn.click(); });
 
@@ -304,15 +305,15 @@ describe('MulticaTaskManagementPage (container)', () => {
   });
 
   it('shows the no-workspaces empty state when connected but no workspaces are bound', async () => {
-    getMulticaTasks.mockResolvedValue(baseVm({ workspaces: [] }));
+    getRemoteTasks.mockResolvedValue(baseVm({ workspaces: [] }));
     const { container } = await renderPage();
 
-    expect(container.textContent).toContain('conversation.sidebar.multica.noWorkspacesBound');
-    expect(container.textContent).toContain('conversation.sidebar.multica.addWorkspace');
+    expect(container.textContent).toContain('conversation.sidebar.remoteTasks.noWorkspacesBound');
+    expect(container.textContent).toContain('conversation.sidebar.remoteTasks.addWorkspace');
   });
 
   it('renders only the effective workspace\'s tasks (default = lastActiveWorkspaceId)', async () => {
-    getMulticaTasks.mockResolvedValue(baseVm({
+    getRemoteTasks.mockResolvedValue(baseVm({
       workspaces: [ws004, ws005],
       lastActiveWorkspaceId: 'ws-004',
       tasksByWorkspace: {
@@ -328,7 +329,7 @@ describe('MulticaTaskManagementPage (container)', () => {
   });
 
   it('switches the filtered workspace via the popover picker (and persists active)', async () => {
-    getMulticaTasks.mockResolvedValue(baseVm({
+    getRemoteTasks.mockResolvedValue(baseVm({
       workspaces: [ws004, ws005],
       lastActiveWorkspaceId: 'ws-004',
       tasksByWorkspace: {
@@ -351,7 +352,7 @@ describe('MulticaTaskManagementPage (container)', () => {
   });
 
   it('removes a workspace via the picker row trash + AlertDialog confirm', async () => {
-    getMulticaTasks.mockResolvedValue(baseVm({
+    getRemoteTasks.mockResolvedValue(baseVm({
       workspaces: [ws004, ws005],
       lastActiveWorkspaceId: 'ws-004',
       tasksByWorkspace: {},
@@ -378,14 +379,14 @@ describe('MulticaTaskManagementPage (container)', () => {
   it('renders the bottom toolbar only when connected (source lives in header, footer is gated)', async () => {
     // 来源下拉已上移页头（常驻）；底部工具条（刷新/账号等）受 source + 连接态门控。
     // 未连接 → 无刷新按钮（footer 不渲染）。
-    getMulticaTasks.mockResolvedValue(baseVm({ connected: false }));
+    getRemoteTasks.mockResolvedValue(baseVm({ connected: false }));
     const { container: disconnectedContainer } = await renderPage();
     // 页头来源标签常驻（即便未连接）。
-    expect(disconnectedContainer.textContent).toContain('multica.taskManagement.source.label');
+    expect(disconnectedContainer.textContent).toContain('remote.taskManagement.source.label');
     expect(disconnectedContainer.querySelector('button[aria-label="common.refresh"]')).toBeNull();
 
     // 已连接 → footer 渲染，刷新按钮出现。
-    getMulticaTasks.mockResolvedValue(baseVm({
+    getRemoteTasks.mockResolvedValue(baseVm({
       workspaces: [ws004],
       lastActiveWorkspaceId: 'ws-004',
       tasksByWorkspace: {},
@@ -396,8 +397,8 @@ describe('MulticaTaskManagementPage (container)', () => {
 
   it('prepares a queued task (read-only) — fetches requirement, prefills composer draft, then navigates to conversation-home', async () => {
     const onSelectRun = vi.fn();
-    const onPrepareMulticaTask = vi.fn();
-    getMulticaTasks.mockResolvedValue(baseVm({
+    const onPrepareRemoteTask = vi.fn();
+    getRemoteTasks.mockResolvedValue(baseVm({
       workspaces: [ws004],
       lastActiveWorkspaceId: 'ws-004',
       tasksByWorkspace: {
@@ -405,66 +406,66 @@ describe('MulticaTaskManagementPage (container)', () => {
       },
     }));
     // 任务详情回填需求正文（pending 列表只有 thread_name，正文仅任务详情里有）。
-    getMulticaTaskRequirement.mockResolvedValue({
-      id: 'rt-1', issueId: null, status: 'queued',
+    getRemoteTaskRequirement.mockResolvedValue({
+      id: 'rt-1', issueRef: null, status: 'queued',
       workspaceId: 'ws-004', title: 'Some task', requirement: '远程任务需求正文', lastActivityAt: null,
     });
-    const { container } = await renderPage(onSelectRun, onPrepareMulticaTask);
+    const { container } = await renderPage(onSelectRun, onPrepareRemoteTask);
 
-    const claimBtn = container.querySelector('button[aria-label="conversation.sidebar.multica.executeTask"]') as HTMLButtonElement;
+    const claimBtn = container.querySelector('button[aria-label="conversation.sidebar.remoteTasks.executeTask"]') as HTMLButtonElement;
     expect(claimBtn).toBeTruthy();
     await act(async () => { claimBtn.click(); });
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
 
-    // claim-at-send：点击只读取（任务仍 queued），预填正文 + multica 绑定，落 conversation-home；发送时才 claim+start。
-    expect(getMulticaTaskRequirement).toHaveBeenCalledWith('rt-1', 'ws-004');
-    expect(draftMocks.prefill).toHaveBeenCalledWith('远程任务需求正文', { remoteTaskId: 'rt-1', workspaceId: 'ws-004', title: 'Some task' });
-    expect(onPrepareMulticaTask).toHaveBeenCalledWith();
+    // claim-at-send：点击只读取（任务仍 queued），预填正文 + 远程绑定，落 conversation-home；发送时才 claim+start。
+    expect(getRemoteTaskRequirement).toHaveBeenCalledWith('rt-1', 'ws-004');
+    expect(draftMocks.prefill).toHaveBeenCalledWith('远程任务需求正文', { source: 'multica', remoteTaskId: 'rt-1', workspaceId: 'ws-004', title: 'Some task' });
+    expect(onPrepareRemoteTask).toHaveBeenCalledWith();
     expect(onSelectRun).not.toHaveBeenCalled();
   });
 
   it('falls back to the task title when the requirement response has no body', async () => {
-    getMulticaTasks.mockResolvedValue(baseVm({
+    getRemoteTasks.mockResolvedValue(baseVm({
       workspaces: [ws004],
       lastActiveWorkspaceId: 'ws-004',
       tasksByWorkspace: {
         'ws-004': [{ id: 'rt-1', workspaceId: 'ws-004', title: 'Issue title', status: 'queued' } as RemoteTaskVm],
       },
     }));
-    getMulticaTaskRequirement.mockResolvedValue({
-      id: 'rt-1', issueId: 'issue-1', status: 'queued',
+    getRemoteTaskRequirement.mockResolvedValue({
+      id: 'rt-1', issueRef: 'issue-1', status: 'queued',
       workspaceId: 'ws-004', title: 'Issue title', requirement: null, lastActivityAt: null,
     });
     const { container } = await renderPage();
 
-    const claimBtn = container.querySelector('button[aria-label="conversation.sidebar.multica.executeTask"]') as HTMLButtonElement;
+    const claimBtn = container.querySelector('button[aria-label="conversation.sidebar.remoteTasks.executeTask"]') as HTMLButtonElement;
     await act(async () => { claimBtn.click(); });
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
 
     expect(draftMocks.prefill).toHaveBeenCalledWith('Issue title', expect.objectContaining({ remoteTaskId: 'rt-1' }));
   });
 
-  it('cancels a running task via cancelMulticaTask', async () => {
-    getMulticaTasks.mockResolvedValue(baseVm({
+  it('cancels a running task via cancelRemoteTask', async () => {
+    getRemoteTasks.mockResolvedValue(baseVm({
       workspaces: [ws004],
       lastActiveWorkspaceId: 'ws-004',
       tasksByWorkspace: {
         'ws-004': [{ id: 'rt-run', workspaceId: 'ws-004', title: 'In flight', status: 'running' } as RemoteTaskVm],
       },
     }));
-    cancelMulticaTask.mockResolvedValue(undefined);
+    cancelRemoteTask.mockResolvedValue(undefined);
     const { container } = await renderPage();
 
-    const cancelBtn = container.querySelector('button[aria-label="conversation.sidebar.multica.cancelTask"]') as HTMLButtonElement;
+    const cancelBtn = container.querySelector('button[aria-label="conversation.sidebar.remoteTasks.cancelTask"]') as HTMLButtonElement;
     expect(cancelBtn).toBeTruthy();
     await act(async () => { cancelBtn.click(); });
     await act(async () => { await Promise.resolve(); });
 
-    expect(cancelMulticaTask).toHaveBeenCalledWith('rt-run');
+    expect(cancelRemoteTask).toHaveBeenCalledWith('rt-run');
   });
 
   it('manual refresh re-fetches the task list without remounting', async () => {
-    getMulticaTasks.mockResolvedValue(baseVm({
+    getRemoteTasks.mockResolvedValue(baseVm({
       workspaces: [ws004],
       lastActiveWorkspaceId: 'ws-004',
       tasksByWorkspace: {},
@@ -472,7 +473,7 @@ describe('MulticaTaskManagementPage (container)', () => {
     const { container } = await renderPage();
 
     // 挂载拉取一次。
-    expect(getMulticaTasks).toHaveBeenCalledTimes(1);
+    expect(getRemoteTasks).toHaveBeenCalledTimes(1);
 
     // 刷新按钮按 aria-label 定位（RotateCw 图标桩成 null，按钮在底部工具条）。
     const refreshBtn = container.querySelector('button[aria-label="common.refresh"]') as HTMLButtonElement;
@@ -481,18 +482,18 @@ describe('MulticaTaskManagementPage (container)', () => {
     await act(async () => { await Promise.resolve(); });
 
     // 刷新触发再次拉取（count → 2），无需重进页面。
-    expect(getMulticaTasks).toHaveBeenCalledTimes(2);
+    expect(getRemoteTasks).toHaveBeenCalledTimes(2);
   });
 
   it('filters the board by issue kind and restores the full list on "all"', async () => {
-    getMulticaTasks.mockResolvedValue(baseVm({
+    getRemoteTasks.mockResolvedValue(baseVm({
       workspaces: [ws004],
       lastActiveWorkspaceId: 'ws-004',
       tasksByWorkspace: {
         'ws-004': [
-          { id: 'rt-dev', workspaceId: 'ws-004', title: 'DevTask', status: 'queued', issueKind: 'dev' },
-          { id: 'rt-test', workspaceId: 'ws-004', title: 'TestTask', status: 'queued', issueKind: 'test', isReady: false },
-          { id: 'rt-general', workspaceId: 'ws-004', title: 'GeneralTask', status: 'queued', issueKind: 'general' },
+          { id: 'rt-dev', workspaceId: 'ws-004', title: 'DevTask', status: 'queued', kind: 'dev' },
+          { id: 'rt-test', workspaceId: 'ws-004', title: 'TestTask', status: 'queued', kind: 'test', readiness: false },
+          { id: 'rt-general', workspaceId: 'ws-004', title: 'GeneralTask', status: 'queued', kind: 'general' },
         ] as RemoteTaskVm[],
       },
     }));
@@ -535,11 +536,11 @@ describe('MulticaTaskManagementPage (container)', () => {
     expect(container.querySelector('[data-testid="task-rt-test"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="task-rt-general"]')).toBeTruthy();
     // 过滤纯客户端：不产生额外拉取。
-    expect(getMulticaTasks).toHaveBeenCalledTimes(1);
+    expect(getRemoteTasks).toHaveBeenCalledTimes(1);
   });
 
   it('hides the issue-kind filter when no workspace is connected', async () => {
-    getMulticaTasks.mockResolvedValue(baseVm({
+    getRemoteTasks.mockResolvedValue(baseVm({
       workspaces: [],
       lastActiveWorkspaceId: null,
       tasksByWorkspace: {},
@@ -555,11 +556,11 @@ describe('MulticaTaskManagementPage (container)', () => {
 
 // 类型过滤纯函数：接口层不变量（all 恒等 + dev/test 精确匹配 + 缺失/未知类型只归 all）。
 describe('filterTasksByIssueKind', () => {
-  const dev = { id: 'd', issueKind: 'dev' } as RemoteTaskVm;
-  const test = { id: 't', issueKind: 'test' } as RemoteTaskVm;
-  const bug = { id: 'b', issueKind: 'bug' } as RemoteTaskVm;
-  const general = { id: 'g', issueKind: 'general' } as RemoteTaskVm;
-  const missing = { id: 'm', issueKind: null } as RemoteTaskVm;
+  const dev = { id: 'd', kind: 'dev' } as RemoteTaskVm;
+  const test = { id: 't', kind: 'test' } as RemoteTaskVm;
+  const bug = { id: 'b', kind: 'bug' } as RemoteTaskVm;
+  const general = { id: 'g', kind: 'general' } as RemoteTaskVm;
+  const missing = { id: 'm', kind: null } as RemoteTaskVm;
   const all = [dev, test, bug, general, missing];
 
   it('returns the same list for "all"', () => {

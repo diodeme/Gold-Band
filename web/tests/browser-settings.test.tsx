@@ -32,6 +32,15 @@ describe('BrowserSettings', () => {
       ));
       expect(container.textContent).toContain('搜索引擎');
       expect(container.textContent).toContain('Baidu');
+      expect(container.textContent).toContain('在内置浏览器中打开 localhost');
+      expect(container.textContent).toContain('对话和文档里的本机服务地址会在内置浏览器打开。关闭后改用系统浏览器。');
+      expect(container.textContent).toContain('在内置浏览器中打开网站');
+      expect(container.textContent).toContain('对话和文档里的普通网站会在内置浏览器打开。关闭后改用系统浏览器。');
+      expect(container.textContent).not.toContain('本地链接');
+      expect(container.textContent).not.toContain('网页链接');
+      expect(container.textContent).not.toContain('file://');
+      expect(container.textContent).not.toContain('127.0.0.1');
+      expect(container.textContent).not.toContain('::1');
       const local = container.querySelector<HTMLButtonElement>('#browser-open-local-links');
       const web = container.querySelector<HTMLButtonElement>('#browser-open-web-links');
       expect(local?.getAttribute('data-state')).toBe('checked');

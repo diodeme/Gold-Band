@@ -1008,6 +1008,8 @@ pub struct AdapterConnection {
     last_activity_at: Mutex<Instant>,
     session_config_transaction: SessionConfigTransaction,
     state: Mutex<AdapterConnectionState>,
+    exit_status_logged: AtomicBool,
+    stderr_noise_counts: Mutex<BTreeMap<&'static str, u64>>,
 }
 
 pub struct ActivePromptGuard {
@@ -1220,6 +1222,8 @@ impl AdapterConnection {
             last_activity_at: Mutex::new(Instant::now()),
             session_config_transaction: SessionConfigTransaction::default(),
             state: Mutex::new(AdapterConnectionState::Open),
+            exit_status_logged: AtomicBool::new(false),
+            stderr_noise_counts: Mutex::new(BTreeMap::new()),
         });
 
         let stdout_connection = Arc::clone(&connection);
@@ -1533,6 +1537,9 @@ impl AdapterConnection {
             },
             reason.as_str(),
         );
+        if first_close == Some(true) {
+            self.flush_stderr_noise_summary();
+        }
         if let Ok(mut pending) = self.pending.lock() {
             pending.clear();
         }
@@ -1544,6 +1551,10 @@ impl AdapterConnection {
                 *early_frames = EarlySessionFrames::default();
             }
         }
+    }
+
+    fn logs_lifecycle_at_info(&self) -> bool {
+        connection_lifecycle_uses_info(self.key.is_some())
     }
 
     fn log_lifecycle(&self, event: &'static str, reason: &'static str) {
@@ -1574,24 +1585,68 @@ impl AdapterConnection {
             .try_lock()
             .ok()
             .map(|last| last.elapsed().as_millis() as u64);
-        info!(
-            event,
-            reason,
+        if self.logs_lifecycle_at_info() {
+            info!(
+                event,
+                reason,
+                provider = %self.provider_id,
+                adapter = %self.adapter.adapter_id,
+                command = %self.adapter.command,
+                workspace = self.key.as_ref().map(|key| key.workspace_root.as_str()),
+                pid = self.pid,
+                connection_generation = self.generation,
+                state = ?self.state.try_lock().ok().map(|state| *state),
+                active_prompts,
+                active_connection_users = self.active_users.load(Ordering::Acquire),
+                pending_requests = pending.as_ref().map(|(count, _)| *count),
+                pending_methods = ?pending.as_ref().map(|(_, methods)| methods),
+                pending_methods_truncated = pending.as_ref().map(|(count, _)| *count > CONNECTION_DIAGNOSTIC_REQUEST_LIMIT),
+                session_routes,
+                idle_ms,
+                "ACP connection lifecycle"
+            );
+        } else {
+            debug!(
+                event,
+                reason,
+                provider = %self.provider_id,
+                adapter = %self.adapter.adapter_id,
+                command = %self.adapter.command,
+                workspace = self.key.as_ref().map(|key| key.workspace_root.as_str()),
+                pid = self.pid,
+                connection_generation = self.generation,
+                state = ?self.state.try_lock().ok().map(|state| *state),
+                active_prompts,
+                active_connection_users = self.active_users.load(Ordering::Acquire),
+                pending_requests = pending.as_ref().map(|(count, _)| *count),
+                pending_methods = ?pending.as_ref().map(|(_, methods)| methods),
+                pending_methods_truncated = pending.as_ref().map(|(count, _)| *count > CONNECTION_DIAGNOSTIC_REQUEST_LIMIT),
+                session_routes,
+                idle_ms,
+                "ACP connection lifecycle"
+            );
+        }
+    }
+
+    fn flush_stderr_noise_summary(&self) {
+        let counts = match self.stderr_noise_counts.lock() {
+            Ok(mut counts) => std::mem::take(&mut *counts),
+            Err(_) => return,
+        };
+        if counts.is_empty() {
+            return;
+        }
+        let suppressed_noise_lines: u64 = counts.values().copied().sum();
+        let kinds: Vec<&'static str> = counts.keys().copied().collect();
+        debug!(
             provider = %self.provider_id,
             adapter = %self.adapter.adapter_id,
             command = %self.adapter.command,
-            workspace = self.key.as_ref().map(|key| key.workspace_root.as_str()),
             pid = self.pid,
             connection_generation = self.generation,
-            state = ?self.state.try_lock().ok().map(|state| *state),
-            active_prompts,
-            active_connection_users = self.active_users.load(Ordering::Acquire),
-            pending_requests = pending.as_ref().map(|(count, _)| *count),
-            pending_methods = ?pending.as_ref().map(|(_, methods)| methods),
-            pending_methods_truncated = pending.as_ref().map(|(count, _)| *count > CONNECTION_DIAGNOSTIC_REQUEST_LIMIT),
-            session_routes,
-            idle_ms,
-            "ACP connection lifecycle"
+            suppressed_noise_lines,
+            kinds = ?kinds,
+            "ACP adapter stderr noise suppressed"
         );
     }
 
@@ -1606,6 +1661,9 @@ impl AdapterConnection {
             .or_else(|| value.pointer("/params/sessionUpdate"))
             .and_then(Value::as_str)
             .unwrap_or("unknown");
+        if is_expected_unrouted_notification(method, session_id) {
+            return;
+        }
         let warning_key = format!("{method}:{session_update}");
         let now = Instant::now();
         let suppressed = match self.unrouted_warnings.lock() {
@@ -1748,14 +1806,25 @@ impl AdapterConnection {
 
     #[track_caller]
     pub fn shutdown(&self, reason: AdapterShutdownReason) {
-        info!(
-            event = "acp_connection_shutdown_requested",
-            reason = reason.as_str(),
-            caller = %std::panic::Location::caller(),
-            pid = self.pid,
-            connection_generation = self.generation,
-            "ACP connection shutdown requested"
-        );
+        if self.logs_lifecycle_at_info() {
+            info!(
+                event = "acp_connection_shutdown_requested",
+                reason = reason.as_str(),
+                caller = %std::panic::Location::caller(),
+                pid = self.pid,
+                connection_generation = self.generation,
+                "ACP connection shutdown requested"
+            );
+        } else {
+            debug!(
+                event = "acp_connection_shutdown_requested",
+                reason = reason.as_str(),
+                caller = %std::panic::Location::caller(),
+                pid = self.pid,
+                connection_generation = self.generation,
+                "ACP connection shutdown requested"
+            );
+        }
         self.mark_transport_closed(TransportCloseReason::Shutdown(reason));
         if let Ok(mut stdin) = self.stdin.lock() {
             let _ = stdin.flush();
@@ -1889,7 +1958,56 @@ where
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdapterStderrKind {
+    Noise(&'static str),
+    Failure,
+    Diagnostic,
+}
+
+fn classify_adapter_stderr(text: &str) -> AdapterStderrKind {
+    let trimmed = text.trim_start();
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains("npm warn unknown user config") {
+        return AdapterStderrKind::Noise("npm-unknown-user-config");
+    }
+    if lower.starts_with("[session/query]") {
+        return AdapterStderrKind::Noise("session-query");
+    }
+    if lower.contains("npm error")
+        || lower.contains("npm err!")
+        || lower.contains("enospc")
+        || lower.contains("enoent")
+        || lower.contains("eacces")
+        || lower.contains("eperm")
+    {
+        return AdapterStderrKind::Failure;
+    }
+    AdapterStderrKind::Diagnostic
+}
+
+fn is_expected_unrouted_notification(method: &str, session_id: &str) -> bool {
+    method == "_auth/status_update" && (session_id.is_empty() || session_id == "unknown")
+}
+
+fn should_emit_adapter_exit_status(already_logged: bool) -> bool {
+    !already_logged
+}
+
+fn connection_lifecycle_uses_info(pooled: bool) -> bool {
+    pooled
+}
+
 fn log_stderr_line(connection: &AdapterConnection, line: StderrLine) {
+    match classify_adapter_stderr(&line.text) {
+        AdapterStderrKind::Noise(kind) => {
+            if let Ok(mut counts) = connection.stderr_noise_counts.lock() {
+                *counts.entry(kind).or_insert(0) += 1;
+            }
+            return;
+        }
+        AdapterStderrKind::Failure | AdapterStderrKind::Diagnostic => {}
+    }
     let raw_bytes_hex = line.raw_bytes_hex.as_deref().unwrap_or("");
     if line.encoding == "non-utf8" {
         debug!(
@@ -1916,19 +2034,38 @@ fn log_stderr_line(connection: &AdapterConnection, line: StderrLine) {
 }
 
 fn log_adapter_exit(connection: &AdapterConnection, transport_was_already_closed: bool) {
+    let already_logged = connection.exit_status_logged.swap(true, Ordering::AcqRel);
+    if !should_emit_adapter_exit_status(already_logged) {
+        return;
+    }
     let result = connection.try_wait();
-    info!(
-        event = "acp_adapter_exit_status",
-        provider = %connection.provider_id,
-        adapter = %connection.adapter.adapter_id,
-        command = %connection.adapter.command,
-        pid = connection.pid,
-        connection_generation = connection.generation,
-        transport_was_already_closed,
-        status_available = result.as_ref().is_ok_and(|status| status.is_some()),
-        exit_code = result.as_ref().ok().and_then(|status| status.as_ref()).and_then(|status| status.code()),
-        "ACP adapter exit status observed"
-    );
+    if connection.logs_lifecycle_at_info() {
+        info!(
+            event = "acp_adapter_exit_status",
+            provider = %connection.provider_id,
+            adapter = %connection.adapter.adapter_id,
+            command = %connection.adapter.command,
+            pid = connection.pid,
+            connection_generation = connection.generation,
+            transport_was_already_closed,
+            status_available = result.as_ref().is_ok_and(|status| status.is_some()),
+            exit_code = result.as_ref().ok().and_then(|status| status.as_ref()).and_then(|status| status.code()),
+            "ACP adapter exit status observed"
+        );
+    } else {
+        debug!(
+            event = "acp_adapter_exit_status",
+            provider = %connection.provider_id,
+            adapter = %connection.adapter.adapter_id,
+            command = %connection.adapter.command,
+            pid = connection.pid,
+            connection_generation = connection.generation,
+            transport_was_already_closed,
+            status_available = result.as_ref().is_ok_and(|status| status.is_some()),
+            exit_code = result.as_ref().ok().and_then(|status| status.as_ref()).and_then(|status| status.code()),
+            "ACP adapter exit status observed"
+        );
+    }
     match result {
         Ok(Some(status)) => {
             if !transport_was_already_closed {
@@ -2803,15 +2940,16 @@ mod tests {
 
     use super::{
         AcpConnectionUnavailable, ActivePromptTracker, AdapterConnectionKey,
-        AdapterConnectionManager, AdapterConnectionState, AttemptSessionUnregisterOutcome,
-        ConnectionCreationGate, ConnectionInitialization, EarlySessionFrames,
-        JSONRPC_METHOD_NOT_FOUND_CODE, STDERR_LINE_MAX_BYTES, SessionConfigTransaction,
-        SessionEventPump, SessionRouteTryRecvError, is_same_connection_generation,
-        persist_cancelled_session_snapshot, read_stderr, record_unrouted_warning,
-        register_session_route_state, request_unavailability, route_or_buffer_session_frame,
-        select_provider_connection_keys, session_id_from_frame, session_route_pair,
-        settle_attempt_for_session_close, unregister_session_route_state,
-        unsupported_client_inbound_reply,
+        AdapterConnectionManager, AdapterConnectionState, AdapterStderrKind,
+        AttemptSessionUnregisterOutcome, ConnectionCreationGate, ConnectionInitialization,
+        EarlySessionFrames, JSONRPC_METHOD_NOT_FOUND_CODE, STDERR_LINE_MAX_BYTES,
+        SessionConfigTransaction, SessionEventPump, SessionRouteTryRecvError,
+        classify_adapter_stderr, connection_lifecycle_uses_info, is_expected_unrouted_notification,
+        is_same_connection_generation, persist_cancelled_session_snapshot, read_stderr,
+        record_unrouted_warning, register_session_route_state, request_unavailability,
+        route_or_buffer_session_frame, select_provider_connection_keys, session_id_from_frame,
+        session_route_pair, settle_attempt_for_session_close, should_emit_adapter_exit_status,
+        unregister_session_route_state, unsupported_client_inbound_reply,
     };
 
     fn write_current_attempt_node(attempt_dir: &Utf8PathBuf) {
@@ -3028,6 +3166,63 @@ mod tests {
                 .iter()
                 .all(|outcome| outcome.capabilities == json!({ "loadSession": true }))
         );
+    }
+
+    #[test]
+    fn adapter_stderr_classification_keeps_failures_and_drops_stable_noise() {
+        assert_eq!(
+            classify_adapter_stderr(
+                "npm warn Unknown user config \"disturl\". This will stop working in the next major version of npm."
+            ),
+            AdapterStderrKind::Noise("npm-unknown-user-config")
+        );
+        assert_eq!(
+            classify_adapter_stderr(
+                "[session/query] sessionId=991b4512-926e-420d-a443-d7ffb974e0d0 resume=none apiType=native"
+            ),
+            AdapterStderrKind::Noise("session-query")
+        );
+        assert_eq!(
+            classify_adapter_stderr("npm error code ENOSPC"),
+            AdapterStderrKind::Failure
+        );
+        assert_eq!(
+            classify_adapter_stderr("npm ERR! code ENOENT"),
+            AdapterStderrKind::Failure
+        );
+        assert_eq!(
+            classify_adapter_stderr("adapter ready"),
+            AdapterStderrKind::Diagnostic
+        );
+    }
+
+    #[test]
+    fn expected_auth_status_update_is_not_an_unrouted_failure() {
+        assert!(is_expected_unrouted_notification(
+            "_auth/status_update",
+            "unknown"
+        ));
+        assert!(is_expected_unrouted_notification("_auth/status_update", ""));
+        assert!(!is_expected_unrouted_notification(
+            "session/update",
+            "unknown"
+        ));
+        assert!(!is_expected_unrouted_notification(
+            "_auth/status_update",
+            "01a0ad42-1c6c-7e63-a4c6-d754416403f2"
+        ));
+    }
+
+    #[test]
+    fn adapter_exit_status_is_emitted_once() {
+        assert!(should_emit_adapter_exit_status(false));
+        assert!(!should_emit_adapter_exit_status(true));
+    }
+
+    #[test]
+    fn standalone_connection_lifecycle_stays_off_default_info() {
+        assert!(connection_lifecycle_uses_info(true));
+        assert!(!connection_lifecycle_uses_info(false));
     }
 
     #[test]

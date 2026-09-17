@@ -1851,7 +1851,7 @@ impl Default for RuntimeConfig {
         );
         let base = Self {
             log_level: RuntimeLogLevel::Info,
-            log_prompts: true,
+            log_prompts: false,
             log_provider_command: true,
             log_retention_days: 30,
             console_theme: ConsoleThemeName::GoldBand,
@@ -2690,6 +2690,10 @@ mod tests {
         assert_eq!(config.desktop_language, DesktopLanguage::ZhCn);
         assert_eq!(config.personalization, PersonalizationPreference::default());
         assert!(matches!(config.log_level, RuntimeLogLevel::Info));
+        assert!(
+            !config.log_prompts,
+            "runtime.log must not record prompt bodies by default"
+        );
     }
 
     #[test]

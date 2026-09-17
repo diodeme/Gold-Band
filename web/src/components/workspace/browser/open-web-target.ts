@@ -1,4 +1,4 @@
-import { resolveWorkspaceFileLink, openExternalUrl } from '@/api';
+import { browserResolveLocalHtml, openExternalUrl } from '@/api';
 import type { RightWorkspaceCommands } from '../right-workspace-context';
 import type { BrowserPreferences } from '@/types';
 import { browserWorkspaceResourceKey } from '../right-workspace-context';
@@ -15,7 +15,7 @@ export interface OpenWebTargetContext {
   scopeKey: string | null;
   openResource: RightWorkspaceCommands['openResource'];
   browserTitle: string;
-  resolveLocalFile?: typeof resolveWorkspaceFileLink;
+  resolveLocalHtml?: typeof browserResolveLocalHtml;
   openSystemUrl?: typeof openExternalUrl;
   browserPreferences?: BrowserPreferences;
 }
@@ -60,11 +60,11 @@ export async function openWebTarget(
       return { status: 'error', error: { code: 'workspace-file.project-not-found', params: {} } };
     }
     try {
-      const resolved = await (context.resolveLocalFile ?? resolveWorkspaceFileLink)(
-        context.projectId,
-        rawPath,
-      );
-      url = resolved.locator.canonicalPath;
+      const resolved = await (context.resolveLocalHtml ?? browserResolveLocalHtml)({
+        projectId: context.projectId,
+        rawHref: rawPath,
+      });
+      url = resolved.canonicalPath;
     } catch (reason) {
       const value = reason as { code?: unknown; params?: unknown };
       return {

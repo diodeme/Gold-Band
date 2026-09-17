@@ -86,26 +86,65 @@ describe('openWebTarget', () => {
 
   it('resolves local html through the file link resolver', async () => {
     browserSessionStore.resetForTests();
-    const resolveLocalFile = vi.fn(async () => ({
-      locator: {
-        projectId: 'project-1',
-        canonicalPath: 'D:/repo/docs/index.html',
-        relativePath: 'docs/index.html',
-        scope: 'workspace' as const,
-      },
-      target: null,
-      externalAccessGrant: null,
+    const resolveLocalHtml = vi.fn(async () => ({
+      canonicalPath: 'D:/repo/docs/index.html',
     }));
     const result = await openWebTarget('docs/index.html', {
       projectId: 'project-1',
       scopeKey: 'draft:project-1',
       openResource: vi.fn(),
       browserTitle: '浏览器',
-      resolveLocalFile,
+      resolveLocalHtml,
     });
-    expect(resolveLocalFile).toHaveBeenCalledWith('project-1', 'docs/index.html');
+    expect(resolveLocalHtml).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      rawHref: 'docs/index.html',
+    });
     expect(result).toMatchObject({ status: 'opened', kind: 'browser' });
     expect(browserSessionStore.activePage()?.url).toBe('D:/repo/docs/index.html');
+    browserSessionStore.resetForTests();
+  });
+
+  it('keeps the browser resolver failure on the clicked link', async () => {
+    browserSessionStore.resetForTests();
+    const resolveLocalHtml = vi.fn(async () => {
+      throw { code: 'workspace-file.path-outside-workspace', params: { path: '../secret.html' } };
+    });
+    const result = await openWebTarget('../secret.html', {
+      projectId: 'project-1',
+      scopeKey: 'draft:project-1',
+      openResource: vi.fn(),
+      browserTitle: '浏览器',
+      resolveLocalHtml,
+    });
+    expect(result).toEqual({
+      status: 'error',
+      error: { code: 'workspace-file.path-outside-workspace', params: { path: '../secret.html' } },
+    });
+    expect(browserSessionStore.snapshot().pages).toHaveLength(0);
+    browserSessionStore.resetForTests();
+  });
+
+  it('opens a local html page with the same canonical identity on repeated clicks', async () => {
+    browserSessionStore.resetForTests();
+    const resolveLocalHtml = vi.fn(async () => ({
+      canonicalPath: 'D:/repo/docs/index.html',
+    }));
+    const context = {
+      projectId: 'project-1',
+      scopeKey: 'draft:project-1',
+      openResource: vi.fn(),
+      browserTitle: '浏览器',
+      resolveLocalHtml,
+    };
+    const first = await openWebTarget('docs/index.html', context);
+    const second = await openWebTarget('D:/repo/docs/index.html', context);
+    expect(second).toMatchObject({
+      status: 'opened',
+      kind: 'browser',
+      pageId: first.status === 'opened' ? first.pageId : null,
+    });
+    expect(browserSessionStore.snapshot().pages).toHaveLength(1);
     browserSessionStore.resetForTests();
   });
 });

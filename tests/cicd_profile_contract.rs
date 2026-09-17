@@ -64,6 +64,7 @@ fn formal_cicd_uses_the_shared_memory_tools_in_both_languages() {
             DesktopLanguage::ZhCn => [
                 "### 代码推送前置检查",
                 "### CLI 与参数检查",
+                "进入参数准备阶段后，先调用 `memory_read`",
                 "只检查当前分支是否存在未 push 的提交",
                 "提醒用户并询问是否 push",
                 "用户不 push",
@@ -80,6 +81,7 @@ fn formal_cicd_uses_the_shared_memory_tools_in_both_languages() {
             DesktopLanguage::En => [
                 "### Code Push Precheck",
                 "### CLI and Parameter Checks",
+                "After entering parameter preparation, first call `memory_read`",
                 "only check whether the current branch has unpushed commits",
                 "remind the user and ask whether to push",
                 "declines to push",
@@ -98,6 +100,16 @@ fn formal_cicd_uses_the_shared_memory_tools_in_both_languages() {
             assert!(
                 profile.content.contains(marker),
                 "CICD push precheck marker missing: {marker}"
+            );
+        }
+        for marker in [
+            "读取 runtime 隐藏上下文中的记忆投影",
+            "hidden memory projection",
+            "<memory-data>",
+        ] {
+            assert!(
+                !profile.content.contains(marker),
+                "CICD must not depend on an automatic memory projection: {marker}"
             );
         }
         assert!(!profile.content.contains("--story=["));

@@ -12130,21 +12130,21 @@ mod tests {
     }
 
     #[test]
-    fn memory_data_reaches_new_and_restored_sessions_without_repeating_rules() {
-        let mut prompt = non_runtime_control_test_prompt("memory-refresh");
-        prompt.system_prompt = "stable-memory-rules".into();
+    fn generic_hidden_user_block_reaches_new_and_restored_sessions_without_repeating_rules() {
+        let mut prompt = non_runtime_control_test_prompt("hidden-block");
+        prompt.system_prompt = "stable-runtime-rules".into();
         prompt.user_prompt = format!(
             "{}\n\nfollow up",
-            super::gold_band_hidden_block("Gold Band current memory", "parameter=B2")
+            super::gold_band_hidden_block("Gold Band runtime context", "context=value")
         );
         for restored in [false, true] {
             for supports_system_prompt in [true, false] {
                 let text =
                     session_prompt_text("any-provider", &prompt, restored, supports_system_prompt);
-                assert_eq!(text.matches("parameter=B2").count(), 1);
+                assert_eq!(text.matches("context=value").count(), 1);
                 assert!(text.contains("data-gold-band-hidden"));
                 assert_eq!(
-                    text.contains("stable-memory-rules"),
+                    text.contains("stable-runtime-rules"),
                     !restored && !supports_system_prompt
                 );
                 assert!(text.ends_with("follow up"));

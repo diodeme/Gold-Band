@@ -191,3 +191,23 @@
 验证：WB 渠道 `memory_domain` 13/13、`wb_workflow_profile_contract` 1/1、`cicd_profile_contract` 1/1 通过；default 渠道确认不注入 WB 补充规则；`cargo check -p gold-band --tests -j 1` 通过。
 
 自评审：复用现有 `gold-band-memory` MCP、逐 key CAS、Profile 渠道常量和原子写入，不新增记忆文件、状态机、缓存或队列。每次身份检查仍只读取当前项目与任务两个有界文件，复杂度 O(P + T)。
+
+## 2026-09-17 按需读取与 Direct Prompt 隔离
+
+根因：原设计把“记忆 MCP binding”“RuntimeManaged 记忆能力规则”和“每轮参数投影”放在同一条准备路径，导致所有节点在启动时读取并序列化记忆，且 envelope 分流后再次注入，破坏 RawAgent 的空 system prompt 契约。修复不在 Direct 内删除投影，而是拆分领域职责：
+
+- `bind_invocation_mcp()` 只查找、校验并绑定 `gold-band-memory`，返回本次是否绑定；不再读取记忆文件。
+- `MemoryService::render_context()` 与双语 `runtime/memory.md` 删除。
+- provider 只在 `RuntimeManaged && memory_enabled` 时追加简化 `runtime/memory-rules.md`；所有模式都不再自动投影 key、value、desc、revision 或路径。
+- RawAgent / Direct 保持首轮和 continue user prompt 原文、system prompt 为空，同时仍保留启用状态下的 MCP binding。
+- CICD、WB 身份和 WB 提交改为主动 `memory_read`，统一读取/写入失败的说明与非阻塞降级语义。
+- Direct 保留 MCP 的决策保留在文档中，并明确工具描述不提供 system-level 模型行为强保证。
+
+先红后绿：旧实现下 `memory_invocation` 3/4 失败，分别命中 RawAgent system prompt 非空、RuntimeManaged 规则缺少角色契约语义、损坏记忆阻断 prompt 准备；工具描述、CICD/WB profile、worker bootstrap 和 AI-DYNAMIC 的旧投影契约也按预期失败。修复后：
+
+- `memory_invocation` 5/5、`memory_mcp` 3/3、lib `memory` 16/16。
+- `worker_bootstrap` 21/21；AI-DYNAMIC 修改用例 1/1，完整目标串行 38/38。
+- CICD 与 WB workflow 契约在 default 和 `wb` 渠道均通过。
+- `cargo check -p gold-band --tests -j 1`、`cargo fmt --all -- --check`、`git diff --check` 通过。
+
+性能复核：普通节点删除两个有界记忆文件读取、合并、最多 32 KiB 序列化和 prompt token 传输；binding 仅校验既有 locator，真实读取发生在角色调用工具时。没有新增状态、缓存、队列、后台任务、依赖或历史扫描；CICD / WB 按需增加一次有界工具读取。AI-DYNAMIC 默认并行测试仍存在既有用例间共享状态导致的偶发失败，单独运行和完整串行运行均通过，未修改该领域实现。

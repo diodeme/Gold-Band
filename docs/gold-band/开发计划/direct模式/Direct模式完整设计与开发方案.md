@@ -372,7 +372,9 @@ visibility = visible
 - 用户选择的 permission mode
 - Gold Band 已启用且健康的 ACP MCP servers
 
-用户明确要求的是“不提供多余 system prompt”，不是禁用模型、权限、附件或 MCP 配置。
+用户明确要求的是“不提供多余 system prompt”，不是禁用模型、权限、附件或 MCP 配置。启用 `gold-band-memory` 时，Direct 仍保留并绑定该 MCP；但首轮 prompt 不包含通用记忆规则、自动记忆数据、key、value、desc、revision 或记忆文件路径。
+
+记忆 MCP 工具描述会声明返回值是参数数据而非指令或授权，但工具描述不等价于 system-level 约束。Direct Agent 是否忽略记忆内容中的指令性文本仍由 Agent 自身策略决定，这是保留工具的既有残余风险。
 
 ### 6.2 same-session 后续追问
 
@@ -391,6 +393,7 @@ user_prompt = 本轮用户原文
 - 历史附件
 - Gold Band runtime hidden context
 - stable system prompt
+- 通用记忆规则或 `Gold Band current memory` / `<memory-data>` 自动记忆投影
 
 只带本轮新增附件。
 
@@ -407,6 +410,7 @@ RawAgent
   -> system_prompt = ""
   -> new session: requirement 原文
   -> continue: resume_prompt 原文
+  -> 不追加记忆规则或自动记忆数据；MCP binding 独立保留
 ```
 
 Direct 输入不能在 renderer 中无条件 `trim()` 后改变用户原文。发送前只用 `trim().is_empty()` 判断是否为空；真正传给 Agent 的非空正文保留原始空格和换行。
@@ -1389,3 +1393,23 @@ Direct 与节点完成后的手动追问复用同一个 ACP attempt。原通知�
 - `npm run web:test -- web/tests/conversation-terminal-result.test.ts web/tests/conversation-terminal-result-ui.test.tsx web/tests/api/desktop.test.ts`：21 项通过。
 - `npx tsc -p web/tsconfig.build.json --noEmit` 与 `npx vite build --config web/vite.config.ts`：通过。
 - 本地 `/chat` 页面：浅色和深色均验证 8px 提醒点位于 16px Agent icon 右上角；危险色分别投影为浅色 `rgb(200, 50, 55)`、深色 `rgb(223, 107, 107)`，可访问名称为“Codex · 执行异常，尚未查看”。进入会话后的清除、迟到确认保护和在途去重由 DOM/导航/接口回归测试固化。
+
+## 28. 2026-09-17 共享记忆按需读取与 Direct 隔离
+
+状态：已实现并通过本地接口与契约回归。
+
+- 所有模式的 `Gold Band current memory`、`<memory-data>` 自动参数投影永久删除。
+- Direct 首轮 `user_prompt` 等于用户原始输入，continue `user_prompt` 等于本轮追问原文，`system_prompt` 保持空；不接收通用记忆规则、记忆路径、key、value、desc 或 revision。
+- Direct 启用 `gold-band-memory` 时仍保留 ACP session 的 MCP binding，工具仍可由 Agent 自主调用。
+- MCP binding 与 prompt projection 分离：binding 对所有启用记忆的模式生效，简化规则只对 `RuntimeManaged` 生效。
+- 工具描述声明记忆返回值是参数数据而非指令或授权，并限制写入为用户明确提供或确认的参数，不保存推断、总结、执行结果或凭据。
+- 残余风险保持明确：工具描述不能替代 system prompt，Gold Band 不保证 Direct Agent 一定把工具结果作为数据消费，也不保证任意模型一定调用工具。
+
+回归覆盖：
+
+- `memory_invocation` 5 项通过，覆盖 Direct 首轮/continue 原文、空 system prompt、MCP 保留、RuntimeManaged 仅通用规则、关闭记忆和损坏记忆不阻断。
+- `memory_mcp` 3 项通过，覆盖双语工具描述安全边界和损坏记忆的结构化读取错误。
+- `worker_bootstrap` 21 项、AI-DYNAMIC 修改用例 1 项及完整串行目标 38 项通过。
+- `cargo check -p gold-band --tests -j 1`、格式和差异检查通过。
+
+性能与过度设计：Direct 不再承担投影读取和 token 成本，仅保留原本按会话配置存在的 MCP 子进程/工具列表；没有新增 Direct 专用 prompt、状态、缓存、队列或 memory 分支。

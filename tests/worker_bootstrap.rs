@@ -1446,10 +1446,13 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
     let manual_prompt = prepared_prompt.prompt;
     assert!(manual_prompt.system_prompt.contains("Run: run-001"));
     assert!(manual_prompt.system_prompt.contains("用户主动打断当前工作"));
-    assert!(manual_prompt.system_prompt.contains("memory_write"));
-    assert_eq!(
-        manual_prompt.user_prompt.matches("<memory-data>").count(),
-        1
+    assert!(manual_prompt.system_prompt.contains("## 共享记忆"));
+    assert!(manual_prompt.system_prompt.contains("memory_read"));
+    assert!(!manual_prompt.user_prompt.contains("<memory-data>"));
+    assert!(
+        !manual_prompt
+            .user_prompt
+            .contains("Gold Band current memory")
     );
     assert!(
         !manual_prompt

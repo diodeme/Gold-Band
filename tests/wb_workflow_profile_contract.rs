@@ -36,6 +36,7 @@ fn wb_workflow_profile_supplements_are_channel_scoped_and_complete() {
             let identity_markers = match language {
                 DesktopLanguage::ZhCn => [
                     "WB 需求身份前置检查",
+                    "本节开始时先调用 `memory_read`",
                     "`memory_read`",
                     "`storyId`",
                     "`storyName`",
@@ -48,6 +49,7 @@ fn wb_workflow_profile_supplements_are_channel_scoped_and_complete() {
                 ],
                 DesktopLanguage::En => [
                     "WB Requirement Identity Precheck",
+                    "At the start of this section, first call `memory_read`",
                     "`memory_read`",
                     "`storyId`",
                     "`storyName`",
@@ -56,7 +58,7 @@ fn wb_workflow_profile_supplements_are_channel_scoped_and_complete() {
                     "`memory_write`",
                     "task scope",
                     "at most 40 Unicode characters",
-                    "not blockers",
+                    "Neither case is a blocker",
                 ],
             };
             for content in [&interview.content, &grill.content] {
@@ -66,14 +68,28 @@ fn wb_workflow_profile_supplements_are_channel_scoped_and_complete() {
                         "WB requirement identity marker missing: {marker}"
                     );
                 }
+                for marker in [
+                    "hidden memory projection",
+                    "记忆投影",
+                    "<memory-data>",
+                    "Gold Band current memory",
+                ] {
+                    assert!(
+                        !content.contains(marker),
+                        "WB identity must not depend on automatic projection: {marker}"
+                    );
+                }
             }
 
             let commit_markers = match language {
                 DesktopLanguage::ZhCn => [
                     "WB 开发测试自动提交",
+                    "1. 使用 `memory_read`",
                     "不创建空提交",
                     "提交过程不向用户询问提交消息",
-                    "记忆工具不可用或写入失败不是阻塞",
+                    "读取失败时说明身份未读取",
+                    "写入或核验失败时说明未持久化",
+                    "二者都不是阻塞",
                     "禁止 `git add -A`",
                     "--story=[{storyId}] {storyName}",
                     "#AI COMMIT#",
@@ -82,9 +98,12 @@ fn wb_workflow_profile_supplements_are_channel_scoped_and_complete() {
                 ],
                 DesktopLanguage::En => [
                     "WB Development and Testing Auto-Commit",
+                    "1. Use `memory_read`",
                     "do not create an empty commit",
                     "Do not ask the user to confirm the commit message",
-                    "Unavailable memory tools or a failed write are not blockers",
+                    "state that the identity was not read",
+                    "state that it was not persisted",
+                    "Neither case is a blocker",
                     "Never use `git add -A`",
                     "--story=[{storyId}] {storyName}",
                     "#AI COMMIT#",
@@ -96,6 +115,19 @@ fn wb_workflow_profile_supplements_are_channel_scoped_and_complete() {
                 assert!(
                     dev_test.content.contains(marker),
                     "WB dev-test commit marker missing: {marker}"
+                );
+            }
+            for marker in [
+                "hidden memory projection",
+                "记忆投影",
+                "<memory-data>",
+                "Gold Band current memory",
+                "收尾开始时先调用 `memory_read`",
+                "At the start of this closing step, first call `memory_read`",
+            ] {
+                assert!(
+                    !dev_test.content.contains(marker),
+                    "WB dev-test commit must not depend on automatic projection: {marker}"
                 );
             }
         } else {

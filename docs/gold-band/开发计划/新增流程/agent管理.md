@@ -4,7 +4,7 @@
 agent管理主要是负责管理支持接入的ACP agent
 当前改为维护构建期精选 ACP Agent Catalog，固定提供 `claude-acp`、`codex-acp`、`cursor`、`gemini`、`codebuddy-code`、`goose`、`qwen-code`、`opencode`、`kimi`、`amp-acp`、`pi-acp` 十一类模板，并支持用户自定义 ACP Agent；GLM 不进入本轮范围
 agent管理页面主要就是agent卡片和新增agent按钮
-agent卡片支持删除、修改、环境诊断操作（检查agent环境是否正常，提供手动检测能力，后台每1分钟自动检测一次agent环境），并显示agent的诊断状态（最好用对应图标）；doctor 失败时在状态旁显示问号帮助入口，该帮助入口统一使用随主题变化的浅色 shadcn/ui `Tooltip` 展示本地化主句、有界故障 stderr 与配置帮助，悬浮或聚焦即可出现；提示参考 ACP Registry 配置命令、参数、环境、网络和认证状态，ACP Registry 链接到 `https://agentclientprotocol.com/get-started/registry`，点击后通过系统默认浏览器打开。卡片内容需要有稳定左右内边距；最近检测时间展示为本地系统时区 `YYYY-MM-DD HH:MM:SS`；手动诊断运行中显示圆形加载动效，完成后根据结果显示数秒成功或异常横幅，异常横幅在本地化主句下展示有界故障 stderr；成功态横幅与成功状态图标需复用主题 success token，避免页面硬编码颜色；诊断命令 `npx -y @agentclientprotocol/claude-agent-acp@latest` 用于启动 Claude ACP adapter，首次运行可能通过 npm 下载依赖而耗时 1 分钟以上；每个 Agent 每轮诊断的初始化、会话创建、命令发现、清理和周期重试共享 3 分钟预算，结束、失败、超时或客户端关闭都必须退出诊断进程树，不能阻塞客户端
+agent卡片支持删除、修改、环境诊断操作（检查agent环境是否正常，提供手动检测能力，后台每1分钟自动检测一次agent环境），并显示agent的诊断状态（最好用对应图标）；doctor 失败时在状态旁显示问号帮助入口，该入口使用 shadcn/ui `Popover`，点击后展示 raw 原因（ACP JSON-RPC `message`、有界故障 stderr、启动失败 `osError`）与配置帮助，没有原始原因时才回退本地化错误句；提示参考 ACP Registry 配置命令、参数、环境、网络和认证状态，ACP Registry 链接到 `https://agentclientprotocol.com/get-started/registry`，使用产品链接样式，点击后通过 `openWebTarget` 在内置浏览器打开。Agent 管理页复用当前工作空间的 draft 右侧工作区投影，未打开工作区时右栏保持收起。卡片内容需要有稳定左右内边距；最近检测时间展示为本地系统时区 `YYYY-MM-DD HH:MM:SS`；手动诊断运行中显示圆形加载动效，完成后根据结果显示数秒成功或异常横幅，异常横幅只展示「环境诊断未通过：{{reason}}」，`reason` 为 raw 原因首行，完整原因放到问号入口；成功态横幅与成功状态图标需复用主题 success token，避免页面硬编码颜色；诊断命令 `npx -y @agentclientprotocol/claude-agent-acp@latest` 用于启动 Claude ACP adapter，首次运行可能通过 npm 下载依赖而耗时 1 分钟以上；每个 Agent 每轮诊断的初始化、会话创建、命令发现、清理和周期重试共享 3 分钟预算，结束、失败、超时或客户端关闭都必须退出诊断进程树，不能阻塞客户端
 补充诊断环境要求：
 - ACP adapter 与 doctor 必须复用 `process` 模块的跨平台 PATH 解析接口，并以首次出现项为准去重。Windows 优先级固定为“Agent 显式配置 PATH → 当前桌面进程 PATH → 用户注册表 PATH → 系统注册表 PATH → 平台通用目录”；每次创建 ACP 进程前直接通过注册表 API 读取 `HKCU\Environment\Path` 和 `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment\Path`，展开 `%VAR%` 并按大小写不敏感去重，不调用 `reg.exe`。macOS / Linux 优先级固定为“Agent 显式配置 PATH → 用户登录 Shell PATH → 当前桌面进程 PATH → 平台通用目录”；首次使用时从 Unix 账户信息选择默认 Shell，以 `-ilc` 登录交互模式读取环境，设置 2 秒总超时并回收超时进程，成功或失败结果按应用生命周期缓存。Shell profile 噪声通过输出边界隔离，只读取 `PATH`；失败时回退当前进程 PATH。Unix 按大小写敏感语义合并，并补全 `~/.nvm/versions/node/*/bin`、`~/.local/bin`、`~/.cargo/bin`、`~/.volta/bin`、`/opt/homebrew/bin`、`/usr/local/bin` 等通用位置；所有平台都禁止维护 Kimi、Cursor、OpenCode、Scoop、npm 等 Agent 或安装器目录特判。该解析仅位于 doctor / ACP 进程创建边界，不进入会话消息热路径
 - Windows 裸命令 PATH 查找统一限定为 `.exe`、`.com`、`.cmd`、`.bat` 候选，优先原生可执行文件并允许 npm `.cmd` wrapper；忽略 `.ps1` 和无扩展名 Unix shim，避免把 `#!/bin/sh` 文件交给 Win32 `CreateProcess` 后产生 OS error 193。显式带扩展名命令保持原名；PowerShell 脚本必须由用户显式配置 `pwsh` / `powershell -NoProfile -File`
@@ -57,6 +57,22 @@ Agent 实例新增两个独立能力配置：
 - ACP 权限模式与节点 Profile 分层生效：权限模式使用 Agent 实际暴露的 mode API 控制工具授权，Profile 继续约束角色职责。实时切换权限成功后不得改写 Profile；例如 `pf-builtin-plan` 在 `yolo` 下仍然只负责规划。验收时必须同时检查 outbound mode 请求、Agent 响应中的 current mode 与节点 Profile，不能仅根据模型是否愿意改代码判断权限是否生效
 
 ## 本轮实现与验收记录（2026-08-07）
+
+### 2026-09-18 Agent 卡片按列表容器宽度降列
+
+- 根因：卡片网格使用整窗 `md/xl` breakpoint。打开内置浏览器后中间栏变窄，窗口仍是 `xl`，继续强制三列，命令/参数被压成逐字竖排，标题被截成 “Agent …”。属于正确的 1/2/3 列设计没有按容器实现，不是要改工作区折叠阈值。
+- 方案：复用角色列表的 `@container/agent-list` 与 `@2xl` / `@6xl` 阈值；兼容档登记 `agent-list` measured fallback。卡片内部摘要固定两列。integrated Header 用最小标题宽度换行，不再按整窗 `sm` 强行同行。
+- 过度设计评审：不新增列数 state、不改 `centerMinWidth`、不另做卡片布局状态机。
+- 性能评审：完整档只有 CSS container query；兼容档多一个已有 measured observer，只发布离散档位。已配置 Agent 数量为小型列表，无额外请求或全量扫描。
+- 验收：修复前布局契约测试因缺少 `@container/agent-list` 失败，Header 测试因仍使用 `sm:flex-row` 失败。修复后相关 8 个文件 41 项通过。1920 宽窗下，右栏收起时三列；把内置浏览器拖到约 940px 后中间栏 394px 降为单列，标题完整显示「Agent 管理」，命令/参数保持两列摘要，诊断/修改/删除同一行。
+
+### 2026-09-18 Agent 诊断横幅与 raw 原因分层
+
+- 根因：ACP JSON-RPC 失败（如 CodeBuddy `Authentication required`）被收成 `acp.session-request-failed`，`RuntimeErrorInfo.raw` 没有进入诊断 snapshot；横幅又用本地化主句替换了原始原因，问号 Tooltip 同样看不到 ACP `message`。
+- 方案：诊断 snapshot 增加可选 `raw`，doctor 原样保留 ACP 错误对象。Agent 管理异常横幅只显示「环境诊断未通过：{{reason}}」，`reason` 为 ACP `message` / 故障 stderr / `osError` 的首行；异常旁问号 Popover 展示完整原文。工作流和运行模式选择器仍只显示本地化主句。
+- 过度设计评审：复用既有 `DiagnosticError` 与页面 Popover，不新增错误码分类、登录流或第二套诊断状态。
+- 性能评审：`raw` 仅为单次 JSON-RPC 错误对象；Popover 内容在打开后才进入 DOM；不进入会话热路径，无额外轮询或缓存。
+- 验收：`doctor_diagnostic_error_preserves_session_request_raw` 修复前因缺少 `raw` 字段编译失败；前端 copy 测试固定 Authentication required 进入 raw 投影；横幅测试确认不内嵌本地化句和 stderr；问号点击后才出现 raw 与 ACP Registry 链接。
 
 ### 2026-09-18 Doctor 对客错误保留有界故障 stderr
 

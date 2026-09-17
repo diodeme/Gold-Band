@@ -112,10 +112,10 @@ describe('MulticaConnectionSettingsDialog (连接地址设置弹窗)', () => {
 
     const input = container.querySelector('input') as HTMLInputElement;
     expect(input.value).toBe('http://localhost:8080');
-    expect(container.textContent).toContain('multica.connection.title');
-    expect(container.textContent).toContain('multica.connection.addressLabel');
+    expect(container.textContent).toContain('remote.connection.title');
+    expect(container.textContent).toContain('remote.connection.addressLabel');
     // 无覆盖（渠道默认）→ 不显示「恢复默认地址」。
-    expect(findButton(container, 'multica.connection.restoreDefault')).toBeUndefined();
+    expect(findButton(container, 'remote.connection.restoreDefault')).toBeUndefined();
   });
 
   it('saves the address with API = login URL (v, v) and closes', async () => {
@@ -127,7 +127,7 @@ describe('MulticaConnectionSettingsDialog (连接地址设置弹窗)', () => {
     setNativeInputValue(container.querySelector('input') as HTMLInputElement, 'https://new.example');
     await act(async () => { await Promise.resolve(); });
 
-    const saveBtn = findButton(container, 'multica.connection.save') as HTMLButtonElement;
+    const saveBtn = findButton(container, 'remote.connection.save') as HTMLButtonElement;
     expect(saveBtn.disabled).toBe(false);
     await act(async () => { saveBtn.click(); });
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
@@ -139,7 +139,7 @@ describe('MulticaConnectionSettingsDialog (连接地址设置弹窗)', () => {
   it('disables save when the address is unchanged (防分端口默认被同址覆盖)', async () => {
     const { container } = await renderDialog(baseSettings());
 
-    const saveBtn = findButton(container, 'multica.connection.save') as HTMLButtonElement;
+    const saveBtn = findButton(container, 'remote.connection.save') as HTMLButtonElement;
     expect(saveBtn.disabled).toBe(true);
     expect(mocks.saveMulticaConnectionAddress).not.toHaveBeenCalled();
   });
@@ -150,8 +150,8 @@ describe('MulticaConnectionSettingsDialog (连接地址设置弹窗)', () => {
     setNativeInputValue(container.querySelector('input') as HTMLInputElement, 'not-a-url');
     await act(async () => { await Promise.resolve(); });
 
-    expect(container.textContent).toContain('multica.connection.invalidUrl');
-    expect(findButton(container, 'multica.connection.save')?.disabled).toBe(true);
+    expect(container.textContent).toContain('remote.connection.invalidUrl');
+    expect(findButton(container, 'remote.connection.save')?.disabled).toBe(true);
   });
 
   it('restores the channel default via (null, null) and refreshes the field in place', async () => {
@@ -162,7 +162,7 @@ describe('MulticaConnectionSettingsDialog (连接地址设置弹窗)', () => {
       baseSettings({ multicaBaseUrl: 'https://override.example', multicaAppUrl: 'https://override.example', addressOverrideSet: true }),
     );
 
-    const restoreBtn = findButton(container, 'multica.connection.restoreDefault');
+    const restoreBtn = findButton(container, 'remote.connection.restoreDefault');
     expect(restoreBtn).toBeTruthy();
     await act(async () => { restoreBtn!.click(); });
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
@@ -170,7 +170,7 @@ describe('MulticaConnectionSettingsDialog (连接地址设置弹窗)', () => {
     expect(mocks.saveMulticaConnectionAddress).toHaveBeenCalledWith(null, null);
     // 用返回 VM 刷新字段（回落渠道默认生效值），弹窗保持打开可继续编辑。
     expect((container.querySelector('input') as HTMLInputElement).value).toBe('http://default.example');
-    expect(findButton(container, 'multica.connection.restoreDefault')).toBeUndefined();
+    expect(findButton(container, 'remote.connection.restoreDefault')).toBeUndefined();
     expect(onOpenChange).not.toHaveBeenCalled();
   });
 });

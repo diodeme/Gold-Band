@@ -68,7 +68,7 @@ export function MulticaAddWorkspaceDialog({
 
   async function handleAdd() {
     if (!workspaceId) {
-      setError(t('conversation.sidebar.multica.dialog.needWorkspace'));
+      setError(t('conversation.sidebar.remoteTasks.dialog.needWorkspace'));
       return;
     }
     const target = serverWorkspaces.find((ws) => ws.id === workspaceId);
@@ -92,17 +92,17 @@ export function MulticaAddWorkspaceDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[85vh] max-w-md flex-col overflow-hidden gap-0 p-0">
         <DialogHeader className="shrink-0 p-6 pb-0">
-          <DialogTitle>{t('conversation.sidebar.multica.dialog.title')}</DialogTitle>
+          <DialogTitle>{t('conversation.sidebar.remoteTasks.dialog.title')}</DialogTitle>
         </DialogHeader>
 
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-6">
           <div className="space-y-1">
             <div className="text-xs font-medium text-muted-foreground">
-              {t('conversation.sidebar.multica.dialog.remoteWorkspace')}
+              {t('conversation.sidebar.remoteTasks.dialog.remoteWorkspace')}
             </div>
             <Select value={workspaceId} onValueChange={setWorkspaceId} disabled={loading || submitting}>
               <SelectTrigger className="h-9 min-w-0 text-xs">
-                <SelectValue placeholder={loading ? '…' : t('conversation.sidebar.multica.dialog.remoteWorkspace')} />
+                <SelectValue placeholder={loading ? '…' : t('conversation.sidebar.remoteTasks.dialog.remoteWorkspace')} />
               </SelectTrigger>
               <SelectContent>
                 {available.map((ws) => (
@@ -113,15 +113,15 @@ export function MulticaAddWorkspaceDialog({
             {!loading && available.length === 0 && (
               <p className="text-[11px] leading-relaxed text-muted-foreground">
                 {serverWorkspaces.length === 0
-                  ? t('conversation.sidebar.multica.dialog.noServerWorkspaces')
-                  : t('conversation.sidebar.multica.dialog.allWorkspacesBound')}
+                  ? t('conversation.sidebar.remoteTasks.dialog.noServerWorkspaces')
+                  : t('conversation.sidebar.remoteTasks.dialog.allWorkspacesBound')}
               </p>
             )}
           </div>
 
           <div className="space-y-1">
             <div className="text-xs font-medium text-muted-foreground">
-              {t('conversation.sidebar.multica.dialog.provider')}
+              {t('conversation.sidebar.remoteTasks.dialog.provider')}
             </div>
             <Select value={provider} onValueChange={setProvider} disabled={submitting}>
               <SelectTrigger className="h-9 min-w-0 font-mono text-xs"><SelectValue /></SelectTrigger>
@@ -144,7 +144,7 @@ export function MulticaAddWorkspaceDialog({
             onClick={() => void handleAdd()}
           >
             {submitting ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : null}
-            {t('conversation.sidebar.multica.dialog.add')}
+            {t('conversation.sidebar.remoteTasks.dialog.add')}
           </Button>
         </DialogFooter>
       </DialogContent>

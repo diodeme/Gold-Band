@@ -4,7 +4,7 @@
 //! （`metrics_settings` metrics.rs:130-167 / `normalize_metrics_base_url` metrics.rs:90-114）。
 
 use gold_band::config::{
-    MulticaAccountRef, MulticaWorkspaceRef, RuntimeConfig, SettingsConfig, StateConfig,
+    MulticaAccountRef, RemoteWorkspaceRef, RuntimeConfig, SettingsConfig, StateConfig,
 };
 use serde::Serialize;
 use url::Url;
@@ -26,7 +26,7 @@ pub struct MulticaSettingsVm {
     /// PAT 是否已设置（存在性，永不回显明文）。
     pub pat_set: bool,
     pub daemon_id_set: bool,
-    pub workspaces: Vec<MulticaWorkspaceRef>,
+    pub workspaces: Vec<RemoteWorkspaceRef>,
     pub active_workspace_id: Option<String>,
     /// 添加 workspace 时的默认 provider 预选（claude-acp）。
     pub default_provider: String,
@@ -172,8 +172,8 @@ pub fn clear_multica_workspace_bindings(settings: &mut SettingsConfig) {
 /// State 索引）。`multica_runtime_ids` 是死字段（仅声明、从不读写，真缓存在内存 `MulticaRuntimeState`），
 /// 不在此处理。
 pub fn clear_multica_state_indices(state: &mut StateConfig) {
-    state.multica_task_conversations = None;
-    state.multica_completed_tasks.clear();
+    state.remote_task_conversations = None;
+    state.remote_completed_tasks.clear();
 }
 
 /// 判定重连是否发生账号切换：以 email 为稳定标识。
@@ -245,7 +245,7 @@ mod tests {
     };
     use crate::multica::error::MulticaError;
     use gold_band::config::{
-        MulticaAccountRef, MulticaCompletedTask, MulticaTaskConversation, MulticaWorkspaceRef,
+        MulticaAccountRef, RemoteCompletedTask, RemoteTaskConversation, RemoteWorkspaceRef,
         RuntimeConfig, StateConfig,
     };
     use std::collections::HashMap;
@@ -337,7 +337,7 @@ mod tests {
         let mut convs = HashMap::new();
         convs.insert(
             "remote-1".to_string(),
-            MulticaTaskConversation {
+            RemoteTaskConversation {
                 local_task_id: "task-1".into(),
                 local_run_id: "run-1".into(),
                 session_id: Some("acp-1".into()),
@@ -345,15 +345,15 @@ mod tests {
             },
         );
         StateConfig {
-            multica_task_conversations: Some(convs),
-            multica_completed_tasks: vec![MulticaCompletedTask {
+            remote_task_conversations: Some(convs),
+            remote_completed_tasks: vec![RemoteCompletedTask {
                 remote_task_id: "remote-1".into(),
                 local_task_id: "task-1".into(),
                 local_run_id: "run-1".into(),
                 workspace_id: "ws-1".into(),
                 local_project_id: "proj-1".into(),
-                issue_id: Some("issue-1".into()),
-                issue_kind: Some("dev".into()),
+                issue_ref: Some("issue-1".into()),
+                kind: Some("dev".into()),
                 status: "completed".into(),
                 title: "T1".into(),
                 completed_at: "2026-08-11T00:00:00".into(),
@@ -366,49 +366,50 @@ mod tests {
     fn clear_multica_state_indices_empties_both_account_scoped_indices() {
         // 换号/断开：State 侧两索引（续跑索引 + 完成历史）均账号作用域，一并作废。
         let mut state = populated_state();
-        assert!(state.multica_task_conversations.is_some());
-        assert!(!state.multica_completed_tasks.is_empty());
+        assert!(state.remote_task_conversations.is_some());
+        assert!(!state.remote_completed_tasks.is_empty());
 
         clear_multica_state_indices(&mut state);
 
         assert!(
-            state.multica_task_conversations.is_none(),
+            state.remote_task_conversations.is_none(),
             "续跑索引清空（旧 remote id 对新账号无意义）"
         );
         assert!(
-            state.multica_completed_tasks.is_empty(),
+            state.remote_completed_tasks.is_empty(),
             "完成历史清空（不再串号到新账号）"
         );
     }
 
     #[test]
-    fn completed_task_roundtrips_issue_kind_and_tolerates_legacy_entries() {
-        // story dev/test 拆分（multica C1）：终态历史持久化 issue_kind，回看行类型徽标不丢。
-        let task = MulticaCompletedTask {
+    fn completed_task_roundtrips_kind_and_tolerates_legacy_entries() {
+        // story dev/test 拆分（multica C1）：终态历史持久化中立词汇 kind（翻译自 wire issue_kind），
+        // 回看行类型徽标不丢。
+        let task = RemoteCompletedTask {
             remote_task_id: "rt-1".into(),
             local_task_id: "task-1".into(),
             local_run_id: "run-1".into(),
             workspace_id: "ws-1".into(),
             local_project_id: "proj-1".into(),
-            issue_id: Some("iss-1".into()),
-            issue_kind: Some("test".into()),
+            issue_ref: Some("iss-1".into()),
+            kind: Some("test".into()),
             status: "completed".into(),
             title: "T1".into(),
             completed_at: "2026-09-10T00:00:00Z".into(),
         };
         let json = serde_json::to_string(&task).unwrap();
         // camelCase 键名（与 StateConfig 其余索引一致）。
-        assert!(json.contains(r#""issueKind":"test""#));
-        let back: MulticaCompletedTask = serde_json::from_str(&json).unwrap();
+        assert!(json.contains(r#""kind":"test""#));
+        let back: RemoteCompletedTask = serde_json::from_str(&json).unwrap();
         assert_eq!(back, task);
 
-        // 旧条目（本次改造前落盘的 JSON，无 issue_kind 键）→ 缺省 None，徽标不渲染；
+        // 旧条目（本次改造前落盘的 JSON，无 kind 键）→ 缺省 None，徽标不渲染；
         // 无迁移、无兼容层（开发阶段破坏式更新规约）。
-        let legacy: MulticaCompletedTask = serde_json::from_str(
-            r#"{"remoteTaskId":"rt-0","localTaskId":"task-0","localRunId":"run-0","workspaceId":"ws-1","localProjectId":"proj-1","issueId":null,"status":"completed","title":"T0","completedAt":"2026-08-01T00:00:00Z"}"#,
+        let legacy: RemoteCompletedTask = serde_json::from_str(
+            r#"{"remoteTaskId":"rt-0","localTaskId":"task-0","localRunId":"run-0","workspaceId":"ws-1","localProjectId":"proj-1","issueRef":null,"status":"completed","title":"T0","completedAt":"2026-08-01T00:00:00Z"}"#,
         )
         .unwrap();
-        assert!(legacy.issue_kind.is_none());
+        assert!(legacy.kind.is_none());
     }
 
     #[test]
@@ -478,8 +479,8 @@ mod tests {
         assert!(!multica_account_changed(None, None));
     }
 
-    fn multica_ref(id: &str, provider: &str) -> MulticaWorkspaceRef {
-        MulticaWorkspaceRef {
+    fn multica_ref(id: &str, provider: &str) -> RemoteWorkspaceRef {
+        RemoteWorkspaceRef {
             id: id.into(),
             name: format!("ws {id}"),
             slug: id.into(),

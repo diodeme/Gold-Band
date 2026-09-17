@@ -322,7 +322,7 @@ pub struct HeartbeatAck {
     /// 就绪变化 diff（story dev/test 拆分，R8 方案 1；wire 最终形态由 multica 定稿，
     /// 码灵按此提案实现，不一致时仅调整本结构反序列化）。
     ///
-    /// 码灵**只把它当刷新信号**：非空 → 发 `multica-task-updated` 事件 → 页面重取 pending
+    /// 码灵**只把它当刷新信号**：非空 → 发 `remote-tasks-updated` 事件 → 页面重取 pending
     /// （pending 列表是唯一事实源，不做本地 is_ready 增量 patch）。旧 server 不发 → None。
     #[serde(default)]
     pub pending_readiness_changes: Option<Vec<ReadinessChange>>,
@@ -1804,7 +1804,7 @@ mod tests {
     #[test]
     fn heartbeat_ack_parses_pending_readiness_changes() {
         // diff 列表形态 [{task_id, is_ready}]，与 ack 现有复数 pending_* 字段同构。
-        // 码灵只作刷新信号消费：非空 → multica-task-updated 事件 → 重取 pending。
+        // 码灵只作刷新信号消费：非空 → remote-tasks-updated 事件 → 重取 pending。
         let ack: HeartbeatAck = serde_json::from_str(
             r#"{"status":"ok","pending_readiness_changes":[{"task_id":"t-1","is_ready":true},{"task_id":"t-2","is_ready":false}]}"#,
         )

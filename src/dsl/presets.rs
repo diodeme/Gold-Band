@@ -1,11 +1,11 @@
 //! 工作流预设（DSL 层复用构造，开发设计 2.5）。
 //!
 //! 把「provider → 单节点 WorkflowDsl」这份构造从私有调用点上提到库层公开，
-//! 供会话 VM（`build_direct_workflow`）与 multica（`create_conversation_run_vm` 经由的发送链）
+//! 供会话 VM（`build_direct_workflow`）与远程任务来源（`create_conversation_run_vm` 经由的发送链）
 //! 共用同一份 provider→WorkflowDsl 构造，杜绝重复造轮子。
 //!
 //! 仅上提 `direct_workflow`：它是 provider 先天绑定的单 Worker 节点工作流，会话 VM 与
-//! multica 都是消费者。`auto_workflow` 的核心是 `AiDynamicAgentStrategy` 构造（VM 配置翻译），
+//! 远程任务来源都是消费者。`auto_workflow` 的核心是 `AiDynamicAgentStrategy` 构造（VM 配置翻译），
 //! 仅会话 VM 单一消费者、无第二消费方——上提只是搬迁不构成复用，故保留在 VM。
 
 use std::collections::BTreeMap;
@@ -17,8 +17,8 @@ use crate::dsl::{
 
 /// Direct 模式工作流预设：单个 raw-agent Worker 节点 → `$end`。
 ///
-/// - `provider`：先天绑定进 `NodeDsl::Worker.provider`（不可变，multica 远程任务即此模式）。
-/// - `model` / `permission_mode` / `config_options`：透传 Worker 节点（会话 VM 带值，multica 传 None/空）。
+/// - `provider`：先天绑定进 `NodeDsl::Worker.provider`（不可变，远程任务来源即此模式）。
+/// - `model` / `permission_mode` / `config_options`：透传 Worker 节点（会话 VM 带值，远程任务来源传 None/空）。
 /// - `manual_check = false` + `PromptEnvelopeMode::RawAgent`：首轮 prompt 即 requirement，不经运行时封装。
 ///
 /// 与原 `view_models_conversation::build_direct_workflow` 完全等价（该函数已改为委托此处）。
@@ -96,8 +96,8 @@ mod tests {
     }
 
     #[test]
-    fn direct_workflow_allows_minimal_multica_binding() {
-        // multica 远程任务：仅 provider 绑定，model/permission/options 全空。
+    fn direct_workflow_allows_minimal_remote_task_binding() {
+        // 远程任务：仅 provider 绑定，model/permission/options 全空。
         let wf = direct_workflow("claude-acp".into(), None, None, BTreeMap::new());
         let w = worker_of(&wf);
         assert_eq!(w.provider.as_deref(), Some("claude-acp"));

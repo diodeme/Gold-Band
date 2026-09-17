@@ -17,45 +17,45 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { cn } from '@/lib/utils';
 import {
   getMulticaSettings,
-  listMulticaSkills,
-  pullMulticaSkills,
+  listRemoteSkills,
+  pullRemoteSkills,
 } from '../api';
 import { displayAppError } from '../i18n';
 import type {
-  MulticaPullItemResultVm,
-  MulticaPullReportVm,
+  RemoteSkillPullItemResultVm,
+  RemoteSkillPullReportVm,
   MulticaSettingsVm,
-  MulticaSkillListItemVm,
+  RemoteSkillListItemVm,
 } from '../types';
 
-interface MulticaSkillSyncDialogProps {
+interface RemoteSkillSyncDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /// 同步完成（弹窗关闭）后回调，调用方刷新本地 SKILL 列表。
   onFinished: () => void;
 }
 
-/// SKILL 管理页「从 Multica 同步」弹窗：选择工作空间 → 勾选远端 SKILL（新增默认勾选，
+/// SKILL 管理页「从远程来源同步」弹窗：选择工作空间 → 勾选远端 SKILL（新增默认勾选，
 /// 已存在默认不勾选并提示将覆盖）→ 同步 → 展示逐项结果报告。
-/// 拉取走 PAT REST（list_multica_skills / pull_multica_skills 命令），与心跳推送通道无关。
-export function MulticaSkillSyncDialog({
+/// 拉取走 PAT REST（list_remote_skills / pull_remote_skills 命令），与心跳推送通道无关。
+export function RemoteSkillSyncDialog({
   open,
   onOpenChange,
   onFinished,
-}: MulticaSkillSyncDialogProps) {
+}: RemoteSkillSyncDialogProps) {
   const { t } = useTranslation();
   // phase：select = 选择阶段；report = 同步结果报告阶段（不可回退，关闭后由调用方刷新列表）。
   const [phase, setPhase] = useState<'select' | 'report'>('select');
   const [settings, setSettings] = useState<MulticaSettingsVm | null>(null);
   const [workspaceId, setWorkspaceId] = useState('');
-  const [skills, setSkills] = useState<MulticaSkillListItemVm[]>([]);
+  const [skills, setSkills] = useState<RemoteSkillListItemVm[]>([]);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [loadingList, setLoadingList] = useState(false);
   const [pulling, setPulling] = useState(false);
   // 手动「重新加载」用 nonce 触发列表 effect 重跑（工作空间 id 不变时也生效）。
   const [reloadNonce, setReloadNonce] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [report, setReport] = useState<MulticaPullReportVm | null>(null);
+  const [report, setReport] = useState<RemoteSkillPullReportVm | null>(null);
 
   // 每次打开：重置到选择阶段并拉取连接状态 + 工作空间列表。
   useEffect(() => {
@@ -91,7 +91,7 @@ export function MulticaSkillSyncDialog({
     let cancelled = false;
     setLoadingList(true);
     setError(null);
-    listMulticaSkills(workspaceId)
+    listRemoteSkills(workspaceId)
       .then((list) => {
         if (cancelled) return;
         setSkills(list);
@@ -123,7 +123,7 @@ export function MulticaSkillSyncDialog({
     setPulling(true);
     setError(null);
     try {
-      const nextReport = await pullMulticaSkills(
+      const nextReport = await pullRemoteSkills(
         workspaceId,
         selectedIds.map((item) => item.id),
       );
@@ -149,7 +149,7 @@ export function MulticaSkillSyncDialog({
         <div className="flex min-h-0 flex-1 flex-col gap-3 p-6">
           {notConnected && (
             <p className="text-xs leading-relaxed text-muted-foreground">
-              {t('contextManagement.skills.multicaSync.notConnected')}
+              {t('contextManagement.skills.remoteSync.notConnected')}
             </p>
           )}
           {!notConnected && (
@@ -157,7 +157,7 @@ export function MulticaSkillSyncDialog({
               <div className="flex shrink-0 items-end gap-2">
                 <div className="min-w-0 flex-1 space-y-1">
                   <div className="text-xs font-medium text-muted-foreground">
-                    {t('contextManagement.skills.multicaSync.workspace')}
+                    {t('contextManagement.skills.remoteSync.workspace')}
                   </div>
                   <Select
                     value={workspaceId || undefined}
@@ -165,7 +165,7 @@ export function MulticaSkillSyncDialog({
                     disabled={loadingList || pulling || (settings?.workspaces.length ?? 0) < 2}
                   >
                     <SelectTrigger className="h-9 min-w-0 text-xs">
-                      <SelectValue placeholder={loadingList ? '…' : t('contextManagement.skills.multicaSync.workspace')} />
+                      <SelectValue placeholder={loadingList ? '…' : t('contextManagement.skills.remoteSync.workspace')} />
                     </SelectTrigger>
                     <SelectContent>
                       {(settings?.workspaces ?? []).map((ws) => (
@@ -180,7 +180,7 @@ export function MulticaSkillSyncDialog({
                   size="icon"
                   className="size-9 shrink-0"
                   disabled={!workspaceId || loadingList || pulling}
-                  aria-label={t('contextManagement.skills.multicaSync.reload')}
+                  aria-label={t('contextManagement.skills.remoteSync.reload')}
                   onClick={() => setReloadNonce((n) => n + 1)}
                 >
                   <RefreshCw className={cn('size-4', loadingList && 'animate-spin')} />
@@ -201,10 +201,10 @@ export function MulticaSkillSyncDialog({
                     onCheckedChange={(checked) => handleToggleSelectAll(checked === true)}
                   />
                   <span className="text-xs font-medium">
-                    {t('contextManagement.skills.multicaSync.selectAll')}
+                    {t('contextManagement.skills.remoteSync.selectAll')}
                   </span>
                   <span className="ml-auto text-[11px] text-muted-foreground">
-                    {t('contextManagement.skills.multicaSync.selectedCount', {
+                    {t('contextManagement.skills.remoteSync.selectedCount', {
                       selected: selectedIds.length,
                       total: skills.length,
                     })}
@@ -221,7 +221,7 @@ export function MulticaSkillSyncDialog({
                   )}
                   {!loadingList && skills.length === 0 && (
                     <p className="p-6 text-center text-xs text-muted-foreground">
-                      {t('contextManagement.skills.multicaSync.empty')}
+                      {t('contextManagement.skills.remoteSync.empty')}
                     </p>
                   )}
                   {!loadingList && skills.map((item) => (
@@ -242,11 +242,11 @@ export function MulticaSkillSyncDialog({
                           <span className="truncate text-xs font-medium">{item.name}</span>
                           {item.localState === 'new' ? (
                             <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
-                              {t('contextManagement.skills.multicaSync.newBadge')}
+                              {t('contextManagement.skills.remoteSync.newBadge')}
                             </Badge>
                           ) : (
                             <Badge variant="outline" className="h-4 px-1.5 text-[10px] text-muted-foreground">
-                              {t('contextManagement.skills.multicaSync.existsBadge')}
+                              {t('contextManagement.skills.remoteSync.existsBadge')}
                             </Badge>
                           )}
                         </span>
@@ -275,8 +275,8 @@ export function MulticaSkillSyncDialog({
             >
               {pulling ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : null}
               {selectedExistsCount > 0
-                ? t('contextManagement.skills.multicaSync.confirmWithOverwrite', { count: selectedExistsCount })
-                : t('contextManagement.skills.multicaSync.confirm')}
+                ? t('contextManagement.skills.remoteSync.confirmWithOverwrite', { count: selectedExistsCount })
+                : t('contextManagement.skills.remoteSync.confirm')}
             </Button>
           </DialogFooter>
         )}
@@ -294,7 +294,7 @@ export function MulticaSkillSyncDialog({
       <>
         <div className="gold-themed-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto p-6">
           <p className="text-xs text-muted-foreground">
-            {t('contextManagement.skills.multicaSync.reportSummary', {
+            {t('contextManagement.skills.remoteSync.reportSummary', {
               created: counts.created ?? 0,
               overwritten: counts.overwritten ?? 0,
               skipped: counts.skipped ?? 0,
@@ -322,8 +322,8 @@ export function MulticaSkillSyncDialog({
         <DialogHeader className="shrink-0 p-6 pb-0">
           <DialogTitle>
             {phase === 'select'
-              ? t('contextManagement.skills.multicaSync.title')
-              : t('contextManagement.skills.multicaSync.reportTitle')}
+              ? t('contextManagement.skills.remoteSync.title')
+              : t('contextManagement.skills.remoteSync.reportTitle')}
           </DialogTitle>
         </DialogHeader>
         {phase === 'select' ? renderSelectPhase() : renderReportPhase()}
@@ -338,9 +338,9 @@ function cap(value: string) {
 
 /// 报告阶段单行：名称 + 结果徽标 + （跳过/失败时）原因文案。
 /// 原因/结果文案用 i18n key 兜底原始值（新增错误码未翻译时不至于显示空白）。
-function ReportRow({ item, t }: { item: MulticaPullItemResultVm; t: TFunction }) {
+function ReportRow({ item, t }: { item: RemoteSkillPullItemResultVm; t: TFunction }) {
   const reasonText = item.reason
-    ? t(`contextManagement.skills.multicaSync.reason.${item.reason}`, {
+    ? t(`contextManagement.skills.remoteSync.reason.${item.reason}`, {
         defaultValue: item.reason,
       })
     : null;
@@ -348,7 +348,7 @@ function ReportRow({ item, t }: { item: MulticaPullItemResultVm; t: TFunction })
     <div className="flex items-center gap-2 rounded-md px-2 py-1.5">
       <span className="min-w-0 flex-1 truncate text-xs">{item.name}</span>
       <Badge variant="outline" className={cn('h-4 shrink-0 px-1.5 text-[10px]', outcomeBadgeClass(item.outcome))}>
-        {t(`contextManagement.skills.multicaSync.outcome${cap(item.outcome)}`, {
+        {t(`contextManagement.skills.remoteSync.outcome${cap(item.outcome)}`, {
           defaultValue: item.outcome,
         })}
       </Badge>

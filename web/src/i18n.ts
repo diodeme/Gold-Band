@@ -711,8 +711,10 @@ const resources = {
           "no-update": "当前没有可安装更新。",
           "context-unavailable": "无法获取更新上下文，请先选择工作空间。",
         },
+        remote: {
+          "source-not-configured": "尚未配置任务来源，请先完成连接。",
+        },
         multica: {
-          "not-configured": "尚未配置 Multica，请先在设置中完成接入。",
           "invalid-address": "连接地址无效：必须是合法的 http(s) 地址。",
           "connect-cancelled": "已取消连接。",
           "auth-failed": "Multica 鉴权失败：{{message}}",
@@ -1001,7 +1003,7 @@ const resources = {
             "仅当前项目可用。保存到 <project>/.gold-band/skills/<name>/SKILL.md",
           storageGlobal: "所有项目可用。保存到 {{path}}",
           storageProject: "项目级。保存到 {{path}}",
-          multicaSync: {
+          remoteSync: {
             action: "从 Multica 同步",
             title: "从 Multica 同步 SKILL",
             workspace: "工作空间",
@@ -2175,7 +2177,7 @@ const resources = {
           },
         },
       },
-      multica: {
+      remote: {
         taskManagement: {
           title: "需求管理",
           source: {
@@ -2266,7 +2268,7 @@ const resources = {
           contextManagement: "上下文",
           runModeManagement: "运行模式",
           more: "更多",
-          multicaTaskManagement: "需求管理",
+          remoteTaskManagement: "需求管理",
           pinned: "置顶",
           noPinned: "置顶会话会显示在这里",
           noWorkspaces: "尚未添加工作空间",
@@ -2306,7 +2308,7 @@ const resources = {
             failed: "执行异常，尚未查看",
           },
           settings: "设置",
-          multica: {
+          remoteTasks: {
             sectionTitle: "需求",
             emptyTitle: "尚未连接 Multica",
             emptyDescription: "连接后可在此查看并领取 Multica 需求。",
@@ -2334,9 +2336,9 @@ const resources = {
           },
         },
         composer: {
-          multicaNeedLocalWorkspace: "请先添加本地工作空间，再执行需求",
-          multicaBindingTag: "Multica · {{title}}",
-          removeMulticaBinding: "解除任务绑定",
+          remoteNeedLocalWorkspace: "请先添加本地工作空间，再执行需求",
+          remoteBindingTag: "{{source}} · {{title}}",
+          removeRemoteBinding: "解除任务绑定",
         },
         branchPicker: {
           label: "分支",
@@ -3246,9 +3248,11 @@ const resources = {
             "Cannot check for updates without a workspace selected.",
           "no-update": "No update is available.",
         },
+        remote: {
+          "source-not-configured":
+            "Task source is not configured. Connect first.",
+        },
         multica: {
-          "not-configured":
-            "Multica is not configured. Complete setup in Settings first.",
           "invalid-address":
             "Invalid connection address: must be a valid http(s) URL.",
           "connect-cancelled": "Connection cancelled.",
@@ -3548,7 +3552,7 @@ const resources = {
             "Only available when this project is open. Saved to <project>/.gold-band/skills/<name>/SKILL.md",
           storageGlobal: "Available across every project. Saved to {{path}}",
           storageProject: "Project-level. Saved to {{path}}",
-          multicaSync: {
+          remoteSync: {
             action: "Sync from Multica",
             title: "Sync SKILLs from Multica",
             workspace: "Workspace",
@@ -4752,7 +4756,7 @@ const resources = {
           },
         },
       },
-      multica: {
+      remote: {
         taskManagement: {
           title: "Requirements",
           source: {
@@ -4846,7 +4850,7 @@ const resources = {
           contextManagement: "Context",
           runModeManagement: "Run Mode",
           more: "More",
-          multicaTaskManagement: "Requirements",
+          remoteTaskManagement: "Requirements",
           pinned: "Pinned",
           noPinned: "Pinned conversations appear here",
           noWorkspaces: "No workspaces added",
@@ -4886,7 +4890,7 @@ const resources = {
             failed: "Failed, not viewed",
           },
           settings: "Settings",
-          multica: {
+          remoteTasks: {
             sectionTitle: "Requirements",
             emptyTitle: "Not connected to Multica",
             emptyDescription: "Connect to view and claim Multica requirements.",
@@ -4914,9 +4918,9 @@ const resources = {
           },
         },
         composer: {
-          multicaNeedLocalWorkspace: "Add a local workspace before running a requirement",
-          multicaBindingTag: "Multica · {{title}}",
-          removeMulticaBinding: "Unbind task",
+          remoteNeedLocalWorkspace: "Add a local workspace before running a requirement",
+          remoteBindingTag: "{{source}} · {{title}}",
+          removeRemoteBinding: "Unbind task",
         },
         branchPicker: {
           label: "Branch",

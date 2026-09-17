@@ -17,13 +17,13 @@
 use std::time::{Duration, Instant};
 
 use camino::Utf8PathBuf;
-use gold_band::config::MulticaWorkspaceRef;
+use gold_band::config::RemoteWorkspaceRef;
 use tauri::{AppHandle, Manager, Runtime};
 
 use crate::channel::current_channel_config;
 use crate::conversation_workspace::workspace_entry_for_project;
 use crate::metrics::get_system_username;
-use crate::multica::bridge::{emit_multica_task_updated, teardown_active_run};
+use crate::multica::bridge::{emit_remote_tasks_updated, teardown_active_run};
 use crate::multica::client::{HeartbeatAck, MulticaClient, RegisterRequest, RuntimeSpec};
 use crate::multica::config::{get_daemon_id, get_pat, multica_base_url, multica_settings};
 use crate::multica::error::MulticaError;
@@ -231,7 +231,7 @@ async fn run_heartbeat_loop<R: Runtime>(app: AppHandle<R>) {
                         //
                         // 与 skill 待办解耦：不并入 dispatch_pending_skill_work 的早返回（两件事各自独立）。
                         if ack_signals_readiness_change(&ack) {
-                            emit_multica_task_updated(&app);
+                            emit_remote_tasks_updated(&app);
                         }
                         dispatch_pending_skill_work(&app, &client, workspace_id, runtime_id, ack)
                     }
@@ -294,7 +294,7 @@ fn trace_stage(stage: &'static str, start: Instant) {
 /// 三层 guard + 取启动注册参数（未启用 / 无 PAT / 无 workspace -> None，静默跳过）。
 fn resolve_startup_params<R: Runtime>(
     app: &AppHandle<R>,
-) -> Option<(MulticaClient, Vec<MulticaWorkspaceRef>, String)> {
+) -> Option<(MulticaClient, Vec<RemoteWorkspaceRef>, String)> {
     let state = app.try_state::<DesktopState>()?;
     let context = state.context().ok()?;
     if !multica_settings(&context.config).enabled {
@@ -375,7 +375,7 @@ async fn self_heal_registration<R: Runtime>(app: &AppHandle<R>, client: &Multica
 /// register 必失败，跳过避免无谓 HTTP（用户未连接时心跳 tick 整体由 `build_client` 返回 None 拦截）。
 fn resolve_self_heal_inputs<R: Runtime>(
     app: &AppHandle<R>,
-) -> Option<(Vec<MulticaWorkspaceRef>, String, SharedMulticaState)> {
+) -> Option<(Vec<RemoteWorkspaceRef>, String, SharedMulticaState)> {
     let desktop = app.try_state::<DesktopState>()?;
     let context = desktop.context().ok()?;
     let settings = multica_settings(&context.config);
@@ -503,7 +503,7 @@ async fn detect_cancelled_active_runs<R: Runtime>(app: &AppHandle<R>, client: &M
         if invalidate {
             spawn_invalidate(app, &remote).await;
             // 本地 run 已作废（remote terminal / 404）-> 通知前端刷新 sidebar。
-            emit_multica_task_updated(app);
+            emit_remote_tasks_updated(app);
         }
     }
 }
@@ -519,7 +519,7 @@ async fn reconcile_startup_orphans<R: Runtime>(app: &AppHandle<R>, client: &Mult
         if invalidate {
             spawn_invalidate(app, &remote).await;
             // 本地 run 已作废（remote terminal / 404）-> 通知前端刷新 sidebar。
-            emit_multica_task_updated(app);
+            emit_remote_tasks_updated(app);
         }
     }
 }
@@ -541,7 +541,7 @@ fn orphan_remote_ids<R: Runtime>(app: &AppHandle<R>) -> Vec<String> {
     app.try_state::<DesktopState>()
         .and_then(|desktop| desktop.context().ok())
         .and_then(|context| context.app().load_state().ok())
-        .and_then(|state| state.multica_task_conversations)
+        .and_then(|state| state.remote_task_conversations)
         .map(|map| map.keys().cloned().collect())
         .unwrap_or_default()
 }
@@ -582,7 +582,7 @@ fn invalidate_remote_task<R: Runtime>(app: &AppHandle<R>, remote: &str) {
         })
         .or_else(|| {
             let state = home_app.load_state().ok()?;
-            let conv = state.multica_task_conversations.as_ref()?.get(remote)?;
+            let conv = state.remote_task_conversations.as_ref()?.get(remote)?;
             let wp = conv.work_dir.clone()?;
             Some((wp, conv.local_task_id.clone(), conv.local_run_id.clone()))
         })

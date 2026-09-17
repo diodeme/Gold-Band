@@ -18,7 +18,7 @@ import type {
 } from '../types';
 import { EntitySection } from '@/components/EntitySection';
 import { McpServerCard } from '@/components/McpServerCard';
-import { MulticaSkillSyncDialog } from '@/components/MulticaSkillSyncDialog';
+import { RemoteSkillSyncDialog } from '@/components/RemoteSkillSyncDialog';
 import { EmptyState, Page, PageContent, PageHeader } from '@/components/PageScaffold';
 import { SkillAgentOverflow } from '@/components/SkillAgentOverflow';
 import { SkillSyncTargetSelector } from '@/components/SkillSyncTargetSelector';
@@ -168,8 +168,8 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
   const [skillTab, setSkillTab] = useState<'global' | 'project'>('global');
   const [skillQuery, setSkillQuery] = useState('');
   const [skillAgentFilter, setSkillAgentFilter] = useState<string>('all');
-  // Multica SKILL 同步弹窗（仅全局 Tab 展示入口；拉取目标恒为全局库）。
-  const [multicaSyncOpen, setMulticaSyncOpen] = useState(false);
+  // 远程来源 SKILL 同步弹窗（仅全局 Tab 展示入口；拉取目标恒为全局库）。
+  const [remoteSyncOpen, setRemoteSyncOpen] = useState(false);
   const [selectedWorkspace, setSelectedWorkspace] = useState<string>('');
   const [workspaces, setWorkspaces] = useState<Array<{ projectId: string; workspacePath: string; name: string }>>([]);
   const needsSkillContext = activeTab === 'skills' || skillSheetMode === 'create';
@@ -865,9 +865,9 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
               <>
                 <EntityRefreshButton label={t('common.refresh')} loading={skillLoading} onRefresh={() => void refreshSkills()} />
                 {skillTab === 'global' && !readOnly && (
-                  <Button variant="outline" size="sm" onClick={() => setMulticaSyncOpen(true)}>
+                  <Button variant="outline" size="sm" onClick={() => setRemoteSyncOpen(true)}>
                     <CloudDownload className="size-4" />
-                    {t('contextManagement.skills.multicaSync.action')}
+                    {t('contextManagement.skills.remoteSync.action')}
                   </Button>
                 )}
                 {!readOnly && <Button size="sm" onClick={() => { setSkillEditTarget(null); setSkillSheetContent(null); setSkillEditWsPath(null); setSkillSheetMode('create'); }}><Plus className="size-4" />{t('contextManagement.skills.createSkill', '创建')}</Button>}
@@ -972,9 +972,9 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
         </PageContent>
       )}
 
-      <MulticaSkillSyncDialog
-        open={multicaSyncOpen}
-        onOpenChange={setMulticaSyncOpen}
+      <RemoteSkillSyncDialog
+        open={remoteSyncOpen}
+        onOpenChange={setRemoteSyncOpen}
         onFinished={() => void refreshSkills()}
       />
 

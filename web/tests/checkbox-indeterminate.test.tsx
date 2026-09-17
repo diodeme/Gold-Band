@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { Checkbox } from '@/components/ui/checkbox';
 
-// 三态 Checkbox 是 MulticaSkillSyncDialog 全选开关的依赖：indeterminate 必须渲染
+// 三态 Checkbox 是 RemoteSkillSyncDialog 全选开关的依赖：indeterminate 必须渲染
 // 减号图标并带主题 accent 填充（ui-interaction.md §8 选中态用主题色），
 // 否则部分勾选态视觉上与未勾选混淆（Radix Indicator 对 indeterminate 也渲染，
 // copy-in 原版只有 CheckIcon + checked 态样式时会出现「无填充方框里的对勾」）。

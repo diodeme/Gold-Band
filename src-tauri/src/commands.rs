@@ -4780,7 +4780,7 @@ pub async fn connect_multica(
         .update_settings_config(&existing)
         .map_err(command_error)?;
     // 连接态变更 → 通知任务列表 + 设置页 re-fetch（跨视图同步）。
-    crate::multica::bridge::emit_multica_settings_updated(&app_handle);
+    crate::multica::bridge::emit_remote_source_settings_updated(&app_handle);
     // 即时注册所有已绑定 workspace（根因修复 Bug 1：旧实现 connect 不注册，首连后心跳空转）。
     // await：claim 需 runtime_id，注册完成后才返回，避免用户连上立即领取撞 RuntimeOffline。
     crate::multica::loop_::register_all_bound_workspaces(&app_handle).await;
@@ -4821,7 +4821,7 @@ pub fn disconnect_multica(
         guard.clear_runtime_ids();
     }
     // 连接态变更 → 通知任务列表 + 设置页 re-fetch（回到「连接 Multica」空状态）。
-    crate::multica::bridge::emit_multica_settings_updated(&app_handle);
+    crate::multica::bridge::emit_remote_source_settings_updated(&app_handle);
     let updated_context = state.context().map_err(command_error)?;
     Ok(multica_settings(&updated_context.config))
 }
@@ -4886,7 +4886,7 @@ pub fn save_multica_connection_address(
         .update_settings_config(&existing)
         .map_err(command_error)?;
     // 地址覆盖变更 → 通知任务列表 + 设置页 re-fetch（弹窗回显与侧栏连接态同步）。
-    crate::multica::bridge::emit_multica_settings_updated(&app_handle);
+    crate::multica::bridge::emit_remote_source_settings_updated(&app_handle);
     let updated_context = state.context().map_err(command_error)?;
     Ok(multica_settings(&updated_context.config))
 }

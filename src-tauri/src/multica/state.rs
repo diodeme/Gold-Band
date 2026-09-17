@@ -38,7 +38,7 @@ pub struct ActiveRemoteRun {
     pub title: Option<String>,
     pub started_at: String,
     /// issue 类型快照（claim 响应的 `issue_kind`，story dev/test 拆分）。终态历史
-    /// `MulticaCompletedTask.issue_kind` 的写入源——running 行与终态行的类型徽标都由它供给。
+    /// `RemoteCompletedTask.issue_kind` 的写入源——running 行与终态行的类型徽标都由它供给。
     /// `is_ready` 不快照：领取后无「就绪」语义。
     pub issue_kind: Option<String>,
 }

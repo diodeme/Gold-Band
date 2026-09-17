@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use gold_band::config::{MulticaCompletedTask, MulticaWorkspaceRef};
+use gold_band::config::{RemoteCompletedTask, RemoteWorkspaceRef};
 use serde::Serialize;
 
 use crate::multica::client::RemoteTask;
@@ -17,7 +17,8 @@ use crate::multica::state::ActiveRemoteRun;
 #[serde(rename_all = "camelCase")]
 pub struct RemoteTaskVm {
     pub id: String,
-    pub issue_id: Option<String>,
+    /// 来源侧工作项引用（翻译自 wire `issue_id`，中立词汇 `issue_ref`，不暴露 issue 语义）。
+    pub issue_ref: Option<String>,
     /// `queued` | `running` | `completed` | `failed`（由 `normalize_remote_status` 归一）。
     pub status: String,
     pub workspace_id: String,
@@ -34,28 +35,32 @@ pub struct RemoteTaskVm {
     pub local_task_id: Option<String>,
     pub run_id: Option<String>,
     pub project_id: Option<String>,
-    /// issue 类型（`dev`|`test`|`bug`|`general`，story dev/test 拆分）。序列化为 `issueKind: string | null`。
+    /// 工作项类型（中立词汇 `kind`，翻译自 wire `issue_kind`；`dev`|`test`|`bug`|`general`，
+    /// story dev/test 拆分）。序列化为 `kind: string | null`。
     ///
     /// pending / detail 透传 wire 字段；active / completed 行取本地快照（`ActiveRemoteRun` /
-    /// `MulticaCompletedTask` 的同名字段）。旧 server 不发、旧历史缺字段 → None，前端不渲染徽标。
-    pub issue_kind: Option<String>,
-    /// test 任务就绪标记（服务端派生）。序列化为 `isReady: boolean | null`。
+    /// `RemoteCompletedTask` 的对应字段）。旧 server 不发、旧历史缺字段 → None，前端不渲染徽标。
+    pub kind: Option<String>,
+    /// test 任务就绪标记（服务端派生，翻译自 wire `is_ready`）。序列化为 `readiness: boolean | null`。
     ///
     /// 仅 pending / detail 行有意义（queued 才有「能否执行」的问题）；active（已领取执行中）
     /// 与 completed（终态）行恒 None，前端不渲染就绪态。旧 server 不发 → None。
-    pub is_ready: Option<bool>,
+    pub readiness: Option<bool>,
 }
 
 /// 远程任务列表 sidebar（对齐 ConversationSidebarVm 形状，line 652-658）。
 ///
 /// - `tasks_by_workspace`：远程任务（active + 终态），按 workspace 分组（key = workspace id）。
-///   终态行来自本地 `multica_completed_tasks` 历史，按 `workspace_id` 归入对应工作空间（改动六：
+///   终态行来自本地 `remote_completed_tasks` 历史，按 `workspace_id` 归入对应工作空间（改动六：
 ///   取代扁平全局「最近完成」桶，提升可读性；终态行带 `local_task_id`/`run_id`/`project_id` 可直达会话）。
 /// - `connected`：未连接 → 前端显示空状态 + 连接入口（不另查 patSet）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteConversationSidebarVm {
-    pub workspaces: Vec<MulticaWorkspaceRef>,
+    /// 当前任务来源（`desktop_remote_task_source` 指针取值，如 "multica"）——前端来源选择器
+    /// 与 draft 绑定的通用层路由键（不变量 3）。
+    pub source: String,
+    pub workspaces: Vec<RemoteWorkspaceRef>,
     pub tasks_by_workspace: BTreeMap<String, Vec<RemoteTaskVm>>,
     pub last_active_workspace_id: Option<String>,
     pub connected: bool,
@@ -76,13 +81,13 @@ impl RemoteTaskVm {
         vm
     }
 
-    /// 终态回看行（`multica_completed_tasks` 本地历史，改动六）。`completed_at` → `last_activity_at`
+    /// 终态回看行（`remote_completed_tasks` 本地历史，改动六）。`completed_at` → `last_activity_at`
     /// （前端复用既有时间渲染；终态时间即「最近活动」），并填入本地 run 链接供整行点击直达会话。
     /// `project_id` 由调用方经 workspaces 列表解析（未绑定 workspace 不进列表，调用前已过滤）。
-    pub fn from_completed(c: &MulticaCompletedTask, project_id: &str) -> Self {
+    pub fn from_completed(c: &RemoteCompletedTask, project_id: &str) -> Self {
         Self {
             id: c.remote_task_id.clone(),
-            issue_id: c.issue_id.clone(),
+            issue_ref: c.issue_ref.clone(),
             // 本地历史 status 已是归一值（"completed" | "failed"），原样透传。
             status: c.status.clone(),
             workspace_id: c.workspace_id.clone(),
@@ -98,8 +103,8 @@ impl RemoteTaskVm {
             run_id: Some(c.local_run_id.clone()),
             project_id: Some(project_id.to_string()),
             // 类型取本地快照（multica C1：终态行类型徽标不丢）；终态无「就绪」语义 → 恒 None。
-            issue_kind: c.issue_kind.clone(),
-            is_ready: None,
+            kind: c.kind.clone(),
+            readiness: None,
         }
     }
 
@@ -111,7 +116,7 @@ impl RemoteTaskVm {
     pub fn from_active_run(remote_task_id: &str, run: &ActiveRemoteRun, project_id: &str) -> Self {
         Self {
             id: remote_task_id.to_string(),
-            issue_id: run.issue_id.clone(),
+            issue_ref: run.issue_id.clone(),
             status: "running".to_string(),
             workspace_id: run.workspace_id.clone(),
             title: run
@@ -125,15 +130,15 @@ impl RemoteTaskVm {
             run_id: Some(run.local_run_id.clone()),
             project_id: Some(project_id.to_string()),
             // 类型取 claim 时随 ActiveRemoteRun 落的快照；已领取执行中无「就绪」语义 → 恒 None。
-            issue_kind: run.issue_kind.clone(),
-            is_ready: None,
+            kind: run.issue_kind.clone(),
+            readiness: None,
         }
     }
 
     fn from_remote(task: &RemoteTask, workspace_id: &str) -> Self {
         Self {
             id: task.id.clone(),
-            issue_id: task.issue_id.clone(),
+            issue_ref: task.issue_id.clone(),
             status: normalize_remote_status(&task.status),
             workspace_id: workspace_id.to_string(),
             // 兑现 client.rs 的兜底约定：thread_name 缺失/空白时用 task id 兜底，
@@ -149,9 +154,9 @@ impl RemoteTaskVm {
             local_task_id: None,
             run_id: None,
             project_id: None,
-            // wire 字段透传（from_pending / from_detail 共用本构造；claim-at-send 门控数据源）。
-            issue_kind: task.issue_kind.clone(),
-            is_ready: task.is_ready,
+            // wire 字段透传并翻译为中立词汇（from_pending / from_detail 共用本构造；claim-at-send 门控数据源）。
+            kind: task.issue_kind.clone(),
+            readiness: task.is_ready,
         }
     }
 }
@@ -247,15 +252,15 @@ mod tests {
         };
         let vm = RemoteTaskVm::from_pending(&task, "ws-1");
         assert_eq!(vm.id, "t-1");
-        assert_eq!(vm.issue_id.as_deref(), Some("iss-1"));
+        assert_eq!(vm.issue_ref.as_deref(), Some("iss-1"));
         assert_eq!(vm.status, "queued");
         assert_eq!(vm.workspace_id, "ws-1");
         assert_eq!(vm.title, "Fix bug");
         // pending 列表无正文来源 → requirement 留 None（预填只在 claim 后才有）。
         assert!(vm.requirement.is_none());
         // story 拆分：pending 行透传 wire 类型；无就绪标记（dev 不受门控）→ None。
-        assert_eq!(vm.issue_kind.as_deref(), Some("dev"));
-        assert!(vm.is_ready.is_none());
+        assert_eq!(vm.kind.as_deref(), Some("dev"));
+        assert!(vm.readiness.is_none());
         // auth_token 永不入 VM（执行凭证不回显）。
     }
 
@@ -281,13 +286,13 @@ mod tests {
             is_ready: Some(false),
         };
         let vm = RemoteTaskVm::from_pending(&task, "ws-1");
-        assert_eq!(vm.issue_kind.as_deref(), Some("test"));
-        assert_eq!(vm.is_ready, Some(false));
+        assert_eq!(vm.kind.as_deref(), Some("test"));
+        assert_eq!(vm.readiness, Some(false));
 
         // detail 同源（claim-at-send 门控读它）——两构造共用 from_remote，一并锁定。
         let detail = RemoteTaskVm::from_detail(&task, "ws-1");
-        assert_eq!(detail.issue_kind.as_deref(), Some("test"));
-        assert_eq!(detail.is_ready, Some(false));
+        assert_eq!(detail.kind.as_deref(), Some("test"));
+        assert_eq!(detail.readiness, Some(false));
     }
 
     #[test]
@@ -403,7 +408,7 @@ mod tests {
     fn remote_task_vm_serializes_camel_case_keys() {
         let vm = RemoteTaskVm {
             id: "t-1".into(),
-            issue_id: Some("iss-1".into()),
+            issue_ref: Some("iss-1".into()),
             status: "queued".into(),
             workspace_id: "ws-1".into(),
             title: "Fix bug".into(),
@@ -412,21 +417,21 @@ mod tests {
             local_task_id: None,
             run_id: None,
             project_id: None,
-            issue_kind: Some("test".into()),
-            is_ready: Some(true),
+            kind: Some("test".into()),
+            readiness: Some(true),
         };
         let json = serde_json::to_value(&vm).unwrap();
         // 锁定 camelCase 键名（对齐 line 650 TS，前端按这些键取值）。
         assert_eq!(json["id"], "t-1");
-        assert_eq!(json["issueId"], "iss-1");
+        assert_eq!(json["issueRef"], "iss-1");
         assert_eq!(json["status"], "queued");
         assert_eq!(json["workspaceId"], "ws-1");
         assert_eq!(json["title"], "Fix bug");
         assert_eq!(json["lastActivityAt"], "2026-08-04T10:00:00Z");
         assert_eq!(json["requirement"], "prefill body");
-        // story 拆分字段（web/src/types.ts 的 issueKind / isReady）。
-        assert_eq!(json["issueKind"], "test");
-        assert_eq!(json["isReady"], true);
+        // 中立词汇字段（web/src/types.ts 的 kind / readiness，翻译自 wire issueKind / isReady）。
+        assert_eq!(json["kind"], "test");
+        assert_eq!(json["readiness"], true);
         // active 行无本地 run 链接（终态行才填）。
         assert!(json["localTaskId"].is_null());
         assert!(json["runId"].is_null());
@@ -438,6 +443,7 @@ mod tests {
     #[test]
     fn sidebar_vm_serializes_aligned_sidebar_keys() {
         let sidebar = RemoteConversationSidebarVm {
+            source: "multica".to_string(),
             workspaces: Vec::new(),
             tasks_by_workspace: BTreeMap::new(),
             last_active_workspace_id: Some("ws-1".into()),
@@ -458,21 +464,21 @@ mod tests {
     #[test]
     fn from_completed_carries_local_run_link_and_terminal_status() {
         // 终态回看行（改动六）：本地历史 → RemoteTaskVm，带本地 run 链接供整行点击直达会话。
-        let c = MulticaCompletedTask {
+        let c = RemoteCompletedTask {
             remote_task_id: "rt-1".into(),
             local_task_id: "task-1".into(),
             local_run_id: "run-1".into(),
             workspace_id: "ws-1".into(),
             local_project_id: "proj-1".into(),
-            issue_id: Some("iss-1".into()),
-            issue_kind: Some("test".into()),
+            issue_ref: Some("iss-1".into()),
+            kind: Some("test".into()),
             status: "completed".into(),
             title: "Done thing".into(),
             completed_at: "2026-08-06T01:23:45Z".into(),
         };
         let vm = RemoteTaskVm::from_completed(&c, "proj-1");
         assert_eq!(vm.id, "rt-1");
-        assert_eq!(vm.issue_id.as_deref(), Some("iss-1"));
+        assert_eq!(vm.issue_ref.as_deref(), Some("iss-1"));
         assert_eq!(vm.status, "completed"); // 本地历史 status 原样透传
         assert_eq!(vm.workspace_id, "ws-1");
         assert_eq!(vm.title, "Done thing");
@@ -483,27 +489,27 @@ mod tests {
         assert_eq!(vm.run_id.as_deref(), Some("run-1"));
         assert_eq!(vm.project_id.as_deref(), Some("proj-1"));
         // story 拆分：终态行类型取本地快照（徽标不丢）；终态无就绪语义 → 恒 None。
-        assert_eq!(vm.issue_kind.as_deref(), Some("test"));
-        assert!(vm.is_ready.is_none());
+        assert_eq!(vm.kind.as_deref(), Some("test"));
+        assert!(vm.readiness.is_none());
 
-        // 旧历史条目（缺 issue_kind）→ None，徽标不渲染（无迁移、无兼容层）。
-        let legacy = MulticaCompletedTask {
-            issue_kind: None,
+        // 旧历史条目（缺 kind）→ None，徽标不渲染（无迁移、无兼容层）。
+        let legacy = RemoteCompletedTask {
+            kind: None,
             ..c.clone()
         };
         let legacy_vm = RemoteTaskVm::from_completed(&legacy, "proj-1");
-        assert!(legacy_vm.issue_kind.is_none());
-        assert!(legacy_vm.is_ready.is_none());
+        assert!(legacy_vm.kind.is_none());
+        assert!(legacy_vm.readiness.is_none());
 
         // title 空白 → 用 remote_task_id 兜底（不留空标签）。
-        let blank = MulticaCompletedTask {
+        let blank = RemoteCompletedTask {
             title: "  ".into(),
             ..c.clone()
         };
         assert_eq!(RemoteTaskVm::from_completed(&blank, "proj-1").title, "rt-1");
 
         // failed 终态同样进列表（status 原样透传）。
-        let failed = MulticaCompletedTask {
+        let failed = RemoteCompletedTask {
             status: "failed".into(),
             ..c
         };
@@ -528,7 +534,7 @@ mod tests {
         };
         let vm = RemoteTaskVm::from_active_run("remote-9", &run, "proj-1");
         assert_eq!(vm.id, "remote-9");
-        assert_eq!(vm.issue_id.as_deref(), Some("iss-9"));
+        assert_eq!(vm.issue_ref.as_deref(), Some("iss-9"));
         assert_eq!(vm.status, "running"); // 进行中固定标识
         assert_eq!(vm.workspace_id, "ws-1");
         assert_eq!(vm.title, "In flight");
@@ -540,8 +546,8 @@ mod tests {
         assert_eq!(vm.run_id.as_deref(), Some("run-9"));
         assert_eq!(vm.project_id.as_deref(), Some("proj-1"));
         // story 拆分：类型取 ActiveRemoteRun 快照（claim 时落盘）；已领取执行中无就绪语义 → 恒 None。
-        assert_eq!(vm.issue_kind.as_deref(), Some("test"));
-        assert!(vm.is_ready.is_none());
+        assert_eq!(vm.kind.as_deref(), Some("test"));
+        assert!(vm.readiness.is_none());
 
         // title 空/纯空白 → remote_task_id 兜底（不留空标签，与其它构造器一致）。
         let blank = ActiveRemoteRun {

@@ -24,7 +24,7 @@ const SettingsPage = lazy(() => import('@/pages/SettingsPage').then((m) => ({ de
 const AgentManagementPage = lazy(() => import('@/pages/AgentManagementPage').then((m) => ({ default: m.AgentManagementPage })));
 const ConversationHomePage = lazy(() => import('@/pages/ConversationHomePage').then((m) => ({ default: m.ConversationHomePage })));
 const RunModeManagementPage = lazy(() => import('@/pages/RunModeManagementPage').then((m) => ({ default: m.RunModeManagementPage })));
-const MulticaTaskManagementPage = lazy(() => import('@/pages/MulticaTaskManagementPage').then((m) => ({ default: m.MulticaTaskManagementPage })));
+const RemoteTaskManagementPage = lazy(() => import('@/pages/RemoteTaskManagementPage').then((m) => ({ default: m.RemoteTaskManagementPage })));
 const ScheduledTaskManagementPage = lazy(() => import('@/pages/ScheduledTaskManagementPage').then((m) => ({ default: m.ScheduledTaskManagementPage })));
 const ScheduledTaskDetailPage = lazy(() => import('@/pages/ScheduledTaskDetailPage').then((m) => ({ default: m.ScheduledTaskDetailPage })));
 const noop = () => {};
@@ -64,7 +64,7 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
   }, []);
   function navigate(next: ConversationPage) {
     const hash = next.kind === 'conversation-run' ? next.taskId : next.kind;
-    if (![...DEMO_TASKS, 'contexts', 'settings', 'run-mode-management', 'agents', 'conversation-home', 'multica-tasks', 'scheduled-tasks', 'scheduled-task-create', 'scheduled-task-detail'].includes(hash)) return;
+    if (![...DEMO_TASKS, 'contexts', 'settings', 'run-mode-management', 'agents', 'conversation-home', 'remote-tasks', 'scheduled-tasks', 'scheduled-task-create', 'scheduled-task-detail'].includes(hash)) return;
     location.hash = next.kind === 'conversation-run' ? `${hash}?${new URLSearchParams({ run: next.runId })}` : next.kind === 'scheduled-task-detail' ? `${hash}?${new URLSearchParams({ id: next.scheduledTaskId })}` : hash;
     setPage(pageFromHash());
     setNavigationOpen(false);
@@ -102,7 +102,7 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
       <Suspense fallback={<div className="p-5 text-sm text-muted-foreground">{t('common.loading')}</div>}>
         {page.kind === 'contexts' ? <ContextManagementPage key={linkParameters.get('tab')} initialTab={linkParameters.get('tab') === 'mcp' ? 'mcp' : linkParameters.get('tab') === 'skills' ? 'skills' : 'profiles'} agentRegistry={demoAgentRegistry} onAgentRegistryChange={noop} />
           : page.kind === 'agents' ? <AgentManagementPage vm={demoAgentRegistry} loading={false} onRefresh={noop} onRegistryChange={noop} />
-          : page.kind === 'multica-tasks' ? <MulticaTaskManagementPage key={preferences.language} onSelectRun={(projectId, taskId, runId) => navigate({ kind: 'conversation-run', projectId, taskId, runId })} onPrepareMulticaTask={() => navigate({ kind: 'conversation-home' })} />
+          : page.kind === 'remote-tasks' ? <RemoteTaskManagementPage key={preferences.language} onSelectRun={(projectId, taskId, runId) => navigate({ kind: 'conversation-run', projectId, taskId, runId })} onPrepareRemoteTask={() => navigate({ kind: 'conversation-home' })} />
           : page.kind === 'scheduled-tasks' ? <ScheduledTaskManagementPage key={preferences.language} onCreate={() => navigate({ kind: 'scheduled-task-create' })} onOpenDetail={(task) => navigate({ kind: 'scheduled-task-detail', projectId: task.projectId, scheduledTaskId: task.id })} />
           : page.kind === 'scheduled-task-detail' ? <ScheduledTaskDetailPage key={`${page.scheduledTaskId}:${preferences.language}`} projectId={page.projectId} scheduledTaskId={page.scheduledTaskId} onBack={() => navigate({ kind: 'scheduled-tasks' })} onOpenOccurrence={navigate} />
           : page.kind === 'conversation-home' || page.kind === 'scheduled-task-create' ? <ConversationHomePage

@@ -142,12 +142,13 @@ export interface MulticaSettingsVm {
 
 export interface RemoteTaskVm {
   id: string;
-  issueId: string | null;
+  /// issue 中立引用（原 issue_id，adapter 构造时翻译）；无 issue 关联时 null。
+  issueRef: string | null;
   status: string;
   workspaceId: string;
   title: string;
   /// claim 响应里解析出的需求正文（quick-create/chat/comment/autopilot/handoff 来源优先级取首个非空，无则 null）。
-  /// 仅 claim 后回填；pending 列表（get_multica_tasks）该字段恒为 null——预填 composer 必须先 claim。
+  /// 仅 claim 后回填；pending 列表（get_remote_tasks）该字段恒为 null——预填 composer 必须先 claim。
   requirement: string | null;
   lastActivityAt: string | null;
   /// 终态行（completed/failed）才回填：本地 run 链接，供整行点击 onSelectRun(projectId, taskId, runId) 直达会话。
@@ -155,15 +156,17 @@ export interface RemoteTaskVm {
   localTaskId: string | null;
   runId: string | null;
   projectId: string | null;
-  /// issue 类型（`dev` | `test` | `bug` | `general`；story dev/test 拆分）。旧 server 不发 → null，
+  /// 工作项类型（原 issue_kind：`dev` | `test` | `bug` | `general`；story dev/test 拆分）。旧 server 不发 → null，
   /// 看板不渲染类型徽标、无门控——行为与拆分前一致（版本解耦）。
-  issueKind: string | null;
-  /// test 任务就绪标记（服务端派生：父 dev issue 已 done 才 true）。仅 pending/detail 行有值，
+  kind: string | null;
+  /// 就绪标记（原 is_ready；服务端派生：父 dev issue 已 done 才 true）。仅 pending/detail 行有值，
   /// running/completed 行恒 null（已领取/终态无「能否执行」语义）。旧 server 不发 → null。
-  isReady: boolean | null;
+  readiness: boolean | null;
 }
 
 export interface RemoteConversationSidebarVm {
+  /// 当前任务来源指针取值（`desktop_remote_task_source`，如 "multica"）——来源选择器的选中值。
+  source: string;
   workspaces: MulticaWorkspaceRefVm[];
   /// 该工作空间的全部远程任务（active queued/running + 终态 completed/failed）；终态行带 localTaskId/runId/projectId 可直达会话。
   tasksByWorkspace: Record<string, RemoteTaskVm[]>;
@@ -171,8 +174,8 @@ export interface RemoteConversationSidebarVm {
   connected: boolean;
 }
 
-/// 「从 Multica 同步」勾选列表项（list_multica_skills 返回）。
-export interface MulticaSkillListItemVm {
+/// 「从远程同步」勾选列表项（list_remote_skills 返回）。
+export interface RemoteSkillListItemVm {
   id: string;
   name: string;
   description: string;
@@ -180,8 +183,8 @@ export interface MulticaSkillListItemVm {
   localState: string;
 }
 
-/// 单个选中项的同步结果（pull_multica_skills 返回）。
-export interface MulticaPullItemResultVm {
+/// 单个选中项的同步结果（pull_remote_skills 返回）。
+export interface RemoteSkillPullItemResultVm {
   id: string;
   name: string;
   /// "created" | "overwritten" | "skipped" | "failed"。
@@ -190,8 +193,8 @@ export interface MulticaPullItemResultVm {
   reason: string | null;
 }
 
-export interface MulticaPullReportVm {
-  results: MulticaPullItemResultVm[];
+export interface RemoteSkillPullReportVm {
+  results: RemoteSkillPullItemResultVm[];
 }
 
 export interface UpdateInfoVm {
@@ -2239,7 +2242,7 @@ export type ConversationPage =
       outerAttemptId?: string;
     }
   | { kind: 'run-mode-management' }
-  | { kind: 'multica-tasks' }
+  | { kind: 'remote-tasks' }
   | { kind: 'agents' }
   | { kind: 'contexts' }
   | { kind: 'scheduled-tasks' }

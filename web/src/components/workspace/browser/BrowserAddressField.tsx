@@ -1,37 +1,47 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Search, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { Button } from '@/components/ui/button';
+import { reportFrontendError } from '@/api';
+import { getRuntimeApi } from '@/api/client';
+import { isTauriRuntime } from '@/api/shared';
 import { Input } from '@/components/ui/input';
-import { cn } from '@/lib/utils';
-import { BrowserFavicon } from './BrowserFavicon';
+import { BrowserAddressSuggestionList } from './BrowserAddressSuggestionList';
 import { browserHistoryStore } from './browser-history-store';
 import {
   browserAddressSuggestions,
-  displayBrowserVisitUrl,
   type BrowserAddressSuggestion,
 } from './browser-history';
+import {
+  browserAddressSuggestionKey,
+  browserAddressSuggestionOverlayItems,
+  createBrowserAddressSuggestionOverlayInput,
+  nextBrowserAddressSuggestionRevision,
+} from './browser-address-overlay';
 
 export function BrowserAddressField({
   address,
   typed,
+  onEditingChange,
   onAddressChange,
   onTyped,
   onSubmit,
-  onOverlayChange,
 }: {
   address: string;
   typed: boolean;
+  onEditingChange?: (editing: boolean) => void;
   onAddressChange: (value: string) => void;
   onTyped: () => void;
   onSubmit: (value?: string) => void;
-  onOverlayChange?: (rect: DOMRect | null) => void;
 }) {
   const { t } = useTranslation();
   const listId = useId();
-  const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const typedRef = useRef(typed);
+  const nativeOverlay = isTauriRuntime();
+  // Revision of the projection the overlay is currently displaying. It intentionally
+  // survives a hide: clicking the overlay blurs the address input and hides the overlay
+  // first, and the click event that follows still carries the displayed revision.
+  const lastVisibleOverlayRevisionRef = useRef(0);
+  const lastOverlayProjectionRef = useRef<string | null>(null);
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const visits = useSyncExternalStore(
@@ -69,12 +79,7 @@ export function BrowserAddressField({
   const closeList = useCallback(() => {
     setOpen(false);
     setActiveIndex(null);
-    onOverlayChange?.(null);
-  }, [onOverlayChange]);
-
-  useLayoutEffect(() => {
-    onOverlayChange?.(showList ? listRef.current?.getBoundingClientRect() ?? null : null);
-  }, [onOverlayChange, showList, suggestions]);
+  }, []);
 
   const choose = useCallback((suggestion: BrowserAddressSuggestion) => {
     closeList();
@@ -98,6 +103,114 @@ export function BrowserAddressField({
     void browserHistoryStore.remove(url);
   }, []);
 
+  const overlayItems = useMemo(() => browserAddressSuggestionOverlayItems(
+    suggestions,
+    t('workspace.browser.searchWeb'),
+    t('workspace.browser.removeVisit'),
+  ), [suggestions, t]);
+
+  const reportOverlayFailure = useCallback((operation: string, error: unknown) => {
+    const structured = typeof error === 'object' && error !== null
+      ? error as { code?: unknown; params?: unknown }
+      : null;
+    const detail = typeof structured?.code === 'string'
+      ? `${structured.code} ${JSON.stringify(structured.params ?? {})}`
+      : String(error);
+    try {
+      void Promise.resolve(reportFrontendError({
+        kind: 'unhandled-rejection',
+        message: `browser address suggestions ${operation} failed: ${detail}`,
+        pathname: window.location.pathname || null,
+      })).catch(() => undefined);
+    } catch {
+      // Diagnostics must never break the address bar interaction.
+    }
+  }, []);
+
+  const syncNativeOverlay = useCallback(() => {
+    if (!nativeOverlay) return;
+    const anchor = inputRef.current?.getBoundingClientRect();
+    const next = showList && anchor
+      ? createBrowserAddressSuggestionOverlayInput({
+          revision: nextBrowserAddressSuggestionRevision(),
+          anchor,
+          suggestions,
+          activeIndex,
+          searchLabel: t('workspace.browser.searchWeb'),
+          removeLabel: t('workspace.browser.removeVisit'),
+        })
+      : null;
+    // The overlay owns its own native surface, so re-issuing the same projection only
+    // races concurrent creates and hides. One request per projection change is enough.
+    const signature = next
+      ? JSON.stringify([next.bounds, next.activeIndex, next.items, next.theme])
+      : 'hidden';
+    if (lastOverlayProjectionRef.current === signature) return;
+    lastOverlayProjectionRef.current = signature;
+    if (!next) {
+      void getRuntimeApi()
+        .browserHideAddressSuggestions({ revision: nextBrowserAddressSuggestionRevision() })
+        .catch((error) => {
+          lastOverlayProjectionRef.current = null;
+          reportOverlayFailure('hide', error);
+        });
+      return;
+    }
+    lastVisibleOverlayRevisionRef.current = next.revision;
+    void getRuntimeApi().browserShowAddressSuggestions(next).catch((error) => {
+      lastOverlayProjectionRef.current = null;
+      reportOverlayFailure('show', error);
+    });
+  }, [activeIndex, nativeOverlay, reportOverlayFailure, showList, suggestions, t]);
+
+  useLayoutEffect(() => {
+    syncNativeOverlay();
+  }, [syncNativeOverlay]);
+
+  useEffect(() => {
+    if (!nativeOverlay || !showList || !inputRef.current) return;
+    const input = inputRef.current;
+    const observer = new ResizeObserver(syncNativeOverlay);
+    observer.observe(input);
+    window.addEventListener('resize', syncNativeOverlay);
+    window.addEventListener('gold-band-theme-icons-changed', syncNativeOverlay);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', syncNativeOverlay);
+      window.removeEventListener('gold-band-theme-icons-changed', syncNativeOverlay);
+    };
+  }, [nativeOverlay, showList, syncNativeOverlay]);
+
+  useEffect(() => {
+    if (!nativeOverlay) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void getRuntimeApi().subscribeBrowserAddressSuggestionActions?.((event) => {
+    if (disposed || event.revision !== lastVisibleOverlayRevisionRef.current) return;
+      const suggestion = suggestions.find((candidate) => browserAddressSuggestionKey(candidate) === event.key);
+      if (!suggestion) return;
+      if (event.kind === 'remove' && suggestion.kind === 'visit') {
+        removeVisit(suggestion.visit.url);
+        return;
+      }
+      if (event.kind === 'choose') choose(suggestion);
+    }).then((stop) => {
+      if (disposed) stop?.();
+      else unlisten = stop ?? null;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [choose, nativeOverlay, removeVisit, suggestions]);
+
+  useEffect(() => () => {
+    if (!nativeOverlay) return;
+    void getRuntimeApi().browserHideAddressSuggestions({
+      revision: nextBrowserAddressSuggestionRevision(),
+    });
+  }, [nativeOverlay]);
+
   return (
     <div className="relative min-w-0 flex-1">
       <Input
@@ -109,10 +222,14 @@ export function BrowserAddressField({
           setOpen(true);
         }}
         onFocus={() => {
+          onEditingChange?.(true);
           refreshHistory();
           setOpen(true);
         }}
-        onBlur={() => closeList()}
+        onBlur={() => {
+          onEditingChange?.(false);
+          closeList();
+        }}
         onKeyDown={(event) => {
           if (event.nativeEvent.isComposing) return;
           if (event.key === 'Escape') {
@@ -151,69 +268,26 @@ export function BrowserAddressField({
         aria-expanded={showList}
         aria-controls={listId}
       />
-      {showList ? (
+      {showList && !nativeOverlay ? (
         <div
-          ref={listRef}
           id={listId}
           role="listbox"
           data-browser-history="true"
           className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-lg border border-border/50 bg-popover p-1 shadow-md"
         >
-          {suggestions.map((suggestion, index) => (
-            <div
-              key={suggestion.kind === 'search' ? `search:${suggestion.query}` : suggestion.visit.url}
-              role="option"
-              aria-selected={index === activeIndex}
-              data-browser-history-item={suggestion.kind}
-              className={cn(
-                'group flex w-full cursor-pointer items-center gap-1 rounded-md px-1 py-0.5 text-xs',
-                index === activeIndex ? 'bg-accent text-accent-foreground' : 'text-foreground',
-              )}
-              onMouseDown={(event) => event.preventDefault()}
-              onMouseEnter={() => setActiveIndex(index)}
-              onClick={() => choose(suggestion)}
-            >
-              {suggestion.kind === 'search' ? (
-                <>
-                  <Search className="size-4 shrink-0 text-muted-foreground" />
-                  <span className="min-w-0 flex-1 truncate px-1 py-1">{suggestion.query}</span>
-                  <span className="shrink-0 px-1 text-muted-foreground">{t('workspace.browser.searchWeb')}</span>
-                </>
-              ) : (
-                <>
-                  <BrowserFavicon src={suggestion.visit.faviconDataUrl} className="size-4" />
-                  <span className="min-w-0 flex-1 truncate px-1 py-1">
-                    <span className="font-medium">{suggestion.visit.title || displayBrowserVisitUrl(suggestion.visit.url)}</span>
-                    <span className="text-muted-foreground">
-                      {' — '}
-                      {displayBrowserVisitUrl(suggestion.visit.url)}
-                    </span>
-                  </span>
-                </>
-              )}
-              {suggestion.kind === 'visit' ? (
-                <Button
-                  type="button"
-                  size="icon-xs"
-                  variant="ghost"
-                  data-browser-history-remove="true"
-                  className={cn(
-                    'size-5 shrink-0 rounded-md',
-                    index === activeIndex ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
-                  )}
-                  aria-label={t('workspace.browser.removeVisit')}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    removeVisit(suggestion.visit.url);
-                  }}
-                >
-                  <X />
-                </Button>
-              ) : null}
-            </div>
-          ))}
+          <BrowserAddressSuggestionList
+            items={overlayItems}
+            activeIndex={activeIndex}
+            onActiveIndexChange={setActiveIndex}
+            onChoose={(key) => {
+              const suggestion = suggestions.find((candidate) => browserAddressSuggestionKey(candidate) === key);
+              if (suggestion) choose(suggestion);
+            }}
+            onRemove={(key) => {
+              const suggestion = suggestions.find((candidate) => browserAddressSuggestionKey(candidate) === key);
+              if (suggestion?.kind === 'visit') removeVisit(suggestion.visit.url);
+            }}
+          />
         </div>
       ) : null}
     </div>

@@ -26,7 +26,7 @@ import { browserBookmarkStore } from './browser-bookmark-store';
 import { bookmarkByOrigin, isUrlBookmarked } from './browser-bookmarks';
 import { BrowserPortal } from './BrowserPortal';
 import { browserHistoryStore } from './browser-history-store';
-import { faviconForUrl, overlayCoverTop } from './browser-history';
+import { faviconForUrl } from './browser-history';
 import { NativeBrowserViewport } from './NativeBrowserViewport';
 import { normalizeBrowserAddress, systemBrowserHref } from './web-target';
 
@@ -40,9 +40,13 @@ export function BrowserWorkspacePanel({ searchEngine = 'baidu' }: { searchEngine
   const active = session.pages.find((page) => page.pageId === session.activePageId) ?? null;
   const [address, setAddress] = useState(active?.url === BLANK_BROWSER_URL ? '' : (active?.url ?? ''));
   const [typed, setTyped] = useState(false);
-  const [coverTop, setCoverTop] = useState(0);
+  // The address bar draft belongs to the user while it is focused. Page url/title events keep
+  // arriving from the native webview (SPA route changes, redirects) and must never overwrite
+  // what the user is typing, otherwise the suggestion list silently flips from filtered
+  // results to recent visits on an already-open tab.
+  const editingAddressRef = useRef(false);
+  const lastSyncedPageRef = useRef<string | null>(active?.pageId ?? null);
   const tabStripRef = useRef<HTMLDivElement>(null);
-  const viewportRef = useRef<HTMLElement | null>(null);
   const overflowMenuRef = useRef<HTMLButtonElement>(null);
   const [tabsOverflowing, setTabsOverflowing] = useState(false);
   const history = useSyncExternalStore(
@@ -68,12 +72,14 @@ export function BrowserWorkspacePanel({ searchEngine = 'baidu' }: { searchEngine
   useLayoutEffect(() => {
     browserWebviewHost.resume?.();
     return () => {
-      browserWebviewHost.suppress?.();
-      void browserWebviewHost.hideAll();
+      void browserWebviewHost.suppress?.();
     };
   }, []);
 
   useEffect(() => {
+    const pageChanged = lastSyncedPageRef.current !== (active?.pageId ?? null);
+    lastSyncedPageRef.current = active?.pageId ?? null;
+    if (!pageChanged && editingAddressRef.current) return;
     setTyped(false);
     setAddress(!active || active.url === BLANK_BROWSER_URL ? '' : active.url);
   }, [active?.pageId, active?.url]);
@@ -91,23 +97,24 @@ export function BrowserWorkspacePanel({ searchEngine = 'baidu' }: { searchEngine
     return () => observer.disconnect();
   }, [session.pages]);
 
+  // The session store already records the structured failure for this page, so the UI
+  // only needs to keep the rejection from surfacing as an unhandled promise.
+  const commitNavigation = useCallback((pageId: string, url: string) => {
+    void Promise.resolve(browserWebviewHost.commitNavigation(pageId, url)).catch(() => undefined);
+  }, []);
+
   const submitAddress = useCallback((override?: string) => {
     const url = normalizeBrowserAddress(override ?? address, searchEngine);
     if (!active) {
       browserSessionStore.openUrl(url);
       return;
     }
-    void browserWebviewHost.commitNavigation(active.pageId, url);
-  }, [active, address, searchEngine]);
+    commitNavigation(active.pageId, url);
+  }, [active, address, searchEngine, commitNavigation]);
 
   const closePages = useCallback((pageIds: string[]) => {
     if (pageIds.length === 0) return;
     void browserWebviewHost.discard(pageIds);
-  }, []);
-
-  const handleOverlayChange = useCallback((rect: DOMRect | null) => {
-    const viewportTop = viewportRef.current?.getBoundingClientRect().top ?? 0;
-    setCoverTop(rect ? overlayCoverTop(rect.bottom, viewportTop) : 0);
   }, []);
 
   const portal = (
@@ -117,7 +124,7 @@ export function BrowserWorkspacePanel({ searchEngine = 'baidu' }: { searchEngine
       onOpenBlank={() => browserSessionStore.addBlankPage()}
       onOpenBookmark={(url) => {
         if (active && isBrowserPortalUrl(active.url)) {
-          void browserWebviewHost.commitNavigation(active.pageId, url);
+          commitNavigation(active.pageId, url);
           return;
         }
         browserSessionStore.openUrl(url);
@@ -155,10 +162,15 @@ export function BrowserWorkspacePanel({ searchEngine = 'baidu' }: { searchEngine
           <BrowserAddressField
             address={address}
             typed={typed}
+            onEditingChange={(editing) => {
+              editingAddressRef.current = editing;
+            }}
             onAddressChange={setAddress}
-            onTyped={() => setTyped(true)}
+            onTyped={() => {
+              editingAddressRef.current = true;
+              setTyped(true);
+            }}
             onSubmit={submitAddress}
-            onOverlayChange={handleOverlayChange}
           />
         </form>
         <div className="flex h-7 items-center gap-1">
@@ -254,7 +266,7 @@ export function BrowserWorkspacePanel({ searchEngine = 'baidu' }: { searchEngine
         </div>
       ) : null}
       {active ? (
-        <div ref={(node) => { viewportRef.current = node; }} className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
           {showPortal ? (
             <div className="absolute inset-0 z-10 flex min-h-0 flex-col">
               {portal}
@@ -264,7 +276,6 @@ export function BrowserWorkspacePanel({ searchEngine = 'baidu' }: { searchEngine
             page={active}
             visible={!showPortal}
             loadingLabel={t('workspace.browser.loading')}
-            coverTop={showPortal ? 0 : coverTop}
           />
         </div>
       ) : portal}

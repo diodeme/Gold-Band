@@ -189,6 +189,38 @@ describe('BrowserWorkspacePanel', () => {
     }
   });
 
+  it('keeps the typed address draft when the open page reports a new url', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      browserSessionStore.openUrl('https://example.com/');
+      await act(async () => root.render(<BrowserWorkspacePanel />));
+      const address = container.querySelector<HTMLInputElement>('[data-browser-address="true"]');
+      expect(address).not.toBeNull();
+
+      await act(async () => {
+        address?.focus();
+      });
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+        setter?.call(address, 'manage');
+        address!.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      expect(address?.value).toBe('manage');
+
+      // Pages keep pushing url updates (redirects, SPA routes) while the user types.
+      await act(async () => {
+        const pageId = browserSessionStore.snapshot().activePageId;
+        browserSessionStore.commitPageUrl(pageId as string, 'https://example.com/next');
+      });
+
+      expect(address?.value).toBe('manage');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('toggles the current page between desktop and mobile site from the toolbar', async () => {
     const container = document.createElement('div');
     document.body.append(container);

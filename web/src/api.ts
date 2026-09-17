@@ -824,6 +824,10 @@ export function resolveWorkspaceFileLink(projectId: string, rawHref: string, bas
   return getRuntimeApi().resolveWorkspaceFileLink(projectId, rawHref, baseCanonicalPath);
 }
 
+export function browserResolveLocalHtml(input: Parameters<ReturnType<typeof getRuntimeApi>['browserResolveLocalHtml']>[0]) {
+  return getRuntimeApi().browserResolveLocalHtml(input);
+}
+
 export function readFileResource(projectId: string, canonicalPath: string, externalAccessToken?: string | null, preferSource = false) {
   return getRuntimeApi().readFileResource(projectId, canonicalPath, externalAccessToken, preferSource);
 }

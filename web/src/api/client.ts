@@ -294,6 +294,15 @@ export interface BrowserNavigateInput extends BrowserPageIdInput {
   url: string;
 }
 
+export interface BrowserResolveLocalHtmlInput {
+  projectId: string;
+  rawHref: string;
+}
+
+export interface BrowserLocalHtmlTargetVm {
+  canonicalPath: string;
+}
+
 export interface BrowserSetViewModeInput extends BrowserPageIdInput {
   viewMode: BrowserViewMode;
 }
@@ -309,6 +318,45 @@ export interface BrowserPageNativeEventVm {
   pageId: string;
   url?: string | null;
   title?: string | null;
+}
+
+export interface BrowserAddressSuggestionOverlayItemVm {
+  key: string;
+  kind: 'search' | 'visit';
+  title: string;
+  detail: string;
+  faviconDataUrl: string | null;
+  removeLabel: string | null;
+}
+
+export interface BrowserAddressSuggestionOverlayThemeVm {
+  dark: boolean;
+  themeId: string;
+  colorScheme: string;
+  visualQuality: string;
+  materialModel: string;
+  variables: Record<string, string>;
+}
+
+export interface BrowserAddressSuggestionOverlayInput {
+  revision: number;
+  bounds: { x: number; y: number; width: number; height: number };
+  activeIndex: number | null;
+  items: BrowserAddressSuggestionOverlayItemVm[];
+  theme: BrowserAddressSuggestionOverlayThemeVm;
+}
+
+export interface BrowserAddressSuggestionActionVm {
+  revision: number;
+  kind: 'choose' | 'remove';
+  key: string;
+}
+
+/** Mirrors `browser::BROWSER_ADDRESS_SUGGESTION_ACTION_EVENT` in the desktop crate. */
+export const BROWSER_ADDRESS_SUGGESTION_ACTION_EVENT = 'gold-band://browser-address-suggestion-action';
+
+export interface BrowserAddressSuggestionOverlayRevisionInput {
+  revision: number;
 }
 
 export interface BrowserVisitVm {
@@ -561,10 +609,13 @@ export interface RuntimeApi {
   workspaceFilePreviewUrl(token: string, staticFrame?: boolean): string;
   openExternalUrl(url: string): Promise<void>;
   browserCreatePage(input: BrowserCreatePageInput): Promise<BrowserPageNativeVm>;
+  browserResolveLocalHtml(input: BrowserResolveLocalHtmlInput): Promise<BrowserLocalHtmlTargetVm>;
   browserSetBounds(input: BrowserBoundsCommandInput): Promise<void>;
   browserShowPage(input: BrowserPageIdInput): Promise<void>;
   browserHidePage(input: BrowserPageIdInput): Promise<void>;
   browserHideAll(): Promise<void>;
+  browserShowAddressSuggestions(input: BrowserAddressSuggestionOverlayInput): Promise<void>;
+  browserHideAddressSuggestions(input: BrowserAddressSuggestionOverlayRevisionInput): Promise<void>;
   browserNavigate(input: BrowserNavigateInput): Promise<BrowserPageNativeVm>;
   browserGoBack(input: BrowserPageIdInput): Promise<void>;
   browserGoForward(input: BrowserPageIdInput): Promise<void>;
@@ -581,6 +632,7 @@ export interface RuntimeApi {
   browserReorderBookmarks(input: { orderedIds: string[] }): Promise<BrowserBookmarkVm[]>;
   subscribeBrowserHistoryEvents?(listener: () => void): Promise<() => void>;
   subscribeBrowserPageEvents?(listener: (event: BrowserPageNativeEventVm) => void): Promise<() => void>;
+  subscribeBrowserAddressSuggestionActions?(listener: (event: BrowserAddressSuggestionActionVm) => void): Promise<() => void>;
   openFileWithSystemApp(path: string): Promise<void>;
   copyImageToClipboard(input: ImageActionInput): Promise<void>;
   saveImageAs(input: ImageActionInput): Promise<boolean>;

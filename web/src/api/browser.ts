@@ -2932,6 +2932,9 @@ export const browserApi: RuntimeApi = {
   browserCreatePage() {
     return Promise.reject(browserCommandError('browser.webview.unavailable'));
   },
+  browserResolveLocalHtml() {
+    return Promise.reject(browserCommandError('browser.webview.unavailable'));
+  },
   browserSetBounds() {
     return Promise.resolve();
   },
@@ -2942,6 +2945,12 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve();
   },
   browserHideAll() {
+    return Promise.resolve();
+  },
+  browserShowAddressSuggestions() {
+    return Promise.resolve();
+  },
+  browserHideAddressSuggestions() {
     return Promise.resolve();
   },
   browserNavigate() {
@@ -2987,6 +2996,9 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve([]);
   },
   subscribeBrowserHistoryEvents() {
+    return Promise.resolve(() => {});
+  },
+  subscribeBrowserAddressSuggestionActions() {
     return Promise.resolve(() => {});
   },
   openFileWithSystemApp(_path) {

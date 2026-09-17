@@ -29,8 +29,8 @@
 
 参数统一接入共享记忆领域服务，格式与边界以 [工作空间与任务记忆](../runtime/workspace-task-memory.md) 为准：
 
-- 工作空间 `subSysId1`、`subSysId2` 等保存真实子系统 ID；任务部署选择使用 `cicd.deploy.<S>.selected`，不能默认执行全部成员。
-- 固定作用域：`subSysId*` 写工作空间；`storyId`、`storyName` 和全部 `cicd.*` 生效参数写任务。CICD 只读工作空间子系统清单，不把任务生效参数写入项目默认值。跨任务 Job / 模板默认值如确有需求，另设明确默认 key。
+- 工作空间项目记忆中由用户维护的子系统号条目提供候选子系统清单；key 由用户定义，CICD 不得假定 `subSysId*` 或按固定 key 名称筛选。value 保存子系统号，desc 用于展示。任务部署选择使用 `cicd.deploy.<S>.selected`，不能默认执行全部成员。
+- 固定作用域：子系统号条目位于工作空间；`storyId`、`storyName` 和全部 `cicd.*` 生效参数写任务。CICD 只读工作空间子系统清单，不把任务生效参数写入项目默认值。跨任务 Job / 模板默认值如确有需求，另设明确默认 key。
 - S 使用真实 ID 的 UTF-8 百分号编码，只保留 ASCII 字母、数字、连字符、下划线、波浪号，其他字节为大写 %HH（包括点号与百分号）；不使用可变清单序号或名称作为身份。CLI 使用解码后的真实 ID。
 - 整个 task 的唯一构建使用 `cicd.build.jobId/branch/appList/appCoverage`；部署按子系统保存 `cicd.deploy.<S>.mode/templateId/templateName/deployType/env/ips/containers/pkgNames/inputParams`。列表为 JSON 数组序列化后的字符串，inputParams 为不含凭据的 JSON 对象字符串；不另建整份配置 JSON。
 - 一次 Jenkins 构建可以产出并推送多个子系统物料，构建生命周期属于 task；部署生命周期属于各子系统。`appList` 是本次确认推送的应用范围，必须由 pkg-list 与仓库结构等证据映射到 `appCoverage`，不能按 Job 登记字段或名称相似度推断。

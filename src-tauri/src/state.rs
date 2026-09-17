@@ -1566,6 +1566,7 @@ mod tests {
                 error: code.map(|code| DiagnosticError {
                     code: code.to_string(),
                     params: serde_json::json!({}),
+                    raw: None,
                 }),
                 capabilities: None,
             },

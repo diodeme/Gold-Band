@@ -1777,6 +1777,8 @@ pub struct DiagnosticError {
     pub code: String,
     #[serde(default = "default_diagnostic_error_params")]
     pub params: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<serde_json::Value>,
 }
 
 fn default_diagnostic_error_params() -> serde_json::Value {

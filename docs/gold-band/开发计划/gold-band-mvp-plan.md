@@ -1,5 +1,33 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-18 PR 审阅面去掉无效源码切换
+
+- 根因：`WorkspaceFileEditor` 只要有 `markdownMode` 就画出源码/预览按钮，真正切换却要求父级 `onMarkdownModeChange`。PR/Issue 详情和创建对话框只传入固定 `live-preview`，点击直接 return。属于共享浮层把“当前模式”和“模式所有权”混在一起，不是某个 PR 按钮坏了。
+- 实现：浮层切换按钮只在传入 `onMarkdownModeChange` 时渲染；复制源码仍可用。PR/Issue 详情保持只读预览。创建 PR 对话框持有本地 `markdownMode`，作者可以切换。
+- 证据：复现用例先失败于无模式所有者仍渲染 `viewMarkdownSource`。修复后同一用例转绿；编辑器与 GitHub 导航共 19 项通过，TypeScript 与 Web 生产构建通过。浏览器 preview 无法打开 GitHub PR 页，未把该路径视觉验收虚报为通过。
+- 过度设计与性能评审：不新增 store、持久化或第二套 Markdown 查看器。创建对话框多一个低频 UI state，打开时重置，不进入 GitHub 导航会话。
+
+## 2026-09-18 Agent 卡片按中间栏容器宽度降列
+
+- 根因：Agent 卡片网格使用整窗 `md/xl`。打开内置浏览器后中间栏变窄，窗口仍是 `xl`，继续三列，卡片被压成命令/参数逐字竖排。属于正确的 1/2/3 列设计未按容器实现。
+- 实现：复用角色列表 container query 阈值（672px 双列、1152px 三列）和 WebView measured fallback。卡片内部摘要固定两列。integrated Header 按标题组最小宽度换行。
+- 证据：修复前布局契约测试因缺少 `@container/agent-list` 失败；Header 测试因仍使用 `sm:flex-row` 失败。修复后同一用例转绿。1920 宽窗下右栏收起为三列，内置浏览器拉宽后中间栏降至单列且标题不再截断。
+- 过度设计与性能评审：不新增列数 state，不改工作区折叠阈值。完整档无 JS 测量；兼容档复用已有 observer。
+
+## 2026-09-18 PR 概览只占半栏
+
+- 根因：PR 审阅面要铺满右侧工作区。实现给 TabsContent 加了 `display: flex` 以传递高度，但默认 `flex-direction: row` 让 `WorkspaceFileEditor` 从块级横向撑满变成按内容宽度收缩；Atomic `78ch` 阅读栏于是成为半栏固有宽度。同时 line Tabs Trigger 无条件 `flex-1`，详情 TabsList 又写了 `w-full` 画底边，「概览 / 文件」被均分成左右两半。属于正确全宽审阅设计下的布局契约不完整，不是 78ch 阅读栏本身或某个 PR 正文特例。只改 `--atomic-editor-measure: 100%` 不能撑开不定宽的 row flex item。
+- 实现：line Tabs 标签跟随内容宽度，default/bare 仍可均分；源码管理填充页的 TabsContent 统一 column flex；编辑器根节点 `w-full min-w-0`；PR/Issue 详情继续使用全宽 Markdown 契约。
+- 证据：复现用例先失败于概览 TabsContent 缺少 `flex-col`、line Trigger 仍无条件 `flex-1`、编辑器根节点缺少 `w-full`。修复后同一用例转绿；源码管理 GitHub / Tabs / 编辑器及相关 37 项通过，TypeScript 与 Web 生产构建通过。浏览器 preview 的 Git capability 仍是 `repository-required`，无法打开 GitHub PR 页；未把该路径的视觉验收虚报为通过。
+- 过度设计与性能评审：只调整既有 Tabs variant 与 flex 方向，不新增状态、测量、观察器、缓存或 identity。布局由浏览器一次 flex 计算完成。
+
+## 2026-09-18 Agent 管理 ACP Registry 改为内置浏览器链接
+
+- 根因：诊断帮助里的 ACP Registry 仍按早期“系统默认浏览器”实现，且用 `text-primary` 只在悬停时出现下划线，在 Tooltip 里看起来像普通正文。内置浏览器已经把应用内 `http(s)` 统一到 `openWebTarget`，Agent 管理页却还绕开该入口；同时该页 `scope=null`，即使改调用也无法展开右栏。属于正确浏览能力下的入口和投影范围不完整，不是要给帮助文案另做一套 opener。
+- 实现：ACP Registry 使用产品 `text-link` 下划线样式；点击走 `openWebTarget`，不读“打开网站”开关、不调用系统 opener。Agent 管理页与快速对话、创建定时任务共用当前工作空间的 draft 右侧工作区投影，未打开时右栏保持收起。
+- 证据：DOM 用例先失败于仍引用 `@tauri-apps/plugin-opener`；修复后同一用例转绿，固定可见链接样式并点击打开 `https://agentclientprotocol.com/get-started/registry`。布局用例固定 `agents` 使用 conversation 配置和 draft scope。
+- 过度设计与性能评审：复用既有 draft scope、`openWebTarget` 和链接 token，不新增 identity、偏好字段、缓存或队列。帮助入口只在诊断失败的卡片上订阅稳定 commands Context，点击是单次导航。
+
 ## 2026-09-17 工作空间 HTML 默认打开源码
 
 - 根因：本地 HTML 原先对所有入口一律进内置浏览器、不进 CodeMirror。会话引用要看渲染结果，这个分流成立；工作空间目录树是在浏览可编辑源码，和普通文本/代码文件同一意图。属于正确浏览器能力下的入口策略过粗，不是要做第二套 HTML 实时预览。
@@ -2086,6 +2114,13 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 实现：所有 Git 启动使用桌面 PATH 解析出的绝对路径并注入同一 PATH；Windows 追加 `Git\cmd` 常见安装位置并跳过 App Execution Alias 空文件。版本行从 stdout/stderr 中识别，能解析则按已安装版本比较门槛。成功路径进程内缓存，重新检测重新解析；版本号仍不持久化。分支选择器把识别失败与版本过低的触发器文案分开。
 - [x] 回归验收：Rust `git::tests` 19 项、`process` Windows PATH/suggested dirs、`git::source_control` 43 项、`git::github` 13 项通过；Web `git-requirement-dialog` 含 unavailable 文案区分，`git-branch-selector` 固定 unavailable 触发器不用 unsupported 标签。
 - 性能与过度设计评审：不新增状态机、版本矩阵、`git.path` 设置或磁盘缓存。PATH 遍历相对 `git --version` 可忽略；绝对路径进程内复用，避免每次 Git 命令读注册表。前端无新请求或 Store。
+
+## 2026-09-18：Agent 诊断横幅与 raw 原因分层
+
+- [x] 根因：ACP JSON-RPC 失败被收成 `acp.session-request-failed` 后丢掉 `raw`；横幅和问号都看不到 `Authentication required`。
+- [x] 方案：诊断 snapshot 增加可选 `raw`。异常横幅只显示「环境诊断未通过：{{reason}}」，`reason` 为 raw 原因首行；问号改为点击 Popover 展示完整 ACP `message` / 有界 stderr / `osError`。选择器仍只显示本地化主句。
+- [x] 验收：`doctor_diagnostic_error_preserves_session_request_raw`；前端 copy、横幅和问号点击测试。
+- 性能与过度设计评审：不新增错误码分类或登录流。`raw` 为单次 JSON-RPC 错误对象；Popover 打开后才进入 DOM。
 
 ## 2026-09-18：Agent 健康诊断对客错误保留有界故障 stderr
 

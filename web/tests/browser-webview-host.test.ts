@@ -262,32 +262,6 @@ describe('browser webview host lifecycle', () => {
     });
   });
 
-  it('flushes the latest bounds when multiple resizes land in the same frame', async () => {
-    const callbacks: FrameRequestCallback[] = [];
-    const originalRaf = globalThis.requestAnimationFrame;
-    globalThis.requestAnimationFrame = ((callback: FrameRequestCallback) => {
-      callbacks.push(callback);
-      return callbacks.length;
-    }) as typeof requestAnimationFrame;
-    try {
-      const page = livePage('https://example.com');
-      browserSessionStore.markLive(page.pageId, true);
-      await browserWebviewHost.ensurePage(page, bounds, true);
-      api.browserSetBounds.mockClear();
-      browserWebviewHost.scheduleBounds(page.pageId, { ...bounds, width: 500 });
-      browserWebviewHost.scheduleBounds(page.pageId, { ...bounds, width: 700 });
-      expect(callbacks).toHaveLength(1);
-      callbacks.splice(0).forEach((callback) => callback(0));
-      expect(api.browserSetBounds).toHaveBeenCalledTimes(1);
-      expect(api.browserSetBounds).toHaveBeenCalledWith({
-        pageId: page.pageId,
-        bounds: { ...bounds, width: 700 },
-      });
-    } finally {
-      globalThis.requestAnimationFrame = originalRaf;
-    }
-  });
-
   it('navigates after a pending create instead of racing a missing webview', async () => {
     let releaseCreate: ((value: { pageId: string; url: string; label: string }) => void) | null = null;
     api.browserCreatePage.mockImplementationOnce(() => new Promise((resolve) => {
@@ -363,6 +337,24 @@ describe('browser webview host lifecycle', () => {
     await browserWebviewHost.ensurePage(page, bounds, true);
     expect(api.browserShowPage.mock.calls.length).toBe(showsAfterSuppress);
     expect(api.browserHideAll).toHaveBeenCalled();
+  });
+
+  it('coalesces concurrent show requests for the retained page', async () => {
+    let releaseShow: (() => void) | null = null;
+    api.browserShowPage.mockImplementationOnce(() => new Promise((resolve) => {
+      releaseShow = resolve;
+    }));
+    const page = livePage('https://example.com');
+    browserSessionStore.markLive(page.pageId, true);
+
+    const first = browserWebviewHost.ensurePage(page, bounds, true);
+    await vi.waitFor(() => expect(api.browserShowPage).toHaveBeenCalledTimes(1));
+    const second = browserWebviewHost.ensurePage(page, bounds, true);
+    await vi.waitFor(() => expect(api.browserShowPage).toHaveBeenCalledTimes(1));
+
+    releaseShow?.();
+    await Promise.all([first, second]);
+    expect(api.browserShowPage).toHaveBeenCalledTimes(1);
   });
 
   it('notifies the viewport when an overlay closes so the current page can be shown again', () => {

@@ -36,9 +36,6 @@ export function NativeBrowserViewport({
     if (!element || !current) return;
     const next = readBounds(element);
     void browserWebviewHost.ensurePage(current, next, visible);
-    if (visible && current.live) {
-      browserWebviewHost.scheduleBounds(current.pageId, next);
-    }
   }, [visible]);
 
   const sync = useCallback(() => {
@@ -53,7 +50,6 @@ export function NativeBrowserViewport({
     const element = hostRef.current;
     const current = pageRef.current;
     if (!element || !current) {
-      if (!current) void browserWebviewHost.hideAll();
       return;
     }
     measureAndSync();
@@ -69,7 +65,6 @@ export function NativeBrowserViewport({
       observer.disconnect();
       window.removeEventListener('resize', sync);
       if (frameRef.current != null) cancelAnimationFrame(frameRef.current);
-      void browserWebviewHost.hideAll();
     };
   }, [measureAndSync, pageId, sync, visible]);
 

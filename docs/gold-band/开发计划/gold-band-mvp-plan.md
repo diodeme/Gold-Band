@@ -3,7 +3,7 @@
 ## 2026-09-18 作者态模型切换保留思考档，运行时按新目录回滚
 
 - 根因：ACP `configOptions` 是当前会话快照，不是按模型预告的思考档表。首页/工作流作者态只有 Doctor 默认模型的一份目录，协议没有“查询模型 B 的 thought/fast 但不切模型”的接口。此前用“选中模型 ≠ `model.currentValue` 就隐藏子栏”把缺目录编码成空白，并不是跟着 B 的 configOptions 走。
-- 实现：复合下拉在作者态继续展示并保留思考强度 / Fast。发起时仍先 `set_config_option(model)`；同一次应用里新目录不支持的 `thought_level` / `model_config` 清成不指定并继续 prompt，timeline 写入 `systemNotice` 分割线。未切模型时的非法 override 仍报 `acp.session-config-value-unavailable`。不为每个模型 doctor 探测，不重发用户消息。
+- 实现：复合下拉在作者态继续展示并保留思考强度 / Fast。发起时仍先 `set_config_option(model)`；同一次应用里新目录没有该项（如目标模型无 Fast）或档位不在可选列表中的 `thought_level` / `model_config` 都不带入、清成不指定并继续 prompt，timeline 写入同一条文案的 `systemNotice` 分割线。思考强度子栏统一用产品文案，不用 Agent 的 Effort / Deep Think。未切模型时的非法 override 仍报 `acp.session-config-value-unavailable`。不为每个模型 doctor 探测，不重发用户消息。
 - 证据：Rust 覆盖“新目录仍列出则保留 / 不列出或 option id 消失则回滚 / 非模型绑定项不静默丢掉”；前端覆盖复合下拉在模型不一致时仍展示、思考强度统一标签，以及 `systemNotice` 分割线文案。
 - 过度设计与性能评审：复用既有 override map、apply 顺序和 timeline item，不新增按模型能力表、重试队列或页顶横幅状态。回滚是目录线性查找，无额外 session/new 或 prompt。
 

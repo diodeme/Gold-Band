@@ -81,8 +81,8 @@ use crate::conversation_attention::{
     ConversationTerminalResultKind, ConversationTerminalResultVm, record_terminal_result,
 };
 use crate::conversation_workspace::{
-    RuntimeWorkspaceAccessError, app_for_workspace, validate_runtime_workspace_access,
-    workspace_entry_for_project,
+    RuntimeWorkspaceAccessError, app_for_workspace, conversation_workspace_entry_for_project,
+    validate_runtime_workspace_access,
 };
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
@@ -917,20 +917,31 @@ pub(crate) fn resolve_command_app(
     state: &DesktopState,
     project_id: Option<&str>,
 ) -> Result<App, CommandErrorVm> {
+    resolve_command_app_with_workspace_label(state, project_id).map(|(app, _)| app)
+}
+
+pub(crate) fn resolve_command_app_with_workspace_label(
+    state: &DesktopState,
+    project_id: Option<&str>,
+) -> Result<(App, Option<String>), CommandErrorVm> {
     match project_id {
-        None => state.app().map_err(command_error),
+        None => Ok((state.app().map_err(command_error)?, None)),
         Some(pid) => {
             let global_app = state.app().map_err(command_error)?;
             let app_state = global_app.load_state().map_err(command_error)?;
-            let (workspace_path, _) =
-                workspace_entry_for_project(&app_state, pid).ok_or_else(|| {
+            let workspace =
+                conversation_workspace_entry_for_project(&app_state, pid).ok_or_else(|| {
                     CommandErrorVm::new(
                         "workspace.not-found",
                         serde_json::json!({ "projectId": pid }),
                     )
                 })?;
             let context = state.context().map_err(command_error)?;
-            Ok(global_app.with_repo_root(Utf8PathBuf::from(workspace_path), context.config))
+            Ok((
+                global_app
+                    .with_repo_root(Utf8PathBuf::from(workspace.workspace_path), context.config),
+                Some(workspace.name),
+            ))
         }
     }
 }
@@ -5479,23 +5490,7 @@ fn acp_intervention_node_label(
     let Some(app) = app else {
         return context.node_id.clone();
     };
-    if let Some(agent_label) =
-        gold_band::app::direct_conversation_agent_label(app, &context.task_id)
-    {
-        return agent_label;
-    }
-    acp_turn_agent_label(
-        app,
-        &AttemptLocator::new(
-            context.task_id.clone(),
-            context.run_id.clone(),
-            context.round_id.clone(),
-            context.node_id.clone(),
-            context.attempt_id.clone(),
-            context.outer_node_id.clone(),
-            context.outer_attempt_id.clone(),
-        ),
-    )
+    app.intervention_node_label(context)
 }
 
 fn request_scoped_intervention_event_id(
@@ -14399,14 +14394,16 @@ mod tests {
             Some(expected_permission.as_str())
         );
 
-        let pending_elicitation = serde_json::from_value::<
-            gold_band::acp::elicitation::PendingElicitationState,
-        >(serde_json::json!({
-            "elicitationId": "elicit-1",
-            "jsonrpcId": 1,
-            "createdAt": "2026-09-03T00:00:00Z",
-            "timelineIdentity": timeline_identity,
-            "request": {
+        let pending_elicitation = gold_band::acp::elicitation::PendingElicitationState {
+            identity: gold_band::acp::interaction::AcpPromptInteractionIdentity::new(
+                "elicit-1",
+                gold_band::acp::interaction::AcpPromptInteractionKind::Elicitation,
+                "turn-1",
+                "prompt-event-1",
+            ),
+            payload: gold_band::acp::elicitation::PendingElicitationPayload {
+                jsonrpc_id: serde_json::json!(1),
+                request: serde_json::from_value(serde_json::json!({
                 "mode": "form",
                 "sessionId": "session-1",
                 "message": "choose",
@@ -14417,9 +14414,12 @@ mod tests {
                     },
                     "required": ["choice"]
                 }
-            }
-        }))
-        .unwrap();
+                }))
+                .unwrap(),
+            },
+            created_at: "2026-09-03T00:00:00Z".into(),
+            timeline_identity: Some(timeline_identity),
+        };
         gold_band::acp::elicitation::write_pending_elicitation(&attempt_dir, &pending_elicitation)
             .unwrap();
         let elicitation = InterventionCommand {
@@ -15050,6 +15050,19 @@ mod tests {
                 seen_for_handler.lock().unwrap().push(fact);
             }
         }));
+        assert_eq!(
+            app.intervention_node_label(&gold_band::app::AcpLiveEventContext {
+                task_id: task_id.to_string(),
+                task_uuid: None,
+                run_id: run_id.to_string(),
+                round_id: round_id.to_string(),
+                node_id: "plan".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                outer_node_id: None,
+                outer_attempt_id: None,
+            }),
+            "Planner"
+        );
 
         app.emit_lifecycle_event(RuntimeLifecycleEvent::MetricsInterventionSource(
             MetricsInterventionSourceEvent {
@@ -15252,6 +15265,19 @@ mod tests {
                 seen_for_handler.lock().unwrap().push(fact);
             }
         }));
+        assert_eq!(
+            app.intervention_node_label(&gold_band::app::AcpLiveEventContext {
+                task_id: task_id.to_string(),
+                task_uuid: None,
+                run_id: run_id.to_string(),
+                round_id: round_id.to_string(),
+                node_id: "bootstrap".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                outer_node_id: Some(outer_node_id.to_string()),
+                outer_attempt_id: Some(outer_attempt_id.to_string()),
+            }),
+            "Bootstrap"
+        );
 
         app.emit_lifecycle_event(RuntimeLifecycleEvent::MetricsInterventionSource(
             MetricsInterventionSourceEvent {

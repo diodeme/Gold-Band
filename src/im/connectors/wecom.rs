@@ -23,12 +23,13 @@ use crate::app::intervention::{
     RemoteElicitationForm, RemoteElicitationFormSelection, permission_action_qualifier,
 };
 use crate::im::{
-    ImActionResponseContext, ImActionTokenCodec, ImChannelCapabilities, ImChannelKind,
-    ImConnectionIdentity, ImConnector, ImConnectorEvent, ImDelivery, ImDeliveryPayload,
-    ImDeliveryReceipt, ImErrorCode, ImInboundActionSelection, ImInboundEnvelope,
-    ImIntegrationError, ImLocale, ImMessageState, ImNotificationKind, ImObservedBinding,
-    ImWeComFormCardKind, ImWeComFormSelection, ImWeComVoteSelection, MAX_IM_PRESENTATION_BYTES,
-    ResolvedImChannelConfig, deterministic_action_id,
+    INTERVENTION_CONTEXT_FIELDS, ImActionResponseContext, ImActionTokenCodec,
+    ImChannelCapabilities, ImChannelKind, ImConnectionIdentity, ImConnector, ImConnectorEvent,
+    ImDelivery, ImDeliveryPayload, ImDeliveryReceipt, ImErrorCode, ImInboundActionSelection,
+    ImInboundEnvelope, ImIntegrationError, ImLocale, ImMessageState, ImNotificationKind,
+    ImObservedBinding, ImWeComFormCardKind, ImWeComFormSelection, ImWeComVoteSelection,
+    MAX_IM_PRESENTATION_BYTES, ResolvedImChannelConfig, deterministic_action_id,
+    is_intervention_context_field,
 };
 
 pub const WECOM_WEBSOCKET_ENDPOINT: &str = "wss://openws.work.weixin.qq.com";
@@ -1023,16 +1024,17 @@ fn linked_detail_markdown(
         format!("**{title}**"),
         localized(locale, card_summary_key(delivery.notification_kind)).to_owned(),
     ];
+    for key in INTERVENTION_CONTEXT_FIELDS {
+        let value = presentation
+            .fields
+            .get(key)
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ImIntegrationError::permanent(ImErrorCode::ProtocolInvalid))?;
+        lines.push(format!("- **{}**: {value}", localized(locale, key)));
+    }
     if delivery.notification_kind == ImNotificationKind::ManualCheck {
-        for key in ["nodeLabel", "taskTitle"] {
-            if let Some(value) = presentation
-                .fields
-                .get(key)
-                .filter(|value| !value.trim().is_empty())
-            {
-                lines.push(format!("- **{}**: {}", localized(locale, key), value));
-            }
-        }
         if let Some(output) = presentation
             .body
             .as_deref()
@@ -1046,15 +1048,6 @@ fn linked_detail_markdown(
         }
     }
     if delivery.notification_kind == ImNotificationKind::Elicitation {
-        for key in ["nodeLabel", "taskTitle"] {
-            if let Some(value) = presentation
-                .fields
-                .get(key)
-                .filter(|value| !value.trim().is_empty())
-            {
-                lines.push(format!("- **{}**: {}", localized(locale, key), value));
-            }
-        }
         if let Some(context) = presentation
             .context
             .as_deref()
@@ -1109,6 +1102,7 @@ fn linked_detail_markdown(
             if !key.starts_with("permission")
                 && !value.trim().is_empty()
                 && key != "permissionTitle"
+                && !is_intervention_context_field(key)
             {
                 lines.push(format!("- **{}**: {}", localized(locale, key), value));
             }
@@ -1123,7 +1117,9 @@ fn horizontal_content_fields(
     locale: ImLocale,
     permission: bool,
 ) -> Vec<Value> {
-    let visible = |key: &str, value: &str| !value.trim().is_empty() && key != "permissionTitle";
+    let visible = |key: &str, value: &str| {
+        !value.trim().is_empty() && key != "permissionTitle" && !is_intervention_context_field(key)
+    };
     let mut entries = Vec::new();
     if permission {
         for key in PERMISSION_FIELD_PRIORITY {
@@ -2377,6 +2373,9 @@ mod tests {
                     body: Some("command failed; retry without sandbox?".into()),
                     context: None,
                     fields: BTreeMap::from([
+                        ("workspaceLabel".into(), "Gold-Band".into()),
+                        ("taskTitle".into(), "Repair download".into()),
+                        ("nodeLabel".into(), "Reviewer".into()),
                         ("permissionTitle".into(), "Make edits?".into()),
                         ("permissionTool".into(), "Edit files".into()),
                         ("permissionCommand".into(), "cargo build --release".into()),
@@ -2423,6 +2422,7 @@ mod tests {
                     body: Some("latest model output".into()),
                     context: None,
                     fields: BTreeMap::from([
+                        ("workspaceLabel".into(), "Gold-Band".into()),
                         ("nodeLabel".into(), "Interview".into()),
                         ("taskTitle".into(), "Prepare release".into()),
                     ]),
@@ -2738,6 +2738,9 @@ mod tests {
         let detail_text = detail["body"]["markdown"]["content"].as_str().unwrap();
         assert!(detail_text.contains("权限审批（id=0007）"));
         assert!(detail_text.contains("Agent 请求执行命令"));
+        assert!(detail_text.contains("- **工作空间**: Gold-Band"));
+        assert!(detail_text.contains("- **任务**: Repair download"));
+        assert!(detail_text.contains("- **节点**: Reviewer"));
         assert!(detail_text.contains("command failed; retry without sandbox?"));
         assert!(detail_text.contains("- **工具**: Edit files"));
         assert!(detail_text.contains("- **命令**: cargo build --release"));
@@ -2779,6 +2782,10 @@ mod tests {
                 { "keyname": "参数", "value": "fallback" },
             ])
         );
+        let card_json = serde_json::to_string(card).unwrap();
+        assert!(!card_json.contains("Gold-Band"));
+        assert!(!card_json.contains("Repair download"));
+        assert!(!card_json.contains("Reviewer"));
         assert!(!card["main_title"]["title"].as_str().unwrap().contains('\n'));
         assert!(card["submit_button"]["key"].as_str().unwrap().len() <= WECOM_MAX_BUTTON_KEY_BYTES);
         assert!(
@@ -2861,12 +2868,16 @@ mod tests {
             .as_str()
             .unwrap();
         assert!(detail.contains("人工检查（id=0123）"));
+        assert!(detail.contains("- **工作空间**: Gold-Band"));
+        assert!(detail.contains("- **任务**: Prepare release"));
+        assert!(detail.contains("- **节点**: Interview"));
         assert!(detail.contains("最后一轮模型输出"));
         assert!(detail.contains("latest model output"));
 
         let card = &plan.card_request["body"]["template_card"];
         assert_eq!(card["card_type"], "vote_interaction");
         assert_eq!(card["main_title"]["title"], "人工检查（id=0123）");
+        assert_eq!(card["horizontal_content_list"], json!([]));
         assert_eq!(
             card["sub_title_text"],
             "模型输出见上一条消息，请选择检查结果后提交"
@@ -2900,6 +2911,34 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn linked_detail_requires_workspace_task_and_node_context() {
+        let codec = ImActionTokenCodec::new(vec![7; 32]).unwrap();
+        let mut delivery = permission_delivery(vec![permission_option(
+            "allow_once",
+            "Yes, proceed",
+            PermissionActionKind::AllowOnce,
+        )]);
+        let ImDeliveryPayload::Intervention { presentation, .. } = &mut delivery.payload else {
+            panic!("permission fixture must be an intervention");
+        };
+        presentation.fields.remove("workspaceLabel");
+
+        let result = linked_detail_send_plan(
+            "detail-req-1",
+            "card-req-1",
+            &delivery,
+            &codec,
+            ImLocale::ZhCn,
+        );
+
+        let error = match result {
+            Ok(_) => panic!("missing context must prevent sending the linked detail"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, ImErrorCode::ProtocolInvalid);
     }
 
     #[test]
@@ -3025,6 +3064,7 @@ mod tests {
                         body: Some("请选择要使用的数据库？".into()),
                         context: Some("已有部署包含订单服务与用户服务。".into()),
                         fields: BTreeMap::from([
+                            ("workspaceLabel".into(), "Gold-Band".into()),
                             ("nodeLabel".into(), "Direct agent".into()),
                             ("taskTitle".into(), "Task".into()),
                         ]),
@@ -3064,6 +3104,9 @@ mod tests {
                 .as_str()
                 .unwrap();
             assert!(detail.contains("补充信息（id=0123）"));
+            assert!(detail.contains("- **工作空间**: Gold-Band"));
+            assert!(detail.contains("- **任务**: Task"));
+            assert!(detail.contains("- **节点**: Direct agent"));
             assert!(detail.contains("前序模型输出"));
             assert!(detail.contains("已有部署包含订单服务与用户服务。"));
             assert!(detail.contains("请选择要使用的数据库？"));
@@ -3075,6 +3118,7 @@ mod tests {
             assert!(detail.contains("其他答案请在桌面端填写"));
             let card = &plan.card_request["body"]["template_card"];
             assert_eq!(card["card_type"], "vote_interaction");
+            assert_eq!(card["horizontal_content_list"], json!([]));
             assert_eq!(card["checkbox"]["question_key"], "q0");
             assert_eq!(card["checkbox"]["mode"], mode);
             assert_eq!(card["checkbox"]["option_list"][0]["id"], "0");

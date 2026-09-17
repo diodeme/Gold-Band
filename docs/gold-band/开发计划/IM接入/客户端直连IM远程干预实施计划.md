@@ -499,7 +499,7 @@ credential payload 是版本化 JSON，只包含该 connector 需要的敏感字
 
 Run 与 ACP turn 信息通知复用同一 outbox transport，但使用 `Information` payload。Run/ACP projection 遇到 `scheduled_occurrence_id` 必须跳过；定时任务 completion、failure、attention 和 missed 不产生 IM delivery。Windows notification DTO、dismiss 状态和 `NotificationDedup` 不得作为 IM 输入。
 
-消息只包含用户决策所需内容：请求类型、任务标题、节点标签、最小请求摘要、允许动作、到期时间。禁止包含本地绝对路径、隐藏 prompt、完整上下文、Secret、原始 provider payload 或调试协议字段。
+消息只包含用户决策所需内容。Markdown 详情固定包含工作空间、任务、节点、请求类型、最小请求摘要和类型专属内容；交互卡片只包含最小请求摘要、类型专属字段、允许动作和到期时间，不重复三个上下文字段。禁止包含隐藏 prompt、完整会话上下文、Secret、原始 provider payload 或调试协议字段；权限执行路径只在已确认的结构化字段中展示。
 
 领域请求解决后，service 通过现有 lifecycle 终态或 command result 更新已绑定卡片/发送文本确认。若无法更新原消息，只发送一次幂等终态通知。
 
@@ -646,6 +646,7 @@ Rust 定义 typed `ImErrorCode`，Tauri 和 connector 只传 code、retryable �
 - [x] Elicitation 桌面投影收尾修复：桌面与 IM 已共用 inspect、scheduled reclaim、metrics、response 写入、session rebuild/emit 和 attempt index 边界；前端 reconcile 进一步把同 session 更高 generation/revision/seq 的空 `pendingElicitations` 视为权威终态，不再要求有界 events 页必须同时包含 response event。未前进的陈旧 active snapshot 仍保留 live pending，避免加载竞态闪烁。Web 定向测试 61/61、企微 connector 28/28、IM 全量 68/68、桌面 IM runtime 10/10、TypeScript、Web 生产构建、两个 Rust crate check 与 Rust 格式检查通过；内置浏览器 `/chat` 加载正常且控制台无 warning/error，真实企微到桌面联动仍需新 EXE 复测。
 - [x] Elicitation 远程范围分类：仅企业微信处理单题 scalar 单选、单题 scalar 多选、2-3 个 scalar 单选题；custom companion 从 IM 表单移除，固定选项对象必须通过原始 schema 校验。其他场景入队前跳过，不产生 outbox、markdown、提示卡、死信或重试。
 - [x] Elicitation 纳入 linked-detail 模式：markdown 详情 -> ACK -> vote mode=0/mode=1 或 multiple_interaction -> ACK；markdown 与卡片展示字符串按 32 KiB 上限在构造层截断，不截断 JSON 字节流或 delivery/question/option identity。
+- [x] 三类干预详情统一增加保留上下文 `workspaceLabel`、`taskTitle`、`nodeLabel`，只渲染在 Markdown 详情，不进入任何交互卡片。工作空间取 canonical display name 并回退目录名；任务取事件或 Task 标题并回退 `task_id`；工作流节点只按 `profileName/profile/node_id` 解析，禁止 Provider fallback；Direct 取 Agent 展示名；AUTO 优先读取当前 `dynamic_node_file.title`，仅在节点投影缺失时回退动态图谱，双缺失时回退 node id。详情缺失任一字段时构造层返回 `IM_PROTOCOL_INVALID`，不发送不完整消息。
 - [x] 实现企微 Form 回调解析：校验 msgid、私聊 actor/conversation、delivery/task、submit key、question key、required selector、重复 option 和非法 index；多选空数组仅当原始 schema 允许且平台显式返回空选择。
 - [x] Elicitation 终态保持原 card_type、task_id、submit key 与 display_ref，vote/multiple 全部控件禁用并标记最终选择；AlreadyHandled/RevisionConflict 显示已处理，业务失败保持原结构。
 - [x] 桌面审批终态回显到 IM：三类桌面 command 在 canonical 提交前捕获原 intervention event identity，成功后通过既有 canonical event 索引、outbox 和 worker 投影 typed 非交互终态确认。企业微信因官方更新接口必须使用 5 秒内 callback `req_id`，桌面来源不伪造原卡更新，改为发送保留原 4 位 `display_ref` 的“已在桌面端处理”确认；pending 原 delivery 与确认 delivery 在同一事务内 supersede/insert，sending/sent 原卡保留，重复投影幂等。桌面终态先于异步原请求投影时先写 deterministic terminal delivery，迟到原请求在 immediate transaction 内检测终态并跳过，避免审批后又发出活卡。IM 来源仍只用 callback 更新原卡，不生成双消息。
@@ -678,6 +679,7 @@ Rust 定义 typed `ImErrorCode`，Tauri 和 connector 只传 code、retryable �
 | connector fixtures | 官方主动推送帧不含 `chat_type`、顶层 `errcode` 必填且 ACK 可无 `msgid`、未知平台数字码脱敏；真实 `event.template_card_event` 使用 `body.msgid` 幂等、嵌套短 `event_key` 指向 delivery/action index、可选嵌套 `task_id` 缺失时恢复原卡 identity、显式 task 不匹配拒绝、私聊/actor/task 校验、嵌套断开、去重、回调确认与限流；SDK 1.0.7 的平铺 event 字段形状不作为运行时回调接受 |
 | 企微 Permission/ManualCheck 双发 | mock WebSocket 断言详情 ACK 前 100ms 内不发送 vote 卡；详情 ACK 后按序收到 vote 卡，卡片 ACK 的 msgid 才进入 delivery receipt；Permission 详情包含完整命令、说明、路径、参数且不含 `permissionTitle`，ManualCheck 详情包含最新 root 模型输出并与 vote 卡共享 4 位 `display_ref`；终态保持 POC 同形 `main_title.title + desc`，标题保留同编号，checkbox 与 submit 均禁用；Permission/ManualCheck 共享提交必须与桌面路径一致收敛前端投影、node outcome、manual pending 与 Run 续跑/完成 |
 | 企微 Elicitation 表单 | 五类范围分类与 unsupported 无 outbox；单题单选无/有 custom、单题多选、2/3 个单选题出站形状正确；custom companion 移除后仍通过原始 schema；markdown/卡片超 32 KiB 时构造层截断且 identity 不变；vote mode=0/1 与 multiple 回调校验 selector、option、required、重复、task、msgid；多选空数组按 schema 允许执行；截断 label 仍提交完整 scalar；终态保持原控件、task/submit key、display_ref 并全部禁用 |
+| 企微干预上下文 | 三类详情均按“工作空间、任务、节点”顺序展示非空值；卡片 JSON 不包含 `workspaceLabel`、`taskTitle`、`nodeLabel`；工作流权限/追问按 `profileName/profile/node_id` 解析，只有 Provider 时必须输出 node id；Direct 取 Agent display name；AUTO 节点文件存在时不得依赖图谱，节点文件缺失时从图谱回退，双缺失输出 node id；事件任务标题缺失时回退 canonical Task 标题或 `task_id`；上下文缺失时详情构造返回 `IM_PROTOCOL_INVALID` |
 
 数据库测试必须使用隔离物理 SQLite 文件和生产 repository 入口，不用 HashMap mock 替代事务与唯一约束。并发测试使用 barrier 固定竞争顺序，不能依赖 sleep 猜测。
 
@@ -776,6 +778,8 @@ npm run web:build
 - [x] 新增/变更的中英文设置与错误文案。
 
 ## 20. 2026-08-30 本地验收记录
+
+- 2026-09-17 三类企微干预详情上下文补齐：根因属于 IM linked-detail 设计正确，但公共展示契约缺失且工作流 ACP 节点错误回退为 Provider 展示名。投影新增 `workspaceLabel`、`taskTitle`、`nodeLabel` 保留字段，仅由 Markdown 详情消费；卡片渲染显式过滤三者。工作空间优先取 workspace canonical display name，任务按事件标题、Task 标题、`task_id` 回退；Direct 使用 Agent 名称；标准工作流只按 `profileName/profile/node_id` 解析角色，删除 Provider fallback；AUTO 先读当前单节点投影 title，图谱只作为节点投影缺失时的 fallback，双缺失回退 node id。接口测试覆盖三类详情、卡片无上下文字段、任务回退、工作流 Provider fallback 禁止、AUTO 节点文件优先、图谱 fallback、双缺失回退与缺失上下文拒绝发送。验收：核心 IM 92/92、桌面 IM runtime 20/20、桌面 intervention 14/14、新增角色与 AUTO 解析定向测试通过；未新增 Schema、依赖、状态机、缓存或队列。
 
 - 2026-09-16 桌面 Elicitation 与 IM transport 策略解耦：根因属于共享 canonical command 的设计正确，但 `execute_elicitation` 错把远程 `allowed_actions` 当成桌面 Accept 准入。canonical 层现只校验完整 ACP `requestedSchema`，IM 入站仍在 Runtime 前按 outbox delivery 的发布动作校验。最小失败测试稳定复现自由文本桌面提交返回 `INTERVENTION_ACTION_INVALID`，修复后同一测试固定自由文本、自定义答案、四问题的合法答案被接受、非法答案仍被 schema 拒绝，且这些答案仍不属于 IM transport 动作集合。验收：Intervention 18/18、IM inbound 6/6、桌面 Elicitation boundary 1/1、两个 Rust crate check、Rust 格式与 Git 差异检查通过；desktop check 仅保留既有 dead-code warning。实现未改变前端组件、路由或交互，不重复执行无关浏览器验证。性能复核确认仍为每次 Accept 一次内容大小检查与一次 schema 校验，无新增 I/O、锁、缓存或队列；过度设计复核确认未新增来源枚举、第二服务或持久状态。
 

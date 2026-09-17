@@ -555,8 +555,9 @@ export function shouldShowReturnToLatest(
   hasNewerEvents: boolean,
   activationEligible: boolean,
   distanceFromBottom: number,
+  explicitHistoricalIntent = true,
 ) {
-  if (isAcpConversationAtBottom(viewportAtBottom, hasNewerEvents)) return false;
+  if (viewportAtBottom && (!hasNewerEvents || !explicitHistoricalIntent)) return false;
   if (hasNewerEvents) return true;
   if (currentlyVisible) return true;
   return activationEligible
@@ -1845,8 +1846,12 @@ export function ACPChatDialog(
   }, [effectiveLoadedEventBufferLimit, sessionKey]);
 
   const hasExplicitHistoricalTimelineIntent = useCallback(() => (
-    paginationDirectionRef.current !== null
-    || viewportManualIntentRef.current
+    viewportManualIntentRef.current
+    || paginationDirectionRef.current === "older"
+    || (
+      paginationDirectionRef.current === "newer"
+      && !canonicalHeadRecoveryAutoHandoffRef.current
+    )
   ), []);
 
   const resumePendingCanonicalHeadRecoveryForSnapshot = useCallback((
@@ -2362,12 +2367,11 @@ export function ACPChatDialog(
   const visibleSession = useMemo(
     () =>
       baseSession
-        ? createVisibleAcpSession(
+        ?         createVisibleAcpSession(
             baseSession,
             loadedEvents,
             effectiveLoadedEventBufferLimit,
             liveUpdatesPaused
-              || canonicalHeadRecoveryPendingRef.current
               || hasExplicitHistoricalTimelineIntent()
               ? "historical"
               : "live-head",
@@ -3245,13 +3249,14 @@ export function ACPChatDialog(
       return;
     }
     if (hasExplicitHistoricalTimelineIntent()) {
-      // The visible list is a historical window. The router has already
-      // retained this live event for replay, so keep the user's window and
-      // anchor intact and expose the existing newer-pagination path.
+      // The visible list is a user-owned historical window. Auto recovery at
+      // the live head is not historical intent, so live events keep merging.
       commitHasNewerEvents(true);
       return;
     }
-    commitHasNewerEvents(false);
+    if (!canonicalHeadRecoveryPendingRef.current) {
+      commitHasNewerEvents(false);
+    }
     const activeWindow = loadedEventWindowRef.current;
     const merged = mergeAcpEvents(activeWindow.events, normalizedUpdates);
     if (!viewportAtBottomRef.current && merged.length > effectiveLoadedEventBufferLimit) {
@@ -3421,6 +3426,7 @@ export function ACPChatDialog(
     const distanceFromBottom = scroller
       ? scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
       : 0;
+    const explicitHistoricalIntent = hasExplicitHistoricalTimelineIntent();
     commitShowReturnToLatest(
       shouldShowReturnToLatest(
         showReturnToLatestRef.current,
@@ -3428,6 +3434,7 @@ export function ACPChatDialog(
         hasNewerEventsRef.current,
         !viewportAtBottom || hasNewerEventsRef.current,
         distanceFromBottom,
+        explicitHistoricalIntent,
       ),
       "at-bottom-change",
       scroller,
@@ -3444,9 +3451,9 @@ export function ACPChatDialog(
       );
     }
     onAtBottomChange?.(
-      isAcpConversationAtBottom(viewportAtBottom, hasNewerEvents),
+      isAcpConversationAtBottom(viewportAtBottom, hasNewerEventsRef.current),
     );
-  }, [commitShowReturnToLatest, eventWindowKey, hasNewerEvents, onAtBottomChange, settleLiveStreamingMarkdown]);
+  }, [commitShowReturnToLatest, eventWindowKey, hasExplicitHistoricalTimelineIntent, hasNewerEvents, onAtBottomChange, settleLiveStreamingMarkdown]);
 
   const requestCanonicalHeadHandoff = useCallback((
     requestedIntent: AcpCanonicalHeadHandoffIntent,
@@ -3591,8 +3598,7 @@ export function ACPChatDialog(
       }
       const preserveVisibleTimeline = hasExplicitHistoricalTimelineIntent();
       if (
-        canonicalHeadRecoveryPendingRef.current
-        || liveUpdatesPausedRef.current
+        liveUpdatesPausedRef.current
         || preserveVisibleTimeline
       ) {
         applyEventUpdates([event], timelineGeneration, false);
@@ -3604,6 +3610,10 @@ export function ACPChatDialog(
           requestCanonicalHeadRecovery(true);
         }
         return false;
+      }
+      if (canonicalHeadRecoveryPendingRef.current) {
+        applyEventUpdates([event], timelineGeneration, true);
+        return true;
       }
       if (event.kind === "timingUpdate") {
         applyEventUpdate(event, timelineGeneration);
@@ -3743,11 +3753,12 @@ export function ACPChatDialog(
         hasNewerEventsRef.current,
         viewportManualIntentRef.current || hasNewerEventsRef.current,
         distanceFromBottom,
+        hasExplicitHistoricalTimelineIntent(),
       ),
       "branch-view-restore",
       scroller,
     );
-  }, [commitShowReturnToLatest, eventWindowKey, timeline]);
+  }, [commitShowReturnToLatest, eventWindowKey, hasExplicitHistoricalTimelineIntent, timeline]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -5397,7 +5408,9 @@ export function ACPChatDialog(
     const requestToken = beginPaginationRequest("newer");
     liveAnimationReadyRef.current = false;
     settleLiveStreamingMarkdown();
-    chatContainerContextRef.current?.stopScroll();
+    if (intent !== "recovery" || viewportManualIntentRef.current) {
+      chatContainerContextRef.current?.stopScroll();
+    }
     try {
       const response = await getAcpSession(
           projectId,
@@ -6207,6 +6220,7 @@ export function ACPChatDialog(
         hasNewerEventsRef.current,
         viewportManualIntentRef.current || hasNewerEventsRef.current,
         distanceFromBottom,
+        hasExplicitHistoricalTimelineIntent(),
       ),
       "viewport-scroll",
       scroller,

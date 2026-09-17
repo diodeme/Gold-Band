@@ -520,6 +520,81 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
     }
   });
 
+  it('keeps reporting geometric at-bottom across an external stopScroll at the live head', async () => {
+    vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (
+      window.setTimeout(() => callback(performance.now()), 0)
+    ));
+    vi.stubGlobal('cancelAnimationFrame', (frameId: number) => window.clearTimeout(frameId));
+
+    const atBottomChanges: boolean[] = [];
+    const followChanges: Array<{ following: boolean; cause: string }> = [];
+    const contextRef = React.createRef<ChatContainerContext>();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          React.createElement(
+            ChatContainerRoot,
+            {
+              resize: 'instant',
+              initial: 'instant',
+              contextRef,
+              onAtBottomChange: (atBottom) => atBottomChanges.push(atBottom),
+              onFollowIntentChange: (following, cause) => {
+                followChanges.push({ following, cause });
+              },
+            },
+            React.createElement(
+              ChatContainerContent,
+              { scrollClassName: 'overflow-y-auto' },
+              React.createElement('div', null, 'live head'),
+            ),
+          ),
+        );
+      });
+
+      const viewport = contextRef.current?.scrollRef.current as HTMLDivElement | null;
+      expect(viewport).not.toBeNull();
+      let scrollTop = 200;
+      Object.defineProperties(viewport, {
+        clientHeight: { configurable: true, get: () => 100 },
+        scrollHeight: { configurable: true, get: () => 300 },
+        scrollTop: {
+          configurable: true,
+          get: () => scrollTop,
+          set: (value: number) => {
+            scrollTop = Number(value);
+          },
+        },
+      });
+      await act(async () => {
+        viewport?.dispatchEvent(new Event('scroll'));
+        await waitForScrollFrames();
+      });
+      expect(atBottomChanges.at(-1)).toBe(true);
+
+      await act(async () => {
+        contextRef.current?.stopScroll();
+        viewport?.dispatchEvent(new Event('scroll'));
+        await waitForScrollFrames();
+      });
+      expect(contextRef.current?.isAtBottom).toBe(false);
+      expect(followChanges).toContainEqual({
+        following: false,
+        cause: 'external-stop-scroll',
+      });
+      expect(atBottomChanges.at(-1)).toBe(true);
+    } finally {
+      await act(async () => {
+        root.unmount();
+      });
+    }
+  });
+
   it('compensates a prepended detail anchor without retriggering pagination in the same frame', async () => {
     vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (

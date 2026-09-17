@@ -49,6 +49,8 @@ fn formal_cicd_uses_the_shared_memory_tools_in_both_languages() {
         );
         assert!(profile.content.contains("memory_write"));
         assert!(profile.content.contains("expectedRevision"));
+        assert!(profile.content.contains("operation=\"create\""));
+        assert!(profile.content.contains("operation=\"update\""));
         assert!(profile.content.contains("subSysId1"));
         assert!(profile.content.contains("cicd.build.jobId"));
         assert!(profile.content.contains("cicd.deploy.<S>.selected"));
@@ -106,6 +108,8 @@ fn formal_cicd_uses_the_shared_memory_tools_in_both_languages() {
             "读取 runtime 隐藏上下文中的记忆投影",
             "hidden memory projection",
             "<memory-data>",
+            "expectedRevision = null",
+            "null expectedRevision",
         ] {
             assert!(
                 !profile.content.contains(marker),

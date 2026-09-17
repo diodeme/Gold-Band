@@ -1,7 +1,7 @@
 use camino::Utf8PathBuf;
 use gold_band::{
     app::App,
-    channel::{RELEASE_CHANNEL, WB_CHANNEL},
+    channel::{ProfileChannelCapability, RELEASE_CHANNEL, profile_channel_capability_enabled},
     config::{DesktopLanguage, RuntimeConfig},
     prompts::{
         PROFILE_DEV_TEST_EN, PROFILE_DEV_TEST_ZH_CN, PROFILE_GRILLME_EN, PROFILE_GRILLME_ZH_CN,
@@ -11,7 +11,7 @@ use gold_band::{
 };
 
 #[test]
-fn wb_workflow_profile_supplements_are_channel_scoped_and_complete() {
+fn profile_supplements_are_channel_scoped_and_complete() {
     configure_storage_paths(StoragePathConfig {
         app_key: "maling",
         config_dir_name: ".maling",
@@ -32,10 +32,18 @@ fn wb_workflow_profile_supplements_are_channel_scoped_and_complete() {
         let grill = app.profile_show("pf-builtin-grill").unwrap();
         let dev_test = app.profile_show("pf-builtin-dev-test").unwrap();
 
-        if RELEASE_CHANNEL == WB_CHANNEL {
+        let requirement_identity_enabled = profile_channel_capability_enabled(
+            RELEASE_CHANNEL,
+            ProfileChannelCapability::RequirementIdentity,
+        );
+        let dev_test_auto_commit_enabled = profile_channel_capability_enabled(
+            RELEASE_CHANNEL,
+            ProfileChannelCapability::DevTestAutoCommit,
+        );
+        if requirement_identity_enabled || dev_test_auto_commit_enabled {
             let identity_markers = match language {
                 DesktopLanguage::ZhCn => [
-                    "WB 需求身份前置检查",
+                    "需求身份前置检查",
                     "本节开始时先调用 `memory_read`",
                     "`memory_read`",
                     "`storyId`",
@@ -48,7 +56,7 @@ fn wb_workflow_profile_supplements_are_channel_scoped_and_complete() {
                     "不是阻塞",
                 ],
                 DesktopLanguage::En => [
-                    "WB Requirement Identity Precheck",
+                    "Requirement Identity Precheck",
                     "At the start of this section, first call `memory_read`",
                     "`memory_read`",
                     "`storyId`",
@@ -65,7 +73,7 @@ fn wb_workflow_profile_supplements_are_channel_scoped_and_complete() {
                 for marker in identity_markers {
                     assert!(
                         content.contains(marker),
-                        "WB requirement identity marker missing: {marker}"
+                        "requirement identity marker missing: {marker}"
                     );
                 }
                 for marker in [
@@ -76,14 +84,14 @@ fn wb_workflow_profile_supplements_are_channel_scoped_and_complete() {
                 ] {
                     assert!(
                         !content.contains(marker),
-                        "WB identity must not depend on automatic projection: {marker}"
+                        "requirement identity must not depend on automatic projection: {marker}"
                     );
                 }
             }
 
             let commit_markers = match language {
                 DesktopLanguage::ZhCn => [
-                    "WB 开发测试自动提交",
+                    "开发测试自动提交",
                     "1. 使用 `memory_read`",
                     "不创建空提交",
                     "提交过程不向用户询问提交消息",
@@ -97,7 +105,7 @@ fn wb_workflow_profile_supplements_are_channel_scoped_and_complete() {
                     "CICD 将使用",
                 ],
                 DesktopLanguage::En => [
-                    "WB Development and Testing Auto-Commit",
+                    "Development and Testing Auto-Commit",
                     "1. Use `memory_read`",
                     "do not create an empty commit",
                     "Do not ask the user to confirm the commit message",
@@ -111,10 +119,14 @@ fn wb_workflow_profile_supplements_are_channel_scoped_and_complete() {
                     "CICD uses these commit OIDs",
                 ],
             };
+            assert_eq!(
+                requirement_identity_enabled, dev_test_auto_commit_enabled,
+                "the current channel policy enables both profile overlays together"
+            );
             for marker in commit_markers {
                 assert!(
                     dev_test.content.contains(marker),
-                    "WB dev-test commit marker missing: {marker}"
+                    "dev-test auto-commit marker missing: {marker}"
                 );
             }
             for marker in [
@@ -127,7 +139,7 @@ fn wb_workflow_profile_supplements_are_channel_scoped_and_complete() {
             ] {
                 assert!(
                     !dev_test.content.contains(marker),
-                    "WB dev-test commit must not depend on automatic projection: {marker}"
+                    "dev-test auto-commit must not depend on automatic projection: {marker}"
                 );
             }
         } else {
@@ -145,10 +157,10 @@ fn wb_workflow_profile_supplements_are_channel_scoped_and_complete() {
             };
             for (actual, expected) in expected {
                 assert_eq!(actual, expected);
-                assert!(!actual.contains("WB 需求身份前置检查"));
-                assert!(!actual.contains("WB Requirement Identity Precheck"));
-                assert!(!actual.contains("WB 开发测试自动提交"));
-                assert!(!actual.contains("WB Development and Testing Auto-Commit"));
+                assert!(!actual.contains("需求身份前置检查"));
+                assert!(!actual.contains("Requirement Identity Precheck"));
+                assert!(!actual.contains("开发测试自动提交"));
+                assert!(!actual.contains("Development and Testing Auto-Commit"));
             }
         }
     }

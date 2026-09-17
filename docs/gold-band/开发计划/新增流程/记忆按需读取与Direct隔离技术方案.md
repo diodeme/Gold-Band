@@ -221,7 +221,7 @@ Gold Band 内置共享参数记忆。当前角色需要项目或任务参数时�
 
 ### 5.2 WB 需求身份
 
-现有 `wb-requirement-identity` 已经明确调用 `memory_read`，不依赖自动投影。需要检查并固定：
+现有 `profile/overlays/requirement-identity.md` 已经明确调用 `memory_read`，不依赖自动投影。需要检查并固定：
 
 - 身份检查前必须先调用 `memory_read`。
 - 只检查返回快照中的 task 条目。
@@ -230,7 +230,7 @@ Gold Band 内置共享参数记忆。当前角色需要项目或任务参数时�
 
 ### 5.3 WB 开发测试提交
 
-现有 `wb-dev-test-commit` 已明确使用 `memory_read` 检查任务身份。保持现有逻辑，不改为依赖 prompt 投影。
+现有 `profile/overlays/dev-test-auto-commit.md` 已明确使用 `memory_read` 检查任务身份。保持现有逻辑，不改为依赖 prompt 投影。
 
 ### 5.4 其他角色
 

@@ -1,6 +1,6 @@
-## WB Requirement Identity Precheck
+## Requirement Identity Precheck
 
-This section applies only to the WB channel. Run it before topology enumeration, Interview Round 0, or Grill branch enumeration. At the start of this section, first call `memory_read`, then perform the identity check.
+Run this section before topology enumeration, Interview Round 0, or Grill branch enumeration. At the start of this section, first call `memory_read`, then perform the identity check.
 
 1. Use `memory_read` to read the current task and workspace memory. Inspect only the `task` entries in the returned snapshot; a workspace `storyId` or `storyName` does not count as an existing current-task identity.
 2. Continue the original role workflow only when the task contains both `storyId` and `storyName` and both values are nonempty after trimming.

@@ -12,3 +12,44 @@ pub const RELEASE_CHANNEL: &str = match option_env!("GOLD_BAND_RELEASE_CHANNEL")
 
 /// 内部 wb 渠道名，用于限定仅内部渠道可用的内置能力。
 pub const WB_CHANNEL: &str = "wb";
+
+/// 可由发布渠道启用的内置 Profile 能力。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileChannelCapability {
+    RequirementIdentity,
+    DevTestAutoCommit,
+    Cicd,
+}
+
+/// 返回指定发布渠道是否启用某项内置 Profile 能力。
+pub const fn profile_channel_capability_enabled(
+    channel: &str,
+    capability: ProfileChannelCapability,
+) -> bool {
+    match capability {
+        ProfileChannelCapability::RequirementIdentity
+        | ProfileChannelCapability::DevTestAutoCommit
+        | ProfileChannelCapability::Cicd => matches!(channel.as_bytes(), b"wb"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_channel_capabilities_are_limited_to_wb() {
+        for capability in [
+            ProfileChannelCapability::RequirementIdentity,
+            ProfileChannelCapability::DevTestAutoCommit,
+            ProfileChannelCapability::Cicd,
+        ] {
+            assert!(profile_channel_capability_enabled(WB_CHANNEL, capability));
+            assert!(!profile_channel_capability_enabled("default", capability));
+            assert!(!profile_channel_capability_enabled(
+                "enterprise",
+                capability
+            ));
+        }
+    }
+}

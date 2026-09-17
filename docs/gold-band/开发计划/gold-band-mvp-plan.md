@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-17 渠道中立 Profile Prompt 与能力矩阵
+
+- 根因：现有 Profile 渠道隔离有效，但渠道策略混入 Prompt 文件名、标题、正文、常量名和契约测试，通用 Prompt 被迫知道自己属于哪个渠道。
+- 实现：新增 `ProfileChannelCapability` 编译期矩阵；seed 通过 `required_capability` 表达可见性，overlay 通过统一静态表组合。需求身份与开发测试自动提交迁移为双语 `profile/overlays/` 渠道中立资产，CI/CD 正文删除渠道自述。
+- 验收：`profile_prompt_channel_boundary` 2/2、default 与 WB 的 `profile_supplements_are_channel_scoped_and_complete` 各 1/1、WB `cicd_profile_contract` 1/1、`app::profiles::tests` 31/31 通过。
+- 过度设计与性能：仅新增 3 项 capability 和 2 项 overlay 的静态查找，无运行时 I/O、缓存、队列、状态机或持久字段；内置 Profile 最大数量不变。
+
 ## 2026-09-17 记忆按需读取与 Direct Prompt 隔离
 
 - 根因：MCP binding、RuntimeManaged 记忆规则和自动参数投影共用同一准备路径，导致普通节点固定读取/序列化记忆，RawAgent 在 envelope 分流后仍被注入规则和 `<memory-data>`。

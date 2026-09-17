@@ -553,7 +553,13 @@ im-projection-diagnostic
 - 已迁移 `ImIntegrationSettings.tsx`：显示模型为纯投影，总开关即时执行；通知草稿下沉到独立表单，不被 snapshot、扫码或启停响应重置；扫码 Dialog 在授权后进入可关闭的等待绑定态，只有持久 binding 与当前 snapshot 一致才完成。
 - `BindingObserved` 已改为先校验、再落盘并重建 target、最后提交 snapshot；IM settings 写入通过同一最小临界区与 generation 推进避免旧事件交错。`IM_STORAGE_UNAVAILABLE` 使用单 channel+generation、最多三次的 1/2/4 秒可取消重试。
 - 生产 React 界面与 `web/tests/im-settings-ui.test.tsx` 是设置流程的唯一实现和自动化验收入口，固定渐进披露、扫码到私聊绑定、即时启停、通知保存/放弃、分类恢复、更换账号、删除确认和无障碍语义。
-- 性能预算：继续使用当前单 channel 增量订阅；六项通知渲染为 O(1)，不新增轮询、全量设置刷新或无界状态。持久化重试为单任务、有限次数且 generation 变化即取消。过度设计复核确认不增加向导状态机、通知预设、测试连接状态或第二套持久模型。
+- 性能预算：继续使用当前单 channel 增量订阅；六项通知渲染为 O(1)，不新增轮询或无界状态。设置页复用定时任务的模块级 SWR 投影，容量固定为单份 `ImSettingsVm`，新鲜期内不重复 `get_im_settings`，启动只增加一次预取。持久化重试为单任务、有限次数且 generation 变化即取消。过度设计复核确认不增加向导状态机、通知预设、测试连接状态或第二套持久模型。
+
+#### 12.2.2 设置页加载闪烁（2026-09-17）
+
+- 根因：IM 设置每次挂载都从 `null` 重新拉取，Radix 非激活标签卸载与 `SettingsPage` 重挂载会让用户每次进入设置都先看到「加载中…」。这是正确设计下的展示投影不完整，不是 IM canonical state 缺陷。
+- 实现：新增与定时任务相同的模块级 stale-while-revalidate 缓存；App 启动预取；命令成功写回；live snapshot 按 generation 合入且不把界面退回加载态。
+- 验收：缓存命中与页面重挂载的首帧不得出现「加载中…」；空缓存仍显示加载；迟到 fetch 不得覆盖更新保存结果或更高 generation snapshot。
 
 ## 13. 结构化错误码
 

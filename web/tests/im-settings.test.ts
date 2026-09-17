@@ -208,4 +208,10 @@ describe('IM settings boundary', () => {
     expect(sources).not.toContain('disconnect_im_channel');
     expect(sources).not.toContain('source = "halo"');
   });
+
+  it('prefetches IM settings at app bootstrap', async () => {
+    const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+    expect(app).toContain('prefetchImSettings');
+    expect(app).toContain('prefetchScheduledRuntimeSettings');
+  });
 });

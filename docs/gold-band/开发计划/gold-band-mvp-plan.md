@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-17 IM 设置每次进入都闪「加载中…」
+
+- 根因：`ImIntegrationSettings` 每次挂载都把 `settings` 置为 `null` 再请求 `get_im_settings`。定时任务运行设置已有 stale-while-revalidate 缓存，IM 没有复用。Radix 非激活标签卸载与设置页重挂载会让用户每次点开设置都先看到加载态。属于正确设计下的展示投影不完整，不修改 IM canonical state。
+- 实现：为 IM 设置增加与定时任务相同的模块级运行时缓存；App 启动后台预取；保存/启停/扫码/删除写回；connection snapshot 按 generation 单调合入。缓存不是第二事实源，不进入 `AppBootstrapVm`。
+- 证据：复现用例「页面重挂载仍显示加载中」修复前稳定失败；修复后同一用例、缓存命中首帧、空缓存仍显示加载、迟到 fetch 不覆盖更新保存结果/更高 generation snapshot 均通过。
+- 过度设计与性能评审：复用已有 SWR 模式，容量固定为单份 `ImSettingsVm`，有 5 秒新鲜期与 single-flight；启动只增加一次 `get_im_settings` 预取，当前单 channel，无新状态机、轮询或持久字段。
+
 ## 2026-09-16 内置浏览器门户页与书签
 
 - 根因：空白页和「没有标签」是同一种未浏览状态，却画成两种空壳；书签也不该再做一套图标下载。属于空白页设计没补完。

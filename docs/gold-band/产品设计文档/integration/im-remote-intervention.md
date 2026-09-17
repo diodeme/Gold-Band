@@ -425,6 +425,8 @@ Connector task 结束时必须先排空其有界事件队列，再把返回错�
 
 2026-09-17 三类干预详情上下文确认属于 linked-detail 公共投影契约缺失，而不是 Runtime、outbox 或审批状态机设计缺陷：原有 `InterventionPresentation.fields` 足以承载展示快照，但权限/追问 ACP 事件的节点在工作流场景错误回退为 Provider 展示名，且卡片渲染会自然消费任务/节点字段。修复统一生成 `workspaceLabel`、`taskTitle`、`nodeLabel`；标准工作流只允许 `profileName/profile/node_id` 解析角色，彻底删除 Provider fallback；AUTO 主路径读取当前节点的 `dynamic_node_file` 并使用其 title，仅在节点投影缺失、不可读或 title 为空时回退 `DynamicGraphState`。三个字段仅进入 Markdown 详情，卡片显式过滤，不新增第二套业务身份或投递状态。
 
+2026-09-17 ManualCheck 生产暂停发布链路补齐确认属于正确领域设计下的 lifecycle 发布实现不完整：人工检查暂停只发布了通用 `RunPaused`，而 IM 投影只消费语义事件 `InterventionRequested`，导致审核详情与成功/失败 vote 卡无法进入 outbox，桌面处理后的通用终态确认也因找不到原 delivery 而无法发送。修复在 canonical 暂停状态持久化后，针对 `manual_check_pending` 复用同一 event ID 补发 `InterventionRequested { request: ManualCheck, kind: ManualDecisionRequired }`；不修改 connector、不增加结果字段或第二套审批状态。桌面来源仍只发送“已在桌面端处理”的通用确认，企微来源继续更新原卡。
+
 2026-09-16 对现有桌面功能的性能与退出复核确认：问题不在 outbox、generation 或 Runtime canonical 设计，而在可选 IM 生命周期被无条件装配、空 claim 仍进入写事务、subscriber 在确认目标前读取 workspace state，以及 shutdown 把控制信号塞入有界 data queue。修复保留同一 `DesktopState` runtime slot、settings、cleanup journal 和 cancellation token，只补齐惰性激活、只读空队列闸门、target-first 快速返回与 gate → scheduler → IM 的退出顺序。ManualCheck 同时恢复原设计边界：Timeline 文本只用于远程展示，不是 canonical command 的 admission 条件。
 
 2026-09-16 Elicitation 桌面提交复核确认：共享 `InterventionCommandService` 负责 pending identity、expected state、幂等与 first-writer-wins 是正确设计，但实现错误地把 `RemoteElicitationForm` 生成的 transport `allowed_actions` 同时用于 canonical Accept 准入，导致自由文本、自定义答案和超过三个问题等桌面可处理表单返回 `INTERVENTION_ACTION_INVALID`。修复后 canonical Elicitation 只按完整 ACP `requestedSchema` 校验对象答案或 Decline；`ImInboundActionService` 继续在调用 Runtime 前按 delivery 中实际发布的 `allowed_actions` 校验 token、固定表单选择与动作，`requires_desktop` 只描述投影能力，不反向限制桌面命令。

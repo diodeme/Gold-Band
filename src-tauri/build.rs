@@ -146,8 +146,8 @@ fn main() {
             bookmarks_path.display()
         )
     });
-    let bookmarks_catalog: serde_json::Value =
-        serde_json::from_str(&bookmarks_text).unwrap_or_else(|error| {
+    let bookmarks_catalog: serde_json::Value = serde_json::from_str(&bookmarks_text)
+        .unwrap_or_else(|error| {
             panic!(
                 "failed to parse browser bookmarks catalog {}: {error}",
                 bookmarks_path.display()
@@ -158,10 +158,7 @@ fn main() {
         .cloned()
         .unwrap_or_else(|| serde_json::json!([]));
     if !channel_bookmarks.is_array() {
-        panic!(
-            "browser bookmarks catalog {} must be an array",
-            channel
-        );
+        panic!("browser bookmarks catalog {} must be an array", channel);
     }
     let bookmarks_json = serde_json::to_string(&channel_bookmarks).unwrap_or_else(|_| "[]".into());
     println!("cargo:rustc-env=GOLD_BAND_BROWSER_BOOKMARKS={bookmarks_json}");

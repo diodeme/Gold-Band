@@ -211,6 +211,23 @@ fn run() -> anyhow::Result<()> {
                 });
             },
         )
+        // Browser local HTML is served through the same bounded custom-protocol
+        // mechanism so the child WebView keeps a single authorized directory
+        // instead of relying on file:// (unsupported on WebView2 navigation).
+        .register_asynchronous_uri_scheme_protocol(
+            browser::BROWSER_LOCAL_FILE_PROTOCOL,
+            |protocol_context, request, responder| {
+                let app = protocol_context.app_handle().clone();
+                let label = protocol_context.webview_label().to_string();
+                let method = request.method().clone();
+                let uri = request.uri().to_string();
+                std::thread::spawn(move || {
+                    responder.respond(browser::browser_local_file_protocol_response(
+                        &app, &label, &method, &uri,
+                    ));
+                });
+            },
+        )
         .register_asynchronous_uri_scheme_protocol(
             wallpaper::WALLPAPER_ASSET_PROTOCOL,
             |protocol_context, request, responder| {
@@ -609,10 +626,15 @@ fn run() -> anyhow::Result<()> {
             workspace_files::start_workspace_file_watch,
             workspace_files::stop_workspace_file_watch,
             browser::browser_create_page,
+            browser::browser_resolve_local_html,
             browser::browser_set_bounds,
             browser::browser_show_page,
             browser::browser_hide_page,
             browser::browser_hide_all,
+            browser::browser_show_address_suggestions,
+            browser::browser_hide_address_suggestions,
+            browser::browser_address_suggestion_action,
+            browser::browser_address_suggestions_ready,
             browser::browser_navigate,
             browser::browser_go_back,
             browser::browser_go_forward,

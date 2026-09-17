@@ -59,10 +59,12 @@ fn windows_settings(
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings2;
     use windows::core::Interface;
 
-    let webview = unsafe { platform.controller().CoreWebView2() }
-        .map_err(|error| error.to_string())?;
+    let webview =
+        unsafe { platform.controller().CoreWebView2() }.map_err(|error| error.to_string())?;
     let settings = unsafe { webview.Settings() }.map_err(|error| error.to_string())?;
-    settings.cast::<ICoreWebView2Settings2>().map_err(|error| error.to_string())
+    settings
+        .cast::<ICoreWebView2Settings2>()
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(windows)]

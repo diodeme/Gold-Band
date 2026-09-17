@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const host = vi.hoisted(() => ({
   ensurePage: vi.fn(async () => undefined),
-  scheduleBounds: vi.fn(),
   hideAll: vi.fn(async () => undefined),
   onOverlayChange: vi.fn(() => () => undefined),
   onVisibilityChange: vi.fn(() => () => undefined),
@@ -97,7 +96,6 @@ describe('NativeBrowserViewport', () => {
       await vi.waitFor(() => expect(host.ensurePage).toHaveBeenCalled());
       host.hideAll.mockClear();
       host.ensurePage.mockClear();
-      host.scheduleBounds.mockClear();
       await act(async () => {
         root.render(
           <NativeBrowserViewport
@@ -108,9 +106,7 @@ describe('NativeBrowserViewport', () => {
         );
       });
       expect(host.hideAll).not.toHaveBeenCalled();
-      await vi.waitFor(() => {
-        expect(host.ensurePage.mock.calls.length + host.scheduleBounds.mock.calls.length).toBeGreaterThan(0);
-      });
+      await vi.waitFor(() => expect(host.ensurePage).toHaveBeenCalled());
     } finally {
       await act(async () => root.unmount());
       container.remove();
@@ -144,7 +140,7 @@ describe('NativeBrowserViewport', () => {
     }
   });
 
-  it('hides the previous native page when the page identity changes', async () => {
+  it('does not hide native pages when the page identity changes', async () => {
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
@@ -163,7 +159,7 @@ describe('NativeBrowserViewport', () => {
           />,
         );
       });
-      expect(host.hideAll).toHaveBeenCalled();
+      expect(host.hideAll).not.toHaveBeenCalled();
     } finally {
       await act(async () => root.unmount());
       container.remove();
@@ -239,7 +235,7 @@ describe('NativeBrowserViewport', () => {
     }
   });
 
-  it('hides the native webview as soon as the placeholder unmounts', async () => {
+  it('leaves native visibility ownership to the shell lifecycle when the placeholder unmounts', async () => {
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
@@ -250,7 +246,7 @@ describe('NativeBrowserViewport', () => {
       await act(async () => {
         root.unmount();
       });
-      expect(host.hideAll).toHaveBeenCalled();
+      expect(host.hideAll).not.toHaveBeenCalled();
     } finally {
       container.remove();
     }

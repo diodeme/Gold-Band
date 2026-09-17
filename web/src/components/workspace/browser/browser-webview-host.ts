@@ -115,7 +115,6 @@ class BrowserWebviewHost {
   private started = false;
   private startPromise: Promise<void> | null = null;
   private unlisten: (() => void) | null = null;
-  private frame: number | null = null;
   private lastBounds = new Map<string, BrowserBounds>();
   private visiblePageId: string | null = null;
   private overlayOpen = false;
@@ -129,6 +128,7 @@ class BrowserWebviewHost {
     promise: Promise<void>;
   }>();
   private hidePromise: Promise<void> | null = null;
+  private showPromise: Promise<void> | null = null;
   private visibilityRevision = 0;
   private suppressed = false;
 
@@ -180,18 +180,6 @@ class BrowserWebviewHost {
     }
   }
 
-  scheduleBounds(pageId: string, bounds: BrowserBounds) {
-    this.lastBounds.set(pageId, roundBounds(bounds));
-    this.setOverlayOpen(this.hasBlockingOverlay());
-    if (this.frame != null) return;
-    this.frame = requestAnimationFrame(() => {
-      this.frame = null;
-      const latest = this.lastBounds.get(pageId);
-      if (!latest) return;
-      void api().browserSetBounds?.({ pageId, bounds: latest });
-    });
-  }
-
   async show(pageId: string) {
     if (this.overlayOpen || this.suppressed) {
       await this.hideAll();
@@ -199,14 +187,26 @@ class BrowserWebviewHost {
     }
     if (this.visiblePageId === pageId) return;
     const revision = this.visibilityRevision;
+    if (this.showPromise) {
+      await this.showPromise;
+      if (this.visiblePageId === pageId) return;
+    }
     if (this.hidePromise) await this.hidePromise;
     if (revision !== this.visibilityRevision || this.overlayOpen || this.suppressed) return;
-    await api().browserShowPage?.({ pageId });
-    if (revision !== this.visibilityRevision || this.overlayOpen || this.suppressed) {
-      await this.hideAll();
-      return;
+    const showing = (async () => {
+      await api().browserShowPage?.({ pageId });
+      if (revision !== this.visibilityRevision || this.overlayOpen || this.suppressed) {
+        await this.hideAll();
+        return;
+      }
+      this.visiblePageId = pageId;
+    })();
+    this.showPromise = showing;
+    try {
+      await showing;
+    } finally {
+      if (this.showPromise === showing) this.showPromise = null;
     }
-    this.visiblePageId = pageId;
   }
 
   async hideAll() {
@@ -409,8 +409,6 @@ class BrowserWebviewHost {
   }
 
   resetForTests() {
-    if (this.frame != null) cancelAnimationFrame(this.frame);
-    this.frame = null;
     this.overlayObserver?.disconnect();
     this.overlayObserver = null;
     this.overlayResizeObserver?.disconnect();
@@ -423,6 +421,7 @@ class BrowserWebviewHost {
     this.pendingCreates.clear();
     this.pendingNavigations.clear();
     this.hidePromise = null;
+    this.showPromise = null;
     this.visiblePageId = null;
     this.overlayOpen = false;
     this.visibilityListener = null;

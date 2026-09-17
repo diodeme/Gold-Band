@@ -439,23 +439,20 @@ pub fn system_rules(language: crate::config::DesktopLanguage) -> &'static str {
     }
 }
 
-pub fn prepare_invocation(
-    req: &mut crate::provider::WorkerInvocation,
-) -> anyhow::Result<Option<String>> {
+pub fn bind_invocation_mcp(req: &mut crate::provider::WorkerInvocation) -> anyhow::Result<bool> {
     let Some(server_index) = req
         .mcp_servers
         .iter()
         .position(|server| server.get("name").and_then(Value::as_str) == Some(mcp::SERVER_NAME))
     else {
-        return Ok(None);
+        return Ok(false);
     };
     let paths = GoldBandPaths::new(req.adapter_workspace_dir.clone());
-    let service = MemoryService::new(
+    MemoryService::new(
         paths.clone(),
         &req.runtime_context.project_id,
         Some(req.runtime_context.task_id.clone()),
     )?;
-    let rendered = service.render_context(req.runtime_context.language)?;
     let base = req.mcp_servers[server_index].clone();
     req.mcp_servers[server_index] = mcp::bind_session_config(
         &base,
@@ -463,31 +460,7 @@ pub fn prepare_invocation(
         &req.runtime_context.task_id,
         req.runtime_context.language,
     )?;
-    Ok(Some(rendered))
-}
-
-impl MemoryService {
-    pub fn render_context(
-        &self,
-        language: crate::config::DesktopLanguage,
-    ) -> anyhow::Result<String> {
-        let snapshot = self.read()?;
-        let data = json!({"workspacePath": snapshot.workspace_path, "taskPath": snapshot.task_path, "effective": snapshot.effective});
-        // Escape markup delimiters so values cannot close the surrounding data block.
-        let data = serde_json::to_string(&data)?
-            .replace('<', "\\u003c")
-            .replace('>', "\\u003e")
-            .replace('&', "\\u0026");
-        let template = match language {
-            crate::config::DesktopLanguage::ZhCn => {
-                include_str!("../prompts/zh-CN/runtime/memory.md")
-            }
-            crate::config::DesktopLanguage::En => include_str!("../prompts/en/runtime/memory.md"),
-        };
-        let rendered =
-            minijinja::Environment::new().render_str(template, minijinja::context! { data })?;
-        Ok(rendered)
-    }
+    Ok(true)
 }
 
 #[cfg(test)]

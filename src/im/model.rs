@@ -11,6 +11,18 @@ use crate::app::intervention::{
 pub const IM_PAYLOAD_VERSION: u16 = 1;
 pub const MAX_IM_PRESENTATION_BYTES: usize = 32 * 1024;
 pub const IM_DESKTOP_RESOLUTION_EVENT_SUFFIX: &str = "desktop-resolved";
+pub const INTERVENTION_WORKSPACE_FIELD: &str = "workspaceLabel";
+pub const INTERVENTION_TASK_FIELD: &str = "taskTitle";
+pub const INTERVENTION_NODE_FIELD: &str = "nodeLabel";
+pub const INTERVENTION_CONTEXT_FIELDS: [&str; 3] = [
+    INTERVENTION_WORKSPACE_FIELD,
+    INTERVENTION_TASK_FIELD,
+    INTERVENTION_NODE_FIELD,
+];
+
+pub fn is_intervention_context_field(key: &str) -> bool {
+    INTERVENTION_CONTEXT_FIELDS.contains(&key)
+}
 
 pub fn desktop_resolution_event_id(source_event_id: &str) -> String {
     format!("{source_event_id}:{IM_DESKTOP_RESOLUTION_EVENT_SUFFIX}")

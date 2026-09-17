@@ -28,6 +28,29 @@
 - 证据：中间栏打开菜单不 hide、相交且未约束的菜单仍 hide、Select 纳入检测、Dialog overlay 覆盖网页仍 hide、关闭菜单与右栏 Sheet 豁免；受约束 popover 即使首框相交也不 hide 且不发 hideAll；hook 运行时测试固定 context boundary、constraint 标记与显式 null 退出；overlay 契约测试固定对话栏 boundary 与共享组件消费 `useOverlayPositioning`。
 - 过度设计与性能评审：复用已有 collision 标记，不加延迟、队列或第二套几何状态。相交检测仍只读当前打开的未约束浮层与一块占位盒矩形。
 
+## 2026-09-17 渠道中立 Profile Prompt 与能力矩阵
+
+- 根因：现有 Profile 渠道隔离有效，但渠道策略混入 Prompt 文件名、标题、正文、常量名和契约测试，通用 Prompt 被迫知道自己属于哪个渠道。
+- 实现：新增 `ProfileChannelCapability` 编译期矩阵；seed 通过 `required_capability` 表达可见性，overlay 通过统一静态表组合。需求身份与开发测试自动提交迁移为双语 `profile/overlays/` 渠道中立资产，CI/CD 正文删除渠道自述。
+- 验收：`profile_prompt_channel_boundary` 2/2、default 与 WB 的 `profile_supplements_are_channel_scoped_and_complete` 各 1/1、WB `cicd_profile_contract` 1/1、`app::profiles::tests` 31/31 通过。
+- 过度设计与性能：仅新增 3 项 capability 和 2 项 overlay 的静态查找，无运行时 I/O、缓存、队列、状态机或持久字段；内置 Profile 最大数量不变。
+
+## 2026-09-17 记忆按需读取与 Direct Prompt 隔离
+
+- 根因：MCP binding、RuntimeManaged 记忆规则和自动参数投影共用同一准备路径，导致普通节点固定读取/序列化记忆，RawAgent 在 envelope 分流后仍被注入规则和 `<memory-data>`。
+- 实现：`bind_invocation_mcp()` 只查找、校验并绑定 MCP；`prepare_prompt_bundle()` 只在 RuntimeManaged 且记忆启用时追加简化通用规则。所有模式永久删除 `Gold Band current memory` 与 `<memory-data>` 自动投影，删除 `MemoryService::render_context()` 和双语 `runtime/memory.md`。RawAgent / Direct 的 system prompt 为空、首轮与 continue user prompt 保持原文，但启用时仍保留记忆 MCP。
+- 角色契约：CICD 在参数准备阶段、WB 身份在身份检查阶段、WB 提交在需求身份处理步骤主动调用 `memory_read`；读取失败说明未读取，写入或核验失败说明未持久化，二者不阻塞业务，缺少业务参数时继续按原门禁询问、暂停或失败。
+- 验收：`memory_invocation` 5/5、`memory_mcp` 3/3、lib `memory` 16/16、`worker_bootstrap` 21/21；CICD/WB profile 契约在 default 与 WB 渠道通过；AI-DYNAMIC 修改用例 1/1、完整目标串行 38/38；`cargo check -p gold-band --tests -j 1`、`cargo fmt --all -- --check`、`git diff --check` 通过。
+- 过度设计与性能：不新增状态机、持久字段、缓存、队列、后台同步或新记忆实现；删除普通节点的两文件读取、合并、最多 32 KiB 序列化和 prompt token 固定成本，真实读取下沉到 CICD/WB 工具调用点。
+- 保证边界：接口保证工具读取最新快照，角色契约要求需要记忆的流程主动读取；模型是否执行工具，以及 Direct 是否忽略记忆内容中的指令性文本，不升级为 runtime 强保证。
+
+## 2026-09-17 CICD 职责迁移与 WB 需求身份
+
+- 根因：代码提交被放在 CICD，而提交生产者是开发测试节点；`storyId/storyName` 没有任务级固定契约；CICD 参数只有通用“默认写任务”规则，缺少逐 key 作用域和写后核验。
+- 实现：CICD 删除 commit 职责，只检查开发测试提交是否已推送；拒绝 push 或 push 失败时询问“继续构建 / 停止”，继续后按远端现状推进。WB 采访/拷问补充需求身份检查，开发测试补充自动提交。用户维护的子系统号条目固定工作空间，`storyId/storyName` 和全部 `cicd.*` 固定任务。
+- 验收：WB `memory_domain` 13、`cicd_profile_contract` 1、`wb_workflow_profile_contract` 1 通过；default `wb_workflow_profile_contract` 1 通过；`cargo check -p gold-band --tests -j 1`、格式和 diff 空白检查通过。
+- 过度设计与性能：复用现有 Profile 渠道目录、记忆 MCP、CAS、原子写入和 Git CLI，无新状态机、持久模型、依赖、缓存或队列；每次只增加固定长度提示词和两个有界记忆文件读取。
+
 ## 2026-09-17 IM 设置每次进入都闪「加载中…」
 
 - 根因：`ImIntegrationSettings` 每次挂载都把 `settings` 置为 `null` 再请求 `get_im_settings`。定时任务运行设置已有 stale-while-revalidate 缓存，IM 没有复用。Radix 非激活标签卸载与设置页重挂载会让用户每次点开设置都先看到加载态。属于正确设计下的展示投影不完整，不修改 IM canonical state。
@@ -165,7 +188,6 @@
 - 原生层修复与诊断：load callback 只发布事件，不再控制显隐；关闭先 best-effort hide，再 native close，成功后才按 `pageId + label` 删除 registry，失败返回结构化错误并保留重试能力。`gold_band::browser` 向既有 `runtime.log` 记录 create/show/hide/navigate/load/close/discard 与 registry 结果，URL 仅保留 origin、本地路径全部脱敏，bounds 成功热路径不逐帧记录。Rust browser 8 项、前端浏览器聚焦回归 7 文件 24 项、TypeScript、桌面 crate check 与 Web 生产构建通过。
 - 性能与过度设计评审：复用既有 BrowserSession、工作区 close resolver 和 Settings 持久化，不新增并行状态机、依赖、缓存或队列。页摘要上限 32、活 WebView 上限 5；每个 loading 页最多一个 timer，无轮询。创建与启动 single-flight，bounds 仍按 rAF 合并；宿主保持按需动态加载，未打开路径不进入主包。
 - 验收结果：聚焦 Vitest 6 文件 21 项、浏览器 API 3 文件 22 项、右侧工作区 DOM 13 项、Rust 浏览器 5 项、浏览器偏好 roundtrip 1 项全部通过；TypeScript、`cargo check -p gold-band-desktop` 与 Web 生产构建通过。右侧工作区 Radix DOM 套件在当前机器超过默认 5 秒，放宽后 13 项均通过，未发现业务断言回归。已启动 `dev:wb` 并拉起本轮 EXE，Computer Use 却返回 `Codex auth token is unavailable`，且能力对象没有 native app API；因此未把子 WebView 点击实操虚报为通过。本轮 PID 已清理，原先运行的 Gold Band 与 1420 服务保留。
-
 ## 2026-09-16 Composer 角色斜杠菜单
 
 - 根因：`/` 菜单原先只有 Agent 命令/Skill 一个命名空间，无法从 composer 指定本次消息的 Gold Band 角色。这是正确斜杠交互下的产品目录缺失，不是命令去重或标签投影缺陷。随后把角色塞进 `/` 并加上品牌组标题，会和 Agent 命令抢同一触发器；改为 `@` 唤醒角色、`/` 只保留 Agent，是同一双命名空间设计的补齐。

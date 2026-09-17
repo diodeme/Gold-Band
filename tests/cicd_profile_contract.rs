@@ -49,7 +49,13 @@ fn formal_cicd_uses_the_shared_memory_tools_in_both_languages() {
         );
         assert!(profile.content.contains("memory_write"));
         assert!(profile.content.contains("expectedRevision"));
-        assert!(profile.content.contains("subSysId1"));
+        assert!(profile.content.contains("operation=\"create\""));
+        assert!(profile.content.contains("operation=\"update\""));
+        assert!(!profile.content.contains("subSysId"));
+        assert!(profile.content.contains(match language {
+            DesktopLanguage::ZhCn => "子系统号",
+            DesktopLanguage::En => "subsystem number",
+        }));
         assert!(profile.content.contains("cicd.build.jobId"));
         assert!(profile.content.contains("cicd.deploy.<S>.selected"));
         assert!(!profile.content.contains("\"targets\""));
@@ -60,56 +66,65 @@ fn formal_cicd_uses_the_shared_memory_tools_in_both_languages() {
         assert!(profile.content.contains("deploy instance-list"));
         assert!(profile.content.contains("buildNum"));
         assert!(!profile.content.contains("`deployments`"));
-        let commit_gate_markers = match language {
+        let push_precheck_markers = match language {
             DesktopLanguage::ZhCn => [
-                "### 代码提交前置条件",
+                "### 代码推送前置检查",
                 "### CLI 与参数检查",
-                "原始需求、当前 task / goal、runtime 明确提供的前序产物",
-                "--story=[",
-                "<type>: <中文描述>",
-                "标准 Conventional Commits 类型 token",
-                "feat: 添加登录功能",
-                "#AI COMMIT#",
-                "先从原始需求确认 `%id` 和 `%name`",
-                "发现相关未提交改动时先协助用户提交",
-                "按具体路径执行 git add 与 git commit",
-                "禁止使用 git add -A",
-                "提交后重新检查",
-                "相关提交已存在但尚未推送时同样协助用户推送",
-                "用户确认后执行普通 git push",
+                "进入参数准备阶段后，先调用 `memory_read`",
+                "只检查当前分支是否存在未 push 的提交",
+                "提醒用户并询问是否 push",
+                "用户不 push",
+                "push 失败",
+                "询问是否继续构建",
+                "按远端现状推进",
                 "禁止 force push",
-                "push 后核实远端分支已包含本次相关提交",
-                "远端分支未包含相关提交",
-                "系统需求",
+                "固定作用域不得混淆",
+                "所有 `cicd.*` 参数固定写任务作用域",
+                "再次 `memory_read`",
+                "不是阻塞",
+                "向用户询问或确认所需参数",
             ],
             DesktopLanguage::En => [
-                "### Code commit precondition",
+                "### Code Push Precheck",
                 "### CLI and Parameter Checks",
-                "original requirement, the current task / goal, predecessor artifacts explicitly supplied by the runtime",
-                "--story=[",
-                "<type>: <Chinese description>",
-                "standard Conventional Commits type token",
-                "feat: 添加登录功能",
-                "#AI COMMIT#",
-                "Resolve `%id` and `%name` from the original requirement first",
-                "first help the user commit them",
-                "run git add and git commit with the specific paths",
-                "Never use git add -A",
-                "recheck after committing",
-                "also help the user push them",
-                "run a normal git push",
+                "After entering parameter preparation, first call `memory_read`",
+                "only check whether the current branch has unpushed commits",
+                "remind the user and ask whether to push",
+                "declines to push",
+                "push fails",
+                "ask whether to continue building",
+                "Continue from the current remote state",
                 "Never force push",
-                "verify that the remote branch contains the related commits",
-                "remote branch lacks related commits",
-                "系统需求",
+                "The fixed scopes are mandatory",
+                "Write every `cicd.*` parameter to task scope",
+                "call `memory_read` again",
+                "not blockers",
+                "ask for or confirm the required parameters",
             ],
         };
-        for marker in commit_gate_markers {
+        for marker in push_precheck_markers {
             assert!(
                 profile.content.contains(marker),
-                "CICD commit gate marker missing: {marker}"
+                "CICD push precheck marker missing: {marker}"
             );
         }
+        for marker in [
+            "读取 runtime 隐藏上下文中的记忆投影",
+            "hidden memory projection",
+            "<memory-data>",
+            "expectedRevision = null",
+            "null expectedRevision",
+        ] {
+            assert!(
+                !profile.content.contains(marker),
+                "CICD must not depend on an automatic memory projection: {marker}"
+            );
+        }
+        assert!(!profile.content.contains("--story=["));
+        assert!(!profile.content.contains("#AI COMMIT#"));
+        assert!(!profile.content.contains("Conventional Commits"));
+        assert!(!profile.content.contains("代码提交前置条件"));
+        assert!(!profile.content.contains("Code commit precondition"));
         for field in [
             "selected",
             "mode",

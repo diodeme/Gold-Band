@@ -176,3 +176,40 @@
 验证：`cargo check --workspace --all-targets`、`cargo fmt --all -- --check`、`git diff --check` 通过；默认渠道 `memory_domain` 12、`memory_invocation` 2、`memory_mcp` 2、`memory_wb_catalog` 1、`cicd_profile_contract` 1、`cicd_output_contract` 1、`cicd_recovery` 3、`provider_prompt_bundle` 31，`GOLD_BAND_RELEASE_CHANNEL=wb` 下同批 18 项，lib `mcp::` 10、`ai_dynamic_node` 38、`worker_bootstrap` 21 全部通过；前端 `project-memory`/`mcp-server-card`/`demo-api`/侧栏 27 项与 `npm run web:build` 通过。`context-management-loading` 仍是 main 既有红灯（App.tsx `listen<...>` 字符串断言），非本次引入。
 
 过度设计复核：复用现有 `McpServerConfig`、managed 卡片、ACP `mcpServers` 与 `WorkerInvocation`，不新增通用占位符模板、常驻代理、第二种卡片类型、持久诊断字段、缓存、队列或新状态机。性能复核：启动外部 MCP 握手从 O(N) 降为 0；definition reconcile 为有界列表线性比较，未变化零写盘；显式诊断只启动单个短进程并统一回收进程树；会话仍由 Agent 承担原本就需要的单次 stdio 启动成本，无额外 N+1 或历史扫描。
+
+## 2026-09-17 WB 需求身份与固定记忆作用域
+
+根因：需求 ID / 名称是开发测试生成三行提交所需的规范输入，但任务记忆没有固定 key 和初始化链路；同时 CICD 参数只有“默认写任务”的通用规则，无法保证每个参数写到正确作用域。
+
+- [x] 启用 `RequirementIdentity` capability 的采访和拷问在角色流程前使用 `memory_read` 只检查任务作用域 `storyId/storyName`；缺失、为空或不成对时，以“不存在 / 其他（用户自行输入）”语义提问。WB 当前启用该 capability。
+- [x] 选择不存在时写 `storyId=0` 和从需求内容提取的最多 40 字符简短名称；选择其他时要求同时提供 ID 和名称。两个 key 均写任务作用域并写后核验。
+- [x] 开发测试在采访或拷问关闭导致身份缺失时自动兜底补齐，不向用户询问提交消息。
+- [x] 固定作用域：用户维护的子系统号条目写工作空间且不依赖固定 key；`storyId/storyName` 与全部 `cicd.*` 生效参数写任务。
+- [x] 记忆领域接口测试新增跨节点任务身份读取，确认任务值优先并在重新构造服务后保持。
+- [x] 记忆工具不可用、写入失败或写后核验失败改为可降级流程：向用户询问或确认参数并继续，明确数据未持久化，不直接修改记忆文件。
+
+验证：WB 渠道 `memory_domain` 13/13、`wb_workflow_profile_contract` 1/1、`cicd_profile_contract` 1/1 通过；default 渠道确认不注入 capability overlay；`cargo check -p gold-band --tests -j 1` 通过。
+
+自评审：复用现有 `gold-band-memory` MCP、逐 key CAS、Profile 渠道常量和原子写入，不新增记忆文件、状态机、缓存或队列。每次身份检查仍只读取当前项目与任务两个有界文件，复杂度 O(P + T)。
+
+2026-09-17 渠道中立补充：需求身份与开发测试自动提交迁移为双语 `profile/overlays/` 资产，并由 `ProfileChannelCapability` 决定追加；CI/CD seed 同样使用 `Cicd` capability。默认渠道不获得 overlay，WB 行为与记忆 key/scope 不变。
+
+## 2026-09-17 按需读取与 Direct Prompt 隔离
+
+根因：原设计把“记忆 MCP binding”“RuntimeManaged 记忆能力规则”和“每轮参数投影”放在同一条准备路径，导致所有节点在启动时读取并序列化记忆，且 envelope 分流后再次注入，破坏 RawAgent 的空 system prompt 契约。修复不在 Direct 内删除投影，而是拆分领域职责：
+
+- `bind_invocation_mcp()` 只查找、校验并绑定 `gold-band-memory`，返回本次是否绑定；不再读取记忆文件。
+- `MemoryService::render_context()` 与双语 `runtime/memory.md` 删除。
+- provider 只在 `RuntimeManaged && memory_enabled` 时追加简化 `runtime/memory-rules.md`；所有模式都不再自动投影 key、value、desc、revision 或路径。
+- RawAgent / Direct 保持首轮和 continue user prompt 原文、system prompt 为空，同时仍保留启用状态下的 MCP binding。
+- CICD、WB 身份和 WB 提交改为主动 `memory_read`，统一读取/写入失败的说明与非阻塞降级语义。
+- Direct 保留 MCP 的决策保留在文档中，并明确工具描述不提供 system-level 模型行为强保证。
+
+先红后绿：旧实现下 `memory_invocation` 3/4 失败，分别命中 RawAgent system prompt 非空、RuntimeManaged 规则缺少角色契约语义、损坏记忆阻断 prompt 准备；工具描述、CICD/WB profile、worker bootstrap 和 AI-DYNAMIC 的旧投影契约也按预期失败。修复后：
+
+- `memory_invocation` 5/5、`memory_mcp` 3/3、lib `memory` 16/16。
+- `worker_bootstrap` 21/21；AI-DYNAMIC 修改用例 1/1，完整目标串行 38/38。
+- CICD 与 WB workflow 契约在 default 和 `wb` 渠道均通过。
+- `cargo check -p gold-band --tests -j 1`、`cargo fmt --all -- --check`、`git diff --check` 通过。
+
+性能复核：普通节点删除两个有界记忆文件读取、合并、最多 32 KiB 序列化和 prompt token 传输；binding 仅校验既有 locator，真实读取发生在角色调用工具时。没有新增状态、缓存、队列、后台任务、依赖或历史扫描；CICD / WB 按需增加一次有界工具读取。AI-DYNAMIC 默认并行测试仍存在既有用例间共享状态导致的偶发失败，单独运行和完整串行运行均通过，未修改该领域实现。

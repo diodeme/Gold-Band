@@ -3633,13 +3633,7 @@ fn should_pause_for_manual_check(workflow: &ValidatedWorkflow, node: &NodeState)
 }
 
 fn node_label(node: &NodeState) -> String {
-    node.resolved_config
-        .get("profileName")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| node.node_id.clone())
+    crate::app::App::node_intervention_role_name(node)
 }
 
 fn task_title(app: &App, task_id: &str) -> Option<String> {
@@ -4060,6 +4054,7 @@ fn emit_run_paused_lifecycle_event(
         reason,
     );
     let occurred_at = now_rfc3339_like();
+    let manual_check = reason == PauseReason::WaitingForUserInput && node.manual_check_pending;
     app.emit_lifecycle_event(RuntimeLifecycleEvent::RunPaused {
         event_id: event_id.clone(),
         occurred_at: occurred_at.clone(),
@@ -4075,6 +4070,26 @@ fn emit_run_paused_lifecycle_event(
         pause_reason: reason,
         task_title: task_title(app, task_id),
     });
+    if manual_check {
+        app.emit_lifecycle_event(RuntimeLifecycleEvent::InterventionRequested {
+            event_id: event_id.clone(),
+            occurred_at: occurred_at.clone(),
+            scheduled_occurrence_id: None,
+            project_id: app.paths.project_id.clone(),
+            task_id: task_id.to_string(),
+            task_uuid: run.task_uuid.clone(),
+            run_id: run.id.clone(),
+            round_id: round.id.clone(),
+            node_id: node.node_id.clone(),
+            attempt_id: node.attempt_id.clone(),
+            outer_node_id: None,
+            outer_attempt_id: None,
+            request: crate::app::intervention::InterventionRequestIdentity::ManualCheck,
+            node_label: node_label(node),
+            kind: RuntimeInterventionKind::ManualDecisionRequired,
+            task_title: task_title(app, task_id),
+        });
+    }
     emit_run_metrics_fact(
         app,
         run,
@@ -17944,6 +17959,102 @@ mod tests {
         node.finished_at = Some("2026-08-25T10:00:02.000".to_string());
         emit_node_completed_lifecycle_event(&app, "task-001", &run, &round, &node);
         assert_eq!(completed_events.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn manual_check_pause_emits_intervention_with_run_pause_identity() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let app = App::new(repo_root).with_inline_lifecycle_subscriber(Arc::new(move |event| {
+            captured.lock().unwrap().push(event);
+        }));
+        let run = RunState {
+            version: VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "2026-09-17T10:00:00.000".to_string(),
+            updated_at: "2026-09-17T10:00:01.000".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("review".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::WaitingForUserInput),
+            uuid: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
+        };
+        let round = RoundState {
+            version: VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: run.id.clone(),
+            index: 1,
+            status: RunStatus::Paused,
+            outcome: None,
+            trigger: RoundTrigger::Initial,
+            started_at: run.started_at.clone(),
+            trace: Vec::new(),
+            uuid: None,
+        };
+        let node = NodeState {
+            version: VERSION.to_string(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+            node_id: "review".to_string(),
+            node_type: crate::domain::NodeType::Worker,
+            run_id: run.id.clone(),
+            round_id: round.id.clone(),
+            attempt_id: "attempt-001".to_string(),
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: run.started_at.clone(),
+            finished_at: None,
+            manual_check_pending: true,
+            runtime_execution_id: None,
+            resolved_config: BTreeMap::new(),
+            uuid: None,
+        };
+
+        emit_pause_side_effects(&app, "task-001", &run, &round, &node);
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        let run_pause_event_id = match &events[0] {
+            RuntimeLifecycleEvent::RunPaused {
+                event_id,
+                pause_reason: PauseReason::WaitingForUserInput,
+                ..
+            } => event_id,
+            event => panic!("expected RunPaused first, got {event:?}"),
+        };
+        match &events[1] {
+            RuntimeLifecycleEvent::InterventionRequested {
+                event_id,
+                request: crate::app::intervention::InterventionRequestIdentity::ManualCheck,
+                kind: RuntimeInterventionKind::ManualDecisionRequired,
+                task_id,
+                run_id,
+                round_id,
+                node_id,
+                attempt_id,
+                node_label: event_node_label,
+                ..
+            } => {
+                assert_eq!(event_id, run_pause_event_id);
+                assert_eq!(task_id, "task-001");
+                assert_eq!(run_id, "run-001");
+                assert_eq!(round_id, "round-001");
+                assert_eq!(node_id, "review");
+                assert_eq!(attempt_id, "attempt-001");
+                assert_eq!(event_node_label, &node_label(&node));
+            }
+            event => panic!("expected ManualCheck intervention second, got {event:?}"),
+        }
     }
 
     #[test]

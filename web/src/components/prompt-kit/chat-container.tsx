@@ -520,10 +520,11 @@ function ChatContainerLifecycle({
 
   const completeFollowResumeFromUserInput = useCallback(() => {
     const cause = resumeFollowFromUserInputRef.current
-    resumeFollowFromUserInputRef.current = null
     if (!cause || isFollowingRef.current) return
     const viewport = scrollRef.current as HTMLDivElement | null
     if (!viewport || !isChatContainerViewportAtBottom(viewport)) return
+    // Incomplete scrollend must not consume the token; pagination or clamp can fire one first.
+    resumeFollowFromUserInputRef.current = null
     cancelContentExpansionRestore()
     updateFollowIntent(true, cause)
   }, [

@@ -461,6 +461,280 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
     }
   });
 
+  it('keeps a downward resume after an incomplete scrollend and later pagination clamp', async () => {
+    vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (
+      window.setTimeout(() => callback(performance.now()), 0)
+    ));
+    vi.stubGlobal('cancelAnimationFrame', (frameId: number) => window.clearTimeout(frameId));
+
+    const atBottomChanges: boolean[] = [];
+    const followChanges: Array<{ following: boolean; cause: string }> = [];
+    const contextRef = React.createRef<ChatContainerContext>();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          React.createElement(
+            ChatContainerRoot,
+            {
+              resize: 'instant',
+              initial: 'instant',
+              contextRef,
+              onAtBottomChange: (atBottom) => atBottomChanges.push(atBottom),
+              onFollowIntentChange: (following, cause) => {
+                followChanges.push({ following, cause });
+              },
+            },
+            React.createElement(
+              ChatContainerContent,
+              { scrollClassName: 'overflow-y-auto' },
+              React.createElement('div', null, 'paginated live head'),
+            ),
+          ),
+        );
+      });
+
+      const viewport = contextRef.current?.scrollRef.current as HTMLDivElement | null;
+      expect(viewport).not.toBeNull();
+
+      let contentHeight = 500;
+      let scrollTop = 400;
+      Object.defineProperties(viewport, {
+        clientHeight: { configurable: true, get: () => 100 },
+        scrollHeight: { configurable: true, get: () => contentHeight },
+        scrollTop: {
+          configurable: true,
+          get: () => scrollTop,
+          set: (value: number) => {
+            scrollTop = Number(value);
+          },
+        },
+      });
+
+      await act(async () => {
+        viewport?.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
+        scrollTop = 250;
+        viewport?.dispatchEvent(new Event('scroll'));
+        await waitForScrollFrames();
+      });
+      expect(contextRef.current?.isAtBottom).toBe(false);
+      expect(atBottomChanges.at(-1)).toBe(false);
+
+      await act(async () => {
+        viewport?.dispatchEvent(new WheelEvent('wheel', { deltaY: 100 }));
+        scrollTop = 350;
+        viewport?.dispatchEvent(new Event('scroll'));
+        await waitForScrollFrames();
+      });
+      expect(contextRef.current?.isAtBottom).toBe(false);
+
+      // Newer pagination replaces the historical window with a shorter live-head
+      // page. The downward gesture is interrupted while still 6px from bottom.
+      contentHeight = 400;
+      await act(async () => {
+        contextRef.current?.stopScroll();
+        scrollTop = 294;
+        viewport?.dispatchEvent(new Event('scroll'));
+        viewport?.dispatchEvent(new Event('scrollend'));
+        emitObservedHeight(contentHeight);
+        await waitForScrollFrames();
+      });
+      expect(contextRef.current?.isAtBottom).toBe(false);
+      expect(atBottomChanges.at(-1)).toBe(false);
+
+      await act(async () => {
+        scrollTop = 300;
+        viewport?.dispatchEvent(new Event('scroll'));
+        viewport?.dispatchEvent(new Event('scrollend'));
+        await waitForScrollFrames();
+      });
+      expect(contextRef.current?.isAtBottom).toBe(true);
+      expect(atBottomChanges.at(-1)).toBe(true);
+      expect(followChanges).toContainEqual({
+        following: true,
+        cause: 'user-wheel-down',
+      });
+    } finally {
+      await act(async () => {
+        root.unmount();
+      });
+    }
+  });
+
+  it('does not grant follow resume from layout clamp without a downward user input', async () => {
+    vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (
+      window.setTimeout(() => callback(performance.now()), 0)
+    ));
+    vi.stubGlobal('cancelAnimationFrame', (frameId: number) => window.clearTimeout(frameId));
+
+    const atBottomChanges: boolean[] = [];
+    const followChanges: Array<{ following: boolean; cause: string }> = [];
+    const contextRef = React.createRef<ChatContainerContext>();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          React.createElement(
+            ChatContainerRoot,
+            {
+              resize: 'instant',
+              initial: 'instant',
+              contextRef,
+              onAtBottomChange: (atBottom) => atBottomChanges.push(atBottom),
+              onFollowIntentChange: (following, cause) => {
+                followChanges.push({ following, cause });
+              },
+            },
+            React.createElement(
+              ChatContainerContent,
+              { scrollClassName: 'overflow-y-auto' },
+              React.createElement('div', null, 'collapsed history'),
+            ),
+          ),
+        );
+      });
+
+      const viewport = contextRef.current?.scrollRef.current as HTMLDivElement | null;
+      expect(viewport).not.toBeNull();
+
+      let contentHeight = 500;
+      let scrollTop = 400;
+      Object.defineProperties(viewport, {
+        clientHeight: { configurable: true, get: () => 100 },
+        scrollHeight: { configurable: true, get: () => contentHeight },
+        scrollTop: {
+          configurable: true,
+          get: () => scrollTop,
+          set: (value: number) => {
+            scrollTop = Number(value);
+          },
+        },
+      });
+
+      await act(async () => {
+        viewport?.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
+        scrollTop = 294;
+        viewport?.dispatchEvent(new Event('scroll'));
+        await waitForScrollFrames();
+      });
+      expect(contextRef.current?.isAtBottom).toBe(false);
+
+      contentHeight = 400;
+      await act(async () => {
+        emitObservedHeight(contentHeight);
+        scrollTop = 300;
+        viewport?.dispatchEvent(new Event('scroll'));
+        viewport?.dispatchEvent(new Event('scrollend'));
+        await waitForScrollFrames();
+      });
+      expect(contextRef.current?.isAtBottom).toBe(false);
+      expect(atBottomChanges.at(-1)).toBe(false);
+      expect(followChanges.filter((change) => change.following)).toEqual([]);
+    } finally {
+      await act(async () => {
+        root.unmount();
+      });
+    }
+  });
+
+  it('clears a downward resume when the user scrolls up before reaching the live head', async () => {
+    vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (
+      window.setTimeout(() => callback(performance.now()), 0)
+    ));
+    vi.stubGlobal('cancelAnimationFrame', (frameId: number) => window.clearTimeout(frameId));
+
+    const atBottomChanges: boolean[] = [];
+    const followChanges: Array<{ following: boolean; cause: string }> = [];
+    const contextRef = React.createRef<ChatContainerContext>();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          React.createElement(
+            ChatContainerRoot,
+            {
+              resize: 'instant',
+              initial: 'instant',
+              contextRef,
+              onAtBottomChange: (atBottom) => atBottomChanges.push(atBottom),
+              onFollowIntentChange: (following, cause) => {
+                followChanges.push({ following, cause });
+              },
+            },
+            React.createElement(
+              ChatContainerContent,
+              { scrollClassName: 'overflow-y-auto' },
+              React.createElement('div', null, 'interrupted downward resume'),
+            ),
+          ),
+        );
+      });
+
+      const viewport = contextRef.current?.scrollRef.current as HTMLDivElement | null;
+      expect(viewport).not.toBeNull();
+
+      let contentHeight = 500;
+      let scrollTop = 400;
+      Object.defineProperties(viewport, {
+        clientHeight: { configurable: true, get: () => 100 },
+        scrollHeight: { configurable: true, get: () => contentHeight },
+        scrollTop: {
+          configurable: true,
+          get: () => scrollTop,
+          set: (value: number) => {
+            scrollTop = Number(value);
+          },
+        },
+      });
+
+      await act(async () => {
+        viewport?.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
+        scrollTop = 250;
+        viewport?.dispatchEvent(new Event('scroll'));
+        viewport?.dispatchEvent(new WheelEvent('wheel', { deltaY: 100 }));
+        scrollTop = 350;
+        viewport?.dispatchEvent(new Event('scroll'));
+        viewport?.dispatchEvent(new Event('scrollend'));
+        viewport?.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
+        scrollTop = 300;
+        viewport?.dispatchEvent(new Event('scroll'));
+        await waitForScrollFrames();
+      });
+      expect(contextRef.current?.isAtBottom).toBe(false);
+
+      contentHeight = 400;
+      await act(async () => {
+        scrollTop = 300;
+        viewport?.dispatchEvent(new Event('scroll'));
+        viewport?.dispatchEvent(new Event('scrollend'));
+        emitObservedHeight(contentHeight);
+        await waitForScrollFrames();
+      });
+      expect(contextRef.current?.isAtBottom).toBe(false);
+      expect(atBottomChanges.at(-1)).toBe(false);
+      expect(followChanges).not.toContainEqual({
+        following: true,
+        cause: 'user-wheel-down',
+      });
+    } finally {
+      await act(async () => {
+        root.unmount();
+      });
+    }
+  });
+
   it('treats an external stopScroll call as an intentional manual position', async () => {
     vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (

@@ -61,7 +61,7 @@ export function agentIconClass(
   return cn(
     'object-contain',
     MONOCHROME_AGENT_ICONS.has(normalizedIconKey) && 'dark:invert',
-    options?.compensateWhitespace && AGENT_ICON_SCALE_CLASS[normalizedIconKey],
+    options?.compensateWhitespace !== false && AGENT_ICON_SCALE_CLASS[normalizedIconKey],
     className,
   );
 }

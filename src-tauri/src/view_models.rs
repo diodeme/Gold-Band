@@ -4313,7 +4313,9 @@ pub fn acp_session_status(
     )))
 }
 
-fn session_metadata_from_attempt_dir(attempt_dir: &camino::Utf8Path) -> Option<serde_json::Value> {
+pub(crate) fn session_metadata_from_attempt_dir(
+    attempt_dir: &camino::Utf8Path,
+) -> Option<serde_json::Value> {
     let snapshot_path = attempt_dir.join("acp.snapshot.json");
     let session_path = attempt_dir.join("acp.session.json");
     let has_acp_artifact = snapshot_path.exists()
@@ -6947,7 +6949,7 @@ fn is_acp_session_stopping_status(status: &str) -> bool {
     )
 }
 
-fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfigVm> {
+pub(crate) fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfigVm> {
     let catalog_observed_at = session
         .get("configCatalogObservedAt")
         .and_then(|value| value.as_str())

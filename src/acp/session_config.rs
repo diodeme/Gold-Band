@@ -11,6 +11,7 @@ pub struct RolledBackSessionConfig {
     pub category: String,
     pub config_id: String,
     pub value: String,
+    pub name: Option<String>,
 }
 
 pub fn is_model_bound_config_category(category: &str) -> bool {
@@ -18,13 +19,36 @@ pub fn is_model_bound_config_category(category: &str) -> bool {
 }
 
 /// After `session/set_config_option(model)`, dependents in the same apply
-/// belong to the new catalog. Keep values that still exist; drop thought /
-/// Fast entries the new model does not list. Other categories stay so the
-/// existing unavailable error can still block the prompt.
+/// belong to the new catalog. Thought level is a category with a wire id that
+/// may change across models; keep the same value by remapping onto the new
+/// `thought_level` option. `model_config` knobs stay id-scoped (Fast is not
+/// Context). Drop entries the new model does not list. Other categories stay
+/// so the existing unavailable error can still block the prompt.
+///
+/// Authoring overrides may still use Doctor/previous-model option ids after
+/// `session/new` already returned the live catalog. Those missing ids are
+/// remapped or rolled back even when Gold Band did not change the model.
 pub fn strip_unsupported_model_bound_overrides(
     catalog_before: Option<&Value>,
     catalog_after: Option<&Value>,
     overrides: &mut BTreeMap<String, String>,
+) -> Vec<RolledBackSessionConfig> {
+    strip_model_bound_overrides(catalog_before, catalog_after, overrides, true)
+}
+
+pub fn align_overrides_to_live_catalog(
+    catalog_before: Option<&Value>,
+    catalog_after: Option<&Value>,
+    overrides: &mut BTreeMap<String, String>,
+) -> Vec<RolledBackSessionConfig> {
+    strip_model_bound_overrides(catalog_before, catalog_after, overrides, false)
+}
+
+fn strip_model_bound_overrides(
+    catalog_before: Option<&Value>,
+    catalog_after: Option<&Value>,
+    overrides: &mut BTreeMap<String, String>,
+    rollback_invalid_listed_values: bool,
 ) -> Vec<RolledBackSessionConfig> {
     let Some(catalog_after) = catalog_after else {
         return Vec::new();
@@ -37,6 +61,32 @@ pub fn strip_unsupported_model_bound_overrides(
         };
         let after = config_option_by_id(Some(catalog_after), &config_id);
         let before = config_option_by_id(catalog_before, &config_id);
+        if after.is_none() {
+            if let Some(thought_id) =
+                remap_thought_level_override(Some(catalog_after), overrides, &config_id, &value)
+            {
+                if thought_id != config_id {
+                    overrides.remove(&config_id);
+                    overrides.insert(thought_id, value);
+                }
+                continue;
+            }
+            if option_category(before).is_some_and(|item| !is_model_bound_config_category(item)) {
+                continue;
+            }
+            let category = option_category(before)
+                .filter(|item| is_model_bound_config_category(item))
+                .map(str::to_string)
+                .unwrap_or_else(|| ACP_MODEL_CONFIG_CATEGORY.to_string());
+            overrides.remove(&config_id);
+            rolled_back.push(RolledBackSessionConfig {
+                name: rollback_display_name(before, Some(catalog_after), &category),
+                category,
+                config_id,
+                value,
+            });
+            continue;
+        }
         let category = option_category(after).or_else(|| option_category(before));
         let Some(category) = category.filter(|item| is_model_bound_config_category(item)) else {
             continue;
@@ -44,8 +94,23 @@ pub fn strip_unsupported_model_bound_overrides(
         if option_has_value(after, &value) {
             continue;
         }
+        if !rollback_invalid_listed_values {
+            continue;
+        }
+        if category == ACP_THOUGHT_LEVEL_CATEGORY {
+            if let Some(thought_id) =
+                remap_thought_level_override(Some(catalog_after), overrides, &config_id, &value)
+            {
+                if thought_id != config_id {
+                    overrides.remove(&config_id);
+                    overrides.insert(thought_id, value);
+                }
+                continue;
+            }
+        }
         overrides.remove(&config_id);
         rolled_back.push(RolledBackSessionConfig {
+            name: rollback_display_name(before.or(after), Some(catalog_after), category),
             category: category.to_string(),
             config_id,
             value,
@@ -56,12 +121,60 @@ pub fn strip_unsupported_model_bound_overrides(
 
 pub fn rolled_back_session_config_params(items: &[RolledBackSessionConfig]) -> Value {
     serde_json::json!({
-        "items": items.iter().map(|item| serde_json::json!({
-            "category": item.category,
-            "configId": item.config_id,
-            "value": item.value,
-        })).collect::<Vec<_>>(),
+        "items": items.iter().map(|item| {
+            let mut value = serde_json::json!({
+                "category": item.category,
+                "configId": item.config_id,
+                "value": item.value,
+            });
+            if let Some(name) = item.name.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
+                value["name"] = serde_json::Value::String(name.to_string());
+            }
+            value
+        }).collect::<Vec<_>>(),
     })
+}
+
+fn remap_thought_level_override(
+    catalog_after: Option<&Value>,
+    _overrides: &BTreeMap<String, String>,
+    _config_id: &str,
+    value: &str,
+) -> Option<String> {
+    let thought = thought_option(catalog_after)?;
+    let thought_id = thought.get("id").and_then(Value::as_str)?;
+    option_has_value(Some(thought), value).then(|| thought_id.to_string())
+}
+
+fn thought_option(catalog: Option<&Value>) -> Option<&Value> {
+    catalog.and_then(Value::as_array).and_then(|options| {
+        options.iter().find(|option| {
+            option.get("category").and_then(Value::as_str) == Some(ACP_THOUGHT_LEVEL_CATEGORY)
+        })
+    })
+}
+
+fn rollback_display_name(
+    option: Option<&Value>,
+    catalog_after: Option<&Value>,
+    category: &str,
+) -> Option<String> {
+    option_display_name(option).or_else(|| {
+        if category == ACP_THOUGHT_LEVEL_CATEGORY {
+            option_display_name(thought_option(catalog_after))
+        } else {
+            None
+        }
+    })
+}
+
+fn option_display_name(option: Option<&Value>) -> Option<String> {
+    option
+        .and_then(|item| item.get("name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
 }
 
 fn config_option_by_id<'a>(catalog: Option<&'a Value>, config_id: &str) -> Option<&'a Value> {
@@ -127,7 +240,6 @@ mod tests {
         let mut overrides = BTreeMap::from([
             ("effort".into(), "high".into()),
             ("fast".into(), "true".into()),
-            ("theme".into(), "dark".into()),
         ]);
 
         let rolled_back =
@@ -139,7 +251,6 @@ mod tests {
             BTreeMap::from([
                 ("effort".into(), "high".into()),
                 ("fast".into(), "true".into()),
-                ("theme".into(), "dark".into()),
             ])
         );
     }
@@ -151,7 +262,6 @@ mod tests {
         let mut overrides = BTreeMap::from([
             ("effort".into(), "high".into()),
             ("fast".into(), "true".into()),
-            ("theme".into(), "dark".into()),
         ]);
 
         let rolled_back =
@@ -164,18 +274,17 @@ mod tests {
                     category: ACP_THOUGHT_LEVEL_CATEGORY.into(),
                     config_id: "effort".into(),
                     value: "high".into(),
+                    name: None,
                 },
                 RolledBackSessionConfig {
                     category: ACP_MODEL_CONFIG_CATEGORY.into(),
                     config_id: "fast".into(),
                     value: "true".into(),
+                    name: None,
                 },
             ]
         );
-        assert_eq!(
-            overrides,
-            BTreeMap::from([("theme".into(), "dark".into())])
-        );
+        assert!(overrides.is_empty());
     }
 
     #[test]
@@ -193,9 +302,252 @@ mod tests {
                 category: ACP_THOUGHT_LEVEL_CATEGORY.into(),
                 config_id: "effort".into(),
                 value: "high".into(),
+                name: None,
             }]
         );
         assert!(overrides.is_empty());
+    }
+
+    fn luna_catalog(thought_values: &[&str], context: bool) -> Value {
+        let mut options = vec![json!({
+            "id": "model",
+            "category": "model",
+            "currentValue": "gpt-5.6-luna",
+            "options": [
+                { "value": "grok-4.6", "name": "Grok" },
+                { "value": "gpt-5.6-luna", "name": "Luna" },
+            ],
+        })];
+        if context {
+            options.push(json!({
+                "id": "context",
+                "category": "model_config",
+                "name": "Context",
+                "options": [
+                    { "value": "272k" },
+                    { "value": "1m" },
+                ],
+            }));
+        }
+        if !thought_values.is_empty() {
+            options.push(json!({
+                "id": "reasoning",
+                "category": "thought_level",
+                "options": thought_values.iter().map(|value| json!({ "value": *value })).collect::<Vec<_>>(),
+            }));
+        }
+        options.push(json!({
+            "id": "fast",
+            "category": "model_config",
+            "options": [
+                { "value": "true" },
+                { "value": "false" },
+            ],
+        }));
+        Value::Array(options)
+    }
+
+    #[test]
+    fn remaps_thought_level_across_option_ids_when_the_value_still_exists() {
+        let before = catalog("grok-4.6", &["low", "medium", "high", "xhigh"], true);
+        let after = luna_catalog(&["none", "low", "medium", "high", "xhigh", "max"], true);
+        let mut overrides = BTreeMap::from([
+            ("effort".into(), "high".into()),
+            ("fast".into(), "false".into()),
+        ]);
+
+        let rolled_back =
+            strip_unsupported_model_bound_overrides(Some(&before), Some(&after), &mut overrides);
+
+        assert!(rolled_back.is_empty());
+        assert_eq!(
+            overrides,
+            BTreeMap::from([
+                ("reasoning".into(), "high".into()),
+                ("fast".into(), "false".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn remaps_authoring_thought_id_when_live_catalog_already_uses_another_id() {
+        let live = luna_catalog(&["none", "low", "medium", "high", "xhigh", "max"], true);
+        let mut overrides = BTreeMap::from([
+            ("effort".into(), "high".into()),
+            ("fast".into(), "false".into()),
+        ]);
+
+        let rolled_back =
+            strip_unsupported_model_bound_overrides(Some(&live), Some(&live), &mut overrides);
+
+        assert!(rolled_back.is_empty());
+        assert_eq!(
+            overrides,
+            BTreeMap::from([
+                ("reasoning".into(), "high".into()),
+                ("fast".into(), "false".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn aligns_authoring_thought_id_to_the_live_catalog_without_a_model_change() {
+        let live = luna_catalog(&["none", "low", "medium", "high", "xhigh", "max"], true);
+        let mut overrides = BTreeMap::from([
+            ("effort".into(), "high".into()),
+            ("fast".into(), "false".into()),
+        ]);
+
+        let rolled_back = align_overrides_to_live_catalog(Some(&live), Some(&live), &mut overrides);
+
+        assert!(rolled_back.is_empty());
+        assert_eq!(
+            overrides,
+            BTreeMap::from([
+                ("reasoning".into(), "high".into()),
+                ("fast".into(), "false".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn rolls_back_authoring_option_ids_missing_from_the_live_catalog() {
+        let before = catalog("grok-4.6", &["low", "medium", "high"], true);
+        let after = luna_catalog(&["none", "low", "medium", "high"], false);
+        let mut overrides = BTreeMap::from([
+            ("effort".into(), "max".into()),
+            ("context".into(), "1m".into()),
+            ("fast".into(), "false".into()),
+        ]);
+
+        let rolled_back =
+            strip_unsupported_model_bound_overrides(Some(&before), Some(&after), &mut overrides);
+
+        assert_eq!(
+            rolled_back,
+            vec![
+                RolledBackSessionConfig {
+                    category: ACP_MODEL_CONFIG_CATEGORY.into(),
+                    config_id: "context".into(),
+                    value: "1m".into(),
+                    name: None,
+                },
+                RolledBackSessionConfig {
+                    category: ACP_THOUGHT_LEVEL_CATEGORY.into(),
+                    config_id: "effort".into(),
+                    value: "max".into(),
+                    name: None,
+                },
+            ]
+        );
+        assert_eq!(overrides, BTreeMap::from([("fast".into(), "false".into())]));
+    }
+
+    #[test]
+    fn aligns_missing_authoring_option_ids_to_unspecified() {
+        let live = luna_catalog(&["none", "low", "medium", "high"], false);
+        let mut overrides = BTreeMap::from([
+            ("effort".into(), "max".into()),
+            ("context".into(), "1m".into()),
+            ("fast".into(), "false".into()),
+        ]);
+
+        let rolled_back = align_overrides_to_live_catalog(Some(&live), Some(&live), &mut overrides);
+
+        assert_eq!(
+            rolled_back,
+            vec![
+                RolledBackSessionConfig {
+                    category: ACP_MODEL_CONFIG_CATEGORY.into(),
+                    config_id: "context".into(),
+                    value: "1m".into(),
+                    name: None,
+                },
+                RolledBackSessionConfig {
+                    category: ACP_MODEL_CONFIG_CATEGORY.into(),
+                    config_id: "effort".into(),
+                    value: "max".into(),
+                    name: None,
+                },
+            ]
+        );
+        assert_eq!(overrides, BTreeMap::from([("fast".into(), "false".into())]));
+    }
+
+    #[test]
+    fn rolled_back_params_include_protocol_name() {
+        let params = rolled_back_session_config_params(&[RolledBackSessionConfig {
+            category: ACP_MODEL_CONFIG_CATEGORY.into(),
+            config_id: "context".into(),
+            value: "1m".into(),
+            name: Some("Context".into()),
+        }]);
+
+        assert_eq!(
+            params,
+            json!({
+                "items": [{
+                    "category": ACP_MODEL_CONFIG_CATEGORY,
+                    "configId": "context",
+                    "value": "1m",
+                    "name": "Context",
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn does_not_map_fast_onto_a_different_model_config_option() {
+        let before = catalog("grok-4.6", &["high"], true);
+        let after = luna_catalog(&["high"], true);
+        let mut overrides = BTreeMap::from([
+            ("effort".into(), "high".into()),
+            ("fast".into(), "false".into()),
+        ]);
+
+        let rolled_back =
+            strip_unsupported_model_bound_overrides(Some(&before), Some(&after), &mut overrides);
+
+        assert!(rolled_back.is_empty());
+        assert_eq!(
+            overrides,
+            BTreeMap::from([
+                ("reasoning".into(), "high".into()),
+                ("fast".into(), "false".into()),
+            ])
+        );
+        assert!(!overrides.contains_key("context"));
+    }
+
+    #[test]
+    fn rolls_back_context_when_the_new_model_does_not_list_it() {
+        let before = luna_catalog(&["high"], true);
+        let after = catalog("grok-4.6", &["low", "medium", "high", "xhigh"], true);
+        let mut overrides = BTreeMap::from([
+            ("reasoning".into(), "high".into()),
+            ("fast".into(), "false".into()),
+            ("context".into(), "1m".into()),
+        ]);
+
+        let rolled_back =
+            strip_unsupported_model_bound_overrides(Some(&before), Some(&after), &mut overrides);
+
+        assert_eq!(
+            rolled_back,
+            vec![RolledBackSessionConfig {
+                category: ACP_MODEL_CONFIG_CATEGORY.into(),
+                config_id: "context".into(),
+                value: "1m".into(),
+                name: Some("Context".into()),
+            }]
+        );
+        assert_eq!(
+            overrides,
+            BTreeMap::from([
+                ("effort".into(), "high".into()),
+                ("fast".into(), "false".into()),
+            ])
+        );
     }
 
     #[test]
@@ -216,6 +568,7 @@ mod tests {
                 category: ACP_MODEL_CONFIG_CATEGORY.into(),
                 config_id: "fast".into(),
                 value: "true".into(),
+                name: None,
             }]
         );
         assert_eq!(
@@ -238,9 +591,20 @@ mod tests {
             strip_unsupported_model_bound_overrides(Some(&before), Some(&after), &mut overrides);
 
         assert!(rolled_back.is_empty());
+        assert_eq!(overrides, BTreeMap::from([("theme".into(), "dark".into())]));
+    }
+
+    #[test]
+    fn keeps_listed_invalid_values_when_aligning_without_a_model_change() {
+        let live = catalog("grok-4.6", &["low", "medium"], true);
+        let mut overrides = BTreeMap::from([("effort".into(), "high".into())]);
+
+        let rolled_back = align_overrides_to_live_catalog(Some(&live), Some(&live), &mut overrides);
+
+        assert!(rolled_back.is_empty());
         assert_eq!(
             overrides,
-            BTreeMap::from([("theme".into(), "dark".into())])
+            BTreeMap::from([("effort".into(), "high".into())])
         );
     }
 

@@ -159,7 +159,7 @@ Agent Cards
 - 单个 Agent 每轮诊断从取得执行资格起共享 3 分钟截止时间，覆盖 adapter 启动后的初始化、会话创建、命令发现和诊断会话清理；周期失败重试沿用同一截止时间，预算耗尽后不再启动重试。超时以 `acp.doctor-timeout` 和当前阶段记录原因，回收进程树并保留有界失败日志；进程回收复用既有平台机制，Unix 的 2 秒终止宽限不计入协议等待预算。正常业务会话的请求期限不随 Doctor 改变
 - 所有诊断入口和命令目录刷新按稳定 Agent ID 互斥，不再持有跨 Agent 的全局运行锁；同一 Agent 在全局与 workspace 命令目录刷新之间仍不能重叠，因为它们共享该 Agent 的 doctor 目录。全应用最多同时运行 4 个诊断 adapter，批量诊断最多使用 4 个 worker；等待同一 Agent 的请求不提前占用 adapter 名额，运行集合随 guard 释放删除，不持久化
 - 周期诊断每完成一项并可靠写入后，立即发布该 Agent 的 registry 投影，不等待其他 Agent 完成；前端按配置及诊断时间局部合并，不重读全局 registry。只有命令目录内容变化并成功落盘后才发布含 Agent ID、project ID 的 commands 更新事件；同一挂载范围合并请求，批次结束不再全局广播。落盘失败不得提前推进内存目录，否则相同内容的重试会被错误跳过。手动诊断与目录扫描使用 blocking 执行器；保存提交、配置版本校验和按版本合并沿用既有机制。批次末尾清理失效诊断进入短时提交锁。性能预算和验收见 [0.15.1 性能修复](performance-0.15.1.md)。
-- 诊断结果除健康状态外，还要缓存 agent 返回的 `modes` / `configOptions` 能力摘要，供工作流编辑器直接复用。Doctor 与正式会话共用同一份 ACP `initialize` 客户端能力声明，因此依赖 `parameterizedModelPicker` 才能展开思考强度或 `model_config` 的 Agent，诊断目录与运行期目录必须看到同一套 `configOptions`。Doctor 默认模型上的 `thought_level` / `model_config` 不得当作其他已选模型的已验证目录；作者态可以先带着当前档位切模型，真正发起后再按新目录决定是设上还是回滚为不指定。
+- 诊断结果除健康状态外，还要缓存 agent 返回的 `modes` / `configOptions` 能力摘要，供工作流编辑器直接复用。Doctor 与正式会话共用同一份 ACP `initialize` 客户端能力声明，因此依赖 `parameterizedModelPicker` 才能展开思考强度或 `model_config` 的 Agent，诊断目录与运行期目录必须看到同一套 `configOptions`。Doctor 默认模型上的 `thought_level` / `model_config` 不得当作其他已选模型的已验证目录；作者态可以先带着当前档位切模型，真正发起后再按新目录 remap 思考强度或回滚为不指定。
 - 诊断缓存需要持久化到当前 workspace 的本地运行时目录，客户端重启后仍可直接为节点展示可选权限模式，不要求用户每次重新手动诊断
 
 ---
@@ -169,7 +169,7 @@ Agent 管理页不是 workflow 编辑器，但它决定 workflow 里声明的 ag
 
 当前约束：
 - workflow 节点中的 `provider` 字段表示稳定的 managed Agent ID
-- workflow 画布、Agent 选择器、会话标题和侧栏统一从当前 `AgentRegistryVm.agents` 实例读取 display name 与 icon，不允许维护按 provider ID 推导图标的内置白名单；因此 Catalog Agent、自定义 Agent、用户上传图标和默认通用图标共享同一展示语义。Select / 列表式 Agent 选择器的触发器与选项都必须渲染该 icon，不能只展示 display name，也不得用通用 Bot 图标替代实例 icon。紧凑身份槽按 SVG viewBox 原样绘制；`scale-*` 留白补偿只用于带浅色底座的画布节点和 Agent 卡片井
+- workflow 画布、Agent 选择器、会话标题和侧栏统一从当前 `AgentRegistryVm.agents` 实例读取 display name 与 icon，不允许维护按 provider ID 推导图标的内置白名单；因此 Catalog Agent、自定义 Agent、用户上传图标和默认通用图标共享同一展示语义。Select / 列表式 Agent 选择器的触发器与选项都必须渲染该 icon，不能只展示 display name，也不得用通用 Bot 图标替代实例 icon。Select 身份槽按 SVG viewBox 原样绘制，避免缩放裁切花瓣；会话栏、搜索和会话头继续用 `agentIconClass` 默认视觉重量缩放。带浅色底座的画布节点和 Agent 卡片井同样保留缩放
 - 创建任务与工作流编辑器的节点 Agent 下拉展示全部已配置 Agent；最近一次 doctor 成功的 Agent 可选择，未运行 doctor、doctor 失败或诊断缓存缺失的 Agent 保留展示但禁用，并展示与 Agent 管理横幅相同的 compact 诊断原因，不展开完整 stderr。是否来自内置 Catalog 不参与可用性判断
 - 已有节点引用的 Agent 诊断失败后必须保留原选择，不得把节点表现为“未关联 Agent”；该工作流不能保存或启动，后端命令入口继续拦截，用户可到 Agent 管理页手动重试诊断
 - 若节点引用的 agent type 未在 Agent 管理页中配置或未通过 doctor，则 workflow 校验失败

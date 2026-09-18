@@ -12,6 +12,7 @@ import {
   formatAcpCompositeSelection,
   formatAcpCompositeSelectionParts,
   nextAcpCompositeSection,
+  remapAcpThoughtLevelOverride,
   retainAcpModelBoundOverrides,
   updateAcpConfigOptionOverride,
 } from '@/components/acp/AcpModelThoughtSelects';
@@ -151,8 +152,8 @@ describe('ACP composite model selector', () => {
         options: [{ value: 'high', name: 'High' }],
       },
     ], 'gpt-5.6-terra', { fast: 'true', effort: 'high' }).map((section) => [section.id, section.valueLabel])).toEqual([
-      ['fast', 'On'],
       ['effort', 'High'],
+      ['fast', 'On'],
     ]);
   });
 
@@ -184,8 +185,8 @@ describe('ACP composite model selector', () => {
         options: [{ value: 'low', name: 'Low' }, { value: 'extra-high', name: 'Extra High' }],
       },
     ], 'composer-2.5', { fast: 'true', effort: 'extra-high' }).map((section) => [section.name, section.valueLabel])).toEqual([
-      ['Fast', 'On'],
       ['Thinking', 'Extra High'],
+      ['Fast', 'On'],
     ]);
   });
 
@@ -273,7 +274,7 @@ describe('ACP composite model selector', () => {
       onConfigOptionChange: () => {},
     });
 
-    expect(markup).toContain('Composer 2.5 · On · Extra High');
+    expect(markup).toContain('Composer 2.5 · Extra High · On');
   });
 
   it('opens a composite menu when only official model_config options exist', () => {
@@ -334,7 +335,7 @@ describe('ACP composite model selector', () => {
       onConfigOptionChange: () => {},
     });
 
-    expect(markup).toContain('5.6 Terra · On · High');
+    expect(markup).toContain('5.6 Terra · High · On');
     expect(markup).not.toContain('Effort');
   });
 
@@ -376,5 +377,48 @@ describe('ACP composite model selector', () => {
 
     expect(modelOnly.match(/<button[^>]*data-slot="dropdown-menu-trigger"[^>]*>/)?.[0]).toContain('disabled=""');
     expect(composite.match(/<button[^>]*data-slot="dropdown-menu-trigger"[^>]*>/)?.[0]).toContain('disabled=""');
+  });
+
+  it('keeps High across thought option ids and puts Context after 思考强度', () => {
+    const lunaCatalog = [
+      {
+        id: 'model',
+        category: 'model',
+        currentValue: 'gpt-5.6-luna',
+        options: [{ value: 'grok-4.6', name: 'Cursor Grok 4.6' }, { value: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' }],
+      },
+      {
+        id: 'context',
+        category: 'model_config',
+        name: 'Context',
+        options: [{ value: '272k', name: '272K' }, { value: '1m', name: '1M' }],
+      },
+      {
+        id: 'reasoning',
+        category: 'thought_level',
+        name: 'Reasoning',
+        options: [{ value: 'medium', name: 'Medium' }, { value: 'high', name: 'High' }],
+      },
+      {
+        id: 'fast',
+        category: 'model_config',
+        name: 'Fast',
+        options: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'Fast' }],
+      },
+    ];
+
+    expect(remapAcpThoughtLevelOverride(
+      { effort: 'high', fast: 'false' },
+      lunaCatalog,
+    )).toEqual({ reasoning: 'high', fast: 'false' });
+    expect(acpCompositeConfigSections(
+      lunaCatalog,
+      'gpt-5.6-luna',
+      { effort: 'high', fast: 'false' },
+    ).map((section) => [section.id, section.name, section.valueLabel])).toEqual([
+      ['reasoning', 'Reasoning', 'High'],
+      ['context', 'Context', null],
+      ['fast', 'Fast', 'Off'],
+    ]);
   });
 });

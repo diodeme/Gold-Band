@@ -1,11 +1,32 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-18 发起会话按活目录 remap/回滚作者态 option id，分割线写出具体配置
+
+- 根因：作者态 `configOptionOverrides` 仍用 Doctor/上一模型接线名（如 `effort`），`session/new` 活目录可能已经是另一模型（如 `reasoning`）。strip 只在切前目录里能看到旧 id 时才 remap，发起会话因此把合法 High 报成 `acp.session-config-value-unavailable`。这是同一套回滚契约没覆盖「活目录已换、Gold Band 未切模型」，不是用户选了非法值。
+- 实现：缺失的 option id 仍先按 thought value remap，对不上的模型绑定项回滚为不指定并继续 prompt。未切模型且 id 仍在活目录、只是值非法时仍报 unavailable。分割线文案改为「{{names}} 不支持，…可停止对话后修改」，多项用 ` · ` 连接。
+- 证据：Rust 覆盖活目录已是 Luna 时 `effort=high`→`reasoning=high`（含未切模型的 align 路径）、缺失 id 回滚为不指定、未切模型的非法 listed 值不静默丢掉、params 带协议 `name`；前端覆盖「思考强度 · Context 不支持…可停止对话后修改」。
+- 过度设计与性能评审：复用现有 strip/override map 和 timeline `systemNotice`，不新增状态、探测或缓存。目录为有界 select 列表。
+
+## 2026-09-18 思考强度按 category 跨 option id 保留，目录立即推给 composer
+
+- 根因：Cursor 在 Grok 上用 `effort`、Luna 上用 `reasoning` 表示同一 `thought_level`；Gold Band 按 option id 判定不支持，把 High 清空。这是身份用错，不是 Luna 没有 High。Context 是独立 `model_config`，按 Agent 数组顺序被画到思考强度上面。控制面 `session_update` 不带 session 体，composer 要等回合结束才读到新目录。
+- 实现：切模型后若新目录仍有相同 thought value，remap 到新 option id 再 apply；`model_config` 仍按 id。复合菜单固定「模型 → 思考强度 → 其余 model_config」。apply 后把清洗 override 写回 snapshot；控制面事件带 `sessionConfig`，不扫描 timeline。
+- 证据：Rust 覆盖 effort→reasoning 保留 High、Fast 不映射成 Context、回到无 Context 模型时回滚 1M；前端覆盖 Luna 目录顺序与 live catalog 合并。
+- 过度设计与性能评审：不新增按模型能力表或 doctor 探测。remap 是单数 thought_level 线性查找。`sessionConfig` 只读 snapshot 配置，不重建 timeline。configOptions 为有界 select 列表。
+
 ## 2026-09-18 作者态模型切换保留思考档，运行时按新目录回滚
 
 - 根因：ACP `configOptions` 是当前会话快照，不是按模型预告的思考档表。首页/工作流作者态只有 Doctor 默认模型的一份目录，协议没有“查询模型 B 的 thought/fast 但不切模型”的接口。此前用“选中模型 ≠ `model.currentValue` 就隐藏子栏”把缺目录编码成空白，并不是跟着 B 的 configOptions 走。
 - 实现：复合下拉在作者态继续展示并保留思考强度 / Fast。发起时仍先 `set_config_option(model)`；同一次应用里新目录没有该项（如目标模型无 Fast）或档位不在可选列表中的 `thought_level` / `model_config` 都不带入、清成不指定并继续 prompt，timeline 写入同一条文案的 `systemNotice` 分割线。思考强度子栏统一用产品文案，不用 Agent 的 Effort / Deep Think。未切模型时的非法 override 仍报 `acp.session-config-value-unavailable`。不为每个模型 doctor 探测，不重发用户消息。
 - 证据：Rust 覆盖“新目录仍列出则保留 / 不列出或 option id 消失则回滚 / 非模型绑定项不静默丢掉”；前端覆盖复合下拉在模型不一致时仍展示、思考强度统一标签，以及 `systemNotice` 分割线文案。
 - 过度设计与性能评审：复用既有 override map、apply 顺序和 timeline item，不新增按模型能力表、重试队列或页顶横幅状态。回滚是目录线性查找，无额外 session/new 或 prompt。
+
+## 2026-09-18 会话栏保留 Codex 视觉重量，Select 仍不缩放
+
+- 根因：上一轮为避免 Select 裁切花瓣，把 `agentIconClass` 默认改成不缩放。会话栏是 `size-4` 槽里的 `size-3` 图标，本来靠 `scale-125` 让镂空的 Codex 和实心 Cursor 视觉重量接近。默认关掉后会话列表 Codex 被缩小，属于把 Select 约束误套到侧栏。
+- 实现：`agentIconClass` 默认恢复视觉重量缩放。`AgentIcon` / Select 继续显式 `compensateWhitespace: false`。画布和卡片井保持 opt-in true。
+- 证据：`size-3` Codex 缺少 `scale-125` 的用例先失败；修复后同一用例转绿，并固定侧栏仍走默认 class、Select 标签仍不含 scale。
+- 过度设计与性能评审：不新增侧栏专用图标组件或按 Agent ID 分支。只恢复默认开关。无额外状态、请求或重渲染范围变化。
 
 ## 2026-09-18 紧凑身份槽不再套用画布座位缩放
 

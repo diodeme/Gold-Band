@@ -1,6 +1,8 @@
 现在应用程序的侧边栏是任务编排、知识库、模型管理
-- 2026-09-18：Select / 列表式 Agent 选择器的触发器和选项都展示 registry icon 与 display name；紧凑身份槽按 SVG viewBox 原样绘制，画布节点和 Agent 卡片井才做留白补偿缩放。选择器禁用原因与 Agent 管理横幅使用同一条 compact raw 首行，不再把 `session-request-failed` 显示成没有具体原因的「请重试」。
+- 2026-09-18：发起会话时 `session/new` 活目录若已不含作者态 option id，按切模型同一规则 remap 思考强度或回滚为不指定；分割线写出具体配置名。
+- 2026-09-18：Select / 列表式 Agent 选择器的触发器和选项都展示 registry icon 与 display name；Select 身份槽按 SVG viewBox 原样绘制，会话栏继续保留 Codex 等视觉重量缩放。选择器禁用原因与 Agent 管理横幅使用同一条 compact raw 首行，不再把 `session-request-failed` 显示成没有具体原因的「请重试」。
 - 2026-09-18：Select / 列表式 Agent 选择器的触发器和选项都展示 registry icon 与 display name，与 Direct 药丸、侧栏和画布共用 `AgentIdentityLabel`；不得只显示名称或改用通用 Bot 图标。
+- 2026-09-18：切到 Luna 等 option id 不同的模型时，思考强度按档位 value remap，不得把 High 当成不支持清空；复合菜单固定思考强度在 Context/Fast 之前。Doctor 默认模型的依赖项不得覆盖另一模型的会话目录。
 - 2026-09-18：作者态切模型时保留当前思考强度 / Fast；发起会话后若新模型目录不支持，回滚为不指定并在该节点/会话 timeline 写入分割线 `systemNotice`。Doctor 默认模型的依赖项不得覆盖另一模型的会话目录。
 - 2026-09-18：Composer 按官方 `category=model_config` 把 Fast 纳入与思考强度同一复合下拉；Doctor 默认模型的依赖项不得覆盖另一模型的会话目录。
 - 2026-09-15：Doctor 与正式 ACP 连接共用全局 `initialize` 客户端能力，新增 `_meta.parameterizedModelPicker`。依赖该声明才展开思考强度 / 模型参数的 Agent，诊断目录与运行期 `configOptions` 必须一致；不按 Agent ID 分叉 handshake。

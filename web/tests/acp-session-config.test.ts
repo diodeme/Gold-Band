@@ -3,6 +3,7 @@ import {
   acpProviderConfigCatalog,
   createAcpSessionConfigViewModel,
   findAcpConfigOption,
+  mergeLiveAcpSessionConfig,
 } from "@/lib/acp-session-config";
 import type { AcpSessionConfigVm, AgentRegistryVm } from "@/types";
 
@@ -460,8 +461,8 @@ describe("ACP session config view model", () => {
     });
 
     expect(viewModel.thoughtLevel?.id).toBe("effort");
-    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual(["fast", "effort"]);
-    expect(viewModel.modelBoundOptions[0]).toMatchObject({
+    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual(["effort", "fast"]);
+    expect(viewModel.modelBoundOptions[1]).toMatchObject({
       id: "fast",
       category: "model_config",
       overrideValue: "true",
@@ -500,7 +501,7 @@ describe("ACP session config view model", () => {
       ],
     });
 
-    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual(["fast", "effort"]);
+    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual(["effort", "fast"]);
     expect(viewModel.thoughtLevel?.id).toBe("effort");
   });
 
@@ -602,5 +603,86 @@ describe("ACP session config view model", () => {
 
     expect(viewModel.thoughtLevel?.id).toBe("effort");
     expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual(["effort"]);
+  });
+
+  it("projects High onto a renamed thought_level option and keeps Context after thought", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      modelOverrideId: "gpt-5.6-luna",
+      configOptionOverrides: { effort: "high", fast: "false" },
+      configOptions: [
+        {
+          id: "model",
+          category: "model",
+          type: "select",
+          currentValue: "gpt-5.6-luna",
+          options: [
+            { value: "grok-4.6", name: "Cursor Grok 4.6" },
+            { value: "gpt-5.6-luna", name: "GPT-5.6 Luna" },
+          ],
+        },
+        {
+          id: "context",
+          category: "model_config",
+          type: "select",
+          name: "Context",
+          options: [{ value: "272k", name: "272K" }, { value: "1m", name: "1M" }],
+        },
+        {
+          id: "reasoning",
+          category: "thought_level",
+          type: "select",
+          name: "Reasoning",
+          options: [
+            { value: "medium", name: "Medium" },
+            { value: "high", name: "High" },
+          ],
+        },
+        {
+          id: "fast",
+          category: "model_config",
+          type: "select",
+          name: "Fast",
+          options: [{ value: "false", name: "Off" }, { value: "true", name: "Fast" }],
+        },
+      ],
+    });
+
+    expect(viewModel.thoughtLevel).toMatchObject({
+      id: "reasoning",
+      overrideValue: "high",
+    });
+    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual([
+      "reasoning",
+      "context",
+      "fast",
+    ]);
+  });
+
+  it("applies a live catalog without rebuilding timeline state", () => {
+    const current = {
+      ...baseConfig(),
+      catalogObservedAt: "100Z",
+      configOptionOverrides: { effort: "high" },
+      configOptions: [{
+        id: "effort",
+        category: "thought_level",
+        type: "select",
+        options: [{ value: "high", name: "High" }],
+      }],
+    };
+    const incoming = {
+      catalogObservedAt: "200Z",
+      configOptions: [{
+        id: "reasoning",
+        category: "thought_level",
+        type: "select",
+        options: [{ value: "high", name: "High" }],
+      }],
+    };
+    const merged = mergeLiveAcpSessionConfig(current, incoming, true);
+    expect(merged?.catalogObservedAt).toBe("200Z");
+    expect(merged?.configOptionOverrides).toEqual({ effort: "high" });
+    expect(merged?.configOptions).toEqual(incoming.configOptions);
+    expect(mergeLiveAcpSessionConfig(current, incoming, false)?.configOptionOverrides).toBeUndefined();
   });
 });

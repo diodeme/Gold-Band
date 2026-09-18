@@ -105,15 +105,16 @@ use crate::updater::{
 };
 use crate::view_models::{
     AcpActivityDetailQueryInput, AcpActivityDetailVm, AcpRawFramePageVm, AcpRawFrameQueryInput,
-    AcpSessionQueryInput, AcpSessionVm, AcpToolDetailQueryInput, AcpToolDetailVm, AgentRegistryVm,
-    AppBootstrapVm, ContentVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, McpServerVm,
-    PreferencesVm, RoundDetailVm, RoundSelectionInput, RunDetailVm, RunSummaryVm, SkillContentVm,
-    SkillListVm, SkillMetaVm, SyncStatusEntryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm,
-    WorkflowVm, acp_activity_detail_vm_for_attempt, acp_raw_frame_page_vm, acp_session_vm,
-    acp_tool_detail_vm_for_attempt, agent_registry_vm, bootstrap_vm, dynamic_acp_session_vm,
-    log_page_vm, mcp_server_list_vm, preferences_vm, round_detail_vm, run_detail_vm,
-    run_summary_vm, skill_content_vm, skill_list_vm, skill_meta_vm, task_detail_vm, task_list_vm,
-    workflow_vm,
+    AcpSessionConfigVm, AcpSessionQueryInput, AcpSessionVm, AcpToolDetailQueryInput,
+    AcpToolDetailVm, AgentRegistryVm, AppBootstrapVm, ContentVm, LocalClaudeStatusVm, LogPageVm,
+    LogQueryInput, McpServerVm, PreferencesVm, RoundDetailVm, RoundSelectionInput, RunDetailVm,
+    RunSummaryVm, SkillContentVm, SkillListVm, SkillMetaVm, SyncStatusEntryVm, TaskDetailVm,
+    TaskListVm, UpdateBadgeStateVm, WorkflowVm, acp_activity_detail_vm_for_attempt,
+    acp_raw_frame_page_vm, acp_session_config_vm, acp_session_vm, acp_tool_detail_vm_for_attempt,
+    agent_registry_vm, bootstrap_vm, dynamic_acp_session_vm, log_page_vm, mcp_server_list_vm,
+    preferences_vm, round_detail_vm, run_detail_vm, run_summary_vm,
+    session_metadata_from_attempt_dir, skill_content_vm, skill_list_vm, skill_meta_vm,
+    task_detail_vm, task_list_vm, workflow_vm,
 };
 use crate::view_models_conversation::{
     ConversationAttemptLifecycleVm, ConversationTaskActivityVm, conversation_attempt_lifecycle_vm,
@@ -873,6 +874,8 @@ struct AcpSessionUpdatedEventVm {
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
     session: Option<AcpSessionVm>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_config: Option<AcpSessionConfigVm>,
     event: Option<AcpUiEvent>,
     lifecycle: Option<ConversationAttemptLifecycleVm>,
     activity: Option<ConversationTaskActivityVm>,
@@ -5673,6 +5676,24 @@ fn emit_acp_update(
     let task_activity_at = app.and_then(|app| {
         crate::view_models_conversation::conversation_task_last_activity_at(app, task_id)
     });
+    let session_config = if session.is_none() && event.is_none() {
+        app.and_then(|app| {
+            let attempt_dir = resolve_acp_attempt_dir(
+                app,
+                task_id,
+                run_id,
+                round_id,
+                node_id,
+                attempt_id,
+                outer_node_id.as_deref(),
+                outer_attempt_id.as_deref(),
+            );
+            session_metadata_from_attempt_dir(&attempt_dir)
+                .and_then(|metadata| acp_session_config_vm(&metadata))
+        })
+    } else {
+        None
+    };
     let _ = app_handle.emit(
         ACP_SESSION_EVENT,
         AcpSessionUpdatedEventVm {
@@ -5689,6 +5710,7 @@ fn emit_acp_update(
             outer_node_id,
             outer_attempt_id,
             session,
+            session_config,
             event,
             lifecycle,
             activity,

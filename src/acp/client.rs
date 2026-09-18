@@ -380,7 +380,7 @@ use crate::acp::permission::{
 };
 use crate::acp::pipeline_diagnostics::{AcpPipelineDiagnostics, PipelineUpdateKind};
 use crate::acp::session_config::{
-    ACP_SESSION_CONFIG_ROLLED_BACK_CODE, RolledBackSessionConfig,
+    ACP_SESSION_CONFIG_ROLLED_BACK_CODE, RolledBackSessionConfig, align_overrides_to_live_catalog,
     rolled_back_session_config_params, strip_unsupported_model_bound_overrides,
 };
 use crate::acp::timeline::{
@@ -4613,6 +4613,8 @@ impl<'a> AcpRuntime<'a> {
                 .clone()
                 .map(Value::String)
                 .unwrap_or(Value::Null);
+            metadata["configOptionOverrides"] =
+                serde_json::to_value(&self.config_option_overrides).unwrap_or_else(|_| json!({}));
             Ok(())
         })?;
         Ok(())
@@ -4643,20 +4645,25 @@ impl<'a> AcpRuntime<'a> {
             self.apply_permission_mode(pm)?;
         }
         let mut pending = config_options.clone();
-        if model_applied {
-            let rollbacks = strip_unsupported_model_bound_overrides(
+        let rollbacks = if model_applied {
+            strip_unsupported_model_bound_overrides(
                 catalog_at_start.as_ref(),
                 self.config_options.as_ref(),
                 &mut pending,
-            );
-            for item in &rollbacks {
-                self.config_option_overrides.remove(&item.config_id);
-            }
-            self.pending_config_rollbacks.extend(rollbacks);
-        }
+            )
+        } else {
+            align_overrides_to_live_catalog(
+                catalog_at_start.as_ref(),
+                self.config_options.as_ref(),
+                &mut pending,
+            )
+        };
+        self.config_option_overrides.clone_from(&pending);
+        self.pending_config_rollbacks.extend(rollbacks);
         for (config_id, value) in &pending {
             self.apply_generic_config_option(config_id, value, catalog_at_start.as_ref())?;
         }
+        let _ = self.persist_session_catalog_observation();
         Ok(())
     }
 

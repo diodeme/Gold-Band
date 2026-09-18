@@ -9,7 +9,7 @@ import type {
   WorkflowTemplate,
   WorkflowTemplateStore,
 } from '@/types';
-import { retainAcpModelBoundOverrides } from '@/lib/acp-composite-config';
+import { remapAcpThoughtLevelOverride, retainAcpModelBoundOverrides } from '@/lib/acp-composite-config';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
 import { readyWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
 import { agentDiagnosticShortReason } from '@/lib/agent-diagnostic';
@@ -359,21 +359,22 @@ export function normalizeConfigOptionOverrides(
   selectedModelId?: string | null,
 ): { configOptions: Record<string, string>; removedOptionIds: string[] } {
   const retained = selectedModelId === undefined
-    ? { ...(overrides ?? {}) }
+    ? remapAcpThoughtLevelOverride(overrides, agent.configOptions)
     : retainAcpModelBoundOverrides(overrides, agent.configOptions, selectedModelId);
   const configOptions: Record<string, string> = {};
   const removedOptionIds: string[] = [];
-  for (const [optionId, value] of Object.entries(overrides ?? {})) {
-    if (retained[optionId] !== value) {
-      removedOptionIds.push(optionId);
-      continue;
-    }
+  const original = overrides ?? {};
+  for (const [optionId, value] of Object.entries(retained)) {
     const option = agent.configOptions?.find((candidate) => candidate.id === optionId);
     if (option?.options.some((candidate) => candidate.value === value)) {
       configOptions[optionId] = value;
     } else {
       removedOptionIds.push(optionId);
     }
+  }
+  for (const [optionId, value] of Object.entries(original)) {
+    if (retained[optionId] === value) continue;
+    if (!removedOptionIds.includes(optionId)) removedOptionIds.push(optionId);
   }
   return { configOptions, removedOptionIds };
 }

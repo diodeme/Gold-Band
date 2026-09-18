@@ -74,7 +74,7 @@
 3. 处理模式选择：WORKFLOW / AUTO 切换；Workflow 模式操作栏的前导图标统一使用运行模式入口的 `Route` 图标，不再使用另一套 `Workflow` 图标。
 4. AUTO 模式：
    - 固定 Agent 策略下显示 agent、模型、权限模式下拉；agent 可以覆盖 AUTO tab 当前配置，模型可为空；权限下拉叠加 Auto Accept
-   - agent 下拉的触发器和选项都展示 registry 中的 icon 与 display name，与 Direct 药丸、侧栏、工作流 Inspector 共用同一身份投影，不得只显示名称或改用通用 Bot 图标；紧凑身份槽按 SVG viewBox 原样绘制，不套用画布座位的视觉缩放
+   - agent 下拉的触发器和选项都展示 registry 中的 icon 与 display name，与 Direct 药丸、侧栏、工作流 Inspector 共用同一身份投影，不得只显示名称或改用通用 Bot 图标；Select 身份槽按 SVG viewBox 原样绘制，会话栏 / 搜索 / 会话头继续使用视觉重量缩放
    - 不可用 Agent 的原因与 Agent 管理横幅共用 compact raw 首行，不得把 `acp.session-request-failed` 显示成没有具体原因的「请重试」
    - 动态 Agent 策略下显示 Dynamic Agent 标识；控制面与候选 worker 的权限下拉同样叠加 Auto Accept
    - 显示非必填全局 Goal 输入框
@@ -259,6 +259,7 @@
 - 切换 workspace 后再返回时，必须恢复该 workspace 当前 Direct Agent 及其模型/权限/Auto Accept；其他 workspace 的选择不得覆盖当前 workspace。切换期间 composer 的 workspace 与运行模式配置由同一个 App 层 workspace key 驱动，不保留组件内第二份 workspace 选择状态。
 - 快速对话 composer 切换 workspace 属于导航上下文切换，不结束未提交草稿生命周期；无论从 composer 工作空间选择器还是左侧工作空间“新会话”入口切换，正文、图片及其他附件都必须原样保留。只有提交成功或用户明确执行清空/放弃操作时才清理草稿。
 - Direct 会话创建后 Agent 身份不可修改；更换 Agent 等价于创建新的 Direct 会话。会话内模型与权限模式分别使用独立显式 override：未指定时不干预 Agent 当前配置，选择具体值后不再允许回到“不指定”，但可以继续切换其他具体值。会话内 Auto Accept 只写该 ACP session，不回写主页记忆。
+- 发起 Direct 会话时以 `session/new` 活目录为准：作者态思考强度若只是 option id 变了、档位还在，则 remap 后下发；活目录没有的 `thought_level` / `model_config` 回滚为不指定并继续发送，timeline 分割线写「{{names}} 不支持，系统已将其回滚为不指定。可停止对话后修改。」。追问目录不得回写主页 Direct 记忆。
 - Direct 侧边栏 task 行使用 Agent icon 代替 run 成功/暂停/失败状态点；当前 turn 活跃时由 task 级 activity 驱动 icon 低强度呼吸，相对时间来自 `lastActivityAt`。工作流和 AUTO 继续使用 run 状态点。
 - Direct task 行点击后直接进入最近会话，不渲染 `run-00x` 子列表；底层 run 仅作为内部执行与存储结构。
 - Direct 的置顶区、workspace 区和搜索结果使用同一 Agent identity VM，不允许前端组件自行从 metadata 重复推断。

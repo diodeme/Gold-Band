@@ -2,8 +2,10 @@
 
 ## 0. 当前实现状态
 
+- 2026-09-18 发起会话时作者态 option id 若已不在 `session/new` 活目录中，按切模型同一套规则 remap 思考强度或回滚为不指定，不得用 `unavailable` 挡住首轮 prompt。分割线文案为「{{names}} 不支持，系统已将其回滚为不指定。可停止对话后修改。」，多项用 ` · ` 连接。
+- 2026-09-18 思考强度跨模型按 category+value 保留：Cursor Luna 用 `reasoning`、Grok 用 `effort`，同一档 `high` 必须 remap 后继续 apply，不得当成不支持清空。`model_config` 仍按 option id（Fast 不会变成 Context）。复合菜单产品顺序为模型 → 思考强度 → 其余 `model_config`。`session/set_config_option` 新目录通过控制面 `sessionConfig` 立即推给 composer，不重建 timeline，不把更新拖到回合结束。
 - 2026-09-18 作者态切模型时复合下拉仍展示并保留思考强度 / Fast；会话发起后以模型 RPC 的新 `configOptions` 为准，不支持的 `thought_level` / `model_config` 回滚为不指定，并在 timeline 写入 `systemNotice` 分割线。会话内换模型仍走官方「改一项、整表更新」。较新 Doctor 目录属于另一模型时，不得用其 Fast/思考强度替换当前会话目录。不按 `id=fast` 或 Agent ID 特配。触发器跳过未选择的中间段，例如 `Composer 2.5 · Extra High`。
-- 2026-09-18 复合模型下拉按官方 `configOptions` 顺序纳入 `category=model_config`（如 Fast）与 `category=thought_level`。
+- 2026-09-18 复合模型下拉按产品语义纳入 `category=thought_level` 与 `category=model_config`（如 Context / Fast）：思考强度固定在模型之后，其余模型参数保持 Agent 相对顺序。
 - 2026-09-15 权限触发器勾选 Auto Accept 后复用模型与思考强度的复合展示，显示 `Agent · 自动批准`；仅勾选时显示 `不指定 · 自动批准`。overlay 分组文案为 `{{appName}}来帮你…` / `{{appName}} will help you…`；分组标题与 Auto Accept 选项和上方原生 mode 名称共用 `pl-8` 文字左边缘，复选框指示器与单选指示器同列。
 - 2026-09-15 ACP `initialize` 全局声明 `_meta.parameterizedModelPicker`，使依赖该客户端能力才展开思考强度 / 模型参数的 Agent（当前主要是 Cursor）能返回标准 `configOptions`。Composer 在存在 `thought_level` 或 `model_config` 时进入复合下拉，不按 Agent ID 分叉，也不解析模型变体串。
 - 2026-09-07 工具图片分层加载修正：过程列表移除图片引用，并在 hydrate 前剥离工具输出；移除过程列表和工具详情查询中重复的旧历史迁移，复用已有会话存储初始化入口。工具展开后从详情取得图片引用，仅预备当前宽度可见的首批缩略图，等待读取和浏览器解码完成后再展示正文及图片，保留局部加载与坏图重试。关闭时释放预备租约，迟到结果不重新展开内容；汇总图片栏保持独立。属于已有分层设计实现不完整，不新增持久字段、缓存或依赖。失败证据为缺失图片 blob 导致列表查询失败，以及图片未完成时正文已显示。

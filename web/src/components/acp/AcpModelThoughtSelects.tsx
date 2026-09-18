@@ -50,6 +50,7 @@ export {
   findAcpCatalogModelId,
   findAcpModelConfigOptions,
   findAcpThoughtLevel,
+  remapAcpThoughtLevelOverride,
   retainAcpModelBoundOverrides,
 } from '@/lib/acp-composite-config';
 

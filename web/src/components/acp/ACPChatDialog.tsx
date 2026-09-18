@@ -137,6 +137,7 @@ import {
   acpProviderConfigCatalog,
   createAcpSessionConfigViewModel,
   findAcpConfigOption,
+  mergeLiveAcpSessionConfig,
   type AcpSessionConfigViewModel,
 } from "@/lib/acp-session-config";
 import {
@@ -4054,7 +4055,20 @@ export function ACPChatDialog(
             }).catch(() => {});
             return;
           }
-          if (!event.session) return;
+          if (!event.session) {
+            if (event.sessionConfig && latestSessionRef.current && branchId === 'root') {
+              const latest = latestSessionRef.current;
+              applySessionUpdate({
+                ...latest,
+                config: mergeLiveAcpSessionConfig(
+                  latest.config,
+                  event.sessionConfig,
+                  configGenerationRef.current > 0,
+                ),
+              }, "subscription-session-config");
+            }
+            return;
+          }
           if (branchId !== 'root') {
             // Agent branch envelopes carry root/session metadata rather than the
             // selected branch body. Coalesce bursts into one in-flight read plus

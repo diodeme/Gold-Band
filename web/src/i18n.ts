@@ -1909,7 +1909,7 @@ const resources = {
         thoughtLevel: "思考强度",
         unspecifiedThoughtLevel: "不指定",
         sessionConfigRolledBack:
-          "你选择的模型配置当前模型暂不支持，系统已将其回滚为不指定。可停止对话后继续修改。",
+          "{{names}} 不支持，系统已将其回滚为不指定。可停止对话后修改。",
         permissionMode: "权限",
         autoAccept: "自动批准",
         autoAcceptGroup: "{{appName}}来帮你…",
@@ -4619,7 +4619,7 @@ const resources = {
         thoughtLevel: "Reasoning",
         unspecifiedThoughtLevel: "Unspecified",
         sessionConfigRolledBack:
-          "The selected model options aren't supported by this model and were reset to unspecified. Stop the conversation to change them.",
+          "{{names}} not supported by this model, and reset to unspecified. Stop the conversation to change them.",
         permissionMode: "Permission",
         autoAccept: "Auto Accept",
         autoAcceptGroup: "{{appName}} will help you…",

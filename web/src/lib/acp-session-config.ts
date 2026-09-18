@@ -5,9 +5,11 @@ import type {
   AgentRegistryVm,
 } from "@/types";
 import {
+  ACP_MODEL_CONFIG_CATEGORY,
   ACP_THOUGHT_LEVEL_CATEGORY,
   findAcpCatalogModelId,
   isAcpModelBoundConfigCategory,
+  remapAcpThoughtLevelOverride,
 } from "@/lib/acp-composite-config";
 
 export type AcpSessionConfigCategory = string;
@@ -58,6 +60,26 @@ export type AcpSessionConfigViewModel = {
   signature: string;
 };
 
+export function mergeLiveAcpSessionConfig(
+  current: AcpSessionConfigVm | null | undefined,
+  incoming: AcpSessionConfigVm | null | undefined,
+  preserveUserOverrides: boolean,
+): AcpSessionConfigVm | null {
+  if (!incoming) return current ?? null;
+  if (!preserveUserOverrides || !current) return incoming;
+  return {
+    ...incoming,
+    modelOverrideId: current.modelOverrideId,
+    permissionModeOverrideId: current.permissionModeOverrideId,
+    autoAccept: current.autoAccept,
+    configOptionOverrides: current.configOptionOverrides,
+    currentModelId: current.currentModelId,
+    currentModelName: current.currentModelName,
+    currentModeId: current.currentModeId,
+    currentModeName: current.currentModeName,
+  };
+}
+
 export function createAcpSessionConfigViewModel(
   config: AcpSessionConfigVm | null | undefined,
   providerCatalog: AcpProviderConfigCatalog | null | undefined = null,
@@ -85,12 +107,19 @@ export function createAcpSessionConfigViewModel(
       ?? modelOverrideId
     : null;
   const permissionModeOverrideId = config?.permissionModeOverrideId ?? null;
+  const remappedOverrides = remapAcpThoughtLevelOverride(
+    config?.configOptionOverrides,
+    projectedCatalog.configOptions,
+  );
   const catalogGroups = normalizeAcpSelectConfigGroups(
     projectedCatalog.configOptions,
-    config?.configOptionOverrides,
+    remappedOverrides,
     config?.configOptions,
   );
-  const modelBoundOptions = catalogGroups.filter((group) => isAcpModelBoundConfigCategory(group.category));
+  const modelBoundOptions = [
+    ...catalogGroups.filter((group) => group.category === ACP_THOUGHT_LEVEL_CATEGORY),
+    ...catalogGroups.filter((group) => group.category === ACP_MODEL_CONFIG_CATEGORY),
+  ];
   const thoughtLevel = modelBoundOptions.find((group) => group.category === ACP_THOUGHT_LEVEL_CATEGORY) ?? null;
   const permissionModeOverrideName = permissionModeOverrideId
     ? availablePermissionModes.find((option) => option.id === permissionModeOverrideId)?.name

@@ -67,6 +67,14 @@ describe('Select-based agent pickers share registry icons', () => {
     );
   });
 
+  it('keeps the conversation sidebar on the default visual-weight icon class', () => {
+    const sidebar = source('../src/components/conversation/ConversationSidebar.tsx');
+    expect(sidebar).toMatch(
+      /agentIconClass\(task\.agentIdentity\.iconKey, cn\('size-3'/,
+    );
+    expect(sidebar).not.toContain('compensateWhitespace: false');
+  });
+
   it('keeps whitespace compensation on padded canvas and card seats', () => {
     const workflow = source('../src/components/WorkflowEditor.tsx');
     const agents = source('../src/pages/AgentManagementPage.tsx');

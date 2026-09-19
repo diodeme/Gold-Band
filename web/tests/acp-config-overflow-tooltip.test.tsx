@@ -63,8 +63,9 @@ describe('ACP config overflow tooltip', () => {
       button.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
     });
 
-    expect(document.body.querySelector('[data-slot="tooltip-content"]')?.textContent)
-      .toBe('Agent full access');
+    const tooltip = document.body.querySelector('[data-slot="tooltip-content"]');
+    expect(tooltip?.textContent).toBe('Agent full access');
+    expect(tooltip?.className).toContain('pointer-events-none');
   });
 
   it('also shows the complete truncated value on keyboard focus', async () => {
@@ -76,8 +77,9 @@ describe('ACP config overflow tooltip', () => {
 
     await act(async () => button.focus());
 
-    expect(document.body.querySelector('[data-slot="tooltip-content"]')?.textContent)
-      .toBe('Agent full access');
+    const tooltip = document.body.querySelector('[data-slot="tooltip-content"]');
+    expect(tooltip?.textContent).toBe('Agent full access');
+    expect(tooltip?.className).toContain('pointer-events-none');
   });
 
   it('does not show a tooltip when the selected value fits', async () => {

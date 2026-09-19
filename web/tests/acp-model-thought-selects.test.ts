@@ -33,9 +33,11 @@ function renderSelect(props: React.ComponentProps<typeof AcpModelThoughtSelects>
 }
 
 function triggerClass(markup: string, slot: string) {
-  const match = markup.match(new RegExp(`data-slot="${slot}"[^>]*class="([^"]+)"`));
-  expect(match).not.toBeNull();
-  return match?.[1] ?? '';
+  const tag = markup.match(new RegExp(`<[^>]*data-slot="${slot}"[^>]*>`));
+  expect(tag).not.toBeNull();
+  const className = tag?.[0].match(/class="([^"]+)"/);
+  expect(className).not.toBeNull();
+  return className?.[1] ?? '';
 }
 
 describe('ACP composite model selector', () => {

@@ -136,7 +136,7 @@
 - 静态图标需要弱底色时，底色与前景必须来自同一主题语义，例如 `bg-foreground/10 + text-foreground`；不得使用浅色模式看似正常、深色模式接近背景的硬编码颜色或强调色组合。
 - 同一业务语义跨页面出现时必须共享颜色规则。例如定时任务标识在管理列表、会话侧栏、会话标题、配置面板和详情页中应保持一致，不能逐页自行决定颜色。
 - 不得机械全局替换颜色类。修改前应审计每个命中的语义，保留链接、按钮、选中态、加载态和结果状态的必要强调色。
-- 图标的视觉说明统一使用项目 Tooltip 组件；`aria-label` 负责无障碍名称，不替代视觉提示；不得使用浏览器原生 `title` 作为产品 Tooltip。
+- 图标的视觉说明统一使用项目 Tooltip 组件；`aria-label` 负责无障碍名称，不替代视觉提示；不得使用浏览器原生 `title` 作为产品 Tooltip。共享 `TooltipContent` 默认 `pointer-events-none`，包含它的 Radix Popper wrapper 也必须 `pointer-events: none`，避免说明层或其定位壳抢走触发器命中并在边沿反复开关；只有内容需要滚动或接受指针时，才在该次调用的 `TooltipContent` 上显式覆盖为 `pointer-events-auto`。截断全文类 Tooltip 的 trigger 必须是整颗控件，不得锚在内部截断文字上。带链接的帮助说明使用 Popover / Dialog，不放进默认 Tooltip。
 
 ## 10. 异步操作中间态
 

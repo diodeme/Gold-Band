@@ -97,18 +97,18 @@ export function AcpSingleConfigMenu({
   return (
     <DropdownMenu modal={ACP_COMPOSER_CONFIG_DROPDOWN_MODAL}>
       <Tooltip open={tooltipOpen} onOpenChange={handleTooltipOpenChange}>
-        <DropdownMenuTrigger
-          disabled={disabled}
-          className={cn(acpComposerConfigTriggerVariants({ compact }), triggerClassName)}
-          data-acp-auto-accept-overlay={onAutoAcceptChange ? 'true' : undefined}
-          onPointerEnter={showTooltipIfOverflowing}
-          onPointerLeave={hideTooltip}
-          onPointerDown={hideTooltip}
-          onFocus={showTooltipIfOverflowing}
-          onBlur={hideTooltip}
-        >
-          <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{label}</span>
-          <TooltipTrigger asChild>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger
+            disabled={disabled}
+            className={cn(acpComposerConfigTriggerVariants({ compact }), triggerClassName)}
+            data-acp-auto-accept-overlay={onAutoAcceptChange ? 'true' : undefined}
+            onPointerEnter={showTooltipIfOverflowing}
+            onPointerLeave={hideTooltip}
+            onPointerDown={hideTooltip}
+            onFocus={showTooltipIfOverflowing}
+            onBlur={hideTooltip}
+          >
+            <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{label}</span>
             <span
               ref={valueRef}
               className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}
@@ -116,9 +116,9 @@ export function AcpSingleConfigMenu({
             >
               {selectedLabel}
             </span>
-          </TooltipTrigger>
-          <ChevronDown className={ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS} />
-        </DropdownMenuTrigger>
+            <ChevronDown className={ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS} />
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
         <TooltipContent
           side="top"
           sideOffset={6}

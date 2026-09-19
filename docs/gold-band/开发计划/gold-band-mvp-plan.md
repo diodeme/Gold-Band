@@ -14,6 +14,13 @@
 - 证据：前端覆盖单条/多条 thought_level、context、Fast 以及分割线 `思考强度（effort） · 上下文（context）`。
 - 过度设计与性能评审：只改已有标签投影和一条 i18n 模板，无新状态、探测或热路径。
 
+## 2026-09-19 ACP `end_turn` 后迟到 Provider 事件污染下一轮 prompt
+
+- 根因与形成路径：历史设计把 `session/prompt` response watermark + bounded quiet drain 作为当前 prompt 的 terminal 收敛，这对响应前和短尾部通知成立；但 ACP `session/update` 没有 prompt request id，Provider 仍可能在 `end_turn` 后数分钟继续发送同一 session 的 thought/tool/message。attached runtime 复用同一 session route 时，下一轮 prompt admission 直接消费这些通知，导致旧流进入新 prompt。Direct durable prompt queue 和 provider `begin_prompt` 锁仍保证不会并发发送两个 `session/prompt`，问题是 session route 与 prompt 生命周期的实现边界不完整，不是“允许并发输入”的设计缺陷。
+- 实现：新增运行期 `AwaitingPromptAdmission` 阶段。attached session reuse 在配置/新 prompt 之间隔离并消费已有 route backlog；阶段内 session update 不写 Timeline、prompt output、命令元数据或 active turn。对按 prompt 独立的稳定 `messageId`、`toolCallId` 等 provider item identity 建立 late-event fence；session 级可复用的 `plan` 投影不加入永久 fence。发出新 `session/prompt` 后命中 fence 的旧 stream 尾部继续抑制，新的 provider identity 仍按既有 `AwaitingTurnStart -> Live` 规则接入。首次 `session/new`、显式 restore/replay 和 Direct queue 不改语义；无稳定 identity 的迟到通知只保留 Raw 审计，不能用固定延时猜测归属。
+- 红测与绿测：新增 `attached_session_quarantines_events_seen_before_prompt_admission`，修复前在 admission 阶段错误返回“接受”（稳定失败）；同一测试修复后转绿。新增尾部测试覆盖“旧 stream 在新 prompt 发出后继续到达”仍被抑制、新 stream identity 正常进入当前轮次，以及 session 级 `plan` identity 不会阻塞下一轮合法计划更新。现场 raw 证据为 `feedback-15-session` 中 request id=6 返回 `end_turn` 后约 177 秒仍有 `session/update`，request id=10 已发出时旧 `messageId` 的尾部继续到达。
+- 验收：本次新增 3 项 admission fence 测试、attached-session 相关 4 项和 prompt-terminal 相关 10 项均通过。一次 152 项 client 回归中 149 项通过、1 项既有 doctor fixture 忽略、2 项既有 doctor fixture 因未到达 `initialize/session/new` 而失败；这 2 项与本次 session reuse 代码路径无关，需单独修复 fixture 后再作为全量绿测。
+- 过度设计与性能评审：复用现有 session route、phase 和 provider stable identity，不新增持久字段、数据库、网络请求、无限等待或第二条输入队列。quarantine 集合只覆盖当前 admission backlog 的稳定 identity；正常 prompt 热路径仍使用现有 128 帧、约 4 MiB、25ms 有界 drain，Timeline/raw 不做全量扫描。attached admission 仅增加一次已有 route 的非阻塞消费，性能成本与 backlog 上限匹配。
 ## 2026-09-19 多条 thought_level 分开标注，context 中文为上下文
 
 - 根因：Cursor Fable 同目录返回 `thinking`（Off/On）和 `effort`（档位）两条 `thought_level`。展示层把所有 `thought_level` 都标成「思考强度」，分割线也按 category 去重，看起来像重复两项。

@@ -2337,6 +2337,12 @@ struct AcpRuntime<'a> {
     active_turn_file_tool_outcomes:
         HashMap<(String, String), Option<crate::acp::turn_files::TurnFileToolTerminalOutcome>>,
     active_prompt_turn: Option<AcpPromptTurnIdentity>,
+    /// Provider session notifications do not carry a prompt id. When an
+    /// attached session is reused, content observed before the next prompt
+    /// is admitted is therefore quarantined by its stable provider identity;
+    /// later chunks for the same stream must not be attributed to the new
+    /// prompt.
+    quarantined_provider_item_ids: HashSet<String>,
     pending_retry_prompt_event: Option<AcpUiEvent>,
     prompt_retry: Option<AcpPromptRetryState>,
     models: Option<Value>,
@@ -2477,6 +2483,7 @@ impl AcpTimelineStreamSlot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SessionUpdatePhase {
     Live,
+    AwaitingPromptAdmission,
     RestoringWithoutReplay,
     ReplayingHistory,
     AwaitingTurnStart,
@@ -3953,6 +3960,7 @@ impl<'a> AcpRuntime<'a> {
             active_turn_file_branches: HashSet::new(),
             active_turn_file_tool_outcomes: HashMap::new(),
             active_prompt_turn: None,
+            quarantined_provider_item_ids: HashSet::new(),
             pending_retry_prompt_event,
             prompt_retry,
             models: prior_metadata
@@ -4477,6 +4485,12 @@ impl<'a> AcpRuntime<'a> {
             self.runtime_policy.external_session_sync_enabled,
         );
         self.retain_session_route = true;
+        // A reused route may still contain notifications emitted after the
+        // previous session/prompt response. Keep them out of the next prompt
+        // until its request is admitted; stable stream identities are fenced
+        // so delayed chunks remain quarantined after admission.
+        self.session_update_phase = SessionUpdatePhase::AwaitingPromptAdmission;
+        self.quarantined_provider_item_ids.clear();
 
         let reuse_plan = plan_attached_session_reuse(
             entry.config_fingerprint != desired_config_fingerprint,
@@ -4542,7 +4556,9 @@ impl<'a> AcpRuntime<'a> {
         }
 
         self.apply_session_mode_options(permission_mode, model, config_options, false)?;
-        self.session_update_phase = SessionUpdatePhase::Live;
+        // Configuration RPCs above may have drained only part of the retained
+        // route. Consume the rest while the admission fence is still active.
+        self.drain_available_inbound()?;
         let _ = append_diagnostic(
             &self.paths.diagnostics,
             "info",
@@ -5601,6 +5617,13 @@ impl<'a> AcpRuntime<'a> {
                 "providerId": provider_id,
             }),
         );
+        if self.session_update_phase == SessionUpdatePhase::AwaitingPromptAdmission {
+            // The route is now owned by this prompt. AwaitingTurnStart keeps
+            // the existing restore rule (first unseen stream starts the turn)
+            // while the fence below continues to reject identities observed
+            // before admission.
+            self.session_update_phase = SessionUpdatePhase::AwaitingTurnStart;
+        }
         let _prompt_guard = self.connection.begin_prompt(session_id)?;
         let agent_capabilities = self
             .connection
@@ -5836,11 +5859,10 @@ impl<'a> AcpRuntime<'a> {
             .map(str::to_string);
         let mut update = params.get("update").cloned().unwrap_or(params);
 
-        if let Some(commands) = parse_available_commands(&update) {
-            self.available_commands = Some(commands);
-        }
-
         if self.session_update_phase == SessionUpdatePhase::RestoringWithoutReplay {
+            if let Some(commands) = parse_available_commands(&update) {
+                self.available_commands = Some(commands);
+            }
             if is_current_turn_content_update(&update) {
                 let _ = append_structured_diagnostic(
                     &self.paths.diagnostics,
@@ -5855,6 +5877,9 @@ impl<'a> AcpRuntime<'a> {
             return Ok(());
         }
         if self.session_update_phase == SessionUpdatePhase::ReplayingHistory {
+            if let Some(commands) = parse_available_commands(&update) {
+                self.available_commands = Some(commands);
+            }
             if !self.runtime_policy.external_session_sync_enabled {
                 return Ok(());
             }
@@ -5865,6 +5890,13 @@ impl<'a> AcpRuntime<'a> {
         }
         if self.should_suppress_session_replay(&session_id, &update) {
             return Ok(());
+        }
+
+        // Commands are a projection of the admitted live stream. A delayed
+        // notification from the previous prompt must not replace the command
+        // palette observed by the next prompt.
+        if let Some(commands) = parse_available_commands(&update) {
+            self.available_commands = Some(commands);
         }
 
         if provider_thread_is_active(&update) {
@@ -6173,8 +6205,9 @@ impl<'a> AcpRuntime<'a> {
     ) -> bool {
         let timeline_store = &self.timeline_store;
         let branch_timeline_stores = &self.branch_timeline_stores;
-        should_suppress_session_update(
+        should_suppress_attached_session_update(
             &mut self.session_update_phase,
+            &mut self.quarantined_provider_item_ids,
             |identity| {
                 timeline_store.contains_provider_history_identity(identity)
                     || branch_timeline_stores
@@ -8339,6 +8372,7 @@ fn should_suppress_session_update(
 ) -> bool {
     let identity = stable_session_update_item_id(session_id, update);
     match *phase {
+        SessionUpdatePhase::AwaitingPromptAdmission => true,
         SessionUpdatePhase::RestoringWithoutReplay | SessionUpdatePhase::ReplayingHistory => true,
         SessionUpdatePhase::AwaitingTurnStart => {
             let starts_current_turn = is_current_turn_content_update(update)
@@ -8364,6 +8398,47 @@ fn should_suppress_session_update(
             current_turn_item_ids.insert(identity);
             false
         }
+    }
+}
+
+fn should_suppress_attached_session_update(
+    phase: &mut SessionUpdatePhase,
+    quarantined_provider_item_ids: &mut HashSet<String>,
+    contains_historical_item: impl Fn(&str) -> bool,
+    current_turn_item_ids: &mut HashSet<String>,
+    session_id: Option<&str>,
+    update: &Value,
+) -> bool {
+    if *phase == SessionUpdatePhase::AwaitingPromptAdmission {
+        if let Some(identity) = attached_session_stream_identity(session_id, update) {
+            quarantined_provider_item_ids.insert(identity);
+        }
+        return true;
+    }
+    if attached_session_stream_identity(session_id, update)
+        .is_some_and(|identity| quarantined_provider_item_ids.contains(&identity))
+    {
+        return true;
+    }
+    should_suppress_session_update(
+        phase,
+        contains_historical_item,
+        current_turn_item_ids,
+        session_id,
+        update,
+    )
+}
+
+/// Only per-stream provider items can safely fence a delayed notification
+/// across prompt admission. A `plan` update is session-scoped in ACP and its
+/// identity may be reused by a later prompt, so fencing it would permanently
+/// suppress a legitimate next-turn plan update.
+fn attached_session_stream_identity(session_id: Option<&str>, update: &Value) -> Option<String> {
+    match update.get("sessionUpdate").and_then(Value::as_str) {
+        Some("agent_message_chunk" | "agent_thought_chunk" | "tool_call" | "tool_call_update") => {
+            stable_session_update_item_id(session_id, update)
+        }
+        _ => None,
     }
 }
 
@@ -8705,7 +8780,8 @@ mod tests {
         retain_bounded_doctor_acp_failure_bundle, runtime_hot_timeline_items,
         scheduled_trigger_for_prompt, session_config_fingerprint, session_load_params,
         session_new_params, session_prompt_params, session_prompt_text, session_resume_params,
-        settle_attempt_prompt_interactions, settle_prompt_event, should_suppress_session_update,
+        settle_attempt_prompt_interactions, settle_prompt_event,
+        should_suppress_attached_session_update, should_suppress_session_update,
         stable_message_item_id, timeline_generation_for_live_event, timeline_patch_flush_due,
         timeline_position_for_live_event, turn_file_change_set_event, unregister_provider_control,
         unsupported_client_inbound_reply, validate_session_restore_target,
@@ -10461,6 +10537,131 @@ mod tests {
             &mut current,
             Some("session-1"),
             &old_message,
+        ));
+    }
+
+    #[test]
+    fn attached_session_quarantines_events_seen_before_prompt_admission() {
+        let historical = HashSet::<String>::new();
+        let mut current = HashSet::new();
+        let mut quarantined = HashSet::new();
+        let mut phase = SessionUpdatePhase::AwaitingPromptAdmission;
+        let late_old_stream = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": "old-stream",
+            "content": { "type": "text", "text": "tail" }
+        });
+
+        assert!(should_suppress_attached_session_update(
+            &mut phase,
+            &mut quarantined,
+            |id| historical.contains(id),
+            &mut current,
+            Some("session-1"),
+            &late_old_stream,
+        ));
+        assert_eq!(phase, SessionUpdatePhase::AwaitingPromptAdmission);
+        assert!(current.is_empty());
+        assert!(quarantined.contains("assistant-message-old-stream"));
+    }
+
+    #[test]
+    fn attached_session_keeps_quarantined_stream_tail_out_of_new_prompt() {
+        let historical = HashSet::<String>::new();
+        let mut current = HashSet::new();
+        let mut quarantined = HashSet::new();
+        let mut phase = SessionUpdatePhase::AwaitingPromptAdmission;
+        let old_start = json!({
+            "sessionUpdate": "agent_thought_chunk",
+            "messageId": "old-stream",
+            "content": { "type": "text", "text": "old" }
+        });
+        let old_tail = json!({
+            "sessionUpdate": "agent_thought_chunk",
+            "messageId": "old-stream",
+            "content": { "type": "text", "text": " tail" }
+        });
+        let new_stream = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": "new-stream",
+            "content": { "type": "text", "text": "new" }
+        });
+
+        assert!(should_suppress_attached_session_update(
+            &mut phase,
+            &mut quarantined,
+            |id| historical.contains(id),
+            &mut current,
+            Some("session-1"),
+            &old_start,
+        ));
+        phase = SessionUpdatePhase::AwaitingTurnStart;
+        assert!(should_suppress_attached_session_update(
+            &mut phase,
+            &mut quarantined,
+            |id| historical.contains(id),
+            &mut current,
+            Some("session-1"),
+            &old_tail,
+        ));
+        assert!(!should_suppress_attached_session_update(
+            &mut phase,
+            &mut quarantined,
+            |id| historical.contains(id),
+            &mut current,
+            Some("session-1"),
+            &new_stream,
+        ));
+        assert_eq!(phase, SessionUpdatePhase::Live);
+    }
+
+    #[test]
+    fn attached_session_does_not_fence_reusable_session_plan_identity() {
+        let historical = HashSet::<String>::new();
+        let mut current = HashSet::new();
+        let mut quarantined = HashSet::new();
+        let mut phase = SessionUpdatePhase::AwaitingPromptAdmission;
+        let old_plan = json!({
+            "sessionUpdate": "plan",
+            "entries": [{ "content": "old plan" }]
+        });
+        let new_message = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": "new-stream",
+            "content": { "type": "text", "text": "new" }
+        });
+        let new_plan = json!({
+            "sessionUpdate": "plan",
+            "entries": [{ "content": "new plan" }]
+        });
+
+        assert!(should_suppress_attached_session_update(
+            &mut phase,
+            &mut quarantined,
+            |id| historical.contains(id),
+            &mut current,
+            Some("session-1"),
+            &old_plan,
+        ));
+        assert!(quarantined.is_empty());
+
+        phase = SessionUpdatePhase::AwaitingTurnStart;
+        assert!(!should_suppress_attached_session_update(
+            &mut phase,
+            &mut quarantined,
+            |id| historical.contains(id),
+            &mut current,
+            Some("session-1"),
+            &new_message,
+        ));
+        assert_eq!(phase, SessionUpdatePhase::Live);
+        assert!(!should_suppress_attached_session_update(
+            &mut phase,
+            &mut quarantined,
+            |id| historical.contains(id),
+            &mut current,
+            Some("session-1"),
+            &new_plan,
         ));
     }
 

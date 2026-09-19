@@ -16,9 +16,18 @@ Gold Band 的 ACP 会话同时服务两类读取路径：
 - 同一段 assistant 文本使用稳定 `id`，例如 `assistant-message-{messageId}`。
 - 同一段 thought 使用稳定 `id`，例如 `assistant-thought-{messageId}`。
 - `content` 表示该稳定 item 到当前 `endedSeq` 为止的完整内容。
-- `seq` / `startedSeq` 定义 timeline item 的规范顺序，必须随事件推进单调递增；恢复解析、计时重建和测试夹具都不得依赖 HashMap 遍历顺序或相同序号下的偶然排序。
+- `startedSeq` 定义 timeline item 的稳定视觉起点；`seq` / `endedSeq` 表示当前累计快照覆盖到的最新位置。累计流式 item 在后续快照中可以只推进 `seq` / `endedSeq`，但不得因此在历史显示中越过其起点之后已经到达的 prompt 或其他 item。恢复解析、计时重建和测试夹具都不得依赖 HashMap 遍历顺序或相同序号下的偶然排序。
 - 原始 token delta 仍逐帧保留为 `acp.raw.jsonl` 中独立的 FIFO JSONL record，但允许多个连续 record 组成一次有界 group commit；不得由前端 chat 渲染重新解释。
 - tool terminal delta 仍按 FIFO 逐帧经过 runtime 并写入 Raw 审计；Timeline 与 live event 只保留同一工具身份在当前发布窗口内的最新投影。工具成功、失败、取消等终态不得合并延迟。
+
+### Prompt terminal 与迟到 session/update
+
+`session/prompt` 返回 `stopReason=end_turn` 只结束该 JSON-RPC 请求，不关闭 ACP session 的异步通知路由。Provider 可能在 response 之后继续发送 `session/update`；这些通知没有 prompt request id，不能按到达时间直接归属下一轮。
+
+- 复用已完成 prompt 的 attached session 时，runtime 先进入 `AwaitingPromptAdmission`，在该状态下收到的 session update 只保留 Raw 审计，不进入新 prompt 的 Timeline、输出摘要、命令元数据或活动生命周期；按 prompt 独立的稳定 `messageId`、`toolCallId` 等 provider item identity 会形成 late-event fence。session 级可复用的 `plan` 投影不加入永久 fence。
+- 新 `session/prompt` 发出前，runtime 消费已有 route backlog；发出后，命中 late-event fence 的旧 stream 尾部仍丢弃。只有未命中 fence 的新 stream 才能按既有 `AwaitingTurnStart -> Live` 规则进入当前 prompt。Direct durable queue 仍负责用户输入的 admission 串行化，不因该 fence 改成无限等待或禁止用户编辑/排队。
+- session/update 在 admission fence 阶段没有稳定 provider identity 时只能作为未关联 Raw 证据保留，不能用固定延时猜测它属于哪一轮；新 prompt 已发出后若 Provider 仍不给 identity，协议本身无法可靠区分旧尾部与新流，runtime 不凭时间或自然语言猜测归属，也不以该通知重新打开已终结的 canonical lifecycle。
+- 该隔离只在 session reuse 的 prompt admission 边界生效；首次 `session/new`、显式 restore replay 与当前 prompt 的正常 stream 继续沿用各自已有阶段规则。
 
 ## 后端实时发送规则
 
@@ -67,6 +76,7 @@ Gold Band 的 ACP 会话同时服务两类读取路径：
 - session 等价判断必须覆盖整个事件窗口，不能只比较最后一条事件。
 - 完整 `AcpSessionVm` 快照到达后，`systemPromptAppend`、`config/models/modes/configOptions` 和 snapshot 中的 timeline events 是当前会话展示的事实来源；实时 `loadedEvents` 只能与 snapshot events 合并，不能覆盖或清空 snapshot events。`createLiveAcpSessionShell` 只允许作为没有 base session 时的临时壳。
 - Gold Band synthetic user prompt 允许由 session-ready snapshot 送达而不单独发送 live event。前端可见事件窗口必须合并 snapshot prompt 与后续 live event，避免实时阶段缺用户消息、停止/刷新后才补齐。
+- 增量分页可以按 `lastRevision` 或 item 的最新覆盖位置选择发生变化的语义块，但返回页必须重新按稳定视觉起点排序。前端合并同一排序空间（同 attempt；未携带 attempt 时为同 session）的事件时，也必须按 `startedSeq`、结束位置和稳定 id 排序；禁止用累计快照最后一次更新的 `seq` 将旧消息重新插入后续 prompt 之后。分页返回的 `oldestSeq/newestSeq` 必须分别覆盖所选页所有语义块的最小起点和最大结束位置，不能取排序后首尾元素的单一字段。
 
 ## Snapshot / live revision 交接
 

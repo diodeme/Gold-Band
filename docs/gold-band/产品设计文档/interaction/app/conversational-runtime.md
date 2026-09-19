@@ -1,5 +1,12 @@
 # 会话式运行时
 
+## 2026-09-19：ACP `end_turn` 后迟到事件的 prompt admission 隔离
+
+- 根因：`session/prompt` 的 `end_turn` 只结束对应 RPC；同一 ACP session 的 `session/update` 是没有 request id 的异步通知，Provider 可能在 response 后继续发送。复用 session 的 runtime 若直接把路由交给下一轮消费，就会把上一轮尾部 thought/tool/message 误挂到新 prompt。Direct queue 的串行 admission 设计仍然正确，缺陷在 session route 与 prompt 生命周期之间少了一道边界。
+- 设计：复用已完成 session 时先进入 `AwaitingPromptAdmission`。该阶段消费并隔离既有 route backlog，不让它更新新轮次的 canonical Timeline、prompt output、命令元数据或 active lifecycle；只对 `messageId/toolCallId` 等按 prompt 独立的稳定 provider identity 建立 late-event fence。`plan` 是 session 级可复用投影，不加入永久 fence。新 `session/prompt` 发出后，命中 fence 的旧 stream 尾部继续丢弃，未命中 fence 的新 stream 才按既有 `AwaitingTurnStart -> Live` 进入当前轮次。没有稳定 identity 的 admission 前通知只保留 Raw 审计；prompt 已发出后若 Provider 仍不给 identity，协议本身无法可靠区分旧尾部与新流，runtime 不通过固定延时或自然语言猜测归属。
+- 该修复复用现有 `SessionUpdatePhase`、session route 和稳定 item identity，不新增持久字段、数据库、无限等待或第二条用户输入队列；首次建 session、显式 restore/replay 与 Direct durable queue 语义不变。
+- 验收：最小失败测试先固定 attached session 在 admission fence 阶段错误接受旧 `agent_message_chunk`；修复后确认 admission 前旧流、prompt 发出后旧流尾部均被隔离，而新 `messageId` 能进入当前轮次。性能目标为 admission 只消费已有 route backlog，identity fence 为有界 HashSet；不扫描完整 Timeline/raw，不改变活跃 prompt 的 128 帧/4 MiB/25ms 有界 drain。
+
 ## 2026-09-10：AI-DYNAMIC 恢复上下文边界
 
 - 显式恢复的 `dynamic_resume_override`、`parent_continue_input` 和 `parent_continue_prompt_id` 只属于入口 AI-DYNAMIC outer attempt。同一 attempt 内部重试保留上下文；工作流切换到后继节点、下一 attempt 或新 round 时，与普通 invocation 参数一起重置，不得把旧恢复 lease 或用户指令交给新的 AI-DYNAMIC。

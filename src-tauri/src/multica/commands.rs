@@ -505,7 +505,11 @@ pub async fn get_remote_task_requirement(
         .await
         .map_err(|e| command_error(e.into()))?;
 
-    Ok(RemoteTaskVm::from_detail(&task, &workspace_id))
+    Ok(RemoteTaskVm::from_detail(
+        &task,
+        &workspace_id,
+        context.config.desktop_language,
+    ))
 }
 
 /// claim-at-send 失败回滚（开发设计 2.5 / 接入方案 B4）。

@@ -39,6 +39,10 @@ pub const RUNTIME_SCHEDULED_TASK_CONTEXT_ZH_CN: &str =
     include_str!("prompts/zh-CN/runtime/scheduled_task_context.md");
 pub const RUNTIME_SCHEDULED_TASK_CONTEXT_EN: &str =
     include_str!("prompts/en/runtime/scheduled_task_context.md");
+pub const RUNTIME_REMOTE_TASK_CONTEXT_ZH_CN: &str =
+    include_str!("prompts/zh-CN/runtime/remote_task_context.md");
+pub const RUNTIME_REMOTE_TASK_CONTEXT_EN: &str =
+    include_str!("prompts/en/runtime/remote_task_context.md");
 pub const RUNTIME_ARTIFACT_FINALIZE_ZH_CN: &str =
     include_str!("prompts/zh-CN/runtime/artifact_finalize.md");
 pub const RUNTIME_ARTIFACT_FINALIZE_EN: &str =
@@ -227,6 +231,44 @@ mod tests {
                 }),
             );
         }
+    }
+
+    #[test]
+    fn remote_task_context_templates_render_all_and_partial_fields() {
+        // 远程任务 DPMS 溯源块（multica 预填 composer / 会话起始输入）：全字段与部分字段
+        // （其余 null，对应 wire 缺省键）都需完整渲染，且中文标签锁定（发布计划 ID / 业务需求 ID / 需求链接）。
+        let full = json!({
+            "release_plan_id": 538181,
+            "dev_user": "alice,bob",
+            "test_user": "carol",
+            "business_story_id": 674290,
+            "origin_url": "https://dpms.example.com/story/674290"
+        });
+        let zh = assert_fully_rendered(RUNTIME_REMOTE_TASK_CONTEXT_ZH_CN, full.clone());
+        assert!(zh.contains("- 发布计划 ID: 538181"));
+        assert!(zh.contains("- 开发负责人: alice,bob"));
+        assert!(zh.contains("- 业务需求 ID: 674290"));
+        assert!(zh.contains("- 需求链接: https://dpms.example.com/story/674290"));
+
+        let en = assert_fully_rendered(RUNTIME_REMOTE_TASK_CONTEXT_EN, full);
+        assert!(en.contains("- Release plan ID: 538181"));
+        assert!(en.contains("- Business story ID: 674290"));
+        assert!(en.contains("- Requirement link: https://dpms.example.com/story/674290"));
+
+        // 部分字段（其余 null）：仅渲染存在的行，缺席字段不出行、无空行残留。
+        let partial = json!({
+            "release_plan_id": 538181,
+            "dev_user": null,
+            "test_user": null,
+            "business_story_id": null,
+            "origin_url": null
+        });
+        let zh_partial = assert_fully_rendered(RUNTIME_REMOTE_TASK_CONTEXT_ZH_CN, partial.clone());
+        assert!(zh_partial.contains("- 发布计划 ID: 538181"));
+        assert!(!zh_partial.contains("开发负责人"));
+        assert!(!zh_partial.contains("\n\n"));
+        let en_partial = assert_fully_rendered(RUNTIME_REMOTE_TASK_CONTEXT_EN, partial);
+        assert!(!en_partial.contains("Dev owner"));
     }
 
     #[test]

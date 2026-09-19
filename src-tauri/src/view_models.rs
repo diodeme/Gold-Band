@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
     str::FromStr,
@@ -22,9 +22,9 @@ use gold_band::dynamic::{
 };
 use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::provider::{
-    attachment_meta_for_path, mcp_capabilities_from_capabilities,
-    select_config_options_from_capabilities, supported_models_from_capabilities,
-    supported_modes_from_capabilities,
+    AcpSelectConfigOption, attachment_meta_for_path, mcp_capabilities_from_capabilities,
+    model_bound_catalogs_from_capabilities, select_config_options_from_capabilities,
+    supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use gold_band::runtime::{NodeState, RoundState, RoundTraceStep, RunState, WorkerRefState};
 
@@ -204,6 +204,8 @@ pub struct ManagedAgentVm {
     pub supported_modes: Option<Vec<AcpModeVm>>,
     pub supported_models: Option<Vec<AcpModeVm>>,
     pub config_options: Option<Vec<AcpSelectConfigOptionVm>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_bound_catalogs: Option<BTreeMap<String, Vec<AcpSelectConfigOptionVm>>>,
     /// 是否支持 streamable HTTP MCP 传输（None=未诊断/未知）
     pub mcp_http_supported: Option<bool>,
     /// 是否支持 SSE MCP 传输（None=未诊断/未知）
@@ -917,6 +919,8 @@ pub struct AcpSessionConfigVm {
     pub models: Option<serde_json::Value>,
     pub modes: Option<serde_json::Value>,
     pub config_options: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_bound_catalogs: Option<BTreeMap<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1423,6 +1427,34 @@ pub fn agent_registry_vm(
     AgentRegistryVm { agents, catalog }
 }
 
+fn select_config_option_vms(capabilities: Option<&Value>) -> Vec<AcpSelectConfigOptionVm> {
+    acp_select_config_option_vms(select_config_options_from_capabilities(capabilities))
+}
+
+fn acp_select_config_option_vms(
+    options: Vec<AcpSelectConfigOption>,
+) -> Vec<AcpSelectConfigOptionVm> {
+    options
+        .into_iter()
+        .map(|option| AcpSelectConfigOptionVm {
+            id: option.id,
+            category: option.category,
+            name: option.name,
+            description: option.description,
+            current_value: option.current_value,
+            options: option
+                .options
+                .into_iter()
+                .map(|value| AcpSelectConfigValueVm {
+                    name: value.name.unwrap_or_else(|| value.value.clone()),
+                    value: value.value,
+                    description: value.description,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 pub(crate) fn managed_agent_vm(
     agent_id: &ManagedAgentId,
     config: &ManagedAgentConfig,
@@ -1483,26 +1515,15 @@ pub(crate) fn managed_agent_vm(
             (!models.is_empty()).then_some(models)
         }),
         config_options: diagnostic.and_then(|diagnostic| {
-            let options = select_config_options_from_capabilities(diagnostic.capabilities.as_ref())
-                .into_iter()
-                .map(|option| AcpSelectConfigOptionVm {
-                    id: option.id,
-                    category: option.category,
-                    name: option.name,
-                    description: option.description,
-                    current_value: option.current_value,
-                    options: option
-                        .options
-                        .into_iter()
-                        .map(|value| AcpSelectConfigValueVm {
-                            name: value.name.unwrap_or_else(|| value.value.clone()),
-                            value: value.value,
-                            description: value.description,
-                        })
-                        .collect(),
-                })
-                .collect::<Vec<_>>();
+            let options = select_config_option_vms(diagnostic.capabilities.as_ref());
             (!options.is_empty()).then_some(options)
+        }),
+        model_bound_catalogs: diagnostic.and_then(|diagnostic| {
+            let catalogs = model_bound_catalogs_from_capabilities(diagnostic.capabilities.as_ref())
+                .into_iter()
+                .map(|(model_id, options)| (model_id, acp_select_config_option_vms(options)))
+                .collect::<BTreeMap<_, _>>();
+            (!catalogs.is_empty()).then_some(catalogs)
         }),
         mcp_http_supported: diagnostic.and_then(|d| {
             mcp_capabilities_from_capabilities(d.capabilities.as_ref()).map(|m| m.http)
@@ -6957,6 +6978,11 @@ pub(crate) fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSe
     let models = session.get("models").cloned();
     let modes = session.get("modes").cloned();
     let config_options = session.get("configOptions").cloned();
+    let model_bound_catalogs = session
+        .get("modelBoundCatalogs")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<BTreeMap<String, serde_json::Value>>(value).ok())
+        .filter(|catalogs| !catalogs.is_empty());
     let model_override_id = session
         .get("modelOverride")
         .and_then(|value| value.as_str())
@@ -7029,6 +7055,7 @@ pub(crate) fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSe
         models,
         modes,
         config_options,
+        model_bound_catalogs,
     })
 }
 
@@ -9385,6 +9412,34 @@ mod tests {
                 .and_then(|value| value.as_array())
                 .map(Vec::len),
             Some(2)
+        );
+    }
+
+    #[test]
+    fn acp_session_config_exposes_session_model_bound_catalogs() {
+        let config = acp_session_config_vm(&json!({
+            "configOptions": [{
+                "id": "model",
+                "category": "model",
+                "type": "select",
+                "currentValue": "gpt-5.6-luna",
+                "options": [{ "value": "grok-4.6" }, { "value": "gpt-5.6-luna" }]
+            }],
+            "modelBoundCatalogs": {
+                "grok-4.6": [{
+                    "id": "fast",
+                    "category": "model_config",
+                    "type": "select",
+                    "options": [{ "value": "true" }]
+                }]
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(config.current_model_id.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(
+            config.model_bound_catalogs.as_ref().unwrap()["grok-4.6"][0]["id"],
+            json!("fast")
         );
     }
 

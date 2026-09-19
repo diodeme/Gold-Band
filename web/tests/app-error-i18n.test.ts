@@ -87,6 +87,24 @@ describe('app error i18n', () => {
     expect(message).not.toContain('{{message}}');
   });
 
+  it('localizes workflow model-binding option rejection instead of a generic retry', () => {
+    const error = {
+      code: 'workflow-model-binding.option-unsupported',
+      params: {
+        executionSlotId: 'slot-direct',
+        agentId: 'cursor',
+        optionId: 'reasoning',
+        value: 'high',
+      },
+    };
+    expect(displayAppError(i18n.getFixedT('zh-CN'), error)).toBe(
+      '当前模型不支持这项配置，请重新选择后重试。',
+    );
+    expect(displayAppError(i18n.getFixedT('en'), error)).toBe(
+      'This model does not support that setting. Choose another option and try again.',
+    );
+  });
+
   it('localizes scheduled occurrence resume failures', () => {
     for (const [code, zh, en] of [
       ['SCHEDULED_COORDINATOR_UNAVAILABLE', '定时任务运行服务暂不可用，请重试。', 'The scheduled task service is unavailable. Try again.'],

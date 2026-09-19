@@ -1119,6 +1119,7 @@ export function RunModeManagementPage({
                       models={fixedModels}
                       modelValue={model}
                       configOptions={selectedAgent?.configOptions}
+                      modelBoundCatalogs={selectedAgent?.modelBoundCatalogs}
                       configOptionValues={configOptions}
                       compact
                       triggerClassName="w-[220px] max-w-none rounded-md"
@@ -1129,6 +1130,7 @@ export function RunModeManagementPage({
                           current,
                           selectedAgent?.configOptions,
                           modelId,
+                          selectedAgent?.modelBoundCatalogs,
                         ));
                       }}
                       onConfigOptionChange={(optionId, value) => setConfigOptions((current) => (
@@ -1153,12 +1155,13 @@ export function RunModeManagementPage({
                 </Field>
               ) : null}
 
-              {agentStrategy === 'dynamic' && acpShowsModelConfigSelect(bootstrapModels, selectedBootstrapAgent?.configOptions, bootstrapModel) ? (
+              {agentStrategy === 'dynamic' && acpShowsModelConfigSelect(bootstrapModels, selectedBootstrapAgent?.configOptions, bootstrapModel, selectedBootstrapAgent?.modelBoundCatalogs) ? (
                 <Field label={t('workflowEditor.dynamicBootstrapModel')} help={t('workflowEditor.dynamicBootstrapModelHelp')}>
                   <AcpModelThoughtSelects
                     models={bootstrapModels}
                     modelValue={bootstrapModel}
                     configOptions={selectedBootstrapAgent?.configOptions}
+                    modelBoundCatalogs={selectedBootstrapAgent?.modelBoundCatalogs}
                     configOptionValues={bootstrapConfigOptions}
                     compact
                     triggerClassName="w-[220px] max-w-none rounded-md"
@@ -1169,6 +1172,7 @@ export function RunModeManagementPage({
                         current,
                         selectedBootstrapAgent?.configOptions,
                         modelId,
+                        selectedBootstrapAgent?.modelBoundCatalogs,
                       ));
                     }}
                     onConfigOptionChange={(optionId, value) => setBootstrapConfigOptions((current) => (
@@ -1178,12 +1182,13 @@ export function RunModeManagementPage({
                 </Field>
               ) : null}
 
-              {agentStrategy === 'dynamic' && acpShowsModelConfigSelect(acceptanceModels, selectedBootstrapAgent?.configOptions, acceptanceModel) ? (
+              {agentStrategy === 'dynamic' && acpShowsModelConfigSelect(acceptanceModels, selectedBootstrapAgent?.configOptions, acceptanceModel, selectedBootstrapAgent?.modelBoundCatalogs) ? (
                 <Field label={t('workflowEditor.dynamicAcceptanceModel')} help={t('workflowEditor.dynamicAcceptanceModelHelp')}>
                   <AcpModelThoughtSelects
                     models={acceptanceModels}
                     modelValue={acceptanceModel}
                     configOptions={selectedBootstrapAgent?.configOptions}
+                    modelBoundCatalogs={selectedBootstrapAgent?.modelBoundCatalogs}
                     configOptionValues={acceptanceConfigOptions}
                     compact
                     triggerClassName="w-[260px] max-w-none rounded-md"
@@ -1194,6 +1199,7 @@ export function RunModeManagementPage({
                         current,
                         selectedBootstrapAgent?.configOptions,
                         modelId,
+                        selectedBootstrapAgent?.modelBoundCatalogs,
                       ));
                     }}
                     onConfigOptionChange={(optionId, value) => setAcceptanceConfigOptions((current) => (
@@ -1240,11 +1246,12 @@ export function RunModeManagementPage({
                           </span>
                           {selected ? (
                             <div className="flex flex-wrap items-center justify-end gap-2">
-                              {acpShowsModelConfigSelect(item.supportedModels, item.configOptions, selectedModel) ? (
+                              {acpShowsModelConfigSelect(item.supportedModels, item.configOptions, selectedModel, item.modelBoundCatalogs) ? (
                               <AcpModelThoughtSelects
                                 models={item.supportedModels ?? []}
                                 modelValue={selectedModel}
                                 configOptions={item.configOptions}
+                                modelBoundCatalogs={item.modelBoundCatalogs}
                                 configOptionValues={availableAgentMap.get(item.agentType)?.configOptions}
                                 compact
                                 triggerClassName="h-8 w-[260px] max-w-none rounded-md text-xs"
@@ -1254,6 +1261,7 @@ export function RunModeManagementPage({
                                     availableAgentMap.get(item.agentType)?.configOptions,
                                     item.configOptions,
                                     value,
+                                    item.modelBoundCatalogs,
                                   ),
                                 })}
                                 onConfigOptionChange={(optionId, value) => updateAvailableAgentConfig(item.agentType, {

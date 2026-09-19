@@ -1486,19 +1486,25 @@ function WorkerNodeInspector({ node, binding, modelBindings, agents, profiles, w
         </Select>
         {agents.length === 0 ? <p className="text-xs text-muted-foreground">{t('workflowEditor.noDoctorReadyAgents')}</p> : null}
       </Field>
-      {acpShowsModelConfigSelect(modelOptions, selectedAgent?.configOptions, binding?.modelId) ? (
+      {acpShowsModelConfigSelect(modelOptions, selectedAgent?.configOptions, binding?.modelId, selectedAgent?.modelBoundCatalogs) ? (
         <Field label={t('workflowEditor.model')} errors={errorsFor('model')}>
           <AcpModelThoughtSelects
             models={modelOptions}
             modelValue={binding?.modelId}
             configOptions={selectedAgent?.configOptions}
+            modelBoundCatalogs={selectedAgent?.modelBoundCatalogs}
             configOptionValues={binding?.configOptions}
             compact
             triggerClassName={cn('w-full max-w-none rounded-md', errorClass(errorsFor('model')))}
             onModelChange={(modelId) => updateBinding({
               modelId: modelId ?? undefined,
               configOptions: optionalWorkerConfigOptions(
-                retainAcpModelBoundOverrides(binding?.configOptions, selectedAgent?.configOptions, modelId),
+                retainAcpModelBoundOverrides(
+                  binding?.configOptions,
+                  selectedAgent?.configOptions,
+                  modelId,
+                  selectedAgent?.modelBoundCatalogs,
+                ),
               ),
             })}
             onConfigOptionChange={(optionId, value) => updateBinding({
@@ -1790,7 +1796,7 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
             const fixedAgent = agents.find((a) => a.agentType === fixedStrategy.provider);
             const fixedModels = fixedAgent?.supportedModels ?? [];
             const fixedModes = fixedAgent?.supportedModes ?? [];
-            if (acpShowsModelConfigSelect(fixedModels, fixedAgent?.configOptions, fixedStrategy.model) || fixedModes.length > 0) {
+            if (acpShowsModelConfigSelect(fixedModels, fixedAgent?.configOptions, fixedStrategy.model, fixedAgent?.modelBoundCatalogs) || fixedModes.length > 0) {
               return (
                 <Field label={t('workflowEditor.model')} errors={errorsFor('agentStrategy.model')}>
                   <div className="flex flex-wrap gap-2">
@@ -1798,12 +1804,18 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                       models={fixedModels}
                       modelValue={fixedStrategy.model}
                       configOptions={fixedAgent?.configOptions}
+                      modelBoundCatalogs={fixedAgent?.modelBoundCatalogs}
                       configOptionValues={node.configOptions}
                       compact
                       triggerClassName={cn('min-w-[12rem] flex-1 rounded-md', errorClass(errorsFor('agentStrategy.model')))}
                       onModelChange={(model) => updateDynamic({
                         agentStrategy: { ...fixedStrategy, model: model || undefined },
-                        configOptions: retainAcpModelBoundOverrides(node.configOptions, fixedAgent?.configOptions, model),
+                        configOptions: retainAcpModelBoundOverrides(
+                          node.configOptions,
+                          fixedAgent?.configOptions,
+                          model,
+                          fixedAgent?.modelBoundCatalogs,
+                        ),
                       })}
                       onConfigOptionChange={(optionId, value) => updateDynamic({
                         configOptions: updateAcpConfigOptionOverride(node.configOptions, optionId, value),
@@ -1856,13 +1868,14 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
             const dynamicStrategy = node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl;
             const bootstrapAgent = agents.find((agent) => agent.agentType === dynamicStrategy.bootstrapProvider);
             const bootstrapModels = bootstrapAgent?.supportedModels ?? [];
-            if (!acpShowsModelConfigSelect(bootstrapModels, bootstrapAgent?.configOptions, dynamicStrategy.bootstrapModel)) return null;
+            if (!acpShowsModelConfigSelect(bootstrapModels, bootstrapAgent?.configOptions, dynamicStrategy.bootstrapModel, bootstrapAgent?.modelBoundCatalogs)) return null;
             return (
               <Field label={t('workflowEditor.dynamicBootstrapModel')} errors={errorsFor('agentStrategy.bootstrapModel')}>
                 <AcpModelThoughtSelects
                   models={bootstrapModels}
                   modelValue={dynamicStrategy.bootstrapModel}
                   configOptions={bootstrapAgent?.configOptions}
+                  modelBoundCatalogs={bootstrapAgent?.modelBoundCatalogs}
                   configOptionValues={dynamicStrategy.bootstrapConfigOptions}
                   compact
                   triggerClassName={cn('w-full max-w-none rounded-md', errorClass(errorsFor('agentStrategy.bootstrapModel')))}
@@ -1873,6 +1886,7 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                       dynamicStrategy.bootstrapConfigOptions,
                       bootstrapAgent?.configOptions,
                       model,
+                      bootstrapAgent?.modelBoundCatalogs,
                     ),
                   })}
                   onConfigOptionChange={(optionId, value) => updateAgentStrategy({
@@ -1887,13 +1901,14 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
             const dynamicStrategy = node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl;
             const acceptanceAgent = agents.find((agent) => agent.agentType === dynamicStrategy.bootstrapProvider);
             const acceptanceModels = acceptanceAgent?.supportedModels ?? [];
-            if (!acpShowsModelConfigSelect(acceptanceModels, acceptanceAgent?.configOptions, dynamicStrategy.acceptanceModel)) return null;
+            if (!acpShowsModelConfigSelect(acceptanceModels, acceptanceAgent?.configOptions, dynamicStrategy.acceptanceModel, acceptanceAgent?.modelBoundCatalogs)) return null;
             return (
               <Field label={<HelpLabel label={t('workflowEditor.dynamicAcceptanceModel')} help={t('workflowEditor.dynamicAcceptanceModelHelp')} />} errors={errorsFor('agentStrategy.acceptanceModel')}>
                 <AcpModelThoughtSelects
                   models={acceptanceModels}
                   modelValue={dynamicStrategy.acceptanceModel}
                   configOptions={acceptanceAgent?.configOptions}
+                  modelBoundCatalogs={acceptanceAgent?.modelBoundCatalogs}
                   configOptionValues={dynamicStrategy.acceptanceConfigOptions}
                   compact
                   triggerClassName={cn('w-full max-w-none rounded-md', errorClass(errorsFor('agentStrategy.acceptanceModel')))}
@@ -1904,6 +1919,7 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                       dynamicStrategy.acceptanceConfigOptions,
                       acceptanceAgent?.configOptions,
                       model,
+                      acceptanceAgent?.modelBoundCatalogs,
                     ),
                   })}
                   onConfigOptionChange={(optionId, value) => updateAgentStrategy({
@@ -1952,11 +1968,12 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
             return (
               <Field key={agentRef.provider} label={`${t('workflowEditor.model')} — ${agentObj.displayName}`} errors={errorsFor(`agentStrategy.availableAgents.${idx}.model`)}>
                 <div className="flex flex-wrap gap-2">
-                  {acpShowsModelConfigSelect(agentModels, agentObj.configOptions, agentRef.model) ? (
+                  {acpShowsModelConfigSelect(agentModels, agentObj.configOptions, agentRef.model, agentObj.modelBoundCatalogs) ? (
                   <AcpModelThoughtSelects
                     models={agentModels}
                     modelValue={agentRef.model}
                     configOptions={agentObj.configOptions}
+                    modelBoundCatalogs={agentObj.modelBoundCatalogs}
                     configOptionValues={agentRef.configOptions}
                     compact
                     triggerClassName={cn('min-w-[12rem] flex-1 rounded-md', errorClass(errorsFor(`agentStrategy.availableAgents.${idx}.model`)))}
@@ -1965,7 +1982,12 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                       next[idx] = {
                         ...next[idx],
                         model: model || undefined,
-                        configOptions: retainAcpModelBoundOverrides(next[idx].configOptions, agentObj.configOptions, model),
+                        configOptions: retainAcpModelBoundOverrides(
+                          next[idx].configOptions,
+                          agentObj.configOptions,
+                          model,
+                          agentObj.modelBoundCatalogs,
+                        ),
                       };
                       updateAgentStrategy({ ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl), availableAgents: next });
                     }}

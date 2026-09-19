@@ -85,6 +85,10 @@ pub struct AcpSessionMetadata {
     pub modes: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_options: Option<Value>,
+    /// Last observed thought_level / model_config catalogs keyed by model id
+    /// for this session. Used when set_config_option(model) omits configOptions.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_bound_catalogs: BTreeMap<String, Value>,
     /// Time when this session last observed a model/mode/config-option catalog
     /// from the ACP provider. Catalog freshness must not be inferred from the
     /// session's general `updated_at`, which also changes for ordinary turns.

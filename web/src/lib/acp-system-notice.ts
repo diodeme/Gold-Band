@@ -1,4 +1,5 @@
 import type { AcpUiEventVm } from '@/types';
+import { acpCompositeSectionLabel } from '@/lib/acp-composite-config';
 
 export const ACP_SESSION_CONFIG_ROLLED_BACK_CODE = 'acp.session-config-rolled-back';
 export const ACP_ROLLED_BACK_CONFIG_NAME_SEPARATOR = ' · ';
@@ -59,10 +60,18 @@ export function acpRolledBackConfigNames(
     ...items.filter((item) => item.category === 'thought_level'),
     ...items.filter((item) => item.category !== 'thought_level'),
   ];
+  const thoughtLevelCount = items.filter((item) => item.category === 'thought_level').length;
   for (const item of ordered) {
-    const name = item.category === 'thought_level'
-      ? t('acp.thoughtLevel')
-      : (item.name || item.configId);
+    const name = acpCompositeSectionLabel(
+      {
+        id: item.configId,
+        category: item.category,
+        name: item.name,
+      },
+      t('acp.thoughtLevel'),
+      thoughtLevelCount,
+      t,
+    );
     if (!name || seen.has(name)) continue;
     seen.add(name);
     names.push(name);

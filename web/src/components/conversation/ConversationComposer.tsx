@@ -850,7 +850,11 @@ export function ConversationComposer({
       autoConfig: isAuto
         ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession(
           !isDynamicAuto && selectedAgentObj
-            ? { configOptions: normalizeConfigOptionOverrides(selectedAgentObj, selectedConfigOptions, selectedModel).configOptions }
+            ? { configOptions: normalizeConfigOptionOverrides(
+              selectedAgentObj,
+              selectedConfigOptions,
+              selectedModel,
+            ).configOptions }
             : {},
         ))
         : undefined,
@@ -1151,6 +1155,7 @@ export function ConversationComposer({
                     models={directModels}
                     modelValue={selectedDirectModel}
                     configOptions={selectedDirectAgentObj?.configOptions}
+                    modelBoundCatalogs={selectedDirectAgentObj?.modelBoundCatalogs}
                     configOptionValues={selectedDirectConfigOptions}
                     triggerClassName={CONVERSATION_HOME_COMPOSER_LAYOUT.configTriggerClassName}
                     onModelChange={(value) => {
@@ -1159,6 +1164,7 @@ export function ConversationComposer({
                         selectedDirectConfigOptions,
                         selectedDirectAgentObj?.configOptions,
                         modelId,
+                        selectedDirectAgentObj?.modelBoundCatalogs,
                       );
                       setSelectedDirectModel(modelId);
                       setSelectedDirectConfigOptions(next);
@@ -1355,6 +1361,7 @@ export function ConversationComposer({
                     models={models}
                     modelValue={selectedModel}
                     configOptions={selectedAgentObj?.configOptions}
+                    modelBoundCatalogs={selectedAgentObj?.modelBoundCatalogs}
                     configOptionValues={selectedConfigOptions}
                     align="start"
                     triggerClassName={CONVERSATION_HOME_COMPOSER_LAYOUT.modeControlHeightClassName}
@@ -1364,6 +1371,7 @@ export function ConversationComposer({
                         selectedConfigOptions,
                         selectedAgentObj?.configOptions,
                         modelId,
+                        selectedAgentObj?.modelBoundCatalogs,
                       );
                       setSelectedModel(modelId);
                       setSelectedConfigOptions(next);

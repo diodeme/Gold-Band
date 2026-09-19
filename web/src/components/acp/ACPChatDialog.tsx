@@ -134,10 +134,13 @@ import {
   normalizeAcpResourceCacheSessionCount,
 } from "@/lib/acp-chat-resource-cache";
 import {
+  acpAuthoringModelBoundCatalogs,
   acpProviderConfigCatalog,
   createAcpSessionConfigViewModel,
   findAcpConfigOption,
   mergeLiveAcpSessionConfig,
+  rememberAcpSessionAppliedOverrides,
+  switchAcpSessionModelBoundOverrides,
   type AcpSessionConfigViewModel,
 } from "@/lib/acp-session-config";
 import {
@@ -2435,9 +2438,17 @@ export function ACPChatDialog(
     () => acpProviderConfigCatalog(agentRegistry, effective?.provider),
     [agentRegistry, effective?.provider],
   );
+  const authoringModelBoundCatalogs = useMemo(
+    () => acpAuthoringModelBoundCatalogs(agentRegistry, effective?.provider),
+    [agentRegistry, effective?.provider],
+  );
   const sessionConfigViewModel = useMemo(
-    () => createAcpSessionConfigViewModel(effective?.config, providerCatalog),
-    [effective?.config, providerCatalog],
+    () => createAcpSessionConfigViewModel(
+      effective?.config,
+      providerCatalog,
+      authoringModelBoundCatalogs,
+    ),
+    [authoringModelBoundCatalogs, effective?.config, providerCatalog],
   );
   const effectiveEvents = effective?.events ?? [];
   const effectiveSessionTerminal = isSessionTerminalStatus(effective?.status);
@@ -3034,9 +3045,16 @@ export function ACPChatDialog(
       "model",
       modelId,
     ) : null;
+    const switched = switchAcpSessionModelBoundOverrides(
+      config,
+      modelId,
+      authoringModelBoundCatalogs,
+    );
     const mutation = patchSessionConfig({
       modelOverrideId: modelId,
       ...(modelId ? { currentModelId: modelId, currentModelName: selected?.name ?? modelId } : {}),
+      configOptionOverrides: switched.configOptionOverrides,
+      modelBoundOverrides: switched.modelBoundOverrides,
     });
     setAcpSessionModel(
       projectId,
@@ -3064,6 +3082,7 @@ export function ACPChatDialog(
   }, [
     applySessionUpdate,
     attemptId,
+    authoringModelBoundCatalogs,
     nodeId,
     outerAttemptId,
     outerNodeId,
@@ -3169,7 +3188,10 @@ export function ACPChatDialog(
     const next = { ...current };
     if (optionValue) next[optionId] = optionValue;
     else delete next[optionId];
-    const mutation = patchSessionConfig({ configOptionOverrides: next });
+    const mutation = patchSessionConfig({
+      configOptionOverrides: next,
+      modelBoundOverrides: rememberAcpSessionAppliedOverrides(latestSessionRef.current?.config, next),
+    });
     setAcpSessionConfigOption(
       projectId,
       taskId,
@@ -4090,6 +4112,7 @@ export function ACPChatDialog(
                 permissionModeOverrideId: cfg.permissionModeOverrideId,
                 autoAccept: cfg.autoAccept,
                 configOptionOverrides: cfg.configOptionOverrides,
+                modelBoundOverrides: cfg.modelBoundOverrides,
                 currentModelId: cfg.currentModelId,
                 currentModelName: cfg.currentModelName,
                 currentModeId: cfg.currentModeId,

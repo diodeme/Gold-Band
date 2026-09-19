@@ -4079,6 +4079,7 @@ mod tests {
                     permission_mode_id: Some("ask".to_string()),
                     auto_accept: false,
                     config_options: Default::default(),
+                    model_bound_overrides: Default::default(),
                 }],
             },
         };

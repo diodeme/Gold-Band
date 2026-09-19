@@ -3540,6 +3540,7 @@ mod tests {
                 permission_mode: Some(permission.to_string()),
                 auto_accept: false,
                 config_options: Default::default(),
+                model_bound_overrides: Default::default(),
             };
             state.conversation_run_modes.insert(
                 workspace.to_string(),
@@ -3914,6 +3915,8 @@ pub struct ConversationDirectConfig {
     pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3925,15 +3928,21 @@ pub struct ConversationAutoConfig {
     pub bootstrap_model_id: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub bootstrap_config_options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bootstrap_model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
     pub acceptance_model_id: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub acceptance_config_options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub acceptance_model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
     pub available_agents: Option<Vec<ConversationDynamicAgentRef>>,
     pub routing_prompt: Option<String>,
     pub allowed_workflows: Option<Vec<ConversationAllowedWorkflowRef>>,
@@ -3954,6 +3963,8 @@ pub struct ConversationDynamicAgentRef {
     pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

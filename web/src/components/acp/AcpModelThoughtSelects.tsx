@@ -53,6 +53,9 @@ export {
   findAcpThoughtLevel,
   remapAcpThoughtLevelOverride,
   retainAcpModelBoundOverrides,
+  rememberAcpModelBoundOverrides,
+  switchAcpModelBoundOverrides,
+  optionalAcpModelBoundOverrides,
 } from '@/lib/acp-composite-config';
 
 export function updateAcpConfigOptionOverride(
@@ -216,17 +219,17 @@ export function AcpModelThoughtSelects({
       onOpenChange={handleMenuOpenChange}
     >
       <Tooltip open={tooltipOpen} onOpenChange={handleTooltipOpenChange}>
-        <DropdownMenuTrigger
-          disabled={disabled}
-          className={cn(triggerClass, triggerClassName)}
-          onPointerEnter={showTooltipIfOverflowing}
-          onPointerLeave={hideTooltip}
-          onPointerDown={hideTooltip}
-          onFocus={showTooltipIfOverflowing}
-          onBlur={hideTooltip}
-        >
-          <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{t('acp.currentModel')}</span>
-          <TooltipTrigger asChild>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger
+            disabled={disabled}
+            className={cn(triggerClass, triggerClassName)}
+            onPointerEnter={showTooltipIfOverflowing}
+            onPointerLeave={hideTooltip}
+            onPointerDown={hideTooltip}
+            onFocus={showTooltipIfOverflowing}
+            onBlur={hideTooltip}
+          >
+            <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{t('acp.currentModel')}</span>
             <span
               ref={valueRef}
               className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}
@@ -234,9 +237,9 @@ export function AcpModelThoughtSelects({
             >
               {compositeLabel}
             </span>
-          </TooltipTrigger>
-          <ChevronDown className={ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS} />
-        </DropdownMenuTrigger>
+            <ChevronDown className={ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS} />
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
         <TooltipContent
           side="top"
           sideOffset={6}

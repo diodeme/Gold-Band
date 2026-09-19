@@ -47,7 +47,9 @@ import { AppCard } from '@/components/AppCard';
 import {
   AcpModelThoughtSelects,
   acpShowsModelConfigSelect,
-  retainAcpModelBoundOverrides,
+  optionalAcpModelBoundOverrides,
+  rememberAcpModelBoundOverrides,
+  switchAcpModelBoundOverrides,
   updateAcpConfigOptionOverride,
 } from '@/components/acp/AcpModelThoughtSelects';
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
@@ -296,6 +298,23 @@ export function optionalWorkerConfigOptions(
   options: Record<string, string>,
 ): Record<string, string> | undefined {
   return Object.keys(options).length > 0 ? options : undefined;
+}
+
+function switchWorkerModelBoundConfig(
+  remembered: Record<string, Record<string, string>> | null | undefined,
+  previousModelId: string | null | undefined,
+  nextModelId: string | null | undefined,
+  currentOverrides: Record<string, string> | null | undefined,
+  agent: ManagedAgentVm | null | undefined,
+) {
+  return switchAcpModelBoundOverrides({
+    remembered,
+    previousModelId,
+    nextModelId,
+    currentOverrides,
+    configOptions: agent?.configOptions,
+    modelBoundCatalogs: agent?.modelBoundCatalogs,
+  });
 }
 
 function AgentSelectItemContent({ agent, unavailableLabel }: { agent: ManagedAgentVm; unavailableLabel: string }) {
@@ -1476,7 +1495,7 @@ function WorkerNodeInspector({ node, binding, modelBindings, agents, profiles, w
         </Button>
       </div>
       <Field label={t('workflowEditor.agent')} required errors={errorsFor('provider')}>
-        <Select value={binding?.agentId ?? ''} onValueChange={(agentId) => updateBinding({ agentId, modelId: undefined, permissionModeId: undefined, autoAccept: undefined, configOptions: undefined })}>
+        <Select value={binding?.agentId ?? ''} onValueChange={(agentId) => updateBinding({ agentId, modelId: undefined, permissionModeId: undefined, autoAccept: undefined, configOptions: undefined, modelBoundOverrides: undefined })}>
           <SelectTrigger className={errorClass(errorsFor('provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
           <SelectContent>{agents.map((agent) => (
             <SelectItem value={agent.agentType} key={agent.agentType} disabled={!isWorkflowAgentDoctorReady(agent)} textValue={agent.displayName}>
@@ -1496,22 +1515,29 @@ function WorkerNodeInspector({ node, binding, modelBindings, agents, profiles, w
             configOptionValues={binding?.configOptions}
             compact
             triggerClassName={cn('w-full max-w-none rounded-md', errorClass(errorsFor('model')))}
-            onModelChange={(modelId) => updateBinding({
-              modelId: modelId ?? undefined,
-              configOptions: optionalWorkerConfigOptions(
-                retainAcpModelBoundOverrides(
-                  binding?.configOptions,
-                  selectedAgent?.configOptions,
-                  modelId,
-                  selectedAgent?.modelBoundCatalogs,
+            onModelChange={(modelId) => {
+              const switched = switchWorkerModelBoundConfig(
+                binding?.modelBoundOverrides,
+                binding?.modelId,
+                modelId,
+                binding?.configOptions,
+                selectedAgent,
+              );
+              updateBinding({
+                modelId: modelId ?? undefined,
+                configOptions: optionalWorkerConfigOptions(switched.overrides),
+                modelBoundOverrides: optionalAcpModelBoundOverrides(switched.remembered),
+              });
+            }}
+            onConfigOptionChange={(optionId, value) => {
+              const next = updateAcpConfigOptionOverride(binding?.configOptions, optionId, value);
+              updateBinding({
+                configOptions: optionalWorkerConfigOptions(next),
+                modelBoundOverrides: optionalAcpModelBoundOverrides(
+                  rememberAcpModelBoundOverrides(binding?.modelBoundOverrides, binding?.modelId, next),
                 ),
-              ),
-            })}
-            onConfigOptionChange={(optionId, value) => updateBinding({
-              configOptions: optionalWorkerConfigOptions(
-                updateAcpConfigOptionOverride(binding?.configOptions, optionId, value),
-              ),
-            })}
+              });
+            }}
           />
         </Field>
       ) : null}
@@ -1808,18 +1834,31 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                       configOptionValues={node.configOptions}
                       compact
                       triggerClassName={cn('min-w-[12rem] flex-1 rounded-md', errorClass(errorsFor('agentStrategy.model')))}
-                      onModelChange={(model) => updateDynamic({
-                        agentStrategy: { ...fixedStrategy, model: model || undefined },
-                        configOptions: retainAcpModelBoundOverrides(
-                          node.configOptions,
-                          fixedAgent?.configOptions,
+                      onModelChange={(model) => {
+                        const switched = switchWorkerModelBoundConfig(
+                          node.modelBoundOverrides,
+                          fixedStrategy.model,
                           model,
-                          fixedAgent?.modelBoundCatalogs,
-                        ),
-                      })}
-                      onConfigOptionChange={(optionId, value) => updateDynamic({
-                        configOptions: updateAcpConfigOptionOverride(node.configOptions, optionId, value),
-                      })}
+                          node.configOptions,
+                          fixedAgent,
+                        );
+                        updateDynamic({
+                          agentStrategy: { ...fixedStrategy, model: model || undefined },
+                          configOptions: switched.overrides,
+                          modelBoundOverrides: switched.remembered,
+                        });
+                      }}
+                      onConfigOptionChange={(optionId, value) => {
+                        const next = updateAcpConfigOptionOverride(node.configOptions, optionId, value);
+                        updateDynamic({
+                          configOptions: next,
+                          modelBoundOverrides: rememberAcpModelBoundOverrides(
+                            node.modelBoundOverrides,
+                            fixedStrategy.model,
+                            next,
+                          ),
+                        });
+                      }}
                     />
                     <AcpSingleConfigMenu
                         label={t('acp.permissionMode')}
@@ -1879,20 +1918,33 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                   configOptionValues={dynamicStrategy.bootstrapConfigOptions}
                   compact
                   triggerClassName={cn('w-full max-w-none rounded-md', errorClass(errorsFor('agentStrategy.bootstrapModel')))}
-                  onModelChange={(model) => updateAgentStrategy({
-                    ...dynamicStrategy,
-                    bootstrapModel: model || undefined,
-                    bootstrapConfigOptions: retainAcpModelBoundOverrides(
-                      dynamicStrategy.bootstrapConfigOptions,
-                      bootstrapAgent?.configOptions,
+                  onModelChange={(model) => {
+                    const switched = switchWorkerModelBoundConfig(
+                      dynamicStrategy.bootstrapModelBoundOverrides,
+                      dynamicStrategy.bootstrapModel,
                       model,
-                      bootstrapAgent?.modelBoundCatalogs,
-                    ),
-                  })}
-                  onConfigOptionChange={(optionId, value) => updateAgentStrategy({
-                    ...dynamicStrategy,
-                    bootstrapConfigOptions: updateAcpConfigOptionOverride(dynamicStrategy.bootstrapConfigOptions, optionId, value),
-                  })}
+                      dynamicStrategy.bootstrapConfigOptions,
+                      bootstrapAgent,
+                    );
+                    updateAgentStrategy({
+                      ...dynamicStrategy,
+                      bootstrapModel: model || undefined,
+                      bootstrapConfigOptions: switched.overrides,
+                      bootstrapModelBoundOverrides: switched.remembered,
+                    });
+                  }}
+                  onConfigOptionChange={(optionId, value) => {
+                    const next = updateAcpConfigOptionOverride(dynamicStrategy.bootstrapConfigOptions, optionId, value);
+                    updateAgentStrategy({
+                      ...dynamicStrategy,
+                      bootstrapConfigOptions: next,
+                      bootstrapModelBoundOverrides: rememberAcpModelBoundOverrides(
+                        dynamicStrategy.bootstrapModelBoundOverrides,
+                        dynamicStrategy.bootstrapModel,
+                        next,
+                      ),
+                    });
+                  }}
                 />
               </Field>
             );
@@ -1912,20 +1964,33 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                   configOptionValues={dynamicStrategy.acceptanceConfigOptions}
                   compact
                   triggerClassName={cn('w-full max-w-none rounded-md', errorClass(errorsFor('agentStrategy.acceptanceModel')))}
-                  onModelChange={(model) => updateAgentStrategy({
-                    ...dynamicStrategy,
-                    acceptanceModel: model || undefined,
-                    acceptanceConfigOptions: retainAcpModelBoundOverrides(
-                      dynamicStrategy.acceptanceConfigOptions,
-                      acceptanceAgent?.configOptions,
+                  onModelChange={(model) => {
+                    const switched = switchWorkerModelBoundConfig(
+                      dynamicStrategy.acceptanceModelBoundOverrides,
+                      dynamicStrategy.acceptanceModel,
                       model,
-                      acceptanceAgent?.modelBoundCatalogs,
-                    ),
-                  })}
-                  onConfigOptionChange={(optionId, value) => updateAgentStrategy({
-                    ...dynamicStrategy,
-                    acceptanceConfigOptions: updateAcpConfigOptionOverride(dynamicStrategy.acceptanceConfigOptions, optionId, value),
-                  })}
+                      dynamicStrategy.acceptanceConfigOptions,
+                      acceptanceAgent,
+                    );
+                    updateAgentStrategy({
+                      ...dynamicStrategy,
+                      acceptanceModel: model || undefined,
+                      acceptanceConfigOptions: switched.overrides,
+                      acceptanceModelBoundOverrides: switched.remembered,
+                    });
+                  }}
+                  onConfigOptionChange={(optionId, value) => {
+                    const next = updateAcpConfigOptionOverride(dynamicStrategy.acceptanceConfigOptions, optionId, value);
+                    updateAgentStrategy({
+                      ...dynamicStrategy,
+                      acceptanceConfigOptions: next,
+                      acceptanceModelBoundOverrides: rememberAcpModelBoundOverrides(
+                        dynamicStrategy.acceptanceModelBoundOverrides,
+                        dynamicStrategy.acceptanceModel,
+                        next,
+                      ),
+                    });
+                  }}
                 />
               </Field>
             );
@@ -1979,23 +2044,32 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                     triggerClassName={cn('min-w-[12rem] flex-1 rounded-md', errorClass(errorsFor(`agentStrategy.availableAgents.${idx}.model`)))}
                     onModelChange={(model) => {
                       const next = [...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl).availableAgents];
+                      const switched = switchWorkerModelBoundConfig(
+                        next[idx].modelBoundOverrides,
+                        next[idx].model,
+                        model,
+                        next[idx].configOptions,
+                        agentObj,
+                      );
                       next[idx] = {
                         ...next[idx],
                         model: model || undefined,
-                        configOptions: retainAcpModelBoundOverrides(
-                          next[idx].configOptions,
-                          agentObj.configOptions,
-                          model,
-                          agentObj.modelBoundCatalogs,
-                        ),
+                        configOptions: switched.overrides,
+                        modelBoundOverrides: switched.remembered,
                       };
                       updateAgentStrategy({ ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl), availableAgents: next });
                     }}
                     onConfigOptionChange={(optionId, value) => {
                       const next = [...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl).availableAgents];
+                      const configOptions = updateAcpConfigOptionOverride(next[idx].configOptions, optionId, value);
                       next[idx] = {
                         ...next[idx],
-                        configOptions: updateAcpConfigOptionOverride(next[idx].configOptions, optionId, value),
+                        configOptions,
+                        modelBoundOverrides: rememberAcpModelBoundOverrides(
+                          next[idx].modelBoundOverrides,
+                          next[idx].model,
+                          configOptions,
+                        ),
                       };
                       updateAgentStrategy({ ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl), availableAgents: next });
                     }}

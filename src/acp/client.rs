@@ -2355,6 +2355,7 @@ struct AcpRuntime<'a> {
     permission_mode_override: Option<String>,
     auto_accept: bool,
     config_option_overrides: BTreeMap<String, String>,
+    model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
     pending_config_rollbacks: Vec<RolledBackSessionConfig>,
     available_commands: Option<Vec<AcpCommandItem>>,
     system_prompt_append: Option<String>,
@@ -3997,6 +3998,10 @@ impl<'a> AcpRuntime<'a> {
                 .as_ref()
                 .is_some_and(|metadata| metadata.auto_accept),
             config_option_overrides: BTreeMap::new(),
+            model_bound_overrides: prior_metadata
+                .as_ref()
+                .map(|metadata| metadata.model_bound_overrides.clone())
+                .unwrap_or_default(),
             pending_config_rollbacks: Vec::new(),
             available_commands: None,
             system_prompt_append: None,
@@ -4655,6 +4660,8 @@ impl<'a> AcpRuntime<'a> {
                 .unwrap_or(Value::Null);
             metadata["configOptionOverrides"] =
                 serde_json::to_value(&self.config_option_overrides).unwrap_or_else(|_| json!({}));
+            metadata["modelBoundOverrides"] =
+                serde_json::to_value(&self.model_bound_overrides).unwrap_or_else(|_| json!({}));
             Ok(())
         })?;
         Ok(())
@@ -4694,6 +4701,10 @@ impl<'a> AcpRuntime<'a> {
             new_session,
         );
         self.config_option_overrides.clone_from(&pending);
+        if let Some(model_id) = live_catalog_model_id(self.config_options.as_ref()) {
+            self.model_bound_overrides
+                .insert(model_id, pending.clone());
+        }
         self.pending_config_rollbacks.extend(rollbacks);
         for (config_id, value) in &pending {
             self.apply_generic_config_option(config_id, value, catalog_at_start.as_ref())?;
@@ -7090,6 +7101,7 @@ impl<'a> AcpRuntime<'a> {
             permission_mode_override: self.permission_mode_override.clone(),
             auto_accept: self.auto_accept,
             config_option_overrides: self.config_option_overrides.clone(),
+            model_bound_overrides: self.model_bound_overrides.clone(),
             system_prompt_append: self.system_prompt_append.clone(),
             prompt_retry: self.prompt_retry.clone(),
             runtime_control,

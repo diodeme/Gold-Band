@@ -1139,6 +1139,7 @@ mod tests {
             permission_mode: None,
             auto_accept: false,
             config_options: Default::default(),
+            model_bound_overrides: Default::default(),
         });
         state
             .conversation_run_modes

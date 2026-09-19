@@ -6,6 +6,8 @@ pub const ACP_SESSION_CONFIG_ROLLED_BACK_CODE: &str = "acp.session-config-rolled
 pub const ACP_THOUGHT_LEVEL_CATEGORY: &str = "thought_level";
 pub const ACP_MODEL_CONFIG_CATEGORY: &str = "model_config";
 pub const ACP_MODEL_BOUND_CATALOGS_KEY: &str = "modelBoundCatalogs";
+pub const ACP_MODEL_BOUND_OVERRIDES_KEY: &str = "modelBoundOverrides";
+pub const ACP_CONFIG_OPTION_OVERRIDES_KEY: &str = "configOptionOverrides";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RolledBackSessionConfig {
@@ -20,11 +22,13 @@ pub fn is_model_bound_config_category(category: &str) -> bool {
 }
 
 /// After `session/set_config_option(model)`, dependents in the same apply
-/// belong to the new catalog. Thought level is a category with a wire id that
-/// may change across models; keep the same value by remapping onto the new
-/// `thought_level` option. `model_config` knobs stay id-scoped (Fast is not
-/// Context). Drop entries the new model does not list. Other categories stay
-/// so the existing unavailable error can still block the prompt.
+/// belong to the new catalog. `thought_level` identity is the value, not the
+/// option id: remap only when the source is `thought_level` (or an unknown
+/// leftover thought wire name) and a target `thought_level` still lists that
+/// value. Other categories, including `model_config`, stay option-id scoped:
+/// same id keeps a listed value; missing id is dropped and never remapped by
+/// value onto a different option. Other non-bound categories stay so the
+/// existing unavailable error can still block the prompt.
 ///
 /// Authoring overrides may still use Doctor/previous-model option ids after
 /// `session/new` already returned the live catalog. Those missing ids are
@@ -288,6 +292,204 @@ pub fn observe_session_model_bound_catalog(
     true
 }
 
+/// Save the leaving model's applied overrides, restore the target model's last
+/// applied set, then retain against that model's catalog. Mini rollback must
+/// not overwrite Grok's slot.
+pub fn switch_model_bound_overrides(
+    remembered: &BTreeMap<String, BTreeMap<String, String>>,
+    previous_model: Option<&str>,
+    next_model: Option<&str>,
+    current_overrides: &BTreeMap<String, String>,
+    live_config_options: Option<&Value>,
+    model_bound_catalogs: &BTreeMap<String, Value>,
+) -> (
+    BTreeMap<String, String>,
+    BTreeMap<String, BTreeMap<String, String>>,
+) {
+    let mut remembered = remembered.clone();
+    if let Some(previous) = trimmed_model_id(previous_model) {
+        remembered.insert(previous, current_overrides.clone());
+    }
+    let mut pending = trimmed_model_id(next_model)
+        .and_then(|model_id| remembered.get(&model_id).cloned())
+        .unwrap_or_else(|| current_overrides.clone());
+    let mut catalog = live_config_options.cloned();
+    if let Some(next) = trimmed_model_id(next_model) {
+        restore_session_model_bound_options(model_bound_catalogs, &mut catalog, &next);
+    }
+    let _ = strip_unsupported_model_bound_overrides(
+        live_config_options,
+        catalog.as_ref(),
+        &mut pending,
+    );
+    if let Some(next) = trimmed_model_id(next_model) {
+        remembered.insert(next, pending.clone());
+    }
+    (pending, remembered)
+}
+
+/// Snapshot-side model switch: remember the leaving model's applied map, restore
+/// the target model's map, and retain against this session's catalogs. Does not
+/// write Direct/home authoring memory.
+pub fn apply_session_snapshot_model_switch(session: &mut Value, next_model: Option<&str>) {
+    apply_session_snapshot_model_switch_with_authoring(session, next_model, None);
+}
+
+/// Same as [`apply_session_snapshot_model_switch`], with the shared Agent
+/// capability cache. Authoring catalogs are not written into the session map.
+pub fn apply_session_snapshot_model_switch_with_authoring(
+    session: &mut Value,
+    next_model: Option<&str>,
+    authoring_catalogs: Option<&BTreeMap<String, Value>>,
+) {
+    let previous = session_selected_model_id(session);
+    let current_overrides = session_string_map(session, ACP_CONFIG_OPTION_OVERRIDES_KEY);
+    let remembered = session_remembered_override_map(session);
+    let catalogs = merge_model_bound_catalogs(
+        authoring_catalogs,
+        &session_model_bound_catalogs(session),
+    );
+    let live = session.get("configOptions").cloned();
+    let (applied, remembered) = switch_model_bound_overrides(
+        &remembered,
+        previous.as_deref(),
+        next_model,
+        &current_overrides,
+        live.as_ref(),
+        &catalogs,
+    );
+    write_session_string_map(session, ACP_CONFIG_OPTION_OVERRIDES_KEY, &applied);
+    write_session_remembered_override_map(session, &remembered);
+    write_session_model_override(session, next_model);
+}
+
+/// Thought / model_config edits belong to the currently selected model.
+pub fn remember_session_snapshot_applied_overrides(session: &mut Value) {
+    let Some(model_id) = session_selected_model_id(session) else {
+        return;
+    };
+    let applied = session_string_map(session, ACP_CONFIG_OPTION_OVERRIDES_KEY);
+    let mut remembered = session_remembered_override_map(session);
+    remembered.insert(model_id, applied);
+    write_session_remembered_override_map(session, &remembered);
+}
+
+fn trimmed_model_id(model_id: Option<&str>) -> Option<String> {
+    model_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn session_selected_model_id(session: &Value) -> Option<String> {
+    session
+        .get("modelOverride")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            session
+                .get("models")
+                .and_then(|models| models.get("currentModelId"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| live_catalog_model_id(session.get("configOptions")))
+}
+
+fn session_string_map(session: &Value, key: &str) -> BTreeMap<String, String> {
+    session
+        .get(key)
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
+}
+
+fn session_remembered_override_map(session: &Value) -> BTreeMap<String, BTreeMap<String, String>> {
+    session
+        .get(ACP_MODEL_BOUND_OVERRIDES_KEY)
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
+}
+
+fn session_model_bound_catalogs(session: &Value) -> BTreeMap<String, Value> {
+    session
+        .get(ACP_MODEL_BOUND_CATALOGS_KEY)
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
+}
+
+pub fn merge_model_bound_catalogs(
+    authoring: Option<&BTreeMap<String, Value>>,
+    session: &BTreeMap<String, Value>,
+) -> BTreeMap<String, Value> {
+    let mut merged = authoring.cloned().unwrap_or_default();
+    merged.extend(session.iter().map(|(key, value)| (key.clone(), value.clone())));
+    merged
+}
+
+pub fn model_bound_catalogs_from_capabilities_value(
+    capabilities: Option<&Value>,
+) -> BTreeMap<String, Value> {
+    capabilities
+        .and_then(|value| value.get(ACP_MODEL_BOUND_CATALOGS_KEY))
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(model_id, catalog)| {
+            let model_id = model_id.trim();
+            (!model_id.is_empty()).then(|| (model_id.to_string(), catalog.clone()))
+        })
+        .collect()
+}
+
+fn write_session_string_map(session: &mut Value, key: &str, map: &BTreeMap<String, String>) {
+    let Some(object) = session.as_object_mut() else {
+        return;
+    };
+    if map.is_empty() {
+        object.remove(key);
+        return;
+    }
+    object.insert(
+        key.to_string(),
+        serde_json::to_value(map).unwrap_or(Value::Object(Default::default())),
+    );
+}
+
+fn write_session_remembered_override_map(
+    session: &mut Value,
+    remembered: &BTreeMap<String, BTreeMap<String, String>>,
+) {
+    let Some(object) = session.as_object_mut() else {
+        return;
+    };
+    if remembered.is_empty() {
+        object.remove(ACP_MODEL_BOUND_OVERRIDES_KEY);
+        return;
+    }
+    object.insert(
+        ACP_MODEL_BOUND_OVERRIDES_KEY.to_string(),
+        serde_json::to_value(remembered).unwrap_or(Value::Object(Default::default())),
+    );
+}
+
+fn write_session_model_override(session: &mut Value, next_model: Option<&str>) {
+    let Some(object) = session.as_object_mut() else {
+        return;
+    };
+    if let Some(model) = trimmed_model_id(next_model) {
+        object.insert("modelOverride".into(), Value::String(model));
+    } else {
+        object.remove("modelOverride");
+    }
+}
+
 /// After `set_config_option(model)` omits the table, restore this model's last
 /// observation. No cache means first contact: keep the previous model's bound
 /// rows so apply can remap, but do not record them as the requested model.
@@ -414,14 +616,19 @@ fn strip_model_bound_overrides(
         let after = config_option_by_id(Some(catalog_after), &config_id);
         let before = config_option_by_id(catalog_before, &config_id);
         if after.is_none() {
-            if let Some(thought_id) =
-                remap_thought_level_override(Some(catalog_after), overrides, &config_id, &value)
-            {
-                if thought_id != config_id {
-                    overrides.remove(&config_id);
-                    overrides.insert(thought_id, value);
+            let source_is_thought_level = option_category(before)
+                .map(|category| category == ACP_THOUGHT_LEVEL_CATEGORY)
+                .unwrap_or(true);
+            if source_is_thought_level {
+                if let Some(thought_id) =
+                    remap_thought_level_override(Some(catalog_after), overrides, &config_id, &value)
+                {
+                    if thought_id != config_id {
+                        overrides.remove(&config_id);
+                        overrides.insert(thought_id, value);
+                    }
+                    continue;
                 }
-                continue;
             }
             if option_category(before).is_some_and(|item| !is_model_bound_config_category(item)) {
                 continue;
@@ -493,9 +700,19 @@ fn remap_thought_level_override(
     _config_id: &str,
     value: &str,
 ) -> Option<String> {
-    let thought = thought_option(catalog_after)?;
-    let thought_id = thought.get("id").and_then(Value::as_str)?;
-    option_has_value(Some(thought), value).then(|| thought_id.to_string())
+    thought_option_with_value(catalog_after, value)?
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn thought_option_with_value<'a>(catalog: Option<&'a Value>, value: &str) -> Option<&'a Value> {
+    catalog.and_then(Value::as_array).and_then(|options| {
+        options.iter().find(|option| {
+            option.get("category").and_then(Value::as_str) == Some(ACP_THOUGHT_LEVEL_CATEGORY)
+                && option_has_value(Some(option), value)
+        })
+    })
 }
 
 fn thought_option(catalog: Option<&Value>) -> Option<&Value> {
@@ -719,6 +936,104 @@ mod tests {
                 ("fast".into(), "false".into()),
             ])
         );
+    }
+
+    #[test]
+    fn does_not_remap_fast_off_onto_thinking_off() {
+        let before = catalog("grok-4.6", &["high", "extra-high"], true);
+        let after = json!([
+            {
+                "id": "model",
+                "category": "model",
+                "currentValue": "claude-fable",
+            },
+            {
+                "id": "thinking",
+                "category": "thought_level",
+                "options": [{ "value": "false" }, { "value": "true" }],
+            },
+            {
+                "id": "effort",
+                "category": "thought_level",
+                "options": [{ "value": "high" }, { "value": "extra-high" }],
+            },
+            {
+                "id": "context",
+                "category": "model_config",
+                "options": [{ "value": "1m" }],
+            },
+        ]);
+        let mut overrides = BTreeMap::from([
+            ("effort".into(), "high".into()),
+            ("fast".into(), "false".into()),
+        ]);
+
+        let rolled_back =
+            strip_unsupported_model_bound_overrides(Some(&before), Some(&after), &mut overrides);
+
+        assert_eq!(
+            rolled_back,
+            vec![RolledBackSessionConfig {
+                category: ACP_MODEL_CONFIG_CATEGORY.into(),
+                config_id: "fast".into(),
+                value: "false".into(),
+                name: None,
+            }]
+        );
+        assert_eq!(
+            overrides,
+            BTreeMap::from([("effort".into(), "high".into())])
+        );
+        assert!(!overrides.contains_key("thinking"));
+    }
+
+    #[test]
+    fn remaps_reasoning_high_onto_fable_effort_not_the_first_thought_option() {
+        let before = luna_catalog(&["medium", "high"], true);
+        let after = json!([
+            {
+                "id": "model",
+                "category": "model",
+                "currentValue": "claude-fable",
+            },
+            {
+                "id": "thinking",
+                "category": "thought_level",
+                "options": [{ "value": "false" }, { "value": "true" }],
+            },
+            {
+                "id": "effort",
+                "category": "thought_level",
+                "options": [{ "value": "high" }, { "value": "extra-high" }],
+            },
+            {
+                "id": "context",
+                "category": "model_config",
+                "options": [{ "value": "1m" }],
+            },
+        ]);
+        let mut overrides = BTreeMap::from([
+            ("reasoning".into(), "high".into()),
+            ("fast".into(), "false".into()),
+        ]);
+
+        let rolled_back =
+            strip_unsupported_model_bound_overrides(Some(&before), Some(&after), &mut overrides);
+
+        assert_eq!(
+            rolled_back,
+            vec![RolledBackSessionConfig {
+                category: ACP_MODEL_CONFIG_CATEGORY.into(),
+                config_id: "fast".into(),
+                value: "false".into(),
+                name: None,
+            }]
+        );
+        assert_eq!(
+            overrides,
+            BTreeMap::from([("effort".into(), "high".into())])
+        );
+        assert!(!overrides.contains_key("thinking"));
     }
 
     #[test]
@@ -1315,6 +1630,124 @@ mod tests {
         assert_eq!(
             catalog_ids(catalogs["sol"].as_array().unwrap()),
             vec!["effort", "fast"]
+        );
+    }
+
+    #[test]
+    fn restores_grok_extra_high_after_switching_to_mini_whose_catalog_cannot_keep_it() {
+        let grok = catalog("grok-4.6", &["high", "extra-high"], true);
+        let mini = catalog("gpt-5-mini", &["low", "high"], false);
+        let mut catalogs = BTreeMap::new();
+        observe_session_model_bound_catalog(&mut catalogs, Some(&grok));
+        observe_session_model_bound_catalog(&mut catalogs, Some(&mini));
+        let current = BTreeMap::from([
+            ("effort".into(), "extra-high".into()),
+            ("fast".into(), "true".into()),
+        ]);
+
+        let (mini_applied, remembered) = switch_model_bound_overrides(
+            &BTreeMap::new(),
+            Some("grok-4.6"),
+            Some("gpt-5-mini"),
+            &current,
+            Some(&mini),
+            &catalogs,
+        );
+        assert!(mini_applied.is_empty());
+        assert_eq!(
+            remembered.get("grok-4.6"),
+            Some(&current)
+        );
+        assert_eq!(remembered.get("gpt-5-mini"), Some(&BTreeMap::new()));
+
+        let (grok_applied, _) = switch_model_bound_overrides(
+            &remembered,
+            Some("gpt-5-mini"),
+            Some("grok-4.6"),
+            &mini_applied,
+            Some(&grok),
+            &catalogs,
+        );
+        assert_eq!(grok_applied, current);
+    }
+
+    #[test]
+    fn session_snapshot_model_switch_remembers_overrides_without_writing_mini_rollback_over_grok() {
+        let grok = catalog("grok-4.6", &["high", "extra-high"], true);
+        let mini = catalog("gpt-5-mini", &["low", "high"], false);
+        let mut catalogs = BTreeMap::new();
+        observe_session_model_bound_catalog(&mut catalogs, Some(&grok));
+        observe_session_model_bound_catalog(&mut catalogs, Some(&mini));
+        let mut session = json!({
+            "modelOverride": "grok-4.6",
+            "configOptions": grok,
+            "modelBoundCatalogs": catalogs,
+            "configOptionOverrides": {
+                "effort": "extra-high",
+                "fast": "true",
+            },
+        });
+
+        apply_session_snapshot_model_switch(&mut session, Some("gpt-5-mini"));
+        assert_eq!(
+            session["modelBoundOverrides"]["grok-4.6"],
+            json!({ "effort": "extra-high", "fast": "true" })
+        );
+        assert_eq!(session["modelBoundOverrides"]["gpt-5-mini"], json!({}));
+        assert!(
+            session
+                .get("configOptionOverrides")
+                .and_then(Value::as_object)
+                .map(|value| value.is_empty())
+                .unwrap_or(true)
+        );
+
+        apply_session_snapshot_model_switch(&mut session, Some("grok-4.6"));
+        assert_eq!(
+            session["configOptionOverrides"],
+            json!({ "effort": "extra-high", "fast": "true" })
+        );
+        assert_eq!(
+            session["modelBoundOverrides"]["grok-4.6"],
+            json!({ "effort": "extra-high", "fast": "true" })
+        );
+    }
+
+    #[test]
+    fn session_model_switch_retains_against_authoring_catalogs_when_this_session_has_not_observed_the_model() {
+        let grok = catalog("grok-4.6", &["high", "extra-high"], true);
+        let mini = catalog("gpt-5-mini", &["low", "high"], false);
+        let mut session_catalogs = BTreeMap::new();
+        observe_session_model_bound_catalog(&mut session_catalogs, Some(&mini));
+        let mut authoring_catalogs = BTreeMap::new();
+        observe_session_model_bound_catalog(&mut authoring_catalogs, Some(&grok));
+        let mut session = json!({
+            "modelOverride": "gpt-5-mini",
+            "configOptions": mini,
+            "modelBoundCatalogs": session_catalogs,
+            "configOptionOverrides": {},
+            "modelBoundOverrides": {
+                "grok-4.6": { "effort": "extra-high", "fast": "true" },
+                "gpt-5-mini": {},
+            },
+        });
+
+        apply_session_snapshot_model_switch_with_authoring(
+            &mut session,
+            Some("grok-4.6"),
+            Some(&authoring_catalogs),
+        );
+        assert_eq!(
+            session["configOptionOverrides"],
+            json!({ "effort": "extra-high", "fast": "true" })
+        );
+        assert_eq!(
+            session["modelBoundOverrides"]["grok-4.6"],
+            json!({ "effort": "extra-high", "fast": "true" })
+        );
+        assert!(
+            session["modelBoundCatalogs"].get("grok-4.6").is_none(),
+            "authoring catalogs must not be stamped as this session's observation",
         );
     }
 

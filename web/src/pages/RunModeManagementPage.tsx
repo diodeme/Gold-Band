@@ -8,7 +8,8 @@ import { Page, PageHeader } from '@/components/PageScaffold';
 import {
   AcpModelThoughtSelects,
   acpShowsModelConfigSelect,
-  retainAcpModelBoundOverrides,
+  rememberAcpModelBoundOverrides,
+  switchAcpModelBoundOverrides,
   updateAcpConfigOptionOverride,
 } from '@/components/acp/AcpModelThoughtSelects';
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
@@ -266,10 +267,13 @@ export function RunModeManagementPage({
   const [permissionMode, setPermissionMode] = useState(runMode.autoConfig?.permissionMode ?? '');
   const [autoAccept, setAutoAccept] = useState(Boolean(runMode.autoConfig?.autoAccept));
   const [bootstrapConfigOptions, setBootstrapConfigOptions] = useState<Record<string, string>>(runMode.autoConfig?.bootstrapConfigOptions ?? {});
+  const [bootstrapModelBoundOverrides, setBootstrapModelBoundOverrides] = useState<Record<string, Record<string, string>>>(runMode.autoConfig?.bootstrapModelBoundOverrides ?? {});
   const [acceptanceModel, setAcceptanceModel] = useState(runMode.autoConfig?.acceptanceModelId ?? '');
   const [acceptanceConfigOptions, setAcceptanceConfigOptions] = useState<Record<string, string>>(runMode.autoConfig?.acceptanceConfigOptions ?? {});
+  const [acceptanceModelBoundOverrides, setAcceptanceModelBoundOverrides] = useState<Record<string, Record<string, string>>>(runMode.autoConfig?.acceptanceModelBoundOverrides ?? {});
   const [model, setModel] = useState(runMode.autoConfig?.modelId ?? '');
   const [configOptions, setConfigOptions] = useState<Record<string, string>>(runMode.autoConfig?.configOptions ?? {});
+  const [modelBoundOverrides, setModelBoundOverrides] = useState<Record<string, Record<string, string>>>(runMode.autoConfig?.modelBoundOverrides ?? {});
   const [availableAgents, setAvailableAgents] = useState<DynamicAgentRefDsl[]>(runMode.autoConfig?.availableAgents ?? []);
   const [routingPrompt, setRoutingPrompt] = useState(runMode.autoConfig?.routingPrompt ?? '');
   const [allowedWorkflowIds, setAllowedWorkflowIds] = useState((runMode.autoConfig?.allowedWorkflows ?? []).map((item) => item.workflowId));
@@ -351,10 +355,13 @@ export function RunModeManagementPage({
     setPermissionMode(config?.permissionMode ?? '');
     setAutoAccept(Boolean(config?.autoAccept));
     setBootstrapConfigOptions(config?.bootstrapConfigOptions ?? {});
+    setBootstrapModelBoundOverrides(config?.bootstrapModelBoundOverrides ?? {});
     setAcceptanceModel(config?.acceptanceModelId ?? '');
     setAcceptanceConfigOptions(config?.acceptanceConfigOptions ?? {});
+    setAcceptanceModelBoundOverrides(config?.acceptanceModelBoundOverrides ?? {});
     setModel(config?.modelId ?? '');
     setConfigOptions(config?.configOptions ?? {});
+    setModelBoundOverrides(config?.modelBoundOverrides ?? {});
     setAvailableAgents(config?.availableAgents ?? []);
     setRoutingPrompt(config?.routingPrompt ?? '');
     setAllowedWorkflowIds((config?.allowedWorkflows ?? []).map((item) => item.workflowId));
@@ -532,8 +539,10 @@ export function RunModeManagementPage({
         permissionMode: permissionMode || undefined,
         autoAccept: autoAccept || undefined,
         bootstrapConfigOptions,
+        bootstrapModelBoundOverrides,
         acceptanceModelId: acceptanceModel || undefined,
         acceptanceConfigOptions,
+        acceptanceModelBoundOverrides,
         availableAgents,
         routingPrompt: routingPrompt.trim() || undefined,
         allowedWorkflows: allowedWorkflowIds.map((workflowId) => ({ workflowId })),
@@ -552,6 +561,7 @@ export function RunModeManagementPage({
       permissionMode: permissionMode || undefined,
       autoAccept: autoAccept || undefined,
       configOptions,
+      modelBoundOverrides,
       allowedWorkflows: allowedWorkflowIds.map((workflowId) => ({ workflowId })),
       allowedProfiles,
       control,
@@ -595,10 +605,13 @@ export function RunModeManagementPage({
     setPermissionMode(config.permissionMode ?? '');
     setAutoAccept(Boolean(config.autoAccept));
     setBootstrapConfigOptions(config.bootstrapConfigOptions ?? {});
+    setBootstrapModelBoundOverrides(config.bootstrapModelBoundOverrides ?? {});
     setAcceptanceModel(config.acceptanceModelId ?? '');
     setAcceptanceConfigOptions(config.acceptanceConfigOptions ?? {});
+    setAcceptanceModelBoundOverrides(config.acceptanceModelBoundOverrides ?? {});
     setModel(config.modelId ?? '');
     setConfigOptions(config.configOptions ?? {});
+    setModelBoundOverrides(config.modelBoundOverrides ?? {});
     setAvailableAgents(config.availableAgents ?? []);
     setRoutingPrompt(config.routingPrompt ?? '');
     setAllowedWorkflowIds((config.allowedWorkflows ?? []).map((item) => item.workflowId));
@@ -1067,8 +1080,11 @@ export function RunModeManagementPage({
                   setModel('');
                   setPermissionMode('');
                   setConfigOptions({});
+                  setModelBoundOverrides({});
                   setBootstrapConfigOptions({});
+                  setBootstrapModelBoundOverrides({});
                   setAcceptanceConfigOptions({});
+                  setAcceptanceModelBoundOverrides({});
                 }}>
                   <SelectTrigger className="h-9 w-[180px]"><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -1080,7 +1096,7 @@ export function RunModeManagementPage({
 
               {agentStrategy === 'fixed' ? (
                 <Field label={t('runMode.agent')} required help={t('workflowEditor.dynamicFixedAgentHelp')}>
-                  <Select value={agent} onValueChange={(value) => { setAgent(value); setModel(''); setPermissionMode(''); setAutoAccept(false); setConfigOptions({}); }}>
+                  <Select value={agent} onValueChange={(value) => { setAgent(value); setModel(''); setPermissionMode(''); setAutoAccept(false); setConfigOptions({}); setModelBoundOverrides({}); }}>
                     <SelectTrigger className="h-9 w-[180px]"><SelectValue placeholder={t('conversation.home.selectAgent')} /></SelectTrigger>
                     <SelectContent>
                       {agentOptions.map(({ agent: item, selectable, reason }) => (
@@ -1125,17 +1141,27 @@ export function RunModeManagementPage({
                       triggerClassName="w-[220px] max-w-none rounded-md"
                       onModelChange={(value) => {
                         const modelId = value ?? '';
+                        const switched = switchAcpModelBoundOverrides({
+                          remembered: modelBoundOverrides,
+                          previousModelId: model,
+                          nextModelId: modelId,
+                          currentOverrides: configOptions,
+                          configOptions: selectedAgent?.configOptions,
+                          modelBoundCatalogs: selectedAgent?.modelBoundCatalogs,
+                        });
                         setModel(modelId);
-                        setConfigOptions((current) => retainAcpModelBoundOverrides(
-                          current,
-                          selectedAgent?.configOptions,
-                          modelId,
-                          selectedAgent?.modelBoundCatalogs,
+                        setConfigOptions(switched.overrides);
+                        setModelBoundOverrides(switched.remembered);
+                      }}
+                      onConfigOptionChange={(optionId, value) => {
+                        const next = updateAcpConfigOptionOverride(configOptions, optionId, value);
+                        setConfigOptions(next);
+                        setModelBoundOverrides(rememberAcpModelBoundOverrides(
+                          modelBoundOverrides,
+                          model,
+                          next,
                         ));
                       }}
-                      onConfigOptionChange={(optionId, value) => setConfigOptions((current) => (
-                        updateAcpConfigOptionOverride(current, optionId, value)
-                      ))}
                     />
                     {selectedAgent ? (
                       <AcpSingleConfigMenu
@@ -1167,17 +1193,27 @@ export function RunModeManagementPage({
                     triggerClassName="w-[220px] max-w-none rounded-md"
                     onModelChange={(value) => {
                       const modelId = value ?? '';
+                      const switched = switchAcpModelBoundOverrides({
+                        remembered: bootstrapModelBoundOverrides,
+                        previousModelId: bootstrapModel,
+                        nextModelId: modelId,
+                        currentOverrides: bootstrapConfigOptions,
+                        configOptions: selectedBootstrapAgent?.configOptions,
+                        modelBoundCatalogs: selectedBootstrapAgent?.modelBoundCatalogs,
+                      });
                       setBootstrapModel(modelId);
-                      setBootstrapConfigOptions((current) => retainAcpModelBoundOverrides(
-                        current,
-                        selectedBootstrapAgent?.configOptions,
-                        modelId,
-                        selectedBootstrapAgent?.modelBoundCatalogs,
+                      setBootstrapConfigOptions(switched.overrides);
+                      setBootstrapModelBoundOverrides(switched.remembered);
+                    }}
+                    onConfigOptionChange={(optionId, value) => {
+                      const next = updateAcpConfigOptionOverride(bootstrapConfigOptions, optionId, value);
+                      setBootstrapConfigOptions(next);
+                      setBootstrapModelBoundOverrides(rememberAcpModelBoundOverrides(
+                        bootstrapModelBoundOverrides,
+                        bootstrapModel,
+                        next,
                       ));
                     }}
-                    onConfigOptionChange={(optionId, value) => setBootstrapConfigOptions((current) => (
-                      updateAcpConfigOptionOverride(current, optionId, value)
-                    ))}
                   />
                 </Field>
               ) : null}
@@ -1194,17 +1230,27 @@ export function RunModeManagementPage({
                     triggerClassName="w-[260px] max-w-none rounded-md"
                     onModelChange={(value) => {
                       const modelId = value ?? '';
+                      const switched = switchAcpModelBoundOverrides({
+                        remembered: acceptanceModelBoundOverrides,
+                        previousModelId: acceptanceModel,
+                        nextModelId: modelId,
+                        currentOverrides: acceptanceConfigOptions,
+                        configOptions: selectedBootstrapAgent?.configOptions,
+                        modelBoundCatalogs: selectedBootstrapAgent?.modelBoundCatalogs,
+                      });
                       setAcceptanceModel(modelId);
-                      setAcceptanceConfigOptions((current) => retainAcpModelBoundOverrides(
-                        current,
-                        selectedBootstrapAgent?.configOptions,
-                        modelId,
-                        selectedBootstrapAgent?.modelBoundCatalogs,
+                      setAcceptanceConfigOptions(switched.overrides);
+                      setAcceptanceModelBoundOverrides(switched.remembered);
+                    }}
+                    onConfigOptionChange={(optionId, value) => {
+                      const next = updateAcpConfigOptionOverride(acceptanceConfigOptions, optionId, value);
+                      setAcceptanceConfigOptions(next);
+                      setAcceptanceModelBoundOverrides(rememberAcpModelBoundOverrides(
+                        acceptanceModelBoundOverrides,
+                        acceptanceModel,
+                        next,
                       ));
                     }}
-                    onConfigOptionChange={(optionId, value) => setAcceptanceConfigOptions((current) => (
-                      updateAcpConfigOptionOverride(current, optionId, value)
-                    ))}
                   />
                 </Field>
               ) : null}
@@ -1255,18 +1301,34 @@ export function RunModeManagementPage({
                                 configOptionValues={availableAgentMap.get(item.agentType)?.configOptions}
                                 compact
                                 triggerClassName="h-8 w-[260px] max-w-none rounded-md text-xs"
-                                onModelChange={(value) => updateAvailableAgentConfig(item.agentType, {
-                                  model: value || undefined,
-                                  configOptions: retainAcpModelBoundOverrides(
-                                    availableAgentMap.get(item.agentType)?.configOptions,
-                                    item.configOptions,
-                                    value,
-                                    item.modelBoundCatalogs,
-                                  ),
-                                })}
-                                onConfigOptionChange={(optionId, value) => updateAvailableAgentConfig(item.agentType, {
-                                  configOptions: updateAcpConfigOptionOverride(availableAgentMap.get(item.agentType)?.configOptions, optionId, value),
-                                })}
+                                onModelChange={(value) => {
+                                  const current = availableAgentMap.get(item.agentType);
+                                  const switched = switchAcpModelBoundOverrides({
+                                    remembered: current?.modelBoundOverrides,
+                                    previousModelId: current?.model,
+                                    nextModelId: value,
+                                    currentOverrides: current?.configOptions,
+                                    configOptions: item.configOptions,
+                                    modelBoundCatalogs: item.modelBoundCatalogs,
+                                  });
+                                  updateAvailableAgentConfig(item.agentType, {
+                                    model: value || undefined,
+                                    configOptions: switched.overrides,
+                                    modelBoundOverrides: switched.remembered,
+                                  });
+                                }}
+                                onConfigOptionChange={(optionId, value) => {
+                                  const current = availableAgentMap.get(item.agentType);
+                                  const configOptions = updateAcpConfigOptionOverride(current?.configOptions, optionId, value);
+                                  updateAvailableAgentConfig(item.agentType, {
+                                    configOptions,
+                                    modelBoundOverrides: rememberAcpModelBoundOverrides(
+                                      current?.modelBoundOverrides,
+                                      current?.model,
+                                      configOptions,
+                                    ),
+                                  });
+                                }}
                               />
                               ) : null}
                                 <AcpSingleConfigMenu

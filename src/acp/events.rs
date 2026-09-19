@@ -106,6 +106,11 @@ pub struct AcpSessionMetadata {
     pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_option_overrides: BTreeMap<String, String>,
+    /// Last applied thought_level / model_config overrides keyed by model id
+    /// for this session. In-session model switches restore the leaving model's
+    /// map; Mini rollback must not overwrite Grok's slot. Not Direct/home memory.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt_append: Option<String>,
     /// Retry lifecycle of the latest logical prompt. Unlike session activity,
@@ -2512,6 +2517,7 @@ fn merge_session_lifecycle(current: Option<&Value>, incoming: &mut Value) {
         "permissionModeOverride",
         "autoAccept",
         "configOptionOverrides",
+        "modelBoundOverrides",
         "configCatalogRefreshRequiredAt",
     ] {
         if let Some(field) = current.get(key) {

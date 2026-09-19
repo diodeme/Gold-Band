@@ -1518,6 +1518,7 @@ mod tests {
                             permission_mode_id: None,
                             auto_accept: false,
                             config_options: BTreeMap::new(),
+                            model_bound_overrides: Default::default(),
                         }),
                         NodeDsl::AiDynamic(_) => None,
                     })
@@ -1991,6 +1992,7 @@ mod tests {
             permission_mode: Some("plan".to_string()),
             auto_accept: false,
             config_options: BTreeMap::new(),
+            model_bound_overrides: Default::default(),
         });
 
         let created = fixture.service.create(input).unwrap();

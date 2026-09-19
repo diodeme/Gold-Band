@@ -1,10 +1,66 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-19 会话目录 unknown JSON 在 remap 边界规范化
+
+- 根因：`AcpSessionConfigVm.configOptions` 是会话快照 JSON（`unknown`）。view model 把这份投影直接传给要求 `AcpSelectConfigOptionVm[]` 的 `remapAcpThoughtLevelOverride`，`web:build` 的 `tsc` 失败。属于类型边界未接上，不是 remap 契约或产品行为错误。
+- 实现：在 remap 调用前把 unknown 目录收成 select option 列表；分组投影仍读带 `type=select` 的原始会话 JSON，避免丢掉协议字段。
+- 证据：`tsc -p web/tsconfig.build.json` 通过；已有「effort High 投影到 reasoning」view model 测试继续覆盖 remap。
+- 过度设计与性能评审：一次有界目录拷贝（数条 select），无新状态、缓存或热路径。
+
+## 2026-09-19 配置展示名带上 option id
+
+- 根因：产品文案「思考强度 / 深度思考 / 上下文」能读，但回滚分割线和复合菜单看不出协议 option id。Fable 同时回滚 thinking 与 effort 时，只写中文名不够定位是哪一项。
+- 实现：`acpCompositeSectionLabel` 在展示名与 option id 字面不同时追加 id，中文 `思考强度（effort）`，英文 `Reasoning (effort)`。`Fast` 与 `fast` 仅大小写不同则不再重复。菜单与回滚分割线共用这一套标签。
+- 证据：前端覆盖单条/多条 thought_level、context、Fast 以及分割线 `思考强度（effort） · 上下文（context）`。
+- 过度设计与性能评审：只改已有标签投影和一条 i18n 模板，无新状态、探测或热路径。
+
+## 2026-09-19 多条 thought_level 分开标注，context 中文为上下文
+
+- 根因：Cursor Fable 同目录返回 `thinking`（Off/On）和 `effort`（档位）两条 `thought_level`。展示层把所有 `thought_level` 都标成「思考强度」，分割线也按 category 去重，看起来像重复两项。
+- 实现：一条 `thought_level` 仍用产品文案「思考强度」。多条时按 option id 映射：中文 thinking→深度思考、effort→思考强度；`context` 中文为上下文。英文保持 Thinking / Effort / Context。不合并、不丢弃任一条。
+- 证据：Fable 目录标签为深度思考、思考强度、上下文；单条 effort 仍是思考强度；回滚分割线两条 thought_level 不再收成一项。
+- 过度设计与性能评审：只改标签投影和三条文案 key，无新状态、探测或热路径。
+
+## 2026-09-19 会话观测回写作者态当前表，未观测模型复用最后一次观测
+
+- 根因：作者态未命中 `modelBoundCatalogs` 时回退整份诊断 `configOptions`。会话观测只 upsert 分模型缓存、不改当前表，Luna 对话之后切到 GPT-5.2 仍画出 Doctor 探测时的 Grok Fast，而不是刚离开的 Luna Context。前端按切模型携带上一模型目录是旁路状态，会在 remount/normalize 丢失。
+- 实现：正式会话活目录成功后，继续 upsert `modelBoundCatalogs[modelId]`，并把诊断 `configOptions` 的 `model.currentValue` 与 `thought_level` / `model_config` 行改成该活目录。保留 Doctor 的模型/权限 options 列表与健康状态，不改 `checked_at`，不按会话模型列表剪枝。未观测模型因此复用最后一次观测。工作流运行仍读冻结 snapshot 与本次 `session/new` 活目录，不读这份当前表绑定行。
+- 证据：Rust 覆盖 Luna 会话后当前表变成 Context/reasoning、模型列表仍含 Grok/Luna/GPT-5.2、mode 行保留、`checked_at` 不变、缓存已有 Luna 但当前表仍是 Grok 时也会刷新；前端覆盖未观测 GPT-5.2 画出 Luna 当前表，已观测 Grok 仍画 Grok Fast。
+- 过度设计与性能评审：只改已有 merge，不新增 identity、探测或前端 carry 状态。目录观测频率与原先 upsert 相同，多一次有界数组合并。
+
+## 2026-09-19 发起会话不拦截 thought_level / model_config，由 session/new 回滚
+
+- 根因：产品契约是不支持的思考强度 / `model_config` 在 `session/new` remap 或回滚为不指定。`validate_and_inject` 却用 Doctor 当前 `configOptions` 做 fail-closed，把 Luna 的 Context 拦成 `option-unsupported`，界面落到「操作失败，请重试」。按所选模型缓存再校验仍是发起拦截，没有回到回滚契约。
+- 实现：注入阶段跳过 `thought_level` / `model_config`。模型、权限仍 fail-closed。不支持的绑定项继续带进 executable，由既有 `session/new` strip 回滚并写分割线。
+- 证据：Doctor 活表是 Grok 时 Luna `reasoning` / `context` 可注入；未观测 Composer 可带当前 `effort`；Luna 缓存没有的 `context=2m` 也放行给运行时回滚。
+- 过度设计与性能评审：删除上一轮为拦截服务的 per-model 校验 helper。注入只多一次有界 category 查找。
+
+## 2026-09-19 会话与作者态统一按模型缓存 config，未观测先复用再 remap
+
+- 根因：`thought_level` / `model_config` 属于 `(agent, modelId)`。会话却只有一份活 `configOptions`。adapter 省略表时只改 `currentValue`，B 的 ABC 会被画成 A 的能力，并可能 upsert 进作者态。作者态未观测模型原先只带思考档，和会话第一次切换「带着当前配置发起」不一致。
+- 实现：会话 snapshot 增加 `modelBoundCatalogs[modelId]`。RPC 带回该模型的表则观测并覆盖缓存；省略表时若有缓存则还原绑定项，没有则带着上一模型配置发起、不把该表写成目标模型。作者态仍用诊断里那份 map；未观测时同样复用当前表，发起时 remap / 回滚。会话观测只按已缓存的当前模型 upsert 作者态。分割线文案补上「系统已将其回滚为不指定。可停止对话后修改。」
+- 证据：Rust 覆盖 A 有缓存则还原 AB、A 未观测则保留 ABC 且 upsert 跳过、同模型返回刷新缓存、无 model 的片段不覆盖缓存；前端覆盖未观测复用 Context、已观测 Grok 不画 Luna Context、会话切回 Grok 画 effort/fast 不画 Context。
+- 过度设计与性能评审：复用已有 map 与观测函数，不为每个模型探测。读写随 Doctor 成功和配置观测，目录未变不写作者态文件。投影是 map 查找加有界数组拼接。
+
+## 2026-09-18 作者态按模型缓存 model_config，会话页只认活目录
+
+- 根因：`thought_level` / `model_config` 属于 `(agent, modelId)`。作者态需要跨模型切换时立刻画出已知目录，但不能把会话栏交给 Doctor 缓存或另一模型的观测。
+- 实现：`modelBoundCatalogs[modelId]` 只服务作者态。Doctor 成功仍 upsert 并按模型列表剪枝；`session/new` 与切模型后的活目录只写入当前模型、不改 Doctor `configOptions`。首页缓存命中即投影，未命中只带思考强度，发起时走现有 remap/回滚。会话 composer 与会话内配置校验的绑定项永远用本次会话活目录；较新 Doctor 只更新模型/权限列表。
+- 证据：Rust 覆盖会话 Luna 观测写入后仍保留 Grok 目录且不改 Doctor current、重复观测跳过、无诊断不发明 snapshot、绑定项校验不接受 Doctor 独有 xhigh/Context；前端覆盖同模型较新 Doctor Context 不得进入会话栏，以及 catalogs 更新可在相同 `checkedAt` 合并进 registry。
+- 过度设计与性能评审：复用已有诊断 JSON map 与 commit 锁，不新增 identity、探测或热路径缓存。会话写入只在无 live event 的 snapshot/config 更新上比较后落盘；未变化不写文件、不广播。
+
+## 2026-09-18 作者态 model_config 按模型观测目录隔离
+
+- 根因：`thought_level` / `model_config` 属于 `(agent, modelId)`。作者态却只有一份 Agent 级 `configOptions`。Cursor adapter 进程当前模型变化后，Luna 的 Context 会画到首页 Grok 上。用「所选 ≠ Doctor current 就藏掉全部 model_config」是补丁：Luna 自己也有 Fast 时会被误藏。
+- 实现：Doctor 成功结果在 capabilities 里维护 `modelBoundCatalogs[modelId]`，每次观测 upsert 当前模型、保留仍在模型列表中的旧模型、模型从列表消失则剪枝。作者态按所选模型投影该目录：有观测则展示该模型的 Fast/Context；从未观测过则只带思考强度、不借用另一模型的 model_config。不为每个模型做现场探测。
+- 证据：Rust 覆盖 Grok→Luna 同时保留两份目录、注册表切换后剪枝、同模型刷新覆盖该 key；前端覆盖 Grok 选中时用 Grok Fast 而不是 Luna Context，Luna 选中时仍展示 Luna 自己的 Fast。
+- 过度设计与性能评审：只增加诊断 JSON 里一份有界 map（模型数 × 少量 select），无额外 doctor、session/new 或按模型探测。投影是 map 查找加线性目录扫描。
+
 ## 2026-09-18 发起会话按活目录 remap/回滚作者态 option id，分割线写出具体配置
 
 - 根因：作者态 `configOptionOverrides` 仍用 Doctor/上一模型接线名（如 `effort`），`session/new` 活目录可能已经是另一模型（如 `reasoning`）。strip 只在切前目录里能看到旧 id 时才 remap，发起会话因此把合法 High 报成 `acp.session-config-value-unavailable`。这是同一套回滚契约没覆盖「活目录已换、Gold Band 未切模型」，不是用户选了非法值。
-- 实现：缺失的 option id 仍先按 thought value remap，对不上的模型绑定项回滚为不指定并继续 prompt。未切模型且 id 仍在活目录、只是值非法时仍报 unavailable。分割线文案改为「{{names}} 不支持，…可停止对话后修改」，多项用 ` · ` 连接。
-- 证据：Rust 覆盖活目录已是 Luna 时 `effort=high`→`reasoning=high`（含未切模型的 align 路径）、缺失 id 回滚为不指定、未切模型的非法 listed 值不静默丢掉、params 带协议 `name`；前端覆盖「思考强度 · Context 不支持…可停止对话后修改」。
+- 实现：缺失的 option id 仍先按 thought value remap，对不上的模型绑定项回滚为不指定并继续 prompt。`session/new` 即使这次没切模型，也按活目录完整 strip（含 listed 非法值）。已建立会话未切模型、option id 仍在活目录、只是值非法时仍报 unavailable。分割线文案改为「当前模型暂不支持配置：{{names}}」，多项用 ` · ` 连接。Doctor 按模型 upsert `modelBoundCatalogs`，不得把 Luna Context 当成 Grok 的目录。
+- 证据：Rust 覆盖活目录已是 Luna 时 `effort=high`→`reasoning=high`、缺失 id 回滚、发起会话 listed 非法值回滚、Doctor 在 Grok 仍列出时不把 Luna Context 写入作者态、params 带协议 `name`；前端覆盖「当前模型暂不支持配置：思考强度 · Context」，以及首页 Grok + Luna 目录时不展示 Context。
 - 过度设计与性能评审：复用现有 strip/override map 和 timeline `systemNotice`，不新增状态、探测或缓存。目录为有界 select 列表。
 
 ## 2026-09-18 思考强度按 category 跨 option id 保留，目录立即推给 composer

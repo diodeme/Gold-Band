@@ -130,7 +130,7 @@ describe('run mode validation', () => {
     expect(overrides).toEqual(snapshot);
   });
 
-  it('keeps thought and Fast overrides when the selected model is not the doctor current model', () => {
+  it('keeps thought and Fast overrides from the selected model catalog', () => {
     const agent = {
       ...agentRegistry.agents[0],
       configOptions: [
@@ -138,7 +138,7 @@ describe('run mode validation', () => {
           id: 'model',
           category: 'model',
           currentValue: 'composer-2.5',
-          options: [{ value: 'composer-2.5', name: 'Composer 2.5' }],
+          options: [{ value: 'composer-2.5', name: 'Composer 2.5' }, { value: 'grok-4.6', name: 'Grok' }],
         },
         {
           id: 'fast',
@@ -151,6 +151,20 @@ describe('run mode validation', () => {
           options: [{ value: 'high', name: 'High' }],
         },
       ],
+      modelBoundCatalogs: {
+        'grok-4.6': [
+          {
+            id: 'thought',
+            category: 'thought_level',
+            options: [{ value: 'high', name: 'High' }],
+          },
+          {
+            id: 'fast',
+            category: 'model_config',
+            options: [{ value: 'true', name: 'On' }],
+          },
+        ],
+      },
     };
     const normalized = normalizeConfigOptionOverrides(agent, {
       thought: 'high',
@@ -160,6 +174,55 @@ describe('run mode validation', () => {
     expect(normalized).toEqual({
       configOptions: { thought: 'high', fast: 'true' },
       removedOptionIds: [],
+    });
+  });
+
+  it('does not submit another model\'s Context when the selected model has its own catalog', () => {
+    const agent = {
+      ...agentRegistry.agents[0],
+      configOptions: [
+        {
+          id: 'model',
+          category: 'model',
+          currentValue: 'gpt-5.6-luna',
+          options: [{ value: 'cursor-grok-4.6', name: 'Cursor Grok 4.6' }, { value: 'gpt-5.6-luna', name: '5.6 Luna' }],
+        },
+        {
+          id: 'context',
+          category: 'model_config',
+          name: 'Context',
+          options: [{ value: '1m', name: '1M' }],
+        },
+        {
+          id: 'thought',
+          category: 'thought_level',
+          options: [{ value: 'high', name: 'High' }],
+        },
+      ],
+      modelBoundCatalogs: {
+        'cursor-grok-4.6': [
+          {
+            id: 'thought',
+            category: 'thought_level',
+            options: [{ value: 'high', name: 'High' }],
+          },
+          {
+            id: 'fast',
+            category: 'model_config',
+            options: [{ value: 'true', name: 'On' }],
+          },
+        ],
+      },
+    };
+    const normalized = normalizeConfigOptionOverrides(agent, {
+      thought: 'high',
+      context: '1m',
+      fast: 'true',
+    }, 'cursor-grok-4.6');
+
+    expect(normalized).toEqual({
+      configOptions: { thought: 'high', fast: 'true' },
+      removedOptionIds: ['context'],
     });
   });
 

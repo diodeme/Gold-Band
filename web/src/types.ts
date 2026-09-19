@@ -459,6 +459,8 @@ export interface ManagedAgentVm {
   supportedModes?: AcpModeVm[] | null;
   supportedModels?: AcpModeVm[] | null;
   configOptions?: AcpSelectConfigOptionVm[] | null;
+  /** Last observed thought_level / model_config catalogs keyed by model id. */
+  modelBoundCatalogs?: Record<string, AcpSelectConfigOptionVm[]> | null;
   /** 是否支持 streamable HTTP MCP 传输（null=未诊断/未知） */
   mcpHttpSupported?: boolean | null;
   /** 是否支持 SSE MCP 传输（null=未诊断/未知） */
@@ -1823,6 +1825,7 @@ export interface AcpSessionConfigVm {
   models?: unknown | null;
   modes?: unknown | null;
   configOptions?: unknown | null;
+  modelBoundCatalogs?: Record<string, unknown[]> | null;
 }
 
 export interface AcpUiEventVm {

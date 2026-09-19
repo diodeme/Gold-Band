@@ -514,6 +514,7 @@ const resources = {
         },
         "workflow-model-binding": {
           "binding-duplicate": "执行槽位 {{executionSlotId}} 存在重复模型绑定，请删除重复项后重试。",
+          "option-unsupported": "当前模型不支持这项配置，请重新选择后重试。",
         },
         SCHEDULED_COORDINATOR_UNAVAILABLE: "定时任务运行服务暂不可用，请重试。",
         SCHEDULED_NOT_FOUND: "待恢复的定时任务执行已不存在，请刷新后重试。",
@@ -1908,8 +1909,13 @@ const resources = {
         currentModel: "模型",
         thoughtLevel: "思考强度",
         unspecifiedThoughtLevel: "不指定",
-        sessionConfigRolledBack:
-          "{{names}} 不支持，系统已将其回滚为不指定。可停止对话后修改。",
+        sessionConfigRolledBack: "当前模型暂不支持配置：{{names}}。系统已将其回滚为不指定。可停止对话后修改。",
+        configOptionWithId: "{{name}}（{{id}}）",
+        configOption: {
+          thinking: "深度思考",
+          effort: "思考强度",
+          context: "上下文",
+        },
         permissionMode: "权限",
         autoAccept: "自动批准",
         autoAcceptGroup: "{{appName}}来帮你…",
@@ -3176,6 +3182,7 @@ const resources = {
         },
         "workflow-model-binding": {
           "binding-duplicate": "Execution slot {{executionSlotId}} has duplicate model bindings. Remove the duplicate and try again.",
+          "option-unsupported": "This model does not support that setting. Choose another option and try again.",
         },
         SCHEDULED_COORDINATOR_UNAVAILABLE: "The scheduled task service is unavailable. Try again.",
         SCHEDULED_NOT_FOUND: "The scheduled run to resume no longer exists. Refresh and try again.",
@@ -4618,8 +4625,13 @@ const resources = {
         currentModel: "Model",
         thoughtLevel: "Reasoning",
         unspecifiedThoughtLevel: "Unspecified",
-        sessionConfigRolledBack:
-          "{{names}} not supported by this model, and reset to unspecified. Stop the conversation to change them.",
+        sessionConfigRolledBack: "This model does not currently support: {{names}}. The system has rolled it back to unspecified. You can change it after stopping the conversation.",
+        configOptionWithId: "{{name}} ({{id}})",
+        configOption: {
+          thinking: "Thinking",
+          effort: "Effort",
+          context: "Context",
+        },
         permissionMode: "Permission",
         autoAccept: "Auto Accept",
         autoAcceptGroup: "{{appName}} will help you…",

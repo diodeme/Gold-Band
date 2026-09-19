@@ -380,8 +380,10 @@ use crate::acp::permission::{
 };
 use crate::acp::pipeline_diagnostics::{AcpPipelineDiagnostics, PipelineUpdateKind};
 use crate::acp::session_config::{
-    ACP_SESSION_CONFIG_ROLLED_BACK_CODE, RolledBackSessionConfig, align_overrides_to_live_catalog,
-    rolled_back_session_config_params, strip_unsupported_model_bound_overrides,
+    ACP_SESSION_CONFIG_ROLLED_BACK_CODE, RolledBackSessionConfig,
+    live_catalog_model_id, observe_session_model_bound_catalog,
+    reconcile_session_config_overrides, restore_session_model_bound_options,
+    rolled_back_session_config_params,
 };
 use crate::acp::timeline::{
     TimelineCompactionPolicy, TimelineStore, read_indexed_prompt_anchor_events,
@@ -1961,6 +1963,7 @@ struct AttachedSessionRuntime {
     models: Option<Value>,
     modes: Option<Value>,
     config_options: Option<Value>,
+    model_bound_catalogs: BTreeMap<String, Value>,
     config_catalog_observed_at: Option<String>,
     config_fingerprint: u64,
     provider_freshness: ProviderFreshnessBaseline,
@@ -2339,6 +2342,7 @@ struct AcpRuntime<'a> {
     models: Option<Value>,
     modes: Option<Value>,
     config_options: Option<Value>,
+    model_bound_catalogs: BTreeMap<String, Value>,
     config_catalog_observed_at: Option<String>,
     config_catalog_refresh_required_at: Option<String>,
     model_override: Option<String>,
@@ -3960,6 +3964,19 @@ impl<'a> AcpRuntime<'a> {
             config_options: prior_metadata
                 .as_ref()
                 .and_then(|metadata| metadata.config_options.clone()),
+            model_bound_catalogs: {
+                let mut catalogs = prior_metadata
+                    .as_ref()
+                    .map(|metadata| metadata.model_bound_catalogs.clone())
+                    .unwrap_or_default();
+                observe_session_model_bound_catalog(
+                    &mut catalogs,
+                    prior_metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.config_options.as_ref()),
+                );
+                catalogs
+            },
             config_catalog_observed_at: prior_metadata
                 .as_ref()
                 .and_then(|metadata| metadata.config_catalog_observed_at.clone()),
@@ -4280,7 +4297,7 @@ impl<'a> AcpRuntime<'a> {
                     if restore_method == SessionRestoreMethod::Resume {
                         self.session_update_phase = SessionUpdatePhase::AwaitingTurnStart;
                     }
-                    self.apply_session_mode_options(permission_mode, model, config_options)?;
+                    self.apply_session_mode_options(permission_mode, model, config_options, false)?;
                     if restore_method.replays_history() {
                         self.drain_session_replay_until_quiet(session_id)?;
                         self.finish_provider_history_replay(Some(session_id.to_string()))?;
@@ -4396,7 +4413,7 @@ impl<'a> AcpRuntime<'a> {
         self.set_session_id(session_id.to_string());
         self.session_update_phase = SessionUpdatePhase::Live;
         self.sync_required = false;
-        self.apply_session_mode_options(permission_mode, model, config_options)?;
+        self.apply_session_mode_options(permission_mode, model, config_options, true)?;
         self.refresh_provider_freshness_best_effort(cwd);
         Ok(false)
     }
@@ -4449,6 +4466,7 @@ impl<'a> AcpRuntime<'a> {
         self.models = entry.models.clone();
         self.modes = entry.modes.clone();
         self.config_options = entry.config_options.clone();
+        self.model_bound_catalogs = entry.model_bound_catalogs.clone();
         self.config_catalog_observed_at = entry.config_catalog_observed_at.clone();
         self.usage = entry.usage.clone();
         self.attempt_usage_ready = true;
@@ -4523,7 +4541,7 @@ impl<'a> AcpRuntime<'a> {
             return Ok(false);
         }
 
-        self.apply_session_mode_options(permission_mode, model, config_options)?;
+        self.apply_session_mode_options(permission_mode, model, config_options, false)?;
         self.session_update_phase = SessionUpdatePhase::Live;
         let _ = append_diagnostic(
             &self.paths.diagnostics,
@@ -4576,6 +4594,10 @@ impl<'a> AcpRuntime<'a> {
         }
         if let Some(config_options) = result.get("configOptions") {
             self.config_options = Some(config_options.clone());
+            observe_session_model_bound_catalog(
+                &mut self.model_bound_catalogs,
+                Some(config_options),
+            );
             observed_catalog = true;
         }
         if observed_catalog {
@@ -4603,6 +4625,8 @@ impl<'a> AcpRuntime<'a> {
             metadata["models"] = self.models.clone().unwrap_or(Value::Null);
             metadata["modes"] = self.modes.clone().unwrap_or(Value::Null);
             metadata["configOptions"] = self.config_options.clone().unwrap_or(Value::Null);
+            metadata["modelBoundCatalogs"] =
+                serde_json::to_value(&self.model_bound_catalogs).unwrap_or_else(|_| json!({}));
             metadata["configCatalogObservedAt"] = self
                 .config_catalog_observed_at
                 .clone()
@@ -4626,6 +4650,7 @@ impl<'a> AcpRuntime<'a> {
         permission_mode: Option<&str>,
         model: Option<&str>,
         config_options: &BTreeMap<String, String>,
+        new_session: bool,
     ) -> Result<()> {
         // Some adapters persist both options into one process-global config file.
         // Keep the pair atomic across all sessions sharing this adapter process.
@@ -4645,19 +4670,13 @@ impl<'a> AcpRuntime<'a> {
             self.apply_permission_mode(pm)?;
         }
         let mut pending = config_options.clone();
-        let rollbacks = if model_applied {
-            strip_unsupported_model_bound_overrides(
-                catalog_at_start.as_ref(),
-                self.config_options.as_ref(),
-                &mut pending,
-            )
-        } else {
-            align_overrides_to_live_catalog(
-                catalog_at_start.as_ref(),
-                self.config_options.as_ref(),
-                &mut pending,
-            )
-        };
+        let rollbacks = reconcile_session_config_overrides(
+            catalog_at_start.as_ref(),
+            self.config_options.as_ref(),
+            &mut pending,
+            model_applied,
+            new_session,
+        );
         self.config_option_overrides.clone_from(&pending);
         self.pending_config_rollbacks.extend(rollbacks);
         for (config_id, value) in &pending {
@@ -4788,7 +4807,7 @@ impl<'a> AcpRuntime<'a> {
                 }),
             )?;
             self.capture_session_config(&result);
-            self.set_current_model(&model);
+            self.retarget_session_model_catalog(&model, result.get("configOptions").is_some());
             return Ok(());
         }
         if self.modes.is_some() {
@@ -4800,9 +4819,27 @@ impl<'a> AcpRuntime<'a> {
                 }),
             )?;
             self.capture_session_config(&result);
-            self.set_current_model(&model);
+            self.retarget_session_model_catalog(&model, result.get("configOptions").is_some());
         }
         Ok(())
+    }
+
+    fn retarget_session_model_catalog(&mut self, model: &str, catalog_returned: bool) {
+        if !catalog_returned {
+            observe_session_model_bound_catalog(
+                &mut self.model_bound_catalogs,
+                self.config_options.as_ref(),
+            );
+        }
+        let catalog_owner = live_catalog_model_id(self.config_options.as_ref());
+        self.set_current_model(model);
+        if catalog_owner.as_deref() != Some(model) {
+            restore_session_model_bound_options(
+                &self.model_bound_catalogs,
+                &mut self.config_options,
+                model,
+            );
+        }
     }
 
     fn set_current_model(&mut self, model: &str) {
@@ -7013,6 +7050,7 @@ impl<'a> AcpRuntime<'a> {
             models: self.models.clone(),
             modes: self.modes.clone(),
             config_options: self.config_options.clone(),
+            model_bound_catalogs: self.model_bound_catalogs.clone(),
             config_catalog_observed_at: self.config_catalog_observed_at.clone(),
             config_catalog_refresh_required_at: self.config_catalog_refresh_required_at.clone(),
             model_override: self.model_override.clone(),
@@ -7863,6 +7901,7 @@ impl<'a> AcpRuntime<'a> {
                 models: self.models.clone(),
                 modes: self.modes.clone(),
                 config_options: self.config_options.clone(),
+                model_bound_catalogs: self.model_bound_catalogs.clone(),
                 config_catalog_observed_at: self.config_catalog_observed_at.clone(),
                 config_fingerprint,
                 provider_freshness: self.provider_freshness.clone(),

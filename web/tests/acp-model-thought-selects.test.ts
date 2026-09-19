@@ -2,7 +2,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
-import '@/i18n';
+import i18n from '@/i18n';
 import {
   AcpModelThoughtSelects,
   acpConfigMenuSelectionMode,
@@ -103,18 +103,19 @@ describe('ACP composite model selector', () => {
     }])).toBe('composite');
   });
 
-  it('keeps thought and Fast overrides when the selected model is not the catalog current model', () => {
+  it('reuses the current model config when the selected model has not been observed', () => {
     const options = [
       {
         id: 'model',
         category: 'model',
-        currentValue: 'gpt-5.6-sol',
-        options: [{ value: 'gpt-5.6-sol', name: '5.6 Sol' }, { value: 'gpt-5.6-terra', name: '5.6 Terra' }],
+        currentValue: 'gpt-5.6-luna',
+        options: [{ value: 'cursor-grok-4.6', name: 'Cursor Grok 4.6' }, { value: 'gpt-5.6-luna', name: '5.6 Luna' }],
       },
       {
-        id: 'fast',
+        id: 'context',
         category: 'model_config',
-        options: [{ value: 'true', name: 'On' }, { value: 'false', name: 'Off' }],
+        name: 'Context',
+        options: [{ value: '272k', name: '272K' }, { value: '1m', name: '1M' }],
       },
       {
         id: 'effort',
@@ -123,38 +124,164 @@ describe('ACP composite model selector', () => {
       },
     ];
     expect(retainAcpModelBoundOverrides(
-      { fast: 'true', effort: 'high', theme: 'dark' },
+      { context: '1m', effort: 'high', theme: 'dark' },
       options,
-      'gpt-5.6-terra',
-    )).toEqual({ fast: 'true', effort: 'high', theme: 'dark' });
-    expect(retainAcpModelBoundOverrides(
-      { fast: 'true', effort: 'max', theme: 'dark' },
-      options,
-      'gpt-5.6-terra',
-    )).toEqual({ fast: 'true', theme: 'dark' });
-    expect(acpCompositeConfigSections([
+      'cursor-grok-4.6',
+    )).toEqual({ context: '1m', effort: 'high', theme: 'dark' });
+    expect(acpCompositeConfigSections(options, 'cursor-grok-4.6', {
+      context: '1m',
+      effort: 'high',
+    }).map((section) => [section.id, section.valueLabel])).toEqual([
+      ['effort', 'High'],
+      ['context', '1M'],
+    ]);
+  });
+
+  it('reuses the authoring current table when switching to an unobserved model', () => {
+    const options = [
       {
         id: 'model',
         category: 'model',
-        currentValue: 'gpt-5.6-sol',
-        options: [{ value: 'gpt-5.6-sol', name: '5.6 Sol' }, { value: 'gpt-5.6-terra', name: '5.6 Terra' }],
+        currentValue: 'gpt-5.6-luna',
+        options: [
+          { value: 'cursor-grok-4.6', name: 'Cursor Grok 4.6' },
+          { value: 'gpt-5.6-luna', name: '5.6 Luna' },
+          { value: 'gpt-5.2', name: 'GPT-5.2' },
+        ],
       },
       {
-        id: 'fast',
+        id: 'context',
         category: 'model_config',
-        name: 'Fast',
-        options: [{ value: 'true', name: 'On' }],
+        name: 'Context',
+        options: [{ value: '272k', name: '272K' }, { value: '1m', name: '1M' }],
       },
       {
-        id: 'effort',
+        id: 'reasoning',
         category: 'thought_level',
-        name: 'Effort',
+        options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }],
+      },
+    ];
+    const catalogs = {
+      'gpt-5.6-luna': [
+        {
+          id: 'reasoning',
+          category: 'thought_level',
+          options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }],
+        },
+        {
+          id: 'context',
+          category: 'model_config',
+          name: 'Context',
+          options: [{ value: '272k', name: '272K' }, { value: '1m', name: '1M' }],
+        },
+      ],
+      'cursor-grok-4.6': [
+        {
+          id: 'effort',
+          category: 'thought_level',
+          options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }],
+        },
+        {
+          id: 'fast',
+          category: 'model_config',
+          name: 'Fast',
+          options: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'On' }],
+        },
+      ],
+    };
+
+    expect(retainAcpModelBoundOverrides(
+      { context: '1m', reasoning: 'low' },
+      options,
+      'gpt-5.2',
+      catalogs,
+    )).toEqual({ context: '1m', reasoning: 'low' });
+    expect(acpCompositeConfigSections(options, 'gpt-5.2', {
+      context: '1m',
+      reasoning: 'low',
+    }, catalogs).map((section) => section.id)).toEqual(['reasoning', 'context']);
+    expect(acpCompositeConfigSections(options, 'cursor-grok-4.6', {
+      context: '1m',
+      reasoning: 'low',
+    }, catalogs).map((section) => section.id)).toEqual(['effort', 'fast']);
+  });
+
+  it('shows the selected model\'s observed Fast even when Doctor current is another model', () => {
+    const options = [
+      {
+        id: 'model',
+        category: 'model',
+        currentValue: 'gpt-5.6-luna',
+        options: [{ value: 'cursor-grok-4.6', name: 'Cursor Grok 4.6' }, { value: 'gpt-5.6-luna', name: '5.6 Luna' }],
+      },
+      {
+        id: 'context',
+        category: 'model_config',
+        name: 'Context',
+        options: [{ value: '272k', name: '272K' }, { value: '1m', name: '1M' }],
+      },
+      {
+        id: 'reasoning',
+        category: 'thought_level',
         options: [{ value: 'high', name: 'High' }],
       },
-    ], 'gpt-5.6-terra', { fast: 'true', effort: 'high' }).map((section) => [section.id, section.valueLabel])).toEqual([
-      ['effort', 'High'],
-      ['fast', 'On'],
-    ]);
+    ];
+    const catalogs = {
+      'cursor-grok-4.6': [
+        {
+          id: 'effort',
+          category: 'thought_level',
+          options: [{ value: 'high', name: 'High' }],
+        },
+        {
+          id: 'fast',
+          category: 'model_config',
+          name: 'Fast',
+          options: [{ value: 'true', name: 'On' }, { value: 'false', name: 'Off' }],
+        },
+      ],
+      'gpt-5.6-luna': [
+        {
+          id: 'reasoning',
+          category: 'thought_level',
+          options: [{ value: 'high', name: 'High' }],
+        },
+        {
+          id: 'context',
+          category: 'model_config',
+          name: 'Context',
+          options: [{ value: '272k', name: '272K' }, { value: '1m', name: '1M' }],
+        },
+        {
+          id: 'fast',
+          category: 'model_config',
+          name: 'Fast',
+          options: [{ value: 'true', name: 'On' }, { value: 'false', name: 'Off' }],
+        },
+      ],
+    };
+    expect(retainAcpModelBoundOverrides(
+      { fast: 'true', context: '1m', effort: 'high' },
+      options,
+      'cursor-grok-4.6',
+      catalogs,
+    )).toEqual({ effort: 'high', fast: 'true' });
+    expect(retainAcpModelBoundOverrides(
+      { fast: 'true', context: '1m', effort: 'high' },
+      options,
+      'gpt-5.6-luna',
+      catalogs,
+    )).toEqual({ reasoning: 'high', context: '1m', fast: 'true' });
+    expect(acpCompositeConfigSections(options, 'cursor-grok-4.6', {
+      fast: 'true',
+      context: '1m',
+      effort: 'high',
+    }, catalogs).map((section) => section.id)).toEqual(['effort', 'fast']);
+    expect(acpCompositeConfigSections(options, 'gpt-5.6-luna', {
+      fast: 'true',
+      context: '1m',
+      effort: 'high',
+    }, catalogs).map((section) => section.id)).toEqual(['reasoning', 'context', 'fast']);
   });
 
   it('shows one unspecified state until a model or thought level is selected', () => {
@@ -303,7 +430,7 @@ describe('ACP composite model selector', () => {
     expect(markup).toContain('Composer 2.5 · On');
   });
 
-  it('keeps the composite thought and Fast menu after selecting a model that is not the catalog current model', () => {
+  it('keeps the composite thought and Fast menu after selecting an observed model that is not Doctor current', () => {
     const markup = renderSelect({
       models: [
         { id: 'gpt-5.6-sol', name: '5.6 Sol' },
@@ -330,6 +457,22 @@ describe('ACP composite model selector', () => {
           options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }],
         },
       ],
+      modelBoundCatalogs: {
+        'gpt-5.6-terra': [
+          {
+            id: 'effort',
+            category: 'thought_level',
+            name: 'Effort',
+            options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }],
+          },
+          {
+            id: 'fast',
+            category: 'model_config',
+            name: 'Fast',
+            options: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'On' }],
+          },
+        ],
+      },
       configOptionValues: { fast: 'true', effort: 'high' },
       onModelChange: () => {},
       onConfigOptionChange: () => {},
@@ -339,22 +482,181 @@ describe('ACP composite model selector', () => {
     expect(markup).not.toContain('Effort');
   });
 
+  it('does not paint Luna Context onto Grok, and still shows Grok Fast from the Grok catalog', () => {
+    const markup = renderSelect({
+      models: [
+        { id: 'cursor-grok-4.6', name: 'Cursor Grok 4.6' },
+        { id: 'gpt-5.6-luna', name: '5.6 Luna' },
+      ],
+      modelValue: 'cursor-grok-4.6',
+      configOptions: [
+        {
+          id: 'model',
+          category: 'model',
+          currentValue: 'gpt-5.6-luna',
+          options: [{ value: 'cursor-grok-4.6', name: 'Cursor Grok 4.6' }, { value: 'gpt-5.6-luna', name: '5.6 Luna' }],
+        },
+        {
+          id: 'context',
+          category: 'model_config',
+          name: 'Context',
+          options: [{ value: '272k', name: '272K' }, { value: '1m', name: '1M' }],
+        },
+        {
+          id: 'reasoning',
+          category: 'thought_level',
+          name: 'Effort',
+          options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }],
+        },
+      ],
+      modelBoundCatalogs: {
+        'cursor-grok-4.6': [
+          {
+            id: 'effort',
+            category: 'thought_level',
+            options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }],
+          },
+          {
+            id: 'fast',
+            category: 'model_config',
+            name: 'Fast',
+            options: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'On' }],
+          },
+        ],
+        'gpt-5.6-luna': [
+          {
+            id: 'reasoning',
+            category: 'thought_level',
+            options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }],
+          },
+          {
+            id: 'context',
+            category: 'model_config',
+            name: 'Context',
+            options: [{ value: '272k', name: '272K' }, { value: '1m', name: '1M' }],
+          },
+          {
+            id: 'fast',
+            category: 'model_config',
+            name: 'Fast',
+            options: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'On' }],
+          },
+        ],
+      },
+      configOptionValues: { fast: 'true', context: '1m', effort: 'high' },
+      onModelChange: () => {},
+      onConfigOptionChange: () => {},
+    });
+
+    expect(markup).toContain('Cursor Grok 4.6 · High · On');
+    expect(markup).not.toContain('1M');
+    expect(markup).not.toContain('Context');
+    expect(markup).not.toContain('Effort');
+  });
+
   it('labels thought_level as the unified thought control and keeps Fast on the Agent name', () => {
     expect(acpCompositeSectionLabel({
       id: 'effort',
       category: 'thought_level',
       name: 'Effort',
-    }, '思考强度')).toBe('思考强度');
+    }, '思考强度')).toBe('思考强度（effort）');
     expect(acpCompositeSectionLabel({
       id: 'deep_think',
       category: 'thought_level',
       name: 'Deep Think',
-    }, '思考强度')).toBe('思考强度');
+    }, '思考强度')).toBe('思考强度（deep_think）');
     expect(acpCompositeSectionLabel({
       id: 'fast',
       category: 'model_config',
       name: 'Fast',
     }, '思考强度')).toBe('Fast');
+  });
+
+  it('maps named config options and splits multiple thought_level rows', () => {
+    const translate = (key: string, options?: Record<string, unknown>) => {
+      const names: Record<string, string> = {
+        'acp.configOption.thinking': '深度思考',
+        'acp.configOption.effort': '思考强度',
+        'acp.configOption.context': '上下文',
+      };
+      return names[key] ?? String(options?.defaultValue ?? key);
+    };
+
+    expect(acpCompositeSectionLabel({
+      id: 'thinking',
+      category: 'thought_level',
+      name: 'Thinking',
+    }, '思考强度', 1, translate)).toBe('思考强度（thinking）');
+    expect(acpCompositeSectionLabel({
+      id: 'thinking',
+      category: 'thought_level',
+      name: 'Thinking',
+    }, '思考强度', 2, translate)).toBe('深度思考（thinking）');
+    expect(acpCompositeSectionLabel({
+      id: 'effort',
+      category: 'thought_level',
+      name: 'Effort',
+    }, '思考强度', 2, translate)).toBe('思考强度（effort）');
+    expect(acpCompositeSectionLabel({
+      id: 'context',
+      category: 'model_config',
+      name: 'Context',
+    }, '思考强度', 1, translate)).toBe('上下文（context）');
+    expect(acpCompositeSectionLabel({
+      id: 'fast',
+      category: 'model_config',
+      name: 'Fast',
+    }, '思考强度', 2, translate)).toBe('Fast');
+  });
+
+  it('renders distinct Fable thought labels instead of two 思考强度 rows', () => {
+    const sections = acpCompositeConfigSections([
+      {
+        id: 'model',
+        category: 'model',
+        currentValue: 'claude-fable-5-1',
+        options: [{ value: 'claude-fable-5-1', name: 'Claude Fable 5.1' }],
+      },
+      {
+        id: 'thinking',
+        category: 'thought_level',
+        name: 'Thinking',
+        options: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'On' }],
+      },
+      {
+        id: 'effort',
+        category: 'thought_level',
+        name: 'Effort',
+        options: [{ value: 'medium', name: 'Medium' }, { value: 'high', name: 'High' }],
+      },
+      {
+        id: 'context',
+        category: 'model_config',
+        name: 'Context',
+        options: [{ value: '300k', name: '300K' }, { value: '1m', name: '1M' }],
+      },
+    ], 'claude-fable-5-1', { thinking: 'false', effort: 'medium' });
+    const thoughtLevelCount = sections.filter((section) => section.category === 'thought_level').length;
+    const translate = (key: string, options?: Record<string, unknown>) => i18n.t(key, options);
+
+    expect(sections.map((section) => acpCompositeSectionLabel(
+      section,
+      translate('acp.thoughtLevel'),
+      thoughtLevelCount,
+      translate,
+    ))).toEqual(['深度思考（thinking）', '思考强度（effort）', '上下文（context）']);
+    expect(acpCompositeSectionLabel(
+      sections[0],
+      'Reasoning',
+      thoughtLevelCount,
+      (key, options) => i18n.t(key, { ...options, lng: 'en' }),
+    )).toBe('Thinking');
+    expect(acpCompositeSectionLabel(
+      { id: 'effort', category: 'thought_level', name: 'Effort' },
+      i18n.t('acp.thoughtLevel', { lng: 'en' }),
+      1,
+      (key, options) => i18n.t(key, { ...options, lng: 'en' }),
+    )).toBe('Reasoning (effort)');
   });
 
   it('forwards disabled state to model-only and composite triggers', () => {

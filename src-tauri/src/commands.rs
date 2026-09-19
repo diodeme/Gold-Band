@@ -5307,6 +5307,68 @@ pub(crate) fn acp_live_update_emitter(
     })
 }
 
+fn maybe_upsert_authoring_model_bound_catalog(
+    app_handle: &AppHandle,
+    app: Option<&App>,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+    session: Option<&AcpSessionVm>,
+    session_config: Option<&AcpSessionConfigVm>,
+) {
+    let Some(config) = session
+        .and_then(|session| session.config.as_ref())
+        .or(session_config)
+    else {
+        return;
+    };
+    let Some(catalogs) = config.model_bound_catalogs.as_ref() else {
+        return;
+    };
+    let Some(payload) =
+        gold_band::acp::session_config::authoring_upsert_payload_from_session_catalog(
+            config.config_options.as_ref(),
+            catalogs,
+            config.current_model_id.as_deref(),
+        )
+    else {
+        return;
+    };
+    let provider = session.map(|session| session.provider.clone()).or_else(|| {
+        app.and_then(|app| {
+            acp_turn_provider_id(
+                app,
+                &AttemptLocator::new(
+                    task_id.to_string(),
+                    run_id.to_string(),
+                    round_id.to_string(),
+                    node_id.to_string(),
+                    attempt_id.to_string(),
+                    outer_node_id,
+                    outer_attempt_id,
+                ),
+            )
+        })
+    });
+    let Some(provider) = provider else {
+        return;
+    };
+    let Ok(agent_id) = ManagedAgentId::from_str(&provider) else {
+        return;
+    };
+    let state = app_handle.state::<DesktopState>();
+    if state
+        .upsert_agent_authoring_model_bound_catalog(&agent_id, &payload)
+        .unwrap_or(false)
+    {
+        emit_agent_registry_updated(app_handle, &agent_id);
+    }
+}
+
 fn maybe_record_agent_commands(
     app_handle: &AppHandle,
     app: Option<&App>,
@@ -5694,6 +5756,21 @@ fn emit_acp_update(
     } else {
         None
     };
+    if event.is_none() {
+        maybe_upsert_authoring_model_bound_catalog(
+            app_handle,
+            app,
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            outer_node_id.clone(),
+            outer_attempt_id.clone(),
+            session.as_ref(),
+            session_config.as_ref(),
+        );
+    }
     let _ = app_handle.emit(
         ACP_SESSION_EVENT,
         AcpSessionUpdatedEventVm {
@@ -9159,6 +9236,31 @@ fn acp_session_config_catalog_context(
     }
 }
 
+fn acp_session_config_option_catalog<'a>(
+    catalogs: &'a AcpSessionConfigCatalogContext,
+    option_id: &str,
+) -> &'a AcpSessionConfigCatalog {
+    if acp_catalog_option_is_model_bound(&catalogs.session, option_id)
+        || catalogs
+            .newer_doctor
+            .as_ref()
+            .is_some_and(|doctor| acp_catalog_option_is_model_bound(doctor, option_id))
+    {
+        return &catalogs.session;
+    }
+    catalogs.effective()
+}
+
+fn acp_catalog_option_is_model_bound(catalog: &AcpSessionConfigCatalog, option_id: &str) -> bool {
+    catalog
+        .config_options
+        .as_ref()
+        .and_then(|options| options.get(option_id))
+        .is_some_and(|option| {
+            gold_band::acp::session_config::is_model_bound_config_category(&option.category)
+        })
+}
+
 fn acp_session_config_value_unavailable(
     category: &str,
     config_id: &str,
@@ -9250,6 +9352,14 @@ fn apply_acp_catalog_refresh_marker(
         .and_then(serde_json::Value::as_object)
         .is_some_and(|overrides| {
             overrides.iter().any(|(option_id, value)| {
+                if acp_catalog_option_is_model_bound(&catalogs.session, option_id)
+                    || catalogs
+                        .newer_doctor
+                        .as_ref()
+                        .is_some_and(|doctor| acp_catalog_option_is_model_bound(doctor, option_id))
+                {
+                    return false;
+                }
                 value.as_str().is_some_and(|value| {
                     doctor.supports_config_value(option_id, value) == Some(true)
                         && catalogs.session.supports_config_value(option_id, value) != Some(true)
@@ -9798,7 +9908,11 @@ pub async fn set_acp_session_config_option(
         .map(str::trim)
         .filter(|value| !value.is_empty());
     if let Some(selected) = normalized_value {
-        validate_acp_catalog_config_value(catalogs.effective(), option_id, selected)?;
+        validate_acp_catalog_config_value(
+            acp_session_config_option_catalog(&catalogs, option_id),
+            option_id,
+            selected,
+        )?;
     }
     if let Some(session) = value.as_object_mut() {
         let overrides = session
@@ -11136,6 +11250,75 @@ mod tests {
     }
 
     #[test]
+    fn session_bound_config_validates_against_live_session_not_newer_doctor() {
+        let session = serde_json::json!({
+            "configCatalogObservedAt": "100Z",
+            "configOptions": [{
+                "id": "effort",
+                "category": "thought_level",
+                "type": "select",
+                "options": [{ "value": "low" }, { "value": "high" }]
+            }]
+        });
+        let catalogs = AcpSessionConfigCatalogContext {
+            session: AcpSessionConfigCatalog::from_value(&session, Some("100Z".to_string())),
+            newer_doctor: Some(AcpSessionConfigCatalog::from_value(
+                &serde_json::json!({
+                    "configOptions": [{
+                        "id": "effort",
+                        "category": "thought_level",
+                        "type": "select",
+                        "options": [{ "value": "low" }, { "value": "high" }, { "value": "xhigh" }]
+                    }, {
+                        "id": "context",
+                        "category": "model_config",
+                        "type": "select",
+                        "options": [{ "value": "1m" }]
+                    }]
+                }),
+                Some("200Z".to_string()),
+            )),
+        };
+
+        validate_acp_catalog_config_value(
+            acp_session_config_option_catalog(&catalogs, "effort"),
+            "effort",
+            "high",
+        )
+        .unwrap();
+        assert_eq!(
+            validate_acp_catalog_config_value(
+                acp_session_config_option_catalog(&catalogs, "effort"),
+                "effort",
+                "xhigh",
+            )
+            .unwrap_err()
+            .code,
+            gold_band::acp::client::ACP_SESSION_CONFIG_VALUE_UNAVAILABLE_CODE
+        );
+        assert_eq!(
+            validate_acp_catalog_config_value(
+                acp_session_config_option_catalog(&catalogs, "context"),
+                "context",
+                "1m",
+            )
+            .unwrap_err()
+            .code,
+            gold_band::acp::client::ACP_SESSION_CONFIG_VALUE_UNAVAILABLE_CODE
+        );
+
+        let mut refresh_session = serde_json::json!({
+            "configOptionOverrides": { "context": "1m", "effort": "xhigh" }
+        });
+        apply_acp_catalog_refresh_marker(&mut refresh_session, &catalogs);
+        assert!(
+            refresh_session
+                .get("configCatalogRefreshRequiredAt")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn session_catalog_wins_ties_and_unavailable_values_are_structured() {
         assert!(!acp_catalog_observation_is_newer("200Z", Some("200Z")));
         assert!(!acp_catalog_observation_is_newer("199Z", Some("200Z")));
@@ -11888,6 +12071,7 @@ mod tests {
             outer_node_id: None,
             outer_attempt_id: None,
             session: None,
+            session_config: None,
             event: Some(AcpUiEvent {
                 id: "acp-timing-1".to_string(),
                 seq: 1,
@@ -11931,6 +12115,7 @@ mod tests {
             outer_node_id: None,
             outer_attempt_id: None,
             session: None,
+            session_config: None,
             event: None,
             lifecycle: None,
             activity: Some(conversation_task_activity_from_prompt(
@@ -11961,6 +12146,7 @@ mod tests {
             outer_node_id: None,
             outer_attempt_id: None,
             session: None,
+            session_config: None,
             event: None,
             lifecycle: None,
             activity: None,

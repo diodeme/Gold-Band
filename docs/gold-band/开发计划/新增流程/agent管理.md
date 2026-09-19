@@ -1,5 +1,10 @@
 现在应用程序的侧边栏是任务编排、知识库、模型管理
-- 2026-09-18：发起会话时 `session/new` 活目录若已不含作者态 option id，按切模型同一规则 remap 思考强度或回滚为不指定；分割线写出具体配置名。
+- 2026-09-19：配置展示名带 option id，例如「思考强度（effort）」；名称与 id 仅大小写不同时不重复。菜单与回滚分割线共用标签。
+- 2026-09-19：复合菜单一条 `thought_level` 标「思考强度」；多条时 `thinking`/`effort` 中文为「深度思考」「思考强度」，`context` 为「上下文」。英文保持协议名。
+- 2026-09-19：正式会话活目录回写作者态当前表：更新诊断 `configOptions` 的 `model.currentValue` 与绑定行，保留模型/权限 options 列表和 `checked_at`。未观测模型复用最后一次观测（Doctor 或会话），已观测模型仍只画自己的 `modelBoundCatalogs`。
+- 2026-09-19：发起会话不再用 Doctor 当前表拦截 `thought_level` / `model_config`；不支持的项由 `session/new` 回滚为不指定。若仍出现非绑定类 `option-unsupported`，显示「当前模型不支持这项配置」，不再落到「操作失败，请重试」。
+- 2026-09-19：会话与作者态统一按 `modelBoundCatalogs[modelId]` 缓存。已观测只画自己的表；未观测复用当前配置发起，返回后更新该模型缓存。会话栏读本会话 snapshot 的 map，不得把省略表时的上一模型目录写成当前模型。分割线为「当前模型暂不支持配置：{{names}}。系统已将其回滚为不指定。可停止对话后修改。」
+- 2026-09-18：作者态按 `modelBoundCatalogs[modelId]` 缓存每个模型的 `thought_level` / `model_config`；Doctor 与正式会话活目录都可写入。发起会话时 `session/new` 活目录若已不含作者态 option id，或值不在可选列表中，按切模型同一规则 remap 思考强度或回滚为不指定；分割线写出「当前模型暂不支持配置：{{names}}。系统已将其回滚为不指定。可停止对话后修改。」。已观测模型不得把另一模型的 `model_config` 画进所选模型。
 - 2026-09-18：Select / 列表式 Agent 选择器的触发器和选项都展示 registry icon 与 display name；Select 身份槽按 SVG viewBox 原样绘制，会话栏继续保留 Codex 等视觉重量缩放。选择器禁用原因与 Agent 管理横幅使用同一条 compact raw 首行，不再把 `session-request-failed` 显示成没有具体原因的「请重试」。
 - 2026-09-18：Select / 列表式 Agent 选择器的触发器和选项都展示 registry icon 与 display name，与 Direct 药丸、侧栏和画布共用 `AgentIdentityLabel`；不得只显示名称或改用通用 Bot 图标。
 - 2026-09-18：切到 Luna 等 option id 不同的模型时，思考强度按档位 value remap，不得把 High 当成不支持清空；复合菜单固定思考强度在 Context/Fast 之前。Doctor 默认模型的依赖项不得覆盖另一模型的会话目录。

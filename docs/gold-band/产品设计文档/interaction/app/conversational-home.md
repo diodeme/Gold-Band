@@ -259,7 +259,7 @@
 - 切换 workspace 后再返回时，必须恢复该 workspace 当前 Direct Agent 及其模型/权限/Auto Accept；其他 workspace 的选择不得覆盖当前 workspace。切换期间 composer 的 workspace 与运行模式配置由同一个 App 层 workspace key 驱动，不保留组件内第二份 workspace 选择状态。
 - 快速对话 composer 切换 workspace 属于导航上下文切换，不结束未提交草稿生命周期；无论从 composer 工作空间选择器还是左侧工作空间“新会话”入口切换，正文、图片及其他附件都必须原样保留。只有提交成功或用户明确执行清空/放弃操作时才清理草稿。
 - Direct 会话创建后 Agent 身份不可修改；更换 Agent 等价于创建新的 Direct 会话。会话内模型与权限模式分别使用独立显式 override：未指定时不干预 Agent 当前配置，选择具体值后不再允许回到“不指定”，但可以继续切换其他具体值。会话内 Auto Accept 只写该 ACP session，不回写主页记忆。
-- 发起 Direct 会话时以 `session/new` 活目录为准：作者态思考强度若只是 option id 变了、档位还在，则 remap 后下发；活目录没有的 `thought_level` / `model_config` 回滚为不指定并继续发送，timeline 分割线写「{{names}} 不支持，系统已将其回滚为不指定。可停止对话后修改。」。追问目录不得回写主页 Direct 记忆。
+- 发起 Direct 会话时以 `session/new` 活目录为准：作者态思考强度若只是 option id 变了、档位还在，则 remap 后下发；活目录没有的 `thought_level` / `model_config`，或档位不在可选列表中，都回滚为不指定并继续发送，timeline 分割线写「当前模型暂不支持配置：{{names}}。系统已将其回滚为不指定。可停止对话后修改。」，`names` 带 option id，例如「思考强度（effort） · 深度思考（thinking） · 上下文（context）」。作者态 `model_config` 来自所选模型最后一次观测（`modelBoundCatalogs[modelId]`，由 Doctor 或正式会话活目录写入）。已观测的 Grok 展示 Grok 的 Fast，Luna 展示 Luna 的 Context / Fast；从未观测过的模型先复用当前这份配置（最后一次 Doctor 或会话观测）去发起，返回后再写入该模型缓存。工作流绑定注入不得因作者态当前表缺少这些绑定项而 fail-closed；不支持的项带进 executable，由 `session/new` 回滚。已建立会话的 composer 读本会话 `modelBoundCatalogs` 与活目录，不读作者态那份 Agent 诊断缓存。
 - Direct 侧边栏 task 行使用 Agent icon 代替 run 成功/暂停/失败状态点；当前 turn 活跃时由 task 级 activity 驱动 icon 低强度呼吸，相对时间来自 `lastActivityAt`。工作流和 AUTO 继续使用 run 状态点。
 - Direct task 行点击后直接进入最近会话，不渲染 `run-00x` 子列表；底层 run 仅作为内部执行与存储结构。
 - Direct 的置顶区、workspace 区和搜索结果使用同一 Agent identity VM，不允许前端组件自行从 metadata 重复推断。

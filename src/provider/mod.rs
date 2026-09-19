@@ -31,7 +31,7 @@ use image::imageops::FilterType;
 use image::{DynamicImage, ImageReader, Limits};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read};
 use std::str::FromStr;
@@ -1488,6 +1488,54 @@ pub fn select_config_options_from_capabilities(
             })
         })
         .collect()
+}
+
+/// Last observed `thought_level` / `model_config` catalogs keyed by model id.
+pub fn model_bound_catalogs_from_capabilities(
+    capabilities: Option<&Value>,
+) -> BTreeMap<String, Vec<AcpSelectConfigOption>> {
+    capabilities
+        .and_then(|value| value.get("modelBoundCatalogs"))
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(model_id, catalog)| {
+            let model_id = model_id.trim();
+            if model_id.is_empty() {
+                return None;
+            }
+            let options = select_config_options_from_capabilities(Some(&json!({
+                "configOptions": with_select_type(catalog),
+            })));
+            Some((model_id.to_string(), options))
+        })
+        .collect()
+}
+
+fn with_select_type(catalog: &Value) -> Value {
+    let Some(options) = catalog.as_array() else {
+        return catalog.clone();
+    };
+    Value::Array(
+        options
+            .iter()
+            .map(|option| {
+                let Some(object) = option.as_object() else {
+                    return option.clone();
+                };
+                if object
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.trim().is_empty())
+                {
+                    return option.clone();
+                }
+                let mut next = object.clone();
+                next.insert("type".into(), Value::String("select".into()));
+                Value::Object(next)
+            })
+            .collect(),
+    )
 }
 
 fn optional_trimmed_string(value: Option<&Value>) -> Option<String> {

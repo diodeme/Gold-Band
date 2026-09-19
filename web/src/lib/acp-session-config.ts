@@ -7,7 +7,6 @@ import type {
 import {
   ACP_MODEL_CONFIG_CATEGORY,
   ACP_THOUGHT_LEVEL_CATEGORY,
-  findAcpCatalogModelId,
   isAcpModelBoundConfigCategory,
   remapAcpThoughtLevelOverride,
 } from "@/lib/acp-composite-config";
@@ -109,7 +108,7 @@ export function createAcpSessionConfigViewModel(
   const permissionModeOverrideId = config?.permissionModeOverrideId ?? null;
   const remappedOverrides = remapAcpThoughtLevelOverride(
     config?.configOptionOverrides,
-    projectedCatalog.configOptions,
+    selectConfigOptionsFromUnknown(projectedCatalog.configOptions),
   );
   const catalogGroups = normalizeAcpSelectConfigGroups(
     projectedCatalog.configOptions,
@@ -255,7 +254,7 @@ function projectAcpSessionConfigCatalog(
     return {
       models: config?.models,
       modes: config?.modes,
-      configOptions: config?.configOptions,
+      configOptions: projectBoundConfigOptionsForSelectedModel(config),
     };
   }
   return {
@@ -275,33 +274,66 @@ function projectAcpSessionConfigCatalog(
     },
     configOptions: mergeDoctorAndSessionConfigOptions(
       providerCatalog.configOptions,
-      config?.configOptions,
+      projectBoundConfigOptionsForSelectedModel(config),
     ),
   };
+}
+
+function projectBoundConfigOptionsForSelectedModel(
+  config: AcpSessionConfigVm | null | undefined,
+) {
+  const options = config?.configOptions;
+  const selected = (config?.modelOverrideId ?? config?.currentModelId)?.trim()
+    || catalogModelCurrentValue(options);
+  const liveOwner = catalogModelCurrentValue(options);
+  if (!selected || selected === liveOwner) return options;
+  const catalogs = config?.modelBoundCatalogs;
+  if (!catalogs || !Object.prototype.hasOwnProperty.call(catalogs, selected)) {
+    return options;
+  }
+  return spliceBoundOptions(options, catalogs[selected]);
+}
+
+function catalogModelCurrentValue(configOptions: unknown) {
+  for (const raw of arrayValue(configOptions) ?? []) {
+    const option = rawObject(raw);
+    const id = stringValue(option?.id)?.trim();
+    const category = stringValue(option?.category)?.trim();
+    if (id === "model" || category === "model") {
+      return stringValue(option?.currentValue)?.trim() || null;
+    }
+  }
+  return null;
+}
+
+function spliceBoundOptions(configOptions: unknown, bound: unknown) {
+  const options = arrayValue(configOptions) ?? [];
+  const nonBound = options.filter((raw) => {
+    const option = rawObject(raw);
+    const category = stringValue(option?.category)?.trim() || stringValue(option?.id)?.trim();
+    return !isAcpModelBoundConfigCategory(category);
+  });
+  const boundOptions = arrayValue(bound) ?? [];
+  const modelIndex = nonBound.findIndex((raw) => {
+    const option = rawObject(raw);
+    return stringValue(option?.id)?.trim() === "model"
+      || stringValue(option?.category)?.trim() === "model";
+  });
+  if (modelIndex < 0) return [...nonBound, ...boundOptions];
+  return [
+    ...nonBound.slice(0, modelIndex + 1),
+    ...boundOptions,
+    ...nonBound.slice(modelIndex + 1),
+  ];
 }
 
 function mergeDoctorAndSessionConfigOptions(
   providerOptions: AcpSelectConfigOptionVm[],
   sessionOptions: unknown,
 ) {
-  const doctorMerged = mergeProviderCatalogCurrentValues(providerOptions, sessionOptions);
-  const doctorModelId = findAcpCatalogModelId(providerOptions);
-  const sessionModelId = findAcpCatalogModelId(
-    (arrayValue(sessionOptions) ?? []).flatMap((raw) => {
-      const option = rawObject(raw);
-      if (!option) return [];
-      return [{
-        id: stringValue(option.id),
-        category: stringValue(option.category),
-        currentValue: stringValue(option.currentValue),
-      }];
-    }),
-  );
-  if (!sessionModelId || sessionModelId === doctorModelId) {
-    return doctorMerged;
-  }
-  const withoutDependents = doctorMerged.filter(
-    (option) => !isAcpModelBoundConfigCategory(option.category),
+  const doctorNonBound = mergeProviderCatalogCurrentValues(
+    providerOptions.filter((option) => !isAcpModelBoundConfigCategory(option.category)),
+    sessionOptions,
   );
   const sessionDependents = (arrayValue(sessionOptions) ?? []).flatMap((raw) => {
     const option = rawObject(raw);
@@ -324,14 +356,14 @@ function mergeDoctorAndSessionConfigOptions(
       })),
     }];
   });
-  const modelIndex = withoutDependents.findIndex((option) => (
+  const modelIndex = doctorNonBound.findIndex((option) => (
     option.id === "model" || option.category === "model"
   ));
-  if (modelIndex < 0) return [...withoutDependents, ...sessionDependents];
+  if (modelIndex < 0) return [...doctorNonBound, ...sessionDependents];
   return [
-    ...withoutDependents.slice(0, modelIndex + 1),
+    ...doctorNonBound.slice(0, modelIndex + 1),
     ...sessionDependents,
-    ...withoutDependents.slice(modelIndex + 1),
+    ...doctorNonBound.slice(modelIndex + 1),
   ];
 }
 
@@ -362,6 +394,32 @@ function catalogObservationValue(value: string | null | undefined) {
   if (epochMatch) return { raw, epoch: Number(epochMatch[1]) };
   const parsed = Date.parse(raw);
   return { raw, epoch: Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null };
+}
+
+function selectConfigOptionsFromUnknown(
+  value: unknown,
+): AcpSelectConfigOptionVm[] | undefined {
+  const list = arrayValue(value);
+  if (!list) return undefined;
+  return list.flatMap((raw) => {
+    const option = rawObject(raw);
+    const id = stringValue(option?.id)?.trim();
+    if (!id) return [];
+    const category = stringValue(option?.category)?.trim() || id;
+    const values = normalizeConfigOptionList(arrayValue(option?.options), category);
+    return [{
+      id,
+      category,
+      name: stringValue(option?.name),
+      description: stringValue(option?.description),
+      currentValue: stringValue(option?.currentValue),
+      options: values.map((item) => ({
+        value: item.id,
+        name: item.name,
+        description: item.description,
+      })),
+    }];
+  });
 }
 
 export function findAcpConfigOption(

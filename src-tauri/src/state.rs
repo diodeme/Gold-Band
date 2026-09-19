@@ -15,6 +15,9 @@ use gold_band::acp::commands::{
     scan_native_skill_commands,
 };
 use gold_band::acp::events::current_timestamp;
+use gold_band::acp::session_config::{
+    merge_doctor_authoring_capabilities, upsert_session_authoring_model_bound_catalog,
+};
 use gold_band::app::ActiveMetricTurn;
 use gold_band::app::observability::{ExecutionObservabilityState, RuntimeLifecycleBus};
 use gold_band::app::{
@@ -800,6 +803,39 @@ impl DesktopState {
         Ok(())
     }
 
+    pub fn upsert_agent_authoring_model_bound_catalog(
+        &self,
+        agent_id: &ManagedAgentId,
+        live_config_options: &serde_json::Value,
+    ) -> Result<bool> {
+        let _commit_guard = self.agent_config_diagnostic_commit_guard()?;
+        let snapshot = {
+            let mut diagnostics = self
+                .agent_diagnostics
+                .lock()
+                .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+            let Some(current) = diagnostics.get(agent_id).cloned() else {
+                return Ok(false);
+            };
+            let Some(capabilities) = upsert_session_authoring_model_bound_catalog(
+                current.capabilities.as_ref(),
+                live_config_options,
+            ) else {
+                return Ok(false);
+            };
+            diagnostics.insert(
+                agent_id.clone(),
+                ProviderDiagnosticSnapshot {
+                    capabilities: Some(capabilities),
+                    ..current
+                },
+            );
+            diagnostics.clone()
+        };
+        self.persist_agent_diagnostics(&snapshot)?;
+        Ok(true)
+    }
+
     pub fn agent_diagnostics(&self) -> Result<BTreeMap<ManagedAgentId, AgentDiagnosticState>> {
         Ok(self
             .agent_diagnostics
@@ -1086,11 +1122,31 @@ impl DesktopState {
                 .agent_diagnostics
                 .lock()
                 .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+            let diagnostic = if diagnostic.available {
+                let capabilities = merge_doctor_authoring_capabilities(
+                    diagnostics
+                        .get(agent_id)
+                        .and_then(|previous| previous.capabilities.as_ref()),
+                    diagnostic
+                        .capabilities
+                        .clone()
+                        .unwrap_or(serde_json::Value::Null),
+                );
+                ProviderDiagnosticSnapshot {
+                    capabilities: (!capabilities.is_null()).then_some(capabilities),
+                    ..diagnostic
+                }
+            } else {
+                diagnostic
+            };
             diagnostics.insert(agent_id.clone(), diagnostic.clone());
             diagnostics.clone()
         };
         self.persist_agent_diagnostics(&snapshot)?;
-        Ok(diagnostic)
+        snapshot
+            .get(agent_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("agent diagnostic snapshot missing after persist"))
     }
 
     pub fn refresh_all_agent_diagnostics(
@@ -2267,6 +2323,95 @@ mod tests {
 
         state.cancel_queued_agent_diagnostic(&agent_id).unwrap();
         assert!(state.queue_agent_diagnostic(&agent_id).unwrap());
+    }
+
+    #[test]
+    fn session_live_catalog_upserts_authoring_cache_and_skips_unchanged() {
+        let (_root, state) = desktop_state();
+        let agent_id = ManagedAgentId::from_str("claude-acp").unwrap();
+        {
+            let mut diagnostics = state.agent_diagnostics.lock().unwrap();
+            diagnostics.insert(
+                agent_id.clone(),
+                ProviderDiagnosticSnapshot {
+                    available: true,
+                    error: None,
+                    checked_at: "100Z".into(),
+                    capabilities: Some(serde_json::json!({
+                        "configOptions": [{
+                            "id": "model",
+                            "category": "model",
+                            "currentValue": "grok-4.6",
+                            "options": [
+                                { "value": "grok-4.6" },
+                                { "value": "gpt-5.6-luna" }
+                            ]
+                        }, {
+                            "id": "fast",
+                            "category": "model_config",
+                            "options": [{ "value": "false" }, { "value": "true" }]
+                        }]
+                    })),
+                },
+            );
+        }
+
+        let luna = serde_json::json!([{
+            "id": "model",
+            "category": "model",
+            "currentValue": "gpt-5.6-luna",
+            "options": [{ "value": "gpt-5.6-luna" }]
+        }, {
+            "id": "context",
+            "category": "model_config",
+            "name": "Context",
+            "options": [{ "value": "1m" }]
+        }]);
+        assert!(
+            state
+                .upsert_agent_authoring_model_bound_catalog(&agent_id, &luna)
+                .unwrap()
+        );
+        assert!(
+            !state
+                .upsert_agent_authoring_model_bound_catalog(&agent_id, &luna)
+                .unwrap()
+        );
+
+        let diagnostic = state
+            .agent_diagnostics()
+            .unwrap()
+            .get(&agent_id)
+            .cloned()
+            .unwrap();
+        let catalogs = diagnostic.capabilities.as_ref().unwrap()["modelBoundCatalogs"].clone();
+        assert!(catalogs.get("grok-4.6").is_some());
+        assert_eq!(
+            catalogs["gpt-5.6-luna"][0]["id"],
+            serde_json::json!("context")
+        );
+        let options = diagnostic.capabilities.as_ref().unwrap()["configOptions"]
+            .as_array()
+            .unwrap();
+        assert_eq!(options[0]["currentValue"], serde_json::json!("gpt-5.6-luna"));
+        assert_eq!(
+            options[0]["options"],
+            serde_json::json!([
+                { "value": "grok-4.6" },
+                { "value": "gpt-5.6-luna" }
+            ])
+        );
+        assert_eq!(options[1]["id"], serde_json::json!("context"));
+        assert!(options.iter().all(|option| option["id"] != "fast"));
+        assert_eq!(diagnostic.checked_at, "100Z");
+        assert!(
+            !state
+                .upsert_agent_authoring_model_bound_catalog(
+                    &ManagedAgentId::from_str("codex-acp").unwrap(),
+                    &luna
+                )
+                .unwrap()
+        );
     }
 
     #[test]

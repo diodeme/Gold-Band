@@ -3,7 +3,7 @@
   "source": {
     "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
     "registryVersion": "1.0.0",
-    "fetchedAt": "2026-09-17T18:47:50.021Z"
+    "fetchedAt": "2026-09-19T06:37:55.857Z"
   },
   "agents": [
     {
@@ -99,7 +99,7 @@
     {
       "id": "codebuddy-code",
       "label": "CodeBuddy",
-      "version": "2.154.0",
+      "version": "2.155.0",
       "description": "Tencent Cloud's official intelligent coding tool",
       "repository": null,
       "website": "https://www.codebuddy.cn/cli/",
@@ -108,7 +108,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@tencent-ai/codebuddy-code@2.154.0",
+        "@tencent-ai/codebuddy-code@2.155.0",
         "--acp"
       ],
       "env": {},
@@ -121,7 +121,7 @@
     {
       "id": "goose",
       "label": "Goose",
-      "version": "1.50.1",
+      "version": "1.51.0",
       "description": "A local, extensible, open source AI agent that automates engineering tasks",
       "repository": "https://github.com/block/goose",
       "website": "https://block.github.io/goose/",

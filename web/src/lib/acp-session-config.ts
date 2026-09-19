@@ -8,7 +8,9 @@ import {
   ACP_MODEL_CONFIG_CATEGORY,
   ACP_THOUGHT_LEVEL_CATEGORY,
   isAcpModelBoundConfigCategory,
+  rememberAcpModelBoundOverrides,
   remapAcpThoughtLevelOverride,
+  switchAcpModelBoundOverrides,
 } from "@/lib/acp-composite-config";
 
 export type AcpSessionConfigCategory = string;
@@ -37,6 +39,7 @@ export type AcpProviderConfigCatalog = {
   models: AcpModeVm[];
   modes: AcpModeVm[];
   configOptions: AcpSelectConfigOptionVm[];
+  modelBoundCatalogs?: Record<string, AcpSelectConfigOptionVm[]> | null;
 };
 
 export type AcpSessionConfigViewModel = {
@@ -72,6 +75,7 @@ export function mergeLiveAcpSessionConfig(
     permissionModeOverrideId: current.permissionModeOverrideId,
     autoAccept: current.autoAccept,
     configOptionOverrides: current.configOptionOverrides,
+    modelBoundOverrides: current.modelBoundOverrides,
     currentModelId: current.currentModelId,
     currentModelName: current.currentModelName,
     currentModeId: current.currentModeId,
@@ -79,11 +83,73 @@ export function mergeLiveAcpSessionConfig(
   };
 }
 
+export function switchAcpSessionModelBoundOverrides(
+  config: AcpSessionConfigVm | null | undefined,
+  nextModelId: string | null,
+  authoringModelBoundCatalogs?: Record<string, AcpSelectConfigOptionVm[]> | null,
+) {
+  const switched = switchAcpModelBoundOverrides({
+    remembered: config?.modelBoundOverrides,
+    previousModelId: config?.modelOverrideId ?? config?.currentModelId,
+    nextModelId,
+    currentOverrides: config?.configOptionOverrides,
+    configOptions: selectConfigOptionsFromUnknown(config?.configOptions),
+    modelBoundCatalogs: mergedAcpModelBoundCatalogs(
+      config?.modelBoundCatalogs,
+      authoringModelBoundCatalogs,
+    ),
+  });
+  return {
+    configOptionOverrides: switched.overrides,
+    modelBoundOverrides: switched.remembered,
+  };
+}
+
+export function rememberAcpSessionAppliedOverrides(
+  config: AcpSessionConfigVm | null | undefined,
+  overrides: Record<string, string>,
+) {
+  return rememberAcpModelBoundOverrides(
+    config?.modelBoundOverrides,
+    config?.modelOverrideId ?? config?.currentModelId,
+    overrides,
+  );
+}
+
+function sessionModelBoundCatalogs(
+  catalogs: Record<string, unknown[]> | null | undefined,
+) {
+  if (!catalogs) return undefined;
+  return Object.fromEntries(
+    Object.entries(catalogs).map(([modelId, options]) => [
+      modelId,
+      selectConfigOptionsFromUnknown(options) ?? [],
+    ]),
+  );
+}
+
+function mergedAcpModelBoundCatalogs(
+  session: Record<string, unknown[]> | null | undefined,
+  authoring: Record<string, AcpSelectConfigOptionVm[]> | null | undefined,
+): Record<string, AcpSelectConfigOptionVm[]> | undefined {
+  const sessionMapped = sessionModelBoundCatalogs(session);
+  if (!sessionMapped && !authoring) return undefined;
+  return {
+    ...(authoring ?? {}),
+    ...(sessionMapped ?? {}),
+  };
+}
+
 export function createAcpSessionConfigViewModel(
   config: AcpSessionConfigVm | null | undefined,
   providerCatalog: AcpProviderConfigCatalog | null | undefined = null,
+  authoringModelBoundCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined = undefined,
 ): AcpSessionConfigViewModel {
-  const projectedCatalog = projectAcpSessionConfigCatalog(config, providerCatalog);
+  const projectedCatalog = projectAcpSessionConfigCatalog(
+    config,
+    providerCatalog,
+    authoringModelBoundCatalogs ?? providerCatalog?.modelBoundCatalogs,
+  );
   const currentModelId = config?.currentModelId ?? null;
   const currentModelName = config?.currentModelName ?? null;
   const currentModeId = config?.currentModeId ?? null;
@@ -109,6 +175,7 @@ export function createAcpSessionConfigViewModel(
   const remappedOverrides = remapAcpThoughtLevelOverride(
     config?.configOptionOverrides,
     selectConfigOptionsFromUnknown(projectedCatalog.configOptions),
+    selectConfigOptionsFromUnknown(config?.configOptions),
   );
   const catalogGroups = normalizeAcpSelectConfigGroups(
     projectedCatalog.configOptions,
@@ -213,6 +280,16 @@ function configOptionValueName(
     ?.name ?? null;
 }
 
+export function acpAuthoringModelBoundCatalogs(
+  registry: AgentRegistryVm | null | undefined,
+  provider: string | null | undefined,
+): Record<string, AcpSelectConfigOptionVm[]> | undefined {
+  const agentType = provider?.trim();
+  if (!agentType) return undefined;
+  return registry?.agents.find((agent) => agent.agentType === agentType)?.modelBoundCatalogs
+    ?? undefined;
+}
+
 export function acpProviderConfigCatalog(
   registry: AgentRegistryVm | null | undefined,
   provider: string | null | undefined,
@@ -225,6 +302,7 @@ export function acpProviderConfigCatalog(
     models: agent.supportedModels ?? [],
     modes: agent.supportedModes ?? [],
     configOptions: agent.configOptions ?? [],
+    modelBoundCatalogs: agent.modelBoundCatalogs ?? null,
   };
 }
 
@@ -246,6 +324,7 @@ export function isAcpCatalogObservationNewer(
 function projectAcpSessionConfigCatalog(
   config: AcpSessionConfigVm | null | undefined,
   providerCatalog: AcpProviderConfigCatalog | null | undefined,
+  authoringModelBoundCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined,
 ) {
   if (!providerCatalog || !isAcpCatalogObservationNewer(
     providerCatalog.observedAt,
@@ -254,7 +333,10 @@ function projectAcpSessionConfigCatalog(
     return {
       models: config?.models,
       modes: config?.modes,
-      configOptions: projectBoundConfigOptionsForSelectedModel(config),
+      configOptions: projectBoundConfigOptionsForSelectedModel(
+        config,
+        authoringModelBoundCatalogs,
+      ),
     };
   }
   return {
@@ -274,24 +356,104 @@ function projectAcpSessionConfigCatalog(
     },
     configOptions: mergeDoctorAndSessionConfigOptions(
       providerCatalog.configOptions,
-      projectBoundConfigOptionsForSelectedModel(config),
+      projectBoundConfigOptionsForSelectedModel(config, authoringModelBoundCatalogs),
     ),
   };
 }
 
 function projectBoundConfigOptionsForSelectedModel(
   config: AcpSessionConfigVm | null | undefined,
+  authoringModelBoundCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined,
 ) {
   const options = config?.configOptions;
   const selected = (config?.modelOverrideId ?? config?.currentModelId)?.trim()
     || catalogModelCurrentValue(options);
   const liveOwner = catalogModelCurrentValue(options);
-  if (!selected || selected === liveOwner) return options;
-  const catalogs = config?.modelBoundCatalogs;
-  if (!catalogs || !Object.prototype.hasOwnProperty.call(catalogs, selected)) {
+  const bound = lookupModelBoundCatalog(
+    selected,
+    config?.modelBoundCatalogs,
+    authoringModelBoundCatalogs,
+  );
+  if (
+    selected
+    && selected === liveOwner
+    && hasModelBoundConfigRows(options)
+    && !liveBoundRowsBelongToAnotherCachedModel(
+      options,
+      selected,
+      config?.modelBoundCatalogs,
+      authoringModelBoundCatalogs,
+    )
+  ) {
     return options;
   }
-  return spliceBoundOptions(options, catalogs[selected]);
+  if (bound !== undefined) {
+    return spliceBoundOptions(options, bound);
+  }
+  return options;
+}
+
+function liveBoundRowsBelongToAnotherCachedModel(
+  options: unknown,
+  selected: string,
+  sessionCatalogs: Record<string, unknown[]> | null | undefined,
+  authoringCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined,
+) {
+  const liveIds = modelBoundCatalogIds(options);
+  if (liveIds.length === 0) return false;
+  const selectedIds = modelBoundCatalogIds(lookupModelBoundCatalog(
+    selected,
+    sessionCatalogs,
+    authoringCatalogs,
+  ));
+  if (selectedIds.length > 0 && sameBoundCatalogIds(liveIds, selectedIds)) {
+    return false;
+  }
+  const catalogs = {
+    ...(authoringCatalogs ?? {}),
+    ...sessionModelBoundCatalogs(sessionCatalogs),
+  };
+  return Object.entries(catalogs).some(([modelId, catalog]) => (
+    modelId !== selected && sameBoundCatalogIds(liveIds, modelBoundCatalogIds(catalog))
+  ));
+}
+
+function modelBoundCatalogIds(options: unknown) {
+  return (arrayValue(options) ?? []).flatMap((raw) => {
+    const option = rawObject(raw);
+    const id = stringValue(option?.id)?.trim();
+    const category = stringValue(option?.category)?.trim() || id;
+    if (!id || !isAcpModelBoundConfigCategory(category)) return [];
+    return [id];
+  });
+}
+
+function sameBoundCatalogIds(left: string[], right: string[]) {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
+function lookupModelBoundCatalog(
+  selected: string | null | undefined,
+  sessionCatalogs: Record<string, unknown[]> | null | undefined,
+  authoringCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined,
+) {
+  const modelId = selected?.trim();
+  if (!modelId) return undefined;
+  if (sessionCatalogs && Object.prototype.hasOwnProperty.call(sessionCatalogs, modelId)) {
+    return sessionCatalogs[modelId];
+  }
+  if (authoringCatalogs && Object.prototype.hasOwnProperty.call(authoringCatalogs, modelId)) {
+    return authoringCatalogs[modelId];
+  }
+  return undefined;
+}
+
+function hasModelBoundConfigRows(configOptions: unknown) {
+  return (arrayValue(configOptions) ?? []).some((raw) => {
+    const option = rawObject(raw);
+    const category = stringValue(option?.category)?.trim() || stringValue(option?.id)?.trim();
+    return isAcpModelBoundConfigCategory(category);
+  });
 }
 
 function catalogModelCurrentValue(configOptions: unknown) {
@@ -313,7 +475,11 @@ function spliceBoundOptions(configOptions: unknown, bound: unknown) {
     const category = stringValue(option?.category)?.trim() || stringValue(option?.id)?.trim();
     return !isAcpModelBoundConfigCategory(category);
   });
-  const boundOptions = arrayValue(bound) ?? [];
+  const boundOptions = (arrayValue(bound) ?? []).map((raw) => {
+    const option = rawObject(raw);
+    if (!option || stringValue(option.type)?.trim()) return raw;
+    return { ...option, type: "select" };
+  });
   const modelIndex = nonBound.findIndex((raw) => {
     const option = rawObject(raw);
     return stringValue(option?.id)?.trim() === "model"

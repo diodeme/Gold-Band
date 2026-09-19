@@ -871,6 +871,8 @@ pub struct ConversationDirectConfigVm {
     pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -890,15 +892,21 @@ pub struct ConversationAutoConfigVm {
     pub bootstrap_model_id: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub bootstrap_config_options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bootstrap_model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
     pub acceptance_model_id: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub acceptance_config_options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub acceptance_model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
     pub available_agents: Option<Vec<ConversationDynamicAgentRefVm>>,
     pub routing_prompt: Option<String>,
     pub allowed_workflows: Option<Vec<ConversationAllowedWorkflowRefVm>>,
@@ -919,6 +927,8 @@ pub struct ConversationDynamicAgentRefVm {
     pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4606,6 +4616,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
                                 .map(str::to_string),
                             auto_accept: agent.auto_accept,
                             config_options: agent.config_options.clone(),
+                            model_bound_overrides: agent.model_bound_overrides.clone(),
                         })
                     })
                     .collect::<Vec<_>>()
@@ -4618,6 +4629,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
                     permission_mode: None,
                     auto_accept: false,
                     config_options: BTreeMap::new(),
+                    model_bound_overrides: Default::default(),
                 }]
             });
         AiDynamicAgentStrategy::Dynamic {
@@ -4628,9 +4640,15 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
             bootstrap_config_options: config
                 .map(|config| config.bootstrap_config_options.clone())
                 .unwrap_or_default(),
+            bootstrap_model_bound_overrides: config
+                .map(|config| config.bootstrap_model_bound_overrides.clone())
+                .unwrap_or_default(),
             acceptance_model: acceptance_model_id.map(str::to_string),
             acceptance_config_options: config
                 .map(|config| config.acceptance_config_options.clone())
+                .unwrap_or_default(),
+            acceptance_model_bound_overrides: config
+                .map(|config| config.acceptance_model_bound_overrides.clone())
                 .unwrap_or_default(),
             routing_prompt: config
                 .and_then(|c| c.routing_prompt.as_deref())
@@ -4658,6 +4676,9 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
             agent_strategy,
             config_options: config
                 .map(|config| config.config_options.clone())
+                .unwrap_or_default(),
+            model_bound_overrides: config
+                .map(|config| config.model_bound_overrides.clone())
                 .unwrap_or_default(),
             allowed_profiles: config
                 .and_then(|c| c.allowed_profiles.clone())
@@ -6993,15 +7014,18 @@ mod tests {
                 "reasoning_effort".to_string(),
                 "high".to_string(),
             )]),
+            bootstrap_model_bound_overrides: Default::default(),
             acceptance_model_id: Some("accept-model".to_string()),
             acceptance_config_options: std::collections::BTreeMap::from([(
                 "reasoning_effort".to_string(),
                 "medium".to_string(),
             )]),
+            acceptance_model_bound_overrides: Default::default(),
             model_id: None,
             permission_mode: Some("acceptEdits".to_string()),
             auto_accept: false,
             config_options: Default::default(),
+            model_bound_overrides: Default::default(),
             available_agents: Some(vec![ConversationDynamicAgentRefVm {
                 provider: "claude-acp".to_string(),
                 model: Some("worker-model".to_string()),
@@ -7011,6 +7035,7 @@ mod tests {
                     "reasoning_effort".to_string(),
                     "low".to_string(),
                 )]),
+                model_bound_overrides: Default::default(),
             }]),
             routing_prompt: Some("Pick worker models explicitly".to_string()),
             allowed_workflows: None,
@@ -7082,18 +7107,22 @@ mod tests {
                 bootstrap_agent_type: Some("agent-bootstrap".to_string()),
                 bootstrap_model_id: None,
                 bootstrap_config_options: Default::default(),
+                bootstrap_model_bound_overrides: Default::default(),
                 acceptance_model_id: None,
                 acceptance_config_options: Default::default(),
+                acceptance_model_bound_overrides: Default::default(),
                 model_id: None,
                 permission_mode: None,
                 auto_accept: false,
                 config_options: Default::default(),
+                model_bound_overrides: Default::default(),
                 available_agents: Some(vec![ConversationDynamicAgentRefVm {
                     provider: "agent-worker".to_string(),
                     model: None,
                     permission_mode: None,
                     auto_accept: false,
                     config_options: Default::default(),
+                    model_bound_overrides: Default::default(),
                 }]),
                 routing_prompt: None,
                 allowed_workflows: None,
@@ -7132,6 +7161,7 @@ mod tests {
             permission_mode: Some("ask".to_string()),
             auto_accept: false,
             config_options: Default::default(),
+            model_bound_overrides: Default::default(),
         });
 
         assert_eq!(workflow.entry, "direct-agent");
@@ -7158,6 +7188,7 @@ mod tests {
             permission_mode: None,
             auto_accept: false,
             config_options: Default::default(),
+            model_bound_overrides: Default::default(),
         });
 
         let created = app.create_task_from_requirement(CreateTaskInput {
@@ -7213,6 +7244,7 @@ mod tests {
                 permission_mode: None,
                 auto_accept: false,
                 config_options: Default::default(),
+                model_bound_overrides: Default::default(),
             }),
             auto_config: None,
             attachment_paths: None,
@@ -7281,6 +7313,7 @@ mod tests {
                 permission_mode: None,
                 auto_accept: false,
                 config_options: Default::default(),
+                model_bound_overrides: Default::default(),
             }),
             auto_config: None,
             attachment_paths: None,
@@ -7312,6 +7345,7 @@ mod tests {
                 permission_mode: None,
                 auto_accept: false,
                 config_options: Default::default(),
+                model_bound_overrides: Default::default(),
             }),
             auto_config: None,
             attachment_paths: None,
@@ -7355,6 +7389,7 @@ mod tests {
                 permission_mode: None,
                 auto_accept: false,
                 config_options: Default::default(),
+                model_bound_overrides: Default::default(),
             }),
             auto_config: None,
             attachment_paths: Some(vec![attachment.to_string()]),
@@ -7397,6 +7432,7 @@ mod tests {
                 permission_mode: None,
                 auto_accept: false,
                 config_options: Default::default(),
+                model_bound_overrides: Default::default(),
             }),
             auto_config: None,
             attachment_paths: Some(vec![app.paths.repo_root.join("missing.txt").to_string()]),

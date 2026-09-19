@@ -202,6 +202,7 @@ fn configured_bindings(workflow: &WorkflowDsl) -> WorkflowModelBindings {
                     permission_mode_id: None,
                     auto_accept: false,
                     config_options: BTreeMap::new(),
+                    model_bound_overrides: Default::default(),
                 })
             })
             .collect(),
@@ -275,6 +276,7 @@ fn create_task_accepts_lightweight_authoring_workflow_with_model_bindings() {
                     permission_mode_id: None,
                     auto_accept: false,
                     config_options: BTreeMap::new(),
+                    model_bound_overrides: Default::default(),
                 })
             })
             .collect(),

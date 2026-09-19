@@ -110,7 +110,7 @@ AUTO 模式本质上是一个只有 AI-DYNAMIC 节点的工作流。
 ## ACP 模型配置
 
 - Direct/AUTO 发起会话、工作流节点 Inspector、AUTO 固定 Agent 模板配置与 ACP 已建立后的追问 composer 共用同一个模型复合选择器：单一“模型”触发器的第一层提供“模型”、思考强度，以及当前模型的其余 `model_config`（如 Context、Fast），第二层展示对应选项；权限模式保持独立，并在同一列表底部叠加 Auto Accept。追问区虽然嵌套在 PromptInput 内，但点击配置按钮、菜单项等交互元素时不得触发输入框聚焦，弹层位置必须跟随触发器，不允许落到抽屉或页面左上角。
-- 思考强度与 Fast 都属于通用 ACP config option override：能力发现分别识别 `category=thought_level` 与 `category=model_config`。下发使用当前目录的 option id；思考强度的稳定身份是档位 value，切模型后若新目录仍有该档则 remap 到新 id。`model_config` 按 option id 保留，不得把 Fast 映射成 Context。作者态切模型时保留当前档；真正 apply 后新目录没有该项或没有该档才丢弃并写 timeline 分割线。工作流模板的普通 Worker 把这些 option 保存到本机模型绑定；AI-DYNAMIC 与会话 AUTO 继续使用各自现有的运行时 `configOptions`。运行解析后仍通过既有 `BTreeMap<String, String>` 管道传给 provider。
+- 思考强度与 Fast 都属于通用 ACP config option override：能力发现分别识别 `category=thought_level` 与 `category=model_config`。下发使用当前目录的 option id；思考强度的稳定身份是档位 value，remap 要求两边都是 `thought_level`，切模型后若新目录任一 thought 项仍有该档则接到该项。非 `thought_level`（含 `model_config`）只比 option id，不得把 Fast 映射成 Context 或 `thinking`。作者态切模型时保留当前档；真正 apply 后新目录没有该项或没有该档才丢弃并写 timeline 分割线。工作流模板的普通 Worker 把这些 option 保存到本机模型绑定；AI-DYNAMIC 与会话 AUTO 继续使用各自现有的运行时 `configOptions`。运行解析后仍通过既有 `BTreeMap<String, String>` 管道传给 provider。
 - 复合选择器的子菜单开合由 Radix DropdownMenu 原生的指针、点击与键盘状态统一管理，业务组件不得重复绑定点击切换，避免一次点击发生两次状态翻转。
 - Composer 内相邻的模型与权限配置菜单统一使用非模态 DropdownMenu 交互；无论当前展开哪一个，单击另一个都必须在同一次点击中完成关闭旧菜单并打开新菜单，不允许使用会消费第一次外部点击的模态 Select 弹层。
 - 发起会话前允许模型、权限、Fast 和思考强度回到“不指定”；进入追问 session 后，“不指定”只在对应显式 override 尚未建立时提供，任一配置选择具体值后便不能再清空，只能切换到其他具体值。

@@ -67,6 +67,8 @@ pub struct WorkerModelBinding {
     pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
@@ -297,6 +299,7 @@ pub fn migrate_authoring_workflow(
                         .filter(|value| !value.trim().is_empty()),
                     auto_accept: worker.auto_accept,
                     config_options: worker.config_options.clone(),
+                    model_bound_overrides: Default::default(),
                 });
             changed = true;
         }
@@ -602,6 +605,7 @@ mod tests {
             permission_mode_id: None,
             auto_accept: false,
             config_options: BTreeMap::new(),
+            model_bound_overrides: Default::default(),
         };
         let mut bindings = WorkflowModelBindings {
             definition_revision: String::new(),
@@ -642,6 +646,7 @@ mod tests {
             permission_mode_id: None,
             auto_accept: false,
             config_options: BTreeMap::new(),
+            model_bound_overrides: Default::default(),
         };
         let bindings = WorkflowModelBindings {
             definition_revision: String::new(),
@@ -801,6 +806,7 @@ mod tests {
                 permission_mode_id: None,
                 auto_accept: false,
                 config_options,
+                model_bound_overrides: Default::default(),
             }],
         };
         (workflow(node), bindings)

@@ -14,6 +14,7 @@ import {
   nextAcpCompositeSection,
   remapAcpThoughtLevelOverride,
   retainAcpModelBoundOverrides,
+  switchAcpModelBoundOverrides,
   updateAcpConfigOptionOverride,
 } from '@/components/acp/AcpModelThoughtSelects';
 import {
@@ -282,6 +283,78 @@ describe('ACP composite model selector', () => {
       context: '1m',
       effort: 'high',
     }, catalogs).map((section) => section.id)).toEqual(['reasoning', 'context', 'fast']);
+  });
+
+  it('restores Grok Extra High after switching to Mini whose catalog cannot keep it', () => {
+    const options = [
+      {
+        id: 'model',
+        category: 'model',
+        currentValue: 'grok-4.6',
+        options: [
+          { value: 'grok-4.6', name: 'Cursor Grok 4.6' },
+          { value: 'gpt-5-mini', name: 'GPT-5 Mini' },
+        ],
+      },
+    ];
+    const catalogs = {
+      'grok-4.6': [
+        {
+          id: 'effort',
+          category: 'thought_level',
+          options: [
+            { value: 'high', name: 'High' },
+            { value: 'extra-high', name: 'Extra High' },
+          ],
+        },
+        {
+          id: 'fast',
+          category: 'model_config',
+          name: 'Fast',
+          options: [{ value: 'true', name: 'On' }, { value: 'false', name: 'Off' }],
+        },
+      ],
+      'gpt-5-mini': [
+        {
+          id: 'effort',
+          category: 'thought_level',
+          options: [
+            { value: 'low', name: 'Low' },
+            { value: 'high', name: 'High' },
+          ],
+        },
+      ],
+    };
+    const strippedOnMini = retainAcpModelBoundOverrides(
+      { effort: 'extra-high', fast: 'true' },
+      options,
+      'gpt-5-mini',
+      catalogs,
+    );
+    expect(strippedOnMini).toEqual({});
+    expect(retainAcpModelBoundOverrides(strippedOnMini, options, 'grok-4.6', catalogs)).toEqual({});
+
+    const toMini = switchAcpModelBoundOverrides({
+      remembered: {},
+      previousModelId: 'grok-4.6',
+      nextModelId: 'gpt-5-mini',
+      currentOverrides: { effort: 'extra-high', fast: 'true' },
+      configOptions: options,
+      modelBoundCatalogs: catalogs,
+    });
+    expect(toMini.overrides).toEqual({});
+    expect(toMini.remembered['grok-4.6']).toEqual({ effort: 'extra-high', fast: 'true' });
+    expect(toMini.remembered['gpt-5-mini']).toEqual({});
+
+    const toGrok = switchAcpModelBoundOverrides({
+      remembered: toMini.remembered,
+      previousModelId: 'gpt-5-mini',
+      nextModelId: 'grok-4.6',
+      currentOverrides: toMini.overrides,
+      configOptions: options,
+      modelBoundCatalogs: catalogs,
+    });
+    expect(toGrok.overrides).toEqual({ effort: 'extra-high', fast: 'true' });
   });
 
   it('shows one unspecified state until a model or thought level is selected', () => {
@@ -713,6 +786,77 @@ describe('ACP composite model selector', () => {
       { effort: 'high', fast: 'false' },
       lunaCatalog,
     )).toEqual({ reasoning: 'high', fast: 'false' });
+    expect(remapAcpThoughtLevelOverride(
+      { effort: 'high', fast: 'false' },
+      [
+        {
+          id: 'thinking',
+          category: 'thought_level',
+          name: 'Thinking',
+          options: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'On' }],
+        },
+        {
+          id: 'effort',
+          category: 'thought_level',
+          name: 'Effort',
+          options: [{ value: 'high', name: 'High' }],
+        },
+        {
+          id: 'context',
+          category: 'model_config',
+          name: 'Context',
+          options: [{ value: '1m', name: '1M' }],
+        },
+      ],
+      [
+        {
+          id: 'effort',
+          category: 'thought_level',
+          options: [{ value: 'high', name: 'High' }, { value: 'extra-high', name: 'Extra High' }],
+        },
+        {
+          id: 'fast',
+          category: 'model_config',
+          name: 'Fast',
+          options: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'On' }],
+        },
+      ],
+    )).toEqual({ effort: 'high', fast: 'false' });
+    expect(remapAcpThoughtLevelOverride(
+      { reasoning: 'high', fast: 'false' },
+      [
+        {
+          id: 'thinking',
+          category: 'thought_level',
+          name: 'Thinking',
+          options: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'On' }],
+        },
+        {
+          id: 'effort',
+          category: 'thought_level',
+          name: 'Effort',
+          options: [{ value: 'high', name: 'High' }],
+        },
+        {
+          id: 'context',
+          category: 'model_config',
+          name: 'Context',
+          options: [{ value: '1m', name: '1M' }],
+        },
+      ],
+      [
+        {
+          id: 'reasoning',
+          category: 'thought_level',
+          options: [{ value: 'medium', name: 'Medium' }, { value: 'high', name: 'High' }],
+        },
+        {
+          id: 'fast',
+          category: 'model_config',
+          options: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'On' }],
+        },
+      ],
+    )).toEqual({ effort: 'high', fast: 'false' });
     expect(acpCompositeConfigSections(
       lunaCatalog,
       'gpt-5.6-luna',

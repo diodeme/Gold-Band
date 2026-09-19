@@ -912,6 +912,8 @@ pub struct AcpSessionConfigVm {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_accept: bool,
     pub config_option_overrides: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub model_bound_overrides: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     pub current_model_id: Option<String>,
     pub current_model_name: Option<String>,
     pub current_mode_id: Option<String>,
@@ -7004,6 +7006,14 @@ pub(crate) fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSe
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default();
+    let model_bound_overrides: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, String>,
+    > = session
+        .get("modelBoundOverrides")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
     let current_model_id = config_current_value(config_options.as_ref(), "model").or_else(|| {
         models
             .as_ref()
@@ -7031,6 +7041,7 @@ pub(crate) fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSe
         && permission_mode_override_id.is_none()
         && !auto_accept
         && config_option_overrides.is_empty()
+        && model_bound_overrides.is_empty()
         && current_model_id.is_none()
         && current_model_name.is_none()
         && current_mode_id.is_none()
@@ -7048,6 +7059,7 @@ pub(crate) fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSe
         permission_mode_override_id,
         auto_accept,
         config_option_overrides,
+        model_bound_overrides,
         current_model_id,
         current_model_name,
         current_mode_id,
@@ -9440,6 +9452,23 @@ mod tests {
         assert_eq!(
             config.model_bound_catalogs.as_ref().unwrap()["grok-4.6"][0]["id"],
             json!("fast")
+        );
+    }
+
+    #[test]
+    fn acp_session_config_exposes_session_model_bound_overrides() {
+        let config = acp_session_config_vm(&json!({
+            "modelOverride": "gpt-5-mini",
+            "configOptionOverrides": {},
+            "modelBoundOverrides": {
+                "grok-4.6": { "effort": "extra-high", "fast": "true" }
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            config.model_bound_overrides["grok-4.6"]["effort"],
+            "extra-high"
         );
     }
 

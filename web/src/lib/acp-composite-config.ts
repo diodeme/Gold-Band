@@ -86,7 +86,7 @@ export function acpCompositeConfigSections(
     modelBoundCatalogs,
     selectedModelId,
   );
-  const remapped = remapAcpThoughtLevelOverride(values, projected);
+  const remapped = remapAcpThoughtLevelOverride(values, projected, configOptions);
   const bound = projected.filter((option) => (
     isAcpModelBoundConfigCategory(option.category)
     && option.options.length > 0
@@ -111,28 +111,37 @@ export function acpCompositeConfigSections(
   });
 }
 
+function findAcpThoughtLevelOptionWithValue(
+  configOptions: AcpSelectConfigOptionVm[] | null | undefined,
+  value: string,
+) {
+  return (configOptions ?? []).find((option) => (
+    option.category === ACP_THOUGHT_LEVEL_CATEGORY
+    && option.options.some((candidate) => candidate.value === value)
+  )) ?? null;
+}
+
 export function remapAcpThoughtLevelOverride(
   overrides: Record<string, string> | null | undefined,
   configOptions: AcpSelectConfigOptionVm[] | null | undefined,
+  sourceOptions: AcpSelectConfigOptionVm[] | null | undefined = undefined,
 ): Record<string, string> {
   const next: Record<string, string> = { ...(overrides ?? {}) };
-  const thought = findAcpThoughtLevel(configOptions);
-  if (!thought) return next;
-  const current = next[thought.id]?.trim();
-  if (current && thought.options.some((option) => option.value === current)) {
-    return next;
-  }
-  const catalogIds = new Set((configOptions ?? []).map((option) => option.id));
-  for (const [optionId, value] of Object.entries(next)) {
-    if (optionId === thought.id) continue;
-    const catalogOption = (configOptions ?? []).find((option) => option.id === optionId);
-    if (catalogIds.has(optionId) && catalogOption?.category !== ACP_THOUGHT_LEVEL_CATEGORY) {
+  const targetOptions = configOptions ?? [];
+  const sourceList = sourceOptions ?? [];
+  for (const [optionId, raw] of Object.entries({ ...next })) {
+    const value = raw.trim();
+    if (!value) continue;
+    const targetOption = targetOptions.find((option) => option.id === optionId);
+    if (targetOption) continue;
+    const sourceOption = sourceList.find((option) => option.id === optionId);
+    if (sourceOption && sourceOption.category !== ACP_THOUGHT_LEVEL_CATEGORY) {
       continue;
     }
-    if (!thought.options.some((option) => option.value === value)) continue;
+    const match = findAcpThoughtLevelOptionWithValue(targetOptions, value);
+    if (!match || match.id === optionId) continue;
     delete next[optionId];
-    next[thought.id] = value;
-    break;
+    next[match.id] = value;
   }
   return next;
 }
@@ -148,7 +157,7 @@ export function retainAcpModelBoundOverrides(
     modelBoundCatalogs,
     selectedModelId,
   );
-  const next = remapAcpThoughtLevelOverride(overrides, projected);
+  const next = remapAcpThoughtLevelOverride(overrides, projected, configOptions);
   const projectedIds = new Set(projected.map((option) => option.id));
   for (const option of projected) {
     if (!isAcpModelBoundConfigCategory(option.category)) continue;
@@ -166,6 +175,68 @@ export function retainAcpModelBoundOverrides(
     }
   }
   return next;
+}
+
+export type AcpModelBoundOverrideMap = Record<string, Record<string, string>>;
+
+export function rememberAcpModelBoundOverrides(
+  remembered: AcpModelBoundOverrideMap | null | undefined,
+  modelId: string | null | undefined,
+  overrides: Record<string, string> | null | undefined,
+): AcpModelBoundOverrideMap {
+  const selected = modelId?.trim();
+  if (!selected) return { ...(remembered ?? {}) };
+  return {
+    ...(remembered ?? {}),
+    [selected]: { ...(overrides ?? {}) },
+  };
+}
+
+export function restoreAcpModelBoundOverrides(
+  remembered: AcpModelBoundOverrideMap | null | undefined,
+  nextModelId: string | null | undefined,
+  fallbackOverrides: Record<string, string> | null | undefined,
+  configOptions: AcpSelectConfigOptionVm[] | null | undefined,
+  modelBoundCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined = undefined,
+): Record<string, string> {
+  const selected = nextModelId?.trim() || '';
+  const source = selected && remembered && Object.prototype.hasOwnProperty.call(remembered, selected)
+    ? remembered[selected]
+    : fallbackOverrides;
+  return retainAcpModelBoundOverrides(source, configOptions, nextModelId, modelBoundCatalogs);
+}
+
+export function switchAcpModelBoundOverrides(input: {
+  remembered: AcpModelBoundOverrideMap | null | undefined;
+  previousModelId: string | null | undefined;
+  nextModelId: string | null | undefined;
+  currentOverrides: Record<string, string> | null | undefined;
+  configOptions: AcpSelectConfigOptionVm[] | null | undefined;
+  modelBoundCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined;
+}): { overrides: Record<string, string>; remembered: AcpModelBoundOverrideMap } {
+  const remembered = rememberAcpModelBoundOverrides(
+    input.remembered,
+    input.previousModelId,
+    input.currentOverrides,
+  );
+  const overrides = restoreAcpModelBoundOverrides(
+    remembered,
+    input.nextModelId,
+    input.currentOverrides,
+    input.configOptions,
+    input.modelBoundCatalogs,
+  );
+  return {
+    remembered: rememberAcpModelBoundOverrides(remembered, input.nextModelId, overrides),
+    overrides,
+  };
+}
+
+export function optionalAcpModelBoundOverrides(
+  remembered: AcpModelBoundOverrideMap | null | undefined,
+): AcpModelBoundOverrideMap | undefined {
+  if (!remembered) return undefined;
+  return Object.keys(remembered).length > 0 ? remembered : undefined;
 }
 
 export type AcpConfigOptionNameTranslate = (

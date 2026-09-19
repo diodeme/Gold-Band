@@ -9236,6 +9236,21 @@ fn acp_session_config_catalog_context(
     }
 }
 
+fn acp_authoring_model_bound_catalogs(
+    app: &App,
+    locator: &AttemptLocator,
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    acp_turn_provider_id(app, locator)
+        .and_then(|provider| app.provider_diagnostics().remove(&provider))
+        .and_then(|diagnostic| diagnostic.capabilities)
+        .map(|capabilities| {
+            gold_band::acp::session_config::model_bound_catalogs_from_capabilities_value(Some(
+                &capabilities,
+            ))
+        })
+        .unwrap_or_default()
+}
+
 fn acp_session_config_option_catalog<'a>(
     catalogs: &'a AcpSessionConfigCatalogContext,
     option_id: &str,
@@ -9469,6 +9484,7 @@ pub async fn set_acp_session_model(
         )
     })?;
     let catalogs = acp_session_config_catalog_context(&app, &locator, &value);
+    let authoring_catalogs = acp_authoring_model_bound_catalogs(&app, &locator);
     if let Some(model_id) = model_id
         .as_deref()
         .map(str::trim)
@@ -9477,20 +9493,14 @@ pub async fn set_acp_session_model(
         validate_acp_catalog_model(catalogs.effective(), model_id)?;
     }
 
-    if let Some(session) = value.as_object_mut() {
-        if let Some(model_id) = model_id
+    gold_band::acp::session_config::apply_session_snapshot_model_switch_with_authoring(
+        &mut value,
+        model_id
             .as_deref()
             .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            session.insert(
-                "modelOverride".to_string(),
-                serde_json::Value::String(model_id.to_string()),
-            );
-        } else {
-            session.remove("modelOverride");
-        }
-    }
+            .filter(|value| !value.is_empty()),
+        Some(&authoring_catalogs),
+    );
     if let Some(model_id) = model_id
         .as_deref()
         .map(str::trim)
@@ -9502,24 +9512,17 @@ pub async fn set_acp_session_model(
                 serde_json::Value::String(model_id.to_string()),
             );
         }
-        set_acp_config_option_current_value(&mut value, "model", model_id);
     }
     apply_acp_catalog_refresh_marker(&mut value, &catalogs);
     value = gold_band::acp::events::patch_session_metadata(&path, |current| {
-        if let Some(session) = current.as_object_mut() {
-            if let Some(model_id) = model_id
+        gold_band::acp::session_config::apply_session_snapshot_model_switch_with_authoring(
+            current,
+            model_id
                 .as_deref()
                 .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                session.insert(
-                    "modelOverride".to_string(),
-                    serde_json::Value::String(model_id.to_string()),
-                );
-            } else {
-                session.remove("modelOverride");
-            }
-        }
+                .filter(|value| !value.is_empty()),
+            Some(&authoring_catalogs),
+        );
         if let Some(model_id) = model_id
             .as_deref()
             .map(str::trim)
@@ -9534,7 +9537,6 @@ pub async fn set_acp_session_model(
                     serde_json::Value::String(model_id.to_string()),
                 );
             }
-            set_acp_config_option_current_value(current, "model", model_id);
         }
         apply_acp_catalog_refresh_marker(current, &catalogs);
         Ok(())
@@ -9935,6 +9937,7 @@ pub async fn set_acp_session_config_option(
             }
         }
     }
+    gold_band::acp::session_config::remember_session_snapshot_applied_overrides(&mut value);
     if let Some(selected) = normalized_value {
         set_acp_config_option_current_value(&mut value, option_id, selected);
     }
@@ -9961,6 +9964,7 @@ pub async fn set_acp_session_config_option(
                 }
             }
         }
+        gold_band::acp::session_config::remember_session_snapshot_applied_overrides(current);
         if let Some(selected) = normalized_value {
             set_acp_config_option_current_value(current, option_id, selected);
         }
@@ -11373,6 +11377,7 @@ mod tests {
                     permission_mode_id: None,
                     auto_accept: false,
                     config_options: BTreeMap::new(),
+                    model_bound_overrides: Default::default(),
                 }],
                 ..WorkflowModelBindings::default()
             },
@@ -11394,8 +11399,10 @@ mod tests {
                         permission_mode: None,
                         auto_accept: false,
                         bootstrap_config_options: Default::default(),
+                        bootstrap_model_bound_overrides: Default::default(),
                         acceptance_model: None,
                         acceptance_config_options: Default::default(),
+                        acceptance_model_bound_overrides: Default::default(),
                         routing_prompt: "route by task".to_string(),
                         available_agents: vec![gold_band::dsl::DynamicAgentRef {
                             provider: "agent-b".to_string(),
@@ -11403,9 +11410,11 @@ mod tests {
                             permission_mode: None,
                             auto_accept: false,
                             config_options: Default::default(),
+                            model_bound_overrides: Default::default(),
                         }],
                     },
                     config_options: Default::default(),
+                    model_bound_overrides: Default::default(),
                     allowed_profiles: Vec::new(),
                     global_goal: None,
                     control: gold_band::dsl::DynamicControlDsl::default(),
@@ -11961,6 +11970,7 @@ mod tests {
                         auto_accept: false,
                     },
                     config_options: Default::default(),
+                    model_bound_overrides: Default::default(),
                     allowed_profiles: Vec::new(),
                     global_goal: None,
                     control: gold_band::dsl::DynamicControlDsl::default(),
@@ -14393,8 +14403,10 @@ mod tests {
                 permission_mode: None,
                 auto_accept: false,
                 bootstrap_config_options: Default::default(),
+                bootstrap_model_bound_overrides: Default::default(),
                 acceptance_model: None,
                 acceptance_config_options: Default::default(),
+                acceptance_model_bound_overrides: Default::default(),
                 routing_prompt: "route by task".to_string(),
                 available_agents: vec![
                     gold_band::dsl::DynamicAgentRef {
@@ -14403,6 +14415,7 @@ mod tests {
                         permission_mode: None,
                         auto_accept: false,
                         config_options: Default::default(),
+                        model_bound_overrides: Default::default(),
                     },
                     gold_band::dsl::DynamicAgentRef {
                         provider: "claude-acp".to_string(),
@@ -14410,10 +14423,12 @@ mod tests {
                         permission_mode: None,
                         auto_accept: false,
                         config_options: Default::default(),
+                        model_bound_overrides: Default::default(),
                     },
                 ],
             },
             config_options: Default::default(),
+            model_bound_overrides: Default::default(),
             allowed_profiles: Vec::new(),
             global_goal: None,
             control: gold_band::dsl::DynamicControlDsl::default(),

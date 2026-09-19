@@ -2,6 +2,11 @@
 
 ## 0. 当前实现状态
 
+- 2026-09-19 会话切模型不得把 `configOptions.model.currentValue` 改挂到还是上一模型的绑定行上，否则 Luna Context 会闪一下再消失。`thought_level` remap 要求两边都是该 category，再按档位 value 换接线名；`model_config` 等非该 category 只比 option id，Grok Fast Off 不得接到 Fable `thinking` Off。
+- 2026-09-19 会话栏与作者态共用 Agent `modelBoundCatalogs[modelId]`：这次会话还没观测过的模型也能画出作者态已缓存的 thought/Fast。活目录属于所选模型且带绑定行时仍优先。已选值继续只在本会话 `modelBoundOverrides`，不写回主页。
+- 2026-09-19 作者态与会话内切模型都按模型记住 `thought_level` / `model_config`。Direct/AUTO/工作流绑定持久化 `modelBoundOverrides[modelId]`；已建立会话的 map 只在 snapshot，不写回主页。Grok Extra High → Mini → Grok 还原 Extra High；Mini 空槽不得回填 Grok 的值。
+- 2026-09-19 回滚分割线两侧横线改用主题 `bg-border`，不再用 `bg-border/70` 减淡。
+- 2026-09-19 回滚分割线不再用 `40rem` max-width 提前换行。两侧横线 `flex-1` 吃剩余宽度，最低 `1.5rem`；文案 `min-w-0` 单行优先，横线到最低长度后才换行。纯 CSS flex，无 ResizeObserver。
 - 2026-09-19 会话 view model 在 remap 思考强度前，把 snapshot `configOptions`（unknown JSON）规范化为 select catalog；不把 unknown 直接传给作者态类型，也不丢掉会话 JSON 的 `type=select`。
 - 2026-09-19 配置展示名带 option id：产品文案后追加 id，例如「思考强度（effort）」「深度思考（thinking）」「上下文（context）」；`Fast`/`fast` 仅大小写不同则不再重复。菜单与回滚分割线共用 `acpCompositeSectionLabel`。
 - 2026-09-19 复合菜单：一条 `thought_level` 仍标「思考强度」；Fable 等模型有 `thinking` + `effort` 时分别标「深度思考」「思考强度」。`context` 中文为「上下文」，英文保持 Thinking / Effort / Context。分割线回滚名用同一套标签，不再把两条 thought_level 收成一个「思考强度」。

@@ -1,5 +1,55 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-19 截断 Tooltip 边沿闪烁：命中层是 Popper wrapper
+
+- 根因：只读 Tooltip 的开关绑在触发器 `pointerEnter/Leave` 上，但 Radix Popper 生成的同尺寸 `data-radix-popper-content-wrapper` 默认 `pointer-events: auto`。只给 `TooltipContent` 加 `pointer-events-none` 后，命中从内容换成 wrapper，指针停在模型选择 pill 上沿仍会打开→抢走命中→关闭→再打开。截断全文才显示的设计成立，实现把“不抢命中”只落到内容节点，覆盖不完整。复合选择器还把 Tooltip 锚在内部截断文字上，tips 底边压进整颗按钮上沿，重叠带更容易触发。
+- 实现：全局 CSS 让包含 `[data-slot=tooltip-content]` 的 Popper wrapper `pointer-events: none`；内容层保持默认 `none`。需要滚动的引用条/角色标签继续在 `TooltipContent` 上 `pointer-events-auto`。模型与权限选择器把 `TooltipTrigger` 收到整颗 `DropdownMenuTrigger`。诊断帮助链接仍走 Popover。
+- 证据：修复前契约测试稳定红于 wrapper 无 `pointer-events: none`、以及 trigger 包在截断 span 上；修复后同一测试转绿。真实浏览器复现：停在上沿 2 秒循环 11 次；给 wrapper 注入 `none` 后只 open 一次。jsdom 不能做真实命中，不编假闪烁用例。
+- 过度设计与性能评审：一条 CSS 契约加 asChild 锚点调整，无新状态、delay 或监听。滚动 opt-in 仍走现有 class 覆盖。Dropdown/Popover wrapper 不在选择器内。
+
+## 2026-09-19 会话切模型残留表与 Fast 串到 thinking
+
+- 根因：切模型命令把 `configOptions.model.currentValue` 改成目标模型，绑定行仍是 Grok。投影把「currentValue 对上且有绑定行」当成新活目录，Luna Context 先从作者态缓存画出、命令回写后又消失。thought remap 被画成「缺 id 就按 value 贴到第一条 thought」，Grok `fast=false`（`model_config`）接到 Fable `thinking=Off`。属于实现把活目录所有权和 remap 契约画宽了。
+- 实现：残留表若匹配另一模型缓存，继续用目标模型的 `modelBoundCatalogs`。`set_acp_session_model` 不再改挂 live `currentValue`。remap 要求源和目标都是 `thought_level`，再按档位接到任一仍有该档的 thought 项；非该 category 只比 option id。
+- 证据：前端覆盖残留 Grok 表仍画 Luna Context，Grok Fast Off 不进 Fable thinking，以及 Luna `reasoning=high` 接到 Fable `effort` 而不是第一条 `thinking`；Rust 覆盖 Fast 回滚为不指定、`reasoning=high` 落到 `effort`。
+- 过度设计与性能评审：只收紧已有投影和 remap 条件，无新 identity。绑定行 id 列表比对有界。
+
+## 2026-09-19 会话栏与作者态共用 `modelBoundCatalogs`，已选值仍按会话隔离
+
+- 根因：能力目录按 `(agent, modelId)` 观测，作者态已经有 Grok 的 thought/Fast。会话栏却只读本会话 snapshot，这次会话还没 round-trip 该模型时 composer 画不出绑定项。这是实现把「活目录优先、覆盖不写回主页」画得过宽，不是要再复制一套 identity。
+- 实现：同一 Agent 的 `modelBoundCatalogs[modelId]` 共用。会话投影顺序为活目录（所选模型且带绑定行）→ 本会话缓存 → 作者态缓存；未命中仍带着当前表去发，不把省略表写成目标模型。切模型 retain 也读这份共用目录，但不把作者态目录 stamp 进本会话 map。`modelBoundOverrides` 仍按会话 snapshot 隔离。
+- 证据：前端覆盖未观测模型投影作者态 Grok 目录、活目录省略绑定行时回退作者态、活目录带绑定行时不被作者态加行、本会话缓存优先于作者态、较新 Doctor 当前表不盖住作者态 Grok 目录；Rust 覆盖切到本会话未观测模型时按作者态目录保留 Extra High，且不写入本会话 `modelBoundCatalogs`。
+- 过度设计与性能评审：不新增 map 或 identity。Agent 上已有 catalog，会话观测本来就 upsert。查找按 `modelId`，map 有界，切一次模型一次投影。
+
+## 2026-09-19 ACP `end_turn` 后迟到 Provider 事件污染下一轮 prompt
+
+- 根因与形成路径：历史设计把 `session/prompt` response watermark + bounded quiet drain 作为当前 prompt 的 terminal 收敛，这对响应前和短尾部通知成立；但 ACP `session/update` 没有 prompt request id，Provider 仍可能在 `end_turn` 后数分钟继续发送同一 session 的 thought/tool/message。attached runtime 复用同一 session route 时，下一轮 prompt admission 直接消费这些通知，导致旧流进入新 prompt。Direct durable prompt queue 和 provider `begin_prompt` 锁仍保证不会并发发送两个 `session/prompt`，问题是 session route 与 prompt 生命周期的实现边界不完整，不是“允许并发输入”的设计缺陷。
+- 实现：新增运行期 `AwaitingPromptAdmission` 阶段。attached session reuse 在配置/新 prompt 之间隔离并消费已有 route backlog；阶段内 session update 不写 Timeline、prompt output、命令元数据或 active turn。对按 prompt 独立的稳定 `messageId`、`toolCallId` 等 provider item identity 建立 late-event fence；session 级可复用的 `plan` 投影不加入永久 fence。发出新 `session/prompt` 后命中 fence 的旧 stream 尾部继续抑制，新的 provider identity 仍按既有 `AwaitingTurnStart -> Live` 规则接入。首次 `session/new`、显式 restore/replay 和 Direct queue 不改语义；无稳定 identity 的迟到通知只保留 Raw 审计，不能用固定延时猜测归属。
+- 红测与绿测：新增 `attached_session_quarantines_events_seen_before_prompt_admission`，修复前在 admission 阶段错误返回“接受”（稳定失败）；同一测试修复后转绿。新增尾部测试覆盖“旧 stream 在新 prompt 发出后继续到达”仍被抑制、新 stream identity 正常进入当前轮次，以及 session 级 `plan` identity 不会阻塞下一轮合法计划更新。现场 raw 证据为 `feedback-15-session` 中 request id=6 返回 `end_turn` 后约 177 秒仍有 `session/update`，request id=10 已发出时旧 `messageId` 的尾部继续到达。
+- 验收：本次新增 3 项 admission fence 测试、attached-session 相关 4 项和 prompt-terminal 相关 10 项均通过。一次 152 项 client 回归中 149 项通过、1 项既有 doctor fixture 忽略、2 项既有 doctor fixture 因未到达 `initialize/session/new` 而失败；这 2 项与本次 session reuse 代码路径无关，需单独修复 fixture 后再作为全量绿测。
+- 过度设计与性能评审：复用现有 session route、phase 和 provider stable identity，不新增持久字段、数据库、网络请求、无限等待或第二条输入队列。quarantine 集合只覆盖当前 admission backlog 的稳定 identity；正常 prompt 热路径仍使用现有 128 帧、约 4 MiB、25ms 有界 drain，Timeline/raw 不做全量扫描。attached admission 仅增加一次已有 route 的非阻塞消费，性能成本与 backlog 上限匹配。
+
+## 2026-09-19 回滚分割线横线改用主题 border
+
+- 根因：两侧横线用了 `bg-border/70`，浅色会话底上接近消失。分割线语义应对齐主题 `border`，不是另造一条更淡的线。
+- 实现：横线改为 `bg-border`，与 shadcn Separator 同一 token；不硬编码颜色。
+- 证据：前端契约测试固定 `bg-border` 且不含透明度后缀。
+- 过度设计与性能评审：只改已有 utility class，无新 token、状态或热路径。
+
+## 2026-09-19 切模型按 (agent/session, modelId) 记住 thought / model_config
+
+- 根因：`thought_level` / `model_config` 属于所选模型。作者态和会话却共用一份当前 `configOptionOverrides`，切到 Mini 时 Extra High 被 strip，再切回 Grok 找不回来。这是实现不完整：目录已经按模型缓存，已选值没有。
+- 实现：作者态 `modelBoundOverrides[modelId]` 记在 Direct/AUTO/工作流绑定上。会话 map 只在 snapshot，切模型先保存离开模型、再按目标模型目录还原；Mini 空槽必须留下，apply 只写当前活模型的槽，不得把 Mini 回滚写进 Grok。`session/new` 只种子当前活模型，不拷贝 Direct map，也不写回主页。
+- 证据：Rust 覆盖 Grok Extra High → Mini → Grok、snapshot 切模型不覆盖 Grok 槽；前端覆盖 Direct/AUTO submit 保留空 Mini 槽、会话 live merge 保留 session map、switch helper 还原 Extra High。
+- 过度设计与性能评审：复用现有 override map，不新增 identity 或状态机。map 以用户切过的模型数为界，每槽是有界 select 覆盖，切模型一次线性 retain。
+
+## 2026-09-19 回滚分割线先缩短两侧横线再换行
+
+- 根因：`systemNotice` 文案写了 `max-w-[min(40rem,calc(100%-3rem))]`，会话轨最宽 56rem 时文案在 40rem 处换行，两侧横线仍很长。属于正确的分割线设计、实现把可读宽度截得过早，不是数据或状态缺陷。
+- 实现：去掉文案固定 max-width。横线 `flex-1 min-w-6` 吃剩余宽度并可缩到 1.5rem；文案 `min-w-0` 保持内容优先宽度，只有横线到达最低长度后才换行。
+- 证据：前端契约测试固定无 `max-w-`、横线 `min-w-6 flex-1`、文案与根节点 `min-w-0`。
+- 过度设计与性能评审：只改已有 flex 类，无新状态、测量或 ResizeObserver。布局由浏览器一次完成。
+
 ## 2026-09-19 会话目录 unknown JSON 在 remap 边界规范化
 
 - 根因：`AcpSessionConfigVm.configOptions` 是会话快照 JSON（`unknown`）。view model 把这份投影直接传给要求 `AcpSelectConfigOptionVm[]` 的 `remapAcpThoughtLevelOverride`，`web:build` 的 `tsc` 失败。属于类型边界未接上，不是 remap 契约或产品行为错误。
@@ -14,13 +64,6 @@
 - 证据：前端覆盖单条/多条 thought_level、context、Fast 以及分割线 `思考强度（effort） · 上下文（context）`。
 - 过度设计与性能评审：只改已有标签投影和一条 i18n 模板，无新状态、探测或热路径。
 
-## 2026-09-19 ACP `end_turn` 后迟到 Provider 事件污染下一轮 prompt
-
-- 根因与形成路径：历史设计把 `session/prompt` response watermark + bounded quiet drain 作为当前 prompt 的 terminal 收敛，这对响应前和短尾部通知成立；但 ACP `session/update` 没有 prompt request id，Provider 仍可能在 `end_turn` 后数分钟继续发送同一 session 的 thought/tool/message。attached runtime 复用同一 session route 时，下一轮 prompt admission 直接消费这些通知，导致旧流进入新 prompt。Direct durable prompt queue 和 provider `begin_prompt` 锁仍保证不会并发发送两个 `session/prompt`，问题是 session route 与 prompt 生命周期的实现边界不完整，不是“允许并发输入”的设计缺陷。
-- 实现：新增运行期 `AwaitingPromptAdmission` 阶段。attached session reuse 在配置/新 prompt 之间隔离并消费已有 route backlog；阶段内 session update 不写 Timeline、prompt output、命令元数据或 active turn。对按 prompt 独立的稳定 `messageId`、`toolCallId` 等 provider item identity 建立 late-event fence；session 级可复用的 `plan` 投影不加入永久 fence。发出新 `session/prompt` 后命中 fence 的旧 stream 尾部继续抑制，新的 provider identity 仍按既有 `AwaitingTurnStart -> Live` 规则接入。首次 `session/new`、显式 restore/replay 和 Direct queue 不改语义；无稳定 identity 的迟到通知只保留 Raw 审计，不能用固定延时猜测归属。
-- 红测与绿测：新增 `attached_session_quarantines_events_seen_before_prompt_admission`，修复前在 admission 阶段错误返回“接受”（稳定失败）；同一测试修复后转绿。新增尾部测试覆盖“旧 stream 在新 prompt 发出后继续到达”仍被抑制、新 stream identity 正常进入当前轮次，以及 session 级 `plan` identity 不会阻塞下一轮合法计划更新。现场 raw 证据为 `feedback-15-session` 中 request id=6 返回 `end_turn` 后约 177 秒仍有 `session/update`，request id=10 已发出时旧 `messageId` 的尾部继续到达。
-- 验收：本次新增 3 项 admission fence 测试、attached-session 相关 4 项和 prompt-terminal 相关 10 项均通过。一次 152 项 client 回归中 149 项通过、1 项既有 doctor fixture 忽略、2 项既有 doctor fixture 因未到达 `initialize/session/new` 而失败；这 2 项与本次 session reuse 代码路径无关，需单独修复 fixture 后再作为全量绿测。
-- 过度设计与性能评审：复用现有 session route、phase 和 provider stable identity，不新增持久字段、数据库、网络请求、无限等待或第二条输入队列。quarantine 集合只覆盖当前 admission backlog 的稳定 identity；正常 prompt 热路径仍使用现有 128 帧、约 4 MiB、25ms 有界 drain，Timeline/raw 不做全量扫描。attached admission 仅增加一次已有 route 的非阻塞消费，性能成本与 backlog 上限匹配。
 ## 2026-09-19 多条 thought_level 分开标注，context 中文为上下文
 
 - 根因：Cursor Fable 同目录返回 `thinking`（Off/On）和 `effort`（档位）两条 `thought_level`。展示层把所有 `thought_level` 都标成「思考强度」，分割线也按 category 去重，看起来像重复两项。

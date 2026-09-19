@@ -981,10 +981,12 @@ export function ConversationComposer({
             onBranchChange={handleBranchChange}
             onBranchMutationPendingChange={setBranchMutationPending}
           />
+          {/* maxHeight=null：textarea 自适应不设上限、自身不滚动；滚动收口在下方
+              inputScrollContainerClassName 包装层，chip/斜杠标签随内容首行一起滚动。 */}
           <PromptInput
           value={visibleContent}
           onValueChange={(value) => setContent(`${committedSlashCommand?.prefix ?? ''}${value}`)}
-          maxHeight={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaMaxHeightPx}
+          maxHeight={null}
           onSubmit={() => { void handleSubmit(); }}
           disabled={readOnly || busy || submittingAttachments || branchMutationPending}
           className={cn(
@@ -1006,7 +1008,7 @@ export function ConversationComposer({
             onSelect={(index) => { slashCommands.selectByIndex(index); }}
             variant="inline"
           >
-            <div className="relative min-w-0">
+            <div className={CONVERSATION_HOME_COMPOSER_LAYOUT.inputScrollContainerClassName}>
               {committedSlashCommand ? (
                 <span ref={committedInputLayout.adornmentRef} className="absolute left-0 top-2 z-10 inline-flex">
                   <SlashCommandInputTag

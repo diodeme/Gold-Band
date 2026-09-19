@@ -2290,6 +2290,25 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.49 改动四十七：会话主页 composer 滚动收口迁移——multica chip 随正文滚动（M5-bi，2026-09-17）
+
+**背景**：用户实测发现，issue 任务认领进会话后，输入框最前的 multica chip 一直悬浮在输入框左上角；正文较长需要滚动时，chip 保持悬浮遮挡后续内容行。
+
+**根因定性**：好设计（leading adornment 首行内嵌 + text-indent 让位）、实现不完整——chip 绝对定位挂在非滚动的包装 div 上，而滚动容器是 textarea 自身（autosize 到 `maxHeight` 上限后 `overflow-y: auto`）。adornment 的定位语义是「正文首行」，却挂在视口层，滚动时首行移出视野而 chip 不动，两者脱离。text-indent 只能让位首行，天然无法覆盖滚动态。
+
+**实现（结构统一，非补丁式 JS 滚动同步）**
+- **prompt-kit copy-in（`prompt-input.tsx`）**：`maxHeight` 类型扩为 `number | string | null`，`null` 语义 = 自适应不设上限、textarea 自身永不滚动（`height: scrollHeight, overflowY: hidden`），滚动收口交由祖先容器。纯增量，既有 number/string 行为不变。
+- **布局常量（`conversation-composer-layout.ts`）**：`textareaMaxHeightPx: 320` 删除，新增 `inputScrollContainerClassName: 'relative min-w-0 max-h-80 overflow-y-auto'`（max-h-80 = 320px，上限原值迁移，杜绝双处硬编码）。
+- **ConversationComposer**：`PromptInput maxHeight={null}`；chip / 斜杠标签所在的包装 div 改用 `inputScrollContainerClassName`。chip 仍在包装层内绝对定位（`absolute left-0 top-2`），随正文首行一起滚出视野；斜杠命令标签共用同一 slot 同步修复。
+
+**影响面**：仅会话主页 `ConversationComposer`（ACP 会话为独立组件 + 独立布局常量，不受影响）；斜杠命令菜单 inline 弹层是包装层兄弟节点（挂 SlashCommandMenu 外层 root），不被滚动容器裁剪，行为不变。
+
+**性能评审**：纯 CSS/结构迁移，无新增 JS 监听、无滚动同步逻辑、无重渲染路径变化；autosize 仍是一次 `scrollHeight` 读写（原机制不变，只是不再封顶）。无性能风险。
+
+**验证（2026-09-17）**：`conversation-composer-autosize.test.ts` 契约更新并新增用例——null maxHeight 不封顶不滚动、composer `maxHeight={null}` 且滚动容器为包装层、chip span 位于滚动容器内部（源码契约）；浏览器（deep link 会话主页）注入 40 行文本实测：textarea 976px 不封顶 `overflow-y: hidden`、包装层 320px 收口接管滚动、chip 随滚动移出视野（offset +8px → -492px）；`tsc -p web/tsconfig.build.json` + 生产构建 + 全量 vitest 过。顺手修正 `composer-context-alignment.test.ts` 中 HEAD 上已陈旧的 onPaste 契约断言（readOnly 演示守卫早已合入但测试未同步）。
+
+---
+
 ## 附录 A：CLAUDE.md 合规自检
 
 - ✅ 先定数据（2.2）→ 再定接口（2.8/第 7 章）→ 再补实现（2.3–2.7/第 4 章）

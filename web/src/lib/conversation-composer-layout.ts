@@ -15,7 +15,10 @@ export const CONVERSATION_HOME_COMPOSER_LAYOUT = {
   opticalBottomPaddingClassName: 'pb-[clamp(4rem,8vh,5rem)]',
   promptInputClassName: 'relative rounded-2xl border-border bg-card/60 px-2.5 py-2 shadow-sm',
   textareaClassName: `${COMPOSER_TEXTAREA_BASE_CLASS_NAME} w-full overflow-y-hidden px-0`,
-  textareaMaxHeightPx: 320,
+  // 输入区滚动收口（max-h-80 = 320px，即原 textareaMaxHeightPx: 320 的上限迁移至此）：
+  // textarea 自适应不设上限、自身不滚动，由本包装层统一滚动，
+  // 使 multica chip / 斜杠标签随正文首行一起滚出视野，不再悬浮遮挡后续内容。
+  inputScrollContainerClassName: 'relative min-w-0 max-h-80 overflow-y-auto',
   containerClassName: '@container/conversation-composer flex flex-col gap-1.5',
   attachedInfoRailClassName: 'min-w-0',
   attachedInfoClassName: '@container/conversation-context relative mx-auto flex h-7 w-[80%] min-w-0 items-center justify-start gap-0 px-8 [--conversation-workspace-info-surface:var(--gold-surface-high)] shadow-none',

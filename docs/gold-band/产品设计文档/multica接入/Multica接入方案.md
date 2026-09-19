@@ -1129,5 +1129,12 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **前端**：零改动（`detail.requirement` 预填管道自动携带溯源块）。
   - **验证（2026-09-17）**：lib `remote_task_context_templates_render_all_and_partial_fields`（全字段/部分字段 + 中文标签锁定）过；desktop multica 单测新增 DPMS 解析（有值/缺 key）与组装（前缀拼接/无字段退化/空白过滤/双语）全过。
 
+- [x] **M5-bi**（2026-09-17）会话主页 composer 输入区滚动收口迁移——multica chip 随正文滚动，不再悬浮遮挡：
+  - **问题**：multica chip（及斜杠命令标签）绝对定位在非滚动的包装 div 上，而 textarea 自身是滚动容器（autosize 到 320px 上限后 `overflow-y: auto`）。正文超长滚动时 chip 钉在输入框左上角悬浮，遮挡后续内容行；text-indent 只让位首行，无法解决滚动态。
+  - **根因**：滚动容器与 leading adornment（chip）所在容器不一致——adornment 定位在「内容首行」语义上，却挂在视口层。
+  - **修复（结构统一，非补丁）**：滚动收口从 textarea 迁到包装层——prompt-kit copy-in `maxHeight` 支持 `null`（自适应不设上限、自身永不滚动，滚动交由祖先容器），包装 div 用 `inputScrollContainerClassName: 'relative min-w-0 max-h-80 overflow-y-auto'`（max-h-80 = 320px，即原 `textareaMaxHeightPx: 320` 的上限原值迁移）统一接管滚动。chip / 斜杠标签位于包装层内部，随正文首行一起滚出视野。
+  - **影响面**：仅会话主页 `ConversationComposer`（ACP 会话 composer 是独立组件、独立布局常量，不受影响）；斜杠命令菜单 inline 弹层是包装层的兄弟节点（挂在 SlashCommandMenu 外层 root 上），不被滚动容器裁剪。
+  - **验证（2026-09-17）**：`conversation-composer-autosize.test.ts` 契约更新——null maxHeight 不封顶不滚动、`maxHeight={null}` 与滚动容器为包装层、chip span 在滚动容器内部（源码契约）；浏览器（deep link 会话主页 + 注入 40 行文本）实测：textarea 976px 不封顶 `overflow-y: hidden`，包装层 320px 收口滚动，chip 随滚动移出视野（offset +8px → -492px）；`tsc` + 生产构建 + 全量 vitest 过。
+
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

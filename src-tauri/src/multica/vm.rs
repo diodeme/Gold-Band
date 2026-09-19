@@ -6,7 +6,10 @@
 
 use std::collections::BTreeMap;
 
-use gold_band::config::{RemoteCompletedTask, RemoteWorkspaceRef};
+use gold_band::config::{DesktopLanguage, RemoteCompletedTask, RemoteWorkspaceRef};
+use gold_band::prompts::{
+    prompt_by_language, render, RUNTIME_REMOTE_TASK_CONTEXT_EN, RUNTIME_REMOTE_TASK_CONTEXT_ZH_CN,
+};
 use serde::Serialize;
 
 use crate::multica::client::RemoteTask;
@@ -73,11 +76,13 @@ impl RemoteTaskVm {
     }
 
     /// 任务详情行（claim-at-send 只读拉取 / claim 响应）。回填 `requirement`
-    /// （正文仅任务详情端点才有：pending 列表只给 thread_name）。read 与 claim 共用此构造——二者响应同构、
+    /// （正文仅任务详情端点才有：pending 列表只给 thread_name）为「会话起始输入」：
+    /// DPMS 溯源块（issue 任务且 server 携带 5 字段之一时）+ 需求正文，经 composer 预填后
+    /// 原样成为会话首条输入。read 与 claim 共用此构造——二者响应同构、
     /// 都带 requirement 来源字段；区别仅在调用时机（read 不改 server 状态、任务仍 queued；claim 置 dispatched）。
-    pub fn from_detail(task: &RemoteTask, workspace_id: &str) -> Self {
+    pub fn from_detail(task: &RemoteTask, workspace_id: &str, language: DesktopLanguage) -> Self {
         let mut vm = Self::from_remote(task, workspace_id);
-        vm.requirement = task.requirement_text();
+        vm.requirement = session_start_input(task, language);
         vm
     }
 
@@ -158,6 +163,73 @@ impl RemoteTaskVm {
             kind: task.issue_kind.clone(),
             readiness: task.is_ready,
         }
+    }
+}
+
+/// 会话起始输入：DPMS 溯源块（存在时）在前、需求正文在后，统一作为 composer 预填 / 会话首条输入。
+///
+/// DPMS 字段全缺省（非 issue 任务 / 旧 server / 未同步 DPMS 的 issue）→ 退化为纯
+/// [`RemoteTask::requirement_text`]，行为与引入溯源块前完全一致。
+fn session_start_input(task: &RemoteTask, language: DesktopLanguage) -> Option<String> {
+    let requirement = task.requirement_text();
+    match dpms_context_block(task, language) {
+        Some(block) => Some(match requirement {
+            Some(body) => format!("{block}\n\n{body}"),
+            // 正文缺失但溯源字段存在（如 issue 无 body 且无 thread_name）：只发溯源块。
+            None => block,
+        }),
+        None => requirement,
+    }
+}
+
+/// DPMS 溯源块（`src/prompts/{zh-CN,en}/runtime/remote_task_context.md` 按语言渲染）。
+///
+/// 5 个溯源字段全部缺省 / 纯空白 → None（不渲染块、不拼正文）。字符串字段逐个空白过滤，
+/// 与 [`RemoteTask::requirement_text`] 的空白过滤惯例一致。
+fn dpms_context_block(task: &RemoteTask, language: DesktopLanguage) -> Option<String> {
+    let context = RemoteTaskContextTemplateContext {
+        release_plan_id: task.release_plan_id,
+        dev_user: blank_to_none(task.dev_user.as_deref()),
+        test_user: blank_to_none(task.test_user.as_deref()),
+        business_story_id: task.business_story_id,
+        origin_url: blank_to_none(task.origin_url.as_deref()),
+    };
+    if context.is_empty() {
+        return None;
+    }
+    let template = prompt_by_language(
+        language,
+        RUNTIME_REMOTE_TASK_CONTEXT_ZH_CN,
+        RUNTIME_REMOTE_TASK_CONTEXT_EN,
+    );
+    let rendered = render(template, &context).expect("remote task context template renders");
+    Some(rendered.trim().to_string())
+}
+
+/// 纯空白字符串 → None（模板按 `{% if %}` 跳过该行）。
+fn blank_to_none(value: Option<&str>) -> Option<String> {
+    value
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string)
+}
+
+/// 远程任务溯源模板上下文（minijinja strict：字段恒序列化为 null/值，`{% if null %}` 为假）。
+#[derive(Serialize)]
+struct RemoteTaskContextTemplateContext {
+    release_plan_id: Option<i64>,
+    dev_user: Option<String>,
+    test_user: Option<String>,
+    business_story_id: Option<i64>,
+    origin_url: Option<String>,
+}
+
+impl RemoteTaskContextTemplateContext {
+    fn is_empty(&self) -> bool {
+        self.release_plan_id.is_none()
+            && self.dev_user.is_none()
+            && self.test_user.is_none()
+            && self.business_story_id.is_none()
+            && self.origin_url.is_none()
     }
 }
 
@@ -249,6 +321,11 @@ mod tests {
             last_activity_at: Some("2026-08-04T10:00:00Z".into()),
             issue_kind: Some("dev".into()),
             is_ready: None,
+            release_plan_id: None,
+            dev_user: None,
+            test_user: None,
+            business_story_id: None,
+            origin_url: None,
         };
         let vm = RemoteTaskVm::from_pending(&task, "ws-1");
         assert_eq!(vm.id, "t-1");
@@ -284,13 +361,18 @@ mod tests {
             last_activity_at: None,
             issue_kind: Some("test".into()),
             is_ready: Some(false),
+            release_plan_id: None,
+            dev_user: None,
+            test_user: None,
+            business_story_id: None,
+            origin_url: None,
         };
         let vm = RemoteTaskVm::from_pending(&task, "ws-1");
         assert_eq!(vm.kind.as_deref(), Some("test"));
         assert_eq!(vm.readiness, Some(false));
 
         // detail 同源（claim-at-send 门控读它）——两构造共用 from_remote，一并锁定。
-        let detail = RemoteTaskVm::from_detail(&task, "ws-1");
+        let detail = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         assert_eq!(detail.kind.as_deref(), Some("test"));
         assert_eq!(detail.readiness, Some(false));
     }
@@ -315,8 +397,13 @@ mod tests {
             last_activity_at: Some("2026-08-04T10:00:00Z".into()),
             issue_kind: None,
             is_ready: None,
+            release_plan_id: None,
+            dev_user: None,
+            test_user: None,
+            business_story_id: None,
+            origin_url: None,
         };
-        let vm = RemoteTaskVm::from_detail(&task, "ws-1");
+        let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         assert_eq!(vm.requirement.as_deref(), Some("Full prompt body"));
         // title 与 requirement 各司其职（title 仍是 thread_name，不混进正文）。
         assert_eq!(vm.title, "Thread name");
@@ -339,9 +426,14 @@ mod tests {
             last_activity_at: None,
             issue_kind: None,
             is_ready: None,
+            release_plan_id: None,
+            dev_user: None,
+            test_user: None,
+            business_story_id: None,
+            origin_url: None,
         };
         assert_eq!(
-            RemoteTaskVm::from_detail(&issue, "ws-1")
+            RemoteTaskVm::from_detail(&issue, "ws-1", DesktopLanguage::ZhCn)
                 .requirement
                 .as_deref(),
             Some("Login bug")
@@ -365,11 +457,109 @@ mod tests {
             last_activity_at: None,
             issue_kind: None,
             is_ready: None,
+            release_plan_id: None,
+            dev_user: None,
+            test_user: None,
+            business_story_id: None,
+            origin_url: None,
         };
-        let vm_body = RemoteTaskVm::from_detail(&issue_body, "ws-1");
+        let vm_body = RemoteTaskVm::from_detail(&issue_body, "ws-1", DesktopLanguage::ZhCn);
         assert_eq!(vm_body.requirement.as_deref(), Some("Steps to repro..."));
         // title 仍是 thread_name，不混进正文。
         assert_eq!(vm_body.title, "Login bug");
+    }
+
+    #[test]
+    fn from_detail_prepends_dpms_context_block_to_requirement() {
+        // DPMS 溯源字段存在（issue 任务 + server 已同步 DPMS，2026-09-17 任务接口新增字段）
+        // → 会话起始输入 = 溯源块 + 空行 + 需求正文（溯源块在最前）。
+        let task = RemoteTask {
+            id: "t-1".into(),
+            issue_id: Some("iss-1".into()),
+            status: "queued".into(),
+            auth_token: None,
+            prior_session_id: None,
+            parent_task_id: None,
+            title: Some("Fix login".into()),
+            quick_create_prompt: None,
+            chat_message: None,
+            trigger_comment_content: None,
+            autopilot_description: None,
+            handoff_note: None,
+            issue_description: Some("Steps to repro...".into()),
+            last_activity_at: None,
+            issue_kind: Some("dev".into()),
+            is_ready: Some(true),
+            release_plan_id: Some(538181),
+            dev_user: Some("alice,bob".into()),
+            test_user: Some("carol".into()),
+            business_story_id: Some(674290),
+            origin_url: Some("https://dpms.example.com/story/674290".into()),
+        };
+        let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
+        let requirement = vm.requirement.expect("requirement prefilled");
+        assert!(requirement.starts_with("本任务来自 DPMS 关联的工作项"));
+        assert!(requirement.contains("- 发布计划 ID: 538181"));
+        assert!(requirement.contains("- 开发负责人: alice,bob"));
+        assert!(requirement.contains("- 测试负责人: carol"));
+        assert!(requirement.contains("- 业务需求 ID: 674290"));
+        assert!(requirement.contains("- 需求链接: https://dpms.example.com/story/674290"));
+        // 块与正文以空行分隔，正文收尾（预填整体即会话首条输入）。
+        assert!(requirement.contains("\n\nSteps to repro..."));
+        assert!(requirement.ends_with("Steps to repro..."));
+
+        // 英文语言 → 同一数据渲染英文模板（模板双语同构）。
+        let vm_en = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::En);
+        let requirement_en = vm_en.requirement.expect("requirement prefilled");
+        assert!(requirement_en.starts_with("This task comes from a DPMS-linked work item"));
+        assert!(requirement_en.contains("- Release plan ID: 538181"));
+        assert!(requirement_en.contains("- Requirement link: https://dpms.example.com/story/674290"));
+        assert!(requirement_en.ends_with("Steps to repro..."));
+    }
+
+    #[test]
+    fn from_detail_without_dpms_fields_keeps_plain_requirement() {
+        // DPMS 字段全缺省（非 issue 任务 / 旧 server / 未同步 DPMS 的 issue）→ 无溯源块，
+        // requirement 退化为纯 requirement_text（与引入溯源块前行为一致，版本解耦）。
+        let task = RemoteTask {
+            id: "t-2".into(),
+            issue_id: None,
+            status: "queued".into(),
+            auth_token: None,
+            prior_session_id: None,
+            parent_task_id: None,
+            title: Some("Login bug".into()),
+            quick_create_prompt: None,
+            chat_message: None,
+            trigger_comment_content: None,
+            autopilot_description: None,
+            handoff_note: None,
+            issue_description: Some("Steps...".into()),
+            last_activity_at: None,
+            issue_kind: None,
+            is_ready: None,
+            release_plan_id: None,
+            dev_user: None,
+            test_user: None,
+            business_story_id: None,
+            origin_url: None,
+        };
+        assert_eq!(
+            RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn).requirement,
+            Some("Steps...".into())
+        );
+
+        // 纯空白字符串字段视为缺失（逐字段空白过滤）：只剩一个非空白字段也渲染，空白字段不出行。
+        let task_blank = RemoteTask {
+            dev_user: Some("   ".into()),
+            origin_url: Some("https://dpms.example.com/story/1".into()),
+            ..task
+        };
+        let vm = RemoteTaskVm::from_detail(&task_blank, "ws-1", DesktopLanguage::ZhCn);
+        let requirement = vm.requirement.expect("requirement prefilled");
+        assert!(requirement.contains("- 需求链接: https://dpms.example.com/story/1"));
+        assert!(!requirement.contains("开发负责人"));
+        assert!(requirement.ends_with("Steps..."));
     }
 
     #[test]
@@ -392,6 +582,11 @@ mod tests {
             last_activity_at: None,
             issue_kind: None,
             is_ready: None,
+            release_plan_id: None,
+            dev_user: None,
+            test_user: None,
+            business_story_id: None,
+            origin_url: None,
         };
         assert_eq!(RemoteTaskVm::from_pending(&task, "ws-1").title, "t-7");
 

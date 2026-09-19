@@ -1120,5 +1120,14 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **wire 层分期（决策）**：source 参数随 P2 落地——当前选择器值恒为 'multica'，单独加参数是恒传单值；P2 随第二来源接入时命令参数 + 按来源路由 + per-source 连接状态同批落地，接缝对称。前端以 `fetchSettings` 单一 helper 收口来源相关状态解析，P2 只扩 helper，弹窗结构不动。
   - **验证（2026-09-17）**：`tsc -p web/tsconfig.build.json` 零错；vitest 3 套件（remote-skill-sync-dialog / remote-skill-sync-i18n / multica-connect-dialog）17 用例过（新增未连接→就地连接→重拉设置全链路 1 例 + {{source}} 插值双语断言 1 例）；视觉验收留待用户桌面端目验（重点：来源选择器单来源显示、未连接分支就地连接）。
 
+- [x] **M5-bh**（2026-09-17）任务接口 DPMS 溯源字段对接——会话起始输入前缀溯源块（webank dev 分支 `feat(daemon): 任务接口补齐 DPMS溯源字段`，对接文档 `.claude/design/multica_issue_management/2026-09-17-daemon-task-dpms-fields-api.md`）：
+  - **wire 变更（纯增量）**：`AgentTaskResponse` 新增 5 个可空字段 `release_plan_id` / `dev_user` / `test_user` / `business_story_id` / `origin_url`（issue 行镜像，列 NULL → 整键不上 wire；pending / detail / claim 三接口同构）。纯展示/溯源语义，**无门控语义**（门控仍只看 `is_ready` + `issue_kind`）；非 issue 来源任务恒缺省。
+  - **码灵 client（Layer 1 解析）**：`RemoteTask` 加 5 个 `#[serde(default)]` 可空字段，旧 server / 非 issue 任务缺 key → None，行为不变（版本解耦）。
+  - **会话起始输入（Layer 3 组装）**：`RemoteTaskVm::from_detail` 增 `language` 参数，`requirement` 由「DPMS 溯源块 + 空行 + `requirement_text()` 正文」组成——经 composer 预填后原样成为会话首条输入，用户发送前可见、可编辑。5 字段全缺省/纯空白 → 无块，退化为纯正文（与引入前行为一致）。`requirement_text()` 来源优先级**不动**（溯源块是上下文前缀，不是需求来源）。
+  - **提示词模板（Layer 2）**：`src/prompts/{zh-CN,en}/runtime/remote_task_context.md` 双语同构，`src/prompts.rs` 注册常量，复用 `prompt_by_language` + minijinja `render`（与 `scheduled_task_context` 同款机制）。中文标签：发布计划 ID / 开发负责人 / 测试负责人 / 业务需求 ID / 需求链接。逐字段条件渲染 + 空白过滤，缺席字段不出行。
+  - **设计判断**：溯源块放 user prompt（会话起始输入）而非 hidden context——DPMS 溯源是工作项自身的需求上下文（随任务变化、与执行目标直接相关），按 system/user prompt 划分标准归 user prompt；且用户与 agent 都需在会话内可见。发送时不二次注入（预填即起始输入，用户编辑是明确意图）。
+  - **前端**：零改动（`detail.requirement` 预填管道自动携带溯源块）。
+  - **验证（2026-09-17）**：lib `remote_task_context_templates_render_all_and_partial_fields`（全字段/部分字段 + 中文标签锁定）过；desktop multica 单测新增 DPMS 解析（有值/缺 key）与组装（前缀拼接/无字段退化/空白过滤/双语）全过。
+
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

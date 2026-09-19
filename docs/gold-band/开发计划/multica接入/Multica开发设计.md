@@ -2271,6 +2271,23 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **验证（2026-09-17）**：`tsc -p web/tsconfig.build.json` 零错（tsconfig.json 全量检查的报错均在未触碰文件，属既有环境噪音）；vitest 3 套件（remote-skill-sync-dialog / remote-skill-sync-i18n / multica-connect-dialog）17 例全过——新增：①未连接 → 来源选择器 + 就地连接按钮 → 连接弹窗携带注册表名片 sourceLabel → 连接成功重拉设置、未连接分支消失（全链路契约）；②notConnected/connect 的 {{source}} 双语插值断言。i18n 测试 KEYS 数组补 `connect` 键。视觉验证按 M5-ba 先例留待用户桌面端目验（重点：来源选择器单来源显示、未连接分支就地连接、层叠弹窗交互）。
 
+### 12.48 改动四十六：任务接口 DPMS 溯源字段对接——会话起始输入前缀溯源块（M5-bh，2026-09-17）
+
+**背景**：webank dev 分支 `feat(daemon): 任务接口补齐 DPMS溯源字段` 给 `AgentTaskResponse` 新增 5 个可空溯源字段（`release_plan_id` / `dev_user` / `test_user` / `business_story_id` / `origin_url`，issue 行镜像，pending / detail / claim 三接口同构，对接文档 `.claude/design/multica_issue_management/2026-09-17-daemon-task-dpms-fields-api.md`）。码灵侧对接目标：issue 任务进会话时，起始输入开头先写 DPMS 溯源信息、再写 issue 内容，统一作为会话首条输入。
+
+**根因定性**：好设计、实现待扩展——claim-at-send 预填链（`get_remote_task_requirement` → `from_detail` → composer 预填 → `input.requirement` 即会话首条输入）早已把「详情正文 → 会话起始输入」打通，DPMS 溯源只是在该链路的 `requirement` 组装点做前缀拼接，前端与发送链路零改动。
+
+**实现（三 layer）**
+- **Layer 1 wire 解析（`client.rs`）**：`RemoteTask` 加 5 个 `#[serde(default)]` 可空字段。列 NULL → 缺 key → None（不报错、不回退默认值）；纯溯源语义，不参与 `is_ready`/`issue_kind` 门控判定。旧 server / 非 issue 任务（chat / autopilot / quick-create）恒 None（版本解耦）。
+- **Layer 2 提示词模板（`src/prompts/{zh-CN,en}/runtime/remote_task_context.md`）**：双语同构、逐字段 `{% if %}` 条件渲染（minijinja strict，字段恒序列化为 null/值）；`src/prompts.rs` 注册 `RUNTIME_REMOTE_TASK_CONTEXT_{ZH_CN,EN}`，复用 `prompt_by_language` + `render`（与 `scheduled_task_context` 同款机制）。中文标签：发布计划 ID / 开发负责人 / 测试负责人 / 业务需求 ID / 需求链接。
+- **Layer 3 组装（`vm.rs`）**：`from_detail` 增 `language: DesktopLanguage` 参数（调用方 `get_remote_task_requirement` 取 `context.config.desktop_language`）；`session_start_input` = 溯源块（`dpms_context_block`，5 字段全缺省/纯空白 → None）+ 空行 + `requirement_text()` 正文。字符串字段逐个空白过滤；正文缺失但溯源存在时只发块。`requirement_text()` 来源优先级不动——溯源块是上下文前缀，不是需求来源。
+
+**设计判断**：溯源块放 user prompt（会话起始输入）而非 hidden context（`scheduled_task_context` 先例路径）——DPMS 溯源是工作项自身的需求上下文（随任务变化、与执行目标直接相关），按 AGENTS.md system/user prompt 划分标准归 user prompt，且用户与 agent 都需在会话内可见。发送时不从 claim 响应二次注入：预填即起始输入，用户编辑/删除是明确意图，二次注入属重复机制。
+
+**性能评审**：一次「认领执行」预填多一次 minijinja 模板渲染（微秒级纯内存字符串操作），无新增 I/O / 状态订阅 / 数据加载路径；前端零改动。无性能风险。
+
+**验证（2026-09-17）**：lib `remote_task_context_templates_render_all_and_partial_fields` 过（全字段/部分字段渲染 + 中英文标签锁定 + 无空行残留）；desktop multica 单测新增 `remote_task_parses_dpms_provenance_fields` / `remote_task_missing_dpms_fields_parse_as_none`（wire 契约：有值/缺 key）与 `from_detail_prepends_dpms_context_block_to_requirement` / `from_detail_without_dpms_fields_keeps_plain_requirement`（前缀拼接 / 无字段退化 / 空白过滤 / 双语）全过。**无需 webank server 改动**（server 已随 dev 分支发版）。
+
 ---
 
 ## 附录 A：CLAUDE.md 合规自检
@@ -2283,5 +2300,5 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 - ✅ 复用库层会话执行 API：一个 remote_task = 一个本地 task（`create_task_from_requirement` + `run_start_background`，库层 App API），不重复造 runtime、不走 command 层；Direct/Auto workflow preset 上提 `gold_band::dsl::presets` 公开复用；浏览器登录复用 multica 原生（localhost callback），server 零改动
 - ✅ 破坏式更新：旧配置 Option+serde(default) 兼容，不建兼容层/灰度/fallback；无需升 schema 版本（2.2.6）
 - ✅ 外部命令约束：multica 不起外部子进程（执行用 gold-band runtime），不涉及 background_command；若 future 需 helper 则经 `background_command`(process.rs:44)
-- ⏳ 提示词 src/prompts/：本期 remote_task.requirement 作为本地 task 的 user prompt，不新增 system prompt，不触发该规则；若后续需 multica 专用 prompt 则入 src/prompts/ zh-CN/en 双语
+- ✅ 提示词 src/prompts/：multica 专用提示词已入 `src/prompts/{zh-CN,en}/runtime/remote_task_context.md` 双语同构（12.48 改动四十六），不在实现代码硬编码长 prompt 文本
 - ⏳ 同步维护 docs/gold-band/产品设计文档 + 开发计划：实现时同步（CLAUDE.md 强制）

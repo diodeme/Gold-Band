@@ -200,6 +200,26 @@ pub struct RemoteTask {
     /// 未就绪 test 任务提醒但放行（§12.42）。旧 server 不发 → None，不渲染提醒。
     #[serde(default)]
     pub is_ready: Option<bool>,
+    /// DPMS 发布计划 ID（issue 行镜像字段，2026-09-17 daemon 任务接口新增）。
+    ///
+    /// 仅 issue 来源任务、且 DPMS 列非 NULL 时 server 才发（`omitempty`：缺 key 而非发 0/null）。
+    /// 纯展示/溯源语义，**无门控语义**（门控仍只看 `is_ready` + `issue_kind`）。旧 server /
+    /// 非 issue 任务（chat / autopilot / quick-create）→ None。
+    #[serde(default)]
+    pub release_plan_id: Option<i64>,
+    /// DPMS 开发负责人（逗号分隔账号串，如 `"alice,bob"`，码灵侧原样使用不 split）。
+    /// 可缺省语义同 [`Self::release_plan_id`]。
+    #[serde(default)]
+    pub dev_user: Option<String>,
+    /// DPMS 测试负责人（逗号分隔账号串）。可缺省语义同 [`Self::release_plan_id`]。
+    #[serde(default)]
+    pub test_user: Option<String>,
+    /// DPMS 业务需求 ID。可缺省语义同 [`Self::release_plan_id`]。
+    #[serde(default)]
+    pub business_story_id: Option<i64>,
+    /// DPMS 需求链接（故事页 URL）。可缺省语义同 [`Self::release_plan_id`]。
+    #[serde(default)]
+    pub origin_url: Option<String>,
 }
 
 impl RemoteTask {
@@ -1511,6 +1531,40 @@ mod tests {
             serde_json::from_str(r#"{"id":"t-1","status":"queued"}"#).unwrap();
         assert!(legacy.issue_kind.is_none());
         assert!(legacy.is_ready.is_none());
+    }
+
+    // ===== DPMS 溯源字段（2026-09-17 daemon 任务接口新增，仅 issue 任务携带）=====
+
+    #[test]
+    fn remote_task_parses_dpms_provenance_fields() {
+        // wire 契约：release_plan_id / dev_user / test_user / business_story_id / origin_url
+        // 五键，列非 NULL 才上 wire（缺 key 而非 0/null），pending / detail / claim 三接口
+        // 共用 AgentTaskResponse。纯溯源语义，无门控——不参与 is_ready/issue_kind 判定。
+        let task: RemoteTask = serde_json::from_str(
+            r#"{"id":"t-1","status":"queued","issue_kind":"dev","is_ready":true,"release_plan_id":538181,"dev_user":"alice,bob","test_user":"carol","business_story_id":674290,"origin_url":"https://dpms.example.com/story/674290"}"#,
+        )
+        .unwrap();
+        assert_eq!(task.release_plan_id, Some(538181));
+        assert_eq!(task.dev_user.as_deref(), Some("alice,bob"));
+        assert_eq!(task.test_user.as_deref(), Some("carol"));
+        assert_eq!(task.business_story_id, Some(674290));
+        assert_eq!(
+            task.origin_url.as_deref(),
+            Some("https://dpms.example.com/story/674290")
+        );
+    }
+
+    #[test]
+    fn remote_task_missing_dpms_fields_parse_as_none() {
+        // 旧 server / 非 issue 任务（chat / autopilot / quick-create）：五键全缺省 → 全 None，
+        // 不报错、不回退默认值（会话起始输入不拼溯源块）。
+        let legacy: RemoteTask =
+            serde_json::from_str(r#"{"id":"t-1","status":"queued"}"#).unwrap();
+        assert!(legacy.release_plan_id.is_none());
+        assert!(legacy.dev_user.is_none());
+        assert!(legacy.test_user.is_none());
+        assert!(legacy.business_story_id.is_none());
+        assert!(legacy.origin_url.is_none());
     }
 
     #[test]

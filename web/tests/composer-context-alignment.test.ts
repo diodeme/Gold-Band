@@ -69,7 +69,7 @@ describe('composer context horizontal alignment', () => {
 
   it('routes paste through attachments without converting normal composer changes or submissions', () => {
     expect(quickComposerSource).toContain("onValueChange={(value) => setContent(`${committedSlashCommand?.prefix ?? ''}${value}`)}");
-    expect(quickComposerSource).toContain('onPaste={(e) => { void handlePaste(e); }}');
+    expect(quickComposerSource).toContain('onPaste={(e) => { if (readOnly) e.preventDefault(); else void handlePaste(e); }}');
     expect(quickComposerSource).toContain('content: trimmed');
     expect(acpDialogSource).toContain('onPromptChange={setPrompt}');
     expect(acpDialogSource).toContain('onPaste={handlePaste}');

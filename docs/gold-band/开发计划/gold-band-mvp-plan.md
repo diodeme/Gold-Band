@@ -28,6 +28,13 @@
 - 证据：修复前 Web 的 Fast Off 串线、overwrite 守卫、dynamic 提交与 Rust 的 Fast Off、overwrite、retarget 作者态、fingerprint 排除稳定失败；同一组测试修复后转绿。切到未观测 Luna 时 Context 写入被 Grok 活目录拒绝的契约测试先红后绿。
 - 过度设计与性能评审：沿用已有 catalog / override map，不新增 identity 或状态机。remap 与 fingerprint 过滤按 option/key 有界扫描；作者态 catalog 只读 `agent-diagnostics.json` 中当前 provider 的 capabilities，不扫会话历史。
 
+## 2026-09-20 Windows 原生窗口无响应修复
+
+- 根因：tao `0.35.3` 的 Windows 键盘/IME 处理在持有输入状态或布局缓存锁时调用 `PeekMessageW`。该 Win32 API 可同步重入窗口过程，导致同一 UI 线程重复获取非递归锁；现场生产包 `0.15.2` 已复现为 `parking_lot::RawMutex::lock_slow -> tao::public_window_callback_inner -> PeekMessageW`，并有同版本 WER AppHang 历史证据。
+- 实现：根项目通过 `[patch.crates-io]` 固定 tao 上游提交 `c704261c519c58cfdd0bc2d58ba24e06a0b71c92`。补丁把键盘/IME 消息 peek 移到锁外，再把已读取结果传入输入构造，并缩短布局缓存临界区；不新增业务状态、队列或延迟，也不修改 Gold Band 的 WebView/overlay API。
+- 验证：`Cargo.lock` 必须记录 tao 和 tao-macros 的固定 git revision；新增 `tests/tao_windows_message_reentrancy.rs`，其中源码契约测试验证 peek 与锁的顺序，Windows 子进程测试并发发送两个 `WM_KEYDOWN`，父进程以 10 秒超时将旧版死锁转化为可审计失败；命令 `cargo test --test tao_windows_message_reentrancy --locked --offline -- --nocapture` 已通过。随后执行 workspace Rust 单元测试和 Windows 生产构建。原始问题不在普通业务接口层，修复前自动复现会永久阻塞测试进程，因此保留现场非侵入式 dump、WER bucket 和上游同根因回归证据作为根因证据。
+- 回归场景：地址栏输入、中文 IME、地址建议 overlay 开关、子 WebView 聚焦切换、最小化/恢复和窗口缩放；每项都需确认 UI 消息泵继续响应。
+
 ## 2026-09-19 截断 Tooltip 边沿闪烁：命中层是 Popper wrapper
 
 - 根因：只读 Tooltip 的开关绑在触发器 `pointerEnter/Leave` 上，但 Radix Popper 生成的同尺寸 `data-radix-popper-content-wrapper` 默认 `pointer-events: auto`。只给 `TooltipContent` 加 `pointer-events-none` 后，命中从内容换成 wrapper，指针停在模型选择 pill 上沿仍会打开→抢走命中→关闭→再打开。截断全文才显示的设计成立，实现把“不抢命中”只落到内容节点，覆盖不完整。复合选择器还把 Tooltip 锚在内部截断文字上，tips 底边压进整颗按钮上沿，重叠带更容易触发。

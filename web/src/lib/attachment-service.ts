@@ -66,7 +66,7 @@ export function isAttachmentDropTarget(target: EventTarget | null): boolean {
   return target instanceof Element && !!target.closest('[data-attachment-dropzone="true"]');
 }
 
-function guessMimeFromExtension(name: string): string {
+export function guessMimeFromExtension(name: string): string {
   const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
   const mimeMap: Record<string, string> = {
     png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',

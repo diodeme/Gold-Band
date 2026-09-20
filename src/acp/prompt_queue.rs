@@ -50,6 +50,8 @@ pub struct QueuedPrompt {
     pub role: Option<UserPromptRole>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachment_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_files: Vec<crate::provider::PromptWorkspaceFileRef>,
     pub created_at: String,
     pub state: QueuedPromptState,
 }
@@ -131,6 +133,7 @@ pub fn enqueue_prompt(
         &input.display_text,
         attachment_paths.len(),
         input.role.as_ref(),
+        input.workspace_files.len(),
     ) {
         return Err(PromptQueueError::Empty);
     }
@@ -148,6 +151,7 @@ pub fn enqueue_prompt(
             quotes: input.quotes,
             role: input.role,
             attachment_paths,
+            workspace_files: input.workspace_files,
             created_at: chrono::Utc::now().to_rfc3339(),
             state: QueuedPromptState::Queued,
         };
@@ -727,6 +731,7 @@ mod tests {
                 display_text: String::new(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             },
             vec!["C:/temp/context.txt".to_string()],
         )
@@ -755,6 +760,7 @@ mod tests {
                 display_text: String::new(),
                 quotes: Vec::new(),
                 role: Some(role.clone()),
+                workspace_files: Vec::new(),
             },
             Vec::new(),
         )
@@ -782,6 +788,7 @@ mod tests {
                     text: "Agent 原文".to_string(),
                 }],
                 role: None,
+                workspace_files: Vec::new(),
             },
             Vec::new(),
         )
@@ -793,6 +800,38 @@ mod tests {
             conversation_prompt_text(&claimed.content, &claimed.quotes).starts_with("> Agent 原文")
         );
         assert_eq!(claimed.quotes[0].source_message_key, "message-1");
+    }
+
+    #[test]
+    fn queue_preserves_workspace_file_references_until_dispatch() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let dir = attempt_dir(&temp);
+        let reference = crate::provider::PromptWorkspaceFileRef {
+            project_id: "project-001".to_string(),
+            relative_path: "src/WorkspaceFileTree.tsx".to_string(),
+        };
+        let queued = enqueue_prompt(
+            &dir,
+            ConversationPromptInput {
+                display_text: String::new(),
+                quotes: Vec::new(),
+                role: None,
+                workspace_files: vec![reference.clone()],
+            },
+            Vec::new(),
+        )
+        .unwrap();
+
+        let claimed = claim_queued_prompt(&dir, &queued.id).unwrap();
+        let restored = load_prompt_queue(&dir).unwrap();
+
+        assert!(claimed.content.is_empty());
+        assert_eq!(claimed.workspace_files, vec![reference.clone()]);
+        assert_eq!(
+            restored.items[0].workspace_files,
+            vec![reference],
+            "the persisted dispatching item must retain lightweight references"
+        );
     }
 
     #[test]
@@ -809,6 +848,7 @@ mod tests {
                     text: "Agent 原文".to_string(),
                 }],
                 role: None,
+                workspace_files: Vec::new(),
             },
             Vec::new(),
         )
@@ -891,6 +931,7 @@ mod tests {
                     text: "quoted".to_string(),
                 }],
                 role: None,
+                workspace_files: Vec::new(),
             },
             vec!["C:/evidence.png".to_string()],
         )

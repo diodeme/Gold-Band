@@ -3586,6 +3586,7 @@ fn scheduled_create_input(
         direct_config,
         auto_config,
         attachment_paths: (!attachment_paths.is_empty()).then_some(attachment_paths),
+        workspace_files: definition.content_snapshot.workspace_files.clone(),
         work_location: Default::default(),
         selected_branch: None,
         scheduled_task_id: Some(definition.id.clone()),

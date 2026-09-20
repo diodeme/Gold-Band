@@ -9,7 +9,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { cn } from '@/lib/utils';
 import { useMeasuredElementHeight } from '@/hooks/use-measured-element-height';
 import { openWorkspacePathInFileManager } from '@/api';
+import { composerWorkspaceFileRefFromEntry } from '@/lib/workspace-file-reference';
 import { fileTreeIconStateClassName, fileTreeRowStateClassName } from '@/lib/file-tree-row-state';
+import { useWorkspaceFileReferenceCommands } from '../workspace-file-reference-bridge';
 import type { WorkspaceDirectoryEntryVm } from '@/types';
 import {
   fileExplorerStore,
@@ -31,6 +33,7 @@ interface TreeRowContextValue {
   onOpenFile: (entry: WorkspaceDirectoryEntryVm) => void;
   onCopyFailed: () => void;
   onOpenInFileManager: (relativePath: string) => void;
+  onReferenceToConversation: ((entry: WorkspaceDirectoryEntryVm) => boolean) | null;
   onContextMenuOpenChange: (open: boolean) => void;
   canActivateFile: () => boolean;
   displayMode: FileTreeDisplayMode;
@@ -85,6 +88,7 @@ export function fileTreeDisplayModeToggle(displayMode: FileTreeDisplayMode) {
 
 export { copyableAbsolutePath } from './WorkspaceDirectoryContextMenu';
 export { copyableRelativePath } from './WorkspaceDirectoryContextMenu';
+export { canReferenceWorkspaceFileToConversation } from './WorkspaceDirectoryContextMenu';
 
 export function shouldActivateTreeFile(contextMenuOpen: boolean, suppressContextMenuActivation: boolean) {
   return !contextMenuOpen && !suppressContextMenuActivation;
@@ -143,7 +147,14 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeView
         onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => event.stopPropagation()}
       >
-        <WorkspaceDirectoryContextMenu canonicalPath={entry.canonicalPath} relativePath={entry.relativePath} onCopyFailed={context.onCopyFailed} onOpenInFileManager={context.onOpenInFileManager} />
+        <WorkspaceDirectoryContextMenu
+          canonicalPath={entry.canonicalPath}
+          relativePath={entry.relativePath}
+          entry={entry}
+          onCopyFailed={context.onCopyFailed}
+          onOpenInFileManager={context.onOpenInFileManager}
+          onReferenceToConversation={context.onReferenceToConversation ?? undefined}
+        />
       </ContextMenuContent>
     </ContextMenu>
   );
@@ -151,6 +162,7 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeView
 
 export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: WorkspaceFileTreeProps) {
   const { t } = useTranslation();
+  const workspaceFileReferenceCommands = useWorkspaceFileReferenceCommands();
   const snapshot = useFileExplorerSnapshot(projectId);
   const displayModeToggle = fileTreeDisplayModeToggle(snapshot.displayMode);
   const treeNodes = useMemo(() => fileTreeView(snapshot.roots, snapshot.displayMode), [snapshot.displayMode, snapshot.roots]);
@@ -226,6 +238,12 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
       actionFailureTimerRef.current = setTimeout(() => setActionFailure(null), 1_500);
     });
   }, [projectId]);
+  const onReferenceToConversation = useCallback((entry: WorkspaceDirectoryEntryVm) => {
+    if (!workspaceFileReferenceCommands?.available) return false;
+    return workspaceFileReferenceCommands.addWorkspaceFileRef(
+      composerWorkspaceFileRefFromEntry(projectId, entry),
+    );
+  }, [projectId, workspaceFileReferenceCommands]);
   const onContextMenuOpenChange = useCallback((open: boolean) => {
     contextMenuOpenRef.current = open;
     suppressContextMenuActivationRef.current = true;
@@ -246,10 +264,11 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
     onOpenFile,
     onCopyFailed,
     onOpenInFileManager,
+    onReferenceToConversation,
     onContextMenuOpenChange,
     canActivateFile,
     displayMode: snapshot.displayMode,
-  }), [canActivateFile, onContextMenuOpenChange, onCopyFailed, onOpenFile, onOpenInFileManager, selectedPath, snapshot.displayMode]);
+  }), [canActivateFile, onContextMenuOpenChange, onCopyFailed, onOpenFile, onOpenInFileManager, onReferenceToConversation, selectedPath, snapshot.displayMode]);
   const searchEntries = snapshot.searchResult?.entries ?? [];
   const searching = snapshot.searchQuery.trim().length > 0;
 
@@ -324,7 +343,14 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
                     </button>
                   </ContextMenuTrigger>
                   <ContextMenuContent className="w-40 min-w-40 p-1" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
-                    <WorkspaceDirectoryContextMenu canonicalPath={entry.canonicalPath} relativePath={entry.relativePath} onCopyFailed={onCopyFailed} onOpenInFileManager={onOpenInFileManager} />
+                    <WorkspaceDirectoryContextMenu
+                      canonicalPath={entry.canonicalPath}
+                      relativePath={entry.relativePath}
+                      entry={entry}
+                      onCopyFailed={onCopyFailed}
+                      onOpenInFileManager={onOpenInFileManager}
+                      onReferenceToConversation={onReferenceToConversation}
+                    />
                   </ContextMenuContent>
                 </ContextMenu>
               );

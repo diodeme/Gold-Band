@@ -6,6 +6,7 @@ use gold_band::config::{
     ConversationDynamicAgentRef, ConversationDynamicControl, ConversationPin, ConversationRunMode,
     ConversationRunModeEntry, ConversationWorkspaceEntry, DesktopUiMode,
 };
+use gold_band::provider::ConversationPromptInput;
 use gold_band::storage::GoldBandPaths;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -19,7 +20,8 @@ use uuid::Uuid;
 
 use crate::commands::{
     CommandErrorVm, CommandResult, command_error, configure_conversation_runtime_callbacks,
-    resolve_command_app, spawn_blocking_command, validate_runtime_workspace_for_command,
+    resolve_command_app, spawn_blocking_command, validate_prompt_workspace_files,
+    validate_runtime_workspace_for_command,
 };
 use crate::conversation_attention::{
     ConversationTerminalResultAcknowledgementVm, acknowledge_terminal_result, remove_task_attention,
@@ -952,6 +954,17 @@ async fn create_conversation_run_inner(
     let mut validation =
         crate::view_models_conversation::validate_conversation_create_vm(&app, &input)
             .map_err(command_error)?;
+    validate_prompt_workspace_files(
+        &app,
+        &ConversationPromptInput {
+            display_text: input.content.clone(),
+            quotes: Vec::new(),
+            role: input.role.clone(),
+            workspace_files: input.workspace_files.clone(),
+        },
+        input.attachment_paths.as_deref().map_or(0, <[_]>::len),
+    )
+    .await?;
     validate_direct_capabilities(state.inner(), &input, &mut validation)?;
     if !validation.valid {
         return Err(CommandErrorVm::new(

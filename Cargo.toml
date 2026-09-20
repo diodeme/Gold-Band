@@ -8,6 +8,14 @@ license = "AGPL-3.0-only"
 members = ["src-tauri"]
 resolver = "3"
 
+# tao's Windows message handler used to call `PeekMessageW` while holding the
+# keyboard input-state mutex. `PeekMessageW` may synchronously re-enter the
+# window procedure, so the same UI thread could wait forever on its own
+# non-recursive mutex. Keep this exact upstream fix until the stable Tauri 2
+# dependency range includes a tao release containing it.
+[patch.crates-io]
+tao = { git = "https://github.com/tauri-apps/tao", rev = "c704261c519c58cfdd0bc2d58ba24e06a0b71c92" }
+
 [dependencies]
 agent-client-protocol-schema = { version = "1.6.0", features = ["unstable_elicitation"] }
 anyhow = "1"
@@ -73,3 +81,10 @@ uzers = { version = "0.12", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
+
+[target.'cfg(windows)'.dev-dependencies]
+# The regression harness drives tao's real Win32 message callback. Keep the
+# dependency on the exact revision used by the desktop build so the test
+# cannot silently exercise a different tao implementation.
+tao = { git = "https://github.com/tauri-apps/tao", rev = "c704261c519c58cfdd0bc2d58ba24e06a0b71c92", default-features = false, features = ["rwh_06"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

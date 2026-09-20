@@ -132,6 +132,21 @@ Provider 只有在归约结果为 `Success` 或可接受中断结果时才提取
 - Codex `_meta.codex.error` 中 `willRetry=true` 仅记录为本轮候选错误信号；若后续恢复正常则不判失败。出现 `willRetry=false` 或 `_meta.codex.threadStatus.type=systemError` 时提升为本轮 terminal failure；后者应携带最近一次错误详情，供统一错误归一化识别 high demand、连接断开等可恢复异常
 - 自定义 ACP adapter 或旧 adapter 不得套用“无 `messageId` 即 warning”的 Codex 专属规则，避免误隐藏正常回答
 
+### Cursor ACP 已知缺陷：`session/cancel` 回滚已接受的 user prompt
+
+这是 Cursor ACP adapter 的上游缺陷，不是 Gold Band cancel / continue 设计错误。ACP 的 `session/cancel` 只应停止当前前台生成和工具，不得把已经接受的 user prompt 从后续模型上下文里撤回。Cursor IDE 本机 Stop 也保留用户消息。Gold Band timeline 同样保留已持久化的 `goldBandPrompt`。
+
+2026-09-20 在 Cursor ACP 上观察到相反行为：`session/prompt` 已被消费（当轮思考和工具调用已经使用该 user prompt），随后 `session/cancel` 返回 `stopReason=cancelled` 后，同一 attached session 的后续 `session/prompt` 不再携带被取消那一轮的 user prompt。表现像整轮 rewind，而不只是截断 assistant / tool。半截 `tool_call` 缺少 `tool_result` 时，正确收尾是保留 user message、把未完成工具标为 cancelled 并补 cancelled 结果；整轮撤回 user prompt 会让 client 可见历史与模型下一轮实际上下文分叉。
+
+现场证据：工作流 `task-083` 的 `dev/attempt-002` `acp.raw.jsonl`。`session/load` 恢复 session `9e98b7f4-20a2-4ad2-90de-ab229fb4e65e` 后发出 `WorkflowResume` hidden runtime context（`attempt-002`、`review/attempt-001` failure、「测试不通过」）；当轮思考已按该上下文行动。cancel 之后的普通 `UserMessage` 追问回到 `attempt-001` 的旧 hidden context（前序链只有 `plan → current dev`，看不到 review failure）。Gold Band 气泡仍展示被取消的 continue 消息。
+
+Gold Band 契约保持不变：
+
+- 本地 timeline / synthetic `goldBandPrompt` 仍是 client 侧用户消息的权威事实，不因 Cursor 模型上下文 rewind 删除。
+- 停止后的普通追问仍走 `UserMessage`，不重注 hidden runtime context。
+- 不得把该缺陷当成“resume 不该注入新运行上下文”或“hidden context 对 Cursor 无效”。第一轮被取消前的思考已经证明注入有效。
+- 后续若补偿，只允许在下一次 runtime-controlled continue（`WorkflowResume` / hidden `RuntimeResume`）重新注入最新 hidden context；不要假设被取消的那条 `session/prompt` 还留在 Cursor 会话历史里。未做该补偿前，这是已知 Cursor ACP 限制。
+
 ### `openSession(ref)`
 根据 `worker-ref` 打开某个 provider 的原始会话。
 

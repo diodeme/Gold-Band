@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-20 记录 Cursor ACP `session/cancel` 回滚已接受 user prompt
+
+- 根因：Cursor ACP 在 `session/prompt` 已被消费（思考/工具已开始）后收到 `session/cancel`，后续同一 session 的模型上下文不再包含该 user prompt。ACP cancel 只应停止前台生成，Cursor IDE Stop 也保留用户消息；Gold Band timeline 同样保留 cancelled `goldBandPrompt`。这是 Cursor adapter 把整轮（含已接受的用户消息）rewind，不是 Gold Band resume 注入失败。半截 tool call 缺 result 时，上游正确收尾是保留 user message 并补 cancelled 工具结果。
+- 记录：不改 Gold Band 实现。权威说明写入 `docs/gold-band/产品设计文档/provider/adapter.md`，并在 prompt-bundle、conversational-runtime、runtime/control 交叉引用。`UserMessage` 追问仍不重注 hidden context；若日后补偿，只允许下一次 runtime-controlled continue 重新注入最新 hidden context。
+- 证据：`task-083` `dev/attempt-002` `acp.raw.jsonl`。`session/load` 恢复 `9e98b7f4-20a2-4ad2-90de-ab229fb4e65e` 后 continue hidden context 为 attempt-002 / review failure；当轮思考已使用。cancel 后追问回落到 attempt-001 旧 hidden context（前序链只有 plan → current dev）。
+- 过度设计与性能评审：仅文档记录上游缺陷，无新 identity、状态机、重试或 I/O。
+
 ## 2026-09-20 AUTO 追问不得把已回滚的作者态 config 再 apply
 
 - 根因：Direct 运行中追问走 prompt queue，不再 `apply_session_mode_options`。AUTO / AI-DYNAMIC 追问走 runtime continue，把冻结 `config_options` `extend` 进 snapshot；snapshot 被第一次 Gemini 省略表清空后，`extend` 删不掉 authoring 的 `reasoning=xhigh`，每次 continue 再 strip 并刷 `acp.session-config-rolled-back`。派发新节点是新的 `session/new`，同样带着冻结 leftover。这是正确设计（continue 只用显式覆盖）实现不完整，不是缺新 identity。

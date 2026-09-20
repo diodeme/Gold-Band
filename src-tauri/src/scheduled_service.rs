@@ -470,6 +470,7 @@ impl ScheduledTaskService {
             direct_config: input.direct_config.clone(),
             auto_config: input.auto_config.clone(),
             attachment_paths: input.attachment_paths.clone(),
+            workspace_files: input.workspace_files.clone(),
             work_location: Default::default(),
             selected_branch: None,
             scheduled_task_id: None,
@@ -639,6 +640,10 @@ impl ScheduledTaskService {
             direct_config: input.direct_config.clone(),
             auto_config: input.auto_config.clone(),
             attachment_paths: Some(attachment_paths),
+            workspace_files: input
+                .workspace_files
+                .clone()
+                .unwrap_or_else(|| current.definition.content_snapshot.workspace_files.clone()),
             work_location: Default::default(),
             selected_branch: None,
             scheduled_task_id: None,
@@ -1561,6 +1566,7 @@ mod tests {
                 schedule: valid_schedule_input(),
                 overlap_policy: OverlapPolicy::SkipWhenRunning,
                 session_policy: None,
+                workspace_files: Vec::new(),
             }
         }
 
@@ -1583,6 +1589,7 @@ mod tests {
                 schedule: valid_schedule_input(),
                 overlap_policy: definition.overlap_policy,
                 session_policy: SessionPolicy::New,
+                workspace_files: None,
             }
         }
 
@@ -2751,6 +2758,7 @@ mod tests {
             schedule: valid_schedule_input(),
             overlap_policy: OverlapPolicy::SkipWhenRunning,
             session_policy: None,
+            workspace_files: Vec::new(),
         };
         service.create(input_for(first_app, "first")).unwrap();
         service.create(input_for(second_app, "second")).unwrap();

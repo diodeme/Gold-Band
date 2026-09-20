@@ -2740,6 +2740,12 @@ export interface ConversationPromptInput {
   displayText: string;
   quotes: UserPromptQuote[];
   role?: UserPromptRole | null;
+  workspaceFiles?: PromptWorkspaceFileRef[];
+}
+
+export interface PromptWorkspaceFileRef {
+  projectId: string;
+  relativePath: string;
 }
 
 export interface ConversationPromptQueueVm {
@@ -2864,6 +2870,7 @@ export interface ConversationQueuedPromptDraftVm {
   quotes: UserPromptQuote[];
   attachmentPaths: string[];
   role?: UserPromptRole | null;
+  workspaceFiles?: PromptWorkspaceFileRef[];
 }
 
 export interface ConversationRunWorktreeVm {
@@ -2945,6 +2952,7 @@ export interface ConversationCreateInput {
   workLocation?: ConversationWorkLocation;
   selectedBranch?: string | null;
   role?: UserPromptRole | null;
+  workspaceFiles?: PromptWorkspaceFileRef[];
 }
 
 export type ConversationWorkLocation = 'main' | 'worktree';

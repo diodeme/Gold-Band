@@ -1,4 +1,5 @@
 use super::ScheduledMode;
+use crate::provider::PromptWorkspaceFileRef;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -17,6 +18,8 @@ pub struct ScheduledTaskContentInput {
     pub instruction: String,
     #[serde(default)]
     pub attachment_hashes: Vec<String>,
+    #[serde(default)]
+    pub workspace_files: Vec<PromptWorkspaceFileRef>,
     pub workspace_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_authoring: Option<Value>,
@@ -35,6 +38,7 @@ impl Default for ScheduledTaskContentInput {
             mode: ScheduledMode::Direct,
             instruction: String::new(),
             attachment_hashes: Vec::new(),
+            workspace_files: Vec::new(),
             workspace_id: String::new(),
             workflow_authoring: None,
             auto_authoring: None,
@@ -54,6 +58,7 @@ impl ScheduledTaskContentInput {
             mode,
             instruction: instruction.into(),
             attachment_hashes: attachment_hashes.into_iter().map(Into::into).collect(),
+            workspace_files: Vec::new(),
             workspace_id: workspace_id.into(),
             ..Self::default()
         }
@@ -150,6 +155,29 @@ pub fn canonical_content_json(input: &ScheduledTaskContentInput) -> Value {
         "attachmentHashes".to_string(),
         sorted_strings(&input.attachment_hashes),
     );
+    let mut workspace_files = input
+        .workspace_files
+        .iter()
+        .map(|reference| {
+            serde_json::json!({
+                "projectId": reference.project_id,
+                "relativePath": reference.relative_path,
+            })
+        })
+        .collect::<Vec<_>>();
+    workspace_files.sort_by(|left, right| {
+        left["projectId"]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(right["projectId"].as_str().unwrap_or_default())
+            .then_with(|| {
+                left["relativePath"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .cmp(right["relativePath"].as_str().unwrap_or_default())
+            })
+    });
+    root.insert("workspaceFiles".to_string(), Value::Array(workspace_files));
     root.insert(
         "instruction".to_string(),
         Value::String(input.instruction.clone()),

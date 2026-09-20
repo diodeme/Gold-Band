@@ -784,6 +784,16 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 
 ## Composer 附件与资源工作区
 
+### 工作空间文件引用（2026-09-18 设计）
+
+- `ConversationPromptInput` 增加 `workspaceFiles` 结构化字段。前端只提交 `{ projectId, relativePath }`；`displayText`、quote、role 和 workspace 引用共同组成一次用户输入，不把引用路径拼接进正文。首页创建、会话详情追问、runtime continue、prompt queue 和定时创建入口消费同一 DTO，不在某个模式中复制旁路字段。
+- 未发送引用属于 Composer 草稿：快速对话引用随首页草稿跨页面保留；会话详情引用随完整 attempt/branch locator 的 ACP 草稿隔离保留。引用与普通附件共享现有 Composer 上下文数量上限，草稿只保存轻量 locator 和展示摘要，不保存文件内容。
+- 快速对话与 ACP 会话详情的 Composer 位于 center panel，文件树位于 right panel；两者通过 right workspace scope 内稳定的引用命令桥连接。Composer 挂载时注册 `addWorkspaceFileRef`，卸载或 scope 切换注销；文件树只消费命令，不订阅草稿、正文、附件或历史消息。桥内部以 ref 读取最新命令，注册状态只让文件树局部重渲染。
+- Prompt admission 和队列写入前必须完成引用校验；`promptSubmission` 与 prompt queue 持久化轻量 `projectId + relativePath`。dispatch 前再次按当前 workspace 解析，生成 `ResolvedWorkspaceFileRef { canonicalPath, name, mimeType, size }`；排队期间文件缺失、改名或越界按结构化错误结算，不自动回填或猜测替代文件。
+- Provider 收到的是 ACP `ResourceLink` content block：`file://` URI、文件名、MIME 与大小。Agent 缺少 `embeddedContext` 或 `image` 能力时仍收到 ResourceLink，不把引用展开为正文；是否读取文件由 Agent 决定。工作空间引用不进入 `task_input_attachment_paths` / `user_input_attachment_paths`，也不物化到 `authoring/inputs` 或 `user-inputs`。
+- Timeline 用户事件在 `raw.workspaceFiles` 中保存结构化引用摘要，供消息 chip 与回放渲染；`originalUserText` 语义不变。当前输入历史继续沿用仅回填正文的既有 quote/attachment 契约，不携带引用、不拼路径。消息 chip 点击复用工作空间文件资源，不创建附件资源，也不把相对路径解释为 attempt 内附件路径。
+- 发送失败或 admission 前停止时，完整草稿按既有快照回填，workspace 引用与正文、quote、附件一起保留；已被 canonical admission 消费后按既有 turn 生命周期释放草稿快照，不以引用预览资源为由延长生命周期。
+
 - 快速对话与会话详情追问的所有未发送附件使用同一 `draft-attachment` 右侧工作区资源；点击附件 chip 不打开遮罩式图片或文本 Dialog。图片继续复用现有工作区画布；文本复用共享只读查看器，其中 Markdown 提供渲染/源码双模式。附件被移除、清空或随 prompt 提交后，必须在同一事件链关闭对应预览 Tab，不能保留引用已释放 Object URL 或已失效内容 locator 的僵尸资源。
 - 草稿附件正文只在活动 Tab 内按需加载。桌面路径附件通过 revision-bound 短期只读 URL 读取，浏览器或粘贴生成附件直接读取当前 `File`；Tab locator 与 composer 草稿均不得缓存正文或触发附件列表全量预读。消息气泡附件继续通过其 canonical `task-inputs` / `user-inputs` locator 读取，但与草稿附件共用同一只读文本/Markdown 展示组件。
 - Composer 与 ACP prompt 使用同一运行配置保护 Agent 上下文：普通粘贴按 UTF-8 字节计数，`conversationInlineContentMaxBytes` 同时是长文本转附件和文本附件内联 `resource` 的边界；当前产品配置为 20,000 字节，超过边界的文本只读取 metadata 并投影显式 `resource_link`，不得先完整读取正文再降级。图片使用独立的 `conversationInlineImageMaxBytes` 与 `conversationInlineImageMaxDimension`；先读取 metadata 与图片头，超过任一边界时从文件流进入受限解码器并只生成本轮内存派生图，依次尝试尺寸受限的无损 WebP、高质量 JPEG 和有界逐级缩小。只有原始编码和尺寸均在预算内时才读取原始图片字节。原文件始终是 canonical attachment，派生失败则投影原文件 link，不覆盖、不持久化、不缓存压缩图。

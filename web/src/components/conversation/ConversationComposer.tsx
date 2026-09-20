@@ -46,15 +46,18 @@ import { workflowTemplateDisplayName } from '@/lib/workflow-template';
 import { useOverflowTooltip } from '@/hooks/useOverflowTooltip';
 import { useWebviewMeasuredContainer } from '@/hooks/use-webview-measured-container';
 import { cn } from '@/lib/utils';
-import { hasUserPromptPayload } from '@/lib/composer-context';
+import { addComposerWorkspaceFile, hasUserPromptPayload, type ComposerWorkspaceFileRef } from '@/lib/composer-context';
 import { GitBranchSelector } from '@/components/git/GitBranchSelector';
 import {
   createDraftAttachmentWorkspaceResource,
   draftAttachmentWorkspaceResourceKey,
   scheduledTaskConfigWorkspaceResourceKey,
   useOptionalRightWorkspace,
+  fileBrowserWorkspaceResourceKey,
+  fileWorkspaceResourceKey,
   type RightWorkspaceResource,
 } from '@/components/workspace/right-workspace-context';
+import { useWorkspaceFileReferenceBridge } from '@/components/workspace/workspace-file-reference-bridge';
 
 interface ConversationComposerProps {
   projectId: string;
@@ -486,6 +489,7 @@ export function ConversationComposer({
   const previousInitialScheduledModeRef = useRef(initialScheduledMode);
   const initialScheduledModeOpenedRef = useRef(false);
   const rightWorkspace = useOptionalRightWorkspace();
+  const workspaceFileReferenceBridge = useWorkspaceFileReferenceBridge();
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const {
     attachments,
@@ -548,6 +552,58 @@ export function ConversationComposer({
   // workspace becomes an explicit choice; with zero local workspaces, send is disabled and the
   // user is guided to add one first (decision e).
   const multicaBinding = composerDraft.draft.multica;
+  const workspaceFiles = composerDraft.draft.workspaceFiles;
+  const attachmentsRef = useRef(composerDraft.draft.attachments);
+  const workspaceFilesRef = useRef(workspaceFiles);
+  useEffect(() => {
+    attachmentsRef.current = composerDraft.draft.attachments;
+  }, [composerDraft.draft.attachments]);
+  useEffect(() => {
+    workspaceFilesRef.current = workspaceFiles;
+  }, [workspaceFiles]);
+
+  useEffect(() => workspaceFileReferenceBridge.register((reference) => {
+    if (reference.projectId !== projectId) return false;
+    const result = addComposerWorkspaceFile(
+      workspaceFilesRef.current,
+      attachmentsRef.current.length,
+      reference,
+    );
+    if (!result.ok) return true;
+    workspaceFilesRef.current = result.workspaceFiles;
+    composerDraft.setWorkspaceFiles(result.workspaceFiles);
+    return true;
+  }), [composerDraft, projectId, workspaceFileReferenceBridge]);
+
+  const openWorkspaceFile = useCallback((file: ComposerWorkspaceFileRef) => {
+    if (!rightWorkspace?.scopeKey) return;
+    void rightWorkspace.openResource({
+      kind: 'file-browser',
+      key: fileBrowserWorkspaceResourceKey(file.projectId),
+      scopeKey: rightWorkspace.scopeKey,
+      title: file.name,
+      description: file.relativePath,
+      attention: false,
+      projectId: file.projectId,
+      selectedFile: {
+        kind: 'file',
+        key: fileWorkspaceResourceKey(file.projectId, file.canonicalPath ?? file.relativePath),
+        scopeKey: rightWorkspace.scopeKey,
+        title: file.name,
+        description: file.relativePath,
+        attention: false,
+        projectId: file.projectId,
+        locator: {
+          projectId: file.projectId,
+          canonicalPath: file.canonicalPath ?? file.relativePath,
+          relativePath: file.relativePath,
+          scope: 'workspace',
+        },
+        target: null,
+        targetRevision: 0,
+      },
+    });
+  }, [rightWorkspace]);
   const multicaActive = multicaBinding !== null;
   const hasLocalWorkspaces = workspaces.length > 0;
   const scheduledSummary = scheduledConfig
@@ -700,6 +756,7 @@ export function ConversationComposer({
     slashSendableText(content, committedSlashCommand),
     attachments.length,
     committedRoleSnapshot(committedSlashCommand),
+    workspaceFiles.length,
   );
   const canCreateScheduledTask = canSubmit && Boolean(onCreateScheduledTask);
   const slashAgentIconKey = isDirect
@@ -852,6 +909,10 @@ export function ConversationComposer({
         ? branchSelection.branch
         : undefined,
       ...(role ? { role } : {}),
+      workspaceFiles: workspaceFiles.map(({ projectId: refProjectId, relativePath }) => ({
+        projectId: refProjectId,
+        relativePath,
+      })),
     };
     setSubmittingAttachments(true);
     try {
@@ -915,6 +976,10 @@ export function ConversationComposer({
       directConfig: isDirect ? normalizeConversationDirectConfigForSubmit({ agentType: selectedDirectAgent, modelId: selectedDirectModel || undefined, permissionMode: selectedDirectPermissionMode || undefined, autoAccept: selectedDirectAutoAccept || undefined, configOptions: selectedDirectConfigOptions }) : undefined,
       autoConfig: isAuto ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession()) : undefined,
       ...(role ? { role } : {}),
+      workspaceFiles: workspaceFiles.map(({ projectId: refProjectId, relativePath }) => ({
+        projectId: refProjectId,
+        relativePath,
+      })),
     };
   };
 
@@ -1036,8 +1101,13 @@ export function ConversationComposer({
         >
           <ComposerContextArea
             attachments={attachments}
+            workspaceFiles={workspaceFiles}
             onRemoveAttachment={removeComposerAttachment}
             onPreviewAttachment={openComposerAttachment}
+            onRemoveWorkspaceFile={(id) => composerDraft.setWorkspaceFiles(
+              workspaceFiles.filter((file) => file.id !== id),
+            )}
+            onOpenWorkspaceFile={openWorkspaceFile}
           />
           <SlashCommandMenu
             open={slashCommands.isOpen}

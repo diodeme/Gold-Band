@@ -75,6 +75,36 @@ export function authoringConfigOptionsForModel(
   return base;
 }
 
+export function isAuthoringModelBoundConfigOption(
+  optionId: string,
+  configOptions: AcpSelectConfigOptionVm[] | null | undefined,
+  modelBoundCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined,
+) {
+  const matches = (option: AcpSelectConfigOptionVm) => (
+    option.id === optionId && isAcpModelBoundConfigCategory(option.category)
+  );
+  if ((configOptions ?? []).some(matches)) return true;
+  return Object.values(modelBoundCatalogs ?? {}).some((catalog) => catalog.some(matches));
+}
+
+export function isAuthoringConfigOptionValueAllowed(
+  optionId: string,
+  value: string,
+  configOptions: AcpSelectConfigOptionVm[] | null | undefined,
+  modelBoundCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined,
+  selectedModelId: string | null | undefined,
+) {
+  const option = authoringConfigOptionsForModel(
+    configOptions,
+    modelBoundCatalogs,
+    selectedModelId,
+  ).find((item) => item.id === optionId);
+  if (option) {
+    return option.options.some((item) => item.value === value);
+  }
+  return isAuthoringModelBoundConfigOption(optionId, configOptions, modelBoundCatalogs);
+}
+
 export function acpCompositeConfigSections(
   configOptions: AcpSelectConfigOptionVm[] | null | undefined,
   selectedModelId: string | null | undefined,
@@ -86,7 +116,11 @@ export function acpCompositeConfigSections(
     modelBoundCatalogs,
     selectedModelId,
   );
-  const remapped = remapAcpThoughtLevelOverride(values, projected, configOptions);
+  const remapped = remapAcpThoughtLevelOverride(
+    values,
+    projected,
+    remapSourceOptions(configOptions, modelBoundCatalogs),
+  );
   const bound = projected.filter((option) => (
     isAcpModelBoundConfigCategory(option.category)
     && option.options.length > 0
@@ -121,6 +155,18 @@ function findAcpThoughtLevelOptionWithValue(
   )) ?? null;
 }
 
+function remapSourceOptions(
+  configOptions: AcpSelectConfigOptionVm[] | null | undefined,
+  modelBoundCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined,
+  previousModelId?: string | null,
+): AcpSelectConfigOptionVm[] {
+  return [
+    ...authoringConfigOptionsForModel(configOptions, modelBoundCatalogs, previousModelId),
+    ...(configOptions ?? []),
+    ...Object.values(modelBoundCatalogs ?? {}).flat(),
+  ];
+}
+
 export function remapAcpThoughtLevelOverride(
   overrides: Record<string, string> | null | undefined,
   configOptions: AcpSelectConfigOptionVm[] | null | undefined,
@@ -140,6 +186,11 @@ export function remapAcpThoughtLevelOverride(
     }
     const match = findAcpThoughtLevelOptionWithValue(targetOptions, value);
     if (!match || match.id === optionId) continue;
+    const existing = next[match.id]?.trim();
+    if (existing && match.options.some((candidate) => candidate.value === existing)) {
+      delete next[optionId];
+      continue;
+    }
     delete next[optionId];
     next[match.id] = value;
   }
@@ -151,13 +202,18 @@ export function retainAcpModelBoundOverrides(
   configOptions: AcpSelectConfigOptionVm[] | null | undefined,
   selectedModelId?: string | null,
   modelBoundCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined = undefined,
+  previousModelId?: string | null,
 ): Record<string, string> {
   const projected = authoringConfigOptionsForModel(
     configOptions,
     modelBoundCatalogs,
     selectedModelId,
   );
-  const next = remapAcpThoughtLevelOverride(overrides, projected, configOptions);
+  const next = remapAcpThoughtLevelOverride(
+    overrides,
+    projected,
+    remapSourceOptions(configOptions, modelBoundCatalogs, previousModelId),
+  );
   const projectedIds = new Set(projected.map((option) => option.id));
   for (const option of projected) {
     if (!isAcpModelBoundConfigCategory(option.category)) continue;
@@ -198,12 +254,19 @@ export function restoreAcpModelBoundOverrides(
   fallbackOverrides: Record<string, string> | null | undefined,
   configOptions: AcpSelectConfigOptionVm[] | null | undefined,
   modelBoundCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined = undefined,
+  previousModelId: string | null | undefined = undefined,
 ): Record<string, string> {
   const selected = nextModelId?.trim() || '';
   const source = selected && remembered && Object.prototype.hasOwnProperty.call(remembered, selected)
     ? remembered[selected]
     : fallbackOverrides;
-  return retainAcpModelBoundOverrides(source, configOptions, nextModelId, modelBoundCatalogs);
+  return retainAcpModelBoundOverrides(
+    source,
+    configOptions,
+    nextModelId,
+    modelBoundCatalogs,
+    previousModelId,
+  );
 }
 
 export function switchAcpModelBoundOverrides(input: {
@@ -225,6 +288,7 @@ export function switchAcpModelBoundOverrides(input: {
     input.currentOverrides,
     input.configOptions,
     input.modelBoundCatalogs,
+    input.previousModelId,
   );
   return {
     remembered: rememberAcpModelBoundOverrides(remembered, input.nextModelId, overrides),

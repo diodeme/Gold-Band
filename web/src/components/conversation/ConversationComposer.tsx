@@ -779,6 +779,7 @@ export function ConversationComposer({
         agentType: base.agentType || base.bootstrapAgentType || nextAgent || '',
         ...patch,
         configOptions: undefined,
+        modelBoundOverrides: undefined,
         globalGoal: optionalRunModeText(nextGlobalGoal),
       };
     }
@@ -817,7 +818,7 @@ export function ConversationComposer({
       configOptions: normalized.configOptions,
       modelBoundOverrides: selectedDirectModelBoundOverrides,
     });
-  }, [isDirect, selectedDirectAgentObj, selectedDirectAgent, selectedDirectModel, selectedDirectPermissionMode, selectedDirectConfigOptions]);
+  }, [isDirect, selectedDirectAgentObj, selectedDirectAgent, selectedDirectModel, selectedDirectPermissionMode, selectedDirectConfigOptions, selectedDirectModelBoundOverrides]);
 
   useEffect(() => {
     if (!isAuto || isDynamicAuto || !selectedAgentObj) return;
@@ -832,7 +833,7 @@ export function ConversationComposer({
       configOptions: normalized.configOptions,
       modelBoundOverrides: selectedModelBoundOverrides,
     });
-  }, [isAuto, isDynamicAuto, selectedAgentObj, selectedConfigOptions, selectedModel]);
+  }, [isAuto, isDynamicAuto, selectedAgentObj, selectedConfigOptions, selectedModel, selectedModelBoundOverrides]);
 
   const handleSubmit = async () => {
     if (!canSubmit) return;

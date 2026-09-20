@@ -12521,10 +12521,7 @@ fn build_dynamic_worker_invocation(
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "runtime_context");
     let runtime_context = dynamic_runtime_context(ctx, &node.id, attempt_id);
-    let mut config_options = dynamic_config_options_for_invocation(ctx.dynamic, node);
-    config_options.extend(dynamic_acp_config_option_overrides(
-        &runtime_context.attempt_dir,
-    ));
+    let snapshot_config_options = dynamic_acp_config_option_overrides(&runtime_context.attempt_dir);
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -12625,6 +12622,21 @@ fn build_dynamic_worker_invocation(
 
     let step_started_at = dynamic_invocation_build_step_begin(ctx, node, attempt_id, "model");
     let model = resolve_dynamic_invocation_model(ctx.dynamic, node, model_override);
+    let diagnostics = ctx.app.provider_diagnostics();
+    let capabilities = node
+        .provider
+        .as_deref()
+        .filter(|provider| !provider.trim().is_empty())
+        .or(Some(dynamic_control_provider(ctx.dynamic)))
+        .and_then(|provider| diagnostics.get(provider))
+        .and_then(|snapshot| snapshot.capabilities.as_ref());
+    let config_options = crate::acp::session_config::invocation_config_option_overrides(
+        session_mode == SessionMode::Continue,
+        dynamic_config_options_for_invocation(ctx.dynamic, node),
+        snapshot_config_options,
+        capabilities,
+        model.as_deref(),
+    );
     dynamic_invocation_build_step_end(
         ctx,
         node,

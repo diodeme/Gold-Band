@@ -1,4 +1,6 @@
 现在应用程序的侧边栏是任务编排、知识库、模型管理
+- 2026-09-20：AUTO / AI-DYNAMIC runtime continue 只传 snapshot `configOptionOverrides`，不得把冻结作者态 `config_options` 再 merge 回来；新节点按已观测 `modelBoundCatalogs[modelId]` 静默 retain。Direct 运行中追问走 prompt queue，不会再 apply 作者态 leftover。
+- 2026-09-20：工作流编辑器保存校验按所选模型的 `modelBoundCatalogs` 投影判定 `thought_level` / `model_config`，与 Inspector 菜单同一份目录；不得用 Doctor 当前表把 Grok 的 effort / Fast 报成不属于当前 Agent。
 - 2026-09-19：配置展示名带 option id，例如「思考强度（effort）」；名称与 id 仅大小写不同时不重复。菜单与回滚分割线共用标签。
 - 2026-09-19：复合菜单一条 `thought_level` 标「思考强度」；多条时 `thinking`/`effort` 中文为「深度思考」「思考强度」，`context` 为「上下文」。英文保持协议名。
 - 2026-09-19：正式会话活目录回写作者态当前表：更新诊断 `configOptions` 的 `model.currentValue` 与绑定行，保留模型/权限 options 列表和 `checked_at`。未观测模型复用最后一次观测（Doctor 或会话），已观测模型仍只画自己的 `modelBoundCatalogs`。

@@ -102,7 +102,7 @@ export function normalizeConversationAutoConfigForSubmit(
     ...(permissionMode ? { permissionMode } : {}),
     ...(config.autoAccept ? { autoAccept: true } : {}),
     ...(config.agentStrategy !== 'dynamic' && configOptions ? { configOptions } : {}),
-    ...(modelBoundOverrides ? { modelBoundOverrides } : {}),
+    ...(config.agentStrategy !== 'dynamic' && modelBoundOverrides ? { modelBoundOverrides } : {}),
     ...(bootstrapConfigOptions ? { bootstrapConfigOptions } : {}),
     ...(bootstrapModelBoundOverrides ? { bootstrapModelBoundOverrides } : {}),
     ...(acceptanceConfigOptions ? { acceptanceConfigOptions } : {}),

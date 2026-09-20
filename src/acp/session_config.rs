@@ -49,6 +49,75 @@ pub fn align_overrides_to_live_catalog(
     strip_model_bound_overrides(catalog_before, catalog_after, overrides, false)
 }
 
+/// Same-session continue must not re-merge frozen authoring leftovers onto a
+/// snapshot that already rolled them back. Direct follow-up avoids this by
+/// queuing prompts on the live session; AUTO / workflow continue rebuilds the
+/// invocation and must pass snapshot `configOptionOverrides` as the complete
+/// authority. New sessions still start from authoring, then silently retain
+/// against the selected model's last observed bound catalog so a later Gemini
+/// node does not re-notice `reasoning` after bootstrap already observed that
+/// the live table omits it.
+pub fn invocation_config_option_overrides(
+    reuse_session: bool,
+    authoring: BTreeMap<String, String>,
+    snapshot: BTreeMap<String, String>,
+    capabilities: Option<&Value>,
+    selected_model: Option<&str>,
+) -> BTreeMap<String, String> {
+    if reuse_session {
+        return snapshot;
+    }
+    let mut next = authoring;
+    retain_authoring_model_bound_overrides(&mut next, capabilities, selected_model);
+    next
+}
+
+fn authoring_config_options_for_model(
+    capabilities: Option<&Value>,
+    selected_model: Option<&str>,
+) -> Option<Value> {
+    let capabilities = capabilities?;
+    let current = capabilities.get("configOptions")?;
+    let current_options = live_config_option_array(current)?;
+    let catalogs = model_bound_catalogs_from_capabilities_value(Some(capabilities));
+    let selected = trimmed_model_id(selected_model)
+        .or_else(|| catalog_model_current_value(current_options))?;
+    if !catalogs.contains_key(&selected) {
+        return Some(current.clone());
+    }
+    let mut next: Vec<Value> = current_options
+        .iter()
+        .filter(|option| !option_category(Some(option)).is_some_and(is_model_bound_config_category))
+        .cloned()
+        .collect();
+    let bound = catalogs
+        .get(&selected)
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let insert_at = next
+        .iter()
+        .position(is_model_select_option)
+        .map(|index| index + 1)
+        .unwrap_or(next.len());
+    for (offset, option) in bound.into_iter().enumerate() {
+        next.insert(insert_at + offset, option);
+    }
+    Some(Value::Array(next))
+}
+
+fn retain_authoring_model_bound_overrides(
+    overrides: &mut BTreeMap<String, String>,
+    capabilities: Option<&Value>,
+    selected_model: Option<&str>,
+) {
+    let Some(projected) = authoring_config_options_for_model(capabilities, selected_model) else {
+        return;
+    };
+    let current = capabilities.and_then(|value| value.get("configOptions"));
+    let _ = strip_unsupported_model_bound_overrides(current, Some(&projected), overrides);
+}
+
 /// `session/new` and in-session model switches both treat the live catalog as
 /// the apply fact source: remap thought by value, unspecify unsupported
 /// `thought_level` / `model_config`. Attached reuse without a model RPC still
@@ -313,12 +382,16 @@ pub fn switch_model_bound_overrides(
     let mut pending = trimmed_model_id(next_model)
         .and_then(|model_id| remembered.get(&model_id).cloned())
         .unwrap_or_else(|| current_overrides.clone());
+    let mut catalog_before = live_config_options.cloned();
+    if let Some(previous) = trimmed_model_id(previous_model) {
+        restore_session_model_bound_options(model_bound_catalogs, &mut catalog_before, &previous);
+    }
     let mut catalog = live_config_options.cloned();
     if let Some(next) = trimmed_model_id(next_model) {
         restore_session_model_bound_options(model_bound_catalogs, &mut catalog, &next);
     }
     let _ = strip_unsupported_model_bound_overrides(
-        live_config_options,
+        catalog_before.as_ref(),
         catalog.as_ref(),
         &mut pending,
     );
@@ -493,6 +566,98 @@ fn write_session_model_override(session: &mut Value, next_model: Option<&str>) {
 /// After `set_config_option(model)` omits the table, restore this model's last
 /// observation. No cache means first contact: keep the previous model's bound
 /// rows so apply can remap, but do not record them as the requested model.
+/// Authoring catalogs are a read-through for models this session has not
+/// observed; they are never stamped into `session_catalogs`.
+pub fn retarget_live_model_bound_catalog(
+    live: &mut Option<Value>,
+    session_catalogs: &mut BTreeMap<String, Value>,
+    authoring_catalogs: &BTreeMap<String, Value>,
+    requested_model: &str,
+    catalog_returned: bool,
+) -> bool {
+    let requested = requested_model.trim();
+    if requested.is_empty() {
+        return false;
+    }
+    if catalog_returned {
+        let observed = observe_session_model_bound_catalog(session_catalogs, live.as_ref());
+        set_live_catalog_model(live, requested);
+        return observed;
+    }
+    set_live_catalog_model(live, requested);
+    if restore_session_model_bound_options(session_catalogs, live, requested) {
+        return true;
+    }
+    restore_session_model_bound_options(authoring_catalogs, live, requested)
+}
+
+fn set_live_catalog_model(live: &mut Option<Value>, model: &str) {
+    let Some(options) = live.as_mut().and_then(Value::as_array_mut) else {
+        return;
+    };
+    if let Some(option) = options.iter_mut().find(|option| {
+        option.get("id").and_then(Value::as_str) == Some("model")
+            || option.get("category").and_then(Value::as_str) == Some("model")
+    }) {
+        if let Some(object) = option.as_object_mut() {
+            object.insert("currentValue".into(), Value::String(model.to_string()));
+        }
+    }
+}
+
+/// Bound option the session composer is allowed to edit for the selected model.
+/// Live rows are the fact source only when they belong to that model; otherwise
+/// this session's cache, then the shared authoring catalog.
+pub fn projected_bound_option<'a>(
+    session: &'a Value,
+    authoring_catalogs: &'a BTreeMap<String, Value>,
+    option_id: &str,
+) -> Option<&'a Value> {
+    let selected = session_selected_model_id(session)?;
+    let live = session.get("configOptions");
+    let source = if live_catalog_model_id(live).as_deref() == Some(selected.as_str())
+        && live_has_model_bound_rows(live)
+    {
+        live
+    } else {
+        session
+            .get(ACP_MODEL_BOUND_CATALOGS_KEY)
+            .and_then(|catalogs| catalogs.get(selected.as_str()))
+            .or_else(|| authoring_catalogs.get(&selected))
+    };
+    config_option_by_id(source, option_id).filter(|option| {
+        option_category(Some(option)).is_some_and(is_model_bound_config_category)
+    })
+}
+
+fn live_has_model_bound_rows(live: Option<&Value>) -> bool {
+    live.and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|option| option_category(Some(option)).is_some_and(is_model_bound_config_category))
+}
+
+pub fn option_lists_value(option: &Value, value: &str) -> bool {
+    option_has_value(Some(option), value)
+}
+
+pub fn option_listed_values(option: &Value) -> Vec<String> {
+    option
+        .get("options")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("value").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+pub fn option_category_name(option: &Value) -> &str {
+    option_category(Some(option)).unwrap_or("config")
+}
+
 pub fn restore_session_model_bound_options(
     catalogs: &BTreeMap<String, Value>,
     live_config_options: &mut Option<Value>,
@@ -620,13 +785,12 @@ fn strip_model_bound_overrides(
                 .map(|category| category == ACP_THOUGHT_LEVEL_CATEGORY)
                 .unwrap_or(true);
             if source_is_thought_level {
-                if let Some(thought_id) =
-                    remap_thought_level_override(Some(catalog_after), overrides, &config_id, &value)
-                {
-                    if thought_id != config_id {
-                        overrides.remove(&config_id);
-                        overrides.insert(thought_id, value);
-                    }
+                if apply_thought_level_remap(
+                    Some(catalog_after),
+                    overrides,
+                    &config_id,
+                    &value,
+                ) {
                     continue;
                 }
             }
@@ -657,13 +821,7 @@ fn strip_model_bound_overrides(
             continue;
         }
         if category == ACP_THOUGHT_LEVEL_CATEGORY {
-            if let Some(thought_id) =
-                remap_thought_level_override(Some(catalog_after), overrides, &config_id, &value)
-            {
-                if thought_id != config_id {
-                    overrides.remove(&config_id);
-                    overrides.insert(thought_id, value);
-                }
+            if apply_thought_level_remap(Some(catalog_after), overrides, &config_id, &value) {
                 continue;
             }
         }
@@ -694,16 +852,40 @@ pub fn rolled_back_session_config_params(items: &[RolledBackSessionConfig]) -> V
     })
 }
 
+fn apply_thought_level_remap(
+    catalog_after: Option<&Value>,
+    overrides: &mut BTreeMap<String, String>,
+    config_id: &str,
+    value: &str,
+) -> bool {
+    let Some(thought_id) =
+        remap_thought_level_override(catalog_after, overrides, config_id, value)
+    else {
+        return false;
+    };
+    if thought_id != config_id {
+        overrides.remove(config_id);
+        overrides.insert(thought_id, value.to_string());
+    }
+    true
+}
+
 fn remap_thought_level_override(
     catalog_after: Option<&Value>,
-    _overrides: &BTreeMap<String, String>,
-    _config_id: &str,
+    overrides: &BTreeMap<String, String>,
+    config_id: &str,
     value: &str,
 ) -> Option<String> {
-    thought_option_with_value(catalog_after, value)?
-        .get("id")
-        .and_then(Value::as_str)
-        .map(str::to_string)
+    let thought = thought_option_with_value(catalog_after, value)?;
+    let thought_id = thought.get("id").and_then(Value::as_str)?;
+    if thought_id != config_id {
+        if let Some(existing) = overrides.get(thought_id) {
+            if option_has_value(Some(thought), existing) {
+                return None;
+            }
+        }
+    }
+    Some(thought_id.to_string())
 }
 
 fn thought_option_with_value<'a>(catalog: Option<&'a Value>, value: &str) -> Option<&'a Value> {
@@ -771,6 +953,31 @@ fn option_has_value(option: Option<&Value>, value: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn fable_catalog() -> Value {
+        json!([
+            {
+                "id": "model",
+                "category": "model",
+                "currentValue": "claude-fable",
+            },
+            {
+                "id": "thinking",
+                "category": "thought_level",
+                "options": [{ "value": "false" }, { "value": "true" }],
+            },
+            {
+                "id": "effort",
+                "category": "thought_level",
+                "options": [{ "value": "high" }, { "value": "extra-high" }],
+            },
+            {
+                "id": "context",
+                "category": "model_config",
+                "options": [{ "value": "1m" }],
+            },
+        ])
+    }
 
     fn catalog(current_model: &str, thought_values: &[&str], fast: bool) -> Value {
         let mut options = vec![json!({
@@ -1748,6 +1955,344 @@ mod tests {
         assert!(
             session["modelBoundCatalogs"].get("grok-4.6").is_none(),
             "authoring catalogs must not be stamped as this session's observation",
+        );
+    }
+
+    #[test]
+    fn does_not_remap_fast_off_when_previous_model_catalog_is_not_the_live_table() {
+        let grok = catalog("grok-4.6", &["high", "extra-high"], true);
+        let fable = fable_catalog();
+        let mut catalogs = BTreeMap::new();
+        observe_session_model_bound_catalog(&mut catalogs, Some(&grok));
+        observe_session_model_bound_catalog(&mut catalogs, Some(&fable));
+        let current = BTreeMap::from([
+            ("effort".into(), "high".into()),
+            ("fast".into(), "false".into()),
+        ]);
+
+        let (applied, _) = switch_model_bound_overrides(
+            &BTreeMap::new(),
+            Some("grok-4.6"),
+            Some("claude-fable"),
+            &current,
+            Some(&fable),
+            &catalogs,
+        );
+        assert_eq!(applied, BTreeMap::from([("effort".into(), "high".into())]));
+        assert!(!applied.contains_key("thinking"));
+
+        let (applied_from_stale_live, _) = switch_model_bound_overrides(
+            &BTreeMap::new(),
+            Some("grok-4.6"),
+            Some("claude-fable"),
+            &current,
+            Some(&grok),
+            &catalogs,
+        );
+        assert_eq!(
+            applied_from_stale_live,
+            BTreeMap::from([("effort".into(), "high".into())])
+        );
+        assert!(!applied_from_stale_live.contains_key("thinking"));
+    }
+
+    #[test]
+    fn does_not_overwrite_an_already_valid_thought_value_when_remapping() {
+        let after = json!([{
+            "id": "effort",
+            "category": "thought_level",
+            "options": [{ "value": "medium" }, { "value": "high" }],
+        }]);
+        let before = json!([{
+            "id": "reasoning",
+            "category": "thought_level",
+            "options": [{ "value": "medium" }, { "value": "high" }],
+        }]);
+        let mut overrides = BTreeMap::from([
+            ("effort".into(), "high".into()),
+            ("reasoning".into(), "medium".into()),
+        ]);
+
+        let rolled_back =
+            strip_unsupported_model_bound_overrides(Some(&before), Some(&after), &mut overrides);
+
+        assert!(rolled_back.is_empty() || rolled_back.iter().all(|item| item.config_id == "reasoning"));
+        assert_eq!(overrides.get("effort").map(String::as_str), Some("high"));
+        assert!(!overrides.contains_key("reasoning"));
+    }
+
+    #[test]
+    fn first_visit_seeds_from_current_overrides_that_the_target_catalog_can_keep() {
+        let grok = catalog("grok-4.6", &["high", "extra-high"], true);
+        let mini = catalog("gpt-5-mini", &["low", "high"], false);
+        let mut catalogs = BTreeMap::new();
+        observe_session_model_bound_catalog(&mut catalogs, Some(&grok));
+        observe_session_model_bound_catalog(&mut catalogs, Some(&mini));
+        let current = BTreeMap::from([("effort".into(), "high".into())]);
+
+        let (applied, remembered) = switch_model_bound_overrides(
+            &BTreeMap::new(),
+            Some("grok-4.6"),
+            Some("gpt-5-mini"),
+            &current,
+            Some(&mini),
+            &catalogs,
+        );
+        assert_eq!(applied, current);
+        assert_eq!(remembered.get("gpt-5-mini"), Some(&current));
+    }
+
+    #[test]
+    fn restores_empty_remembered_slot_instead_of_seeding_from_current() {
+        let grok = catalog("grok-4.6", &["high", "extra-high"], true);
+        let mini = catalog("gpt-5-mini", &["low", "high"], false);
+        let mut catalogs = BTreeMap::new();
+        observe_session_model_bound_catalog(&mut catalogs, Some(&grok));
+        observe_session_model_bound_catalog(&mut catalogs, Some(&mini));
+        let remembered = BTreeMap::from([
+            (
+                "grok-4.6".into(),
+                BTreeMap::from([("effort".into(), "extra-high".into())]),
+            ),
+            ("gpt-5-mini".into(), BTreeMap::new()),
+        ]);
+        let current = BTreeMap::from([("effort".into(), "extra-high".into())]);
+
+        let (applied, _) = switch_model_bound_overrides(
+            &remembered,
+            Some("grok-4.6"),
+            Some("gpt-5-mini"),
+            &current,
+            Some(&mini),
+            &catalogs,
+        );
+        assert!(applied.is_empty());
+    }
+
+    #[test]
+    fn overwrites_a_model_slot_with_the_state_at_leave() {
+        let grok = catalog("grok-4.6", &["high", "extra-high"], true);
+        let mini = catalog("gpt-5-mini", &["low", "high"], false);
+        let mut catalogs = BTreeMap::new();
+        observe_session_model_bound_catalog(&mut catalogs, Some(&grok));
+        observe_session_model_bound_catalog(&mut catalogs, Some(&mini));
+
+        let (mini_applied, remembered) = switch_model_bound_overrides(
+            &BTreeMap::new(),
+            Some("grok-4.6"),
+            Some("gpt-5-mini"),
+            &BTreeMap::from([("effort".into(), "extra-high".into())]),
+            Some(&mini),
+            &catalogs,
+        );
+        let (_, remembered) = switch_model_bound_overrides(
+            &remembered,
+            Some("gpt-5-mini"),
+            Some("grok-4.6"),
+            &mini_applied,
+            Some(&grok),
+            &catalogs,
+        );
+        let (mini_again, remembered) = switch_model_bound_overrides(
+            &remembered,
+            Some("grok-4.6"),
+            Some("gpt-5-mini"),
+            &BTreeMap::from([("effort".into(), "high".into())]),
+            Some(&mini),
+            &catalogs,
+        );
+        let (grok_applied, _) = switch_model_bound_overrides(
+            &remembered,
+            Some("gpt-5-mini"),
+            Some("grok-4.6"),
+            &mini_again,
+            Some(&grok),
+            &catalogs,
+        );
+        assert_eq!(
+            grok_applied,
+            BTreeMap::from([("effort".into(), "high".into())])
+        );
+    }
+
+    #[test]
+    fn retarget_restores_authoring_catalog_without_stamping_session_observation() {
+        let grok = catalog("grok-4.6", &["high", "extra-high"], true);
+        let luna_bound = json!([
+            {
+                "id": "reasoning",
+                "category": "thought_level",
+                "options": [{ "value": "high" }],
+            },
+            {
+                "id": "context",
+                "category": "model_config",
+                "options": [{ "value": "1m" }],
+            },
+        ]);
+        let mut live = Some(json!([
+            {
+                "id": "model",
+                "category": "model",
+                "currentValue": "gpt-5.6-luna",
+            },
+            {
+                "id": "effort",
+                "category": "thought_level",
+                "options": [{ "value": "extra-high" }],
+            },
+            {
+                "id": "fast",
+                "category": "model_config",
+                "options": [{ "value": "false" }, { "value": "true" }],
+            },
+        ]));
+        let mut session_catalogs = BTreeMap::new();
+        observe_session_model_bound_catalog(&mut session_catalogs, Some(&grok));
+        let mut authoring = BTreeMap::new();
+        authoring.insert("gpt-5.6-luna".into(), luna_bound);
+
+        assert!(retarget_live_model_bound_catalog(
+            &mut live,
+            &mut session_catalogs,
+            &authoring,
+            "gpt-5.6-luna",
+            false,
+        ));
+        let ids = catalog_ids(live.as_ref().and_then(Value::as_array).unwrap());
+        assert_eq!(ids, vec!["model", "reasoning", "context"]);
+        assert!(session_catalogs.get("gpt-5.6-luna").is_none());
+    }
+
+    #[test]
+    fn selected_luna_context_is_available_from_authoring_while_live_table_is_still_grok() {
+        let grok = catalog("grok-4.6", &["high", "extra-high"], true);
+        let luna_bound = json!([
+            {
+                "id": "reasoning",
+                "category": "thought_level",
+                "options": [{ "value": "high" }, { "value": "extra-high" }],
+            },
+            {
+                "id": "context",
+                "category": "model_config",
+                "options": [{ "value": "272k" }, { "value": "1m" }],
+            },
+            {
+                "id": "fast",
+                "category": "model_config",
+                "options": [{ "value": "false" }, { "value": "true" }],
+            },
+        ]);
+        let session = json!({
+            "modelOverride": "gpt-5.6-luna",
+            "models": { "currentModelId": "gpt-5.6-luna" },
+            "configOptions": grok,
+            "modelBoundCatalogs": {
+                "grok-4.6": bound_config_options(grok.as_array().unwrap()),
+            },
+        });
+        let mut authoring = BTreeMap::new();
+        authoring.insert("gpt-5.6-luna".into(), luna_bound);
+
+        let context = projected_bound_option(&session, &authoring, "context")
+            .expect("Luna Context must be selectable from the authoring catalog");
+        assert!(option_lists_value(context, "1m"));
+        assert!(option_lists_value(context, "272k"));
+        assert!(!option_lists_value(context, "2m"));
+        assert!(projected_bound_option(&session, &authoring, "fast").is_some());
+        assert!(projected_bound_option(&session, &authoring, "effort").is_none());
+    }
+
+    #[test]
+    fn doctor_current_table_context_is_not_projected_onto_live_grok() {
+        let grok = catalog("grok-4.6", &["high", "extra-high"], true);
+        let session = json!({
+            "configOptions": grok,
+        });
+        let mut authoring = BTreeMap::new();
+        authoring.insert(
+            "gpt-5.6-luna".into(),
+            json!([{
+                "id": "context",
+                "category": "model_config",
+                "options": [{ "value": "1m" }],
+            }]),
+        );
+        assert!(projected_bound_option(&session, &authoring, "context").is_none());
+        assert!(projected_bound_option(&session, &authoring, "fast").is_some());
+    }
+
+    #[test]
+    fn continue_does_not_reapply_authoring_bound_options_after_snapshot_rollback() {
+        let authoring = BTreeMap::from([("reasoning".into(), "xhigh".into())]);
+        let snapshot = BTreeMap::new();
+        assert!(
+            invocation_config_option_overrides(true, authoring, snapshot, None, Some("gemini"))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn continue_keeps_snapshot_overrides_instead_of_authoring_leftovers() {
+        let authoring = BTreeMap::from([("reasoning".into(), "xhigh".into())]);
+        let snapshot = BTreeMap::from([("effort".into(), "high".into())]);
+        assert_eq!(
+            invocation_config_option_overrides(true, authoring, snapshot, None, Some("gemini"),),
+            BTreeMap::from([("effort".into(), "high".into())])
+        );
+    }
+
+    #[test]
+    fn new_session_keeps_authoring_when_selected_model_catalog_is_unobserved() {
+        let authoring = BTreeMap::from([("reasoning".into(), "xhigh".into())]);
+        let capabilities = capabilities(json!([
+            {
+                "id": "model",
+                "category": "model",
+                "currentValue": "grok-4.6",
+                "options": [
+                    { "value": "grok-4.6" },
+                    { "value": "gemini-3.5-flash" },
+                ],
+            },
+            {
+                "id": "reasoning",
+                "category": "thought_level",
+                "options": [{ "value": "xhigh" }, { "value": "high" }],
+            },
+        ]));
+        assert_eq!(
+            invocation_config_option_overrides(
+                false,
+                authoring,
+                BTreeMap::new(),
+                Some(&capabilities),
+                Some("gemini-3.5-flash"),
+            )
+            .get("reasoning")
+            .map(String::as_str),
+            Some("xhigh")
+        );
+    }
+
+    #[test]
+    fn new_session_silently_drops_bound_options_omitted_from_observed_model_catalog() {
+        let authoring = BTreeMap::from([("reasoning".into(), "xhigh".into())]);
+        let mut capabilities = capabilities(catalog("grok-4.6", &["xhigh", "high"], true));
+        capabilities.as_object_mut().unwrap().insert(
+            ACP_MODEL_BOUND_CATALOGS_KEY.into(),
+            json!({ "gemini-3.5-flash": [] }),
+        );
+        assert!(
+            invocation_config_option_overrides(
+                false,
+                authoring,
+                BTreeMap::new(),
+                Some(&capabilities),
+                Some("gemini-3.5-flash"),
+            )
+            .is_empty()
         );
     }
 

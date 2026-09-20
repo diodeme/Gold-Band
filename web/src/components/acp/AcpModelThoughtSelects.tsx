@@ -48,6 +48,8 @@ export {
   acpCompositeSectionLabel,
   acpShowsModelConfigSelect,
   authoringConfigOptionsForModel,
+  isAuthoringConfigOptionValueAllowed,
+  isAuthoringModelBoundConfigOption,
   findAcpCatalogModelId,
   findAcpModelConfigOptions,
   findAcpThoughtLevel,

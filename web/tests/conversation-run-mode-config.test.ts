@@ -103,6 +103,35 @@ describe('conversation run mode config text fields', () => {
     });
   });
 
+  it('drops top-level AUTO modelBoundOverrides when submitting a dynamic strategy', () => {
+    expect(normalizeConversationAutoConfigForSubmit({
+      agentStrategy: 'dynamic',
+      agentType: 'claude-acp',
+      bootstrapAgentType: 'claude-acp',
+      configOptions: { effort: 'high' },
+      modelBoundOverrides: {
+        'grok-4.6': { effort: 'extra-high' },
+      },
+      bootstrapConfigOptions: { effort: 'high' },
+      bootstrapModelBoundOverrides: {
+        'grok-4.6': { effort: 'high' },
+      },
+    })).toMatchObject({
+      agentStrategy: 'dynamic',
+      bootstrapConfigOptions: { effort: 'high' },
+      bootstrapModelBoundOverrides: {
+        'grok-4.6': { effort: 'high' },
+      },
+    });
+    expect(normalizeConversationAutoConfigForSubmit({
+      agentStrategy: 'dynamic',
+      agentType: 'claude-acp',
+      modelBoundOverrides: {
+        'grok-4.6': { effort: 'extra-high' },
+      },
+    })?.modelBoundOverrides).toBeUndefined();
+  });
+
   it('normalizes role-scoped dynamic AUTO thought-level overrides', () => {
     expect(normalizeConversationAutoConfigForSubmit({
       agentStrategy: 'dynamic',

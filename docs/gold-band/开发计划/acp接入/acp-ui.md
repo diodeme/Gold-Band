@@ -2,6 +2,9 @@
 
 ## 0. 当前实现状态
 
+- 2026-09-20 AUTO / AI-DYNAMIC runtime continue 只传 snapshot `configOptionOverrides`，不得把冻结作者态 `config_options` 再 merge 回来；否则 Gemini 省略表后第一次回滚的 reasoning 会在每次追问再刷分割线。Direct 运行中追问走 prompt queue，本来就不会再 apply。新节点 `session/new` 按所选模型已观测的 `modelBoundCatalogs[modelId]` 静默 retain。
+- 2026-09-20 工作流编辑器保存校验与 Inspector 菜单共用所选模型的 `modelBoundCatalogs` 投影。Doctor 当前表是 Luna 时，Grok 节点上菜单可选的 effort / Fast 不得报「不属于当前 Agent」。投影中有该项则值必须在列表中；投影没有的绑定类 option 与 `validate_and_inject` 对齐，不 fail-closed。
+- 2026-09-20 会话切到尚未被本会话观测的模型时，composer 按作者态 `modelBoundCatalogs[modelId]` 画出 Context 等绑定项；点选必须按同一份投影目录校验并写入 snapshot override，不得拿仍属于上一模型的活目录报 `acp.session-config-value-unavailable`。下次 prompt 仍以模型 RPC 后的活目录 apply，并 remap / 回滚。Doctor 当前表不得当成另一模型绑定项的写入目录。
 - 2026-09-19 会话切模型不得把 `configOptions.model.currentValue` 改挂到还是上一模型的绑定行上，否则 Luna Context 会闪一下再消失。`thought_level` remap 要求两边都是该 category，再按档位 value 换接线名；`model_config` 等非该 category 只比 option id，Grok Fast Off 不得接到 Fable `thinking` Off。
 - 2026-09-19 会话栏与作者态共用 Agent `modelBoundCatalogs[modelId]`：这次会话还没观测过的模型也能画出作者态已缓存的 thought/Fast。活目录属于所选模型且带绑定行时仍优先。已选值继续只在本会话 `modelBoundOverrides`，不写回主页。
 - 2026-09-19 作者态与会话内切模型都按模型记住 `thought_level` / `model_config`。Direct/AUTO/工作流绑定持久化 `modelBoundOverrides[modelId]`；已建立会话的 map 只在 snapshot，不写回主页。Grok Extra High → Mini → Grok 还原 Extra High；Mini 空槽不得回填 Grok 的值。
@@ -35,7 +38,7 @@
 - 系统提示弹窗正文、原始帧摘要展开详情、子 Agent 结果等长文本区统一跟随应用设置字体；仅在明确需要展示代码或固定宽度标识时才允许局部使用等宽字体。系统提示正文直接复用 AtomEditor/CodeMirror 的 Markdown 查看器并固定 `editable=false`，复制源码与 Markdown/原文切换沿用该组件右上角的工具栏，不使用额外文字、Switch 或独立工具行。
 - 系统提示弹窗已收口为 shadcn/Radix Dialog + 原生 flex 滚动容器的单滚动面：标题栏固定，正文使用 Gold Band 统一滚动条且常驻，profile/runtime prompt 不做长度截断；长路径和连续字符在正文容器内强制断行，禁止由 `<pre>` 再创建嵌套滚动或把 Dialog 撑出视口。由于 Dialog 使用自然高度加 `max-height`，正文不得改用依赖百分比 viewport 高度的 Radix ScrollArea。前端回归测试固化 `max-height + flex column + min-height zero + direct overflow-y-scroll child` 布局契约。
 - ACP 会话流支持将 `Agent` 工具调用生命周期内的子 Agent transcript 聚合为可展开/收起分组，不再把主 Agent 与子 Agent 输出完全混排。
-- ACP session 初始化与后续追问必须分别维护 Gold Band 显式覆盖和 Agent 当前配置：模型只继承 `modelOverride`，权限模式只继承 `permissionModeOverride`，Auto Accept 只继承 session `autoAccept`，其余 ACP select 配置继承 `configOptionOverrides[实际 optionId]`；不得从 Agent 返回的 `currentModelId / currentModeId / currentValue` 反推 override。Auto Accept 不通过 mode API 下发。发起会话前模型、权限和思考强度都可切回“不指定”；会话详情仅在对应 override 尚为空时提供“不指定”，模型、权限或思考强度一旦选择具体值后都只能在具体值之间切换。same-session prompt、runtime continue 与 AI-DYNAMIC inner continue 只继续使用显式覆盖。
+- ACP session 初始化与后续追问必须分别维护 Gold Band 显式覆盖和 Agent 当前配置：模型只继承 `modelOverride`，权限模式只继承 `permissionModeOverride`，Auto Accept 只继承 session `autoAccept`，其余 ACP select 配置继承 `configOptionOverrides[实际 optionId]`；不得从 Agent 返回的 `currentModelId / currentModeId / currentValue` 反推 override。Auto Accept 不通过 mode API 下发。发起会话前模型、权限和思考强度都可切回“不指定”；会话详情仅在对应 override 尚为空时提供“不指定”，模型、权限或思考强度一旦选择具体值后都只能在具体值之间切换。same-session prompt、runtime continue 与 AI-DYNAMIC inner continue 只继续使用显式覆盖；AUTO / 工作流 continue 不得把冻结作者态 `config_options` 再 merge 进已清洗的 snapshot。新节点 `session/new` 按所选模型已观测的 `modelBoundCatalogs[modelId]` 静默 retain，未观测才带作者态进活目录并通知一次。
 - 发起会话前与已建立会话后的模型配置按 Agent 能力选择载体：存在模型且同时存在 `thought_level` 或 `model_config` 时使用复合二级菜单，选择任一子项后保留菜单以便继续配置，点击外部才关闭；只有模型时使用普通单项菜单，权限始终使用单项菜单，两者选择后立即关闭。追问 composer 内的 PromptInput 点击聚焦逻辑必须忽略按钮、选择器以及 `menuitem`、`menuitemcheckbox`、`menuitemradio` 等菜单项，配置选择只生效而不主动聚焦文本框。
 - ACP session 配置归一化统一采用 `configOptions` 优先、旧 `models` / `modes` 回退：目录、当前值和显示名必须使用同一优先级，避免 Codex 等 adapter 同时返回纯模型 config option 与“模型 × 思考强度”旧目录时展示展开组合。缺少模型绑定的 `thought_level` / `model_config` 时继续退化为模型单下拉，不从模型 ID 或名称反向猜测思考强度或 Fast；回归测试覆盖新旧字段冲突和 legacy-only adapter。
 - Composer 配置栏中的模型单选、模型复合菜单与权限单选统一基于非模态 shadcn/Radix DropdownMenu；相邻菜单必须支持双向一次点击切换，不能混用会拦截外部点击的 Select 弹层。单项菜单沿用 Radix 的选择即关闭语义，只有复合菜单拦截子项默认关闭事件。

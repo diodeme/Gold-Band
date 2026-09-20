@@ -1,5 +1,33 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-20 AUTO 追问不得把已回滚的作者态 config 再 apply
+
+- 根因：Direct 运行中追问走 prompt queue，不再 `apply_session_mode_options`。AUTO / AI-DYNAMIC 追问走 runtime continue，把冻结 `config_options` `extend` 进 snapshot；snapshot 被第一次 Gemini 省略表清空后，`extend` 删不掉 authoring 的 `reasoning=xhigh`，每次 continue 再 strip 并刷 `acp.session-config-rolled-back`。派发新节点是新的 `session/new`，同样带着冻结 leftover。这是正确设计（continue 只用显式覆盖）实现不完整，不是缺新 identity。
+- 实现：invocation 在 continue 时只传 snapshot `configOptionOverrides`；`session/new` 按所选模型最后观测的 `modelBoundCatalogs[modelId]` 静默 retain，与 Direct composer normalize 对齐。未观测模型仍带作者态进活目录，由 `session/new` 通知一次。
+- 证据：修复前 `continue_does_not_reapply_authoring_bound_options_after_snapshot_rollback`、`continue_keeps_snapshot_overrides_instead_of_authoring_leftovers`、`new_session_silently_drops_bound_options_omitted_from_observed_model_catalog` 稳定失败；修复后与「未观测模型仍保留作者态」一并转绿。
+- 过度设计与性能评审：复用 snapshot overrides 与作者态 catalog，无新 identity。retain 按有界 select 列表点查；诊断 map 按 provider 点读，不扫会话历史。
+
+## 2026-09-20 工作流保存不得用 Doctor 当前表否定所选模型绑定项
+
+- 根因：Inspector 菜单按 `modelBoundCatalogs[modelId]` 画出 Grok 的 effort / Fast，这是既定作者态投影。`validateWorkflowForSave` 却只查 Doctor 当前 `configOptions`（当时是 Luna 的 reasoning / context），把菜单里可选的值报成「不属于当前 Agent」。属于正确设计下编辑器保存校验覆盖不完整，不是用户选了非法值；`validate_and_inject` 已对绑定类 option skip fail-closed。
+- 实现：保存校验与 Inspector 共用所选模型投影目录。投影中有该项则值必须在列表中；投影没有但属于 `thought_level` / `model_config` 时与注入对齐，不 fail-closed，由 `session/new` remap 或回滚。同步对话框标签也读同一份投影。
+- 证据：修复前 `accepts Grok effort and fast when Doctor current table belongs to another model` 稳定失败，报 effort / fast 不属于当前 Agent；修复后该测试与「投影里的非法 effort 仍拒绝」一并转绿。
+- 过度设计与性能评审：复用已有 `authoringConfigOptionsForModel`，无新 identity。按节点绑定的有界 option map 点查，不扫历史。
+
+## 2026-09-20 会话切到未观测模型后 Context 可点却报不可用
+
+- 根因：切模型后 live `configOptions` 仍属 Grok，composer 按作者态 `modelBoundCatalogs[luna]` 画出 Context，这是既定投影。`set_acp_session_config_option` 却仍用 Grok 活目录校验，属于正确设计下写入路径覆盖不完整，不是用户选了非法值。
+- 实现：绑定项写入与展示共用投影：活目录属于所选模型时用活目录，否则本会话 map → 作者态 map。Doctor 当前表仍不得作为另一模型绑定项的写入目录。override 写入 snapshot，下次 prompt 再按活目录 apply / remap / 回滚。
+- 证据：修复前 `selected_luna_context_is_available_from_authoring_while_live_table_is_still_grok` 稳定失败；修复后该测试与「未切模型时 Doctor 当前表 Context 仍拒绝」一并转绿。
+- 过度设计与性能评审：复用已有 catalog 查找，无新 identity。按 `modelId` 点查，map 有界。
+
+## 2026-09-20 ACP 切模型 remap 源、会话权威与执行选项指纹
+
+- 根因：thought remap 拿 Doctor/当前活目录当源表，Grok `fast=false`（`model_config`）被当成未知 leftover，接到 Fable `thinking=Off`。会话栏又在前端本地计算 override，并用残留表启发式补洞。`ai_dynamic` 的 `modelBoundOverrides` 漏进 scheduled content fingerprint。这是实现把 remap 源、会话权威和执行选项边界画错，不是缺一套新 identity。
+- 实现：remap 源是离开模型的 bound catalog；未知 leftover 仅当源项是 `thought_level` 才按档位换线；目标 thought 已有合法值则不覆盖。省略活目录时 runtime 先还原本会话 `modelBoundCatalogs`，再读作者态 catalog，不把作者态 stamp 进本会话观测。已建立会话切模型由 Rust snapshot 收敛 `configOptionOverrides` / `modelBoundOverrides`；前端只乐观改模型 id。按模型记忆是离开时覆盖写入、首次访问从当前值种子、已有空槽还原为空。fingerprint 排除 `modelBoundOverrides` 以及 bootstrap/acceptance 的 config/overrides。AUTO dynamic 提交丢掉顶层 `modelBoundOverrides`。会话内点选 thought / `model_config` 按所选模型的投影目录校验（活目录属于该模型时用活目录，否则本会话 map → 作者态 map）；不得用上一模型活目录把 Luna Context 报成不可用。
+- 证据：修复前 Web 的 Fast Off 串线、overwrite 守卫、dynamic 提交与 Rust 的 Fast Off、overwrite、retarget 作者态、fingerprint 排除稳定失败；同一组测试修复后转绿。切到未观测 Luna 时 Context 写入被 Grok 活目录拒绝的契约测试先红后绿。
+- 过度设计与性能评审：沿用已有 catalog / override map，不新增 identity 或状态机。remap 与 fingerprint 过滤按 option/key 有界扫描；作者态 catalog 只读 `agent-diagnostics.json` 中当前 provider 的 capabilities，不扫会话历史。
+
 ## 2026-09-19 截断 Tooltip 边沿闪烁：命中层是 Popper wrapper
 
 - 根因：只读 Tooltip 的开关绑在触发器 `pointerEnter/Leave` 上，但 Radix Popper 生成的同尺寸 `data-radix-popper-content-wrapper` 默认 `pointer-events: auto`。只给 `TooltipContent` 加 `pointer-events-none` 后，命中从内容换成 wrapper，指针停在模型选择 pill 上沿仍会打开→抢走命中→关闭→再打开。截断全文才显示的设计成立，实现把“不抢命中”只落到内容节点，覆盖不完整。复合选择器还把 Tooltip 锚在内部截断文字上，tips 底边压进整颗按钮上沿，重叠带更容易触发。

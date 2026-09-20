@@ -381,9 +381,9 @@ use crate::acp::permission::{
 use crate::acp::pipeline_diagnostics::{AcpPipelineDiagnostics, PipelineUpdateKind};
 use crate::acp::session_config::{
     ACP_SESSION_CONFIG_ROLLED_BACK_CODE, RolledBackSessionConfig,
-    live_catalog_model_id, observe_session_model_bound_catalog,
-    reconcile_session_config_overrides, restore_session_model_bound_options,
-    rolled_back_session_config_params,
+    live_catalog_model_id, model_bound_catalogs_from_capabilities_value,
+    observe_session_model_bound_catalog, reconcile_session_config_overrides,
+    retarget_live_model_bound_catalog, rolled_back_session_config_params,
 };
 use crate::acp::timeline::{
     TimelineCompactionPolicy, TimelineStore, read_indexed_prompt_anchor_events,
@@ -394,7 +394,7 @@ use crate::acp::usage::{
 };
 use crate::config::{
     AcpAdapterConfig, DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS, DiagnosticError,
-    ManagedAgentId, RuntimeConfig,
+    ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig,
 };
 use crate::domain::{SessionMode, TurnControlMode, TurnControlTransitionCause, VERSION};
 use crate::provider::{
@@ -2349,6 +2349,7 @@ struct AcpRuntime<'a> {
     modes: Option<Value>,
     config_options: Option<Value>,
     model_bound_catalogs: BTreeMap<String, Value>,
+    authoring_model_bound_catalogs: BTreeMap<String, Value>,
     config_catalog_observed_at: Option<String>,
     config_catalog_refresh_required_at: Option<String>,
     model_override: Option<String>,
@@ -3835,8 +3836,8 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn from_connection(
-        _provider_id: &str,
-        _workspace_dir: Utf8PathBuf,
+        provider_id: &str,
+        workspace_dir: Utf8PathBuf,
         connection_key: Option<AdapterConnectionKey>,
         connection: AdapterConnectionUse,
         paths: AcpAttemptPaths,
@@ -3986,6 +3987,10 @@ impl<'a> AcpRuntime<'a> {
                 );
                 catalogs
             },
+            authoring_model_bound_catalogs: authoring_model_bound_catalogs_for_provider(
+                provider_id,
+                &workspace_dir,
+            ),
             config_catalog_observed_at: prior_metadata
                 .as_ref()
                 .and_then(|metadata| metadata.config_catalog_observed_at.clone()),
@@ -4852,21 +4857,14 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn retarget_session_model_catalog(&mut self, model: &str, catalog_returned: bool) {
-        if !catalog_returned {
-            observe_session_model_bound_catalog(
-                &mut self.model_bound_catalogs,
-                self.config_options.as_ref(),
-            );
-        }
-        let catalog_owner = live_catalog_model_id(self.config_options.as_ref());
+        retarget_live_model_bound_catalog(
+            &mut self.config_options,
+            &mut self.model_bound_catalogs,
+            &self.authoring_model_bound_catalogs,
+            model,
+            catalog_returned,
+        );
         self.set_current_model(model);
-        if catalog_owner.as_deref() != Some(model) {
-            restore_session_model_bound_options(
-                &self.model_bound_catalogs,
-                &mut self.config_options,
-                model,
-            );
-        }
     }
 
     fn set_current_model(&mut self, model: &str) {
@@ -8656,6 +8654,25 @@ fn find_model_config_option(config_options: &Value) -> Option<&Value> {
                 || option.get("category").and_then(Value::as_str) == Some("model")
         })
     })
+}
+
+fn authoring_model_bound_catalogs_for_provider(
+    provider_id: &str,
+    workspace_dir: &Utf8Path,
+) -> BTreeMap<String, Value> {
+    let provider_id = provider_id.trim();
+    if provider_id.is_empty() {
+        return BTreeMap::new();
+    }
+    let path = GoldBandPaths::new(workspace_dir).agent_diagnostics_file();
+    let Ok(diagnostics) = read_json::<BTreeMap<String, ProviderDiagnosticSnapshot>>(&path) else {
+        return BTreeMap::new();
+    };
+    diagnostics
+        .get(provider_id)
+        .and_then(|diagnostic| diagnostic.capabilities.as_ref())
+        .map(|capabilities| model_bound_catalogs_from_capabilities_value(Some(capabilities)))
+        .unwrap_or_default()
 }
 
 fn config_option_category<'a>(

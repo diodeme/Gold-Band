@@ -60,7 +60,7 @@ pending
 - Direct/continuous：复用关联 Task/session chain，但每个 prompt 仍绑定唯一 occurrence；没有可恢复链路时创建新的 Task chain。
 - Direct 更新 instruction、附件或 session policy 时保留既有 `task_id`；Direct 的内容指纹变化不会单独触发 Task 重建。`New -> Continuous` 从既有链路继续，`Continuous -> New` 保留关联但由 New 策略在下一次触发时物化新的 Task。
 - Workflow/AUTO：content fingerprint 未变化时复用 Task、每次新 Run；authoring 变化时下一次触发新建 Task。
-- model、thought level 和 permission 变化不改变 content fingerprint；Direct Agent 与 workspace 在编辑入口中保持不可变，Workflow/AUTO authoring 变化会重新物化 Task。
+- model、thought level、permission、`configOptions` 和 `modelBoundOverrides`（含 bootstrap/acceptance 对应字段）变化不改变 content fingerprint；Direct Agent 与 workspace 在编辑入口中保持不可变，Workflow/AUTO authoring 变化会重新物化 Task。
 
 Direct 与 Workflow/AUTO 之间切换属于执行模式边界，更新时会清除旧 `task_id`，避免跨模式复用不兼容的 Task 链路。
 

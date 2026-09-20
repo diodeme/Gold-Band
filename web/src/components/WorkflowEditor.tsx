@@ -47,6 +47,8 @@ import { AppCard } from '@/components/AppCard';
 import {
   AcpModelThoughtSelects,
   acpShowsModelConfigSelect,
+  authoringConfigOptionsForModel,
+  isAuthoringConfigOptionValueAllowed,
   optionalAcpModelBoundOverrides,
   rememberAcpModelBoundOverrides,
   switchAcpModelBoundOverrides,
@@ -1401,8 +1403,13 @@ function WorkerNodeInspector({ node, binding, modelBindings, agents, profiles, w
   const syncPlan = planWorkerBindingSync(workflow, modelBindings, node.executionSlotId ?? '', overwriteConfigured);
   const selectedModelName = modelOptions.find((model) => model.id === binding?.modelId)?.name ?? binding?.modelId ?? t('workflowEditor.permissionModeUnspecified');
   const selectedPermissionName = permissionModes.find((mode) => mode.id === binding?.permissionModeId)?.name ?? binding?.permissionModeId ?? t('workflowEditor.permissionModeUnspecified');
+  const projectedConfigOptions = authoringConfigOptionsForModel(
+    selectedAgent?.configOptions,
+    selectedAgent?.modelBoundCatalogs,
+    binding?.modelId,
+  );
   const selectedConfigOptions = Object.entries(binding?.configOptions ?? {}).map(([optionId, value]) => {
-    const option = selectedAgent?.configOptions?.find((item) => item.id === optionId);
+    const option = projectedConfigOptions.find((item) => item.id === optionId);
     return {
       id: option?.name ?? optionId,
       value: option?.options.find((item) => item.value === value)?.name ?? value,
@@ -3379,8 +3386,13 @@ export function validateWorkflowForSave(
         addIssue(t('workflowEditor.validationPermissionModeUnavailable', { node: nodeLabel }), nodeField(node, 'permission_mode'), node.id);
       }
       Object.entries(binding.configOptions ?? {}).forEach(([optionId, value]) => {
-        const option = agent?.configOptions?.find((item) => item.id === optionId);
-        if (!option?.options.some((item) => item.value === value)) {
+        if (!isAuthoringConfigOptionValueAllowed(
+          optionId,
+          value,
+          agent?.configOptions,
+          agent?.modelBoundCatalogs,
+          binding.modelId,
+        )) {
           addIssue(t('workflowEditor.validationConfigOptionUnavailable', { node: nodeLabel, option: optionId }), nodeField(node, 'model'), node.id);
         }
       });

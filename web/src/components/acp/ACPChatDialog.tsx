@@ -139,8 +139,6 @@ import {
   createAcpSessionConfigViewModel,
   findAcpConfigOption,
   mergeLiveAcpSessionConfig,
-  rememberAcpSessionAppliedOverrides,
-  switchAcpSessionModelBoundOverrides,
   type AcpSessionConfigViewModel,
 } from "@/lib/acp-session-config";
 import {
@@ -3045,16 +3043,9 @@ export function ACPChatDialog(
       "model",
       modelId,
     ) : null;
-    const switched = switchAcpSessionModelBoundOverrides(
-      config,
-      modelId,
-      authoringModelBoundCatalogs,
-    );
     const mutation = patchSessionConfig({
       modelOverrideId: modelId,
       ...(modelId ? { currentModelId: modelId, currentModelName: selected?.name ?? modelId } : {}),
-      configOptionOverrides: switched.configOptionOverrides,
-      modelBoundOverrides: switched.modelBoundOverrides,
     });
     setAcpSessionModel(
       projectId,
@@ -3082,7 +3073,6 @@ export function ACPChatDialog(
   }, [
     applySessionUpdate,
     attemptId,
-    authoringModelBoundCatalogs,
     nodeId,
     outerAttemptId,
     outerNodeId,
@@ -3190,7 +3180,6 @@ export function ACPChatDialog(
     else delete next[optionId];
     const mutation = patchSessionConfig({
       configOptionOverrides: next,
-      modelBoundOverrides: rememberAcpSessionAppliedOverrides(latestSessionRef.current?.config, next),
     });
     setAcpSessionConfigOption(
       projectId,

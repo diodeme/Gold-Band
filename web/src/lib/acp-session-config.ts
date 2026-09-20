@@ -8,9 +8,7 @@ import {
   ACP_MODEL_CONFIG_CATEGORY,
   ACP_THOUGHT_LEVEL_CATEGORY,
   isAcpModelBoundConfigCategory,
-  rememberAcpModelBoundOverrides,
   remapAcpThoughtLevelOverride,
-  switchAcpModelBoundOverrides,
 } from "@/lib/acp-composite-config";
 
 export type AcpSessionConfigCategory = string;
@@ -83,63 +81,6 @@ export function mergeLiveAcpSessionConfig(
   };
 }
 
-export function switchAcpSessionModelBoundOverrides(
-  config: AcpSessionConfigVm | null | undefined,
-  nextModelId: string | null,
-  authoringModelBoundCatalogs?: Record<string, AcpSelectConfigOptionVm[]> | null,
-) {
-  const switched = switchAcpModelBoundOverrides({
-    remembered: config?.modelBoundOverrides,
-    previousModelId: config?.modelOverrideId ?? config?.currentModelId,
-    nextModelId,
-    currentOverrides: config?.configOptionOverrides,
-    configOptions: selectConfigOptionsFromUnknown(config?.configOptions),
-    modelBoundCatalogs: mergedAcpModelBoundCatalogs(
-      config?.modelBoundCatalogs,
-      authoringModelBoundCatalogs,
-    ),
-  });
-  return {
-    configOptionOverrides: switched.overrides,
-    modelBoundOverrides: switched.remembered,
-  };
-}
-
-export function rememberAcpSessionAppliedOverrides(
-  config: AcpSessionConfigVm | null | undefined,
-  overrides: Record<string, string>,
-) {
-  return rememberAcpModelBoundOverrides(
-    config?.modelBoundOverrides,
-    config?.modelOverrideId ?? config?.currentModelId,
-    overrides,
-  );
-}
-
-function sessionModelBoundCatalogs(
-  catalogs: Record<string, unknown[]> | null | undefined,
-) {
-  if (!catalogs) return undefined;
-  return Object.fromEntries(
-    Object.entries(catalogs).map(([modelId, options]) => [
-      modelId,
-      selectConfigOptionsFromUnknown(options) ?? [],
-    ]),
-  );
-}
-
-function mergedAcpModelBoundCatalogs(
-  session: Record<string, unknown[]> | null | undefined,
-  authoring: Record<string, AcpSelectConfigOptionVm[]> | null | undefined,
-): Record<string, AcpSelectConfigOptionVm[]> | undefined {
-  const sessionMapped = sessionModelBoundCatalogs(session);
-  if (!sessionMapped && !authoring) return undefined;
-  return {
-    ...(authoring ?? {}),
-    ...(sessionMapped ?? {}),
-  };
-}
-
 export function createAcpSessionConfigViewModel(
   config: AcpSessionConfigVm | null | undefined,
   providerCatalog: AcpProviderConfigCatalog | null | undefined = null,
@@ -175,7 +116,11 @@ export function createAcpSessionConfigViewModel(
   const remappedOverrides = remapAcpThoughtLevelOverride(
     config?.configOptionOverrides,
     selectConfigOptionsFromUnknown(projectedCatalog.configOptions),
-    selectConfigOptionsFromUnknown(config?.configOptions),
+    [
+      ...(selectConfigOptionsFromUnknown(config?.configOptions) ?? []),
+      ...Object.values(sessionModelBoundCatalogs(config?.modelBoundCatalogs) ?? {}).flat(),
+      ...Object.values(authoringModelBoundCatalogs ?? {}).flat(),
+    ],
   );
   const catalogGroups = normalizeAcpSelectConfigGroups(
     projectedCatalog.configOptions,
@@ -369,67 +314,30 @@ function projectBoundConfigOptionsForSelectedModel(
   const selected = (config?.modelOverrideId ?? config?.currentModelId)?.trim()
     || catalogModelCurrentValue(options);
   const liveOwner = catalogModelCurrentValue(options);
+  if (selected && selected === liveOwner && hasModelBoundConfigRows(options)) {
+    return options;
+  }
   const bound = lookupModelBoundCatalog(
     selected,
     config?.modelBoundCatalogs,
     authoringModelBoundCatalogs,
   );
-  if (
-    selected
-    && selected === liveOwner
-    && hasModelBoundConfigRows(options)
-    && !liveBoundRowsBelongToAnotherCachedModel(
-      options,
-      selected,
-      config?.modelBoundCatalogs,
-      authoringModelBoundCatalogs,
-    )
-  ) {
-    return options;
-  }
   if (bound !== undefined) {
     return spliceBoundOptions(options, bound);
   }
   return options;
 }
 
-function liveBoundRowsBelongToAnotherCachedModel(
-  options: unknown,
-  selected: string,
-  sessionCatalogs: Record<string, unknown[]> | null | undefined,
-  authoringCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined,
+function sessionModelBoundCatalogs(
+  catalogs: Record<string, unknown[]> | null | undefined,
 ) {
-  const liveIds = modelBoundCatalogIds(options);
-  if (liveIds.length === 0) return false;
-  const selectedIds = modelBoundCatalogIds(lookupModelBoundCatalog(
-    selected,
-    sessionCatalogs,
-    authoringCatalogs,
-  ));
-  if (selectedIds.length > 0 && sameBoundCatalogIds(liveIds, selectedIds)) {
-    return false;
-  }
-  const catalogs = {
-    ...(authoringCatalogs ?? {}),
-    ...sessionModelBoundCatalogs(sessionCatalogs),
-  };
-  return Object.entries(catalogs).some(([modelId, catalog]) => (
-    modelId !== selected && sameBoundCatalogIds(liveIds, modelBoundCatalogIds(catalog))
-  ));
-}
-
-function modelBoundCatalogIds(options: unknown) {
-  return (arrayValue(options) ?? []).flatMap((raw) => {
-    const option = rawObject(raw);
-    const id = stringValue(option?.id)?.trim();
-    const category = stringValue(option?.category)?.trim() || id;
-    if (!id || !isAcpModelBoundConfigCategory(category)) return [];
-    return [id];
-  });
-}
-
-function sameBoundCatalogIds(left: string[], right: string[]) {
-  return left.length === right.length && left.every((id, index) => id === right[index]);
+  if (!catalogs) return undefined;
+  return Object.fromEntries(
+    Object.entries(catalogs).map(([modelId, options]) => [
+      modelId,
+      selectConfigOptionsFromUnknown(options) ?? [],
+    ]),
+  );
 }
 
 function lookupModelBoundCatalog(

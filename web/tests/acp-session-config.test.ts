@@ -5,7 +5,6 @@ import {
   createAcpSessionConfigViewModel,
   findAcpConfigOption,
   mergeLiveAcpSessionConfig,
-  switchAcpSessionModelBoundOverrides,
 } from "@/lib/acp-session-config";
 import type { AcpSessionConfigVm, AgentRegistryVm } from "@/types";
 
@@ -1066,37 +1065,6 @@ describe("ACP session config view model", () => {
     expect(viewModel.modelBoundOptions.some((group) => group.id === "context")).toBe(false);
   });
 
-  it("retains session overrides against the authoring catalog when switching to an unobserved model", () => {
-    const switched = switchAcpSessionModelBoundOverrides({
-      modelOverrideId: "gpt-5.6-luna",
-      currentModelId: "gpt-5.6-luna",
-      configOptionOverrides: { reasoning: "high", context: "1m" },
-      configOptions: lunaLiveOptions,
-      modelBoundCatalogs: {
-        "gpt-5.6-luna": [lunaLiveOptions[2], lunaLiveOptions[1]],
-      },
-      modelBoundOverrides: {
-        "grok-4.6": { effort: "extra-high", fast: "true" },
-        "gpt-5.6-luna": { reasoning: "high", context: "1m" },
-      },
-    }, "grok-4.6", {
-      "grok-4.6": grokBoundCatalog,
-    });
-
-    expect(switched.configOptionOverrides).toEqual({
-      effort: "extra-high",
-      fast: "true",
-    });
-    expect(switched.modelBoundOverrides["grok-4.6"]).toEqual({
-      effort: "extra-high",
-      fast: "true",
-    });
-    expect(switched.modelBoundOverrides["gpt-5.6-luna"]).toEqual({
-      reasoning: "high",
-      context: "1m",
-    });
-  });
-
   it("reads shared authoring catalogs from the Agent registry without requiring a newer Doctor", () => {
     const registry = {
       agents: [{
@@ -1116,49 +1084,7 @@ describe("ACP session config view model", () => {
     });
   });
 
-  it("keeps Luna Context when live currentValue was retargeted onto leftover Grok bound rows", () => {
-    const viewModel = createAcpSessionConfigViewModel({
-      modelOverrideId: "gpt-5.6-luna",
-      currentModelId: "gpt-5.6-luna",
-      configOptions: [
-        {
-          id: "model",
-          category: "model",
-          type: "select",
-          currentValue: "gpt-5.6-luna",
-          options: [
-            { value: "grok-4.6", name: "Cursor Grok 4.6" },
-            { value: "gpt-5.6-luna", name: "GPT-5.6 Luna" },
-          ],
-        },
-        {
-          id: "effort",
-          category: "thought_level",
-          type: "select",
-          options: [{ value: "extra-high", name: "Extra High" }],
-        },
-        {
-          id: "fast",
-          category: "model_config",
-          type: "select",
-          name: "Fast",
-          options: [{ value: "false", name: "Off" }, { value: "true", name: "On" }],
-        },
-      ],
-      modelBoundCatalogs: {
-        "grok-4.6": grokBoundCatalog,
-      },
-    }, null, {
-      "gpt-5.6-luna": [
-        lunaLiveOptions[2],
-        lunaLiveOptions[1],
-      ],
-    });
-
-    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual(["reasoning", "context"]);
-  });
-
-  it("does not wire Grok Fast Off onto Fable thinking Off", () => {
+  it("does not wire leftover Grok Fast Off onto Fable thinking Off in the session view model", () => {
     const fableCatalog = [
       {
         id: "thinking",
@@ -1195,21 +1121,6 @@ describe("ACP session config view model", () => {
       },
       ...grokBoundCatalog,
     ];
-    const switched = switchAcpSessionModelBoundOverrides({
-      modelOverrideId: "grok-4.6",
-      currentModelId: "grok-4.6",
-      configOptionOverrides: { effort: "high", fast: "false" },
-      configOptions: grokLive,
-      modelBoundCatalogs: { "grok-4.6": grokBoundCatalog },
-      modelBoundOverrides: {
-        "grok-4.6": { effort: "high", fast: "false" },
-      },
-    }, "claude-fable", {
-      "claude-fable": fableCatalog,
-    });
-
-    expect(switched.configOptionOverrides).toEqual({ effort: "high" });
-    expect(switched.configOptionOverrides.thinking).toBeUndefined();
 
     const viewModel = createAcpSessionConfigViewModel({
       modelOverrideId: "claude-fable",

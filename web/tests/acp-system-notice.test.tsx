@@ -2,7 +2,10 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
-import { AcpSystemNoticeDivider } from '@/components/acp/AcpSystemNotice';
+import {
+  ACP_SYSTEM_NOTICE_DIVIDER_LAYOUT,
+  AcpSystemNoticeDivider,
+} from '@/components/acp/AcpSystemNotice';
 import i18n from '@/i18n';
 import {
   ACP_SESSION_CONFIG_ROLLED_BACK_CODE,
@@ -105,5 +108,31 @@ describe('ACP system notice', () => {
     expect(markup).toContain('h-px');
     expect(markup).not.toContain('data-acp-error-banner');
     expect(markup).toMatch(/当前模型暂不支持配置：Fast。系统已将其回滚为不指定。可停止对话后修改。|This model does not currently support: Fast\. The system has rolled it back to unspecified\. You can change it after stopping the conversation\./);
+  });
+
+  it('shrinks the side rules to a floor before wrapping the notice copy', () => {
+    const markup = renderToStaticMarkup(createElement(AcpSystemNoticeDivider, {
+      event: {
+        kind: 'systemNotice',
+        raw: {
+          systemNotice: {
+            code: ACP_SESSION_CONFIG_ROLLED_BACK_CODE,
+            params: { items: [{ category: 'model_config', configId: 'fast', value: 'true', name: 'Fast' }] },
+          },
+        },
+      },
+    }));
+
+    expect(markup).toContain(ACP_SYSTEM_NOTICE_DIVIDER_LAYOUT.rootClassName);
+    expect(markup).toContain(ACP_SYSTEM_NOTICE_DIVIDER_LAYOUT.lineClassName);
+    expect(markup).toContain(ACP_SYSTEM_NOTICE_DIVIDER_LAYOUT.copyClassName);
+    expect(ACP_SYSTEM_NOTICE_DIVIDER_LAYOUT.rootClassName).toContain('min-w-0');
+    expect(ACP_SYSTEM_NOTICE_DIVIDER_LAYOUT.lineClassName).toContain('flex-1');
+    expect(ACP_SYSTEM_NOTICE_DIVIDER_LAYOUT.lineClassName).toContain('min-w-6');
+    expect(ACP_SYSTEM_NOTICE_DIVIDER_LAYOUT.lineClassName).toContain('bg-border');
+    expect(ACP_SYSTEM_NOTICE_DIVIDER_LAYOUT.lineClassName).not.toContain('bg-border/');
+    expect(ACP_SYSTEM_NOTICE_DIVIDER_LAYOUT.copyClassName).toContain('min-w-0');
+    expect(ACP_SYSTEM_NOTICE_DIVIDER_LAYOUT.copyClassName).not.toMatch(/max-w-/);
+    expect(ACP_SYSTEM_NOTICE_DIVIDER_LAYOUT.copyClassName).not.toContain('shrink-0');
   });
 });

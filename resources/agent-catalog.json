@@ -3,7 +3,7 @@
   "source": {
     "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
     "registryVersion": "1.0.0",
-    "fetchedAt": "2026-09-19T06:37:55.857Z"
+    "fetchedAt": "2026-09-19T17:57:06.127Z"
   },
   "agents": [
     {
@@ -141,7 +141,7 @@
     {
       "id": "qwen-code",
       "label": "Qwen Code",
-      "version": "0.24.0",
+      "version": "0.24.1",
       "description": "Alibaba's Qwen coding assistant",
       "repository": "https://github.com/QwenLM/qwen-code",
       "website": "https://qwenlm.github.io/qwen-code-docs/en/users/overview",
@@ -150,7 +150,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@qwen-code/qwen-code@0.24.0",
+        "@qwen-code/qwen-code@0.24.1",
         "--acp",
         "--experimental-skills"
       ],

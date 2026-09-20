@@ -9317,6 +9317,35 @@ fn validate_acp_catalog_mode(catalog: &AcpSessionConfigCatalog, value: &str) -> 
     Ok(())
 }
 
+fn validate_acp_session_config_option_value(
+    catalogs: &AcpSessionConfigCatalogContext,
+    session: &serde_json::Value,
+    authoring_catalogs: &std::collections::BTreeMap<String, serde_json::Value>,
+    option_id: &str,
+    value: &str,
+) -> CommandResult<()> {
+    if let Some(option) = gold_band::acp::session_config::projected_bound_option(
+        session,
+        authoring_catalogs,
+        option_id,
+    ) {
+        if gold_band::acp::session_config::option_lists_value(option, value) {
+            return Ok(());
+        }
+        return Err(acp_session_config_value_unavailable(
+            gold_band::acp::session_config::option_category_name(option),
+            option_id,
+            value,
+            gold_band::acp::session_config::option_listed_values(option),
+        ));
+    }
+    validate_acp_catalog_config_value(
+        acp_session_config_option_catalog(catalogs, option_id),
+        option_id,
+        value,
+    )
+}
+
 fn validate_acp_catalog_config_value(
     catalog: &AcpSessionConfigCatalog,
     option_id: &str,
@@ -9909,9 +9938,12 @@ pub async fn set_acp_session_config_option(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    let authoring_catalogs = acp_authoring_model_bound_catalogs(&app, &locator);
     if let Some(selected) = normalized_value {
-        validate_acp_catalog_config_value(
-            acp_session_config_option_catalog(&catalogs, option_id),
+        validate_acp_session_config_option_value(
+            &catalogs,
+            &value,
+            &authoring_catalogs,
             option_id,
             selected,
         )?;
@@ -11319,6 +11351,88 @@ mod tests {
             refresh_session
                 .get("configCatalogRefreshRequiredAt")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn session_bound_config_accepts_authoring_catalog_for_selected_unobserved_model() {
+        let session = serde_json::json!({
+            "modelOverride": "gpt-5.6-luna",
+            "configCatalogObservedAt": "100Z",
+            "configOptions": [{
+                "id": "model",
+                "category": "model",
+                "currentValue": "grok-4.6"
+            }, {
+                "id": "effort",
+                "category": "thought_level",
+                "type": "select",
+                "options": [{ "value": "low" }, { "value": "high" }]
+            }, {
+                "id": "fast",
+                "category": "model_config",
+                "type": "select",
+                "options": [{ "value": "false" }, { "value": "true" }]
+            }]
+        });
+        let catalogs = AcpSessionConfigCatalogContext {
+            session: AcpSessionConfigCatalog::from_value(&session, Some("100Z".to_string())),
+            newer_doctor: Some(AcpSessionConfigCatalog::from_value(
+                &serde_json::json!({
+                    "configOptions": [{
+                        "id": "context",
+                        "category": "model_config",
+                        "type": "select",
+                        "options": [{ "value": "1m" }]
+                    }]
+                }),
+                Some("200Z".to_string()),
+            )),
+        };
+        let mut authoring = std::collections::BTreeMap::new();
+        authoring.insert(
+            "gpt-5.6-luna".into(),
+            serde_json::json!([{
+                "id": "context",
+                "category": "model_config",
+                "options": [{ "value": "272k" }, { "value": "1m" }]
+            }]),
+        );
+
+        validate_acp_session_config_option_value(
+            &catalogs,
+            &session,
+            &authoring,
+            "context",
+            "1m",
+        )
+        .unwrap();
+        assert_eq!(
+            validate_acp_session_config_option_value(
+                &catalogs,
+                &session,
+                &authoring,
+                "context",
+                "2m",
+            )
+            .unwrap_err()
+            .code,
+            gold_band::acp::client::ACP_SESSION_CONFIG_VALUE_UNAVAILABLE_CODE
+        );
+        assert_eq!(
+            validate_acp_session_config_option_value(
+                &catalogs,
+                &serde_json::json!({
+                    "configOptions": session["configOptions"],
+                    "configCatalogObservedAt": "100Z"
+                }),
+                &authoring,
+                "context",
+                "1m",
+            )
+            .unwrap_err()
+            .code,
+            gold_band::acp::client::ACP_SESSION_CONFIG_VALUE_UNAVAILABLE_CODE
         );
     }
 

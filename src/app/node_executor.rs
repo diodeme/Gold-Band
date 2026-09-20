@@ -503,6 +503,7 @@ pub(crate) fn build_worker_invocation(
         cold_attachments,
         prompt_envelope,
         configured_options,
+        configured_provider,
     ) = match node_dsl {
         NodeDsl::Worker(worker) => (
             worker.profile.clone(),
@@ -516,6 +517,7 @@ pub(crate) fn build_worker_invocation(
             Vec::new(),
             worker.prompt_envelope,
             worker.config_options.clone(),
+            worker.provider.clone(),
         ),
         NodeDsl::AiDynamic(_) => {
             bail!("ai-dynamic nodes must be executed by the dynamic orchestrator")
@@ -543,10 +545,18 @@ pub(crate) fn build_worker_invocation(
 
     let runtime_context =
         runtime_prompt_context(app, task_id, run_id, round_id, node_id, attempt_id);
-    let mut config_options = configured_options;
-    config_options.extend(current_acp_config_option_overrides(
-        &runtime_context.attempt_dir,
-    ));
+    let diagnostics = app.provider_diagnostics();
+    let capabilities = configured_provider
+        .as_deref()
+        .and_then(|provider| diagnostics.get(provider))
+        .and_then(|snapshot| snapshot.capabilities.as_ref());
+    let config_options = crate::acp::session_config::invocation_config_option_overrides(
+        session_mode == SessionMode::Continue,
+        configured_options,
+        current_acp_config_option_overrides(&runtime_context.attempt_dir),
+        capabilities,
+        model.as_deref(),
+    );
     let predecessors =
         build_predecessor_contexts(app, task_id, run_id, round, node_id, attempt_id, workflow);
     let new_round_trigger =

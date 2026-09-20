@@ -807,3 +807,15 @@ task-284 原 timeline 副本的 V4 Release 复测：一次性 V3→V4 migration 
 - Activity/Tool lazy detail 每个展开项限制为一个 in-flight 加一个可覆盖的 latest-trailing intent，不能让连续 revision 形成并发 IPC/JSONL 扫描。Tool detail owner 在 window/session/generation/logical item/observed position/request sequence 外增加 `raw/status/content/title` 的语义 source fingerprint，不使用 raw 对象引用；等价 canonical refresh 复用已加载/in-flight 详情，真实同 position source 变化只覆盖一个 trailing，error/retry 受同一 owner fence。详情查询要求非空 canonical session owner，Web query、Rust 候选扫描与 response commit 都精确匹配 sessionId；同 position Tool detail 使用 canonical-wins 深合并，只补 raw 缺失字段，显式 null 和新 output 不被旧详情复活或覆盖。进入暂停时清除暂停前尚未 drain 的页面 live buffer，并通过统一 coordinator 用一次 canonical recovery 取代恢复后的逐项补帧。
 
 回归固定 session owner 隔离、prefix ACK 保留 cut 后事件与新 loss、transient generation/sequence loss、canonical/visible sequence 水位分域、ordinary/recovery coordinator 优先级、newer edge 自然交接、Agent burst single-flight、Activity/Tool detail session scope、canonical enrichment 与 semantic trailing、跨代 cursor 熔断、4 次/2 秒 catch-up、paused overflow canonical handoff、optimistic 单一有界 snapshot，以及历史 DOM/折叠/贴底既有行为。默认 DOM/live/optimistic 容量为 `96 × 3 = 288`，有效值跟随两项 app config；Router 硬边界仍为 64 replay events/branch、512 KiB/branch 和 4 MiB 全局。没有新增持久队列、第二事实源、虚拟列表、轮询或并发 worker。
+
+### 14.10 累计流式消息与后续 Prompt 的显示顺序修复（2026-09-19）
+
+现场 `feedback-15-session` 的 timeline 证明原始事件写入顺序正确：assistant 消息从 `startedSeq=4462` 开始，后续 Gold Band prompt 位于 `seq=4614`，assistant 累计快照随后更新到 `seq=4673`。错误来自投影排序契约：增量分页按语义块最新 revision/结束位置选取后，返回页仍可能按最新 `seq` 排序；前端合并又直接按 `event.seq` 排序，于是旧 assistant 尾部被重新插到后续 prompt 之后。
+
+本轮按既有 append log + materialized index 设计修复，不新增状态或兼容层：
+
+- Rust `read_indexed_timeline_page` 保留 revision/最新覆盖位置作为增量选择依据，但输出前按语义块稳定起点 `oldest_seq` 排序；`oldestSeq/newestSeq` 改为覆盖所选页全部块的最小起点和最大结束位置，避免重叠范围产生错误游标。
+- Web `mergeAcpEventWindows` 在同一排序空间内按 `startedSeq`、结束位置、seq、稳定 id 排序。同一 attempt 优先使用 attempt identity；未携带 attempt 的现场事件使用同一 `sessionId`，跨 attempt 仍沿用 display seq，避免混合不同序列空间。
+- 新增 Rust 与 Vitest 最小失败测试，固定“assistant 起点早于 prompt、但累计快照结束更晚”这一交叉范围；回归验证显示 assistant 始终位于 prompt 之前。
+
+验证结果：Rust `acp_timeline_pagination` 全量通过；ACP reducer 与 chat events 前端回归 100/100 通过；Web TypeScript 类型检查通过。`cargo fmt -- --check` 仍被仓库其他既有文件的格式差异阻断，本轮变更文件单独检查无新增格式问题。性能影响为对当前已选语义块做一次 O(P log P) 排序，P 为页大小，不扫描历史、不增加 IPC/缓存/持久字段；前端只改变已有事件数组排序，内存和请求量不变。

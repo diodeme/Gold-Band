@@ -11,6 +11,7 @@ import {
   findAcpThoughtLevel,
   formatAcpCompositeSelection,
   formatAcpCompositeSelectionParts,
+  isAuthoringConfigOptionValueAllowed,
   nextAcpCompositeSection,
   remapAcpThoughtLevelOverride,
   retainAcpModelBoundOverrides,
@@ -357,6 +358,221 @@ describe('ACP composite model selector', () => {
       modelBoundCatalogs: catalogs,
     });
     expect(toGrok.overrides).toEqual({ effort: 'extra-high', fast: 'true' });
+  });
+
+  it('does not remap leftover Grok Fast Off onto Fable thinking Off', () => {
+    const fableRows = [
+      {
+        id: 'thinking',
+        category: 'thought_level',
+        name: 'Thinking',
+        options: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'On' }],
+      },
+      {
+        id: 'effort',
+        category: 'thought_level',
+        name: 'Effort',
+        options: [{ value: 'high', name: 'High' }, { value: 'extra-high', name: 'Extra High' }],
+      },
+      {
+        id: 'context',
+        category: 'model_config',
+        name: 'Context',
+        options: [{ value: '1m', name: '1M' }],
+      },
+    ];
+    const grokRows = [
+      {
+        id: 'effort',
+        category: 'thought_level',
+        name: 'Effort',
+        options: [{ value: 'high', name: 'High' }, { value: 'extra-high', name: 'Extra High' }],
+      },
+      {
+        id: 'fast',
+        category: 'model_config',
+        name: 'Fast',
+        options: [{ value: 'true', name: 'On' }, { value: 'false', name: 'Off' }],
+      },
+    ];
+    const doctorConfigOptions = [
+      {
+        id: 'model',
+        category: 'model',
+        currentValue: 'claude-fable',
+        options: [
+          { value: 'claude-fable', name: 'Fable' },
+          { value: 'grok-4.6', name: 'Grok' },
+        ],
+      },
+      ...fableRows,
+    ];
+    const catalogs = {
+      'claude-fable': fableRows,
+      'grok-4.6': grokRows,
+    };
+
+    expect(retainAcpModelBoundOverrides(
+      { effort: 'high', fast: 'false' },
+      doctorConfigOptions,
+      'claude-fable',
+      catalogs,
+    )).toEqual({ effort: 'high' });
+
+    const switched = switchAcpModelBoundOverrides({
+      remembered: {},
+      previousModelId: 'grok-4.6',
+      nextModelId: 'claude-fable',
+      currentOverrides: { effort: 'high', fast: 'false' },
+      configOptions: doctorConfigOptions,
+      modelBoundCatalogs: catalogs,
+    });
+    expect(switched.overrides).toEqual({ effort: 'high' });
+    expect(switched.overrides.thinking).toBeUndefined();
+  });
+
+  it('does not overwrite an already valid thought value when remapping another thought id', () => {
+    expect(remapAcpThoughtLevelOverride(
+      { effort: 'high', reasoning: 'medium' },
+      [
+        {
+          id: 'effort',
+          category: 'thought_level',
+          options: [{ value: 'medium', name: 'Medium' }, { value: 'high', name: 'High' }],
+        },
+      ],
+      [
+        {
+          id: 'reasoning',
+          category: 'thought_level',
+          options: [{ value: 'medium', name: 'Medium' }, { value: 'high', name: 'High' }],
+        },
+      ],
+    )).toEqual({ effort: 'high' });
+  });
+
+  it('seeds the first visit from current overrides and restores an empty remembered slot', () => {
+    const options = [
+      {
+        id: 'model',
+        category: 'model',
+        currentValue: 'grok-4.6',
+        options: [
+          { value: 'grok-4.6', name: 'Grok' },
+          { value: 'gpt-5-mini', name: 'Mini' },
+        ],
+      },
+    ];
+    const catalogs = {
+      'grok-4.6': [
+        {
+          id: 'effort',
+          category: 'thought_level',
+          options: [{ value: 'high', name: 'High' }, { value: 'extra-high', name: 'Extra High' }],
+        },
+      ],
+      'gpt-5-mini': [
+        {
+          id: 'effort',
+          category: 'thought_level',
+          options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }],
+        },
+      ],
+    };
+
+    const firstVisit = switchAcpModelBoundOverrides({
+      remembered: {},
+      previousModelId: 'grok-4.6',
+      nextModelId: 'gpt-5-mini',
+      currentOverrides: { effort: 'high' },
+      configOptions: options,
+      modelBoundCatalogs: catalogs,
+    });
+    expect(firstVisit.overrides).toEqual({ effort: 'high' });
+    expect(firstVisit.remembered['gpt-5-mini']).toEqual({ effort: 'high' });
+
+    const leaveMiniEmpty = switchAcpModelBoundOverrides({
+      remembered: firstVisit.remembered,
+      previousModelId: 'gpt-5-mini',
+      nextModelId: 'grok-4.6',
+      currentOverrides: {},
+      configOptions: options,
+      modelBoundCatalogs: catalogs,
+    });
+    expect(leaveMiniEmpty.remembered['gpt-5-mini']).toEqual({});
+
+    const restoreEmptyMini = switchAcpModelBoundOverrides({
+      remembered: leaveMiniEmpty.remembered,
+      previousModelId: 'grok-4.6',
+      nextModelId: 'gpt-5-mini',
+      currentOverrides: { effort: 'extra-high' },
+      configOptions: options,
+      modelBoundCatalogs: catalogs,
+    });
+    expect(restoreEmptyMini.overrides).toEqual({});
+  });
+
+  it('overwrites a model slot with the state at leave, not the first visit', () => {
+    const options = [
+      {
+        id: 'model',
+        category: 'model',
+        currentValue: 'grok-4.6',
+        options: [
+          { value: 'grok-4.6', name: 'Grok' },
+          { value: 'gpt-5-mini', name: 'Mini' },
+        ],
+      },
+    ];
+    const catalogs = {
+      'grok-4.6': [
+        {
+          id: 'effort',
+          category: 'thought_level',
+          options: [{ value: 'high', name: 'High' }, { value: 'extra-high', name: 'Extra High' }],
+        },
+      ],
+      'gpt-5-mini': [
+        {
+          id: 'effort',
+          category: 'thought_level',
+          options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }],
+        },
+      ],
+    };
+    const afterFirstLeave = switchAcpModelBoundOverrides({
+      remembered: {},
+      previousModelId: 'grok-4.6',
+      nextModelId: 'gpt-5-mini',
+      currentOverrides: { effort: 'extra-high' },
+      configOptions: options,
+      modelBoundCatalogs: catalogs,
+    });
+    const afterEdit = switchAcpModelBoundOverrides({
+      remembered: afterFirstLeave.remembered,
+      previousModelId: 'gpt-5-mini',
+      nextModelId: 'grok-4.6',
+      currentOverrides: afterFirstLeave.overrides,
+      configOptions: options,
+      modelBoundCatalogs: catalogs,
+    });
+    const leaveEditedGrok = switchAcpModelBoundOverrides({
+      remembered: afterEdit.remembered,
+      previousModelId: 'grok-4.6',
+      nextModelId: 'gpt-5-mini',
+      currentOverrides: { effort: 'high' },
+      configOptions: options,
+      modelBoundCatalogs: catalogs,
+    });
+    const backToGrok = switchAcpModelBoundOverrides({
+      remembered: leaveEditedGrok.remembered,
+      previousModelId: 'gpt-5-mini',
+      nextModelId: 'grok-4.6',
+      currentOverrides: leaveEditedGrok.overrides,
+      configOptions: options,
+      modelBoundCatalogs: catalogs,
+    });
+    expect(backToGrok.overrides).toEqual({ effort: 'high' });
   });
 
   it('shows one unspecified state until a model or thought level is selected', () => {
@@ -868,5 +1084,41 @@ describe('ACP composite model selector', () => {
       ['context', 'Context', null],
       ['fast', 'Fast', 'Off'],
     ]);
+  });
+
+  it('allows Grok effort and fast against the projected catalog while Doctor current belongs to Luna', () => {
+    const current = [
+      {
+        id: 'reasoning',
+        category: 'thought_level',
+        options: [{ value: 'high', name: 'High' }],
+      },
+      {
+        id: 'context',
+        category: 'model_config',
+        options: [{ value: '1m', name: '1M' }],
+      },
+    ];
+    const catalogs = {
+      'grok-4.6': [
+        {
+          id: 'effort',
+          category: 'thought_level',
+          options: [{ value: 'high', name: 'High' }],
+        },
+        {
+          id: 'fast',
+          category: 'model_config',
+          options: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'On' }],
+        },
+      ],
+      'gpt-5.6-luna': current,
+    };
+
+    expect(isAuthoringConfigOptionValueAllowed('effort', 'high', current, catalogs, 'grok-4.6')).toBe(true);
+    expect(isAuthoringConfigOptionValueAllowed('fast', 'false', current, catalogs, 'grok-4.6')).toBe(true);
+    expect(isAuthoringConfigOptionValueAllowed('effort', 'bogus', current, catalogs, 'grok-4.6')).toBe(false);
+    expect(isAuthoringConfigOptionValueAllowed('reasoning', 'high', current, catalogs, 'grok-4.6')).toBe(true);
+    expect(isAuthoringConfigOptionValueAllowed('theme', 'dark', current, catalogs, 'grok-4.6')).toBe(false);
   });
 });

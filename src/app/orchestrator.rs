@@ -12534,10 +12534,7 @@ fn build_dynamic_worker_invocation(
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "runtime_context");
     let runtime_context = dynamic_runtime_context(ctx, &node.id, attempt_id);
-    let mut config_options = dynamic_config_options_for_invocation(ctx.dynamic, node);
-    config_options.extend(dynamic_acp_config_option_overrides(
-        &runtime_context.attempt_dir,
-    ));
+    let snapshot_config_options = dynamic_acp_config_option_overrides(&runtime_context.attempt_dir);
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -12638,6 +12635,21 @@ fn build_dynamic_worker_invocation(
 
     let step_started_at = dynamic_invocation_build_step_begin(ctx, node, attempt_id, "model");
     let model = resolve_dynamic_invocation_model(ctx.dynamic, node, model_override);
+    let diagnostics = ctx.app.provider_diagnostics();
+    let capabilities = node
+        .provider
+        .as_deref()
+        .filter(|provider| !provider.trim().is_empty())
+        .or(Some(dynamic_control_provider(ctx.dynamic)))
+        .and_then(|provider| diagnostics.get(provider))
+        .and_then(|snapshot| snapshot.capabilities.as_ref());
+    let config_options = crate::acp::session_config::invocation_config_option_overrides(
+        session_mode == SessionMode::Continue,
+        dynamic_config_options_for_invocation(ctx.dynamic, node),
+        snapshot_config_options,
+        capabilities,
+        model.as_deref(),
+    );
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -16237,7 +16249,7 @@ mod tests {
         fn doctor(&self) -> DoctorResult {
             DoctorResult {
                 available: true,
-                reason: None,
+                error: None,
                 capabilities: None,
             }
         }
@@ -17386,6 +17398,7 @@ mod tests {
                 auto_accept: false,
             },
             config_options: Default::default(),
+            model_bound_overrides: Default::default(),
             allowed_profiles: Vec::new(),
             global_goal: None,
             control: DynamicControlDsl::default(),
@@ -17406,11 +17419,13 @@ mod tests {
                     "reasoning_effort".to_string(),
                     "high".to_string(),
                 )]),
+                bootstrap_model_bound_overrides: Default::default(),
                 acceptance_model: Some("gpt-5.6-sol".to_string()),
                 acceptance_config_options: BTreeMap::from([(
                     "reasoning_effort".to_string(),
                     "medium".to_string(),
                 )]),
+                acceptance_model_bound_overrides: Default::default(),
                 routing_prompt: String::new(),
                 available_agents: vec![crate::dsl::DynamicAgentRef {
                     provider: "codex-acp".to_string(),
@@ -17421,9 +17436,11 @@ mod tests {
                         "reasoning_effort".to_string(),
                         "low".to_string(),
                     )]),
+                    model_bound_overrides: Default::default(),
                 }],
             },
             config_options: Default::default(),
+            model_bound_overrides: Default::default(),
             allowed_profiles: Vec::new(),
             global_goal: None,
             control: DynamicControlDsl::default(),
@@ -17484,7 +17501,7 @@ mod tests {
             "claude-acp".to_string(),
             ProviderDiagnosticSnapshot {
                 available: true,
-                reason: None,
+                error: None,
                 checked_at: "2026-06-16T00:00:00Z".to_string(),
                 capabilities: Some(capabilities),
             },
@@ -18988,8 +19005,10 @@ mod tests {
                 permission_mode: None,
                 auto_accept: false,
                 bootstrap_config_options: Default::default(),
+                bootstrap_model_bound_overrides: Default::default(),
                 acceptance_model: None,
                 acceptance_config_options: Default::default(),
+                acceptance_model_bound_overrides: Default::default(),
                 routing_prompt: "choose provider and model".to_string(),
                 available_agents: vec![crate::dsl::DynamicAgentRef {
                     provider: "claude-acp".to_string(),
@@ -18997,6 +19016,7 @@ mod tests {
                     permission_mode: None,
                     auto_accept: false,
                     config_options: Default::default(),
+                    model_bound_overrides: Default::default(),
                 }],
             },
             ..test_dynamic()
@@ -19105,8 +19125,10 @@ mod tests {
                 permission_mode: None,
                 auto_accept: false,
                 bootstrap_config_options: Default::default(),
+                bootstrap_model_bound_overrides: Default::default(),
                 acceptance_model: None,
                 acceptance_config_options: Default::default(),
+                acceptance_model_bound_overrides: Default::default(),
                 routing_prompt: "choose provider and model".to_string(),
                 available_agents: vec![crate::dsl::DynamicAgentRef {
                     provider: "claude-acp".to_string(),
@@ -19114,6 +19136,7 @@ mod tests {
                     permission_mode: None,
                     auto_accept: false,
                     config_options: Default::default(),
+                    model_bound_overrides: Default::default(),
                 }],
             },
             ..test_dynamic()

@@ -192,6 +192,72 @@ describe("ACP event reducer", () => {
     expect(merged[0]!.content).toBe("我找到了实现文件和现成测试文件，接下来核对代码内容并执行它们。");
   });
 
+  it("keeps a cumulative response before a later prompt when their ranges overlap", () => {
+    const merged = mergeAcpEventWindows([], [
+      event({
+        id: "assistant-response",
+        kind: "textDelta",
+        seq: 20,
+        startedSeq: 10,
+        endedSeq: 20,
+        content: "complete response",
+      }),
+      event({
+        id: "user-prompt",
+        kind: "userTextDelta",
+        seq: 11,
+        startedSeq: 11,
+        endedSeq: 11,
+        content: "follow-up",
+        raw: { source: "goldBandPrompt" },
+      }),
+    ]);
+
+    expect(merged.map((item) => item.id)).toEqual([
+      "assistant-response",
+      "user-prompt",
+    ]);
+  });
+
+  it("repairs the same ordering when a later snapshot replaces an existing response", () => {
+    const merged = mergeAcpEventWindows(
+      [
+        event({
+          id: "user-prompt",
+          kind: "userTextDelta",
+          seq: 11,
+          startedSeq: 11,
+          endedSeq: 11,
+          content: "follow-up",
+          raw: { source: "goldBandPrompt" },
+        }),
+        event({
+          id: "assistant-response",
+          kind: "textDelta",
+          seq: 20,
+          startedSeq: 10,
+          endedSeq: 20,
+          content: "complete response",
+        }),
+      ],
+      [
+        event({
+          id: "assistant-response",
+          kind: "textDelta",
+          seq: 20,
+          startedSeq: 10,
+          endedSeq: 20,
+          content: "complete response",
+        }),
+      ],
+    );
+
+    expect(merged.map((item) => item.id)).toEqual([
+      "assistant-response",
+      "user-prompt",
+    ]);
+  });
+
   it("fills an initially empty realtime bubble when content arrives later", () => {
     const merged = mergeAcpEventWindows(
       [

@@ -518,6 +518,7 @@ const resources = {
         },
         "workflow-model-binding": {
           "binding-duplicate": "执行槽位 {{executionSlotId}} 存在重复模型绑定，请删除重复项后重试。",
+          "option-unsupported": "当前模型不支持这项配置，请重新选择后重试。",
         },
         SCHEDULED_COORDINATOR_UNAVAILABLE: "定时任务运行服务暂不可用，请重试。",
         SCHEDULED_NOT_FOUND: "待恢复的定时任务执行已不存在，请刷新后重试。",
@@ -639,6 +640,10 @@ const resources = {
           "session-query-failed": "会话内容加载失败，请重试。",
           "activity-detail-query-failed": "活动详情加载失败，请重试。",
           "tool-detail-query-failed": "工具详情加载失败，请重试。",
+          "adapter-exited": "Agent 进程在 {{method}} 阶段退出。请检查命令、参数、环境变量、网络和认证状态。",
+          "adapter-exited-with-code": "Agent 进程在 {{method}} 阶段退出（退出码 {{exitCode}}）。请检查命令、参数、环境变量、网络和认证状态。",
+          "adapter-start-failed": "无法启动 Agent：{{osError}}",
+          "doctor-timeout": "Agent 环境诊断在 {{method}} 阶段超时。",
         },
         app: {
           "task-join-failed": "后台任务执行失败。",
@@ -933,8 +938,11 @@ const resources = {
         diagnosing: "诊断中",
         savedAndDiagnosing: "配置已保存，正在后台诊断。",
         diagnosticComplete: "环境诊断完成，诊断进程已退出。",
-        diagnosticFailed: "环境诊断异常：{{reason}}",
+        diagnosticFailed: "环境诊断未通过：{{reason}}",
+        diagnosticFailedNoReason: "环境诊断未通过。",
         diagnosticFailedFallback: "请检查 agent 命令、网络和认证状态。",
+        diagnosticHelpLabel: "查看诊断原因",
+        diagnosticReasonLabel: "原因",
         registryHelpLabel: "配置帮助",
         registryHelp:
           "请参考 <registry>ACP Registry</registry> 中该 Agent 的配置，确认命令、参数、环境变量、网络和认证状态。",
@@ -1817,6 +1825,7 @@ const resources = {
         noPullRequests: "没有匹配的 Pull Request",
         noIssues: "没有匹配的 Issue",
         openOnGitHub: "在 GitHub 中打开",
+        openInBuiltInBrowser: "在内置浏览器中打开",
         noDescription: "没有正文。",
         createPullRequest: "创建 Pull Request",
         createPullRequestDescription: "选择比较分支，确认标题和正文后创建。",
@@ -1912,6 +1921,13 @@ const resources = {
         currentModel: "模型",
         thoughtLevel: "思考强度",
         unspecifiedThoughtLevel: "不指定",
+        sessionConfigRolledBack: "当前模型暂不支持配置：{{names}}。系统已将其回滚为不指定。可停止对话后修改。",
+        configOptionWithId: "{{name}}（{{id}}）",
+        configOption: {
+          thinking: "深度思考",
+          effort: "思考强度",
+          context: "上下文",
+        },
         permissionMode: "权限",
         autoAccept: "自动批准",
         autoAcceptGroup: "{{appName}}来帮你…",
@@ -3182,6 +3198,7 @@ const resources = {
         },
         "workflow-model-binding": {
           "binding-duplicate": "Execution slot {{executionSlotId}} has duplicate model bindings. Remove the duplicate and try again.",
+          "option-unsupported": "This model does not support that setting. Choose another option and try again.",
         },
         SCHEDULED_COORDINATOR_UNAVAILABLE: "The scheduled task service is unavailable. Try again.",
         SCHEDULED_NOT_FOUND: "The scheduled run to resume no longer exists. Refresh and try again.",
@@ -3305,6 +3322,12 @@ const resources = {
           "session-query-failed": "The conversation could not be loaded. Try again.",
           "activity-detail-query-failed": "Activity details could not be loaded. Try again.",
           "tool-detail-query-failed": "Tool details could not be loaded. Try again.",
+          "adapter-exited":
+            "The Agent process exited during {{method}}. Check the command, arguments, environment variables, network, and authentication.",
+          "adapter-exited-with-code":
+            "The Agent process exited during {{method}} (exit code {{exitCode}}). Check the command, arguments, environment variables, network, and authentication.",
+          "adapter-start-failed": "The Agent could not be started: {{osError}}",
+          "doctor-timeout": "Agent environment check timed out during {{method}}.",
         },
         app: {
           "task-join-failed": "Background task failed.",
@@ -3612,9 +3635,12 @@ const resources = {
         savedAndDiagnosing: "Configuration saved. Diagnosing in the background.",
         diagnosticComplete:
           "Environment check completed and the diagnostic process has exited.",
-        diagnosticFailed: "Environment check failed: {{reason}}",
+        diagnosticFailed: "Environment check didn’t pass: {{reason}}",
+        diagnosticFailedNoReason: "Environment check didn’t pass.",
         diagnosticFailedFallback:
           "Check the agent command, network, and authentication state.",
+        diagnosticHelpLabel: "View diagnostic reason",
+        diagnosticReasonLabel: "Reason",
         registryHelpLabel: "Configuration help",
         registryHelp:
           "Reference the <registry>ACP Registry</registry> entry for this agent and verify the command, arguments, environment, network, and authentication state.",
@@ -4526,6 +4552,7 @@ const resources = {
         noPullRequests: "No matching pull requests",
         noIssues: "No matching issues",
         openOnGitHub: "Open on GitHub",
+        openInBuiltInBrowser: "Open in built-in browser",
         noDescription: "No description.",
         createPullRequest: "Create pull request",
         createPullRequestDescription: "Choose the comparison branches, then review the title and body.",
@@ -4622,6 +4649,13 @@ const resources = {
         currentModel: "Model",
         thoughtLevel: "Reasoning",
         unspecifiedThoughtLevel: "Unspecified",
+        sessionConfigRolledBack: "This model does not currently support: {{names}}. The system has rolled it back to unspecified. You can change it after stopping the conversation.",
+        configOptionWithId: "{{name}} ({{id}})",
+        configOption: {
+          thinking: "Thinking",
+          effort: "Effort",
+          context: "Context",
+        },
         permissionMode: "Permission",
         autoAccept: "Auto Accept",
         autoAcceptGroup: "{{appName}} will help you…",

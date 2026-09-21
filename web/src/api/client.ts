@@ -2,6 +2,7 @@ import type {
   AcpRawFramePageVm,
   AcpRawFrameQueryInput,
   AcpSessionQueryInput,
+  AcpSessionConfigVm,
   AcpSessionVm,
   AcpUiEventVm,
   ActiveSessionStopVm,
@@ -160,6 +161,7 @@ interface AcpSessionUpdatedEventBaseVm {
   activity?: ConversationTaskActivityVm | null;
   taskActivityAt?: string | null;
   timelineRecoveryRequired?: boolean;
+  sessionConfig?: AcpSessionConfigVm | null;
 }
 
 export type AcpSessionUpdatedEventVm = AcpSessionUpdatedEventBaseVm & (

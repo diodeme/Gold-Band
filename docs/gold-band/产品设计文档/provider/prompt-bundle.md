@@ -332,6 +332,8 @@ AI-DYNAMIC 内部 agent 阶段（bootstrap / worker / merge / acceptance）与�
 
 桌面 ACP 会话面板的手动追问必须走 `UserMessage`：只复用同一套 prompt bundle / attachment / provider 发送链路，不复用 workflow hidden runtime context。
 
+Cursor ACP 已知缺陷：`session/cancel` 可能把已经接受的那条 `session/prompt`（含 `WorkflowResume` hidden runtime context）从后续模型上下文中整轮撤回，Gold Band timeline 仍保留该气泡。详见 [Provider Adapter 接口](adapter.md)「Cursor ACP 已知缺陷」。不要据此取消 resume 注入；下一次 runtime continue 才是重新注入最新 hidden context 的补偿点。
+
 ACP 会话展示按 Gold Band 的 session 策略聚合：`session=new` 始终创建独立 conversation，即使底层 provider 暴露了相同或临时 session id，也不把两个 new attempt 合并；后续 `session=continue` 且指向已有 ACP session id 时，挂回被继续的 conversation，并以 attempt 分隔行标记新 attempt 进入。会话流中 Gold Band synthetic user prompt 与 provider 回放的同文 user prompt 只展示一条，避免运行中出现重复用户消息。
 
 说明：Claude Agent ACP 的 `session/load` 会在恢复已有 Claude 会话时创建新的 SDK query 进程；这里的 create session 是 provider 进程内的查询对象创建，不表示 Gold Band 开启了新的对话语义。

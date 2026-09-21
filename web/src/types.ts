@@ -459,6 +459,8 @@ export interface ManagedAgentVm {
   supportedModes?: AcpModeVm[] | null;
   supportedModels?: AcpModeVm[] | null;
   configOptions?: AcpSelectConfigOptionVm[] | null;
+  /** Last observed thought_level / model_config catalogs keyed by model id. */
+  modelBoundCatalogs?: Record<string, AcpSelectConfigOptionVm[]> | null;
   /** 是否支持 streamable HTTP MCP 传输（null=未诊断/未知） */
   mcpHttpSupported?: boolean | null;
   /** 是否支持 SSE MCP 传输（null=未诊断/未知） */
@@ -520,7 +522,7 @@ export interface AgentEnvEntryVm {
 export interface ManagedAgentDiagnosticVm {
   status: string;
   available: boolean;
-  reason?: string | null;
+  error?: AppErrorVm | null;
   checkedAt: string;
 }
 
@@ -781,6 +783,7 @@ export interface TaskRowVm {
 export interface AppErrorVm {
   code: string;
   params: Record<string, unknown>;
+  raw?: unknown;
 }
 
 export interface GitCapabilityVm {
@@ -1301,6 +1304,7 @@ export interface DynamicAgentRefDsl {
   permissionMode?: string | null;
   autoAccept?: boolean;
   configOptions?: Record<string, string>;
+  modelBoundOverrides?: Record<string, Record<string, string>>;
 }
 
 export interface WorkflowAiDynamicFixedAgentStrategyDsl {
@@ -1318,8 +1322,10 @@ export interface WorkflowAiDynamicDynamicAgentStrategyDsl {
   permissionMode?: string | null;
   autoAccept?: boolean;
   bootstrapConfigOptions?: Record<string, string>;
+  bootstrapModelBoundOverrides?: Record<string, Record<string, string>>;
   acceptanceModel?: string | null;
   acceptanceConfigOptions?: Record<string, string>;
+  acceptanceModelBoundOverrides?: Record<string, Record<string, string>>;
   routingPrompt: string;
   availableAgents: DynamicAgentRefDsl[];
 }
@@ -1329,6 +1335,7 @@ export interface WorkflowAiDynamicNodeDsl {
   id: string;
   agentStrategy: WorkflowAiDynamicAgentStrategyDsl;
   configOptions?: Record<string, string>;
+  modelBoundOverrides?: Record<string, Record<string, string>>;
   allowedProfiles?: string[];
   globalGoal?: string | null;
   control: DynamicControlDsl;
@@ -1420,6 +1427,7 @@ export interface WorkerModelBinding {
   permissionModeId?: string | null;
   autoAccept?: boolean;
   configOptions?: Record<string, string>;
+  modelBoundOverrides?: Record<string, Record<string, string>>;
 }
 
 export interface AutoTemplateStore {
@@ -1815,6 +1823,7 @@ export interface AcpSessionConfigVm {
   permissionModeOverrideId?: string | null;
   autoAccept?: boolean;
   configOptionOverrides?: Record<string, string>;
+  modelBoundOverrides?: Record<string, Record<string, string>>;
   currentModelId?: string | null;
   currentModelName?: string | null;
   currentModeId?: string | null;
@@ -1822,6 +1831,7 @@ export interface AcpSessionConfigVm {
   models?: unknown | null;
   modes?: unknown | null;
   configOptions?: unknown | null;
+  modelBoundCatalogs?: Record<string, unknown[]> | null;
 }
 
 export interface AcpUiEventVm {
@@ -2910,6 +2920,7 @@ export interface ConversationDirectConfigVm {
   permissionMode?: string | null;
   autoAccept?: boolean;
   configOptions?: Record<string, string>;
+  modelBoundOverrides?: Record<string, Record<string, string>>;
 }
 
 export interface ConversationAgentIdentityVm {
@@ -2924,12 +2935,15 @@ export interface ConversationAutoConfigVm {
   bootstrapAgentType?: string | null;
   bootstrapModelId?: string | null;
   bootstrapConfigOptions?: Record<string, string>;
+  bootstrapModelBoundOverrides?: Record<string, Record<string, string>>;
   acceptanceModelId?: string | null;
   acceptanceConfigOptions?: Record<string, string>;
+  acceptanceModelBoundOverrides?: Record<string, Record<string, string>>;
   modelId?: string | null;
   permissionMode?: string | null;
   autoAccept?: boolean;
   configOptions?: Record<string, string>;
+  modelBoundOverrides?: Record<string, Record<string, string>>;
   availableAgents?: DynamicAgentRefDsl[];
   routingPrompt?: string | null;
   allowedWorkflows?: AllowedWorkflowRefDsl[];

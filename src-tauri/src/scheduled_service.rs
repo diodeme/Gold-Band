@@ -1488,7 +1488,7 @@ mod tests {
                 "claude-acp".to_string(),
                 ProviderDiagnosticSnapshot {
                     available: true,
-                    reason: None,
+                    error: None,
                     checked_at: "2026-08-14T00:00:00Z".to_string(),
                     capabilities: Some(serde_json::json!({
                         "configOptions": [{
@@ -1523,6 +1523,7 @@ mod tests {
                             permission_mode_id: None,
                             auto_accept: false,
                             config_options: BTreeMap::new(),
+                            model_bound_overrides: Default::default(),
                         }),
                         NodeDsl::AiDynamic(_) => None,
                     })
@@ -1998,6 +1999,7 @@ mod tests {
             permission_mode: Some("plan".to_string()),
             auto_accept: false,
             config_options: BTreeMap::new(),
+            model_bound_overrides: Default::default(),
         });
 
         let created = fixture.service.create(input).unwrap();

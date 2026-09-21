@@ -72,6 +72,7 @@ import {
   useChatContainerDisclosure,
 } from "@/components/prompt-kit/chat-container";
 import { ScheduledTriggerRow } from "@/components/conversation/ScheduledTriggerRow";
+import { AcpSystemNoticeDivider } from "@/components/acp/AcpSystemNotice";
 import {
   ConversationViewport,
   ConversationViewportFooter,
@@ -137,9 +138,11 @@ import {
   normalizeAcpResourceCacheSessionCount,
 } from "@/lib/acp-chat-resource-cache";
 import {
+  acpAuthoringModelBoundCatalogs,
   acpProviderConfigCatalog,
   createAcpSessionConfigViewModel,
   findAcpConfigOption,
+  mergeLiveAcpSessionConfig,
   type AcpSessionConfigViewModel,
 } from "@/lib/acp-session-config";
 import {
@@ -563,8 +566,9 @@ export function shouldShowReturnToLatest(
   hasNewerEvents: boolean,
   activationEligible: boolean,
   distanceFromBottom: number,
+  explicitHistoricalIntent = true,
 ) {
-  if (isAcpConversationAtBottom(viewportAtBottom, hasNewerEvents)) return false;
+  if (viewportAtBottom && (!hasNewerEvents || !explicitHistoricalIntent)) return false;
   if (hasNewerEvents) return true;
   if (currentlyVisible) return true;
   return activationEligible
@@ -1872,8 +1876,12 @@ export function ACPChatDialog(
   }, [effectiveLoadedEventBufferLimit, sessionKey]);
 
   const hasExplicitHistoricalTimelineIntent = useCallback(() => (
-    paginationDirectionRef.current !== null
-    || viewportManualIntentRef.current
+    viewportManualIntentRef.current
+    || paginationDirectionRef.current === "older"
+    || (
+      paginationDirectionRef.current === "newer"
+      && !canonicalHeadRecoveryAutoHandoffRef.current
+    )
   ), []);
 
   const resumePendingCanonicalHeadRecoveryForSnapshot = useCallback((
@@ -2389,12 +2397,11 @@ export function ACPChatDialog(
   const visibleSession = useMemo(
     () =>
       baseSession
-        ? createVisibleAcpSession(
+        ?         createVisibleAcpSession(
             baseSession,
             loadedEvents,
             effectiveLoadedEventBufferLimit,
             liveUpdatesPaused
-              || canonicalHeadRecoveryPendingRef.current
               || hasExplicitHistoricalTimelineIntent()
               ? "historical"
               : "live-head",
@@ -2456,9 +2463,17 @@ export function ACPChatDialog(
     () => acpProviderConfigCatalog(agentRegistry, effective?.provider),
     [agentRegistry, effective?.provider],
   );
+  const authoringModelBoundCatalogs = useMemo(
+    () => acpAuthoringModelBoundCatalogs(agentRegistry, effective?.provider),
+    [agentRegistry, effective?.provider],
+  );
   const sessionConfigViewModel = useMemo(
-    () => createAcpSessionConfigViewModel(effective?.config, providerCatalog),
-    [effective?.config, providerCatalog],
+    () => createAcpSessionConfigViewModel(
+      effective?.config,
+      providerCatalog,
+      authoringModelBoundCatalogs,
+    ),
+    [authoringModelBoundCatalogs, effective?.config, providerCatalog],
   );
   const effectiveEvents = effective?.events ?? [];
   const effectiveSessionTerminal = isSessionTerminalStatus(effective?.status);
@@ -3192,7 +3207,9 @@ export function ACPChatDialog(
     const next = { ...current };
     if (optionValue) next[optionId] = optionValue;
     else delete next[optionId];
-    const mutation = patchSessionConfig({ configOptionOverrides: next });
+    const mutation = patchSessionConfig({
+      configOptionOverrides: next,
+    });
     setAcpSessionConfigOption(
       projectId,
       taskId,
@@ -3274,13 +3291,14 @@ export function ACPChatDialog(
       return;
     }
     if (hasExplicitHistoricalTimelineIntent()) {
-      // The visible list is a historical window. The router has already
-      // retained this live event for replay, so keep the user's window and
-      // anchor intact and expose the existing newer-pagination path.
+      // The visible list is a user-owned historical window. Auto recovery at
+      // the live head is not historical intent, so live events keep merging.
       commitHasNewerEvents(true);
       return;
     }
-    commitHasNewerEvents(false);
+    if (!canonicalHeadRecoveryPendingRef.current) {
+      commitHasNewerEvents(false);
+    }
     const activeWindow = loadedEventWindowRef.current;
     const merged = mergeAcpEvents(activeWindow.events, normalizedUpdates);
     if (!viewportAtBottomRef.current && merged.length > effectiveLoadedEventBufferLimit) {
@@ -3450,6 +3468,7 @@ export function ACPChatDialog(
     const distanceFromBottom = scroller
       ? scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
       : 0;
+    const explicitHistoricalIntent = hasExplicitHistoricalTimelineIntent();
     commitShowReturnToLatest(
       shouldShowReturnToLatest(
         showReturnToLatestRef.current,
@@ -3457,6 +3476,7 @@ export function ACPChatDialog(
         hasNewerEventsRef.current,
         !viewportAtBottom || hasNewerEventsRef.current,
         distanceFromBottom,
+        explicitHistoricalIntent,
       ),
       "at-bottom-change",
       scroller,
@@ -3473,9 +3493,9 @@ export function ACPChatDialog(
       );
     }
     onAtBottomChange?.(
-      isAcpConversationAtBottom(viewportAtBottom, hasNewerEvents),
+      isAcpConversationAtBottom(viewportAtBottom, hasNewerEventsRef.current),
     );
-  }, [commitShowReturnToLatest, eventWindowKey, hasNewerEvents, onAtBottomChange, settleLiveStreamingMarkdown]);
+  }, [commitShowReturnToLatest, eventWindowKey, hasExplicitHistoricalTimelineIntent, hasNewerEvents, onAtBottomChange, settleLiveStreamingMarkdown]);
 
   const requestCanonicalHeadHandoff = useCallback((
     requestedIntent: AcpCanonicalHeadHandoffIntent,
@@ -3620,8 +3640,7 @@ export function ACPChatDialog(
       }
       const preserveVisibleTimeline = hasExplicitHistoricalTimelineIntent();
       if (
-        canonicalHeadRecoveryPendingRef.current
-        || liveUpdatesPausedRef.current
+        liveUpdatesPausedRef.current
         || preserveVisibleTimeline
       ) {
         applyEventUpdates([event], timelineGeneration, false);
@@ -3633,6 +3652,10 @@ export function ACPChatDialog(
           requestCanonicalHeadRecovery(true);
         }
         return false;
+      }
+      if (canonicalHeadRecoveryPendingRef.current) {
+        applyEventUpdates([event], timelineGeneration, true);
+        return true;
       }
       if (event.kind === "timingUpdate") {
         applyEventUpdate(event, timelineGeneration);
@@ -3772,11 +3795,12 @@ export function ACPChatDialog(
         hasNewerEventsRef.current,
         viewportManualIntentRef.current || hasNewerEventsRef.current,
         distanceFromBottom,
+        hasExplicitHistoricalTimelineIntent(),
       ),
       "branch-view-restore",
       scroller,
     );
-  }, [commitShowReturnToLatest, eventWindowKey, timeline]);
+  }, [commitShowReturnToLatest, eventWindowKey, hasExplicitHistoricalTimelineIntent, timeline]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -4071,7 +4095,20 @@ export function ACPChatDialog(
             }).catch(() => {});
             return;
           }
-          if (!event.session) return;
+          if (!event.session) {
+            if (event.sessionConfig && latestSessionRef.current && branchId === 'root') {
+              const latest = latestSessionRef.current;
+              applySessionUpdate({
+                ...latest,
+                config: mergeLiveAcpSessionConfig(
+                  latest.config,
+                  event.sessionConfig,
+                  configGenerationRef.current > 0,
+                ),
+              }, "subscription-session-config");
+            }
+            return;
+          }
           if (branchId !== 'root') {
             // Agent branch envelopes carry root/session metadata rather than the
             // selected branch body. Coalesce bursts into one in-flight read plus
@@ -4093,6 +4130,7 @@ export function ACPChatDialog(
                 permissionModeOverrideId: cfg.permissionModeOverrideId,
                 autoAccept: cfg.autoAccept,
                 configOptionOverrides: cfg.configOptionOverrides,
+                modelBoundOverrides: cfg.modelBoundOverrides,
                 currentModelId: cfg.currentModelId,
                 currentModelName: cfg.currentModelName,
                 currentModeId: cfg.currentModeId,
@@ -5426,7 +5464,9 @@ export function ACPChatDialog(
     const requestToken = beginPaginationRequest("newer");
     liveAnimationReadyRef.current = false;
     settleLiveStreamingMarkdown();
-    chatContainerContextRef.current?.stopScroll();
+    if (intent !== "recovery" || viewportManualIntentRef.current) {
+      chatContainerContextRef.current?.stopScroll();
+    }
     try {
       const response = await getAcpSession(
           projectId,
@@ -6274,6 +6314,7 @@ export function ACPChatDialog(
         hasNewerEventsRef.current,
         viewportManualIntentRef.current || hasNewerEventsRef.current,
         distanceFromBottom,
+        hasExplicitHistoricalTimelineIntent(),
       ),
       "viewport-scroll",
       scroller,
@@ -7102,7 +7143,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
     currentModeId,
     availableModels,
     availablePermissionModes,
-    thoughtLevel,
+    modelBoundOptions,
   } = viewModel;
 
   const handlePermissionModeSelect = useCallback(
@@ -7116,8 +7157,24 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
     ?? t('conversation.home.unspecifiedPermissionMode');
   const showModels = availableModels.length > 0 || Boolean(currentModelId);
   const showPermissionModes = availablePermissionModes.length > 0 || Boolean(currentModeId) || Boolean(onAutoAcceptChange);
+  const compositeSections = modelBoundOptions.map((group) => ({
+    id: group.id,
+    category: group.category,
+    name: group.name,
+    description: group.description,
+    currentValue: group.currentValue,
+    value: group.overrideValue,
+    valueLabel: group.overrideValueName,
+    showUnspecified: group.canSelectUnspecified,
+    options: group.options.map((option) => ({
+      value: option.id,
+      name: option.name,
+      description: option.description,
+      available: option.available,
+    })),
+  }));
 
-  if (!showModels && !showPermissionModes && !thoughtLevel) return null;
+  if (!showModels && !showPermissionModes && compositeSections.length === 0) return null;
 
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground" data-acp-session-config-bar="true">
@@ -7129,25 +7186,10 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
         models={availableModels}
         modelValue={modelOverrideId}
         modelValueLabel={modelOverrideName}
-        thoughtLevel={thoughtLevel ? {
-          id: thoughtLevel.id,
-          category: thoughtLevel.category,
-          name: thoughtLevel.name,
-          description: thoughtLevel.description,
-          currentValue: thoughtLevel.currentValue,
-          options: thoughtLevel.options.map((option) => ({
-            value: option.id,
-            name: option.name,
-            description: option.description,
-            available: option.available,
-          })),
-        } : null}
-        thoughtValue={thoughtLevel?.overrideValue}
-        thoughtValueLabel={thoughtLevel?.overrideValueName}
+        compositeSections={compositeSections}
         showUnspecifiedModel={canSelectUnspecifiedModel}
-        showUnspecifiedThought={thoughtLevel?.canSelectUnspecified ?? true}
         onModelChange={(value) => onModelChange?.(value)}
-        onThoughtChange={(optionId, value) => onConfigOptionChange?.(optionId, value)}
+        onConfigOptionChange={(optionId, value) => onConfigOptionChange?.(optionId, value)}
       />
       {showPermissionModes ? (
         <AcpSingleConfigMenu
@@ -7761,6 +7803,8 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
     );
   if (event.kind === "attemptSeparator")
     return <AttemptSeparator event={event} />;
+  if (event.kind === "systemNotice")
+    return <AcpSystemNoticeDivider event={event} />;
   if (event.kind === "scheduledTrigger") {
     const payload = scheduledTriggerPayload(event);
     return payload ? <ScheduledTriggerRow payload={payload} onOpen={() => { window.dispatchEvent(new CustomEvent('gold-band:scheduled-trigger-open', { detail: payload })); }} /> : null;

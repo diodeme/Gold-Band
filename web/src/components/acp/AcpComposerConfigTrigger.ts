@@ -28,15 +28,23 @@ export const ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS = 'shrink-0 text-muted-fore
 export const ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS = 'min-w-0 flex-1 truncate text-left text-foreground';
 export const ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS = 'size-3.5 shrink-0 text-muted-foreground';
 
+export function formatAcpCompositeSelectionParts(
+  names: Array<string | null | undefined>,
+  unspecifiedLabel: string,
+) {
+  const parts = names.map((name) => name?.trim() || null);
+  const selected = parts.filter((name): name is string => Boolean(name));
+  if (selected.length === 0) return unspecifiedLabel;
+  if (parts[0]) return [parts[0], ...parts.slice(1).filter((name): name is string => Boolean(name))].join(' · ');
+  return [unspecifiedLabel, ...selected].join(' · ');
+}
+
 export function formatAcpCompositeSelection(
   primaryName: string | null | undefined,
   secondaryName: string | null | undefined,
   unspecifiedLabel: string,
 ) {
-  if (primaryName && secondaryName) return `${primaryName} · ${secondaryName}`;
-  if (primaryName) return primaryName;
-  if (secondaryName) return `${unspecifiedLabel} · ${secondaryName}`;
-  return unspecifiedLabel;
+  return formatAcpCompositeSelectionParts([primaryName, secondaryName], unspecifiedLabel);
 }
 
 export function isAcpComposerConfigValueOverflowing(element: HTMLElement | null) {

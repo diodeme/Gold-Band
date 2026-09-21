@@ -3,7 +3,7 @@ pub mod workspace_files;
 use crate::acp::{client, events::AcpUiEvent};
 use crate::artifacts::{JsonArtifactSpan, artifact_uses_json_output, json_artifact_display_span};
 use crate::config::{
-    AcpAdapterConfig, DesktopLanguage, ManagedAgentConfig, ManagedAgentId,
+    AcpAdapterConfig, DesktopLanguage, DiagnosticError, ManagedAgentConfig, ManagedAgentId,
     catalog_agent_default_config,
 };
 pub use crate::domain::SessionRef;
@@ -32,7 +32,7 @@ use image::imageops::FilterType;
 use image::{DynamicImage, ImageReader, Limits};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read};
 use std::str::FromStr;
@@ -268,11 +268,28 @@ pub struct AcpSelectConfigOption {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoctorResult {
     pub available: bool,
-    pub reason: Option<String>,
+    #[serde(default)]
+    pub error: Option<DiagnosticError>,
     pub capabilities: Option<Value>,
 }
 
 impl DoctorResult {
+    pub fn healthy() -> Self {
+        Self {
+            available: true,
+            error: None,
+            capabilities: None,
+        }
+    }
+
+    pub fn from_anyhow(error: &anyhow::Error) -> Self {
+        Self {
+            available: false,
+            error: Some(client::doctor_diagnostic_error(error)),
+            capabilities: None,
+        }
+    }
+
     pub fn supported_modes(&self) -> Vec<AcpModeOption> {
         supported_modes_from_capabilities(self.capabilities.as_ref())
     }
@@ -1484,6 +1501,54 @@ pub fn select_config_options_from_capabilities(
         .collect()
 }
 
+/// Last observed `thought_level` / `model_config` catalogs keyed by model id.
+pub fn model_bound_catalogs_from_capabilities(
+    capabilities: Option<&Value>,
+) -> BTreeMap<String, Vec<AcpSelectConfigOption>> {
+    capabilities
+        .and_then(|value| value.get("modelBoundCatalogs"))
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(model_id, catalog)| {
+            let model_id = model_id.trim();
+            if model_id.is_empty() {
+                return None;
+            }
+            let options = select_config_options_from_capabilities(Some(&json!({
+                "configOptions": with_select_type(catalog),
+            })));
+            Some((model_id.to_string(), options))
+        })
+        .collect()
+}
+
+fn with_select_type(catalog: &Value) -> Value {
+    let Some(options) = catalog.as_array() else {
+        return catalog.clone();
+    };
+    Value::Array(
+        options
+            .iter()
+            .map(|option| {
+                let Some(object) = option.as_object() else {
+                    return option.clone();
+                };
+                if object
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.trim().is_empty())
+                {
+                    return option.clone();
+                }
+                let mut next = object.clone();
+                next.insert("type".into(), Value::String("select".into()));
+                Value::Object(next)
+            })
+            .collect(),
+    )
+}
+
 fn optional_trimmed_string(value: Option<&Value>) -> Option<String> {
     value
         .and_then(Value::as_str)
@@ -1917,13 +1982,7 @@ impl ProviderAdapter for AcpProvider {
             .unwrap_or_else(|| Utf8PathBuf::from("."));
         let agent_id = match ManagedAgentId::from_str(&self.provider_id) {
             Ok(agent_id) => agent_id,
-            Err(err) => {
-                return DoctorResult {
-                    available: false,
-                    reason: Some(err.to_string()),
-                    capabilities: None,
-                };
-            }
+            Err(err) => return DoctorResult::from_anyhow(&err),
         };
         match client::doctor(
             &agent_id,
@@ -1934,14 +1993,10 @@ impl ProviderAdapter for AcpProvider {
         ) {
             Ok(probe) => DoctorResult {
                 available: true,
-                reason: None,
+                error: None,
                 capabilities: Some(probe.capabilities),
             },
-            Err(err) => DoctorResult {
-                available: false,
-                reason: Some(err.to_string()),
-                capabilities: None,
-            },
+            Err(err) => DoctorResult::from_anyhow(&err),
         }
     }
 

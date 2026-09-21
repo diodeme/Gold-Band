@@ -115,7 +115,6 @@ class BrowserWebviewHost {
   private started = false;
   private startPromise: Promise<void> | null = null;
   private unlisten: (() => void) | null = null;
-  private frame: number | null = null;
   private lastBounds = new Map<string, BrowserBounds>();
   private visiblePageId: string | null = null;
   private overlayOpen = false;
@@ -128,7 +127,13 @@ class BrowserWebviewHost {
     queued: string | null;
     promise: Promise<void>;
   }>();
+  private readonly pendingBounds = new Map<string, {
+    target: BrowserBounds;
+    queued: BrowserBounds | null;
+    promise: Promise<void>;
+  }>();
   private hidePromise: Promise<void> | null = null;
+  private showPromise: Promise<void> | null = null;
   private visibilityRevision = 0;
   private suppressed = false;
 
@@ -159,7 +164,7 @@ class BrowserWebviewHost {
     const next = roundBounds(bounds);
     const previous = this.lastBounds.get(page.pageId) ?? null;
     if (next.width < 2 || next.height < 2) {
-      await this.hideAll();
+      if (!this.suppressed) await this.hideAll();
       return;
     }
     this.lastBounds.set(page.pageId, next);
@@ -170,26 +175,14 @@ class BrowserWebviewHost {
     }
     if (!page.live) {
       await this.createPage(page.pageId, page.url, next);
-    } else if (!boundsEqual(previous, next)) {
-      await api().browserSetBounds?.({ pageId: page.pageId, bounds: next });
+    } else if (!this.suppressed && !boundsEqual(previous, next)) {
+      await this.commitBounds(page.pageId, next);
     }
     if (visible && !this.overlayOpen) {
       await this.show(page.pageId);
     } else {
       await this.hideAll();
     }
-  }
-
-  scheduleBounds(pageId: string, bounds: BrowserBounds) {
-    this.lastBounds.set(pageId, roundBounds(bounds));
-    this.setOverlayOpen(this.hasBlockingOverlay());
-    if (this.frame != null) return;
-    this.frame = requestAnimationFrame(() => {
-      this.frame = null;
-      const latest = this.lastBounds.get(pageId);
-      if (!latest) return;
-      void api().browserSetBounds?.({ pageId, bounds: latest });
-    });
   }
 
   async show(pageId: string) {
@@ -199,14 +192,26 @@ class BrowserWebviewHost {
     }
     if (this.visiblePageId === pageId) return;
     const revision = this.visibilityRevision;
+    if (this.showPromise) {
+      await this.showPromise;
+      if (this.visiblePageId === pageId) return;
+    }
     if (this.hidePromise) await this.hidePromise;
     if (revision !== this.visibilityRevision || this.overlayOpen || this.suppressed) return;
-    await api().browserShowPage?.({ pageId });
-    if (revision !== this.visibilityRevision || this.overlayOpen || this.suppressed) {
-      await this.hideAll();
-      return;
+    const showing = (async () => {
+      await api().browserShowPage?.({ pageId });
+      if (revision !== this.visibilityRevision || this.overlayOpen || this.suppressed) {
+        await this.hideAll();
+        return;
+      }
+      this.visiblePageId = pageId;
+    })();
+    this.showPromise = showing;
+    try {
+      await showing;
+    } finally {
+      if (this.showPromise === showing) this.showPromise = null;
     }
-    this.visiblePageId = pageId;
   }
 
   async hideAll() {
@@ -241,7 +246,9 @@ class BrowserWebviewHost {
   async discard(pageIds: string[]) {
     for (const pageId of pageIds) {
       await this.pendingCreates.get(pageId);
+      await this.pendingBounds.get(pageId)?.promise;
       this.lastBounds.delete(pageId);
+      this.pendingBounds.delete(pageId);
       await api().browserClosePage?.({ pageId });
     }
     if (pageIds.includes(this.visiblePageId ?? '')) this.visiblePageId = null;
@@ -267,8 +274,10 @@ class BrowserWebviewHost {
     await this.suppress();
     const live = browserSessionStore.livePageIds();
     await Promise.all(this.pendingCreates.values());
+    await Promise.all([...this.pendingBounds.values()].map((operation) => operation.promise));
     await api().browserDiscardAll?.();
     this.lastBounds.clear();
+    this.pendingBounds.clear();
     this.visiblePageId = null;
     browserSessionStore.markDiscarded(live);
   }
@@ -409,8 +418,6 @@ class BrowserWebviewHost {
   }
 
   resetForTests() {
-    if (this.frame != null) cancelAnimationFrame(this.frame);
-    this.frame = null;
     this.overlayObserver?.disconnect();
     this.overlayObserver = null;
     this.overlayResizeObserver?.disconnect();
@@ -422,7 +429,9 @@ class BrowserWebviewHost {
     this.lastBounds.clear();
     this.pendingCreates.clear();
     this.pendingNavigations.clear();
+    this.pendingBounds.clear();
     this.hidePromise = null;
+    this.showPromise = null;
     this.visiblePageId = null;
     this.overlayOpen = false;
     this.visibilityListener = null;
@@ -448,8 +457,8 @@ class BrowserWebviewHost {
         browserSessionStore.markLive(pageId, true);
         browserSessionStore.markLoading(pageId, url !== 'about:blank');
         const latest = this.lastBounds.get(pageId);
-        if (latest) {
-          await api().browserSetBounds?.({ pageId, bounds: latest });
+        if (latest && !this.suppressed) {
+          await this.commitBounds(pageId, latest);
         }
       } catch (error) {
         if (browserSessionStore.page(pageId)) {
@@ -463,6 +472,43 @@ class BrowserWebviewHost {
       await create;
     } finally {
       if (this.pendingCreates.get(pageId) === create) this.pendingCreates.delete(pageId);
+    }
+  }
+
+  private commitBounds(pageId: string, bounds: BrowserBounds) {
+    const target = roundBounds(bounds);
+    const pending = this.pendingBounds.get(pageId);
+    if (pending) {
+      pending.queued = target;
+      return pending.promise;
+    }
+    const operation = {
+      target,
+      queued: null as BrowserBounds | null,
+      promise: Promise.resolve(),
+    };
+    operation.promise = this.runBoundsQueue(pageId, operation);
+    this.pendingBounds.set(pageId, operation);
+    return operation.promise;
+  }
+
+  private async runBoundsQueue(
+    pageId: string,
+    operation: { target: BrowserBounds; queued: BrowserBounds | null; promise: Promise<void> },
+  ) {
+    try {
+      let target: BrowserBounds | null = operation.target;
+      while (target) {
+        operation.target = target;
+        if (!this.suppressed) {
+          await api().browserSetBounds?.({ pageId, bounds: target });
+        }
+        const queued = operation.queued;
+        operation.queued = null;
+        target = queued && !boundsEqual(queued, target) ? queued : null;
+      }
+    } finally {
+      if (this.pendingBounds.get(pageId) === operation) this.pendingBounds.delete(pageId);
     }
   }
 

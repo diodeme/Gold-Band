@@ -157,6 +157,11 @@ describe('Agent management input mapping', () => {
     expect(i18n.t('agentManagement.agentId', { lng: 'zh-CN' })).toBe('Agent ID');
     expect(i18n.t('agentManagement.agentIdDescription', { lng: 'zh-CN' })).toContain('创建后不可修改');
     expect(i18n.exists('agentManagement.systemPromptSupport', { lng: 'zh-CN' })).toBe(false);
+    expect(i18n.t('errors.acp.adapter-exited', { lng: 'zh-CN', method: 'initialize' })).not.toContain(
+      'ACP adapter transport interrupted',
+    );
+    expect(i18n.t('errors.acp.adapter-exited-with-code', { lng: 'zh-CN', method: 'initialize', exitCode: 1 }))
+      .toContain('退出码 1');
   });
 
   it('keeps custom Agent IDs editable independently from Catalog ID text', () => {

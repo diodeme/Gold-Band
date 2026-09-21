@@ -413,6 +413,16 @@ fn is_execution_option(key: &str) -> bool {
             | "session_mode"
             | "configOptions"
             | "config_options"
+            | "bootstrapConfigOptions"
+            | "bootstrap_config_options"
+            | "acceptanceConfigOptions"
+            | "acceptance_config_options"
+            | "modelBoundOverrides"
+            | "model_bound_overrides"
+            | "bootstrapModelBoundOverrides"
+            | "bootstrap_model_bound_overrides"
+            | "acceptanceModelBoundOverrides"
+            | "acceptance_model_bound_overrides"
             | "acpOptions"
             | "acp_options"
             | "executionConfig"
@@ -561,6 +571,66 @@ mod tests {
             content_fingerprint(&first).unwrap(),
             content_fingerprint(&second).unwrap()
         );
+    }
+
+    #[test]
+    fn ai_dynamic_execution_options_do_not_change_fingerprint() {
+        fn authoring(effort: &str, remembered: &str) -> Value {
+            serde_json::json!({
+                "workflow": {
+                    "name": "w",
+                    "entry": "dyn",
+                    "nodes": [{
+                        "type": "ai_dynamic",
+                        "id": "dyn",
+                        "agentStrategy": {
+                            "kind": "dynamic",
+                            "provider": "cursor-acp",
+                            "bootstrapModel": "grok-4.6",
+                            "bootstrapConfigOptions": { "effort": effort },
+                            "bootstrapModelBoundOverrides": { "grok-4.6": { "effort": remembered } },
+                            "acceptanceModel": "gpt-5-mini",
+                            "acceptanceConfigOptions": { "effort": effort },
+                            "acceptanceModelBoundOverrides": { "gpt-5-mini": { "effort": remembered } },
+                            "availableAgents": [{
+                                "provider": "cursor-acp",
+                                "model": "grok-4.6",
+                                "configOptions": { "effort": effort },
+                                "modelBoundOverrides": { "grok-4.6": { "effort": remembered } }
+                            }]
+                        },
+                        "configOptions": { "effort": effort },
+                        "modelBoundOverrides": { "grok-4.6": { "effort": remembered } }
+                    }],
+                    "edges": []
+                },
+                "modelBindings": { "definitionRevision": "", "bindings": [] }
+            })
+        }
+
+        let first = ScheduledTaskContentInput::workflow(
+            "inspect",
+            Vec::<String>::new(),
+            "workspace-a",
+            authoring("high", "extra-high"),
+        );
+        let second = ScheduledTaskContentInput::workflow(
+            "inspect",
+            Vec::<String>::new(),
+            "workspace-a",
+            authoring("low", "high"),
+        );
+        assert_eq!(
+            content_fingerprint(&first).unwrap(),
+            content_fingerprint(&second).unwrap()
+        );
+        let canonical = canonical_content_json(&first).to_string();
+        for excluded in ["extra-high", "bootstrapConfigOptions", "modelBoundOverrides"] {
+            assert!(
+                !canonical.contains(excluded),
+                "canonical identity leaked {excluded}"
+            );
+        }
     }
 
     #[test]

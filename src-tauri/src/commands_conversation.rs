@@ -1420,6 +1420,7 @@ pub fn get_conversation_run_mode(
                         permission_mode: config.permission_mode.clone(),
                         auto_accept: config.auto_accept,
                         config_options: config.config_options.clone(),
+                        model_bound_overrides: config.model_bound_overrides.clone(),
                     }
                 }),
                 direct_preferences: entry
@@ -1434,6 +1435,7 @@ pub fn get_conversation_run_mode(
                                 permission_mode: config.permission_mode.clone(),
                                 auto_accept: config.auto_accept,
                                 config_options: config.config_options.clone(),
+                                model_bound_overrides: config.model_bound_overrides.clone(),
                             },
                         )
                     })
@@ -1445,12 +1447,15 @@ pub fn get_conversation_run_mode(
                         bootstrap_agent_type: cfg.bootstrap_agent_type.clone(),
                         bootstrap_model_id: cfg.bootstrap_model_id.clone(),
                         bootstrap_config_options: cfg.bootstrap_config_options.clone(),
+                        bootstrap_model_bound_overrides: cfg.bootstrap_model_bound_overrides.clone(),
                         acceptance_model_id: cfg.acceptance_model_id.clone(),
                         acceptance_config_options: cfg.acceptance_config_options.clone(),
+                        acceptance_model_bound_overrides: cfg.acceptance_model_bound_overrides.clone(),
                         model_id: cfg.model_id.clone(),
                         permission_mode: cfg.permission_mode.clone(),
                         auto_accept: cfg.auto_accept,
                         config_options: cfg.config_options.clone(),
+                        model_bound_overrides: cfg.model_bound_overrides.clone(),
                         available_agents: cfg.available_agents.as_ref().map(|agents| {
                             agents
                                 .iter()
@@ -1461,6 +1466,7 @@ pub fn get_conversation_run_mode(
                                         permission_mode: agent.permission_mode.clone(),
                                         auto_accept: agent.auto_accept,
                                         config_options: agent.config_options.clone(),
+                                        model_bound_overrides: agent.model_bound_overrides.clone(),
                                     }
                                 })
                                 .collect()
@@ -1529,6 +1535,7 @@ pub fn save_conversation_run_mode(
                         permission_mode: config.permission_mode,
                         auto_accept: config.auto_accept,
                         config_options: config.config_options,
+                        model_bound_overrides: config.model_bound_overrides,
                     }),
                 direct_preferences: settings
                     .direct_preferences
@@ -1542,22 +1549,26 @@ pub fn save_conversation_run_mode(
                                 permission_mode: config.permission_mode,
                                 auto_accept: config.auto_accept,
                                 config_options: config.config_options,
+                                model_bound_overrides: config.model_bound_overrides,
                             },
                         )
                     })
                     .collect(),
-                auto_config: settings.auto_config.map(|cfg| ConversationAutoConfig {
+                    auto_config: settings.auto_config.map(|cfg| ConversationAutoConfig {
                     agent_strategy: cfg.agent_strategy,
                     agent_type: cfg.agent_type,
                     bootstrap_agent_type: cfg.bootstrap_agent_type,
                     bootstrap_model_id: cfg.bootstrap_model_id,
                     bootstrap_config_options: cfg.bootstrap_config_options,
+                    bootstrap_model_bound_overrides: cfg.bootstrap_model_bound_overrides,
                     acceptance_model_id: cfg.acceptance_model_id,
                     acceptance_config_options: cfg.acceptance_config_options,
+                    acceptance_model_bound_overrides: cfg.acceptance_model_bound_overrides,
                     model_id: cfg.model_id,
                     permission_mode: cfg.permission_mode,
                     auto_accept: cfg.auto_accept,
                     config_options: cfg.config_options,
+                    model_bound_overrides: cfg.model_bound_overrides,
                     available_agents: cfg.available_agents.map(|agents| {
                         agents
                             .into_iter()
@@ -1567,6 +1578,7 @@ pub fn save_conversation_run_mode(
                                 permission_mode: agent.permission_mode,
                                 auto_accept: agent.auto_accept,
                                 config_options: agent.config_options,
+                                model_bound_overrides: agent.model_bound_overrides,
                             })
                             .collect()
                     }),

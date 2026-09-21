@@ -2,7 +2,7 @@ import type { AgentRegistryVm, ManagedAgentVm } from '@/types';
 
 function configuration(agent: ManagedAgentVm) {
   const { diagnostic: _diagnostic, supportedModes: _modes, supportedModels: _models,
-    configOptions: _options, mcpHttpSupported: _http, mcpSseSupported: _sse, ...config } = agent;
+    configOptions: _options, modelBoundCatalogs: _catalogs, mcpHttpSupported: _http, mcpSseSupported: _sse, ...config } = agent;
   return JSON.stringify(config);
 }
 

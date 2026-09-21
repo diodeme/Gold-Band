@@ -118,4 +118,32 @@ describe('personal analytics preferences', () => {
     };
     expect(Object.keys(persisted.selectionByAgent ?? {})).toHaveLength(32);
   });
+
+  it('keeps thought level when the remembered model is not the catalog current model', () => {
+    const storage = new MemoryStorage();
+    rememberPersonalAnalyticsSelection({
+      agentType: 'agent-a',
+      modelId: 'model-a-deep',
+      thoughtLevelOptionId: 'reasoning_effort',
+      thoughtLevelValue: 'high',
+    }, storage);
+
+    expect(resolvePersonalAnalyticsSelection([{
+      ...agents[0],
+      configOptions: [
+        {
+          id: 'model',
+          category: 'model',
+          currentValue: 'model-a',
+          options: [{ value: 'model-a' }, { value: 'model-a-deep' }],
+        },
+        ...agents[0].configOptions,
+      ],
+    }], 'agent-a', storage)).toEqual({
+      agentType: 'agent-a',
+      modelId: 'model-a-deep',
+      thoughtLevelOptionId: 'reasoning_effort',
+      thoughtLevelValue: 'high',
+    });
+  });
 });

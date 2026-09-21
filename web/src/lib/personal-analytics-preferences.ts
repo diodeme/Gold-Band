@@ -26,6 +26,7 @@ interface AgentCapability {
   configOptions?: ReadonlyArray<{
     id: string;
     category?: string | null;
+    currentValue?: string | null;
     options: ReadonlyArray<{ value: string }>;
   }> | null;
 }

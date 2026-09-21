@@ -62,7 +62,7 @@ pub fn resolved_child_path(configured_path: Option<&OsStr>) -> Option<OsString> 
     #[cfg(not(windows))]
     let suggested_dirs = suggested_unix_path_dirs();
     #[cfg(windows)]
-    let suggested_dirs: Vec<PathBuf> = Vec::new();
+    let suggested_dirs = suggested_windows_path_dirs();
 
     resolved_child_path_from_sources(
         configured_path,
@@ -236,11 +236,42 @@ fn nvm_bin_dirs(home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-#[cfg(not(windows))]
 fn push_dir_if_exists(dirs: &mut Vec<PathBuf>, dir: PathBuf) {
     if dir.is_dir() && !dirs.iter().any(|existing| existing == &dir) {
         dirs.push(dir);
     }
+}
+
+#[cfg(windows)]
+fn suggested_windows_path_dirs() -> Vec<PathBuf> {
+    let program_files = std::env::var_os("ProgramFiles").map(PathBuf::from);
+    let program_files_x86 = std::env::var_os("ProgramFiles(x86)").map(PathBuf::from);
+    let local_app_data = std::env::var_os("LocalAppData")
+        .map(PathBuf::from)
+        .or_else(dirs::data_local_dir);
+    suggested_windows_path_dirs_from(
+        program_files.as_deref(),
+        program_files_x86.as_deref(),
+        local_app_data.as_deref(),
+    )
+}
+
+fn suggested_windows_path_dirs_from(
+    program_files: Option<&Path>,
+    program_files_x86: Option<&Path>,
+    local_app_data: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(root) = program_files {
+        push_dir_if_exists(&mut dirs, root.join("Git").join("cmd"));
+    }
+    if let Some(root) = program_files_x86 {
+        push_dir_if_exists(&mut dirs, root.join("Git").join("cmd"));
+    }
+    if let Some(root) = local_app_data {
+        push_dir_if_exists(&mut dirs, root.join("Programs").join("Git").join("cmd"));
+    }
+    dirs
 }
 
 #[cfg(unix)]
@@ -394,7 +425,7 @@ pub fn find_executable_in_paths(name: &str, path_var: Option<&OsStr>) -> Option<
         #[cfg(windows)]
         {
             for candidate in windows_executable_candidates(&dir, name) {
-                if candidate.is_file() {
+                if is_usable_executable(&candidate) {
                     return Some(candidate);
                 }
             }
@@ -402,12 +433,26 @@ pub fn find_executable_in_paths(name: &str, path_var: Option<&OsStr>) -> Option<
         #[cfg(not(windows))]
         {
             let candidate = dir.join(name);
-            if candidate.is_file() {
+            if is_usable_executable(&candidate) {
                 return Some(candidate);
             }
         }
     }
     None
+}
+
+fn is_usable_executable(path: &Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(windows)]
+    if metadata.len() == 0 {
+        return false;
+    }
+    true
 }
 
 #[cfg(windows)]
@@ -778,6 +823,53 @@ mod tests {
         }
     }
 
+    #[test]
+    fn windows_suggested_git_cmd_dirs_are_appended_when_present() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let temp = tempdir().unwrap();
+        let program_files = temp.path().join("Program Files");
+        let git_cmd = program_files.join("Git").join("cmd");
+        fs::create_dir_all(&git_cmd).unwrap();
+        let local_app_data = temp.path().join("Local");
+        fs::create_dir_all(local_app_data.join("Programs").join("Git").join("cmd")).unwrap();
+
+        let dirs = super::suggested_windows_path_dirs_from(
+            Some(program_files.as_path()),
+            None,
+            Some(local_app_data.as_path()),
+        );
+
+        assert_eq!(
+            dirs,
+            vec![
+                git_cmd,
+                local_app_data.join("Programs").join("Git").join("cmd"),
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_path_lookup_skips_empty_app_execution_alias() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let temp = tempdir().unwrap();
+        let alias_dir = temp.path().join("WindowsApps");
+        let git_cmd = temp.path().join("Git").join("cmd");
+        fs::create_dir_all(&alias_dir).unwrap();
+        fs::create_dir_all(&git_cmd).unwrap();
+        fs::write(alias_dir.join("git.exe"), "").unwrap();
+        fs::write(git_cmd.join("git.exe"), "git").unwrap();
+        let path = std::env::join_paths([&alias_dir, &git_cmd]).unwrap();
+
+        let resolved = super::find_executable_in_paths("git", Some(path.as_os_str()));
+
+        assert_eq!(resolved, Some(git_cmd.join("git.exe")));
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_path_lookup_prefers_native_binary_over_npm_shims() {
@@ -787,7 +879,7 @@ mod tests {
         let temp = tempdir().unwrap();
         fs::write(temp.path().join("opencode"), "#!/bin/sh\n").unwrap();
         fs::write(temp.path().join("opencode.cmd"), "@ECHO off\r\n").unwrap();
-        fs::write(temp.path().join("opencode.exe"), "").unwrap();
+        fs::write(temp.path().join("opencode.exe"), "native-binary").unwrap();
         let path = std::env::join_paths([temp.path()]).unwrap();
 
         let resolved = super::find_executable_in_paths("opencode", Some(path.as_os_str()));

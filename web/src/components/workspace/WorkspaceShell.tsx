@@ -10,7 +10,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/componen
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
-import { overlayOwnerAttribute, rightWorkspaceOverlayOwner } from '@/lib/portal-container';
+import { overlayOwnerAttribute, rightWorkspaceOverlayOwner, CollisionBoundaryContext, conversationOverlayCollisionBoundary } from '@/lib/portal-container';
 import {
   isWorkspaceLayoutDiagnosticsEnabled,
   installWorkspaceLayoutDiagnosticShortcut,
@@ -326,6 +326,7 @@ function WorkspaceShellLayout({
     WORKSPACE_SIDEBAR_MAX_WIDTH,
   );
   const shellRef = useRef<HTMLDivElement>(null);
+  const [conversationCollisionBoundary, setConversationCollisionBoundary] = useState<HTMLElement | null>(null);
   const panelGroupElementRef = useRef<HTMLDivElement>(null);
   const panelGroupRef = useRef<GroupImperativeHandle | null>(null);
   const compactSheetContentRef = useRef<HTMLDivElement>(null);
@@ -780,8 +781,15 @@ function WorkspaceShellLayout({
           )}
           groupResizeBehavior={autoCollapse.rightOwnsWindowResize ? 'preserve-pixel-size' : 'preserve-relative-size'}
         >
-          <main data-theme-wallpaper-slot="workspace" className={cn('relative flex h-full min-w-0 flex-col overflow-hidden border-t border-sidebar-border bg-gold-workspace', showLeft && 'rounded-tl-2xl border-l')}>
-            {children}
+          <main
+            ref={setConversationCollisionBoundary}
+            data-overlay-collision-boundary={conversationOverlayCollisionBoundary}
+            data-theme-wallpaper-slot="workspace"
+            className={cn('relative flex h-full min-w-0 flex-col overflow-hidden border-t border-sidebar-border bg-gold-workspace', showLeft && 'rounded-tl-2xl border-l')}
+          >
+            <CollisionBoundaryContext.Provider value={conversationCollisionBoundary}>
+              {children}
+            </CollisionBoundaryContext.Provider>
           </main>
         </ResizablePanel>
         <ResizableHandle

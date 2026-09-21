@@ -29,15 +29,55 @@ vi.mock('@/api/client', () => ({
 
 import { browserSessionStore } from '@/components/workspace/browser/browser-session-store';
 import { browserWebviewHost } from '@/components/workspace/browser/browser-webview-host';
-import { overlayOwnerAttribute, rightWorkspaceOverlayOwner } from '@/lib/portal-container';
+import {
+  conversationOverlayCollisionBoundary,
+  overlayCollisionBoundaryAttribute,
+  overlayOwnerAttribute,
+  rightWorkspaceOverlayOwner,
+} from '@/lib/portal-container';
 
 const bounds = { x: 20, y: 40, width: 640, height: 480 };
+const rightPaneBounds = { x: 800, y: 80, width: 480, height: 640 };
+const middleColumnMenuRect = { x: 240, y: 180, width: 280, height: 360 };
+const overlappingMenuRect = { x: 760, y: 120, width: 240, height: 320 };
 
 function livePage(url = 'about:blank') {
   const pageId = url === 'about:blank'
     ? browserSessionStore.addBlankPage()
     : browserSessionStore.openUrl(url);
   return browserSessionStore.page(pageId)!;
+}
+
+function stubRect(element: Element, rect: { x: number; y: number; width: number; height: number }) {
+  Object.defineProperty(element, 'getBoundingClientRect', {
+    configurable: true,
+    value: () => ({
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+      top: rect.y,
+      left: rect.x,
+      right: rect.x + rect.width,
+      bottom: rect.y + rect.height,
+      toJSON() { return {}; },
+    }),
+  });
+}
+
+async function showNativeViewport(rect = rightPaneBounds) {
+  const page = livePage('https://example.com');
+  browserSessionStore.markLive(page.pageId, true);
+  await browserWebviewHost.ensurePage(page, rect, true);
+  return page;
+}
+
+function mountOverlay(html: string, rect: { x: number; y: number; width: number; height: number }, selector: string) {
+  document.body.insertAdjacentHTML('beforeend', html);
+  const element = document.querySelector(selector);
+  if (!element) throw new Error(`missing overlay ${selector}`);
+  stubRect(element, rect);
+  return element;
 }
 
 describe('browser webview host lifecycle', () => {
@@ -75,25 +115,93 @@ describe('browser webview host lifecycle', () => {
     expect(browserSessionStore.page(browserSessionStore.snapshot().activePageId!)?.url).toBe('https://github.com/');
   });
 
-  it('does not treat a closed menu as a blocking overlay', () => {
-    document.body.innerHTML = '<div data-slot="dropdown-menu-content" data-state="closed"></div>';
+  it('does not treat a closed menu as a blocking overlay', async () => {
+    await showNativeViewport();
+    mountOverlay(
+      '<div data-slot="dropdown-menu-content-positioner" data-state="closed"><div data-slot="dropdown-menu-content"></div></div>',
+      overlappingMenuRect,
+      '[data-slot="dropdown-menu-content-positioner"]',
+    );
     expect(browserWebviewHost.hasBlockingOverlay()).toBe(false);
-    document.body.innerHTML = '<div data-slot="dropdown-menu-content" data-state="open"></div>';
+  });
+
+  it('does not hide the native page for an open menu that stays in the conversation column', async () => {
+    await showNativeViewport();
+    mountOverlay(
+      '<div data-slot="dropdown-menu-content-positioner" data-state="open"><div data-slot="dropdown-menu-content"></div></div>',
+      middleColumnMenuRect,
+      '[data-slot="dropdown-menu-content-positioner"]',
+    );
+    expect(browserWebviewHost.hasBlockingOverlay()).toBe(false);
+  });
+
+  it('hides the native page when an open menu intersects the page viewport', async () => {
+    await showNativeViewport();
+    mountOverlay(
+      '<div data-slot="dropdown-menu-content-positioner" data-state="open"><div data-slot="dropdown-menu-content"></div></div>',
+      overlappingMenuRect,
+      '[data-slot="dropdown-menu-content-positioner"]',
+    );
     expect(browserWebviewHost.hasBlockingOverlay()).toBe(true);
   });
 
-  it('does not treat the compact right-workspace sheet overlay as blocking', () => {
-    document.body.innerHTML = `
+  it('does not hide for a conversation-constrained menu whose opening box still intersects', async () => {
+    await showNativeViewport();
+    api.browserHideAll.mockClear();
+    mountOverlay(
+      `<div data-slot="popover-content" data-state="open" ${overlayCollisionBoundaryAttribute}="${conversationOverlayCollisionBoundary}"></div>`,
+      overlappingMenuRect,
+      '[data-slot="popover-content"]',
+    );
+    expect(browserWebviewHost.hasBlockingOverlay()).toBe(false);
+    expect(api.browserHideAll).not.toHaveBeenCalled();
+  });
+
+  it('treats a conversation-column select as blocking only when it intersects the page viewport', async () => {
+    await showNativeViewport();
+    mountOverlay(
+      '<div data-slot="select-content" data-state="open"></div>',
+      middleColumnMenuRect,
+      '[data-slot="select-content"]',
+    );
+    expect(browserWebviewHost.hasBlockingOverlay()).toBe(false);
+
+    document.body.replaceChildren();
+    await showNativeViewport();
+    mountOverlay(
+      '<div data-slot="select-content" data-state="open"></div>',
+      overlappingMenuRect,
+      '[data-slot="select-content"]',
+    );
+    expect(browserWebviewHost.hasBlockingOverlay()).toBe(true);
+  });
+
+  it('hides the native page when a dialog overlay covers the page viewport', async () => {
+    await showNativeViewport();
+    mountOverlay(
+      '<div data-slot="dialog-overlay" data-state="open"></div>',
+      { x: 0, y: 0, width: 1280, height: 800 },
+      '[data-slot="dialog-overlay"]',
+    );
+    expect(browserWebviewHost.hasBlockingOverlay()).toBe(true);
+  });
+
+  it('does not treat the compact right-workspace sheet overlay as blocking', async () => {
+    await showNativeViewport();
+    document.body.insertAdjacentHTML('beforeend', `
       <div id="gold-band-overlay-portal-host">
         <div data-slot="sheet-overlay" data-state="open" ${overlayOwnerAttribute}="${rightWorkspaceOverlayOwner}"></div>
         <div data-slot="sheet-content" data-state="open">
           <div data-right-workspace-presentation="sheet"></div>
         </div>
       </div>
-    `;
+    `);
+    const overlay = document.querySelector('[data-slot="sheet-overlay"]');
+    if (!overlay) throw new Error('missing sheet overlay');
+    stubRect(overlay, { x: 0, y: 0, width: 1280, height: 800 });
     expect(browserWebviewHost.hasBlockingOverlay()).toBe(false);
 
-    document.querySelector('[data-slot="sheet-overlay"]')?.removeAttribute(overlayOwnerAttribute);
+    overlay.removeAttribute(overlayOwnerAttribute);
     expect(browserWebviewHost.hasBlockingOverlay()).toBe(true);
   });
 

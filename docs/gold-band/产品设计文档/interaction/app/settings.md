@@ -271,4 +271,5 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 ## 12. IM 远程干预与通知
 
 - 设置页「通用」是 IM 接入、私聊绑定和六类通知偏好的唯一可见入口；权威事实仍是后端 IM settings 与 connection generation。
+- 企业微信标题行只展示平台名和状态徽章，不展示“安装级目标”等实现注释；未接入时的操作说明使用“尚未接入企业微信…”。
 - 2026-09-17 起 IM 设置接入与定时任务相同的前端 stale-while-revalidate 缓存：App 启动后台预取一次填充模块级缓存，进入设置页与在「通用」标签页间切换时命中缓存立即渲染，不再出现「加载中…」闪烁。缓存命中后在新鲜期内不重复请求；过期后后台静默刷新，保存/启停/扫码/删除成功后写回缓存，connection snapshot 按 generation 单调合入。该缓存只是展示投影，不并入 `AppBootstrapVm`，也不是第二事实源。迟到 fetch 不得覆盖更新的保存结果，也不得用更低 generation 覆盖 live snapshot。已有可展示数据时刷新不得退回「加载中…」。

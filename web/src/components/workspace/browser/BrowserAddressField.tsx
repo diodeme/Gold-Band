@@ -37,9 +37,9 @@ export function BrowserAddressField({
   const inputRef = useRef<HTMLInputElement>(null);
   const typedRef = useRef(typed);
   const nativeOverlay = isTauriRuntime();
-  // Revision of the projection the overlay is currently displaying. It intentionally
-  // survives a hide: clicking the overlay blurs the address input and hides the overlay
-  // first, and the click event that follows still carries the displayed revision.
+  // Revision of the projection the overlay is currently displaying. Overlay clicks blur
+  // the address input first; the displayed revision still identifies that click. choose
+  // navigates, remove stays in the suggestion session, and hide is not part of remove.
   const lastVisibleOverlayRevisionRef = useRef(0);
   const lastOverlayProjectionRef = useRef<string | null>(null);
   const [open, setOpen] = useState(false);
@@ -100,8 +100,15 @@ export function BrowserAddressField({
   }, [closeList, onSubmit]);
 
   const removeVisit = useCallback((url: string) => {
-    void browserHistoryStore.remove(url);
-  }, []);
+    // Deleting a visit stays inside the suggestion session. Restore editing so page
+    // URL events cannot overwrite the draft, then return focus after the write so a
+    // concurrent history refresh cannot resurrect the deleted row.
+    setOpen(true);
+    onEditingChange?.(true);
+    void browserHistoryStore.remove(url).finally(() => {
+      inputRef.current?.focus();
+    });
+  }, [onEditingChange]);
 
   const overlayItems = useMemo(() => browserAddressSuggestionOverlayItems(
     suggestions,
@@ -186,7 +193,12 @@ export function BrowserAddressField({
     let disposed = false;
     let unlisten: (() => void) | null = null;
     void getRuntimeApi().subscribeBrowserAddressSuggestionActions?.((event) => {
-    if (disposed || event.revision !== lastVisibleOverlayRevisionRef.current) return;
+      if (disposed || event.revision !== lastVisibleOverlayRevisionRef.current) return;
+      if (event.kind === 'dismiss') {
+        onEditingChange?.(false);
+        closeList();
+        return;
+      }
       const suggestion = suggestions.find((candidate) => browserAddressSuggestionKey(candidate) === event.key);
       if (!suggestion) return;
       if (event.kind === 'remove' && suggestion.kind === 'visit') {
@@ -202,7 +214,19 @@ export function BrowserAddressField({
       disposed = true;
       unlisten?.();
     };
-  }, [choose, nativeOverlay, removeVisit, suggestions]);
+  }, [choose, closeList, nativeOverlay, onEditingChange, removeVisit, suggestions]);
+
+  useEffect(() => {
+    if (!nativeOverlay || !open) return;
+    const onPointerDown = (event: Event) => {
+      const input = inputRef.current;
+      if (input && event.target instanceof Node && input.contains(event.target)) return;
+      onEditingChange?.(false);
+      closeList();
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [closeList, nativeOverlay, onEditingChange, open]);
 
   useEffect(() => () => {
     if (!nativeOverlay) return;
@@ -227,6 +251,9 @@ export function BrowserAddressField({
           setOpen(true);
         }}
         onBlur={() => {
+          // Native overlay clicks move focus to another webview. Closing here hides the
+          // list and the later remove/choose then shows it again, which is the flicker.
+          if (nativeOverlay && open) return;
           onEditingChange?.(false);
           closeList();
         }}

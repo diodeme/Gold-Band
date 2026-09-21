@@ -27,7 +27,7 @@ GitHub capability、PR/Issue 查询和详情同样独立于 React 组件生命�
 
 ## 3. 信息架构
 
-源码管理入口先读取项目级 Git capability，再决定是否加载 snapshot/history。Gold Band 所有 Git 相关能力统一要求系统 Git `2.36.0+`，该门槛不阻断应用启动，也不按功能拆分版本矩阵。`not-installed` 显示系统 Git 未安装与官方下载入口；`version-unsupported` 展示已安装版本、最低版本、Git 下载入口和重新检测，不得伪装成“无分支”或普通仓库读取失败；`version-unavailable` 表示 Git 可执行文件存在但版本无法可靠识别，与未安装和版本过低严格区分。只有版本 capability 通过后才探测当前 repository、HEAD 与 worktree。`repository-required` 明确显示当前文件夹不是 Git 仓库，并提供“初始化仓库”；初始化只执行 `git init`，不自动暂存或提交目录。初始化后的 unborn repository 是可操作的正常状态：进入“更改”区展示未跟踪文件，历史返回空页，用户自行选择文件并创建首次 Commit。Git porcelain v2 的 `branch.oid (initial)` 必须在领域解析入口规范化为缺失 HEAD，snapshot、history、revision 与 UI 不得各自识别 Git sentinel。`worktree-required / repository-unavailable` 显示各自的恢复建议；只有 capability 可用后完整 snapshot/history 的真实读取失败才进入结构化错误与重试态，不得再把所有情况折叠成“无法读取当前仓库”。探测和初始化必须放到 blocking task，不阻塞桌面 IPC 事件线程。
+源码管理入口先读取项目级 Git capability，再决定是否加载 snapshot/history。Gold Band 所有 Git 相关能力统一要求系统 Git `2.36.0+`，该门槛不阻断应用启动，也不按功能拆分版本矩阵。系统 Git 可执行文件通过桌面 PATH 适配层解析（进程 PATH、Windows 用户/系统 PATH、常见 `Git\\cmd` 安装位置），与 ACP/`gh` 共用同一查找规则，并跳过 Windows App Execution Alias 空文件。`git --version` 按行识别 `git version …`（stdout 优先，其次 stderr），不要求整段输出以前缀开头，也不因非 0 退出码丢掉已解析版本。`not-installed` 显示系统 Git 未安装与官方下载入口；`version-unsupported` 展示已安装版本、最低版本、Git 下载入口和重新检测，不得伪装成“无分支”或普通仓库读取失败；`version-unavailable` 表示已找到 Git 可执行文件但没有任何可解析版本行，与未安装和版本过低严格区分，对客文案不得再写成需要升级到 `2.36.0`。只有版本 capability 通过后才探测当前 repository、HEAD 与 worktree。`repository-required` 明确显示当前文件夹不是 Git 仓库，并提供“初始化仓库”；初始化只执行 `git init`，不自动暂存或提交目录。初始化后的 unborn repository 是可操作的正常状态：进入“更改”区展示未跟踪文件，历史返回空页，用户自行选择文件并创建首次 Commit。Git porcelain v2 的 `branch.oid (initial)` 必须在领域解析入口规范化为缺失 HEAD，snapshot、history、revision 与 UI 不得各自识别 Git sentinel。`worktree-required / repository-unavailable` 显示各自的恢复建议；只有 capability 可用后完整 snapshot/history 的真实读取失败才进入结构化错误与重试态，不得再把所有情况折叠成“无法读取当前仓库”。探测和初始化必须放到 blocking task，不阻塞桌面 IPC 事件线程。版本号不持久化；已解析的 Git 绝对路径仅在进程内复用，capability 重新检测会重新解析。
 
 快速会话选择新工作树但 repository、HEAD 或 worktree capability 未就绪时，阻塞对话框的恢复动作固定为“取消 / 重新检测 / 使用主工作区 / 打开源码管理”。“重新检测”和“使用主工作区”使用次按钮，“打开源码管理”是唯一主按钮；点击后通过当前会话作用域的右侧工作区命令，以 `projectId + main workspace` 打开或激活源码管理 Tab，并关闭对话框。若状态是 `version-unsupported / version-unavailable`，恢复动作改为“取消 / 重新检测 / 使用主工作区（或其他工作流）/ 打开 Git 下载页面”，Git 下载是唯一主按钮，不再把用户导向同样不可用的源码管理页。紧凑布局必须在 auto-collapse 收敛后自动展开右侧 Sheet，不能只创建隐藏 Tab。用户完成升级、首次提交或其他仓库配置后再显式重新检测。
 
@@ -70,7 +70,7 @@ Commit 列表与当前聚合文件列表是两个独立滚动域，按 repositor
 
 ## 4. Git 操作约束
 
-- 系统 Git CLI 是唯一读写后端。
+- 系统 Git CLI 是唯一读写后端；可执行文件通过桌面 PATH 适配层解析，与 ACP/`gh` 共用查找规则。
 - 前端只发送 tagged union，不允许发送任意命令或参数数组。
 - 用户写操作与 runtime checkpoint/worktree 共用 repository/workspace 协调锁。
 - commit 只提交 index，不自动 stage 未暂存文件。

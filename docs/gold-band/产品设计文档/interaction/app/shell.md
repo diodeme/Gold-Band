@@ -185,7 +185,7 @@ Agent 管理
 - Tauri 原生最小宽度随当前页面 profile 动态切换：会话与设置为 480px、上下文卡片为 520px、工作流画布为 640px。窗口约束同步必须按数值去重，相同宽高不得重复调用宿主 mutation；窗口最大化期间只记录最新待应用约束，不调用 `setMinSize/setSize`，避免 Windows TAO 在重检尺寸边界时退出最大化。用户恢复普通窗口后再应用最新约束，若恢复尺寸低于新页面下限才扩到下限。进入更窄页面只放宽约束，不主动缩小用户窗口；`shellMinWidth/shellMinHeight` 保护应用 chrome 的绝对下限；初始隐藏窗口必须完成当前页面约束和主题背景同步后再显示，页面快速切换与恢复后的 pending 应用必须进入同一串行生命周期，最终页面配置最后生效。
 - 紧凑 Sheet 复用 shadcn/Radix 的焦点陷阱与键盘可访问性，但打开后的初始焦点落在对话区容器，不落到唯一的关闭按钮。关闭按钮只使用 `focus-visible` 绘制键盘焦点环，不得使用 `data-state=open` 背景或普通 `focus` 环把鼠标打开后的自动焦点误呈现为选中态；键盘 Tab 进入关闭按钮时仍必须有可见焦点。
 - Windows 无边框窗口使用 WebView2 composition 路径承载连续边缘 resize：Tauri Window 在 Windows 平台启用透明控制器，但 `html/body/#root` 与应用壳始终绘制不透明主题 surface，不向用户呈现实际透明效果。宿主 Window 背景随主题同步，WebView 层保持 composition 模式，禁止为了遮盖黑带重新设为不透明控制器。
-- 主窗口初始隐藏；bootstrap、主题和宿主背景准备完成后由前端显式显示，避免 transparent composition 窗口在首帧 CSS 尚未就绪时闪现。窗口 decorations、title bar style 与 native shadow 的生命周期只由 Rust/Tauri 宿主配置管理，Web 层只同步主题背景并显示窗口，不具备运行时修改 decorations 的权限。Windows 自定义无边框模式按系统能力控制 native shadow：Win11 及更高版本开启，由 DWM 提供系统圆角与边界；Win10 关闭，避免 TAO `top=0 / left-right-bottom=frame_thickness` 的非对称 non-client frame，仅由应用内嵌边界补足可感知轮廓。关闭 Win10 shadow 不移除 `RESIZABLE/WS_SIZEBOX`，TAO 继续通过完整客户区边缘 hit-test 提供四边缩放；macOS 恢复 native decorations、shadow 与 traffic lights。
+- 主窗口初始隐藏；bootstrap、主题和宿主背景准备完成后由前端显式显示，避免 transparent composition 窗口在首帧 CSS 尚未就绪时闪现。窗口 decorations、title bar style 与 native shadow 的生命周期只由 Rust/Tauri 宿主配置管理，Web 层只同步主题背景并显示窗口，不具备运行时修改 decorations 的权限。Windows 自定义无边框模式按系统能力控制 native shadow：Win11 及更高版本开启，由 DWM 提供系统圆角与边界；Win10 关闭，避免 TAO `top=0 / left-right-bottom=frame_thickness` 的非对称 non-client frame，仅由应用内嵌边界补足可感知轮廓。关闭 Win10 shadow 不移除 `RESIZABLE/WS_SIZEBOX`。内置浏览器启用 Tauri `unstable` 后，主 WebView 以 `WindowChild` 创建，runtime 不会自动挂上 `TAURI_DRAG_RESIZE_WINDOW`；宿主必须在窗口就绪后重新断言 `resizable` 以挂上四边缩放 overlay，并在任何 child WebView `HWND_TOP` 之后把该 overlay 再抬到最前。Win11 仍可由 DWM 非客户区缩放；macOS 恢复 native decorations、shadow 与 traffic lights。
 - 上下文管理的角色卡片网格按列表容器实际宽度决定列数，而不是只依赖整窗 viewport：窄容器单列、中等容器双列、足够宽时三列。卡片底部操作区允许整组换行，系统显示缩放、字体增大或翻译文案变长时不得越过卡片边界或覆盖相邻卡片。
 
 ### 6.4 运行态生命周期
@@ -263,6 +263,7 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 2026-08-16：Gold Band 浅色主题的共享顶栏与侧栏统一使用 `#fafafa` sidebar surface，消除顶栏白色条带与导航区之间的色阶断层；深色 Gold Band 和技术中性主题维持各自已有声明。该视觉由主题 token/recipe 投影，禁止在共享 `AppTitleBar` 中按主题特判。
 - 2026-08-15：共享顶栏从 44px 收紧为 36px，品牌图标容器同步收紧为 24×36px，应用标题由 14px 提升为 16px，并使用独立 700 字重而不是全局映射为 520 的 `font-bold`；帮助入口为 28px 高，左右栏开关保持 28px，Windows/Linux 窗口控制保留既有横向点击宽度并填满顶栏高度。改动只调整共享 `AppTitleBar` 的静态布局 token，不改变拖拽区、平台控制策略和窗口生命周期。
 - 2026-08-20：用户反馈紧凑顶栏中的品牌标识视觉权重偏低。共享 `AppTitleBar` 的品牌图标容器由 24×36px 提升为 28×36px，标题、操作按钮、拖拽区和平台窗口控制策略保持不变；尺寸作为单一 layout token，由所有页面共同消费。
+- 2026-09-17 Windows 无边框边缘缩放：内置浏览器启用 `unstable` 后，主 WebView 以 `WindowChild` 创建，runtime 跳过 `TAURI_DRAG_RESIZE_WINDOW`。Win10 关闭 native shadow 后没有 DWM 外侧缩放框，冷启动即无法拖边；Win11 仍可由 DWM 非客户区缩放。宿主在窗口就绪后重新断言 `resizable` 挂上 Tauri overlay，并在 child WebView `HWND_TOP` 之后再把它抬到最前。不恢复 Win10 native shadow，也不改用 HTML 缩放手柄。
 
 ---
 

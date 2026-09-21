@@ -178,6 +178,8 @@ describe('IM settings production interaction', () => {
     expect(host.querySelector('fieldset')).toBeNull();
     expect(host.textContent).toContain('扫码接入');
     expect(host.textContent).not.toContain('保存通知设置');
+    expect(host.textContent).not.toContain('安装级目标');
+    expect(host.textContent).not.toContain('Installation-wide');
   });
 
   it('keeps a dirty notification draft across connection snapshots and can discard it', async () => {

@@ -746,7 +746,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 用户点击停止、provider cancel 或 prompt 失败都属于 turn 终态，必须结算已经收到的标准 diff。直接杀进程只能依赖已落盘 mutation journal，不能承诺生成尚未来得及写入的终态卡片。
 - shell/Bash 命令本身不是普通文件变化事实源。只有 provider 对该 tool call 返回标准 `content[type=diff]` 才能统计普通修改/删除；唯一例外是受控 `attachments/` 路径集合差分可确认“结束时新存在的节点附件”，但不据此推断已有附件修改或 workspace 文件变化。
 - 用户消息附件和 canonical artifact 保持各自消息归属，点击后打开右侧会话资源，不进入文件变化卡。Conversation 主 DTO 不再聚合当前 session 的 artifacts/attachments，composer 上方也不再显示独立资产展开栏。
-- 根会话和 Agent branch 按持久化 branch ownership 各自查询普通 changes。attempt 级新增附件只挂到 root change set；同一新增附件对应的 `Added` mutation 即使来自 Agent branch，也在该 branch finalize 中被同一 attachment delta 排除，避免跨卡重复。前端不根据路径或自然语言推断归属。
+- 根会话和 Agent branch 按持久化 branch ownership 各自查询普通 changes。`fileChangeSet` 指针事件必须写入 canonical `_meta.goldBandConversation.branchId`，使 persist 把它落到所属 branch timeline，而不是父会话。attempt 级新增附件只挂到 root change set；同一新增附件对应的 `Added` mutation 即使来自 Agent branch，也在该 branch finalize 中被同一 attachment delta 排除，避免跨卡重复。前端不根据路径或自然语言推断归属；当前视图 locator 与事件 owner branch 不一致时不渲染该卡。
 
 ## 2026-08-20 会话停止继续与 Timeline 运行态恢复
 
@@ -771,7 +771,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 
 - 已建立会话的根 composer 支持翻阅本会话已派发的用户原文；新会话首页、只读 Agent 分支与禁止输入状态不启用。作用域使用 project/task/run/round/node/attempt 及可选 outer node/attempt，切换作用域立即结束翻阅。
 - 普通输入与未接收提交取消后恢复的内容统一作为草稿，包含正文、引用、文件和图片。ArrowUp 从当前草稿进入最新一条；继续向上按时间倒序翻阅，最早一条再次向上循环到最新一条。ArrowDown 前往较新一条，在最新一条再次向下恢复进入翻阅前的完整草稿并退出。首次查询尚未返回时向下同样取消查询并保留草稿。只有一条时向上保持该条；没有历史时保持原草稿。
-- 单行原文允许直接上下翻阅；多行原文只在整个文本起点响应向上、终点响应向下，其余交给原生光标。选区、修饰键和输入法组合期间保留编辑语义。已展开的斜杠菜单优先消费按键；历史回填的斜杠文本不自动展开菜单或转换成命令标签。
+- 光标在第一视觉行时 ArrowUp 进入或继续向上翻阅；光标在最后视觉行时 ArrowDown 前往较新一条或恢复草稿。其余上/下键交给原生换行移动。硬换行不在首段或末段时不查询几何；只有首段/末段可能被软换行拆开时才测量一次光标行。空输入和未折行的短单行整段都是顶行，上键仍一次进入最新历史。进入历史条目时把光标放在该条末尾；ArrowDown 越过最新一条或 Escape 退出时恢复进入翻阅前的草稿选区。选区、修饰键和输入法组合期间保留编辑语义。已展开的斜杠菜单优先消费按键；历史回填的斜杠文本不自动展开菜单或转换成命令标签。
 - 翻阅仅在 composer 内投影历史文字，原草稿留在既有有界草稿 store；历史投影不展示或携带原草稿的附件、图片、引用。Escape 在翻阅或查询期间恢复完整草稿。编辑历史文字（含开始输入法组合）或发送历史时，将其采用为新的纯文字草稿并释放被替换草稿的预览资源；发送继续复用原提交入口和新 turn identity，失败恢复这份纯文字草稿。选择附件或添加引用作用于原草稿，实际上下文变化后退出翻阅；仅打开并取消文件选择、拖拽悬停不丢弃草稿。提交、外部草稿变更、输入禁用、切换会话和卸载取消迟到响应的写入资格，查询期间重复按键不排队。
 - 提交期间保留完整草稿快照，附件路径解析消费本次快照；快照只在匹配 prompt identity 的 canonical admission 出现后才释放附件预览资源。未接收提交失败（包括取消过程中的失败）通过同一草稿恢复接口回填，保留 File、图片预览 URL 和引用身份，不覆盖其间的新输入。命令返回 accepted 只表示后端已接纳，不等于消息已进入 transcript：admission 到达前用户点击停止，或 turn 在未 admission 时进入 failed / cancelled 终态（例如会话配置阻止派发），必须把完整草稿放回 composer 并移除对应 optimistic 气泡；turn 完成表示消息已被消费，只释放快照、不回填。已经 admission 的消息停止生成不自动回填。停止与提交响应先后顺序不得改变这一判断；快照未结算前随组件卸载释放预览资源，不形成无界缓存。
 - Timeline 仍为持久化事实源，不能从已加载的聊天窗口拼接历史。用户事件写入 `raw.originalUserText`，表明 content 来自独立 `display_text`；仅消费明确为 true、根分支、可见、非空的 goldBandPrompt。RawAgent 新会话首轮 RequirementTask 必须将原样 requirement 填入 display_text；运行时组装文本不作为原文。runtimeControl 是控制权转换元数据，可能附着在手动追问或“继续并发送”的真实输入上，不能仅凭该字段排除消息。无可靠来源的旧记录不猜测回填；未派发队列、提交前失败、provider 回显、隐藏修复与纯运行时提示词不纳入。相同文本的不同 promptId 保留，重试的相同身份去重。

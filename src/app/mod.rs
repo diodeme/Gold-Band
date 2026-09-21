@@ -1122,6 +1122,12 @@ pub enum RuntimeLifecycleEvent {
         /// terminal event carries the total count used by the desktop notification.
         batch_progress: AcpTurnBatchProgress,
         task_title: Option<String>,
+        /// Path to the turn's attempt directory (ACP session timeline lives
+        /// there — `acp.timeline.jsonl`). Mirrors `RunCompleted::attempt_dir`;
+        /// lets terminal subscribers (multica completion-output relay) read the
+        /// final agent reply without re-deriving paths from a different repo
+        /// root. Direct 后续追问不产生新的 RunCompleted，补发只能挂本事件。
+        attempt_dir: Option<String>,
     },
 }
 

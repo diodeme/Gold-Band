@@ -3362,6 +3362,7 @@ fn scheduled_create_input(
         scheduled_task_id: Some(definition.id.clone()),
         scheduled_content_fingerprint: Some(definition.content_fingerprint.clone()),
         workflow_authoring,
+        first_prompt_hidden_sections: None,
     })
 }
 
@@ -5608,6 +5609,7 @@ mod tests {
                 outcome: gold_band::app::AcpTurnOutcome::Failed,
                 batch_progress: gold_band::app::AcpTurnBatchProgress::terminal(1),
                 task_title: None,
+                attempt_dir: None,
             },
         )
         .unwrap();

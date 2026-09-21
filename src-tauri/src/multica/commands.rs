@@ -31,8 +31,8 @@ use crate::multica::local_skills::{
 };
 use crate::multica::state::{ActiveRemoteRun, SharedMulticaState};
 use crate::multica::vm::{
-    MulticaPullItemResultVm, MulticaPullReportVm, MulticaSkillListItemVm, RemoteConversationSidebarVm,
-    RemoteTaskVm,
+    MulticaPullItemResultVm, MulticaPullReportVm, MulticaSkillListItemVm,
+    RemoteConversationSidebarVm, RemoteTaskVm, remote_task_hidden_section,
 };
 use crate::remote::remote_task_source;
 use crate::state::DesktopState;
@@ -629,8 +629,11 @@ fn in_progress_target(issue_id: Option<&str>) -> Option<&str> {
 /// 与本地工作空间「+」号进入的是**同一创建链路**：解析 workspace 绑定目录 → 构造 workspace-bound App
 /// （注入与 `create_conversation_run` 同款的 ACP emitter，NodeCompleted/RunCompleted 流向前端）→
 /// `validate_conversation_create_vm` → **复用** `create_conversation_run_vm`（建工作流 + 建任务 +
-/// 写 conversation.json + 拷附件 + 启动 run）。远程任务预填的需求即 `input.requirement`，用户在 composer
-/// 已选好模型/模式（与本地完全一致）。
+/// 写 conversation.json + 拷附件 + 启动 run）。远程任务预填的需求即 `input.requirement`（由
+/// [`get_remote_task_requirement`] 组装为「DPMS 溯源块 + 上游交付说明块 + 需求正文」，用户发送前可核对
+/// 目标环境与父任务交付内容），用户在 composer 已选好模型/模式（与本地完全一致）。完成输出协议**不进
+/// composer**：claim 响应构建隐藏区段经 `input.first_prompt_hidden_sections` 随首条 prompt 隐式下发
+/// （改动四十八 + 二次修正 + 三次调整）。
 ///
 /// **claim-at-send**：发送即事务边界——先 `claim_specific_task`（pending→dispatched），再走本地创建链路 +
 /// `start_task`（dispatched→running）。点击「认领执行」时不 claim（只 [`get_remote_task_requirement`]
@@ -703,6 +706,12 @@ pub async fn start_remote_conversation_run(
         .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
     let mut input = input;
     input.project_id = resolved_project_id.clone();
+    // 远程任务上下文隐式注入（改动四十八 + 二次修正 + 三次调整）：claim 响应构建仅含「完成输出协议」
+    // 的隐藏区段，随首条 prompt 隐式下发；DPMS 溯源块、上游交付说明块与需求正文都在可见预填侧
+    // （`get_remote_task_requirement` → `detail_prefill`），故**不**重复进区段。claim 时刻数据即执行
+    // 依据（multica 设计：领取即定版），前端不感知该字段。
+    input.first_prompt_hidden_sections =
+        remote_task_hidden_section(&task, context.config.desktop_language).map(|s| vec![s]);
     // 先算 emitter（借 workspace_app）再 move——避免在 with_acp_live_update 表达式内同时借与 move。
     let live_update = acp_live_update_emitter_for_app(
         &workspace_app,
@@ -927,15 +936,14 @@ pub async fn start_remote_conversation_run(
             // RMW 经 with_state 原子化：与 bridge NodeCompleted/终态收尾并发 save 互不覆盖（lost-update）。
             ctx_clone.app().with_state(|state| {
                 let mut conversations = state.remote_task_conversations.take().unwrap_or_default();
-                let entry =
-                    conversations
-                        .entry(remote.clone())
-                        .or_insert(RemoteTaskConversation {
-                            local_task_id: run.task_id.clone(),
-                            local_run_id: run.run_id.clone(),
-                            session_id: None,
-                            work_dir: Some(ws_path.clone()),
-                        });
+                let entry = conversations
+                    .entry(remote.clone())
+                    .or_insert(RemoteTaskConversation {
+                        local_task_id: run.task_id.clone(),
+                        local_run_id: run.run_id.clone(),
+                        session_id: None,
+                        work_dir: Some(ws_path.clone()),
+                    });
                 entry.local_task_id = run.task_id.clone();
                 entry.local_run_id = run.run_id.clone();
                 // 命中 stale checkpoint 时重置 session_id（旧 session 随旧 run 失效；新 run 的 session_id
@@ -1089,6 +1097,34 @@ pub async fn cancel_remote_task(
     })
     .await
     .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?;
+    Ok(())
+}
+
+/// 移出终态行的「最近完成」历史条目（`remote_completed_tasks`，真删除）。
+///
+/// 终态行的唯一数据源是本地历史（服务端不回传终态），视图过滤无法阻止刷新「复活」；
+/// pending/running 行不经此命令（pending 每次从服务端拉取，服务端删除自然消失）。
+/// 不存在时幂等成功（用户意图「不在列表」已满足）；删除后广播任务列表刷新（同步侧栏等视图）。
+#[tauri::command]
+pub fn remove_remote_completed_task(
+    state: State<'_, DesktopState>,
+    app_handle: AppHandle,
+    remote_task_id: String,
+) -> CommandResult<()> {
+    let context = state.context().map_err(command_error)?;
+    let removed = context
+        .app()
+        .with_state(|state_cfg| {
+            let removed = crate::multica::bridge::remove_completed_task_entry(
+                state_cfg,
+                &remote_task_id,
+            );
+            (removed, removed)
+        })
+        .map_err(command_error)?;
+    if removed {
+        crate::multica::bridge::emit_remote_tasks_updated(&app_handle);
+    }
     Ok(())
 }
 

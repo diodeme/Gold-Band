@@ -578,6 +578,10 @@ export function cancelRemoteTask(taskId: string) {
   return getRuntimeApi().cancelRemoteTask(taskId);
 }
 
+export function removeRemoteCompletedTask(remoteTaskId: string) {
+  return getRuntimeApi().removeRemoteCompletedTask(remoteTaskId);
+}
+
 export function listServerMulticaWorkspaces() {
   return getRuntimeApi().listServerMulticaWorkspaces();
 }

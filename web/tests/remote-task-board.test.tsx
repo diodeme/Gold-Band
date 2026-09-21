@@ -16,6 +16,7 @@ vi.mock('lucide-react', () => ({
   Ban: () => null,
   Loader2: () => null,
   Play: () => null,
+  Trash2: () => null,
 }));
 
 vi.mock('@/lib/utils', () => ({
@@ -163,6 +164,7 @@ async function renderBoard(props: {
   busyTaskId?: string | null;
   onPrepare?: (t: RemoteTaskVm) => void;
   onCancel?: (t: RemoteTaskVm) => void;
+  onRemove?: (t: RemoteTaskVm) => void;
   onSelectRun?: (p: string, t: string, r: string) => void;
 }) {
   const container = document.createElement('div');
@@ -170,6 +172,7 @@ async function renderBoard(props: {
   const root = createRoot(container);
   const onPrepare = props.onPrepare ?? vi.fn();
   const onCancel = props.onCancel ?? vi.fn();
+  const onRemove = props.onRemove ?? vi.fn();
   const onSelectRun = props.onSelectRun ?? vi.fn();
   await act(async () => {
     root.render(
@@ -178,11 +181,12 @@ async function renderBoard(props: {
         busyTaskId={props.busyTaskId ?? null}
         onPrepare={onPrepare}
         onCancel={onCancel}
+        onRemove={onRemove}
         onSelectRun={onSelectRun}
       />,
     );
   });
-  return { container, onPrepare, onCancel, onSelectRun };
+  return { container, onPrepare, onCancel, onRemove, onSelectRun };
 }
 
 describe('RemoteTaskBoard render', () => {
@@ -337,5 +341,38 @@ describe('RemoteTaskBoard render', () => {
     });
     expect(container.textContent).toContain(formatLocalDateTime(ts));
     expect(container.textContent).not.toContain('2026-08-06T02:30:00Z');
+  });
+
+  // 移出列表（全状态可用）：纯本地视图过滤、刷新即恢复——此处固化「每列都有入口 + 转发 onRemove」。
+  it('renders a remove button for every status and forwards onRemove', async () => {
+    const onRemove = vi.fn();
+    const { container } = await renderBoard({
+      tasks: [
+        task({ id: 'q', status: 'queued', title: 'Todo' }),
+        task({ id: 'r', status: 'running', title: 'Doing' }),
+        task({ id: 'c', status: 'completed', title: 'Done' }),
+        task({ id: 'f', status: 'failed', title: 'Boom' }),
+      ],
+      onRemove,
+    });
+    const removeButtons = container.querySelectorAll(
+      'button[aria-label="conversation.sidebar.remoteTasks.removeTask"]',
+    );
+    // 四个 canonical 状态各一张卡片 → 四个移出入口。
+    expect(removeButtons.length).toBe(4);
+    await act(async () => { (removeButtons[2] as HTMLButtonElement).click(); });
+    expect(onRemove).toHaveBeenCalledTimes(1);
+    expect((onRemove.mock.calls[0] as [RemoteTaskVm])[0].id).toBe('c');
+  });
+
+  it('disables the remove button while the card is busy', async () => {
+    const { container } = await renderBoard({
+      tasks: [task({ id: 'q', status: 'queued', title: 'Todo' })],
+      busyTaskId: 'q',
+    });
+    const removeBtn = container.querySelector(
+      'button[aria-label="conversation.sidebar.remoteTasks.removeTask"]',
+    ) as HTMLButtonElement;
+    expect(removeBtn.disabled).toBe(true);
   });
 });

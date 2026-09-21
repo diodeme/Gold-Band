@@ -2182,6 +2182,15 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
     {
         user_prompt = append_extra_hidden_sections(&user_prompt, &req.extra_hidden_sections);
     }
+    // RawAgent 信封（直接对话等）的首条 prompt：隐式隐藏区段（远程任务上下文等）以独立标题
+    // `<hidden>` 块追加在可见正文之后（改动四十八）。RequirementTask 即首条 prompt（追问为
+    // Continue+resume_prompt），自动重试复用同一渲染路径故同样生效。
+    if req.prompt_envelope == crate::dsl::PromptEnvelopeMode::RawAgent
+        && req.user_prompt_render_mode == UserPromptRenderMode::RequirementTask
+        && !req.extra_hidden_sections.is_empty()
+    {
+        user_prompt = append_titled_hidden_sections(&user_prompt, &req.extra_hidden_sections);
+    }
     let is_continue = matches!(req.session_mode, SessionMode::Continue);
 
     let mut attachment_metas = Vec::new();
@@ -2327,6 +2336,21 @@ fn append_extra_hidden_sections(prompt: &str, sections: &[PromptHiddenSection]) 
         prompt.trim(),
         gold_band_hidden_block("Gold Band runtime context", &content)
     )
+}
+
+/// RawAgent 首条 prompt 的隐式隐藏区段：与 `append_extra_hidden_sections` 合并为单一
+/// "Gold Band runtime context" 块不同，这里每个区段保留自身标题渲染为独立 `<hidden>` 块
+/// （前端按标题折叠展示，区段边界可审计）。
+fn append_titled_hidden_sections(prompt: &str, sections: &[PromptHiddenSection]) -> String {
+    let blocks = sections
+        .iter()
+        .filter(|section| !section.content.trim().is_empty())
+        .map(|section| gold_band_hidden_block(&section.title, &section.content))
+        .collect::<Vec<_>>();
+    if blocks.is_empty() {
+        return prompt.to_string();
+    }
+    format!("{}\n\n{}", prompt.trim(), blocks.join("\n\n"))
 }
 
 fn render_hidden_context(req: &WorkerInvocation) -> String {

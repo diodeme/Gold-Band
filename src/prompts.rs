@@ -281,8 +281,8 @@ mod tests {
 
     #[test]
     fn remote_task_parent_output_templates_render_handoff() {
-        // 上游交付说明块（issue 完成输出传递特性）：parent_output 渲染进模板正文，
-        // 中英文都需完整渲染且锁定关键语义（执行上下文 + 交付说明）。
+        // 上游交付说明块（issue 完成输出传递特性；三次调整后随预填进 composer）：parent_output 渲染
+        // 进模板正文，中英文都需完整渲染且锁定关键语义（执行上下文 + 交付说明）。
         let ctx = json!({"parent_output": "部署地址: https://t.example.com\n测试要点: 回归登录链路"});
         let zh = assert_fully_rendered(RUNTIME_REMOTE_TASK_PARENT_OUTPUT_ZH_CN, ctx.clone());
         assert!(zh.contains("执行上下文"));
@@ -297,8 +297,10 @@ mod tests {
     fn remote_task_completion_protocol_templates_lock_fence_contract() {
         // 完成输出协议（写侧）：模板不含变量、无条件渲染；中英文都必须锁定围栏块 info 串
         // `completion-output`（提取函数按该 info 串精确匹配，两语言漂移即提取失效）。
-        // 服务端上限 16k 收紧（2026-09-21）后另锁三点篇幅契约：非 run 日志（最终交付说明）、
-        // 2k 字符以内、超长走工作区文件 + 块内路径引用（超长 400 会卡整个 done 请求）。
+        // 服务端上限 16k 收紧（2026-09-21）后另锁四点篇幅契约：非 run 日志（最终交付说明）、
+        // 2k 字符以内、超长走工作区文件 + 块内路径引用（超长 400 会卡整个 done 请求）、
+        // 传递给下游子任务（读侧 parent_output 的消费方）。协议块改由隐式隐藏区段注入（M5-bk），
+        // 文案同步精简为要点列表，契约锚点不变。
         for template in [
             RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_ZH_CN,
             RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_EN,
@@ -308,14 +310,18 @@ mod tests {
         }
         let zh = RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_ZH_CN;
         let en = RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_EN;
-        assert!(zh.contains("交付说明"));
+        assert!(zh.contains("最终交付说明"));
         assert!(zh.contains("run 日志"));
         assert!(zh.contains("2000 字符"));
+        assert!(zh.contains("工作项无法标记完成"));
         assert!(zh.contains("文件路径引用"));
-        assert!(en.contains("deliverable handoff"));
+        assert!(zh.contains("下游子任务"));
+        assert!(en.contains("final deliverable handoff"));
         assert!(en.contains("run log"));
         assert!(en.contains("2,000 characters"));
-        assert!(en.contains("reference them by path"));
+        assert!(en.contains("cannot be marked done"));
+        assert!(en.contains("file path references"));
+        assert!(en.contains("downstream sub-tasks"));
     }
 
     #[test]

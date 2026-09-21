@@ -1,5 +1,5 @@
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
-import { Ban, Loader2, Play } from 'lucide-react';
+import { Ban, Loader2, Play, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -20,6 +20,7 @@ import type { RemoteTaskVm } from '../../types';
  * - queued   → 准备执行(prepare)：只读取需求正文 + 绑定 composer，任务仍 queued，发送时才 claim+start
  * - running  → 取消(cancel)
  * - completed/failed（带本地 run 链接）→ 点击回看会话(onSelectRun)
+ * - 全状态   → 移出列表(remove)：纯本地视图过滤，刷新即恢复（服务端不动）
  */
 
 /// 看板列定义：4 canonical status，与 `RemoteTaskVm.status` 1:1
@@ -100,6 +101,8 @@ interface RemoteTaskBoardProps {
   onPrepare: (task: RemoteTaskVm) => void;
   /// 取消 running 任务。
   onCancel: (task: RemoteTaskVm) => void;
+  /// 移出列表（全状态可用）：纯本地视图过滤，刷新即恢复——容器负责，服务端不动。
+  onRemove: (task: RemoteTaskVm) => void;
   /// 终态行（带本地 run 链接）整块点击 → 直达本地 conversation-run。
   onSelectRun: (projectId: string, taskId: string, runId: string) => void;
 }
@@ -109,6 +112,7 @@ export function RemoteTaskBoard({
   busyTaskId,
   onPrepare,
   onCancel,
+  onRemove,
   onSelectRun,
 }: RemoteTaskBoardProps) {
   const { t } = useTranslation();
@@ -140,6 +144,7 @@ export function RemoteTaskBoard({
                     busy={busyTaskId === task.id}
                     onPrepare={onPrepare}
                     onCancel={onCancel}
+                    onRemove={onRemove}
                     onSelectRun={onSelectRun}
                     t={t}
                   />
@@ -164,6 +169,7 @@ function RemoteTaskCard({
   busy,
   onPrepare,
   onCancel,
+  onRemove,
   onSelectRun,
   t,
 }: {
@@ -171,6 +177,7 @@ function RemoteTaskCard({
   busy: boolean;
   onPrepare: (task: RemoteTaskVm) => void;
   onCancel: (task: RemoteTaskVm) => void;
+  onRemove: (task: RemoteTaskVm) => void;
   onSelectRun: (projectId: string, taskId: string, runId: string) => void;
   t: TranslationFn;
 }) {
@@ -181,6 +188,9 @@ function RemoteTaskCard({
   const notReady = queued && isTaskNotReady(task);
   const canClaim = queued;
   const canCancel = task.status === 'running';
+  // 终态行（completed/failed）：唯一数据源是本地完成历史——「移出列表」语义与 active 行不同
+  // （真删除 vs 视图过滤），hint 按此分派（见 onRemove 按钮）。
+  const terminal = task.status === 'completed' || task.status === 'failed';
   const statusTone = REMOTE_STATUS_TONE[task.status as BoardColumnStatus] ?? REMOTE_STATUS_TONE.queued;
   const issueKind = visibleIssueKind(task.kind);
   const notReadyHint = t('remote.taskManagement.readiness.notReadyHint');
@@ -282,6 +292,24 @@ function RemoteTaskCard({
                 <TooltipContent side="top" className="text-xs">{t('conversation.sidebar.remoteTasks.cancelTask')}</TooltipContent>
               </Tooltip>
             )}
+            {/* 移出列表（全状态可用），按行数据源分派：终态行真删除本地完成历史（刷新不复活），
+                pending/running 行纯视图过滤（刷新即恢复）——hint 如实说明差异；不弹确认框
+                （可逆操作无数据丢失，ui-interaction §1 删除确认针对破坏性删除）。 */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-7 hover:text-destructive"
+                  disabled={readOnly || busy}
+                  onClick={() => onRemove(task)}
+                  aria-label={t('conversation.sidebar.remoteTasks.removeTask')}
+                >
+                  <Trash2 className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="text-xs">{t(terminal ? 'conversation.sidebar.remoteTasks.removeTaskTerminalHint' : 'conversation.sidebar.remoteTasks.removeTaskHint')}</TooltipContent>
+            </Tooltip>
             {(!canClaim && !canCancel) && busy && (
               <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
             )}

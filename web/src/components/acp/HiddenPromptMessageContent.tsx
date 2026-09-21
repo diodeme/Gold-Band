@@ -209,6 +209,9 @@ function hiddenPromptTitle(title: string | undefined, t: TFunction) {
   if (title === "Gold Band stable system prompt") {
     return t("acp.hiddenStableSystemPrompt");
   }
+  if (title === "Gold Band remote task context") {
+    return t("acp.hiddenRemoteTaskContext");
+  }
   if (!title || title === "Gold Band runtime context") {
     return t("acp.hiddenRuntimeContext");
   }

@@ -17,9 +17,9 @@ use std::path::{Path, PathBuf};
 
 use camino::Utf8Path;
 use gold_band::app::App;
-use gold_band::config::{SkillMeta, SkillSource, SKILL_FILE_NAME};
+use gold_band::config::{SKILL_FILE_NAME, SkillMeta, SkillSource};
 use gold_band::frontmatter::{
-    parse_optional_frontmatter_document, render_frontmatter_document, FrontmatterUpdate,
+    FrontmatterUpdate, parse_optional_frontmatter_document, render_frontmatter_document,
 };
 use gold_band::skill::{parse_skill_md_public, skill_dir_name_from_str};
 use gold_band::storage::GoldBandPaths;
@@ -183,8 +183,8 @@ pub fn read_local_skill_bundle(
 
     let mut files = Vec::with_capacity(collected.len());
     for (rel, path, _) in &collected {
-        let text =
-            fs::read_to_string(path).map_err(|_| format!("non-utf8 file (binary not supported): {rel}"))?;
+        let text = fs::read_to_string(path)
+            .map_err(|_| format!("non-utf8 file (binary not supported): {rel}"))?;
         files.push(LocalSkillFile {
             path: rel.clone(),
             content: text,
@@ -503,7 +503,10 @@ mod tests {
     #[test]
     fn dir_name_strips_illegal_and_collapses_whitespace() {
         // Windows 非法字符删除、控制符删除。
-        assert_eq!(multica_skill_dir_name("a<b>c:\"d/e|f?g*h", "sk-1"), "abcdefgh");
+        assert_eq!(
+            multica_skill_dir_name("a<b>c:\"d/e|f?g*h", "sk-1"),
+            "abcdefgh"
+        );
         assert_eq!(multica_skill_dir_name("a\tb\nc", "sk-1"), "a-b-c");
         // 连续空白折叠为单个 -，首尾 - 去除。
         assert_eq!(
@@ -519,7 +522,10 @@ mod tests {
             multica_skill_dir_name("???***", "sk-abcdef12345"),
             "skill-sk-abcde"
         );
-        assert_eq!(multica_skill_dir_name("   ", "0123456789"), "skill-01234567");
+        assert_eq!(
+            multica_skill_dir_name("   ", "0123456789"),
+            "skill-01234567"
+        );
         assert_eq!(multica_skill_dir_name("", "short"), "skill-short");
         assert_eq!(multica_skill_dir_name("**", ""), "skill");
     }
@@ -551,7 +557,10 @@ mod tests {
         // 远端 description 列为空 → 回退 content 内 description（含空格的值得加引号）。
         let with_content_desc = "---\nname: x\ndescription: from content\n---\nbody";
         let out = assemble_pulled_skill_md("N", "", with_content_desc);
-        assert_eq!(out, "---\nname: N\ndescription: \"from content\"\n---\nbody");
+        assert_eq!(
+            out,
+            "---\nname: N\ndescription: \"from content\"\n---\nbody"
+        );
 
         // 两侧均无 → 省略 description。
         let out = assemble_pulled_skill_md("N", "  ", "plain body");
@@ -638,7 +647,9 @@ mod tests {
         );
         let bare_name = format!("to-spec-bare-{}", std::process::id());
         let manager = SkillManager::new(
-            GoldBandPaths::new(camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap()),
+            GoldBandPaths::new(
+                camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap(),
+            ),
             std::collections::BTreeMap::new(),
         );
 
@@ -699,7 +710,10 @@ mod tests {
         let dir = write_skill(
             tmp.path().join("pr-review").as_path(),
             "---\nname: PR review\nallowed-tools: Read\n---\n\nBody\n",
-            &[("assets/template.md", "# tpl"), ("nested/deep/ref.md", "ref")],
+            &[
+                ("assets/template.md", "# tpl"),
+                ("nested/deep/ref.md", "ref"),
+            ],
         );
         let bundle = read_local_skill_bundle(&dir, "pr-review", "claude-acp").unwrap();
         // content = SKILL.md 原文（含 frontmatter 与附加字段，Q5 修正：原样透传）。
@@ -746,7 +760,8 @@ mod tests {
         );
 
         let no_md =
-            camino::Utf8PathBuf::from_path_buf(tmp.path().join("no-skill-md").to_path_buf()).unwrap();
+            camino::Utf8PathBuf::from_path_buf(tmp.path().join("no-skill-md").to_path_buf())
+                .unwrap();
         fs::create_dir_all(no_md.as_std_path()).unwrap();
         assert!(
             read_local_skill_bundle(&no_md, "no-skill-md", "claude-acp")

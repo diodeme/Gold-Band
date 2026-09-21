@@ -382,6 +382,7 @@ impl ScheduledTaskService {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            first_prompt_hidden_sections: None,
         };
         let validation = validate_conversation_create_vm(&workspace.app, &validation_input)
             .map_err(|_| {
@@ -550,6 +551,7 @@ impl ScheduledTaskService {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            first_prompt_hidden_sections: None,
         };
         let validation = validate_conversation_create_vm(&workspace.app, &validation_input)
             .map_err(|_| {

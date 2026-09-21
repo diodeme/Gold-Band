@@ -2730,6 +2730,7 @@ export interface ConversationQueuedPromptVm {
   content: string;
   attachmentCount: number;
   quoteCount: number;
+  workspaceFileCount: number;
   roleName?: string | null;
   createdAt: string;
 }

@@ -1992,12 +1992,7 @@ fn schedule_direct_prompt_queue_drain(
             locator.round_id.clone(),
             locator.node_id.clone(),
             locator.attempt_id.clone(),
-            ConversationPromptInput {
-                display_text: claimed.content.clone(),
-                quotes: claimed.quotes.clone(),
-                role: claimed.role.clone(),
-                workspace_files: Vec::new(),
-            },
+            claimed.to_conversation_prompt_input(),
             Some(claimed.prompt_id.clone()),
             locator.outer_node_id.clone(),
             locator.outer_attempt_id.clone(),
@@ -6569,12 +6564,7 @@ pub async fn use_conversation_queued_prompt(
         locator.round_id.clone(),
         locator.node_id.clone(),
         locator.attempt_id.clone(),
-        ConversationPromptInput {
-            display_text: claimed.content.clone(),
-            quotes: claimed.quotes.clone(),
-            role: claimed.role.clone(),
-            workspace_files: claimed.workspace_files.clone(),
-        },
+        claimed.to_conversation_prompt_input(),
         Some(claimed.prompt_id.clone()),
         locator.outer_node_id.clone(),
         locator.outer_attempt_id.clone(),
@@ -6599,12 +6589,7 @@ pub async fn use_conversation_queued_prompt(
                     locator.round_id.clone(),
                     locator.node_id.clone(),
                     locator.attempt_id.clone(),
-                    ConversationPromptInput {
-                        display_text: reclaimed.content,
-                        quotes: reclaimed.quotes,
-                        role: reclaimed.role,
-                        workspace_files: reclaimed.workspace_files,
-                    },
+                    reclaimed.to_conversation_prompt_input(),
                     Some(reclaimed.prompt_id),
                     locator.outer_node_id.clone(),
                     locator.outer_attempt_id.clone(),
@@ -11445,21 +11430,11 @@ mod tests {
             }]),
         );
 
-        validate_acp_session_config_option_value(
-            &catalogs,
-            &session,
-            &authoring,
-            "context",
-            "1m",
-        )
-        .unwrap();
+        validate_acp_session_config_option_value(&catalogs, &session, &authoring, "context", "1m")
+            .unwrap();
         assert_eq!(
             validate_acp_session_config_option_value(
-                &catalogs,
-                &session,
-                &authoring,
-                "context",
-                "2m",
+                &catalogs, &session, &authoring, "context", "2m",
             )
             .unwrap_err()
             .code,

@@ -770,6 +770,7 @@ pub struct ConversationQueuedPromptVm {
     pub content: String,
     pub attachment_count: usize,
     pub quote_count: usize,
+    pub workspace_file_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role_name: Option<String>,
     pub created_at: String,
@@ -1198,6 +1199,7 @@ fn direct_prompt_queue_vm(
                 content: item.content,
                 attachment_count: item.attachment_paths.len(),
                 quote_count: item.quotes.len(),
+                workspace_file_count: item.workspace_files.len(),
                 role_name: item.role.as_ref().map(|role| role.name.clone()),
                 created_at: item.created_at,
             })
@@ -7937,7 +7939,20 @@ mod tests {
         let attempt_dir =
             app.paths
                 .attempt_dir("task-046", "run-060", "round-001", "测试", "attempt-002");
-        enqueue_prompt(&attempt_dir, "persist after stop".to_string(), Vec::new()).unwrap();
+        enqueue_prompt(
+            &attempt_dir,
+            gold_band::provider::ConversationPromptInput {
+                display_text: "persist after stop".to_string(),
+                quotes: Vec::new(),
+                role: None,
+                workspace_files: vec![gold_band::provider::PromptWorkspaceFileRef {
+                    project_id: "project-001".to_string(),
+                    relative_path: "src/a.ts".to_string(),
+                }],
+            },
+            Vec::new(),
+        )
+        .unwrap();
 
         let vm = conversation_run_vm(
             &app,
@@ -7960,6 +7975,7 @@ mod tests {
         assert!(!leaf.lifecycle.runtime.continuable);
         assert_eq!(queue.items.len(), 1);
         assert_eq!(queue.items[0].content, "persist after stop");
+        assert_eq!(queue.items[0].workspace_file_count, 1);
     }
 
     #[test]

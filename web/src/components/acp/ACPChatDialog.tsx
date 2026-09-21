@@ -99,9 +99,6 @@ import {
   createDraftAttachmentWorkspaceResource,
   createHiddenPromptSectionWorkspaceResource,
   draftAttachmentWorkspaceResourceKey,
-  fileBrowserWorkspaceResourceKey,
-  fileWorkspaceResourceKey,
-  useOptionalRightWorkspace,
   useOptionalRightWorkspaceCommands,
   type AcpAttemptWorkspaceLocator,
   type AgentTranscriptLocator,
@@ -173,6 +170,7 @@ import {
   workspaceFilesFromRaw,
   type ComposerWorkspaceFileRef,
 } from "@/lib/composer-context";
+import { openWorkspaceFileReference } from "@/lib/workspace-file-reference";
 import type { ConversationPromptInput, ProfileVm } from "@/types";
 import type { AgentMessageSelection } from "@/lib/agent-message-selection";
 import { AcpConversationComposer } from "@/components/conversation/AcpConversationComposer";
@@ -1350,7 +1348,6 @@ export function ACPChatDialog(
     };
   }, []);
   const rightWorkspace = useOptionalRightWorkspaceCommands();
-  const rightWorkspaceState = useOptionalRightWorkspace();
   const workspaceFileReferenceBridge = useWorkspaceFileReferenceBridge();
   const effectiveEventPageSize = normalizeEventPageSize(eventPageSize);
   const effectiveEventWindowPageCount = normalizeEventWindowPageCount(
@@ -1416,23 +1413,35 @@ export function ACPChatDialog(
   });
   const sessionIdentity = eventWindowKey;
   const composerDraft = useAcpComposerDraft(eventWindowKey);
+  const setComposerWorkspaceFiles = composerDraft.setWorkspaceFiles;
   const workspaceFiles = composerDraft.draft.workspaceFiles;
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const workspaceFilesRef = useRef(workspaceFiles);
   workspaceFilesRef.current = workspaceFiles;
   const pendingAttachmentsRef = useRef(composerDraft.draft.attachments);
   pendingAttachmentsRef.current = composerDraft.draft.attachments;
-  useEffect(() => workspaceFileReferenceBridge.register((reference) => {
-    if (!projectId || reference.projectId !== projectId) return false;
+  useEffect(() => workspaceFileReferenceBridge.register((reference, options) => {
+    if (!projectId || reference.projectId !== projectId) return { kind: 'unavailable' };
     const result = addComposerWorkspaceFile(
       workspaceFilesRef.current,
       pendingAttachmentsRef.current.length,
       reference,
     );
-    if (!result.ok) return true;
+    if (!result.ok) {
+      if (result.code === 'composer.context.limit-exceeded') {
+        setComposerContextError(
+          t('errors.composer.context-limit-exceeded', { max: result.max }),
+        );
+        return { kind: 'limit-exceeded', max: result.max };
+      }
+      return { kind: 'duplicate' };
+    }
     workspaceFilesRef.current = result.workspaceFiles;
-    composerDraft.setWorkspaceFiles(result.workspaceFiles);
-    return true;
-  }), [composerDraft, projectId, workspaceFileReferenceBridge]);
+    setComposerWorkspaceFiles(result.workspaceFiles);
+    setComposerContextError(null);
+    if (options.isDocked) requestAnimationFrame(() => composerTextareaRef.current?.focus());
+    return { kind: 'added' };
+  }), [projectId, setComposerWorkspaceFiles, t, workspaceFileReferenceBridge]);
   const restoredSession = session ?? restoreAcpSession(eventWindowKey);
   const componentInstanceIdRef = useRef(createAcpChatDialogInstanceId());
   const componentInstanceId = componentInstanceIdRef.current;
@@ -1683,7 +1692,6 @@ export function ACPChatDialog(
   const paginationCursorGenerationStaleRef = useRef(false);
   const configGenerationRef = useRef(0);
   const configMutationGenerationRef = useRef(0);
-  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const paginationAnchorRef = useRef<{ key: string; top: number } | null>(null);
   const pendingLiveEventsRef = useRef(
     new AcpLatestWinsEventBuffer<AcpGenerationScopedLiveEvent>(
@@ -5935,34 +5943,11 @@ export function ACPChatDialog(
   }, [composerDraft]);
 
   const openWorkspaceFile = useCallback((file: ComposerWorkspaceFileRef) => {
-    if (!rightWorkspaceState?.scopeKey) return;
-    void rightWorkspaceState.openResource({
-      kind: "file-browser",
-      key: fileBrowserWorkspaceResourceKey(file.projectId),
-      scopeKey: rightWorkspaceState.scopeKey,
-      title: file.name,
-      description: file.relativePath,
-      attention: false,
-      projectId: file.projectId,
-      selectedFile: {
-        kind: "file",
-        key: fileWorkspaceResourceKey(file.projectId, file.canonicalPath ?? file.relativePath),
-        scopeKey: rightWorkspaceState.scopeKey,
-        title: file.name,
-        description: file.relativePath,
-        attention: false,
-        projectId: file.projectId,
-        locator: {
-          projectId: file.projectId,
-          canonicalPath: file.canonicalPath ?? file.relativePath,
-          relativePath: file.relativePath,
-          scope: "workspace",
-        },
-        target: null,
-        targetRevision: 0,
-      },
-    });
-  }, [rightWorkspaceState]);
+    if (!rightWorkspace?.scopeKey) return;
+    void openWorkspaceFileReference(file, rightWorkspace.scopeKey, rightWorkspace.openResource)
+      .then(() => setComposerContextError(null))
+      .catch(error => setComposerContextError(displayAppError(t, error)));
+  }, [rightWorkspace, t]);
 
   const stopSession = async () => {
     if (!canStopSession || stopInProgress) return;
@@ -8828,6 +8813,7 @@ const MessageBubble = memo(function MessageBubble({
   const userQuotes = isUser ? userPromptQuotesFromRaw(event.raw) : [];
   const userRole = isUser ? userPromptRoleFromRaw(event.raw) : null;
   const userWorkspaceFiles = isUser ? workspaceFilesFromRaw(event.raw) : [];
+  const [workspaceFileOpenError, setWorkspaceFileOpenError] = useState<string | null>(null);
   const hasAttachments = isUser && rawAttachments.length > 0;
   const attachmentGroups = groupMessageAttachmentPreviews(rawAttachments);
   const runtimeControlParts = !isUser && !streamingDraft
@@ -8855,33 +8841,10 @@ const MessageBubble = memo(function MessageBubble({
   }, [branchLocator, event.endedSeq, event.id, event.optimistic, event.seq, workspace]);
   const openUserWorkspaceFile = useCallback((file: (typeof userWorkspaceFiles)[number]) => {
     if (!workspace?.scopeKey) return;
-    void workspace.openResource({
-      kind: "file-browser",
-      key: fileBrowserWorkspaceResourceKey(file.projectId),
-      scopeKey: workspace.scopeKey,
-      title: file.name ?? file.relativePath,
-      description: file.relativePath,
-      attention: false,
-      projectId: file.projectId,
-      selectedFile: {
-        kind: "file",
-        key: fileWorkspaceResourceKey(file.projectId, file.canonicalPath ?? file.relativePath),
-        scopeKey: workspace.scopeKey,
-        title: file.name ?? file.relativePath,
-        description: file.relativePath,
-        attention: false,
-        projectId: file.projectId,
-        locator: {
-          projectId: file.projectId,
-          canonicalPath: file.canonicalPath ?? file.relativePath,
-          relativePath: file.relativePath,
-          scope: "workspace",
-        },
-        target: null,
-        targetRevision: 0,
-      },
-    });
-  }, [workspace]);
+    void openWorkspaceFileReference(file, workspace.scopeKey, workspace.openResource)
+      .then(() => setWorkspaceFileOpenError(null))
+      .catch(error => setWorkspaceFileOpenError(displayAppError(t, error)));
+  }, [t, workspace]);
   const openArtifact = useCallback((name: string) => {
     if (!branchLocator || !workspace?.scopeKey) return;
     void workspace.openResource({
@@ -8920,6 +8883,11 @@ const MessageBubble = memo(function MessageBubble({
           files={userWorkspaceFiles}
           onOpen={openUserWorkspaceFile}
         />
+        {workspaceFileOpenError ? (
+          <p className="max-w-full text-ui-caption leading-4 text-destructive" role="alert">
+            {workspaceFileOpenError}
+          </p>
+        ) : null}
         {showMessageBubble ? (
           <MessageContent
             data-agent-quotable-text={quotableAgentMessage ? "true" : undefined}

@@ -2,15 +2,17 @@ import { useTranslation } from 'react-i18next';
 import { FilePlus2 } from 'lucide-react';
 import { ContextMenuItem } from '@/components/ui/context-menu';
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
+import type { AddWorkspaceFileRefResult } from '../workspace-file-reference-bridge';
 import type { WorkspaceDirectoryEntryVm } from '@/types';
 
 interface WorkspaceDirectoryContextMenuProps {
   canonicalPath: string;
   relativePath: string;
   entry?: WorkspaceDirectoryEntryVm;
+  canReferenceToConversation?: boolean;
   onCopyFailed: () => void;
   onOpenInFileManager: (relativePath: string) => void;
-  onReferenceToConversation?: (entry: WorkspaceDirectoryEntryVm) => boolean;
+  onReferenceToConversation?: (entry: WorkspaceDirectoryEntryVm) => AddWorkspaceFileRefResult;
 }
 
 async function copyPath(value: string) {
@@ -31,6 +33,7 @@ export function WorkspaceDirectoryContextMenu({
   canonicalPath,
   relativePath,
   entry,
+  canReferenceToConversation = false,
   onCopyFailed,
   onOpenInFileManager,
   onReferenceToConversation,
@@ -42,7 +45,7 @@ export function WorkspaceDirectoryContextMenu({
     void copyPath(value).catch(onCopyFailed);
   };
   const referenceAction = entry && onReferenceToConversation
-    && canReferenceWorkspaceFileToConversation(entry.kind, true, readOnly)
+    && canReferenceWorkspaceFileToConversation(entry.kind, canReferenceToConversation, readOnly)
     ? { entry, onReferenceToConversation }
     : null;
   return <>

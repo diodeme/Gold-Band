@@ -11,7 +11,11 @@ import { useMeasuredElementHeight } from '@/hooks/use-measured-element-height';
 import { openWorkspacePathInFileManager } from '@/api';
 import { composerWorkspaceFileRefFromEntry } from '@/lib/workspace-file-reference';
 import { fileTreeIconStateClassName, fileTreeRowStateClassName } from '@/lib/file-tree-row-state';
-import { useWorkspaceFileReferenceCommands } from '../workspace-file-reference-bridge';
+import {
+  type AddWorkspaceFileRefResult,
+  useWorkspaceFileReferenceCommands,
+  useWorkspaceFileReferencePresentation,
+} from '../workspace-file-reference-bridge';
 import type { WorkspaceDirectoryEntryVm } from '@/types';
 import {
   fileExplorerStore,
@@ -33,7 +37,8 @@ interface TreeRowContextValue {
   onOpenFile: (entry: WorkspaceDirectoryEntryVm) => void;
   onCopyFailed: () => void;
   onOpenInFileManager: (relativePath: string) => void;
-  onReferenceToConversation: ((entry: WorkspaceDirectoryEntryVm) => boolean) | null;
+  onReferenceToConversation: ((entry: WorkspaceDirectoryEntryVm) => AddWorkspaceFileRefResult) | null;
+  canReferenceToConversation: boolean;
   onContextMenuOpenChange: (open: boolean) => void;
   canActivateFile: () => boolean;
   displayMode: FileTreeDisplayMode;
@@ -151,6 +156,7 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeView
           canonicalPath={entry.canonicalPath}
           relativePath={entry.relativePath}
           entry={entry}
+          canReferenceToConversation={context.canReferenceToConversation}
           onCopyFailed={context.onCopyFailed}
           onOpenInFileManager={context.onOpenInFileManager}
           onReferenceToConversation={context.onReferenceToConversation ?? undefined}
@@ -163,6 +169,8 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeView
 export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: WorkspaceFileTreeProps) {
   const { t } = useTranslation();
   const workspaceFileReferenceCommands = useWorkspaceFileReferenceCommands();
+  const workspaceFileReferencePresentation = useWorkspaceFileReferencePresentation();
+  const canReferenceToConversation = workspaceFileReferenceCommands?.available === true;
   const snapshot = useFileExplorerSnapshot(projectId);
   const displayModeToggle = fileTreeDisplayModeToggle(snapshot.displayMode);
   const treeNodes = useMemo(() => fileTreeView(snapshot.roots, snapshot.displayMode), [snapshot.displayMode, snapshot.roots]);
@@ -239,11 +247,12 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
     });
   }, [projectId]);
   const onReferenceToConversation = useCallback((entry: WorkspaceDirectoryEntryVm) => {
-    if (!workspaceFileReferenceCommands?.available) return false;
+    if (!workspaceFileReferenceCommands?.available) return { kind: 'unavailable' } as const;
     return workspaceFileReferenceCommands.addWorkspaceFileRef(
       composerWorkspaceFileRefFromEntry(projectId, entry),
+      workspaceFileReferencePresentation,
     );
-  }, [projectId, workspaceFileReferenceCommands]);
+  }, [projectId, workspaceFileReferenceCommands, workspaceFileReferencePresentation]);
   const onContextMenuOpenChange = useCallback((open: boolean) => {
     contextMenuOpenRef.current = open;
     suppressContextMenuActivationRef.current = true;
@@ -265,10 +274,11 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
     onCopyFailed,
     onOpenInFileManager,
     onReferenceToConversation,
+    canReferenceToConversation,
     onContextMenuOpenChange,
     canActivateFile,
     displayMode: snapshot.displayMode,
-  }), [canActivateFile, onContextMenuOpenChange, onCopyFailed, onOpenFile, onOpenInFileManager, onReferenceToConversation, selectedPath, snapshot.displayMode]);
+  }), [canActivateFile, canReferenceToConversation, onContextMenuOpenChange, onCopyFailed, onOpenFile, onOpenInFileManager, onReferenceToConversation, selectedPath, snapshot.displayMode]);
   const searchEntries = snapshot.searchResult?.entries ?? [];
   const searching = snapshot.searchQuery.trim().length > 0;
 
@@ -347,6 +357,7 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
                       canonicalPath={entry.canonicalPath}
                       relativePath={entry.relativePath}
                       entry={entry}
+                      canReferenceToConversation={canReferenceToConversation}
                       onCopyFailed={onCopyFailed}
                       onOpenInFileManager={onOpenInFileManager}
                       onReferenceToConversation={onReferenceToConversation}

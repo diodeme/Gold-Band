@@ -492,6 +492,9 @@ const resources = {
         discardWorkflowChanges: "工作流还有未保存的修改。确定要放弃这些修改并关闭吗？",
       },
       errors: {
+        composer: {
+          "context-limit-exceeded": "上下文最多包含 {{max}} 个引用和附件。",
+        },
         browser: {
           webview: {
             create_failed: "无法创建内置浏览器页面，请重试。",
@@ -3172,6 +3175,9 @@ const resources = {
         discardWorkflowChanges: "This workflow has unsaved changes. Discard them and close the tab?",
       },
       errors: {
+        composer: {
+          "context-limit-exceeded": "Context can contain at most {{max}} references and attachments.",
+        },
         browser: {
           webview: {
             create_failed: "The in-app browser page could not be created. Try again.",

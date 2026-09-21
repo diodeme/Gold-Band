@@ -6,6 +6,16 @@ use url::Url;
 
 pub const MAX_PROMPT_WORKSPACE_FILES: usize = 10;
 
+pub fn workspace_file_authoring_identity(project_id: &str, path: &str) -> (String, String) {
+    let project_id = project_id.trim().to_string();
+    let path = path.trim().replace('\\', "/");
+    if cfg!(windows) {
+        (project_id.to_ascii_lowercase(), path.to_ascii_lowercase())
+    } else {
+        (project_id, path)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptWorkspaceFileRef {
@@ -124,24 +134,40 @@ pub fn resolve_prompt_workspace_files(
     workspace_root: &Path,
     attachment_count: usize,
 ) -> Result<Vec<ResolvedWorkspaceFileRef>, WorkspaceFileRefError> {
-    if references.len() + attachment_count > MAX_PROMPT_WORKSPACE_FILES {
-        return Err(WorkspaceFileRefError::CountExceeded {
-            max: MAX_PROMPT_WORKSPACE_FILES,
-        });
-    }
     let root =
         canonicalize_directory(workspace_root).map_err(|_| WorkspaceFileRefError::IoFailed {
             project_id: expected_project_id.to_string(),
             relative_path: String::new(),
         })?;
-    let mut seen = HashSet::new();
-    let mut resolved = Vec::with_capacity(references.len());
+    let mut authoring_seen = HashSet::new();
+    let mut unique_references = Vec::new();
     for reference in references {
+        let relative_path = normalized_relative_path(reference, expected_project_id)?;
+        let authoring_identity =
+            workspace_file_authoring_identity(expected_project_id, &relative_path);
+        if authoring_seen.insert(authoring_identity) {
+            unique_references.push(PromptWorkspaceFileRef {
+                project_id: expected_project_id.to_string(),
+                relative_path,
+            });
+        }
+    }
+
+    let mut canonical_seen = HashSet::new();
+    let mut resolved = Vec::with_capacity(references.len());
+    for reference in &unique_references {
         let normalized = normalize_reference(reference, &root, expected_project_id)?;
-        if !seen.insert((reference.project_id.clone(), normalized.1.clone())) {
+        let canonical_identity =
+            workspace_file_authoring_identity(expected_project_id, &normalized.0.canonical_path);
+        if !canonical_seen.insert(canonical_identity) {
             continue;
         }
         resolved.push(normalized.0);
+    }
+    if resolved.len() + attachment_count > MAX_PROMPT_WORKSPACE_FILES {
+        return Err(WorkspaceFileRefError::CountExceeded {
+            max: MAX_PROMPT_WORKSPACE_FILES,
+        });
     }
     Ok(resolved)
 }
@@ -164,31 +190,7 @@ fn normalize_reference(
 ) -> Result<(ResolvedWorkspaceFileRef, String), WorkspaceFileRefError> {
     // Project identity is validated here because WorkerInvocation receives the
     // authoritative project separately from user-controlled reference payloads.
-    if reference.project_id.trim().is_empty()
-        || !reference.project_id.eq_ignore_ascii_case(root_project_id)
-    {
-        return Err(WorkspaceFileRefError::ProjectMismatch {
-            project_id: reference.project_id.clone(),
-            expected_project_id: root_project_id.to_string(),
-        });
-    }
-    let relative_path = reference.relative_path.trim().replace('\\', "/");
-    let relative = Path::new(&relative_path);
-    if reference.project_id.trim().is_empty()
-        || relative_path.is_empty()
-        || reference.relative_path.contains('\0')
-        || relative.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        })
-    {
-        return Err(WorkspaceFileRefError::InvalidPath {
-            project_id: reference.project_id.clone(),
-            relative_path: reference.relative_path.clone(),
-        });
-    }
+    let relative_path = normalized_relative_path(reference, root_project_id)?;
     let canonical =
         std::fs::canonicalize(root.join(&relative_path)).map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => WorkspaceFileRefError::NotFound {
@@ -206,17 +208,17 @@ fn normalize_reference(
         })?;
     if !path_is_within(&canonical, root) {
         return Err(WorkspaceFileRefError::OutsideWorkspace {
-            project_id: reference.project_id.clone(),
+            project_id: root_project_id.to_string(),
             relative_path: reference.relative_path.clone(),
         });
     }
     let metadata = std::fs::metadata(&canonical).map_err(|_| WorkspaceFileRefError::IoFailed {
-        project_id: reference.project_id.clone(),
+        project_id: root_project_id.to_string(),
         relative_path: reference.relative_path.clone(),
     })?;
     if !metadata.is_file() {
         return Err(WorkspaceFileRefError::NotAFile {
-            project_id: reference.project_id.clone(),
+            project_id: root_project_id.to_string(),
             relative_path: reference.relative_path.clone(),
         });
     }
@@ -227,7 +229,7 @@ fn normalize_reference(
     let mime_type = mime_type_for_path(&canonical);
     Ok((
         ResolvedWorkspaceFileRef {
-            project_id: reference.project_id.clone(),
+            project_id: root_project_id.to_string(),
             relative_path: relative_path.clone(),
             canonical_path: display_path(&canonical),
             name,
@@ -236,6 +238,43 @@ fn normalize_reference(
         },
         relative_path,
     ))
+}
+
+fn normalized_relative_path(
+    reference: &PromptWorkspaceFileRef,
+    root_project_id: &str,
+) -> Result<String, WorkspaceFileRefError> {
+    if reference.project_id != root_project_id {
+        return Err(WorkspaceFileRefError::ProjectMismatch {
+            project_id: reference.project_id.clone(),
+            expected_project_id: root_project_id.to_string(),
+        });
+    }
+
+    let relative_path = reference.relative_path.trim().replace('\\', "/");
+    let windows_drive_prefix = relative_path
+        .as_bytes()
+        .get(0)
+        .is_some_and(u8::is_ascii_alphabetic)
+        && relative_path.as_bytes().get(1) == Some(&b':');
+    let invalid_components = Path::new(&relative_path).components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    });
+    if relative_path.is_empty()
+        || reference.relative_path.contains('\0')
+        || relative_path.starts_with('/')
+        || windows_drive_prefix
+        || invalid_components
+    {
+        return Err(WorkspaceFileRefError::InvalidPath {
+            project_id: root_project_id.to_string(),
+            relative_path: reference.relative_path.clone(),
+        });
+    }
+    Ok(relative_path)
 }
 
 fn canonicalize_directory(path: &Path) -> std::io::Result<PathBuf> {
@@ -348,6 +387,15 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
+    fn windows_authoring_identity_normalizes_case_and_separators() {
+        assert_eq!(
+            workspace_file_authoring_identity("P", "SRC\\WorkspaceFile.TSX"),
+            workspace_file_authoring_identity("p", "src/workspacefile.tsx")
+        );
+    }
+
+    #[test]
     fn rejects_unsafe_project_and_path_boundaries() {
         let root = TempDir::new().unwrap();
         std::fs::write(root.path().join("file.txt"), "x").unwrap();
@@ -358,7 +406,7 @@ mod tests {
                 .code(),
             "conversation.workspace-file-project-mismatch"
         );
-        for path in ["", "..", "/file.txt", "C:/file.txt"] {
+        for path in ["", "..", "/file.txt", "C:/file.txt", "c:\\file.txt"] {
             let mut invalid = input("p", "file.txt");
             invalid.workspace_files[0].relative_path = path.to_string();
             assert_eq!(
@@ -395,11 +443,52 @@ mod tests {
                 relative_path: format!("file-{index}.txt"),
             })
             .collect();
+        for index in 0..10 {
+            std::fs::write(root.path().join(format!("file-{index}.txt")), "x").unwrap();
+        }
         assert_eq!(
             resolve_prompt_workspace_files("p", &over_limit.workspace_files, root.path(), 1)
                 .unwrap_err()
                 .code(),
             "conversation.workspace-file-count-exceeded"
+        );
+    }
+
+    #[test]
+    fn duplicate_references_do_not_consume_the_context_limit() {
+        let root = TempDir::new().unwrap();
+        std::fs::write(root.path().join("file.txt"), "x").unwrap();
+        let mut duplicate_limit = input("p", "file.txt");
+        duplicate_limit.workspace_files = (0..11)
+            .map(|_| PromptWorkspaceFileRef {
+                project_id: "p".to_string(),
+                relative_path: "file.txt".to_string(),
+            })
+            .collect();
+
+        let resolved =
+            resolve_prompt_workspace_files("p", &duplicate_limit.workspace_files, root.path(), 0)
+                .unwrap();
+
+        assert_eq!(resolved.len(), 1);
+    }
+
+    #[test]
+    fn project_identity_is_compared_by_its_authoritative_value() {
+        let root = TempDir::new().unwrap();
+        std::fs::write(root.path().join("file.txt"), "x").unwrap();
+        let mismatch = input("P", "file.txt");
+
+        assert_eq!(
+            resolve_prompt_workspace_files(
+                "p",
+                &mismatch.workspace_files,
+                root.path(),
+                0
+            )
+            .unwrap_err()
+            .code(),
+            "conversation.workspace-file-project-mismatch"
         );
     }
 

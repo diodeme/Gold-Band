@@ -724,6 +724,7 @@ function browserQueuedConversationRun(): ConversationRunVm {
           content: item.content,
           attachmentCount: item.attachmentPaths.length,
           quoteCount: item.quotes.length,
+          workspaceFileCount: item.workspaceFiles?.length ?? 0,
           ...('role' in item && item.role ? { roleName: item.role.name } : {}),
           createdAt: item.createdAt,
         })),

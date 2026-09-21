@@ -1,5 +1,5 @@
 use super::ScheduledMode;
-use crate::provider::PromptWorkspaceFileRef;
+use crate::provider::{PromptWorkspaceFileRef, workspace_file_authoring_identity};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -159,24 +159,22 @@ pub fn canonical_content_json(input: &ScheduledTaskContentInput) -> Value {
         .workspace_files
         .iter()
         .map(|reference| {
+            let (project_id, relative_path) =
+                workspace_file_authoring_identity(&reference.project_id, &reference.relative_path);
+            (project_id, relative_path)
+        })
+        .collect::<Vec<_>>();
+    workspace_files.sort();
+    workspace_files.dedup();
+    let workspace_files = workspace_files
+        .into_iter()
+        .map(|(project_id, relative_path)| {
             serde_json::json!({
-                "projectId": reference.project_id,
-                "relativePath": reference.relative_path,
+                "projectId": project_id,
+                "relativePath": relative_path,
             })
         })
         .collect::<Vec<_>>();
-    workspace_files.sort_by(|left, right| {
-        left["projectId"]
-            .as_str()
-            .unwrap_or_default()
-            .cmp(right["projectId"].as_str().unwrap_or_default())
-            .then_with(|| {
-                left["relativePath"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .cmp(right["relativePath"].as_str().unwrap_or_default())
-            })
-    });
     root.insert("workspaceFiles".to_string(), Value::Array(workspace_files));
     root.insert(
         "instruction".to_string(),
@@ -625,7 +623,11 @@ mod tests {
             content_fingerprint(&second).unwrap()
         );
         let canonical = canonical_content_json(&first).to_string();
-        for excluded in ["extra-high", "bootstrapConfigOptions", "modelBoundOverrides"] {
+        for excluded in [
+            "extra-high",
+            "bootstrapConfigOptions",
+            "modelBoundOverrides",
+        ] {
             assert!(
                 !canonical.contains(excluded),
                 "canonical identity leaked {excluded}"
@@ -677,6 +679,11 @@ mod tests {
         changed_attachment.attachment_hashes = vec!["sha256:attachment-b".to_string()];
         let mut changed_workspace = baseline.clone();
         changed_workspace.workspace_id = "workspace-b".to_string();
+        let mut changed_workspace_file = baseline.clone();
+        changed_workspace_file.workspace_files = vec![PromptWorkspaceFileRef {
+            project_id: "workspace-b".to_string(),
+            relative_path: "src/main.rs".to_string(),
+        }];
         let mut changed_instruction = baseline.clone();
         changed_instruction.instruction = "inspect a different thing".to_string();
 
@@ -684,7 +691,70 @@ mod tests {
         assert_ne!(original, content_fingerprint(&changed_agent).unwrap());
         assert_ne!(original, content_fingerprint(&changed_attachment).unwrap());
         assert_ne!(original, content_fingerprint(&changed_workspace).unwrap());
+        assert_ne!(
+            original,
+            content_fingerprint(&changed_workspace_file).unwrap()
+        );
         assert_ne!(original, content_fingerprint(&changed_instruction).unwrap());
+    }
+
+    #[test]
+    fn workspace_file_order_separators_and_duplicates_are_normalized() {
+        let mut first = direct_input("claude-acp");
+        first.workspace_files = vec![
+            PromptWorkspaceFileRef {
+                project_id: "workspace-a".to_string(),
+                relative_path: "src\\WorkspaceFileTree.tsx".to_string(),
+            },
+            PromptWorkspaceFileRef {
+                project_id: "workspace-a".to_string(),
+                relative_path: "docs/design.md".to_string(),
+            },
+            PromptWorkspaceFileRef {
+                project_id: "workspace-a".to_string(),
+                relative_path: "src/WorkspaceFileTree.tsx".to_string(),
+            },
+        ];
+        let mut second = first.clone();
+        second.workspace_files.reverse();
+
+        assert_eq!(
+            content_fingerprint(&first).unwrap(),
+            content_fingerprint(&second).unwrap()
+        );
+        assert_eq!(
+            canonical_content_json(&first)["workspaceFiles"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_workspace_file_case_variants_share_identity() {
+        let mut first = direct_input("claude-acp");
+        first.workspace_files = vec![
+            PromptWorkspaceFileRef {
+                project_id: "Workspace-A".to_string(),
+                relative_path: "src\\WorkspaceFileTree.tsx".to_string(),
+            },
+            PromptWorkspaceFileRef {
+                project_id: "workspace-a".to_string(),
+                relative_path: "SRC/workspacefiletree.TSX".to_string(),
+            },
+        ];
+        let mut second = direct_input("claude-acp");
+        second.workspace_files = vec![PromptWorkspaceFileRef {
+            project_id: "workspace-a".to_string(),
+            relative_path: "src/workspacefiletree.tsx".to_string(),
+        }];
+
+        assert_eq!(
+            content_fingerprint(&first).unwrap(),
+            content_fingerprint(&second).unwrap()
+        );
     }
 
     #[test]

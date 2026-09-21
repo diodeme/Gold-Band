@@ -228,11 +228,11 @@
 
 ## 2026-09-18 工作空间文件引用到 Composer
 
-- 方案：文件树 / 搜索结果中的文件右键“引用到对话”，在当前 Composer 上下文区生成轻量文件 chip；prompt 新增 `workspaceFiles { projectId, relativePath }` 结构化输入，Rust 在 admission 与 dispatch 前重新解析并校验 workspace 边界，最终投影为 ACP `ResourceLink`。
+- 方案：文件树 / 搜索结果中的文件右键“引用到对话”，在当前 Composer 上下文区生成轻量文件 chip；prompt 新增 `workspaceFiles { projectId, relativePath }` 结构化输入，Rust 在 admission、队列 dispatch 与定时任务 authoring 持久化前重新解析并校验 workspace 边界，最终投影为 ACP `ResourceLink`。
 - 边界：不把路径写入 textarea，不把工作空间文件当作普通上传附件，不复制到 `task-inputs` / `user-inputs`，不读取全文、不计算 revision、不签发 preview grant、不新增 watcher 或文件 ID。
 - 状态：已完成。实施与验收细目见[工作空间文件引用到 Composer 设计与实施计划](新增流程/2026-09-18-工作空间文件引用到Composer设计与实施计划.md)。
-- 验收：Rust focused 16/16、Web focused 50/50、类型检查、生产构建、格式检查和桌面测试编译通过；内置浏览器覆盖首页/会话详情、树/搜索右键、chip 去重删除打开、消息 chip、深浅主题、宽窄布局与控制台错误检查。
-- 说明：首次 Rust 全量测试编译受 Windows 页面文件不足影响失败，已改用低并发 focused 测试并记录；非代码断言失败。
+- 验收：2026-09-21 review 修复后 Rust focused 44/44、Web focused 143/143、类型检查与生产构建通过；内置浏览器覆盖队列文件数量、树右键、Composer chip resolver-first 打开、消息 chip、620px 宽度与控制台错误检查。
+- 说明：首次 Rust 全量测试编译受 Windows 页面文件不足影响失败，已改用低并发 focused 测试并记录；非代码断言失败。本次修改相关 Rust 文件通过 rustfmt 检查；仓库级 cargo fmt 仍存在本分支既有的无关格式差异。
 
 ## 2026-09-18 Agent 管理 ACP Registry 改为内置浏览器链接
 

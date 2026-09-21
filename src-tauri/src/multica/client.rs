@@ -220,6 +220,16 @@ pub struct RemoteTask {
     /// DPMS 需求链接（故事页 URL）。可缺省语义同 [`Self::release_plan_id`]。
     #[serde(default)]
     pub origin_url: Option<String>,
+    /// 直接父 issue 的完成输出（multica `AgentTaskResponse.ParentOutput`，JSON `parent_output`，
+    /// issue 完成输出传递特性）。
+    ///
+    /// 服务端 claim 时派生读取父行、不物化到子任务（父 done 后补写/改写，子任务下次 claim 拿新值）。
+    /// 仅 issue 来源任务、且直接父 issue 有 `completion_output` 时 server 才发（`omitempty`：缺 key
+    /// 而非发 null）。码灵消费点：`session_start_input` 渲染为「上游交付说明」上下文块。
+    /// 纯上下文语义，**无门控语义**（门控仍只看 `is_ready` + `issue_kind`；父曾 done 又 reopen 时
+    /// 本字段仍可能存在，任务是否执行继续按 is_ready 判定）。旧 server / 非 issue 任务 → None。
+    #[serde(default)]
+    pub parent_output: Option<String>,
 }
 
 impl RemoteTask {
@@ -314,9 +324,15 @@ pub struct PinTaskSessionRequest {
 ///
 /// 码灵完成远程任务后用自身 PAT 把关联 issue 流转到 [`MULTICA_ISSUE_DONE_STATUS`]（码灵作为中介，
 /// 非 agent 直调 multica API）。issue 维度接口，path 不含 workspace，靠 `X-Workspace-ID` 头路由。
+///
+/// `completion_output`（issue 完成输出传递特性）：码灵从 agent 最终回复提取的交付说明，与 `status`
+/// 同一 PUT 原子写入——对齐 multica「写输出 + 标 done 单请求」的时序设计。None 时键整体缺席：
+/// 服务端「未触摸字段保留现值」，旧 server 未知键被忽略；码灵无清除场景，永不发显式 null。
 #[derive(Debug, Serialize)]
 struct UpdateIssueStatusRequest {
     status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completion_output: Option<String>,
 }
 
 // ===== skill 同步 wire 类型（设计 `.claude/design/multica_skill/` §3-§5）=====
@@ -1103,16 +1119,21 @@ impl MulticaClient {
     /// （3 次）；该步骤**失败仅记日志、不阻断任务终态**——complete 已送达、任务已 done，issue 状态推进
     /// 失败由调用方兜底（issue 保持原状，不影响 multica 任务生命周期）。
     ///
+    /// `completion_output`：done 流转时随同一请求写入的交付说明（agent 最终回复提取，见
+    /// `multica/handoff.rs`）。None = 不带该键（服务端保留现值；in_progress 流转恒 None）。
+    ///
     /// [`complete_task`]: MulticaClient::complete_task
     pub async fn update_issue_status(
         &self,
         workspace_id: &str,
         issue_id: &str,
         status: &str,
+        completion_output: Option<&str>,
     ) -> Result<(), MulticaError> {
         let path = format!("/api/issues/{issue_id}");
         let body = UpdateIssueStatusRequest {
             status: status.to_string(),
+            completion_output: completion_output.map(str::to_string),
         };
         self.with_network_retry("update_issue_status", || async {
             // body 丢弃：issue 状态更新只关心 HTTP 状态（map_status 已校验），无需解码响应。
@@ -1567,6 +1588,31 @@ mod tests {
         assert!(legacy.origin_url.is_none());
     }
 
+    // ===== 父任务完成输出 parent_output（issue 完成输出传递特性，仅 issue 任务 + 父有输出时携带）=====
+
+    #[test]
+    fn remote_task_parses_parent_output() {
+        // wire 契约：`parent_output` = 直接父 issue 的 completion_output，服务端 claim 时
+        // 派生读取父行。omitempty——父无输出/无父/非 issue 任务时键整体缺席。
+        let task: RemoteTask = serde_json::from_str(
+            r#"{"id":"t-1","status":"queued","issue_kind":"test","is_ready":true,"parent_output":"部署地址: https://t.example.com\n测试要点: 回归登录链路"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            task.parent_output.as_deref(),
+            Some("部署地址: https://t.example.com\n测试要点: 回归登录链路")
+        );
+    }
+
+    #[test]
+    fn remote_task_missing_parent_output_parses_as_none() {
+        // 旧 server / 父无输出 / 无父 / 非 issue 任务：键缺席 → None（会话起始输入不拼
+        // 「上游交付说明」块），与拆分前行为一致（版本解耦）。
+        let legacy: RemoteTask =
+            serde_json::from_str(r#"{"id":"t-1","status":"queued"}"#).unwrap();
+        assert!(legacy.parent_output.is_none());
+    }
+
     #[test]
     fn pending_list_response_carries_readiness_fields() {
         // pending 列表是看板的数据源：包装形态与裸数组形态都必须带出两字段
@@ -1782,12 +1828,33 @@ mod tests {
 
     #[test]
     fn update_issue_status_request_serializes_status_key() {
-        // 接入方案 D2：PUT /api/issues/{id} body {status}。锁定 wire body 契约（status 为唯一键）。
+        // 接入方案 D2：PUT /api/issues/{id} body {status}。completion_output 为 None 时键
+        // 整体缺席——锁定「未触摸字段保留现值 + 旧 server 未知键忽略」的兼容契约
+        // （in_progress 流转与无交付说明的 done 流转均走此形态）。
         let body = serde_json::to_value(UpdateIssueStatusRequest {
             status: "done".into(),
+            completion_output: None,
         })
         .unwrap();
         assert_eq!(body, serde_json::json!({"status": "done"}));
+    }
+
+    #[test]
+    fn update_issue_status_request_serializes_completion_output_when_present() {
+        // issue 完成输出传递特性：status + completion_output 同一 PUT 原子写入（对齐 multica
+        // 「写输出 + 标 done 单请求」的时序设计——分两次请求存在 test 恰好 claim 在中间的竞态窗口）。
+        let body = serde_json::to_value(UpdateIssueStatusRequest {
+            status: "done".into(),
+            completion_output: Some("部署地址: https://t.example.com".into()),
+        })
+        .unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "status": "done",
+                "completion_output": "部署地址: https://t.example.com"
+            })
+        );
     }
 
     #[test]

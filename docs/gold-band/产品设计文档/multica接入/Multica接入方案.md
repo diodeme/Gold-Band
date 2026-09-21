@@ -289,6 +289,7 @@ run 终局（订阅器穷举 4 分支，源码依据 provider/mod.rs:1086-1100 +
 | `multica/state.rs` | 运行期状态：per-workspace runtime_id 映射、在飞 remote_task↔本地 task 映射（`multica_pending_issues` 失败待重试 issue 持久化在 StateConfig，非 state.rs 内存）；**执行注入**：claim 后由 composer 下拉选定的本地工作区 → 发送时随 `start_multica_conversation_run` 写入 `ActiveRemoteRun.local_project_id` → 按 `workspace_entry_for_project(&home_state, &local_project_id)` 解析 `workspace_path` → `App::with_repo_root`（参考 `commands_conversation.rs:257`）。**原 workspace 级 `binding_for_multica()` 已删除（M5-z）** |
 | `multica/loop.rs` | 心跳循环、**启动全量 register 已添加 workspace / 新添加 workspace 时 register**/recover-orphans/失败任务供 rerun、取消检测轮询 |
 | `multica/bridge.rs` | remote_task ↔ 本地 task/run 衔接（**直接调 `gold-band` 库层 App API** + 订阅 lifecycle bus；不走 Tauri command 层） |
+| `multica/handoff.rs` | issue 完成输出传递（M5-bj）：从最终 assistant 回复提取 `completion-output` 围栏块（纯函数提取 + timeline 投影），随 issue done 流转一次 PUT 上送；fail-open |
 
 **边界**：multica **业务逻辑**（HTTP / 心跳 / claim / 重试 / 状态机）留在 src-tauri 薄壳层（依赖 reqwest、tauri state、AppHandle）；但**会话执行复用 `gold-band` 库层 App 公开 API**（`create_task_from_requirement` / `run_start_background` / `worker_ref_show` / `run_continue_background_with_config_overrides`，均公开），并把会话 VM 现有私有的 Direct/Auto workflow 构造上提到 `gold_band::dsl::presets` 公开复用（库层唯一轻微改动）。multica 不新造 runtime、不碰核心 lifecycle 契约。
 
@@ -544,6 +545,7 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 - ⚠️ 现有的 `POST /api/daemon/tasks/claim`（批量 FIFO）和 `POST /api/daemon/runtimes/{runtimeId}/tasks/claim`（逐 runtime FIFO）**不能指定 task_id**，不满足「点哪领哪」，所以才需要本接口。
 
 - **story dev/test 拆分（§12.42）**：claim 响应同带 `issue_kind` / `is_ready`，但码灵 claim 路径**不消费就绪字段做门控**（未就绪 test 任务照常领取执行）；claim 后本地建 run 失败时的回滚路径不变（`release_after_run_start_failure`，覆盖 workspace 解析 / 模型校验 / 本地建 run / start_task 失败）。
+- **issue 完成输出传递（M5-bj）**：claim / pending / detail 响应另带可选 `parent_output`（直接父 issue 完成时留下的交付说明，服务端 claim 时派生读取父行、omitempty）。码灵侧 serde-optional：旧 server / 无父 / 非 issue 任务缺失 → 不渲染「上游交付说明」块，行为与现状一致；消费为**纯执行上下文**（拼入会话起始输入，见 §3.2.4「任务执行」行），无门控语义。
 
 > claim 之后**没有退回/释放接口**，唯一出路是执行到 complete 或 fail。因此列表展示用只读的 B1，确认要做了再用 B2 领取。
 
@@ -600,6 +602,11 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 - 语义：fail 后原任务行保持 failed 终态（审计），rerun 是新建任务行（`rerun_of_task_id` 指回原行）=「这件事重做一遍」。
 - 前提：issue 当前 assignee 仍是绑定本 runtime 的 agent；agent 未归档；issue 未被删除（删除则 404）。
 - `force_fresh_session` 强制新会话——对自建 daemon（自己执行、不依赖 provider session）无影响。
+
+**D2. issue 状态流转** ★ M5-t（done）/ M5-w（in_progress）/ M5-bj（completion_output）
+- `PUT /api/issues/{id}` ｜ user PAT ｜ 需 `X-Workspace-ID` 头
+- 请求：`{ "status": "in_progress" | "done", "completion_output": "<可选，仅 done>" }`
+- 说明：issue 列表流转（开始→in_progress 由 M5-w、完成→done 由 M5-t 引入，均为**码灵作为中介**用自己的 PAT 调用、agent 不感知 multica 业务接口）。M5-bj 起 done 请求可带 `completion_output`（≤16,000 Unicode 字符，服务端按 rune 计数、超长 400 且**整个 PUT 被拒、issue 不会标 done**——2026-09-21 从 64,000 收紧）：码灵从 agent 最终回复提取 `completion-output` 围栏块（见 `multica/handoff.rs`，客户端按 16k 截断兜底 + 提示词要求执行体控篇幅 ≤2k、超长走工作区文件 + 路径引用），**status 与 completion_output 一次 PUT 原子上送**；键缺席（serde skip_serializing_if）= 服务端保持原值——旧 server 忽略未知键、新 server 缺键不覆盖，双向兼容。提取失败 fail-open（issue 照常 done，写作可选、不门控）。
 
 #### E. 辅助查询（本地记录丢失时兜底）
 
@@ -1135,6 +1142,15 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **修复（结构统一，非补丁）**：滚动收口从 textarea 迁到包装层——prompt-kit copy-in `maxHeight` 支持 `null`（自适应不设上限、自身永不滚动，滚动交由祖先容器），包装 div 用 `inputScrollContainerClassName: 'relative min-w-0 max-h-80 overflow-y-auto'`（max-h-80 = 320px，即原 `textareaMaxHeightPx: 320` 的上限原值迁移）统一接管滚动。chip / 斜杠标签位于包装层内部，随正文首行一起滚出视野。
   - **影响面**：仅会话主页 `ConversationComposer`（ACP 会话 composer 是独立组件、独立布局常量，不受影响）；斜杠命令菜单 inline 弹层是包装层的兄弟节点（挂在 SlashCommandMenu 外层 root 上），不被滚动容器裁剪。
   - **验证（2026-09-17）**：`conversation-composer-autosize.test.ts` 契约更新——null maxHeight 不封顶不滚动、`maxHeight={null}` 与滚动容器为包装层、chip span 在滚动容器内部（源码契约）；浏览器（deep link 会话主页 + 注入 40 行文本）实测：textarea 976px 不封顶 `overflow-y: hidden`，包装层 320px 收口滚动，chip 随滚动移出视野（offset +8px → -492px）；`tsc` + 生产构建 + 全量 vitest 过。
+
+- [x] **M5-bj**（2026-09-21）issue 完成输出传递（multica `completion_output` / `parent_output` 特性对接，权威设计 `.claude/design/multica_issue_output_sync/码灵侧设计方案-issue-completion-output.md`）：
+  - **特性**：multica issue 完成时可留交付说明（`completion_output`，≤16k 字符）；子任务 claim/pending/detail 响应携带直接父 issue 的输出（`parent_output`，派生读取、omitempty）。
+  - **读路径**：`RemoteTask` 增 `parent_output`（serde-optional）；会话起始输入按 **DPMS 溯源块 → 上游交付说明块 → 需求正文 → 完成输出协议块** 四段组装（`vm.rs session_start_input`）。协议块按 `issue_id` 非空注入（与 kind 无关）。消费为纯执行上下文、无门控语义；绑定快照语义（bind 时 detail 读到的值即执行值）。
+  - **写路径（核心适配）**：multica 改动清单 §2.1 的 CLI 写入路径（`multica issue status done --completion-output`）不适用于码灵选项 B 中介形态——agent 不装 CLI、从不直调 multica API。改为**围栏块协议 + 自动中继**：提示词要求 agent 在最终回复末尾附 info 为 `completion-output` 的代码围栏块（`src/prompts/{zh-CN,en}/runtime/remote_task_completion_protocol.md`）；run 成功收尾时 bridge 从 `attempt_dir` 的 `acp.timeline.jsonl` 投影最终 assistant 回复（`multica/handoff.rs final_assistant_reply`，取最后一条非占位 textDelta）、提取最后一个匹配围栏块（`extract_completion_output`，trim 空→None、按 rune 截断 16k）；有 attempt 却提不出内容时记 warn（仅观察指令层遵从度，不重试、不阻断），随 `update_issue_status(done)` **一次 PUT 原子上送**。
+  - **支撑改动**：`RuntimeLifecycleEvent::RunCompleted` 增 `attempt_dir: Option<String>`（编排器构造点透传，镜像 NodeCompleted；非 ACP 路径 None）——避免 bridge 自行反推路径（desktop_context 是 home app 非 workspace app，repo root 不对会静默提取失败）。
+  - **兼容**：读侧 `#[serde(default)]`、写侧 `skip_serializing_if`（缺键=服务端保持原值）；旧 server 忽略未知键 → 双向渐进升级安全。本地 webank fork 无本特性，端到端验证须打包内网（改动清单 §3 六步脚本）。
+  - **验证（2026-09-21）**：目标测试全绿——gold_band `prompts::` 12 / `app::tests::` 59；src-tauri `multica::` 148（含 handoff 9：命中/无块/多块取最后/空块→None/未闭合围栏/嵌套围栏跳过/16k rune 截断/timeline 投影/缺目录 fail-open；bridge 新增 2：提取命中→Some、无块或无 attempt_dir→None）。
+  - **2026-09-21 服务端上限收紧跟进（64k → 16k，multica 通知）**：`handoff.rs MAX_COMPLETION_OUTPUT_CHARS` 改 16_000（截断测试同步改 16k rune 断言）；提示词模板（zh/en）补篇幅契约——交付说明是「最终交付结论」而非 run 日志（多 run 整体覆盖前值）、建议 ≤2,000 字符、详细执行过程/日志写入工作区文件、块内只放文件路径引用（行内代码格式；multica CLI 的 `issue comment add --attachment` 附件通道对码灵选项 B 中介不适用，工作区文件 + 路径引用是码灵侧等价物）、输出前自行控制篇幅（超长 400 卡 done）；`prompts.rs` 测试锁定新契约关键词。读侧 `parent_output` 上限随服务端收紧为 16k——渲染为纯文本模板拼接、无 UI 崩溃面，不加客户端截断（≤16k 由服务端写库前拦截保证）。
 
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

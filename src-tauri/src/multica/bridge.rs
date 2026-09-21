@@ -25,6 +25,7 @@ use tracing::warn;
 
 use crate::multica::client::{MULTICA_ISSUE_DONE_STATUS, MulticaClient};
 use crate::multica::config::{get_pat, multica_base_url, multica_settings};
+use crate::multica::handoff;
 use crate::multica::state::{ActiveRemoteRun, SharedMulticaState};
 use crate::remote::{REMOTE_SOURCE_SETTINGS_UPDATED_EVENT, REMOTE_TASKS_UPDATED_EVENT};
 use crate::state::{DesktopContext, DesktopState};
@@ -180,6 +181,7 @@ pub fn create_multica_subscriber(
                 run_id,
                 outcome,
                 node_label,
+                attempt_dir,
                 ..
             } => {
                 let Some((remote_task_id, run)) = lookup_active_run(&app_handle, &task_id, &run_id)
@@ -188,8 +190,15 @@ pub fn create_multica_subscriber(
                 };
                 let app_handle = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
-                    handle_run_completed(app_handle, remote_task_id, run, outcome, node_label)
-                        .await;
+                    handle_run_completed(
+                        app_handle,
+                        remote_task_id,
+                        run,
+                        outcome,
+                        node_label,
+                        attempt_dir,
+                    )
+                    .await;
                 });
             }
             // RunPaused / InterventionRequested / NodeStarted / AcpTurnFinished：不上报终态。
@@ -282,14 +291,17 @@ async fn handle_node_completed(
 /// RunCompleted：按 outcome 4 分支上报终态 + 清本地索引。
 ///
 /// Success 分支在 `complete_task` 送达后，额外用码灵 PAT 把关联 issue 流转到 `done`（接入方案 D2：
-/// 码灵作为中介）。该步骤失败仅记日志、不阻断终态（complete 已送达）；issue 关联缺失（issue_id 为空，
-/// 如非 issue 来源任务）则跳过。
+/// 码灵作为中介），并在同一 PUT 内附带 `completion_output`——从 `attempt_dir` 的 acp.timeline 投影
+/// 最终 assistant 回复、提取 `completion-output` 围栏块（issue 完成输出传递特性）。提取失败
+/// fail-open（不带该键，issue 照常 done——写作可选、不门控）。该步骤失败仅记日志、不阻断终态
+/// （complete 已送达）；issue 关联缺失（issue_id 为空，如非 issue 来源任务）则跳过。
 async fn handle_run_completed(
     app: AppHandle,
     remote_task_id: String,
     run: ActiveRemoteRun,
     outcome: RunOutcome,
     node_label: String,
+    attempt_dir: Option<String>,
 ) {
     let Some(context) = desktop_context(&app) else {
         return;
@@ -324,11 +336,24 @@ async fn handle_run_completed(
                     // 中介，非 agent 直调 multica API）。失败仅记日志——任务终态已上报，issue 状态推进
                     // 不阻断任务完成（issue 保持原状，server 扫描器/用户兜底）。
                     if let Some(issue) = run.issue_id.as_deref().filter(|s| !s.trim().is_empty()) {
+                        let completion_output =
+                            completion_output_for_issue_done(attempt_dir.as_deref());
+                        // 有 attempt（说明可读到执行体终态回复）却提不出交付说明，说明执行体没按协议
+                        // 产出围栏块。仅记日志、不改变行为（issue 仍标 done、不再重试），用于内网联调
+                        // 观察指令层遵从度。
+                        if completion_output.is_none() && attempt_dir.is_some() {
+                            warn!(
+                                task = %remote_task_id,
+                                issue = %issue,
+                                "multica completion-output: nothing extracted from final reply (issue still marked done)"
+                            );
+                        }
                         if let Err(e) = client
                             .update_issue_status(
                                 &run.workspace_id,
                                 issue,
                                 MULTICA_ISSUE_DONE_STATUS,
+                                completion_output.as_deref(),
                             )
                             .await
                         {
@@ -447,6 +472,16 @@ enum PendingUpdate {
     ClearOnSuccess,
     /// Failure：completed 历史记 `failed`。
     AddOnFailure,
+}
+
+/// Success 分支 issue done 流转附带的交付说明提取（issue 完成输出传递特性，fail-open）。
+///
+/// attempt 缺失（非 ACP 完成路径）/ timeline 不可读 / 最终回复无 `completion-output` 围栏块
+/// → None：issue 照常流转 done，写作可选、不门控。读取与提取均为纯本地操作。
+fn completion_output_for_issue_done(attempt_dir: Option<&str>) -> Option<String> {
+    attempt_dir
+        .and_then(handoff::final_assistant_reply)
+        .and_then(|reply| handoff::completion_output_from_reply(&reply))
 }
 
 // ── 配置/状态访问 helper ────────────────────────────────────────────────────────
@@ -685,5 +720,60 @@ mod tests {
             state.remote_completed_tasks[0].remote_task_id,
             format!("rt-{}", MAX_MULTICA_COMPLETED_HISTORY + 4)
         );
+    }
+
+    // ===== issue 完成输出传递：Success 分支 completion_output 提取组合的接口层固化 =====
+
+    #[test]
+    fn completion_output_for_issue_done_extracts_fenced_block_from_timeline() {
+        // attempt_dir 指向含 completion-output 围栏块的最终 assistant 回复 → Some（随 done 一次 PUT 上送）。
+        let (attempt_dir, _temp) =
+            timeline_attempt_dir("工作完成。\n```completion-output\n交付说明\n```\n");
+        assert_eq!(
+            completion_output_for_issue_done(Some(attempt_dir.as_str())),
+            Some("交付说明".to_string())
+        );
+    }
+
+    #[test]
+    fn completion_output_for_issue_done_without_block_or_dir_is_none() {
+        // agent 未按协议产出块 / 非 ACP 完成路径（attempt_dir None）→ None：issue 照常 done（fail-open）。
+        let (attempt_dir, _temp) = timeline_attempt_dir("工作完成，无交付说明块。");
+        assert_eq!(
+            completion_output_for_issue_done(Some(attempt_dir.as_str())),
+            None
+        );
+        assert_eq!(completion_output_for_issue_done(None), None);
+    }
+
+    /// 造一个 attempt 目录，timeline 内含一条最终 assistant textDelta（`reply`）。
+    /// 返回 (attempt_dir, TempDir guard)——guard 由调用方持有，目录在测试结束才清理。
+    fn timeline_attempt_dir(reply: &str) -> (camino::Utf8PathBuf, tempfile::TempDir) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let attempt_dir =
+            camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let paths = gold_band::acp::events::AcpAttemptPaths::from_attempt_dir(attempt_dir.clone());
+        gold_band::acp::events::write_timeline_items(
+            &paths.timeline,
+            &[gold_band::acp::events::AcpUiEvent {
+                id: "assistant-final".into(),
+                seq: 1,
+                timestamp: "1Z".into(),
+                kind: "textDelta".into(),
+                session_id: None,
+                content: Some(reply.to_string()),
+                title: None,
+                tool_call_id: None,
+                status: None,
+                started_seq: Some(1),
+                ended_seq: Some(1),
+                started_at: Some("1Z".into()),
+                ended_at: Some("1Z".into()),
+                timing: None,
+                raw: None,
+            }],
+        )
+        .expect("write timeline");
+        (attempt_dir, temp)
     }
 }

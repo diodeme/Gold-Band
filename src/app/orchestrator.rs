@@ -3974,6 +3974,11 @@ fn emit_run_completed_lifecycle_event(
         outcome,
         task_title: task_title(app, task_id),
         completion_agent_label: super::notification::direct_conversation_agent_label(app, task_id),
+        attempt_dir: Some(
+            app.paths
+                .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id)
+                .to_string(),
+        ),
     });
     emit_run_metrics_fact(
         app,

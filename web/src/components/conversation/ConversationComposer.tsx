@@ -55,10 +55,9 @@ import {
   draftAttachmentWorkspaceResourceKey,
   scheduledTaskConfigWorkspaceResourceKey,
   useOptionalRightWorkspace,
-  fileBrowserWorkspaceResourceKey,
-  fileWorkspaceResourceKey,
   type RightWorkspaceResource,
 } from '@/components/workspace/right-workspace-context';
+import { openWorkspaceFileReference } from '@/lib/workspace-file-reference';
 import { useWorkspaceFileReferenceBridge } from '@/components/workspace/workspace-file-reference-bridge';
 
 interface ConversationComposerProps {
@@ -487,6 +486,7 @@ export function ConversationComposer({
   const [globalGoal, setGlobalGoal] = useState(runMode.autoConfig?.globalGoal ?? '');
   const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? '');
   const [runModeError, setRunModeError] = useState<string | null>(null);
+  const [contextError, setContextError] = useState<string | null>(null);
   const [submittingAttachments, setSubmittingAttachments] = useState(false);
   const [branchSelection, setBranchSelection] = useState<{ projectId: string; branch: string } | null>(null);
   const [branchMutationPending, setBranchMutationPending] = useState(false);
@@ -544,6 +544,10 @@ export function ConversationComposer({
     });
   }, [projectId]);
 
+  const handleWorkspaceChange = useCallback((nextProjectId: string) => {
+    onWorkspaceChange(nextProjectId);
+  }, [onWorkspaceChange]);
+
   useWindowDragGuard();
 
   const isAuto = runMode.mode === 'auto';
@@ -557,6 +561,7 @@ export function ConversationComposer({
   // user is guided to add one first (decision e).
   const multicaBinding = composerDraft.draft.multica;
   const workspaceFiles = composerDraft.draft.workspaceFiles;
+  const setComposerWorkspaceFiles = composerDraft.setWorkspaceFiles;
   const attachmentsRef = useRef(composerDraft.draft.attachments);
   const workspaceFilesRef = useRef(workspaceFiles);
   useEffect(() => {
@@ -566,48 +571,35 @@ export function ConversationComposer({
     workspaceFilesRef.current = workspaceFiles;
   }, [workspaceFiles]);
 
-  useEffect(() => workspaceFileReferenceBridge.register((reference) => {
-    if (reference.projectId !== projectId) return false;
+  useEffect(() => workspaceFileReferenceBridge.register((reference, options) => {
+    if (reference.projectId !== projectId) return { kind: 'unavailable' };
     const result = addComposerWorkspaceFile(
       workspaceFilesRef.current,
       attachmentsRef.current.length,
       reference,
     );
-    if (!result.ok) return true;
+    if (!result.ok) {
+      if (result.code === 'composer.context.limit-exceeded') {
+        setContextError(
+          t('errors.composer.context-limit-exceeded', { max: result.max }),
+        );
+        return { kind: 'limit-exceeded', max: result.max };
+      }
+      return { kind: 'duplicate' };
+    }
     workspaceFilesRef.current = result.workspaceFiles;
-    composerDraft.setWorkspaceFiles(result.workspaceFiles);
-    return true;
-  }), [composerDraft, projectId, workspaceFileReferenceBridge]);
+    setComposerWorkspaceFiles(result.workspaceFiles);
+    setContextError(null);
+    if (options.isDocked) requestAnimationFrame(() => composerTextareaRef.current?.focus());
+    return { kind: 'added' };
+  }), [projectId, setComposerWorkspaceFiles, t, workspaceFileReferenceBridge]);
 
   const openWorkspaceFile = useCallback((file: ComposerWorkspaceFileRef) => {
     if (!rightWorkspace?.scopeKey) return;
-    void rightWorkspace.openResource({
-      kind: 'file-browser',
-      key: fileBrowserWorkspaceResourceKey(file.projectId),
-      scopeKey: rightWorkspace.scopeKey,
-      title: file.name,
-      description: file.relativePath,
-      attention: false,
-      projectId: file.projectId,
-      selectedFile: {
-        kind: 'file',
-        key: fileWorkspaceResourceKey(file.projectId, file.canonicalPath ?? file.relativePath),
-        scopeKey: rightWorkspace.scopeKey,
-        title: file.name,
-        description: file.relativePath,
-        attention: false,
-        projectId: file.projectId,
-        locator: {
-          projectId: file.projectId,
-          canonicalPath: file.canonicalPath ?? file.relativePath,
-          relativePath: file.relativePath,
-          scope: 'workspace',
-        },
-        target: null,
-        targetRevision: 0,
-      },
-    });
-  }, [rightWorkspace]);
+    void openWorkspaceFileReference(file, rightWorkspace.scopeKey, rightWorkspace.openResource)
+      .then(() => setContextError(null))
+      .catch(error => setContextError(displayAppError(t, error)));
+  }, [rightWorkspace, t]);
   const multicaActive = multicaBinding !== null;
   const hasLocalWorkspaces = workspaces.length > 0;
   const scheduledSummary = scheduledConfig
@@ -990,6 +982,7 @@ export function ConversationComposer({
       }
       attachments.forEach(closeComposerAttachmentPreview);
       composerDraft.reset();
+      setContextError(null);
     } catch {
       // Attachment hook owns the user-facing file error.
     } finally {
@@ -1053,6 +1046,7 @@ export function ConversationComposer({
       onScheduledTaskCreated?.();
       exitScheduledMode();
       setRunModeError(null);
+      setContextError(null);
     } catch (error) {
       setRunModeError(displayAppError(t, error));
     } finally {
@@ -1122,7 +1116,7 @@ export function ConversationComposer({
             workspaces={workspaces}
             workLocation={workLocation}
             busy={busy || submittingAttachments}
-            onWorkspaceChange={onWorkspaceChange}
+            onWorkspaceChange={handleWorkspaceChange}
             onWorkLocationChange={onWorkLocationChange}
             showWorkLocation={!scheduledMode}
             forceSelector={multicaActive}
@@ -1145,11 +1139,15 @@ export function ConversationComposer({
           <ComposerContextArea
             attachments={attachments}
             workspaceFiles={workspaceFiles}
+            error={contextError}
             onRemoveAttachment={removeComposerAttachment}
             onPreviewAttachment={openComposerAttachment}
-            onRemoveWorkspaceFile={(id) => composerDraft.setWorkspaceFiles(
-              workspaceFiles.filter((file) => file.id !== id),
-            )}
+            onRemoveWorkspaceFile={(id) => {
+              setComposerWorkspaceFiles(
+                workspaceFiles.filter((file) => file.id !== id),
+              );
+              setContextError(null);
+            }}
             onOpenWorkspaceFile={openWorkspaceFile}
           />
           <SlashCommandMenu

@@ -750,22 +750,25 @@ pub fn set_scheduled_task_enabled(
 }
 
 #[tauri::command]
-pub fn create_scheduled_task(
+pub async fn create_scheduled_task(
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::CreateScheduledTaskInputVm,
 ) -> CommandResult<crate::view_models_conversation::ScheduledTaskVm> {
     let service = state.scheduled_service().map_err(command_error)?;
-    let record = service.create(input).map_err(scheduled_service_error)?;
-    let workspace_name = service
-        .workspace_name(&record.definition.project_id)
-        .map_err(scheduled_service_error)?;
-    Ok(
+    spawn_blocking_command(move || {
+        let record = service.create(input).map_err(scheduled_service_error)?;
+        let workspace_name = service
+            .workspace_name(&record.definition.project_id)
+            .map_err(scheduled_service_error)?;
+        Ok(
         crate::view_models_conversation::ScheduledTaskVm::from_definition_in_workspace(
             &record.definition,
             &workspace_name,
             record.next_run_at,
         ),
-    )
+        )
+    })
+    .await
 }
 
 #[tauri::command]
@@ -783,16 +786,20 @@ pub fn get_scheduled_task(
 }
 
 #[tauri::command]
-pub fn update_scheduled_task(
+pub async fn update_scheduled_task(
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::UpdateScheduledTaskInputVm,
 ) -> CommandResult<crate::view_models_conversation::ScheduledTaskEditVm> {
-    let record = state
+    let service = state
         .scheduled_service()
-        .map_err(command_error)?
-        .update(input)
-        .map_err(scheduled_service_error)?;
-    Ok(crate::view_models_conversation::ScheduledTaskEditVm::from_definition(&record.definition))
+        .map_err(command_error)?;
+    spawn_blocking_command(move || {
+        let record = service.update(input).map_err(scheduled_service_error)?;
+        Ok(crate::view_models_conversation::ScheduledTaskEditVm::from_definition(
+            &record.definition,
+        ))
+    })
+    .await
 }
 
 #[tauri::command]

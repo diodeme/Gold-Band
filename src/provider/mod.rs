@@ -39,7 +39,7 @@ use std::str::FromStr;
 use tracing::debug;
 pub use workspace_files::{
     MAX_PROMPT_WORKSPACE_FILES, PromptWorkspaceFileRef, ResolvedWorkspaceFileRef,
-    WorkspaceFileRefError, resolve_prompt_workspace_files,
+    WorkspaceFileRefError, resolve_prompt_workspace_files, workspace_file_authoring_identity,
 };
 
 use crate::acp::events::AttachmentMeta;

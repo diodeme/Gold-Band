@@ -322,6 +322,7 @@ describe('deriveAcpRuntimeComposerState', () => {
       content: `prompt ${index}`,
       attachmentCount: 0,
       quoteCount: 0,
+      workspaceFileCount: 0,
       createdAt: '2026-08-07T00:00:00Z',
     }));
     const state = deriveAcpRuntimeComposerState(baseInput({
@@ -1316,6 +1317,7 @@ describe('mergeConversationAttemptLifecycle', () => {
           content: 'keep visible',
           attachmentCount: 0,
           quoteCount: 0,
+          workspaceFileCount: 0,
           createdAt: '2026-08-07T00:00:00Z',
         }],
       },
@@ -1375,6 +1377,7 @@ describe('mergeConversationAttemptLifecycle', () => {
           content: 'deleted',
           attachmentCount: 0,
           quoteCount: 0,
+          workspaceFileCount: 0,
           createdAt: '2026-08-07T00:00:00Z',
         }],
       },

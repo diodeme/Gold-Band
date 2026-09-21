@@ -796,12 +796,12 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 
 ### 工作空间文件引用（2026-09-18 设计）
 
-- `ConversationPromptInput` 增加 `workspaceFiles` 结构化字段。前端只提交 `{ projectId, relativePath }`；`displayText`、quote、role 和 workspace 引用共同组成一次用户输入，不把引用路径拼接进正文。首页创建、会话详情追问、runtime continue、prompt queue 和定时创建入口消费同一 DTO，不在某个模式中复制旁路字段。
-- 未发送引用属于 Composer 草稿：快速对话引用随首页草稿跨页面保留；会话详情引用随完整 attempt/branch locator 的 ACP 草稿隔离保留。引用与普通附件共享现有 Composer 上下文数量上限，草稿只保存轻量 locator 和展示摘要，不保存文件内容。
-- 快速对话与 ACP 会话详情的 Composer 位于 center panel，文件树位于 right panel；两者通过 right workspace scope 内稳定的引用命令桥连接。Composer 挂载时注册 `addWorkspaceFileRef`，卸载或 scope 切换注销；文件树只消费命令，不订阅草稿、正文、附件或历史消息。桥内部以 ref 读取最新命令，注册状态只让文件树局部重渲染。
-- Prompt admission 和队列写入前必须完成引用校验；`promptSubmission` 与 prompt queue 持久化轻量 `projectId + relativePath`。dispatch 前再次按当前 workspace 解析，生成 `ResolvedWorkspaceFileRef { canonicalPath, name, mimeType, size }`；排队期间文件缺失、改名或越界按结构化错误结算，不自动回填或猜测替代文件。
+- `ConversationPromptInput` 增加 `workspaceFiles` 结构化字段。前端只提交 `{ projectId, relativePath }`；`displayText`、quote、role 和 workspace 引用共同组成一次用户输入，不把引用路径拼接进正文。首页创建、会话详情追问、runtime continue、prompt queue 和定时创建入口消费同一 DTO；队列自动 dispatch、手动 use 和 terminal recovery 必须复用同一队列项投影，禁止在单条 dispatch 路径重建不完整 input。
+- 未发送引用属于 Composer 草稿：快速对话引用随首页草稿跨页面保留，但所有 workspace 选择入口都通过 App draft boundary 派发切换，旧 project 引用随选择事件移除，正文与普通附件仍按既有草稿语义保留；会话详情引用随完整 attempt/branch locator 的 ACP 草稿隔离保留。引用与普通附件共享现有 Composer 上下文数量上限，重复引用去重后再计算上限，草稿只保存轻量 locator 和展示摘要，不保存文件内容。
+- 快速对话与 ACP 会话详情的 Composer 位于 center panel，文件树位于 right panel；两者通过 right workspace scope 内稳定的引用命令桥连接。Composer 挂载时注册 `addWorkspaceFileRef`，卸载或 scope 切换注销；文件树只消费命令，不订阅草稿、正文、附件或历史消息。桥内部以 ref 读取最新命令，注册状态只让文件树局部重渲染。ACP 打开引用文件只消费 right workspace commands context，右侧工作区 Tab、宽度和 renderer 状态变化不得重渲染会话历史。
+- Prompt admission、队列写入和定时任务 create / update 前必须完成引用校验；`promptSubmission` 与 prompt queue 持久化轻量 `projectId + relativePath`，队列摘要暴露文件引用数量。dispatch 前再次按当前 workspace 解析，生成 `ResolvedWorkspaceFileRef { canonicalPath, name, mimeType, size }`；排队或定时期间文件缺失、改名或越界按结构化错误结算，不自动回填或猜测替代文件。
 - Provider 收到的是 ACP `ResourceLink` content block：`file://` URI、文件名、MIME 与大小。Agent 缺少 `embeddedContext` 或 `image` 能力时仍收到 ResourceLink，不把引用展开为正文；是否读取文件由 Agent 决定。工作空间引用不进入 `task_input_attachment_paths` / `user_input_attachment_paths`，也不物化到 `authoring/inputs` 或 `user-inputs`。
-- Timeline 用户事件在 `raw.workspaceFiles` 中保存结构化引用摘要，供消息 chip 与回放渲染；`originalUserText` 语义不变。当前输入历史继续沿用仅回填正文的既有 quote/attachment 契约，不携带引用、不拼路径。消息 chip 点击复用工作空间文件资源，不创建附件资源，也不把相对路径解释为 attempt 内附件路径。
+- Timeline 用户事件在 `raw.workspaceFiles` 中保存结构化引用摘要，供消息 chip 与回放渲染；`originalUserText` 语义不变。当前输入历史继续沿用仅回填正文的既有 quote/attachment 契约，不携带引用、不拼路径。消息 chip 点击先通过工作空间 resolver 取得 canonical locator，再复用工作空间文件资源，不创建附件资源，也不把相对路径解释为 attempt 内附件路径。
 - 发送失败或 admission 前停止时，完整草稿按既有快照回填，workspace 引用与正文、quote、附件一起保留；已被 canonical admission 消费后按既有 turn 生命周期释放草稿快照，不以引用预览资源为由延长生命周期。
 
 - 快速对话与会话详情追问的所有未发送附件使用同一 `draft-attachment` 右侧工作区资源；点击附件 chip 不打开遮罩式图片或文本 Dialog。图片继续复用现有工作区画布；文本复用共享只读查看器，其中 Markdown 提供渲染/源码双模式。附件被移除、清空或随 prompt 提交后，必须在同一事件链关闭对应预览 Tab，不能保留引用已释放 Object URL 或已失效内容 locator 的僵尸资源。

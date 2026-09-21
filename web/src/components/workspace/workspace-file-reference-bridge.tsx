@@ -10,7 +10,39 @@ import type { ComposerWorkspaceFileRef } from '@/lib/composer-context';
 
 export type AddWorkspaceFileRefCommand = (
   reference: ComposerWorkspaceFileRef,
-) => boolean;
+  options: { isDocked: boolean },
+) => AddWorkspaceFileRefResult;
+
+export type AddWorkspaceFileRefResult =
+  | { kind: 'added' }
+  | { kind: 'duplicate' }
+  | { kind: 'limit-exceeded'; max: number }
+  | { kind: 'unavailable' };
+
+export interface WorkspaceFileReferencePresentation {
+  isDocked: boolean;
+}
+
+const WorkspaceFileReferencePresentationContext =
+  createContext<WorkspaceFileReferencePresentation>({ isDocked: false });
+
+export function useWorkspaceFileReferencePresentation() {
+  return useContext(WorkspaceFileReferencePresentationContext);
+}
+
+export function WorkspaceFileReferencePresentationProvider({
+  value,
+  children,
+}: {
+  value: WorkspaceFileReferencePresentation;
+  children: ReactNode;
+}) {
+  return (
+    <WorkspaceFileReferencePresentationContext.Provider value={value}>
+      {children}
+    </WorkspaceFileReferencePresentationContext.Provider>
+  );
+}
 
 interface WorkspaceFileReferenceBridgeValue {
   register: (command: AddWorkspaceFileRefCommand | null) => () => void;
@@ -50,7 +82,8 @@ export function useWorkspaceFileReferenceBridgeState() {
   }, [commandRef]);
   const commands = useMemo<WorkspaceFileReferenceCommandsValue>(() => ({
     available,
-    addWorkspaceFileRef: (reference) => commandRef.current?.(reference) ?? false,
+    addWorkspaceFileRef: (reference, options) =>
+      commandRef.current?.(reference, options) ?? { kind: 'unavailable' },
   }), [available, commandRef]);
   const bridge = useMemo<WorkspaceFileReferenceBridgeValue>(() => ({ register }), [register]);
   return { bridge, commands };

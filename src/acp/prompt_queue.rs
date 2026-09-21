@@ -78,6 +78,22 @@ impl Default for PromptQueue {
     }
 }
 
+impl QueuedPrompt {
+    /// Projects the complete durable authoring payload into a prompt input.
+    ///
+    /// All queue consumers must use this conversion so newly added structured
+    /// prompt fields have one explicit compilation point instead of being
+    /// silently dropped by a dispatch-specific reconstruction.
+    pub fn to_conversation_prompt_input(&self) -> ConversationPromptInput {
+        ConversationPromptInput {
+            display_text: self.content.clone(),
+            quotes: self.quotes.clone(),
+            role: self.role.clone(),
+            workspace_files: self.workspace_files.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PromptQueueError {
     #[error("prompt queue is full")]
@@ -832,6 +848,42 @@ mod tests {
             vec![reference],
             "the persisted dispatching item must retain lightweight references"
         );
+    }
+
+    #[test]
+    fn queued_prompt_projects_its_complete_authoring_payload() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let dir = attempt_dir(&temp);
+        let role = UserPromptRole {
+            profile_id: "pf-dev".to_string(),
+            name: "开发".to_string(),
+            content: "完整角色定义".to_string(),
+        };
+        let queued = enqueue_prompt(
+            &dir,
+            ConversationPromptInput {
+                display_text: "继续修改".to_string(),
+                quotes: vec![UserPromptQuote {
+                    id: "quote-1".to_string(),
+                    source_message_key: "message-1".to_string(),
+                    text: "Agent 原文".to_string(),
+                }],
+                role: Some(role.clone()),
+                workspace_files: vec![crate::provider::PromptWorkspaceFileRef {
+                    project_id: "project-001".to_string(),
+                    relative_path: "src/WorkspaceFileTree.tsx".to_string(),
+                }],
+            },
+            Vec::new(),
+        )
+        .unwrap();
+
+        let input = queued.to_conversation_prompt_input();
+
+        assert_eq!(input.display_text, queued.content);
+        assert_eq!(input.quotes, queued.quotes);
+        assert_eq!(input.role.as_ref(), Some(&role));
+        assert_eq!(input.workspace_files, queued.workspace_files);
     }
 
     #[test]

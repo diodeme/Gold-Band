@@ -105,14 +105,23 @@ export function normalizeComposerWorkspaceFileRef(ref: ComposerWorkspaceFileRef)
   };
 }
 
+function composerWorkspaceFileIdentity(ref: ComposerWorkspaceFileRef) {
+  const projectId = ref.projectId.trim().toLowerCase();
+  const relativePath = ref.relativePath.replaceAll('\\', '/');
+  const platform = globalThis.navigator?.platform ?? '';
+  const normalizedPath = /win/i.test(platform)
+    ? relativePath.toLowerCase()
+    : relativePath;
+  return `${projectId}\0${normalizedPath}`;
+}
+
 export function addComposerWorkspaceFile(
   workspaceFiles: readonly ComposerWorkspaceFileRef[],
   attachmentCount: number,
   ref: ComposerWorkspaceFileRef,
 ): { ok: true; workspaceFiles: ComposerWorkspaceFileRef[] } | { ok: false; code: 'composer.context.limit-exceeded'; max: number } | { ok: false; code: 'composer.workspace-file.duplicate' } {
   const normalized = normalizeComposerWorkspaceFileRef(ref);
-  const identity = (item: ComposerWorkspaceFileRef) =>
-    `${item.projectId.toLowerCase()}\0${item.relativePath.replaceAll('\\', '/').toLowerCase()}`;
+  const identity = composerWorkspaceFileIdentity;
   if (workspaceFiles.some((item) => identity(item) === identity(normalized))) {
     return { ok: false, code: 'composer.workspace-file.duplicate' };
   }

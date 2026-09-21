@@ -5569,6 +5569,7 @@ mod tests {
                 outcome: RunOutcome::Success,
                 task_title: None,
                 completion_agent_label: None,
+                attempt_dir: None,
             },
         )
         .unwrap();

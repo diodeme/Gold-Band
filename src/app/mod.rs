@@ -1090,6 +1090,12 @@ pub enum RuntimeLifecycleEvent {
         task_title: Option<String>,
         /// Direct 首轮以 Agent 回复语义展示；普通 Workflow/AUTO 为 None。
         completion_agent_label: Option<String>,
+        /// Path to the completing node's attempt directory (ACP session timeline
+        /// lives there — `acp.timeline.jsonl`). Mirrors `NodeCompleted::attempt_dir`;
+        /// `None` for completion paths without a persisted attempt. Lets terminal
+        /// subscribers (multica completion-output extraction) read the final agent
+        /// reply without re-deriving paths from a different repo root.
+        attempt_dir: Option<String>,
     },
     /// 非 Runtime 控制的 ACP prompt turn 已结束。
     ///
@@ -6760,6 +6766,7 @@ mod tests {
             outcome: RunOutcome::Success,
             task_title: None,
             completion_agent_label: None,
+            attempt_dir: None,
         });
 
         assert_eq!(

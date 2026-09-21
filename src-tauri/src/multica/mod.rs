@@ -13,12 +13,15 @@
 //!   start_remote_conversation_run）
 //! - `bridge`（M4）：lifecycle 事件转译 multica 终态（NodeCompleted 采 session pin /
 //!   RunCompleted 4 分支 complete/fail；订阅 `RuntimeLifecycleBus`）
+//! - `handoff`（issue 完成输出）：从最终 assistant 回复提取 `completion-output` 围栏块，
+//!   随 issue done 流转一次 PUT 上送（fail-open）
 
 pub mod bridge;
 pub mod client;
 pub mod commands;
 pub mod config;
 pub mod error;
+pub mod handoff;
 pub mod local_skills;
 pub mod loop_;
 pub mod state;

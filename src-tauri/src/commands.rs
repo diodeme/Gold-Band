@@ -10716,6 +10716,7 @@ mod tests {
             outcome,
             task_title: None,
             completion_agent_label: Some("Claude".to_string()),
+            attempt_dir: None,
         }
     }
 
@@ -12913,6 +12914,7 @@ mod tests {
                 outcome: RunOutcome::Success,
                 task_title: None,
                 completion_agent_label: None,
+                attempt_dir: None,
             })
             .unwrap();
         assert_eq!(completed.event_kind, "run-completed");

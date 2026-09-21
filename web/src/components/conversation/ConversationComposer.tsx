@@ -17,6 +17,7 @@ import { ComposerContextArea } from '@/components/shared/ComposerContextArea';
 import { useConversationComposerDraft, type ConversationComposerMulticaBinding } from '@/lib/conversation-composer-draft';
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { shouldBackspaceClearMulticaBinding } from '@/lib/conversation-composer-multica-chip';
+import { AgentIcon, AgentIdentityLabel } from '@/components/AgentIdentityLabel';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { useAgentCommands } from '@/hooks/useAgentCommands';
 import { useSlashCommandController } from '@/hooks/useSlashCommandController';
@@ -24,7 +25,8 @@ import { SlashCommandMenu } from '@/components/conversation/SlashCommandMenu';
 import { SlashCommandInputTag } from '@/components/conversation/SlashCommandInputTag';
 import {
   AcpModelThoughtSelects,
-  findAcpThoughtLevel,
+  rememberAcpModelBoundOverrides,
+  switchAcpModelBoundOverrides,
   updateAcpConfigOptionOverride,
 } from '@/components/acp/AcpModelThoughtSelects';
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
@@ -475,11 +477,13 @@ export function ConversationComposer({
   const [selectedDirectPermissionMode, setSelectedDirectPermissionMode] = useState(runMode.directConfig?.permissionMode ?? '');
   const [selectedDirectAutoAccept, setSelectedDirectAutoAccept] = useState(Boolean(runMode.directConfig?.autoAccept));
   const [selectedDirectConfigOptions, setSelectedDirectConfigOptions] = useState<Record<string, string>>(runMode.directConfig?.configOptions ?? {});
+  const [selectedDirectModelBoundOverrides, setSelectedDirectModelBoundOverrides] = useState<Record<string, Record<string, string>>>(runMode.directConfig?.modelBoundOverrides ?? {});
   const [selectedAgent, setSelectedAgent] = useState(runMode.autoConfig?.agentType ?? '');
   const [selectedModel, setSelectedModel] = useState(runMode.autoConfig?.modelId ?? '');
   const [selectedPermissionMode, setSelectedPermissionMode] = useState(runMode.autoConfig?.permissionMode ?? '');
   const [selectedAutoAccept, setSelectedAutoAccept] = useState(Boolean(runMode.autoConfig?.autoAccept));
   const [selectedConfigOptions, setSelectedConfigOptions] = useState<Record<string, string>>(runMode.autoConfig?.configOptions ?? {});
+  const [selectedModelBoundOverrides, setSelectedModelBoundOverrides] = useState<Record<string, Record<string, string>>>(runMode.autoConfig?.modelBoundOverrides ?? {});
   const [globalGoal, setGlobalGoal] = useState(runMode.autoConfig?.globalGoal ?? '');
   const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? '');
   const [runModeError, setRunModeError] = useState<string | null>(null);
@@ -686,11 +690,9 @@ export function ConversationComposer({
   const selectedDirectAgentObj = agents.find((agent) => agent.agentType === selectedDirectAgent);
   const directModels = selectedDirectAgentObj?.supportedModels ?? [];
   const directPermissionModes = selectedDirectAgentObj?.supportedModes ?? [];
-  const directThoughtLevel = findAcpThoughtLevel(selectedDirectAgentObj?.configOptions);
   const models = selectedAgentObj?.supportedModels ?? [];
   const permissionModes = selectedAgentObj?.supportedModes ?? [];
   const autoPermissionModes = permissionModes;
-  const thoughtLevel = findAcpThoughtLevel(selectedAgentObj?.configOptions);
   const templates = workflowTemplates?.templates ?? [];
   const selectedWorkflowTemplateId = workflowTemplateId || runMode.workflowTemplateId || undefined;
   const selectedWorkflowTemplate = templates.find((template) => template.id === selectedWorkflowTemplateId);
@@ -705,11 +707,7 @@ export function ConversationComposer({
             disabled={!selectable}
             className={CONVERSATION_HOME_COMPOSER_LAYOUT.agentOptionClassName}
           >
-            <img
-              src={agentIconSrc(agent.iconKey)}
-              alt=""
-              className={agentIconClass(agent.iconKey, 'size-5')}
-            />
+            <AgentIcon iconKey={agent.iconKey} className="size-5" />
             {selectedDirectAgent === agent.agentType ? (
               <span className="max-w-36 truncate text-xs">{agent.displayName}</span>
             ) : null}
@@ -781,11 +779,13 @@ export function ConversationComposer({
     setSelectedDirectPermissionMode(directConfig?.permissionMode ?? '');
     setSelectedDirectAutoAccept(Boolean(directConfig?.autoAccept));
     setSelectedDirectConfigOptions(directConfig?.configOptions ?? {});
+    setSelectedDirectModelBoundOverrides(directConfig?.modelBoundOverrides ?? {});
     setSelectedAgent(runMode.autoConfig?.agentType ?? '');
     setSelectedModel(runMode.autoConfig?.modelId ?? '');
     setSelectedPermissionMode(runMode.autoConfig?.permissionMode ?? '');
     setSelectedAutoAccept(Boolean(runMode.autoConfig?.autoAccept));
     setSelectedConfigOptions(runMode.autoConfig?.configOptions ?? {});
+    setSelectedModelBoundOverrides(runMode.autoConfig?.modelBoundOverrides ?? {});
     setGlobalGoal(runMode.autoConfig?.globalGoal ?? '');
     setWorkflowTemplateId(runMode.workflowTemplateId ?? workflowTemplates?.lastUsedTemplateId ?? templates[0]?.id ?? '');
   }, [runMode, workflowTemplates, agents]);
@@ -808,6 +808,7 @@ export function ConversationComposer({
     setSelectedDirectPermissionMode(remembered.permissionMode ?? '');
     setSelectedDirectAutoAccept(Boolean(remembered.autoAccept));
     setSelectedDirectConfigOptions(remembered.configOptions ?? {});
+    setSelectedDirectModelBoundOverrides(remembered.modelBoundOverrides ?? {});
     updateDirectConfig(remembered);
   };
 
@@ -826,6 +827,7 @@ export function ConversationComposer({
     const nextPermissionMode = patchedValue(patch, 'permissionMode', selectedPermissionMode);
     const nextAutoAccept = patchedValue(patch, 'autoAccept', selectedAutoAccept);
     const nextConfigOptions = patchedValue(patch, 'configOptions', selectedConfigOptions);
+    const nextModelBoundOverrides = patchedValue(patch, 'modelBoundOverrides', selectedModelBoundOverrides);
     const nextGlobalGoal = patchedValue(patch, 'globalGoal', globalGoal);
     if (isDynamicAuto) {
       return {
@@ -834,6 +836,7 @@ export function ConversationComposer({
         agentType: base.agentType || base.bootstrapAgentType || nextAgent || '',
         ...patch,
         configOptions: undefined,
+        modelBoundOverrides: undefined,
         globalGoal: optionalRunModeText(nextGlobalGoal),
       };
     }
@@ -846,6 +849,7 @@ export function ConversationComposer({
       permissionMode: nextPermissionMode || undefined,
       autoAccept: nextAutoAccept || undefined,
       configOptions: nextConfigOptions,
+      modelBoundOverrides: nextModelBoundOverrides,
       globalGoal: optionalRunModeText(nextGlobalGoal),
     };
   };
@@ -856,7 +860,11 @@ export function ConversationComposer({
 
   useEffect(() => {
     if (!isDirect || !selectedDirectAgentObj) return;
-    const normalized = normalizeConfigOptionOverrides(selectedDirectAgentObj, selectedDirectConfigOptions);
+    const normalized = normalizeConfigOptionOverrides(
+      selectedDirectAgentObj,
+      selectedDirectConfigOptions,
+      selectedDirectModel,
+    );
     if (normalized.removedOptionIds.length === 0) return;
     setSelectedDirectConfigOptions(normalized.configOptions);
     updateDirectConfig({
@@ -865,16 +873,24 @@ export function ConversationComposer({
       permissionMode: selectedDirectPermissionMode || undefined,
       autoAccept: selectedDirectAutoAccept || undefined,
       configOptions: normalized.configOptions,
+      modelBoundOverrides: selectedDirectModelBoundOverrides,
     });
-  }, [isDirect, selectedDirectAgentObj, selectedDirectAgent, selectedDirectModel, selectedDirectPermissionMode, selectedDirectConfigOptions]);
+  }, [isDirect, selectedDirectAgentObj, selectedDirectAgent, selectedDirectModel, selectedDirectPermissionMode, selectedDirectConfigOptions, selectedDirectModelBoundOverrides]);
 
   useEffect(() => {
     if (!isAuto || isDynamicAuto || !selectedAgentObj) return;
-    const normalized = normalizeConfigOptionOverrides(selectedAgentObj, selectedConfigOptions);
+    const normalized = normalizeConfigOptionOverrides(
+      selectedAgentObj,
+      selectedConfigOptions,
+      selectedModel,
+    );
     if (normalized.removedOptionIds.length === 0) return;
     setSelectedConfigOptions(normalized.configOptions);
-    updateAutoSession({ configOptions: normalized.configOptions });
-  }, [isAuto, isDynamicAuto, selectedAgentObj, selectedConfigOptions]);
+    updateAutoSession({
+      configOptions: normalized.configOptions,
+      modelBoundOverrides: selectedModelBoundOverrides,
+    });
+  }, [isAuto, isDynamicAuto, selectedAgentObj, selectedConfigOptions, selectedModel, selectedModelBoundOverrides]);
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
@@ -887,20 +903,36 @@ export function ConversationComposer({
       workflowTemplateId: isAuto || isDirect ? undefined : selectedWorkflowTemplateId,
       includeOptionalEntry,
       directConfig: isDirect
-        ? normalizeConversationDirectConfigForSubmit({
-          agentType: selectedDirectAgent,
-          modelId: selectedDirectModel || undefined,
-          permissionMode: selectedDirectPermissionMode || undefined,
-          autoAccept: selectedDirectAutoAccept || undefined,
-          configOptions: selectedDirectAgentObj
-            ? normalizeConfigOptionOverrides(selectedDirectAgentObj, selectedDirectConfigOptions).configOptions
-            : selectedDirectConfigOptions,
-        })
+        ? (() => {
+          const configOptions = selectedDirectAgentObj
+            ? normalizeConfigOptionOverrides(
+              selectedDirectAgentObj,
+              selectedDirectConfigOptions,
+              selectedDirectModel,
+            ).configOptions
+            : selectedDirectConfigOptions;
+          return normalizeConversationDirectConfigForSubmit({
+            agentType: selectedDirectAgent,
+            modelId: selectedDirectModel || undefined,
+            permissionMode: selectedDirectPermissionMode || undefined,
+            autoAccept: selectedDirectAutoAccept || undefined,
+            configOptions,
+            modelBoundOverrides: rememberAcpModelBoundOverrides(
+              selectedDirectModelBoundOverrides,
+              selectedDirectModel,
+              configOptions,
+            ),
+          });
+        })()
         : undefined,
       autoConfig: isAuto
         ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession(
           !isDynamicAuto && selectedAgentObj
-            ? { configOptions: normalizeConfigOptionOverrides(selectedAgentObj, selectedConfigOptions).configOptions }
+            ? { configOptions: normalizeConfigOptionOverrides(
+              selectedAgentObj,
+              selectedConfigOptions,
+              selectedModel,
+            ).configOptions }
             : {},
         ))
         : undefined,
@@ -973,7 +1005,18 @@ export function ConversationComposer({
       runMode: runMode.mode,
       workflowTemplateId: isAuto || isDirect ? undefined : selectedWorkflowTemplateId,
       includeOptionalEntry,
-      directConfig: isDirect ? normalizeConversationDirectConfigForSubmit({ agentType: selectedDirectAgent, modelId: selectedDirectModel || undefined, permissionMode: selectedDirectPermissionMode || undefined, autoAccept: selectedDirectAutoAccept || undefined, configOptions: selectedDirectConfigOptions }) : undefined,
+      directConfig: isDirect ? normalizeConversationDirectConfigForSubmit({
+        agentType: selectedDirectAgent,
+        modelId: selectedDirectModel || undefined,
+        permissionMode: selectedDirectPermissionMode || undefined,
+        autoAccept: selectedDirectAutoAccept || undefined,
+        configOptions: selectedDirectConfigOptions,
+        modelBoundOverrides: rememberAcpModelBoundOverrides(
+          selectedDirectModelBoundOverrides,
+          selectedDirectModel,
+          selectedDirectConfigOptions,
+        ),
+      }) : undefined,
       autoConfig: isAuto ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession()) : undefined,
       ...(role ? { role } : {}),
       workspaceFiles: workspaceFiles.map(({ projectId: refProjectId, relativePath }) => ({
@@ -1213,29 +1256,48 @@ export function ConversationComposer({
                   <AcpModelThoughtSelects
                     models={directModels}
                     modelValue={selectedDirectModel}
-                    thoughtLevel={directThoughtLevel}
-                    thoughtValue={directThoughtLevel ? selectedDirectConfigOptions[directThoughtLevel.id] : null}
+                    configOptions={selectedDirectAgentObj?.configOptions}
+                    modelBoundCatalogs={selectedDirectAgentObj?.modelBoundCatalogs}
+                    configOptionValues={selectedDirectConfigOptions}
                     triggerClassName={CONVERSATION_HOME_COMPOSER_LAYOUT.configTriggerClassName}
                     onModelChange={(value) => {
                       const modelId = value ?? '';
+                      const switched = switchAcpModelBoundOverrides({
+                        remembered: selectedDirectModelBoundOverrides,
+                        previousModelId: selectedDirectModel,
+                        nextModelId: modelId,
+                        currentOverrides: selectedDirectConfigOptions,
+                        configOptions: selectedDirectAgentObj?.configOptions,
+                        modelBoundCatalogs: selectedDirectAgentObj?.modelBoundCatalogs,
+                      });
                       setSelectedDirectModel(modelId);
+                      setSelectedDirectConfigOptions(switched.overrides);
+                      setSelectedDirectModelBoundOverrides(switched.remembered);
                       updateDirectConfig({
                         agentType: selectedDirectAgent,
                         modelId: modelId || undefined,
                         permissionMode: selectedDirectPermissionMode || undefined,
                         autoAccept: selectedDirectAutoAccept || undefined,
-                        configOptions: selectedDirectConfigOptions,
+                        configOptions: switched.overrides,
+                        modelBoundOverrides: switched.remembered,
                       });
                     }}
-                    onThoughtChange={(optionId, value) => {
+                    onConfigOptionChange={(optionId, value) => {
                       const next = updateAcpConfigOptionOverride(selectedDirectConfigOptions, optionId, value);
+                      const remembered = rememberAcpModelBoundOverrides(
+                        selectedDirectModelBoundOverrides,
+                        selectedDirectModel,
+                        next,
+                      );
                       setSelectedDirectConfigOptions(next);
+                      setSelectedDirectModelBoundOverrides(remembered);
                       updateDirectConfig({
                         agentType: selectedDirectAgent,
                         modelId: selectedDirectModel || undefined,
                         permissionMode: selectedDirectPermissionMode || undefined,
                         autoAccept: selectedDirectAutoAccept || undefined,
                         configOptions: next,
+                        modelBoundOverrides: remembered,
                       });
                     }}
                   />
@@ -1256,6 +1318,7 @@ export function ConversationComposer({
                         permissionMode: selectedDirectPermissionMode || undefined,
                         autoAccept: enabled || undefined,
                         configOptions: selectedDirectConfigOptions,
+                        modelBoundOverrides: selectedDirectModelBoundOverrides,
                       });
                     }}
                     onValueChange={(value) => {
@@ -1267,6 +1330,7 @@ export function ConversationComposer({
                         permissionMode: permissionMode || undefined,
                         autoAccept: selectedDirectAutoAccept || undefined,
                         configOptions: selectedDirectConfigOptions,
+                        modelBoundOverrides: selectedDirectModelBoundOverrides,
                       });
                     }}
                   />
@@ -1388,15 +1452,15 @@ export function ConversationComposer({
                     <span className="truncate">{t('conversation.home.dynamicAgent')}</span>
                   </div>
                 ) : (
-                  <Select value={selectedAgent} onValueChange={(v) => { setSelectedAgent(v); setSelectedModel(''); setSelectedConfigOptions({}); updateAutoSession({ agentType: v, modelId: undefined, configOptions: {} }); }}>
+                  <Select value={selectedAgent} onValueChange={(v) => { setSelectedAgent(v); setSelectedModel(''); setSelectedConfigOptions({}); setSelectedModelBoundOverrides({}); updateAutoSession({ agentType: v, modelId: undefined, configOptions: {}, modelBoundOverrides: {} }); }}>
                     <SelectTrigger className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.modeControlHeightClassName} w-[180px] min-w-0 text-xs`}>
                       <SelectValue placeholder={t('conversation.home.selectAgent')} />
                     </SelectTrigger>
                     <SelectContent position="popper" align="start">
                       {agentOptions.map(({ agent: a, selectable, reason }) => (
-                        <SelectItem key={a.agentType} value={a.agentType} disabled={!selectable}>
+                        <SelectItem key={a.agentType} value={a.agentType} disabled={!selectable} textValue={a.displayName}>
                           <span className="block min-w-0">
-                            <span className="block truncate">{a.displayName}</span>
+                            <AgentIdentityLabel iconKey={a.iconKey} name={a.displayName} />
                             {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-ui-caption text-destructive">{reason}</span> : null}
                           </span>
                         </SelectItem>
@@ -1411,19 +1475,40 @@ export function ConversationComposer({
                   <AcpModelThoughtSelects
                     models={models}
                     modelValue={selectedModel}
-                    thoughtLevel={thoughtLevel}
-                    thoughtValue={thoughtLevel ? selectedConfigOptions[thoughtLevel.id] : null}
+                    configOptions={selectedAgentObj?.configOptions}
+                    modelBoundCatalogs={selectedAgentObj?.modelBoundCatalogs}
+                    configOptionValues={selectedConfigOptions}
                     align="start"
                     triggerClassName={CONVERSATION_HOME_COMPOSER_LAYOUT.modeControlHeightClassName}
                     onModelChange={(value) => {
                       const modelId = value ?? '';
+                      const switched = switchAcpModelBoundOverrides({
+                        remembered: selectedModelBoundOverrides,
+                        previousModelId: selectedModel,
+                        nextModelId: modelId,
+                        currentOverrides: selectedConfigOptions,
+                        configOptions: selectedAgentObj?.configOptions,
+                        modelBoundCatalogs: selectedAgentObj?.modelBoundCatalogs,
+                      });
                       setSelectedModel(modelId);
-                      updateAutoSession({ modelId: modelId || undefined });
+                      setSelectedConfigOptions(switched.overrides);
+                      setSelectedModelBoundOverrides(switched.remembered);
+                      updateAutoSession({
+                        modelId: modelId || undefined,
+                        configOptions: switched.overrides,
+                        modelBoundOverrides: switched.remembered,
+                      });
                     }}
-                    onThoughtChange={(optionId, value) => {
+                    onConfigOptionChange={(optionId, value) => {
                       const next = updateAcpConfigOptionOverride(selectedConfigOptions, optionId, value);
+                      const remembered = rememberAcpModelBoundOverrides(
+                        selectedModelBoundOverrides,
+                        selectedModel,
+                        next,
+                      );
                       setSelectedConfigOptions(next);
-                      updateAutoSession({ configOptions: next });
+                      setSelectedModelBoundOverrides(remembered);
+                      updateAutoSession({ configOptions: next, modelBoundOverrides: remembered });
                     }}
                   />
                 ) : null}

@@ -73,3 +73,11 @@ Markdown 继续使用 prompt-kit/Streamdown。项目本地文件链接不使用 
 ## 10. 验收边界
 
 Windows 自动化负责三档能力 fixture、接口测试、类型检查、生产构建和 bundle 审计；它不能替代 WKWebView 613 真机结论。Intel macOS Monterey/WebKit 613 必须使用 DevTools DMG 验证启动、runtime.log 诊断、主业务路径、Markdown/WASM 高亮、弹层和窗口缩放。2026-08-31 的首次用户真机结果发现 `CSS.supports(custom-property, value)` 会假阴性并被错误拦截，现已改用语义探测；后续真机已确认应用可以进入业务界面，并发现 Tailwind 透明状态背景退化为不透明源色。该状态表面问题已由公共 marker 和主题软表面 fallback 修复，仍需用修正版 DMG 在同一设备确认成功、警告和错误提示的图标及文字可见。真机复验完成前不得宣称已完全验证。
+
+## 11. Windows 原生窗口消息重入安全
+
+Gold Band 的原生浏览器、子 WebView 和地址建议 overlay 共用 Tauri 2 的 tao Windows 消息泵。Windows 的 `PeekMessageW` 可能在调用期间同步重入窗口过程；因此键盘与 IME 消息处理不得在持有输入状态锁时执行消息 peek，否则 UI 线程可能再次获取同一非递归锁并永久挂起。
+
+实现契约由 tao 上游修复提交 `c704261c519c58cfdd0bc2d58ba24e06a0b71c92` 固定提供：先在无锁区读取下一条键盘/IME 消息，再在最小临界区更新键盘状态；布局缓存锁只覆盖实际读取和事件构造，不跨越 Win32 消息泵调用。该补丁只影响 Windows tao 输入路径，不改变业务 canonical state、WebView 内容或跨平台行为。
+
+验收必须覆盖地址栏输入、中文 IME、地址建议显隐、子 WebView 聚焦切换，以及窗口最小化/恢复和调整尺寸；主窗口消息泵在这些操作后仍须可响应，后台 runtime 与 WebView2 子进程不得因输入处理被阻塞。自动回归由 `tests/tao_windows_message_reentrancy.rs` 固化：源码契约测试检查锁外 peek，Windows 子进程测试并发发送两个 `WM_KEYDOWN` 并由父进程设置 10 秒超时；旧实现超时即判失败，修复提交下两类测试均须通过。

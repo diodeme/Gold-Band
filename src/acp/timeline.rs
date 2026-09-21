@@ -1540,6 +1540,7 @@ fn timeline_item_locator(
                 | "textDelta"
                 | "fileChangeSet"
                 | "attemptSeparator"
+                | "systemNotice"
                 | "contextCompaction"
         )
         || (item.kind == "permissionRequest" && item.status.as_deref() == Some("pending"))
@@ -2185,6 +2186,11 @@ pub fn read_indexed_timeline_page(
             .skip(total.saturating_sub(limit))
             .collect::<Vec<_>>()
     };
+    // A cumulative stream item can start before a later prompt and finish
+    // afterwards. Incremental selection is based on the newest revision, but
+    // the returned page must retain the canonical visual order by start.
+    let mut selected = selected;
+    selected.sort_by_key(|block| (block.oldest_seq, block.newest_seq, block.last_revision));
     let mut events = Vec::with_capacity(selected.len());
     for block in &selected {
         if let Some(summary) = block.summary.as_ref() {
@@ -2197,8 +2203,8 @@ pub fn read_indexed_timeline_page(
             }
         }
     }
-    let oldest_seq = selected.first().map(|block| block.oldest_seq);
-    let newest_seq = selected.last().map(|block| block.newest_seq);
+    let oldest_seq = selected.iter().map(|block| block.oldest_seq).min();
+    let newest_seq = selected.iter().map(|block| block.newest_seq).max();
     let newest_revision = selected.iter().map(|block| block.last_revision).max();
     let first_ordinal = selected.first().and_then(|selected| {
         index

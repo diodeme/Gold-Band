@@ -58,7 +58,7 @@ export function SlashCommandInputTag({
           sideOffset={6}
           className={cn(
             'p-0 text-pretty leading-5',
-            kind === 'role' ? 'max-w-80' : 'max-w-80 px-3 py-1.5',
+            kind === 'role' ? 'pointer-events-auto max-w-80' : 'max-w-80 px-3 py-1.5',
           )}
         >
           {kind === 'role' ? (

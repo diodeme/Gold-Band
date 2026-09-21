@@ -301,6 +301,8 @@ pub struct AiDynamicNode {
     pub agent_strategy: AiDynamicAgentStrategy,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_profiles: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -321,6 +323,8 @@ struct AiDynamicNodeCompat {
     pub provider: Option<String>,
     #[serde(default)]
     pub config_options: BTreeMap<String, String>,
+    #[serde(default)]
+    pub model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(default)]
     pub allowed_profiles: Vec<String>,
     #[serde(default)]
@@ -357,6 +361,7 @@ impl<'de> Deserialize<'de> for AiDynamicNode {
             id: raw.id,
             agent_strategy,
             config_options: raw.config_options,
+            model_bound_overrides: raw.model_bound_overrides,
             allowed_profiles: raw
                 .allowed_profiles
                 .into_iter()
@@ -421,10 +426,14 @@ pub enum AiDynamicAgentStrategy {
         auto_accept: bool,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         bootstrap_config_options: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        bootstrap_model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         acceptance_model: Option<String>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         acceptance_config_options: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        acceptance_model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
         routing_prompt: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         available_agents: Vec<DynamicAgentRef>,
@@ -443,6 +452,8 @@ pub struct DynamicAgentRef {
     pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

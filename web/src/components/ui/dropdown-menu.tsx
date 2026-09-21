@@ -28,8 +28,8 @@ const DropdownMenuTrigger = React.forwardRef<
 >(({ ...props }, ref) => (
   <DropdownMenuPrimitive.Trigger
     ref={ref}
-    data-slot="dropdown-menu-trigger"
     {...props}
+    data-slot="dropdown-menu-trigger"
   />
 ))
 DropdownMenuTrigger.displayName = "DropdownMenuTrigger"

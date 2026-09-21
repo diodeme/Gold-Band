@@ -4038,17 +4038,13 @@ impl App {
             Ok(probe) => Ok(ProviderDoctorProbe {
                 doctor: DoctorResult {
                     available: true,
-                    reason: None,
+                    error: None,
                     capabilities: Some(probe.capabilities),
                 },
                 commands: probe.commands,
             }),
             Err(err) => Ok(ProviderDoctorProbe {
-                doctor: DoctorResult {
-                    available: false,
-                    reason: Some(err.to_string()),
-                    capabilities: None,
-                },
+                doctor: DoctorResult::from_anyhow(&err),
                 commands: Vec::new(),
             }),
         }
@@ -6777,7 +6773,7 @@ mod tests {
                 provider.to_string(),
                 ProviderDiagnosticSnapshot {
                     available: true,
-                    reason: None,
+                    error: None,
                     checked_at: "2026-06-24T00:00:00Z".to_string(),
                     capabilities: Some(capabilities),
                 },
@@ -7050,7 +7046,7 @@ mod tests {
                 "claude-acp".to_string(),
                 ProviderDiagnosticSnapshot {
                     available: true,
-                    reason: None,
+                    error: None,
                     checked_at: "2026-06-24T00:00:00Z".to_string(),
                     capabilities: Some(serde_json::json!({
                         "configOptions": [
@@ -7140,8 +7136,10 @@ mod tests {
                 permission_mode: Some("agent-full-access".to_string()),
                 auto_accept: false,
                 bootstrap_config_options: Default::default(),
+                bootstrap_model_bound_overrides: Default::default(),
                 acceptance_model: None,
                 acceptance_config_options: Default::default(),
+                acceptance_model_bound_overrides: Default::default(),
                 routing_prompt: String::new(),
                 available_agents: vec![crate::dsl::DynamicAgentRef {
                     provider: "codex-acp".to_string(),
@@ -7149,9 +7147,11 @@ mod tests {
                     permission_mode: Some("agent-full-access".to_string()),
                     auto_accept: false,
                     config_options: Default::default(),
+                    model_bound_overrides: Default::default(),
                 }],
             },
             config_options: Default::default(),
+            model_bound_overrides: Default::default(),
             allowed_profiles: Vec::new(),
             global_goal: None,
             control: crate::dsl::DynamicControlDsl::default(),
@@ -7190,8 +7190,10 @@ mod tests {
                     permission_mode: None,
                     auto_accept: false,
                     bootstrap_config_options: Default::default(),
+                    bootstrap_model_bound_overrides: Default::default(),
                     acceptance_model: Some("sonnet".to_string()),
                     acceptance_config_options: Default::default(),
+                    acceptance_model_bound_overrides: Default::default(),
                     routing_prompt: String::new(),
                     available_agents: vec![crate::dsl::DynamicAgentRef {
                         provider: "claude-acp".to_string(),
@@ -7199,9 +7201,11 @@ mod tests {
                         permission_mode: None,
                         auto_accept: false,
                         config_options: Default::default(),
+                        model_bound_overrides: Default::default(),
                     }],
                 },
                 config_options: Default::default(),
+                model_bound_overrides: Default::default(),
                 allowed_profiles: Vec::new(),
                 global_goal: None,
                 control: crate::dsl::DynamicControlDsl::default(),
@@ -7258,8 +7262,10 @@ mod tests {
                         permission_mode: None,
                         auto_accept: false,
                         bootstrap_config_options: Default::default(),
+                        bootstrap_model_bound_overrides: Default::default(),
                         acceptance_model: Some("gpt-5.6-sol".to_string()),
                         acceptance_config_options: Default::default(),
+                        acceptance_model_bound_overrides: Default::default(),
                         routing_prompt: String::new(),
                         available_agents: vec![crate::dsl::DynamicAgentRef {
                             provider: "codex-acp".to_string(),
@@ -7267,9 +7273,11 @@ mod tests {
                             permission_mode: None,
                             auto_accept: false,
                             config_options: Default::default(),
+                            model_bound_overrides: Default::default(),
                         }],
                     },
                     config_options: Default::default(),
+                    model_bound_overrides: Default::default(),
                     allowed_profiles: Vec::new(),
                     global_goal: None,
                     control: crate::dsl::DynamicControlDsl::default(),
@@ -7284,6 +7292,7 @@ mod tests {
                         auto_accept: false,
                     },
                     config_options: Default::default(),
+                    model_bound_overrides: Default::default(),
                     allowed_profiles: Vec::new(),
                     global_goal: None,
                     control: crate::dsl::DynamicControlDsl::default(),
@@ -7423,6 +7432,7 @@ mod tests {
             permission_mode_id: None,
             auto_accept: false,
             config_options: BTreeMap::new(),
+            model_bound_overrides: Default::default(),
         };
         let bindings = WorkflowModelBindings {
             definition_revision: String::new(),

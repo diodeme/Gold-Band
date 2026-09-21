@@ -4,6 +4,12 @@ import type {
   AcpSessionConfigVm,
   AgentRegistryVm,
 } from "@/types";
+import {
+  ACP_MODEL_CONFIG_CATEGORY,
+  ACP_THOUGHT_LEVEL_CATEGORY,
+  isAcpModelBoundConfigCategory,
+  remapAcpThoughtLevelOverride,
+} from "@/lib/acp-composite-config";
 
 export type AcpSessionConfigCategory = string;
 
@@ -31,6 +37,7 @@ export type AcpProviderConfigCatalog = {
   models: AcpModeVm[];
   modes: AcpModeVm[];
   configOptions: AcpSelectConfigOptionVm[];
+  modelBoundCatalogs?: Record<string, AcpSelectConfigOptionVm[]> | null;
 };
 
 export type AcpSessionConfigViewModel = {
@@ -49,14 +56,41 @@ export type AcpSessionConfigViewModel = {
   availableModels: AcpSessionConfigOption[];
   availablePermissionModes: AcpSessionConfigOption[];
   thoughtLevel: AcpSessionConfigGroup | null;
+  modelBoundOptions: AcpSessionConfigGroup[];
   signature: string;
 };
+
+export function mergeLiveAcpSessionConfig(
+  current: AcpSessionConfigVm | null | undefined,
+  incoming: AcpSessionConfigVm | null | undefined,
+  preserveUserOverrides: boolean,
+): AcpSessionConfigVm | null {
+  if (!incoming) return current ?? null;
+  if (!preserveUserOverrides || !current) return incoming;
+  return {
+    ...incoming,
+    modelOverrideId: current.modelOverrideId,
+    permissionModeOverrideId: current.permissionModeOverrideId,
+    autoAccept: current.autoAccept,
+    configOptionOverrides: current.configOptionOverrides,
+    modelBoundOverrides: current.modelBoundOverrides,
+    currentModelId: current.currentModelId,
+    currentModelName: current.currentModelName,
+    currentModeId: current.currentModeId,
+    currentModeName: current.currentModeName,
+  };
+}
 
 export function createAcpSessionConfigViewModel(
   config: AcpSessionConfigVm | null | undefined,
   providerCatalog: AcpProviderConfigCatalog | null | undefined = null,
+  authoringModelBoundCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined = undefined,
 ): AcpSessionConfigViewModel {
-  const projectedCatalog = projectAcpSessionConfigCatalog(config, providerCatalog);
+  const projectedCatalog = projectAcpSessionConfigCatalog(
+    config,
+    providerCatalog,
+    authoringModelBoundCatalogs ?? providerCatalog?.modelBoundCatalogs,
+  );
   const currentModelId = config?.currentModelId ?? null;
   const currentModelName = config?.currentModelName ?? null;
   const currentModeId = config?.currentModeId ?? null;
@@ -79,11 +113,25 @@ export function createAcpSessionConfigViewModel(
       ?? modelOverrideId
     : null;
   const permissionModeOverrideId = config?.permissionModeOverrideId ?? null;
-  const thoughtLevel = normalizeAcpSelectConfigGroups(
-    projectedCatalog.configOptions,
+  const remappedOverrides = remapAcpThoughtLevelOverride(
     config?.configOptionOverrides,
+    selectConfigOptionsFromUnknown(projectedCatalog.configOptions),
+    [
+      ...(selectConfigOptionsFromUnknown(config?.configOptions) ?? []),
+      ...Object.values(sessionModelBoundCatalogs(config?.modelBoundCatalogs) ?? {}).flat(),
+      ...Object.values(authoringModelBoundCatalogs ?? {}).flat(),
+    ],
+  );
+  const catalogGroups = normalizeAcpSelectConfigGroups(
+    projectedCatalog.configOptions,
+    remappedOverrides,
     config?.configOptions,
-  ).find((group) => group.category === "thought_level") ?? null;
+  );
+  const modelBoundOptions = [
+    ...catalogGroups.filter((group) => group.category === ACP_THOUGHT_LEVEL_CATEGORY),
+    ...catalogGroups.filter((group) => group.category === ACP_MODEL_CONFIG_CATEGORY),
+  ];
+  const thoughtLevel = modelBoundOptions.find((group) => group.category === ACP_THOUGHT_LEVEL_CATEGORY) ?? null;
   const permissionModeOverrideName = permissionModeOverrideId
     ? availablePermissionModes.find((option) => option.id === permissionModeOverrideId)?.name
       ?? (currentModeId === permissionModeOverrideId ? currentModeName : null)
@@ -123,6 +171,7 @@ export function createAcpSessionConfigViewModel(
     availableModels: projectedAvailableModels,
     availablePermissionModes: projectedAvailablePermissionModes,
     thoughtLevel,
+    modelBoundOptions,
   };
 
   return {
@@ -176,6 +225,16 @@ function configOptionValueName(
     ?.name ?? null;
 }
 
+export function acpAuthoringModelBoundCatalogs(
+  registry: AgentRegistryVm | null | undefined,
+  provider: string | null | undefined,
+): Record<string, AcpSelectConfigOptionVm[]> | undefined {
+  const agentType = provider?.trim();
+  if (!agentType) return undefined;
+  return registry?.agents.find((agent) => agent.agentType === agentType)?.modelBoundCatalogs
+    ?? undefined;
+}
+
 export function acpProviderConfigCatalog(
   registry: AgentRegistryVm | null | undefined,
   provider: string | null | undefined,
@@ -188,6 +247,7 @@ export function acpProviderConfigCatalog(
     models: agent.supportedModels ?? [],
     modes: agent.supportedModes ?? [],
     configOptions: agent.configOptions ?? [],
+    modelBoundCatalogs: agent.modelBoundCatalogs ?? null,
   };
 }
 
@@ -209,6 +269,7 @@ export function isAcpCatalogObservationNewer(
 function projectAcpSessionConfigCatalog(
   config: AcpSessionConfigVm | null | undefined,
   providerCatalog: AcpProviderConfigCatalog | null | undefined,
+  authoringModelBoundCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined,
 ) {
   if (!providerCatalog || !isAcpCatalogObservationNewer(
     providerCatalog.observedAt,
@@ -217,7 +278,10 @@ function projectAcpSessionConfigCatalog(
     return {
       models: config?.models,
       modes: config?.modes,
-      configOptions: config?.configOptions,
+      configOptions: projectBoundConfigOptionsForSelectedModel(
+        config,
+        authoringModelBoundCatalogs,
+      ),
     };
   }
   return {
@@ -235,11 +299,146 @@ function projectAcpSessionConfigCatalog(
         description: mode.description,
       })),
     },
-    configOptions: mergeProviderCatalogCurrentValues(
+    configOptions: mergeDoctorAndSessionConfigOptions(
       providerCatalog.configOptions,
-      config?.configOptions,
+      projectBoundConfigOptionsForSelectedModel(config, authoringModelBoundCatalogs),
     ),
   };
+}
+
+function projectBoundConfigOptionsForSelectedModel(
+  config: AcpSessionConfigVm | null | undefined,
+  authoringModelBoundCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined,
+) {
+  const options = config?.configOptions;
+  const selected = (config?.modelOverrideId ?? config?.currentModelId)?.trim()
+    || catalogModelCurrentValue(options);
+  const liveOwner = catalogModelCurrentValue(options);
+  if (selected && selected === liveOwner && hasModelBoundConfigRows(options)) {
+    return options;
+  }
+  const bound = lookupModelBoundCatalog(
+    selected,
+    config?.modelBoundCatalogs,
+    authoringModelBoundCatalogs,
+  );
+  if (bound !== undefined) {
+    return spliceBoundOptions(options, bound);
+  }
+  return options;
+}
+
+function sessionModelBoundCatalogs(
+  catalogs: Record<string, unknown[]> | null | undefined,
+) {
+  if (!catalogs) return undefined;
+  return Object.fromEntries(
+    Object.entries(catalogs).map(([modelId, options]) => [
+      modelId,
+      selectConfigOptionsFromUnknown(options) ?? [],
+    ]),
+  );
+}
+
+function lookupModelBoundCatalog(
+  selected: string | null | undefined,
+  sessionCatalogs: Record<string, unknown[]> | null | undefined,
+  authoringCatalogs: Record<string, AcpSelectConfigOptionVm[]> | null | undefined,
+) {
+  const modelId = selected?.trim();
+  if (!modelId) return undefined;
+  if (sessionCatalogs && Object.prototype.hasOwnProperty.call(sessionCatalogs, modelId)) {
+    return sessionCatalogs[modelId];
+  }
+  if (authoringCatalogs && Object.prototype.hasOwnProperty.call(authoringCatalogs, modelId)) {
+    return authoringCatalogs[modelId];
+  }
+  return undefined;
+}
+
+function hasModelBoundConfigRows(configOptions: unknown) {
+  return (arrayValue(configOptions) ?? []).some((raw) => {
+    const option = rawObject(raw);
+    const category = stringValue(option?.category)?.trim() || stringValue(option?.id)?.trim();
+    return isAcpModelBoundConfigCategory(category);
+  });
+}
+
+function catalogModelCurrentValue(configOptions: unknown) {
+  for (const raw of arrayValue(configOptions) ?? []) {
+    const option = rawObject(raw);
+    const id = stringValue(option?.id)?.trim();
+    const category = stringValue(option?.category)?.trim();
+    if (id === "model" || category === "model") {
+      return stringValue(option?.currentValue)?.trim() || null;
+    }
+  }
+  return null;
+}
+
+function spliceBoundOptions(configOptions: unknown, bound: unknown) {
+  const options = arrayValue(configOptions) ?? [];
+  const nonBound = options.filter((raw) => {
+    const option = rawObject(raw);
+    const category = stringValue(option?.category)?.trim() || stringValue(option?.id)?.trim();
+    return !isAcpModelBoundConfigCategory(category);
+  });
+  const boundOptions = (arrayValue(bound) ?? []).map((raw) => {
+    const option = rawObject(raw);
+    if (!option || stringValue(option.type)?.trim()) return raw;
+    return { ...option, type: "select" };
+  });
+  const modelIndex = nonBound.findIndex((raw) => {
+    const option = rawObject(raw);
+    return stringValue(option?.id)?.trim() === "model"
+      || stringValue(option?.category)?.trim() === "model";
+  });
+  if (modelIndex < 0) return [...nonBound, ...boundOptions];
+  return [
+    ...nonBound.slice(0, modelIndex + 1),
+    ...boundOptions,
+    ...nonBound.slice(modelIndex + 1),
+  ];
+}
+
+function mergeDoctorAndSessionConfigOptions(
+  providerOptions: AcpSelectConfigOptionVm[],
+  sessionOptions: unknown,
+) {
+  const doctorNonBound = mergeProviderCatalogCurrentValues(
+    providerOptions.filter((option) => !isAcpModelBoundConfigCategory(option.category)),
+    sessionOptions,
+  );
+  const sessionDependents = (arrayValue(sessionOptions) ?? []).flatMap((raw) => {
+    const option = rawObject(raw);
+    const id = stringValue(option?.id)?.trim();
+    const category = stringValue(option?.category)?.trim() || id;
+    if (!id || !isAcpModelBoundConfigCategory(category)) return [];
+    const values = normalizeConfigOptionList(arrayValue(option?.options), category);
+    if (values.length === 0) return [];
+    return [{
+      id,
+      category,
+      name: stringValue(option?.name),
+      description: stringValue(option?.description),
+      currentValue: stringValue(option?.currentValue),
+      type: "select",
+      options: values.map((value) => ({
+        value: value.id,
+        name: value.name,
+        description: value.description,
+      })),
+    }];
+  });
+  const modelIndex = doctorNonBound.findIndex((option) => (
+    option.id === "model" || option.category === "model"
+  ));
+  if (modelIndex < 0) return [...doctorNonBound, ...sessionDependents];
+  return [
+    ...doctorNonBound.slice(0, modelIndex + 1),
+    ...sessionDependents,
+    ...doctorNonBound.slice(modelIndex + 1),
+  ];
 }
 
 function mergeProviderCatalogCurrentValues(
@@ -269,6 +468,32 @@ function catalogObservationValue(value: string | null | undefined) {
   if (epochMatch) return { raw, epoch: Number(epochMatch[1]) };
   const parsed = Date.parse(raw);
   return { raw, epoch: Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null };
+}
+
+function selectConfigOptionsFromUnknown(
+  value: unknown,
+): AcpSelectConfigOptionVm[] | undefined {
+  const list = arrayValue(value);
+  if (!list) return undefined;
+  return list.flatMap((raw) => {
+    const option = rawObject(raw);
+    const id = stringValue(option?.id)?.trim();
+    if (!id) return [];
+    const category = stringValue(option?.category)?.trim() || id;
+    const values = normalizeConfigOptionList(arrayValue(option?.options), category);
+    return [{
+      id,
+      category,
+      name: stringValue(option?.name),
+      description: stringValue(option?.description),
+      currentValue: stringValue(option?.currentValue),
+      options: values.map((item) => ({
+        value: item.id,
+        name: item.name,
+        description: item.description,
+      })),
+    }];
+  });
 }
 
 export function findAcpConfigOption(
@@ -323,6 +548,15 @@ function createAcpSessionConfigSignature(
       canSelectUnspecified: viewModel.thoughtLevel.canSelectUnspecified,
       options: viewModel.thoughtLevel.options.map(signatureOption),
     } : null,
+    modelBoundOptions: viewModel.modelBoundOptions.map((group) => ([
+      group.id,
+      group.category,
+      group.currentValue,
+      group.overrideValue,
+      group.overrideValueName,
+      group.canSelectUnspecified,
+      group.options.map(signatureOption),
+    ])),
   });
 }
 

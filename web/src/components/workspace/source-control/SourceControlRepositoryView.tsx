@@ -168,7 +168,7 @@ export function SourceControlRepositoryView({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      <TabsContent value="branches" className="min-h-0 min-w-0 overflow-hidden data-[state=active]:flex data-[state=active]:flex-1"><ScrollArea className="min-h-0 min-w-0 flex-1">
+      <TabsContent value="branches" className="min-h-0 min-w-0 overflow-hidden data-[state=active]:flex data-[state=active]:flex-1 data-[state=active]:flex-col"><ScrollArea className="min-h-0 min-w-0 flex-1">
         <div className="py-1">
           {localBranches.map((ref) => (
             <RepositoryRow key={ref.fullName} primary={ref.shortName} secondary={ref.targetOid.slice(0, 8)} active={ref.shortName === snapshot.repository.currentBranch}>
@@ -185,7 +185,7 @@ export function SourceControlRepositoryView({
           ))}
         </div>
       </ScrollArea></TabsContent>
-      <TabsContent value="tags" className="min-h-0 min-w-0 overflow-hidden data-[state=active]:flex data-[state=active]:flex-1"><ScrollArea className="min-h-0 min-w-0 flex-1"><div className="min-w-0 py-1">
+      <TabsContent value="tags" className="min-h-0 min-w-0 overflow-hidden data-[state=active]:flex data-[state=active]:flex-1 data-[state=active]:flex-col"><ScrollArea className="min-h-0 min-w-0 flex-1"><div className="min-w-0 py-1">
           {tags.map((ref) => (
             <RepositoryRow key={ref.fullName} primary={ref.shortName} secondary={(ref.peeledOid ?? ref.targetOid).slice(0, 8)}>
               <DropdownMenu>
@@ -199,7 +199,7 @@ export function SourceControlRepositoryView({
             </RepositoryRow>
           ))}
         </div></ScrollArea></TabsContent>
-      <TabsContent value="worktrees" className="min-h-0 min-w-0 overflow-hidden data-[state=active]:flex data-[state=active]:flex-1"><ScrollArea className="min-h-0 min-w-0 flex-1"><div className="min-w-0 py-1">
+      <TabsContent value="worktrees" className="min-h-0 min-w-0 overflow-hidden data-[state=active]:flex data-[state=active]:flex-1 data-[state=active]:flex-col"><ScrollArea className="min-h-0 min-w-0 flex-1"><div className="min-w-0 py-1">
           {snapshot.worktrees.map((worktree) => {
             const current = worktree.path === snapshot.repository.workspacePath;
             const removing = busyActionKind === 'worktree-remove' && busyActionPath === worktree.path;
@@ -217,7 +217,7 @@ export function SourceControlRepositoryView({
             );
           })}
         </div></ScrollArea></TabsContent>
-      <TabsContent value="stashes" className="min-h-0 min-w-0 overflow-hidden data-[state=active]:flex data-[state=active]:flex-1"><ScrollArea className="min-h-0 min-w-0 flex-1"><div className="min-w-0 py-1">
+      <TabsContent value="stashes" className="min-h-0 min-w-0 overflow-hidden data-[state=active]:flex data-[state=active]:flex-1 data-[state=active]:flex-col"><ScrollArea className="min-h-0 min-w-0 flex-1"><div className="min-w-0 py-1">
           {snapshot.stashes.map((stash) => (
             <RepositoryRow key={stash.oid} primary={stash.message} secondary={stash.refName}>
               <Button size="xs" variant="ghost" disabled={busy || locked} onClick={() => openAction({ kind: 'stash-apply', target: stash.refName })}>{t('sourceControl.apply')}</Button>

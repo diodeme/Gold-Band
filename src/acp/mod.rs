@@ -12,6 +12,7 @@ pub mod interaction;
 pub mod permission;
 mod pipeline_diagnostics;
 pub mod prompt_queue;
+pub mod session_config;
 pub mod timeline;
 pub mod turn_files;
 pub mod usage;

@@ -33,6 +33,7 @@ import { fileContentStore } from './files/file-content-store';
 import { fileExplorerStore } from './files/file-explorer-store';
 import { WorkspaceFileLinkProvider } from './files/WorkspaceFileLinkProvider';
 import {
+  conversationPageHasDraftWorkspaceScope,
   reduceWorkspaceAutoCollapse,
   resolveWorkspaceCanonicalLayout,
   resolveRightWorkspaceWidthFromLayout,
@@ -247,7 +248,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
   );
   const activeConversation = props.active.kind === 'conversation-run' ? props.active : null;
   const rightWorkspaceScope = useMemo(() => {
-    if (props.active.kind === 'conversation-home' || props.active.kind === 'scheduled-task-create') {
+    if (conversationPageHasDraftWorkspaceScope(props.active)) {
       return createDraftConversationWorkspaceScope(props.activeWorkspaceId ?? 'default');
     }
     if (activeConversation) {

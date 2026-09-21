@@ -303,7 +303,7 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
           <SourceControlRepositoryView snapshot={snapshot} busyActionKind={busyActionKind} busyActionPath={pendingAction?.path ?? null} locked={writeLocked} onMutation={mutate} onOperation={startOperation} activeTab={repositoryTab} onTabChange={changeRepositoryTab} />
         </TabsContent>
 
-        <TabsContent value="github" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-1">
+        <TabsContent value="github" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-1 data-[state=active]:flex-col">
           <SourceControlGitHubView
             projectId={resource.projectId}
             workspacePath={resource.workspacePath}

@@ -187,6 +187,8 @@ runtime 写入 `Paused + ProcessInterrupted` 后，自动重试控制器必须�
 
 `session/cancel` 后仍需有界等待原 `session/prompt` terminal。若 deadline 到期，记录结构化 `acp.cancel-drain-timeout`，用户可见 attempt 仍保持 `Paused + ProcessInterrupted`，ACP turn 结算为 cancelled；该未收尾 session 必须从 attempt route 与 attached runtime registry 中隔离，但 `worker-ref.json` 继续保留原 Provider session identity。后续向该既有 attempt 提交用户 turn 时必须使用 `SessionMode::Continue`，优先按 live capability 调用 `session/resume`，仅在 resume 不可用而 load 可用时调用 `session/load`；缺少恢复引用时返回 `acp.session-restore-reference-missing`，恢复能力缺失时返回 `acp.session-restore-unsupported`，均不得静默降级为 `session/new`。adapter process 仍按 `provider_id + workspace_root` 复用，不因单个 session 收尾超时被 kill，也不得影响同 process 上的其他 session。
 
+Cursor ACP 已知缺陷：prompt 已被消费后发送 `session/cancel`，后续模型上下文可能整轮撤回该 user prompt（含 runtime continue 刚注入的 hidden context），与 ACP「cancel 只停前台工作」和 Gold Band 保留 cancelled `goldBandPrompt` 的契约不一致。详见 [Provider Adapter 接口](../provider/adapter.md)。未做补偿前，不要假设被取消的 continue prompt 仍在 Cursor 会话历史里；下一次 runtime-controlled continue 才应重新注入最新 hidden context。
+
 若 ACP 在 session-ready、session id 或首批 timeline event 形成前已经进入 `runtime-error`，会话 UI 必须优先展示 runtime diagnostic 错误态并停止初始 loading；不能因为 session snapshot 尚未 ready 而持续显示加载中。已经建立 session 或已有事件的会话仍走正常会话错误展示路径，避免初始化错误规则覆盖可恢复的既有会话。
 
 ### 8.2 AI-DYNAMIC workspace 一致性边界

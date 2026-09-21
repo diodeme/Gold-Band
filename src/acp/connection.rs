@@ -36,6 +36,8 @@ const EARLY_SESSION_FRAME_MAX_FRAMES: usize = 64;
 const STDERR_READ_BUFFER_SIZE: usize = 4096;
 const STDERR_LINE_MAX_BYTES: usize = 16 * 1024;
 const STDERR_RAW_PREVIEW_BYTES: usize = 256;
+const STDERR_FAILURE_MAX_CHARS: usize = 2_000;
+pub(crate) const STDERR_FAILURE_DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
 const CONNECTION_DIAGNOSTIC_REQUEST_LIMIT: usize = 8;
 static NEXT_CONNECTION_GENERATION: AtomicU64 = AtomicU64::new(1);
 static NEXT_SESSION_ROUTE_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -1010,6 +1012,14 @@ pub struct AdapterConnection {
     state: Mutex<AdapterConnectionState>,
     exit_status_logged: AtomicBool,
     stderr_noise_counts: Mutex<BTreeMap<&'static str, u64>>,
+    stderr_failures: Mutex<StderrFailureLog>,
+    stderr_failures_changed: Condvar,
+}
+
+#[derive(Default)]
+struct StderrFailureLog {
+    text: String,
+    finished: bool,
 }
 
 pub struct ActivePromptGuard {
@@ -1224,6 +1234,8 @@ impl AdapterConnection {
             state: Mutex::new(AdapterConnectionState::Open),
             exit_status_logged: AtomicBool::new(false),
             stderr_noise_counts: Mutex::new(BTreeMap::new()),
+            stderr_failures: Mutex::new(StderrFailureLog::default()),
+            stderr_failures_changed: Condvar::new(),
         });
 
         let stdout_connection = Arc::clone(&connection);
@@ -1231,9 +1243,11 @@ impl AdapterConnection {
 
         let stderr_connection = Arc::clone(&connection);
         thread::spawn(move || {
-            if let Err(error) = read_stderr(stderr, |line| {
+            let read_result = read_stderr(stderr, |line| {
                 log_stderr_line(&stderr_connection, line);
-            }) {
+            });
+            stderr_connection.finish_failure_stderr();
+            if let Err(error) = read_result {
                 warn!(
                     provider = %stderr_connection.provider_id,
                     adapter = %stderr_connection.adapter.adapter_id,
@@ -1290,6 +1304,47 @@ impl AdapterConnection {
             .map_err(|_| anyhow!("ACP adapter child lock poisoned"))?
             .try_wait()
             .map_err(Into::into)
+    }
+
+    pub fn wait_for_failure_stderr(&self, timeout: Duration) -> String {
+        let Ok(mut log) = self.stderr_failures.lock() else {
+            return String::new();
+        };
+        let deadline = Instant::now() + timeout;
+        while !log.finished {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match self.stderr_failures_changed.wait_timeout(log, remaining) {
+                Ok((guard, wait)) => {
+                    log = guard;
+                    if wait.timed_out() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    log = error.into_inner().0;
+                    break;
+                }
+            }
+        }
+        log.text.clone()
+    }
+
+    fn record_failure_stderr(&self, line: &str) {
+        let Ok(mut log) = self.stderr_failures.lock() else {
+            return;
+        };
+        append_failure_stderr_text(&mut log.text, line);
+        self.stderr_failures_changed.notify_all();
+    }
+
+    fn finish_failure_stderr(&self) {
+        if let Ok(mut log) = self.stderr_failures.lock() {
+            log.finished = true;
+        }
+        self.stderr_failures_changed.notify_all();
     }
 
     pub fn initialized_capabilities(&self) -> Option<Value> {
@@ -1998,6 +2053,20 @@ fn connection_lifecycle_uses_info(pooled: bool) -> bool {
     pooled
 }
 
+fn append_failure_stderr_text(target: &mut String, line: &str) {
+    let line = line.trim_end();
+    if line.is_empty() || target.chars().count() >= STDERR_FAILURE_MAX_CHARS {
+        return;
+    }
+    if !target.is_empty() {
+        target.push('\n');
+    }
+    target.push_str(line);
+    if target.chars().count() > STDERR_FAILURE_MAX_CHARS {
+        *target = target.chars().take(STDERR_FAILURE_MAX_CHARS).collect();
+    }
+}
+
 fn log_stderr_line(connection: &AdapterConnection, line: StderrLine) {
     match classify_adapter_stderr(&line.text) {
         AdapterStderrKind::Noise(kind) => {
@@ -2006,7 +2075,8 @@ fn log_stderr_line(connection: &AdapterConnection, line: StderrLine) {
             }
             return;
         }
-        AdapterStderrKind::Failure | AdapterStderrKind::Diagnostic => {}
+        AdapterStderrKind::Failure => connection.record_failure_stderr(&line.text),
+        AdapterStderrKind::Diagnostic => {}
     }
     let raw_bytes_hex = line.raw_bytes_hex.as_deref().unwrap_or("");
     if line.encoding == "non-utf8" {
@@ -2942,9 +3012,10 @@ mod tests {
         AcpConnectionUnavailable, ActivePromptTracker, AdapterConnectionKey,
         AdapterConnectionManager, AdapterConnectionState, AdapterStderrKind,
         AttemptSessionUnregisterOutcome, ConnectionCreationGate, ConnectionInitialization,
-        EarlySessionFrames, JSONRPC_METHOD_NOT_FOUND_CODE, STDERR_LINE_MAX_BYTES,
-        SessionConfigTransaction, SessionEventPump, SessionRouteTryRecvError,
-        classify_adapter_stderr, connection_lifecycle_uses_info, is_expected_unrouted_notification,
+        EarlySessionFrames, JSONRPC_METHOD_NOT_FOUND_CODE, STDERR_FAILURE_MAX_CHARS,
+        STDERR_LINE_MAX_BYTES, SessionConfigTransaction, SessionEventPump,
+        SessionRouteTryRecvError, append_failure_stderr_text, classify_adapter_stderr,
+        connection_lifecycle_uses_info, is_expected_unrouted_notification,
         is_same_connection_generation, persist_cancelled_session_snapshot, read_stderr,
         record_unrouted_warning, register_session_route_state, request_unavailability,
         route_or_buffer_session_frame, select_provider_connection_keys, session_id_from_frame,
@@ -3194,6 +3265,24 @@ mod tests {
             classify_adapter_stderr("adapter ready"),
             AdapterStderrKind::Diagnostic
         );
+    }
+
+    #[test]
+    fn failure_stderr_text_is_newline_joined_and_bounded() {
+        let mut text = String::new();
+        append_failure_stderr_text(&mut text, "npm error code ENOENT");
+        append_failure_stderr_text(&mut text, "npm error path C:\\cache\\package.json");
+        assert_eq!(
+            text,
+            "npm error code ENOENT\nnpm error path C:\\cache\\package.json"
+        );
+
+        let mut bounded = String::new();
+        append_failure_stderr_text(&mut bounded, &"e".repeat(STDERR_FAILURE_MAX_CHARS + 50));
+        assert_eq!(bounded.chars().count(), STDERR_FAILURE_MAX_CHARS);
+        append_failure_stderr_text(&mut bounded, "npm error extra");
+        assert_eq!(bounded.chars().count(), STDERR_FAILURE_MAX_CHARS);
+        assert!(!bounded.contains("extra"));
     }
 
     #[test]

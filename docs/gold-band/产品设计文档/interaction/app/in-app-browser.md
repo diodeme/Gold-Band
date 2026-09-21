@@ -125,8 +125,9 @@
 | `mailto:` / `tel:` | 系统 opener |
 | 页内普通左键 `http(s)` 链接 | 当前内部页跳转；站点 `preventDefault` / `target=_blank` 不得把点击吞掉 |
 | 页内 Ctrl+点击、右键「新窗口」 | 内部新页，不创建系统窗口 |
+| Agent 管理诊断帮助中的 ACP Registry | 始终走 `openWebTarget` 打开内置浏览器；不受“打开网站”开关影响，也不走系统 opener |
 
-Markdown 会话链接、文件 Markdown 预览、源码管理 Markdown 外链共用该入口。
+Markdown 会话链接、文件 Markdown 预览、源码管理 Markdown 外链，以及 Agent 管理诊断帮助中的 ACP Registry 共用该入口。Agent 管理页与快速对话、创建定时任务一样使用当前工作空间的 draft 右侧工作区投影，未打开工作区时右栏保持收起。
 
 页内点击按手势分流，不按 HTML `target` 分流。普通左键在子 WebView 文档捕获阶段把 `http(s)` 链接改成当前页 `location.assign`，这样站点 `preventDefault` / `target=_blank` 不能把点击吞掉。Ctrl+点击、右键「新窗口」、以及仍然到达引擎的 `window.open` 才走 `on_new_window`，拦截为内部新页。Windows 上 External 子 WebView 对 `_blank` 锚点经常根本不触发该回调；Tauri `NewWindowResponse::Deny` 等于 Handled，也不会回退成当前页导航。因此左键契约必须在点击发生时落实，不能指望 Deny 之后再补一次 navigate。
 
@@ -183,7 +184,7 @@ BrowserPanel
 | 右栏可见且当前是浏览器 | 对齐占位盒 | 当前页必活，其余 LRU | 保留 | 在 |
 | 切到文件 / Agent（deactivate） | 立刻 hide + suppress，停同步 | 保留（不丢弃） | 保留 | 在 |
 | 切会话 scope（详情 ↔ 快速会话） | 页面不变，只按新占位盒重新对齐；不得 hide / show | 保留（不丢弃） | 保留 | 随新 scope 的投影 |
-| 会话内设置 / 上下文 / 搜索等（Shell 仍在，右栏 scope 为空） | 立刻 hide + suppress，停同步 | 保留（不丢弃） | 保留 | 随 scope 保存 |
+| 会话内设置 / 上下文 / 搜索等（Shell 仍在，右栏 scope 为空；Agent 管理除外，它复用 draft 投影） | 立刻 hide + suppress，停同步 | 保留（不丢弃） | 保留 | 随 scope 保存 |
 | 手动收起右栏（workspace-close） | 立刻 hide + suppress，停同步 | 保留（不丢弃） | 保留 | 在（只是看不见）
 | 窗口变窄自动收起，Sheet 未开 | 立刻 hide + suppress，停同步 | 保留 | 保留 | 在 |
 | 窄屏 Sheet 打开 | 对齐抽屉矩形 | 留着 | 保留 | 在 Sheet 中 |
@@ -201,13 +202,15 @@ BrowserPanel
 
 隐藏后重新显示必然是原生图层的一次 hide → show，中间会露出承载面板的 HTML 空白，因此首次测量与 `show` 必须在 layout 阶段（首帧前）发出，不得排进 `requestAnimationFrame`；只有 resize / observer 驱动的后续同步才走 rAF 合并。只有 `live` 翻转时才额外补一次同步，避免挂载时重复同步。
 
+占位盒尺寸是 HWND bounds 的权威投影，与导航一样按 `pageId` 只有一个在途事务：同一页同时最多一条未完成的 `setBounds`，较新测量只更新排队目标；在途 IPC 完成后必须继续应用到最新 `lastBounds`，过期尺寸不得成为最终 HWND。`suppress` 期间不得把收起、展开中间态或未达 2px 的测量写入 native：小于 2px 的占位盒不得 `hide` 已经隐藏的实例，也不得改写 `lastBounds`；有效但不该展示的测量只更新 `lastBounds`，`resume` 后再按当前占位盒提交。否则切回会话时会先按上次正确尺寸显示，再被 layout 前的窄测量改小，网页媒体查询闪到紧凑布局后又拉回。
+
 导航同样只有一个在途事务，与页面身份绑定：同一个 `pageId` 同时最多有一条未完成的原生 create/navigate，同目标重复提交直接复用在途 Promise，不同目标只保留最后一个排队目标。权威 URL（`page.url`）只在原生命令成功后写回；失败时结束 loading、让页面保持在上一次确认的 URL，并把结构化错误码投到该页 notice。地址栏作为用户输入保留待修正内容，不回写失败地址为权威值。禁用「先写 URL 再发命令」和「同一页并发导航」，是因为前者会留下白屏但地址栏显示成功的假象，后者会随点击次数线性堆积原生调用，最终拖垮 WebView 消息循环并让整个应用无响应。
 
 `suppress` 语义固定为幂等的「隐藏并阻止迟到 show」，`resume` 为幂等的「解除抑制并通知占位组件按当前 bounds 重新 show」；重复调用不得产生额外 IPC 或重复 show。`resume` 只清标志位而不同步，会留下工具栏还在、网页全白的状态。`scope-change` 的 close resolver 保持 no-op：scope 切换由 `BrowserNativeLifecycle` 统一驱动，该组件位于 `RightWorkspaceProvider` 内部，子级 effect 先于父级执行；若父级 resolver 再 suppress，会把刚恢复的新 scope 页面重新隐藏。`deactivate` 与 `workspace-close` 走 suppress，只有 `close` 走 `discardAll`。
 
 临时离开统一 suppress 而不是 discard，是为了保留页内 JS 状态、滚动位置、SPA 状态和原生导航历史，代价是隐藏实例仍占用内存并可能继续跑定时器、网络或音频，由 5 个活实例上限兜底。语义按 Tauri 子 WebView 定义，不绑定具体内核：`show/hide`、bounds、`close`、registry 与 LRU 对所有平台一致，Windows WebView2 / macOS WKWebView / Linux WebKitGTK 只作为平台实现细节。第一版不引入平台专属 suspend/冻结状态机；只有实测隐藏实例消耗不可接受时，才单独设计跨平台降级能力。
 
-`WorkspaceShell` 仍是同窗口 child WebView 的最终 owner。占位组件卸载时的 `hideAll` 只负责局部可见性收敛。owner cleanup 使用本地 generation fence：React StrictMode 的模拟卸载若紧接着重新挂载，旧 cleanup 必须失效；但无论是面板卸载、Shell 卸载还是 `available=false`，cleanup 都只 suppress，不销毁实例，避免切走再立即回来时迟到 discard 杀掉刚恢复的实例。关闭顺序固定为先 best-effort hide，再执行 native close，close 成功后才从 registry 删除；close 失败必须返回结构化错误并保留 registry 项，允许重试，同时优先让图层退出命中区域。
+`WorkspaceShell` 仍是同窗口 child WebView 的最终 owner。原生网页的显隐只由 `BrowserNativeLifecycle` 写入；浏览器面板和占位组件卸载不得自行调用 `resume`、`suppress` 或 `hideAll`，避免同一 scope 切换产生重复 hide/show。占位组件只负责在 layout 阶段测量并把当前 `pageId + bounds + visible` 交给 host，后续 ResizeObserver/窗口变化通过 rAF 合并到 `ensurePage`；同一次测量不得再旁路发送 bounds IPC。owner cleanup 使用本地 generation fence：React StrictMode 的模拟卸载若紧接着重新挂载，旧 cleanup 必须失效；但无论是面板卸载、Shell 卸载还是 `available=false`，cleanup 都只 suppress，不销毁实例，避免切走再立即回来时迟到 discard 杀掉刚恢复的实例。关闭顺序固定为先 best-effort hide，再执行 native close，close 成功后才从 registry 删除；close 失败必须返回结构化错误并保留 registry 项，允许重试，同时优先让图层退出命中区域。
 
 地址建议浮层不进入活网页 LRU。聚焦/输入/键盘选中/主题或窗口尺寸变化时更新同一个实例；提交、Escape、主界面点到地址栏以外、浏览页子 WebView 获得焦点、浏览器整体隐藏或 owner 丢弃时 hide/close。地址栏因点击浮层而失焦不得 hide。show/hide revision 由模块级分配器跨组件挂载单调递增；整体隐藏还必须在 Rust 侧失效化在途 show，迟到请求不得覆盖较新的 hide。鼠标选择与删除通过带 revision 和稳定 item key 的事件回到主 WebView；主界面只接受当前可见 revision 且仍存在于当前建议投影中的项目。dismiss 只关闭浮层，不匹配建议项。
 

@@ -113,6 +113,20 @@ afterEach(() => {
 });
 
 describe('BrowserWorkspacePanel', () => {
+  it('does not own native visibility lifecycle across workspace remounts', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<BrowserWorkspacePanel />));
+      expect(browserWebviewHost.resume).not.toHaveBeenCalled();
+      await act(async () => root.unmount());
+      expect(browserWebviewHost.suppress).not.toHaveBeenCalled();
+    } finally {
+      container.remove();
+    }
+  });
+
   it('keeps the new-tab control after every internal page is closed', async () => {
     const container = document.createElement('div');
     document.body.append(container);

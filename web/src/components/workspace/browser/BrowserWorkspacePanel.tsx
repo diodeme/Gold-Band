@@ -69,13 +69,6 @@ export function BrowserWorkspacePanel({ searchEngine = 'baidu' }: { searchEngine
     void browserBookmarkStore.refresh();
   }, []);
 
-  useLayoutEffect(() => {
-    browserWebviewHost.resume?.();
-    return () => {
-      void browserWebviewHost.suppress?.();
-    };
-  }, []);
-
   useEffect(() => {
     const pageChanged = lastSyncedPageRef.current !== (active?.pageId ?? null);
     lastSyncedPageRef.current = active?.pageId ?? null;

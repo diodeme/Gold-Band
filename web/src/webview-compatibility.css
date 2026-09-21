@@ -120,9 +120,11 @@
 :root[data-webview-responsive-layout='measured'] [data-webview-container='conversation-composer'][data-webview-container-tiers~='2xl'] [class~='@2xl/conversation-composer:gap-3'] { gap: .75rem; }
 
 :root[data-webview-responsive-layout='measured'] [data-webview-container='profile-list'][data-webview-container-tiers~='2xl'] [class~='@2xl/profile-list:grid-cols-2'],
+:root[data-webview-responsive-layout='measured'] [data-webview-container='agent-list'][data-webview-container-tiers~='2xl'] [class~='@2xl/agent-list:grid-cols-2'],
 :root[data-webview-responsive-layout='measured'] [data-webview-container='theme-drawer'][data-webview-container-tiers~='2xl'] [class~='@2xl/theme-drawer:grid-cols-2'],
 :root[data-webview-responsive-layout='measured'] [data-webview-container='settings-content'][data-webview-container-tiers~='5xl'] [class~='@5xl/settings-content:grid-cols-2'] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-:root[data-webview-responsive-layout='measured'] [data-webview-container='profile-list'][data-webview-container-tiers~='6xl'] [class~='@6xl/profile-list:grid-cols-3'] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+:root[data-webview-responsive-layout='measured'] [data-webview-container='profile-list'][data-webview-container-tiers~='6xl'] [class~='@6xl/profile-list:grid-cols-3'],
+:root[data-webview-responsive-layout='measured'] [data-webview-container='agent-list'][data-webview-container-tiers~='6xl'] [class~='@6xl/agent-list:grid-cols-3'] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 :root[data-webview-responsive-layout='measured'] [data-webview-container='run-detail'][data-webview-container-tiers~='4xl'] [class~='@4xl/run-detail:grid-cols-[minmax(320px,420px)_minmax(0,1fr)]'] { grid-template-columns: minmax(320px, 420px) minmax(0, 1fr); }
 :root[data-webview-responsive-layout='measured'] [data-webview-container='run-detail'][data-webview-container-tiers~='4xl'] [class~='@4xl/run-detail:gap-6'] { gap: 1.5rem; }
 :root[data-webview-responsive-layout='measured'] [data-webview-container='settings-section'][data-webview-container-tiers~='3xl'] [class~='@3xl/settings-section:grid-cols-[160px_minmax(0,1fr)]'] { grid-template-columns: 160px minmax(0, 1fr); }

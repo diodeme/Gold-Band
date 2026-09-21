@@ -18,7 +18,10 @@ describe('integrated management page header', () => {
     expect(pageHeaderStyles.integrated.root).not.toContain('bg-');
     expect(pageHeaderStyles.integrated.root).not.toContain('backdrop-blur');
     expect(pageHeaderStyles.integrated.title).toBe('text-lg');
-    expect(pageHeaderStyles.integrated.headingRow).toContain('sm:items-start');
+    expect(pageHeaderStyles.integrated.headingRow).toContain('flex-wrap');
+    expect(pageHeaderStyles.integrated.headingRow).toContain('items-start');
+    expect(pageHeaderStyles.integrated.headingRow).toContain('justify-between');
+    expect(pageHeaderStyles.integrated.headingRow).not.toContain('sm:flex-row');
     expect(pageHeaderStyles.integrated.headingRow).not.toContain('sm:items-center');
 
     const html = renderToStaticMarkup(
@@ -33,7 +36,7 @@ describe('integrated management page header', () => {
     );
 
     expect(html).toContain('data-variant="integrated"');
-    expect(html).toContain('data-slot="page-header-identity" class="flex min-w-0 items-center gap-3"');
+    expect(html).toContain('data-slot="page-header-identity" class="flex min-w-[min(100%,12rem)] flex-1 items-center gap-3"');
     expect(html).toContain('data-slot="page-header-icon"');
     expect(html).toContain('aria-hidden="true"');
     expect(html).toContain('text-foreground [&amp;_svg]:size-5');

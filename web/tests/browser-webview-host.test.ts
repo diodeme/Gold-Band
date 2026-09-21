@@ -48,6 +48,12 @@ function livePage(url = 'about:blank') {
   return browserSessionStore.page(pageId)!;
 }
 
+function liveNativePage(url = 'https://example.com') {
+  const page = livePage(url);
+  browserSessionStore.markLive(page.pageId, true);
+  return browserSessionStore.page(page.pageId)!;
+}
+
 function stubRect(element: Element, rect: { x: number; y: number; width: number; height: number }) {
   Object.defineProperty(element, 'getBoundingClientRect', {
     configurable: true,
@@ -96,6 +102,8 @@ describe('browser webview host lifecycle', () => {
     api.browserHideAll.mockResolvedValue(undefined);
     api.browserShowPage.mockResolvedValue(undefined);
     api.browserDiscardAll.mockResolvedValue(undefined);
+    api.browserSetBounds.mockReset();
+    api.browserSetBounds.mockImplementation(async () => undefined);
   });
 
   afterEach(() => {
@@ -236,6 +244,70 @@ describe('browser webview host lifecycle', () => {
     expect(api.browserNavigate).not.toHaveBeenCalled();
   });
 
+  it('does not let an older live setBounds win after a newer placeholder size', async () => {
+    const page = liveNativePage();
+    const full = { x: 20, y: 40, width: 640, height: 720 };
+    const narrow = { x: 20, y: 40, width: 320, height: 720 };
+    await browserWebviewHost.ensurePage(page, full, true);
+
+    const applied: Array<typeof full> = [];
+    let releaseNarrow: (() => void) | null = null;
+    api.browserSetBounds.mockImplementation((input: { pageId: string; bounds: typeof full }) => {
+      if (input.bounds.width === 320 && releaseNarrow == null) {
+        return new Promise<void>((resolve) => {
+          releaseNarrow = () => {
+            applied.push(input.bounds);
+            resolve();
+          };
+        });
+      }
+      applied.push(input.bounds);
+      return Promise.resolve();
+    });
+
+    const shrinking = browserWebviewHost.ensurePage(page, narrow, true);
+    await vi.waitFor(() => expect(releaseNarrow).not.toBeNull());
+    const restoring = browserWebviewHost.ensurePage(page, full, true);
+    releaseNarrow!();
+    await Promise.all([shrinking, restoring]);
+
+    expect(applied.at(-1)).toEqual(full);
+  });
+
+  it('does not apply placeholder bounds while suppressed so restore cannot shrink a hidden page', async () => {
+    const page = liveNativePage();
+    const full = { x: 20, y: 40, width: 640, height: 720 };
+    const narrow = { x: 20, y: 40, width: 320, height: 720 };
+    await browserWebviewHost.ensurePage(page, full, true);
+    await browserWebviewHost.suppress();
+    api.browserSetBounds.mockClear();
+    api.browserHideAll.mockClear();
+
+    await browserWebviewHost.ensurePage(page, narrow, true);
+    expect(api.browserSetBounds).not.toHaveBeenCalled();
+
+    browserWebviewHost.resume();
+    await browserWebviewHost.ensurePage(page, full, true);
+    expect(api.browserSetBounds).toHaveBeenCalledWith({
+      pageId: page.pageId,
+      bounds: full,
+    });
+    expect(api.browserShowPage).toHaveBeenCalledWith({ pageId: page.pageId });
+  });
+
+  it('does not hide a suppressed page when the placeholder is still collapsed', async () => {
+    const page = liveNativePage();
+    await browserWebviewHost.ensurePage(page, bounds, true);
+    await browserWebviewHost.suppress();
+    api.browserHideAll.mockClear();
+    api.browserSetBounds.mockClear();
+
+    await browserWebviewHost.ensurePage(page, { x: 20, y: 40, width: 0, height: 0 }, true);
+
+    expect(api.browserSetBounds).not.toHaveBeenCalled();
+    expect(api.browserHideAll).not.toHaveBeenCalled();
+  });
+
   it('applies the latest placeholder bounds after a slow native create', async () => {
     let releaseCreate: ((value: { pageId: string; url: string; label: string }) => void) | null = null;
     api.browserCreatePage.mockImplementationOnce((input) => new Promise((resolve) => {
@@ -260,32 +332,6 @@ describe('browser webview host lifecycle', () => {
       pageId: page.pageId,
       bounds: settled,
     });
-  });
-
-  it('flushes the latest bounds when multiple resizes land in the same frame', async () => {
-    const callbacks: FrameRequestCallback[] = [];
-    const originalRaf = globalThis.requestAnimationFrame;
-    globalThis.requestAnimationFrame = ((callback: FrameRequestCallback) => {
-      callbacks.push(callback);
-      return callbacks.length;
-    }) as typeof requestAnimationFrame;
-    try {
-      const page = livePage('https://example.com');
-      browserSessionStore.markLive(page.pageId, true);
-      await browserWebviewHost.ensurePage(page, bounds, true);
-      api.browserSetBounds.mockClear();
-      browserWebviewHost.scheduleBounds(page.pageId, { ...bounds, width: 500 });
-      browserWebviewHost.scheduleBounds(page.pageId, { ...bounds, width: 700 });
-      expect(callbacks).toHaveLength(1);
-      callbacks.splice(0).forEach((callback) => callback(0));
-      expect(api.browserSetBounds).toHaveBeenCalledTimes(1);
-      expect(api.browserSetBounds).toHaveBeenCalledWith({
-        pageId: page.pageId,
-        bounds: { ...bounds, width: 700 },
-      });
-    } finally {
-      globalThis.requestAnimationFrame = originalRaf;
-    }
   });
 
   it('navigates after a pending create instead of racing a missing webview', async () => {
@@ -363,6 +409,24 @@ describe('browser webview host lifecycle', () => {
     await browserWebviewHost.ensurePage(page, bounds, true);
     expect(api.browserShowPage.mock.calls.length).toBe(showsAfterSuppress);
     expect(api.browserHideAll).toHaveBeenCalled();
+  });
+
+  it('coalesces concurrent show requests for the retained page', async () => {
+    let releaseShow: (() => void) | null = null;
+    api.browserShowPage.mockImplementationOnce(() => new Promise((resolve) => {
+      releaseShow = resolve;
+    }));
+    const page = livePage('https://example.com');
+    browserSessionStore.markLive(page.pageId, true);
+
+    const first = browserWebviewHost.ensurePage(page, bounds, true);
+    await vi.waitFor(() => expect(api.browserShowPage).toHaveBeenCalledTimes(1));
+    const second = browserWebviewHost.ensurePage(page, bounds, true);
+    await vi.waitFor(() => expect(api.browserShowPage).toHaveBeenCalledTimes(1));
+
+    releaseShow?.();
+    await Promise.all([first, second]);
+    expect(api.browserShowPage).toHaveBeenCalledTimes(1);
   });
 
   it('notifies the viewport when an overlay closes so the current page can be shown again', () => {

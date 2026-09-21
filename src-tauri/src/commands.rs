@@ -105,15 +105,16 @@ use crate::updater::{
 };
 use crate::view_models::{
     AcpActivityDetailQueryInput, AcpActivityDetailVm, AcpRawFramePageVm, AcpRawFrameQueryInput,
-    AcpSessionQueryInput, AcpSessionVm, AcpToolDetailQueryInput, AcpToolDetailVm, AgentRegistryVm,
-    AppBootstrapVm, ContentVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, McpServerVm,
-    PreferencesVm, RoundDetailVm, RoundSelectionInput, RunDetailVm, RunSummaryVm, SkillContentVm,
-    SkillListVm, SkillMetaVm, SyncStatusEntryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm,
-    WorkflowVm, acp_activity_detail_vm_for_attempt, acp_raw_frame_page_vm, acp_session_vm,
-    acp_tool_detail_vm_for_attempt, agent_registry_vm, bootstrap_vm, dynamic_acp_session_vm,
-    log_page_vm, mcp_server_list_vm, preferences_vm, round_detail_vm, run_detail_vm,
-    run_summary_vm, skill_content_vm, skill_list_vm, skill_meta_vm, task_detail_vm, task_list_vm,
-    workflow_vm,
+    AcpSessionConfigVm, AcpSessionQueryInput, AcpSessionVm, AcpToolDetailQueryInput,
+    AcpToolDetailVm, AgentRegistryVm, AppBootstrapVm, ContentVm, LocalClaudeStatusVm, LogPageVm,
+    LogQueryInput, McpServerVm, PreferencesVm, RoundDetailVm, RoundSelectionInput, RunDetailVm,
+    RunSummaryVm, SkillContentVm, SkillListVm, SkillMetaVm, SyncStatusEntryVm, TaskDetailVm,
+    TaskListVm, UpdateBadgeStateVm, WorkflowVm, acp_activity_detail_vm_for_attempt,
+    acp_raw_frame_page_vm, acp_session_config_vm, acp_session_vm, acp_tool_detail_vm_for_attempt,
+    agent_registry_vm, bootstrap_vm, dynamic_acp_session_vm, log_page_vm, mcp_server_list_vm,
+    preferences_vm, round_detail_vm, run_detail_vm, run_summary_vm,
+    session_metadata_from_attempt_dir, skill_content_vm, skill_list_vm, skill_meta_vm,
+    task_detail_vm, task_list_vm, workflow_vm,
 };
 use crate::view_models_conversation::{
     ConversationAttemptLifecycleVm, ConversationTaskActivityVm, conversation_attempt_lifecycle_vm,
@@ -897,6 +898,8 @@ struct AcpSessionUpdatedEventVm {
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
     session: Option<AcpSessionVm>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_config: Option<AcpSessionConfigVm>,
     event: Option<AcpUiEvent>,
     lifecycle: Option<ConversationAttemptLifecycleVm>,
     activity: Option<ConversationTaskActivityVm>,
@@ -5337,6 +5340,68 @@ pub(crate) fn acp_live_update_emitter(
     })
 }
 
+fn maybe_upsert_authoring_model_bound_catalog(
+    app_handle: &AppHandle,
+    app: Option<&App>,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+    session: Option<&AcpSessionVm>,
+    session_config: Option<&AcpSessionConfigVm>,
+) {
+    let Some(config) = session
+        .and_then(|session| session.config.as_ref())
+        .or(session_config)
+    else {
+        return;
+    };
+    let Some(catalogs) = config.model_bound_catalogs.as_ref() else {
+        return;
+    };
+    let Some(payload) =
+        gold_band::acp::session_config::authoring_upsert_payload_from_session_catalog(
+            config.config_options.as_ref(),
+            catalogs,
+            config.current_model_id.as_deref(),
+        )
+    else {
+        return;
+    };
+    let provider = session.map(|session| session.provider.clone()).or_else(|| {
+        app.and_then(|app| {
+            acp_turn_provider_id(
+                app,
+                &AttemptLocator::new(
+                    task_id.to_string(),
+                    run_id.to_string(),
+                    round_id.to_string(),
+                    node_id.to_string(),
+                    attempt_id.to_string(),
+                    outer_node_id,
+                    outer_attempt_id,
+                ),
+            )
+        })
+    });
+    let Some(provider) = provider else {
+        return;
+    };
+    let Ok(agent_id) = ManagedAgentId::from_str(&provider) else {
+        return;
+    };
+    let state = app_handle.state::<DesktopState>();
+    if state
+        .upsert_agent_authoring_model_bound_catalog(&agent_id, &payload)
+        .unwrap_or(false)
+    {
+        emit_agent_registry_updated(app_handle, &agent_id);
+    }
+}
+
 fn maybe_record_agent_commands(
     app_handle: &AppHandle,
     app: Option<&App>,
@@ -5706,6 +5771,39 @@ fn emit_acp_update(
     let task_activity_at = app.and_then(|app| {
         crate::view_models_conversation::conversation_task_last_activity_at(app, task_id)
     });
+    let session_config = if session.is_none() && event.is_none() {
+        app.and_then(|app| {
+            let attempt_dir = resolve_acp_attempt_dir(
+                app,
+                task_id,
+                run_id,
+                round_id,
+                node_id,
+                attempt_id,
+                outer_node_id.as_deref(),
+                outer_attempt_id.as_deref(),
+            );
+            session_metadata_from_attempt_dir(&attempt_dir)
+                .and_then(|metadata| acp_session_config_vm(&metadata))
+        })
+    } else {
+        None
+    };
+    if event.is_none() {
+        maybe_upsert_authoring_model_bound_catalog(
+            app_handle,
+            app,
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            outer_node_id.clone(),
+            outer_attempt_id.clone(),
+            session.as_ref(),
+            session_config.as_ref(),
+        );
+    }
     let _ = app_handle.emit(
         ACP_SESSION_EVENT,
         AcpSessionUpdatedEventVm {
@@ -5722,6 +5820,7 @@ fn emit_acp_update(
             outer_node_id,
             outer_attempt_id,
             session,
+            session_config,
             event,
             lifecycle,
             activity,
@@ -9182,6 +9281,46 @@ fn acp_session_config_catalog_context(
     }
 }
 
+fn acp_authoring_model_bound_catalogs(
+    app: &App,
+    locator: &AttemptLocator,
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    acp_turn_provider_id(app, locator)
+        .and_then(|provider| app.provider_diagnostics().remove(&provider))
+        .and_then(|diagnostic| diagnostic.capabilities)
+        .map(|capabilities| {
+            gold_band::acp::session_config::model_bound_catalogs_from_capabilities_value(Some(
+                &capabilities,
+            ))
+        })
+        .unwrap_or_default()
+}
+
+fn acp_session_config_option_catalog<'a>(
+    catalogs: &'a AcpSessionConfigCatalogContext,
+    option_id: &str,
+) -> &'a AcpSessionConfigCatalog {
+    if acp_catalog_option_is_model_bound(&catalogs.session, option_id)
+        || catalogs
+            .newer_doctor
+            .as_ref()
+            .is_some_and(|doctor| acp_catalog_option_is_model_bound(doctor, option_id))
+    {
+        return &catalogs.session;
+    }
+    catalogs.effective()
+}
+
+fn acp_catalog_option_is_model_bound(catalog: &AcpSessionConfigCatalog, option_id: &str) -> bool {
+    catalog
+        .config_options
+        .as_ref()
+        .and_then(|options| options.get(option_id))
+        .is_some_and(|option| {
+            gold_band::acp::session_config::is_model_bound_config_category(&option.category)
+        })
+}
+
 fn acp_session_config_value_unavailable(
     category: &str,
     config_id: &str,
@@ -9221,6 +9360,35 @@ fn validate_acp_catalog_mode(catalog: &AcpSessionConfigCatalog, value: &str) -> 
         ));
     }
     Ok(())
+}
+
+fn validate_acp_session_config_option_value(
+    catalogs: &AcpSessionConfigCatalogContext,
+    session: &serde_json::Value,
+    authoring_catalogs: &std::collections::BTreeMap<String, serde_json::Value>,
+    option_id: &str,
+    value: &str,
+) -> CommandResult<()> {
+    if let Some(option) = gold_band::acp::session_config::projected_bound_option(
+        session,
+        authoring_catalogs,
+        option_id,
+    ) {
+        if gold_band::acp::session_config::option_lists_value(option, value) {
+            return Ok(());
+        }
+        return Err(acp_session_config_value_unavailable(
+            gold_band::acp::session_config::option_category_name(option),
+            option_id,
+            value,
+            gold_band::acp::session_config::option_listed_values(option),
+        ));
+    }
+    validate_acp_catalog_config_value(
+        acp_session_config_option_catalog(catalogs, option_id),
+        option_id,
+        value,
+    )
 }
 
 fn validate_acp_catalog_config_value(
@@ -9273,6 +9441,14 @@ fn apply_acp_catalog_refresh_marker(
         .and_then(serde_json::Value::as_object)
         .is_some_and(|overrides| {
             overrides.iter().any(|(option_id, value)| {
+                if acp_catalog_option_is_model_bound(&catalogs.session, option_id)
+                    || catalogs
+                        .newer_doctor
+                        .as_ref()
+                        .is_some_and(|doctor| acp_catalog_option_is_model_bound(doctor, option_id))
+                {
+                    return false;
+                }
                 value.as_str().is_some_and(|value| {
                     doctor.supports_config_value(option_id, value) == Some(true)
                         && catalogs.session.supports_config_value(option_id, value) != Some(true)
@@ -9382,6 +9558,7 @@ pub async fn set_acp_session_model(
         )
     })?;
     let catalogs = acp_session_config_catalog_context(&app, &locator, &value);
+    let authoring_catalogs = acp_authoring_model_bound_catalogs(&app, &locator);
     if let Some(model_id) = model_id
         .as_deref()
         .map(str::trim)
@@ -9390,20 +9567,14 @@ pub async fn set_acp_session_model(
         validate_acp_catalog_model(catalogs.effective(), model_id)?;
     }
 
-    if let Some(session) = value.as_object_mut() {
-        if let Some(model_id) = model_id
+    gold_band::acp::session_config::apply_session_snapshot_model_switch_with_authoring(
+        &mut value,
+        model_id
             .as_deref()
             .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            session.insert(
-                "modelOverride".to_string(),
-                serde_json::Value::String(model_id.to_string()),
-            );
-        } else {
-            session.remove("modelOverride");
-        }
-    }
+            .filter(|value| !value.is_empty()),
+        Some(&authoring_catalogs),
+    );
     if let Some(model_id) = model_id
         .as_deref()
         .map(str::trim)
@@ -9415,24 +9586,17 @@ pub async fn set_acp_session_model(
                 serde_json::Value::String(model_id.to_string()),
             );
         }
-        set_acp_config_option_current_value(&mut value, "model", model_id);
     }
     apply_acp_catalog_refresh_marker(&mut value, &catalogs);
     value = gold_band::acp::events::patch_session_metadata(&path, |current| {
-        if let Some(session) = current.as_object_mut() {
-            if let Some(model_id) = model_id
+        gold_band::acp::session_config::apply_session_snapshot_model_switch_with_authoring(
+            current,
+            model_id
                 .as_deref()
                 .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                session.insert(
-                    "modelOverride".to_string(),
-                    serde_json::Value::String(model_id.to_string()),
-                );
-            } else {
-                session.remove("modelOverride");
-            }
-        }
+                .filter(|value| !value.is_empty()),
+            Some(&authoring_catalogs),
+        );
         if let Some(model_id) = model_id
             .as_deref()
             .map(str::trim)
@@ -9447,7 +9611,6 @@ pub async fn set_acp_session_model(
                     serde_json::Value::String(model_id.to_string()),
                 );
             }
-            set_acp_config_option_current_value(current, "model", model_id);
         }
         apply_acp_catalog_refresh_marker(current, &catalogs);
         Ok(())
@@ -9820,8 +9983,15 @@ pub async fn set_acp_session_config_option(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    let authoring_catalogs = acp_authoring_model_bound_catalogs(&app, &locator);
     if let Some(selected) = normalized_value {
-        validate_acp_catalog_config_value(catalogs.effective(), option_id, selected)?;
+        validate_acp_session_config_option_value(
+            &catalogs,
+            &value,
+            &authoring_catalogs,
+            option_id,
+            selected,
+        )?;
     }
     if let Some(session) = value.as_object_mut() {
         let overrides = session
@@ -9844,6 +10014,7 @@ pub async fn set_acp_session_config_option(
             }
         }
     }
+    gold_band::acp::session_config::remember_session_snapshot_applied_overrides(&mut value);
     if let Some(selected) = normalized_value {
         set_acp_config_option_current_value(&mut value, option_id, selected);
     }
@@ -9870,6 +10041,7 @@ pub async fn set_acp_session_config_option(
                 }
             }
         }
+        gold_band::acp::session_config::remember_session_snapshot_applied_overrides(current);
         if let Some(selected) = normalized_value {
             set_acp_config_option_current_value(current, option_id, selected);
         }
@@ -11160,6 +11332,157 @@ mod tests {
     }
 
     #[test]
+    fn session_bound_config_validates_against_live_session_not_newer_doctor() {
+        let session = serde_json::json!({
+            "configCatalogObservedAt": "100Z",
+            "configOptions": [{
+                "id": "effort",
+                "category": "thought_level",
+                "type": "select",
+                "options": [{ "value": "low" }, { "value": "high" }]
+            }]
+        });
+        let catalogs = AcpSessionConfigCatalogContext {
+            session: AcpSessionConfigCatalog::from_value(&session, Some("100Z".to_string())),
+            newer_doctor: Some(AcpSessionConfigCatalog::from_value(
+                &serde_json::json!({
+                    "configOptions": [{
+                        "id": "effort",
+                        "category": "thought_level",
+                        "type": "select",
+                        "options": [{ "value": "low" }, { "value": "high" }, { "value": "xhigh" }]
+                    }, {
+                        "id": "context",
+                        "category": "model_config",
+                        "type": "select",
+                        "options": [{ "value": "1m" }]
+                    }]
+                }),
+                Some("200Z".to_string()),
+            )),
+        };
+
+        validate_acp_catalog_config_value(
+            acp_session_config_option_catalog(&catalogs, "effort"),
+            "effort",
+            "high",
+        )
+        .unwrap();
+        assert_eq!(
+            validate_acp_catalog_config_value(
+                acp_session_config_option_catalog(&catalogs, "effort"),
+                "effort",
+                "xhigh",
+            )
+            .unwrap_err()
+            .code,
+            gold_band::acp::client::ACP_SESSION_CONFIG_VALUE_UNAVAILABLE_CODE
+        );
+        assert_eq!(
+            validate_acp_catalog_config_value(
+                acp_session_config_option_catalog(&catalogs, "context"),
+                "context",
+                "1m",
+            )
+            .unwrap_err()
+            .code,
+            gold_band::acp::client::ACP_SESSION_CONFIG_VALUE_UNAVAILABLE_CODE
+        );
+
+        let mut refresh_session = serde_json::json!({
+            "configOptionOverrides": { "context": "1m", "effort": "xhigh" }
+        });
+        apply_acp_catalog_refresh_marker(&mut refresh_session, &catalogs);
+        assert!(
+            refresh_session
+                .get("configCatalogRefreshRequiredAt")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn session_bound_config_accepts_authoring_catalog_for_selected_unobserved_model() {
+        let session = serde_json::json!({
+            "modelOverride": "gpt-5.6-luna",
+            "configCatalogObservedAt": "100Z",
+            "configOptions": [{
+                "id": "model",
+                "category": "model",
+                "currentValue": "grok-4.6"
+            }, {
+                "id": "effort",
+                "category": "thought_level",
+                "type": "select",
+                "options": [{ "value": "low" }, { "value": "high" }]
+            }, {
+                "id": "fast",
+                "category": "model_config",
+                "type": "select",
+                "options": [{ "value": "false" }, { "value": "true" }]
+            }]
+        });
+        let catalogs = AcpSessionConfigCatalogContext {
+            session: AcpSessionConfigCatalog::from_value(&session, Some("100Z".to_string())),
+            newer_doctor: Some(AcpSessionConfigCatalog::from_value(
+                &serde_json::json!({
+                    "configOptions": [{
+                        "id": "context",
+                        "category": "model_config",
+                        "type": "select",
+                        "options": [{ "value": "1m" }]
+                    }]
+                }),
+                Some("200Z".to_string()),
+            )),
+        };
+        let mut authoring = std::collections::BTreeMap::new();
+        authoring.insert(
+            "gpt-5.6-luna".into(),
+            serde_json::json!([{
+                "id": "context",
+                "category": "model_config",
+                "options": [{ "value": "272k" }, { "value": "1m" }]
+            }]),
+        );
+
+        validate_acp_session_config_option_value(
+            &catalogs,
+            &session,
+            &authoring,
+            "context",
+            "1m",
+        )
+        .unwrap();
+        assert_eq!(
+            validate_acp_session_config_option_value(
+                &catalogs,
+                &session,
+                &authoring,
+                "context",
+                "2m",
+            )
+            .unwrap_err()
+            .code,
+            gold_band::acp::client::ACP_SESSION_CONFIG_VALUE_UNAVAILABLE_CODE
+        );
+        assert_eq!(
+            validate_acp_session_config_option_value(
+                &catalogs,
+                &serde_json::json!({
+                    "configOptions": session["configOptions"],
+                    "configCatalogObservedAt": "100Z"
+                }),
+                &authoring,
+                "context",
+                "1m",
+            )
+            .unwrap_err()
+            .code,
+            gold_band::acp::client::ACP_SESSION_CONFIG_VALUE_UNAVAILABLE_CODE
+        );
+    }
+
+    #[test]
     fn session_catalog_wins_ties_and_unavailable_values_are_structured() {
         assert!(!acp_catalog_observation_is_newer("200Z", Some("200Z")));
         assert!(!acp_catalog_observation_is_newer("199Z", Some("200Z")));
@@ -11214,6 +11537,7 @@ mod tests {
                     permission_mode_id: None,
                     auto_accept: false,
                     config_options: BTreeMap::new(),
+                    model_bound_overrides: Default::default(),
                 }],
                 ..WorkflowModelBindings::default()
             },
@@ -11235,8 +11559,10 @@ mod tests {
                         permission_mode: None,
                         auto_accept: false,
                         bootstrap_config_options: Default::default(),
+                        bootstrap_model_bound_overrides: Default::default(),
                         acceptance_model: None,
                         acceptance_config_options: Default::default(),
+                        acceptance_model_bound_overrides: Default::default(),
                         routing_prompt: "route by task".to_string(),
                         available_agents: vec![gold_band::dsl::DynamicAgentRef {
                             provider: "agent-b".to_string(),
@@ -11244,9 +11570,11 @@ mod tests {
                             permission_mode: None,
                             auto_accept: false,
                             config_options: Default::default(),
+                            model_bound_overrides: Default::default(),
                         }],
                     },
                     config_options: Default::default(),
+                    model_bound_overrides: Default::default(),
                     allowed_profiles: Vec::new(),
                     global_goal: None,
                     control: gold_band::dsl::DynamicControlDsl::default(),
@@ -11805,6 +12133,7 @@ mod tests {
                         auto_accept: false,
                     },
                     config_options: Default::default(),
+                    model_bound_overrides: Default::default(),
                     allowed_profiles: Vec::new(),
                     global_goal: None,
                     control: gold_band::dsl::DynamicControlDsl::default(),
@@ -11915,6 +12244,7 @@ mod tests {
             outer_node_id: None,
             outer_attempt_id: None,
             session: None,
+            session_config: None,
             event: Some(AcpUiEvent {
                 id: "acp-timing-1".to_string(),
                 seq: 1,
@@ -11958,6 +12288,7 @@ mod tests {
             outer_node_id: None,
             outer_attempt_id: None,
             session: None,
+            session_config: None,
             event: None,
             lifecycle: None,
             activity: Some(conversation_task_activity_from_prompt(
@@ -11988,6 +12319,7 @@ mod tests {
             outer_node_id: None,
             outer_attempt_id: None,
             session: None,
+            session_config: None,
             event: None,
             lifecycle: None,
             activity: None,
@@ -14235,8 +14567,10 @@ mod tests {
                 permission_mode: None,
                 auto_accept: false,
                 bootstrap_config_options: Default::default(),
+                bootstrap_model_bound_overrides: Default::default(),
                 acceptance_model: None,
                 acceptance_config_options: Default::default(),
+                acceptance_model_bound_overrides: Default::default(),
                 routing_prompt: "route by task".to_string(),
                 available_agents: vec![
                     gold_band::dsl::DynamicAgentRef {
@@ -14245,6 +14579,7 @@ mod tests {
                         permission_mode: None,
                         auto_accept: false,
                         config_options: Default::default(),
+                        model_bound_overrides: Default::default(),
                     },
                     gold_band::dsl::DynamicAgentRef {
                         provider: "claude-acp".to_string(),
@@ -14252,10 +14587,12 @@ mod tests {
                         permission_mode: None,
                         auto_accept: false,
                         config_options: Default::default(),
+                        model_bound_overrides: Default::default(),
                     },
                 ],
             },
             config_options: Default::default(),
+            model_bound_overrides: Default::default(),
             allowed_profiles: Vec::new(),
             global_goal: None,
             control: gold_band::dsl::DynamicControlDsl::default(),

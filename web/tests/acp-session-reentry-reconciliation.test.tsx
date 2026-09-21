@@ -5971,6 +5971,80 @@ describe('ACP session re-entry reconciliation', () => {
     }
   });
 
+  it('keeps live events visible and hides return-to-latest while auto recovery runs at live head', async () => {
+    const initial = session([
+      event('live-head-before-recovery', 1, 'textDelta', '跟随时的当前正文'),
+    ]);
+    const liveDelta = event(
+      'live-head-during-recovery',
+      2,
+      'textDelta',
+      'recovery 飞行中到达的 live 正文',
+    );
+    const canonicalHead = session([
+      event('live-head-before-recovery', 1, 'textDelta', '跟随时的当前正文'),
+      liveDelta,
+    ]);
+    Object.assign(canonicalHead.eventPage, {
+      coveredRevision: 2,
+      newestRevision: 2,
+      newestSeq: 2,
+    });
+    let resolveRecovery!: (value: AcpSessionVm) => void;
+    const pendingRecovery = new Promise<AcpSessionVm>((resolve) => {
+      resolveRecovery = resolve;
+    });
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(initial)
+      .mockReturnValueOnce(pendingRecovery)
+      .mockResolvedValue(canonicalHead);
+
+    const { container, root } = await renderDialog(initial);
+    try {
+      const scroller = [...container.querySelectorAll<HTMLDivElement>('div')]
+        .find((element) => element.classList.contains('h-full')
+          && element.classList.contains('overflow-y-auto'));
+      expect(scroller).toBeDefined();
+      Object.defineProperties(scroller!, {
+        clientHeight: { configurable: true, value: 600 },
+        scrollHeight: { configurable: true, value: 600 },
+        scrollTop: { configurable: true, value: 0, writable: true },
+      });
+
+      await act(async () => {
+        runtime.listener?.({
+          ...locator,
+          branchId: 'root',
+          timelineGeneration: 1,
+          timelineRecoveryRequired: true,
+        });
+        await vi.waitFor(() => {
+          expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+        });
+      });
+
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+
+      applyConversationEventToBranchSnapshots(update(liveDelta));
+      await act(async () => {
+        runtime.listener?.(update(liveDelta));
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+
+      expect(container.textContent).toContain('recovery 飞行中到达的 live 正文');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+
+      await act(async () => {
+        resolveRecovery(canonicalHead);
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+      expect(container.textContent).toContain('recovery 飞行中到达的 live 正文');
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).toBeNull();
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('catches up only the fixed C0 replay cut when C1 advances during I/O', async () => {
     const initial = session([
       event('fixed-cut-initial', 1, 'textDelta', '固定切片前的 snapshot'),

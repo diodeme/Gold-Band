@@ -12,10 +12,12 @@ import {
   getConversationWorkspaces, doctorAgent,
 } from '../api';
 import { displayAppError } from '../i18n';
+import { agentDiagnosticShortReason } from '@/lib/agent-diagnostic';
 import type {
   AppErrorVm, ImportedProfileRecord, ImportProfilesResult, ProfileFieldFallback, ProfileInput, ProfileListVm, ProfileScope, ProfileVm,
   McpServerVm, SkillListVm, SkillMetaVm, SkillContentVm, AgentRegistryVm, ToolInfo,
 } from '../types';
+import { AgentIdentityLabel } from '@/components/AgentIdentityLabel';
 import { EntitySection } from '@/components/EntitySection';
 import { McpServerCard } from '@/components/McpServerCard';
 import { EmptyState, Page, PageContent, PageHeader } from '@/components/PageScaffold';
@@ -811,7 +813,9 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
                     mcpHttpSupported: a.mcpHttpSupported,
                     mcpSseSupported: a.mcpSseSupported,
                     diagnosticAvailable: a.diagnostic?.available,
-                    diagnosticReason: a.diagnostic?.reason,
+                    diagnosticReason: a.diagnostic?.available === false
+                      ? agentDiagnosticShortReason(t, a.diagnostic)
+                      : null,
                   }))}
                   diagnosingAgentType={mcpDiagnosingAgent}
                   onDiagnoseAgent={async (agentType) => {
@@ -877,7 +881,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
                   <SelectContent>
                     <SelectItem value="all">{t('contextManagement.skills.allAgents', '全部 Agent')}</SelectItem>
                     {configuredAgents.map((agent) => (
-                      <SelectItem key={agent.agentType} value={agent.agentType}>{agent.label}</SelectItem>
+                      <SelectItem key={agent.agentType} value={agent.agentType} textValue={agent.label}><AgentIdentityLabel iconKey={agent.iconKey} name={agent.label} /></SelectItem>
                     ))}
                   </SelectContent>
                 </Select>

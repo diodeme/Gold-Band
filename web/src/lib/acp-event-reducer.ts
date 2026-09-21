@@ -129,6 +129,32 @@ function eventLifecycleRevision(event: AcpUiEventVm) {
   return event.endedSeq ?? event.startedSeq ?? originalSeqFromAcpEvent(event);
 }
 
+function compareAcpEventsForDisplay(left: AcpUiEventVm, right: AcpUiEventVm) {
+  const leftAttempt = attemptIdFromAcpEvent(left);
+  const rightAttempt = attemptIdFromAcpEvent(right);
+  const sameAttempt = Boolean(leftAttempt && rightAttempt && leftAttempt === rightAttempt);
+  const sameUnscopedSession = Boolean(
+    !leftAttempt
+    && !rightAttempt
+    && left.sessionId
+    && right.sessionId
+    && left.sessionId === right.sessionId,
+  );
+  if (sameAttempt || sameUnscopedSession) {
+    const leftStart = left.startedSeq ?? originalSeqFromAcpEvent(left);
+    const rightStart = right.startedSeq ?? originalSeqFromAcpEvent(right);
+    const leftEnd = left.endedSeq ?? left.seq;
+    const rightEnd = right.endedSeq ?? right.seq;
+    return (
+      leftStart - rightStart
+      || leftEnd - rightEnd
+      || left.seq - right.seq
+      || left.id.localeCompare(right.id)
+    );
+  }
+  return left.seq - right.seq || left.id.localeCompare(right.id);
+}
+
 function isTerminalEventStatus(status?: string | null) {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
@@ -158,14 +184,12 @@ export function mergeAcpEventWindows(
     }
   }
   if (allUpdatesReplaceExistingEvents) {
-    let changed = false;
     const merged = previous.map((event) => {
       const replacement = replacementByKey.get(acpEventKey(event));
       if (!replacement) return event;
-      changed = true;
       return mergeAcpEventSnapshots(event, replacement);
     });
-    return changed ? orderProviderHistoryByPromptAnchors(merged) : previous;
+    return orderAcpEventsForDisplay(merged);
   }
 
   const previousByKey = new Map<string, AcpUiEventVm>();
@@ -184,8 +208,12 @@ export function mergeAcpEventWindows(
         : { ...event, seq: alignDisplaySeq(event, previous) },
     );
   }
+  return orderAcpEventsForDisplay([...byKey.values()]);
+}
+
+function orderAcpEventsForDisplay(events: AcpUiEventVm[]) {
   return orderProviderHistoryByPromptAnchors(
-    [...byKey.values()].sort((left, right) => left.seq - right.seq),
+    [...events].sort(compareAcpEventsForDisplay),
   );
 }
 

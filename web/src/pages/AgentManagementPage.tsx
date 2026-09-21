@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type InputHTMLAttributes, type TextareaHTMLAttributes } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
-import { openUrl } from '@tauri-apps/plugin-opener';
 import { createAgent, deleteAgent, doctorAgent, getAgentBindingUsage, updateAgent } from '../api';
+import { openWebTarget } from '@/components/workspace/browser/open-web-target';
+import { useOptionalRightWorkspaceCommands } from '@/components/workspace/right-workspace-context';
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { displayAppError } from '../i18n';
-import type { AgentBindingUsageVm, AgentCatalogEntryVm, AgentRegistryVm, ManagedAgentInput, ManagedAgentVm } from '../types';
+import { agentDiagnosticBannerReason, agentDiagnosticHelpReason } from '@/lib/agent-diagnostic';
+import type { AgentBindingUsageVm, AgentCatalogEntryVm, AgentRegistryVm, ManagedAgentDiagnosticVm, ManagedAgentInput, ManagedAgentVm } from '../types';
 import { AppCard } from '@/components/AppCard';
 import { EmptyState, Page, PageHeader } from '@/components/PageScaffold';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -18,6 +20,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { AlertTriangle, Bot, CheckCircle2, CircleHelp, ImagePlus, LoaderCircle, Pencil, Plus, RefreshCw, RotateCcw, Split, Stethoscope, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useWebviewMeasuredContainer } from '@/hooks/use-webview-measured-container';
 import { formatLocalDateTime } from '@/lib/datetime';
 import { AGENT_ICON_ACCEPT, DEFAULT_AGENT_ICON_KEY, agentIconClass, agentIconSrc, readAgentIconFile } from '@/lib/agent-icons';
 import { toneSurfaceClass } from '@/lib/status';
@@ -59,7 +62,21 @@ export function agentDeleteActionDisabled(
 ) {
   return loading || usage === null || error !== null;
 }
-type Notice = { tone: 'success' | 'error'; message: string };
+type Notice = { tone: 'success' | 'error'; message: string; detail?: string | null };
+
+function diagnosticFailedNotice(
+  t: (key: string, options?: Record<string, unknown>) => string,
+  diagnostic?: ManagedAgentDiagnosticVm | null,
+  fallbackReason?: string,
+): Notice {
+  const reason = agentDiagnosticBannerReason(t, diagnostic, fallbackReason);
+  return {
+    tone: 'error',
+    message: reason
+      ? t('agentManagement.diagnosticFailed', { reason })
+      : t('agentManagement.diagnosticFailedNoReason'),
+  };
+}
 
 const ACP_REGISTRY_URL = 'https://agentclientprotocol.com/get-started/registry';
 export const agentAddMenuItemClassName = 'rounded-md transition-colors hover:bg-accent hover:text-accent-foreground data-[selected=true]:!bg-transparent data-[selected=true]:!text-foreground data-[selected=true]:hover:!bg-accent data-[selected=true]:hover:!text-accent-foreground';
@@ -135,6 +152,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
   const [notice, setNotice] = useState<Notice | null>(null);
   const [error, setError] = useState<string | null>(null);
   const iconFileInputRef = useRef<HTMLInputElement>(null);
+  const measuredAgentListRef = useWebviewMeasuredContainer<HTMLDivElement>('agent-list');
 
   const catalog = vm?.catalog ?? [];
   const configuredTypes = useMemo(() => new Set(vm?.agents.map((agent) => agent.agentType) ?? []), [vm]);
@@ -159,7 +177,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
     setAutomaticDiagnosingType(null);
     setNotice(diagnostic.available
       ? { tone: 'success', message: t('agentManagement.diagnosticComplete') }
-      : { tone: 'error', message: t('agentManagement.diagnosticFailed', { reason: diagnostic.reason ?? t('agentManagement.diagnosticFailedFallback') }) });
+      : diagnosticFailedNotice(t, diagnostic));
   }, [automaticDiagnosingType, t, vm]);
 
   const openCreate = (agentType: AgentCatalogEntryVm) => {
@@ -281,9 +299,9 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
       const diagnostic = next.agents.find((agent) => agent.agentType === agentType)?.diagnostic;
       setNotice(diagnostic?.available
         ? { tone: 'success', message: t('agentManagement.diagnosticComplete') }
-        : { tone: 'error', message: t('agentManagement.diagnosticFailed', { reason: diagnostic?.reason ?? t('agentManagement.diagnosticFailedFallback') }) });
+        : diagnosticFailedNotice(t, diagnostic));
     } catch (nextError) {
-      setNotice({ tone: 'error', message: t('agentManagement.diagnosticFailed', { reason: displayAppError(t, nextError) }) });
+      setNotice(diagnosticFailedNotice(t, null, displayAppError(t, nextError)));
     } finally {
       setDiagnosingType(null);
     }
@@ -395,24 +413,31 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
         >
           {notice.tone === 'success' ? <CheckCircle2 /> : <AlertTriangle />}
           <AlertDescription className="text-sm font-medium text-current">
-            {notice.message}
+            <div>{notice.message}</div>
+            {notice.detail ? (
+              <div className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-words font-normal text-ui-caption text-current/80">
+                {notice.detail}
+              </div>
+            ) : null}
           </AlertDescription>
         </Alert>
       ) : null}
       {error && !editor.open ? <div className="rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">{error}</div> : null}
 
       {vm && vm.agents.length > 0 ? (
-        <div className={readOnly ? 'grid grid-cols-[repeat(auto-fit,minmax(min(100%,20rem),1fr))] gap-3' : 'grid gap-3 md:grid-cols-2 xl:grid-cols-3'}>
-          {vm.agents.map((agent) => (
-            <AgentCard
-              key={agent.agentType}
-              agent={agent}
-              diagnosing={diagnosingType === agent.agentType || automaticDiagnosingType === agent.agentType}
-              onEdit={() => openEdit(agent)}
-              onDelete={() => openDeleteDialog(agent)}
-              onDoctor={() => void runDoctor(agent.agentType)}
-            />
-          ))}
+        <div ref={measuredAgentListRef} className="@container/agent-list min-w-0">
+          <div data-slot="agent-card-grid" className="grid min-w-0 gap-3 @2xl/agent-list:grid-cols-2 @6xl/agent-list:grid-cols-3">
+            {vm.agents.map((agent) => (
+              <AgentCard
+                key={agent.agentType}
+                agent={agent}
+                diagnosing={diagnosingType === agent.agentType || automaticDiagnosingType === agent.agentType}
+                onEdit={() => openEdit(agent)}
+                onDelete={() => openDeleteDialog(agent)}
+                onDoctor={() => void runDoctor(agent.agentType)}
+              />
+            ))}
+          </div>
         </div>
       ) : (
         <AppCard>
@@ -473,7 +498,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
             >
               <div className="flex items-center gap-3">
                 <span className="grid size-10 shrink-0 place-items-center rounded-xl border border-border/60 bg-background">
-                  <img src={agentIconSrc(editor.form.icon)} alt="" className={agentIconClass(editor.form.icon, 'size-6')} />
+                  <img src={agentIconSrc(editor.form.icon)} alt="" className={agentIconClass(editor.form.icon, 'size-6', { compensateWhitespace: true })} />
                 </span>
                 <Button
                   type="button"
@@ -644,11 +669,11 @@ function AgentCard({ agent, diagnosing, onEdit, onDelete, onDoctor }: { agent: M
   const { t } = useTranslation();
   const diagnostic = agent.diagnostic;
   return (
-    <AppCard className="h-full gap-3 px-4 py-4 sm:px-4">
+    <AppCard className="h-full min-w-0 gap-3 px-4 py-4 sm:px-4">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-3">
           <span className="grid size-10 shrink-0 place-items-center rounded-xl border border-border/60 bg-background">
-            <img src={agentIconSrc(agent.iconKey)} alt="" className={agentIconClass(agent.iconKey, 'size-6')} />
+            <img src={agentIconSrc(agent.iconKey)} alt="" className={agentIconClass(agent.iconKey, 'size-6', { compensateWhitespace: true })} />
           </span>
           <div className="min-w-0 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
@@ -660,10 +685,10 @@ function AgentCard({ agent, diagnosing, onEdit, onDelete, onDoctor }: { agent: M
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <DiagnosticBadge diagnostic={diagnostic} />
-          {diagnostic?.status === 'unhealthy' ? <RegistryHelp reason={diagnostic.reason} /> : null}
+          {diagnostic?.status === 'unhealthy' ? <RegistryHelp diagnostic={diagnostic} /> : null}
         </div>
       </div>
-      <div className="grid gap-2 text-sm text-muted-foreground sm:grid-cols-2">
+      <div className="grid grid-cols-2 gap-2 text-sm text-muted-foreground">
         {buildAgentCardSummary(agent, t).map((item) => (
           <Info key={item.key} label={item.label} value={item.value} mono={item.mono} />
         ))}
@@ -680,52 +705,52 @@ function AgentCard({ agent, diagnosing, onEdit, onDelete, onDoctor }: { agent: M
   );
 }
 
-function RegistryHelp({ reason }: { reason?: string | null }) {
+function RegistryHelp({ diagnostic }: { diagnostic?: ManagedAgentDiagnosticVm | null }) {
   const { t } = useTranslation();
-  const openRegistry = async () => {
-    try {
-      await openUrl(ACP_REGISTRY_URL);
-    } catch {
-      window.open(ACP_REGISTRY_URL, '_blank', 'noopener,noreferrer');
-    }
-  };
+  const workspace = useOptionalRightWorkspaceCommands();
+  const reason = agentDiagnosticHelpReason(t, diagnostic);
   const openRegistryLink = (event: React.MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
-    void openRegistry();
+    event.stopPropagation();
+    if (!workspace?.scopeKey) return;
+    void openWebTarget(ACP_REGISTRY_URL, {
+      projectId: workspace.projectId,
+      scopeKey: workspace.scopeKey,
+      openResource: workspace.openResource,
+      browserTitle: t('workspace.browser.title'),
+    });
   };
   return (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button type="button" variant="ghost" size="icon" className="size-7 rounded-full text-muted-foreground hover:text-foreground" aria-label={t('agentManagement.registryHelpLabel')}>
-            <CircleHelp className="size-4" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="left" sideOffset={8} className="w-56 space-y-1.5 whitespace-pre-wrap break-words px-2.5 py-2 text-xs leading-[1.45]">
-          {reason ? (
-            <div className="w-full space-y-1">
-              <div className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">{t('status.error')}</div>
-              <div className="whitespace-pre-wrap break-words [text-wrap:wrap]">{reason}</div>
-            </div>
-          ) : null}
-          <div className="w-full space-y-1 border-t border-border/60 pt-3">
-            <div className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">{t('agentManagement.registryHelpLabel')}</div>
-            <Trans
-              i18nKey="agentManagement.registryHelp"
-              components={{
-                registry: (
-                  <a
-                    className="font-medium text-primary underline-offset-4 hover:underline"
-                    href={ACP_REGISTRY_URL}
-                    onClick={openRegistryLink}
-                  />
-                ),
-              }}
-            />
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button type="button" variant="ghost" size="icon" className="size-7 rounded-full text-muted-foreground hover:text-foreground" aria-label={t('agentManagement.diagnosticHelpLabel')}>
+          <CircleHelp className="size-4" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent side="left" align="start" sideOffset={8} className="w-72 max-w-[20rem] space-y-1.5 whitespace-pre-wrap break-words px-2.5 py-2 text-xs leading-[1.45]">
+        {reason ? (
+          <div className="w-full space-y-1">
+            <div className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">{t('agentManagement.diagnosticReasonLabel')}</div>
+            <div className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words [text-wrap:wrap]">{reason}</div>
           </div>
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+        ) : null}
+        <div className="w-full space-y-1 border-t border-border/60 pt-3">
+          <div className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">{t('agentManagement.registryHelpLabel')}</div>
+          <Trans
+            i18nKey="agentManagement.registryHelp"
+            components={{
+              registry: (
+                <a
+                  className="font-medium text-link underline decoration-link/45 underline-offset-2 hover:decoration-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-link/45"
+                  href={ACP_REGISTRY_URL}
+                  onClick={openRegistryLink}
+                />
+              ),
+            }}
+          />
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 

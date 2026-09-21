@@ -92,7 +92,7 @@ Agent 最终只能输出 `PersonalAnalyticsNarrative`，包含 `schemaVersion + 
 1. 点击“个人数据分析”直接导航到 `/chat/personal-analytics`；UI mode、主模块、页面状态和路由在同一导航事务中更新，不经过 Dialog。
 2. 页面标题操作区提供全部、今天、近 7 天、近 30 天和自定义范围；自定义范围使用两个原生日期输入。
 3. 桌面宽度使用左侧章节导航和右侧报告内容；窄宽度切换为横向吸顶导航，当前章节由 `IntersectionObserver` 标记。
-4. 标题操作区使用 shadcn `Select` 列出可用 Agent，并直接复用 composer 的 `AcpModelThoughtSelects` 组合选择栏；模型与 `category=thought_level` 的思考强度均来源于所选 Agent 最近一次 doctor capability，配置 ID 不得硬编码为某个 Provider 字段。未指定表示使用 Agent 默认模型/思考强度。三者只服务“生成 Agent 洞察”，确定性刷新不依赖它们。选择偏好使用 schema 2 的版本化本地结构，按 Agent 成组保存模型与 `thoughtLevelOptionId + thoughtLevelValue`；恢复时只接受当前 doctor capability 仍存在的身份和值，失效项分别回退 Agent 默认值。
+4. 标题操作区使用 shadcn `Select` 列出可用 Agent，触发器和选项展示 registry icon 与 display name，并直接复用 composer 的 `AcpModelThoughtSelects` 组合选择栏；模型与 `category=thought_level` 的思考强度均来源于所选 Agent 最近一次 doctor capability，配置 ID 不得硬编码为某个 Provider 字段。未指定表示使用 Agent 默认模型/思考强度。三者只服务“生成 Agent 洞察”，确定性刷新不依赖它们。选择偏好使用 schema 2 的版本化本地结构，按 Agent 成组保存模型与 `thoughtLevelOptionId + thoughtLevelValue`；恢复时只接受当前 doctor capability 仍存在的身份和值，失效项分别回退 Agent 默认值。
 5. 日期范围、Agent、模型/思考强度和动作按钮使用容器驱动的可换行布局；选择器在窄宽度占满一行，宽度足够时共享剩余空间，按钮允许换行，不设置依赖当前文案长度的固定操作区上限。
 6. 增量索引入口统一命名为“刷新”并使用刷新图标，与“生成 Agent 洞察”的 Sparkles 图标区分。刷新期间保留当前可用报告并展示进度，不并发发起可能读取未就绪索引的日期报告查询；刷新完成后只查询当前范围与当前 Agent/模型/思考强度 identity，并自动恢复洞察按钮，无需用户切换 Agent。洞察运行中锁定 Agent、模型与思考强度选择并禁止重复启动，失败或取消不影响统计。
 7. durable operation 仍负责重启恢复，但页面只展示恢复中的 active operation 和本次页面生命周期内已观察或发起的终态；进入页面时不得把上一次 failed/cancelled 终态作为当前错误重新展示。Agent、模型、思考强度或日期范围变化后，只属于旧执行 identity 的本地提交错误与终态投影立即退出当前操作区。

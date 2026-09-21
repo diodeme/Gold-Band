@@ -895,6 +895,9 @@ fn emit_acp_turn_finished(
         outcome,
         batch_progress,
         task_title: task.and_then(|task| task.title),
+        // 追问 turn 的 timeline 就写在该 attempt 下：随事件携带路径，multica 迟到补发
+        // 免于跨 repo root 反推（对齐 RunCompleted::attempt_dir 的先例与理由）。
+        attempt_dir: Some(locator.attempt_dir(app).to_string()),
     });
     if let Some(sender) = direct_metrics_sender() {
         let _ = sender.try_send(DirectMetricsJob::TurnFinished {
@@ -10742,6 +10745,7 @@ mod tests {
                 continues,
             },
             task_title: None,
+            attempt_dir: None,
         }
     }
 
@@ -12486,6 +12490,7 @@ mod tests {
                 agent_label,
                 outcome,
                 batch_progress,
+                attempt_dir,
                 ..
             } => {
                 assert_eq!(
@@ -12499,6 +12504,17 @@ mod tests {
                 assert_eq!(agent_label, "Claude");
                 assert_eq!(*outcome, AcpTurnOutcome::Failed);
                 assert_eq!(*batch_progress, AcpTurnBatchProgress::terminal(1));
+                // 追问 turn 的 timeline 就写在该 attempt 下：事件必须携带 attempt_dir，
+                // 让 multica 迟到补发（relay_late_completion_output）免于跨 repo root 反推路径
+                // （对齐 RunCompleted::attempt_dir 的先例与理由）。
+                assert_eq!(
+                    attempt_dir.as_deref(),
+                    Some(
+                        app.paths
+                            .attempt_dir("task-001", "run-001", "round-001", "node-001", "attempt-001")
+                            .as_str()
+                    )
+                );
             }
             event => panic!("expected AcpTurnFinished, got {event:?}"),
         }

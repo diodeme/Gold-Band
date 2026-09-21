@@ -1979,6 +1979,9 @@ export const browserApi: RuntimeApi = {
   cancelRemoteTask(_taskId: string) {
     return Promise.resolve();
   },
+  removeRemoteCompletedTask(_remoteTaskId: string) {
+    return Promise.resolve();
+  },
   listServerMulticaWorkspaces() {
     return Promise.resolve([]);
   },

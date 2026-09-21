@@ -110,12 +110,13 @@ vi.mock('@/components/ui/tooltip', () => ({
   TooltipContent: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));
 
-// Board 桩：渲染收到的任务标题 + prepare/cancel/open 触发按钮，把容器逻辑与看板内部解耦。
+// Board 桩：渲染收到的任务标题 + prepare/cancel/remove/open 触发按钮，把容器逻辑与看板内部解耦。
 vi.mock('@/components/conversation/RemoteTaskBoard', () => ({
-  RemoteTaskBoard: ({ tasks, onPrepare, onCancel, onSelectRun }: {
+  RemoteTaskBoard: ({ tasks, onPrepare, onCancel, onRemove, onSelectRun }: {
     tasks: { id: string; title: string; status: string; projectId?: string | null; localTaskId?: string | null; runId?: string | null }[];
     onPrepare: (t: unknown) => void;
     onCancel: (t: unknown) => void;
+    onRemove: (t: unknown) => void;
     onSelectRun: (p: string, t: string, r: string) => void;
   }) => (
     <div data-testid="board">
@@ -128,6 +129,7 @@ vi.mock('@/components/conversation/RemoteTaskBoard', () => ({
           {task.status === 'running' && (
             <button aria-label="conversation.sidebar.remoteTasks.cancelTask" onClick={() => onCancel(task)} />
           )}
+          <button aria-label="conversation.sidebar.remoteTasks.removeTask" onClick={() => onRemove(task)} />
           {task.projectId && task.localTaskId && task.runId && (
             <button data-testid={`open-${task.id}`} onClick={() => onSelectRun(task.projectId!, task.localTaskId!, task.runId!)} />
           )}
@@ -158,6 +160,7 @@ const mocks = vi.hoisted(() => ({
   disconnectMultica: vi.fn(),
   getRemoteTaskRequirement: vi.fn(),
   cancelRemoteTask: vi.fn(),
+  removeRemoteCompletedTask: vi.fn(),
   removeMulticaWorkspace: vi.fn(),
   setActiveMulticaWorkspace: vi.fn(),
   openExternalUrl: vi.fn(),
@@ -171,6 +174,7 @@ vi.mock('@/api', () => ({
   disconnectMultica: mocks.disconnectMultica,
   getRemoteTaskRequirement: mocks.getRemoteTaskRequirement,
   cancelRemoteTask: mocks.cancelRemoteTask,
+  removeRemoteCompletedTask: mocks.removeRemoteCompletedTask,
   removeMulticaWorkspace: mocks.removeMulticaWorkspace,
   setActiveMulticaWorkspace: mocks.setActiveMulticaWorkspace,
   openExternalUrl: mocks.openExternalUrl,
@@ -551,6 +555,76 @@ describe('RemoteTaskManagementPage (container)', () => {
       (s) => Array.from(s.options).map((o) => o.value).join(',') === 'all,dev,test',
     );
     expect(filterSelect).toBeUndefined();
+  });
+
+  // 移出列表（终态行真删除本地历史；pending/running 行纯视图过滤——按行数据源分派）。
+  it('removes a terminal row by deleting the local completed-history entry (real delete, not view filter)', async () => {
+    mocks.removeRemoteCompletedTask.mockResolvedValue(undefined);
+    getRemoteTasks.mockResolvedValue(baseVm({
+      workspaces: [ws004],
+      lastActiveWorkspaceId: 'ws-004',
+      tasksByWorkspace: {
+        'ws-004': [
+          { id: 'rt-1', workspaceId: 'ws-004', title: 'Todo', status: 'queued' } as RemoteTaskVm,
+          { id: 'rt-done', workspaceId: 'ws-004', title: 'Done', status: 'completed' } as RemoteTaskVm,
+        ],
+      },
+    }));
+    const { container } = await renderPage();
+    expect(container.querySelector('[data-testid="task-rt-1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="task-rt-done"]')).toBeTruthy();
+
+    // 移出已完成任务：调 removeRemoteCompletedTask 真删本地条目，卡片消失，其余任务保留。
+    await act(async () => {
+      (container.querySelector('[data-testid="task-rt-done"] button[aria-label="conversation.sidebar.remoteTasks.removeTask"]') as HTMLButtonElement).click();
+    });
+    expect(mocks.removeRemoteCompletedTask).toHaveBeenCalledWith('rt-done');
+    expect(container.querySelector('[data-testid="task-rt-done"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-rt-1"]')).toBeTruthy();
+
+    // 终态行的唯一数据源是本地历史：刷新后服务端/本地历史都不再回传该行 → 不复活。
+    getRemoteTasks.mockResolvedValue(baseVm({
+      workspaces: [ws004],
+      lastActiveWorkspaceId: 'ws-004',
+      tasksByWorkspace: {
+        'ws-004': [{ id: 'rt-1', workspaceId: 'ws-004', title: 'Todo', status: 'queued' } as RemoteTaskVm],
+      },
+    }));
+    const refreshBtn = container.querySelector('button[aria-label="common.refresh"]') as HTMLButtonElement;
+    await act(async () => { refreshBtn.click(); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    expect(getRemoteTasks).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-testid="task-rt-done"]')).toBeNull();
+    expect(cancelRemoteTask).not.toHaveBeenCalled();
+  });
+
+  it('removes a pending row as pure view filtering (no history delete, no server call)', async () => {
+    getRemoteTasks.mockResolvedValue(baseVm({
+      workspaces: [ws004],
+      lastActiveWorkspaceId: 'ws-004',
+      tasksByWorkspace: {
+        'ws-004': [{ id: 'rt-1', workspaceId: 'ws-004', title: 'Todo', status: 'queued' } as RemoteTaskVm],
+      },
+    }));
+    const { container } = await renderPage();
+
+    await act(async () => {
+      (container.querySelector('[data-testid="task-rt-1"] button[aria-label="conversation.sidebar.remoteTasks.removeTask"]') as HTMLButtonElement).click();
+    });
+    expect(container.querySelector('[data-testid="task-rt-1"]')).toBeNull();
+    // pending 行每次从服务端重建：不删本地历史、不调任何删除 API。
+    expect(mocks.removeRemoteCompletedTask).not.toHaveBeenCalled();
+    expect(cancelRemoteTask).not.toHaveBeenCalled();
+    expect(getRemoteTasks).toHaveBeenCalledTimes(1);
+
+    // 手动刷新 → 重新拉取成功 → 移出集合清空，pending 行随服务端数据回到看板（服务端真源）。
+    const refreshBtn = container.querySelector('button[aria-label="common.refresh"]') as HTMLButtonElement;
+    await act(async () => { refreshBtn.click(); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    expect(getRemoteTasks).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-testid="task-rt-1"]')).toBeTruthy();
   });
 });
 

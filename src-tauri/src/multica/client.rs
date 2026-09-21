@@ -225,7 +225,8 @@ pub struct RemoteTask {
     ///
     /// 服务端 claim 时派生读取父行、不物化到子任务（父 done 后补写/改写，子任务下次 claim 拿新值）。
     /// 仅 issue 来源任务、且直接父 issue 有 `completion_output` 时 server 才发（`omitempty`：缺 key
-    /// 而非发 null）。码灵消费点：`session_start_input` 渲染为「上游交付说明」上下文块。
+    /// 而非发 null）。码灵消费点：`detail_prefill` 渲染为「上游交付说明」块、随 DPMS 溯源与需求正文
+    /// 一起预填 composer（用户可见可编辑，三次调整）。
     /// 纯上下文语义，**无门控语义**（门控仍只看 `is_ready` + `issue_kind`；父曾 done 又 reopen 时
     /// 本字段仍可能存在，任务是否执行继续按 is_ready 判定）。旧 server / 非 issue 任务 → None。
     #[serde(default)]
@@ -333,6 +334,17 @@ struct UpdateIssueStatusRequest {
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     completion_output: Option<String>,
+}
+
+/// issue 迟到输出补发请求（issue 完成输出传递特性，多 run 场景）。
+///
+/// 与 [`UpdateIssueStatusRequest`] 同一 `PUT /api/issues/{id}` 端点，但**只写
+/// `completion_output`、不带 `status` 键**——服务端字段级 merge「未触摸字段保留现值」，
+/// 用于任务终态后的追问 run 补交交付说明的场景：issue 状态（可能已被服务端 reopen 或
+/// 人工流转）不被码灵的迟到写入强行拉回 done。结构体上不存在 status 字段即契约本身。
+#[derive(Debug, Serialize)]
+struct UpdateIssueCompletionOutputRequest {
+    completion_output: String,
 }
 
 // ===== skill 同步 wire 类型（设计 `.claude/design/multica_skill/` §3-§5）=====
@@ -1145,6 +1157,35 @@ impl MulticaClient {
         .await
     }
 
+    /// `PUT /api/issues/{id}` —— 只补写 `completion_output`（**不带 status 键**，多 run 场景）。
+    ///
+    /// 任务终态后的追问 run 补交了交付说明时（首 run fail-open 标 done 时未提取到块），
+    /// 由 bridge 按 local_task_id 反查 completed 历史找回 issue 关联后调用（见
+    /// `multica/bridge.rs` 的 `relay_late_completion_output`）。服务端字段级 merge：
+    /// 未触摸的 `status` 保留现值——迟到写入不把已 reopen/人工流转的 issue 拉回 done；
+    /// 单值覆盖语义（每次 run 整体覆盖前值）与首 run 同一 PUT 内写入一致。
+    ///
+    /// 该步骤失败仅记日志、不重试——迟到的自愈写入，下次补交会整体覆盖。走一般网络重试（3 次）。
+    pub async fn update_issue_completion_output(
+        &self,
+        workspace_id: &str,
+        issue_id: &str,
+        completion_output: &str,
+    ) -> Result<(), MulticaError> {
+        let path = format!("/api/issues/{issue_id}");
+        let body = UpdateIssueCompletionOutputRequest {
+            completion_output: completion_output.to_string(),
+        };
+        self.with_network_retry("update_issue_completion_output", || async {
+            // body 丢弃：同 update_issue_status，只关心 HTTP 状态（map_status 已校验）。
+            let _resp = self
+                .json_send(Method::PUT, &path, Some(workspace_id), &body, None)
+                .await?;
+            Ok(())
+        })
+        .await
+    }
+
     /// 浏览器登录（复刻 `cmd_auth.go:240-358`）：
     ///
     /// 1. 起 IPv4 本地 listener（`127.0.0.1:0`）
@@ -1548,8 +1589,7 @@ mod tests {
     #[test]
     fn remote_task_missing_issue_fields_parse_as_none() {
         // 旧 server 契约（版本解耦）：两字段皆无 → None/None，不渲染类型徽标与未就绪提醒。
-        let legacy: RemoteTask =
-            serde_json::from_str(r#"{"id":"t-1","status":"queued"}"#).unwrap();
+        let legacy: RemoteTask = serde_json::from_str(r#"{"id":"t-1","status":"queued"}"#).unwrap();
         assert!(legacy.issue_kind.is_none());
         assert!(legacy.is_ready.is_none());
     }
@@ -1579,8 +1619,7 @@ mod tests {
     fn remote_task_missing_dpms_fields_parse_as_none() {
         // 旧 server / 非 issue 任务（chat / autopilot / quick-create）：五键全缺省 → 全 None，
         // 不报错、不回退默认值（会话起始输入不拼溯源块）。
-        let legacy: RemoteTask =
-            serde_json::from_str(r#"{"id":"t-1","status":"queued"}"#).unwrap();
+        let legacy: RemoteTask = serde_json::from_str(r#"{"id":"t-1","status":"queued"}"#).unwrap();
         assert!(legacy.release_plan_id.is_none());
         assert!(legacy.dev_user.is_none());
         assert!(legacy.test_user.is_none());
@@ -1608,8 +1647,7 @@ mod tests {
     fn remote_task_missing_parent_output_parses_as_none() {
         // 旧 server / 父无输出 / 无父 / 非 issue 任务：键缺席 → None（会话起始输入不拼
         // 「上游交付说明」块），与拆分前行为一致（版本解耦）。
-        let legacy: RemoteTask =
-            serde_json::from_str(r#"{"id":"t-1","status":"queued"}"#).unwrap();
+        let legacy: RemoteTask = serde_json::from_str(r#"{"id":"t-1","status":"queued"}"#).unwrap();
         assert!(legacy.parent_output.is_none());
     }
 
@@ -1858,6 +1896,21 @@ mod tests {
     }
 
     #[test]
+    fn update_issue_completion_output_request_omits_status_key() {
+        // 多 run 迟到补发（终态后追问 run 补交交付说明）：同一 PUT 端点**只写
+        // completion_output、不带 status 键**——服务端字段级 merge「未触摸字段保留现值」，
+        // 迟到写入不得把 issue（可能已被 reopen/人工流转）强行拉回 done。锁定 body 恰为单键。
+        let body = serde_json::to_value(UpdateIssueCompletionOutputRequest {
+            completion_output: "部署地址: https://t.example.com".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({"completion_output": "部署地址: https://t.example.com"})
+        );
+    }
+
+    #[test]
     fn update_issue_status_path_is_workspace_scoped_put() {
         // 锁定 PUT path 形状（issue 维度接口，靠 X-Workspace-ID 头路由，path 不含 workspace）。
         // 头注入在 json_send 内，由 HTTP 集成测试覆盖；此处锁定 path。
@@ -1951,9 +2004,10 @@ mod tests {
         // 绝不能因这个可选字段让**整条 ack** 解码失败——ack 同时承载 skill 待办派发
         // （loop_.rs `dispatch_pending_skill_work`），解码失败会连带跳过本 tick 的 skill 工作，
         // 且日志只留一句通用的 `multica heartbeat failed (will retry next tick)`，故障无法归因。
-        let missing_flag: HeartbeatAck =
-            serde_json::from_str(r#"{"status":"ok","pending_readiness_changes":[{"task_id":"t-1"}]}"#)
-                .expect("条目缺 is_ready 不应让整条 ack 解码失败");
+        let missing_flag: HeartbeatAck = serde_json::from_str(
+            r#"{"status":"ok","pending_readiness_changes":[{"task_id":"t-1"}]}"#,
+        )
+        .expect("条目缺 is_ready 不应让整条 ack 解码失败");
         let changes = missing_flag
             .pending_readiness_changes
             .expect("diverged 形态仍应解出 diff");
@@ -2016,7 +2070,10 @@ mod tests {
         assert_eq!(json["mcp_supported"], false);
         assert_eq!(json["skills"][0]["key"], "pr-review");
         assert_eq!(json["skills"][0]["name"], "PR review");
-        assert_eq!(json["skills"][0]["source_path"], "C:/home/.gold-band/skills/pr-review");
+        assert_eq!(
+            json["skills"][0]["source_path"],
+            "C:/home/.gold-band/skills/pr-review"
+        );
         assert_eq!(json["skills"][0]["provider"], "claude-acp");
         assert_eq!(json["skills"][0]["root"], "provider");
         assert_eq!(json["skills"][0]["file_count"], 2);

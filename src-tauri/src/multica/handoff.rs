@@ -6,7 +6,7 @@
 //! 服务端单 PATCH 设计对齐）。提取失败一律 fail-open（None）——issue 照常 done，写作可选、不门控。
 
 use gold_band::acp::events::{
-    is_semantically_empty_agent_content, load_timeline_items, AcpAttemptPaths, AcpUiEvent,
+    AcpAttemptPaths, AcpUiEvent, is_semantically_empty_agent_content, load_timeline_items,
 };
 
 /// 服务端同口径上限（multica 按 rune 计数，超长 400 会让整个 PUT 失败、issue 卡非 done）。
@@ -92,7 +92,12 @@ pub(crate) fn completion_output_from_reply(reply: &str) -> Option<String> {
     if extracted.is_empty() {
         return None;
     }
-    Some(extracted.chars().take(MAX_COMPLETION_OUTPUT_CHARS).collect())
+    Some(
+        extracted
+            .chars()
+            .take(MAX_COMPLETION_OUTPUT_CHARS)
+            .collect(),
+    )
 }
 
 /// 投影 run 最终 attempt 的最终 assistant 回复文本（设计方案 §5.2 支撑改动 2）。
@@ -190,15 +195,19 @@ mod tests {
     #[test]
     fn final_assistant_reply_reads_last_non_placeholder_text_delta() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf())
-            .expect("utf8 temp path");
+        let attempt_dir =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
         let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir.clone());
         gold_band::acp::events::write_timeline_items(
             &paths.timeline,
             &[
                 text_delta("user-echo", 1, "用户输入"),
                 text_delta("assistant-1", 2, "中间说明"),
-                text_delta("assistant-final", 3, "最终回复\n```completion-output\n交付\n```\n"),
+                text_delta(
+                    "assistant-final",
+                    3,
+                    "最终回复\n```completion-output\n交付\n```\n",
+                ),
             ],
         )
         .expect("write timeline");
@@ -209,7 +218,9 @@ mod tests {
         );
         assert_eq!(
             completion_output_from_reply(
-                final_assistant_reply(attempt_dir.as_str()).as_deref().unwrap_or_default()
+                final_assistant_reply(attempt_dir.as_str())
+                    .as_deref()
+                    .unwrap_or_default()
             ),
             Some("交付".to_string())
         );
@@ -217,8 +228,9 @@ mod tests {
 
     #[test]
     fn final_assistant_reply_missing_dir_is_none() {
-        let missing = Utf8PathBuf::from_path_buf(std::env::temp_dir().join("gold-band-handoff-missing"))
-            .expect("utf8 temp path");
+        let missing =
+            Utf8PathBuf::from_path_buf(std::env::temp_dir().join("gold-band-handoff-missing"))
+                .expect("utf8 temp path");
         assert_eq!(final_assistant_reply(missing.as_str()), None);
     }
 

@@ -38,6 +38,7 @@ import {
   getRemoteTaskRequirement,
   getRemoteTasks,
   removeMulticaWorkspace,
+  removeRemoteCompletedTask,
   setActiveMulticaWorkspace,
   subscribeRemoteSourceSettingsUpdates,
   subscribeRemoteTaskUpdates,
@@ -111,13 +112,25 @@ export function RemoteTaskManagementPage({
   const [addWorkspaceOpen, setAddWorkspaceOpen] = useState(false);
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [pendingRemoveWorkspace, setPendingRemoveWorkspace] = useState<MulticaWorkspaceRefVm | null>(null);
+  // 「移出列表」的任务 id（本页视图过滤层）：终态行（completed/failed）的唯一数据源是本地
+  // remote_completed_tasks 历史（服务端不回传终态），移出时已真删除本地条目（见
+  // handleRemoveTask）——此集合只为删除到下一次 fetch 之间提供即时移除；pending/running 行
+  // 每次从服务端/内存重建，视图过滤即全部语义（服务端删除后自然消失）。任何一次成功
+  // re-fetch 都清空此集合。瞬时 UI 状态，不持久化（ui-interaction §7）。
+  const [removedTaskIds, setRemovedTaskIds] = useState<ReadonlySet<string>>(new Set());
   const mountRef = useRef(true);
 
   const fetchTasks = useCallback(() => {
     setError(null);
     // 返回 promise 供手动刷新链接 refreshing 收尾（mount/event 调用忽略返回值）。
     return getRemoteTasks()
-      .then((next) => { if (mountRef.current) setVm(next); })
+      .then((next) => {
+        if (mountRef.current) {
+          setVm(next);
+          // 新数据到达 = 一次「刷新」：视图级移出全部恢复（刷新即恢复语义）。
+          setRemovedTaskIds(new Set());
+        }
+      })
       .catch((err) => { if (mountRef.current) setError(displayAppError(t, err)); })
       .finally(() => { if (mountRef.current) setLoading(false); });
   }, [t]);
@@ -183,9 +196,13 @@ export function RemoteTaskManagementPage({
 
   const hasWorkspaces = workspaces.length > 0;
   const workspaceTasks = vm?.tasksByWorkspace[effectiveWorkspaceId] ?? [];
+  // 投影 = 类型过滤 ∩ 未移出：两级都是纯客户端过滤，不触碰数据源。
   const selectedTasks = useMemo(
-    () => filterTasksByIssueKind(workspaceTasks, issueKindFilter),
-    [workspaceTasks, issueKindFilter],
+    () =>
+      filterTasksByIssueKind(workspaceTasks, issueKindFilter).filter(
+        (task) => !removedTaskIds.has(task.id),
+      ),
+    [workspaceTasks, issueKindFilter, removedTaskIds],
   );
   const activeWorkspaceName = workspaces.find((w) => w.id === effectiveWorkspaceId)?.name ?? '';
 
@@ -229,6 +246,39 @@ export function RemoteTaskManagementPage({
     } finally {
       setBusyTaskId(null);
     }
+  }
+
+  // 行级「移出列表」，按行数据源分派：
+  // - 终态行（completed/failed）：唯一数据源是本地 remote_completed_tasks 历史——真删除
+  //   本地条目（后端命令），刷新不再「复活」；删除的是列表回看索引，不动本地会话本体。
+  // - pending/running 行：每次 re-fetch 从服务端/内存重建——纯视图过滤即全部语义
+  //   （服务端侧删除后自然消失），不调服务端。
+  async function handleRemoveTask(task: RemoteTaskVm) {
+    if (readOnly) return;
+    const terminal = task.status === 'completed' || task.status === 'failed';
+    if (terminal) {
+      setBusyTaskId(task.id);
+      setError(null);
+      try {
+        await removeRemoteCompletedTask(task.id);
+        markRemovedFromView(task.id);
+      } catch (err) {
+        setError(displayAppError(t, err));
+      } finally {
+        setBusyTaskId(null);
+      }
+      return;
+    }
+    markRemovedFromView(task.id);
+  }
+
+  function markRemovedFromView(taskId: string) {
+    setRemovedTaskIds((prev) => {
+      if (prev.has(taskId)) return prev;
+      const next = new Set(prev);
+      next.add(taskId);
+      return next;
+    });
   }
 
   async function handleWorkspaceChange(id: string) {
@@ -342,6 +392,7 @@ export function RemoteTaskManagementPage({
             busyTaskId={busyTaskId}
             onPrepare={(task) => void handlePrepareRemoteTask(task)}
             onCancel={(task) => void handleCancel(task)}
+            onRemove={handleRemoveTask}
             onSelectRun={onSelectRun}
           />
         )}

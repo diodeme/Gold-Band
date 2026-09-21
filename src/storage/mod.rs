@@ -417,6 +417,13 @@ impl GoldBandPaths {
         self.task_dir(task_id).join("authoring/requirement.md")
     }
 
+    /// 首条 prompt 的隐式隐藏区段（远程任务上下文等）：任务创建时随 authoring 落盘，
+    /// 首次执行（SessionMode::New）加载并随首条 prompt 下发；续跑/追问不重放。
+    pub fn first_prompt_hidden_sections_file(&self, task_id: &str) -> Utf8PathBuf {
+        self.task_dir(task_id)
+            .join("authoring/first-prompt-hidden-sections.json")
+    }
+
     pub fn workflow_file(&self, task_id: &str) -> Utf8PathBuf {
         self.task_dir(task_id).join("authoring/workflow.json")
     }

@@ -6,7 +6,12 @@
 //! - `RunCompleted`：按 `RunOutcome` 穷举上报（Success→complete（complete 送达后再用 PAT 把关联
 //!   issue 流转到 done，接入方案 D2）+ completed 历史记 `completed` / Failure→fail + 历史记 `failed`
 //!   / Killed→fail(timeout)，agent 真死；cancel 路径皆经 run_pause→Paused 从不产生 Killed，故无需
-//!   cancel-detection 上下文消歧）。
+//!   cancel-detection 上下文消歧）。在飞映射落空但 Success 的 run 是**终态后追问 run**：按
+//!   local_task_id 反查 completed 历史，补交了 `completion-output` 时用不带 status 键的 PATCH
+//!   只补写输出（`relay_late_completion_output`，issue 完成输出传递的多 run 场景）。
+//! - `AcpTurnFinished`：Direct 后续追问在同一 attempt 内收尾、**不产生新的 RunCompleted**，
+//!   上述补发对追问场景永不触发——故 Completed 的 turn 也走 `relay_late_completion_output`
+//!   （同一补写通道，PUT 幂等覆盖；Failed/Cancelled 无交付语义不上报）。
 //! - `RunPaused`/`InterventionRequested`：**绝对不上报终态**（multica 继续 running，本地处理
 //!   elicitation/permission，开发设计 2.5 Paused 盲区）。
 //!
@@ -16,12 +21,12 @@
 
 use std::sync::Arc;
 
-use gold_band::app::{App, RuntimeLifecycleEvent};
+use gold_band::app::{AcpTurnOutcome, App, RuntimeLifecycleEvent};
 use gold_band::config::{RemoteCompletedTask, RemoteTaskConversation, StateConfig};
 use gold_band::domain::{PauseReason, RunOutcome};
 use gold_band::runtime::WorkerRefState;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::multica::client::{MULTICA_ISSUE_DONE_STATUS, MulticaClient};
 use crate::multica::config::{get_pat, multica_base_url, multica_settings};
@@ -186,6 +191,22 @@ pub fn create_multica_subscriber(
             } => {
                 let Some((remote_task_id, run)) = lookup_active_run(&app_handle, &task_id, &run_id)
                 else {
+                    // 无在飞映射的本地 run：绝大多数是普通本地任务；唯一需要处理的例外是
+                    // 「multica 任务终态后的追问 run」——首 run fail-open 标 done 时可能没
+                    // 提出交付说明，用户追问后 agent 补交。反查 completed 历史含 state.json
+                    // 磁盘读，故整体移入 spawn 异步执行（订阅器回调在热路径，不可阻塞）；
+                    // Failure/Killed 无补发语义，不进 spawn。
+                    if outcome == RunOutcome::Success {
+                        let app_handle = app_handle.clone();
+                        tauri::async_runtime::spawn(async move {
+                            relay_late_completion_output(
+                                app_handle,
+                                &task_id,
+                                attempt_dir.as_deref(),
+                            )
+                            .await;
+                        });
+                    }
                     return;
                 };
                 let app_handle = app_handle.clone();
@@ -201,7 +222,26 @@ pub fn create_multica_subscriber(
                     .await;
                 });
             }
-            // RunPaused / InterventionRequested / NodeStarted / AcpTurnFinished：不上报终态。
+            RuntimeLifecycleEvent::AcpTurnFinished {
+                task_id,
+                outcome,
+                attempt_dir,
+                ..
+            } => {
+                // Direct 后续追问在同一 attempt 内收尾、不产生新的 RunCompleted——M5-bl 只挂
+                // RunCompleted 的补发对追问场景永不触发，故 Completed turn 也进同一补写通道。
+                // 不查 active_run：relay 按 completed 历史反查，在飞任务天然不在历史里（run
+                // 级收尾仍由 RunCompleted 主路径负责）。Failed/Cancelled 无交付语义。
+                if outcome != AcpTurnOutcome::Completed {
+                    return;
+                }
+                let app_handle = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    relay_late_completion_output(app_handle, &task_id, attempt_dir.as_deref())
+                        .await;
+                });
+            }
+            // RunPaused / InterventionRequested / NodeStarted：不上报终态。
             _ => {}
         }
     })
@@ -382,6 +422,78 @@ async fn handle_run_completed(
     emit_remote_tasks_updated(&app);
 }
 
+/// 终态后追问的迟到 `completion-output` 补发（issue 完成输出传递特性，多 run/多 turn 场景）。
+///
+/// 背景：首 run Success 时 fail-open——issue 已 done 但交付说明未写入（agent 没按协议产出
+/// 围栏块）；用户在本地会话继续追问、agent 补交了块。触发源有两个（同一补写通道，PUT 幂等
+/// 覆盖）：终态后追问 **run**（`RunCompleted` 反查不到 active run）与 Direct 后续追问
+/// **turn**（`AcpTurnFinished`——追问在同一 attempt 内收尾、不产生新的 RunCompleted）。
+/// 均按 local_task_id 从「最近完成」历史找回 issue 关联，用**不带 status 键**的 PATCH 只补写
+/// `completion_output`（服务端字段级 merge：issue 状态可能已被 reopen/人工流转，迟到写入
+/// 不得拉回 done）。
+///
+/// - 未连接 / 历史/issue 关联缺失 → 静默跳过：普通本地会话的常态出口（`AcpTurnFinished`
+///   逐消息触发，不刷日志）。
+/// - 命中 multica 终态任务但提不出块 → info 日志：这正是「补发触发过但无内容可送」的
+///   诊断分界（M5-bl 排查时四个静默 return 让触发缺失不可见）。
+/// - PATCH 失败 → warn：迟到的自愈写入，不重试不阻断（下次补交整体覆盖，服务端
+///   「done 后补写自愈」语义）。
+/// - 本地状态零改动（completed 历史与 issue 状态均不动）。
+///
+/// 过滤顺序：内存检查（连接态）→ state.json（小文件，completed 历史反查）→ attempt
+/// timeline（大文件，提块）——turn 级触发逐消息发生，先用小文件过滤非 multica 任务，
+/// 避免每条追问消息都读大 timeline。
+async fn relay_late_completion_output(
+    app: AppHandle,
+    local_task_id: &str,
+    attempt_dir: Option<&str>,
+) {
+    // 未连接时无处可发（multica_client 是纯内存检查，先挡掉最便宜）。
+    let Some(context) = desktop_context(&app) else {
+        return;
+    };
+    let Some(client) = multica_client(&context) else {
+        return;
+    };
+    // 先按 completed 历史过滤（state.json 小文件）：非 multica 终态任务（普通本地会话的
+    // 常态）直接跳过，不为它们做大体积 timeline 读取。
+    let Ok(state) = context.app().load_state() else {
+        info!(task = %local_task_id, "multica late relay skip: state read failed");
+        return;
+    };
+    let Some((workspace_id, issue, remote_task_id)) =
+        find_completed_issue_task(&state, local_task_id)
+    else {
+        return;
+    };
+    // 命中 multica 终态任务后再提块（attempt timeline 磁盘读）。
+    let Some(output) = completion_output_for_issue_done(attempt_dir) else {
+        info!(
+            task = %remote_task_id,
+            "multica late relay skip: no completion-output block in final reply"
+        );
+        return;
+    };
+    if let Err(e) = client
+        .update_issue_completion_output(&workspace_id, &issue, &output)
+        .await
+    {
+        warn!(
+            task = %remote_task_id,
+            issue = %issue,
+            %e,
+            "multica late completion-output relay failed (ignored; next relay overwrites)"
+        );
+        return;
+    }
+    info!(
+        task = %remote_task_id,
+        issue = %issue,
+        chars = output.chars().count(),
+        "multica late completion-output relayed"
+    );
+}
+
 /// 终态本地收尾：移 active_runs + 清 task_conversations + 记 completed 历史快照（status 由 pending 决定）。
 fn finalize_terminal(
     app: &AppHandle,
@@ -466,6 +578,22 @@ fn record_completed_task(state: &mut StateConfig, entry: RemoteCompletedTask) {
     }
 }
 
+/// 从「最近完成」历史删除指定 remote_task_id 的条目（`record_completed_task` 的逆操作）。
+///
+/// 终态行的唯一数据源是本地历史（`get_remote_tasks` 三源合并，服务端不回传终态），故终态行的
+/// 「移出列表」必须是真删除而非视图过滤——否则任何一次刷新都会把行「复活」。返回是否删到
+/// （false = 本就不在历史，幂等 no-op，调用方据此不落盘）。
+pub(crate) fn remove_completed_task_entry(
+    state: &mut StateConfig,
+    remote_task_id: &str,
+) -> bool {
+    let before = state.remote_completed_tasks.len();
+    state
+        .remote_completed_tasks
+        .retain(|c| c.remote_task_id != remote_task_id);
+    before != state.remote_completed_tasks.len()
+}
+
 /// 终态对「最近完成」历史快照 status 的处置（success→completed / failure→failed）。
 enum PendingUpdate {
     /// Success：completed 历史记 `completed`。
@@ -482,6 +610,31 @@ fn completion_output_for_issue_done(attempt_dir: Option<&str>) -> Option<String>
     attempt_dir
         .and_then(handoff::final_assistant_reply)
         .and_then(|reply| handoff::completion_output_from_reply(&reply))
+}
+
+/// 按 local_task_id 从「最近完成」历史反查迟到补发目标 `(workspace_id, issue_id, remote_task_id)`
+/// （纯函数）。命中条件：status == `completed`（与 [`PendingUpdate::ClearOnSuccess`] 写入的字面量
+/// 一致——failed 任务无 done 流转、无输出可补）且 issue_ref 非空（无 issue 来源任务没有补写
+/// 对象）。多条命中取最新（历史最新在前）。
+fn find_completed_issue_task(
+    state: &StateConfig,
+    local_task_id: &str,
+) -> Option<(String, String, String)> {
+    state
+        .remote_completed_tasks
+        .iter()
+        .find(|c| {
+            c.local_task_id == local_task_id
+                && c.status == "completed"
+                && c.issue_ref.as_deref().is_some_and(|s| !s.trim().is_empty())
+        })
+        .map(|c| {
+            (
+                c.workspace_id.clone(),
+                c.issue_ref.clone().unwrap_or_default(),
+                c.remote_task_id.clone(),
+            )
+        })
 }
 
 // ── 配置/状态访问 helper ────────────────────────────────────────────────────────
@@ -656,6 +809,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn remove_completed_task_entry_deletes_by_remote_id_and_is_noop_when_absent() {
+        // 终态行的唯一数据源是本地 remote_completed_tasks 历史（get_remote_tasks 三源合并，
+        // 服务端不回传终态）——「移出列表」若只做视图过滤，任何一次刷新都会把行「复活」。
+        // 此处锁住真删除语义：按 remote_task_id 删条目；不存在时 no-op（幂等，不标脏）。
+        let mut state = StateConfig::default();
+        state.remote_completed_tasks = vec![
+            completed("rt-1", "2026-09-20T01:00:00Z"),
+            completed("rt-2", "2026-09-20T02:00:00Z"),
+        ];
+
+        assert!(remove_completed_task_entry(&mut state, "rt-1"));
+        let ids: Vec<&str> = state
+            .remote_completed_tasks
+            .iter()
+            .map(|c| c.remote_task_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["rt-2"], "只删目标条目，其余历史保序保留");
+
+        assert!(
+            !remove_completed_task_entry(&mut state, "rt-missing"),
+            "不存在 → 未删任何条目"
+        );
+        assert_eq!(state.remote_completed_tasks.len(), 1);
+    }
+
     // ===== story dev/test 拆分：C1「终态历史保留类型快照」的接口层固化 =====
 
     #[test]
@@ -744,6 +923,86 @@ mod tests {
             None
         );
         assert_eq!(completion_output_for_issue_done(None), None);
+    }
+
+    // ===== 终态后追问 run 的迟到 completion-output 补发（多 run 场景，纯函数固化）=====
+
+    /// 直造一条 completed 历史条目（local_task_id / status / issue_ref 可指定——
+    /// 迟到补发反查的三个命中维度）。
+    fn history_entry(
+        local_task_id: &str,
+        status: &str,
+        issue_ref: Option<&str>,
+    ) -> RemoteCompletedTask {
+        RemoteCompletedTask {
+            remote_task_id: format!("rt-{local_task_id}"),
+            local_task_id: local_task_id.into(),
+            local_run_id: format!("run-{local_task_id}"),
+            workspace_id: "ws-1".into(),
+            local_project_id: "proj-1".into(),
+            issue_ref: issue_ref.map(str::to_string),
+            kind: Some("dev".into()),
+            status: status.into(),
+            title: format!("title-{local_task_id}"),
+            completed_at: "2026-09-20T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn find_completed_issue_task_returns_relay_target_for_completed_issue_entry() {
+        // 首 run fail-open 标 done 后，追问 run 的 RunCompleted 已无在飞映射 → 按
+        // local_task_id 反查 completed 历史，命中 completed + issue 关联条目 → 补发目标三元组。
+        let mut state = StateConfig::default();
+        state
+            .remote_completed_tasks
+            .push(history_entry("lt-1", "completed", Some("iss-1")));
+        assert_eq!(
+            find_completed_issue_task(&state, "lt-1"),
+            Some(("ws-1".into(), "iss-1".into(), "rt-lt-1".into()))
+        );
+    }
+
+    #[test]
+    fn find_completed_issue_task_skips_failed_blank_issue_and_foreign_local_tasks() {
+        // failed 任务无 done 流转、issue_ref 空/空白无补写对象、local_task_id 不同是别的任务
+        // ——三者都必须落空，否则会把迟到输出补发到错误对象（含普通本地 run 误发）。
+        for (status, issue) in [
+            ("failed", Some("iss-1")),
+            ("completed", None),
+            ("completed", Some("   ")),
+        ] {
+            let mut state = StateConfig::default();
+            state
+                .remote_completed_tasks
+                .push(history_entry("lt-1", status, issue));
+            assert_eq!(
+                find_completed_issue_task(&state, "lt-1"),
+                None,
+                "status={status} issue={issue:?} 不命中"
+            );
+        }
+        // local_task_id 不同（普通本地 run / 其他任务）→ 落空。
+        let mut state = StateConfig::default();
+        state
+            .remote_completed_tasks
+            .push(history_entry("lt-other", "completed", Some("iss-1")));
+        assert_eq!(find_completed_issue_task(&state, "lt-1"), None);
+    }
+
+    #[test]
+    fn find_completed_issue_task_prefers_newest_match() {
+        // 同一 local_task_id 对过多条远程任务时取最新（历史最新在前；旧条目的输出已被后续
+        // 覆盖，补发目标应与「最近完成」分区展示一致）。
+        let mut state = StateConfig::default();
+        let mut older = history_entry("lt-1", "completed", Some("iss-old"));
+        older.remote_task_id = "rt-old".into();
+        let mut newer = history_entry("lt-1", "completed", Some("iss-new"));
+        newer.remote_task_id = "rt-new".into();
+        state.remote_completed_tasks = vec![newer, older];
+        assert_eq!(
+            find_completed_issue_task(&state, "lt-1"),
+            Some(("ws-1".into(), "iss-new".into(), "rt-new".into()))
+        );
     }
 
     /// 造一个 attempt 目录，timeline 内含一条最终 assistant textDelta（`reply`）。

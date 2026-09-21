@@ -414,6 +414,9 @@ export interface RuntimeApi {
   /// + 叠加远程簿记（register_active_run）。claim 成功但 start 失败时后端自动 release（dispatched→queued）回滚。
   startRemoteConversationRun(input: ConversationCreateInput, remoteTaskId: string, workspaceId: string): Promise<ConversationCreateResultVm>;
   cancelRemoteTask(taskId: string): Promise<void>;
+  /// 移出终态行的「最近完成」本地历史条目（真删除，刷新不复活）；不存在时幂等成功。
+  /// 仅终态行（completed/failed）有意义——pending/running 行不来自本地历史。
+  removeRemoteCompletedTask(remoteTaskId: string): Promise<void>;
   listServerMulticaWorkspaces(): Promise<MulticaServerWorkspaceVm[]>;
   pickLocalDirectory(): Promise<string | null>;
   addMulticaWorkspace(workspaceId: string, workspaceName: string, provider: string): Promise<MulticaSettingsVm>;

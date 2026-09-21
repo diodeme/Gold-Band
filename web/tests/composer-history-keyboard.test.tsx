@@ -101,22 +101,53 @@ it.each([
   expect(current.browsing).toBe(false);
 });
 
-it('reserves selection, modifiers, IME, and multiline interior for native editing', async () => {
+it('reserves selection, modifiers, IME, and non-boundary lines for native editing', async () => {
   await press('ArrowUp', { ctrlKey: true }); expect(textarea().value).toBe('');
   await press('ArrowUp', { isComposing: true }); expect(textarea().value).toBe('');
   await press('Enter', { isComposing: true }); expect(submit).not.toHaveBeenCalled();
   vi.mocked(source.text).mockImplementation(async (cursor) => ({ cursor, text: `line${cursor.position}\nend` }));
-  await press('ArrowUp'); expect(textarea().selectionStart).toBe(0);
-  textarea().setSelectionRange(2, 2);
+  await press('ArrowUp');
+  expect(textarea().value).toBe('line3\nend');
+  expect(textarea().selectionStart).toBe(textarea().value.length);
   expect((await press('ArrowUp')).defaultPrevented).toBe(false);
+  expect(textarea().value).toBe('line3\nend');
+  textarea().setSelectionRange(2, 2);
   expect((await press('ArrowDown')).defaultPrevented).toBe(false);
+  await press('ArrowUp');
+  expect(textarea().value).toBe('line2\nend');
+  expect(textarea().selectionStart).toBe(textarea().value.length);
   textarea().setSelectionRange(0, 3);
   expect((await press('ArrowUp')).defaultPrevented).toBe(false);
-  textarea().setSelectionRange(0, 0);
-  await press('ArrowUp'); expect(textarea().value).toBe('line2\nend');
   textarea().setSelectionRange(textarea().value.length, textarea().value.length);
-  await press('ArrowDown'); expect(textarea().value).toBe('line3\nend');
+  await press('ArrowDown');
+  expect(textarea().value).toBe('line3\nend');
   expect(textarea().selectionStart).toBe(textarea().value.length);
+});
+
+it('recalls from the first hard line and restores the draft caret after down or escape', async () => {
+  await act(async () => setInput('line1\nline2'));
+  await render();
+  textarea().focus();
+  textarea().setSelectionRange(8, 8);
+  expect((await press('ArrowUp')).defaultPrevented).toBe(false);
+  expect(textarea().value).toBe('line1\nline2');
+
+  textarea().setSelectionRange(2, 2);
+  expect((await press('ArrowUp')).defaultPrevented).toBe(true);
+  expect(textarea().value).toBe('hello3');
+  expect(textarea().selectionStart).toBe('hello3'.length);
+
+  await press('ArrowDown');
+  expect(textarea().value).toBe('line1\nline2');
+  expect(textarea().selectionStart).toBe(2);
+  expect(textarea().selectionEnd).toBe(2);
+
+  textarea().setSelectionRange(3, 3);
+  await press('ArrowUp');
+  await press('Escape');
+  expect(textarea().value).toBe('line1\nline2');
+  expect(textarea().selectionStart).toBe(3);
+  expect(textarea().selectionEnd).toBe(3);
 });
 
 it.each(['edit', 'external-input', 'scope', 'attachment', 'disabled', 'escape', 'down', 'composition', 'submit'] as const)('ignores a pending result after %s', async (cause) => {

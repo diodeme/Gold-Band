@@ -8,6 +8,34 @@
 - 验收：Rust focused 16/16、Web focused 50/50、类型检查、生产构建、格式检查和桌面测试编译通过；内置浏览器覆盖首页/会话详情、树/搜索右键、chip 去重删除打开、消息 chip、深浅主题、宽窄布局与控制台错误检查。
 - 说明：首次 Rust 全量测试编译受 Windows 页面文件不足影响失败，已改用低并发 focused 测试并记录；非代码断言失败。
 
+## 2026-09-17 工作空间 HTML 默认打开源码
+
+- 根因：本地 HTML 原先对所有入口一律进内置浏览器、不进 CodeMirror。会话引用要看渲染结果，这个分流成立；工作空间目录树是在浏览可编辑源码，和普通文本/代码文件同一意图。属于正确浏览器能力下的入口策略过粗，不是要做第二套 HTML 实时预览。
+- 实现：目录树点击 `.html/.htm` 打开文件工作区 CodeMirror 源码；内容区右上角复用 Markdown 浮层按钮样式，点击后先 flush 再 `openWebTarget`。会话和 Markdown 中的本地 HTML 引用仍直接进内置浏览器。运行目录只读 HTML 同样提供该按钮。不增加 HTML 预览模式、持久字段或新 identity。
+- 证据：目录树源码契约先失败于仍拦截 `local-html`；编辑器浮层 DOM 先失败于缺少打开按钮。修复后同一用例转绿，并固定会话 HTML 引用继续走 `openWebTarget`。运行目录 HTML 打开源码浮层，命令订阅只在正文子组件。
+- 过度设计与性能评审：复用现有 FileContent、WorkspaceFileEditor 浮层、FileContentStore.flush 和 openWebTarget。按钮状态只在当前编辑器内，不进 Context。打开浏览器仍是既有单次导航，无额外扫描、缓存或队列。
+
+## 2026-09-17 设置页企业微信实现注释与浏览器开关说明
+
+- 根因：IM 对客文案设计已禁止暴露“安装级目标”，设置页企业微信标题下仍渲染该实现注释，属于正确设计下的展示残留。浏览器两个开关的真实分流是 localhost `http(s)` 与普通网站；标题写成“本地链接 / 网页链接”会被读成 `file://` 与 `http://`。属于正确路由设计下的对客文案不完整，不是要把开关改成文件与网页。
+- 实现：删除企业微信标题下的实现注释及中英文 i18n 键；未接入时只保留状态徽章和“尚未接入…”操作说明。浏览器开关标题改为“打开 localhost / 打开网站”，说明改为“对话和文档里的本机服务地址 / 普通网站，关闭后改用系统浏览器”。
+- 证据：IM 未接入 DOM 用例先稳定失败于仍包含“安装级目标”，源码契约先失败于仍消费 `settings.im.channels.wecom.description`；修复后同一用例转绿。浏览器设置 DOM 用例先失败于仍使用“本地链接”，修复后固定 localhost/网站标题并排除 `file://`、`127.0.0.1` / `::1`。
+- 过度设计与性能评审：只删除一行展示和改写既有 i18n，不新增状态、接口、缓存、identity 或第三个开关。设置页文案长度为常数，无加载或渲染范围变化。
+
+## 2026-09-17 Win10 冷启动无法拖窗口边缘缩放
+
+- 根因：2026-07-28 关闭 Win10 native shadow 后，四边缩放本应由 Tauri `TAURI_DRAG_RESIZE_WINDOW` overlay 提供。2026-09-16 内置浏览器启用 `tauri/unstable` 后，主 WebView 以 `WindowChild` 创建，runtime 只给 `WindowContent` 挂 overlay，冷启动就没有边缘命中。Win11 仍有 DWM 外侧框所以不明显。属于正确的无边框缩放设计下宿主挂钩不完整，不是阴影策略或 HTML 手柄问题。
+- 实现：窗口就绪后 `set_resizable(true)` 走 Tauri 同一 attach 路径；child WebView 或地址建议 `HWND_TOP` 之后把 overlay 再抬到最前。Win10 `native_shadow = false` 不变。
+- 证据：Vitest `window-surface` 6/6，其中契约测试先稳定失败于源码缺少 `TAURI_DRAG_RESIZE_*` / `set_resizable(true)` / 调用点，修复后转绿。`window_chrome` 4/4、`second_launch_reuses_the_existing_main_window` 通过；`cargo check -p gold-band-desktop --all-targets` 通过。HWND z-order 无法在 jsdom / cargo mock 中复现，Win10 冷启动拖边与打开浏览器页后右边缘仍可拖作为 EXE 验收。
+- 过度设计与性能评审：复用 Tauri overlay，不新增 HTML handle、状态机或持久字段。`FindWindowEx` + `SetWindowPos` 只在窗口就绪和有界次 child 创建/显示时执行一次，不进热路径。
+
+## 2026-09-17 对话栏菜单打开时内置浏览器变白
+
+- 根因：网页子 WebView 是独立 HWND，HTML `z-index` 盖不住它。原实现把「任意菜单打开」当成 hide 的充分条件，对话栏列表即使没进网页矩形也会把整页藏白。相交 hide 补上后仍会闪一下：Radix 打开当下的未收敛几何可能暂时相交，`hideAll` 是原生 IPC，一旦发出必须等 hide 完成再 show。属于正确 collision 设计下 hide 判定过早，不是 child WebView 分层错误。
+- 实现：对话栏容器作为 Radix collision boundary，共享 Select / Dropdown / Popover / Context Menu 自动约束在栏内，并在定位节点标记 `data-overlay-collision-boundary=conversation`；受约束菜单不进入 `hasBlockingOverlay`。hide 只留给 Dialog / 非自身 Sheet，以及未受约束且与网页占位盒相交的菜单。紧凑右栏 Sheet 仍按 owner 豁免。
+- 证据：中间栏打开菜单不 hide、相交且未约束的菜单仍 hide、Select 纳入检测、Dialog overlay 覆盖网页仍 hide、关闭菜单与右栏 Sheet 豁免；受约束 popover 即使首框相交也不 hide 且不发 hideAll；hook 运行时测试固定 context boundary、constraint 标记与显式 null 退出；overlay 契约测试固定对话栏 boundary 与共享组件消费 `useOverlayPositioning`。
+- 过度设计与性能评审：复用已有 collision 标记，不加延迟、队列或第二套几何状态。相交检测仍只读当前打开的未约束浮层与一块占位盒矩形。
+
 ## 2026-09-17 渠道中立 Profile Prompt 与能力矩阵
 
 - 根因：现有 Profile 渠道隔离有效，但渠道策略混入 Prompt 文件名、标题、正文、常量名和契约测试，通用 Prompt 被迫知道自己属于哪个渠道。
@@ -30,6 +58,7 @@
 - 实现：CICD 删除 commit 职责，只检查开发测试提交是否已推送；拒绝 push 或 push 失败时询问“继续构建 / 停止”，继续后按远端现状推进。WB 采访/拷问补充需求身份检查，开发测试补充自动提交。用户维护的子系统号条目固定工作空间，`storyId/storyName` 和全部 `cicd.*` 固定任务。
 - 验收：WB `memory_domain` 13、`cicd_profile_contract` 1、`wb_workflow_profile_contract` 1 通过；default `wb_workflow_profile_contract` 1 通过；`cargo check -p gold-band --tests -j 1`、格式和 diff 空白检查通过。
 - 过度设计与性能：复用现有 Profile 渠道目录、记忆 MCP、CAS、原子写入和 Git CLI，无新状态机、持久模型、依赖、缓存或队列；每次只增加固定长度提示词和两个有界记忆文件读取。
+
 ## 2026-09-17 IM 设置每次进入都闪「加载中…」
 
 - 根因：`ImIntegrationSettings` 每次挂载都把 `settings` 置为 `null` 再请求 `get_im_settings`。定时任务运行设置已有 stale-while-revalidate 缓存，IM 没有复用。Radix 非激活标签卸载与设置页重挂载会让用户每次点开设置都先看到加载态。属于正确设计下的展示投影不完整，不修改 IM canonical state。
@@ -1814,6 +1843,13 @@ attempt-001/
 - 回归与验收：核心接口测试覆盖 `in_progress(diff) → completed(无重复 diff)` 生成变更、缺失成功终态不生成、`in_progress(diff) → failed(重复 diff)` 不生成、终态映射与 permission 无关，以及 schema v3 失败工具集合迁移为空。定向 `cargo test --lib acp::turn_files` 17 项通过；宽泛 package test 被既有 `tests/entity_uuid_test.rs` 缺少 `NodeState.acp_storage_schema_version` 的夹具编译错误阻塞，未在本需求中修改该无关用户改动。
 - 性能与过度设计评审：新 turn 每个 diff 工具只增加一次 `HashMap` 常数级记录，状态随 turn 结算清空；聚合仍只遍历该 turn 已有的有界 mutation，不新增依赖、持久字段、队列、缓存、锁或普通路径 timeline 扫描。历史全 timeline 读取只发生在 schema v1-v3 的一次性迁移慢路径。现有 `toolCallId`、timeline status 与 change-set 模型足以表达不变量，无需 permission→diff 关联、新 aggregate 或第二套状态机。
 
+## 2026-09-17：Agent branch 文件变化不得泄漏到父会话
+
+- 根因：`fileChangeSet` persist 把 branch owner 写到 `_meta.conversation.branchId`，但 timeline 路由只消费 canonical `_meta.goldBandConversation.branchId`。嵌套 Agent 的 change set 因此落到 root timeline；父会话用 `branchId=root` 去读 Agent 的 change set，被 `turn-files.version-access-denied` 拒绝后误报为“无法加载本轮文件变化”。产物与 change set 文件本身是完整的。这是正确的 branch ownership 设计未写到 persist 路由字段，不是加载接口或文案问题。
+- 实现：finalize 用 change set 自己的 `branchId` 写入 `goldBandConversation`，使 persist 把指针落到所属 branch timeline。前端按事件 owner branch 与当前 locator 投影，不一致时不渲染该卡。
+- 回归：Rust 接口测试覆盖 Agent branch 指针经 `annotate_event_branch` 后仍属于该 branch。前端 DOM 测试覆盖历史泄漏事件不出现在 root 会话。
+- 性能与过度设计评审：不新增 identity、缓存、扫描或请求。只纠正既有 branch 元数据写入，并在卡片投影处跳过不属于当前视图的指针，避免一次注定失败的详情读取。
+
 ## 2026-08-21：Direct 首轮停止后的空会话投影
 
 - 根因：后端为避免把只有 `initialize`/outbound raw frame、尚未完成 `session/new` 的占位数据误报为真实 ACP session，正确过滤了 `unavailable + no sessionId + empty Timeline` 的 Provider session；前端只实现了 Workflow/AUTO 的“初始化被中断”投影，却没有按 Direct attempt lifecycle 建立可继续对话的空壳，最终把合法的 `paused + cancelled` 状态降级为通用“ACP 会话失败”。
@@ -2051,3 +2087,10 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 方案：overlay 把 `bundle.publisher` 固定为该渠道 `productName`；`wb` 为 `MALING`，`default` 为 `Gold Band`。不新增独立厂商配置项，避免与产品名漂移。
 - [x] 验收：渠道 overlay 测试固定 publisher 与 productName 同源，以及真实 `wb.json` overlay 的 `MALING`；`npm run test:channel-config` 通过。
 - 性能与过度设计评审：只在构建 overlay JSON 增加一个常量字符串，不改变运行时 I/O、状态、缓存、队列或渲染；复用现有渠道 `productName`，无新依赖或 identity。
+
+## 2026-09-17：Git 版本探测按行解析并复用桌面 PATH
+
+- [x] 根因与方案：`2.36.0+` capability gate 设计正确。偶发「无法识别 Git 版本」来自探测实现不完整：Git 子进程未走桌面 PATH 适配层，且 `git --version` 要求整段 stdout 以前缀开头、非 0 即丢弃。补齐可执行文件解析与按行版本协议，不为特定发行版开特例。
+- [x] 实现：所有 Git 启动使用桌面 PATH 解析出的绝对路径并注入同一 PATH；Windows 追加 `Git\cmd` 常见安装位置并跳过 App Execution Alias 空文件。版本行从 stdout/stderr 中识别，能解析则按已安装版本比较门槛。成功路径进程内缓存，重新检测重新解析；版本号仍不持久化。分支选择器把识别失败与版本过低的触发器文案分开。
+- [x] 回归验收：Rust `git::tests` 19 项、`process` Windows PATH/suggested dirs、`git::source_control` 43 项、`git::github` 13 项通过；Web `git-requirement-dialog` 含 unavailable 文案区分，`git-branch-selector` 固定 unavailable 触发器不用 unsupported 标签。
+- 性能与过度设计评审：不新增状态机、版本矩阵、`git.path` 设置或磁盘缓存。PATH 遍历相对 `git --version` 可忽略；绝对路径进程内复用，避免每次 Git 命令读注册表。前端无新请求或 Store。

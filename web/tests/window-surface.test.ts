@@ -47,6 +47,22 @@ describe('desktop window surface', () => {
     expect(chromeSource).toContain('native_shadow: true');
   });
 
+  it('reattaches the Windows undecorated resize overlay after unstable multiwebview', () => {
+    const cargo = readFileSync(path.resolve(__dirname, '../../src-tauri/Cargo.toml'), 'utf8');
+    const chromeSource = readFileSync(path.resolve(__dirname, '../../src-tauri/src/window_chrome.rs'), 'utf8');
+    const mainSource = readFileSync(path.resolve(__dirname, '../../src-tauri/src/main.rs'), 'utf8');
+    const lifecycleSource = readFileSync(path.resolve(__dirname, '../../src-tauri/src/desktop_lifecycle.rs'), 'utf8');
+    const browserSource = readFileSync(path.resolve(__dirname, '../../src-tauri/src/browser.rs'), 'utf8');
+
+    expect(cargo).toContain('features = ["unstable"]');
+    expect(chromeSource).toContain('TAURI_DRAG_RESIZE_BORDERS');
+    expect(chromeSource).toContain('TAURI_DRAG_RESIZE_WINDOW');
+    expect(chromeSource).toContain('set_resizable(true)');
+    expect(mainSource).toContain('ensure_undecorated_edge_resize(');
+    expect(lifecycleSource).toContain('ensure_undecorated_edge_resize(');
+    expect(browserSource).toContain('raise_undecorated_edge_resize_for_app(');
+  });
+
   it('grants host background synchronization and first-frame reveal permissions', () => {
     const capability = JSON.parse(readFileSync(path.resolve(__dirname, '../../src-tauri/capabilities/default.json'), 'utf8'));
 

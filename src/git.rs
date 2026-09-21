@@ -1,5 +1,7 @@
 use std::fmt;
-use std::process::Output;
+use std::path::PathBuf;
+use std::process::{Command, Output};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -7,7 +9,7 @@ use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 use semver::{Prerelease, Version};
 use serde::{Deserialize, Serialize};
 
-use crate::process::background_command;
+use crate::process::{background_command, find_executable_in_path, resolved_child_path};
 use crate::runtime_error::{RuntimeErrorDomain, manual_runtime_error_info, runtime_error};
 
 mod github;
@@ -19,6 +21,8 @@ pub use source_control::*;
 const CHECKPOINT_AUTHOR_NAME: &str = "Gold Band Runtime";
 const CHECKPOINT_AUTHOR_EMAIL: &str = "runtime@gold-band.local";
 pub const MINIMUM_SUPPORTED_GIT_VERSION: &str = "2.36.0";
+
+static RESOLVED_GIT_EXECUTABLE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct GitFilesystemPathIdentity(String);
@@ -262,27 +266,73 @@ enum GitVersionProbe {
 }
 
 fn probe_git_version() -> GitVersionProbe {
-    let output = match background_command("git")
-        .arg("--version")
-        .env("LC_ALL", "C")
-        .output()
-    {
+    let Some(mut command) = git_command_from_executable(refresh_resolved_git_executable()) else {
+        return GitVersionProbe::NotInstalled;
+    };
+    let output = match command.arg("--version").env("LC_ALL", "C").output() {
         Ok(output) => output,
-        Err(_) => return GitVersionProbe::NotInstalled,
+        Err(_) => {
+            clear_resolved_git_executable();
+            return GitVersionProbe::NotInstalled;
+        }
     };
-    if !output.status.success() {
-        return GitVersionProbe::VersionUnavailable;
-    }
-    let Ok(stdout) = std::str::from_utf8(&output.stdout) else {
-        return GitVersionProbe::VersionUnavailable;
-    };
-    parse_git_version(stdout)
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    parse_git_version_from_output(&stdout, &stderr)
         .map(GitVersionProbe::Installed)
         .unwrap_or(GitVersionProbe::VersionUnavailable)
 }
 
+pub(crate) fn resolved_git_executable() -> Option<PathBuf> {
+    if let Ok(cache) = RESOLVED_GIT_EXECUTABLE.lock()
+        && let Some(path) = cache.as_ref()
+    {
+        return Some(path.clone());
+    }
+    let found = find_executable_in_path("git");
+    if let Some(path) = found.as_ref()
+        && let Ok(mut cache) = RESOLVED_GIT_EXECUTABLE.lock()
+    {
+        *cache = Some(path.clone());
+    }
+    found
+}
+
+fn refresh_resolved_git_executable() -> Option<PathBuf> {
+    clear_resolved_git_executable();
+    resolved_git_executable()
+}
+
+fn clear_resolved_git_executable() {
+    if let Ok(mut cache) = RESOLVED_GIT_EXECUTABLE.lock() {
+        *cache = None;
+    }
+}
+
+pub(crate) fn git_background_command() -> Option<Command> {
+    git_command_from_executable(resolved_git_executable())
+}
+
+fn git_command_from_executable(executable: Option<PathBuf>) -> Option<Command> {
+    let executable = executable?;
+    let mut command = background_command(&executable);
+    if let Some(path) = resolved_child_path(None) {
+        command.env("PATH", path);
+    }
+    Some(command)
+}
+
+fn parse_git_version_from_output(stdout: &str, stderr: &str) -> Option<InstalledGitVersion> {
+    stdout
+        .lines()
+        .chain(stderr.lines())
+        .find_map(parse_git_version)
+}
+
 fn parse_git_version(output: &str) -> Option<InstalledGitVersion> {
     let display = output
+        .trim()
+        .trim_start_matches('\u{feff}')
         .trim()
         .strip_prefix("git version ")?
         .split_whitespace()
@@ -376,7 +426,8 @@ pub struct GitCommandRunner;
 
 impl GitCommandRunner {
     pub fn run(&self, cwd: &Utf8Path, args: &[&str]) -> Result<GitCommandOutput> {
-        background_command("git")
+        git_background_command()
+            .ok_or_else(|| anyhow!("Git executable was not found"))?
             .arg("-C")
             .arg(cwd.as_str())
             .args(args)
@@ -1016,6 +1067,25 @@ mod tests {
         for output in ["", "git version unknown", "git version 2.36"] {
             assert_eq!(parse_git_version(output), None);
         }
+    }
+
+    #[test]
+    fn git_version_output_ignores_leading_noise_and_reads_stderr() {
+        let noisy = parse_git_version_from_output(
+            "warning: unable to access '/tmp/.gitconfig': Permission denied\ngit version 2.43.0.windows.1\n",
+            "",
+        )
+        .expect("version after warnings should parse");
+        assert_eq!(noisy.display, "2.43.0.windows.1");
+        assert!(noisy.semantic >= minimum_supported_git_version());
+
+        let stderr_only = parse_git_version_from_output("", "git version 2.43.0.windows.1\n")
+            .expect("stderr version should parse");
+        assert_eq!(stderr_only.display, "2.43.0.windows.1");
+
+        let bom = parse_git_version_from_output("\u{feff}git version 2.36.0\n", "")
+            .expect("BOM-prefixed version should parse");
+        assert_eq!(bom.display, "2.36.0");
     }
 
     #[test]

@@ -3,6 +3,10 @@ import { CheckIcon, ChevronRightIcon, CircleIcon } from "lucide-react"
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import {
+  overlayCollisionMaxWidthClassName,
+  useOverlayPositioning,
+} from "@/lib/portal-container"
 
 function DropdownMenu({
   ...props
@@ -34,14 +38,19 @@ function DropdownMenuContent({
   className,
   children,
   sideOffset = 4,
+  collisionBoundary,
+  collisionPadding,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
+  const positioning = useOverlayPositioning(collisionBoundary as HTMLElement | null | undefined, collisionPadding)
   return (
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.Content
         data-slot="dropdown-menu-content-positioner"
+        data-overlay-collision-boundary={positioning.constraintBoundary}
         sideOffset={sideOffset}
         className="group/dropdown-menu-positioner z-50 outline-none"
+        {...positioning.collisionProps}
         {...props}
       >
         <div
@@ -50,6 +59,7 @@ function DropdownMenuContent({
           data-theme-material-layer="isolated"
           className={cn(
             "relative max-h-(--radix-dropdown-menu-content-available-height) min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md group-data-[side=bottom]/dropdown-menu-positioner:slide-in-from-top-2 group-data-[side=left]/dropdown-menu-positioner:slide-in-from-right-2 group-data-[side=right]/dropdown-menu-positioner:slide-in-from-left-2 group-data-[side=top]/dropdown-menu-positioner:slide-in-from-bottom-2 group-data-[state=closed]/dropdown-menu-positioner:animate-out group-data-[state=closed]/dropdown-menu-positioner:fade-out-0 group-data-[state=closed]/dropdown-menu-positioner:zoom-out-95 group-data-[state=open]/dropdown-menu-positioner:animate-in group-data-[state=open]/dropdown-menu-positioner:fade-in-0 group-data-[state=open]/dropdown-menu-positioner:zoom-in-95",
+            positioning.constrainWidth && overlayCollisionMaxWidthClassName,
             className
           )}
         >
@@ -234,12 +244,17 @@ function DropdownMenuSubTrigger({
 function DropdownMenuSubContent({
   className,
   children,
+  collisionBoundary,
+  collisionPadding,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.SubContent>) {
+  const positioning = useOverlayPositioning(collisionBoundary as HTMLElement | null | undefined, collisionPadding)
   return (
     <DropdownMenuPrimitive.SubContent
       data-slot="dropdown-menu-sub-content-positioner"
+      data-overlay-collision-boundary={positioning.constraintBoundary}
       className="group/dropdown-menu-sub-positioner z-50 outline-none"
+      {...positioning.collisionProps}
       {...props}
     >
       <div
@@ -248,6 +263,7 @@ function DropdownMenuSubContent({
         data-theme-material-layer="isolated"
         className={cn(
           "relative min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-lg group-data-[side=bottom]/dropdown-menu-sub-positioner:slide-in-from-top-2 group-data-[side=left]/dropdown-menu-sub-positioner:slide-in-from-right-2 group-data-[side=right]/dropdown-menu-sub-positioner:slide-in-from-left-2 group-data-[side=top]/dropdown-menu-sub-positioner:slide-in-from-bottom-2 group-data-[state=closed]/dropdown-menu-sub-positioner:animate-out group-data-[state=closed]/dropdown-menu-sub-positioner:fade-out-0 group-data-[state=closed]/dropdown-menu-sub-positioner:zoom-out-95 group-data-[state=open]/dropdown-menu-sub-positioner:animate-in group-data-[state=open]/dropdown-menu-sub-positioner:fade-in-0 group-data-[state=open]/dropdown-menu-sub-positioner:zoom-in-95",
+          positioning.constrainWidth && overlayCollisionMaxWidthClassName,
           className
         )}
       >

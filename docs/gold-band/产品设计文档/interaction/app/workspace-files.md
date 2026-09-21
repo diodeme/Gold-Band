@@ -44,7 +44,7 @@
 | 常见代码与配置 | CodeMirror 按需语言高亮；无语言包时回退纯文本 |
 | PNG、JPEG、WebP、GIF、BMP、ICO | 安全图片预览、缩放、适应窗口、原始大小和拖拽平移；GIF 支持播放/暂停，并在 reduced motion 下默认显示静态首帧 |
 | SVG | Rust 安全栅格化预览，可切换源码编辑 |
-| HTML（`.html` / `.htm`） | 在内置浏览器中预览，不进入 CodeMirror；边界见 [内置浏览器](in-app-browser.md) |
+| HTML（`.html` / `.htm`） | 工作空间与运行目录树默认打开 CodeMirror 源码，内容区右上角浮层按钮再打开内置浏览器；会话和 Markdown 中的本地 HTML 引用仍直接进内置浏览器。边界见 [内置浏览器](in-app-browser.md) |
 | PDF、Office、音视频、压缩包、字体、数据库及其他二进制 | 显示明确的不支持状态并提供系统应用打开 |
 
 文件识别以签名、BOM 和内容探测为权威事实，扩展名只辅助选择图标与语言能力；PDF、压缩包等二进制即使碰巧可按 UTF-8 解码也不得进入文本编辑器。文本编码保证 UTF-8、UTF-8 BOM、带 BOM 的 UTF-16 LE/BE，保存时保留 BOM 与 CRLF/LF 语义；无法可靠解码的内容不做有损猜测，也不自动写回。大文件读取和 revision 计算使用流式处理，不为识别或哈希重复完整载入文件。
@@ -110,6 +110,7 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 - 壁纸仅在工作区 surface 可见时预加载；缺失、损坏或由 performance 档关闭时回退语义底色。编辑器正文继续使用独立 editor 字体栈和字号，locale 切换不重载文件内容。
 - 2026-08-17 补齐运行目录 Markdown 能力：运行目录与会话附件接入统一只读 Markdown 适配器，固定只读、默认实时预览、支持源码切换，并统一遵守高亮与实时预览长度阈值；DOM 回归测试固定运行目录 `.md` 的读取 locator、只读属性和模式切换契约。
 - 2026-08-28 新增 `turn-attachment` 交付物资源：同一 turn change set 中的附件/普通变化集合天然互斥，附件点击立即打开独立 Tab，再通过 manifest 身份签发精确外部读写 grant。面板直接复用可编辑 `FileContent`，因此 Markdown 渲染/源码切换、自动保存、CAS 冲突和关闭冲刷不复制第二套实现。
+- 2026-09-17 工作空间与运行目录树中的 `.html/.htm` 默认打开 CodeMirror 源码；右上角浮层按钮 flush 后打开内置浏览器。会话和 Markdown 本地 HTML 引用仍直接进浏览器。不增加 HTML 实时预览模式。
 
 2026-08-09 文件 reveal 已迁移到官方 `tauri-plugin-opener` Rust API。项目工作空间和会话运行目录仍分别使用原有受控 locator 解析路径，只有验证后的 canonical path 会交给 opener；删除 Explorer `/select` 参数拼接和 `xdg-open` 平台分支，使 Finder reveal 成为同一接口的 macOS 实现。
 

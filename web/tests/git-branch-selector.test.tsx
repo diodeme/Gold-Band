@@ -202,6 +202,24 @@ describe('GitBranchSelector', () => {
     }
   });
 
+  it('shows an unidentified Git version state instead of the unsupported-version label', async () => {
+    getSnapshot.mockRejectedValueOnce({
+      code: 'git.version-unavailable',
+      params: { installedVersion: null, minimumVersion: '2.36.0' },
+    });
+    const { container, root } = await renderSelector(
+      <GitBranchSelector projectId="project-a" />,
+    );
+    try {
+      const trigger = container.querySelector<HTMLButtonElement>('[data-git-branch-selector="editable"]')!;
+      expect(trigger.textContent).toContain('conversation.branchPicker.versionUnavailableLabel');
+      expect(trigger.textContent).not.toContain('conversation.branchPicker.versionUnsupportedLabel');
+      expect(trigger.getAttribute('aria-label')).toContain('conversation.branchPicker.versionUnavailableLabel');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('keeps a managed Worktree branch read-only and exposes its full truncated name', async () => {
     const branch = 'gold-band/conversation/very-long-managed-worktree-branch';
     const { container, root } = await renderSelector(

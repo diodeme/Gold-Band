@@ -207,9 +207,11 @@ export function GitBranchSelector({
   }
 
   const versionCapabilityError = isGitVersionCapabilityError(error?.code);
-  const currentBranch = versionCapabilityError
+  const currentBranch = error?.code === 'git.version-unsupported'
     ? t('conversation.branchPicker.versionUnsupportedLabel')
-    : snapshot?.currentBranch ?? t('conversation.branchPicker.unavailable');
+    : error?.code === 'git.version-unavailable'
+      ? t('conversation.branchPicker.versionUnavailableLabel')
+      : snapshot?.currentBranch ?? t('conversation.branchPicker.unavailable');
   const workspaceDisplayName = workspaceName?.trim() ?? '';
   const branchSearchPlaceholder = gitBranchSearchPlaceholder(t, workspaceName);
   const blocked = disabled

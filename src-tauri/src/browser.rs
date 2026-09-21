@@ -559,7 +559,7 @@ fn validate_address_suggestion_action(
     input: &BrowserAddressSuggestionActionVm,
 ) -> CommandResult<()> {
     if input.revision == 0
-        || !matches!(input.kind.as_str(), "choose" | "remove")
+        || !matches!(input.kind.as_str(), "choose" | "remove" | "dismiss")
         || input.key.is_empty()
         || input.key.len() > BROWSER_ADDRESS_SUGGESTION_MAX_KEY_BYTES
     {
@@ -766,6 +766,7 @@ fn create_address_suggestion_webview(
             LogicalSize::new(bounds.width.max(1.0), bounds.height.max(1.0)),
         )
         .map_err(|error| webview_error("browser.webview.create_failed", error))?;
+    crate::window_chrome::raise_undecorated_edge_resize_for_app(app);
     let webview = app
         .get_webview(BROWSER_ADDRESS_SUGGESTION_WEBVIEW_LABEL)
         .ok_or_else(|| {
@@ -896,6 +897,78 @@ fn eval_address_suggestion_state(webview: &tauri::Webview, state_json: &str) {
     }
 }
 
+fn attach_page_focus_dismisses_address_suggestions(app: &AppHandle, label: &str) {
+    #[cfg(windows)]
+    attach_windows_page_focus_dismisses_address_suggestions(app, label);
+    #[cfg(not(windows))]
+    let _ = (app, label);
+}
+
+/// Clicking a browsing page moves focus off the address field. That must dismiss the
+/// suggestion overlay, but address-field blur cannot do it: overlay clicks also blur
+/// the address field, and hiding there is what made delete flash.
+#[cfg(windows)]
+fn attach_windows_page_focus_dismisses_address_suggestions(app: &AppHandle, label: &str) {
+    use tauri::webview::PlatformWebview;
+    use webview2_com::FocusChangedEventHandler;
+
+    let Some(webview) = app.get_webview(label) else {
+        return;
+    };
+    let app = app.clone();
+    let page_label = label.to_string();
+    let _ = webview.with_webview(move |platform: PlatformWebview| {
+        let mut token = 0;
+        let app = app.clone();
+        let result = unsafe {
+            platform.controller().add_GotFocus(
+                &FocusChangedEventHandler::create(Box::new(move |_, _| {
+                    emit_address_suggestion_dismiss_for_page_focus(&app);
+                    Ok(())
+                })),
+                &mut token,
+            )
+        };
+        if let Err(error) = result {
+            log_webview_failure(
+                "watch-page-focus-address-suggestions",
+                None,
+                &page_label,
+                &error,
+            );
+        }
+    });
+}
+
+fn emit_address_suggestion_dismiss_for_page_focus(app: &AppHandle) {
+    let Some(host) = app.try_state::<BrowserHost>() else {
+        return;
+    };
+    let revision = match lock_host(&host) {
+        Ok(inner) if inner.address_suggestion_state_json.is_some() => {
+            inner.address_suggestion_revision
+        }
+        _ => return,
+    };
+    let payload = BrowserAddressSuggestionActionVm {
+        revision,
+        kind: "dismiss".into(),
+        key: "page-focus".into(),
+    };
+    if let Err(error) = app.emit_to(
+        MAIN_WEBVIEW_LABEL,
+        BROWSER_ADDRESS_SUGGESTION_ACTION_EVENT,
+        payload,
+    ) {
+        log_webview_failure(
+            "forward-address-suggestion-dismiss",
+            None,
+            MAIN_WEBVIEW_LABEL,
+            &error,
+        );
+    }
+}
+
 fn hide_address_suggestions(app: &AppHandle) -> CommandResult<()> {
     let Some(webview) = app.get_webview(BROWSER_ADDRESS_SUGGESTION_WEBVIEW_LABEL) else {
         return Ok(());
@@ -949,6 +1022,7 @@ fn raise_address_suggestion_overlay(app: &AppHandle) {
     let Some(webview) = app.get_webview(BROWSER_ADDRESS_SUGGESTION_WEBVIEW_LABEL) else {
         return;
     };
+    let app_for_raise = app.clone();
     let _ = webview.with_webview(move |platform: PlatformWebview| {
         let mut parent = Default::default();
         if unsafe { platform.controller().ParentWindow(&mut parent) }.is_err() {
@@ -980,6 +1054,7 @@ fn raise_address_suggestion_overlay(app: &AppHandle) {
                 &error,
             ),
         }
+        crate::window_chrome::raise_undecorated_edge_resize_for_app(&app_for_raise);
     });
 }
 
@@ -1162,8 +1237,10 @@ fn create_or_reuse_page(
         let _ = lock_host(host)?.remove_if_label(page_id, &label);
         return Err(webview_error("browser.webview.create_failed", error));
     }
+    crate::window_chrome::raise_undecorated_edge_resize_for_app(app);
 
     hide_label(app, Some(page_id), &label)?;
+    attach_page_focus_dismisses_address_suggestions(app, &label);
     info!(
         target: "gold_band::browser",
         operation = "create",
@@ -2600,6 +2677,7 @@ mod tests {
         assert!(
             validate_address_suggestion_action(&action(1, "remove", "visit:https://a/")).is_ok()
         );
+        assert!(validate_address_suggestion_action(&action(1, "dismiss", "page-focus")).is_ok());
 
         assert!(
             validate_address_suggestion_action(&action(0, "choose", "visit:https://a/")).is_err()

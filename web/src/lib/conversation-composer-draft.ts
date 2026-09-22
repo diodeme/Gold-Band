@@ -81,14 +81,9 @@ export function conversationComposerDraftReducer(
         ? state
         : { ...state, workspaceFiles: action.workspaceFiles };
     case 'changeWorkspace':
-      return state.workspaceFiles.some(file => file.projectId !== action.projectId)
-        ? {
-          ...state,
-          workspaceFiles: state.workspaceFiles.filter(
-            file => file.projectId === action.projectId,
-          ),
-        }
-        : state;
+      // Each reference keeps its own projectId and resolves to that workspace's
+      // absolute path, so switching the composer workspace must not drop them.
+      return state;
     case 'prefill':
       // 远程任务 prepare：覆盖式新草稿——正文预填 + 绑定 multica + 清空附件，并回到 send 提交意图
       // （scheduled-task 与 multica 绑定是互斥的提交意图，prefill 即声明本草稿为远程执行草稿）。

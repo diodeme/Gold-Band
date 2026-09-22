@@ -12779,6 +12779,14 @@ fn build_dynamic_worker_invocation(
         );
         Vec::new()
     });
+    let workspace_file_roots = if prompt_display
+        .as_ref()
+        .is_some_and(|input| !input.workspace_files.is_empty())
+    {
+        ctx.app.prompt_workspace_roots()
+    } else {
+        Vec::new()
+    };
     let invocation = WorkerInvocation {
         invocation_kind: InvocationKind::WorkerGeneric,
         turn_control_mode: TurnControlMode::RuntimeControlled,
@@ -12827,6 +12835,7 @@ fn build_dynamic_worker_invocation(
         ),
         mcp_servers,
         scheduled_context: None,
+        workspace_file_roots,
     };
     dynamic_invocation_build_step_end(
         ctx,

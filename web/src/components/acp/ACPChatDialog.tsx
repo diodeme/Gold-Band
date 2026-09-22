@@ -1421,7 +1421,7 @@ export function ACPChatDialog(
   const pendingAttachmentsRef = useRef(composerDraft.draft.attachments);
   pendingAttachmentsRef.current = composerDraft.draft.attachments;
   useEffect(() => workspaceFileReferenceBridge.register((reference, options) => {
-    if (!projectId || reference.projectId !== projectId) return { kind: 'unavailable' };
+    if (!projectId) return { kind: 'unavailable' };
     const result = addComposerWorkspaceFile(
       workspaceFilesRef.current,
       pendingAttachmentsRef.current.length,

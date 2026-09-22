@@ -23,7 +23,7 @@ describe('ConversationComposerDraftBoundary', () => {
     container = null;
   });
 
-  it('lets the application boundary switch the draft workspace and drop foreign references', () => {
+  it('lets the application boundary switch the draft workspace without dropping file references', () => {
     container = document.body.appendChild(document.createElement('div'));
     root = createRoot(container);
     const boundaryRef = { current: null as ConversationComposerDraftBoundaryHandle | null };
@@ -62,6 +62,8 @@ describe('ConversationComposerDraftBoundary', () => {
       boundaryRef.current?.changeWorkspace('project-b');
     });
 
-    expect(observedFiles).toEqual([]);
+    expect(observedFiles).toEqual([
+      expect.objectContaining({ projectId: 'project-a', relativePath: 'src/a.ts' }),
+    ]);
   });
 });

@@ -572,7 +572,6 @@ export function ConversationComposer({
   }, [workspaceFiles]);
 
   useEffect(() => workspaceFileReferenceBridge.register((reference, options) => {
-    if (reference.projectId !== projectId) return { kind: 'unavailable' };
     const result = addComposerWorkspaceFile(
       workspaceFilesRef.current,
       attachmentsRef.current.length,
@@ -592,7 +591,7 @@ export function ConversationComposer({
     setContextError(null);
     if (options.isDocked) requestAnimationFrame(() => composerTextareaRef.current?.focus());
     return { kind: 'added' };
-  }), [projectId, setComposerWorkspaceFiles, t, workspaceFileReferenceBridge]);
+  }), [setComposerWorkspaceFiles, t, workspaceFileReferenceBridge]);
 
   const openWorkspaceFile = useCallback((file: ComposerWorkspaceFileRef) => {
     if (!rightWorkspace?.scopeKey) return;

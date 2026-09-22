@@ -127,6 +127,7 @@ fn invocation() -> WorkerInvocation {
         ),
         mcp_servers: Vec::new(),
         scheduled_context: None,
+        workspace_file_roots: Vec::new(),
     }
 }
 

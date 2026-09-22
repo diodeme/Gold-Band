@@ -2,6 +2,9 @@ use serde::Serialize;
 use tauri::{Manager, Runtime, WebviewWindow};
 use tracing::warn;
 
+#[cfg(windows)]
+use std::sync::Mutex;
+
 const WINDOWS_11_MINIMUM_BUILD: u32 = 22_000;
 
 #[cfg(windows)]
@@ -123,6 +126,134 @@ fn windows_window_chrome(major: u32, build: u32) -> DesktopWindowChromeVm {
     }
 }
 
+/// DWM drop-shadow margins in left, right, top, bottom order.
+///
+/// One bottom pixel is enough for DWM to draw the outer shadow. TAO's
+/// undecorated shadow instead insets the client by the resize frame on three
+/// sides, and Windows 10 keeps the top inset at 0, so the WebView leaves black
+/// bars. Win11 already enables that TAO path. A maximized or fullscreen window
+/// has no desktop around it, so the margin is cleared.
+pub fn compositor_shadow_margins(uses_tao_native_shadow: bool, occludes_desktop: bool) -> [i32; 4] {
+    if uses_tao_native_shadow || occludes_desktop {
+        [0, 0, 0, 0]
+    } else {
+        [0, 0, 0, 1]
+    }
+}
+
+/// Applies the Win10 DWM shadow and keeps it in sync when the window is
+/// maximized, restored, or recreated. Win11 is unchanged.
+pub fn install_win10_compositor_shadow<R: Runtime>(window: &WebviewWindow<R>) {
+    if current_desktop_window_chrome().native_shadow {
+        return;
+    }
+    sync_win10_compositor_shadow(window);
+    #[cfg(windows)]
+    {
+        let tracked = window.clone();
+        window.on_window_event(move |event| {
+            if matches!(event, tauri::WindowEvent::Resized(_)) {
+                sync_win10_compositor_shadow(&tracked);
+            }
+        });
+    }
+}
+
+pub fn sync_win10_compositor_shadow<R: Runtime>(window: &WebviewWindow<R>) {
+    #[cfg(windows)]
+    sync_win10_compositor_shadow_hwnd(window);
+    #[cfg(not(windows))]
+    let _ = window;
+}
+
+#[cfg(windows)]
+struct AppliedCompositorShadow {
+    hwnd: isize,
+    margins: [i32; 4],
+}
+
+#[cfg(windows)]
+static APPLIED_COMPOSITOR_SHADOW: Mutex<Option<AppliedCompositorShadow>> = Mutex::new(None);
+
+#[cfg(windows)]
+fn sync_win10_compositor_shadow_hwnd<R: Runtime>(window: &WebviewWindow<R>) {
+    if current_desktop_window_chrome().native_shadow || window.is_decorated().unwrap_or(true) {
+        return;
+    }
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let occludes_desktop =
+        window.is_maximized().unwrap_or(false) || window.is_fullscreen().unwrap_or(false);
+    let margins = compositor_shadow_margins(false, occludes_desktop);
+    let hwnd_key = hwnd.0 as isize;
+    if applied_shadow_matches(hwnd_key, margins) {
+        return;
+    }
+    // Remember the request even when DWM rejects it. Otherwise every resize
+    // pixel would call SetWindowPos again.
+    let _ = apply_compositor_shadow(hwnd, margins);
+    remember_applied_shadow(hwnd_key, margins);
+}
+
+#[cfg(windows)]
+fn applied_shadow_matches(hwnd: isize, margins: [i32; 4]) -> bool {
+    APPLIED_COMPOSITOR_SHADOW
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .is_some_and(|applied| applied.hwnd == hwnd && applied.margins == margins)
+}
+
+#[cfg(windows)]
+fn remember_applied_shadow(hwnd: isize, margins: [i32; 4]) {
+    *APPLIED_COMPOSITOR_SHADOW
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) =
+        Some(AppliedCompositorShadow { hwnd, margins });
+}
+
+#[cfg(windows)]
+fn apply_compositor_shadow(hwnd: windows::Win32::Foundation::HWND, margins: [i32; 4]) -> bool {
+    use windows::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
+    use windows::Win32::UI::Controls::MARGINS;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
+    };
+
+    let inset = MARGINS {
+        cxLeftWidth: margins[0],
+        cxRightWidth: margins[1],
+        cyTopHeight: margins[2],
+        cyBottomHeight: margins[3],
+    };
+    unsafe {
+        if let Err(error) = DwmExtendFrameIntoClientArea(hwnd, &inset) {
+            warn!(
+                error = %error,
+                "failed to extend the window frame for the Win10 drop shadow"
+            );
+            return false;
+        }
+        if let Err(error) = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        ) {
+            warn!(
+                error = %error,
+                "failed to refresh the window frame after enabling the Win10 drop shadow"
+            );
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,6 +266,27 @@ mod tests {
                 frame_style: DesktopWindowFrameStyle::AppOutline,
                 native_shadow: false,
             }
+        );
+    }
+
+    #[test]
+    fn windows_10_requests_a_one_pixel_dwm_shadow_without_tao_insets() {
+        let chrome = windows_window_chrome(10, 19_045);
+        assert!(!chrome.native_shadow);
+        assert_eq!(
+            compositor_shadow_margins(chrome.native_shadow, false),
+            [0, 0, 0, 1]
+        );
+        assert_eq!(
+            compositor_shadow_margins(chrome.native_shadow, true),
+            [0, 0, 0, 0]
+        );
+        assert_eq!(
+            compositor_shadow_margins(
+                windows_window_chrome(10, WINDOWS_11_MINIMUM_BUILD).native_shadow,
+                false
+            ),
+            [0, 0, 0, 0]
         );
     }
 

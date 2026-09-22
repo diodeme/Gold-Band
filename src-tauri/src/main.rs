@@ -139,8 +139,8 @@ fn run() -> anyhow::Result<()> {
         // WebView2's opaque controller visibly lags behind Win32 edge resizing and exposes
         // black/white bars. Composition mode avoids that artifact while the CSS root still
         // paints an opaque application surface. Windows 11 keeps the DWM shadow for native
-        // rounding; Windows 10 disables TAO's asymmetric undecorated frame and uses the
-        // application-owned inset outline instead.
+        // rounding. Windows 10 keeps TAO's undecorated shadow off — that path insets the
+        // client on three sides — and asks DWM for a symmetric outer shadow separately.
         window.transparent = true;
         window.shadow = desktop_window_chrome.native_shadow;
         // WRY maps this setting to both WebView2 IsZoomControlEnabled and
@@ -246,6 +246,7 @@ fn run() -> anyhow::Result<()> {
             #[cfg(target_os = "windows")]
             if let Some(window) = app.get_webview_window("main") {
                 window_chrome::ensure_undecorated_edge_resize(&window);
+                window_chrome::install_win10_compositor_shadow(&window);
             }
             let state = app.state::<DesktopState>();
             let _ = state.cleanup_agent_diagnostic_processes();

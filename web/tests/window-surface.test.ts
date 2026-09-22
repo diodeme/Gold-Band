@@ -45,6 +45,9 @@ describe('desktop window surface', () => {
     expect(chromeSource).toContain('DesktopWindowFrameStyle::NativeCompositor');
     expect(chromeSource).toContain('native_shadow: false');
     expect(chromeSource).toContain('native_shadow: true');
+    expect(chromeSource).toContain('fn compositor_shadow_margins');
+    expect(chromeSource).toContain('DwmExtendFrameIntoClientArea');
+    expect(chromeSource).toContain('[0, 0, 0, 1]');
   });
 
   it('reattaches the Windows undecorated resize overlay after unstable multiwebview', () => {
@@ -59,7 +62,10 @@ describe('desktop window surface', () => {
     expect(chromeSource).toContain('TAURI_DRAG_RESIZE_WINDOW');
     expect(chromeSource).toContain('set_resizable(true)');
     expect(mainSource).toContain('ensure_undecorated_edge_resize(');
+    expect(mainSource).toContain('install_win10_compositor_shadow(');
     expect(lifecycleSource).toContain('ensure_undecorated_edge_resize(');
+    expect(lifecycleSource).toContain('install_win10_compositor_shadow(');
+    expect(lifecycleSource).toContain('sync_win10_compositor_shadow(');
     expect(browserSource).toContain('raise_undecorated_edge_resize_for_app(');
   });
 

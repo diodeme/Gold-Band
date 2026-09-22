@@ -9,6 +9,7 @@ const host = vi.hoisted(() => ({
   hideAll: vi.fn(async () => undefined),
   onOverlayChange: vi.fn(() => () => undefined),
   onVisibilityChange: vi.fn(() => () => undefined),
+  onLayoutFrame: vi.fn(() => () => undefined),
 }));
 
 vi.mock('@/components/workspace/browser/browser-webview-host', () => ({
@@ -163,6 +164,57 @@ describe('NativeBrowserViewport', () => {
     } finally {
       await act(async () => root.unmount());
       container.remove();
+    }
+  });
+
+  it('remeasures when a shell layout frame moves the placeholder without changing its size', async () => {
+    let layoutListener: (() => void) | undefined;
+    host.onLayoutFrame.mockImplementation((listener: () => void) => {
+      layoutListener = listener;
+      return () => {
+        if (layoutListener === listener) layoutListener = undefined;
+      };
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const frames: FrameRequestCallback[] = [];
+    const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const hostNodeRect = { x: 538, y: 182, width: 998, height: 642 };
+    try {
+      await act(async () => {
+        root.render(<NativeBrowserViewport page={page} visible loadingLabel="Loading page" />);
+      });
+      const hostNode = container.querySelector<HTMLElement>('[data-browser-native-host="true"]');
+      if (!hostNode) throw new Error('missing native host');
+      hostNode.getBoundingClientRect = () => ({
+        ...hostNodeRect,
+        top: hostNodeRect.y,
+        left: hostNodeRect.x,
+        right: hostNodeRect.x + hostNodeRect.width,
+        bottom: hostNodeRect.y + hostNodeRect.height,
+        toJSON() { return {}; },
+      });
+      host.ensurePage.mockClear();
+      hostNodeRect.x = 320;
+      expect(layoutListener).toEqual(expect.any(Function));
+      await act(async () => {
+        layoutListener?.();
+        frames.splice(0).forEach((frame) => frame(0));
+      });
+      expect(host.ensurePage).toHaveBeenCalledWith(
+        page,
+        expect.objectContaining({ x: 320, y: 182, width: 998, height: 642 }),
+        true,
+      );
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      vi.stubGlobal('requestAnimationFrame', originalRequestAnimationFrame);
     }
   });
 

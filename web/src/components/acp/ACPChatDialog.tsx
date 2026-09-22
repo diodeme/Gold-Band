@@ -7817,7 +7817,7 @@ const ContextCompactionRow = memo(function ContextCompactionRow({
             aria-hidden="true"
             className={cn(
               "flex size-5 shrink-0 items-center justify-center rounded-full text-ui-caption font-semibold",
-              running && "border-2 border-gold-running/30 border-t-gold-running text-transparent animate-spin motion-reduce:animate-none",
+              running && "border-2 border-gold-running/30 border-t-gold-running text-transparent animate-spin",
               !running && !interrupted && "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
               interrupted && "bg-destructive/10 text-destructive",
             )}
@@ -7841,7 +7841,7 @@ const ContextCompactionRow = memo(function ContextCompactionRow({
         ) : null}
         {running ? (
           <div className="mt-2 h-0.5 w-full max-w-72 overflow-hidden rounded-full bg-primary/10">
-            <div className="h-full w-1/2 animate-pulse rounded-full bg-primary/55 motion-reduce:animate-none" />
+            <div className="h-full w-1/2 animate-pulse rounded-full bg-primary/55" />
           </div>
         ) : null}
       </div>
@@ -7969,7 +7969,7 @@ const AgentBranchSessionSummary = memo(function AgentBranchSessionSummary({
           aria-hidden="true"
           className={cn(
             "size-1.5 rounded-full bg-muted-foreground/50",
-            tone === "running" && "animate-pulse bg-primary motion-reduce:animate-none",
+            tone === "running" && "animate-pulse bg-primary",
             tone === "success" && "bg-emerald-500",
             tone === "danger" && "bg-destructive",
           )}

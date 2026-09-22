@@ -470,6 +470,27 @@ describe('browser webview host lifecycle', () => {
     });
   });
 
+  it('moves an existing webview to the latest placeholder when create fails', async () => {
+    const page = livePage('file:///E:/demo/index.html');
+    const shifted = { ...bounds, x: bounds.x + 180 };
+    api.browserCreatePage.mockRejectedValue({
+      code: 'browser.local_html.grant_failed',
+      params: {},
+    });
+
+    await expect(browserWebviewHost.ensurePage(page, bounds, true)).rejects.toMatchObject({
+      code: 'browser.local_html.grant_failed',
+    });
+    expect(api.browserSetBounds).toHaveBeenCalledWith({ pageId: page.pageId, bounds });
+
+    api.browserSetBounds.mockClear();
+    await expect(browserWebviewHost.ensurePage(page, shifted, true)).rejects.toMatchObject({
+      code: 'browser.local_html.grant_failed',
+    });
+    expect(api.browserSetBounds).toHaveBeenCalledWith({ pageId: page.pageId, bounds: shifted });
+    expect(browserSessionStore.snapshot().noticeCode).toBe('browser.local_html.grant_failed');
+  });
+
   it('clears loading when native create fails so the loader cannot cover the workspace forever', async () => {
     const page = livePage('https://example.com');
     expect(browserSessionStore.page(page.pageId)?.loading).toBe(true);

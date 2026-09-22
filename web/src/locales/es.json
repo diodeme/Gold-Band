@@ -1811,6 +1811,7 @@
     "rootCommit": "Commit raíz (sin padres)",
     "previousFile": "Archivo anterior",
     "nextFile": "Archivo siguiente",
+    "fileNotInChanges": "Este archivo ya no está en los cambios actuales",
     "targetPaths": {
       "tip": "Punta de la rama actual",
       "direct": "En la línea principal del primer padre",

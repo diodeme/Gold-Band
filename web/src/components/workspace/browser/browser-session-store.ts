@@ -62,10 +62,18 @@ function cloneState(state: BrowserSessionState): BrowserSessionState {
   };
 }
 
+function isDownloadNotice(code: string | null) {
+  return code === 'browser.download.cancelled' || code === 'browser.download.unsupported';
+}
+
 export class BrowserSessionStore {
   private state: BrowserSessionState = { pages: [], activePageId: null, noticeCode: null };
   private readonly listeners = new Set<BrowserSessionListener>();
   private readonly loadStallTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private noticePageId: string | null = null;
+  private eventRevision = 0;
+  private noticeRevision = 0;
+  private readonly loadStartRevision = new Map<string, number>();
 
   snapshot() {
     return this.state;
@@ -99,6 +107,7 @@ export class BrowserSessionStore {
       live: false,
       viewMode: 'desktop',
     };
+    this.noticePageId = null;
     this.state = {
       pages: [...this.state.pages, page],
       activePageId: page.pageId,
@@ -191,13 +200,18 @@ export class BrowserSessionStore {
   closeAll() {
     const closed = this.state.pages.map((page) => page.pageId);
     for (const pageId of closed) this.clearLoadStallTimer(pageId);
+    this.noticePageId = null;
     this.state = { pages: [], activePageId: null, noticeCode: null };
     this.emit();
     return closed;
   }
 
   markLive(pageId: string, live: boolean) {
-    this.patch(pageId, { live, loading: live ? this.page(pageId)?.loading ?? false : false });
+    this.patch(
+      pageId,
+      { live, loading: live ? this.page(pageId)?.loading ?? false : false },
+      live && this.navigationNoticeExpired(pageId),
+    );
   }
 
   markLoading(pageId: string, loading: boolean) {
@@ -212,6 +226,7 @@ export class BrowserSessionStore {
     const pages = this.state.pages.map((page, pageIndex) => (
       pageIndex === index ? { ...page, loading: true } : page
     ));
+    this.noticePageId = null;
     this.state = { ...this.state, pages, noticeCode: null };
     this.scheduleLoadStallRecovery(pageId);
     this.emit();
@@ -226,6 +241,7 @@ export class BrowserSessionStore {
         ? { ...page, url: canonical, loading: canonical !== BLANK_BROWSER_URL }
         : page
     ));
+    this.noticePageId = null;
     this.state = { ...this.state, pages, noticeCode: null };
     this.emit();
     if (canonical === BLANK_BROWSER_URL) this.clearLoadStallTimer(pageId);
@@ -236,6 +252,9 @@ export class BrowserSessionStore {
     const index = this.state.pages.findIndex((page) => page.pageId === pageId);
     if (index < 0) return;
     this.clearLoadStallTimer(pageId);
+    this.eventRevision += 1;
+    this.noticeRevision = this.eventRevision;
+    this.noticePageId = pageId;
     const pages = this.state.pages.map((page, pageIndex) => (
       pageIndex === index ? { ...page, loading: false } : page
     ));
@@ -257,6 +276,8 @@ export class BrowserSessionStore {
       return;
     }
     if (event.kind === 'load-start') {
+      this.eventRevision += 1;
+      this.loadStartRevision.set(event.pageId, this.eventRevision);
       this.patch(event.pageId, {
         loading: true,
         ...(event.url ? { url: event.url } : {}),
@@ -276,11 +297,12 @@ export class BrowserSessionStore {
     }
     if (event.kind === 'load-finish') {
       this.clearLoadStallTimer(event.pageId);
+      const started = this.loadStartRevision.get(event.pageId) ?? 0;
       this.patch(event.pageId, {
         loading: false,
         live: true,
         ...(event.url ? { url: event.url } : {}),
-      });
+      }, this.navigationNoticeExpired(event.pageId, started));
     }
   }
 
@@ -314,8 +336,18 @@ export class BrowserSessionStore {
   resetForTests() {
     for (const timer of this.loadStallTimers.values()) clearTimeout(timer);
     this.loadStallTimers.clear();
+    this.loadStartRevision.clear();
+    this.noticePageId = null;
+    this.eventRevision = 0;
+    this.noticeRevision = 0;
     this.state = { pages: [], activePageId: null, noticeCode: null };
     this.emit();
+  }
+
+  private navigationNoticeExpired(pageId: string, loadStartedAt?: number) {
+    if (this.noticePageId !== pageId || this.state.noticeCode == null) return false;
+    if (isDownloadNotice(this.state.noticeCode)) return false;
+    return loadStartedAt === undefined || loadStartedAt > this.noticeRevision;
   }
 
   private scheduleLoadStallRecovery(pageId: string) {
@@ -333,13 +365,15 @@ export class BrowserSessionStore {
     this.loadStallTimers.delete(pageId);
   }
 
-  private patch(pageId: string, patch: Partial<BrowserPage>) {
+  private patch(pageId: string, patch: Partial<BrowserPage>, clearNavigationNotice = false) {
     const index = this.state.pages.findIndex((page) => page.pageId === pageId);
     if (index < 0) return;
     const pages = this.state.pages.map((page, pageIndex) => (
       pageIndex === index ? { ...page, ...patch } : page
     ));
-    this.state = { ...this.state, pages };
+    const noticeCode = clearNavigationNotice ? null : this.state.noticeCode;
+    if (clearNavigationNotice) this.noticePageId = null;
+    this.state = { ...this.state, pages, noticeCode };
     this.emit();
   }
 

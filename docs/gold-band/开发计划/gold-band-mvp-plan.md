@@ -1,5 +1,54 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-22 官网与 rrweb 演示不再跟随系统减少动态效果
+
+- 根因：官网章节回放和内部 rrweb 演示仍读取 `prefers-reduced-motion`。Windows 关闭窗口动画时，官网停在海报并出现播放按钮，同时把全站动画和过渡压到 0.01ms；演示回放不自动开始，录制宽度切换失去 850ms 过渡。这和桌面端已经去掉的系统开关是同一条媒体查询。
+- 实现：章节进入视野后直接 `autoPlay`。删除官网那条全站降级规则，锚点平滑滚动和加载转圈恢复。演示回放固定 `autoPlay: true`，录制 iframe 保留宽度过渡。标签页隐藏时官网回放仍暂停。
+- 验收：`marketing-site.test.ts` 与 `rrweb-demo-recording.test.ts` 固定这两处源码不再包含 `prefers-reduced-motion`。
+- 过度设计与性能评审：不新增播放器或设置项。官网同一时刻仍只有当前章节在播；演示只在打开该工具时多一次自动回放。
+
+## 2026-09-22 桌面动效不再跟随系统减少动态效果
+
+- 根因：桌面端没有独立的动效开关。主题 motion token 只决定按钮、卡片等 role 的过渡时长。活动文字呼吸、重试文字、压缩圆环和进度条、工作流扫光与流动边、品牌 Logo、流式逐字、GIF 默认暂停，以及主题 CSS 里把 `data-theme-role` 的动画压到 0.01ms，全部读取系统 `prefers-reduced-motion`。Windows 关闭窗口动画时 WebView2 会报 reduce，于是这些机器和开着动画的机器表现不一致。
+- 实现：删除上述媒体查询、`motion-reduce` 和 `matchMedia` 分支。主题时长保持原 token。官网自动播放和 rrweb 演示仍尊重系统设置。
+- 验收：`acp-message-theme.test.ts` 固定重试呼吸样式不再包含 `prefers-reduced-motion` 或 `motion-reduce`。
+- 过度设计与性能评审：不新增设置、状态或第二套动画。系统关闭动画的机器会多出已有的少量 CSS 动画，以及正在生成的那一条消息的逐字 RAF；终态和历史消息仍立即静态展示。
+
+## 2026-09-22 运行态呼吸不因系统关闭动画而停止
+
+- 根因：侧边栏 Agent icon、Workflow/AUTO 运行圆点，以及 Session Switcher / 会话头的运行圆点，都用 `motion-safe:animate-pulse`。Windows 关闭「在窗口中为控件和元素设置动画」时，WebView2 投影 `prefers-reduced-motion: reduce`，这条 class 不生效。会话仍在运行，图标静止。这与 2026-08-25 处理圆环的成因相同，属于运行反馈被可访问性媒体查询整段拿掉，不是 activity 没传到侧边栏。
+- 实现：这三处改为无条件 Tailwind `animate-pulse`。暂停、成功、失败仍是静态色点。品牌加载、工作流画布和重试文案继续遵守 reduced-motion。
+- 验收：`conversation-sidebar-selection.test.ts`、`runtime-status-dot.test.ts` 与 `conversation-terminal-result-ui.test.tsx` 在修复前因 class 仍含 `motion-safe` 失败，修复后固定 `animate-pulse` 且禁止 `motion-safe` / `motion-reduce`。
+- 过度设计与性能评审：不新增动画、状态、定时器或设置项。只有当前运行中的图标或圆点做 opacity 呼吸；终态保持静态。系统减少动态效果时，这些少量元素会继续合成，与常驻运行反馈一致。
+
+## 2026-09-22 工作区 diff、搜索和文件正文不再停在旧缓存
+
+- 根因：工作区 diff 按路径缓存比较结果，审阅序列在打开时复制一份，文件继续保存后两者都不失效。文件名搜索只在输入关键字时查询。文件面板离开前台后，已缓存的其他文件下次打开仍交回旧正文。更改列表和目录树本身会刷新。这是可变内容沿用了不可变身份，不是 Git 读取变慢。
+- 实现：普通文件事件只失效该路径的未暂存比较；Git 元数据变化失效该工作区已缓存的暂存和未暂存比较。失效与更改列表同一次去抖，只重读当前文件，旧 diff 保留到新结果返回。审阅序列按最新快照原位更新。有关键字时，目录刷新和面板重新激活重跑文件名搜索，并保留上一次结果。文件监听停止时递增项目正文代际，过期缓存在下次打开时重读。
+- 验收：`diff-review-store.test.ts` 固定路径失效后重读、提交比较仍命中、序列原位更新和元数据失效。`source-control-store.test.ts` 固定去抖后的单路径失效与元数据失效。`file-explorer-store.test.ts` 固定搜索随目录刷新和重新激活更新，且内容修改不重跑搜索。`file-content-store.test.ts` 固定监听停止后重读、监听期间仍命中缓存。
+- 过度设计与性能评审：不给变更文件计算内容哈希，不新增快照字段、监听或轮询。一次保存风暴最多多读当前打开的文件；有搜索时最多多一次有上限的文件名搜索；正文只在下次打开过期文件时多读一次。
+
+## 2026-09-22 Win10 无边框窗口补上外侧系统阴影
+
+- 根因：2026-07-28 关闭 TAO undecorated native shadow，是因为 Win10 上该路径把客户区左、右、下内收一个 frame thickness、顶部保持 0，WebView 不绘制这三侧，形成黑线。替代的 `app-outline` 是客户区内 1px 描边加 8px 内阴影，画在窗口里面，投不到桌面上。浅色窗口贴在浅色桌面上因此没有外轮廓。这是正确避开黑线之后，外轮廓仍交给了不能出界的内描边，不是要把 TAO 三侧 inset 加回来。
+- 实现：Win10 继续 `native_shadow = false`。普通窗口调用 `DwmExtendFrameIntoClientArea`，边距为左 0、右 0、上 0、下 1，让 DWM 在窗口外侧绘制四边投影，客户区仍等于窗口矩形。最大化或全屏把边距收回 0。同一 HWND 和同一边距不重复调用。Win11 仍走 TAO native shadow，不叠加这次调用。`app-outline` 内侧边界保留。
+- 证据：边距策略由 `windows_10_requests_a_one_pixel_dwm_shadow_without_tao_insets` 固定；Win10 仍关闭 TAO shadow。DWM 合成出的投影像素不能在 cargo 或 jsdom 里复现，需要在 Win10 普通窗口上查看四边阴影，并确认没有三侧黑线；最大化后阴影消失，还原后恢复。
+- 过度设计与性能评审：不新增 frame style、前端状态或持久字段。边距只在窗口创建、重建，以及最大化/还原这类尺寸状态变化时提交给 DWM；拖拽缩放命中缓存后不再调用 `SetWindowPos`。
+
+## 2026-09-22 验收 FOLLOW_UP 不再承接范围内未满足条款
+
+- 根因：`profile/accept.md` 与 `runtime/ai-dynamic/acceptance.md` 把 `BLOCKER` 收成三类，又写「其他发现均为 `FOLLOW_UP`」和「环境或人工验收不构成阻塞」。范围内条款因此可以被解释成文案遗漏、测试没走到、入口暂时走不到或没有浏览器，然后与 PASS 并存。task-183 round-003 按这套规则把方案 §6、§7.1、§11.3、§14.1、§14.3 的 PARTIAL / MISSING 标成 `FOLLOW_UP` 并通过。这是分级契约过宽，不是模型违反角色。
+- 实现：七种语言的验收角色和 AI-DYNAMIC acceptance 使用同一分级。已批准条款未实现、部分实现，或缺少实现侧能够补齐的证据，都是 `BLOCKER`。低层内容不能扩大范围，也不能删除、缩小、拆散、替换或弱化已批准条款。`FOLLOW_UP` 留给不属于任何已批准条款的观察、仅因环境或人工条件无法执行的验证，以及历史遗留和不属于本轮需求所要求范围的问题。本轮需求已经要求的条款不能改称为历史遗留后降级。环境或人工条件无法执行的验证不挡住其余已验证条款，因为当前没有单独暂停等待用户豁免的路径。缺测试、缺文案、要求的分支没执行到、用代码阅读代替执行，不能说成环境限制。测试角色和审查角色的非阻塞边界不变。
+- 验收：`acceptance_prompts_separate_scope_or_regression_backed_blockers_from_follow_ups` 先在旧文案上因缺少「不能删除、缩小、拆散、替换或弱化」失败，再与 `built_in_validation_profiles_do_not_block_on_missing_external_evidence` 一起转绿。
+- 过度设计与性能评审：只改静态提示词。不新增账本、schema、Agent 或调度状态。每次验收调用增加的是常量级契约文本。
+
+## 2026-09-22 新建会话后已打开的附件预览改读任务输入文件
+
+- 根因：设计要求提交后结束草稿预览，不能把已释放的 Object URL 留在工作区。实现却在 `promoteDraft` 里原样搬走 `draft-attachment`，标签键跟着会话作用域变掉，随后的关闭打不中，草稿 reset 再回收预览地址。已经画出来的图片会留到卸载；切走再回来用同一个失效地址新建 `<img>`，于是只剩破损图标和文件名。这是正确生命周期没有在草稿提升时落地，不是缺一套预览缓存。
+- 实现：提升时把打开的草稿附件改绑为 `conversation-asset` / `input-attachment`，指向创建会话时已经复制到 `authoring/inputs` 的文件。Tab 身份是 project、task 与 `task-inputs/{文件名}`，与稍后从消息气泡打开的同一任务输入重合。面板继续调用 `showConversationAttachment`，每次挂载按文件名读取，不保存草稿 `previewUrl`。
+- 验收：`right-workspace.test.ts` 在修复前失败于仍提升 `draft-attachment` 且任务输入键带 attempt；修复后固定提升结果不含 `blob:` 预览地址，并且不同 attempt 的同一任务输入键相同。`conversation-asset-workspace-panel.test.tsx` 固定卸载再挂载会再次调用 `showConversationAttachment`，画布拿到的是文件 data URL。
+- 过度设计与性能评审：不新增资源类型、预览缓存、grant 或持久字段。提升只遍历当前已打开的少量 Tab。图片在 Tab 可见时读取一次，大小仍受附件单文件上限约束；离开会话即卸下面板，不保留正文。
+
 ## 2026-09-22 桌面语言扩展到七种，安装包与首次启动跟随系统界面语言
 
 - 根因：界面、后端短文案和内置提示词原来只有简体中文与英文两套，安装包语言列表也只有这两项，而且应用不会在第一次打开时读取系统界面语言。这是语言目录和首次持久化边界不完整，不是缺一套独立的语言检测服务。

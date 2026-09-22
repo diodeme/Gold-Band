@@ -16,7 +16,7 @@ import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { conversationRunIdentityKey, conversationTaskIdentityKey } from '@/lib/conversation-run-identity';
 import { formatCompactRelativeTime } from '@/lib/datetime';
 
-export const conversationSidebarActivityIconClass = 'motion-safe:animate-pulse';
+export const conversationSidebarActivityIconClass = 'animate-pulse';
 
 export function conversationSidebarTerminalResultDotClass(
   kind: NonNullable<ConversationTaskRowVm['unreadTerminalResult']>['kind'],
@@ -653,7 +653,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
 // ── Task Row ──
 
 export function conversationSidebarRunStatusClass(run: ConversationTaskRowVm['runs'][0]) {
-  if (run.status === 'running') return 'bg-gold-running motion-safe:animate-pulse';
+  if (run.status === 'running') return 'bg-gold-running animate-pulse';
   if (run.status === 'paused') return 'bg-yellow-500/50';
   if (run.outcome === 'success') return 'bg-emerald-500/50';
   if (run.outcome === 'failure' || run.outcome === 'killed') return 'bg-red-500/50';

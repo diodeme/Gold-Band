@@ -121,6 +121,7 @@ class BrowserWebviewHost {
   private overlayObserver: MutationObserver | null = null;
   private overlayResizeObserver: ResizeObserver | null = null;
   private visibilityListener: (() => void) | null = null;
+  private layoutListener: (() => void) | null = null;
   private readonly pendingCreates = new Map<string, Promise<void>>();
   private readonly pendingNavigations = new Map<string, {
     target: string;
@@ -174,7 +175,12 @@ class BrowserWebviewHost {
       return;
     }
     if (!page.live) {
-      await this.createPage(page.pageId, page.url, next);
+      try {
+        await this.createPage(page.pageId, page.url, next);
+      } catch (error) {
+        await this.alignRetainedPage(page.pageId, previous, next, visible);
+        throw error;
+      }
     } else if (!this.suppressed && !boundsEqual(previous, next)) {
       await this.commitBounds(page.pageId, next);
     }
@@ -413,6 +419,17 @@ class BrowserWebviewHost {
     };
   }
 
+  onLayoutFrame(listener: () => void) {
+    this.layoutListener = listener;
+    return () => {
+      if (this.layoutListener === listener) this.layoutListener = null;
+    };
+  }
+
+  notifyLayoutFrame() {
+    this.layoutListener?.();
+  }
+
   onOverlayChange(listener: () => void) {
     return this.onVisibilityChange(listener);
   }
@@ -435,8 +452,29 @@ class BrowserWebviewHost {
     this.visiblePageId = null;
     this.overlayOpen = false;
     this.visibilityListener = null;
+    this.layoutListener = null;
     this.visibilityRevision = 0;
     this.suppressed = false;
+  }
+
+  private async alignRetainedPage(
+    pageId: string,
+    previous: BrowserBounds | null,
+    next: BrowserBounds,
+    visible: boolean,
+  ) {
+    if (this.suppressed || boundsEqual(previous, next)) return;
+    try {
+      await this.commitBounds(pageId, next);
+    } catch {
+      // Create already failed. Moving the retained window is best-effort when one still exists.
+    }
+    if (!visible || this.overlayOpen) return;
+    try {
+      await this.show(pageId);
+    } catch {
+      // A missing native page stays hidden; the navigation notice already records the failure.
+    }
   }
 
   private async createPage(pageId: string, url: string, bounds: BrowserBounds) {

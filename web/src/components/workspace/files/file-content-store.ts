@@ -43,6 +43,7 @@ export interface FileContentEntry {
   errorCode: string | null;
   requestRevision: number;
   contentRevision: number;
+  watchEpoch: number;
   localRevision: number;
   savedLocalRevision: number;
   saveState: FileSaveState;
@@ -56,6 +57,7 @@ const EMPTY_ENTRY: FileContentEntry = {
   errorCode: null,
   requestRevision: 0,
   contentRevision: 0,
+  watchEpoch: 0,
   localRevision: 0,
   savedLocalRevision: 0,
   saveState: { kind: 'clean' },
@@ -119,6 +121,7 @@ export class FileContentStore {
   private readonly projectWatchRefs = new Map<string, number>();
   private readonly projectWatchOperations = new Map<string, Promise<void>>();
   private readonly activeProjectWatches = new Set<string>();
+  private readonly projectContentEpoch = new Map<string, number>();
   private eventUnsubscribe: (() => void) | null = null;
   private eventSubscriptionPromise: Promise<void> | null = null;
 
@@ -272,7 +275,8 @@ export class FileContentStore {
 
   async load(resource: FileWorkspaceResource, preferSource = false, force = false, preserveReady = false) {
     const existing = this.entries.get(resource.key);
-    if (!force && existing?.status === 'ready') return existing;
+    const watchEpoch = this.contentEpoch(resource.projectId);
+    if (!force && existing?.status === 'ready' && existing.watchEpoch === watchEpoch) return existing;
     const requestRevision = (existing?.requestRevision ?? 0) + 1;
     const keepReady = preserveReady && existing?.status === 'ready' && existing.snapshot !== null;
     this.setEntry(resource.key, {
@@ -314,6 +318,7 @@ export class FileContentStore {
         errorCode: null,
         requestRevision,
         contentRevision: (existing?.contentRevision ?? 0) + 1,
+        watchEpoch: this.contentEpoch(resource.projectId) === watchEpoch ? watchEpoch : existing?.watchEpoch ?? watchEpoch,
         localRevision: 0,
         savedLocalRevision: 0,
         saveState: { kind: 'clean' },
@@ -445,6 +450,9 @@ export class FileContentStore {
     if (refs > 1) {
       this.projectWatchRefs.set(projectId, refs - 1);
       return;
+    }
+    if (refs === 1) {
+      this.projectContentEpoch.set(projectId, this.contentEpoch(projectId) + 1);
     }
     this.projectWatchRefs.delete(projectId);
     await this.queueWatchOperation(projectId, async () => {
@@ -828,6 +836,10 @@ export class FileContentStore {
       }
       await this.load(entry.resource, entry.snapshot?.kind === 'text' && entry.resource.locator.canonicalPath.toLowerCase().endsWith('.svg'), true);
     }
+  }
+
+  private contentEpoch(projectId: string) {
+    return this.projectContentEpoch.get(projectId) ?? 0;
   }
 
   private setEntry(key: string, entry: FileContentEntry) {

@@ -587,7 +587,7 @@ Conversation VM 在外层仍 Running 且 phase 为 `PreparingWorkspace` 时，�
 6. 点击继续后，composer 使用 command 返回的 durable active lifecycle 立即从“正在继续”单调收敛到“停止”；同一 snapshot 同步更新 session tree，sidebar task 的 `latestRun` 与 `runs[]` 仅在非终态且 Runtime active 时投影 Running、清空 outcome 并关闭 resumable，两级侧栏圆点立即变蓝。不得把 attempt 的暂停或终态复制到整体 Run，整体暂停和终态由 Run 摘要及 Run 状态事件更新；整体终态拒绝迟到 active snapshot。父级 run/sidebar 刷新只做校准，不能在两者之间重新显示“继续工作流”，也不能等待下一节点启动才显示运行态。
 7. Direct、completed follow-up 和 manual check 普通消息行为不回归。
 8. AI-DYNAMIC 选中 paused leaf 时 continue action 只携带目标 leaf locator。
-9. session tree/header 的 Running 圆点复用侧边栏 `gold-running + motion-safe:animate-pulse`，不保留额外 ping halo；暂停和终态保持静态。
+9. session tree/header 的 Running 圆点复用侧边栏 `gold-running + animate-pulse`，不因系统 reduced-motion 停止，不保留额外 ping halo；暂停和终态保持静态。
 
 ### 14.3 页面验证
 

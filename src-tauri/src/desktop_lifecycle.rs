@@ -269,6 +269,7 @@ pub fn ensure_main_window<R: Runtime>(
 ) -> anyhow::Result<WebviewWindow<R>> {
     if let Some(window) = app_handle.get_webview_window("main") {
         crate::window_chrome::ensure_undecorated_edge_resize(&window);
+        crate::window_chrome::sync_win10_compositor_shadow(&window);
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
@@ -284,6 +285,7 @@ pub fn ensure_main_window<R: Runtime>(
         .ok_or_else(|| anyhow::anyhow!("main window config is missing"))?;
     let window = WebviewWindowBuilder::from_config(app_handle, &config)?.build()?;
     crate::window_chrome::ensure_undecorated_edge_resize(&window);
+    crate::window_chrome::install_win10_compositor_shadow(&window);
     focus_window_after_bootstrap(app_handle.clone());
     Ok(window)
 }

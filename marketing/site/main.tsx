@@ -21,7 +21,6 @@ function useDesktop() {
   return desktop;
 }
 function Media({ language, chapter, active, desktop, onActivate, theme }: { language: Language; chapter: ChapterId; active: boolean; desktop: boolean; onActivate: (chapter: ChapterId) => void; theme: 'light' | 'dark' }) {
-  const [requested, setRequested] = useState(false);
   const surface = useRef<HTMLDivElement>(null);
   const [mobilePoster, setMobilePoster] = useState(false);
   useEffect(() => {
@@ -31,12 +30,10 @@ function Media({ language, chapter, active, desktop, onActivate, theme }: { lang
     return () => observer.disconnect();
   }, []);
   const t = copy[language];
-  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const replay = active && (requested || !reducedMotion);
   return <div className="chapter-media" data-chapter-media={chapter}>
     <div ref={surface} className="media-surface">
       <img className="poster" src={posterPath(config.base, language, chapter, theme, mobilePoster)} width={mobilePoster ? 320 : 1440} height={mobilePoster ? 780 : 900} alt={`${t.chapters[CHAPTER_IDS.indexOf(chapter)].eyebrow} · Gold Band`} loading={chapter === 'before' ? 'eager' : 'lazy'} />
-      {replay ? <Suspense fallback={<MediaLoading language={language} />}><Replay language={language} chapter={chapter} theme={theme} autoPlay={requested || !reducedMotion} /></Suspense> : <Button className="poster-play" variant="secondary" onClick={() => { setRequested(true); onActivate(chapter); }} aria-label={t.play}><Play />{t.play}</Button>}
+      {active ? <Suspense fallback={<MediaLoading language={language} />}><Replay language={language} chapter={chapter} theme={theme} autoPlay /></Suspense> : <Button className="poster-play" variant="secondary" onClick={() => onActivate(chapter)} aria-label={t.play}><Play />{t.play}</Button>}
     </div>
   </div>;
 }

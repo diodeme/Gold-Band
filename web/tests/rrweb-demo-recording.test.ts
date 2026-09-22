@@ -1,9 +1,22 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { eventWithTime } from '@rrweb/types';
 import { canReplay, createRecordingBuffer } from '../rrweb-demo/recording';
 
 const event = (type: number, timestamp = 1000) => ({ type, timestamp, data: {} }) as eventWithTime;
 
+describe('rrweb demo motion', () => {
+  it('keeps replay and capture width transition when the system reduces motion', () => {
+    const demoRoot = resolve('web/rrweb-demo');
+    const main = readFileSync(resolve(demoRoot, 'main.tsx'), 'utf8');
+    const style = readFileSync(resolve(demoRoot, 'style.css'), 'utf8');
+    expect(main).toContain('autoPlay: true');
+    expect(main).not.toContain('prefers-reduced-motion');
+    expect(style).toContain('transition: width 850ms ease-in-out');
+    expect(style).not.toContain('prefers-reduced-motion');
+  });
+});
 describe('rrweb demo recording boundary', () => {
   it('requires a full snapshot before playback', () => {
     const buffer = createRecordingBuffer();

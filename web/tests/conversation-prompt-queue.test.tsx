@@ -21,6 +21,7 @@ const queue: ConversationPromptQueueVm = {
     content: `queued prompt ${index + 1}`,
     attachmentCount: index === 0 ? 2 : 0,
     quoteCount: index === 1 ? 2 : 0,
+    workspaceFileCount: index === 2 ? 1 : 0,
     createdAt: `2026-08-07T00:00:0${index}Z`,
   })),
 };
@@ -135,6 +136,27 @@ describe('ConversationPromptQueue', () => {
     expect(secondRow.textContent).toContain('2 条引用');
   });
 
+  it('shows workspace file context for a file-only queued prompt', async () => {
+    await renderQueue({
+      queue: {
+        revision: 1,
+        maxItems: 10,
+        items: [{
+          id: 'file-only',
+          content: '',
+          attachmentCount: 0,
+          quoteCount: 0,
+          workspaceFileCount: 2,
+          createdAt: '2026-09-16T00:00:00Z',
+        }],
+      },
+    });
+    const row = host.querySelector('[data-queue-item-id="file-only"]') as HTMLElement;
+
+    expect(row.querySelector('[data-queue-item-content="true"]')).toBeNull();
+    expect(row.querySelector('[data-queue-item-workspace-file-count]')?.textContent).toBe('2');
+  });
+
   it('shows the queued role name and hides an empty content line', async () => {
     await renderQueue({
       queue: {
@@ -145,6 +167,7 @@ describe('ConversationPromptQueue', () => {
           content: '',
           attachmentCount: 0,
           quoteCount: 0,
+          workspaceFileCount: 0,
           roleName: '开发',
           createdAt: '2026-09-16T00:00:00Z',
         }, {
@@ -152,6 +175,7 @@ describe('ConversationPromptQueue', () => {
           content: '爱仕达',
           attachmentCount: 0,
           quoteCount: 0,
+          workspaceFileCount: 0,
           roleName: '开发',
           createdAt: '2026-09-16T00:00:01Z',
         }],

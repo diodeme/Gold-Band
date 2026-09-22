@@ -21,6 +21,7 @@ import {
   GripVertical,
   ListPlus,
   MessageSquareQuote,
+  SquareCode,
   UserRound,
   Paperclip,
   Pencil,
@@ -277,7 +278,10 @@ function QueueItem({
             {item.content}
           </p>
         ) : null}
-        {item.attachmentCount > 0 || item.quoteCount > 0 || item.roleName ? (
+        {item.attachmentCount > 0
+          || item.quoteCount > 0
+          || item.workspaceFileCount > 0
+          || item.roleName ? (
           <div className="mt-0.5 flex items-center gap-2 text-ui-caption text-muted-foreground">
             {item.roleName ? (
               <span className="inline-flex items-center gap-1" data-queue-item-role="true">
@@ -295,6 +299,15 @@ function QueueItem({
               <span className="inline-flex items-center gap-1">
                 <Paperclip className="size-3" />
                 {item.attachmentCount}
+              </span>
+            ) : null}
+            {item.workspaceFileCount > 0 ? (
+              <span
+                className="inline-flex items-center gap-1"
+                data-queue-item-workspace-file-count="true"
+              >
+                <SquareCode className="size-3" />
+                {item.workspaceFileCount}
               </span>
             ) : null}
           </div>

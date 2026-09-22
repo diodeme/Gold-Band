@@ -2,16 +2,29 @@ import { describe, expect, it } from 'vitest';
 import {
   MAX_COMPOSER_QUOTE_CHARS,
   MAX_COMPOSER_QUOTES,
+  MAX_COMPOSER_CONTEXT_ITEMS,
   addComposerQuote,
+  addComposerWorkspaceFile,
   createUserPromptSubmission,
   hasUserPromptPayload,
   serializeUserPromptSubmission,
   userPromptQuotesFromRaw,
   userPromptRoleFromRaw,
+  workspaceFilesFromRaw,
   type ComposerQuote,
+  type ComposerWorkspaceFileRef,
 } from '@/lib/composer-context';
 
 const quote = (id: string, text: string, sourceKey = id): ComposerQuote => ({ id, text, sourceKey });
+const workspaceFile = (path: string, id = 'ref-1'): ComposerWorkspaceFileRef => ({
+  id,
+  projectId: 'project-1',
+  relativePath: path,
+  name: path.split('/').at(-1) ?? path,
+  byteLength: 12,
+  mimeType: 'text/typescript',
+  canonicalPath: 'D:/workspace/' + path,
+});
 
 describe('composer quote contract', () => {
   it('keeps display text and structured quotes separate from the agent prompt', () => {
@@ -28,6 +41,7 @@ describe('composer quote contract', () => {
         { id: 'one', sourceMessageKey: 'one', text: '第一行\n第二行' },
         { id: 'two', sourceMessageKey: 'two', text: '另一段' },
       ],
+      workspaceFiles: [],
     });
     expect(serializeUserPromptSubmission(submission)).toBe('> 第一行\n> 第二行\n\n> 另一段\n\n继续解释');
   });
@@ -109,5 +123,59 @@ describe('composer payload contract', () => {
     const submission = createUserPromptSubmission('', [], role);
     expect(submission.displayText).toBe('');
     expect(submission.role).toEqual(role);
+  });
+
+  it('keeps workspace file references as a separate sendable context', () => {
+    const first = addComposerWorkspaceFile([], 0, workspaceFile('src\\WorkspaceFileTree.tsx'));
+    expect(first).toMatchObject({ ok: true });
+    if (!first.ok) return;
+    const duplicate = addComposerWorkspaceFile(
+      first.workspaceFiles,
+      0,
+      workspaceFile('src/WorkspaceFileTree.tsx', 'ref-2'),
+    );
+    expect(duplicate).toMatchObject({ ok: false, code: 'composer.workspace-file.duplicate' });
+
+    const submission = createUserPromptSubmission('', [], null, first.workspaceFiles);
+    expect(submission.displayText).toBe('');
+    expect(submission.workspaceFiles).toEqual([
+      { projectId: 'project-1', relativePath: 'src/WorkspaceFileTree.tsx' },
+    ]);
+    expect(hasUserPromptPayload('', 0, null, first.workspaceFiles.length)).toBe(true);
+  });
+
+  it('bounds workspace references and attachments by one composer context limit', () => {
+    const files = Array.from({ length: MAX_COMPOSER_CONTEXT_ITEMS }, (_, index) =>
+      workspaceFile(`src/file-${index}.ts`, `ref-${index}`));
+    expect(addComposerWorkspaceFile(files.slice(0, 9), 1, workspaceFile('src/overflow.ts'))).toEqual({
+      ok: false,
+      code: 'composer.context.limit-exceeded',
+      max: MAX_COMPOSER_CONTEXT_ITEMS,
+    });
+  });
+
+  it('defensively parses canonical workspace file metadata', () => {
+    expect(workspaceFilesFromRaw({
+      workspaceFiles: [
+        {
+          projectId: 'project-1',
+          relativePath: 'src/a.ts',
+          canonicalPath: 'D:/workspace/src/a.ts',
+          name: 'a.ts',
+          mimeType: 'text/typescript',
+          size: 12,
+        },
+        { projectId: '', relativePath: 'src/b.ts' },
+        { projectId: 'project-1' },
+      ],
+    })).toEqual([{
+      projectId: 'project-1',
+      relativePath: 'src/a.ts',
+      canonicalPath: 'D:/workspace/src/a.ts',
+      name: 'a.ts',
+      mimeType: 'text/typescript',
+      size: 12,
+    }]);
+    expect(workspaceFilesFromRaw({ workspaceFiles: 'invalid' })).toEqual([]);
   });
 });

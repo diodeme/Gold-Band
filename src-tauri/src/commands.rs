@@ -187,6 +187,50 @@ where
         })?
 }
 
+pub(crate) async fn validate_prompt_workspace_files(
+    app: &gold_band::app::App,
+    input: &ConversationPromptInput,
+    attachment_count: usize,
+) -> CommandResult<()> {
+    if input.workspace_files.is_empty() {
+        return Ok(());
+    }
+    let app = app.clone_for_background();
+    let references = input.workspace_files.clone();
+    spawn_blocking_command(move || {
+        let roots = app.prompt_workspace_roots();
+        gold_band::provider::resolve_prompt_workspace_files(&roots, &references, attachment_count)
+            .map(|_| ())
+            .map_err(|error| CommandErrorVm::new(error.code(), error.params()))
+    })
+    .await
+}
+
+fn attach_admitted_workspace_files(
+    app: &gold_band::app::App,
+    bundle: &mut gold_band::provider::PromptBundle,
+    workspace_files: &[gold_band::provider::PromptWorkspaceFileRef],
+    attachment_count: usize,
+) -> CommandResult<()> {
+    if workspace_files.is_empty() {
+        return Ok(());
+    }
+    let roots = app.prompt_workspace_roots();
+    let resolved = gold_band::provider::resolve_prompt_workspace_files(
+        &roots,
+        workspace_files,
+        attachment_count,
+    )
+    .map_err(|error| CommandErrorVm::new(error.code(), error.params()))?;
+    for reference in &resolved {
+        bundle.content_blocks.push(
+            gold_band::provider::workspace_files::resolved_workspace_file_content_block(reference),
+        );
+    }
+    bundle.workspace_files = resolved;
+    Ok(())
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AttemptLocator {
@@ -1968,11 +2012,7 @@ fn schedule_direct_prompt_queue_drain(
             locator.round_id.clone(),
             locator.node_id.clone(),
             locator.attempt_id.clone(),
-            ConversationPromptInput {
-                display_text: claimed.content.clone(),
-                quotes: claimed.quotes.clone(),
-                role: claimed.role.clone(),
-            },
+            claimed.to_conversation_prompt_input(),
             Some(claimed.prompt_id.clone()),
             locator.outer_node_id.clone(),
             locator.outer_attempt_id.clone(),
@@ -2077,6 +2117,8 @@ pub struct ConversationQueuedPromptDraftVm {
     pub content: String,
     pub quotes: Vec<UserPromptQuote>,
     pub attachment_paths: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub workspace_files: Vec<gold_band::provider::PromptWorkspaceFileRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<UserPromptRole>,
 }
@@ -4235,6 +4277,12 @@ async fn continue_conversation_runtime_inner(
     );
     if let Some(input) = input.as_ref() {
         validate_conversation_prompt_input(input, attachment_paths.as_deref())?;
+        validate_prompt_workspace_files(
+            &app,
+            input,
+            attachment_paths.as_deref().map_or(0, <[_]>::len),
+        )
+        .await?;
     }
     let app = app.clone_for_background();
     spawn_blocking_command(move || {
@@ -6452,6 +6500,7 @@ pub fn restore_conversation_queued_prompt(
             quotes: item.quotes,
             attachment_paths: item.attachment_paths,
             role: item.role,
+            workspace_files: item.workspace_files,
         },
         lifecycle: emit_prompt_queue_lifecycle(&app_handle, &app, project_id, &locator),
     })
@@ -6535,11 +6584,7 @@ pub async fn use_conversation_queued_prompt(
         locator.round_id.clone(),
         locator.node_id.clone(),
         locator.attempt_id.clone(),
-        ConversationPromptInput {
-            display_text: claimed.content.clone(),
-            quotes: claimed.quotes.clone(),
-            role: claimed.role.clone(),
-        },
+        claimed.to_conversation_prompt_input(),
         Some(claimed.prompt_id.clone()),
         locator.outer_node_id.clone(),
         locator.outer_attempt_id.clone(),
@@ -6564,11 +6609,7 @@ pub async fn use_conversation_queued_prompt(
                     locator.round_id.clone(),
                     locator.node_id.clone(),
                     locator.attempt_id.clone(),
-                    ConversationPromptInput {
-                        display_text: reclaimed.content,
-                        quotes: reclaimed.quotes,
-                        role: reclaimed.role,
-                    },
+                    reclaimed.to_conversation_prompt_input(),
                     Some(reclaimed.prompt_id),
                     locator.outer_node_id.clone(),
                     locator.outer_attempt_id.clone(),
@@ -6699,6 +6740,12 @@ async fn submit_conversation_prompt_inner(
         outer_attempt_id,
     );
     validate_conversation_prompt_input(&input, attachment_paths.as_deref())?;
+    validate_prompt_workspace_files(
+        &app,
+        &input,
+        attachment_paths.as_deref().map_or(0, <[_]>::len),
+    )
+    .await?;
     let run = app
         .run_status(&locator.task_id, &locator.run_id)
         .map_err(command_error)?;
@@ -7081,12 +7128,14 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             display_text,
             quotes,
             role,
+            workspace_files,
         } = input;
         let prompt = conversation_agent_prompt_text(
             &ConversationPromptInput {
                 display_text: display_text.clone(),
                 quotes: quotes.clone(),
                 role: role.clone(),
+                workspace_files: workspace_files.clone(),
             },
             app.config.desktop_language,
         );
@@ -7179,6 +7228,12 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                     }
                 }
             }
+            attach_admitted_workspace_files(
+                &app,
+                &mut prompt_bundle,
+                &workspace_files,
+                attachment_paths.as_ref().map_or(0, Vec::len),
+            )?;
             let app_handle_for_live = app_handle_for_task.clone();
             let task_id_for_live = task_id.clone();
             let run_id_for_live = run_id.clone();
@@ -7342,6 +7397,12 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 }
             }
         }
+        attach_admitted_workspace_files(
+            &app,
+            &mut prompt_bundle,
+            &workspace_files,
+            attachment_paths.as_ref().map_or(0, Vec::len),
+        )?;
         let app_handle_for_live = app_handle_for_task.clone();
         let task_id_for_live = task_id.clone();
         let run_id_for_live = run_id.clone();
@@ -8771,6 +8832,7 @@ fn validate_conversation_prompt_input(
         &input.display_text,
         attachment_paths.len(),
         input.role.as_ref(),
+        input.workspace_files.len(),
     ) {
         return Err(CommandErrorVm::new(
             "conversation.prompt-empty",
@@ -11007,6 +11069,7 @@ mod tests {
                 display_text: "test".to_string(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-26T00:00:00Z".to_string(),
@@ -11399,21 +11462,11 @@ mod tests {
             }]),
         );
 
-        validate_acp_session_config_option_value(
-            &catalogs,
-            &session,
-            &authoring,
-            "context",
-            "1m",
-        )
-        .unwrap();
+        validate_acp_session_config_option_value(&catalogs, &session, &authoring, "context", "1m")
+            .unwrap();
         assert_eq!(
             validate_acp_session_config_option_value(
-                &catalogs,
-                &session,
-                &authoring,
-                "context",
-                "2m",
+                &catalogs, &session, &authoring, "context", "2m",
             )
             .unwrap_err()
             .code,
@@ -11558,6 +11611,7 @@ mod tests {
                 text: text.to_string(),
             }],
             role: None,
+            workspace_files: Vec::new(),
         }
     }
 
@@ -11608,6 +11662,7 @@ mod tests {
                 text: "用户提供的任意引用内容".to_string(),
             }],
             role: None,
+            workspace_files: Vec::new(),
         };
         assert_eq!(
             validate_conversation_prompt_input(&too_long_id, None)
@@ -11635,6 +11690,7 @@ mod tests {
             display_text: String::new(),
             quotes: Vec::new(),
             role: None,
+            workspace_files: Vec::new(),
         };
 
         assert_eq!(
@@ -12708,6 +12764,7 @@ mod tests {
                 display_text: "next".to_string(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-26T00:00:03Z".to_string(),

@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-22 Win10 无边框窗口补上外侧系统阴影
+
+- 根因：2026-07-28 关闭 TAO undecorated native shadow，是因为 Win10 上该路径把客户区左、右、下内收一个 frame thickness、顶部保持 0，WebView 不绘制这三侧，形成黑线。替代的 `app-outline` 是客户区内 1px 描边加 8px 内阴影，画在窗口里面，投不到桌面上。浅色窗口贴在浅色桌面上因此没有外轮廓。这是正确避开黑线之后，外轮廓仍交给了不能出界的内描边，不是要把 TAO 三侧 inset 加回来。
+- 实现：Win10 继续 `native_shadow = false`。普通窗口调用 `DwmExtendFrameIntoClientArea`，边距为左 0、右 0、上 0、下 1，让 DWM 在窗口外侧绘制四边投影，客户区仍等于窗口矩形。最大化或全屏把边距收回 0。同一 HWND 和同一边距不重复调用。Win11 仍走 TAO native shadow，不叠加这次调用。`app-outline` 内侧边界保留。
+- 证据：边距策略由 `windows_10_requests_a_one_pixel_dwm_shadow_without_tao_insets` 固定；Win10 仍关闭 TAO shadow。DWM 合成出的投影像素不能在 cargo 或 jsdom 里复现，需要在 Win10 普通窗口上查看四边阴影，并确认没有三侧黑线；最大化后阴影消失，还原后恢复。
+- 过度设计与性能评审：不新增 frame style、前端状态或持久字段。边距只在窗口创建、重建，以及最大化/还原这类尺寸状态变化时提交给 DWM；拖拽缩放命中缓存后不再调用 `SetWindowPos`。
+
 ## 2026-09-22 验收 FOLLOW_UP 不再承接范围内未满足条款
 
 - 根因：`profile/accept.md` 与 `runtime/ai-dynamic/acceptance.md` 把 `BLOCKER` 收成三类，又写「其他发现均为 `FOLLOW_UP`」和「环境或人工验收不构成阻塞」。范围内条款因此可以被解释成文案遗漏、测试没走到、入口暂时走不到或没有浏览器，然后与 PASS 并存。task-183 round-003 按这套规则把方案 §6、§7.1、§11.3、§14.1、§14.3 的 PARTIAL / MISSING 标成 `FOLLOW_UP` 并通过。这是分级契约过宽，不是模型违反角色。

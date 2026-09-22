@@ -1225,7 +1225,14 @@ impl GitSourceControlService {
     ) -> Result<GitRepositoryIdentity> {
         super::require_supported_git_version_for_service()?;
         let project = self.repository_identity(project_root)?;
-        let workspace = self.repository_identity(requested_workspace.unwrap_or(project_root))?;
+        let requested = requested_workspace.unwrap_or(project_root);
+        if same_workspace_argument(requested, project_root)
+            || same_workspace_argument(requested, &project.repo_root)
+            || same_workspace_argument(requested, &project.workspace_path)
+        {
+            return Ok(project);
+        }
+        let workspace = self.repository_identity(requested)?;
         let project_common_dir = canonical_utf8_path(&project.common_dir)?;
         let workspace_common_dir = canonical_utf8_path(&workspace.common_dir)?;
         if normalized_lock_path(&project_common_dir)?
@@ -1306,6 +1313,15 @@ impl GitSourceControlService {
 
     pub fn snapshot(&self, project_id: &str, cwd: &Utf8Path) -> Result<GitSourceControlSnapshot> {
         let identity = self.repository_identity(cwd)?;
+        self.snapshot_with_identity(project_id, &identity)
+    }
+
+    pub fn snapshot_with_identity(
+        &self,
+        project_id: &str,
+        identity: &GitRepositoryIdentity,
+    ) -> Result<GitSourceControlSnapshot> {
+        let cwd = &identity.workspace_path;
         let mut status = self.status(cwd)?;
         let refs = self.refs(cwd)?;
         let worktrees = self.worktrees(cwd)?;
@@ -1322,9 +1338,9 @@ impl GitSourceControlService {
         let lock = combined_lock_snapshot(&identity);
         let repository = GitRepositorySnapshot {
             project_id: project_id.to_string(),
-            repo_root: identity.repo_root,
-            common_dir: identity.common_dir,
-            workspace_path: identity.workspace_path,
+            repo_root: identity.repo_root.clone(),
+            common_dir: identity.common_dir.clone(),
+            workspace_path: identity.workspace_path.clone(),
             detached: status.branch.head.as_deref() == Some("(detached)"),
             unborn: head_oid.is_none(),
             head_oid,
@@ -1365,6 +1381,13 @@ impl GitSourceControlService {
     pub fn branch_picker_snapshot(&self, cwd: &Utf8Path) -> Result<GitBranchPickerSnapshot> {
         let identity = self.repository_identity(cwd)?;
         self.branch_picker_snapshot_for_identity(cwd, &identity)
+    }
+
+    pub fn branch_picker_snapshot_with_identity(
+        &self,
+        identity: &GitRepositoryIdentity,
+    ) -> Result<GitBranchPickerSnapshot> {
+        self.branch_picker_snapshot_for_identity(&identity.workspace_path, identity)
     }
 
     pub fn change_branch(
@@ -1452,8 +1475,8 @@ impl GitSourceControlService {
         cwd: &Utf8Path,
         identity: &GitRepositoryIdentity,
     ) -> Result<GitBranchPickerSnapshot> {
-        let status = self.status_without_stats(cwd)?;
-        let refs = self.refs(cwd)?;
+        let status = self.status_with_untracked(cwd, "normal")?;
+        let refs = self.local_branch_refs(cwd)?;
         let worktrees = self.worktrees(cwd)?;
         let revision = workspace_snapshot_revision(&status, &refs);
         let mut dirty_paths = HashSet::new();
@@ -1525,6 +1548,15 @@ impl GitSourceControlService {
     }
 
     fn status_without_stats(&self, cwd: &Utf8Path) -> Result<GitWorkspaceStatus> {
+        self.status_with_untracked(cwd, "all")
+    }
+
+    fn status_with_untracked(
+        &self,
+        cwd: &Utf8Path,
+        untracked: &str,
+    ) -> Result<GitWorkspaceStatus> {
+        let untracked_arg = format!("--untracked-files={untracked}");
         let output = self.runner.require(
             cwd,
             &[
@@ -1532,13 +1564,28 @@ impl GitSourceControlService {
                 "--porcelain=v2",
                 "-z",
                 "--branch",
-                "--untracked-files=all",
+                untracked_arg.as_str(),
             ],
             "git.status-failed",
         )?;
         let mut status = parse_porcelain_v2(&output.stdout)?;
         status.operation_in_progress = self.in_progress_operation(cwd)?;
         Ok(status)
+    }
+
+    fn branch_header(&self, cwd: &Utf8Path) -> Result<GitBranchStatus> {
+        let output = self.runner.require(
+            cwd,
+            &[
+                "status",
+                "--porcelain=v2",
+                "-z",
+                "--branch",
+                "--untracked-files=no",
+            ],
+            "git.status-failed",
+        )?;
+        Ok(parse_porcelain_v2(&output.stdout)?.branch)
     }
 
     fn workspace_numstat(
@@ -1566,17 +1613,22 @@ impl GitSourceControlService {
     }
 
     pub fn refs(&self, cwd: &Utf8Path) -> Result<Vec<GitRef>> {
-        let output = self.runner.require(
-            cwd,
-            &[
-                "for-each-ref",
-                "--format=%(refname)%00%(refname:short)%00%(objectname)%00%(*objectname)%00%(upstream:short)%00",
-                "refs/heads",
-                "refs/remotes",
-                "refs/tags",
-            ],
-            "git.refs-query-failed",
-        )?;
+        self.refs_under(cwd, &["refs/heads", "refs/remotes", "refs/tags"])
+    }
+
+    fn local_branch_refs(&self, cwd: &Utf8Path) -> Result<Vec<GitRef>> {
+        self.refs_under(cwd, &["refs/heads"])
+    }
+
+    fn refs_under(&self, cwd: &Utf8Path, scopes: &[&str]) -> Result<Vec<GitRef>> {
+        let mut args = vec![
+            "for-each-ref",
+            "--format=%(refname)%00%(refname:short)%00%(objectname)%00%(*objectname)%00%(upstream:short)%00",
+        ];
+        args.extend(scopes);
+        let output = self
+            .runner
+            .require(cwd, &args, "git.refs-query-failed")?;
         parse_refs(&output.stdout)
     }
 
@@ -1604,9 +1656,8 @@ impl GitSourceControlService {
     }
 
     pub fn history(&self, cwd: &Utf8Path, query: &GitHistoryQuery) -> Result<GitHistoryPage> {
-        let refs = self.refs(cwd)?;
-        let status = self.status_without_stats(cwd)?;
-        let revision = repository_revision(&status.branch, &refs);
+        let branch = self.branch_header(cwd)?;
+        let revision = history_revision(&branch);
         if let Some(expected) = query.revision.as_deref()
             && expected != revision
         {
@@ -1616,7 +1667,7 @@ impl GitSourceControlService {
             )
             .into());
         }
-        if status.branch.oid.is_none() && refs.is_empty() {
+        if branch.oid.is_none() && query.ref_name.is_none() {
             return Ok(GitHistoryPage {
                 commits: Vec::new(),
                 next_cursor: None,
@@ -1642,11 +1693,10 @@ impl GitSourceControlService {
             "--topo-order".to_string(),
             "--date-order".to_string(),
             "--parents".to_string(),
-            "--source".to_string(),
             "-z".to_string(),
             format!("--max-count={max_count}"),
             format!("--skip={skip}"),
-            "--format=%H%x00%P%x00%s%x00%b%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%S"
+            "--format=%H%x00%P%x00%s%x00%(trailers:key=Gold-Band-Internal,valueonly)%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI"
                 .to_string(),
         ];
         if let Some(ref_name) = query.ref_name.as_deref() {
@@ -1659,8 +1709,7 @@ impl GitSourceControlService {
         let output = self
             .runner
             .require(cwd, &args, "git.history-query-failed")?;
-        let labels = refs_by_oid(&refs);
-        let mut commits = parse_history(&output.stdout, &labels)?;
+        let mut commits = parse_history_summary(&output.stdout)?;
         let has_more = commits.len() > limit;
         commits.truncate(limit);
         Ok(GitHistoryPage {
@@ -1752,9 +1801,8 @@ impl GitSourceControlService {
             .into());
         }
 
-        let refs = self.refs(cwd)?;
-        let status = self.status_without_stats(cwd)?;
-        let revision = repository_revision(&status.branch, &refs);
+        let branch = self.branch_header(cwd)?;
+        let revision = history_revision(&branch);
         if let Some(expected) = query.revision.as_deref()
             && expected != revision
         {
@@ -1771,7 +1819,7 @@ impl GitSourceControlService {
                 selected_oids.push(oid);
             }
         }
-        let labels = refs_by_oid(&refs);
+        let labels = HashMap::<String, Vec<GitRefLabel>>::new();
         let metadata = self.commit_metadata_batch(cwd, &selected_oids, &labels)?;
         let worker_count = metadata.len().min(4);
         let chunk_size = metadata.len().div_ceil(worker_count);
@@ -1786,7 +1834,7 @@ impl GitSourceControlService {
                             .iter()
                             .map(|(index, commit)| {
                                 let before_oid = commit.parent_oids.first().cloned();
-                                let files = service.commit_file_changes(
+                                let files = service.commit_name_status(
                                     cwd,
                                     before_oid.as_deref(),
                                     &commit.oid,
@@ -2260,7 +2308,7 @@ impl GitSourceControlService {
         }
     }
 
-    fn commit_file_changes(
+    fn commit_name_status(
         &self,
         cwd: &Utf8Path,
         before_oid: Option<&str>,
@@ -2301,8 +2349,27 @@ impl GitSourceControlService {
         };
         merge_commit_file_changes(
             parse_commit_name_status(&name_output.stdout)?,
-            self.commit_numstat(cwd, before_oid, after_oid, &[])?,
+            HashMap::new(),
         )
+    }
+
+    fn commit_file_changes(
+        &self,
+        cwd: &Utf8Path,
+        before_oid: Option<&str>,
+        after_oid: &str,
+    ) -> Result<Vec<GitCommitFileChange>> {
+        let mut files = self.commit_name_status(cwd, before_oid, after_oid)?;
+        let stats = self.commit_numstat(cwd, before_oid, after_oid, &[])?;
+        for file in &mut files {
+            let Some(file_stats) = stats.get(&file.path) else {
+                continue;
+            };
+            file.binary = file_stats.binary;
+            file.added_lines = file_stats.added_lines;
+            file.deleted_lines = file_stats.deleted_lines;
+        }
+        Ok(files)
     }
 
     pub fn execute_mutation(
@@ -4386,6 +4453,55 @@ fn merge_commit_file_changes(
         .collect()
 }
 
+fn parse_history_summary(bytes: &[u8]) -> Result<Vec<GitCommit>> {
+    let fields = nul_fields(bytes);
+    ensure!(
+        fields.len().is_multiple_of(10),
+        "invalid git history record"
+    );
+    let mut commits = Vec::new();
+    for fields in fields.chunks_exact(10) {
+        let marker = text(&fields[3]);
+        commits.push(GitCommit {
+            oid: text(&fields[0]).trim().to_string(),
+            parent_oids: text(&fields[1])
+                .split_whitespace()
+                .map(str::to_string)
+                .collect(),
+            subject: text(&fields[2]),
+            body: String::new(),
+            author: GitSignature {
+                name: text(&fields[4]),
+                email: non_empty_text(&fields[5]),
+                timestamp: text(&fields[6]),
+            },
+            committer: GitSignature {
+                name: text(&fields[7]),
+                email: non_empty_text(&fields[8]),
+                timestamp: text(&fields[9]),
+            },
+            refs: Vec::new(),
+            source_ref: None,
+            runtime_checkpoint: marker.split_whitespace().any(|value| value == "checkpoint"),
+        });
+    }
+    Ok(commits)
+}
+
+fn history_revision(branch: &GitBranchStatus) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(branch.oid.as_deref().unwrap_or_default().as_bytes());
+    hasher.update(branch.head.as_deref().unwrap_or_default().as_bytes());
+    hasher.update(branch.upstream.as_deref().unwrap_or_default().as_bytes());
+    hasher.update(&branch.ahead.to_le_bytes());
+    hasher.update(&branch.behind.to_le_bytes());
+    hasher.finalize().to_hex().to_string()
+}
+
+fn same_workspace_argument(requested: &Utf8Path, known: &Utf8Path) -> bool {
+    requested.as_str().eq_ignore_ascii_case(known.as_str())
+}
+
 fn parse_history(bytes: &[u8], refs: &HashMap<String, Vec<GitRefLabel>>) -> Result<Vec<GitCommit>> {
     let mut commits = Vec::new();
     let fields = nul_fields(bytes);
@@ -4690,6 +4806,21 @@ mod tests {
                 .iter()
                 .any(|branch| branch.name == snapshot.current_branch.as_deref().unwrap())
         );
+    }
+
+    #[test]
+    fn branch_picker_counts_an_untracked_directory_once() {
+        let (_temp, root) = initialized_repository();
+        commit_file(&root, "tracked.txt", "one\n", "first");
+        std::fs::create_dir(root.join("scratch")).unwrap();
+        std::fs::write(root.join("scratch").join("a.txt"), "a\n").unwrap();
+        std::fs::write(root.join("scratch").join("b.txt"), "b\n").unwrap();
+
+        let snapshot = GitSourceControlService::default()
+            .branch_picker_snapshot(&root)
+            .unwrap();
+
+        assert_eq!(snapshot.dirty_file_count, 1);
     }
 
     #[test]
@@ -5142,6 +5273,8 @@ mod tests {
         assert_eq!(page.commits[0].oid, second);
         assert_eq!(page.commits[0].parent_oids, vec![first]);
         assert!(page.commits[0].runtime_checkpoint);
+        assert!(page.commits[0].body.is_empty());
+        assert!(page.commits[0].source_ref.is_none());
         assert!(page.next_cursor.is_none());
     }
 
@@ -5837,7 +5970,12 @@ mod tests {
             )
             .unwrap();
         assert_eq!(history.commits[0].subject, "feat: typed commit");
-        assert_eq!(history.commits[0].body.trim(), "body from stdin");
+        assert!(history.commits[0].body.is_empty());
+        let recorded_body = GitCommandRunner
+            .run(&root, &["log", "-1", "--format=%b"])
+            .unwrap()
+            .stdout;
+        assert_eq!(recorded_body, "body from stdin");
     }
 
     #[test]

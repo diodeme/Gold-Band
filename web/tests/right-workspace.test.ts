@@ -5,6 +5,7 @@ import {
   agentTranscriptResourceKey,
   CONVERSATION_WORKSPACE_LRU_LIMIT,
   ConversationWorkspaceStore,
+  conversationAssetWorkspaceResourceKey,
   conversationDirectoryWorkspaceResourceKey,
   conversationRunWorkspaceResourceKey,
   createHiddenPromptSectionWorkspaceResource,
@@ -80,6 +81,13 @@ describe('right workspace resource model', () => {
     );
     expect(acpAttemptWorkspaceResourceKey('raw-frames', locator('agent-a'))).toBe(
       'raw-frames:project-1:task-uuid-1:run-1:round-1:node-1:attempt-1:::agent-a',
+    );
+    const taskInputPath = 'task-inputs/preview.png';
+    expect(conversationAssetWorkspaceResourceKey('input-attachment', locator('attempt-a'), 'preview.png', taskInputPath)).toBe(
+      'conversation-asset:input-attachment:project-1:task-uuid-1:task-inputs/preview.png',
+    );
+    expect(conversationAssetWorkspaceResourceKey('input-attachment', locator('attempt-b'), 'preview.png', taskInputPath)).toBe(
+      conversationAssetWorkspaceResourceKey('input-attachment', locator('attempt-a'), 'preview.png', taskInputPath),
     );
     expect(hiddenPromptSectionWorkspaceResourceKey({
       ...locator('agent-a'),
@@ -383,7 +391,12 @@ describe('right workspace resource model', () => {
   it('promotes draft tabs and their content locators when a conversation is created', () => {
     const store = new ConversationWorkspaceStore();
     const draft = createDraftConversationWorkspaceScope('project-1');
-    const conversation = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', runId: 'run-1' });
+    const conversation = createConversationWorkspaceScope({
+      projectId: 'project-1',
+      taskId: 'task-1',
+      taskUuid: 'task-uuid-1',
+      runId: 'run-1',
+    });
     const attachment = {
       id: 'attachment-1',
       name: 'preview.png',
@@ -392,6 +405,16 @@ describe('right workspace resource model', () => {
       previewUrl: 'blob:preview',
       source: 'paste' as const,
     };
+    const persistedKey = conversationAssetWorkspaceResourceKey('input-attachment', {
+      projectId: 'project-1',
+      taskId: 'task-1',
+      taskUuid: 'task-uuid-1',
+      runId: 'run-1',
+      roundId: 'round-later',
+      nodeId: 'node-later',
+      attemptId: 'attempt-later',
+      branchId: 'branch-later',
+    }, attachment.name, 'task-inputs/preview.png');
     const draftAttachment: RightWorkspaceResource = {
       kind: 'draft-attachment',
       key: draftAttachmentWorkspaceResourceKey(draft.key, attachment.id),
@@ -410,17 +433,29 @@ describe('right workspace resource model', () => {
     store.promoteDraft(draft, conversation);
 
     expect(store.has(draft)).toBe(false);
-    expect(store.restore(conversation)).toMatchObject({
+    const promoted = store.restore(conversation);
+    expect(promoted).toMatchObject({
       tabs: [
         { key: agent('draft-agent').key, scopeKey: conversation.key },
         {
-          key: draftAttachmentWorkspaceResourceKey(conversation.key, attachment.id),
+          kind: 'conversation-asset',
+          key: persistedKey,
           scopeKey: conversation.key,
-          attachment,
+          assetKind: 'input-attachment',
+          name: attachment.name,
+          path: 'task-inputs/preview.png',
+          locator: {
+            projectId: 'project-1',
+            taskId: 'task-1',
+            taskUuid: 'task-uuid-1',
+            runId: 'run-1',
+          },
         },
       ],
-      activeTabKey: draftAttachmentWorkspaceResourceKey(conversation.key, attachment.id),
+      activeTabKey: persistedKey,
     });
+    expect(promoted.tabs.some((tab) => tab.kind === 'draft-attachment')).toBe(false);
+    expect(JSON.stringify(promoted)).not.toContain('blob:preview');
     expect(store.peekShellState(conversation).requestedOpen).toBe(true);
   });
 

@@ -134,4 +134,44 @@ describe('conversation asset workspace panel', () => {
       await act(async () => root.unmount());
     }
   });
+
+  it('reloads a task input image from the persisted file after the panel is remounted', async () => {
+    const content = {
+      title: 'image.png',
+      kind: 'input-attachment',
+      content: 'data:image/png;base64,AQIDBA==',
+      metadata: { mimeType: 'image/png' },
+    };
+    api.showConversationAttachment.mockResolvedValue(content);
+    const inputResource: ConversationAssetWorkspaceResource = {
+      ...resource,
+      key: 'conversation-asset:input-attachment:project-1:task-1:task-inputs/image.png',
+      title: 'image.png',
+      assetKind: 'input-attachment',
+      name: 'image.png',
+      path: 'task-inputs/image.png',
+    };
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(<ConversationAssetWorkspacePanel resource={inputResource} />);
+      });
+      await act(async () => root.render(<div />));
+      await act(async () => {
+        root.render(<ConversationAssetWorkspacePanel resource={inputResource} />);
+      });
+
+      expect(api.showConversationAttachment).toHaveBeenCalledTimes(2);
+      expect(api.showConversationAttachment).toHaveBeenNthCalledWith(2, 'project-1', 'task-1', 'image.png');
+      expect(api.showConversationMessageAttachment).not.toHaveBeenCalled();
+      const image = container.querySelector<HTMLElement>('[data-testid="workspace-image"]');
+      expect(image?.dataset.actionPreviewUrl).toBe(content.content);
+      expect(image?.dataset.actionPreviewUrl).not.toContain('blob:');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
 });

@@ -15,14 +15,17 @@ use gold_band::acp::commands::{
     scan_native_skill_commands,
 };
 use gold_band::acp::events::current_timestamp;
+use gold_band::acp::session_config::{
+    merge_doctor_authoring_capabilities, upsert_session_authoring_model_bound_catalog,
+};
 use gold_band::app::ActiveMetricTurn;
 use gold_band::app::observability::{ExecutionObservabilityState, RuntimeLifecycleBus};
 use gold_band::app::{
     App, NotificationDedup, ProviderDoctorProbe, RuntimeLifecycleEvent, RuntimeRecoveryCoordinator,
 };
 use gold_band::config::{
-    ManagedAgentConfig, ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig, SettingsConfig,
-    StateConfig,
+    DiagnosticError, ManagedAgentConfig, ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig,
+    SettingsConfig, StateConfig,
 };
 use gold_band::process::recover_persisted_process_group;
 use gold_band::provider::DoctorResult;
@@ -344,10 +347,12 @@ pub struct DesktopState {
         Arc<Mutex<std::collections::HashMap<String, ExecutionObservabilityState>>>,
     active_metric_turns: Arc<Mutex<std::collections::HashMap<String, ActiveMetricTurn>>>,
     runtime_recovery: Arc<RuntimeRecoveryCoordinator>,
-    /// MCP 服务器健康状态缓存（启动后台线程 + 手动诊断共同写入，列表读取）。
-    mcp_health: Mutex<BTreeMap<String, gold_band::config::McpServerState>>,
+    /// MCP 最近一次显式配置诊断结果；不代表正式会话进程状态。
+    mcp_health: Mutex<BTreeMap<String, gold_band::config::McpServerDiagnosticState>>,
     /// 进程级心跳上报器（由生命周期总线驱动六类 reason）。
     heartbeat_reporter: Arc<crate::metrics::heartbeat::HeartbeatReporter>,
+    im_runtime_initialization: Mutex<()>,
+    im_runtime: Mutex<Option<Arc<crate::im_runtime::DesktopImRuntime>>>,
 }
 
 impl DesktopState {
@@ -386,7 +391,43 @@ impl DesktopState {
             heartbeat_reporter: crate::metrics::heartbeat::HeartbeatReporter::new(
                 env!("CARGO_PKG_VERSION").to_string(),
             ),
+            im_runtime_initialization: Mutex::new(()),
+            im_runtime: Mutex::new(None),
         }
+    }
+
+    pub fn initialize_im_runtime(
+        &self,
+        create: impl FnOnce() -> Result<Option<Arc<crate::im_runtime::DesktopImRuntime>>>,
+    ) -> Result<(Option<Arc<crate::im_runtime::DesktopImRuntime>>, bool)> {
+        let _initialization = self
+            .im_runtime_initialization
+            .lock()
+            .map_err(|_| anyhow::anyhow!("IM runtime initialization lock poisoned"))?;
+        let slot = self
+            .im_runtime
+            .lock()
+            .map_err(|_| anyhow::anyhow!("IM runtime lock poisoned"))?;
+        if let Some(runtime) = slot.as_ref() {
+            return Ok((Some(runtime.clone()), false));
+        }
+        drop(slot);
+        let Some(runtime) = create()? else {
+            return Ok((None, false));
+        };
+        let mut slot = self
+            .im_runtime
+            .lock()
+            .map_err(|_| anyhow::anyhow!("IM runtime lock poisoned"))?;
+        *slot = Some(runtime.clone());
+        Ok((Some(runtime), true))
+    }
+
+    pub fn im_runtime(&self) -> Option<Arc<crate::im_runtime::DesktopImRuntime>> {
+        self.im_runtime
+            .lock()
+            .ok()
+            .and_then(|runtime| runtime.clone())
     }
 
     /// 发布真实用户活动事实；heartbeat 由异步 metrics subscriber 投影。
@@ -421,10 +462,10 @@ impl DesktopState {
         self.runtime_recovery.clone()
     }
 
-    /// 读取 MCP 健康状态缓存快照（供列表 VM 附加展示）。
+    /// 读取 MCP 最近一次显式配置诊断结果（供列表 VM 附加展示）。
     pub fn mcp_health_snapshot(
         &self,
-    ) -> Result<BTreeMap<String, gold_band::config::McpServerState>> {
+    ) -> Result<BTreeMap<String, gold_band::config::McpServerDiagnosticState>> {
         Ok(self
             .mcp_health
             .lock()
@@ -432,16 +473,24 @@ impl DesktopState {
             .clone())
     }
 
-    /// 写入/更新单个 MCP 服务器的健康状态（启动后台线程与诊断命令共用）。
+    /// 写入/更新单个 MCP 服务器最近一次显式配置诊断结果。
     pub fn record_mcp_health(
         &self,
         id: String,
-        state: gold_band::config::McpServerState,
+        state: gold_band::config::McpServerDiagnosticState,
     ) -> Result<()> {
         self.mcp_health
             .lock()
             .map_err(|_| anyhow::anyhow!("mcp health lock poisoned"))?
             .insert(id, state);
+        Ok(())
+    }
+
+    pub fn clear_mcp_health(&self, id: &str) -> Result<()> {
+        self.mcp_health
+            .lock()
+            .map_err(|_| anyhow::anyhow!("mcp health lock poisoned"))?
+            .remove(id);
         Ok(())
     }
 
@@ -754,6 +803,39 @@ impl DesktopState {
         Ok(())
     }
 
+    pub fn upsert_agent_authoring_model_bound_catalog(
+        &self,
+        agent_id: &ManagedAgentId,
+        live_config_options: &serde_json::Value,
+    ) -> Result<bool> {
+        let _commit_guard = self.agent_config_diagnostic_commit_guard()?;
+        let snapshot = {
+            let mut diagnostics = self
+                .agent_diagnostics
+                .lock()
+                .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+            let Some(current) = diagnostics.get(agent_id).cloned() else {
+                return Ok(false);
+            };
+            let Some(capabilities) = upsert_session_authoring_model_bound_catalog(
+                current.capabilities.as_ref(),
+                live_config_options,
+            ) else {
+                return Ok(false);
+            };
+            diagnostics.insert(
+                agent_id.clone(),
+                ProviderDiagnosticSnapshot {
+                    capabilities: Some(capabilities),
+                    ..current
+                },
+            );
+            diagnostics.clone()
+        };
+        self.persist_agent_diagnostics(&snapshot)?;
+        Ok(true)
+    }
+
     pub fn agent_diagnostics(&self) -> Result<BTreeMap<ManagedAgentId, AgentDiagnosticState>> {
         Ok(self
             .agent_diagnostics
@@ -1040,11 +1122,31 @@ impl DesktopState {
                 .agent_diagnostics
                 .lock()
                 .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+            let diagnostic = if diagnostic.available {
+                let capabilities = merge_doctor_authoring_capabilities(
+                    diagnostics
+                        .get(agent_id)
+                        .and_then(|previous| previous.capabilities.as_ref()),
+                    diagnostic
+                        .capabilities
+                        .clone()
+                        .unwrap_or(serde_json::Value::Null),
+                );
+                ProviderDiagnosticSnapshot {
+                    capabilities: (!capabilities.is_null()).then_some(capabilities),
+                    ..diagnostic
+                }
+            } else {
+                diagnostic
+            };
             diagnostics.insert(agent_id.clone(), diagnostic.clone());
             diagnostics.clone()
         };
         self.persist_agent_diagnostics(&snapshot)?;
-        Ok(diagnostic)
+        snapshot
+            .get(agent_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("agent diagnostic snapshot missing after persist"))
     }
 
     pub fn refresh_all_agent_diagnostics(
@@ -1371,7 +1473,7 @@ impl DesktopState {
 fn diagnostic_state_from_result(result: DoctorResult) -> AgentDiagnosticState {
     ProviderDiagnosticSnapshot {
         available: result.available,
-        reason: result.reason,
+        error: result.error,
         checked_at: current_timestamp(),
         capabilities: result.capabilities,
     }
@@ -1513,11 +1615,15 @@ mod tests {
     use std::sync::{Arc, mpsc};
     use std::time::Duration;
 
-    fn doctor_probe(available: bool, reason: Option<&str>) -> ProviderDoctorProbe {
+    fn doctor_probe(available: bool, code: Option<&str>) -> ProviderDoctorProbe {
         ProviderDoctorProbe {
             doctor: DoctorResult {
                 available,
-                reason: reason.map(str::to_string),
+                error: code.map(|code| DiagnosticError {
+                    code: code.to_string(),
+                    params: serde_json::json!({}),
+                    raw: None,
+                }),
                 capabilities: None,
             },
             commands: Vec::new(),
@@ -2220,6 +2326,95 @@ mod tests {
     }
 
     #[test]
+    fn session_live_catalog_upserts_authoring_cache_and_skips_unchanged() {
+        let (_root, state) = desktop_state();
+        let agent_id = ManagedAgentId::from_str("claude-acp").unwrap();
+        {
+            let mut diagnostics = state.agent_diagnostics.lock().unwrap();
+            diagnostics.insert(
+                agent_id.clone(),
+                ProviderDiagnosticSnapshot {
+                    available: true,
+                    error: None,
+                    checked_at: "100Z".into(),
+                    capabilities: Some(serde_json::json!({
+                        "configOptions": [{
+                            "id": "model",
+                            "category": "model",
+                            "currentValue": "grok-4.6",
+                            "options": [
+                                { "value": "grok-4.6" },
+                                { "value": "gpt-5.6-luna" }
+                            ]
+                        }, {
+                            "id": "fast",
+                            "category": "model_config",
+                            "options": [{ "value": "false" }, { "value": "true" }]
+                        }]
+                    })),
+                },
+            );
+        }
+
+        let luna = serde_json::json!([{
+            "id": "model",
+            "category": "model",
+            "currentValue": "gpt-5.6-luna",
+            "options": [{ "value": "gpt-5.6-luna" }]
+        }, {
+            "id": "context",
+            "category": "model_config",
+            "name": "Context",
+            "options": [{ "value": "1m" }]
+        }]);
+        assert!(
+            state
+                .upsert_agent_authoring_model_bound_catalog(&agent_id, &luna)
+                .unwrap()
+        );
+        assert!(
+            !state
+                .upsert_agent_authoring_model_bound_catalog(&agent_id, &luna)
+                .unwrap()
+        );
+
+        let diagnostic = state
+            .agent_diagnostics()
+            .unwrap()
+            .get(&agent_id)
+            .cloned()
+            .unwrap();
+        let catalogs = diagnostic.capabilities.as_ref().unwrap()["modelBoundCatalogs"].clone();
+        assert!(catalogs.get("grok-4.6").is_some());
+        assert_eq!(
+            catalogs["gpt-5.6-luna"][0]["id"],
+            serde_json::json!("context")
+        );
+        let options = diagnostic.capabilities.as_ref().unwrap()["configOptions"]
+            .as_array()
+            .unwrap();
+        assert_eq!(options[0]["currentValue"], serde_json::json!("gpt-5.6-luna"));
+        assert_eq!(
+            options[0]["options"],
+            serde_json::json!([
+                { "value": "grok-4.6" },
+                { "value": "gpt-5.6-luna" }
+            ])
+        );
+        assert_eq!(options[1]["id"], serde_json::json!("context"));
+        assert!(options.iter().all(|option| option["id"] != "fast"));
+        assert_eq!(diagnostic.checked_at, "100Z");
+        assert!(
+            !state
+                .upsert_agent_authoring_model_bound_catalog(
+                    &ManagedAgentId::from_str("codex-acp").unwrap(),
+                    &luna
+                )
+                .unwrap()
+        );
+    }
+
+    #[test]
     fn background_doctor_retries_once_after_an_unavailable_result() {
         let mut attempts = 0;
         let result = doctor_probe_with_retry(DoctorRetryPolicy::RetryOnce, |_| {
@@ -2257,7 +2452,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(calls, 1);
-        assert_eq!(result.doctor.reason.as_deref(), Some("deadline expired"));
+        assert_eq!(
+            result
+                .doctor
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("deadline expired")
+        );
     }
 
     #[test]
@@ -2274,7 +2476,14 @@ mod tests {
 
         assert_eq!(attempts, 2);
         assert!(!result.doctor.available);
-        assert_eq!(result.doctor.reason.as_deref(), Some("second"));
+        assert_eq!(
+            result
+                .doctor
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("second")
+        );
     }
 
     #[test]
@@ -2301,7 +2510,14 @@ mod tests {
 
         assert_eq!(attempts, 1);
         assert!(!result.doctor.available);
-        assert_eq!(result.doctor.reason.as_deref(), Some("manual failure"));
+        assert_eq!(
+            result
+                .doctor
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("manual failure")
+        );
     }
 
     #[test]
@@ -2499,7 +2715,10 @@ mod tests {
             read_json(&state.app().unwrap().paths.agent_diagnostics_file()).unwrap();
         assert!(diagnostics[&"codebuddy-code".parse().unwrap()].available);
         assert_eq!(
-            diagnostics[&"codex-acp".parse().unwrap()].reason.as_deref(),
+            diagnostics[&"codex-acp".parse().unwrap()]
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
             Some("acp.doctor-timeout")
         );
     }

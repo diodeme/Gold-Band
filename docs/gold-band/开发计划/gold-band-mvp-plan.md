@@ -1,5 +1,453 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-20 记录 Cursor ACP `session/cancel` 回滚已接受 user prompt
+
+- 根因：Cursor ACP 在 `session/prompt` 已被消费（思考/工具已开始）后收到 `session/cancel`，后续同一 session 的模型上下文不再包含该 user prompt。ACP cancel 只应停止前台生成，Cursor IDE Stop 也保留用户消息；Gold Band timeline 同样保留 cancelled `goldBandPrompt`。这是 Cursor adapter 把整轮（含已接受的用户消息）rewind，不是 Gold Band resume 注入失败。半截 tool call 缺 result 时，上游正确收尾是保留 user message 并补 cancelled 工具结果。
+- 记录：不改 Gold Band 实现。权威说明写入 `docs/gold-band/产品设计文档/provider/adapter.md`，并在 prompt-bundle、conversational-runtime、runtime/control 交叉引用。`UserMessage` 追问仍不重注 hidden context；若日后补偿，只允许下一次 runtime-controlled continue 重新注入最新 hidden context。
+- 证据：`task-083` `dev/attempt-002` `acp.raw.jsonl`。`session/load` 恢复 `9e98b7f4-20a2-4ad2-90de-ab229fb4e65e` 后 continue hidden context 为 attempt-002 / review failure；当轮思考已使用。cancel 后追问回落到 attempt-001 旧 hidden context（前序链只有 plan → current dev）。
+- 过度设计与性能评审：仅文档记录上游缺陷，无新 identity、状态机、重试或 I/O。
+
+## 2026-09-20 AUTO 追问不得把已回滚的作者态 config 再 apply
+
+- 根因：Direct 运行中追问走 prompt queue，不再 `apply_session_mode_options`。AUTO / AI-DYNAMIC 追问走 runtime continue，把冻结 `config_options` `extend` 进 snapshot；snapshot 被第一次 Gemini 省略表清空后，`extend` 删不掉 authoring 的 `reasoning=xhigh`，每次 continue 再 strip 并刷 `acp.session-config-rolled-back`。派发新节点是新的 `session/new`，同样带着冻结 leftover。这是正确设计（continue 只用显式覆盖）实现不完整，不是缺新 identity。
+- 实现：invocation 在 continue 时只传 snapshot `configOptionOverrides`；`session/new` 按所选模型最后观测的 `modelBoundCatalogs[modelId]` 静默 retain，与 Direct composer normalize 对齐。未观测模型仍带作者态进活目录，由 `session/new` 通知一次。
+- 证据：修复前 `continue_does_not_reapply_authoring_bound_options_after_snapshot_rollback`、`continue_keeps_snapshot_overrides_instead_of_authoring_leftovers`、`new_session_silently_drops_bound_options_omitted_from_observed_model_catalog` 稳定失败；修复后与「未观测模型仍保留作者态」一并转绿。
+- 过度设计与性能评审：复用 snapshot overrides 与作者态 catalog，无新 identity。retain 按有界 select 列表点查；诊断 map 按 provider 点读，不扫会话历史。
+
+## 2026-09-20 工作流保存不得用 Doctor 当前表否定所选模型绑定项
+
+- 根因：Inspector 菜单按 `modelBoundCatalogs[modelId]` 画出 Grok 的 effort / Fast，这是既定作者态投影。`validateWorkflowForSave` 却只查 Doctor 当前 `configOptions`（当时是 Luna 的 reasoning / context），把菜单里可选的值报成「不属于当前 Agent」。属于正确设计下编辑器保存校验覆盖不完整，不是用户选了非法值；`validate_and_inject` 已对绑定类 option skip fail-closed。
+- 实现：保存校验与 Inspector 共用所选模型投影目录。投影中有该项则值必须在列表中；投影没有但属于 `thought_level` / `model_config` 时与注入对齐，不 fail-closed，由 `session/new` remap 或回滚。同步对话框标签也读同一份投影。
+- 证据：修复前 `accepts Grok effort and fast when Doctor current table belongs to another model` 稳定失败，报 effort / fast 不属于当前 Agent；修复后该测试与「投影里的非法 effort 仍拒绝」一并转绿。
+- 过度设计与性能评审：复用已有 `authoringConfigOptionsForModel`，无新 identity。按节点绑定的有界 option map 点查，不扫历史。
+
+## 2026-09-20 会话切到未观测模型后 Context 可点却报不可用
+
+- 根因：切模型后 live `configOptions` 仍属 Grok，composer 按作者态 `modelBoundCatalogs[luna]` 画出 Context，这是既定投影。`set_acp_session_config_option` 却仍用 Grok 活目录校验，属于正确设计下写入路径覆盖不完整，不是用户选了非法值。
+- 实现：绑定项写入与展示共用投影：活目录属于所选模型时用活目录，否则本会话 map → 作者态 map。Doctor 当前表仍不得作为另一模型绑定项的写入目录。override 写入 snapshot，下次 prompt 再按活目录 apply / remap / 回滚。
+- 证据：修复前 `selected_luna_context_is_available_from_authoring_while_live_table_is_still_grok` 稳定失败；修复后该测试与「未切模型时 Doctor 当前表 Context 仍拒绝」一并转绿。
+- 过度设计与性能评审：复用已有 catalog 查找，无新 identity。按 `modelId` 点查，map 有界。
+
+## 2026-09-20 ACP 切模型 remap 源、会话权威与执行选项指纹
+
+- 根因：thought remap 拿 Doctor/当前活目录当源表，Grok `fast=false`（`model_config`）被当成未知 leftover，接到 Fable `thinking=Off`。会话栏又在前端本地计算 override，并用残留表启发式补洞。`ai_dynamic` 的 `modelBoundOverrides` 漏进 scheduled content fingerprint。这是实现把 remap 源、会话权威和执行选项边界画错，不是缺一套新 identity。
+- 实现：remap 源是离开模型的 bound catalog；未知 leftover 仅当源项是 `thought_level` 才按档位换线；目标 thought 已有合法值则不覆盖。省略活目录时 runtime 先还原本会话 `modelBoundCatalogs`，再读作者态 catalog，不把作者态 stamp 进本会话观测。已建立会话切模型由 Rust snapshot 收敛 `configOptionOverrides` / `modelBoundOverrides`；前端只乐观改模型 id。按模型记忆是离开时覆盖写入、首次访问从当前值种子、已有空槽还原为空。fingerprint 排除 `modelBoundOverrides` 以及 bootstrap/acceptance 的 config/overrides。AUTO dynamic 提交丢掉顶层 `modelBoundOverrides`。会话内点选 thought / `model_config` 按所选模型的投影目录校验（活目录属于该模型时用活目录，否则本会话 map → 作者态 map）；不得用上一模型活目录把 Luna Context 报成不可用。
+- 证据：修复前 Web 的 Fast Off 串线、overwrite 守卫、dynamic 提交与 Rust 的 Fast Off、overwrite、retarget 作者态、fingerprint 排除稳定失败；同一组测试修复后转绿。切到未观测 Luna 时 Context 写入被 Grok 活目录拒绝的契约测试先红后绿。
+- 过度设计与性能评审：沿用已有 catalog / override map，不新增 identity 或状态机。remap 与 fingerprint 过滤按 option/key 有界扫描；作者态 catalog 只读 `agent-diagnostics.json` 中当前 provider 的 capabilities，不扫会话历史。
+
+## 2026-09-20 Windows 原生窗口无响应修复
+
+- 根因：tao `0.35.3` 的 Windows 键盘/IME 处理在持有输入状态或布局缓存锁时调用 `PeekMessageW`。该 Win32 API 可同步重入窗口过程，导致同一 UI 线程重复获取非递归锁；现场生产包 `0.15.2` 已复现为 `parking_lot::RawMutex::lock_slow -> tao::public_window_callback_inner -> PeekMessageW`，并有同版本 WER AppHang 历史证据。
+- 实现：根项目通过 `[patch.crates-io]` 固定 tao 上游提交 `c704261c519c58cfdd0bc2d58ba24e06a0b71c92`。补丁把键盘/IME 消息 peek 移到锁外，再把已读取结果传入输入构造，并缩短布局缓存临界区；不新增业务状态、队列或延迟，也不修改 Gold Band 的 WebView/overlay API。
+- 验证：`Cargo.lock` 必须记录 tao 和 tao-macros 的固定 git revision；新增 `tests/tao_windows_message_reentrancy.rs`，其中源码契约测试验证 peek 与锁的顺序，Windows 子进程测试并发发送两个 `WM_KEYDOWN`，父进程以 10 秒超时将旧版死锁转化为可审计失败；命令 `cargo test --test tao_windows_message_reentrancy --locked --offline -- --nocapture` 已通过。随后执行 workspace Rust 单元测试和 Windows 生产构建。原始问题不在普通业务接口层，修复前自动复现会永久阻塞测试进程，因此保留现场非侵入式 dump、WER bucket 和上游同根因回归证据作为根因证据。
+- 回归场景：地址栏输入、中文 IME、地址建议 overlay 开关、子 WebView 聚焦切换、最小化/恢复和窗口缩放；每项都需确认 UI 消息泵继续响应。
+
+## 2026-09-19 截断 Tooltip 边沿闪烁：命中层是 Popper wrapper
+
+- 根因：只读 Tooltip 的开关绑在触发器 `pointerEnter/Leave` 上，但 Radix Popper 生成的同尺寸 `data-radix-popper-content-wrapper` 默认 `pointer-events: auto`。只给 `TooltipContent` 加 `pointer-events-none` 后，命中从内容换成 wrapper，指针停在模型选择 pill 上沿仍会打开→抢走命中→关闭→再打开。截断全文才显示的设计成立，实现把“不抢命中”只落到内容节点，覆盖不完整。复合选择器还把 Tooltip 锚在内部截断文字上，tips 底边压进整颗按钮上沿，重叠带更容易触发。
+- 实现：全局 CSS 让包含 `[data-slot=tooltip-content]` 的 Popper wrapper `pointer-events: none`；内容层保持默认 `none`。需要滚动的引用条/角色标签继续在 `TooltipContent` 上 `pointer-events-auto`。模型与权限选择器把 `TooltipTrigger` 收到整颗 `DropdownMenuTrigger`。诊断帮助链接仍走 Popover。
+- 证据：修复前契约测试稳定红于 wrapper 无 `pointer-events: none`、以及 trigger 包在截断 span 上；修复后同一测试转绿。真实浏览器复现：停在上沿 2 秒循环 11 次；给 wrapper 注入 `none` 后只 open 一次。jsdom 不能做真实命中，不编假闪烁用例。
+- 过度设计与性能评审：一条 CSS 契约加 asChild 锚点调整，无新状态、delay 或监听。滚动 opt-in 仍走现有 class 覆盖。Dropdown/Popover wrapper 不在选择器内。
+
+## 2026-09-19 会话切模型残留表与 Fast 串到 thinking
+
+- 根因：切模型命令把 `configOptions.model.currentValue` 改成目标模型，绑定行仍是 Grok。投影把「currentValue 对上且有绑定行」当成新活目录，Luna Context 先从作者态缓存画出、命令回写后又消失。thought remap 被画成「缺 id 就按 value 贴到第一条 thought」，Grok `fast=false`（`model_config`）接到 Fable `thinking=Off`。属于实现把活目录所有权和 remap 契约画宽了。
+- 实现：残留表若匹配另一模型缓存，继续用目标模型的 `modelBoundCatalogs`。`set_acp_session_model` 不再改挂 live `currentValue`。remap 要求源和目标都是 `thought_level`，再按档位接到任一仍有该档的 thought 项；非该 category 只比 option id。
+- 证据：前端覆盖残留 Grok 表仍画 Luna Context，Grok Fast Off 不进 Fable thinking，以及 Luna `reasoning=high` 接到 Fable `effort` 而不是第一条 `thinking`；Rust 覆盖 Fast 回滚为不指定、`reasoning=high` 落到 `effort`。
+- 过度设计与性能评审：只收紧已有投影和 remap 条件，无新 identity。绑定行 id 列表比对有界。
+
+## 2026-09-19 会话栏与作者态共用 `modelBoundCatalogs`，已选值仍按会话隔离
+
+- 根因：能力目录按 `(agent, modelId)` 观测，作者态已经有 Grok 的 thought/Fast。会话栏却只读本会话 snapshot，这次会话还没 round-trip 该模型时 composer 画不出绑定项。这是实现把「活目录优先、覆盖不写回主页」画得过宽，不是要再复制一套 identity。
+- 实现：同一 Agent 的 `modelBoundCatalogs[modelId]` 共用。会话投影顺序为活目录（所选模型且带绑定行）→ 本会话缓存 → 作者态缓存；未命中仍带着当前表去发，不把省略表写成目标模型。切模型 retain 也读这份共用目录，但不把作者态目录 stamp 进本会话 map。`modelBoundOverrides` 仍按会话 snapshot 隔离。
+- 证据：前端覆盖未观测模型投影作者态 Grok 目录、活目录省略绑定行时回退作者态、活目录带绑定行时不被作者态加行、本会话缓存优先于作者态、较新 Doctor 当前表不盖住作者态 Grok 目录；Rust 覆盖切到本会话未观测模型时按作者态目录保留 Extra High，且不写入本会话 `modelBoundCatalogs`。
+- 过度设计与性能评审：不新增 map 或 identity。Agent 上已有 catalog，会话观测本来就 upsert。查找按 `modelId`，map 有界，切一次模型一次投影。
+
+## 2026-09-19 ACP `end_turn` 后迟到 Provider 事件污染下一轮 prompt
+
+- 根因与形成路径：历史设计把 `session/prompt` response watermark + bounded quiet drain 作为当前 prompt 的 terminal 收敛，这对响应前和短尾部通知成立；但 ACP `session/update` 没有 prompt request id，Provider 仍可能在 `end_turn` 后数分钟继续发送同一 session 的 thought/tool/message。attached runtime 复用同一 session route 时，下一轮 prompt admission 直接消费这些通知，导致旧流进入新 prompt。Direct durable prompt queue 和 provider `begin_prompt` 锁仍保证不会并发发送两个 `session/prompt`，问题是 session route 与 prompt 生命周期的实现边界不完整，不是“允许并发输入”的设计缺陷。
+- 实现：新增运行期 `AwaitingPromptAdmission` 阶段。attached session reuse 在配置/新 prompt 之间隔离并消费已有 route backlog；阶段内 session update 不写 Timeline、prompt output、命令元数据或 active turn。对按 prompt 独立的稳定 `messageId`、`toolCallId` 等 provider item identity 建立 late-event fence；session 级可复用的 `plan` 投影不加入永久 fence。发出新 `session/prompt` 后命中 fence 的旧 stream 尾部继续抑制，新的 provider identity 仍按既有 `AwaitingTurnStart -> Live` 规则接入。首次 `session/new`、显式 restore/replay 和 Direct queue 不改语义；无稳定 identity 的迟到通知只保留 Raw 审计，不能用固定延时猜测归属。
+- 红测与绿测：新增 `attached_session_quarantines_events_seen_before_prompt_admission`，修复前在 admission 阶段错误返回“接受”（稳定失败）；同一测试修复后转绿。新增尾部测试覆盖“旧 stream 在新 prompt 发出后继续到达”仍被抑制、新 stream identity 正常进入当前轮次，以及 session 级 `plan` identity 不会阻塞下一轮合法计划更新。现场 raw 证据为 `feedback-15-session` 中 request id=6 返回 `end_turn` 后约 177 秒仍有 `session/update`，request id=10 已发出时旧 `messageId` 的尾部继续到达。
+- 验收：本次新增 3 项 admission fence 测试、attached-session 相关 4 项和 prompt-terminal 相关 10 项均通过。一次 152 项 client 回归中 149 项通过、1 项既有 doctor fixture 忽略、2 项既有 doctor fixture 因未到达 `initialize/session/new` 而失败；这 2 项与本次 session reuse 代码路径无关，需单独修复 fixture 后再作为全量绿测。
+- 过度设计与性能评审：复用现有 session route、phase 和 provider stable identity，不新增持久字段、数据库、网络请求、无限等待或第二条输入队列。quarantine 集合只覆盖当前 admission backlog 的稳定 identity；正常 prompt 热路径仍使用现有 128 帧、约 4 MiB、25ms 有界 drain，Timeline/raw 不做全量扫描。attached admission 仅增加一次已有 route 的非阻塞消费，性能成本与 backlog 上限匹配。
+
+## 2026-09-19 回滚分割线横线改用主题 border
+
+- 根因：两侧横线用了 `bg-border/70`，浅色会话底上接近消失。分割线语义应对齐主题 `border`，不是另造一条更淡的线。
+- 实现：横线改为 `bg-border`，与 shadcn Separator 同一 token；不硬编码颜色。
+- 证据：前端契约测试固定 `bg-border` 且不含透明度后缀。
+- 过度设计与性能评审：只改已有 utility class，无新 token、状态或热路径。
+
+## 2026-09-19 切模型按 (agent/session, modelId) 记住 thought / model_config
+
+- 根因：`thought_level` / `model_config` 属于所选模型。作者态和会话却共用一份当前 `configOptionOverrides`，切到 Mini 时 Extra High 被 strip，再切回 Grok 找不回来。这是实现不完整：目录已经按模型缓存，已选值没有。
+- 实现：作者态 `modelBoundOverrides[modelId]` 记在 Direct/AUTO/工作流绑定上。会话 map 只在 snapshot，切模型先保存离开模型、再按目标模型目录还原；Mini 空槽必须留下，apply 只写当前活模型的槽，不得把 Mini 回滚写进 Grok。`session/new` 只种子当前活模型，不拷贝 Direct map，也不写回主页。
+- 证据：Rust 覆盖 Grok Extra High → Mini → Grok、snapshot 切模型不覆盖 Grok 槽；前端覆盖 Direct/AUTO submit 保留空 Mini 槽、会话 live merge 保留 session map、switch helper 还原 Extra High。
+- 过度设计与性能评审：复用现有 override map，不新增 identity 或状态机。map 以用户切过的模型数为界，每槽是有界 select 覆盖，切模型一次线性 retain。
+
+## 2026-09-19 回滚分割线先缩短两侧横线再换行
+
+- 根因：`systemNotice` 文案写了 `max-w-[min(40rem,calc(100%-3rem))]`，会话轨最宽 56rem 时文案在 40rem 处换行，两侧横线仍很长。属于正确的分割线设计、实现把可读宽度截得过早，不是数据或状态缺陷。
+- 实现：去掉文案固定 max-width。横线 `flex-1 min-w-6` 吃剩余宽度并可缩到 1.5rem；文案 `min-w-0` 保持内容优先宽度，只有横线到达最低长度后才换行。
+- 证据：前端契约测试固定无 `max-w-`、横线 `min-w-6 flex-1`、文案与根节点 `min-w-0`。
+- 过度设计与性能评审：只改已有 flex 类，无新状态、测量或 ResizeObserver。布局由浏览器一次完成。
+
+## 2026-09-19 会话目录 unknown JSON 在 remap 边界规范化
+
+- 根因：`AcpSessionConfigVm.configOptions` 是会话快照 JSON（`unknown`）。view model 把这份投影直接传给要求 `AcpSelectConfigOptionVm[]` 的 `remapAcpThoughtLevelOverride`，`web:build` 的 `tsc` 失败。属于类型边界未接上，不是 remap 契约或产品行为错误。
+- 实现：在 remap 调用前把 unknown 目录收成 select option 列表；分组投影仍读带 `type=select` 的原始会话 JSON，避免丢掉协议字段。
+- 证据：`tsc -p web/tsconfig.build.json` 通过；已有「effort High 投影到 reasoning」view model 测试继续覆盖 remap。
+- 过度设计与性能评审：一次有界目录拷贝（数条 select），无新状态、缓存或热路径。
+
+## 2026-09-19 配置展示名带上 option id
+
+- 根因：产品文案「思考强度 / 深度思考 / 上下文」能读，但回滚分割线和复合菜单看不出协议 option id。Fable 同时回滚 thinking 与 effort 时，只写中文名不够定位是哪一项。
+- 实现：`acpCompositeSectionLabel` 在展示名与 option id 字面不同时追加 id，中文 `思考强度（effort）`，英文 `Reasoning (effort)`。`Fast` 与 `fast` 仅大小写不同则不再重复。菜单与回滚分割线共用这一套标签。
+- 证据：前端覆盖单条/多条 thought_level、context、Fast 以及分割线 `思考强度（effort） · 上下文（context）`。
+- 过度设计与性能评审：只改已有标签投影和一条 i18n 模板，无新状态、探测或热路径。
+
+## 2026-09-19 多条 thought_level 分开标注，context 中文为上下文
+
+- 根因：Cursor Fable 同目录返回 `thinking`（Off/On）和 `effort`（档位）两条 `thought_level`。展示层把所有 `thought_level` 都标成「思考强度」，分割线也按 category 去重，看起来像重复两项。
+- 实现：一条 `thought_level` 仍用产品文案「思考强度」。多条时按 option id 映射：中文 thinking→深度思考、effort→思考强度；`context` 中文为上下文。英文保持 Thinking / Effort / Context。不合并、不丢弃任一条。
+- 证据：Fable 目录标签为深度思考、思考强度、上下文；单条 effort 仍是思考强度；回滚分割线两条 thought_level 不再收成一项。
+- 过度设计与性能评审：只改标签投影和三条文案 key，无新状态、探测或热路径。
+
+## 2026-09-19 会话观测回写作者态当前表，未观测模型复用最后一次观测
+
+- 根因：作者态未命中 `modelBoundCatalogs` 时回退整份诊断 `configOptions`。会话观测只 upsert 分模型缓存、不改当前表，Luna 对话之后切到 GPT-5.2 仍画出 Doctor 探测时的 Grok Fast，而不是刚离开的 Luna Context。前端按切模型携带上一模型目录是旁路状态，会在 remount/normalize 丢失。
+- 实现：正式会话活目录成功后，继续 upsert `modelBoundCatalogs[modelId]`，并把诊断 `configOptions` 的 `model.currentValue` 与 `thought_level` / `model_config` 行改成该活目录。保留 Doctor 的模型/权限 options 列表与健康状态，不改 `checked_at`，不按会话模型列表剪枝。未观测模型因此复用最后一次观测。工作流运行仍读冻结 snapshot 与本次 `session/new` 活目录，不读这份当前表绑定行。
+- 证据：Rust 覆盖 Luna 会话后当前表变成 Context/reasoning、模型列表仍含 Grok/Luna/GPT-5.2、mode 行保留、`checked_at` 不变、缓存已有 Luna 但当前表仍是 Grok 时也会刷新；前端覆盖未观测 GPT-5.2 画出 Luna 当前表，已观测 Grok 仍画 Grok Fast。
+- 过度设计与性能评审：只改已有 merge，不新增 identity、探测或前端 carry 状态。目录观测频率与原先 upsert 相同，多一次有界数组合并。
+
+## 2026-09-19 发起会话不拦截 thought_level / model_config，由 session/new 回滚
+
+- 根因：产品契约是不支持的思考强度 / `model_config` 在 `session/new` remap 或回滚为不指定。`validate_and_inject` 却用 Doctor 当前 `configOptions` 做 fail-closed，把 Luna 的 Context 拦成 `option-unsupported`，界面落到「操作失败，请重试」。按所选模型缓存再校验仍是发起拦截，没有回到回滚契约。
+- 实现：注入阶段跳过 `thought_level` / `model_config`。模型、权限仍 fail-closed。不支持的绑定项继续带进 executable，由既有 `session/new` strip 回滚并写分割线。
+- 证据：Doctor 活表是 Grok 时 Luna `reasoning` / `context` 可注入；未观测 Composer 可带当前 `effort`；Luna 缓存没有的 `context=2m` 也放行给运行时回滚。
+- 过度设计与性能评审：删除上一轮为拦截服务的 per-model 校验 helper。注入只多一次有界 category 查找。
+
+## 2026-09-19 会话与作者态统一按模型缓存 config，未观测先复用再 remap
+
+- 根因：`thought_level` / `model_config` 属于 `(agent, modelId)`。会话却只有一份活 `configOptions`。adapter 省略表时只改 `currentValue`，B 的 ABC 会被画成 A 的能力，并可能 upsert 进作者态。作者态未观测模型原先只带思考档，和会话第一次切换「带着当前配置发起」不一致。
+- 实现：会话 snapshot 增加 `modelBoundCatalogs[modelId]`。RPC 带回该模型的表则观测并覆盖缓存；省略表时若有缓存则还原绑定项，没有则带着上一模型配置发起、不把该表写成目标模型。作者态仍用诊断里那份 map；未观测时同样复用当前表，发起时 remap / 回滚。会话观测只按已缓存的当前模型 upsert 作者态。分割线文案补上「系统已将其回滚为不指定。可停止对话后修改。」
+- 证据：Rust 覆盖 A 有缓存则还原 AB、A 未观测则保留 ABC 且 upsert 跳过、同模型返回刷新缓存、无 model 的片段不覆盖缓存；前端覆盖未观测复用 Context、已观测 Grok 不画 Luna Context、会话切回 Grok 画 effort/fast 不画 Context。
+- 过度设计与性能评审：复用已有 map 与观测函数，不为每个模型探测。读写随 Doctor 成功和配置观测，目录未变不写作者态文件。投影是 map 查找加有界数组拼接。
+
+## 2026-09-18 作者态按模型缓存 model_config，会话页只认活目录
+
+- 根因：`thought_level` / `model_config` 属于 `(agent, modelId)`。作者态需要跨模型切换时立刻画出已知目录，但不能把会话栏交给 Doctor 缓存或另一模型的观测。
+- 实现：`modelBoundCatalogs[modelId]` 只服务作者态。Doctor 成功仍 upsert 并按模型列表剪枝；`session/new` 与切模型后的活目录只写入当前模型、不改 Doctor `configOptions`。首页缓存命中即投影，未命中只带思考强度，发起时走现有 remap/回滚。会话 composer 与会话内配置校验的绑定项永远用本次会话活目录；较新 Doctor 只更新模型/权限列表。
+- 证据：Rust 覆盖会话 Luna 观测写入后仍保留 Grok 目录且不改 Doctor current、重复观测跳过、无诊断不发明 snapshot、绑定项校验不接受 Doctor 独有 xhigh/Context；前端覆盖同模型较新 Doctor Context 不得进入会话栏，以及 catalogs 更新可在相同 `checkedAt` 合并进 registry。
+- 过度设计与性能评审：复用已有诊断 JSON map 与 commit 锁，不新增 identity、探测或热路径缓存。会话写入只在无 live event 的 snapshot/config 更新上比较后落盘；未变化不写文件、不广播。
+
+## 2026-09-18 作者态 model_config 按模型观测目录隔离
+
+- 根因：`thought_level` / `model_config` 属于 `(agent, modelId)`。作者态却只有一份 Agent 级 `configOptions`。Cursor adapter 进程当前模型变化后，Luna 的 Context 会画到首页 Grok 上。用「所选 ≠ Doctor current 就藏掉全部 model_config」是补丁：Luna 自己也有 Fast 时会被误藏。
+- 实现：Doctor 成功结果在 capabilities 里维护 `modelBoundCatalogs[modelId]`，每次观测 upsert 当前模型、保留仍在模型列表中的旧模型、模型从列表消失则剪枝。作者态按所选模型投影该目录：有观测则展示该模型的 Fast/Context；从未观测过则只带思考强度、不借用另一模型的 model_config。不为每个模型做现场探测。
+- 证据：Rust 覆盖 Grok→Luna 同时保留两份目录、注册表切换后剪枝、同模型刷新覆盖该 key；前端覆盖 Grok 选中时用 Grok Fast 而不是 Luna Context，Luna 选中时仍展示 Luna 自己的 Fast。
+- 过度设计与性能评审：只增加诊断 JSON 里一份有界 map（模型数 × 少量 select），无额外 doctor、session/new 或按模型探测。投影是 map 查找加线性目录扫描。
+
+## 2026-09-18 发起会话按活目录 remap/回滚作者态 option id，分割线写出具体配置
+
+- 根因：作者态 `configOptionOverrides` 仍用 Doctor/上一模型接线名（如 `effort`），`session/new` 活目录可能已经是另一模型（如 `reasoning`）。strip 只在切前目录里能看到旧 id 时才 remap，发起会话因此把合法 High 报成 `acp.session-config-value-unavailable`。这是同一套回滚契约没覆盖「活目录已换、Gold Band 未切模型」，不是用户选了非法值。
+- 实现：缺失的 option id 仍先按 thought value remap，对不上的模型绑定项回滚为不指定并继续 prompt。`session/new` 即使这次没切模型，也按活目录完整 strip（含 listed 非法值）。已建立会话未切模型、option id 仍在活目录、只是值非法时仍报 unavailable。分割线文案改为「当前模型暂不支持配置：{{names}}」，多项用 ` · ` 连接。Doctor 按模型 upsert `modelBoundCatalogs`，不得把 Luna Context 当成 Grok 的目录。
+- 证据：Rust 覆盖活目录已是 Luna 时 `effort=high`→`reasoning=high`、缺失 id 回滚、发起会话 listed 非法值回滚、Doctor 在 Grok 仍列出时不把 Luna Context 写入作者态、params 带协议 `name`；前端覆盖「当前模型暂不支持配置：思考强度 · Context」，以及首页 Grok + Luna 目录时不展示 Context。
+- 过度设计与性能评审：复用现有 strip/override map 和 timeline `systemNotice`，不新增状态、探测或缓存。目录为有界 select 列表。
+
+## 2026-09-18 思考强度按 category 跨 option id 保留，目录立即推给 composer
+
+- 根因：Cursor 在 Grok 上用 `effort`、Luna 上用 `reasoning` 表示同一 `thought_level`；Gold Band 按 option id 判定不支持，把 High 清空。这是身份用错，不是 Luna 没有 High。Context 是独立 `model_config`，按 Agent 数组顺序被画到思考强度上面。控制面 `session_update` 不带 session 体，composer 要等回合结束才读到新目录。
+- 实现：切模型后若新目录仍有相同 thought value，remap 到新 option id 再 apply；`model_config` 仍按 id。复合菜单固定「模型 → 思考强度 → 其余 model_config」。apply 后把清洗 override 写回 snapshot；控制面事件带 `sessionConfig`，不扫描 timeline。
+- 证据：Rust 覆盖 effort→reasoning 保留 High、Fast 不映射成 Context、回到无 Context 模型时回滚 1M；前端覆盖 Luna 目录顺序与 live catalog 合并。
+- 过度设计与性能评审：不新增按模型能力表或 doctor 探测。remap 是单数 thought_level 线性查找。`sessionConfig` 只读 snapshot 配置，不重建 timeline。configOptions 为有界 select 列表。
+
+## 2026-09-18 作者态模型切换保留思考档，运行时按新目录回滚
+
+- 根因：ACP `configOptions` 是当前会话快照，不是按模型预告的思考档表。首页/工作流作者态只有 Doctor 默认模型的一份目录，协议没有“查询模型 B 的 thought/fast 但不切模型”的接口。此前用“选中模型 ≠ `model.currentValue` 就隐藏子栏”把缺目录编码成空白，并不是跟着 B 的 configOptions 走。
+- 实现：复合下拉在作者态继续展示并保留思考强度 / Fast。发起时仍先 `set_config_option(model)`；同一次应用里新目录没有该项（如目标模型无 Fast）或档位不在可选列表中的 `thought_level` / `model_config` 都不带入、清成不指定并继续 prompt，timeline 写入同一条文案的 `systemNotice` 分割线。思考强度子栏统一用产品文案，不用 Agent 的 Effort / Deep Think。未切模型时的非法 override 仍报 `acp.session-config-value-unavailable`。不为每个模型 doctor 探测，不重发用户消息。
+- 证据：Rust 覆盖“新目录仍列出则保留 / 不列出或 option id 消失则回滚 / 非模型绑定项不静默丢掉”；前端覆盖复合下拉在模型不一致时仍展示、思考强度统一标签，以及 `systemNotice` 分割线文案。
+- 过度设计与性能评审：复用既有 override map、apply 顺序和 timeline item，不新增按模型能力表、重试队列或页顶横幅状态。回滚是目录线性查找，无额外 session/new 或 prompt。
+
+## 2026-09-18 会话栏保留 Codex 视觉重量，Select 仍不缩放
+
+- 根因：上一轮为避免 Select 裁切花瓣，把 `agentIconClass` 默认改成不缩放。会话栏是 `size-4` 槽里的 `size-3` 图标，本来靠 `scale-125` 让镂空的 Codex 和实心 Cursor 视觉重量接近。默认关掉后会话列表 Codex 被缩小，属于把 Select 约束误套到侧栏。
+- 实现：`agentIconClass` 默认恢复视觉重量缩放。`AgentIcon` / Select 继续显式 `compensateWhitespace: false`。画布和卡片井保持 opt-in true。
+- 证据：`size-3` Codex 缺少 `scale-125` 的用例先失败；修复后同一用例转绿，并固定侧栏仍走默认 class、Select 标签仍不含 scale。
+- 过度设计与性能评审：不新增侧栏专用图标组件或按 Agent ID 分支。只恢复默认开关。无额外状态、请求或重渲染范围变化。
+
+## 2026-09-18 紧凑身份槽不再套用画布座位缩放
+
+- 根因：Codex SVG 路径已经顶满 24×24 viewBox，没有可补偿留白。画布节点的 `scale-125` 是浅色底座上的视觉重量补偿，被写进通用 `agentIconClass` 后，Select 触发器和选项都会放大。不裁切则花瓣画出格子，裁切则切掉花瓣，里外同时坏。上一轮裁切框是补丁；正确设计是缩放只属于有底座的座位。
+- 实现：`agentIconClass` 默认按 viewBox 原样绘制。工作流节点、Agent 卡片井显式 `compensateWhitespace: true`。`AgentIcon` / Select 身份槽不缩放，保留 overflow 只挡住用户超大图。
+- 证据：身份标签含 `scale-125` 的用例先失败；修复后同一用例转绿，并固定画布/卡片座位仍 opt-in。
+- 过度设计与性能评审：不新增 icon 表或按 Agent ID 分支。只把已有 scale map 改成座位 opt-in。无额外状态、请求或重渲染范围变化。
+
+## 2026-09-18 Agent 选择器 icon 裁切与诊断原因对齐
+
+- 根因 1：Codex / Gemini / OpenCode 的视觉缩放写在 img 自己身上。画布和卡片有更大的底座所以看不出来，Select 行用 `size-4` 当槽位，`scale-125` 会画出槽外。属于正确的视觉平衡没配套裁切框。
+- 根因 2：Agent 管理横幅/问号已经展示 raw 首行（如 Gemini API key），选择器仍只用本地化主句，把 `acp.session-request-failed` 显示成「会话准备失败，请重试。」。这是诊断展示分层不完整，不是 Gemini 特判。
+- 实现：共享 `AgentIcon` 用固定槽位 `overflow-hidden` 裁切缩放。选择器、工作流 Inspector 和 MCP 兼容提示改走 `agentDiagnosticShortReason`，与管理横幅同一条 compact raw 首行，完整 stderr 仍只在问号里。
+- 证据：Codex 标签缺少 `overflow-hidden` 的用例先失败；Gemini raw 与 generic 主句被同一个短原因函数对齐。修复后同一用例转绿。
+- 过度设计与性能评审：不新增诊断字段或按 Agent ID 分支。多一个 span 裁切框，原因函数复用已有 raw 首行截断。
+
+## 2026-09-18 Agent 选择器补齐 registry icon
+
+- 根因：Agent 选择器应从当前 registry 实例读取 display name 与 icon。Direct 药丸、侧栏和画布已经渲染 icon，AUTO / 运行模式 / 工作流 Inspector / 个人分析 / SKILL 筛选等 Select 只显示名称，个人分析还用了通用 Bot 图标。属于正确身份投影实现不完整，不是要按 Agent ID 再做一套图标表。
+- 实现：新增共享 `AgentIdentityLabel`，Select 触发器和选项都展示 registry icon 与名称。不可用原因仍跟在名称下方。
+- 证据：修复前因缺少 `AgentIdentityLabel` 无法导入；修复后同一用例转绿，并固定 AUTO、运行模式、工作流 Inspector、个人分析和 SKILL 筛选消费同一标签。
+- 过度设计与性能评审：只增加展示投影，不新增状态、identity、缓存或请求。Agent 列表为有界小型集合，每项一张已有静态/data URI 图标。
+
+## 2026-09-18 ACP Fast 进入官方 model_config 复合下拉
+
+- 根因：思考强度 / Fast 都随当前模型的 `configOptions` 走。首页 Off/On 来自 Doctor 默认模型的 `thought_level`，不是把 Fast 误接到思考强度。Fast 的官方 category 是 `model_config`，应进入同一复合下拉，不能做 Cursor `id=fast` 特配。Doctor 默认模型的依赖项不得覆盖另一模型的会话目录。
+- 实现：复合菜单按 Agent 目录顺序展示 `model` + `model_config` + `thought_level`。作者态切模型时保留仍在当前 Doctor 目录里的思考强度 / Fast；真正发起后以模型 RPC 返回的新目录为准，不支持则回滚为不指定并写入 timeline `systemNotice`。较新 Doctor 目录与会话当前模型不同时，保留会话依赖项。个人数据分析仍只记忆思考强度。
+- 证据：复合 DOM、override 保留、session 目录合并与 run-mode 规范化用例覆盖 Fast 与跨模型隐藏。
+- 过度设计与性能评审：复用 `configOptionOverrides` 与既有复合菜单，不新增 Fast 字段、按模型探测或 Cursor 分支。目录为有界 select 列表，无额外扫描或缓存。
+
+## 2026-09-18 PR 审阅面去掉无效源码切换
+
+- 根因：`WorkspaceFileEditor` 只要有 `markdownMode` 就画出源码/预览按钮，真正切换却要求父级 `onMarkdownModeChange`。PR/Issue 详情和创建对话框只传入固定 `live-preview`，点击直接 return。属于共享浮层把“当前模式”和“模式所有权”混在一起，不是某个 PR 按钮坏了。
+- 实现：浮层切换按钮只在传入 `onMarkdownModeChange` 时渲染；复制源码仍可用。PR/Issue 详情保持只读预览。创建 PR 对话框持有本地 `markdownMode`，作者可以切换。
+- 证据：复现用例先失败于无模式所有者仍渲染 `viewMarkdownSource`。修复后同一用例转绿；编辑器与 GitHub 导航共 19 项通过，TypeScript 与 Web 生产构建通过。浏览器 preview 无法打开 GitHub PR 页，未把该路径视觉验收虚报为通过。
+- 过度设计与性能评审：不新增 store、持久化或第二套 Markdown 查看器。创建对话框多一个低频 UI state，打开时重置，不进入 GitHub 导航会话。
+
+## 2026-09-18 Agent 卡片按中间栏容器宽度降列
+
+- 根因：Agent 卡片网格使用整窗 `md/xl`。打开内置浏览器后中间栏变窄，窗口仍是 `xl`，继续三列，卡片被压成命令/参数逐字竖排。属于正确的 1/2/3 列设计未按容器实现。
+- 实现：复用角色列表 container query 阈值（672px 双列、1152px 三列）和 WebView measured fallback。卡片内部摘要固定两列。integrated Header 按标题组最小宽度换行。
+- 证据：修复前布局契约测试因缺少 `@container/agent-list` 失败；Header 测试因仍使用 `sm:flex-row` 失败。修复后同一用例转绿。1920 宽窗下右栏收起为三列，内置浏览器拉宽后中间栏降至单列且标题不再截断。
+- 过度设计与性能评审：不新增列数 state，不改工作区折叠阈值。完整档无 JS 测量；兼容档复用已有 observer。
+
+## 2026-09-18 PR 概览只占半栏
+
+- 根因：PR 审阅面要铺满右侧工作区。实现给 TabsContent 加了 `display: flex` 以传递高度，但默认 `flex-direction: row` 让 `WorkspaceFileEditor` 从块级横向撑满变成按内容宽度收缩；Atomic `78ch` 阅读栏于是成为半栏固有宽度。同时 line Tabs Trigger 无条件 `flex-1`，详情 TabsList 又写了 `w-full` 画底边，「概览 / 文件」被均分成左右两半。属于正确全宽审阅设计下的布局契约不完整，不是 78ch 阅读栏本身或某个 PR 正文特例。只改 `--atomic-editor-measure: 100%` 不能撑开不定宽的 row flex item。
+- 实现：line Tabs 标签跟随内容宽度，default/bare 仍可均分；源码管理填充页的 TabsContent 统一 column flex；编辑器根节点 `w-full min-w-0`；PR/Issue 详情继续使用全宽 Markdown 契约。
+- 证据：复现用例先失败于概览 TabsContent 缺少 `flex-col`、line Trigger 仍无条件 `flex-1`、编辑器根节点缺少 `w-full`。修复后同一用例转绿；源码管理 GitHub / Tabs / 编辑器及相关 37 项通过，TypeScript 与 Web 生产构建通过。浏览器 preview 的 Git capability 仍是 `repository-required`，无法打开 GitHub PR 页；未把该路径的视觉验收虚报为通过。
+- 过度设计与性能评审：只调整既有 Tabs variant 与 flex 方向，不新增状态、测量、观察器、缓存或 identity。布局由浏览器一次 flex 计算完成。
+
+## 2026-09-18 Agent 管理 ACP Registry 改为内置浏览器链接
+
+- 根因：诊断帮助里的 ACP Registry 仍按早期“系统默认浏览器”实现，且用 `text-primary` 只在悬停时出现下划线，在 Tooltip 里看起来像普通正文。内置浏览器已经把应用内 `http(s)` 统一到 `openWebTarget`，Agent 管理页却还绕开该入口；同时该页 `scope=null`，即使改调用也无法展开右栏。属于正确浏览能力下的入口和投影范围不完整，不是要给帮助文案另做一套 opener。
+- 实现：ACP Registry 使用产品 `text-link` 下划线样式；点击走 `openWebTarget`，不读“打开网站”开关、不调用系统 opener。Agent 管理页与快速对话、创建定时任务共用当前工作空间的 draft 右侧工作区投影，未打开时右栏保持收起。
+- 证据：DOM 用例先失败于仍引用 `@tauri-apps/plugin-opener`；修复后同一用例转绿，固定可见链接样式并点击打开 `https://agentclientprotocol.com/get-started/registry`。布局用例固定 `agents` 使用 conversation 配置和 draft scope。
+- 过度设计与性能评审：复用既有 draft scope、`openWebTarget` 和链接 token，不新增 identity、偏好字段、缓存或队列。帮助入口只在诊断失败的卡片上订阅稳定 commands Context，点击是单次导航。
+
+## 2026-09-17 工作空间 HTML 默认打开源码
+
+- 根因：本地 HTML 原先对所有入口一律进内置浏览器、不进 CodeMirror。会话引用要看渲染结果，这个分流成立；工作空间目录树是在浏览可编辑源码，和普通文本/代码文件同一意图。属于正确浏览器能力下的入口策略过粗，不是要做第二套 HTML 实时预览。
+- 实现：目录树点击 `.html/.htm` 打开文件工作区 CodeMirror 源码；内容区右上角复用 Markdown 浮层按钮样式，点击后先 flush 再 `openWebTarget`。会话和 Markdown 中的本地 HTML 引用仍直接进内置浏览器。运行目录只读 HTML 同样提供该按钮。不增加 HTML 预览模式、持久字段或新 identity。
+- 证据：目录树源码契约先失败于仍拦截 `local-html`；编辑器浮层 DOM 先失败于缺少打开按钮。修复后同一用例转绿，并固定会话 HTML 引用继续走 `openWebTarget`。运行目录 HTML 打开源码浮层，命令订阅只在正文子组件。
+- 过度设计与性能评审：复用现有 FileContent、WorkspaceFileEditor 浮层、FileContentStore.flush 和 openWebTarget。按钮状态只在当前编辑器内，不进 Context。打开浏览器仍是既有单次导航，无额外扫描、缓存或队列。
+
+## 2026-09-17 设置页企业微信实现注释与浏览器开关说明
+
+- 根因：IM 对客文案设计已禁止暴露“安装级目标”，设置页企业微信标题下仍渲染该实现注释，属于正确设计下的展示残留。浏览器两个开关的真实分流是 localhost `http(s)` 与普通网站；标题写成“本地链接 / 网页链接”会被读成 `file://` 与 `http://`。属于正确路由设计下的对客文案不完整，不是要把开关改成文件与网页。
+- 实现：删除企业微信标题下的实现注释及中英文 i18n 键；未接入时只保留状态徽章和“尚未接入…”操作说明。浏览器开关标题改为“打开 localhost / 打开网站”，说明改为“对话和文档里的本机服务地址 / 普通网站，关闭后改用系统浏览器”。
+- 证据：IM 未接入 DOM 用例先稳定失败于仍包含“安装级目标”，源码契约先失败于仍消费 `settings.im.channels.wecom.description`；修复后同一用例转绿。浏览器设置 DOM 用例先失败于仍使用“本地链接”，修复后固定 localhost/网站标题并排除 `file://`、`127.0.0.1` / `::1`。
+- 过度设计与性能评审：只删除一行展示和改写既有 i18n，不新增状态、接口、缓存、identity 或第三个开关。设置页文案长度为常数，无加载或渲染范围变化。
+
+## 2026-09-17 Win10 冷启动无法拖窗口边缘缩放
+
+- 根因：2026-07-28 关闭 Win10 native shadow 后，四边缩放本应由 Tauri `TAURI_DRAG_RESIZE_WINDOW` overlay 提供。2026-09-16 内置浏览器启用 `tauri/unstable` 后，主 WebView 以 `WindowChild` 创建，runtime 只给 `WindowContent` 挂 overlay，冷启动就没有边缘命中。Win11 仍有 DWM 外侧框所以不明显。属于正确的无边框缩放设计下宿主挂钩不完整，不是阴影策略或 HTML 手柄问题。
+- 实现：窗口就绪后 `set_resizable(true)` 走 Tauri 同一 attach 路径；child WebView 或地址建议 `HWND_TOP` 之后把 overlay 再抬到最前。Win10 `native_shadow = false` 不变。
+- 证据：Vitest `window-surface` 6/6，其中契约测试先稳定失败于源码缺少 `TAURI_DRAG_RESIZE_*` / `set_resizable(true)` / 调用点，修复后转绿。`window_chrome` 4/4、`second_launch_reuses_the_existing_main_window` 通过；`cargo check -p gold-band-desktop --all-targets` 通过。HWND z-order 无法在 jsdom / cargo mock 中复现，Win10 冷启动拖边与打开浏览器页后右边缘仍可拖作为 EXE 验收。
+- 过度设计与性能评审：复用 Tauri overlay，不新增 HTML handle、状态机或持久字段。`FindWindowEx` + `SetWindowPos` 只在窗口就绪和有界次 child 创建/显示时执行一次，不进热路径。
+
+## 2026-09-17 对话栏菜单打开时内置浏览器变白
+
+- 根因：网页子 WebView 是独立 HWND，HTML `z-index` 盖不住它。原实现把「任意菜单打开」当成 hide 的充分条件，对话栏列表即使没进网页矩形也会把整页藏白。相交 hide 补上后仍会闪一下：Radix 打开当下的未收敛几何可能暂时相交，`hideAll` 是原生 IPC，一旦发出必须等 hide 完成再 show。属于正确 collision 设计下 hide 判定过早，不是 child WebView 分层错误。
+- 实现：对话栏容器作为 Radix collision boundary，共享 Select / Dropdown / Popover / Context Menu 自动约束在栏内，并在定位节点标记 `data-overlay-collision-boundary=conversation`；受约束菜单不进入 `hasBlockingOverlay`。hide 只留给 Dialog / 非自身 Sheet，以及未受约束且与网页占位盒相交的菜单。紧凑右栏 Sheet 仍按 owner 豁免。
+- 证据：中间栏打开菜单不 hide、相交且未约束的菜单仍 hide、Select 纳入检测、Dialog overlay 覆盖网页仍 hide、关闭菜单与右栏 Sheet 豁免；受约束 popover 即使首框相交也不 hide 且不发 hideAll；hook 运行时测试固定 context boundary、constraint 标记与显式 null 退出；overlay 契约测试固定对话栏 boundary 与共享组件消费 `useOverlayPositioning`。
+- 过度设计与性能评审：复用已有 collision 标记，不加延迟、队列或第二套几何状态。相交检测仍只读当前打开的未约束浮层与一块占位盒矩形。
+
+## 2026-09-17 渠道中立 Profile Prompt 与能力矩阵
+
+- 根因：现有 Profile 渠道隔离有效，但渠道策略混入 Prompt 文件名、标题、正文、常量名和契约测试，通用 Prompt 被迫知道自己属于哪个渠道。
+- 实现：新增 `ProfileChannelCapability` 编译期矩阵；seed 通过 `required_capability` 表达可见性，overlay 通过统一静态表组合。需求身份与开发测试自动提交迁移为双语 `profile/overlays/` 渠道中立资产，CI/CD 正文删除渠道自述。
+- 验收：`profile_prompt_channel_boundary` 2/2、default 与 WB 的 `profile_supplements_are_channel_scoped_and_complete` 各 1/1、WB `cicd_profile_contract` 1/1、`app::profiles::tests` 31/31 通过。
+- 过度设计与性能：仅新增 3 项 capability 和 2 项 overlay 的静态查找，无运行时 I/O、缓存、队列、状态机或持久字段；内置 Profile 最大数量不变。
+
+## 2026-09-17 记忆按需读取与 Direct Prompt 隔离
+
+- 根因：MCP binding、RuntimeManaged 记忆规则和自动参数投影共用同一准备路径，导致普通节点固定读取/序列化记忆，RawAgent 在 envelope 分流后仍被注入规则和 `<memory-data>`。
+- 实现：`bind_invocation_mcp()` 只查找、校验并绑定 MCP；`prepare_prompt_bundle()` 只在 RuntimeManaged 且记忆启用时追加简化通用规则。所有模式永久删除 `Gold Band current memory` 与 `<memory-data>` 自动投影，删除 `MemoryService::render_context()` 和双语 `runtime/memory.md`。RawAgent / Direct 的 system prompt 为空、首轮与 continue user prompt 保持原文，但启用时仍保留记忆 MCP。
+- 角色契约：CICD 在参数准备阶段、WB 身份在身份检查阶段、WB 提交在需求身份处理步骤主动调用 `memory_read`；读取失败说明未读取，写入或核验失败说明未持久化，二者不阻塞业务，缺少业务参数时继续按原门禁询问、暂停或失败。
+- 验收：`memory_invocation` 5/5、`memory_mcp` 3/3、lib `memory` 16/16、`worker_bootstrap` 21/21；CICD/WB profile 契约在 default 与 WB 渠道通过；AI-DYNAMIC 修改用例 1/1、完整目标串行 38/38；`cargo check -p gold-band --tests -j 1`、`cargo fmt --all -- --check`、`git diff --check` 通过。
+- 过度设计与性能：不新增状态机、持久字段、缓存、队列、后台同步或新记忆实现；删除普通节点的两文件读取、合并、最多 32 KiB 序列化和 prompt token 固定成本，真实读取下沉到 CICD/WB 工具调用点。
+- 保证边界：接口保证工具读取最新快照，角色契约要求需要记忆的流程主动读取；模型是否执行工具，以及 Direct 是否忽略记忆内容中的指令性文本，不升级为 runtime 强保证。
+
+## 2026-09-17 CICD 职责迁移与 WB 需求身份
+
+- 根因：代码提交被放在 CICD，而提交生产者是开发测试节点；`storyId/storyName` 没有任务级固定契约；CICD 参数只有通用“默认写任务”规则，缺少逐 key 作用域和写后核验。
+- 实现：CICD 删除 commit 职责，只检查开发测试提交是否已推送；拒绝 push 或 push 失败时询问“继续构建 / 停止”，继续后按远端现状推进。WB 采访/拷问补充需求身份检查，开发测试补充自动提交。用户维护的子系统号条目固定工作空间，`storyId/storyName` 和全部 `cicd.*` 固定任务。
+- 验收：WB `memory_domain` 13、`cicd_profile_contract` 1、`wb_workflow_profile_contract` 1 通过；default `wb_workflow_profile_contract` 1 通过；`cargo check -p gold-band --tests -j 1`、格式和 diff 空白检查通过。
+- 过度设计与性能：复用现有 Profile 渠道目录、记忆 MCP、CAS、原子写入和 Git CLI，无新状态机、持久模型、依赖、缓存或队列；每次只增加固定长度提示词和两个有界记忆文件读取。
+
+## 2026-09-17 IM 设置每次进入都闪「加载中…」
+
+- 根因：`ImIntegrationSettings` 每次挂载都把 `settings` 置为 `null` 再请求 `get_im_settings`。定时任务运行设置已有 stale-while-revalidate 缓存，IM 没有复用。Radix 非激活标签卸载与设置页重挂载会让用户每次点开设置都先看到加载态。属于正确设计下的展示投影不完整，不修改 IM canonical state。
+- 实现：为 IM 设置增加与定时任务相同的模块级运行时缓存；App 启动后台预取；保存/启停/扫码/删除写回；connection snapshot 按 generation 单调合入。缓存不是第二事实源，不进入 `AppBootstrapVm`。
+- 证据：复现用例「页面重挂载仍显示加载中」修复前稳定失败；修复后同一用例、缓存命中首帧、空缓存仍显示加载、迟到 fetch 不覆盖更新保存结果/更高 generation snapshot 均通过。
+- 过度设计与性能评审：复用已有 SWR 模式，容量固定为单份 `ImSettingsVm`，有 5 秒新鲜期与 single-flight；启动只增加一次 `get_im_settings` 预取，当前单 channel，无新状态机、轮询或持久字段。
+
+## 2026-09-17 分支搜索框误用 projectId 作为工作空间名
+
+- 根因：分支搜索 i18n 设计为 `搜索 {{workspace}} 分支`，`workspace` 是与会话栏相同的展示名。实现却把 Git 作用域身份 `projectId` 直接插进占位文案，属于正确分层下的展示投影错误，不修改 workspace identity 或 Git snapshot。
+- 实现：`GitBranchSelector` 新增展示投影 `workspaceName`；快速对话信息栏与会话详情都传入 `ConversationWorkspaceVm.name`。`projectId` 只继续用于 snapshot / checkout 作用域。缺少显示名时回退“搜索分支”，不再展示 identity。
+- 证据：占位文案投影函数固定显示名并排除 `projectId`；信息栏 DOM 固定分支触发器携带与工作空间选择器相同的 `ConversationWorkspaceVm.name`。
+- 过度设计与性能评审：只增加一条展示 prop、一个纯函数投影和一次已有 workspace 列表的 O(n) 查找（工作空间数量个位数），无新状态、请求、缓存或 identity。
+
+## 2026-09-17 地址栏浮层首帧黑/空白帧（显示时机早于绘制）
+
+- 根因：上一轮把显示时机放在 `load-finish`，但“文档加载完成”不等于“内容已经画出来”。现场录屏的四帧（浅色 → 深色 → 紫调 → 正常）说明新建 WebView2 合成面在真正绘制前仍会被展示，黑帧与紫调都是未绘制/合成中的画面。主题注入只解决了“画出来时用哪套颜色”，没有解决“什么时候可以显示”。
+- 实现：建议面在完成一次绘制后上报新命令 `browser_address_suggestions_painted { revision }`（连续两帧后触发，确保已过一帧合成），Rust 仅在当前投影可见且 revision 匹配时显示浮层；`load-finish` 只负责注入状态，不再直接显示；1.2 秒有界兜底保留。
+- 证据：前端用例固定“表面渲染后必须上报 painted revision”；Rust `browser::tests` 22 项、Web 聚焦用例通过；现场验收标准为首次打开不再出现黑/空白帧，日志顺序为 `address-suggestions-page load-finish` → `show-address-suggestions-painted`。
+- 过度设计与性能评审：只增加一次命令上报与一次显示判定（每次打开一次，无轮询、无缓存、无状态机），显示时机由“内容已就绪”这一真实条件决定，而不是靠延时猜测。
+## 2026-09-17 地址栏浮层首帧闪黑（主题注入时机）
+
+- 根因：浮层与主应用共用同一份入口资源，`styles.css` 的 `:root` 默认是深色主题；此前主题由 React 挂载后的 `applyTheme` 写入，因此文档第一次绘制用的是默认深底，肉眼就是“第一次点开闪一下黑屏”。上一次把 WebView 自身背景改成透明并延后显示，所以闪的时间变短但没消失。
+- 实现：新增 `browser-address-suggestion-theme.js`（沿用 `browser-link-click.js` 的 `include_str!` 约定），由 Rust 在创建浮层时把 `theme` 一起拼进初始化脚本，在文档开始即写入根元素的 `dark` class、`data-theme/color-scheme/visual-quality/material-model`、`colorScheme` 与语义变量；React 之后的 `applyTheme` 继续负责运行期更新。透明背景与“加载完成后再显示”保持不变。
+- 证据：新增 Rust 用例固定生成的初始化脚本同时包含状态注入与主题注入（含 `dataset.theme`、`setProperty` 与主题 JSON）；`browser::tests` 22 项、`cargo check` 通过。
+- 过度设计与性能评审：只是把已有主题数据用在更早的时机，新增一个静态 JS 片段，无新增状态、监听、请求或缓存；`name(theme)` 形式避免了全局污染。
+- 验收：首次打开地址栏不再出现黑底闪帧；若仍有“空白面板若干帧”，可再引入一次“表面已绘制”上报（额外命令）来延后显示，属于可选加固。
+
+## 2026-09-17 地址栏建议被网页子 WebView 盖住（原生 z-order）
+
+- 根因：子 WebView 创建时会插到窗口 z-order 顶部，而浮层是懒创建、生命周期远长于网页；只要之后新建过任何网页子 WebView，浮层就排到它下面。于是列表只露出网页视口上沿之上的一条，其余被网页盖住，表现为“列表被遮盖”。属于原生层级契约缺失，不是建议数据或样式问题。
+- 现场证据（只读枚举）：`TOP → CHILD page(visible) → CHILD overlay(visible=False) → CHILD main`，网页子 WebView 明确排在浮层之前（即更靠上层）。
+- 实现：新增 `show_address_suggestions_overlay`，在 show 之前通过 WebView2 controller 取容器 HWND 并 `SetWindowPos(HWND_TOP, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)` 抬到最前；创建后首帧显示、有界兜底显示均走同一 helper，并记录 `raise-address-suggestions` 日志。
+- 复现与验收：z-order 无法用单元测试表达，采用可审计替代证据——窗口子级枚举顺序（修复前网页在浮层之上，修复后浮层排第一），配合“网页已打开时列表完整可见”的现场验收。
+- 过度设计与性能评审：只在显示浮层时做一次 `SetWindowPos`，不新增状态、监听或轮询；不重建浮层、不触发页面重载。
+
+## 2026-09-17 地址栏草稿被页面事件覆盖导致两处建议不一致
+
+- 根因：`BrowserWorkspacePanel` 的同步 effect 依赖 `active.pageId/url`，任何网页 url 变化（跳转、重定向、SPA 路由）都会把地址栏重置为权威 URL 并把 `typed` 置回 false。空白页没有这类事件，所以输入稳定走过滤结果；已打开的页面会中途把草稿打回页面 URL，建议列表回落为最近访问，表现为“同一个输入在两个标签页检索效果不一样”。属于“权威状态覆盖用户草稿”，不是建议算法问题（同一函数在两种状态下本来就产出不同列表：过滤 = 搜索行 + 命中访问；最近访问 = 最近 N 条且无搜索行）。
+- 实现：地址栏新增 `onEditingChange` 上报编辑态；面板用 `editingAddressRef` + `lastSyncedPageRef` 判定，同一 `pageId` 下正在编辑时跳过地址/typed 同步，只有切换内部页或提交后才用权威 URL 重写。
+- 红绿证据：新增面板用例固定“已打开页面上输入草稿后，页面再上报新 url 不得覆盖草稿”；修复前稳定失败（实际值变成 `https://example.com/next`），恢复修复后通过。另用真实浏览器验证建议面自身是不透明白底、行序为 `search → visit`，并在真实实例里用同一函数算出 `manage` 的过滤结果（搜索行 + CLI Proxy）与最近访问结果（5 条、无搜索行），确认差异来自状态而非渲染。
+- 过度设计与性能评审：不新增状态机、定时器或缓存，只增加一个编辑态 ref 与一次判定；建议计算与请求去重不变。
+- 验收：Web 聚焦 6 文件 34 项通过、`tsc` 无错误。
+
+## 2026-09-17 内置浏览器地址栏浮层点击被失焦竞态吞掉
+
+- 根因：点击浮层会把焦点交给原生浮层 WebView，地址栏立即 `onBlur` → `closeList()` → 前端先发一条新的 hide 并把“当前可见 revision”清零；约 30ms 后点击事件才带着浮层**当时显示的那个 revision** 到达，被 revision 过滤直接丢弃。日志能证明这一点：同一个时刻 `address-suggestion-action received … forwarded` 两条都在，后端已转发，但 UI 无任何动作。
+- 实现：把 revision 语义固定为“浮层当前显示/最近显示的投影 revision”，hide 不再清零；只有下一次 show 才会推进它。隐藏行为本身不变（失焦仍然关闭列表），但不再吞掉紧随其后的点击。
+- 红绿证据：新增前端用例固定“点击浮层导致的失焦先隐藏列表，随后到达的 choose 事件仍必须触发提交”；修复前同一用例稳定失败（`onSubmit` 未被调用），恢复修复后通过。
+- 过度设计与性能评审：不新增状态、定时器或缓存，只修正一个 ref 的生命周期语义；点击仍是每次一次 IPC。
+- 验收：Web 聚焦 5 文件 27 项通过、`tsc` 无错误；现场日志保持 `address-suggestion-action received/forwarded`，UI 端应出现跳转或删除。
+
+## 2026-09-17 内置浏览器地址栏浮层点击无效
+
+- 根因：浮层只通过 `getCurrentWebview().emitTo('main', …)` 回传点击，而浮层没有自己的诊断通道，跨 WebView 事件一旦被 ACL 拒绝或丢失就完全不可观测（页面里既没有报错也没有日志）。属于“正确设计但回传链路不可审计”，不是 DOM 交互或数据问题。
+- 实现：新增命令 `browser_address_suggestion_action { revision, kind, key }`，由 Rust 校验（revision 非零、kind 仅 choose/remove、key 非空且 ≤16KB）并记录 `address-suggestion-action received/forwarded` 日志，再用 `emit_to("main", …)` 转发给主 WebView；浮层改为调用该命令，不再直接 emit。主 WebView 侧的 revision + item key 校验保持不变。
+- 红绿证据：新增前端用例固定“点击建议行发送 `browser_address_suggestion_action` 且 kind=choose”“点击删除按钮只发送 kind=remove 且不触发 choose”（修复前浮层使用的是 emitTo，用例无法通过）；新增 Rust 用例固定 action 校验边界（revision=0、未知 kind、空 key、超长 key 全部拒绝）。
+- 过度设计与性能评审：不新增权限/能力文件（本地 origin 的浮层本就可调用应用命令），只增加一个薄转发命令与两条日志；点击仍是每次一次 IPC，无缓存、无队列、无轮询。
+- 验收：Rust `browser::tests` 21 项、Web 聚焦 5 文件 26 项通过；现场判定标准为 `runtime.log` 出现 `address-suggestion-action received/forwarded` 且随后主 WebView 执行跳转或删除。
+
+## 2026-09-17 内置浏览器地址栏浮层首帧黑底
+
+- 根因：浮层创建后立刻 `show()`，而新建子 WebView 在文档渲染前会先绘制自己的默认背景，于是第一次聚焦地址栏会先看到一块黑底面板，随后才出现历史列表；之后复用同一实例所以不再出现。属于“设计正确但首帧时序实现不完整”，不是样式或数据问题。
+- 实现：浮层创建时使用透明默认背景（`WebviewColor(0, 0, 0, 0)`）并立即 hide，仅在文档 `load-finish` 且状态注入完成后 show；新增 1.2 秒有界兜底，加载停滞时仍会显示。bounds 仍在创建后立即同步。新增 `show-address-suggestions-after-load` / `show-address-suggestions-fallback` 日志。
+- 证据：现场日志显示 create 时 `document_url=about:blank`，显式导航后约 30ms 内出现 `load-start`/`load-finish`，黑底窗口只存在于“已显示但未渲染”的窗口期；修复后首次显示与首帧完成对齐。
+- 过度设计与性能评审：只增加一个每实例最多一次的有界定时器，不新增状态机、缓存或轮询；浮层仍是复用实例，投影上限与请求去重不变。
+- 验收：Rust `browser::tests` 20 项通过；首帧行为由日志与窗口树共同判定（内容子窗口存在 + 建议面 URL + 页面加载事件 + 显示发生在加载之后）。
+
+## 2026-09-17 重启后 ACP 会话失败原因丢失
+
+- 根因：snapshot 已有结构化 `turnError` 仍显示通用横幅，是因为会话树 leaf 没挂 ACP header；同时 persist 的 revision CAS 也可能让原因根本写不进 snapshot。Live emit 会挂 header，重开走会话树就不会。
+- 实现：会话树 Direct / AI-DYNAMIC leaf 与 live lifecycle 共用 header 挂载；同一 turn 的结构化失败在 revision 漂移后仍落盘，占位失败只能被结构化原因升级。
+- 红绿证据：`conversation_run_session_tree_carries_current_turn_error` 修复前 leaf `turnId/turnError` 为 `None`；修复后带上配置错误。persist/orphan 4 项先前已由红转绿。
+- 过度设计与性能评审：不新增加载接口或缓存；每个 leaf 多读一次已有轻量 snapshot header，不扫 timeline 或 raw。
+
+## 2026-09-17 内置浏览器地址栏浮层“透明可点击空窗”
+
+- 根因：地址建议浮层的命令链路是通的（create/show/hide 全部 started+completed、bounds 正确），但浮层 WebView 只有**容器窗口**：窗口树里主 WebView 与浏览页 WebView 都有 `Chrome_WidgetWin_*` 内容子窗口，浮层容器下一个子窗口都没有，因此既画不出内容又照常拦截点击，表现为“地址栏位置有个透明窗口占着、页面点不动、缩窄右栏后也不跟随内容”。形成路径是浮层与主 WebView 共享 WebView2 环境并且使用应用相对 URL 创建，与已验证可用的浏览页子 WebView（独立数据目录 + 绝对 URL）不是同一条路径。
+- 实现：浮层改用独立数据目录 `{appData}/browser-profile/address-suggestions`，URL 由主 WebView origin 推导为绝对地址后以 `WebviewUrl::External` 创建；create 完成后校验文档 URL（缺少 `surface=browser-address-suggestions` 时显式 `navigate` 兜底），并新增 create 文档 URL 与 `load-start`/`load-finish` 结构化日志，任何“空窗”都能从日志与窗口树直接判定。
+- 证据与红绿：现场通过只读 CDP + Win32 窗口枚举取证（应用主 WebView 有内容子窗口、浮层无内容子窗口），并通过全屏截图确认可点击区域无渲染。修复后的判定标准写入产品设计文档：浮层必须同时满足“内容窗口存在 + 文档 URL 为建议面 + 出现页面加载事件”。
+- 过度设计与性能评审：只增加一个必要且独立的 WebView2 环境（与浏览页同构），不新增状态机、缓存或队列；浮层仍复用同一个实例，投影上限与请求去重沿用上一轮实现。
+
+## 2026-09-17 内置浏览器地址栏下拉不显示（浮层请求竞态）
+
+- 根因：地址建议浮层是正确设计，但「显示浮层」这条链路的实现不完整。一是一次聚焦/布局收敛中前端会连续发出多条 show/hide（投影未变也重发），二是 Rust 侧对同一 `gb-browser-address-suggestions` 标签没有创建串行化，并发 create 必有一个失败，三是被更新 revision 超越的在途 show 会无条件 hide，可能把较新 show 刚显示的浮层重新隐藏，于是表现为「点击地址栏没有任何下拉」。现场证据：MALING 调试实例日志里点击地址栏后同一毫秒出现多条 `show-address-suggestions`/`create-address-suggestions` 并伴随 `unhandled-rejection`（结构化命令错误），窗口树中浮层 HWND 已创建且坐标与请求一致，说明不是浮层缺失而是投影收敛错误。
+- 实现：前端只在投影签名（bounds/items/activeIndex/theme）变化时发送一次原生请求，失败时上报结构化错误码并清除签名以便下次重试；Rust 为浮层引入串行锁，持锁后按**最新投影**创建/复用、设置 bounds、注入状态并显示，只有更新的 hide 才允许收敛为隐藏。原生命令补齐 started/completed/skipped/superseded 结构化日志，结构化命令错误不再记录为 `[object Object]`。
+- 红绿证据：新增 Rust 单测固定「交错的 show 收敛到最新投影、更新的 hide 才隐藏」；新增前端用例固定「同一投影重复同步只发送一次原生请求」「原生失败上报 `browser.webview.create_failed` 并在下次投影变化重试」；新增诊断用例固定结构化错误码可见。现场在真实 MALING 调试实例上聚焦地址栏复现了同一 `unhandled-rejection`。
+- 过度设计与性能评审：不新增依赖、缓存或第二套状态；复用现有 revision 语义与页面 WebView 已有的 single-flight 思路；串行锁只覆盖浮层变更，不覆盖网页 WebView；去重把每次聚焦的多次 IPC 降为一次，并保持最多 9 行投影的上限。
+- 验收：Web 聚焦用例 6 文件 36 项、Rust browser 18 项、`cargo check` 通过。
+
+## 2026-09-17 内置浏览器本地 HTML 打开失败与重复点击卡死
+
+- 根因：本地 HTML 打不开不是样式或入口问题，而是原设计把「已授权目录 + `file://` 导航」当成可用方案。Windows WebView2 对子 WebView 不保证 `file://` 导航与相对资源加载，实际白屏且不产生任何 load 事件；`wry` 只在初始 URL 上做自定义协议改写，`navigate` 不会改写。重复点击导致应用无响应则来自实现缺陷：`commitNavigation` 先写权威 URL 再 fire-and-forget 下发原生命令，失败不回滚、不结构化上报，且同一 page 允许并发导航，点击次数线性放大原生调用。
+- 实现：新增 `gold-band-browser-file` 自定义异步协议承载本地 HTML。Rust 只按「当前页已授权目录」逐段解析请求，拒绝越界、编码分隔符与非 GET/HEAD，响应带 `no-store` / `nosniff` / 按扩展名推断的 `Content-Type`，单文件读取上限 64MB；Windows 生成 `http://<scheme>.localhost/<path>`，其他平台生成 `<scheme>://localhost/<path>`，处理器同时接受两种形态。授权目录仅来自打开本地 HTML 时解析出的文件父目录，页面跳到 `http(s)` 即清空（fail closed），重新输入已授权的协议地址保留原目录。前端导航收敛为每页单一在途事务：同目标重复提交复用在途 Promise，不同目标只保留最后一个排队目标；权威 URL 只在原生命令成功后写入，失败结束 loading、保留上一次确认 URL 并写结构化错误码。本地 HTML 解析改用浏览器专属轻量解析，不再借用文件编辑器链路签发外部访问令牌或启动文件监听。`file://` 从导航白名单移除，仅保留 canonical 展示语义。
+- 红绿证据：`web/tests/browser-webview-host.test.ts` 先新增 2 项稳定失败测试——「同目标连续提交只允许一次原生导航」实际调用 2 次、「原生导航失败后仍停留在失败 URL 且 loading 未收敛」；修复后与既有用例合计 18 项全部通过。Rust 新增 4 项接口级测试：协议路径越界拒绝（`..%5C`、`%2F`、空路径）、协议响应只服务授权目录内文件（含 MIME、HEAD 空 body、缺失文件 404、非 GET/HEAD 405）、导航使用平台可加载 scheme、重复导航不丢授权目录；`browser::tests` 16→17 项全绿。
+- 过度设计与性能评审：不引入本地 HTTP 服务、临时目录、独立缓存或第二套授权状态，复用 Tauri 异步自定义协议与页面已持有的授权目录；协议请求间无共享状态，单次只 stat + 读一个文件，不扫目录。导航收敛复用既有 `page.url` 与 `loading`，每页只多一个在途 Promise 与一个排队目标字符串，不新增状态字段或事实源。耗时与点击次数无关。
+- 验收：`cargo test --bin gold-band-desktop` 766 项通过，2 项失败（`commands.rs` 既有干预身份用例、metrics 源码自省用例因工作树 CRLF 行尾匹配失败）与本改动无关；浏览器聚焦 Vitest 3 文件 33 项、`tsc -p web/tsconfig.build.json` 通过。WebView2 真实渲染仍需 EXE 人工验收：用内置浏览器打开 `E:\Projects\Code\AI\Test\pelican-bike.html`，应出现 `create`/`navigate` started 与 completed 配对及随后 `page-load` started/finished，页面显示动画且连续点击不再堆积；本机 Computer Use 插件缺少 `@oai/sky`，无法自动驱动该 EXE 复核，不虚报为通过。
+
+## 2026-09-16 内置浏览器门户页与书签
+
+- 根因：空白页和「没有标签」是同一种未浏览状态，却画成两种空壳；书签也不该再做一套图标下载。属于空白页设计没补完。
+- 实现：无内部页与 `about:blank` 都显示门户页，空白页不创建子 WebView。工具栏书签按 origin 加入/删除；已加入用 `accent-foreground` 实心，不用 `accent` 填图标。门户卡可拖拽排序。渠道 JSON 首次写入用户列表。图标复用 origin favicon 缓存，`ensure` 不写访问记录。
+- 过度设计与性能评审：不进 Settings，不复制 favicon 到书签 JSON，不新增浏览会话。32 条书签一次加载；拖拽只在松手写盘。
+- 验收：Rust 固定 origin 去重、上限、排序失败不丢列表、渠道目录含 default/wb，且 wb 含 7 个内网站点；前端固定门户在无页/空白页出现、点书签走当前空白页 navigate、空白 URL 不 create 原生页。
+
+## 2026-09-16 内置浏览器地址栏访问记录
+
+- 根因：前进后退是 WebView 会话历史，地址栏补全需要另一份应用级访问记录。第一版缺少该实体，不是要把打开的页签落盘。
+- 实现：`load-finish` 按规范化 `http(s)` URL 去重写入最多 200 条；聚焦未改字浮层展示最近 8 条，输入后过滤，普通词加搜索行。悬停删除按 URL 落盘移除；回车提交当前输入并关闭浮层。桌面端建议列表使用独立受信任 child WebView 覆盖网页，网页 bounds 始终不变；普通 Web 预览保留 DOM `absolute` 回退。origin 图标后台拉取并转 32px PNG，页签复用同一图标，失败用 Globe。
+- 过度设计与性能评审：复用现有 Tauri child WebView 与 copy-in 列表组件，不新增依赖、页身份、持久字段、缓存或队列，不进 Settings，不做 SQLite/frecency/图标 CDN。浮层实例复用且不计入活网页 LRU；击键只过滤内存中的 200 条并投影最多 9 行，图标请求不在输入热路径。
+- 验收：最小失败测试先固定历史列表展开时 native host 的 `style.top` 实际为 `80px`，与“网页边界不变”契约冲突；修复后同一测试要求 `style.top` 为空。建议函数固定空输入最近访问、词语带搜索行、网址不带搜索行、origin 图标复用；浮层按地址栏锚定、空间不足时翻转并约束到视口；提交后不再弹出最近访问；键盘选择、鼠标选择和 × 删除保持原语义；模块级 revision 跨地址栏重挂载保持递增，Rust 固定有界投影校验和整体隐藏失效化，保证迟到 show 不能覆盖 hide；URL 去重上限、按 URL 删除与 PNG/SVG 转码继续回归。
+
+## 2026-09-16 内置浏览器电脑/移动版切换保留历史
+
+- 根因：前进后退用 WebView 原生会话历史，这个设计成立。电脑/移动版却用 close + 新建来换 User-Agent，等于把历史所在的实例丢掉。属于 view-mode 机制选错，不是要自建第二套历史栈。
+- 实现：活页切换只在同一实例上设置 UA 并 reload；首次切离电脑版时记下引擎默认 UA，切回时恢复。不再 close/create。
+- 过度设计与性能评审：不新增页身份或历史模型。一次 SetUserAgent 加一次 reload，替代销毁再建。无扫描、无缓存、无队列。
+- 验收：最小宿主测试先稳定失败于 `browserClosePage` 被调用；修复后同一用例要求不 close、不 create，只调用 `browserSetViewMode`。
+
+## 2026-09-16 内置浏览器页内左键导航
+
+- 根因：内置浏览的「无系统窗口」策略成立，但左键跟随时契约不完整。右键「新窗口」会触发 `NewWindowRequested`，`Deny` 后由前端开内部页，所以能用。普通左键常被站点改成 `preventDefault` / `target=_blank`；Windows External 子 WebView 上该回调经常不来，Deny 也不会回退成当前页，于是点击没反应。这不是遮罩，也不是 Google 特判。
+- 实现：文档创建脚本在捕获阶段把未修饰左键 `http(s)` 链接改成当前页 `location.assign`；Ctrl/Meta/Shift/Alt 与 download 不拦截。`on_new_window` 仍只服务显式新窗口手势。
+- 过度设计与性能评审：零 IPC、每 frame 一个捕获监听、点击时 O(1) 最近 `a[href]`，不新增状态机或页身份。无全量扫描、无缓存、无队列。
+- 验收：Vitest 固定左键 `location.assign`、站点 preventDefault 不能抢先 `window.open`、Ctrl+点击不拦截；宿主固定 `new-window` 仍开内部页；Rust 固定脚本已注入全部 frame。
+
+## 2026-09-16 内置浏览器生命周期、搜索与设置
+
+- 根因：子 WebView 作为原生图层、应用级 BrowserSession 与工作区投影的设计成立，但实现没有完成整条生命周期契约。裸词被误判为地址；空白逻辑页没有原生实例却直接 navigate；加载没有停止和超时收敛；工作区关闭未等待 hide/discard，遗留原生图层继续截获点击；外部打开只有无障碍标签而无产品 Tooltip。属于正确设计实现不完整，不改为 iframe，也不复制第二套 canonical 页状态。
+- 实现：地址解析显式区分 URL 与搜索词，支持百度 / Google / Bing；设置 → 通用 → 浏览器持久化搜索引擎、localhost 内部打开和普通网页内部打开。宿主补齐 single-flight 启动/创建、空白页 create、活页 navigate、停止、15 秒有界 loading 恢复、显隐 revision fencing、卸载 hide 以及关闭前 await discard。工具栏复用 shadcn Tooltip / Select / Switch；Rust 导航使用 WebView 原生 navigate，并新增 stop command。
+- 红绿证据：原聚焦套件 19 项中 10 项失败，稳定覆盖空白页 navigate、关闭后遗留图层、启动/创建竞态、无停止与 Tooltip、搜索分类和偏好路由；实现后浏览器 session/host/panel/viewport/target/settings 6 文件 21 项全部通过。补充“外部打开搜索词继承当前引擎”的最小测试先收到百度 URL，修复后同一测试转绿。Rust 浏览器偏好 v1 默认与 roundtrip 测试、TypeScript、桌面 crate check 与 Web 生产构建纳入最终验收。
+- 现场二次根因：viewport 把 loading 错当成原生页面可见性门槛，测试实际得到 `ensurePage(..., false)`；`WorkspaceShell` 最终 owner 卸载又没有 discard，测试实际得到 `discardAll = 0`。前者令长期 loading 的站点永远只显示 Logo，后者令透明 child WebView 在切到设置页后继续截获原矩形内的点击，均属于同一生命周期实现缺口，不是百度特判。
+- 现场二次修复：原生实例创建后立即 show 并渐进渲染，load 状态只控制停止/刷新；Shell 真正卸载时 discard 全部 child WebView，并用组件内 generation fence 排除 React StrictMode 模拟卸载。新增 lifecycle 测试与 viewport 测试组成 2 文件 3 项，同一最小命令由 2 项失败转为全部通过。
+- 现场复测纠偏：用户实测证明前端转绿仍未闭环。进一步回溯发现 Rust `on_page_load(Started)` 仍主动 hide，直接覆盖前端 show；close/discard/eviction 又先删除 registry 再 native close，并吞掉 close 错误，失败后形成仍拦截点击但无法重试的孤儿 WebView。新增两条原生最小测试分别稳定失败于 load-start 不可见、close 失败前已 mark closed，证明此前测试边界不足。
+- 原生层修复与诊断：load callback 只发布事件，不再控制显隐；关闭先 best-effort hide，再 native close，成功后才按 `pageId + label` 删除 registry，失败返回结构化错误并保留重试能力。`gold_band::browser` 向既有 `runtime.log` 记录 create/show/hide/navigate/load/close/discard 与 registry 结果，URL 仅保留 origin、本地路径全部脱敏，bounds 成功热路径不逐帧记录。Rust browser 8 项、前端浏览器聚焦回归 7 文件 24 项、TypeScript、桌面 crate check 与 Web 生产构建通过。
+- 性能与过度设计评审：复用既有 BrowserSession、工作区 close resolver 和 Settings 持久化，不新增并行状态机、依赖、缓存或队列。页摘要上限 32、活 WebView 上限 5；每个 loading 页最多一个 timer，无轮询。创建与启动 single-flight，bounds 仍按 rAF 合并；宿主保持按需动态加载，未打开路径不进入主包。
+- 验收结果：聚焦 Vitest 6 文件 21 项、浏览器 API 3 文件 22 项、右侧工作区 DOM 13 项、Rust 浏览器 5 项、浏览器偏好 roundtrip 1 项全部通过；TypeScript、`cargo check -p gold-band-desktop` 与 Web 生产构建通过。右侧工作区 Radix DOM 套件在当前机器超过默认 5 秒，放宽后 13 项均通过，未发现业务断言回归。已启动 `dev:wb` 并拉起本轮 EXE，Computer Use 却返回 `Codex auth token is unavailable`，且能力对象没有 native app API；因此未把子 WebView 点击实操虚报为通过。本轮 PID 已清理，原先运行的 Gold Band 与 1420 服务保留。
+## 2026-09-16 Composer 角色斜杠菜单
+
+- 根因：`/` 菜单原先只有 Agent 命令/Skill 一个命名空间，无法从 composer 指定本次消息的 Gold Band 角色。这是正确斜杠交互下的产品目录缺失，不是命令去重或标签投影缺陷。随后把角色塞进 `/` 并加上品牌组标题，会和 Agent 命令抢同一触发器；改为 `@` 唤醒角色、`/` 只保留 Agent，是同一双命名空间设计的补齐。
+- 实现：`/` 只列出 Agent 命令/Skill 并保留 Agent 组标题；`@` 列出角色且无品牌/组标题。菜单行不放 icon，角色行只显示名称、不带 `@`，Agent 命令行仍显示 `/${name}`。高亮只跟父级 `activeIndex`。发送复用引用的 display/send 分离：气泡只保留用户原文，Agent 正文用双语 `user_role_message` 包装“用户指定的角色定义”。角色快照随 prompt 持久化，新建会话写入 `authoring/initial-prompt-role.json` 供首次 Direct/requirement turn 读取。`@name` 只命中角色，`/name` 只命中命令。标签用应用 logo / 当前 Agent icon 区分，展示名称不带 `/` 或 `@`。气泡元信息与引用入口共用 `h-7` outline pill；composer 输入标签用同款 outline，高度改为第一行 `h-6`，与输入文字垂直居中。长 content Tooltip 内滚动；角色与引用同一元信息行，角色在前。完整角色快照视为有效 payload，允许无正文发送。队列列表投影 `roleName`；编辑 restore 把快照还原为 `@${token} ` 前缀。
+- 过度设计与性能评审：不新增 identity 或状态机，角色目录沿用现有 `getProfiles()` 有界 catalog，slash/mention 过滤为内存线性扫描且可见项上限仍为 512。首次会话多一次小 JSON 读写，不扫描历史。队列最多 10 条，列表只投影短 `roleName`，restore 不新增 draft.role 状态机。无需专项 benchmark。
+
+## 2026-09-15 ACP client Auto Accept
+
+- 根因：Cursor `agent` 等原生 mode 只描述执行风格，不会让 Gold Band 作为 ACP client 自动回复 `session/request_permission`。文档此前禁止 composer 隐式代答。这是正确设计下缺少一层与 mode 正交的 client 开关，不是要把 Auto Accept 写成 Cursor mode 或改 `cli-config.json`。
+- 实现：所有权限下拉叠加 `{{appName}}来帮你…` / `{{appName}} will help you…` 分割线与 Auto Accept 复选框，默认关闭。勾选后触发器复用模型与思考强度的复合展示（`Agent · 自动批准`）。runtime 对后续含 allow 的 `session/request_permission` 选择第一个 allow 并直接回包；elicitation 永不跳过；已 pending 的卡不因中途勾选被结算。字段与 `permissionMode` 同维度持久化（Direct `workspace+agentType`、节点绑定、session override、Run 快照）；session 建立后由用户命令拥有。不发送 `set_mode` / `--force`。
+- 验收：`first_allow_option_is_the_first_kind_starting_with_allow`、`auto_accept_skips_requests_without_allow_options`、`session_auto_accept_reads_snapshot_boolean`、`established_session_keeps_command_owned_auto_accept` 与前端 overlay / persist true-only 测试固定选择规则、缺省关闭、命令所有权与 UI 叠加形态。
+- 过度设计与性能评审：复用现有权限握手、session metadata 和权限下拉，只增加一个 skip-if-false 布尔。无新状态机、队列、扫描或按请求分类策略。热路径在到达 permission 时多一次有界 snapshot 布尔读取；无 allow 时回退原 waiter。无需专项 benchmark。
+
+## 2026-09-15 ACP 未知入站请求回 JSON-RPC Method not found
+
+- 根因：入站分发只实现 `session/update`、`session/request_permission`、`elicitation/create`，未知 method 只写诊断、不回包。这是正确白名单下的 JSON-RPC 请求契约不完整：带 `id` 的阻塞扩展（如 Cursor `cursor/ask_question`）会让 Agent 一直等待。不是缺失 Cursor 提问 UI。
+- 实现：未知 client method 若带 `id`，session runtime 与未路由 connection 都回标准 `-32601 Method not found`；无 `id` 的 notification 仍只记日志。不新增厂商提问卡片或 elicitation 映射。
+- 验收：`unsupported_inbound_requests_reply_jsonrpc_method_not_found` 与 `handled_or_notification_inbound_frames_do_not_reply_method_not_found` 固定 `cursor/ask_question` 等未知请求回包、已知方法与 notification 不回 `-32601`。
+- 过度设计与性能评审：复用现有 stdin 写路径，无新身份、状态机、缓存或队列。未知请求为偶发控制面帧，单次常数级 JSON 构造与一行写出。
+
+## 2026-09-15 ACP initialize 声明 parameterizedModelPicker
+
+- 根因：Composer 思考强度只在 Agent 返回 `configOptions[category=thought_level]` 时展示。Cursor ACP 把思考强度 / Fast 等参数化模型配置挡在未文档化的 `_meta.parameterizedModelPicker` 后面；Gold Band 的全局 `initialize` 此前只声明 `subagent-transcript` 与 `elicitation.form`，Cursor 因而只回每个模型的默认变体，UI 正确退化为纯模型下拉。属于正确设计下客户端能力声明不完整，不是 Cursor 专用选择器缺失。
+- 实现：共享 `initialize_params()` 增加 `_meta.parameterizedModelPicker=true`，与现有 nested transcript 并列，不按 Agent ID 分叉。展示仍只认 `category=thought_level`，不解析模型变体串，不为 Cursor 新增状态或控件。
+- 验收：`initialize_requests_nested_agent_transcripts_at_the_adapter_boundary` 固定 handshake 同时声明 nested transcript、parameterized model picker 与 elicitation.form。
+- 过度设计与性能评审：只改一份握手 JSON 的布尔字段，无新身份、状态机、缓存、请求或扫描；未知 `_meta` 按 ACP 扩展规则忽略。
+
 ## 2026-09-10 人工 Check 后继消息窗口与首屏状态
 
 - 根因判断：已有按会话隔离阅读窗口、分页和自动追平的设计成立，但消费端身份与显示状态投影不完整。显式导航先提交 B 的 selectedSessionKey，摘要未到时仍渲染 A；旧 JSX key 却提前切为 B，随后 B 摘要到达时复用带有 A 阅读状态的组件。用户现场 dev-test 的 raw/timeline 与 runtime 日志证明正文已生成，点击“回到最新”后可正常读取，问题位于前端窗口交接。
@@ -35,6 +483,12 @@
 - 红测证据：新增 4 个接口测试在旧实现均失败；single 后继错误保留旧 groupId，fanout 错误占用嵌套深度。改动后同 4 项通过，覆盖顶层/嵌套 single/fanout、父 merge 等待、workspace、最终摘要与无旧 merge-2。
 - 最终验收：orchestrator 单元测试 123/123、AI-DYNAMIC 接口测试 34/34 全部通过；后续补充连续 group 的 acceptance end 两种场景。接口在后继真实启动时检查旧 group closed、旧 child workspace released、新 fanout target frozen、父 group 未提前 merge，以及实际业务 prompt 可见最近 merge/acceptance 报告路径。单测固定超过五节点接力仍保留已退出 group 证据；定向 rustfmt 检查和 git diff --check 通过。未启动或改写现场 run；未执行 EXE/UI 验证。
 - 方案审视：内部图生命周期无需外部组件；不新增持久字段、身份、控制类型、缓存或队列。图关系解析受既有 maxDynamicNodes 限制，附件扫描仍每来源最多 10 个文件或空目录，正文不读取；未新增历史目录全量扫描。
+
+## 2026-09-07：IM lifecycle subscriber 启动 readiness
+
+- 根因与实现：IM 异步 bootstrap 的方向正确，但 runtime 以空投递目标构造后立即注册 lifecycle subscriber，订阅早于异步 `reconfigure` 完成时，新事件会把空目标永久固化进 projection job。桌面 setup 现以 settings 为唯一权威源，先同步建立 projection targets，成功后才安装 runtime、启动后台任务并注册订阅；读取失败只禁用本次 IM 初始化并记录错误，不阻断桌面主体。连接、凭据、maintenance 与后续重配置仍保持异步。
+- 验收固化：desktop IM runtime 接口测试直接固定“初始空目标 -> 按已有企业微信 binding 建立目标”的启动契约；desktop IM runtime 18/18、core IM 87/87、`cargo check -p gold-band-desktop -j 1` 通过，仅保留既有 dead-code warning，格式与差异检查通过。
+- 性能与过度设计评审：复用现有 settings、`projection_targets`、`RwLock` 与有界 MPSC，不新增 readiness 状态机、持久字段、事件回放、缓存、队列或兼容路径。启动只增加一次小型 settings 读取与 `O(C)` 投影，当前 `C=1`；不涉及网络 I/O、历史扫描、全量加载、长锁或运行期热路径，无需专项 benchmark。
 
 ## 2026-09-04：AI-DYNAMIC hidden context 路径树投影压缩
 
@@ -373,6 +827,16 @@
 - 高级调度 / 多 run 并发 orchestration
 
 ### 桌面端 MVP 增量
+- 2026-09-07：收敛企微权限选项文案。`allow_for_session / allow_always` 展示为“本次会话允许”，`allow_once / allow` 展示为“仅允许一次”，`reject_once / reject / cancel` 展示为“拒绝”，`reject_always` 展示为“始终拒绝”；英文同步使用准确的 `Allow for session / Allow once / Deny / Always deny`。修改只发生在 typed permission presentation 映射，原始 `optionId`、授权语义、排序和默认选项不变；标准权限标签复用既有 locale 词条入口，不新增状态、协议字段或依赖。
+- 2026-09-03：IM 远程干预首期范围收缩为仅支持企业微信。删除第二平台 connector、SDK、通道枚举、Runtime 装配、手工凭据 DTO、设置页字段和双平台测试路径；`ImChannelKind::ALL` 成为后端唯一支持通道集合，浏览器预览与接口测试固定只返回 `weCom`。既有 Runtime canonical state、共享 `InterventionCommandService`、typed outbox、幂等和 generation 生命周期不变，不增加兼容层或持久字段；单 WebSocket 与单 worker 降低启动、内存和依赖体积。
+- 2026-09-03：修复 IM 完成 Elicitation 后桌面卡片残留，并调整企微审批选项。后端桌面/IM 已共用完整 Elicitation 应用边界，残留根因是前端 reconcile 在新版有界 events 页未携带 response event 时错误保留旧 pending；现在同 session 的更高 generation/revision/seq 投影以空 `pendingInteractions` 权威清除卡片，未前进的陈旧快照仍保留 live pending。Permission vote 仅在 presentation 层按“记住选择、允许一次、拒绝”排序，ManualCheck 改为“成功、失败”，option id 继续保存原 allowed action index；展示排序与超容量安全降级保持分离。Web 定向测试 61/61、企微 connector 28/28、IM 全量 68/68、桌面 IM runtime 10/10、TypeScript、Web 生产构建、两个 Rust crate check、Rust 格式与内置浏览器 `/chat` 加载检查通过；真实企微到桌面联动仍需新 EXE 复测。
+- 2026-09-03：补齐桌面审批向 IM 的终态回显。根因是共享 `InterventionCommandService` 只统一了 canonical 执行和桌面收尾，IM 卡更新仍只挂在平台 callback 的 `respond_to_action`；桌面审批没有企微 `updateTemplateCard` 所需的回调 `req_id` 和 5 秒更新窗口。三类桌面 command 现于提交前捕获原 intervention event identity，提交成功后用既有 canonical event 索引定位原 outbox delivery，并在同一事务中 supersede 未发送原卡、幂等插入保留原 `display_ref` 的非交互终态确认；若终态先于异步原请求投影，则先写 deterministic terminal delivery，迟到原请求在同一 SQLite 写边界检测后跳过。已发送原卡保留，迟到点击继续按 canonical inbound 幂等收敛。企业微信显示 `id=xxxx 已在桌面端处理`，不携带 action token 或提交控件；IM 来源仍更新原卡而不另发确认。无新增状态机、依赖、缓存或历史扫描。核心 IM 72/72、桌面 IM runtime 12/12、Permission 20/20、ManualCheck 3/3 及 Elicitation/source identity 定向回归、两个 crate check、格式、索引 query-plan、Web 生产构建和 `/chat` 浏览器检查均通过；真实企微仍需新 EXE 复测桌面审批后的主动确认。
+- 2026-09-03：修复上一版桌面终态导致企微连接 `IM_PROTOCOL_INVALID` 的真实回归。`runtime.log` 显示 Elicitation terminal outbox 写入成功后 3ms 即永久断连，`core.db` 中该 delivery 随后持续以 `IM_NETWORK_UNAVAILABLE` 重试；根因不是平台 ACK，而是 connector 仅按 intervention kind 选择 linked-detail 路径，把 `InterventionResolution` 交给只接受待处理 `Intervention` 的 renderer，并用 `?` 将该单 delivery 构建错误冒泡为 session failure。发送策略现以 payload 生命周期 + kind 共同决定：桌面终态直接发送单条 markdown；所有出站构建/校验错误只失败对应请求并保持连接。企微 connector 31/31、核心 IM 74/74、两个 Rust crate check、格式与差异检查通过；新增会话级回归覆盖 Elicitation terminal 写帧、成功 ACK、无 Disconnected，以及无效 delivery 写帧前失败且 session 存活。分流为 O(1)，不新增状态、依赖、查询、缓存、队列或网络帧；真实机器人回显仍待新 EXE 验收。
+- 2026-09-03：完成企微三类干预终态重复点击、标题与 Elicitation 详情修复。真实记录证明首次 Permission / Elicitation / ManualCheck 均已 `ACCEPTED`，失败来自终态提交产生新 `msgid` 后绕过旧的 msgid 幂等，并在 ACP signal 清理后误入 Runtime。入站现于 actor/conversation 校验后按 indexed `channel + canonical_event_id` 收敛 `ALREADY_APPLIED`；桌面先处理的 Permission/Elicitation 从 durable timeline 恢复终态；Permission 先 inspect/CAS，再 reclaim scheduled interaction。企微保留原 card/task/submit key，仅禁用协议支持的 checkbox/select，不发送 SDK 不支持的 `submit_button.disable`；标题改为 `id=xxxx 已处理：<摘要>`。Elicitation 详情读取当前 root 最新可见 `textDelta` 的 4096 字符有界快照，并规范化去重 message、question description 与前序输出。接口回归覆盖同/新 msgid、audit 写入窗口、signal 清理、桌面先处理、索引迁移/查询计划和三类终态 payload；真实企微多端重复点击与 5 秒更新仍待新 EXE 验收。
+- 2026-09-02：修复企微 Permission 处理后桌面权限卡残留与终态标题丢失 4 位编号的问题。根因确认：权限响应写入本身已走共享 `InterventionCommandService::execute`，但桌面 command 额外执行 scheduled resume、metrics resume cause、session 重建/emit 与 attempt 索引，IM 只写响应未刷新前端 pending 投影；回调上下文还缺少 durable `display_ref`。实现 Permission 桌面/IM 共享收尾边界。此前曾按错误假设尝试 `submit_button.disable=true` 和尾置编号；2026-09-03 已依据官方 SDK 类型修正为不发送无效字段，并将终态标题改为编号前置。真实企微仍需重启新 EXE 后验证权限卡消失、标题编号和重复点击幂等。
+- 2026-09-02：修复企微 ManualCheck 审批后客户端不反馈、Run 不进入下一步的问题。根因是共享 `InterventionCommandService::execute` 对 ManualCheck 返回状态错误，而桌面 command 另行走 prepare/resume/commit 两阶段路径，导致 IM 回调在进入 Runtime 前被拒绝。修复将桌面按钮与 IM inbound 收敛到同一个 ManualCheck 应用执行边界，统一 expected state 校验、`ManualCheckSubmissionLease`、scheduled attention resume、conversation callbacks、`submit_manual_check_background` 与 launch ack；共享 execute 也补齐 ManualCheck 分发。验收：`cargo fmt --all --check`、`cargo check --lib -j 1`、`cargo check -p gold-band-desktop -j 1`、`cargo test app::intervention --lib -j 1`（15/15）、`cargo test im:: --lib -j 1`（61/61）、`cargo test -p gold-band-desktop im_runtime::tests -j 1`（9/9）、`git diff --check` 通过；desktop 仅输出既有 dead-code warning 与 LF/CRLF 提示。回归覆盖共享 execute 提交后 node outcome / manual pending / Run 完成状态收敛，真实企微仍需重启新 EXE 后验证提交、客户端事件与下一节点启动。
+- 2026-09-02：修复企微 ManualCheck 远程审批缺少决策上下文的问题。根因是 Runtime 的 `manual_check_pending` / expected state / allowed actions / `submit_manual_check` 设计正确，但 IM snapshot 未投影当前 attempt 最后一轮模型输出，企微也仍使用两个按钮。实现 timeline index 最新可见 root `textDelta` 有界读取（4096 字符，不加载完整历史），先发送“人工检查（id=xxxx）+ 最后一轮模型输出”markdown，详情 ACK 后发送同标题 vote 卡；后续按业务顺序修正为 `ManualSuccess`“成功”在前并默认选中、`ManualFailure`“失败”在后，回调仍用 outbox allowed action index 提交 typed outcome，终态保持禁用 vote 与原 task/submit key。验收：`cargo fmt --all --check`、`cargo check --lib -j 1`、`cargo test im:: --lib -j 1`（61/61）、`cargo test latest_root_agent_output_skips_empty_hidden_and_nested_text --lib -j 1`（1/1）、`cargo test app::intervention --lib -j 1`（14/14）通过；真实企微展示仍待重启新 EXE 后验收。
+- 2026-09-02：修复企微 Permission 并发审批时 markdown 详情与 vote 卡缺少人可读配对依据的问题。根因是机器侧已有完整 deterministic delivery identity 与顺序发送契约，但 presentation 层只依赖消息相邻关系；修复复用 durable outbox `rowid` 派生 4 位 `display_ref`（`rowid % 10000`，不足补零），同一 delivery 的详情与卡标题一致，重试/重启后编号稳定，最近 10,000 次 outbox 插入内不重复。该编号不写入 expected state，也不参与回调、task id、submit key 或授权语义，完整 delivery identity 不变。验收：`cargo check --lib -j 1`、`cargo fmt --all --check`、`cargo test im:: --lib -j 1`（57/57）、`cargo test -p gold-band-desktop im_runtime::tests -j 1`（9/9）、`git diff --check` 通过；desktop 测试仅保留 3 个既有 dead-code warning，真实企微并发审批展示仍待外部验收。
 - 2026-09-03：完成 AI-DYNAMIC 范围权威与跨 Agent 交接 prompt 收敛。回放确认 `continue` 保留原 ACP 会话；真实缺陷由验收 Agent 正确发现，范围漂移发生在“建议 -> 自选实现 -> 新验收标准”的交接升级。双语 prompt 统一为范围权威、结果导向 gate、`BLOCKER/FOLLOW_UP` 和“恢复最小范围内方案”；runtime task 只可拆解已授权工作，反馈与本轮 Agent 产物只能提供证据或建议。借鉴 Stop That Shit 的前置停止检查与 Ponytail 的最小完整方案，但不接入缺少 ACP/Desktop adapter 的 Guard，不复制高 token 常驻 persona，也不在运行 prompt 中加入事故词或技术类别特判。修改前范围契约测试稳定失败；修改后 `cargo test --lib prompt` 116 项、`provider_prompt_bundle` 31 项、`ai_dynamic_node` 28 项全部通过。方案复用现有 prompt/profile/output contract，不新增依赖、Agent、持久状态、额外 provider 往返或文件操作；AI-DYNAMIC 只增加短静态契约，通用 accept 角色删去重复段落后，全部改动 prompt 的总字符数净下降。Runtime 语义硬约束留待固定回放仍漂移时再评估。
 - 2026-08-13：完成“默认轻量工作流”。保留稳定 ID `default` 并将展示名调整为“默认完整工作流”，新增 `default-lightweight`，拓扑为 `grill -> dev-test -> accept`；新增内置 `pf-builtin-dev-test` 中英文角色 prompt。轻量模板验收失败通过 `$new-round(new_round_entry=dev-test)` 回到开发测试；完整与轻量模板都默认配置 `max_attempts=10`、`max_rounds=3`，重试和新 Round 次数统一遵循现有 Control DSL。原 `includeInterview` 特判已删除，改为模板元数据驱动的可选入口能力；模板只用 `isBuiltIn` 区分是否内置，不定义完整/轻量类型枚举。完整模板显示采访开关，轻量模板显示拷问开关，偏好按 workspace/template 持久化，定时任务冻结创建时的有效选择。Rust 编译与专项接口测试、Web 全量测试、生产构建及 `/chat`、`/chat/run-modes` 页面验收通过；根 crate 全量 Rust 测试在 10 分钟工具窗口内未结束且无失败输出，已在实施方案中如实记录。详细数据、接口、测试与性能结论见 `docs/gold-band/开发计划/新增流程/默认轻量工作流实施方案.md`。
 - 2026-08-12：完成 Workflow Runtime execution 与 ACP 生命周期解耦。`run.json.execution` 以显式 phase、精确 locator 和单调 revision 成为 Workflow/AUTO 阶段唯一权威源；Runtime control、ACP session availability、进程内 live turn 与 latest turn 历史分别投影。破坏式删除 `runtime active + ACP terminal => launching-next-node` 及通用 ACP active/terminal DTO 消费，`acp.snapshot.json / acp.session.json` 也从混合 `status` 迁移为 `availability + latestTurnStatus`，旧文件首次读取后一次性回写。停止后的 NonRuntime 追问结束仍保持 Paused，继续命令在后台启动前先提交 checkpoint phase。`run-progress.json` 仅作 revision 对齐后的观测，启动恢复仍统一收敛为 `Paused + ProcessInterrupted`。Rust/Web 接口回归覆盖停止/恢复、manual check、Direct、AI-DYNAMIC、stale snapshot/progress、metadata migration 与 sidebar/composer 单调收敛；不增加轮询、timeline 扫描或 token 热路径写入。
@@ -510,7 +974,7 @@
 - 2026-06-29：ACP elicitation 卡片视觉密度收敛：已确认回答、多步骤进度、题干、选项行、自定义输入与底部操作区统一压缩上下留白和控制高度，保持会话流内联提问的轻量表单形态，不改变 request/response 协议与答案提交语义。
 - 2026-06-29：前端构建类型检查拆分为生产源码配置 `web/tsconfig.build.json` 与 Vitest 测试运行配置；`npm run web:build` 不再把 Node 环境测试文件纳入浏览器源码编译，测试验收继续通过 `npm run web:test` 固化。
 - 2026-06-29：wb 构建链路补齐 MCP stdio 握手实现对 `std::process::Command` 的显式依赖，保持新增 stdio MCP health/tools 探测逻辑可被 Rust 编译器稳定解析。
-- 启动：`npm run dev`；默认渠道固定快照调试：`npm run dev:static`（前端构建直接写入本次进程独占的不可变快照，Tauri 只服务该快照并在退出后清理；其他 `web:build` 不再触发全局刷新或深层路由临时 404。该模式同时关闭 Vite HMR、Tauri source watcher 与 Rust debug symbols，并使用独立 Cargo target，源码修改不影响当前客户端且规避 Windows PDB 冲突/容量限制；普通 dev 调试能力不受影响）；构建：`npm run build` / `npm run build:default`；wb 本地构建：`npm run build:wb`。
+- 启动：`npm run dev`（未显式设置 `CARGO_BUILD_JOBS` 时默认单任务编译，避免 Windows 16 GB 内存下多个 rustc 同时生成大型 debug 元数据触发 LLVM OOM；需要并行时可自行设置该环境变量）；默认渠道固定快照调试：`npm run dev:static`（前端构建直接写入本次进程独占的不可变快照，Tauri 只服务该快照并在退出后清理；其他 `web:build` 不再触发全局刷新或深层路由临时 404。该模式同时关闭 Vite HMR、Tauri source watcher 与 Rust debug symbols，并使用独立 Cargo target，源码修改不影响当前客户端且规避 Windows PDB 冲突/容量限制；普通 dev 调试能力不受影响）；构建：`npm run build` / `npm run build:default`；wb 本地构建：`npm run build:wb`。Windows 厂商字段 `CompanyName` 由渠道 overlay 的 `bundle.publisher` 写入，值与该渠道 `productName` 相同；`wb` 为 `MALING`。
 - 仓库级依赖安装与锁文件统一使用 `npm` / `package-lock.json`；除非单独立项迁移包管理器，否则不新增 `pnpm-lock.yaml`、`yarn.lock` 等并行 lockfile。
 
 ---
@@ -1004,6 +1468,7 @@ attempt-001/
 - 日志：未路由 frame 仅记录摘要并按连接/事件类型限频；`runtime.log` 8 MiB 轮转、保留 4 份并继续执行 30 天清理，`acp.raw.jsonl` 保持现状。
 - 2026-08-20：修复 Windows ACP adapter stderr 被强制按 UTF-8 逐行读取、首次解码失败即停止消费的问题。stderr 改为 4 KiB buffer 流式读取与 16 KiB 单行有界保留，非法 UTF-8 使用 lossy 文本继续消费，并在详细日志附带编码、大小、截断状态及最多 256 字节十六进制前缀。stdout/stderr/进程退出日志统一携带 canonical provider id、adapter identity 与实际 command，异常 stdout EOF 补记可获得的 exit code/status，避免多个 npx Agent 无法归因及真实 npm 错误被 `ACP adapter transport interrupted` 覆盖。接口测试固化非法字节后的后续行仍可读、超长无换行输出内存有界；未新增依赖、缓存、队列或持久状态，读取整体 O(n) 且不进入 ACP stdout/消息处理热路径。
 - 2026-08-21：完成桌面 `runtime.log` 会话审计与分级收敛。创建、prompt admission/queue、continue、stop、terminal 等用户低频边界使用结构化 `INFO`，同步/后台失败及自动队列、MCP 降级使用 `WARN`；每 60 秒 doctor/命令目录周期、ACP raw/RPC、adapter stderr 正文及非 UTF-8 摘要统一为“记录详细日志”控制的 `DEBUG`。日志只携带 canonical locator、turn/operation/revision/outcome，不记录 prompt、附件路径、工具内容、Token 或原始 frame。`runtime.log`、`acp.raw.jsonl`、`acp.diagnostics.jsonl` 明确为 best-effort 旁路，写入失败不得覆盖 provider 原错误或改变 RPC、取消、队列与 terminal；canonical timeline/session/worker/run 状态仍保持强一致写入。补充不可写 sidecar、非 UTF-8 连续消费、有界长行与 prompt 队列生命周期回归测试，并同步修正桌面测试夹具的 ACP storage schema version；5 项日志定向测试、1 项桌面队列接口测试及 `cargo check --workspace` 均通过。未新增依赖、状态、缓存或重试，单个用户动作只增加 O(1) 结构化事件，周期日志默认关闭。
+- 2026-09-17：收敛 `runtime.log` 无效写入。adapter stderr 按噪声/故障/其他诊断分类，`npm warn Unknown user config` 与 `[session/query]` 即使详细日志也不逐行展开；doctor standalone 关闭链降为 `DEBUG`，进程退出状态每个连接只记一次；无 session 的 `_auth/status_update` 不再作为未路由 `WARN`；`log_prompts` 默认关闭且 `runtime.log` 永不写入 prompt 正文。接口测试覆盖分类、退出去重、standalone 级别、未路由豁免与默认配置。
 - 兼容边界：Tauri command、Runtime API、ViewModel JSON、前端类型、既有事件窗口配置、75ms/125ms 流式刷新、消息/工具/权限/分页/自动跟随与 workflow 并行度全部不变；不包含 WebView 恢复和高内存降并行。
 - 回归固化：覆盖具名订阅幂等、10,000 帧 FIFO、session ingress 过载隔离、超大帧与关闭、热状态释放后 timeline 可读、tool input/output/Blob 合并、permission/elicitation timing、非选中不可读 timeline、日志限频和 size rotation。合入前必须通过 Rust workspace、Web test/build 与桌面 deep-link 验证。
 - 本次结果：Rust workspace 全量通过；Release ACP route 10 项通过；Web 54 个测试文件、362 项通过且生产构建成功；桌面端现有 run/session deep-link 冒烟通过，测试实例与 dev server 已清理。字体测试仅修正元素定位，未改变 UI。
@@ -1603,6 +2068,13 @@ attempt-001/
 - 回归与验收：核心接口测试覆盖 `in_progress(diff) → completed(无重复 diff)` 生成变更、缺失成功终态不生成、`in_progress(diff) → failed(重复 diff)` 不生成、终态映射与 permission 无关，以及 schema v3 失败工具集合迁移为空。定向 `cargo test --lib acp::turn_files` 17 项通过；宽泛 package test 被既有 `tests/entity_uuid_test.rs` 缺少 `NodeState.acp_storage_schema_version` 的夹具编译错误阻塞，未在本需求中修改该无关用户改动。
 - 性能与过度设计评审：新 turn 每个 diff 工具只增加一次 `HashMap` 常数级记录，状态随 turn 结算清空；聚合仍只遍历该 turn 已有的有界 mutation，不新增依赖、持久字段、队列、缓存、锁或普通路径 timeline 扫描。历史全 timeline 读取只发生在 schema v1-v3 的一次性迁移慢路径。现有 `toolCallId`、timeline status 与 change-set 模型足以表达不变量，无需 permission→diff 关联、新 aggregate 或第二套状态机。
 
+## 2026-09-17：Agent branch 文件变化不得泄漏到父会话
+
+- 根因：`fileChangeSet` persist 把 branch owner 写到 `_meta.conversation.branchId`，但 timeline 路由只消费 canonical `_meta.goldBandConversation.branchId`。嵌套 Agent 的 change set 因此落到 root timeline；父会话用 `branchId=root` 去读 Agent 的 change set，被 `turn-files.version-access-denied` 拒绝后误报为“无法加载本轮文件变化”。产物与 change set 文件本身是完整的。这是正确的 branch ownership 设计未写到 persist 路由字段，不是加载接口或文案问题。
+- 实现：finalize 用 change set 自己的 `branchId` 写入 `goldBandConversation`，使 persist 把指针落到所属 branch timeline。前端按事件 owner branch 与当前 locator 投影，不一致时不渲染该卡。
+- 回归：Rust 接口测试覆盖 Agent branch 指针经 `annotate_event_branch` 后仍属于该 branch。前端 DOM 测试覆盖历史泄漏事件不出现在 root 会话。
+- 性能与过度设计评审：不新增 identity、缓存、扫描或请求。只纠正既有 branch 元数据写入，并在卡片投影处跳过不属于当前视图的指针，避免一次注定失败的详情读取。
+
 ## 2026-08-21：Direct 首轮停止后的空会话投影
 
 - 根因：后端为避免把只有 `initialize`/outbound raw frame、尚未完成 `session/new` 的占位数据误报为真实 ACP session，正确过滤了 `unavailable + no sessionId + empty Timeline` 的 Provider session；前端只实现了 Workflow/AUTO 的“初始化被中断”投影，却没有按 Direct attempt lifecycle 建立可继续对话的空壳，最终把合法的 `paused + cancelled` 状态降级为通用“ACP 会话失败”。
@@ -1812,3 +2284,52 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 水位与所有权：可见窗口与 Router replay 均绑定 `sessionId + timelineGeneration`；同 locator 新 session 原子清旧 retained/loss/head/permission。所有 live envelope 始终携带所属 root/Agent branch generation，只有 durable event 携带 revision；transient revision 可空，durable pair 来自同一次 TimelineStore mutation。Router 淘汰无 revision 的 transient event 时以最大 `endedSeq/seq` 建立 `lossWatermarkSeq`，sequence fence 不能伪装成 revision cursor 或被普通 ACK 清除，必须由匹配 owner/generation 且 `newestSeq` 已覆盖的 canonical head 消费。Router generation 只标识固定 cut，ACK 为 session-aware prefix ACK，只删除 observed cut 前缀并保留其后事件/新 loss；ACK 的 generation/revision/sequence 只由本次 full-head/delta canonical response 推进，显示层合并 replay 后的 `newestSeq` 不算 coverage。catch-up 固定 C0，同代 revision delta 与 sequence full-head 重读共用最多 4 次或 2 秒、更高代际至多一次 canonical refresh，随后只读一次 C1；不追逐移动 head。older/newer/latest 请求绑定 `{componentInstanceId,eventWindowKey,requestSeq,windowSessionId,windowTimelineGeneration}`，跨代响应熔断旧 cursor，旧 await/finally/layout commit 不得回写新会话。Activity/Tool detail query 要求非空 canonical sessionId，前后端候选和 response commit 精确隔离 session。Tool detail 在既有 owner token 上增加 `raw/status/content/title` 语义 source fingerprint；等价 raw 对象重建不重拉，真实同 position 变化只保留一个 latest trailing，error 与 retry 同样受该 source owner 隔离；同位置详情只补 canonical raw 缺失字段，不能覆盖更新的 output/status/content/title 或显式 null。
 - [ ] 回归与验收：Vitest 固定 historical cache/同会话 prop refresh 不改变 DOM 与锚点、sending→accepted→canonical、optimistic 单一有界 snapshot、terminal/迟到 transport reject、replay-only usage/permission、durable revision loss 与 transient sequence loss、visible replay 不充当 canonical sequence coverage、ordinary/recovery coordinator 互斥及优先级、请求期间 replay 与代际竞态、covered/newest 分域、切会话迟到 older/newer/latest、ACK 失败保留按钮、newer edge 自动交接并结清 recovery gate、historical recovery 显式/自然交接后恢复合法 live、冻结 RAF 首帧贴底、折叠 Activity 详情零请求、Activity/Tool 无 session owner 零请求与后端 session 隔离、Tool 同位置 canonical output 优先且等价 source 不重拉/真实 source 只 trailing 一次、Activity/Tool detail 一个 in-flight 加一个 latest trailing 及默认 288 窗口边界。完成 re-entry/router/pagination/chat-events/branch-view/live-flush/ChatContainer/Activity 相邻测试、TypeScript、生产构建和真实长会话 deep-link 验证后勾选。
 - 性能与过度设计评审：显式返回最新常态一次 latest page；newer 自动交接在低频自然触边时增加一次 fresh canonical head 读取，以换取分页请求期间 recovery 的正确 owner/ACK 语义；仅当 replay timeline generation 更高时至多额外一次 canonical refresh，发生 loss 才在 4 次/2 秒总预算内增加固定水位 delta/full-head I/O。每页按有效配置窗口即时裁剪；当前默认 `96 × 3 = 288` 项，页大小与窗口页数均来自 app config，不把 288 固化为协议上限。Router 每 branch 最多 64 项/512 KiB、全局最多 4 MiB；页面 live buffer、DOM 窗口与每 session optimistic snapshot 共用有效窗口容量并最迟 250ms drain，历史/暂停/recovery timeline 完全不进入页面 buffer。Agent branch refresh、统一 canonical-head coordinator 及每个展开 Activity/Tool detail 均最多一个 in-flight 加一个 latest trailing，连续 revision/source 只覆盖 O(1) 意图，不累计 Promise、DOM 或 JSONL 扫描请求；session filter 在 JSONL header 候选阶段执行，不增加第二次无界扫描。未新增 aggregate、第二状态机、持久队列、通用并发队列、轮询、依赖或无界 retry；复用 canonical timeline、Router replay/ACK、既有请求 fence 和原生滚动，复杂度与真实竞态匹配。
+
+## 2026-08-30：客户端直连 IM 远程干预与信息通知开始实施
+
+- [ ] 首期企业微信桌面进程内连接的本地实现已完成，只绑定一个安装级全局一对一私聊，不部署 Gold Band 云端网关；真实机器人、平台权限与 OS credential store 验收仍是发布阻塞项。微信等待稳定主动推送真实 PoC，不提供 pull-only 降级。
+- [x] 桌面与 IM 共用 `InterventionCommandService`；Runtime canonical state、完整 locator、request identity、owner、allowed actions、expiry 和 expected state 保持唯一权威来源，并由接口测试固定 first-writer-wins。
+- [x] IM outbox 使用 `Intervention` / `Information` typed payload，每个 channel + destination 分别投递；设置页提供 permission、elicitation、manual check、Run success、Run failure、ACP turn finished 六类通知开关和安静默认值。scheduled occurrence 的 completion、failure、attention 与 missed 不进入 IM outbox，继续使用桌面原生通知。
+- [ ] 用户级 `core.db` 的有界 outbox、入站幂等和消息绑定、OS credential store、Settings schema v12、企业微信渐进式设置 UI 与本地接口回归已完成；v11 -> v12 会清理四个已退役的 scheduled IM 偏好键，当前版本继续严格拒绝这些键。设置命令已按启停、通知、更换账号、真实重连和删除拆分，旧通用保存/断开入口已删除；binding 只在落盘并重建 target 后发布。剩余真实平台、Windows/macOS/Linux 凭据库与发布构建矩阵验收。
+- [x] 企业微信配置入口已改为官方 CLI 同源扫码授权：安装配置的产品来源标识已明确为 `source=maling`，后端有界轮询并直接写 keyring，前端不接收 Secret；单聊缺失 `chatid` 与同机器人连接冲突已按官方协议语义修正。`source=maling` 的跨企业适用范围仍需真实公司账号验收。
+- [x] ACP permission 的 IM request identity 使用接收 JSON-RPC 时固化到 pending state 与 typed `raw.requestId` 的原始 ID，timeline `permission-<id>` 仅作展示 identity，不做前缀解析；elicitation 继续使用 Gold Band 生成的 canonical ID。`askUserQuestion` 从 canonical pending schema typed 投影 scalar/array/free-text 全部问题与选项，仅单题单选生成 `{ fieldName: value }` 动作；permission 按钮按 ACP option 内的 typed `kind` 覆盖四类 canonical 语义与 Claude ExitPlanMode 模式选项，提交仍返回原始 `optionId`。
+- [x] permission IM 展示补齐结构化摘要：从 pending params 投影权限标题、正文、工具标题、最多 3 条路径与关键 scalar 参数，并合并任务/节点字段；企微权限卡把标题与描述提升到 `main_title`，完整描述进入 `sub_title_text`，`permissionTitle` 不再占用横向字段。企微远程最多渲染 2 个 typed 优先动作，超过容量时优先保留 `reject_once/allow_once`，其余选择引导桌面端处理；未知 kind、重复且不可区分选项不提交模糊授权。
+- [x] 企微主动推送协议已按官方 `@wecom/aibot-node-sdk` 修正为 `chatid + typed payload`，删除未定义的 `chat_type`；ACK 只依据顶层 `errcode`，平台未返回 `msgid` 时 delivery 仍可靠标记 sent 但不写伪 binding。
+- [x] 重启后的 lifecycle-to-outbox 链路补齐 task-scoped canonical event ID，避免不同 task 复用 `run-001` 时被误判重放；Direct Run completed 后的 ACP pending permission/elicitation 按当前 owner 与 request identity 继续可操作，manual check 仍拒绝终态 Run。
+- [x] tracing 初始化前移到 IM runtime、连接配置与 lifecycle subscriber 之前，启动期 target、凭据和连接错误可进入结构化日志。
+- [x] connector task 不再丢弃 `connect()` terminal error 或 abort 未排空的 128 容量转发队列；错误继续进入现有 generation-scoped connection manager。
+- [x] 企业微信模板卡片点击使用 `body.msgid` 幂等并校验私聊 actor，按钮 key 只携带 `delivery_id:action_index`，由本地 outbox 权威 `allowed_actions` 还原 typed action。
+- [x] permission/elicitation 的 IM expected state 指纹显式排除 `timelineIdentity` 展示回写，params/request schema 与允许动作变化仍保持 CAS 冲突。
+- [x] 2026-09-04 IM 设置清晰度优化：设置页按未接入、等待绑定、连接中、正在重连、可用、暂停、重新授权和连接冲突渐进呈现；凭据存在后六项通知在所有连接状态下可编辑。
+- [x] 2026-09-07 IM 授权、outbox、请求超时与重连可靠性闭环：入站动作按当前 durable binding 完整校验；`claim_due` 在写事务前对最多 32 条候选逐条 typed decode；pending/command channel 上限 64；网络错误按 1 秒起步、60 秒封顶持续重连，永久错误才发布 `ConnectionFailed`。
+- [x] 2026-09-16 IM 对既有桌面功能的隔离：零配置且无 cleanup 时不创建 runtime、访问 keyring/IM schema 或启动周期任务，首次配置惰性激活；空 delivery poll 只读返回，不争用 `core.db` writer lock；lifecycle 空 target 快速返回；退出按 admission gate → scheduler → 可取消 IM worker 收敛；ManualCheck 不再把可选 Timeline 文本作为 canonical 提交前置条件。默认开发恢复 Cargo 并行度，低内存模式改为显式 `dev:low-memory`。核心 IM 90 项、ManualCheck 17 项、配置 57 项、桌面 IM 20 项、Web 定向 32 项和 Node 脚本 2 项均通过，两个 Rust crate check、Web 生产构建、格式与差异检查通过；只读 Demo 在 1252px/640px 均无隐藏功能泄漏、横向溢出或 console error。
+- [x] 2026-09-16 桌面 Elicitation 与 IM transport 能力解耦：桌面 Accept 按完整 ACP `requestedSchema` 校验，自由文本、自定义答案和超过三个问题不再受远程表单动作集合限制；IM 入站继续只接受 delivery 实际发布的动作，pending、expected state、幂等与 first-writer-wins 保持共用。接口回归覆盖三类合法桌面答案、三类非法 schema 答案和远程动作不可用断言。
+- 性能与过度设计复评审：最多一个企业微信 WebSocket，lifecycle subscriber 只做 O(1) 有界投影且不等待网络；permission 摘要只读取当前 pending request；due/retention query plan 命中索引，队列、claim batch、租约和保留均有上限。未新增云网关、消息代理、第二套审批状态机、无界缓存或队列。
+
+## 2026-09-16：wb Windows 厂商字段固定为 MALING
+
+- [x] 根因：渠道 overlay 已正确写入 `productName`，但未设置 Tauri `bundle.publisher`。Windows `CompanyName` 因此回退 identifier 第二段，`wb` 得到 `maling` 而不是产品名 `MALING`。这属于正确渠道设计下的打包元数据未闭环，不是第二套身份模型。
+- [x] 方案：overlay 把 `bundle.publisher` 固定为该渠道 `productName`；`wb` 为 `MALING`，`default` 为 `Gold Band`。不新增独立厂商配置项，避免与产品名漂移。
+- [x] 验收：渠道 overlay 测试固定 publisher 与 productName 同源，以及真实 `wb.json` overlay 的 `MALING`；`npm run test:channel-config` 通过。
+- 性能与过度设计评审：只在构建 overlay JSON 增加一个常量字符串，不改变运行时 I/O、状态、缓存、队列或渲染；复用现有渠道 `productName`，无新依赖或 identity。
+
+## 2026-09-17：Git 版本探测按行解析并复用桌面 PATH
+
+- [x] 根因与方案：`2.36.0+` capability gate 设计正确。偶发「无法识别 Git 版本」来自探测实现不完整：Git 子进程未走桌面 PATH 适配层，且 `git --version` 要求整段 stdout 以前缀开头、非 0 即丢弃。补齐可执行文件解析与按行版本协议，不为特定发行版开特例。
+- [x] 实现：所有 Git 启动使用桌面 PATH 解析出的绝对路径并注入同一 PATH；Windows 追加 `Git\cmd` 常见安装位置并跳过 App Execution Alias 空文件。版本行从 stdout/stderr 中识别，能解析则按已安装版本比较门槛。成功路径进程内缓存，重新检测重新解析；版本号仍不持久化。分支选择器把识别失败与版本过低的触发器文案分开。
+- [x] 回归验收：Rust `git::tests` 19 项、`process` Windows PATH/suggested dirs、`git::source_control` 43 项、`git::github` 13 项通过；Web `git-requirement-dialog` 含 unavailable 文案区分，`git-branch-selector` 固定 unavailable 触发器不用 unsupported 标签。
+- 性能与过度设计评审：不新增状态机、版本矩阵、`git.path` 设置或磁盘缓存。PATH 遍历相对 `git --version` 可忽略；绝对路径进程内复用，避免每次 Git 命令读注册表。前端无新请求或 Store。
+
+## 2026-09-18：Agent 诊断横幅与 raw 原因分层
+
+- [x] 根因：ACP JSON-RPC 失败被收成 `acp.session-request-failed` 后丢掉 `raw`；横幅和问号都看不到 `Authentication required`。
+- [x] 方案：诊断 snapshot 增加可选 `raw`。异常横幅只显示「环境诊断未通过：{{reason}}」，`reason` 为 raw 原因首行；问号改为点击 Popover 展示完整 ACP `message` / 有界 stderr / `osError`。选择器与横幅使用同一条 compact 首行。
+- [x] 验收：`doctor_diagnostic_error_preserves_session_request_raw`；前端 copy、横幅和问号点击测试。
+- 性能与过度设计评审：不新增错误码分类或登录流。`raw` 为单次 JSON-RPC 错误对象；Popover 打开后才进入 DOM。
+
+## 2026-09-18：Agent 健康诊断对客错误保留有界故障 stderr
+
+- [x] 根因：doctor 失败把内部 `ACP adapter transport interrupted` Display 当作对客原因；已分类的 `npm error` / `ENOENT` stderr 只写 DEBUG，不进入诊断 snapshot。
+- [x] 方案：诊断 snapshot 使用结构化错误码；`acp.adapter-exited` / `acp.adapter-start-failed` / `acp.doctor-timeout` 由前端本地化。连接层缓存有界故障 stderr（2000 字符）到 `params.reason`，Agent 管理横幅和帮助 Tooltip 在主句下展示原始输出，选择器只展示主句。不改聊天 transport 文案、默认 INFO 策略，也不为 npx 特判。
+- [x] 验收：`doctor_initialize_exit_keeps_classified_failure_stderr` 固定 ENOENT 进入 `params.reason` 且不含英文 transport Display；映射测试覆盖 `acp.adapter-exited` / `acp.adapter-start-failed`；stderr 有界拼接测试通过。桌面 `background_doctor` 4 项通过。前端诊断 copy/横幅/Agent 管理/workflow 健康相关 9 个文件 37 项通过，`tsc -p web/tsconfig.build.json --noEmit` 通过。Doctor `session/new` 超时回归通过。
+- 性能与过度设计评审：复用既有 stderr 分类和 Git `params.reason` 模式。故障缓冲有界，仅 doctor 失败路径最多等待 250ms 排空 reader；无新状态机、缓存、队列或热路径扫描。

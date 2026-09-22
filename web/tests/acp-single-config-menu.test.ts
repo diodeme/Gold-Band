@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   AcpSingleConfigMenu,
+  ACP_AUTO_ACCEPT_GROUP_LABEL_CLASS,
   resolveAcpSingleConfigMenuValue,
   UNSPECIFIED_ACP_CONFIG_VALUE,
 } from '@/components/acp/AcpSingleConfigMenu';
@@ -12,6 +13,7 @@ import {
   isAcpComposerConfigValueOverflowing,
 } from '@/components/acp/AcpComposerConfigTrigger';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import i18n from '@/i18n';
 
 function renderMenu(props: React.ComponentProps<typeof AcpSingleConfigMenu>) {
   return renderToStaticMarkup(createElement(
@@ -66,5 +68,67 @@ describe('ACP single config menu', () => {
 
     expect(markup).toContain('w-full max-w-none');
     expect(markup).toContain('rounded-full');
+    expect(markup).not.toContain('data-acp-auto-accept-overlay="true"');
+  });
+
+  it('wires Auto Accept as a client overlay instead of a native permission mode', () => {
+    const markup = renderMenu({
+      label: '权限',
+      value: 'ask',
+      options: [{ id: 'ask', name: 'Ask' }, { id: 'agent', name: 'Agent' }],
+      unspecifiedLabel: '不指定',
+      onValueChange: () => {},
+      autoAccept: true,
+      autoAcceptLabel: '自动批准',
+      autoAcceptGroupLabel: 'MALING来帮你…',
+      appName: 'MALING',
+      onAutoAcceptChange: () => {},
+    });
+
+    expect(markup).toContain('data-acp-auto-accept-overlay="true"');
+    expect(markup).not.toContain('id="auto-accept"');
+    expect(markup).not.toContain('id="autoAccept"');
+  });
+
+  it('names the overlay group as the product helping the user', () => {
+    expect(i18n.t('acp.autoAcceptGroup', { appName: 'MALING', lng: 'zh-CN' })).toBe('MALING来帮你…');
+    expect(i18n.t('acp.autoAcceptGroup', { appName: 'Gold Band', lng: 'en' })).toBe('Gold Band will help you…');
+    expect(ACP_AUTO_ACCEPT_GROUP_LABEL_CLASS).toContain('pl-8');
+  });
+
+  it('shows Auto Accept on the permission trigger with the same composite separator as model and thought', () => {
+    const overlay = { autoAcceptLabel: '自动批准', onAutoAcceptChange: () => {} };
+    const agentSelected = renderMenu({
+      label: '权限',
+      value: 'agent',
+      options: [{ id: 'agent', name: 'Agent' }],
+      unspecifiedLabel: '不指定',
+      onValueChange: () => {},
+      autoAccept: true,
+      ...overlay,
+    });
+    const agentOnly = renderMenu({
+      label: '权限',
+      value: 'agent',
+      options: [{ id: 'agent', name: 'Agent' }],
+      unspecifiedLabel: '不指定',
+      onValueChange: () => {},
+      autoAccept: false,
+      ...overlay,
+    });
+    const unspecifiedWithAutoAccept = renderMenu({
+      label: '权限',
+      value: null,
+      options: [{ id: 'agent', name: 'Agent' }],
+      unspecifiedLabel: '不指定',
+      onValueChange: () => {},
+      autoAccept: true,
+      ...overlay,
+    });
+
+    expect(agentSelected).toContain('Agent · 自动批准');
+    expect(agentOnly).toContain('Agent');
+    expect(agentOnly).not.toContain('Agent · 自动批准');
+    expect(unspecifiedWithAutoAccept).toContain('不指定 · 自动批准');
   });
 });

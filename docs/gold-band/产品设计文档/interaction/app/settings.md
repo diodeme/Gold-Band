@@ -174,7 +174,7 @@
 
 - 外观权威字段改为 `appearance`：`schemaVersion = 2`、稳定 `themeId`、`colorScheme = system | light | dark`、按主题隔离的 `visualQualityByTheme`。旧 `desktopTheme` 在 settings schema v5 一次性迁移后删除，不双写。
 - 个性化权威字段为 `personalization`：`schemaVersion = 4`，显式保存两套有序字体栈、字号、按明暗模式隔离的壁纸来源/可见度以及 Agent / 个人头像图片与形状的 `source`。settings schema v8 破坏式删除 v1 单字体字段；settings schema v9 增加单壁纸；settings schema v10 将它一次性升级为 light/dark 两份配置，不保留双读。主题来源持续跟随当前主题，用户资产历史全局共享。
-- 内置 `builtin.gold-band`、`builtin.tech-neutral` 分别位于独立 `themes/*` 声明式包目录，共用 DTCG token、manifest/recipe/preset、Style Dictionary alias 解析、JSON Schema/Ajv 与 Zod/Rust 双端契约；构建产出的 Catalog、CSS recipe 和 asset manifest 是 Web 与 Tauri 的共同输入，业务组件不得读取具体主题 ID。
+- 内置 `builtin.gold-band`、`builtin.tech-neutral` 分别位于独立 `themes/*` 声明式包目录，共用 DTCG token、manifest/recipe/preset、Style Dictionary alias 解析、JSON Schema/Ajv 与 Zod/Rust 双端契约；构建产出的 Catalog、CSS recipe 和 asset manifest 是 Web 与 Tauri 的共同输入，业务组件不得读取具体主题 ID。主题 Catalog、Schema、主题包 `dist` 文本产物、Web generated catalog/CSS 与 Agent SVG 图标在仓库层固定为 LF 文本；`.gitattributes` 的精确路径规则优先于本机 `core.autocrlf`，避免生成脚本重写相同内容后在 Windows Changes 中反复出现假变更。
 - 设置页先选择设计风格主题包，再选择明暗模式；`system` 只解析当前主题包内的 light/dark。当前两个内置主题均不声明视觉质量能力，因此不显示质量档控件。
 - 主题运行时只更新根 `data-theme / data-color-scheme / data-visual-quality / data-material-model`、封闭 CSS variables 与原生窗口安全底色，不请求会话、不重建 timeline 或编辑器。
 - 共享 shadcn/ui、prompt-kit 与应用壳以稳定 `data-theme-role` 消费材质 recipe；主题卡在宽内容区三列，窄窗口自动单列。
@@ -264,6 +264,12 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 保持唤醒同时展示用户启用值与系统实际生效值。只有用户开启、至少一个 job 为 enabled 且应用仍在运行时才生效；平台获取失败展示 `SCHEDULED_POWER_INHIBITOR_FAILED`，但不改变任务调度与 occurrence 结果。
 - Windows、macOS 和 Linux 使用 `keepawake 0.6.0` 的统一进程级 guard；Windows 走 System Power API，macOS 走 IOKit，Linux 走系统 inhibit 后端。配置允许显示器休眠，只阻止空闲导致的系统自动睡眠，应用退出时必须释放 guard。
 - macOS 不是后续兼容项，而是 Task 6 的同级目标平台：实现必须保留 `objc2-io-kit`/IOKit 后端与相同的启用、失效、退出释放语义。Windows 开发机无法替代 macOS 编译或真机验证；发布验收需要在 macOS CI 或真机上补充编译和开关 smoke test。
-- occurrence 默认保留 30 天。清理仅删除 SQLite 中过期的 `succeeded/failed/skipped/missed` 行，保留 `attention_required`、非终态和活动 Run 链接；Task、Run、Round、ACP 文件与产物不属于该清理事务。
+- occurrence 默认保留 30 天。清理仅删除 SQLite 中过期且 `accepted_at IS NULL` 的 `succeeded/failed/skipped/missed` 诊断行，保留全部 accepted execution history、`attention_required`、非终态和活动 Run 链接；Task、Run、Round、ACP 文件与产物不属于该清理事务。
 - 2026-08-09 起 `ScheduledRuntimeSettings` 只在通用设置页展示；定时任务管理页移除重复入口，但继续由同一命令和状态模型服务设置页，不增加页面级副本。
 - 2026-08-11 起定时任务运行设置接入前端 stale-while-revalidate 缓存：App 启动后台预取一次填充模块级缓存，进入设置页与在「通用」标签页间切换时命中缓存立即渲染，不再出现「加载中…」闪烁；缓存命中后在新鲜期内不重复请求，过期或保存成功后才静默刷新动态字段（生效情况、启用任务数、电源错误码）。该缓存以独立运行时缓存形态存在，不并入启动静态快照 `AppBootstrapVm`，因为这些值混合了运行时状态而非纯静态配置。
+
+## 12. IM 远程干预与通知
+
+- 设置页「通用」是 IM 接入、私聊绑定和六类通知偏好的唯一可见入口；权威事实仍是后端 IM settings 与 connection generation。
+- 企业微信标题行只展示平台名和状态徽章，不展示“安装级目标”等实现注释；未接入时的操作说明使用“尚未接入企业微信…”。
+- 2026-09-17 起 IM 设置接入与定时任务相同的前端 stale-while-revalidate 缓存：App 启动后台预取一次填充模块级缓存，进入设置页与在「通用」标签页间切换时命中缓存立即渲染，不再出现「加载中…」闪烁。缓存命中后在新鲜期内不重复请求；过期后后台静默刷新，保存/启停/扫码/删除成功后写回缓存，connection snapshot 按 generation 单调合入。该缓存只是展示投影，不并入 `AppBootstrapVm`，也不是第二事实源。迟到 fetch 不得覆盖更新的保存结果，也不得用更低 generation 覆盖 live snapshot。已有可展示数据时刷新不得退回「加载中…」。

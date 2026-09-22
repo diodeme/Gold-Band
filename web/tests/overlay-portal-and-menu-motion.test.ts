@@ -2,6 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import {
+  overlayCollisionPadding,
+  resolveOverlayCollisionBoundary,
+} from '@/lib/portal-container';
+
 const readSource = (relativePath: string) => fs.readFileSync(path.resolve(__dirname, relativePath), 'utf8');
 
 describe('overlay portal and positioned menu contracts', () => {
@@ -14,6 +19,8 @@ describe('overlay portal and positioned menu contracts', () => {
     expect(index.indexOf('id="gold-band-overlay-portal-host"')).toBeGreaterThan(index.indexOf('id="root"'));
     expect(styles).toMatch(/#gold-band-overlay-portal-host\s*\{[^}]*overflow:\s*visible;[^}]*contain:\s*none;[^}]*transform:\s*none;[^}]*filter:\s*none;[^}]*backdrop-filter:\s*none;/su);
     expect(portalContainer).toContain("export const overlayPortalHostId = 'gold-band-overlay-portal-host';");
+    expect(portalContainer).toContain('export const CollisionBoundaryContext');
+    expect(portalContainer).toContain('export function useOverlayPositioning');
 
     for (const file of ['dialog.tsx', 'sheet.tsx', 'alert-dialog.tsx']) {
       const source = readSource(`../src/components/ui/${file}`);
@@ -44,5 +51,30 @@ describe('overlay portal and positioned menu contracts', () => {
       expect(visual).toMatch(/slide-in-from/u);
       expect(visual).toMatch(/overflow-(?:hidden|x-hidden)/u);
     }
+  });
+
+  it('keeps conversation-column menus inside the conversation pane collision boundary', () => {
+    const shell = readSource('../src/components/workspace/WorkspaceShell.tsx');
+    const portalContainer = readSource('../src/lib/portal-container.ts');
+    expect(portalContainer).toContain("export const conversationOverlayCollisionBoundary = 'conversation'");
+    expect(shell).toContain('data-overlay-collision-boundary={conversationOverlayCollisionBoundary}');
+    expect(shell).toContain('<CollisionBoundaryContext.Provider value={conversationCollisionBoundary}>');
+
+    for (const file of ['popover.tsx', 'dropdown-menu.tsx', 'select.tsx', 'context-menu.tsx']) {
+      const source = readSource(`../src/components/ui/${file}`);
+      expect(source).toContain('useOverlayPositioning');
+      expect(source).toContain('{...positioning.collisionProps}');
+      expect(source).toContain('overlayCollisionMaxWidthClassName');
+      expect(source).toContain('data-overlay-collision-boundary={positioning.constraintBoundary}');
+    }
+  });
+
+  it('uses the conversation context unless a caller overrides the collision boundary', () => {
+    const context = { id: 'conversation' } as HTMLElement;
+    const explicit = { id: 'explicit' } as HTMLElement;
+    expect(resolveOverlayCollisionBoundary(undefined, context)).toBe(context);
+    expect(resolveOverlayCollisionBoundary(explicit, context)).toBe(explicit);
+    expect(resolveOverlayCollisionBoundary(null, context)).toBeUndefined();
+    expect(overlayCollisionPadding).toBe(8);
   });
 });

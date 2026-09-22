@@ -44,10 +44,14 @@ describe('conversation composer autosize contract', () => {
       '<div className={CONVERSATION_HOME_COMPOSER_LAYOUT.inputScrollContainerClassName}>',
     );
     // chip 与斜杠标签的绝对定位 span 必须位于滚动包装层内部（在其开标签之后渲染）。
+    // 两类 leading adornment 统一使用 main 引入的 COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME
+    // 槽位常量（absolute z-10 inline-flex … + left-0 top-2），不再各自硬编码类名字符串。
     const wrapperIndex = composerSource.indexOf(
       'CONVERSATION_HOME_COMPOSER_LAYOUT.inputScrollContainerClassName',
     );
-    const chipIndex = composerSource.indexOf('absolute left-0 top-2 z-10 inline-flex');
+    const chipIndex = composerSource.indexOf(
+      '${COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME} left-0 top-2',
+    );
     expect(wrapperIndex).toBeGreaterThan(-1);
     expect(chipIndex).toBeGreaterThan(wrapperIndex);
   });

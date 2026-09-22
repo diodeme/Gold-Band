@@ -43,6 +43,21 @@ describe('ACP follow-up composer draft store', () => {
     });
   });
 
+  it('reconstructs the composer role tag from the queued role snapshot', () => {
+    expect(queuedPromptToAcpComposerDraft({
+      content: '',
+      quotes: [],
+      attachmentPaths: [],
+      role: { profileId: 'pf-dev', name: '开发', content: '完整角色定义' },
+    }).content).toBe('@开发 ');
+    expect(queuedPromptToAcpComposerDraft({
+      content: '爱仕达',
+      quotes: [],
+      attachmentPaths: [],
+      role: { profileId: 'pf-dev', name: '开发', content: '完整角色定义' },
+    }).content).toBe('@开发 爱仕达');
+  });
+
   it('restores text and attachments by full session locator while isolating another session', () => {
     const store = new AcpComposerDraftStore();
     const firstKey = 'project-a/task-a/run-1/round-1/node-a/attempt-1/root';

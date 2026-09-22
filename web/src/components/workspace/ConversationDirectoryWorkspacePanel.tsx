@@ -9,12 +9,14 @@ import { listConversationDirectory, openConversationDirectoryPathInFileManager, 
 import { fileTreeIconStateClassName, fileTreeRowStateClassName } from '@/lib/file-tree-row-state';
 import type { WorkspaceDirectoryEntryVm, WorkspaceFileSnapshotVm } from '@/types';
 import type { FileWorkspaceLayoutVm } from '@/types';
-import { conversationDirectoryWorkspaceDataKey, type ConversationDirectoryWorkspaceResource } from './right-workspace-context';
+import { conversationDirectoryWorkspaceDataKey, type ConversationDirectoryWorkspaceResource, useRightWorkspaceCommands } from './right-workspace-context';
 import { WorkspaceFileEditor } from './files/WorkspaceFileEditor';
 import { FileWorkspaceSplitLayout } from './files/FileWorkspacePanel';
 import { WorkspaceDirectoryContextMenu } from './files/WorkspaceDirectoryContextMenu';
 import { isMarkdownDocumentPath } from './files/markdown-document';
 import { ReadonlyMarkdownWorkspaceViewer } from './files/ReadonlyMarkdownWorkspaceViewer';
+import { isHtmlDocumentPath } from './browser/web-target';
+import { openWebTarget } from './browser/open-web-target';
 
 type Node = WorkspaceDirectoryEntryVm & { id: string; children: Node[] | null; loading: boolean };
 
@@ -86,6 +88,49 @@ function ConversationDirectoryTreeRow({ node, style }: NodeRendererProps<Node>) 
         />
       </ContextMenuContent>
     </ContextMenu>
+  );
+}
+
+function ConversationDirectoryTextPreview({
+  resource,
+  selected,
+  snapshot,
+}: {
+  resource: ConversationDirectoryWorkspaceResource;
+  selected: WorkspaceDirectoryEntryVm;
+  snapshot: Extract<WorkspaceFileSnapshotVm, { kind: 'text' }>;
+}) {
+  const { t } = useTranslation();
+  const workspace = useRightWorkspaceCommands();
+  const htmlDocument = isHtmlDocumentPath(selected.canonicalPath);
+  const openHtmlInBrowser = useCallback(async () => {
+    if (!htmlDocument || !workspace.scopeKey) return;
+    await openWebTarget(selected.canonicalPath, {
+      projectId: resource.locator.projectId,
+      scopeKey: workspace.scopeKey,
+      openResource: workspace.openResource,
+      browserTitle: t('workspace.browser.title'),
+    });
+  }, [htmlDocument, resource.locator.projectId, selected.canonicalPath, t, workspace.openResource, workspace.scopeKey]);
+  if (isMarkdownDocumentPath(selected.canonicalPath)) {
+    return <ReadonlyMarkdownWorkspaceViewer documentKey={`${resource.key}:${selected.canonicalPath}`} value={snapshot.content} />;
+  }
+  return (
+    <WorkspaceFileEditor
+      documentKey={`${resource.key}:${selected.canonicalPath}`}
+      value={snapshot.content}
+      editable={false}
+      language={snapshot.language}
+      highlight
+      contentRevision={0}
+      target={null}
+      targetRevision={0}
+      onChange={() => undefined}
+      onSave={() => undefined}
+      initialStateJson={null}
+      onPersistState={() => undefined}
+      onOpenInBrowser={htmlDocument ? openHtmlInBrowser : undefined}
+    />
   );
 }
 
@@ -191,9 +236,7 @@ export function ConversationDirectoryWorkspacePanel({ resource, layout }: { reso
   const onCopyFailed = useCallback(() => showActionFailure('copy'), [showActionFailure]);
   const content = !selected ? <div className="flex h-full items-center justify-center text-xs text-muted-foreground">{t('workspace.filesPanel.chooseFromTree')}</div>
     : !snapshot ? <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="size-3.5 animate-spin" />{t('workspace.filesPanel.loadingFile')}</div>
-      : snapshot.kind === 'text' ? (isMarkdownDocumentPath(selected.canonicalPath)
-        ? <ReadonlyMarkdownWorkspaceViewer documentKey={`${resource.key}:${selected.canonicalPath}`} value={snapshot.content} />
-        : <WorkspaceFileEditor documentKey={`${resource.key}:${selected.canonicalPath}`} value={snapshot.content} editable={false} language={snapshot.language} highlight contentRevision={0} target={null} targetRevision={0} onChange={() => undefined} onSave={() => undefined} initialStateJson={null} onPersistState={() => undefined} />)
+      : snapshot.kind === 'text' ? <ConversationDirectoryTextPreview resource={resource} selected={selected} snapshot={snapshot} />
         : snapshot.kind === 'image' ? <div className="flex h-full items-center justify-center overflow-auto p-4"><img src={workspaceFilePreviewUrl(snapshot.previewGrant.token)} alt={snapshot.name} className="max-h-full max-w-full object-contain" /></div>
           : <div className="flex h-full items-center justify-center text-xs text-muted-foreground">{t('workspace.filesPanel.unsupportedTitle')}</div>;
   const tree = <ConversationDirectoryTree roots={roots} loading={loading} selectedPath={selected?.canonicalPath ?? null} actionFailure={actionFailure} onLoadDirectory={load} onOpenFile={openFile} onCopyFailed={onCopyFailed} onOpenInFileManager={openInManager} />;

@@ -4,6 +4,7 @@ type Translate = (key: string, options?: Record<string, unknown>) => string;
 export function workflowTemplateDisplayName(template: WorkflowTemplate, t: Translate): string {
   if (template.id === 'default') return t('taskList.create.defaultFullWorkflow');
   if (template.id === 'default-lightweight') return t('taskList.create.defaultLightweightWorkflow');
+  if (template.id === 'wb-development-cicd') return t('memory.workflow');
   return template.name;
 }
 

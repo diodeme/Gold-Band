@@ -3,6 +3,10 @@ import { CheckIcon, ChevronRightIcon, CircleIcon } from "lucide-react"
 import { ContextMenu as ContextMenuPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import {
+  overlayCollisionMaxWidthClassName,
+  useOverlayPositioning,
+} from "@/lib/portal-container"
 
 function ContextMenu({
   ...props
@@ -78,12 +82,17 @@ function ContextMenuSubTrigger({
 function ContextMenuSubContent({
   className,
   children,
+  collisionBoundary,
+  collisionPadding,
   ...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.SubContent>) {
+  const positioning = useOverlayPositioning(collisionBoundary as HTMLElement | null | undefined, collisionPadding)
   return (
     <ContextMenuPrimitive.SubContent
       data-slot="context-menu-sub-content-positioner"
+      data-overlay-collision-boundary={positioning.constraintBoundary}
       className="group/context-menu-sub-positioner z-50 outline-none"
+      {...positioning.collisionProps}
       {...props}
     >
       <div
@@ -92,6 +101,7 @@ function ContextMenuSubContent({
         data-theme-material-layer="isolated"
         className={cn(
           "relative min-w-[8rem] origin-(--radix-context-menu-content-transform-origin) overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-lg group-data-[side=bottom]/context-menu-sub-positioner:slide-in-from-top-2 group-data-[side=left]/context-menu-sub-positioner:slide-in-from-right-2 group-data-[side=right]/context-menu-sub-positioner:slide-in-from-left-2 group-data-[side=top]/context-menu-sub-positioner:slide-in-from-bottom-2 group-data-[state=closed]/context-menu-sub-positioner:animate-out group-data-[state=closed]/context-menu-sub-positioner:fade-out-0 group-data-[state=closed]/context-menu-sub-positioner:zoom-out-95 group-data-[state=open]/context-menu-sub-positioner:animate-in group-data-[state=open]/context-menu-sub-positioner:fade-in-0 group-data-[state=open]/context-menu-sub-positioner:zoom-in-95",
+          positioning.constrainWidth && overlayCollisionMaxWidthClassName,
           className
         )}
       >
@@ -104,13 +114,18 @@ function ContextMenuSubContent({
 function ContextMenuContent({
   className,
   children,
+  collisionBoundary,
+  collisionPadding,
   ...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.Content>) {
+  const positioning = useOverlayPositioning(collisionBoundary as HTMLElement | null | undefined, collisionPadding)
   return (
     <ContextMenuPrimitive.Portal>
       <ContextMenuPrimitive.Content
         data-slot="context-menu-content-positioner"
+        data-overlay-collision-boundary={positioning.constraintBoundary}
         className="group/context-menu-positioner z-50 outline-none"
+        {...positioning.collisionProps}
         {...props}
       >
         <div
@@ -119,6 +134,7 @@ function ContextMenuContent({
           data-theme-material-layer="isolated"
           className={cn(
             "relative max-h-(--radix-context-menu-content-available-height) min-w-[8rem] origin-(--radix-context-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md group-data-[side=bottom]/context-menu-positioner:slide-in-from-top-2 group-data-[side=left]/context-menu-positioner:slide-in-from-right-2 group-data-[side=right]/context-menu-positioner:slide-in-from-left-2 group-data-[side=top]/context-menu-positioner:slide-in-from-bottom-2 group-data-[state=closed]/context-menu-positioner:animate-out group-data-[state=closed]/context-menu-positioner:fade-out-0 group-data-[state=closed]/context-menu-positioner:zoom-out-95 group-data-[state=open]/context-menu-positioner:animate-in group-data-[state=open]/context-menu-positioner:fade-in-0 group-data-[state=open]/context-menu-positioner:zoom-in-95",
+            positioning.constrainWidth && overlayCollisionMaxWidthClassName,
             className
           )}
         >

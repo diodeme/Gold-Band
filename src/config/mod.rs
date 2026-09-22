@@ -25,6 +25,13 @@ fn embedded_project_app_config() -> &'static ProjectAppConfig {
             .validate()
             .expect("embedded projectIdentity config is valid");
         config
+            .im
+            .as_ref()
+            .expect("embedded app-config.toml defines im")
+            .wecom_scan_auth
+            .validate()
+            .expect("embedded WeCom scan auth config is valid");
+        config
     })
 }
 
@@ -679,7 +686,7 @@ pub struct DesktopAvailableUpdate {
 
 // ── MCP Server Configuration ──
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerConfig {
     pub id: String,
@@ -699,7 +706,7 @@ fn default_enabled() -> bool {
 }
 
 /// 对标 Zed OAuthClientSettings
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OAuthClientConfig {
     pub client_id: String,
@@ -707,7 +714,7 @@ pub struct OAuthClientConfig {
     pub client_secret: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "transport", rename_all = "camelCase")]
 pub enum McpTransportConfig {
     Stdio {
@@ -745,25 +752,29 @@ pub struct McpServerHealthResult {
     /// 对标 Zed ClientSecretRequired — 需要输入 client_secret
     #[serde(skip_serializing_if = "Option::is_none")]
     pub needs_client_secret: Option<bool>,
-    /// tools/list 发现的工具列表（仅 Running 状态时填充）
+    /// tools/list 发现的工具列表（仅配置诊断通过时填充）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolInfo>,
 }
 
-/// MCP 服务器状态机（对标 Zed ContextServerState）
+/// MCP 配置最近一次显式诊断的瞬时状态。
+///
+/// stdio 诊断进程会在握手完成后退出，因此这里不能表达正式会话实例的运行状态；
+/// 正式连接由 ACP Agent 在 session setup 中拥有。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum McpServerState {
-    /// 正在启动（握手进行中）
-    Starting,
-    /// 运行中，持有已发现的工具列表
-    Running { tools: Vec<ToolInfo> },
-    /// 已停止（用户禁用或手动停止）
-    Stopped,
-    /// 启动失败
-    Error { message: String },
+pub enum McpServerDiagnosticState {
+    Checking,
+    Passed {
+        tools: Vec<ToolInfo>,
+    },
+    Failed {
+        message: String,
+    },
     /// 需要 OAuth 认证
-    AuthRequired { auth_url: Option<String> },
+    AuthRequired {
+        auth_url: Option<String>,
+    },
 }
 
 /// MCP 工具信息（从 tools/list 响应解析）
@@ -812,6 +823,49 @@ pub enum SkillSource {
     Project,
 }
 
+pub const CURRENT_BROWSER_PREFERENCES_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BrowserSearchEngine {
+    #[default]
+    Baidu,
+    Google,
+    Bing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserPreferences {
+    #[serde(default = "browser_preferences_schema_version")]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub search_engine: BrowserSearchEngine,
+    #[serde(default = "browser_preference_enabled")]
+    pub open_local_links_in_browser: bool,
+    #[serde(default = "browser_preference_enabled")]
+    pub open_web_links_in_browser: bool,
+}
+
+impl Default for BrowserPreferences {
+    fn default() -> Self {
+        Self {
+            schema_version: CURRENT_BROWSER_PREFERENCES_SCHEMA_VERSION,
+            search_engine: BrowserSearchEngine::Baidu,
+            open_local_links_in_browser: true,
+            open_web_links_in_browser: true,
+        }
+    }
+}
+
+fn browser_preferences_schema_version() -> u32 {
+    CURRENT_BROWSER_PREFERENCES_SCHEMA_VERSION
+}
+
+fn browser_preference_enabled() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsConfig {
@@ -825,6 +879,8 @@ pub struct SettingsConfig {
     pub appearance: Option<AppearancePreference>,
     pub personalization: Option<PersonalizationPreference>,
     pub desktop_language: Option<DesktopLanguage>,
+    #[serde(default)]
+    pub browser: BrowserPreferences,
     pub desktop_updater_url_override: Option<String>,
     #[serde(default, with = "managed_agents")]
     pub agents: Option<BTreeMap<ManagedAgentId, ManagedAgentConfig>>,
@@ -835,6 +891,8 @@ pub struct SettingsConfig {
     pub scheduled_keep_awake_enabled: Option<bool>,
     pub scheduled_completion_notifications_enabled: Option<bool>,
     pub scheduled_occurrence_retention_days: Option<u16>,
+    #[serde(default)]
+    pub im_integrations: crate::im::ImIntegrationSettings,
     #[serde(default)]
     pub context_servers: Option<Vec<McpServerConfig>>,
     // —— multica（全 Option<T>，对照 metrics 三字段）——
@@ -855,7 +913,15 @@ pub struct SettingsConfig {
     pub desktop_remote_skill_source: Option<String>,
 }
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 11;
+pub fn wecom_scan_auth_config() -> &'static WeComScanAuthConfig {
+    &embedded_project_app_config()
+        .im
+        .as_ref()
+        .expect("embedded app-config.toml defines im")
+        .wecom_scan_auth
+}
+
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 12;
 const USE_LOCAL_CLAUDE: bool = false;
 
 const LEGACY_CODEX_ACP_PACKAGE_PREFIX: &str = "@zed-industries/codex-acp";
@@ -926,6 +992,13 @@ impl SettingsConfig {
         }
         if version < 11 {
             // The agents serde boundary now omits built-in launch fields on writeback.
+            migrated = true;
+        }
+        if version < 12 {
+            settings
+                .entry("imIntegrations".to_string())
+                .or_insert_with(|| serde_json::json!({ "channels": [] }));
+            migrate_removed_im_notification_preferences(settings);
             migrated = true;
         }
         if migrated {
@@ -1115,6 +1188,37 @@ fn migrate_scheduled_runtime_settings(settings: &mut serde_json::Map<String, ser
     settings
         .entry("scheduledOccurrenceRetentionDays".to_string())
         .or_insert_with(|| serde_json::json!(DEFAULT_SCHEDULED_OCCURRENCE_RETENTION_DAYS));
+}
+
+fn migrate_removed_im_notification_preferences(
+    settings: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    let Some(channels) = settings
+        .get_mut("imIntegrations")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|integrations| integrations.get_mut("channels"))
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+
+    for channel in channels {
+        let Some(notifications) = channel
+            .as_object_mut()
+            .and_then(|channel| channel.get_mut("notifications"))
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            continue;
+        };
+        for field in [
+            "scheduledCompletion",
+            "scheduledFailure",
+            "scheduledAttention",
+            "scheduledMissed",
+        ] {
+            notifications.remove(field);
+        }
+    }
 }
 
 fn migrate_codex_acp_package(
@@ -1320,11 +1424,37 @@ pub struct ProjectAppConfig {
     pub notification_auto_dismiss_target_secs: Option<u64>,
     pub require_local_claude_executable: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub im: Option<ImAppConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_layout: Option<WorkspaceLayoutConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_files: Option<WorkspaceFilesConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_files: Option<TurnFilesConfig>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImAppConfig {
+    pub wecom_scan_auth: WeComScanAuthConfig,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeComScanAuthConfig {
+    pub source: String,
+}
+
+impl WeComScanAuthConfig {
+    fn validate(&self) -> Result<()> {
+        let source = self.source.trim();
+        if source.is_empty() || source.len() > 64 || !source.is_ascii() {
+            return Err(anyhow!(
+                "WeCom scan auth source must be non-empty ASCII with at most 64 bytes"
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1647,10 +1777,25 @@ impl Default for WorkspaceFilesConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticError {
+    pub code: String,
+    #[serde(default = "default_diagnostic_error_params")]
+    pub params: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<serde_json::Value>,
+}
+
+fn default_diagnostic_error_params() -> serde_json::Value {
+    serde_json::json!({})
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderDiagnosticSnapshot {
     pub available: bool,
-    pub reason: Option<String>,
+    #[serde(default)]
+    pub error: Option<DiagnosticError>,
     pub checked_at: String,
     pub capabilities: Option<serde_json::Value>,
 }
@@ -1730,7 +1875,7 @@ impl Default for RuntimeConfig {
         );
         let base = Self {
             log_level: RuntimeLogLevel::Info,
-            log_prompts: true,
+            log_prompts: false,
             log_provider_command: true,
             log_retention_days: 30,
             console_theme: ConsoleThemeName::GoldBand,
@@ -2037,15 +2182,15 @@ impl RuntimeConfig {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpAdapterConfig, AppearancePreference, ColorSchemePreference, ConsoleThemeName,
-        ConversationDirectConfig, ConversationRunMode, ConversationRunModeEntry,
-        DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS, DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT,
-        DesktopAvailableUpdate, DesktopLanguage, DesktopUpdateBadgeState, FontSizePreference,
-        FontStackPreference, ManagedAgentConfig, ManagedAgentId, MulticaAccountRef,
-        RemoteCompletedTask, RemoteTaskConversation, RemoteWorkspaceRef,
-        PersonalizationPreference, ProjectAppConfig, ProjectIdentityConfig, RuntimeConfig,
-        RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery, TurnFilesConfig,
-        VisualQuality, WallpaperImagePreference, WorkspaceLayoutConfig,
+        AcpAdapterConfig, AppearancePreference, BrowserPreferences, BrowserSearchEngine,
+        ColorSchemePreference, ConsoleThemeName, ConversationDirectConfig, ConversationRunMode,
+        ConversationRunModeEntry, DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS,
+        DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT, DesktopAvailableUpdate, DesktopLanguage,
+        DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, ManagedAgentConfig,
+        ManagedAgentId, MulticaAccountRef, PersonalizationPreference, ProjectAppConfig,
+        ProjectIdentityConfig, RemoteCompletedTask, RemoteTaskConversation, RuntimeConfig,
+        RuntimeLogLevel, RemoteWorkspaceRef, SettingsConfig, StateConfig, SystemPromptDelivery,
+        TurnFilesConfig, VisualQuality, WallpaperImagePreference, WorkspaceLayoutConfig,
         catalog_agent_default_config, project_identity_config,
     };
     use crate::agent_catalog::builtin_agent_catalog;
@@ -2070,6 +2215,32 @@ mod tests {
         personalization.typography.editor.font_size =
             FontSizePreference::Custom { px: editor_size };
         personalization
+    }
+
+    #[test]
+    fn browser_preferences_have_versioned_defaults_and_roundtrip() {
+        let settings: SettingsConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(settings.browser, BrowserPreferences::default());
+        assert!(settings.browser.open_local_links_in_browser);
+        assert!(settings.browser.open_web_links_in_browser);
+
+        let custom = SettingsConfig {
+            browser: BrowserPreferences {
+                schema_version: 1,
+                search_engine: BrowserSearchEngine::Google,
+                open_local_links_in_browser: false,
+                open_web_links_in_browser: false,
+            },
+            ..SettingsConfig::default()
+        };
+        let roundtripped: SettingsConfig =
+            serde_json::from_value(serde_json::to_value(custom).unwrap()).unwrap();
+        assert_eq!(
+            roundtripped.browser.search_engine,
+            BrowserSearchEngine::Google
+        );
+        assert!(!roundtripped.browser.open_local_links_in_browser);
+        assert!(!roundtripped.browser.open_web_links_in_browser);
     }
 
     #[test]
@@ -2557,6 +2728,10 @@ mod tests {
         assert_eq!(config.desktop_language, DesktopLanguage::ZhCn);
         assert_eq!(config.personalization, PersonalizationPreference::default());
         assert!(matches!(config.log_level, RuntimeLogLevel::Info));
+        assert!(
+            !config.log_prompts,
+            "runtime.log must not record prompt bodies by default"
+        );
     }
 
     #[test]
@@ -2880,7 +3055,10 @@ mod tests {
         let codex = &agents[&ManagedAgentId::from_str("codex-acp").unwrap()];
         assert_eq!(
             codex.adapter.args,
-            catalog_agent_default_config("codex-acp").unwrap().adapter.args
+            catalog_agent_default_config("codex-acp")
+                .unwrap()
+                .adapter
+                .args
         );
     }
 
@@ -2955,6 +3133,99 @@ mod tests {
             Some(true)
         );
         assert_eq!(settings.scheduled_occurrence_retention_days, Some(30));
+    }
+
+    #[test]
+    fn embedded_app_config_defines_wecom_scan_source() {
+        assert_eq!(super::wecom_scan_auth_config().source, "maling");
+        assert!(super::wecom_scan_auth_config().validate().is_ok());
+    }
+
+    #[test]
+    fn settings_v10_adds_empty_im_integrations_without_credentials() {
+        let (settings, migrated) =
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "settingsSchemaVersion": 10
+            }))
+            .unwrap();
+
+        assert!(migrated);
+        assert_eq!(
+            settings.settings_schema_version.0,
+            super::CURRENT_SETTINGS_SCHEMA_VERSION
+        );
+        assert!(settings.im_integrations.channels.is_empty());
+        let serialized = serde_json::to_string(&settings).unwrap();
+        for forbidden in ["secret", "accessToken", "refreshToken", "updateToken"] {
+            assert!(!serialized.contains(forbidden), "found {forbidden}");
+        }
+    }
+
+    #[test]
+    fn settings_v11_adds_empty_im_integrations() {
+        let (settings, migrated) =
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "settingsSchemaVersion": 11,
+                "imIntegrations": {
+                    "channels": [{
+                        "kind": "weCom",
+                        "enabled": false,
+                        "publicIdentity": "bot-id",
+                        "notifications": {
+                            "permission": true,
+                            "elicitation": true,
+                            "manualCheck": true,
+                            "runSuccess": false,
+                            "runFailure": true,
+                            "acpTurnFinished": false,
+                            "scheduledCompletion": true,
+                            "scheduledFailure": true,
+                            "scheduledAttention": true,
+                            "scheduledMissed": true
+                        }
+                    }]
+                }
+            }))
+            .unwrap();
+
+        assert!(migrated);
+        assert_eq!(
+            settings.settings_schema_version.0,
+            super::CURRENT_SETTINGS_SCHEMA_VERSION
+        );
+        assert_eq!(settings.im_integrations.channels.len(), 1);
+        let notifications = &settings.im_integrations.channels[0].notifications;
+        assert!(notifications.permission);
+        assert!(notifications.elicitation);
+        assert!(notifications.manual_check);
+        assert!(!notifications.run_success);
+        assert!(notifications.run_failure);
+        assert!(!notifications.acp_turn_finished);
+    }
+
+    #[test]
+    fn current_settings_reject_removed_im_notification_preferences() {
+        let result = SettingsConfig::from_json_value_with_migration(serde_json::json!({
+            "settingsSchemaVersion": super::CURRENT_SETTINGS_SCHEMA_VERSION,
+            "imIntegrations": {
+                "channels": [{
+                    "kind": "weCom",
+                    "enabled": false,
+                    "publicIdentity": "bot-id",
+                    "notifications": {
+                        "permission": true,
+                        "elicitation": true,
+                        "manualCheck": true,
+                        "runSuccess": false,
+                        "runFailure": true,
+                        "acpTurnFinished": false,
+                        "scheduledCompletion": true
+                    }
+                }]
+            }
+        }));
+
+        assert!(result.is_err());
     }
 
     #[test]
@@ -3149,7 +3420,10 @@ mod tests {
         let claude = &agents[&ManagedAgentId::from_str("claude-acp").unwrap()];
         assert_eq!(
             claude.adapter.command,
-            catalog_agent_default_config("claude-acp").unwrap().adapter.command
+            catalog_agent_default_config("claude-acp")
+                .unwrap()
+                .adapter
+                .command
         );
         assert_eq!(claude.icon, "claude");
         assert!(claude.supports_system_prompt());
@@ -3283,7 +3557,9 @@ mod tests {
                 agent_type: "claude-acp".to_string(),
                 model_id: Some(model.to_string()),
                 permission_mode: Some(permission.to_string()),
+                auto_accept: false,
                 config_options: Default::default(),
+                model_bound_overrides: Default::default(),
             };
             state.conversation_run_modes.insert(
                 workspace.to_string(),
@@ -3707,8 +3983,12 @@ pub struct ConversationDirectConfig {
     pub agent_type: String,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3720,13 +4000,21 @@ pub struct ConversationAutoConfig {
     pub bootstrap_model_id: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub bootstrap_config_options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bootstrap_model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
     pub acceptance_model_id: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub acceptance_config_options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub acceptance_model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
     pub available_agents: Option<Vec<ConversationDynamicAgentRef>>,
     pub routing_prompt: Option<String>,
     pub allowed_workflows: Option<Vec<ConversationAllowedWorkflowRef>>,
@@ -3743,8 +4031,12 @@ pub struct ConversationDynamicAgentRef {
     pub provider: String,
     pub model: Option<String>,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

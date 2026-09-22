@@ -19,6 +19,7 @@ import {
   rightWorkspaceReducer,
   scheduledTaskConfigWorkspaceResourceKey,
   sourceControlWorkspaceResourceKey,
+  browserWorkspaceResourceKey,
   draftAttachmentWorkspaceResourceKey,
   type AgentTranscriptLocator,
   type FileWorkspaceResource,
@@ -195,6 +196,21 @@ describe('right workspace resource model', () => {
     expect(key).toBe('scheduled-task-config:draft:project-1');
     expect(state.tabs).toEqual([{ ...resource, title: 'Updated settings' }]);
     expect(state).toMatchObject({ activeTabKey: key });
+  });
+
+  it('projects in-app browser as one stable tab per scope', () => {
+    const resource: RightWorkspaceResource = {
+      kind: 'browser',
+      key: browserWorkspaceResourceKey(),
+      scopeKey: 'draft:project-1',
+      title: '浏览器',
+      attention: false,
+    };
+    let state = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open', resource });
+    state = rightWorkspaceReducer(state, { type: 'open', resource: { ...resource, title: 'Browser' } });
+    expect(browserWorkspaceResourceKey()).toBe('browser');
+    expect(state.tabs).toEqual([{ ...resource, title: 'Browser' }]);
+    expect(state.activeTabKey).toBe('browser');
   });
 
   it('keys draft attachment previews by draft scope and stable attachment identity', () => {

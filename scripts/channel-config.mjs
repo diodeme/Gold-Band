@@ -53,16 +53,16 @@ export function tauriConfigOverlay(config, version, buildOptions = {}) {
     overlay.version = version;
   }
 
-  const bundle = {};
+  const bundle = {
+    publisher: config.productName,
+  };
   if (config.bundleTargets) {
     bundle.targets = config.bundleTargets;
   }
   if (buildOptions.createUpdaterArtifacts !== undefined) {
     bundle.createUpdaterArtifacts = buildOptions.createUpdaterArtifacts;
   }
-  if (Object.keys(bundle).length > 0) {
-    overlay.bundle = bundle;
-  }
+  overlay.bundle = bundle;
 
   return overlay;
 }

@@ -5,11 +5,19 @@ import { AGENT_ICON_ACCEPT, DEFAULT_AGENT_ICON_KEY, MAX_AGENT_ICON_BYTES, agentI
 afterEach(() => vi.unstubAllGlobals());
 
 describe('agent icon helpers', () => {
-  it('keeps known compact icons visually balanced', () => {
-    expect(agentIconClass('codex', 'size-4')).toContain('scale-125');
-    expect(agentIconClass('gemini', 'size-4')).toContain('scale-110');
-    expect(agentIconClass('opencode', 'size-4')).toContain('scale-110');
-    expect(agentIconClass('claude', 'size-4')).not.toContain('scale-');
+  it('keeps visual-weight scale on session list icons by default', () => {
+    expect(agentIconClass('codex', 'size-3')).toContain('scale-125');
+    expect(agentIconClass('gemini', 'size-3')).toContain('scale-110');
+    expect(agentIconClass('opencode', 'size-3')).toContain('scale-110');
+    expect(agentIconClass('claude', 'size-3')).not.toContain('scale-');
+    expect(agentIconClass('codex', 'size-4', { compensateWhitespace: false })).not.toContain('scale-125');
+  });
+
+  it('applies whitespace compensation on padded seats that opt in', () => {
+    expect(agentIconClass('codex', 'size-4', { compensateWhitespace: true })).toContain('scale-125');
+    expect(agentIconClass('gemini', 'size-4', { compensateWhitespace: true })).toContain('scale-110');
+    expect(agentIconClass('opencode', 'size-4', { compensateWhitespace: true })).toContain('scale-110');
+    expect(agentIconClass('claude', 'size-4', { compensateWhitespace: true })).not.toContain('scale-');
   });
 
   it('inverts bundled monochrome icons only in dark mode', () => {

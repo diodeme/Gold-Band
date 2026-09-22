@@ -24,6 +24,7 @@ use crate::storage::{
 const AGENT_TRANSCRIPT_META_KEY: &str = "agentTranscript";
 const CLAUDE_CODE_META_KEY: &str = "claudeCode";
 const CLAUDE_AGENT_TOOL_NAMES: [&str; 2] = ["agent", "task"];
+pub(crate) const ACP_TURN_EXECUTION_FAILED_CODE: &str = "acp.turn-execution-failed";
 
 fn is_false(value: &bool) -> bool {
     !*value
@@ -84,6 +85,10 @@ pub struct AcpSessionMetadata {
     pub modes: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_options: Option<Value>,
+    /// Last observed thought_level / model_config catalogs keyed by model id
+    /// for this session. Used when set_config_option(model) omits configOptions.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_bound_catalogs: BTreeMap<String, Value>,
     /// Time when this session last observed a model/mode/config-option catalog
     /// from the ACP provider. Catalog freshness must not be inferred from the
     /// session's general `updated_at`, which also changes for ordinary turns.
@@ -97,8 +102,15 @@ pub struct AcpSessionMetadata {
     pub model_override: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode_override: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_option_overrides: BTreeMap<String, String>,
+    /// Last applied thought_level / model_config overrides keyed by model id
+    /// for this session. In-session model switches restore the leaving model's
+    /// map; Mini rollback must not overwrite Grok's slot. Not Direct/home memory.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt_append: Option<String>,
     /// Retry lifecycle of the latest logical prompt. Unlike session activity,
@@ -284,12 +296,7 @@ impl Drop for AcpLifecycleTerminalGuard {
         let _ = persist_session_turn_failure_owned(
             &self.path,
             &self.owner,
-            &manual_runtime_error_info(
-                RuntimeErrorDomain::Internal,
-                "acp.turn-execution-failed",
-                "",
-                serde_json::json!({}),
-            ),
+            &placeholder_turn_execution_error(""),
             &current_timestamp(),
         );
     }
@@ -453,6 +460,20 @@ pub struct AcpUiEvent {
     pub timing: Option<AcpTimingPatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledTriggerPayload {
+    pub project_id: String,
+    pub scheduled_task_id: String,
+    pub occurrence_id: String,
+    pub trigger_kind: crate::scheduler::occurrence::OccurrenceTriggerKind,
+    pub scheduled_at: Option<String>,
+    pub accepted_at: String,
+    pub instruction_summary: String,
+    pub content_fingerprint: String,
+    pub links: crate::scheduler::occurrence::OccurrenceLinks,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -994,6 +1015,37 @@ fn canonical_permission_request_id(event: &AcpUiEvent) -> String {
         current = next;
     }
     current.to_string()
+}
+
+pub fn permission_timeline_item_id(event: &AcpUiEvent) -> String {
+    if let Some(item_id) = event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("_goldBandPermissionItemId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| value.starts_with("permission-") && value.len() > "permission-".len())
+    {
+        return item_id.to_string();
+    }
+
+    // The JSON-RPC request id is transport-scoped and can reset after a
+    // provider restart. The durable provider tool-call id (or the persisted
+    // Gold Band sequence when a provider omits it) identifies the occurrence.
+    let request_id = canonical_permission_request_id(event);
+    let sequence_fallback = event.seq.to_string();
+    let occurrence_id = event
+        .tool_call_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(sequence_fallback.as_str());
+    let mut hasher = blake3::Hasher::new();
+    for part in [request_id.as_bytes(), occurrence_id.as_bytes()] {
+        hasher.update(&(part.len() as u64).to_be_bytes());
+        hasher.update(part);
+    }
+    format!("permission-{}", hasher.finalize())
 }
 
 /// Read token totals from the ACP session metadata file and timeline.
@@ -1613,6 +1665,9 @@ pub(crate) fn merge_timeline_item_revision(
     existing: &AcpUiEvent,
     mut incoming: AcpUiEvent,
 ) -> AcpUiEvent {
+    if existing.kind == "scheduledTrigger" {
+        return existing.clone();
+    }
     if is_provider_history_event(&incoming) && !is_provider_history_event(existing) {
         return existing.clone();
     }
@@ -2378,6 +2433,7 @@ pub fn reconcile_orphaned_session_turn(path: &Utf8Path) -> Result<Option<AcpLife
     if value.get("promptSubmission").is_none() {
         return Ok(None);
     }
+    let persisted_error = persisted_turn_error(&value);
     let current = lifecycle_header_from_value(&value);
     if current.live_turn_activity == AcpLiveTurnActivity::Idle
         || session_turn_is_active(path, current.turn_id.as_deref())
@@ -2385,15 +2441,18 @@ pub fn reconcile_orphaned_session_turn(path: &Utf8Path) -> Result<Option<AcpLife
         return Ok(None);
     }
     let was_stopping = lifecycle_is_stopping(&current);
+    let has_structured_error = !turn_error_is_placeholder(persisted_error.as_ref());
     let (latest_turn_status, stop_reason) = if was_stopping {
         // A durable stop is already user intent. Once its owning process is
         // gone, preserve that intent instead of leaving CancelRequested
         // without a possible finalizer.
         (AcpLatestTurnStatus::Cancelled, "cancelled")
+    } else if has_structured_error {
+        (AcpLatestTurnStatus::Failed, "runtime-error")
     } else {
         (AcpLatestTurnStatus::Failed, "process-interrupted")
     };
-    let terminal = reduce_lifecycle_header(
+    let mut terminal = reduce_lifecycle_header(
         &value,
         current,
         AcpLifecycleTransition::TurnSettled {
@@ -2401,6 +2460,15 @@ pub fn reconcile_orphaned_session_turn(path: &Utf8Path) -> Result<Option<AcpLife
             reason: stop_reason,
         },
     )?;
+    if terminal.latest_turn_status == AcpLatestTurnStatus::Failed {
+        terminal.turn_error = if has_structured_error {
+            persisted_error
+        } else {
+            Some(placeholder_turn_execution_error(
+                "ACP session turn was interrupted before a terminal result was recorded",
+            ))
+        };
+    }
     apply_lifecycle_header(&mut value, &terminal);
     value["updatedAt"] = Value::String(current_timestamp());
     write_json(path, &value)?;
@@ -2447,7 +2515,9 @@ fn merge_session_lifecycle(current: Option<&Value>, incoming: &mut Value) {
     for key in [
         "modelOverride",
         "permissionModeOverride",
+        "autoAccept",
         "configOptionOverrides",
+        "modelBoundOverrides",
         "configCatalogRefreshRequiredAt",
     ] {
         if let Some(field) = current.get(key) {
@@ -2619,7 +2689,9 @@ pub fn begin_session_turn(
 
 /// Settles a background submission only while the same logical turn still
 /// owns the lifecycle header. A late failure can therefore never terminate a
-/// newer follow-up admitted after it.
+/// newer follow-up admitted after it. Completions keep the claim-generation
+/// CAS; a known structured failure for that same turn may still persist after
+/// revision drift or a reasonless placeholder terminal.
 pub fn persist_session_turn_terminal_owned(
     path: &Utf8Path,
     turn_id: &str,
@@ -2659,6 +2731,40 @@ pub fn persist_session_turn_failure_owned(
     )
 }
 
+fn persisted_turn_error(value: &Value) -> Option<RuntimeErrorInfo> {
+    value
+        .get("turnError")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+fn turn_error_is_placeholder(error: Option<&RuntimeErrorInfo>) -> bool {
+    match error {
+        None => true,
+        Some(error) => error.code_str() == ACP_TURN_EXECUTION_FAILED_CODE,
+    }
+}
+
+fn placeholder_turn_execution_error(diagnostic: &str) -> RuntimeErrorInfo {
+    manual_runtime_error_info(
+        RuntimeErrorDomain::Internal,
+        ACP_TURN_EXECUTION_FAILED_CODE,
+        diagnostic,
+        serde_json::json!({}),
+    )
+}
+
+fn should_upgrade_failed_turn_error(
+    current: &AcpLifecycleHeader,
+    incoming_status: AcpLatestTurnStatus,
+    incoming_error: Option<&RuntimeErrorInfo>,
+) -> bool {
+    incoming_status == AcpLatestTurnStatus::Failed
+        && current.latest_turn_status == AcpLatestTurnStatus::Failed
+        && incoming_error.is_some_and(|error| !turn_error_is_placeholder(Some(error)))
+        && turn_error_is_placeholder(current.turn_error.as_ref())
+}
+
 fn persist_session_turn_terminal_with_error_owned(
     path: &Utf8Path,
     turn_id: &str,
@@ -2677,12 +2783,33 @@ fn persist_session_turn_terminal_with_error_owned(
     let current = lifecycle_header_from_value(&value);
     if current.turn_id.as_deref() != Some(turn_id)
         || current.operation_id.as_deref() != operation_id
-        || current.revision != expected_revision
     {
         return Ok(None);
     }
     if lifecycle_is_terminal(&current) {
+        if should_upgrade_failed_turn_error(&current, latest_turn_status, error) {
+            let mut terminal = current;
+            terminal.revision = terminal.revision.saturating_add(1).max(1);
+            terminal.turn_error = error.cloned();
+            if terminal.stop_reason.as_deref() == Some("process-interrupted") {
+                terminal.stop_reason = Some(stop_reason.to_string());
+            }
+            apply_lifecycle_header(&mut value, &terminal);
+            value["updatedAt"] = Value::String(decided_at.to_string());
+            write_json(path, &value)?;
+            clear_session_turn_active(path, terminal.turn_id.as_deref());
+            return Ok(Some(terminal));
+        }
+        if current.revision != expected_revision {
+            return Ok(None);
+        }
         return Ok(Some(current));
+    }
+    // Completions and cancellations keep the claim-generation CAS. A known
+    // failure for the same turn+operation must still land after metadata
+    // revision drift or a reasonless placeholder terminal.
+    if error.is_none() && current.revision != expected_revision {
+        return Ok(None);
     }
     let mut terminal = reduce_lifecycle_header(
         &value,
@@ -3057,11 +3184,10 @@ pub fn permission_request_event(seq: u64, request_id: String, params: Value) -> 
     let mut raw = params;
     normalize_agent_transcript_metadata(&mut raw);
     if let Some(object) = raw.as_object_mut() {
-        object
-            .entry("requestId".to_string())
-            .or_insert_with(|| Value::String(request_id.clone()));
+        object.remove("_goldBandPermissionItemId");
+        object.insert("requestId".to_string(), Value::String(request_id.clone()));
     }
-    AcpUiEvent {
+    let mut event = AcpUiEvent {
         id: request_id,
         seq,
         timestamp: current_timestamp(),
@@ -3080,7 +3206,15 @@ pub fn permission_request_event(seq: u64, request_id: String, params: Value) -> 
         ended_at: None,
         timing: None,
         raw: Some(raw),
+    };
+    let item_id = permission_timeline_item_id(&event);
+    if let Some(object) = event.raw.as_mut().and_then(Value::as_object_mut) {
+        object.insert(
+            "_goldBandPermissionItemId".to_string(),
+            Value::String(item_id),
+        );
     }
+    event
 }
 
 pub fn normalize_agent_transcript_metadata(value: &mut Value) -> Option<AgentTranscriptRelation> {
@@ -3368,6 +3502,57 @@ pub fn user_prompt_event(
     )
 }
 
+pub fn scheduled_trigger_event(seq: u64, payload: &ScheduledTriggerPayload) -> AcpUiEvent {
+    AcpUiEvent {
+        id: format!("scheduled-trigger:{}", payload.occurrence_id),
+        seq,
+        timestamp: payload.accepted_at.clone(),
+        kind: "scheduledTrigger".to_string(),
+        session_id: None,
+        content: None,
+        title: None,
+        tool_call_id: None,
+        status: Some("completed".to_string()),
+        started_seq: Some(seq),
+        ended_seq: Some(seq),
+        started_at: Some(payload.accepted_at.clone()),
+        ended_at: Some(payload.accepted_at.clone()),
+        timing: None,
+        raw: Some(serde_json::json!({
+            "source": "goldBandScheduledTrigger",
+            "scheduledTrigger": payload,
+        })),
+    }
+}
+
+pub fn system_notice_event(seq: u64, code: &str, params: Value) -> AcpUiEvent {
+    let timestamp = current_timestamp();
+    AcpUiEvent {
+        id: format!("gold-band-system-notice-{seq}"),
+        seq,
+        timestamp: timestamp.clone(),
+        kind: "systemNotice".to_string(),
+        session_id: None,
+        content: None,
+        title: None,
+        tool_call_id: None,
+        status: Some("completed".to_string()),
+        started_seq: Some(seq),
+        ended_seq: Some(seq),
+        started_at: Some(timestamp.clone()),
+        ended_at: Some(timestamp),
+        timing: None,
+        raw: Some(serde_json::json!({
+            "source": "goldBandSystemNotice",
+            "synthetic": true,
+            "systemNotice": {
+                "code": code,
+                "params": params,
+            },
+        })),
+    }
+}
+
 pub fn user_prompt_event_with_quotes(
     seq: u64,
     session_id: String,
@@ -3500,20 +3685,117 @@ fn extract_status(value: &Value) -> Option<String> {
 mod tests {
     use super::{
         AcpLatestTurnStatus, AcpLiveTurnActivity, AcpPromptSubmission, AcpSessionAvailability,
-        AcpSessionMetadata, AcpTimingState, AcpTurnAdmission, AcpUiEvent,
+        AcpSessionMetadata, AcpTimingState, AcpTurnAdmission, AcpUiEvent, ScheduledTriggerPayload,
         agent_transcript_tool_output, annotate_runtime_control_output, append_raw_frame,
         append_structured_diagnostic, append_timeline_patch, begin_session_turn,
         cancel_latest_processing_prompt_retry, compact_live_conversation_event,
         context_compaction_phase, elicitation_request_event, elicitation_response_event,
         extract_usage_fields, inspect_session_turn, is_semantically_empty_agent_content,
         kind_to_ui_kind, latest_timeline_source_seq, load_session_metadata, load_timeline_items,
-        normalize_session_update, permission_request_event, user_prompt_event,
+        normalize_session_update, permission_request_event, permission_timeline_item_id,
+        scheduled_trigger_event, system_notice_event, user_prompt_event,
         user_prompt_event_with_quotes, write_timeline_items,
     };
     use crate::provider::UserPromptQuote;
     use crate::storage::{read_json, write_json};
     use camino::Utf8PathBuf;
     use serde_json::{Value, json};
+
+    fn scheduled_trigger_payload(
+        trigger_kind: crate::scheduler::occurrence::OccurrenceTriggerKind,
+    ) -> ScheduledTriggerPayload {
+        ScheduledTriggerPayload {
+            project_id: "project-001".to_string(),
+            scheduled_task_id: "scheduled-task-001".to_string(),
+            occurrence_id: "occurrence-001".to_string(),
+            trigger_kind: trigger_kind.clone(),
+            scheduled_at: (trigger_kind
+                == crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled)
+                .then(|| "2026-08-25T01:30:00Z".to_string()),
+            accepted_at: "2026-08-25T01:29:59Z".to_string(),
+            instruction_summary: "检查主分支状态".to_string(),
+            content_fingerprint: "sha256:accepted".to_string(),
+            links: crate::scheduler::occurrence::OccurrenceLinks {
+                task_id: Some("task-001".to_string()),
+                run_id: Some("run-001".to_string()),
+                round_id: Some("round-001".to_string()),
+                node_id: Some("dev".to_string()),
+                attempt_id: Some("attempt-001".to_string()),
+            },
+        }
+    }
+
+    #[test]
+    fn scheduled_trigger_event_has_deterministic_occurrence_identity() {
+        let payload = scheduled_trigger_payload(
+            crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled,
+        );
+
+        let first = scheduled_trigger_event(10, &payload);
+        let retry = scheduled_trigger_event(20, &payload);
+
+        assert_eq!(first.id, "scheduled-trigger:occurrence-001");
+        assert_eq!(retry.id, first.id);
+        assert_eq!(first.kind, "scheduledTrigger");
+        assert!(first.content.is_none());
+        assert_eq!(
+            first.raw.as_ref().unwrap()["scheduledTrigger"],
+            json!(payload)
+        );
+        assert_ne!(first.seq, retry.seq);
+    }
+
+    #[test]
+    fn automatic_and_manual_trigger_events_have_distinct_kinds() {
+        let automatic = scheduled_trigger_event(
+            1,
+            &scheduled_trigger_payload(
+                crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled,
+            ),
+        );
+        let manual = scheduled_trigger_event(
+            2,
+            &scheduled_trigger_payload(crate::scheduler::occurrence::OccurrenceTriggerKind::Manual),
+        );
+
+        assert_eq!(
+            automatic.raw.as_ref().unwrap()["scheduledTrigger"]["triggerKind"],
+            "scheduled"
+        );
+        assert_eq!(
+            manual.raw.as_ref().unwrap()["scheduledTrigger"]["triggerKind"],
+            "manual"
+        );
+        assert!(automatic.raw.as_ref().unwrap()["scheduledTrigger"]["scheduledAt"].is_string());
+        assert!(manual.raw.as_ref().unwrap()["scheduledTrigger"]["scheduledAt"].is_null());
+    }
+
+    #[test]
+    fn system_notice_event_stores_structured_code_without_user_copy() {
+        let event = system_notice_event(
+            12,
+            crate::acp::session_config::ACP_SESSION_CONFIG_ROLLED_BACK_CODE,
+            json!({
+                "items": [{
+                    "category": "thought_level",
+                    "configId": "effort",
+                    "value": "high",
+                }],
+            }),
+        );
+
+        assert_eq!(event.id, "gold-band-system-notice-12");
+        assert_eq!(event.kind, "systemNotice");
+        assert!(event.content.is_none());
+        assert_eq!(
+            event.raw.as_ref().unwrap()["systemNotice"]["code"],
+            "acp.session-config-rolled-back"
+        );
+        assert_eq!(
+            event.raw.as_ref().unwrap()["systemNotice"]["params"]["items"][0]["configId"],
+            "effort"
+        );
+    }
 
     #[test]
     fn metadata_patch_preserves_the_latest_canonical_lifecycle() {
@@ -3707,6 +3989,37 @@ mod tests {
         );
     }
 
+    fn session_config_unavailable_error() -> crate::runtime_error::RuntimeErrorInfo {
+        crate::runtime_error::manual_runtime_error_info(
+            crate::runtime_error::RuntimeErrorDomain::Config,
+            "acp.session-config-value-unavailable",
+            "model gpt-5.6-sol is not in the current catalog",
+            serde_json::json!({
+                "category": "model",
+                "configId": "model",
+                "requested": "gpt-5.6-sol",
+                "available": ["deepseek-flash"],
+            }),
+        )
+    }
+
+    fn prompt_submission(turn_id: &str, operation_id: &str) -> AcpPromptSubmission {
+        AcpPromptSubmission {
+            turn_id: turn_id.to_string(),
+            operation_id: operation_id.to_string(),
+            adapter_id: "codex-acp".to_string(),
+            adapter_display_name: "Codex".to_string(),
+            cwd: "C:/tmp/attempt".to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "follow up".to_string(),
+                quotes: Vec::new(),
+                role: None,
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-09-17T00:00:00Z".to_string(),
+        }
+    }
+
     #[test]
     fn abandoned_execution_persists_displayable_turn_error() {
         let temp = tempfile::tempdir().unwrap();
@@ -3734,6 +4047,128 @@ mod tests {
             snapshot["turnError"]["code"]["code"],
             "acp.turn-execution-failed"
         );
+    }
+
+    #[test]
+    fn known_turn_failure_persists_after_same_turn_revision_drift() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        crate::storage::write_json(
+            &path,
+            &serde_json::json!({
+                "acpRevision": 9, "turnId": "turn-a", "lifecycleOperationId": "operation-a",
+                "availability": "established", "sessionId": "session-a",
+                "liveTurnActivity": "accepted", "latestTurnStatus": "none",
+                "promptSubmission": prompt_submission("turn-a", "operation-a"),
+            }),
+        )
+        .unwrap();
+        let error = session_config_unavailable_error();
+        let owner = super::AcpLifecycleOwner {
+            turn_id: "turn-a".into(),
+            operation_id: "operation-a".into(),
+            revision: 2,
+        };
+        let persisted = super::persist_session_turn_failure_owned(&path, &owner, &error, "10Z")
+            .unwrap()
+            .expect("same turn+operation must still accept a known failure after revision drift");
+        assert_eq!(persisted.latest_turn_status, AcpLatestTurnStatus::Failed);
+        assert_eq!(persisted.turn_error.as_ref(), Some(&error));
+        let snapshot = super::read_lifecycle_header_snapshot(&path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.turn_error.as_ref(), Some(&error));
+    }
+
+    #[test]
+    fn placeholder_turn_error_is_upgraded_by_structured_reason_on_same_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        crate::storage::write_json(
+            &path,
+            &serde_json::json!({
+                "acpRevision": 2, "turnId": "turn-a", "lifecycleOperationId": "operation-a",
+                "availability": "established", "sessionId": "session-a",
+                "liveTurnActivity": "accepted", "latestTurnStatus": "none"
+            }),
+        )
+        .unwrap();
+        let owner = super::AcpLifecycleOwner {
+            turn_id: "turn-a".into(),
+            operation_id: "operation-a".into(),
+            revision: 2,
+        };
+        drop(super::AcpLifecycleTerminalGuard::new(
+            path.clone(),
+            owner.clone(),
+        ));
+        let error = session_config_unavailable_error();
+        let persisted = super::persist_session_turn_failure_owned(&path, &owner, &error, "11Z")
+            .unwrap()
+            .expect("a known failure must upgrade the same turn's reasonless placeholder");
+        assert_eq!(persisted.turn_error.as_ref(), Some(&error));
+        assert_eq!(
+            persisted.turn_error.as_ref().map(|error| error.code_str()),
+            Some("acp.session-config-value-unavailable")
+        );
+    }
+
+    #[test]
+    fn structured_turn_error_is_not_replaced_by_placeholder_on_same_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        crate::storage::write_json(
+            &path,
+            &serde_json::json!({
+                "acpRevision": 2, "turnId": "turn-a", "lifecycleOperationId": "operation-a",
+                "availability": "established", "sessionId": "session-a",
+                "liveTurnActivity": "accepted", "latestTurnStatus": "none"
+            }),
+        )
+        .unwrap();
+        let owner = super::AcpLifecycleOwner {
+            turn_id: "turn-a".into(),
+            operation_id: "operation-a".into(),
+            revision: 2,
+        };
+        let error = session_config_unavailable_error();
+        super::persist_session_turn_failure_owned(&path, &owner, &error, "12Z")
+            .unwrap()
+            .unwrap();
+        drop(super::AcpLifecycleTerminalGuard::new(path.clone(), owner));
+        let snapshot = super::read_lifecycle_header_snapshot(&path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.turn_error.as_ref(), Some(&error));
+    }
+
+    #[test]
+    fn orphaned_in_flight_turn_preserves_persisted_turn_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let error = session_config_unavailable_error();
+        crate::storage::write_json(
+            &path,
+            &serde_json::json!({
+                "acpRevision": 2, "turnId": "turn-orphan-error",
+                "lifecycleOperationId": "operation-orphan-error",
+                "availability": "established", "sessionId": "session-a",
+                "liveTurnActivity": "accepted", "latestTurnStatus": "none",
+                "turnError": error,
+                "promptSubmission": prompt_submission("turn-orphan-error", "operation-orphan-error"),
+            }),
+        )
+        .unwrap();
+        super::clear_session_turn_active(&path, Some("turn-orphan-error"));
+        let header = super::reconcile_orphaned_session_turn(&path)
+            .unwrap()
+            .expect("in-flight orphan must settle");
+        assert_eq!(header.latest_turn_status, AcpLatestTurnStatus::Failed);
+        assert_eq!(header.turn_error.as_ref(), Some(&error));
+        let snapshot = super::read_lifecycle_header_snapshot(&path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.turn_error.as_ref(), Some(&error));
     }
 
     #[test]
@@ -3782,6 +4217,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "retry".into(),
                 quotes: vec![],
+                role: None,
             },
             attachment_paths: vec![],
             admitted_at: "4Z".into(),
@@ -3837,6 +4273,7 @@ mod tests {
                 input: crate::provider::ConversationPromptInput {
                     display_text: format!("message for {turn_id}"),
                     quotes: Vec::new(),
+                    role: None,
                 },
                 attachment_paths: vec![format!("{turn_id}.txt")],
                 admitted_at: admitted_at.to_string(),
@@ -3960,6 +4397,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "survive restart".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: vec!["evidence.txt".to_string()],
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -3981,6 +4419,17 @@ mod tests {
         assert_eq!(header.latest_turn_status, AcpLatestTurnStatus::Failed);
         assert_eq!(header.stop_reason.as_deref(), Some("process-interrupted"));
         assert_eq!(
+            header.turn_error.as_ref().map(|error| error.code_str()),
+            Some("acp.turn-execution-failed")
+        );
+        assert!(
+            header
+                .turn_error
+                .as_ref()
+                .is_some_and(|error| !error.diagnostic.is_empty()),
+            "process-interrupted orphans must persist a displayable placeholder reason"
+        );
+        assert_eq!(
             super::read_session_prompt_submission(&path, "turn-orphan").unwrap(),
             Some(submission),
         );
@@ -3999,6 +4448,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "stop before provider startup".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4074,6 +4524,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "first".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4096,6 +4547,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "second".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             admitted_at: "2026-08-19T10:00:03Z".to_string(),
             ..first
@@ -4166,6 +4618,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "continue legacy session".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4212,6 +4665,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "shared lifecycle".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4251,6 +4705,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "claim me".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4339,6 +4794,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "run owned".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4400,6 +4856,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "stop me".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -4525,6 +4982,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "hi".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-21T10:00:00Z".to_string(),
@@ -4576,6 +5034,7 @@ mod tests {
             input: crate::provider::ConversationPromptInput {
                 display_text: "follow up".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-21T10:00:00Z".to_string(),
@@ -4620,6 +5079,57 @@ mod tests {
         assert!(persisted.get("modelOverride").is_none());
         assert!(persisted.get("permissionModeOverride").is_none());
         assert!(persisted.get("configOptionOverrides").is_none());
+    }
+
+    #[test]
+    fn established_session_keeps_command_owned_auto_accept() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-auto-accept".to_string(),
+            operation_id: "operation-auto-accept".to_string(),
+            adapter_id: "claude-acp".to_string(),
+            adapter_display_name: "Claude".to_string(),
+            cwd: "C:/tmp/attempt".to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "follow up".to_string(),
+                quotes: Vec::new(),
+                role: None,
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-08-21T10:00:00Z".to_string(),
+        };
+        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission).unwrap()
+        else {
+            panic!("auto accept command-owned test admission must start");
+        };
+        let owner = match super::claim_session_turn_for_execution(
+            &path,
+            &submission.turn_id,
+            started.revision,
+            &submission.operation_id,
+        )
+        .unwrap()
+        {
+            super::AcpTurnExecutionClaim::Claimed(owner) => owner,
+            claim => panic!("expected ownership claim, got {claim:?}"),
+        };
+        let mut stale_provider = load_session_metadata(&path, None).unwrap();
+        stale_provider.session_id = Some("session-existing".to_string());
+        stale_provider.availability = AcpSessionAvailability::Established;
+        stale_provider.live_turn_activity = AcpLiveTurnActivity::Running;
+        stale_provider.auto_accept = true;
+        let mut command_owned = read_json::<Value>(&path).unwrap();
+        command_owned["sessionId"] = json!("session-existing");
+        command_owned["autoAccept"] = json!(false);
+        write_json(&path, &command_owned).unwrap();
+
+        super::write_session_metadata_owned(&path, &stale_provider, &owner)
+            .unwrap()
+            .expect("same owner provider write must merge command Auto Accept");
+        let persisted = read_json::<Value>(&path).unwrap();
+
+        assert_eq!(persisted["autoAccept"], false);
     }
 
     #[test]
@@ -5318,6 +5828,75 @@ mod tests {
                 .and_then(|raw| raw.get("requestId"))
                 .and_then(|value| value.as_str()),
             Some("0")
+        );
+    }
+
+    #[test]
+    fn permission_request_event_overrides_conflicting_params_identity() {
+        let event = permission_request_event(
+            9,
+            "0".to_string(),
+            json!({
+                "requestId": "provider-display-id",
+                "_goldBandPermissionItemId": "permission-provider-supplied",
+                "sessionId": "session-123"
+            }),
+        );
+
+        assert_eq!(event.id, "0");
+        assert_eq!(event.raw.as_ref().unwrap()["requestId"], "0");
+        assert_ne!(
+            event.raw.as_ref().unwrap()["_goldBandPermissionItemId"],
+            "permission-provider-supplied"
+        );
+    }
+
+    #[test]
+    fn permission_timeline_identity_survives_transport_request_id_reuse() {
+        let params = |tool_call_id: &str| {
+            json!({
+                "sessionId": "session-123",
+                "toolCall": { "toolCallId": tool_call_id },
+                "options": [{ "optionId": "allow", "name": "Allow", "kind": "allow_once" }]
+            })
+        };
+        let first = permission_request_event(10, "0".to_string(), params("call-first"));
+        let second = permission_request_event(11, "0".to_string(), params("call-second"));
+        let first_identity = permission_timeline_item_id(&first);
+
+        assert_eq!(first_identity, permission_timeline_item_id(&first));
+        assert_ne!(first_identity, permission_timeline_item_id(&second));
+        assert!(first_identity.starts_with("permission-"));
+        assert_eq!(
+            first
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("requestId"))
+                .and_then(Value::as_str),
+            Some("0")
+        );
+        assert_eq!(
+            second
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("requestId"))
+                .and_then(Value::as_str),
+            Some("0")
+        );
+    }
+
+    #[test]
+    fn permission_timeline_identity_uses_durable_sequence_without_tool_call() {
+        let first = permission_request_event(10, "0".to_string(), json!({}));
+        let second = permission_request_event(11, "0".to_string(), json!({}));
+
+        assert_ne!(
+            permission_timeline_item_id(&first),
+            permission_timeline_item_id(&second)
+        );
+        assert_eq!(
+            permission_timeline_item_id(&first),
+            permission_timeline_item_id(&first)
         );
     }
 

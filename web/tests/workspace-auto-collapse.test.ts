@@ -16,6 +16,7 @@ import {
   workspaceAutoCollapsePresentationChanged,
   workspaceCanonicalLayoutMissingPanel,
   workspaceCanonicalLayoutNeedsConvergence,
+  conversationPageHasDraftWorkspaceScope,
   workspaceLayoutProfileForPage,
   workspaceLayoutProfileForSurface,
   type FileWorkspaceResponsiveState,
@@ -136,7 +137,13 @@ describe('workspace auto collapse state machine', () => {
   });
 
   it('resolves page profiles from the bootstrapped app configuration', () => {
+    expect(conversationPageHasDraftWorkspaceScope({ kind: 'conversation-home' })).toBe(true);
+    expect(conversationPageHasDraftWorkspaceScope({ kind: 'scheduled-task-create' })).toBe(true);
+    expect(conversationPageHasDraftWorkspaceScope({ kind: 'agents' })).toBe(true);
+    expect(conversationPageHasDraftWorkspaceScope({ kind: 'conversation-run', projectId: 'p', taskId: 't', runId: 'r' })).toBe(false);
     expect(workspaceLayoutProfileForPage({ kind: 'conversation-home' }, FALLBACK_WORKSPACE_LAYOUT))
+      .toBe(FALLBACK_WORKSPACE_LAYOUT.conversation);
+    expect(workspaceLayoutProfileForPage({ kind: 'agents' }, FALLBACK_WORKSPACE_LAYOUT))
       .toBe(FALLBACK_WORKSPACE_LAYOUT.conversation);
     expect(workspaceLayoutProfileForPage({ kind: 'contexts' }, FALLBACK_WORKSPACE_LAYOUT))
       .toBe(FALLBACK_WORKSPACE_LAYOUT.contextCards);

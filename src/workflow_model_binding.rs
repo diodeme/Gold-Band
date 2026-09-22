@@ -1,8 +1,9 @@
+use crate::acp::session_config::is_model_bound_config_category;
 use crate::config::{ManagedAgentConfig, ManagedAgentId, ProviderDiagnosticSnapshot};
 use crate::dsl::{NodeDsl, WorkflowDsl};
 use crate::provider::{
-    select_config_options_from_capabilities, supported_models_from_capabilities,
-    supported_modes_from_capabilities,
+    model_bound_catalogs_from_capabilities, select_config_options_from_capabilities,
+    supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -62,8 +63,12 @@ pub struct WorkerModelBinding {
     pub model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_bound_overrides: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
@@ -221,6 +226,9 @@ pub fn definition_revision(workflow: &WorkflowDsl) -> String {
                 object.remove("provider");
                 object.remove("model");
                 object.remove("permission_mode");
+                object.remove("permissionMode");
+                object.remove("auto_accept");
+                object.remove("autoAccept");
                 object.remove("config_options");
             }
         }
@@ -289,18 +297,26 @@ pub fn migrate_authoring_workflow(
                         .permission_mode
                         .clone()
                         .filter(|value| !value.trim().is_empty()),
+                    auto_accept: worker.auto_accept,
                     config_options: worker.config_options.clone(),
+                    model_bound_overrides: Default::default(),
                 });
             changed = true;
         }
         let removed_provider = worker.provider.take().is_some();
         let removed_model = worker.model.take().is_some();
         let removed_permission = worker.permission_mode.take().is_some();
+        let removed_auto_accept = std::mem::take(&mut worker.auto_accept);
         let removed_options = !worker.config_options.is_empty();
         if removed_options {
             worker.config_options.clear();
         }
-        if removed_provider || removed_model || removed_permission || removed_options {
+        if removed_provider
+            || removed_model
+            || removed_permission
+            || removed_auto_accept
+            || removed_options
+        {
             changed = true;
         }
     }
@@ -476,11 +492,15 @@ pub fn validate_and_inject(
                 });
             }
         }
-        let options = select_config_options_from_capabilities(capabilities);
+        let live_options = select_config_options_from_capabilities(capabilities);
         for (option_id, value) in &binding.config_options {
-            if !options.iter().any(|option| {
-                option.id == *option_id && option.options.iter().any(|item| item.value == *value)
-            }) {
+            if is_model_bound_config_option(capabilities, option_id) {
+                continue;
+            }
+            let Some(option) = live_options.iter().find(|option| option.id == *option_id) else {
+                continue;
+            };
+            if !option.options.iter().any(|item| item.value == *value) {
                 return Err(WorkflowModelBindingError::OptionUnsupported {
                     execution_slot_id: slot.to_string(),
                     agent_id: binding.agent_id.clone(),
@@ -492,15 +512,38 @@ pub fn validate_and_inject(
         worker.provider = Some(binding.agent_id.clone());
         worker.model = binding.model_id.clone();
         worker.permission_mode = binding.permission_mode_id.clone();
+        worker.auto_accept = binding.auto_accept;
         worker.config_options = binding.config_options.clone();
     }
     Ok(executable)
 }
 
+fn is_model_bound_config_option(capabilities: Option<&serde_json::Value>, option_id: &str) -> bool {
+    let matches_bound = |option: &crate::provider::AcpSelectConfigOption| {
+        option.id == option_id
+            && option
+                .category
+                .as_deref()
+                .is_some_and(is_model_bound_config_category)
+    };
+    if select_config_options_from_capabilities(capabilities)
+        .iter()
+        .any(matches_bound)
+    {
+        return true;
+    }
+    model_bound_catalogs_from_capabilities(capabilities)
+        .values()
+        .flatten()
+        .any(matches_bound)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::catalog_agent_default_config;
     use crate::dsl::{NodeDsl, WorkerNode};
+    use serde_json::{Value, json};
 
     fn workflow(worker: WorkerNode) -> WorkflowDsl {
         WorkflowDsl {
@@ -524,6 +567,7 @@ mod tests {
             output: None,
             success_condition: None,
             permission_mode: Some("mode-a".into()),
+            auto_accept: false,
             config_options: BTreeMap::from([("thought".into(), "high".into())]),
             manual_check: None,
             prompt_envelope: Default::default(),
@@ -559,7 +603,9 @@ mod tests {
             agent_id: "agent-a".into(),
             model_id: None,
             permission_mode_id: None,
+            auto_accept: false,
             config_options: BTreeMap::new(),
+            model_bound_overrides: Default::default(),
         };
         let mut bindings = WorkflowModelBindings {
             definition_revision: String::new(),
@@ -598,7 +644,9 @@ mod tests {
             agent_id: "agent-a".into(),
             model_id: None,
             permission_mode_id: None,
+            auto_accept: false,
             config_options: BTreeMap::new(),
+            model_bound_overrides: Default::default(),
         };
         let bindings = WorkflowModelBindings {
             definition_revision: String::new(),
@@ -635,5 +683,203 @@ mod tests {
         let value = serde_json::to_value(WorkflowModelBindings::default()).unwrap();
 
         assert_eq!(value.get("bindings"), Some(&serde_json::json!([])));
+    }
+
+    fn cursor_agents() -> BTreeMap<ManagedAgentId, ManagedAgentConfig> {
+        let agent_id = ManagedAgentId::from_str("cursor").expect("cursor id");
+        BTreeMap::from([(
+            agent_id,
+            catalog_agent_default_config("cursor").expect("cursor catalog"),
+        )])
+    }
+
+    fn grok_live_luna_cached_capabilities() -> Value {
+        json!({
+            "configOptions": [
+                {
+                    "id": "model",
+                    "category": "model",
+                    "type": "select",
+                    "currentValue": "grok-4.6",
+                    "options": [
+                        { "value": "grok-4.6" },
+                        { "value": "gpt-5.6-luna" },
+                        { "value": "composer-2.5" }
+                    ]
+                },
+                {
+                    "id": "effort",
+                    "category": "thought_level",
+                    "type": "select",
+                    "options": [
+                        { "value": "low" },
+                        { "value": "high" },
+                        { "value": "xhigh" }
+                    ]
+                },
+                {
+                    "id": "fast",
+                    "category": "model_config",
+                    "type": "select",
+                    "options": [
+                        { "value": "false" },
+                        { "value": "true" }
+                    ]
+                }
+            ],
+            "modelBoundCatalogs": {
+                "grok-4.6": [
+                    {
+                        "id": "effort",
+                        "category": "thought_level",
+                        "type": "select",
+                        "options": [
+                            { "value": "low" },
+                            { "value": "high" },
+                            { "value": "xhigh" }
+                        ]
+                    },
+                    {
+                        "id": "fast",
+                        "category": "model_config",
+                        "type": "select",
+                        "options": [
+                            { "value": "false" },
+                            { "value": "true" }
+                        ]
+                    }
+                ],
+                "gpt-5.6-luna": [
+                    {
+                        "id": "context",
+                        "category": "model_config",
+                        "type": "select",
+                        "options": [
+                            { "value": "272k" },
+                            { "value": "1m" }
+                        ]
+                    },
+                    {
+                        "id": "reasoning",
+                        "category": "thought_level",
+                        "type": "select",
+                        "options": [
+                            { "value": "low" },
+                            { "value": "high" },
+                            { "value": "xhigh" }
+                        ]
+                    }
+                ]
+            }
+        })
+    }
+
+    fn cursor_diagnostics(capabilities: Value) -> BTreeMap<String, ProviderDiagnosticSnapshot> {
+        BTreeMap::from([(
+            "cursor".to_string(),
+            ProviderDiagnosticSnapshot {
+                available: true,
+                error: None,
+                checked_at: "2026-09-19T00:00:00Z".to_string(),
+                capabilities: Some(capabilities),
+            },
+        )])
+    }
+
+    fn bound_workflow(
+        model_id: &str,
+        config_options: BTreeMap<String, String>,
+    ) -> (WorkflowDsl, WorkflowModelBindings) {
+        let mut node = worker();
+        node.execution_slot_id = Some("slot-direct".into());
+        node.provider = None;
+        node.model = None;
+        node.permission_mode = None;
+        node.config_options.clear();
+        let bindings = WorkflowModelBindings {
+            definition_revision: String::new(),
+            binding_revision: 1,
+            bindings: vec![WorkerModelBinding {
+                execution_slot_id: "slot-direct".into(),
+                agent_id: "cursor".into(),
+                model_id: Some(model_id.into()),
+                permission_mode_id: None,
+                auto_accept: false,
+                config_options,
+                model_bound_overrides: Default::default(),
+            }],
+        };
+        (workflow(node), bindings)
+    }
+
+    #[test]
+    fn inject_does_not_block_model_bound_options_when_doctor_live_table_belongs_to_another_model() {
+        let (workflow, bindings) = bound_workflow(
+            "gpt-5.6-luna",
+            BTreeMap::from([
+                ("reasoning".into(), "high".into()),
+                ("context".into(), "1m".into()),
+            ]),
+        );
+
+        let executable = validate_and_inject(
+            &workflow,
+            &bindings,
+            &cursor_agents(),
+            &cursor_diagnostics(grok_live_luna_cached_capabilities()),
+        )
+        .expect("session/new remaps or unspecifies thought_level and model_config");
+
+        let NodeDsl::Worker(worker) = &executable.nodes[0] else {
+            panic!("worker expected");
+        };
+        assert_eq!(
+            worker.config_options.get("reasoning").map(String::as_str),
+            Some("high")
+        );
+        assert_eq!(
+            worker.config_options.get("context").map(String::as_str),
+            Some("1m")
+        );
+    }
+
+    #[test]
+    fn inject_reuses_doctor_live_options_for_an_unobserved_model() {
+        let (workflow, bindings) = bound_workflow(
+            "composer-2.5",
+            BTreeMap::from([("effort".into(), "high".into())]),
+        );
+
+        validate_and_inject(
+            &workflow,
+            &bindings,
+            &cursor_agents(),
+            &cursor_diagnostics(grok_live_luna_cached_capabilities()),
+        )
+        .expect("first contact carries the current Doctor table");
+    }
+
+    #[test]
+    fn inject_passes_unsupported_model_bound_values_for_session_rollback() {
+        let (workflow, bindings) = bound_workflow(
+            "gpt-5.6-luna",
+            BTreeMap::from([("context".into(), "2m".into())]),
+        );
+
+        let executable = validate_and_inject(
+            &workflow,
+            &bindings,
+            &cursor_agents(),
+            &cursor_diagnostics(grok_live_luna_cached_capabilities()),
+        )
+        .expect("unsupported model_config is unspecified at session/new, not at inject");
+
+        let NodeDsl::Worker(worker) = &executable.nodes[0] else {
+            panic!("worker expected");
+        };
+        assert_eq!(
+            worker.config_options.get("context").map(String::as_str),
+            Some("2m")
+        );
     }
 }

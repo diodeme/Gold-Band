@@ -1288,6 +1288,7 @@ fn invoke_agent(
         user_prompt: user_prompt.map_err(prompt_error)?,
         display_text: None,
         quotes: Vec::new(),
+        role: None,
         prompt_id: Some(turn_id.clone()),
         visibility: PromptVisibility::Hidden,
         hidden_reason: Some("personalAnalytics".to_string()),
@@ -1298,6 +1299,7 @@ fn invoke_agent(
         runtime_control_transition_cause: None,
         attachment_metas: resolved.iter().map(|item| item.meta.clone()).collect(),
         content_blocks: resolved.iter().map(|item| item.block.clone()).collect(),
+        scheduled_trigger: None,
     };
     let attempt_dir = operation_dir.join(attempt_name);
     let lifecycle_owner = claim_agent_prompt_lifecycle(
@@ -1317,6 +1319,7 @@ fn invoke_agent(
         &prompt,
         SessionMode::New,
         None,
+        false,
         model_id.map(str::to_string),
         insight_config_options(thought_level_option_id, thought_level_value),
         None,
@@ -1374,6 +1377,7 @@ fn claim_agent_prompt_lifecycle(
         input: ConversationPromptInput {
             display_text: display_text.to_string(),
             quotes: Vec::new(),
+            role: None,
         },
         attachment_paths: attachment_paths.to_vec(),
         admitted_at: gold_band::acp::events::current_timestamp(),

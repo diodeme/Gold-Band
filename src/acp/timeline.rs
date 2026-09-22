@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::acp::events::{
     AcpTimelineItem, AcpTimelinePatch, AcpTimingPatch, AcpTimingStateSnapshot, AcpUiEvent,
-    extract_agent_transcript_relation, extract_usage_fields,
+    extract_agent_transcript_relation, extract_usage_fields, is_semantically_empty_agent_content,
     load_timeline_items_for_storage_unlocked, merge_timeline_item_revision,
     normalize_timeline_items_for_storage,
 };
@@ -34,8 +34,9 @@ thread_local! { static INDEX_DISK_LOADS: std::cell::Cell<usize> = const { std::c
 // V10 removes runtime-control artifact inference from the generic timeline
 // index. Artifact selection belongs to Runtime output evaluation and the
 // selected source is annotated by its canonical branch and item identity.
-// V9 guarantees that each indexed locator points at a canonical full item, so
-// compaction can read only the latest locators instead of replaying every patch.
+// V9 introduced canonical full-item locators; V13 retains that guarantee while
+// adding newer projections, so compaction reads latest locators rather than
+// replaying every patch.
 // V8 keeps Agent launch links as standalone semantic blocks and recognizes
 // their canonical Gold Band conversation identity. V7 indexes grouped these
 // links into ordinary activity when provider-only metadata was absent.
@@ -52,7 +53,10 @@ thread_local! { static INDEX_DISK_LOADS: std::cell::Cell<usize> = const { std::c
 // index as compatible would leave stop unable to settle a processing retry in
 // the crash window between the timeline append and session metadata rewrite.
 // V11 indexes lightweight image references, including images in paginated activity.
-pub const TIMELINE_INDEX_FORMAT_VERSION: u32 = 11;
+// V12 derives composer eligibility from user-text provenance, including manual transitions.
+// V13 adds the canonical metrics follow-up prompt projection. Older indexes
+// must rebuild so terminal metrics never depend on a partially populated set.
+pub const TIMELINE_INDEX_FORMAT_VERSION: u32 = 13;
 pub const DEFAULT_TIMELINE_CHECKPOINT_PATCH_INTERVAL: usize = 256;
 pub const DEFAULT_TIMELINE_TAIL_REPLAY_LIMIT: usize = 256;
 // Internal result marker: tail replay exceeded its bound and the index was
@@ -148,10 +152,14 @@ struct TimelineItemLocator {
     agent_result: bool,
     #[serde(default)]
     retry_prompt: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metric_follow_up_prompt_id: Option<String>,
     #[serde(default)]
     branch_id: String,
     #[serde(default)]
     gold_band_prompt: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    composer_text_bytes: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider_history_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -322,6 +330,8 @@ struct TimelineMaterializedIndex {
     agent_launches: HashMap<String, AcpUiEvent>,
     #[serde(default)]
     accepted_prompt_ids: HashSet<String>,
+    #[serde(default)]
+    metric_follow_up_prompt_ids: HashSet<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending_retry_prompt_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -353,6 +363,7 @@ impl Default for TimelineMaterializedIndex {
             latest_plan: None,
             agent_launches: HashMap::new(),
             accepted_prompt_ids: HashSet::new(),
+            metric_follow_up_prompt_ids: HashSet::new(),
             pending_retry_prompt_id: None,
             timing_state_snapshot: None,
             runtime_projection: TimelineRuntimeProjection::default(),
@@ -1242,7 +1253,12 @@ fn apply_index_event_inner(
     if !should_replace {
         return Ok(());
     }
+    let previous_metric_prompt_id = index
+        .item_locators
+        .get(&item.id)
+        .and_then(|locator| locator.metric_follow_up_prompt_id.clone());
     let locator = timeline_item_locator(item, revision, offset, line_length)?;
+    let metric_prompt_id = locator.metric_follow_up_prompt_id.clone();
     let previous_locator = index.item_locators.get(&item.id).cloned();
     index.covered_revision = index.covered_revision.max(revision).max(locator.ended_seq);
     apply_lightweight_projection(index, item);
@@ -1250,6 +1266,20 @@ fn apply_index_event_inner(
     let processing_retry = locator.retry_prompt && locator.status.as_deref() == Some("processing");
     let candidate_order = (locator.ended_seq, locator.seq, locator.revision);
     index.item_locators.insert(item.id.clone(), locator);
+    if previous_metric_prompt_id != metric_prompt_id {
+        if let Some(previous_prompt_id) = previous_metric_prompt_id
+            && !index.item_locators.values().any(|locator| {
+                locator.metric_follow_up_prompt_id.as_deref() == Some(previous_prompt_id.as_str())
+            })
+        {
+            index
+                .metric_follow_up_prompt_ids
+                .remove(&previous_prompt_id);
+        }
+        if let Some(prompt_id) = metric_prompt_id {
+            index.metric_follow_up_prompt_ids.insert(prompt_id);
+        }
+    }
     update_runtime_projection(
         index,
         &item.id,
@@ -1506,9 +1536,11 @@ fn timeline_item_locator(
         || matches!(
             item.kind.as_str(),
             "userTextDelta"
+                | "scheduledTrigger"
                 | "textDelta"
                 | "fileChangeSet"
                 | "attemptSeparator"
+                | "systemNotice"
                 | "contextCompaction"
         )
         || (item.kind == "permissionRequest" && item.status.as_deref() == Some("pending"))
@@ -1563,6 +1595,7 @@ fn timeline_item_locator(
             .and_then(|raw| raw.pointer("/retry/attempt"))
             .and_then(Value::as_u64)
             .is_some_and(|attempt| attempt > 0),
+        metric_follow_up_prompt_id: metric_follow_up_prompt_id(item),
         branch_id: item
             .raw
             .as_ref()
@@ -1577,9 +1610,29 @@ fn timeline_item_locator(
             .and_then(|raw| raw.get("source"))
             .and_then(Value::as_str)
             == Some("goldBandPrompt"),
+        composer_text_bytes: composer_history::original_user_text(item).map(str::len),
         provider_history_item_id: timeline_provider_history_item_id(item),
         prompt_id: timeline_prompt_id(item),
     })
+}
+
+fn metric_follow_up_prompt_id(item: &AcpUiEvent) -> Option<String> {
+    let raw = item.raw.as_ref()?;
+    if item.kind != "userTextDelta"
+        || raw.get("source").and_then(Value::as_str) != Some("goldBandPrompt")
+        || raw.get("turnControlMode").and_then(Value::as_str) != Some("non-runtime-controlled")
+        || raw
+            .get("hiddenFromChat")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return None;
+    }
+    raw.get("promptId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|prompt_id| !prompt_id.is_empty())
+        .map(str::to_string)
 }
 
 fn is_agent_launch(item: &AcpUiEvent) -> bool {
@@ -1963,7 +2016,13 @@ fn build_activity_summary(
     let mut images = Vec::new();
     for item_id in &block.item_ids {
         let locator = index.item_locators.get(item_id)?;
-        images.extend(locator.images.iter().take(crate::acp::images::MAX_PROJECTED_IMAGES.saturating_sub(images.len())).cloned());
+        images.extend(
+            locator
+                .images
+                .iter()
+                .take(crate::acp::images::MAX_PROJECTED_IMAGES.saturating_sub(images.len()))
+                .cloned(),
+        );
         match locator.kind.as_str() {
             "thoughtDelta" => thought_count = thought_count.saturating_add(1),
             "error" => error_count = error_count.saturating_add(1),
@@ -2060,6 +2119,8 @@ fn read_event_from_file_at_locator(
         .ok_or_else(|| anyhow::anyhow!("acp.timeline-index-locator-corrupt"))
 }
 
+pub mod composer_history;
+
 pub fn read_indexed_timeline_page(
     path: &Utf8Path,
     before_seq: Option<u64>,
@@ -2125,6 +2186,11 @@ pub fn read_indexed_timeline_page(
             .skip(total.saturating_sub(limit))
             .collect::<Vec<_>>()
     };
+    // A cumulative stream item can start before a later prompt and finish
+    // afterwards. Incremental selection is based on the newest revision, but
+    // the returned page must retain the canonical visual order by start.
+    let mut selected = selected;
+    selected.sort_by_key(|block| (block.oldest_seq, block.newest_seq, block.last_revision));
     let mut events = Vec::with_capacity(selected.len());
     for block in &selected {
         if let Some(summary) = block.summary.as_ref() {
@@ -2137,8 +2203,8 @@ pub fn read_indexed_timeline_page(
             }
         }
     }
-    let oldest_seq = selected.first().map(|block| block.oldest_seq);
-    let newest_seq = selected.last().map(|block| block.newest_seq);
+    let oldest_seq = selected.iter().map(|block| block.oldest_seq).min();
+    let newest_seq = selected.iter().map(|block| block.newest_seq).max();
     let newest_revision = selected.iter().map(|block| block.last_revision).max();
     let first_ordinal = selected.first().and_then(|selected| {
         index
@@ -2192,12 +2258,68 @@ pub fn timeline_has_agent_launches(path: &Utf8Path) -> Result<bool> {
     })
 }
 
+/// Reads the newest visible Agent text from the root branch through the
+/// timeline index. Manual-check IM delivery only needs this presentation
+/// snapshot, so it must not hydrate the complete attempt history.
+pub fn read_indexed_latest_root_agent_output(path: &Utf8Path) -> Result<Option<String>> {
+    let policy = TimelineCheckpointPolicy::default();
+    let index_path = timeline_index_path(path);
+    with_jsonl_file_lock(path, || {
+        let (index, _) = load_or_rebuild_index_unlocked(path, &index_path, policy)?;
+        let mut candidates = index
+            .item_locators
+            .values()
+            .filter(|locator| {
+                locator.kind == "textDelta"
+                    && locator.branch_id == "root"
+                    && !locator.hidden_from_chat
+                    && locator.session_timeline_event
+                    && !locator.agent_launch
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|locator| {
+            (
+                std::cmp::Reverse(locator.ended_seq),
+                std::cmp::Reverse(locator.seq),
+            )
+        });
+        for locator in candidates {
+            let event = read_event_at_locator(path, locator)?;
+            if is_semantically_empty_agent_content(&event) {
+                continue;
+            }
+            if let Some(output) = event
+                .content
+                .as_deref()
+                .filter(|content| !content.is_empty())
+            {
+                return Ok(Some(output.to_string()));
+            }
+        }
+        Ok(None)
+    })
+}
+
 pub fn read_indexed_accepted_prompt_ids(path: &Utf8Path) -> Result<HashSet<String>> {
     let policy = TimelineCheckpointPolicy::default();
     let index_path = timeline_index_path(path);
     with_jsonl_file_lock(path, || {
         let (index, _) = load_or_rebuild_index_unlocked(path, &index_path, policy)?;
         Ok(index.accepted_prompt_ids)
+    })
+}
+
+pub fn read_indexed_metric_follow_up_prompt_ids(path: &Utf8Path) -> Result<Vec<String>> {
+    let policy = TimelineCheckpointPolicy::default();
+    let index_path = timeline_index_path(path);
+    with_jsonl_file_lock(path, || {
+        let (index, _) = load_or_rebuild_index_unlocked(path, &index_path, policy)?;
+        let mut prompt_ids = index
+            .metric_follow_up_prompt_ids
+            .into_iter()
+            .collect::<Vec<_>>();
+        prompt_ids.sort();
+        Ok(prompt_ids)
     })
 }
 
@@ -2456,6 +2578,45 @@ pub fn read_indexed_pending_permission(
     request_id: &str,
 ) -> Result<Option<TimelineIndexedItem>> {
     read_indexed_pending_interaction(path, request_id, true)
+}
+
+pub fn read_indexed_permission_request_by_request_id(
+    path: &Utf8Path,
+    request_id: &str,
+) -> Result<Option<TimelineIndexedItem>> {
+    let policy = TimelineCheckpointPolicy::default();
+    let index_path = timeline_index_path(path);
+    with_jsonl_file_lock(path, || {
+        let (index, _) = load_or_rebuild_index_unlocked(path, &index_path, policy)?;
+        let mut locators = index
+            .item_locators
+            .values()
+            .filter(|locator| locator.kind == "permissionRequest")
+            .collect::<Vec<_>>();
+        locators.sort_by_key(|locator| {
+            (
+                std::cmp::Reverse(locator.ended_seq),
+                std::cmp::Reverse(locator.seq),
+            )
+        });
+        for locator in locators {
+            let event = read_event_at_locator(path, locator)?;
+            if event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("requestId"))
+                .and_then(Value::as_str)
+                == Some(request_id)
+            {
+                return Ok(Some(TimelineIndexedItem {
+                    event,
+                    generation: index.generation,
+                    revision: locator.revision,
+                }));
+            }
+        }
+        Ok(None)
+    })
 }
 
 pub fn read_indexed_pending_elicitation(
@@ -3082,12 +3243,16 @@ mod tests {
         DEFAULT_TIMELINE_COMPACT_MIN_PATCH_COUNT, DEFAULT_TIMELINE_TAIL_REPLAY_LIMIT,
         TIMELINE_BLOB_MIN_BYTES, TIMELINE_INDEX_FORMAT_VERSION, TimelineCompactionPolicy,
         TimelineRestoreMode, TimelineSettleOutcome, TimelineStore, TimelineUpsertOutcome,
-        read_indexed_prompt_anchor_events, read_indexed_runtime_restore,
-        read_indexed_runtime_restore_for_branch, read_indexed_timeline_page,
-        read_indexed_timeline_projection, settle_latest_processing_retry_prompt,
-        settle_timeline_item_status, timeline_index_path,
+        read_indexed_latest_root_agent_output, read_indexed_metric_follow_up_prompt_ids,
+        read_indexed_permission_request_by_request_id, read_indexed_prompt_anchor_events,
+        read_indexed_runtime_restore, read_indexed_runtime_restore_for_branch,
+        read_indexed_timeline_item, read_indexed_timeline_page, read_indexed_timeline_projection,
+        settle_latest_processing_retry_prompt, settle_timeline_item_status, timeline_index_path,
     };
-    use crate::acp::events::{AcpTimelinePatch, AcpTimingPatch, AcpUiEvent, load_timeline_items};
+    use crate::acp::events::{
+        AcpTimelinePatch, AcpTimingPatch, AcpUiEvent, ScheduledTriggerPayload, load_timeline_items,
+        scheduled_trigger_event,
+    };
 
     fn event(id: &str, seq: u64, content: &str) -> AcpUiEvent {
         AcpUiEvent {
@@ -3107,6 +3272,194 @@ mod tests {
             timing: None,
             raw: Some(json!({ "source": "providerHistory" })),
         }
+    }
+
+    fn metric_follow_up_event(id: &str, seq: u64, prompt_id: &str) -> AcpUiEvent {
+        let mut item = event(id, seq, "same answer");
+        item.kind = "userTextDelta".to_string();
+        item.raw = Some(json!({
+            "source": "goldBandPrompt",
+            "turnControlMode": "non-runtime-controlled",
+            "promptId": prompt_id,
+        }));
+        item
+    }
+
+    #[test]
+    fn metric_follow_up_projection_uses_canonical_prompt_identity_and_filters_sources() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+
+        store
+            .upsert(1, &metric_follow_up_event("prompt-a", 1, "prompt-2"))
+            .unwrap();
+        store
+            .upsert(2, &metric_follow_up_event("prompt-b", 2, "prompt-1"))
+            .unwrap();
+        store
+            .upsert(3, &metric_follow_up_event("prompt-a-replay", 3, "prompt-2"))
+            .unwrap();
+        let mut runtime_prompt = metric_follow_up_event("runtime-prompt", 4, "prompt-runtime");
+        runtime_prompt.raw.as_mut().unwrap()["turnControlMode"] = json!("runtime-controlled");
+        store.upsert(4, &runtime_prompt).unwrap();
+        let mut hidden_prompt = metric_follow_up_event("hidden-prompt", 5, "prompt-hidden");
+        hidden_prompt.raw.as_mut().unwrap()["hiddenFromChat"] = json!(true);
+        store.upsert(5, &hidden_prompt).unwrap();
+        let mut provider_history = metric_follow_up_event("provider-history", 6, "prompt-history");
+        provider_history.raw.as_mut().unwrap()["source"] = json!("providerHistory");
+        store.upsert(6, &provider_history).unwrap();
+        let mut missing_id = metric_follow_up_event("missing-id", 7, "");
+        missing_id.raw.as_mut().unwrap()["promptId"] = json!("   ");
+        store.upsert(7, &missing_id).unwrap();
+
+        assert_eq!(
+            read_indexed_metric_follow_up_prompt_ids(&path).unwrap(),
+            vec!["prompt-1".to_string(), "prompt-2".to_string()]
+        );
+    }
+
+    #[test]
+    fn metric_follow_up_projection_rebuilds_old_index_and_removes_reclassified_item() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        let visible = metric_follow_up_event("prompt-a", 1, "prompt-1");
+        store.upsert(1, &visible).unwrap();
+        store.force_checkpoint().unwrap();
+
+        let index_path = timeline_index_path(&path);
+        let mut legacy: serde_json::Value = crate::storage::read_json(&index_path).unwrap();
+        legacy["formatVersion"] = json!(TIMELINE_INDEX_FORMAT_VERSION - 1);
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("metricFollowUpPromptIds");
+        crate::storage::write_json(&index_path, &legacy).unwrap();
+        assert_eq!(
+            read_indexed_metric_follow_up_prompt_ids(&path).unwrap(),
+            vec!["prompt-1".to_string()]
+        );
+
+        let mut hidden = visible;
+        hidden.seq = 2;
+        hidden.ended_seq = Some(2);
+        hidden.raw.as_mut().unwrap()["hiddenFromChat"] = json!(true);
+        store.upsert(2, &hidden).unwrap();
+        assert!(
+            read_indexed_metric_follow_up_prompt_ids(&path)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    fn trigger_payload() -> ScheduledTriggerPayload {
+        ScheduledTriggerPayload {
+            project_id: "project-001".to_string(),
+            scheduled_task_id: "scheduled-task-001".to_string(),
+            occurrence_id: "occurrence-001".to_string(),
+            trigger_kind: crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled,
+            scheduled_at: Some("2026-08-25T01:30:00Z".to_string()),
+            accepted_at: "2026-08-25T01:29:59Z".to_string(),
+            instruction_summary: "accepted summary".to_string(),
+            content_fingerprint: "sha256:accepted".to_string(),
+            links: crate::scheduler::occurrence::OccurrenceLinks {
+                task_id: Some("task-001".to_string()),
+                run_id: Some("run-001".to_string()),
+                round_id: Some("round-001".to_string()),
+                node_id: Some("dev".to_string()),
+                attempt_id: Some("attempt-001".to_string()),
+            },
+        }
+    }
+
+    #[test]
+    fn prompt_retry_does_not_duplicate_the_scheduled_trigger() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let payload = trigger_payload();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+
+        assert_eq!(
+            store
+                .upsert(1, &scheduled_trigger_event(1, &payload))
+                .unwrap(),
+            TimelineUpsertOutcome::Appended
+        );
+        assert_eq!(
+            store
+                .upsert(2, &scheduled_trigger_event(20, &payload))
+                .unwrap(),
+            TimelineUpsertOutcome::Unchanged
+        );
+        store.force_checkpoint().unwrap();
+
+        let items = load_timeline_items(&path).unwrap();
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| item.kind == "scheduledTrigger")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn timeline_index_restores_scheduled_trigger_after_restart() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let payload = trigger_payload();
+        {
+            let mut store =
+                TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+            store
+                .upsert(1, &scheduled_trigger_event(1, &payload))
+                .unwrap();
+            store.force_checkpoint().unwrap();
+        }
+
+        let restored = read_indexed_timeline_item(&path, "scheduled-trigger:occurrence-001")
+            .unwrap()
+            .expect("scheduled trigger must remain indexed after restart");
+
+        assert_eq!(restored.event.kind, "scheduledTrigger");
+        assert_eq!(
+            restored.event.raw.unwrap()["scheduledTrigger"],
+            serde_json::json!(payload)
+        );
+    }
+
+    #[test]
+    fn trigger_event_snapshot_is_immutable_under_later_definition_edits() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let accepted = trigger_payload();
+        let mut edited = accepted.clone();
+        edited.instruction_summary = "later definition summary".to_string();
+        edited.content_fingerprint = "sha256:later-definition".to_string();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        store
+            .upsert(1, &scheduled_trigger_event(1, &accepted))
+            .unwrap();
+
+        assert_eq!(
+            store
+                .upsert(2, &scheduled_trigger_event(2, &edited))
+                .unwrap(),
+            TimelineUpsertOutcome::Unchanged
+        );
+        store.force_checkpoint().unwrap();
+        let restored = read_indexed_timeline_item(&path, "scheduled-trigger:occurrence-001")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            restored.event.raw.unwrap()["scheduledTrigger"],
+            serde_json::json!(accepted)
+        );
     }
 
     #[test]
@@ -3327,6 +3680,65 @@ mod tests {
     }
 
     #[test]
+    fn latest_root_agent_output_skips_empty_hidden_and_nested_text() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        store
+            .upsert(1, &event("root-old", 1, "old output"))
+            .unwrap();
+        store.upsert(2, &event("root-empty", 2, "")).unwrap();
+
+        let mut nested = event("nested-new", 3, "nested output");
+        nested.raw = Some(json!({
+            "_meta": { "goldBandConversation": { "branchId": "agent-branch" } }
+        }));
+        store.upsert(3, &nested).unwrap();
+
+        store
+            .upsert(4, &event("root-new", 4, "final root output"))
+            .unwrap();
+
+        let mut hidden = event("root-hidden", 5, "hidden output");
+        hidden.raw = Some(json!({ "hiddenFromChat": true }));
+        store.upsert(5, &hidden).unwrap();
+
+        assert_eq!(
+            read_indexed_latest_root_agent_output(&path).unwrap(),
+            Some("final root output".to_string())
+        );
+    }
+
+    #[test]
+    fn permission_request_is_readable_by_raw_request_id_after_signal_cleanup() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        let mut request = event("permission-1", 1, "");
+        request.kind = "permissionRequest".to_string();
+        request.raw = Some(json!({
+            "requestId": "0",
+            "optionId": "allow-once"
+        }));
+        store.upsert(1, &request).unwrap();
+
+        let found = read_indexed_permission_request_by_request_id(&path, "0")
+            .unwrap()
+            .expect("permission request exists");
+        assert_eq!(found.event.id, "permission-1");
+        assert_eq!(
+            found.event.raw.and_then(|raw| {
+                raw.get("optionId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            }),
+            Some("allow-once".to_string())
+        );
+    }
+
+    #[test]
     fn batch_upsert_commits_distinct_identities_and_preserves_aligned_outcomes() {
         let dir = tempdir().unwrap();
         let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
@@ -3435,6 +3847,25 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn scheduled_trigger_is_a_standalone_semantic_block() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        store
+            .upsert(1, &scheduled_trigger_event(1, &trigger_payload()))
+            .unwrap();
+        store.force_checkpoint().unwrap();
+
+        let page = read_indexed_timeline_page(&path, None, None, None, 30).unwrap();
+
+        assert_eq!(page.total_semantic_blocks, 1);
+        assert_eq!(page.loaded_semantic_blocks, 1);
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(page.events[0].kind, "scheduledTrigger");
     }
 
     #[test]
@@ -3641,7 +4072,7 @@ mod tests {
     }
 
     #[test]
-    fn ten_thousand_revisions_query_from_checkpoint_without_full_replay() {
+    fn ten_thousand_revisions_old_index_rebuilds_once_then_queries_from_checkpoint() {
         let dir = tempdir().unwrap();
         let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
         let file = std::fs::File::create(path.as_std_path()).unwrap();
@@ -3663,7 +4094,23 @@ mod tests {
         }
         writer.flush().unwrap();
 
+        let initial = read_indexed_timeline_page(&path, None, None, None, 30).unwrap();
+        assert_eq!(initial.events.len(), 1);
+        let index_path = timeline_index_path(&path);
+        let mut legacy: serde_json::Value = crate::storage::read_json(&index_path).unwrap();
+        legacy["formatVersion"] = json!(TIMELINE_INDEX_FORMAT_VERSION - 1);
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("metricFollowUpPromptIds");
+        crate::storage::write_json(&index_path, &legacy).unwrap();
+
+        let started = Instant::now();
         let migrated = read_indexed_timeline_page(&path, None, None, None, 30).unwrap();
+        eprintln!(
+            "timeline legacy-index rebuild records=10000 elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
         assert_eq!(migrated.events.len(), 1);
         let page = read_indexed_timeline_page(&path, None, None, None, 30).unwrap();
         assert_eq!(page.processed_tail_records, 0);
@@ -3830,18 +4277,40 @@ mod tests {
                 { "type": "image", "mimeType": "image/png", "data": "AQIDBA==" }
             ] } }
         }));
-        let mut store = TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
         store.upsert(1, &item).unwrap();
-        let stored = super::read_indexed_timeline_item(&path, "tool-image").unwrap().unwrap().event;
-        assert!(stored.raw.as_ref().unwrap().pointer("/rawOutput/result/content/0/data/$goldBandBlob").is_some());
+        let stored = super::read_indexed_timeline_item(&path, "tool-image")
+            .unwrap()
+            .unwrap()
+            .event;
+        assert!(
+            stored
+                .raw
+                .as_ref()
+                .unwrap()
+                .pointer("/rawOutput/result/content/0/data/$goldBandBlob")
+                .is_some()
+        );
         store.force_checkpoint().unwrap();
         let summary = store.index.semantic_blocks[0].summary.as_ref().unwrap();
-        let images = summary.raw.as_ref().unwrap().pointer("/goldBandActivity/images").unwrap().as_array().unwrap();
+        let images = summary
+            .raw
+            .as_ref()
+            .unwrap()
+            .pointer("/goldBandActivity/images")
+            .unwrap()
+            .as_array()
+            .unwrap();
         assert_eq!(images.len(), 1);
         assert_eq!(images[0]["eventId"], "tool-image");
         assert!(!serde_json::to_string(summary).unwrap().contains("AQIDBA=="));
-        let reference = serde_json::from_value::<crate::acp::images::AcpImageRef>(images[0].clone()).unwrap();
-        assert_eq!(crate::acp::images::read_image_base64(&path, &reference).unwrap(), "AQIDBA==");
+        let reference =
+            serde_json::from_value::<crate::acp::images::AcpImageRef>(images[0].clone()).unwrap();
+        assert_eq!(
+            crate::acp::images::read_image_base64(&path, &reference).unwrap(),
+            "AQIDBA=="
+        );
         let mut invalid = reference.clone();
         invalid.content_hash = "wrong-version".into();
         assert!(crate::acp::images::read_image_base64(&path, &invalid).is_err());
@@ -3850,7 +4319,10 @@ mod tests {
         assert!(crate::acp::images::read_image_base64(&path, &invalid).is_err());
         let mut live = item.clone();
         crate::acp::events::compact_live_conversation_event(&mut live);
-        assert_eq!(live.raw.as_ref().unwrap()["goldBandImages"][0], serde_json::to_value(reference).unwrap());
+        assert_eq!(
+            live.raw.as_ref().unwrap()["goldBandImages"][0],
+            serde_json::to_value(reference).unwrap()
+        );
         assert!(!serde_json::to_string(&live).unwrap().contains("AQIDBA=="));
     }
 

@@ -12,6 +12,9 @@ const defaultSheetViewportMargin = 16
 const sheetResizeStep = 24
 
 type SheetSide = "top" | "right" | "bottom" | "left"
+type SheetOverlayProps = React.ComponentProps<typeof SheetPrimitive.Overlay> & {
+  [attribute: `data-${string}`]: string | number | boolean | undefined
+}
 const SheetModalContext = React.createContext(true)
 
 function Sheet({ modal = true, ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
@@ -114,6 +117,7 @@ function SheetContent({
   side = "right",
   showCloseButton = true,
   showOverlay,
+  overlayProps,
   closeLabel = "Close",
   resizable = true,
   resizeStorageKey,
@@ -127,6 +131,7 @@ function SheetContent({
   side?: SheetSide
   showCloseButton?: boolean
   showOverlay?: boolean
+  overlayProps?: SheetOverlayProps
   closeLabel?: string
   resizable?: boolean
   resizeStorageKey?: string
@@ -310,7 +315,7 @@ function SheetContent({
 
   return (
     <SheetPortal>
-      {overlayVisible ? <SheetOverlay /> : null}
+      {overlayVisible ? <SheetOverlay {...overlayProps} /> : null}
       <SheetPrimitive.Content
         ref={setContentRef}
         data-slot="sheet-content"

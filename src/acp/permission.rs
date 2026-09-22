@@ -18,7 +18,7 @@ use crate::{
             read_indexed_pending_permission, read_indexed_timeline_item, settle_permission_item,
         },
     },
-    storage::{ensure_parent_dir, read_json, write_json},
+    storage::{ensure_parent_dir, read_json, with_file_lock, write_json},
 };
 
 pub type PendingPermissionState = PendingAcpPromptInteractionState<Value>;
@@ -166,24 +166,27 @@ pub fn write_permission_response_if_pending(
     decided_at: String,
 ) -> Result<bool> {
     let pending_path = pending_permission_file(attempt_dir, request_id);
-    if !pending_path.exists() {
+    let response_path = permission_response_file(attempt_dir, request_id);
+    let pending = with_file_lock(&response_path, || {
+        if !pending_path.exists() || response_path.exists() {
+            return Ok(None);
+        }
+        // The response file is the Runtime hand-off reservation. Persist it
+        // before settling the timeline so concurrent desktop/IM writers have
+        // one first-writer-wins boundary.
+        let pending: PendingPermissionState = read_json(&pending_path)?;
+        write_permission_response(
+            attempt_dir,
+            request_id,
+            option_id.clone(),
+            cancelled,
+            decided_at.clone(),
+        )?;
+        Ok(Some(pending))
+    })?;
+    let Some(pending) = pending else {
         return Ok(false);
-    }
-    if permission_response_file(attempt_dir, request_id).exists() {
-        return Ok(false);
-    }
-    // The provider waiter is the control-plane consumer. Persist its response
-    // before attempting to settle the timeline projection: the permission
-    // event can still be between the pending-file write and timeline/index
-    // persistence when the user responds.
-    let pending: PendingPermissionState = read_json(&pending_path)?;
-    write_permission_response(
-        attempt_dir,
-        request_id,
-        option_id.clone(),
-        cancelled,
-        decided_at.clone(),
-    )?;
+    };
     if let Some((identity, indexed)) = resolve_permission_identity(
         attempt_dir,
         &pending.identity.interaction_id,
@@ -240,6 +243,52 @@ pub fn wait_for_permission_response_until_cancelled(
         }
         thread::sleep(Duration::from_millis(200));
     }
+}
+
+pub fn first_allow_permission_option_id(params: &Value) -> Option<String> {
+    params
+        .get("options")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find_map(|option| {
+            let kind = option.get("kind").and_then(Value::as_str)?;
+            if !kind.starts_with("allow") {
+                return None;
+            }
+            option
+                .get("optionId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+}
+
+pub fn auto_accept_permission_option_id(auto_accept: bool, params: &Value) -> Option<String> {
+    if !auto_accept {
+        return None;
+    }
+    first_allow_permission_option_id(params)
+}
+
+pub fn session_auto_accept_override(attempt_dir: &Utf8Path) -> Option<bool> {
+    for name in ["acp.snapshot.json", "acp.session.json"] {
+        let path = attempt_dir.join(name);
+        if !path.exists() {
+            continue;
+        }
+        if let Ok(value) = read_json::<Value>(&path)
+            && let Some(enabled) = value.get("autoAccept").and_then(Value::as_bool)
+        {
+            return Some(enabled);
+        }
+    }
+    None
+}
+
+pub fn session_auto_accept_enabled(attempt_dir: &Utf8Path) -> bool {
+    session_auto_accept_override(attempt_dir).unwrap_or(false)
 }
 
 pub fn acp_permission_response_result(response: PermissionResponseState) -> Result<Value> {
@@ -376,6 +425,71 @@ mod tests {
         )
         .unwrap();
         (dir, attempt_dir)
+    }
+
+    #[test]
+    fn first_allow_option_is_the_first_kind_starting_with_allow() {
+        let params = serde_json::json!({
+            "options": [
+                { "optionId": "reject-once", "kind": "reject_once" },
+                { "optionId": "allow-once", "kind": "allow_once" },
+                { "optionId": "allow-always", "kind": "allow_always" }
+            ]
+        });
+        assert_eq!(
+            first_allow_permission_option_id(&params).as_deref(),
+            Some("allow-once")
+        );
+    }
+
+    #[test]
+    fn auto_accept_skips_requests_without_allow_options() {
+        let params = serde_json::json!({
+            "options": [{ "optionId": "reject-once", "kind": "reject_once" }]
+        });
+        assert_eq!(auto_accept_permission_option_id(true, &params), None);
+        assert_eq!(
+            auto_accept_permission_option_id(
+                false,
+                &serde_json::json!({
+                    "options": [{ "optionId": "allow-once", "kind": "allow_once" }]
+                })
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn session_auto_accept_reads_snapshot_boolean() {
+        let (_dir, attempt_dir) =
+            test_attempt_dir(crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION);
+        assert!(!session_auto_accept_enabled(&attempt_dir));
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({ "autoAccept": true }),
+        )
+        .unwrap();
+        assert!(session_auto_accept_enabled(&attempt_dir));
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({ "autoAccept": false }),
+        )
+        .unwrap();
+        assert!(!session_auto_accept_enabled(&attempt_dir));
+        assert_eq!(session_auto_accept_override(&attempt_dir), Some(false));
+    }
+
+    #[test]
+    fn session_auto_accept_override_is_absent_when_unset() {
+        let (_dir, attempt_dir) =
+            test_attempt_dir(crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION);
+        assert_eq!(session_auto_accept_override(&attempt_dir), None);
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({ "permissionModeOverride": "agent" }),
+        )
+        .unwrap();
+        assert_eq!(session_auto_accept_override(&attempt_dir), None);
     }
 
     #[test]

@@ -41,6 +41,8 @@
 
 `systemPrompt` 不承载 resume 时可能变化的运行事实，例如当前 attempt、前序节点链、前序产物摘要、本轮反馈以及 PostTurn finalize / repair 的完整控制协议。它也不再承载旧的 `InvocationKind` 语义，不根据 artifact 名称内置 `节点输出产物` / `验收输出产物` 之类特殊输出规则，不注入 runtime `skill_catalog`。
 
+当 `gold-band-memory` 已启用时，`RuntimeManaged` 会在 system prompt 末尾追加简化后的通用共享记忆规则。该规则只说明 `memory_read` / `memory_write` 的通用能力、角色契约优先和“不保存推断、总结、执行结果或凭据”的安全边界；不包含 key、value、desc、revision、来源作用域或记忆文件路径。`RawAgent` 不追加该规则，但 MCP binding 仍独立保留。
+
 内置审查 profile 的审查边界固定为当前开发节点 / 当前迭代改动：优先以 `dev-report.md` 中列出的文件和行号为范围；前序存在开发节点但未产出报告不构成阻塞条件，直接以当前 git 工作区对应改动为准。相邻代码只作为理解上下文，未被当前改动引入或放大的历史问题不应阻塞本轮 review 裁决。
 
 内置测试 profile 遇到环境问题或必须人工验收而无法继续自动验证时，必须如实记录未执行项和证据缺口，但该情况不构成任务阻塞条件，也不得仅据此声明 BLOCKED；测试通过/失败的事实结论仍按实际执行结果记录。
@@ -62,7 +64,7 @@
 - runtime finalize / repair 请求的完整 artifact 协议与修复提示原文；两者都是隐藏 user prompt，不回写 system prompt
 - 用户手动追问 / stopped-completed session follow-up 的用户输入原文
 
-profile 正文、`extra_system_sections` 不放在 `userPrompt` 中；output DSL 只在隐藏 `RuntimeFinalize / RuntimeRepair` 控制 turn 中作为 user prompt 协议出现，普通业务 user prompt 不携带。`Cold Artifact Index` / `Cold Attachment Index` 本期从 prompt 中删除。
+profile 正文、`extra_system_sections` 不放在 `userPrompt` 中；output DSL 只在隐藏 `RuntimeFinalize / RuntimeRepair` 控制 turn 中作为 user prompt 协议出现，普通业务 user prompt 不携带。共享记忆不通过 `userPrompt` 自动投影，需要记忆的角色必须在角色契约声明的时机调用 `memory_read`。`Cold Artifact Index` / `Cold Attachment Index` 本期从 prompt 中删除。
 
 ### 3.3 Profile 动态模板
 
@@ -330,6 +332,8 @@ AI-DYNAMIC 内部 agent 阶段（bootstrap / worker / merge / acceptance）与�
 
 桌面 ACP 会话面板的手动追问必须走 `UserMessage`：只复用同一套 prompt bundle / attachment / provider 发送链路，不复用 workflow hidden runtime context。
 
+Cursor ACP 已知缺陷：`session/cancel` 可能把已经接受的那条 `session/prompt`（含 `WorkflowResume` hidden runtime context）从后续模型上下文中整轮撤回，Gold Band timeline 仍保留该气泡。详见 [Provider Adapter 接口](adapter.md)「Cursor ACP 已知缺陷」。不要据此取消 resume 注入；下一次 runtime continue 才是重新注入最新 hidden context 的补偿点。
+
 ACP 会话展示按 Gold Band 的 session 策略聚合：`session=new` 始终创建独立 conversation，即使底层 provider 暴露了相同或临时 session id，也不把两个 new attempt 合并；后续 `session=continue` 且指向已有 ACP session id 时，挂回被继续的 conversation，并以 attempt 分隔行标记新 attempt 进入。会话流中 Gold Band synthetic user prompt 与 provider 回放的同文 user prompt 只展示一条，避免运行中出现重复用户消息。
 
 说明：Claude Agent ACP 的 `session/load` 会在恢复已有 Claude 会话时创建新的 SDK query 进程；这里的 create session 是 provider 进程内的查询对象创建，不表示 Gold Band 开启了新的对话语义。
@@ -349,4 +353,4 @@ Provider 能力中新增 `supports_system_prompt`。支持该能力的 provider 
 - `runtime-managed`：普通 Workflow/AUTO 节点，继续使用本规范中的 system/user prompt 模板、profile、hidden runtime context、output contract 和 repair 规则。
 - `raw-agent`：仅供 Direct 内部单 Worker 执行壳使用。`systemPrompt` 严格为空；首轮 `userPrompt` 等于用户创建会话时的原始输入，continue `userPrompt` 等于本轮追问原文。
 
-`raw-agent` 不允许注入 Gold Band runtime/profile/goal/hidden/output/repair 文本，也不创建“空提示词”文件。附件、MCP、模型、权限、usage、timing、permission 和 elicitation 不属于 prompt envelope，继续沿用现有 provider 管道。空 system prompt 不写入 ACP `session/new` / `session/load` 的 `_meta.systemPrompt`，也不会被 Codex ACP 内联为 stable hidden block。
+`raw-agent` 不允许注入 Gold Band runtime/profile/goal/hidden/output/repair 文本，也不接收通用记忆规则或自动记忆数据，也不创建“空提示词”文件。附件、MCP、模型、权限、usage、timing、permission 和 elicitation 不属于 prompt envelope，继续沿用现有 provider 管道；启用 `gold-band-memory` 时仍保留并绑定该 MCP。工具描述只能降低 Direct 误用记忆内容的风险，不能提供与 system prompt 等价的模型行为级约束。空 system prompt 不写入 ACP `session/new` / `session/load` 的 `_meta.systemPrompt`，也不会被 Codex ACP 内联为 stable hidden block。

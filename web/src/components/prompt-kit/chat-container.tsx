@@ -84,6 +84,9 @@ export type ChatContainerRootProps = {
   resize?: StickToBottomProps["resize"]
   initial?: StickToBottomProps["initial"]
   contextRef?: React.Ref<ChatContainerContext>
+  // Follow-aware viewport signal: true while following; false after a user
+  // escape or content-expansion pause; external stopScroll at the live head
+  // still reports remaining geometric at-bottom.
   onAtBottomChange?: (atBottom: boolean) => void
   canResumeFollowingAfterDisclosure?: () => boolean
   onFollowIntentChange?: (
@@ -190,6 +193,13 @@ export function isChatContainerViewportAtBottom(
     viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <=
     CHAT_CONTAINER_BOTTOM_REJOIN_TOLERANCE_PX
   )
+}
+
+function isUserDetachedFollowCause(cause: ChatContainerFollowIntentCause) {
+  return cause === "user-wheel-up"
+    || cause === "user-key-up"
+    || cause === "user-scrollbar-up"
+    || cause === "content-expansion-user-scroll"
 }
 
 export function alignChatContainerViewportToBottomBeforePaint(
@@ -303,6 +313,7 @@ function ChatContainerLifecycle({
   const canResumeFollowingAfterDisclosureRef = useRef(canResumeFollowingAfterDisclosure)
   canResumeFollowingAfterDisclosureRef.current = canResumeFollowingAfterDisclosure
   const isFollowingRef = useRef(initialFollowing)
+  const userDetachedFromBottomRef = useRef(!initialFollowing)
   const scrollbarPointerIdRef = useRef<number | null>(null)
   const lastScrollTopRef = useRef<number | null>(null)
   const resumeFollowFromUserInputRef = useRef<ChatFollowResumeCause | null>(null)
@@ -412,6 +423,18 @@ function ChatContainerLifecycle({
     }
   }, [initialFollowing, recordScrollTrace])
 
+  const resolveReportedAtBottom = useCallback(() => {
+    if (isFollowingRef.current) return true
+    if (userDetachedFromBottomRef.current) return false
+    if (contentExpansionTokensRef.current) return false
+    const viewport = scrollRef.current as HTMLDivElement | null
+    return viewport ? isChatContainerViewportAtBottom(viewport) : false
+  }, [scrollRef])
+
+  const notifyAtBottomChange = useCallback(() => {
+    onAtBottomChangeRef.current?.(resolveReportedAtBottom())
+  }, [resolveReportedAtBottom])
+
   const updateFollowIntent = useCallback((
     following: boolean,
     cause: ChatContainerFollowIntentCause,
@@ -423,11 +446,17 @@ function ChatContainerLifecycle({
       next: following,
       changed: previous !== following,
     }), true)
+    if (following) {
+      userDetachedFromBottomRef.current = false
+      resumeFollowFromUserInputRef.current = null
+    } else if (isUserDetachedFollowCause(cause)) {
+      userDetachedFromBottomRef.current = true
+    }
     onFollowIntentChange?.(following, cause)
-    if (following) resumeFollowFromUserInputRef.current = null
     isFollowingRef.current = following
     setIsFollowing((current) => current === following ? current : following)
-  }, [onFollowIntentChange, recordScrollTrace])
+    notifyAtBottomChange()
+  }, [notifyAtBottomChange, onFollowIntentChange, recordScrollTrace])
 
   const cancelContentExpansionRestore = useCallback(() => {
     contentExpansionTokensRef.current = null
@@ -491,10 +520,11 @@ function ChatContainerLifecycle({
 
   const completeFollowResumeFromUserInput = useCallback(() => {
     const cause = resumeFollowFromUserInputRef.current
-    resumeFollowFromUserInputRef.current = null
     if (!cause || isFollowingRef.current) return
     const viewport = scrollRef.current as HTMLDivElement | null
     if (!viewport || !isChatContainerViewportAtBottom(viewport)) return
+    // Incomplete scrollend must not consume the token; pagination or clamp can fire one first.
+    resumeFollowFromUserInputRef.current = null
     cancelContentExpansionRestore()
     updateFollowIntent(true, cause)
   }, [
@@ -624,8 +654,8 @@ function ChatContainerLifecycle({
   useImperativeHandle(contextRef, () => exposedContext, [exposedContext])
 
   useEffect(() => {
-    onAtBottomChange?.(isFollowing)
-  }, [isFollowing, onAtBottomChange])
+    notifyAtBottomChange()
+  }, [notifyAtBottomChange, onAtBottomChange])
 
   const scheduleFollowRecovery = useCallback(() => {
     if (!isFollowingRef.current || recoveryTimerRef.current !== null) return
@@ -890,8 +920,8 @@ function ChatContainerLifecycle({
         // The library re-locks on shrinking content within its near-bottom
         // threshold. Geometry alone must not override the wrapper's intent.
         libraryStopScroll()
-        onAtBottomChangeRef.current?.(false)
       }
+      notifyAtBottomChange()
       if (isAcpStreamingDiagnosticsEnabled()) {
         const durationMs = performance.now() - startedAt
         const diagnostic = layoutDiagnosticRef.current
@@ -938,6 +968,7 @@ function ChatContainerLifecycle({
     cancelContentExpansionRestore,
     contentRef,
     libraryScrollToBottom,
+    notifyAtBottomChange,
     recordScrollTrace,
     scheduleFollowRecovery,
     scrollRef,

@@ -56,7 +56,7 @@ export function ComposerContextArea({
                 </Button>
               </span>
             </TooltipTrigger>
-            <TooltipContent side="top" sideOffset={8} className="max-h-72 max-w-[min(36rem,calc(100vw-2rem))] overflow-auto whitespace-pre-wrap px-3 py-2 text-left leading-5">
+            <TooltipContent side="top" sideOffset={8} className="pointer-events-auto max-h-72 max-w-[min(36rem,calc(100vw-2rem))] overflow-auto whitespace-pre-wrap px-3 py-2 text-left leading-5">
               {quote.text}
             </TooltipContent>
           </Tooltip>

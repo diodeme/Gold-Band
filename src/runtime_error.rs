@@ -162,6 +162,14 @@ pub fn auto_runtime_error_info(
 
 pub fn normalize_runtime_error(error: &anyhow::Error) -> RuntimeErrorInfo {
     let diagnostic = format!("{error:#}");
+    if let Some(memory) = error.downcast_ref::<crate::memory::MemoryError>() {
+        return manual_runtime_error_info(
+            RuntimeErrorDomain::RuntimeIo,
+            memory.code,
+            diagnostic,
+            memory.params.clone(),
+        );
+    }
     if let Some(runtime_error) = error.downcast_ref::<RuntimeError>() {
         let mut info = runtime_error.info.clone();
         info.diagnostic = diagnostic.clone();

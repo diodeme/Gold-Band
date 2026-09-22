@@ -294,6 +294,8 @@ describe('quick conversation workspace control', () => {
     expect(curves[1]?.querySelector('path')?.getAttribute('d')).toBe('M0 28L20.14 4Q23.497 0 29.497 0H48V28Z');
     expect(curves[1]?.querySelector('path')?.getAttribute('transform')).toBe('translate(48 0) scale(-1 1)');
     expect(host.querySelector('[data-conversation-workspace-value="true"]')?.textContent).toBe('Gold Band');
+    expect(branchTrigger!.getAttribute('data-git-branch-workspace-name')).toBe('Gold Band');
+    expect(branchTrigger!.getAttribute('data-git-branch-workspace-name')).not.toBe('gold-band');
   });
 
   it('keeps the compact context controls mounted while their values change', async () => {

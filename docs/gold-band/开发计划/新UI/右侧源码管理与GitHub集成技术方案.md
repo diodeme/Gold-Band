@@ -130,7 +130,7 @@ Git Graph 和关系分析不再作为首版能力。真实仓库的多 ref DAG �
 
 - `not-installed`：不请求 snapshot/history，显示 Git 安装引导和重新检测。
 - `version-unsupported`：Git 可执行文件存在但版本低于 `2.36.0`；返回 `installedVersion + minimumVersion`，不请求 repository snapshot/history，并在源码管理、分支选择器和 Git 前置对话框展示下载与重新检测。
-- `version-unavailable`：Git 可执行文件存在但 `git --version` 失败、非 UTF-8 或格式无法识别；与未安装、低版本分开处理，不猜测可用能力。
+- `version-unavailable`：已解析到 Git 可执行文件，但 `git --version` 的 stdout/stderr 中没有任何可解析的 `git version …` 行；与未安装、低版本分开处理，不猜测可用能力。前置警告、stderr 版本行和非 0 退出码只要带有合法版本行，仍按已安装版本继续比较门槛。
 - `repository-required`：显示非 Git 仓库状态，typed command 执行 `git init`；不 stage、不 commit。
 - `head-required`：允许读取源码管理 snapshot；history 对 unborn HEAD 返回稳定空页，用户从“更改”完成首次提交。
 - `worktree-required / repository-unavailable`：按稳定 capability 状态展示针对性恢复建议。
@@ -138,7 +138,7 @@ Git Graph 和关系分析不再作为首版能力。真实仓库的多 ref DAG �
 
 capability 仅在首次进入、不可用状态的显式重试或初始化终态读取；已 ready 的后台 watcher refresh 不重复 probe。Tauri capability/init command 进入 blocking pool，避免 Git 进程等待占用 IPC event loop。
 
-最低版本采用单一产品级 Git capability，不建立按命令分支的版本矩阵，也不实现 `worktree list --porcelain` 旧行协议或路径输出 fallback。版本解析复用 Rust `semver` 比较核心版本，同时接受 Git for Windows、Apple Git 等发行后缀；`2.36.0-rc*` 仍低于稳定版。通过门槛后继续使用 Git 原生 `--path-format=absolute` 与 `worktree list --porcelain -z`，避免跨平台自行模拟 Git 的路径/worktree 协议。Git source-control typed service 在解析 workspace scope 前统一执行版本 gate，结构化错误为 `git.version-unsupported / git.version-unavailable`；runtime preflight 对应 `run.git-version-unsupported / run.git-version-unavailable`。版本信息不持久化、不新增全局缓存。
+最低版本采用单一产品级 Git capability，不建立按命令分支的版本矩阵，也不实现 `worktree list --porcelain` 旧行协议或路径输出 fallback。Git 子进程通过桌面 PATH 适配层解析绝对路径并注入同一 PATH；Windows 追加常见 Git cmd 安装位置并跳过 App Execution Alias 空文件。版本解析按行识别 `git version` 输出，复用 Rust `semver` 比较核心版本，同时接受 Git for Windows、Apple Git 等发行后缀；`2.36.0-rc*` 仍低于稳定版。通过门槛后继续使用 Git 原生 `--path-format=absolute` 与 `worktree list --porcelain -z`，避免跨平台自行模拟 Git 的路径/worktree 协议。Git source-control typed service 在解析 workspace scope 前统一执行版本 gate，结构化错误为 `git.version-unsupported / git.version-unavailable`；runtime preflight 对应 `run.git-version-unsupported / run.git-version-unavailable`。版本信息不持久化；Git 绝对路径仅进程内缓存，capability 重新检测会重新解析。
 
 ```text
 Right Workspace / Source Control
@@ -641,7 +641,7 @@ GitHub 数据不得保存在 `SourceControlGitHubView` 的组件本地生命周�
 
 `GitHubPullRequestDetailVm` 返回 `baseRefOid/headRefOid`。点击文件时把这两个稳定 revision 写入 typed comparison locator；后端校验 40/64 位十六进制 OID 和 repo-relative path，只并行执行 base/head 两次 raw content 请求。旧的每文件 `gh pr diff --name-only` 与 `gh pr view --json baseRefOid,headRefOid,files` 消费路径删除。
 
-GitHub PR/Issue 列表和详情的宽度链从领域根容器贯穿 Tabs、TabsContent、ScrollArea 到单行，统一使用 `min-w-0 / overflow-hidden / max-w-full` 限制在右侧面板内。标题、账号、head/base 分支、label 与文件路径是可压缩省略列；导航按钮、状态和增删统计为固定列，长远端文本不得改变客户端宽度或生成横向滚动。
+GitHub PR/Issue 列表和详情的宽度链从领域根容器贯穿 Tabs、TabsContent、ScrollArea 到单行，统一使用 `min-w-0 / overflow-hidden / max-w-full` 限制在右侧面板内。填充剩余高度的 TabsContent 必须是 column flex，避免默认 row flex 把 Atomic `78ch` 阅读栏变成半栏固有宽度。line Tabs 的 `w-full` 只画底边，Trigger 跟随标签宽度。标题、账号、head/base 分支、label 与文件路径是可压缩省略列；导航按钮、状态和增删统计为固定列，长远端文本不得改变客户端宽度或生成横向滚动。PR/Issue 正文给 `WorkspaceFileEditor` 传递语义化的全宽 Markdown 契约，使 Atomic 的正文 measure 使用 `100%`；默认文档仍保留既有阅读宽度，不能全局修改共享编辑器样式。编辑器根节点同时使用 `w-full min-w-0`，防止任意 flex 父级再次 shrink-wrap。
 
 ## 11. 提交历史与多选关系
 
@@ -790,7 +790,9 @@ Fetch Dialog 的 `prune` 开关默认关闭，UI 使用用户领域文案“移�
 PR/Issue 是文档内容，不是聊天消息：
 
 - PR/Issue 详情 body 使用 `WorkspaceFileEditor`，`editable={false}`，默认 live preview。
-- PR create body 使用 `WorkspaceFileEditor`，`editable={true}`。
+- PR/Issue 详情 body 使用 `markdownContentWidth="full"` 铺满详情工作区；承载该正文的 TabsContent 必须 `flex-col`。其他 Markdown 消费方默认维持 `readable`。
+- PR/Issue 详情不托管 markdown 模式，浮层只保留复制；源码/预览切换按钮仅在传入 `onMarkdownModeChange` 时渲染。
+- PR create body 使用 `WorkspaceFileEditor`，`editable={true}`，由对话框持有 `markdownMode`。
 - title、filter 等短字段使用 shadcn Input。
 - 列表摘要使用裁剪后的纯文本，不为每行挂载 CodeMirror。
 - prompt-kit/Streamdown 只用于聊天消息、流式文本和简单信息正文。
@@ -1162,6 +1164,12 @@ Browser preview 的源码管理 fixture 提供 `origin` 与 `fork` 两个 remote
 2026-08-11 已在 Gold-Band 实仓测量 GitHub 基线：`gh auth status` 约 1.95 秒、`gh repo view` 约 1.58 秒；旧 PR 文件 Diff 串行执行 `pr diff --name-only` 约 3.82 秒、PR metadata 约 1.47 秒、base raw content 约 1.38 秒、head raw content 约 1.58 秒，单文件约 8.25 秒。现已用 repository/workspace 有界缓存消除普通 Tab 往返的重复 capability/list/detail 调用，并以 immutable base/head OID 删除前两次整 PR 查询、并行读取两个文件版本；同一实仓文件的并行 base/head 请求约 2.06 秒，首次读取耗时下降约 75%，同 revision 重开 comparison 直接命中缓存。
 
 2026-08-10 已使用浏览器 mock 实际验证 GitHub PR #42：详情“概览/文件”切换、文件统计、点击文件打开现有 `file-diff` tab、CodeMirror unified diff 内容与 `+4/-1` 统计均正确，控制台无 warning/error；验证页面和 Vite 进程已清理。
+
+2026-09-18 修复 PR 审阅面无效源码切换：共享编辑器浮层仅在父级拥有 `onMarkdownModeChange` 时渲染切换按钮；PR/Issue 详情只保留复制，创建 PR 对话框持有本地模式。
+
+2026-09-18 修复 PR 概览只占半栏：根因是详情 TabsContent 用 row flex 传递高度，编辑器按 Atomic 阅读栏固有宽度收缩；line Trigger 的 `flex-1` 再把「概览 / 文件」均分。仅设置 `--atomic-editor-measure: 100%` 不能撑开不定宽 flex item。现改为 column flex、line 标签跟随内容、编辑器根节点 `w-full min-w-0`。
+
+2026-09-18 修复 PR/Issue 详情正文未铺满与远端跳转绕过内置浏览器：根因是 Atomic live preview 为普通文档提供的 `78ch` 阅读 measure 被 PR 审阅面无差别继承，属于共享组件缺少消费场景尺寸契约；右上角按钮则直接调用了系统 opener，违反应用统一网页路由设计。`WorkspaceFileEditor` 新增默认 `readable`、可选 `full` 的 Markdown 内容宽度契约，只有 PR/Issue 详情显式使用 `full`；远端按钮改为统一 `openWebTarget` 并增加“在内置浏览器中打开”Tooltip。修复前最小 DOM 测试因缺少全宽契约稳定失败，修复后源码管理导航与编辑器测试共 18 项通过，TypeScript 与生产构建通过。浏览器预览能进入源码管理，但 preview Git capability 固定为 `repository-required`，无法到达 GitHub fixture；当前 Codex 会话的内置浏览器/Chrome 连接为空，Computer Use 缺少 `@oai/sky`，因此未把 EXE 实际 PR 页面视觉验收虚报为通过；测试浏览器会话与进程已清理。
 
 2026-08-12 已将历史区完整替换为 Commit 主从审阅：删除 Canvas/HTML Git Graph、Checkbox 和关系分析前后端路径，改为标准桌面选择、当前归属和有界 Diff review session。2026-08-12 进一步对齐 IntelliJ IDEA Log：批量审阅只收集显式选中 Commit 的 first-parent Changes，最多 4 个 worker 并发读取后按旧到新执行文件演化链 zip，返回每条文件演化链的最早 before 与最终 after；同一拓扑链中的重复路径只展示一次，创建后删除的净空文件消失，重命名链保留首尾路径。Review 结果按 workspace + revision + ordered OIDs 进入 48 项有界缓存，不预读文件正文；会话清理或 LRU 淘汰时同步移除所属 Review 缓存。
 

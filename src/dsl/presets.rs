@@ -26,6 +26,7 @@ pub fn direct_workflow(
     provider: String,
     model: Option<String>,
     permission_mode: Option<String>,
+    auto_accept: bool,
     config_options: BTreeMap<String, String>,
 ) -> WorkflowDsl {
     WorkflowDsl {
@@ -43,6 +44,7 @@ pub fn direct_workflow(
             output: None,
             success_condition: None,
             permission_mode,
+            auto_accept,
             config_options,
             manual_check: Some(false),
             prompt_envelope: PromptEnvelopeMode::RawAgent,
@@ -75,6 +77,7 @@ mod tests {
             "claude-acp".into(),
             Some("claude-sonnet-5".into()),
             Some("default".into()),
+            false,
             BTreeMap::from([("k".into(), "v".into())]),
         );
         assert_eq!(wf.version, "0.1");
@@ -98,7 +101,7 @@ mod tests {
     #[test]
     fn direct_workflow_allows_minimal_remote_task_binding() {
         // 远程任务：仅 provider 绑定，model/permission/options 全空。
-        let wf = direct_workflow("claude-acp".into(), None, None, BTreeMap::new());
+        let wf = direct_workflow("claude-acp".into(), None, None, false, BTreeMap::new());
         let w = worker_of(&wf);
         assert_eq!(w.provider.as_deref(), Some("claude-acp"));
         assert!(w.model.is_none());

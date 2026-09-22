@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  acpAuthoringModelBoundCatalogs,
   acpProviderConfigCatalog,
   createAcpSessionConfigViewModel,
   findAcpConfigOption,
+  mergeLiveAcpSessionConfig,
 } from "@/lib/acp-session-config";
 import type { AcpSessionConfigVm, AgentRegistryVm } from "@/types";
 
@@ -72,6 +74,10 @@ describe("ACP session config view model", () => {
     expect(viewModel.currentModelId).toBe("gpt-old");
     expect(viewModel.thoughtLevel?.currentValue).toBe("low");
     expect(viewModel.thoughtLevel?.overrideValue).toBe("high");
+    expect(viewModel.thoughtLevel?.options).toEqual([
+      { id: "high", name: "high", description: null, available: false },
+      { id: "low", name: "Low", description: null },
+    ]);
   });
 
   it("keeps a same-time or newer Session catalog authoritative", () => {
@@ -111,14 +117,13 @@ describe("ACP session config view model", () => {
         category: "thought_level",
         type: "select",
         currentValue: "low",
-        options: [{ value: "low", name: "Low" }, { value: "max", name: "Max" }],
+        options: [{ value: "low", name: "Low" }],
       }],
     }, doctorCatalog);
 
     expect(viewModel.thoughtLevel?.options).toEqual([
-      { id: "max", name: "Max", description: null, available: false },
+      { id: "max", name: "max", description: null, available: false },
       { id: "low", name: "Low", description: null },
-      { id: "high", name: "High", description: null },
     ]);
   });
 
@@ -165,6 +170,37 @@ describe("ACP session config view model", () => {
     );
 
     expect(second.signature).toBe(first.signature);
+  });
+
+  it("defaults Auto Accept off and keeps it out of native permission modes", () => {
+    const viewModel = createAcpSessionConfigViewModel(baseConfig());
+
+    expect(viewModel.autoAccept).toBe(false);
+    expect(viewModel.availablePermissionModes.map((option) => option.id)).toEqual([
+      "ask",
+      "full_access",
+    ]);
+  });
+
+  it("projects session Auto Accept without treating it as a permission override", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      ...baseConfig(),
+      autoAccept: true,
+    });
+
+    expect(viewModel.autoAccept).toBe(true);
+    expect(viewModel.permissionModeOverrideId).toBe("ask");
+    expect(viewModel.availablePermissionModes.map((option) => option.id)).not.toContain("autoAccept");
+  });
+
+  it("changes the signature when Auto Accept changes", () => {
+    const first = createAcpSessionConfigViewModel(baseConfig());
+    const second = createAcpSessionConfigViewModel({
+      ...baseConfig(),
+      autoAccept: true,
+    });
+
+    expect(second.signature).not.toBe(first.signature);
   });
 
   it("keeps the same signature for stream-only session changes", () => {
@@ -395,5 +431,706 @@ describe("ACP session config view model", () => {
     expect(viewModel.thoughtLevel?.currentValue).toBe("max");
     expect(viewModel.thoughtLevel?.overrideValue).toBeNull();
     expect(viewModel.thoughtLevel?.canSelectUnspecified).toBe(true);
+  });
+
+  it("exposes Fast as a model_config composite option without treating it as thought level", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      configOptionOverrides: { fast: "true" },
+      configOptions: [
+        {
+          id: "model",
+          category: "model",
+          type: "select",
+          currentValue: "composer-2.5",
+          options: [{ value: "composer-2.5", name: "Composer 2.5" }],
+        },
+        {
+          id: "fast",
+          category: "model_config",
+          type: "select",
+          name: "Fast",
+          currentValue: "false",
+          options: [
+            { value: "false", name: "Off" },
+            { value: "true", name: "On" },
+          ],
+        },
+        {
+          id: "effort",
+          category: "thought_level",
+          type: "select",
+          options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }],
+        },
+      ],
+    });
+
+    expect(viewModel.thoughtLevel?.id).toBe("effort");
+    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual(["effort", "fast"]);
+    expect(viewModel.modelBoundOptions[1]).toMatchObject({
+      id: "fast",
+      category: "model_config",
+      overrideValue: "true",
+    });
+  });
+
+  it("keeps thought and Fast after the user selects a model that is not the catalog current model", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      modelOverrideId: "gpt-5.6-terra",
+      configOptionOverrides: { effort: "high", fast: "true" },
+      configOptions: [
+        {
+          id: "model",
+          category: "model",
+          type: "select",
+          currentValue: "gpt-5.6-sol",
+          options: [
+            { value: "gpt-5.6-sol", name: "5.6 Sol" },
+            { value: "gpt-5.6-terra", name: "5.6 Terra" },
+          ],
+        },
+        {
+          id: "fast",
+          category: "model_config",
+          type: "select",
+          name: "Fast",
+          options: [{ value: "false", name: "Off" }, { value: "true", name: "On" }],
+        },
+        {
+          id: "effort",
+          category: "thought_level",
+          type: "select",
+          name: "Effort",
+          options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }],
+        },
+      ],
+    });
+
+    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual(["effort", "fast"]);
+    expect(viewModel.thoughtLevel?.id).toBe("effort");
+  });
+
+  it("keeps session thought options when a newer Doctor catalog belongs to a different model", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      catalogObservedAt: "199Z",
+      modelOverrideId: "grok-4.6",
+      currentModelId: "grok-4.6",
+      currentModelName: "Cursor Grok 4.6",
+      configOptionOverrides: { effort: "extra-high" },
+      configOptions: [
+        {
+          id: "model",
+          category: "model",
+          type: "select",
+          currentValue: "grok-4.6",
+          options: [
+            { value: "composer-2.5", name: "Composer 2.5" },
+            { value: "grok-4.6", name: "Cursor Grok 4.6" },
+          ],
+        },
+        {
+          id: "effort",
+          category: "thought_level",
+          type: "select",
+          currentValue: "high",
+          options: [
+            { value: "low", name: "Low" },
+            { value: "high", name: "High" },
+            { value: "extra-high", name: "Extra High" },
+          ],
+        },
+      ],
+    }, {
+      observedAt: "200Z",
+      models: [
+        { id: "composer-2.5", name: "Composer 2.5" },
+        { id: "grok-4.6", name: "Cursor Grok 4.6" },
+      ],
+      modes: [],
+      configOptions: [
+        {
+          id: "model",
+          category: "model",
+          currentValue: "composer-2.5",
+          options: [
+            { value: "composer-2.5", name: "Composer 2.5" },
+            { value: "grok-4.6", name: "Cursor Grok 4.6" },
+          ],
+        },
+        {
+          id: "fast",
+          category: "model_config",
+          name: "Fast",
+          currentValue: "true",
+          options: [{ value: "false", name: "Off" }, { value: "true", name: "On" }],
+        },
+      ],
+    });
+
+    expect(viewModel.thoughtLevel?.options.map((option) => option.id)).toEqual(["low", "high", "extra-high"]);
+    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual(["effort"]);
+    expect(viewModel.modelBoundOptions.some((group) => group.id === "fast")).toBe(false);
+  });
+
+  it("keeps session thought when a newer Doctor catalog has Fast but no catalog model currentValue", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      catalogObservedAt: "199Z",
+      modelOverrideId: "grok-4.6",
+      configOptionOverrides: { effort: "high" },
+      configOptions: [
+        {
+          id: "model",
+          category: "model",
+          type: "select",
+          currentValue: "grok-4.6",
+          options: [{ value: "grok-4.6", name: "Cursor Grok 4.6" }],
+        },
+        {
+          id: "effort",
+          category: "thought_level",
+          type: "select",
+          currentValue: "high",
+          options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }],
+        },
+      ],
+    }, {
+      observedAt: "200Z",
+      models: [{ id: "grok-4.6", name: "Cursor Grok 4.6" }],
+      modes: [],
+      configOptions: [{
+        id: "fast",
+        category: "model_config",
+        name: "Fast",
+        currentValue: "true",
+        options: [{ value: "false", name: "Off" }, { value: "true", name: "On" }],
+      }],
+    });
+
+    expect(viewModel.thoughtLevel?.id).toBe("effort");
+    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual(["effort"]);
+  });
+
+  it("keeps live session Fast when a newer Doctor catalog for the same model adds Context", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      catalogObservedAt: "199Z",
+      modelOverrideId: "grok-4.6",
+      configOptionOverrides: { effort: "high", fast: "true" },
+      configOptions: [
+        {
+          id: "model",
+          category: "model",
+          type: "select",
+          currentValue: "grok-4.6",
+          options: [{ value: "grok-4.6", name: "Cursor Grok 4.6" }],
+        },
+        {
+          id: "effort",
+          category: "thought_level",
+          type: "select",
+          currentValue: "high",
+          options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }],
+        },
+        {
+          id: "fast",
+          category: "model_config",
+          type: "select",
+          name: "Fast",
+          options: [{ value: "false", name: "Off" }, { value: "true", name: "On" }],
+        },
+      ],
+    }, {
+      observedAt: "200Z",
+      models: [{ id: "grok-4.6", name: "Cursor Grok 4.6" }],
+      modes: [],
+      configOptions: [
+        {
+          id: "model",
+          category: "model",
+          currentValue: "grok-4.6",
+          options: [{ value: "grok-4.6", name: "Cursor Grok 4.6" }],
+        },
+        {
+          id: "effort",
+          category: "thought_level",
+          options: [
+            { value: "low", name: "Low" },
+            { value: "high", name: "High" },
+            { value: "xhigh", name: "Extra High" },
+          ],
+        },
+        {
+          id: "context",
+          category: "model_config",
+          name: "Context",
+          options: [{ value: "272k", name: "272K" }, { value: "1m", name: "1M" }],
+        },
+      ],
+    });
+
+    expect(viewModel.thoughtLevel?.options.map((option) => option.id)).toEqual(["low", "high"]);
+    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual(["effort", "fast"]);
+    expect(viewModel.modelBoundOptions.some((group) => group.id === "context")).toBe(false);
+  });
+
+  it("projects High onto a renamed thought_level option and keeps Context after thought", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      modelOverrideId: "gpt-5.6-luna",
+      configOptionOverrides: { effort: "high", fast: "false" },
+      configOptions: [
+        {
+          id: "model",
+          category: "model",
+          type: "select",
+          currentValue: "gpt-5.6-luna",
+          options: [
+            { value: "grok-4.6", name: "Cursor Grok 4.6" },
+            { value: "gpt-5.6-luna", name: "GPT-5.6 Luna" },
+          ],
+        },
+        {
+          id: "context",
+          category: "model_config",
+          type: "select",
+          name: "Context",
+          options: [{ value: "272k", name: "272K" }, { value: "1m", name: "1M" }],
+        },
+        {
+          id: "reasoning",
+          category: "thought_level",
+          type: "select",
+          name: "Reasoning",
+          options: [
+            { value: "medium", name: "Medium" },
+            { value: "high", name: "High" },
+          ],
+        },
+        {
+          id: "fast",
+          category: "model_config",
+          type: "select",
+          name: "Fast",
+          options: [{ value: "false", name: "Off" }, { value: "true", name: "Fast" }],
+        },
+      ],
+    });
+
+    expect(viewModel.thoughtLevel).toMatchObject({
+      id: "reasoning",
+      overrideValue: "high",
+    });
+    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual([
+      "reasoning",
+      "context",
+      "fast",
+    ]);
+  });
+
+  it("applies a live catalog without rebuilding timeline state", () => {
+    const current = {
+      ...baseConfig(),
+      catalogObservedAt: "100Z",
+      configOptionOverrides: { effort: "high" },
+      configOptions: [{
+        id: "effort",
+        category: "thought_level",
+        type: "select",
+        options: [{ value: "high", name: "High" }],
+      }],
+    };
+    const incoming = {
+      catalogObservedAt: "200Z",
+      configOptions: [{
+        id: "reasoning",
+        category: "thought_level",
+        type: "select",
+        options: [{ value: "high", name: "High" }],
+      }],
+    };
+    const merged = mergeLiveAcpSessionConfig(current, incoming, true);
+    expect(merged?.catalogObservedAt).toBe("200Z");
+    expect(merged?.configOptionOverrides).toEqual({ effort: "high" });
+    expect(merged?.configOptions).toEqual(incoming.configOptions);
+    expect(mergeLiveAcpSessionConfig(current, incoming, false)?.configOptionOverrides).toBeUndefined();
+  });
+
+  it("keeps this session's per-model overrides when a live catalog arrives", () => {
+    const current = {
+      ...baseConfig(),
+      catalogObservedAt: "100Z",
+      configOptionOverrides: {},
+      modelBoundOverrides: {
+        "grok-4.6": { effort: "extra-high", fast: "true" },
+      },
+    };
+    const incoming = {
+      catalogObservedAt: "200Z",
+      configOptions: [{
+        id: "effort",
+        category: "thought_level",
+        type: "select",
+        options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }],
+      }],
+    };
+    const merged = mergeLiveAcpSessionConfig(current, incoming, true);
+    expect(merged?.modelBoundOverrides).toEqual({
+      "grok-4.6": { effort: "extra-high", fast: "true" },
+    });
+  });
+
+  it("restores the selected model's last session catalog instead of the previous model's live table", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      modelOverrideId: "grok-4.6",
+      currentModelId: "gpt-5.6-luna",
+      currentModelName: "GPT-5.6 Luna",
+      configOptions: [
+        {
+          id: "model",
+          category: "model",
+          type: "select",
+          currentValue: "gpt-5.6-luna",
+          options: [
+            { value: "grok-4.6", name: "Cursor Grok 4.6" },
+            { value: "gpt-5.6-luna", name: "GPT-5.6 Luna" },
+          ],
+        },
+        {
+          id: "context",
+          category: "model_config",
+          type: "select",
+          name: "Context",
+          options: [{ value: "272k", name: "272K" }, { value: "1m", name: "1M" }],
+        },
+        {
+          id: "reasoning",
+          category: "thought_level",
+          type: "select",
+          options: [{ value: "high", name: "High" }],
+        },
+        {
+          id: "fast",
+          category: "model_config",
+          type: "select",
+          name: "Fast",
+          options: [{ value: "false", name: "Off" }, { value: "true", name: "On" }],
+        },
+      ],
+      modelBoundCatalogs: {
+        "grok-4.6": [
+          {
+            id: "effort",
+            category: "thought_level",
+            type: "select",
+            options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }],
+          },
+          {
+            id: "fast",
+            category: "model_config",
+            type: "select",
+            name: "Fast",
+            options: [{ value: "false", name: "Off" }, { value: "true", name: "On" }],
+          },
+        ],
+        "gpt-5.6-luna": [
+          {
+            id: "context",
+            category: "model_config",
+            type: "select",
+            name: "Context",
+            options: [{ value: "272k", name: "272K" }, { value: "1m", name: "1M" }],
+          },
+          {
+            id: "reasoning",
+            category: "thought_level",
+            type: "select",
+            options: [{ value: "high", name: "High" }],
+          },
+          {
+            id: "fast",
+            category: "model_config",
+            type: "select",
+            name: "Fast",
+            options: [{ value: "false", name: "Off" }, { value: "true", name: "On" }],
+          },
+        ],
+      },
+    });
+
+    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual(["effort", "fast"]);
+    expect(viewModel.modelBoundOptions.some((group) => group.id === "context")).toBe(false);
+  });
+
+  it("carries the current session catalog when switching to a model that has not been observed", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      modelOverrideId: "grok-4.6",
+      currentModelId: "gpt-5.6-luna",
+      configOptions: [
+        {
+          id: "model",
+          category: "model",
+          type: "select",
+          currentValue: "gpt-5.6-luna",
+          options: [
+            { value: "grok-4.6", name: "Cursor Grok 4.6" },
+            { value: "gpt-5.6-luna", name: "GPT-5.6 Luna" },
+          ],
+        },
+        {
+          id: "context",
+          category: "model_config",
+          type: "select",
+          name: "Context",
+          options: [{ value: "1m", name: "1M" }],
+        },
+        {
+          id: "reasoning",
+          category: "thought_level",
+          type: "select",
+          options: [{ value: "high", name: "High" }],
+        },
+      ],
+      modelBoundCatalogs: {
+        "gpt-5.6-luna": [
+          {
+            id: "context",
+            category: "model_config",
+            type: "select",
+            name: "Context",
+            options: [{ value: "1m", name: "1M" }],
+          },
+          {
+            id: "reasoning",
+            category: "thought_level",
+            type: "select",
+            options: [{ value: "high", name: "High" }],
+          },
+        ],
+      },
+    });
+
+    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual(["reasoning", "context"]);
+  });
+
+  const grokBoundCatalog = [
+    {
+      id: "effort",
+      category: "thought_level",
+      name: "Thought",
+      options: [
+        { value: "low", name: "Low" },
+        { value: "high", name: "High" },
+        { value: "extra-high", name: "Extra High" },
+      ],
+    },
+    {
+      id: "fast",
+      category: "model_config",
+      name: "Fast",
+      options: [{ value: "false", name: "Off" }, { value: "true", name: "On" }],
+    },
+  ];
+  const lunaLiveOptions = [
+    {
+      id: "model",
+      category: "model",
+      type: "select",
+      currentValue: "gpt-5.6-luna",
+      options: [
+        { value: "grok-4.6", name: "Cursor Grok 4.6" },
+        { value: "gpt-5.6-luna", name: "GPT-5.6 Luna" },
+      ],
+    },
+    {
+      id: "context",
+      category: "model_config",
+      type: "select",
+      name: "Context",
+      options: [{ value: "1m", name: "1M" }],
+    },
+    {
+      id: "reasoning",
+      category: "thought_level",
+      type: "select",
+      options: [{ value: "high", name: "High" }],
+    },
+  ];
+
+  it("projects authoring catalogs when this session has not observed the selected model", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      modelOverrideId: "grok-4.6",
+      currentModelId: "gpt-5.6-luna",
+      configOptions: lunaLiveOptions,
+      modelBoundCatalogs: {
+        "gpt-5.6-luna": [
+          lunaLiveOptions[2],
+          lunaLiveOptions[1],
+        ],
+      },
+    }, null, {
+      "grok-4.6": grokBoundCatalog,
+    });
+
+    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual(["effort", "fast"]);
+    expect(viewModel.modelBoundOptions.some((group) => group.id === "context")).toBe(false);
+  });
+
+  it("projects authoring catalogs when the live table belongs to the selected model but omitted bound rows", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      modelOverrideId: "grok-4.6",
+      currentModelId: "grok-4.6",
+      configOptions: [{
+        id: "model",
+        category: "model",
+        type: "select",
+        currentValue: "grok-4.6",
+        options: [{ value: "grok-4.6", name: "Cursor Grok 4.6" }],
+      }],
+    }, null, {
+      "grok-4.6": grokBoundCatalog,
+    });
+
+    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual(["effort", "fast"]);
+  });
+
+  it("keeps the live table when it belongs to the selected model and includes bound rows", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      modelOverrideId: "grok-4.6",
+      currentModelId: "grok-4.6",
+      configOptions: [
+        {
+          id: "model",
+          category: "model",
+          type: "select",
+          currentValue: "grok-4.6",
+          options: [{ value: "grok-4.6", name: "Cursor Grok 4.6" }],
+        },
+        {
+          id: "effort",
+          category: "thought_level",
+          type: "select",
+          options: [{ value: "high", name: "High" }],
+        },
+      ],
+    }, null, {
+      "grok-4.6": grokBoundCatalog,
+    });
+
+    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual(["effort"]);
+    expect(viewModel.modelBoundOptions[0]?.options.map((option) => option.id)).toEqual(["high"]);
+  });
+
+  it("prefers this session's catalog over authoring when both observed the selected model", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      modelOverrideId: "grok-4.6",
+      currentModelId: "gpt-5.6-luna",
+      configOptions: lunaLiveOptions,
+      modelBoundCatalogs: {
+        "grok-4.6": [{
+          id: "effort",
+          category: "thought_level",
+          type: "select",
+          options: [{ value: "high", name: "High" }],
+        }],
+      },
+    }, null, {
+      "grok-4.6": grokBoundCatalog,
+    });
+
+    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual(["effort"]);
+    expect(viewModel.modelBoundOptions.some((group) => group.id === "fast")).toBe(false);
+  });
+
+  it("does not paint a newer Doctor current table onto a selected model restored from authoring catalogs", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      catalogObservedAt: "100Z",
+      modelOverrideId: "grok-4.6",
+      currentModelId: "gpt-5.6-luna",
+      configOptions: lunaLiveOptions,
+      modelBoundCatalogs: {
+        "gpt-5.6-luna": [lunaLiveOptions[2], lunaLiveOptions[1]],
+      },
+    }, {
+      ...doctorCatalog,
+      observedAt: "200Z",
+      configOptions: [{
+        id: "context",
+        category: "model_config",
+        name: "Context",
+        currentValue: "1m",
+        options: [{ value: "1m", name: "1M" }],
+      }],
+    }, {
+      "grok-4.6": grokBoundCatalog,
+    });
+
+    expect(viewModel.modelBoundOptions.map((group) => group.id)).toEqual(["effort", "fast"]);
+    expect(viewModel.modelBoundOptions.some((group) => group.id === "context")).toBe(false);
+  });
+
+  it("reads shared authoring catalogs from the Agent registry without requiring a newer Doctor", () => {
+    const registry = {
+      agents: [{
+        agentType: "cursor",
+        diagnostic: { status: "healthy", available: true, checkedAt: "100Z" },
+        supportedModels: [{ id: "grok-4.6", name: "Cursor Grok 4.6" }],
+        modelBoundCatalogs: { "grok-4.6": grokBoundCatalog },
+      }],
+      catalog: [],
+    } as AgentRegistryVm;
+
+    expect(acpAuthoringModelBoundCatalogs(registry, "cursor")).toEqual({
+      "grok-4.6": grokBoundCatalog,
+    });
+    expect(acpProviderConfigCatalog(registry, "cursor")?.modelBoundCatalogs).toEqual({
+      "grok-4.6": grokBoundCatalog,
+    });
+  });
+
+  it("does not wire leftover Grok Fast Off onto Fable thinking Off in the session view model", () => {
+    const fableCatalog = [
+      {
+        id: "thinking",
+        category: "thought_level",
+        type: "select",
+        name: "Thinking",
+        options: [{ value: "false", name: "Off" }, { value: "true", name: "On" }],
+      },
+      {
+        id: "effort",
+        category: "thought_level",
+        type: "select",
+        name: "Effort",
+        options: [{ value: "high", name: "High" }, { value: "extra-high", name: "Extra High" }],
+      },
+      {
+        id: "context",
+        category: "model_config",
+        type: "select",
+        name: "Context",
+        options: [{ value: "1m", name: "1M" }],
+      },
+    ];
+    const grokLive = [
+      {
+        id: "model",
+        category: "model",
+        type: "select",
+        currentValue: "grok-4.6",
+        options: [
+          { value: "grok-4.6", name: "Cursor Grok 4.6" },
+          { value: "claude-fable", name: "Claude Fable 5.1" },
+        ],
+      },
+      ...grokBoundCatalog,
+    ];
+
+    const viewModel = createAcpSessionConfigViewModel({
+      modelOverrideId: "claude-fable",
+      currentModelId: "grok-4.6",
+      configOptionOverrides: { effort: "high", fast: "false" },
+      configOptions: grokLive,
+    }, null, {
+      "claude-fable": fableCatalog,
+    });
+    expect(viewModel.modelBoundOptions.find((group) => group.id === "thinking")?.overrideValue).toBeNull();
+    expect(viewModel.modelBoundOptions.find((group) => group.id === "effort")?.overrideValue).toBe("high");
   });
 });

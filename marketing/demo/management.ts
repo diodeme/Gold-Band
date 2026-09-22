@@ -43,9 +43,46 @@ export function demoManagementApi(language: () => DesktopLanguage): Partial<Runt
         workflowTemplateId: item.mode === 'workflow' ? 'default-lightweight' : null, directConfig: { agentType: 'claude-acp' },
         schedule: item.schedule, overlapPolicy: 'skip_when_running', sessionPolicy: item.mode === 'direct' ? 'continuous' : 'new', expectedUpdatedAt: item.updatedAt };
     },
-    async listScheduledTaskOccurrences(projectId, id, cursor, status) {
-      const all = occurrences(projectId, id).filter((item) => !status || item.status === status);
-      const start = cursor ? all.findIndex((item) => item.id === cursor) + 1 : 0;
+    async listScheduledExecutionHistory(projectId, id, cursor, anchor) {
+      const item = task(projectId, id);
+      const groups = new Map<string, ScheduledOccurrenceVm[]>();
+      for (const occurrence of occurrences(projectId, id)) {
+        if (!occurrence.taskId || !occurrence.runId) continue;
+        const key = `${occurrence.taskId}:${occurrence.runId}`;
+        const group = groups.get(key);
+        if (group) group.push(occurrence);
+        else groups.set(key, [occurrence]);
+      }
+      const all = [...groups.values()].map((group) => {
+        const latest = group[0];
+        const oldest = group.at(-1) ?? latest;
+        return {
+          projectId,
+          scheduledTaskId: id,
+          taskId: latest.taskId!,
+          runId: latest.runId!,
+          firstAcceptedAt: oldest.startedAt ?? oldest.scheduledAt,
+          lastAcceptedAt: latest.startedAt ?? latest.scheduledAt,
+          occurrenceCount: group.length,
+          latestOccurrenceId: latest.id,
+          latestSummary: item.title,
+          latestContentFingerprint: `demo:${id}`,
+          availability: 'available' as const,
+          run: {
+            runId: latest.runId!,
+            status: 'completed',
+            outcome: 'succeeded',
+            startedAt: oldest.startedAt ?? oldest.scheduledAt,
+            updatedAt: latest.finishedAt ?? latest.scheduledAt,
+            resumable: false,
+          },
+        };
+      });
+      const anchored = !cursor && anchor
+        ? all.findIndex((history) => history.taskId === anchor.taskId && history.runId === anchor.runId)
+        : -1;
+      if (anchor && !cursor && anchored < 0) return missing();
+      const start = cursor ? all.findIndex((history) => history.runId === cursor) + 1 : Math.max(0, anchored);
       if (cursor && !start) return missing();
       return { items: all.slice(start), nextCursor: null };
     },

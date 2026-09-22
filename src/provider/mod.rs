@@ -1,7 +1,9 @@
+pub(crate) mod cicd;
 use crate::acp::{client, events::AcpUiEvent};
 use crate::artifacts::{JsonArtifactSpan, artifact_uses_json_output, json_artifact_display_span};
 use crate::config::{
-    AcpAdapterConfig, ManagedAgentConfig, ManagedAgentId, catalog_agent_default_config,
+    AcpAdapterConfig, DesktopLanguage, DiagnosticError, ManagedAgentConfig, ManagedAgentId,
+    catalog_agent_default_config,
 };
 pub use crate::domain::SessionRef;
 use crate::domain::{
@@ -12,7 +14,8 @@ use crate::dynamic::AI_DYNAMIC_RESULT_ARTIFACT;
 use crate::prompts::{
     PromptExecutionSurface, RUNTIME_ARTIFACT_FINALIZE_EN, RUNTIME_ARTIFACT_FINALIZE_ZH_CN,
     RUNTIME_HIDDEN_CONTEXT_EN, RUNTIME_HIDDEN_CONTEXT_ZH_CN, RUNTIME_SYSTEM_EN,
-    RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN, RUNTIME_USER_ZH_CN, profile_template_context,
+    RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN, RUNTIME_USER_ROLE_MESSAGE_EN,
+    RUNTIME_USER_ROLE_MESSAGE_ZH_CN, RUNTIME_USER_ZH_CN, profile_template_context,
     prompt_by_language, render as render_template,
 };
 use crate::runtime::WorkerRefState;
@@ -28,7 +31,7 @@ use image::imageops::FilterType;
 use image::{DynamicImage, ImageReader, Limits};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read};
 use std::str::FromStr;
@@ -46,10 +49,38 @@ pub struct UserPromptQuote {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UserPromptRole {
+    pub profile_id: String,
+    pub name: String,
+    pub content: String,
+}
+
+impl UserPromptRole {
+    pub fn is_complete(&self) -> bool {
+        !self.profile_id.trim().is_empty()
+            && !self.name.trim().is_empty()
+            && !self.content.trim().is_empty()
+    }
+}
+
+pub fn conversation_prompt_has_payload(
+    display_text: &str,
+    attachment_count: usize,
+    role: Option<&UserPromptRole>,
+) -> bool {
+    !display_text.trim().is_empty()
+        || attachment_count > 0
+        || role.is_some_and(UserPromptRole::is_complete)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConversationPromptInput {
     pub display_text: String,
     #[serde(default)]
     pub quotes: Vec<UserPromptQuote>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<UserPromptRole>,
 }
 
 impl From<String> for ConversationPromptInput {
@@ -57,6 +88,7 @@ impl From<String> for ConversationPromptInput {
         Self {
             display_text: prompt.clone(),
             quotes: Vec::new(),
+            role: None,
         }
     }
 }
@@ -65,6 +97,9 @@ pub const MAX_USER_PROMPT_QUOTE_CHARS: usize = 12_000;
 pub const MAX_USER_PROMPT_QUOTES: usize = 64;
 pub const MAX_USER_PROMPT_QUOTE_ID_BYTES: usize = 128;
 pub const MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES: usize = 512;
+pub const MAX_USER_PROMPT_ROLE_ID_BYTES: usize = 128;
+pub const MAX_USER_PROMPT_ROLE_NAME_BYTES: usize = 128;
+pub const MAX_USER_PROMPT_ROLE_CONTENT_CHARS: usize = 64_000;
 
 pub fn conversation_prompt_text(display_text: &str, quotes: &[UserPromptQuote]) -> String {
     let display_text = display_text.trim();
@@ -84,6 +119,33 @@ pub fn conversation_prompt_text(display_text: &str, quotes: &[UserPromptQuote]) 
         .collect::<Vec<_>>()
         .join("\n\n");
     format!("{quote_blocks}\n\n{display_text}")
+}
+
+pub fn conversation_agent_prompt_text(
+    input: &ConversationPromptInput,
+    language: DesktopLanguage,
+) -> String {
+    let user_input = conversation_prompt_text(&input.display_text, &input.quotes);
+    let Some(role) = input.role.as_ref() else {
+        return user_input;
+    };
+    if role.content.trim().is_empty() {
+        return user_input;
+    }
+    render_template(
+        prompt_by_language(
+            language,
+            RUNTIME_USER_ROLE_MESSAGE_ZH_CN,
+            RUNTIME_USER_ROLE_MESSAGE_EN,
+        ),
+        serde_json::json!({
+            "role_definition": role.content.trim(),
+            "user_input": user_input,
+        }),
+    )
+    .expect("bundled user role message prompt renders")
+    .trim()
+    .to_string()
 }
 
 /// Attachment content awaiting projection into an ACP session/prompt content block.
@@ -196,11 +258,28 @@ pub struct AcpSelectConfigOption {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoctorResult {
     pub available: bool,
-    pub reason: Option<String>,
+    #[serde(default)]
+    pub error: Option<DiagnosticError>,
     pub capabilities: Option<Value>,
 }
 
 impl DoctorResult {
+    pub fn healthy() -> Self {
+        Self {
+            available: true,
+            error: None,
+            capabilities: None,
+        }
+    }
+
+    pub fn from_anyhow(error: &anyhow::Error) -> Self {
+        Self {
+            available: false,
+            error: Some(client::doctor_diagnostic_error(error)),
+            capabilities: None,
+        }
+    }
+
     pub fn supported_modes(&self) -> Vec<AcpModeOption> {
         supported_modes_from_capabilities(self.capabilities.as_ref())
     }
@@ -277,6 +356,8 @@ pub struct WorkerInvocation {
     #[serde(default)]
     pub user_prompt_render_mode: UserPromptRenderMode,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -311,14 +392,18 @@ pub struct WorkerInvocation {
     pub scheduled_context: Option<ScheduledTaskContextInfo>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduledTaskContextInfo {
-    pub title: String,
-    pub mode: String,
-    pub session_policy: String,
-    pub trigger_kind: String,
-    pub triggered_at: String,
-    pub instruction: Option<String>,
+    pub project_id: String,
+    pub scheduled_task_id: String,
+    pub occurrence_id: String,
+    pub trigger_kind: crate::scheduler::occurrence::OccurrenceTriggerKind,
+    pub accepted_at: String,
+    pub automatic: Option<crate::scheduler::execution::ScheduledAutomaticTriggerContext>,
+    pub content_fingerprint: String,
+    pub instruction_summary: String,
+    pub schedule: Option<crate::scheduler::ScheduleSpec>,
+    pub timeline_owner: crate::scheduler::occurrence::OccurrenceLinks,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -612,6 +697,7 @@ pub struct PromptBundle {
     pub user_prompt: String,
     pub display_text: Option<String>,
     pub quotes: Vec<UserPromptQuote>,
+    pub role: Option<UserPromptRole>,
     pub prompt_id: Option<String>,
     pub visibility: PromptVisibility,
     pub hidden_reason: Option<String>,
@@ -622,6 +708,7 @@ pub struct PromptBundle {
     pub runtime_control_transition_cause: Option<TurnControlTransitionCause>,
     pub attachment_metas: Vec<AttachmentMeta>,
     pub content_blocks: Vec<AcpContentBlock>,
+    pub scheduled_trigger: Option<crate::acp::events::ScheduledTriggerPayload>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1403,6 +1490,54 @@ pub fn select_config_options_from_capabilities(
         .collect()
 }
 
+/// Last observed `thought_level` / `model_config` catalogs keyed by model id.
+pub fn model_bound_catalogs_from_capabilities(
+    capabilities: Option<&Value>,
+) -> BTreeMap<String, Vec<AcpSelectConfigOption>> {
+    capabilities
+        .and_then(|value| value.get("modelBoundCatalogs"))
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(model_id, catalog)| {
+            let model_id = model_id.trim();
+            if model_id.is_empty() {
+                return None;
+            }
+            let options = select_config_options_from_capabilities(Some(&json!({
+                "configOptions": with_select_type(catalog),
+            })));
+            Some((model_id.to_string(), options))
+        })
+        .collect()
+}
+
+fn with_select_type(catalog: &Value) -> Value {
+    let Some(options) = catalog.as_array() else {
+        return catalog.clone();
+    };
+    Value::Array(
+        options
+            .iter()
+            .map(|option| {
+                let Some(object) = option.as_object() else {
+                    return option.clone();
+                };
+                if object
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.trim().is_empty())
+                {
+                    return option.clone();
+                }
+                let mut next = object.clone();
+                next.insert("type".into(), Value::String("select".into()));
+                Value::Object(next)
+            })
+            .collect(),
+    )
+}
+
 fn optional_trimmed_string(value: Option<&Value>) -> Option<String> {
     value
         .and_then(Value::as_str)
@@ -1483,12 +1618,12 @@ impl AcpProvider {
 
     fn run_worker_once_with_callbacks(
         &self,
-        req: WorkerInvocation,
+        mut req: WorkerInvocation,
         live_update: Option<AcpLiveUpdate<'_>>,
         session_update: Option<AcpSessionUpdate<'_>>,
         prompt_accepted: Option<AcpPromptAccepted<'_>>,
     ) -> Result<ProviderRunResult> {
-        let prompt = render_prompt_bundle(&req)?;
+        let prompt = prepare_prompt_bundle(&mut req)?;
         let turn_id = prompt
             .prompt_id
             .as_deref()
@@ -1507,6 +1642,7 @@ impl AcpProvider {
                     .clone()
                     .unwrap_or_else(|| prompt.user_prompt.clone()),
                 quotes: prompt.quotes.clone(),
+                role: prompt.role.clone(),
             },
             attachment_paths: req
                 .task_input_attachment_paths
@@ -1560,6 +1696,7 @@ impl AcpProvider {
             &prompt,
             req.session_mode,
             req.permission_mode.clone(),
+            req.auto_accept,
             req.model.clone(),
             req.config_options.clone(),
             req.continue_ref.clone(),
@@ -1826,13 +1963,7 @@ impl ProviderAdapter for AcpProvider {
             .unwrap_or_else(|| Utf8PathBuf::from("."));
         let agent_id = match ManagedAgentId::from_str(&self.provider_id) {
             Ok(agent_id) => agent_id,
-            Err(err) => {
-                return DoctorResult {
-                    available: false,
-                    reason: Some(err.to_string()),
-                    capabilities: None,
-                };
-            }
+            Err(err) => return DoctorResult::from_anyhow(&err),
         };
         match client::doctor(
             &agent_id,
@@ -1843,14 +1974,10 @@ impl ProviderAdapter for AcpProvider {
         ) {
             Ok(probe) => DoctorResult {
                 available: true,
-                reason: None,
+                error: None,
                 capabilities: Some(probe.capabilities),
             },
-            Err(err) => DoctorResult {
-                available: false,
-                reason: Some(err.to_string()),
-                capabilities: None,
-            },
+            Err(err) => DoctorResult::from_anyhow(&err),
         }
     }
 
@@ -1890,6 +2017,16 @@ impl ProviderAdapter for AcpProvider {
         prompt_accepted: Option<AcpPromptAccepted<'_>>,
         runtime_phase_update: Option<ProviderRuntimePhaseUpdate<'_>>,
     ) -> Result<ProviderRunResult> {
+        if cicd::is_single_submission(req.profile.as_deref()) {
+            return cicd::run_once(|| {
+                self.run_worker_once_with_callbacks(
+                    req,
+                    live_update,
+                    session_update,
+                    prompt_accepted,
+                )
+            });
+        }
         if req.turn_control_mode == TurnControlMode::RuntimeControlled
             && req.output_contract.as_ref().is_some_and(|contract| {
                 contract.emission_mode == OutputEmissionMode::PostTurnProjection
@@ -2142,6 +2279,20 @@ fn non_empty_artifact_text(value: &str) -> Option<String> {
     (!value.trim().is_empty()).then(|| value.to_string())
 }
 
+/// Bind enabled MCP servers and project only the RuntimeManaged memory capability rules.
+pub fn prepare_prompt_bundle(req: &mut WorkerInvocation) -> Result<PromptBundle> {
+    let prompt_envelope = req.prompt_envelope;
+    let memory_enabled = crate::memory::bind_invocation_mcp(req)?;
+    let mut prompt = render_prompt_bundle(req)?;
+    if memory_enabled && prompt_envelope == crate::dsl::PromptEnvelopeMode::RuntimeManaged {
+        prompt.system_prompt.push_str("\n\n");
+        prompt
+            .system_prompt
+            .push_str(crate::memory::system_rules(req.runtime_context.language));
+    }
+    Ok(prompt)
+}
+
 pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
     let requirement_text = match req.user_prompt_render_mode {
         UserPromptRenderMode::RequirementTask => {
@@ -2161,18 +2312,19 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         | UserPromptRenderMode::RuntimeRepair
         | UserPromptRenderMode::UserMessage => String::new(),
     };
+    let requirement_for_agent = requirement_text_for_agent(req, &requirement_text);
 
     let (system_prompt, mut user_prompt) = match req.prompt_envelope {
         crate::dsl::PromptEnvelopeMode::RuntimeManaged => (
             render_system_prompt(req)?,
-            render_user_prompt(req, &requirement_text),
+            render_user_prompt(req, &requirement_for_agent),
         ),
         crate::dsl::PromptEnvelopeMode::RawAgent => (
             String::new(),
             if matches!(req.session_mode, SessionMode::Continue) {
                 req.resume_prompt.clone().unwrap_or_default()
             } else {
-                requirement_text.clone()
+                requirement_for_agent
             },
         ),
     };
@@ -2191,7 +2343,7 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
     {
         user_prompt = append_titled_hidden_sections(&user_prompt, &req.extra_hidden_sections);
     }
-    let is_continue = matches!(req.session_mode, SessionMode::Continue);
+    let (user_prompt, visibility, hidden_reason) = project_scheduled_execution(req, user_prompt)?;
 
     let mut attachment_metas = Vec::new();
     let mut content_blocks = Vec::new();
@@ -2210,33 +2362,36 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         content_blocks.push(resolved.block);
     }
 
+    let display_text = req
+        .prompt_display
+        .as_ref()
+        .map(|input| input.display_text.clone())
+        .or_else(|| {
+            // A new RawAgent turn receives the requirement verbatim, before any runtime assembly.
+            (req.prompt_envelope == crate::dsl::PromptEnvelopeMode::RawAgent
+                && req.session_mode == SessionMode::New
+                && req.user_prompt_render_mode == UserPromptRenderMode::RequirementTask)
+                .then(|| requirement_text.clone())
+        });
     Ok(PromptBundle {
         system_prompt,
         user_prompt,
-        display_text: req
-            .prompt_display
-            .as_ref()
-            .map(|input| input.display_text.clone()),
+        display_text,
         quotes: req
             .prompt_display
             .as_ref()
             .map(|input| input.quotes.clone())
             .unwrap_or_default(),
+        role: req
+            .prompt_display
+            .as_ref()
+            .and_then(|input| input.role.clone()),
         // Prompt identity is an orchestration concern, independent of ACP
         // session mode.  In particular, an automatic retry may start a new
         // ACP session while remaining the same visible user turn.
         prompt_id: req.resume_prompt_id.clone(),
-        visibility: if is_continue {
-            req.resume_prompt_visibility
-        } else {
-            PromptVisibility::Visible
-        },
-        hidden_reason: match req.user_prompt_render_mode {
-            UserPromptRenderMode::RuntimeResume => Some("runtimeControlResume".to_string()),
-            UserPromptRenderMode::RuntimeFinalize => Some("artifactFinalize".to_string()),
-            UserPromptRenderMode::RuntimeRepair => Some("invalidOutputRepair".to_string()),
-            _ => None,
-        },
+        visibility,
+        hidden_reason,
         turn_control_mode: req.turn_control_mode,
         runtime_control_intent: req.runtime_control_intent,
         runtime_control_transition_id: None,
@@ -2244,7 +2399,18 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         runtime_control_transition_cause: None,
         attachment_metas,
         content_blocks,
+        scheduled_trigger: scheduled_trigger_payload(req)?,
     })
+}
+
+fn requirement_text_for_agent(req: &WorkerInvocation, requirement_text: &str) -> String {
+    let Some(display) = req.prompt_display.as_ref() else {
+        return requirement_text.to_string();
+    };
+    if display.role.is_none() {
+        return requirement_text.to_string();
+    }
+    conversation_agent_prompt_text(display, req.runtime_context.language)
 }
 
 fn render_system_prompt(req: &WorkerInvocation) -> Result<String> {
@@ -2353,6 +2519,97 @@ fn append_titled_hidden_sections(prompt: &str, sections: &[PromptHiddenSection])
     format!("{}\n\n{}", prompt.trim(), blocks.join("\n\n"))
 }
 
+fn project_scheduled_execution(
+    req: &WorkerInvocation,
+    base_user_prompt: String,
+) -> Result<(String, PromptVisibility, Option<String>)> {
+    let ordinary_visibility = if matches!(req.session_mode, SessionMode::Continue) {
+        req.resume_prompt_visibility
+    } else {
+        PromptVisibility::Visible
+    };
+    let ordinary_hidden_reason = match req.user_prompt_render_mode {
+        UserPromptRenderMode::RuntimeResume => Some("runtimeControlResume".to_string()),
+        UserPromptRenderMode::RuntimeFinalize => Some("artifactFinalize".to_string()),
+        UserPromptRenderMode::RuntimeRepair => Some("invalidOutputRepair".to_string()),
+        _ => None,
+    };
+    let Some(context) = req.scheduled_context.as_ref() else {
+        return Ok((
+            base_user_prompt,
+            ordinary_visibility,
+            ordinary_hidden_reason,
+        ));
+    };
+    let rendered = crate::prompts::render(
+        prompt_by_language(
+            req.runtime_context.language,
+            crate::prompts::RUNTIME_SCHEDULED_TASK_CONTEXT_ZH_CN,
+            crate::prompts::RUNTIME_SCHEDULED_TASK_CONTEXT_EN,
+        ),
+        ScheduledTaskContextTemplateContext {
+            scheduled_task_id: &context.scheduled_task_id,
+            occurrence_id: &context.occurrence_id,
+            trigger_kind: context.trigger_kind.to_string(),
+            accepted_at: &context.accepted_at,
+            automatic: context.automatic.as_ref().map(|automatic| {
+                ScheduledAutomaticContextTemplateContext {
+                    scheduled_at: automatic
+                        .scheduled_at
+                        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    schedule_summary: &automatic.schedule_summary,
+                    timezone: &automatic.timezone,
+                }
+            }),
+        },
+    )?;
+    let scheduled_protocol =
+        gold_band_hidden_block("Gold Band scheduled task execution", rendered.trim());
+    Ok((
+        format!("{scheduled_protocol}\n\n{base_user_prompt}"),
+        PromptVisibility::Hidden,
+        Some("scheduledTaskExecution".to_string()),
+    ))
+}
+
+fn scheduled_trigger_payload(
+    req: &WorkerInvocation,
+) -> Result<Option<crate::acp::events::ScheduledTriggerPayload>> {
+    let Some(context) = req.scheduled_context.as_ref() else {
+        return Ok(None);
+    };
+    ensure!(
+        context.timeline_owner.is_complete(),
+        "scheduled trigger requires a complete timeline owner"
+    );
+    let runtime = &req.runtime_context;
+    let owner = &context.timeline_owner;
+    let is_owner = context.project_id == runtime.project_id
+        && owner.task_id.as_deref() == Some(runtime.task_id.as_str())
+        && owner.run_id.as_deref() == Some(runtime.run_id.as_str())
+        && owner.round_id.as_deref() == Some(runtime.round_id.as_str())
+        && owner.node_id.as_deref() == Some(runtime.node_id.as_str())
+        && owner.attempt_id.as_deref() == Some(runtime.attempt_id.as_str());
+    if !is_owner {
+        return Ok(None);
+    }
+    Ok(Some(crate::acp::events::ScheduledTriggerPayload {
+        project_id: context.project_id.clone(),
+        scheduled_task_id: context.scheduled_task_id.clone(),
+        occurrence_id: context.occurrence_id.clone(),
+        trigger_kind: context.trigger_kind.clone(),
+        scheduled_at: context.automatic.as_ref().map(|automatic| {
+            automatic
+                .scheduled_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        }),
+        accepted_at: context.accepted_at.clone(),
+        instruction_summary: context.instruction_summary.clone(),
+        content_fingerprint: context.content_fingerprint.clone(),
+        links: context.timeline_owner.clone(),
+    }))
+}
+
 fn render_hidden_context(req: &WorkerInvocation) -> String {
     let extra_sections = req
         .extra_hidden_sections
@@ -2379,48 +2636,26 @@ fn render_hidden_context(req: &WorkerInvocation) -> String {
         content.push_str("\n\n");
         content.push_str(section.content.trim());
     }
-    let content = compact_hidden_context_spacing(&content);
-    let content = if let Some(scheduled) = render_scheduled_context(req) {
-        format!("{content}\n\n{scheduled}")
-    } else {
-        content
-    };
-    gold_band_hidden_block("Gold Band runtime context", &content)
-}
-
-fn render_scheduled_context(req: &WorkerInvocation) -> Option<String> {
-    let ctx = req.scheduled_context.as_ref()?;
-    let template = prompt_by_language(
-        req.runtime_context.language,
-        crate::prompts::RUNTIME_SCHEDULED_TASK_CONTEXT_ZH_CN,
-        crate::prompts::RUNTIME_SCHEDULED_TASK_CONTEXT_EN,
-    );
-    let rendered = crate::prompts::render(
-        template,
-        &ScheduledTaskContextTemplateContext {
-            scheduled_title: &ctx.title,
-            scheduled_mode: &ctx.mode,
-            scheduled_session_policy: &ctx.session_policy,
-            scheduled_trigger_kind: &ctx.trigger_kind,
-            scheduled_triggered_at: &ctx.triggered_at,
-            scheduled_instruction: ctx.instruction.as_deref(),
-        },
+    gold_band_hidden_block(
+        "Gold Band runtime context",
+        &compact_hidden_context_spacing(&content),
     )
-    .ok()?;
-    Some(gold_band_hidden_block(
-        "Gold Band scheduled task context",
-        &rendered,
-    ))
 }
 
 #[derive(Serialize)]
 struct ScheduledTaskContextTemplateContext<'a> {
-    scheduled_title: &'a str,
-    scheduled_mode: &'a str,
-    scheduled_session_policy: &'a str,
-    scheduled_trigger_kind: &'a str,
-    scheduled_triggered_at: &'a str,
-    scheduled_instruction: Option<&'a str>,
+    scheduled_task_id: &'a str,
+    occurrence_id: &'a str,
+    trigger_kind: String,
+    accepted_at: &'a str,
+    automatic: Option<ScheduledAutomaticContextTemplateContext<'a>>,
+}
+
+#[derive(Serialize)]
+struct ScheduledAutomaticContextTemplateContext<'a> {
+    scheduled_at: String,
+    schedule_summary: &'a str,
+    timezone: &'a str,
 }
 
 fn compact_hidden_context_spacing(content: &str) -> String {
@@ -2867,9 +3102,13 @@ fn log_prompt_bundle(
         cold_attachments,
         "provider prompt bundle summary"
     );
-    if log_prompts {
+    if prompt_bundle_logs_content(log_prompts) {
         debug!(system_prompt = %prompt.system_prompt, user_prompt = %prompt.user_prompt, "provider prompt bundle content");
     }
+}
+
+fn prompt_bundle_logs_content(_log_prompts: bool) -> bool {
+    false
 }
 
 pub fn provider_capabilities(provider_id: &str) -> Result<ProviderCapabilities> {
@@ -2987,6 +3226,79 @@ mod tests {
         AttachmentProjectionPolicy::from(&crate::config::RuntimeConfig::default())
     }
 
+    #[test]
+    fn prompt_bundle_never_logs_prompt_bodies_to_runtime_log() {
+        assert!(!prompt_bundle_logs_content(false));
+        assert!(
+            !prompt_bundle_logs_content(true),
+            "runtime.log must not record prompt bodies even when log_prompts is enabled"
+        );
+    }
+
+    #[test]
+    fn conversation_agent_prompt_text_wraps_user_specified_role() {
+        let wrapped = conversation_agent_prompt_text(
+            &ConversationPromptInput {
+                display_text: "帮我改这段代码".to_string(),
+                quotes: Vec::new(),
+                role: Some(UserPromptRole {
+                    profile_id: "pf-builtin-dev".to_string(),
+                    name: "开发".to_string(),
+                    content: "你是开发角色".to_string(),
+                }),
+            },
+            crate::config::DesktopLanguage::ZhCn,
+        );
+        assert!(wrapped.starts_with("# 以下是用户指定的角色定义："));
+        assert!(wrapped.contains("你是开发角色"));
+        assert!(wrapped.contains("# 以下是用户的输入："));
+        assert!(wrapped.contains("帮我改这段代码"));
+        assert!(!wrapped.contains("你的角色定义"));
+    }
+
+    #[test]
+    fn conversation_agent_prompt_text_keeps_plain_user_input_without_role() {
+        let text = conversation_agent_prompt_text(
+            &ConversationPromptInput {
+                display_text: "继续".to_string(),
+                quotes: Vec::new(),
+                role: None,
+            },
+            crate::config::DesktopLanguage::En,
+        );
+        assert_eq!(text, "继续");
+    }
+
+    #[test]
+    fn conversation_prompt_has_payload_accepts_role_only_and_rejects_fully_empty_input() {
+        let role = UserPromptRole {
+            profile_id: "pf-dev".to_string(),
+            name: "开发".to_string(),
+            content: "完整角色定义".to_string(),
+        };
+        assert!(conversation_prompt_has_payload("", 0, Some(&role)));
+        assert!(!conversation_prompt_has_payload("   ", 0, None));
+        assert!(!conversation_prompt_has_payload(
+            "",
+            0,
+            Some(&UserPromptRole {
+                profile_id: "pf-dev".to_string(),
+                name: "开发".to_string(),
+                content: String::new(),
+            })
+        ));
+        let wrapped = conversation_agent_prompt_text(
+            &ConversationPromptInput {
+                display_text: String::new(),
+                quotes: Vec::new(),
+                role: Some(role),
+            },
+            crate::config::DesktopLanguage::ZhCn,
+        );
+        assert!(wrapped.contains("完整角色定义"));
+        assert!(wrapped.contains("# 以下是用户的输入："));
+    }
+
     fn test_png(width: u32, height: u32) -> Vec<u8> {
         let raster = image::ImageBuffer::from_fn(width, height, |x, y| {
             image::Rgb([
@@ -3047,6 +3359,7 @@ mod tests {
             session_mode: SessionMode::New,
             user_prompt_render_mode: UserPromptRenderMode::RequirementTask,
             permission_mode: None,
+            auto_accept: false,
             model: None,
             config_options: Default::default(),
             continue_ref: None,
@@ -3068,6 +3381,265 @@ mod tests {
             mcp_servers: Vec::new(),
             scheduled_context: None,
         }
+    }
+
+    fn scheduled_context(
+        trigger_kind: crate::scheduler::occurrence::OccurrenceTriggerKind,
+    ) -> ScheduledTaskContextInfo {
+        let automatic =
+            (trigger_kind == crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled).then(
+                || crate::scheduler::execution::ScheduledAutomaticTriggerContext {
+                    scheduled_at: chrono::DateTime::parse_from_rfc3339("2026-08-25T01:30:00Z")
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                    schedule_summary: "每天 09:30".to_string(),
+                    timezone: "Asia/Shanghai".to_string(),
+                },
+            );
+        ScheduledTaskContextInfo {
+            project_id: "project-001".to_string(),
+            scheduled_task_id: "scheduled-task-001".to_string(),
+            occurrence_id: "occurrence-001".to_string(),
+            trigger_kind,
+            accepted_at: "2026-08-25T01:29:59Z".to_string(),
+            automatic,
+            content_fingerprint: "sha256:scheduled-content".to_string(),
+            instruction_summary: "检查主分支状态".to_string(),
+            schedule: Some(
+                crate::scheduler::ScheduleSpec::cron("0 30 9 * * *", "Asia/Shanghai").unwrap(),
+            ),
+            timeline_owner: crate::scheduler::occurrence::OccurrenceLinks {
+                task_id: Some("task-001".to_string()),
+                run_id: Some("run-001".to_string()),
+                round_id: Some("round-001".to_string()),
+                node_id: Some("dev".to_string()),
+                attempt_id: Some("attempt-001".to_string()),
+            },
+        }
+    }
+
+    fn scheduled_invocation(
+        trigger_kind: crate::scheduler::occurrence::OccurrenceTriggerKind,
+    ) -> WorkerInvocation {
+        let mut req = test_worker_invocation(Utf8PathBuf::from("/attempt"));
+        req.requirement_text = Some("ORIGINAL_SCHEDULED_INSTRUCTION".to_string());
+        req.task_instruction = None;
+        req.prompt_display = Some(ConversationPromptInput {
+            display_text: "检查主分支状态".to_string(),
+            quotes: Vec::new(),
+            role: None,
+        });
+        req.resume_prompt_id = Some("occurrence-turn-001".to_string());
+        req.scheduled_context = Some(scheduled_context(trigger_kind));
+        req
+    }
+
+    #[test]
+    fn scheduled_protocol_is_injected_into_runtime_managed_new_turn() {
+        let req =
+            scheduled_invocation(crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled);
+
+        let prompt = render_prompt_bundle(&req).unwrap();
+
+        assert!(prompt.user_prompt.contains("# 本次定时任务执行"));
+        assert!(prompt.user_prompt.contains("occurrenceId: occurrence-001"));
+    }
+
+    #[test]
+    fn scheduled_protocol_is_injected_into_raw_agent_new_turn() {
+        let mut req =
+            scheduled_invocation(crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled);
+        req.prompt_envelope = crate::dsl::PromptEnvelopeMode::RawAgent;
+
+        let prompt = render_prompt_bundle(&req).unwrap();
+
+        assert!(prompt.user_prompt.contains("# 本次定时任务执行"));
+        assert!(
+            prompt
+                .user_prompt
+                .contains("ORIGINAL_SCHEDULED_INSTRUCTION")
+        );
+    }
+
+    #[test]
+    fn scheduled_protocol_is_injected_into_raw_agent_restored_continue_turn() {
+        let mut req =
+            scheduled_invocation(crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled);
+        req.prompt_envelope = crate::dsl::PromptEnvelopeMode::RawAgent;
+        req.session_mode = SessionMode::Continue;
+        req.resume_prompt = Some("ORIGINAL_SCHEDULED_INSTRUCTION".to_string());
+
+        let prompt = render_prompt_bundle(&req).unwrap();
+
+        assert!(prompt.user_prompt.contains("# 本次定时任务执行"));
+        assert!(prompt.user_prompt.contains("occurrenceId: occurrence-001"));
+    }
+
+    #[test]
+    fn automatic_protocol_has_scheduled_at_schedule_and_timezone() {
+        let req =
+            scheduled_invocation(crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled);
+
+        let prompt = render_prompt_bundle(&req).unwrap();
+
+        assert!(
+            prompt
+                .user_prompt
+                .contains("scheduledAt: 2026-08-25T01:30:00Z")
+        );
+        assert!(prompt.user_prompt.contains("schedule: 每天 09:30"));
+        assert!(prompt.user_prompt.contains("timezone: Asia/Shanghai"));
+
+        let mut en_req = req;
+        en_req.runtime_context.language = crate::config::DesktopLanguage::En;
+        let en_prompt = render_prompt_bundle(&en_req).unwrap();
+        assert!(
+            en_prompt
+                .user_prompt
+                .contains("# This Scheduled Task Execution")
+        );
+        assert!(en_prompt.user_prompt.contains(
+            "This invocation is an automatic scheduled trigger execution accepted by Gold Band."
+        ));
+        assert!(
+            en_prompt
+                .user_prompt
+                .contains("scheduledAt: 2026-08-25T01:30:00Z")
+        );
+        assert!(en_prompt.user_prompt.contains("schedule: 每天 09:30"));
+        assert!(en_prompt.user_prompt.contains("timezone: Asia/Shanghai"));
+    }
+
+    #[test]
+    fn manual_protocol_omits_all_automatic_schedule_fields_and_says_manual_run() {
+        let req = scheduled_invocation(crate::scheduler::occurrence::OccurrenceTriggerKind::Manual);
+
+        let prompt = render_prompt_bundle(&req).unwrap();
+
+        assert!(prompt.user_prompt.contains("“立即执行”手动触发"));
+        assert!(!prompt.user_prompt.contains("scheduledAt:"));
+        assert!(!prompt.user_prompt.contains("schedule:"));
+        assert!(!prompt.user_prompt.contains("timezone:"));
+
+        let mut en_req = req;
+        en_req.runtime_context.language = crate::config::DesktopLanguage::En;
+        let en_prompt = render_prompt_bundle(&en_req).unwrap();
+        assert!(
+            en_prompt
+                .user_prompt
+                .contains("manually triggered with Run Now")
+        );
+        assert!(!en_prompt.user_prompt.contains("scheduledAt:"));
+        assert!(!en_prompt.user_prompt.contains("schedule:"));
+        assert!(!en_prompt.user_prompt.contains("timezone:"));
+    }
+
+    #[test]
+    fn provider_prompt_contains_the_original_instruction_exactly_once() {
+        let req =
+            scheduled_invocation(crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled);
+
+        let prompt = render_prompt_bundle(&req).unwrap();
+
+        assert_eq!(
+            prompt
+                .user_prompt
+                .matches("ORIGINAL_SCHEDULED_INSTRUCTION")
+                .count(),
+            1
+        );
+
+        let mut raw_new = req.clone();
+        raw_new.prompt_envelope = crate::dsl::PromptEnvelopeMode::RawAgent;
+        let raw_new_prompt = render_prompt_bundle(&raw_new).unwrap();
+        assert_eq!(
+            raw_new_prompt
+                .user_prompt
+                .matches("ORIGINAL_SCHEDULED_INSTRUCTION")
+                .count(),
+            1
+        );
+
+        let mut raw_restored = raw_new;
+        raw_restored.session_mode = SessionMode::Continue;
+        raw_restored.resume_prompt = Some("ORIGINAL_SCHEDULED_INSTRUCTION".to_string());
+        let raw_restored_prompt = render_prompt_bundle(&raw_restored).unwrap();
+        assert_eq!(
+            raw_restored_prompt
+                .user_prompt
+                .matches("ORIGINAL_SCHEDULED_INSTRUCTION")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn scheduled_prompt_is_hidden_but_preserves_display_text() {
+        let req =
+            scheduled_invocation(crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled);
+
+        let prompt = render_prompt_bundle(&req).unwrap();
+
+        assert_eq!(prompt.visibility, PromptVisibility::Hidden);
+        assert_eq!(
+            prompt.hidden_reason.as_deref(),
+            Some("scheduledTaskExecution")
+        );
+        assert_eq!(prompt.display_text.as_deref(), Some("检查主分支状态"));
+        assert_eq!(
+            prompt
+                .scheduled_trigger
+                .as_ref()
+                .map(|payload| payload.occurrence_id.as_str()),
+            Some("occurrence-001")
+        );
+    }
+
+    #[test]
+    fn workflow_child_invocation_gets_context_but_not_a_second_trigger_row() {
+        let mut child =
+            scheduled_invocation(crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled);
+        child.runtime_context.node_id = "child-node".to_string();
+        child.runtime_context.attempt_id = "child-attempt".to_string();
+
+        let prompt = render_prompt_bundle(&child).unwrap();
+
+        assert!(prompt.user_prompt.contains("occurrenceId: occurrence-001"));
+        assert!(prompt.scheduled_trigger.is_none());
+    }
+
+    #[test]
+    fn ordinary_follow_up_has_no_scheduled_protocol() {
+        let mut req = test_worker_invocation(Utf8PathBuf::from("/attempt"));
+        req.prompt_envelope = crate::dsl::PromptEnvelopeMode::RawAgent;
+        req.session_mode = SessionMode::Continue;
+        req.user_prompt_render_mode = UserPromptRenderMode::UserMessage;
+        req.resume_prompt = Some("ordinary follow-up".to_string());
+
+        let prompt = render_prompt_bundle(&req).unwrap();
+
+        assert_eq!(prompt.user_prompt, "ordinary follow-up");
+        assert!(!prompt.user_prompt.contains("occurrenceId:"));
+        assert_eq!(prompt.visibility, PromptVisibility::Visible);
+    }
+
+    #[test]
+    fn runtime_repair_for_the_same_occurrence_keeps_the_protocol_without_a_new_trigger_identity() {
+        let mut req =
+            scheduled_invocation(crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled);
+        req.session_mode = SessionMode::Continue;
+        req.user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
+        req.resume_prompt = Some("repair invalid output".to_string());
+        req.resume_prompt_visibility = PromptVisibility::Hidden;
+
+        let prompt = render_prompt_bundle(&req).unwrap();
+
+        assert!(prompt.user_prompt.contains("# 本次定时任务执行"));
+        assert_eq!(prompt.prompt_id.as_deref(), Some("occurrence-turn-001"));
+        assert_eq!(
+            prompt.hidden_reason.as_deref(),
+            Some("scheduledTaskExecution")
+        );
     }
 
     #[test]
@@ -3767,6 +4339,7 @@ mod tests {
             input: ConversationPromptInput {
                 display_text: "hi".to_string(),
                 quotes: Vec::new(),
+                role: None,
             },
             attachment_paths: Vec::new(),
             admitted_at: "1Z".to_string(),
@@ -4242,6 +4815,7 @@ mod tests {
             session_mode: SessionMode::New,
             user_prompt_render_mode: UserPromptRenderMode::RequirementTask,
             permission_mode: None,
+            auto_accept: false,
             model: None,
             config_options: Default::default(),
             continue_ref: None,
@@ -4284,6 +4858,10 @@ mod tests {
         let prompt = render_prompt_bundle(&req).unwrap();
         assert_eq!(prompt.system_prompt, "");
         assert_eq!(prompt.user_prompt, "  original direct prompt\n");
+        assert_eq!(
+            prompt.display_text.as_deref(),
+            Some("  original direct prompt\n")
+        );
 
         req.session_mode = SessionMode::Continue;
         req.user_prompt_render_mode = UserPromptRenderMode::UserMessage;

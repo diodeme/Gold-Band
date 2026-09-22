@@ -14,5 +14,7 @@ void import('./lib/webview-runtime-diagnostics')
 
 void startWebviewBootstrap({
   snapshot,
-  loadApp: () => import('./main'),
+  loadApp: () => new URLSearchParams(window.location.search).get('surface') === 'browser-address-suggestions'
+    ? import('./browser-address-suggestions-main')
+    : import('./main'),
 });

@@ -10,17 +10,14 @@ use crate::artifacts::parse_json_artifact;
 use crate::domain::{
     InvocationKind, NodeOutcome, RunStatus, SessionMode, TurnControlMode, VERSION,
 };
-use crate::dsl::{
-    JsonConditionDsl, JsonPathSegment, NodeDsl, ValidatedWorkflow, WorkerNode, parse_json_path,
-};
+use crate::dsl::{JsonPathSegment, NodeDsl, ValidatedWorkflow, WorkerNode, parse_json_path};
 use crate::dynamic::AI_DYNAMIC_RESULT_ARTIFACT;
 use crate::observability::{ProgressStage, progress};
 use crate::prompts::PromptExecutionSurface;
 use crate::provider::{
-    ConversationPromptInput, OutputEmissionMode, PromptArtifactRef, PromptAttachmentRef,
-    PromptOutputContract, PromptPredecessorContext, PromptRuntimeContext, PromptVisibility,
-    ProviderRunResult, ProviderRunStatus, RuntimeControlIntent, RuntimeControlOutput, StreamMode,
-    UserPromptRenderMode, WorkerInvocation,
+    ConversationPromptInput, PromptArtifactRef, PromptAttachmentRef, PromptPredecessorContext,
+    PromptRuntimeContext, PromptVisibility, ProviderRunResult, ProviderRunStatus,
+    RuntimeControlIntent, RuntimeControlOutput, StreamMode, UserPromptRenderMode, WorkerInvocation,
 };
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, WorkerRefState, validate_node_state,
@@ -57,29 +54,8 @@ fn attempt_is_still_current_running(
         && run.current_attempt.as_deref() == Some(attempt_id))
 }
 
-fn success_condition_text(condition: &JsonConditionDsl) -> String {
-    match condition {
-        JsonConditionDsl::Expression { expression } => expression.clone(),
-        JsonConditionDsl::PathEquals { path, equals } => {
-            format!("JSON field `{}` equals `{}`", path, equals)
-        }
-    }
-}
-
-fn worker_output_contract(worker: &WorkerNode) -> Option<PromptOutputContract> {
-    worker.output.as_ref().map(|output| PromptOutputContract {
-        artifact: output.artifact.clone(),
-        kind: format!("{:?}", output.kind).to_ascii_lowercase(),
-        schema: output.schema.clone(),
-        schema_text: None,
-        success_condition: worker
-            .success_condition
-            .as_ref()
-            .map(success_condition_text),
-        finalize_context: None,
-        emission_mode: OutputEmissionMode::PostTurnProjection,
-    })
-}
+mod output_contract;
+use output_contract::worker_output_contract;
 
 fn runtime_prompt_context(
     app: &App,
@@ -518,6 +494,7 @@ pub(crate) fn build_worker_invocation(
     let (
         profile,
         permission_mode,
+        auto_accept,
         configured_model,
         output_contract,
         task_instruction,
@@ -526,10 +503,12 @@ pub(crate) fn build_worker_invocation(
         cold_attachments,
         prompt_envelope,
         configured_options,
+        configured_provider,
     ) = match node_dsl {
         NodeDsl::Worker(worker) => (
             worker.profile.clone(),
             worker.permission_mode.clone(),
+            worker.auto_accept,
             worker.model.clone(),
             worker_output_contract(worker),
             worker_task_instruction(worker),
@@ -538,6 +517,7 @@ pub(crate) fn build_worker_invocation(
             Vec::new(),
             worker.prompt_envelope,
             worker.config_options.clone(),
+            worker.provider.clone(),
         ),
         NodeDsl::AiDynamic(_) => {
             bail!("ai-dynamic nodes must be executed by the dynamic orchestrator")
@@ -565,10 +545,18 @@ pub(crate) fn build_worker_invocation(
 
     let runtime_context =
         runtime_prompt_context(app, task_id, run_id, round_id, node_id, attempt_id);
-    let mut config_options = configured_options;
-    config_options.extend(current_acp_config_option_overrides(
-        &runtime_context.attempt_dir,
-    ));
+    let diagnostics = app.provider_diagnostics();
+    let capabilities = configured_provider
+        .as_deref()
+        .and_then(|provider| diagnostics.get(provider))
+        .and_then(|snapshot| snapshot.capabilities.as_ref());
+    let config_options = crate::acp::session_config::invocation_config_option_overrides(
+        session_mode == SessionMode::Continue,
+        configured_options,
+        current_acp_config_option_overrides(&runtime_context.attempt_dir),
+        capabilities,
+        model.as_deref(),
+    );
     let predecessors =
         build_predecessor_contexts(app, task_id, run_id, round, node_id, attempt_id, workflow);
     let new_round_trigger =
@@ -641,6 +629,7 @@ pub(crate) fn build_worker_invocation(
         session_mode,
         user_prompt_render_mode,
         permission_mode,
+        auto_accept,
         model,
         config_options,
         continue_ref,
@@ -1277,6 +1266,7 @@ pub(crate) fn re_evaluate_attempt(
 mod tests {
     use super::*;
     use crate::dsl::{OutputContractDsl, OutputKind};
+    use crate::provider::OutputEmissionMode;
     use crate::runtime_error::{RuntimeErrorDomain, manual_runtime_error_info};
 
     #[test]
@@ -1295,6 +1285,7 @@ mod tests {
             }),
             success_condition: None,
             permission_mode: None,
+            auto_accept: false,
             config_options: Default::default(),
             manual_check: None,
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
@@ -1534,6 +1525,7 @@ mod tests {
                 output: None,
                 success_condition: None,
                 permission_mode: None,
+                auto_accept: false,
                 config_options: Default::default(),
                 manual_check: None,
                 prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,

@@ -306,22 +306,12 @@ function ImagePreview({ resource }: { resource: FileWorkspaceResource }) {
   const snapshot = entry.snapshot?.kind === 'image' ? entry.snapshot : null;
   const initialViewState = useMemo(() => fileContentStore.imageViewState(resource.key), [resource.key]);
   const [zoom, setZoomState] = useState(initialViewState.zoom);
-  const [animationPaused, setAnimationPaused] = useState(() => (
-    Boolean(snapshot?.animated)
-    && typeof window !== 'undefined'
-    && Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
-  ));
+  const [animationPaused, setAnimationPaused] = useState(false);
   const viewportRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ pointerId: number; x: number; y: number; left: number; top: number } | null>(null);
   useEffect(() => {
-    if (!snapshot?.animated) {
-      setAnimationPaused(false);
-      return;
-    }
-    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
-      setAnimationPaused(true);
-    }
-  }, [snapshot?.animated, snapshot?.previewGrant.token]);
+    if (!snapshot?.animated) setAnimationPaused(false);
+  }, [snapshot?.animated]);
   useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport || !snapshot) return;

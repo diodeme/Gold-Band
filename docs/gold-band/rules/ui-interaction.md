@@ -165,7 +165,7 @@
 
 ## 12. 主题样式级联
 
-- 主题 recipe 生成的展示声明必须位于 CSS `components` layer，作为主题 role 的组件默认值；不得使用未分层的高优先级选择器或 `!important` 越过组件显式 utility/variant。无障碍 `prefers-reduced-motion` 规则可以强制关闭动效。
+- 主题 recipe 生成的展示声明必须位于 CSS `components` layer，作为主题 role 的组件默认值；不得使用未分层的高优先级选择器或 `!important` 越过组件显式 utility/variant。桌面端、官网和内部 rrweb 演示都不读取系统 `prefers-reduced-motion`。主题 motion token 只决定过渡时长，不能因系统关闭窗口动画把 role 的 animation 或 transition 压成 0。页面隐藏时暂停回放不受此限制。
 - 组件覆盖只用于真实变体、交互状态和组件拓扑，例如 focus ring、单边 separator、joined control、透明 variant，以及显式声明的阴影、圆角和动效；禁止在组件中按 `themeId` 特判视觉样式。
 - 迁移现有主题时，必须由各主题 recipe 明确声明需要保持的边框、圆角、阴影、颜色、材质、状态和动效，不得把旧主题外观硬编码回共享组件。
 - Dialog、Sheet、AlertDialog 必须 Portal 到 `body` 的专用 overlay host；host 不得包含非 `none` 的 `transform`、`filter`、`backdrop-filter`、`contain`，也不得使用会裁剪后代的 `overflow`。

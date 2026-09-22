@@ -1,5 +1,19 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-22 官网与 rrweb 演示不再跟随系统减少动态效果
+
+- 根因：官网章节回放和内部 rrweb 演示仍读取 `prefers-reduced-motion`。Windows 关闭窗口动画时，官网停在海报并出现播放按钮，同时把全站动画和过渡压到 0.01ms；演示回放不自动开始，录制宽度切换失去 850ms 过渡。这和桌面端已经去掉的系统开关是同一条媒体查询。
+- 实现：章节进入视野后直接 `autoPlay`。删除官网那条全站降级规则，锚点平滑滚动和加载转圈恢复。演示回放固定 `autoPlay: true`，录制 iframe 保留宽度过渡。标签页隐藏时官网回放仍暂停。
+- 验收：`marketing-site.test.ts` 与 `rrweb-demo-recording.test.ts` 固定这两处源码不再包含 `prefers-reduced-motion`。
+- 过度设计与性能评审：不新增播放器或设置项。官网同一时刻仍只有当前章节在播；演示只在打开该工具时多一次自动回放。
+
+## 2026-09-22 桌面动效不再跟随系统减少动态效果
+
+- 根因：桌面端没有独立的动效开关。主题 motion token 只决定按钮、卡片等 role 的过渡时长。活动文字呼吸、重试文字、压缩圆环和进度条、工作流扫光与流动边、品牌 Logo、流式逐字、GIF 默认暂停，以及主题 CSS 里把 `data-theme-role` 的动画压到 0.01ms，全部读取系统 `prefers-reduced-motion`。Windows 关闭窗口动画时 WebView2 会报 reduce，于是这些机器和开着动画的机器表现不一致。
+- 实现：删除上述媒体查询、`motion-reduce` 和 `matchMedia` 分支。主题时长保持原 token。官网自动播放和 rrweb 演示仍尊重系统设置。
+- 验收：`acp-message-theme.test.ts` 固定重试呼吸样式不再包含 `prefers-reduced-motion` 或 `motion-reduce`。
+- 过度设计与性能评审：不新增设置、状态或第二套动画。系统关闭动画的机器会多出已有的少量 CSS 动画，以及正在生成的那一条消息的逐字 RAF；终态和历史消息仍立即静态展示。
+
 ## 2026-09-22 运行态呼吸不因系统关闭动画而停止
 
 - 根因：侧边栏 Agent icon、Workflow/AUTO 运行圆点，以及 Session Switcher / 会话头的运行圆点，都用 `motion-safe:animate-pulse`。Windows 关闭「在窗口中为控件和元素设置动画」时，WebView2 投影 `prefers-reduced-motion: reduce`，这条 class 不生效。会话仍在运行，图标静止。这与 2026-08-25 处理圆环的成因相同，属于运行反馈被可访问性媒体查询整段拿掉，不是 activity 没传到侧边栏。

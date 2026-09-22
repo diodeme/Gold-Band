@@ -31,7 +31,7 @@
 | 文本、日志 | CodeMirror 查看、查找、行号、换行和编辑 |
 | Markdown | 项目文件与节点附件卡打开的本轮新增附件默认实时预览编辑，可切换源码并保存；系统提示、用户消息附件、运行目录文件与完全新增的历史文件版本固定只读。两类资源复用同一 AtomEditor/WorkspaceFileEditor 契约并共享模式与视口语义；可编辑资源额外共享撤销历史、revision 与自动保存队列。源码/预览切换按钮只在父级传入 `onMarkdownModeChange` 时出现，禁止画出无法切换的空按钮 |
 | 常见代码与配置 | CodeMirror 按需语言高亮；无语言包时回退纯文本 |
-| PNG、JPEG、WebP、GIF、BMP、ICO | 安全图片预览、缩放、适应窗口、原始大小和拖拽平移；GIF 支持播放/暂停，并在 reduced motion 下默认显示静态首帧 |
+| PNG、JPEG、WebP、GIF、BMP、ICO | 安全图片预览、缩放、适应窗口、原始大小和拖拽平移；GIF 支持播放/暂停，打开时默认播放，不因系统 reduced-motion 停在首帧 |
 | SVG | Rust 安全栅格化预览，可切换源码编辑 |
 | HTML（`.html` / `.htm`） | 工作空间与运行目录树默认打开 CodeMirror 源码，内容区右上角浮层按钮再打开内置浏览器；会话和 Markdown 中的本地 HTML 引用仍直接进内置浏览器。边界见 [内置浏览器](in-app-browser.md) |
 | PDF、Office、音视频、压缩包、字体、数据库及其他二进制 | 显示明确的不支持状态并提供系统应用打开 |

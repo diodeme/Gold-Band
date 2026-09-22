@@ -1,9 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { CHAPTER_IDS, copy, pageHref, parseRoute } from '../../marketing/site/content';
 import { createPreviewRun } from '../../marketing/site/fixture';
 import { mockErrorBlockedConversationRun } from '../src/mockData';
 
+describe('website motion', () => {
+  it('keeps chapter playback and page motion when the system reduces motion', () => {
+    const siteRoot = resolve('marketing/site');
+    const main = readFileSync(resolve(siteRoot, 'main.tsx'), 'utf8');
+    const style = readFileSync(resolve(siteRoot, 'style.css'), 'utf8');
+    expect(main).toContain('autoPlay');
+    expect(main).not.toContain('prefers-reduced-motion');
+    expect(main).not.toContain('reducedMotion');
+    expect(style).toContain('scroll-behavior: smooth');
+    expect(style).not.toContain('prefers-reduced-motion');
+    expect(style).not.toContain('animation-duration: 0.01ms');
+  });
+});
 describe('website routing and bilingual content', () => {
   it('preserves page identity when changing language and handles unknown paths', () => {
     for (const language of ['zh', 'en'] as const) for (const page of ['home', 'documentation', 'demo'] as const) {

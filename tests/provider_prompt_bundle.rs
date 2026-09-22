@@ -632,6 +632,35 @@ fn render_raw_agent_first_prompt_appends_titled_hidden_sections() {
 }
 
 #[test]
+fn render_raw_agent_first_prompt_with_hidden_sections_suppresses_verbatim_display() {
+    // 含隐式隐藏区段的首条 prompt 不回退为需求原文：气泡正文必须以完整 user_prompt 投影，
+    // 否则前端 parseGoldBandHiddenSections 解析不到 <hidden> 块，审计入口丢失（M5-bk 契约）。
+    let mut req = invocation();
+    req.prompt_envelope = gold_band::dsl::PromptEnvelopeMode::RawAgent;
+    req.turn_control_mode = TurnControlMode::NonRuntimeControlled;
+    req.extra_hidden_sections = vec![PromptHiddenSection {
+        title: "Gold Band remote task context".to_string(),
+        content: "本任务来自 DPMS 关联的工作项".to_string(),
+    }];
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert!(prompt.display_text.is_none());
+}
+
+#[test]
+fn render_raw_agent_first_prompt_without_sections_falls_back_to_requirement() {
+    // 无隐式区段时保留 main 的回落意图：新的 RawAgent 首条 turn 以需求原文作为气泡投影。
+    let mut req = invocation();
+    req.prompt_envelope = gold_band::dsl::PromptEnvelopeMode::RawAgent;
+    req.turn_control_mode = TurnControlMode::NonRuntimeControlled;
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert_eq!(prompt.display_text.as_deref(), Some("Need an implementation"));
+}
+
+#[test]
 fn render_raw_agent_continue_prompt_skips_hidden_sections() {
     // Continue（追问 / 续跑）不重放首条区段。真实数据流下 build_worker_invocation 在 Continue
     // 时不加载区段（见 node_executor 侧测试），此处按该契约构造：正文即 resume prompt，无隐藏块。

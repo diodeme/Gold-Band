@@ -191,6 +191,21 @@ describe('FileContentStore autosave contract', () => {
       && store.snapshot(resource.key).snapshot.content).toBe('disk replacement');
   });
 
+  it('keeps the editor instance when a clean reload returns the same bytes', async () => {
+    const store = createStore();
+    await store.load(resource);
+    const previousContentRevision = store.snapshot(resource.key).contentRevision;
+    store.persistEditorState(resource.key, { history: ['kept'] }, previousContentRevision);
+    api.readFileResource.mockResolvedValueOnce(snapshot('start', revision('disk-1')));
+
+    await store.load(resource, false, true, true);
+
+    expect(store.snapshot(resource.key).contentRevision).toBe(previousContentRevision);
+    expect(store.editorState(resource.key)).toEqual({ history: ['kept'] });
+    store.persistEditorState(resource.key, { history: ['still-current'] }, previousContentRevision);
+    expect(store.editorState(resource.key)).toEqual({ history: ['still-current'] });
+  });
+
   it('flushes a deactivated file without releasing its content, history, or grant', async () => {
     const store = createStore();
     api.readFileResource.mockResolvedValueOnce(externalSnapshot());

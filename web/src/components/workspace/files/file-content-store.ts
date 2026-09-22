@@ -111,6 +111,15 @@ function operationId() {
   return globalThis.crypto?.randomUUID?.() ?? `file-write-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function sameDiskContent(
+  previous: WorkspaceFileSnapshotVm | null | undefined,
+  next: WorkspaceFileSnapshotVm,
+) {
+  return previous != null
+    && previous.kind === next.kind
+    && previous.revision.contentHash === next.revision.contentHash;
+}
+
 export class FileContentStore {
   private config: WorkspaceFilesVm = FALLBACK_WORKSPACE_FILES;
   private readonly entries = new Map<string, FileContentEntry>();
@@ -297,6 +306,39 @@ export class FileContentStore {
         preferSource,
       );
       if (this.entries.get(resource.key)?.requestRevision !== requestRevision) return this.entries.get(resource.key) ?? null;
+      const current = this.entries.get(resource.key);
+      const unchanged = Boolean(
+        current
+        && current.status === 'ready'
+        && current.saveState.kind === 'clean'
+        && sameDiskContent(current.snapshot, snapshot),
+      );
+      if (unchanged && current) {
+        const runtime = this.runtimes.get(resource.key);
+        if (runtime) {
+          if (snapshot.kind === 'text') {
+            runtime.latestContent = snapshot.content;
+            runtime.encoding = snapshot.encoding;
+            runtime.lineEnding = snapshot.lineEnding;
+          }
+          runtime.diskRevision = snapshot.revision;
+          runtime.externalAccessGrant = snapshot.externalAccessGrant;
+        } else {
+          this.installRuntime(resource.key, snapshot);
+        }
+        const next: FileContentEntry = {
+          ...current,
+          resource,
+          status: 'ready',
+          snapshot,
+          errorCode: null,
+          requestRevision,
+          watchEpoch: this.contentEpoch(resource.projectId) === watchEpoch ? watchEpoch : current.watchEpoch,
+        };
+        this.setEntry(resource.key, next);
+        this.touch(resource.key);
+        return next;
+      }
       if (snapshot.externalAccessGrant) {
         this.primedGrants.set(resource.key, {
           projectId: resource.projectId,

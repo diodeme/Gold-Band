@@ -384,7 +384,7 @@ export function WorkspaceFileEditor({
         setMarkdownLanguageExtension(extension);
         setMarkdownLanguageRevision((revision) => revision + 1);
       }
-    });
+    }).catch(() => undefined);
     return () => { active = false; };
   }, [markdownLivePreviewAvailable, markdownMode === null]);
 
@@ -401,16 +401,13 @@ export function WorkspaceFileEditor({
           extensions,
         }));
       }
-    });
+    }).catch(() => undefined);
     return () => { active = false; };
   }, [markdownHasTableImages, markdownLivePreviewAvailable, markdownMode === null, routeMarkdownLink]);
 
   const previewMode = markdownMode === 'live-preview' && markdownLivePreviewAvailable;
   const desiredEditorMode: MarkdownEditorMode = previewMode && markdownPreviewProfile ? 'live-preview' : 'source';
   const stableMarkdownLanguage = markdownMode !== null && markdownLivePreviewAvailable;
-  const editorReady = editorExtensionsRef.current !== null
-    || !stableMarkdownLanguage
-    || (markdownLanguageExtension !== null && (!previewMode || markdownPreviewProfile !== null));
   const baseEditorExtensions = useMemo<Extension[]>(() => [
     ...basicSetup({
       lineNumbers: false,
@@ -471,7 +468,7 @@ export function WorkspaceFileEditor({
     }
     return sourceModeExtensions;
   }, [desiredEditorMode, highlight, markdownImagePreviewProfile, markdownPreviewProfile, sourceModeExtensions]);
-  if (editorReady && !editorExtensionsRef.current) {
+  if (!editorExtensionsRef.current) {
     editorExtensionsRef.current = [
       ...baseEditorExtensions,
       languageCompartment.of(documentLanguageExtensions),
@@ -667,7 +664,14 @@ export function WorkspaceFileEditor({
     if (!markdownMode || !onMarkdownModeChange || modeTransitionPending) return;
     const nextMode = previewMode ? 'source' : 'live-preview';
     const view = editorRef.current?.view;
-    if (!view || (nextMode === 'live-preview' && !markdownPreviewProfile)) return;
+    if (!view) {
+      onMarkdownModeChange(nextMode);
+      return;
+    }
+    if (nextMode === 'live-preview' && !markdownPreviewProfile) {
+      onMarkdownModeChange(nextMode);
+      return;
+    }
     const request = modeTransitionRequestRef.current + 1;
     modeTransitionRequestRef.current = request;
     setModeTransitionPending(true);
@@ -766,35 +770,31 @@ export function WorkspaceFileEditor({
           ) : null}
         </div>
       ) : null}
-      {editorReady ? (
-        <CodeMirror
-          ref={editorRef}
-          value={editorValue}
-          height="100%"
-          theme="none"
-          basicSetup={false}
-          extensions={editorExtensionsRef.current ?? []}
-          initialState={initialStateJson ? { json: initialStateJson, fields: { history: historyField } } : undefined}
-          onCreateEditor={(view) => {
-            appliedLanguageProfileRef.current = initialLanguageProfileRef.current;
-            appliedEditorPolicyProfileRef.current = initialEditorPolicyProfileRef.current;
-            appliedMarkdownImagePreviewProfileRef.current = initialMarkdownImagePreviewProfileRef.current;
-            appliedModeProfileRef.current = initialModeProfileRef.current;
-            setActiveEditorView(view);
-          }}
-          onChange={handleChange}
-          onBlur={() => onSaveRef.current()}
-          className={previewMode
-            ? 'atomic-cm-editor workspace-markdown-live-preview h-full min-h-0 overflow-hidden [&_.cm-editor]:h-full [&_.cm-scroller]:overflow-auto'
-            : 'h-full min-h-0 overflow-hidden [&_.cm-editor]:h-full [&_.cm-scroller]:overflow-auto'}
-          style={previewMode && markdownContentWidth === 'full'
-            ? FULL_WIDTH_MARKDOWN_STYLE
-            : undefined}
-          aria-label="workspace-file-editor"
-        />
-      ) : (
-        <div className="flex h-full items-center justify-center text-sm text-muted-foreground" aria-label="workspace-markdown-loading">…</div>
-      )}
+      <CodeMirror
+        ref={editorRef}
+        value={editorValue}
+        height="100%"
+        theme="none"
+        basicSetup={false}
+        extensions={editorExtensionsRef.current ?? []}
+        initialState={initialStateJson ? { json: initialStateJson, fields: { history: historyField } } : undefined}
+        onCreateEditor={(view) => {
+          appliedLanguageProfileRef.current = initialLanguageProfileRef.current;
+          appliedEditorPolicyProfileRef.current = initialEditorPolicyProfileRef.current;
+          appliedMarkdownImagePreviewProfileRef.current = initialMarkdownImagePreviewProfileRef.current;
+          appliedModeProfileRef.current = initialModeProfileRef.current;
+          setActiveEditorView(view);
+        }}
+        onChange={handleChange}
+        onBlur={() => onSaveRef.current()}
+        className={desiredEditorMode === 'live-preview'
+          ? 'atomic-cm-editor workspace-markdown-live-preview h-full min-h-0 overflow-hidden [&_.cm-editor]:h-full [&_.cm-scroller]:overflow-auto'
+          : 'h-full min-h-0 overflow-hidden [&_.cm-editor]:h-full [&_.cm-scroller]:overflow-auto'}
+        style={desiredEditorMode === 'live-preview' && markdownContentWidth === 'full'
+          ? FULL_WIDTH_MARKDOWN_STYLE
+          : undefined}
+        aria-label="workspace-file-editor"
+      />
     </div>
   );
 }

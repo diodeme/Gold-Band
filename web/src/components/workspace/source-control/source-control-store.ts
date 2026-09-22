@@ -55,6 +55,7 @@ export interface SourceControlSessionSnapshot {
   capability: GitCapabilityVm | null;
   snapshot: GitSourceControlSnapshotVm | null;
   history: GitHistoryPageVm | null;
+  historyLoading: boolean;
   activeTab: SourceControlTab;
   repositoryTab: SourceControlRepositoryTab;
   historyPage: number;
@@ -96,6 +97,7 @@ interface SessionRuntime {
   listeners: Set<() => void>;
   repositoryRequestRevision: number;
   historyRequestRevision: number;
+  historyPromise: Promise<void> | null;
   detailRequestRevision: number;
   reachabilityRequestRevision: number;
   loadPromise: Promise<void> | null;
@@ -198,8 +200,12 @@ export class SourceControlStore {
 
   setActiveTab(projectId: string, workspacePath: string | null | undefined, activeTab: SourceControlTab) {
     const runtime = this.runtime(projectId, workspacePath);
-    if (runtime.snapshot.activeTab === activeTab) return;
-    this.update(runtime, { ...runtime.snapshot, activeTab });
+    if (runtime.snapshot.activeTab === activeTab) {
+      return activeTab === 'history' ? this.ensureHistory(projectId, workspacePath) : Promise.resolve();
+    }
+    const historyLoading = activeTab === 'history' && runtime.snapshot.history == null;
+    this.update(runtime, { ...runtime.snapshot, activeTab, historyLoading });
+    return historyLoading ? this.ensureHistory(projectId, workspacePath) : Promise.resolve();
   }
 
   setHistoryPage(projectId: string, workspacePath: string | null | undefined, historyPage: number) {
@@ -379,7 +385,9 @@ export class SourceControlStore {
       }
       const [nextSnapshot, history] = await Promise.all([
         this.api.getSnapshot(projectId, workspacePath),
-        this.api.getHistory(projectId, workspacePath, { limit: HISTORY_PAGE_SIZE }),
+        this.historyIsCurrent(runtime)
+          ? this.api.getHistory(projectId, workspacePath, { limit: HISTORY_PAGE_SIZE })
+          : Promise.resolve(runtime.snapshot.history),
       ]);
       if (runtime.repositoryRequestRevision !== requestRevision) return;
       this.registerCanonicalAlias(runtime, nextSnapshot.repository.workspacePath);
@@ -581,6 +589,41 @@ export class SourceControlStore {
     }
   }
 
+  private historyIsCurrent(runtime: SessionRuntime) {
+    return runtime.snapshot.history != null || runtime.snapshot.activeTab === 'history';
+  }
+
+  private ensureHistory(projectId: string, workspacePath: string | null | undefined) {
+    const runtime = this.runtime(projectId, workspacePath);
+    if (runtime.snapshot.history || runtime.snapshot.status !== 'ready') {
+      if (runtime.snapshot.historyLoading && runtime.snapshot.history) {
+        this.update(runtime, { ...runtime.snapshot, historyLoading: false });
+      }
+      return Promise.resolve();
+    }
+    if (runtime.historyPromise) return runtime.historyPromise;
+    const requestRevision = ++runtime.historyRequestRevision;
+    if (!runtime.snapshot.historyLoading) {
+      this.update(runtime, { ...runtime.snapshot, historyLoading: true });
+    }
+    const request = (async () => {
+      const page = await this.api.getHistory(projectId, workspacePath, { limit: HISTORY_PAGE_SIZE });
+      if (runtime.historyRequestRevision !== requestRevision) return;
+      this.update(runtime, { ...runtime.snapshot, history: page, historyLoading: false });
+    })().catch((reason: unknown) => {
+      if (runtime.historyRequestRevision !== requestRevision) return;
+      this.update(runtime, {
+        ...runtime.snapshot,
+        historyLoading: false,
+        error: structuredErrorFrom(reason, 'git.history-query-failed'),
+      });
+    }).finally(() => {
+      if (runtime.historyPromise === request) runtime.historyPromise = null;
+    });
+    runtime.historyPromise = request;
+    return request;
+  }
+
   private async load(
     projectId: string,
     workspacePath: string | null | undefined,
@@ -635,9 +678,12 @@ export class SourceControlStore {
         await this.startMonitor(runtime, workspacePath);
         if (runtime.repositoryRequestRevision !== requestRevision) return;
       }
+      const includeHistory = this.historyIsCurrent(runtime);
       const [snapshot, history] = await Promise.all([
         this.api.getSnapshot(projectId, workspacePath),
-        this.api.getHistory(projectId, workspacePath, { limit: HISTORY_PAGE_SIZE }),
+        includeHistory
+          ? this.api.getHistory(projectId, workspacePath, { limit: HISTORY_PAGE_SIZE })
+          : Promise.resolve(runtime.snapshot.history),
       ]);
       if (runtime.repositoryRequestRevision !== requestRevision) return;
       this.registerCanonicalAlias(runtime, snapshot.repository.workspacePath);
@@ -647,7 +693,8 @@ export class SourceControlStore {
         capability,
         canonicalWorkspacePath: snapshot.repository.workspacePath,
         snapshot,
-        history,
+        history: includeHistory ? history : runtime.snapshot.history,
+        historyLoading: includeHistory ? false : runtime.snapshot.historyLoading,
         refreshing: null,
         error: operationError,
       });
@@ -879,6 +926,7 @@ export class SourceControlStore {
         listeners: new Set(),
         repositoryRequestRevision: 0,
         historyRequestRevision: 0,
+        historyPromise: null,
         detailRequestRevision: 0,
         reachabilityRequestRevision: 0,
         loadPromise: null,
@@ -975,6 +1023,7 @@ function idleSnapshot(projectId: string, workspacePath: string | null | undefine
     capability: null,
     snapshot: null,
     history: null,
+    historyLoading: false,
     activeTab: 'changes',
     repositoryTab: 'branches',
     historyPage: 0,

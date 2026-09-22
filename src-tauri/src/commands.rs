@@ -3524,7 +3524,7 @@ pub async fn get_source_control_snapshot(
             )
             .map_err(command_error)?;
         service
-            .snapshot(&project_id, &workspace.workspace_path)
+            .snapshot_with_identity(&project_id, &workspace)
             .map_err(command_error)
     })
     .await
@@ -3547,7 +3547,7 @@ pub async fn get_git_branch_picker_snapshot(
             )
             .map_err(command_error)?;
         service
-            .branch_picker_snapshot(&workspace.workspace_path)
+            .branch_picker_snapshot_with_identity(&workspace)
             .map_err(command_error)
     })
     .await

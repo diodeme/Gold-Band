@@ -89,6 +89,14 @@ export function SourceControlHistoryView({
     }
   };
 
+  if (!session.history) {
+    return (
+      <div ref={ref} className="flex min-h-0 flex-1 items-center justify-center" data-source-control-history-layout={session.historyLoading ? 'loading' : 'empty'}>
+        {session.historyLoading ? <CenteredState icon={<LoaderCircle className="size-4 animate-spin" />} text={t('sourceControl.loading')} /> : null}
+      </div>
+    );
+  }
+
   const list = (
     <section className="flex h-full min-h-0 flex-col" aria-label={t('sourceControl.commitList')}>
       {session.selectedCommitOids.size > 1 ? (

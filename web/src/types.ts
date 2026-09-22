@@ -30,7 +30,7 @@ export interface PersonalizationPreference {
     user: { image: AvatarPreference; shape: AvatarShapePreference };
   };
 }
-export type DesktopLanguage = 'zh-cn' | 'en';
+export type DesktopLanguage = 'zh-cn' | 'zh-tw' | 'en' | 'ja-jp' | 'ko-kr' | 'pt-br' | 'es';
 export type BrowserSearchEngine = 'baidu' | 'google' | 'bing';
 export interface BrowserPreferences {
   schemaVersion: 1;

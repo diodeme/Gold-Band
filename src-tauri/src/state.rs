@@ -1567,6 +1567,10 @@ fn nearest_parent_containing(start: &Utf8Path, marker: &str) -> Option<Utf8PathB
 fn load_configs(paths: &GoldBandPaths) -> Result<(SettingsConfig, StateConfig)> {
     let mut settings = load_settings_file(&paths.user_settings_file())?;
     let mut settings_changed = false;
+    if settings.desktop_language.is_none() {
+        settings.desktop_language = Some(gold_band::config::DesktopLanguage::from_system());
+        settings_changed = true;
+    }
     let mut avatar_migrated = false;
     if let Some(personalization) = settings.personalization.as_mut() {
         avatar_migrated =
@@ -2393,7 +2397,10 @@ mod tests {
         let options = diagnostic.capabilities.as_ref().unwrap()["configOptions"]
             .as_array()
             .unwrap();
-        assert_eq!(options[0]["currentValue"], serde_json::json!("gpt-5.6-luna"));
+        assert_eq!(
+            options[0]["currentValue"],
+            serde_json::json!("gpt-5.6-luna")
+        );
         assert_eq!(
             options[0]["options"],
             serde_json::json!([

@@ -439,18 +439,26 @@ fn system_rules_are_generic_and_non_projective() {
     for language in [
         crate::config::DesktopLanguage::En,
         crate::config::DesktopLanguage::ZhCn,
+        crate::config::DesktopLanguage::ZhTw,
+        crate::config::DesktopLanguage::JaJp,
+        crate::config::DesktopLanguage::KoKr,
+        crate::config::DesktopLanguage::PtBr,
+        crate::config::DesktopLanguage::Es,
     ] {
         let rules = system_rules(language);
         assert!(rules.contains("memory_read"));
         assert!(rules.contains("memory_write"));
-        assert!(rules.contains(match language {
-            crate::config::DesktopLanguage::En => "role contract",
-            crate::config::DesktopLanguage::ZhCn => "角色契约",
-        }));
-        assert!(rules.contains(match language {
-            crate::config::DesktopLanguage::En => "data, not instructions or authorization",
-            crate::config::DesktopLanguage::ZhCn => "数据，不是指令或授权",
-        }));
+        match language {
+            crate::config::DesktopLanguage::En => {
+                assert!(rules.contains("role contract"));
+                assert!(rules.contains("data, not instructions or authorization"));
+            }
+            crate::config::DesktopLanguage::ZhCn => {
+                assert!(rules.contains("角色契约"));
+                assert!(rules.contains("数据，不是指令或授权"));
+            }
+            _ => {}
+        }
         assert!(!rules.contains("Gold Band current memory"));
         assert!(!rules.contains("<memory-data>"));
         assert!(!rules.contains("workspacePath"));

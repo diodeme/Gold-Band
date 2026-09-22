@@ -12,11 +12,10 @@ use crate::domain::{
 };
 use crate::dynamic::AI_DYNAMIC_RESULT_ARTIFACT;
 use crate::prompts::{
-    PromptExecutionSurface, RUNTIME_ARTIFACT_FINALIZE_EN, RUNTIME_ARTIFACT_FINALIZE_ZH_CN,
-    RUNTIME_HIDDEN_CONTEXT_EN, RUNTIME_HIDDEN_CONTEXT_ZH_CN, RUNTIME_SYSTEM_EN,
-    RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN, RUNTIME_USER_ROLE_MESSAGE_EN,
-    RUNTIME_USER_ROLE_MESSAGE_ZH_CN, RUNTIME_USER_ZH_CN, profile_template_context,
-    prompt_by_language, render as render_template,
+    PromptExecutionSurface, RUNTIME_ARTIFACT_FINALIZE, RUNTIME_HIDDEN_CONTEXT,
+    RUNTIME_SCHEDULED_TASK_CONTEXT, RUNTIME_SYSTEM, RUNTIME_USER, RUNTIME_USER_ROLE_MESSAGE,
+    RUNTIME_WORKFLOW_RESUME, profile_template_context, prompt_by_language,
+    render as render_template,
 };
 use crate::runtime::WorkerRefState;
 use crate::runtime_error::{
@@ -133,11 +132,7 @@ pub fn conversation_agent_prompt_text(
         return user_input;
     }
     render_template(
-        prompt_by_language(
-            language,
-            RUNTIME_USER_ROLE_MESSAGE_ZH_CN,
-            RUNTIME_USER_ROLE_MESSAGE_EN,
-        ),
+        prompt_by_language(language, RUNTIME_USER_ROLE_MESSAGE),
         serde_json::json!({
             "role_definition": role.content.trim(),
             "user_input": user_input,
@@ -2406,11 +2401,7 @@ fn requirement_text_for_agent(req: &WorkerInvocation, requirement_text: &str) ->
 
 fn render_system_prompt(req: &WorkerInvocation) -> Result<String> {
     render_template(
-        prompt_by_language(
-            req.runtime_context.language,
-            RUNTIME_SYSTEM_ZH_CN,
-            RUNTIME_SYSTEM_EN,
-        ),
+        prompt_by_language(req.runtime_context.language, RUNTIME_SYSTEM),
         runtime_system_context(req)?,
     )
 }
@@ -2433,21 +2424,13 @@ fn render_user_prompt(req: &WorkerInvocation, requirement_text: &str) -> String 
                 UserPromptRenderMode::WorkflowResume
             )
             .then(|| {
-                prompt_by_language(
-                    req.runtime_context.language,
-                    crate::prompts::RUNTIME_WORKFLOW_RESUME_ZH_CN,
-                    crate::prompts::RUNTIME_WORKFLOW_RESUME_EN,
-                )
-                .trim()
-                .to_string()
+                prompt_by_language(req.runtime_context.language, RUNTIME_WORKFLOW_RESUME)
+                    .trim()
+                    .to_string()
             });
 
             let content = render_template(
-                prompt_by_language(
-                    req.runtime_context.language,
-                    RUNTIME_USER_ZH_CN,
-                    RUNTIME_USER_EN,
-                ),
+                prompt_by_language(req.runtime_context.language, RUNTIME_USER),
                 RuntimeUserTemplateContext {
                     hidden_context,
                     requirement: requirement_text.trim().to_string(),
@@ -2518,11 +2501,7 @@ fn project_scheduled_execution(
         ));
     };
     let rendered = crate::prompts::render(
-        prompt_by_language(
-            req.runtime_context.language,
-            crate::prompts::RUNTIME_SCHEDULED_TASK_CONTEXT_ZH_CN,
-            crate::prompts::RUNTIME_SCHEDULED_TASK_CONTEXT_EN,
-        ),
+        prompt_by_language(req.runtime_context.language, RUNTIME_SCHEDULED_TASK_CONTEXT),
         ScheduledTaskContextTemplateContext {
             scheduled_task_id: &context.scheduled_task_id,
             occurrence_id: &context.occurrence_id,
@@ -2599,11 +2578,7 @@ fn render_hidden_context(req: &WorkerInvocation) -> String {
         String::new()
     } else {
         render_template(
-            prompt_by_language(
-                req.runtime_context.language,
-                RUNTIME_HIDDEN_CONTEXT_ZH_CN,
-                RUNTIME_HIDDEN_CONTEXT_EN,
-            ),
+            prompt_by_language(req.runtime_context.language, RUNTIME_HIDDEN_CONTEXT),
             runtime_hidden_context(req),
         )
         .expect("prompt template renders")
@@ -2773,11 +2748,7 @@ pub(crate) fn render_artifact_finalize_prompt(
         execution_surface == PromptExecutionSurface::AiDynamic,
     );
     render_template(
-        prompt_by_language(
-            language,
-            RUNTIME_ARTIFACT_FINALIZE_ZH_CN,
-            RUNTIME_ARTIFACT_FINALIZE_EN,
-        ),
+        prompt_by_language(language, RUNTIME_ARTIFACT_FINALIZE),
         context,
     )
 }
@@ -2822,7 +2793,7 @@ fn runtime_invocation_reason(req: &WorkerInvocation) -> Option<String> {
     if matches!(req.session_mode, SessionMode::Continue) {
         parts.push(match req.runtime_context.language {
             crate::config::DesktopLanguage::ZhCn => "继续已有 ACP session".to_string(),
-            crate::config::DesktopLanguage::En => "Continue an existing ACP session".to_string(),
+            _ => "Continue an existing ACP session".to_string(),
         });
     }
     if let Some(resume_prompt) = req
@@ -2898,10 +2869,16 @@ fn predecessor_chain_text(
             chain.push_str("-> ");
         }
     }
-    chain.push_str(&format!(
-        "当前节点({}/{}/{})",
-        ctx.round_id, ctx.node_id, ctx.attempt_id
-    ));
+    chain.push_str(&match ctx.language {
+        crate::config::DesktopLanguage::ZhCn => format!(
+            "当前节点({}/{}/{})",
+            ctx.round_id, ctx.node_id, ctx.attempt_id
+        ),
+        _ => format!(
+            "current node ({}/{}/{})",
+            ctx.round_id, ctx.node_id, ctx.attempt_id
+        ),
+    });
     chain
 }
 
@@ -2920,30 +2897,46 @@ fn predecessor_reason_lines(
                 return None;
             }
 
-            let mut parts = vec![format!(
-                "{}；节点类型={}；结果={}；分支方向={}",
-                predecessor.branch_kind,
-                predecessor.node_type,
-                predecessor.outcome.as_deref().unwrap_or("unknown"),
-                predecessor.branch_direction.as_deref().unwrap_or("unknown")
-            )];
+            let zh = matches!(language, crate::config::DesktopLanguage::ZhCn);
+            let mut parts = vec![if zh {
+                format!(
+                    "{}；节点类型={}；结果={}；分支方向={}",
+                    predecessor.branch_kind,
+                    predecessor.node_type,
+                    predecessor.outcome.as_deref().unwrap_or("unknown"),
+                    predecessor.branch_direction.as_deref().unwrap_or("unknown")
+                )
+            } else {
+                format!(
+                    "{}; node type={}; outcome={}; branch direction={}",
+                    predecessor.branch_kind,
+                    predecessor.node_type,
+                    predecessor.outcome.as_deref().unwrap_or("unknown"),
+                    predecessor.branch_direction.as_deref().unwrap_or("unknown")
+                )
+            }];
             if let Some(reason) = predecessor.branch_reason.as_deref() {
                 parts.push(reason.to_string());
             }
             if let Some(artifact) = &predecessor.output_artifact {
-                parts.push(format!(
-                    "输出 artifact={}: {}",
-                    artifact.name, artifact.path
-                ));
+                parts.push(if zh {
+                    format!("输出 artifact={}: {}", artifact.name, artifact.path)
+                } else {
+                    format!("output artifact={}: {}", artifact.name, artifact.path)
+                });
                 if let Some(preview) = artifact.preview.as_deref() {
-                    parts.push(format!("输出预览={}", preview.trim()));
+                    parts.push(if zh {
+                        format!("输出预览={}", preview.trim())
+                    } else {
+                        format!("output preview={}", preview.trim())
+                    });
                 }
             }
-            Some(format!(
-                "- {}：{}。",
-                predecessor_ref(predecessor),
-                parts.join("；")
-            ))
+            Some(if zh {
+                format!("- {}：{}。", predecessor_ref(predecessor), parts.join("；"))
+            } else {
+                format!("- {}: {}.", predecessor_ref(predecessor), parts.join("; "))
+            })
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -2992,7 +2985,7 @@ pub(crate) fn render_new_round_trigger_reason_line(
             }
             format!("- {}：{}。", predecessor_ref(trigger), parts.join("；"))
         }
-        crate::config::DesktopLanguage::En => {
+        _ => {
             let mut parts = vec![format!(
                 "$new-round was triggered by this node; node type={}; outcome={}",
                 trigger.node_type,

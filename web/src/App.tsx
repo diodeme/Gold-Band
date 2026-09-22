@@ -1106,7 +1106,9 @@ export function App() {
   }, [conversationPage, conversationRun]);
 
   useEffect(() => {
-    void i18n.changeLanguage(i18nLanguage(preferences.language));
+    const tag = i18nLanguage(preferences.language);
+    void i18n.changeLanguage(tag);
+    document.documentElement.lang = tag;
   }, [preferences.language]);
 
   useEffect(() => {

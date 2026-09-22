@@ -431,12 +431,7 @@ fn validate_entry(entry: &Entry) -> Result<()> {
 }
 
 pub fn system_rules(language: crate::config::DesktopLanguage) -> &'static str {
-    match language {
-        crate::config::DesktopLanguage::ZhCn => {
-            include_str!("../prompts/zh-CN/runtime/memory-rules.md")
-        }
-        crate::config::DesktopLanguage::En => include_str!("../prompts/en/runtime/memory-rules.md"),
-    }
+    crate::prompts::MEMORY_RULES.resolve(language)
 }
 
 pub fn bind_invocation_mcp(req: &mut crate::provider::WorkerInvocation) -> anyhow::Result<bool> {

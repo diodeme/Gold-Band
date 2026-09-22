@@ -21,6 +21,7 @@ import {
   type DesktopFontOption,
   type ThemePreviewPalette,
 } from '../theme';
+import { DESKTOP_LANGUAGE_OPTIONS } from '../languages';
 import { AppCard } from '@/components/AppCard';
 import { Page, PageHeader } from '@/components/PageScaffold';
 import { Button } from '@/components/ui/button';
@@ -316,12 +317,13 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
           <AppCard className="gap-0 overflow-hidden py-0">
             <SettingsSection title={t('settings.language')}>
               <Select value={language} onValueChange={(value) => chooseLanguage(value as DesktopLanguage)}>
-                <SelectTrigger className="w-56">
+                <SelectTrigger className="w-72">
                   <SelectValue aria-label={language} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="zh-cn">中文</SelectItem>
-                  <SelectItem value="en">English</SelectItem>
+                  {DESKTOP_LANGUAGE_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </SettingsSection>
@@ -752,7 +754,7 @@ function CurrentThemeSummary({ summary, scheme }: {
 }) {
   const measuredSummaryRef = useWebviewMeasuredContainer<HTMLDivElement>('theme-summary');
   const { i18n, t } = useTranslation();
-  const language = i18n.resolvedLanguage?.startsWith('zh') ? 'zh-CN' : 'en';
+  const language = i18n.resolvedLanguage === 'zh-CN' ? 'zh-CN' : 'en';
   return (
     <div ref={measuredSummaryRef} className="@container/theme-summary">
       <div className="grid gap-3 rounded-lg border border-border/35 bg-transparent p-3 @lg/theme-summary:grid-cols-[auto_minmax(0,1fr)] @lg/theme-summary:items-center @xl/theme-summary:grid-cols-[auto_minmax(0,1fr)_auto]">
@@ -776,7 +778,7 @@ function CurrentThemeSummary({ summary, scheme }: {
 
 function ThemePackageCard({ summary, selected, scheme, onSelect }: ThemePackageCardProps) {
   const { i18n, t } = useTranslation();
-  const language = i18n.resolvedLanguage?.startsWith('zh') ? 'zh-CN' : 'en';
+  const language = i18n.resolvedLanguage === 'zh-CN' ? 'zh-CN' : 'en';
   return (
     <button
       type="button"

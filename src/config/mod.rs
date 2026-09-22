@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow};
 use serde::{Deserialize, Deserializer, Serialize};
 use tracing::Level;
 
+mod language;
 mod managed_agents;
 
 fn embedded_project_app_config() -> &'static ProjectAppConfig {
@@ -420,7 +421,12 @@ impl PersonalizationPreference {
 #[serde(rename_all = "kebab-case")]
 pub enum DesktopLanguage {
     ZhCn,
+    ZhTw,
     En,
+    JaJp,
+    KoKr,
+    PtBr,
+    Es,
 }
 
 pub const DEFAULT_DESKTOP_UI_FONT_SIZE: u8 = 14;
@@ -522,7 +528,12 @@ impl FromStr for DesktopLanguage {
     fn from_str(value: &str) -> Result<Self> {
         match value {
             "zh-cn" => Ok(Self::ZhCn),
+            "zh-tw" => Ok(Self::ZhTw),
             "en" => Ok(Self::En),
+            "ja-jp" => Ok(Self::JaJp),
+            "ko-kr" => Ok(Self::KoKr),
+            "pt-br" => Ok(Self::PtBr),
+            "es" => Ok(Self::Es),
             _ => Err(anyhow!("unsupported desktop language: {value}")),
         }
     }

@@ -369,7 +369,7 @@ export class ConversationWorkspaceStore {
     ) return;
     const draftWorkspace = this.entries.peek(draft.key);
     if (!draftWorkspace) return;
-    const promotedTabs = draftWorkspace.state.tabs.map((resource) => promoteDraftWorkspaceResource(resource, conversation.key));
+    const promotedTabs = draftWorkspace.state.tabs.map((resource) => promoteDraftWorkspaceResource(resource, conversation));
     const promotedActiveTabKey = draftWorkspace.state.activeTabKey == null
       ? null
       : promotedTabs[draftWorkspace.state.tabs.findIndex((resource) => resource.key === draftWorkspace.state.activeTabKey)]?.key ?? null;
@@ -460,13 +460,33 @@ export function rightWorkspaceReducer(state: RightWorkspaceSessionState, action:
 
 function promoteDraftWorkspaceResource(
   resource: RightWorkspaceResource,
-  scopeKey: string,
+  conversation: Extract<ConversationWorkspaceScope, { kind: 'conversation' }>,
 ): RightWorkspaceResource {
+  const scopeKey = conversation.key;
   if (resource.kind === 'draft-attachment') {
+    const name = resource.attachment.name;
+    const path = taskInputAttachmentPath(name);
+    const locator: AcpAttemptWorkspaceLocator = {
+      projectId: conversation.projectId,
+      taskId: conversation.taskId,
+      taskUuid: conversation.taskUuid,
+      runId: conversation.runId,
+      roundId: '',
+      nodeId: '',
+      attemptId: '',
+      branchId: '',
+    };
     return {
-      ...resource,
-      key: draftAttachmentWorkspaceResourceKey(scopeKey, resource.attachment.id),
+      kind: 'conversation-asset',
+      key: conversationAssetWorkspaceResourceKey('input-attachment', locator, name, path),
       scopeKey,
+      title: name,
+      description: path,
+      attention: false,
+      locator,
+      assetKind: 'input-attachment',
+      name,
+      path,
     };
   }
   if (resource.kind === 'scheduled-task-config') {
@@ -786,12 +806,30 @@ export function acpAttemptWorkspaceResourceKey(kind: 'system-prompt' | 'raw-fram
   ].join(':');
 }
 
+export function taskInputAttachmentPath(name: string) {
+  return `task-inputs/${name}`;
+}
+
+function canonicalTaskInputPath(path: string | null | undefined, name: string) {
+  const normalized = path?.replaceAll('\\', '/') ?? '';
+  return normalized.startsWith('task-inputs/') ? normalized : taskInputAttachmentPath(name);
+}
+
 export function conversationAssetWorkspaceResourceKey(
   assetKind: ConversationAssetWorkspaceResource['assetKind'],
   locator: AcpAttemptWorkspaceLocator,
   name: string,
   path?: string | null,
 ) {
+  if (assetKind === 'input-attachment') {
+    return [
+      'conversation-asset',
+      assetKind,
+      locator.projectId,
+      locator.taskUuid ?? locator.taskId,
+      canonicalTaskInputPath(path, name),
+    ].join(':');
+  }
   return [
     'conversation-asset',
     assetKind,

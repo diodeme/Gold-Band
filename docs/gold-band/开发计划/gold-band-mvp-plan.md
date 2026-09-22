@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-22 新建会话后已打开的附件预览改读任务输入文件
+
+- 根因：设计要求提交后结束草稿预览，不能把已释放的 Object URL 留在工作区。实现却在 `promoteDraft` 里原样搬走 `draft-attachment`，标签键跟着会话作用域变掉，随后的关闭打不中，草稿 reset 再回收预览地址。已经画出来的图片会留到卸载；切走再回来用同一个失效地址新建 `<img>`，于是只剩破损图标和文件名。这是正确生命周期没有在草稿提升时落地，不是缺一套预览缓存。
+- 实现：提升时把打开的草稿附件改绑为 `conversation-asset` / `input-attachment`，指向创建会话时已经复制到 `authoring/inputs` 的文件。Tab 身份是 project、task 与 `task-inputs/{文件名}`，与稍后从消息气泡打开的同一任务输入重合。面板继续调用 `showConversationAttachment`，每次挂载按文件名读取，不保存草稿 `previewUrl`。
+- 验收：`right-workspace.test.ts` 在修复前失败于仍提升 `draft-attachment` 且任务输入键带 attempt；修复后固定提升结果不含 `blob:` 预览地址，并且不同 attempt 的同一任务输入键相同。`conversation-asset-workspace-panel.test.tsx` 固定卸载再挂载会再次调用 `showConversationAttachment`，画布拿到的是文件 data URL。
+- 过度设计与性能评审：不新增资源类型、预览缓存、grant 或持久字段。提升只遍历当前已打开的少量 Tab。图片在 Tab 可见时读取一次，大小仍受附件单文件上限约束；离开会话即卸下面板，不保留正文。
+
 ## 2026-09-22 桌面语言扩展到七种，安装包与首次启动跟随系统界面语言
 
 - 根因：界面、后端短文案和内置提示词原来只有简体中文与英文两套，安装包语言列表也只有这两项，而且应用不会在第一次打开时读取系统界面语言。这是语言目录和首次持久化边界不完整，不是缺一套独立的语言检测服务。

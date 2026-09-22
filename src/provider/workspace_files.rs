@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -23,6 +23,45 @@ pub struct PromptWorkspaceFileRef {
     pub relative_path: String,
 }
 
+/// A registered workspace the resolver may read. The resource link uses the
+/// canonical absolute path inside this root; callers do not supply absolute
+/// paths as reference identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptWorkspaceRoot {
+    pub project_id: String,
+    pub root: PathBuf,
+}
+
+pub fn prompt_workspace_roots(
+    current_project_id: &str,
+    current_root: &Path,
+    registered: &[(String, PathBuf)],
+) -> Vec<PromptWorkspaceRoot> {
+    let mut roots = registered
+        .iter()
+        .filter(|(project_id, root)| !project_id.trim().is_empty() && !root.as_os_str().is_empty())
+        .map(|(project_id, root)| PromptWorkspaceRoot {
+            project_id: project_id.clone(),
+            root: root.clone(),
+        })
+        .collect::<Vec<_>>();
+    if current_project_id.trim().is_empty() {
+        return roots;
+    }
+    if let Some(existing) = roots
+        .iter_mut()
+        .find(|root| root.project_id == current_project_id)
+    {
+        existing.root = current_root.to_path_buf();
+    } else {
+        roots.push(PromptWorkspaceRoot {
+            project_id: current_project_id.to_string(),
+            root: current_root.to_path_buf(),
+        });
+    }
+    roots
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedWorkspaceFileRef {
@@ -36,9 +75,8 @@ pub struct ResolvedWorkspaceFileRef {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkspaceFileRefError {
-    ProjectMismatch {
+    ProjectUnavailable {
         project_id: String,
-        expected_project_id: String,
     },
     InvalidPath {
         project_id: String,
@@ -72,7 +110,7 @@ pub enum WorkspaceFileRefError {
 impl WorkspaceFileRefError {
     pub fn code(&self) -> &'static str {
         match self {
-            Self::ProjectMismatch { .. } => "conversation.workspace-file-project-mismatch",
+            Self::ProjectUnavailable { .. } => "conversation.workspace-file-project-unavailable",
             Self::InvalidPath { .. } => "conversation.workspace-file-path-invalid",
             Self::OutsideWorkspace { .. } => "conversation.workspace-file-outside-workspace",
             Self::NotFound { .. } => "conversation.workspace-file-not-found",
@@ -85,12 +123,8 @@ impl WorkspaceFileRefError {
 
     pub fn params(&self) -> serde_json::Value {
         match self {
-            Self::ProjectMismatch {
-                project_id,
-                expected_project_id,
-            } => serde_json::json!({
+            Self::ProjectUnavailable { project_id } => serde_json::json!({
                 "projectId": project_id,
-                "expectedProjectId": expected_project_id,
             }),
             Self::InvalidPath {
                 project_id,
@@ -129,40 +163,35 @@ impl WorkspaceFileRefError {
 }
 
 pub fn resolve_prompt_workspace_files(
-    expected_project_id: &str,
+    roots: &[PromptWorkspaceRoot],
     references: &[PromptWorkspaceFileRef],
-    workspace_root: &Path,
     attachment_count: usize,
 ) -> Result<Vec<ResolvedWorkspaceFileRef>, WorkspaceFileRefError> {
-    let root =
-        canonicalize_directory(workspace_root).map_err(|_| WorkspaceFileRefError::IoFailed {
-            project_id: expected_project_id.to_string(),
-            relative_path: String::new(),
-        })?;
     let mut authoring_seen = HashSet::new();
     let mut unique_references = Vec::new();
     for reference in references {
-        let relative_path = normalized_relative_path(reference, expected_project_id)?;
+        let relative_path = lexical_relative_path(reference)?;
         let authoring_identity =
-            workspace_file_authoring_identity(expected_project_id, &relative_path);
+            workspace_file_authoring_identity(&reference.project_id, &relative_path);
         if authoring_seen.insert(authoring_identity) {
             unique_references.push(PromptWorkspaceFileRef {
-                project_id: expected_project_id.to_string(),
+                project_id: reference.project_id.clone(),
                 relative_path,
             });
         }
     }
 
+    let mut canonical_roots: HashMap<String, PathBuf> = HashMap::new();
     let mut canonical_seen = HashSet::new();
-    let mut resolved = Vec::with_capacity(references.len());
+    let mut resolved = Vec::with_capacity(unique_references.len());
     for reference in &unique_references {
-        let normalized = normalize_reference(reference, &root, expected_project_id)?;
-        let canonical_identity =
-            workspace_file_authoring_identity(expected_project_id, &normalized.0.canonical_path);
+        let root = canonical_root_for(roots, &reference.project_id, &mut canonical_roots)?;
+        let normalized = normalize_reference(reference, &root)?;
+        let canonical_identity = canonical_file_identity(&normalized.canonical_path);
         if !canonical_seen.insert(canonical_identity) {
             continue;
         }
-        resolved.push(normalized.0);
+        resolved.push(normalized);
     }
     if resolved.len() + attachment_count > MAX_PROMPT_WORKSPACE_FILES {
         return Err(WorkspaceFileRefError::CountExceeded {
@@ -183,14 +212,43 @@ pub fn resolved_workspace_file_content_block(
     })
 }
 
+fn canonical_root_for(
+    roots: &[PromptWorkspaceRoot],
+    project_id: &str,
+    cache: &mut HashMap<String, PathBuf>,
+) -> Result<PathBuf, WorkspaceFileRefError> {
+    if let Some(root) = cache.get(project_id) {
+        return Ok(root.clone());
+    }
+    let root = roots
+        .iter()
+        .find(|root| root.project_id == project_id)
+        .ok_or_else(|| WorkspaceFileRefError::ProjectUnavailable {
+            project_id: project_id.to_string(),
+        })?;
+    let canonical =
+        canonicalize_directory(&root.root).map_err(|_| WorkspaceFileRefError::IoFailed {
+            project_id: project_id.to_string(),
+            relative_path: String::new(),
+        })?;
+    cache.insert(project_id.to_string(), canonical.clone());
+    Ok(canonical)
+}
+
+fn canonical_file_identity(canonical_path: &str) -> String {
+    let path = canonical_path.replace('\\', "/");
+    if cfg!(windows) {
+        path.to_ascii_lowercase()
+    } else {
+        path
+    }
+}
+
 fn normalize_reference(
     reference: &PromptWorkspaceFileRef,
     root: &Path,
-    root_project_id: &str,
-) -> Result<(ResolvedWorkspaceFileRef, String), WorkspaceFileRefError> {
-    // Project identity is validated here because WorkerInvocation receives the
-    // authoritative project separately from user-controlled reference payloads.
-    let relative_path = normalized_relative_path(reference, root_project_id)?;
+) -> Result<ResolvedWorkspaceFileRef, WorkspaceFileRefError> {
+    let relative_path = reference.relative_path.clone();
     let canonical =
         std::fs::canonicalize(root.join(&relative_path)).map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => WorkspaceFileRefError::NotFound {
@@ -208,17 +266,17 @@ fn normalize_reference(
         })?;
     if !path_is_within(&canonical, root) {
         return Err(WorkspaceFileRefError::OutsideWorkspace {
-            project_id: root_project_id.to_string(),
+            project_id: reference.project_id.clone(),
             relative_path: reference.relative_path.clone(),
         });
     }
     let metadata = std::fs::metadata(&canonical).map_err(|_| WorkspaceFileRefError::IoFailed {
-        project_id: root_project_id.to_string(),
+        project_id: reference.project_id.clone(),
         relative_path: reference.relative_path.clone(),
     })?;
     if !metadata.is_file() {
         return Err(WorkspaceFileRefError::NotAFile {
-            project_id: root_project_id.to_string(),
+            project_id: reference.project_id.clone(),
             relative_path: reference.relative_path.clone(),
         });
     }
@@ -227,30 +285,19 @@ fn normalize_reference(
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| relative_path.clone());
     let mime_type = mime_type_for_path(&canonical);
-    Ok((
-        ResolvedWorkspaceFileRef {
-            project_id: root_project_id.to_string(),
-            relative_path: relative_path.clone(),
-            canonical_path: display_path(&canonical),
-            name,
-            mime_type,
-            size: metadata.len(),
-        },
+    Ok(ResolvedWorkspaceFileRef {
+        project_id: reference.project_id.clone(),
         relative_path,
-    ))
+        canonical_path: display_path(&canonical),
+        name,
+        mime_type,
+        size: metadata.len(),
+    })
 }
 
-fn normalized_relative_path(
+fn lexical_relative_path(
     reference: &PromptWorkspaceFileRef,
-    root_project_id: &str,
 ) -> Result<String, WorkspaceFileRefError> {
-    if reference.project_id != root_project_id {
-        return Err(WorkspaceFileRefError::ProjectMismatch {
-            project_id: reference.project_id.clone(),
-            expected_project_id: root_project_id.to_string(),
-        });
-    }
-
     let relative_path = reference.relative_path.trim().replace('\\', "/");
     let windows_drive_prefix = relative_path
         .as_bytes()
@@ -270,7 +317,7 @@ fn normalized_relative_path(
         || invalid_components
     {
         return Err(WorkspaceFileRefError::InvalidPath {
-            project_id: root_project_id.to_string(),
+            project_id: reference.project_id.clone(),
             relative_path: reference.relative_path.clone(),
         });
     }
@@ -342,6 +389,22 @@ mod tests {
     use crate::provider::ConversationPromptInput;
     use tempfile::TempDir;
 
+    fn resolve_at(
+        project_id: &str,
+        references: &[PromptWorkspaceFileRef],
+        root: &std::path::Path,
+        attachment_count: usize,
+    ) -> Result<Vec<ResolvedWorkspaceFileRef>, WorkspaceFileRefError> {
+        resolve_prompt_workspace_files(
+            &[PromptWorkspaceRoot {
+                project_id: project_id.to_string(),
+                root: root.to_path_buf(),
+            }],
+            references,
+            attachment_count,
+        )
+    }
+
     fn input(project_id: &str, path: &str) -> ConversationPromptInput {
         ConversationPromptInput {
             display_text: String::new(),
@@ -376,8 +439,7 @@ mod tests {
             relative_path: "src/WorkspaceFileTree.tsx".to_string(),
         });
 
-        let resolved =
-            resolve_prompt_workspace_files("p", &value.workspace_files, root.path(), 0).unwrap();
+        let resolved = resolve_at("p", &value.workspace_files, root.path(), 0).unwrap();
 
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].relative_path, "src/WorkspaceFileTree.tsx");
@@ -401,16 +463,16 @@ mod tests {
         std::fs::write(root.path().join("file.txt"), "x").unwrap();
         let mismatch = input("other", "file.txt");
         assert_eq!(
-            resolve_prompt_workspace_files("p", &mismatch.workspace_files, root.path(), 0)
+            resolve_at("p", &mismatch.workspace_files, root.path(), 0)
                 .unwrap_err()
                 .code(),
-            "conversation.workspace-file-project-mismatch"
+            "conversation.workspace-file-project-unavailable"
         );
         for path in ["", "..", "/file.txt", "C:/file.txt", "c:\\file.txt"] {
             let mut invalid = input("p", "file.txt");
             invalid.workspace_files[0].relative_path = path.to_string();
             assert_eq!(
-                resolve_prompt_workspace_files("p", &invalid.workspace_files, root.path(), 0)
+                resolve_at("p", &invalid.workspace_files, root.path(), 0)
                     .unwrap_err()
                     .code(),
                 "conversation.workspace-file-path-invalid"
@@ -418,7 +480,7 @@ mod tests {
         }
         let missing = input("p", "missing.txt");
         assert_eq!(
-            resolve_prompt_workspace_files("p", &missing.workspace_files, root.path(), 0)
+            resolve_at("p", &missing.workspace_files, root.path(), 0)
                 .unwrap_err()
                 .code(),
             "conversation.workspace-file-not-found"
@@ -431,7 +493,7 @@ mod tests {
         std::fs::create_dir(root.path().join("dir")).unwrap();
         let directory = input("p", "dir");
         assert_eq!(
-            resolve_prompt_workspace_files("p", &directory.workspace_files, root.path(), 0)
+            resolve_at("p", &directory.workspace_files, root.path(), 0)
                 .unwrap_err()
                 .code(),
             "conversation.workspace-file-not-a-file"
@@ -447,7 +509,7 @@ mod tests {
             std::fs::write(root.path().join(format!("file-{index}.txt")), "x").unwrap();
         }
         assert_eq!(
-            resolve_prompt_workspace_files("p", &over_limit.workspace_files, root.path(), 1)
+            resolve_at("p", &over_limit.workspace_files, root.path(), 1)
                 .unwrap_err()
                 .code(),
             "conversation.workspace-file-count-exceeded"
@@ -466,9 +528,7 @@ mod tests {
             })
             .collect();
 
-        let resolved =
-            resolve_prompt_workspace_files("p", &duplicate_limit.workspace_files, root.path(), 0)
-                .unwrap();
+        let resolved = resolve_at("p", &duplicate_limit.workspace_files, root.path(), 0).unwrap();
 
         assert_eq!(resolved.len(), 1);
     }
@@ -480,16 +540,49 @@ mod tests {
         let mismatch = input("P", "file.txt");
 
         assert_eq!(
-            resolve_prompt_workspace_files(
-                "p",
-                &mismatch.workspace_files,
-                root.path(),
-                0
-            )
-            .unwrap_err()
-            .code(),
-            "conversation.workspace-file-project-mismatch"
+            resolve_at("p", &mismatch.workspace_files, root.path(), 0)
+                .unwrap_err()
+                .code(),
+            "conversation.workspace-file-project-unavailable"
         );
+    }
+
+    #[test]
+    fn other_registered_workspace_reference_uses_an_absolute_resource_link() {
+        let conversation = TempDir::new().unwrap();
+        let other = TempDir::new().unwrap();
+        std::fs::write(other.path().join("foreign.ts"), "export {}").unwrap();
+        let reference = input("other-project", "foreign.ts");
+
+        let resolved = resolve_prompt_workspace_files(
+            &[
+                PromptWorkspaceRoot {
+                    project_id: "conversation".to_string(),
+                    root: conversation.path().to_path_buf(),
+                },
+                PromptWorkspaceRoot {
+                    project_id: "other-project".to_string(),
+                    root: other.path().to_path_buf(),
+                },
+            ],
+            &reference.workspace_files,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].project_id, "other-project");
+        assert_eq!(resolved[0].relative_path, "foreign.ts");
+        assert!(std::path::Path::new(&resolved[0].canonical_path).is_absolute());
+        let block = resolved_workspace_file_content_block(&resolved[0]);
+        match block {
+            crate::provider::AcpContentBlock::ResourceLink(link) => {
+                assert!(link.uri.starts_with("file:"));
+                assert!(link.uri.contains("foreign.ts"));
+                assert_eq!(link.name, "foreign.ts");
+            }
+            other => panic!("unexpected content block: {other:?}"),
+        }
     }
 
     #[test]

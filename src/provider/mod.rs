@@ -38,8 +38,9 @@ use std::io::{Cursor, Read};
 use std::str::FromStr;
 use tracing::debug;
 pub use workspace_files::{
-    MAX_PROMPT_WORKSPACE_FILES, PromptWorkspaceFileRef, ResolvedWorkspaceFileRef,
-    WorkspaceFileRefError, resolve_prompt_workspace_files, workspace_file_authoring_identity,
+    MAX_PROMPT_WORKSPACE_FILES, PromptWorkspaceFileRef, PromptWorkspaceRoot,
+    ResolvedWorkspaceFileRef, WorkspaceFileRefError, prompt_workspace_roots,
+    resolve_prompt_workspace_files, workspace_file_authoring_identity,
 };
 
 use crate::acp::events::AttachmentMeta;
@@ -400,6 +401,10 @@ pub struct WorkerInvocation {
     pub mcp_servers: Vec<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduled_context: Option<ScheduledTaskContextInfo>,
+    /// Registered workspace roots used to resolve `prompt_display.workspace_files`.
+    /// Empty means the conversation project root in `adapter_workspace_dir`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_file_roots: Vec<PromptWorkspaceRoot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2379,10 +2384,17 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
     let resolved_workspace_files = if prompt_workspace_files.is_empty() {
         Vec::new()
     } else {
+        let roots = if req.workspace_file_roots.is_empty() {
+            vec![PromptWorkspaceRoot {
+                project_id: req.runtime_context.project_id.clone(),
+                root: req.adapter_workspace_dir.as_std_path().to_path_buf(),
+            }]
+        } else {
+            req.workspace_file_roots.clone()
+        };
         resolve_prompt_workspace_files(
-            &req.runtime_context.project_id,
+            &roots,
             &prompt_workspace_files,
-            req.adapter_workspace_dir.as_std_path(),
             req.task_input_attachment_paths.len() + req.user_input_attachment_paths.len(),
         )
         .map_err(|error| {
@@ -3408,6 +3420,7 @@ mod tests {
             ),
             mcp_servers: Vec::new(),
             scheduled_context: None,
+            workspace_file_roots: Vec::new(),
         }
     }
 
@@ -3477,6 +3490,43 @@ mod tests {
                     && link.size == 1
         ));
         assert!(!prompt.user_prompt.contains("WorkspaceFileTree.tsx"));
+    }
+
+    #[test]
+    fn prompt_bundle_projects_another_workspace_as_an_absolute_resource_link() {
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(other.path().join("foreign.ts"), "export {}").unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(other.path().join("attempt")).unwrap();
+        std::fs::create_dir_all(&attempt_dir).unwrap();
+        let mut req = test_worker_invocation(attempt_dir);
+        req.workspace_file_roots = vec![PromptWorkspaceRoot {
+            project_id: "other-project".to_string(),
+            root: other.path().to_path_buf(),
+        }];
+        req.prompt_display = Some(ConversationPromptInput {
+            display_text: String::new(),
+            quotes: Vec::new(),
+            role: None,
+            workspace_files: vec![PromptWorkspaceFileRef {
+                project_id: "other-project".to_string(),
+                relative_path: "foreign.ts".to_string(),
+            }],
+        });
+
+        let prompt = render_prompt_bundle(&req).unwrap();
+
+        assert_eq!(prompt.workspace_files.len(), 1);
+        assert!(
+            prompt.workspace_files[0]
+                .canonical_path
+                .contains("foreign.ts")
+        );
+        assert!(matches!(
+            prompt.content_blocks.last(),
+            Some(AcpContentBlock::ResourceLink(link))
+                if link.uri.starts_with("file:") && link.uri.contains("foreign.ts")
+        ));
+        assert!(!prompt.user_prompt.contains("foreign.ts"));
     }
 
     fn scheduled_invocation(
@@ -4899,6 +4949,7 @@ mod tests {
             ),
             mcp_servers: Vec::new(),
             scheduled_context: None,
+            workspace_file_roots: Vec::new(),
         };
 
         let prompt = render_prompt_bundle(&req).unwrap();

@@ -69,7 +69,7 @@ describe('ConversationComposer draft cross-page retention', () => {
     expect(next.attachments.map((a) => a.id)).toEqual(['a1', 'a2']);
   });
 
-  it('changing workspace drops only references from another project', () => {
+  it('changing workspace keeps references from other workspaces', () => {
     const state: ConversationComposerDraftState = {
       content: '继续处理',
       attachments: [makeAttachment('a1')],
@@ -86,9 +86,8 @@ describe('ConversationComposer draft cross-page retention', () => {
       projectId: 'project-b',
     });
 
-    expect(next.content).toBe('继续处理');
-    expect(next.attachments).toEqual(state.attachments);
-    expect(next.workspaceFiles.map(file => file.id)).toEqual(['project-b-file']);
+    expect(next).toBe(state);
+    expect(next.workspaceFiles.map(file => file.id)).toEqual(['project-a-file', 'project-b-file']);
   });
 
   it('changing to the same workspace is a no-op (stable reference)', () => {

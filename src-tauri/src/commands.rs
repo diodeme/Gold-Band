@@ -195,20 +195,40 @@ pub(crate) async fn validate_prompt_workspace_files(
     if input.workspace_files.is_empty() {
         return Ok(());
     }
-    let project_id = app.paths.project_id.clone();
-    let workspace_root = app.paths.repo_root.as_std_path().to_path_buf();
+    let app = app.clone_for_background();
     let references = input.workspace_files.clone();
     spawn_blocking_command(move || {
-        gold_band::provider::resolve_prompt_workspace_files(
-            &project_id,
-            &references,
-            &workspace_root,
-            attachment_count,
-        )
-        .map(|_| ())
-        .map_err(|error| CommandErrorVm::new(error.code(), error.params()))
+        let roots = app.prompt_workspace_roots();
+        gold_band::provider::resolve_prompt_workspace_files(&roots, &references, attachment_count)
+            .map(|_| ())
+            .map_err(|error| CommandErrorVm::new(error.code(), error.params()))
     })
     .await
+}
+
+fn attach_admitted_workspace_files(
+    app: &gold_band::app::App,
+    bundle: &mut gold_band::provider::PromptBundle,
+    workspace_files: &[gold_band::provider::PromptWorkspaceFileRef],
+    attachment_count: usize,
+) -> CommandResult<()> {
+    if workspace_files.is_empty() {
+        return Ok(());
+    }
+    let roots = app.prompt_workspace_roots();
+    let resolved = gold_band::provider::resolve_prompt_workspace_files(
+        &roots,
+        workspace_files,
+        attachment_count,
+    )
+    .map_err(|error| CommandErrorVm::new(error.code(), error.params()))?;
+    for reference in &resolved {
+        bundle.content_blocks.push(
+            gold_band::provider::workspace_files::resolved_workspace_file_content_block(reference),
+        );
+    }
+    bundle.workspace_files = resolved;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -7208,6 +7228,12 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                     }
                 }
             }
+            attach_admitted_workspace_files(
+                &app,
+                &mut prompt_bundle,
+                &workspace_files,
+                attachment_paths.as_ref().map_or(0, Vec::len),
+            )?;
             let app_handle_for_live = app_handle_for_task.clone();
             let task_id_for_live = task_id.clone();
             let run_id_for_live = run_id.clone();
@@ -7371,6 +7397,12 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 }
             }
         }
+        attach_admitted_workspace_files(
+            &app,
+            &mut prompt_bundle,
+            &workspace_files,
+            attachment_paths.as_ref().map_or(0, Vec::len),
+        )?;
         let app_handle_for_live = app_handle_for_task.clone();
         let task_id_for_live = task_id.clone();
         let run_id_for_live = run_id.clone();

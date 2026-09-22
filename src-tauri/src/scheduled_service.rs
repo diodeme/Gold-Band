@@ -87,26 +87,21 @@ pub type CoordinatorRunFuture =
 
 fn validate_prompt_workspace_files(
     app: &App,
-    expected_project_id: &str,
     references: &[PromptWorkspaceFileRef],
     attachment_count: usize,
 ) -> ScheduledServiceResult<()> {
-    provider::resolve_prompt_workspace_files(
-        expected_project_id,
-        references,
-        app.paths.repo_root.as_std_path(),
-        attachment_count,
-    )
-    .map(|_| ())
-    .map_err(|error| {
-        ScheduledServiceError::invalid(
-            "validate-workspace-files",
-            serde_json::json!({
-                "code": error.code(),
-                "params": error.params(),
-            }),
-        )
-    })
+    let roots = app.prompt_workspace_roots();
+    provider::resolve_prompt_workspace_files(&roots, references, attachment_count)
+        .map(|_| ())
+        .map_err(|error| {
+            ScheduledServiceError::invalid(
+                "validate-workspace-files",
+                serde_json::json!({
+                    "code": error.code(),
+                    "params": error.params(),
+                }),
+            )
+        })
 }
 
 fn schedule_input_error(error: ScheduleError) -> ScheduledServiceError {
@@ -524,7 +519,6 @@ impl ScheduledTaskService {
         }
         validate_prompt_workspace_files(
             &workspace.app,
-            &resolved_project_id,
             &input.workspace_files,
             input.attachment_paths.as_deref().map_or(0, <[_]>::len),
         )?;
@@ -668,7 +662,6 @@ impl ScheduledTaskService {
             .unwrap_or_else(|| current.definition.content_snapshot.workspace_files.clone());
         validate_prompt_workspace_files(
             &workspace.app,
-            &resolved_project_id,
             &effective_workspace_files,
             attachment_paths.len(),
         )?;
@@ -2052,7 +2045,7 @@ mod tests {
         assert_eq!(error.code, ScheduledErrorCode::ValidationFailed);
         assert_eq!(
             error.params["details"]["code"],
-            "conversation.workspace-file-project-mismatch"
+            "conversation.workspace-file-project-unavailable"
         );
         assert_eq!(
             fixture

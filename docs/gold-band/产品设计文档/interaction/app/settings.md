@@ -35,7 +35,7 @@
 │   Agent / 个人紧凑设置行，主题头像、最近头像、上传裁剪与头像框    │
 │                                                              │
 │ 语言                                                         │
-│   语言选择：中文 / English                                    │
+│   语言选择：中文 / 繁體中文 / English / 日本語 / 한국어 / Português (Brasil) / Español │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -56,6 +56,8 @@
 - 选择 `跟随系统` 时只保存 `colorScheme = system`；操作系统变化只重新解析当前包的 light/dark，不写回偏好。
 - 视觉质量选择按 `themeId` 隔离记忆；切换到不声明该能力的主题时隐藏控件且不制造伪性能档。
 - 后端完成校验和原子持久化后返回 canonical `appearance + personalization`，前端以返回值收敛并应用根属性。
+- 主题包的状态 surface/border 等语义字段必须在主题 SDK、生成目录和 Rust 模型中保持一致；保存外观前使用的严格主题目录校验不得因后端遗漏正式字段而拒绝内置主题。
+- 会话行的悬浮操作区使用透明背景并参与行内 Flex 布局；标题按剩余空间截断，hover 与键盘 focus 共用展示规则，操作区不得覆盖标题或叠加不同于整行的色块。
 - 所有主题选择后立即预览，不需要重启。
 
 ### 4.3 UI 形式
@@ -152,12 +154,19 @@
 ## 7. 语言选择
 
 ### 6.1 选项
-当前支持：
-- 中文
-- English
+界面语言使用母语自称，顺序固定为：
+- 中文（`zh-cn`）
+- 繁體中文（`zh-tw`）
+- English（`en`）
+- 日本語（`ja-jp`）
+- 한국어（`ko-kr`）
+- Português (Brasil)（`pt-br`）
+- Español（`es`）
 
 ### 6.2 行为
-- 选择后立即切换界面语言，或提示重启后生效。
+- 选择后立即切换界面语言并写入 `desktopLanguage`。
+- 设置里还没有 `desktopLanguage` 时，桌面端第一次加载按系统界面语言写入一次。简体中文、繁体中文（含香港、澳门）、日语、韩语、巴西葡萄牙语、西班牙语映射到上表；葡萄牙语其他地区和其他语言写入 `en`。写入之后以设置为准，系统语言再变化不覆盖。
+- Windows 安装包按系统界面语言选择 NSIS 语言，未匹配时使用英文，不弹出语言对话框。安装包语言不会写入应用设置。
 
 ### 6.3 UI 形式
 推荐使用下拉选择：
@@ -172,7 +181,7 @@
 
 - 外观权威字段改为 `appearance`：`schemaVersion = 2`、稳定 `themeId`、`colorScheme = system | light | dark`、按主题隔离的 `visualQualityByTheme`。旧 `desktopTheme` 在 settings schema v5 一次性迁移后删除，不双写。
 - 个性化权威字段为 `personalization`：`schemaVersion = 4`，显式保存两套有序字体栈、字号、按明暗模式隔离的壁纸来源/可见度以及 Agent / 个人头像图片与形状的 `source`。settings schema v8 破坏式删除 v1 单字体字段；settings schema v9 增加单壁纸；settings schema v10 将它一次性升级为 light/dark 两份配置，不保留双读。主题来源持续跟随当前主题，用户资产历史全局共享。
-- 内置 `builtin.gold-band`、`builtin.tech-neutral` 分别位于独立 `themes/*` 声明式包目录，共用 DTCG token、manifest/recipe/preset、Style Dictionary alias 解析、JSON Schema/Ajv 与 Zod/Rust 双端契约；构建产出的 Catalog、CSS recipe 和 asset manifest 是 Web 与 Tauri 的共同输入，业务组件不得读取具体主题 ID。
+- 内置 `builtin.gold-band`、`builtin.tech-neutral` 分别位于独立 `themes/*` 声明式包目录，共用 DTCG token、manifest/recipe/preset、Style Dictionary alias 解析、JSON Schema/Ajv 与 Zod/Rust 双端契约；构建产出的 Catalog、CSS recipe 和 asset manifest 是 Web 与 Tauri 的共同输入，业务组件不得读取具体主题 ID。主题 Catalog、Schema、主题包 `dist` 文本产物、Web generated catalog/CSS 与 Agent SVG 图标在仓库层固定为 LF 文本；`.gitattributes` 的精确路径规则优先于本机 `core.autocrlf`，避免生成脚本重写相同内容后在 Windows Changes 中反复出现假变更。
 - 设置页先选择设计风格主题包，再选择明暗模式；`system` 只解析当前主题包内的 light/dark。当前两个内置主题均不声明视觉质量能力，因此不显示质量档控件。
 - 主题运行时只更新根 `data-theme / data-color-scheme / data-visual-quality / data-material-model`、封闭 CSS variables 与原生窗口安全底色，不请求会话、不重建 timeline 或编辑器。
 - 共享 shadcn/ui、prompt-kit 与应用壳以稳定 `data-theme-role` 消费材质 recipe；主题卡在宽内容区三列，窄窗口自动单列。
@@ -197,7 +206,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 
 当前实现规则：
 - 历史实现曾保存 `desktopTheme = system | light | light-gray | dark | black`，现仅由 v5 migration 读取并映射为主题包与明暗模式。
-- 语言字段保存为 `desktopLanguage`，支持 `zh-cn`、`en`。
+- 语言字段保存为 `desktopLanguage`，支持 `zh-cn`、`zh-tw`、`en`、`ja-jp`、`ko-kr`、`pt-br`、`es`。未知值拒绝加载。缺省字段只在桌面端首次加载时按系统界面语言补写，内存默认和测试夹具仍使用 `zh-cn`。
 - 旧 `desktopFont / desktopEditorFont / desktopUiFontSize / desktopEditorFontSize` 仅由 schema v7 migration 读取，迁移成功后删除；运行时和保存接口只消费 `personalization`。
 - personalization v1 的 `typography.*.font` 仅由 settings schema v8 migration 删除；运行时只消费 v2 `typography.*.fontStack`，明确替换后不提供兼容字段或 fallback 读取。
 - personalization v2 由 settings schema v9 migration 升级为带单壁纸的 v3，v3 再由 settings schema v10 一次性升级为按 `light / dark` 隔离的 v4；运行时只消费 v4。壁纸资产仓库与 VM 不复制 personalization 的选择状态，所有壁纸写命令显式接收目标 resolved color scheme，并返回最新 `PreferencesVm` 供前端收敛。
@@ -236,7 +245,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 设置页中的问号帮助入口（如“记录详细日志”“开启指标上报”）统一使用随主题变化的浅色 shadcn/ui `Tooltip`，悬浮或聚焦即可展示说明文本；这些布尔开关统一采用“标题 + tips icon + switch”同一行布局，避免一部分开关右置、一部分行内导致对齐不一致；同时避免页面出现主题色 tooltip 与白底说明面板混用。
 - 2026-08-16 起高级设置移除“使用本地 Claude”开关及其本地探测请求；设置页保存偏好时固定提交 `useLocalClaude = false`，`RuntimeConfig` 加载入口同步固定为 `false`，历史设置中的 `true` 不再进入运行时。后端既有字段、接口与 ACP 本地解析能力保留，未来重新开放时只需恢复这一处配置投影和前端入口。
 - 更新能力使用 Tauri updater：`default` 渠道内置 GitHub Release `latest.json`，`wb` 渠道内置内网占位地址；两个渠道使用不同 updater public key，用户只能覆盖 URL，不能覆盖 public key，因此两个渠道不会通过改 URL 串包更新。default 渠道的安装包、签名和 `latest.json` 由 `release-please` 创建 draft release 后在同一 GitHub Actions workflow 确保 git tag 存在并上传；该 workflow 可由 `main` push 自动触发，也可在 GitHub Actions 页面手动触发以补跑 release-please 主链路，release publish 后才对客户端 latest 检查可见。
-- `wb` 渠道本地执行 `npm run build:wb` 生成 `latest.json` 时，必须优先选择与本次 `--version` 精确匹配的签名安装包；即使 `release/wb` 或构建产物目录里残留旧包，也不能把下载 URL 指回历史安装包。
+- `wb` 渠道本地执行 `npm run build:wb` 生成 `latest.json` 时，必须优先选择与本次 `--version` 精确匹配的签名安装包；即使 `release/wb` 或构建产物目录里残留旧包，也不能把下载 URL 指回历史安装包。收集签名安装包时必须使用 Cargo 解析后的 target 目录：优先 `cargo metadata` 的 `target_directory`（覆盖本机 `CARGO_TARGET_DIR`、`CARGO_BUILD_TARGET_DIR` 与用户/项目 `build.target-dir`），再回退环境变量和仓库内 `target/`、`src-tauri/target/`；不得写死某台机器的绝对路径。清理过期 bundle 与生成 `latest.json` 使用同一组候选目录。
 - 桌面端启动 90 秒后执行首次后台更新检查，此后每 240 分钟检查一次；同一轮检查只请求一次渠道 manifest，检查所得的完整更新对象同时用于状态投影和渠道更新策略，不得为判断静默更新再次请求 manifest。`default` 渠道仍只更新状态并提示用户，不自动下载或安装；`wb` 渠道仅在 manifest 明确声明 `critical: true` 时静默预下载已签名更新包，不立即安装，并在应用退出或后续启动阶段安装。相同版本已经作为完整 pending 文件存在时必须幂等跳过下载；pending 文件使用临时文件加原子替换写入，最终路径存在即代表本次完整写入已经提交。用户仍可在高级页手动检查，有新版本时点击下载并安装；上次检查时间持久化为本地系统时区 `YYYY-MM-DD HH:MM:SS`。
 - 2026-05-27 起更新提示增加三级红点：后台发现当前可更新版本后，左侧 `Settings`、设置页 `Advanced` tab、`Updates` 分组标题同时显示红点。用户进入设置页时只清除 `Settings` 红点；切到 `Advanced` tab 时只清除 `Advanced` 红点；`Updates` 红点不因进入页面消失，只有当前已无可更新版本时才自动消失。
 - 红点状态按“当前可用版本号 + 分层已读版本号”计算，而不是简单布尔值：`Settings`、`Advanced` 和公告关闭状态都持久化到用户级桌面配置，并与版本号绑定；同一版本已读/关闭后不再重复提示，但一旦后台发现更高版本，三级红点和公告都会重新出现。
@@ -262,6 +271,12 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 保持唤醒同时展示用户启用值与系统实际生效值。只有用户开启、至少一个 job 为 enabled 且应用仍在运行时才生效；平台获取失败展示 `SCHEDULED_POWER_INHIBITOR_FAILED`，但不改变任务调度与 occurrence 结果。
 - Windows、macOS 和 Linux 使用 `keepawake 0.6.0` 的统一进程级 guard；Windows 走 System Power API，macOS 走 IOKit，Linux 走系统 inhibit 后端。配置允许显示器休眠，只阻止空闲导致的系统自动睡眠，应用退出时必须释放 guard。
 - macOS 不是后续兼容项，而是 Task 6 的同级目标平台：实现必须保留 `objc2-io-kit`/IOKit 后端与相同的启用、失效、退出释放语义。Windows 开发机无法替代 macOS 编译或真机验证；发布验收需要在 macOS CI 或真机上补充编译和开关 smoke test。
-- occurrence 默认保留 30 天。清理仅删除 SQLite 中过期的 `succeeded/failed/skipped/missed` 行，保留 `attention_required`、非终态和活动 Run 链接；Task、Run、Round、ACP 文件与产物不属于该清理事务。
+- occurrence 默认保留 30 天。清理仅删除 SQLite 中过期且 `accepted_at IS NULL` 的 `succeeded/failed/skipped/missed` 诊断行，保留全部 accepted execution history、`attention_required`、非终态和活动 Run 链接；Task、Run、Round、ACP 文件与产物不属于该清理事务。
 - 2026-08-09 起 `ScheduledRuntimeSettings` 只在通用设置页展示；定时任务管理页移除重复入口，但继续由同一命令和状态模型服务设置页，不增加页面级副本。
 - 2026-08-11 起定时任务运行设置接入前端 stale-while-revalidate 缓存：App 启动后台预取一次填充模块级缓存，进入设置页与在「通用」标签页间切换时命中缓存立即渲染，不再出现「加载中…」闪烁；缓存命中后在新鲜期内不重复请求，过期或保存成功后才静默刷新动态字段（生效情况、启用任务数、电源错误码）。该缓存以独立运行时缓存形态存在，不并入启动静态快照 `AppBootstrapVm`，因为这些值混合了运行时状态而非纯静态配置。
+
+## 12. IM 远程干预与通知
+
+- 设置页「通用」是 IM 接入、私聊绑定和六类通知偏好的唯一可见入口；权威事实仍是后端 IM settings 与 connection generation。
+- 企业微信标题行只展示平台名和状态徽章，不展示“安装级目标”等实现注释；未接入时的操作说明使用“尚未接入企业微信…”。
+- 2026-09-17 起 IM 设置接入与定时任务相同的前端 stale-while-revalidate 缓存：App 启动后台预取一次填充模块级缓存，进入设置页与在「通用」标签页间切换时命中缓存立即渲染，不再出现「加载中…」闪烁。缓存命中后在新鲜期内不重复请求；过期后后台静默刷新，保存/启停/扫码/删除成功后写回缓存，connection snapshot 按 generation 单调合入。该缓存只是展示投影，不并入 `AppBootstrapVm`，也不是第二事实源。迟到 fetch 不得覆盖更新的保存结果，也不得用更低 generation 覆盖 live snapshot。已有可展示数据时刷新不得退回「加载中…」。

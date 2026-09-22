@@ -7,6 +7,7 @@ import {
   hasUserPromptPayload,
   serializeUserPromptSubmission,
   userPromptQuotesFromRaw,
+  userPromptRoleFromRaw,
   type ComposerQuote,
 } from '@/lib/composer-context';
 
@@ -29,6 +30,21 @@ describe('composer quote contract', () => {
       ],
     });
     expect(serializeUserPromptSubmission(submission)).toBe('> 第一行\n> 第二行\n\n> 另一段\n\n继续解释');
+  });
+
+  it('keeps a role snapshot on the submission without putting it in display text', () => {
+    const submission = createUserPromptSubmission('帮我改代码', [], {
+      profileId: 'pf-dev',
+      name: '开发',
+      content: '完整角色定义',
+    });
+    expect(submission.displayText).toBe('帮我改代码');
+    expect(submission.role).toEqual({
+      profileId: 'pf-dev',
+      name: '开发',
+      content: '完整角色定义',
+    });
+    expect(userPromptRoleFromRaw({ role: submission.role })).toEqual(submission.role);
   });
 
   it('does not infer quotes from user-authored Markdown blockquotes', () => {
@@ -83,5 +99,15 @@ describe('composer payload contract', () => {
     expect(hasUserPromptPayload('hello', 0)).toBe(true);
     expect(hasUserPromptPayload('', 1)).toBe(true);
     expect(hasUserPromptPayload('   ', 0)).toBe(false);
+  });
+
+  it('treats a complete role snapshot as a sendable payload even without user text', () => {
+    const role = { profileId: 'pf-dev', name: '开发', content: '完整角色定义' };
+    expect(hasUserPromptPayload('', 0, role)).toBe(true);
+    expect(hasUserPromptPayload('   ', 0, role)).toBe(true);
+    expect(hasUserPromptPayload('', 0, { profileId: 'pf-dev', name: '开发', content: '' })).toBe(false);
+    const submission = createUserPromptSubmission('', [], role);
+    expect(submission.displayText).toBe('');
+    expect(submission.role).toEqual(role);
   });
 });

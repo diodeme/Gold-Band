@@ -36,6 +36,8 @@ const EARLY_SESSION_FRAME_MAX_FRAMES: usize = 64;
 const STDERR_READ_BUFFER_SIZE: usize = 4096;
 const STDERR_LINE_MAX_BYTES: usize = 16 * 1024;
 const STDERR_RAW_PREVIEW_BYTES: usize = 256;
+const STDERR_FAILURE_MAX_CHARS: usize = 2_000;
+pub(crate) const STDERR_FAILURE_DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
 const CONNECTION_DIAGNOSTIC_REQUEST_LIMIT: usize = 8;
 static NEXT_CONNECTION_GENERATION: AtomicU64 = AtomicU64::new(1);
 static NEXT_SESSION_ROUTE_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -1008,6 +1010,16 @@ pub struct AdapterConnection {
     last_activity_at: Mutex<Instant>,
     session_config_transaction: SessionConfigTransaction,
     state: Mutex<AdapterConnectionState>,
+    exit_status_logged: AtomicBool,
+    stderr_noise_counts: Mutex<BTreeMap<&'static str, u64>>,
+    stderr_failures: Mutex<StderrFailureLog>,
+    stderr_failures_changed: Condvar,
+}
+
+#[derive(Default)]
+struct StderrFailureLog {
+    text: String,
+    finished: bool,
 }
 
 pub struct ActivePromptGuard {
@@ -1220,6 +1232,10 @@ impl AdapterConnection {
             last_activity_at: Mutex::new(Instant::now()),
             session_config_transaction: SessionConfigTransaction::default(),
             state: Mutex::new(AdapterConnectionState::Open),
+            exit_status_logged: AtomicBool::new(false),
+            stderr_noise_counts: Mutex::new(BTreeMap::new()),
+            stderr_failures: Mutex::new(StderrFailureLog::default()),
+            stderr_failures_changed: Condvar::new(),
         });
 
         let stdout_connection = Arc::clone(&connection);
@@ -1227,9 +1243,11 @@ impl AdapterConnection {
 
         let stderr_connection = Arc::clone(&connection);
         thread::spawn(move || {
-            if let Err(error) = read_stderr(stderr, |line| {
+            let read_result = read_stderr(stderr, |line| {
                 log_stderr_line(&stderr_connection, line);
-            }) {
+            });
+            stderr_connection.finish_failure_stderr();
+            if let Err(error) = read_result {
                 warn!(
                     provider = %stderr_connection.provider_id,
                     adapter = %stderr_connection.adapter.adapter_id,
@@ -1286,6 +1304,47 @@ impl AdapterConnection {
             .map_err(|_| anyhow!("ACP adapter child lock poisoned"))?
             .try_wait()
             .map_err(Into::into)
+    }
+
+    pub fn wait_for_failure_stderr(&self, timeout: Duration) -> String {
+        let Ok(mut log) = self.stderr_failures.lock() else {
+            return String::new();
+        };
+        let deadline = Instant::now() + timeout;
+        while !log.finished {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match self.stderr_failures_changed.wait_timeout(log, remaining) {
+                Ok((guard, wait)) => {
+                    log = guard;
+                    if wait.timed_out() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    log = error.into_inner().0;
+                    break;
+                }
+            }
+        }
+        log.text.clone()
+    }
+
+    fn record_failure_stderr(&self, line: &str) {
+        let Ok(mut log) = self.stderr_failures.lock() else {
+            return;
+        };
+        append_failure_stderr_text(&mut log.text, line);
+        self.stderr_failures_changed.notify_all();
+    }
+
+    fn finish_failure_stderr(&self) {
+        if let Ok(mut log) = self.stderr_failures.lock() {
+            log.finished = true;
+        }
+        self.stderr_failures_changed.notify_all();
     }
 
     pub fn initialized_capabilities(&self) -> Option<Value> {
@@ -1533,6 +1592,9 @@ impl AdapterConnection {
             },
             reason.as_str(),
         );
+        if first_close == Some(true) {
+            self.flush_stderr_noise_summary();
+        }
         if let Ok(mut pending) = self.pending.lock() {
             pending.clear();
         }
@@ -1544,6 +1606,10 @@ impl AdapterConnection {
                 *early_frames = EarlySessionFrames::default();
             }
         }
+    }
+
+    fn logs_lifecycle_at_info(&self) -> bool {
+        connection_lifecycle_uses_info(self.key.is_some())
     }
 
     fn log_lifecycle(&self, event: &'static str, reason: &'static str) {
@@ -1574,24 +1640,68 @@ impl AdapterConnection {
             .try_lock()
             .ok()
             .map(|last| last.elapsed().as_millis() as u64);
-        info!(
-            event,
-            reason,
+        if self.logs_lifecycle_at_info() {
+            info!(
+                event,
+                reason,
+                provider = %self.provider_id,
+                adapter = %self.adapter.adapter_id,
+                command = %self.adapter.command,
+                workspace = self.key.as_ref().map(|key| key.workspace_root.as_str()),
+                pid = self.pid,
+                connection_generation = self.generation,
+                state = ?self.state.try_lock().ok().map(|state| *state),
+                active_prompts,
+                active_connection_users = self.active_users.load(Ordering::Acquire),
+                pending_requests = pending.as_ref().map(|(count, _)| *count),
+                pending_methods = ?pending.as_ref().map(|(_, methods)| methods),
+                pending_methods_truncated = pending.as_ref().map(|(count, _)| *count > CONNECTION_DIAGNOSTIC_REQUEST_LIMIT),
+                session_routes,
+                idle_ms,
+                "ACP connection lifecycle"
+            );
+        } else {
+            debug!(
+                event,
+                reason,
+                provider = %self.provider_id,
+                adapter = %self.adapter.adapter_id,
+                command = %self.adapter.command,
+                workspace = self.key.as_ref().map(|key| key.workspace_root.as_str()),
+                pid = self.pid,
+                connection_generation = self.generation,
+                state = ?self.state.try_lock().ok().map(|state| *state),
+                active_prompts,
+                active_connection_users = self.active_users.load(Ordering::Acquire),
+                pending_requests = pending.as_ref().map(|(count, _)| *count),
+                pending_methods = ?pending.as_ref().map(|(_, methods)| methods),
+                pending_methods_truncated = pending.as_ref().map(|(count, _)| *count > CONNECTION_DIAGNOSTIC_REQUEST_LIMIT),
+                session_routes,
+                idle_ms,
+                "ACP connection lifecycle"
+            );
+        }
+    }
+
+    fn flush_stderr_noise_summary(&self) {
+        let counts = match self.stderr_noise_counts.lock() {
+            Ok(mut counts) => std::mem::take(&mut *counts),
+            Err(_) => return,
+        };
+        if counts.is_empty() {
+            return;
+        }
+        let suppressed_noise_lines: u64 = counts.values().copied().sum();
+        let kinds: Vec<&'static str> = counts.keys().copied().collect();
+        debug!(
             provider = %self.provider_id,
             adapter = %self.adapter.adapter_id,
             command = %self.adapter.command,
-            workspace = self.key.as_ref().map(|key| key.workspace_root.as_str()),
             pid = self.pid,
             connection_generation = self.generation,
-            state = ?self.state.try_lock().ok().map(|state| *state),
-            active_prompts,
-            active_connection_users = self.active_users.load(Ordering::Acquire),
-            pending_requests = pending.as_ref().map(|(count, _)| *count),
-            pending_methods = ?pending.as_ref().map(|(_, methods)| methods),
-            pending_methods_truncated = pending.as_ref().map(|(count, _)| *count > CONNECTION_DIAGNOSTIC_REQUEST_LIMIT),
-            session_routes,
-            idle_ms,
-            "ACP connection lifecycle"
+            suppressed_noise_lines,
+            kinds = ?kinds,
+            "ACP adapter stderr noise suppressed"
         );
     }
 
@@ -1606,6 +1716,9 @@ impl AdapterConnection {
             .or_else(|| value.pointer("/params/sessionUpdate"))
             .and_then(Value::as_str)
             .unwrap_or("unknown");
+        if is_expected_unrouted_notification(method, session_id) {
+            return;
+        }
         let warning_key = format!("{method}:{session_update}");
         let now = Instant::now();
         let suppressed = match self.unrouted_warnings.lock() {
@@ -1748,14 +1861,25 @@ impl AdapterConnection {
 
     #[track_caller]
     pub fn shutdown(&self, reason: AdapterShutdownReason) {
-        info!(
-            event = "acp_connection_shutdown_requested",
-            reason = reason.as_str(),
-            caller = %std::panic::Location::caller(),
-            pid = self.pid,
-            connection_generation = self.generation,
-            "ACP connection shutdown requested"
-        );
+        if self.logs_lifecycle_at_info() {
+            info!(
+                event = "acp_connection_shutdown_requested",
+                reason = reason.as_str(),
+                caller = %std::panic::Location::caller(),
+                pid = self.pid,
+                connection_generation = self.generation,
+                "ACP connection shutdown requested"
+            );
+        } else {
+            debug!(
+                event = "acp_connection_shutdown_requested",
+                reason = reason.as_str(),
+                caller = %std::panic::Location::caller(),
+                pid = self.pid,
+                connection_generation = self.generation,
+                "ACP connection shutdown requested"
+            );
+        }
         self.mark_transport_closed(TransportCloseReason::Shutdown(reason));
         if let Ok(mut stdin) = self.stdin.lock() {
             let _ = stdin.flush();
@@ -1889,7 +2013,71 @@ where
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdapterStderrKind {
+    Noise(&'static str),
+    Failure,
+    Diagnostic,
+}
+
+fn classify_adapter_stderr(text: &str) -> AdapterStderrKind {
+    let trimmed = text.trim_start();
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains("npm warn unknown user config") {
+        return AdapterStderrKind::Noise("npm-unknown-user-config");
+    }
+    if lower.starts_with("[session/query]") {
+        return AdapterStderrKind::Noise("session-query");
+    }
+    if lower.contains("npm error")
+        || lower.contains("npm err!")
+        || lower.contains("enospc")
+        || lower.contains("enoent")
+        || lower.contains("eacces")
+        || lower.contains("eperm")
+    {
+        return AdapterStderrKind::Failure;
+    }
+    AdapterStderrKind::Diagnostic
+}
+
+fn is_expected_unrouted_notification(method: &str, session_id: &str) -> bool {
+    method == "_auth/status_update" && (session_id.is_empty() || session_id == "unknown")
+}
+
+fn should_emit_adapter_exit_status(already_logged: bool) -> bool {
+    !already_logged
+}
+
+fn connection_lifecycle_uses_info(pooled: bool) -> bool {
+    pooled
+}
+
+fn append_failure_stderr_text(target: &mut String, line: &str) {
+    let line = line.trim_end();
+    if line.is_empty() || target.chars().count() >= STDERR_FAILURE_MAX_CHARS {
+        return;
+    }
+    if !target.is_empty() {
+        target.push('\n');
+    }
+    target.push_str(line);
+    if target.chars().count() > STDERR_FAILURE_MAX_CHARS {
+        *target = target.chars().take(STDERR_FAILURE_MAX_CHARS).collect();
+    }
+}
+
 fn log_stderr_line(connection: &AdapterConnection, line: StderrLine) {
+    match classify_adapter_stderr(&line.text) {
+        AdapterStderrKind::Noise(kind) => {
+            if let Ok(mut counts) = connection.stderr_noise_counts.lock() {
+                *counts.entry(kind).or_insert(0) += 1;
+            }
+            return;
+        }
+        AdapterStderrKind::Failure => connection.record_failure_stderr(&line.text),
+        AdapterStderrKind::Diagnostic => {}
+    }
     let raw_bytes_hex = line.raw_bytes_hex.as_deref().unwrap_or("");
     if line.encoding == "non-utf8" {
         debug!(
@@ -1916,19 +2104,38 @@ fn log_stderr_line(connection: &AdapterConnection, line: StderrLine) {
 }
 
 fn log_adapter_exit(connection: &AdapterConnection, transport_was_already_closed: bool) {
+    let already_logged = connection.exit_status_logged.swap(true, Ordering::AcqRel);
+    if !should_emit_adapter_exit_status(already_logged) {
+        return;
+    }
     let result = connection.try_wait();
-    info!(
-        event = "acp_adapter_exit_status",
-        provider = %connection.provider_id,
-        adapter = %connection.adapter.adapter_id,
-        command = %connection.adapter.command,
-        pid = connection.pid,
-        connection_generation = connection.generation,
-        transport_was_already_closed,
-        status_available = result.as_ref().is_ok_and(|status| status.is_some()),
-        exit_code = result.as_ref().ok().and_then(|status| status.as_ref()).and_then(|status| status.code()),
-        "ACP adapter exit status observed"
-    );
+    if connection.logs_lifecycle_at_info() {
+        info!(
+            event = "acp_adapter_exit_status",
+            provider = %connection.provider_id,
+            adapter = %connection.adapter.adapter_id,
+            command = %connection.adapter.command,
+            pid = connection.pid,
+            connection_generation = connection.generation,
+            transport_was_already_closed,
+            status_available = result.as_ref().is_ok_and(|status| status.is_some()),
+            exit_code = result.as_ref().ok().and_then(|status| status.as_ref()).and_then(|status| status.code()),
+            "ACP adapter exit status observed"
+        );
+    } else {
+        debug!(
+            event = "acp_adapter_exit_status",
+            provider = %connection.provider_id,
+            adapter = %connection.adapter.adapter_id,
+            command = %connection.adapter.command,
+            pid = connection.pid,
+            connection_generation = connection.generation,
+            transport_was_already_closed,
+            status_available = result.as_ref().is_ok_and(|status| status.is_some()),
+            exit_code = result.as_ref().ok().and_then(|status| status.as_ref()).and_then(|status| status.code()),
+            "ACP adapter exit status observed"
+        );
+    }
     match result {
         Ok(Some(status)) => {
             if !transport_was_already_closed {
@@ -2009,6 +2216,9 @@ fn route_inbound_frame(
         }
     }
 
+    if let Some(reply) = unsupported_client_inbound_reply(&value) {
+        let _ = connection.send_raw_frame(&reply);
+    }
     connection.warn_unrouted_frame(&value, frame_bytes);
 }
 
@@ -2103,6 +2313,40 @@ fn route_or_buffer_session_frame(
         .unwrap_or(false);
     drop(routes);
     buffered
+}
+
+pub(crate) const JSONRPC_METHOD_NOT_FOUND_CODE: i64 = -32601;
+const JSONRPC_METHOD_NOT_FOUND_MESSAGE: &str = "Method not found";
+
+fn is_handled_client_inbound_method(method: &str) -> bool {
+    matches!(
+        method,
+        "session/update" | "session/request_permission" | "elicitation/create"
+    )
+}
+
+fn jsonrpc_error_frame(id: Value, code: i64, message: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": code,
+            "message": message,
+        },
+    })
+}
+
+pub(crate) fn unsupported_client_inbound_reply(value: &Value) -> Option<Value> {
+    let method = value.get("method").and_then(Value::as_str)?;
+    if is_handled_client_inbound_method(method) {
+        return None;
+    }
+    let id = value.as_object()?.get("id")?.clone();
+    Some(jsonrpc_error_frame(
+        id,
+        JSONRPC_METHOD_NOT_FOUND_CODE,
+        JSONRPC_METHOD_NOT_FOUND_MESSAGE,
+    ))
 }
 
 fn session_id_from_frame(value: &Value) -> Option<&str> {
@@ -2766,14 +3010,17 @@ mod tests {
 
     use super::{
         AcpConnectionUnavailable, ActivePromptTracker, AdapterConnectionKey,
-        AdapterConnectionManager, AdapterConnectionState, AttemptSessionUnregisterOutcome,
-        ConnectionCreationGate, ConnectionInitialization, EarlySessionFrames,
+        AdapterConnectionManager, AdapterConnectionState, AdapterStderrKind,
+        AttemptSessionUnregisterOutcome, ConnectionCreationGate, ConnectionInitialization,
+        EarlySessionFrames, JSONRPC_METHOD_NOT_FOUND_CODE, STDERR_FAILURE_MAX_CHARS,
         STDERR_LINE_MAX_BYTES, SessionConfigTransaction, SessionEventPump,
-        SessionRouteTryRecvError, is_same_connection_generation,
-        persist_cancelled_session_snapshot, read_stderr, record_unrouted_warning,
-        register_session_route_state, request_unavailability, route_or_buffer_session_frame,
-        select_provider_connection_keys, session_id_from_frame, session_route_pair,
-        settle_attempt_for_session_close, unregister_session_route_state,
+        SessionRouteTryRecvError, append_failure_stderr_text, classify_adapter_stderr,
+        connection_lifecycle_uses_info, is_expected_unrouted_notification,
+        is_same_connection_generation, persist_cancelled_session_snapshot, read_stderr,
+        record_unrouted_warning, register_session_route_state, request_unavailability,
+        route_or_buffer_session_frame, select_provider_connection_keys, session_id_from_frame,
+        session_route_pair, settle_attempt_for_session_close, should_emit_adapter_exit_status,
+        unregister_session_route_state, unsupported_client_inbound_reply,
     };
 
     fn write_current_attempt_node(attempt_dir: &Utf8PathBuf) {
@@ -2990,6 +3237,81 @@ mod tests {
                 .iter()
                 .all(|outcome| outcome.capabilities == json!({ "loadSession": true }))
         );
+    }
+
+    #[test]
+    fn adapter_stderr_classification_keeps_failures_and_drops_stable_noise() {
+        assert_eq!(
+            classify_adapter_stderr(
+                "npm warn Unknown user config \"disturl\". This will stop working in the next major version of npm."
+            ),
+            AdapterStderrKind::Noise("npm-unknown-user-config")
+        );
+        assert_eq!(
+            classify_adapter_stderr(
+                "[session/query] sessionId=991b4512-926e-420d-a443-d7ffb974e0d0 resume=none apiType=native"
+            ),
+            AdapterStderrKind::Noise("session-query")
+        );
+        assert_eq!(
+            classify_adapter_stderr("npm error code ENOSPC"),
+            AdapterStderrKind::Failure
+        );
+        assert_eq!(
+            classify_adapter_stderr("npm ERR! code ENOENT"),
+            AdapterStderrKind::Failure
+        );
+        assert_eq!(
+            classify_adapter_stderr("adapter ready"),
+            AdapterStderrKind::Diagnostic
+        );
+    }
+
+    #[test]
+    fn failure_stderr_text_is_newline_joined_and_bounded() {
+        let mut text = String::new();
+        append_failure_stderr_text(&mut text, "npm error code ENOENT");
+        append_failure_stderr_text(&mut text, "npm error path C:\\cache\\package.json");
+        assert_eq!(
+            text,
+            "npm error code ENOENT\nnpm error path C:\\cache\\package.json"
+        );
+
+        let mut bounded = String::new();
+        append_failure_stderr_text(&mut bounded, &"e".repeat(STDERR_FAILURE_MAX_CHARS + 50));
+        assert_eq!(bounded.chars().count(), STDERR_FAILURE_MAX_CHARS);
+        append_failure_stderr_text(&mut bounded, "npm error extra");
+        assert_eq!(bounded.chars().count(), STDERR_FAILURE_MAX_CHARS);
+        assert!(!bounded.contains("extra"));
+    }
+
+    #[test]
+    fn expected_auth_status_update_is_not_an_unrouted_failure() {
+        assert!(is_expected_unrouted_notification(
+            "_auth/status_update",
+            "unknown"
+        ));
+        assert!(is_expected_unrouted_notification("_auth/status_update", ""));
+        assert!(!is_expected_unrouted_notification(
+            "session/update",
+            "unknown"
+        ));
+        assert!(!is_expected_unrouted_notification(
+            "_auth/status_update",
+            "01a0ad42-1c6c-7e63-a4c6-d754416403f2"
+        ));
+    }
+
+    #[test]
+    fn adapter_exit_status_is_emitted_once() {
+        assert!(should_emit_adapter_exit_status(false));
+        assert!(!should_emit_adapter_exit_status(true));
+    }
+
+    #[test]
+    fn standalone_connection_lifecycle_stays_off_default_info() {
+        assert!(connection_lifecycle_uses_info(true));
+        assert!(!connection_lifecycle_uses_info(false));
     }
 
     #[test]
@@ -3322,6 +3644,76 @@ mod tests {
 
         assert_eq!(session_id_from_frame(&direct), Some("session-a"));
         assert_eq!(session_id_from_frame(&nested), Some("session-b"));
+    }
+
+    #[test]
+    fn unsupported_inbound_requests_reply_jsonrpc_method_not_found() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 42,
+            "method": "cursor/ask_question",
+            "params": {
+                "toolCallId": "call_123",
+                "questions": []
+            }
+        });
+        assert_eq!(
+            unsupported_client_inbound_reply(&request),
+            Some(json!({
+                "jsonrpc": "2.0",
+                "id": 42,
+                "error": {
+                    "code": JSONRPC_METHOD_NOT_FOUND_CODE,
+                    "message": "Method not found",
+                }
+            }))
+        );
+
+        let string_id = json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "fs/read_text_file",
+            "params": { "path": "/tmp/x" }
+        });
+        assert_eq!(
+            unsupported_client_inbound_reply(&string_id).unwrap()["id"],
+            json!("req-1")
+        );
+
+        let null_id = json!({
+            "jsonrpc": "2.0",
+            "id": null,
+            "method": "cursor/create_plan",
+            "params": {}
+        });
+        assert_eq!(
+            unsupported_client_inbound_reply(&null_id).unwrap()["id"],
+            json!(null)
+        );
+    }
+
+    #[test]
+    fn handled_or_notification_inbound_frames_do_not_reply_method_not_found() {
+        for method in [
+            "session/update",
+            "session/request_permission",
+            "elicitation/create",
+        ] {
+            let request = json!({
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": method,
+                "params": { "sessionId": "session-1" }
+            });
+            assert_eq!(unsupported_client_inbound_reply(&request), None, "{method}");
+        }
+
+        let notification = json!({
+            "jsonrpc": "2.0",
+            "method": "cursor/update_todos",
+            "params": { "todos": [] }
+        });
+        assert_eq!(unsupported_client_inbound_reply(&notification), None);
     }
 
     #[test]

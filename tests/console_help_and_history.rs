@@ -21,7 +21,7 @@ fn with_available_claude_diagnostics(app: App) -> App {
             "claude-acp".to_string(),
             ProviderDiagnosticSnapshot {
                 available: true,
-                reason: None,
+                error: None,
                 checked_at: "2026-08-17T00:00:00Z".to_string(),
                 capabilities: None,
             },
@@ -50,7 +50,7 @@ impl ProviderAdapter for StartTaskProvider {
     fn doctor(&self) -> DoctorResult {
         DoctorResult {
             available: true,
-            reason: None,
+            error: None,
             capabilities: None,
         }
     }

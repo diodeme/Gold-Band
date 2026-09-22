@@ -52,7 +52,7 @@ Runtime 是否可显式继续还必须受运行模式约束。`ConversationRunMo
 
 继续动作属于 composer action，固定与模型、思考强度、权限和发送按钮放在 composer 底部 command bar；附件入口与键盘提示单独占据上方辅助行。继续按钮是否切换为“继续并发送”必须直接复用发送按钮的最终 `canSubmit`，不得单独检查 `prompt.trim()`；这样未来附件、引用等输入资格只需修改一处。视觉提示分别为“继续运行工作流”“发送消息并继续工作流”和“发送消息”，Enter 始终等价于发送按钮。窄宽度时 command bar 可以整体换行，但继续与发送必须保持在配置项同一操作域。该动作只消费后端 lifecycle，前端不得在 stop command 返回后自行合成 `continuable` 或 `continueKind`。Direct 在首个 ACP session 尚未完整建立时停止，也应保留自由会话入口；不得因为 session 建立时机不同而要求用户重跑或调用 Runtime continue。
 
-Workflow/AUTO 的中英文基础 runtime system prompt 预先说明：用户主动打断当前工作并转向其他内容时，在 Runtime 明确恢复工作流前无需遵守当前 artifact 输出语义，应自然回应用户当前问题。中断期间用户针对当前任务给出的最新明确指引在恢复后继续有效，可以调整任务内容、交付结果或角色预设流程；无关闲聊不改变任务，且这些指引不能覆盖 artifact contract、Gold Band 文件规则、安全与能力边界。恢复 Runtime 控制只恢复结果消费和输出协议，不等价于恢复中断前的角色流程；Runtime control resume 段只声明控制权与当前 output contract 重新生效，不重复 system 中的指令优先级规则。AI-DYNAMIC 通过既有基础 system 组合自然继承，不重复写入专属 section。停止后的普通消息只发送用户原文，不追加一次性 suspended hidden context，不创建 accepted prompt cursor；Runtime 仍以 `NonRuntimeControlled` 独立保证不提取、不校验 artifact 且不推进节点。Direct / `RawAgent` system prompt 继续为空，从首轮开始就是 `NonRuntimeControlled`。
+Workflow/AUTO 的中英文基础 runtime system prompt 预先说明：用户主动打断当前工作并转向其他内容时，在 Runtime 明确恢复工作流前无需遵守当前 artifact 输出语义，应自然回应用户当前问题。中断期间用户针对当前任务给出的最新明确指引在恢复后继续有效，可以调整任务内容、交付结果或角色预设流程；无关闲聊不改变任务，且这些指引不能覆盖 artifact contract、Gold Band 文件规则、安全与能力边界。恢复 Runtime 控制只恢复结果消费和输出协议，不等价于恢复中断前的角色流程；纯继续的 Runtime control resume 段固定为“请继续执行当前节点尚未完成的任务，并遵循用户针对该任务的最新指引（如果有）”，中英文模板同步维护，明确继续执行的意图，避免被理解为结束节点并交接。AI-DYNAMIC 通过既有基础 system 组合自然继承，不重复写入专属 section。停止后的普通消息只发送用户原文，不追加一次性 suspended hidden context，不创建 accepted prompt cursor；Runtime 仍以 `NonRuntimeControlled` 独立保证不提取、不校验 artifact 且不推进节点。Direct / `RawAgent` system prompt 继续为空，从首轮开始就是 `NonRuntimeControlled`。
 
 显式继续先生成包含 source transition id 的候选，只有 accepted user prompt event 已持久化后才以 CAS 提交 `WorkflowContinued`。ACP 初始化、session setup 或 prompt 接受前失败时 cursor 保持 NonRuntime，新的 stop transition 也不能被迟到的 resume 覆盖。同一 ACP session 的普通消息和 Runtime 控制 prompt 继续共享 prompt lock，但该锁不再承担 suspended context 的一次性认领。
 
@@ -91,7 +91,7 @@ AI-DYNAMIC 的状态归属必须按聚合边界拆分：
 - Conversation 选中 dynamic leaf 时，从该 `DynamicNodeState` 投影 leaf lifecycle；尚未创建 active execution 的 `Ready` leaf 由明确的 read-model 规则投影为 `StartingNode`。父 Run 已暂停时，非终态 leaf 服从父 `Paused` 聚合；workspace 临界区只把 causal leaf 的 phase 暂时推进到 `PreparingWorkspace`，无关并行/历史 leaf 保持自己的 phase。leaf 已完成但 graph 尚在消费 proposal，或 leaf pause 已落盘但 graph active 集合尚未收敛的提交窗口，才服从父 graph 聚合。页面选择和 `currentNodeIds` 聚合都不能替代 causal owner identity。
 - 停止一个 leaf 后若仍有 `Ready | Running` sibling，`DynamicRunState` 与父 Run 保持 Running；最后一个 active leaf 停止时，才把 graph、父 Node/Round/Run 聚合为 Paused。旧 execution 的迟到回调必须被忽略或拒绝。
 
-`LaunchingNextNode` 只能在当前节点 outcome 已可靠落盘、Runtime 明确提交后出现。停止后的 NonRuntime 追问无论成功、取消或失败，都保持 `Paused + ProcessInterrupted + execution=Paused`，直到用户点击“继续工作流”。继续命令在启动后台执行前先提交 `Run.status=Running` 与 checkpoint 对应的 execution phase，因此不会读取上一条 NonRuntime turn 的 terminal 结果填补窗口。
+`LaunchingNextNode` 只能在当前节点 outcome 已可靠落盘、Runtime 明确提交后出现。停止后的 NonRuntime 追问无论成功、取消或失败，都保持 `Paused + ProcessInterrupted + execution=Paused`，直到用户点击“继续工作流”。继续命令在启动后台执行前先提交 `Run.status=Running` 与 checkpoint 对应的 execution phase，因此不会读取上一条 NonRuntime turn 的 terminal 结果填补窗口。指标只能订阅这次已提交的 lifecycle transition，不得向 `RunState/RuntimeExecutionState` 增加 pending action 或改变 continue 的状态转换与失败收敛。
 
 `run-progress.json` 是带 `runtimeRevision` 的观测投影，不参与 continue 资格、composer、sidebar、错误语义或 active run 选择；详情页只展示 revision 与 `run.json.execution.revision` 相同的 progress。启动恢复继续把遗留 Running 收敛为 `Paused + ProcessInterrupted + execution=Paused`，revision 单调推进。
 
@@ -175,7 +175,7 @@ ACP 会话传输与 Runtime 控制权转换必须正交建模。`SessionMode` �
 - auth、quota、rate limit、provider 暂不可用、model invalid、catalog missing、provider 缺失、workspace 能力缺失等用户处理外部条件后可继续的异常。
 - 事件、timeline、raw frame 等观察性写入失败，且不会改变 workflow 前提条件。
 
-`runtime-abnormal` 与用户停止的 `process-interrupted` 都保留当前 run / round / node / attempt，并允许通过显式“继续工作流”动作恢复；区别是前者需要以异常视觉提醒用户排查本地、协议层或 provider/config 条件。暂停期间输入区继续提供 NonRuntime 普通对话，独立 continue action 才恢复 Runtime。用户点击继续且后端接受后，会话输入区立即进入 runtime 控制态并保持锁定，直到 runtime active、停止中、错误或下一次可交互暂停事实到达；后台写入 running 文件前残留的旧 paused/action 快照不得让输入区短暂降级。错误分类优先使用 runtime 内部 typed error 与 source chain 中的 `std::io::Error` / transport error；只有 adapter、ACP 或第三方库没有稳定错误类型时，才允许在统一 normalization 层用字符串特征作为最后兜底。
+`runtime-abnormal` 与用户停止的 `process-interrupted` 都保留当前 run / round / node / attempt，并允许通过显式“继续工作流”动作恢复；区别是前者需要以异常视觉提醒用户排查本地、协议层或 provider/config 条件。暂停期间输入区继续提供 NonRuntime 普通对话，独立 continue action 才恢复 Runtime。用户点击继续且后端接受后，会话输入区立即进入 runtime 控制态并保持锁定，直到 runtime active、停止中、错误或下一次可交互暂停事实到达；后台写入 running 文件前残留的旧 paused UI snapshot 不得让输入区短暂降级。错误分类优先使用 runtime 内部 typed error 与 source chain 中的 `std::io::Error` / transport error；只有 adapter、ACP 或第三方库没有稳定错误类型时，才允许在统一 normalization 层用字符串特征作为最后兜底。
 
 ### 8.1 用户停止优先级与 ACP 收尾
 
@@ -186,6 +186,8 @@ runtime 写入 `Paused + ProcessInterrupted` 后，自动重试控制器必须�
 只有尚未形成 provider terminal verdict 的 transport interruption、临时本地资源等 `RecoveryMode::Auto` 错误使用共享 `RetryPolicy`，默认在初次调用后最多自动重试 3 次。明确的 `session/prompt` JSON-RPC error、`willRetry=false` 或 `threadStatus=systemError` 已经终结当前业务 turn，统一映射为 `RecoveryMode::Manual`，不得进入自动重试；否则重放业务 prompt 可能重复部分副作用。AI-DYNAMIC 自动重试必须保持原 attempt、logical prompt 与 session mode，不生成 proposal repair prompt；预算耗尽后才收敛为 `Paused + RuntimeAbnormal`。运行时自动恢复与输出协议 repair 是两套独立状态机，调用次数和验收必须从共享 retry policy 推导，不能在测试或实现中另行硬编码。
 
 `session/cancel` 后仍需有界等待原 `session/prompt` terminal。若 deadline 到期，记录结构化 `acp.cancel-drain-timeout`，用户可见 attempt 仍保持 `Paused + ProcessInterrupted`，ACP turn 结算为 cancelled；该未收尾 session 必须从 attempt route 与 attached runtime registry 中隔离，但 `worker-ref.json` 继续保留原 Provider session identity。后续向该既有 attempt 提交用户 turn 时必须使用 `SessionMode::Continue`，优先按 live capability 调用 `session/resume`，仅在 resume 不可用而 load 可用时调用 `session/load`；缺少恢复引用时返回 `acp.session-restore-reference-missing`，恢复能力缺失时返回 `acp.session-restore-unsupported`，均不得静默降级为 `session/new`。adapter process 仍按 `provider_id + workspace_root` 复用，不因单个 session 收尾超时被 kill，也不得影响同 process 上的其他 session。
+
+Cursor ACP 已知缺陷：prompt 已被消费后发送 `session/cancel`，后续模型上下文可能整轮撤回该 user prompt（含 runtime continue 刚注入的 hidden context），与 ACP「cancel 只停前台工作」和 Gold Band 保留 cancelled `goldBandPrompt` 的契约不一致。详见 [Provider Adapter 接口](../provider/adapter.md)。未做补偿前，不要假设被取消的 continue prompt 仍在 Cursor 会话历史里；下一次 runtime-controlled continue 才应重新注入最新 hidden context。
 
 若 ACP 在 session-ready、session id 或首批 timeline event 形成前已经进入 `runtime-error`，会话 UI 必须优先展示 runtime diagnostic 错误态并停止初始 loading；不能因为 session snapshot 尚未 ready 而持续显示加载中。已经建立 session 或已有事件的会话仍走正常会话错误展示路径，避免初始化错误规则覆盖可恢复的既有会话。
 

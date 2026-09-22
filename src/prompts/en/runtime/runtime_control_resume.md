@@ -1,1 +1,1 @@
-The user has chosen to return the current node to Runtime control. The current output contract, if any, is active again.
+Please continue the unfinished task of the current node and follow the user's latest guidance for that task, if any.

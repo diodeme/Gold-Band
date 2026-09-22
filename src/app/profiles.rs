@@ -9,17 +9,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::warn;
 use walkdir::WalkDir;
 
+use crate::channel::{
+    ProfileChannelCapability, RELEASE_CHANNEL, profile_channel_capability_enabled,
+};
 use crate::config::DesktopLanguage;
 use crate::frontmatter::{
     FrontmatterUpdate, parse_frontmatter_document, parse_optional_frontmatter_document,
     render_frontmatter_document, update_frontmatter_document,
 };
 use crate::prompts::{
-    PROFILE_ACCEPT_EN, PROFILE_ACCEPT_ZH_CN, PROFILE_CLEAN_EN, PROFILE_CLEAN_ZH_CN, PROFILE_DEV_EN,
-    PROFILE_DEV_TEST_EN, PROFILE_DEV_TEST_ZH_CN, PROFILE_DEV_ZH_CN, PROFILE_GRILLME_EN,
-    PROFILE_GRILLME_ZH_CN, PROFILE_INTERVIEW_EN, PROFILE_INTERVIEW_ZH_CN, PROFILE_PLAN_EN,
-    PROFILE_PLAN_ZH_CN, PROFILE_REVIEW_EN, PROFILE_REVIEW_ZH_CN, PROFILE_TEST_EN,
-    PROFILE_TEST_ZH_CN, profile_template_validation_contexts, prompt_by_language, render,
+    LocalizedText, PROFILE_ACCEPT, PROFILE_CICD, PROFILE_CLEAN, PROFILE_DEV, PROFILE_DEV_TEST,
+    PROFILE_GRILLME, PROFILE_INTERVIEW, PROFILE_OVERLAY_DEV_TEST_AUTO_COMMIT,
+    PROFILE_OVERLAY_REQUIREMENT_IDENTITY, PROFILE_PLAN, PROFILE_REVIEW, PROFILE_TEST,
+    profile_template_validation_contexts, prompt_by_language, render,
 };
 use crate::storage::{GoldBandPaths, ensure_parent_dir};
 
@@ -150,14 +152,33 @@ impl DefaultProfileIds {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct LocalizedProfileText {
-    zh_cn: &'static str,
-    en: &'static str,
-}
+struct LocalizedProfileText(LocalizedText);
 
 impl LocalizedProfileText {
+    const fn all(
+        zh_cn: &'static str,
+        zh_tw: &'static str,
+        en: &'static str,
+        ja_jp: &'static str,
+        ko_kr: &'static str,
+        pt_br: &'static str,
+        es: &'static str,
+    ) -> Self {
+        Self(LocalizedText::all(
+            zh_cn, zh_tw, en, ja_jp, ko_kr, pt_br, es,
+        ))
+    }
+
+    const fn zh_en(zh_cn: &'static str, en: &'static str) -> Self {
+        Self(LocalizedText::zh_en(zh_cn, en))
+    }
+
+    const fn from_text(text: LocalizedText) -> Self {
+        Self(text)
+    }
+
     fn value(self, language: DesktopLanguage) -> &'static str {
-        prompt_by_language(language, self.zh_cn, self.en)
+        self.0.resolve(language)
     }
 }
 
@@ -165,9 +186,17 @@ impl LocalizedProfileText {
 struct DefaultProfileSeed {
     key: &'static str,
     id: &'static str,
+    required_capability: Option<ProfileChannelCapability>,
     name: LocalizedProfileText,
     summary: LocalizedProfileText,
     dynamic_template: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProfileOverlay {
+    target_profile_keys: &'static [&'static str],
+    required_capability: ProfileChannelCapability,
+    content: LocalizedProfileText,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -233,126 +262,253 @@ impl ProfileCommandError {
 const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     DefaultProfileSeed {
         key: "plan",
+        required_capability: None,
         id: "pf-builtin-plan",
-        name: LocalizedProfileText {
-            zh_cn: "方案",
-            en: "Plan",
-        },
-        summary: LocalizedProfileText {
-            zh_cn: "方案角色，用于需求分析和实施方案设计。",
-            en: "Planning role for analyzing requirements and designing implementation plans.",
-        },
+        name: LocalizedProfileText::all("方案", "方案", "Plan", "計画", "계획", "Plano", "Plan"),
+        summary: LocalizedProfileText::all(
+            "方案角色，用于需求分析和实施方案设计。",
+            "方案角色，用於需求分析和實施方案設計。",
+            "Planning role for analyzing requirements and designing implementation plans.",
+            "要件を分析し、実装計画を設計する Plan ロールです。",
+            "요구사항을 분석하고 구현 계획을 설계하는 Plan 역할입니다.",
+            "Papel de Plan para analisar requisitos e desenhar planos de implementação.",
+            "Rol de Plan para analizar requisitos y diseñar planes de implementación.",
+        ),
         dynamic_template: true,
     },
     DefaultProfileSeed {
         key: "dev",
+        required_capability: None,
         id: "pf-builtin-dev",
-        name: LocalizedProfileText {
-            zh_cn: "开发",
-            en: "Development",
-        },
-        summary: LocalizedProfileText {
-            zh_cn: "开发角色，用于实现需求并维护代码质量。",
-            en: "Development role for implementing requirements and maintaining code quality.",
-        },
+        name: LocalizedProfileText::all(
+            "开发",
+            "開發",
+            "Development",
+            "開発",
+            "개발",
+            "Desenvolvimento",
+            "Desarrollo",
+        ),
+        summary: LocalizedProfileText::all(
+            "开发角色，用于实现需求并维护代码质量。",
+            "開發角色，用於實現需求並維護程式品質。",
+            "Development role for implementing requirements and maintaining code quality.",
+            "要件を実装し、コード品質を維持する Development ロールです。",
+            "요구사항을 구현하고 코드 품질을 유지하는 Development 역할입니다.",
+            "Papel de Development para implementar requisitos e manter a qualidade do código.",
+            "Rol de Development para implementar requisitos y mantener la calidad del código.",
+        ),
         dynamic_template: true,
     },
     DefaultProfileSeed {
         key: "dev-test",
+        required_capability: None,
         id: "pf-builtin-dev-test",
-        name: LocalizedProfileText {
-            zh_cn: "开发测试",
-            en: "Development and Testing",
-        },
-        summary: LocalizedProfileText {
-            zh_cn: "开发测试角色，用于在同一节点完成需求实现、自动化测试与必要回归。",
-            en: "Development and testing role for implementing requirements and running automated verification in one node.",
-        },
+        name: LocalizedProfileText::all(
+            "开发测试",
+            "開發測試",
+            "Development and Testing",
+            "開発とテスト",
+            "개발 및 테스트",
+            "Desenvolvimento e testes",
+            "Desarrollo y pruebas",
+        ),
+        summary: LocalizedProfileText::all(
+            "开发测试角色，用于在同一节点完成需求实现、自动化测试与必要回归。",
+            "開發測試角色，用於在同一節點完成需求實現、自動化測試與必要回歸。",
+            "Development and testing role for implementing requirements and running automated verification in one node.",
+            "同一ノードで要件の実装、自動テスト、必要な回帰を行う Development and Testing ロールです。",
+            "같은 노드에서 요구사항 구현, 자동화 테스트, 필요한 회귀를 수행하는 Development and Testing 역할입니다.",
+            "Papel de Development and Testing para implementar requisitos e executar verificação automatizada no mesmo nó.",
+            "Rol de Development and Testing para implementar requisitos y ejecutar la verificación automatizada en el mismo nodo.",
+        ),
         dynamic_template: true,
     },
     DefaultProfileSeed {
         key: "review",
+        required_capability: None,
         id: "pf-builtin-review",
-        name: LocalizedProfileText {
-            zh_cn: "审查",
-            en: "Review",
-        },
-        summary: LocalizedProfileText {
-            zh_cn: "审查角色，用于检查实现质量、风险和一致性。",
-            en: "Review role for checking implementation quality, risks, and consistency.",
-        },
+        name: LocalizedProfileText::all(
+            "审查",
+            "審查",
+            "Review",
+            "レビュー",
+            "검토",
+            "Revisão",
+            "Revisión",
+        ),
+        summary: LocalizedProfileText::all(
+            "审查角色，用于检查实现质量、风险和一致性。",
+            "審查角色，用於檢查實作品質、風險和一致性。",
+            "Review role for checking implementation quality, risks, and consistency.",
+            "実装品質、リスク、一貫性を確認する Review ロールです。",
+            "구현 품질, 위험, 일관성을 확인하는 Review 역할입니다.",
+            "Papel de Review para verificar a qualidade, os riscos e a consistência da implementação.",
+            "Rol de Review para comprobar la calidad, los riesgos y la consistencia de la implementación.",
+        ),
         dynamic_template: false,
     },
     DefaultProfileSeed {
         key: "test",
+        required_capability: None,
         id: "pf-builtin-test",
-        name: LocalizedProfileText {
-            zh_cn: "测试",
-            en: "Testing",
-        },
-        summary: LocalizedProfileText {
-            zh_cn: "测试角色，用于执行验证并反馈质量结果。",
-            en: "Testing role for running verification and reporting quality results.",
-        },
+        name: LocalizedProfileText::all(
+            "测试",
+            "測試",
+            "Testing",
+            "テスト",
+            "테스트",
+            "Testes",
+            "Pruebas",
+        ),
+        summary: LocalizedProfileText::all(
+            "测试角色，用于执行验证并反馈质量结果。",
+            "測試角色，用於執行驗證並回報品質結果。",
+            "Testing role for running verification and reporting quality results.",
+            "検証を実行し、品質結果を返す Testing ロールです。",
+            "검증을 실행하고 품질 결과를 보고하는 Testing 역할입니다.",
+            "Papel de Testing para executar a verificação e reportar os resultados de qualidade.",
+            "Rol de Testing para ejecutar la verificación e informar los resultados de calidad.",
+        ),
         dynamic_template: false,
     },
     DefaultProfileSeed {
         key: "accept",
+        required_capability: None,
         id: "pf-builtin-accept",
-        name: LocalizedProfileText {
-            zh_cn: "验收",
-            en: "Acceptance",
-        },
-        summary: LocalizedProfileText {
-            zh_cn: "验收角色，用于对照需求判断交付是否满足目标。",
-            en: "Acceptance role for determining whether the delivery meets the requirements.",
-        },
+        name: LocalizedProfileText::all(
+            "验收",
+            "驗收",
+            "Acceptance",
+            "受け入れ",
+            "인수",
+            "Aceite",
+            "Aceptación",
+        ),
+        summary: LocalizedProfileText::all(
+            "验收角色，用于对照需求判断交付是否满足目标。",
+            "驗收角色，用於對照需求判斷交付是否滿足目標。",
+            "Acceptance role for determining whether the delivery meets the requirements.",
+            "要件と照合して、成果物が目標を満たすか判断する Acceptance ロールです。",
+            "요구사항과 대조해 전달물이 목표를 충족하는지 판단하는 Acceptance 역할입니다.",
+            "Papel de Acceptance para decidir se a entrega atende aos requisitos.",
+            "Rol de Acceptance para decidir si la entrega cumple los requisitos.",
+        ),
+        dynamic_template: false,
+    },
+    DefaultProfileSeed {
+        key: "cicd",
+        required_capability: Some(ProfileChannelCapability::Cicd),
+        id: "pf-builtin-cicd",
+        name: LocalizedProfileText::zh_en("CI/CD", "CI/CD"),
+        summary: LocalizedProfileText::zh_en(
+            "CI/CD 角色，使用 WeTest 完成构建，并与用户交互确认按构建或包名部署。",
+            "CI/CD role for WeTest builds and interactive deployment from a build or by package name.",
+        ),
         dynamic_template: false,
     },
     DefaultProfileSeed {
         key: "cleanup",
+        required_capability: None,
         id: "pf-builtin-cleanup",
-        name: LocalizedProfileText {
-            zh_cn: "清理",
-            en: "Cleanup",
-        },
-        summary: LocalizedProfileText {
-            zh_cn: "清理角色，用于验收成功后的资源释放、收尾和环境清理。",
-            en: "Cleanup role for releasing resources, finalizing handoff notes, and cleaning up the environment after acceptance.",
-        },
+        name: LocalizedProfileText::all(
+            "清理",
+            "清理",
+            "Cleanup",
+            "クリーンアップ",
+            "정리",
+            "Limpeza",
+            "Limpieza",
+        ),
+        summary: LocalizedProfileText::all(
+            "清理角色，用于验收成功后的资源释放、收尾和环境清理。",
+            "清理角色，用於驗收成功後的資源釋放、收尾和環境清理。",
+            "Cleanup role for releasing resources, finalizing handoff notes, and cleaning up the environment after acceptance.",
+            "Acceptance 成功後のリソース解放、引き継ぎ、環境のクリーンアップを行う Cleanup ロールです。",
+            "Acceptance 성공 후 리소스 해제, 인수인계, 환경 정리를 수행하는 Cleanup 역할입니다.",
+            "Papel de Cleanup para liberar recursos, finalizar as notas de handoff e limpar o ambiente após o Acceptance.",
+            "Rol de Cleanup para liberar recursos, cerrar las notas de handoff y limpiar el entorno tras el Acceptance.",
+        ),
         dynamic_template: false,
     },
     DefaultProfileSeed {
         key: "interview",
+        required_capability: None,
         id: "pf-builtin-interview",
-        name: LocalizedProfileText {
-            zh_cn: "访谈",
-            en: "Interview",
-        },
-        summary: LocalizedProfileText {
-            zh_cn: "访谈角色，用于需求澄清，通过深度访谈把模糊需求转化为清晰规格。",
-            en: "Interview role for clarifying requirements and turning ambiguity into clear specifications through deep interviews.",
-        },
+        name: LocalizedProfileText::all(
+            "访谈",
+            "訪談",
+            "Interview",
+            "インタビュー",
+            "인터뷰",
+            "Entrevista",
+            "Entrevista",
+        ),
+        summary: LocalizedProfileText::all(
+            "访谈角色，用于需求澄清，通过深度访谈把模糊需求转化为清晰规格。",
+            "訪談角色，用於需求釐清，透過深度訪談把模糊需求轉化為清晰規格。",
+            "Interview role for clarifying requirements and turning ambiguity into clear specifications through deep interviews.",
+            "要件を明確にし、深いインタビューで曖昧な要件を明確な仕様へ変える Interview ロールです。",
+            "요구사항을 명확히 하고, 심층 인터뷰로 모호한 요구를 명확한 스펙으로 바꾸는 Interview 역할입니다.",
+            "Papel de Interview para esclarecer requisitos e transformar ambiguidades em especificações claras.",
+            "Rol de Interview para aclarar requisitos y convertir la ambigüedad en especificaciones claras.",
+        ),
         dynamic_template: false,
     },
     DefaultProfileSeed {
         key: "grill",
+        required_capability: None,
         id: "pf-builtin-grill",
-        name: LocalizedProfileText {
-            zh_cn: "拷问",
-            en: "Grill",
-        },
-        summary: LocalizedProfileText {
-            zh_cn: "拷问角色，围绕计划或决策进行毫不留情的深度访谈，直到达成共同理解。",
-            en: "Grill role for rigorously challenging plans or decisions through deep interviews until shared understanding is reached.",
-        },
+        name: LocalizedProfileText::all(
+            "拷问",
+            "詰問",
+            "Grill",
+            "追及",
+            "심층 질의",
+            "Questionamento",
+            "Interrogatorio",
+        ),
+        summary: LocalizedProfileText::all(
+            "拷问角色，围绕计划或决策进行毫不留情的深度访谈，直到达成共同理解。",
+            "詰問角色，圍繞計畫或決策進行毫不留情的深度訪談，直到達成共同理解。",
+            "Grill role for rigorously challenging plans or decisions through deep interviews until shared understanding is reached.",
+            "計画や意思決定を深いインタビューで厳しく問い、共通理解に至るまで詰める Grill ロールです。",
+            "계획이나 의사결정을 심층 인터뷰로 엄격히 따져 공통 이해에 도달하는 Grill 역할입니다.",
+            "Papel de Grill para questionar planos ou decisões em entrevistas profundas até haver entendimento comum.",
+            "Rol de Grill para cuestionar planes o decisiones en entrevistas profundas hasta alcanzar un entendimiento común.",
+        ),
         dynamic_template: false,
     },
 ];
 
+const PROFILE_OVERLAYS: &[ProfileOverlay] = &[
+    ProfileOverlay {
+        target_profile_keys: &["interview", "grill"],
+        required_capability: ProfileChannelCapability::RequirementIdentity,
+        content: LocalizedProfileText::from_text(PROFILE_OVERLAY_REQUIREMENT_IDENTITY),
+    },
+    ProfileOverlay {
+        target_profile_keys: &["dev-test"],
+        required_capability: ProfileChannelCapability::DevTestAutoCommit,
+        content: LocalizedProfileText::from_text(PROFILE_OVERLAY_DEV_TEST_AUTO_COMMIT),
+    },
+];
+
+fn default_profile_seeds_for_channel(
+    channel: &str,
+) -> impl Iterator<Item = &'static DefaultProfileSeed> + '_ {
+    DEFAULT_PROFILE_SEEDS.iter().filter(move |seed| {
+        seed.required_capability
+            .is_none_or(|capability| profile_channel_capability_enabled(channel, capability))
+    })
+}
+
+fn available_default_profile_seeds() -> impl Iterator<Item = &'static DefaultProfileSeed> {
+    default_profile_seeds_for_channel(RELEASE_CHANNEL)
+}
+
 pub(crate) fn ensure_default_user_profiles(_paths: &GoldBandPaths) -> Result<DefaultProfileIds> {
-    let by_key = DEFAULT_PROFILE_SEEDS
-        .iter()
+    let by_key = available_default_profile_seeds()
         .map(|seed| (seed.key.to_string(), seed.id.to_string()))
         .collect();
     Ok(DefaultProfileIds { by_key })
@@ -747,14 +903,13 @@ pub(crate) fn find_profile_by_id(
 }
 
 fn built_in_profiles(language: DesktopLanguage) -> Vec<ProfileEntry> {
-    DEFAULT_PROFILE_SEEDS
-        .iter()
+    available_default_profile_seeds()
         .map(|seed| ProfileEntry {
             id: seed.id.to_string(),
             name: seed.name.value(language).to_string(),
             summary: seed.summary.value(language).to_string(),
             summary_source: seed.summary.value(language).to_string(),
-            content: built_in_profile_content(seed.key, language).to_string(),
+            content: built_in_profile_content(seed.key, language),
             dynamic_template: seed.dynamic_template,
             scope: ProfileScope::BuiltIn,
             is_built_in: true,
@@ -766,15 +921,14 @@ fn built_in_profiles(language: DesktopLanguage) -> Vec<ProfileEntry> {
 }
 
 fn built_in_profile_by_id(id: &str, language: DesktopLanguage) -> Option<ProfileEntry> {
-    DEFAULT_PROFILE_SEEDS
-        .iter()
+    available_default_profile_seeds()
         .find(|seed| seed.id == id)
         .map(|seed| ProfileEntry {
             id: seed.id.to_string(),
             name: seed.name.value(language).to_string(),
             summary: seed.summary.value(language).to_string(),
             summary_source: seed.summary.value(language).to_string(),
-            content: built_in_profile_content(seed.key, language).to_string(),
+            content: built_in_profile_content(seed.key, language),
             dynamic_template: seed.dynamic_template,
             scope: ProfileScope::BuiltIn,
             is_built_in: true,
@@ -784,19 +938,29 @@ fn built_in_profile_by_id(id: &str, language: DesktopLanguage) -> Option<Profile
         })
 }
 
-fn built_in_profile_content(key: &str, language: DesktopLanguage) -> &'static str {
-    match key {
-        "plan" => prompt_by_language(language, PROFILE_PLAN_ZH_CN, PROFILE_PLAN_EN),
-        "dev" => prompt_by_language(language, PROFILE_DEV_ZH_CN, PROFILE_DEV_EN),
-        "dev-test" => prompt_by_language(language, PROFILE_DEV_TEST_ZH_CN, PROFILE_DEV_TEST_EN),
-        "review" => prompt_by_language(language, PROFILE_REVIEW_ZH_CN, PROFILE_REVIEW_EN),
-        "test" => prompt_by_language(language, PROFILE_TEST_ZH_CN, PROFILE_TEST_EN),
-        "accept" => prompt_by_language(language, PROFILE_ACCEPT_ZH_CN, PROFILE_ACCEPT_EN),
-        "cleanup" => prompt_by_language(language, PROFILE_CLEAN_ZH_CN, PROFILE_CLEAN_EN),
-        "interview" => prompt_by_language(language, PROFILE_INTERVIEW_ZH_CN, PROFILE_INTERVIEW_EN),
-        "grill" => prompt_by_language(language, PROFILE_GRILLME_ZH_CN, PROFILE_GRILLME_EN),
+fn built_in_profile_content(key: &str, language: DesktopLanguage) -> String {
+    let content = match key {
+        "plan" => prompt_by_language(language, PROFILE_PLAN),
+        "dev" => prompt_by_language(language, PROFILE_DEV),
+        "dev-test" => prompt_by_language(language, PROFILE_DEV_TEST),
+        "review" => prompt_by_language(language, PROFILE_REVIEW),
+        "test" => prompt_by_language(language, PROFILE_TEST),
+        "cicd" => prompt_by_language(language, PROFILE_CICD),
+        "accept" => prompt_by_language(language, PROFILE_ACCEPT),
+        "cleanup" => prompt_by_language(language, PROFILE_CLEAN),
+        "interview" => prompt_by_language(language, PROFILE_INTERVIEW),
+        "grill" => prompt_by_language(language, PROFILE_GRILLME),
         _ => "",
+    };
+    let mut composed = content.to_string();
+    for overlay in PROFILE_OVERLAYS.iter().filter(|overlay| {
+        overlay.target_profile_keys.contains(&key)
+            && profile_channel_capability_enabled(RELEASE_CHANNEL, overlay.required_capability)
+    }) {
+        composed.push_str("\n\n");
+        composed.push_str(overlay.content.value(language).trim());
     }
+    composed
 }
 
 fn read_profile_dir(paths: &GoldBandPaths, scope: ProfileScope) -> Result<Vec<ProfileEntry>> {
@@ -1062,6 +1226,7 @@ fn scope_rank(scope: ProfileScope) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prompts::{PROFILE_CICD_EN, PROFILE_CICD_ZH_CN, PROFILE_PLAN_EN};
     use std::fs;
 
     #[test]
@@ -1262,6 +1427,12 @@ profile body
         assert_eq!(by_id["pf-builtin-dev-test"], true);
         assert_eq!(by_id["pf-builtin-review"], false);
         assert_eq!(by_id["pf-builtin-test"], false);
+        let cicd_available =
+            profile_channel_capability_enabled(RELEASE_CHANNEL, ProfileChannelCapability::Cicd);
+        assert_eq!(
+            by_id.get("pf-builtin-cicd"),
+            cicd_available.then_some(&false)
+        );
         assert_eq!(by_id["pf-builtin-accept"], false);
         assert_eq!(by_id["pf-builtin-cleanup"], false);
         assert_eq!(by_id["pf-builtin-interview"], false);
@@ -1298,6 +1469,45 @@ profile body
             assert_eq!(en.name, en_name);
             assert_ne!(zh.summary, en.summary);
         }
+
+        let ja_plan = built_in_profiles(DesktopLanguage::JaJp)
+            .into_iter()
+            .find(|profile| profile.id == "pf-builtin-plan")
+            .expect("Japanese plan role");
+        assert_eq!(ja_plan.id, "pf-builtin-plan");
+        assert_eq!(ja_plan.name, "計画");
+        assert_ne!(ja_plan.content, PROFILE_PLAN_EN);
+    }
+
+    #[test]
+    fn built_in_profiles_reject_update_and_delete_in_every_channel() {
+        // 渠道目录只决定哪些内置角色可见；在当前渠道可见的内置角色都必须只读。
+        let tmp = tempfile::tempdir().unwrap();
+        let paths =
+            GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap());
+        let built_ins = built_in_profiles(DesktopLanguage::ZhCn);
+        assert!(!built_ins.is_empty());
+        for profile in built_ins {
+            let input = ProfileInput {
+                name: "Edited role".to_string(),
+                summary: "Edited role".to_string(),
+                content: "Edited content".to_string(),
+                dynamic_template: false,
+            };
+            for error in [
+                update_profile(&paths, &profile.id, input).unwrap_err(),
+                delete_profile(&paths, &profile.id).unwrap_err(),
+            ] {
+                assert!(
+                    matches!(
+                        error.downcast_ref::<ProfileCommandError>(),
+                        Some(ProfileCommandError::ReadonlyBuiltIn)
+                    ),
+                    "built-in profile `{}` must reject writes",
+                    profile.id
+                );
+            }
+        }
     }
 
     #[test]
@@ -1315,6 +1525,126 @@ profile body
         }
     }
 
+    #[test]
+    fn channel_profile_catalog_preserves_shared_roles_and_restricts_cicd() {
+        for channel in ["default", "wb", "enterprise", ""] {
+            let profiles = default_profile_seeds_for_channel(channel).collect::<Vec<_>>();
+            assert_eq!(profiles.len(), if channel == "wb" { 10 } else { 9 });
+            assert_eq!(
+                profiles.iter().any(|seed| seed.id == "pf-builtin-cicd"),
+                channel == "wb"
+            );
+            for seed in DEFAULT_PROFILE_SEEDS
+                .iter()
+                .filter(|seed| seed.required_capability.is_none())
+            {
+                assert!(profiles.iter().any(|available| available.id == seed.id));
+            }
+        }
+    }
+
+    #[test]
+    fn cicd_profile_availability_matches_build_channel() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths =
+            GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap());
+        let available =
+            profile_channel_capability_enabled(RELEASE_CHANNEL, ProfileChannelCapability::Cicd);
+        for language in [DesktopLanguage::ZhCn, DesktopLanguage::En] {
+            let list = list_profiles(&paths, language).unwrap();
+            assert_eq!(
+                list.profiles
+                    .iter()
+                    .any(|profile| profile.id == "pf-builtin-cicd"),
+                available,
+                "CI/CD visibility must match the profile channel capability"
+            );
+            assert_eq!(
+                find_profile_by_id(&paths, "pf-builtin-cicd", language)
+                    .unwrap()
+                    .is_some(),
+                available
+            );
+            assert_eq!(
+                show_profile(&paths, "pf-builtin-cicd", language).is_ok(),
+                available
+            );
+            assert!(show_profile(&paths, "pf-builtin-dev", language).is_ok());
+            let resolved = crate::app::profile_resolver::resolve_profile(
+                &paths,
+                "cicd-node",
+                "pf-builtin-cicd",
+                language,
+            );
+            assert_eq!(resolved.is_ok(), available);
+        }
+        let ids = ensure_default_user_profiles(&paths).unwrap();
+        assert_eq!(ids.get("cicd"), available.then_some("pf-builtin-cicd"));
+        assert_eq!(ids.get("dev"), Some("pf-builtin-dev"));
+    }
+
+    #[test]
+    fn cicd_profile_interfaces_return_localized_builtin_content_without_enabling_default_execution()
+    {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths =
+            GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().join("repo")).unwrap());
+        let id = "pf-builtin-cicd";
+        if !profile_channel_capability_enabled(RELEASE_CHANNEL, ProfileChannelCapability::Cicd) {
+            assert!(show_profile(&paths, id, DesktopLanguage::ZhCn).is_err());
+            assert!(show_profile(&paths, id, DesktopLanguage::En).is_err());
+            return;
+        }
+        for (language, content) in [
+            (DesktopLanguage::ZhCn, PROFILE_CICD_ZH_CN),
+            (DesktopLanguage::En, PROFILE_CICD_EN),
+        ] {
+            let list = list_profiles(&paths, language).unwrap();
+            let matches = list
+                .profiles
+                .iter()
+                .filter(|profile| profile.id == id)
+                .collect::<Vec<_>>();
+            assert_eq!(matches.len(), 1);
+            let shown = show_profile(&paths, id, language).unwrap();
+            assert_eq!(shown.content, content);
+            assert_eq!(matches[0].content, shown.content);
+            assert_eq!(shown.name, "CI/CD");
+            assert_eq!(shown.scope, ProfileScope::BuiltIn);
+            assert!(shown.is_built_in);
+            assert!(!shown.dynamic_template);
+            assert_eq!(shown.path, "builtin://profiles/cicd");
+        }
+        assert_ne!(
+            show_profile(&paths, id, DesktopLanguage::ZhCn)
+                .unwrap()
+                .summary,
+            show_profile(&paths, id, DesktopLanguage::En)
+                .unwrap()
+                .summary
+        );
+
+        let input = ProfileInput {
+            name: "CI/CD".to_string(),
+            summary: "Edited role".to_string(),
+            content: "Edited content".to_string(),
+            dynamic_template: false,
+        };
+        for error in [
+            update_profile(&paths, id, input).unwrap_err(),
+            delete_profile(&paths, id).unwrap_err(),
+        ] {
+            assert!(matches!(
+                error.downcast_ref::<ProfileCommandError>(),
+                Some(ProfileCommandError::ReadonlyBuiltIn)
+            ));
+        }
+        let ids = ensure_default_user_profiles(&paths).unwrap();
+        assert_eq!(ids.get("cicd"), Some(id));
+        let workflow = crate::app::default_workflow_dsl("claude-acp", &ids, DesktopLanguage::ZhCn);
+        assert!(!serde_json::to_string(&workflow).unwrap().contains(id));
+    }
+
     fn setup_import_dir() -> (tempfile::TempDir, GoldBandPaths, std::path::PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
         let paths =
@@ -1323,6 +1653,84 @@ profile body
         let import_dir = tmp.path().join("import");
         fs::create_dir_all(&import_dir).unwrap();
         (tmp, paths, import_dir)
+    }
+
+    #[test]
+    fn cicd_profile_requires_interactive_build_and_deploy_without_automatic_extras() {
+        for (content, clauses) in [
+            (
+                PROFILE_CICD_ZH_CN,
+                [
+                    "默认任务是构建 + 部署",
+                    "默认推荐按构建部署",
+                    "两种部署方式都必须与用户交互确认",
+                    "每次 run 都必须重新确认构建和部署参数",
+                    "不能复用上一次 run 的确认",
+                    "未选择的附加操作不执行，也不影响构建部署任务完成",
+                    "工作空间与任务记忆统一使用字符串 `key/value/desc` 条目",
+                    "`wetest <cmd> --help` 动态发现",
+                    "查询自由、触发类确认",
+                    "不通过试运行触发类命令来探测参数",
+                ],
+            ),
+            (
+                PROFILE_CICD_EN,
+                [
+                    "The default task is build + deploy",
+                    "Recommend deployment from a build by default",
+                    "Both deployment modes require interactive confirmation with the user",
+                    "Every run must freshly confirm its build and deployment parameters",
+                    "A confirmation from a previous run cannot be reused",
+                    "Unselected optional operations are not executed and do not block completion of build and deployment",
+                    "Workspace and task memory share string `key/value/desc` entries",
+                    "dynamically discover it with `wetest <cmd> --help`",
+                    "queries are free; triggers require confirmation",
+                    "never probe parameters by trial-running a trigger command",
+                ],
+            ),
+        ] {
+            for clause in clauses {
+                assert!(content.contains(clause), "missing CI/CD contract: {clause}");
+            }
+        }
+    }
+
+    #[test]
+    fn cicd_profiles_share_task_build_and_subsystem_deployment_keys() {
+        let keys = |content: &str| {
+            content
+                .lines()
+                .filter(|line| line.starts_with("| `cicd."))
+                .map(|line| line.split('|').nth(1).unwrap().trim().to_owned())
+                .collect::<Vec<_>>()
+        };
+        let zh = keys(PROFILE_CICD_ZH_CN);
+        assert_eq!(zh.len(), 14);
+        assert_eq!(zh, keys(PROFILE_CICD_EN));
+        assert_eq!(
+            zh,
+            [
+                "`cicd.build.jobId`",
+                "`cicd.build.branch`",
+                "`cicd.build.appList`",
+                "`cicd.build.appCoverage`",
+                "`cicd.deploy.<S>.selected`",
+                "`cicd.deploy.<S>.mode`",
+                "`cicd.deploy.<S>.templateId`",
+                "`cicd.deploy.<S>.templateName`",
+                "`cicd.deploy.<S>.deployType`",
+                "`cicd.deploy.<S>.env`",
+                "`cicd.deploy.<S>.ips`",
+                "`cicd.deploy.<S>.containers`",
+                "`cicd.deploy.<S>.pkgNames`",
+                "`cicd.deploy.<S>.inputParams`",
+            ]
+        );
+        for content in [PROFILE_CICD_ZH_CN, PROFILE_CICD_EN] {
+            assert!(!content.contains("Current-task `memory.json`"));
+            assert!(!content.contains("当前 task 的 `memory.json`"));
+            assert!(!content.contains("\"targets\""));
+        }
     }
 
     fn run_import(

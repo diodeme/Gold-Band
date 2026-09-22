@@ -62,3 +62,39 @@ fn backward_page_uses_semantic_position_when_an_earlier_block_finishes_later() {
     assert!(!page.has_older);
     assert!(page.has_newer);
 }
+
+#[test]
+fn forward_page_keeps_cumulative_response_before_prompt_when_ranges_overlap() {
+    let dir = tempdir().unwrap();
+    let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+    let mut store = TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+
+    let mut response = event("assistant-response", 10, "partial response");
+    response.started_seq = Some(10);
+    response.started_at = Some("10Z".to_string());
+    store.upsert(10, &response).unwrap();
+
+    let mut prompt = event("user-prompt", 11, "follow-up");
+    prompt.kind = "userTextDelta".to_string();
+    prompt.raw = Some(json!({ "source": "goldBandPrompt" }));
+    store.upsert(11, &prompt).unwrap();
+
+    response.seq = 20;
+    response.ended_seq = Some(20);
+    response.ended_at = Some("20Z".to_string());
+    response.content = Some("complete response".to_string());
+    store.upsert(20, &response).unwrap();
+    store.force_checkpoint().unwrap();
+
+    let page = read_indexed_timeline_page(&path, None, Some(9), None, 30).unwrap();
+
+    assert_eq!(
+        page.events
+            .iter()
+            .map(|event| event.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["assistant-response", "user-prompt"]
+    );
+    assert_eq!(page.oldest_seq, Some(10));
+    assert_eq!(page.newest_seq, Some(20));
+}

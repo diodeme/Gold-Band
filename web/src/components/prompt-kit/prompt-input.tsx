@@ -8,6 +8,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
+import { COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME } from "@/lib/conversation-composer-layout"
 import { useLeadingAdornmentTextIndent } from "@/hooks/useLeadingAdornmentTextIndent"
 import React, {
   useCallback,
@@ -246,7 +247,7 @@ function PromptInputTextarea({
     >
       <span
         ref={leadingAdornmentLayout.adornmentRef}
-        className="absolute left-2.5 top-2 z-10 inline-flex"
+        className={cn(COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME, "left-2.5 top-2")}
       >
         {leadingAdornment}
       </span>

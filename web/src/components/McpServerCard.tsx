@@ -69,6 +69,19 @@ export function McpServerCard({
   const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   const transportLabel = TRANSPORT_LABEL[server.transport] ?? server.transport;
+  const displayName = server.id === 'gold-band-memory'
+    ? t('contextManagement.mcp.goldBandMemoryName', 'Gold Band 共享记忆')
+    : server.name;
+  const diagnosticChecking = isChecking || health?.status === 'checking';
+  const diagnosticMessage = diagnosticChecking
+    ? t('contextManagement.mcp.diagnosticChecking', '正在检测配置…')
+    : health?.status === 'healthy'
+      ? t('contextManagement.mcp.diagnosticPassed', '最近一次 MCP 配置检测通过')
+      : health?.status === 'auth_required'
+        ? (health.message ?? t('contextManagement.mcp.diagnosticAuthRequired', '最近一次检测需要授权'))
+        : health?.status === 'unhealthy'
+          ? (health.message ?? t('contextManagement.mcp.diagnosticFailed', '最近一次 MCP 配置检测失败'))
+          : t('contextManagement.mcp.diagnosticNotChecked', '尚未检测配置');
   return (
     <Card className={cn('group flex h-44 flex-col overflow-hidden border-border/50 py-0 transition-shadow hover:shadow-sm', !server.enabled && 'opacity-50')}>
       {/* ── 上区：名称 / 传输 / 健康点 / 开关 ── */}
@@ -79,7 +92,7 @@ export function McpServerCard({
               <span
                 className={cn(
                   'size-2.5 shrink-0 rounded-full ring-1 ring-offset-1 ring-offset-background',
-                  isChecking ? 'bg-yellow-400 ring-yellow-400/30 animate-pulse' :
+                  diagnosticChecking ? 'bg-yellow-400 ring-yellow-400/30 animate-pulse' :
                   health?.status === 'healthy' ? 'bg-green-500 ring-green-500/30' :
                   health?.status === 'auth_required' ? 'bg-yellow-500 ring-yellow-500/30' :
                   health?.status === 'unhealthy' ? 'bg-red-500 ring-red-500/30' :
@@ -88,13 +101,13 @@ export function McpServerCard({
               />
             </TooltipTrigger>
             <TooltipContent side="bottom" className="max-w-xs whitespace-pre-wrap text-xs leading-relaxed">
-              {health?.message ?? t('contextManagement.mcp.noDiagnostic', '暂无诊断信息')}
+              {diagnosticMessage}
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="truncate text-sm font-semibold">{server.name}</span>
+            <span className="truncate text-sm font-semibold">{displayName}</span>
             <Badge variant="outline" className={cn('shrink-0 border px-1.5 py-0 text-ui-micro font-normal', TRANSPORT_BADGE_CLASS[server.transport])}>{transportLabel}</Badge>
             {server.helpMessage && (
               <Popover>
@@ -113,6 +126,7 @@ export function McpServerCard({
         </div>
         <button
           type="button" role="switch" aria-checked={server.enabled}
+          aria-label={t('contextManagement.mcp.toggleServer', { name: displayName, defaultValue: '启用或关闭 {{name}}' })}
           className={cn(
             'relative h-5 w-9 shrink-0 rounded-full border transition-colors',
             server.enabled ? 'border-primary bg-primary' : 'border-border/70 bg-muted-foreground/20',

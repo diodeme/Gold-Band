@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AppearancePreference, AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, ColorSchemePreference, DesktopLanguage, MetricsSettingsVm, PersonalizationPreference, PreferencesVm, ResolvedColorScheme, SaveDesktopAvatarInput, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, VisualQuality, WallpaperPreferencesVm } from '../types';
+import type { AppearancePreference, AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, BrowserPreferences, ColorSchemePreference, DesktopLanguage, MetricsSettingsVm, PersonalizationPreference, PreferencesVm, ResolvedColorScheme, SaveDesktopAvatarInput, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, VisualQuality, WallpaperPreferencesVm } from '../types';
 import {
   appearanceWithQuality,
   appearanceWithTheme,
@@ -21,6 +21,7 @@ import {
   type DesktopFontOption,
   type ThemePreviewPalette,
 } from '../theme';
+import { DESKTOP_LANGUAGE_OPTIONS } from '../languages';
 import { AppCard } from '@/components/AppCard';
 import { Page, PageHeader } from '@/components/PageScaffold';
 import { Button } from '@/components/ui/button';
@@ -43,6 +44,8 @@ import { normalizeFontCatalogFamilies } from '@/lib/font-families';
 import { ScheduledRuntimeSettings } from '@/components/scheduled-tasks/ScheduledRuntimeSettings';
 import { AvatarSettings } from '@/components/settings/AvatarSettings';
 import { WallpaperSettings } from '@/components/settings/WallpaperSettings';
+import { ImIntegrationSettings } from '@/components/settings/ImIntegrationSettings';
+import { BrowserSettings } from '@/components/settings/BrowserSettings';
 import { useWebviewMeasuredContainer } from '@/hooks/use-webview-measured-container';
 
 type TypographySection = 'ui' | 'editor';
@@ -90,7 +93,7 @@ interface SettingsPageProps {
   clientVersion: string;
   busy: boolean;
   initialTab?: 'general' | 'appearance' | 'advanced';
-  onSave: (appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean) => void;
+  onSave: (appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean, browser: BrowserPreferences) => void;
   onSaveAvatar: (input: SaveDesktopAvatarInput) => Promise<AvatarPreferencesVm | undefined>;
   onSelectRecentAvatar: (kind: AvatarKind, avatarId: string) => Promise<AvatarPreferencesVm | undefined>;
   onSaveAvatarShape: (kind: AvatarKind, shape: AvatarShape | null) => Promise<AvatarPreferencesVm | undefined>;
@@ -120,6 +123,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   const [editorFontSize, setEditorFontSize] = useState(() => effectiveTypographySize(preferences.appearance, preferences.personalization, 'editor'));
   const useLocalClaude = false;
   const [verboseLogging, setVerboseLogging] = useState(preferences.verboseLogging);
+  const [browser, setBrowser] = useState(preferences.browser);
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
   const [themeSheetOpen, setThemeSheetOpen] = useState(false);
   const [typographyDisclosure, setTypographyDisclosure] = useState(initialTypographyDisclosure);
@@ -133,6 +137,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   useEffect(() => setUiFontSize(effectiveTypographySize(preferences.appearance, preferences.personalization, 'ui')), [preferences.appearance, preferences.personalization]);
   useEffect(() => setEditorFontSize(effectiveTypographySize(preferences.appearance, preferences.personalization, 'editor')), [preferences.appearance, preferences.personalization]);
   useEffect(() => setVerboseLogging(preferences.verboseLogging), [preferences.verboseLogging]);
+  useEffect(() => setBrowser(preferences.browser), [preferences.browser]);
   useEffect(() => setUpdaterOverrideUrl(updaterSettings.overrideUrl ?? ''), [updaterSettings.overrideUrl]);
 
   // ── Metrics ──
@@ -195,7 +200,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
     setAppearance(next);
     applyAppearance(next);
     applyPersonalization(personalization);
-    onSave(next, personalization, language, useLocalClaude, verboseLogging);
+    onSave(next, personalization, language, useLocalClaude, verboseLogging, browser);
   };
 
   const chooseThemeFromSheet = (themeId: string) => {
@@ -205,14 +210,14 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
 
   const chooseLanguage = (value: DesktopLanguage) => {
     setLanguage(value);
-    onSave(appearance, personalization, value, useLocalClaude, verboseLogging);
+    onSave(appearance, personalization, value, useLocalClaude, verboseLogging, browser);
   };
 
   const chooseFontStack = (kind: TypographySection, families: readonly string[]) => {
     const next = withTypographyFontStack(personalization, kind, families);
     setPersonalization(next);
     applyPersonalization(next);
-    onSave(appearance, next, language, useLocalClaude, verboseLogging);
+    onSave(appearance, next, language, useLocalClaude, verboseLogging, browser);
   };
 
   const chooseTypographySize = (kind: 'ui' | 'editor', value: number) => {
@@ -221,7 +226,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
     setUiFontSize(effectiveTypographySize(appearance, next, 'ui'));
     setEditorFontSize(effectiveTypographySize(appearance, next, 'editor'));
     applyPersonalization(next);
-    onSave(appearance, next, language, useLocalClaude, verboseLogging);
+    onSave(appearance, next, language, useLocalClaude, verboseLogging, browser);
   };
 
   const previewTypographySize = (kind: 'ui' | 'editor', value: number) => {
@@ -235,7 +240,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
     setUiFontSize(effectiveTypographySize(appearance, next, 'ui'));
     setEditorFontSize(effectiveTypographySize(appearance, next, 'editor'));
     applyPersonalization(next);
-    onSave(appearance, next, language, useLocalClaude, verboseLogging);
+    onSave(appearance, next, language, useLocalClaude, verboseLogging, browser);
   };
 
 
@@ -298,10 +303,10 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
       <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5 xl:p-6">
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'general' | 'appearance' | 'advanced')} className="space-y-4">
         <TabsList className={cn('grid w-full max-w-md', readOnly ? 'grid-cols-2' : 'grid-cols-3')}>
-          <TabsTrigger value="general">{t('settings.tabs.general')}</TabsTrigger>
-          <TabsTrigger value="appearance">{t('settings.tabs.appearance')}</TabsTrigger>
-          {!readOnly && <TabsTrigger value="advanced">
-            <span className="inline-flex items-center gap-2">
+          <TabsTrigger value="general" className="min-w-0 px-1">{t('settings.tabs.general')}</TabsTrigger>
+          <TabsTrigger value="appearance" className="min-w-0 px-1">{t('settings.tabs.appearance')}</TabsTrigger>
+          {!readOnly && <TabsTrigger value="advanced" className="min-w-0 px-1">
+            <span className="inline-flex min-w-0 items-center gap-1">
               <span>{t('settings.tabs.advanced')}</span>
               {showAdvancedUpdateDot ? <UpdateDot /> : null}
             </span>
@@ -312,17 +317,30 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
           <AppCard className="gap-0 overflow-hidden py-0">
             <SettingsSection title={t('settings.language')}>
               <Select value={language} onValueChange={(value) => chooseLanguage(value as DesktopLanguage)}>
-                <SelectTrigger className="w-56">
+                <SelectTrigger className="w-72">
                   <SelectValue aria-label={language} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="zh-cn">中文</SelectItem>
-                  <SelectItem value="en">English</SelectItem>
+                  {DESKTOP_LANGUAGE_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </SettingsSection>
+            <SettingsSection title={t('settings.browser.title')} divided>
+              <BrowserSettings
+                preferences={browser}
+                onChange={(next) => {
+                  setBrowser(next);
+                  onSave(appearance, personalization, language, useLocalClaude, verboseLogging, next);
+                }}
+              />
+            </SettingsSection>
             {!readOnly && <SettingsSection title={t('scheduled.settings.title')} divided>
               <ScheduledRuntimeSettings />
+            </SettingsSection>}
+            {!readOnly && <SettingsSection title={t('settings.im.title')} divided>
+              <ImIntegrationSettings />
             </SettingsSection>}
           </AppCard>
         </TabsContent>
@@ -495,7 +513,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   onClick={() => {
                     const next = !verboseLogging;
                     setVerboseLogging(next);
-                    onSave(appearance, personalization, language, useLocalClaude, next);
+                    onSave(appearance, personalization, language, useLocalClaude, next, browser);
                   }}
                 >
                   <span
@@ -736,7 +754,7 @@ function CurrentThemeSummary({ summary, scheme }: {
 }) {
   const measuredSummaryRef = useWebviewMeasuredContainer<HTMLDivElement>('theme-summary');
   const { i18n, t } = useTranslation();
-  const language = i18n.resolvedLanguage?.startsWith('zh') ? 'zh-CN' : 'en';
+  const language = i18n.resolvedLanguage === 'zh-CN' ? 'zh-CN' : 'en';
   return (
     <div ref={measuredSummaryRef} className="@container/theme-summary">
       <div className="grid gap-3 rounded-lg border border-border/35 bg-transparent p-3 @lg/theme-summary:grid-cols-[auto_minmax(0,1fr)] @lg/theme-summary:items-center @xl/theme-summary:grid-cols-[auto_minmax(0,1fr)_auto]">
@@ -760,7 +778,7 @@ function CurrentThemeSummary({ summary, scheme }: {
 
 function ThemePackageCard({ summary, selected, scheme, onSelect }: ThemePackageCardProps) {
   const { i18n, t } = useTranslation();
-  const language = i18n.resolvedLanguage?.startsWith('zh') ? 'zh-CN' : 'en';
+  const language = i18n.resolvedLanguage === 'zh-CN' ? 'zh-CN' : 'en';
   return (
     <button
       type="button"

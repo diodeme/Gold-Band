@@ -20,6 +20,7 @@ import {
 } from '@/components/workspace/files/TurnFileWorkspacePanel';
 import {
   clearTurnFileChangeSetCacheForTests,
+  fileChangeSetOwnerBranch,
   loadTurnFileChangeSet,
 } from '@/lib/turn-file-change-set-cache';
 import {
@@ -184,6 +185,40 @@ afterEach(() => {
 });
 
 describe('turn file changes card', () => {
+  it('does not render a nested-agent change set on the parent conversation', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const rootLocator: TurnFileLocatorVm = { ...locator, branchId: 'root' };
+    const event = pointerEvent('turn-files-agent');
+    event.raw = {
+      changeSetId: 'turn-files-agent',
+      summary: { fileCount: 1, addedFiles: 1, modifiedFiles: 0, deletedFiles: 0, addedLines: 22, deletedLines: 0 },
+      attachmentCount: 0,
+      _meta: {
+        conversation: { branchId: 'agent-04fcd2a222955ab5ac81c4683a403f28' },
+        goldBandConversation: { branchId: 'root' },
+      },
+    };
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <RightWorkspaceProvider>
+          <TooltipProvider>
+            <TurnFileChangesCard event={event} locator={rootLocator} />
+          </TooltipProvider>
+        </RightWorkspaceProvider>,
+      );
+    });
+    await act(async () => { await Promise.resolve(); });
+    try {
+      expect(container.querySelector('[data-turn-file-changes-card]')).toBeNull();
+      expect(container.textContent).not.toContain('无法加载本轮文件变化');
+      expect(getTurnFileChangeSetMock).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('renders new attachments once, defaults to one row, and opens the attachment tab immediately', async () => {
     const container = document.createElement('div');
     document.body.append(container);
@@ -236,6 +271,47 @@ describe('turn file changes card', () => {
       expect(attachmentCard?.querySelectorAll('[role="listitem"]')).toHaveLength(2);
     } finally {
       await act(async () => root.unmount());
+    }
+  });
+
+  it('updates one compaction row in place and stops its clock on completion', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-09T06:16:20Z'));
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const first: AcpUiEventVm = {
+      id: 'context-compaction-10', seq: 10, kind: 'contextCompaction',
+      timestamp: '2026-09-09T06:16:20Z', startedAt: '2026-09-09T06:16:20Z',
+      status: 'running',
+    };
+    const render = async (event: AcpUiEventVm) => {
+      await act(async () => root.render(
+        <TooltipProvider><ACPMessageList timeline={[event]} sessionStatus="running" sending={false} /></TooltipProvider>,
+      ));
+    };
+    try {
+      await render(first);
+      const row = container.querySelector('[role="status"]');
+      expect(row).not.toBeNull();
+      for (const seq of [11, 12, 13]) {
+        await act(async () => vi.advanceTimersByTime(30_000));
+        await render({ ...first, seq });
+        expect(container.querySelectorAll('[role="status"]')).toHaveLength(1);
+        expect(container.querySelector('[role="status"]')).toBe(row);
+      }
+      await act(async () => vi.advanceTimersByTime(17_000));
+      await render({ ...first, seq: 14, status: 'completed', endedAt: '2026-09-09T06:18:07Z' });
+      const completedText = row?.textContent;
+      expect(completedText).toContain('1m 47s');
+      expect(row?.querySelector('.animate-spin')).toBeNull();
+      await act(async () => vi.advanceTimersByTime(120_000));
+      expect(row?.textContent).toBe(completedText);
+      expect(container.querySelector('[role="status"]')).toBe(row);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      vi.useRealTimers();
     }
   });
 
@@ -685,5 +761,26 @@ describe('turn file viewer contract', () => {
     expect(source).toContain('isMarkdownDocumentPath(');
     expect(source).toContain('<WorkspaceFileEditor');
     expect(source).toContain('editable={false}');
+  });
+});
+
+describe('file change set owner branch', () => {
+  it('prefers the finalize owner over a leaked parent-timeline goldBandConversation branch', () => {
+    expect(fileChangeSetOwnerBranch({
+      changeSetId: 'turn-files-agent',
+      _meta: {
+        conversation: { branchId: 'agent-04fcd2a222955ab5ac81c4683a403f28' },
+        goldBandConversation: { branchId: 'root' },
+      },
+    })).toBe('agent-04fcd2a222955ab5ac81c4683a403f28');
+  });
+
+  it('reads canonical goldBandConversation ownership after persist routing is corrected', () => {
+    expect(fileChangeSetOwnerBranch({
+      changeSetId: 'turn-files-agent',
+      _meta: {
+        goldBandConversation: { branchId: 'agent-04fcd2a222955ab5ac81c4683a403f28' },
+      },
+    })).toBe('agent-04fcd2a222955ab5ac81c4683a403f28');
   });
 });

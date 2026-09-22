@@ -23,7 +23,7 @@
 以下修改保留已有 Task 关联：
 
 - 调度时间、时区和队列保护策略。
-- model、thought level 和 permission。
+- model、thought level、permission、`configOptions` 和 `modelBoundOverrides`。
 
 以下修改清除已有 Task 关联，使下一次触发创建新 Task：
 
@@ -47,7 +47,7 @@ Direct Agent 是定时任务创建时冻结的身份，创建后不可修改。�
 - Workflow/AUTO 的 Agent 身份、Agent 策略和可用 Agent 集合。
 - Direct Agent 身份。
 
-model、thought level、permission 和 Direct session policy 不进入内容指纹。
+model、thought level、permission、`configOptions`、`modelBoundOverrides`（含 bootstrap/acceptance 对应字段）和 Direct session policy 不进入内容指纹。
 
 编辑保存时若新旧内容指纹不同，将 `taskId` 置空；历史 Task/Run 不修改、不迁移、不删除。
 

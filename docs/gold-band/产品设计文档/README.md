@@ -1,6 +1,6 @@
 ﻿# Gold Band 文档导航
 
-Gold Band 当前文档按目录式结构整理为 5 个主板块：
+Gold Band 当前文档按目录式结构整理为 6 个主板块：
 
 ## 1. 产品设计
 - [产品概览](product/overview.md)
@@ -15,6 +15,7 @@ Gold Band 当前文档按目录式结构整理为 5 个主板块：
 - [Console 状态与事件](interaction/console-state-and-events.md)
 - [Progress 规范](interaction/progress.md)
 - [右侧工作区文件浏览与编辑](interaction/app/workspace-files.md)
+- [右侧工作区内置浏览器](interaction/app/in-app-browser.md)
 
 ## 3. Provider 层
 - [Provider 概览](provider/overview.md)
@@ -35,6 +36,7 @@ Gold Band 当前文档按目录式结构整理为 5 个主板块：
 
 ## 5. Runtime / Layout
 - [Runtime 概览](runtime/overview.md)
+- [工作空间与任务记忆及 WB CICD 工作流](runtime/workspace-task-memory.md)
 - [WB 会话指标采集与批量上报](runtime/metrics-collection.md)
 - [会话指标上报服务端处理](runtime/metrics-server-processing.md)
 - [定时任务运行时设计](runtime/scheduled-task.md)
@@ -48,6 +50,9 @@ Gold Band 当前文档按目录式结构整理为 5 个主板块：
   - [run.json](runtime/state/run.json.md)
   - [round.json](runtime/state/round.json.md)
   - [node.json](runtime/state/node.json.md)
+
+## 6. 外部集成
+- [客户端直连 IM 的远程干预与信息通知设计（企微扫码、先落盘后发布的私聊绑定、渐进式设置与窄命令、typed askUserQuestion 全问题投影、permission/manual-check 结构化详情与 vote 双发已完成本地验证，真实平台验收待完成）](integration/im-remote-intervention.md)
 
 ## 当前原则
 - 文档主内容统一维护在 `docs/gold-band/` 下

@@ -64,7 +64,7 @@
 - `mode` 为 `direct | workflow | auto`。
 - `sessionPolicy` 为 `new | continuous`；Workflow/AUTO 必须为 `new`。
 - `taskId` 在首次触发前允许为 `null`，首次物化后指向当前 task。
-- `contentFingerprint` 覆盖定时任务内容及 authoring 身份；Workflow/AUTO 的 Agent 身份、Agent 策略和可用 Agent 集合必须参与指纹。model、thought level、permission 和 Direct session policy 不参与指纹。
+- `contentFingerprint` 覆盖定时任务内容及 authoring 身份；Workflow/AUTO 的 Agent 身份、Agent 策略和可用 Agent 集合必须参与指纹。model、thought level、permission、`configOptions`、`modelBoundOverrides`（含 bootstrap/acceptance 对应字段）和 Direct session policy 不参与指纹。
 - `schedule.kind` 为 `at | repeat | every | cron`。
 - `every.unit` 只能是 `minutes | hours`，`value` 必须为正整数。
 - `schedule.timezone` 必须是有效 IANA 时区。
@@ -165,7 +165,7 @@ Scheduler 在用户级 `core.db` 的 `core_schema` 中以 `component = 'schedule
 
 终态 occurrence 按有界批次清理，`batch_size` 必须大于零，只处理 cutoff 之前的 `succeeded | failed | skipped | missed`。`attention_required`、非终态 occurrence，以及调用方提供的活动 Run ID 所关联记录必须保留；清理不会删除 Task、Run、Round、ACP 会话或产物。
 
-runtime 仍保存结构化 `contentSnapshot` 与 `contentFingerprint`。指纹是 authoring 内容的 canonical SHA-256 投影；model、thought level、permission 和 Direct session policy 仍属于执行配置，不参与指纹。
+runtime 仍保存结构化 `contentSnapshot` 与 `contentFingerprint`。指纹是 authoring 内容的 canonical SHA-256 投影；model、thought level、permission、`configOptions`、`modelBoundOverrides`（含 bootstrap/acceptance 对应字段）和 Direct session policy 仍属于执行配置，不参与指纹。
 
 删除调度定义只删除 scheduler 定义、复制的输入快照和 occurrence 历史；已经物化的 Task/Run/Round/ACP 会话和产物继续保留。
 

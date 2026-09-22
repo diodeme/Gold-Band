@@ -12,9 +12,9 @@ use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::process::{ManagedProcessGroup, PROCESS_GROUP_TERMINATION_GRACE, background_command};
+use crate::process::{ManagedProcessGroup, PROCESS_GROUP_TERMINATION_GRACE};
 
-use super::git_filesystem_path_identity;
+use super::{git_background_command, git_filesystem_path_identity};
 
 const HISTORY_PAGE_DEFAULT: usize = 300;
 const HISTORY_PAGE_MAX: usize = 1_000;
@@ -415,7 +415,9 @@ struct GitMachineRunner;
 
 impl GitMachineRunner {
     fn run(&self, cwd: &Utf8Path, args: &[&str]) -> Result<MachineCommandOutput> {
-        background_command("git")
+        let mut command = git_background_command()
+            .ok_or_else(|| GitServiceError::new("git.not-installed", serde_json::json!({})))?;
+        command
             .arg("-C")
             .arg(cwd.as_str())
             .args(args)
@@ -446,7 +448,8 @@ impl GitMachineRunner {
         args: &[&str],
         input: &[u8],
     ) -> Result<MachineCommandOutput> {
-        let mut command = background_command("git");
+        let mut command = git_background_command()
+            .ok_or_else(|| GitServiceError::new("git.not-installed", serde_json::json!({})))?;
         command
             .arg("-C")
             .arg(cwd.as_str())
@@ -3287,7 +3290,8 @@ fn execute_managed_git_operation(
         stage_unmerged_paths(cwd)?;
     }
     let args = operation_args(input);
-    let mut command = background_command("git");
+    let mut command = git_background_command()
+        .ok_or_else(|| GitServiceError::new("git.not-installed", serde_json::json!({})))?;
     command
         .arg("-C")
         .arg(cwd.as_str())

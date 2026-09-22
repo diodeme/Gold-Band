@@ -61,25 +61,21 @@ use crate::observability::{
     write_progress_hint, write_run_progress_best_effort,
 };
 use crate::prompts::{
-    AI_DYNAMIC_ACCEPTANCE_EN, AI_DYNAMIC_ACCEPTANCE_ZH_CN, AI_DYNAMIC_FANOUT_EN,
-    AI_DYNAMIC_FANOUT_ZH_CN, AI_DYNAMIC_HIDDEN_CONTEXT_EN, AI_DYNAMIC_HIDDEN_CONTEXT_ZH_CN,
-    AI_DYNAMIC_MERGE_EN, AI_DYNAMIC_MERGE_ZH_CN, AI_DYNAMIC_NODE_TASK_EN,
-    AI_DYNAMIC_NODE_TASK_ZH_CN, AI_DYNAMIC_OUTPUT_PROTOCOL_EN, AI_DYNAMIC_OUTPUT_PROTOCOL_ZH_CN,
-    AI_DYNAMIC_PROPOSAL_REPAIR_EN, AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN, AI_DYNAMIC_SYSTEM_EN,
-    AI_DYNAMIC_SYSTEM_ZH_CN, AI_DYNAMIC_WORKFLOW_INVOCATION_EN,
-    AI_DYNAMIC_WORKFLOW_INVOCATION_ZH_CN, PromptExecutionSurface, RUNTIME_CONTROL_RESUME_EN,
-    RUNTIME_CONTROL_RESUME_WITH_MESSAGE_EN, RUNTIME_CONTROL_RESUME_WITH_MESSAGE_ZH_CN,
-    RUNTIME_CONTROL_RESUME_ZH_CN, RUNTIME_INVALID_OUTPUT_REPAIR_EN,
-    RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN, RUNTIME_WORKFLOW_RESUME_EN, RUNTIME_WORKFLOW_RESUME_ZH_CN,
-    prompt_by_language, render as render_template,
+    AI_DYNAMIC_ACCEPTANCE, AI_DYNAMIC_FANOUT, AI_DYNAMIC_HIDDEN_CONTEXT, AI_DYNAMIC_MERGE,
+    AI_DYNAMIC_NODE_TASK, AI_DYNAMIC_OUTPUT_PROTOCOL, AI_DYNAMIC_PROPOSAL_REPAIR,
+    AI_DYNAMIC_SYSTEM, AI_DYNAMIC_WORKFLOW_INVOCATION, PromptExecutionSurface,
+    RUNTIME_CONTROL_RESUME, RUNTIME_CONTROL_RESUME_WITH_MESSAGE, RUNTIME_INVALID_OUTPUT_REPAIR,
+    RUNTIME_WORKFLOW_RESUME, prompt_by_language, render as render_template,
 };
+#[cfg(test)]
+use crate::provider::render_prompt_bundle;
 use crate::provider::{
     ConversationPromptInput, OutputEmissionMode, PromptHiddenSection, PromptOutputContract,
     PromptPredecessorContext, PromptRuntimeContext, PromptVisibility, ProviderRunResult,
     ProviderRunStatus, RuntimeControlIntent, RuntimeControlOutput, StreamMode,
-    UserPromptRenderMode, WorkerInvocation, conversation_prompt_text,
-    render_new_round_trigger_reason_line, render_prompt_bundle, supported_models_from_capabilities,
-    supported_modes_from_capabilities,
+    UserPromptRenderMode, UserPromptRole, WorkerInvocation, conversation_agent_prompt_text,
+    conversation_prompt_has_payload, prepare_prompt_bundle, render_new_round_trigger_reason_line,
+    supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, RunState, RunWorktreeState, RuntimeAttemptLocator,
@@ -182,8 +178,39 @@ struct AcpInvocationPromptState {
     permission_mode_override: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct RuntimeResumeMetricsContext {
+    previous_pause_reason: PauseReason,
+    transition_revision: u64,
+}
+
+impl RuntimeResumeMetricsContext {
+    fn manual_continue(previous_pause_reason: PauseReason, transition_revision: u64) -> Self {
+        Self {
+            previous_pause_reason,
+            transition_revision,
+        }
+    }
+}
+
+fn effective_previous_pause_reason(
+    run_status: RunStatus,
+    run_pause_reason: Option<PauseReason>,
+    resume_context: Option<&RuntimeResumeMetricsContext>,
+) -> Option<PauseReason> {
+    resume_context
+        .map(|context| context.previous_pause_reason)
+        .or_else(|| {
+            (run_status == RunStatus::Paused)
+                .then_some(run_pause_reason)
+                .flatten()
+        })
+}
+
 const MAX_INVALID_OUTPUT_REPAIR_PROMPTS: u32 = 3;
 const MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS: u32 = 3;
+const DYNAMIC_FANOUT_WORKSPACE_DIRTY: &str = "dynamic.fanout.workspace-dirty";
+const DYNAMIC_FANOUT_WORKSPACE_CHECK_FAILED: &str = "dynamic.fanout.workspace-check-failed";
 const DYNAMIC_PROMPT_SOURCE_PREDECESSOR_LIMIT: usize = 5;
 const DYNAMIC_PROMPT_ATTACHMENTS_PER_SOURCE_LIMIT: usize = 10;
 const AUTO_RETRY_STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -481,13 +508,9 @@ fn infer_dynamic_error_expected(code: &str, params: &serde_json::Value) -> Optio
 }
 
 fn localized_runtime_control_resume_prompt(language: DesktopLanguage) -> String {
-    prompt_by_language(
-        language,
-        RUNTIME_CONTROL_RESUME_ZH_CN,
-        RUNTIME_CONTROL_RESUME_EN,
-    )
-    .trim()
-    .to_string()
+    prompt_by_language(language, RUNTIME_CONTROL_RESUME)
+        .trim()
+        .to_string()
 }
 
 fn localized_runtime_control_resume_with_message_prompt(
@@ -496,13 +519,9 @@ fn localized_runtime_control_resume_with_message_prompt(
     artifact_emission_mode: Option<OutputEmissionMode>,
 ) -> String {
     render_template(
-        prompt_by_language(
-            language,
-            RUNTIME_CONTROL_RESUME_WITH_MESSAGE_ZH_CN,
-            RUNTIME_CONTROL_RESUME_WITH_MESSAGE_EN,
-        ),
+        prompt_by_language(language, RUNTIME_CONTROL_RESUME_WITH_MESSAGE),
         serde_json::json!({
-            "user_message": conversation_prompt_text(&input.display_text, &input.quotes),
+            "user_message": conversation_agent_prompt_text(input, language),
             "artifact_emission_mode": artifact_emission_mode,
         }),
     )
@@ -512,13 +531,9 @@ fn localized_runtime_control_resume_with_message_prompt(
 }
 
 fn localized_workflow_resume_prompt(language: DesktopLanguage) -> String {
-    prompt_by_language(
-        language,
-        RUNTIME_WORKFLOW_RESUME_ZH_CN,
-        RUNTIME_WORKFLOW_RESUME_EN,
-    )
-    .trim()
-    .to_string()
+    prompt_by_language(language, RUNTIME_WORKFLOW_RESUME)
+        .trim()
+        .to_string()
 }
 
 impl AcpInvocationPromptState {
@@ -586,7 +601,11 @@ fn apply_continue_input_to_prompt_state(
     state.permission_mode_override = permission_mode_override;
 
     if let Some(mut input) = input.filter(|value| {
-        !value.display_text.trim().is_empty() || !state.input_attachment_paths.is_empty()
+        conversation_prompt_has_payload(
+            &value.display_text,
+            state.input_attachment_paths.len(),
+            value.role.as_ref(),
+        )
     }) {
         input.display_text = input.display_text.trim().to_string();
         state.resume_prompt = Some(localized_runtime_control_resume_with_message_prompt(
@@ -638,11 +657,7 @@ fn output_schema_for_node<'a>(
 fn invalid_output_repair_prompt(schema: &serde_json::Value) -> String {
     let schema = serde_json::to_string_pretty(schema).unwrap_or_else(|_| schema.to_string());
     render_template(
-        prompt_by_language(
-            DesktopLanguage::ZhCn,
-            RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN,
-            RUNTIME_INVALID_OUTPUT_REPAIR_EN,
-        ),
+        prompt_by_language(DesktopLanguage::ZhCn, RUNTIME_INVALID_OUTPUT_REPAIR),
         serde_json::json!({
             "schema": schema,
         }),
@@ -958,10 +973,10 @@ fn emit_background_drive_error_from_fallback(
     node.outcome = None;
     node.runtime_execution_id = None;
     node.finished_at = Some(now);
-    emit_background_drive_error(app, task_id, &run, &round, &node, error);
+    append_background_drive_error_event(app, task_id, &run, &round, &node, error);
 }
 
-fn emit_background_drive_error(
+fn append_background_drive_error_event(
     app: &App,
     task_id: &str,
     run: &RunState,
@@ -991,7 +1006,6 @@ fn emit_background_drive_error(
         run.updated_at.clone(),
         event_data,
     );
-    emit_pause_side_effects(app, task_id, run, round, node);
 }
 
 pub(crate) fn launch_prepared_run_background(
@@ -1304,6 +1318,7 @@ fn prepare_run_from_workflow(
         super::observability::LifecycleEventType::ExecutionStarted,
         uuid::Uuid::new_v4().to_string(),
         run.started_at.clone(),
+        None,
         None,
         None,
         None,
@@ -1694,6 +1709,7 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
     }
     let mut run: RunState = read_json(&run_path)?;
     let mut run_became_inactive = run.status != RunStatus::Running;
+    let mut run_transitioned_to_paused = false;
     if run.status == RunStatus::Running
         && run.current_round.as_deref() == Some(round_id)
         && run.current_node.as_deref() == Some(outer_node_id)
@@ -1707,6 +1723,7 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
         validate_run_state(&run)?;
         write_json(&run_path, &run)?;
         run_became_inactive = true;
+        run_transitioned_to_paused = true;
     }
 
     let round_path = app.paths.round_file(task_id, run_id, round_id);
@@ -1763,6 +1780,9 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
         )?;
     }
     drop(_guard);
+    if run_transitioned_to_paused {
+        app.publish_committed_attempt_pause(&run);
+    }
     if run_became_inactive {
         app.finish_runtime_candidate_best_effort(
             task_id,
@@ -1795,6 +1815,7 @@ pub(crate) fn run_continue(
         permission_mode_override,
         None,
         None,
+        None,
     )
 }
 
@@ -1810,6 +1831,7 @@ fn run_continue_with_launch_signal(
     permission_mode_override: Option<String>,
     launch: Option<mpsc::Sender<RuntimeContinueLaunch>>,
     expected_execution_id: Option<String>,
+    resume_metrics_context: Option<RuntimeResumeMetricsContext>,
 ) -> Result<RunState> {
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow_snapshot(workflow)?;
@@ -2011,6 +2033,7 @@ fn run_continue_with_launch_signal(
         initial_parent_continue_input,
         initial_parent_continue_prompt_id,
         None,
+        resume_metrics_context,
         initial_model_override,
         initial_permission_mode_override,
         launch,
@@ -2219,6 +2242,7 @@ fn run_continue_dynamic_inner(
         None,
         None,
         Some(resume_override),
+        None,
         prompt_state.model_override,
         prompt_state.permission_mode_override,
         None,
@@ -2629,6 +2653,7 @@ pub(crate) fn run_continue_background(
     }
     let execution_id = next_runtime_execution_id();
     let runtime_candidate = app.begin_runtime_candidate(task_id, run_id)?;
+    let resume_metrics_context;
     {
         let state_lock = super::attempt_runtime_state_lock(
             app,
@@ -2663,6 +2688,9 @@ pub(crate) fn run_continue_background(
             "current attempt is not resumable by continue"
         );
         node.runtime_execution_id = Some(execution_id.clone());
+        let previous_pause_reason = current_run
+            .pause_reason
+            .ok_or_else(|| anyhow!("continuable run is missing its pause reason"))?;
         let resumed_at = now_rfc3339_like();
         let attempt_dir =
             app.paths
@@ -2681,6 +2709,10 @@ pub(crate) fn run_continue_background(
                 Some(runtime_candidate.token().to_string());
         }
         current_run.transition_current_execution(resume_phase, resumed_at)?;
+        resume_metrics_context = RuntimeResumeMetricsContext::manual_continue(
+            previous_pause_reason,
+            current_run.execution.revision,
+        );
         crate::runtime::validate_node_state(&node)?;
         validate_run_state(&current_run)?;
         let node_path =
@@ -2734,6 +2766,7 @@ pub(crate) fn run_continue_background(
                 permission_mode_override,
                 Some(launch_sender),
                 Some(background_execution_id.clone()),
+                Some(resume_metrics_context),
             ) {
                 let info = runtime_continue_launch_error(&err);
                 tracing::warn!(
@@ -2936,6 +2969,7 @@ pub(crate) fn run_recover_completed_background(
                 None,
                 None,
                 None,
+                None,
                 prompt_state.model_override,
                 prompt_state.permission_mode_override,
                 None,
@@ -3066,6 +3100,7 @@ fn submit_manual_check_with_launch_signal(
     if let Some(runtime_candidate) = runtime_candidate {
         runtime_candidate.commit();
     }
+    emit_node_completed_lifecycle_event(app, task_id, &run, &round, &node);
     let decision = decide_next_step(&validated, &run, &round, &node);
     let next = apply_control_decision(
         app,
@@ -3120,6 +3155,7 @@ fn submit_manual_check_with_launch_signal(
             prompt_state.user_prompt_render_mode,
             prompt_state.input_attachment_paths,
             prompt_state.runtime_control_intent,
+            None,
             None,
             None,
             None,
@@ -3575,23 +3611,11 @@ fn should_pause_for_manual_check(workflow: &ValidatedWorkflow, node: &NodeState)
 }
 
 fn node_label(node: &NodeState) -> String {
-    node.resolved_config
-        .get("profileName")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| node.node_id.clone())
+    crate::app::App::node_intervention_role_name(node)
 }
 
 fn task_title(app: &App, task_id: &str) -> Option<String> {
     app.task_show(task_id).ok().and_then(|t| t.title)
-}
-
-fn metrics_user_id() -> String {
-    std::env::var("USERNAME")
-        .or_else(|_| std::env::var("USER"))
-        .unwrap_or_else(|_| "unknown".into())
 }
 
 fn metrics_pause_reason(reason: PauseReason) -> super::observability::MetricsPauseReason {
@@ -3650,15 +3674,24 @@ fn metrics_intervention_kind(
     }
 }
 
+fn metrics_resume_fact_id(run: &RunState, transition_revision: Option<u64>) -> String {
+    format!(
+        "run:{}:resume:{}",
+        run.uuid.as_deref().unwrap_or(&run.id),
+        transition_revision.unwrap_or(run.execution.revision)
+    )
+}
+
 fn emit_run_metrics_fact(
     app: &App,
     run: &RunState,
     event_type: super::observability::LifecycleEventType,
-    _event_id: String,
+    event_id: String,
     occurred_at: String,
     pause_reason: Option<PauseReason>,
     intervention_kind: Option<RuntimeInterventionKind>,
     outcome: Option<RunOutcome>,
+    resume_context: Option<&RuntimeResumeMetricsContext>,
 ) {
     if !app.metrics_collection_enabled() {
         return;
@@ -3677,20 +3710,18 @@ fn emit_run_metrics_fact(
         .join("observability")
         .join(&task_uuid)
         .join(super::observability::OBSERVABILITY_SNAPSHOT_FILE);
-    let state = app.update_observability_state(&task_uuid, path.clone(), |state| {
-        state.next_revision();
-
-        if event_type == super::observability::LifecycleEventType::ExecutionPaused {
-            state.record_pause(true);
-        }
-        if event_type == super::observability::LifecycleEventType::ExecutionResumed {
-            let cause = state
-                .take_pending_resume_cause()
-                .unwrap_or(super::observability::ResumeCause::AutomaticRecovery);
-            state.record_resume(true, cause);
-        }
-    });
-    let revision = state.event_revision;
+    let mut resume_cause =
+        resume_context.map(|_| super::observability::ResumeCause::ManualContinue);
+    if event_type == super::observability::LifecycleEventType::ExecutionResumed {
+        app.update_observability_state(&task_uuid, path, |state| {
+            let pending_cause = state.take_pending_resume_cause();
+            if resume_cause.is_none() {
+                resume_cause = Some(
+                    pending_cause.unwrap_or(super::observability::ResumeCause::AutomaticRecovery),
+                );
+            }
+        });
+    }
     let current_node_state = run
         .current_round
         .as_deref()
@@ -3722,73 +3753,159 @@ fn emit_run_metrics_fact(
             | super::observability::LifecycleEventType::ExecutionResumed
             | super::observability::LifecycleEventType::InterventionRequested
     );
-    let mut fact = super::observability::MetricsLifecycleFact::new(
+    let Some(round_id) = run.current_round.clone() else {
+        tracing::warn!(
+            code = "METRICS_RUNTIME_LOCATOR_MISSING",
+            task_id = %run.task_id,
+            run_id = %run.id,
+            "metrics fact requires a durable round locator"
+        );
+        return;
+    };
+    let session_mode = if is_auto {
+        super::observability::MetricsSessionMode::Auto
+    } else {
+        super::observability::MetricsSessionMode::Workflow
+    };
+    let subject = if is_intermediate {
+        let Some(node) = current_node_state.as_ref() else {
+            tracing::warn!(
+                code = "METRICS_ACTIVE_ATTEMPT_MISSING",
+                task_id = %run.task_id,
+                run_id = %run.id,
+                "metrics intermediate fact has no active attempt"
+            );
+            return;
+        };
+        let Some(round_index) = current_round_index else {
+            tracing::warn!(
+                code = "METRICS_ACTIVE_ATTEMPT_MISSING",
+                task_id = %run.task_id,
+                run_id = %run.id,
+                "metrics intermediate fact has no round index"
+            );
+            return;
+        };
+        if is_auto {
+            let Some(subject) = active_auto_metrics_subject(app, run, node, &round_id, round_index)
+            else {
+                tracing::warn!(
+                    code = "METRICS_ACTIVE_ATTEMPT_MISSING",
+                    task_id = %run.task_id,
+                    run_id = %run.id,
+                    "AUTO metrics intermediate fact has no unique active unit"
+                );
+                return;
+            };
+            subject
+        } else {
+            let (Some(attempt_id), Some(attempt_index)) = (
+                node.uuid.clone(),
+                super::observability::attempt_index_from_local_id(&node.attempt_id),
+            ) else {
+                tracing::warn!(
+                    code = "METRICS_ACTIVE_ATTEMPT_MISSING",
+                    task_id = %run.task_id,
+                    run_id = %run.id,
+                    "Workflow metrics intermediate fact has no canonical attempt identity"
+                );
+                return;
+            };
+            let node_id = super::observability::derive_execution_id(
+                &run_uuid,
+                &format!("round:{round_index}:node:{}", node.node_id),
+            )
+            .unwrap_or_else(|| attempt_id.clone());
+            super::observability::MetricsSubject::WorkflowNodeAttempt {
+                node_id,
+                attempt_id,
+                attempt_index,
+                round_index,
+                role_name: node_label(node),
+            }
+        }
+    } else if is_auto {
+        super::observability::MetricsSubject::AutoOuterRun
+    } else {
+        super::observability::MetricsSubject::WorkflowRun
+    };
+    let mut fact = app.pending_metrics_fact(
+        &run.task_id,
+        task_uuid.clone(),
+        run.id.clone(),
+        round_id,
         event_type,
-        revision,
         occurred_at,
-        metrics_user_id(),
-        app.paths.repo_root.to_string(),
-        if is_auto {
-            super::observability::MetricsSessionMode::Auto
-        } else {
-            super::observability::MetricsSessionMode::Workflow
-        },
-        task_uuid.clone(),
-        if is_auto {
-            super::observability::ExecutionKind::OuterRun
-        } else {
-            super::observability::ExecutionKind::Run
-        },
-        task_uuid.clone(),
+        session_mode,
+        subject,
     );
-    fact.task_title = task_title(app, &run.task_id);
-    fact.pause_reason = pause_reason.map(metrics_pause_reason);
-    fact.previous_pause_reason =
+    fact.fact_id = event_id.clone();
+    fact.payload.pause_reason = pause_reason.map(metrics_pause_reason);
+    fact.payload.previous_pause_reason =
         if event_type == super::observability::LifecycleEventType::ExecutionResumed {
             pause_reason.map(metrics_pause_reason)
         } else {
             None
         };
-    fact.intervention_kind = intervention_kind.map(metrics_intervention_kind);
-    fact.collection_state_recovered = state.collection_state_recovered;
-    if is_intermediate {
-        if let Some(node) = &current_node_state {
-            fact.round_index = current_round_index;
-            fact.role_name = Some(node_label(node));
-            fact.attempt_index =
-                super::observability::attempt_index_from_local_id(&node.attempt_id);
-            if is_auto {
-                fact.node_id = node.uuid.clone();
-                fact.attempt_id = node.uuid.as_ref().and_then(|uuid| {
-                    super::observability::derive_attempt_id(uuid, &node.attempt_id)
-                });
-            } else {
-                let logical = current_round_index
-                    .and_then(|round_index| {
-                        super::observability::derive_execution_id(
-                            &run_uuid,
-                            &format!("round:{round_index}:node:{}", node.node_id),
-                        )
-                    })
-                    .or_else(|| node.uuid.clone());
-                fact.node_id = logical;
-                fact.attempt_id = node.uuid.clone();
+    fact.payload.intervention_kind = intervention_kind.map(metrics_intervention_kind);
+    fact.transition = match event_type {
+        super::observability::LifecycleEventType::ExecutionPaused => {
+            super::observability::MetricsTransition::Paused {
+                transition_id: event_id,
             }
         }
-    }
+        super::observability::LifecycleEventType::ExecutionResumed => {
+            let action = match resume_cause
+                .unwrap_or(super::observability::ResumeCause::AutomaticRecovery)
+            {
+                super::observability::ResumeCause::ManualContinue => {
+                    super::observability::UserExecutionAction::ManualContinue
+                }
+                super::observability::ResumeCause::PermissionResolved => {
+                    super::observability::UserExecutionAction::PermissionResponse
+                }
+                super::observability::ResumeCause::ElicitationResolved => {
+                    super::observability::UserExecutionAction::ElicitationResponse
+                }
+                super::observability::ResumeCause::AutomaticRecovery => {
+                    super::observability::UserExecutionAction::AutomaticRecovery
+                }
+            };
+            super::observability::MetricsTransition::Resumed {
+                transition_id: event_id,
+                action,
+            }
+        }
+        super::observability::LifecycleEventType::InterventionRequested => {
+            match intervention_kind {
+                Some(RuntimeInterventionKind::PermissionRequested) => {
+                    super::observability::MetricsTransition::PermissionRequested {
+                        request_id: event_id,
+                    }
+                }
+                Some(RuntimeInterventionKind::ElicitationRequested) => {
+                    super::observability::MetricsTransition::ElicitationRequested {
+                        request_id: event_id,
+                    }
+                }
+                _ => super::observability::MetricsTransition::None,
+            }
+        }
+        _ => super::observability::MetricsTransition::None,
+    };
     if let Some(outcome) = outcome {
-        fact.outcome = Some(match outcome {
+        fact.payload.outcome = Some(match outcome {
             RunOutcome::Success => super::observability::ExecutionOutcome::Success,
             RunOutcome::Failure => super::observability::ExecutionOutcome::Failure,
             RunOutcome::Killed => super::observability::ExecutionOutcome::Killed,
         });
-        fact.terminal_reason = Some(match outcome {
+        fact.payload.terminal_reason = Some(match outcome {
             RunOutcome::Success => super::observability::TerminalReason::Completed,
             RunOutcome::Failure => super::observability::TerminalReason::ExecutionFailed,
             RunOutcome::Killed => super::observability::TerminalReason::ProcessKilled,
         });
         if !is_auto {
-            fact.round_count = Some(run.new_rounds_opened.saturating_add(1));
+            fact.payload.round_count = Some(run.new_rounds_opened.saturating_add(1));
         }
         if outcome != RunOutcome::Success {
             let outer_attempt = run
@@ -3811,19 +3928,19 @@ fn emit_run_metrics_fact(
                 })
                 .and_then(|graph| failed_dynamic_metrics_unit(&graph).cloned());
             if let Some(node) = failed_unit {
-                fact.failed_attempt_id = node.uuid.as_deref().and_then(|execution_id| {
+                fact.payload.failed_attempt_id = node.uuid.as_deref().and_then(|execution_id| {
                     super::observability::derive_attempt_id(
                         execution_id,
                         &dynamic_attempt_id(&node),
                     )
                 });
-                fact.terminal_reason = Some(dynamic_metrics_terminal_reason(&node));
-                fact.terminal_reason_code = node
+                fact.payload.terminal_reason = Some(dynamic_metrics_terminal_reason(&node));
+                fact.payload.terminal_reason_code = node
                     .runtime_error
                     .as_ref()
                     .map(|error| error.code_str().to_string());
             } else {
-                fact.failed_attempt_id =
+                fact.payload.failed_attempt_id =
                     outer_attempt.and_then(|((round_id, node_id), attempt_id)| {
                         read_json::<NodeState>(&app.paths.node_file(
                             &run.task_id,
@@ -3837,12 +3954,64 @@ fn emit_run_metrics_fact(
                     });
             }
         }
-        fact.counters = Some(state.counters.clone());
     }
-    app.emit_lifecycle_event(RuntimeLifecycleEvent::MetricsFact(fact));
-    if outcome.is_some() {
-        app.release_observability_state(&task_uuid);
+    app.emit_lifecycle_event(RuntimeLifecycleEvent::PendingMetricsFact(fact));
+}
+
+fn active_auto_metrics_subject(
+    app: &App,
+    run: &RunState,
+    outer: &NodeState,
+    round_id: &str,
+    round_index: u32,
+) -> Option<super::observability::MetricsSubject> {
+    let graph = read_json::<DynamicGraphState>(&app.paths.dynamic_graph_file(
+        &run.task_id,
+        &run.id,
+        round_id,
+        &outer.node_id,
+        &outer.attempt_id,
+    ))
+    .ok()?;
+    let mut candidates = graph
+        .nodes
+        .iter()
+        .filter(|node| graph.run.current_node_ids.contains(&node.id))
+        .collect::<Vec<_>>();
+    if candidates.len() != 1 {
+        candidates = graph
+            .nodes
+            .iter()
+            .filter(|node| {
+                matches!(
+                    node.status,
+                    DynamicNodeStatus::Running | DynamicNodeStatus::Paused
+                ) && node.outcome.is_none()
+            })
+            .collect();
     }
+    let [node] = candidates.as_slice() else {
+        return None;
+    };
+    let node_id = node.uuid.clone()?;
+    let attempt_id = super::observability::derive_attempt_id(&node_id, &dynamic_attempt_id(node))?;
+    let attempt_index =
+        super::observability::attempt_index_from_local_id(&dynamic_attempt_id(node))?;
+    Some(super::observability::MetricsSubject::AutoUnitAttempt {
+        node_id,
+        attempt_id,
+        attempt_index,
+        round_index,
+        role_name: node.title.clone(),
+        unit_kind: match node.kind {
+            DynamicNodeKind::Worker => super::observability::UnitKind::Worker,
+            DynamicNodeKind::WorkflowInvocation => {
+                super::observability::UnitKind::WorkflowInvocation
+            }
+            DynamicNodeKind::Merge => super::observability::UnitKind::Merge,
+            DynamicNodeKind::Acceptance => super::observability::UnitKind::Acceptance,
+        },
+    })
 }
 
 fn emit_run_paused_lifecycle_event(
@@ -3855,6 +4024,7 @@ fn emit_run_paused_lifecycle_event(
     let reason = run.pause_reason.unwrap_or(PauseReason::ProcessInterrupted);
     let event_id = super::notification::make_dedup_key(
         &app.paths.project_id,
+        task_id,
         &run.id,
         &round.id,
         &node.node_id,
@@ -3862,6 +4032,7 @@ fn emit_run_paused_lifecycle_event(
         reason,
     );
     let occurred_at = now_rfc3339_like();
+    let manual_check = reason == PauseReason::WaitingForUserInput && node.manual_check_pending;
     app.emit_lifecycle_event(RuntimeLifecycleEvent::RunPaused {
         event_id: event_id.clone(),
         occurred_at: occurred_at.clone(),
@@ -3877,61 +4048,35 @@ fn emit_run_paused_lifecycle_event(
         pause_reason: reason,
         task_title: task_title(app, task_id),
     });
+    if manual_check {
+        app.emit_lifecycle_event(RuntimeLifecycleEvent::InterventionRequested {
+            event_id: event_id.clone(),
+            occurred_at: occurred_at.clone(),
+            scheduled_occurrence_id: None,
+            project_id: app.paths.project_id.clone(),
+            task_id: task_id.to_string(),
+            task_uuid: run.task_uuid.clone(),
+            run_id: run.id.clone(),
+            round_id: round.id.clone(),
+            node_id: node.node_id.clone(),
+            attempt_id: node.attempt_id.clone(),
+            outer_node_id: None,
+            outer_attempt_id: None,
+            request: crate::app::intervention::InterventionRequestIdentity::ManualCheck,
+            node_label: node_label(node),
+            kind: RuntimeInterventionKind::ManualDecisionRequired,
+            task_title: task_title(app, task_id),
+        });
+    }
     emit_run_metrics_fact(
         app,
         run,
         super::observability::LifecycleEventType::ExecutionPaused,
-        event_id,
+        format!("{event_id}:paused:{}", run.execution.revision),
         occurred_at,
         Some(reason),
         None,
         None,
-    );
-}
-
-fn emit_intervention_requested(
-    app: &App,
-    task_id: &str,
-    run: &RunState,
-    round: &RoundState,
-    node: &NodeState,
-    kind: RuntimeInterventionKind,
-) {
-    let pause_reason = super::notification::pause_reason_for_intervention(kind);
-    let event_id = super::notification::make_dedup_key(
-        &app.paths.project_id,
-        &run.id,
-        &round.id,
-        &node.node_id,
-        &node.attempt_id,
-        pause_reason,
-    );
-    let occurred_at = now_rfc3339_like();
-    app.emit_lifecycle_event(RuntimeLifecycleEvent::InterventionRequested {
-        event_id: event_id.clone(),
-        occurred_at: occurred_at.clone(),
-        scheduled_occurrence_id: None,
-        project_id: app.paths.project_id.clone(),
-        task_id: task_id.to_string(),
-        task_uuid: run.task_uuid.clone(),
-        run_id: run.id.clone(),
-        round_id: round.id.clone(),
-        node_id: node.node_id.clone(),
-        attempt_id: node.attempt_id.clone(),
-        outer_node_id: None,
-        outer_attempt_id: None,
-        node_label: node_label(node),
-        kind,
-        task_title: task_title(app, task_id),
-    });
-    emit_run_metrics_fact(
-        app,
-        run,
-        super::observability::LifecycleEventType::InterventionRequested,
-        event_id,
-        occurred_at,
-        None,
-        Some(kind),
         None,
     );
 }
@@ -3946,6 +4091,7 @@ fn emit_run_completed_lifecycle_event(
 ) {
     let event_id = super::notification::make_completion_dedup_key(
         &app.paths.project_id,
+        task_id,
         &run.id,
         &round.id,
         &node.node_id,
@@ -3977,6 +4123,7 @@ fn emit_run_completed_lifecycle_event(
         None,
         None,
         Some(outcome),
+        None,
     );
     let _ = app.notify_prompt_turn_finished(
         crate::app::AcpLiveEventContext {
@@ -3991,64 +4138,15 @@ fn emit_run_completed_lifecycle_event(
         },
         super::direct_conversation_agent_label(app, task_id)
             .map(|_| super::INITIAL_DIRECT_TURN_ID.to_string()),
-        outcome == RunOutcome::Success,
+        match outcome {
+            RunOutcome::Success => super::AcpTurnOutcome::Completed,
+            RunOutcome::Failure => super::AcpTurnOutcome::Failed,
+            RunOutcome::Killed => super::AcpTurnOutcome::Cancelled,
+        },
     );
 }
 
-fn intervention_kind_for_pause(
-    app: &App,
-    task_id: &str,
-    run: &RunState,
-    round: &RoundState,
-    node: &NodeState,
-) -> Option<RuntimeInterventionKind> {
-    match run.pause_reason.unwrap_or(PauseReason::ProcessInterrupted) {
-        PauseReason::WaitingForUserInput => Some(waiting_for_user_input_intervention_kind(
-            app, task_id, run, round, node,
-        )),
-        reason @ (PauseReason::PermissionRequested
-        | PauseReason::RuntimeAbnormal
-        | PauseReason::ErrorBlocked) => Some(RuntimeInterventionKind::from(reason)),
-        PauseReason::ProcessInterrupted => {
-            (!attempt_was_user_cancelled(app, task_id, &run.id, &round.id, node))
-                .then_some(RuntimeInterventionKind::ProcessInterrupted)
-        }
-    }
-}
-
-fn waiting_for_user_input_intervention_kind(
-    app: &App,
-    task_id: &str,
-    run: &RunState,
-    round: &RoundState,
-    node: &NodeState,
-) -> RuntimeInterventionKind {
-    if node.manual_check_pending {
-        return RuntimeInterventionKind::ManualDecisionRequired;
-    }
-    let attempt_dir =
-        app.paths
-            .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
-    if attempt_has_pending_elicitation(&attempt_dir) {
-        return RuntimeInterventionKind::ElicitationRequested;
-    }
-    RuntimeInterventionKind::ManualDecisionRequired
-}
-
-fn attempt_has_pending_elicitation(attempt_dir: &camino::Utf8Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(attempt_dir.as_std_path()) else {
-        return false;
-    };
-    entries.filter_map(|entry| entry.ok()).any(|entry| {
-        entry
-            .file_name()
-            .to_str()
-            .map(|name| name.starts_with("acp.elicitation-request.") && name.ends_with(".json"))
-            .unwrap_or(false)
-    })
-}
-
-fn emit_pause_side_effects(
+pub(crate) fn emit_pause_side_effects(
     app: &App,
     task_id: &str,
     run: &RunState,
@@ -4056,45 +4154,6 @@ fn emit_pause_side_effects(
     node: &NodeState,
 ) {
     emit_run_paused_lifecycle_event(app, task_id, run, round, node);
-    if let Some(kind) = intervention_kind_for_pause(app, task_id, run, round, node) {
-        emit_intervention_requested(app, task_id, run, round, node, kind);
-    }
-}
-
-fn attempt_was_user_cancelled(
-    app: &App,
-    task_id: &str,
-    run_id: &str,
-    round_id: &str,
-    node: &NodeState,
-) -> bool {
-    let attempt_dir =
-        app.paths
-            .attempt_dir(task_id, run_id, round_id, &node.node_id, &node.attempt_id);
-    if attempt_dir_was_cancelled(&attempt_dir) {
-        return true;
-    }
-    if node.node_type != crate::domain::NodeType::AiDynamic {
-        return false;
-    }
-    let graph_path =
-        app.paths
-            .dynamic_graph_file(task_id, run_id, round_id, &node.node_id, &node.attempt_id);
-    let Ok(graph) = load_dynamic_graph(&graph_path, &app.paths.repo_root) else {
-        return false;
-    };
-    graph.nodes.iter().any(|dynamic_node| {
-        let attempt_dir = app.paths.dynamic_node_attempt_dir(
-            task_id,
-            run_id,
-            round_id,
-            &node.node_id,
-            &node.attempt_id,
-            &dynamic_node.id,
-            &dynamic_attempt_id(dynamic_node),
-        );
-        attempt_dir_was_cancelled(&attempt_dir)
-    })
 }
 
 fn dynamic_node_attempt_was_cancelled(
@@ -4247,6 +4306,64 @@ fn completed_node_snapshot(
         finished_at: node.finished_at.clone(),
         attempt_dir,
     }
+}
+
+fn emit_node_completed_lifecycle_event(
+    app: &App,
+    task_id: &str,
+    run: &RunState,
+    round: &RoundState,
+    node: &NodeState,
+) {
+    if node.status != RunStatus::Completed
+        || node.outcome.is_none()
+        || node.manual_check_pending
+        || node.finished_at.is_none()
+    {
+        tracing::warn!(
+            code = "NODE_COMPLETED_LIFECYCLE_NOT_TERMINAL",
+            task_id,
+            run_id = %run.id,
+            round_id = %round.id,
+            node_id = %node.node_id,
+            attempt_id = %node.attempt_id,
+            "refused to publish node completion before canonical terminal state"
+        );
+        return;
+    }
+    let attempt_dir = app
+        .paths
+        .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id)
+        .to_string();
+    let snapshot = completed_node_snapshot(round, node, Some(attempt_dir.clone()));
+    app.emit_lifecycle_event(RuntimeLifecycleEvent::NodeCompleted {
+        task_id: task_id.to_string(),
+        task_uuid: run.task_uuid.clone(),
+        run_id: run.id.clone(),
+        run_uuid: run.uuid.clone(),
+        round_id: round.id.clone(),
+        round_uuid: round.uuid.clone(),
+        round_index: Some(round.index),
+        node_id: node.node_id.clone(),
+        node_uuid: node.uuid.clone(),
+        attempt_id: node.attempt_id.clone(),
+        repo_root: app.paths.repo_root.to_string(),
+        seq: snapshot.seq,
+        node_name: snapshot.node_name,
+        agent_type: snapshot.agent_type,
+        resolved_model: node
+            .resolved_config
+            .get("model")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        started_at: node.started_at.clone(),
+        finished_at: node.finished_at.clone(),
+        outcome: snapshot.status,
+        attempt_dir,
+        suppress_sentinel: false,
+        metrics_unit_kind: None,
+        child_run_id: None,
+    });
 }
 
 fn apply_control_decision(
@@ -4666,6 +4783,23 @@ fn apply_control_decision(
     }
 }
 
+fn load_initial_prompt_display(app: &App, task_id: &str) -> Option<ConversationPromptInput> {
+    let role = read_json::<UserPromptRole>(&app.paths.initial_prompt_role_file(task_id)).ok()?;
+    if role.profile_id.trim().is_empty()
+        || role.name.trim().is_empty()
+        || role.content.trim().is_empty()
+    {
+        return None;
+    }
+    let requirement =
+        std::fs::read_to_string(app.paths.requirement_file(task_id).as_std_path()).ok()?;
+    Some(ConversationPromptInput {
+        display_text: requirement,
+        quotes: Vec::new(),
+        role: Some(role),
+    })
+}
+
 pub(crate) fn drive_from_node(
     app: &App,
     task_id: &str,
@@ -4708,11 +4842,13 @@ fn drive_from_node_with_runtime_candidate(
         SessionMode::New,
         None,
         None,
-        None,
-        None,
+        super::direct_conversation_agent_label(app, task_id)
+            .map(|_| super::INITIAL_DIRECT_TURN_ID.to_string()),
+        load_initial_prompt_display(app, task_id),
         UserPromptRenderMode::RequirementTask,
         Vec::new(),
         RuntimeControlIntent::Unchanged,
+        None,
         None,
         None,
         None,
@@ -5220,6 +5356,18 @@ fn dynamic_permission_mode_for_provider(dynamic: &AiDynamicNode, provider: &str)
     }
 }
 
+fn dynamic_auto_accept_for_provider(dynamic: &AiDynamicNode, provider: &str) -> bool {
+    match &dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { auto_accept, .. } => *auto_accept,
+        AiDynamicAgentStrategy::Dynamic {
+            available_agents, ..
+        } => available_agents
+            .iter()
+            .find(|agent_ref| agent_ref.provider == provider)
+            .is_some_and(|agent_ref| agent_ref.auto_accept),
+    }
+}
+
 fn dynamic_control_provider(dynamic: &AiDynamicNode) -> &str {
     match &dynamic.agent_strategy {
         AiDynamicAgentStrategy::Fixed { provider, .. } => provider,
@@ -5237,6 +5385,13 @@ fn dynamic_control_permission_mode(dynamic: &AiDynamicNode) -> Option<String> {
         AiDynamicAgentStrategy::Dynamic {
             permission_mode, ..
         } => permission_mode.clone(),
+    }
+}
+
+fn dynamic_control_auto_accept(dynamic: &AiDynamicNode) -> bool {
+    match &dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { auto_accept, .. } => *auto_accept,
+        AiDynamicAgentStrategy::Dynamic { auto_accept, .. } => *auto_accept,
     }
 }
 
@@ -5644,18 +5799,14 @@ fn dynamic_output_contract(
     let schema = dynamic_effective_completion_schema(ctx, graph);
     let json_schema = serde_json::to_string_pretty(&schema).expect("serialize dynamic schema");
     let schema_text = render_template(
-        prompt_by_language(
-            language,
-            AI_DYNAMIC_OUTPUT_PROTOCOL_ZH_CN,
-            AI_DYNAMIC_OUTPUT_PROTOCOL_EN,
-        ),
+        prompt_by_language(language, AI_DYNAMIC_OUTPUT_PROTOCOL),
         serde_json::json!({
             "agent_strategy_mode": dynamic_agent_strategy_mode(ctx.dynamic),
             "provider_required_in_proposal": dynamic_requires_provider_in_proposal(ctx.dynamic),
             "model_required_in_proposal": dynamic_any_worker_model_required_from_proposal(ctx),
             "model_policy": match language {
                 DesktopLanguage::ZhCn => dynamic_model_policy_summary_zh_cn(ctx),
-                DesktopLanguage::En => dynamic_model_policy_summary(ctx),
+                _ => dynamic_model_policy_summary(ctx),
             },
             "end_summary_is_outer_handoff": dynamic_end_summary_is_outer_handoff(graph, node),
             "json_schema": json_schema,
@@ -5702,7 +5853,9 @@ fn dynamic_end_summary_is_outer_handoff(
 }
 
 fn dynamic_output_emission_mode(node: &DynamicNodeState) -> OutputEmissionMode {
-    if dynamic_node_is_bootstrap_dispatch(node) {
+    if dynamic_node_is_bootstrap_dispatch(node)
+        || crate::provider::cicd::is_single_submission(node.profile.as_deref())
+    {
         OutputEmissionMode::InlineControl
     } else {
         OutputEmissionMode::PostTurnProjection
@@ -6753,15 +6906,6 @@ fn unregister_dynamic_resume_driver(key: &str, driver_id: &str) -> Vec<DynamicRe
     failed
 }
 
-fn clear_dynamic_resume_starting_window(key: &str) -> Result<Vec<DynamicResumeOverride>> {
-    let mut coordinator = DYNAMIC_RESUME_COORDINATOR
-        .get_or_init(|| Mutex::new(DynamicResumeCoordinator::default()))
-        .lock()
-        .map_err(|_| anyhow!("dynamic resume coordinator poisoned"))?;
-    coordinator.starting.remove(key);
-    Ok(coordinator.pending.remove(key).unwrap_or_default())
-}
-
 fn execute_ai_dynamic_node(
     app: &App,
     task_id: &str,
@@ -7274,6 +7418,7 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         provider: ctx.dynamic.bootstrap_provider().map(ToOwned::to_owned),
         profile: None,
         permission_mode: dynamic_control_permission_mode(ctx.dynamic),
+        auto_accept: dynamic_control_auto_accept(ctx.dynamic),
         model: ctx.dynamic.bootstrap_model().map(ToOwned::to_owned),
         session_mode: SessionMode::New,
         continue_from_node_id: None,
@@ -8212,7 +8357,14 @@ fn apply_dynamic_execution_message(
     for proposal in result.proposals {
         if proposal.validation_status == DynamicProposalValidationStatus::Rejected {
             rejected_source_node_id = Some(proposal.source_node_id.clone());
-            graph.proposals.push(proposal);
+            if !proposal_has_fanout_commit_reminder(&proposal)
+                || !graph.proposals.iter().any(|previous| {
+                    previous.source_node_id == proposal.source_node_id
+                        && proposal_has_fanout_commit_reminder(previous)
+                })
+            {
+                graph.proposals.push(proposal);
+            }
             continue;
         }
         accepted_any = true;
@@ -8276,7 +8428,24 @@ fn accept_dynamic_completion_proposal(
     let proposal_id = proposal.id.clone();
     let source_node_id = proposal.source_node_id.clone();
     graph.proposals.push(proposal);
-    let visible_node_ids = materialize_dynamic_next(ctx, graph, source_index, completion.next)?;
+    let visible_node_ids = match materialize_dynamic_next(ctx, graph, source_index, completion.next)
+    {
+        Ok(visible) => visible,
+        Err(error) => {
+            let info = normalize_runtime_error(&error);
+            if info.code_str() == DYNAMIC_FANOUT_WORKSPACE_CHECK_FAILED {
+                // Reading the fork baseline happens before any workspace transition.
+                graph.proposals.pop();
+                mark_dynamic_node_paused(
+                    &mut graph.nodes[source_index],
+                    PauseReason::RuntimeAbnormal,
+                    Some(info),
+                );
+                persist_dynamic_graph(ctx, graph)?;
+            }
+            return Err(error);
+        }
+    };
     append_dynamic_event(
         ctx,
         "dynamic_proposal_accepted",
@@ -8355,98 +8524,6 @@ fn dynamic_node_uses_completion_contract(kind: DynamicNodeKind) -> bool {
     matches!(
         kind,
         DynamicNodeKind::Worker | DynamicNodeKind::WorkflowInvocation | DynamicNodeKind::Acceptance
-    )
-}
-
-fn outer_attempt_is_current_recoverable_pause(ctx: &DynamicExecutionContext<'_>) -> Result<bool> {
-    let run: RunState = read_json(&ctx.app.paths.run_file(ctx.task_id, ctx.run_id))?;
-    Ok(run.current_round.as_deref() == Some(ctx.round_id)
-        && run.current_node.as_deref() == Some(ctx.outer_node_id)
-        && run.current_attempt.as_deref() == Some(ctx.outer_attempt_id)
-        && run.status == RunStatus::Paused
-        && matches!(
-            run.pause_reason,
-            Some(PauseReason::ProcessInterrupted | PauseReason::RuntimeAbnormal)
-        ))
-}
-
-fn restore_outer_attempt_running_for_dynamic_resume(
-    app: &App,
-    task_id: &str,
-    run_id: &str,
-    round_id: &str,
-    outer_node_id: &str,
-    outer_attempt_id: &str,
-) -> Result<bool> {
-    let mut run: RunState = read_json(&app.paths.run_file(task_id, run_id))?;
-    if run.current_round.as_deref() != Some(round_id)
-        || run.current_node.as_deref() != Some(outer_node_id)
-        || run.current_attempt.as_deref() != Some(outer_attempt_id)
-        || run.status != RunStatus::Paused
-        || !matches!(
-            run.pause_reason,
-            Some(PauseReason::ProcessInterrupted | PauseReason::RuntimeAbnormal)
-        )
-    {
-        return Ok(false);
-    }
-    let mut round: RoundState = read_json(&app.paths.round_file(task_id, run_id, round_id))?;
-    let mut node: NodeState = read_json(&app.paths.node_file(
-        task_id,
-        run_id,
-        round_id,
-        outer_node_id,
-        outer_attempt_id,
-    ))?;
-    if round.status != RunStatus::Paused || node.status != RunStatus::Paused {
-        return Ok(false);
-    }
-    let runtime_candidate = app.begin_runtime_candidate(task_id, run_id)?;
-    let previous_pause_reason = run.pause_reason.unwrap_or(PauseReason::ProcessInterrupted);
-    let now = now_rfc3339_like();
-    run.status = RunStatus::Running;
-    run.pause_reason = None;
-    run.updated_at = now;
-    if let Some(runtime_candidate) = runtime_candidate.as_ref() {
-        run.execution.recovery_candidate_token = Some(runtime_candidate.token().to_string());
-    }
-    round.status = RunStatus::Running;
-    round.outcome = None;
-    node.status = RunStatus::Running;
-    node.outcome = None;
-    node.finished_at = None;
-    persist_runtime_state(app, task_id, &run, &round, &node)?;
-    if let Some(runtime_candidate) = runtime_candidate {
-        runtime_candidate.commit();
-    }
-    app.record_metrics_resume_cause(
-        task_id,
-        run_id,
-        super::observability::ResumeCause::AutomaticRecovery,
-    );
-    emit_run_metrics_fact(
-        app,
-        &run,
-        super::observability::LifecycleEventType::ExecutionResumed,
-        uuid::Uuid::new_v4().to_string(),
-        now_rfc3339_like(),
-        Some(previous_pause_reason),
-        None,
-        None,
-    );
-    Ok(true)
-}
-
-fn try_restore_outer_attempt_running_for_dynamic_completion(
-    ctx: &DynamicExecutionContext<'_>,
-) -> Result<bool> {
-    restore_outer_attempt_running_for_dynamic_resume(
-        ctx.app,
-        ctx.task_id,
-        ctx.run_id,
-        ctx.round_id,
-        ctx.outer_node_id,
-        ctx.outer_attempt_id,
     )
 }
 
@@ -9209,7 +9286,13 @@ fn execute_dynamic_worker(
                 )?;
                 return Ok(DynamicExecutionResult { node, proposals });
             }
-            Ok(proposal) if proposal_repair_prompts < MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS => {
+            Ok(proposal)
+                if proposal_repair_prompts < MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS
+                    || proposal
+                        .validation_errors
+                        .iter()
+                        .all(|error| error.code == DYNAMIC_FANOUT_WORKSPACE_DIRTY) =>
+            {
                 let repair_continue_ref = read_json::<WorkerRefState>(&worker_ref_path)
                     .ok()
                     .and_then(|worker_ref| worker_ref.continue_ref);
@@ -9231,9 +9314,23 @@ fn execute_dynamic_worker(
                     )?;
                     return Ok(DynamicExecutionResult { node, proposals });
                 };
-                proposal_repair_prompts += 1;
-                current_prompt_id =
-                    dynamic_proposal_repair_prompt_id(&logical_prompt_id, proposal_repair_prompts);
+                let commit_reminder = validation_errors
+                    .iter()
+                    .any(|error| error.code == DYNAMIC_FANOUT_WORKSPACE_DIRTY);
+                if validation_errors
+                    .iter()
+                    .any(|error| error.code != DYNAMIC_FANOUT_WORKSPACE_DIRTY)
+                {
+                    proposal_repair_prompts += 1;
+                }
+                if commit_reminder {
+                    persist_dynamic_fanout_commit_reminder(ctx, proposals.last().unwrap())?;
+                }
+                current_prompt_id = if commit_reminder {
+                    format!("{logical_prompt_id}-fanout-commit")
+                } else {
+                    dynamic_proposal_repair_prompt_id(&logical_prompt_id, proposal_repair_prompts)
+                };
                 append_dynamic_event(
                     ctx,
                     "dynamic_proposal_repair_requested",
@@ -9243,6 +9340,7 @@ fn execute_dynamic_worker(
                         "repairAttempt": proposal_repair_prompts,
                         "maxRepairAttempts": MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS,
                         "promptId": current_prompt_id,
+                        "commitReminder": commit_reminder,
                         "error": validation_error,
                         "validationErrors": validation_errors,
                     }),
@@ -9289,6 +9387,12 @@ fn execute_dynamic_worker(
                     }),
                 )?;
                 return Ok(DynamicExecutionResult { node, proposals });
+            }
+            Err(err)
+                if normalize_runtime_error(&err).code_str()
+                    == DYNAMIC_FANOUT_WORKSPACE_CHECK_FAILED =>
+            {
+                return Err(err);
             }
             Err(err) if proposal_repair_prompts < MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS => {
                 let confirm_completion = dynamic_output_emission_mode(&node)
@@ -9853,11 +9957,7 @@ fn workflow_with_dynamic_invocation_task(
         if let NodeDsl::Worker(worker) = node {
             worker.goal = Some(match worker.goal.as_deref() {
                 Some(goal) if !goal.trim().is_empty() => render_template(
-                    prompt_by_language(
-                        language,
-                        AI_DYNAMIC_WORKFLOW_INVOCATION_ZH_CN,
-                        AI_DYNAMIC_WORKFLOW_INVOCATION_EN,
-                    ),
+                    prompt_by_language(language, AI_DYNAMIC_WORKFLOW_INVOCATION),
                     serde_json::json!({
                         "invocation_task": task.trim(),
                         "node_goal": goal.trim(),
@@ -9918,9 +10018,34 @@ fn finalize_dynamic_worker_result(
     }
     match status {
         ProviderRunStatus::Success => {
-            if let Some(payload) = result.result_payload
-                && let Some(output_artifact) = payload.output_artifact
-            {
+            // A canonical artifact represents this result, never a prior repair turn.
+            let artifact_path = dynamic_output_artifact_path(
+                ctx,
+                &node_id,
+                attempt_id,
+                DYNAMIC_COMPLETION_ARTIFACT,
+            );
+            match std::fs::remove_file(&artifact_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("failed to replace current dynamic artifact: {artifact_path}")
+                    });
+                }
+            }
+            let output_artifact = result
+                .result_payload
+                .and_then(|payload| payload.output_artifact)
+                .or_else(|| {
+                    result.runtime_control_output.map(|output| {
+                        crate::provider::OutputArtifactPayload {
+                            name: output.artifact_name,
+                            content: output.span.json_text,
+                        }
+                    })
+                });
+            if let Some(output_artifact) = output_artifact {
                 write_dynamic_output_artifact(ctx, &node_id, attempt_id, &output_artifact)?;
             }
             node.status = DynamicNodeStatus::Completed;
@@ -10616,6 +10741,19 @@ fn build_dynamic_completion_proposal(
     };
     let mut validation_errors = pre_validation_errors;
     validation_errors.extend(validate_dynamic_completion(ctx, &graph, index, &completion));
+    if matches!(completion.next, DynamicNext::Fanout { .. })
+        && !graph.proposals.iter().any(|proposal| {
+            proposal.source_node_id == node.id && proposal_has_fanout_commit_reminder(proposal)
+        })
+    {
+        let workspace = dynamic_fanout_source_workspace(&graph, &graph.nodes[index])?;
+        if !GitRepositoryService::default()
+            .is_clean(&workspace.path)
+            .map_err(|error| dynamic_fanout_workspace_check_error(workspace, error))?
+        {
+            validation_errors.push(dynamic_fanout_workspace_dirty_error(workspace));
+        }
+    }
     if validation_errors.is_empty() {
         Ok(DynamicProposalState {
             version: VERSION.to_string(),
@@ -11450,7 +11588,7 @@ fn materialize_dynamic_next(
         .cloned()
         .ok_or_else(|| anyhow!("dynamic proposal source node is missing"))?;
     if source.kind != DynamicNodeKind::Acceptance && matches!(next, DynamicNext::Single { .. }) {
-        return materialize_dynamic_next_in_scope(ctx, graph, &source, next);
+        return materialize_dynamic_next_in_scope(ctx, graph, &source, next, None);
     }
     let owner = dynamic_outgoing_scope_owner(graph, &source)?;
     let mut outgoing = source.clone();
@@ -11473,13 +11611,22 @@ fn materialize_dynamic_next(
     } else {
         None
     };
+    let fork_commit = if matches!(next, DynamicNext::Fanout { .. }) {
+        Some(dynamic_fanout_head(dynamic_workspace(
+            graph,
+            &outgoing.workspace_id,
+        )?)?)
+    } else {
+        None
+    };
     with_dynamic_workspace_transition(ctx, graph, std::slice::from_ref(&source.id), |graph| {
         if closing_group.is_some() {
             let target = dynamic_workspace_mut(graph, &outgoing.workspace_id)?;
             target.status = WorkspaceStatus::Active;
             target.updated_at = now_rfc3339_like();
         }
-        let visible = materialize_dynamic_next_in_scope(ctx, graph, &outgoing, next)?;
+        let visible =
+            materialize_dynamic_next_in_scope(ctx, graph, &outgoing, next, fork_commit.as_deref())?;
         if let Some(group) = closing_group {
             let current = graph
                 .groups
@@ -11533,6 +11680,7 @@ fn materialize_dynamic_next_in_scope(
     graph: &mut DynamicGraphState,
     source: &DynamicNodeState,
     next: DynamicNext,
+    fork_commit: Option<&str>,
 ) -> Result<Vec<String>> {
     let mut visible_node_ids = Vec::new();
     match next {
@@ -11576,6 +11724,7 @@ fn materialize_dynamic_next_in_scope(
             merge,
             acceptance,
         } => {
+            let fork_commit = fork_commit.context("fanout requires a fixed source commit")?;
             let merge = dynamic_agent_task_spec_with_resolved_provider(ctx, merge)?;
             let acceptance = dynamic_agent_task_spec_with_resolved_provider(ctx, acceptance)?;
             let group_depth = source
@@ -11587,12 +11736,13 @@ fn materialize_dynamic_next_in_scope(
             let root_node_ids = nodes.iter().map(|node| node.id.clone()).collect::<Vec<_>>();
             let mut child_workspace_ids = Vec::with_capacity(nodes.len());
             for node in &nodes {
-                child_workspace_ids.push(fork_dynamic_workspace(
+                child_workspace_ids.push(fork_dynamic_workspace_from_commit(
                     ctx,
                     graph,
                     &source.workspace_id,
                     &group_id,
                     &node.id,
+                    fork_commit,
                 )?);
             }
             {
@@ -11697,6 +11847,10 @@ fn dynamic_node_state_from_spec(
     let permission_mode = provider
         .as_deref()
         .and_then(|provider| dynamic_permission_mode_for_provider(ctx.dynamic, provider));
+    let auto_accept = provider
+        .as_deref()
+        .map(|provider| dynamic_auto_accept_for_provider(ctx.dynamic, provider))
+        .unwrap_or_else(|| dynamic_control_auto_accept(ctx.dynamic));
     let node = DynamicNodeState {
         version: VERSION.to_string(),
         acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
@@ -11722,6 +11876,7 @@ fn dynamic_node_state_from_spec(
         profile: spec.profile,
         model,
         permission_mode,
+        auto_accept,
         session_mode: spec.session_mode,
         continue_from_node_id: spec.continue_from_node_id,
         workflow_id: spec.workflow_id,
@@ -12053,6 +12208,7 @@ fn create_dynamic_merge_node(
         profile: None,
         model: group.merge.model.clone(),
         permission_mode: dynamic_control_permission_mode(ctx.dynamic),
+        auto_accept: dynamic_control_auto_accept(ctx.dynamic),
         session_mode: SessionMode::New,
         continue_from_node_id: None,
         workflow_id: None,
@@ -12106,6 +12262,7 @@ fn create_dynamic_acceptance_node(
         profile: None,
         model: group.acceptance.model.clone(),
         permission_mode: dynamic_control_permission_mode(ctx.dynamic),
+        auto_accept: dynamic_control_auto_accept(ctx.dynamic),
         session_mode: SessionMode::New,
         continue_from_node_id: None,
         workflow_id: None,
@@ -12283,10 +12440,12 @@ pub(crate) fn prepare_dynamic_acp_prompt(
     invocation.turn_control_mode = TurnControlMode::NonRuntimeControlled;
     invocation.runtime_control_intent = RuntimeControlIntent::ManualFollowUp;
     invocation.extra_hidden_sections.clear();
+    let prompt = prepare_prompt_bundle(&mut invocation)?;
     Ok(PreparedAcpPrompt {
-        prompt: render_prompt_bundle(&invocation)?,
+        prompt,
         adapter_workspace_dir: invocation.adapter_workspace_dir,
         session_workspace_dir: invocation.workspace_dir,
+        mcp_servers: invocation.mcp_servers,
     })
 }
 
@@ -12304,6 +12463,7 @@ pub(crate) fn run_continue_with_prompt_input(
         prompt_id,
         input,
         Vec::new(),
+        None,
         None,
         None,
         None,
@@ -12331,10 +12491,7 @@ fn build_dynamic_worker_invocation(
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "runtime_context");
     let runtime_context = dynamic_runtime_context(ctx, &node.id, attempt_id);
-    let mut config_options = dynamic_config_options_for_invocation(ctx.dynamic, node);
-    config_options.extend(dynamic_acp_config_option_overrides(
-        &runtime_context.attempt_dir,
-    ));
+    let snapshot_config_options = dynamic_acp_config_option_overrides(&runtime_context.attempt_dir);
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -12435,6 +12592,21 @@ fn build_dynamic_worker_invocation(
 
     let step_started_at = dynamic_invocation_build_step_begin(ctx, node, attempt_id, "model");
     let model = resolve_dynamic_invocation_model(ctx.dynamic, node, model_override);
+    let diagnostics = ctx.app.provider_diagnostics();
+    let capabilities = node
+        .provider
+        .as_deref()
+        .filter(|provider| !provider.trim().is_empty())
+        .or(Some(dynamic_control_provider(ctx.dynamic)))
+        .and_then(|provider| diagnostics.get(provider))
+        .and_then(|snapshot| snapshot.capabilities.as_ref());
+    let config_options = crate::acp::session_config::invocation_config_option_overrides(
+        session_mode == SessionMode::Continue,
+        dynamic_config_options_for_invocation(ctx.dynamic, node),
+        snapshot_config_options,
+        capabilities,
+        model.as_deref(),
+    );
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -12495,6 +12667,7 @@ fn build_dynamic_worker_invocation(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .or_else(|| node.permission_mode.clone());
+    let auto_accept = node.auto_accept;
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -12550,6 +12723,19 @@ fn build_dynamic_worker_invocation(
 
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "assemble_invocation");
+    let mcp_servers = ctx.app.acp_mcp_servers().unwrap_or_else(|error| {
+        tracing::warn!(
+            project_id = %ctx.app.paths.project_id,
+            task_id = ctx.task_id,
+            run_id = ctx.run_id,
+            round_id = ctx.round_id,
+            node_id = node.id,
+            attempt_id,
+            %error,
+            "failed to load MCP servers for dynamic ACP session; continuing without MCP servers"
+        );
+        Vec::new()
+    });
     let invocation = WorkerInvocation {
         invocation_kind: InvocationKind::WorkerGeneric,
         turn_control_mode: TurnControlMode::RuntimeControlled,
@@ -12577,6 +12763,7 @@ fn build_dynamic_worker_invocation(
         session_mode,
         user_prompt_render_mode,
         permission_mode,
+        auto_accept,
         model,
         config_options,
         continue_ref,
@@ -12595,7 +12782,7 @@ fn build_dynamic_worker_invocation(
         attachment_projection_policy: crate::provider::AttachmentProjectionPolicy::from(
             &ctx.app.config,
         ),
-        mcp_servers: Vec::new(),
+        mcp_servers,
         scheduled_context: None,
     };
     dynamic_invocation_build_step_end(
@@ -12638,19 +12825,15 @@ fn dynamic_builtin_profile(
     match node.kind {
         DynamicNodeKind::Worker if dynamic_node_is_bootstrap_dispatch(node) => Some((
             "ai-dynamic-fanout",
-            prompt_by_language(language, AI_DYNAMIC_FANOUT_ZH_CN, AI_DYNAMIC_FANOUT_EN),
+            prompt_by_language(language, AI_DYNAMIC_FANOUT),
         )),
         DynamicNodeKind::Merge => Some((
             "ai-dynamic-merge",
-            prompt_by_language(language, AI_DYNAMIC_MERGE_ZH_CN, AI_DYNAMIC_MERGE_EN),
+            prompt_by_language(language, AI_DYNAMIC_MERGE),
         )),
         DynamicNodeKind::Acceptance => Some((
             "ai-dynamic-acceptance",
-            prompt_by_language(
-                language,
-                AI_DYNAMIC_ACCEPTANCE_ZH_CN,
-                AI_DYNAMIC_ACCEPTANCE_EN,
-            ),
+            prompt_by_language(language, AI_DYNAMIC_ACCEPTANCE),
         )),
         _ => None,
     }
@@ -12690,13 +12873,13 @@ fn dynamic_structured_repair_prompt(
 ) -> String {
     let has_coordination_snapshot = dynamic_node_reads_coordination_snapshot(node, true);
     render_template(
-        prompt_by_language(
-            ctx.app.config.desktop_language,
-            AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN,
-            AI_DYNAMIC_PROPOSAL_REPAIR_EN,
-        ),
+        prompt_by_language(ctx.app.config.desktop_language, AI_DYNAMIC_PROPOSAL_REPAIR),
         serde_json::json!({
             "validation_errors": dynamic_validation_repair_lines(ctx, graph, errors),
+            "fanout_workspace_dirty": errors.iter().any(|error| error.code == DYNAMIC_FANOUT_WORKSPACE_DIRTY),
+            "fanout_workspace_path": errors.iter()
+                .find(|error| error.code == DYNAMIC_FANOUT_WORKSPACE_DIRTY)
+                .and_then(|error| error.params.get("workspacePath")),
             "repair_reference": dynamic_repair_reference_summary(ctx, graph),
             "remaining_budget": dynamic_remaining_budget_summary(graph, node),
             "has_coordination_snapshot": has_coordination_snapshot,
@@ -12872,11 +13055,7 @@ fn dynamic_task_instruction(
     has_output_contract: bool,
 ) -> String {
     let metadata = render_template(
-        prompt_by_language(
-            ctx.app.config.desktop_language,
-            AI_DYNAMIC_NODE_TASK_ZH_CN,
-            AI_DYNAMIC_NODE_TASK_EN,
-        ),
+        prompt_by_language(ctx.app.config.desktop_language, AI_DYNAMIC_NODE_TASK),
         serde_json::json!({
             "title": node.title,
             "has_output_contract": has_output_contract,
@@ -13891,11 +14070,7 @@ fn dynamic_system_sections(
     control_emission_mode: Option<OutputEmissionMode>,
 ) -> Result<Vec<String>> {
     Ok(vec![render_template(
-        prompt_by_language(
-            ctx.app.config.desktop_language,
-            AI_DYNAMIC_SYSTEM_ZH_CN,
-            AI_DYNAMIC_SYSTEM_EN,
-        ),
+        prompt_by_language(ctx.app.config.desktop_language, AI_DYNAMIC_SYSTEM),
         serde_json::json!({
             "control_emission_mode": control_emission_mode,
         }),
@@ -13964,11 +14139,7 @@ fn dynamic_hidden_sections(
     );
     let coordination_snapshot_path =
         prompt_path_relative_to(&dynamic_root, &coordination_snapshot_path);
-    let template = prompt_by_language(
-        ctx.app.config.desktop_language,
-        AI_DYNAMIC_HIDDEN_CONTEXT_ZH_CN,
-        AI_DYNAMIC_HIDDEN_CONTEXT_EN,
-    );
+    let template = prompt_by_language(ctx.app.config.desktop_language, AI_DYNAMIC_HIDDEN_CONTEXT);
     let attachment_template_context = serde_json::json!({
         "source_predecessor_limit": DYNAMIC_PROMPT_SOURCE_PREDECESSOR_LIMIT,
         "attachments_per_source_limit": DYNAMIC_PROMPT_ATTACHMENTS_PER_SOURCE_LIMIT,
@@ -14030,7 +14201,7 @@ fn dynamic_hidden_sections(
                 ),
                 None => "未单独配置验收模型；`merge` / `acceptance` 与普通动态节点沿用同一套模型规则。".to_string(),
             },
-            DesktopLanguage::En => match dynamic_acceptance_model(ctx.dynamic) {
+            _ => match dynamic_acceptance_model(ctx.dynamic) {
                 Some(model) => format!(
                     "`merge` / `acceptance` use the configured acceptance model `{model}`; those specs must not output `model`."
                 ),
@@ -14407,14 +14578,96 @@ fn checkpoint_dynamic_workspace(
     Ok(head)
 }
 
-fn fork_dynamic_workspace(
+fn dynamic_fanout_source_workspace<'a>(
+    graph: &'a DynamicGraphState,
+    node: &DynamicNodeState,
+) -> Result<&'a WorkspaceState> {
+    let workspace_id = if node.kind == DynamicNodeKind::Acceptance {
+        &graph
+            .groups
+            .iter()
+            .find(|group| Some(&group.id) == node.group_id.as_ref())
+            .ok_or_else(|| anyhow!("dynamic.acceptance.group-missing: {}", node.id))?
+            .target_workspace_id
+    } else {
+        &node.workspace_id
+    };
+    dynamic_workspace(graph, workspace_id)
+}
+
+fn proposal_has_fanout_commit_reminder(proposal: &DynamicProposalState) -> bool {
+    proposal
+        .validation_errors
+        .iter()
+        .any(|error| error.code == DYNAMIC_FANOUT_WORKSPACE_DIRTY)
+}
+
+fn persist_dynamic_fanout_commit_reminder(
+    ctx: &DynamicExecutionContext<'_>,
+    proposal: &DynamicProposalState,
+) -> Result<()> {
+    let lock = dynamic_state_lock(ctx)?;
+    let _guard = lock.lock();
+    let mut graph = load_dynamic_graph(
+        &ctx.app.paths.dynamic_graph_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        ),
+        &ctx.app.paths.repo_root,
+    )?;
+    if !graph.proposals.iter().any(|previous| {
+        previous.source_node_id == proposal.source_node_id
+            && proposal_has_fanout_commit_reminder(previous)
+    }) {
+        graph.proposals.push(proposal.clone());
+        persist_dynamic_graph(ctx, &mut graph)?;
+    }
+    Ok(())
+}
+
+fn dynamic_fanout_workspace_dirty_error(
+    workspace: &WorkspaceState,
+) -> DynamicProposalValidationError {
+    dynamic_validation_error(
+        DYNAMIC_FANOUT_WORKSPACE_DIRTY,
+        "review uncommitted task changes before fanout; one-time commit reminder",
+        serde_json::json!({
+            "path": "next", "workspaceId": workspace.id, "workspacePath": workspace.path,
+            "actual": "dirty", "expected": "review task changes and resubmit; clean workspace not required",
+        }),
+    )
+}
+
+fn dynamic_fanout_workspace_check_error(
+    workspace: &WorkspaceState,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    runtime_error(manual_runtime_error_info(
+        RuntimeErrorDomain::Workspace,
+        DYNAMIC_FANOUT_WORKSPACE_CHECK_FAILED,
+        format!("fanout source Git check failed: {error:#}"),
+        serde_json::json!({ "workspaceId": workspace.id, "workspacePath": workspace.path }),
+    ))
+}
+
+fn dynamic_fanout_head(workspace: &WorkspaceState) -> Result<String> {
+    let repository = GitRepositoryService::default();
+    repository
+        .head(&workspace.path)
+        .map_err(|error| dynamic_fanout_workspace_check_error(workspace, error))
+}
+
+fn fork_dynamic_workspace_from_commit(
     ctx: &DynamicExecutionContext<'_>,
     graph: &mut DynamicGraphState,
     parent_workspace_id: &str,
     group_id: &str,
     node_id: &str,
+    fork_commit: &str,
 ) -> Result<String> {
-    let fork_commit = checkpoint_dynamic_workspace(graph, parent_workspace_id, Some(group_id))?;
     let workspace_id = format!(
         "workspace-{}",
         dynamic_worktree_short_id(ctx, &format!("{group_id}:{node_id}"))
@@ -14430,7 +14683,7 @@ fn fork_dynamic_workspace(
         &parent.repo_root,
         &path,
         &branch,
-        &fork_commit,
+        fork_commit,
     ) {
         return Err(error)
             .with_context(|| format!("failed to fork dynamic workspace `{workspace_id}`"));
@@ -14447,7 +14700,7 @@ fn fork_dynamic_workspace(
         branch: Some(branch),
         parent_workspace_id: Some(parent_workspace_id.to_string()),
         created_by_group_id: Some(group_id.to_string()),
-        fork_commit,
+        fork_commit: fork_commit.to_string(),
         checkpoint_commit: None,
         status: WorkspaceStatus::Active,
         created_at: now.clone(),
@@ -15082,9 +15335,10 @@ fn drive_from_node_with_initial_session(
     initial_user_prompt_render_mode: UserPromptRenderMode,
     initial_resume_input_attachment_paths: Vec<String>,
     initial_runtime_control_intent: RuntimeControlIntent,
-    parent_continue_input: Option<ConversationPromptInput>,
-    parent_continue_prompt_id: Option<String>,
-    dynamic_resume_override: Option<DynamicResumeOverride>,
+    mut parent_continue_input: Option<ConversationPromptInput>,
+    mut parent_continue_prompt_id: Option<String>,
+    mut dynamic_resume_override: Option<DynamicResumeOverride>,
+    mut resume_metrics_context: Option<RuntimeResumeMetricsContext>,
     initial_model_override: Option<String>,
     initial_permission_mode_override: Option<String>,
     mut launch: Option<mpsc::Sender<RuntimeContinueLaunch>>,
@@ -15113,6 +15367,7 @@ fn drive_from_node_with_initial_session(
     let mut invalid_output_repair_prompts = 0;
 
     loop {
+        let current_resume_metrics_context = resume_metrics_context.take();
         let current_attempt_id = node.attempt_id.clone();
         let current_node_id = node.node_id.clone();
         let current_execution_id = node.runtime_execution_id.clone();
@@ -15120,15 +15375,30 @@ fn drive_from_node_with_initial_session(
             .with_round(round.id.clone())
             .with_node(current_node_id.clone())
             .with_attempt(current_attempt_id.clone());
-        let previous_pause_reason = (run.status == RunStatus::Paused)
-            .then_some(run.pause_reason)
-            .flatten();
+        let previous_pause_reason = effective_previous_pause_reason(
+            run.status,
+            run.pause_reason,
+            current_resume_metrics_context.as_ref(),
+        );
         run.status = RunStatus::Running;
         run.pause_reason = None;
         run.updated_at = now_rfc3339_like();
         let starting_phase = match run.execution.phase {
             RuntimeExecutionPhase::FinalizingArtifact => RuntimeExecutionPhase::FinalizingArtifact,
             RuntimeExecutionPhase::RepairingArtifact => RuntimeExecutionPhase::RepairingArtifact,
+            _ if previous_pause_reason.is_some()
+                && crate::provider::post_turn_projection_checkpoint_is_finalizing(
+                    &app.paths.attempt_dir(
+                        task_id,
+                        &run.id,
+                        &round.id,
+                        &node.node_id,
+                        &node.attempt_id,
+                    ),
+                )? =>
+            {
+                RuntimeExecutionPhase::FinalizingArtifact
+            }
             _ => RuntimeExecutionPhase::StartingNode,
         };
         run.transition_current_execution(starting_phase, run.updated_at.clone())?;
@@ -15177,11 +15447,17 @@ fn drive_from_node_with_initial_session(
                 app,
                 run,
                 super::observability::LifecycleEventType::ExecutionResumed,
-                uuid::Uuid::new_v4().to_string(),
+                metrics_resume_fact_id(
+                    run,
+                    current_resume_metrics_context
+                        .as_ref()
+                        .map(|context| context.transition_revision),
+                ),
                 now_rfc3339_like(),
                 Some(previous_pause_reason),
                 None,
                 None,
+                current_resume_metrics_context.as_ref(),
             );
         }
 
@@ -15517,44 +15793,6 @@ fn drive_from_node_with_initial_session(
 
         if node.status == RunStatus::Completed {
             teardown_node_environment_best_effort(app, task_id, &run.id, &round.id, &node, &ctx);
-
-            // Emit NodeCompleted immediately when the node reaches terminal execution state.
-            // This must happen BEFORE any control flow decisions (manual check, invalid
-            // repair, transition, run completion) so metrics are reported for every node.
-            let node_attempt_dir = app
-                .paths
-                .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id)
-                .to_string();
-            let node_completed_snapshot =
-                completed_node_snapshot(round, &node, Some(node_attempt_dir.clone()));
-            app.emit_lifecycle_event(super::RuntimeLifecycleEvent::NodeCompleted {
-                task_id: task_id.to_string(),
-                task_uuid: run.task_uuid.clone(),
-                run_id: run.id.clone(),
-                run_uuid: run.uuid.clone(),
-                round_id: round.id.clone(),
-                round_uuid: round.uuid.clone(),
-                round_index: Some(round.index),
-                node_id: node.node_id.clone(),
-                node_uuid: node.uuid.clone(),
-                attempt_id: node.attempt_id.clone(),
-                repo_root: app.paths.repo_root.to_string(),
-                seq: node_completed_snapshot.seq,
-                node_name: node_completed_snapshot.node_name.clone(),
-                agent_type: node_completed_snapshot.agent_type.clone(),
-                resolved_model: node
-                    .resolved_config
-                    .get("model")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string),
-                started_at: node.started_at.clone(),
-                finished_at: node.finished_at.clone(),
-                outcome: node_completed_snapshot.status.clone(),
-                attempt_dir: node_attempt_dir,
-                suppress_sentinel: false,
-                metrics_unit_kind: None,
-                child_run_id: None,
-            });
         }
 
         if node.status == RunStatus::Paused {
@@ -15776,7 +16014,7 @@ fn drive_from_node_with_initial_session(
             node.status = RunStatus::Paused;
             node.outcome = None;
             node.manual_check_pending = true;
-            node.finished_at = Some(now_rfc3339_like());
+            node.finished_at = None;
             run.status = RunStatus::Paused;
             run.pause_reason = Some(PauseReason::WaitingForUserInput);
             run.updated_at = now_rfc3339_like();
@@ -15861,7 +16099,7 @@ fn drive_from_node_with_initial_session(
             return Ok(());
         }
 
-        // NodeCompleted already emitted above inside the if-completed block.
+        emit_node_completed_lifecycle_event(app, task_id, run, round, &node);
         let decision = decide_next_step(workflow, run, round, &node);
 
         if let Some(next) = apply_control_decision(
@@ -15892,10 +16130,14 @@ fn drive_from_node_with_initial_session(
             runtime_control_intent = prompt_state.runtime_control_intent;
             model_override = prompt_state.model_override;
             permission_mode_override = prompt_state.permission_mode_override;
+            // Explicit recovery belongs to the initial outer attempt, including
+            // its retries, but never to a workflow successor or a new round.
+            parent_continue_input = None;
+            parent_continue_prompt_id = None;
+            dynamic_resume_override = None;
             invalid_output_repair_prompts = 0;
             continue;
         }
-        // Workflow ended - NodeCompleted already emitted above before control decision.
         if run.status != RunStatus::Running {
             app.finish_runtime_candidate_best_effort(
                 task_id,
@@ -15910,7 +16152,6 @@ fn drive_from_node_with_initial_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acp::elicitation::{pending_elicitation_state, write_pending_elicitation};
     use crate::config::{ProviderDiagnosticSnapshot, RuntimeConfig};
     use crate::dsl::{AiDynamicAgentStrategy, DynamicControlDsl};
     use crate::provider::{
@@ -15945,7 +16186,7 @@ mod tests {
         fn doctor(&self) -> DoctorResult {
             DoctorResult {
                 available: true,
-                reason: None,
+                error: None,
                 capabilities: None,
             }
         }
@@ -16035,21 +16276,6 @@ mod tests {
     }
 
     #[test]
-    fn metrics_resume_cause_is_consumed_without_pause_reason_inference() {
-        let mut state = crate::app::observability::ExecutionObservabilityState::default();
-        state.set_pending_resume_cause(crate::app::observability::ResumeCause::PermissionResolved);
-        let cause = state.take_pending_resume_cause().unwrap();
-        state.record_resume(true, cause);
-        assert_eq!(state.counters.resume_count, 1);
-        assert_eq!(state.counters.manual_continue_count, 0);
-        state.set_pending_resume_cause(crate::app::observability::ResumeCause::ManualContinue);
-        let cause = state.take_pending_resume_cause().unwrap();
-        state.record_resume(true, cause);
-        assert_eq!(state.counters.resume_count, 2);
-        assert_eq!(state.counters.manual_continue_count, 1);
-    }
-
-    #[test]
     fn run_intermediate_metrics_carry_current_workflow_node_context() {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
@@ -16061,7 +16287,7 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_for_handler = seen.clone();
         bus.subscribe_inline(Arc::new(move |event| {
-            if let RuntimeLifecycleEvent::MetricsFact(fact) = event {
+            if let RuntimeLifecycleEvent::PendingMetricsFact(fact) = event {
                 seen_for_handler.lock().unwrap().push(fact);
             }
         }));
@@ -16141,6 +16367,7 @@ mod tests {
             Some(PauseReason::WaitingForUserInput),
             None,
             None,
+            None,
         );
         emit_run_metrics_fact(
             &app,
@@ -16151,24 +16378,46 @@ mod tests {
             Some(PauseReason::WaitingForUserInput),
             None,
             None,
+            Some(&RuntimeResumeMetricsContext::manual_continue(
+                PauseReason::WaitingForUserInput,
+                7,
+            )),
         );
 
         let facts = seen.lock().unwrap();
         assert_eq!(facts.len(), 2);
         for fact in facts.iter() {
-            assert_eq!(fact.round_index, Some(1));
-            assert_eq!(fact.attempt_index, Some(1));
-            assert_eq!(fact.attempt_id.as_deref(), Some(node_uuid.as_str()));
-            assert_eq!(fact.role_name.as_deref(), Some("Planner"));
+            let crate::app::observability::MetricsSubject::WorkflowNodeAttempt {
+                node_id,
+                attempt_id,
+                attempt_index,
+                round_index,
+                role_name,
+            } = &fact.subject
+            else {
+                panic!("expected workflow node attempt subject")
+            };
+            assert_eq!(*round_index, 1);
+            assert_eq!(*attempt_index, 1);
+            assert_eq!(attempt_id, &node_uuid);
+            assert_eq!(role_name, "Planner");
             assert_eq!(
-                fact.node_id.as_deref(),
-                crate::app::observability::derive_execution_id(&run_uuid, "round:1:node:plan")
-                    .as_deref()
+                node_id,
+                &crate::app::observability::derive_execution_id(&run_uuid, "round:1:node:plan")
+                    .unwrap()
             );
         }
         assert_eq!(
-            facts[1].previous_pause_reason,
+            facts[1].payload.previous_pause_reason,
             Some(crate::app::observability::MetricsPauseReason::WaitingForUserInput)
+        );
+        assert_eq!(facts[1].fact_id, "resumed-1");
+        assert_eq!(
+            facts[1].transition,
+            crate::app::observability::MetricsTransition::Resumed {
+                transition_id: "resumed-1".to_string(),
+                action: crate::app::observability::UserExecutionAction::ManualContinue,
+            }
         );
     }
 
@@ -16204,6 +16453,7 @@ mod tests {
                 provider: None,
                 profile: None,
                 permission_mode: None,
+                auto_accept: false,
                 model: None,
                 session_mode: SessionMode::New,
                 continue_from_node_id: None,
@@ -16312,7 +16562,7 @@ mod tests {
                 .resume_prompt
                 .as_deref()
                 .unwrap_or_default()
-                .contains("用户已选择将当前节点重新交由 Runtime 控制")
+                .contains("请继续执行当前节点尚未完成的任务")
         );
     }
 
@@ -16332,7 +16582,7 @@ mod tests {
         assert_eq!(state.resume_prompt_visibility, PromptVisibility::Hidden);
         assert_eq!(
             state.resume_prompt.as_deref(),
-            Some("用户已选择将当前节点重新交由 Runtime 控制。当前输出契约（如有）重新生效。")
+            Some("请继续执行当前节点尚未完成的任务，并遵循用户针对该任务的最新指引（如果有）")
         );
     }
 
@@ -16341,6 +16591,7 @@ mod tests {
         let input = ConversationPromptInput {
             display_text: "  请先补充回归测试  ".to_string(),
             quotes: Vec::new(),
+            role: None,
         };
         let state = runtime_control_resume_prompt_state(
             DesktopLanguage::ZhCn,
@@ -16383,6 +16634,7 @@ mod tests {
             Some(ConversationPromptInput {
                 display_text: "Write another essay".to_string(),
                 quotes: Vec::new(),
+                role: None,
             }),
             Some("prompt-2".to_string()),
             Vec::new(),
@@ -16469,6 +16721,7 @@ mod tests {
             Some(ConversationPromptInput {
                 display_text: String::new(),
                 quotes: Vec::new(),
+                role: None,
             }),
             Some("prompt-attachment-only".to_string()),
             vec!["C:/temp/context.txt".to_string()],
@@ -16515,6 +16768,33 @@ mod tests {
         );
         drop(first);
         assert!(FixedRunContinueLease::acquire(&app, "task-001", "run-001").is_ok());
+    }
+
+    #[test]
+    fn resume_metrics_context_only_carries_resume_lifecycle_fields() {
+        let context =
+            RuntimeResumeMetricsContext::manual_continue(PauseReason::ProcessInterrupted, 7);
+
+        assert_eq!(
+            context.previous_pause_reason,
+            PauseReason::ProcessInterrupted
+        );
+        assert_eq!(context.transition_revision, 7);
+    }
+
+    #[test]
+    fn committed_continue_context_keeps_running_drive_from_republishing_started() {
+        let context =
+            RuntimeResumeMetricsContext::manual_continue(PauseReason::ProcessInterrupted, 9);
+
+        assert_eq!(
+            effective_previous_pause_reason(RunStatus::Running, None, Some(&context)),
+            Some(PauseReason::ProcessInterrupted)
+        );
+        assert_eq!(
+            effective_previous_pause_reason(RunStatus::Running, None, None),
+            None
+        );
     }
 
     #[test]
@@ -16769,6 +17049,12 @@ mod tests {
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
         std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
         git(&repo_root, &["init"]);
+        // Test runtime storage is colocated with the fixture repository.
+        std::fs::write(
+            repo_root.join(".git/info/exclude"),
+            "gold-band-home/\n.gold-band/\n",
+        )
+        .unwrap();
         git(&repo_root, &["config", "user.email", "test@example.com"]);
         git(&repo_root, &["config", "user.name", "Test User"]);
         std::fs::write(repo_root.join("README.md").as_std_path(), "hello\n").unwrap();
@@ -17043,8 +17329,10 @@ mod tests {
                 provider: "claude-acp".to_string(),
                 model: None,
                 permission_mode: None,
+                auto_accept: false,
             },
             config_options: Default::default(),
+            model_bound_overrides: Default::default(),
             allowed_profiles: Vec::new(),
             global_goal: None,
             control: DynamicControlDsl::default(),
@@ -17060,27 +17348,33 @@ mod tests {
                 bootstrap_provider: "codex-acp".to_string(),
                 bootstrap_model: Some("gpt-5.6-sol".to_string()),
                 permission_mode: Some("agent-full-access".to_string()),
+                auto_accept: false,
                 bootstrap_config_options: BTreeMap::from([(
                     "reasoning_effort".to_string(),
                     "high".to_string(),
                 )]),
+                bootstrap_model_bound_overrides: Default::default(),
                 acceptance_model: Some("gpt-5.6-sol".to_string()),
                 acceptance_config_options: BTreeMap::from([(
                     "reasoning_effort".to_string(),
                     "medium".to_string(),
                 )]),
+                acceptance_model_bound_overrides: Default::default(),
                 routing_prompt: String::new(),
                 available_agents: vec![crate::dsl::DynamicAgentRef {
                     provider: "codex-acp".to_string(),
                     model: Some("gpt-5.4".to_string()),
                     permission_mode: Some("auto".to_string()),
+                    auto_accept: false,
                     config_options: BTreeMap::from([(
                         "reasoning_effort".to_string(),
                         "low".to_string(),
                     )]),
+                    model_bound_overrides: Default::default(),
                 }],
             },
             config_options: Default::default(),
+            model_bound_overrides: Default::default(),
             allowed_profiles: Vec::new(),
             global_goal: None,
             control: DynamicControlDsl::default(),
@@ -17141,7 +17435,7 @@ mod tests {
             "claude-acp".to_string(),
             ProviderDiagnosticSnapshot {
                 available: true,
-                reason: None,
+                error: None,
                 checked_at: "2026-06-16T00:00:00Z".to_string(),
                 capabilities: Some(capabilities),
             },
@@ -17260,7 +17554,7 @@ mod tests {
     }
 
     #[test]
-    fn background_drive_error_terminalizes_runtime_and_emits_intervention() {
+    fn background_drive_error_terminalizes_runtime_and_publishes_committed_pause_once() {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
         let events = Arc::new(Mutex::new(Vec::new()));
@@ -17371,14 +17665,27 @@ mod tests {
                 .iter()
                 .filter(|event| matches!(
                     event,
-                    RuntimeLifecycleEvent::InterventionRequested {
-                        scheduled_occurrence_id: Some(occurrence_id),
-                        kind: RuntimeInterventionKind::RuntimeAbnormal,
+                    RuntimeLifecycleEvent::RunPaused {
+                        task_id: emitted_task_id,
+                        run_id,
+                        node_id,
+                        pause_reason: PauseReason::RuntimeAbnormal,
                         ..
-                    } if occurrence_id == "occurrence-001"
+                    } if emitted_task_id == task_id && run_id == "run-001" && node_id == "worker"
                 ))
                 .count(),
             1
+        );
+        assert_eq!(
+            captured
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    RuntimeLifecycleEvent::InterventionRequested { .. }
+                ))
+                .count(),
+            0,
+            "committed attempt pause must not create a parallel intervention lifecycle"
         );
         drop(captured);
 
@@ -17392,20 +17699,9 @@ mod tests {
             &anyhow!("round persistence failed after run pause"),
         );
         let captured = events.lock().unwrap();
-        assert_eq!(
-            captured
-                .iter()
-                .filter(|event| matches!(
-                    event,
-                    RuntimeLifecycleEvent::InterventionRequested {
-                        scheduled_occurrence_id: Some(occurrence_id),
-                        kind: RuntimeInterventionKind::RuntimeAbnormal,
-                        ..
-                    } if occurrence_id == "occurrence-001"
-                ))
-                .count(),
-            1,
-            "a partially persisted pause still needs a terminal lifecycle event"
+        assert!(
+            captured.is_empty(),
+            "re-terminalizing an already committed pause must not publish lifecycle events"
         );
     }
 
@@ -17561,105 +17857,28 @@ mod tests {
     }
 
     #[test]
-    fn waiting_for_user_input_maps_to_elicitation_when_pending_request_exists() {
+    fn manual_check_attempt_emits_completed_only_after_terminal_state_is_persistable() {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let app = App::new(repo_root);
-        let task_id = "task-001";
+        let completed_events = Arc::new(Mutex::new(Vec::new()));
+        let captured = completed_events.clone();
+        let app = App::new(repo_root).with_inline_lifecycle_subscriber(Arc::new(move |event| {
+            if matches!(&event, RuntimeLifecycleEvent::NodeCompleted { .. }) {
+                captured.lock().unwrap().push(event);
+            }
+        }));
         let run = RunState {
-            version: crate::domain::VERSION.to_string(),
-            id: "run-001".to_string(),
-            task_id: task_id.to_string(),
-            task_uuid: None,
-            status: RunStatus::Paused,
-            outcome: None,
-            started_at: "1Z".to_string(),
-            updated_at: "1Z".to_string(),
-            workflow_snapshot: "workflow.snapshot.json".to_string(),
-            current_round: Some("round-001".to_string()),
-            current_node: Some("plan".to_string()),
-            current_attempt: Some("attempt-001".to_string()),
-            new_rounds_opened: 0,
-            pause_reason: Some(PauseReason::WaitingForUserInput),
-            uuid: None,
-            last_executed_node: None,
-            worktree: None,
-            execution: Default::default(),
-        };
-        let round = RoundState {
-            version: crate::domain::VERSION.to_string(),
-            id: "round-001".to_string(),
-            run_id: run.id.clone(),
-            index: 1,
-            status: RunStatus::Paused,
-            outcome: None,
-            trigger: crate::domain::RoundTrigger::Initial,
-            started_at: "1Z".to_string(),
-            trace: Vec::new(),
-            uuid: None,
-        };
-        let node = NodeState {
-            version: crate::domain::VERSION.to_string(),
-            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
-            node_id: "plan".to_string(),
-            run_id: run.id.clone(),
-            round_id: round.id.clone(),
-            attempt_id: "attempt-001".to_string(),
-            node_type: crate::domain::NodeType::Worker,
-            status: RunStatus::Paused,
-            outcome: None,
-            started_at: "1Z".to_string(),
-            finished_at: None,
-            resolved_config: std::collections::BTreeMap::new(),
-            manual_check_pending: false,
-            runtime_execution_id: None,
-            uuid: None,
-        };
-        let attempt_dir =
-            app.paths
-                .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
-        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
-        write_pending_elicitation(
-            &attempt_dir,
-            &pending_elicitation_state(
-                "elicit-001",
-                "turn-1",
-                "prompt-turn-1",
-                serde_json::json!(1),
-                serde_json::from_value(serde_json::json!({
-                    "mode": "form",
-                    "sessionId": "session-test",
-                    "message": "请选择",
-                    "requestedSchema": { "type": "object", "properties": {} }
-                }))
-                .unwrap(),
-                "1Z".to_string(),
-            ),
-        )
-        .unwrap();
-
-        let kind = waiting_for_user_input_intervention_kind(&app, task_id, &run, &round, &node);
-
-        assert_eq!(kind, RuntimeInterventionKind::ElicitationRequested);
-    }
-
-    #[test]
-    fn waiting_for_user_input_keeps_manual_check_when_flagged() {
-        let temp = tempdir().unwrap();
-        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let app = App::new(repo_root);
-        let run = RunState {
-            version: crate::domain::VERSION.to_string(),
+            version: VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: "task-001".to_string(),
             task_uuid: None,
             status: RunStatus::Paused,
             outcome: None,
-            started_at: "1Z".to_string(),
-            updated_at: "1Z".to_string(),
+            started_at: "2026-08-25T10:00:00.000".to_string(),
+            updated_at: "2026-08-25T10:00:01.000".to_string(),
             workflow_snapshot: "workflow.snapshot.json".to_string(),
             current_round: Some("round-001".to_string()),
-            current_node: Some("plan".to_string()),
+            current_node: Some("review".to_string()),
             current_attempt: Some("attempt-001".to_string()),
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::WaitingForUserInput),
@@ -17669,38 +17888,140 @@ mod tests {
             execution: Default::default(),
         };
         let round = RoundState {
-            version: crate::domain::VERSION.to_string(),
+            version: VERSION.to_string(),
             id: "round-001".to_string(),
             run_id: run.id.clone(),
             index: 1,
             status: RunStatus::Paused,
             outcome: None,
-            trigger: crate::domain::RoundTrigger::Initial,
-            started_at: "1Z".to_string(),
+            trigger: RoundTrigger::Initial,
+            started_at: run.started_at.clone(),
+            trace: Vec::new(),
+            uuid: None,
+        };
+        let mut node = NodeState {
+            version: VERSION.to_string(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+            node_id: "review".to_string(),
+            node_type: crate::domain::NodeType::Worker,
+            run_id: run.id.clone(),
+            round_id: round.id.clone(),
+            attempt_id: "attempt-001".to_string(),
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: run.started_at.clone(),
+            finished_at: None,
+            manual_check_pending: true,
+            runtime_execution_id: None,
+            resolved_config: BTreeMap::new(),
+            uuid: None,
+        };
+
+        emit_node_completed_lifecycle_event(&app, "task-001", &run, &round, &node);
+        assert!(completed_events.lock().unwrap().is_empty());
+
+        node.status = RunStatus::Completed;
+        node.outcome = Some(NodeOutcome::Success);
+        node.manual_check_pending = false;
+        node.finished_at = Some("2026-08-25T10:00:02.000".to_string());
+        emit_node_completed_lifecycle_event(&app, "task-001", &run, &round, &node);
+        assert_eq!(completed_events.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn manual_check_pause_emits_intervention_with_run_pause_identity() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let app = App::new(repo_root).with_inline_lifecycle_subscriber(Arc::new(move |event| {
+            captured.lock().unwrap().push(event);
+        }));
+        let run = RunState {
+            version: VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "2026-09-17T10:00:00.000".to_string(),
+            updated_at: "2026-09-17T10:00:01.000".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("review".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::WaitingForUserInput),
+            uuid: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
+        };
+        let round = RoundState {
+            version: VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: run.id.clone(),
+            index: 1,
+            status: RunStatus::Paused,
+            outcome: None,
+            trigger: RoundTrigger::Initial,
+            started_at: run.started_at.clone(),
             trace: Vec::new(),
             uuid: None,
         };
         let node = NodeState {
-            version: crate::domain::VERSION.to_string(),
+            version: VERSION.to_string(),
             acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
-            node_id: "plan".to_string(),
+            node_id: "review".to_string(),
+            node_type: crate::domain::NodeType::Worker,
             run_id: run.id.clone(),
             round_id: round.id.clone(),
             attempt_id: "attempt-001".to_string(),
-            node_type: crate::domain::NodeType::Worker,
             status: RunStatus::Paused,
             outcome: None,
-            started_at: "1Z".to_string(),
+            started_at: run.started_at.clone(),
             finished_at: None,
-            resolved_config: std::collections::BTreeMap::new(),
             manual_check_pending: true,
             runtime_execution_id: None,
+            resolved_config: BTreeMap::new(),
             uuid: None,
         };
 
-        let kind = waiting_for_user_input_intervention_kind(&app, "task-001", &run, &round, &node);
+        emit_pause_side_effects(&app, "task-001", &run, &round, &node);
 
-        assert_eq!(kind, RuntimeInterventionKind::ManualDecisionRequired);
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        let run_pause_event_id = match &events[0] {
+            RuntimeLifecycleEvent::RunPaused {
+                event_id,
+                pause_reason: PauseReason::WaitingForUserInput,
+                ..
+            } => event_id,
+            event => panic!("expected RunPaused first, got {event:?}"),
+        };
+        match &events[1] {
+            RuntimeLifecycleEvent::InterventionRequested {
+                event_id,
+                request: crate::app::intervention::InterventionRequestIdentity::ManualCheck,
+                kind: RuntimeInterventionKind::ManualDecisionRequired,
+                task_id,
+                run_id,
+                round_id,
+                node_id,
+                attempt_id,
+                node_label: event_node_label,
+                ..
+            } => {
+                assert_eq!(event_id, run_pause_event_id);
+                assert_eq!(task_id, "task-001");
+                assert_eq!(run_id, "run-001");
+                assert_eq!(round_id, "round-001");
+                assert_eq!(node_id, "review");
+                assert_eq!(attempt_id, "attempt-001");
+                assert_eq!(event_node_label, &node_label(&node));
+            }
+            event => panic!("expected ManualCheck intervention second, got {event:?}"),
+        }
     }
 
     #[test]
@@ -17927,16 +18248,28 @@ mod tests {
         let converged = app.run_status(task_id, &run.id).unwrap();
         assert_eq!(converged.status, RunStatus::Paused);
         assert_eq!(converged.pause_reason, Some(PauseReason::RuntimeAbnormal));
-        assert!(lifecycle_events.lock().unwrap().iter().any(|event| {
-            matches!(
-                event,
-                RuntimeLifecycleEvent::InterventionRequested {
-                    scheduled_occurrence_id: Some(occurrence_id),
-                    kind: RuntimeInterventionKind::RuntimeAbnormal,
-                    ..
-                } if occurrence_id == "occurrence-001"
-            )
-        }));
+        let lifecycle_events = lifecycle_events.lock().unwrap();
+        assert_eq!(
+            lifecycle_events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    RuntimeLifecycleEvent::RunPaused {
+                        task_id: emitted_task_id,
+                        run_id,
+                        node_id,
+                        pause_reason: PauseReason::RuntimeAbnormal,
+                        ..
+                    } if emitted_task_id == task_id && run_id == "run-001" && node_id == "review"
+                ))
+                .count(),
+            1
+        );
+        assert!(
+            !lifecycle_events
+                .iter()
+                .any(|event| matches!(event, RuntimeLifecycleEvent::InterventionRequested { .. }))
+        );
     }
 
     #[test]
@@ -18073,17 +18406,10 @@ mod tests {
             durable_node.runtime_execution_id.as_deref(),
             Some("execution-b")
         );
-        assert!(lifecycle_events.lock().unwrap().iter().any(|event| {
-            matches!(
-                event,
-                RuntimeLifecycleEvent::InterventionRequested {
-                    scheduled_occurrence_id: Some(occurrence_id),
-                    attempt_id,
-                    kind: RuntimeInterventionKind::RuntimeAbnormal,
-                    ..
-                } if occurrence_id == "occurrence-001" && attempt_id == "attempt-001"
-            )
-        }));
+        assert!(
+            lifecycle_events.lock().unwrap().is_empty(),
+            "a superseded attempt must not publish pause or intervention events"
+        );
     }
 
     #[test]
@@ -18174,17 +18500,10 @@ mod tests {
         let durable_run = app.run_status(task_id, &run.id).unwrap();
         assert_eq!(durable_run.status, RunStatus::Paused);
         assert_eq!(durable_run.pause_reason, Some(PauseReason::RuntimeAbnormal));
-        assert!(lifecycle_events.lock().unwrap().iter().any(|event| {
-            matches!(
-                event,
-                RuntimeLifecycleEvent::InterventionRequested {
-                    scheduled_occurrence_id: Some(occurrence_id),
-                    attempt_id,
-                    kind: RuntimeInterventionKind::RuntimeAbnormal,
-                    ..
-                } if occurrence_id == "occurrence-001" && attempt_id == "attempt-001"
-            )
-        }));
+        assert!(
+            lifecycle_events.lock().unwrap().is_empty(),
+            "a partially persisted pause must not be published as committed"
+        );
     }
 
     fn test_worktree_node(id: &str) -> DynamicNodeState {
@@ -18212,6 +18531,7 @@ mod tests {
             provider: Some("claude-acp".to_string()),
             profile: None,
             permission_mode: None,
+            auto_accept: false,
             model: None,
             session_mode: SessionMode::New,
             continue_from_node_id: None,
@@ -18617,15 +18937,20 @@ mod tests {
                 bootstrap_provider: "claude-acp".to_string(),
                 bootstrap_model: None,
                 permission_mode: None,
+                auto_accept: false,
                 bootstrap_config_options: Default::default(),
+                bootstrap_model_bound_overrides: Default::default(),
                 acceptance_model: None,
                 acceptance_config_options: Default::default(),
+                acceptance_model_bound_overrides: Default::default(),
                 routing_prompt: "choose provider and model".to_string(),
                 available_agents: vec![crate::dsl::DynamicAgentRef {
                     provider: "claude-acp".to_string(),
                     model: None,
                     permission_mode: None,
+                    auto_accept: false,
                     config_options: Default::default(),
+                    model_bound_overrides: Default::default(),
                 }],
             },
             ..test_dynamic()
@@ -18732,15 +19057,20 @@ mod tests {
                 bootstrap_provider: "claude-acp".to_string(),
                 bootstrap_model: None,
                 permission_mode: None,
+                auto_accept: false,
                 bootstrap_config_options: Default::default(),
+                bootstrap_model_bound_overrides: Default::default(),
                 acceptance_model: None,
                 acceptance_config_options: Default::default(),
+                acceptance_model_bound_overrides: Default::default(),
                 routing_prompt: "choose provider and model".to_string(),
                 available_agents: vec![crate::dsl::DynamicAgentRef {
                     provider: "claude-acp".to_string(),
                     model: None,
                     permission_mode: None,
+                    auto_accept: false,
                     config_options: Default::default(),
+                    model_bound_overrides: Default::default(),
                 }],
             },
             ..test_dynamic()
@@ -20815,6 +21145,14 @@ mod tests {
                 .emission_mode,
             OutputEmissionMode::PostTurnProjection
         );
+        let mut cicd = worker;
+        cicd.profile = Some("pf-builtin-cicd".into());
+        assert_eq!(
+            dynamic_output_contract_for_node(&ctx, &graph, &cicd)
+                .unwrap()
+                .emission_mode,
+            OutputEmissionMode::InlineControl
+        );
     }
 
     #[test]
@@ -21477,6 +21815,530 @@ mod tests {
         release_dynamic_workspace_best_effort(&ctx, &mut graph, &parent_workspace_id);
     }
 
+    fn fanout_workspace_test_completion() -> DynamicNodeCompletion {
+        let branch = |id: &str| DynamicNodeSpec {
+            id: id.to_string(),
+            kind: DynamicNodeSpecKind::Worker,
+            title: id.to_string(),
+            task: format!("Implement {id}."),
+            provider: None,
+            profile: None,
+            model: None,
+            permission_mode: None,
+            session_mode: SessionMode::New,
+            continue_from_node_id: None,
+            depends_on: Vec::new(),
+            workflow_id: None,
+        };
+        let mut merge = test_agent_task("merge");
+        merge.provider.clear();
+        let mut acceptance = test_agent_task("accept");
+        acceptance.provider.clear();
+        DynamicNodeCompletion {
+            version: VERSION.to_string(),
+            kind: DynamicNodeCompletionKind::DynamicNodeCompletion,
+            status: DynamicCompletionStatus::Success,
+            summary: "Ready for fanout".to_string(),
+            next: DynamicNext::Fanout {
+                group_id: "clean-source-group".to_string(),
+                nodes: vec![branch("clean-child-a"), branch("clean-child-b")],
+                merge,
+                acceptance,
+            },
+            source: None,
+        }
+    }
+
+    fn fork_dynamic_workspace(
+        ctx: &DynamicExecutionContext<'_>,
+        graph: &mut DynamicGraphState,
+        parent_workspace_id: &str,
+        group_id: &str,
+        node_id: &str,
+    ) -> Result<String> {
+        let commit = dynamic_fanout_head(dynamic_workspace(graph, parent_workspace_id)?)?;
+        fork_dynamic_workspace_from_commit(
+            ctx,
+            graph,
+            parent_workspace_id,
+            group_id,
+            node_id,
+            &commit,
+        )
+    }
+
+    #[test]
+    fn fanout_workspace_dirty_proposal_batches_errors_without_changing_git() {
+        for change in ["unstaged", "staged", "untracked"] {
+            let (_temp, repo_root) = init_repo();
+            let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+            write_test_outer_run(&app);
+            let dynamic = test_dynamic();
+            let ctx = test_context(&app, &dynamic);
+            let source = test_worktree_node("source");
+            let mut graph = test_dynamic_graph_at(repo_root.clone(), vec![source.clone()]);
+            persist_dynamic_graph(&ctx, &mut graph).unwrap();
+            let path = if change == "untracked" {
+                "local-note.txt"
+            } else {
+                "README.md"
+            };
+            std::fs::write(repo_root.join(path), "uncommitted foundation\n").unwrap();
+            if change == "staged" {
+                git(&repo_root, &["add", "README.md"]);
+            }
+            let repository = GitRepositoryService::default();
+            let head = repository.head(&repo_root).unwrap();
+            let status = repository.status_porcelain(&repo_root).unwrap();
+            let mut completion = fanout_workspace_test_completion();
+            completion.summary.clear();
+            let proposal = build_dynamic_completion_proposal(
+                &ctx,
+                &source,
+                completion,
+                None,
+                None,
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+            assert!(
+                proposal
+                    .validation_errors
+                    .iter()
+                    .any(|error| error.code == "dynamic.summary.blank")
+            );
+            assert!(
+                proposal
+                    .validation_errors
+                    .iter()
+                    .any(|error| error.code == "dynamic.fanout.workspace-dirty"),
+                "{change}: {:?}",
+                proposal.validation_errors
+            );
+            assert_eq!(repository.head(&repo_root).unwrap(), head);
+            assert_eq!(repository.status_porcelain(&repo_root).unwrap(), status);
+        }
+    }
+
+    #[test]
+    fn fanout_reminder_does_not_repeat_after_recorded_proposal() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let source = test_worktree_node("source");
+        let mut graph = test_dynamic_graph_at(repo_root.clone(), vec![source.clone()]);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        std::fs::write(repo_root.join("README.md"), "unrelated work\n").unwrap();
+        let proposal = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            fanout_workspace_test_completion(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            proposal.validation_status,
+            DynamicProposalValidationStatus::Rejected
+        );
+        graph.proposals.push(proposal);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        let proposal = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            fanout_workspace_test_completion(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            proposal.validation_status,
+            DynamicProposalValidationStatus::Accepted
+        );
+        accept_dynamic_completion_proposal(&ctx, &mut graph, proposal).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repo_root.join("README.md")).unwrap(),
+            "unrelated work\n"
+        );
+    }
+
+    #[test]
+    fn dynamic_current_result_without_artifact_cannot_reuse_old_file() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("source");
+        let mut graph = test_dynamic_graph_at(repo_root, vec![node.clone()]);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        write_dynamic_output_artifact(
+            &ctx,
+            &node.id,
+            "attempt-001",
+            &OutputArtifactPayload {
+                name: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
+                content: test_end_completion("stale"),
+            },
+        )
+        .unwrap();
+        finalize_dynamic_worker_result(
+            &ctx,
+            &mut node,
+            "attempt-001",
+            ProviderRunResult {
+                status: ProviderRunStatus::Success,
+                exit_code: Some(0),
+                result_payload: None,
+                worker_ref_seed: None,
+                stream_path: None,
+                runtime_error: None,
+                runtime_control_output: None,
+            },
+        )
+        .unwrap();
+        assert!(build_dynamic_completion_from_artifact(&ctx, "attempt-001", &node).is_err());
+    }
+
+    #[test]
+    fn dynamic_current_invalid_candidate_replaces_old_artifact() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("source");
+        let mut graph = test_dynamic_graph_at(repo_root, vec![node.clone()]);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        write_dynamic_output_artifact(
+            &ctx,
+            &node.id,
+            "attempt-001",
+            &OutputArtifactPayload {
+                name: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
+                content: test_end_completion("stale"),
+            },
+        )
+        .unwrap();
+        let malformed = "{\"version\":\"0.1\",\"kind\":\"dynamic-node-completion\"";
+        finalize_dynamic_worker_result(
+            &ctx,
+            &mut node,
+            "attempt-001",
+            ProviderRunResult {
+                status: ProviderRunStatus::Success,
+                exit_code: Some(0),
+                result_payload: None,
+                worker_ref_seed: None,
+                stream_path: None,
+                runtime_error: None,
+                runtime_control_output: Some(crate::provider::RuntimeControlOutput {
+                    artifact_name: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
+                    source: crate::acp::client::AcpPromptMessageSource {
+                        branch_id: "root".to_string(),
+                        item_id: "current".to_string(),
+                    },
+                    span: crate::artifacts::json_artifact_display_span(malformed).unwrap(),
+                }),
+            },
+        )
+        .unwrap();
+        assert!(build_dynamic_completion_from_artifact(&ctx, "attempt-001", &node).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dynamic_output_artifact_path(
+                &ctx,
+                &node.id,
+                "attempt-001",
+                DYNAMIC_COMPLETION_ARTIFACT
+            ))
+            .unwrap(),
+            malformed
+        );
+    }
+
+    #[test]
+    fn fanout_workspace_dirty_materialization_uses_committed_head() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph =
+            test_dynamic_graph_at(repo_root.clone(), vec![test_worktree_node("source")]);
+        std::fs::write(repo_root.join("README.md"), "late edit\n").unwrap();
+        let result =
+            materialize_dynamic_next(&ctx, &mut graph, 0, fanout_workspace_test_completion().next);
+        result.unwrap();
+        assert_eq!(graph.groups.len(), 1);
+        assert_eq!(graph.workspaces.len(), 3);
+        for workspace in graph.workspaces.iter().skip(1) {
+            assert_eq!(
+                std::fs::read_to_string(workspace.path.join("README.md"))
+                    .unwrap()
+                    .trim(),
+                "hello"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(repo_root.join("README.md")).unwrap(),
+            "late edit\n"
+        );
+    }
+
+    #[test]
+    fn fanout_workspace_late_edit_does_not_block_accepted_proposal() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let source = test_worktree_node("source");
+        let mut graph = test_dynamic_graph_at(repo_root.clone(), vec![source.clone()]);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        let proposal = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            fanout_workspace_test_completion(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            proposal.validation_status,
+            DynamicProposalValidationStatus::Accepted
+        );
+        std::fs::write(repo_root.join("README.md"), "late edit\n").unwrap();
+        accept_dynamic_completion_proposal(&ctx, &mut graph, proposal).unwrap();
+        assert_eq!(graph.proposals.len(), 1);
+        assert_eq!(graph.groups.len(), 1);
+        let persisted = load_dynamic_graph(
+            &ctx.app.paths.dynamic_graph_file(
+                ctx.task_id,
+                ctx.run_id,
+                ctx.round_id,
+                ctx.outer_node_id,
+                ctx.outer_attempt_id,
+            ),
+            &repo_root,
+        )
+        .unwrap();
+        assert_eq!(persisted.proposals.len(), 1);
+        assert_eq!(persisted.groups.len(), 1);
+    }
+
+    #[test]
+    fn fanout_workspace_git_failure_is_runtime_error_without_accepted_proposal() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let source = test_worktree_node("source");
+        let mut graph = test_dynamic_graph_at(repo_root.clone(), vec![source.clone()]);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        let proposal = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            fanout_workspace_test_completion(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        std::fs::rename(repo_root.join(".git"), repo_root.join("saved-git")).unwrap();
+        let error = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            fanout_workspace_test_completion(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            normalize_runtime_error(&error).code_str(),
+            "dynamic.fanout.workspace-check-failed"
+        );
+        let error = accept_dynamic_completion_proposal(&ctx, &mut graph, proposal).unwrap_err();
+        assert_eq!(
+            normalize_runtime_error(&error).code_str(),
+            "dynamic.fanout.workspace-check-failed"
+        );
+        assert!(graph.proposals.is_empty());
+        assert!(graph.groups.is_empty());
+        assert_eq!(graph.nodes[0].status, DynamicNodeStatus::Paused);
+    }
+
+    #[test]
+    fn fanout_workspace_runtime_source_is_checked_and_ignored_files_are_allowed() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph = test_dynamic_graph_at(repo_root, vec![test_worktree_node("source")]);
+        let workspace_id =
+            fork_dynamic_workspace(&ctx, &mut graph, "workspace-main", "parent", "source").unwrap();
+        graph.nodes[0].workspace_id = workspace_id.clone();
+        let source = graph.nodes[0].clone();
+        let workspace = dynamic_workspace(&graph, &workspace_id).unwrap().clone();
+        std::fs::write(workspace.path.join("README.md"), "nested foundation\n").unwrap();
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        let proposal = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            fanout_workspace_test_completion(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(
+            proposal
+                .validation_errors
+                .iter()
+                .any(|error| error.code == DYNAMIC_FANOUT_WORKSPACE_DIRTY)
+        );
+        assert!(dynamic_fanout_head(&workspace).is_ok());
+        git(&workspace.path, &["add", "README.md"]);
+        git(
+            &workspace.path,
+            &["commit", "-m", "feat: nested foundation"],
+        );
+        std::fs::create_dir_all(workspace.path.join(".gold-band")).unwrap();
+        std::fs::write(workspace.path.join(".gold-band/local-cache"), "ignored\n").unwrap();
+        let proposal = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            fanout_workspace_test_completion(),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            proposal.validation_status,
+            DynamicProposalValidationStatus::Accepted
+        );
+        let commit = dynamic_fanout_head(&workspace).unwrap();
+        materialize_dynamic_next(&ctx, &mut graph, 0, fanout_workspace_test_completion().next)
+            .unwrap();
+        let group = graph
+            .groups
+            .iter()
+            .find(|group| group.id == "clean-source-group")
+            .unwrap();
+        for child_id in &group.child_workspace_ids {
+            let child = dynamic_workspace(&graph, child_id).unwrap();
+            assert_eq!(child.fork_commit, commit);
+            assert_eq!(
+                std::fs::read_to_string(child.path.join("README.md"))
+                    .unwrap()
+                    .trim(),
+                "nested foundation"
+            );
+        }
+    }
+
+    #[test]
+    fn fanout_workspace_acceptance_uses_target_and_end_does_not_require_clean() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut source = test_worktree_node("accept");
+        source.kind = DynamicNodeKind::Acceptance;
+        source.group_id = Some("group".to_string());
+        source.workspace_id = "not-the-fork-target".to_string();
+        let mut graph = test_dynamic_graph_at(
+            repo_root.clone(),
+            vec![test_worktree_node("creator"), source.clone()],
+        );
+        let mut group = test_group_state("group", "creator", vec![], vec![]);
+        group.target_workspace_id = "workspace-main".to_string();
+        graph.groups.push(group);
+        std::fs::write(repo_root.join("README.md"), "pending\n").unwrap();
+        assert_eq!(
+            dynamic_fanout_source_workspace(&graph, &source).unwrap().id,
+            "workspace-main"
+        );
+        // End and single do not need to move uncommitted work into a new worktree.
+        graph.groups.clear();
+        graph.nodes.truncate(1);
+        source = graph.nodes[0].clone();
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+        let mut completion = fanout_workspace_test_completion();
+        completion.next = DynamicNext::End;
+        let proposal = build_dynamic_completion_proposal(
+            &ctx,
+            &source,
+            completion,
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            proposal.validation_status,
+            DynamicProposalValidationStatus::Accepted
+        );
+    }
+
+    #[test]
+    fn fanout_workspace_prompts_are_optional_commit_reminders_in_both_languages() {
+        let (_temp, repo_root) = init_repo();
+        for language in [DesktopLanguage::ZhCn, DesktopLanguage::En] {
+            let mut config = RuntimeConfig::default();
+            config.desktop_language = language;
+            let app = App::with_config(repo_root.clone(), config);
+            let dynamic = test_dynamic();
+            let ctx = test_context(&app, &dynamic);
+            let node = test_worktree_node("source");
+            let graph = test_dynamic_graph_at(repo_root.clone(), vec![node.clone()]);
+            let error = dynamic_fanout_workspace_dirty_error(&graph.workspaces[0]);
+            let repair = dynamic_proposal_repair_prompt(&ctx, &graph, &node, &[error]);
+            let contract = dynamic_output_contract(
+                &ctx,
+                &graph,
+                &node,
+                OutputEmissionMode::PostTurnProjection,
+            );
+            for prompt in [repair.as_str(), contract.schema_text.as_deref().unwrap()] {
+                for term in ["Conventional Commits", "artifact"] {
+                    assert!(prompt.contains(term), "missing {term} in {language:?}");
+                }
+                assert!(prompt.contains(if language == DesktopLanguage::ZhCn {
+                    "不要求"
+                } else {
+                    "resubmit"
+                }));
+            }
+            assert!(repair.contains(repo_root.as_str()));
+            assert!(repair.contains(if language == DesktopLanguage::ZhCn {
+                "本次fanout即将从HEAD开始创建worktree，检测到源工作区仍有未提交代码，故提醒："
+            } else {
+                "This fanout is about to create worktrees from HEAD."
+            }));
+            let unrelated_repair = dynamic_proposal_repair_prompt(&ctx, &graph, &node, &[]);
+            assert!(!unrelated_repair.contains("Conventional Commits"));
+        }
+    }
+
     #[test]
     fn loading_dynamic_graph_releases_stale_workspace_from_closed_group() {
         let (_temp, repo_root) = init_repo();
@@ -22003,7 +22865,7 @@ mod tests {
             ctx.outer_node_id,
             ctx.outer_attempt_id,
         );
-        clear_dynamic_resume_starting_window(&key).unwrap();
+        clear_test_dynamic_resume_coordinator(&key);
         if let Some(coordinator) = DYNAMIC_RESUME_COORDINATOR.get() {
             let mut coordinator = coordinator.lock().unwrap();
             coordinator.drivers.remove(&key);
@@ -22071,7 +22933,7 @@ mod tests {
         assert_eq!(second_dispatch, DynamicResumeDispatch::QueuedStarting);
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].node_id, "good-night");
-        clear_dynamic_resume_starting_window(&key).unwrap();
+        clear_test_dynamic_resume_coordinator(&key);
     }
 
     #[test]

@@ -121,6 +121,7 @@ function cloneProfiles(profiles: ProfileVm[]): ProfileVm[] {
 function clonePreferences(preferences: PreferencesVm): PreferencesVm {
   return {
     ...preferences,
+    browser: { ...preferences.browser },
     appearance: {
       ...preferences.appearance,
       visualQualityByTheme: { ...preferences.appearance.visualQualityByTheme },

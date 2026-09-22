@@ -51,16 +51,27 @@ export function normalizeConversationAutoConfigForSubmit(
 ): ConversationAutoConfigVm | undefined {
   if (!config) return undefined;
   const configOptions = normalizeConfigOptions(config.configOptions);
+  const modelBoundOverrides = normalizeModelBoundOverrides(config.modelBoundOverrides);
   const bootstrapConfigOptions = normalizeConfigOptions(config.bootstrapConfigOptions);
+  const bootstrapModelBoundOverrides = normalizeModelBoundOverrides(config.bootstrapModelBoundOverrides);
   const acceptanceConfigOptions = normalizeConfigOptions(config.acceptanceConfigOptions);
+  const acceptanceModelBoundOverrides = normalizeModelBoundOverrides(config.acceptanceModelBoundOverrides);
   const availableAgents = config.availableAgents?.map((agent) => {
     const agentConfigOptions = normalizeConfigOptions(agent.configOptions);
-    const { configOptions: _agentConfigOptions, ...agentRest } = agent;
+    const agentModelBoundOverrides = normalizeModelBoundOverrides(agent.modelBoundOverrides);
+    const {
+      configOptions: _agentConfigOptions,
+      autoAccept: _agentAutoAccept,
+      modelBoundOverrides: _agentModelBoundOverrides,
+      ...agentRest
+    } = agent;
     return {
       ...agentRest,
       model: normalizeOptionalRunModeId(agent.model),
       permissionMode: normalizeOptionalRunModeId(agent.permissionMode),
+      ...(agent.autoAccept ? { autoAccept: true } : {}),
       ...(agentConfigOptions ? { configOptions: agentConfigOptions } : {}),
+      ...(agentModelBoundOverrides ? { modelBoundOverrides: agentModelBoundOverrides } : {}),
     };
   });
   const {
@@ -72,6 +83,10 @@ export function normalizeConversationAutoConfigForSubmit(
     acceptanceModelId: _acceptanceModelId,
     modelId: _modelId,
     permissionMode: _permissionMode,
+    autoAccept: _autoAccept,
+    modelBoundOverrides: _modelBoundOverrides,
+    bootstrapModelBoundOverrides: _bootstrapModelBoundOverrides,
+    acceptanceModelBoundOverrides: _acceptanceModelBoundOverrides,
     ...rest
   } = config;
   const bootstrapModelId = normalizeOptionalRunModeId(config.bootstrapModelId);
@@ -85,9 +100,13 @@ export function normalizeConversationAutoConfigForSubmit(
     ...(acceptanceModelId ? { acceptanceModelId } : {}),
     ...(modelId ? { modelId } : {}),
     ...(permissionMode ? { permissionMode } : {}),
+    ...(config.autoAccept ? { autoAccept: true } : {}),
     ...(config.agentStrategy !== 'dynamic' && configOptions ? { configOptions } : {}),
+    ...(config.agentStrategy !== 'dynamic' && modelBoundOverrides ? { modelBoundOverrides } : {}),
     ...(bootstrapConfigOptions ? { bootstrapConfigOptions } : {}),
+    ...(bootstrapModelBoundOverrides ? { bootstrapModelBoundOverrides } : {}),
     ...(acceptanceConfigOptions ? { acceptanceConfigOptions } : {}),
+    ...(acceptanceModelBoundOverrides ? { acceptanceModelBoundOverrides } : {}),
     ...(availableAgents ? { availableAgents } : {}),
   };
 }
@@ -97,11 +116,14 @@ export function normalizeConversationDirectConfigForSubmit(
 ): ConversationDirectConfigVm | undefined {
   if (!config?.agentType.trim()) return undefined;
   const configOptions = normalizeConfigOptions(config.configOptions);
+  const modelBoundOverrides = normalizeModelBoundOverrides(config.modelBoundOverrides);
   return {
     agentType: config.agentType.trim(),
     modelId: normalizeOptionalRunModeId(config.modelId),
     permissionMode: normalizeOptionalRunModeId(config.permissionMode),
+    ...(config.autoAccept ? { autoAccept: true } : {}),
     ...(configOptions ? { configOptions } : {}),
+    ...(modelBoundOverrides ? { modelBoundOverrides } : {}),
   };
 }
 
@@ -113,6 +135,19 @@ function normalizeConfigOptions(options: Record<string, string> | null | undefin
       .filter(([key, value]) => key.length > 0 && value.length > 0),
   );
   return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function normalizeModelBoundOverrides(
+  remembered: Record<string, Record<string, string>> | null | undefined,
+): Record<string, Record<string, string>> | undefined {
+  if (!remembered) return undefined;
+  const next: Record<string, Record<string, string>> = {};
+  for (const [modelId, overrides] of Object.entries(remembered)) {
+    const id = modelId.trim();
+    if (!id) continue;
+    next[id] = normalizeConfigOptions(overrides) ?? {};
+  }
+  return Object.keys(next).length > 0 ? next : undefined;
 }
 
 export function directConfigForAgent(

@@ -126,7 +126,8 @@ ACP attempt 会在 `acp.diagnostics.jsonl` 写入 adapter 复用/新建结果和
 边界：
 - 配置由 CLI 或上层入口构造
 - `App` 持有配置并向 observability / provider 执行链透传
-- provider command 与完整 prompt 仅属于 debug observability，不属于 canonical state
+- `log_prompts` 默认关闭；`runtime.log` 只记录 prompt 长度摘要，不得写入 system/user prompt 正文。完整 prompt 只留在 session `acp.raw.jsonl`
+- provider command 仅属于 debug observability，不属于 canonical state
 
 ## 8. 与 console / 插件的关系
 - console CLI 是同一套 runtime 的交互壳，不引入新的 runtime 语义

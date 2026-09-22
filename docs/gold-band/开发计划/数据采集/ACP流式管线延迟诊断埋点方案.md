@@ -114,6 +114,6 @@ Release 最终压测在 Windows 本机执行两组各 1,000,000 条 update，每
 - receipt time 复用已有 frame ownership；queue high-water 复用已有 route/pump mutex，仅在 prompt 起止读取并重置。5 秒 diagnostics I/O 只在用户开启详细日志时发生。
 - 未引入 histogram/t-digest、遥测数据库、独立采样状态机或新 UI 开关；当前抽象与定位单条 ACP 管线的实际规模和风险匹配。
 - 吞吐修复新增的 pending map 上限等于当前窗口内活跃 stream/tool identity 数，替代按 Raw frame 增长的同步写入/IPC 次数；每批排序规模为活跃 identity 数，不扫描历史 Timeline。没有新增线程、持久字段、队列或依赖。
-- Timeline group commit 的普通路径为 O(batch identities)，V9 compaction 为 O(canonical items)，不再为每批 identity N 次打开文件，也不再按历史 patch 数全量 replay。写缓冲和 batch 暂存受当前窗口 distinct identity/编码量约束，持久文件受 4,096 patch ratio 门槛与 8 MiB 上限约束。
+- Timeline group commit 的普通路径为 O(batch identities)，当前 V13 compaction 为 O(canonical items)，不再为每批 identity N 次打开文件，也不再按历史 patch 数全量 replay。V9 仍是当时 group commit A/B 的历史版本标识；写缓冲和 batch 暂存受当前窗口 distinct identity/编码量约束，持久文件受 4,096 patch ratio 门槛与 8 MiB 上限约束。
 - 未新增异步持久化线程、后台 compaction 队列、数据库或第二套 canonical state；继续复用现有 JSONL/index/atomic write。相较引入并发状态机，本方案直接消除 I/O 与算法放大，复杂度与现有数据规模、崩溃一致性风险匹配，不属于过度设计。
 - Raw 编码暂存受 128 帧和约 4 MiB 边界约束，时间复杂度仍为 O(frames + bytes)，文件锁/open/flush/roll 次数降为 O(batches)。显式 route ack 复用现有 sequence/watermark，不新增持久字段或 aggregate；它修复批量预取暴露的生命周期语义缺口，不是第二套状态机。

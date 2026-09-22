@@ -1,0 +1,4 @@
+{{ user_message }}
+<hidden data-gold-band-hidden="true" show="false" title="Gold Band runtime control">
+{% if artifact_emission_mode == "post-turn-projection" %}Primeiro, execute integralmente a instrução do usuário nesta mensagem, depois continue e conclua a task em que estava trabalhando. Restrições anteriores de saída de artifact não se aplicam neste turno, e não produza artifact; quando a task estiver concluída, o Runtime normalizará o resultado em um turno subsequente separado.{% elif artifact_emission_mode == "inline-control" %}Primeiro, execute integralmente a instrução do usuário nesta mensagem, depois continue e conclua a task em que estava trabalhando; somente depois disso, produza o artifact conforme o contrato de saída atual.{% else %}Primeiro, execute integralmente a instrução do usuário nesta mensagem, depois continue e conclua a task em que estava trabalhando.{% endif %}
+</hidden>

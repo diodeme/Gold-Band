@@ -89,5 +89,13 @@ describe('WebView bootstrap', () => {
     expect(shell?.textContent).toContain('不能通过单独更新 Safari 替换');
     expect(shell?.querySelector('pre')?.textContent).toContain('missingCapabilities');
     expect(shell?.querySelector('button')?.textContent).toBe('复制诊断信息');
+
+    renderWebviewStartupError(unsupportedWebviewError(snapshot), undefined, 'ja-JP');
+    expect(document.querySelector('[data-webview-startup-error]')?.textContent).toContain('Gold Band はこの WebView では起動できません');
+    expect(document.documentElement.lang).toBe('ja-JP');
+
+    renderWebviewStartupError(unsupportedWebviewError(snapshot), undefined, 'pt-PT');
+    expect(document.querySelector('[data-webview-startup-error]')?.textContent).toContain('Gold Band cannot start in this WebView');
+    expect(document.documentElement.lang).toBe('en');
   });
 });

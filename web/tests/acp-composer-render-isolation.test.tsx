@@ -340,6 +340,46 @@ describe('ACP composer render isolation', () => {
     }
   });
 
+  it('renders idle canonical history without system prompt metadata', async () => {
+    runtime.tauri = true;
+    const session: AcpSessionVm = {
+      ...completedSession(),
+      status: 'idle',
+      systemPromptAppend: null,
+      config: null,
+    };
+    vi.mocked(getAcpSession).mockResolvedValue(session);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => root.render(
+        <TooltipProvider>
+          <ACPChatDialog
+            session={null}
+            projectId="project-render"
+            taskId="task-render"
+            runId="run-render"
+            roundId="round-render"
+            nodeId="node-render"
+            attemptId="attempt-render"
+            sessionEstablished
+            showSystemPromptAction={false}
+            showRawFramesAction={false}
+            usageCompact
+          />
+        </TooltipProvider>,
+      ));
+
+      expect(container.textContent).toContain('historical');
+      expect(container.querySelector('[data-acp-item-key]')).not.toBeNull();
+      expect(container.textContent).not.toContain('ACP session failed');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('never writes the previous event window under a newly selected eventWindowKey', async () => {
     const container = document.createElement('div');
     document.body.append(container);

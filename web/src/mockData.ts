@@ -33,7 +33,7 @@ import {
 } from './lib/acp-chat-pagination';
 import { DEFAULT_ACP_RESOURCE_CACHE_SESSION_COUNT } from './lib/acp-chat-resource-cache';
 
-const preferences: PreferencesVm = { appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {} }, personalization: defaultPersonalizationPreference, language: 'zh-cn', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences(), wallpapers: createDefaultWallpaperPreferences() };
+const preferences: PreferencesVm = { appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {} }, personalization: defaultPersonalizationPreference, language: 'zh-cn', useLocalClaude: false, verboseLogging: false, browser: { schemaVersion: 1, searchEngine: 'baidu', openLocalLinksInBrowser: true, openWebLinksInBrowser: true }, avatars: createDefaultAvatarPreferences(), wallpapers: createDefaultWallpaperPreferences() };
 export const mockAppInfo = {
   channel: 'default',
   feedbackEnabled: false,
@@ -529,7 +529,7 @@ export const mockAgentRegistry: AgentRegistryVm = {
       diagnostic: {
         status: 'healthy',
         available: true,
-        reason: null,
+        error: null,
         checkedAt: '2026-05-16 10:42:00',
       },
       supportedModels: [
@@ -554,6 +554,57 @@ export const mockAgentRegistry: AgentRegistryVm = {
           { value: 'max', name: 'Max' },
         ],
       }],
+    },
+    {
+      agentType: 'codex-acp',
+      displayName: 'Codex',
+      command: 'npx',
+      args: ['-y', '@agentclientprotocol/codex-acp@1.1.13'],
+      env: [],
+      iconKey: 'codex',
+      primaryAgentDir: '.codex',
+      projectPrimaryAgentDir: null,
+      compatibleAgentDirs: ['.agents'],
+      supportsSystemPrompt: false,
+      externalSessionSyncSupported: false,
+      externalSessionSyncEnabled: false,
+      diagnostic: {
+        status: 'healthy',
+        available: true,
+        error: null,
+        checkedAt: '2026-05-16 10:42:00',
+      },
+      supportedModels: [
+        { id: 'gpt-5.4', name: 'GPT-5.4' },
+      ],
+    },
+    {
+      agentType: 'gemini',
+      displayName: 'Gemini',
+      command: 'npx',
+      args: ['-y', '@google/gemini-cli@0.54.4', '--acp'],
+      env: [],
+      iconKey: 'gemini',
+      primaryAgentDir: '.gemini',
+      projectPrimaryAgentDir: null,
+      compatibleAgentDirs: ['.agents'],
+      supportsSystemPrompt: false,
+      externalSessionSyncSupported: false,
+      externalSessionSyncEnabled: false,
+      diagnostic: {
+        status: 'unhealthy',
+        available: false,
+        error: {
+          code: 'acp.session-request-failed',
+          params: { method: 'session/new' },
+          raw: {
+            code: -32000,
+            message: 'Gemini API key is missing or not configured.',
+            data: { category: 'auth' },
+          },
+        },
+        checkedAt: '2026-05-16 10:42:00',
+      },
     },
   ],
   catalog: [

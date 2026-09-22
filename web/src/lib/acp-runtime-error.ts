@@ -16,16 +16,33 @@ function stringArrayParam(value: unknown): string[] {
     : [];
 }
 
-/**
- * Maps a structured runtime error to localized banner copy.
- * Returns null for unknown codes so callers can keep their existing fallback.
- */
+/** Keeps the current turn's original reason when no product mapping exists. */
 export function acpRuntimeErrorBannerCopy(
+  t: Translate,
+  runtimeError: RuntimeErrorInfoVm | null | undefined,
+): string | null {
+  if (!runtimeError) return null;
+  const summary = localizedRuntimeErrorSummary(t, runtimeError)
+    ?? t(`errors.${runtimeError.code.code}`, { ...runtimeError.params, defaultValue: '' });
+  const raw = runtimeError.raw as { data?: { details?: unknown; message?: unknown }; message?: unknown } | null;
+  const extra = raw?.data?.details ?? raw?.data?.message ?? raw?.message;
+  const diagnostic = runtimeError.diagnostic?.trim() ? runtimeError.diagnostic : '';
+  const detail = typeof extra === 'string' && extra.trim() && !diagnostic.includes(extra) ? extra : '';
+  const reason = [diagnostic, detail].filter(Boolean).join('\n');
+  return [summary, reason].filter(Boolean).join('\n') || null;
+}
+
+function localizedRuntimeErrorSummary(
   t: Translate,
   runtimeError: RuntimeErrorInfoVm | null | undefined,
 ): string | null {
   if (!runtimeError) {
     return null;
+  }
+  if (runtimeError.code?.code?.startsWith('memory.')) {
+    const message = t(`memory.errors.${runtimeError.code.code.slice('memory.'.length)}`);
+    const path = stringParam(runtimeError.params?.path);
+    return path ? `${message} ${path}` : message;
   }
   if (runtimeError.code?.code === WORKSPACE_WORKTREE_CREATE_FAILED_CODE) {
     return t('conversation.runtime.worktreeCreateFailed');

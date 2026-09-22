@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default desktop window permissions.",
-  "windows": ["main"],
+  "description": "Default desktop window permissions. Bound to the main WebView label so child browser WebViews get zero IPC.",
+  "webviews": ["main"],
   "permissions": [
     "core:default",
     "core:window:allow-close",

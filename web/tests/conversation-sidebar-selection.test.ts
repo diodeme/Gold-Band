@@ -232,6 +232,24 @@ describe('ConversationSidebar run selection identity', () => {
       'run-001',
       lifecycle,
     )).toBe(sidebar);
+
+    // A sibling finishing or stopping does not settle the whole parallel run.
+    for (const [status, outcome] of [['completed', 'success'], ['completed', 'failure'], ['paused', null]] as const) {
+      const leaf = { ...lifecycle, runtime: { ...lifecycle.runtime, active: false, status, outcome } };
+      expect(applyConversationSidebarRunLifecycle(sidebar, 'project-a', 'task-a', 'run-001', leaf)).toBe(sidebar);
+    }
+    for (const [status, outcome] of [['paused', null], ['completed', 'success'], ['completed', 'failure']] as const) {
+      const settled = applyConversationSidebarRunStateUpdate(sidebar, {
+        projectId: 'project-a', taskId: 'task-a', runId: 'run-001', eventKind: 'run-completed', status, outcome,
+      });
+      expect(settled.pinnedTasks[0].latestRun).toMatchObject({ status, outcome });
+      expect(settled.tasksByWorkspace['project-a'][0].runs[0]).toMatchObject({ status, outcome });
+      if (status === 'completed') {
+        expect(applyConversationSidebarRunLifecycle(settled, 'project-a', 'task-a', 'run-001', lifecycle)).toBe(settled);
+      }
+    }
+    const followUp = { ...lifecycle, runtime: { ...lifecycle.runtime, active: false, status: 'paused' } };
+    expect(applyConversationSidebarRunLifecycle(sidebar, 'project-a', 'task-a', 'run-001', followUp)).toBe(sidebar);
   });
 
   it('projects a background terminal run across workspaces without replacing unrelated sidebar data', () => {

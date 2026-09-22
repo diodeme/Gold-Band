@@ -12,7 +12,7 @@
 - 相同内容再次执行时，Workflow/AUTO 在同一 task 下创建新的 run。
 - Workflow/AUTO 的每个 run 都冻结自己的 `workflow.snapshot.json`。
 - Workflow/AUTO 修改 instruction、附件、authoring 或 workspace 后，下一次触发创建新 task；历史 task 和 run 保留。Direct 编辑 instruction、附件或 session policy 时保留既有 Task 关联，由 new/continuous 策略决定下一次触发如何物化。
-- 修改 model、thought level 或 permission 只改变后续执行配置，不创建新 task；修改 Workflow/AUTO 的 Agent 选择属于 authoring 变化，下一次触发创建新 task。
+- 修改 model、thought level、permission 或 `modelBoundOverrides` 只改变后续执行配置，不创建新 task；修改 Workflow/AUTO 的 Agent 选择属于 authoring 变化，下一次触发创建新 task。
 - Direct Agent 是 Direct 会话身份的一部分，定时任务创建后不可修改；需要更换 Agent 时创建新的定时任务。
 
 定时任务定义自身可以在首次触发前保持 `taskId = null`。首次触发后记录物化的 task，后续按照内容指纹决定复用或创建新的 task。
@@ -86,7 +86,7 @@
 - workspace 身份
 - Direct 模式的 Direct Agent 身份
 
-model、thought level 和 permission 不进入内容指纹。
+model、thought level、permission、`configOptions` 和 `modelBoundOverrides`（含 bootstrap/acceptance 对应字段）不进入内容指纹。
 
 Direct session policy 是执行策略，不进入内容指纹。新会话与持续会话互相切换时保留最近 Task 关联用于队列保护；下一次触发按照新策略决定创建新 Task 或继续最近的可恢复会话。
 
@@ -97,6 +97,26 @@ Direct session policy 是执行策略，不进入内容指纹。新会话与持�
 - Direct 与 Workflow/AUTO 之间切换时清除 `taskId`，避免跨执行模式复用不兼容的 Task 链路。
 - 调度、时区、队列保护、model、thought level 或 permission 变化时保留 `taskId`。
 - 删除定时任务只删除调度定义和定时输入快照，保留历史 Task、Run、Round、ACP 会话和产物。
+
+### 5.2 Accepted execution snapshot
+
+`ScheduledTaskDefinition` 与其中的 `ScheduledTaskContentSnapshot` 仍是可编辑的 authoring 权威；只有运行时可靠接受一次 occurrence 后，才生成不可变的 `ScheduledExecutionSnapshot`。快照保存 `acceptedAt`、定义 revision、内容 fingerprint、完整 `ScheduledTaskContentSnapshot` 和只用于展示的 `instructionSummary`。任务没有 title 字段，摘要不得作为 identity、名称或 authoring 数据使用。
+
+摘要使用 Markdown parser 提取第一个非空块，将块内空白规范化后最多保留 120 个 Unicode 字符。生成过程确定性执行，不调用模型，也不读取额外文件。自动触发额外冻结 `scheduledAt + scheduleSummary + timezone`；三个字段由一个可选值统一管理，手动“立即执行”不得携带其中任何一个。
+
+Occurrence 的执行链接由 `taskId + runId + roundId + nodeId + attemptId` 构成完整内部 locator。接受前允许链接不完整；接受事务必须一次性绑定完整 locator，后续编辑和重试不得覆写已接受快照。跨 UI 导航使用 `projectId + scheduledTaskId + taskId + runId + occurrenceId`，不使用摘要反查实体。
+
+### 5.3 隐藏 occurrence 执行协议
+
+每个已接受 occurrence 在最终 provider user prompt 边界投影一个 Gold Band 可信隐藏块，适用于 RuntimeManaged、RawAgent、新 session、restored continuous session、Workflow/AUTO worker 以及同一 occurrence 的 runtime repair。协议是本次执行目标直接相关且随 occurrence 变化的上下文，因此属于 user prompt；它不进入稳定 system prompt，也不得只追加到 RuntimeManaged 的内部 runtime context。
+
+协议只表达冻结触发事实：`scheduledTaskId`、`occurrenceId`、类型化 `triggerKind` 和 `acceptedAt`。自动触发额外包含完整的 `scheduledAt + schedule + timezone`；手动“立即执行”明确说明手动触发并完全省略这三个自动字段。任务没有 title，协议不携带 instruction 摘要、mode、session policy 或第二份 instruction。原始执行 instruction 在协议之后原样保留且只出现一次。
+
+协议声明这是无人值守执行，并使用有边界的自主执行规则：默认自主采取合理且可逆的行动；仅当继续执行不安全、不可逆、客观上无法完成或缺少必要信息时请求用户介入。中英文模板分别由 `src/prompts/zh-CN/runtime/scheduled_task_context.md` 与 `src/prompts/en/runtime/scheduled_task_context.md` 维护，结构和条件字段必须同步。
+
+带 scheduled context 的 `PromptBundle` 固定为 `visibility = hidden`、`hiddenReason = scheduledTaskExecution`，但保留 `promptDisplay.displayText` 供审计和工作区检查；Chat 不显示重复的原始 instruction 气泡，后续由一条结构化 trigger Timeline 行表达触发事实。普通用户 follow-up 通过 turn 边界清除 scheduled context，不继承无人值守姿态；同一 occurrence 的 repair 保持相同 prompt identity 和协议，不创建新的触发身份。
+
+性能与过度设计复核：投影只对一个常量大小的 occurrence context 执行一次 MiniJinja 渲染和字符串前置，时间与空间开销为 `O(protocol + instruction length)`；不增加 provider 请求、token 之外的 I/O、缓存、队列、状态机或依赖。复用现有 `PromptBundle` visibility/display、语言模板和 prompt identity 已足以满足不变量，不新增第二套 envelope 或 scheduled provider adapter。
 
 ## 6. 队列保护和错过执行
 
@@ -112,6 +132,10 @@ active 包括运行中、等待权限、等待 AskUserQuestion、等待用户恢
 ### 6.1 用户配置与运行期交互
 
 定时任务不预判或映射 Agent 的无人值守能力，也不要求特定 permission mode。创建和编辑必须原样保存用户当前选择的 Agent、model、permission mode 和 config options；计划触发与手动立即执行都通过现有 ACP 会话创建链路应用这份冻结配置。不得因为内置或自定义 Agent 未提供已知的 full-auto 标识而阻止定义保存或 occurrence 进入执行。
+
+Agent、模型和其他运行设置的 canonical state 是 `DesktopContext.config`。Scheduler workspace registration 中的 `App` 只是运行快照；设置保存成功并更新 canonical config 后，`SettingsChanged` 必须通过既有 candidate registration 边界重建所有已注册 workspace，完成 reconcile 后再替换旧快照。单个 workspace 刷新失败时保留旧 registration 和 deadline，并进入现有有界重试；不得只对账 deadline 后继续使用设置变更前的 Agent registry。
+
+Occurrence 在 acceptance 前因 Agent 缺失、执行准备或同步启动失败而结束时，canonical occurrence 必须记录 `failed + SCHEDULED_EXECUTION_FAILED + params`。同一次收尾还要通过现有 revision CAS 推进 definition 的 `lastTriggerAt / lastTriggerStatus / lastError` runtime projection，管理列表据此显示真实失败而不是“尚未运行”；已由 materialization 推进的 `nextRunAt` 不得倒退。该投影不是第二份执行历史，详情和恢复判断仍以 occurrence 与 Task/Run canonical state 为准。
 
 运行时仍出现 permission request 时，本次 occurrence 结束为 `failed`，错误码为
 `SCHEDULED_PERMISSION_REQUIRED`。系统保留关联 Task、Run、ACP 会话和权限请求，并通过通知引导用户查看详情，不让调度器无限等待。
@@ -186,5 +210,7 @@ write target.
 ### 10.2 Deadline coordinator
 
 桌面进程只运行一个 scheduler coordinator，并通过 `DelayQueue` 为每个 enabled job 保存一个 wakeup。CRUD 提交、workspace 注册/移除、系统 resume 和应用退出都通过类型化命令更新 coordinator；不再周期扫描全部 workspace/job。注册和触发都会重新读取 SQLite revision 与 deadline，陈旧 timer 只重排、不创建 occurrence。
+
+`SettingsChanged` 属于 workspace runtime snapshot 刷新命令，不是普通 deadline reconcile。Coordinator 对当前已注册 workspace 逐项重新调用权威 `app_for_workspace()`，使用最新 `DesktopContext.config` 构造 candidate；candidate 完成 reconcile 后才替换旧 registration。该刷新只发生在低频设置写入，不进入 deadline 热路径，也不增加轮询或全量页面刷新。
 
 启动 reconcile 先处理 pending/retrying occurrence，再处理后续计划点。早于 `LATE_FIRE_GRACE` 的点写为 `missed`，grace 内近迟到点仍可执行。计划点只有到达 deadline 后才由事务物化；普通创建始终只保存定义。立即执行是独立 `RunNow` 命令，立即创建 manual occurrence，但不改变原计划 `next_run_at`。

@@ -30,8 +30,19 @@ import { useOverflowTooltip } from '@/hooks/useOverflowTooltip';
 import { GIT_DOWNLOAD_URL, isGitVersionCapabilityError } from '@/lib/git-capability';
 import { useGitBranchPickerSnapshotStore } from './GitBranchPickerSnapshotContext';
 
+export function gitBranchSearchPlaceholder(
+  translate: (key: string, options?: Record<string, unknown>) => string,
+  workspaceName?: string | null,
+): string {
+  const displayName = workspaceName?.trim() ?? '';
+  return displayName
+    ? translate('conversation.branchPicker.search', { workspace: displayName })
+    : translate('conversation.branchPicker.searchGeneric');
+}
+
 export interface GitBranchSelectorProps {
   projectId: string;
+  workspaceName?: string | null;
   workspacePath?: string | null;
   disabled?: boolean;
   readOnlyBranch?: string | null;
@@ -43,6 +54,7 @@ export interface GitBranchSelectorProps {
 
 export function GitBranchSelector({
   projectId,
+  workspaceName,
   workspacePath,
   disabled = false,
   readOnlyBranch,
@@ -195,9 +207,13 @@ export function GitBranchSelector({
   }
 
   const versionCapabilityError = isGitVersionCapabilityError(error?.code);
-  const currentBranch = versionCapabilityError
+  const currentBranch = error?.code === 'git.version-unsupported'
     ? t('conversation.branchPicker.versionUnsupportedLabel')
-    : snapshot?.currentBranch ?? t('conversation.branchPicker.unavailable');
+    : error?.code === 'git.version-unavailable'
+      ? t('conversation.branchPicker.versionUnavailableLabel')
+      : snapshot?.currentBranch ?? t('conversation.branchPicker.unavailable');
+  const workspaceDisplayName = workspaceName?.trim() ?? '';
+  const branchSearchPlaceholder = gitBranchSearchPlaceholder(t, workspaceName);
   const blocked = disabled
     || changing
     || Boolean(snapshot?.lock.locked)
@@ -227,6 +243,7 @@ export function GitBranchSelector({
                 disabled={disabled}
                 aria-label={`${t('conversation.branchPicker.label')}: ${currentBranch}`}
                 data-git-branch-selector="editable"
+                data-git-branch-workspace-name={workspaceDisplayName || undefined}
                 data-git-branch-popover-open={open ? 'true' : 'false'}
                 onPointerEnter={showBranchTooltipIfOverflowing}
                 onPointerLeave={() => {
@@ -290,7 +307,7 @@ export function GitBranchSelector({
             }}
           >
             <Command>
-              {!versionCapabilityError ? <CommandInput placeholder={t('conversation.branchPicker.search', { workspace: projectId })} /> : null}
+              {!versionCapabilityError ? <CommandInput placeholder={branchSearchPlaceholder} /> : null}
               <CommandList className="max-h-72">
               {loading ? (
                 <div className="flex items-center justify-center gap-2 px-3 py-6 text-xs text-muted-foreground">

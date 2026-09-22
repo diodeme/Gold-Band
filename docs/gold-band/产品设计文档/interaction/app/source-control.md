@@ -27,7 +27,7 @@ GitHub capability、PR/Issue 查询和详情同样独立于 React 组件生命�
 
 ## 3. 信息架构
 
-源码管理入口先读取项目级 Git capability，再决定是否加载 snapshot/history。Gold Band 所有 Git 相关能力统一要求系统 Git `2.36.0+`，该门槛不阻断应用启动，也不按功能拆分版本矩阵。`not-installed` 显示系统 Git 未安装与官方下载入口；`version-unsupported` 展示已安装版本、最低版本、Git 下载入口和重新检测，不得伪装成“无分支”或普通仓库读取失败；`version-unavailable` 表示 Git 可执行文件存在但版本无法可靠识别，与未安装和版本过低严格区分。只有版本 capability 通过后才探测当前 repository、HEAD 与 worktree。`repository-required` 明确显示当前文件夹不是 Git 仓库，并提供“初始化仓库”；初始化只执行 `git init`，不自动暂存或提交目录。初始化后的 unborn repository 是可操作的正常状态：进入“更改”区展示未跟踪文件，历史返回空页，用户自行选择文件并创建首次 Commit。Git porcelain v2 的 `branch.oid (initial)` 必须在领域解析入口规范化为缺失 HEAD，snapshot、history、revision 与 UI 不得各自识别 Git sentinel。`worktree-required / repository-unavailable` 显示各自的恢复建议；只有 capability 可用后完整 snapshot/history 的真实读取失败才进入结构化错误与重试态，不得再把所有情况折叠成“无法读取当前仓库”。探测和初始化必须放到 blocking task，不阻塞桌面 IPC 事件线程。
+源码管理入口先读取项目级 Git capability，再决定是否加载 snapshot/history。Gold Band 所有 Git 相关能力统一要求系统 Git `2.36.0+`，该门槛不阻断应用启动，也不按功能拆分版本矩阵。系统 Git 可执行文件通过桌面 PATH 适配层解析（进程 PATH、Windows 用户/系统 PATH、常见 `Git\\cmd` 安装位置），与 ACP/`gh` 共用同一查找规则，并跳过 Windows App Execution Alias 空文件。`git --version` 按行识别 `git version …`（stdout 优先，其次 stderr），不要求整段输出以前缀开头，也不因非 0 退出码丢掉已解析版本。`not-installed` 显示系统 Git 未安装与官方下载入口；`version-unsupported` 展示已安装版本、最低版本、Git 下载入口和重新检测，不得伪装成“无分支”或普通仓库读取失败；`version-unavailable` 表示已找到 Git 可执行文件但没有任何可解析版本行，与未安装和版本过低严格区分，对客文案不得再写成需要升级到 `2.36.0`。只有版本 capability 通过后才探测当前 repository、HEAD 与 worktree。`repository-required` 明确显示当前文件夹不是 Git 仓库，并提供“初始化仓库”；初始化只执行 `git init`，不自动暂存或提交目录。初始化后的 unborn repository 是可操作的正常状态：进入“更改”区展示未跟踪文件，历史返回空页，用户自行选择文件并创建首次 Commit。Git porcelain v2 的 `branch.oid (initial)` 必须在领域解析入口规范化为缺失 HEAD，snapshot、history、revision 与 UI 不得各自识别 Git sentinel。`worktree-required / repository-unavailable` 显示各自的恢复建议；只有 capability 可用后完整 snapshot/history 的真实读取失败才进入结构化错误与重试态，不得再把所有情况折叠成“无法读取当前仓库”。探测和初始化必须放到 blocking task，不阻塞桌面 IPC 事件线程。版本号不持久化；已解析的 Git 绝对路径仅在进程内复用，capability 重新检测会重新解析。
 
 快速会话选择新工作树但 repository、HEAD 或 worktree capability 未就绪时，阻塞对话框的恢复动作固定为“取消 / 重新检测 / 使用主工作区 / 打开源码管理”。“重新检测”和“使用主工作区”使用次按钮，“打开源码管理”是唯一主按钮；点击后通过当前会话作用域的右侧工作区命令，以 `projectId + main workspace` 打开或激活源码管理 Tab，并关闭对话框。若状态是 `version-unsupported / version-unavailable`，恢复动作改为“取消 / 重新检测 / 使用主工作区（或其他工作流）/ 打开 Git 下载页面”，Git 下载是唯一主按钮，不再把用户导向同样不可用的源码管理页。紧凑布局必须在 auto-collapse 收敛后自动展开右侧 Sheet，不能只创建隐藏 Tab。用户完成升级、首次提交或其他仓库配置后再显式重新检测。
 
@@ -70,7 +70,7 @@ Commit 列表与当前聚合文件列表是两个独立滚动域，按 repositor
 
 ## 4. Git 操作约束
 
-- 系统 Git CLI 是唯一读写后端。
+- 系统 Git CLI 是唯一读写后端；可执行文件通过桌面 PATH 适配层解析，与 ACP/`gh` 共用查找规则。
 - 前端只发送 tagged union，不允许发送任意命令或参数数组。
 - 用户写操作与 runtime checkpoint/worktree 共用 repository/workspace 协调锁。
 - commit 只提交 index，不自动 stage 未暂存文件。
@@ -92,7 +92,7 @@ Commit 列表与当前聚合文件列表是两个独立滚动域，按 repositor
 
 未安装时禁用 GitHub 操作并提供 GitHub CLI 官方安装入口，本地 Git 不受影响。未登录时由用户按钮启动 `gh auth login --web --clipboard`；后台进程隐藏窗口，浏览器完成授权，UI 提供取消与重新检测。应用不读取、保存或输出 GitHub token。
 
-PR/Issue 正文查看和 PR body 编辑复用现有 `WorkspaceFileEditor` Markdown/Atomic 能力；PR diff 继续复用统一 comparison viewer。PR 详情通过一次 `gh api repos/{owner}/{repo}/pulls/{number}/files --paginate --slurp` 批量取得权威 status、previous filename 和增删统计，禁止逐文件查询或前端猜测类型。
+PR/Issue 正文查看和 PR body 编辑复用现有 `WorkspaceFileEditor` Markdown/Atomic 能力；PR diff 继续复用统一 comparison viewer。普通文档继续使用适合阅读的正文行宽，PR/Issue 详情作为右侧工作区审阅面必须显式使用全部可用宽度，不能继承 Atomic 默认的 `78ch` 阅读栏而在宽窗口留下空白。详情子页 TabsContent 必须是 column flex，让正文编辑器沿交叉轴撑满面板；禁止默认 row flex 把阅读栏固有宽度收缩成半栏。line Tabs 的 `w-full` 只负责画满宽底边，Trigger 跟随标签内容宽度，不得 `flex-1` 把「概览 / 文件」均分成左右两半。Markdown 浮层的源码/预览切换只在父级拥有 `markdownMode` 时出现；PR/Issue 详情是只读审阅面，固定实时预览，浮层只保留复制源码。创建 PR 的可编辑正文由对话框持有模式状态，切换必须生效。PR 详情通过一次 `gh api repos/{owner}/{repo}/pulls/{number}/files --paginate --slurp` 批量取得权威 status、previous filename 和增删统计，禁止逐文件查询或前端猜测类型。
 
 PR 列表项点击后先进入由选中 locator 驱动的详情 loading 状态，再异步读取 PR 详情；不得让列表在请求期间保持无反馈，也不得通过延迟切页掩盖请求耗时。PR 详情提供“概览/文件”分区，并随详情返回 base/head OID。文件列表只承担 PR 变更导航，点击文件后打开现有右侧 `file-diff` resource，并由新 Tab 自己展示 comparison loading；typed `github-pr` comparison source 携带后端已经解析的不可变 base/head OID，后端校验 host、repository、OID 和路径后，并行按两个 OID 读取文件内容，不再为每个文件重复执行整 PR 的 `gh pr diff --name-only` 与 `gh pr view --json files`。前端不能传递任意 `gh` 参数。新增、删除、二进制、非 UTF-8 和超限文件继续使用统一 `GitFileComparison` 与 limitation code；加载期间 viewer 显示 spinner。
 
@@ -118,6 +118,6 @@ Git 失败链路已完整保留 `code + params.reason`：常见的身份验证�
 
 GitHub 已完成 CLI capability、网页登录、repository/default branch/remote mapping、PR/Issue 列表与详情、带 typed preflight 的可取消 PR 创建，以及 PR 文件 Diff。仓库探测使用 GitHub CLI 支持的 positional repository 参数，并以命令参数契约测试防止回退到无效 `--repo` flag；capability、列表、详情和 immutable-revision comparison 已进入有界缓存并合并 in-flight 请求。预检覆盖 head/base、ahead、发布状态和已有 open PR；未发布分支必须由用户显式 push。PR body 使用可编辑 `WorkspaceFileEditor`，只经 stdin 传给 `gh`。PR 文件列表进入与更改/历史相同的连续 CodeMirror 审阅会话，base/head 内容并行读取；权威文件状态映射和输出截断已有接口测试。
 
-GitHub 列表与详情必须以右侧面板宽度为硬边界，根容器、Tabs、滚动区和行建立完整的 `min-width: 0 / overflow: hidden` 约束链。PR/Issue 标题、账号、head/base 分支及文件路径占用可压缩空间并省略；返回、打开远端、状态 Badge 和增删统计保持固定，不允许任何远端长文本撑宽客户端或制造横向滚动。
+GitHub 列表与详情必须以右侧面板宽度为硬边界，根容器、Tabs、滚动区和行建立完整的 `min-width: 0 / overflow: hidden` 约束链。填充剩余高度的 TabsContent 使用 column flex，使正文编辑器与列表沿交叉轴撑满，不得保留默认 row flex。line Tabs 标签跟随内容宽度。PR/Issue 标题、账号、head/base 分支及文件路径占用可压缩空间并省略；返回、打开远端、状态 Badge 和增删统计保持固定，不允许任何远端长文本撑宽客户端或制造横向滚动。PR/Issue 详情标题栏的远端跳转按钮固定通过统一 `openWebTarget` 进入应用内置浏览器，并显示“在内置浏览器中打开”Tooltip；不得直接调用系统浏览器 opener。
 
 旧 Git Graph、Checkbox 多选和两两关系分析已完整删除，包括第三方依赖、前后端模型、命令与测试；不再把不可恢复的“历史分支来源”包装成分析结果。新的 `GitCommitReview` 与 `GitCommitReachability` typed service 分离管理聚合文件终态和当前归属。源码管理 snapshot/history、内部 Tab、分页、选择、审阅和 commit 草稿位于 repository/workspace-scoped 有界会话 Store，Review 结果和 Diff 审阅序列使用独立有界缓存，源码管理会话清理或 LRU 淘汰时同步清理所属 Review 缓存；Stage/Unstage 使用 status-scoped mutation result 局部收敛，refs 变更 mutation 并行刷新 snapshot/history，并通过各领域独立 request revision 阻止 stale response。

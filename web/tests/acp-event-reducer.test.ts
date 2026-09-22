@@ -41,6 +41,65 @@ function session(events: AcpUiEventVm[]): Pick<AcpSessionVm, "events" | "eventPa
 }
 
 describe("ACP event reducer", () => {
+  it("keeps reused permission request ids as distinct occurrences", () => {
+    const first = event({
+      id: "permission-occurrence-1",
+      kind: "permissionRequest",
+      seq: 10,
+      status: "pending",
+      raw: { requestId: "json-rpc-7", attemptId: "attempt-1" },
+    });
+    const second = event({
+      id: "permission-occurrence-2",
+      kind: "permissionRequest",
+      seq: 20,
+      status: "pending",
+      raw: { requestId: "json-rpc-7", attemptId: "attempt-1" },
+    });
+
+    expect(mergeAcpEventWindows([first], [second])).toHaveLength(2);
+  });
+
+  it("merges lifecycle snapshots for the same permission occurrence", () => {
+    const pending = event({
+      id: "permission-occurrence-1",
+      kind: "permissionRequest",
+      seq: 10,
+      endedSeq: 10,
+      status: "pending",
+      raw: { requestId: "json-rpc-7", attemptId: "attempt-1" },
+    });
+    const resolved = event({
+      id: "permission-occurrence-1",
+      kind: "permissionRequest",
+      seq: 10,
+      endedSeq: 11,
+      status: "completed",
+      raw: { requestId: "json-rpc-7", attemptId: "attempt-1", optionId: "allow" },
+    });
+
+    const merged = mergeAcpEventWindows([pending], [resolved]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({ status: "completed", endedSeq: 11 });
+  });
+
+  it("does not merge identical event ids across attempts", () => {
+    const first = event({
+      id: "permission-occurrence-1",
+      kind: "permissionRequest",
+      seq: 10,
+      raw: { requestId: "json-rpc-7", attemptId: "attempt-1" },
+    });
+    const second = event({
+      id: "permission-occurrence-1",
+      kind: "permissionRequest",
+      seq: 20,
+      raw: { requestId: "json-rpc-7", attemptId: "attempt-2" },
+    });
+
+    expect(mergeAcpEventWindows([first], [second])).toHaveLength(2);
+  });
+
   it("replaces old messages and permissions when the ACP session identity changes", () => {
     const oldEvents = [
       event({ id: "old-message", kind: "agentMessage", content: "你好？", sessionId: "old-session" }),
@@ -131,6 +190,72 @@ describe("ACP event reducer", () => {
     expect(merged[0]!.seq).toBe(10);
     expect(merged[0]!.endedSeq).toBe(20);
     expect(merged[0]!.content).toBe("我找到了实现文件和现成测试文件，接下来核对代码内容并执行它们。");
+  });
+
+  it("keeps a cumulative response before a later prompt when their ranges overlap", () => {
+    const merged = mergeAcpEventWindows([], [
+      event({
+        id: "assistant-response",
+        kind: "textDelta",
+        seq: 20,
+        startedSeq: 10,
+        endedSeq: 20,
+        content: "complete response",
+      }),
+      event({
+        id: "user-prompt",
+        kind: "userTextDelta",
+        seq: 11,
+        startedSeq: 11,
+        endedSeq: 11,
+        content: "follow-up",
+        raw: { source: "goldBandPrompt" },
+      }),
+    ]);
+
+    expect(merged.map((item) => item.id)).toEqual([
+      "assistant-response",
+      "user-prompt",
+    ]);
+  });
+
+  it("repairs the same ordering when a later snapshot replaces an existing response", () => {
+    const merged = mergeAcpEventWindows(
+      [
+        event({
+          id: "user-prompt",
+          kind: "userTextDelta",
+          seq: 11,
+          startedSeq: 11,
+          endedSeq: 11,
+          content: "follow-up",
+          raw: { source: "goldBandPrompt" },
+        }),
+        event({
+          id: "assistant-response",
+          kind: "textDelta",
+          seq: 20,
+          startedSeq: 10,
+          endedSeq: 20,
+          content: "complete response",
+        }),
+      ],
+      [
+        event({
+          id: "assistant-response",
+          kind: "textDelta",
+          seq: 20,
+          startedSeq: 10,
+          endedSeq: 20,
+          content: "complete response",
+        }),
+      ],
+    );
+
+    expect(merged.map((item) => item.id)).toEqual([
+      "assistant-response",
+      "user-prompt",
+    ]);
   });
 
   it("fills an initially empty realtime bubble when content arrives later", () => {

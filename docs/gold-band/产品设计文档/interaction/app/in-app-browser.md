@@ -162,10 +162,10 @@ BrowserPanel
 约束：
 
 - 使用 Tauri 官方 `Webview` 的 `setPosition` / `setSize` / `show` / `hide` / `close`。创建子 WebView 所需 capability 与 `unstable` 特征在开发方案中记录。Windows 上所有会创建、关闭或操作子 WebView 的命令必须是 async，禁止从同步 IPC 命令调用 `add_child`。
-- 同步必须同时覆盖 **尺寸变化和位移**。仅 `ResizeObserver` 不够：左栏收起而右栏宽度不变时，`x` 会变、`width` 不变。必须接到现有 Shell 布局帧（左栏折叠、右栏 collapse/expand、窗口 `scaleFactor`、Sheet 开关、Tab 激活）。
+- 同步必须同时覆盖 **尺寸变化和位移**。仅 `ResizeObserver` 不够：左栏收起而右栏宽度不变时，`x` 会变、`width` 不变。Shell 在 `setLayout` 和面板 `onLayoutChanged` 上发出布局帧，占位组件收到后重新测量；`visualViewport` 的 resize 覆盖缩放。Sheet 开关与 Tab 激活仍走显隐恢复和 `pageId` 变化。这些后续测量继续走 rAF 合并，不写 React state。
 - 坐标使用逻辑像素，与 `getBoundingClientRect()` 对齐，并处理 DPI。
 - 同步热路径禁止每次回调两次无合并 IPC；禁止把逐像素写入 React 根 state。rAF 合并必须读取最新 bounds，不得把同一帧内的后续尺寸丢掉。
-- 原生 create 未完成时占位盒仍可能继续布局；create 成功后必须把当时最新的占位矩形应用到 WebView，不能沿用发起 create 时的第一帧尺寸。实例变为 live 后要再同步一次，且不得因此 hide。
+- 原生 create 未完成时占位盒仍可能继续布局；create 成功后必须把当时最新的占位矩形应用到 WebView，不能沿用发起 create 时的第一帧尺寸。实例变为 live 后要再同步一次，且不得因此 hide。create 失败时，若该页仍有已保留的原生窗口，仍把最新占位矩形写到窗口上，不能因为这次创建失败就停在旧位置。
 - 占位组件的原生显隐生命周期只绑定 `pageId` 与可见性，不得因 title、loading 或 url 投影更新而卸载观察器或 `hideAll`。
 - 改 URL 使用 navigate，不重建 WebView。只有新内部页才 create，淘汰或关闭页才 close。
 - 门户 URL 仍测量占位盒并记住 bounds，但不 create / show；从门户提交地址或打开书签时用该尺寸创建原生页。
@@ -205,6 +205,8 @@ BrowserPanel
 占位盒尺寸是 HWND bounds 的权威投影，与导航一样按 `pageId` 只有一个在途事务：同一页同时最多一条未完成的 `setBounds`，较新测量只更新排队目标；在途 IPC 完成后必须继续应用到最新 `lastBounds`，过期尺寸不得成为最终 HWND。`suppress` 期间不得把收起、展开中间态或未达 2px 的测量写入 native：小于 2px 的占位盒不得 `hide` 已经隐藏的实例，也不得改写 `lastBounds`；有效但不该展示的测量只更新 `lastBounds`，`resume` 后再按当前占位盒提交。否则切回会话时会先按上次正确尺寸显示，再被 layout 前的窄测量改小，网页媒体查询闪到紧凑布局后又拉回。
 
 导航同样只有一个在途事务，与页面身份绑定：同一个 `pageId` 同时最多有一条未完成的原生 create/navigate，同目标重复提交直接复用在途 Promise，不同目标只保留最后一个排队目标。权威 URL（`page.url`）只在原生命令成功后写回；失败时结束 loading、让页面保持在上一次确认的 URL，并把结构化错误码投到该页 notice。地址栏作为用户输入保留待修正内容，不回写失败地址为权威值。禁用「先写 URL 再发命令」和「同一页并发导航」，是因为前者会留下白屏但地址栏显示成功的假象，后者会随点击次数线性堆积原生调用，最终拖垮 WebView 消息循环并让整个应用无响应。
+
+导航 notice 只表示这次还没成功。该页随后创建成功，或失败之后才开始的文档加载完成时，清掉这条导航错误。更早一次 load 的迟到 finish，以及另一页创建成功，都不清。下载取消或无法另存为的 notice 不随创建或加载完成清除。notice 仍是会话上的一个错误码，不按页复制一份列表。
 
 `suppress` 语义固定为幂等的「隐藏并阻止迟到 show」，`resume` 为幂等的「解除抑制并通知占位组件按当前 bounds 重新 show」；重复调用不得产生额外 IPC 或重复 show。`resume` 只清标志位而不同步，会留下工具栏还在、网页全白的状态。`scope-change` 的 close resolver 保持 no-op：scope 切换由 `BrowserNativeLifecycle` 统一驱动，该组件位于 `RightWorkspaceProvider` 内部，子级 effect 先于父级执行；若父级 resolver 再 suppress，会把刚恢复的新 scope 页面重新隐藏。`deactivate` 与 `workspace-close` 走 suppress，只有 `close` 走 `discardAll`。
 

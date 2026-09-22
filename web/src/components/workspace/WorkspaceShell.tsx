@@ -28,7 +28,7 @@ import {
   useRightWorkspace,
   type RightWorkspaceResource,
 } from './right-workspace-context';
-import { BrowserNativeLifecycle, resolveBrowserResourceTransition } from './browser/browser-workspace-hooks';
+import { BrowserNativeLifecycle, notifyBrowserLayoutFrame, resolveBrowserResourceTransition } from './browser/browser-workspace-hooks';
 import { fileContentStore } from './files/file-content-store';
 import { fileExplorerStore } from './files/file-explorer-store';
 import { WorkspaceFileLinkProvider } from './files/WorkspaceFileLinkProvider';
@@ -528,6 +528,7 @@ function WorkspaceShellLayout({
           expandedPanels.push(panelId);
         }
         if (expandedPanels.length > 0) applied = group.setLayout(target);
+        if (applied != null) notifyBrowserLayoutFrame();
       } catch {
         // The panel group may be unmounting while the desktop surface changes.
       }
@@ -609,6 +610,7 @@ function WorkspaceShellLayout({
     }));
   }, []);
   const saveWorkspaceLayout = useCallback((layout: Layout, meta: LayoutChangedMeta) => {
+    notifyBrowserLayoutFrame();
     const previousLayout = lastCommittedLayoutRef.current;
     lastCommittedLayoutRef.current = { ...layout };
     const activeElement = typeof document === 'undefined' ? null : document.activeElement;

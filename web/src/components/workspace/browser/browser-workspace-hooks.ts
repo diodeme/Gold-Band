@@ -14,9 +14,23 @@ export function useOpenWebTarget() {
   });
 }
 
+let browserHostModule: Promise<typeof import('./browser-webview-host')> | null = null;
+
+function loadBrowserHost() {
+  browserHostModule ??= import('./browser-webview-host');
+  return browserHostModule;
+}
+
+export function notifyBrowserLayoutFrame() {
+  if (browserHostModule == null) return;
+  void browserHostModule.then(({ browserWebviewHost }) => {
+    browserWebviewHost.notifyLayoutFrame();
+  });
+}
+
 export async function resolveBrowserResourceTransition(reason: RightWorkspaceResourceTransitionReason) {
   if (reason === 'scope-change') return true;
-  const { browserWebviewHost } = await import('./browser-webview-host');
+  const { browserWebviewHost } = await loadBrowserHost();
   if (reason === 'close') await browserWebviewHost.discardAll();
   else await browserWebviewHost.suppress();
   return true;
@@ -49,7 +63,7 @@ export function BrowserNativeLifecycle({
           ownerGenerationRef.current !== cleanupGeneration
           || !browserWasPresentedRef.current
         ) return;
-        void import('./browser-webview-host').then(({ browserWebviewHost }) => browserWebviewHost.suppress());
+        void loadBrowserHost().then(({ browserWebviewHost }) => browserWebviewHost.suppress());
       });
     };
   }, []);
@@ -63,7 +77,7 @@ export function BrowserNativeLifecycle({
       || autoCollapsedHidden
       || !presented
       || !activeIsBrowser;
-    void import('./browser-webview-host').then(async ({ browserWebviewHost }) => {
+    void loadBrowserHost().then(async ({ browserWebviewHost }) => {
       if (visibilityGenerationRef.current !== generation) return;
       if (suppressed) {
         await browserWebviewHost.suppress();

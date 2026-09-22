@@ -2368,9 +2368,12 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         .map(|input| input.display_text.clone())
         .or_else(|| {
             // A new RawAgent turn receives the requirement verbatim, before any runtime assembly.
+            // 仅当 prompt 未被 runtime 追加隐式隐藏区段时才回退为需求原文：含区段的 prompt
+            // 必须以完整 user_prompt 作为气泡投影，否则前端解析不到 <hidden> 块、审计入口丢失。
             (req.prompt_envelope == crate::dsl::PromptEnvelopeMode::RawAgent
                 && req.session_mode == SessionMode::New
-                && req.user_prompt_render_mode == UserPromptRenderMode::RequirementTask)
+                && req.user_prompt_render_mode == UserPromptRenderMode::RequirementTask
+                && req.extra_hidden_sections.is_empty())
                 .then(|| requirement_text.clone())
         });
     Ok(PromptBundle {

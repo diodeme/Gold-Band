@@ -2377,7 +2377,7 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 - **根因定性**：不是实现错误，是**分层判断过度收敛**——M5-bk 把三块一律判为「runtime 决定、用户不需操心」，但 DPMS 溯源（发布计划 / 开发·测试负责人 / 需求链接）是**用户在发送前需要核对的目标环境信息**，具备 user 侧价值；只有「上游交付说明」（纯执行上下文，用户无需核对）与「完成输出协议」（写侧契约，误删即静默断链）才必须留在隐式侧。修法是按实际消费主体拆开两类上下文，而不是整体回退（整体回退会把协议块重新塞回用户可编辑文本，那才是 M5-bk 修掉的原始缺陷）。
 - **实现**：`vm.rs` 恢复 `from_detail(task, workspace_id, language)`，预填 = `detail_prefill(task, language)` = DPMS 溯源块（可选）+ 空行 + 需求正文（含「正文缺失但溯源存在 → 只发块」，与 M5-bh 语义一致）；`remote_task_hidden_section` 收敛为**上游交付说明块 → 完成输出协议块**两块。**同一份上下文只下发一次**：溯源块已进预填，故从区段中移除，避免模型收到两份。
 - **连带效果**：低发现 #3（「标题与正文皆空的 issue 型远程任务」预填为空 → 发送被拒 + claim 回滚）在该形态下自然消失——有 DPMS 字段的任务预填不再为空。
-- **措辞更正（评审追踪）**：隐藏区段在会话气泡中的呈现是**「图标 + 标题 + 字符数」的链接按钮 → 打开右侧工作区只读面板**，不是内联折叠模块（`web/src/components/acp/HiddenPromptMessageContent.tsx`；前端测试断言 `[data-slot="collapsible"]` 为 null）；链接可点需 `branchLocator && scopeKey && !optimistic`，否则按钮 disabled。另：multica 首条 prompt 无 `prompt_display` → 气泡正文回退为渲染后的完整 `user_prompt`，故区段确实可审计；追问路径（Continue + `UserMessage`）气泡只显示键入文本。
+- **措辞更正（评审追踪）**：隐藏区段在会话气泡中的呈现是**「图标 + 标题 + 字符数」的链接按钮 → 打开右侧工作区只读面板**，不是内联折叠模块（`web/src/components/acp/HiddenPromptMessageContent.tsx`；前端测试断言 `[data-slot="collapsible"]` 为 null）；链接可点需 `branchLocator && scopeKey && !optimistic`，否则按钮 disabled。另：multica 首条 prompt 含隐式区段 → 不适用 main 的需求原文 `display_text` 回落，气泡正文以完整 `user_prompt` 投影、区段可审计（详见本节末「合并接缝修正」）；追问路径（Continue + `UserMessage`）气泡只显示键入文本。
 - **测试（同一轮验证）**：`cargo test -p gold-band-desktop --bins multica::` → 149 passed，其中 `from_detail_prepends_dpms_context_block_to_requirement`（溯源块在前、正文在后、双语同构、**预填不含 `completion-output`**）/ `from_detail_without_dpms_fields_keeps_plain_requirement`（全缺省退化纯正文 + 逐字段空白过滤 + 正文缺失只发块）/ `remote_task_hidden_section_excludes_prefilled_dpms_block`（**防重复下发**：区段无 DPMS 字段值、无正文）/ `remote_task_hidden_section_assembles_blocks_in_order`（上游→协议锚点递增）。管道层 fixture 文本同步改为 `upstream handoff + completion protocol`（原名含 dpms 已不符实际）；`first_prompt_hidden` 2 / `provider_prompt_bundle` 33 / `view_models_conversation::` 94 全部保持绿。
 
 **三次调整（2026-09-21，用户指定）：上游交付说明（父任务 completion-output）进 composer 预填**
@@ -2388,6 +2388,13 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 - **实现**：`detail_prefill` = DPMS 溯源块（可选）+ 上游交付说明块（可选）+ 需求正文，块间空行分隔（`parent_output` 缺省/纯空白跳过该块，版本解耦；正文缺失但任一块存在 → 只发块）；`remote_task_hidden_section` 收敛为**仅完成输出协议块**（非 issue 关联 → None）。**同一份上下文只下发一次**：上游块进预填后从区段移除。模板 `remote_task_parent_output.md` 本身零改动（预填即首条 user prompt，模板指令语气本就面向 agent）。`client.rs` `parent_output` 字段注释的消费点同步改指 `detail_prefill`。
 - **连带效果**：低发现 #3 的残余场景进一步消失——只要父任务有交付内容，即使任务无正文/无 DPMS 字段，预填也不为空。
 - **测试（同一轮验证）**：`cargo test -p gold-band-desktop --bins multica::` → 149 passed。重写/新增：`from_detail_prefills_upstream_handoff_between_dpms_and_body`（预填三段锚点严格递增 DPMS→上游→正文、正文收尾、父输出文本不丢、区段无上游块且含协议、双语同构）/ `from_detail_without_parent_output_omits_upstream_block`（缺省/纯空白跳过上游块、协议块不受影响）/ `remote_task_hidden_section_issue_linked_without_body_yields_protocol_only`（扩展：正文缺失但父输出存在 → 预填只剩上游块、区段仍协议块）。管道层 fixture 文本同步改为 `completion protocol`；`first_prompt_hidden` 2 / `provider_prompt_bundle` 33 / `view_models_conversation::` 94 全部保持绿；前端零改动（区段标题与 i18n 映射不变）。
+
+**合并接缝修正（2026-09-22，合并 main `361eeb3c` 后功能 review 发现）**
+
+- **回归现象**：合并 main 后，远程任务首条 prompt 的聊天气泡不再出现隐藏区段审计入口（「图标 + 标题 + 字符数」链接按钮），二次修正措辞更正中「气泡正文回退为完整 `user_prompt`，故区段确实可审计」的前提被破坏。
+- **根因定性（合并接缝，非原设计缺陷）**：main `53491fc1`（session input history navigation）在 `render_prompt_bundle` 新增 `display_text` 回落——条件 RawAgent + New + RequirementTask 恰好精确命中远程任务首条 prompt 三元组，使 `display_text = Some(纯需求正文)`，经 `client.rs` 的 `display_text` 优先级压过 `session_prompt_text`（完整 `user_prompt`），`<hidden>` 块从气泡文本中被剥离、前端解析不到。两个设计意图各自正确（main：本地直接对话显示用户原话；M5-bk：后端注入上下文必须可审计），冲突在 main 的回落条件未考虑「user_prompt 已被 runtime 追加隐式区段」的场景。
+- **修复（收紧守卫而非补投影）**：回落条件追加 `extra_hidden_sections.is_empty()`——仅当 prompt 未被 runtime 追加任何隐式区段时才回退需求原文。本地直接对话保持 main 原话显示意图；含区段的首条 prompt 恢复完整投影、审计入口回归。不选「给远程任务补 `prompt_display`」：那会复制投影逻辑、且 display_text 与 user_prompt 形成双真源易漂移。
+- **最小失败测试先行**：新增 `render_raw_agent_first_prompt_with_hidden_sections_suppresses_verbatim_display`（先失败：`display_text` 为 Some）+ `render_raw_agent_first_prompt_without_sections_falls_back_to_requirement`（保护 main 回落意图不被误删），修复后同测试转绿。`provider_prompt_bundle` → 35 passed；`multica:: / view_models_conversation:: / scheduled_service:: / scheduled_runtime::` → 369 passed 零回归。main 侧无测试锁定「无 prompt_display + RawAgent」场景的回退，修改无破坏面。
 
 ### 12.51 改动四十九：终态后追问 run 的迟到 completion-output 补发（M5-bl，2026-09-21）
 

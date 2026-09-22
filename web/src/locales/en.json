@@ -1811,6 +1811,7 @@
     "rootCommit": "Root commit (no parents)",
     "previousFile": "Previous file",
     "nextFile": "Next file",
+    "fileNotInChanges": "This file is no longer in the current changes",
     "targetPaths": {
       "tip": "Current branch tip",
       "direct": "On the first-parent mainline",

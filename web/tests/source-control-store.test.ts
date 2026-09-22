@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { diffReviewStore, workspaceReviewItems } from '@/components/workspace/source-control/diff-review-store';
 import { SourceControlStore } from '@/components/workspace/source-control/source-control-store';
 import i18n from '@/i18n';
 import type {
@@ -662,6 +663,94 @@ describe('source control session store', () => {
       expect(events.api.getSnapshot).toHaveBeenCalledTimes(2);
       expect(events.api.getHistory).toHaveBeenCalledTimes(1);
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('updates the open workspace review from the same debounced file event', async () => {
+    vi.useFakeTimers();
+    try {
+      diffReviewStore.clearForTests();
+      const events = eventApi();
+      const refreshed = repositorySnapshot('D:/repo', 'revision-1');
+      refreshed.status.unstaged = [{
+        path: 'src/current.ts',
+        oldPath: null,
+        kind: 'modified',
+        indexStatus: null,
+        worktreeStatus: 'M',
+        binary: false,
+        submodule: false,
+        addedLines: 9,
+        deletedLines: 2,
+      }];
+      events.api.getSnapshot
+        .mockResolvedValueOnce(repositorySnapshot('D:/repo'))
+        .mockResolvedValueOnce(refreshed);
+      const store = new SourceControlStore(events.api);
+      await store.ensureLoaded('project-1', 'D:/repo');
+      const sessionId = 'project-1:workspace:D:/repo:unstaged:revision-1';
+      diffReviewStore.save({
+        id: sessionId,
+        projectId: 'project-1',
+        revision: 'revision-1',
+        workspace: { workspacePath: 'D:/repo', area: 'unstaged' },
+        items: workspaceReviewItems('D:/repo', 'unstaged', [
+          { path: 'src/current.ts', oldPath: null, kind: 'modified', indexStatus: null, worktreeStatus: 'M', binary: false, submodule: false, addedLines: 1, deletedLines: 0 },
+          { path: 'src/other.ts', oldPath: null, kind: 'modified', indexStatus: null, worktreeStatus: 'M', binary: false, submodule: false, addedLines: 1, deletedLines: 0 },
+        ]),
+      });
+      const current = diffReviewStore.get(sessionId)?.items[0];
+      const other = diffReviewStore.get(sessionId)?.items[1];
+      if (!current || !other) throw new Error('missing review items');
+
+      events.emitWorkspace('D:/repo/src/current.ts');
+      await vi.advanceTimersByTimeAsync(151);
+
+      expect(events.api.getHistory).toHaveBeenCalledTimes(1);
+      expect(diffReviewStore.get(sessionId)?.items.map((item) => item.path)).toEqual(['src/current.ts']);
+      expect(diffReviewStore.get(sessionId)?.items[0]?.stats).toEqual({ addedLines: 9, deletedLines: 2 });
+      expect(diffReviewStore.workspaceContentEpoch('project-1', current.source)).toBe(1);
+      expect(diffReviewStore.workspaceContentEpoch('project-1', other.source)).toBe(0);
+    } finally {
+      diffReviewStore.clearForTests();
+      vi.useRealTimers();
+    }
+  });
+
+  it('invalidates cached workspace diffs when Git metadata changes', async () => {
+    vi.useFakeTimers();
+    try {
+      diffReviewStore.clearForTests();
+      const events = eventApi();
+      const store = new SourceControlStore(events.api);
+      await store.ensureLoaded('project-1', 'D:/repo');
+      const sessionId = 'project-1:workspace:D:/repo:staged:revision-1';
+      diffReviewStore.save({
+        id: sessionId,
+        projectId: 'project-1',
+        revision: 'revision-1',
+        workspace: { workspacePath: 'D:/repo', area: 'staged' },
+        items: workspaceReviewItems('D:/repo', 'staged', [{
+          path: 'src/current.ts', oldPath: null, kind: 'modified', indexStatus: 'M', worktreeStatus: null,
+          binary: false, submodule: false, addedLines: 1, deletedLines: 0,
+        }]),
+      });
+      const item = diffReviewStore.get(sessionId)?.items[0];
+      if (!item) throw new Error('missing staged item');
+
+      events.emitState({
+        projectId: 'project-1',
+        repositoryCommonDir: 'D:/repo/.git',
+        workspacePath: 'D:/repo',
+        reason: 'metadata',
+      });
+      await vi.advanceTimersByTimeAsync(151);
+
+      expect(diffReviewStore.get(sessionId)?.id).toBe(sessionId);
+      expect(diffReviewStore.workspaceContentEpoch('project-1', item.source)).toBe(1);
+    } finally {
+      diffReviewStore.clearForTests();
       vi.useRealTimers();
     }
   });

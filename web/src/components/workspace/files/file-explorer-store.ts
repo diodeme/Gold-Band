@@ -397,7 +397,14 @@ export class FileExplorerStore {
     this.invalidate(event.projectId, event.canonicalPath);
   }
 
-  private async runSearch(runtime: ProjectRuntime, query: string, revision: number) {
+  private refreshActiveSearch(runtime: ProjectRuntime) {
+    const query = runtime.snapshot.searchQuery.trim();
+    if (!query) return Promise.resolve();
+    runtime.searchRevision += 1;
+    return this.runSearch(runtime, query, runtime.searchRevision, true);
+  }
+
+  private async runSearch(runtime: ProjectRuntime, query: string, revision: number, background = false) {
     const requestId = `${runtime.snapshot.projectId}:${revision}`;
     try {
       const result = await searchWorkspaceFiles(runtime.snapshot.projectId, query, requestId, this.config.searchResultLimit);
@@ -405,6 +412,7 @@ export class FileExplorerStore {
       this.setSnapshot(runtime, { ...runtime.snapshot, searchStatus: 'ready', searchResult: result });
     } catch (reason) {
       if (runtime.searchRevision !== revision) return;
+      if (background && runtime.snapshot.searchResult) return;
       this.setSnapshot(runtime, {
         ...runtime.snapshot,
         searchStatus: 'error',
@@ -438,12 +446,15 @@ export class FileExplorerStore {
       : minimalDirectorySet(runtime.pendingRefreshDirectories);
     runtime.refreshAll = false;
     runtime.pendingRefreshDirectories.clear();
-    const request = (refreshAll
-      ? this.refreshRoot(projectId)
-      : directories.reduce(
-          (previous, directory) => previous.then(() => this.refreshDirectory(projectId, directory)),
-          Promise.resolve(),
-        )).finally(() => {
+    const request = Promise.all([
+      refreshAll
+        ? this.refreshRoot(projectId)
+        : directories.reduce(
+            (previous, directory) => previous.then(() => this.refreshDirectory(projectId, directory)),
+            Promise.resolve(),
+          ),
+      this.refreshActiveSearch(runtime),
+    ]).then(() => undefined).finally(() => {
       if (runtime.refreshPromise === request) runtime.refreshPromise = null;
       if (runtime.refreshDirty || runtime.refreshAll || runtime.pendingRefreshDirectories.size > 0) {
         runtime.refreshDirty = false;

@@ -1811,6 +1811,7 @@
     "rootCommit": "Root 커밋(부모 없음)",
     "previousFile": "이전 파일",
     "nextFile": "다음 파일",
+    "fileNotInChanges": "이 파일은 현재 변경 내용에 없습니다",
     "targetPaths": {
       "tip": "현재 브랜치 끝",
       "direct": "첫 번째 부모 메인라인에 있음",

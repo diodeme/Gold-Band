@@ -255,6 +255,77 @@ describe('FileExplorerStore lifecycle', () => {
     expect(api.listWorkspaceDirectory).toHaveBeenCalledTimes(2);
   });
 
+  it('reruns an active filename search with the directory refresh and keeps the previous results visible', async () => {
+    const store = createStore();
+    await store.loadRoot('project-1');
+    api.searchWorkspaceFiles.mockResolvedValueOnce({
+      requestId: 'project-1:1',
+      entries: [file('README.md')],
+      truncated: false,
+    });
+    store.setSearchQuery('project-1', 'read');
+    await vi.advanceTimersByTimeAsync(200);
+    expect(store.snapshot('project-1').searchStatus).toBe('ready');
+
+    let finishSearch!: (value: { requestId: string; entries: WorkspaceDirectoryEntryVm[]; truncated: boolean }) => void;
+    api.searchWorkspaceFiles.mockImplementationOnce((_projectId: string, _query: string, requestId: string) => new Promise((resolve) => {
+      finishSearch = resolve;
+    }));
+    store.applyFileChange({
+      projectId: 'project-1',
+      canonicalPath: 'D:\\repo\\notes.md',
+      kind: 'created',
+      revision: null,
+      operationId: null,
+    });
+    await vi.advanceTimersByTimeAsync(FALLBACK_WORKSPACE_FILES.watchDebounceMs);
+
+    expect(store.snapshot('project-1').searchStatus).toBe('ready');
+    expect(store.snapshot('project-1').searchResult?.entries.map((entry) => entry.name)).toEqual(['README.md']);
+    finishSearch({ requestId: 'project-1:2', entries: [file('notes.md')], truncated: false });
+    await vi.waitFor(() => expect(store.snapshot('project-1').searchResult?.entries.map((entry) => entry.name)).toEqual(['notes.md']));
+    expect(api.searchWorkspaceFiles).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not rerun filename search for a content-only change', async () => {
+    const store = createStore();
+    await store.loadRoot('project-1');
+    api.searchWorkspaceFiles.mockResolvedValue({
+      requestId: 'project-1:1',
+      entries: [file('README.md')],
+      truncated: false,
+    });
+    store.setSearchQuery('project-1', 'read');
+    await vi.advanceTimersByTimeAsync(200);
+
+    store.applyFileChange({
+      projectId: 'project-1',
+      canonicalPath: 'D:\\repo\\README.md',
+      kind: 'modified',
+      revision: { byteLength: 20, modifiedAtNs: '2', contentHash: 'changed' },
+      operationId: null,
+    });
+    await vi.advanceTimersByTimeAsync(FALLBACK_WORKSPACE_FILES.watchDebounceMs);
+
+    expect(api.searchWorkspaceFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('reruns the active search when the file panel reconciles after reactivation', async () => {
+    const store = createStore();
+    await store.loadRoot('project-1');
+    api.searchWorkspaceFiles
+      .mockResolvedValueOnce({ requestId: 'project-1:1', entries: [file('README.md')], truncated: false })
+      .mockResolvedValueOnce({ requestId: 'project-1:2', entries: [file('notes.md')], truncated: false });
+    store.setSearchQuery('project-1', 'read');
+    await vi.advanceTimersByTimeAsync(200);
+
+    await store.reconcile('project-1');
+
+    expect(store.snapshot('project-1').searchStatus).toBe('ready');
+    expect(store.snapshot('project-1').searchResult?.entries.map((entry) => entry.name)).toEqual(['notes.md']);
+    expect(api.searchWorkspaceFiles).toHaveBeenCalledTimes(2);
+  });
+
   it('rehydrates expanded descendants when a new file splits a compact chain', async () => {
     let splitChain = false;
     api.listWorkspaceDirectory.mockImplementation(async (_projectId: string, path: string) => {

@@ -61,17 +61,11 @@ use crate::observability::{
     write_progress_hint, write_run_progress_best_effort,
 };
 use crate::prompts::{
-    AI_DYNAMIC_ACCEPTANCE_EN, AI_DYNAMIC_ACCEPTANCE_ZH_CN, AI_DYNAMIC_FANOUT_EN,
-    AI_DYNAMIC_FANOUT_ZH_CN, AI_DYNAMIC_HIDDEN_CONTEXT_EN, AI_DYNAMIC_HIDDEN_CONTEXT_ZH_CN,
-    AI_DYNAMIC_MERGE_EN, AI_DYNAMIC_MERGE_ZH_CN, AI_DYNAMIC_NODE_TASK_EN,
-    AI_DYNAMIC_NODE_TASK_ZH_CN, AI_DYNAMIC_OUTPUT_PROTOCOL_EN, AI_DYNAMIC_OUTPUT_PROTOCOL_ZH_CN,
-    AI_DYNAMIC_PROPOSAL_REPAIR_EN, AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN, AI_DYNAMIC_SYSTEM_EN,
-    AI_DYNAMIC_SYSTEM_ZH_CN, AI_DYNAMIC_WORKFLOW_INVOCATION_EN,
-    AI_DYNAMIC_WORKFLOW_INVOCATION_ZH_CN, PromptExecutionSurface, RUNTIME_CONTROL_RESUME_EN,
-    RUNTIME_CONTROL_RESUME_WITH_MESSAGE_EN, RUNTIME_CONTROL_RESUME_WITH_MESSAGE_ZH_CN,
-    RUNTIME_CONTROL_RESUME_ZH_CN, RUNTIME_INVALID_OUTPUT_REPAIR_EN,
-    RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN, RUNTIME_WORKFLOW_RESUME_EN, RUNTIME_WORKFLOW_RESUME_ZH_CN,
-    prompt_by_language, render as render_template,
+    AI_DYNAMIC_ACCEPTANCE, AI_DYNAMIC_FANOUT, AI_DYNAMIC_HIDDEN_CONTEXT, AI_DYNAMIC_MERGE,
+    AI_DYNAMIC_NODE_TASK, AI_DYNAMIC_OUTPUT_PROTOCOL, AI_DYNAMIC_PROPOSAL_REPAIR,
+    AI_DYNAMIC_SYSTEM, AI_DYNAMIC_WORKFLOW_INVOCATION, PromptExecutionSurface,
+    RUNTIME_CONTROL_RESUME, RUNTIME_CONTROL_RESUME_WITH_MESSAGE, RUNTIME_INVALID_OUTPUT_REPAIR,
+    RUNTIME_WORKFLOW_RESUME, prompt_by_language, render as render_template,
 };
 #[cfg(test)]
 use crate::provider::render_prompt_bundle;
@@ -514,13 +508,9 @@ fn infer_dynamic_error_expected(code: &str, params: &serde_json::Value) -> Optio
 }
 
 fn localized_runtime_control_resume_prompt(language: DesktopLanguage) -> String {
-    prompt_by_language(
-        language,
-        RUNTIME_CONTROL_RESUME_ZH_CN,
-        RUNTIME_CONTROL_RESUME_EN,
-    )
-    .trim()
-    .to_string()
+    prompt_by_language(language, RUNTIME_CONTROL_RESUME)
+        .trim()
+        .to_string()
 }
 
 fn localized_runtime_control_resume_with_message_prompt(
@@ -529,11 +519,7 @@ fn localized_runtime_control_resume_with_message_prompt(
     artifact_emission_mode: Option<OutputEmissionMode>,
 ) -> String {
     render_template(
-        prompt_by_language(
-            language,
-            RUNTIME_CONTROL_RESUME_WITH_MESSAGE_ZH_CN,
-            RUNTIME_CONTROL_RESUME_WITH_MESSAGE_EN,
-        ),
+        prompt_by_language(language, RUNTIME_CONTROL_RESUME_WITH_MESSAGE),
         serde_json::json!({
             "user_message": conversation_agent_prompt_text(input, language),
             "artifact_emission_mode": artifact_emission_mode,
@@ -545,13 +531,9 @@ fn localized_runtime_control_resume_with_message_prompt(
 }
 
 fn localized_workflow_resume_prompt(language: DesktopLanguage) -> String {
-    prompt_by_language(
-        language,
-        RUNTIME_WORKFLOW_RESUME_ZH_CN,
-        RUNTIME_WORKFLOW_RESUME_EN,
-    )
-    .trim()
-    .to_string()
+    prompt_by_language(language, RUNTIME_WORKFLOW_RESUME)
+        .trim()
+        .to_string()
 }
 
 impl AcpInvocationPromptState {
@@ -675,11 +657,7 @@ fn output_schema_for_node<'a>(
 fn invalid_output_repair_prompt(schema: &serde_json::Value) -> String {
     let schema = serde_json::to_string_pretty(schema).unwrap_or_else(|_| schema.to_string());
     render_template(
-        prompt_by_language(
-            DesktopLanguage::ZhCn,
-            RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN,
-            RUNTIME_INVALID_OUTPUT_REPAIR_EN,
-        ),
+        prompt_by_language(DesktopLanguage::ZhCn, RUNTIME_INVALID_OUTPUT_REPAIR),
         serde_json::json!({
             "schema": schema,
         }),
@@ -5821,18 +5799,14 @@ fn dynamic_output_contract(
     let schema = dynamic_effective_completion_schema(ctx, graph);
     let json_schema = serde_json::to_string_pretty(&schema).expect("serialize dynamic schema");
     let schema_text = render_template(
-        prompt_by_language(
-            language,
-            AI_DYNAMIC_OUTPUT_PROTOCOL_ZH_CN,
-            AI_DYNAMIC_OUTPUT_PROTOCOL_EN,
-        ),
+        prompt_by_language(language, AI_DYNAMIC_OUTPUT_PROTOCOL),
         serde_json::json!({
             "agent_strategy_mode": dynamic_agent_strategy_mode(ctx.dynamic),
             "provider_required_in_proposal": dynamic_requires_provider_in_proposal(ctx.dynamic),
             "model_required_in_proposal": dynamic_any_worker_model_required_from_proposal(ctx),
             "model_policy": match language {
                 DesktopLanguage::ZhCn => dynamic_model_policy_summary_zh_cn(ctx),
-                DesktopLanguage::En => dynamic_model_policy_summary(ctx),
+                _ => dynamic_model_policy_summary(ctx),
             },
             "end_summary_is_outer_handoff": dynamic_end_summary_is_outer_handoff(graph, node),
             "json_schema": json_schema,
@@ -9983,11 +9957,7 @@ fn workflow_with_dynamic_invocation_task(
         if let NodeDsl::Worker(worker) = node {
             worker.goal = Some(match worker.goal.as_deref() {
                 Some(goal) if !goal.trim().is_empty() => render_template(
-                    prompt_by_language(
-                        language,
-                        AI_DYNAMIC_WORKFLOW_INVOCATION_ZH_CN,
-                        AI_DYNAMIC_WORKFLOW_INVOCATION_EN,
-                    ),
+                    prompt_by_language(language, AI_DYNAMIC_WORKFLOW_INVOCATION),
                     serde_json::json!({
                         "invocation_task": task.trim(),
                         "node_goal": goal.trim(),
@@ -12855,19 +12825,15 @@ fn dynamic_builtin_profile(
     match node.kind {
         DynamicNodeKind::Worker if dynamic_node_is_bootstrap_dispatch(node) => Some((
             "ai-dynamic-fanout",
-            prompt_by_language(language, AI_DYNAMIC_FANOUT_ZH_CN, AI_DYNAMIC_FANOUT_EN),
+            prompt_by_language(language, AI_DYNAMIC_FANOUT),
         )),
         DynamicNodeKind::Merge => Some((
             "ai-dynamic-merge",
-            prompt_by_language(language, AI_DYNAMIC_MERGE_ZH_CN, AI_DYNAMIC_MERGE_EN),
+            prompt_by_language(language, AI_DYNAMIC_MERGE),
         )),
         DynamicNodeKind::Acceptance => Some((
             "ai-dynamic-acceptance",
-            prompt_by_language(
-                language,
-                AI_DYNAMIC_ACCEPTANCE_ZH_CN,
-                AI_DYNAMIC_ACCEPTANCE_EN,
-            ),
+            prompt_by_language(language, AI_DYNAMIC_ACCEPTANCE),
         )),
         _ => None,
     }
@@ -12907,11 +12873,7 @@ fn dynamic_structured_repair_prompt(
 ) -> String {
     let has_coordination_snapshot = dynamic_node_reads_coordination_snapshot(node, true);
     render_template(
-        prompt_by_language(
-            ctx.app.config.desktop_language,
-            AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN,
-            AI_DYNAMIC_PROPOSAL_REPAIR_EN,
-        ),
+        prompt_by_language(ctx.app.config.desktop_language, AI_DYNAMIC_PROPOSAL_REPAIR),
         serde_json::json!({
             "validation_errors": dynamic_validation_repair_lines(ctx, graph, errors),
             "fanout_workspace_dirty": errors.iter().any(|error| error.code == DYNAMIC_FANOUT_WORKSPACE_DIRTY),
@@ -13093,11 +13055,7 @@ fn dynamic_task_instruction(
     has_output_contract: bool,
 ) -> String {
     let metadata = render_template(
-        prompt_by_language(
-            ctx.app.config.desktop_language,
-            AI_DYNAMIC_NODE_TASK_ZH_CN,
-            AI_DYNAMIC_NODE_TASK_EN,
-        ),
+        prompt_by_language(ctx.app.config.desktop_language, AI_DYNAMIC_NODE_TASK),
         serde_json::json!({
             "title": node.title,
             "has_output_contract": has_output_contract,
@@ -14112,11 +14070,7 @@ fn dynamic_system_sections(
     control_emission_mode: Option<OutputEmissionMode>,
 ) -> Result<Vec<String>> {
     Ok(vec![render_template(
-        prompt_by_language(
-            ctx.app.config.desktop_language,
-            AI_DYNAMIC_SYSTEM_ZH_CN,
-            AI_DYNAMIC_SYSTEM_EN,
-        ),
+        prompt_by_language(ctx.app.config.desktop_language, AI_DYNAMIC_SYSTEM),
         serde_json::json!({
             "control_emission_mode": control_emission_mode,
         }),
@@ -14185,11 +14139,7 @@ fn dynamic_hidden_sections(
     );
     let coordination_snapshot_path =
         prompt_path_relative_to(&dynamic_root, &coordination_snapshot_path);
-    let template = prompt_by_language(
-        ctx.app.config.desktop_language,
-        AI_DYNAMIC_HIDDEN_CONTEXT_ZH_CN,
-        AI_DYNAMIC_HIDDEN_CONTEXT_EN,
-    );
+    let template = prompt_by_language(ctx.app.config.desktop_language, AI_DYNAMIC_HIDDEN_CONTEXT);
     let attachment_template_context = serde_json::json!({
         "source_predecessor_limit": DYNAMIC_PROMPT_SOURCE_PREDECESSOR_LIMIT,
         "attachments_per_source_limit": DYNAMIC_PROMPT_ATTACHMENTS_PER_SOURCE_LIMIT,
@@ -14251,7 +14201,7 @@ fn dynamic_hidden_sections(
                 ),
                 None => "未单独配置验收模型；`merge` / `acceptance` 与普通动态节点沿用同一套模型规则。".to_string(),
             },
-            DesktopLanguage::En => match dynamic_acceptance_model(ctx.dynamic) {
+            _ => match dynamic_acceptance_model(ctx.dynamic) {
                 Some(model) => format!(
                     "`merge` / `acceptance` use the configured acceptance model `{model}`; those specs must not output `model`."
                 ),

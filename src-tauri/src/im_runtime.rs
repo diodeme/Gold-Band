@@ -592,8 +592,8 @@ impl DesktopImRuntime {
         let target_count = self.configure_projection_targets(&settings.im_integrations)?;
         tracing::info!(target_count, "IM projection targets configured");
         let locale = match settings.desktop_language {
-            Some(gold_band::config::DesktopLanguage::En) => ImLocale::En,
-            _ => ImLocale::ZhCn,
+            Some(gold_band::config::DesktopLanguage::ZhCn) => ImLocale::ZhCn,
+            _ => ImLocale::En,
         };
         for channel in ImChannelKind::ALL {
             if let Err(error) = self

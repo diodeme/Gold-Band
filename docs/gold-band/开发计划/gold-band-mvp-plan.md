@@ -1,5 +1,19 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-22 桌面语言扩展到七种，安装包与首次启动跟随系统界面语言
+
+- 根因：界面、后端短文案和内置提示词原来只有简体中文与英文两套，安装包语言列表也只有这两项，而且应用不会在第一次打开时读取系统界面语言。这是语言目录和首次持久化边界不完整，不是缺一套独立的语言检测服务。
+- 数据与实现：`desktopLanguage` 增加 `zh-tw`、`ja-jp`、`ko-kr`、`pt-br`、`es`，与原有 `zh-cn`、`en` 共用同一张 BCP 47 / Windows LANGID 映射表。未匹配语言落到 `en`。桌面端只在设置字段缺失时写入一次。NSIS 语言表把 English 放在第一位作为未匹配回退，并关闭语言选择对话框。提示词按同样七个目录加载；CI/CD 角色正文和 goal 只有中英，缺语言降级到英文。主题显示名仍只要求简体中文和英文。字体栈不随语言变化。快速会话三个模式名统一为：各语言保留 `Direct` 和 `AUTO`，`工作流` 按界面语言翻译。
+- 验收：语言标签与 LANGID 映射、提示词 MiniJinja 标记顺序、CI/CD 英文降级和角色 ID 稳定由单元测试固定。
+- 过度设计与性能评审：不新增语言状态机、注册表读取或按语言懒加载框架。七份界面文案随前端包静态引入，提示词仍是编译期 `include_str`，一次匹配，无额外 I/O。首次写入只在字段缺失时发生一次。
+
+## 2026-09-20 渠道构建按 Cargo 解析的 target 目录收集 latest.json
+
+- 根因：`npm run build:wb` 收集签名安装包并生成 `latest.json` 的设计正确，但 `build-channel.mjs` 只硬编码仓库内 `target/release/bundle` 与 `src-tauri/target/release/bundle`。本机 `CARGO_TARGET_DIR`、`CARGO_BUILD_TARGET_DIR` 或用户/项目 `build.target-dir` 把产物写到其他目录时，post-build 找不到 `.sig`，表现为“构建成功却没有 latest.json”。属于正确设计下实现不完整，不是缺第二套发布协议。
+- 实现：收集与清理共用 Cargo 解析后的 target 目录。优先 `cargo metadata --no-deps` 的 `target_directory`（覆盖环境变量和本机 cargo config，换机器无需改脚本），失败再回退 `CARGO_TARGET_DIR` / `CARGO_BUILD_TARGET_DIR` 与仓库内默认路径；设置了 `CARGO_BUILD_TARGET` 时同时看 host 与 triple 子目录。不写死某台机器的绝对路径。
+- 证据：修复前 `scripts/cargo-bundle-dirs.test.mjs` 中 8 项稳定失败，表现为候选目录不含自定义 target、`findBundleDir` 命中仓库残留 bundle、`build-channel.mjs` 仍内联硬编码路径；修复后 `npm run test:channel-config` 17 项通过。本机 `cargo metadata` 解析为共享 target 目录，与本次 wb 安装包实际落点一致。
+- 过度设计与性能评审：不新增配置、持久字段、缓存或扫描整个 target。每次渠道构建只调用一次 `cargo metadata --no-deps`，再对 2–4 个 bundle 路径 `existsSync`；复杂度与一次正式打包相比可忽略，无需 benchmark。
+
 ## 2026-09-20 记录 Cursor ACP `session/cancel` 回滚已接受 user prompt
 
 - 根因：Cursor ACP 在 `session/prompt` 已被消费（思考/工具已开始）后收到 `session/cancel`，后续同一 session 的模型上下文不再包含该 user prompt。ACP cancel 只应停止前台生成，Cursor IDE Stop 也保留用户消息；Gold Band timeline 同样保留 cancelled `goldBandPrompt`。这是 Cursor adapter 把整轮（含已接受的用户消息）rewind，不是 Gold Band resume 注入失败。半截 tool call 缺 result 时，上游正确收尾是保留 user message 并补 cancelled 工具结果。
@@ -950,7 +964,7 @@
 - 2026-05-21：工作流编辑器的节点 id 输入改为本地草稿提交，避免中文输入法 composition 阶段被受控值和 sanitize 打断；作者态画布普通节点直接展示原始 id，不再把 `test` 等默认模板名称本地化显示。
 - 2026-05-21：AI 输出验证的 JSON 输出约束输入改为本地草稿 + 延迟校验，停止输入约 2 秒或失焦后再写入 DSL；自动 beautify 改为输入框右上角手动美化按钮，避免编辑半截 JSON 时被重排。
 - 2026-08-11：Release Please 明确启用 `bump-minor-pre-major`。在正式进入 `1.0.0` 前，带 `!` 或 `BREAKING CHANGE` 的提交从当前 `0.x` 版本提升 minor 并归零 patch，例如 `0.12.4` 发布为 `0.13.0`；进入稳定版后的 major 版本规则不受影响。配置契约由 `npm run test:release-config` 固化，避免发布策略被后续配置调整意外移除。
-- 2026-05-25：桌面端接入 Tauri updater，按 `default` / `wb` 构建渠道隔离更新配置和 public key。default 渠道指向 `https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json`，`release-please` 在创建 draft release 后会先确保对应 git tag 指向 release commit，再于同一 workflow 构建 default 桌面安装包、签名并上传 `latest.json`；该 workflow 支持 `main` push 自动触发和 GitHub Actions 页面手动触发，手动触发用于补跑 release-please 主链路；updater manifest 生成时显式使用 release tag，避免 workflow_dispatch 分支名进入 `version` 或下载 URL；Windows 平台优先选择签名的 setup exe 作为更新安装包；macOS arm64 使用 `macos-15`，macOS x64 使用 `macos-15-intel`；publish 后客户端才通过 latest 地址看到更新。独立 `Release` workflow 仅作为手动输入 tag 的重建 fallback，重建时应用源码来自 release tag，发布脚本和 manifest 生成逻辑来自所选 workflow 分支。wb 渠道使用内网占位地址，本地 `npm run build:wb` 打包后由人工上传内网包与 JSON；本地生成 `latest.json` 时必须优先匹配本次构建 version 对应的签名安装包，避免目录残留旧包时 URL 指回历史 exe。
+- 2026-05-25：桌面端接入 Tauri updater，按 `default` / `wb` 构建渠道隔离更新配置和 public key。default 渠道指向 `https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json`，`release-please` 在创建 draft release 后会先确保对应 git tag 指向 release commit，再于同一 workflow 构建 default 桌面安装包、签名并上传 `latest.json`；该 workflow 支持 `main` push 自动触发和 GitHub Actions 页面手动触发，手动触发用于补跑 release-please 主链路；updater manifest 生成时显式使用 release tag，避免 workflow_dispatch 分支名进入 `version` 或下载 URL；Windows 平台优先选择签名的 setup exe 作为更新安装包；macOS arm64 使用 `macos-15`，macOS x64 使用 `macos-15-intel`；publish 后客户端才通过 latest 地址看到更新。独立 `Release` workflow 仅作为手动输入 tag 的重建 fallback，重建时应用源码来自 release tag，发布脚本和 manifest 生成逻辑来自所选 workflow 分支。wb 渠道使用内网占位地址，本地 `npm run build:wb` 打包后由人工上传内网包与 JSON；本地生成 `latest.json` 时必须优先匹配本次构建 version 对应的签名安装包，避免目录残留旧包时 URL 指回历史 exe。收集签名包时必须使用 Cargo 解析后的 target 目录（`cargo metadata` 的 `target_directory`，覆盖本机 `CARGO_TARGET_DIR` / `CARGO_BUILD_TARGET_DIR` 与用户或项目 `build.target-dir`），再回退仓库内 `target/` 与 `src-tauri/target/`，不得写死某台机器的绝对路径。
 - 2026-05-25：设置页改为 `通用 / 外观 / 高级` tabs，高级页支持保存用户级 `desktopUpdaterUrlOverride`、恢复内置地址、手动检查更新和展示后台检查状态；用户覆盖 URL 不改变渠道 public key，避免 default / wb 串包；`desktopUpdaterLastCheckedAt` 持久化最近一次检查时间，展示为本地系统时区 `YYYY-MM-DD HH:MM:SS`。
 - 2026-08-21：修复 `wb` 静默关键更新轮询的重复 I/O。后台单轮检查保留 Tauri `Update` 作为该轮唯一结果，同时投影 UI 状态并判断 `critical`，不再由静默下载路径第二次请求 manifest；同一版本已有完整 pending 文件时跳过安装包下载，下载完成后通过既有原子写入能力提交最终文件，再登记 pending 状态。接口回归以本地 HTTP updater 固定静默渠道单轮仅一次 manifest GET，并覆盖相同/不同/缺失 pending 文件与完整落盘；`default` 渠道的静默更新配置保持关闭。
 - 2026-06-12：高级设置中“记录详细日志”“开启指标上报”的常驻说明文案改为 tips icon tooltip 形式，减少长说明占位；“开启指标上报”标题颜色与相邻设置项统一为 muted heading 样式；这两项开关统一放到标题行内而不是远端右对齐。

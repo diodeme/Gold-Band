@@ -74,6 +74,9 @@ unicode-properties = { version = "0.1", features = ["general-category"] }
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
 
+[target.'cfg(not(windows))'.dependencies]
+sys-locale = "0.3"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 tempfile = "3"

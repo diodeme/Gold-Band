@@ -4,115 +4,293 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::DesktopLanguage;
 
-pub const PROFILE_PLAN_ZH_CN: &str = include_str!("prompts/zh-CN/profile/plan.md");
-pub const PROFILE_DEV_ZH_CN: &str = include_str!("prompts/zh-CN/profile/dev.md");
-pub const PROFILE_DEV_TEST_ZH_CN: &str = include_str!("prompts/zh-CN/profile/dev-test.md");
-pub const PROFILE_REVIEW_ZH_CN: &str = include_str!("prompts/zh-CN/profile/review.md");
-pub const PROFILE_TEST_ZH_CN: &str = include_str!("prompts/zh-CN/profile/test.md");
-pub const PROFILE_CICD_ZH_CN: &str = include_str!("prompts/zh-CN/profile/cicd.md");
-pub const PROFILE_ACCEPT_ZH_CN: &str = include_str!("prompts/zh-CN/profile/accept.md");
-pub const PROFILE_CLEAN_ZH_CN: &str = include_str!("prompts/zh-CN/profile/clean.md");
-pub const PROFILE_INTERVIEW_ZH_CN: &str = include_str!("prompts/zh-CN/profile/interview.md");
-pub const PROFILE_GRILLME_ZH_CN: &str = include_str!("prompts/zh-CN/profile/GrillMe.md");
+#[derive(Debug, Clone, Copy)]
+pub struct LocalizedText {
+    pub zh_cn: &'static str,
+    pub en: &'static str,
+    pub zh_tw: Option<&'static str>,
+    pub ja_jp: Option<&'static str>,
+    pub ko_kr: Option<&'static str>,
+    pub pt_br: Option<&'static str>,
+    pub es: Option<&'static str>,
+}
+
+impl LocalizedText {
+    pub const fn all(
+        zh_cn: &'static str,
+        zh_tw: &'static str,
+        en: &'static str,
+        ja_jp: &'static str,
+        ko_kr: &'static str,
+        pt_br: &'static str,
+        es: &'static str,
+    ) -> Self {
+        Self {
+            zh_cn,
+            en,
+            zh_tw: Some(zh_tw),
+            ja_jp: Some(ja_jp),
+            ko_kr: Some(ko_kr),
+            pt_br: Some(pt_br),
+            es: Some(es),
+        }
+    }
+
+    pub const fn zh_en(zh_cn: &'static str, en: &'static str) -> Self {
+        Self {
+            zh_cn,
+            en,
+            zh_tw: None,
+            ja_jp: None,
+            ko_kr: None,
+            pt_br: None,
+            es: None,
+        }
+    }
+
+    pub fn resolve(self, language: DesktopLanguage) -> &'static str {
+        match language {
+            DesktopLanguage::ZhCn => self.zh_cn,
+            DesktopLanguage::En => self.en,
+            DesktopLanguage::ZhTw => self.zh_tw.unwrap_or(self.en),
+            DesktopLanguage::JaJp => self.ja_jp.unwrap_or(self.en),
+            DesktopLanguage::KoKr => self.ko_kr.unwrap_or(self.en),
+            DesktopLanguage::PtBr => self.pt_br.unwrap_or(self.en),
+            DesktopLanguage::Es => self.es.unwrap_or(self.en),
+        }
+    }
+}
+
+macro_rules! localized_prompt {
+    ($path:literal) => {
+        LocalizedText::all(
+            include_str!(concat!("prompts/zh-CN/", $path)),
+            include_str!(concat!("prompts/zh-TW/", $path)),
+            include_str!(concat!("prompts/en/", $path)),
+            include_str!(concat!("prompts/ja-JP/", $path)),
+            include_str!(concat!("prompts/ko-KR/", $path)),
+            include_str!(concat!("prompts/pt-BR/", $path)),
+            include_str!(concat!("prompts/es/", $path)),
+        )
+    };
+}
+
+macro_rules! localized_prompt_zh_en {
+    ($path:literal) => {
+        LocalizedText::zh_en(
+            include_str!(concat!("prompts/zh-CN/", $path)),
+            include_str!(concat!("prompts/en/", $path)),
+        )
+    };
+}
+
+pub const PROFILE_PLAN: LocalizedText = localized_prompt!("profile/plan.md");
+pub const PROFILE_DEV: LocalizedText = localized_prompt!("profile/dev.md");
+pub const PROFILE_DEV_TEST: LocalizedText = localized_prompt!("profile/dev-test.md");
+pub const PROFILE_REVIEW: LocalizedText = localized_prompt!("profile/review.md");
+pub const PROFILE_TEST: LocalizedText = localized_prompt!("profile/test.md");
+pub const PROFILE_CICD: LocalizedText = localized_prompt_zh_en!("profile/cicd.md");
+pub const PROFILE_ACCEPT: LocalizedText = localized_prompt!("profile/accept.md");
+pub const PROFILE_CLEAN: LocalizedText = localized_prompt!("profile/clean.md");
+pub const PROFILE_INTERVIEW: LocalizedText = localized_prompt!("profile/interview.md");
+pub const PROFILE_GRILLME: LocalizedText = localized_prompt!("profile/GrillMe.md");
+pub const PROFILE_OVERLAY_REQUIREMENT_IDENTITY: LocalizedText =
+    localized_prompt!("profile/overlays/requirement-identity.md");
+pub const PROFILE_OVERLAY_DEV_TEST_AUTO_COMMIT: LocalizedText =
+    localized_prompt!("profile/overlays/dev-test-auto-commit.md");
+pub const RUNTIME_SYSTEM: LocalizedText = localized_prompt!("runtime/system.md");
+pub const RUNTIME_HIDDEN_CONTEXT: LocalizedText = localized_prompt!("runtime/hidden_context.md");
+pub const RUNTIME_USER: LocalizedText = localized_prompt!("runtime/user.md");
+pub const RUNTIME_INVALID_OUTPUT_REPAIR: LocalizedText =
+    localized_prompt!("runtime/invalid_output_repair.md");
+pub const RUNTIME_SCHEDULED_TASK_CONTEXT: LocalizedText =
+    localized_prompt!("runtime/scheduled_task_context.md");
+pub const RUNTIME_ARTIFACT_FINALIZE: LocalizedText =
+    localized_prompt!("runtime/artifact_finalize.md");
+pub const RUNTIME_CONTROL_RESUME: LocalizedText =
+    localized_prompt!("runtime/runtime_control_resume.md");
+pub const RUNTIME_CONTROL_RESUME_WITH_MESSAGE: LocalizedText =
+    localized_prompt!("runtime/runtime_control_resume_with_message.md");
+pub const RUNTIME_WORKFLOW_RESUME: LocalizedText = localized_prompt!("runtime/workflow_resume.md");
+pub const RUNTIME_USER_ROLE_MESSAGE: LocalizedText =
+    localized_prompt!("runtime/user_role_message.md");
+pub const CICD_GOAL: LocalizedText = localized_prompt_zh_en!("runtime/cicd-goal.md");
+pub const AI_DYNAMIC_PROPOSAL_REPAIR: LocalizedText =
+    localized_prompt!("runtime/ai-dynamic/proposal_repair.md");
+pub const AI_DYNAMIC_FANOUT: LocalizedText = localized_prompt!("runtime/ai-dynamic/fanout.md");
+pub const AI_DYNAMIC_MERGE: LocalizedText = localized_prompt!("runtime/ai-dynamic/merge.md");
+pub const AI_DYNAMIC_ACCEPTANCE: LocalizedText =
+    localized_prompt!("runtime/ai-dynamic/acceptance.md");
+pub const AI_DYNAMIC_NODE_TASK: LocalizedText =
+    localized_prompt!("runtime/ai-dynamic/node_task.md");
+pub const AI_DYNAMIC_HIDDEN_CONTEXT: LocalizedText =
+    localized_prompt!("runtime/ai-dynamic/hidden_context.md");
+pub const AI_DYNAMIC_WORKFLOW_INVOCATION: LocalizedText =
+    localized_prompt!("runtime/ai-dynamic/workflow_invocation.md");
+pub const AI_DYNAMIC_SYSTEM: LocalizedText = localized_prompt!("runtime/ai-dynamic/system.md");
+pub const AI_DYNAMIC_OUTPUT_PROTOCOL: LocalizedText =
+    localized_prompt!("runtime/ai-dynamic/output_protocol.md");
+pub const PERSONAL_ANALYTICS_SYSTEM: LocalizedText =
+    localized_prompt!("personal-analytics/system.md");
+pub const PERSONAL_ANALYTICS_USER: LocalizedText = localized_prompt!("personal-analytics/user.md");
+pub const PERSONAL_ANALYTICS_REPAIR_SYSTEM: LocalizedText =
+    localized_prompt!("personal-analytics/repair_system.md");
+pub const PERSONAL_ANALYTICS_REPAIR_USER: LocalizedText =
+    localized_prompt!("personal-analytics/repair_user.md");
+pub const MEMORY_RULES: LocalizedText = localized_prompt!("runtime/memory-rules.md");
+pub const MEMORY_TOOLS: LocalizedText = localized_prompt!("runtime/memory-tools.json");
+
+pub const PROFILE_PLAN_ZH_CN: &str = PROFILE_PLAN.zh_cn;
+pub const PROFILE_PLAN_EN: &str = PROFILE_PLAN.en;
+pub const PROFILE_DEV_ZH_CN: &str = PROFILE_DEV.zh_cn;
+pub const PROFILE_DEV_EN: &str = PROFILE_DEV.en;
+pub const PROFILE_DEV_TEST_ZH_CN: &str = PROFILE_DEV_TEST.zh_cn;
+pub const PROFILE_DEV_TEST_EN: &str = PROFILE_DEV_TEST.en;
+pub const PROFILE_REVIEW_ZH_CN: &str = PROFILE_REVIEW.zh_cn;
+pub const PROFILE_REVIEW_EN: &str = PROFILE_REVIEW.en;
+pub const PROFILE_TEST_ZH_CN: &str = PROFILE_TEST.zh_cn;
+pub const PROFILE_TEST_EN: &str = PROFILE_TEST.en;
+pub const PROFILE_CICD_ZH_CN: &str = PROFILE_CICD.zh_cn;
+pub const PROFILE_CICD_EN: &str = PROFILE_CICD.en;
+pub const PROFILE_ACCEPT_ZH_CN: &str = PROFILE_ACCEPT.zh_cn;
+pub const PROFILE_ACCEPT_EN: &str = PROFILE_ACCEPT.en;
+pub const PROFILE_CLEAN_ZH_CN: &str = PROFILE_CLEAN.zh_cn;
+pub const PROFILE_CLEAN_EN: &str = PROFILE_CLEAN.en;
+pub const PROFILE_INTERVIEW_ZH_CN: &str = PROFILE_INTERVIEW.zh_cn;
+pub const PROFILE_INTERVIEW_EN: &str = PROFILE_INTERVIEW.en;
+pub const PROFILE_GRILLME_ZH_CN: &str = PROFILE_GRILLME.zh_cn;
+pub const PROFILE_GRILLME_EN: &str = PROFILE_GRILLME.en;
 pub const PROFILE_OVERLAY_REQUIREMENT_IDENTITY_ZH_CN: &str =
-    include_str!("prompts/zh-CN/profile/overlays/requirement-identity.md");
+    PROFILE_OVERLAY_REQUIREMENT_IDENTITY.zh_cn;
+pub const PROFILE_OVERLAY_REQUIREMENT_IDENTITY_EN: &str = PROFILE_OVERLAY_REQUIREMENT_IDENTITY.en;
 pub const PROFILE_OVERLAY_DEV_TEST_AUTO_COMMIT_ZH_CN: &str =
-    include_str!("prompts/zh-CN/profile/overlays/dev-test-auto-commit.md");
-pub const PROFILE_PLAN_EN: &str = include_str!("prompts/en/profile/plan.md");
-pub const PROFILE_DEV_EN: &str = include_str!("prompts/en/profile/dev.md");
-pub const PROFILE_DEV_TEST_EN: &str = include_str!("prompts/en/profile/dev-test.md");
-pub const PROFILE_REVIEW_EN: &str = include_str!("prompts/en/profile/review.md");
-pub const PROFILE_TEST_EN: &str = include_str!("prompts/en/profile/test.md");
-pub const PROFILE_CICD_EN: &str = include_str!("prompts/en/profile/cicd.md");
-pub const PROFILE_ACCEPT_EN: &str = include_str!("prompts/en/profile/accept.md");
-pub const PROFILE_CLEAN_EN: &str = include_str!("prompts/en/profile/clean.md");
-pub const PROFILE_INTERVIEW_EN: &str = include_str!("prompts/en/profile/interview.md");
-pub const PROFILE_GRILLME_EN: &str = include_str!("prompts/en/profile/GrillMe.md");
-pub const PROFILE_OVERLAY_REQUIREMENT_IDENTITY_EN: &str =
-    include_str!("prompts/en/profile/overlays/requirement-identity.md");
-pub const PROFILE_OVERLAY_DEV_TEST_AUTO_COMMIT_EN: &str =
-    include_str!("prompts/en/profile/overlays/dev-test-auto-commit.md");
-pub const RUNTIME_SYSTEM_ZH_CN: &str = include_str!("prompts/zh-CN/runtime/system.md");
-pub const RUNTIME_SYSTEM_EN: &str = include_str!("prompts/en/runtime/system.md");
-pub const RUNTIME_HIDDEN_CONTEXT_ZH_CN: &str =
-    include_str!("prompts/zh-CN/runtime/hidden_context.md");
-pub const RUNTIME_HIDDEN_CONTEXT_EN: &str = include_str!("prompts/en/runtime/hidden_context.md");
-pub const RUNTIME_USER_ZH_CN: &str = include_str!("prompts/zh-CN/runtime/user.md");
-pub const RUNTIME_USER_EN: &str = include_str!("prompts/en/runtime/user.md");
-pub const RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN: &str =
-    include_str!("prompts/zh-CN/runtime/invalid_output_repair.md");
-pub const RUNTIME_INVALID_OUTPUT_REPAIR_EN: &str =
-    include_str!("prompts/en/runtime/invalid_output_repair.md");
-pub const RUNTIME_SCHEDULED_TASK_CONTEXT_ZH_CN: &str =
-    include_str!("prompts/zh-CN/runtime/scheduled_task_context.md");
-pub const RUNTIME_SCHEDULED_TASK_CONTEXT_EN: &str =
-    include_str!("prompts/en/runtime/scheduled_task_context.md");
-pub const RUNTIME_ARTIFACT_FINALIZE_ZH_CN: &str =
-    include_str!("prompts/zh-CN/runtime/artifact_finalize.md");
-pub const RUNTIME_ARTIFACT_FINALIZE_EN: &str =
-    include_str!("prompts/en/runtime/artifact_finalize.md");
-pub const RUNTIME_CONTROL_RESUME_ZH_CN: &str =
-    include_str!("prompts/zh-CN/runtime/runtime_control_resume.md");
-pub const RUNTIME_CONTROL_RESUME_EN: &str =
-    include_str!("prompts/en/runtime/runtime_control_resume.md");
+    PROFILE_OVERLAY_DEV_TEST_AUTO_COMMIT.zh_cn;
+pub const PROFILE_OVERLAY_DEV_TEST_AUTO_COMMIT_EN: &str = PROFILE_OVERLAY_DEV_TEST_AUTO_COMMIT.en;
+pub const RUNTIME_SYSTEM_ZH_CN: &str = RUNTIME_SYSTEM.zh_cn;
+pub const RUNTIME_SYSTEM_EN: &str = RUNTIME_SYSTEM.en;
+pub const RUNTIME_HIDDEN_CONTEXT_ZH_CN: &str = RUNTIME_HIDDEN_CONTEXT.zh_cn;
+pub const RUNTIME_HIDDEN_CONTEXT_EN: &str = RUNTIME_HIDDEN_CONTEXT.en;
+pub const RUNTIME_USER_ZH_CN: &str = RUNTIME_USER.zh_cn;
+pub const RUNTIME_USER_EN: &str = RUNTIME_USER.en;
+pub const RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN: &str = RUNTIME_INVALID_OUTPUT_REPAIR.zh_cn;
+pub const RUNTIME_INVALID_OUTPUT_REPAIR_EN: &str = RUNTIME_INVALID_OUTPUT_REPAIR.en;
+pub const RUNTIME_SCHEDULED_TASK_CONTEXT_ZH_CN: &str = RUNTIME_SCHEDULED_TASK_CONTEXT.zh_cn;
+pub const RUNTIME_SCHEDULED_TASK_CONTEXT_EN: &str = RUNTIME_SCHEDULED_TASK_CONTEXT.en;
+pub const RUNTIME_ARTIFACT_FINALIZE_ZH_CN: &str = RUNTIME_ARTIFACT_FINALIZE.zh_cn;
+pub const RUNTIME_ARTIFACT_FINALIZE_EN: &str = RUNTIME_ARTIFACT_FINALIZE.en;
+pub const RUNTIME_CONTROL_RESUME_ZH_CN: &str = RUNTIME_CONTROL_RESUME.zh_cn;
+pub const RUNTIME_CONTROL_RESUME_EN: &str = RUNTIME_CONTROL_RESUME.en;
 pub const RUNTIME_CONTROL_RESUME_WITH_MESSAGE_ZH_CN: &str =
-    include_str!("prompts/zh-CN/runtime/runtime_control_resume_with_message.md");
-pub const RUNTIME_CONTROL_RESUME_WITH_MESSAGE_EN: &str =
-    include_str!("prompts/en/runtime/runtime_control_resume_with_message.md");
-pub const RUNTIME_WORKFLOW_RESUME_ZH_CN: &str =
-    include_str!("prompts/zh-CN/runtime/workflow_resume.md");
-pub const RUNTIME_WORKFLOW_RESUME_EN: &str = include_str!("prompts/en/runtime/workflow_resume.md");
-pub const RUNTIME_USER_ROLE_MESSAGE_ZH_CN: &str =
-    include_str!("prompts/zh-CN/runtime/user_role_message.md");
-pub const RUNTIME_USER_ROLE_MESSAGE_EN: &str =
-    include_str!("prompts/en/runtime/user_role_message.md");
-pub const AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN: &str =
-    include_str!("prompts/zh-CN/runtime/ai-dynamic/proposal_repair.md");
-pub const AI_DYNAMIC_PROPOSAL_REPAIR_EN: &str =
-    include_str!("prompts/en/runtime/ai-dynamic/proposal_repair.md");
-pub const AI_DYNAMIC_FANOUT_ZH_CN: &str =
-    include_str!("prompts/zh-CN/runtime/ai-dynamic/fanout.md");
-pub const AI_DYNAMIC_FANOUT_EN: &str = include_str!("prompts/en/runtime/ai-dynamic/fanout.md");
-pub const AI_DYNAMIC_MERGE_ZH_CN: &str = include_str!("prompts/zh-CN/runtime/ai-dynamic/merge.md");
-pub const AI_DYNAMIC_MERGE_EN: &str = include_str!("prompts/en/runtime/ai-dynamic/merge.md");
-pub const AI_DYNAMIC_ACCEPTANCE_ZH_CN: &str =
-    include_str!("prompts/zh-CN/runtime/ai-dynamic/acceptance.md");
-pub const AI_DYNAMIC_ACCEPTANCE_EN: &str =
-    include_str!("prompts/en/runtime/ai-dynamic/acceptance.md");
-pub const AI_DYNAMIC_NODE_TASK_ZH_CN: &str =
-    include_str!("prompts/zh-CN/runtime/ai-dynamic/node_task.md");
-pub const AI_DYNAMIC_NODE_TASK_EN: &str =
-    include_str!("prompts/en/runtime/ai-dynamic/node_task.md");
-pub const AI_DYNAMIC_HIDDEN_CONTEXT_ZH_CN: &str =
-    include_str!("prompts/zh-CN/runtime/ai-dynamic/hidden_context.md");
-pub const AI_DYNAMIC_HIDDEN_CONTEXT_EN: &str =
-    include_str!("prompts/en/runtime/ai-dynamic/hidden_context.md");
-pub const AI_DYNAMIC_WORKFLOW_INVOCATION_ZH_CN: &str =
-    include_str!("prompts/zh-CN/runtime/ai-dynamic/workflow_invocation.md");
-pub const AI_DYNAMIC_WORKFLOW_INVOCATION_EN: &str =
-    include_str!("prompts/en/runtime/ai-dynamic/workflow_invocation.md");
-pub const AI_DYNAMIC_SYSTEM_ZH_CN: &str =
-    include_str!("prompts/zh-CN/runtime/ai-dynamic/system.md");
-pub const AI_DYNAMIC_SYSTEM_EN: &str = include_str!("prompts/en/runtime/ai-dynamic/system.md");
-pub const AI_DYNAMIC_OUTPUT_PROTOCOL_ZH_CN: &str =
-    include_str!("prompts/zh-CN/runtime/ai-dynamic/output_protocol.md");
-pub const AI_DYNAMIC_OUTPUT_PROTOCOL_EN: &str =
-    include_str!("prompts/en/runtime/ai-dynamic/output_protocol.md");
-pub const PERSONAL_ANALYTICS_SYSTEM_ZH_CN: &str =
-    include_str!("prompts/zh-CN/personal-analytics/system.md");
-pub const PERSONAL_ANALYTICS_SYSTEM_EN: &str =
-    include_str!("prompts/en/personal-analytics/system.md");
-pub const PERSONAL_ANALYTICS_USER_ZH_CN: &str =
-    include_str!("prompts/zh-CN/personal-analytics/user.md");
-pub const PERSONAL_ANALYTICS_USER_EN: &str = include_str!("prompts/en/personal-analytics/user.md");
-pub const PERSONAL_ANALYTICS_REPAIR_SYSTEM_ZH_CN: &str =
-    include_str!("prompts/zh-CN/personal-analytics/repair_system.md");
-pub const PERSONAL_ANALYTICS_REPAIR_SYSTEM_EN: &str =
-    include_str!("prompts/en/personal-analytics/repair_system.md");
-pub const PERSONAL_ANALYTICS_REPAIR_USER_ZH_CN: &str =
-    include_str!("prompts/zh-CN/personal-analytics/repair_user.md");
-pub const PERSONAL_ANALYTICS_REPAIR_USER_EN: &str =
-    include_str!("prompts/en/personal-analytics/repair_user.md");
+    RUNTIME_CONTROL_RESUME_WITH_MESSAGE.zh_cn;
+pub const RUNTIME_CONTROL_RESUME_WITH_MESSAGE_EN: &str = RUNTIME_CONTROL_RESUME_WITH_MESSAGE.en;
+pub const RUNTIME_WORKFLOW_RESUME_ZH_CN: &str = RUNTIME_WORKFLOW_RESUME.zh_cn;
+pub const RUNTIME_WORKFLOW_RESUME_EN: &str = RUNTIME_WORKFLOW_RESUME.en;
+pub const RUNTIME_USER_ROLE_MESSAGE_ZH_CN: &str = RUNTIME_USER_ROLE_MESSAGE.zh_cn;
+pub const RUNTIME_USER_ROLE_MESSAGE_EN: &str = RUNTIME_USER_ROLE_MESSAGE.en;
+pub const AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN: &str = AI_DYNAMIC_PROPOSAL_REPAIR.zh_cn;
+pub const AI_DYNAMIC_PROPOSAL_REPAIR_EN: &str = AI_DYNAMIC_PROPOSAL_REPAIR.en;
+pub const AI_DYNAMIC_FANOUT_ZH_CN: &str = AI_DYNAMIC_FANOUT.zh_cn;
+pub const AI_DYNAMIC_FANOUT_EN: &str = AI_DYNAMIC_FANOUT.en;
+pub const AI_DYNAMIC_MERGE_ZH_CN: &str = AI_DYNAMIC_MERGE.zh_cn;
+pub const AI_DYNAMIC_MERGE_EN: &str = AI_DYNAMIC_MERGE.en;
+pub const AI_DYNAMIC_ACCEPTANCE_ZH_CN: &str = AI_DYNAMIC_ACCEPTANCE.zh_cn;
+pub const AI_DYNAMIC_ACCEPTANCE_EN: &str = AI_DYNAMIC_ACCEPTANCE.en;
+pub const AI_DYNAMIC_NODE_TASK_ZH_CN: &str = AI_DYNAMIC_NODE_TASK.zh_cn;
+pub const AI_DYNAMIC_NODE_TASK_EN: &str = AI_DYNAMIC_NODE_TASK.en;
+pub const AI_DYNAMIC_HIDDEN_CONTEXT_ZH_CN: &str = AI_DYNAMIC_HIDDEN_CONTEXT.zh_cn;
+pub const AI_DYNAMIC_HIDDEN_CONTEXT_EN: &str = AI_DYNAMIC_HIDDEN_CONTEXT.en;
+pub const AI_DYNAMIC_WORKFLOW_INVOCATION_ZH_CN: &str = AI_DYNAMIC_WORKFLOW_INVOCATION.zh_cn;
+pub const AI_DYNAMIC_WORKFLOW_INVOCATION_EN: &str = AI_DYNAMIC_WORKFLOW_INVOCATION.en;
+pub const AI_DYNAMIC_SYSTEM_ZH_CN: &str = AI_DYNAMIC_SYSTEM.zh_cn;
+pub const AI_DYNAMIC_SYSTEM_EN: &str = AI_DYNAMIC_SYSTEM.en;
+pub const AI_DYNAMIC_OUTPUT_PROTOCOL_ZH_CN: &str = AI_DYNAMIC_OUTPUT_PROTOCOL.zh_cn;
+pub const AI_DYNAMIC_OUTPUT_PROTOCOL_EN: &str = AI_DYNAMIC_OUTPUT_PROTOCOL.en;
+pub const PERSONAL_ANALYTICS_SYSTEM_ZH_CN: &str = PERSONAL_ANALYTICS_SYSTEM.zh_cn;
+pub const PERSONAL_ANALYTICS_SYSTEM_EN: &str = PERSONAL_ANALYTICS_SYSTEM.en;
+pub const PERSONAL_ANALYTICS_USER_ZH_CN: &str = PERSONAL_ANALYTICS_USER.zh_cn;
+pub const PERSONAL_ANALYTICS_USER_EN: &str = PERSONAL_ANALYTICS_USER.en;
+pub const PERSONAL_ANALYTICS_REPAIR_SYSTEM_ZH_CN: &str = PERSONAL_ANALYTICS_REPAIR_SYSTEM.zh_cn;
+pub const PERSONAL_ANALYTICS_REPAIR_SYSTEM_EN: &str = PERSONAL_ANALYTICS_REPAIR_SYSTEM.en;
+pub const PERSONAL_ANALYTICS_REPAIR_USER_ZH_CN: &str = PERSONAL_ANALYTICS_REPAIR_USER.zh_cn;
+pub const PERSONAL_ANALYTICS_REPAIR_USER_EN: &str = PERSONAL_ANALYTICS_REPAIR_USER.en;
+
+pub const BUNDLED_PROMPTS: &[(&str, LocalizedText)] = &[
+    ("profile/plan.md", PROFILE_PLAN),
+    ("profile/dev.md", PROFILE_DEV),
+    ("profile/dev-test.md", PROFILE_DEV_TEST),
+    ("profile/review.md", PROFILE_REVIEW),
+    ("profile/test.md", PROFILE_TEST),
+    ("profile/cicd.md", PROFILE_CICD),
+    ("profile/accept.md", PROFILE_ACCEPT),
+    ("profile/clean.md", PROFILE_CLEAN),
+    ("profile/interview.md", PROFILE_INTERVIEW),
+    ("profile/GrillMe.md", PROFILE_GRILLME),
+    (
+        "profile/overlays/requirement-identity.md",
+        PROFILE_OVERLAY_REQUIREMENT_IDENTITY,
+    ),
+    (
+        "profile/overlays/dev-test-auto-commit.md",
+        PROFILE_OVERLAY_DEV_TEST_AUTO_COMMIT,
+    ),
+    ("runtime/system.md", RUNTIME_SYSTEM),
+    ("runtime/hidden_context.md", RUNTIME_HIDDEN_CONTEXT),
+    ("runtime/user.md", RUNTIME_USER),
+    (
+        "runtime/invalid_output_repair.md",
+        RUNTIME_INVALID_OUTPUT_REPAIR,
+    ),
+    (
+        "runtime/scheduled_task_context.md",
+        RUNTIME_SCHEDULED_TASK_CONTEXT,
+    ),
+    ("runtime/artifact_finalize.md", RUNTIME_ARTIFACT_FINALIZE),
+    ("runtime/runtime_control_resume.md", RUNTIME_CONTROL_RESUME),
+    (
+        "runtime/runtime_control_resume_with_message.md",
+        RUNTIME_CONTROL_RESUME_WITH_MESSAGE,
+    ),
+    ("runtime/workflow_resume.md", RUNTIME_WORKFLOW_RESUME),
+    ("runtime/user_role_message.md", RUNTIME_USER_ROLE_MESSAGE),
+    ("runtime/cicd-goal.md", CICD_GOAL),
+    (
+        "runtime/ai-dynamic/proposal_repair.md",
+        AI_DYNAMIC_PROPOSAL_REPAIR,
+    ),
+    ("runtime/ai-dynamic/fanout.md", AI_DYNAMIC_FANOUT),
+    ("runtime/ai-dynamic/merge.md", AI_DYNAMIC_MERGE),
+    ("runtime/ai-dynamic/acceptance.md", AI_DYNAMIC_ACCEPTANCE),
+    ("runtime/ai-dynamic/node_task.md", AI_DYNAMIC_NODE_TASK),
+    (
+        "runtime/ai-dynamic/hidden_context.md",
+        AI_DYNAMIC_HIDDEN_CONTEXT,
+    ),
+    (
+        "runtime/ai-dynamic/workflow_invocation.md",
+        AI_DYNAMIC_WORKFLOW_INVOCATION,
+    ),
+    ("runtime/ai-dynamic/system.md", AI_DYNAMIC_SYSTEM),
+    (
+        "runtime/ai-dynamic/output_protocol.md",
+        AI_DYNAMIC_OUTPUT_PROTOCOL,
+    ),
+    ("personal-analytics/system.md", PERSONAL_ANALYTICS_SYSTEM),
+    ("personal-analytics/user.md", PERSONAL_ANALYTICS_USER),
+    (
+        "personal-analytics/repair_system.md",
+        PERSONAL_ANALYTICS_REPAIR_SYSTEM,
+    ),
+    (
+        "personal-analytics/repair_user.md",
+        PERSONAL_ANALYTICS_REPAIR_USER,
+    ),
+    ("runtime/memory-rules.md", MEMORY_RULES),
+    ("runtime/memory-tools.json", MEMORY_TOOLS),
+];
+
+pub fn prompt_by_language(language: DesktopLanguage, text: LocalizedText) -> &'static str {
+    text.resolve(language)
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProfileTemplateContext {
@@ -167,13 +345,6 @@ pub fn render<T: Serialize>(template: &str, context: T) -> Result<String> {
     template
         .render(context)
         .map_err(|error| anyhow!(error.to_string()))
-}
-
-pub fn prompt_by_language<'a>(language: DesktopLanguage, zh_cn: &'a str, en: &'a str) -> &'a str {
-    match language {
-        DesktopLanguage::ZhCn => zh_cn,
-        DesktopLanguage::En => en,
-    }
 }
 
 #[cfg(test)]
@@ -463,5 +634,85 @@ mod tests {
         );
         assert!(RUNTIME_WORKFLOW_RESUME_ZH_CN.chars().count() <= 60);
         assert!(RUNTIME_WORKFLOW_RESUME_EN.chars().count() <= 180);
+    }
+
+    #[test]
+    fn bundled_prompts_keep_marker_order_and_cicd_falls_back_to_english() {
+        assert_eq!(PROFILE_CICD.resolve(DesktopLanguage::JaJp), PROFILE_CICD.en);
+        assert_eq!(CICD_GOAL.resolve(DesktopLanguage::ZhTw), CICD_GOAL.en);
+        assert_ne!(PROFILE_PLAN.resolve(DesktopLanguage::JaJp), PROFILE_PLAN.en);
+        assert_ne!(
+            PROFILE_PLAN.resolve(DesktopLanguage::ZhTw),
+            PROFILE_PLAN.zh_cn
+        );
+
+        for (path, text) in BUNDLED_PROMPTS {
+            let english_markers = template_markers(text.en);
+            for (language, value) in [
+                ("zh-CN", Some(text.zh_cn)),
+                ("zh-TW", text.zh_tw),
+                ("ja-JP", text.ja_jp),
+                ("ko-KR", text.ko_kr),
+                ("pt-BR", text.pt_br),
+                ("es", text.es),
+            ] {
+                let Some(value) = value else {
+                    continue;
+                };
+                assert_eq!(
+                    template_markers(value),
+                    english_markers,
+                    "{path} {language} MiniJinja markers diverged"
+                );
+                assert!(
+                    !value.to_ascii_lowercase().contains("wb"),
+                    "{path} {language} contains a channel token"
+                );
+            }
+            if *path == "runtime/memory-tools.json" {
+                let english_keys = json_object_keys(text.en);
+                for value in [
+                    text.zh_cn,
+                    text.zh_tw.unwrap(),
+                    text.ja_jp.unwrap(),
+                    text.ko_kr.unwrap(),
+                    text.pt_br.unwrap(),
+                    text.es.unwrap(),
+                ] {
+                    assert_eq!(json_object_keys(value), english_keys);
+                }
+            }
+        }
+    }
+
+    fn template_markers(text: &str) -> Vec<String> {
+        let mut markers = Vec::new();
+        let mut rest = text;
+        loop {
+            let open_expr = rest.find("{{");
+            let open_stmt = rest.find("{%");
+            let start = match (open_expr, open_stmt) {
+                (Some(expr), Some(stmt)) => expr.min(stmt),
+                (Some(expr), None) => expr,
+                (None, Some(stmt)) => stmt,
+                (None, None) => break,
+            };
+            let after = &rest[start..];
+            let close = if after.starts_with("{{") { "}}" } else { "%}" };
+            let end = after.find(close).expect("MiniJinja marker closes");
+            markers.push(after[..end + close.len()].to_string());
+            rest = &after[end + close.len()..];
+        }
+        markers
+    }
+
+    fn json_object_keys(text: &str) -> Vec<String> {
+        let mut keys = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text)
+            .expect("memory tool descriptions are json")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.sort();
+        keys
     }
 }

@@ -318,6 +318,8 @@ export function WorkspaceFileEditor({
   const [markdownPreviewProfile, setMarkdownPreviewProfile] = useState<MarkdownPreviewProfile | null>(null);
   const [activeEditorView, setActiveEditorView] = useState<EditorView | null>(null);
   const [modeTransitionPending, setModeTransitionPending] = useState(false);
+  const [previewExtensionsFailed, setPreviewExtensionsFailed] = useState(false);
+  const [previewLoadAttempt, setPreviewLoadAttempt] = useState(0);
   const [copied, setCopied] = useState(false);
   const [openingInBrowser, setOpeningInBrowser] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -379,14 +381,17 @@ export function WorkspaceFileEditor({
       setMarkdownLanguageExtension(null);
       return () => { active = false; };
     }
+    setPreviewExtensionsFailed(false);
     void loadMarkdownLanguageExtension().then((extension) => {
       if (active) {
         setMarkdownLanguageExtension(extension);
         setMarkdownLanguageRevision((revision) => revision + 1);
       }
-    }).catch(() => undefined);
+    }).catch(() => {
+      if (active) setPreviewExtensionsFailed(true);
+    });
     return () => { active = false; };
-  }, [markdownLivePreviewAvailable, markdownMode === null]);
+  }, [markdownLivePreviewAvailable, markdownMode === null, previewLoadAttempt]);
 
   useEffect(() => {
     let active = true;
@@ -394,6 +399,7 @@ export function WorkspaceFileEditor({
       setMarkdownPreviewProfile(null);
       return () => { active = false; };
     }
+    setPreviewExtensionsFailed(false);
     void loadMarkdownPreviewExtensions(routeMarkdownLink, !markdownHasTableImages).then((extensions) => {
       if (active) {
         setMarkdownPreviewProfile((current) => ({
@@ -401,13 +407,19 @@ export function WorkspaceFileEditor({
           extensions,
         }));
       }
-    }).catch(() => undefined);
+    }).catch(() => {
+      if (active) setPreviewExtensionsFailed(true);
+    });
     return () => { active = false; };
-  }, [markdownHasTableImages, markdownLivePreviewAvailable, markdownMode === null, routeMarkdownLink]);
+  }, [markdownHasTableImages, markdownLivePreviewAvailable, markdownMode === null, previewLoadAttempt, routeMarkdownLink]);
 
   const previewMode = markdownMode === 'live-preview' && markdownLivePreviewAvailable;
-  const desiredEditorMode: MarkdownEditorMode = previewMode && markdownPreviewProfile ? 'live-preview' : 'source';
+  const desiredEditorMode: MarkdownEditorMode = previewMode && markdownPreviewProfile && !previewExtensionsFailed ? 'live-preview' : 'source';
   const stableMarkdownLanguage = markdownMode !== null && markdownLivePreviewAvailable;
+  const editorReady = editorExtensionsRef.current !== null
+    || previewExtensionsFailed
+    || !stableMarkdownLanguage
+    || (markdownLanguageExtension !== null && (!previewMode || markdownPreviewProfile !== null));
   const baseEditorExtensions = useMemo<Extension[]>(() => [
     ...basicSetup({
       lineNumbers: false,
@@ -468,7 +480,7 @@ export function WorkspaceFileEditor({
     }
     return sourceModeExtensions;
   }, [desiredEditorMode, highlight, markdownImagePreviewProfile, markdownPreviewProfile, sourceModeExtensions]);
-  if (!editorExtensionsRef.current) {
+  if (editorReady && !editorExtensionsRef.current) {
     editorExtensionsRef.current = [
       ...baseEditorExtensions,
       languageCompartment.of(documentLanguageExtensions),
@@ -552,32 +564,34 @@ export function WorkspaceFileEditor({
   ]);
 
   useEffect(() => {
-    const view = activeEditorView;
-    if (
-      !view
-      || editorRef.current?.view !== view
-      || appliedModeProfileRef.current === modeProfileSignature
-    ) return;
+    const view = activeEditorView ?? editorRef.current?.view ?? null;
+    if (!view || appliedModeProfileRef.current === modeProfileSignature) return;
     const pendingTransition = pendingModeTransitionRef.current;
-    const viewport = pendingTransition?.mode === desiredEditorMode
-      ? pendingTransition.viewport
-      : captureEditorViewportAnchor(view);
+    let viewport: ReturnType<typeof captureEditorViewportAnchor> | null = null;
+    if (pendingTransition?.mode === desiredEditorMode) viewport = pendingTransition.viewport;
+    else {
+      try {
+        viewport = captureEditorViewportAnchor(view);
+      } catch {
+        viewport = null;
+      }
+    }
     const hasNewerTarget = Boolean(
       pendingTransition
       && target?.line
       && targetRevision > pendingTransition.targetRevisionAtCapture,
     );
-    if (!hasNewerTarget) {
+    if (!hasNewerTarget && viewport) {
       cancelPendingViewportMeasure();
       pendingViewportRestoreRef.current = viewport;
     }
     view.dispatch({
       effects: [
         modeCompartment.reconfigure(currentModeExtensions()),
-        ...(!hasNewerTarget ? [editorViewportScrollEffect(view, viewport)] : []),
+        ...(!hasNewerTarget && viewport ? [editorViewportScrollEffect(view, viewport)] : []),
       ],
     });
-    if (!hasNewerTarget) {
+    if (!hasNewerTarget && viewport) {
       const viewWindow = view.dom.ownerDocument.defaultView;
       if (viewWindow) {
         const id = viewWindow.requestAnimationFrame(() => {
@@ -662,14 +676,12 @@ export function WorkspaceFileEditor({
 
   const switchMarkdownMode = async () => {
     if (!markdownMode || !onMarkdownModeChange || modeTransitionPending) return;
-    const nextMode = previewMode ? 'source' : 'live-preview';
-    const view = editorRef.current?.view;
-    if (!view) {
+    const showingPreview = desiredEditorMode === 'live-preview';
+    const nextMode = showingPreview ? 'source' : 'live-preview';
+    const view = editorRef.current?.view ?? activeEditorView;
+    if (!view || (nextMode === 'live-preview' && !markdownPreviewProfile)) {
       onMarkdownModeChange(nextMode);
-      return;
-    }
-    if (nextMode === 'live-preview' && !markdownPreviewProfile) {
-      onMarkdownModeChange(nextMode);
+      if (nextMode === 'live-preview' && previewExtensionsFailed) setPreviewLoadAttempt((attempt) => attempt + 1);
       return;
     }
     const request = modeTransitionRequestRef.current + 1;
@@ -704,6 +716,7 @@ export function WorkspaceFileEditor({
 
   const showMarkdownCopy = Boolean(markdownMode);
   const canSwitchMarkdownMode = Boolean(markdownMode && onMarkdownModeChange);
+  const showingPreview = desiredEditorMode === 'live-preview';
   const showEditorOverlay = showMarkdownCopy || Boolean(onOpenInBrowser);
 
   return (
@@ -735,14 +748,14 @@ export function WorkspaceFileEditor({
                 variant="ghost"
                 className="size-6"
                 data-markdown-mode-toggle="true"
-                disabled={modeTransitionPending || (!previewMode && (!markdownLivePreviewAvailable || !markdownPreviewProfile))}
+                disabled={modeTransitionPending || (!showingPreview && !markdownLivePreviewAvailable)}
                 onClick={() => void switchMarkdownMode()}
-                aria-label={t(previewMode ? 'workspace.filesPanel.viewMarkdownSource' : 'workspace.filesPanel.viewMarkdownLivePreview')}
+                aria-label={t(showingPreview ? 'workspace.filesPanel.viewMarkdownSource' : 'workspace.filesPanel.viewMarkdownLivePreview')}
               >
-                {previewMode ? <Code2 className="size-3" /> : <Eye className="size-3" />}
+                {showingPreview ? <Code2 className="size-3" /> : <Eye className="size-3" />}
               </Button>
             </TooltipTrigger>
-            <TooltipContent>{t(previewMode ? 'workspace.filesPanel.viewMarkdownSource' : 'workspace.filesPanel.viewMarkdownLivePreview')}</TooltipContent>
+            <TooltipContent>{t(showingPreview ? 'workspace.filesPanel.viewMarkdownSource' : 'workspace.filesPanel.viewMarkdownLivePreview')}</TooltipContent>
           </Tooltip>
           ) : null}
             </>
@@ -770,6 +783,7 @@ export function WorkspaceFileEditor({
           ) : null}
         </div>
       ) : null}
+      {editorReady ? (
       <CodeMirror
         ref={editorRef}
         value={editorValue}
@@ -795,6 +809,9 @@ export function WorkspaceFileEditor({
           : undefined}
         aria-label="workspace-file-editor"
       />
+      ) : (
+        <div className="flex h-full items-center justify-center text-sm text-muted-foreground" aria-label="workspace-markdown-loading">…</div>
+      )}
     </div>
   );
 }

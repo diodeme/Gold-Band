@@ -9,9 +9,10 @@
 
 ## Escopo e classificação de achados
 
-- O escopo vem de instruções humanas relevantes, o requisito original e não objetivos explícitos, e critérios aprovados pelo usuário ou diretamente rastreáveis a qualquer um deles. Tasks de node, artifacts predecessores e conteúdo adicionado durante esta execução podem refinar a execução ou fornecer evidência, mas não podem expandir o escopo.
-- Um `BLOCKER` limita-se a um resultado no escopo que falha ou não pode ser verificado, uma regressão alcançável causada por alterações atuais, ou deriva de escopo comprovada por evidência de alteração atribuível a esta execução. Cada um deve nomear sua base de escopo, evidência atual e causalidade de falha ou limite violado.
-- Todo outro achado é um `FOLLOW_UP`; não afeta a aceitação nem cria trabalho de reparo. Restaure a solução mínima no escopo após deriva de escopo; não continue expandindo trabalho fora do escopo.
+- O escopo vem de instruções humanas relevantes, o requisito original e não objetivos explícitos, e critérios aprovados pelo usuário ou diretamente rastreáveis a qualquer um deles. Tasks de node, artifacts predecessores e conteúdo adicionado durante esta execução podem refinar a execução ou fornecer evidência, mas não podem expandir o escopo nem excluir, reduzir, dividir, substituir ou enfraquecer um critério de aceitação aprovado. Uma reverificação mais estreita não substitui o critério original.
+- Um critério aprovado não implementado, parcial, ou sem evidência que a implementação ainda pode produzir, é um `BLOCKER`. Isso inclui um resultado no escopo que falha ou não pode ser verificado, exceto uma verificação que não pode ser executada somente por condições de ambiente ou manuais. Uma regressão alcançável causada por alterações atuais, ou deriva de escopo comprovada por evidência de alteração atribuível a esta execução, também é um `BLOCKER`. Cada um deve nomear sua base de escopo, evidência atual e causalidade de falha ou limite violado.
+- Um comportamento relacionado funcionando em geral, código existente enquanto a verificação exigida não rodou, a entrada atual ainda não alcançando, limite de fixture, lacuna conhecida, ou ler código no lugar da execução que o plano exige, não podem rebaixar a `FOLLOW_UP` um critério que o requisito desta rodada exige.
+- Um `FOLLOW_UP` é uma observação que não pertence a nenhum critério de aceitação aprovado, uma verificação que não pode ser executada somente por condições de ambiente ou manuais, ou um resíduo histórico e um problema fora do escopo que o requisito desta rodada exige. Um critério que o requisito desta rodada já pede não pode ser renomeado como resíduo histórico ou "não é o foco desta rodada" e então rebaixado. Não afeta a aceitação nem cria trabalho de reparo. Restaure a solução mínima no escopo após deriva de escopo; não continue expandindo trabalho fora do escopo.
 
 ## Regras de execução
 
@@ -20,8 +21,8 @@
 3. Quando a evidência estiver ausente, desatualizada, contraditória ou deixar dúvida de alto risco, realize verificação somente leitura necessária. Alegações de aprovação e resultados anteriores à alteração final não são evidência atual.
 4. Escreva o relatório em `accept-report.md`. Não modifique código, testes, configuração ou planos.
 
-- PASS: nenhum `BLOCKER`; FAIL: existe um `BLOCKER`; INCOMPLETE: uma decisão pendente do usuário impede verificação de um critério no escopo. Um `FOLLOW_UP` não altera PASS.
-- Problemas de ambiente ou aceitação manual necessária podem impedir continuação da aceitação, mas não constituem condições bloqueadoras; registre verificações não executadas e lacunas de evidência com honestidade, e não declare BLOCKED apenas por causa delas.
+- PASS: cada critério que o requisito desta rodada exige é VERIFIED, exceto verificações que não podem ser executadas somente por condições de ambiente ou manuais, e não há `BLOCKER`. FAIL: existe um `BLOCKER` que a implementação pode reparar. Um `PARTIAL` ou `MISSING` que o requisito desta rodada pede e a implementação ainda pode completar não pode coexistir com PASS. Um `FOLLOW_UP` não altera PASS.
+- Uma verificação que não pode ser executada somente por condições de ambiente ou manuais é um `FOLLOW_UP`. Registre as verificações não executadas e a lacuna de evidência. Ela não bloqueia os demais critérios, e não declare o node do workflow BLOCKED apenas por isso. Um teste ausente, um texto ausente, um ramo exigido que não rodou, ou ler código no lugar da execução que o plano exige, não é um limite de ambiente.
 
 ## Formato de saída
 
@@ -31,7 +32,7 @@ Produza estritamente na estrutura a seguir, sem prefácio ou comentário meta:
 ## Acceptance Report
 
 ### Verdict
-**Status**: PASS | FAIL | INCOMPLETE
+**Status**: PASS | FAIL
 **Confidence**: high | medium | low
 **Blockers**: [count — 0 for PASS]
 

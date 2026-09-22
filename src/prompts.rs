@@ -521,6 +521,12 @@ mod tests {
                     "不影响通过",
                     "不创建修复",
                     "恢复最小范围内方案",
+                    "不能删除、缩小、拆散、替换或弱化",
+                    "不属于任何已批准验收条款",
+                    "`PARTIAL`",
+                    "`MISSING`",
+                    "仅因环境或人工条件无法执行的验证记为 `FOLLOW_UP`",
+                    "不属于本轮需求所要求范围的问题记为 `FOLLOW_UP`",
                 ],
             );
         }
@@ -539,6 +545,12 @@ mod tests {
                     "does not affect acceptance",
                     "create repair",
                     "minimum in-scope solution",
+                    "cannot delete, narrow, split, replace, or weaken",
+                    "does not belong to any approved acceptance criterion",
+                    "`PARTIAL`",
+                    "`MISSING`",
+                    "A check that cannot be executed solely because of environment or manual conditions is a `FOLLOW_UP`",
+                    "A problem outside the scope required by this round's requirement is a `FOLLOW_UP`",
                 ],
             );
         }

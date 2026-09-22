@@ -459,16 +459,17 @@ describe('WorkspaceFileEditor target intent', () => {
     );
     try {
       await act(async () => root.render(<ModeHarness />));
-      await act(async () => new Promise((resolve) => setTimeout(resolve, 600)));
+      await vi.waitFor(() => expect(container.querySelector('.workspace-markdown-live-preview')).not.toBeNull(), { timeout: 5_000 });
       const originalView = EditorView.findFromDOM(container.querySelector('.cm-editor') as HTMLElement);
+      const baseline = viewportRestoreCalls().length;
 
       await switchMode();
-      await vi.waitFor(() => expect(viewportRestoreCalls()).toHaveLength(1), { timeout: 5_000 });
+      await vi.waitFor(() => expect(viewportRestoreCalls()).toHaveLength(baseline + 1), { timeout: 5_000 });
       expect(EditorView.findFromDOM(container.querySelector('.cm-editor') as HTMLElement)).toBe(originalView);
       await switchMode();
-      await vi.waitFor(() => expect(viewportRestoreCalls()).toHaveLength(2), { timeout: 5_000 });
+      await vi.waitFor(() => expect(viewportRestoreCalls()).toHaveLength(baseline + 2), { timeout: 5_000 });
 
-      const viewportRestores = viewportRestoreCalls();
+      const viewportRestores = viewportRestoreCalls().slice(baseline);
       expect(viewportRestores).toHaveLength(2);
       expect(viewportRestores[1]).toEqual(viewportRestores[0]);
       expect(decode).toHaveBeenCalledOnce();
@@ -479,7 +480,7 @@ describe('WorkspaceFileEditor target intent', () => {
       if (originalDecode) Object.defineProperty(HTMLImageElement.prototype, 'decode', originalDecode);
       else Reflect.deleteProperty(HTMLImageElement.prototype, 'decode');
     }
-  });
+  }, 20_000);
 
   it('restores the real todo table after preview-source-preview mode changes', async () => {
     const container = document.createElement('div');

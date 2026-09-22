@@ -7,6 +7,13 @@
 - 验收：`marketing-site.test.ts` 与 `rrweb-demo-recording.test.ts` 固定这两处源码不再包含 `prefers-reduced-motion`。
 - 过度设计与性能评审：不新增播放器或设置项。官网同一时刻仍只有当前章节在播；演示只在打开该工具时多一次自动回放。
 
+## 2026-09-22 Markdown 预览不再停在占位，源码管理按需读取
+
+- 根因：Markdown 编辑器要等预览扩展才挂载，源码按钮又依赖这个还不存在的 View。同一份正文再次读取仍增加 `contentRevision`，编辑器被拆掉，进行中的扩展结果被丢掉，界面停在 “…”。源码管理打开时同时读取 snapshot 和 300 条带正文的历史；点提交看文件还会扫工作区 status、全部引用，并做两次 numstat。分支选择器用 `--untracked-files=all` 并列出用不到的远端和标签。这是正确设计下的实现过重，不是要换渲染器或 Git 库。
+- 实现：正文哈希未变的干净重读保持 `contentRevision` 和编辑器状态。编辑器先按源码挂上，扩展到达后在同一 View 切到预览，失败留在源码；没有 View 时切换按钮也改模式。源码管理首屏只读 snapshot，进入历史页才读历史。历史列表不传完整正文和 `--source`，检查点用 trailer 判断。点提交只做 name-status 和一次端点 numstat。分支选择器只查 `refs/heads`，脏文件用 `--untracked-files=normal`。同一次命令里相同路径不再重复解析仓库身份。
+- 验收：同一正文重读、预览扩展未返回或失败时的源码可见性和模式切换，由 `file-content-store.test.ts` 与 `workspace-markdown-editor-ready.test.tsx` 固定。历史延迟加载由 `source-control-store.test.ts` 固定。未跟踪目录只计一次、历史检查点不再带正文，以及提交文件聚合，由 `source_control` 单测固定。
+- 过度设计与性能评审：不新增渲染器、libgit2、缓存层或持久字段。打开源码管理不再等待历史；点提交不再扫描工作区未跟踪文件和全部引用；分支列表不再展开未跟踪目录。Markdown 侧少一次无效重挂，避免整篇文档重新解析。
+
 ## 2026-09-22 桌面动效不再跟随系统减少动态效果
 
 - 根因：桌面端没有独立的动效开关。主题 motion token 只决定按钮、卡片等 role 的过渡时长。活动文字呼吸、重试文字、压缩圆环和进度条、工作流扫光与流动边、品牌 Logo、流式逐字、GIF 默认暂停，以及主题 CSS 里把 `data-theme-role` 的动画压到 0.01ms，全部读取系统 `prefers-reduced-motion`。Windows 关闭窗口动画时 WebView2 会报 reduce，于是这些机器和开着动画的机器表现不一致。

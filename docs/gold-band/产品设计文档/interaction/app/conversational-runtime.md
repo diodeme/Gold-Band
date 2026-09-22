@@ -82,7 +82,7 @@ Task 最近对话活动只在三类 durable 边界推进：Task 创建成功、�
 - `PostTurnProjection` 只有在业务 turn terminal success 后才能原子写入 `artifact-emission.json(finalizing)` 并发出 finalize。业务 turn 收到结构化 terminal failure 时直接收敛为 `Paused + RuntimeAbnormal`；若 failure 发生在 finalize 或 repair，保留既有 finalizing checkpoint 供用户显式继续，但当前 drive 不再发送 repair。任何明确失败的业务 turn 都不能依赖后续 Agent 恢复来生成合法 JSON 并包装成成功。
 - ACP prompt 输出投影与 canonical timeline stream 的字符预算必须由生命周期状态同时持有累计字符数；每个新 chunk 只扫描自身一次并按 UTF-8 字符边界追加，禁止为检查上限反复遍历已经累计的完整字符串。该优化将“上限检查 + 有界字符串追加”步骤由最坏 O(n²) 收敛为整体 O(n)，不改变既有累计快照、字符上限、截断表现、artifact 候选段或 timeline 展示语义；runtime 从持久化 timeline 恢复开放 stream 时允许对已有内容执行一次字符计数，后续继续增量维护。
 - 桌面进程共享单一 `RuntimeLifecycleBus`，metrics、notifications、conversation-run-state 使用固定具名幂等订阅并只在 setup 注册一次；创建、重跑、继续与 prompt 路径不得重复挂载订阅。
-- 会话侧边栏仅将活跃态动画绑定到既有身份/状态载体：进行中的 Workflow/AUTO run 使用 `gold-running` 蓝色圆点低强度呼吸；进行中的 Direct 会话让既有 Agent icon 低强度呼吸。动画必须遵守系统 reduced-motion 设置，禁止使用旋转外圈或标题文字动画；暂停保持既有黄色静态点，成功保持既有绿色静态点，失败保持既有红色静态点。
+- 会话侧边栏仅将活跃态动画绑定到既有身份/状态载体：进行中的 Workflow/AUTO run 使用 `gold-running` 蓝色圆点低强度呼吸；进行中的 Direct 会话让既有 Agent icon 低强度呼吸。这两处呼吸与 Session Switcher、会话头的运行圆点都使用无条件 `animate-pulse`，不因系统 reduced-motion 停止。禁止使用旋转外圈或标题文字动画；暂停保持既有黄色静态点，成功保持既有绿色静态点，失败保持既有红色静态点。
 - 会话侧栏的 workspace 标题与会话标题统一消费主题 `text-sm` UI 字号 token（默认 14px），不得为会话标题硬编码固定字号；会话标题进入重命名态后继续消费同一 token，避免编辑前后跳变。字重层级固定为 workspace `font-semibold`、选中会话 `font-medium`、普通会话 `font-normal`，由主题字重 token 映射为 450 / 380 / 330，不使用局部数值。普通与选中会话标题均使用完整 `sidebar-foreground` 语义色，不以透明度削弱正文；时间等元信息继续使用弱化色。置顶区与 workspace 区的相邻会话统一使用 Tailwind `space-y-0.5` 间距 token，在不缩小行内点击热区的前提下保持紧凑节奏。
 - AI-DYNAMIC 生命周期状态按领域分层持久化：每个 `DynamicNodeState` 自己持有结构化 `pauseReason` 与 `runtimeError`，`DynamicRunState.pauseReason` 只表示 graph 聚合结果。事件日志仅用于审计与诊断，不能作为 leaf 生命周期恢复的唯一事实源。
 - 并行 leaf 中一个节点异常、其他 sibling 仍运行时，graph 保持 `running`，异常 leaf 立即持久化自己的暂停原因和完整错误链；最后一个 active sibling 结束后，graph 按暂停 leaf 原因优先级聚合，不能统一降级为 `process-interrupted`。优先级为 `error-blocked > runtime-abnormal > permission-requested > waiting-for-user-input > process-interrupted`。
@@ -150,7 +150,7 @@ Task 最近对话活动只在三类 durable 边界推进：Task 创建成功、�
 - 点击展开 round → node → attempt 层级树
 - 用户可切换具体 session
 - Session Switcher 只有 attempt leaf 可以成为当前 session；round/node 只负责展开。round、node 与未选中 leaf 的 hover 统一使用较弱的 `sidebar-accent` 层级，当前 leaf 使用完整 `sidebar-accent / sidebar-accent-foreground` 并暴露 `aria-current`，顶部 trigger 暴露展开态。键盘 focus 继续使用主题 ring，不得用另一套填充色把 hover、focus 或展开态伪装成第二个选中项。
-- 每个 attempt 前仅显示轻量状态圆点，颜色只来自后端 `runtimeDisplay.tone`：绿色成功、红色失败/错误阻塞、黄色暂停、灰色待处理/未知；运行中统一使用 `gold-running` 蓝色圆点的低强度呼吸动画，并遵守 reduced-motion，不叠加另一套外圈 ping halo。
+- 每个 attempt 前仅显示轻量状态圆点，颜色只来自后端 `runtimeDisplay.tone`：绿色成功、红色失败/错误阻塞、黄色暂停、灰色待处理/未知；运行中统一使用 `gold-running` 蓝色圆点的低强度呼吸动画，不因系统 reduced-motion 停止，不叠加另一套外圈 ping halo。
 - 已选中的 session 行仍保留同一枚状态标记，不能因为选中高亮而丢失运行态/结果态识别
 - `status / outcome / pauseReason` 只作为运行事实字段保留；Session Switcher、顶部选中栏、工作流查看 Sheet 不在前端自行推断成功/失败/暂停，而是统一消费后端派生的 `runtimeDisplay.code / tone / icon / terminal / resumable / reasonCode`
 - `completed + outcome=null` 不展示为成功；成功必须来自 `outcome=success` 派生出的 `runtimeDisplay.tone=success`

@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-22 运行态呼吸不因系统关闭动画而停止
+
+- 根因：侧边栏 Agent icon、Workflow/AUTO 运行圆点，以及 Session Switcher / 会话头的运行圆点，都用 `motion-safe:animate-pulse`。Windows 关闭「在窗口中为控件和元素设置动画」时，WebView2 投影 `prefers-reduced-motion: reduce`，这条 class 不生效。会话仍在运行，图标静止。这与 2026-08-25 处理圆环的成因相同，属于运行反馈被可访问性媒体查询整段拿掉，不是 activity 没传到侧边栏。
+- 实现：这三处改为无条件 Tailwind `animate-pulse`。暂停、成功、失败仍是静态色点。品牌加载、工作流画布和重试文案继续遵守 reduced-motion。
+- 验收：`conversation-sidebar-selection.test.ts`、`runtime-status-dot.test.ts` 与 `conversation-terminal-result-ui.test.tsx` 在修复前因 class 仍含 `motion-safe` 失败，修复后固定 `animate-pulse` 且禁止 `motion-safe` / `motion-reduce`。
+- 过度设计与性能评审：不新增动画、状态、定时器或设置项。只有当前运行中的图标或圆点做 opacity 呼吸；终态保持静态。系统减少动态效果时，这些少量元素会继续合成，与常驻运行反馈一致。
+
 ## 2026-09-22 工作区 diff、搜索和文件正文不再停在旧缓存
 
 - 根因：工作区 diff 按路径缓存比较结果，审阅序列在打开时复制一份，文件继续保存后两者都不失效。文件名搜索只在输入关键字时查询。文件面板离开前台后，已缓存的其他文件下次打开仍交回旧正文。更改列表和目录树本身会刷新。这是可变内容沿用了不可变身份，不是 Git 读取变慢。

@@ -200,7 +200,7 @@ Agent 管理
 - 主窗口关闭与应用退出是两个不同的生命周期动作。macOS 红色关闭只在前端冲刷编辑队列后销毁 `main` WebViewWindow，Rust runtime、ACP/MCP 连接和系统 Dock 应用继续存活；Windows/Linux 关闭主窗口则进入应用退出事务。Cmd+Q、系统菜单退出、updater 退出和无窗口退出统一由 Rust `DesktopLifecycleCoordinator` 协调，不能由前端直接销毁进程。
 - 应用退出状态固定为 `Running / ClosingMainWindow / AwaitingFrontend / Cleaning / ReadyToExit`。存在主窗口时，宿主发送带 `requestId` 的退出请求，前端复用同一保存事务并通过 `resolve_app_exit` 返回 `Proceed / Cancel`；监听失败或 15 秒内未响应必须取消退出，不能静默丢弃未保存内容。后端清理全局上限为 15 秒，超时后强制终止受管进程组，最终只调用一次 `app.exit(0)`。
 - macOS `RunEvent::Reopen` 和通知点击统一调用 `ensure_main_window()`：已有 `main` 时 show、unminimize、focus；窗口已销毁时使用 `WebviewWindowBuilder::from_config` 从权威 Tauri window config 重建，并继续复用 bootstrap 完成后的显示流程。此处 Dock 指 macOS 系统 Dock，与右侧 `RightWorkspaceDock` 无关。
-- 会话侧栏 Direct 任务在活动态保持 Agent 图标的呼吸效果，不增加旋转环或终局状态点。
+- 会话侧栏 Direct 任务在活动态保持 Agent 图标的呼吸效果，该呼吸不因系统 reduced-motion 停止，不增加旋转环或终局状态点。
 - Direct turn 到达终局且对应会话尚未成功呈现时，在 Agent 图标右上角叠加未查看结果点：完成使用 `gold-success`，停止/取消使用 `gold-warning`，失败/异常使用 `gold-danger`。该点表达“未查看的终局事件”，不是 run 的权威状态；不得因查看而修改 `run.status`、`outcome` 或 ACP lifecycle。
 - 侧栏、置顶、搜索结果、系统通知和 deep link 必须汇入同一会话呈现事务。只有目标 project/task/run 已成功呈现，且待确认 `eventId` 仍是该任务最新终局事件时才持久化已查看；迟到的旧确认不得清除更新事件。仅导航开始、加载失败或打开了同任务的其他 run 时不得消失。
 

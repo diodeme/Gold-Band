@@ -76,7 +76,7 @@
 - AI-DYNAMIC 的业务范围权威顺序固定为：相关的人类最新指令 > 原始需求与明确非目标 > 用户批准的标准及运行前已纳入范围的项目契约 > 当前节点任务 > 本轮 Agent 产物。低层内容只能细化执行，不能扩大高层范围。
 - hidden context、coordination snapshot 和 graph 对节点身份、workspace、依赖、生命周期、预算等运行事实具有权威性；runtime task 可以拆解已授权工作，但 Runtime 投影、前序报告和本轮新增内容不能创建需求或验收标准。`sessionMode=continue` 复用完整 ACP 会话，不丢失原需求；resume prompt 只作“反馈是证据，不是授权”的近端提醒。
 - 新增工作前只需指出范围依据和省略后会失败的既定结果；答不出就不实施、不分发。交付既定结果所必需的内部手段无需在需求中逐字出现，避免把范围控制变成机械保守。
-- 验收发现统一分为 `BLOCKER` 与 `FOLLOW_UP`。`BLOCKER` 只允许范围内结果失败或无法验证、当前改动造成的可达回归，或可归因到本轮变更的范围漂移；每项必须有范围依据、当前证据和失败因果或被违反的边界。范围漂移恢复最小范围内方案，不继续扩展越界内容；Acceptance 只读报告和路由，由实现节点修改。
+- 验收发现分为 `BLOCKER` 与 `FOLLOW_UP`。已批准条款未实现、部分实现，或缺少实现侧能够补齐的证据，以及当前改动造成的可达回归、可归因到本轮变更的范围漂移，都是 `BLOCKER`；每项必须有范围依据、当前证据和失败因果或被违反的边界。低层内容不能扩大范围，也不能删除、缩小、拆散、替换或弱化已批准条款。相关行为大体可用、验证没执行到、当前入口暂时走不到、fixture 限制、已知缺口，以及用代码阅读代替方案要求的执行验证，都不能把本轮需求所要求的条款降为 `FOLLOW_UP`。`FOLLOW_UP` 还用于历史遗留，以及不属于本轮需求所要求范围的问题；本轮需求已经要求的条款不能改称为历史遗留或不是本轮重点后降级。环境或人工条件无法执行的验证、历史遗留和本轮需求范围外的问题不影响其余条款通过，不创建修复任务，也不阻止 AI-DYNAMIC `next.type="end"`。本轮需求所要求、且可由实现补齐的 `PARTIAL` 或 `MISSING` 不能与 PASS 并存，也不能 `end`。范围漂移恢复最小范围内方案，不继续扩展越界内容；Acceptance 只读报告和路由，由实现节点修改。
 - AI-DYNAMIC 有两条验收角色路径：group 自动生成的 `DynamicNodeKind::Acceptance` 使用内置 `runtime/ai-dynamic/acceptance.md`；普通 `DynamicNodeKind::Worker + pf-builtin-accept` 使用 `profile/accept.md`。两者必须遵守同一分级契约，避免只修一条路径。
 - system、completion output protocol 和 proposal repair 共同约束交接：`single/fanout` 只能分解既定范围内结果或修复合格 `BLOCKER`，不得把 `FOLLOW_UP` 或前序建议升级成新结果；非法 proposal 的隐藏 repair turn 只修协议错误，并删除或收窄越界后继任务。fanout 角色不重复同一段规则。
 - 当前阶段采用 prompt 软约束，不新增 scope judge Agent、依赖、持久字段、队列、缓存或语义 validator。Runtime 继续硬校验 schema、provider、预算、workspace 和图不变量；若后续固定评测仍出现范围漂移，再评估冻结 requirement snapshot、criterion 引用和 blocker ID 等最小结构化约束。

@@ -92,4 +92,3 @@
 :root[data-theme='builtin.gold-band'] [data-theme-role='scrollbar']{--gb-recipe-background:transparent;--gb-recipe-foreground:var(--muted-foreground);--gb-recipe-border:transparent;background-color:var(--gb-recipe-background);color:var(--gb-recipe-foreground);border-color:var(--gb-recipe-border);box-shadow:var(--gb-elevation-none);transition-property:color,background-color,border-color;transition-duration:var(--gb-motion-fast);transition-timing-function:var(--gb-easing-standard)}
 :root[data-theme='builtin.gold-band'] [data-theme-role='scrollbar']{border-width:0;border-style:solid;border-radius:var(--gb-radius-pill)}}
 :root[data-theme='builtin.gold-band']{--gb-theme-package-version:'2.0.0'}
-@media (prefers-reduced-motion:reduce){:root[data-theme='builtin.gold-band'] [data-theme-role]{transition-duration:.01ms!important;animation-duration:.01ms!important}}

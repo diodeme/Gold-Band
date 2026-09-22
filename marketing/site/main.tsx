@@ -15,17 +15,14 @@ function useDesktop() {
 }
 function Media({ language, chapter, active, desktop, onActivate }: { language: Language; chapter: ChapterId; active: boolean; desktop: boolean; onActivate: (chapter: ChapterId) => void }) {
   const [interactive, setInteractive] = useState(false);
-  const [requested, setRequested] = useState(false);
   const t = copy[language];
-  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const replay = active && (requested || !reducedMotion);
   return <div className="chapter-media" data-chapter-media={chapter}>
     <div className="media-label"><span><img src="/logo.svg" alt="" />Gold Band</span><span>{t.chapters[CHAPTER_IDS.indexOf(chapter)].eyebrow}</span></div>
     {interactive && active && desktop ? <Suspense fallback={<MediaLoading language={language} />}><Interactive language={language} /></Suspense> : <div className="media-surface">
       <img className="poster" src={mediaPath(language, chapter, 'png')} width="1440" height="880" alt={`${t.chapters[CHAPTER_IDS.indexOf(chapter)].eyebrow} · Gold Band`} loading={chapter === 'before' ? 'eager' : 'lazy'} />
-      {replay ? <Suspense fallback={<MediaLoading language={language} />}><Replay language={language} chapter={chapter} autoPlay={requested || !reducedMotion} /></Suspense> : <Button className="poster-play" variant="secondary" onClick={() => { setRequested(true); onActivate(chapter); }} aria-label={t.play}><Play />{t.play}</Button>}
+      {active ? <Suspense fallback={<MediaLoading language={language} />}><Replay language={language} chapter={chapter} autoPlay /></Suspense> : <Button className="poster-play" variant="secondary" onClick={() => onActivate(chapter)} aria-label={t.play}><Play />{t.play}</Button>}
     </div>}
-    {chapter === 'personalize' && desktop && <Button className="try-button" variant="ghost" onClick={() => { setInteractive(value => !value); setRequested(true); }}><PanelsTopLeft />{interactive ? t.recording : t.interactive}<ArrowRight /></Button>}
+    {chapter === 'personalize' && desktop && <Button className="try-button" variant="ghost" onClick={() => setInteractive(value => !value)}><PanelsTopLeft />{interactive ? t.recording : t.interactive}<ArrowRight /></Button>}
   </div>;
 }
 function MediaLoading({ language }: { language: Language }) { return <div className="media-status" role="status"><Loader2 className="animate-spin" />{copy[language].loading}</div>; }

@@ -21,9 +21,9 @@ Demo 是复用客户端界面的产品体验入口，独立构建、独立部署
 - 运行模式直接复用客户端 RunModeManagementPage 与 WorkflowEditor，保留工作流/AUTO、模板选择、画布/JSON、节点和边的配置、模型绑定、控制参数等完整界面。可临时调整，禁用保存、另存及持久删除。删除早期独立的 DemoWorkflow 简化图页面。
 - 上下文默认显示九个内置角色。名称和摘要随语言切换，角色正文按打开动作加载 src/prompts 对应语言文件，不复制提示词正文到 Demo 代码。
 - Skill 使用规范来源 .gold-band 匹配应用图标，展示多 Agent 已关联图标和溢出菜单；图标只读，不实际创建或删除软链。
-- MCP 展示 HTTP、SSE 两个预设卡片，可查看预设工具。兼容 Agent 为 Claude、Codex；HTTP 均支持，SSE 的 Codex 显示不支持红点与提示。禁用服务器修改、开关和真实诊断，不请求样例 URL。
+- MCP 展示标准 managed stdio 的 Gold Band 共享记忆卡片，以及 HTTP、SSE 两个自定义预设卡片，均可查看预设工具。内置卡片不可编辑或删除；只读 Demo 禁用开关和真实诊断，不启动样例命令或请求样例 URL。兼容 Agent 为 Claude、Codex；HTTP 均支持，SSE 的 Codex 显示不支持红点与提示。
 
-新增状态仅包含窗口几何、当前模板、快速对话选项与打开的临时表单；没有新增依赖、持久业务状态或桌面 API。数据量固定为两条会话、两套工作流、九个内置角色、一个 Skill、两个 MCP 和样例 Agent 目录。角色正文按需动态导入；拖动复用现有 ResizeObserver/动画帧边界，不在每个像素变化时刷新 Demo 根状态。
+新增状态仅包含窗口几何、当前模板、快速对话选项与打开的临时表单；没有新增依赖、持久业务状态或桌面 API。数据量固定为两条会话、两套工作流、九个内置角色、一个 Skill、三个 MCP 和样例 Agent 目录。角色正文按需动态导入；拖动复用现有 ResizeObserver/动画帧边界，不在每个像素变化时刷新 Demo 根状态。
 
 Windows 构建中适配器插件必须通过 Vite normalizePath 返回规范模块 ID，防止直接导入与插件导入形成两个 runtime 实例，导致设置与内容读取各自持有一份偏好状态。
 

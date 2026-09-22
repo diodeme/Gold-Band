@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangle, Ban, Bot, Clock3, Coins, FileCheck2, Gauge, ListChecks,
+  AlertTriangle, Ban, Clock3, Coins, FileCheck2, Gauge, ListChecks,
   RefreshCw, Settings, ShieldCheck, Sparkles, Square, Wrench,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -13,6 +13,7 @@ import type {
   AgentRegistryVm, PersonalAnalyticsRateMetricVm, PersonalAnalyticsReportVm,
   PersonalAnalyticsTaskSummaryVm,
 } from '@/types';
+import { AgentIdentityLabel } from '@/components/AgentIdentityLabel';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { AcpModelThoughtSelects, findAcpThoughtLevel } from '@/components/acp/AcpModelThoughtSelects';
@@ -70,7 +71,10 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
     [availableAgents, selectedAgentType],
   );
   const availableModels = useMemo(() => selectedAgent?.supportedModels ?? [], [selectedAgent]);
-  const thoughtLevel = useMemo(() => findAcpThoughtLevel(selectedAgent?.configOptions), [selectedAgent]);
+  const thoughtLevel = useMemo(
+    () => findAcpThoughtLevel(selectedAgent?.configOptions),
+    [selectedAgent],
+  );
 
   useEffect(() => {
     pageRef.current?.focus({ preventScroll: true });
@@ -311,8 +315,8 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
                   </SelectTrigger>
                   <SelectContent>
                     {availableAgents.map((agent) => (
-                      <SelectItem key={agent.agentType} value={agent.agentType}>
-                        <span className="flex min-w-0 items-center gap-2"><Bot className="size-4" /><span className="truncate">{agent.displayName}</span></span>
+                      <SelectItem key={agent.agentType} value={agent.agentType} textValue={agent.displayName}>
+                        <AgentIdentityLabel iconKey={agent.iconKey} name={agent.displayName} />
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -331,6 +335,8 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
                           setRangeError(null);
                           setShowInsightOperation(false);
                           setSelectedModelId(modelId);
+                          setSelectedThoughtLevelOptionId(selectedThoughtLevelOptionId);
+                          setSelectedThoughtLevelValue(selectedThoughtLevelValue);
                           rememberPersonalAnalyticsSelection({
                             agentType: selectedAgentType,
                             modelId,

@@ -2,6 +2,7 @@ import type {
   AcpRawFramePageVm,
   AcpRawFrameQueryInput,
   AcpSessionQueryInput,
+  AcpSessionConfigVm,
   AcpSessionVm,
   AcpUiEventVm,
   ActiveSessionStopVm,
@@ -63,6 +64,14 @@ import type {
   UpdateStatusVm,
   UpdaterSettingsVm,
   MetricsSettingsVm,
+  ImChannelKind,
+  ImChannelSnapshotVm,
+  DeleteImChannelResultVm,
+  ImGenerationInputVm,
+  ImSettingsVm,
+  SaveImNotificationPreferencesInputVm,
+  SetImChannelEnabledInputVm,
+  WeComScanAuthorizationVm,
   MulticaSettingsVm,
   MulticaServerWorkspaceVm,
   RemoteSkillListItemVm,
@@ -79,6 +88,9 @@ import type {
   WorkflowVm,
   ScheduledTaskEditVm,
   ScheduledOccurrenceVm,
+  ScheduledExecutionHistoryPageVm,
+  ScheduledExecutionHistoryDeleteInputVm,
+  ScheduledExecutionHistoryDeleteResultVm,
   ScheduledTaskDiagnosticsVm,
   ScheduledNotificationEventVm,
   ScheduledNativeNotificationInputVm,
@@ -151,6 +163,7 @@ interface AcpSessionUpdatedEventBaseVm {
   activity?: ConversationTaskActivityVm | null;
   taskActivityAt?: string | null;
   timelineRecoveryRequired?: boolean;
+  sessionConfig?: AcpSessionConfigVm | null;
 }
 
 export type AcpSessionUpdatedEventVm = AcpSessionUpdatedEventBaseVm & (
@@ -265,7 +278,110 @@ export interface FrontendErrorReportInput {
   userAgent?: string | null;
 }
 
+export interface BrowserBoundsCommandInput {
+  pageId: string;
+  bounds: { x: number; y: number; width: number; height: number };
+}
+
+export type BrowserViewMode = 'desktop' | 'mobile';
+
+export interface BrowserCreatePageInput extends BrowserBoundsCommandInput {
+  url: string;
+  viewMode?: BrowserViewMode;
+}
+
+export interface BrowserPageIdInput {
+  pageId: string;
+}
+
+export interface BrowserNavigateInput extends BrowserPageIdInput {
+  url: string;
+}
+
+export interface BrowserResolveLocalHtmlInput {
+  projectId: string;
+  rawHref: string;
+}
+
+export interface BrowserLocalHtmlTargetVm {
+  canonicalPath: string;
+}
+
+export interface BrowserSetViewModeInput extends BrowserPageIdInput {
+  viewMode: BrowserViewMode;
+}
+
+export interface BrowserPageNativeVm {
+  pageId: string;
+  url: string;
+  label: string;
+}
+
+export interface BrowserPageNativeEventVm {
+  kind: string;
+  pageId: string;
+  url?: string | null;
+  title?: string | null;
+}
+
+export interface BrowserAddressSuggestionOverlayItemVm {
+  key: string;
+  kind: 'search' | 'visit';
+  title: string;
+  detail: string;
+  faviconDataUrl: string | null;
+  removeLabel: string | null;
+}
+
+export interface BrowserAddressSuggestionOverlayThemeVm {
+  dark: boolean;
+  themeId: string;
+  colorScheme: string;
+  visualQuality: string;
+  materialModel: string;
+  variables: Record<string, string>;
+}
+
+export interface BrowserAddressSuggestionOverlayInput {
+  revision: number;
+  bounds: { x: number; y: number; width: number; height: number };
+  activeIndex: number | null;
+  items: BrowserAddressSuggestionOverlayItemVm[];
+  theme: BrowserAddressSuggestionOverlayThemeVm;
+}
+
+export interface BrowserAddressSuggestionActionVm {
+  revision: number;
+  kind: 'choose' | 'remove' | 'dismiss';
+  key: string;
+}
+
+/** Mirrors `browser::BROWSER_ADDRESS_SUGGESTION_ACTION_EVENT` in the desktop crate. */
+export const BROWSER_ADDRESS_SUGGESTION_ACTION_EVENT = 'gold-band://browser-address-suggestion-action';
+
+export interface BrowserAddressSuggestionOverlayRevisionInput {
+  revision: number;
+}
+
+export interface BrowserVisitVm {
+  url: string;
+  title: string;
+  origin: string;
+  lastVisitedAt: number;
+  faviconDataUrl?: string | null;
+}
+
+export interface BrowserBookmarkVm {
+  bookmarkId: string;
+  url: string;
+  title: string;
+  origin: string;
+  faviconDataUrl?: string | null;
+}
+
 export interface RuntimeApi {
+  readProjectMemory(projectId: string): Promise<import('@/lib/memory').MemorySnapshot>;
+  writeProjectMemory(projectId: string, command: import('@/lib/memory').MemoryCommand): Promise<import('@/lib/memory').MemorySnapshot>;
   getGitCapability(projectId?: string | null): Promise<GitCapabilityVm>;
   initializeGitRepository(projectId?: string | null): Promise<GitCapabilityVm>;
   getSourceControlSnapshot(projectId: string, workspacePath?: string | null): Promise<GitSourceControlSnapshotVm>;
@@ -366,6 +482,16 @@ export interface RuntimeApi {
   sendScheduledNativeNotification(input: ScheduledNativeNotificationInputVm): Promise<void>;
   getScheduledRuntimeSettings(): Promise<ScheduledRuntimeSettingsVm>;
   saveScheduledRuntimeSettings(input: ScheduledRuntimeSettingsInputVm): Promise<ScheduledRuntimeSettingsVm>;
+  getImSettings(): Promise<ImSettingsVm>;
+  startWeComScanAuthorization(sessionId: string): Promise<WeComScanAuthorizationVm>;
+  completeWeComScanAuthorization(sessionId: string): Promise<ImSettingsVm>;
+  cancelWeComScanAuthorization(sessionId: string): Promise<void>;
+  setImChannelEnabled(input: SetImChannelEnabledInputVm): Promise<ImSettingsVm>;
+  saveImNotificationPreferences(input: SaveImNotificationPreferencesInputVm): Promise<ImSettingsVm>;
+  resetImChannelBinding(input: ImGenerationInputVm): Promise<ImSettingsVm>;
+  reconnectImChannel(input: ImGenerationInputVm): Promise<ImChannelSnapshotVm>;
+  deleteImChannel(kind: ImChannelKind): Promise<DeleteImChannelResultVm>;
+  subscribeImChannelStateUpdates?(listener: (snapshot: ImChannelSnapshotVm) => void): Promise<() => void>;
   // 干预通知：OS Toast「查看详情」点击后后端转发导航事件，前端订阅做 deep-link。
   subscribeInterventionNavigate?(listener: (event: InterventionNavigateEventVm) => void): Promise<() => void>;
   subscribeAppExitRequested?(listener: (event: AppExitRequestVm) => void): Promise<() => void>;
@@ -377,16 +503,19 @@ export interface RuntimeApi {
   useConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptSubmitVm>;
   setAcpSessionModel(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, modelId: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   setAcpSessionPermissionMode(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, permissionModeId: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
+  setAcpSessionAutoAccept(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, autoAccept: boolean, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   setAcpSessionConfigOption(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, optionId: string, optionValue: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   respondAcpPermission(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   respondElicitation(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, elicitationId: string, action: "accept" | "decline", content?: Record<string, unknown> | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<void>;
+  listComposerHistory(locator: import('@/lib/composer-history').ComposerHistoryLocator, query: import('@/lib/composer-history').HistoryQuery): Promise<import('@/lib/composer-history').HistoryPage>;
+  getComposerHistoryText(locator: import('@/lib/composer-history').ComposerHistoryLocator, cursor: import('@/lib/composer-history').HistoryCursor): Promise<import('@/lib/composer-history').HistoryText>;
   getAcpRawFrames(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpRawFrameQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpRawFramePageVm>;
   showArtifact(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   showAttachment(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   showConversationAttachment(projectId: string, taskId: string, name: string): Promise<ContentVm>;
   showConversationMessageAttachment(projectId: string, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, path: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
-  saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean): Promise<PreferencesVm>;
+  saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean, browser: import('../types').BrowserPreferences): Promise<PreferencesVm>;
   saveDesktopAvatar(input: SaveDesktopAvatarInput): Promise<PreferencesVm>;
   selectRecentDesktopAvatar(kind: AvatarKind, avatarId: string): Promise<PreferencesVm>;
   saveDesktopAvatarShape(kind: AvatarKind, shape: AvatarShape | null): Promise<PreferencesVm>;
@@ -447,7 +576,8 @@ export interface RuntimeApi {
   getScheduledTask(projectId: string, scheduledTaskId: string): Promise<ScheduledTaskEditVm>;
   updateScheduledTask(input: UpdateScheduledTaskInput): Promise<ScheduledTaskEditVm>;
   deleteScheduledTask(projectId: string, scheduledTaskId: string): Promise<void>;
-  listScheduledTaskOccurrences(projectId: string, scheduledTaskId: string, cursor?: string | null, status?: string | null): Promise<import('../types').ScheduledOccurrencePageVm>;
+  listScheduledExecutionHistory(projectId: string, scheduledTaskId: string, cursor?: string | null, anchor?: { taskId: string; runId: string } | null): Promise<ScheduledExecutionHistoryPageVm>;
+  deleteScheduledExecutionHistory(items: ScheduledExecutionHistoryDeleteInputVm[]): Promise<ScheduledExecutionHistoryDeleteResultVm[]>;
   getScheduledTaskDiagnostics(projectId: string, scheduledTaskId: string): Promise<ScheduledTaskDiagnosticsVm>;
   runScheduledTaskNow(projectId: string, scheduledTaskId: string): Promise<RunScheduledTaskResultVm>;
   getConversationWorkspaces(): Promise<ConversationWorkspaceVm[]>;
@@ -489,6 +619,31 @@ export interface RuntimeApi {
   subscribeRemoteSourceSettingsUpdates?(listener: () => void): Promise<() => void>;
   workspaceFilePreviewUrl(token: string, staticFrame?: boolean): string;
   openExternalUrl(url: string): Promise<void>;
+  browserCreatePage(input: BrowserCreatePageInput): Promise<BrowserPageNativeVm>;
+  browserResolveLocalHtml(input: BrowserResolveLocalHtmlInput): Promise<BrowserLocalHtmlTargetVm>;
+  browserSetBounds(input: BrowserBoundsCommandInput): Promise<void>;
+  browserShowPage(input: BrowserPageIdInput): Promise<void>;
+  browserHidePage(input: BrowserPageIdInput): Promise<void>;
+  browserHideAll(): Promise<void>;
+  browserShowAddressSuggestions(input: BrowserAddressSuggestionOverlayInput): Promise<void>;
+  browserHideAddressSuggestions(input: BrowserAddressSuggestionOverlayRevisionInput): Promise<void>;
+  browserNavigate(input: BrowserNavigateInput): Promise<BrowserPageNativeVm>;
+  browserGoBack(input: BrowserPageIdInput): Promise<void>;
+  browserGoForward(input: BrowserPageIdInput): Promise<void>;
+  browserReload(input: BrowserPageIdInput): Promise<void>;
+  browserStop(input: BrowserPageIdInput): Promise<void>;
+  browserClosePage(input: BrowserPageIdInput): Promise<void>;
+  browserSetViewMode(input: BrowserSetViewModeInput): Promise<void>;
+  browserDiscardAll(): Promise<void>;
+  browserListHistory(): Promise<BrowserVisitVm[]>;
+  browserDeleteHistory(input: { url: string }): Promise<BrowserVisitVm[]>;
+  browserListBookmarks(): Promise<BrowserBookmarkVm[]>;
+  browserAddBookmark(input: { url: string; title?: string | null }): Promise<BrowserBookmarkVm[]>;
+  browserRemoveBookmark(input: { bookmarkId: string }): Promise<BrowserBookmarkVm[]>;
+  browserReorderBookmarks(input: { orderedIds: string[] }): Promise<BrowserBookmarkVm[]>;
+  subscribeBrowserHistoryEvents?(listener: () => void): Promise<() => void>;
+  subscribeBrowserPageEvents?(listener: (event: BrowserPageNativeEventVm) => void): Promise<() => void>;
+  subscribeBrowserAddressSuggestionActions?(listener: (event: BrowserAddressSuggestionActionVm) => void): Promise<() => void>;
   openFileWithSystemApp(path: string): Promise<void>;
   copyImageToClipboard(input: ImageActionInput): Promise<void>;
   saveImageAs(input: ImageActionInput): Promise<boolean>;

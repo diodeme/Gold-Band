@@ -1,5 +1,6 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationPinnedTaskPageVm, ConversationRunModeVm, ConversationRunSummaryPageVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionTreeVm, ConversationSidebarBootstrapVm, ConversationSidebarVm, ConversationTaskPageVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaWorkspaceRefVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, RemoteConversationSidebarVm, RemoteSkillListItemVm, RemoteSkillPullReportVm, RemoteTaskVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationPinnedTaskPageVm, ConversationRunModeVm, ConversationRunSummaryPageVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionTreeVm, ConversationSidebarBootstrapVm, ConversationSidebarVm, ConversationTaskPageVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DeleteImChannelResultVm, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImChannelSnapshotVm, ImSettingsVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaWorkspaceRefVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, RemoteConversationSidebarVm, RemoteSkillListItemVm, RemoteSkillPullReportVm, RemoteTaskVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
+import { BROWSER_ADDRESS_SUGGESTION_ACTION_EVENT } from './client';
 import {
   ACP_SESSION_UPDATED_EVENT,
   APP_EXIT_REQUESTED_EVENT,
@@ -63,6 +64,8 @@ function withWallpaperBootstrapAssetUrls(bootstrap: AppBootstrapVm): AppBootstra
 }
 
 export const desktopApi: RuntimeApi = {
+  readProjectMemory: (projectId) => invokeCommand('read_project_memory', { projectId }),
+  writeProjectMemory: (projectId, command) => invokeCommand('write_project_memory', { projectId, command }),
   getGitCapability(projectId) {
     return invokeCommand('get_git_capability', { projectId });
   },
@@ -441,11 +444,20 @@ export const desktopApi: RuntimeApi = {
   setAcpSessionPermissionMode(projectId, taskId, runId, roundId, nodeId, attemptId, permissionModeId, outerNodeId, outerAttemptId) {
     return invokeCommand<AcpSessionVm | null>('set_acp_session_permission_mode', { projectId, taskId, runId, roundId, nodeId, attemptId, permissionModeId, outerNodeId, outerAttemptId });
   },
+  setAcpSessionAutoAccept(projectId, taskId, runId, roundId, nodeId, attemptId, autoAccept, outerNodeId, outerAttemptId) {
+    return invokeCommand<AcpSessionVm | null>('set_acp_session_auto_accept', { projectId, taskId, runId, roundId, nodeId, attemptId, autoAccept, outerNodeId, outerAttemptId });
+  },
   respondAcpPermission(projectId, taskId, runId, roundId, nodeId, attemptId, requestId, optionId, _fallback, outerNodeId, outerAttemptId) {
     return invokeCommand<AcpSessionVm | null>('respond_acp_permission', { projectId, taskId, runId, roundId, nodeId, attemptId, requestId, optionId, outerNodeId, outerAttemptId });
   },
   respondElicitation(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, elicitationId: string, action: string, content?: Record<string, unknown> | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
     return invokeCommand<void>('respond_elicitation', { projectId, taskId, runId, roundId, nodeId, attemptId, elicitationId, action, content, outerNodeId, outerAttemptId });
+  },
+  listComposerHistory(locator, query) {
+    return invokeCommand('list_composer_history', { locator, query });
+  },
+  getComposerHistoryText(locator, cursor) {
+    return invokeCommand('get_composer_history_text', { locator, cursor });
   },
   getAcpRawFrames(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId) {
     return invokeCommand('get_acp_raw_frames', { projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
@@ -465,8 +477,8 @@ export const desktopApi: RuntimeApi = {
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
     return invokeCommand('show_worker_ref', { taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
-  saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean) {
-    return invokeCommand<PreferencesVm>('save_desktop_preferences', { appearance, personalization, language, useLocalClaude, verboseLogging }).then(withWallpaperAssetUrls);
+  saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean, browser) {
+    return invokeCommand<PreferencesVm>('save_desktop_preferences', { appearance, personalization, language, useLocalClaude, verboseLogging, browser }).then(withWallpaperAssetUrls);
   },
   saveDesktopAvatar(input) {
     return invokeCommand<PreferencesVm>('save_desktop_avatar', { input }).then(withWallpaperAssetUrls);
@@ -631,6 +643,40 @@ export const desktopApi: RuntimeApi = {
   saveScheduledRuntimeSettings(input) {
     return invokeCommand('save_scheduled_runtime_settings', { input });
   },
+  getImSettings() {
+    return invokeCommand<ImSettingsVm>('get_im_settings');
+  },
+  startWeComScanAuthorization(sessionId) {
+    return invokeCommand('start_wecom_scan_authorization', { input: { sessionId } });
+  },
+  completeWeComScanAuthorization(sessionId) {
+    return invokeCommand<ImSettingsVm>('complete_wecom_scan_authorization', { input: { sessionId } });
+  },
+  cancelWeComScanAuthorization(sessionId) {
+    return invokeCommand('cancel_wecom_scan_authorization', { input: { sessionId } });
+  },
+  setImChannelEnabled(input) {
+    return invokeCommand<ImSettingsVm>('set_im_channel_enabled', { input });
+  },
+  saveImNotificationPreferences(input) {
+    return invokeCommand<ImSettingsVm>('save_im_notification_preferences', { input });
+  },
+  resetImChannelBinding(input) {
+    return invokeCommand<ImSettingsVm>('reset_im_channel_binding', { input });
+  },
+  reconnectImChannel(input) {
+    return invokeCommand<ImChannelSnapshotVm>('reconnect_im_channel', { input });
+  },
+  deleteImChannel(kind) {
+    return invokeCommand<DeleteImChannelResultVm>('delete_im_channel', { input: { kind } });
+  },
+  async subscribeImChannelStateUpdates(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<ImChannelSnapshotVm>('im-channel-state-updated', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
   async subscribeScheduledTaskUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
     const unlisten: UnlistenFn = await listen<ScheduledTaskUpdatedEventVm>(SCHEDULED_TASK_UPDATED_EVENT, (event) => {
@@ -663,8 +709,11 @@ export const desktopApi: RuntimeApi = {
   deleteScheduledTask(projectId, scheduledTaskId) {
     return invokeCommand<void>('delete_scheduled_task', { projectId, scheduledTaskId });
   },
-  listScheduledTaskOccurrences(projectId, scheduledTaskId, cursor, status) {
-    return invokeCommand<import('../types').ScheduledOccurrencePageVm>('list_scheduled_task_occurrences', { projectId, scheduledTaskId, cursor, status });
+  listScheduledExecutionHistory(projectId, scheduledTaskId, cursor, anchor) {
+    return invokeCommand<import('../types').ScheduledExecutionHistoryPageVm>('list_scheduled_execution_history', { projectId, scheduledTaskId, cursor, taskId: anchor?.taskId, runId: anchor?.runId });
+  },
+  deleteScheduledExecutionHistory(items) {
+    return invokeCommand<import('../types').ScheduledExecutionHistoryDeleteResultVm[]>('delete_scheduled_execution_history', { items });
   },
   getScheduledTaskDiagnostics(projectId, scheduledTaskId) {
     return invokeCommand<ScheduledTaskDiagnosticsVm>('get_scheduled_task_diagnostics', { projectId, scheduledTaskId });
@@ -786,6 +835,93 @@ export const desktopApi: RuntimeApi = {
   async openExternalUrl(url) {
     const { openUrl } = await import('@tauri-apps/plugin-opener');
     await openUrl(url);
+  },
+  browserCreatePage(input) {
+    return invokeCommand('browser_create_page', { input });
+  },
+  browserResolveLocalHtml(input) {
+    return invokeCommand('browser_resolve_local_html', { input });
+  },
+  browserSetBounds(input) {
+    return invokeCommand('browser_set_bounds', { input });
+  },
+  browserShowPage(input) {
+    return invokeCommand('browser_show_page', { input });
+  },
+  browserHidePage(input) {
+    return invokeCommand('browser_hide_page', { input });
+  },
+  browserHideAll() {
+    return invokeCommand('browser_hide_all');
+  },
+  browserShowAddressSuggestions(input) {
+    return invokeCommand('browser_show_address_suggestions', { input });
+  },
+  browserHideAddressSuggestions(input) {
+    return invokeCommand('browser_hide_address_suggestions', { input });
+  },
+  browserNavigate(input) {
+    return invokeCommand('browser_navigate', { input });
+  },
+  browserGoBack(input) {
+    return invokeCommand('browser_go_back', { input });
+  },
+  browserGoForward(input) {
+    return invokeCommand('browser_go_forward', { input });
+  },
+  browserReload(input) {
+    return invokeCommand('browser_reload', { input });
+  },
+  browserStop(input) {
+    return invokeCommand('browser_stop', { input });
+  },
+  browserClosePage(input) {
+    return invokeCommand('browser_close_page', { input });
+  },
+  browserSetViewMode(input) {
+    return invokeCommand('browser_set_view_mode', { input });
+  },
+  browserDiscardAll() {
+    return invokeCommand('browser_discard_all');
+  },
+  browserListHistory() {
+    return invokeCommand('browser_list_history');
+  },
+  browserDeleteHistory(input) {
+    return invokeCommand('browser_delete_history', { input });
+  },
+  browserListBookmarks() {
+    return invokeCommand('browser_list_bookmarks');
+  },
+  browserAddBookmark(input) {
+    return invokeCommand('browser_add_bookmark', { input });
+  },
+  browserRemoveBookmark(input) {
+    return invokeCommand('browser_remove_bookmark', { input });
+  },
+  browserReorderBookmarks(input) {
+    return invokeCommand('browser_reorder_bookmarks', { input });
+  },
+  async subscribeBrowserHistoryEvents(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen('gold-band://browser-history', () => {
+      listener();
+    });
+    return () => unlisten();
+  },
+  async subscribeBrowserPageEvents(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<import('./client').BrowserPageNativeEventVm>('gold-band://browser-page', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
+  async subscribeBrowserAddressSuggestionActions(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<import('./client').BrowserAddressSuggestionActionVm>(BROWSER_ADDRESS_SUGGESTION_ACTION_EVENT, (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
   },
   async openFileWithSystemApp(path) {
     const { openPath } = await import('@tauri-apps/plugin-opener');

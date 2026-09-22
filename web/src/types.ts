@@ -31,6 +31,13 @@ export interface PersonalizationPreference {
   };
 }
 export type DesktopLanguage = 'zh-cn' | 'en';
+export type BrowserSearchEngine = 'baidu' | 'google' | 'bing';
+export interface BrowserPreferences {
+  schemaVersion: 1;
+  searchEngine: BrowserSearchEngine;
+  openLocalLinksInBrowser: boolean;
+  openWebLinksInBrowser: boolean;
+}
 export type AvatarKind = 'agent' | 'user';
 export type AvatarShape = 'circle' | 'square';
 export type DesktopPlatform = 'macos' | 'windows' | 'linux' | 'unknown';
@@ -43,6 +50,7 @@ export interface PreferencesVm {
   language: DesktopLanguage;
   useLocalClaude: boolean;
   verboseLogging: boolean;
+  browser: BrowserPreferences;
   avatars: AvatarPreferencesVm;
   wallpapers: WallpaperPreferencesVm;
 }
@@ -483,6 +491,8 @@ export interface ManagedAgentVm {
   supportedModes?: AcpModeVm[] | null;
   supportedModels?: AcpModeVm[] | null;
   configOptions?: AcpSelectConfigOptionVm[] | null;
+  /** Last observed thought_level / model_config catalogs keyed by model id. */
+  modelBoundCatalogs?: Record<string, AcpSelectConfigOptionVm[]> | null;
   /** 是否支持 streamable HTTP MCP 传输（null=未诊断/未知） */
   mcpHttpSupported?: boolean | null;
   /** 是否支持 SSE MCP 传输（null=未诊断/未知） */
@@ -544,7 +554,7 @@ export interface AgentEnvEntryVm {
 export interface ManagedAgentDiagnosticVm {
   status: string;
   available: boolean;
-  reason?: string | null;
+  error?: AppErrorVm | null;
   checkedAt: string;
 }
 
@@ -805,6 +815,7 @@ export interface TaskRowVm {
 export interface AppErrorVm {
   code: string;
   params: Record<string, unknown>;
+  raw?: unknown;
 }
 
 export interface GitCapabilityVm {
@@ -1312,6 +1323,7 @@ export interface WorkflowWorkerNodeDsl {
   output?: WorkflowOutputContractDsl | null;
   success_condition?: WorkflowJsonConditionDsl | null;
   permission_mode?: string | null;
+  auto_accept?: boolean;
   config_options?: Record<string, string>;
   manual_check?: boolean | null;
 }
@@ -1322,7 +1334,9 @@ export interface DynamicAgentRefDsl {
   provider: string;
   model?: string | null;
   permissionMode?: string | null;
+  autoAccept?: boolean;
   configOptions?: Record<string, string>;
+  modelBoundOverrides?: Record<string, Record<string, string>>;
 }
 
 export interface WorkflowAiDynamicFixedAgentStrategyDsl {
@@ -1330,6 +1344,7 @@ export interface WorkflowAiDynamicFixedAgentStrategyDsl {
   provider: string;
   model?: string;
   permissionMode?: string | null;
+  autoAccept?: boolean;
 }
 
 export interface WorkflowAiDynamicDynamicAgentStrategyDsl {
@@ -1337,9 +1352,12 @@ export interface WorkflowAiDynamicDynamicAgentStrategyDsl {
   bootstrapProvider: string;
   bootstrapModel?: string | null;
   permissionMode?: string | null;
+  autoAccept?: boolean;
   bootstrapConfigOptions?: Record<string, string>;
+  bootstrapModelBoundOverrides?: Record<string, Record<string, string>>;
   acceptanceModel?: string | null;
   acceptanceConfigOptions?: Record<string, string>;
+  acceptanceModelBoundOverrides?: Record<string, Record<string, string>>;
   routingPrompt: string;
   availableAgents: DynamicAgentRefDsl[];
 }
@@ -1349,6 +1367,7 @@ export interface WorkflowAiDynamicNodeDsl {
   id: string;
   agentStrategy: WorkflowAiDynamicAgentStrategyDsl;
   configOptions?: Record<string, string>;
+  modelBoundOverrides?: Record<string, Record<string, string>>;
   allowedProfiles?: string[];
   globalGoal?: string | null;
   control: DynamicControlDsl;
@@ -1438,7 +1457,9 @@ export interface WorkerModelBinding {
   agentId: string;
   modelId?: string | null;
   permissionModeId?: string | null;
+  autoAccept?: boolean;
   configOptions?: Record<string, string>;
+  modelBoundOverrides?: Record<string, Record<string, string>>;
 }
 
 export interface AutoTemplateStore {
@@ -1832,7 +1853,9 @@ export interface AcpSessionConfigVm {
   catalogObservedAt?: string | null;
   modelOverrideId?: string | null;
   permissionModeOverrideId?: string | null;
+  autoAccept?: boolean;
   configOptionOverrides?: Record<string, string>;
+  modelBoundOverrides?: Record<string, Record<string, string>>;
   currentModelId?: string | null;
   currentModelName?: string | null;
   currentModeId?: string | null;
@@ -1840,6 +1863,7 @@ export interface AcpSessionConfigVm {
   models?: unknown | null;
   modes?: unknown | null;
   configOptions?: unknown | null;
+  modelBoundCatalogs?: Record<string, unknown[]> | null;
 }
 
 export interface AcpUiEventVm {
@@ -2068,6 +2092,97 @@ export interface ScheduledRuntimeSettingsInputVm {
   occurrenceRetentionDays: number;
 }
 
+export type ImChannelKind = 'weCom';
+export type ImConnectionState = 'disabled' | 'connecting' | 'reconnecting' | 'connected' | 'authenticationRequired' | 'error';
+
+export interface ImNotificationPreferencesVm {
+  permission: boolean;
+  elicitation: boolean;
+  manualCheck: boolean;
+  runSuccess: boolean;
+  runFailure: boolean;
+  acpTurnFinished: boolean;
+}
+
+export interface ImBindingSummaryVm {
+  destinationId: string;
+  conversationId: string;
+  authorizedActorId: string;
+  displayName: string;
+}
+
+export interface ImObservedBindingVm {
+  destinationId: string;
+  conversationId: string;
+  actorId: string;
+  isPrivate: boolean;
+}
+
+export interface ImChannelCapabilitiesVm {
+  proactiveDelivery: boolean;
+  cardActions: boolean;
+  messageUpdate: boolean;
+  privateChat: boolean;
+}
+
+export interface ImConnectionIdentityVm {
+  botId: string;
+  displayName: string;
+}
+
+export interface ImChannelSnapshotVm {
+  kind: ImChannelKind;
+  enabled: boolean;
+  generation: number;
+  state: ImConnectionState;
+  capabilities: ImChannelCapabilitiesVm;
+  identity: ImConnectionIdentityVm | null;
+  binding: ImObservedBindingVm | null;
+  lastConnectedAtMs: number | null;
+  lastErrorCode: string | null;
+}
+
+export interface ImChannelSettingsVm {
+  kind: ImChannelKind;
+  enabled: boolean;
+  publicIdentity: string;
+  credentialConfigured: boolean;
+  binding: ImBindingSummaryVm | null;
+  notifications: ImNotificationPreferencesVm;
+  connection: ImChannelSnapshotVm | null;
+}
+
+export interface ImSettingsVm {
+  channels: ImChannelSettingsVm[];
+}
+
+export interface DeleteImChannelResultVm {
+  settings: ImSettingsVm;
+  operationId: string;
+  cleanupStatus: 'complete' | 'pending';
+}
+
+export interface SetImChannelEnabledInputVm {
+    kind: ImChannelKind;
+    enabled: boolean;
+}
+
+export interface SaveImNotificationPreferencesInputVm {
+    kind: ImChannelKind;
+    notifications: ImNotificationPreferencesVm;
+}
+
+export interface ImGenerationInputVm {
+    kind: ImChannelKind;
+    expectedGeneration: number;
+}
+
+export interface WeComScanAuthorizationVm {
+  sessionId: string;
+  authUrl: string;
+  expiresAtMs: number;
+}
+
 export interface NotificationAttentionInput {
   windowFocused: boolean;
   windowMinimized: boolean;
@@ -2246,7 +2361,7 @@ export type ConversationPage =
   | { kind: 'agents' }
   | { kind: 'contexts' }
   | { kind: 'scheduled-tasks' }
-  | { kind: 'scheduled-task-detail'; projectId: string; scheduledTaskId: string }
+  | { kind: 'scheduled-task-detail'; projectId: string; scheduledTaskId: string; taskId?: string; runId?: string; occurrenceId?: string }
   | { kind: 'settings' };
 
 export interface ScheduledTaskVm {
@@ -2283,9 +2398,59 @@ export interface ScheduledOccurrenceVm {
   finishedAt?: string | null;
 }
 
-export interface ScheduledOccurrencePageVm {
-  items: ScheduledOccurrenceVm[];
+export interface ScheduledOccurrenceLinksVm {
+  taskId?: string | null;
+  runId?: string | null;
+  roundId?: string | null;
+  attemptId?: string | null;
+  nodeId?: string | null;
+}
+
+export interface ScheduledTriggerPayloadVm {
+  projectId: string;
+  scheduledTaskId: string;
+  occurrenceId: string;
+  triggerKind: 'scheduled' | 'manual';
+  scheduledAt?: string | null;
+  acceptedAt: string;
+  instructionSummary: string;
+  contentFingerprint: string;
+  links: ScheduledOccurrenceLinksVm;
+}
+
+export interface ScheduledExecutionHistoryVm {
+  projectId: string;
+  scheduledTaskId: string;
+  taskId: string;
+  runId: string;
+  firstAcceptedAt: string;
+  lastAcceptedAt: string;
+  occurrenceCount: number;
+  latestOccurrenceId: string;
+  latestSummary: string;
+  latestContentFingerprint: string;
+  availability: 'available' | 'unavailable';
+  run?: ConversationRunSummaryVm | null;
+  error?: { code: string; params: Record<string, unknown> } | null;
+}
+
+export interface ScheduledExecutionHistoryPageVm {
+  items: ScheduledExecutionHistoryVm[];
   nextCursor?: string | null;
+}
+
+export interface ScheduledExecutionHistoryDeleteInputVm {
+  projectId: string;
+  scheduledTaskId: string;
+  taskId: string;
+  runId: string;
+  throughOccurrenceId: string;
+}
+
+export interface ScheduledExecutionHistoryDeleteResultVm extends ScheduledExecutionHistoryDeleteInputVm {
+  status: 'completed' | 'failed';
+  code?: string | null;
+  params: Record<string, unknown>;
 }
 
 export interface ScheduledTaskDiagnosticsVm {
@@ -2597,6 +2762,7 @@ export interface ConversationQueuedPromptVm {
   content: string;
   attachmentCount: number;
   quoteCount: number;
+  roleName?: string | null;
   createdAt: string;
 }
 
@@ -2606,9 +2772,16 @@ export interface UserPromptQuote {
   text: string;
 }
 
+export interface UserPromptRole {
+  profileId: string;
+  name: string;
+  content: string;
+}
+
 export interface ConversationPromptInput {
   displayText: string;
   quotes: UserPromptQuote[];
+  role?: UserPromptRole | null;
 }
 
 export interface ConversationPromptQueueVm {
@@ -2732,6 +2905,7 @@ export interface ConversationQueuedPromptDraftVm {
   content: string;
   quotes: UserPromptQuote[];
   attachmentPaths: string[];
+  role?: UserPromptRole | null;
 }
 
 export interface ConversationRunWorktreeVm {
@@ -2769,7 +2943,9 @@ export interface ConversationDirectConfigVm {
   agentType: string;
   modelId?: string | null;
   permissionMode?: string | null;
+  autoAccept?: boolean;
   configOptions?: Record<string, string>;
+  modelBoundOverrides?: Record<string, Record<string, string>>;
 }
 
 export interface ConversationAgentIdentityVm {
@@ -2784,11 +2960,15 @@ export interface ConversationAutoConfigVm {
   bootstrapAgentType?: string | null;
   bootstrapModelId?: string | null;
   bootstrapConfigOptions?: Record<string, string>;
+  bootstrapModelBoundOverrides?: Record<string, Record<string, string>>;
   acceptanceModelId?: string | null;
   acceptanceConfigOptions?: Record<string, string>;
+  acceptanceModelBoundOverrides?: Record<string, Record<string, string>>;
   modelId?: string | null;
   permissionMode?: string | null;
+  autoAccept?: boolean;
   configOptions?: Record<string, string>;
+  modelBoundOverrides?: Record<string, Record<string, string>>;
   availableAgents?: DynamicAgentRefDsl[];
   routingPrompt?: string | null;
   allowedWorkflows?: AllowedWorkflowRefDsl[];
@@ -2810,6 +2990,7 @@ export interface ConversationCreateInput {
   attachmentPaths?: string[];
   workLocation?: ConversationWorkLocation;
   selectedBranch?: string | null;
+  role?: UserPromptRole | null;
 }
 
 export type ConversationWorkLocation = 'main' | 'worktree';
@@ -2872,7 +3053,8 @@ export interface McpServerVm {
   headers?: AgentEnvEntryVm[] | null;
   managed: boolean;
   helpMessage?: string | null;
-  healthStatus?: 'healthy' | 'unhealthy' | 'auth_required' | 'stopped' | 'checking' | 'unknown' | null;
+  /** 最近一次显式配置诊断结果；不代表正式会话进程正在运行。 */
+  healthStatus?: 'healthy' | 'unhealthy' | 'auth_required' | 'checking' | 'unknown' | null;
   healthMessage?: string | null;
 }
 

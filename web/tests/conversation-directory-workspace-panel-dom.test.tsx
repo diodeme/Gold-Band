@@ -21,11 +21,13 @@ vi.mock('@/components/workspace/files/WorkspaceFileEditor', () => ({
     editable: boolean;
     markdownMode?: string | null;
     onMarkdownModeChange?: (mode: 'live-preview' | 'source') => void;
+    onOpenInBrowser?: () => void | Promise<void>;
   }) => (
     <output
       data-testid="run-directory-file-editor"
       data-editable={String(props.editable)}
       data-markdown-mode={String(props.markdownMode)}
+      data-html-open-in-browser={props.onOpenInBrowser ? 'true' : undefined}
     >
       <button type="button" onClick={() => props.onMarkdownModeChange?.('source')}>source</button>
     </output>
@@ -274,6 +276,49 @@ describe('conversation directory responsive tree lifecycle', () => {
       });
       editor = container.querySelector<HTMLElement>('[data-testid="run-directory-file-editor"]');
       expect(editor?.dataset.markdownMode).toBe('source');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('opens HTML run artifacts as source with an explicit browser action', async () => {
+    const htmlArtifact: WorkspaceDirectoryEntryVm = {
+      ...artifact,
+      name: 'page.html',
+      relativePath: 'page.html',
+      canonicalPath: 'D:\\attempt\\page.html',
+    };
+    apiMocks.listConversationDirectory.mockResolvedValue([htmlArtifact]);
+    apiMocks.readConversationDirectoryFile.mockResolvedValue({
+      kind: 'text',
+      name: htmlArtifact.name,
+      content: '<p>hi</p>',
+      language: 'html',
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider initialWidth={397}>
+            <ConversationDirectoryWorkspacePanel resource={resource} layout={layout} />
+          </RightWorkspaceProvider>,
+        );
+      });
+      await act(async () => { await Promise.resolve(); });
+
+      const row = [...container.querySelectorAll<HTMLButtonElement>('button')]
+        .find((button) => button.textContent?.includes(htmlArtifact.name));
+      await act(async () => {
+        row?.click();
+        await Promise.resolve();
+      });
+
+      const editor = container.querySelector<HTMLElement>('[data-testid="run-directory-file-editor"]');
+      expect(editor?.dataset.editable).toBe('false');
+      expect(editor?.dataset.htmlOpenInBrowser).toBe('true');
     } finally {
       await act(async () => root.unmount());
     }

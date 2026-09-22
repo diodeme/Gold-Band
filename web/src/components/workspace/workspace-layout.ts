@@ -339,11 +339,17 @@ export function resolveRightWorkspaceSheetOpenTransition({
   };
 }
 
+export function conversationPageHasDraftWorkspaceScope(page: ConversationPage) {
+  return page.kind === 'conversation-home'
+    || page.kind === 'scheduled-task-create'
+    || page.kind === 'agents';
+}
+
 export function workspaceLayoutProfileForPage(
   page: ConversationPage,
   layout: WorkspaceLayoutVm,
 ): WorkspaceLayoutProfileVm {
-  if (page.kind === 'conversation-home' || page.kind === 'scheduled-task-create' || page.kind === 'conversation-run') return layout.conversation;
+  if (conversationPageHasDraftWorkspaceScope(page) || page.kind === 'conversation-run') return layout.conversation;
   if (page.kind === 'contexts') return layout.contextCards;
   if (page.kind === 'settings') return layout.settings;
   return layout.workflowCanvas;

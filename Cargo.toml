@@ -1,6 +1,6 @@
 [package]
 name = "gold-band"
-version = "0.15.1"
+version = "0.16.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 
@@ -8,12 +8,24 @@ license = "AGPL-3.0-only"
 members = ["src-tauri"]
 resolver = "3"
 
+# tao's Windows message handler used to call `PeekMessageW` while holding the
+# keyboard input-state mutex. `PeekMessageW` may synchronously re-enter the
+# window procedure, so the same UI thread could wait forever on its own
+# non-recursive mutex. Keep this exact upstream fix until the stable Tauri 2
+# dependency range includes a tao release containing it.
+[patch.crates-io]
+tao = { git = "https://github.com/tauri-apps/tao", rev = "c704261c519c58cfdd0bc2d58ba24e06a0b71c92" }
+
 [dependencies]
 agent-client-protocol-schema = { version = "1.6.0", features = ["unstable_elicitation"] }
 anyhow = "1"
+async-trait = "0.1"
+base64 = "0.22"
 camino = { version = "1", features = ["serde1"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 chrono-tz = "0.10"
+hmac = "0.12"
+futures-util = "0.3"
 iana-time-zone = "0.1"
 cron = "0.17"
 command-group = "5.0.1"
@@ -32,11 +44,14 @@ config = { version = "0.15", default-features = false, features = ["toml"] }
 serde_path_to_error = "0.1"
 schemars = { version = "0.8", features = ["derive"] }
 jsonschema = { version = "0.17", default-features = false }
+keyring = "4.2.0"
 minijinja = "2"
 parking_lot = "0.12"
+pulldown-cmark = "0.13"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "fs", "io-util", "sync", "time", "test-util"] }
 tokio-util = { version = "0.7", features = ["time"] }
+tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
 uuid = { version = "1", features = ["v4", "v5"] }
 tracing = "0.1"
 tracing-appender = "0.2"
@@ -50,6 +65,8 @@ rusqlite = { version = "0.34", features = ["bundled", "hooks"] }
 reqwest = { version = "0.12", features = ["blocking", "json"] }
 url = "2"
 atomic-write-file = "0.2"
+fs2 = "0.4"
+rmcp = { version = "3.2", default-features = false, features = ["server", "transport-io"] }
 blake3 = "1"
 similar = "3.1"
 unicode-properties = { version = "0.1", features = ["general-category"] }
@@ -64,3 +81,10 @@ uzers = { version = "0.12", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
+
+[target.'cfg(windows)'.dev-dependencies]
+# The regression harness drives tao's real Win32 message callback. Keep the
+# dependency on the exact revision used by the desktop build so the test
+# cannot silently exercise a different tao implementation.
+tao = { git = "https://github.com/tauri-apps/tao", rev = "c704261c519c58cfdd0bc2d58ba24e06a0b71c92", default-features = false, features = ["rwh_06"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

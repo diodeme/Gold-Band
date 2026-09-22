@@ -103,6 +103,35 @@ describe('conversation run mode config text fields', () => {
     });
   });
 
+  it('drops top-level AUTO modelBoundOverrides when submitting a dynamic strategy', () => {
+    expect(normalizeConversationAutoConfigForSubmit({
+      agentStrategy: 'dynamic',
+      agentType: 'claude-acp',
+      bootstrapAgentType: 'claude-acp',
+      configOptions: { effort: 'high' },
+      modelBoundOverrides: {
+        'grok-4.6': { effort: 'extra-high' },
+      },
+      bootstrapConfigOptions: { effort: 'high' },
+      bootstrapModelBoundOverrides: {
+        'grok-4.6': { effort: 'high' },
+      },
+    })).toMatchObject({
+      agentStrategy: 'dynamic',
+      bootstrapConfigOptions: { effort: 'high' },
+      bootstrapModelBoundOverrides: {
+        'grok-4.6': { effort: 'high' },
+      },
+    });
+    expect(normalizeConversationAutoConfigForSubmit({
+      agentStrategy: 'dynamic',
+      agentType: 'claude-acp',
+      modelBoundOverrides: {
+        'grok-4.6': { effort: 'extra-high' },
+      },
+    })?.modelBoundOverrides).toBeUndefined();
+  });
+
   it('normalizes role-scoped dynamic AUTO thought-level overrides', () => {
     expect(normalizeConversationAutoConfigForSubmit({
       agentStrategy: 'dynamic',
@@ -141,6 +170,99 @@ describe('conversation run mode config text fields', () => {
       permissionMode: 'ask',
     });
     expect(normalizeConversationDirectConfigForSubmit({ agentType: '  ' })).toBeUndefined();
+  });
+
+  it('persists Auto Accept only when enabled', () => {
+    expect(normalizeConversationDirectConfigForSubmit({
+      agentType: 'cursor',
+      permissionMode: 'agent',
+      autoAccept: true,
+    })).toEqual({
+      agentType: 'cursor',
+      permissionMode: 'agent',
+      autoAccept: true,
+    });
+    expect(normalizeConversationDirectConfigForSubmit({
+      agentType: 'cursor',
+      autoAccept: false,
+    })).toEqual({
+      agentType: 'cursor',
+    });
+    expect(normalizeConversationAutoConfigForSubmit({
+      agentStrategy: 'fixed',
+      agentType: 'claude-acp',
+      autoAccept: true,
+      availableAgents: [{
+        provider: 'cursor',
+        autoAccept: true,
+      }],
+    })).toMatchObject({
+      autoAccept: true,
+      availableAgents: [{ provider: 'cursor', autoAccept: true }],
+    });
+    expect(normalizeConversationAutoConfigForSubmit({
+      agentStrategy: 'fixed',
+      agentType: 'claude-acp',
+      autoAccept: false,
+      availableAgents: [{ provider: 'cursor', autoAccept: false }],
+    })).toEqual({
+      agentStrategy: 'fixed',
+      agentType: 'claude-acp',
+      availableAgents: [{ provider: 'cursor' }],
+    });
+  });
+
+  it('keeps per-model thought overrides when submitting Direct after Mini cannot hold Extra High', () => {
+    expect(normalizeConversationDirectConfigForSubmit({
+      agentType: 'cursor',
+      modelId: 'gpt-5-mini',
+      configOptions: {},
+      modelBoundOverrides: {
+        'grok-4.6': { effort: 'extra-high', fast: 'true' },
+        'gpt-5-mini': {},
+      },
+    })).toMatchObject({
+      agentType: 'cursor',
+      modelId: 'gpt-5-mini',
+      modelBoundOverrides: {
+        'grok-4.6': { effort: 'extra-high', fast: 'true' },
+        'gpt-5-mini': {},
+      },
+    });
+  });
+
+  it('keeps AUTO per-model thought overrides through submit normalization', () => {
+    expect(normalizeConversationAutoConfigForSubmit({
+      agentStrategy: 'fixed',
+      agentType: 'cursor',
+      modelId: 'gpt-5-mini',
+      configOptions: {},
+      modelBoundOverrides: {
+        'grok-4.6': { effort: 'extra-high' },
+      },
+      availableAgents: [{
+        provider: 'cursor',
+        model: 'gpt-5-mini',
+        configOptions: {},
+        modelBoundOverrides: {
+          'grok-4.6': { effort: 'extra-high' },
+        },
+      }],
+    })).toEqual({
+      agentStrategy: 'fixed',
+      agentType: 'cursor',
+      modelId: 'gpt-5-mini',
+      modelBoundOverrides: {
+        'grok-4.6': { effort: 'extra-high' },
+      },
+      availableAgents: [{
+        provider: 'cursor',
+        model: 'gpt-5-mini',
+        modelBoundOverrides: {
+          'grok-4.6': { effort: 'extra-high' },
+        },
+      }],
+    });
   });
 
   it('restores Direct model and permission per Agent inside a workspace', () => {

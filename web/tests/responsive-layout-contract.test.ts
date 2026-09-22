@@ -46,6 +46,14 @@ const acpChatSource = readFileSync(
   fileURLToPath(new URL('../src/components/acp/ACPChatDialog.tsx', import.meta.url)),
   'utf8',
 );
+const agentManagementSource = readFileSync(
+  fileURLToPath(new URL('../src/pages/AgentManagementPage.tsx', import.meta.url)),
+  'utf8',
+);
+const webviewCompatibilitySource = readFileSync(
+  fileURLToPath(new URL('../src/webview-compatibility.css', import.meta.url)),
+  'utf8',
+);
 
 describe('responsive desktop layout contracts', () => {
   it('shares the workspace info bar with scheduled authoring while keeping worktree selection unavailable there', () => {
@@ -211,6 +219,19 @@ describe('responsive desktop layout contracts', () => {
     expect(contextSource.match(/@container\/profile-list/g)?.length).toBe(2);
     expect(contextSource.match(/@6xl\/profile-list:grid-cols-3/g)?.length).toBe(2);
     expect(contextSource.match(/CardFooter className="[^"]*flex-wrap/g)?.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('sizes Agent cards by the list container instead of the window viewport', () => {
+    expect(agentManagementSource).toContain('useWebviewMeasuredContainer<HTMLDivElement>(\'agent-list\')');
+    expect(agentManagementSource).toContain('@container/agent-list');
+    expect(agentManagementSource).toContain('@2xl/agent-list:grid-cols-2');
+    expect(agentManagementSource).toContain('@6xl/agent-list:grid-cols-3');
+    expect(agentManagementSource).not.toContain('md:grid-cols-2 xl:grid-cols-3');
+    expect(agentManagementSource).not.toContain('repeat(auto-fit,minmax(min(100%,20rem),1fr))');
+    expect(agentManagementSource).toContain('grid grid-cols-2 gap-2 text-sm text-muted-foreground');
+    expect(agentManagementSource).not.toContain('text-muted-foreground sm:grid-cols-2');
+    expect(webviewCompatibilitySource).toContain("[data-webview-container='agent-list'][data-webview-container-tiers~='2xl'] [class~='@2xl/agent-list:grid-cols-2']");
+    expect(webviewCompatibilitySource).toContain("[data-webview-container='agent-list'][data-webview-container-tiers~='6xl'] [class~='@6xl/agent-list:grid-cols-3']");
   });
 
   it('keeps profile import settings and results in one resizable sheet workflow', () => {

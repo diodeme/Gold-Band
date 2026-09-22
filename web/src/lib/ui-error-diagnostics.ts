@@ -165,6 +165,13 @@ export function extractErrorMessage(error: unknown): string {
   try {
     if (error instanceof Error) return error.message;
     if (typeof error === 'string') return error;
+    if (error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string') {
+      // Structured command errors carry the actionable code, so surface it instead of
+      // the useless default object stringification.
+      const structured = error as { code: string; params?: unknown };
+      const params = structured.params === undefined ? '' : ` ${safeStringify(structured.params)}`;
+      return `${structured.code}${params}`;
+    }
     if (error && typeof error === 'object' && 'message' in error) {
       const message = (error as { message?: unknown }).message;
       if (typeof message === 'string') return message;
@@ -172,6 +179,14 @@ export function extractErrorMessage(error: unknown): string {
     return String(error);
   } catch {
     return 'Unknown frontend error';
+  }
+}
+
+function safeStringify(value: unknown) {
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
   }
 }
 

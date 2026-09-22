@@ -9,8 +9,10 @@ import type {
   WorkflowTemplate,
   WorkflowTemplateStore,
 } from '@/types';
+import { authoringConfigOptionsForModel, remapAcpThoughtLevelOverride, retainAcpModelBoundOverrides } from '@/lib/acp-composite-config';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
 import { readyWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
+import { agentDiagnosticShortReason } from '@/lib/agent-diagnostic';
 
 export type SelectableAgentOption = {
   agent: ManagedAgentVm;
@@ -32,8 +34,7 @@ export type SelectableWorkflowOption = {
 
 export function agentDoctorReason(agent: ManagedAgentVm, t: (key: string, options?: Record<string, unknown>) => string) {
   if (agent.diagnostic?.available === true) return null;
-  if (agent.diagnostic?.reason?.trim()) return agent.diagnostic.reason;
-  return t('runMode.agentDoctorRequired');
+  return agentDiagnosticShortReason(t, agent.diagnostic, t('runMode.agentDoctorRequired'));
 }
 
 export function selectableAgentOptions(
@@ -355,16 +356,35 @@ export function validateDirectConfig(
 export function normalizeConfigOptionOverrides(
   agent: ManagedAgentVm,
   overrides: Record<string, string> | null | undefined,
+  selectedModelId?: string | null,
 ): { configOptions: Record<string, string>; removedOptionIds: string[] } {
+  const projected = authoringConfigOptionsForModel(
+    agent.configOptions,
+    agent.modelBoundCatalogs,
+    selectedModelId,
+  );
+  const retained = selectedModelId === undefined
+    ? remapAcpThoughtLevelOverride(overrides, agent.configOptions)
+    : retainAcpModelBoundOverrides(
+      overrides,
+      agent.configOptions,
+      selectedModelId,
+      agent.modelBoundCatalogs,
+    );
   const configOptions: Record<string, string> = {};
   const removedOptionIds: string[] = [];
-  for (const [optionId, value] of Object.entries(overrides ?? {})) {
-    const option = agent.configOptions?.find((candidate) => candidate.id === optionId);
+  const original = overrides ?? {};
+  for (const [optionId, value] of Object.entries(retained)) {
+    const option = projected.find((candidate) => candidate.id === optionId);
     if (option?.options.some((candidate) => candidate.value === value)) {
       configOptions[optionId] = value;
     } else {
       removedOptionIds.push(optionId);
     }
+  }
+  for (const [optionId, value] of Object.entries(original)) {
+    if (retained[optionId] === value) continue;
+    if (!removedOptionIds.includes(optionId)) removedOptionIds.push(optionId);
   }
   return { configOptions, removedOptionIds };
 }

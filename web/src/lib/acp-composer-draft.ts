@@ -4,6 +4,7 @@ import {
   revokeAttachmentPreviewUrls,
   type AttachmentItem,
 } from './attachment-service';
+import { composerTextFromPromptRole } from './slash-command';
 import type { ComposerQuote } from './composer-context';
 import type { AttachmentFileRef } from '@/api/client';
 import type { ConversationQueuedPromptDraftVm } from '@/types';
@@ -19,7 +20,7 @@ export function queuedPromptToAcpComposerDraft(
   fileRefs: readonly AttachmentFileRef[] = [],
 ): AcpComposerDraft {
   return {
-    content: item.content,
+    content: composerTextFromPromptRole(item.role, item.content),
     attachments: attachmentItemsFromPaths(item.attachmentPaths, fileRefs),
     quotes: item.quotes.map(({ id, sourceMessageKey, text }) => ({
       id,

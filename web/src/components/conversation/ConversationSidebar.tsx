@@ -1,4 +1,4 @@
-import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Globe, Settings, ChevronDown, Ellipsis, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Globe, Settings, BookOpen, ChevronDown, Ellipsis, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
@@ -75,6 +75,7 @@ interface ConversationSidebarProps {
   onPauseRun?: (projectId: string, taskId: string, runId: string) => void | Promise<void>;
   onNewConversationInWorkspace?: (projectId: string) => void;
   onAddWorkspace?: () => void;
+  onOpenProjectMemory?: (workspace: { projectId: string; name: string }) => void;
   onRemoveWorkspace?: (projectId: string) => Promise<void>;
   onRetryBootstrap: () => void;
   onRequestWorkspaceTasks: (projectId: string, cursor?: string | null) => void;
@@ -97,6 +98,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   onPauseRun,
   onNewConversationInWorkspace,
   onAddWorkspace,
+  onOpenProjectMemory,
   onRemoveWorkspace,
   onRetryBootstrap,
   onRequestWorkspaceTasks,
@@ -479,7 +481,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                         type="button"
                         data-conversation-workspace-id={ws.projectId}
                         aria-expanded={Boolean(expandedWorkspaces[ws.projectId])}
-                        className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm font-semibold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground group-hover:pr-11"
+                        className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm font-semibold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground group-hover:pr-17"
                         onClick={() => toggleWorkspace(ws.projectId)}
                       >
                         <ChevronDown className={cn('size-3 shrink-0 transition-transform', !expandedWorkspaces[ws.projectId] && '-rotate-90')} />
@@ -490,7 +492,17 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                       {ws.workspacePath}
                     </TooltipContent>
                   </Tooltip>
-                  <span className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
+                  <span className="pointer-events-none absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
+                    {!readOnly && onOpenProjectMemory ? (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+<Button variant="ghost" size="icon" className="size-5 shrink-0" aria-label={t('memory.title')} onClick={(event) => { event.stopPropagation(); onOpenProjectMemory({ projectId: ws.projectId, name: ws.name }); }}>
+                            <BookOpen className="size-3" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>{t('memory.title')}</TooltipContent>
+                      </Tooltip>
+                    ) : null}
                     {!readOnly && onNewConversationInWorkspace ? (
                       <Button variant="ghost" size="icon" className="size-5 active:scale-90 transition-transform" onClick={(e) => { e.stopPropagation(); onNewConversationInWorkspace(ws.projectId); }}>
                         <Plus className="size-3" />

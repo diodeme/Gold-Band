@@ -55,12 +55,12 @@
    - prompt-kit textarea 本体在所有主题下保持透明并继承 composer 外层表面色；主页发起会话与会话追问不得出现独立的内层灰色输入色块。
    - 主页主内容使用较紧凑的 `max-w-3xl` 可读宽度；正文输入区初始最小高度为 56px，随文字换行和内容增加同步增高，最高增长到 320px。未达到上限时隐藏正文区滚动条；超过上限后固定正文区高度并仅在正文区内部滚动，顶部工作空间信息区、底部提示、附件、模型、权限和发送操作不随正文滚动。输入框及其后的处理模式、Direct Agent / Workflow / AUTO 对应操作栏继续作为同一 composer 内容组参与页面光学居中。
 2. 工作空间信息与工作位置：普通快速对话和定时任务创建模式的发起 composer 都在输入面上方复用同一条 28px 低矮信息栏；该区域不进入会话详情 composer。包含左右侧边在内的顶部操作栏总宽固定为输入框宽度的 80%，整体居中；中间实体宽度按总宽扣除左右各 48px 侧边计算，不得通过压缩侧边本身实现收窄。背景在明暗主题中统一消费比页面底色更高一层的 `surface-high` 语义材质，使轮廓始终可辨，不得回退到 `conversation-background` 或用单一 `muted` 透明度造成层级消失、反转。信息栏与输入面在正常文档流中紧邻但不重叠；左右侧各使用一个 48×28px 的镜像 SVG 侧边，从输入框上边缘内侧端点直接以直线斜边向上收窄，只在斜边接近顶部时用保持切线连续的圆角过渡接入主体顶边，形成顶部圆润、底部无回弯的圆角梯形；斜边按约 50° 上升，使梯形顶部内角约为 130°。侧边不得再使用从底部水平起步的 Bézier 曲线，不得出现“S”或“∫”轮廓、竖直脖子、圆角拼缝或折点。侧边不得伸入半透明 composer；输入框保留完整上圆角，半透明区域下方只允许存在会话背景，避免壁纸场景透出横向色带。禁止使用负 margin、z-index 叠放、阴影扩散或重叠透明填充。信息栏在窄宽度下继续以输入框宽度为上限，内部名称允许截断，不得造成横向滚动或遮挡欢迎标题。
-   - 信息区复用现有工作空间选择器，工作空间入口统一从 composer 底栏移入此处；80% 宽的完整圆角梯形是信息栏布局根节点，中间矩形表面左右各内收 48px，两侧 SVG 位于根节点内部。普通快速对话的工作空间与工作位置两个触发器作为一个连续操作组从完整外轮廓左侧 32px 的安全平顶位置开始排列，比中间矩形左边缘再提前 16px；组间距为 0，两个触发器使用 6px 紧凑水平内边距与图标文字间距，在保持 28px 高点击热区的前提下进一步靠左。定时任务创建模式复用同一布局根节点和工作空间触发器，但不渲染工作位置触发器。不得用负 margin 或 transform 移动交互控件。超长名称只在真实截断时通过 shadcn/Radix Tooltip 展示完整名称，不使用原生 `title`。触发器静态时必须透明并继承信息栏背景，只在 hover、键盘 focus 或菜单展开时共享主题 `accent / accent-foreground` 交互态；菜单关闭且指针离开后必须恢复透明，不显示常驻选中色块。
+   - 信息区复用现有工作空间选择器，工作空间入口统一从 composer 底栏移入此处；80% 宽的完整圆角梯形是信息栏布局根节点，中间矩形表面左右各内收 48px，两侧 SVG 位于根节点内部。普通快速对话的工作空间与工作位置两个触发器作为一个连续操作组从完整外轮廓左侧 32px 的安全平顶位置开始排列，比中间矩形左边缘再提前 16px；组间距为 0，两个触发器使用 6px 紧凑水平内边距与图标文字间距，在保持 28px 高点击热区的前提下进一步靠左。定时任务创建模式复用同一布局根节点和工作空间触发器，但不渲染工作位置触发器。不得用负 margin 或 transform 移动交互控件。超长名称只在真实截断时通过 shadcn/Radix Tooltip 展示完整名称，不使用原生 `title`；该说明层及其 Radix Popper 定位壳默认不接收指针，避免边沿反复开关。触发器静态时必须透明并继承信息栏背景，只在 hover、键盘 focus 或菜单展开时共享主题 `accent / accent-foreground` 交互态；菜单关闭且指针离开后必须恢复透明，不显示常驻选中色块。
    - 工作空间和工作位置菜单关闭后的焦点归还都按输入方式处理：鼠标或触控选择、再次点击触发器或点击外部关闭后，不把焦点重新放回触发器，也不保留误导性的选中描边；键盘选择或关闭后仍由 Radix 将焦点归还触发器并显示 `focus-visible`，保证后续键盘导航连续。禁止通过删除共享 focus ring 或强制 blur 所有输入方式掩盖该差异。
    - 普通快速对话当前选择的工作空间属于应用运行期的 draft 上下文：用户切换后，无论进入设置还是查看其他工作空间的会话详情，再点击全局“快速对话”都必须恢复该 draft。只有 draft 尚不存在时，才先使用当前会话所属工作空间，非会话页再回退最近会话工作空间。只有在某个工作空间下显式点击“新会话”，才将 draft 切换为该工作空间。draft 选择不得写入或重排 `lastConversationWorkspace`，左侧工作空间置顶仍只由最近实际创建、重跑或进入的会话驱动。
    - 同一区域提供工作位置选择器，仅包含“主工作区”和“新工作树 / New worktree”。“新工作树”使用 Git fork 图标，悬浮或键盘聚焦提示“创建副本，以便并行工作 / Create a copy for parallel work”。工作位置触发器与工作空间触发器统一使用 28px 高度、相同圆角、水平内边距、图标和箭头规格，宽度仅随各自内容自然收缩；不得让 shadcn `SelectTrigger` 的默认 size variant 把工作空间控件撑高。工作位置偏好按 `projectId` 记忆，切换工作空间后恢复该工作空间最后一次选择，不使用跨工作空间的单一全局值。
    - 快速对话顶部上下文栏必须按自身容器宽度渐进收缩，不依赖窗口 viewport：宽档展示工作空间、工作位置和分支的图标与当前值；中档只保留工作空间当前值，工作位置与分支收为 28px 图标触发器；窄档三个控件都收为 28px 图标触发器。三个选择器保持各自一步直达，不合并进“更多”，也不得因档位变化重复挂载控件、清空焦点/菜单状态或重复读取分支 snapshot。图标态通过项目 Tooltip 在悬浮或键盘聚焦时展示“领域：当前值”，同时提供包含当前值的 `aria-label`；打开对应 Select、DropdownMenu 或 Popover 时必须在同一次 open 状态提交中关闭 Tooltip，不能在 Popover 的 click 打开之前先于 pointerdown 单独关闭而制造按压态回闪；菜单出现后触发器持续使用 Popover 自身受控 open 投影的强调态，不能依赖 TooltipTrigger 与 PopoverTrigger 竞争写入的共享 `data-state`。分支 Popover 关闭后的焦点归还必须区分输入方式：鼠标或触控选择分支、再次点击触发器或点击外部关闭时，不把焦点还给紧凑图标，并收起其 Tooltip；键盘选择或关闭后继续由 Radix 归还触发器焦点，保留键盘导航连续性。容器重新变宽后按同一 CSS 投影恢复标签。
-   - 普通快速对话的信息栏最右侧提供当前工作目录的分支选择器，复用 shadcn `Popover + Command` 与源码管理 Git 能力，读取轻量 branch snapshot，不加载 status numstat、历史或 Diff。选择已有本地分支以及“创建并检出新分支”都是真实 Git checkout；主工作区与用户选中的普通工作树遵循相同规则，Git 拒绝即返回结构化错误，不伪造选择态。Popover 默认与分支触发按钮左边缘对齐；搜索框固定在顶部，分支列表独立滚动，“创建并检出新分支”作为左对齐 action 固定在底部，不进入滚动列表。列表支持搜索；分支名在触发器中单行截断，只有真实溢出时才在鼠标悬浮或键盘聚焦后通过项目 Tooltip 查看全称。切换期间禁用发送，成功后只使用后端返回的当前分支更新本次 draft 的分支选择；snapshot 中的 `HEAD` 与 revision 只服务选择器展示、缓存校准和后续 Git mutation CAS，不进入会话创建意图。已读取 snapshot 按 `projectId + workspacePath` 进入 App 会话期最多 24 项的有界 Store；切换 workspace、进入会话再返回时先同步恢复已有 snapshot，不显示 loading spinner，同时后台读取轻量 snapshot 校准。缓存不持久化、不替代后端 revision，LRU 淘汰后按首次加载处理。
+   - 普通快速对话的信息栏最右侧提供当前工作目录的分支选择器，复用 shadcn `Popover + Command` 与源码管理 Git 能力，读取轻量 branch snapshot，不加载 status numstat、历史或 Diff。选择已有本地分支以及“创建并检出新分支”都是真实 Git checkout；主工作区与用户选中的普通工作树遵循相同规则，Git 拒绝即返回结构化错误，不伪造选择态。Popover 默认与分支触发按钮左边缘对齐；搜索框固定在顶部，分支列表独立滚动，“创建并检出新分支”作为左对齐 action 固定在底部，不进入滚动列表。搜索框占位文案使用与会话栏/工作空间选择器相同的 `ConversationWorkspaceVm.name` 显示名，不得展示 `projectId`。列表支持搜索；分支名在触发器中单行截断，只有真实溢出时才在鼠标悬浮或键盘聚焦后通过项目 Tooltip 查看全称。切换期间禁用发送，成功后只使用后端返回的当前分支更新本次 draft 的分支选择；snapshot 中的 `HEAD` 与 revision 只服务选择器展示、缓存校准和后续 Git mutation CAS，不进入会话创建意图。已读取 snapshot 按 `projectId + workspacePath` 进入 App 会话期最多 24 项的有界 Store；切换 workspace、进入会话再返回时先同步恢复已有 snapshot，不显示 loading spinner，同时后台读取轻量 snapshot 校准。缓存不持久化、不替代后端 revision，LRU 淘汰后按首次加载处理。
    - 分支 snapshot 加载 effect 只允许由 `projectId + workspacePath + readOnlyBranch` 等语义作用域变化触发；父级通知 callback 的引用变化不得重新读取 snapshot 或产生 Git IPC。通知始终调用最新 callback，同一 `projectId + branch` 写回 draft 必须幂等。
    - 非 Git 工作空间仍展示“新工作树”；用户选择时先复用 AI-DYNAMIC 的 Git capability preflight，并通过既有 `GitRequirementDialog` 展示结构化错误与恢复动作。校验失败不得保存 worktree 偏好、创建 task/run 或静默回退主工作区。
    - 定时任务创建模式在与普通快速对话一致的顶部信息栏展示工作空间选择器；定时任务固定使用主工作区，不展示或继承快速对话的工作位置选择，也不向定时任务定义提交 `workLocation`。
@@ -73,8 +73,10 @@
    - 左侧栏的手动展开/折叠意图与窗口宽度导致的临时自动折叠分开管理。窄屏不得改写或持久化手动折叠值；再次拉宽时自动恢复，右侧工作区与左侧栏同时折叠时固定先恢复右侧、再恢复左侧。
 3. 处理模式选择：WORKFLOW / AUTO 切换；Workflow 模式操作栏的前导图标统一使用运行模式入口的 `Route` 图标，不再使用另一套 `Workflow` 图标。
 4. AUTO 模式：
-   - 固定 Agent 策略下显示 agent、模型、权限模式下拉；agent 可以覆盖 AUTO tab 当前配置，模型可为空
-   - 动态 Agent 策略下显示 Dynamic Agent 标识和权限模式下拉
+   - 固定 Agent 策略下显示 agent、模型、权限模式下拉；agent 可以覆盖 AUTO tab 当前配置，模型可为空；权限下拉叠加 Auto Accept
+   - agent 下拉的触发器和选项都展示 registry 中的 icon 与 display name，与 Direct 药丸、侧栏、工作流 Inspector 共用同一身份投影，不得只显示名称或改用通用 Bot 图标；Select 身份槽按 SVG viewBox 原样绘制，会话栏 / 搜索 / 会话头继续使用视觉重量缩放
+   - 不可用 Agent 的原因与 Agent 管理横幅共用 compact raw 首行，不得把 `acp.session-request-failed` 显示成没有具体原因的「请重试」
+   - 动态 Agent 策略下显示 Dynamic Agent 标识；控制面与候选 worker 的权限下拉同样叠加 Auto Accept
    - 显示非必填全局 Goal 输入框
    - 全局 Goal 输入框必须保留用户原始输入，包括词间空格、连续空格、开头空格和输入末尾的临时空格；创建会话 payload 边界只把纯空白输入规范化为未设置，不裁剪非空文本
    - 提供跳转 AUTO tab 的快速入口
@@ -140,7 +142,7 @@
 - 运行模式状态以 workspace 为一级作用域，不使用跨 workspace 共享的单一前端快照；切换草稿目标时先展示该 workspace 的内存快照，并重新读取其持久化配置。
 - Direct 在 workspace 内再以 `agentType` 为二级作用域保存模型和权限。选择 Agent、模型或权限时，保存请求必须显式携带当前 composer 的 `projectId`，不能依赖切换中的默认 workspace 闭包。
 - 同一 workspace 的运行模式写入必须按用户操作顺序串行提交；切回 workspace 重新加载前必须等待该 workspace 已排队的写入完成，避免较早的 Agent 默认配置晚到并覆盖后续模型/权限选择。不同 workspace 的写入可以并行，互不阻塞。
-- 如果上一次选择 AUTO，则复用 composer 中的会话级 AUTO 配置，包括固定策略下的 agent / 模型、权限模式和全局 Goal
+- 如果上一次选择 AUTO，则复用 composer 中的会话级 AUTO 配置，包括固定策略下的 agent / 模型、权限模式、Auto Accept 和全局 Goal
 - 会话级 AUTO 全局 Goal 的持久化编辑态不在每次按键时 trim，避免受控输入框反灌时吞掉空格；创建会话时也不裁剪非空文本，只把纯空白值折叠为未设置
 - AUTO tab 模板另行持久化，只保存模板级 AI-DYNAMIC 配置
 
@@ -181,7 +183,8 @@
 - 会话侧栏启动分为四层接口：`get_conversation_sidebar_bootstrap` 只返回工作空间 identity、置顶 locator、最近工作空间和偏好；当前或用户展开的工作空间再通过 `get_conversation_task_page` 读取首批 Task 摘要；置顶区通过独立 `get_conversation_pinned_task_page` 读取有界摘要；只有 Workflow/AUTO Task 被展开时，才通过 `get_conversation_run_summary_page` 读取 Run 历史。基础身份、首批可见数据和逐项历史不得重新合并成一个原子接口。
 - 置顶 Task 摘要必须独立完成会话导航：点击 Task 使用当前摘要携带的 `projectId + taskUuid/taskId + latestRun.runId`，点击 Run 使用对应 `runId`，统一提交完整 `ConversationPage` locator；不得先从 workspace Task 页反查，也不得要求对应 workspace 已展开或加载。置顶区与 workspace 区的交互 scope 继续独立，导航 locator 只改变 canonical 页面，不合并两处列表的展开或高亮状态。
 - Task 页默认 24 项，使用 `updatedAt + taskId` 稳定 cursor；Run 页默认 20 项，继续使用递减 `runId` cursor。前端已合并 Task 最多保留 120 项、单 Task 已合并 Run 最多保留 100 项。继续加载只能追加去重后的下一页，不得形成无界 DOM、缓存或历史数组。
-- 每个层级必须独立表达 `not-loaded / loading / ready / ready-empty / error`。尚未请求不得显示“暂无会话/暂无运行”，已有可用数据的后台刷新不得清空内容；错误只影响对应 workspace、置顶区或 Run 历史，并在原位置提供重试。
+- 每个层级必须独立表达 `not-loaded / loading / ready / ready-empty / error`。尚未请求不得显示“暂无会话/暂无运行”，已有可用数据的后台刷新不得清空内容或把侧栏降回全局 loading；错误只影响对应 workspace、置顶区或 Run 历史，并在原位置提供重试。
+- App 级 `bootstrap` 是混合袋。语言、浏览器、外观等 preference 补丁和 updater 状态只更新对应偏好投影，不得重新触发会话侧栏 bootstrap，也不得重订会话事件订阅。侧栏身份加载只在会话壳首次就绪或用户显式重试时发生。
 - 同一资源同时只允许一个请求；所有异步提交都按资源 generation 校验。删除 Task、移除 workspace、置顶关系变化或 bootstrap 重置必须在发起 mutation 时作废相关 generation，迟到页不得把已删除实体或旧 pin 投影写回。Task 合并按 `projectId + taskUuid` 去重，只有历史缺少 UUID 时才退回 `taskId`；Run 合并在 Task identity 内按 `runId` 去重。
 - 单条损坏 Task/Run 通过结构化 `errors` 隔离，不能阻断同页其他条目。反馈会话选择器等非侧栏消费者也只能组合轻量 bootstrap 与每个 workspace 的有界首批 Task 摘要，不得借用全量历史接口。
 - Task 页从 SQLite `tasks.updated_at` 读取轻量活动投影，按活动时间递减、再按递减 `taskId` 稳定分页；canonical Task 目录身份仍由文件系统枚举，索引缺行或不可用不得隐藏 Task，缺少活动投影的历史 Task 暂按递减 `taskId` 排在已有活动时间之后。Task 摘要只读取当前页 `task.json` 和各项最新序号 Run，不扫描页外 `run.json`。Run 分页继续只按递减 `runId`，不建立 Run 活动索引。
@@ -249,13 +252,14 @@
 - 快速会话模式固定按 `Direct / 工作流 / AUTO` 排列；三种模式各自保留配置，切换模式不清空正文和附件。
 - Direct 配置区使用 Agent icon 列表。当前 Agent 展示 icon + 名称，其他 Agent 只展示 icon；可用 Agent 与不可用 Agent 分别保持其注册表内的既有顺序并连续排列，两组同时存在时使用一条低对比竖线分隔。不可用 Agent 保留诊断提示但不能选中。
 - Direct 没有任何可选 Agent 时，空状态在提示文案旁展示紧凑的“+”按钮；按钮使用现有会话导航进入 Agent 管理页，用户添加完成后可返回继续当前快速会话草稿。
-- Direct 的模型和权限模式位于 composer 右下角、发送按钮之前，不复用 AUTO 的大配置面板；两者的空选项统一显示为“不指定”，发起会话前允许在具体值与“不指定”之间切换。
+- Direct 的模型和权限模式位于 composer 右下角、发送按钮之前，不复用 AUTO 的大配置面板；两者的空选项统一显示为“不指定”，发起会话前允许在具体值与“不指定”之间切换。权限下拉同时叠加 Auto Accept 复选框，默认关闭，可与原生 mode 同时选中。
 - composer 主体宽度随右侧内容区增长，但保留桌面端可读上限和响应式左右 gutter；底部附件/工作空间组与 Direct 模型/权限/发送组按组参与换行，选择器允许在合理最小宽度内弹性收缩。窗口变窄、侧边栏展开、系统字体或显示缩放增大时，后组应完整下移到下一行，禁止与工作空间控件重叠或溢出输入框。
-- Direct 不在运行模式管理页出现，也不展示指向该页的“去配置 / 修复”按钮；Agent、模型、权限和对应校验均在快速会话 composer 内闭环。
-- Direct 的模型和权限记忆范围是 `workspace + agentType`；切换 Agent 时恢复该 Agent 在当前 workspace 上一次使用的模型和权限。
-- 切换 workspace 后再返回时，必须恢复该 workspace 当前 Direct Agent 及其模型/权限；其他 workspace 的选择不得覆盖当前 workspace。切换期间 composer 的 workspace 与运行模式配置由同一个 App 层 workspace key 驱动，不保留组件内第二份 workspace 选择状态。
+- Direct 不在运行模式管理页出现，也不展示指向该页的“去配置 / 修复”按钮；Agent、模型、权限、Auto Accept 和对应校验均在快速会话 composer 内闭环。
+- Direct 的模型、权限和 Auto Accept 记忆范围是 `workspace + agentType`；切换 Agent 时恢复该 Agent 在当前 workspace 上一次使用的模型、权限和 Auto Accept。`thought_level` / `model_config` 的已选值按 `(agent, modelId)` 记在 `modelBoundOverrides[modelId]`：离开模型时覆盖写入当时状态；第一次访问某模型从当前已选值种子；该模型已有空槽则还原为空，不得拿别的模型回填。Grok Extra High 切到 Mini 再切回 Grok 必须还原 Extra High。Mini 目录留不下的档位置空槽，不得拿 Grok 的值回填 Mini。
+- 切换 workspace 后再返回时，必须恢复该 workspace 当前 Direct Agent 及其模型/权限/Auto Accept；其他 workspace 的选择不得覆盖当前 workspace。切换期间 composer 的 workspace 与运行模式配置由同一个 App 层 workspace key 驱动，不保留组件内第二份 workspace 选择状态。
 - 快速对话 composer 切换 workspace 属于导航上下文切换，不结束未提交草稿生命周期；无论从 composer 工作空间选择器还是左侧工作空间“新会话”入口切换，正文、图片及其他附件都必须原样保留。只有提交成功或用户明确执行清空/放弃操作时才清理草稿。
-- Direct 会话创建后 Agent 身份不可修改；更换 Agent 等价于创建新的 Direct 会话。会话内模型与权限模式分别使用独立显式 override：未指定时不干预 Agent 当前配置，选择具体值后不再允许回到“不指定”，但可以继续切换其他具体值。
+- Direct 会话创建后 Agent 身份不可修改；更换 Agent 等价于创建新的 Direct 会话。会话内模型与权限模式分别使用独立显式 override：未指定时不干预 Agent 当前配置，选择具体值后不再允许回到“不指定”，但可以继续切换其他具体值。会话内切模型使用本会话 snapshot 上的 `modelBoundOverrides`，规则与作者态相同，但只属于该 session，不得写回主页 Direct 记忆。会话内改 Auto Accept 同样只写该 ACP session。
+- 发起 Direct 会话时以 `session/new` 活目录为准：作者态思考强度若只是 option id 变了、档位还在，则 remap 后下发；活目录没有的 `thought_level` / `model_config`，或档位不在可选列表中，都回滚为不指定并继续发送，timeline 分割线写「当前模型暂不支持配置：{{names}}。系统已将其回滚为不指定。可停止对话后修改。」两侧横线使用主题 `border`、最低 1.5rem，文案先占用横线空间，横线到最低长度后才换行。`names` 带 option id，例如「思考强度（effort） · 深度思考（thinking） · 上下文（context）」。作者态 `model_config` 来自所选模型最后一次观测（`modelBoundCatalogs[modelId]`，由 Doctor 或正式会话活目录写入）。已观测的 Grok 展示 Grok 的 Fast，Luna 展示 Luna 的 Context / Fast；从未观测过的模型先复用当前这份配置（最后一次 Doctor 或会话观测）去发起，返回后再写入该模型缓存。工作流绑定注入不得因作者态当前表缺少这些绑定项而 fail-closed；工作流编辑器保存校验与 Inspector 菜单共用所选模型投影目录，不得用 Doctor 当前表把 Grok 的 effort / Fast 报成不属于当前 Agent。不支持的项带进 executable，由 `session/new` 回滚。AUTO / 工作流 runtime continue 只传 snapshot 显式覆盖，不得把冻结 `config_options` 再 apply 进已回滚的会话；新节点按已观测 `modelBoundCatalogs[modelId]` 静默 retain。已建立会话的 composer：活目录属于所选模型且带了绑定行时用活目录；否则先本会话 `modelBoundCatalogs[modelId]`，再读同一 Agent 共用的作者态 `modelBoundCatalogs[modelId]`。点选绑定项按同一份投影目录校验并写入 snapshot，不得用上一模型活目录报配置不可用。`set_acp_session_model` 不改挂 live `configOptions.model.currentValue`。真正 apply 模型时 runtime 还原本会话或作者态 catalog，不把省略表写成目标模型。较新 Doctor 的当前表不得盖住本会话活目录。已选值仍只在本会话 `modelBoundOverrides`，不写回主页。会话内切模型由 Rust snapshot 收敛 override，前端只乐观改模型 id。
 - Direct 侧边栏 task 行使用 Agent icon 代替 run 成功/暂停/失败状态点；当前 turn 活跃时由 task 级 activity 驱动 icon 低强度呼吸，相对时间来自 `lastActivityAt`。工作流和 AUTO 继续使用 run 状态点。
 - Direct task 行点击后直接进入最近会话，不渲染 `run-00x` 子列表；底层 run 仅作为内部执行与存储结构。
 - Direct 的置顶区、workspace 区和搜索结果使用同一 Agent identity VM，不允许前端组件自行从 metadata 重复推断。

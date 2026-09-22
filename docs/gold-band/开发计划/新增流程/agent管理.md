@@ -1,9 +1,23 @@
 现在应用程序的侧边栏是任务编排、知识库、模型管理
+- 2026-09-20：AUTO / AI-DYNAMIC runtime continue 只传 snapshot `configOptionOverrides`，不得把冻结作者态 `config_options` 再 merge 回来；新节点按已观测 `modelBoundCatalogs[modelId]` 静默 retain。Direct 运行中追问走 prompt queue，不会再 apply 作者态 leftover。
+- 2026-09-20：工作流编辑器保存校验按所选模型的 `modelBoundCatalogs` 投影判定 `thought_level` / `model_config`，与 Inspector 菜单同一份目录；不得用 Doctor 当前表把 Grok 的 effort / Fast 报成不属于当前 Agent。
+- 2026-09-19：配置展示名带 option id，例如「思考强度（effort）」；名称与 id 仅大小写不同时不重复。菜单与回滚分割线共用标签。
+- 2026-09-19：复合菜单一条 `thought_level` 标「思考强度」；多条时 `thinking`/`effort` 中文为「深度思考」「思考强度」，`context` 为「上下文」。英文保持协议名。
+- 2026-09-19：正式会话活目录回写作者态当前表：更新诊断 `configOptions` 的 `model.currentValue` 与绑定行，保留模型/权限 options 列表和 `checked_at`。未观测模型复用最后一次观测（Doctor 或会话），已观测模型仍只画自己的 `modelBoundCatalogs`。
+- 2026-09-19：发起会话不再用 Doctor 当前表拦截 `thought_level` / `model_config`；不支持的项由 `session/new` 回滚为不指定。若仍出现非绑定类 `option-unsupported`，显示「当前模型不支持这项配置」，不再落到「操作失败，请重试」。
+- 2026-09-19：会话与作者态统一按 `modelBoundCatalogs[modelId]` 缓存。已观测只画自己的表；未观测复用当前配置发起，返回后更新该模型缓存。会话栏读本会话 snapshot 的 map，不得把省略表时的上一模型目录写成当前模型。分割线为「当前模型暂不支持配置：{{names}}。系统已将其回滚为不指定。可停止对话后修改。」
+- 2026-09-18：作者态按 `modelBoundCatalogs[modelId]` 缓存每个模型的 `thought_level` / `model_config`；Doctor 与正式会话活目录都可写入。发起会话时 `session/new` 活目录若已不含作者态 option id，或值不在可选列表中，按切模型同一规则 remap 思考强度或回滚为不指定；分割线写出「当前模型暂不支持配置：{{names}}。系统已将其回滚为不指定。可停止对话后修改。」。已观测模型不得把另一模型的 `model_config` 画进所选模型。
+- 2026-09-18：Select / 列表式 Agent 选择器的触发器和选项都展示 registry icon 与 display name；Select 身份槽按 SVG viewBox 原样绘制，会话栏继续保留 Codex 等视觉重量缩放。选择器禁用原因与 Agent 管理横幅使用同一条 compact raw 首行，不再把 `session-request-failed` 显示成没有具体原因的「请重试」。
+- 2026-09-18：Select / 列表式 Agent 选择器的触发器和选项都展示 registry icon 与 display name，与 Direct 药丸、侧栏和画布共用 `AgentIdentityLabel`；不得只显示名称或改用通用 Bot 图标。
+- 2026-09-18：切到 Luna 等 option id 不同的模型时，思考强度按档位 value remap，不得把 High 当成不支持清空；复合菜单固定思考强度在 Context/Fast 之前。Doctor 默认模型的依赖项不得覆盖另一模型的会话目录。
+- 2026-09-18：作者态切模型时保留当前思考强度 / Fast；发起会话后若新模型目录不支持，回滚为不指定并在该节点/会话 timeline 写入分割线 `systemNotice`。Doctor 默认模型的依赖项不得覆盖另一模型的会话目录。
+- 2026-09-18：Composer 按官方 `category=model_config` 把 Fast 纳入与思考强度同一复合下拉；Doctor 默认模型的依赖项不得覆盖另一模型的会话目录。
+- 2026-09-15：Doctor 与正式 ACP 连接共用全局 `initialize` 客户端能力，新增 `_meta.parameterizedModelPicker`。依赖该声明才展开思考强度 / 模型参数的 Agent，诊断目录与运行期 `configOptions` 必须一致；不按 Agent ID 分叉 handshake。
 你现在先新增个agent管理吧
 agent管理主要是负责管理支持接入的ACP agent
 当前改为维护构建期精选 ACP Agent Catalog，固定提供 `claude-acp`、`codex-acp`、`cursor`、`gemini`、`codebuddy-code`、`goose`、`qwen-code`、`opencode`、`kimi`、`amp-acp`、`pi-acp` 十一类模板，并支持用户自定义 ACP Agent；GLM 不进入本轮范围
 agent管理页面主要就是agent卡片和新增agent按钮
-agent卡片支持删除、修改、环境诊断操作（检查agent环境是否正常，提供手动检测能力，后台每1分钟自动检测一次agent环境），并显示agent的诊断状态（最好用对应图标）；doctor 失败时在状态旁显示问号帮助入口，该帮助入口统一使用随主题变化的浅色 shadcn/ui `Tooltip` 展示错误原因与配置帮助，悬浮或聚焦即可出现；提示参考 ACP Registry 配置命令、参数、环境、网络和认证状态，ACP Registry 链接到 `https://agentclientprotocol.com/get-started/registry`，点击后通过系统默认浏览器打开。卡片内容需要有稳定左右内边距；最近检测时间展示为本地系统时区 `YYYY-MM-DD HH:MM:SS`；手动诊断运行中显示圆形加载动效，完成后根据结果显示数秒成功或异常横幅；成功态横幅与成功状态图标需复用主题 success token，避免页面硬编码颜色；诊断命令 `npx -y @agentclientprotocol/claude-agent-acp@latest` 用于启动 Claude ACP adapter，首次运行可能通过 npm 下载依赖而耗时 1 分钟以上；每个 Agent 每轮诊断的初始化、会话创建、命令发现、清理和周期重试共享 3 分钟预算，结束、失败、超时或客户端关闭都必须退出诊断进程树，不能阻塞客户端
+agent卡片支持删除、修改、环境诊断操作（检查agent环境是否正常，提供手动检测能力，后台每1分钟自动检测一次agent环境），并显示agent的诊断状态（最好用对应图标）；doctor 失败时在状态旁显示问号帮助入口，该入口使用 shadcn/ui `Popover`，点击后展示 raw 原因（ACP JSON-RPC `message`、有界故障 stderr、启动失败 `osError`）与配置帮助，没有原始原因时才回退本地化错误句；提示参考 ACP Registry 配置命令、参数、环境、网络和认证状态，ACP Registry 链接到 `https://agentclientprotocol.com/get-started/registry`，使用产品链接样式，点击后通过 `openWebTarget` 在内置浏览器打开。Agent 管理页复用当前工作空间的 draft 右侧工作区投影，未打开工作区时右栏保持收起。卡片内容需要有稳定左右内边距；最近检测时间展示为本地系统时区 `YYYY-MM-DD HH:MM:SS`；手动诊断运行中显示圆形加载动效，完成后根据结果显示数秒成功或异常横幅，异常横幅只展示「环境诊断未通过：{{reason}}」，`reason` 为 raw 原因首行，完整原因放到问号入口；成功态横幅与成功状态图标需复用主题 success token，避免页面硬编码颜色；诊断命令 `npx -y @agentclientprotocol/claude-agent-acp@latest` 用于启动 Claude ACP adapter，首次运行可能通过 npm 下载依赖而耗时 1 分钟以上；每个 Agent 每轮诊断的初始化、会话创建、命令发现、清理和周期重试共享 3 分钟预算，结束、失败、超时或客户端关闭都必须退出诊断进程树，不能阻塞客户端
 补充诊断环境要求：
 - ACP adapter 与 doctor 必须复用 `process` 模块的跨平台 PATH 解析接口，并以首次出现项为准去重。Windows 优先级固定为“Agent 显式配置 PATH → 当前桌面进程 PATH → 用户注册表 PATH → 系统注册表 PATH → 平台通用目录”；每次创建 ACP 进程前直接通过注册表 API 读取 `HKCU\Environment\Path` 和 `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment\Path`，展开 `%VAR%` 并按大小写不敏感去重，不调用 `reg.exe`。macOS / Linux 优先级固定为“Agent 显式配置 PATH → 用户登录 Shell PATH → 当前桌面进程 PATH → 平台通用目录”；首次使用时从 Unix 账户信息选择默认 Shell，以 `-ilc` 登录交互模式读取环境，设置 2 秒总超时并回收超时进程，成功或失败结果按应用生命周期缓存。Shell profile 噪声通过输出边界隔离，只读取 `PATH`；失败时回退当前进程 PATH。Unix 按大小写敏感语义合并，并补全 `~/.nvm/versions/node/*/bin`、`~/.local/bin`、`~/.cargo/bin`、`~/.volta/bin`、`/opt/homebrew/bin`、`/usr/local/bin` 等通用位置；所有平台都禁止维护 Kimi、Cursor、OpenCode、Scoop、npm 等 Agent 或安装器目录特判。该解析仅位于 doctor / ACP 进程创建边界，不进入会话消息热路径
 - Windows 裸命令 PATH 查找统一限定为 `.exe`、`.com`、`.cmd`、`.bat` 候选，优先原生可执行文件并允许 npm `.cmd` wrapper；忽略 `.ps1` 和无扩展名 Unix shim，避免把 `#!/bin/sh` 文件交给 Win32 `CreateProcess` 后产生 OS error 193。显式带扩展名命令保持原名；PowerShell 脚本必须由用户显式配置 `pwsh` / `powershell -NoProfile -File`
@@ -50,11 +64,36 @@ Agent 实例新增两个独立能力配置：
 - 当前 agent type 直接作为 registry key 使用，因此同一类型只能维护一份配置
 - 节点详情页需要展示当前节点声明的 agent type，便于确认执行来源
 - 工作流创建、修改和模板保存时，Agent 下拉只允许选择已配置且最近一次 doctor 成功的 agent；未诊断或诊断失败的 agent 不能进入 workflow
-- workflow 节点的权限模式只能从当前 agent doctor 返回的 `supportedModes` 中选择；切换 agent 时清空旧权限模式，不做跨 agent 权限模式映射
+- workflow 节点的权限模式只能从当前 agent doctor 返回的 `supportedModes` 中选择；切换 agent 时清空旧权限模式和 Auto Accept，不做跨 agent 权限模式映射
+- Auto Accept 是 client overlay，不是 doctor `supportedModes` 的一项；所有 ACP Agent 的权限下拉都展示同一套开关
 - workflow 画布不得维护内置 provider → icon 硬编码表，必须按 provider 从当前 managed Agent registry 读取实例 icon；这同时覆盖后续 Catalog Agent、自定义 Agent、用户上传 data URI 和空值默认 icon
 - ACP 权限模式与节点 Profile 分层生效：权限模式使用 Agent 实际暴露的 mode API 控制工具授权，Profile 继续约束角色职责。实时切换权限成功后不得改写 Profile；例如 `pf-builtin-plan` 在 `yolo` 下仍然只负责规划。验收时必须同时检查 outbound mode 请求、Agent 响应中的 current mode 与节点 Profile，不能仅根据模型是否愿意改代码判断权限是否生效
 
 ## 本轮实现与验收记录（2026-08-07）
+
+### 2026-09-18 Agent 卡片按列表容器宽度降列
+
+- 根因：卡片网格使用整窗 `md/xl` breakpoint。打开内置浏览器后中间栏变窄，窗口仍是 `xl`，继续强制三列，命令/参数被压成逐字竖排，标题被截成 “Agent …”。属于正确的 1/2/3 列设计没有按容器实现，不是要改工作区折叠阈值。
+- 方案：复用角色列表的 `@container/agent-list` 与 `@2xl` / `@6xl` 阈值；兼容档登记 `agent-list` measured fallback。卡片内部摘要固定两列。integrated Header 用最小标题宽度换行，不再按整窗 `sm` 强行同行。
+- 过度设计评审：不新增列数 state、不改 `centerMinWidth`、不另做卡片布局状态机。
+- 性能评审：完整档只有 CSS container query；兼容档多一个已有 measured observer，只发布离散档位。已配置 Agent 数量为小型列表，无额外请求或全量扫描。
+- 验收：修复前布局契约测试因缺少 `@container/agent-list` 失败，Header 测试因仍使用 `sm:flex-row` 失败。修复后相关 8 个文件 41 项通过。1920 宽窗下，右栏收起时三列；把内置浏览器拖到约 940px 后中间栏 394px 降为单列，标题完整显示「Agent 管理」，命令/参数保持两列摘要，诊断/修改/删除同一行。
+
+### 2026-09-18 Agent 诊断横幅与 raw 原因分层
+
+- 根因：ACP JSON-RPC 失败（如 CodeBuddy `Authentication required`）被收成 `acp.session-request-failed`，`RuntimeErrorInfo.raw` 没有进入诊断 snapshot；横幅又用本地化主句替换了原始原因，问号 Tooltip 同样看不到 ACP `message`。
+- 方案：诊断 snapshot 增加可选 `raw`，doctor 原样保留 ACP 错误对象。Agent 管理异常横幅只显示「环境诊断未通过：{{reason}}」，`reason` 为 ACP `message` / 故障 stderr / `osError` 的首行；异常旁问号 Popover 展示完整原文。工作流、会话和运行模式选择器与横幅使用同一条 compact 首行，不展开完整 stderr。
+- 过度设计评审：复用既有 `DiagnosticError` 与页面 Popover，不新增错误码分类、登录流或第二套诊断状态。
+- 性能评审：`raw` 仅为单次 JSON-RPC 错误对象；Popover 内容在打开后才进入 DOM；不进入会话热路径，无额外轮询或缓存。
+- 验收：`doctor_diagnostic_error_preserves_session_request_raw` 修复前因缺少 `raw` 字段编译失败；前端 copy 测试固定 Authentication required 进入 raw 投影；横幅测试确认不内嵌本地化句和 stderr；问号点击后才出现 raw 与 ACP Registry 链接。
+
+### 2026-09-18 Doctor 对客错误保留有界故障 stderr
+
+- 根因：诊断失败把内部 `Display`（`ACP adapter transport interrupted`）写入 snapshot `reason`；已分类的 adapter 故障 stderr 只进 DEBUG，对客看不到 `ENOENT` / `npm error`。
+- 方案：诊断 snapshot 改为结构化 `error { code, params }`；doctor 将 transport interrupt 映射为 `acp.adapter-exited`，启动失败映射为 `acp.adapter-start-failed` 并保留 OS 文本。连接层缓存有界故障 stderr（2000 字符），doctor 失败时写入 `params.reason`。Agent 管理横幅/帮助 Tooltip 展示本地化主句加原始输出；选择器只展示主句。不改聊天 transport 文案、默认 INFO 策略，也不为 npx 特判。
+- 过度设计评审：复用既有 stderr 分类、RuntimeErrorInfo 和 Git `params.reason` 模式；不新增状态机、队列或持久 identity。
+- 性能评审：故障缓冲有界，仅 doctor 失败路径额外等待最多 250ms 排空 stderr reader；不进入会话热路径，不把全文写入 INFO。
+- 验收：`doctor_initialize_exit_keeps_classified_failure_stderr`、transport/start-failed 映射与 stderr 有界拼接测试通过；桌面 `background_doctor` 4 项通过；前端诊断 copy/横幅及相关 Agent 测试 37 项通过；`tsc` 通过。Doctor `session/new` 超时回归通过。
 
 ### 2026-09-09 Doctor 超时与跨 Agent 隔离
 

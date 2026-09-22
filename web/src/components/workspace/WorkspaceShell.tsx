@@ -3,12 +3,14 @@ import { useTranslation } from 'react-i18next';
 import type { GroupImperativeHandle, Layout, LayoutChangedMeta, PanelImperativeHandle } from 'react-resizable-panels';
 import type { AppConfigVm, ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, DesktopPlatform, DesktopWindowFrameStyle } from '../../types';
 import { ConversationSidebar, type ConversationSidebarWorkspaceRevealRequest } from '../conversation/ConversationSidebar';
+import { ProjectMemorySheet } from '../conversation/ProjectMemorySheet';
 import { saveConversationPreference } from '../../api';
 import { AppTitleBar } from '../AppTitleBar';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { overlayOwnerAttribute, rightWorkspaceOverlayOwner, CollisionBoundaryContext, conversationOverlayCollisionBoundary } from '@/lib/portal-container';
 import {
   isWorkspaceLayoutDiagnosticsEnabled,
   installWorkspaceLayoutDiagnosticShortcut,
@@ -26,10 +28,12 @@ import {
   useRightWorkspace,
   type RightWorkspaceResource,
 } from './right-workspace-context';
+import { BrowserNativeLifecycle, resolveBrowserResourceTransition } from './browser/browser-workspace-hooks';
 import { fileContentStore } from './files/file-content-store';
 import { fileExplorerStore } from './files/file-explorer-store';
 import { WorkspaceFileLinkProvider } from './files/WorkspaceFileLinkProvider';
 import {
+  conversationPageHasDraftWorkspaceScope,
   reduceWorkspaceAutoCollapse,
   resolveWorkspaceCanonicalLayout,
   resolveRightWorkspaceWidthFromLayout,
@@ -56,6 +60,7 @@ interface WorkspaceShellProps {
   platform?: DesktopPlatform | null;
   windowFrameStyle: DesktopWindowFrameStyle;
   appConfig: AppConfigVm;
+  browserPreferences: import('@/types').BrowserPreferences;
   vm: ConversationSidebarVm;
   active: ConversationPage;
   sidebarCollapsed: boolean;
@@ -144,14 +149,17 @@ const LazyAcpImageWorkspacePanel = lazy(() => import('@/components/acp/AcpImageS
 const LazyDraftAttachmentWorkspacePanel = lazy(() => import('./files/DraftAttachmentWorkspacePanel').then((module) => ({ default: module.DraftAttachmentWorkspacePanel })));
 const LazyConversationDirectoryWorkspacePanel = lazy(() => import('./ConversationDirectoryWorkspacePanel').then((module) => ({ default: module.ConversationDirectoryWorkspacePanel })));
 const LazySourceControlWorkspacePanel = lazy(() => import('./source-control/SourceControlWorkspacePanel').then((module) => ({ default: module.SourceControlWorkspacePanel })));
+const LazyBrowserWorkspacePanel = lazy(() => import('./browser/BrowserWorkspacePanel').then((module) => ({ default: module.BrowserWorkspacePanel })));
 const workspaceLayoutDiagnosticsEnabled = isWorkspaceLayoutDiagnosticsEnabled();
 
 function FileWorkspaceIntegration({
   config = FALLBACK_WORKSPACE_FILES,
   layout,
+  browserPreferences,
 }: {
   config?: AppConfigVm['workspaceFiles'];
   layout: AppConfigVm['workspaceLayout']['rightWorkspace']['file'];
+  browserPreferences: import('@/types').BrowserPreferences;
 }) {
   const workspace = useRightWorkspace();
   useEffect(() => {
@@ -206,6 +214,15 @@ function FileWorkspaceIntegration({
       ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazySourceControlWorkspacePanel resource={resource} /></Suspense>
       : null
   )), [workspace.registerResourceRenderer]);
+  useEffect(() => workspace.registerResourceRenderer('browser', (resource: RightWorkspaceResource) => (
+    resource.kind === 'browser'
+      ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyBrowserWorkspacePanel searchEngine={browserPreferences.searchEngine} /></Suspense>
+      : null
+  )), [browserPreferences.searchEngine, workspace.registerResourceRenderer]);
+  useEffect(() => workspace.registerResourceCloseResolver(
+    'browser',
+    (_resource, reason) => resolveBrowserResourceTransition(reason),
+  ), [workspace.registerResourceCloseResolver]);
   useEffect(() => workspace.registerResourceCloseResolver('file', (resource, reason) => (
     resource.kind === 'file'
       ? (reason === 'close' ? fileContentStore.close(resource.key) : fileContentStore.flush(resource.key))
@@ -231,7 +248,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
   );
   const activeConversation = props.active.kind === 'conversation-run' ? props.active : null;
   const rightWorkspaceScope = useMemo(() => {
-    if (props.active.kind === 'conversation-home' || props.active.kind === 'scheduled-task-create') {
+    if (conversationPageHasDraftWorkspaceScope(props.active)) {
       return createDraftConversationWorkspaceScope(props.activeWorkspaceId ?? 'default');
     }
     if (activeConversation) {
@@ -259,7 +276,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
         sourceControlWorkspacePath={props.sourceControlWorkspacePath}
         store={props.conversationWorkspaceStore}
       >
-        <WorkspaceFileLinkProvider>
+        <WorkspaceFileLinkProvider browserPreferences={props.browserPreferences}>
           <WorkspaceShellLayout {...props} />
         </WorkspaceFileLinkProvider>
       </RightWorkspaceProvider>
@@ -274,6 +291,7 @@ function WorkspaceShellLayout({
   platform,
   windowFrameStyle,
   appConfig,
+  browserPreferences,
   vm,
   active,
   sidebarCollapsed,
@@ -309,6 +327,7 @@ function WorkspaceShellLayout({
     WORKSPACE_SIDEBAR_MAX_WIDTH,
   );
   const shellRef = useRef<HTMLDivElement>(null);
+  const [conversationCollisionBoundary, setConversationCollisionBoundary] = useState<HTMLElement | null>(null);
   const panelGroupElementRef = useRef<HTMLDivElement>(null);
   const panelGroupRef = useRef<GroupImperativeHandle | null>(null);
   const compactSheetContentRef = useRef<HTMLDivElement>(null);
@@ -324,6 +343,11 @@ function WorkspaceShellLayout({
   const handledOpenRevisionRef = useRef(workspace.openRevision);
   const handledWorkspaceScopeRef = useRef(workspace.scopeKey);
   const [compactSheetOpen, setCompactSheetOpen] = useState(false);
+  const [memoryWorkspace, setMemoryWorkspace] = useState<{ projectId: string; name: string } | null>(null);
+  const openProjectMemory = useCallback((workspace: { projectId: string; name: string }) => {
+    setCompactSheetOpen(false);
+    setMemoryWorkspace(workspace);
+  }, []);
   const autoCollapseStateRef = useRef<WorkspaceAutoCollapseState>({
     previousWidth: 0,
     left: false,
@@ -675,7 +699,17 @@ function WorkspaceShellLayout({
       <FileWorkspaceIntegration
         config={appConfig.workspaceFiles}
         layout={appConfig.workspaceLayout.rightWorkspace.file}
+        browserPreferences={browserPreferences}
       />
+      <BrowserNativeLifecycle
+        scopeKey={workspace.scopeKey}
+        presented={rightWorkspacePresented}
+        autoCollapsedHidden={rightWorkspaceCompact && !compactSheetOpen}
+        available={rightWorkspaceAvailable}
+        requestedOpen={workspace.requestedOpen}
+        activeIsBrowser={activeRightResource?.kind === 'browser'}
+      />
+      {memoryWorkspace && <ProjectMemorySheet key={memoryWorkspace.projectId} {...memoryWorkspace} onClose={() => setMemoryWorkspace(null)} />}
       <AppTitleBar
         trailingContent={titleBarTrailingContent}
         appName={appName}
@@ -722,6 +756,7 @@ function WorkspaceShellLayout({
               onDeleteTask={deleteTask}
               onNewConversationInWorkspace={onNewConversationInWorkspace}
               onAddWorkspace={onAddWorkspace}
+              onOpenProjectMemory={openProjectMemory}
               onRemoveWorkspace={onRemoveWorkspace ? removeWorkspace : undefined}
               onRetryBootstrap={onRetryBootstrap}
               onRequestWorkspaceTasks={onRequestWorkspaceTasks}
@@ -747,8 +782,15 @@ function WorkspaceShellLayout({
           )}
           groupResizeBehavior={autoCollapse.rightOwnsWindowResize ? 'preserve-pixel-size' : 'preserve-relative-size'}
         >
-          <main data-theme-wallpaper-slot="workspace" className={cn('relative flex h-full min-w-0 flex-col overflow-hidden border-t border-sidebar-border bg-gold-workspace', showLeft && 'rounded-tl-2xl border-l')}>
-            {children}
+          <main
+            ref={setConversationCollisionBoundary}
+            data-overlay-collision-boundary={conversationOverlayCollisionBoundary}
+            data-theme-wallpaper-slot="workspace"
+            className={cn('relative flex h-full min-w-0 flex-col overflow-hidden border-t border-sidebar-border bg-gold-workspace', showLeft && 'rounded-tl-2xl border-l')}
+          >
+            <CollisionBoundaryContext.Provider value={conversationCollisionBoundary}>
+              {children}
+            </CollisionBoundaryContext.Provider>
           </main>
         </ResizablePanel>
         <ResizableHandle
@@ -796,6 +838,7 @@ function WorkspaceShellLayout({
           side="right"
           tabIndex={-1}
           className="flex w-[min(92vw,44rem)] flex-col gap-0 p-0 focus:outline-none sm:max-w-none"
+          overlayProps={{ [overlayOwnerAttribute]: rightWorkspaceOverlayOwner }}
           onOpenAutoFocus={(event) => {
             event.preventDefault();
             compactSheetContentRef.current?.focus({ preventScroll: true });

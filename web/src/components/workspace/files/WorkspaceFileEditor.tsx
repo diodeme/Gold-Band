@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import CodeMirror, { basicSetup, type ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import { historyField } from '@codemirror/commands';
 import { foldGutter } from '@codemirror/language';
@@ -11,7 +11,7 @@ import {
   keymap,
   lineNumbers,
 } from '@codemirror/view';
-import { Check, Code2, Copy, Eye } from 'lucide-react';
+import { Check, Code2, Copy, Eye, Globe, LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -57,11 +57,13 @@ interface WorkspaceFileEditorProps {
   onLocationAdjusted?: (adjusted: boolean) => void;
   markdownMode?: MarkdownEditorMode | null;
   markdownLivePreviewAvailable?: boolean;
+  markdownContentWidth?: 'readable' | 'full';
   onMarkdownModeChange?: (mode: MarkdownEditorMode) => void;
   markdownImages?: ReadonlyMap<string, MarkdownImageState>;
   markdownHasTableImages?: boolean;
   onMarkdownImagePreviewError?: (rawSrc: string, failedToken: string) => void;
   onMarkdownLinkClick?: (href: string) => void;
+  onOpenInBrowser?: () => void | Promise<void>;
 }
 
 export interface EditorViewportAnchor {
@@ -91,6 +93,7 @@ interface MarkdownImagePreviewProfile {
 
 const EMPTY_MARKDOWN_IMAGES = new Map<string, MarkdownImageState>();
 const VIEWPORT_ANCHOR_INSET_PX = 1;
+const FULL_WIDTH_MARKDOWN_STYLE = { '--atomic-editor-measure': '100%' } as CSSProperties;
 
 function sameMarkdownImagePreviewProfile(
   left: MarkdownImagePreviewProfile | null,
@@ -270,11 +273,13 @@ export function WorkspaceFileEditor({
   onLocationAdjusted,
   markdownMode = null,
   markdownLivePreviewAvailable = true,
+  markdownContentWidth = 'readable',
   onMarkdownModeChange,
   markdownImages = EMPTY_MARKDOWN_IMAGES,
   markdownHasTableImages = false,
   onMarkdownImagePreviewError,
   onMarkdownLinkClick,
+  onOpenInBrowser,
 }: WorkspaceFileEditorProps) {
   const { t } = useTranslation();
   const editorRef = useRef<ReactCodeMirrorRef>(null);
@@ -314,6 +319,7 @@ export function WorkspaceFileEditor({
   const [activeEditorView, setActiveEditorView] = useState<EditorView | null>(null);
   const [modeTransitionPending, setModeTransitionPending] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [openingInBrowser, setOpeningInBrowser] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancelPendingViewportMeasure = useCallback(() => {
     const pendingFrame = pendingViewportMeasureFrameRef.current;
@@ -682,16 +688,33 @@ export function WorkspaceFileEditor({
     onMarkdownModeChange(nextMode);
   };
 
+  const openInBrowser = async () => {
+    if (!onOpenInBrowser || openingInBrowser) return;
+    setOpeningInBrowser(true);
+    try {
+      await onOpenInBrowser();
+    } finally {
+      setOpeningInBrowser(false);
+    }
+  };
+
+  const showMarkdownCopy = Boolean(markdownMode);
+  const canSwitchMarkdownMode = Boolean(markdownMode && onMarkdownModeChange);
+  const showEditorOverlay = showMarkdownCopy || Boolean(onOpenInBrowser);
+
   return (
-    <div data-theme-role="editor" className="relative h-full min-h-0">
-      {markdownMode ? (
+    <div data-theme-role="editor" className="relative h-full min-h-0 min-w-0 w-full">
+      {showEditorOverlay ? (
         <div className="absolute right-2 top-2 z-20 flex items-center gap-0.5 rounded-md border border-border/50 bg-background/88 p-0.5 shadow-sm backdrop-blur">
+          {showMarkdownCopy ? (
+            <>
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
                 size="icon"
                 variant="ghost"
                 className="size-6"
+                data-markdown-copy-source="true"
                 onClick={() => void copySource()}
                 aria-label={t('workspace.filesPanel.copyMarkdownSource')}
               >
@@ -700,12 +723,14 @@ export function WorkspaceFileEditor({
             </TooltipTrigger>
             <TooltipContent>{t(copied ? 'workspace.filesPanel.markdownSourceCopied' : 'workspace.filesPanel.copyMarkdownSource')}</TooltipContent>
           </Tooltip>
+          {canSwitchMarkdownMode ? (
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
                 size="icon"
                 variant="ghost"
                 className="size-6"
+                data-markdown-mode-toggle="true"
                 disabled={modeTransitionPending || (!previewMode && (!markdownLivePreviewAvailable || !markdownPreviewProfile))}
                 onClick={() => void switchMarkdownMode()}
                 aria-label={t(previewMode ? 'workspace.filesPanel.viewMarkdownSource' : 'workspace.filesPanel.viewMarkdownLivePreview')}
@@ -715,6 +740,30 @@ export function WorkspaceFileEditor({
             </TooltipTrigger>
             <TooltipContent>{t(previewMode ? 'workspace.filesPanel.viewMarkdownSource' : 'workspace.filesPanel.viewMarkdownLivePreview')}</TooltipContent>
           </Tooltip>
+          ) : null}
+            </>
+          ) : null}
+          {onOpenInBrowser ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-6"
+                  data-html-open-in-browser="true"
+                  disabled={openingInBrowser}
+                  aria-busy={openingInBrowser}
+                  onClick={() => void openInBrowser()}
+                  aria-label={t('workspace.filesPanel.openHtmlInBrowser')}
+                >
+                  {openingInBrowser
+                    ? <LoaderCircle className="size-3 animate-spin" />
+                    : <Globe className="size-3" />}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t('workspace.filesPanel.openHtmlInBrowser')}</TooltipContent>
+            </Tooltip>
+          ) : null}
         </div>
       ) : null}
       {editorReady ? (
@@ -738,6 +787,9 @@ export function WorkspaceFileEditor({
           className={previewMode
             ? 'atomic-cm-editor workspace-markdown-live-preview h-full min-h-0 overflow-hidden [&_.cm-editor]:h-full [&_.cm-scroller]:overflow-auto'
             : 'h-full min-h-0 overflow-hidden [&_.cm-editor]:h-full [&_.cm-scroller]:overflow-auto'}
+          style={previewMode && markdownContentWidth === 'full'
+            ? FULL_WIDTH_MARKDOWN_STYLE
+            : undefined}
           aria-label="workspace-file-editor"
         />
       ) : (

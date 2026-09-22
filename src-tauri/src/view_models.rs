@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
     str::FromStr,
@@ -10,9 +10,9 @@ use anyhow::Result;
 use gold_band::acp::client::PromptActivity;
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
-    AppearancePreference, DesktopAvailableUpdate, DesktopLanguage, DesktopUpdateBadgeState,
-    ManagedAgentConfig, ManagedAgentId, McpServerState, PersonalizationPreference, RuntimeConfig,
-    RuntimeLogLevel,
+    AppearancePreference, BrowserPreferences, DesktopAvailableUpdate, DesktopLanguage,
+    DesktopUpdateBadgeState, DiagnosticError, ManagedAgentConfig, ManagedAgentId,
+    McpServerDiagnosticState, PersonalizationPreference, RuntimeConfig, RuntimeLogLevel,
 };
 use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -22,9 +22,9 @@ use gold_band::dynamic::{
 };
 use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::provider::{
-    attachment_meta_for_path, mcp_capabilities_from_capabilities,
-    select_config_options_from_capabilities, supported_models_from_capabilities,
-    supported_modes_from_capabilities,
+    AcpSelectConfigOption, attachment_meta_for_path, mcp_capabilities_from_capabilities,
+    model_bound_catalogs_from_capabilities, select_config_options_from_capabilities,
+    supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use gold_band::runtime::{NodeState, RoundState, RoundTraceStep, RunState, WorkerRefState};
 
@@ -49,6 +49,7 @@ pub struct PreferencesVm {
     pub language: DesktopLanguage,
     pub use_local_claude: bool,
     pub verbose_logging: bool,
+    pub browser: BrowserPreferences,
     pub avatars: AvatarPreferencesVm,
     pub wallpapers: WallpaperPreferencesVm,
 }
@@ -203,6 +204,8 @@ pub struct ManagedAgentVm {
     pub supported_modes: Option<Vec<AcpModeVm>>,
     pub supported_models: Option<Vec<AcpModeVm>>,
     pub config_options: Option<Vec<AcpSelectConfigOptionVm>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_bound_catalogs: Option<BTreeMap<String, Vec<AcpSelectConfigOptionVm>>>,
     /// 是否支持 streamable HTTP MCP 传输（None=未诊断/未知）
     pub mcp_http_supported: Option<bool>,
     /// 是否支持 SSE MCP 传输（None=未诊断/未知）
@@ -259,7 +262,8 @@ pub struct McpServerVm {
     pub headers: Option<Vec<AgentEnvEntryVm>>,
     pub managed: bool,
     pub help_message: Option<String>,
-    pub health_status: Option<String>, // "healthy" | "unhealthy" | "unknown"
+    /// 最近一次显式配置诊断结果；不代表服务器进程正在运行。
+    pub health_status: Option<String>,
     pub health_message: Option<String>,
 }
 
@@ -297,7 +301,7 @@ pub struct SkillContentVm {
 pub struct ManagedAgentDiagnosticVm {
     pub status: String,
     pub available: bool,
-    pub reason: Option<String>,
+    pub error: Option<DiagnosticError>,
     pub checked_at: String,
 }
 
@@ -905,7 +909,11 @@ pub struct AcpSessionConfigVm {
     pub catalog_observed_at: Option<String>,
     pub model_override_id: Option<String>,
     pub permission_mode_override_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_accept: bool,
     pub config_option_overrides: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub model_bound_overrides: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     pub current_model_id: Option<String>,
     pub current_model_name: Option<String>,
     pub current_mode_id: Option<String>,
@@ -913,6 +921,8 @@ pub struct AcpSessionConfigVm {
     pub models: Option<serde_json::Value>,
     pub modes: Option<serde_json::Value>,
     pub config_options: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_bound_catalogs: Option<BTreeMap<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1205,6 +1215,7 @@ pub fn preferences_vm(
     language: DesktopLanguage,
     use_local_claude: bool,
     log_level: RuntimeLogLevel,
+    browser: BrowserPreferences,
     avatars: AvatarPreferencesVm,
     wallpapers: WallpaperPreferencesVm,
 ) -> PreferencesVm {
@@ -1214,6 +1225,7 @@ pub fn preferences_vm(
         language,
         use_local_claude,
         verbose_logging: matches!(log_level, RuntimeLogLevel::Debug | RuntimeLogLevel::Trace),
+        browser,
         avatars,
         wallpapers,
     }
@@ -1325,6 +1337,10 @@ pub fn bootstrap_vm(
 ) -> AppBootstrapVm {
     let client_version_string: String = client_version.into();
     let channel_config = current_channel_config();
+    let browser_preferences = app
+        .load_settings()
+        .map(|settings| settings.browser)
+        .unwrap_or_default();
     AppBootstrapVm {
         repo_root: app.paths.repo_root.to_string(),
         recent_workspaces,
@@ -1334,6 +1350,7 @@ pub fn bootstrap_vm(
             app.config.desktop_language,
             app.config.use_local_claude,
             app.config.log_level,
+            browser_preferences,
             load_resolved_avatar_preferences(
                 &app.paths.user_gold_band_dir(),
                 &app.config.personalization,
@@ -1412,6 +1429,34 @@ pub fn agent_registry_vm(
     AgentRegistryVm { agents, catalog }
 }
 
+fn select_config_option_vms(capabilities: Option<&Value>) -> Vec<AcpSelectConfigOptionVm> {
+    acp_select_config_option_vms(select_config_options_from_capabilities(capabilities))
+}
+
+fn acp_select_config_option_vms(
+    options: Vec<AcpSelectConfigOption>,
+) -> Vec<AcpSelectConfigOptionVm> {
+    options
+        .into_iter()
+        .map(|option| AcpSelectConfigOptionVm {
+            id: option.id,
+            category: option.category,
+            name: option.name,
+            description: option.description,
+            current_value: option.current_value,
+            options: option
+                .options
+                .into_iter()
+                .map(|value| AcpSelectConfigValueVm {
+                    name: value.name.unwrap_or_else(|| value.value.clone()),
+                    value: value.value,
+                    description: value.description,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 pub(crate) fn managed_agent_vm(
     agent_id: &ManagedAgentId,
     config: &ManagedAgentConfig,
@@ -1446,7 +1491,7 @@ pub(crate) fn managed_agent_vm(
             }
             .to_string(),
             available: diagnostic.available,
-            reason: diagnostic.reason.clone(),
+            error: diagnostic.error.clone(),
             checked_at: diagnostic.checked_at.clone(),
         }),
         supported_modes: diagnostic.and_then(|diagnostic| {
@@ -1472,26 +1517,15 @@ pub(crate) fn managed_agent_vm(
             (!models.is_empty()).then_some(models)
         }),
         config_options: diagnostic.and_then(|diagnostic| {
-            let options = select_config_options_from_capabilities(diagnostic.capabilities.as_ref())
-                .into_iter()
-                .map(|option| AcpSelectConfigOptionVm {
-                    id: option.id,
-                    category: option.category,
-                    name: option.name,
-                    description: option.description,
-                    current_value: option.current_value,
-                    options: option
-                        .options
-                        .into_iter()
-                        .map(|value| AcpSelectConfigValueVm {
-                            name: value.name.unwrap_or_else(|| value.value.clone()),
-                            value: value.value,
-                            description: value.description,
-                        })
-                        .collect(),
-                })
-                .collect::<Vec<_>>();
+            let options = select_config_option_vms(diagnostic.capabilities.as_ref());
             (!options.is_empty()).then_some(options)
+        }),
+        model_bound_catalogs: diagnostic.and_then(|diagnostic| {
+            let catalogs = model_bound_catalogs_from_capabilities(diagnostic.capabilities.as_ref())
+                .into_iter()
+                .map(|(model_id, options)| (model_id, acp_select_config_option_vms(options)))
+                .collect::<BTreeMap<_, _>>();
+            (!catalogs.is_empty()).then_some(catalogs)
         }),
         mcp_http_supported: diagnostic.and_then(|d| {
             mcp_capabilities_from_capabilities(d.capabilities.as_ref()).map(|m| m.http)
@@ -4302,7 +4336,9 @@ pub fn acp_session_status(
     )))
 }
 
-fn session_metadata_from_attempt_dir(attempt_dir: &camino::Utf8Path) -> Option<serde_json::Value> {
+pub(crate) fn session_metadata_from_attempt_dir(
+    attempt_dir: &camino::Utf8Path,
+) -> Option<serde_json::Value> {
     let snapshot_path = attempt_dir.join("acp.snapshot.json");
     let session_path = attempt_dir.join("acp.session.json");
     let has_acp_artifact = snapshot_path.exists()
@@ -4801,6 +4837,9 @@ fn merge_timeline_item_revision_vm(
     existing: &AcpUiEventVm,
     mut incoming: AcpUiEventVm,
 ) -> AcpUiEventVm {
+    if existing.kind == "scheduledTrigger" {
+        return existing.clone();
+    }
     if is_provider_history_event_vm(&incoming) && !is_provider_history_event_vm(existing) {
         return existing.clone();
     }
@@ -5768,12 +5807,14 @@ fn is_conversation_semantic_event(
     matches!(
         event.kind.as_str(),
         "userTextDelta"
+            | "scheduledTrigger"
             | "textDelta"
             | "thoughtDelta"
             | "toolCall"
             | "toolCallUpdate"
             | "fileChangeSet"
             | "attemptSeparator"
+            | "systemNotice"
             | "contextCompaction"
             | "error"
     )
@@ -6931,7 +6972,7 @@ fn is_acp_session_stopping_status(status: &str) -> bool {
     )
 }
 
-fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfigVm> {
+pub(crate) fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfigVm> {
     let catalog_observed_at = session
         .get("configCatalogObservedAt")
         .and_then(|value| value.as_str())
@@ -6939,6 +6980,11 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
     let models = session.get("models").cloned();
     let modes = session.get("modes").cloned();
     let config_options = session.get("configOptions").cloned();
+    let model_bound_catalogs = session
+        .get("modelBoundCatalogs")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<BTreeMap<String, serde_json::Value>>(value).ok())
+        .filter(|catalogs| !catalogs.is_empty());
     let model_override_id = session
         .get("modelOverride")
         .and_then(|value| value.as_str())
@@ -6951,8 +6997,20 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let auto_accept = session
+        .get("autoAccept")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
     let config_option_overrides: std::collections::BTreeMap<String, String> = session
         .get("configOptionOverrides")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
+    let model_bound_overrides: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, String>,
+    > = session
+        .get("modelBoundOverrides")
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default();
@@ -6981,7 +7039,9 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
 
     if model_override_id.is_none()
         && permission_mode_override_id.is_none()
+        && !auto_accept
         && config_option_overrides.is_empty()
+        && model_bound_overrides.is_empty()
         && current_model_id.is_none()
         && current_model_name.is_none()
         && current_mode_id.is_none()
@@ -6997,7 +7057,9 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
         catalog_observed_at,
         model_override_id,
         permission_mode_override_id,
+        auto_accept,
         config_option_overrides,
+        model_bound_overrides,
         current_model_id,
         current_model_name,
         current_mode_id,
@@ -7005,6 +7067,7 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
         models,
         modes,
         config_options,
+        model_bound_catalogs,
     })
 }
 
@@ -7778,7 +7841,7 @@ fn newest_first<T>(mut items: Vec<T>) -> Vec<T> {
 
 pub fn mcp_server_list_vm(
     servers: &[gold_band::config::McpServerConfig],
-    health: &std::collections::BTreeMap<String, McpServerState>,
+    health: &std::collections::BTreeMap<String, McpServerDiagnosticState>,
 ) -> Vec<McpServerVm> {
     servers
         .iter()
@@ -7816,15 +7879,16 @@ pub fn mcp_server_list_vm(
                 ),
             };
             let (health_status, health_message) = match health.get(&s.id) {
-                Some(McpServerState::Running { .. }) => (Some("healthy".to_string()), None),
-                Some(McpServerState::Error { message }) => {
+                Some(McpServerDiagnosticState::Passed { .. }) => {
+                    (Some("healthy".to_string()), None)
+                }
+                Some(McpServerDiagnosticState::Failed { message }) => {
                     (Some("unhealthy".to_string()), Some(message.clone()))
                 }
-                Some(McpServerState::AuthRequired { auth_url }) => {
+                Some(McpServerDiagnosticState::AuthRequired { auth_url }) => {
                     (Some("auth_required".to_string()), auth_url.clone())
                 }
-                Some(McpServerState::Stopped) => (Some("stopped".to_string()), None),
-                Some(McpServerState::Starting) => (Some("checking".to_string()), None),
+                Some(McpServerDiagnosticState::Checking) => (Some("checking".to_string()), None),
                 None => (None, None),
             };
             McpServerVm {
@@ -7911,6 +7975,23 @@ mod tests {
     use gold_band::storage::write_json;
     use serde_json::json;
     use tempfile::tempdir;
+
+    #[test]
+    fn mcp_server_list_projects_managed_memory_as_a_standard_stdio_server() {
+        let server = gold_band::memory::mcp::managed_server_config("gold-band.exe".into());
+        let value = serde_json::to_value(mcp_server_list_vm(
+            &[server],
+            &std::collections::BTreeMap::new(),
+        ))
+        .unwrap();
+        let memory = &value.as_array().unwrap()[0];
+
+        assert_eq!(memory["id"], gold_band::memory::mcp::SERVER_NAME);
+        assert_eq!(memory["managed"], true);
+        assert_eq!(memory["enabled"], true);
+        assert_eq!(memory["transport"], "stdio");
+        assert!(memory.get("sessionScoped").is_none());
+    }
 
     #[test]
     fn app_config_vm_exposes_workspace_layout_contract() {
@@ -8023,6 +8104,96 @@ mod tests {
             timing: None,
             raw: Some(json!({ "source": "goldBandPrompt" })),
         }
+    }
+
+    #[test]
+    fn scheduled_trigger_is_visible_while_provider_prompt_is_hidden() {
+        let dir = tempfile::tempdir().unwrap();
+        let path =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut trigger = test_event("scheduledTrigger", "");
+        trigger.id = "scheduled-trigger:occurrence-001".to_string();
+        trigger.content = None;
+        trigger.raw = Some(json!({
+            "source": "goldBandScheduledTrigger",
+            "scheduledTrigger": {
+                "occurrenceId": "occurrence-001",
+                "instructionSummary": "检查主分支状态"
+            }
+        }));
+        let mut hidden_prompt = test_event("userTextDelta", "hidden protocol");
+        hidden_prompt.raw = Some(json!({
+            "source": "goldBandPrompt",
+            "hiddenFromChat": true,
+            "reason": "scheduledTaskExecution"
+        }));
+        std::fs::write(
+            path.as_std_path(),
+            format!(
+                "{}\n{}\n",
+                json!({ "item": trigger }),
+                json!({ "item": hidden_prompt })
+            ),
+        )
+        .unwrap();
+
+        let (events, ..) = parse_timeline_file(&path, false).unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "scheduledTrigger");
+        assert_eq!(
+            events[0].raw.as_ref().unwrap()["scheduledTrigger"]["instructionSummary"],
+            "检查主分支状态"
+        );
+    }
+
+    #[test]
+    fn scheduled_trigger_projection_keeps_the_first_persisted_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut accepted = test_event("scheduledTrigger", "");
+        accepted.id = "scheduled-trigger:occurrence-001".to_string();
+        accepted.content = None;
+        accepted.raw = Some(json!({
+            "source": "goldBandScheduledTrigger",
+            "scheduledTrigger": {
+                "occurrenceId": "occurrence-001",
+                "instructionSummary": "accepted summary"
+            }
+        }));
+        let mut later = accepted.clone();
+        later.raw.as_mut().unwrap()["scheduledTrigger"]["instructionSummary"] =
+            Value::String("later definition summary".to_string());
+        std::fs::write(
+            path.as_std_path(),
+            format!(
+                "{}\n{}\n",
+                json!({
+                    "patchType": "timelinePatch",
+                    "itemId": accepted.id,
+                    "revision": 1,
+                    "op": "upsert",
+                    "item": accepted
+                }),
+                json!({
+                    "patchType": "timelinePatch",
+                    "itemId": later.id,
+                    "revision": 2,
+                    "op": "upsert",
+                    "item": later
+                })
+            ),
+        )
+        .unwrap();
+
+        let (events, ..) = parse_timeline_file(&path, false).unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].raw.as_ref().unwrap()["scheduledTrigger"]["instructionSummary"],
+            "accepted summary"
+        );
     }
 
     #[test]
@@ -9253,6 +9424,51 @@ mod tests {
                 .and_then(|value| value.as_array())
                 .map(Vec::len),
             Some(2)
+        );
+    }
+
+    #[test]
+    fn acp_session_config_exposes_session_model_bound_catalogs() {
+        let config = acp_session_config_vm(&json!({
+            "configOptions": [{
+                "id": "model",
+                "category": "model",
+                "type": "select",
+                "currentValue": "gpt-5.6-luna",
+                "options": [{ "value": "grok-4.6" }, { "value": "gpt-5.6-luna" }]
+            }],
+            "modelBoundCatalogs": {
+                "grok-4.6": [{
+                    "id": "fast",
+                    "category": "model_config",
+                    "type": "select",
+                    "options": [{ "value": "true" }]
+                }]
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(config.current_model_id.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(
+            config.model_bound_catalogs.as_ref().unwrap()["grok-4.6"][0]["id"],
+            json!("fast")
+        );
+    }
+
+    #[test]
+    fn acp_session_config_exposes_session_model_bound_overrides() {
+        let config = acp_session_config_vm(&json!({
+            "modelOverride": "gpt-5-mini",
+            "configOptionOverrides": {},
+            "modelBoundOverrides": {
+                "grok-4.6": { "effort": "extra-high", "fast": "true" }
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            config.model_bound_overrides["grok-4.6"]["effort"],
+            "extra-high"
         );
     }
 

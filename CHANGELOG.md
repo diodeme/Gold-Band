@@ -1,5 +1,122 @@
 # Changelog
 
+## [0.16.0](https://github.com/diodeme/Gold-Band/compare/v0.15.2...v0.16.0) (2026-09-20)
+
+
+### Features
+
+* **acp:** add client-owned Auto Accept overlay ([f9ce4fc](https://github.com/diodeme/Gold-Band/commit/f9ce4fc42777aeb6619807551aa627b23d8c044e))
+* **acp:** keep per-model thought/fast catalogs ([05a754c](https://github.com/diodeme/Gold-Band/commit/05a754cd761997d32ec8c94f4c0bd584e85265dc))
+* **acp:** remap thought level across live catalog option ids ([fd02666](https://github.com/diodeme/Gold-Band/commit/fd0266643d7ff54547d03a1931fdb932e3c79473))
+* **acp:** show Auto Accept on the permission trigger ([e25eee4](https://github.com/diodeme/Gold-Band/commit/e25eee4459d9191c761fcfd67453503939aa0cfa))
+* add shared task memory and WB CI/CD workflow ([bd4708c](https://github.com/diodeme/Gold-Band/commit/bd4708c1424b3f9f93c58fcb60ad7cacb3584c89))
+* **agent:** show picker icons and keep session config on the live catalog ([536eb81](https://github.com/diodeme/Gold-Band/commit/536eb81adb6598d847d100c89e894021e39f1260))
+* **app:** add native browser and complete role prompts ([7ac0c1f](https://github.com/diodeme/Gold-Band/commit/7ac0c1fee66e52bc492d20fa07ff6958442ff8b8))
+* **browser:** expose overlay and local HTML desktop APIs ([62235e0](https://github.com/diodeme/Gold-Band/commit/62235e0e083bf6aed0408829a03fc641090f1bde))
+* **browser:** host local HTML and address overlay in native WebViews ([cd72003](https://github.com/diodeme/Gold-Band/commit/cd72003c440731784910da5ba28b598d62a026ca))
+* **browser:** open local HTML through the bounded file protocol ([e6e5cef](https://github.com/diodeme/Gold-Band/commit/e6e5cefa6d7510690fc9a0978bc6dcbc57d94239))
+* **browser:** open web links in the in-app browser by default ([251797d](https://github.com/diodeme/Gold-Band/commit/251797d607ed17991f6fe340e0f9a9cd2d1e8c37))
+* **browser:** render address suggestions on a native overlay ([d237e28](https://github.com/diodeme/Gold-Band/commit/d237e286c6cecaed412c72a80688e8031b76f351))
+* **composer:** add Gold Band roles to the slash menu ([69c2e52](https://github.com/diodeme/Gold-Band/commit/69c2e521fbc74ad24d60d894918476d824778b39))
+* expand intervention context and workflow memory contracts ([de9ea58](https://github.com/diodeme/Gold-Band/commit/de9ea58be4aa3e5d4303928453050dc1c0ca55a7))
+* **im:** add WeCom intervention context details ([ca38d74](https://github.com/diodeme/Gold-Band/commit/ca38d74e55db4debd723963da1fa6cd8ccd7559c))
+* **im:** add WeCom remote intervention ([7fe9c84](https://github.com/diodeme/Gold-Band/commit/7fe9c84a64d39957c9d35df67cc9232b998bd521))
+* **metrics:** overhaul lifecycle collection and reporting ([9a5cde0](https://github.com/diodeme/Gold-Band/commit/9a5cde09b0d93d78ec0073404093b6dac1b7ca78))
+* **scheduler:** manage accepted execution history by run ([37492fa](https://github.com/diodeme/Gold-Band/commit/37492faf7c64ea25d91eea20c80cb56828b6052f))
+* **workflow:** move commits to dev-test and add WB identity ([c3c761b](https://github.com/diodeme/Gold-Band/commit/c3c761b078013eb93ec68f68b2331929c5e6df8e))
+* **workflow:** 调整 CICD 人工判定和记忆入口 ([8733455](https://github.com/diodeme/Gold-Band/commit/87334550351e29787b0ba593417d7cdc93253045))
+* **workspace:** open tree HTML as source with overlay browser action ([bf3980b](https://github.com/diodeme/Gold-Band/commit/bf3980b50460fbeb31f1d523327ffb0a96e211ed))
+
+
+### Bug Fixes
+
+* **acp:** gate live projection on reading intent, not newer edge ([fe9b671](https://github.com/diodeme/Gold-Band/commit/fe9b6714b9dff14c9b54dbb21a55773b7807c018))
+* **acp:** keep downward follow resume across incomplete scrollend ([2f3addf](https://github.com/diodeme/Gold-Band/commit/2f3addf336146d6b295f9ce1dc68ed735539875b))
+* **acp:** keep live follow during auto head recovery ([756a212](https://github.com/diodeme/Gold-Band/commit/756a21255e42fc75f8c86022ab9322b48b4353bc))
+* **acp:** keep nested agent file changes off the parent timeline ([550f8a7](https://github.com/diodeme/Gold-Band/commit/550f8a79718a3b16b55c5baf1c8c4bac82ac79c7))
+* **acp:** keep selected-model catalogs and continue snapshot overrides ([879fcc5](https://github.com/diodeme/Gold-Band/commit/879fcc5f014240aa1ae1ffdf2fe3195886e2e323))
+* **acp:** keep session config across model switches ([6a6105c](https://github.com/diodeme/Gold-Band/commit/6a6105ce1f0c1198a1ae24bd6e12b332a9becc5c))
+* **acp:** keep structured turnError across persist, orphan, and session-tree reopen ([ab0f0c5](https://github.com/diodeme/Gold-Band/commit/ab0f0c50cdb127283db3f700e992203fe9dc5a2c))
+* **acp:** quarantine late session updates across prompts ([7c22f54](https://github.com/diodeme/Gold-Band/commit/7c22f54a3233c962115aadcef82e21331af2d824))
+* **acp:** recall composer history from visual line edges ([2ffb0ea](https://github.com/diodeme/Gold-Band/commit/2ffb0ea496279a557974ca8179f939d8669528c1))
+* **acp:** reply method-not-found for unknown inbound requests ([af057d3](https://github.com/diodeme/Gold-Band/commit/af057d3f4e135f5f791cbdb622f855a4f9efddf5))
+* **acp:** separate desktop elicitation from IM capabilities ([d555706](https://github.com/diodeme/Gold-Band/commit/d555706a0d39d7e48f848ef4808b79b34da3149d))
+* **acp:** 展示无系统提示元数据的历史会话 ([f0dd11f](https://github.com/diodeme/Gold-Band/commit/f0dd11f54e1991740056cfbbcaba9311f4bf7482))
+* **agent:** localize doctor errors and keep bounded failure stderr ([901f11b](https://github.com/diodeme/Gold-Band/commit/901f11b56e2aec565ce554cb8461c5ce00bbd751))
+* **agent:** open ACP Registry help in the in-app browser ([a8021fb](https://github.com/diodeme/Gold-Band/commit/a8021fbb46ad0f3db455cdca509d08dec175db77))
+* **agent:** persist ACP raw errors in doctor diagnostics ([b86c7ac](https://github.com/diodeme/Gold-Band/commit/b86c7aca9c03cb26bc7b27ad4909da85366cf124))
+* **agent:** restore Codex visual weight in the session list ([1ee97a7](https://github.com/diodeme/Gold-Band/commit/1ee97a74672b8fa2e8591de1fcaa19268bd006dd))
+* **agent:** size Agent cards by the center pane width ([9f7668d](https://github.com/diodeme/Gold-Band/commit/9f7668dd5200bb76f4f961ccdb1fcd3653dd43d4))
+* **browser:** keep address history overlay open without flicker ([985607d](https://github.com/diodeme/Gold-Band/commit/985607d48beec65ece0adc7a3f75cc9f6ffa9dae))
+* **browser:** keep conversation menus from hiding the native page ([9ce12b1](https://github.com/diodeme/Gold-Band/commit/9ce12b1f48469af393b0c846acb04b971937d85f))
+* **browser:** keep restored pages from shrinking to a stale layout ([b57b75e](https://github.com/diodeme/Gold-Band/commit/b57b75e69421f349d2958f741d7145394fd99ffb))
+* **browser:** serialize navigation and preserve native session lifecycle ([8447bae](https://github.com/diodeme/Gold-Band/commit/8447baed0a33492b28b129c9a9211adb5485abad))
+* **browser:** stop session switches from flashing the native page ([75c2aa1](https://github.com/diodeme/Gold-Band/commit/75c2aa12066c4697a69e2a1790e875b3d0e311a3))
+* **build:** stamp Windows publisher from channel product name ([4b6d3d6](https://github.com/diodeme/Gold-Band/commit/4b6d3d6590c795e9d3ade0763f8f134815ca7134))
+* **cicd:** treat subsystem numbers as user-defined memory ([a72f485](https://github.com/diodeme/Gold-Band/commit/a72f48508ada9540d9e35036650b56a2a48d400a))
+* **conversation:** show workspace name in branch search placeholder ([6cf66a8](https://github.com/diodeme/Gold-Band/commit/6cf66a871d7122ecf313c6a7fca29cc80f29fa8d))
+* **desktop:** patch tao to avoid PeekMessageW lock reentrancy ([b242ac4](https://github.com/diodeme/Gold-Band/commit/b242ac4cb98f06a01159867b41f95c7bb57e3285))
+* **git:** identify supported Git from noisy version output ([3912d4b](https://github.com/diodeme/Gold-Band/commit/3912d4b96ac71aab01ef10ce12ada7bba8c0aa88))
+* **im:** merge main and isolate optional runtime ([5a8d193](https://github.com/diodeme/Gold-Band/commit/5a8d1938b6e869edde8a8030de70fea0ce11138f))
+* **im:** publish manual check intervention events ([d489bde](https://github.com/diodeme/Gold-Band/commit/d489bdecbcd477d188c5404151c0a9e99eeea822))
+* **mcp:** separate memory MCP definition, diagnostics and session binding ([adf9efe](https://github.com/diodeme/Gold-Band/commit/adf9efeff6e3f2da5315273414b5767bb07f42a0))
+* **memory:** harden task lifecycle and conflict projection ([b135852](https://github.com/diodeme/Gold-Band/commit/b1358527dd69dc8a2a80be988739103b068fa54b))
+* **memory:** isolate direct prompts and load memory on demand ([64a3eab](https://github.com/diodeme/Gold-Band/commit/64a3eab56c32ee3f2e89135ee4d634b1e3c93710))
+* **memory:** make MCP write operations explicit ([49b042c](https://github.com/diodeme/Gold-Band/commit/49b042c84558c5ff15f57e6c8b6d6621938ea750))
+* **observability:** keep runtime.log from drowning in adapter noise ([7e12403](https://github.com/diodeme/Gold-Band/commit/7e124030655ee49c405b9af45707051feeb98890))
+* **profiles:** require per-run CI/CD confirmation ([39f1d37](https://github.com/diodeme/Gold-Band/commit/39f1d37c008191ad6e8ace1a4b16a6b6fd2ad72a))
+* **profiles:** require per-run CI/CD confirmation ([d831c8a](https://github.com/diodeme/Gold-Band/commit/d831c8a0f3ad9acfc8d3e30f3867c85ebd31f768))
+* **profiles:** require per-run CI/CD confirmation ([093fe1f](https://github.com/diodeme/Gold-Band/commit/093fe1f3b3660bcc39467e9c7e65996adbb2acfb))
+* **scheduler:** reconcile execution history with main ([970217b](https://github.com/diodeme/Gold-Band/commit/970217b352f8ab6258930d6ba3e1dbff287530fc))
+* **settings:** cache IM settings so opening settings does not flash loading ([ed16803](https://github.com/diodeme/Gold-Band/commit/ed168036cb6884ae2d053fa9dac6d977c9317374))
+* **source-control:** fill PR overview and hide inert source toggle ([a499195](https://github.com/diodeme/Gold-Band/commit/a499195b211a5c02f831c0ee8f8f51c056d4bfc0))
+* **ui:** stop overflow tooltips from stealing pointer hits ([a689e63](https://github.com/diodeme/Gold-Band/commit/a689e63d281f2743e2bcb63f61c9524090d171d1))
+* **window:** reattach undecorated resize overlay after unstable webviews ([455a373](https://github.com/diodeme/Gold-Band/commit/455a373c7d5a37681a448f74466d80ea423afff1))
+
+## [0.15.2](https://github.com/diodeme/Gold-Band/compare/v0.15.1...v0.15.2) (2026-09-11)
+
+
+### Features
+
+* **acp:** preserve complete drafts across history navigation ([5e083a7](https://github.com/diodeme/Gold-Band/commit/5e083a714da572762fceb5af651e19350d2d2b6f))
+* **chat:** add session input history navigation ([53491fc](https://github.com/diodeme/Gold-Band/commit/53491fc1d0f46c302fbc46464aad3d871fc17e6d))
+* **profiles:** add built-in WeTest CI/CD role ([ce28897](https://github.com/diodeme/Gold-Band/commit/ce28897626adb71991d8bf86d471c52eaf603876))
+* **profiles:** add built-in WeTest CI/CD role ([7f92291](https://github.com/diodeme/Gold-Band/commit/7f922919bff4e797ad7c2611f0f907c1492dac8a))
+
+
+### Bug Fixes
+
+* **acp:** clear stale run errors during follow-up ([a4ebbd4](https://github.com/diodeme/Gold-Band/commit/a4ebbd479be22beb54da65fbfda6998b9bc95d33))
+* **acp:** decouple error ownership from prompt submission mode ([fd481e9](https://github.com/diodeme/Gold-Band/commit/fd481e95fb9b7fa42fdd45ada525d20bd2c6b6d9))
+* **acp:** keep raw frame controls fixed while scrolling ([bd9875d](https://github.com/diodeme/Gold-Band/commit/bd9875d50f3410eda1bcb413f9fe03333aae77e6))
+* **acp:** make context compaction starts idempotent ([d81a26a](https://github.com/diodeme/Gold-Band/commit/d81a26abc92e5663c097da76287fc477ce4f0f2a))
+* **acp:** preserve failure reasons and allow manual recovery ([d848896](https://github.com/diodeme/Gold-Band/commit/d848896fa040994e1481c9a9b77483596e8ab862))
+* **acp:** return undelivered prompt drafts to composer ([18b11d6](https://github.com/diodeme/Gold-Band/commit/18b11d69c42c8f2cfec91d6790eb88da5933bf08))
+* **acp:** unblock input history merge checks ([c820bea](https://github.com/diodeme/Gold-Band/commit/c820beade6050df284e2385cc02198a3a228d50c))
+* **agent-doctor:** bound diagnostics and isolate agents ([563438e](https://github.com/diodeme/Gold-Band/commit/563438ecd3edf997d26129c546e703fc967dbbc0))
+* **agent-management:** distinguish catalog launch fields ([d29bfff](https://github.com/diodeme/Gold-Band/commit/d29bfffd1a8a24392dbbaff36b49680d241f269d))
+* **ai-dynamic:** scope resume context to the initial attempt ([94fb3f6](https://github.com/diodeme/Gold-Band/commit/94fb3f637b76562856bbc47c02e8155c1ed11bef))
+* **conversation:** follow successor after manual check ([0c711b5](https://github.com/diodeme/Gold-Band/commit/0c711b58a31e7b1f284ebf28a2f65c67649670e3))
+* **conversation:** isolate successor loading after manual check ([def0fa5](https://github.com/diodeme/Gold-Band/commit/def0fa590f429168c5c5451d63af8bd9a55f25fa))
+* **conversation:** preserve aggregate sidebar run status ([4052fae](https://github.com/diodeme/Gold-Band/commit/4052fae543c2530f256a7121062aa7d6dae216b9))
+* **profiles:** require per-run CI/CD confirmation ([97c3490](https://github.com/diodeme/Gold-Band/commit/97c3490301618064fee89f6f21b3483bfd7faddd))
+* **profiles:** require per-run CI/CD confirmation ([f31031f](https://github.com/diodeme/Gold-Band/commit/f31031f99ae13fe95b94466c9433859f87c0f90b))
+* **runtime:** clarify task continuation in resume prompt ([0cc0554](https://github.com/diodeme/Gold-Band/commit/0cc0554e4fee3043dac4d6494898602be9734982))
+* **runtime:** publish committed run pause notifications ([9a4c81e](https://github.com/diodeme/Gold-Band/commit/9a4c81e723419f9cbd7bab34a83b0d247d472f28))
+* **theme:** restore preference saves and seamless sidebar actions ([019711c](https://github.com/diodeme/Gold-Band/commit/019711c3446ae59a727d6a1431a23eaa484b07da))
+* **ui:** align editable agent field surfaces ([ecba730](https://github.com/diodeme/Gold-Band/commit/ecba73052635c3eb2698a63c3a7a49b67b112c0c))
+* **ui:** group editable and read-only agent fields ([a88cc32](https://github.com/diodeme/Gold-Band/commit/a88cc326fc0fb57f5b7772d5f5aa8c9a0e9cba35))
+
+
+### Performance Improvements
+
+* scope diagnostic refreshes and optimize ACP image reads ([a127ec9](https://github.com/diodeme/Gold-Band/commit/a127ec9a5df9338bc5e23216d70074654c3a08c7))
+
+
+### Miscellaneous Chores
+
+* release 0.15.2 ([65786b2](https://github.com/diodeme/Gold-Band/commit/65786b2597831052548f1081de906d734b822b8d))
+
 ## [0.15.1](https://github.com/diodeme/Gold-Band/compare/v0.15.0...v0.15.1) (2026-09-09)
 
 

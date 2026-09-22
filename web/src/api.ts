@@ -3,6 +3,8 @@ import type { RuntimeApi } from './api/client';
 import type { ResolvedColorScheme } from './types';
 
 export { isTauriRuntime } from './api/shared';
+export function readProjectMemory(projectId: string) { return getRuntimeApi().readProjectMemory(projectId); }
+export function writeProjectMemory(projectId: string, command: import('@/lib/memory').MemoryCommand) { return getRuntimeApi().writeProjectMemory(projectId, command); }
 
 export function checkLocalClaude() {
   return getRuntimeApi().checkLocalClaude();
@@ -393,6 +395,46 @@ export function saveScheduledRuntimeSettings(input: Parameters<RuntimeApi['saveS
   return getRuntimeApi().saveScheduledRuntimeSettings(input);
 }
 
+export function getImSettings() {
+  return getRuntimeApi().getImSettings();
+}
+
+export function startWeComScanAuthorization(sessionId: string) {
+  return getRuntimeApi().startWeComScanAuthorization(sessionId);
+}
+
+export function completeWeComScanAuthorization(sessionId: string) {
+  return getRuntimeApi().completeWeComScanAuthorization(sessionId);
+}
+
+export function cancelWeComScanAuthorization(sessionId: string) {
+  return getRuntimeApi().cancelWeComScanAuthorization(sessionId);
+}
+
+export function setImChannelEnabled(input: Parameters<RuntimeApi['setImChannelEnabled']>[0]) {
+  return getRuntimeApi().setImChannelEnabled(input);
+}
+
+export function saveImNotificationPreferences(input: Parameters<RuntimeApi['saveImNotificationPreferences']>[0]) {
+  return getRuntimeApi().saveImNotificationPreferences(input);
+}
+
+export function resetImChannelBinding(input: Parameters<RuntimeApi['resetImChannelBinding']>[0]) {
+  return getRuntimeApi().resetImChannelBinding(input);
+}
+
+export function reconnectImChannel(input: Parameters<RuntimeApi['reconnectImChannel']>[0]) {
+  return getRuntimeApi().reconnectImChannel(input);
+}
+
+export function deleteImChannel(kind: Parameters<RuntimeApi['deleteImChannel']>[0]) {
+  return getRuntimeApi().deleteImChannel(kind);
+}
+
+export function subscribeImChannelStateUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeImChannelStateUpdates']>>[0]) {
+  return getRuntimeApi().subscribeImChannelStateUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
 // 干预通知：OS Toast「查看详情」点击后由后端转发导航事件，前端订阅做 deep-link。
 export function subscribeInterventionNavigate(listener: Parameters<NonNullable<RuntimeApi['subscribeInterventionNavigate']>>[0]) {
   return getRuntimeApi().subscribeInterventionNavigate?.(listener) ?? Promise.resolve(() => {});
@@ -430,6 +472,10 @@ export function setAcpSessionPermissionMode(projectId: string | null | undefined
   return getRuntimeApi().setAcpSessionPermissionMode(projectId, taskId, runId, roundId, nodeId, attemptId, permissionModeId, outerNodeId, outerAttemptId);
 }
 
+export function setAcpSessionAutoAccept(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, autoAccept: boolean, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().setAcpSessionAutoAccept(projectId, taskId, runId, roundId, nodeId, attemptId, autoAccept, outerNodeId, outerAttemptId);
+}
+
 export function respondAcpPermission(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['respondAcpPermission']>[8], outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().respondAcpPermission(projectId, taskId, runId, roundId, nodeId, attemptId, requestId, optionId, fallback, outerNodeId, outerAttemptId);
 }
@@ -462,8 +508,8 @@ export function showWorkerRef(taskId: string, runId: string, roundId: string, no
   return getRuntimeApi().showWorkerRef(taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
 }
 
-export function saveDesktopPreferences(appearance: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[0], personalization: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[1], language: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[2], useLocalClaude: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[3], verboseLogging: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[4]) {
-  return getRuntimeApi().saveDesktopPreferences(appearance, personalization, language, useLocalClaude, verboseLogging);
+export function saveDesktopPreferences(appearance: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[0], personalization: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[1], language: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[2], useLocalClaude: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[3], verboseLogging: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[4], browser: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[5]) {
+  return getRuntimeApi().saveDesktopPreferences(appearance, personalization, language, useLocalClaude, verboseLogging, browser);
 }
 
 export function saveDesktopAvatar(input: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopAvatar']>[0]) {
@@ -674,8 +720,12 @@ export function deleteScheduledTask(projectId: string, scheduledTaskId: string) 
   return getRuntimeApi().deleteScheduledTask(projectId, scheduledTaskId);
 }
 
-export function listScheduledTaskOccurrences(projectId: string, scheduledTaskId: string, cursor?: string | null, status?: string | null) {
-  return getRuntimeApi().listScheduledTaskOccurrences(projectId, scheduledTaskId, cursor, status);
+export function listScheduledExecutionHistory(projectId: string, scheduledTaskId: string, cursor?: string | null, anchor?: { taskId: string; runId: string } | null) {
+  return getRuntimeApi().listScheduledExecutionHistory(projectId, scheduledTaskId, cursor, anchor);
+}
+
+export function deleteScheduledExecutionHistory(items: import('./types').ScheduledExecutionHistoryDeleteInputVm[]) {
+  return getRuntimeApi().deleteScheduledExecutionHistory(items);
 }
 
 export function getScheduledTaskDiagnostics(projectId: string, scheduledTaskId: string) {
@@ -784,6 +834,10 @@ export function searchWorkspaceFiles(projectId: string, query: string, requestId
 
 export function resolveWorkspaceFileLink(projectId: string, rawHref: string, baseCanonicalPath?: string | null) {
   return getRuntimeApi().resolveWorkspaceFileLink(projectId, rawHref, baseCanonicalPath);
+}
+
+export function browserResolveLocalHtml(input: Parameters<ReturnType<typeof getRuntimeApi>['browserResolveLocalHtml']>[0]) {
+  return getRuntimeApi().browserResolveLocalHtml(input);
 }
 
 export function readFileResource(projectId: string, canonicalPath: string, externalAccessToken?: string | null, preferSource = false) {

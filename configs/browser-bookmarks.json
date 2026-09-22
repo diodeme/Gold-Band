@@ -1,0 +1,18 @@
+{
+  "default": [
+    { "id": "github", "title": "GitHub", "url": "https://github.com/" },
+    { "id": "figma", "title": "Figma", "url": "https://www.figma.com/" },
+    { "id": "mdn", "title": "MDN", "url": "https://developer.mozilla.org/" },
+    { "id": "stackoverflow", "title": "Stack Overflow", "url": "https://stackoverflow.com/" },
+    { "id": "npm", "title": "npm", "url": "https://www.npmjs.com/" }
+  ],
+  "wb": [
+    { "id": "maling", "title": "码灵官网", "url": "http://maling.weoa.com/" },
+    { "id": "ci", "title": "CI平台", "url": "http://rd.weoa.com/" },
+    { "id": "dpms", "title": "DPMS", "url": "http://dpms.weoa.com/" },
+    { "id": "aomp", "title": "AOMP", "url": "http://uat.aompplus.weoa.com/" },
+    { "id": "weapm", "title": "WeAPM", "url": "http://weapm.weoa.com/" },
+    { "id": "pace", "title": "Pace+", "url": "http://pace.weoa.com/" },
+    { "id": "cmdb", "title": "CMDB", "url": "http://uat.cmdb.weoa.com/" }
+  ]
+}

@@ -14,6 +14,10 @@ pub const PROFILE_ACCEPT_ZH_CN: &str = include_str!("prompts/zh-CN/profile/accep
 pub const PROFILE_CLEAN_ZH_CN: &str = include_str!("prompts/zh-CN/profile/clean.md");
 pub const PROFILE_INTERVIEW_ZH_CN: &str = include_str!("prompts/zh-CN/profile/interview.md");
 pub const PROFILE_GRILLME_ZH_CN: &str = include_str!("prompts/zh-CN/profile/GrillMe.md");
+pub const PROFILE_OVERLAY_REQUIREMENT_IDENTITY_ZH_CN: &str =
+    include_str!("prompts/zh-CN/profile/overlays/requirement-identity.md");
+pub const PROFILE_OVERLAY_DEV_TEST_AUTO_COMMIT_ZH_CN: &str =
+    include_str!("prompts/zh-CN/profile/overlays/dev-test-auto-commit.md");
 pub const PROFILE_PLAN_EN: &str = include_str!("prompts/en/profile/plan.md");
 pub const PROFILE_DEV_EN: &str = include_str!("prompts/en/profile/dev.md");
 pub const PROFILE_DEV_TEST_EN: &str = include_str!("prompts/en/profile/dev-test.md");
@@ -24,6 +28,10 @@ pub const PROFILE_ACCEPT_EN: &str = include_str!("prompts/en/profile/accept.md")
 pub const PROFILE_CLEAN_EN: &str = include_str!("prompts/en/profile/clean.md");
 pub const PROFILE_INTERVIEW_EN: &str = include_str!("prompts/en/profile/interview.md");
 pub const PROFILE_GRILLME_EN: &str = include_str!("prompts/en/profile/GrillMe.md");
+pub const PROFILE_OVERLAY_REQUIREMENT_IDENTITY_EN: &str =
+    include_str!("prompts/en/profile/overlays/requirement-identity.md");
+pub const PROFILE_OVERLAY_DEV_TEST_AUTO_COMMIT_EN: &str =
+    include_str!("prompts/en/profile/overlays/dev-test-auto-commit.md");
 pub const RUNTIME_SYSTEM_ZH_CN: &str = include_str!("prompts/zh-CN/runtime/system.md");
 pub const RUNTIME_SYSTEM_EN: &str = include_str!("prompts/en/runtime/system.md");
 pub const RUNTIME_HIDDEN_CONTEXT_ZH_CN: &str =
@@ -66,6 +74,10 @@ pub const RUNTIME_CONTROL_RESUME_WITH_MESSAGE_EN: &str =
 pub const RUNTIME_WORKFLOW_RESUME_ZH_CN: &str =
     include_str!("prompts/zh-CN/runtime/workflow_resume.md");
 pub const RUNTIME_WORKFLOW_RESUME_EN: &str = include_str!("prompts/en/runtime/workflow_resume.md");
+pub const RUNTIME_USER_ROLE_MESSAGE_ZH_CN: &str =
+    include_str!("prompts/zh-CN/runtime/user_role_message.md");
+pub const RUNTIME_USER_ROLE_MESSAGE_EN: &str =
+    include_str!("prompts/en/runtime/user_role_message.md");
 pub const AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN: &str =
     include_str!("prompts/zh-CN/runtime/ai-dynamic/proposal_repair.md");
 pub const AI_DYNAMIC_PROPOSAL_REPAIR_EN: &str =

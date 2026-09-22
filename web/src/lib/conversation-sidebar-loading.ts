@@ -83,6 +83,7 @@ export function createEmptyConversationSidebar(): ConversationSidebarVm {
 }
 
 export function beginConversationSidebarBootstrap(sidebar: ConversationSidebarVm): ConversationSidebarVm {
+  if (sidebar.loadStatus === 'ready' || sidebar.loadStatus === 'ready-empty') return sidebar;
   return { ...sidebar, loadStatus: 'loading' };
 }
 

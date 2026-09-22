@@ -29,10 +29,11 @@
 | 类别 | 内置能力 |
 |---|---|
 | 文本、日志 | CodeMirror 查看、查找、行号、换行和编辑 |
-| Markdown | 项目文件与节点附件卡打开的本轮新增附件默认实时预览编辑，可切换源码并保存；系统提示、用户消息附件、运行目录文件与完全新增的历史文件版本固定只读。两类资源复用同一 AtomEditor/WorkspaceFileEditor 契约并共享模式与视口语义；可编辑资源额外共享撤销历史、revision 与自动保存队列 |
+| Markdown | 项目文件与节点附件卡打开的本轮新增附件默认实时预览编辑，可切换源码并保存；系统提示、用户消息附件、运行目录文件与完全新增的历史文件版本固定只读。两类资源复用同一 AtomEditor/WorkspaceFileEditor 契约并共享模式与视口语义；可编辑资源额外共享撤销历史、revision 与自动保存队列。源码/预览切换按钮只在父级传入 `onMarkdownModeChange` 时出现，禁止画出无法切换的空按钮 |
 | 常见代码与配置 | CodeMirror 按需语言高亮；无语言包时回退纯文本 |
 | PNG、JPEG、WebP、GIF、BMP、ICO | 安全图片预览、缩放、适应窗口、原始大小和拖拽平移；GIF 支持播放/暂停，并在 reduced motion 下默认显示静态首帧 |
 | SVG | Rust 安全栅格化预览，可切换源码编辑 |
+| HTML（`.html` / `.htm`） | 工作空间与运行目录树默认打开 CodeMirror 源码，内容区右上角浮层按钮再打开内置浏览器；会话和 Markdown 中的本地 HTML 引用仍直接进内置浏览器。边界见 [内置浏览器](in-app-browser.md) |
 | PDF、Office、音视频、压缩包、字体、数据库及其他二进制 | 显示明确的不支持状态并提供系统应用打开 |
 
 文件识别以签名、BOM 和内容探测为权威事实，扩展名只辅助选择图标与语言能力；PDF、压缩包等二进制即使碰巧可按 UTF-8 解码也不得进入文本编辑器。文本编码保证 UTF-8、UTF-8 BOM、带 BOM 的 UTF-16 LE/BE，保存时保留 BOM 与 CRLF/LF 语义；无法可靠解码的内容不做有损猜测，也不自动写回。大文件读取和 revision 计算使用流式处理，不为识别或哈希重复完整载入文件。
@@ -50,7 +51,7 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 - Atomic table、Markdown 图片与 README decoration 只在模式 Compartment 内显式重配置，不随 React extensions props 反复重组；Markdown/GFM parser 只位于语言 Compartment。这样 table `StateField` 每次进入预览时都消费同一棵持续增长的语法树，长文档从源码返回预览不会因重新解析尚未完成而退化成原始 Markdown。图片授权状态继续由稳定 `StateField + StateEffect` 更新；源码切到预览前，对当前源码视口及有限 overscan 内已有 preview grant 的图片执行 `HTMLImageElement.decode()`，解码完成或明确失败后再原子提交模式 transaction。图片 URL 与 token 不因模式切换释放，禁止用截图、遮罩、淡入或固定延迟掩盖重挂载闪烁。
 - 合法 GFM 表格使用 Atomic table widget；只有表格单元格本身含图片时才关闭该 widget，防止上游把原始地址直接交给 `<img>`。文档其他位置含图片不影响表格渲染。表格采用详情容器宽度和 fixed layout，长文本在单元格内部换行，不得把 CodeMirror 或文件详情撑出横向滚动。
 - README 常见的单行 `<div|p align="left|center|right">`、闭合标签、`<br>` 和单行 `<img>` 进入安全白名单视图；Markdown HTML 注释属于非展示元数据，在实时预览中隐藏，在 fenced code 中作为示例出现的注释仍正常显示。只解释布局语义，图片仍通过 preview token。其他原始 HTML 显示源码，不使用 `dangerouslySetInnerHTML`。
-- 单独占行的本地 Markdown 图片交给安全图片 widget。网络图片永不进入 `<img>`：普通网络图片显示以 alt 为名称、指向图片 URL 的普通超链接；“图片包在链接中”的 badge 显示以 alt 为名称、严格执行外层目标的普通超链接。目标统一分为本地文件、同文档 `#` 锚点和 HTTP/HTTPS/mailto/tel 外链：本地相对路径复用工作区导航并以当前 Markdown 文件目录为基准，同文档 `#` 由当前编辑器处理，外链通过 Tauri opener 交给系统默认应用，不使用 WebView `window.open`。
+- 单独占行的本地 Markdown 图片交给安全图片 widget。网络图片永不进入 `<img>`：普通网络图片显示以 alt 为名称、指向图片 URL 的普通超链接；“图片包在链接中”的 badge 显示以 alt 为名称、严格执行外层目标的普通超链接。目标统一分为本地文件、同文档 `#` 锚点和 HTTP/HTTPS/mailto/tel 外链：本地相对路径复用工作区导航并以当前 Markdown 文件目录为基准（`.html/.htm` 打开内置浏览器，其余文件打开文件工作区）；同文档 `#` 由当前编辑器处理；`http(s)` 打开内置浏览器；`mailto:` / `tel:` 通过 Tauri opener 交给系统默认应用。不使用主 WebView `window.open`。内置浏览器边界见 [内置浏览器](in-app-browser.md)。
 - 超过配置阈值的 Markdown 自动降级源码模式，避免长文档 decoration、表格和图片 widget 影响输入性能。
 - 详细数据、接口、安全和验收约束见[Markdown 实时预览编辑开发方案](../../../开发计划/新UI/Markdown实时预览编辑开发方案.md)。
 
@@ -97,6 +98,7 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 - 壁纸仅在工作区 surface 可见时预加载；缺失、损坏或由 performance 档关闭时回退语义底色。编辑器正文继续使用独立 editor 字体栈和字号，locale 切换不重载文件内容。
 - 2026-08-17 补齐运行目录 Markdown 能力：运行目录与会话附件接入统一只读 Markdown 适配器，固定只读、默认实时预览、支持源码切换，并统一遵守高亮与实时预览长度阈值；DOM 回归测试固定运行目录 `.md` 的读取 locator、只读属性和模式切换契约。
 - 2026-08-28 新增 `turn-attachment` 交付物资源：同一 turn change set 中的附件/普通变化集合天然互斥，附件点击立即打开独立 Tab，再通过 manifest 身份签发精确外部读写 grant。面板直接复用可编辑 `FileContent`，因此 Markdown 渲染/源码切换、自动保存、CAS 冲突和关闭冲刷不复制第二套实现。
+- 2026-09-17 工作空间与运行目录树中的 `.html/.htm` 默认打开 CodeMirror 源码；右上角浮层按钮 flush 后打开内置浏览器。会话和 Markdown 本地 HTML 引用仍直接进浏览器。不增加 HTML 实时预览模式。
 
 2026-08-09 文件 reveal 已迁移到官方 `tauri-plugin-opener` Rust API。项目工作空间和会话运行目录仍分别使用原有受控 locator 解析路径，只有验证后的 canonical path 会交给 opener；删除 Explorer `/select` 参数拼接和 `xdg-open` 平台分支，使 Finder reveal 成为同一接口的 macOS 实现。
 

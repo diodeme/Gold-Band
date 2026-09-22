@@ -382,7 +382,7 @@ impl Default for GitHubCliService {
     fn default() -> Self {
         Self {
             executable: find_executable_in_path("gh"),
-            git_executable: find_executable_in_path("git"),
+            git_executable: super::resolved_git_executable(),
         }
     }
 }
@@ -1071,7 +1071,11 @@ fn run_bounded_command(
         .args(args)
         .env("LC_ALL", "C")
         .env("GH_PROMPT_DISABLED", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_TERMINAL_PROMPT", "0");
+    if let Some(path) = crate::process::resolved_child_path(None) {
+        command.env("PATH", path);
+    }
+    command
         .stdin(if input.is_some() {
             Stdio::piped()
         } else {

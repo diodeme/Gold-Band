@@ -6,7 +6,9 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::provider::{ConversationPromptInput, UserPromptQuote};
+use crate::provider::{
+    ConversationPromptInput, UserPromptQuote, UserPromptRole, conversation_prompt_has_payload,
+};
 use crate::storage::{read_json, write_json};
 
 pub const PROMPT_QUEUE_FILE_NAME: &str = "acp.prompt-queue.json";
@@ -44,6 +46,8 @@ pub struct QueuedPrompt {
     pub content: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub quotes: Vec<UserPromptQuote>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<UserPromptRole>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachment_paths: Vec<String>,
     pub created_at: String,
@@ -123,7 +127,11 @@ pub fn enqueue_prompt(
     attachment_paths: Vec<String>,
 ) -> Result<QueuedPrompt, PromptQueueError> {
     let input = input.into();
-    if input.display_text.trim().is_empty() && attachment_paths.is_empty() {
+    if !conversation_prompt_has_payload(
+        &input.display_text,
+        attachment_paths.len(),
+        input.role.as_ref(),
+    ) {
         return Err(PromptQueueError::Empty);
     }
     with_typed_queue_lock(attempt_dir, || {
@@ -138,6 +146,7 @@ pub fn enqueue_prompt(
             id,
             content: input.display_text,
             quotes: input.quotes,
+            role: input.role,
             attachment_paths,
             created_at: chrono::Utc::now().to_rfc3339(),
             state: QueuedPromptState::Queued,
@@ -717,6 +726,7 @@ mod tests {
             ConversationPromptInput {
                 display_text: String::new(),
                 quotes: Vec::new(),
+                role: None,
             },
             vec!["C:/temp/context.txt".to_string()],
         )
@@ -728,6 +738,34 @@ mod tests {
             enqueue_prompt(&dir, String::new(), Vec::new()),
             Err(PromptQueueError::Empty)
         );
+    }
+
+    #[test]
+    fn queue_accepts_role_only_payloads_and_restores_the_role_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        let role = UserPromptRole {
+            profile_id: "pf-dev".to_string(),
+            name: "开发".to_string(),
+            content: "完整角色定义".to_string(),
+        };
+        let queued = enqueue_prompt(
+            &dir,
+            ConversationPromptInput {
+                display_text: String::new(),
+                quotes: Vec::new(),
+                role: Some(role.clone()),
+            },
+            Vec::new(),
+        )
+        .unwrap();
+
+        assert!(queued.content.is_empty());
+        assert_eq!(queued.role.as_ref(), Some(&role));
+
+        let restored = take_queued_prompt(&dir, &queued.id).unwrap();
+        assert_eq!(restored.0.role.as_ref(), Some(&role));
+        assert!(restored.0.content.is_empty());
     }
 
     #[test]
@@ -743,6 +781,7 @@ mod tests {
                     source_message_key: "message-1".to_string(),
                     text: "Agent 原文".to_string(),
                 }],
+                role: None,
             },
             Vec::new(),
         )
@@ -769,6 +808,7 @@ mod tests {
                     source_message_key: "textDelta-message-1".to_string(),
                     text: "Agent 原文".to_string(),
                 }],
+                role: None,
             },
             Vec::new(),
         )
@@ -850,6 +890,7 @@ mod tests {
                     source_message_key: "message-1".to_string(),
                     text: "quoted".to_string(),
                 }],
+                role: None,
             },
             vec!["C:/evidence.png".to_string()],
         )

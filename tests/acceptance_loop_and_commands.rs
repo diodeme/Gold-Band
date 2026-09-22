@@ -32,7 +32,7 @@ impl ProviderAdapter for LoopingProvider {
     fn doctor(&self) -> DoctorResult {
         DoctorResult {
             available: true,
-            reason: None,
+            error: None,
             capabilities: None,
         }
     }
@@ -119,7 +119,7 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
                 "claude-acp".to_string(),
                 ProviderDiagnosticSnapshot {
                     available: true,
-                    reason: None,
+                    error: None,
                     checked_at: "2026-08-16T00:00:00Z".to_string(),
                     capabilities: None,
                 },

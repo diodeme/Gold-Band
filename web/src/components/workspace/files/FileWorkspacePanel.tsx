@@ -9,11 +9,14 @@ import { useMarkdownResourceLinkHandler } from '@/components/prompt-kit/markdown
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import type { FileWorkspaceLayoutVm, WorkspaceDirectoryEntryVm } from '@/types';
 import { isExternalUrlHref, isLocalFileHref } from '@/lib/file-link';
+import { isHtmlDocumentPath } from '../browser/web-target';
+import { openWebTarget } from '../browser/open-web-target';
 import { resolveWorkspacePanelWidthFromLayout } from '../workspace-layout';
 import { useWorkspaceResponsiveState } from '../use-workspace-responsive-state';
 import {
   fileWorkspaceResourceKey,
   useRightWorkspace,
+  useRightWorkspaceCommands,
   type FileWorkspaceResource,
   type RightWorkspaceResource,
 } from '../right-workspace-context';
@@ -115,8 +118,20 @@ function FileEmptyState() {
 
 export function FileContent({ resource }: { resource: FileWorkspaceResource }) {
   const { t } = useTranslation();
+  const workspace = useRightWorkspaceCommands();
   const entry = useFileContentEntry(resource.key);
   const [locationAdjusted, setLocationAdjusted] = useState(false);
+  const htmlDocument = isHtmlDocumentPath(resource.locator.canonicalPath);
+  const openHtmlInBrowser = useCallback(async () => {
+    if (!htmlDocument || !workspace.scopeKey) return;
+    if (!await fileContentStore.flush(resource.key)) return;
+    await openWebTarget(resource.locator.canonicalPath, {
+      projectId: resource.projectId,
+      scopeKey: workspace.scopeKey,
+      openResource: workspace.openResource,
+      browserTitle: t('workspace.browser.title'),
+    });
+  }, [htmlDocument, resource.key, resource.locator.canonicalPath, resource.projectId, t, workspace.openResource, workspace.scopeKey]);
 
   useEffect(() => {
     void fileContentStore.load(resource);
@@ -159,14 +174,14 @@ export function FileContent({ resource }: { resource: FileWorkspaceResource }) {
       ) : entry.saveState.kind === 'conflict' ? (
         <div className="flex min-h-0 flex-1 flex-col">
           <ConflictBanner resource={resource} />
-          <FileSnapshotContent resource={resource} onLocationAdjusted={setLocationAdjusted} />
+          <FileSnapshotContent resource={resource} onLocationAdjusted={setLocationAdjusted} onOpenInBrowser={htmlDocument ? openHtmlInBrowser : undefined} />
         </div>
       ) : entry.saveState.kind === 'error' ? (
         <div className="flex min-h-0 flex-1 flex-col">
           <SaveErrorBanner resource={resource} errorCode={entry.saveState.errorCode} />
-          <FileSnapshotContent resource={resource} onLocationAdjusted={setLocationAdjusted} />
+          <FileSnapshotContent resource={resource} onLocationAdjusted={setLocationAdjusted} onOpenInBrowser={htmlDocument ? openHtmlInBrowser : undefined} />
         </div>
-      ) : <FileSnapshotContent resource={resource} onLocationAdjusted={setLocationAdjusted} />}
+      ) : <FileSnapshotContent resource={resource} onLocationAdjusted={setLocationAdjusted} onOpenInBrowser={htmlDocument ? openHtmlInBrowser : undefined} />}
     </article>
   );
 }
@@ -174,9 +189,11 @@ export function FileContent({ resource }: { resource: FileWorkspaceResource }) {
 function FileSnapshotContent({
   resource,
   onLocationAdjusted,
+  onOpenInBrowser,
 }: {
   resource: FileWorkspaceResource;
   onLocationAdjusted?: (adjusted: boolean) => void;
+  onOpenInBrowser?: () => void | Promise<void>;
 }) {
   const { t } = useTranslation();
   const markdownResourceLinkHandler = useMarkdownResourceLinkHandler();
@@ -210,7 +227,13 @@ function FileSnapshotContent({
       }
       return;
     }
-    if (isExternalUrlHref(href)) void openExternalUrl(href);
+    if (isExternalUrlHref(href)) {
+      if (markdownResourceLinkHandler?.openWebUrl && !href.startsWith('mailto:') && !href.startsWith('tel:')) {
+        void markdownResourceLinkHandler.openWebUrl(href);
+        return;
+      }
+      void openExternalUrl(href);
+    }
   }, [markdownResourceLinkHandler, resource.locator.canonicalPath]);
   const approvalCount = [...markdownImages.values()].filter((image) => image.kind === 'approvalRequired').length;
   useEffect(() => {
@@ -266,6 +289,7 @@ function FileSnapshotContent({
           markdownHasTableImages={markdownTableHasImages}
           onMarkdownImagePreviewError={handleMarkdownImagePreviewError}
           onMarkdownLinkClick={handleMarkdownLinkClick}
+          onOpenInBrowser={onOpenInBrowser}
         />
         </div>
       </div>

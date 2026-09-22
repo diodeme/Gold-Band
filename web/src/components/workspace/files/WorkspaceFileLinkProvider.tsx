@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { resolveWorkspaceFileLink } from '@/api';
 import {
   MarkdownResourceLinkProvider,
@@ -11,6 +12,9 @@ import {
   useRightWorkspaceCommands,
 } from '../right-workspace-context';
 import { fileContentStore } from './file-content-store';
+import { classifyWebTarget } from '../browser/web-target';
+import { openWebTarget } from '../browser/open-web-target';
+import type { BrowserPreferences } from '@/types';
 
 function fileName(path: string) {
   const raw = path.replaceAll('\\', '/').split('/').at(-1) || path;
@@ -34,9 +38,19 @@ function fileLinkError(reason: unknown): MarkdownResourceLinkError {
   };
 }
 
-export function WorkspaceFileLinkProvider({ children }: { children: ReactNode }) {
+export function WorkspaceFileLinkProvider({ children, browserPreferences }: { children: ReactNode; browserPreferences: BrowserPreferences }) {
+  const { t } = useTranslation();
   const workspace = useRightWorkspaceCommands();
   const targetRevisionsRef = useRef(new Map<string, number>());
+  const openWebUrl = useCallback(async (href: string) => {
+    await openWebTarget(href, {
+      projectId: workspace.projectId,
+      scopeKey: workspace.scopeKey,
+      openResource: workspace.openResource,
+      browserTitle: t('workspace.browser.title'),
+      browserPreferences,
+    });
+  }, [browserPreferences, t, workspace.openResource, workspace.projectId, workspace.scopeKey]);
   const openLocalFile = useCallback(async (
     rawHref: string,
     baseCanonicalPath?: string | null,
@@ -46,6 +60,17 @@ export function WorkspaceFileLinkProvider({ children }: { children: ReactNode })
         status: 'error',
         error: { code: 'workspace-file.project-not-found', params: {} },
       };
+    }
+    if (classifyWebTarget(rawHref) === 'local-html') {
+      const result = await openWebTarget(rawHref, {
+        projectId: workspace.projectId,
+        scopeKey: workspace.scopeKey,
+        openResource: workspace.openResource,
+        browserTitle: t('workspace.browser.title'),
+      });
+      return result.status === 'opened'
+        ? { status: 'opened' }
+        : { status: 'error', error: result.error };
     }
     try {
       const resolved = await resolveWorkspaceFileLink(workspace.projectId, rawHref, baseCanonicalPath);
@@ -88,10 +113,10 @@ export function WorkspaceFileLinkProvider({ children }: { children: ReactNode })
     } catch (reason) {
       return { status: 'error', error: fileLinkError(reason) };
     }
-  }, [workspace.getResource, workspace.openResource, workspace.projectId, workspace.scopeKey]);
+  }, [t, workspace.getResource, workspace.openResource, workspace.projectId, workspace.scopeKey]);
   const handler = useMemo(
-    () => workspace.projectId && workspace.scopeKey ? { openLocalFile } : null,
-    [openLocalFile, workspace.projectId, workspace.scopeKey],
+    () => workspace.projectId && workspace.scopeKey ? { openLocalFile, openWebUrl } : null,
+    [openLocalFile, openWebUrl, workspace.projectId, workspace.scopeKey],
   );
   return <MarkdownResourceLinkProvider handler={handler}>{children}</MarkdownResourceLinkProvider>;
 }

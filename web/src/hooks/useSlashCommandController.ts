@@ -2,34 +2,54 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { AcpCommandItemVm } from '@/types';
 import {
-  filterSlashCommands,
+  type SlashCatalogGroup,
+  type SlashCatalogItem,
+  type SlashItemIdentity,
   clearSlashCommandDismissal,
-  matchSlashCommandQuery,
+  commandSlashItems,
+  filterSlashCatalog,
+  flattenSlashCatalog,
+  groupsForComposerMenuTrigger,
+  matchComposerMenuQuery,
   rememberSlashCommandDismissal,
   restoreSlashCommandDismissal,
-  slashCommandText,
-  unwrapSelectedSlashCommand,
+  composerTokenText,
+  unwrapSelectedSlashItem,
 } from '@/lib/slash-command';
 
 interface UseSlashCommandControllerOptions {
   input: string;
-  commands: readonly AcpCommandItemVm[];
+  groups?: readonly SlashCatalogGroup[];
+  commands?: readonly AcpCommandItemVm[];
   contextKey?: string | null;
   onInputChange: (value: string) => void;
   onInputFocusRequested?: () => void;
 }
 
+function catalogGroups(
+  groups: readonly SlashCatalogGroup[] | undefined,
+  commands: readonly AcpCommandItemVm[] | undefined,
+): SlashCatalogGroup[] {
+  if (groups) return [...groups];
+  const items = commandSlashItems(commands ?? []);
+  return items.length > 0 ? [{ id: 'agent', heading: 'Agent', items }] : [];
+}
+
 export function useSlashCommandController({
   input,
+  groups,
   commands,
   contextKey,
   onInputChange,
   onInputFocusRequested,
 }: UseSlashCommandControllerOptions) {
-  const query = useMemo(() => matchSlashCommandQuery(input), [input]);
+  const catalog = useMemo(() => catalogGroups(groups, commands), [commands, groups]);
+  const catalogItems = useMemo(() => flattenSlashCatalog(catalog), [catalog]);
+  const menuQuery = useMemo(() => matchComposerMenuQuery(input), [input]);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [selectedIdentity, setSelectedIdentity] = useState<SlashItemIdentity | null>(null);
   const [dismissed, setDismissed] = useState(() => (
-    restoreSlashCommandDismissal(contextKey, input, query !== null)
+    restoreSlashCommandDismissal(contextKey, input, menuQuery !== null)
   ));
   const previousContextKey = useRef(contextKey);
 
@@ -39,25 +59,28 @@ export function useSlashCommandController({
       previousContextKey.current = contextKey;
       clearSlashCommandDismissal(contextKey);
       setDismissed(false);
+      setSelectedIdentity(null);
       return;
     }
-    setDismissed(restoreSlashCommandDismissal(contextKey, input, query !== null));
-  }, [contextKey, input, query]);
+    setDismissed(restoreSlashCommandDismissal(contextKey, input, menuQuery !== null));
+  }, [contextKey, input, menuQuery]);
 
-  const filteredCommands = useMemo(
-    () => (query === null ? [] : filterSlashCommands(commands, query)),
-    [commands, query],
-  );
-  const isOpen = query !== null && !dismissed && filteredCommands.length > 0;
+  const filteredGroups = useMemo(() => {
+    if (!menuQuery) return [];
+    return filterSlashCatalog(groupsForComposerMenuTrigger(catalog, menuQuery.trigger), menuQuery.query);
+  }, [catalog, menuQuery]);
+  const filteredItems = useMemo(() => flattenSlashCatalog(filteredGroups), [filteredGroups]);
+  const isOpen = menuQuery !== null && !dismissed && filteredItems.length > 0;
 
   const selectByIndex = useCallback((index: number) => {
-    const command = filteredCommands[index];
-    if (!command) return false;
-    onInputChange(slashCommandText(command.name));
+    const item = filteredItems[index];
+    if (!item) return false;
+    setSelectedIdentity({ kind: item.kind, id: item.id });
+    onInputChange(composerTokenText(item));
     setDismissed(true);
     onInputFocusRequested?.();
     return true;
-  }, [filteredCommands, onInputChange, onInputFocusRequested]);
+  }, [filteredItems, onInputChange, onInputFocusRequested]);
 
   const dismiss = useCallback(() => {
     rememberSlashCommandDismissal(contextKey, input);
@@ -66,11 +89,12 @@ export function useSlashCommandController({
 
   const onKeyDown = useCallback((event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Backspace' && !event.nativeEvent.isComposing) {
-      const unwrappedInput = unwrapSelectedSlashCommand(
+      const unwrappedInput = unwrapSelectedSlashItem(
         input,
-        commands,
+        catalogItems,
         event.currentTarget.selectionStart,
         event.currentTarget.selectionEnd,
+        selectedIdentity,
       );
       if (unwrappedInput !== null) {
         event.preventDefault();
@@ -88,12 +112,12 @@ export function useSlashCommandController({
     }
     if (event.key === 'ArrowDown') {
       event.preventDefault();
-      setActiveIndex((index) => (index + 1) % filteredCommands.length);
+      setActiveIndex((index) => (index + 1) % filteredItems.length);
       return true;
     }
     if (event.key === 'ArrowUp') {
       event.preventDefault();
-      setActiveIndex((index) => (index - 1 + filteredCommands.length) % filteredCommands.length);
+      setActiveIndex((index) => (index - 1 + filteredItems.length) % filteredItems.length);
       return true;
     }
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -101,11 +125,26 @@ export function useSlashCommandController({
       return selectByIndex(activeIndex);
     }
     return false;
-  }, [activeIndex, commands, dismiss, filteredCommands.length, input, isOpen, onInputChange, onInputFocusRequested, selectByIndex]);
+  }, [
+    activeIndex,
+    catalogItems,
+    dismiss,
+    filteredItems.length,
+    input,
+    isOpen,
+    onInputChange,
+    onInputFocusRequested,
+    selectByIndex,
+    selectedIdentity,
+  ]);
 
   return {
     activeIndex,
-    filteredCommands,
+    filteredGroups,
+    filteredItems,
+    filteredCommands: filteredItems,
+    selectedIdentity,
+    catalogItems,
     isOpen,
     onKeyDown,
     selectByIndex,

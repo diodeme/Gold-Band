@@ -38,7 +38,101 @@ afterEach(() => {
   else Reflect.deleteProperty(HTMLElement.prototype, 'clientHeight');
 });
 
+function markdownModeToggle(container: HTMLElement) {
+  return container.querySelector('[data-markdown-mode-toggle="true"]')
+    ?? Array.from(container.querySelectorAll('button')).find((button) => {
+      const label = button.getAttribute('aria-label') ?? '';
+      return /viewMarkdownSource|viewMarkdownLivePreview|源码模式|实时预览|source mode|live preview/iu.test(label);
+    })
+    ?? null;
+}
+
 describe('WorkspaceFileEditor target intent', () => {
+  it('lets document surfaces opt into the full available Markdown width', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const props = {
+      documentKey: 'full-width-markdown',
+      value: '# Full width',
+      editable: false,
+      language: 'markdown',
+      highlight: true,
+      contentRevision: 1,
+      target: null,
+      targetRevision: 0,
+      onChange: () => undefined,
+      onSave: () => undefined,
+      initialStateJson: null,
+      onPersistState: () => undefined,
+      markdownMode: 'live-preview' as const,
+    };
+
+    try {
+      await act(async () => root.render(
+        <TooltipProvider>
+          <WorkspaceFileEditor {...props} markdownContentWidth="full" />
+        </TooltipProvider>,
+      ));
+      await vi.waitFor(() => expect(container.querySelector('.workspace-markdown-live-preview')).not.toBeNull(), { timeout: 5_000 });
+
+      const editor = container.querySelector<HTMLElement>('.workspace-markdown-live-preview');
+      const editorRoot = container.querySelector<HTMLElement>('[data-theme-role="editor"]');
+      expect(editor?.style.getPropertyValue('--atomic-editor-measure')).toBe('100%');
+      expect(editorRoot?.classList.contains('w-full')).toBe(true);
+      expect(editorRoot?.classList.contains('min-w-0')).toBe(true);
+      expect(markdownModeToggle(container)).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('only shows the Markdown source switch when the parent owns the mode', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const props = {
+      documentKey: 'owned-markdown-mode',
+      value: '# Mode',
+      editable: false,
+      language: 'markdown',
+      highlight: true,
+      contentRevision: 1,
+      target: null,
+      targetRevision: 0,
+      onChange: () => undefined,
+      onSave: () => undefined,
+      initialStateJson: null,
+      onPersistState: () => undefined,
+      markdownMode: 'live-preview' as const,
+      markdownLivePreviewAvailable: true,
+    };
+
+    try {
+      await act(async () => root.render(
+        <TooltipProvider>
+          <WorkspaceFileEditor {...props} />
+        </TooltipProvider>,
+      ));
+      await vi.waitFor(() => expect(container.querySelector('.workspace-markdown-live-preview')).not.toBeNull(), { timeout: 5_000 });
+      expect(markdownModeToggle(container)).toBeNull();
+      expect(container.querySelector('[data-markdown-copy-source="true"]')).not.toBeNull();
+
+      function OwnedMode() {
+        const [mode, setMode] = React.useState<'live-preview' | 'source'>('live-preview');
+        return (
+          <TooltipProvider>
+            <WorkspaceFileEditor {...props} markdownMode={mode} onMarkdownModeChange={setMode} />
+          </TooltipProvider>
+        );
+      }
+      await act(async () => root.render(<OwnedMode />));
+      await vi.waitFor(() => expect(markdownModeToggle(container)).not.toBeNull(), { timeout: 5_000 });
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('does not reconfigure an unchanged editor policy after the view mounts', async () => {
     const container = document.createElement('div');
     document.body.append(container);

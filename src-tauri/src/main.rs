@@ -2,6 +2,10 @@
 
 mod acp_images;
 mod avatar;
+mod browser;
+mod browser_bookmarks;
+mod browser_history;
+mod browser_ua;
 mod builtin_mcp;
 mod channel;
 mod commands;
@@ -12,7 +16,9 @@ mod desktop_lifecycle;
 mod feedback;
 mod git_state_monitor;
 mod i18n;
+mod im_runtime;
 mod image_actions;
+mod memory;
 mod metrics;
 mod multica;
 mod notifications;
@@ -63,29 +69,31 @@ use commands::{
     save_multica_connection_address, save_task_workflow, save_updater_settings,
     save_workflow_template, search_acp_prompts, search_acp_sessions, search_tasks,
     select_recent_desktop_avatar, select_recent_desktop_wallpaper, select_recent_workspace,
-    set_acp_session_config_option, set_acp_session_model, set_acp_session_permission_mode,
-    show_artifact, show_attachment, show_worker_ref, start_git_operation, start_git_state_monitor,
-    start_github_login, start_github_pull_request_create, start_run, stop_active_session,
-    stop_git_state_monitor, submit_conversation_prompt, submit_manual_check, toggle_mcp_server,
-    update_agent, update_auto_template, update_mcp_server, update_notification_attention,
-    update_profile, update_skill_sync_targets, update_workflow_template,
-    use_conversation_queued_prompt, write_skill,
+    set_acp_session_auto_accept, set_acp_session_config_option, set_acp_session_model,
+    set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref,
+    start_git_operation, start_git_state_monitor, start_github_login,
+    start_github_pull_request_create, start_run, stop_active_session, stop_git_state_monitor,
+    submit_conversation_prompt, submit_manual_check, toggle_mcp_server, update_agent,
+    update_auto_template, update_mcp_server, update_notification_attention, update_profile,
+    update_skill_sync_targets, update_workflow_template, use_conversation_queued_prompt,
+    write_skill,
 };
 use commands_conversation::{
     acknowledge_conversation_terminal_result, add_conversation_workspace,
     choose_conversation_workspace, create_conversation_run, create_scheduled_task,
-    delete_conversation_task, delete_scheduled_task, get_conversation_pinned_task_page,
-    get_conversation_run, get_conversation_run_mode, get_conversation_run_summary_page,
-    get_conversation_sidebar_bootstrap, get_conversation_task_page, get_conversation_workspaces,
-    get_scheduled_runtime_settings, get_scheduled_task, get_scheduled_task_diagnostics,
-    get_supported_attachment_extensions, list_scheduled_task_occurrences, list_scheduled_tasks,
-    materialize_conversation_attachments, pin_conversation, remove_conversation_workspace,
-    reorder_pinned_conversations, rerun_conversation_task, run_scheduled_task_now,
-    save_conversation_preference, save_conversation_run_mode, save_desktop_ui_mode,
-    save_last_conversation_workspace, save_scheduled_runtime_settings, search_conversation_tasks,
-    set_scheduled_task_enabled, show_conversation_attachment, show_conversation_message_attachment,
-    stat_attachment_files, sync_conversation_workspace, unpin_conversation, update_scheduled_task,
-    update_task_metadata, validate_conversation_create,
+    delete_conversation_task, delete_scheduled_execution_history, delete_scheduled_task,
+    get_conversation_pinned_task_page, get_conversation_run, get_conversation_run_mode,
+    get_conversation_run_summary_page, get_conversation_sidebar_bootstrap,
+    get_conversation_task_page, get_conversation_workspaces, get_scheduled_runtime_settings,
+    get_scheduled_task, get_scheduled_task_diagnostics, get_supported_attachment_extensions,
+    list_scheduled_execution_history, list_scheduled_tasks, materialize_conversation_attachments,
+    pin_conversation, remove_conversation_workspace, reorder_pinned_conversations,
+    rerun_conversation_task, run_scheduled_task_now, save_conversation_preference,
+    save_conversation_run_mode, save_desktop_ui_mode, save_last_conversation_workspace,
+    save_scheduled_runtime_settings, search_conversation_tasks, set_scheduled_task_enabled,
+    show_conversation_attachment, show_conversation_message_attachment, stat_attachment_files,
+    sync_conversation_workspace, unpin_conversation, update_scheduled_task, update_task_metadata,
+    validate_conversation_create,
 };
 use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::sqlite::init_search_index;
@@ -116,6 +124,9 @@ fn main() {
 
 fn run() -> anyhow::Result<()> {
     configure_storage_paths(channel::storage_path_config());
+    if gold_band::memory::mcp::requested() {
+        return tokio::runtime::Runtime::new()?.block_on(gold_band::memory::mcp::run());
+    }
     let context = DesktopContext::from_current_dir()?;
     let wallpaper_runtime = wallpaper::WallpaperProtocolRuntime::new(
         GoldBandPaths::new(context.repo_root.clone()).user_gold_band_dir(),
@@ -176,6 +187,9 @@ fn run() -> anyhow::Result<()> {
         .manage(personal_analytics::PersonalAnalyticsInsightRuntime::default())
         .manage(WorkspaceFileRuntime::default())
         .manage(WorkspaceFileWatchRuntime::default())
+        .manage(browser::BrowserHost::default())
+        .manage(browser_history::BrowserHistoryHost::default())
+        .manage(browser_bookmarks::BrowserBookmarkHost::default())
         .manage(multica::shared_state())
         .manage(multica::MulticaConnectCancel::default())
         .manage(wallpaper_runtime);
@@ -199,6 +213,23 @@ fn run() -> anyhow::Result<()> {
                 });
             },
         )
+        // Browser local HTML is served through the same bounded custom-protocol
+        // mechanism so the child WebView keeps a single authorized directory
+        // instead of relying on file:// (unsupported on WebView2 navigation).
+        .register_asynchronous_uri_scheme_protocol(
+            browser::BROWSER_LOCAL_FILE_PROTOCOL,
+            |protocol_context, request, responder| {
+                let app = protocol_context.app_handle().clone();
+                let label = protocol_context.webview_label().to_string();
+                let method = request.method().clone();
+                let uri = request.uri().to_string();
+                std::thread::spawn(move || {
+                    responder.respond(browser::browser_local_file_protocol_response(
+                        &app, &label, &method, &uri,
+                    ));
+                });
+            },
+        )
         .register_asynchronous_uri_scheme_protocol(
             wallpaper::WALLPAPER_ASSET_PROTOCOL,
             |protocol_context, request, responder| {
@@ -214,12 +245,31 @@ fn run() -> anyhow::Result<()> {
             },
         )
         .setup(|app| {
+            #[cfg(target_os = "windows")]
+            if let Some(window) = app.get_webview_window("main") {
+                window_chrome::ensure_undecorated_edge_resize(&window);
+            }
             let state = app.state::<DesktopState>();
             let _ = state.cleanup_agent_diagnostic_processes();
+            if let Ok(ctx) = state.context() {
+                let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root);
+                touch_log_file_best_effort(&paths);
+                if let Some(runtime_log_guard) = init_tracing(&paths, &ctx.config, true) {
+                    let _ = app.manage(runtime_log_guard);
+                }
+            }
             state.install_scheduled_service(std::sync::Arc::new(
                 scheduled_service::ScheduledTaskService::desktop(app.handle().clone()),
             ))?;
             if let Ok(runtime_app) = state.app() {
+                let im_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) =
+                        im_runtime::initialize_im_runtime_if_required(&im_handle).await
+                    {
+                        warn!(error = %error, "IM runtime failed to initialize");
+                    }
+                });
                 commands::register_lifecycle_subscribers(&runtime_app, app.handle());
                 // home repo 自愈（单一 repo、有界）：远程来源 work_dir 定点自愈移入下方 spawn_blocking
                 // 恢复管线（P2），不再阻塞窗口启动关键路径。
@@ -313,10 +363,6 @@ fn run() -> anyhow::Result<()> {
             // On first run (empty DB), a background thread backfills existing tasks/sessions.
             if let Ok(ctx) = state.context() {
                 let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root);
-                touch_log_file_best_effort(&paths);
-                if let Some(runtime_log_guard) = init_tracing(&paths, &ctx.config, true) {
-                    let _ = app.manage(runtime_log_guard);
-                }
                 info!(
                     repo_root = %paths.repo_root,
                     project_id = %paths.project_id,
@@ -362,13 +408,6 @@ fn run() -> anyhow::Result<()> {
                     std::thread::sleep(std::time::Duration::from_secs(60));
                 }
             });
-            // 启动后台线程预探测 MCP 服务健康状态（独立线程，避免阻塞 webview 主线程）。
-            // 客户端启动后即开始检测，进入 MCP 管理页时状态已就绪，无需手动诊断。
-            let health_handle = app.handle().clone();
-            std::thread::spawn(move || {
-                let state = health_handle.state::<DesktopState>();
-                builtin_mcp::refresh_all_mcp_health(&state);
-            });
             retry_pending_startup_install(&app.handle().clone());
             start_update_polling(app.handle().clone());
             multica::start_multica_loop(app.handle().clone());
@@ -376,7 +415,18 @@ fn run() -> anyhow::Result<()> {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            memory::read_project_memory,
+            memory::write_project_memory,
             get_app_bootstrap,
+            im_runtime::get_im_settings,
+            im_runtime::start_wecom_scan_authorization,
+            im_runtime::complete_wecom_scan_authorization,
+            im_runtime::cancel_wecom_scan_authorization,
+            im_runtime::set_im_channel_enabled,
+            im_runtime::save_im_notification_preferences,
+            im_runtime::reset_im_channel_binding,
+            im_runtime::reconnect_im_channel,
+            im_runtime::delete_im_channel,
             desktop_lifecycle::complete_main_window_close,
             desktop_lifecycle::resolve_app_exit,
             notifications::take_pending_intervention_navigations,
@@ -441,9 +491,12 @@ fn run() -> anyhow::Result<()> {
             set_acp_session_model,
             set_acp_session_config_option,
             set_acp_session_permission_mode,
+            set_acp_session_auto_accept,
             respond_acp_permission,
             respond_elicitation,
             get_acp_raw_frames,
+            commands::list_composer_history,
+            commands::get_composer_history_text,
             start_run,
             get_git_capability,
             initialize_git_repository,
@@ -530,7 +583,8 @@ fn run() -> anyhow::Result<()> {
             get_conversation_pinned_task_page,
             get_conversation_run_summary_page,
             list_scheduled_tasks,
-            list_scheduled_task_occurrences,
+            list_scheduled_execution_history,
+            delete_scheduled_execution_history,
             get_scheduled_task_diagnostics,
             get_scheduled_runtime_settings,
             save_scheduled_runtime_settings,
@@ -580,6 +634,30 @@ fn run() -> anyhow::Result<()> {
             workspace_files::release_external_file_access,
             workspace_files::start_workspace_file_watch,
             workspace_files::stop_workspace_file_watch,
+            browser::browser_create_page,
+            browser::browser_resolve_local_html,
+            browser::browser_set_bounds,
+            browser::browser_show_page,
+            browser::browser_hide_page,
+            browser::browser_hide_all,
+            browser::browser_show_address_suggestions,
+            browser::browser_hide_address_suggestions,
+            browser::browser_address_suggestion_action,
+            browser::browser_address_suggestions_ready,
+            browser::browser_navigate,
+            browser::browser_go_back,
+            browser::browser_go_forward,
+            browser::browser_reload,
+            browser::browser_stop,
+            browser::browser_set_view_mode,
+            browser::browser_close_page,
+            browser::browser_discard_all,
+            browser_history::browser_list_history,
+            browser_bookmarks::browser_list_bookmarks,
+            browser_bookmarks::browser_add_bookmark,
+            browser_bookmarks::browser_remove_bookmark,
+            browser_bookmarks::browser_reorder_bookmarks,
+            browser_history::browser_delete_history,
             // MCP & SKILL management
             list_mcp_servers,
             add_mcp_server,

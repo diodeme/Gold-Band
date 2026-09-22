@@ -15,7 +15,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { openExternalUrl } from '@/api';
 import { cn } from '@/lib/utils';
-import { isExternalUrlHref, isLocalFileHref, parseLocalFileLinkTarget } from '@/lib/file-link';
+import { isExternalUrlHref, isHttpUrlHref, isLocalFileHref, isSystemHandlerHref, parseLocalFileLinkTarget } from '@/lib/file-link';
 import { createIncrementalMarkdownBlockParser } from '@/lib/incremental-markdown-blocks';
 import {
   createStreamingMarkdownPlayback,
@@ -43,6 +43,7 @@ export interface MarkdownResourceLinkHandler {
     rawHref: string,
     baseCanonicalPath?: string | null,
   ) => void | MarkdownResourceLinkOpenResult | Promise<void | MarkdownResourceLinkOpenResult>;
+  openWebUrl?: (href: string) => void | Promise<void>;
 }
 
 const MarkdownResourceLinkContext = createContext<MarkdownResourceLinkHandler | null>(null);
@@ -186,7 +187,12 @@ function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<H
           : external
             ? (event) => {
               event.preventDefault();
-              if (href) void openExternalUrl(href);
+              if (!href) return;
+              if (isSystemHandlerHref(href) || !handler?.openWebUrl || !isHttpUrlHref(href)) {
+                void openExternalUrl(href);
+                return;
+              }
+              void handler.openWebUrl(href);
             }
             : props.onClick}
       >

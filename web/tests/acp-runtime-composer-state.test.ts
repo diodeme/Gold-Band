@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   activityProjectionStatus,
+  shouldTreatAcpRuntimeErrorAsFallback,
   deriveAcpRuntimeComposerState,
   isAcceptedQueuePromptSubmitKind,
   isAcceptedAcpPromptSubmitKind,
@@ -14,7 +15,8 @@ import {
   shouldSettleRuntimeContinueSubmission,
   type AcpRuntimeComposerStateInput,
 } from '@/lib/acp-runtime-composer-state';
-import type { ConversationAttemptLifecycleVm, RuntimeDisplayVm } from '@/types';
+import type { AcpSessionVm, ConversationAttemptLifecycleVm, RuntimeDisplayVm } from '@/types';
+import { visibleAcpBannerError } from '@/components/acp/ACPChatDialog';
 
 const pausedDisplay: RuntimeDisplayVm = {
   code: 'paused',
@@ -128,6 +130,53 @@ function lifecycle(overrides: LifecycleOverrides = {}): ConversationAttemptLifec
   }
   return merged;
 }
+
+describe('Direct runtime error ownership', () => {
+  it('keeps the old run banner hidden from completion through follow-up and stop', () => {
+    const oldRunError = 'OLD_RUN_FAILURE';
+    const session = { status: 'running', diagnostics: { errorCount: 0 } } as AcpSessionVm;
+    for (const [submitTarget, latestTurnStatus] of [
+      ['acp-prompt', 'completed'], ['queue-prompt', 'none'], ['none', 'none'],
+      ['acp-prompt', 'cancelled'],
+    ] as const) {
+      const current = lifecycle({
+        runtime: { status: 'paused', pauseReason: 'runtime-abnormal' },
+        runtimeDisplay: runtimeAbnormalDisplay,
+        composer: { submitTarget },
+        acp: { latestTurnStatus, turnError: null },
+      });
+      const fallback = shouldTreatAcpRuntimeErrorAsFallback(true, current);
+      expect(visibleAcpBannerError(
+        fallback ? null : oldRunError, session, [], fallback ? oldRunError : null,
+        current.acp.latestTurnStatus, current.acp.turnError,
+      )).toBeNull();
+    }
+  });
+  it.each(['acp-prompt', 'queue-prompt', 'none'] as const)(
+    'keeps non-blocking run errors as fallback with submit target %s',
+    (submitTarget) => {
+      const current = lifecycle({
+        runtime: { status: 'paused', pauseReason: 'runtime-abnormal' },
+        runtimeDisplay: runtimeAbnormalDisplay,
+        composer: { submitTarget },
+      });
+      expect(shouldTreatAcpRuntimeErrorAsFallback(true, current)).toBe(true);
+      expect(shouldTreatAcpRuntimeErrorAsFallback(false, current)).toBe(false);
+      expect(shouldTreatAcpRuntimeErrorAsFallback(true, {
+        ...current, runtimeDisplay: { ...runtimeAbnormalDisplay, blockingError: true },
+      })).toBe(false);
+      expect(shouldTreatAcpRuntimeErrorAsFallback(true, {
+        ...current, control: { mode: 'runtime-controlled' },
+      })).toBe(false);
+    },
+  );
+  it('does not classify process-interrupted as a runtime abnormal error', () => {
+    expect(shouldTreatAcpRuntimeErrorAsFallback(true, lifecycle({
+      runtime: { status: 'paused', pauseReason: 'process-interrupted' },
+      runtimeDisplay: pausedDisplay,
+    }))).toBe(false);
+  });
+});
 
 function baseInput(overrides: Partial<AcpRuntimeComposerStateInput> = {}): AcpRuntimeComposerStateInput {
   return {

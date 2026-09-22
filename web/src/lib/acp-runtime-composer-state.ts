@@ -64,6 +64,7 @@ export interface AcpRuntimeComposerState {
   submitTarget: AcpComposerSubmitTarget;
   inputDisabled: boolean;
   canSubmit: boolean;
+  canSubmitContent: boolean;
   canStop: boolean;
   stopInProgress: boolean;
   sessionActive: boolean;
@@ -89,7 +90,6 @@ export function shouldTreatAcpRuntimeErrorAsFallback(
     && lifecycle?.control.mode === 'non-runtime-controlled'
     && lifecycle.runtime.pauseReason === 'runtime-abnormal'
     && !lifecycle.runtimeDisplay.blockingError
-    && lifecycle.composer.submitTarget === 'acp-prompt'
   );
 }
 
@@ -186,11 +186,11 @@ export function deriveAcpRuntimeComposerState(
       ? directInputDisabled
       : composerLocked || backendInputLocked || activePromptLocked || mode === 'invalid-workflow' || mode === 'runtime-error'
   );
-  const canSubmit = (Boolean(input.prompt.trim()) || Boolean(input.hasAttachments))
-    && submitTarget !== 'none'
+  const canSubmitContent = submitTarget !== 'none'
     && !queueAtCapacity
     && !(sending && submitTarget !== 'queue-prompt')
     && !inputDisabled;
+  const canSubmit = canSubmitContent && (Boolean(input.prompt.trim()) || Boolean(input.hasAttachments));
   const processingKind = processingKindForInput(
     { ...input, sending },
     stopInProgress,
@@ -216,6 +216,7 @@ export function deriveAcpRuntimeComposerState(
     submitTarget,
     inputDisabled,
     canSubmit,
+    canSubmitContent,
     canStop: !sessionSuperseded && (
       (!acpTerminal && Boolean(backend?.canStop)) ||
       (backendWorkspaceTransition && Boolean(backend?.canStop)) ||
@@ -580,6 +581,10 @@ export function isSessionStopPending(status?: string | null) {
 
 export function isSessionCompletedStatus(status?: string | null) {
   return ['completed', 'complete'].includes(normalizeStatus(status));
+}
+
+export function isSessionIdleStatus(status?: string | null) {
+  return normalizeStatus(status) === 'idle';
 }
 
 export function isSessionTerminalStatus(status?: string | null) {

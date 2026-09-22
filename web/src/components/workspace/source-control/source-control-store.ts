@@ -28,6 +28,7 @@ import type {
   GitSourceControlSnapshotVm,
   WorkspaceFileChangedEventVm,
 } from '@/types';
+import { diffReviewStore } from './diff-review-store';
 import {
   normalizeSourceControlWorkspacePath,
   sourceControlWorkspaceSessionKey,
@@ -103,6 +104,8 @@ interface SessionRuntime {
   invalidationTimer: ReturnType<typeof setTimeout> | null;
   invalidationStartedAt: number | null;
   pendingInvalidation: SourceControlInvalidationScope | null;
+  pendingDiffPaths: Set<string>;
+  pendingDiffAll: boolean;
   finishingOperationId: string | null;
   historyCommitScrollTop: number;
   historyReviewScrollTop: number;
@@ -360,6 +363,7 @@ export class SourceControlStore {
       mutationApplied = true;
       if (runtime.repositoryRequestRevision !== requestRevision) return;
       if (result.scope === 'workspace') {
+        runtime.pendingDiffAll = true;
         this.update(runtime, {
           ...runtime.snapshot,
           snapshot: {
@@ -370,6 +374,7 @@ export class SourceControlStore {
           pendingAction: null,
           error: null,
         });
+        this.applyWorkspaceProjection(runtime, result.status);
         return;
       }
       const [nextSnapshot, history] = await Promise.all([
@@ -378,6 +383,7 @@ export class SourceControlStore {
       ]);
       if (runtime.repositoryRequestRevision !== requestRevision) return;
       this.registerCanonicalAlias(runtime, nextSnapshot.repository.workspacePath);
+      runtime.pendingDiffAll = true;
       this.update(runtime, {
         ...resetHistoryState(runtime.snapshot),
         status: 'ready',
@@ -389,6 +395,7 @@ export class SourceControlStore {
         subject: input.kind === 'commit' ? '' : runtime.snapshot.subject,
         body: input.kind === 'commit' ? '' : runtime.snapshot.body,
       });
+      this.applyWorkspaceProjection(runtime, nextSnapshot.status);
     } catch (reason) {
       if (runtime.repositoryRequestRevision !== requestRevision) return;
       this.update(runtime, {
@@ -644,6 +651,7 @@ export class SourceControlStore {
         refreshing: null,
         error: operationError,
       });
+      this.applyWorkspaceProjection(runtime, snapshot.status);
     })().catch((reason: unknown) => {
       if (runtime.repositoryRequestRevision !== requestRevision) return;
       this.update(runtime, {
@@ -698,6 +706,7 @@ export class SourceControlStore {
               event.workspacePath,
             ))
       ) {
+        runtime.pendingDiffAll = true;
         this.scheduleInvalidation(runtime, 'repository');
       }
     }
@@ -714,6 +723,9 @@ export class SourceControlStore {
         && workspacePath
         && pathIsWithinWorkspace(event.canonicalPath, workspacePath)
       ) {
+        const relativePath = workspaceRelativePath(workspacePath, event.canonicalPath);
+        if (relativePath) runtime.pendingDiffPaths.add(relativePath);
+        else runtime.pendingDiffAll = true;
         this.scheduleInvalidation(runtime, 'worktree');
       }
     }
@@ -780,6 +792,7 @@ export class SourceControlStore {
         refreshing: null,
         error: null,
       });
+      this.applyWorkspaceProjection(runtime, snapshot.status);
     }).catch((reason: unknown) => {
       if (runtime.repositoryRequestRevision !== requestRevision) return;
       this.update(runtime, {
@@ -874,6 +887,8 @@ export class SourceControlStore {
         invalidationTimer: null,
         invalidationStartedAt: null,
         pendingInvalidation: null,
+        pendingDiffPaths: new Set(),
+        pendingDiffAll: false,
         finishingOperationId: null,
         historyCommitScrollTop: 0,
         historyReviewScrollTop: 0,
@@ -887,6 +902,22 @@ export class SourceControlStore {
       this.sessions.set(storageKey, runtime);
     }
     return runtime;
+  }
+
+  private applyWorkspaceProjection(runtime: SessionRuntime, status: GitSourceControlSnapshotVm['status']) {
+    const invalidate = runtime.pendingDiffAll
+      ? { all: true, paths: [] as string[] }
+      : { all: false, paths: [...runtime.pendingDiffPaths] };
+    runtime.pendingDiffAll = false;
+    runtime.pendingDiffPaths.clear();
+    diffReviewStore.publishWorkspaceRefresh({
+      projectId: runtime.snapshot.projectId,
+      workspacePath: runtime.snapshot.requestedWorkspacePath,
+      staged: status.staged,
+      unstaged: status.unstaged,
+      untracked: status.untracked,
+      invalidate,
+    });
   }
 
   private registerCanonicalAlias(runtime: SessionRuntime, canonicalWorkspacePath: string) {
@@ -993,6 +1024,14 @@ function pathIsWithinWorkspace(path: string, workspacePath: string) {
   const candidate = normalizeWorkspacePath(path);
   const root = normalizeWorkspacePath(workspacePath);
   return candidate === root || candidate.startsWith(`${root}/`);
+}
+
+function workspaceRelativePath(workspacePath: string, canonicalPath: string) {
+  const root = normalizeWorkspacePath(workspacePath);
+  const candidate = normalizeWorkspacePath(canonicalPath);
+  const prefix = `${root}/`;
+  if (!candidate.startsWith(prefix)) return null;
+  return candidate.slice(prefix.length);
 }
 
 function pendingActionFromMutation(input: GitMutationRequestVm): SourceControlPendingAction {

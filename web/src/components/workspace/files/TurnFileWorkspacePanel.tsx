@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import CodeMirror, { basicSetup, type ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import { EditorSelection, EditorState, type Extension } from '@codemirror/state';
 import { EditorView, lineNumbers } from '@codemirror/view';
@@ -14,7 +14,7 @@ import type { GitFileComparisonWorkspaceResource, TurnFileWorkspaceResource } fr
 import { useRightWorkspaceCommands } from '../right-workspace-context';
 import { WorkspaceFileEditor } from './WorkspaceFileEditor';
 import { githubComparisonCache } from '../source-control/github-comparison-cache';
-import { diffReviewStore, resolveDiffReviewNavigation } from '../source-control/diff-review-store';
+import { diffReviewStore, resolveDiffReviewNavigation, shouldRetainVisibleComparison } from '../source-control/diff-review-store';
 import {
   loadWorkspaceLanguageForPath,
   workspaceEditorTheme,
@@ -39,6 +39,9 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
   const [markdownMode, setMarkdownMode] = useState<MarkdownEditorMode>('live-preview');
   const [diffChunkCount, setDiffChunkCount] = useState(0);
   const [activeChunkIndex, setActiveChunkIndex] = useState(0);
+  const requestGenerationRef = useRef(0);
+  const comparisonRef = useRef<WorkspaceComparisonVm | null>(null);
+  useSyncExternalStore(diffReviewStore.subscribe, diffReviewStore.version, diffReviewStore.version);
 
   const gitResource = 'gitSource' in resource ? resource : null;
   const reviewSession = gitResource?.reviewSessionId
@@ -48,12 +51,26 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
     ? reviewSession.items.findIndex((item) => item.id === gitResource.reviewItemId)
     : -1;
   const reviewItem = reviewItemIndex >= 0 ? reviewSession?.items[reviewItemIndex] ?? null : null;
+  const comparisonEpoch = gitResource && reviewItem?.source.kind === 'workspace'
+    ? diffReviewStore.workspaceContentEpoch(gitResource.projectId, reviewItem.source)
+    : 0;
+  comparisonRef.current = comparison;
+  const fileLeftChanges = Boolean(gitResource?.reviewSessionId && gitResource.reviewItemId && reviewSession && !reviewItem);
 
   useEffect(() => {
+    if (fileLeftChanges) {
+      setErrorCode(null);
+      return;
+    }
     let cancelled = false;
-    setComparison(null);
-    setErrorCode(null);
-    setDiffChunkCount(0);
+    const generation = requestGenerationRef.current + 1;
+    requestGenerationRef.current = generation;
+    const nextPath = reviewItem?.path ?? null;
+    if (!shouldRetainVisibleComparison(comparisonRef.current?.path, nextPath)) {
+      setComparison(null);
+      setErrorCode(null);
+      setDiffChunkCount(0);
+    }
     const request = 'gitSource' in resource
       ? resource.reviewSessionId && resource.reviewItemId
         ? reviewItem
@@ -65,20 +82,20 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
       : loadTurnFileComparison(resource.locator, resource.changeSetId, resource.changeId);
     void request
       .then((next) => {
-        if (cancelled) return;
+        if (cancelled || requestGenerationRef.current !== generation) return;
         setComparison(next);
         if ('gitSource' in resource && resource.reviewSessionId && resource.reviewItemId) {
           diffReviewStore.prefetchAdjacent(resource.reviewSessionId, resource.reviewItemId);
         }
       })
       .catch((reason: unknown) => {
-        if (cancelled) return;
+        if (cancelled || requestGenerationRef.current !== generation) return;
         setErrorCode(typeof reason === 'object' && reason && 'code' in reason && typeof reason.code === 'string'
           ? reason.code
           : 'turn-files.change-set-not-found');
       });
     return () => { cancelled = true; };
-  }, [resource, reviewItem]);
+  }, [resource, reviewItem?.id, reviewItem?.path, comparisonEpoch, fileLeftChanges]);
 
   const navigateReviewFile = (offset: number, landing: 'top' | 'first-change' | 'last-change') => {
     if (!('gitSource' in resource) || !reviewSession || reviewItemIndex < 0) return;
@@ -162,6 +179,9 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
     return base;
   }, [language]);
 
+  if (fileLeftChanges) {
+    return <PanelMessage icon={<TriangleAlert className="size-4 text-amber-500" />} text={t('sourceControl.fileNotInChanges')} />;
+  }
   if (errorCode) {
     return <PanelMessage icon={<TriangleAlert className="size-4 text-destructive" />} text={t(`errors.${errorCode}`, { defaultValue: t('turnFiles.loadFailed') })} />;
   }
@@ -178,8 +198,8 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
         <div className="flex h-9 items-center gap-2 px-3 text-xs">
           {resource.kind === 'file-diff' ? <FileDiff className="size-3.5 text-foreground" /> : <FileText className="size-3.5 text-foreground" />}
           <span className="min-w-0 flex-1 truncate font-mono text-foreground">{comparison.path}</span>
-          <span className="tabular-nums text-emerald-600 dark:text-emerald-400">+{comparison.stats.addedLines ?? 0}</span>
-          <span className="tabular-nums text-destructive">-{comparison.stats.deletedLines ?? 0}</span>
+          <span className="tabular-nums text-emerald-600 dark:text-emerald-400">+{reviewItem?.stats.addedLines ?? comparison.stats.addedLines ?? 0}</span>
+          <span className="tabular-nums text-destructive">-{reviewItem?.stats.deletedLines ?? comparison.stats.deletedLines ?? 0}</span>
         </div>
         {resource.kind === 'file-diff' ? (
           <div className="flex h-9 items-center gap-1 border-t border-border/40 px-2">
@@ -234,6 +254,10 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
             comparison={comparison}
             editorRef={editorRef}
             ariaLabel={t('turnFiles.diffViewer')}
+            onChunksChange={(count) => {
+              setDiffChunkCount((current) => current === count ? current : count);
+              setActiveChunkIndex((current) => Math.min(current, Math.max(0, count - 1)));
+            }}
             onCreateEditor={(view) => {
               const count = getChunks(view.state)?.chunks.length ?? 0;
               setDiffChunkCount(count);

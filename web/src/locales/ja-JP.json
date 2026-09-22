@@ -1811,6 +1811,7 @@
     "rootCommit": "ルートコミット (親なし)",
     "previousFile": "前のファイル",
     "nextFile": "次のファイル",
+    "fileNotInChanges": "このファイルは現在の変更にありません",
     "targetPaths": {
       "tip": "現在のブランチの先端",
       "direct": "最初の親メインライン上",

@@ -1811,6 +1811,7 @@
     "rootCommit": "Root 提交（无父提交）",
     "previousFile": "上一个文件",
     "nextFile": "下一个文件",
+    "fileNotInChanges": "该文件已不在当前变更中",
     "targetPaths": {
       "tip": "当前分支顶端",
       "direct": "位于第一父主线",

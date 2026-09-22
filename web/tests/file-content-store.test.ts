@@ -303,6 +303,29 @@ describe('FileContentStore autosave contract', () => {
     });
   });
 
+  it('rereads a cached file after the project watch stops and keeps it while that watch stays active', async () => {
+    const store = createStore();
+    const other: FileWorkspaceResource = {
+      ...resource,
+      key: 'file:project-1:D:/repo/other.txt',
+      title: 'other.txt',
+      locator: { ...resource.locator, canonicalPath: 'D:/repo/other.txt', relativePath: 'other.txt' },
+    };
+    await store.load(resource);
+    await store.load(other);
+    await store.startProjectWatch(resource.projectId);
+    await store.load(resource);
+    expect(api.readFileResource).toHaveBeenCalledTimes(2);
+
+    await store.stopProjectWatch(resource.projectId);
+    api.readFileResource.mockResolvedValueOnce(snapshot('after gap', revision('disk-2')));
+    await store.load(resource);
+
+    expect(store.snapshot(resource.key).snapshot?.kind === 'text' && store.snapshot(resource.key).snapshot.content).toBe('after gap');
+    expect(api.readFileResource).toHaveBeenCalledTimes(3);
+    expect(store.snapshot(other.key).snapshot?.kind === 'text' && store.snapshot(other.key).snapshot.content).toBe('start');
+  });
+
   it('reconciles clean cached content after the workspace watcher becomes active', async () => {
     const store = createStore();
     await store.load(resource);

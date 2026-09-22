@@ -103,6 +103,7 @@ import {
   type AcpAttemptWorkspaceLocator,
   type AgentTranscriptLocator,
 } from "@/components/workspace/right-workspace-context";
+import { useWorkspaceFileReferenceBridge } from "@/components/workspace/workspace-file-reference-bridge";
 import { formatTokenCount } from "@/lib/format-token";
 import { agentIconClass, agentIconSrc } from "@/lib/agent-icons";
 import { EditableConversationTitle } from "@/components/conversation/EditableConversationTitle";
@@ -160,18 +161,23 @@ import {
 } from "@/lib/acp-composer-draft";
 import {
   addComposerQuote,
+  addComposerWorkspaceFile,
   createComposerPromptSubmission,
   serializeUserPromptSubmission,
   userPromptQuotesFromRaw,
   userPromptRoleFromRaw,
   hasUserPromptPayload,
+  workspaceFilesFromRaw,
+  type ComposerWorkspaceFileRef,
 } from "@/lib/composer-context";
+import { openWorkspaceFileReference } from "@/lib/workspace-file-reference";
 import type { ConversationPromptInput, ProfileVm } from "@/types";
 import type { AgentMessageSelection } from "@/lib/agent-message-selection";
 import { AcpConversationComposer } from "@/components/conversation/AcpConversationComposer";
 import { AgentSelectionQuoteButton } from "@/components/conversation/AgentSelectionQuoteButton";
 import { ConversationPromptQueue } from "@/components/conversation/ConversationPromptQueue";
 import { UserMessageMeta } from "@/components/conversation/UserMessageMeta";
+import { UserMessageWorkspaceFiles } from "@/components/conversation/UserMessageWorkspaceFiles";
 import { UserMessageDisclosure } from "@/components/conversation/UserMessageDisclosure";
 import { buildSlashCatalog, committedRoleSnapshot, parseCommittedSlashItem, restoreSlashCommandInputFocus, slashSendableText } from "@/lib/slash-command";
 import { useAgentCommands } from "@/hooks/useAgentCommands";
@@ -1342,6 +1348,7 @@ export function ACPChatDialog(
     };
   }, []);
   const rightWorkspace = useOptionalRightWorkspaceCommands();
+  const workspaceFileReferenceBridge = useWorkspaceFileReferenceBridge();
   const effectiveEventPageSize = normalizeEventPageSize(eventPageSize);
   const effectiveEventWindowPageCount = normalizeEventWindowPageCount(
     eventWindowPageCount,
@@ -1406,6 +1413,35 @@ export function ACPChatDialog(
   });
   const sessionIdentity = eventWindowKey;
   const composerDraft = useAcpComposerDraft(eventWindowKey);
+  const setComposerWorkspaceFiles = composerDraft.setWorkspaceFiles;
+  const workspaceFiles = composerDraft.draft.workspaceFiles;
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const workspaceFilesRef = useRef(workspaceFiles);
+  workspaceFilesRef.current = workspaceFiles;
+  const pendingAttachmentsRef = useRef(composerDraft.draft.attachments);
+  pendingAttachmentsRef.current = composerDraft.draft.attachments;
+  useEffect(() => workspaceFileReferenceBridge.register((reference, options) => {
+    if (!projectId) return { kind: 'unavailable' };
+    const result = addComposerWorkspaceFile(
+      workspaceFilesRef.current,
+      pendingAttachmentsRef.current.length,
+      reference,
+    );
+    if (!result.ok) {
+      if (result.code === 'composer.context.limit-exceeded') {
+        setComposerContextError(
+          t('errors.composer.context-limit-exceeded', { max: result.max }),
+        );
+        return { kind: 'limit-exceeded', max: result.max };
+      }
+      return { kind: 'duplicate' };
+    }
+    workspaceFilesRef.current = result.workspaceFiles;
+    setComposerWorkspaceFiles(result.workspaceFiles);
+    setComposerContextError(null);
+    if (options.isDocked) requestAnimationFrame(() => composerTextareaRef.current?.focus());
+    return { kind: 'added' };
+  }), [projectId, setComposerWorkspaceFiles, t, workspaceFileReferenceBridge]);
   const restoredSession = session ?? restoreAcpSession(eventWindowKey);
   const componentInstanceIdRef = useRef(createAcpChatDialogInstanceId());
   const componentInstanceId = componentInstanceIdRef.current;
@@ -1656,7 +1692,6 @@ export function ACPChatDialog(
   const paginationCursorGenerationStaleRef = useRef(false);
   const configGenerationRef = useRef(0);
   const configMutationGenerationRef = useRef(0);
-  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const paginationAnchorRef = useRef<{ key: string; top: number } | null>(null);
   const pendingLiveEventsRef = useRef(
     new AcpLatestWinsEventBuffer<AcpGenerationScopedLiveEvent>(
@@ -2711,6 +2746,7 @@ export function ACPChatDialog(
       slashSendableText(prompt, committedSlashCommand),
       pendingAttachments.length,
       committedRoleSnapshot(committedSlashCommand),
+      workspaceFiles.length,
     );
   const canSubmitHistory = composerState.canSubmitContent
     && !queueSubmitPending
@@ -2721,7 +2757,8 @@ export function ACPChatDialog(
   const promptQueueVisible = Boolean(promptQueue?.items.length);
   const composerDraftOccupied = prompt.length > 0
     || pendingAttachments.length > 0
-    || quotes.length > 0;
+    || quotes.length > 0
+    || workspaceFiles.length > 0;
   const showBranchInfo = Boolean(showBranchControl && projectId);
   const showComposerInfoPanel = showComposerStatus
     || composerSessionSeconds != null
@@ -5497,7 +5534,7 @@ export function ACPChatDialog(
 
   const adoptHistoryText = (content: string): AcpComposerDraft | null => {
     const previous = composerDraft.draft;
-    const next = { content, attachments: [], quotes: [] };
+    const next = { content, attachments: [], quotes: [], workspaceFiles: [] };
     if (!composerDraft.clearIfUnchanged(previous)) return null;
     composerDraft.restoreIfEmpty(next);
     releaseSubmittedAttachments(previous.attachments);
@@ -5588,6 +5625,7 @@ export function ACPChatDialog(
       latestCanonicalTimelinePosition(loadedEventWindowRef.current.events),
       optimisticAttachments,
       submittedRole ?? null,
+      draftSnapshot?.workspaceFiles ?? [],
     );
     const promptId = promptIdFromEvent(optimisticEvent);
     const detachedDraft = draftSnapshot && composerDraft.clearIfUnchanged(draftSnapshot)
@@ -5864,6 +5902,7 @@ export function ACPChatDialog(
       draftSnapshot.content,
       draftSnapshot.quotes,
       committedSlashCommand,
+      draftSnapshot.workspaceFiles,
     );
     if (composerState.submitTarget !== "none") {
       await submitPrompt(submission, draftSnapshot);
@@ -5897,6 +5936,18 @@ export function ACPChatDialog(
     setQuotes((current) => current.filter((quote) => quote.id !== id));
     setComposerContextError(null);
   }, [setQuotes]);
+
+  const removeWorkspaceFile = useCallback((id: string) => {
+    composerDraft.setWorkspaceFiles((current) => current.filter((file) => file.id !== id));
+    setComposerContextError(null);
+  }, [composerDraft]);
+
+  const openWorkspaceFile = useCallback((file: ComposerWorkspaceFileRef) => {
+    if (!rightWorkspace?.scopeKey) return;
+    void openWorkspaceFileReference(file, rightWorkspace.scopeKey, rightWorkspace.openResource)
+      .then(() => setComposerContextError(null))
+      .catch(error => setComposerContextError(displayAppError(t, error)));
+  }, [rightWorkspace, t]);
 
   const stopSession = async () => {
     if (!canStopSession || stopInProgress) return;
@@ -5984,6 +6035,7 @@ export function ACPChatDialog(
             draftSnapshot.content,
             draftSnapshot.quotes,
             committedSlashCommand,
+            draftSnapshot.workspaceFiles,
           ),
           draftSnapshot,
           "runtime-continue",
@@ -6608,8 +6660,11 @@ export function ACPChatDialog(
                 sending={sending}
                 attachments={pendingAttachments}
                 quotes={quotes}
+                workspaceFiles={workspaceFiles}
                 contextError={composerContextError}
                 onRemoveQuote={removeQuote}
+                onRemoveWorkspaceFile={removeWorkspaceFile}
+                onOpenWorkspaceFile={openWorkspaceFile}
                 onRemoveAttachment={removeComposerAttachment}
                 onPreviewAttachment={handleOpenComposerAttachment}
                 onClearAttachments={clearComposerAttachments}
@@ -8757,6 +8812,8 @@ const MessageBubble = memo(function MessageBubble({
   const rawAttachments = messageAttachmentPreviewsFromRaw(event.raw);
   const userQuotes = isUser ? userPromptQuotesFromRaw(event.raw) : [];
   const userRole = isUser ? userPromptRoleFromRaw(event.raw) : null;
+  const userWorkspaceFiles = isUser ? workspaceFilesFromRaw(event.raw) : [];
+  const [workspaceFileOpenError, setWorkspaceFileOpenError] = useState<string | null>(null);
   const hasAttachments = isUser && rawAttachments.length > 0;
   const attachmentGroups = groupMessageAttachmentPreviews(rawAttachments);
   const runtimeControlParts = !isUser && !streamingDraft
@@ -8782,6 +8839,12 @@ const MessageBubble = memo(function MessageBubble({
       partIndex: request.sourceIndex,
     }));
   }, [branchLocator, event.endedSeq, event.id, event.optimistic, event.seq, workspace]);
+  const openUserWorkspaceFile = useCallback((file: (typeof userWorkspaceFiles)[number]) => {
+    if (!workspace?.scopeKey) return;
+    void openWorkspaceFileReference(file, workspace.scopeKey, workspace.openResource)
+      .then(() => setWorkspaceFileOpenError(null))
+      .catch(error => setWorkspaceFileOpenError(displayAppError(t, error)));
+  }, [t, workspace]);
   const openArtifact = useCallback((name: string) => {
     if (!branchLocator || !workspace?.scopeKey) return;
     void workspace.openResource({
@@ -8816,6 +8879,15 @@ const MessageBubble = memo(function MessageBubble({
         )}
       >
         <UserMessageMeta role={userRole} quotes={userQuotes} />
+        <UserMessageWorkspaceFiles
+          files={userWorkspaceFiles}
+          onOpen={openUserWorkspaceFile}
+        />
+        {workspaceFileOpenError ? (
+          <p className="max-w-full text-ui-caption leading-4 text-destructive" role="alert">
+            {workspaceFileOpenError}
+          </p>
+        ) : null}
         {showMessageBubble ? (
           <MessageContent
             data-agent-quotable-text={quotableAgentMessage ? "true" : undefined}
@@ -11998,6 +12070,7 @@ export function optimisticUserEvent(
   afterSeq: number | null = null,
   attachments: MessageAttachmentPreview[] = [],
   role: import('@/types').UserPromptRole | null = null,
+  workspaceFiles: ComposerWorkspaceFileRef[] = [],
 ): AcpUiEventVm {
   const createdAt = Math.floor(Date.now() / 1000);
   return {
@@ -12015,6 +12088,16 @@ export function optimisticUserEvent(
       ...(quotes.length > 0 ? { quotes } : {}),
       ...(role ? { role } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
+      ...(workspaceFiles.length > 0 ? {
+        workspaceFiles: workspaceFiles.map((file) => ({
+          projectId: file.projectId,
+          relativePath: file.relativePath,
+          ...(file.canonicalPath ? { canonicalPath: file.canonicalPath } : {}),
+          name: file.name,
+          mimeType: file.mimeType,
+          ...(file.byteLength != null ? { size: file.byteLength } : {}),
+        })),
+      } : {}),
     },
   };
 }

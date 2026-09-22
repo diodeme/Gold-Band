@@ -127,6 +127,7 @@ fn invocation() -> WorkerInvocation {
         ),
         mcp_servers: Vec::new(),
         scheduled_context: None,
+        workspace_file_roots: Vec::new(),
     }
 }
 
@@ -640,6 +641,7 @@ fn render_runtime_resume_with_message_keeps_internal_prompt_out_of_display_proje
             text: "引用内容".to_string(),
         }],
         role: None,
+        workspace_files: Vec::new(),
     });
 
     let prompt = render_prompt_bundle(&req).unwrap();

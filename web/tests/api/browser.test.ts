@@ -9,6 +9,12 @@ describe('browserApi', () => {
       id: 'browser-queued-1',
       attachmentCount: 1,
       quoteCount: 0,
+      workspaceFileCount: 0,
+    });
+    const fileItem = run.sessionTree.rounds[0]?.nodes[0]?.attempts[0]?.lifecycle?.promptQueue?.items[2];
+    expect(fileItem).toMatchObject({
+      id: 'browser-queued-3',
+      workspaceFileCount: 1,
     });
     expect(item).not.toHaveProperty('attachmentPaths');
     expect(item).not.toHaveProperty('quotes');

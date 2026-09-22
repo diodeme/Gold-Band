@@ -33,7 +33,7 @@ use gold_band::dsl::{
 };
 use gold_band::dynamic::{DynamicRunPhase, DynamicRunStatus};
 use gold_band::dynamic_store::load_dynamic_graph;
-use gold_band::provider::conversation_prompt_has_payload;
+use gold_band::provider::{PromptWorkspaceFileRef, conversation_prompt_has_payload};
 use gold_band::runtime::{
     RoundState, RunState, RuntimeExecutionPhase, RuntimeExecutionState, TaskState, WorkerRefState,
 };
@@ -228,6 +228,8 @@ pub struct CreateScheduledTaskInputVm {
     pub direct_config: Option<ConversationDirectConfigVm>,
     pub auto_config: Option<ConversationAutoConfigVm>,
     pub attachment_paths: Option<Vec<String>>,
+    #[serde(default)]
+    pub workspace_files: Vec<PromptWorkspaceFileRef>,
     pub schedule: ScheduledScheduleInputVm,
     pub overlap_policy: gold_band::scheduler::OverlapPolicy,
     pub session_policy: Option<gold_band::scheduler::SessionPolicy>,
@@ -327,6 +329,8 @@ pub struct UpdateScheduledTaskInputVm {
     pub direct_config: Option<ConversationDirectConfigVm>,
     pub auto_config: Option<ConversationAutoConfigVm>,
     pub attachment_paths: Option<Vec<String>>,
+    #[serde(default)]
+    pub workspace_files: Option<Vec<PromptWorkspaceFileRef>>,
     pub schedule: ScheduledScheduleInputVm,
     pub overlap_policy: gold_band::scheduler::OverlapPolicy,
     pub session_policy: gold_band::scheduler::SessionPolicy,
@@ -766,6 +770,7 @@ pub struct ConversationQueuedPromptVm {
     pub content: String,
     pub attachment_count: usize,
     pub quote_count: usize,
+    pub workspace_file_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role_name: Option<String>,
     pub created_at: String,
@@ -980,6 +985,8 @@ pub struct ConversationCreateInputVm {
     pub workflow_authoring: Option<TaskAuthoringWorkflow>,
     #[serde(default)]
     pub role: Option<gold_band::provider::UserPromptRole>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_files: Vec<PromptWorkspaceFileRef>,
 }
 
 pub fn scheduled_content_snapshot(
@@ -1007,6 +1014,7 @@ pub fn scheduled_content_snapshot(
         attachment_hashes,
         input.project_id.clone(),
     );
+    snapshot.workspace_files = input.workspace_files.clone();
 
     match mode {
         ScheduledMode::Direct => {
@@ -1119,6 +1127,8 @@ pub(crate) struct ConversationMetadata {
     pub(crate) agent_identity: Option<ConversationAgentIdentityVm>,
     pub(crate) title_auto_generated: bool,
     pub(crate) initial_attachment_names: Option<Vec<String>>,
+    #[serde(default)]
+    pub(crate) initial_workspace_files: Vec<PromptWorkspaceFileRef>,
     pub(crate) created_at: String,
     pub(crate) last_activity_at: Option<String>,
     #[serde(default)]
@@ -1189,6 +1199,7 @@ fn direct_prompt_queue_vm(
                 content: item.content,
                 attachment_count: item.attachment_paths.len(),
                 quote_count: item.quotes.len(),
+                workspace_file_count: item.workspace_files.len(),
                 role_name: item.role.as_ref().map(|role| role.name.clone()),
                 created_at: item.created_at,
             })
@@ -4391,8 +4402,12 @@ pub fn validate_conversation_create_vm(
     let mut missing: Vec<ConversationMissingItemVm> = Vec::new();
 
     let attachment_paths = input.attachment_paths.as_deref().unwrap_or_default();
-    if !conversation_prompt_has_payload(&input.content, attachment_paths.len(), input.role.as_ref())
-    {
+    if !conversation_prompt_has_payload(
+        &input.content,
+        attachment_paths.len(),
+        input.role.as_ref(),
+        input.workspace_files.len(),
+    ) {
         missing.push(missing_item(
             "content.required",
             "Content is required",
@@ -4791,6 +4806,7 @@ pub fn prepare_conversation_task_vm(
                 .map(|paths| paths.len())
                 .unwrap_or(0),
             input.role.as_ref(),
+            input.workspace_files.len(),
         ),
         "conversation payload cannot be empty"
     );
@@ -4915,6 +4931,7 @@ pub fn prepare_conversation_task_vm(
                 })
                 .unwrap_or_default(),
         ),
+        initial_workspace_files: input.workspace_files.clone(),
         created_at: created_at.clone(),
         last_activity_at: Some(created_at),
         work_location: input.work_location,
@@ -4929,6 +4946,15 @@ pub fn prepare_conversation_task_vm(
         {
             write_json(&app.paths.initial_prompt_role_file(&task_id), role)?;
         }
+    }
+    if !input.workspace_files.is_empty() {
+        write_json(
+            &app.paths
+                .task_dir(&task_id)
+                .join("authoring")
+                .join("initial-prompt-workspace-files.json"),
+            &input.workspace_files,
+        )?;
     }
 
     // Copy attachments to authoring dir
@@ -7139,6 +7165,7 @@ mod tests {
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
             role: None,
+            workspace_files: Vec::new(),
         };
 
         let snapshot = scheduled_content_snapshot(&app, &input).unwrap();
@@ -7254,6 +7281,7 @@ mod tests {
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
             role: None,
+            workspace_files: Vec::new(),
         };
 
         let created = create_conversation_run_vm(&app, &input).unwrap();
@@ -7291,6 +7319,7 @@ mod tests {
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
             role: None,
+            workspace_files: Vec::new(),
         };
 
         let error = validate_conversation_create_vm(&app, &input).unwrap_err();
@@ -7323,6 +7352,7 @@ mod tests {
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
             role: None,
+            workspace_files: Vec::new(),
         };
 
         let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
@@ -7355,6 +7385,7 @@ mod tests {
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
             role: None,
+            workspace_files: Vec::new(),
         };
         let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
 
@@ -7399,6 +7430,7 @@ mod tests {
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
             role: None,
+            workspace_files: Vec::new(),
         };
 
         let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
@@ -7442,6 +7474,7 @@ mod tests {
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
             role: None,
+            workspace_files: Vec::new(),
         };
 
         assert!(create_conversation_task_vm(&app, &input).is_err());
@@ -7906,7 +7939,20 @@ mod tests {
         let attempt_dir =
             app.paths
                 .attempt_dir("task-046", "run-060", "round-001", "测试", "attempt-002");
-        enqueue_prompt(&attempt_dir, "persist after stop".to_string(), Vec::new()).unwrap();
+        enqueue_prompt(
+            &attempt_dir,
+            gold_band::provider::ConversationPromptInput {
+                display_text: "persist after stop".to_string(),
+                quotes: Vec::new(),
+                role: None,
+                workspace_files: vec![gold_band::provider::PromptWorkspaceFileRef {
+                    project_id: "project-001".to_string(),
+                    relative_path: "src/a.ts".to_string(),
+                }],
+            },
+            Vec::new(),
+        )
+        .unwrap();
 
         let vm = conversation_run_vm(
             &app,
@@ -7929,6 +7975,7 @@ mod tests {
         assert!(!leaf.lifecycle.runtime.continuable);
         assert_eq!(queue.items.len(), 1);
         assert_eq!(queue.items[0].content, "persist after stop");
+        assert_eq!(queue.items[0].workspace_file_count, 1);
     }
 
     #[test]

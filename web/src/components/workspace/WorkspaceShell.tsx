@@ -32,6 +32,7 @@ import { BrowserNativeLifecycle, resolveBrowserResourceTransition } from './brow
 import { fileContentStore } from './files/file-content-store';
 import { fileExplorerStore } from './files/file-explorer-store';
 import { WorkspaceFileLinkProvider } from './files/WorkspaceFileLinkProvider';
+import { WorkspaceFileReferencePresentationProvider } from './workspace-file-reference-bridge';
 import {
   conversationPageHasDraftWorkspaceScope,
   reduceWorkspaceAutoCollapse,
@@ -686,8 +687,13 @@ function WorkspaceShellLayout({
     }
     workspace.openWorkspace();
   }, [rightWorkspacePresented, workspace.closeWorkspace, workspace.openWorkspace]);
+  const workspaceFileReferencePresentation = useMemo(
+    () => ({ isDocked: showRightDock }),
+    [showRightDock],
+  );
 
   return (
+    <WorkspaceFileReferencePresentationProvider value={workspaceFileReferencePresentation}>
     <div
       ref={shellRef}
       className="app-window-shell flex h-screen flex-col bg-gold-workspace text-foreground"
@@ -857,5 +863,6 @@ function WorkspaceShellLayout({
         </SheetContent>
       </Sheet>
     </div>
+    </WorkspaceFileReferencePresentationProvider>
   );
 }

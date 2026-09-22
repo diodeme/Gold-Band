@@ -226,6 +226,14 @@
 - 证据：复现用例先失败于概览 TabsContent 缺少 `flex-col`、line Trigger 仍无条件 `flex-1`、编辑器根节点缺少 `w-full`。修复后同一用例转绿；源码管理 GitHub / Tabs / 编辑器及相关 37 项通过，TypeScript 与 Web 生产构建通过。浏览器 preview 的 Git capability 仍是 `repository-required`，无法打开 GitHub PR 页；未把该路径的视觉验收虚报为通过。
 - 过度设计与性能评审：只调整既有 Tabs variant 与 flex 方向，不新增状态、测量、观察器、缓存或 identity。布局由浏览器一次 flex 计算完成。
 
+## 2026-09-18 工作空间文件引用到 Composer
+
+- 方案：文件树 / 搜索结果中的文件右键“引用到对话”，在当前 Composer 上下文区生成轻量文件 chip；prompt 新增 `workspaceFiles { projectId, relativePath }` 结构化输入，Rust 在 admission、队列 dispatch 与定时任务 authoring 持久化前重新解析并校验 workspace 边界，最终投影为 ACP `ResourceLink`。
+- 边界：不把路径写入 textarea，不把工作空间文件当作普通上传附件，不复制到 `task-inputs` / `user-inputs`，不读取全文、不计算 revision、不签发 preview grant、不新增 watcher 或文件 ID。
+- 状态：已完成。已有会话追问、队列派发和定时任务继续同一会话都会把 `workspaceFiles` 投影为绝对路径 ResourceLink；跨工作空间引用按该工作空间根目录解析。实施与验收细目见[工作空间文件引用到 Composer 设计与实施计划](新增流程/2026-09-18-工作空间文件引用到Composer设计与实施计划.md)。
+- 验收：2026-09-21 review 修复后 Rust focused 44/44、Web focused 143/143、类型检查与生产构建通过；内置浏览器覆盖队列文件数量、树右键、Composer chip resolver-first 打开、消息 chip、620px 宽度与控制台错误检查。
+- 说明：首次 Rust 全量测试编译受 Windows 页面文件不足影响失败，已改用低并发 focused 测试并记录；非代码断言失败。本次修改相关 Rust 文件通过 rustfmt 检查；仓库级 cargo fmt 仍存在本分支既有的无关格式差异。
+
 ## 2026-09-18 Agent 管理 ACP Registry 改为内置浏览器链接
 
 - 根因：诊断帮助里的 ACP Registry 仍按早期“系统默认浏览器”实现，且用 `text-primary` 只在悬停时出现下划线，在 Tooltip 里看起来像普通正文。内置浏览器已经把应用内 `http(s)` 统一到 `openWebTarget`，Agent 管理页却还绕开该入口；同时该页 `scope=null`，即使改调用也无法展开右栏。属于正确浏览能力下的入口和投影范围不完整，不是要给帮助文案另做一套 opener。

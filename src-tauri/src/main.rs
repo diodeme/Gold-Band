@@ -5,6 +5,7 @@ mod avatar;
 mod browser;
 mod browser_bookmarks;
 mod browser_history;
+mod browser_location;
 mod browser_ua;
 mod builtin_mcp;
 mod channel;

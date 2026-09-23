@@ -22,7 +22,7 @@ import {
 } from '../right-workspace-context';
 import { fileContentStore, useFileContentEntry } from './file-content-store';
 import { fileExplorerStore } from './file-explorer-store';
-import { WorkspaceFileEditor } from './WorkspaceFileEditor';
+import { WorkspaceFileEditor, type EditorViewportAnchor } from './WorkspaceFileEditor';
 import { markdownImageSources } from './markdown-image-preview';
 import { isMarkdownDocumentPath } from './markdown-document';
 import { markdownHasTableImages } from './markdown-live-preview';
@@ -198,8 +198,8 @@ function FileSnapshotContent({
   const { t } = useTranslation();
   const markdownResourceLinkHandler = useMarkdownResourceLinkHandler();
   const entry = useFileContentEntry(resource.key);
-  const persistEditorState = useCallback((state: unknown) => {
-    fileContentStore.persistEditorState(resource.key, state, entry.contentRevision);
+  const persistEditorState = useCallback((state: unknown, viewportAnchor?: EditorViewportAnchor | null, scrollTop?: number) => {
+    fileContentStore.persistEditorState(resource.key, state, entry.contentRevision, viewportAnchor, scrollTop);
   }, [entry.contentRevision, resource.key]);
   const snapshot = entry.snapshot;
   const markdown = snapshot?.kind === 'text' && isMarkdownDocumentPath(resource.locator.canonicalPath);
@@ -280,6 +280,10 @@ function FileSnapshotContent({
           onChange={(content) => fileContentStore.updateText(resource.key, content)}
           onSave={() => void fileContentStore.flush(resource.key)}
           initialStateJson={fileContentStore.editorState(resource.key)}
+          initialViewportAnchor={fileContentStore.editorViewport(resource.key)}
+          initialViewportScrollTop={fileContentStore.editorScrollTop(resource.key)}
+          initialConsumedLocationRevision={fileContentStore.consumedLocationTarget(resource.key)}
+          onConsumeLocationTarget={(revision) => fileContentStore.consumeLocationTarget(resource.key, revision)}
           onPersistState={persistEditorState}
           onLocationAdjusted={onLocationAdjusted}
           markdownMode={markdownMode}

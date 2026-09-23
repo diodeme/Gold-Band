@@ -20,6 +20,7 @@ import type {
   MarkdownImagePreviewVm,
 } from '@/types';
 import type { FileWorkspaceResource } from '../right-workspace-context';
+import type { EditorViewportAnchor } from './WorkspaceFileEditor';
 
 export type FileSaveState =
   | { kind: 'clean' }
@@ -74,6 +75,9 @@ interface SaveRuntime {
   renewalTimer: ReturnType<typeof setTimeout> | null;
   previewRefreshTimer: ReturnType<typeof setTimeout> | null;
   editorStateJson: unknown | null;
+  viewportAnchor: EditorViewportAnchor | null;
+  viewportScrollTop: number;
+  consumedLocationRevision: number;
   imageViewState: FileImageViewState;
   markdownMode: MarkdownEditorMode;
   markdownImages: Map<string, MarkdownImageState>;
@@ -250,10 +254,37 @@ export class FileContentStore {
     return this.runtimes.get(resourceKey)?.editorStateJson ?? null;
   }
 
-  persistEditorState(resourceKey: string, state: unknown, contentRevision?: number) {
+  editorViewport(resourceKey: string) {
+    return this.runtimes.get(resourceKey)?.viewportAnchor ?? null;
+  }
+
+  editorScrollTop(resourceKey: string) {
+    return this.runtimes.get(resourceKey)?.viewportScrollTop ?? 0;
+  }
+
+  consumedLocationTarget(resourceKey: string) {
+    return this.runtimes.get(resourceKey)?.consumedLocationRevision ?? 0;
+  }
+
+  consumeLocationTarget(resourceKey: string, revision: number) {
+    const runtime = this.runtimes.get(resourceKey);
+    if (!runtime || revision <= runtime.consumedLocationRevision) return;
+    runtime.consumedLocationRevision = revision;
+  }
+
+  persistEditorState(
+    resourceKey: string,
+    state: unknown,
+    contentRevision?: number,
+    viewportAnchor?: EditorViewportAnchor | null,
+    scrollTop?: number,
+  ) {
     if (contentRevision != null && this.entries.get(resourceKey)?.contentRevision !== contentRevision) return;
     const runtime = this.runtimes.get(resourceKey);
-    if (runtime) runtime.editorStateJson = state;
+    if (!runtime) return;
+    if (state !== undefined) runtime.editorStateJson = state;
+    if (viewportAnchor !== undefined) runtime.viewportAnchor = viewportAnchor;
+    if (scrollTop !== undefined) runtime.viewportScrollTop = Math.max(0, scrollTop);
   }
 
   subscribe = (listener: () => void) => {
@@ -287,7 +318,8 @@ export class FileContentStore {
     const watchEpoch = this.contentEpoch(resource.projectId);
     if (!force && existing?.status === 'ready' && existing.watchEpoch === watchEpoch) return existing;
     const requestRevision = (existing?.requestRevision ?? 0) + 1;
-    const keepReady = preserveReady && existing?.status === 'ready' && existing.snapshot !== null;
+    // A later watch epoch still re-reads disk, but an open file must stay visible.
+    const keepReady = existing?.status === 'ready' && existing.snapshot !== null && (preserveReady || existing.status === 'ready');
     this.setEntry(resource.key, {
       ...(existing ?? { ...EMPTY_ENTRY, key: resource.key, resource }),
       resource,
@@ -745,6 +777,9 @@ export class FileContentStore {
       // A disk reload creates a new undo boundary. Tab deactivation does not call load,
       // so normal Tab switches still preserve the serialized CodeMirror history.
       editorStateJson: null,
+      viewportAnchor: null,
+      viewportScrollTop: 0,
+      consumedLocationRevision: 0,
       imageViewState: existing?.imageViewState ?? { zoom: 1, scrollLeft: 0, scrollTop: 0 },
       markdownMode: existing?.markdownMode ?? 'live-preview',
       markdownImages: new Map(),

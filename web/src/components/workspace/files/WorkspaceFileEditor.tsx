@@ -53,7 +53,11 @@ interface WorkspaceFileEditorProps {
   onChange: (value: string) => void;
   onSave: () => void;
   initialStateJson: unknown | null;
-  onPersistState: (state: unknown) => void;
+  initialViewportAnchor?: EditorViewportAnchor | null;
+  initialViewportScrollTop?: number;
+  initialConsumedLocationRevision?: number;
+  onConsumeLocationTarget?: (revision: number) => void;
+  onPersistState: (state: unknown, viewportAnchor?: EditorViewportAnchor | null, scrollTop?: number) => void;
   onLocationAdjusted?: (adjusted: boolean) => void;
   markdownMode?: MarkdownEditorMode | null;
   markdownLivePreviewAvailable?: boolean;
@@ -269,6 +273,10 @@ export function WorkspaceFileEditor({
   onChange,
   onSave,
   initialStateJson,
+  initialViewportAnchor = null,
+  initialViewportScrollTop = 0,
+  initialConsumedLocationRevision = 0,
+  onConsumeLocationTarget,
   onPersistState,
   onLocationAdjusted,
   markdownMode = null,
@@ -283,12 +291,20 @@ export function WorkspaceFileEditor({
 }: WorkspaceFileEditorProps) {
   const { t } = useTranslation();
   const editorRef = useRef<ReactCodeMirrorRef>(null);
+  const liveViewRef = useRef<EditorView | null>(null);
   const onSaveRef = useRef(onSave);
   const onChangeRef = useRef(onChange);
   const onMarkdownLinkClickRef = useRef(onMarkdownLinkClick);
   const onMarkdownImagePreviewErrorRef = useRef(onMarkdownImagePreviewError);
   const onLocationAdjustedRef = useRef(onLocationAdjusted);
   const onPersistStateRef = useRef(onPersistState);
+  const onConsumeLocationTargetRef = useRef(onConsumeLocationTarget);
+  const readingAnchorRef = useRef<EditorViewportAnchor | null>(initialViewportAnchor);
+  const readingScrollTopRef = useRef(Math.max(0, initialViewportScrollTop));
+  const initialScrollTopRef = useRef(Math.max(0, initialViewportScrollTop));
+  const pendingRestoreScrollRef = useRef(initialViewportScrollTop > 0);
+  const ignoreReadingCaptureRef = useRef(initialViewportAnchor != null || initialViewportScrollTop > 0);
+  const sessionViewportPendingRef = useRef(initialViewportAnchor != null);
   const valueRef = useRef(value);
   const targetRevisionRef = useRef(targetRevision);
   const markdownImagesRef = useRef(markdownImages);
@@ -298,6 +314,17 @@ export function WorkspaceFileEditor({
   const restoredModeAnchorRef = useRef<{ mode: MarkdownEditorMode; anchor: EditorViewportAnchor } | null>(null);
   const modeTransitionRequestRef = useRef(0);
   const appliedTargetRevisionsRef = useRef(new Map<string, number>());
+  if (initialConsumedLocationRevision > (appliedTargetRevisionsRef.current.get(documentKey) ?? 0)) {
+    appliedTargetRevisionsRef.current.set(documentKey, initialConsumedLocationRevision);
+  }
+  const locationTargetPending = Boolean(
+    target?.line
+    && targetRevision > (appliedTargetRevisionsRef.current.get(documentKey) ?? 0),
+  );
+  if (locationTargetPending && sessionViewportPendingRef.current) {
+    sessionViewportPendingRef.current = false;
+    ignoreReadingCaptureRef.current = false;
+  }
   const appliedModeProfileRef = useRef<string | null>(null);
   const initialModeProfileRef = useRef<string | null>(null);
   const appliedLanguageProfileRef = useRef<string | null>(null);
@@ -334,6 +361,7 @@ export function WorkspaceFileEditor({
   onMarkdownImagePreviewErrorRef.current = onMarkdownImagePreviewError;
   onLocationAdjustedRef.current = onLocationAdjusted;
   onPersistStateRef.current = onPersistState;
+  onConsumeLocationTargetRef.current = onConsumeLocationTarget;
   markdownImagesRef.current = markdownImages;
   const editorValue = useMemo(() => normalizeCodeMirrorValue(value), [value]);
   valueRef.current = editorValue;
@@ -439,11 +467,33 @@ export function WorkspaceFileEditor({
       if (range.head !== position || options.y !== 'start') return false;
       if (anchor.widgetAnchor && !editorWidgetBlockAt(view, position)) {
         pendingViewportRestoreRef.current = null;
+        ignoreReadingCaptureRef.current = false;
         return false;
       }
       pendingViewportRestoreRef.current = null;
+      ignoreReadingCaptureRef.current = false;
       scrollEditorViewportAnchor(view, anchor);
+      readingAnchorRef.current = anchor;
       return true;
+    }),
+    EditorView.domEventHandlers({
+      scroll(event, view) {
+        if (ignoreReadingCaptureRef.current) return false;
+        const scroller = view.scrollDOM;
+        if (scroller.clientHeight < 1) return false;
+        const scrollTop = scroller.scrollTop;
+        // Hiding the panel can emit an untrusted scroll that snaps back to the start.
+        if (scrollTop <= 1 && readingScrollTopRef.current > 24 && !event.isTrusted) return false;
+        pendingRestoreScrollRef.current = false;
+        readingScrollTopRef.current = scrollTop;
+        try {
+          const anchor = captureEditorViewportAnchor(view);
+          if (!(anchor.position === 0 && scrollTop > 24)) readingAnchorRef.current = anchor;
+        } catch {
+          // Geometry is not ready yet. The scroller offset still stands.
+        }
+        return false;
+      },
     }),
     Prec.highest(keymap.of([{ key: 'Mod-s', preventDefault: true, run: () => { onSaveRef.current(); return true; } }])),
   ], []);
@@ -521,9 +571,62 @@ export function WorkspaceFileEditor({
       effects: EditorView.scrollIntoView(resolved.selection.main, { y: 'center' }),
     });
     appliedTargetRevisionsRef.current.set(intent.documentKey, intent.targetRevision);
+    onConsumeLocationTargetRef.current?.(intent.targetRevision);
     onLocationAdjustedRef.current?.(resolved.adjusted);
     view.focus();
     return true;
+  }, [cancelPendingViewportMeasure]);
+
+  const restoreReadingPosition = useCallback((view: EditorView) => {
+    const scrollTop = readingScrollTopRef.current;
+    const sessionAnchor = sessionViewportPendingRef.current ? readingAnchorRef.current : null;
+    if (scrollTop <= 0 && !sessionAnchor) return;
+    const intent = targetIntentRef.current;
+    const locationStillPending = Boolean(
+      intent.target?.line
+      && intent.targetRevision > (appliedTargetRevisionsRef.current.get(intent.documentKey) ?? 0),
+    );
+    if (locationStillPending) return;
+    sessionViewportPendingRef.current = false;
+    ignoreReadingCaptureRef.current = true;
+    cancelPendingViewportMeasure();
+    let attempts = 0;
+    const apply = () => {
+      if (liveViewRef.current !== view) return;
+      if (scrollTop > 0) {
+        const max = Math.max(0, view.scrollDOM.scrollHeight - view.scrollDOM.clientHeight);
+        // Preview widgets can finish measuring after the editor is created.
+        if (max + 8 < scrollTop && attempts < 4) {
+          attempts += 1;
+          view.requestMeasure({ read: (measured) => measured.scrollDOM.scrollHeight, write: () => apply() });
+          return;
+        }
+        view.scrollDOM.scrollTop = Math.min(scrollTop, max);
+        if (view.scrollDOM.scrollTop > 1) pendingRestoreScrollRef.current = false;
+      } else if (sessionAnchor) {
+        pendingViewportRestoreRef.current = sessionAnchor;
+        view.dispatch({ effects: editorViewportScrollEffect(view, sessionAnchor) });
+      }
+      const viewWindow = view.dom.ownerDocument.defaultView;
+      const settle = () => {
+        if (liveViewRef.current !== view) return;
+        if (scrollTop > 24 && view.scrollDOM.scrollTop <= 1) {
+          const max = Math.max(0, view.scrollDOM.scrollHeight - view.scrollDOM.clientHeight);
+          if (max + 8 >= scrollTop) view.scrollDOM.scrollTop = Math.min(scrollTop, max);
+        }
+        ignoreReadingCaptureRef.current = false;
+      };
+      if (viewWindow) {
+        const id = viewWindow.requestAnimationFrame(() => {
+          pendingViewportMeasureFrameRef.current = null;
+          settle();
+        });
+        pendingViewportMeasureFrameRef.current = { id, win: viewWindow };
+      } else {
+        settle();
+      }
+    };
+    view.requestMeasure({ read: (measured) => measured.scrollDOM.scrollHeight, write: () => apply() });
   }, [cancelPendingViewportMeasure]);
 
   useEffect(() => {
@@ -662,8 +765,17 @@ export function WorkspaceFileEditor({
     modeTransitionRequestRef.current += 1;
     cancelPendingViewportMeasure();
     if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
-    const state = editorRef.current?.view?.state;
-    if (state) onPersistStateRef.current(state.toJSON({ history: historyField }));
+    const view = liveViewRef.current ?? editorRef.current?.view ?? null;
+    if (view) {
+      try {
+        const scrollTop = pendingRestoreScrollRef.current ? initialScrollTopRef.current : readingScrollTopRef.current;
+        onPersistStateRef.current(view.state.toJSON({ history: historyField }), readingAnchorRef.current, scrollTop);
+      } catch {
+        const scrollTop = pendingRestoreScrollRef.current ? initialScrollTopRef.current : readingScrollTopRef.current;
+        onPersistStateRef.current(undefined, readingAnchorRef.current, scrollTop);
+      }
+    }
+    liveViewRef.current = null;
   }, [cancelPendingViewportMeasure]);
 
   const copySource = async () => {
@@ -797,6 +909,8 @@ export function WorkspaceFileEditor({
           appliedEditorPolicyProfileRef.current = initialEditorPolicyProfileRef.current;
           appliedMarkdownImagePreviewProfileRef.current = initialMarkdownImagePreviewProfileRef.current;
           appliedModeProfileRef.current = initialModeProfileRef.current;
+          liveViewRef.current = view;
+          restoreReadingPosition(view);
           setActiveEditorView(view);
         }}
         onChange={handleChange}

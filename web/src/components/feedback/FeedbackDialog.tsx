@@ -234,7 +234,7 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!submitting) onOpenChange(v); }}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="min-w-0 sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{t("common.feedbackTitle")}</DialogTitle>
           <DialogDescription>{t("common.feedbackSubtitle")}</DialogDescription>
@@ -242,7 +242,7 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps) {
 
         <div
           data-attachment-dropzone="true"
-          className="flex flex-col gap-4"
+          className="flex min-w-0 flex-col gap-4"
           {...dropZoneHandlers}
         >
           <div className="flex flex-col gap-1.5">
@@ -261,14 +261,22 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps) {
           </div>
 
           {sessionOptions.length > 0 ? (
-            <div className="flex flex-col gap-1.5">
+            <div className="flex min-w-0 flex-col gap-1.5">
               <label className="text-sm font-medium text-foreground">{t("common.feedbackRelatedSession")}</label>
               <Select value={sessionValue} onValueChange={setSessionValue} disabled={submitting}>
-                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-                <SelectContent>
+                <SelectTrigger className="w-full min-w-0 *:data-[slot=select-value]:min-w-0 *:data-[slot=select-value]:flex-1">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="w-[var(--radix-select-trigger-width)] max-w-[calc(100vw-2rem)]">
                   <SelectItem value="none">{t("common.feedbackNoSession")}</SelectItem>
                   {sessionOptions.map((o) => (
-                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                    <SelectItem
+                      key={o.value}
+                      value={o.value}
+                      className="min-w-0 whitespace-normal [overflow-wrap:anywhere] [&>span]:min-w-0 [&>span]:[overflow-wrap:anywhere]"
+                    >
+                      {o.label}
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>

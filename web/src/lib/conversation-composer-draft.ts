@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { revokeAttachmentPreviewUrls, type AttachmentItem } from './attachment-service';
 import type { ScheduledTaskConfig } from '@/types';
+import type { ComposerWorkspaceFileRef } from './composer-context';
 
 /**
  * 首页会话发起 composer 的未提交草稿。
@@ -33,6 +34,7 @@ export interface ConversationComposerRemoteBinding {
 export interface ConversationComposerDraftState {
   content: string;
   attachments: AttachmentItem[];
+  workspaceFiles: ComposerWorkspaceFileRef[];
   /// 当前 prepare 中的远程任务绑定（null = 普通本地新建会话，走 create_conversation_run）。
   remote: ConversationComposerRemoteBinding | null;
   /// 提交意图：普通发送，或从 composer 直接创建 scheduled task。与远程绑定互斥（见 prefill / enterScheduledTask）。
@@ -42,7 +44,7 @@ export interface ConversationComposerDraftState {
 }
 
 export function createInitialConversationComposerDraft(): ConversationComposerDraftState {
-  return { content: '', attachments: [], remote: null, submission: { kind: 'send' } };
+  return { content: '', attachments: [], workspaceFiles: [], remote: null, submission: { kind: 'send' } };
 }
 
 /**
@@ -52,6 +54,8 @@ export function createInitialConversationComposerDraft(): ConversationComposerDr
 export type ConversationComposerDraftAction =
   | { type: 'setContent'; content: string }
   | { type: 'setAttachments'; attachments: AttachmentItem[] }
+  | { type: 'setWorkspaceFiles'; workspaceFiles: ComposerWorkspaceFileRef[] }
+  | { type: 'changeWorkspace'; projectId: string | null }
   | { type: 'prefill'; content: string; remote: ConversationComposerRemoteBinding }
   | { type: 'clearRemote' }
   | { type: 'enterScheduledTask' }
@@ -68,10 +72,19 @@ export function conversationComposerDraftReducer(
       return state.content === action.content ? state : { ...state, content: action.content };
     case 'setAttachments':
       return { ...state, attachments: action.attachments };
+    case 'setWorkspaceFiles':
+      return state.workspaceFiles === action.workspaceFiles
+        ? state
+        : { ...state, workspaceFiles: action.workspaceFiles };
+    case 'changeWorkspace':
+      // Each reference keeps its own projectId and resolves to that workspace's
+      // absolute path, so switching the composer workspace must not drop them.
+      return state;
     case 'prefill':
-      // 远程任务 prepare：覆盖式新草稿——正文预填 + 绑定 remote + 清空附件，并回到 send 提交意图
-      // （scheduled-task 与远程绑定是互斥的提交意图，prefill 即声明本草稿为远程执行草稿）。
-      return { content: action.content, attachments: [], remote: action.remote, submission: { kind: 'send' } };
+      // 远程任务 prepare：覆盖式新草稿——正文预填 + 绑定 remote + 清空附件与工作区文件引用，并回到 send
+      // 提交意图（scheduled-task 与远程绑定是互斥的提交意图，prefill 即声明本草稿为远程执行草稿；
+      // 远程任务在远程工作空间执行，本地工作区文件引用不适用）。
+      return { content: action.content, attachments: [], workspaceFiles: [], remote: action.remote, submission: { kind: 'send' } };
     case 'clearRemote':
       // 解除远程绑定但保留正文与附件：用户删掉绑定 chip 后，草稿降级为普通本地会话（发送走 create_conversation_run）。
       return state.remote === null ? state : { ...state, remote: null };
@@ -99,7 +112,9 @@ export interface ConversationComposerDraftContextValue {
   setAttachments: (
     next: AttachmentItem[] | ((prev: AttachmentItem[]) => AttachmentItem[]),
   ) => void;
-  /// 远程任务点击执行后预填：写正文 + 绑定 remote，清空既有附件。仅在 draft boundary 内可用。
+  setWorkspaceFiles: (next: ComposerWorkspaceFileRef[] | ((prev: ComposerWorkspaceFileRef[]) => ComposerWorkspaceFileRef[])) => void;
+  changeWorkspace: (projectId: string | null) => void;
+  /// 远程任务点击执行后预填：写正文 + 绑定 remote，清空既有附件与工作区文件引用。仅在 draft boundary 内可用。
   prefill: (content: string, remote: ConversationComposerRemoteBinding) => void;
   /// 解除远程绑定（保留正文与附件）。claim-at-send 下删 chip 纯属本地解绑——任务未被领取（仍 queued），无需通知服务端。
   clearRemote: () => void;
@@ -111,6 +126,7 @@ export interface ConversationComposerDraftContextValue {
 
 export interface ConversationComposerDraftBoundaryHandle {
   reset: () => void;
+  changeWorkspace: (projectId: string | null) => void;
 }
 
 const ConversationComposerDraftContext = createContext<ConversationComposerDraftContextValue | null>(null);
@@ -128,7 +144,7 @@ export const ConversationComposerDraftProvider = ConversationComposerDraftContex
 export function createConversationComposerDraftBoundaryHandle(
   owner: ConversationComposerDraftContextValue,
 ): ConversationComposerDraftBoundaryHandle {
-  return { reset: owner.reset };
+  return { reset: owner.reset, changeWorkspace: owner.changeWorkspace };
 }
 
 export function resetConversationComposerDraft(
@@ -173,6 +189,28 @@ export function useConversationComposerDraftOwner(): ConversationComposerDraftCo
     [],
   );
 
+  const setWorkspaceFiles = useCallback(
+    (next: ComposerWorkspaceFileRef[] | ((prev: ComposerWorkspaceFileRef[]) => ComposerWorkspaceFileRef[])) => {
+      setDraft((prev) =>
+        conversationComposerDraftReducer(prev, {
+          type: 'setWorkspaceFiles',
+          workspaceFiles:
+                        typeof next === 'function'
+                          ? (next as (p: ComposerWorkspaceFileRef[]) => ComposerWorkspaceFileRef[])(prev.workspaceFiles)
+                          : next,
+        }),
+      );
+    },
+    [],
+  );
+
+  const changeWorkspace = useCallback((projectId: string | null) => {
+    setDraft(prev => conversationComposerDraftReducer(prev, {
+      type: 'changeWorkspace',
+      projectId,
+    }));
+  }, []);
+
   const prefill = useCallback(
     (content: string, remote: ConversationComposerRemoteBinding) => {
       setDraft((prev) => {
@@ -212,6 +250,8 @@ export function useConversationComposerDraftOwner(): ConversationComposerDraftCo
       draft,
       setContent,
       setAttachments,
+      setWorkspaceFiles,
+      changeWorkspace,
       prefill,
       clearRemote,
       enterScheduledTask,
@@ -219,6 +259,6 @@ export function useConversationComposerDraftOwner(): ConversationComposerDraftCo
       exitScheduledTask,
       reset,
     }),
-    [draft, setContent, setAttachments, prefill, clearRemote, enterScheduledTask, setScheduledTaskConfig, exitScheduledTask, reset],
+    [draft, setContent, setAttachments, setWorkspaceFiles, changeWorkspace, prefill, clearRemote, enterScheduledTask, setScheduledTaskConfig, exitScheduledTask, reset],
   );
 }

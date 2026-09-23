@@ -1,6 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import { BoundedLruCache } from '@/lib/bounded-lru-cache';
 import type { AttachmentItem } from '@/lib/attachment-service';
+import {
+  WorkspaceFileReferenceBridgeProvider,
+  useWorkspaceFileReferenceBridgeState,
+} from './workspace-file-reference-bridge';
 import { RIGHT_WORKSPACE_DEFAULT_WIDTH } from './workspace-layout';
 import {
   normalizeSourceControlWorkspacePath,
@@ -503,6 +507,7 @@ export function RightWorkspaceProvider({
   sourceControlWorkspacePath?: string | null;
   children: ReactNode;
 }) {
+  const workspaceFileReferenceBridge = useWorkspaceFileReferenceBridgeState();
   const internalStoreRef = useRef<ConversationWorkspaceStore | null>(null);
   if (!internalStoreRef.current) internalStoreRef.current = new ConversationWorkspaceStore();
   const effectiveStore = store ?? internalStoreRef.current;
@@ -667,9 +672,14 @@ export function RightWorkspaceProvider({
     getResource,
   }), [closeTab, getResource, openResource, scope?.key, scope?.projectId]);
   return (
-    <RightWorkspaceCommandsContext.Provider value={commands}>
-      <RightWorkspaceContext.Provider value={value}>{children}</RightWorkspaceContext.Provider>
-    </RightWorkspaceCommandsContext.Provider>
+    <WorkspaceFileReferenceBridgeProvider
+      bridge={workspaceFileReferenceBridge.bridge}
+      commands={workspaceFileReferenceBridge.commands}
+    >
+      <RightWorkspaceCommandsContext.Provider value={commands}>
+        <RightWorkspaceContext.Provider value={value}>{children}</RightWorkspaceContext.Provider>
+      </RightWorkspaceCommandsContext.Provider>
+    </WorkspaceFileReferenceBridgeProvider>
   );
 }
 

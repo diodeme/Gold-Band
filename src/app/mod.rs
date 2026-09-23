@@ -3162,6 +3162,32 @@ impl App {
         read_json(&path)
     }
 
+    /// Roots that can back a workspace file reference. The current project uses
+    /// this app's repo root. Other registered conversation workspaces come from
+    /// global state. Missing or unreadable state still leaves the current root.
+    pub fn prompt_workspace_roots(&self) -> Vec<crate::provider::PromptWorkspaceRoot> {
+        let registered = self
+            .load_state()
+            .map(|state| {
+                state
+                    .conversation_workspaces
+                    .into_iter()
+                    .map(|workspace| {
+                        (
+                            workspace.project_id,
+                            std::path::PathBuf::from(workspace.workspace_path),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        crate::provider::prompt_workspace_roots(
+            &self.paths.project_id,
+            self.paths.repo_root.as_std_path(),
+            &registered,
+        )
+    }
+
     /// 落盘 `state.json`（底层单次原子写入，临时文件替换）。
     ///
     /// `pub(crate)`：仅供 [`Self::with_state`] 事务边界与 crate 内测试 seeding 使用；

@@ -2,7 +2,7 @@ import { execSync, spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { basename, join, relative } from 'node:path';
 
-import { channelBuildPlan, parseChannelBuildArgs } from './build-channel-options.mjs';
+import { assertChannelBuildSecrets, channelBuildPlan, parseChannelBuildArgs } from './build-channel-options.mjs';
 import { channelEnvPrefix, readChannelConfig, repoRoot, writeTauriConfigOverlay } from './channel-config.mjs';
 
 let buildOptions;
@@ -47,6 +47,14 @@ const env = {
   ...process.env,
   GOLD_BAND_RELEASE_CHANNEL: channel,
 };
+
+try {
+  assertChannelBuildSecrets(channel, config, env);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
+
 const upper = channelEnvPrefix(channel);
 const privateKey = env[`${upper}_TAURI_SIGNING_PRIVATE_KEY`] || env.TAURI_SIGNING_PRIVATE_KEY;
 const password = env[`${upper}_TAURI_SIGNING_PRIVATE_KEY_PASSWORD`];

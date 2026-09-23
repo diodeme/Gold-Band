@@ -1371,6 +1371,89 @@ mod tests {
     }
 
     #[test]
+    fn workflow_manual_check_reports_intervention_without_counters() {
+        let temp = tempdir().unwrap();
+        let mut store = MetricsCollectorStore::open(&temp.path().join("metrics.sqlite3")).unwrap();
+
+        let started = store
+            .collect(
+                workflow_fact(
+                    LifecycleEventType::ExecutionStarted,
+                    "run-001",
+                    "round-001",
+                    "attempt-1",
+                ),
+                "2026-09-23T00:00:01.000".to_string(),
+                "test",
+                1,
+            )
+            .unwrap();
+        assert_eq!(started.event_type, WireEventType::ExecutionStarted);
+        assert!(started.counters.is_none());
+
+        let mut paused = workflow_fact(
+            LifecycleEventType::ExecutionPaused,
+            "run-001",
+            "round-001",
+            "attempt-1",
+        );
+        paused.payload.pause_reason = Some(MetricsPauseReason::WaitingForUserInput);
+        paused.transition = MetricsTransition::Paused {
+            transition_id: "pause-1".to_string(),
+        };
+        let paused = store
+            .collect(paused, "2026-09-23T00:00:02.000".to_string(), "test", 2)
+            .unwrap();
+        assert_eq!(paused.event_type, WireEventType::ExecutionPaused);
+        assert!(paused.counters.is_none());
+
+        let mut intervention = workflow_fact(
+            LifecycleEventType::InterventionRequested,
+            "run-001",
+            "round-001",
+            "attempt-1",
+        );
+        intervention.fact_id = "manual-decision-1".to_string();
+        intervention.payload.intervention_kind = Some(MetricsInterventionKind::ManualDecision);
+        let intervention = store
+            .collect(
+                intervention,
+                "2026-09-23T00:00:03.000".to_string(),
+                "test",
+                3,
+            )
+            .unwrap();
+        assert_eq!(
+            intervention.event_type,
+            WireEventType::InterventionRequested
+        );
+        assert_eq!(
+            intervention.intervention_kind,
+            Some(MetricsInterventionKind::ManualDecision)
+        );
+        assert!(intervention.counters.is_none());
+
+        let completed = store
+            .collect(
+                workflow_fact(
+                    LifecycleEventType::ExecutionCompleted,
+                    "run-001",
+                    "round-001",
+                    "attempt-1",
+                ),
+                "2026-09-23T00:00:04.000".to_string(),
+                "test",
+                4,
+            )
+            .unwrap();
+        assert_eq!(completed.event_type, WireEventType::ExecutionCompleted);
+        let counters = completed.counters.unwrap();
+        assert_eq!(counters.pause_count, 1);
+        assert_eq!(counters.resume_count, 0);
+        assert_eq!(counters.manual_continue_count, 0);
+    }
+
+    #[test]
     fn repeated_terminal_follow_up_projection_is_idempotent() {
         let temp = tempdir().unwrap();
         let mut store = MetricsCollectorStore::open(&temp.path().join("metrics.sqlite3")).unwrap();

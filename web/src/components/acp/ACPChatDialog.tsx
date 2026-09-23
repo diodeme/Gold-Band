@@ -247,6 +247,7 @@ import {
   missingAcpSessionRetryDelay,
   resolveAcpTimelineSurfaceState,
   resolveAcpSessionShellState,
+  shouldKeepAcpInitialSessionLoadingAfterRetryExhausted,
   shouldCreateCancelledDirectAttemptShell,
   shouldCreateLiveAcpSessionShell,
 } from "@/lib/acp-session-shell";
@@ -2334,6 +2335,8 @@ export function ACPChatDialog(
   const baseSession = currentSession ?? session;
   const projectionLifecycle = localRuntimeLifecycle ?? runtimeComposerContext?.lifecycle;
   const runtimeActiveFromContext = !runtimeStopAccepted && (runtimeComposerContext?.lifecycle?.runtime.active ?? isRuntimeActiveStatus(runtimeComposerContext?.runtimeStatus));
+  const runtimeActiveFromContextRef = useRef(runtimeActiveFromContext);
+  runtimeActiveFromContextRef.current = runtimeActiveFromContext;
   const cancelledDirectAttemptShell = shouldCreateCancelledDirectAttemptShell({
     isOrchestrated: runtimeComposerContext?.isOrchestrated ?? true,
     lifecycle: projectionLifecycle,
@@ -4272,6 +4275,16 @@ export function ACPChatDialog(
             || hasHydratedAcpSessionContent(eventWindowKey)
           ) {
             setInitialSessionQueryState("success");
+            return;
+          }
+          if (
+            shouldKeepAcpInitialSessionLoadingAfterRetryExhausted({
+              runtimeActive: runtimeActiveFromContextRef.current,
+              hasLoadError: lastLoadError != null,
+            })
+          ) {
+            setSessionLoadError(null);
+            setInitialSessionQueryState("loading");
             return;
           }
           setSessionLoadError(

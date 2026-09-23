@@ -72,6 +72,7 @@ import {
   storeAcpLoadedEventWindow,
 } from '@/components/acp/ACPChatDialog';
 import { GitBranchPickerSnapshotProvider } from '@/components/git/GitBranchPickerSnapshotContext';
+import { RightWorkspaceProvider } from '@/components/workspace/right-workspace-context';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { getAcpSession } from '@/api';
 import type { AcpSessionVm, AgentRegistryVm, ConversationAttemptLifecycleVm } from '@/types';
@@ -147,6 +148,88 @@ function nonRuntimeControlledLifecycle(): ConversationAttemptLifecycleVm {
       tone: 'success',
       icon: 'check',
       terminal: true,
+      resumable: false,
+      reasonCode: null,
+      blockingError: false,
+    },
+    continueKind: null,
+    composer: {
+      mode: 'normal',
+      submitTarget: 'acp-prompt',
+      processingKind: 'processing',
+      statusKey: null,
+      canStop: false,
+      lockInput: false,
+    },
+  };
+}
+
+function activeRuntimeLifecycle(): ConversationAttemptLifecycleVm {
+  return {
+    runtime: {
+      status: 'running',
+      outcome: null,
+      pauseReason: null,
+      resumable: false,
+      current: true,
+      active: true,
+      continuable: false,
+      phase: 'running-node',
+    },
+    control: { mode: 'runtime-controlled' },
+    acp: {
+      sessionAvailability: 'unavailable',
+      liveTurnActivity: 'starting',
+      latestTurnStatus: 'none',
+      stopping: false,
+    },
+    displayStatus: 'running',
+    runtimeDisplay: {
+      code: 'running',
+      tone: 'running',
+      icon: 'loader',
+      terminal: false,
+      resumable: false,
+      reasonCode: null,
+      blockingError: false,
+    },
+    continueKind: null,
+    composer: {
+      mode: 'runtime-active',
+      submitTarget: 'none',
+      processingKind: 'processing',
+      statusKey: 'conversation.runtime.runtimeActive',
+      canStop: true,
+      lockInput: true,
+    },
+  };
+}
+
+function inactiveWithoutFailureLifecycle(): ConversationAttemptLifecycleVm {
+  return {
+    runtime: {
+      status: 'paused',
+      outcome: null,
+      pauseReason: null,
+      resumable: false,
+      current: true,
+      active: false,
+      continuable: false,
+      phase: 'paused',
+    },
+    control: { mode: 'runtime-controlled' },
+    acp: {
+      sessionAvailability: 'unavailable',
+      liveTurnActivity: 'idle',
+      latestTurnStatus: 'none',
+      stopping: false,
+    },
+    displayStatus: 'paused',
+    runtimeDisplay: {
+      code: 'paused',
+      tone: 'warning',
+      icon: 'pause',
+      terminal: false,
       resumable: false,
       reasonCode: null,
       blockingError: false,
@@ -643,6 +726,53 @@ describe('ACP composer render isolation', () => {
       expect(menu?.className).not.toContain('backdrop-blur');
     } finally {
       await act(async () => root.unmount());
+    }
+  });
+
+  it('uses the latest runtime active state when initial session retries are exhausted', async () => {
+    vi.useFakeTimers();
+    runtime.tauri = true;
+    vi.mocked(getAcpSession).mockResolvedValue(null);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    const view = (active: boolean) => (
+      <RightWorkspaceProvider>
+        <TooltipProvider>
+          <ACPChatDialog
+            session={null}
+            projectId="project-render"
+            taskId="task-render"
+            runId="run-render"
+            roundId="round-render"
+            nodeId="node-render"
+            attemptId="attempt-render"
+            runtimeComposerContext={{
+              isOrchestrated: true,
+              lifecycle: active ? activeRuntimeLifecycle() : inactiveWithoutFailureLifecycle(),
+              runtimeStatus: active ? 'running' : 'paused',
+              workflowValid: true,
+            }}
+            showSystemPromptAction={false}
+            showRawFramesAction={false}
+            usageCompact
+          />
+        </TooltipProvider>
+      </RightWorkspaceProvider>
+    );
+
+    try {
+      await act(async () => root.render(view(true)));
+      await act(async () => root.render(view(false)));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(40_000);
+      });
+
+      expect(container.textContent).toContain('ACP 会话失败');
+    } finally {
+      await act(async () => root.unmount());
+      vi.useRealTimers();
     }
   });
 });

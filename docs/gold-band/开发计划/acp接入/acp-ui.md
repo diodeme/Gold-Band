@@ -2,6 +2,8 @@
 
 ## 0. 当前实现状态
 
+- 2026-09-23 新会话冷启动短暂出现 ACP 错误横幅，切走再回来后恢复。根因是初始会话重试耗尽时无条件进入 `error`，把 provider 元数据已落盘但 timeline 正文尚未就绪的正常启动空窗误判为失败；这是正确状态分层下的收敛实现不完整。修复新增 `shouldKeepAcpInitialSessionLoadingAfterRetryExhausted` 判定：runtime 仍 active 且没有实际 `lastLoadError` 时保持 `loading/initializing`，由既有 live subscription 或后续刷新收敛为 available；实际命令错误或非运行态空会话仍正常报错。最小失败测试先固定误报，再用 5 个 ACP 相关文件 170 项回归转绿；TypeScript 产品构建检查通过。不新增状态机、请求、缓存或兼容旁路。
+- 2026-09-23 P2 修正：上述重试耗尽判定原先读取长异步 effect 启动时捕获的 `runtimeActiveFromContext`，active 在 30 秒重试窗口内变化但未同时改变 failed/interrupted 时可能使用旧值。修复新增 `runtimeActiveFromContextRef` 并在收尾判定读取 ref 当前值，不把 runtime active 加入 effect 依赖，避免 active 每次变化重启会话订阅。组件级 fake-timer 回归先固定 active 由真变假后仍错误停留在“加载中…”，修复后正确进入 ACP 失败态；TypeScript 产品构建检查通过。
 - 2026-09-20 AUTO / AI-DYNAMIC runtime continue 只传 snapshot `configOptionOverrides`，不得把冻结作者态 `config_options` 再 merge 回来；否则 Gemini 省略表后第一次回滚的 reasoning 会在每次追问再刷分割线。Direct 运行中追问走 prompt queue，本来就不会再 apply。新节点 `session/new` 按所选模型已观测的 `modelBoundCatalogs[modelId]` 静默 retain。
 - 2026-09-20 工作流编辑器保存校验与 Inspector 菜单共用所选模型的 `modelBoundCatalogs` 投影。Doctor 当前表是 Luna 时，Grok 节点上菜单可选的 effort / Fast 不得报「不属于当前 Agent」。投影中有该项则值必须在列表中；投影没有的绑定类 option 与 `validate_and_inject` 对齐，不 fail-closed。
 - 2026-09-20 会话切到尚未被本会话观测的模型时，composer 按作者态 `modelBoundCatalogs[modelId]` 画出 Context 等绑定项；点选必须按同一份投影目录校验并写入 snapshot override，不得拿仍属于上一模型的活目录报 `acp.session-config-value-unavailable`。下次 prompt 仍以模型 RPC 后的活目录 apply，并 remap / 回滚。Doctor 当前表不得当成另一模型绑定项的写入目录。

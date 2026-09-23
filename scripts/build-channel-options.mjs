@@ -1,4 +1,5 @@
 export const SUPPORT_DEVTOOLS_FEATURE = 'support-devtools';
+export const GOLD_BAND_METRICS_API_KEY = 'GOLD_BAND_METRICS_API_KEY';
 
 export function parseChannelBuildArgs(args) {
   const [channel = 'default', ...rawOptions] = args;
@@ -33,4 +34,17 @@ export function channelBuildPlan(overlayPath, { devtools = false } = {}) {
     tauriConfigBuildOptions: devtools ? { createUpdaterArtifacts: false } : undefined,
     shouldCollectReleaseArtifacts: !devtools,
   };
+}
+
+export function assertChannelBuildSecrets(channel, config, env) {
+  if (!config.metricsEnabled) {
+    return;
+  }
+
+  const metricsApiKey = env[GOLD_BAND_METRICS_API_KEY];
+  if (typeof metricsApiKey !== 'string' || metricsApiKey.trim() === '') {
+    throw new Error(
+      `Missing required build secret ${GOLD_BAND_METRICS_API_KEY} for channel ${channel} because metrics are enabled.`,
+    );
+  }
 }

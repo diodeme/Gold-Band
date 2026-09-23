@@ -7,6 +7,7 @@ import {
   missingAcpSessionRetryDelay,
   resolveAcpTimelineSurfaceState,
   resolveAcpSessionShellState,
+  shouldKeepAcpInitialSessionLoadingAfterRetryExhausted,
   shouldCreateCancelledDirectAttemptShell,
   shouldCreateLiveAcpSessionShell,
 } from '@/lib/acp-session-shell';
@@ -511,5 +512,28 @@ describe('missingAcpSessionRetryDelay', () => {
     }
 
     expect(totalDelayMs).toBeGreaterThanOrEqual(30_000);
+  });
+});
+
+describe('shouldKeepAcpInitialSessionLoadingAfterRetryExhausted', () => {
+  it('keeps an active runtime attempt initializing when retries end without an actual load error', () => {
+    expect(shouldKeepAcpInitialSessionLoadingAfterRetryExhausted({
+      runtimeActive: true,
+      hasLoadError: false,
+    })).toBe(true);
+  });
+
+  it('still reports an actual load error for an active runtime attempt', () => {
+    expect(shouldKeepAcpInitialSessionLoadingAfterRetryExhausted({
+      runtimeActive: true,
+      hasLoadError: true,
+    })).toBe(false);
+  });
+
+  it('reports missing session content once an inactive attempt stops retrying', () => {
+    expect(shouldKeepAcpInitialSessionLoadingAfterRetryExhausted({
+      runtimeActive: false,
+      hasLoadError: false,
+    })).toBe(false);
   });
 });

@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-23 wb 渠道构建要求 `GOLD_BAND_METRICS_API_KEY` 非空
+
+- 根因：wb 渠道开启 metrics，但构建期只有 Tauri 对签名私钥的原生门禁；`GOLD_BAND_METRICS_API_KEY` 为空时构建仍成功，运行时 metrics collector 会静默关闭采集。属于构建门禁缺失，不是运行时设计缺陷。
+- 实现：`scripts/build-channel-options.mjs` 新增 `assertChannelBuildSecrets`，以 `config.metricsEnabled` 为触发条件，要求环境变量 `GOLD_BAND_METRICS_API_KEY` trim 后非空；`scripts/build-channel.mjs` 在 env 组装后、catalog 与 Tauri 构建前调用并失败退出。default 渠道 metrics 关闭，`npm run build` 与 `dev:wb` 均不受影响。
+- 验证：`npm run test:channel-config` 9/9 通过，新增 metrics 开启缺 key/空 key/空白 key 失败与非空 key 通过、metrics 关闭不要求 key 的接口测试。
+- 过度设计与性能评审：新增一个纯函数和一次入口校验，无新依赖、持久状态、缓存、队列或兼容层；校验为 O(1) 且提前失败，避免空 key 继续执行昂贵构建。
+
 ## 2026-09-20 记录 Cursor ACP `session/cancel` 回滚已接受 user prompt
 
 - 根因：Cursor ACP 在 `session/prompt` 已被消费（思考/工具已开始）后收到 `session/cancel`，后续同一 session 的模型上下文不再包含该 user prompt。ACP cancel 只应停止前台生成，Cursor IDE Stop 也保留用户消息；Gold Band timeline 同样保留 cancelled `goldBandPrompt`。这是 Cursor adapter 把整轮（含已接受的用户消息）rewind，不是 Gold Band resume 注入失败。半截 tool call 缺 result 时，上游正确收尾是保留 user message 并补 cancelled 工具结果。

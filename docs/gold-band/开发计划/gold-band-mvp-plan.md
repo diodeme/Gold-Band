@@ -1,5 +1,19 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-23 同文档跳转后地址栏仍停在上一页
+
+- 根因：两处都会把地址留在 demo。地址栏只要获得过焦点就把后续 `url` 事件全部丢掉，即使用户没有改字；提交后这层保护也不解除。Windows 上 WebView2 的 `Source` 对一部分 `history.pushState` 保持为上一次整页加载地址，只订 `SourceChanged` 读不到 `/zh/documentation`。页签标题来自 `document.title`，所以标题已经变成 Documentation，地址栏仍是 demo。
+- 实现：未提交改动才挡住地址写回；仅聚焦或已经提交不再挡住。Windows 在 `HistoryChanged` 后读取 `location.href`，用 probe 丢掉被文档加载追上的迟到结果。`SourceChanged` 仍在同文档 Source 真正变化时立即发布。
+- 验收：修复前 `browser-workspace-panel.test.tsx` 在地址栏只聚焦、未改字时，文档地址事件后输入框仍是 `/zh/demo`。修复后同一用例和“提交后再来的地址事件”都显示 `/zh/documentation`；已改字未提交的草稿仍保持。`browser_location` 固定脚本结果 `"\"https://.../documentation\""` 解出文档地址，`null` 和空串丢弃。
+- 过度设计与性能评审：不新增页面身份，不向浏览页开放消息通道。每次历史变化多一次返回短字符串的脚本读取；probe 只是页上的一个整数。地址未变不发 `url` 事件，也不写访问记录。
+
+## 2026-09-23 内置浏览器地址栏跟上同文档跳转
+
+- 根因：地址栏的权威地址只从整页加载（WebView2 的 ContentLoading / NavigationCompleted）写回。单页应用用 `history.pushState` 改地址并更新 `document.title` 时，页签标题会变，地址栏仍停在上一次文档加载的 URL。设计已经要求未编辑地址栏时跟上 SPA 路由，实现没有接同文档历史。
+- 实现：引擎报告顶层地址变化且这次不是新文档时，读取引擎自己的当前地址，发已有的 `url` 事件。Windows 看 `SourceChanged.IsNewDocument`；macOS/Linux 在整页加载进行中不发，避免和文档加载重复。浏览页仍然没有 Tauri IPC。fragment 没变时的 hash 改写只更新地址栏，不重写访问记录。
+- 验收：`browser_location` 的决策测试固定 `/zh/demo` 到 `/zh/documentation` 会发布并记一次访问，只改 hash 会发布但不记访问，整页加载和 `about:blank` 不从这条路径发布。`browser-workspace-panel.test.tsx` 固定未编辑时这条 `url` 事件写进地址栏。
+- 过度设计与性能评审：不新增页面身份、轮询或页面脚本通道。每个活页多记一条上次投影的地址，用来丢掉重复事件。一次同文档跳转只发一条 `url` 事件；访问记录仍只在去掉 fragment 后的 `http(s)` 地址变化时写盘。
+
 ## 2026-09-23 切回会话不再把已打开文件刷回顶部
 
 - 根因：离开会话会停止文件监听并递增正文代际。再进入时 `FileContent` 按代际重新 `load`，即使缓存里已有正文，也会先把状态设成 `loading`。界面闪一下加载，编辑器被卸掉；这次卸载发生在滚动恢复之前，把阅读位置写成 0。纯文本和 Markdown 都会回到顶部。这是激活对账没有守住“已有正文保持 ready”的约定。

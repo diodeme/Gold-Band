@@ -226,7 +226,9 @@ BrowserPanel
 
 点击浮层必然让地址栏先失焦（焦点转到原生浮层 WebView），因此不得把地址栏 `blur` 当成建议会话结束：那会先 hide 再在 `remove` 后 show，记录面板会闪一下。判定一次建议点击是否有效，必须使用**浮层当时正在显示的 revision**。`remove` 只更新剩余建议投影，不关浮层、不跳转。关闭只发生在选中跳转、提交、Escape、主界面点到地址栏以外，以及浏览页子 WebView 获得焦点（`dismiss`）。网页获得焦点由页面 WebView 的 focus 信号发出 dismiss，不能再靠地址栏失焦猜测。
 
-地址栏草稿属于用户：地址栏聚焦编辑期间，网页带来的 `url`/标题事件（跳转、重定向、SPA 路由变化）不得覆盖已输入内容，也不得把“已输入”状态重置回“最近访问”。只有切换内部页（`pageId` 变化）或提交后才允许用权威 URL 重写地址栏。否则同一个输入在“空白页”与“已打开页面”上会落到不同的建议模式：空白页稳定走过滤结果，已打开页面会被页面事件打回最近访问，表现为两处检索效果不一致。
+地址栏草稿属于用户：地址栏里已有未提交改动时，网页带来的 `url` 事件不得覆盖已输入内容，也不得把“已输入”状态重置回“最近访问”。仅聚焦、尚未改字不构成草稿。提交后清掉这层保护。只有切换内部页（`pageId` 变化）可以在仍有未提交改动时用权威 URL 重写地址栏。否则同一个输入在“空白页”与“已打开页面”上会落到不同的建议模式：空白页稳定走过滤结果，已打开页面会被页面事件打回最近访问，表现为两处检索效果不一致。
+
+同文档历史跳转不产生新文档，整页加载事件看不到它。`history.pushState`、`replaceState`、同文档后退/前进和 hash 变化仍要写回地址栏。Windows 上 `Source` 对一部分 `history.pushState` 保持为上一次整页加载的地址，`SourceChanged` 因此带不出新路径；`HistoryChanged` 之后由宿主读取文档的 `location.href`（WebView2 `ExecuteScript` 的 JSON 字符串，不是页面主动上报）。读取带递增 probe，文档加载会作废更早的读取，迟到结果不能盖住更新的地址。`SourceChanged` 在 `IsNewDocument == false` 时仍立即发布引擎 Source。macOS 观察 WKWebView 的 `URL`，Linux 观察 WebKit `uri`；这两处在整页加载进行中（`isLoading` / `is_loading`）不发布，避免和文档加载事件重复。不向浏览页开放 IPC。地址与上次已投影的位置相同则不重复发送。只有去掉 fragment 后的 `http(s)` 访问地址变了，才写入访问记录，避免页面滚动改 hash 时反复写历史文件。地址栏里已有未提交改动时，这条 `url` 事件仍然不覆盖草稿。
 
 地址建议浮层必须位于所有浏览页子 WebView 之上：子 WebView 创建时会插到窗口 z-order 顶部，因此**在浮层之后创建的网页子 WebView 会盖住浮层**，只留下网页视口上沿之上的一条建议可见。每次显示浮层都必须显式把它抬到最前（`SetWindowPos(HWND_TOP, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)`），不得依赖创建顺序；判定标准是窗口子级 z-order 中浮层排在网页子 WebView 之前，且列表在网页打开时仍完整可见。Windows 无边框缩放 overlay（`TAURI_DRAG_RESIZE_WINDOW`）必须压在浏览页之上，否则贴边的网页 HWND 会吃掉窗口右/下边缘命中；显示浮层后必须把该 overlay 再抬到最前。overlay 客户区有孔洞，建议列表仍在孔内接收点击。
 

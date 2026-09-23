@@ -596,6 +596,14 @@ pub(crate) fn build_worker_invocation(
     );
 
     let workspace_dir = super::orchestrator::run_workspace_dir(app, task_id, run_id)?;
+    let workspace_file_roots = if prompt_display
+        .as_ref()
+        .is_some_and(|input| !input.workspace_files.is_empty())
+    {
+        app.prompt_workspace_roots()
+    } else {
+        Vec::new()
+    };
 
     Ok(WorkerInvocation {
         invocation_kind,
@@ -653,6 +661,7 @@ pub(crate) fn build_worker_invocation(
         ),
         mcp_servers,
         scheduled_context: app.scheduled_task_context().cloned(),
+        workspace_file_roots,
     })
 }
 

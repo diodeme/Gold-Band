@@ -418,6 +418,10 @@ const resources = {
           noSearchResults: "没有匹配的文件",
           searchTruncated: "结果较多，请继续缩小范围",
           openFile: "打开文件",
+          openWorkspaceFile: "打开工作空间文件",
+          referenceToConversation: "引用到对话",
+          removeWorkspaceReference: "移除文件引用",
+          unknownFileSize: "大小未知",
           chooseFromTree: "从工作空间目录树中选择文件",
           pendingSave: "等待保存",
           saving: "保存中",
@@ -488,6 +492,9 @@ const resources = {
         discardWorkflowChanges: "工作流还有未保存的修改。确定要放弃这些修改并关闭吗？",
       },
       errors: {
+        composer: {
+          "context-limit-exceeded": "上下文最多包含 {{max}} 个引用和附件。",
+        },
         browser: {
           webview: {
             create_failed: "无法创建内置浏览器页面，请重试。",
@@ -722,6 +729,15 @@ const resources = {
           "prompt-role-invalid": "角色数据无效，请重新选择角色后再发送。",
           "prompt-role-metadata-too-long": "角色标识过长，请重新选择角色后再发送。",
           "prompt-role-limit-exceeded": "角色定义不能超过 {{maxChars}} 个字符。",
+          "workspace-file-project-mismatch": "文件引用不属于当前工作空间。",
+          "workspace-file-project-unavailable": "找不到该文件所属的工作空间。",
+          "workspace-file-path-invalid": "文件引用路径无效。",
+          "workspace-file-outside-workspace": "文件引用超出当前工作空间。",
+          "workspace-file-not-found": "引用的文件不存在或已被移动。",
+          "workspace-file-not-a-file": "引用的目标不是普通文件。",
+          "workspace-file-permission-denied": "没有访问引用文件的权限。",
+          "workspace-file-read-failed": "读取引用文件信息失败，请重试。",
+          "workspace-file-count-exceeded": "上下文最多包含 {{max}} 个引用和附件。",
           "prompt-queue-full": "待发送队列已满，最多可保留 10 条。",
           "prompt-queue-item-not-found": "这条待发送内容已不存在。",
           "prompt-queue-item-dispatching": "这条内容正在发送，暂时无法操作。",
@@ -3133,6 +3149,10 @@ const resources = {
           noSearchResults: "No matching files",
           searchTruncated: "Too many results. Refine the search.",
           openFile: "Open a file",
+          openWorkspaceFile: "Open workspace file",
+          referenceToConversation: "Reference in conversation",
+          removeWorkspaceReference: "Remove file reference",
+          unknownFileSize: "Unknown size",
           chooseFromTree: "Choose a file from the workspace directory tree",
           pendingSave: "Waiting to save",
           saving: "Saving",
@@ -3203,6 +3223,9 @@ const resources = {
         discardWorkflowChanges: "This workflow has unsaved changes. Discard them and close the tab?",
       },
       errors: {
+        composer: {
+          "context-limit-exceeded": "Context can contain at most {{max}} references and attachments.",
+        },
         browser: {
           webview: {
             create_failed: "The in-app browser page could not be created. Try again.",
@@ -3444,6 +3467,15 @@ const resources = {
           "prompt-role-invalid": "The role data is invalid. Select the role again before sending.",
           "prompt-role-metadata-too-long": "The role identifier is too long. Select the role again before sending.",
           "prompt-role-limit-exceeded": "The role definition cannot exceed {{maxChars}} characters.",
+          "workspace-file-project-mismatch": "The file reference belongs to a different workspace.",
+          "workspace-file-project-unavailable": "The referenced file's workspace is not available.",
+          "workspace-file-path-invalid": "The file reference path is invalid.",
+          "workspace-file-outside-workspace": "The file reference leaves the current workspace.",
+          "workspace-file-not-found": "The referenced file no longer exists or has moved.",
+          "workspace-file-not-a-file": "The referenced target is not a regular file.",
+          "workspace-file-permission-denied": "You do not have permission to access the referenced file.",
+          "workspace-file-read-failed": "Could not read the referenced file metadata. Try again.",
+          "workspace-file-count-exceeded": "Context can contain at most {{max}} references and attachments.",
           "prompt-queue-full": "The pending queue is full. It can hold up to 10 prompts.",
           "prompt-queue-item-not-found": "This queued prompt no longer exists.",
           "prompt-queue-item-dispatching": "This prompt is being sent and cannot be changed right now.",

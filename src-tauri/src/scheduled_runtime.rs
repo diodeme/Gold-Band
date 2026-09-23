@@ -3395,6 +3395,8 @@ pub(super) fn execute_definition_with_action(
                         thread::Builder::new()
                             .name("scheduled-continuous-prompt".to_string())
                             .spawn(move || {
+                                let attachment_paths = input.attachment_paths.clone();
+                                let prompt_input = scheduled_continue_prompt_input(input);
                                 let result = tauri::async_runtime::block_on(
                                     crate::commands::send_acp_prompt_with_configured_app(
                                         handle,
@@ -3405,11 +3407,11 @@ pub(super) fn execute_definition_with_action(
                                         round_id_for_thread,
                                         node_id_for_thread,
                                         attempt_id_for_thread,
-                                        input.content.into(),
+                                        prompt_input,
                                         None,
                                         None,
                                         None,
-                                        input.attachment_paths,
+                                        attachment_paths,
                                     ),
                                 );
                                 if let Err(error) = result {
@@ -3541,6 +3543,17 @@ fn latest_attempt(
     )))
 }
 
+fn scheduled_continue_prompt_input(
+    input: crate::view_models_conversation::ConversationCreateInputVm,
+) -> gold_band::provider::ConversationPromptInput {
+    gold_band::provider::ConversationPromptInput {
+        display_text: input.content,
+        quotes: Vec::new(),
+        role: input.role,
+        workspace_files: input.workspace_files,
+    }
+}
+
 fn scheduled_create_input(
     app: &App,
     definition: &ScheduledTaskDefinition,
@@ -3586,6 +3599,7 @@ fn scheduled_create_input(
         direct_config,
         auto_config,
         attachment_paths: (!attachment_paths.is_empty()).then_some(attachment_paths),
+        workspace_files: definition.content_snapshot.workspace_files.clone(),
         work_location: Default::default(),
         selected_branch: None,
         scheduled_task_id: Some(definition.id.clone()),
@@ -4029,6 +4043,38 @@ mod tests {
         for _ in 0..8 {
             tokio::task::yield_now().await;
         }
+    }
+
+    #[test]
+    fn scheduled_continue_prompt_keeps_workspace_file_references() {
+        let input = crate::view_models_conversation::ConversationCreateInputVm {
+            project_id: "project-a".to_string(),
+            content: "检查状态".to_string(),
+            run_mode: "direct".to_string(),
+            workflow_template_id: None,
+            include_optional_entry: None,
+            direct_config: None,
+            auto_config: None,
+            attachment_paths: Some(vec!["C:/temp/note.txt".to_string()]),
+            work_location: Default::default(),
+            selected_branch: None,
+            scheduled_task_id: Some("scheduled-1".to_string()),
+            scheduled_content_fingerprint: None,
+            workflow_authoring: None,
+            first_prompt_hidden_sections: None,
+            role: None,
+            workspace_files: vec![gold_band::provider::PromptWorkspaceFileRef {
+                project_id: "project-b".to_string(),
+                relative_path: "src/lib.rs".to_string(),
+            }],
+        };
+
+        let prompt = super::scheduled_continue_prompt_input(input);
+
+        assert_eq!(prompt.display_text, "检查状态");
+        assert_eq!(prompt.workspace_files.len(), 1);
+        assert_eq!(prompt.workspace_files[0].project_id, "project-b");
+        assert_eq!(prompt.workspace_files[0].relative_path, "src/lib.rs");
     }
 
     #[test]

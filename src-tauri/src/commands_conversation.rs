@@ -6,6 +6,7 @@ use gold_band::config::{
     ConversationDynamicAgentRef, ConversationDynamicControl, ConversationPin, ConversationRunMode,
     ConversationRunModeEntry, ConversationWorkspaceEntry, DesktopUiMode,
 };
+use gold_band::provider::ConversationPromptInput;
 use gold_band::storage::GoldBandPaths;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -19,7 +20,8 @@ use uuid::Uuid;
 
 use crate::commands::{
     CommandErrorVm, CommandResult, command_error, configure_conversation_runtime_callbacks,
-    resolve_command_app, spawn_blocking_command, validate_runtime_workspace_for_command,
+    resolve_command_app, spawn_blocking_command, validate_prompt_workspace_files,
+    validate_runtime_workspace_for_command,
 };
 use crate::conversation_attention::{
     ConversationTerminalResultAcknowledgementVm, acknowledge_terminal_result, remove_task_attention,
@@ -748,22 +750,25 @@ pub fn set_scheduled_task_enabled(
 }
 
 #[tauri::command]
-pub fn create_scheduled_task(
+pub async fn create_scheduled_task(
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::CreateScheduledTaskInputVm,
 ) -> CommandResult<crate::view_models_conversation::ScheduledTaskVm> {
     let service = state.scheduled_service().map_err(command_error)?;
-    let record = service.create(input).map_err(scheduled_service_error)?;
-    let workspace_name = service
-        .workspace_name(&record.definition.project_id)
-        .map_err(scheduled_service_error)?;
-    Ok(
+    spawn_blocking_command(move || {
+        let record = service.create(input).map_err(scheduled_service_error)?;
+        let workspace_name = service
+            .workspace_name(&record.definition.project_id)
+            .map_err(scheduled_service_error)?;
+        Ok(
         crate::view_models_conversation::ScheduledTaskVm::from_definition_in_workspace(
             &record.definition,
             &workspace_name,
             record.next_run_at,
         ),
-    )
+        )
+    })
+    .await
 }
 
 #[tauri::command]
@@ -781,16 +786,20 @@ pub fn get_scheduled_task(
 }
 
 #[tauri::command]
-pub fn update_scheduled_task(
+pub async fn update_scheduled_task(
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::UpdateScheduledTaskInputVm,
 ) -> CommandResult<crate::view_models_conversation::ScheduledTaskEditVm> {
-    let record = state
+    let service = state
         .scheduled_service()
-        .map_err(command_error)?
-        .update(input)
-        .map_err(scheduled_service_error)?;
-    Ok(crate::view_models_conversation::ScheduledTaskEditVm::from_definition(&record.definition))
+        .map_err(command_error)?;
+    spawn_blocking_command(move || {
+        let record = service.update(input).map_err(scheduled_service_error)?;
+        Ok(crate::view_models_conversation::ScheduledTaskEditVm::from_definition(
+            &record.definition,
+        ))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -952,6 +961,17 @@ async fn create_conversation_run_inner(
     let mut validation =
         crate::view_models_conversation::validate_conversation_create_vm(&app, &input)
             .map_err(command_error)?;
+    validate_prompt_workspace_files(
+        &app,
+        &ConversationPromptInput {
+            display_text: input.content.clone(),
+            quotes: Vec::new(),
+            role: input.role.clone(),
+            workspace_files: input.workspace_files.clone(),
+        },
+        input.attachment_paths.as_deref().map_or(0, <[_]>::len),
+    )
+    .await?;
     validate_direct_capabilities(state.inner(), &input, &mut validation)?;
     if !validation.valid {
         return Err(CommandErrorVm::new(

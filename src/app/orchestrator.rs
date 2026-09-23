@@ -623,6 +623,7 @@ fn apply_continue_input_to_prompt_state(
             &value.display_text,
             state.input_attachment_paths.len(),
             value.role.as_ref(),
+            value.workspace_files.len(),
         )
     }) {
         input.display_text = input.display_text.trim().to_string();
@@ -4811,11 +4812,22 @@ fn apply_control_decision(
 }
 
 fn load_initial_prompt_display(app: &App, task_id: &str) -> Option<ConversationPromptInput> {
-    let role = read_json::<UserPromptRole>(&app.paths.initial_prompt_role_file(task_id)).ok()?;
-    if role.profile_id.trim().is_empty()
-        || role.name.trim().is_empty()
-        || role.content.trim().is_empty()
-    {
+    let role = read_json::<UserPromptRole>(&app.paths.initial_prompt_role_file(task_id))
+        .ok()
+        .filter(|role| {
+            !role.profile_id.trim().is_empty()
+                && !role.name.trim().is_empty()
+                && !role.content.trim().is_empty()
+        });
+    let workspace_files = read_json::<Vec<crate::provider::PromptWorkspaceFileRef>>(
+        &app.paths
+            .task_dir(task_id)
+            .join("authoring")
+            .join("initial-prompt-workspace-files.json"),
+    )
+    .ok()
+    .unwrap_or_default();
+    if role.is_none() && workspace_files.is_empty() {
         return None;
     }
     let requirement =
@@ -4823,7 +4835,8 @@ fn load_initial_prompt_display(app: &App, task_id: &str) -> Option<ConversationP
     Some(ConversationPromptInput {
         display_text: requirement,
         quotes: Vec::new(),
-        role: Some(role),
+        role,
+        workspace_files,
     })
 }
 
@@ -12780,6 +12793,14 @@ fn build_dynamic_worker_invocation(
         );
         Vec::new()
     });
+    let workspace_file_roots = if prompt_display
+        .as_ref()
+        .is_some_and(|input| !input.workspace_files.is_empty())
+    {
+        ctx.app.prompt_workspace_roots()
+    } else {
+        Vec::new()
+    };
     let invocation = WorkerInvocation {
         invocation_kind: InvocationKind::WorkerGeneric,
         turn_control_mode: TurnControlMode::RuntimeControlled,
@@ -12828,6 +12849,7 @@ fn build_dynamic_worker_invocation(
         ),
         mcp_servers,
         scheduled_context: None,
+        workspace_file_roots,
     };
     dynamic_invocation_build_step_end(
         ctx,
@@ -16656,6 +16678,7 @@ mod tests {
             display_text: "  请先补充回归测试  ".to_string(),
             quotes: Vec::new(),
             role: None,
+            workspace_files: Vec::new(),
         };
         let state = runtime_control_resume_prompt_state(
             DesktopLanguage::ZhCn,
@@ -16699,6 +16722,7 @@ mod tests {
                 display_text: "Write another essay".to_string(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             }),
             Some("prompt-2".to_string()),
             Vec::new(),
@@ -16786,6 +16810,7 @@ mod tests {
                 display_text: String::new(),
                 quotes: Vec::new(),
                 role: None,
+                workspace_files: Vec::new(),
             }),
             Some("prompt-attachment-only".to_string()),
             vec!["C:/temp/context.txt".to_string()],

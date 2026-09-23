@@ -257,5 +257,6 @@ fn test_worker_invocation(attempt_dir: Utf8PathBuf) -> WorkerInvocation {
         ),
         mcp_servers: Vec::new(),
         scheduled_context: None,
+        workspace_file_roots: Vec::new(),
     }
 }

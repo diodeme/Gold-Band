@@ -1300,6 +1300,7 @@ fn invoke_agent(
         attachment_metas: resolved.iter().map(|item| item.meta.clone()).collect(),
         content_blocks: resolved.iter().map(|item| item.block.clone()).collect(),
         scheduled_trigger: None,
+        workspace_files: Vec::new(),
     };
     let attempt_dir = operation_dir.join(attempt_name);
     let lifecycle_owner = claim_agent_prompt_lifecycle(
@@ -1378,6 +1379,7 @@ fn claim_agent_prompt_lifecycle(
             display_text: display_text.to_string(),
             quotes: Vec::new(),
             role: None,
+            workspace_files: Vec::new(),
         },
         attachment_paths: attachment_paths.to_vec(),
         admitted_at: gold_band::acp::events::current_timestamp(),

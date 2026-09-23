@@ -2396,6 +2396,11 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 - **修复（收紧守卫而非补投影）**：回落条件追加 `extra_hidden_sections.is_empty()`——仅当 prompt 未被 runtime 追加任何隐式区段时才回退需求原文。本地直接对话保持 main 原话显示意图；含区段的首条 prompt 恢复完整投影、审计入口回归。不选「给远程任务补 `prompt_display`」：那会复制投影逻辑、且 display_text 与 user_prompt 形成双真源易漂移。
 - **最小失败测试先行**：新增 `render_raw_agent_first_prompt_with_hidden_sections_suppresses_verbatim_display`（先失败：`display_text` 为 Some）+ `render_raw_agent_first_prompt_without_sections_falls_back_to_requirement`（保护 main 回落意图不被误删），修复后同测试转绿。`provider_prompt_bundle` → 35 passed；`multica:: / view_models_conversation:: / scheduled_service:: / scheduled_runtime::` → 369 passed 零回归。main 侧无测试锁定「无 prompt_display + RawAgent」场景的回退，修改无破坏面。
 
+**main 合并适配（2026-09-23 第十次合并，PR #131 workspace file references）**
+
+- main 新增 composer 工作区文件引用（draft `workspaceFiles` 状态）与本分支远程绑定并集后，`prefill`（远程任务覆盖式新草稿）同时清空 `workspaceFiles`——远程任务在远程工作空间执行，本地工作区文件引用不适用（draft 测试 `prefill writes requirement text + remote binding and drops prior attachments and workspace files` 锁定）。
+- main 新测试 `render_prompt_bundle_does_not_add_builtin_output_contracts` 曾锁定「RawAgent 首条 prompt 区段不进 user_prompt + display 回退原文」，与 M5-bk 契约在同一输入形态互斥；经取证（main 无 M5-bk 追加块、生产路径直接对话不设区段）并经用户确认，适配该测试到 M5-bk 语义（区段以标题 `<hidden>` 块受控追加 + `display_text = None`，其余 MUST NOT LEAK 断言保留）。详见 `merge-conflict-analysis-2026-09-22.md` 第十次合并章节。
+
 ### 12.51 改动四十九：终态后追问 run 的迟到 completion-output 补发（M5-bl，2026-09-21）
 
 **背景（用户内网实测）**：父任务 direct 模式首 run 完成时未产出 `completion-output` 块，用户输入「完成」让 agent 在**同一本地会话**补交了块，但子任务 claim 时 `parent_output` 仍为空。

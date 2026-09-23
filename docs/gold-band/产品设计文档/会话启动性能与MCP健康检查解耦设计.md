@@ -67,6 +67,7 @@
 5. sessionId 尚未建立属于正常初始化事实，标题栏不展示“无 session id”占位。
 6. “暂无 ACP 事件”仅用于非初始化归属、初始查询已完成、runtime 不活跃且确认为空的既有会话。
 7. 品牌加载组件区分页面背景 surface 与消息区透明 surface；新会话首条消息前的内嵌 Logo 不得绘制独立背景块，浅色与深色主题保持相同层级关系。
+8. 新会话初始查询重试耗尽时，若 runtime 仍 active 且没有实际查询错误，说明 provider 只完成了元数据落盘、timeline 正文尚未就绪，必须继续留在 `initializing` 并等待 live event 或后续刷新收敛；不得把“尚未就绪”投影为 `error`。只有实际请求失败，或 runtime 已不再负责创建会话，才允许进入 `error` / `missing`。该判定必须读取收尾时刻的最新 runtime active 事实，不能使用 effect 启动时捕获的旧闭包值。
 
 该契约只收口既有 lifecycle、session query 和 timeline 的消费边界，不新增延时、轮询、缓存或平行状态机。
 
@@ -109,6 +110,7 @@ ACP 停止完成后，控制面只发送带单调 `revision` 与 `turnId` 的轻
 - 会话快照必须包含当前 task 绑定，settings 中的基础定义不得被该绑定污染。
 - 页面刷新只读取配置与最近诊断结果，不触发 N 个 MCP 的批量握手。
 - 当前运行的新会话在初始 fetch 进行中仍返回 `initializing`。
+- 当前运行的新会话在初始 fetch 重试耗尽且无实际错误时仍返回 `initializing`；同一场景若存在实际查询错误，或 runtime 已停止，则分别返回 `error` / `missing`。
 - 当前新会话即使 runtime 先于 timeline 查询收敛而终止，也保持完整聊天壳、品牌等待态和锁定 composer，直到首条 timeline item 到达。
 - sessionId 未建立时标题栏不展示缺失占位；首条 timeline item 到达后优先展示消息而非等待态。
 - 非当前会话切换仍返回 `loading`。

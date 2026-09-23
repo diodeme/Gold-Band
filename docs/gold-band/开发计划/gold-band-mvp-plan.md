@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-09-23 源码管理历史提交聚合刷新后正确收敛
+
+- 根因：历史页选中 Commit 后，Review 请求正在执行时 Git metadata watcher 触发 repository refresh。刷新会递增 `detailRequestRevision`，这是防止旧响应覆盖新 history 的正确边界；但刷新成功或失败后没有为仍选中的 OID 重新发起 Review，也没有结束被作废请求留下的 `historyDetailLoading`，右侧因此永久显示“正在聚合所选提交的文件变化”。后端 Git 聚合本身可在单提交场景返回真实文件列表，缺陷属于前端异步生命周期收口不完整。
+- 修复：repository refresh 完成并发布最新 snapshot/history 后，若历史页仍有选中提交，则清空旧 Review、重新进入详情 loading，并以当前 history revision 调用同一 `getGitCommitReview`；刷新失败时结束详情 loading，保留结构化错误供页面恢复。不会放宽旧请求校验，也不新增第二套 Review 状态。
+- 验收：新增前端接口级回归测试，先让 Review 请求挂起，再注入 repository refresh，确认请求完成后 `historyDetailLoading=false` 且选中 OID 的 `commitReview` 恢复；修复前测试稳定停留在 loading，修复后通过。源码管理历史/布局相关测试共 48 项通过；Git 聚合单测验证真实多文件提交可返回文件列表。
+- 过度设计与性能评审：只在已有 repository refresh 与选中 Review 同时存在时重发一次有界请求，不新增轮询、缓存、队列或持久字段。刷新仍复用单次 snapshot/history 读取；Review 仍按选中 OID 及 revision 合并，旧响应继续由 revision 丢弃。
+
 ## 2026-09-22 官网与 rrweb 演示不再跟随系统减少动态效果
 
 - 根因：官网章节回放和内部 rrweb 演示仍读取 `prefers-reduced-motion`。Windows 关闭窗口动画时，官网停在海报并出现播放按钮，同时把全站动画和过渡压到 0.01ms；演示回放不自动开始，录制宽度切换失去 850ms 过渡。这和桌面端已经去掉的系统开关是同一条媒体查询。

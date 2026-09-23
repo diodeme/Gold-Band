@@ -54,7 +54,7 @@ Git metadata watcher 必须覆盖 `MERGE_HEAD`、`REBASE_HEAD`、`rebase-merge`�
 
 提交历史与分页定位属于 repository/workspace 会话缓存。打开源码管理只读取当前更改所需的 snapshot，不读取 history。进入历史页时才请求第一页；首次无数据时使用真实请求中间态。普通源码管理 Tab 往返必须直接恢复已缓存列表，不插入延时或伪 loading，不重新请求 history。已经显示的历史数据在后台刷新时继续保留，不退回全屏 loading。历史列表查询不携带完整提交正文和 `--source`；运行检查点标记在服务端根据 `Gold-Band-Internal` trailer 判断。历史 revision 只覆盖当前 HEAD、分支名和 upstream 前后关系，不扫描全部引用或未跟踪文件。
 
-历史工作区默认只有 Commit 单栏；至少选中一个 Commit 后才挂载响应式主从布局。布局按历史内容区的实际 CSS 宽度判断：达到 `520px` 时进入双栏，左侧 Commit 列表最低 `220px`，右侧聚合变更最低 `280px`，余量留给分隔条；低于该阈值退化为“提交/更改”单栏切换。清空选择后无论宽度都立即恢复 Commit 单栏。单击执行单选，`Shift + Click` 按当前可见稳定 OID 顺序范围选择，`Ctrl/Cmd + Click` 增减选择，`Ctrl/Cmd + Shift + Click` 合并范围；不显示 Checkbox，也不增加独立多选模式。选择颜色与右栏 loading 必须在同一次同步状态提交中出现，不能等待 Review IPC；旧请求不得覆盖新选择。
+历史工作区默认只有 Commit 单栏；至少选中一个 Commit 后才挂载响应式主从布局。布局按历史内容区的实际 CSS 宽度判断：达到 `520px` 时进入双栏，左侧 Commit 列表最低 `220px`，右侧聚合变更最低 `280px`，余量留给分隔条；低于该阈值退化为“提交/更改”单栏切换。清空选择后无论宽度都立即恢复 Commit 单栏。单击执行单选，`Shift + Click` 按当前可见稳定 OID 顺序范围选择，`Ctrl/Cmd + Click` 增减选择，`Ctrl/Cmd + Shift + Click` 合并范围；不显示 Checkbox，也不增加独立多选模式。选择颜色与右栏 loading 必须在同一次同步状态提交中出现，不能等待 Review IPC；旧请求不得覆盖新选择。Git metadata 刷新若使当前 Review 请求失效，刷新完成后必须以最新 history revision 重新聚合仍选中的 OID；刷新失败也必须结束详情 loading 并显示结构化错误，不能留下无限 spinner。
 
 Commit 列表与当前聚合文件列表是两个独立滚动域，按 repository/workspace 运行期会话保存轻量 scroll offset；打开 Diff Tab 再返回时分别恢复，不能互相覆盖。滚动恢复必须在审阅 viewport 重挂载并完成布局后应用，不能只在数据 identity 变化时设置一次。切换历史页属于新列表导航，Commit 列表必须回到顶部；聚合文件滚动位置只在相同 review identity 下恢复。鼠标点击 Commit 不保留普通焦点方框，键盘 Tab 导航仍保留 `focus-visible` 可访问焦点。
 

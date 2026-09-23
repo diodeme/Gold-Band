@@ -306,6 +306,39 @@ describe('source control session store', () => {
     await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').historyDetailLoading).toBe(false));
   });
 
+  it('does not leave commit review loading when a repository refresh races the review request', async () => {
+    vi.useFakeTimers();
+    try {
+      const review = deferred<GitCommitReviewVm>();
+      const events = eventApi();
+      events.api.getCommitReview.mockReturnValueOnce(review.promise);
+      const store = new SourceControlStore(events.api);
+      await store.ensureLoaded('project-1', 'D:/repo');
+      await store.setActiveTab('project-1', 'D:/repo', 'history');
+
+      store.selectCommit('project-1', 'D:/repo', 'commit-1', ['commit-1'], {
+        additive: false,
+        range: false,
+      });
+      events.emitState({
+        projectId: 'project-1',
+        repositoryCommonDir: 'D:/repo/.git',
+        workspacePath: 'D:/repo',
+        revision: null,
+      });
+      await vi.advanceTimersByTimeAsync(151);
+
+      review.resolve(commitReview(['commit-1']));
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(store.session('project-1', 'D:/repo').historyDetailLoading).toBe(false);
+      expect(store.session('project-1', 'D:/repo').commitReview?.selectedOids).toEqual(['commit-1']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reuses a commit review result for the same ordered selection and revision', async () => {
     const api = fakeApi();
     const store = new SourceControlStore(api);

@@ -699,6 +699,17 @@ export class SourceControlStore {
         error: operationError,
       });
       this.applyWorkspaceProjection(runtime, snapshot.status);
+      if (!resetNavigation && includeHistory && runtime.snapshot.activeTab === 'history') {
+        const selectedOids = [...runtime.snapshot.selectedCommitOids];
+        if (selectedOids.length > 0) {
+          this.update(runtime, {
+            ...runtime.snapshot,
+            commitReview: null,
+            historyDetailLoading: true,
+          });
+          void this.loadCommitReview(projectId, workspacePath, selectedOids);
+        }
+      }
     })().catch((reason: unknown) => {
       if (runtime.repositoryRequestRevision !== requestRevision) return;
       this.update(runtime, {
@@ -707,6 +718,13 @@ export class SourceControlStore {
         refreshing: null,
         error: structuredErrorFrom(reason, 'git.status-failed'),
       });
+      if (
+        runtime.snapshot.activeTab === 'history'
+        && runtime.snapshot.selectedCommitOids.size > 0
+        && runtime.snapshot.commitReview === null
+      ) {
+        this.update(runtime, { ...runtime.snapshot, historyDetailLoading: false });
+      }
     }).finally(() => {
       if (runtime.loadPromise === request) {
         runtime.loadPromise = null;

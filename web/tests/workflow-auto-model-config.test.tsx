@@ -13,6 +13,7 @@ const agentRegistry = {
   agents: [{
     agentType: 'claude-acp',
     displayName: 'Claude',
+    iconKey: 'claude',
     diagnostic: { available: true },
     supportedModels: [{ id: 'sonnet', name: 'Sonnet' }],
     supportedModes: [{ id: 'acceptEdits', name: 'Accept Edits' }],

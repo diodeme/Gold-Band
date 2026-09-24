@@ -77,9 +77,9 @@ describe('scheduled task composer entry', () => {
   it('uses the ordinary composer workspace surface without offering worktree selection', () => {
     const composer = readFileSync(fileURLToPath(new URL('../src/components/conversation/ConversationComposer.tsx', import.meta.url)), 'utf8');
     expect(composer).toContain('showWorkLocation={!scheduledMode}');
-    expect(composer).toContain('const scheduledConversationInput = () => ({');
+    expect(composer).toContain('const scheduledConversationInput = () => {');
     const scheduledInputSource = composer.slice(
-      composer.indexOf('const scheduledConversationInput = () => ({'),
+      composer.indexOf('const scheduledConversationInput = () => {'),
       composer.indexOf('const createScheduledTask = async () => {'),
     );
     expect(scheduledInputSource).not.toContain('workLocation');

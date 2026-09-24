@@ -282,7 +282,7 @@ describe('ACP activity batch disclosure', () => {
 
       expect(trigger?.getAttribute('aria-expanded')).toBe('false');
       expect(container.querySelector('.acp-permission-decision-audit')).toBeNull();
-      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+      expect(scrollIntoView).not.toHaveBeenCalled();
     } finally {
       await act(async () => {
         root.unmount();

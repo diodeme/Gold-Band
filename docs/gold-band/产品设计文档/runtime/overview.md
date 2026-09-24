@@ -128,6 +128,7 @@ ACP attempt 会在 `acp.diagnostics.jsonl` 写入 adapter 复用/新建结果和
 - `App` 持有配置并向 observability / provider 执行链透传
 - `log_prompts` 默认关闭；`runtime.log` 只记录 prompt 长度摘要，不得写入 system/user prompt 正文。完整 prompt 只留在 session `acp.raw.jsonl`
 - provider command 仅属于 debug observability，不属于 canonical state
+- `runtime.log` 的有界异步 writer 在生产退出时继续使用 `WorkerGuard` 做 best-effort 排空；验证轮转文件时必须等待底层 writer 已关闭的明确回执，不能把 guard 的限时关闭握手当作线程 join，也不能依赖固定 sleep 推断文件已稳定。
 
 ## 8. 与 console / 插件的关系
 - console CLI 是同一套 runtime 的交互壳，不引入新的 runtime 语义

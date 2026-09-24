@@ -2109,14 +2109,22 @@ fn log_stderr_line(connection: &AdapterConnection, line: StderrLine) {
 }
 
 fn log_adapter_exit(connection: &AdapterConnection, transport_was_already_closed: bool) {
-    let already_logged = connection.exit_status_logged.swap(true, Ordering::AcqRel);
-    if !should_emit_adapter_exit_status(already_logged) {
-        return;
-    }
     let result = connection.try_wait();
+    let event = if result.as_ref().is_ok_and(Option::is_none) {
+        if connection.exit_status_logged.load(Ordering::Acquire) {
+            return;
+        }
+        "acp_adapter_exit_status_pending"
+    } else {
+        let already_logged = connection.exit_status_logged.swap(true, Ordering::AcqRel);
+        if !should_emit_adapter_exit_status(already_logged) {
+            return;
+        }
+        "acp_adapter_exit_status"
+    };
     if connection.logs_lifecycle_at_info() {
         info!(
-            event = "acp_adapter_exit_status",
+            event,
             provider = %connection.provider_id,
             adapter = %connection.adapter.adapter_id,
             command = %connection.adapter.command,
@@ -2129,7 +2137,7 @@ fn log_adapter_exit(connection: &AdapterConnection, transport_was_already_closed
         );
     } else {
         debug!(
-            event = "acp_adapter_exit_status",
+            event,
             provider = %connection.provider_id,
             adapter = %connection.adapter.adapter_id,
             command = %connection.adapter.command,

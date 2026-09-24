@@ -475,7 +475,7 @@ mod tests {
         let adapter_bin = temp.path().join("adapter-bin");
         fs::create_dir_all(&adapter_bin).unwrap();
         let executable_name = if cfg!(windows) { "npx.exe" } else { "npx" };
-        fs::write(adapter_bin.join(executable_name), "").unwrap();
+        fs::write(adapter_bin.join(executable_name), "native-binary").unwrap();
 
         let path = std::env::join_paths([adapter_bin.clone()]).unwrap();
         let resolved = resolve_command_with_path("npx", Some(path.to_str().unwrap()));

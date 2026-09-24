@@ -7,6 +7,13 @@
 - 验收：修复前最小测试证明自定义 provider 不注入策略、`thinking` 缺失；修复后 adapter 单测 4 项与 `tests/acp_claude_execution_policy.rs` 4 项通过，fixture 按 initialize 返回能力，覆盖自定义 provider 生效、无能力不注入、非会话方法不改写、保留调用方 `thinking` 与幂等。真实 claude-agent-acp 0.81.2 + 本机 Claude 登录，同一推理 prompt：不带选项 0 个 thought chunk，带 summarized 24 个。`acp::` 其余测试通过；`resolve_command_uses_resolved_path` 修复前已失败，`doctor_session_new_timeout_reclaims_adapter_and_retains_evidence` 仅全量并行时超时，单跑稳定通过，均与本次无关。
 - 过度设计与性能评审：复用连接已缓存的 initialize 能力，无新增状态或依赖；只在四个会话方法上读取一次能力并合并参数。思考流新增的 chunk 与文本 chunk 同路径处理，原诊断显示单帧处理远低于瓶颈。
 
+## 2026-09-24 全量回归契约补齐
+
+- 根因：第一组稳定失败来自测试夹具和接口契约随生产边界演进后未同步。Windows 命令解析用例用零字节 `npx.exe`，与 App Execution Alias 防护冲突；AI-DYNAMIC acceptance 断言仍绑定旧文案或否定稳定角色规则中的 `next.type`；ACP DOM 测试遗漏 `RightWorkspaceProvider`；其余是 `workspaceFiles`、`browserPreferences`、Agent `iconKey`、静态源码形态与滚动所有权变化后的 fixture 漂移。继续使用 `--no-fail-fast` 后另发现两项真实生命周期缺陷：stdout EOF 在退出状态未就绪时提前占用最终日志标记；跨 workspace 派生 App 重新读取进程级 storage config，测试并发时还会被临时 HOME 污染。
+- 实现：保留生产可执行文件校验、Prompt 分层和右侧工作区强 Provider 边界；修正非空命令夹具、acceptance/merge 契约断言与四个 ACP 文件的统一 Provider harness，补齐各类 DTO fixture 和静态契约。侧栏图标操作与 Agent 只读保存提示复用 shadcn Tooltip。ACP 退出观测把 pending 与最终 exit status 分开，终态可用后只记录一次 exit code；`App::with_repo_root` 继承来源 App 已冻结的 path config，相关桌面测试改用显式 path config 并删除进程级环境/全局配置写入。doctor fixture 使用 5 秒 stage deadline 与 10 秒 rescue 的显式顺序，保留共享 deadline、诊断证据和子进程回收断言。
+- 验收：Web 全量 334 个文件、2523 项全部通过；TypeScript 和 Web 生产构建通过。Rust 核心库 1504 通过、3 ignored，桌面端 788 通过、1 ignored，最终 workspace `--no-fail-fast` 无失败；并发回归发现的日志轮转测试已改为等待 writer 关闭回执，不放宽轮转文件数量、大小或异步排空断言。ACP 退出日志定向集成测试、命令解析、AI-DYNAMIC Prompt 投影和两项 doctor 超时回收测试通过；`cargo fmt --all -- --check` 与 `git diff --check` 通过。按用户要求不继续前端实际交互验证。
+- 性能与过度设计评审：生产路径只增加常数级 Tooltip DOM、一次 exit-status pending 分支和已有 path config 的值复制；不增加请求、历史扫描、缓存、队列、订阅、持久字段或新依赖。doctor 的测试专用等待上限增加，但生产 180 秒预算不变；路径修复减少跨 workspace 错误 I/O，退出日志修复不轮询进程。复用现有 Provider、composer draft schema、ChatContainer、Tooltip、`StoragePathConfig` 和进程状态机，没有第二套领域模型。
+
 ## 2026-09-24 Win10 独立窗口边框
 
 - 根因：原设计已经要求 Win10 `app-outline`，但 base layer 的 inset shadow 被 components layer 的 shell recipe `box-shadow: none` 覆盖；即使恢复阴影，父容器 inset shadow 也会绘制在子内容下方。属于已有设计的实现不完整，系统关闭阴影后没有可靠的可见边界。

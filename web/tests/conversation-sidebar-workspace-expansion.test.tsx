@@ -112,7 +112,7 @@ describe('ConversationSidebar workspace expansion intent', () => {
         <ConversationSidebar {...callbacks} vm={vm} active={{ kind: 'conversation-home' }} />,
       ));
       const rename = container.querySelector<HTMLButtonElement>('[aria-label="conversation.sidebar.rename"]')!;
-      const actions = rename.parentElement!;
+      const actions = rename.parentElement?.parentElement!;
       expect(actions.classList.contains('bg-sidebar')).toBe(false);
       expect(actions.classList.contains('absolute')).toBe(false);
       expect(actions.classList.contains('shrink-0')).toBe(true);

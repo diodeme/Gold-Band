@@ -827,6 +827,10 @@ export function App() {
   const preferenceSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const conversationWorkLocationSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const preferenceSaveGenerationRef = useRef(0);
+  const selectDraftConversationWorkspace = useCallback((projectId: string | null) => {
+    composerDraftRef.current?.changeWorkspace(projectId);
+    setDraftConversationWorkspaceId(projectId);
+  }, []);
   const [downloadProgress, setDownloadProgress] = useState<{ downloaded: number; total: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [gitRequirement, setGitRequirement] = useState<GitRequirementState | null>(null);
@@ -2409,7 +2413,7 @@ export function App() {
           draftConversationWorkspaceId,
           effectiveWorkspaceId,
         );
-        if (targetPid) setDraftConversationWorkspaceId(targetPid);
+        if (targetPid) selectDraftConversationWorkspace(targetPid);
         onSelectConversation({ kind: 'conversation-home' });
       }}
       onConversationSearch={() => setConversationSearchOpen(true)}
@@ -2494,7 +2498,7 @@ export function App() {
         }).catch(() => {});
       }}
       onConversationNewInWorkspace={(projectId) => {
-        setDraftConversationWorkspaceId(projectId);
+        selectDraftConversationWorkspace(projectId);
         onSelectConversation({ kind: 'conversation-home' });
       }}
       onConversationAddWorkspace={() => {
@@ -2522,7 +2526,7 @@ export function App() {
             });
             activeWorkspaceIdRef.current = transition.activeWorkspaceId;
             setActiveWorkspaceId(transition.activeWorkspaceId);
-            setDraftConversationWorkspaceId(transition.draftWorkspaceId);
+            selectDraftConversationWorkspace(transition.draftWorkspaceId);
             if (transition.navigateHome) {
               conversationRunRef.current = null;
               setConversationRun(null);
@@ -2794,7 +2798,7 @@ export function App() {
             ? () => onSelectConversation({ kind: 'conversation-home' })
             : undefined}
           onWorkspaceChange={(projectId) => {
-            setDraftConversationWorkspaceId(projectId);
+            selectDraftConversationWorkspace(projectId);
             void loadConversationRunMode(projectId);
           }}
           onWorkLocationChange={selectConversationWorkLocation}
@@ -2852,7 +2856,7 @@ export function App() {
           workflowTemplates={conversationWorkflowTemplates}
           repairTarget={workflowRepairTarget}
           onProjectChange={(projectId) => {
-            setDraftConversationWorkspaceId(projectId);
+            selectDraftConversationWorkspace(projectId);
             void loadConversationRunMode(projectId);
           }}
           onSave={(mode) => updateConversationRunMode(mode, defaultProjectId)}
@@ -2879,7 +2883,7 @@ export function App() {
             // 决策 c：远程任务本地工作区延迟到执行时选，落 conversation-home 时预选最近活跃本地工作区
             //（activeWorkspaceId ?? 持久化 lastActiveWorkspaceId），让 composer 下拉带着合理默认值并可改。
             const preselect = activeWorkspaceIdRef.current ?? conversationSidebar.lastActiveWorkspaceId ?? null;
-            setDraftConversationWorkspaceId(preselect);
+            selectDraftConversationWorkspace(preselect);
             setConversationPage({ kind: 'conversation-home' });
           }}
         />
@@ -3024,7 +3028,7 @@ export function App() {
         }}
         onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
         onWorkspaceChange={(projectId) => {
-          setDraftConversationWorkspaceId(projectId);
+          selectDraftConversationWorkspace(projectId);
           void loadConversationRunMode(projectId);
         }}
         onWorkLocationChange={selectConversationWorkLocation}

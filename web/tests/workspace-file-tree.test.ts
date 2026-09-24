@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   consumePendingTreeReveal,
   copyableAbsolutePath,
+  canReferenceWorkspaceFileToConversation,
   copyableRelativePath,
   fileTreeDisplayModeToggle,
   shouldActivateTreeFile,
@@ -165,5 +166,14 @@ describe('workspace file tree path actions', () => {
     expect(shouldActivateTreeFile(true, true)).toBe(false);
     expect(shouldActivateTreeFile(false, true)).toBe(false);
     expect(shouldActivateTreeFile(false, false)).toBe(true);
+  });
+
+  it('shows the conversation reference action only for files with an active composer command', () => {
+    expect(canReferenceWorkspaceFileToConversation('file', true, false)).toBe(true);
+    expect(canReferenceWorkspaceFileToConversation('file', false, false)).toBe(false);
+    expect(canReferenceWorkspaceFileToConversation('file', true, true)).toBe(false);
+    expect(canReferenceWorkspaceFileToConversation('directory', true, false)).toBe(false);
+    expect(canReferenceWorkspaceFileToConversation('symlink', true, false)).toBe(false);
+    expect(canReferenceWorkspaceFileToConversation('other', true, false)).toBe(false);
   });
 });

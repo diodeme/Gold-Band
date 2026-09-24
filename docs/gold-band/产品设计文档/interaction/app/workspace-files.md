@@ -19,6 +19,18 @@
 - 运行目录的 attempt locator 与入口文案属于低频工作区投影，只在这些语义字段实际变化时更新；语义未变时不得重复同步已打开 Tab 或重新读取目录。Agent text、thought、tool 等流式事件不得仅因 session leaf 对象引用变化而刷新工作区 Context。react-arborist 的节点 renderer 必须是模块级稳定组件，不能在 render 中创建新的组件类型；同一节点 identity 未变化时，无关流式更新和父级重渲染不得卸载目录行或关闭已经打开的 Radix 右键菜单。真实删除或重命名目标节点时，菜单随节点生命周期关闭。
 - 单栏状态的“文件 / 目录”视图由当前选中文件的稳定 identity 驱动；无论此前是否已有文件，目录树选择新文件后都必须自动切回“文件”。用户消息附件的只读 CodeMirror 与节点附件卡打开的可编辑 CodeMirror 都启用原生折行并约束内部最小宽度，长行只能在内容区内换行，不得撑宽右侧工作区。
 - 项目工作空间始终只有一个稳定的 `file-browser:<projectId>` 文件 Tab；树点击、搜索结果和会话文件链接均在该 Tab 内更新当前选中文件。`projectId + canonicalPath` 仅作为 `FileContentStore` 的文档身份；再次点击同一文件的不同链接位置只更新 `target/targetRevision`，不创建任何文件级 Tab。
+
+### 2.1 工作空间文件引用到 Composer
+
+工作空间文件引用是 Composer 的一等结构化上下文，不是普通上传附件，也不是插入正文的一段路径文本。用户在项目工作空间文件树或搜索结果中右键 `kind=file` 的条目并选择“引用到对话”后，当前可用 Composer 的上下文区出现一个文件 chip；该 chip 只表示“本次 prompt 携带这个文件的引用”，不把文件正文、绝对路径或 Markdown 链接写入 textarea。
+
+- 引用 chip 与现有 quote / attachment chip 使用同一轻量上下文区、同一删除交互和同一数量上限；文件 chip 展示文件名，Tooltip 展示相对路径与大小。点击未发送 chip 先通过工作空间 resolver 取得 canonical locator，再复用 `file-browser:<projectId>` 资源并选中当前文件，不创建文件级 Tab；删除 chip 只移除本次 prompt 上下文，不关闭用户已打开的工作空间文件 Tab。
+- 前端草稿保存 `projectId + relativePath` 与展示摘要；`canonicalPath` 只能作为当前工作区投影用于打开文件，不作为提交身份。提交、排队和执行前的引用身份固定为权威 `projectId + relativePath`，重复引用同一文件去重，不新增文件 ID、revision 或第二事实源。文件树与当前 Composer 不属于同一个工作空间时仍可引用；该引用按自己的 `projectId` 解析，不因为切换 Composer 的 workspace 被清除。快速对话的 workspace 选择必须经由 App draft boundary 统一派发；composer selector、sidebar、workspace 移除后的自动切换和设置页入口都保留正文、普通附件和已添加的文件引用。
+- 文件树和搜索结果的引用动作只对真实文件可见；目录、symlink、other、只读演示页以及当前 scope 没有 Composer 时隐藏。引用命令返回 added / duplicate / limit-exceeded / unavailable 结构化结果：added 在右侧工作区为 dock 时聚焦 Composer textarea，duplicate 作为幂等 no-op，limit-exceeded 在 Composer 上下文区显示中英文错误；窄屏 Sheet 展示时不抢走 Sheet 焦点。
+- 发送前的引用校验和发送后的再次解析都由 Rust 在 blocking pool 完成：每条引用按自己的 `projectId` 在已注册工作空间中取根目录，当前会话项目优先使用该项目 App 的 repo root。relative path 先做跨平台 lexical 校验，拒绝 `..`、根路径、Windows 盘符前缀和 UNC 路径，再 canonicalize 并确认仍在该 workspace 且为普通文件。ResourceLink 的 `uri` 使用解析后的绝对 `file://` 路径。重复项先按 authoring identity、再按 canonical path 去重，最终唯一引用数加附件数不得超过上限。未注册的 project、文件缺失、目录、权限失败和 symlink escape 均返回既有 `CommandErrorVm { code, params }` 结构，前端负责中英文恢复文案。
+- 定时任务 create / update 属于 authoring 入口，完整 service 写入在 blocking pool 执行，持久化前必须校验生效后的 workspace 引用集合；`workspaceFiles == null` 表示沿用当前集合，空数组表示清空，非空数组表示替换。执行前仍按当前磁盘状态再次解析，处理创建后文件被删除、替换或越界的变化。
+- 该链路不读取文件正文、不计算 BLAKE3 revision、不签发 preview grant、不复制到 `user-inputs`，因此不得复用会读取全文的附件 stat/preview 命令。文件名、大小和 MIME 只作为 ResourceLink metadata；未知扩展回退 `application/octet-stream`。
+- 发送后用户消息渲染轻量文件引用 chip。点击该 chip 打开当前工作空间文件；如果排队后文件被删除、改名或越界，执行返回结构化错误并按既有 turn 生命周期结算，不伪造成功，也不影响其他 prompt。队列摘要必须暴露文件引用数量，纯文件引用的排队项不得显示为空消息。
 - 关闭最后一个资源 Tab 时右侧工作区同步收起。接口级验收必须按稳定 file-browser key 查询资源，并从 `selectedFile` 读取当前文件与定位 revision；连续打开任意数量的项目文件后 Tab 数仍为 1，测试和消费者不得继续依赖旧的 file key 或“每文件一 Tab”结构。
 - 会话中的本地文件链接使用“文件图标 + 语义链接文字”的轻量文本按钮形态，不使用背景、边框或阴影；图标与文字统一消费主题包的 `link` 语义色，不得复用“运行中”状态色，保留主题 `font-medium` 层级，默认不显示下划线，hover 时显示下划线，键盘 focus 使用同一 `link` 语义色保留清晰 focus ring，不可用时统一切换为 `muted-foreground`。链接目标带 `:line[:column]` 或 `#Lline[-LendLine]` 时，可见名称必须连续显示为紧凑的 `文件名:位置`，位置与文件名完全继承同一字号、字体、字重和颜色；不得用间隙、独立颜色、独立 badge、小号等宽文本或第二层底色把位置拆成附属标签。Markdown label 已含等价位置时不得重复追加。路径解析得到的 `target/targetRevision` 属于绑定 `projectId + canonicalPath` 的一次定位意图：相同链接每次点击都产生新 revision。Adapter 以 `documentKey + contentRevision + 当前 EditorView ref` 判断文档实例，不得用全文字符串相等判断，因为 CodeMirror 会规范化 CRLF。`onCreateEditor` 只初始化 View 插件；外部定位必须等受控 `value` 同步后的 React effect，再在同一个 CodeMirror transaction 中提交 selection 与官方 `EditorView.scrollIntoView(range, { y: 'center' })` effect。滚动测量、虚拟高度换算与视口更新完全交给 CodeMirror，不得用 rAF/ResizeObserver 轮询、`coordsAtPos`、估算块高度或直接写 `scrollTop` 实现第二套滚动器。transaction 成功 dispatch 后按文档身份消费 revision，文件切换不能沿用其他文件的已消费 revision。
 - 会话本地文件链接必须先经过统一 Rust resolver，再创建或更新文件资源。resolver 接受工作空间相对路径、平台绝对路径与 `file://` URL；WebView 在 Windows 会把盘符绝对路径投影成 `/C:/...` URL pathname，Rust 仅在 Windows 对满足 `/<盘符>:/` 的输入移除一个前导 `/`，Linux/macOS 必须把 `/...`（包括 `/E:/...`）保留为 Unix 绝对路径。只有 resolver 成功返回的 canonical locator 才能进入 Tab、读取、外部文件授权或系统打开链路；失败时在被点击链接旁展示结构化错误，不创建错误资源或伪造 canonical path。用户再次点击同一链接即从 resolver 重新尝试，不维护独立重试状态。同一链接请求按 `workspace handler + href + revision` 隔离；工作空间或 handler 改变后，旧请求不得阻塞新点击或把迟到错误投影到新作用域。
@@ -97,6 +109,7 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 ## 7. 实现状态
 
 - 2026-09-22 会话切回时的目录对账改为按目录 identity 合并已加载子树。列表未变化不发布快照，已展开后代不再先清空再逐层打开。
+- 2026-09-20 工作空间文件引用到 Composer 已完成：文件树 / 搜索结果右键、首页与 ACP 草稿、结构化 prompt DTO、Rust admission/dispatch 前解析、queue / promptSubmission 持久化、ACP ResourceLink、Timeline 消息 chip 与浏览器 mock 已接入。引用链路保持轻量 metadata，不读取正文、不复制文件、不进入普通附件路径。
 - 2026-08-16 起文件工作区接入 Theme Contract v2：外层使用稳定 `workspace` wallpaper surface，编辑器使用 `editor` role。主题只改变背景投影、字体变量、边界、形状和材质，不销毁 CodeMirror `EditorView`，也不改变文件加载、保存或 revision 状态。
 - 壁纸仅在工作区 surface 可见时预加载；缺失、损坏或由 performance 档关闭时回退语义底色。编辑器正文继续使用独立 editor 字体栈和字号，locale 切换不重载文件内容。
 - 2026-08-17 补齐运行目录 Markdown 能力：运行目录与会话附件接入统一只读 Markdown 适配器，固定只读、默认实时预览、支持源码切换，并统一遵守高亮与实时预览长度阈值；DOM 回归测试固定运行目录 `.md` 的读取 locator、只读属性和模式切换契约。

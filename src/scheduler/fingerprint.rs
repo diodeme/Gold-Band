@@ -1,4 +1,5 @@
 use super::ScheduledMode;
+use crate::provider::{PromptWorkspaceFileRef, workspace_file_authoring_identity};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -17,6 +18,8 @@ pub struct ScheduledTaskContentInput {
     pub instruction: String,
     #[serde(default)]
     pub attachment_hashes: Vec<String>,
+    #[serde(default)]
+    pub workspace_files: Vec<PromptWorkspaceFileRef>,
     pub workspace_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_authoring: Option<Value>,
@@ -35,6 +38,7 @@ impl Default for ScheduledTaskContentInput {
             mode: ScheduledMode::Direct,
             instruction: String::new(),
             attachment_hashes: Vec::new(),
+            workspace_files: Vec::new(),
             workspace_id: String::new(),
             workflow_authoring: None,
             auto_authoring: None,
@@ -54,6 +58,7 @@ impl ScheduledTaskContentInput {
             mode,
             instruction: instruction.into(),
             attachment_hashes: attachment_hashes.into_iter().map(Into::into).collect(),
+            workspace_files: Vec::new(),
             workspace_id: workspace_id.into(),
             ..Self::default()
         }
@@ -150,6 +155,27 @@ pub fn canonical_content_json(input: &ScheduledTaskContentInput) -> Value {
         "attachmentHashes".to_string(),
         sorted_strings(&input.attachment_hashes),
     );
+    let mut workspace_files = input
+        .workspace_files
+        .iter()
+        .map(|reference| {
+            let (project_id, relative_path) =
+                workspace_file_authoring_identity(&reference.project_id, &reference.relative_path);
+            (project_id, relative_path)
+        })
+        .collect::<Vec<_>>();
+    workspace_files.sort();
+    workspace_files.dedup();
+    let workspace_files = workspace_files
+        .into_iter()
+        .map(|(project_id, relative_path)| {
+            serde_json::json!({
+                "projectId": project_id,
+                "relativePath": relative_path,
+            })
+        })
+        .collect::<Vec<_>>();
+    root.insert("workspaceFiles".to_string(), Value::Array(workspace_files));
     root.insert(
         "instruction".to_string(),
         Value::String(input.instruction.clone()),
@@ -653,6 +679,11 @@ mod tests {
         changed_attachment.attachment_hashes = vec!["sha256:attachment-b".to_string()];
         let mut changed_workspace = baseline.clone();
         changed_workspace.workspace_id = "workspace-b".to_string();
+        let mut changed_workspace_file = baseline.clone();
+        changed_workspace_file.workspace_files = vec![PromptWorkspaceFileRef {
+            project_id: "workspace-b".to_string(),
+            relative_path: "src/main.rs".to_string(),
+        }];
         let mut changed_instruction = baseline.clone();
         changed_instruction.instruction = "inspect a different thing".to_string();
 
@@ -660,7 +691,70 @@ mod tests {
         assert_ne!(original, content_fingerprint(&changed_agent).unwrap());
         assert_ne!(original, content_fingerprint(&changed_attachment).unwrap());
         assert_ne!(original, content_fingerprint(&changed_workspace).unwrap());
+        assert_ne!(
+            original,
+            content_fingerprint(&changed_workspace_file).unwrap()
+        );
         assert_ne!(original, content_fingerprint(&changed_instruction).unwrap());
+    }
+
+    #[test]
+    fn workspace_file_order_separators_and_duplicates_are_normalized() {
+        let mut first = direct_input("claude-acp");
+        first.workspace_files = vec![
+            PromptWorkspaceFileRef {
+                project_id: "workspace-a".to_string(),
+                relative_path: "src\\WorkspaceFileTree.tsx".to_string(),
+            },
+            PromptWorkspaceFileRef {
+                project_id: "workspace-a".to_string(),
+                relative_path: "docs/design.md".to_string(),
+            },
+            PromptWorkspaceFileRef {
+                project_id: "workspace-a".to_string(),
+                relative_path: "src/WorkspaceFileTree.tsx".to_string(),
+            },
+        ];
+        let mut second = first.clone();
+        second.workspace_files.reverse();
+
+        assert_eq!(
+            content_fingerprint(&first).unwrap(),
+            content_fingerprint(&second).unwrap()
+        );
+        assert_eq!(
+            canonical_content_json(&first)["workspaceFiles"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_workspace_file_case_variants_share_identity() {
+        let mut first = direct_input("claude-acp");
+        first.workspace_files = vec![
+            PromptWorkspaceFileRef {
+                project_id: "Workspace-A".to_string(),
+                relative_path: "src\\WorkspaceFileTree.tsx".to_string(),
+            },
+            PromptWorkspaceFileRef {
+                project_id: "workspace-a".to_string(),
+                relative_path: "SRC/workspacefiletree.TSX".to_string(),
+            },
+        ];
+        let mut second = direct_input("claude-acp");
+        second.workspace_files = vec![PromptWorkspaceFileRef {
+            project_id: "workspace-a".to_string(),
+            relative_path: "src/workspacefiletree.tsx".to_string(),
+        }];
+
+        assert_eq!(
+            content_fingerprint(&first).unwrap(),
+            content_fingerprint(&second).unwrap()
+        );
     }
 
     #[test]

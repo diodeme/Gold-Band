@@ -5268,6 +5268,11 @@ impl<'a> AcpRuntime<'a> {
         if let (Some(role), Some(raw)) = (prompt.role.as_ref(), user_event.raw.as_mut()) {
             raw["role"] = serde_json::to_value(role)?;
         }
+        if !prompt.workspace_files.is_empty()
+            && let Some(raw) = user_event.raw.as_mut()
+        {
+            raw["workspaceFiles"] = serde_json::to_value(&prompt.workspace_files)?;
+        }
         if hidden_from_chat
             && let Some(reason) = prompt.hidden_reason.as_deref()
             && let Some(raw) = user_event.raw.as_mut()
@@ -9233,6 +9238,7 @@ mod tests {
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
             scheduled_trigger: None,
+            workspace_files: Vec::new(),
         }
     }
 
@@ -9320,6 +9326,7 @@ mod tests {
                 display_text: "test".into(),
                 quotes: vec![],
                 role: None,
+                workspace_files: Vec::new(),
             },
             attachment_paths: vec![],
             admitted_at: super::current_timestamp(),
@@ -12737,6 +12744,7 @@ mod tests {
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
             scheduled_trigger: None,
+            workspace_files: Vec::new(),
         };
 
         let text = session_prompt_text("codex-acp", &prompt, false, false);
@@ -12777,6 +12785,7 @@ mod tests {
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
             scheduled_trigger: None,
+            workspace_files: Vec::new(),
         };
 
         let text = session_prompt_text("codex-acp", &prompt, true, false);
@@ -12838,6 +12847,7 @@ mod tests {
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
             scheduled_trigger: None,
+            workspace_files: Vec::new(),
         };
 
         assert_eq!(

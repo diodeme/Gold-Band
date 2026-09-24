@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import { BoundedLruCache } from '@/lib/bounded-lru-cache';
-import type { AttachmentItem } from '@/lib/attachment-service';
+import { revokeAttachmentPreviewUrls, type AttachmentItem } from '@/lib/attachment-service';
 import { RIGHT_WORKSPACE_DEFAULT_WIDTH } from './workspace-layout';
 import {
   normalizeSourceControlWorkspacePath,
@@ -122,6 +122,8 @@ export type DraftAttachmentWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'draft-attachment';
   projectId: string;
   attachment: AttachmentItem;
+  /** Message preview key recorded after a successful send. Absent until then. */
+  previewAliasKey?: string;
 };
 
 export type WorkflowViewWorkspaceResource = RightWorkspaceResourceBase & {
@@ -132,6 +134,11 @@ export type WorkflowViewWorkspaceResource = RightWorkspaceResourceBase & {
 export type WorkflowEditWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'workflow-edit';
   mode: 'edit' | 'repair';
+  locator: ConversationRunLocator;
+};
+
+export type AutoConfigWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'auto-config';
   locator: ConversationRunLocator;
 };
 
@@ -172,6 +179,7 @@ export type RightWorkspaceResource =
   | DraftAttachmentWorkspaceResource
   | WorkflowViewWorkspaceResource
   | WorkflowEditWorkspaceResource
+  | AutoConfigWorkspaceResource
   | SystemPromptWorkspaceResource
   | HiddenPromptSectionWorkspaceResource
   | RawFramesWorkspaceResource
@@ -222,6 +230,8 @@ export interface RightWorkspaceCommands {
   openResource: (resource: RightWorkspaceResource) => void | Promise<void>;
   closeTab: (key: string) => void | Promise<void>;
   getResource: (key: string) => RightWorkspaceResource | null;
+  aliasOpenDraftAttachment: (attachmentId: string, previewAliasKey: string) => boolean;
+  activatePreviewAlias: (previewAliasKey: string) => boolean;
 }
 
 export type RightWorkspaceResourceKind = RightWorkspaceResource['kind'];
@@ -296,7 +306,7 @@ export class ConversationWorkspaceStore {
 
   save(scope: ConversationWorkspaceScope, state: RightWorkspaceSessionState) {
     const stored = this.entries.peek(scope.key);
-    this.entries.set(scope.key, {
+    this.put(scope.key, {
       scope,
       state: cloneRightWorkspaceState(state),
       presentation: stored?.presentation ?? createInitialRightWorkspacePresentation(),
@@ -336,7 +346,7 @@ export class ConversationWorkspaceStore {
   openWorkspace(scope: ConversationWorkspaceScope, { explicit }: { explicit: boolean }) {
     const stored = this.entries.peek(scope.key);
     const presentation = stored?.presentation ?? createInitialRightWorkspacePresentation();
-    this.entries.set(scope.key, {
+    this.put(scope.key, {
       scope,
       state: cloneRightWorkspaceState(stored?.state ?? createInitialRightWorkspaceState()),
       presentation: {
@@ -350,7 +360,7 @@ export class ConversationWorkspaceStore {
   closeWorkspace(scope: ConversationWorkspaceScope) {
     const stored = this.entries.peek(scope.key);
     if (!stored?.presentation.requestedOpen) return false;
-    this.entries.set(scope.key, {
+    this.put(scope.key, {
       scope,
       state: cloneRightWorkspaceState(stored.state),
       presentation: {
@@ -373,7 +383,7 @@ export class ConversationWorkspaceStore {
     const promotedActiveTabKey = draftWorkspace.state.activeTabKey == null
       ? null
       : promotedTabs[draftWorkspace.state.tabs.findIndex((resource) => resource.key === draftWorkspace.state.activeTabKey)]?.key ?? null;
-    this.entries.set(conversation.key, {
+    this.put(conversation.key, {
       scope: conversation,
       state: {
         tabs: promotedTabs,
@@ -385,11 +395,54 @@ export class ConversationWorkspaceStore {
   }
 
   deleteConversation(projectId: string, taskId: string) {
-    this.entries.deleteWhere(({ scope }) => scope.kind === 'conversation' && scope.projectId === projectId && scope.taskId === taskId);
+    this.discardWhere((stored) => stored.scope.kind === 'conversation' && stored.scope.projectId === projectId && stored.scope.taskId === taskId);
   }
 
   deleteProject(projectId: string) {
-    this.entries.deleteWhere(({ scope }) => scope.projectId === projectId);
+    this.discardWhere((stored) => stored.scope.projectId === projectId);
+  }
+
+  private put(key: string, stored: StoredConversationWorkspace) {
+    const evicting = this.entries.peek(key) === undefined && this.entries.size >= CONVERSATION_WORKSPACE_LRU_LIMIT;
+    const oldestKey = evicting ? this.entries.keys()[0] : undefined;
+    const evicted = oldestKey === undefined ? undefined : this.entries.peek(oldestKey);
+    this.entries.set(key, stored);
+    if (evicted && oldestKey !== key) revokeDraftAttachmentPreviewResources(evicted.state.tabs);
+  }
+
+  private discardWhere(predicate: (stored: StoredConversationWorkspace) => boolean) {
+    for (const key of this.entries.keys()) {
+      const stored = this.entries.peek(key);
+      if (!stored || !predicate(stored)) continue;
+      revokeDraftAttachmentPreviewResources(stored.state.tabs);
+      this.entries.delete(key);
+    }
+  }
+
+  aliasDraftAttachmentPreview(scopeKey: string, attachmentId: string, previewAliasKey: string) {
+    const stored = this.entries.peek(scopeKey);
+    if (!stored) return false;
+    const key = draftAttachmentWorkspaceResourceKey(scopeKey, attachmentId);
+    const index = stored.state.tabs.findIndex((tab) => tab.kind === 'draft-attachment' && tab.key === key);
+    if (index < 0) return false;
+    const current = stored.state.tabs[index];
+    if (current?.kind !== 'draft-attachment') return false;
+    if (current.previewAliasKey === previewAliasKey) return true;
+    const tabs = stored.state.tabs.slice();
+    tabs[index] = { ...current, previewAliasKey };
+    this.put(scopeKey, {
+      scope: stored.scope,
+      state: { tabs, activeTabKey: stored.state.activeTabKey },
+      presentation: stored.presentation,
+    });
+    return true;
+  }
+
+  draftAttachmentForPreviewAlias(scopeKey: string, previewAliasKey: string) {
+    const stored = this.entries.peek(scopeKey);
+    return stored?.state.tabs.find((tab): tab is DraftAttachmentWorkspaceResource => (
+      tab.kind === 'draft-attachment' && tab.previewAliasKey === previewAliasKey
+    )) ?? null;
   }
 
   has(scope: ConversationWorkspaceScope) {
@@ -464,29 +517,10 @@ function promoteDraftWorkspaceResource(
 ): RightWorkspaceResource {
   const scopeKey = conversation.key;
   if (resource.kind === 'draft-attachment') {
-    const name = resource.attachment.name;
-    const path = taskInputAttachmentPath(name);
-    const locator: AcpAttemptWorkspaceLocator = {
-      projectId: conversation.projectId,
-      taskId: conversation.taskId,
-      taskUuid: conversation.taskUuid,
-      runId: conversation.runId,
-      roundId: '',
-      nodeId: '',
-      attemptId: '',
-      branchId: '',
-    };
     return {
-      kind: 'conversation-asset',
-      key: conversationAssetWorkspaceResourceKey('input-attachment', locator, name, path),
+      ...resource,
+      key: draftAttachmentWorkspaceResourceKey(scopeKey, resource.attachment.id),
       scopeKey,
-      title: name,
-      description: path,
-      attention: false,
-      locator,
-      assetKind: 'input-attachment',
-      name,
-      path,
     };
   }
   if (resource.kind === 'scheduled-task-config') {
@@ -626,6 +660,21 @@ export function RightWorkspaceProvider({
     if (next.tabs.length === 0) effectiveStore.closeWorkspace(scope);
     render();
   }, [commit, effectiveStore, peekProjectedState, scope]);
+  const aliasOpenDraftAttachment = useCallback((attachmentId: string, previewAliasKey: string) => {
+    const currentScope = scopeRef.current;
+    if (!currentScope) return false;
+    return effectiveStore.aliasDraftAttachmentPreview(currentScope.key, attachmentId, previewAliasKey);
+  }, [effectiveStore]);
+  const activatePreviewAlias = useCallback((previewAliasKey: string) => {
+    const currentScope = scopeRef.current;
+    if (!currentScope) return false;
+    const tab = effectiveStore.draftAttachmentForPreviewAlias(currentScope.key, previewAliasKey);
+    if (!tab) return false;
+    if (!commit({ type: 'activate', key: tab.key })) return true;
+    effectiveStore.openWorkspace(currentScope, { explicit: false });
+    render();
+    return true;
+  }, [commit, effectiveStore]);
   const closeWorkspace = useCallback(async () => {
     if (!scope) return;
     const current = peekProjectedState(scope);
@@ -685,7 +734,9 @@ export function RightWorkspaceProvider({
     openResource,
     closeTab,
     getResource,
-  }), [closeTab, getResource, openResource, scope?.key, scope?.projectId]);
+    aliasOpenDraftAttachment,
+    activatePreviewAlias,
+  }), [activatePreviewAlias, aliasOpenDraftAttachment, closeTab, getResource, openResource, scope?.key, scope?.projectId]);
   return (
     <RightWorkspaceCommandsContext.Provider value={commands}>
       <RightWorkspaceContext.Provider value={value}>{children}</RightWorkspaceContext.Provider>
@@ -727,7 +778,7 @@ export function agentTranscriptResourceKey(locator: AgentTranscriptLocator) {
   ].join(':');
 }
 
-export function conversationRunWorkspaceResourceKey(kind: 'workflow-view' | 'workflow-edit', locator: ConversationRunLocator) {
+export function conversationRunWorkspaceResourceKey(kind: 'workflow-view' | 'workflow-edit' | 'auto-config', locator: ConversationRunLocator) {
   return `${kind}:${locator.projectId}:${locator.taskUuid ?? 'missing-task-uuid'}:${locator.runId}`;
 }
 
@@ -808,6 +859,33 @@ export function acpAttemptWorkspaceResourceKey(kind: 'system-prompt' | 'raw-fram
 
 export function taskInputAttachmentPath(name: string) {
   return `task-inputs/${name}`;
+}
+
+export function userInputAttachmentPath(name: string) {
+  return `user-inputs/${name}`;
+}
+
+export function sentAttachmentPreviewAliasKey(input: {
+  assetKind: 'input-attachment' | 'message-attachment';
+  locator: AcpAttemptWorkspaceLocator;
+  name: string;
+}) {
+  const path = input.assetKind === 'input-attachment'
+    ? taskInputAttachmentPath(input.name)
+    : userInputAttachmentPath(input.name);
+  return conversationAssetWorkspaceResourceKey(input.assetKind, input.locator, input.name, path);
+}
+
+export function detachDraftAttachmentPreview(attachment: AttachmentItem): AttachmentItem {
+  if (!attachment.file || !attachment.previewUrl?.startsWith('blob:')) return { ...attachment };
+  return {
+    ...attachment,
+    previewUrl: URL.createObjectURL(attachment.file),
+  };
+}
+
+export function revokeDraftAttachmentPreviewResources(tabs: readonly RightWorkspaceResource[]) {
+  revokeAttachmentPreviewUrls(tabs.flatMap((tab) => tab.kind === 'draft-attachment' ? [tab.attachment] : []));
 }
 
 function canonicalTaskInputPath(path: string | null | undefined, name: string) {
@@ -906,6 +984,6 @@ export function createDraftAttachmentWorkspaceResource(input: {
     title: input.attachment.name,
     description: input.attachment.path ?? null,
     attention: false,
-    attachment: input.attachment,
+    attachment: detachDraftAttachmentPreview(input.attachment),
   };
 }

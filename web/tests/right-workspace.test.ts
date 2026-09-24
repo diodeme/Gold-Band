@@ -11,6 +11,7 @@ import {
   createHiddenPromptSectionWorkspaceResource,
   createDraftAttachmentWorkspaceResource,
   createConversationWorkspaceScope,
+  sentAttachmentPreviewAliasKey,
   createDraftConversationWorkspaceScope,
   createInitialRightWorkspaceState,
   fileBrowserWorkspaceResourceKey,
@@ -405,16 +406,11 @@ describe('right workspace resource model', () => {
       previewUrl: 'blob:preview',
       source: 'paste' as const,
     };
-    const persistedKey = conversationAssetWorkspaceResourceKey('input-attachment', {
-      projectId: 'project-1',
-      taskId: 'task-1',
-      taskUuid: 'task-uuid-1',
-      runId: 'run-1',
-      roundId: 'round-later',
-      nodeId: 'node-later',
-      attemptId: 'attempt-later',
-      branchId: 'branch-later',
-    }, attachment.name, 'task-inputs/preview.png');
+    const sameName = {
+      ...attachment,
+      id: 'attachment-2',
+      previewUrl: 'blob:preview-2',
+    };
     const draftAttachment: RightWorkspaceResource = {
       kind: 'draft-attachment',
       key: draftAttachmentWorkspaceResourceKey(draft.key, attachment.id),
@@ -426,7 +422,15 @@ describe('right workspace resource model', () => {
     };
     store.save(draft, {
       ...createInitialRightWorkspaceState(),
-      tabs: [{ ...agent('draft-agent'), scopeKey: draft.key }, draftAttachment],
+      tabs: [
+        { ...agent('draft-agent'), scopeKey: draft.key },
+        draftAttachment,
+        createDraftAttachmentWorkspaceResource({
+          scopeKey: draft.key,
+          projectId: draft.projectId,
+          attachment: sameName,
+        }),
+      ],
       activeTabKey: draftAttachment.key,
     });
     store.openWorkspace(draft, { explicit: true });
@@ -434,29 +438,77 @@ describe('right workspace resource model', () => {
 
     expect(store.has(draft)).toBe(false);
     const promoted = store.restore(conversation);
-    expect(promoted).toMatchObject({
-      tabs: [
-        { key: agent('draft-agent').key, scopeKey: conversation.key },
-        {
-          kind: 'conversation-asset',
-          key: persistedKey,
-          scopeKey: conversation.key,
-          assetKind: 'input-attachment',
-          name: attachment.name,
-          path: 'task-inputs/preview.png',
-          locator: {
-            projectId: 'project-1',
-            taskId: 'task-1',
-            taskUuid: 'task-uuid-1',
-            runId: 'run-1',
-          },
-        },
-      ],
-      activeTabKey: persistedKey,
-    });
-    expect(promoted.tabs.some((tab) => tab.kind === 'draft-attachment')).toBe(false);
-    expect(JSON.stringify(promoted)).not.toContain('blob:preview');
+    expect(promoted.tabs.filter((tab) => tab.kind === 'draft-attachment')).toEqual([
+      expect.objectContaining({
+        key: draftAttachmentWorkspaceResourceKey(conversation.key, attachment.id),
+        scopeKey: conversation.key,
+        attachment: expect.objectContaining({ id: attachment.id, name: 'preview.png', previewUrl: 'blob:preview' }),
+      }),
+      expect.objectContaining({
+        key: draftAttachmentWorkspaceResourceKey(conversation.key, sameName.id),
+        scopeKey: conversation.key,
+        attachment: expect.objectContaining({ id: sameName.id, name: 'preview.png', previewUrl: 'blob:preview-2' }),
+      }),
+    ]);
+    expect(promoted.activeTabKey).toBe(draftAttachmentWorkspaceResourceKey(conversation.key, attachment.id));
+    expect(promoted.tabs.some((tab) => tab.kind === 'conversation-asset')).toBe(false);
     expect(store.peekShellState(conversation).requestedOpen).toBe(true);
+  });
+
+  it('reuses an open draft preview when a sent message uses the same attachment id', () => {
+    const store = new ConversationWorkspaceStore();
+    const draft = createDraftConversationWorkspaceScope('project-1');
+    const conversation = createConversationWorkspaceScope({
+      projectId: 'project-1',
+      taskId: 'task-1',
+      taskUuid: 'task-uuid-1',
+      runId: 'run-1',
+    });
+    const attempt = {
+      projectId: 'project-1',
+      taskId: 'task-1',
+      taskUuid: 'task-uuid-1',
+      runId: 'run-1',
+      roundId: 'round-1',
+      nodeId: 'node-1',
+      attemptId: 'attempt-1',
+      branchId: 'root',
+    };
+    const attachment = {
+      id: 'attachment-1',
+      name: 'image.png',
+      size: 4,
+      mime: 'image/png',
+      previewUrl: 'blob:open-preview',
+      source: 'paste' as const,
+    };
+    const other = { ...attachment, id: 'attachment-2', previewUrl: 'blob:other-preview' };
+    store.save(draft, {
+      tabs: [
+        createDraftAttachmentWorkspaceResource({ scopeKey: draft.key, projectId: 'project-1', attachment }),
+        createDraftAttachmentWorkspaceResource({ scopeKey: draft.key, projectId: 'project-1', attachment: other }),
+      ],
+      activeTabKey: draftAttachmentWorkspaceResourceKey(draft.key, attachment.id),
+    });
+    store.promoteDraft(draft, conversation);
+    const aliasKey = sentAttachmentPreviewAliasKey({
+      assetKind: 'input-attachment',
+      locator: attempt,
+      name: attachment.name,
+    });
+
+    expect(store.aliasDraftAttachmentPreview(conversation.key, attachment.id, aliasKey)).toBe(true);
+    expect(store.aliasDraftAttachmentPreview(conversation.key, 'missing', aliasKey)).toBe(false);
+
+    const reused = store.draftAttachmentForPreviewAlias(conversation.key, aliasKey);
+    expect(reused?.attachment).toMatchObject({ id: attachment.id, previewUrl: 'blob:open-preview' });
+    expect(reused?.kind).toBe('draft-attachment');
+    expect(store.draftAttachmentForPreviewAlias(conversation.key, sentAttachmentPreviewAliasKey({
+      assetKind: 'message-attachment',
+      locator: { ...attempt, attemptId: 'attempt-2' },
+      name: attachment.name,
+    }))).toBeNull();
+    expect(store.restore(conversation).tabs.filter((tab) => tab.kind === 'draft-attachment')).toHaveLength(2);
   });
 
   it('keeps draft promotion isolated to the same project and idempotent after success', () => {

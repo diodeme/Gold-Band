@@ -73,7 +73,7 @@ interface ConversationComposerProps {
   workLocation: ConversationWorkLocation;
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
-  onSubmit: (input: ConversationCreateInput, multica?: ConversationComposerMulticaBinding | null) => Promise<string | null | undefined> | string | null | undefined;
+  onSubmit: (input: ConversationCreateInput, multica?: ConversationComposerMulticaBinding | null, sentAttachments?: readonly { id: string; name: string }[]) => Promise<string | null | undefined> | string | null | undefined;
   onCreateScheduledTask?: (input: ConversationCreateInput & { schedule: ScheduledScheduleInput; overlapPolicy: 'skip_when_running' | 'retry_when_busy'; sessionPolicy?: 'new' | 'continuous' }) => Promise<void>;
   onScheduledTaskCreated?: () => void;
   onOpenAgentManagement: () => void;
@@ -509,7 +509,9 @@ export function ConversationComposer({
 
   const openComposerAttachment = useCallback((attachment: import('@/lib/attachment-service').AttachmentItem) => {
     if (!rightWorkspace?.scopeKey) return;
-    void rightWorkspace.openResource(createDraftAttachmentWorkspaceResource({
+    const key = draftAttachmentWorkspaceResourceKey(rightWorkspace.scopeKey, attachment.id);
+    const existing = rightWorkspace.tabs.find((tab) => tab.key === key);
+    void rightWorkspace.openResource(existing?.kind === 'draft-attachment' ? existing : createDraftAttachmentWorkspaceResource({
       scopeKey: rightWorkspace.scopeKey,
       projectId,
       attachment,
@@ -922,12 +924,12 @@ export function ConversationComposer({
           attachmentPaths: paths.length > 0 ? paths : undefined,
         },
         composerDraft.draft.multica,
+        attachments.map(({ id, name }) => ({ id, name })),
       );
       if (submitError) {
         setRunModeError(submitError);
         return;
       }
-      attachments.forEach(closeComposerAttachmentPreview);
       composerDraft.reset();
     } catch {
       // Attachment hook owns the user-facing file error.

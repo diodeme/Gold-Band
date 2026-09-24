@@ -98,6 +98,7 @@ import {
   conversationAssetWorkspaceResourceKey,
   createDraftAttachmentWorkspaceResource,
   createHiddenPromptSectionWorkspaceResource,
+  sentAttachmentPreviewAliasKey,
   draftAttachmentWorkspaceResourceKey,
   useOptionalRightWorkspaceCommands,
   type AcpAttemptWorkspaceLocator,
@@ -1640,8 +1641,8 @@ export function ACPChatDialog(
       restoreComposerDraftIfEmpty(record.draft);
     }
   }, [promptDraftHasAdmission, restoreComposerDraftIfEmpty]);
-  // Canonical admission is the delivery fact: only then may the detached draft
-  // release its attachment previews. Until then the snapshot stays reclaimable.
+  // Canonical admission releases the composer draft's own preview URL. An open
+  // workspace tab keeps a separate object URL until the user closes that tab.
   useEffect(() => {
     releaseAdmittedPromptDrafts();
   });
@@ -2581,9 +2582,11 @@ export function ACPChatDialog(
       const assetKind = isTaskInputMessageAttachment(attachment)
         ? 'input-attachment' as const
         : 'message-attachment' as const;
+      const key = conversationAssetWorkspaceResourceKey(assetKind, attemptWorkspaceLocator, attachment.name, attachment.path);
+      if (rightWorkspace.activatePreviewAlias(key)) return;
       void rightWorkspace.openResource({
         kind: 'conversation-asset',
-        key: conversationAssetWorkspaceResourceKey(assetKind, attemptWorkspaceLocator, attachment.name, attachment.path),
+        key,
         scopeKey: rightWorkspace.scopeKey,
         title: attachment.name,
         description: attachment.path,
@@ -2610,7 +2613,9 @@ export function ACPChatDialog(
 
   const handleOpenComposerAttachment = useCallback((attachment: AttachmentItem) => {
     if (!rightWorkspace?.scopeKey) return;
-    void rightWorkspace.openResource(createDraftAttachmentWorkspaceResource({
+    const key = draftAttachmentWorkspaceResourceKey(rightWorkspace.scopeKey, attachment.id);
+    const existing = rightWorkspace.getResource(key);
+    void rightWorkspace.openResource(existing?.kind === 'draft-attachment' ? existing : createDraftAttachmentWorkspaceResource({
       scopeKey: rightWorkspace.scopeKey,
       projectId,
       attachment,
@@ -5491,7 +5496,15 @@ export function ACPChatDialog(
   };
 
   const releaseSubmittedAttachments = (attachments: AttachmentItem[]) => {
-    attachments.forEach(closeComposerAttachmentPreview);
+    if (rightWorkspace?.scopeKey) {
+      for (const attachment of attachments) {
+        rightWorkspace.aliasOpenDraftAttachment(attachment.id, sentAttachmentPreviewAliasKey({
+          assetKind: 'message-attachment',
+          locator: attemptWorkspaceLocator,
+          name: attachment.name,
+        }));
+      }
+    }
     revokeAttachmentPreviewUrls(attachments);
   };
 
@@ -5500,7 +5513,8 @@ export function ACPChatDialog(
     const next = { content, attachments: [], quotes: [] };
     if (!composerDraft.clearIfUnchanged(previous)) return null;
     composerDraft.restoreIfEmpty(next);
-    releaseSubmittedAttachments(previous.attachments);
+    previous.attachments.forEach(closeComposerAttachmentPreview);
+    revokeAttachmentPreviewUrls(previous.attachments);
     setComposerContextError(null);
     return next;
   };

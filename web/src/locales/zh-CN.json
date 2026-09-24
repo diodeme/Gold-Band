@@ -686,6 +686,35 @@
     },
     "discardWorkflowChanges": "工作流还有未保存的修改。确定要放弃这些修改并关闭吗？"
   },
+  "executionPlan": {
+    "configureAuto": "AUTO 配置",
+    "currentRun": "当前 Run",
+    "nextRun": "下一次 Run",
+    "saveTarget": "保存目标",
+    "save": "保存",
+    "saving": "保存中",
+    "working": "正在更新执行计划",
+    "diverged": "当前 Run 与下一次 Run 已经不同。请先分开查看，再修改其中一侧。",
+    "split": "分开查看",
+    "unsplit": "取消分开",
+    "unsplitTitle": "保留一份草稿",
+    "unsplitDescription": "选择编辑器继续使用哪一份草稿。取消不会保存，确认后仍按保存目标提交。",
+    "keepCurrent": "保留当前 Run",
+    "keepNext": "保留下一次 Run",
+    "cancel": "取消",
+    "reload": "重新加载",
+    "viewIssues": "查看原因",
+    "revert": "还原",
+    "recover": "恢复",
+    "committed": "已保存",
+    "notCommitted": "未保存",
+    "saveFailed": "执行计划没有保存。",
+    "targets": {
+      "current": "仅当前 Run",
+      "next": "仅下一次 Run",
+      "current-and-next": "当前 Run 和下一次 Run"
+    }
+  },
   "errors": {
     "browser": {
       "webview": {
@@ -722,7 +751,8 @@
       "version-unsupported": "当前 Git 版本 {{installedVersion}} 过低，需要 Git {{minimumVersion}} 或更高版本。",
       "version-unavailable": "无法识别当前 Git 版本，请修复或重新安装 Git 后重试。",
       "workspace-outside-project": "所选 Worktree 不属于当前项目。",
-      "ref-changed": "仓库状态已变化，请刷新后重试。",
+      "ref-changed": "更改列表已更新，请再试一次。",
+      "sync-ref-changed": "分支已变化，请再试一次。",
       "repository-locked": "仓库正在执行其他写操作。",
       "workspace-locked": "当前工作空间正在执行其他写操作。",
       "operation-in-progress": "当前 Git 流程尚未结束，请完成或中止后重试。",
@@ -929,7 +959,23 @@
       "prompt-session-busy": "上一条消息仍在处理中，请稍候或先停止当前回复。",
       "prompt-submission-conflict": "这条消息的发送标识已被其他内容使用，请重新发送。",
       "prompt-submission-missing": "已接纳的消息内容无法读取，请重新发送。",
-      "prompt-queue-storage-failed": "待发送队列保存失败，请重试。"
+      "prompt-queue-storage-failed": "待发送队列保存失败，请重试。",
+      "execution-plan": {
+        "not-found": "这次 Run 还没有执行计划。",
+        "revision-conflict": "执行计划已变化。请重新加载后再试。",
+        "authoring-conflict": "下一次 Run 的配置已变化。请重新加载后再试。",
+        "current-locator-conflict": "当前运行位置已变化。请重新加载后再试。",
+        "current-run-not-editable": "这次 Run 不能再修改当前执行计划。",
+        "current-node-identity-changed": "当前节点的身份不能改变。",
+        "current-node-removed": "不能删除当前节点。",
+        "agent-identity-changed": "仍可能被继续的 Agent 不能更换。",
+        "agent-identity-changed-node": "节点 {{nodeId}} 仍可能被继续，不能更换 Agent。",
+        "continue-unsupported": "这个 Agent 不能继续原有会话。",
+        "resume-failed": "继续会话失败。请选择重试或新会话。",
+        "validation-failed": "执行计划未通过校验。",
+        "partial-commit": "只发布了一部分。请查看每个保存目标。",
+        "recovery-required": "这次保存需要先恢复，才能继续。"
+      }
     },
     "workflow": {
       "agent-doctor-failed": "Agent {{agentType}} 未通过 doctor。",
@@ -2083,8 +2129,9 @@
     "currentModel": "模型",
     "thoughtLevel": "思考强度",
     "unspecifiedThoughtLevel": "不指定",
-    "sessionConfigRolledBack": "当前模型暂不支持配置：{{names}}。系统已将其回滚为不指定。可停止对话后修改。",
+    "sessionConfigRolledBack": "当前Agent暂不支持配置：{{names}}。系统已将其回滚为不指定。可停止对话后修改。",
     "configOptionWithId": "{{name}}（{{id}}）",
+    "configOptionWithValue": "{{name}}：{{value}}",
     "configOption": {
       "thinking": "深度思考",
       "effort": "思考强度",

@@ -723,7 +723,8 @@
       "version-unsupported": "Git {{installedVersion}} 버전이 너무 낮습니다. Git {{minimumVersion}} 이상이 필요합니다.",
       "version-unavailable": "설치된 Git 버전을 확인할 수 없습니다. Git을 복구하거나 재설치한 뒤 다시 시도해 주세요.",
       "workspace-outside-project": "선택한 worktree가 이 프로젝트에 속하지 않습니다.",
-      "ref-changed": "저장소 상태가 변경되었습니다. 새로고침한 뒤 다시 시도해 주세요.",
+      "ref-changed": "변경 목록이 갱신되었습니다. 다시 시도해 주세요.",
+      "sync-ref-changed": "브랜치가 변경되었습니다. 다시 시도해 주세요.",
       "repository-locked": "다른 저장소 쓰기 작업이 실행 중입니다.",
       "workspace-locked": "다른 워크스페이스 쓰기 작업이 실행 중입니다.",
       "operation-in-progress": "Git Workflow가 아직 진행 중입니다. 완료하거나 중단한 뒤 다시 시도해 주세요.",
@@ -929,7 +930,23 @@
       "prompt-session-busy": "이전 메시지가 아직 처리 중입니다. 기다리거나 현재 응답을 먼저 중지해 주세요.",
       "prompt-submission-conflict": "이 메시지 식별자가 이미 다른 내용과 연결되어 있습니다. 다시 보내 주세요.",
       "prompt-submission-missing": "수락된 메시지 내용을 읽을 수 없습니다. 다시 보내 주세요.",
-      "prompt-queue-storage-failed": "대기열을 저장할 수 없습니다. 다시 시도해 주세요."
+      "prompt-queue-storage-failed": "대기열을 저장할 수 없습니다. 다시 시도해 주세요.",
+      "execution-plan": {
+        "not-found": "이 Run에는 실행 계획이 없습니다.",
+        "revision-conflict": "실행 계획이 바뀌었습니다. 다시 불러온 뒤 시도하세요.",
+        "authoring-conflict": "다음 Run 구성이 바뀌었습니다. 다시 불러온 뒤 시도하세요.",
+        "current-locator-conflict": "실행 위치가 바뀌었습니다. 다시 불러온 뒤 시도하세요.",
+        "current-run-not-editable": "이 Run의 현재 실행 계획은 더 이상 수정할 수 없습니다.",
+        "current-node-identity-changed": "현재 노드의 식별은 바꿀 수 없습니다.",
+        "current-node-removed": "현재 노드는 삭제할 수 없습니다.",
+        "agent-identity-changed": "이어서 실행할 수 있는 Agent는 바꿀 수 없습니다.",
+        "agent-identity-changed-node": "노드 {{nodeId}}는 이어서 실행할 수 있어 Agent를 바꿀 수 없습니다.",
+        "continue-unsupported": "이 Agent는 기존 세션을 이어서 실행할 수 없습니다.",
+        "resume-failed": "세션을 이어가지 못했습니다. 다시 시도하거나 새 세션을 선택하세요.",
+        "validation-failed": "실행 계획이 검증을 통과하지 못했습니다.",
+        "partial-commit": "일부만 저장되었습니다. 저장 대상을 확인하세요.",
+        "recovery-required": "이 저장은 복구한 뒤에 계속할 수 있습니다."
+      }
     },
     "workflow": {
       "agent-doctor-failed": "Agent {{agentType}}가 doctor를 통과하지 못했습니다.",
@@ -2083,8 +2100,9 @@
     "currentModel": "모델",
     "thoughtLevel": "추론",
     "unspecifiedThoughtLevel": "지정 안 함",
-    "sessionConfigRolledBack": "현재 모델은 다음을 지원하지 않습니다: {{names}}. 시스템이 지정 안 함으로 되돌렸습니다. 대화를 중지한 후 변경할 수 있습니다.",
+    "sessionConfigRolledBack": "현재 Agent는 다음을 지원하지 않습니다: {{names}}. 시스템이 지정 안 함으로 되돌렸습니다. 대화를 중지한 후 변경할 수 있습니다.",
     "configOptionWithId": "{{name}} ({{id}})",
+    "configOptionWithValue": "{{name}}: {{value}}",
     "configOption": {
       "thinking": "사고",
       "effort": "노력",

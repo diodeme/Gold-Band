@@ -44,12 +44,14 @@ export function AppTitleBar({
 }: AppTitleBarProps) {
   const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
-  const [isMaximized, setIsMaximized] = useState(false);
+  const [windowState, setWindowState] = useState({ maximized: false, fullscreen: false });
+  const isMaximized = windowState.maximized;
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [helpMenuOpen, setHelpMenuOpen] = useState(false);
   const [helpTooltipOpen, setHelpTooltipOpen] = useState(false);
   const [helpTooltipSuppressed, setHelpTooltipSuppressed] = useState(false);
   const helpNavigationPendingRef = useRef(false);
+  const syncWindowStateRef = useRef<() => void>(() => {});
   const tauriRuntime = isTauriRuntime();
   const policy = resolveWindowControlsPolicy(platform, readOnly ? 'browser' : 'desktop');
 
@@ -57,17 +59,24 @@ export function AppTitleBar({
     if (!tauriRuntime) return undefined;
     const appWindow = getCurrentWindow();
     let active = true;
+    let revision = 0;
     let unlisten: (() => void) | undefined;
 
-    const syncMaximized = () => {
-      appWindow.isMaximized().then((value) => {
-        if (active) setIsMaximized(value);
+    const syncWindowState = () => {
+      const requestedRevision = ++revision;
+      Promise.all([appWindow.isMaximized(), appWindow.isFullscreen()]).then(([maximized, fullscreen]) => {
+        if (active && revision === requestedRevision) {
+          setWindowState((previous) => previous.maximized === maximized && previous.fullscreen === fullscreen
+            ? previous
+            : { maximized, fullscreen });
+        }
       }).catch(() => {});
     };
 
-    syncMaximized();
+    syncWindowStateRef.current = syncWindowState;
+    syncWindowState();
     appWindow.onResized(() => {
-      syncMaximized();
+      syncWindowState();
     }).then((dispose) => {
       if (active) {
         unlisten = dispose;
@@ -78,6 +87,7 @@ export function AppTitleBar({
 
     return () => {
       active = false;
+      syncWindowStateRef.current = () => {};
       unlisten?.();
     };
   }, [tauriRuntime]);
@@ -90,7 +100,7 @@ export function AppTitleBar({
   const handleToggleMaximize = () => {
     if (!tauriRuntime) return;
     getCurrentWindow().toggleMaximize().then(() => {
-      setIsMaximized((value) => !value);
+      syncWindowStateRef.current();
     }).catch(() => {});
   };
 
@@ -107,6 +117,7 @@ export function AppTitleBar({
       data-tauri-drag-region
       className={APP_TITLE_BAR_LAYOUT.rootClassName}
       data-theme-role="titlebar"
+      data-window-occludes-desktop={windowState.maximized || windowState.fullscreen}
     >
       <div className="flex items-center px-2.5">
         {hasLeadingInset ? <div aria-hidden="true" className={cn('shrink-0', policy.leadingInsetClassName)} /> : null}

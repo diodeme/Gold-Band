@@ -78,6 +78,7 @@ describe('desktop window surface', () => {
     expect(capability.permissions).toContain('core:window:allow-set-min-size');
     expect(capability.permissions).toContain('core:window:allow-set-size');
     expect(capability.permissions).toContain('core:window:allow-show');
+    expect(capability.permissions).toContain('core:window:allow-is-fullscreen');
     expect(capability.permissions).not.toContain('core:webview:allow-set-webview-background-color');
   });
 
